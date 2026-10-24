@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
+menu "RadioFoundry Gateway common (common)"
+
+    config RDOF_FEATURE_TX
+        bool "Transmit-side burst work (regenerate, CSBK preambles)"
+        default y
+        help
+            What a simplex or duplex MMDVM modem must be handed. The roamer's
+            transmit path needs it; a receive-only build doesn't.
+
+    config RDOF_FEATURE_DATA_BLOCKS
+        bool "Data block decode (trellis 3/4, rate 1, CRC-9, CRC-32)"
+        default y
+        help
+            Decoding data blocks and confirmed data. The call tracker doesn't need it
+            (it counts blocks), so a receive-only gateway can leave it out.
+
+    config RDOF_FEATURE_TRACKER
+        bool "Call tracker and HBlink sink"
+        default y
+        help
+            The call tracker: call start / end JSON, raw bursts and DMRD for what the radio hears.
+
+    config RDOF_FEATURE_REPEATER
+        bool "Duplex and single frequency repeater"
+        depends on RDOF_FEATURE_TX
+        default y
+
+    config RDOF_RUST
+        bool "rust's modules in place of their C files"
+        depends on RDOF_FEATURE_TX && RDOF_FEATURE_DATA_BLOCKS && RDOF_FEATURE_TRACKER && RDOF_FEATURE_REPEATER
+        default n
+        help
+            common ported to Rust a module at a time (rust/README.md lists them).
+            The Rust is the build with every feature on, so it needs them all.
+            Needs Espressif's Rust toolchain (espup install --targets esp32s3 --std).
+
+endmenu

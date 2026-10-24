@@ -1,0 +1,21 @@
+RadioFoundry Gateway
+Copyright (c) 2026 The RadioFoundry Gateway authors (see AUTHORS). MIT License (LICENSE).
+
+Source files that contain third-party code keep their notices; PROVENANCE.md lists them and LICENSES/ holds
+their license texts (Apache-2.0, BSD-2-Clause, BSD-3-Clause, BSD-3-Clause-Clear, ISC, MIT).
+
+Firmware binaries built from this project also contain:
+
+- ESP-IDF v5.5, Copyright Espressif Systems (Shanghai) Co., Ltd. Apache-2.0 (LICENSES/Apache-2.0.txt).
+  ESP-IDF includes third-party code under its own licenses, among them FreeRTOS (MIT), lwIP (BSD-3-Clause),
+  newlib (BSD), Mbed TLS (Apache-2.0), wpa_supplicant (BSD-3-Clause), FreeBSD net80211 (BSD), ESP-MQTT
+  (Apache-2.0), cJSON (MIT), http_parser (NGINX / Joyent terms, MIT-style), the TLSF allocator (BSD-3-Clause) and Tensilica's Xtensa
+  headers and libhal (MIT). The full list and texts: ESP-IDF's docs/en/COPYRIGHT.rst and each component's
+  LICENSE file (https://github.com/espressif/esp-idf/tree/v5.5).
+- Espressif's Wi-Fi and PHY libraries, shipped as binaries with ESP-IDF under Espressif's license.
+- espressif/esp-dsp 1.8.2, Copyright Espressif Systems. Apache-2.0.
+- espressif/usb_host_cdc_acm, usb_host_ftdi_vcp, usb_host_cp210x_vcp, usb_host_ch34x_vcp, Copyright Espressif
+  Systems. Apache-2.0.
+- With CONFIG_RDOF_RUST: the Rust core library (Espressif's Xtensa fork of rust-lang/rust), MIT OR Apache-2.0.
+
+The host tool rdofsdr, when built with SoapySDR, links it dynamically (Boost Software License 1.0).

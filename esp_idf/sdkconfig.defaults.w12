@@ -1,0 +1,31 @@
+# Meshnology W12 (ESP32-S3R8: 16 MB flash, 8 MB octal PSRAM; a Semtech LR2021 on SPI). Layer it on 16mb:
+#   idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.16mb;sdkconfig.defaults.w12" build
+# One USB-C on the native USB (no UART bridge): flash in ROM download mode; console on UART0 (GPIO43 / 44) and,
+# as a second console, the USB serial port, the board's only way out without wiring (it would be lost if USB host
+# started, so USB host is off below).
+# The LR2021's pins are the defaults of "LR2021 pins and options". NOT RUN ON THE BOARD YET.
+# Its RGB LED
+CONFIG_RDOF_STATUS_LED_GPIO=46
+# The GNSS header (an L76K, sold separately): power switch GPIO48 (active low, per the Meshtastic port), PPS on
+# GPIO41 (Meshnology's pin table). UART RX 39 / TX 38, WAKE 40, RESET 42 aren't used. Unchecked on a board.
+CONFIG_RDOF_GNSS_EN_GPIO=48
+CONFIG_RDOF_GNSS_EN_LEVEL=0
+CONFIG_NETCLOCK_PPS_GPIO=41
+# Its NMEA (9600 baud): the pin table's RX 39 / TX 38; autodetect tries them swapped too
+CONFIG_GNSS_UART_RX_GPIO=39
+CONFIG_GNSS_UART_TX_GPIO=38
+CONFIG_RDOF_SDR_LR2021=y
+# USB host off while the LR2021 is brought up: the USB port stays the serial console and flashing port
+# CONFIG_RDOF_USB_HOST is not set
+# The log on the USB serial port too
+CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y
+# FreeRTOS run-time stats: the LR2021 reader logs its share of core 0 every minute
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+# The OLED (an SSD1315, SSD1306 compatible, 128x64 at 0x3C; yellow top 16 rows, blue below) on SDA 17 / SCL 18, on
+# unless the settings say "oled": false. VEXT_EN (GPIO45) powers it, active low (Meshtastic's W12 variant).
+CONFIG_RDOF_OLED_BUILTIN=y
+CONFIG_RDOF_OLED_SDA=17
+CONFIG_RDOF_OLED_SCL=18
+CONFIG_RDOF_OLED_POWER_GPIO=45
+CONFIG_RDOF_OLED_POWER_LEVEL=0

@@ -1,0 +1,392 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
+menu "RadioFoundry Gateway"
+
+    config RDOF_ROAMER
+        bool "Roamer and repeater (an MMDVM modem: OpenGD77 on USB, MMDVM_HS on a UART)"
+        default y
+        help
+            The roaming transceiver and repeater on an MMDVM modem (common).
+            Off: the board runs an SDR only.
+
+    config RDOF_SDR
+        bool "SDR receiver (an RTL-SDR on USB)"
+        default y
+        help
+            The SDR receive path (sdr) on 4 or 5 channels at 288 kS/s, with the
+            RTL2832U driver (rtlsdr). Off: the board runs a roamer or repeater only.
+
+    comment "The board"
+
+    config RDOF_MQTT
+        bool "MQTT output (call JSON, raw bursts, status)"
+        default y
+
+    config RDOF_MQTT_RAW
+        bool "Publish every burst on .../raw"
+        depends on RDOF_MQTT
+        default y
+
+    config RDOF_MQTT_TLS
+        bool "MQTT over TLS (mqtts://, with the CA bundle)"
+        depends on RDOF_MQTT
+        select MBEDTLS_CERTIFICATE_BUNDLE
+        default n
+
+    config RDOF_WEB_FULL
+        bool "Full web page (status, settings, log, OTA upload, the SDR's tests)"
+        default y
+        help
+            Off: a minimal settings page only. The JSON API is there either way.
+
+    config RDOF_OTA
+        bool "OTA update by upload on the web page"
+        default y
+        help
+            Needs a partition table with two OTA slots.
+
+    config RDOF_SOFTAP
+        bool "softAP for setup when Wi-Fi isn't set or doesn't connect"
+        default y
+
+    config RDOF_STATUS_LED_GPIO
+        int "Status RGB LED (WS2812) GPIO, -1 for none"
+        range -1 48
+        default -1
+        help
+            Red without Wi-Fi; with it, orange while a configured device isn't working,
+            else green. The SuperMini's is on GPIO48.
+
+    config RDOF_GNSS_EN_GPIO
+        int "GNSS receiver power switch GPIO, -1 for none"
+        range -1 48
+        default -1
+        help
+            Driven to RDOF_GNSS_EN_LEVEL at boot to power a GNSS receiver, whose pulse per
+            second goes to netclock (NETCLOCK_PPS_GPIO). The W12's GNSS header: GPIO48.
+
+    config RDOF_GNSS_EN_LEVEL
+        int "Level that turns the GNSS receiver on"
+        depends on RDOF_GNSS_EN_GPIO >= 0
+        range 0 1
+        default 0
+
+    config RDOF_LOG_RING_KB
+        int "Log ring for the web page (KB; in PSRAM when there is some; 0 = off)"
+        default 16
+        range 0 1024
+
+    config RDOF_CRASH_TEST
+        bool "POST /api/crash: crash on purpose (debug builds only)"
+        depends on ESP_COREDUMP_ENABLE_TO_FLASH
+        default n
+        help
+            Tests the core dump end to end: the board writes to address 0, the IDF saves a
+            core dump to flash and reboots, and /api/status and /api/coredump show it.
+            Never on in a build that goes on a box.
+
+    comment "The roamer and repeater"
+        depends on RDOF_ROAMER
+
+    config RDOF_MODEM_USB
+        bool "OpenGD77 on USB (host, CDC-ACM)"
+        depends on RDOF_ROAMER
+        default y
+        help
+            The radio on the S3's USB OTG port. That port is then a host, so the
+            console has to be on UART0 (or JTAG).
+
+    config RDOF_USB_VID
+        hex "USB vendor ID of the radio"
+        depends on RDOF_MODEM_USB
+        default 0x1FC9
+
+    config RDOF_USB_PID
+        hex "USB product ID of the radio"
+        depends on RDOF_MODEM_USB
+        default 0x0094
+
+    config RDOF_USB_INTERFACE
+        int "USB interface index of its CDC-ACM port"
+        depends on RDOF_MODEM_USB
+        default 0
+
+    config RDOF_MODEM_UART
+        bool "MMDVM_HS HAT on a UART"
+        depends on RDOF_ROAMER
+        default y
+        help
+            An MMDVM_HS (or MMDVM) board wired to UART1 (3.3 V, 115200). The pins are
+            settings (uart: {tx, rx}; GPIO5 / GPIO6 by default).
+
+    config RDOF_HBLINK_SCTP
+        bool "HBlink4 over SCTP (hblink transport: sctp; SCTP in UDP, tinysctp)"
+        depends on RDOF_ROAMER
+        default y
+        help
+            The roamer's or repeater's link to HBlink4 over SCTP encapsulated in UDP
+            (RFC 6951, HBlink4's sctp_encap_port), as the MMDVMHost fork's SCTP:
+            retransmission, heartbeats, and DMRD given up after sctp_ttl_ms. Off: UDP
+            only. The SDR's peers are UDP either way.
+
+    config RDOF_SCAN
+        bool "Scanning between calls (a roamer's scan setting)"
+        depends on RDOF_ROAMER
+        default y
+
+    config RDOF_OLED
+        bool "OLED status screen (SSD1306 / SH1106 on I2C; the SDR's or the roamer's state)"
+        depends on RDOF_ROAMER || RDOF_SDR
+        default y
+        help
+            A 128x64 panel on I2C: the SDR's channels and calls when the board runs an SDR,
+            else the first roamer's or repeater's state. On with an "oled" key in the
+            settings, or on its own with RDOF_OLED_BUILTIN.
+
+    config RDOF_OLED_BUILTIN
+        bool "The board has the display built in (on unless the settings say \"oled\": false)"
+        depends on RDOF_OLED
+        default n
+
+    config RDOF_OLED_SDA
+        int "OLED SDA GPIO when the settings don't name one (oled.sda)"
+        depends on RDOF_OLED
+        range 0 48
+        default 8
+
+    config RDOF_OLED_SCL
+        int "OLED SCL GPIO when the settings don't name one (oled.scl)"
+        depends on RDOF_OLED
+        range 0 48
+        default 9
+
+    config RDOF_OLED_POWER_GPIO
+        int "OLED power switch GPIO, -1 for none"
+        depends on RDOF_OLED
+        range -1 48
+        default -1
+        help
+            Driven to RDOF_OLED_POWER_LEVEL before the display is opened, when it's on.
+            The W12's VEXT_EN: GPIO45, active low.
+
+    config RDOF_OLED_POWER_LEVEL
+        int "Level that turns the OLED's power on"
+        depends on RDOF_OLED_POWER_GPIO >= 0
+        range 0 1
+        default 0
+
+    config RDOF_MEM_MARGIN_KB
+        int "Memory plan: internal RAM kept free for Wi-Fi, lwIP and what isn't planned (KB)"
+        default 80
+        range 8 200
+        help
+            80: the W12 (SDR, IP gateway, OLED, GNSS) ran with about 77 KB taken by Wi-Fi, lwIP and the
+            rest after the roles' own memory, on 2026-10-24.
+            At boot each role declares the internal, DMA and PSRAM memory it needs (mem.c,
+            docs/spec/fw/memory.md); the plan checks them against what's free with this much left
+            over. Short of it, the plan's error is in the log and the status (memory.error).
+            memory.internal.outside_plan shows what Wi-Fi, lwIP and the rest really took.
+
+    config RDOF_MEM_STRICT
+        bool "Memory plan: refuse a role that would cut into the margin"
+        default n
+        help
+            Off: a role over the margin still starts, and the plan says it's over. On: it doesn't start.
+
+    config RDOF_IPGW
+        bool "IP gateway: DMR packet data to and from the IP network (\"ip_gateway\")"
+        depends on (RDOF_ROAMER || RDOF_SDR) && RDOF_FEATURE_DATA_BLOCKS && RDOF_FEATURE_TRACKER
+        default y
+        help
+            Radios' IPv4 datagrams, put together from the data bursts the SDR and the
+            radios hear, relayed over UDP by route or by NAT; replies go back down
+            through a roamer or repeater. Off unless the settings have "ip_gateway"
+            (docs/spec/fw/ipgw.md).
+
+    config RDOF_IPGW_MAX_SOCKETS
+        int "IP gateway: UDP sockets at most (one a flow; ip_gateway.max_flows is cut to this)"
+        depends on RDOF_IPGW
+        range 1 16
+        default 8
+        help
+            Each flow holds a socket on a port of its own. lwIP has LWIP_MAX_SOCKETS (28) for
+            everything: the web server takes 8, each HBlink4 peer and MQTT client one.
+
+    comment "The SDR"
+        depends on RDOF_SDR
+
+    config RDOF_SDR_HBLINK
+        bool "HBlink4: one receive-only peer per channel"
+        depends on RDOF_SDR
+        default y
+
+    config RDOF_SDR_FAST
+        bool "Build the SDR's DSP for speed (-O2: sdr, esp-dsp and the DSP task; the rest stays -Os)"
+        depends on RDOF_SDR
+        default y
+
+    config RDOF_SDR_ESP_DSP
+        bool "Use esp-dsp for the matched filter and power-of-two FFTs (each checked at start)"
+        depends on RDOF_SDR
+        default y
+
+    config RDOF_SDR_TWO_CORES
+        bool "Allow splitting the channel demods over both cores (the dsp_cores setting)"
+        depends on RDOF_SDR
+        default y
+
+    config RDOF_SDR_HELPER_STACK
+        int "The second DSP core's task stack (bytes, internal RAM)"
+        depends on RDOF_SDR_TWO_CORES
+        default 6144
+        range 3072 16384
+        help
+            dsp_helper runs half the demods and their sinks (trackers, MQTT, HBlink4, an sdr_transceiver's modem).
+            Its high-water mark is logged a minute into streaming and shown on the page (stack_free): trim this
+            to what it used plus a margin.
+
+    config RDOF_SDR_CHUNK
+        int "Samples per DSP chunk"
+        depends on RDOF_SDR
+        default 4096
+        range 1024 32768
+
+    config RDOF_SDR_RING_KB
+        int "USB sample ring (KB, in PSRAM)"
+        depends on RDOF_SDR
+        default 256
+        range 32 1536
+
+    config RDOF_SDR_INTERNAL_RESERVE_KB
+        int "Internal RAM the DSP leaves free (KB); its buffers go to PSRAM past that"
+        depends on RDOF_SDR
+        default 40
+        range 0 256
+        help
+            sdr's buffers go in internal RAM while this much stays free for
+            Wi-Fi, lwIP, TLS, the web server and the roamer, and in PSRAM (slower)
+            after that.
+
+    config RDOF_SDR_SELFTEST
+        bool "CPU self-test with an embedded 0.6 s clip (about 340 KB of flash)"
+        depends on RDOF_SDR
+        default y
+
+    config RDOF_SDR_SPIKE
+        bool "USB throughput spike (the spike setting)"
+        depends on RDOF_SDR
+        default y
+
+    config RDOF_USB_HOST
+        bool "USB host (RTL-SDR, radios and bench radios on USB)"
+        default y
+        help
+            Off: the USB host stack is never installed, so the S3's USB serial port (flashing, the console)
+            stays up whatever the settings say; the roles that need USB then find nothing there. For a
+            board whose only USB port is for debugging (the W12 while its LR2021 is brought up).
+
+    config RDOF_BENCH
+        bool "Bench API (/api/bench/v1: I/Q, bursts and calls streams, sessions, bench radios)"
+        depends on RDOF_SDR
+        default y
+        help
+            docs/spec/bench-api.md: what a host tool needs to use the board as an SDR bench.
+
+    config RDOF_BENCH_TX
+        bool "Bench API transmit (WS /tx)"
+        depends on RDOF_BENCH
+        default y
+        help
+            Transmit through the board's SDR modem or a bench radio's MMDVM modem. It still needs
+            bench.tx in the settings (the frequencies and the key time), a lease, and the arm jumper
+            when bench.tx.arm_gpio names one: built in, it transmits nothing until those allow it.
+
+    config RDOF_SDR_LR2021
+        bool "LR2021 front end on SPI (device.type lr2021; not run on a chip yet)"
+        depends on RDOF_SDR
+        default n
+        help
+            A Semtech LR2021 as the SDR's receiver (components/lr2021). The pins
+            default to the Meshnology W12's. Its I/Q comes from ROM 1.24's raw route
+            (docs/spec/lr2021-iq.md); see docs/reference.md, "Front ends".
+
+    menu "LR2021 pins and options"
+        depends on RDOF_SDR_LR2021
+
+        config RDOF_LR2021_SPI_HOST
+            int "SPI host (1: SPI2, 2: SPI3)"
+            range 1 2
+            default 1
+        config RDOF_LR2021_SPI_HZ
+            int "SPI clock (Hz; 16 MHz at most)"
+            range 1000000 16000000
+            default 16000000
+        config RDOF_LR2021_NSS
+            int "NSS GPIO"
+            default 8
+        config RDOF_LR2021_SCK
+            int "SCK GPIO"
+            default 9
+        config RDOF_LR2021_MOSI
+            int "MOSI GPIO"
+            default 10
+        config RDOF_LR2021_MISO
+            int "MISO GPIO"
+            default 11
+        config RDOF_LR2021_NRESET
+            int "NRESET GPIO"
+            default 12
+        config RDOF_LR2021_BUSY
+            int "BUSY GPIO"
+            default 13
+        config RDOF_LR2021_IRQ
+            int "IRQ GPIO (a DIO set to IRQ; -1 for none; the W12's DIO7 is GPIO7, DIO8 GPIO14)"
+            range -1 48
+            default 7
+        config RDOF_LR2021_PA_EN_GPIO
+            int "Front-end supply enable GPIO, driven high (-1 for none; the W12's sub-GHz PA_EN is GPIO4)"
+            range -1 48
+            default 4
+        config RDOF_LR2021_TCXO_TUNE
+            int "TCXO supply code (0: 1.6 V to 7: 3.3 V; -1: a crystal, the W12's)"
+            range -1 7
+            default -1
+        config RDOF_LR2021_RX_BOOST
+            int "RX boost on the LF path (0 to 7; the datasheet recommends 0)"
+            range 0 7
+            default 0
+        config RDOF_LR2021_PA_LO_MHZ
+            int "The front end's PA band starts at (MHz)"
+            default 860
+            help
+                The W12's GC1109 front end is specified for 860 to 930 MHz. Tuned inside
+                this band it transmits through its PA; outside it, through its transmit
+                bypass. It receives through its LNA either way (it has no receive
+                bypass), and on the W12 a 902-928 MHz SAW filter follows the LNA, so
+                other bands reach the LR2021 about 46 dB down.
+        config RDOF_LR2021_PA_HI_MHZ
+            int "The front end's PA band ends at (MHz)"
+            default 930
+        comment "RF switch DIOs: high in the modes each mask names (1 standby, 2 RX LF, 4 TX LF; 0xFF: unused)"
+        comment "The GC1109 (datasheet table 4): CSD 0 off; CSD 1 CTX 0 receive (LNA); CTX 1 CPS 0 transmit bypass; CTX 1 CPS 1 transmit (PA)"
+        config RDOF_LR2021_DIO9_PA
+            hex "DIO9 (the W12's CTX) in the PA band"
+            default 0x04
+        config RDOF_LR2021_DIO10_PA
+            hex "DIO10 (CPS) in the PA band"
+            default 0x04
+        config RDOF_LR2021_DIO11_PA
+            hex "DIO11 (CSD, the front end's enable) in the PA band"
+            default 0x06
+        config RDOF_LR2021_DIO9_BYPASS
+            hex "DIO9 (CTX) outside the PA band (transmit bypass)"
+            default 0x04
+        config RDOF_LR2021_DIO10_BYPASS
+            hex "DIO10 (CPS) outside the PA band (transmit bypass)"
+            default 0x00
+        config RDOF_LR2021_DIO11_BYPASS
+            hex "DIO11 (CSD) outside the PA band (transmit bypass)"
+            default 0x06
+    endmenu
+
+endmenu

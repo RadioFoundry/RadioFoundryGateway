@@ -1,0 +1,606 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RadioFoundry Gateway</title>
+<style>
+:root{--bg:#f4f4f6;--card:#fff;--fg:#1d1d1f;--mute:#6b6b70;--line:#dcdce0;--ok:#1a7f37;--bad:#c62828;--warn:#a85f00;--accent:#0b5cad;--hi:#e6f0fb;--badbg:#fdecec;--warnbg:#fdf3e2;--okbg:#e8f5ec}
+@media (prefers-color-scheme:dark){:root{--bg:#111113;--card:#1b1b1f;--fg:#ececf0;--mute:#9a9aa2;--line:#303036;--ok:#4cc26b;--bad:#ef6b6b;--warn:#e0a040;--accent:#6aa9f0;--hi:#1b2a3d;--badbg:#3a1d1d;--warnbg:#3a2c14;--okbg:#17301f}}
+*{box-sizing:border-box}a{color:var(--accent)}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,sans-serif}
+header{position:sticky;top:0;z-index:2;background:var(--card);border-bottom:1px solid var(--line)}
+.top{display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px;padding:10px 16px 4px;max-width:1100px;margin:0 auto}
+h1{font-size:18px;margin:0;flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#clock{font-variant-numeric:tabular-nums;color:var(--mute);font-size:13px}
+nav{display:flex;flex-wrap:wrap;gap:0 2px;padding:0 12px;max-width:1100px;margin:0 auto;scrollbar-width:none}
+nav a{padding:8px 10px;color:var(--mute);text-decoration:none;border-bottom:2px solid transparent;white-space:nowrap}
+nav a.on{color:var(--fg);border-color:var(--accent)}
+main{max-width:1100px;margin:0 auto;padding:12px 16px 40px}
+section[data-tab]:not(.on){display:none}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,330px),1fr));gap:12px;margin-bottom:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px;min-width:0;margin-bottom:12px}
+.cards .card{margin:0}
+h2{font-size:15px;margin:0 0 8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+h2 small{font-weight:normal;color:var(--mute);font-size:13px}
+.kv{display:grid;grid-template-columns:minmax(90px,max-content) 1fr;gap:3px 12px;margin:0}
+.kv dt{color:var(--mute)}.kv dd{margin:0;min-width:0;overflow-wrap:anywhere}
+.ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}.mute{color:var(--mute);font-size:13px}
+.pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;font-weight:600;white-space:nowrap;text-decoration:none}
+.pill.ok{background:var(--okbg)}.pill.bad{background:var(--badbg)}.pill.warn{background:var(--warnbg)}
+.pill.rf{background:var(--okbg);color:var(--ok)}.pill.net{background:var(--hi);color:var(--accent)}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
+td,th{padding:4px 6px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;white-space:nowrap}
+th{color:var(--mute);font-weight:500;font-size:13px}
+tr.live td{background:var(--hi)}td.n,th.n{text-align:right}
+.wrap{overflow-x:auto}
+ul.prob{margin:0 0 8px;padding-left:18px}
+textarea{width:100%;height:380px;font:12px/1.35 ui-monospace,monospace;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+button,.btn{display:inline-block;margin:8px 8px 0 0;padding:7px 14px;border:0;border-radius:6px;background:var(--accent);color:#fff;font:inherit;cursor:pointer;text-decoration:none}
+.sec{background:none;color:var(--accent);border:1px solid var(--line)}button.dang{background:var(--bad)}h2 button{margin:0;padding:2px 10px}
+.seg button{margin:0 4px 8px 0;padding:3px 10px;background:none;color:var(--mute);border:1px solid var(--line)}.seg button.on{color:var(--fg);border-color:var(--accent)}
+pre{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px;overflow:auto;max-height:420px;font-size:12px;white-space:pre-wrap;margin:8px 0 0;overflow-wrap:anywhere}
+details summary{cursor:pointer;color:var(--mute);font-size:13px;margin-top:8px}
+input[type=file]{max-width:100%;margin-top:8px}
+canvas{display:block;width:100%;background:#0b0b10;border-radius:6px}#spec{height:180px}#wf{height:220px;margin-top:2px;image-rendering:pixelated}
+@media (max-width:640px){.w{display:none}}
+</style>
+</head>
+<body>
+<header>
+<div class="top"><h1 id="title">RadioFoundry Gateway</h1><a id="health" class="pill" href="#overview">...</a><span id="clock"></span></div>
+<nav id="nav"><a href="#overview">Overview</a><a href="#heard">Last heard</a><a href="#radios">Radios</a><a href="#network">Network</a><a href="#settings">Settings</a><a href="#maint">Logs &amp; maintenance</a></nav>
+</header>
+<main>
+<section data-tab="overview">
+<div class="card" id="ov_health"></div>
+<div class="cards" id="ov_cards"></div>
+<div class="card"><h2>Last heard <small id="ov_lhn"></small><a class="mute" href="#heard">all calls</a></h2><div class="wrap" id="ov_heard"></div></div>
+<div class="cards" id="ov_more"></div>
+</section>
+
+<section data-tab="heard">
+<div class="card">
+<h2>Last heard <small>RF: heard on the air (SDR, radio or repeater). NET: from the network, sent out over RF.</small></h2>
+<div class="seg" id="lh_seg"><button data-f="all" class="on">All</button><button data-f="rf">RF</button><button data-f="net">NET</button><button data-f="live">Active</button></div>
+<div class="wrap" id="lh_t"></div>
+</div>
+</section>
+
+<section data-tab="radios">
+<div id="radios"></div>
+<div id="sdr" hidden>
+<div class="card" id="sdr_c"></div>
+<div class="card"><h2>Channels</h2><div class="wrap" id="chans"></div></div>
+<div class="card"><h2>Spectrum</h2>
+<p class="mute">The tuner's whole span, 512 bins, averaged over each row; the bands are the channels. dBFS at the
+configured gain. <span id="specinfo"></span></p>
+<canvas id="spec"></canvas>
+<canvas id="wf" width="512" height="220"></canvas>
+</div>
+</div>
+<div class="card" id="noradio" hidden><span class="mute">This board runs no radio or SDR.</span></div>
+</section>
+
+<section data-tab="network">
+<div class="cards" id="links"></div>
+<div class="card"><h2>Wi-Fi networks</h2><div data-wifilist></div></div>
+<div class="card"><h2>Clock</h2><div data-netclock></div></div>
+</section>
+
+<section data-tab="settings">
+<div class="card">
+<h2>Settings</h2>
+<p class="mute">A box config in JSON: name, location, mqtt, hblink, cc, channels and radios, plus run: the radios this board runs (a name or a list; two roamers or repeaters and one SDR at most;
+without it, the first roamer or repeater, else the first SDR). "enabled": false on a radio leaves it out (run may
+still name it). For the roamer, on the box or on each radio: modem
+(usb / uart), uart {tx, rx, num (1 or 2)}, speed; on a radio, usb {serial, port} to tell two on a hub apart; oled
+{sda, scl}. In the SDR's section: usb {transfers, transfer_kb}, dsp_cores (1 or 2); its sample_rate is 288000 or
+240000 here. A roamer on USB and an SDR both run: whichever is plugged in runs, unless "usb_hub": true. Comments are fine. It's checked
+before it's saved. The Wi-Fi networks and the NTP servers show as wifi {networks} and ntp {servers,
+poll_s}: passwords never leave the board, so a network without a "password" keeps the one it has (add "password" to
+set one).</p>
+<textarea id="cfg" spellcheck="false"></textarea>
+<div>
+<button type="button" onclick="save()">Save and restart</button>
+<a class="btn sec" href="/api/config?download=1">Export</a>
+<button type="button" class="sec" onclick="$('imp').click()">Import</button>
+<button type="button" class="sec" onclick="config()">Reload</button>
+<input type="file" id="imp" accept=".json,application/json" hidden>
+</div>
+<p id="cfgmsg"></p>
+</div>
+<div class="card"><h2>As resolved, and the SDR's tuner plan <button type="button" class="sec" onclick="config()">Refresh</button></h2><pre id="resolved"></pre></div>
+</section>
+
+<section data-tab="maint">
+<div class="cards">
+<div class="card" id="m_board"></div>
+<div class="card"><h2>Firmware update</h2>
+<p class="mute">Upload an app image (.bin): the board writes it to the other slot and restarts into it.</p>
+<input type="file" id="fw" accept=".bin"><br><button type="button" onclick="ota()">Upload</button>
+<button type="button" class="dang" onclick="restart()">Restart</button>
+<p id="otamsg"></p></div>
+<div class="card" id="m_crash"></div>
+<div class="card" id="m_mem"></div>
+<div class="card" id="tests" hidden><h2>SDR tests</h2>
+<p class="mute">The self-test runs a built-in 0.6 s recording through the SDR receiver and checks it against the
+expected output (no dongle needed). The USB spike measures how much of the RTL-SDR's stream Full Speed USB delivers at 288,
+250 and 240 kS/s (the dongle must be in). Both restart the board; the results show here and in the log.</p>
+<button type="button" onclick="post('/api/selftest')">Run the self-test</button>
+<button type="button" onclick="post('/api/spike')">Run the USB spike</button>
+<p id="testmsg"></p>
+<dl class="kv" id="tests_t"></dl></div>
+</div>
+<div class="card"><h2>Log <button type="button" class="sec" onclick="loadLog()">Refresh</button>
+<label class="mute"><input type="checkbox" id="logauto"> every 5 s</label><a class="mute" href="/api/log" target="_blank">as text</a></h2>
+<pre id="log"></pre></div>
+<div class="card"><h2>Tasks <button type="button" class="sec" onclick="tasks()">Load</button></h2>
+<p class="mute">Each task's core, priority and share of a core since the last load.</p><pre id="tasks" hidden></pre></div>
+</section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const sp = (c, t) => '<span class="' + c + '">' + t + '</span>';
+const yes = v => v ? sp('ok', 'yes') : sp('bad', 'no');
+const up = v => v ? sp('ok', 'up') : sp('bad', 'down');
+const num = v => v == null ? '-' : Number(v).toLocaleString('en-US');
+const cnt = v => v ? sp('warn', num(v)) : '0';                       // a count of trouble: orange when not 0
+const kb = b => b == null ? '-' : b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.round(b / 1024) + ' KB';
+const mhz = f => f ? (f / 1e6).toFixed(5) + ' MHz' : 'not tuned';
+const pct = v => v == null ? '-' : Math.round(v * 100) + '%';
+const dur = s => { s = Math.max(0, s); if (s < 60) return s.toFixed(s < 10 ? 1 : 0) + ' s';
+  const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+  return d ? d + 'd ' + h + 'h' : h ? h + 'h ' + m + 'm' : m + 'm ' + Math.floor(s % 60) + 's'; };
+const ago = s => s < 2 ? 'now' : dur(s).replace(/\.\d/, '') + ' ago';
+const kv = r => '<dl class="kv">' + r.filter(Boolean).map(x => '<dt>' + x[0] + '</dt><dd>' + x[1] + '</dd>').join('') + '</dl>';
+const card = (h, body) => '<div class="card"><h2>' + h + '</h2>' + body + '</div>';
+const pill = (c, t) => '<span class="pill ' + c + '">' + t + '</span>';
+const S = {s: null, tab: 'overview', calls: new Map(), seq: 0, max: 50, now: 0, nowAt: 0, statusAt: Date.now(), f: 'all'};
+const radios = s => s.roamers || (s.roamer ? [s.roamer] : []);
+const waiting = (s, what) => s.started ? null : [['Waiting', 'for ' + what + ' to be plugged in']];
+
+// ── health: what's wrong, the worst first ─────────────────────────────────
+function problems(s) {
+  const p = [], bad = t => p.push(['bad', t]), warn = t => p.push(['warn', t]);
+  if (!s.settings_ok) bad('Settings: ' + s.settings_error + ' (running the defaults)');
+  if (!s.wifi) (s.ap_mode ? warn : bad)('Wi-Fi not connected' + (s.ap_mode ? ' (setup access point on)' : ''));
+  if (s.clock == 'none') warn('Clock not set');
+  if (s.crash) warn('A core dump is saved (Logs & maintenance)');
+  if (/-dirty$/.test(s.version)) warn('Built from uncommitted source');
+  radios(s).forEach((r, i) => {
+    const n = (r.mode == 'roamer' ? 'Roamer ' : 'Repeater ') + r.name + ': ';
+    if (s.usb_either && !i && !r.started) return;
+    if (r.radio_error) bad(n + r.radio_error);
+    else if (!r.radio_ready) bad(n + 'radio not ready');
+    if (!r.hblink) warn(n + 'HBlink4 down');
+    if (!r.mqtt) warn(n + 'MQTT down');
+    if (r.queue_dropped || r.dropped) warn(n + num(r.queue_dropped || r.dropped) + ' bursts dropped');
+  });
+  const d = s.sdr;
+  if (d && !(s.usb_either && !d.started)) {
+    const n = 'SDR ' + d.name + ': ';
+    if (d.rtl_error) bad(n + d.rtl_error);
+    else if (!d.rtl_open && !d.sim) bad(n + 'front end not open');
+    else if (!d.receiving) bad(n + 'not receiving');
+    if (d.ring_overflows) warn(n + num(d.ring_overflows) + (d.sim ? ' chunks dropped' : ' ring overflows'));
+    if (d.usb_errors) warn(n + num(d.usb_errors) + ' sample errors');
+    if (d.cpu_load > 0.9) warn(n + 'DSP load ' + pct(d.cpu_load));
+    if (!d.mqtt) warn(n + 'MQTT down');
+    if (d.mqtt_dropped) warn(n + num(d.mqtt_dropped) + ' MQTT posts dropped');
+    if (d.hblink_up < d.hblink_peers) warn(n + d.hblink_up + ' of ' + d.hblink_peers + ' HBlink4 peers up');
+  }
+  for (const [k, v] of extras(s)) if (v && typeof v == 'object') flat(v).forEach(([f, x]) => {
+    if (tone(f, x) == 'bad') bad(k.replace(/_/g, ' ') + ' ' + f.replace(/_/g, ' ') + ': ' + (typeof x == 'boolean' ? 'no' : x));
+  });
+  return p.sort((a, b) => (a[0] == 'bad' ? 0 : 1) - (b[0] == 'bad' ? 0 : 1));
+}
+
+// ── anything in /api/status this page doesn't know: shown as it comes ─────
+const KNOWN = 'name version idf uptime_s reset crash heap_free psram_free memory settings_ok settings_error wifi ap_mode ip clock usb_either build_roamer build_sdr selftest spike roamer roamers sdr'.split(' ');
+const extras = s => Object.entries(s).filter(([k]) => !KNOWN.includes(k));
+const flat = (o, pre = '') => Object.entries(o).flatMap(([k, v]) => v && typeof v == 'object' ?
+  (Array.isArray(v) && v.every(x => typeof x != 'object') ? [[pre + k, v.join(', ')]] : flat(v, pre + k + '.')) : [[pre + k, v]]);
+function tone(k, v) {
+  if (typeof v == 'string') return /error|why/.test(k) && v ? 'bad' : '';
+  if (typeof v == 'boolean') return !v && /(^|\.)(up|ok|ready|connected|open|receiving|running|hblink|mqtt|synced)$/.test(k) ? 'bad' : '';
+  return typeof v == 'number' && v > 0 && /(dropped|overflows?|errors|failures|failed|lost|underruns|misses|refused|no_reply|abandoned|rejected)$/.test(k) ? 'warn' : '';
+}
+const fv = (k, v) => { const c = tone(k, v), t = v == null ? '-' : typeof v == 'number' ? num(v) : typeof v == 'boolean' ? (v ? 'yes' : 'no') : esc(v);
+  return c ? sp(c, t) : t; };
+const fields = r => kv(r.map(([k, v]) => [esc(k.replace(/_/g, ' ')), fv(k, v)]));
+// A "More fields" list stays open across redraws: which are open, by key (the radio's or the SDR's name).
+const opened = new Set();
+document.addEventListener('toggle', e => { const k = e.target.dataset && e.target.dataset.k;
+  if (k != null) e.target.open ? opened.add(k) : opened.delete(k); }, true);
+const more = (o, known, key) => { const r = flat(o).filter(([k]) => !known.includes(k.split('.')[0]));
+  return r.length ? '<details data-k="' + esc(key) + '"' + (opened.has(key) ? ' open' : '') + '><summary>More fields (' + r.length +
+    ')</summary>' + fields(r) + '</details>' : ''; };
+
+// ── the board ─────────────────────────────────────────────────────────────
+const clockName = c => c === 'pps' ? sp('ok', 'GNSS PPS') : c === 'ntp' ? sp('ok', 'NTP') : c === 'browser' ? sp('warn', 'from a browser') : sp('bad', 'not set');
+const wifiText = s => yes(s.wifi) + (s.ip ? ' ' + esc(s.ip) : '') + (s.ap_mode ? ' ' + sp('warn', '(setup access point on)') : '');
+const memRow = s => ['Memory free', kb(s.heap_free) + ' internal, ' + kb(s.psram_free) + ' PSRAM'];
+const buildRow = s => ['Build', (/-dirty$/.test(s.version) ? sp('bad', esc(s.version)) : esc(s.version)) + (s.idf ? ' · IDF ' + esc(s.idf) : '')];
+const boardRows = s => [
+  ['Runs', (radios(s).concat([s.sdr]).filter(Boolean).map(x => x.name).filter(Boolean).map(esc).join(', ') || '-') +
+    (s.usb_either ? ' <span class="mute">(both on USB: whichever is plugged in runs)</span>' : '')],
+  ['Settings', s.settings_ok ? sp('ok', 'ok') : sp('bad', esc(s.settings_error) + ' (running the defaults)')],
+  ['Wi-Fi', wifiText(s)], ['Clock', clockName(s.clock)], memRow(s),
+  ['Up', dur(s.uptime_s) + ' <span class="mute">(last reset: ' + esc(s.reset) + ')</span>'],
+  ['Crash', crashText(s.crash)], buildRow(s)];
+// The memory plan (docs/spec/fw/memory.md): what each role claimed at boot, and the heap now.
+const freeLargest = (o, label) => o ? kb(o.free) + ' free, ' + kb(o.largest) + ' in one piece' + (label || '') : '-';
+function memCard(m) {
+  if (!m) return '<h2>Memory</h2>' + kv([['Free', '-']]);
+  const i = m.internal, roles = Object.entries(m.roles || {});
+  const state = r => r.state == 'planned' ? (r.why ? sp('warn', 'planned, ' + esc(r.why)) : sp('ok', 'planned')) :
+    sp(r.state == 'refused' ? 'bad' : 'mute', esc(r.state) + (r.why ? ': ' + esc(r.why) : ''));
+  const claims = (name, r) => '<details data-k="mem.' + esc(name) + '"' + (opened.has('mem.' + name) ? ' open' : '') + '><summary>' +
+    esc(name) + ' claims</summary><div class="wrap"><table><tr><th>Claim</th><th class="n">Bytes</th><th>In</th><th>How</th></tr>' +
+    Object.entries(r.claims || {}).map(([k, c]) => '<tr><td>' + esc(k) + '</td><td class="n">' + num(c.bytes) + '</td><td>' + esc(c.in) +
+      '</td><td>' + esc(c.how) + (c.how == 'hold' ? ' (' + c.handed + ' handed over)' : c.how == 'alloc' && !c.taken ? ' <span class="mute">(not taken)</span>' : '') +
+      '</td></tr>').join('') + '</table></div></details>';
+  return '<h2>Memory ' + (!m.planned ? pill('warn', 'not planned') : m.ok ? pill('ok', 'plan fits') : pill('bad', 'plan short')) + '</h2>' +
+    (m.error ? '<p>' + sp('bad', esc(m.error)) + '</p>' : '') +
+    kv([['Internal', freeLargest(i)], ['DMA', freeLargest(m.dma)], ['PSRAM', freeLargest(m.psram)],
+      ['Margin', kb(m.margin) + ' kept for Wi-Fi and lwIP' + (m.strict ? ' (strict)' : '') + ', ' +
+        (m.spare >= 0 ? kb(m.spare) + ' spare' : sp('bad', kb(-m.spare) + ' short'))],
+      i && ['Planned', kb(i.planned) + ' internal held, ' + kb(i.budget) + ' budgeted, ' + kb(m.psram && m.psram.planned) + ' PSRAM'],
+      i && ['Outside the plan', kb(i.outside_plan) + ' <span class="mute">(of ' + kb(i.at_plan) + ' free at the plan: budgets, Wi-Fi, lwIP, the rest)</span>']]) +
+    (roles.length ? '<div class="wrap"><table><tr><th>Role</th><th>State</th><th class="n">Internal</th><th class="n">DMA</th><th class="n">PSRAM</th><th class="n">Budget</th></tr>' +
+      roles.map(([k, r]) => '<tr><td>' + esc(k) + '</td><td style="white-space:normal">' + state(r) + '</td><td class="n">' + kb(r.internal) +
+        '</td><td class="n">' + kb(r.dma) + '</td><td class="n">' + kb(r.psram) + '</td><td class="n">' + kb(r.budget) + '</td></tr>').join('') +
+      '</table></div>' + roles.map(([k, r]) => claims(k, r)).join('') : '');
+}
+function crashText(c) {
+  if (!c) return 'none saved';
+  return sp('bad', c.error ? 'core dump, bad: ' + esc(c.error) : esc(c.task) + ' at ' + esc(c.pc) + ', ' + esc(c.cause) +
+    (c.details ? ': ' + esc(c.details) : '') + (c.this_image !== false ? '' : ' (image ' + esc(c.elf) + ')')) +
+    ' · <a href="/api/coredump">core dump</a>';
+}
+
+// ── a roamer or repeater ──────────────────────────────────────────────────
+const rname = r => (r.mode === 'roamer' ? 'Roamer ' : r.mode === 'sfr repeater' ? 'SFR repeater ' : 'Repeater ') + esc(r.name);
+const rstate = (r, either) => either && !r.started ? pill('warn', 'waiting') : r.radio_error || !r.radio_ready ? pill('bad', 'not ready') :
+  r.keyed || r.sending ? pill('ok', 'on air') : r.heard ? pill('ok', 'hearing') : pill('ok', 'ready');
+const chan = r => mhz(r.frequency) + ' CC' + r.colorCode + (r.state ? ', ' + esc(r.state) : '') +
+  (r.listening ? ', listening' : '') + (r.scanning ? ', scanning' : '') + (r.keyed ? ', ' + sp('ok', 'keyed') : '');
+const radioRow = r => ['Radio', yes(r.radio_ready) + ' ' + esc(r.modem || (r.modem_open ? 'port open, no answer' : 'not connected (' + r.port + ')')) +
+  (r.radio_error ? '<br>' + sp('bad', esc(r.radio_error)) : '')];
+const hbRow = r => ['HBlink4', up(r.hblink) + ' <span class="mute">(' + num(r.hblink_tx) + ' sent, ' + num(r.hblink_rx) + ' received)</span>' + (r.sctp ?
+  '<br>SCTP ' + esc(r.sctp.state) + ', RTT ' + r.sctp.srtt_ms + ' ms, ' + cnt(r.sctp.retransmits + r.sctp.fast_retransmits) + ' resent, ' +
+  cnt(r.sctp.abandoned) + ' given up, ' + cnt(r.sctp.failures) + ' lost' : '')];
+const R_KNOWN = 'name mode started port split modem_open radio_ready radio_error modem protocol radio requests no_reply refused bursts_heard state listening scanning status_misses queue_dropped keyed busy1 busy2 dropped jitter frequency colorCode hblink hblink_tx hblink_rx mqtt heard sending'.split(' ');
+function roamerFull(r, either) {
+  const w = either && waiting(r, 'the radio'), j = r.jitter, sl = r.split;
+  return card(rname(r) + ' ' + rstate(r, either), kv(w || [
+    radioRow(r),
+    ['Kind / protocol', esc(r.radio || '-') + ' / ' + r.protocol],
+    ['Channel', chan(r)],
+    ['Heard / sending', esc(r.heard || '-') + ' / ' + esc(r.sending || '-')],
+    ['Modem requests', num(r.requests) + ' (' + cnt(r.no_reply) + ' without a reply, ' + cnt(r.refused) + ' refused)'],
+    ['Bursts heard', num(r.bursts_heard)],
+    r.status_misses != null && ['Transceiver', cnt(r.status_misses) + ' status polls missed, ' + cnt(r.queue_dropped) + ' network bursts dropped'],
+    r.keyed != null && ['Repeater', 'slot 1 ' + (r.busy1 ? sp('ok', 'busy') : 'idle') + ', slot 2 ' + (r.busy2 ? sp('ok', 'busy') : 'idle') + ', ' + cnt(r.dropped) + ' bursts dropped'],
+    j && ['Jitter buffer', esc(j.mode) + ', target ' + j.target_ms + ' ms, jitter ' + j.jitter_ms + ' ms, late ' + j.late_ms + ' ms' +
+      (j.min_ms != null ? ' (' + j.min_ms + ' to ' + j.max_ms + ' ms)' : '') + '<br>' + num(j.streams) + ' streams, ' + cnt(j.underruns) +
+      ' underruns, ' + num(j.grown) + ' grown, ' + num(j.shrunk) + ' shrunk'],
+    sl && ['Split', yes(sl.ready) + ' epoch ' + sl.epoch + ', ' + num(sl.tx) + ' sent, ' + num(sl.rx) + ' received, ' + cnt(sl.dropped) + ' dropped, ' + cnt(sl.failed) + ' failed'],
+    hbRow(r),
+    ['MQTT', up(r.mqtt)],
+  ]) + more(r, R_KNOWN, 'r:' + r.name));
+}
+const roamerBrief = (r, either) => card(rname(r) + ' ' + rstate(r, either), kv((either && waiting(r, 'the radio')) ||
+  [radioRow(r), ['Channel', chan(r)], ['Heard', esc(r.heard || '-')], ['Sending', esc(r.sending || '-')], ['HBlink4 / MQTT', up(r.hblink) + ' / ' + up(r.mqtt)]]));
+
+// ── the SDR ───────────────────────────────────────────────────────────────
+// What warming up is waiting on: each reading not yet 10 min long, or moving more than it may
+function settleWait(p) {
+  const w = [];
+  if (p.die_c != null) w.push('die ' + p.die_c.toFixed(1) + ' C, ' + (p.die_spread == null ? 'under 10 min of readings' :
+    'moved ' + p.die_spread.toFixed(1) + ' C' + (p.die_spread > p.die_tol ? ' (more than ' + p.die_tol + ' C)' : ', held')));
+  const c = p.clock;
+  if (c) w.push('sample rate ' + (c.spread == null ? 'timed for ' + Math.round(c.span_s / 60) + ' min' +
+    (c.steps ? ' (fit started over ' + c.steps + ' times)' : '') :
+    'moved ' + c.spread.toFixed(2) + ' ppm' + (c.spread > c.spread_tol ? ' (more than ' + c.spread_tol + ')' : ', held')));
+  return w.length ? '(' + w.join('; ') + ')' : '';
+}
+function ppm(p) {
+  if (!p) return '-';
+  const f = (v, n) => v == null ? '-' : (v > 0 ? '+' : '') + v.toFixed(n);
+  let t = 'set to ' + p.rtl + (p.learned == null ? (p.learning ? ', learning' : ', learning off') :
+    ', learned ' + f(p.learned, 2) + ' (' + (p.by == 'clock' ? 'sample clock' : p.channels + ' channels\' AFC') + ')') +
+    (p.saved == null ? '' : ', saved ' + f(p.saved, 2)) + (p.sim == null ? '' : ', simulated ' + f(p.sim, 2)) +
+    (p.table && p.table.length ? '<br>Learned at: ' + p.table.map(e => e.c + ' C ' + f(e.ppm, 2) +
+      (e.n > 1 ? ' (' + e.n + ')' : '')).join(', ') +
+      (p.expected == null ? '' : '; expects ' + f(p.expected, 2) + (p.die_c == null ? '' : ' at ' + p.die_c.toFixed(1) + ' C')) : '') +
+    (p.settled ? '' : '<br><span class="warn">Warming up</span>: nothing saved until the die' +
+      (p.clock ? ' and the sample rate hold' : ' holds') + ' for 10 min. ' + settleWait(p));
+  const c = p.clock;
+  if (c) t += '<br>Sample clock: ' + (c.board == null ? 'waiting for the board\'s clock rate' :
+    c.ppm == null ? 'timing (' + Math.round(c.span_s) + ' s)' :
+    f(c.ppm, 2) + ' &plusmn; ' + c.err.toFixed(2) + ' over ' + Math.round(c.span_s / 60) + ' min' +
+    (c.trusted ? '' : ' <span class="warn">(not yet trusted)</span>')) +
+    (c.steps ? ', ' + c.steps + ' restarts for lost samples' : '');
+  return t;
+}
+/* UTC slot timing: the gate's state and source, how far off, holdover's age, the modem's last slot against the grid */
+function slotTiming(t) {
+  const cls = {aligned: 'ok', holdover: 'warn', free: 'warn', stopped: 'bad'}[t.state];
+  let v = '<span class="' + cls + '">' + esc(t.state) + '</span> on ' + esc(t.source || 'no clock') +
+    (t.err_us == null ? '' : ', within ' + Math.round(t.err_us) + ' us');
+  if (t.state == 'holdover') v += ', for ' + Math.round(t.holdover_s) + ' s';
+  if (t.phase_us != null) v += '; the last slot ' + t.phase_us.toFixed(1) + ' us off before steering (' + t.slips + ' samples slipped or inserted)';
+  if (t.why) v += '<br>' + esc(t.why);
+  return v;
+}
+const feRow = d => [{lr2021: 'LR2021', sx1255: 'SX1255'}[d.frontend] || 'RTL-SDR', (d.sim ? '<span class="warn">none</span> ' : yes(d.rtl_open) + ' ') +
+  esc(d.rtl || 'not plugged in') + (d.rtl_error ? '<br>' + sp('bad', esc(d.rtl_error)) : '')];
+const rxRow = d => ['Receiving', yes(d.receiving) + (d.center_hz ? ' at ' + (d.center_hz / 1e6).toFixed(5) + ' MHz' : '') + ', ' +
+  d.sample_rate / 1000 + ' kS/s, gain ' + (d.gain_db == null ? 'tuner AGC' : d.gain_db + ' dB')];
+function usbRow(d) {
+  const r = d.usb_bytes_per_s == null ? null : d.usb_bytes_per_s / d.usb_expected_per_s;
+  const u = r == null ? '-' : Math.round(d.usb_bytes_per_s / 1000) + ' of ' + Math.round(d.usb_expected_per_s / 1000) + ' KB/s (' +
+    sp(r < 0.99 ? 'warn' : '', (100 * r).toFixed(1) + '%') + ')';
+  return [d.sim ? 'Samples (simulated)' : d.frontend == 'lr2021' ? 'SPI samples' : 'USB samples', u + ', ' + cnt(d.usb_errors) + ' errors, ' +
+    cnt(d.ring_overflows) + (d.sim ? ' chunks dropped (late)' : ' ring overflows')];
+}
+const loadRow = d => ['DSP load', sp(d.cpu_load > 0.9 ? 'bad' : d.cpu_load > 0.75 ? 'warn' : '', pct(d.cpu_load)) + ' of core 1 (esp-dsp FFT ' +
+  (d.esp_dsp_fft ? 'on' : 'off') + ', FIR ' + (d.esp_dsp_fir ? 'on' : 'off') + ')' + (d.cpu_stages ? '<br><span class="mute">input ' +
+  pct(d.cpu_stages.input) + ', channelizer ' + pct(d.cpu_stages.channelize) + ', demods ' + pct(d.cpu_stages.demod) + ', trackers ' +
+  pct(d.cpu_stages.track) + '</span>' : '')];
+const sstate = (d, either) => either && !d.started ? pill('warn', 'waiting') : d.rtl_error || !d.receiving ? pill('bad', 'not receiving') : pill('ok', 'receiving');
+const S_KNOWN = 'name started rtl_open sim frontend rtl rtl_error receiving sample_rate center_hz gain_db cpu_load cpu_stages usb_bytes_per_s usb_expected_per_s usb_errors ring_overflows ppm mqtt mqtt_dropped hblink_peers hblink_up esp_dsp_fft esp_dsp_fir channels slot_timing'.split(' ');
+const busy = (radio, ch) => [...S.calls.values()].some(c => c.active && c.radio == radio && c.channel == ch);
+function sdrFull(d, either) {
+  $('sdr_c').innerHTML = '<h2>SDR ' + esc(d.name) + ' ' + sstate(d, either) + '</h2>' + kv((either && waiting(d, 'an RTL-SDR')) || [
+    feRow(d), rxRow(d), usbRow(d),
+    ['Tuner ppm', ppm(d.ppm)],
+    loadRow(d),
+    d.slot_timing && d.slot_timing.mode == 'utc' && ['Slot timing', slotTiming(d.slot_timing)],
+    ['MQTT', up(d.mqtt) + ', ' + cnt(d.mqtt_dropped) + ' posts dropped'],
+    ['HBlink4', sp(d.hblink_up < d.hblink_peers ? 'warn' : '', d.hblink_up + ' of ' + d.hblink_peers) + ' peers registered'],
+  ]) + more(d, S_KNOWN, 's:' + d.name);
+  spec.chans = d.channels;
+  $('chans').innerHTML = '<table><tr><th>Id</th><th>Name</th><th class="n">MHz</th><th>In window</th><th class="n">Bursts</th><th class="n">RSSI</th>' +
+    '<th class="n w">AFC Hz</th><th class="n w">Idle</th></tr>' + d.channels.map(c => '<tr' + (busy(d.name, c.id) ? ' class="live"' : '') + '><td>' +
+      esc(c.id) + '</td><td>' + esc(c.name) + '</td><td class="n">' + (c.freq / 1e6).toFixed(5) + '</td><td>' + yes(c.in) + '</td><td class="n">' +
+      num(c.bursts) + '</td><td class="n">' + (c.rssi ? c.rssi + ' dBm' : '-') + '</td><td class="n w">' + c.afc + '</td><td class="n w">' +
+      (c.idle == null ? '-' : c.idle + '%') + '</td></tr>').join('') + '</table>';
+}
+const sdrBrief = (d, either) => card('SDR ' + esc(d.name) + ' ' + sstate(d, either), kv((either && waiting(d, 'an RTL-SDR')) ||
+  [feRow(d), rxRow(d), usbRow(d), loadRow(d), ['Channels', d.channels.filter(c => c.in).length + ' of ' + d.channels.length + ' in the window'],
+   ['MQTT / HBlink4', up(d.mqtt) + ' / ' + d.hblink_up + ' of ' + d.hblink_peers + ' peers']]));
+
+// ── each tab, from the last status ────────────────────────────────────────
+function render() {
+  const s = S.s;
+  if (!s) return;
+  const p = problems(s), nb = p.filter(x => x[0] == 'bad').length, h = $('health');
+  h.className = 'pill ' + (nb ? 'bad' : p.length ? 'warn' : 'ok');
+  h.textContent = nb ? nb + (nb > 1 ? ' problems' : ' problem') : p.length ? p.length + (p.length > 1 ? ' warnings' : ' warning') : 'All good';
+  const t = S.tab, rs = radios(s);
+  if (t == 'overview') {
+    $('ov_health').innerHTML = '<h2>Board ' + (p.length ? '' : pill('ok', 'all good')) + '</h2>' + (p.length ? '<ul class="prob">' +
+      p.map(x => '<li class="' + x[0] + '">' + esc(x[1]) + '</li>').join('') + '</ul>' : '') + kv(boardRows(s));
+    $('ov_cards').innerHTML = rs.map((r, i) => roamerBrief(r, s.usb_either && !i)).join('') + (s.sdr ? sdrBrief(s.sdr, s.usb_either) : '');
+    $('ov_more').innerHTML = extras(s).map(([k, v]) => card(esc(k.replace(/_/g, ' ')), v && typeof v == 'object' ? fields(flat(v)) : fv(k, v))).join('');
+  } else if (t == 'radios') {
+    $('radios').innerHTML = rs.map((r, i) => roamerFull(r, s.usb_either && !i)).join('');
+    $('sdr').hidden = !s.sdr;
+    $('noradio').hidden = !!(rs.length || s.sdr);
+    if (s.sdr) sdrFull(s.sdr, s.usb_either);
+  } else if (t == 'network') {
+    $('links').innerHTML = card('Links', kv([['Wi-Fi', wifiText(s)], ['Clock', clockName(s.clock)],
+      ...rs.map(r => [esc(r.name), 'HBlink4 ' + up(r.hblink) + ', MQTT ' + up(r.mqtt) + (r.sctp ? ', SCTP ' + esc(r.sctp.state) + ' (RTT ' + r.sctp.srtt_ms + ' ms)' : '')]),
+      s.sdr && [esc(s.sdr.name), 'MQTT ' + up(s.sdr.mqtt) + ', HBlink4 ' + s.sdr.hblink_up + ' of ' + s.sdr.hblink_peers + ' peers']]));
+  } else if (t == 'maint') {
+    $('m_board').innerHTML = '<h2>Board</h2>' + kv([buildRow(s), ['Up', dur(s.uptime_s)], ['Last reset', esc(s.reset)], memRow(s),
+      ['Built with', [s.build_roamer && 'roamer', s.build_sdr && 'SDR'].filter(Boolean).join(', ') || '-']]);
+    const c = s.crash;
+    $('m_crash').innerHTML = '<h2>Crash ' + (c ? pill('bad', 'core dump saved') : pill('ok', 'none')) + '</h2>' + kv([['Last', crashText(c)],
+      c && c.exccause != null && ['Cause', esc(c.cause) + ' (' + c.exccause + '), address ' + esc(c.excvaddr)],
+      c && c.backtrace && ['Backtrace', '<code>' + esc(c.backtrace) + '</code>' + (c.backtrace_corrupted ? ' ' + sp('warn', '(corrupted)') : '')],
+      c && ['Size', kb(c.size)]]) + (c ? '<button type="button" class="sec" onclick="eraseDump()">Erase the core dump</button>' : '');
+    $('m_mem').innerHTML = memCard(s.memory);
+    $('tests').hidden = !s.build_sdr;
+    if (s.build_sdr) $('tests_t').innerHTML = '<dt>Self-test</dt><dd>' + esc(s.selftest || 'not run') + '</dd><dt>USB spike</dt><dd>' + esc(s.spike || 'not run') + '</dd>';
+  }
+  if (t == 'overview' || t == 'heard') renderHeard();
+}
+
+// ── last heard ────────────────────────────────────────────────────────────
+function callRow(c, now, brief) {
+  const a = (now - c.t0) / 1000, d = c.active ? a : c.duration;
+  const sig = [c.rssi != null && c.rssi + ' dBm', c.ber != null && c.ber.toFixed(1) + '% BER'].filter(Boolean).join(' · ');
+  const info = [c.kind == 'data' && 'data' + (c.frames != null ? ', ' + c.frames + ' blocks' : ''), c.kind == 'csbk' && esc(c.desc || 'CSBK'),
+    c.late && 'late entry', c.emergency && sp('bad', 'emergency'), c.encrypted && sp('warn', 'encrypted'),
+    c.end == 'lost' && sp('warn', 'lost')].filter(Boolean).join(', ');
+  const tt = c.start_ms ? new Date(c.start_ms).toISOString().replace('T', ' ').slice(0, 19) + ' UTC' : '';
+  return '<tr' + (c.active ? ' class="live"' : '') + '><td title="' + tt + '">' + (c.active ? sp('ok', '&#9679; live') : ago(a)) + '</td><td>' +
+    pill(c.dir, c.dir.toUpperCase()) + '</td><td class="n">' + c.src + '</td><td>' + (c.group ? 'TG ' : '') + c.dst + '</td>' +
+    (brief ? '' : '<td class="n w">' + c.slot + '</td>') + '<td>' + esc(c.radio) + (c.channel ? ' / ' + esc(c.channel) : '') + '</td>' +
+    (brief ? '' : '<td class="w">' + (c.freq ? (c.freq / 1e6).toFixed(5) : '') + (c.cc != null ? ' CC' + c.cc : '') + '</td>') +
+    '<td class="n">' + (c.kind == 'csbk' ? '' : dur(d)) + '</td>' + (brief ? '' : '<td class="w">' + sig + '</td><td>' + info + '</td>') + '</tr>';
+}
+function renderHeard() {
+  const now = Date.now(), all = [...S.calls.values()].sort((a, b) => b.id - a.id);
+  const head = brief => '<table><tr><th>When</th><th></th><th class="n">From</th><th>To</th>' + (brief ? '' : '<th class="n w">Slot</th>') +
+    '<th>Radio</th>' + (brief ? '' : '<th class="w">MHz</th>') + '<th class="n">Length</th>' + (brief ? '' : '<th class="w">Signal</th><th></th>') + '</tr>';
+  const none = '<p class="mute">No calls yet.</p>';
+  if (S.tab == 'overview') {
+    const act = all.filter(c => c.active), rest = all.filter(c => !c.active).slice(0, Math.max(0, 6 - act.length));
+    $('ov_lhn').textContent = act.length ? act.length + ' active' : '';
+    $('ov_heard').innerHTML = all.length ? head(true) + act.concat(rest).map(c => callRow(c, now, true)).join('') + '</table>' : none;
+  } else {
+    const f = S.f, l = all.filter(c => f == 'all' || (f == 'live' ? c.active : c.dir == f));
+    $('lh_t').innerHTML = l.length ? head(false) + l.map(c => callRow(c, now, false)).join('') + '</table>' : none;
+  }
+}
+async function heard() {
+  try {
+    let d = await (await fetch('/api/lastheard?since=' + S.seq)).json();
+    if (d.seq < S.seq) { S.calls.clear(); d = await (await fetch('/api/lastheard')).json(); }   // the board restarted
+    const now = Date.now();
+    for (const c of d.calls) { c.t0 = now - c.age_s * 1000; S.calls.set(c.id, c); }
+    S.seq = d.seq; S.max = d.max || 50; S.now = d.now_ms; S.nowAt = now;
+    for (const id of [...S.calls.keys()].sort((a, b) => b - a).slice(S.max)) S.calls.delete(id);
+  } catch (e) {}
+}
+$('lh_seg').onclick = e => { const f = e.target.dataset.f; if (!f) return; S.f = f;
+  for (const b of $('lh_seg').children) b.classList.toggle('on', b == e.target); renderHeard(); };
+
+// ── polling: only what the open tab shows, nothing while the page is hidden ──
+async function status() {
+  try {
+    const s = await (await fetch('/api/status')).json();
+    // the board restarted: its last heard numbering starts again, so the page's must too (heard() can't always tell)
+    if (S.s && s.uptime_s < S.s.uptime_s) { S.calls.clear(); S.seq = 0; }
+    S.s = s;
+    S.statusAt = Date.now();
+    $('title').textContent = 'RadioFoundry ' + S.s.name;
+    document.title = S.s.name + ' · RadioFoundry';
+  } catch (e) { $('health').className = 'pill bad'; $('health').textContent = 'no answer'; return; }
+  render();
+}
+function clock() {
+  const s = S.s, ms = S.now ? S.now + Date.now() - S.nowAt : 0;
+  $('clock').innerHTML = (ms ? new Date(ms).toISOString().slice(11, 19) + ' UTC' : sp('warn', 'clock not set')) +
+    (s ? ' · up ' + dur(s.uptime_s + (Date.now() - S.statusAt) / 1000).replace(/\.\d/, '') : '');
+}
+let n = 0;
+async function tick() {
+  if (document.hidden) return;
+  const t = S.tab, k = n++;
+  if (k % 2 == 0) await status();
+  if ((t == 'overview' || t == 'heard' || t == 'radios') ? k % 2 == 1 : k % 15 == 1) await heard();
+  if (t == 'overview' || t == 'heard') renderHeard();
+  if (t == 'maint' && $('logauto').checked && k % 5 == 0) loadLog();
+  clock();
+}
+function show() {
+  const t = (location.hash || '#overview').slice(1);
+  S.tab = document.querySelector('section[data-tab="' + t + '"]') ? t : 'overview';
+  for (const x of document.querySelectorAll('section[data-tab]')) x.classList.toggle('on', x.dataset.tab == S.tab);
+  for (const a of $('nav').children) a.classList.toggle('on', a.hash == '#' + S.tab);
+  if (S.tab == 'settings' && !$('cfg').value) config();
+  if (S.tab == 'maint' && !$('log').textContent) loadLog();
+  render();
+}
+window.onhashchange = show;
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { n = 0; tick(); } });
+
+// ── settings, log, maintenance ────────────────────────────────────────────
+async function config() {
+  $('cfg').value = await (await fetch('/api/config')).text();
+  $('resolved').textContent = await (await fetch('/api/resolved')).text();
+}
+async function post(url) { $('testmsg').textContent = await (await fetch(url, {method: 'POST'})).text(); }
+async function save() {
+  const r = await fetch('/api/config', {method: 'POST', body: $('cfg').value});
+  $('cfgmsg').innerHTML = r.ok ? sp('ok', esc(await r.text())) : sp('bad', esc(await r.text()));
+}
+$('imp').onchange = async () => { const f = $('imp').files[0]; if (f) $('cfg').value = await f.text(); };
+async function loadLog() {
+  const l = $('log'), end = l.scrollTop + l.clientHeight >= l.scrollHeight - 20;
+  l.textContent = await (await fetch('/api/log')).text();
+  if (end) l.scrollTop = 1e9;
+}
+async function tasks() {
+  const r = await fetch('/api/tasks');
+  $('tasks').hidden = false;
+  $('tasks').textContent = r.ok ? await r.text() : 'Not in this build (FreeRTOS run-time stats are off).';
+}
+async function restart() { if (confirm('Restart the board?')) $('otamsg').textContent = await (await fetch('/api/restart', {method: 'POST'})).text(); }
+async function eraseDump() { if (confirm('Erase the saved core dump?')) { await fetch('/api/coredump', {method: 'DELETE'}); status(); } }
+async function ota() {
+  const f = $('fw').files[0];
+  if (!f) return;
+  $('otamsg').textContent = 'uploading ' + f.name + ' (' + kb(f.size) + ')...';
+  const r = await fetch('/api/ota', {method: 'POST', body: f});
+  $('otamsg').innerHTML = r.ok ? sp('ok', esc(await r.text())) : sp('bad', esc(await r.text()));
+}
+// ── spectrum and waterfall ───────────────────────────────────────────────────
+const spec = {seq: 0, last: null, lo: -110, hi: -30, chans: [], center: 0, rate: 0, busy: false, hover: null};
+const turbo = [[0,0,0],[20,20,90],[0,90,200],[0,190,200],[120,230,60],[250,220,0],[250,90,0],[255,255,255]];
+const lut = Array.from({length: 256}, (_, i) => {
+  const x = i / 255 * (turbo.length - 1), k = Math.min(Math.floor(x), turbo.length - 2), f = x - k;
+  return turbo[k].map((c, j) => Math.round(c + (turbo[k + 1][j] - c) * f));
+});
+const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+function specRange(row) {
+  const db = Array.from(row, b => -b / 2).sort((a, b) => a - b);
+  const floor = db[Math.floor(db.length * 0.2)], peak = db[db.length - 1];
+  spec.lo += ((floor - 8) - spec.lo) * 0.2;                       // eased, so it doesn't jump row to row
+  spec.hi += (Math.max(peak + 5, floor + 40) - spec.hi) * 0.2;
+}
+function drawSpec() {
+  const c = $('spec'), g = c.getContext('2d'), dpr = window.devicePixelRatio || 1;
+  const w = c.width = Math.round(c.clientWidth * dpr), h = c.height = Math.round(c.clientHeight * dpr);
+  g.font = (11 * dpr) + 'px system-ui'; g.textBaseline = 'top';
+  const span = spec.rate, f0 = spec.center - span / 2, x = f => (f - f0) / span * w;
+  const y = d => h - (d - spec.lo) / (spec.hi - spec.lo) * h;
+  g.strokeStyle = 'rgba(255,255,255,.12)'; g.fillStyle = 'rgba(255,255,255,.5)'; g.lineWidth = 1;
+  for (let d = Math.ceil(spec.lo / 10) * 10; d < spec.hi; d += 10) {
+    g.beginPath(); g.moveTo(0, y(d)); g.lineTo(w, y(d)); g.stroke(); g.fillText(d + ' dB', 4 * dpr, y(d) + 2 * dpr);
+  }
+  if (span) for (let f = Math.ceil(f0 / 50e3) * 50e3; f < f0 + span; f += 50e3) {
+    g.beginPath(); g.moveTo(x(f), 0); g.lineTo(x(f), h); g.stroke();
+    g.fillText((f / 1e6).toFixed(2), x(f) + 3 * dpr, h - 14 * dpr);
+  }
+  for (const ch of spec.chans) {
+    g.fillStyle = ch.in ? 'rgba(106,169,240,.18)' : 'rgba(255,255,255,.06)';
+    g.fillRect(x(ch.freq - 6250), 0, x(ch.freq + 6250) - x(ch.freq - 6250), h);
+    g.fillStyle = 'rgba(160,200,255,.9)'; g.fillText(ch.id, x(ch.freq - 6250) + 2 * dpr, 4 * dpr);
+  }
+  if (!spec.last) return;
+  const n = spec.last.length;
+  g.strokeStyle = '#ffd040'; g.lineWidth = 1.2 * dpr; g.beginPath();
+  for (let i = 0; i < n; i++) { const px = (i + 0.5) / n * w, py = y(-spec.last[i] / 2); i ? g.lineTo(px, py) : g.moveTo(px, py); }
+  g.stroke();
+  if (spec.hover != null) {
+    const i = Math.min(n - 1, Math.max(0, Math.floor(spec.hover * n))), f = f0 + (i + 0.5) / n * span;
+    g.strokeStyle = 'rgba(255,255,255,.6)'; g.beginPath(); g.moveTo(spec.hover * w, 0); g.lineTo(spec.hover * w, h); g.stroke();
+    g.fillStyle = '#fff'; g.textAlign = spec.hover > 0.7 ? 'right' : 'left';
+    g.fillText((f / 1e6).toFixed(4) + ' MHz  ' + (-spec.last[i] / 2).toFixed(1) + ' dBFS',
+      spec.hover * w + (spec.hover > 0.7 ? -6 : 6) * dpr, 20 * dpr);
+    g.textAlign = 'left';
+  }
+}
+function wfRow(row) {
+  const c = $('wf'), g = c.getContext('2d'), n = row.length;
+  if (c.width !== n) c.width = n;
+  g.drawImage(c, 0, 0, n, c.height - 1, 0, 1, n, c.height - 1);   // everything down a line
+  const img = g.createImageData(n, 1);
+  for (let i = 0; i < n; i++) {
+    const v = Math.max(0, Math.min(255, Math.round((-row[i] / 2 - spec.lo) / (spec.hi - spec.lo) * 255)));
+    img.data.set(lut[v], i * 4); img.data[i * 4 + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+}
+async function spectrum() {
+  if (spec.busy || document.hidden || S.tab != 'radios' || $('sdr').hidden) return;
+  spec.busy = true;
+  try {
+    const d = await (await fetch('/api/spectrum?since=' + spec.seq)).json();
+    if (d.seq < spec.seq) spec.seq = 0;                               // the board restarted
+    spec.center = d.center; spec.rate = d.rate;
+    for (const r of d.rows) { const row = unb64(r); specRange(row); wfRow(row); spec.last = row; }
+    spec.seq = d.seq;
+    $('specinfo').textContent = d.row_ms ? 'A row every ' + d.row_ms + ' ms, ' + (d.rate / d.bins).toFixed(0) +
+      ' Hz a bin.' : 'Starting...';
+    drawSpec();
+  } catch (e) {}
+  spec.busy = false;
+}
+$('spec').onmousemove = e => { const r = $('spec').getBoundingClientRect(); spec.hover = (e.clientX - r.left) / r.width; drawSpec(); };
+$('spec').onmouseleave = () => { spec.hover = null; drawSpec(); };
+setInterval(spectrum, 400);
+show(); tick(); setInterval(tick, 1000);
+</script>
+<script src="/wifilist.js" defer></script>
+<script src="/netclock.js" defer></script>
+</body>
+</html>

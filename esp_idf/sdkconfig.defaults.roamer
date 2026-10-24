@@ -1,0 +1,3 @@
+# A roamer / repeater only image: no SDR, no RTL-SDR driver, no esp-dsp. Layer it on a profile:
+#   idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.4mb;sdkconfig.defaults.roamer" build
+CONFIG_RDOF_SDR=n

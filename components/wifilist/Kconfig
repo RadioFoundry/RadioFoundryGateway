@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
+menu "wifilist (prioritized Wi-Fi networks)"
+
+    config WIFILIST_MAX_NETWORKS
+        int "Networks in the list"
+        range 1 32
+        default 8
+
+    config WIFILIST_CONNECT_TIMEOUT_S
+        int "Time to get an address from one network before trying the next (s)"
+        range 5 120
+        default 15
+
+    config WIFILIST_RESCAN_MAX_S
+        int "Longest wait between scans while nothing connects (s)"
+        range 5 600
+        default 30
+        help
+            The wait grows 5, 10, 20 s up to this; it's always this while the setup
+            access point is up, since a scan takes the radio off the AP's channel.
+
+    config WIFILIST_SOFTAP
+        bool "Setup access point while there's no connection"
+        default y
+
+    config WIFILIST_HTTP
+        bool "HTTP handlers and the page section (wifilist_http_register)"
+        default y
+
+    config WIFILIST_HTTP_BASE
+        string "Path the JSON API sits under"
+        depends on WIFILIST_HTTP
+        default "/api"
+
+    config WIFILIST_NVS_NAMESPACE
+        string "NVS namespace for the list"
+        default "wifilist"
+
+    config WIFILIST_TASK_PRIORITY
+        int "Station task priority"
+        range 1 24
+        default 5
+
+endmenu

@@ -1,0 +1,98 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
+menu "netclock (NTP disciplined clock)"
+
+    config NETCLOCK_DEFAULT_SERVERS
+        string "NTP servers until some are set"
+        default "pool.ntp.org"
+        help
+            Names or addresses, space or comma separated (up to 6 servers). A name
+            ending in pool.ntp.org counts as three (0., 1. and 2.). Settings stored in
+            NVS replace this.
+
+    config NETCLOCK_POLL_S
+        int "Poll interval once the clock rate is learned (s)"
+        range 16 3600
+        default 300
+
+    config NETCLOCK_POLL_FAST_S
+        int "Poll interval while the clock rate is being learned (s)"
+        range 16 3600
+        default 120
+
+    config NETCLOCK_START_ON_IP
+        bool "Start polling on the first IP address (Wi-Fi, Ethernet or PPP)"
+        default y
+        help
+            Off: the app calls netclock_start() itself.
+
+    config NETCLOCK_SET_SYSTEM_TIME
+        bool "Set the system time when the clock steps"
+        default y
+        help
+            Keeps time() and log stamps roughly right. netclock_now_ns() doesn't use it.
+
+    config NETCLOCK_DIE_TEMP
+        bool "Record the chip temperature with each reference"
+        depends on SOC_TEMP_SENSOR_SUPPORTED
+        default y
+        help
+            The crystal's rate follows temperature: the status shows both.
+
+    config NETCLOCK_PPS_GPIO
+        int "GPIO of a GNSS receiver's pulse per second (-1: none)"
+        range -1 48
+        default -1
+        help
+            Each pulse is stamped in an interrupt; the clock as NTP or a browser set it
+            numbers the seconds (it must be within 300 ms), and every 20th good pulse is a
+            reference. The pulse leads the clock while it comes; NTP takes over 60 s after
+            it stops. The pin gets a pull-down, so a missing receiver gives no edges.
+
+    config NETCLOCK_PPS_FALLING
+        bool "The second starts on the pulse's falling edge"
+        depends on NETCLOCK_PPS_GPIO >= 0
+        default n
+        help
+            Most receivers (u-blox, Quectel L76K) start the second on the rising edge.
+
+    config NETCLOCK_GNSS_EVERY
+        int "With no pulse: every Nth GNSS NMEA second is a reference"
+        range 1 3600
+        default 16
+
+    config NETCLOCK_GNSS_LAG_MS
+        int "With no pulse ever seen: the NMEA burst's start after the second (ms)"
+        range 0 999
+        default 0
+        help
+            Receivers send the second's sentences some tens to hundreds of ms after it
+            starts. With a pulse, this is measured (the status's gnss_lag_ms); set it
+            from that for a board without one.
+
+    config NETCLOCK_HTTP
+        bool "HTTP handlers and the page section (netclock_http_register)"
+        default y
+
+    config NETCLOCK_HTTP_BASE
+        string "Path the JSON API sits under"
+        depends on NETCLOCK_HTTP
+        default "/api"
+
+    config NETCLOCK_NVS_NAMESPACE
+        string "NVS namespace for its settings and the learned rate"
+        default "netclock"
+
+    config NETCLOCK_TASK_PRIORITY
+        int "NTP task priority"
+        range 1 24
+        default 8
+        help
+            Above the web server: reply stamps want a prompt wakeup.
+
+    config NETCLOCK_TASK_CORE
+        int "NTP task core (-1: any)"
+        range -1 1
+        default 0
+
+endmenu

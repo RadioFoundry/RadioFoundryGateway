@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
+menu "tinysctp (SCTP over UDP)"
+
+    config TINYSCTP_MAX_STREAMS
+        int "Streams each way, at most"
+        default 8
+        range 1 1024
+        help
+            An association gets min(this, what each end asks for). Each costs 4 bytes.
+
+    config TINYSCTP_RX_WINDOW
+        int "Receive window, in chunks"
+        default 64
+        range 8 4096
+        help
+            DATA chunks held for reordering or reassembly; more arriving past it are
+            dropped and sent again by the peer. 20 bytes each, plus the data held.
+
+    config TINYSCTP_TASK_STACK
+        int "Stack of the association's task (bytes)"
+        default 4096
+
+    config TINYSCTP_TASK_PRIORITY
+        int "Priority of the association's task"
+        default 8
+        range 1 24
+
+endmenu

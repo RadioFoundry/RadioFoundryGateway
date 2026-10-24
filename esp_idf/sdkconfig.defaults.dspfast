@@ -1,0 +1,4 @@
+# An experiment overlay (on top of 16mb): the receive path's hot code in IRAM, and the 64 KB data cache (32 KB
+# more of the PSRAM cache, 32 KB less internal RAM). Compare the self-test's "prof" lines with a build without it.
+CONFIG_RDOF_SDR_DSP_IRAM=y
+CONFIG_ESP32S3_DATA_CACHE_64KB=y

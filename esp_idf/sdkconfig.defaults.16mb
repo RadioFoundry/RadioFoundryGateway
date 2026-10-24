@@ -1,0 +1,34 @@
+# 16 MB flash, 8 MB octal PSRAM (ESP32-S3-WROOM-1-N16R8 and the like): the OTG port goes to the RTL-SDR or the
+# radio, so flash and console go through the board's USB-UART bridge on UART0. Everything on.
+# Octal PSRAM takes GPIO35-37. A quad PSRAM part wants CONFIG_SPIRAM_MODE_QUAD=y instead.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-16mb.csv"
+# Its RGB LED (WS2812); GPIO38 on some board revisions
+CONFIG_RDOF_STATUS_LED_GPIO=48
+
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
+# .bss marked EXT_RAM_BSS_ATTR in PSRAM: the bench API's buffers, so internal RAM stays the DSP's
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+# Internal RAM is the scarce thing here, not PSRAM: TLS buffers in PSRAM, and the DSP leaves more internal RAM free
+# (octal PSRAM is fast enough that the DSP barely notices).
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+CONFIG_RDOF_SDR_INTERNAL_RESERVE_KB=64
+
+CONFIG_RDOF_WEB_FULL=y
+CONFIG_RDOF_OTA=y
+CONFIG_RDOF_MQTT_TLS=y
+CONFIG_RDOF_LOG_RING_KB=256
+CONFIG_RDOF_SOFTAP=y
+# A crash saves a core dump to flash (GET /api/coredump).
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+# USB hubs (docs/reference.md, "More than one radio"): a radio and an RTL-SDR on one powered hub with "usb_hub": true.
+# 15 KB of flash; a device on the port without a hub works as before (checked 2026-10-21 with the RTL-SDR).
+CONFIG_USB_HOST_HUBS_SUPPORTED=y
+CONFIG_USB_HOST_HUB_MULTI_LEVEL=n

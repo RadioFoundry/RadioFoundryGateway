@@ -1,0 +1,51 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
+menu "gnss (NMEA from a GNSS receiver)"
+
+    config GNSS_UART_RX_GPIO
+        int "GPIO the ESP receives NMEA on (the receiver's TX), -1 for none"
+        range -1 48
+        default -1
+        help
+            -1 builds the reader out. With autodetect, the RX and TX pins are tried swapped
+            too, so a pin table that names them from either end still works.
+
+    config GNSS_UART_TX_GPIO
+        int "GPIO the ESP sends on (the receiver's RX), -1 for none"
+        range -1 48
+        default -1
+        depends on GNSS_UART_RX_GPIO >= 0
+
+    config GNSS_UART_NUM
+        int "UART"
+        range 0 2
+        default 1
+        depends on GNSS_UART_RX_GPIO >= 0
+
+    config GNSS_BAUD
+        int "Baud rate"
+        default 9600
+        depends on GNSS_UART_RX_GPIO >= 0
+        help
+            Most receivers (u-blox, Quectel L76K) start at 9600.
+
+    config GNSS_AUTODETECT
+        bool "No NMEA in 3 s: try the pins swapped and the usual baud rates"
+        default y
+        depends on GNSS_UART_RX_GPIO >= 0
+
+    config GNSS_TASK_PRIORITY
+        int "Reader task priority"
+        range 1 24
+        default 9
+        depends on GNSS_UART_RX_GPIO >= 0
+        help
+            Above the web server: a chunk's time is when the task wakes for it.
+
+    config GNSS_TASK_CORE
+        int "Reader task core (-1: any)"
+        range -1 1
+        default 0
+        depends on GNSS_UART_RX_GPIO >= 0
+
+endmenu

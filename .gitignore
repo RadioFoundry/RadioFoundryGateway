@@ -1,0 +1,25 @@
+build/
+.cache/
+__pycache__/
+.venv/
+.DS_Store
+
+# Local notes and vendor files: never committed
+*.local*
+
+# Python, Rust, editors, OS
+.pytest_cache/
+*.pyc
+.idea/
+.vscode/
+*.swp
+*~
+*.core
+core.*
+*.log
+
+# ESP-IDF generated
+sdkconfig
+sdkconfig.old
+dependencies.lock.bak
+managed_components/

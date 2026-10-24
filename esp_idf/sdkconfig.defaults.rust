@@ -1,0 +1,2 @@
+# The modules ported to Rust (rust/) in place of their C.
+CONFIG_RDOF_RUST=y

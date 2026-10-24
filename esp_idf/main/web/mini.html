@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RadioFoundry Gateway</title>
+<style>body{font:15px system-ui,sans-serif;padding:16px;max-width:700px}textarea{width:100%;height:320px;font:12px monospace}
+@media (prefers-color-scheme:dark){body{background:#141416;color:#ececf0}a{color:#6aa9f0}}#h{font:13px monospace;white-space:pre-wrap}</style>
+</head>
+<body>
+<h1>RadioFoundry Gateway</h1>
+<p><a href="/api/status">status</a> · <a href="/api/resolved">settings as resolved</a> · <a href="/api/log">log</a> ·
+<a href="/api/coredump">core dump</a> · <a href="/api/config?download=1">export</a> · <a href="/api/lastheard">last heard</a></p>
+<h2>Last heard</h2><div id="h">-</div>
+<h2>Wi-Fi networks</h2><div data-wifilist></div>
+<h2>Clock</h2><div data-netclock></div>
+<p>Settings: a box config in JSON, with run for the radios this board runs (see docs/reference.md).</p>
+<textarea id="c"></textarea><br><button id="s">Save and restart</button>
+<p id="m"></p>
+<script>
+const c = document.getElementById('c');
+fetch('/api/config').then(r => r.text()).then(t => c.value = t);
+document.getElementById('s').onclick = () => fetch('/api/config', {method: 'POST', body: c.value})
+  .then(r => r.text()).then(t => document.getElementById('m').textContent = t);
+// the last ten calls: age, RF or NET, from > to, where, length
+const lh = () => document.hidden || fetch('/api/lastheard').then(r => r.json()).then(d => document.getElementById('h').textContent =
+  d.calls.slice(0, 10).map(x => (x.active ? 'live' : Math.round(x.age_s) + ' s ago').padEnd(10) + x.dir.toUpperCase().padEnd(4) +
+    x.src + ' > ' + (x.group ? 'TG ' : '') + x.dst + '  ' + x.radio + (x.channel ? '/' + x.channel : '') +
+    (x.duration != null ? '  ' + x.duration.toFixed(1) + ' s' : '')).join('\n') || 'No calls yet.').catch(() => {});
+lh(); setInterval(lh, 3000);
+</script>
+<script src="/wifilist.js" defer></script>
+<script src="/netclock.js" defer></script>
+</body>
+</html>

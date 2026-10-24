@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
+menu "RadioFoundry Gateway SDR (sdr)"
+
+    config RDOF_FEATURE_SDR
+        bool "SDR receive path"
+        default y
+        help
+            The channelizer, FM discriminator, DMR burst demod and AFC (the SDR
+            receiver). Off, the component builds empty.
+
+    config RDOF_FEATURE_SDR_AGC
+        bool "Front-end gain control law"
+        default y
+        depends on RDOF_FEATURE_SDR
+        help
+            Turn the tuner gain down while samples clip, back up slowly.
+
+    config RDOF_FEATURE_SDR_BUILTIN_FFT
+        bool "Built-in FFT"
+        default y
+        depends on RDOF_FEATURE_SDR
+        help
+            The portable mixed-radix FFT. Turn it off when the firmware supplies
+            rdof_fft_new / rdof_fft_run / rdof_fft_free itself (for example on esp-dsp).
+
+    config RDOF_FEATURE_SDR_RECEIVER
+        bool "Multi-channel receiver with call trackers"
+        default y
+        depends on RDOF_FEATURE_SDR && RDOF_FEATURE_TRACKER
+        help
+            One tuner's channels, each with a demod and a call tracker,
+            and AFC fed back to the channelizer.
+
+    config RDOF_SDR_DSP_IRAM
+        bool "The receive path's hot code in internal RAM (IRAM)"
+        default n
+        depends on RDOF_FEATURE_SDR
+        help
+            demod, fm, channelizer, fft and receiver (and the firmware's esp-dsp glue) run from IRAM instead of
+            through the 16 KB flash instruction cache both cores share. About 33 KB of internal RAM, which the
+            DSP buffers then don't get (more of them go to PSRAM). An experiment: compare the self-test's
+            "prof" lines with and without (sdkconfig.defaults.dspfast).
+
+endmenu

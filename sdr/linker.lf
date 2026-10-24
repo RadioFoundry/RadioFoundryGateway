@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
+# CONFIG_RDOF_SDR_DSP_IRAM: the receive path's hot code in IRAM, out of the flash cache (sdr/Kconfig).
+[mapping:rdof_sdr]
+archive: libsdr.a
+entries:
+    if RDOF_SDR_DSP_IRAM = y:
+        demod (noflash)
+        fm (noflash)
+        channelizer (noflash)
+        fft (noflash)
+        receiver (noflash)

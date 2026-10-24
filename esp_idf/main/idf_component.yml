@@ -1,0 +1,10 @@
+# Both always: the component manager's Kconfig rules need options that a role turned off doesn't have. A role
+# that's off leaves its library built but not linked.
+dependencies:
+  idf: ">=5.4"
+  espressif/usb_host_cdc_acm: "^2.3.0"
+  # the bench API's radios on USB-serial bridges (bench_radio.c)
+  espressif/usb_host_ftdi_vcp: "^2.1.1"
+  espressif/usb_host_cp210x_vcp: "^2.2.0"
+  espressif/usb_host_ch34x_vcp: "^2.2.1"
+  espressif/esp-dsp: "^1.5.0"

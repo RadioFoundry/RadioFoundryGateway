@@ -1,0 +1,6 @@
+# A USB hub on the S3's port: two radios, or a radio and an RTL-SDR, at once (docs/reference.md, "More than one radio").
+# The 16mb profile has it already; layer this on the others:
+# SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.4mb;sdkconfig.defaults.hub".
+# ESP-IDF v5.5's hub support has no overcurrent handling and no port debounce: use a powered hub.
+CONFIG_USB_HOST_HUBS_SUPPORTED=y
+CONFIG_USB_HOST_HUB_MULTI_LEVEL=n

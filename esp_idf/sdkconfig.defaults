@@ -1,0 +1,36 @@
+# Shared by every profile. Add a profile on top (and a role overlay for a one-role image):
+#   idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.4mb" build
+CONFIG_IDF_TARGET="esp32s3"
+
+# The USB OTG port is the host to the radio or the RTL-SDR: console on UART0 (TX GPIO43 / RX GPIO44).
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# Both cores at 240 MHz; the SDR's DSP on core 1, USB and the network on core 0.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+# 1 ms ticks: the 60 ms status poll and transmit pacing want them.
+CONFIG_FREERTOS_HZ=1000
+
+# USB host: give the FIFO to IN (the samples), and room for the RTL's control transfers.
+CONFIG_USB_HOST_HW_BUFFER_BIAS_IN=y
+
+# Partition table: from the profile.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+
+# Size first; the SDR's DSP builds -O2 by itself (CONFIG_RDOF_SDR_FAST).
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+# WebSocket streams for the bench API (bench_api.c)
+CONFIG_HTTPD_WS_SUPPORT=y
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# Wi-Fi power save is turned off in code (WIFI_PS_NONE). Sockets: the SDR's peers (one a channel), the roamer's,
+# MQTT (one a role), NTP, and the web server's 8 plus 3 of its own.
+CONFIG_LWIP_MAX_SOCKETS=28
+
+# 64-byte data cache lines: the DSP streams its buffers through PSRAM; measured 3.5% fewer cycles than 32, no RAM cost
+CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
+
+# MQTT 5, for topic aliases on the per-channel topics (net.c; falls back to 3.1.1 when the broker refuses 5).
+CONFIG_MQTT_PROTOCOL_5=y

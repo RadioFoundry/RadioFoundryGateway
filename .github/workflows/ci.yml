@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  host-tests:
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: cmake -S host-tests -B build/host && cmake --build build/host -j4
+      - name: Test
+        run: ctest --test-dir build/host --output-on-failure
+
+  firmware:
+    runs-on: ubuntu-24.04
+    container: espressif/idf:v5.5
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: 16mb
+            defaults: sdkconfig.defaults;sdkconfig.defaults.16mb
+          - profile: 4mb
+            defaults: sdkconfig.defaults;sdkconfig.defaults.4mb
+          - profile: w12
+            defaults: sdkconfig.defaults;sdkconfig.defaults.16mb;sdkconfig.defaults.w12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ${{ matrix.profile }}
+        shell: bash
+        run: |
+          . $IDF_PATH/export.sh
+          cd esp_idf
+          idf.py -B ../build/${{ matrix.profile }} -D SDKCONFIG=../build/${{ matrix.profile }}/sdkconfig \
+            -D SDKCONFIG_DEFAULTS="${{ matrix.defaults }}" build
+
+  system-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: RadioFoundry at systest/radiofoundry.ref
+        run: |
+          git clone --filter=blob:none https://github.com/RadioFoundry/RadioFoundry ../RadioFoundry
+          git -C ../RadioFoundry checkout "$(cat systest/radiofoundry.ref)"
+      - name: Build
+        run: |
+          cmake -S . -B build/linux -DRADIOFOUNDRY_DIR="$PWD/../RadioFoundry"
+          cmake --build build/linux -j4 --target test_radiosim radiosim
+      - name: Test
+        run: ctest --test-dir build/linux -R radiosim --output-on-failure

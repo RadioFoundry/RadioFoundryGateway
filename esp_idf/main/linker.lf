@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
+# CONFIG_RDOF_SDR_DSP_IRAM: the esp-dsp glue (the FFT plans' combine steps, the int16 matched filter) in IRAM too.
+[mapping:rdof_main_dsp]
+archive: libmain.a
+entries:
+    if RDOF_SDR_DSP_IRAM = y:
+        dsp_esp (noflash)
+        fir_s3 (noflash)
