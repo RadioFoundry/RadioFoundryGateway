@@ -1,30 +1,39 @@
 # RadioFoundry Gateway
 
-DMR gateway firmware for the ESP32-S3. One image runs whatever radios the board's config names:
+DMR gateway software for the ESP32-S3, Linux, macOS and (planned) Windows under WSL.
 
-- a roaming transceiver or a repeater, on a radio in hotspot mode
-- a multi-channel SDR receiver, on an RTL-SDR or the LR2021 in a Meshnology W12
+- **What it runs:** whatever combination of radios its config names:
+  - a roaming transceiver or a repeater, on radio(s) in hotspot mode
+  - a multi-channel SDR receiver: RTL-SDR or LR2021 on ESP32, or any SoapySDR-compatible SDR on Linux
+- **Where calls go:** to an HBlink4 network, and out over MQTT.
+- **Who it's for:** DMR operators and event networks that want low-cost receive sites and hotspots. An ESP32-S3 board or Pi
+  with an RTL-SDR or integrated LR2021 can watch several channels at once and feed them into a network.
+- **Code:** a portable C11 core by default, with optional Rust core.
 
-Calls go to an HBlink4 network and out over MQTT. The core is portable C11; the ESP-IDF app is in `esp_idf/`, and
-there's a Linux / macOS build for tests and the `rdofsdr` host tool.
+Status: in development. See [docs/reference.md](docs/reference.md) for what's been tested and what isn't done.
 
-It's for DMR operators and event networks that want low-cost receive sites and hotspots: an ESP32-S3 board and an RTL-SDR
-can watch several channels at once and feed them into a network.
-
-Status: in development. Host tests pass; the SDR role runs on boards. See [docs/reference.md](docs/reference.md)
-for what's been tested and what isn't done.
+- Host tests pass.
+- On boards, the SDR receiver runs.
+- The W12 has transmitted as a roaming transceiver and answered a ping as the IP gateway.
 
 ## Features
 
+- Multi-radio support, using any combination of physical or SDR-based radios
 - HBlink4 peer per radio (UDP, or SCTP over UDP for the roamer): DMRC, DMRD both ways, DMRT / DMRK call routing
 - MQTT: MMDVMHost-compatible call JSON, raw bursts, retained status per radio
-- SDR receiver: 4-5 channels from an RTL-SDR, or from the LR2021's raw I/Q
-- Repeater: duplex, split duplex (two radios as one) and single frequency
-- IP gateway for DMR packet data (UDP routes and NAT)
+- SDR receiver: 4-5 simultaneous channels on the ESP32-S3, 10+ tested on a Raspberry Pi 3, using RTL-SDR or LR2021
+- Repeater: duplex, split duplex (two radios as one), and single-frequency-repeater
+- IP gateway for DMR packet data (UDP/ICMP NAT, static routes, and configurable firewall rules)
 - UTC slot timing from NTP, the browser or a GNSS receiver
-- Web page and JSON API for settings, status, Wi-Fi, the clock, OTA and core dumps
+- Web page and JSON API for Last heard, spectrum view, settings, status, Wi-Fi, the clock, OTA and core dumps
 - Optional Rust build of the core modules (`CONFIG_RDOF_RUST`)
 - Host tool `rdofsdr`: the SDR receiver on a PC, from a recording or live from any SoapySDR device
+
+This project relies on a few additions to the standard HBlink4 and MMDVM protocols to enable advanced functionality,
+with the goal of eventually having these protocol additions merged into their respective projects:
+
+- HBlink4: DMRT / DMRK call routing and SCTP over UDP ([hblink.md](docs/spec/fw/hblink.md))
+- MMDVM modem protocol: split duplex and dual capacity direct mode (DCDM) ([radio.md](docs/spec/fw/radio.md))
 
 ## Hardware
 
@@ -32,10 +41,16 @@ for what's been tested and what isn't done.
 |---|---|
 | `4mb` | ESP32-S3 SuperMini (4 MB flash, 2 MB PSRAM) |
 | `16mb` | ESP32-S3 N16R8 boards (16 MB flash, 8 MB PSRAM) |
-| `16mb` + `w12` | Meshnology W12 (LR2021, L76K GNSS header) |
+| `16mb` + `w12` | Meshnology W12 (LR2021, L76K GNSS header). Receives/transmits well only in 902–928 MHz: at UHF its filter costs about 46 dB, so it hears only nearby transmitters |
 
-Radios: an RTL-SDR (R820T / R828D) on USB, an OpenGD77 or [RadioFoundry](https://github.com/RadioFoundry/RadioFoundry) radio in hotspot mode on USB, or an
-MMDVM_HS HAT on a UART. A powered USB hub runs two at once. Optional I2C OLED (SSD1306 type).
+Supports any combination of radios:
+
+- an RTL-SDR (R820T / R828D) on USB [RX Only]
+- SPI-connected LR2021 transceiver [TX/RX, half-duplex]
+- OpenGD77 or [RadioFoundry](https://github.com/RadioFoundry/RadioFoundry) radio(s) in hotspot mode on USB or UART [TX/RX, half or full-duplex]
+- an MMDVM_HS HAT on a UART [TX/RX, half or full-duplex]
+
+A powered USB hub runs two at once. Optional I2C OLED (SSD1306 type).
 
 ## Build
 
