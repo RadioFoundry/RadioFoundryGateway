@@ -32,3 +32,11 @@ CONFIG_RDOF_OLED_POWER_LEVEL=0
 # A 1 MB sample ring (1.4 s at 384 kS/s): the DSP's hot buffers are in PSRAM here (no internal RAM for them), and
 # core 0's traffic (the web page, MQTT during a call) slows it for a second at a time; 256 KB overflowed then.
 CONFIG_RDOF_SDR_RING_KB=1024
+# Wi-Fi's hot code in flash, not IRAM (which is the heap's SRAM on the S3): about 27 KB more internal RAM, so the
+# SDR and an sdr_transceiver fit together (with both IRAM options on, Wi-Fi ran out, 2026-10-24). Wi-Fi's peak
+# throughput, which nothing here needs, is what it costs.
+# CONFIG_ESP_WIFI_IRAM_OPT is not set
+# CONFIG_ESP_WIFI_RX_IRAM_OPT is not set
+# The memory plan's margin: with the SDR and an sdr_transceiver, what isn't planned (Wi-Fi, lwIP, TLS, the web
+# server) took more than 80 KB, and the roamer's stacks, planned into the 80's spare, left the heap with 0.3 KB.
+CONFIG_RDOF_MEM_MARGIN_KB=96

@@ -349,6 +349,11 @@ On 2026-10-24 the `16mb` + `w12` build is 1988 KB (0x1F1020) with 177 KB DIRAM u
 documented-modem API, the packet calls, the DMR receive setup, both patch RAM images (Semtech's 2.2 KB, ours 1.1 KB)
 and the work of other sessions since 2026-10-20; the other builds weren't measured that day.
 
+Later on 2026-10-24 the `16mb` + `w12` + `rust` build is 2056 KB with 162 KB DIRAM used (48.6%). `w12` turns
+Wi-Fi's IRAM options off (its hot code runs from flash), which gives the heap about 27 KB, and keeps a 96 KB margin
+(`CONFIG_RDOF_MEM_MARGIN_KB`): with 80 and Wi-Fi in IRAM, the SDR and an `sdr_transceiver` together left Wi-Fi
+without memory. With both, about 21 KB of the heap is free while it streams.
+
 DIRAM went down because the roamer's state moved from `.bss` to the heap when it became a `roam_t`: the first
 radio's is still internal (about 5 KB, allocated when it starts), its settings in PSRAM. The `w12` build's 11 KB
 more DIRAM is the SPI master driver and the LR2021's state.

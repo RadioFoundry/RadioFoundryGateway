@@ -155,10 +155,19 @@ static void rx_task(void *arg)
 
 void roam_rx_start(roam_t *r)
 {
-    /* the first radio's in internal RAM as before; another's in PSRAM */
-    r->rx = r->i ? heap_caps_calloc(1, sizeof *r->rx, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : NULL;
-    if (!r->rx)
-        r->rx = calloc(1, sizeof *r->rx);
-    r->rx->queue = xQueueCreate(64, sizeof(heard_t));
-    roam_task(r, rx_task, "rx", 8192, 7);
+    /* in PSRAM where the roamer's stacks are (another radio, or one on the SDR); else internal as before */
+    struct roam_rx *rx = r->psram_stacks ? heap_caps_calloc(1, sizeof *rx, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : NULL;
+    if (!rx)
+        rx = calloc(1, sizeof *rx);
+    if (rx)
+        rx->queue = r->psram_stacks ? xQueueCreateWithCaps(64, sizeof(heard_t), MALLOC_CAP_SPIRAM)
+                                    : xQueueCreate(64, sizeof(heard_t));
+    if (!rx || !rx->queue) { /* nothing heard is passed on, rather than a NULL queue (a crash, 2026-10-24) */
+        ESP_LOGE(TAG, "radio %d: no memory for the receive path; what it hears isn't reported", r->i + 1);
+        free(rx);
+        return;
+    }
+    r->rx = rx; /* last: put() hands bursts over once r->rx is set */
+    if (!roam_task(r, rx_task, "rx", 8192, 7))
+        ESP_LOGE(TAG, "radio %d: the receive task didn't start", r->i + 1);
 }
