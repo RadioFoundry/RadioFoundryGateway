@@ -1,6 +1,6 @@
 # RadioFoundry Gateway
 
-DMR gateway software for the ESP32-S3, Linux, macOS and (planned) Windows under WSL.
+A unified DMR repeater controller, DMR hotspot / network gateway, DMR-IP data gateway, and multi-frequency monitoring software for the ESP32-S3, Linux, and macOS, supporting a broad range of radio hardware.
 
 - **What it runs:** whatever combination of radios its config names:
   - a roaming transceiver or a repeater, on radio(s) in hotspot mode
