@@ -96,6 +96,8 @@ int64_t rdof_mod_slot_samples(const rdof_mod_t *m);
 int64_t rdof_mod_key_on(const rdof_mod_t *m, int64_t start, int first);
 /* Nothing queued or still sounding. */
 bool rdof_mod_idle(const rdof_mod_t *m);
+/* Idle: the position straight to pos (the phase as rendering would have left it). Else, or pos not ahead, nothing. */
+void rdof_mod_skip(rdof_mod_t *m, int64_t pos);
 
 /* The next n samples of complex baseband: |x| = amplitude while keyed. */
 void rdof_mod_iq(rdof_mod_t *m, rdof_cf_t *out, int n);

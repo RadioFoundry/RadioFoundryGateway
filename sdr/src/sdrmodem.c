@@ -1220,6 +1220,7 @@ static void queue_duplex(rdof_sdrmodem_t *m, int64_t pos, int n)
 static void advance(rdof_sdrmodem_t *m, int64_t pos, int n)
 {
     if (pos > m->mod.pos) { /* the front end skipped samples: let the modulator's clock catch up */
+        rdof_mod_skip(&m->mod, pos); /* idle: at once (a front end starting hours into the stream) */
         rdof_cf_t junk[64];
         while (m->mod.pos < pos) {
             int64_t k = pos - m->mod.pos;

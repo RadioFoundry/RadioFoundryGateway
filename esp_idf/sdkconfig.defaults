@@ -34,3 +34,9 @@ CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
 
 # MQTT 5, for topic aliases on the per-channel topics (net.c; falls back to 3.1.1 when the broker refuses 5).
 CONFIG_MQTT_PROTOCOL_5=y
+
+# The network off the DSP's core (1): lwip's task (priority 18) and MQTT's, unpinned, preempted the DSP (12) for
+# every publish and web reply, and the W12's ring overflowed during calls with the page open (2026-10-24).
+CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0=y
+CONFIG_MQTT_TASK_CORE_SELECTION_ENABLED=y
+CONFIG_MQTT_USE_CORE_0=y

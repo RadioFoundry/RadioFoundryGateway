@@ -13,7 +13,10 @@
 #include "mem.h"
 #include "driver/gpio.h"
 #include "esp_app_desc.h"
+#include "esp_attr.h"
 #include "esp_log.h"
+#include "esp_system.h"
+#include "esp_timer.h"
 #include "gnss.h"
 #include "netclock.h"
 #include "nvs_flash.h"
@@ -26,6 +29,37 @@ board_status_t g_board;
 double now_unix(void)
 {
     return netclock_now_ns() / 1e9;
+}
+
+/* Safe mode: SAFE_CRASHES crashes in a row, each within SAFE_UP_S of its boot, and the next boot starts no roles,
+ * only Wi-Fi, the web server and OTA, so settings that crash the board can be changed without a cable. The count
+ * lives in RTC memory a reset keeps; a boot that stays up SAFE_UP_S clears it. */
+#define SAFE_CRASHES 3
+#define SAFE_UP_S 60
+#define SAFE_MAGIC 0x5AFE0001u
+static RTC_NOINIT_ATTR uint32_t safe_magic, safe_crashes;
+
+static void safe_clear(void *arg) { safe_crashes = 0; }
+
+static bool safe_check(void)
+{
+    const esp_reset_reason_t r = esp_reset_reason();
+    const bool crashed = r == ESP_RST_PANIC || r == ESP_RST_INT_WDT || r == ESP_RST_TASK_WDT || r == ESP_RST_WDT;
+    if (safe_magic != SAFE_MAGIC || !crashed)
+        safe_crashes = 0;
+    safe_magic = SAFE_MAGIC;
+    if (crashed)
+        safe_crashes++;
+    const esp_timer_create_args_t a = {.callback = safe_clear, .name = "safe_clear"};
+    esp_timer_handle_t t;
+    if (esp_timer_create(&a, &t) == ESP_OK)
+        esp_timer_start_once(t, SAFE_UP_S * 1000000LL);
+    if (safe_crashes < SAFE_CRASHES)
+        return false;
+    ESP_LOGE(TAG, "safe mode: %lu crashes in a row within %d s of boot; no roles started (fix the settings, then "
+                  "restart)", (unsigned long)safe_crashes, SAFE_UP_S);
+    safe_crashes = 0; /* the next restart tries the roles again */
+    return true;
 }
 
 #if CONFIG_GNSS_UART_RX_GPIO >= 0
@@ -73,6 +107,10 @@ void app_main(void)
     ESP_ERROR_CHECK(e);
     netclock_init();
     settings_load();
+    if ((g_board.safe_mode = safe_check())) {
+        g_roles.has_radio = false;
+        g_roles.has_sdr = false;
+    }
 #if CONFIG_GNSS_UART_RX_GPIO >= 0
     gnss_begin();
 #endif

@@ -68,6 +68,7 @@ typedef struct {
     bool wifi_up, ap_mode;
     char ip[16];
     bool usb_either; /* both roles want the USB port: whichever device is plugged in decides */
+    bool safe_mode;  /* crashed soon after boot SAFE_CRASHES times running: no roles started (main.c) */
 } board_status_t;
 
 extern board_status_t g_board;
@@ -343,6 +344,8 @@ void sdr_hot_count(bool on);
 size_t sdr_hot_counted(void);
 void *sdr_hot_aligned(size_t align, size_t n, bool zero);
 void sdr_hot_free(void *p);
+/* While on, the SDR's allocations (hot ones too) go in PSRAM: for what isn't on the receive path. */
+void sdr_alloc_cold(bool on);
 
 /* The DSP (sdr_task.c). */
 void sdr_start(void);

@@ -1112,8 +1112,10 @@ which is low (an external PA for useful power). Nothing written yet.
 
 ### Transmit: the SDR as a radio
 
-Built and run on the host and in the self-test; on a board only with `sim`, which loops what it sends back into
-what it receives. No front end with a real transmitter does it yet (the LR2021 and SX1255 plans are below).
+Built and run on the host and in the self-test; on a board with `sim` (which loops what it sends back into what it
+receives) and the LR2021, half duplex. On the W12 (2026-10-24) a 29-burst call sent through the bench's `WS /tx
+via=modem` at +10 dBm on 461.2375 MHz decoded whole on the SDR bench: 0 FEC failures, about 0.9% bit errors, the
+bursts within 26 us of the TDMA grid. The roamer on it (an `sdr_transceiver`) hasn't been run against HBlink4 yet.
 
 - **Config.** A radio of type `sdr_transceiver` in `radios` (and in `run`, with the SDR): `duplex: half` (the
   default) is a roamer, with a roamer's keys (`idle`, `channels`, `scan` ...); `duplex: full` is a duplex repeater,
@@ -1172,8 +1174,15 @@ what it receives. No front end with a real transmitter does it yet (the LR2021 a
   clock's error, the modem's phase, slips and snaps. Host tests: `test_utc_tx` (25 ppm fast, 0–2 ms of arrival
   jitter: 30 s keyed within 97 µs of the grid), `test_utc_rx`, `test_split_tx_utc`, `test_pair_utc`.
 - **The front end's part**: `tx_set(src, power)` in `rdof_fe_ops_t` and the TX fields of `rdof_fe_caps_t`. `sim`:
-  full duplex, I/Q at the receive rate, mixed into the samples it reads at a quarter of full scale. `rtlsdr`,
-  `lr2021`: receive only (refused when settings are saved).
+  full duplex, I/Q at the receive rate, mixed into the samples it reads at a quarter of full scale. `lr2021`:
+  half duplex, `RDOF_FE_TX_FREQ` at 48 kS/s, tuned by `tx_tune` (within 1 MHz of the receiver's center, where it's
+  calibrated). Its reader pulls the modulator 40 ms ahead of the stream; each keyed span (a burst with its ramps)
+  goes out as one run of frequency samples (fdev 2048) at its time: the receiver stops about 2 ms before (spec
+  lr2021-iq.md R3.16), the run keys within a few us of its time, and the receiver restarts with no CalibFE. The
+  stream's gap is filled with zeros so its sample count keeps real time, and positions map to esp_timer through an
+  anchor held for a transmission, so a call's bursts keep their 60 ms spacing. Every channel's receiver is muted
+  while it sends. A log line a transmission: runs, late, early (R3.17), underflows, the key-up error. `rtlsdr`:
+  receive only (refused when settings are saved).
 - **Tests.** `sdrmodem_tests` (host): the CACH (short LC forms, the 4-slot cycle, AT), each split role on its own
   (labels, the lease, GET_EPOCH, SET_AT's modes and hold, the key-up limit, a retune), and the split matrix: a
   radio or an SDR modem as each half, `rdof_split_t` between them, 90 s of inbound bursts on the TX half's slots,
@@ -1227,7 +1236,7 @@ channel), `CONFIG_RDOF_SDR_FAST` (`-O2` for the DSP), `CONFIG_RDOF_SDR_ESP_DSP` 
 64-point IFFTs, the forward FFT as 6 x 64 or 3 to 6 x 256; and the matched filter, each checked against the
 built-in code when the role starts and left out if they disagree),
 `CONFIG_RDOF_SDR_TWO_CORES` (allows `"dsp_cores": 2`), `CONFIG_RDOF_SDR_HELPER_STACK` (6144), `CONFIG_RDOF_SDR_CHUNK`
-(4096), `CONFIG_RDOF_SDR_RING_KB` (256), `CONFIG_RDOF_SDR_INTERNAL_RESERVE_KB` (40; 64 in `16mb`; the DSP buffers outside the hot arena),
+(4096), `CONFIG_RDOF_SDR_RING_KB` (256; 1024 in `w12`, whose DSP buffers are in PSRAM and slow down for a second at a time while core 0 is busy), `CONFIG_RDOF_SDR_INTERNAL_RESERVE_KB` (40; 64 in `16mb`; the DSP buffers outside the hot arena),
 `CONFIG_RDOF_SDR_SELFTEST`, `CONFIG_RDOF_SDR_SPIKE`, `CONFIG_RDOF_SDR_LR2021` (off; "Front ends" above); and the board's
 MQTT, OTA, softAP and log options. The SDR core's own switches are under "RadioFoundry Gateway SDR (sdr)".
 

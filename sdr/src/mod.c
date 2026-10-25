@@ -140,6 +140,14 @@ bool rdof_mod_idle(const rdof_mod_t *m)
     return true;
 }
 
+void rdof_mod_skip(rdof_mod_t *m, int64_t pos)
+{
+    if (pos <= m->pos || !rdof_mod_idle(m))
+        return;
+    m->phase += (uint32_t)(pos - m->pos) * m->base_inc; /* mod 2^32, as the accumulator wraps */
+    m->pos = pos;
+}
+
 void rdof_mod_symbols(const uint8_t *bits, int nbits, int8_t *sym)
 {
     static const int8_t map[4] = {1, 3, -1, -3}; /* dibits 00 01 10 11 */

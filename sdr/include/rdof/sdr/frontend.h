@@ -151,6 +151,9 @@ typedef struct rdof_fe_ops {
     /* Optional (duplex other than RX_ONLY): transmit what src gives from now on (NULL: stop), from the DSP task.
      * The sim front end mixes it into what it reads (its loopback). */
     int (*tx_set)(void *ctx, const rdof_fe_tx_source_t *src, double power_dbm);
+    /* Optional (RDOF_FE_TX_FREQ / _4FSK: a chip that tunes its own transmitter): transmit on hz from the next key-up
+     * on. 0, or < 0 if it can't reach hz. */
+    int (*tx_tune)(void *ctx, double hz);
 } rdof_fe_ops_t;
 
 typedef struct {

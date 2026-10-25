@@ -13,6 +13,7 @@ int rdof_spectrum_init(rdof_spectrum_t *s, int n, int per_row)
     memset(s, 0, sizeof *s);
     s->n = n;
     s->per_row = per_row < 1 ? 1 : per_row;
+    s->max_ffts = RDOF_SPECTRUM_FFTS;
     s->fft = rdof_fft_new(n, false);
     s->win = rdof_sdr_alloc(sizeof(float) * (size_t)n);
     s->in = rdof_sdr_alloc(sizeof(rdof_cf_t) * (size_t)n);
@@ -29,6 +30,11 @@ int rdof_spectrum_init(rdof_spectrum_t *s, int n, int per_row)
     }
     s->norm = (float)(1.0 / (sum * sum));
     return 0;
+}
+
+void rdof_spectrum_set_ffts(rdof_spectrum_t *s, int k)
+{
+    s->max_ffts = k < 1 ? 1 : k > RDOF_SPECTRUM_FFTS ? RDOF_SPECTRUM_FFTS : k;
 }
 
 void rdof_spectrum_free(rdof_spectrum_t *s)
@@ -61,13 +67,22 @@ static void one_fft(rdof_spectrum_t *s, const rdof_cf_t *iq, int len)
 bool rdof_spectrum_feed(rdof_spectrum_t *s, const rdof_cf_t *iq, int len, uint8_t *row)
 {
     const int n = s->n;
-    int m = len / n;
-    m = m < 1 ? 1 : m > RDOF_SPECTRUM_FFTS ? RDOF_SPECTRUM_FFTS : m;
-    if (m == 1)
+    const int fit = len / n;
+    int m = fit < 1 ? 1 : fit > RDOF_SPECTRUM_FFTS ? RDOF_SPECTRUM_FFTS : fit;
+    if (m > s->max_ffts && len > n) {
+        /* fewer than fit: k FFTs a stride apart, the first one turning through the stride chunk by chunk (a step
+         * of 0.618 of it: no short cycle for a pulse train to lock onto) */
+        const int k = s->max_ffts, span = len - n, stride = span / k;
+        s->turn += (uint32_t)(stride * 0.618) + 1;
+        const int first = stride > 0 ? (int)(s->turn % (uint32_t)stride) : 0;
+        for (int j = 0; j < k; j++)
+            one_fft(s, iq + first + (size_t)j * (size_t)stride, n);
+    } else if (m == 1) {
         one_fft(s, iq, len);
-    else
+    } else {
         for (int j = 0; j < m; j++)
             one_fft(s, iq + (size_t)j * (size_t)(len - n) / (size_t)(m - 1), n);
+    }
     if (++s->count < s->per_row)
         return false;
     const float k = s->norm / (float)s->ffts;

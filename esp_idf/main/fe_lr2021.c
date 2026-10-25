@@ -76,8 +76,9 @@ static rdof_fe_caps_t caps = {
     .usable = 0.8, /* set from the rate in init (band_usable) */
     .dc_guard_hz = 5000, /* the raw samples' DC hasn't been measured: keep channels off the center */
     .gain = true,
-    .duplex = RDOF_FE_HALF_DUPLEX, /* one synthesizer: RX or TX (TX not wired up yet) */
-    .tx_mode = RDOF_FE_TX_NONE,
+    .duplex = RDOF_FE_HALF_DUPLEX, /* one synthesizer: the receiver stops for each run (tx_service) */
+    .tx_mode = RDOF_FE_TX_FREQ,
+    .tx_rate = 48000,
     .tx_freq_min = 150e6,
     .tx_freq_max = 960e6,
     .tx_power_min = -9.5, /* the LF PA, 0.5 dB steps (7.4.3) */
@@ -304,8 +305,9 @@ static int init(void *ctx)
 
 static bool wait(void *ctx, int timeout_ms) { return st.dev != NULL; }
 
-/* The LoRa receiver the raw route sits in (spec 2.1), at the center: the bandwidth sets the rate. */
-static int lora_setup(void)
+/* The LoRa receiver the raw route sits in (spec 2.1), at the center: the bandwidth sets the rate. calib: CalibFE
+ * there first (not after a transmission in the same 4 MHz, spec R3.16). */
+static int lora_setup(bool calib)
 {
     uint8_t f[16];
     esp_err_t e;
@@ -315,7 +317,7 @@ static int lora_setup(void)
     if ((e = cmd(f, lr2021_cmd_u8(f, LR2021_SET_STANDBY, 0))) != ESP_OK ||
         (e = cmd(f, lr2021_cmd_u8(f, LR2021_SET_PACKET_TYPE, LR2021_PACKET_LORA))) != ESP_OK)
         return failed("SetPacketType", e);
-    if ((e = cmd(f, lr2021_cmd_calib_fe(f, &cal_hz, 1, false))) != ESP_OK)
+    if (calib && (e = cmd(f, lr2021_cmd_calib_fe(f, &cal_hz, 1, false))) != ESP_OK)
         return failed("CalibFE", e);
     if ((e = cmd(f, lr2021_cmd_set_rf_frequency(f, chip_hz))) != ESP_OK)
         return failed("SetRfFrequency", e);
@@ -336,8 +338,9 @@ static int lora_setup(void)
 }
 
 /* The FSK receiver the wide route sits in, at the center: rx_bw sets the rate and the channel filter (spec
- * R2.19). The bit rate and deviation don't matter to the samples; they're set well inside the filter. */
-static int fsk_setup(void)
+ * R2.19). The bit rate and deviation don't matter to the samples; they're set well inside the filter. calib: as
+ * lora_setup's. */
+static int fsk_setup(bool calib)
 {
     uint8_t f[16];
     esp_err_t e;
@@ -348,7 +351,7 @@ static int fsk_setup(void)
     if ((e = cmd(f, lr2021_cmd_u8(f, LR2021_SET_STANDBY, 0))) != ESP_OK ||
         (e = cmd(f, lr2021_cmd_u8(f, LR2021_SET_PACKET_TYPE, LR2021_PACKET_FSK))) != ESP_OK)
         return failed("SetPacketType", e);
-    if ((e = cmd(f, lr2021_cmd_calib_fe(f, &cal_hz, 1, false))) != ESP_OK)
+    if (calib && (e = cmd(f, lr2021_cmd_calib_fe(f, &cal_hz, 1, false))) != ESP_OK)
         return failed("CalibFE", e);
     if ((e = cmd(f, lr2021_cmd_set_rf_frequency(f, chip_hz))) != ESP_OK)
         return failed("SetRfFrequency", e);
@@ -376,13 +379,16 @@ static bool fifo_mapped(void)
            size == LR2021_RX_FIFO_SIZE_1K;
 }
 
-/* A raw receive session (spec 2.2). The caller holds the lock. */
-static int session_start(void)
+/* A raw receive session (spec 2.2). quick: back from a transmission, the chip known and calibrated here: no
+ * checks, no CalibFE (spec R3.16). The caller holds the lock. */
+static int session_start(bool quick)
 {
     uint8_t f[16];
     esp_err_t e;
     uint8_t maj = 0, min = 0;
     uint32_t marker = 0;
+    if (quick)
+        goto setup;
     if (lr2021_version(st.dev, &maj, &min) != ESP_OK || maj != LR2021_VERSION_MAJOR || min != LR2021_VERSION_MINOR) {
         snprintf(st.error, sizeof st.error, "LR2021 firmware %u.%u: raw I/Q needs 1.24", maj, min);
         return -1;
@@ -391,7 +397,8 @@ static int session_start(void)
         snprintf(st.error, sizeof st.error, "LR2021: a Semtech patch is running; raw I/Q needs the plain ROM");
         return -1;
     }
-    if (st.wide ? fsk_setup() : lora_setup())
+setup:
+    if (st.wide ? fsk_setup(!quick) : lora_setup(!quick))
         return -1;
     cmd(f, lr2021_cmd_u8(f, LR2021_SET_STANDBY, 0));
     if ((e = cmd(f, st.wide && !st.iq16 ? lr2021_cmd_raw_route_rate(f, st.code, st.native_num, LR2021_RAW_SRC_CONV)
@@ -399,7 +406,7 @@ static int session_start(void)
         return failed("raw route", e);
     cmd(f, lr2021_cmd_write_reg32(f, LR2021_REG_RX_FIFO_BASE, LR2021_RX_FIFO_BASE_1K));
     cmd(f, lr2021_cmd_write_reg32(f, LR2021_REG_RX_FIFO_SIZE, LR2021_RX_FIFO_SIZE_1K));
-    if (!fifo_mapped()) {
+    if (!quick && !fifo_mapped()) {
         snprintf(st.error, sizeof st.error, "LR2021: the 1 KB RX FIFO didn't map");
         return -1;
     }
@@ -417,7 +424,7 @@ static int session_start(void)
      * runs only once 0 is sent in RX (measured; spec R2.25) */
     if ((e = cmd(f, lr2021_cmd_set_gain(f, isnan(st.gain) ? 0 : (uint8_t)st.gain))) != ESP_OK)
         return failed("SetAgcGainManual", e);
-    if (!fifo_mapped()) {
+    if (!quick && !fifo_mapped()) {
         snprintf(st.error, sizeof st.error, "LR2021: the RX FIFO moved when RX started");
         return -1;
     }
@@ -458,7 +465,7 @@ static int tune(void *ctx, double rate, double center_hz, int ppm, double *got_r
     int r = 0;
     if (!st.held) { /* checked again under the lock: a hold may have come in between */
         session_end();
-        r = session_start();
+        r = session_start(false);
     }
     unlock();
     return r;
@@ -474,7 +481,7 @@ static int set_ppm(void *ctx, int ppm)
     int r = 0;
     if (!st.held) { /* checked again under the lock: a hold may have come in between */
         session_end();
-        r = session_start();
+        r = session_start(false);
     }
     unlock();
     return r;
@@ -506,8 +513,13 @@ static int gain_steps(void *ctx, const double **db)
 
 /* ── streaming ──────────────────────────────────────────────────────────── */
 
+/* The stream's samples since start() at the chip's rate: read from it, or filled in while it transmitted. The
+ * reader's alone. */
+static int64_t rx_count;
+
 static void put(const uint8_t *b, size_t n)
 {
+    rx_count += (int64_t)(n / (size_t)st.sbytes);
     size_t sent = xStreamBufferSpacesAvailable(st.ring) >= n ? xStreamBufferSend(st.ring, b, n, 0) : 0;
     size_t used = xStreamBufferBytesAvailable(st.ring);
     portENTER_CRITICAL(&st.lock);
@@ -555,7 +567,7 @@ static void lost(const char *why)
         return;
     }
     session_end();
-    if (session_start())
+    if (session_start(false))
         ESP_LOGW(TAG, "%s", st.error);
 }
 
@@ -654,6 +666,304 @@ static bool drain(size_t n, bool then_rearm)
     return true;
 }
 
+/* ── transmit ───────────────────────────────────────────────────────────── */
+
+/* Half duplex: the receiver stops for each key-up (the user's choice: one chip roams every channel). The modem's
+ * frequency samples (pull_freq, 48 kS/s) are pulled TX_LOOK ahead of the stream into a staging ring; each keyed span
+ * (a DMR burst with its ramps) goes out as one run of frequency samples (spec R3.9-R3.19) at its time, the receiver
+ * off around it (R3.16: about 1.5 ms to TX, 1.2 back, no reset, no CalibFE). The stream's gap is filled with zeros
+ * so its sample count keeps real time. Stream positions map to esp_timer through an anchor taken from the sample
+ * count while nothing is sent and held through a transmission, so a call's runs keep their 60 ms spacing (the gaps'
+ * fill follows the same map). All of it runs in the reader: it alone touches the chip while streaming. */
+#define TX_RATE 48000
+#define TX_FDEV 2048     /* 32 Hz a count (R3.10) */
+#define TX_STAGE 8192    /* staged samples (170 ms), a power of 2 */
+#define TX_LOOK 1920     /* pulled this far ahead of now (40 ms) */
+#define TX_BLOCK 240     /* samples a pull (5 ms) */
+#define TX_MAX_RUN 4096  /* the longest span sent as one run (85 ms): a longer one is cut there */
+#define TX_MERGE 192     /* keyed spans this close (4 ms) go out as one run */
+#define TX_PREP_US 4500  /* the switch to TX starts this long before a run's time (it takes about 2 ms) */
+#define TX_LATE_US 2500  /* less than this left: the run is dropped (late) */
+#define TX_HOLD_US 300000 /* the anchor held this long after a run */
+#define TX_CHUNK 256     /* the FIFO topped up once this much of it is free */
+
+EXT_RAM_BSS_ATTR static struct {
+    int8_t s[TX_STAGE];  /* frequency samples (lr2021_raw_freq_sample) */
+    uint8_t k[TX_STAGE]; /* keyed */
+} stage;
+
+static struct {
+    const rdof_fe_tx_source_t *volatile src;
+    volatile double power, hz; /* dBm (tx_set), the carrier (tx_tune, 0 until then) */
+    int64_t pos;               /* the next sample to pull (0: none pulled yet) */
+    int64_t key;               /* the first keyed sample staged and not sent yet, or -1 */
+    bool hold;                 /* the anchor held: a transmission on */
+    int64_t a_pos, a_us;       /* the anchor: stream sample a_pos (48 kS/s) at esp_timer a_us */
+    int64_t last_us;           /* the last run's end */
+    /* this transmission's, for its log line */
+    unsigned runs, late, early, failed, cut, underflows;
+    int err_min, err_max;      /* SetTx's time against the run's, us */
+    int64_t zeros;             /* samples filled in */
+} tx = {.key = -1};
+
+static int64_t tx_now48(int64_t us) { return tx.a_pos + (us - tx.a_us) * TX_RATE / 1000000; }
+static int64_t tx_at_us(int64_t pos) { return tx.a_us + (pos - tx.a_pos) * 1000000 / TX_RATE; }
+/* The stream's count at 48 kS/s, and a 48 kS/s position as the chip's count. */
+static int64_t rx48(void) { return rx_count * TX_RATE * (int64_t)st.native_den / (int64_t)st.native_num; }
+static int64_t native_at(int64_t pos48) { return pos48 * (int64_t)st.native_num / ((int64_t)TX_RATE * st.native_den); }
+
+/* Pull the source up to sample upto, a block at a time, into the stage; note the first keyed sample. */
+static void tx_fill(int64_t upto)
+{
+    EXT_RAM_BSS_ATTR static float hz[TX_BLOCK], env[TX_BLOCK];
+    const rdof_fe_tx_source_t *src = tx.src;
+    while (src && tx.pos < upto) {
+        const bool keyed = src->pull_freq(src->ctx, tx.pos, hz, env, TX_BLOCK);
+        for (int i = 0; i < TX_BLOCK; i++) {
+            const int64_t p = tx.pos + i;
+            const bool k = keyed && env[i] > 0;
+            stage.s[p & (TX_STAGE - 1)] = lr2021_raw_freq_sample(hz[i], TX_FDEV);
+            stage.k[p & (TX_STAGE - 1)] = k;
+            if (k && tx.key < 0)
+                tx.key = p;
+        }
+        tx.pos += TX_BLOCK;
+    }
+}
+
+/* Zeros into the stream for n samples (the receiver off): its count keeps real time. */
+static void tx_zero_fill(int64_t n)
+{
+    EXT_RAM_BSS_ATTR static uint8_t z[1024];
+    const size_t sb = (size_t)st.sbytes, max = sizeof z / sb;
+    tx.zeros += n;
+    while (n > 0) {
+        const size_t k = n > (int64_t)max ? max : (size_t)n;
+        size_t sent = xStreamBufferSpacesAvailable(st.ring) >= k * sb ? xStreamBufferSend(st.ring, z, k * sb, 0) : 0;
+        rx_count += (int64_t)k;
+        portENTER_CRITICAL(&st.lock);
+        st.stats.bytes_filled += sent;
+        if (sent < k * sb) {
+            st.stats.overflows++;
+            st.stats.bytes_lost += k * sb - sent;
+        }
+        portEXIT_CRITICAL(&st.lock);
+        n -= (int64_t)k;
+    }
+}
+
+/* One run: the receiver off, n staged samples from k0 on at esp_timer t_key, the receiver back on and the gap filled.
+ * The caller holds the lock, in a session. */
+static void tx_run(int64_t k0, int n, int64_t t_key)
+{
+    /* static: the reader's stack has little to spare */
+    EXT_RAM_BSS_ATTR static uint8_t frames[LR2021_TX_FRAMES_MAX][LR2021_TX_FRAME_MAX], buf[1020];
+    static size_t lens[LR2021_TX_FRAMES_MAX];
+    uint8_t f[12];
+    const lr2021_tx_setup_t s = {
+        .mode = LR2021_TX_FREQ,
+        .freq_hz = lr2021_freq_corrected(tx.hz, st.ppm),
+        .standby_first = true, /* out of RX; the 4 MHz is calibrated (R3.16) */
+        .power_code = lr2021_tx_power_code(tx.power),
+        .ramp_code = 4,
+        .pa_lf_duty = 4, /* as the lab's runs (web.c, /api/lr2021/txmode) */
+        .pa_lf_slices = 2,
+        .fallback = LR2021_FALLBACK_STBY_RC,
+        .rate = TX_RATE,
+        .fdev_hz = TX_FDEV,
+        .rx_bw = 0x1C,
+        .n = (uint16_t)n,
+    };
+    const int nf = lr2021_tx_frames(&s, frames, lens);
+    esp_err_t e = nf > 0 ? ESP_OK : ESP_ERR_INVALID_ARG;
+    for (int i = 0; i < nf && e == ESP_OK; i++)
+        e = cmd(frames[i], lens[i]);
+    if (e == ESP_OK)
+        e = cmd(f, lr2021_cmd_clear_fifo_flags(f, 0, 0x3F));
+    if (e == ESP_OK)
+        e = cmd(f, lr2021_cmd_clear_irq(f, LR2021_IRQ_TX_DONE | LR2021_IRQ_TIMEOUT));
+    int sent = 0;
+#define TX_PUT(k_)                                                                                                  \
+    do {                                                                                                            \
+        const int put_n = (k_);                                                                                     \
+        for (int j = 0; j < put_n; j++)                                                                             \
+            buf[j] = (uint8_t)stage.s[(k0 + sent + j) & (TX_STAGE - 1)];                                            \
+        e = lr2021_write_tx_fifo(st.dev, buf, (size_t)put_n);                                                       \
+        sent += put_n;                                                                                              \
+    } while (0)
+    if (e == ESP_OK)
+        TX_PUT(n < (int)sizeof buf ? n : (int)sizeof buf);
+    int64_t t_on = 0;
+    if (e == ESP_OK) {
+        while (esp_timer_get_time() < t_key)
+            ;
+        t_on = esp_timer_get_time();
+        /* a timeout past the run's end (1/32 ms), so a run that never ends can't hold the chip */
+        e = lr2021_send(st.dev, f, lr2021_cmd_set_tx(f, (uint32_t)((int64_t)n * 32000 / TX_RATE + 32 * 50)));
+        const int err = (int)(t_on - t_key);
+        if (!tx.runs || err < tx.err_min)
+            tx.err_min = err;
+        if (!tx.runs || err > tx.err_max)
+            tx.err_max = err;
+    }
+    const int64_t end = t_on + (int64_t)n * 1000000 / TX_RATE + 30000;
+    bool done = false;
+    while (e == ESP_OK && !done) {
+        uint32_t irq = 0;
+        uint16_t level = 0;
+        if ((e = lr2021_irq(st.dev, &irq)) != ESP_OK || (e = lr2021_tx_fifo_level(st.dev, &level)) != ESP_OK)
+            break;
+        if (irq & (LR2021_IRQ_TX_DONE | LR2021_IRQ_TIMEOUT)) {
+            /* ended short with the FIFO still holding some: it sent nothing (R3.17) */
+            if (level > 0 && sent - level + 4 < n)
+                tx.early++;
+            else
+                tx.runs++;
+            done = true;
+        } else if (esp_timer_get_time() > end) {
+            e = ESP_ERR_TIMEOUT;
+        } else if (sent < n && 1020 - level >= TX_CHUNK) {
+            const int room = 1020 - level;
+            TX_PUT(n - sent < room ? n - sent : room);
+        } else {
+            vTaskDelay(1); /* the FIFO holds 5 ms or more: Wi-Fi gets core 0 meanwhile */
+        }
+    }
+#undef TX_PUT
+    uint8_t rxf = 0, txf = 0;
+    lr2021_fifo_flags_peek(st.dev, &rxf, &txf);
+    if (txf & LR2021_FIFO_UNDERFLOW)
+        tx.underflows++;
+    if (e != ESP_OK) {
+        tx.failed++;
+        ESP_LOGW(TAG, "TX run of %d samples: %s", n, esp_err_to_name(e));
+    }
+    tx.last_us = esp_timer_get_time();
+    /* back to receiving: the same session's setup without its checks; else a new session (the reader's) */
+    if (session_start(true)) {
+        ESP_LOGW(TAG, "back to RX after TX: %s", st.error);
+        st.in_session = false;
+    }
+    const int64_t gap = native_at(tx_now48(esp_timer_get_time())) - rx_count;
+    if (gap > 0 && gap < (int64_t)(st.native * 0.5))
+        tx_zero_fill(gap);
+}
+
+/* The end of a transmission: its line in the log, the counts cleared. */
+static void tx_said(void)
+{
+    if (tx.runs || tx.late || tx.early || tx.failed)
+        ESP_LOGI(TAG, "TX at %.5f MHz, %.1f dBm: %u runs, %u late, %u early (R3.17), %u failed, %u cut, %u underflows; "
+                      "key-up %+d to %+d us of its time; %lld samples filled",
+                 tx.hz / 1e6, tx.power, tx.runs, tx.late, tx.early, tx.failed, tx.cut, tx.underflows, tx.err_min,
+                 tx.err_max, (long long)tx.zeros);
+    tx.runs = tx.late = tx.early = tx.failed = tx.cut = tx.underflows = 0;
+    tx.err_min = tx.err_max = 0;
+    tx.zeros = 0;
+}
+
+/* The reader's transmit turn, between reads: stage what's due and send a run whose time has come. True if it sent
+ * one (the receiver restarted). */
+static bool tx_service(void)
+{
+    const int64_t now = esp_timer_get_time();
+    if (!tx.src || tx.hz <= 0) {
+        if (tx.hold)
+            tx_said();
+        tx.hold = false;
+        tx.pos = 0;
+        tx.key = -1;
+        return false;
+    }
+    if (!tx.hold) {
+        tx.a_pos = rx48();
+        tx.a_us = now;
+    }
+    const int64_t n48 = tx_now48(now);
+    if (!tx.pos || tx.pos < n48 - TX_STAGE / 2) { /* the first pull, or far behind: from now */
+        tx.pos = n48;
+        tx.key = -1;
+    }
+    tx_fill(n48 + TX_LOOK);
+    if (tx.key < 0) {
+        if (tx.hold && now - tx.last_us > TX_HOLD_US) {
+            tx.hold = false;
+            tx_said();
+        }
+        return false;
+    }
+    if (!tx.hold) {
+        tx.hold = true;
+        tx.last_us = now;
+    }
+    const int64_t t_key = tx_at_us(tx.key);
+    if (t_key - now > TX_PREP_US)
+        return false;
+    /* the span: keyed samples, through gaps under TX_MERGE, pulling on where it reaches the stage's end */
+    const int64_t k0 = tx.key;
+    int64_t k1 = k0;
+    while (tx.src && k1 - k0 < TX_MAX_RUN) {
+        while (k1 < tx.pos && stage.k[k1 & (TX_STAGE - 1)])
+            k1++;
+        if (k1 >= tx.pos) {
+            tx_fill(tx.pos + TX_BLOCK);
+            continue;
+        }
+        int64_t g = k1;
+        while (g < tx.pos && g < k1 + TX_MERGE && !stage.k[g & (TX_STAGE - 1)])
+            g++;
+        if (g >= k1 + TX_MERGE)
+            break; /* a real gap: the span ends at k1 */
+        if (g >= tx.pos) {
+            tx_fill(tx.pos + TX_BLOCK);
+            continue;
+        }
+        k1 = g; /* keyed again soon: one run */
+    }
+    if (k1 - k0 > TX_MAX_RUN) {
+        k1 = k0 + TX_MAX_RUN;
+        tx.cut++;
+    }
+    bool ran = false;
+    if (t_key - esp_timer_get_time() < TX_LATE_US) {
+        tx.late++;
+    } else {
+        lock();
+        if (st.in_session && !st.held) {
+            tx_run(k0, (int)(k1 - k0), t_key);
+            ran = true;
+        }
+        unlock();
+    }
+    tx.key = -1;
+    for (int64_t p = k1; p < tx.pos; p++)
+        if (stage.k[p & (TX_STAGE - 1)]) {
+            tx.key = p;
+            break;
+        }
+    return ran;
+}
+
+static int tx_set(void *ctx, const rdof_fe_tx_source_t *src, double power_dbm)
+{
+    tx.power = power_dbm;
+    tx.src = src; /* the reader picks it up */
+    return 0;
+}
+
+/* The carrier for the next runs. Within 1 MHz of the receiver's center: the front end is calibrated there (R3.16;
+ * CalibFE elsewhere would cost the stream 11 ms and the RX FIFO, R2.5). */
+static int tx_tune(void *ctx, double hz)
+{
+    if (hz < caps.tx_freq_min || hz > caps.tx_freq_max || fabs(hz - st.center) > 1e6) {
+        snprintf(st.error, sizeof st.error, "LR2021: can't transmit on %.5f MHz (receiving at %.5f)", hz / 1e6,
+                 st.center / 1e6);
+        return -1;
+    }
+    tx.hz = hz;
+    return 0;
+}
+
 /* The reader: the FIFO's samples, little-endian I then Q, 16 bits each (spec R2.7) or 8 in the wide mode, into
  * the ring. With the IRQ
  * pin it sleeps until the chip's RX FIFO IRQ says IRQ_LEVEL bytes are in, then reads them with no level query:
@@ -675,6 +985,8 @@ static void reader_task(void *arg)
             by_level = true;
             continue;
         }
+        if ((tx.src || tx.hold) && tx_service())
+            by_level = true; /* the receiver restarted: by the level, then the IRQ */
         lock();
         if (st.held) {
             unlock();
@@ -685,7 +997,7 @@ static void reader_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(100));
             lock();
             /* held again during the wait: the experiment has the chip */
-            if (st.streaming && !st.held && !st.in_session && session_start())
+            if (st.streaming && !st.held && !st.in_session && session_start(false))
                 count_error();
             unlock();
             by_level = true; /* whatever is in the new session's FIFO, then the IRQ */
@@ -786,8 +1098,9 @@ static int start(void *ctx)
     }
     xStreamBufferReset(st.ring);
     memset(&st.stats, 0, sizeof st.stats);
+    rx_count = 0;
     lock();
-    int r = session_start();
+    int r = session_start(false);
     unlock();
     if (r)
         return -1;
@@ -896,6 +1209,8 @@ static const rdof_fe_ops_t ops = {
     .stats = stats,
     .identity = identity,
     .error = error,
+    .tx_set = tx_set,
+    .tx_tune = tx_tune,
 };
 
 int fe_lr2021_read_mem(uint32_t addr, uint32_t *w, int n)

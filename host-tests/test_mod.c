@@ -248,6 +248,25 @@ static double now(void)
     return ts.tv_sec + ts.tv_nsec * 1e-9;
 }
 
+/* rdof_mod_skip: idle, the same position and phase as rendering there; with a burst queued, nothing. */
+static void test_skip(void)
+{
+    rdof_mod_t a, b;
+    rdof_mod_init(&a, 48000, 1234.5, 4.0, 1.0f, 4, 0);
+    rdof_mod_init(&b, 48000, 1234.5, 4.0, 1.0f, 4, 0);
+    static rdof_cf_t junk[100003];
+    rdof_mod_iq(&a, junk, 100003);
+    rdof_mod_skip(&b, 100003);
+    CHECK(a.pos == b.pos && a.phase == b.phase, "skip: pos %lld / %lld, phase %u / %u", (long long)a.pos,
+          (long long)b.pos, (unsigned)a.phase, (unsigned)b.phase);
+    int8_t sym[132] = {0};
+    rdof_mod_queue(&b, 101000, sym, 0, 132, RDOF_MOD_RAMPS);
+    rdof_mod_skip(&b, 102000);
+    CHECK(b.pos == 100003, "skip past a queued burst: at %lld", (long long)b.pos);
+    rdof_mod_free(&a);
+    rdof_mod_free(&b);
+}
+
 /* A repeater's continuous downlink at 288 kS/s: time per second of I/Q (rough, on the host). */
 static void bench(void)
 {
@@ -284,6 +303,7 @@ int main(void)
             round_trip(&v_mods[t], 0.1);
         }
     test_just_in_time();
+    test_skip();
     bench();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

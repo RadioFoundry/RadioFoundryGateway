@@ -995,7 +995,13 @@ static void spectrum_feed(const rdof_cf_t *iq, int n)
         /* a row about every 200 ms: one FFT a chunk, averaged */
         int per_row = (int)lrint(0.2 * g_scfg.sample_rate / CHUNK);
         spec_rows = heap_caps_calloc(SPEC_ROWS, SPEC_BINS, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!spec_rows || rdof_spectrum_init(&spec, SPEC_BINS, per_row)) {
+        /* in PSRAM: once the hot arena is full its FFT plan took 4 KB of internal RAM, which the W12 can't spare */
+        sdr_alloc_cold(true);
+        int bad = !spec_rows || rdof_spectrum_init(&spec, SPEC_BINS, per_row);
+        sdr_alloc_cold(false);
+        if (!bad) /* one FFT a chunk: four took 13% of the DSP's core with the page open (overflows on the W12) */
+            rdof_spectrum_set_ffts(&spec, 1);
+        if (bad) {
             ESP_LOGE(TAG, "no memory for the spectrum");
             spec_failed = true;
             free(spec_rows);
@@ -1311,8 +1317,9 @@ static void dsp_task(void *arg)
             rdof_fe_stats_t u;
             sdr_fe_stats(&u);
             g_sstat.stream_restarts++;
-            snprintf(g_sstat.rtl_error, sizeof g_sstat.rtl_error, "no samples for %d s (%lu USB errors): restarted",
-                     (int)(STALL_US / 1000000), (unsigned long)u.errors);
+            snprintf(g_sstat.rtl_error, sizeof g_sstat.rtl_error, "no samples for %d s (%lu %s errors): restarted",
+                     (int)(STALL_US / 1000000), (unsigned long)u.errors,
+                     g_scfg.frontend == RDOF_FE_LR2021 ? "SPI" : "USB");
             ESP_LOGW(TAG, "%s", g_sstat.rtl_error);
             continue;
         }

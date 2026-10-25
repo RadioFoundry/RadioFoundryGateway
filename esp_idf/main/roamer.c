@@ -49,8 +49,11 @@ bool roamer_mem_claims(void)
             continue;
         char role[12];
         role_name(k, role, sizeof role);
-        const uint8_t stacks = k ? RDOF_MEM_INTERNAL | RDOF_MEM_FALLBACK : RDOF_MEM_INTERNAL;
-        mem_add(role, "roam_t", sizeof(roam_t), 8, k ? RDOF_MEM_PSRAM : RDOF_MEM_INTERNAL, RDOF_MEM_ALLOC);
+        /* an sdr_transceiver's like a second radio's: no UART or USB to keep up with, and the SDR beside it has
+         * the internal RAM (the first's stacks there, 34 KB, left the W12 without Wi-Fi, 2026-10-24) */
+        const bool on_sdr = !strcmp(c->modem_port, "sdr");
+        const uint8_t stacks = k || on_sdr ? RDOF_MEM_INTERNAL | RDOF_MEM_FALLBACK : RDOF_MEM_INTERNAL;
+        mem_add(role, "roam_t", sizeof(roam_t), 8, k || on_sdr ? RDOF_MEM_PSRAM : RDOF_MEM_INTERNAL, RDOF_MEM_ALLOC);
         mem_add_task(role, "radio", 8192, stacks);
         mem_add_task(role, "rx", 8192, stacks);
         mem_add_task(role, "modem_rx", 6144, stacks);
@@ -104,8 +107,9 @@ static void start_one(int k)
     const rdof_config_t *c = g_rcfg[k];
     char role[12];
     role_name(k, role, sizeof role);
+    const bool on_sdr = !strcmp(c->modem_port, "sdr"); /* as roamer_mem_claims plans it */
     roam_t *r = mem_take(role, "roam_t", NULL);
-    if (!r && !k)
+    if (!r && !k && !on_sdr)
         r = heap_caps_calloc(1, sizeof *r, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (!r)
         r = heap_caps_calloc(1, sizeof *r, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -115,7 +119,7 @@ static void start_one(int k)
     }
     r->i = k;
     r->cfg = c;
-    r->psram_stacks = k > 0;
+    r->psram_stacks = k > 0 || on_sdr;
     if (mem_role_state(role) < 0) {
         snprintf(r->st.radio_error, sizeof r->st.radio_error, "not started: memory plan: %.80s", mem_role_why(role));
         ESP_LOGE(TAG, "%s %s", c->name, r->st.radio_error);

@@ -39,6 +39,8 @@ static TaskHandle_t arena_owner; /* NULL: closed */
 /* sdr_hot_count: a dry run measures what the receiver will take, in PSRAM so the internal heap isn't touched */
 static bool counting;
 static size_t counted;
+/* sdr_alloc_cold: what isn't on the receive path (the display spectrum) goes in PSRAM */
+static bool cold;
 
 #define HOT_ALIGN 16 /* the S3's SIMD loads */
 
@@ -73,6 +75,8 @@ void sdr_hot_count(bool on)
 
 size_t sdr_hot_counted(void) { return counted; }
 
+void sdr_alloc_cold(bool on) { cold = on; }
+
 static bool in_arena(const void *p) { return arena && (const uint8_t *)p >= arena && (const uint8_t *)p < arena + arena_cap; }
 
 void *sdr_hot_aligned(size_t align, size_t n, bool zero)
@@ -82,6 +86,12 @@ void *sdr_hot_aligned(size_t align, size_t n, bool zero)
     if (counting) {
         counted += (n + align - 1) / align * align;
         return heap_caps_aligned_calloc(align, 1, n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
+    if (cold) {
+        void *p = heap_caps_aligned_calloc(align, 1, n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (p)
+            g_dsp_psram_bytes += n;
+        return p;
     }
     if (arena && arena_owner && xTaskGetCurrentTaskHandle() == arena_owner) {
         size_t off = (arena_used + align - 1) / align * align;
@@ -114,7 +124,7 @@ static void *fast_alloc(size_t n)
     void *p = NULL;
     if (counting)
         return heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL) > n + (size_t)CONFIG_RDOF_SDR_INTERNAL_RESERVE_KB * 1024)
+    if (!cold && heap_caps_get_free_size(MALLOC_CAP_INTERNAL) > n + (size_t)CONFIG_RDOF_SDR_INTERNAL_RESERVE_KB * 1024)
         p = heap_caps_malloc(n, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (p) {
         g_dsp_internal_bytes += n;

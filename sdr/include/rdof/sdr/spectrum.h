@@ -28,6 +28,8 @@ typedef struct {
     int per_row;         /* chunks averaged into a row */
     int count;           /* chunks in acc so far */
     int ffts;            /* FFTs in acc so far */
+    int max_ffts;        /* FFTs a chunk at most: RDOF_SPECTRUM_FFTS, or fewer (rdof_spectrum_set_ffts) */
+    uint32_t turn;       /* fewer FFTs than fit: where the next one starts, turning through the chunk */
     rdof_fft_t *fft;
     float *win;          /* Hann window */
     float norm;          /* 1 / (sum of the window)^2: a full scale tone reads 1 */
@@ -38,8 +40,11 @@ typedef struct {
 /* 0, or -1 if n isn't an FFT size or out of memory. Buffers come from the SDR allocator (rdof_sdr_set_allocator). */
 int rdof_spectrum_init(rdof_spectrum_t *s, int n, int per_row);
 void rdof_spectrum_free(rdof_spectrum_t *s);
-/* Takes FFTs of n samples spread evenly over iq, as many as fit up to RDOF_SPECTRUM_FFTS (len < n: one, zero
- * padded). true when a row is done: its n bytes are in row and the average starts over. */
+/* At most k FFTs a chunk (1 to RDOF_SPECTRUM_FFTS), for a DSP with little time to spare. Below what fits, each
+ * chunk's FFTs start further along than the last chunk's, so a pulsed signal is still sampled evenly over a row. */
+void rdof_spectrum_set_ffts(rdof_spectrum_t *s, int k);
+/* Takes FFTs of n samples spread evenly over iq, as many as fit up to the cap (len < n: one, zero padded). true
+ * when a row is done: its n bytes are in row and the average starts over. */
 bool rdof_spectrum_feed(rdof_spectrum_t *s, const rdof_cf_t *iq, int len, uint8_t *row);
 
 #ifdef __cplusplus

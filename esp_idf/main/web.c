@@ -114,6 +114,7 @@ static esp_err_t get_status(httpd_req_t *req)
     rdof_json_str(&j, "idf", app->idf_ver);
     rdof_json_int(&j, "uptime_s", esp_timer_get_time() / 1000000);
     rdof_json_str(&j, "reset", reset_name(esp_reset_reason()));
+    rdof_json_bool(&j, "safe_mode", g_board.safe_mode);
     crash_status_json(&j); /* the core dump in flash, if any (crash.c) */
     rdof_json_int(&j, "heap_free", (long long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     rdof_json_int(&j, "psram_free", (long long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));

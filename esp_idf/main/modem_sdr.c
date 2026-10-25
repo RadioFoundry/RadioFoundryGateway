@@ -95,8 +95,8 @@ static bool io_tx_tune(void *ctx, uint32_t hz, double *off)
         *off = (double)hz - center;
         return fabs(*off) <= rate * c->usable / 2;
     }
-    *off = 0; /* a chip that tunes its own transmitter (not yet: none does) */
-    return false;
+    *off = 0; /* a chip that tunes its own transmitter: the samples are the deviation only */
+    return c->tx_mode == RDOF_FE_TX_FREQ && fe.ops->tx_tune && fe.ops->tx_tune(fe.ctx, hz) == 0;
 }
 
 /* Why the front end can't be this modem's transmitter (NULL: it can). Fills fe, rate, center. */
@@ -105,7 +105,8 @@ static const char *frontend_why(void)
     if (!sdr_tx_frontend(&fe, &rate, &center))
         return "the SDR isn't receiving yet";
     const rdof_fe_caps_t *c = fe.caps;
-    if (c->duplex == RDOF_FE_RX_ONLY || c->tx_mode != RDOF_FE_TX_IQ || !fe.ops->tx_set)
+    const bool modulates = c->tx_mode == RDOF_FE_TX_IQ || (c->tx_mode == RDOF_FE_TX_FREQ && fe.ops->tx_tune);
+    if (c->duplex == RDOF_FE_RX_ONLY || !modulates || !fe.ops->tx_set)
         return "the SDR's front end can't transmit";
     return NULL;
 }

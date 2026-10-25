@@ -917,6 +917,16 @@ static void test_spectrum(void)
     CHECK(rdof_spectrum_feed(&s, y, 8 * N, row), "a row a chunk");
     CHECK(row[N / 2 + 64] == 46, "half-time burst: %d (want 46: -20 dBFS, -3 dB)", row[N / 2 + 64]);
     rdof_spectrum_free(&s);
+    /* one FFT a chunk (the board's setting): its start turns through the chunk, so over 40 chunks it sees the burst
+     * about half the time too (within 1.5 dB of -3) */
+    CHECK(rdof_spectrum_init(&s, N, 40) == 0, "spectrum init");
+    rdof_spectrum_set_ffts(&s, 1);
+    bool done = false;
+    for (int c = 0; c < 40; c++)
+        done = rdof_spectrum_feed(&s, y, 8 * N, row);
+    CHECK(done && s.ffts == 0 && abs(row[N / 2 + 64] - 46) <= 3, "one FFT a chunk, half-time burst: %d (want 46 +- 3)",
+          row[N / 2 + 64]);
+    rdof_spectrum_free(&s);
     printf("  spectrum: a -20 dBFS tone at bin %d reads %.1f dBFS; on half the chunk, %.1f\n", peak, -level / 2.0,
            -row[N / 2 + 64] / 2.0);
 }

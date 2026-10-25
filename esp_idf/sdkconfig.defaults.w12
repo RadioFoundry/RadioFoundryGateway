@@ -17,8 +17,8 @@ CONFIG_GNSS_UART_TX_GPIO=38
 CONFIG_RDOF_SDR_LR2021=y
 # USB host off while the LR2021 is brought up: the USB port stays the serial console and flashing port
 # CONFIG_RDOF_USB_HOST is not set
-# The log on the USB serial port too
-CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y
+# No log on the USB serial port: with nothing reading it, writes stall and the SDR's ring overflows (2026-10-24:
+# about 150 KB/s of 768 KB/s lost and 6 KB less internal RAM). UART0 still has the log; turn it on for a session.
 # FreeRTOS run-time stats: the LR2021 reader logs its share of core 0 every minute
 CONFIG_FREERTOS_USE_TRACE_FACILITY=y
 CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
@@ -29,3 +29,6 @@ CONFIG_RDOF_OLED_SDA=17
 CONFIG_RDOF_OLED_SCL=18
 CONFIG_RDOF_OLED_POWER_GPIO=45
 CONFIG_RDOF_OLED_POWER_LEVEL=0
+# A 1 MB sample ring (1.4 s at 384 kS/s): the DSP's hot buffers are in PSRAM here (no internal RAM for them), and
+# core 0's traffic (the web page, MQTT during a call) slows it for a second at a time; 256 KB overflowed then.
+CONFIG_RDOF_SDR_RING_KB=1024
