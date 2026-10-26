@@ -600,6 +600,9 @@ static void ch_burst(ch_t *c, uint8_t control, const uint8_t *burst)
     c->t += 0.06;
 }
 
+/* t_chain's own: g_open counts opens in an md_t, and its ctx is a ch_t */
+static bool ch_open(void *ctx, int flow) { return true; }
+
 static void t_chain(void)
 {
     for (int lose = 0; lose < 2; lose++) {
@@ -615,7 +618,7 @@ static void t_chain(void)
         char err[160];
         CHECK(rdof_ipgw_settings_parse(json, strlen(json), &cfg, err, sizeof err), "settings: %s", err);
         rdof_ipgw_init(&c.g, &cfg);
-        c.g.open = g_open;
+        c.g.open = ch_open;
         c.g.send_udp = ch_send;
         c.g.ctx = &c;
         uint8_t pre[2][RDOF_BURST_BYTES];
