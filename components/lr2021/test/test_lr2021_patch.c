@@ -7,8 +7,9 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "esp_shim.h"
+#include "mock_hal.h"
 #include "lr2021.h"
+#include "lr2021_patch.h"
 
 static int checks, fails;
 
@@ -165,7 +166,7 @@ static lr2021_t *open_dev(void)
     memset(&M, 0, sizeof M);
     M.prev = LR2021_CMD_OK;
     F.respond = respond;
-    lr2021_config_t c = {.spi_host = 1, .sck = 1, .mosi = 2, .miso = 3, .nss = 4, .busy = 5, .nreset = 6, .irq = -1};
+    lr2021_config_t c = mock_config();
     lr2021_t *d = NULL;
     lr2021_open(&c, &d);
     return d;
@@ -183,30 +184,30 @@ int main(void)
     // a load: every word in place, in frames of 32 words at most, then EnablePram, and the info reads back
     lr2021_t *d = open_dev();
     lr2021_patch_info_t info;
-    CHECK(lr2021_patch_info(d, &info) == ESP_OK && !info.loaded, "none before");
-    esp_err_t e = lr2021_patch_load(d, NULL, 0);
-    CHECK(e == ESP_OK, "load: %d", e);
+    CHECK(lr2021_patch_info(d, &info) == LR2021_OK && !info.loaded, "none before");
+    lr2021_err_t e = lr2021_patch_load(d, NULL, 0);
+    CHECK(e == LR2021_OK, "load: %d", e);
     CHECK(!memcmp(M.pram, lr2021_patch_image, sizeof lr2021_patch_image), "image in place");
     CHECK(M.writes == 18 && M.max_words == 32 && M.enables == 1 && M.standbys == 1, "writes %d max %d enables %d",
           M.writes, M.max_words, M.enables);
-    CHECK(lr2021_patch_info(d, &info) == ESP_OK && info.loaded && info.type == 3 && info.version == 0x13, "info after");
+    CHECK(lr2021_patch_info(d, &info) == LR2021_OK && info.loaded && info.type == 3 && info.version == 0x13, "info after");
 
     // a second load is refused: only a reset removes the first
     int w = M.writes;
-    CHECK(lr2021_patch_load(d, NULL, 0) == ESP_ERR_INVALID_STATE && M.writes == w, "second load");
+    CHECK(lr2021_patch_load(d, NULL, 0) == LR2021_ERR_INVALID_STATE && M.writes == w, "second load");
     lr2021_close(d);
 
     // enabled but not running: the magic never shows up
     d = open_dev();
     M.broken = true;
-    CHECK(lr2021_patch_load(d, NULL, 0) == ESP_ERR_INVALID_RESPONSE, "not started");
+    CHECK(lr2021_patch_load(d, NULL, 0) == LR2021_ERR_INVALID_RESPONSE, "not started");
     lr2021_close(d);
 
     // a caller's own image (a short one: one frame)
     d = open_dev();
     static const uint32_t mine[5] = {LR2021_PATCH_MAGIC, 0x00070100, 1, 2, 3};
-    CHECK(lr2021_patch_load(d, mine, 5) == ESP_OK && M.writes == 1 && M.pram[4] == 3, "own image");
-    CHECK(lr2021_patch_info(d, &info) == ESP_OK && info.type == 7 && info.version == 1, "own info");
+    CHECK(lr2021_patch_load(d, mine, 5) == LR2021_OK && M.writes == 1 && M.pram[4] == 3, "own image");
+    CHECK(lr2021_patch_info(d, &info) == LR2021_OK && info.type == 7 && info.version == 1, "own info");
     lr2021_close(d);
 
     // our patch's frames
@@ -237,42 +238,42 @@ int main(void)
     M.st.magic = LR2021_RDOF_STATE_MAGIC, M.st.count = 5, M.st.enabled = 1, M.st.rf_runs = 7; /* an old table */
     memset(&r, 0, sizeof r);
     e = lr2021_patch_load_rdof(d, &r);
-    CHECK(e == ESP_OK && M.rdof, "rdof load: %d", e);
+    CHECK(e == LR2021_OK && M.rdof, "rdof load: %d", e);
     CHECK(!memcmp(M.pram, lr2021_rdof_pram_image, 4 * lr2021_rdof_pram_words) && M.enables == 1, "ours in bank 1");
     CHECK(r.version == LR2021_RDOF_VERSION && r.count == 0 && !r.enabled && r.rf_runs == 0 && r.cmds == 1,
           "first state %08x %u %d %u", (unsigned)r.version, r.count, r.enabled, (unsigned)r.cmds);
-    CHECK(lr2021_patch_info(d, &info) == ESP_OK && info.loaded && info.type == LR2021_RDOF_TYPE, "our info");
-    CHECK(lr2021_patch_load_rdof(d, NULL) == ESP_ERR_INVALID_STATE, "second rdof load");
+    CHECK(lr2021_patch_info(d, &info) == LR2021_OK && info.loaded && info.type == LR2021_RDOF_TYPE, "our info");
+    CHECK(lr2021_patch_load_rdof(d, NULL) == LR2021_ERR_INVALID_STATE, "second rdof load");
 
     // a table of 23 entries: clear, three appends of 10, 10 and 3, enable; read back both ways
     lr2021_rdof_entry_t tab[23];
     for (int i = 0; i < 23; i++)
         tab[i] = (lr2021_rdof_entry_t){0xF30C00 + 4 * (uint32_t)(i % 16), (uint32_t)i, (uint32_t)i * 3};
     int a0 = M.appends;
-    CHECK(lr2021_rdof_set(d, tab, 23, true) == ESP_OK && M.appends - a0 == 3 && M.st.count == 23 && M.st.enabled,
+    CHECK(lr2021_rdof_set(d, tab, 23, true) == LR2021_OK && M.appends - a0 == 3 && M.st.count == 23 && M.st.enabled,
           "set 23");
     CHECK(!memcmp(M.st.table, tab, sizeof tab), "table in order");
     M.st.sync_runs = 4, M.st.samp_runs = 2;
-    CHECK(lr2021_rdof_report(d, &r) == ESP_OK && r.count == 23 && r.enabled && r.sync_runs == 4 && r.samp_runs == 2,
+    CHECK(lr2021_rdof_report(d, &r) == LR2021_OK && r.count == 23 && r.enabled && r.sync_runs == 4 && r.samp_runs == 2,
           "report 23");
-    CHECK(lr2021_rdof_state(d, &r) == ESP_OK && r.count == 23 && r.enabled && r.sync_runs == 4 && r.cmds == 7,
+    CHECK(lr2021_rdof_state(d, &r) == LR2021_OK && r.count == 23 && r.enabled && r.sync_runs == 4 && r.cmds == 7,
           "state 23: cmds %u", (unsigned)r.cmds);
-    CHECK(lr2021_rdof_enable(d, false) == ESP_OK && !M.st.enabled, "disable");
-    CHECK(lr2021_rdof_set(d, NULL, 0, false) == ESP_OK && M.st.count == 0 && M.st.sync_runs == 4, "clear keeps the counts");
-    CHECK(lr2021_rdof_set(d, tab, LR2021_RDOF_MAX_ENTRIES + 1, false) == ESP_ERR_INVALID_ARG, "too many");
+    CHECK(lr2021_rdof_enable(d, false) == LR2021_OK && !M.st.enabled, "disable");
+    CHECK(lr2021_rdof_set(d, NULL, 0, false) == LR2021_OK && M.st.count == 0 && M.st.sync_runs == 4, "clear keeps the counts");
+    CHECK(lr2021_rdof_set(d, tab, LR2021_RDOF_MAX_ENTRIES + 1, false) == LR2021_ERR_INVALID_ARG, "too many");
     // a bad address is refused by the chip, and nothing of that append is kept
     const lr2021_rdof_entry_t bad[2] = {{0xF30C14, 0x7F, 1}, {0x100000, 0, 0}};
-    CHECK(lr2021_rdof_set(d, bad, 2, false) != ESP_OK && M.st.count == 0 && M.last_status == LR2021_CMD_PERR,
+    CHECK(lr2021_rdof_set(d, bad, 2, false) != LR2021_OK && M.st.count == 0 && M.last_status == LR2021_CMD_PERR,
           "bad address");
     lr2021_close(d);
 
     // DMR 4-FSK reception: the frames in order, then the BS table, enabled
     d = open_dev();
-    CHECK(lr2021_fsk4_dmr_rx(d, LR2021_DMR_BS) == ESP_ERR_INVALID_STATE, "dmr rx without ours");
-    CHECK(lr2021_patch_load_rdof(d, NULL) == ESP_OK, "rdof for dmr");
-    CHECK(lr2021_fsk4_dmr_rx(d, 2) == ESP_ERR_INVALID_ARG, "dmr rx bad family");
+    CHECK(lr2021_fsk4_dmr_rx(d, LR2021_DMR_BS) == LR2021_ERR_INVALID_STATE, "dmr rx without ours");
+    CHECK(lr2021_patch_load_rdof(d, NULL) == LR2021_OK, "rdof for dmr");
+    CHECK(lr2021_fsk4_dmr_rx(d, 2) == LR2021_ERR_INVALID_ARG, "dmr rx bad family");
     M.nops = 0;
-    CHECK(lr2021_fsk4_dmr_rx(d, LR2021_DMR_BS) == ESP_OK, "dmr rx bs");
+    CHECK(lr2021_fsk4_dmr_rx(d, LR2021_DMR_BS) == LR2021_OK, "dmr rx bs");
     {
         static const uint16_t want[] = {0x0207, LR2021_SET_FSK_VARIANT, 0x0240, 0x0241, 0x0244, LR2021_SET_FSK_DEMOD_OPT,
                                         0x02F0, 0x02F0, 0x02F0};
@@ -295,14 +296,14 @@ int main(void)
 
     // Semtech's image running: ours isn't loaded over it
     d = open_dev();
-    CHECK(lr2021_patch_load(d, NULL, 0) == ESP_OK && lr2021_patch_load_rdof(d, NULL) == ESP_ERR_INVALID_STATE && !M.rdof,
+    CHECK(lr2021_patch_load(d, NULL, 0) == LR2021_OK && lr2021_patch_load_rdof(d, NULL) == LR2021_ERR_INVALID_STATE && !M.rdof,
           "rdof over semtech");
     lr2021_close(d);
 
     // not started: the marker never shows up
     d = open_dev();
     M.broken = true;
-    CHECK(lr2021_patch_load_rdof(d, NULL) == ESP_ERR_INVALID_RESPONSE && !M.rdof, "rdof not started");
+    CHECK(lr2021_patch_load_rdof(d, NULL) == LR2021_ERR_INVALID_RESPONSE && !M.rdof, "rdof not started");
     lr2021_close(d);
 
     // state words: no magic, no state

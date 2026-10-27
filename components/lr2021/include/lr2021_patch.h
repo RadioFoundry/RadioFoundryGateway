@@ -14,6 +14,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "lr2021.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -106,6 +108,32 @@ size_t lr2021_rdof_append(uint8_t *buf, const lr2021_rdof_entry_t *entries, int 
 bool lr2021_rdof_parse_report(const uint8_t *b, size_t n, lr2021_rdof_report_t *out);
 /* The state words read at LR2021_RDOF_STATE_ADDR; false if the magic isn't there. */
 bool lr2021_rdof_parse_state(const uint32_t w[LR2021_RDOF_STATE_WORDS], lr2021_rdof_report_t *out);
+
+/* ── Semtech's patch RAM (lr2021_patch.h, src/lr2021_patch_load.c) ── */
+
+/* Whether a patch runs, and its type and version. */
+lr2021_err_t lr2021_patch_info(lr2021_t *dev, lr2021_patch_info_t *info);
+/* Load a patch and run it: image NULL for Semtech's (lr2021_patch_image). In standby, after the chip's setup
+ * (TCXO, calibration). LR2021_ERR_INVALID_STATE if one runs already; LR2021_ERR_INVALID_RESPONSE if it didn't start. The
+ * raw I/Q paths are refused while it runs; a reset removes it. */
+lr2021_err_t lr2021_patch_load(lr2021_t *dev, const uint32_t *image, size_t words);
+/* Our patch image in place of Semtech's (pram/README.md): load, EnablePram 0, check the marker's type, empty the
+ * override table, read the state. rep (may be NULL): that state. LR2021_ERR_INVALID_STATE if a patch runs already;
+ * LR2021_ERR_INVALID_RESPONSE if ours didn't start or its state doesn't read back. */
+lr2021_err_t lr2021_patch_load_rdof(lr2021_t *dev, lr2021_rdof_report_t *rep);
+/* Our patch's state, read directly from bank 2 (ReadRegMem32), or through its report command. */
+lr2021_err_t lr2021_rdof_state(lr2021_t *dev, lr2021_rdof_report_t *rep);
+lr2021_err_t lr2021_rdof_report(lr2021_t *dev, lr2021_rdof_report_t *rep);
+/* Replace the override table with n entries (0 to LR2021_RDOF_MAX_ENTRIES), applied in order; enable: apply it now
+ * and from now on. */
+lr2021_err_t lr2021_rdof_set(lr2021_t *dev, const lr2021_rdof_entry_t *entries, int n, bool enable);
+lr2021_err_t lr2021_rdof_enable(lr2021_t *dev, bool on);
+/* DMR 4-FSK reception with our patch running (lr2021_patch.h, spec R3.40), from standby with the frequency set:
+ * SetPacketType FSK, the 4-FSK variant (before the modulation: the setter reads it), 9600 b/s, Gaussian BT 0.5,
+ * rx_bw 0x1E, fdev 1944 Hz, fixed LR2021_DMR_RX_LEN-byte packets with no preamble detector, CRC or whitening, the
+ * family's data sync word, 0x022F LR2021_DMR_RX_DEMOD_OPT, then the override table, enabled. Then SetRx; each burst of the family gives RX_DONE.
+ * LR2021_ERR_INVALID_STATE if our patch isn't running; LR2021_ERR_INVALID_ARG for a bad family. */
+lr2021_err_t lr2021_fsk4_dmr_rx(lr2021_t *dev, int family);
 
 #ifdef __cplusplus
 }

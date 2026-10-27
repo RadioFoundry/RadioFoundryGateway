@@ -1,11 +1,17 @@
 # lr2021
 
-A Semtech LR2021 transceiver on an ESP32's SPI bus, for any ESP-IDF project: reset, the BUSY handshake, command
-and response frames, the FIFOs, and the command encodings. Nothing specific to the gateway app.
+A Semtech LR2021 transceiver on SPI, for any ESP-IDF project (and Linux, macOS and the host tests): reset, the BUSY
+handshake, command and response frames, the FIFOs, the command encodings, and the chip as an SDR (a raw I/Q receive
+session and sample transmit, `lr2021_iq.h`). Nothing specific to the gateway app: the pins come through a HAL
+(`lr2021_hal.h`), the clock and waits through a port (`lr2021_port.h`).
 
-Status (2026-10-24): runs on the Meshnology W12 (ROM 1.24): raw I/Q receive, and every transmit mode in
+Status (2026-10-27): runs on the Meshnology W12 (ROM 1.24): raw I/Q receive, and every transmit mode in
 `lr2021_tx.h` checked on air at 920 MHz with an SDR (a DMR call decoded with no bit errors by frequency samples and
 by the 4-FSK modem; a carrier and its live retune; phase steps; polar and phase-only I/Q).
+
+The same code is SoapyLR20xx's `lib/` (github.com/RadioFoundry/SoapyLR20xx), renamed `lr20xx`: every file but this
+README, `CMakeLists.txt` and the gateway's own (the patch RAM files, `pram/`, `lr2021_lora_extra.*`) is the same
+there but for the rename, so a change on either side carries over (that project's `tools/upstream/`).
 
 References: Semtech LR2021/LR2022/LR2012 datasheet, DS.LR20xx Rev. 2.2 (29 Jul 2026), cited below as "DS" with
 its section or table. The raw I/Q commands are undocumented by Semtech; their facts are in
@@ -14,44 +20,56 @@ its section or table. The raw I/Q commands are undocumented by Semtech; their fa
 | File | What |
 |---|---|
 | `include/lr2021_cmd.h`, `src/lr2021_cmd.c` | opcodes, frame builders, the status word, error names; portable C, no I/O |
-| `include/lr2021.h`, `src/lr2021.c` | the ESP-IDF SPI master driver |
+| `include/lr2021.h`, `src/lr2021.c` | the driver over the HAL: reset, BUSY, command and answer frames, the FIFOs |
+| `include/lr2021_hal.h`, `include/lr2021_hal_esp_idf.h`, `hal/esp_idf.c` | the pins: ESP-IDF's SPI master with DMA, BUSY and NRESET GPIOs, the IRQ pin's edge interrupt |
+| `include/lr2021_hal_linux.h`, `hal/linux.c` | the pins on Linux: spidev and the GPIO character device |
+| `include/lr2021_port.h`, `port/esp_idf.c`, `port/posix.c` | error codes (ESP-IDF's values), the clock, waits; on ESP-IDF a sleep under a tick by a one-shot timer |
+| `include/lr2021_iq.h`, `src/lr2021_iq.c`, `src/lr2021_iq_plan.c` | the chip as an SDR: modes and rates, the receive session and its reader, a transmission with the receiver paused |
+| `include/lr2021_board.h`, `src/lr2021_board.c` | the board around the chip (clock, RF switch, IRQ DIO, range): `lr2021_board_w12` and a text form |
+| `include/lr2021_chips.h`, `src/lr2021_chips.c` | the ROMs the raw paths are known on |
+| `linker.lf` | the receive and transmit paths in IRAM (6.7 KB): the reader 30% of core 0 on the W12 at 384 kS/s, 36% without |
 | `include/lr2021_tx.h`, `src/lr2021_tx.c` | the transmit modes: setup sequences, sample formats, polar I/Q conditioning; portable, no I/O |
-| `src/lr2021_tx_stream.c` | `lr2021_tx_stream`: feeds the TX FIFO from a callback and chains runs |
+| `src/lr2021_tx_stream.c` | `lr2021_tx_stream`: feeds the TX FIFO from a callback and chains runs (on the IRQ pin, the next SetTx just ahead of TX_DONE), a timed key-up |
 | `src/lr2021_packet.c` | `lr2021_packet_send` / `_receive`: one packet with the chip's modems |
 | `include/lr2021_patch.h`, `src/lr2021_patch.c`, `src/lr2021_patch_image.c` | Semtech's patch RAM image (Clear BSD) and its info words; our patch's command frames and the DMR 4-FSK RX table; portable |
 | `pram/`, `src/lr2021_rdof_pram_image.c` | our own patch RAM image: its source, build script and README, and the generated image |
 | `src/lr2021_patch_load.c` | `lr2021_patch_load` / `_info`: load a patch into the chip and start it; ours, its override table, DMR 4-FSK RX |
 | `include/lr2021_radio.h`, `src/lr2021_radio.c` | system and common radio commands: sleep, standby, FS, calibration, clocks, temperature, battery, random numbers, RSSI and its calibration, CAD, CCA, duty-cycled RX, timestamps, the IRQ table |
 | `include/lr2021_lora.h`, `src/lr2021_lora.c` | LoRa (all the modulation, packet, sync word, CAD, side detector and hopping commands, packet status, time on air), LR-FHSS, ranging (RTToF) |
+| `include/lr2021_lora_extra.h`, `src/lr2021_lora_extra.c` | the gateway's own: LoRa's 10-bit sync word commands and a ranging delay table (not in the datasheet) |
 | `include/lr2021_fsk.h`, `src/lr2021_fsk.c` | (G)FSK, OOK, FLRC, BPSK TX: modulation, packet, sync words, CRC, whitening, addresses, packet status, time on air |
 | `include/lr2021_proto.h`, `src/lr2021_proto.c` | the standard-protocol modems: Bluetooth LE, IEEE 802.15.4 O-QPSK, Z-Wave, Wireless M-Bus, Wi-SUN |
 | `test/test_lr2021.c` | host tests of the encodings |
-| `test/test_lr2021_driver.c`, `test/esp_shim/` | host tests of the driver (`src/lr2021.c`) over a shim of the few ESP-IDF calls it makes and a scripted chip |
+| `test/test_lr2021_driver.c`, `test/mock_hal.*` | host tests of the driver (`src/lr2021.c`) over a mock HAL, a fake clock and a scripted chip |
 | `test/test_lr2021_tx.c` | host tests of the transmit setups and sample helpers |
-| `test/test_lr2021_tx_stream.c` | host tests of `lr2021_tx_stream` over the shim and a model of the TX FIFO |
-| `test/test_lr2021_packet.c` | host tests of the packet calls over the shim and a model of a packet modem |
-| `test/test_lr2021_patch.c` | host tests of the patch loader over the shim and a chip model with memory |
+| `test/test_lr2021_tx_stream.c` | host tests of `lr2021_tx_stream` over the mock and a model of the TX FIFO |
+| `test/test_lr2021_iq.c` | host tests of the session (setup, reader, losses, gain) and a transmission over a model of the chip |
+| `test/test_lr2021_packet.c` | host tests of the packet calls over the mock and a model of a packet modem |
+| `test/test_lr2021_patch.c` | host tests of the patch loader over the mock and a chip model with memory |
+| `test/test_lr2021_chips.c`, `test/test_lr2021_hal_linux.c`, `test/test_lr2021_lora_extra.c` | the ROM table and boards, the Linux HAL's arguments (Linux only), the LoRa extras |
 | `test/test_lr2021_{radio,lora,fsk,proto}.c` | host tests of the documented commands: every frame byte for byte, every answer parser, time on air |
 
-No Kconfig options. CMake: an ESP-IDF component when `ESP_PLATFORM` is set (`PRIV_REQUIRES esp_driver_spi
-esp_driver_gpio esp_timer`); otherwise the static library `lr2021_portable` (every builder: `lr2021_cmd.c`, `lr2021_tx.c`, `lr2021_radio.c`,
-`lr2021_lora.c`, `lr2021_fsk.c`, `lr2021_proto.c`; links `m`).
+No Kconfig options; `CONFIG_ESP_TIMER_SUPPORTS_ISR_DISPATCH_METHOD` lets the port's sleep under a tick wake from the
+timer's ISR (else from esp_timer's task). CMake: an ESP-IDF component when `ESP_PLATFORM` is set (`PRIV_REQUIRES
+esp_driver_spi esp_driver_gpio esp_timer`, `linker.lf`); otherwise static libraries: `lr2021_portable` (the
+encodings, no I/O; links `m`), `lr2021_driver` (the driver, no port or HAL: the tests link the mock) and `lr2021`
+(the driver, the POSIX port and on Linux the spidev HAL). `LR2021_TESTS` adds the tests.
 
 ## SPI link
 
 | Item | Value | Source |
 |---|---|---|
-| SPI mode | 0 (CPOL 0, CPHA 0), MSB first | `src/lr2021.c:lr2021_open` |
-| Clock | `cfg.clock_hz`; ≤ 0 or > 16 MHz becomes 16 MHz | DS 3.7.2; `lr2021_open` |
-| NSS | driven by the SPI peripheral, `cs_ena_pretrans = 1` | `lr2021_open` |
+| SPI mode | 0 (CPOL 0, CPHA 0), MSB first | `hal/esp_idf.c:add_device` |
+| Clock | `clock_hz`; ≤ 0 or > 16 MHz becomes 16 MHz | DS 3.7.2; `lr2021_hal_esp_open` |
+| NSS | driven by the SPI peripheral, `cs_ena_pretrans = 1` | `add_device` |
 | BUSY | GPIO input; polled before **every** frame | DS 5.2; `src/lr2021.c:wait_busy` |
 | BUSY timeout | 200 ms (`src/lr2021.c:BUSY_TIMEOUT_US` = 200000) → `ESP_ERR_TIMEOUT` | |
-| BUSY poll | 5 µs busy-wait for the first 2 ms, then 1 RTOS tick per poll | `wait_busy` |
-| NRESET | GPIO output, high when idle | `lr2021_open` |
+| BUSY poll | 1 µs busy-wait for the first 50 µs, 5 µs to 2 ms, then 1 RTOS tick per poll (most commands hold BUSY a few µs: 5 µs steps added half of that again to every frame, IQ R2.34) | `wait_busy` |
+| NRESET | GPIO output, high when idle | `lr2021_hal_esp_open` |
 | Largest frame | commands and reads 260 bytes (`src/lr2021.c:MAX_FRAME`); FIFO transfers 1026 bytes (`MAX_FIFO_FRAME`: a 1 KB FIFO transfer, the extended FIFO, plus 2 status bytes). The bus's `max_transfer_sz` is 1026 | |
-| Transfer | full duplex, one frame per NSS low; frames shorter than 32 bytes (`DMA_MIN`) by `spi_device_polling_transmit`, longer ones by `spi_device_transmit` (the task sleeps while the DMA moves them) | `src/lr2021.c:xfer_rx` |
+| Transfer | full duplex, one frame per NSS low; frames shorter than 32 bytes (`DMA_MIN`) by `spi_device_polling_transmit`, longer ones by `spi_device_transmit` (the task sleeps while the DMA moves them) | `hal/esp_idf.c:xfer` |
 | Received bytes | only what the call needs, rounded up to 4 within the frame; none (`rx_buffer` NULL) when only the write matters (see DMA alignment) | `xfer_rx` |
-| IRQ pin | `cfg.irq` ≥ 0: a GPIO interrupt on the rising edge; `lr2021_wait_irq` sleeps on it | `lr2021_wait_irq` |
+| IRQ pin | `irq` ≥ 0: a GPIO interrupt on the rising edge; `lr2021_wait_irq` sleeps on it, `lr2021_irq_pin` reads its level | `hal/esp_idf.c:wait_irq` |
 
 At 16 MHz a 258-byte FIFO read is about 130 µs on the wire, plus ESP-IDF's transaction overhead.
 
@@ -69,7 +87,7 @@ internal DMA bounce buffer for that transaction, and on IDF 5.5 a failed allocat
 - A FIFO read of n bytes is an n + 2 byte frame: keep n + 2 a multiple of 4 (n − 2 for n a multiple of 4) and there
   is no bounce.
 - What can't be rounded (the IRQ word, register reads, a FIFO read of another length) still bounces. Each one counts
-  in `lr2021_bounces`, and while the largest internal DMA block is under the transfer plus 64 bytes the transfer is
+  in `lr2021_hal_esp_bounces`, and while the largest internal DMA block is under the transfer plus 64 bytes the transfer is
   refused (`ESP_ERR_NO_MEM`, "no internal DMA memory for an unaligned transfer") instead of letting the IDF fail.
 
 ### Frames
@@ -105,32 +123,42 @@ Each frame waits for BUSY low first; a failure at any step returns at once.
 
 ### Reset
 
-`lr2021_reset`: NRESET low for 2 ms (`pdMS_TO_TICKS(2)`, at least 1 tick; DS 4.2 asks ≥ 100 µs), high, wait 1
-tick, then wait for BUSY low (boot and calibration), 200 ms at most.
+`lr2021_reset`: NRESET low for 2 ms (`lr2021_sleep_ms(2)`, at least 1 tick; DS 4.2 asks ≥ 100 µs), high, wait 1
+ms, then wait for BUSY low (boot and calibration), 200 ms at most.
 
 ## API: driver (`include/lr2021.h`)
 
 Thread safety: none. A handle owns one TX and one RX buffer; serialize all calls on a handle. Several handles may
-share a bus (`bus_initialized`), and ESP-IDF serializes the bus between devices. Every failure sets the text
+share a bus (the ESP-IDF HAL's `bus_initialized`), and ESP-IDF serializes the bus between devices. Every failure sets the text
 `lr2021_last_error` returns and counts in `lr2021_failures` (except `ESP_ERR_INVALID_SIZE` and `lr2021_open`'s
 own errors).
 
 ```c
 typedef struct {
+    lr2021_hal_t hal;      /* the pins: lr2021_hal_esp_open (ESP-IDF), lr2021_hal_linux_open, or a test's mock */
+    void *mem;             /* lr2021_handle_size() bytes aligned to 4 (on an ESP32 internal DMA RAM), kept until close; NULL: allocated */
+} lr2021_config_t;
+
+typedef struct {           /* lr2021_hal_esp_idf.h */
     int spi_host;          /* SPI2_HOST or SPI3_HOST */
     int sck, mosi, miso, nss, busy, nreset;
     int irq;               /* the GPIO a DIO with IRQs drives, -1 for none */
+    int pa_en;             /* a GPIO driven high while open (a front-end supply), -1 for none */
     int clock_hz;          /* 16 MHz at most */
     bool bus_initialized;  /* the app set up the bus already (shared) */
-    void *mem;             /* lr2021_handle_size() bytes of internal DMA RAM aligned to 4, kept until close; NULL: allocated */
-} lr2021_config_t;
+} lr2021_esp_cfg_t;
 ```
+
+Errors are `lr2021_err_t` (`lr2021_port.h`): ESP-IDF's codes and values under the component's names
+(`LR2021_ERR_TIMEOUT` is `ESP_ERR_TIMEOUT`), so on ESP-IDF they compare and print as `esp_err_t`. The table below
+writes them as ESP-IDF's.
 
 | Function | Behavior | Errors |
 |---|---|---|
 | `size_t lr2021_handle_size(void)` | Bytes a handle takes (its 1 KB TX and RX frames among them), for `cfg.mem` | – |
-| `esp_err_t lr2021_open(const lr2021_config_t *, lr2021_t **out)` | Uses `cfg.mem` for the handle, else allocates it in internal DMA-capable RAM; configures BUSY (in) and NRESET (out, high), the IRQ pin if any, initializes the bus unless `bus_initialized` (DMA auto, `max_transfer_sz` 1026), adds the device, resets | `ESP_ERR_INVALID_ARG` (`cfg.mem` not aligned to 4); `ESP_ERR_NO_MEM`; SPI driver errors; `ESP_ERR_TIMEOUT` from reset. On error nothing it allocated stays (the caller's `cfg.mem` is the caller's): the device is removed and the bus freed if this call initialized it (a `bus_initialized` bus is left alone) |
-| `void lr2021_close(lr2021_t *)` | NRESET low (chip held in reset), removes the device, frees the bus unless `bus_initialized`, frees the handle unless it was `cfg.mem`. NULL is a no-op | – |
+| `esp_err_t lr2021_hal_esp_open(const lr2021_esp_cfg_t *, lr2021_hal_t *)` | Configures BUSY (in), NRESET (out, high), `pa_en` (out, high) and the IRQ pin if any, initializes the bus unless `bus_initialized` (DMA auto, `max_transfer_sz` 1028), adds the device | `ESP_ERR_NO_MEM`; SPI and GPIO driver errors (what it set up is undone) |
+| `esp_err_t lr2021_open(const lr2021_config_t *, lr2021_t **out)` | Takes the HAL, uses `cfg.mem` for the handle (else allocates it), resets | `ESP_ERR_INVALID_ARG` (no `xfer`, `busy` or `nreset`; `cfg.mem` not aligned to 4); `ESP_ERR_NO_MEM`; `ESP_ERR_TIMEOUT` from reset. On error the HAL is closed and nothing it allocated stays (the caller's `cfg.mem` is the caller's) |
+| `void lr2021_close(lr2021_t *)` | NRESET low (chip held in reset), closes the HAL (the ESP-IDF one removes the device, frees the bus unless `bus_initialized`, drops `pa_en`), frees the handle unless it was `cfg.mem`. NULL is a no-op | – |
 | `esp_err_t lr2021_reset(lr2021_t *)` | See Reset | `ESP_ERR_TIMEOUT` |
 | `esp_err_t lr2021_wake(lr2021_t *)` | Wake from SetSleep: 120 µs of zeros without waiting for BUSY (DS 4.4.1 asks 100 µs of NSS low), then wait for BUSY. A sleeping chip only; not with a patch loaded (IQ R1.9) | `ESP_ERR_TIMEOUT` |
 | `esp_err_t lr2021_write(lr2021_t *, const uint8_t *frame, size_t len)` | Write transaction | `ESP_ERR_INVALID_SIZE` (len > 260), `ESP_ERR_TIMEOUT`, SPI errors, `ESP_FAIL` (FAIL/PERR) |
@@ -148,7 +176,9 @@ typedef struct {
 | `esp_err_t lr2021_read32(lr2021_t *, uint32_t addr, uint32_t *value)` | ReadRegMem32 (0x0106) of one word | read errors |
 | `const char *lr2021_last_error(const lr2021_t *)` | Last failure text: `"BUSY stayed high"`, `"SPI transfer failed"`, `"command failed (chip in <mode>)"`, `"command not understood (chip in <mode>)"` | – |
 | `uint32_t lr2021_failures(const lr2021_t *)` | Count of BUSY timeouts, SPI failures and FAIL/PERR statuses since open | – |
-| `uint32_t lr2021_bounces(const lr2021_t *)` | Transfers whose answer wasn't a multiple of 4 bytes, so ESP-IDF allocated a DMA bounce buffer (see DMA alignment) | – |
+| `uint32_t lr2021_hal_esp_bounces(const lr2021_hal_t *)` | Transfers whose answer wasn't a multiple of 4 bytes, so ESP-IDF allocated a DMA bounce buffer (see DMA alignment) | – |
+| `esp_err_t lr2021_set_clock(lr2021_t *, int hz, int input_delay_ns)` | The SPI clock, up to 80 MHz (past 16 MHz out of spec: experiments); the ESP-IDF HAL takes the device off the bus and adds it back | `ESP_ERR_INVALID_ARG`, `ESP_ERR_NOT_SUPPORTED` (a HAL without it) |
+| `bool lr2021_wait_irq(lr2021_t *, int timeout_ms)`, `bool lr2021_has_irq(const lr2021_t *)`, `int lr2021_irq_pin(lr2021_t *)` | The IRQ pin: wait for it high, whether there is one, its level now (a GPIO read, no SPI) | – |
 
 ## API: documented modems (`lr2021_radio.h`, `lr2021_lora.h`, `lr2021_fsk.h`, `lr2021_proto.h`)
 
@@ -197,6 +227,29 @@ other fixes.
 The DMR receiver finds the bursts reliably and gets about 6% of the symbols wrong (a median of 3 in 52), where a
 demodulator on the same signal's I/Q gets about 1% (IQ R3.40 to R3.42): the chip's demodulator is the limit.
 
+## API: the chip as an SDR (`include/lr2021_iq.h`)
+
+A raw I/Q receive session (IQ section 2) and transmissions (section 3) on an open chip, single-threaded: the caller
+runs `lr2021_iq_poll` in a loop on a task of its own, at a priority that keeps the 1 KB FIFO read (2 ms at 125 kS/s
+int16, R2.18), and serializes every other call with it. Samples go to a sink as they come, at the chip's own rate;
+buffering, resampling and scheduling are the caller's (the gateway's are in `esp_idf/main/fe_lr2021.c`).
+
+| Mode | Format | Rates | Found |
+|---|---|---|---|
+| `LR2021_IQ_LORA` | cs16 | 125 000, 250 000 (4 × the LoRa bandwidth) | R2.1-R2.10 |
+| `LR2021_IQ_FSK16` | cs16 | an FSK rx_bw code's, 32 MHz / (m × d), up to 260 000 | R2.19-R2.20 |
+| `LR2021_IQ_CONV8` | cs8 | any whole rate up to 576 000, through the rate converter | R2.21, R2.26 |
+
+| Call | What |
+|---|---|
+| `lr2021_iq_plan(rate, mode, &plan)`, `lr2021_iq_rates(mode, ...)` | The mode's settings for a rate (no I/O): sample size, exact rate, rx_bw or LoRa bandwidth, the filter's passband |
+| `lr2021_iq_init(iq, dev, board, allow_untested)` | Checks the ROM (`lr2021_chips.h`) and that no patch runs (R1.2), then standby, the clock, the regulator, calibration |
+| `lr2021_iq_start(iq, cfg)` | A session at `cfg`'s rate, center, crystal correction and gain step (0: the AGC); ends one running first |
+| `lr2021_iq_poll(iq, sink, ctx, wait_ms)` | One step of the reader: waits for the RX FIFO IRQ (LORA), or for about 640 bytes by the level reckoned from the rate (a real query every fourth read, R2.34), sleeping meanwhile; reads them in one frame; hands whole samples to the sink with the time. A loss (R2.13-R2.15, R2.28) is handled here, counted and flagged to the sink |
+| `lr2021_iq_set_gain(iq, step)`, `lr2021_iq_stop(iq)` | The gain now or for the next session; the session's end (standby, reset, setup: R2.16) |
+| `lr2021_iq_transmit(iq, tx, pull, ctx, stats)` | One transmission, half duplex: the session paused (no reset), the mode set up (CalibFE only where the chip isn't calibrated already, R3.48), the board's front end held in TX between runs (R3.44), the samples streamed in runs from the pull, keyed up at `tx->at_us` if given, the session back after |
+| `lr2021_iq_tx_calibrates(iq, tx)` | Whether that transmission will run CalibFE first (about 10.6 ms) |
+
 ## API: transmit (`include/lr2021_tx.h`, `lr2021_tx_stream` in `lr2021.h`)
 
 Every way found to put a waveform on air, from the raw TX command 0x0293 and the FSK modem. The facts, the limits
@@ -212,16 +265,21 @@ and the measurements are in IQ section 3 (R3.9-R3.31).
 | `LR2021_TX_FSK4` | 4 symbols a byte | the chip's 4-FSK modem, its shaping filter | R3.20-R3.21 |
 
 A transmission: `lr2021_tx_frames` gives the setup frames (send each with `lr2021_write`), then
-`lr2021_tx_stream` keys up with `lr2021_tx_start_frame`'s frame and feeds the FIFO from a pull callback. A run is at
-most 65,535 samples (`LR2021_TX_MAX_RUN`); the stream starts the next on each TX_DONE (a 0.2-0.5 ms seam, R3.15), so
-the length has no limit. A run that ends at once with nothing sent (R3.17) comes back as `ESP_ERR_INVALID_RESPONSE`
-with `stats.early`: send it again.
+`lr2021_tx_stream` keys up with `lr2021_tx_start_frame`'s frame and feeds the FIFO from a pull callback
+(`lr2021_iq_transmit` does all of it). A run's length and its bytes are 16-bit counts: at most 32,767 samples for
+I/Q, 65,535 otherwise (`lr2021_tx_max_run`, R3.43). The stream starts the next run as one ends, so the length has
+no limit: with the IRQ pin on TX_DONE (`cfg.irq_pin`) it sends the next SetTx 35-45 µs ahead of the TX_DONE it
+predicts, and the seams are 60-80 µs (R3.45, R3.47); polling, 0.2-0.5 ms (R3.15). `cfg.at_us` keys up at a time,
+within ±5 µs (R3.48); `cfg.cut_end` lets the data end inside a run (a streamed transmission, R3.46); `cfg.stop`
+ends it at once. A run that ends at once with nothing sent (R3.17) comes back as `ESP_ERR_INVALID_RESPONSE` with
+`stats.early`: send it again.
 
 | Function | Behavior |
 |---|---|
 | `int lr2021_tx_frames(const lr2021_tx_setup_t *, uint8_t f[][13], size_t *len)` | The setup frames, in order (at most 16); −1 for a bad setup (no rate or samples, no fdev for FREQ / FSK4, an unknown mode) |
 | `size_t lr2021_tx_start_frame(const lr2021_tx_setup_t *, uint8_t *buf, uint32_t timeout)` | SetTx (or SetTxTestMode for CW) |
 | `int lr2021_tx_sample_bytes(mode)` | FIFO bytes a sample: 2 for I/Q, 1 for FREQ, PHASE_STEP and FSK4 (a byte is 4 symbols there), 0 for CW |
+| `uint32_t lr2021_tx_max_run(mode)` | The most samples a run takes: 32,767 for I/Q, 65,535 otherwise (R3.43) |
 | `esp_err_t lr2021_tx_stream(dev, cfg, pull, ctx, stats)` | See `lr2021.h`; `cfg.run_bytes` 0 keys a carrier and returns |
 | `int8_t lr2021_phase_step_sample(float hz, uint32_t rate)` | The count for a frequency in PHASE_STEP |
 | `uint32_t lr2021_fsk4_fdev(float outer_hz)` | The fdev that puts the outer 4-FSK levels at `outer_hz` (DMR: 1944 → 2074) |
@@ -364,12 +422,11 @@ Encodings (`test/test_lr2021.c`, 37 checks):
 | LoRa, FSK | Modulation and packet frames |
 | Raw paths | Route and raw TX frames, RX rates per BW, frequency sample rounding and clamps |
 
-### Driver (`test/test_lr2021_driver.c`, 131 checks)
+### Driver (`test/test_lr2021_driver.c`)
 
-`src/lr2021.c` is built on the host over `test/esp_shim/` (stand-ins for `driver/spi_master.h`, `driver/gpio.h`,
-`esp_timer.h`, `esp_heap_caps.h`, `esp_rom_sys.h` and `freertos/`, with a fake clock that only the delays move) and a
-scripted chip that answers each SPI transaction by index. Not a model of the chip: it pins what the driver sends
-and how it reads the answers.
+`src/lr2021.c` is built on the host over a mock HAL and a fake clock that only the waits move (`test/mock_hal.*`),
+with a scripted chip that answers each SPI transfer by index. Not a model of the chip: it pins what the driver sends
+and how it reads the answers. The ESP-IDF HAL itself (`hal/esp_idf.c`) is checked on the board.
 
 | Group | What it pins |
 |---|---|
@@ -389,20 +446,21 @@ and how it reads the answers.
 | Builders | PA config, the retune word (920 MHz at −28 ppm is 0x39806984, read back from the chip) |
 | Samples | Phase-step counts and clamps, 4-FSK packing and DMR's mapping, the fdev for DMR, the I/Q frequency limit, phase-only I/Q |
 | Polar | Hole punching (a two-tone's 180° jump spread over the dip), the W12 table's full scale, a mid level with its AM-PM taken off, the floor |
-| Stream | Three chained runs with every byte aired and the task sleeping, an underflow on a short last run, R3.17's early end and a resend, a chip that never finishes (timeout, standby), small pulls, a carrier, bad arguments |
+| Stream | Three chained runs with every byte aired and the task sleeping, an underflow on a short last run, R3.17's early end and a resend, a chip that never finishes (timeout, standby), small pulls, a carrier, bad arguments; on the IRQ pin, restarts on its edge and queued ahead of TX_DONE; a streamed end cut; a timed key-up and one too late |
+| Session (`test/test_lr2021_iq.c`) | Each mode's setup frames, the reader by the IRQ and by the reckoned level, losses and restarts, the gain, a transmission with the session paused and resumed and its CalibFE kept |
 
 ```sh
 cmake -S components/lr2021 -B build/lr2021 && cmake --build build/lr2021 && ctest --test-dir build/lr2021
 ```
 
-(also built by `host-tests` as `test_lr2021`, `test_lr2021_driver`, `test_lr2021_tx` and `test_lr2021_tx_stream`).
+(also built by `host-tests`, with its sanitizers: every test above).
 
 ## Provenance
 
 The driver, the raw paths and `lr2021_cmd.*` are written from the DS and measurements on the chip. The documented
 commands (`lr2021_radio.*`, `lr2021_lora.*`, `lr2021_fsk.*`, `lr2021_proto.*`) are ported from Semtech's USP driver
-(Clear BSD; the notice is in each file), with two LoRa opcodes and the ranging delay table from TheClams/lr2021
-(MIT; its notice in `lr2021_lora.*`). The patch image in `src/lr2021_patch_image.c` is Semtech's, unchanged, from
+(Clear BSD; the notice is in each file). Two LoRa opcodes and the ranging delay table in `lr2021_lora_extra.*`
+are from TheClams/lr2021 (MIT; its notice in those files). The patch image in `src/lr2021_patch_image.c` is Semtech's, unchanged, from
 the same USP commit (Clear BSD; the notice in the file). Both are in `PROVENANCE.md` and `LICENSES/`. The raw I/Q commands
 (`lr2021_cmd_raw_*`, `lr2021_raw_*`, the patch marker) are facts learned from the documentation of
 SAMS0N1TE/lr2021-sdr (GPL-3.0), recorded in `docs/spec/lr2021-iq.md`; no code taken (`PROVENANCE.md`).

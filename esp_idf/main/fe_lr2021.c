@@ -3,8 +3,9 @@
 /*
  * The LR2021 front end (device.type lr2021, CONFIG_RDOF_SDR_LR2021): a Semtech
  * LR2021 on SPI (components/lr2021). Its receiver's raw I/Q comes through
- * ROM 1.24's undocumented route into the 1 KB RX FIFO (docs/spec/lr2021-iq.md),
- * read by a task on core 0, above Wi-Fi, into a PSRAM ring, and resampled to the settings'
+ * ROM 1.24's undocumented route into the 1 KB RX FIFO (docs/spec/lr2021-iq.md):
+ * the component's session (lr2021_iq.h) sets it up and reads it, from a task on
+ * core 0 above Wi-Fi, into a PSRAM ring; read() resamples it to the settings'
  * rate (the chip's is 125 or 250 kS/s, not a multiple of 48 kS/s).
  *
  * The W12's sub-GHz front end (a GC1109) has an LNA, a PA for about 860 to 930
@@ -17,6 +18,7 @@
  * one DMR channel a tune at 125 kS/s (band_usable). Samples come out a few counts of 16 bits (lr2021-iq.md R2.17).
  */
 #include <math.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -32,6 +34,12 @@
 #include "freertos/stream_buffer.h"
 #include "freertos/task.h"
 #include "lr2021.h"
+#include "lr2021_fsk.h"
+#include "lr2021_hal_esp_idf.h"
+#include "lr2021_iq.h"
+#include "lr2021_lora.h"
+#include "lr2021_patch.h"
+#include "lr2021_radio.h"
 #include "lr2021_tx.h"
 #include "mem.h"
 #include "rdof/sdr/resample.h"
@@ -41,22 +49,12 @@
 
 static const char *TAG = "lr2021";
 
-#define IRQ_LEVEL_WIDE16 256
 /* iq_bits 16: 4 bytes a sample. 240 kS/s from the chip's 250 k is 1 MB/s. 288 k (333.3 k, 1.33 MB/s) lost samples
  * about 70 times a second at 16 MHz SPI (reads 76% of the time, control 17%) and 0.4 at 20 MHz (out of spec) */
 #define WIDE16_MAX 240000
-#define WIDE16_CHIP_MAX 260000
 #define READ_MAX 1024 /* bytes a FIFO read: the whole FIFO in one frame, by DMA */
 #define FIFO_BYTES 1024
-/* The FIFO level that raises the RX FIFO IRQ on the DIO (1.5 ms at 125 kS/s, the rest fills in 0.5): the reader
- * sleeps until it's there, then takes it in one transfer. In the wide mode the FIFO fills in 0.77 ms: half of it,
- * so the reader has 0.38 ms to wake. Without an IRQ pin it waits a tick at a time below a quarter of the FIFO. */
-#define IRQ_LEVEL 768
-#define IRQ_LEVEL_WIDE 512
-
-#define POLL_LEVEL 256
 #define IRQ_DIO 7 /* the W12's DIO7, wired to GPIO7 (CONFIG_RDOF_LR2021_IRQ) */
-#define LOSS (LR2021_FIFO_OVERFLOW | LR2021_FIFO_UNDERFLOW) /* spec R2.14 */
 #define RING_KB CONFIG_RDOF_SDR_RING_KB
 /* The wide mode's fastest rate: 2 bytes a sample at 576 kS/s is 9.2 Mbit/s of the SPI's 16. At 768 kS/s (12.3
  * Mbit/s) the FIFO overflowed about 30 times a second at 16 MHz; at 26.67 MHz the reader polled without a pause and
@@ -87,27 +85,31 @@ static rdof_fe_caps_t caps = {
     .turnaround_us = 107, /* RX to TX, typical (table 3-23); TX to RX 91 */
 };
 
+/* The session (the component's): in PSRAM, as the reader's buffer was (internal RAM is the DSP's) */
+EXT_RAM_BSS_ATTR static lr2021_iq_t iq;
+
 static struct {
     lr2021_t *dev;
+    lr2021_hal_t hal;     /* the HAL lr2021_open took (for its bounce count) */
+    lr2021_board_t board; /* the pins and front end, from the Kconfig */
+    bool iq_ok;           /* lr2021_iq_init took the chip (its ROM known, no patch running) */
+    int clock_hz;
     char error[128];
     char id[32];
     double rate, center, native;
     int ppm;
     double gain;          /* a step, or NAN for the AGC */
-    /* The mode (pick): narrow, the LoRa modem at bandwidth bw and int16 I/Q (the first one proven, spec R2.8);
-     * wide, the FSK modem at rx_bw code, its rate converted by the chip to the settings' rate, int8 I/Q (spec R2.19
-     * to R2.21). What comes out of the FIFO is at native_num / native_den S/s. */
-    bool wide;
-    uint8_t bw, code;
+    /* The mode (pick): narrow, the LoRa modem at 125 kS/s and int16 I/Q (the first one proven, spec R2.8);
+     * wide, the FSK modem, its rate converted by the chip to the settings' rate, int8 I/Q (spec R2.19 to R2.21), or
+     * with iq_bits 16 at the FSK code's own rate, int16. What comes out of the FIFO is at native_num / native_den S/s. */
+    bool wide, iq16;
+    lr2021_iq_plan_t plan;
+    lr2021_iq_cfg_t cfg;  /* what the next session starts with */
     int sbytes;           /* bytes a sample on the FIFO and in the ring */
     uint32_t native_num, native_den;
-    uint32_t chip_num, chip_den; /* the wide mode: the rate before the converter, as a fraction */
 
     SemaphoreHandle_t spi; /* one user of the chip at a time: the reader, or a control call */
-    bool in_session;
     volatile bool streaming, gone;
-    bool iq16;            /* the wide mode in int16 (iq_bits 16) */
-    uint8_t carry_n;      /* drain: bytes of a sample read and not yet in the ring (0 or 2) */
     volatile bool held; /* the chip lent out for experiments (fe_lr2021_hold): the reader leaves it alone */
     TaskHandle_t reader;
     StreamBufferHandle_t ring;
@@ -124,8 +126,8 @@ static struct {
 } st = {.lock = portMUX_INITIALIZER_UNLOCKED};
 
 /* The memory plan's "sdr_fe" (mem.c): the driver's handle with its 1 KB SPI frames (DMA-capable, aligned to 4: see
- * lr2021.h, lr2021_bounces), the reader's stack, the ring and read()'s blocks (PSRAM), and what the SPI bus takes
- * of DMA memory for itself (its state and descriptors). */
+ * lr2021.h), the reader's stack, the ring and read()'s blocks (PSRAM), and what the SPI bus takes of DMA memory for
+ * itself (its state and descriptors). */
 void fe_lr2021_mem_claims(void)
 {
     mem_add("sdr_fe", "lr2021_dev", lr2021_handle_size(), 4, RDOF_MEM_DMA, RDOF_MEM_ALLOC);
@@ -142,6 +144,13 @@ static int failed(const char *what, esp_err_t e)
     return -1;
 }
 
+/* The session's own error (iq.error), as st.error. */
+static int iq_failed(void)
+{
+    snprintf(st.error, sizeof st.error, "LR2021 %.120s", iq.error);
+    return -1;
+}
+
 static esp_err_t cmd(const uint8_t *f, size_t n) { return lr2021_write(st.dev, f, n); }
 
 /* wanting counts the tasks waiting for the lock: the reader, at a wide rate always busy and above them, gives
@@ -155,6 +164,36 @@ static void lock(void)
 }
 static void unlock(void) { xSemaphoreGive(st.spi); }
 
+/* ── log lines, from esp_timer's task ───────────────────────────────────── */
+
+/* A log line in the reader held it past the FIFO (2 FIFO losses in 3 runs after one ESP_LOGI): the reader leaves
+ * its lines here, and a one-shot timer prints them from esp_timer's task. */
+static char said[3][200];
+static volatile unsigned said_put, said_got;
+static esp_timer_handle_t said_timer;
+
+static void said_print(void *arg)
+{
+    while (said_got != said_put) {
+        ESP_LOGI(TAG, "%s", said[said_got % 3]);
+        said_got++;
+    }
+}
+
+static void say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void say(const char *fmt, ...)
+{
+    if (said_put - said_got >= 3)
+        return; /* the timer hasn't run yet: drop it */
+    va_list a;
+    va_start(a, fmt);
+    vsnprintf(said[said_put % 3], sizeof said[0], fmt, a);
+    va_end(a);
+    said_put++;
+    if (said_timer && !esp_timer_is_active(said_timer))
+        esp_timer_start_once(said_timer, 1000);
+}
+
 /* ── setup ──────────────────────────────────────────────────────────────── */
 
 /* The front end's transmit path for a frequency: its PA inside its band, else its transmit bypass. It receives
@@ -164,108 +203,115 @@ static bool pa_band(double hz)
     return hz >= CONFIG_RDOF_LR2021_PA_LO_MHZ * 1e6 && hz <= CONFIG_RDOF_LR2021_PA_HI_MHZ * 1e6;
 }
 
-static void rf_switch(double hz)
+/* The board as the component takes it (lr2021_board.h), from the Kconfig: DIO9 to DIO11 drive the W12's GC1109
+ * (CTX, CPS, CSD), high in the modes each mask names. Receive is CSD high, CTX low; transmit CTX high, CPS high for
+ * the PA (its datasheet's table 4; MeshCore drives the W12 the same: standby 0/0/0, receive 0/0/1, transmit 1/1/1).
+ * The defaults are lr2021_board_w12. */
+static void board_setup(void)
 {
-    /* DIO9 to DIO11 drive the W12's GC1109 (CTX, CPS, CSD): high in the modes each mask names. Receive is CSD
-     * high, CTX low; transmit CTX high, CPS high for the PA (datasheet table 4; MeshCore drives the W12 the same:
-     * standby 0/0/0, receive 0/0/1, transmit 1/1/1). */
-    static const uint8_t dio[3] = {9, 10, 11};
+    lr2021_board_t *b = &st.board;
+    *b = lr2021_board_generic;
+    b->name = "kconfig";
+    b->tcxo_tune = CONFIG_RDOF_LR2021_TCXO_TUNE;
+    b->tcxo_start_us = 5000;
     static const uint8_t pa[3] = {CONFIG_RDOF_LR2021_DIO9_PA, CONFIG_RDOF_LR2021_DIO10_PA, CONFIG_RDOF_LR2021_DIO11_PA};
     static const uint8_t bypass[3] = {CONFIG_RDOF_LR2021_DIO9_BYPASS, CONFIG_RDOF_LR2021_DIO10_BYPASS,
                                       CONFIG_RDOF_LR2021_DIO11_BYPASS};
-    const uint8_t *modes = pa_band(hz) ? pa : bypass;
-    uint8_t f[12];
+    int n = 0;
     for (int i = 0; i < 3; i++) {
-        if (modes[i] == 0xFF)
+        if (pa[i] == 0xFF)
             continue; /* not used */
+        b->rfsw_dio[n] = (uint8_t)(9 + i);
+        b->rfsw_pa[n] = pa[i];
+        b->rfsw_bypass[n] = bypass[i] == 0xFF ? 0 : bypass[i];
+        n++;
+    }
+    b->rfsw_n = n;
+    b->pa_lo_hz = CONFIG_RDOF_LR2021_PA_LO_MHZ * 1e6;
+    b->pa_hi_hz = CONFIG_RDOF_LR2021_PA_HI_MHZ * 1e6;
+    b->irq_dio = CONFIG_RDOF_LR2021_IRQ >= 0 ? IRQ_DIO : -1;
+    b->rx_boost = CONFIG_RDOF_LR2021_RX_BOOST;
+}
+
+/* The RF switch for a frequency, for the experiments (the session sets its own). */
+static void rf_switch(double hz)
+{
+    uint8_t dio[LR2021_BOARD_RFSW_MAX], modes[LR2021_BOARD_RFSW_MAX], f[12];
+    const int n = lr2021_board_rfsw(&st.board, hz, dio, modes);
+    for (int i = 0; i < n; i++) {
         cmd(f, lr2021_cmd_set_dio_function(f, dio[i], LR2021_DIO_RF_SWITCH, 0));
         cmd(f, lr2021_cmd_set_dio_rf_switch(f, dio[i], modes[i]));
     }
 }
 
-/* After power-up or a reset: standby, the clock and regulator, calibration (DS 6.4). */
-static int chip_setup(void)
+static lr2021_iq_stats_t seen; /* the session's counts already added to st.stats */
+
+/* After a reset: the chip set up again for the session (standby, the clock and regulator, calibration), its state
+ * and counts cleared. The caller holds the lock. */
+static void iq_reinit(void)
 {
-    uint8_t f[12];
-    cmd(f, lr2021_cmd_u8(f, LR2021_SET_STANDBY, 0));
-    cmd(f, lr2021_cmd(f, LR2021_CLEAR_ERRORS));
-    if (CONFIG_RDOF_LR2021_TCXO_TUNE >= 0)
-        cmd(f, lr2021_cmd_set_tcxo(f, CONFIG_RDOF_LR2021_TCXO_TUNE, 32000 * 5)); /* 5 ms to start */
-    cmd(f, lr2021_cmd_u8(f, LR2021_SET_REG_MODE, 0)); /* LDO */
-    cmd(f, lr2021_cmd_u8(f, LR2021_CALIBRATE,
-                         LR2021_CAL_LF_RC | LR2021_CAL_HF_RC | LR2021_CAL_PLL | LR2021_CAL_AAF | LR2021_CAL_MU |
-                             LR2021_CAL_PA_OFF));
-    uint16_t errs = 0;
-    lr2021_errors(st.dev, &errs);
-    if (errs)
-        ESP_LOGW(TAG, "after calibration: errors 0x%04x (%s)", errs, lr2021_error_name(errs));
-    return 0;
+    const esp_err_t e = lr2021_iq_init(&iq, st.dev, &st.board, false);
+    st.iq_ok = e == ESP_OK;
+    memset(&seen, 0, sizeof seen);
+    if (!st.iq_ok)
+        iq_failed();
 }
 
-/* The mode for a rate: up to 120 kS/s the narrow one (LoRa, 125 kS/s, int16, resampled here); above, the wide one
- * (FSK, the route's rate converter making exactly the settings' rate from the fastest rate code whose channel filter
- * stays within 0.8 of it, int8; spec R2.21). With iq_bits 16, the wide one is int16 at the FSK code's own rate
- * (source 2), resampled here: about 50 dB more headroom than int8's 6 bits (R2.26), twice the SPI bytes, so up to
+/* The mode for a rate: up to 120 kS/s the narrow one (LORA, 125 kS/s, int16, resampled here); above, the wide one
+ * (CONV8: the route's rate converter making exactly the settings' rate from the fastest rate code whose channel
+ * filter stays within 0.8 of it, int8; spec R2.21). With iq_bits 16, the wide one is FSK16, int16 at the FSK code's
+ * own rate, resampled here: about 50 dB more headroom than int8's 6 bits (R2.26), twice the SPI bytes, so up to
  * WIDE16_MAX. */
 static void pick(double rate)
 {
     st.iq16 = g_scfg.iq_bits == 16 && rate > 120000;
-    int code = !(rate > 120000 && rate <= (st.iq16 ? WIDE16_MAX : WIDE_MAX)) ? -1
-               : st.iq16 ? lr2021_fsk_rx_bw_for(rate, WIDE16_CHIP_MAX)
-                         : lr2021_conv_rx_bw_for(rate, 0.8);
-    st.wide = code >= 0;
-    if (st.wide && st.iq16) {
-        st.code = (uint8_t)code;
-        st.sbytes = lr2021_raw_sample_bytes(LR2021_RAW_SRC_CS16);
-        lr2021_fsk_rx_rate(st.code, &st.chip_num, &st.chip_den);
-        st.native_num = st.chip_num;
-        st.native_den = st.chip_den;
-    } else if (st.wide) {
-        st.code = (uint8_t)code;
-        st.sbytes = lr2021_raw_sample_bytes(LR2021_RAW_SRC_CONV);
-        lr2021_fsk_rx_rate(st.code, &st.chip_num, &st.chip_den);
-        st.native_num = (uint32_t)lrint(rate); /* the converter's output */
-        st.native_den = 1;
-    } else {
-        st.bw = LR2021_LORA_BW_31;
-        st.sbytes = lr2021_raw_sample_bytes(LR2021_RAW_SRC_CS16);
-        st.native_num = lr2021_raw_rx_rate(st.bw);
-        st.native_den = 1;
-    }
-    st.native = (double)st.native_num / st.native_den;
+    lr2021_iq_mode_t m = LR2021_IQ_LORA;
+    if (rate > 120000 && rate <= (st.iq16 ? WIDE16_MAX : WIDE_MAX))
+        m = st.iq16 ? LR2021_IQ_FSK16 : LR2021_IQ_CONV8;
+    if (m == LR2021_IQ_LORA || lr2021_iq_plan(rate, m, &st.plan) != ESP_OK)
+        lr2021_iq_plan(125000, m = LR2021_IQ_LORA, &st.plan);
+    st.wide = m != LR2021_IQ_LORA;
+    st.sbytes = st.plan.sample_bytes;
+    st.native_num = st.plan.rate_num;
+    st.native_den = st.plan.rate_den;
+    st.native = st.plan.rate;
 }
-
-/* The FIFO level that raises the IRQ in the mode picked. */
-/* int16 in the wide mode fills the FIFO in 0.77 ms: at 512 bytes the reader had 0.38 ms to start, and lost
- * samples about 25 times a second */
-static size_t irq_level(void) { return st.wide ? (st.iq16 ? IRQ_LEVEL_WIDE16 : IRQ_LEVEL_WIDE) : IRQ_LEVEL; }
 
 /* The chip's own filter passes far less than the rate's 0.8 in the narrow mode: the LoRa bandwidth, a quarter of the
  * rate (+-15.6 kHz at 125 kS/s; it showed on the W12's spectrum). In the wide mode, the FSK channel filter: 0.37 of
  * the rate before the converter (+-185 kHz at 1 MS/s into 576 kS/s). A DMR channel (+-4.8 kHz, 7.6 with margin)
- * goes within that. As the share of the settings' rate, which
- * the planner uses. */
+ * goes within that. As the share of the settings' rate, which the planner uses. */
 static double band_usable(double rate)
 {
     if (rate <= 0)
         return 0.8;
     pick(rate);
-    double half = (st.wide ? (double)st.chip_num / st.chip_den * lr2021_fsk_filter_share(st.code) : st.native / 4) / 2;
-    double u = 2 * (half - 7.6e3) / rate;
+    double u = 2 * (st.plan.passband_hz / 2 - 7.6e3) / rate;
     return u > 0.8 ? 0.8 : u;
+}
+
+#define READ_SLACK_US 600
+
+/* The session's settings from the front end's. */
+static void cfg_update(void)
+{
+    st.cfg = (lr2021_iq_cfg_t){
+        .rate = st.wide ? st.rate : st.plan.rate,
+        .mode = st.plan.mode,
+        .center_hz = st.center,
+        .ppm = st.ppm,
+        .gain = isnan(st.gain) ? 0 : (int)st.gain,
+        /* read with this long left before the FIFO fills: Wi-Fi and the link hold core 0 that long at times (at
+         * 640 bytes in, the library's default, about 4 losses in 3 minutes at 384 kS/s, IQ R2.34) */
+        .slack_us = READ_SLACK_US,
+    };
 }
 
 static int init(void *ctx)
 {
     caps.usable = band_usable(g_scfg.sample_rate);
     caps.link_bytes_per_s = st.sbytes * (double)st.native_num / st.native_den; /* pick ran in band_usable */
-    if (CONFIG_RDOF_LR2021_PA_EN_GPIO >= 0) {
-        /* the board's front-end supply (the W12's PA_EN_M, GPIO4) */
-        gpio_config_t o = {.pin_bit_mask = 1ULL << CONFIG_RDOF_LR2021_PA_EN_GPIO, .mode = GPIO_MODE_OUTPUT};
-        gpio_config(&o);
-        gpio_set_level(CONFIG_RDOF_LR2021_PA_EN_GPIO, 1);
-    }
-    lr2021_config_t c = {
+    lr2021_esp_cfg_t ec = {
         .spi_host = CONFIG_RDOF_LR2021_SPI_HOST,
         .sck = CONFIG_RDOF_LR2021_SCK,
         .mosi = CONFIG_RDOF_LR2021_MOSI,
@@ -274,24 +320,34 @@ static int init(void *ctx)
         .busy = CONFIG_RDOF_LR2021_BUSY,
         .nreset = CONFIG_RDOF_LR2021_NRESET,
         .irq = CONFIG_RDOF_LR2021_IRQ,
+        .pa_en = CONFIG_RDOF_LR2021_PA_EN_GPIO, /* the board's front-end supply (the W12's PA_EN_M, GPIO4) */
         .clock_hz = CONFIG_RDOF_LR2021_SPI_HZ,
     };
-    c.mem = mem_take("sdr_fe", "lr2021_dev", NULL); /* NULL, not planned: the driver allocates it */
-    esp_err_t e = lr2021_open(&c, &st.dev);
+    lr2021_config_t c = {0};
+    esp_err_t e = lr2021_hal_esp_open(&ec, &c.hal);
     if (e != ESP_OK)
+        return failed("SPI and pins", e);
+    st.hal = c.hal;
+    st.clock_hz = CONFIG_RDOF_LR2021_SPI_HZ;
+    c.mem = mem_take("sdr_fe", "lr2021_dev", NULL); /* NULL, not planned: the driver allocates it */
+    if ((e = lr2021_open(&c, &st.dev)) != ESP_OK) {
+        st.dev = NULL;
         return failed("didn't open", e);
+    }
     uint8_t maj = 0, min = 0;
     if ((e = lr2021_version(st.dev, &maj, &min)) != ESP_OK)
         return failed("GetVersion", e);
     snprintf(st.id, sizeof st.id, "LR2021 fw %u.%u", maj, min);
     ESP_LOGI(TAG, "%s (SPI %d MHz)", st.id, CONFIG_RDOF_LR2021_SPI_HZ / 1000000);
-    if (maj != LR2021_VERSION_MAJOR || min != LR2021_VERSION_MINOR)
-        ESP_LOGW(TAG, "firmware %u.%u: the datasheet's LR2021 is %u.%u", maj, min, LR2021_VERSION_MAJOR,
-                 LR2021_VERSION_MINOR);
-    if (chip_setup() != 0)
-        return -1;
+    board_setup();
+    /* A ROM the raw paths aren't known on (lr2021_chips.h) leaves the chip to the experiments: start() says why */
+    iq_reinit();
+    if (!st.iq_ok)
+        ESP_LOGW(TAG, "%s", st.error);
     st.spi = xSemaphoreCreateMutex();
     st.gain = NAN;
+    const esp_timer_create_args_t sa = {.callback = said_print, .name = "lr2021 log"};
+    esp_timer_create(&sa, &said_timer);
     st.ring_storage = mem_take("sdr_fe", "ring", NULL);
     if (!st.ring_storage)
         st.ring_storage = heap_caps_malloc((size_t)RING_KB * 1024 + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -305,146 +361,13 @@ static int init(void *ctx)
 
 static bool wait(void *ctx, int timeout_ms) { return st.dev != NULL; }
 
-/* The LoRa receiver the raw route sits in (spec 2.1), at the center: the bandwidth sets the rate. calib: CalibFE
- * there first (not after a transmission in the same 4 MHz, spec R3.16). */
-static int lora_setup(bool calib)
+/* A new session with st.cfg (any running one ends first: standby, reset, setup, spec 2.5). The caller holds the
+ * lock. */
+static int session_start(void)
 {
-    uint8_t f[16];
-    esp_err_t e;
-    const double hz = st.center;
-    const uint32_t chip_hz = lr2021_freq_corrected(hz, st.ppm), cal_hz = (uint32_t)lrint(hz);
-    rf_switch(hz);
-    if ((e = cmd(f, lr2021_cmd_u8(f, LR2021_SET_STANDBY, 0))) != ESP_OK ||
-        (e = cmd(f, lr2021_cmd_u8(f, LR2021_SET_PACKET_TYPE, LR2021_PACKET_LORA))) != ESP_OK)
-        return failed("SetPacketType", e);
-    if (calib && (e = cmd(f, lr2021_cmd_calib_fe(f, &cal_hz, 1, false))) != ESP_OK)
-        return failed("CalibFE", e);
-    if ((e = cmd(f, lr2021_cmd_set_rf_frequency(f, chip_hz))) != ESP_OK)
-        return failed("SetRfFrequency", e);
-    if ((e = cmd(f, lr2021_cmd_set_rx_path(f, false, CONFIG_RDOF_LR2021_RX_BOOST))) != ESP_OK)
-        return failed("SetRxPath", e);
-    /* SF7, CR 4/5, a preamble of 8, 255 bytes, sync 0x12: they don't matter to the raw samples (spec R2.2) */
-    if ((e = cmd(f, lr2021_cmd_lora_modulation(f, 7, st.bw, 1, 0))) != ESP_OK ||
-        (e = cmd(f, lr2021_cmd_lora_packet(f, 8, 255, 0x02))) != ESP_OK ||
-        (e = cmd(f, lr2021_cmd_u8(f, LR2021_SET_LORA_SYNCWORD, 0x12))) != ESP_OK)
-        return failed("LoRa setup", e);
-    uint16_t errs = 0;
-    if ((e = lr2021_errors(st.dev, &errs)) != ESP_OK || errs) {
-        snprintf(st.error, sizeof st.error, "LR2021 setup at %.5f MHz: %s", hz / 1e6,
-                 errs ? lr2021_error_name(errs) : esp_err_to_name(e));
-        return -1;
-    }
-    return 0;
-}
-
-/* The FSK receiver the wide route sits in, at the center: rx_bw sets the rate and the channel filter (spec
- * R2.19). The bit rate and deviation don't matter to the samples; they're set well inside the filter. calib: as
- * lora_setup's. */
-static int fsk_setup(bool calib)
-{
-    uint8_t f[16];
-    esp_err_t e;
-    const double hz = st.center;
-    const uint32_t chip_hz = lr2021_freq_corrected(hz, st.ppm), cal_hz = (uint32_t)lrint(hz);
-    const uint32_t bitrate = (uint32_t)((double)st.chip_num / st.chip_den * lr2021_fsk_filter_share(st.code) / 4);
-    rf_switch(hz);
-    if ((e = cmd(f, lr2021_cmd_u8(f, LR2021_SET_STANDBY, 0))) != ESP_OK ||
-        (e = cmd(f, lr2021_cmd_u8(f, LR2021_SET_PACKET_TYPE, LR2021_PACKET_FSK))) != ESP_OK)
-        return failed("SetPacketType", e);
-    if (calib && (e = cmd(f, lr2021_cmd_calib_fe(f, &cal_hz, 1, false))) != ESP_OK)
-        return failed("CalibFE", e);
-    if ((e = cmd(f, lr2021_cmd_set_rf_frequency(f, chip_hz))) != ESP_OK)
-        return failed("SetRfFrequency", e);
-    if ((e = cmd(f, lr2021_cmd_set_rx_path(f, false, CONFIG_RDOF_LR2021_RX_BOOST))) != ESP_OK)
-        return failed("SetRxPath", e);
-    if ((e = cmd(f, lr2021_cmd_fsk_modulation(f, bitrate, 0, st.code, bitrate / 2))) != ESP_OK)
-        return failed("SetFskModulationParams", e);
-    uint16_t errs = 0;
-    if ((e = lr2021_errors(st.dev, &errs)) != ESP_OK || errs) {
-        snprintf(st.error, sizeof st.error, "LR2021 FSK setup at %.5f MHz: %s", hz / 1e6,
-                 errs ? lr2021_error_name(errs) : esp_err_to_name(e));
-        return -1;
-    }
-    return 0;
-}
-
-static bool fifo_mapped(void)
-{
-    uint32_t base = 0, size = 0;
-    if (lr2021_read32(st.dev, LR2021_REG_RX_FIFO_BASE, &base) != ESP_OK ||
-        lr2021_read32(st.dev, LR2021_REG_RX_FIFO_SIZE, &size) != ESP_OK)
-        return false;
-    /* ROM 1.24 reads the base back without its alias bit (spec 2.2 step 4) */
-    return (base == LR2021_RX_FIFO_BASE_1K || base == (LR2021_RX_FIFO_BASE_1K & 0xFFFF)) &&
-           size == LR2021_RX_FIFO_SIZE_1K;
-}
-
-/* A raw receive session (spec 2.2). quick: back from a transmission, the chip known and calibrated here: no
- * checks, no CalibFE (spec R3.16). The caller holds the lock. */
-static int session_start(bool quick)
-{
-    uint8_t f[16];
-    esp_err_t e;
-    uint8_t maj = 0, min = 0;
-    uint32_t marker = 0;
-    if (quick)
-        goto setup;
-    if (lr2021_version(st.dev, &maj, &min) != ESP_OK || maj != LR2021_VERSION_MAJOR || min != LR2021_VERSION_MINOR) {
-        snprintf(st.error, sizeof st.error, "LR2021 firmware %u.%u: raw I/Q needs 1.24", maj, min);
-        return -1;
-    }
-    if (lr2021_read32(st.dev, LR2021_PATCH_MARKER_ADDR, &marker) != ESP_OK || marker == LR2021_PATCH_ACTIVE) {
-        snprintf(st.error, sizeof st.error, "LR2021: a Semtech patch is running; raw I/Q needs the plain ROM");
-        return -1;
-    }
-setup:
-    if (st.wide ? fsk_setup(!quick) : lora_setup(!quick))
-        return -1;
-    cmd(f, lr2021_cmd_u8(f, LR2021_SET_STANDBY, 0));
-    if ((e = cmd(f, st.wide && !st.iq16 ? lr2021_cmd_raw_route_rate(f, st.code, st.native_num, LR2021_RAW_SRC_CONV)
-                                        : lr2021_cmd_raw_route_fifo(f))) != ESP_OK) /* int16: at the modem's rate */
-        return failed("raw route", e);
-    cmd(f, lr2021_cmd_write_reg32(f, LR2021_REG_RX_FIFO_BASE, LR2021_RX_FIFO_BASE_1K));
-    cmd(f, lr2021_cmd_write_reg32(f, LR2021_REG_RX_FIFO_SIZE, LR2021_RX_FIFO_SIZE_1K));
-    if (!quick && !fifo_mapped()) {
-        snprintf(st.error, sizeof st.error, "LR2021: the 1 KB RX FIFO didn't map");
-        return -1;
-    }
-    cmd(f, lr2021_cmd_clear_fifo_flags(f, 0x3F, 0x3F));
-    if (CONFIG_RDOF_LR2021_IRQ >= 0) {
-        /* the RX FIFO IRQ on the DIO at IRQ_LEVEL bytes (ConfigFifoIrq, 6.10.1; a high threshold over 256 is fine) */
-        cmd(f, lr2021_cmd_set_dio_function(f, IRQ_DIO, LR2021_DIO_IRQ, 0));
-        cmd(f, lr2021_cmd_set_dio_irq(f, IRQ_DIO, LR2021_IRQ_RX_FIFO));
-        cmd(f, lr2021_cmd_config_fifo_irq(f, LR2021_FIFO_HIGH, 0, irq_level(), 0, 0, 0));
-        cmd(f, lr2021_cmd_clear_irq(f, 0xFFFFFFFF));
-    }
-    if ((e = cmd(f, lr2021_cmd_set_rx(f, 0xFFFFFF))) != ESP_OK) /* continuous (6.3.5) */
-        return failed("SetRx", e);
-    /* The gain after SetRx: SetRx sets step 13 (0xF30154[23:16] = 0xDD), whatever came before, and the AGC
-     * runs only once 0 is sent in RX (measured; spec R2.25) */
-    if ((e = cmd(f, lr2021_cmd_set_gain(f, isnan(st.gain) ? 0 : (uint8_t)st.gain))) != ESP_OK)
-        return failed("SetAgcGainManual", e);
-    if (!quick && !fifo_mapped()) {
-        snprintf(st.error, sizeof st.error, "LR2021: the RX FIFO moved when RX started");
-        return -1;
-    }
-    cmd(f, lr2021_cmd(f, LR2021_CLEAR_RX_FIFO));
-    cmd(f, lr2021_cmd_clear_fifo_flags(f, 0x3F, 0x3F));
-    st.carry_n = 0;
-    st.in_session = true;
-    return 0;
-}
-
-/* End a session: standby, reset, set the chip up again (spec 2.5). The caller holds the lock. */
-static void session_end(void)
-{
-    uint8_t f[4];
-    if (!st.in_session)
-        return;
-    st.in_session = false;
-    cmd(f, lr2021_cmd_u8(f, LR2021_SET_STANDBY, 0));
-    lr2021_reset(st.dev);
-    chip_setup();
+    if (!st.iq_ok)
+        return -1; /* st.error has why */
+    return lr2021_iq_start(&iq, &st.cfg) == ESP_OK ? 0 : iq_failed();
 }
 
 static int tune(void *ctx, double rate, double center_hz, int ppm, double *got_rate)
@@ -458,15 +381,12 @@ static int tune(void *ctx, double rate, double center_hz, int ppm, double *got_r
                  rate);
         return -1;
     }
+    cfg_update();
     *got_rate = rate;
     if (!st.streaming || st.held)
         return 0; /* held: the session starts with these when the hold ends */
     lock();
-    int r = 0;
-    if (!st.held) { /* checked again under the lock: a hold may have come in between */
-        session_end();
-        r = session_start(false);
-    }
+    int r = st.held ? 0 : session_start(); /* checked again under the lock: a hold may have come in between */
     unlock();
     return r;
 }
@@ -474,33 +394,30 @@ static int tune(void *ctx, double rate, double center_hz, int ppm, double *got_r
 static int set_ppm(void *ctx, int ppm)
 {
     st.ppm = ppm;
+    cfg_update();
     if (!st.streaming || st.held)
         return 0;
     /* a new frequency needs CalibFE, which overwrites the FIFO: a new session (spec R2.5) */
     lock();
-    int r = 0;
-    if (!st.held) { /* checked again under the lock: a hold may have come in between */
-        session_end();
-        r = session_start(false);
-    }
+    int r = st.held ? 0 : session_start();
     unlock();
     return r;
 }
 
-/* The gain as SetAgcGainManual's step, 1 to 13 (the datasheet gives no dB for them); NAN: the chip's AGC. */
+/* The gain as SetAgcGainManual's step, 1 to 13 (spec R2.25 has their dB); NAN: the chip's AGC. */
 static int set_gain(void *ctx, double db, double *got)
 {
     int step = isnan(db) ? 0 : (int)lrint(db);
     step = step < 1 ? 1 : step > 13 ? 13 : step;
     st.gain = isnan(db) ? NAN : step;
     *got = st.gain;
-    if (!st.in_session || st.held)
+    cfg_update();
+    if (!st.dev || st.held)
         return 0; /* set when the session starts */
-    uint8_t f[4];
     lock();
-    esp_err_t e = st.held ? ESP_OK : cmd(f, lr2021_cmd_set_gain(f, isnan(db) ? 0 : (uint8_t)step));
+    esp_err_t e = st.held || !st.iq_ok ? ESP_OK : lr2021_iq_set_gain(&iq, st.cfg.gain);
     unlock();
-    return e == ESP_OK ? 0 : failed("SetAgcGainManual", e);
+    return e == ESP_OK ? 0 : iq_failed();
 }
 
 static int gain_steps(void *ctx, const double **db)
@@ -533,6 +450,12 @@ static void put(const uint8_t *b, size_t n)
     portEXIT_CRITICAL(&st.lock);
 }
 
+/* The session's samples, as the FIFO had them, into the ring (read() converts them, on the DSP's core). */
+static void sink(void *ctx, const uint8_t *data, size_t n, unsigned flags, int64_t t_us)
+{
+    put(data, n * (size_t)st.sbytes);
+}
+
 static void count_error(void)
 {
     portENTER_CRITICAL(&st.lock);
@@ -540,43 +463,25 @@ static void count_error(void)
     portEXIT_CRITICAL(&st.lock);
 }
 
-/* Lost samples: count it and, in the narrow mode, start a new session (spec R2.15); in the wide mode, empty the
- * FIFO (R2.28). The caller holds the lock. why: what showed it,
- * logged at most every 10 s with how many since. */
-static void lost(const char *why)
+/* The session's losses and errors since the last look into st.stats. The caller holds the lock. */
+static volatile unsigned losses; /* for report's line */
+static void count_session(void)
 {
-    static int64_t said_us;
-    static unsigned since;
-    portENTER_CRITICAL(&st.lock);
-    st.stats.overflows++;
-    portEXIT_CRITICAL(&st.lock);
-    since++;
-    int64_t now = esp_timer_get_time();
-    if (!said_us || now - said_us >= 10000000) {
-        ESP_LOGW(TAG, "samples lost (%s); %u since the last said", why, since);
-        said_us = now;
-        since = 0;
+    const unsigned dl = iq.stats.losses - seen.losses, de = iq.stats.errors - seen.errors;
+    if (dl || de) {
+        portENTER_CRITICAL(&st.lock);
+        st.stats.overflows += dl;
+        st.stats.errors += de;
+        portEXIT_CRITICAL(&st.lock);
+        losses += dl;
     }
-    if (st.wide) {
-        /* empty the FIFO and go on: a new session takes about 30 ms, and at a wide rate the stream overflowed again
-         * right after it (int16 at 288 k: 25 losses a second, the stream down most of the time) */
-        uint8_t f[6];
-        cmd(f, lr2021_cmd(f, LR2021_CLEAR_RX_FIFO));
-        cmd(f, lr2021_cmd_clear_fifo_flags(f, 0x3F, 0x3F));
-        st.carry_n = 0;
-        return;
-    }
-    session_end();
-    if (session_start(false))
-        ESP_LOGW(TAG, "%s", st.error);
+    seen = iq.stats;
 }
 
-/* Every 20 s while streaming, from esp_timer's task (a log line in the reader stalled it past the FIFO): the
- * reader's share of its core (FreeRTOS run-time stats) and what it did. */
-static volatile unsigned waits, late;
+/* Every 20 s while streaming, from esp_timer's task: the reader's share of its core (FreeRTOS run-time stats) and
+ * what the session did. */
 static volatile struct {
-    unsigned high_now, reads, yields;
-    uint64_t level_sum, read_us, dsp_us, ctl_us;
+    unsigned yields;
     uint64_t conv_us; /* read()'s convert and resample, on the DSP's core */
 } dbg;
 
@@ -584,6 +489,7 @@ static void report(void *arg)
 {
     static int64_t t0;
     static uint32_t run0;
+    static lr2021_iq_stats_t s0;
     int64_t now = esp_timer_get_time();
     uint32_t run = 0;
 #if CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS
@@ -593,99 +499,46 @@ static void report(void *arg)
         run = (uint32_t)ts.ulRunTimeCounter; /* esp_timer us */
     }
 #endif
+    const lr2021_iq_stats_t s = iq.stats;
+    if (s.reads < s0.reads)
+        s0 = (lr2021_iq_stats_t){0}; /* a new session state (iq_reinit) */
     if (t0 && st.streaming) {
         double w = (now - t0) / 100.0;
-        ESP_LOGI(TAG, "reader: %.1f%% of core 0 (read %.1f%%, control %.1f%%, convert %.1f%% of the time), %u reads of "
-                      "%u bytes, %u waits, %u IRQs late, pin high before %u, %u yields, %u SPI bounces in all; DSP core: "
-                      "%.1f%% converting and resampling",
-                 (uint32_t)(run - run0) / w, dbg.read_us / w, dbg.ctl_us / w, dbg.dsp_us / w, dbg.reads,
-                 dbg.reads ? (unsigned)(dbg.level_sum / dbg.reads) : 0, waits, late, dbg.high_now, dbg.yields,
-                 st.dev ? (unsigned)lr2021_bounces(st.dev) : 0, dbg.conv_us / w);
+        ESP_LOGI(TAG, "reader: %.1f%% of core 0, %u reads, %u IRQs late, %u lost, %u yields, %u SPI bounces in all; "
+                      "DSP core: %.1f%% converting and resampling",
+                 (uint32_t)(run - run0) / w, (unsigned)(s.reads - s0.reads), (unsigned)(s.irq_late - s0.irq_late),
+                 losses, dbg.yields, st.dev ? (unsigned)lr2021_hal_esp_bounces(&st.hal) : 0, dbg.conv_us / w);
     }
     memset((void *)&dbg, 0, sizeof dbg);
-    waits = late = 0;
+    losses = 0;
+    s0 = s;
     t0 = now;
     run0 = run;
-}
-
-/* n bytes of the FIFO (whole samples, at most READ_MAX) in one read, by DMA (the task sleeps while it moves),
- * into the ring as they came (read() converts them, on the DSP's core). Every 8 KB (1 without the IRQ) the FIFO
- * flags are read (a loss shows there, spec R2.14); then_rearm: the IRQ re-armed after. False if it failed or
- * samples were lost. The caller holds the lock. */
-/* Re-arm the IRQ: clear FIFO-high (the loss flags stay for the peek), then the IRQ it raised (the flag alone leaves
- * it, 6.10.3). Two frames, no status read: they can't fail. */
-static void rearm(void)
-{
-    uint8_t f[6];
-    lr2021_send(st.dev, f, lr2021_cmd_clear_fifo_flags(f, LR2021_FIFO_HIGH, 0));
-    lr2021_send(st.dev, f, lr2021_cmd_clear_irq(f, LR2021_IRQ_RX_FIFO));
-}
-
-static bool drain(size_t n, bool then_rearm)
-{
-    /* in PSRAM: internal RAM is the DSP's (its buffers didn't fit with this there) */
-    EXT_RAM_BSS_ATTR static uint8_t buf[READ_MAX + 2];
-    static uint32_t since_flags;
-    /* Each read is n - 2 bytes (n a multiple of 4), so its frame, 2 status bytes and the samples, is a multiple of
-     * 4: the SPI driver then needs no internal buffer of its own for it (lr2021.c, xfer), of which there is little.
-     * With 2-byte samples (int8) that's whole samples. With 4-byte ones (int16, and the narrow mode) every other read ends halfway
-     * through one: its 2 bytes wait in buf[0..1] for the next read (carry_n), so the ring gets whole samples only. */
-    if (n >= 4 && !(n & 3))
-        n -= 2;
-    const size_t c = st.carry_n;
-    dbg.reads++;
-    dbg.level_sum += n;
-    int64_t ta = esp_timer_get_time();
-    esp_err_t e = lr2021_read_fifo(st.dev, buf + c, n);
-    dbg.read_us += esp_timer_get_time() - ta;
-    if (e != ESP_OK) {
-        count_error();
-        return false;
-    }
-    int64_t tc = esp_timer_get_time();
-    uint8_t rx = 0, tx = 0;
-    bool checked = false;
-    if ((since_flags += n) >= (CONFIG_RDOF_LR2021_IRQ >= 0 ? 8192 : 1024)) {
-        since_flags = 0;
-        checked = lr2021_fifo_flags_peek(st.dev, &rx, &tx) == ESP_OK;
-    }
-    if (CONFIG_RDOF_LR2021_IRQ >= 0 && then_rearm)
-        rearm();
-    dbg.ctl_us += esp_timer_get_time() - tc;
-    if (checked && (rx & LOSS)) {
-        lost(rx & LR2021_FIFO_OVERFLOW ? "FIFO overflow flag" : "FIFO underflow flag");
-        return false;
-    }
-    int64_t tb = esp_timer_get_time();
-    const size_t have = c + n, sample = (size_t)st.sbytes, whole = have - have % sample;
-    put(buf, whole);
-    st.carry_n = (uint8_t)(have - whole);
-    if (st.carry_n)
-        memcpy(buf, buf + whole, st.carry_n);
-    dbg.dsp_us += esp_timer_get_time() - tb;
-    return true;
 }
 
 /* ── transmit ───────────────────────────────────────────────────────────── */
 
 /* Half duplex: the receiver stops for each key-up (the user's choice: one chip roams every channel). The modem's
  * frequency samples (pull_freq, 48 kS/s) are pulled TX_LOOK ahead of the stream into a staging ring; each keyed span
- * (a DMR burst with its ramps) goes out as one run of frequency samples (spec R3.9-R3.19) at its time, the receiver
- * off around it (R3.16: about 1.5 ms to TX, 1.2 back, no reset, no CalibFE). The stream's gap is filled with zeros
- * so its sample count keeps real time. Stream positions map to esp_timer through an anchor taken from the sample
- * count while nothing is sent and held through a transmission, so a call's runs keep their 60 ms spacing (the gaps'
- * fill follows the same map). All of it runs in the reader: it alone touches the chip while streaming. */
+ * (a DMR burst with its ramps) goes out as one run of frequency samples (spec R3.9-R3.19) keyed up at its time
+ * (lr2021_iq_transmit's at_us: within a few us, R3.48), the receiver off around it (R3.16: no reset, and no CalibFE
+ * in the cell the session calibrated). The stream's gap is filled with zeros so its sample count keeps real time.
+ * Stream positions map to esp_timer through an anchor taken from the sample count while nothing is sent and held
+ * through a transmission, so a call's runs keep their 60 ms spacing (the gaps' fill follows the same map). All of it
+ * runs in the reader: it alone touches the chip while streaming. */
 #define TX_RATE 48000
 #define TX_FDEV 2048     /* 32 Hz a count (R3.10) */
 #define TX_STAGE 8192    /* staged samples (170 ms), a power of 2 */
 #define TX_LOOK 1920     /* pulled this far ahead of now (40 ms) */
-#define TX_BLOCK 240     /* samples a pull (5 ms) */
+#define TX_BLOCK 96      /* samples a pull (2 ms, about 150 us of the reader) */
 #define TX_MAX_RUN 4096  /* the longest span sent as one run (85 ms): a longer one is cut there */
 #define TX_MERGE 192     /* keyed spans this close (4 ms) go out as one run */
-#define TX_PREP_US 4500  /* the switch to TX starts this long before a run's time (it takes about 2 ms) */
-#define TX_LATE_US 2500  /* less than this left: the run is dropped (late) */
+/* The switch to TX starts this long before a run's time: from a running session it takes about 2.8 ms to a filled
+ * FIFO (R3.48); the reader's turn comes every 1-2 ms. Less than TX_LATE_US left: the run is dropped (late), as
+ * lr2021_iq_transmit would drop it once ready past its time. */
+#define TX_PREP_US 5500
+#define TX_LATE_US 3200
 #define TX_HOLD_US 300000 /* the anchor held this long after a run */
-#define TX_CHUNK 256     /* the FIFO topped up once this much of it is free */
 
 EXT_RAM_BSS_ATTR static struct {
     int8_t s[TX_STAGE];  /* frequency samples (lr2021_raw_freq_sample) */
@@ -701,9 +554,10 @@ static struct {
     int64_t a_pos, a_us;       /* the anchor: stream sample a_pos (48 kS/s) at esp_timer a_us */
     int64_t last_us;           /* the last run's end */
     /* this transmission's, for its log line */
-    unsigned runs, late, early, failed, cut, underflows;
-    int err_min, err_max;      /* SetTx's time against the run's, us */
+    unsigned runs, late, early, failed, cut, underflows, calibrated;
+    int err_min, err_max;      /* key-up's time against the run's, us */
     int64_t zeros;             /* samples filled in */
+    lr2021_err_t last_err;
 } tx = {.key = -1};
 
 static int64_t tx_now48(int64_t us) { return tx.a_pos + (us - tx.a_us) * TX_RATE / 1000000; }
@@ -712,12 +566,13 @@ static int64_t tx_at_us(int64_t pos) { return tx.a_us + (pos - tx.a_pos) * 10000
 static int64_t rx48(void) { return rx_count * TX_RATE * (int64_t)st.native_den / (int64_t)st.native_num; }
 static int64_t native_at(int64_t pos48) { return pos48 * (int64_t)st.native_num / ((int64_t)TX_RATE * st.native_den); }
 
-/* Pull the source up to sample upto, a block at a time, into the stage; note the first keyed sample. */
-static void tx_fill(int64_t upto)
+/* Pull the source up to sample upto, a block at a time, at most blocks of them, into the stage;
+ * note the first keyed sample. */
+static void tx_fill(int64_t upto, int blocks)
 {
     EXT_RAM_BSS_ATTR static float hz[TX_BLOCK], env[TX_BLOCK];
     const rdof_fe_tx_source_t *src = tx.src;
-    while (src && tx.pos < upto) {
+    while (src && tx.pos < upto && blocks-- > 0) {
         const bool keyed = src->pull_freq(src->ctx, tx.pos, hz, env, TX_BLOCK);
         for (int i = 0; i < TX_BLOCK; i++) {
             const int64_t p = tx.pos + i;
@@ -752,98 +607,60 @@ static void tx_zero_fill(int64_t n)
     }
 }
 
-/* One run: the receiver off, n staged samples from k0 on at esp_timer t_key, the receiver back on and the gap filled.
- * The caller holds the lock, in a session. */
+/* The staged samples from at to end, as FIFO bytes (lr2021_iq_transmit's pull). */
+struct stage_span {
+    int64_t at, end;
+};
+
+static size_t stage_pull(void *ctx, uint8_t *buf, size_t max)
+{
+    struct stage_span *p = ctx;
+    const size_t k = p->end - p->at < (int64_t)max ? (size_t)(p->end - p->at) : max;
+    for (size_t j = 0; j < k; j++)
+        buf[j] = (uint8_t)stage.s[(p->at + (int64_t)j) & (TX_STAGE - 1)];
+    p->at += (int64_t)k;
+    return k;
+}
+
+/* One run: n staged samples from k0 on, keyed up at esp_timer t_key (lr2021_iq_transmit: the receiver paused and
+ * back after), then the gap filled. The caller holds the lock, in a session. */
 static void tx_run(int64_t k0, int n, int64_t t_key)
 {
-    /* static: the reader's stack has little to spare */
-    EXT_RAM_BSS_ATTR static uint8_t frames[LR2021_TX_FRAMES_MAX][LR2021_TX_FRAME_MAX], buf[1020];
-    static size_t lens[LR2021_TX_FRAMES_MAX];
-    uint8_t f[12];
-    const lr2021_tx_setup_t s = {
+    const lr2021_iq_tx_t t = {
         .mode = LR2021_TX_FREQ,
-        .freq_hz = lr2021_freq_corrected(tx.hz, st.ppm),
-        .standby_first = true, /* out of RX; the 4 MHz is calibrated (R3.16) */
-        .power_code = lr2021_tx_power_code(tx.power),
-        .ramp_code = 4,
-        .pa_lf_duty = 4, /* as the lab's runs (web.c, /api/lr2021/txmode) */
-        .pa_lf_slices = 2,
-        .fallback = LR2021_FALLBACK_STBY_RC,
+        .center_hz = tx.hz,
+        .ppm = st.ppm,
         .rate = TX_RATE,
         .fdev_hz = TX_FDEV,
-        .rx_bw = 0x1C,
-        .n = (uint16_t)n,
+        .power_dbm = tx.power,
+        .samples = (uint64_t)n,
+        .at_us = t_key,
     };
-    const int nf = lr2021_tx_frames(&s, frames, lens);
-    esp_err_t e = nf > 0 ? ESP_OK : ESP_ERR_INVALID_ARG;
-    for (int i = 0; i < nf && e == ESP_OK; i++)
-        e = cmd(frames[i], lens[i]);
-    if (e == ESP_OK)
-        e = cmd(f, lr2021_cmd_clear_fifo_flags(f, 0, 0x3F));
-    if (e == ESP_OK)
-        e = cmd(f, lr2021_cmd_clear_irq(f, LR2021_IRQ_TX_DONE | LR2021_IRQ_TIMEOUT));
-    int sent = 0;
-#define TX_PUT(k_)                                                                                                  \
-    do {                                                                                                            \
-        const int put_n = (k_);                                                                                     \
-        for (int j = 0; j < put_n; j++)                                                                             \
-            buf[j] = (uint8_t)stage.s[(k0 + sent + j) & (TX_STAGE - 1)];                                            \
-        e = lr2021_write_tx_fifo(st.dev, buf, (size_t)put_n);                                                       \
-        sent += put_n;                                                                                              \
-    } while (0)
-    if (e == ESP_OK)
-        TX_PUT(n < (int)sizeof buf ? n : (int)sizeof buf);
-    int64_t t_on = 0;
-    if (e == ESP_OK) {
-        while (esp_timer_get_time() < t_key)
-            ;
-        t_on = esp_timer_get_time();
-        /* a timeout past the run's end (1/32 ms), so a run that never ends can't hold the chip */
-        e = lr2021_send(st.dev, f, lr2021_cmd_set_tx(f, (uint32_t)((int64_t)n * 32000 / TX_RATE + 32 * 50)));
-        const int err = (int)(t_on - t_key);
+    struct stage_span span = {k0, k0 + n};
+    lr2021_tx_stream_stats_t s;
+    if (lr2021_iq_tx_calibrates(&iq, &t))
+        tx.calibrated++;
+    const lr2021_err_t e = lr2021_iq_transmit(&iq, &t, stage_pull, &span, &s);
+    if (s.late) {
+        tx.late++;
+    } else if (s.early) {
+        tx.early++;
+    } else if (e == ESP_OK) {
+        const int err = (int)(s.key_us - t_key);
         if (!tx.runs || err < tx.err_min)
             tx.err_min = err;
         if (!tx.runs || err > tx.err_max)
             tx.err_max = err;
+        tx.runs++;
     }
-    const int64_t end = t_on + (int64_t)n * 1000000 / TX_RATE + 30000;
-    bool done = false;
-    while (e == ESP_OK && !done) {
-        uint32_t irq = 0;
-        uint16_t level = 0;
-        if ((e = lr2021_irq(st.dev, &irq)) != ESP_OK || (e = lr2021_tx_fifo_level(st.dev, &level)) != ESP_OK)
-            break;
-        if (irq & (LR2021_IRQ_TX_DONE | LR2021_IRQ_TIMEOUT)) {
-            /* ended short with the FIFO still holding some: it sent nothing (R3.17) */
-            if (level > 0 && sent - level + 4 < n)
-                tx.early++;
-            else
-                tx.runs++;
-            done = true;
-        } else if (esp_timer_get_time() > end) {
-            e = ESP_ERR_TIMEOUT;
-        } else if (sent < n && 1020 - level >= TX_CHUNK) {
-            const int room = 1020 - level;
-            TX_PUT(n - sent < room ? n - sent : room);
-        } else {
-            vTaskDelay(1); /* the FIFO holds 5 ms or more: Wi-Fi gets core 0 meanwhile */
-        }
-    }
-#undef TX_PUT
-    uint8_t rxf = 0, txf = 0;
-    lr2021_fifo_flags_peek(st.dev, &rxf, &txf);
-    if (txf & LR2021_FIFO_UNDERFLOW)
+    if (s.tx_flags & LR2021_FIFO_UNDERFLOW)
         tx.underflows++;
-    if (e != ESP_OK) {
+    if (e != ESP_OK && !s.late && !s.early) {
         tx.failed++;
-        ESP_LOGW(TAG, "TX run of %d samples: %s", n, esp_err_to_name(e));
+        tx.last_err = e;
     }
     tx.last_us = esp_timer_get_time();
-    /* back to receiving: the same session's setup without its checks; else a new session (the reader's) */
-    if (session_start(true)) {
-        ESP_LOGW(TAG, "back to RX after TX: %s", st.error);
-        st.in_session = false;
-    }
+    /* the session didn't come back (lr2021_iq_transmit's restart failed): the reader starts a new one */
     const int64_t gap = native_at(tx_now48(esp_timer_get_time())) - rx_count;
     if (gap > 0 && gap < (int64_t)(st.native * 0.5))
         tx_zero_fill(gap);
@@ -853,11 +670,12 @@ static void tx_run(int64_t k0, int n, int64_t t_key)
 static void tx_said(void)
 {
     if (tx.runs || tx.late || tx.early || tx.failed)
-        ESP_LOGI(TAG, "TX at %.5f MHz, %.1f dBm: %u runs, %u late, %u early (R3.17), %u failed, %u cut, %u underflows; "
-                      "key-up %+d to %+d us of its time; %lld samples filled",
-                 tx.hz / 1e6, tx.power, tx.runs, tx.late, tx.early, tx.failed, tx.cut, tx.underflows, tx.err_min,
-                 tx.err_max, (long long)tx.zeros);
-    tx.runs = tx.late = tx.early = tx.failed = tx.cut = tx.underflows = 0;
+        say("TX at %.5f MHz, %.1f dBm: %u runs, %u late, %u early (R3.17), %u failed%s%s, %u cut, %u underflows, "
+            "%u calibrated; key-up %+d to %+d us of its time; %lld samples filled",
+            tx.hz / 1e6, tx.power, tx.runs, tx.late, tx.early, tx.failed, tx.failed ? ": " : "",
+            tx.failed ? esp_err_to_name(tx.last_err) : "", tx.cut, tx.underflows, tx.calibrated, tx.err_min,
+            tx.err_max, (long long)tx.zeros);
+    tx.runs = tx.late = tx.early = tx.failed = tx.cut = tx.underflows = tx.calibrated = 0;
     tx.err_min = tx.err_max = 0;
     tx.zeros = 0;
 }
@@ -884,7 +702,10 @@ static bool tx_service(void)
         tx.pos = n48;
         tx.key = -1;
     }
-    tx_fill(n48 + TX_LOOK);
+    /* a block a turn: after a run the source is a run's length behind, and pulling all of it at once held the reader
+     * 2.8 ms, past the RX FIFO (1.3 ms at 384 kS/s): about 2.5 FIFO losses a burst. 5 ms blocks still lost about
+     * one a burst; 2 ms blocks none */
+    tx_fill(n48 + TX_LOOK, 1);
     if (tx.key < 0) {
         if (tx.hold && now - tx.last_us > TX_HOLD_US) {
             tx.hold = false;
@@ -906,7 +727,7 @@ static bool tx_service(void)
         while (k1 < tx.pos && stage.k[k1 & (TX_STAGE - 1)])
             k1++;
         if (k1 >= tx.pos) {
-            tx_fill(tx.pos + TX_BLOCK);
+            tx_fill(tx.pos + TX_BLOCK, 1);
             continue;
         }
         int64_t g = k1;
@@ -915,7 +736,7 @@ static bool tx_service(void)
         if (g >= k1 + TX_MERGE)
             break; /* a real gap: the span ends at k1 */
         if (g >= tx.pos) {
-            tx_fill(tx.pos + TX_BLOCK);
+            tx_fill(tx.pos + TX_BLOCK, 1);
             continue;
         }
         k1 = g; /* keyed again soon: one run */
@@ -929,7 +750,7 @@ static bool tx_service(void)
         tx.late++;
     } else {
         lock();
-        if (st.in_session && !st.held) {
+        if (iq.in_session && !st.held) {
             tx_run(k0, (int)(k1 - k0), t_key);
             ran = true;
         }
@@ -964,13 +785,11 @@ static int tx_tune(void *ctx, double hz)
     return 0;
 }
 
-/* The reader: the FIFO's samples, little-endian I then Q, 16 bits each (spec R2.7) or 8 in the wide mode, into
- * the ring. With the IRQ
- * pin it sleeps until the chip's RX FIFO IRQ says IRQ_LEVEL bytes are in, then reads them with no level query:
- * a read and two commands a millisecond. Without it, or after an IRQ that didn't come, it reads by the level. */
+/* The reader: lr2021_iq_poll in a loop (the FIFO's samples, little-endian I then Q, 16 bits each, spec R2.7, or 8
+ * in the wide mode, into the ring), the transmit turn between. The session waits for the RX FIFO IRQ or reads by
+ * the level it reckons from the rate (spec R2.34), sleeping between reads. */
 static void reader_task(void *arg)
 {
-    bool by_level = CONFIG_RDOF_LR2021_IRQ < 0;
     for (;;) {
         if (wanting) {
             dbg.yields++;
@@ -982,86 +801,30 @@ static void reader_task(void *arg)
         }
         if (st.held) {
             vTaskDelay(pdMS_TO_TICKS(50));
-            by_level = true;
             continue;
         }
-        if ((tx.src || tx.hold) && tx_service())
-            by_level = true; /* the receiver restarted: by the level, then the IRQ */
+        if (tx.src || tx.hold)
+            tx_service();
         lock();
-        if (st.held) {
+        if (st.held || !st.streaming) {
             unlock();
             continue;
         }
-        if (!st.in_session) {
+        if (!iq.in_session) {
+            /* lost (a failed restart), or back from a hold: a new session, 100 ms apart while they fail */
+            const int r = session_start();
             unlock();
-            vTaskDelay(pdMS_TO_TICKS(100));
-            lock();
-            /* held again during the wait: the experiment has the chip */
-            if (st.streaming && !st.held && !st.in_session && session_start(false))
+            if (r) {
                 count_error();
-            unlock();
-            by_level = true; /* whatever is in the new session's FIFO, then the IRQ */
-            continue;
-        }
-        if (!by_level) {
-            unlock();
-            /* The pin is checked first, so an IRQ raised since the last re-arm isn't missed. 2 ticks (1 to 2 ms;
-             * the rest of the FIFO fills in 1): past that, read by the level. */
-            if (gpio_get_level(CONFIG_RDOF_LR2021_IRQ))
-                dbg.high_now++;
-            waits++;
-            if (!lr2021_wait_irq(st.dev, 2)) {
-                late++;
-                by_level = true;
-                continue;
+                vTaskDelay(pdMS_TO_TICKS(100));
             }
-            lock();
-            if (st.in_session && !drain(irq_level(), !st.wide))
-                by_level = true;
-            /* In the wide mode, what came in during the read can pass the level before the re-arm, and the FIFO-high
-             * flag then never rises again (no new edge): read by the level until it's nearly empty. */
-            if (st.wide)
-                by_level = true;
-            unlock();
             continue;
         }
-        uint16_t level = 0;
-        int64_t tc = esp_timer_get_time();
-        esp_err_t e = lr2021_rx_fifo_level(st.dev, &level);
-        dbg.ctl_us += esp_timer_get_time() - tc;
-        if (e != ESP_OK) {
-            unlock();
-            count_error();
-            vTaskDelay(1);
-            continue;
-        }
-        if (level >= FIFO_BYTES) { /* it filled: samples are gone (spec R2.13) */
-            lost("the FIFO filled");
-            unlock();
-            continue;
-        }
-        size_t backlog = level & ~3u;
-        if (CONFIG_RDOF_LR2021_IRQ < 0 && backlog < POLL_LEVEL) {
-            /* Waiting only for an empty FIFO never waited (samples come in while it's read), and the task
-             * starved core 0. */
-            unlock();
-            waits++;
-            vTaskDelay(1);
-            continue;
-        }
-        /* With the IRQ: what's there (the drain re-arms it), then back to waiting for it once the FIFO is well under
-         * the IRQ's level, so the level rising past it raises the IRQ (the SPI outruns the samples: each read
-         * leaves less behind). */
-        if (backlog > READ_MAX)
-            backlog = READ_MAX;
-        bool ok = !backlog || drain(backlog, false);
-        if (CONFIG_RDOF_LR2021_IRQ >= 0 && ok && backlog < irq_level() / 2) {
-            int64_t tc = esp_timer_get_time();
-            rearm();
-            dbg.ctl_us += esp_timer_get_time() - tc;
-            by_level = false;
-        }
+        const int got = lr2021_iq_poll(&iq, sink, NULL, 2);
+        count_session();
         unlock();
+        if (got < 0)
+            vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
@@ -1080,7 +843,7 @@ static int start(void *ctx)
                  st.native, st.wide ? "FSK" : "LoRa", st.rate, st.rs.L, st.rs.M, caps.usable * st.rate / 1e3);
     } else if (st.wide) {
         ESP_LOGI(TAG, "I/Q at %.0f S/s (FSK, int8, the chip's converter from %.0f), channels within %.0f kHz", st.native,
-                 (double)st.chip_num / st.chip_den, caps.usable * st.rate / 1e3);
+                 st.plan.chip_rate, caps.usable * st.rate / 1e3);
     }
     if (!st.blk.raw) {
         const size_t need = BLOCK * 4 + sizeof(rdof_cf_t) * (2 * BLOCK + 4);
@@ -1088,19 +851,19 @@ static int start(void *ctx)
         uint8_t *p = mem_take("sdr_fe", "blocks", NULL);
         if (!p)
             p = heap_caps_malloc(need, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        bool internal = false;
         if (!p)
             return failed("read buffers", ESP_ERR_NO_MEM);
         st.blk.x = (rdof_cf_t *)p;
         st.blk.y = st.blk.x + BLOCK;
         st.blk.raw = (uint8_t *)(st.blk.y + BLOCK + 4);
-        ESP_LOGI(TAG, "read buffers: %u bytes %s", (unsigned)need, internal ? "internal" : "in PSRAM");
+        ESP_LOGI(TAG, "read buffers: %u bytes in PSRAM", (unsigned)need);
     }
     xStreamBufferReset(st.ring);
     memset(&st.stats, 0, sizeof st.stats);
     rx_count = 0;
+    cfg_update();
     lock();
-    int r = session_start(false);
+    int r = session_start();
     unlock();
     if (r)
         return -1;
@@ -1111,8 +874,8 @@ static int start(void *ctx)
         if (esp_timer_create(&a, &t) == ESP_OK)
             esp_timer_start_periodic(t, 20000000);
         /* Above Wi-Fi (23): under it, Wi-Fi and MQTT traffic kept it off the CPU past the FIFO's 2 ms, about one
-         * loss every 5 s idle and several a second on a call. It works in bursts with a tick's wait between, so
-         * Wi-Fi still gets core 0 most of the time. On core 1 (above the DSP) it lost far more. */
+         * loss every 5 s idle and several a second on a call. It sleeps between reads (lr2021_sleep_us), so Wi-Fi
+         * still gets core 0 most of the time. On core 1 (above the DSP) it lost far more. */
         mem_task("sdr_fe", "lr2021", reader_task, 4096, NULL, 24, 0, &st.reader);
     }
     xTaskNotifyGive(st.reader);
@@ -1125,7 +888,7 @@ static void stop(void *ctx)
 {
     st.streaming = false;
     lock();
-    session_end();
+    lr2021_iq_stop(&iq);
     unlock();
 }
 
@@ -1235,8 +998,9 @@ int fe_lr2021_hold(bool on, bool keep, int patch)
     if (on && !st.held) {
         st.held = true;
         if (!keep || patch) {
-            st.in_session = true; /* reset even if no session ran: a clean chip under the patch */
-            session_end();        /* reset and set up: standby, the chip's own settings */
+            /* reset even if no session ran: a clean chip under the patch, in standby with the chip's own settings */
+            lr2021_reset(st.dev);
+            iq_reinit();
         }
     }
     if (on && patch) { /* 1: Semtech's patch RAM (the documented modems' fixes); 2: and ours in bank 2 */
@@ -1247,10 +1011,10 @@ int fe_lr2021_hold(bool on, bool keep, int patch)
             return -1;
         }
     } else if (!on && st.held) {
-        /* back to streaming: the chip reset and set up (an experiment's settings and errors gone), then the
-         * reader starts a new session */
-        st.in_session = true;
-        session_end();
+        /* back to streaming: the chip reset and set up (an experiment's settings, errors and calibration gone),
+         * then the reader starts a new session */
+        lr2021_reset(st.dev);
+        iq_reinit();
         st.held = false;
     }
     unlock();
@@ -1493,9 +1257,11 @@ int fe_lr2021_spi(int hz, int delay_ns)
     if (!st.dev)
         return -1;
     if (hz <= 0)
-        return lr2021_clock(st.dev);
+        return st.clock_hz;
     lock();
     esp_err_t e = lr2021_set_clock(st.dev, hz, delay_ns);
+    if (e == ESP_OK)
+        st.clock_hz = hz;
     unlock();
     return e == ESP_OK ? hz : -1;
 }

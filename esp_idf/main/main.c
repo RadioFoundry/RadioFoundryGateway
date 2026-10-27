@@ -18,6 +18,9 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "gnss.h"
+#if CONFIG_USJ_ENABLE_USB_SERIAL_JTAG && !CONFIG_RDOF_USB_HOST
+#include "hal/usb_serial_jtag_ll.h"
+#endif
 #include "netclock.h"
 #include "nvs_flash.h"
 #include "rdof/rust.h"
@@ -85,6 +88,11 @@ static void gnss_begin(void)
 void app_main(void)
 {
     status_led_start(); /* red until Wi-Fi is up, then orange or green by the devices */
+#if CONFIG_USJ_ENABLE_USB_SERIAL_JTAG && !CONFIG_RDOF_USB_HOST
+    /* the USB PHY back to the serial / JTAG port: an image that used USB OTG (TinyUSB, a USB host) leaves it there
+     * across a software restart or an OTA, and the board then can't be flashed over USB until power-cycled */
+    usb_serial_jtag_ll_phy_enable_external(false);
+#endif
 #if CONFIG_RDOF_GNSS_EN_GPIO >= 0
     /* the GNSS receiver on: its pulse per second disciplines the clock (netclock) */
     gpio_set_level(CONFIG_RDOF_GNSS_EN_GPIO, CONFIG_RDOF_GNSS_EN_LEVEL);

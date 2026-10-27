@@ -22,6 +22,9 @@ CONFIG_RDOF_SDR_LR2021=y
 # FreeRTOS run-time stats: the LR2021 reader logs its share of core 0 every minute
 CONFIG_FREERTOS_USE_TRACE_FACILITY=y
 CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+# The LR2021 reader's sleeps under a tick (components/lr2021/port/esp_idf.c): a one-shot esp_timer dispatched from
+# its ISR, so the wake doesn't wait behind Wi-Fi for esp_timer's task
+CONFIG_ESP_TIMER_SUPPORTS_ISR_DISPATCH_METHOD=y
 # The OLED (an SSD1315, SSD1306 compatible, 128x64 at 0x3C; yellow top 16 rows, blue below) on SDA 17 / SCL 18, on
 # unless the settings say "oled": false. VEXT_EN (GPIO45) powers it, active low (Meshtastic's W12 variant).
 CONFIG_RDOF_OLED_BUILTIN=y

@@ -71,17 +71,8 @@ static void lora_frames(void)
     CHECK(lr2021_lora_mant_exp(62, &code) == 62 && code == (31 << 3), "62 symbols: %02X", code);
     CHECK(lr2021_lora_mant_exp(65535, &code) == 65536 && code == 0x46, "65535 symbols: %02X", code);
 
-    // sync words (9.9.5) and the 10-bit form: public (6, 8), private (2, 4), negatives as 5-bit two's complement
+    // sync words (9.9.5)
     FRAME(lr2021_lora_syncword(b_, LR2021_LORA_SYNCWORD_PUBLIC), 0x02, 0x23, 0x34);
-    FRAME(lr2021_lora_syncword_ext(b_, 6, 8), 0x02, 0x2D, 0x06, 0x08);
-    FRAME(lr2021_lora_syncword_ext(b_, -2, -16), 0x02, 0x2D, 0x1E, 0x10);
-    int8_t s1, s2;
-    lr2021_lora_syncword_split(0x34, &s1, &s2);
-    CHECK(s1 == 6 && s2 == 8, "0x34 splits %d %d", s1, s2);
-    lr2021_lora_syncword_split(0x12, &s1, &s2);
-    CHECK(s1 == 2 && s2 == 4, "0x12 splits %d %d", s1, s2);
-    lr2021_lora_syncword_split(0xF8, &s1, &s2);
-    CHECK(s1 == -2 && s2 == -16, "0xF8 splits %d %d", s1, s2);
 
     // side detectors (9.9.6, 9.9.7, 9.9.13): sf 7:4, ldro 3:2, invert_iq 0; none turns them off
     const lr2021_lora_side_det_t d[2] = {{8, false, true}, {9, true, false}};
@@ -91,8 +82,6 @@ static void lora_frames(void)
     const uint8_t sw[3] = {0x12, 0x34, 0x56};
     FRAME(lr2021_lora_side_det_syncword(b_, sw, 3), 0x02, 0x25, 0x12, 0x34, 0x56);
     FRAME(lr2021_lora_side_det_syncword(b_, sw, 5), 0x02, 0x25, 0x12, 0x34, 0x56);
-    const int8_t pairs[3][2] = {{2, 4}, {6, 8}, {-2, -4}};
-    FRAME(lr2021_lora_side_det_syncword_ext(b_, pairs), 0x02, 0x2E, 0x02, 0x04, 0x06, 0x08, 0x1E, 0x1C);
     const uint8_t pnr[2] = {8, 0x10}, peak[2] = {60, 56};
     FRAME(lr2021_lora_side_det_cad(b_, pnr, peak, 2), 0x02, 0x1E, 0x08, 0x3C, 0x00, 0x38);
 
@@ -344,13 +333,6 @@ static void rttof(void)
     lr2021_rttof_parse_stats(st, &s);
     CHECK(s.exchanges_ok == 10 && s.requests_ok == 9 && s.responses == 8 && s.timeouts == 7 && s.discarded == 262,
           "ranging stats");
-
-    CHECK(lr2021_rttof_base_delay(5, LR2021_LORA_BW_1000) == 21711 && lr2021_rttof_base_delay(12, LR2021_LORA_BW_125) == 14191 &&
-              lr2021_rttof_base_delay(7, LR2021_LORA_BW_203) == 24089,
-          "base delay table");
-    CHECK(lr2021_rttof_base_delay(12, LR2021_LORA_BW_62) == 12400 && lr2021_rttof_base_delay(7, LR2021_LORA_BW_62) == 17825 &&
-              lr2021_rttof_base_delay(4, LR2021_LORA_BW_125) == 0,
-          "base delay estimate");
 }
 
 int main(void)

@@ -38,7 +38,8 @@ typedef enum {
     LR2021_TX_FSK4,
 } lr2021_tx_mode_t;
 
-/* A sample run's length is a 16-bit count (R3.12); a longer transmission is runs back to back (R3.15). */
+/* A sample run's length is a 16-bit count (R3.12), and so are its bytes (R3.43): lr2021_tx_max_run has the cap for a
+ * mode. A longer transmission is runs back to back (R3.15). */
 #define LR2021_TX_MAX_RUN 65535u
 /* The largest frame lr2021_tx_frames writes. */
 #define LR2021_TX_FRAME_MAX 13
@@ -71,6 +72,8 @@ int lr2021_tx_frames(const lr2021_tx_setup_t *s, uint8_t frames[][LR2021_TX_FRAM
 size_t lr2021_tx_start_frame(const lr2021_tx_setup_t *s, uint8_t *buf, uint32_t timeout);
 /* FIFO bytes a sample takes in a mode: 2 for I/Q, 1 for FREQ and PHASE_STEP, 0 for CW. FSK4's are bytes. */
 int lr2021_tx_sample_bytes(lr2021_tx_mode_t mode);
+/* The most samples a run takes in a mode: its bytes stay under 64 KB (R3.43). 32 767 for I/Q, 65 535 otherwise. */
+uint32_t lr2021_tx_max_run(lr2021_tx_mode_t mode);
 
 /* ── Samples ─────────────────────────────────────────────────────────────── */
 

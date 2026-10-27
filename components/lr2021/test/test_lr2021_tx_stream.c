@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "esp_shim.h"
+#include "mock_hal.h"
 #include "lr2021.h"
 #include "lr2021_tx.h"
 
@@ -124,7 +124,7 @@ static lr2021_t *open_dev(void)
     shim_reset();
     memset(&M, 0, sizeof M);
     F.respond = respond;
-    lr2021_config_t c = {.spi_host = 1, .sck = 1, .mosi = 2, .miso = 3, .nss = 4, .busy = 5, .nreset = 6, .irq = -1};
+    lr2021_config_t c = mock_config();
     lr2021_t *d = NULL;
     lr2021_open(&c, &d);
     M.last_us = F.now_us;
@@ -176,8 +176,8 @@ int main(void)
     memset(&P, 0, sizeof P);
     P.total = 3 * 4800;
     lr2021_tx_stream_cfg_t c = cfg(settx, settx_len, 4800);
-    esp_err_t e = lr2021_tx_stream(d, &c, pull, NULL, &st);
-    CHECK(e == ESP_OK, "chained: %d", e);
+    lr2021_err_t e = lr2021_tx_stream(d, &c, pull, NULL, &st);
+    CHECK(e == LR2021_OK, "chained: %d", e);
     CHECK(st.runs == 3 && M.starts == 3, "runs %d starts %d", st.runs, M.starts);
     CHECK(st.sent == 14400 && M.aired == 14400, "sent %zu aired %d", st.sent, M.aired);
     CHECK(!(st.tx_flags & LR2021_FIFO_UNDERFLOW) && !st.early && !st.timed_out, "flags %02X", st.tx_flags);
@@ -194,7 +194,7 @@ int main(void)
     memset(&P, 0, sizeof P);
     P.total = 4000;
     e = lr2021_tx_stream(d, &c, pull, NULL, &st);
-    CHECK(e == ESP_OK && st.runs == 1, "short: %d runs %d", e, st.runs);
+    CHECK(e == LR2021_OK && st.runs == 1, "short: %d runs %d", e, st.runs);
     CHECK(st.tx_flags & LR2021_FIFO_UNDERFLOW, "no underflow flag: %02X", st.tx_flags);
     lr2021_close(d);
 
@@ -206,12 +206,12 @@ int main(void)
     memset(&P, 0, sizeof P);
     P.total = 4800;
     e = lr2021_tx_stream(d, &c, pull, NULL, &st);
-    CHECK(e == ESP_ERR_INVALID_RESPONSE && st.early && st.runs == 1, "early: %d %d", e, st.early);
+    CHECK(e == LR2021_ERR_INVALID_RESPONSE && st.early && st.runs == 1, "early: %d %d", e, st.early);
     memset(&P, 0, sizeof P);
     P.total = 4800;
     M.aired = 0;
     e = lr2021_tx_stream(d, &c, pull, NULL, &st);
-    CHECK(e == ESP_OK && !st.early && M.aired == 4800, "again: %d aired %d", e, M.aired);
+    CHECK(e == LR2021_OK && !st.early && M.aired == 4800, "again: %d aired %d", e, M.aired);
     lr2021_close(d);
 
     // a chip that never finishes: the stream gives up at max_ms and puts it in standby
@@ -222,7 +222,7 @@ int main(void)
     P.total = 4800;
     c.max_ms = 50;
     e = lr2021_tx_stream(d, &c, pull, NULL, &st);
-    CHECK(e == ESP_ERR_TIMEOUT && st.timed_out && M.standbys == 1 && !M.tx, "timeout: %d standbys %d", e, M.standbys);
+    CHECK(e == LR2021_ERR_TIMEOUT && st.timed_out && M.standbys == 1 && !M.tx, "timeout: %d standbys %d", e, M.standbys);
     c.max_ms = 5000;
     lr2021_close(d);
 
@@ -234,7 +234,7 @@ int main(void)
     P.total = 9600;
     P.most = 100;
     e = lr2021_tx_stream(d, &c, pull, NULL, &st);
-    CHECK(e == ESP_OK && st.runs == 2 && M.aired == 9600 && !(st.tx_flags & LR2021_FIFO_UNDERFLOW),
+    CHECK(e == LR2021_OK && st.runs == 2 && M.aired == 9600 && !(st.tx_flags & LR2021_FIFO_UNDERFLOW),
           "small pulls: %d runs %d aired %d flags %02X", e, st.runs, M.aired, st.tx_flags);
     lr2021_close(d);
 
@@ -245,18 +245,18 @@ int main(void)
     lr2021_tx_stream_cfg_t cc = cfg(cw, cw_len, 0);
     int before = F.xfers;
     e = lr2021_tx_stream(d, &cc, NULL, NULL, &st);
-    CHECK(e == ESP_OK && F.xfers - before == 2, "cw: %d xfers %d", e, F.xfers - before);
+    CHECK(e == LR2021_OK && F.xfers - before == 2, "cw: %d xfers %d", e, F.xfers - before);
     lr2021_close(d);
 
     // bad arguments
     d = open_dev();
-    CHECK(lr2021_tx_stream(d, NULL, pull, NULL, &st) == ESP_ERR_INVALID_ARG, "no cfg");
+    CHECK(lr2021_tx_stream(d, NULL, pull, NULL, &st) == LR2021_ERR_INVALID_ARG, "no cfg");
     c.start = NULL;
-    CHECK(lr2021_tx_stream(d, &c, pull, NULL, &st) == ESP_ERR_INVALID_ARG, "no start");
+    CHECK(lr2021_tx_stream(d, &c, pull, NULL, &st) == LR2021_ERR_INVALID_ARG, "no start");
     c.start = settx;
-    CHECK(lr2021_tx_stream(d, &c, NULL, NULL, &st) == ESP_ERR_INVALID_ARG, "no pull");
+    CHECK(lr2021_tx_stream(d, &c, NULL, NULL, &st) == LR2021_ERR_INVALID_ARG, "no pull");
     memset(&P, 0, sizeof P);
-    CHECK(lr2021_tx_stream(d, &c, pull, NULL, &st) == ESP_ERR_INVALID_SIZE, "no data");
+    CHECK(lr2021_tx_stream(d, &c, pull, NULL, &st) == LR2021_ERR_INVALID_SIZE, "no data");
     lr2021_close(d);
 
     printf("%d checks, %d failed\n", checks, fails);

@@ -354,6 +354,12 @@ Wi-Fi's IRAM options off (its hot code runs from flash), which gives the heap ab
 (`CONFIG_RDOF_MEM_MARGIN_KB`): with 80 and Wi-Fi in IRAM, the SDR and an `sdr_transceiver` together left Wi-Fi
 without memory. With both, about 21 KB of the heap is free while it streams.
 
+On 2026-10-27, after the LR2021 component took SoapyLR20xx's library (a HAL, a port, the session in
+`lr2021_iq.c`): `16mb` + `w12` is 2002 KB (0x1F4910), 8 KB more DIRAM than the day's build before it (7 KB more
+image), 6.7 KB of it the component's `linker.lf` (its read and transmit paths in IRAM: the reader takes 30% of core 0
+with it, 36% without, and the heap had no more free without it); `16mb` 1924 KB (0x1E0DE0); `4mb` 1827 KB
+(0x1C8C80), 92 KB (5%) free in its slot; `w12` + `rust` 2063 KB.
+
 DIRAM went down because the roamer's state moved from `.bss` to the heap when it became a `roam_t`: the first
 radio's is still internal (about 5 KB, allocated when it starts), its settings in PSRAM. The `w12` build's 11 KB
 more DIRAM is the SPI master driver and the LR2021's state.
@@ -361,8 +367,8 @@ more DIRAM is the SPI master driver and the LR2021's state.
 The roamer role costs 132 KB of flash and the SDR 436 KB (338 KB of it the self-test clip), against about 945 KB for
 the board both share. The SDR only image is 64 KB smaller than with everything built `-O2`.
 
-Everything, the self-test clip too, fits the 4 MB part with two OTA slots and about 400 KB to spare, so nothing is
-gated off in `4mb`. If that changes, drop the self-test clip (`CONFIG_RDOF_SDR_SELFTEST`, 338 KB) first, then the
+Everything, the self-test clip too, fits the 4 MB part with two OTA slots (92 KB to spare on 2026-10-27), so
+nothing is gated off in `4mb`. If that changes, drop the self-test clip (`CONFIG_RDOF_SDR_SELFTEST`, 338 KB) first, then the
 repeater, OLED or the full page, before giving up a slot or a role. IRAM shows 100% in `idf.py size`: that's
 the fixed 16 KB vector / cache-miss region filling as usual. The transceiver (about 20 KB), the repeater (about 55
 KB), the settings parser (under 65 KB, while parsing) and the log ring are allocated in PSRAM.
@@ -1014,7 +1020,8 @@ here from those specs. Nothing is copied from RadioFoundry or from GPL sources; 
 
 #### LR2021 (Semtech), and the Meshnology W12
 
-`components/lr2021` is a plain ESP-IDF SPI driver for the chip; `fe_lr2021.c` is the front end. Semtech
+`components/lr2021` is the chip's driver and its raw I/Q session (`lr2021_iq.c`; the same code as SoapyLR20xx's
+library, its README says how they're kept in step); `fe_lr2021.c` is the front end over it. Semtech
 documents no raw I/Q output. ROM 1.24 has one (an undocumented route into the RX FIFO), and its facts are written
 down in `docs/spec/lr2021-iq.md`; the code here is ours, written from that spec and the datasheet. A receive session
 (spec 2.2): check ROM 1.24 and no active patch, set the receiver up, route, map the 1 KB RX FIFO and check it, SetRx
@@ -1030,11 +1037,15 @@ continuous, then the gain step (SetRx forces step 13; spec R2.25). It runs in on
   resampled on the DSP core. About 50 dB more headroom than int8, for a box near strong radios; 240000 gives about
   77 kHz of channels (250 kS/s, 1 MB/s of SPI). 130 of 131 bench bursts. 288000 needs the SPI at 20 MHz (R2.29).
 
-The reader task on core 0 sleeps on the FIFO IRQ (DIO7), reads by DMA, and in the wide mode reads by the FIFO's
-level until it's nearly empty before waiting on the IRQ again. Each read is n − 2 bytes, n a multiple of 4, so the
-SPI frame (2 status bytes and the samples) is a multiple of 4 and the IDF needs no DMA bounce buffer; a sample cut
-in two by a read waits for the next (`fe_lr2021.c:drain`, `carry_n`). It gives other tasks waiting for the chip a tick
-(the web server's lab requests stalled behind it). A loss, a retune or a new ppm ends the session (standby, reset,
+The reader task on core 0 runs `lr2021_iq_poll` in a loop. In the narrow mode it sleeps on the FIFO IRQ (DIO7); in
+the wide modes it reads by the FIFO's level, asking it before one read in four and reckoning it from the rate
+between, and sleeps until enough is in (under a tick, by a timer: the port's `lr2021_sleep_us`). It reads when the
+FIFO has 600 us left before it fills (`READ_SLACK_US`, the session's `slack_us`): at 384 kS/s int8 about 500 bytes a
+read and 30% of core 0, against 360 bytes and 43% before (2026-10-27, no losses in 3 minutes). Each read is n − 2
+bytes, n a multiple of 4, so the SPI frame (2 status bytes and the samples) is a multiple of 4 and the IDF needs no
+DMA bounce buffer; a sample cut in two by a read waits for the next (`carry_n`). It gives other tasks waiting for
+the chip a tick (the web server's lab requests stalled behind it). Its log lines go out from a timer, not the
+reader: one `ESP_LOGI` in it held it past the FIFO. A loss, a retune or a new ppm ends the session (standby, reset,
 set up again) and starts a new one: CalibFE overwrites the extended FIFO, so a session can't span a retune. In the
 wide mode a loss only empties the FIFO (R2.28).
 
@@ -1181,9 +1192,12 @@ bursts within 26 us of the TDMA grid. The roamer on it (an `sdr_transceiver`) ha
 - **The front end's part**: `tx_set(src, power)` in `rdof_fe_ops_t` and the TX fields of `rdof_fe_caps_t`. `sim`:
   full duplex, I/Q at the receive rate, mixed into the samples it reads at a quarter of full scale. `lr2021`:
   half duplex, `RDOF_FE_TX_FREQ` at 48 kS/s, tuned by `tx_tune` (within 1 MHz of the receiver's center, where it's
-  calibrated). Its reader pulls the modulator 40 ms ahead of the stream; each keyed span (a burst with its ramps)
-  goes out as one run of frequency samples (fdev 2048) at its time: the receiver stops about 2 ms before (spec
-  lr2021-iq.md R3.16), the run keys within a few us of its time, and the receiver restarts with no CalibFE. The
+  calibrated). Its reader pulls the modulator 40 ms ahead of the stream, 2 ms of samples a turn between reads (pulling a
+  run's worth at once after a run held it 2.8 ms, past the FIFO: about 2.5 losses a burst); each keyed span (a
+  burst with its ramps) goes out as one run of frequency samples (fdev 2048) through `lr2021_iq_transmit`, keyed at
+  its time: the setup starts 5.5 ms before, the SetTx is timed to within about ±10 us (R3.48), and the receiver
+  restarts with no CalibFE (R3.16). A 3 s call from the bench API: 50 of 50 bursts on air, none failing FEC, spaced
+  59.96-60.04 ms, and 0-1 receive losses (2026-10-27). The
   stream's gap is filled with zeros so its sample count keeps real time, and positions map to esp_timer through an
   anchor held for a transmission, so a call's bursts keep their 60 ms spacing. Every channel's receiver is muted
   while it sends. A log line a transmission: runs, late, early (R3.17), underflows, the key-up error. `rtlsdr`:

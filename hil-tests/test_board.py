@@ -104,7 +104,7 @@ def test_status_headers_and_size():
     assert code == 200
     assert hdrs["Content-Type"].startswith("application/json")
     assert hdrs["Cache-Control"] == "no-store"
-    assert len(body) <= 6144
+    assert len(body) <= 8192  # the memory plan is about 4 KB with two roles (the W12)
 
 
 def test_crash_report(status):

@@ -79,6 +79,7 @@ int fe_lr2021_read_mem(uint32_t addr, uint32_t *words, int n);
 /* A driver TX mode on the held chip (lr2021_tx.h): its setup frames (*setup_ok counts the ones that went), then
  * data through lr2021_tx_stream. -1 on an error (fe_lr2021_error says what; stats tell an early end). */
 #include "lr2021.h"
+#include "lr2021_patch.h"
 #include "lr2021_tx.h"
 int fe_lr2021_tx_mode(const lr2021_tx_setup_t *s, const uint8_t *data, size_t n, uint32_t timeout, int max_ms,
                       lr2021_tx_stream_stats_t *stats, int *setup_ok);

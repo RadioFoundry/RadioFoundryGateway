@@ -177,6 +177,9 @@ uint16_t lr2021_calib_fe_word(uint32_t hz, bool hf);
 size_t lr2021_cmd_set_tcxo(uint8_t *buf, uint8_t tune, uint32_t start_32mhz_periods);
 size_t lr2021_cmd_set_dio_function(uint8_t *buf, uint8_t dio, uint8_t func, uint8_t sleep_pull);
 size_t lr2021_cmd_set_dio_rf_switch(uint8_t *buf, uint8_t dio, uint8_t modes);
+/* SetDioRfSwitchConfig's mode bits: the states a DIO is high in */
+enum { LR2021_RFSW_STANDBY = 0x01, LR2021_RFSW_RX_LF = 0x02, LR2021_RFSW_TX_LF = 0x04, LR2021_RFSW_RX_HF = 0x08,
+       LR2021_RFSW_TX_HF = 0x10 };
 size_t lr2021_cmd_set_dio_irq(uint8_t *buf, uint8_t dio, uint32_t irqs);
 size_t lr2021_cmd_clear_irq(uint8_t *buf, uint32_t irqs);
 size_t lr2021_cmd_clear_fifo_flags(uint8_t *buf, uint8_t rx, uint8_t tx);

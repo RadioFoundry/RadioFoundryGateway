@@ -29,6 +29,12 @@ int lr2021_tx_sample_bytes(lr2021_tx_mode_t mode)
     }
 }
 
+uint32_t lr2021_tx_max_run(lr2021_tx_mode_t mode)
+{
+    const int sb = lr2021_tx_sample_bytes(mode);
+    return sb > 1 ? LR2021_TX_MAX_RUN / (uint32_t)sb : LR2021_TX_MAX_RUN;
+}
+
 int lr2021_tx_frames(const lr2021_tx_setup_t *s, uint8_t f[][LR2021_TX_FRAME_MAX], size_t *len)
 {
     if (s->mode > LR2021_TX_FSK4 || (s->mode != LR2021_TX_CW && (s->rate == 0 || s->n == 0)))

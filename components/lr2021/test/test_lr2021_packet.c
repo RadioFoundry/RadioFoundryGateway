@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "esp_shim.h"
+#include "mock_hal.h"
 #include "lr2021.h"
 
 static int checks, fails;
@@ -175,7 +175,7 @@ static lr2021_t *open_dev(int cap)
     M.mode = LR2021_MODE_STBY_RC;
     M.cap = cap;
     F.respond = respond;
-    lr2021_config_t c = {.spi_host = 1, .sck = 1, .mosi = 2, .miso = 3, .nss = 4, .busy = 5, .nreset = 6, .irq = -1};
+    lr2021_config_t c = mock_config();
     lr2021_t *d = NULL;
     lr2021_open(&c, &d);
     M.last_us = F.now_us;
@@ -194,8 +194,8 @@ static void sending(void)
     M.tx_len = 20;
     M.bytes_per_us = 0.001; /* 8 kb/s */
     lr2021_packet_cfg_t c = {.max_ms = 1000};
-    esp_err_t e = lr2021_packet_send(d, data, 20, &c, &r);
-    CHECK(e == ESP_OK && (r.irq & TX_DONE) && r.len == 20 && M.settx == 1, "short: %d irq %08X", e, (unsigned)r.irq);
+    lr2021_err_t e = lr2021_packet_send(d, data, 20, &c, &r);
+    CHECK(e == LR2021_OK && (r.irq & TX_DONE) && r.len == 20 && M.settx == 1, "short: %d irq %08X", e, (unsigned)r.irq);
     CHECK(!memcmp(M.txdata, data, 20) && M.overflow == 0, "short: bytes");
     CHECK(r.done_us >= 19000 && r.done_us < 40000, "short: %lld us", (long long)r.done_us);
     lr2021_close(d);
@@ -205,7 +205,7 @@ static void sending(void)
     M.tx_len = 700;
     M.bytes_per_us = 0.05;
     e = lr2021_packet_send(d, data, 700, &c, &r);
-    CHECK(e == ESP_OK && r.len == 700 && M.sent_total == 700 && M.overflow == 0, "long: %d sent %d overflow %d", e,
+    CHECK(e == LR2021_OK && r.len == 700 && M.sent_total == 700 && M.overflow == 0, "long: %d sent %d overflow %d", e,
           M.sent_total, M.overflow);
     CHECK(!memcmp(M.txdata, data, 700), "long: bytes");
     lr2021_close(d);
@@ -217,19 +217,19 @@ static void sending(void)
     c.fifo_bytes = 1020;
     int before = F.xfers;
     e = lr2021_packet_send(d, data, 700, &c, &r);
-    CHECK(e == ESP_OK && M.sent_total == 700 && M.overflow == 0, "1K: %d", e);
+    CHECK(e == LR2021_OK && M.sent_total == 700 && M.overflow == 0, "1K: %d", e);
     (void)before;
     c.fifo_bytes = 0;
     lr2021_close(d);
 
-    // the chip's timeout: ESP_ERR_TIMEOUT
+    // the chip's timeout: LR2021_ERR_TIMEOUT
     d = open_dev(256);
     M.tx_len = 1000; /* never reached */
     M.bytes_per_us = 0;
     M.irq = 0;
     c.max_ms = 30;
     e = lr2021_packet_send(d, data, 10, &c, &r);
-    CHECK(e == ESP_ERR_TIMEOUT && r.timed_out && M.standbys == 2 && M.mode != LR2021_MODE_TX, "tx timeout: %d", e); /* at the start and the end */
+    CHECK(e == LR2021_ERR_TIMEOUT && r.timed_out && M.standbys == 2 && M.mode != LR2021_MODE_TX, "tx timeout: %d", e); /* at the start and the end */
     c.max_ms = 1000;
     lr2021_close(d);
 }
@@ -250,8 +250,8 @@ static void receiving(void)
     M.bytes_per_us = 0.01;
     M.rx_end_irq = RX_DONE;
     memset(buf, 0, sizeof buf);
-    esp_err_t e = lr2021_packet_receive(d, buf, sizeof buf, &c, &r);
-    CHECK(e == ESP_OK && r.len == 40 && !memcmp(buf, pkt, 40), "short rx: %d len %zu", e, r.len);
+    lr2021_err_t e = lr2021_packet_receive(d, buf, sizeof buf, &c, &r);
+    CHECK(e == LR2021_OK && r.len == 40 && !memcmp(buf, pkt, 40), "short rx: %d len %zu", e, r.len);
     CHECK(M.rx_timeout == 32768 && M.setrx == 1, "SetRx timeout %u", (unsigned)M.rx_timeout);
     lr2021_close(d);
 
@@ -265,7 +265,7 @@ static void receiving(void)
     M.rx_end_irq = RX_DONE;
     memset(buf, 0, sizeof buf);
     e = lr2021_packet_receive(d, buf, sizeof buf, &c, &r);
-    CHECK(e == ESP_OK && r.len == 600 && M.overflow == 0 && !memcmp(buf, pkt, 600), "long rx: %d overflow %d", e,
+    CHECK(e == LR2021_OK && r.len == 600 && M.overflow == 0 && !memcmp(buf, pkt, 600), "long rx: %d overflow %d", e,
           M.overflow);
     c.poll_us = 0;
     lr2021_close(d);
@@ -277,7 +277,7 @@ static void receiving(void)
     M.bytes_per_us = 0.01;
     M.rx_end_irq = RX_DONE | CRC_ERROR;
     e = lr2021_packet_receive(d, buf, sizeof buf, &c, &r);
-    CHECK(e == ESP_ERR_INVALID_CRC && r.crc_error && !memcmp(buf, pkt, 16), "crc: %d", e);
+    CHECK(e == LR2021_ERR_INVALID_CRC && r.crc_error && !memcmp(buf, pkt, 16), "crc: %d", e);
     lr2021_close(d);
 
     // a header error: no packet
@@ -287,7 +287,7 @@ static void receiving(void)
     M.bytes_per_us = 0.01;
     M.rx_end_irq = HEADER_ERROR;
     e = lr2021_packet_receive(d, buf, sizeof buf, &c, &r);
-    CHECK(e == ESP_ERR_INVALID_RESPONSE && !r.timed_out, "header error: %d", e);
+    CHECK(e == LR2021_ERR_INVALID_RESPONSE && !r.timed_out, "header error: %d", e);
     lr2021_close(d);
 
     // nothing on air: the chip's timeout
@@ -295,7 +295,7 @@ static void receiving(void)
     M.never = true;
     c.timeout = 3277; /* 100 ms */
     e = lr2021_packet_receive(d, buf, sizeof buf, &c, &r);
-    CHECK(e == ESP_ERR_TIMEOUT && r.timed_out && (r.irq & TIMEOUT), "rx timeout: %d", e);
+    CHECK(e == LR2021_ERR_TIMEOUT && r.timed_out && (r.irq & TIMEOUT), "rx timeout: %d", e);
     lr2021_close(d);
 
     // a packet longer than the buffer: the start kept, the rest read out and dropped
@@ -307,7 +307,7 @@ static void receiving(void)
     c.timeout = 0;
     memset(buf, 0, sizeof buf);
     e = lr2021_packet_receive(d, buf, 30, &c, &r);
-    CHECK(e == ESP_ERR_INVALID_SIZE && r.len == 100 && !memcmp(buf, pkt, 30) && buf[30] == 0 && M.level == 0,
+    CHECK(e == LR2021_ERR_INVALID_SIZE && r.len == 100 && !memcmp(buf, pkt, 30) && buf[30] == 0 && M.level == 0,
           "too long: %d", e);
     lr2021_close(d);
 
@@ -319,10 +319,10 @@ static void receiving(void)
     M.bytes_per_us = 0.01;
     M.rx_end_irq = RX_DONE;
     e = lr2021_packet_receive(d, buf, sizeof buf, &c, &r);
-    CHECK(e == ESP_OK && r.len == 8 && M.standbys >= 1, "from RX: %d", e);
+    CHECK(e == LR2021_OK && r.len == 8 && M.standbys >= 1, "from RX: %d", e);
     lr2021_close(d);
 
-    CHECK(lr2021_packet_receive(NULL, buf, 10, &c, &r) == ESP_ERR_INVALID_ARG, "no dev");
+    CHECK(lr2021_packet_receive(NULL, buf, 10, &c, &r) == LR2021_ERR_INVALID_ARG, "no dev");
 }
 
 int main(void)
