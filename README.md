@@ -10,6 +10,8 @@ A unified DMR repeater controller, DMR hotspot / network gateway, DMR-IP data ga
   with an RTL-SDR or integrated LR2021 can watch several channels at once and feed them into a network.
 - **Code:** a portable C11 core by default, with optional Rust core.
 
+![The W12's Radios page: six channels at 384 kS/s on its LR2021, with DMR calls in the waterfall](docs/img/w12-spectrum.png)
+
 Status: in development. See [docs/reference.md](docs/reference.md) for what's been tested and what isn't done.
 
 - Host tests pass.
@@ -21,7 +23,7 @@ Status: in development. See [docs/reference.md](docs/reference.md) for what's be
 - Multi-radio support, using any combination of physical or SDR-based radios
 - HBlink4 peer per radio (UDP, or SCTP over UDP for the roamer): DMRC, DMRD both ways, DMRT / DMRK call routing
 - MQTT: MMDVMHost-compatible call JSON, raw bursts, retained status per radio
-- SDR receiver: 4-5 simultaneous channels on the ESP32-S3, 10+ tested on a Raspberry Pi 3, using RTL-SDR or LR2021
+- SDR receiver: up to 6 simultaneous channels on the ESP32-S3, 10+ tested on a Raspberry Pi 3, using RTL-SDR or LR2021
 - Repeater: duplex, split duplex (two radios as one), and single-frequency-repeater
 - IP gateway for DMR packet data (UDP/ICMP NAT, static routes, and configurable firewall rules)
 - UTC slot timing from NTP, the browser or a GNSS receiver
