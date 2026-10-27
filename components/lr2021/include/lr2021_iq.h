@@ -5,8 +5,8 @@
  * lr2021_t. Portable and single-threaded: the caller runs lr2021_iq_poll in a loop on a thread of its own, at a
  * priority that keeps the 1 KB FIFO read (2 ms at 125 kS/s int16, R2.18), and serializes every other call with it.
  *
- * From RadioFoundry Gateway's esp_idf/main/fe_lr2021.c (its session, reader and transmit run), without the
- * gateway's ring, resampler and scheduling: samples go to a sink as they come, at the chip's own rate.
+ * Samples go to a sink as they come, at the chip's own rate: buffering, resampling and scheduling are the
+ * caller's.
  *
  * Receive modes (lr2021_iq_plan picks one for a rate):
  *
