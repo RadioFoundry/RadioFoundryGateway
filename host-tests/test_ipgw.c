@@ -1097,7 +1097,8 @@ static size_t icmp_dgram(uint32_t src, uint32_t dst, int ttl, int type, int code
     m[0] = (uint8_t)type;
     m[1] = (uint8_t)code;
     rdof_put_be32(m + 4, rest);
-    memcpy(m + 8, body, bl);
+    if (bl)
+        memcpy(m + 8, body, bl);
     uint32_t s = 0;
     for (size_t i = 0; i + 1 < 8 + bl; i += 2)
         s += rd16(m + i);

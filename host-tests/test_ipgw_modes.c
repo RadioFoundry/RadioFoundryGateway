@@ -586,6 +586,9 @@ static void ch_frame(void *ctx, const char *channel, const rdof_frame_t *f)
     rdof_ipgw_burst(&c->g, &w, f->dt, f->burst, c->t);
 }
 
+/* open takes a ch_t here: g_open's is an md_t */
+static bool ch_open(void *ctx, int flow) { return true; }
+
 static bool ch_send(void *ctx, int flow, uint32_t ip, uint16_t port, const uint8_t *data, size_t len, int ttl)
 {
     ((ch_t *)ctx)->udp++;
@@ -615,7 +618,7 @@ static void t_chain(void)
         char err[160];
         CHECK(rdof_ipgw_settings_parse(json, strlen(json), &cfg, err, sizeof err), "settings: %s", err);
         rdof_ipgw_init(&c.g, &cfg);
-        c.g.open = g_open;
+        c.g.open = ch_open;
         c.g.send_udp = ch_send;
         c.g.ctx = &c;
         uint8_t pre[2][RDOF_BURST_BYTES];

@@ -63,7 +63,7 @@ Used by the system tests only (`systest/`); nothing of them is in the gateway's 
 
 | What | License | Used for |
 |---|---|---|
-| [RadioFoundry](https://github.com/RadioFoundry/RadioFoundry) (a checkout given as `RADIOFOUNDRY_DIR`, at `systest/radiofoundry.ref`, 8c878103) | MIT | `radiosim` compiles its `core/hotspot`, the DMR code it uses and `tests/host/sim/dmr_sim_modem.c` (listed in `systest/CMakeLists.txt`) around our own `systest/radiosim/radiosim.c` |
+| [RadioFoundry](https://github.com/RadioFoundry/RadioFoundry) (a checkout given as `RADIOFOUNDRY_DIR`, at `systest/radiofoundry.ref`, 4f92e513) | MIT | `radiosim` compiles its `core/hotspot`, the DMR code it uses and `tests/host/sim/dmr_sim_modem.c` (listed in `systest/CMakeLists.txt`) around our own `systest/radiosim/radiosim.c` |
 
 ## Host dependencies
 

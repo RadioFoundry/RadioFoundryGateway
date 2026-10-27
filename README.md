@@ -30,8 +30,8 @@ flowchart LR
         NTP["NTP servers ×6"]
     end
     subgraph GW["RadioFoundry Gateway<br/>ESP32-S3 · Linux · macOS"]
-        CLK["Clock discipline<br/>falseticker rejection<br/>crystal ppm learned<br/>temperature corrected"]
-        GRID["UTC slot grid<br/>sample clock on UTC"]
+        CLK["Clock discipline<br/>rate · temperature"]
+        GRID["UTC slot grid"]
         R["Roamer · Repeater<br/>SDR receiver"]
         IP["DMR-IP gateway"]
     end
