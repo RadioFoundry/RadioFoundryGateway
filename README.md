@@ -213,6 +213,8 @@ and [LICENSES/](LICENSES/).
 - Mark Borgerding's [KISS FFT](https://github.com/mborgerding/kissfft): the structure of our FFT (BSD-3-Clause).
 - Adafruit's [GFX library](https://github.com/adafruit/Adafruit-GFX-Library): the 5x7 OLED font (BSD-2-Clause).
 - Howard Hinnant, for the published `days_from_civil` date algorithm.
+- chrony (Miroslav Lichvar and contributors), whose documented behavior netclock's NTP client follows (no chrony
+  code), and David L. Mills, for NTP (RFC 5905).
 - Realtek's RTL2832U datasheet, Rafael Micro's R820T2 register description and Jacobo Tarrio's
   [webrtlsdr](https://github.com/jtarrio/webrtlsdr) (Apache-2.0), for the register facts our RTL-SDR driver is
   written from (docs/spec/rtlsdr.md).
