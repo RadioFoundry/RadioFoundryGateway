@@ -9,10 +9,10 @@ data gateway, in any combination, from whatever radios you have. Also runs on Li
 
 - 📡 **Hear up to 6 channels at once** on an ESP32-S3 (RTL-SDR or the W12's built-in LR2021), 10+ on a Raspberry Pi
 - 🔁 **Repeater or roaming hotspot** from a hotspot-mode handheld, an MMDVM HAT, or the SDR itself
-- 🌐 **HBlink4 peer** per radio and per SDR channel, over UDP or SCTP
+- 🔗 **HBlink4 peer** per radio and per SDR channel, over UDP or SCTP
 - 📨 **MQTT** in MMDVMHost's call JSON, plus raw bursts for your own decoders
-- 🛰️ **UTC-locked slot timing** from GNSS PPS, NTP or the browser: groundwork for voting and simulcast
-- 🔌 **DMR-IP gateway** built in: radios' ARS, text, location and any UDP app reach the internet, no PC
+- 🛰️ **Disciplined UTC clock:** GNSS PPS or NTP, falsetickers rejected, the crystal's ppm and temperature drift learned and corrected, DMR slots and SDR samples locked to UTC. Groundwork for voting and simulcast
+- 🌐 **DMR-IP gateway** built in: radios' ARS, text, location and any UDP app reach the internet, no PC
 - 🖥️ **Web page and JSON API**: live spectrum and waterfall, Last heard, settings, Wi-Fi, clock, OTA, crash dumps
 - 🧪 **Tested byte for byte** against golden fixtures on the host, plus hardware-in-the-loop tests on boards
 
@@ -25,19 +25,26 @@ flowchart LR
         HS["Handheld in hotspot mode<br/>OpenGD77 / RadioFoundry"]
         HAT["MMDVM_HS HAT"]
     end
+    subgraph Time["Time sources"]
+        PPS["GNSS PPS"]
+        NTP["NTP servers ×6"]
+    end
     subgraph GW["RadioFoundry Gateway<br/>ESP32-S3 · Linux · macOS"]
+        CLK["Clock discipline<br/>falseticker rejection<br/>crystal ppm learned<br/>temperature corrected"]
+        GRID["UTC slot grid<br/>sample clock on UTC"]
         R["Roamer · Repeater<br/>SDR receiver"]
         IP["DMR-IP gateway"]
-        CLK["Clock<br/>GNSS PPS · NTP"]
     end
+    PPS --> CLK
+    NTP --> CLK
+    CLK --> GRID --> R
     SDR --> R
     HS <--> R
     HAT <--> R
     R <--> HB["HBlink4 network"]
     R --> MQ["MQTT broker<br/>dashboards, loggers"]
-    IP <--> NET["Internet / LAN<br/>servers, apps"]
     R <--> IP
-    CLK -.-> R
+    IP <--> NET["Internet / LAN<br/>servers, apps"]
 ```
 
 ## Mix and match radios
@@ -95,11 +102,20 @@ A powered USB hub runs two USB radios at once. An optional SSD1306 OLED shows th
 - UDP and ping through NAT, with replies sent back over the air
 - Firewall: private ranges denied by default, rate limits, flow and size caps
 
-**Time**
+**Disciplined time**
 
-- GNSS PPS (W12's L76K header), NTP (up to 6 servers, chrony-style), or the browser's clock
-- Learns the crystal's rate and keeps it across restarts
-- DMR slots laid on UTC, so every site agrees which slot is which
+The board doesn't just set its clock, it disciplines it, chrony style:
+
+- **Sources, best first:** GNSS PPS (the W12's L76K header), NTP (up to 6 servers), GNSS NMEA alone, the browser
+- **NTP selection:** Marzullo's algorithm picks the servers that agree and drops falsetickers and outliers
+- **Crystal rate:** a least-squares fit learns the crystal's ppm error. With a GNSS PPS it's good to hundredths of a ppm within minutes
+- **Temperature:** a rate-against-die-temperature table corrects drift as the board warms and cools
+- **Kept across restarts:** the rate and the table are stored, so a reboot starts disciplined
+- **No jumps:** corrections are slewed in. It steps only when three references in a row are over 200 ms off
+- **On the air:** DMR slots are laid on UTC, so every site agrees which slot is which and when it starts.
+  The SDR's sample clock is mapped to UTC, and transmit steers to the grid one sample at a time.
+  In the host tests a crystal 25 ppm fast stays within 97 µs of the grid.
+- **On the page:** the servers table (offset, delay, jitter, stratum, reach) and a residual plot
 
 **Board**
 
