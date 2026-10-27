@@ -1,9 +1,12 @@
 name: CI
 
+# Docs-only changes (Markdown, docs/, license texts) don't build or test anything.
 on:
   push:
     branches: [main]
+    paths-ignore: ['**.md', 'docs/**', 'LICENSES/**', 'LICENSE', 'NOTICE', 'AUTHORS']
   pull_request:
+    paths-ignore: ['**.md', 'docs/**', 'LICENSES/**', 'LICENSE', 'NOTICE', 'AUTHORS']
 
 jobs:
   host-tests:
