@@ -57,7 +57,7 @@ Each board runs whatever its config names: up to **two roamers or repeaters plus
 | LR2021 (Meshnology W12, on board) | SPI | ✅ multi-channel | ✅ | half |
 | Handheld in hotspot mode ([OpenGD77](https://www.opengd77.com/), [RadioFoundry](https://github.com/RadioFoundry/RadioFoundry)) | USB or UART | ✅ | ✅ | half or full |
 | MMDVM_HS HAT | UART | ✅ | ✅ | half or full |
-| Any SoapySDR device (Linux / macOS) | `rdofsdr` | ✅ multi-channel | — | — |
+| Any SoapySDR device (Linux / macOS): RTL-SDR and PlutoSDR tested; LimeSDR, HackRF, USRP B200 and others ([list](docs/reference.md)) | `rdofsdr` | ✅ multi-channel | — | — |
 
 Some combinations:
 

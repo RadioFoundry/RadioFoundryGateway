@@ -46,9 +46,24 @@ cmake -S . -B build/linux -DRADIOFOUNDRY_DIR=/path/to/radiofoundry && cmake --bu
 With SoapySDR installed (Debian / Ubuntu `libsoapysdr-dev`, Homebrew `soapysdr`) the build finds it and `rdofsdr`
 also runs live from any SoapySDR device: `rdofsdr --soapy driver=rtlsdr -r 1536000 --ch C1:461.4625 ...
 [--gain DB] [--setting biastee=true] [--seconds S]`. The device streams CF32 at the rate, tuned to the planned
-center; `--ppm` stays the receiver's software correction. Checked against SoapySDR 0.8 and SoapyRTLSDR on Debian
-aarch64 (2026-10-24). The device API plan, [docs/spec/fw/sdr-device-api.md](spec/fw/sdr-device-api.md), takes the
-same model into the firmware's front ends.
+center; `--ppm` stays the receiver's software correction. The rate must be a multiple of 48000 that the device
+can run at exactly (`rdofsdr` warns when it can't).
+
+| Device | Soapy module | Rate (`-r`) | Status |
+|---|---|---|---|
+| RTL-SDR | SoapyRTLSDR | 1536000 | Tested: SoapySDR 0.8 on Debian aarch64 (2026-10-24) |
+| PlutoSDR | SoapyPlutoSDR (libiio) | 2400000 | Tested: "PlutoSDR Rev.C (Z7010-AD9361)", firmware v0.38, USB, SoapySDR 0.9 and libiio 0.26 on macOS arm64 (2026-10-27) |
+| LimeSDR | SoapyLMS7 (LimeSuite) | 1536000 | Untested; any rate |
+| HackRF One | SoapyHackRF | 2400000 or more | Untested; 2-20 MS/s |
+| Ettus B200 / B210 | SoapyUHD (UHD) | 1536000 | Untested; any rate |
+| bladeRF | SoapyBladeRF | 1536000 | Untested; any rate |
+| SDRplay RSP | SoapySDRPlay3 | 2400000 | Untested; 2 MS/s or more |
+| Airspy Mini | SoapyAirspy | 6000000 | Untested; 3 and 10 MS/s aren't multiples of 48000 |
+
+The Airspy R2 (2.5 and 10 MS/s only) doesn't fit. The tested Pluto's FPGA x8 decimator doesn't work: below about
+2.08 MS/s SoapyPlutoSDR turns it on, and the board then streams a constant (also when read through libiio
+directly), so run it at 2.4 MS/s or more; a Pluto whose decimator works may run at 1536000. The device API plan,
+[docs/spec/fw/sdr-device-api.md](spec/fw/sdr-device-api.md), takes the same model into the firmware's front ends.
 
 Checked on macOS (arm64; Apple clang, and GCC 15 with `-DRDOF_SANITIZE=OFF -DTINYSCTP_SANITIZE=OFF`, as GCC there
 has no sanitizer runtime) and Linux (Ubuntu 24.04 x86_64, GCC 13, LeakSanitizer included; Debian 13
