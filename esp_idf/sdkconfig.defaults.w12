@@ -19,9 +19,6 @@ CONFIG_RDOF_SDR_LR2021=y
 # CONFIG_RDOF_USB_HOST is not set
 # No log on the USB serial port: with nothing reading it, writes stall and the SDR's ring overflows (2026-10-24:
 # about 150 KB/s of 768 KB/s lost and 6 KB less internal RAM). UART0 still has the log; turn it on for a session.
-# FreeRTOS run-time stats: the LR2021 reader logs its share of core 0 every minute
-CONFIG_FREERTOS_USE_TRACE_FACILITY=y
-CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
 # The LR2021 reader's sleeps under a tick (components/lr2021/port/esp_idf.c): a one-shot esp_timer dispatched from
 # its ISR, so the wake doesn't wait behind Wi-Fi for esp_timer's task
 CONFIG_ESP_TIMER_SUPPORTS_ISR_DISPATCH_METHOD=y

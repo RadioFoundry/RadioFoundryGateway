@@ -323,7 +323,10 @@ int rdof_chz_process(rdof_chz_t *s, const rdof_cf_t *in, int n_in, rdof_cf_t *ou
         int take = N - s->fill;
         if (take > n_in - used)
             take = n_in - used;
+        const uint32_t tc = chz_now();
         memcpy(s->win + s->fill, in + used, sizeof(rdof_cf_t) * take);
+        if (chz_clock)
+            rdof_chz_prof.copy += (uint32_t)(chz_now() - tc);
         s->fill += take;
         used += take;
         if (s->fill < N)
@@ -333,10 +336,16 @@ int rdof_chz_process(rdof_chz_t *s, const rdof_cf_t *in, int n_in, rdof_cf_t *ou
         const unsigned boff = s->boff;
         s->boff = (boff + (unsigned)s->hop) % (unsigned)N;
         s->block++;
+        const uint32_t th = chz_now();
         for (int c = 0; c < s->C; c++)
             channel_block(s, c, s->X, boff, noise, out + (size_t)c * stride + produced, s->inv, s->Y, s->y);
+        const uint32_t tm = chz_now();
         produced += s->out_per_hop;
         memmove(s->win, s->win + s->hop, sizeof(rdof_cf_t) * (N - s->hop));
+        if (chz_clock) {
+            rdof_chz_prof.chan += (uint32_t)(tm - th);
+            rdof_chz_prof.copy += (uint32_t)(chz_now() - tm);
+        }
         s->fill = N - s->hop;
     }
     return produced;

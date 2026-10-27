@@ -181,7 +181,7 @@ void roam_mqtt_start(roam_t *r)
                         .on_connected = on_connected, .ctx = r, .up = &r->st.mqtt_up,
                         .alias_topics = q->alias_topics, .n_alias_topics = 2};
     q->client = net_mqtt_start(&q->m);
-    roam_task(r, heartbeat_task, "roam_status", 3072, 4);
+    roam_task(r, heartbeat_task, "roam_status", 4096, 4); /* 3072 left 80 bytes on the W12 (2026-10-27) */
 }
 
 #else

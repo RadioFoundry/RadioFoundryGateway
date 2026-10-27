@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "app.h"
+#include "esp_cpu.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 
@@ -44,6 +45,7 @@ typedef struct {
 } fft_plan_t;
 
 static bool fft_pq_ok = true; /* the P x Q plans passed their check at boot */
+static bool fft_pq512;        /* and 512 (384 kS/s) as 2 x 256 did, against radix-2 */
 
 static bool fft_conj_trick; /* the library's forward sign is the other way: flip it */
 
@@ -165,7 +167,8 @@ static void fft6_run(fft_plan_t *p, const rdof_cf_t *in, rdof_cf_t *out)
 /* A forward FFT of n = P x Q points, P in {2, 3, 5, 6} and Q a power of 4 up to FFT4_MAX, the way fft6 does
  * 6 x 64: P radix-4 FFTs of Q points (x[P n2 + n1]), then per k2 the twiddles W_n^(n1 k2) and a P-point DFT.
  * The channelizer's forward FFT at 576, 960 and 1152 kS/s (768, 1280, 1536 points), which the built-in mixed
- * radix does at about 250 cycles a point. NULL for a size it can't do. */
+ * radix does at about 250 cycles a point, and at 384 kS/s (512 points) when fft_pq512 is set: 36k cycles against
+ * radix-2's 60k with its bit reversal and conjugate passes (W12, 2026-10-27). NULL for a size it can't do. */
 static void *fftpq_create(int n)
 {
     static const int ps[] = {5, 3, 6, 2};
@@ -216,6 +219,15 @@ static void fftpq_run(fft_plan_t *p, const rdof_cf_t *in, rdof_cf_t *out)
         dsps_fft4r_fc32((float *)f, Q);
     }
     const rdof_cf_t *tw = p->tw;
+    if (P == 2) { /* the 2-point DFT: one twiddle, a sum and a difference */
+        for (int k2 = 0; k2 < Q; k2++) {
+            const int q = p->perm[k2];
+            const rdof_cf_t z0 = sub[q], z1 = cmul_(sub[Q + q], tw[k2]);
+            out[k2] = (rdof_cf_t){z0.re + z1.re, z0.im + z1.im};
+            out[k2 + Q] = (rdof_cf_t){z0.re - z1.re, z0.im - z1.im};
+        }
+        return;
+    }
     if (P == 5) { /* the 5-point DFT with its constants: no table, no modulo */
         const float c1 = 0.309016994f, c2 = -0.809016994f, s1 = 0.951056516f, s2 = 0.587785252f;
         for (int k2 = 0; k2 < Q; k2++) {
@@ -262,7 +274,7 @@ static void fftpq_run(fft_plan_t *p, const rdof_cf_t *in, rdof_cf_t *out)
 static void *fft_create(int n, bool inverse)
 {
     if (!inverse && n != 6 * SIX_M && fft_pq_ok && !(power_of_4(n) && n <= FFT4_MAX) &&
-        !(n >= 16 && n <= FFT2_MAX && !(n & (n - 1)))) {
+        (!(n >= 16 && n <= FFT2_MAX && !(n & (n - 1))) || (n == 2 * FFT4_MAX && fft_pq512))) {
         void *p = fftpq_create(n);
         if (p)
             return p;
@@ -355,6 +367,24 @@ static double fft_check(int n, bool inverse)
     free(a);
     free(b);
     return err / mx;
+}
+
+/* One forward FFT of n points, in cycles (the plan's second run: warm caches). */
+static uint32_t fft_cycles(int n)
+{
+    rdof_cf_t *x = calloc(n, sizeof *x), *a = malloc(sizeof(rdof_cf_t) * n);
+    void *p = x && a ? fft_create(n, false) : NULL;
+    uint32_t c = 0;
+    if (p) {
+        fft_run(p, x, a);
+        const uint32_t t = esp_cpu_get_cycle_count();
+        fft_run(p, x, a);
+        c = esp_cpu_get_cycle_count() - t;
+        fft_destroy(p);
+    }
+    free(x);
+    free(a);
+    return c;
 }
 
 /* ── FIR ────────────────────────────────────────────────────────────────── */
@@ -549,6 +579,13 @@ void dsp_esp_install(void)
         fft_pq_ok = g_esp_fft && epq < 1e-4;
         ESP_LOGI(TAG, "FFT 768 / 1280 / 1536 as 3 / 5 / 6 x 256: %s (error %.2g)", fft_pq_ok ? "in use" : "LEFT OUT",
                  epq);
+        /* 512 (384 kS/s) as 2 x 256 rather than radix-2 with its bit reversal and conjugate passes, if it agrees */
+        const uint32_t c2 = fft_cycles(512);
+        fft_pq512 = fft_pq_ok;
+        const double e512 = fft_pq512 ? fft_check(512, false) : INFINITY;
+        fft_pq512 = e512 < 1e-4;
+        ESP_LOGI(TAG, "FFT 512 as 2 x 256: %s (error %.2g; %lu cycles, radix-2 %lu)", fft_pq512 ? "in use" : "LEFT OUT",
+                 e512, (unsigned long)(fft_pq512 ? fft_cycles(512) : 0), (unsigned long)c2);
         ESP_LOGI(TAG, "FFT (dsps_fft4r_fc32 to %d and 384 as 6 x 64, dsps_fft2r_fc32 to %d): %s (error %.2g of the largest bin)%s", FFT4_MAX, FFT2_MAX,
                  g_esp_fft ? "in use" : "LEFT OUT",
                  e, fft_conj_trick && g_esp_fft ? ", sign flipped" : "");

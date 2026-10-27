@@ -47,7 +47,8 @@ How (`rdof_mem_how_t`):
 | `BUDGET` | counted, not allocated: something allocates it soon after | the web server's stack, MQTT clients, CDC-ACM, lwIP sockets, SCTP |
 
 An elastic claim (`mem_elastic`) gets its size at least and grows in steps up to a maximum from what is spare once
-every role has its share.
+every role has its share. An elastic `FALLBACK` claim grows in its turn among the `FALLBACK` claims instead, ahead of
+the ones declared after it (the SDR's hot arena before the roamer's stacks).
 
 A HOLD keeps the room until the driver needs it. Between the free and the driver's allocation nothing else runs on
 that heap (the role's start is one task), so the driver gets the same block back.
@@ -64,8 +65,8 @@ block) and, role by role in the order declared:
    plan's `error` says so and the role runs (its `why` starts "over the margin").
 4. Otherwise the role's claims are placed and their bytes taken off what is left.
 
-Then the `FALLBACK` claims are placed (internal while the spare holds them, else PSRAM), and the elastic claims share
-the spare in the order declared. The spare left is `spare`. Last, each role's `ALLOC` claims of each kind are laid
+Then the `FALLBACK` claims are placed (internal while the spare holds them, else PSRAM; an elastic one grows there
+from the spare), and the other elastic claims share the spare in the order declared. The spare left is `spare`. Last, each role's `ALLOC` claims of each kind are laid
 out in one region, each claim at its alignment.
 
 The declaration order is the priority: the SDR first (its DSP buffers want the heap in one piece), then the radios,
@@ -100,8 +101,14 @@ claim.
 
 The DSP task opens the arena (`sdr_hot_arena_open`) only while it builds a receiver and closes it after; each
 receiver starts it over. Anything else that allocates meanwhile (the page's spectrum, from another task) doesn't
-land in it. A free inside the arena does nothing. Past its end, the receiver's buffers come from the internal heap
-as before. The SDR status shows `hot_arena` and `hot_arena_used`; the log says how much the receiver used.
+land in it. A free inside the arena does nothing.
+
+On a board with PSRAM the arena is two claims: `hot`, internal and elastic from what the plan has spare (ahead of
+the roamer's `FALLBACK` stacks), and `hot_ps`, the whole size in PSRAM. The receiver's buffers fill `hot` first, in
+the order it builds them (the channelizer's first), then `hot_ps`. On the W12 at 384 kS/s and 5 channels that's 17
+KB internal and 11 KB in PSRAM. Without PSRAM, `hot` is the whole size, internal. Past both, the receiver's buffers
+come from the internal heap as before. The SDR status shows `hot_arena`, `hot_arena_used` and `hot_arena_spill`;
+the log says how much the receiver used.
 
 The DSP's other buffers (trackers, demod history, channelizer output) still come from `fast_alloc`: internal while
 `CONFIG_RDOF_SDR_INTERNAL_RESERVE_KB` stays free, else PSRAM. Measured on five busy channels, they cost nothing in
@@ -124,8 +131,9 @@ Per role, what is declared (bytes; "×n" a count). Sizes are the code's; the SDR
 | Role | Claim | Size | Where | How | When |
 |---|---|---|---|---|---|
 | `sdr` | `iq` | `CONFIG_RDOF_SDR_CHUNK` × 8 (32 KB at 4096) | internal, 16-aligned | alloc | an SDR in `run` (not "either") |
-| | `raw` | chunk × the front end's sample bytes | internal, 16-aligned | alloc | |
-| | `hot` | measured (§5) | internal, 16-aligned, PSRAM when short (fallback) | alloc | |
+| | `raw` | chunk × the front end's sample bytes (8 KB for the LR2021's int8) | internal, 16-aligned; PSRAM for the LR2021 | alloc | |
+| | `hot` | measured (§5); with PSRAM, from 16 bytes up to that (elastic) | internal, 16-aligned (fallback) | alloc | |
+| | `hot_ps` | measured (§5) | PSRAM, 16-aligned | alloc | a board with PSRAM |
 | | `dsp` | 8192 stack + control block | internal | alloc | |
 | | `dsp_helper` | `CONFIG_RDOF_SDR_HELPER_STACK` (6144) | internal | alloc | `dsp_cores` 2 and the self-test hasn't started it |
 | `sdr_net` | `sdr_status` | 4096 | internal | alloc | |

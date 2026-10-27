@@ -97,6 +97,41 @@ static const char *reset_name(esp_reset_reason_t r)
     }
 }
 
+#if CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS
+/* Each core's busy share: 1 less its idle task's share of the time since the last sample. A sample is at least 2 s
+ * long, so several viewers polling the page see the same figures rather than short, noisy windows. */
+static void cpu_json(rdof_json_t *j)
+{
+    static int64_t t0;
+    static uint32_t idle0[CONFIG_FREERTOS_NUMBER_OF_CORES];
+    static double busy[CONFIG_FREERTOS_NUMBER_OF_CORES];
+    static bool have;
+    const int64_t now = esp_timer_get_time();
+    if (now - t0 >= 2000000) {
+        for (int c = 0; c < CONFIG_FREERTOS_NUMBER_OF_CORES; c++) {
+            TaskStatus_t ts;
+            vTaskGetInfo(xTaskGetIdleTaskHandleForCore(c), &ts, pdFALSE, eReady);
+            const uint32_t idle = (uint32_t)ts.ulRunTimeCounter; /* esp_timer us */
+            if (t0) {
+                const double b = 1.0 - (double)(uint32_t)(idle - idle0[c]) / (double)(now - t0);
+                busy[c] = b < 0 ? 0 : b;
+                have = true;
+            }
+            idle0[c] = idle;
+        }
+        t0 = now;
+    }
+    if (!have)
+        return;
+    char a[48];
+    int n = 0;
+    for (int c = 0; c < CONFIG_FREERTOS_NUMBER_OF_CORES; c++)
+        n += snprintf(a + n, sizeof a - (size_t)n, "%s%.3f", c ? "," : "[", busy[c]);
+    snprintf(a + n, sizeof a - (size_t)n, "]");
+    rdof_json_raw(j, "cpu", a);
+}
+#endif
+
 static esp_err_t get_status(httpd_req_t *req)
 {
     const size_t cap = 14336; /* two roamers with SCTP and jitter status, the SDR, the IP gateway, the memory plan */
@@ -118,6 +153,9 @@ static esp_err_t get_status(httpd_req_t *req)
     crash_status_json(&j); /* the core dump in flash, if any (crash.c) */
     rdof_json_int(&j, "heap_free", (long long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     rdof_json_int(&j, "psram_free", (long long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+#if CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS
+    cpu_json(&j); /* each core's busy share */
+#endif
     mem_status_json(&j); /* the plan: each role's claims, internal / DMA / PSRAM free and largest, the margin */
     rdof_json_bool(&j, "settings_ok", g_cfg_ok);
     rdof_json_str(&j, "settings_error", g_cfg_error);

@@ -249,6 +249,14 @@ bool rdof_memplan_solve(rdof_memplan_t *p, const rdof_mem_avail_t *a)
         if (b <= left || !psram || b > ps_left) {
             c->where = RDOF_MEM_IN_INTERNAL;
             left -= b;
+            if (c->max && left > 0) { /* elastic: grown now, ahead of the fallback claims after it */
+                int64_t extra = left / c->count;
+                if (extra > (int64_t)(c->max - c->size))
+                    extra = c->max - c->size;
+                extra -= extra % c->unit;
+                c->got = c->size + (uint32_t)extra;
+                left -= extra * c->count;
+            }
             if (left < 0) {
                 snprintf(why, sizeof why, "%s %s: %lld KB short of internal RAM above the margin",
                          p->role[c->role].name, c->name, KB(-left));
@@ -262,7 +270,7 @@ bool rdof_memplan_solve(rdof_memplan_t *p, const rdof_mem_avail_t *a)
     /* elastic claims share what's spare, in order */
     for (int i = 0; i < p->n; i++) {
         rdof_mem_claim_t *c = &p->c[i];
-        if (!c->max || !planned(p, c->role) || c->where == RDOF_MEM_NOWHERE)
+        if (!c->max || (c->caps & RDOF_MEM_FALLBACK) || !planned(p, c->role) || c->where == RDOF_MEM_NOWHERE)
             continue;
         int64_t *pool = c->where == RDOF_MEM_IN_PSRAM ? &ps_left : &left;
         if (*pool <= 0)

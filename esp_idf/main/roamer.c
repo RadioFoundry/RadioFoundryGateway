@@ -58,7 +58,7 @@ bool roamer_mem_claims(void)
         mem_add_task(role, "rx", 8192, stacks);
         mem_add_task(role, "modem_rx", 6144, stacks);
         mem_add_task(role, "roam_hblink", 4096, stacks);
-        mem_add_task(role, "roam_status", 3072, stacks);
+        mem_add_task(role, "roam_status", 4096, stacks);
         rdof_cfg_port_t p[2];
         const int n = rdof_config_ports(c, p);
         int uarts = 0;

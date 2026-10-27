@@ -1032,7 +1032,7 @@ continuous, then the gain step (SetRx forces step 13; spec R2.25). It runs in on
   the DSP core to the settings' rate.
 - **Wide, 120001 to 576000:** the FSK modem with its receive bandwidth as the rate code (spec R2.19), and the
   route's own rate converter making the settings' rate exactly (source 0, int8 I/Q; R2.21). No resampler on the
-  ESP. 576000 gives about 355 kHz of channels; 131 of 131 bench bursts decoded at 461 MHz.
+  ESP: the DSP gets the int8 samples as they came (the front end's format is CS8). 576000 gives about 355 kHz of channels; 131 of 131 bench bursts decoded at 461 MHz.
 - **Wide in int16, `device.settings.iq_bits` 16, 120001 to 240000:** the FSK modem's own rate (source 2, int16),
   resampled on the DSP core. About 50 dB more headroom than int8, for a box near strong radios; 240000 gives about
   77 kHz of channels (250 kS/s, 1 MB/s of SPI). 130 of 131 bench bursts. 288000 needs the SPI at 20 MHz (R2.29).
@@ -1267,8 +1267,8 @@ channelizer (its bins, filter, 64-point inverse FFT and NCO), then its demod. Th
 core 1 after. The forward step keeps each block's spectrum (about 43 KB at 288 kS/s with 4096-sample chunks,
 allocated on the first two-core chunk; without the memory it falls back to channelizing everything on core 1),
 and core 0 has its own inverse FFT plan, since an esp-dsp plan's work buffer can't be shared. The forward FFT at
-576, 960 and 1152 kS/s (768, 1280 and 1536 points) is 3, 5 or 6 esp-dsp radix-4 FFTs of 256 and a small DFT per
-bin (`dsp_esp.c`), checked against the built-in one at boot; the built-in mixed radix took 365 Mcycles/s at 960 kS/s. The split starts at
+384, 576, 960 and 1152 kS/s (512, 768, 1280 and 1536 points) is 2, 3, 5 or 6 esp-dsp radix-4 FFTs of 256 and a
+small DFT per bin (`dsp_esp.c`), checked against the built-in one at boot; the built-in mixed radix took 365 Mcycles/s at 960 kS/s. The split starts at
 `round(C / 2 - 0.6)` channels on core 1 (forward FFT and trackers about 33 Mcycles/s, a busy channel about 28)
 and is then chosen by what a chunk really takes, start to end: every 64 chunks it tries one channel more on the
 less busy core, keeps that if the next 64 chunks were 2% faster, else goes back and waits 8 windows. Core 1 always
@@ -1502,7 +1502,7 @@ which the last line gives (`spike done: ... the most that arrived 1152.5 KB/s` o
 
 **5. Receive.** Set Wi-Fi, MQTT and the channels; key a radio on one of them. On the page:
 - "USB samples" near 100% of the expected rate;
-- "DSP load" under about 80% (or set `"dsp_cores": 2`);
+- "DSP load" under about 80% (or set `"dsp_cores": 2`, if the board's "CPU" row shows core 0 has room);
 - the channel's bursts count up, with RSSI and AFC.
 On MQTT: `DMR/<id>/sdr/json` call start / end, `DMR/<id>/sdr/raw`, the retained `Receiver` messages, and
 `DMR/_sdr/<name>/status` every 30 s. With `hblink.enabled`, each channel's peer registers (`peer ... registered`).
@@ -1597,6 +1597,72 @@ next lever: a skipped channel needs only its last two blocks inverse-FFT'd (for 
 moved on. After that, the forward FFT in int16 (8-bit samples lose nothing; esp-dsp's `dsps_fft2r_sc16` does 64
 points in 775 cycles against radix-4 float's 2,300; about 4%), and fewer PSRAM bytes per sample. Five busy
 channels on one core then reached about 93% of real time.
+
+On the W12 (LR2021, CONV8, real channels, mostly idle) on 2026-10-27, after the LR2021 reader went from 43% of core
+0 to 31%. Each run is 1 to 2 minutes; `cpu` is the status's busy share of each core:
+
+| Run | `cpu` (core 0, core 1) | DSP load | Samples lost |
+|---|---|---|---|
+| 384 kS/s, 5 channels, one core (as configured) | 0.43, 0.99 | 0.94 | none |
+| the same, `"dsp_cores": 2` | 0.72, 0.78 | 0.95 | about 6% (and 7 KB less internal RAM) |
+| 384 kS/s, 6 channels, one core | 0.41, 0.99 | 0.95 | about 3% |
+| 576 kS/s, 5 channels, one core | 0.52, 0.99 | 0.95 | about 33% (the reader 42% of core 0, no FIFO losses) |
+
+The status's `chz_steps` (the channelizer by step) put the forward FFT at 0.31 of core 1: 512 points on esp-dsp's
+radix-2 with its bit reversal and conjugate passes. Two changes, the output the same:
+
+- 512 points as 2 x 256 on radix-4 and a 2-point step (`dsp_esp.c`, checked at boot like the other P x Q sizes):
+  36k cycles against 60k at boot, 0.31 to 0.23 of core 1 live.
+- The LR2021's `read` waits for a whole chunk (`fe_lr2021.c`). It used to hand over what was in the ring once the
+  first block came, so a DSP with time to spare ran chunks of a millisecond or two and their per-chunk costs (the
+  demods' and trackers' calls, the gate) used the time up: the load read 0.94 with 5 channels and with 6.
+
+Then, same channels:
+
+| Run | `cpu` (core 0, core 1) | DSP load | Samples lost |
+|---|---|---|---|
+| 384 kS/s, 5 channels | 0.41, 0.88 | 0.83 | none |
+| 384 kS/s, 6 channels | 0.41, 0.93 | 0.89 | none |
+| 384 kS/s, 7 channels | 0.42, 0.99 | 0.95 | none while idle, no margin for calls |
+
+Six channels at 384 kS/s is the limit with room for traffic; 576 kS/s still doesn't fit on one core. Core 0 has
+about half a core spare, but on the W12 neither way of giving it DSP work gains anything:
+
+- `"dsp_cores": 2` (above) and a pipeline (tried and dropped: a core 0 task did each chunk's input step and forward
+  FFTs a chunk ahead into a second block store while core 1 ran the channels and demods, bit-exact with one core)
+  both keep every block's spectrum in a store in PSRAM, about 4 MB/s written by one core and read by the other.
+  The single core reuses one spectrum buffer that stays in the cache. The forward FFTs took 1.75 times their
+  one-core cycles on core 0, and the input step 4 times into a PSRAM buffer, so the pipeline freed 0.2 of core 1
+  and took 0.63 of core 0, which then ran at 99% and the web server stalled.
+- The hot arena (28 KB) was in PSRAM on the W12: the plan places it after the fixed claims, and the chunk buffers
+  (48 KB internal) left it 1 KB short. With `CONFIG_RDOF_SDR_CHUNK` 2048 and a 90 KB margin it fits in internal
+  RAM: the load at 5 channels went from 0.88 (2048, arena in PSRAM) to 0.81, the forward FFT from 0.21 to 0.17,
+  with 16 KB of heap free instead of 20 KB. Not taken: 3% better than 4096-sample chunks with the arena in PSRAM,
+  for 6 KB less margin.
+
+Instead, three changes give the arena internal RAM with the chunk and the margin as they were:
+
+- The LR2021's samples stay int8 when the chip's converter makes the rate (`caps.format` CS8, set at boot):
+  `read` receives straight into the chunk, and the `raw` chunk buffer is 8 KB instead of 16.
+- `raw` is in PSRAM for the LR2021: it's written once and read once in order, and the input step's time didn't
+  change (0.069 of core 1 either way).
+- The arena is an elastic internal claim, grown from the spare ahead of the roamer's FALLBACK stacks, plus a PSRAM
+  part for the rest (`hot_ps`, [memory.md](spec/fw/memory.md#5-the-sdrs-hot-arena)): the channelizer's buffers,
+  built first, get the internal part.
+
+At 384 kS/s, about 2 minutes each, no samples lost:
+
+| Run | arena internal | `cpu` core 1 | forward FFT |
+|---|---|---|---|
+| 5 channels, before | 0 | 0.88 | 0.19 |
+| int8 alone (the 8 KB went to the roamer's `radio` stack) | 0 | 0.87 | 0.19 |
+| int8, partial arena | 9 KB | 0.84 | 0.17 |
+| int8, `raw` in PSRAM, partial arena | 17 KB | 0.83 | 0.16 |
+| the same, 6 channels | 17 KB | 0.89 (was 0.93) | 0.16 |
+| the same, 7 channels | 18 KB | 0.97 (was 0.99; the ring peaked at 200 KB) | 0.16 |
+
+Six channels keep about 10% of core 1 for calls; seven still don't. The heap's free internal RAM went from about
+20.7 KB to 19.5 KB (the plan's spare, now in the arena); the margin is unchanged.
 
 ### The bench API
 

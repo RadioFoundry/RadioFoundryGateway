@@ -198,7 +198,7 @@ function problems(s) {
 }
 
 // ── anything in /api/status this page doesn't know: shown as it comes ─────
-const KNOWN = 'name version idf uptime_s reset crash heap_free psram_free memory settings_ok settings_error wifi ap_mode ip clock usb_either build_roamer build_sdr selftest spike roamer roamers sdr'.split(' ');
+const KNOWN = 'name version idf uptime_s reset crash heap_free psram_free cpu memory settings_ok settings_error wifi ap_mode ip clock usb_either build_roamer build_sdr selftest spike roamer roamers sdr'.split(' ');
 const extras = s => Object.entries(s).filter(([k]) => !KNOWN.includes(k));
 const flat = (o, pre = '') => Object.entries(o).flatMap(([k, v]) => v && typeof v == 'object' ?
   (Array.isArray(v) && v.every(x => typeof x != 'object') ? [[pre + k, v.join(', ')]] : flat(v, pre + k + '.')) : [[pre + k, v]]);
@@ -222,12 +222,14 @@ const more = (o, known, key) => { const r = flat(o).filter(([k]) => !known.inclu
 const clockName = c => c === 'pps' ? sp('ok', 'GNSS PPS') : c === 'ntp' ? sp('ok', 'NTP') : c === 'browser' ? sp('warn', 'from a browser') : sp('bad', 'not set');
 const wifiText = s => yes(s.wifi) + (s.ip ? ' ' + esc(s.ip) : '') + (s.ap_mode ? ' ' + sp('warn', '(setup access point on)') : '');
 const memRow = s => ['Memory free', kb(s.heap_free) + ' internal, ' + kb(s.psram_free) + ' PSRAM'];
+// Each core's busy share (cpu: one figure per core, with the FreeRTOS run-time stats built in).
+const cpuRow = s => s.cpu && ['CPU', s.cpu.map((v, c) => 'core ' + c + ' ' + sp(v > 0.9 ? 'bad' : v > 0.75 ? 'warn' : '', pct(v))).join(', ')];
 const buildRow = s => ['Build', (/-dirty$/.test(s.version) ? sp('bad', esc(s.version)) : esc(s.version)) + (s.idf ? ' · IDF ' + esc(s.idf) : '')];
 const boardRows = s => [
   ['Runs', (radios(s).concat([s.sdr]).filter(Boolean).map(x => x.name).filter(Boolean).map(esc).join(', ') || '-') +
     (s.usb_either ? ' <span class="mute">(both on USB: whichever is plugged in runs)</span>' : '')],
   ['Settings', s.settings_ok ? sp('ok', 'ok') : sp('bad', esc(s.settings_error) + ' (running the defaults)')],
-  ['Wi-Fi', wifiText(s)], ['Clock', clockName(s.clock)], memRow(s),
+  ['Wi-Fi', wifiText(s)], ['Clock', clockName(s.clock)], memRow(s), cpuRow(s),
   ['Up', dur(s.uptime_s) + ' <span class="mute">(last reset: ' + esc(s.reset) + ')</span>'],
   ['Crash', crashText(s.crash)], buildRow(s)];
 // The memory plan (docs/spec/fw/memory.md): what each role claimed at boot, and the heap now.
@@ -397,7 +399,7 @@ function render() {
       ...rs.map(r => [esc(r.name), 'HBlink4 ' + up(r.hblink) + ', MQTT ' + up(r.mqtt) + (r.sctp ? ', SCTP ' + esc(r.sctp.state) + ' (RTT ' + r.sctp.srtt_ms + ' ms)' : '')]),
       s.sdr && [esc(s.sdr.name), 'MQTT ' + up(s.sdr.mqtt) + ', HBlink4 ' + s.sdr.hblink_up + ' of ' + s.sdr.hblink_peers + ' peers']]));
   } else if (t == 'maint') {
-    $('m_board').innerHTML = '<h2>Board</h2>' + kv([buildRow(s), ['Up', dur(s.uptime_s)], ['Last reset', esc(s.reset)], memRow(s),
+    $('m_board').innerHTML = '<h2>Board</h2>' + kv([buildRow(s), ['Up', dur(s.uptime_s)], ['Last reset', esc(s.reset)], memRow(s), cpuRow(s),
       ['Built with', [s.build_roamer && 'roamer', s.build_sdr && 'SDR'].filter(Boolean).join(', ') || '-']]);
     const c = s.crash;
     $('m_crash').innerHTML = '<h2>Crash ' + (c ? pill('bad', 'core dump saved') : pill('ok', 'none')) + '</h2>' + kv([['Last', crashText(c)],

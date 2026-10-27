@@ -80,7 +80,7 @@ static volatile int64_t spec_want_until; /* esp_timer us: someone looked at it l
 static int spec_row_ms;
 static bool spec_failed;
 static rdof_cf_t *iq; /* the chunk as float, internal RAM */
-static uint8_t *raw_buf; /* the chunk as the front end gives it, internal RAM */
+static uint8_t *raw_buf; /* the chunk as the front end gives it (sdr_mem_claims says where) */
 static double rx_freq[RDOF_SDR_MAX_CHANNELS]; /* g_rx's channels' frequencies */
 static int64_t last_wait_us; /* when the DSP task last blocked: behind, it has to let core 1's idle task run */
 
@@ -233,8 +233,15 @@ static void balance(int C, int64_t wall, int64_t c1, int64_t c0)
 }
 #endif
 
+static uint32_t cycles(void) { return esp_cpu_get_cycle_count(); }
+
 void sdr_process_chunk(rdof_sdr_rx_t *rx, const rdof_cf_t *iq, int n, int split)
 {
+    static bool clocked;
+    if (!clocked) { /* the channelizer's own profile (rdof_chz_prof), for the status's chz_steps */
+        rdof_chz_set_clock(cycles);
+        clocked = true;
+    }
     const int64_t t0 = esp_timer_get_time();
     int64_t t1, t2;
     /* cycles on this core: the forward step ends at kf, its channels' channelizer runs kc to kz, their demods kz to
@@ -380,6 +387,11 @@ void sdr_counters(long *dropped_chunks, long *overflows, double *cpu_load)
     const uint64_t v[4] = {p.fm, p.search, p.fly, p.compact};
     for (int k = 0; k < 4; k++)
         g_sstat.demod_load[k] = wall > 0 && wall_from_us ? (double)v[k] / cyc : NAN;
+    const rdof_chz_prof_t z = rdof_chz_prof;
+    memset(&rdof_chz_prof, 0, sizeof rdof_chz_prof);
+    const uint64_t zv[4] = {z.fft, z.copy, z.noise, z.chan};
+    for (int k = 0; k < 4; k++)
+        g_sstat.chz_load[k] = wall > 0 && wall_from_us ? (double)zv[k] / cyc : NAN;
     busy_us = 0;
     wall_from_us = now;
     g_sstat.cpu_load = *cpu_load;
@@ -525,8 +537,8 @@ static bool rx_setup(void)
     if (!bad && g_scfg.dsp_cores > 1)
         rdof_chz_reserve(&g_rx.chz, CHUNK);
     sdr_hot_arena_close();
-    size_t hot_used, hot_peak, hot_cap;
-    sdr_hot_arena_use(&hot_used, &hot_peak, &hot_cap);
+    size_t hot_used, hot_peak, hot_cap, hot_spilled;
+    sdr_hot_arena_use(&hot_used, &hot_peak, &hot_cap, &hot_spilled);
     if (bad) {
         ESP_LOGE(TAG, "receiver init failed (out of memory?)");
         snprintf(rt_why, sizeof rt_why, "receiver init failed (out of memory?)");
@@ -534,9 +546,9 @@ static bool rx_setup(void)
         live_taps = 0;
         return false;
     }
-    ESP_LOGI(TAG, "receiver buffers: %u KB internal (%u of the hot arena's %u bytes), %u KB PSRAM (internal free %u KB, "
-             "largest block %u KB)",
-             (unsigned)((g_dsp_internal_bytes - in0) / 1024), (unsigned)hot_used, (unsigned)hot_cap,
+    ESP_LOGI(TAG, "receiver buffers: %u KB internal (%u of the hot arena's %u bytes; %u past it in PSRAM), %u KB PSRAM "
+             "(internal free %u KB, largest block %u KB)",
+             (unsigned)((g_dsp_internal_bytes - in0) / 1024), (unsigned)hot_used, (unsigned)hot_cap, (unsigned)hot_spilled,
              (unsigned)((g_dsp_psram_bytes - ps0) / 1024),
              (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
              (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024));
@@ -1412,8 +1424,9 @@ static size_t hot_measure(void)
 
 /* The SDR's memory plan (mem.c, docs/spec/fw/memory.md). Role "sdr", the DSP: the chunk buffers (iq is 32 KB in one
  * piece; taken after Wi-Fi, with two DSP cores at 576 kS/s, it didn't fit: 98 KB free, 31 KB in one piece), the hot
- * arena, the DSP tasks' stacks. Role "sdr_net": its MQTT and HBlink4 tasks. Role "sdr_fe": the front end's. Each
- * internal: PSRAM is several times slower for the DSP. True if the front end is on USB. */
+ * arena, the DSP tasks' stacks. Role "sdr_net": its MQTT and HBlink4 tasks. Role "sdr_fe": the front end's.
+ * Internal (PSRAM is several times slower for the DSP), but for the LR2021's raw chunk and what the hot arena can't
+ * get. True if the front end is on USB. */
 bool sdr_mem_claims(void)
 {
     rdof_fe_t f;
@@ -1423,11 +1436,20 @@ bool sdr_mem_claims(void)
     dsp_setup(); /* esp-dsp's tables now, while the heap is whole; and the allocators the dry run counts with */
     const size_t fb = (size_t)rdof_fe_sample_bytes(f.caps->format);
     mem_add("sdr", "iq", sizeof(rdof_cf_t) * CHUNK, 16, RDOF_MEM_INTERNAL, RDOF_MEM_ALLOC);
-    mem_add("sdr", "raw", CHUNK * fb, 16, RDOF_MEM_INTERNAL, RDOF_MEM_ALLOC);
+    /* raw: the LR2021's in PSRAM, written once and read once in order: no slower there (the W12, 2026-10-27), and
+     * its 8 KB go to the hot arena */
+    mem_add("sdr", "raw", CHUNK * fb, 16, g_scfg.frontend == RDOF_FE_LR2021 ? RDOF_MEM_PSRAM : RDOF_MEM_INTERNAL,
+            RDOF_MEM_ALLOC);
     const size_t hot = hot_measure();
-    if (hot)
-        mem_add("sdr", "hot", hot, 16, RDOF_MEM_INTERNAL | RDOF_MEM_FALLBACK, RDOF_MEM_ALLOC); /* PSRAM when short: the W12's
-                                                                                         LR2021 then still opens */
+    if (hot && heap_caps_get_total_size(MALLOC_CAP_SPIRAM)) {
+        /* internal as far as the spare goes (elastic, ahead of the roamer's FALLBACK stacks), the rest in PSRAM
+         * ("hot_ps"): the receiver's first buffers, the channelizer's, go internal. The W12, its chunk buffers
+         * taken first, has part of it spare. */
+        mem_elastic(mem_add("sdr", "hot", 16, 16, RDOF_MEM_INTERNAL | RDOF_MEM_FALLBACK, RDOF_MEM_ALLOC), hot, 16);
+        mem_add("sdr", "hot_ps", hot, 16, RDOF_MEM_PSRAM, RDOF_MEM_ALLOC);
+    } else if (hot) {
+        mem_add("sdr", "hot", hot, 16, RDOF_MEM_INTERNAL | RDOF_MEM_FALLBACK, RDOF_MEM_ALLOC);
+    }
     mem_add_task("sdr", "dsp", 8192, RDOF_MEM_INTERNAL);
 #if CONFIG_RDOF_SDR_TWO_CORES
     if (g_scfg.dsp_cores > 1 && !helper) /* the boot self-test may have started it already */
@@ -1469,6 +1491,9 @@ static void take_buffers(rdof_fe_t *f)
     void *hot = mem_take("sdr", "hot", &n);
     if (hot)
         sdr_hot_arena(hot, n);
+    size_t ns = 0;
+    void *spill = mem_take("sdr", "hot_ps", &ns);
+    sdr_hot_spill(spill, ns);
     const bool planned = iq && raw_buf;
     if (!iq)
         iq = heap_caps_malloc(sizeof(rdof_cf_t) * CHUNK, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
@@ -1489,6 +1514,7 @@ static void release_dsp(void)
     iq = NULL;
     raw_buf = NULL;
     sdr_hot_arena(NULL, 0);
+    sdr_hot_spill(NULL, 0);
     mem_release("sdr");
 }
 

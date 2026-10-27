@@ -190,6 +190,17 @@ static void test_fallback_elastic(void)
     CHECK(rdof_memplan_solve(&P, &a) && P.c[q].got == 64 * 40 + 1000 / 40 * 40 && P.spare == 1000 % 40);
     a = avail(10000 + 64 * 40 - 5, 0); /* nothing spare: its least, over the margin */
     CHECK(!rdof_memplan_solve(&P, &a) && P.c[q].got == 64 * 40);
+    /* elastic and FALLBACK: what's spare, ahead of the FALLBACK claims after it (the SDR's hot arena before the
+     * roamer's stacks) */
+    rdof_memplan_init(&P, 10000, false);
+    const int h = rdof_memplan_add(&P, "sdr", "hot", 16, 16, RDOF_MEM_INTERNAL | RDOF_MEM_FALLBACK, RDOF_MEM_ALLOC);
+    rdof_memplan_elastic(&P, h, 28000, 16);
+    const int st = rdof_memplan_add(&P, "radio1", "radio", 8192, 4, RDOF_MEM_INTERNAL | RDOF_MEM_FALLBACK, RDOF_MEM_ALLOC);
+    a = avail(10000 + 9000, 1000000);
+    CHECK(rdof_memplan_solve(&P, &a) && P.c[h].where == RDOF_MEM_IN_INTERNAL && P.c[st].where == RDOF_MEM_IN_PSRAM);
+    CHECK(P.c[h].got == (9000 - 12) / 16 * 16 && P.spare == 9000 - 12 - P.c[h].got);
+    a = avail(10000 + 40000, 1000000); /* room for both */
+    CHECK(rdof_memplan_solve(&P, &a) && P.c[h].got == 28000 && P.c[st].where == RDOF_MEM_IN_INTERNAL);
     /* an elastic claim of several blocks grows each */
     rdof_memplan_init(&P, 0, false);
     const int b = rdof_memplan_add(&P, "x", "bufs", 100, 4, RDOF_MEM_INTERNAL, RDOF_MEM_ALLOC);

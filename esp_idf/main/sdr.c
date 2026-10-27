@@ -19,6 +19,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "rdof/sdr/channelizer.h"
+#include "sdr_prof.h"
 
 static const char *TAG = "sdr";
 
@@ -32,9 +33,10 @@ size_t g_dsp_internal_bytes, g_dsp_psram_bytes; /* what fast_alloc has handed ou
  * esp-dsp's plans and filter states, taken at boot before Wi-Fi carves the heap up. Only while the DSP task builds
  * a receiver (sdr_hot_arena_open to _close) does anything come from it, and each receiver starts it over: what's in
  * it is the receiver's alone (the page's spectrum, made later, isn't). A free inside it is nothing. Past its end,
- * the heap as before. */
-static uint8_t *arena;
-static size_t arena_cap, arena_used, arena_peak;
+ * its spill (the plan's "hot_ps" in PSRAM, where the internal part is only what was spare), then the heap as
+ * before. */
+static uint8_t *arena, *spill;
+static size_t arena_cap, arena_used, arena_peak, spill_cap, spill_used;
 static TaskHandle_t arena_owner; /* NULL: closed */
 /* sdr_hot_count: a dry run measures what the receiver will take, in PSRAM so the internal heap isn't touched */
 static bool counting;
@@ -51,19 +53,29 @@ void sdr_hot_arena(void *base, size_t cap)
     arena_used = 0;
 }
 
+void sdr_hot_spill(void *base, size_t cap)
+{
+    spill = base;
+    spill_cap = base ? cap : 0;
+    spill_used = 0;
+}
+
 void sdr_hot_arena_open(void)
 {
     arena_used = 0;
+    spill_used = 0;
     arena_owner = xTaskGetCurrentTaskHandle();
 }
 
 void sdr_hot_arena_close(void) { arena_owner = NULL; }
 
-void sdr_hot_arena_use(size_t *used, size_t *peak, size_t *cap)
+void sdr_hot_arena_use(size_t *used, size_t *peak, size_t *cap, size_t *spilled)
 {
     *used = arena_used;
     *peak = arena_peak;
     *cap = arena_cap;
+    if (spilled)
+        *spilled = spill_used;
 }
 
 void sdr_hot_count(bool on)
@@ -77,7 +89,25 @@ size_t sdr_hot_counted(void) { return counted; }
 
 void sdr_alloc_cold(bool on) { cold = on; }
 
-static bool in_arena(const void *p) { return arena && (const uint8_t *)p >= arena && (const uint8_t *)p < arena + arena_cap; }
+static bool in(const void *p, const uint8_t *base, size_t cap)
+{
+    return base && (const uint8_t *)p >= base && (const uint8_t *)p < base + cap;
+}
+
+static bool in_arena(const void *p) { return in(p, arena, arena_cap) || in(p, spill, spill_cap); }
+
+/* n bytes from a region, or NULL */
+static void *carve(uint8_t *base, size_t cap, size_t *used, size_t align, size_t n, bool zero)
+{
+    size_t off = (*used + align - 1) / align * align;
+    if (!base || off + n > cap)
+        return NULL;
+    void *p = base + off;
+    if (zero)
+        memset(p, 0, n);
+    *used = off + n;
+    return p;
+}
 
 void *sdr_hot_aligned(size_t align, size_t n, bool zero)
 {
@@ -93,16 +123,16 @@ void *sdr_hot_aligned(size_t align, size_t n, bool zero)
             g_dsp_psram_bytes += n;
         return p;
     }
-    if (arena && arena_owner && xTaskGetCurrentTaskHandle() == arena_owner) {
-        size_t off = (arena_used + align - 1) / align * align;
-        if (off + n <= arena_cap) {
-            void *p = arena + off;
-            if (zero)
-                memset(p, 0, n);
-            arena_used = off + n;
+    if (arena_owner && xTaskGetCurrentTaskHandle() == arena_owner) {
+        void *p = carve(arena, arena_cap, &arena_used, align, n, zero);
+        if (p) {
             if (arena_used > arena_peak)
                 arena_peak = arena_used;
             g_dsp_internal_bytes += n;
+            return p;
+        }
+        if ((p = carve(spill, spill_cap, &spill_used, align, n, zero))) {
+            g_dsp_psram_bytes += n;
             return p;
         }
     }
@@ -245,10 +275,11 @@ void sdr_status_json(rdof_json_t *j)
     sdr_dsp_stacks(&dsp_free, &helper_free);
     rdof_json_int(j, "dsp_stack_free", dsp_free);
     rdof_json_int(j, "helper_stack_free", helper_free);
-    size_t hot_used, hot_peak, hot_cap;
-    sdr_hot_arena_use(&hot_used, &hot_peak, &hot_cap);
-    rdof_json_int(j, "hot_arena", (long long)hot_cap);       /* the plan's hot arena (bytes, internal) */
-    rdof_json_int(j, "hot_arena_used", (long long)hot_used); /* by the receiver now */
+    size_t hot_used, hot_peak, hot_cap, hot_spilled;
+    sdr_hot_arena_use(&hot_used, &hot_peak, &hot_cap, &hot_spilled);
+    rdof_json_int(j, "hot_arena", (long long)hot_cap);          /* the plan's hot arena (bytes, internal) */
+    rdof_json_int(j, "hot_arena_used", (long long)hot_used);    /* by the receiver now */
+    rdof_json_int(j, "hot_arena_spill", (long long)hot_spilled); /* past it, in PSRAM */
     rdof_json_open(j, "cpu_stages");
     static const char *const stage_names[SDR_STAGES] = {"input", "channelize", "demod", "track"};
     for (int k = 0; k < SDR_STAGES; k++)
@@ -259,6 +290,16 @@ void sdr_status_json(rdof_json_t *j)
     for (int k = 0; k < 4; k++)
         jnum(j, step_names[k], s->demod_load[k]);
     rdof_json_close(j);
+    rdof_json_open(j, "chz_steps"); /* the channelizer on one core: forward FFT, copies, noise floor, channels */
+    static const char *const chz_names[4] = {"fft", "copy", "noise", "channels"};
+    for (int k = 0; k < 4; k++)
+        jnum(j, chz_names[k], s->chz_load[k]);
+    rdof_json_close(j);
+    if (g_rx_ready) {
+        char where[200];
+        sdr_prof_placement(&g_rx, where, sizeof where);
+        rdof_json_str(j, "dsp_buffers", where); /* internal or PSRAM, each of the receiver's buffers */
+    }
     jnum(j, "usb_bytes_per_s", bps);
     const rdof_fe_caps_t *fc = sdr_fe_caps();
     jnum(j, "usb_expected_per_s",

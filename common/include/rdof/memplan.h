@@ -111,7 +111,9 @@ int rdof_memplan_add(rdof_memplan_t *p, const char *role, const char *name, uint
                      uint8_t caps, rdof_mem_how_t how);
 /* A claim of count blocks of its size (a HOLD's are handed over one at a time). */
 void rdof_memplan_count(rdof_memplan_t *p, int i, int count);
-/* An elastic claim: from its size up to max a block, in steps of unit, from what's spare above the margin. */
+/* An elastic claim: from its size up to max a block, in steps of unit, from what's spare above the margin. A
+ * FALLBACK one grows in its turn among the FALLBACK claims, ahead of those after it; the others, from what's left
+ * after all of them. */
 void rdof_memplan_elastic(rdof_memplan_t *p, int i, uint32_t max, uint32_t unit);
 
 /* Place every claim against a, the heap before anything is allocated, and lay out the regions. A role whose needs

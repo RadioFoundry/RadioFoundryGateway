@@ -831,6 +831,10 @@ static void reader_task(void *arg)
 static int start(void *ctx)
 {
     st.resample = fabs(st.native - st.rate) > 0.5;
+    if ((caps.format == RDOF_FE_CS8) != (st.wide && !st.iq16 && !st.resample)) {
+        snprintf(st.error, sizeof st.error, "LR2021: the I/Q format changed with the rate: restart the board");
+        return -1;
+    }
     if (st.resample) {
         /* the chip's rate is native_num / native_den (666 666.7 S/s is 2 MHz / 3): both rates times den */
         rdof_resamp_free(&st.rs);
@@ -892,9 +896,10 @@ static void stop(void *ctx)
     unlock();
 }
 
-/* The ring's samples as they came from the chip, BLOCK at a time, converted to float, resampled to the settings'
- * rate and written as int16 I/Q: up to len bytes. On the DSP's core, off the reader's. The first block waits up
- * to timeout_ms; the rest are what's there. */
+/* The ring's samples: int8 as they came (caps.format CS8), or BLOCK at a time converted to float, resampled to the
+ * settings' rate and written as int16 I/Q: len bytes, or what came in timeout_ms. On the DSP's core, off the reader's. It
+ * waits for the whole len: taking what's there gave a DSP with time to spare chunks of a millisecond or two, whose
+ * per-chunk costs then used the time up (the load read 0.94 with 5 channels or 6, 2026-10-27). */
 static size_t read(void *ctx, uint8_t *out, size_t len, int timeout_ms, size_t *filled)
 {
     *filled = 0;
@@ -902,9 +907,23 @@ static size_t read(void *ctx, uint8_t *out, size_t len, int timeout_ms, size_t *
     rdof_cf_t *x = st.blk.x, *y = st.blk.y;
     const int sb = st.sbytes;
     const rdof_fe_format_t fmt = sb == 2 ? RDOF_FE_CS8 : RDOF_FE_CS16;
+    const TickType_t until = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms);
+    if (caps.format == RDOF_FE_CS8) {
+        /* as the FIFO gave it, straight into the chunk */
+        size_t done = 0;
+        len -= len % 2;
+        while (done < len) {
+            const TickType_t left = until - xTaskGetTickCount();
+            const TickType_t wait = left <= pdMS_TO_TICKS(timeout_ms) ? left : 0;
+            size_t got = xStreamBufferReceive(st.ring, out + done, len - done, wait);
+            if (!got)
+                break;
+            done += got;
+        }
+        return done;
+    }
     int16_t *z = (int16_t *)out;
     size_t room = len / 4, done = 0;
-    TickType_t wait = pdMS_TO_TICKS(timeout_ms);
     for (;;) {
         /* inputs whose outputs fit in what's left */
         size_t n = st.resample ? (room > 2 ? (room - 2) * (size_t)st.rs.M / (size_t)st.rs.L : 0) : room;
@@ -913,22 +932,12 @@ static size_t read(void *ctx, uint8_t *out, size_t len, int timeout_ms, size_t *
         if (!n)
             break;
         /* whole samples: the reader puts whole ones, and this asks for whole ones */
+        const TickType_t left = until - xTaskGetTickCount(); /* past the deadline it wraps: then don't wait */
+        const TickType_t wait = left <= pdMS_TO_TICKS(timeout_ms) ? left : 0;
         size_t got = xStreamBufferReceive(st.ring, raw, n * (size_t)sb, wait) / (size_t)sb;
-        wait = 0;
         if (!got)
             break;
         int64_t t0 = esp_timer_get_time();
-        if (!st.resample && fmt == RDOF_FE_CS8) {
-            /* the converter's rate as is: int8 to int16 by a shift, no floats */
-            const int8_t *b = (const int8_t *)raw;
-            for (size_t i = 0; i < 2 * got; i++)
-                z[i] = (int16_t)(b[i] * 256);
-            dbg.conv_us += esp_timer_get_time() - t0;
-            z += 2 * got;
-            done += got;
-            room -= got;
-            continue;
-        }
         rdof_fe_convert(fmt, raw, got, x);
         int m = st.resample ? rdof_resamp_run(&st.rs, x, (int)got, y) : (int)got;
         const rdof_cf_t *o = st.resample ? y : x;
@@ -1266,7 +1275,24 @@ int fe_lr2021_spi(int hz, int delay_ns)
     return e == ESP_OK ? hz : -1;
 }
 
-void fe_lr2021(rdof_fe_t *fe) { *fe = (rdof_fe_t){&ops, &caps, NULL}; }
+/* The format, set at the first pick (the rate changes only with a restart; the settings check picks too, while it
+ * streams, so nothing of the session's is touched): int8 as the FIFO gives it when the chip's converter makes the
+ * rate (pick's CONV8), else int16 from read()'s float path. int8 halves the DSP's chunk buffer in internal RAM and
+ * spares read() a pass. */
+void fe_lr2021(rdof_fe_t *fe)
+{
+    static bool set;
+    if (!set) {
+        const double rate = g_scfg.sample_rate;
+        lr2021_iq_plan_t p;
+        caps.format = rate > 120000 && rate <= WIDE_MAX && g_scfg.iq_bits != 16 &&
+                              lr2021_iq_plan(rate, LR2021_IQ_CONV8, &p) == ESP_OK && fabs(p.rate - rate) <= 0.5
+                          ? RDOF_FE_CS8
+                          : RDOF_FE_CS16;
+        set = true;
+    }
+    *fe = (rdof_fe_t){&ops, &caps, NULL};
+}
 
 #endif
 

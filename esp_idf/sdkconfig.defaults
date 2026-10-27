@@ -10,6 +10,10 @@ CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 # 1 ms ticks: the 60 ms status poll and transmit pacing want them.
 CONFIG_FREERTOS_HZ=1000
+# FreeRTOS run-time stats: each core's load in the status and on the page, /api/tasks, and the LR2021 reader's
+# share of core 0 in the log
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
 
 # USB host: give the FIFO to IN (the samples), and room for the RTL's control transfers.
 CONFIG_USB_HOST_HW_BUFFER_BIAS_IN=y

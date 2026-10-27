@@ -83,11 +83,12 @@ int rdof_chz_process(rdof_chz_t *s, const rdof_cf_t *in, int n_in, rdof_cf_t *ou
  * Returns the samples per channel, as rdof_chz_process; the output is the same. */
 int rdof_chz_reserve(rdof_chz_t *s, int max_in);
 
-/* Where the forward step's time goes, in a clock's ticks over every channelizer, while a clock is set (NULL: off,
+/* Where the channelizer's time goes, in a clock's ticks over every channelizer, while a clock is set (NULL: off,
  * the default): the forward FFTs (into the block store for rdof_chz_forward), the input copy and window move, the
- * noise floor. For a board's profile; nothing reads it here. */
+ * noise floor, and in rdof_chz_process the channels' share (bins, filter, inverse FFT, NCO). For a board's
+ * profile; nothing reads it here. */
 typedef struct {
-    uint64_t fft, copy, noise, blocks;
+    uint64_t fft, copy, noise, chan, blocks;
 } rdof_chz_prof_t;
 extern rdof_chz_prof_t rdof_chz_prof;
 void rdof_chz_set_clock(uint32_t (*ticks)(void));

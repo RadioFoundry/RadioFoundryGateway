@@ -85,6 +85,7 @@ One JSON object, built by `web.c` with `rdof_json` (cap 14336). Non-finite numbe
 | `crash` | object | | the core dump in flash (the last crash, maybe of an earlier image): `size` (bytes); then either `error` (the dump fails its check: the IDF error's name) or `elf` (the start of the crashed image's ELF SHA-256, hex), `this_image` (bool: the running image), `task` (string), `pc` (`"0x%08lx"`), `exccause` (int: EXCCAUSE, or the IDF's own causes from 64), `cause` (its name: `LoadProhibited`, `StoreProhibited`, `CacheError`, ...; `unknown`), `excvaddr` (`"0x%08lx"`), `backtrace` (space-separated hex, up to 16), `backtrace_corrupted` (bool), `details` (abort()'s or the task watchdog's message; only when there is one) | a core dump exists (`CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH`, ELF) |
 | `heap_free` | int | bytes | internal heap free | always |
 | `psram_free` | int | bytes | PSRAM free | always |
+| `cpu` | array of number | fraction | each core's busy share (1 less its idle task's), core 0 first, over at least the last 2 s | built with the FreeRTOS run-time stats (`CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS`, on in `sdkconfig.defaults`); omitted on the first ask |
 | `memory` | object | | the memory plan (§3.5) | always |
 | `settings_ok` | bool | | the stored settings parsed and resolved; false: the board runs `DEFAULT_JSON` | always |
 | `settings_error` | string | | why not (empty if ok) | always |
@@ -160,10 +161,13 @@ with its counters at zero.
 | `cpu_load` | number | 0–1+ | DSP time / wall time, last period | always |
 | `dsp_split` | int | | channels on core 1 with `dsp_cores` 2; -1 one core | always |
 | `dsp_stack_free`, `helper_stack_free` | int | bytes | stack high-water marks | always |
-| `hot_arena` | int | bytes | the plan's hot arena in internal RAM: the receiver's per-sample buffers and esp-dsp's plans and filter states ([memory.md](memory.md#5-the-sdrs-hot-arena)); 0 not planned | always |
-| `hot_arena_used` | int | bytes | of it, taken by the receiver now; past `hot_arena` the rest went to the heap | always |
+| `hot_arena` | int | bytes | the plan's hot arena in internal RAM, as much as was spare on a board with PSRAM: the receiver's per-sample buffers and esp-dsp's plans and filter states ([memory.md](memory.md#5-the-sdrs-hot-arena)); 0 not planned | always |
+| `hot_arena_used` | int | bytes | of it, taken by the receiver now | always |
+| `hot_arena_spill` | int | bytes | taken past it, in the arena's PSRAM part (`hot_ps`); past that, the heap | always |
 | `cpu_stages` | object | 0–1 | `{input, channelize, demod, track}` | always |
 | `demod_steps` | object | 0–1 | `{fm, search, flywheel, history}` | always |
+| `chz_steps` | object | 0–1 | the channelizer on one core, in cycles over the period: `{fft, copy, noise, channels}` (the forward FFTs, the input copy and window move, the noise floor, the channels' bins, filter, inverse FFT and NCO) | always |
+| `dsp_buffers` | string | | where the receiver's buffers are, each `internal` or `PSRAM` (`y PSRAM 21 KB, win PSRAM 4 KB, ...`) | the receiver is up |
 | `usb_bytes_per_s` | number/null | B/s | measured since the last call (null on the first) | always |
 | `usb_expected_per_s` | number | B/s | sample rate × bytes per sample of the front end's format (`rdof_fe_sample_bytes`; 2 for cu8 I/Q) | always |
 | `usb_errors`, `usb_short` | int | | transfer errors, short transfers | always |

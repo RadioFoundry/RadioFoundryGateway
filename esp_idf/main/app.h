@@ -288,6 +288,7 @@ typedef struct {
     int dsp_split;              /* dsp_cores 2: channels demodded on core 1 (the rest on core 0); -1 one core */
     double stage_load[4];       /* the same by stage (SDR_STAGE_*) */
     double demod_load[4];       /* the demods by step: FM (discriminator, matched filter), sync search, flywheel, history move */
+    double chz_load[4];         /* the one-core channelizer by step: forward FFT, copies, noise floor, channels */
     double gain_db;             /* NAN: tuner AGC */
     volatile bool mqtt_up;
     int hb_peers, hb_up;
@@ -337,9 +338,10 @@ int sdr_hb_status(const char **ids, bool *up, int max);
  * internal allocations esp-dsp's plans and filters make (dsp_esp.c). */
 void dsp_setup(void);
 void sdr_hot_arena(void *base, size_t cap);
+void sdr_hot_spill(void *base, size_t cap);
 void sdr_hot_arena_open(void);
 void sdr_hot_arena_close(void);
-void sdr_hot_arena_use(size_t *used, size_t *peak, size_t *cap);
+void sdr_hot_arena_use(size_t *used, size_t *peak, size_t *cap, size_t *spilled);
 void sdr_hot_count(bool on);
 size_t sdr_hot_counted(void);
 void *sdr_hot_aligned(size_t align, size_t n, bool zero);

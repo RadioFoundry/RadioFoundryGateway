@@ -530,7 +530,8 @@ static void test_chz_clock(void)
         in[i].re = 0.1f * noise();
         in[i].im = 0.1f * noise();
     }
-    /* a clock set: each timed step counts 10 ticks. process: one FFT and one noise floor a block */
+    /* a clock set: each timed step counts 10 ticks. process: one FFT, one noise floor, the channels and a window
+     * move a block, and each window fill */
     memset(&rdof_chz_prof, 0, sizeof rdof_chz_prof);
     clk = 0;
     rdof_chz_set_clock(tick10);
@@ -549,17 +550,20 @@ static void test_chz_clock(void)
     int got = rdof_chz_process(&z, in, 4608, out, 2000);
     CHECK(got == blocks * z.out_per_hop, "process: %d outputs, %d blocks", got, blocks);
     CHECK(rdof_chz_prof.blocks == (uint64_t)blocks && rdof_chz_prof.fft == 10u * (uint64_t)blocks &&
-              rdof_chz_prof.noise == 10u * (uint64_t)blocks && rdof_chz_prof.copy == 0,
-          "process profile: %llu blocks, fft %llu noise %llu copy %llu", (unsigned long long)rdof_chz_prof.blocks,
-          (unsigned long long)rdof_chz_prof.fft, (unsigned long long)rdof_chz_prof.noise,
-          (unsigned long long)rdof_chz_prof.copy);
-    /* forward: the same blocks, and the copies (a window fill and a window move) counted too */
+              rdof_chz_prof.noise == 10u * (uint64_t)blocks && rdof_chz_prof.copy == 10u * (uint64_t)(iters + blocks) &&
+              rdof_chz_prof.chan == 10u * (uint64_t)blocks,
+          "process profile: %llu blocks, fft %llu noise %llu copy %llu chan %llu",
+          (unsigned long long)rdof_chz_prof.blocks, (unsigned long long)rdof_chz_prof.fft,
+          (unsigned long long)rdof_chz_prof.noise, (unsigned long long)rdof_chz_prof.copy,
+          (unsigned long long)rdof_chz_prof.chan);
+    /* forward: the same blocks, fills and moves; the channels are rdof_chz_channels', not counted */
     rdof_chz_free(&z);
     CHECK(rdof_chz_init(&z, 288e3, off, 2, 6, 64, 7500) == 0 && rdof_chz_reserve(&z, 4608) == 0, "again");
     memset(&rdof_chz_prof, 0, sizeof rdof_chz_prof);
     CHECK(rdof_chz_forward(&z, in, 4608) == got, "forward: %d outputs a channel", got);
     CHECK(rdof_chz_prof.blocks == (uint64_t)blocks && rdof_chz_prof.fft == 10u * (uint64_t)blocks &&
-              rdof_chz_prof.noise == 10u * (uint64_t)blocks && rdof_chz_prof.copy == 10u * (uint64_t)(iters + blocks),
+              rdof_chz_prof.noise == 10u * (uint64_t)blocks && rdof_chz_prof.copy == 10u * (uint64_t)(iters + blocks) &&
+              rdof_chz_prof.chan == 0,
           "forward profile: copy %llu, want %d", (unsigned long long)rdof_chz_prof.copy, 10 * (iters + blocks));
     rdof_chz_set_clock(NULL);
     memset(&rdof_chz_prof, 0, sizeof rdof_chz_prof);
