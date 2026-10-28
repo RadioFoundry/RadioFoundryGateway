@@ -4,6 +4,7 @@
 #include "rdofradio_cfg.h"
 #include "rdof/setup.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -139,6 +140,28 @@ done:
     return ok;
 }
 
+/* Version 2: the SDR device's channels as the board's SDR resolves them (rdof_sdr_config_parse_device), but the
+   radio's own RX and TX. */
+static bool monitors(const char *text, size_t len, rdofradio_cfg_t *o, char *err, size_t cap)
+{
+    rdof_sdr_config_t *s = malloc(sizeof *s);
+    if (!s) {
+        snprintf(err, cap, "no memory");
+        return false;
+    }
+    char e[160];
+    const bool ok = rdof_sdr_config_parse_device(text, len, NULL, s, e, sizeof e);
+    if (!ok)
+        snprintf(err, cap, "the SDR device: %s", e);
+    for (int i = 0; ok && i < s->nch; i++) {
+        const uint32_t f = (uint32_t)llround(s->ch[i].freq);
+        if (f != o->rx_hz && f != o->tx_hz)
+            o->mon[o->nmon++] = s->ch[i];
+    }
+    free(s);
+    return ok;
+}
+
 bool rdofradio_cfg_parse(const char *text, size_t len, rdofradio_cfg_t *o, char *err, size_t cap)
 {
     memset(o, 0, sizeof *o);
@@ -188,8 +211,9 @@ bool rdofradio_cfg_parse(const char *text, size_t len, rdofradio_cfg_t *o, char 
     char *owned = NULL, verr[8];
     if (rdof_config_as_v1(&v1, &v1len, roles.radio, &owned, verr, sizeof verr))
         unused(v1, v1len, roles.radio, owned != NULL, o->unused, sizeof o->unused, &o->has_hblink);
+    const bool v2 = owned != NULL;
     free(owned);
-    return true;
+    return v2 ? monitors(text, len, o, err, cap) : true;
 }
 
 /* MHz with the trailing zeros off, 438.25 */
@@ -267,6 +291,17 @@ size_t rdofradio_cfg_describe(const rdofradio_cfg_t *o, const char *source, cons
             strcmp(o->cfg.transport, "udp") ? " (UDP: SCTP isn't on this host yet)" : "");
     else
         PUT("HBlink4: off (no hblink section)\n");
+    for (int i = 0; i < o->nmon; i++) {
+        const rdof_sdr_cfg_channel_t *m = &o->mon[i];
+        char f[24];
+        fmhz(f, sizeof f, (uint32_t)llround(m->freq));
+        PUT("monitor %s: %s MHz", m->id, f);
+        if (m->cc >= 0)
+            PUT(", CC %d", m->cc);
+        if (o->has_hblink && m->hblink && m->peer_id >= 0)
+            PUT(", peer %ld", m->peer_id);
+        PUT("\n");
+    }
     if (o->own_clock)
         PUT("clock: netclock, from %s\n", o->ntp_servers[0] ? o->ntp_servers : "the browser only (no servers)");
     else

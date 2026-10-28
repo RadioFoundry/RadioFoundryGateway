@@ -332,6 +332,30 @@ static void host_status(void *ctx, rdof_json_t *j, rdof_webapi_at_t at)
     rdof_json_int(j, "hblink_rx", s.hblink_rx);
     if (s.has_mqtt)
         rdof_json_bool(j, "mqtt", s.mqtt);
+    if (s.nchan > 0) {
+        char a[16 * 120] = "[";
+        size_t n = 1;
+        for (int i = 0; i < s.nchan && i < 16; i++) {
+            s.chan[i].id[sizeof s.chan[i].id - 1] = 0;
+            char esc_id[24];
+            size_t k = 0; /* an id from the settings: no quotes, backslashes or control characters in the JSON */
+            for (const char *c = s.chan[i].id; *c && k + 1 < sizeof esc_id; c++)
+                if ((unsigned char)*c >= 0x20 && *c != '"' && *c != '\\')
+                    esc_id[k++] = *c;
+            esc_id[k] = 0;
+            n += (size_t)snprintf(a + n, sizeof a - n, "%s{\"id\":\"%s\",\"freq\":%u,\"bursts\":%llu,\"rssi\":%d%s%s}",
+                                  i ? "," : "", esc_id, (unsigned)s.chan[i].freq,
+                                  (unsigned long long)s.chan[i].bursts, s.chan[i].rssi, s.chan[i].peer ? ",\"hblink\":" : "",
+                                  s.chan[i].peer ? (s.chan[i].up ? "true" : "false") : "");
+            if (n >= sizeof a - 2)
+                break;
+        }
+        if (n < sizeof a - 1) {
+            a[n++] = ']';
+            a[n] = 0;
+            rdof_json_raw(j, "channels", a);
+        }
+    }
     rdof_json_close(j);
     /* the page lists keys it doesn't know as cards: the host's own */
     rdof_json_open(j, "host");

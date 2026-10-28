@@ -122,6 +122,26 @@ int main(void)
           strstr(C.unused, "mqtt"));
     if (err[0])
         printf("  %s / unused: %s\n", err, C.unused);
+    CHECK(C.nmon == 0);
+
+    /* a monitor role on the repeater's device: its channels, each its own peer; the repeater's own isn't one */
+    const char *mon = "{\"version\": 2, \"name\": \"pluto\", \"cc\": 1, \"hblink\": {\"host\": \"m\", \"port\": 62031}, "
+                      "\"channels\": {\"1\": 438.075, \"2\": 438.15, \"3\": 438.25}, \"devices\": {\"pluto\": {\"kind\": "
+                      "\"sdr\", \"driver\": \"iio\", \"tx\": {}}}, \"roles\": {\"R1\": {\"type\": \"repeater\", "
+                      "\"peer_id\": 9800001, \"rx_freq\": 438.25, \"tx_freq\": 438.0125, \"modem\": {\"device\": "
+                      "\"pluto\"}}, \"MON\": {\"type\": \"monitor\", \"rx\": {\"device\": \"pluto\"}, \"peer_ids\": "
+                      "9800100, \"channels\": [1, {\"ch\": 2, \"cc\": 3}, 3]}}}";
+    CHECK(parse(mon) && C.full && C.rx_hz == 438250000);
+    if (err[0])
+        printf("  %s\n", err);
+    CHECK(C.nmon == 2 && C.mon[0].freq == 438.075e6 && C.mon[0].cc == 1 && C.mon[0].hblink &&
+          C.mon[0].peer_id == 9800101 && C.mon[1].freq == 438.15e6 && C.mon[1].cc == 3 && C.mon[1].peer_id == 9800102);
+    CHECK(!strstr(C.unused, "MON"));
+    rdofradio_cfg_describe(&C, "file x.json", "", text, sizeof text);
+    CHECK(strstr(text, "monitor SDR01: 438.075 MHz, CC 1, peer 9800101\n") &&
+          strstr(text, "monitor SDR02: 438.15 MHz, CC 3, peer 9800102\n"));
+    if (!strstr(text, "monitor SDR02"))
+        printf("%s / unused: %s\n", text, C.unused);
 
     printf("radiocfg: %d checks, %d failed\n", checks, fails);
     return fails != 0;

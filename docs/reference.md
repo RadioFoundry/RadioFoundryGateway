@@ -186,6 +186,14 @@ transceiver, and the transceiver's DMRK back. UDP only: `transport` sctp falls b
 an `hblink` section there's no network. The page shows the peer as the board's (`hblink`, `hblink_tx`,
 `hblink_rx`).
 
+Version 2 settings can put `monitor` roles on the same SDR device. rdofradio resolves the device's channels with the
+board's SDR parser (`rdof_sdr_config_parse_device`) and receives every channel other than the radio's own RX and TX
+as an extra receiver channel. All of them must fit the sample rate's window, up to 16 channels. Each channel with
+`hblink` and a peer id is an HBlink4 peer of its own, as on the board's SDR (`rdof_hb_channel_dmrc`). A DMRT sent
+to one of them gets a refusal. The repeater's slot timing (`relabel`) applies only to its own RX channel. The
+radio's card on the page lists the monitored channels with their bursts, RSSI and peer state, and their calls show
+in Last heard as the SDR's.
+
 The clock is the settings' `ntp`: with servers it's netclock, the board's NTP disciplined clock
 (`components/netclock`, its POSIX glue `netclock_posix`), and the page's clock card is the board's (`/api/clock`,
 `/api/time`: the browser's clock sets it when there's no NTP). `ntp.clock` `"os"` leaves the time to the OS

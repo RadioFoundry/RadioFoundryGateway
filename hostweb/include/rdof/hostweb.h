@@ -69,6 +69,16 @@ typedef struct {
     uint32_t parrot_id, parrot_src, parrot_dst;
     uint32_t parrot_replayed, parrot_ignored, parrot_cut;
     /* a free-form counters block shown as "tool" on the page: up to 8 name / value pairs */
+    /* the channels it also monitors (monitor roles), receive only; the page lists them on the radio's card */
+    int nchan;
+    struct {
+        char id[24];
+        uint32_t freq;
+        uint64_t bursts;
+        int rssi;   /* dBm, 0: none yet */
+        bool peer;  /* an HBlink4 peer of its own */
+        bool up;
+    } chan[16];
     int nextra;
     struct {
         char name[24];

@@ -499,10 +499,73 @@ static void net_start(void)
             rcfg.cfg.master_port);
 }
 
+/* The monitored channels (monitor roles on the device): receive only, each its own peer, as the board's SDR's */
+typedef struct {
+    int c; /* the receiver's channel */
+    const rdof_sdr_cfg_channel_t *ch;
+    bool peer;
+    rdofnet_peer_t net;
+    rdof_hb_sink_t sink;
+} mon_t;
+static mon_t MON[RDOF_SDR_MAX_CHANNELS];
+static int nmon;
+
+static void mon_send(void *ctx, const uint8_t *d, size_t n) { rdofnet_peer_send(&((mon_t *)ctx)->net, d, n); }
+static void mon_packet(void *ctx, const uint8_t *d, size_t n)
+{
+    mon_t *m = ctx;
+    uint8_t k[RDOF_DMRK_LEN];
+    if (rdof_hb_dispatch(d, n, NULL, NULL, m->net.peer.peer_id, k)) /* nothing here sends: a DMRT is refused */
+        rdofnet_peer_send(&m->net, k, sizeof k);
+}
+
+static void mon_start(void)
+{
+    if (!rcfg.has_hblink)
+        return;
+    const rdof_location_t *loc = rcfg.cfg.has_location ? &rcfg.cfg.location : NULL;
+    for (int i = 0; i < nmon; i++) {
+        mon_t *m = &MON[i];
+        if (!m->ch->hblink || m->ch->peer_id < 0)
+            continue;
+        rdofnet_peer_init(&m->net, rcfg.cfg.master_host, rcfg.cfg.master_port, (uint32_t)m->ch->peer_id,
+                          RDOF_HB_KEEPALIVE_SECONDS, m->ch->id);
+        m->net.on_packet = mon_packet;
+        m->net.say = net_say;
+        m->net.ctx = m;
+        rdof_hb_sink_init(&m->sink, (uint32_t)m->ch->peer_id);
+        m->sink.send = mon_send;
+        m->sink.rand32 = sink_rand;
+        m->sink.ctx = m;
+        const rdof_sink_t sk = rdof_hb_sink_as_sink(&m->sink);
+        rdof_sdr_rx_add_sink(&R.rx, m->c, &sk);
+        uint8_t pkt[RDOF_DMRC_MAX];
+        rdofnet_peer_set_config(&m->net, pkt,
+                                rdof_hb_channel_dmrc(m->net.peer.peer_id, m->ch->id, (uint32_t)llround(m->ch->freq),
+                                                     m->ch->cc, loc, pkt),
+                                now_s());
+        m->peer = true;
+        fprintf(stderr, "hblink: %s, peer %u, to %s:%d\n", m->ch->id, (unsigned)m->net.peer.peer_id,
+                rcfg.cfg.master_host, rcfg.cfg.master_port);
+    }
+}
+
 static void net_poll(double now)
 {
     if (net_on)
         rdofnet_peer_poll(&NET, now);
+    for (int i = 0; i < nmon; i++)
+        if (MON[i].peer)
+            rdofnet_peer_poll(&MON[i].net, now);
+}
+
+static void net_close(void)
+{
+    if (net_on)
+        rdofnet_peer_close(&NET);
+    for (int i = 0; i < nmon; i++)
+        if (MON[i].peer)
+            rdofnet_peer_close(&MON[i].net);
 }
 
 /* ── the clock: netclock, or the OS's ─────────────────────────────────────────── */
@@ -563,7 +626,10 @@ static void clock_stop(void) {}
 static void on_json(void *ctx, const char *ch, const char *json)
 {
 #ifdef RDOF_HOST_WEB
-    rdof_hostweb_tracker_json(R.full ? "repeater" : "roamer", rcfg.name, NULL, json);
+    if (strcmp(ch, "rx") && strcmp(ch, "out")) /* a monitored channel: the SDR's, as on the board */
+        rdof_hostweb_tracker_json("sdr", rcfg.box, ch, json);
+    else
+        rdof_hostweb_tracker_json(R.full ? "repeater" : "roamer", rcfg.name, NULL, json);
 #endif
     if (!quiet)
         printf("%s json %s\n", ch, json);
@@ -594,7 +660,8 @@ static void on_burst(void *ctx, int c, const rdof_sdr_burst_t *b, double t)
 }
 
 static bool muted(void *ctx, int64_t p) { return rdof_sdrmodem_muted_at(&R.m, p); }
-static int relabel(void *ctx, const rdof_sdr_burst_t *b) { return rdof_sdrmodem_inbound(&R.m, b); }
+/* the inbound slot by timing: the radio's RX channel only (a monitored channel keeps its own CACH) */
+static int relabel(void *ctx, int c, const rdof_sdr_burst_t *b) { return c ? 0 : rdof_sdrmodem_inbound(&R.m, b); }
 
 static void tx_gain(double db)
 {
@@ -661,6 +728,16 @@ static void web_publish(double rx, double tx, int cc)
     w.links = net_on;
     w.hblink = net_on && NET.peer.up;
     w.hblink_tx = NET.peer.tx, w.hblink_rx = NET.peer.rx;
+    for (int i = 0; i < nmon && w.nchan < 16; i++) {
+        const mon_t *m = &MON[i];
+        const int r = R.rx.rssi[m->c];
+        snprintf(w.chan[w.nchan].id, sizeof w.chan[w.nchan].id, "%s", m->ch->id);
+        w.chan[w.nchan].freq = (uint32_t)llround(m->ch->freq);
+        w.chan[w.nchan].bursts = R.rx.bursts[m->c];
+        w.chan[w.nchan].rssi = r == INT32_MIN ? 0 : r;
+        w.chan[w.nchan].peer = m->peer;
+        w.chan[w.nchan++].up = m->peer && m->net.peer.up;
+    }
     w.nextra = R.split ? 0 : 2; /* the TX half's timing is the radio's own */
     snprintf(w.extra[0].name, sizeof w.extra[0].name, "tx late (us)");
     w.extra[0].value = R.m.tx_late48 * 1000 / 48;
@@ -1022,8 +1099,7 @@ out:
     if (R.parrot)
         say("parrot: %u sent back, %u not to it, %u bursts cut\n", R.parrot->replayed, R.parrot->ignored,
             R.parrot->cut);
-    if (net_on)
-        rdofnet_peer_close(&NET);
+    net_close();
     clock_stop();
     rdof_sdr_rx_free(&R.rx);
 #ifdef RDOF_HOST_WEB
@@ -1256,22 +1332,34 @@ int main(int argc, char **argv)
     }
     setvbuf(stdout, NULL, _IOLBF, 0);
 
-    /* the receiver: the RX channel, and with --monitor the TX channel (our own outbound, heard back) */
+    /* the receiver: the RX channel, with --monitor the TX channel (our own outbound, heard back), then the
+       monitor roles' channels on this device */
     const rdof_sdr_rx_config_t rc = {rate, center, -55.0, 0.0, true, CHUNK};
-    rdof_sdr_channel_t ch[2] = {{"rx", rx, cc, 1}, {"out", tx, cc, 1}};
-    const int nch = monitor && R.tx_hz != R.rx_hz ? 2 : 1;
-    rdof_sink_t sink = {.on_json = on_json};
-    if (rdof_sdr_rx_init(&R.rx, &rc, ch, nch, &sink, (double)time(NULL))) {
-        fprintf(stderr, "receiver: the rate isn't a multiple of 48 kS/s, or the channels don't fit one window\n");
-        return 1;
-    }
+    rdof_sdr_channel_t ch[RDOF_SDR_MAX_CHANNELS] = {{"rx", rx, cc, 1}, {"out", tx, cc, 1}};
+    int nch = monitor && R.tx_hz != R.rx_hz ? 2 : 1;
     if (nch == 2 || (monitor && R.tx_hz == R.rx_hz))
         R.mon = nch - 1;
+    for (int i = 0; i < rcfg.nmon && nch < RDOF_SDR_MAX_CHANNELS; i++) {
+        const rdof_sdr_cfg_channel_t *m = &rcfg.mon[i];
+        MON[nmon].c = nch;
+        MON[nmon++].ch = m;
+        ch[nch++] = (rdof_sdr_channel_t){m->id, m->freq, m->cc, m->slot};
+    }
+    if (nmon < rcfg.nmon)
+        fprintf(stderr, "receiver: %d channels at most: %d monitored channels left out\n", RDOF_SDR_MAX_CHANNELS,
+                rcfg.nmon - nmon);
+    rdof_sink_t sink = {.on_json = on_json};
+    if (rdof_sdr_rx_init(&R.rx, &rc, ch, nch, &sink, (double)time(NULL))) {
+        fprintf(stderr, "receiver: the rate isn't a multiple of 48 kS/s, or the channels don't fit one window%s\n",
+                nmon ? " (the monitored channels with the radio's: a wider --rate, or fewer)" : "");
+        return 1;
+    }
     R.rx.on_burst = on_burst;
     R.rx.muted = muted;
     R.rx.relabel = relabel; /* the tracker's JSON (calls, BER, RSSI) with the inbound slot, not slot 1 */
     R.rx.burst_ctx = &R;
     net_start();
+    mon_start();
     clock_start();
 #ifdef RDOF_HOST_WEB
     rdof_hostweb_version(RDOF_VERSION);
@@ -1643,8 +1731,7 @@ int main(int argc, char **argv)
     if (R.parrot)
         say("parrot: %u sent back, %u not to it, %u bursts cut\n", R.parrot->replayed, R.parrot->ignored,
                 R.parrot->cut);
-    if (net_on)
-        rdofnet_peer_close(&NET);
+    net_close();
     clock_stop();
     rdof_sdr_rx_free(&R.rx);
 #ifdef RDOF_HOST_WEB

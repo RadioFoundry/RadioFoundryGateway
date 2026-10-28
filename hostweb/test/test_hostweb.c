@@ -202,6 +202,17 @@ int main(int argc, char **argv)
     rdof_hostweb_status(&s);
     http(port, "GET /api/status HTTP/1.1\r\n\r\n", b, sizeof b);
     CHECK(strstr(b, "\"radio_ready\":false") && strstr(b, "\"radio_error\":\"x\""));
+    CHECK(!strstr(b, "\"channels\""));
+    /* the monitored channels: a peer's state only when it has one; an id can't break the JSON */
+    s.nchan = 2;
+    snprintf(s.chan[0].id, sizeof s.chan[0].id, "SDR01");
+    s.chan[0].freq = 438075000, s.chan[0].bursts = 12, s.chan[0].rssi = -80, s.chan[0].peer = true;
+    snprintf(s.chan[1].id, sizeof s.chan[1].id, "a\"b");
+    s.chan[1].freq = 438150000;
+    rdof_hostweb_status(&s);
+    http(port, "GET /api/status HTTP/1.1\r\n\r\n", b, sizeof b);
+    CHECK(strstr(b, "\"channels\":[{\"id\":\"SDR01\",\"freq\":438075000,\"bursts\":12,\"rssi\":-80,\"hblink\":false},"
+                    "{\"id\":\"ab\",\"freq\":438150000,\"bursts\":0,\"rssi\":0}]"));
 
     rdof_hostweb_logf("parrot: sending back slot %d", 2);
     http(port, "GET /api/log HTTP/1.1\r\n\r\n", b, sizeof b);

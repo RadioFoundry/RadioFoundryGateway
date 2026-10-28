@@ -179,6 +179,8 @@ function problems(s) {
     if (r.radio_error) bad(n + r.radio_error);
     else if (!r.radio_ready) bad(n + 'radio not ready');
     if (has(s, 'links') && !r.hblink) warn(n + 'HBlink4 down');
+    const cd = (r.channels || []).filter(c => c.hblink === false).length;
+    if (has(s, 'links') && cd) warn(n + cd + ' monitored channel' + (cd > 1 ? 's\' HBlink4 peers' : '\'s HBlink4 peer') + ' down');
     if (has(s, 'links') && 'mqtt' in r && !r.mqtt) warn(n + 'MQTT down');
     if (r.queue_dropped || r.dropped) warn(n + num(r.queue_dropped || r.dropped) + ' bursts dropped');
   });
@@ -299,7 +301,7 @@ const radioRow = r => ['Radio', yes(r.radio_ready) + ' ' + esc(r.modem || (r.mod
 const hbRow = r => ['HBlink4', up(r.hblink) + ' <span class="mute">(' + num(r.hblink_tx) + ' sent, ' + num(r.hblink_rx) + ' received)</span>' + (r.sctp ?
   '<br>SCTP ' + esc(r.sctp.state) + ', RTT ' + r.sctp.srtt_ms + ' ms, ' + cnt(r.sctp.retransmits + r.sctp.fast_retransmits) + ' resent, ' +
   cnt(r.sctp.abandoned) + ' given up, ' + cnt(r.sctp.failures) + ' lost' : '')];
-const R_KNOWN = 'name mode started port split modem_open radio_ready radio_error modem protocol radio requests no_reply refused bursts_heard state listening scanning status_misses queue_dropped keyed busy1 busy2 dropped jitter frequency colorCode hblink hblink_tx hblink_rx mqtt heard sending'.split(' ');
+const R_KNOWN = 'name mode started port split modem_open radio_ready radio_error modem protocol radio requests no_reply refused bursts_heard state listening scanning status_misses queue_dropped keyed busy1 busy2 dropped jitter frequency colorCode hblink hblink_tx hblink_rx mqtt heard sending channels'.split(' ');
 function roamerFull(r, either) {
   const w = either && waiting(r, 'the radio'), j = r.jitter, sl = r.split;
   return card(rname(r) + ' ' + rstate(r, either), kv(w || [
@@ -317,6 +319,8 @@ function roamerFull(r, either) {
     sl && ['Split', yes(sl.ready) + ' epoch ' + sl.epoch + ', ' + num(sl.tx) + ' sent, ' + num(sl.rx) + ' received, ' + cnt(sl.dropped) + ' dropped, ' + cnt(sl.failed) + ' failed'],
     has(S.s, 'links') && hbRow(r),
     has(S.s, 'links') && 'mqtt' in r && ['MQTT', up(r.mqtt)],
+    r.channels && ['Monitoring', r.channels.map(c => esc(c.id) + ' ' + (c.freq / 1e6).toFixed(5) + ' MHz, ' + num(c.bursts) + ' bursts' +
+      (c.rssi ? ', ' + c.rssi + ' dBm' : '') + ('hblink' in c ? ', HBlink4 ' + up(c.hblink) : '')).join('<br>')],
   ]) + more(r, R_KNOWN, 'r:' + r.name));
 }
 const roamerBrief = (r, either) => card(rname(r) + ' ' + rstate(r, either), kv((either && waiting(r, 'the radio')) ||

@@ -18,7 +18,7 @@ if(NOT WIN32)
     # rdofradio's settings (--config FILE): the firmware's document as rdofradio runs it
     add_executable(rdof_radiocfg_tests test_radiocfg.c ../sdr/cli/rdofradio_cfg.c)
     target_include_directories(rdof_radiocfg_tests PRIVATE ../sdr/cli)
-    target_link_libraries(rdof_radiocfg_tests PRIVATE rdof_common)
+    target_link_libraries(rdof_radiocfg_tests PRIVATE rdof_sdr_core m)
     set_target_properties(rdof_radiocfg_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
     target_compile_options(rdof_radiocfg_tests PRIVATE -Wall -Wno-unused-parameter)
     if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
