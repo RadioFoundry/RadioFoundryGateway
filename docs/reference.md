@@ -134,6 +134,32 @@ Measured on a "PlutoSDR Rev.C (Z7010-AD9361)", firmware v0.38, its two Cortex-A9
 The full duplex run calibrated at once ("the transmit path is 58.50 ms past its place"). The web page answered on
 the Pluto's USB network address.
 
+### A radio transmits, the SDR receives (split duplex)
+
+`rdofradio DEVICE --allow-tx --split-tx PORT --rx MHZ --tx MHZ` runs a split duplex repeater
+([docs/spec/repeater.md](spec/repeater.md)). A RadioFoundry radio with the split duplex extension (its hotspot,
+"SPLIT1" in its description) on PORT is the TX half. The SDR, opened receive only, is the RX half. Any receiver
+will do: an RTL-SDR through SoapySDR, or a Pluto with its transmitter off. `rdof_split_t` joins the two into one
+duplex modem for the repeater, as `split_port.c` does on a board. PORT is the radio's USB serial device or a
+programming cable's UART (`--baud`, default 115200). `--split-power-cap` caps the radio's RF level (MMDVM scale
+1-255; the radio's own default is 64, its lowest step on most radios). The SDR's flags for its transmitter
+(`--tx-gain`, `--tx-lo`, `--tx-offset`, `--monitor`) are refused.
+
+- **The SDR modem's clock** for the split's TIME is the receive stream's sample count against the wall clock, at
+  the freshest read. Its least lag over half a second follows the device's crystal.
+- **Dropped samples.** A lag that stays more than 2 ms over that floor for a second is samples the device dropped.
+  Zeros take their place in the receiver ("receive: ... ms of samples lost; zeros in their place"), so the count
+  keeps real time and the clock fit holds.
+- **The port** is read by a thread that stamps each read, so a TIME round trip doesn't include the main loop's wait
+  on the receive stream.
+- **Waits.** While the repeater waits for the radio's reply, the receiver keeps reading. What it hears in that time
+  is given to the repeater once the wait ends.
+
+On the Pluto (2026-10-28), `--iio local:` at 768 kS/s with the host tests' simulated RadioFoundry radio
+(`host-tests/fake_radio.c`) on a pty as the TX half: the split came up, the RX half got the TX half's slot clock,
+and the repeater ran 60.0 s in 60.0 s with no samples lost. The TX half's round trip bound settled at 1.1 ms. Not
+yet run with a real radio.
+
 The radio can come from a settings file instead: `--config FILE` takes the firmware's settings document
 ([docs/spec/fw/config.md](spec/fw/config.md)), read by the firmware's parser. The radio is a `repeater` (or an
 `sdr_transceiver` with `duplex` full) or a half duplex `sdr_transceiver` on its idle channel. rdofradio applies its
@@ -809,7 +835,7 @@ What the roamer, repeater and their settings do, and the limits:
 | Scan (channels, dwell, hang, carrier first) | in, `CONFIG_RDOF_SCAN` |
 | The repeater: duplex repeat, network per slot, RF priority, echo drop, hang, CW ID, short LC; SFR; dual capacity direct mode (`mode: dcdm`, two simplex calls at once on one frequency, on the SDR modem; no stock MMDVM / OpenGD77 firmware does DCDM yet) | in, `CONFIG_RDOF_FEATURE_REPEATER`; queues bounded (192 bursts a slot, 6 streams) |
 | UTC slot timing: the grid, `slot_timing`, the gate, the sample clock | in (`common/src/slotgrid.c`); the gate on the board from netclock |
-| Split duplex (two modems as one) | in (`common/src/split.c`; on the board `split_port.c` over two USB / UART halves). The board's SDR modem as a half: the core and host tests, not yet on the board |
+| Split duplex (two modems as one) | in (`common/src/split.c`; on the board `split_port.c` over two USB / UART halves). The board's SDR modem as a half: the core and host tests, not yet on the board. On a host or a Pluto, `rdofradio --split-tx` (the SDR as the RX half, a RadioFoundry radio as the TX half): run against the simulated radio, not yet a real one |
 | Network calls, `tx` messages, status every 10 s and on changes, Receiver, restart with backoff | in |
 | Settings, defaults, validation | for a board's roamers or repeaters and its SDR, as JSON (comments allowed). Not: a standalone roaming JSON layout (use a box config), `${VAR}` from the environment (write the values in), checking SDR sections that don't run, ids unique across a box |
 | HBlink4: DMRC (roamer and repeater), DMRD, DMRT, DMRK, the peer link over UDP, the HBlink sink | in |
@@ -853,7 +879,7 @@ edits. Headers in `include/rdof/sdr/`.
 | `sdrmodem`, `loopback` | the SDR as an MMDVM modem for an `sdr_transceiver`, and its end-to-end check ("Transmit: the SDR as a radio") |
 | `receiver` | one tuner: channelizer, a demod and a `common` call tracker per channel, AFC after each chunk |
 | `cli/rdofsdr.c` | host tool: a cu8 recording (or, with SoapySDR, a live device: `--soapy`) in, bursts and tracker JSON out; `--bench` times each stage |
-| `cli/rdofradio.c` | host tool, with SoapySDR or libiio: a device that transmits, run as an `sdr_transceiver` (repeater or roaming transceiver), with the parrot; the device behind `rdofradio_dev.h` (`rdofradio_soapy.c`, `rdofradio_iio.c`) |
+| `cli/rdofradio.c` | host tool, with SoapySDR or libiio: a device that transmits, run as an `sdr_transceiver` (repeater or roaming transceiver), with the parrot; or receive only as a split's RX half with a RadioFoundry radio transmitting (`--split-tx`, over `rdofradio_serial.c`); the device behind `rdofradio_dev.h` (`rdofradio_soapy.c`, `rdofradio_iio.c`) |
 | `cli/tools.cmake` | the host tools' build, shared by the top-level build and host-tests: SoapySDR, libiio and libad9361 found, pffft and the web page linked |
 | `pffft/` | pffft (FFTPACK license), unchanged, and `rdof_pffft.c`: an `rdof_fft` backend the host tools use (`--fft builtin` turns it off). 2.6 to 2.9 times the built-in FFT on a Cortex-A9; scalar there, as its NEON code was slower |
 

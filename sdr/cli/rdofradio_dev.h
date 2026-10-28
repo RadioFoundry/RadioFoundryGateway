@@ -7,6 +7,7 @@
  *   --iio URI     an AD9361 (the PlutoSDR family) through libiio straight (rdofradio_iio.c): only the libraries a
  *                 stock PlutoSDR already has, and with libad9361 its own FIR decimation below 2.083 MS/s (the
  *                 FPGA's decimator, which SoapyPlutoSDR uses there, is broken on some boards)
+ * Opened receive only (rx_only), any receiver does (an RTL-SDR through SoapySDR): write and stop_tx do nothing.
  * Samples are complex floats, full scale 1.0. TX gain is in dB above the device's least: the PlutoSDR's 0..89 is
  * its attenuation of 89..0 dB, on both. write is called from the transmit thread alone, the rest from the main
  * loop.
@@ -14,6 +15,7 @@
 #ifndef RDOFRADIO_DEV_H
 #define RDOFRADIO_DEV_H
 
+#include <stdbool.h>
 #include <stddef.h>
 
 #include "rdof/sdr/fft.h" /* rdof_cf_t */
@@ -28,6 +30,7 @@ typedef struct {
     double gain;         /* RX gain, dB; NAN: the device's AGC */
     double bw;           /* analog bandwidth, Hz, both directions; 0: the device's own */
     const char *stream;  /* --stream: the backend's stream arguments, "" for its defaults */
+    bool rx_only;        /* receive only (a radio transmits: --split-tx): no TX stream, the TX LO off */
 } rdofradio_dev_setup_t;
 
 typedef struct rdofradio_dev rdofradio_dev_t;

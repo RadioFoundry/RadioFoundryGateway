@@ -45,6 +45,7 @@ typedef struct {
     size_t r_left;
     int16_t *wp;         /* the transmit buffer's next free sample, w_left of them */
     size_t w_left;
+    bool rx_only;
 } iio_t;
 
 static void fail(rdofradio_dev_t *d, const char *what, int err)
@@ -102,6 +103,8 @@ static int start(rdofradio_dev_t *d)
         fail(d, "receive buffer", errno);
         return -1;
     }
+    if (s->rx_only)
+        return 0;
     s->txb = iio_device_create_buffer(s->txd, s->len, false);
     if (!s->txb) {
         fail(d, "transmit buffer", errno);
@@ -146,6 +149,8 @@ static int16_t dac(float v)
 static int wr(rdofradio_dev_t *d, const rdof_cf_t *x, int n, long timeout_us)
 {
     iio_t *s = (iio_t *)d;
+    if (!s->txb)
+        return n;
     const int k = (size_t)n < s->w_left ? n : (int)s->w_left;
     for (int i = 0; i < k; i++) {
         s->wp[2 * i] = dac(x[i].re);
@@ -289,8 +294,8 @@ rdofradio_dev_t *rdofradio_iio_open(const char *uri, const rdofradio_dev_setup_t
     fpga_rate(s->rxd, false, rate);
     fpga_rate(s->txd, true, rate);
     if (r < 0 || put_ll(d, s->rx_lo, "frequency", llround(su->rx_hz)) ||
-        put_ll(d, s->tx_lo, "frequency", llround(su->tx_hz)) || lo_power(d, s->rx_lo, true) ||
-        lo_power(d, s->tx_lo, true) ||
+        (!su->rx_only && put_ll(d, s->tx_lo, "frequency", llround(su->tx_hz))) || lo_power(d, s->rx_lo, true) ||
+        lo_power(d, s->tx_lo, !su->rx_only) ||
         (su->bw > 0 && (put_ll(d, s->rx_ch, "rf_bandwidth", llround(su->bw)) ||
                         put_ll(d, s->tx_ch, "rf_bandwidth", llround(su->bw))))) {
         snprintf(err, cap, "iio setup: %s", d->error);
@@ -311,8 +316,11 @@ rdofradio_dev_t *rdofradio_iio_open(const char *uri, const rdofradio_dev_setup_t
     d->rate = (double)got;
     iio_channel_enable(s->rx_i);
     iio_channel_enable(s->rx_q);
-    iio_channel_enable(s->tx_i);
-    iio_channel_enable(s->tx_q);
+    s->rx_only = su->rx_only;
+    if (!s->rx_only) {
+        iio_channel_enable(s->tx_i);
+        iio_channel_enable(s->tx_q);
+    }
     s->len = stream_len(su->stream, d->rate);
     return d;
 }

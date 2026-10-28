@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 /*
- * rdofradio's device on SoapySDR (rdofradio_dev.h): any SoapySDR device that transmits, CF32 both ways.
+ * rdofradio's device on SoapySDR (rdofradio_dev.h): any SoapySDR device that transmits, CF32 both ways; receive
+ * only, any that receives.
  */
 #define _POSIX_C_SOURCE 200809L
 #include <math.h>
@@ -52,7 +53,8 @@ static double bandwidth(rdofradio_dev_t *d) { return SoapySDRDevice_getBandwidth
 static int start(rdofradio_dev_t *d)
 {
     soapy_t *s = (soapy_t *)d;
-    if (SoapySDRDevice_activateStream(s->dev, s->rx, 0, 0, 0) || SoapySDRDevice_activateStream(s->dev, s->tx, 0, 0, 0)) {
+    if (SoapySDRDevice_activateStream(s->dev, s->rx, 0, 0, 0) ||
+        (s->tx && SoapySDRDevice_activateStream(s->dev, s->tx, 0, 0, 0))) {
         fail(d, "activate");
         return -1;
     }
@@ -79,6 +81,8 @@ static int rd(rdofradio_dev_t *d, rdof_cf_t *x, int n, long timeout_us)
 static int wr(rdofradio_dev_t *d, const rdof_cf_t *x, int n, long timeout_us)
 {
     soapy_t *s = (soapy_t *)d;
+    if (!s->tx)
+        return n;
     const void *b[1] = {x};
     int flags = 0;
     const int k = SoapySDRDevice_writeStream(s->dev, s->tx, b, (size_t)n, &flags, 0, timeout_us);
@@ -136,17 +140,20 @@ rdofradio_dev_t *rdofradio_soapy_open(const char *args, const rdofradio_dev_setu
     snprintf(d->name, sizeof d->name, "SoapySDR %s", driver ? driver : "");
     const bool pluto = driver && !strcasecmp(driver, "plutosdr");
     free(driver);
-    const SoapySDRRange tr = SoapySDRDevice_getGainRange(s->dev, SOAPY_SDR_TX, 0);
-    d->tx_gain_min = tr.minimum, d->tx_gain_max = tr.maximum;
-    set_tx_gain(d, d->tx_gain_min);
+    const bool tx = !su->rx_only;
+    if (tx) {
+        const SoapySDRRange tr = SoapySDRDevice_getGainRange(s->dev, SOAPY_SDR_TX, 0);
+        d->tx_gain_min = tr.minimum, d->tx_gain_max = tr.maximum;
+        set_tx_gain(d, d->tx_gain_min);
+    }
     if (SoapySDRDevice_setSampleRate(s->dev, SOAPY_SDR_RX, 0, su->rate) ||
-        SoapySDRDevice_setSampleRate(s->dev, SOAPY_SDR_TX, 0, su->rate) ||
+        (tx && SoapySDRDevice_setSampleRate(s->dev, SOAPY_SDR_TX, 0, su->rate)) ||
         SoapySDRDevice_setFrequency(s->dev, SOAPY_SDR_RX, 0, su->rx_hz, NULL) ||
-        SoapySDRDevice_setFrequency(s->dev, SOAPY_SDR_TX, 0, su->tx_hz, NULL) ||
+        (tx && SoapySDRDevice_setFrequency(s->dev, SOAPY_SDR_TX, 0, su->tx_hz, NULL)) ||
         SoapySDRDevice_setGainMode(s->dev, SOAPY_SDR_RX, 0, isnan(su->gain)) ||
         (!isnan(su->gain) && SoapySDRDevice_setGain(s->dev, SOAPY_SDR_RX, 0, su->gain)) ||
         (su->bw > 0 && (SoapySDRDevice_setBandwidth(s->dev, SOAPY_SDR_RX, 0, su->bw) ||
-                        SoapySDRDevice_setBandwidth(s->dev, SOAPY_SDR_TX, 0, su->bw)))) {
+                        (tx && SoapySDRDevice_setBandwidth(s->dev, SOAPY_SDR_TX, 0, su->bw))))) {
         snprintf(err, cap, "soapy setup: %s", SoapySDRDevice_lastError());
         SoapySDRDevice_unmake(s->dev);
         free(s);
@@ -159,9 +166,10 @@ rdofradio_dev_t *rdofradio_soapy_open(const char *args, const rdofradio_dev_setu
     const char *stream = su->stream && *su->stream ? su->stream : pluto ? "bufflen=32768" : "";
     SoapySDRKwargs sa = SoapySDRKwargs_fromString(stream);
     s->rx = SoapySDRDevice_setupStream(s->dev, SOAPY_SDR_RX, SOAPY_SDR_CF32, NULL, 0, &sa);
-    s->tx = SoapySDRDevice_setupStream(s->dev, SOAPY_SDR_TX, SOAPY_SDR_CF32, NULL, 0, &sa);
+    if (tx)
+        s->tx = SoapySDRDevice_setupStream(s->dev, SOAPY_SDR_TX, SOAPY_SDR_CF32, NULL, 0, &sa);
     SoapySDRKwargs_clear(&sa);
-    if (!s->rx || !s->tx) {
+    if (!s->rx || (tx && !s->tx)) {
         snprintf(err, cap, "soapy streams: %s", SoapySDRDevice_lastError());
         close_dev(d);
         return NULL;
