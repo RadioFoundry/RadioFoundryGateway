@@ -400,9 +400,20 @@ static double plan_rate(const rdof_sdr_channel_t *c, int n, char *why, size_t ca
         f[i] = c[i].freq_hz;
     const double lo = rate_flag ? rate_flag : dev_iio ? 768000 : 2400000;
     const double hi = rate_flag ? rate_flag : dev_local ? 2400000 : dev_iio ? 3840000 : 3200000;
-    for (double r = ceil(lo / 48000) * 48000; r <= hi; r += 48000)
-        if (!rdof_plan_center(f, n, r, &center))
+    for (double r = ceil(lo / 48000) * 48000; r <= hi; r += 48000) {
+        if (rdof_plan_center(f, n, r, &center))
+            continue;
+        /* and one the channelizer takes: its FFT is 64 times the decimation, which the FFT may not do (pffft:
+           factors 2, 3 and 5 only) */
+        double off[RDOF_SDR_MAX_CHANNELS];
+        for (int i = 0; i < n; i++)
+            off[i] = f[i] - center;
+        rdof_chz_t z;
+        const int bad = rdof_chz_init(&z, r, off, n, (int)(r / 48000), RDOF_CHZ_OUT_FFT, RDOF_CHZ_CUTOFF_HZ);
+        rdof_chz_free(&z);
+        if (!bad)
             return r;
+    }
     double flo = f[0], fhi = f[0];
     for (int i = 1; i < n; i++)
         flo = fmin(flo, f[i]), fhi = fmax(fhi, f[i]);
