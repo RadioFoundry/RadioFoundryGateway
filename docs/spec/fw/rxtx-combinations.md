@@ -84,6 +84,32 @@ split (`rdof_split_t`), built by the runtime, never written out in the config. T
 A role on one SDR's channel and one of that SDR's carriers runs one `rdof_sdrmodem_t` in duplex, as `sdr_transceiver`
 does now. The SDR modem becomes **one a role**, not one a board. They share the device's receiver and front end.
 
+### 2.1 Channels and how they're used
+
+A channel is a frequency in the plan (`channels`). What uses it comes from the roles and devices, not from a mode on
+the channel, so one channel may serve several uses at once (heard by a monitor while a roamer may also send there).
+The uses:
+
+| Use | What happens on the channel | Config |
+|---|---|---|
+| simplex | heard and reported; the network's calls for it sent on it, half duplex | a monitor channel that's also one of a roamer's `channels` on the same SDR (rdofradio, built) |
+| receive only | heard and reported, never sent on (a repeater's output, monitored) | a monitor channel with `"tx": false` in the plan (built) |
+| repeater input | a repeater hears its users there | a repeater's `rx_freq` |
+| repeater output | a repeater transmits there | a repeater's `tx_freq` (refused on a `"tx": false` channel) |
+| SFR | one frequency, both directions, slots timed by the radio | an `sfr` role's `freq` |
+| DCDM | one frequency, two slots, two directions | a `dcdm` role's `freq` |
+
+A repeater is the input and output uses joined: one RX resource and one TX resource, on any devices (§2). A roamer is
+a transmitter that may hop to any of its channels, and a receiver on its idle channel or scanning several. On an SDR
+the receiver hears every channel in its window at once, so a roamer on an SDR plus a monitor over the same channels
+is simplex on all of them. An SDR has no scan for now: a scan would let it hear more than its window holds, which
+needs more thought.
+
+`"tx": false` on a plan channel is the one per-channel switch: nothing in the gateway transmits there.
+
+Open: a channel carrying several talkgroups. Today a channel has one `tg`. The likely form is a list with ranges
+and a wildcard (`"tg": [201, "300-399", "*"]`), used to route the network's calls to channels; not designed yet.
+
 ## 3. The broker
 
 **`rdof_broker_t`** (new, `common/`) is a table of resources with their owner and caps. There is no I/O, so it's host-tested.

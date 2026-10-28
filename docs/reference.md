@@ -194,6 +194,30 @@ to one of them gets a refusal. The repeater's slot timing (`relabel`) applies on
 radio's card on the page lists the monitored channels with their bursts, RSSI and peer state, and their calls show
 in Last heard as the SDR's.
 
+**Simplex on every channel** (a roamer and a monitor on one SDR). The transceiver takes the roamer's `channels`
+(and `listen_s`, `clear_s`, the answer window, `idle_after_s`, CW ID, as the firmware's roamer) and hears on any
+receiver channel (`io_channel`); a channel the window doesn't hold can still be sent on (the modem hears nothing
+there, `RDOF_SDRMODEM_NOT_HEARD`). The TX LO moves when a call's channel is past the modulator's reach (0.4 of the
+rate, less half a channel): to 100 kHz above it, unkeyed (`set_tx_freq`). A DMRT to the roamer's peer sends the
+call where the master says. DMRD to a monitored channel's peer, when that channel is one of the roamer's, goes out
+on that channel through the same transceiver: one channel at a time, the next call refused while it's busy (as a
+DMRT would be; the DMRK goes nowhere, since the master sent no DMRT). What we transmit is heard back on its channel
+(and its I/Q image): the receiver drops those bursts (`drop`, counted in `echoes`) within the key-up's span on the
+air, 60 ms either side, so a monitored channel's peer never sends the network's call back as heard. The plan's
+`"tx": false` on a channel keeps everything off it: a roamer's `all` leaves it out, naming it is refused, an idle
+channel with it is heard and never sent on, and no repeater's `tx_freq` may be it. That's how a repeater's output is
+monitored: a monitor channel with `"tx": false`.
+
+**The rate** without `-r` is the least multiple of 48 kS/s, from the device's usual rate (768 kS/s through libiio,
+2.4 MS/s through SoapySDR), whose window holds every receive channel and which the channelizer takes (its FFT is 64
+times the decimation; pffft does factors 2, 3 and 5 only). The most: 2.4 MS/s on a PlutoSDR's own ARM, 3.84 MS/s
+from a host through libiio, 3.2 MS/s through SoapySDR (give another device `-r`). 438.0625 to 438.975 MHz (10
+channels) runs at 1.296 MS/s on the Pluto, the receive loop 69 % busy (2026-10-28).
+
+**Settings that can't run** (refused, or channels no window holds) keep the page up with `--config` and `--web`:
+the radio's card shows the reason, `/api/resolved` says it isn't running, and a save from the page or the file
+changing on disk starts it again. A save is refused when its receive channels don't fit a window.
+
 The clock is the settings' `ntp`: with servers it's netclock, the board's NTP disciplined clock
 (`components/netclock`, its POSIX glue `netclock_posix`), and the page's clock card is the board's (`/api/clock`,
 `/api/time`: the browser's clock sets it when there's no NTP). `ntp.clock` `"os"` leaves the time to the OS
