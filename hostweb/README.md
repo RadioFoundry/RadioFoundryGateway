@@ -20,13 +20,17 @@ own server (esp_http_server). Both route the shared API to the same handlers in 
   - `GET / POST /api/config`, `GET /api/resolved`, `POST /api/restart`: when the tool gives settings hooks
     (`rdof_hostweb_settings`). Read only, a POST answers 403. A POST is checked by the tool's own `save`; saved,
     the answer is "saved; restarting" and the tool's `restart` hook runs after it goes out.
+- `GET /api/spectrum?since=N`: the spectrum and waterfall, as the board's: the rows newer than row N (512 bins, base64,
+  dBFS times -2), plus `channels`, the status's receive, transmit and monitored channels with `in` set for those in
+  the span. The tool makes rows (`rdof_hostweb_spectrum_row`) only while `rdof_hostweb_spectrum_wanted`: the page
+  asked in the last 10 s.
 - Every other `/api/` path, and every other POST / DELETE, answers 501 with `{"error":"not on this platform", ...}`:
-  OTA, core dump, Wi-Fi, the firmware's clock, tasks, spectrum.
+  OTA, core dump, Wi-Fi, the firmware's clock, tasks.
 
 `caps` in the status: `ota`, `restart`, `wifi`, `tasks`, `coredump`, `board_mem`, `sys_mem`, `netclock`,
-`os_clock`, `links`, `settings`, `settings_edit`. The page shows what's set and hides the rest (a status without
+`os_clock`, `links`, `settings`, `settings_edit`, `spectrum`. The page shows what's set and hides the rest (a status without
 `caps` is firmware with everything). Here: `sys_mem` and `os_clock`; `settings`, `settings_edit` (writable) and
-`restart` with the settings hooks.
+`restart` with the settings hooks; `spectrum` when the status says the tool makes one.
 
 One thread serves one connection at a time, bound to 127.0.0.1 unless told otherwise (there is no
 authentication: bind to another address only on a network you trust). A client that stalls holds it up to 2 s.
@@ -41,6 +45,7 @@ authentication: bind to another address only on a network you trust). A client t
 | `rdof_hostweb_logf(fmt, ...)` | a line for the log, stamped UTC |
 | `rdof_hostweb_tracker_json(role, radio, channel, json)` | a call tracker's JSON line, for last heard |
 | `rdof_hostweb_net_call(role, radio, action, call, duration)` | a call going out ("start" / "end"), for last heard |
+| `rdof_hostweb_spectrum_wanted()` / `rdof_hostweb_spectrum_row(row, bins, center, rate, row_ms)` | the page's spectrum: make rows only while wanted |
 | `rdof_hostweb_settings(&hooks)` | the settings: `get`, `save`, `resolved`, `restart`, `writable`, `source` |
 | `rdof_hostweb_save_file(path, text, len, err, cap)` | write a file whole or not at all (a temporary file, fsync, rename) |
 | `rdof_hostweb_reexec(argv)` | start the program again with the same command line (after it has stopped cleanly) |
