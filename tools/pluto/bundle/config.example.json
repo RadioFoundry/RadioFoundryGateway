@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "name": "pluto",
+  "devices": {
+    "pluto": {"kind": "sdr", "driver": "iio", "match": {"uri": "local:"}, "tx": {}}
+  },
+  "roles": {
+    "R1": {"type": "repeater", "peer_id": 9800001, "rx_freq": 438.25, "tx_freq": 438.0125, "cc": 1, "parrot": 9990,
+           "modem": {"device": "pluto"}}
+  }
+}

@@ -11,6 +11,9 @@
 #
 # Then: scp -O build/pluto/rdof-pluto.tar.gz root@192.168.2.1:/tmp (password analog), and on the Pluto
 #   cd /tmp && gunzip -c rdof-pluto.tar.gz | tar -xf - && ./rdofradio --iio local: --allow-tx ... --web 0.0.0.0:8080
+# It also writes the install bundle, build/pluto/rdof-pluto-bundle-VERSION.tar.gz: rdofradio with an install script
+# that sets it up to start at boot and again when it exits (tools/pluto/bundle/README.md). VERSION is
+# $RDOF_VERSION, else git describe, else "dev".
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 OUT=$ROOT/build/pluto
@@ -49,4 +52,16 @@ echo "newest glibc symbol:"; arm-linux-gnueabihf-objdump -T rdofradio | grep -oE
 tar -czf rdof-pluto.tar.gz rdofradio rdofsdr
 chown -R '"$(id -u):$(id -g)"' /out
 '
-ls -la "$OUT"/rdofradio "$OUT"/rdofsdr "$OUT"/rdof-pluto.tar.gz
+
+# the install bundle
+VERSION=${RDOF_VERSION:-$(git -C "$ROOT" describe --always --dirty 2>/dev/null || echo dev)}
+B=rdof-pluto-bundle-$VERSION
+rm -rf "$OUT/$B" && mkdir -p "$OUT/$B"
+cp "$ROOT"/tools/pluto/bundle/{install.sh,run.sh,config.example.json,flags.example,README.md} "$OUT/$B/"
+cp -r "$ROOT"/LICENSE "$ROOT"/LICENSES "$ROOT"/PROVENANCE.md "$OUT/$B/"
+gzip -9 -c "$OUT/rdofradio" > "$OUT/$B/rdofradio.gz"
+echo "$VERSION" > "$OUT/$B/VERSION"
+chmod 755 "$OUT/$B/install.sh" "$OUT/$B/run.sh"
+tar -C "$OUT" -czf "$OUT/$B.tar.gz" "$B"
+rm -rf "$OUT/$B"
+ls -la "$OUT"/rdofradio "$OUT"/rdofsdr "$OUT"/rdof-pluto.tar.gz "$OUT/$B.tar.gz"

@@ -134,6 +134,15 @@ Measured on a "PlutoSDR Rev.C (Z7010-AD9361)", firmware v0.38, its two Cortex-A9
 The full duplex run calibrated at once ("the transmit path is 58.50 ms past its place"). The web page answered on
 the Pluto's USB network address.
 
+**To run it at every boot:** `tools/pluto/build.sh` also writes `build/pluto/rdof-pluto-bundle-VERSION.tar.gz`, with an
+install script ([tools/pluto/bundle/README.md](../tools/pluto/bundle/README.md)). `./install.sh --config FILE` (or
+`--example`) from a computer, over ssh, puts `rdofradio` (gzipped, 285 KB), the settings and a supervisor loop in the
+Pluto's persistent flash (`/mnt/jffs2`). The firmware's `/mnt/jffs2/autorun.sh` starts the loop at boot, and the loop
+starts `rdofradio` again 5 s after it exits. The settings stay in `/mnt/jffs2/rdof/config.json`, which the web page
+edits. The Pluto makes a new ssh host key at every boot, so the script doesn't check it. Tested on a Pluto+ style
+clone (Z7010, 1 GB, Ethernet, SD boot, ADI's v0.38): the web page answers about 25 s after power-on. At `--tx-gain 0`
+(the bundle's default) the start's calibration pulse isn't heard, so the outbound slot timing isn't measured.
+
 ### A radio transmits, the SDR receives (split duplex)
 
 `rdofradio DEVICE --allow-tx --split-tx PORT --rx MHZ --tx MHZ` runs a split duplex repeater
