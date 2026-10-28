@@ -5,6 +5,7 @@
  * publishing from a thread while requests run. With --serve [PORT] [FILE] it stays up with moving fake state, for a
  * browser, its settings in FILE (editable; a save logs the restart it would do) or read only without one. */
 #include <arpa/inet.h>
+#include <math.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -74,6 +75,47 @@ static void fake(rdof_hostweb_status_t *s, int t)
     s->nextra = 1;
     snprintf(s->extra[0].name, sizeof s->extra[0].name, "late_chunks");
     s->extra[0].value = 2;
+}
+
+/* Two SDRs and a split's radio, as a tool with several devices would publish them */
+static void fake_devices(rdof_hostweb_status_t *s, int t)
+{
+    s->nsdr = 2;
+    for (int i = 0; i < 2; i++) {
+        rdof_hostweb_sdr_t *d = &s->sdrs[i];
+        snprintf(d->name, sizeof d->name, i ? "wide" : "pluto");
+        snprintf(d->device, sizeof d->device, i ? "SoapySDR rtlsdr" : "libiio AD9361 local:");
+        d->open = d->receiving = true;
+        d->rate = i ? 2400000 : 768000;
+        d->center_hz = i ? 438525000 : 438100000;
+        d->gain_db = i ? NAN : 40;
+        d->agc = i;
+        d->samples_per_s = d->rate - 100;
+        d->overflows = (uint64_t)i * 3;
+        d->load = 0.42;
+        d->nstage = 1;
+        snprintf(d->stage[0].name, sizeof d->stage[0].name, "receiver");
+        d->stage[0].share = 0.3f;
+        d->tx = !i;
+        d->tx_hz = 438500000, d->tx_lo_hz = 438250000;
+        d->tx_on = (t / 4) & 1;
+        d->hblink_peers = i ? 2 : 0, d->hblink_up = 1;
+        d->nchan = 1;
+        snprintf(d->chan[0].id, sizeof d->chan[0].id, i ? "M1" : "bench");
+        snprintf(d->chan[0].name, sizeof d->chan[0].name, i ? "re\"ceive" : "receive");
+        d->chan[0].freq = i ? 438425000 : 438000000, d->chan[0].in = true, d->chan[0].bursts = 12, d->chan[0].rssi = -80;
+        d->chan[0].afc_hz = -12.34f, d->chan[0].idle_pct = 40.4f;
+    }
+    s->nmodem = 1;
+    rdof_hostweb_modem_t *m = &s->modems[0];
+    snprintf(m->name, sizeof m->name, "TX half");
+    snprintf(m->kind, sizeof m->kind, "RadioFoundry radio");
+    snprintf(m->port, sizeof m->port, "/dev/ttyACM0");
+    snprintf(m->version, sizeof m->version, "RadioFoundry 1.2");
+    m->open = m->ready = true;
+    m->nextra = 1;
+    snprintf(m->extra[0].name, sizeof m->extra[0].name, "misses");
+    m->extra[0].value = 3;
 }
 
 /* The settings: a file, checked the way a tool would (here: a JSON object), saved whole */
@@ -161,6 +203,7 @@ int main(int argc, char **argv)
         for (int t = 0;; t++) {
             rdof_hostweb_status_t s;
             fake(&s, t);
+            fake_devices(&s, t);
             s.spectrum = true;
             rdof_hostweb_status(&s);
             for (int r = 0; r < 5; r++) { /* a noise floor and a tone that walks across the span */
@@ -325,16 +368,25 @@ int main(int argc, char **argv)
     s.nchan = 1;
     snprintf(s.chan[0].id, sizeof s.chan[0].id, "M\"1");
     s.chan[0].freq = 438200000;
-    s.nrx = 1;
-    snprintf(s.rx[0].id, sizeof s.rx[0].id, "bench");
-    snprintf(s.rx[0].name, sizeof s.rx[0].name, "re\"ceive");
-    s.rx[0].freq = 438000000, s.rx[0].in = true, s.rx[0].bursts = 12, s.rx[0].rssi = -80;
-    s.rx[0].afc_hz = -12.34f, s.rx[0].idle_pct = 40.4f;
+    fake_devices(&s, 0);
     rdof_hostweb_status(&s);
     http(port, "GET /api/status HTTP/1.1\r\n\r\n", b, sizeof b);
     CHECK(strstr(b, "\"spectrum\":true}"));
-    CHECK(strstr(b, "\"rx_channels\":[{\"id\":\"bench\",\"name\":\"receive\",\"freq\":438000000,\"in\":true,\"bursts\":12,"
-                    "\"rssi\":-80,\"afc\":-12.3,\"idle\":40}]"));
+    CHECK(strstr(b, "\"sdrs\":[{\"name\":\"pluto\",\"started\":true,\"frontend\":\"host\",\"rtl_open\":true,"
+                    "\"rtl\":\"libiio AD9361 local:\",\"receiving\":true,\"sample_rate\":768000,\"center_hz\":438100000,"
+                    "\"gain_db\":40.0,\"agc\":false,\"samples_per_s\":767900,"));
+    CHECK(strstr(b, "\"cpu_load\":0.42,\"load_of\":\"the receive loop\",\"cpu_stages\":{\"receiver\":0.3},"
+                    "\"tx_hz\":438500000,\"tx_lo_hz\":438250000,"));
+    CHECK(strstr(b, "\"channels\":[{\"id\":\"bench\",\"name\":\"receive\",\"freq\":438000000,\"in\":true,\"bursts\":12,"
+                    "\"rssi\":-80,\"afc\":-12.3,\"idle\":40}]},{\"name\":\"wide\""));
+    CHECK(strstr(b, "\"agc\":true,") && strstr(b, "\"hblink_peers\":2,\"hblink_up\":1,"));
+    CHECK(strstr(b, "{\"id\":\"M1\",\"name\":\"receive\",")); /* the quote taken out */
+    CHECK(strstr(b, "\"modems\":[{\"name\":\"TX half\",\"kind\":\"RadioFoundry radio\",\"role\":\"\",\"port\":\"/dev/ttyACM0\","
+                    "\"open\":true,\"ready\":true,\"version\":\"RadioFoundry 1.2\",\"state\":\"\",\"misses\":3}]"));
+    CHECK(strstr(b, "\"cpu_process\":"));
+#if defined(__APPLE__) || defined(__linux__)
+    CHECK(strstr(b, "\"cpu\":[0") || strstr(b, "\"cpu\":[1"));
+#endif
     http(port, "GET /api/spectrum HTTP/1.1\r\n\r\n", b, sizeof b);
     CHECK(strstr(b, "200 OK") && strstr(b, "\"seq\":0,") && strstr(b, "\"rows\":[]") && rdof_hostweb_spectrum_wanted());
     uint8_t row[RDOF_HOSTWEB_SPECTRUM_BINS];

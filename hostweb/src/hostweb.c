@@ -299,8 +299,227 @@ static void json_safe(char *out, size_t cap, const char *in, size_t in_cap)
     out[k] = 0;
 }
 
+/* Objects written one at a time into an array: the writer has none. "[" to start, each object's text, "]". */
+typedef struct {
+    char *buf;
+    size_t cap, len;
+} jarr_t;
+
+static void jarr_add(jarr_t *a, const char *text)
+{
+    const size_t n = strlen(text);
+    if (a->len + n + 3 > a->cap)
+        return;
+    a->buf[a->len] = a->len ? ',' : '[';
+    a->len++;
+    memcpy(a->buf + a->len, text, n);
+    a->len += n;
+}
+
+static void jarr_put(rdof_json_t *j, const char *key, jarr_t *a)
+{
+    if (a->len == 0)
+        a->buf[a->len++] = '[';
+    a->buf[a->len++] = ']';
+    a->buf[a->len] = 0;
+    rdof_json_raw(j, key, a->buf);
+}
+
+/* The SDRs, as the board's SDR (sdrs: the page's SDR cards, one each): the board's names where they mean the same */
+static void sdrs_json(rdof_json_t *j, rdof_hostweb_status_t *s)
+{
+    if (s->nsdr <= 0)
+        return;
+    const size_t one = 6144, all = RDOF_HOSTWEB_SDRS * 6144;
+    char *obj = malloc(one), *chans = malloc(16 * 200), *buf = malloc(all);
+    if (!obj || !chans || !buf)
+        goto out;
+    jarr_t arr = {buf, all - 1, 0};
+    for (int i = 0; i < s->nsdr && i < RDOF_HOSTWEB_SDRS; i++) {
+        rdof_hostweb_sdr_t *d = &s->sdrs[i];
+        d->name[sizeof d->name - 1] = d->device[sizeof d->device - 1] = d->error[sizeof d->error - 1] = 0;
+        rdof_json_t o;
+        rdof_json_init(&o, obj, one);
+        rdof_json_open(&o, NULL);
+        rdof_json_str(&o, "name", d->name);
+        rdof_json_bool(&o, "started", true);
+        rdof_json_str(&o, "frontend", "host");
+        rdof_json_bool(&o, "rtl_open", d->open);
+        rdof_json_str(&o, "rtl", d->device);
+        if (d->error[0])
+            rdof_json_str(&o, "rtl_error", d->error);
+        rdof_json_bool(&o, "receiving", d->receiving && !d->error[0]);
+        if (d->calibrating)
+            rdof_json_bool(&o, "calibrating", true);
+        rdof_json_int(&o, "sample_rate", llround(d->rate));
+        rdof_json_int(&o, "center_hz", llround(d->center_hz));
+        if (!isnan(d->gain_db))
+            rdof_json_float3(&o, "gain_db", d->gain_db);
+        rdof_json_bool(&o, "agc", d->agc);
+        if (d->samples_per_s >= 0)
+            rdof_json_int(&o, "samples_per_s", llround(d->samples_per_s));
+        rdof_json_int(&o, "samples_expected_per_s", llround(d->rate));
+        rdof_json_int(&o, "read_errors", (long long)d->read_errors);
+        rdof_json_int(&o, "overflows", (long long)d->overflows);
+        rdof_json_float3(&o, "lost_ms", d->lost_ms);
+        if (d->load >= 0) {
+            rdof_json_float3(&o, "cpu_load", d->load);
+            rdof_json_str(&o, "load_of", "the receive loop");
+            if (d->nstage > 0) {
+                rdof_json_open(&o, "cpu_stages");
+                for (int k = 0; k < d->nstage && k < 6; k++) {
+                    d->stage[k].name[sizeof d->stage[k].name - 1] = 0;
+                    rdof_json_float3(&o, d->stage[k].name, d->stage[k].share);
+                }
+                rdof_json_close(&o);
+            }
+        }
+        if (d->tx) {
+            rdof_json_int(&o, "tx_hz", d->tx_hz);
+            rdof_json_int(&o, "tx_lo_hz", d->tx_lo_hz);
+            rdof_json_float3(&o, "tx_gain_db", d->tx_gain_db);
+            rdof_json_bool(&o, "tx_on", d->tx_on);
+            rdof_json_int(&o, "tx_errors", (long long)d->tx_errors);
+        }
+        if (d->has_mqtt) {
+            rdof_json_bool(&o, "mqtt", d->mqtt);
+            rdof_json_int(&o, "mqtt_dropped", d->mqtt_dropped);
+        }
+        if (d->hblink_peers > 0) {
+            rdof_json_int(&o, "hblink_peers", d->hblink_peers);
+            rdof_json_int(&o, "hblink_up", d->hblink_up);
+        }
+        size_t n = 1;
+        chans[0] = '[';
+        for (int c = 0; c < d->nchan && c < 16 && n < 16 * 200 - 2; c++) {
+            char id[24], name[32];
+            json_safe(id, sizeof id, d->chan[c].id, sizeof d->chan[c].id);
+            json_safe(name, sizeof name, d->chan[c].name, sizeof d->chan[c].name);
+            n += (size_t)snprintf(chans + n, 16 * 200 - n,
+                                  "%s{\"id\":\"%s\",\"name\":\"%s\",\"freq\":%u,\"in\":%s,\"bursts\":%llu,\"rssi\":%d,"
+                                  "\"afc\":%.1f,\"idle\":%.0f}",
+                                  c ? "," : "", id, name, (unsigned)d->chan[c].freq, d->chan[c].in ? "true" : "false",
+                                  (unsigned long long)d->chan[c].bursts, d->chan[c].rssi, d->chan[c].afc_hz,
+                                  d->chan[c].idle_pct);
+        }
+        if (n < 16 * 200 - 1) {
+            chans[n++] = ']';
+            chans[n] = 0;
+            rdof_json_raw(&o, "channels", chans);
+        }
+        rdof_json_close(&o);
+        if (rdof_json_done(&o))
+            jarr_add(&arr, obj);
+    }
+    jarr_put(j, "sdrs", &arr);
+out:
+    free(obj);
+    free(chans);
+    free(buf);
+}
+
+/* The radios and modems on ports (modems: a card each) */
+static void modems_json(rdof_json_t *j, rdof_hostweb_status_t *s)
+{
+    if (s->nmodem <= 0)
+        return;
+    char obj[1536], buf[RDOF_HOSTWEB_MODEMS * 1536 + 4];
+    jarr_t arr = {buf, sizeof buf - 1, 0};
+    for (int i = 0; i < s->nmodem && i < RDOF_HOSTWEB_MODEMS; i++) {
+        rdof_hostweb_modem_t *m = &s->modems[i];
+        m->name[sizeof m->name - 1] = m->kind[sizeof m->kind - 1] = m->role[sizeof m->role - 1] = 0;
+        m->port[sizeof m->port - 1] = m->version[sizeof m->version - 1] = 0;
+        m->state[sizeof m->state - 1] = m->error[sizeof m->error - 1] = 0;
+        rdof_json_t o;
+        rdof_json_init(&o, obj, sizeof obj);
+        rdof_json_open(&o, NULL);
+        rdof_json_str(&o, "name", m->name);
+        rdof_json_str(&o, "kind", m->kind);
+        rdof_json_str(&o, "role", m->role);
+        rdof_json_str(&o, "port", m->port);
+        rdof_json_bool(&o, "open", m->open);
+        rdof_json_bool(&o, "ready", m->ready && !m->error[0]);
+        rdof_json_str(&o, "version", m->version);
+        rdof_json_str(&o, "state", m->state);
+        if (m->error[0])
+            rdof_json_str(&o, "error", m->error);
+        for (int k = 0; k < m->nextra && k < 8; k++) {
+            m->extra[k].name[sizeof m->extra[k].name - 1] = 0;
+            rdof_json_int(&o, m->extra[k].name, m->extra[k].value);
+        }
+        rdof_json_close(&o);
+        if (rdof_json_done(&o))
+            jarr_add(&arr, obj);
+    }
+    jarr_put(j, "modems", &arr);
+}
+
+/* Each core's busy share and this process's (of one core; past 1 with threads on several), since the last status
+ * (cpu and cpu_process, as the board's cpu). Nothing the first time, or where the system doesn't say. */
+#define CPU_MAX 64
+static void host_cpu(rdof_json_t *j)
+{
+    static uint64_t busy0[CPU_MAX], total0[CPU_MAX];
+    static double proc0 = -1, t0;
+    uint64_t busy[CPU_MAX], total[CPU_MAX];
+    int n = 0;
+#ifdef __APPLE__
+    natural_t ncpu = 0;
+    processor_info_array_t info;
+    mach_msg_type_number_t ninfo;
+    if (host_processor_info(mach_host_self(), PROCESSOR_CPU_LOAD_INFO, &ncpu, &info, &ninfo) == KERN_SUCCESS) {
+        for (natural_t c = 0; c < ncpu && n < CPU_MAX; c++, n++) {
+            const integer_t *t = &info[c * CPU_STATE_MAX];
+            busy[n] = (uint64_t)t[CPU_STATE_USER] + (uint64_t)t[CPU_STATE_SYSTEM] + (uint64_t)t[CPU_STATE_NICE];
+            total[n] = busy[n] + (uint64_t)t[CPU_STATE_IDLE];
+        }
+        vm_deallocate(mach_task_self(), (vm_address_t)info, ninfo * sizeof *info);
+    }
+#else
+    FILE *f = fopen("/proc/stat", "r");
+    char line[256];
+    while (f && fgets(line, sizeof line, f) && n < CPU_MAX) {
+        unsigned long long v[8] = {0};
+        int c;
+        if (strncmp(line, "cpu", 3) || line[3] < '0' || line[3] > '9' ||
+            sscanf(line + 3, "%d %llu %llu %llu %llu %llu %llu %llu %llu", &c, &v[0], &v[1], &v[2], &v[3], &v[4], &v[5],
+                   &v[6], &v[7]) < 5)
+            continue;
+        total[n] = v[0] + v[1] + v[2] + v[3] + v[4] + v[5] + v[6] + v[7];
+        busy[n] = total[n] - v[3] - v[4]; /* less idle and iowait */
+        n++;
+    }
+    if (f)
+        fclose(f);
+#endif
+    struct rusage ru;
+    const double now = mono_s();
+    double proc = -1;
+    if (!getrusage(RUSAGE_SELF, &ru))
+        proc = (double)ru.ru_utime.tv_sec + ru.ru_utime.tv_usec / 1e6 + (double)ru.ru_stime.tv_sec + ru.ru_stime.tv_usec / 1e6;
+    static int n0;
+    if (n > 0 && n == n0) {
+        char a[CPU_MAX * 8 + 2] = "[";
+        size_t k = 1;
+        for (int c = 0; c < n; c++) {
+            const uint64_t dt = total[c] - total0[c];
+            k += (size_t)snprintf(a + k, sizeof a - k, "%s%.3f", c ? "," : "",
+                                  dt ? (double)(busy[c] - busy0[c]) / (double)dt : 0.0);
+        }
+        snprintf(a + k, sizeof a - k, "]");
+        rdof_json_raw(j, "cpu", a);
+    }
+    if (proc >= 0 && proc0 >= 0 && now > t0)
+        rdof_json_float3(j, "cpu_process", (proc - proc0) / (now - t0));
+    memcpy(busy0, busy, sizeof busy[0] * (size_t)n);
+    memcpy(total0, total, sizeof total[0] * (size_t)n);
+    n0 = n, proc0 = proc, t0 = now;
+}
+
 static void host_status(void *ctx, rdof_json_t *j, rdof_webapi_at_t at)
 {
+    if (at == RDOF_WEBAPI_AT_BOARD)
+        host_cpu(j);
     if (at != RDOF_WEBAPI_AT_RADIOS)
         return;
     rdof_hostweb_status_t s;
@@ -376,25 +595,8 @@ static void host_status(void *ctx, rdof_json_t *j, rdof_webapi_at_t at)
             rdof_json_raw(j, "channels", a);
         }
     }
-    if (s.nrx > 0) { /* the board's SDR's channel rows */
-        char a[16 * 200] = "[";
-        size_t n = 1;
-        for (int i = 0; i < s.nrx && i < 16 && n < sizeof a - 2; i++) {
-            char id[24], name[32];
-            json_safe(id, sizeof id, s.rx[i].id, sizeof s.rx[i].id);
-            json_safe(name, sizeof name, s.rx[i].name, sizeof s.rx[i].name);
-            n += (size_t)snprintf(a + n, sizeof a - n,
-                                  "%s{\"id\":\"%s\",\"name\":\"%s\",\"freq\":%u,\"in\":%s,\"bursts\":%llu,\"rssi\":%d,"
-                                  "\"afc\":%.1f,\"idle\":%.0f}",
-                                  i ? "," : "", id, name, (unsigned)s.rx[i].freq, s.rx[i].in ? "true" : "false",
-                                  (unsigned long long)s.rx[i].bursts, s.rx[i].rssi, s.rx[i].afc_hz, s.rx[i].idle_pct);
-        }
-        if (n < sizeof a - 1) {
-            a[n++] = ']';
-            a[n] = 0;
-            rdof_json_raw(j, "rx_channels", a);
-        }
-    }
+    if (s.has_mqtt)
+        rdof_json_int(j, "mqtt_dropped", s.mqtt_dropped);
     rdof_json_close(j);
     /* the page lists keys it doesn't know as cards: the host's own */
     rdof_json_open(j, "host");
@@ -423,6 +625,8 @@ static void host_status(void *ctx, rdof_json_t *j, rdof_webapi_at_t at)
         rdof_json_int(j, "cut", s.parrot_cut);
         rdof_json_close(j);
     }
+    sdrs_json(j, &s);
+    modems_json(j, &s);
 }
 
 static size_t host_log(void *ctx, char *out, size_t cap)
@@ -587,7 +791,7 @@ static void platform(rdof_webapi_platform_t *p, rdof_hostweb_settings_t *set)
     p->memory = host_memory;
     p->clock = host_clock;
     p->status_json = host_status;
-    p->status_cap = 16384;
+    p->status_cap = 32768; /* four SDRs of 16 channels, the modems */
     p->log_cap = LOG_BYTES + 1;
     p->log_read = host_log;
     p->lastheard = host_lastheard;

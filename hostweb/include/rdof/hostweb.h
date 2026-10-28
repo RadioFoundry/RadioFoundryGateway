@@ -40,6 +40,66 @@ typedef struct {
     int rssi;  /* dBm */
 } rdof_hostweb_slot_t;
 
+/* An SDR the tool runs: a card on the page as the board's SDR has, and its rows in the Channels table. */
+#define RDOF_HOSTWEB_SDRS 4
+typedef struct {
+    char name[24];
+    char device[48];  /* the front end, "libiio AD9361 local:" */
+    char error[96];   /* non-empty: the page shows it as not receiving */
+    bool open;        /* the device is open */
+    bool receiving;   /* samples came in the last second */
+    bool calibrating; /* the receiver is off its channels for a while (a transceiver's loop delay) */
+    double rate, center_hz;
+    double gain_db;   /* RX gain now; NAN: not known */
+    bool agc;         /* the device's AGC sets it */
+    double samples_per_s; /* measured over the last seconds; < 0: not yet */
+    uint64_t overflows, read_errors;
+    double lost_ms;   /* samples the device dropped, made up */
+    double load;      /* 0..1 of the receive loop's time spent working, or -1 */
+    int nstage;       /* where that time went: shares of the loop's time */
+    struct {
+        char name[16];
+        float share;
+    } stage[6];
+    bool tx;          /* it transmits too */
+    uint32_t tx_hz, tx_lo_hz;
+    double tx_gain_db;
+    bool tx_on;       /* keyed: the TX gain up */
+    uint64_t tx_errors;
+    bool has_mqtt, mqtt; /* its own MQTT connection, and its state */
+    uint32_t mqtt_dropped;
+    int hblink_peers, hblink_up; /* its channels' own HBlink4 peers */
+    /* every receiver channel (a transceiver's own first), as the board's SDR lists them */
+    int nchan;
+    struct {
+        char id[24], name[32];
+        uint32_t freq;
+        bool in;        /* inside the receiver's span */
+        uint64_t bursts;
+        int rssi;       /* dBm, 0: none yet */
+        float afc_hz;   /* the channel's frequency correction */
+        float idle_pct; /* the share of chunks the idle gate skipped */
+    } chan[16];
+} rdof_hostweb_sdr_t;
+
+/* A radio or modem the tool drives on a port: a RadioFoundry radio's hotspot (a split's TX half), an MMDVM. */
+#define RDOF_HOSTWEB_MODEMS 4
+typedef struct {
+    char name[24];
+    char kind[24];     /* "RadioFoundry radio", "MMDVM" */
+    char role[48];     /* what it does here, "transmits (the split's TX half)" */
+    char port[64];
+    char version[96];  /* what it answers to the version request */
+    char state[32];    /* free text, "epoch aligned" */
+    char error[96];    /* non-empty: failed */
+    bool open, ready;
+    int nextra;        /* its counters, shown as they come */
+    struct {
+        char name[24];
+        int64_t value;
+    } extra[8];
+} rdof_hostweb_modem_t;
+
 /* What the page shows. Zero it, fill what the tool knows, publish. Strings are cut to fit. */
 typedef struct {
     rdof_hostweb_role_t role;
@@ -85,18 +145,12 @@ typedef struct {
         int64_t value;
     } extra[8];
     bool spectrum; /* the tool makes the page's spectrum (rdof_hostweb_spectrum_row) */
-    /* every receiver channel (the radio's own first, then the monitored ones), for the page's Channels table, as the
-     * board's SDR lists them */
-    int nrx;
-    struct {
-        char id[24], name[32];
-        uint32_t freq;
-        bool in;        /* inside the receiver's span */
-        uint64_t bursts;
-        int rssi;       /* dBm, 0: none yet */
-        float afc_hz;   /* the channel's frequency correction */
-        float idle_pct; /* the share of chunks the idle gate skipped */
-    } rx[16];
+    uint32_t mqtt_dropped; /* the radio's MQTT posts dropped (has_mqtt) */
+    /* the SDRs it runs and the radios or modems it drives on a port (below) */
+    int nsdr;
+    rdof_hostweb_sdr_t sdrs[RDOF_HOSTWEB_SDRS];
+    int nmodem;
+    rdof_hostweb_modem_t modems[RDOF_HOSTWEB_MODEMS];
 } rdof_hostweb_status_t;
 
 /* The tool's settings, for the page's Settings tab (GET / POST /api/config, GET /api/resolved), and its restart

@@ -161,8 +161,53 @@ static void web_publish(double rx, double tx, int cc);
 #endif
 static rdofradio_dev_t *dev;
 
+/* The SDR's figures for the page, over 1 s windows: samples in, the receive loop's time and where it went */
+static struct {
+    double t0, wait, rx, spec, mod; /* this window: its start; seconds waiting (reads, the ring), in the receiver,
+                                       the spectrum, the modulator */
+    long long n;
+    double load, share[3], sps;     /* the last window's: the time not waiting, the stages', samples a second */
+    double last_samples;            /* when samples last came */
+    long long overflows, errors, lost; /* lost: samples */
+    double tx_gain, rx_gain, rx_gain_at;
+    bool tx_on, agc;
+} WS = {.load = -1, .sps = -1};
+
+static void ws_turn(double now)
+{
+    const double w = now - WS.t0;
+    if (WS.t0 > 0 && w < 1.0)
+        return;
+    if (WS.t0 > 0) {
+        WS.sps = (double)WS.n / w;
+        WS.load = fmin(1.0, fmax(0.0, 1.0 - WS.wait / w));
+        WS.share[0] = WS.rx / w, WS.share[1] = WS.spec / w, WS.share[2] = WS.mod / w;
+    }
+    WS.t0 = now;
+    WS.wait = WS.rx = WS.spec = WS.mod = 0;
+    WS.n = 0;
+}
+
 /* --split-tx (below) */
 static rdof_split_t S;
+
+/* The radio's port: a thread reads it and stamps each read with the time it came, so the split's TIME round trips
+ * don't include the main loop's wait on the receive stream. */
+#define PORT_Q 64
+static struct {
+    int fd;
+    const char *path;
+    pthread_t thread;
+    pthread_mutex_t mu;
+    struct {
+        double t;
+        int n;
+        uint8_t b[256];
+    } q[PORT_Q];
+    int head, tail;
+    uint32_t dropped;
+    volatile bool gone, quit;
+} P = {.fd = -1, .mu = PTHREAD_MUTEX_INITIALIZER};
 static int in_wait; /* inside the client's wait for a reply: what's heard waits for it to end */
 static void split_turn(void);
 static void split_flush(void);
@@ -912,6 +957,7 @@ static int relabel(void *ctx, int c, const rdof_sdr_burst_t *b) { return c ? 0 :
 
 static void tx_gain(double db)
 {
+    WS.tx_gain = db;
     if (dev->set_tx_gain(dev, db))
         fprintf(stderr, "TX gain %.1f: %s\n", db, dev->error);
 }
@@ -955,6 +1001,103 @@ static void web_spectrum(const rdof_cf_t *in, int n)
     if (rdof_spectrum_feed(&sp, in, n, row))
         rdof_hostweb_spectrum_row(row, RDOF_HOSTWEB_SPECTRUM_BINS, R.rx.center_hz, R.rate,
                                   (int)lrint(1e3 * sp.per_row * chunk / R.rate));
+}
+
+/* The SDR's card: the device, its samples and faults, the loop's time, the transmitter, and every receiver channel */
+static void web_sdr(rdof_hostweb_sdr_t *d)
+{
+    const double now = now_s();
+    snprintf(d->name, sizeof d->name, "%s", rcfg.mon_name[0] ? rcfg.mon_name : "sdr");
+    snprintf(d->device, sizeof d->device, "%s", dev->name);
+    d->open = true;
+    d->receiving = WS.last_samples > 0 && now - WS.last_samples < 1.0;
+    d->calibrating = R.cal != 0;
+    d->rate = R.rate;
+    d->center_hz = R.rx.center_hz;
+    if (now - WS.rx_gain_at >= 2.0) { /* a device read (a network round trip on a remote libiio): not every time */
+        WS.rx_gain = dev->rx_gain(dev);
+        WS.rx_gain_at = now;
+    }
+    d->gain_db = WS.rx_gain;
+    d->agc = WS.agc;
+    d->samples_per_s = WS.sps;
+    d->overflows = (uint64_t)WS.overflows, d->read_errors = (uint64_t)WS.errors;
+    d->lost_ms = 1e3 * (double)WS.lost / R.rate;
+    d->load = WS.load;
+    if (WS.load >= 0) {
+        static const char *stages[] = {"receiver", "spectrum", "modulator"};
+        for (int i = 0; i < (R.split ? 2 : 3); i++) {
+            snprintf(d->stage[d->nstage].name, sizeof d->stage[0].name, "%s", stages[i]);
+            d->stage[d->nstage++].share = (float)WS.share[i];
+        }
+    }
+    if (!R.split) { /* the split's radio transmits: the SDR receives only */
+        d->tx = true;
+        d->tx_hz = (uint32_t)R.tx_hz, d->tx_lo_hz = (uint32_t)llround(R.tx_lo);
+        d->tx_gain_db = WS.tx_gain;
+        d->tx_on = WS.tx_on;
+        d->tx_errors = (uint64_t)W.errors;
+    }
+#ifdef RDOF_MQTT
+    d->has_mqtt = MQ_SDR != NULL;
+    d->mqtt = rdofmq_up(MQ_SDR);
+    d->mqtt_dropped = rdofmq_dropped(MQ_SDR);
+#endif
+    for (int i = 0; i < nmon; i++)
+        if (MON[i].peer) {
+            d->hblink_peers++;
+            d->hblink_up += MON[i].net.peer.up;
+        }
+    for (int c = 0; c < R.rx.C && d->nchan < 16; c++) {
+        const char *id = R.rx.trackers[c].channel, *name = "";
+        if (c == 0)
+            name = "receive";
+        else if (c == R.mon)
+            name = "transmit (heard back)";
+        for (int i = 0; i < nmon; i++)
+            if (MON[i].c == c)
+                name = MON[i].ch->name;
+        const double f = R.rx.trackers[c].freq_hz;
+        const int r = R.rx.rssi[c];
+        snprintf(d->chan[d->nchan].id, sizeof d->chan[0].id, "%s", c == 0 ? rcfg.name : id);
+        snprintf(d->chan[d->nchan].name, sizeof d->chan[0].name, "%s", name);
+        d->chan[d->nchan].freq = (uint32_t)llround(f);
+        d->chan[d->nchan].in = fabs(f - R.rx.center_hz) < R.rate / 2;
+        d->chan[d->nchan].bursts = (uint64_t)R.rx.bursts[c];
+        d->chan[d->nchan].rssi = r == INT32_MIN ? 0 : r;
+        d->chan[d->nchan].afc_hz = (float)R.rx.chz.correction_hz[c];
+        d->chan[d->nchan++].idle_pct = R.rx.chunks ? (float)(100.0 * (double)R.rx.gated[c] / (double)R.rx.chunks) : 0.0f;
+    }
+}
+
+/* The split's TX half: the RadioFoundry radio on the port */
+static void web_split_radio(rdof_hostweb_modem_t *m)
+{
+    const rdof_split_half_t *h = &S.halves[RDOF_SPLIT_TX];
+    snprintf(m->name, sizeof m->name, "TX half");
+    snprintf(m->kind, sizeof m->kind, "RadioFoundry radio");
+    snprintf(m->role, sizeof m->role, "transmits (the split's TX half)");
+    snprintf(m->port, sizeof m->port, "%s", P.path ? P.path : "");
+    snprintf(m->version, sizeof m->version, "%s", h->description);
+    snprintf(m->state, sizeof m->state, "%s", S.epoch_ok ? "epoch aligned" : S.ready ? "aligning" : "starting");
+    if (P.gone)
+        snprintf(m->error, sizeof m->error, "the port went away");
+    else if (S.failed[0])
+        snprintf(m->error, sizeof m->error, "%s", S.failed);
+    m->open = !P.gone;
+    m->ready = S.ready;
+    const struct {
+        const char *name;
+        int64_t v;
+    } x[] = {{"clock bound (us)", (int64_t)llround(rdof_clock_sync_bound_us(&h->sync))},
+             {"misses", h->misses},
+             {"split dropped", S.dropped},
+             {"port bytes dropped", P.dropped},
+             {"out dropped", h->overflow}};
+    for (size_t i = 0; i < sizeof x / sizeof x[0]; i++) {
+        snprintf(m->extra[m->nextra].name, sizeof m->extra[0].name, "%s", x[i].name);
+        m->extra[m->nextra++].value = x[i].v;
+    }
 }
 
 static void web_publish(double rx, double tx, int cc)
@@ -1001,6 +1144,7 @@ static void web_publish(double rx, double tx, int cc)
     w.links = net_on || MQ;
     w.has_mqtt = MQ != NULL;
     w.mqtt = rdofmq_up(MQ);
+    w.mqtt_dropped = rdofmq_dropped(MQ);
 #endif
     w.hblink = net_on && NET.peer.up;
     w.hblink_tx = NET.peer.tx, w.hblink_rx = NET.peer.rx;
@@ -1020,26 +1164,9 @@ static void web_publish(double rx, double tx, int cc)
     snprintf(w.extra[1].name, sizeof w.extra[1].name, "inbound off (%%)");
     w.extra[1].value = (int64_t)llround(R.m.inbound_off * 100);
     w.spectrum = true;
-    for (int c = 0; c < R.rx.C && w.nrx < 16; c++) {
-        const char *id = R.rx.trackers[c].channel, *name = "";
-        if (c == 0)
-            name = "receive";
-        else if (c == R.mon)
-            name = "transmit (heard back)";
-        for (int i = 0; i < nmon; i++)
-            if (MON[i].c == c)
-                name = MON[i].ch->name;
-        const double f = R.rx.trackers[c].freq_hz;
-        const int r = R.rx.rssi[c];
-        snprintf(w.rx[w.nrx].id, sizeof w.rx[w.nrx].id, "%s", c == 0 ? rcfg.name : id);
-        snprintf(w.rx[w.nrx].name, sizeof w.rx[w.nrx].name, "%s", name);
-        w.rx[w.nrx].freq = (uint32_t)llround(f);
-        w.rx[w.nrx].in = fabs(f - R.rx.center_hz) < R.rate / 2;
-        w.rx[w.nrx].bursts = (uint64_t)R.rx.bursts[c];
-        w.rx[w.nrx].rssi = r == INT32_MIN ? 0 : r;
-        w.rx[w.nrx].afc_hz = (float)R.rx.chz.correction_hz[c];
-        w.rx[w.nrx++].idle_pct = R.rx.chunks ? (float)(100.0 * (double)R.rx.gated[c] / (double)R.rx.chunks) : 0.0f;
-    }
+    web_sdr(&w.sdrs[w.nsdr++]);
+    if (R.split)
+        web_split_radio(&w.modems[w.nmodem++]);
     rdof_hostweb_status(&w);
 }
 
@@ -1107,22 +1234,6 @@ static void web_settings(int argc, char **argv)
 
 /* ── --split-tx: the radio transmits, the SDR is the split's RX half ─────────── */
 
-/* The radio's port: a thread reads it and stamps each read with the time it came, so the split's TIME round trips
- * don't include the main loop's wait on the receive stream. */
-#define PORT_Q 64
-static struct {
-    int fd;
-    pthread_t thread;
-    pthread_mutex_t mu;
-    struct {
-        double t;
-        int n;
-        uint8_t b[256];
-    } q[PORT_Q];
-    int head, tail;
-    uint32_t dropped;
-    volatile bool gone, quit;
-} P = {.fd = -1, .mu = PTHREAD_MUTEX_INITIALIZER};
 
 static void *port_reader(void *arg)
 {
@@ -1177,6 +1288,7 @@ static void clock_read(double t)
         long long lost = llround(fmin(w, SC.last_win) - SC.floor);
         say("receive: %.1f ms of samples lost; zeros in their place\n", 1e3 * (double)lost / SC.rate);
         SC.filled += lost;
+        WS.lost += lost;
         SC.total += lost;
         for (; lost > 0; lost -= CHUNK)
             rdof_sdr_rx_process(&R.rx, zeros, lost < CHUNK ? (int)lost : CHUNK);
@@ -1254,8 +1366,10 @@ static void split_service(void)
 static void split_turn(void)
 {
     static rdof_cf_t in[CHUNK];
+    const double t_in = now_s();
     const int n = dev->read(dev, in, SC.chunk, 100000);
     const double t = now_s();
+    WS.wait += t - t_in;
     if (n == RDOF_DEV_TIMEOUT) {
         if (++SC.timeouts >= 50 && !stop) {
             say("read: nothing for 5 s, stopping\n");
@@ -1263,7 +1377,9 @@ static void split_turn(void)
         }
     } else if (n == RDOF_DEV_OVERFLOW) {
         SC.overflows++;
+        WS.overflows++;
     } else if (n < 0) {
+        WS.errors++;
         if (++SC.errors > 10 && !stop) {
             say("%s\n", dev->error);
             stop = 1;
@@ -1271,19 +1387,26 @@ static void split_turn(void)
     } else if (n > 0) {
         SC.timeouts = 0;
         SC.total += n;
+        WS.last_samples = t;
+        WS.n += n;
         clock_read(t);
 #ifdef RDOF_HOST_WEB
         web_spectrum(in, n);
 #endif
+        const double t3 = now_s();
         rdof_sdr_rx_process(&R.rx, in, n);
+        const double t4 = now_s();
+        WS.spec += t3 - t, WS.rx += t4 - t3;
     }
     split_service();
+    ws_turn(now_s());
 }
 
 /* The split's whole run, once the device is open (receive only) and the SDR modem made. */
 static int split_main(int argc, char **argv, const char *port, int baud, int power_cap, double seconds)
 {
     char err[256];
+    P.path = port;
     P.fd = rdofradio_serial_open(port, baud, err, sizeof err);
     if (P.fd < 0) {
         fprintf(stderr, "--split-tx %s\n", err);
@@ -1688,6 +1811,8 @@ int main(int argc, char **argv)
         fprintf(stderr, "%s\n", derr);
         return 1;
     }
+    WS.agc = isnan(gain);
+    WS.tx_gain = dev->tx_gain_min;
     if (!R.split && (txg < dev->tx_gain_min || txg > dev->tx_gain_max)) {
         fprintf(stderr, "TX gain %.1f outside the device's %.1f..%.1f\n", txg, dev->tx_gain_min, dev->tx_gain_max);
         dev->close(dev);
@@ -1834,7 +1959,9 @@ int main(int argc, char **argv)
     while (!stop && (seconds <= 0 || total < (long long)(seconds * rate))) {
         const double t0 = now_s();
         int n = dev->read(dev, in, chunk, 500000);
-        t_read += now_s() - t0;
+        const double dt_read = now_s() - t0;
+        t_read += dt_read;
+        WS.wait += dt_read;
         if (n == RDOF_DEV_TIMEOUT) {
             if (++timeouts >= 10) { /* 5 s: the stream is dead (a Pluto after a USB read error) */
                 fprintf(stderr, "read: nothing for 5 s, stopping\n");
@@ -1846,9 +1973,11 @@ int main(int argc, char **argv)
         if (n == RDOF_DEV_OVERFLOW) {
             overflows++;
             mq_overflows++;
+            WS.overflows++;
             continue;
         }
         if (n < 0) {
+            WS.errors++;
             if (++rx_errors > 10) {
                 fprintf(stderr, "%s\n", dev->error);
                 break;
@@ -1856,6 +1985,8 @@ int main(int argc, char **argv)
             continue;
         }
         const double now = now_s();
+        WS.last_samples = now;
+        WS.n += n;
         if (now - last_poll >= POLL_S) {
             last_poll = now;
             if (R.parrot)
@@ -1866,7 +1997,9 @@ int main(int argc, char **argv)
             mq_poll(now);
         }
         /* as many transmit samples as were read, at the modem's position for them */
+        const double t_mod = now_s();
         const bool keyed = rdof_sdrmodem_pull_iq(&R.m, txn - lead + offset, out, n);
+        WS.mod += now_s() - t_mod;
         /* Samples the receiver lost (a stall longer than the device's buffers: the stream falls behind the wall
          * clock) move what's heard against what's sent, and the transmitter's samples are paced by what's read: the
          * calibration no longer holds. Its floor over half a second against the last one's: a step is a loss. */
@@ -1876,6 +2009,7 @@ int main(int argc, char **argv)
                 R.lag_min = lag;
             if ((double)total / rate - R.lag_win >= 0.5) {
                 if (!isnan(R.lag_prev) && R.lag_min - R.lag_prev > rate / 500) {
+                    WS.lost += llround(R.lag_min - R.lag_prev);
                     say("receive: %.1f ms of samples lost; calibrating again once idle\n", 1e3 * (R.lag_min - R.lag_prev) / rate);
                     R.recal = true, R.cal_tries = 0;
                 }
@@ -1924,6 +2058,7 @@ int main(int argc, char **argv)
         const double t1 = now_s();
         tx_put(out, n);
         t_write += now_s() - t1;
+        WS.wait += now_s() - t1;
         txn += n;
         /* The transmit path's delay drifts: a stall in the writer lets the device run dry, and all that follows goes out
          * that much later. With the device's buffers full, the ring holds that much more: its floor over half a second,
@@ -2000,6 +2135,7 @@ int main(int argc, char **argv)
 #ifdef RDOF_HOST_WEB
         if (now - last_web >= 0.25) {
             last_web = now;
+            WS.tx_on = hot;
             web_publish(rx, tx, cc);
         }
 #endif
@@ -2022,8 +2158,12 @@ int main(int argc, char **argv)
 #ifdef RDOF_HOST_WEB
         web_spectrum(in, n);
 #endif
+        const double t3 = now_s();
         rdof_sdr_rx_process(&R.rx, in, n);
-        t_proc += now_s() - t2;
+        const double t4 = now_s();
+        t_proc += t4 - t2;
+        WS.spec += t3 - t2, WS.rx += t4 - t3;
+        ws_turn(t4);
         total += n;
     }
     if (R.full)
