@@ -73,12 +73,12 @@ canvas{display:block;width:100%;background:#0b0b10;border-radius:6px}#spec{heigh
 <div id="sdr" hidden>
 <div class="card" id="sdr_c"></div>
 <div class="card"><h2>Channels</h2><div class="wrap" id="chans"></div></div>
-<div class="card"><h2>Spectrum</h2>
+</div>
+<div class="card" id="specbox" hidden><h2>Spectrum</h2>
 <p class="mute">The tuner's whole span, 512 bins, averaged over each row; the bands are the channels. dBFS at the
 configured gain. <span id="specinfo"></span></p>
 <canvas id="spec"></canvas>
 <canvas id="wf" width="512" height="220"></canvas>
-</div>
 </div>
 <div class="card" id="noradio" hidden><span class="mute">This board runs no radio or SDR.</span></div>
 </section>
@@ -421,6 +421,7 @@ function render() {
   } else if (t == 'radios') {
     $('radios').innerHTML = rs.map((r, i) => roamerFull(r, s.usb_either && !i)).join('');
     $('sdr').hidden = !s.sdr;
+    $('specbox').hidden = !(s.sdr || has(s, 'spectrum'));
     $('noradio').hidden = !!(rs.length || s.sdr);
     if (s.sdr) sdrFull(s.sdr, s.usb_either);
   } else if (t == 'network') {
@@ -635,12 +636,13 @@ function wfRow(row) {
   g.putImageData(img, 0, 0);
 }
 async function spectrum() {
-  if (spec.busy || document.hidden || S.tab != 'radios' || $('sdr').hidden) return;
+  if (spec.busy || document.hidden || S.tab != 'radios' || $('specbox').hidden) return;
   spec.busy = true;
   try {
     const d = await (await fetch('/api/spectrum?since=' + spec.seq)).json();
     if (d.seq < spec.seq) spec.seq = 0;                               // the board restarted
     spec.center = d.center; spec.rate = d.rate;
+    if (d.channels) spec.chans = d.channels;                         // a host tool: its radio's and monitored channels
     for (const r of d.rows) { const row = unb64(r); specRange(row); wfRow(row); spec.last = row; }
     spec.seq = d.seq;
     $('specinfo').textContent = d.row_ms ? 'A row every ' + d.row_ms + ' ms, ' + (d.rate / d.bins).toFixed(0) +

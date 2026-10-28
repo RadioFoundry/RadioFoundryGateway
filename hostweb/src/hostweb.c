@@ -11,6 +11,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <math.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <pthread.h>
@@ -40,6 +41,8 @@
 #define LOG_BYTES (64 * 1024) /* the log ring */
 #define LOG_LINE 192
 #define RESTART_ENV "RDOF_HOSTWEB_RESTARTED"
+#define SPEC_ROWS 64          /* the spectrum's ring */
+#define SPEC_MAX 16           /* rows an answer, at most */
 
 static struct {
     atomic_bool running;
@@ -68,8 +71,15 @@ static struct {
     pthread_mutex_t lh_mu;
     rdof_lh_t lh;
     rdof_lh_entry_t lh_e[RDOF_LH_DEFAULT];
+    /* the spectrum: the tool's rows, newest at sp_seq */
+    pthread_mutex_t sp_mu;
+    uint8_t sp_rows[SPEC_ROWS][RDOF_HOSTWEB_SPECTRUM_BINS];
+    uint32_t sp_seq;
+    int sp_bins, sp_row_ms;
+    double sp_center, sp_rate;
+    atomic_llong sp_want_ms; /* mono ms: the page asked until then */
 } W = {.st_mu = PTHREAD_MUTEX_INITIALIZER, .log_mu = PTHREAD_MUTEX_INITIALIZER, .lh_mu = PTHREAD_MUTEX_INITIALIZER,
-       .set_mu = PTHREAD_MUTEX_INITIALIZER};
+       .set_mu = PTHREAD_MUTEX_INITIALIZER, .sp_mu = PTHREAD_MUTEX_INITIALIZER};
 
 static double mono_s(void)
 {
@@ -429,6 +439,101 @@ static void set_restart(void *ctx)
 }
 
 /* The platform for one request; set holds the tool's hooks meanwhile. */
+/* ── the spectrum ──────────────────────────────────────────────────────────── */
+
+bool rdof_hostweb_spectrum_wanted(void)
+{
+    return atomic_load(&W.running) && (long long)(mono_s() * 1e3) < atomic_load(&W.sp_want_ms);
+}
+
+void rdof_hostweb_spectrum_row(const uint8_t *row, int bins, double center_hz, double rate, int row_ms)
+{
+    if (bins <= 0 || bins > RDOF_HOSTWEB_SPECTRUM_BINS)
+        return;
+    pthread_mutex_lock(&W.sp_mu);
+    if (bins != W.sp_bins) /* a new size: the old rows don't fit it */
+        W.sp_seq = 0;
+    W.sp_bins = bins, W.sp_row_ms = row_ms, W.sp_center = center_hz, W.sp_rate = rate;
+    memcpy(W.sp_rows[(W.sp_seq + 1) % SPEC_ROWS], row, (size_t)bins);
+    W.sp_seq++;
+    pthread_mutex_unlock(&W.sp_mu);
+}
+
+/* a channel's band on the page, when it's in the span */
+static void spec_chan(char *out, size_t cap, size_t *len, const char *id, uint32_t hz, double center, double rate)
+{
+    if (!hz || *len >= cap)
+        return;
+    char safe[32];
+    size_t k = 0;
+    for (; id[k] && k < sizeof safe - 1; k++)
+        safe[k] = (id[k] == '"' || id[k] == '\\' || (unsigned char)id[k] < 32) ? '_' : id[k];
+    safe[k] = 0;
+    const bool in = rate > 0 && fabs((double)hz - center) < rate / 2;
+    *len += (size_t)snprintf(out + *len, cap - *len, "%s{\"id\":\"%s\",\"freq\":%u,\"in\":%s}",
+                             out[*len - 1] == '[' ? "" : ",", safe, (unsigned)hz, in ? "true" : "false");
+}
+
+/* GET /api/spectrum?since=N: the rows newer than row N, as the board's (esp_idf/main/web.c), and the channels */
+static char *spectrum_json(const char *query, size_t *n)
+{
+    atomic_store(&W.sp_want_ms, (long long)(mono_s() * 1e3) + 10000);
+    char v[16];
+    const uint32_t since = rdof_webapi_query(query, "since", v, sizeof v) ? (uint32_t)strtoul(v, NULL, 10) : 0;
+    static uint8_t rows[SPEC_MAX][RDOF_HOSTWEB_SPECTRUM_BINS]; /* the server's thread only */
+    pthread_mutex_lock(&W.sp_mu);
+    const uint32_t last = W.sp_seq;
+    uint32_t from = since > last ? 0 : since; /* ahead of us: the tool restarted */
+    if (last - from > SPEC_MAX)
+        from = last - SPEC_MAX;
+    if (last - from > SPEC_ROWS)
+        from = last - SPEC_ROWS;
+    int k = 0;
+    for (uint32_t q = from + 1; q <= last; q++, k++)
+        memcpy(rows[k], W.sp_rows[q % SPEC_ROWS], (size_t)W.sp_bins);
+    const int bins = W.sp_bins, row_ms = W.sp_row_ms;
+    const double center = W.sp_center, rate = W.sp_rate;
+    pthread_mutex_unlock(&W.sp_mu);
+
+    const size_t cap = 1024 + 24 * 64 + (size_t)k * (4 * ((size_t)bins + 2) / 3 + 8);
+    char *out = malloc(cap);
+    if (!out)
+        return NULL;
+    size_t len = (size_t)snprintf(out, cap, "{\"seq\":%u,\"bins\":%d,\"row_ms\":%d,\"rate\":%.0f,\"center\":%.0f,\"rows\":[",
+                                  (unsigned)last, bins, row_ms, rate, center);
+    for (int i = 0; i < k; i++) {
+        if (i)
+            out[len++] = ',';
+        out[len++] = '"';
+        rdof_base64(rows[i], (size_t)bins, out + len);
+        len += strlen(out + len);
+        out[len++] = '"';
+    }
+    len += (size_t)snprintf(out + len, cap - len, "],\"channels\":[");
+    rdof_hostweb_status_t *st = malloc(sizeof *st);
+    if (st) {
+        pthread_mutex_lock(&W.st_mu);
+        const bool have = W.have_st;
+        if (have)
+            *st = W.st;
+        pthread_mutex_unlock(&W.st_mu);
+        if (have) {
+            st->name[sizeof st->name - 1] = 0;
+            spec_chan(out, cap, &len, st->name[0] ? st->name : "RX", st->rx_hz, center, rate);
+            if (st->tx_hz != st->rx_hz)
+                spec_chan(out, cap, &len, "TX", st->tx_hz, center, rate);
+            for (int i = 0; i < st->nchan && i < 16; i++) {
+                st->chan[i].id[sizeof st->chan[i].id - 1] = 0;
+                spec_chan(out, cap, &len, st->chan[i].id, st->chan[i].freq, center, rate);
+            }
+        }
+        free(st);
+    }
+    len += (size_t)snprintf(out + len, cap - len, "]}");
+    *n = len < cap ? len : cap - 1;
+    return out;
+}
+
 static void platform(rdof_webapi_platform_t *p, rdof_hostweb_settings_t *set)
 {
     pthread_mutex_lock(&W.set_mu);
@@ -441,6 +546,8 @@ static void platform(rdof_webapi_platform_t *p, rdof_hostweb_settings_t *set)
     pthread_mutex_lock(&W.st_mu);
     if (W.have_st && W.st.links)
         p->caps |= RDOF_WEBAPI_CAP_LINKS;
+    if (W.have_st && W.st.spectrum)
+        p->caps |= RDOF_WEBAPI_CAP_SPECTRUM;
     pthread_mutex_unlock(&W.st_mu);
     if (W.have_clk) {
         p->clock_json = clk_json;
@@ -677,6 +784,17 @@ static void serve(int fd)
     const bool head = !strcmp(method, "HEAD");
     const bool get = !strcmp(method, "GET") || head;
 
+    if (get && !strcmp(target, "/api/spectrum")) {
+        drop_body(fd, (long)body_have, body_len);
+        size_t len = 0;
+        char *js = spectrum_json(query, &len);
+        if (js)
+            respond(fd, 200, "application/json", js, len);
+        else
+            respond_str(fd, 500, "text/plain", "no memory\n");
+        free(js);
+        return;
+    }
     if (!strncmp(target, "/api/", 5)) {
         rdof_hostweb_settings_t set;
         rdof_webapi_platform_t p;

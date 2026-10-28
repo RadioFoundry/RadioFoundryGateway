@@ -28,6 +28,7 @@ static const struct {
     {RDOF_WEBAPI_CAP_LINKS, "links"},
     {RDOF_WEBAPI_CAP_SETTINGS, "settings"},
     {RDOF_WEBAPI_CAP_SETTINGS_EDIT, "settings_edit"},
+    {RDOF_WEBAPI_CAP_SPECTRUM, "spectrum"},
 };
 
 static void *alloc(const rdof_webapi_platform_t *p, size_t n)

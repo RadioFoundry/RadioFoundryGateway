@@ -161,7 +161,15 @@ int main(int argc, char **argv)
         for (int t = 0;; t++) {
             rdof_hostweb_status_t s;
             fake(&s, t);
+            s.spectrum = true;
             rdof_hostweb_status(&s);
+            for (int r = 0; r < 5; r++) { /* a noise floor and a tone that walks across the span */
+                uint8_t row[RDOF_HOSTWEB_SPECTRUM_BINS];
+                for (int i = 0; i < RDOF_HOSTWEB_SPECTRUM_BINS; i++)
+                    row[i] = (uint8_t)(200 + rand() % 10);
+                row[(t * 5 + r) % RDOF_HOSTWEB_SPECTRUM_BINS] = 80;
+                rdof_hostweb_spectrum_row(row, RDOF_HOSTWEB_SPECTRUM_BINS, 438.1e6, 768000, 200);
+            }
             if (t % 8 == 0)
                 rdof_hostweb_logf("parrot: sending back slot 2 call %d", t / 8);
             sleep(1);
@@ -182,7 +190,7 @@ int main(int argc, char **argv)
     CHECK(strstr(b, "\"clock\":\"os\"") && strstr(b, "\"clock_os\":{\"source\":") && strstr(b, "\"known\":"));
     CHECK(strstr(b, "\"caps\":{\"ota\":false,\"restart\":false,\"wifi\":false,\"tasks\":false,\"coredump\":false,"
                     "\"board_mem\":false,\"sys_mem\":true,\"netclock\":false,\"os_clock\":true,\"links\":false,"
-                    "\"settings\":false,\"settings_edit\":false}}"));
+                    "\"settings\":false,\"settings_edit\":false,\"spectrum\":false}}"));
     CHECK(!strstr(b, "settings_source") && strstr(b, "\"reset\":\"start\""));
 
     CHECK(http(port, "GET / HTTP/1.1\r\nHost: x\r\n\r\n", b, sizeof b) > 40000);
@@ -262,7 +270,7 @@ int main(int argc, char **argv)
     }
     settings(true);
     http(port, "GET /api/status HTTP/1.1\r\n\r\n", b, sizeof b);
-    CHECK(strstr(b, "\"restart\":true") && strstr(b, "\"settings\":true,\"settings_edit\":true}"));
+    CHECK(strstr(b, "\"restart\":true") && strstr(b, "\"settings\":true,\"settings_edit\":true,"));
     CHECK(strstr(b, "\"settings_source\":\"file ") && strstr(b, "\"settings_ok\":true"));
     http(port, "GET /api/config HTTP/1.1\r\n\r\n", b, sizeof b);
     CHECK(strstr(b, "200 OK") && strstr(b, "\r\n\r\n{\"name\": \"one\"}") && strstr(b, "no-store"));
@@ -297,7 +305,7 @@ int main(int argc, char **argv)
     /* read only: shown, never written */
     settings(false);
     http(port, "GET /api/status HTTP/1.1\r\n\r\n", b, sizeof b);
-    CHECK(strstr(b, "\"settings\":true,\"settings_edit\":false}") && strstr(b, "\"settings_source\":\"command line"));
+    CHECK(strstr(b, "\"settings\":true,\"settings_edit\":false,") && strstr(b, "\"settings_source\":\"command line"));
     http(port, "GET /api/config HTTP/1.1\r\n\r\n", b, sizeof b);
     CHECK(strstr(b, "200 OK") && strstr(b, "\"two\""));
     post(port, "/api/config", "{\"name\": \"three\"}", b, sizeof b);
@@ -309,6 +317,33 @@ int main(int argc, char **argv)
     char err[200] = "";
     CHECK(!rdof_hostweb_save_file("/nonexistent-dir/x.json", "{}", 2, err, sizeof err) && err[0]);
     unlink(cfg_path);
+
+    /* the spectrum: wanted once the page asks; rows newer than since, the channels in the span */
+    CHECK(!rdof_hostweb_spectrum_wanted());
+    fake(&s, 0);
+    s.spectrum = true;
+    s.nchan = 1;
+    snprintf(s.chan[0].id, sizeof s.chan[0].id, "M\"1");
+    s.chan[0].freq = 438200000;
+    rdof_hostweb_status(&s);
+    http(port, "GET /api/status HTTP/1.1\r\n\r\n", b, sizeof b);
+    CHECK(strstr(b, "\"spectrum\":true}"));
+    http(port, "GET /api/spectrum HTTP/1.1\r\n\r\n", b, sizeof b);
+    CHECK(strstr(b, "200 OK") && strstr(b, "\"seq\":0,") && strstr(b, "\"rows\":[]") && rdof_hostweb_spectrum_wanted());
+    uint8_t row[RDOF_HOSTWEB_SPECTRUM_BINS];
+    for (int i = 0; i < 3; i++) {
+        memset(row, 200 - i, sizeof row);
+        rdof_hostweb_spectrum_row(row, RDOF_HOSTWEB_SPECTRUM_BINS, 438.1e6, 768000, 200);
+    }
+    http(port, "GET /api/spectrum?since=0 HTTP/1.1\r\n\r\n", b, sizeof b);
+    CHECK(strstr(b, "{\"seq\":3,\"bins\":512,\"row_ms\":200,\"rate\":768000,\"center\":438100000,\"rows\":[\"yMjI"));
+    CHECK(strstr(b, "\"channels\":[{\"id\":\"bench\",\"freq\":438000000,\"in\":true},"
+                    "{\"id\":\"TX\",\"freq\":438500000,\"in\":false},{\"id\":\"M_1\",\"freq\":438200000,\"in\":true}]}"));
+    http(port, "GET /api/spectrum?since=2 HTTP/1.1\r\n\r\n", b, sizeof b);
+    const char *rows = strstr(b, "\"rows\":[\"xsbG"); /* the third row (198) alone: 684 characters of base64 */
+    CHECK(rows && strlen(rows) > 9 + 684 && !strncmp(rows + 9 + 684, "\"],", 3));
+    http(port, "GET /api/spectrum?since=99 HTTP/1.1\r\n\r\n", b, sizeof b); /* ahead: the tool restarted */
+    CHECK(strstr(b, "\"seq\":3,") && strstr(b, "\"rows\":[\"yMjI"));
 
     /* publishing from a thread while requests run */
     pthread_t th;

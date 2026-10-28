@@ -84,6 +84,7 @@ typedef struct {
         char name[24];
         int64_t value;
     } extra[8];
+    bool spectrum; /* the tool makes the page's spectrum (rdof_hostweb_spectrum_row) */
 } rdof_hostweb_status_t;
 
 /* The tool's settings, for the page's Settings tab (GET / POST /api/config, GET /api/resolved), and its restart
@@ -145,6 +146,13 @@ void rdof_hostweb_logf(const char *fmt, ...)
 /* A call tracker's JSON line (the SDR modem's tracker output), for the last heard list: role "repeater" or
  * "roamer", radio the radio's name, channel NULL for a radio. */
 void rdof_hostweb_tracker_json(const char *role, const char *radio, const char *channel, const char *json);
+/* The page's spectrum and waterfall (GET /api/spectrum, as the board's): rows of up to RDOF_HOSTWEB_SPECTRUM_BINS
+ * bytes on rdof/sdr/spectrum.h's scale (dBFS times -2), the receiver's whole span. Make rows only while
+ * rdof_hostweb_spectrum_wanted (the page asked in the last 10 s); a row is copied in under a short lock. The page's
+ * bands are the status's receive, transmit and monitored channels that fall in the span. */
+#define RDOF_HOSTWEB_SPECTRUM_BINS 512
+bool rdof_hostweb_spectrum_wanted(void);
+void rdof_hostweb_spectrum_row(const uint8_t *row, int bins, double center_hz, double rate, int row_ms);
 /* A call going out ("start" or "end"; the on_tx hook's arguments), for the last heard list. */
 void rdof_hostweb_net_call(const char *role, const char *radio, const char *action, const rdof_tx_call_info_t *call,
                            double duration);

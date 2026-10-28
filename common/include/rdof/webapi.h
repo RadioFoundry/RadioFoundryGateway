@@ -47,6 +47,7 @@ enum {
     RDOF_WEBAPI_CAP_LINKS = 1 << 9,         /* "links": HBlink4 and MQTT */
     RDOF_WEBAPI_CAP_SETTINGS = 1 << 10,     /* "settings": GET /api/config and /api/resolved */
     RDOF_WEBAPI_CAP_SETTINGS_EDIT = 1 << 11, /* "settings_edit": POST /api/config */
+    RDOF_WEBAPI_CAP_SPECTRUM = 1 << 12,     /* "spectrum": GET /api/spectrum (a board's SDR shows it by its card) */
 };
 
 /* The board, first in /api/status. */

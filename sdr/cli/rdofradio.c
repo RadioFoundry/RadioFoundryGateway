@@ -78,6 +78,7 @@
 #include "rdof/split.h"
 #include "rdof/sdr/receiver.h"
 #include "rdof/sdr/sdrmodem.h"
+#include "rdof/sdr/spectrum.h"
 #include "rdof/txvr.h"
 #include "rdofradio_cfg.h"
 #include "rdofradio_dev.h"
@@ -932,6 +933,28 @@ static void shutdown_tx(void)
 }
 
 #ifdef RDOF_HOST_WEB
+/* The page's spectrum and waterfall: the receive stream, a row about every 200 ms, while the page looks. Not
+ * during the calibration, when the receiver is on the TX LO. */
+static void web_spectrum(const rdof_cf_t *in, int n)
+{
+    static rdof_spectrum_t sp;
+    static int made; /* 1 made, -1 no memory */
+    if (made < 0 || n <= 0 || R.cal || !rdof_hostweb_spectrum_wanted())
+        return;
+    if (!made) {
+        const int per_row = (int)lrint(0.2 * R.rate / n);
+        made = rdof_spectrum_init(&sp, RDOF_HOSTWEB_SPECTRUM_BINS, per_row > 0 ? per_row : 1) ? -1 : 1;
+        if (made < 0) {
+            say("web: no memory for the spectrum\n");
+            return;
+        }
+    }
+    uint8_t row[RDOF_HOSTWEB_SPECTRUM_BINS];
+    if (rdof_spectrum_feed(&sp, in, n, row))
+        rdof_hostweb_spectrum_row(row, RDOF_HOSTWEB_SPECTRUM_BINS, R.rx.center_hz, R.rate,
+                                  (int)lrint(1e3 * sp.per_row * n / R.rate));
+}
+
 static void web_publish(double rx, double tx, int cc)
 {
     static const char *pstate[] = {"idle", "recording", "waiting", "replaying"};
@@ -994,6 +1017,7 @@ static void web_publish(double rx, double tx, int cc)
     w.extra[0].value = R.m.tx_late48 * 1000 / 48;
     snprintf(w.extra[1].name, sizeof w.extra[1].name, "inbound off (%%)");
     w.extra[1].value = (int64_t)llround(R.m.inbound_off * 100);
+    w.spectrum = true;
     rdof_hostweb_status(&w);
 }
 
@@ -1226,6 +1250,9 @@ static void split_turn(void)
         SC.timeouts = 0;
         SC.total += n;
         clock_read(t);
+#ifdef RDOF_HOST_WEB
+        web_spectrum(in, n);
+#endif
         rdof_sdr_rx_process(&R.rx, in, n);
     }
     split_service();
@@ -1970,6 +1997,9 @@ int main(int argc, char **argv)
             }
         }
         const double t2 = now_s();
+#ifdef RDOF_HOST_WEB
+        web_spectrum(in, n);
+#endif
         rdof_sdr_rx_process(&R.rx, in, n);
         t_proc += now_s() - t2;
         total += n;
