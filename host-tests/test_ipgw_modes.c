@@ -603,6 +603,9 @@ static void ch_burst(ch_t *c, uint8_t control, const uint8_t *burst)
     c->t += 0.06;
 }
 
+/* t_chain's own: g_open counts opens in an md_t, and its ctx is a ch_t */
+static bool ch_open(void *ctx, int flow) { return true; }
+
 static void t_chain(void)
 {
     for (int lose = 0; lose < 2; lose++) {
