@@ -2072,3 +2072,54 @@ bool rdof_config_as_v1(const char **text, size_t *len, const char *focus, char *
     *len = n;
     return true;
 }
+
+bool rdof_setup_box_roles(const char *text, size_t len, rdof_roles_t *roles, char *error, size_t error_cap)
+{
+    rdof_setup_t *s = malloc(sizeof *s);
+    if (!s) {
+        if (error && error_cap)
+            snprintf(error, error_cap, "no memory");
+        return false;
+    }
+    bool ok = rdof_setup_parse(text, len, s, error, error_cap);
+    snprintf(roles->box, sizeof roles->box, "%s", s->name);
+    roles->usb_hub = s->usb_hub;
+    int sdr = -1;
+    for (int k = 0; ok && k < s->nrole; k++) {
+        const rdof_role_t *r = &s->role[k];
+        if (!r->run)
+            continue;
+        if (r->type != RDOF_ROLE_MONITOR) {
+            if (roles->nradios >= RDOF_MAX_RADIOS) {
+                snprintf(error, error_cap, "run: %d roamers or repeaters a board at most", RDOF_MAX_RADIOS);
+                ok = false;
+                break;
+            }
+            snprintf(roles->radios[roles->nradios++], sizeof roles->radios[0], "%s", r->name);
+        }
+        for (int d = 0; d < 2; d++) {
+            int dev = d ? r->tx : r->rx;
+            if (dev < 0 || s->dev[dev].kind != RDOF_DEV_SDR || dev == sdr)
+                continue;
+            if (sdr >= 0) {
+                snprintf(error, error_cap, "run uses devices.%s and devices.%s: a board runs one SDR",
+                         s->dev[sdr].name, s->dev[dev].name);
+                ok = false;
+                break;
+            }
+            sdr = dev;
+        }
+    }
+    if (ok) {
+        if ((roles->has_radio = roles->nradios > 0))
+            snprintf(roles->radio, sizeof roles->radio, "%s", roles->radios[0]);
+        if ((roles->has_sdr = sdr >= 0))
+            snprintf(roles->sdr, sizeof roles->sdr, "%s", rdof_setup_sdr_section(s, sdr));
+        if (!roles->nradios && sdr < 0) {
+            snprintf(error, error_cap, "run: nothing to run");
+            ok = false;
+        }
+    }
+    free(s);
+    return ok;
+}

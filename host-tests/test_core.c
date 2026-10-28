@@ -3951,6 +3951,38 @@ static void t_config_edges(void)
     }
 }
 
+/* Versions 2 and 3 go through setup.c's view (the C and the Rust config the same); a channel nothing transmits on may
+   leave its color code out. */
+static void t_config_versions(void)
+{
+    static const char v3[] =
+        "{\"version\": 3, \"id\": 9800016, \"callsign\": \"N0CALL\", \"defaults\": {\"cc\": 1},"
+        " \"devices\": [{\"name\": \"hs\", \"kind\": \"modem\", \"type\": \"radio_hotspot\","
+        " \"port\": {\"uart\": 1, \"tx\": 17, \"rx\": 18}, \"hears\": {\"idle\": 438.0625, \"scan\": [438.0875]}}],"
+        " \"frequencies\": [438.0625, 438.0875],"
+        " \"networks\": [{\"type\": \"hblink\", \"host\": \"hb.example.net\", \"port\": 62031}]}";
+    static rdof_roles_t roles;
+    static rdof_config_t cfg;
+    char error[200] = "";
+    bool ok = rdof_box_roles(v3, strlen(v3), &roles, error, sizeof error);
+    CHECK(ok && roles.nradios == 1 && !strcmp(roles.radios[0], "hs"), "v3 roles: %d %s", roles.nradios, error);
+    ok = rdof_config_parse(v3, strlen(v3), &cfg, error, sizeof error);
+    static char d[4096];
+    rdof_config_describe(&cfg, d, sizeof d);
+    CHECK(ok && strstr(d, "mode=roamer;name=hs;peer=9800016;callsign=N0CALL;master=hb.example.net:62031;") &&
+              strstr(d, ";channels=438062500:1:255,438087500:1:255;idle=438062500:1:255;"),
+          "v3 roamer: %s %s", error, d);
+    static const char bad3[] = "{\"version\": 3, \"id\": 1, \"devices\": []}";
+    ok = rdof_box_roles(bad3, strlen(bad3), &roles, error, sizeof error);
+    CHECK(!ok && !strcmp(error, "roles: none"), "v3, nothing to run (roles): %s", error);
+    ok = rdof_config_parse(bad3, strlen(bad3), &cfg, error, sizeof error);
+    CHECK(!ok && !strcmp(error, "roles: none"), "v3, nothing to run: %s", error);
+    static const char v1[] = "{\"channels\": {\"1\": {\"freq\": 438.0625, \"cc\": 2}, \"2\": {\"freq\": 438.0875, \"tx\": false}},"
+                             " \"radios\": [{\"type\": \"mmdvm_hs\", \"peer_id\": 1, \"idle\": 1, \"cc\": 2, \"scan\": [2]}]}";
+    ok = rdof_config_parse(v1, strlen(v1), &cfg, error, sizeof error);
+    CHECK(ok, "a receive-only channel without a color code: %s", error);
+}
+
 void test_core(void)
 {
     t_crcs();
@@ -3971,6 +4003,7 @@ void test_core(void)
     t_config_parrot();
     t_config_values();
     t_config_edges();
+    t_config_versions();
     t_json_writer();
     t_json_writer_edges();
     t_csbk_names();

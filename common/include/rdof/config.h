@@ -178,6 +178,9 @@ typedef struct {
    or failing that the first SDR. false with `error` set
    when the settings don't say (bad JSON, no radios, a type or a name in run that isn't known). */
 bool rdof_box_roles(const char *text, size_t len, rdof_roles_t *roles, char *error, size_t error_cap);
+/* Version 2 or 3 (rdof/setup.h): the roles run names; a board's limits (RDOF_MAX_RADIOS, one SDR) as version 1's.
+   In setup.c, so config.c and its Rust port share it. */
+bool rdof_setup_box_roles(const char *text, size_t len, rdof_roles_t *roles, char *error, size_t error_cap);
 /* A stable one-line description of everything resolved (for the tests and the web page). */
 size_t rdof_config_describe(const rdof_config_t *cfg, char *out, size_t cap);
 

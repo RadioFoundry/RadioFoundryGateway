@@ -1488,9 +1488,16 @@ impl Cx {
             let freq = self.box_hz(f, b"channel")?;
             let obj = if cn.type_ == RDOF_JOBJ { ch } else { -1 };
             let ccn = self.get(obj, c"cc");
+            let txk = self.get(obj, c"tx");
+            if txk >= 0 && self.n(txk).type_ != RDOF_JBOOL {
+                return self.err(&[S(b"channel "), I(pn.into()), S(b": tx: true or false")]);
+            }
+            let no_tx = txk >= 0 && !self.n(txk).b;
+            // a channel nothing transmits on may leave the color code out: any (-1)
             let cc = match (ccn >= 0, self.num(ccn)) {
                 (true, Some(v)) => v,
                 (false, _) if has_default_cc => dcc,
+                (false, _) if no_tx => -1.0,
                 _ => {
                     return self.err(&[
                         S(b"channel "),
@@ -1500,11 +1507,6 @@ impl Cx {
                 }
             };
             let power = self.fget(obj, c"power", 255.0, b"channel")?;
-            let txk = self.get(obj, c"tx");
-            if txk >= 0 && self.n(txk).type_ != RDOF_JBOOL {
-                return self.err(&[S(b"channel "), I(pn.into()), S(b": tx: true or false")]);
-            }
-            let no_tx = txk >= 0 && !self.n(txk).b;
             let p = PlanCh { number: pn, freq, cc: cc as c_int, power: power as c_int, no_tx };
             match plan.ch[..plan.n].iter_mut().find(|q| q.number == pn) {
                 Some(same) => *same = p, // "1" and "01": the last one
@@ -1670,8 +1672,88 @@ pub unsafe extern "C" fn rdof_config_parse(
     rdof_config_parse_radio(text, len, ptr::null(), cfg, error, cap)
 }
 
+// rdof/setup.h and setup.c's part of rdof/config.h (C): versions 2 and 3 as the version 1 the parser reads.
+extern "C" {
+    fn rdof_config_version(text: *const c_char, len: usize) -> c_int;
+    fn rdof_config_as_v1(
+        text: *mut *const c_char,
+        len: *mut usize,
+        focus: *const c_char,
+        owned: *mut *mut c_char,
+        error: *mut c_char,
+        cap: usize,
+    ) -> bool;
+    fn rdof_setup_box_roles(text: *const c_char, len: usize, roles: &mut RdofRoles, error: *mut c_char, cap: usize)
+        -> bool;
+}
+
+/// Version 2 or 3: the role's section in its view (rdof/setup.h); its errors say which role.
+unsafe fn parse_radio_v2(
+    mut text: *const c_char,
+    mut len: usize,
+    want: *const c_char,
+    cfg: &mut RdofConfig,
+    error: *mut c_char,
+    cap: usize,
+) -> bool {
+    ptr::write_bytes(cfg as *mut RdofConfig, 0, 1);
+    let mut name = [0u8; 24];
+    let mut want = want;
+    if want.is_null() {
+        let roles: *mut RdofRoles = calloc(1, size_of::<RdofRoles>()).cast();
+        if roles.is_null() {
+            if !error.is_null() {
+                print(slice_mut(error.cast(), cap), &[S(b"no memory")]);
+            }
+            return false;
+        }
+        if !rdof_box_roles(text, len, &mut *roles, error, cap) {
+            free(roles.cast());
+            return false;
+        }
+        if (*roles).nradios == 0 {
+            free(roles.cast());
+            if !error.is_null() {
+                print(slice_mut(error.cast(), cap), &[S(b"run: no roamer or repeater")]);
+            }
+            return false;
+        }
+        put(&mut name, field(&(*roles).radios[0]));
+        free(roles.cast());
+        want = name.as_ptr().cast();
+    }
+    let mut view: *mut c_char = ptr::null_mut();
+    if !rdof_config_as_v1(&mut text, &mut len, want, &mut view, error, cap) {
+        return false;
+    }
+    let mut why = [0u8; 160];
+    let ok = parse_radio_v1(text, len, want, cfg, why.as_mut_ptr().cast(), why.len());
+    if !ok && !error.is_null() {
+        print(
+            slice_mut(error.cast(), cap),
+            &[S(b"roles."), S(c_bytes(want)), S(b": "), S(c_bytes(why.as_ptr().cast()))],
+        );
+    }
+    free(view.cast());
+    ok
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn rdof_config_parse_radio(
+    text: *const c_char,
+    len: usize,
+    want: *const c_char,
+    cfg: &mut RdofConfig,
+    error: *mut c_char,
+    cap: usize,
+) -> bool {
+    if rdof_config_version(text, len) >= 2 {
+        return parse_radio_v2(text, len, want, cfg, error, cap);
+    }
+    parse_radio_v1(text, len, want, cfg, error, cap)
+}
+
+unsafe fn parse_radio_v1(
     text: *const c_char,
     len: usize,
     want: *const c_char,
@@ -1800,6 +1882,10 @@ pub unsafe extern "C" fn rdof_box_roles(
 ) -> bool {
     ptr::write_bytes(roles as *mut RdofRoles, 0, 1);
     let mut dummy = [0u8; 8];
+    if rdof_config_version(text, len) >= 2 {
+        let (error, cap) = if error.is_null() || cap == 0 { (dummy.as_mut_ptr().cast(), dummy.len()) } else { (error, cap) };
+        return rdof_setup_box_roles(text, len, roles, error, cap);
+    }
     let Some((c, bx)) = Cx::new(text, len, error, cap, &mut dummy) else {
         return false;
     };
