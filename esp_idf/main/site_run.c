@@ -148,5 +148,5 @@ bool site_tuned(const uint8_t sid[4])
 
 size_t site_resolved(char *out, size_t cap)
 {
-    return S ? rdof_site_resolved(S, out, cap) : 0;
+    return S ? rdof_site_resolved_text(S, out, cap) : 0;
 }

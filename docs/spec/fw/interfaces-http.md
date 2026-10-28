@@ -31,7 +31,7 @@ The setup access point is `radiofoundry-<suffix>` (format `"radiofoundry-%s"`), 
 | GET | `/api/status` | always | none | `application/json`, `Cache-Control: no-store`, at most 6144 bytes (§3) | none |
 | GET | `/api/config` | always | `?download` (any value) adds `Content-Disposition: attachment; filename="<box>.json"` | `application/json`: `settings_export()`, the stored JSONC text with `wifi` and `ntp` added (§4) | none |
 | POST | `/api/config` | always | body: the settings JSON(C), 1 to 16384 bytes (`RDOF_WEBAPI_MAX_CONFIG`) | 200 `saved; restarting` | stores the settings in NVS, then restarts after 1 s (`web.c:restart_task`, `vTaskDelay(1000 ms)`) |
-| GET | `/api/resolved` | always | none | `text/plain`, at most 5120 bytes (§5) | none |
+| GET | `/api/resolved` | always | none | `text/plain`, at most 16384 bytes (§5; the host tools 65536) | none |
 | GET | `/api/log` | always | none | `text/plain`, `no-store`: the log ring, oldest first, the last `CONFIG_RDOF_LOG_RING_KB` KB (default 16; 0 = off, empty body) | none |
 | GET | `/api/lastheard` | always | `?since=N` (u32, default 0) | JSON (§7a): the recent calls changed after N, newest first | none |
 | GET | `/api/tasks` | `CONFIG_FREERTOS_USE_TRACE_FACILITY` and `CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS` | none | `text/plain`, `no-store`: the seconds since the last ask, then a line a task: name, core (0, 1 or any), priority and its share of a core in % since the last ask (the first ask after a restart shows 0) | none |
@@ -269,9 +269,12 @@ port: <usb|uart|sdr|split>[ serial <s>][ at port <p>]
 <…>
 <rdof_sdr_config_describe>
 plan: <the channel plan>
+
+version 3, as it runs (paths, policies, talkgroups):
+<rdof_site_resolved_text: the frequencies, paths, talkgroups, apps, networks and devices, as JSON>
 ```
 
-For people. Not a stable machine format.
+The last part only for a version 3 document ([config-v3.md](config-v3.md) §11). For people. Not a stable machine format.
 
 ## 6. `GET /api/spectrum?since=N`
 

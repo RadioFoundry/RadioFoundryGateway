@@ -190,6 +190,21 @@ static void test_scenarios(const char *dir)
         CHECK(strstr(out, "\"tg\":\"3100,3120,3177\",\"path\":\"R1/2\",\"how\":\"static\""), "reverse view");
         CHECK(strstr(out, "\"tg\":\"policy open\""), "sources");
         snprintf(t, sizeof t, "%zu", n);
+        /* indented: the same JSON, a line per top key and per list entry */
+        static char txt[16384], back[16384];
+        size_t m = rdof_site_resolved_text(&S, txt, sizeof txt), k = 0;
+        CHECK(m > n && !strncmp(txt, "{\n  \"version\": 3,\n", 18), "%.60s", txt);
+        CHECK(strstr(txt, "\n    {\"tg\": \"3100,3120,3177\", \"path\": \"R1/2\", \"how\": \"static\"}"), "a line an entry");
+        bool str = false;
+        for (const char *c = txt; *c; c++) { /* less the added whitespace, as it was */
+            if (*c == '"' && (c == txt || c[-1] != '\\'))
+                str = !str;
+            if (str || (*c != ' ' && *c != '\n'))
+                back[k++] = *c;
+        }
+        back[k] = 0;
+        CHECK(!strcmp(back, out), "indented reads back the same");
+        CHECK(rdof_site_resolved_text(&S, txt, 40) == 39 && strlen(txt) == 39, "cut at cap");
     }
 }
 

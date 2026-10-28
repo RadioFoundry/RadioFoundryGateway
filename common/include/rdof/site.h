@@ -150,6 +150,8 @@ char *rdof_site_lower(const char *text, size_t len, size_t *out_len, char *err, 
    (each key's source), the reverse talkgroup view, the networks. Returns the length (out NUL terminated, cut at
    cap). */
 size_t rdof_site_resolved(const rdof_site_t *s, char *out, size_t cap);
+/* The same, indented for reading (the settings page's resolved view). */
+size_t rdof_site_resolved_text(const rdof_site_t *s, char *out, size_t cap);
 
 #ifdef __cplusplus
 }

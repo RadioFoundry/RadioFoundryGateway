@@ -907,6 +907,7 @@ static void platform(rdof_webapi_platform_t *p, rdof_hostweb_settings_t *set)
     p->status_json = host_status;
     p->status_cap = 32768; /* four SDRs of 16 channels, the modems */
     p->log_cap = LOG_BYTES + 1;
+    p->resolved_cap = 65536; /* a version 3 site's view (rdof_site_resolved_text) */
     p->log_read = host_log;
     p->lastheard = host_lastheard;
     if (!have)

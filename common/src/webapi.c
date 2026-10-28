@@ -254,7 +254,7 @@ bool rdof_webapi_handle(const rdof_webapi_platform_t *p, const char *method, con
         break;
     }
     case RESOLVED: {
-        const size_t cap = 5120;
+        const size_t cap = p->resolved_cap ? p->resolved_cap : 5120;
         if (take(p, r, cap, "text/plain")) {
             r->len = p->settings_resolved(p->ctx, r->body, cap);
             if (r->len >= cap)

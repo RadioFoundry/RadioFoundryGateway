@@ -105,6 +105,7 @@ typedef struct {
      * terminated and may be changed. */
     bool (*settings_save)(void *ctx, char *text, size_t len, char *err, size_t err_cap);
     size_t (*settings_resolved)(void *ctx, char *out, size_t cap); /* NULL: no /api/resolved */
+    size_t resolved_cap; /* the /api/resolved buffer; 0: 5120 */
     const char *settings_source; /* where the settings live, for the page ("file /x.json"); NULL: left out */
 
     /* The board's clock servo (RDOF_WEBAPI_CAP_NETCLOCK) for a server that doesn't answer its routes itself (the

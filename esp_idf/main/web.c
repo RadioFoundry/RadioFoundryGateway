@@ -246,6 +246,10 @@ static size_t fw_resolved(void *ctx, char *buf, size_t cap)
         n += sdr_resolved(buf + n, cap - n);
     }
 #endif
+    if (site_on() && n < cap - 64) {
+        n += (size_t)snprintf(buf + n, cap - n, "\nversion 3, as it runs (paths, policies, talkgroups):\n");
+        n += site_resolved(buf + n, cap - n);
+    }
     return n;
 }
 
@@ -292,6 +296,7 @@ static const rdof_webapi_platform_t WEB = {
     .settings_save = fw_settings_save,
     .settings_resolved = fw_resolved,
     .log_cap = (size_t)CONFIG_RDOF_LOG_RING_KB * 1024 + 1,
+    .resolved_cap = 16384, /* a version 3 site's view */
     .log_read = fw_log,
     .lastheard = fw_lastheard,
     .restart = fw_restart,

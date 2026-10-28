@@ -1553,7 +1553,12 @@ static size_t web_resolved(void *ctx, char *out, size_t cap)
         snprintf(src, sizeof src, "file %s", config_path);
     else
         snprintf(src, sizeof src, "command line flags");
-    return rdofradio_cfg_describe(&rcfg, src, web_device, out, cap);
+    size_t n = rdofradio_cfg_describe(&rcfg, src, web_device, out, cap);
+    if (rcfg.v3 && n < cap - 64) {
+        n += (size_t)snprintf(out + n, cap - n, "\nversion 3, as it runs (paths, policies, talkgroups):\n");
+        n += rdof_site_resolved_text(&rcfg.site, out + n, cap - n);
+    }
+    return n;
 }
 static void web_restart(void *ctx)
 {

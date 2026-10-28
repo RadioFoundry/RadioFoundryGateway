@@ -1792,8 +1792,11 @@ size_t rdof_site_resolved(const rdof_site_t *s, char *out, size_t cap)
                 w_str(&w, "how", which ? "ptt" : "static");
                 close_(&w, '}');
             }
-            if (set->star) {
-                rdof_idset_format(set, ids, sizeof ids);
+            if (set->star) { /* "*" and its exclusions, the listed ranges above */
+                rdof_idset_t star = *set;
+                memmove(star.r, star.r + star.nin, star.nout * sizeof star.r[0]);
+                star.nin = 0;
+                rdof_idset_format(&star, ids, sizeof ids);
                 open_(&w, NULL, '{');
                 w_str(&w, "tg", ids);
                 w_str(&w, "path", s->path[k].name);
@@ -1869,5 +1872,74 @@ size_t rdof_site_resolved(const rdof_site_t *s, char *out, size_t cap)
         out[n] = 0;
     }
     free(w.s);
+    return n;
+}
+
+size_t rdof_site_resolved_text(const rdof_site_t *s, char *out, size_t cap)
+{
+    char *in = cap ? malloc(cap) : NULL;
+    if (!in) {
+        if (cap)
+            out[0] = 0;
+        return 0;
+    }
+    rdof_site_resolved(s, in, cap);
+    bool brk[16] = {false}, str = false;
+    int depth = 0;
+    size_t n = 0;
+#define PUT(ch) (n + 1 < cap ? (void)(out[n++] = (ch)) : (void)0)
+#define LINE(d) do { PUT('\n'); for (int i_ = 0; i_ < 2 * (d); i_++) PUT(' '); } while (0)
+    for (const char *c = in; *c; c++) {
+        if (str) {
+            PUT(*c);
+            if (*c == '\\' && c[1])
+                PUT(*++c);
+            else if (*c == '"')
+                str = false;
+            continue;
+        }
+        switch (*c) {
+        case '"':
+            str = true;
+            PUT(*c);
+            break;
+        case '{':
+        case '[':
+            PUT(*c);
+            if (depth < 15) {
+                /* the top object a line per key, a list of objects a line per entry, the rest on one line */
+                const bool b = *c == '{' ? depth == 0 : c[1] == '{';
+                brk[++depth] = b;
+                if (brk[depth])
+                    LINE(depth);
+            }
+            break;
+        case '}':
+        case ']':
+            if (depth > 0 && brk[depth])
+                LINE(depth - 1);
+            PUT(*c);
+            if (depth > 0)
+                depth--;
+            break;
+        case ',':
+            PUT(',');
+            if (brk[depth])
+                LINE(depth);
+            else
+                PUT(' ');
+            break;
+        case ':':
+            PUT(':');
+            PUT(' ');
+            break;
+        default:
+            PUT(*c);
+        }
+    }
+#undef PUT
+#undef LINE
+    out[n] = 0;
+    free(in);
     return n;
 }
