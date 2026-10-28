@@ -109,6 +109,7 @@ typedef struct {
     uint8_t slot;    /* 1 or 2; 0: both (a simplex, SFR or receive-only frequency) */
     uint8_t tx_slot; /* the slot it transmits on: slot, else the frequency's ts */
     uint32_t peer_id; /* its HBlink peer: the site's id, or (identity per_path) its own */
+    char peer_name[9]; /* that peer's name for the master (identity per_path, peer_names), "": the default */
     rdof_policy_t pol;
 } rdof_path_t;
 

@@ -150,7 +150,7 @@ static const char *const IPGW_V2_KEYS[] = {"radio_net", "tx", "ack", "max_bytes"
                                            "max_flows", "routes", "nat", NULL};
 static const char *const HBLINK_KEYS[] = {"name", "type", "host", "port", "transport", "sctp_encap_port",
                                           "sctp_heartbeat_ms", "sctp_max_retransmit", "sctp_ttl_ms", "identity",
-                                          "peer_ids", "roaming", NULL};
+                                          "peer_ids", "peer_names", "roaming", NULL};
 static const char *const HBLINK_V2_KEYS[] = {"host", "port", "transport", "sctp_encap_port", "sctp_heartbeat_ms",
                                              "sctp_max_retransmit", "sctp_ttl_ms", NULL};
 static const char *const MQTT_KEYS[] = {"name", "type", "host", "port", "username", "password", "root", "tls",
@@ -617,6 +617,11 @@ static bool parse_nets(ctx_t *c, rdof_site_t *s)
                 return fail(c, "%s.peer_ids: with identity per_path", path);
             if (i >= 0 && !is_type(c, i, RDOF_JOBJ))
                 return fail(c, "%s.peer_ids: {\"<path>\": id, ...}", path);
+            i = get(c, e, "peer_names");
+            if (i >= 0 && !n->per_path)
+                return fail(c, "%s.peer_names: with identity per_path", path);
+            if (i >= 0 && !is_type(c, i, RDOF_JOBJ))
+                return fail(c, "%s.peer_names: {\"<path>\": \"name\", ...}", path);
             i = get(c, e, "roaming");
             if (i >= 0 && !is_type(c, i, RDOF_JBOOL))
                 return fail(c, "%s.roaming: true or false", path);
@@ -1109,6 +1114,16 @@ static bool peer_ids(ctx_t *c, rdof_site_t *s)
         if (!num_of(c, at(c, ids, k), &v) || v < 1 || v > 4294967295.0 || v != floor(v))
             return fail(c, "networks.%s.peer_ids.%s: a peer ID", s->net[hb].name, key);
     }
+    int names = hb >= 0 ? get(c, c->nnode[hb], "peer_names") : -1;
+    for (int k = 0; k < count(c, names); k++) {
+        const char *key = N(c, at(c, names, k))->key, *v = str_of(c, at(c, names, k));
+        int a = rdof_site_app(s, key), f = rdof_site_freq(s, key);
+        if (!((a >= 0 && s->app[a].type == RDOF_APP_REPEATER) || (f >= 0 && s->freq[f].app < 0)))
+            return fail(c, "networks.%s.peer_names.%s: not a frequency's or a repeater's name", s->net[hb].name, key);
+        if (!v || !v[0] || strlen(v) > 8)
+            return fail(c, "networks.%s.peer_names.%s: a name of 1 to 8 characters (the master's callsign field)",
+                        s->net[hb].name, key);
+    }
     for (int k = 0; k < s->npath; k++) {
         rdof_path_t *p = &s->path[k];
         p->peer_id = s->id;
@@ -1121,11 +1136,14 @@ static bool peer_ids(ctx_t *c, rdof_site_t *s)
                 same = j;
         if (same >= 0) {
             p->peer_id = s->path[same].peer_id;
+            memcpy(p->peer_name, s->path[same].peer_name, sizeof p->peer_name);
             continue;
         }
         const char *key = p->app >= 0 ? s->app[p->app].name : s->freq[p->freq].name;
         double v;
         p->peer_id = num_of(c, get(c, ids, key), &v) ? (uint32_t)v : ++next;
+        const char *nm = names >= 0 ? str_of(c, get(c, names, key)) : NULL;
+        snprintf(p->peer_name, sizeof p->peer_name, "%s", nm ? nm : "");
     }
     return true;
 }
@@ -1401,9 +1419,13 @@ static void w_role_net(jw_t *w, const rdof_site_t *s, int path)
         w_num(w, "peer_id", p->peer_id);
 }
 
-/* The box's callsign, on each role (version 2 has it per role). */
-static void w_callsign(jw_t *w, ctx_t *c)
+/* The callsign on each role (version 2 has it per role): its path's peer name (peer_names), else the box's. */
+static void w_callsign(jw_t *w, ctx_t *c, const rdof_site_t *s, int path)
 {
+    if (path >= 0 && s->path[path].peer_name[0]) {
+        w_str(w, "callsign", s->path[path].peer_name);
+        return;
+    }
     int i = get(c, c->root, "callsign");
     if (i >= 0)
         emit(w, c, "callsign", i);
@@ -1508,7 +1530,7 @@ static char *lower(ctx_t *c, const rdof_site_t *s, size_t *out_len)
         if (s->freq[ap->out].power >= 0)
             w_num(&w, "power", s->freq[ap->out].power);
         w_role_net(&w, s, ap->path[0]);
-        w_callsign(&w, c);
+        w_callsign(&w, c, s, ap->path[0]);
         w_parrot(&w, s, s->path[ap->path[0]].pol.apps | s->path[ap->path[1]].pol.apps);
         emit_keys(&w, c, c->anode[a], REPEATER_V2_KEYS, true);
         close_(&w, '}');
@@ -1539,7 +1561,7 @@ static char *lower(ctx_t *c, const rdof_site_t *s, size_t *out_len)
             w_num(&w, "power", fr->power);
         int p0 = rdof_site_path_rx(s, fr->hz, 1), p1 = rdof_site_path_rx(s, fr->hz, 2);
         w_role_net(&w, s, p0);
-        w_callsign(&w, c);
+        w_callsign(&w, c, s, p0);
         w_parrot(&w, s, s->path[p0].pol.apps | s->path[p1].pol.apps);
         emit_keys(&w, c, c->fnode[f], RADIO_FREQ_KEYS, true);
         close_(&w, '}');
@@ -1583,7 +1605,7 @@ static char *lower(ctx_t *c, const rdof_site_t *s, size_t *out_len)
         }
         int ip = rdof_site_path_rx(s, s->freq[idle].hz, s->freq[idle].ts);
         w_role_net(&w, s, ip);
-        w_callsign(&w, c);
+        w_callsign(&w, c, s, ip);
         uint32_t reach = 0;
         for (int f = 0; f < s->nfreq; f++)
             if (ch >> f & 1) {
@@ -1615,7 +1637,7 @@ static char *lower(ctx_t *c, const rdof_site_t *s, size_t *out_len)
         snprintf(nm, sizeof nm, "%s-rx", dv->name);
         open_(&w, nm, '{');
         w_str(&w, "type", "monitor");
-        w_callsign(&w, c);
+        w_callsign(&w, c, s, -1);
         open_(&w, "rx", '{');
         w_str(&w, "device", dv->name);
         close_(&w, '}');
@@ -1632,6 +1654,8 @@ static char *lower(ctx_t *c, const rdof_site_t *s, size_t *out_len)
             w_bool(&w, "hblink", own);
             if (own)
                 w_num(&w, "peer_id", s->path[p].peer_id);
+            if (own && s->path[p].peer_name[0])
+                w_str(&w, "id", s->path[p].peer_name); /* the channel's peer name for the master */
             close_(&w, '}');
         }
         close_(&w, ']');
@@ -1765,6 +1789,8 @@ size_t rdof_site_resolved(const rdof_site_t *s, char *out, size_t cap)
         w_str(&w, "dir", DIR_NAMES[pol->dir & 3]);
         if (pol->net >= 0 && s->net[pol->net].type == RDOF_NET_HBLINK)
             w_num(&w, "peer_id", p->peer_id);
+        if (pol->net >= 0 && s->net[pol->net].type == RDOF_NET_HBLINK && p->peer_name[0])
+            w_str(&w, "peer_name", p->peer_name);
         open_(&w, "from", '{');
         for (int x = 0; x < RDOF_PK_N; x++)
             w_src(&w, s, PK_NAMES[x], pol->src[x]);
