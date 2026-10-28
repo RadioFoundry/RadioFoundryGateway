@@ -16,6 +16,7 @@
 #include "rdof/oled.h"
 #include "rdof/fec.h"
 #include "rdof/hblink.h"
+#include "rdof/hbpeer.h"
 #include "rdof/json.h"
 #include "rdof/layer2.h"
 #include "rdof/mmdvm.h"
@@ -423,6 +424,69 @@ static void test_mmdvm(void)
 
 /* ── HBlink4 ───────────────────────────────────────────────────────────────── */
 
+/* The HBlink4 peer state the board and the host share (hbpeer.c). */
+static void test_hbpeer(void)
+{
+    rdof_hb_peer_t p;
+    rdof_hbp_event_t ev;
+    const uint8_t a[] = "DMRC-a", b[] = "DMRC-b";
+    rdof_hb_peer_init(&p, 9800001, 10.0);
+    CHECK(rdof_hb_peer_set_config(&p, a, sizeof a, false, 0) && !rdof_hb_peer_set_config(&p, a, sizeof a, false, 1) &&
+              rdof_hb_peer_set_config(&p, a, sizeof a, true, 1) && rdof_hb_peer_set_config(&p, b, sizeof b, false, 2),
+          "hbpeer: the DMRC goes when it changes or is forced");
+    rdof_hb_peer_link_up(&p);
+    CHECK(rdof_hb_peer_tick(&p, 3, &ev) && ev == RDOF_HBP_NONE && !rdof_hb_peer_tick(&p, 12.9, &ev) &&
+              rdof_hb_peer_tick(&p, 13, &ev),
+          "hbpeer: the keepalive at once on link up, then every keepalive_s");
+    CHECK(rdof_hb_peer_received(&p, (const uint8_t *)"DMRP\x00\x2f\x4d\x61", 8, 13.1) == RDOF_HBP_REGISTERED &&
+              rdof_hb_peer_received(&p, (const uint8_t *)"DMRP\x00\x2f\x4d\x61", 8, 23.1) == RDOF_HBP_NONE && p.up,
+          "hbpeer: registered on the first DMRP");
+    bool quiet = false;
+    for (double t = 23; t < 70; t += 10) /* the last DMRP at 23.1: quiet at the tick past 53.1 */
+        if (rdof_hb_peer_tick(&p, t, &ev) && ev == RDOF_HBP_QUIET)
+            quiet = t > 60;
+    CHECK(quiet && !p.up, "hbpeer: down after three keepalives without a DMRP");
+    CHECK(rdof_hb_peer_received(&p, (const uint8_t *)"MSTNAK", 6, 61) == RDOF_HBP_REFUSED && p.refused == 1 &&
+              rdof_hb_peer_received(&p, (const uint8_t *)"DMRD", 4, 61) == RDOF_HBP_PACKET,
+          "hbpeer: refusals, and the rest to the caller");
+
+    /* the DMRC per role, as the board sends them */
+    rdof_config_t c;
+    memset(&c, 0, sizeof c);
+    c.mode = RDOF_CFG_REPEATER;
+    c.peer_id = 9800001;
+    snprintf(c.callsign, sizeof c.callsign, "N0CALL");
+    c.rx_freq = 438250000;
+    c.tx_freq = 438012500;
+    c.cc = 1;
+    c.slot2 = true;
+    uint8_t x[RDOF_DMRC_MAX], y[RDOF_DMRC_MAX];
+    size_t nx = rdof_hb_role_dmrc(&c, 0, 0, x);
+    size_t ny = rdof_dmrc_packet(9800001, "N0CALL", 438250000, 438012500, 1, '2', 0, "RadioFoundry Gateway repeater",
+                                 "radiofoundry_gateway duplex repeater", NULL, NULL, NULL, y);
+    CHECK(nx == ny && !memcmp(x, y, nx), "hbpeer: a repeater's DMRC");
+    c.mode = RDOF_CFG_ROAMER;
+    c.idle.freq = 438500000;
+    c.idle.cc = 2;
+    const uint32_t idle = 438500000;
+    const int idle_cc = 2;
+    nx = rdof_hb_role_dmrc(&c, 438025000, 3, x);
+    ny = rdof_dmrc_packet(9800001, "N0CALL", 438025000, 438025000, 3, '4', 0, "RadioFoundry Gateway roaming",
+                          "radiofoundry_gateway simplex", NULL, &idle, &idle_cc, y);
+    CHECK(nx == ny && !memcmp(x, y, nx), "hbpeer: a roamer's DMRC: its channel now and its idle channel");
+    nx = rdof_hb_channel_dmrc(9800002, "monitor-449", 438250000, -1, NULL, x);
+    ny = rdof_dmrc_packet(9800002, "monitor-", 438250000, 438250000, 1, '3', 0, "radiofoundry-gateway",
+                          "RadioFoundry_Gateway_SDR", NULL, NULL, NULL, y);
+    CHECK(nx == ny && !memcmp(x, y, nx), "hbpeer: a channel's DMRC: its id, 8 characters");
+
+    /* a DMRT nothing here can take is refused */
+    const uint8_t dmrt[18] = {'D', 'M', 'R', 'T', 0, 0, 0, 1, 0xAA, 0xBB, 0xCC, 0xDD, 0x1B, 0x6B, 0x16, 0xE0, 0x01, 0};
+    uint8_t k[RDOF_DMRK_LEN], want[RDOF_DMRK_LEN];
+    rdof_dmrk_packet(9800001, dmrt + 8, RDOF_DMRK_RADIO_ERROR, 0x1B6B16E0, 1, want);
+    CHECK(rdof_hb_dispatch(dmrt, sizeof dmrt, NULL, NULL, 9800001, k) && !memcmp(k, want, sizeof k),
+          "hbpeer: a DMRT with no transceiver refused");
+}
+
 static void test_hblink(void)
 {
     uint8_t in[256], out[256];
@@ -726,14 +790,14 @@ static void test_enabled(void)
     }
     static rdof_config_t cfg;
     static const char covered[] =
-        "{\"cc\": 1, \"channels\": {\"1\": 461.0375, \"2\": 461.0875}, \"radios\": [{\"type\": \"mmdvm_hs\","
+        "{\"cc\": 1, \"channels\": {\"1\": 438.0625, \"2\": 438.1125}, \"radios\": [{\"type\": \"mmdvm_hs\","
         " \"peer_id\": 1, \"idle\": 1}, {\"type\": \"sdr\", \"channels\": [1]}, {\"type\": \"sdr\", \"enabled\": false,"
         " \"channels\": [2, 9]}]}";
     bool ok = rdof_config_parse(covered, strlen(covered), &cfg, error, sizeof error);
-    CHECK(ok && cfg.ncovered == 1 && cfg.covered[0] == 461037500, "a disabled SDR covers nothing: %d (%s)",
+    CHECK(ok && cfg.ncovered == 1 && cfg.covered[0] == 438062500, "a disabled SDR covers nothing: %d (%s)",
           ok ? cfg.ncovered : -1, error);
     static const char sdrtx[] =
-        "{\"cc\": 1, \"channels\": {\"1\": 461.0375}, \"radios\": [{\"type\": \"sdr_transceiver\", \"peer_id\": 1,"
+        "{\"cc\": 1, \"channels\": {\"1\": 438.0625}, \"radios\": [{\"type\": \"sdr_transceiver\", \"peer_id\": 1,"
         " \"idle\": 1}, {\"type\": \"sdr\", \"enabled\": false, \"channels\": [1]}]}";
     ok = rdof_config_parse(sdrtx, strlen(sdrtx), &cfg, error, sizeof error);
     CHECK(!ok && !strcmp(error, "an sdr_transceiver needs an SDR in radios: its front end is the radio"),
@@ -746,7 +810,7 @@ static void test_radios(void)
 {
     static const char box[] =
         "{\"name\": \"b\", \"cc\": 1, \"modem\": \"uart\", \"uart\": {\"tx\": 5, \"rx\": 6},"
-        " \"channels\": {\"1\": 461.0375, \"2\": 461.0875},"
+        " \"channels\": {\"1\": 438.0625, \"2\": 438.1125},"
         " \"run\": [\"A\", \"B\", \"S\"], \"radios\": ["
         "{\"type\": \"opengd77\", \"name\": \"A\", \"peer_id\": 1, \"idle\": 1, \"modem\": \"usb\","
         " \"usb\": {\"serial\": \"ODR-17\"}},"
@@ -812,23 +876,23 @@ static void test_radios(void)
 
     /* sdr_transceiver: the SDR's front end as a roamer (half) or a repeater (full); its port is the SDR */
     static const char tx[] =
-        "{\"name\": \"b\", \"cc\": 1, \"channels\": {\"1\": 461.0375, \"2\": 461.0875}, \"run\": [\"T\", \"S\"],"
+        "{\"name\": \"b\", \"cc\": 1, \"channels\": {\"1\": 438.0625, \"2\": 438.1125}, \"run\": [\"T\", \"S\"],"
         " \"radios\": [{\"type\": \"sdr_transceiver\", \"name\": \"T\", \"peer_id\": 3, \"idle\": 1,"
         " \"tx_power_dbm\": 14, \"modem\": \"uart\"},"
         "{\"type\": \"sdr\", \"name\": \"S\", \"device\": {\"sample_rate\": 288000}, \"channels\": [1, 2]}]}";
     ok = rdof_config_parse_radio(tx, strlen(tx), "T", &c, error, sizeof error);
     CHECK(ok && c.mode == RDOF_CFG_ROAMER && c.sdr_duplex == RDOF_SDR_DUPLEX_HALF && c.tx_power_dbm == 14 &&
-              !strcmp(c.modem_port, "sdr") && !strcmp(c.radio_type, "auto") && c.idle.freq == 461037500,
+              !strcmp(c.modem_port, "sdr") && !strcmp(c.radio_type, "auto") && c.idle.freq == 438062500,
           "sdr_transceiver, half: %s", error);
     static char txf[sizeof tx + 64];
     snprintf(txf, sizeof txf, "%s", tx);
     char *at = strstr(txf, "\"idle\": 1,");
-    const char full[] = "\"duplex\": \"full\", \"rx_freq\": 461.0875, \"tx_freq\": 466.0875,";
+    const char full[] = "\"duplex\": \"full\", \"rx_freq\": 438.1125, \"tx_freq\": 438.75,";
     memmove(at + strlen(full), at + 10, strlen(at + 10) + 1);
     memcpy(at, full, strlen(full));
     ok = rdof_config_parse_radio(txf, strlen(txf), "T", &c, error, sizeof error);
-    CHECK(ok && c.mode == RDOF_CFG_REPEATER && c.sdr_duplex == RDOF_SDR_DUPLEX_FULL && c.rx_freq == 461087500 &&
-              c.tx_freq == 466087500 && !strcmp(c.modem_port, "sdr"),
+    CHECK(ok && c.mode == RDOF_CFG_REPEATER && c.sdr_duplex == RDOF_SDR_DUPLEX_FULL && c.rx_freq == 438112500 &&
+              c.tx_freq == 438750000 && !strcmp(c.modem_port, "sdr"),
           "sdr_transceiver, full: %s", error);
     memcpy(strstr(txf, "full"), "fool", 4);
     CHECK(!rdof_config_parse_radio(txf, strlen(txf), "T", &c, error, sizeof error) &&
@@ -851,9 +915,9 @@ static void test_radios(void)
 #if RDOF_FEATURE_REPEATER
     /* a split repeater: each half's port on the board */
     static const char sp[] =
-        "{\"name\": \"b\", \"cc\": 1, \"channels\": {\"1\": 461.0375},"
-        " \"radios\": [{\"type\": \"repeater\", \"name\": \"R\", \"peer_id\": 3, \"rx_freq\": 461.0375,"
-        " \"tx_freq\": 466.0375, \"radio\": {\"type\": \"split\", \"power_cap\": 32, \"max_key_s\": 120,"
+        "{\"name\": \"b\", \"cc\": 1, \"channels\": {\"1\": 438.0625},"
+        " \"radios\": [{\"type\": \"repeater\", \"name\": \"R\", \"peer_id\": 3, \"rx_freq\": 438.0625,"
+        " \"tx_freq\": 438.0375, \"radio\": {\"type\": \"split\", \"power_cap\": 32, \"max_key_s\": 120,"
         " \"tx\": {\"usb\": {\"serial\": \"ODR-9\"}},"
         " \"rx\": {\"modem\": \"uart\", \"uart\": {\"num\": 2, \"tx\": 17, \"rx\": 18}, \"speed\": 57600}}}]}";
     ok = rdof_config_parse_radio(sp, strlen(sp), "R", &c, error, sizeof error);
@@ -1014,7 +1078,7 @@ static void test_oled(void)
               "oled text %zu", i);
     }
     static rdof_frame_buf_t f;
-    rdof_oled_status_t st = {"ROAM1", "10.0.0.50", true, true, false, true, false, 467375000, 467375000, 2, "listening",
+    rdof_oled_status_t st = {"ROAM1", "10.0.0.50", true, true, false, true, false, 438600000, 438600000, 2, "listening",
                            "T201<9990123", true, "", false, "12:00:00"};
     rdof_oled_render(&f, &st);
     int lit = 0;
@@ -1025,7 +1089,7 @@ static void test_oled(void)
     uint32_t h = 2166136261u; /* FNV-1a of the frame: the C's screen, pinned */
     for (size_t i = 0; i < sizeof f.buf; i++)
         h = (h ^ f.buf[i]) * 16777619u;
-    CHECK(h == 0x72e0d013u, "status screen %08x", (unsigned)h);
+    CHECK(h == 0xf8b4b0a9u, "status screen %08x", (unsigned)h);
 }
 
 static void test_misc(void)
@@ -1205,6 +1269,7 @@ int main(void)
     test_pdu();
     test_mmdvm();
     test_hblink();
+    test_hbpeer();
 #if RDOF_FEATURE_TRACKER
     test_tracker();
 #endif

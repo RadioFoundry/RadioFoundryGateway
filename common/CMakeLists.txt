@@ -11,6 +11,7 @@ set(RDOF_COMMON_SRCS
     src/pdu.c
     src/mmdvm.c
     src/hblink.c
+    src/hbpeer.c
     src/json.c
     src/tracker.c
     src/modem.c

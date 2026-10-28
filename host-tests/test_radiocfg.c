@@ -70,12 +70,20 @@ int main(void)
                 "\"hblink\": {\"master\": \"h\", \"port\": 62031, \"passphrase\": \"p\"}}]}"));
     if (err[0])
         printf("  %s\n", err);
-    CHECK(strstr(C.unused, "mqtt") && strstr(C.unused, "wifi") && strstr(C.unused, "R.power") &&
-          strstr(C.unused, "R.hblink") && !strstr(C.unused, "rx_freq"));
+    CHECK(strstr(C.unused, "mqtt") && strstr(C.unused, "wifi") && !strstr(C.unused, "R.power") &&
+          strstr(C.unused, "R.hblink") && !strstr(C.unused, "rx_freq") && !C.has_hblink);
     char text[1024];
     rdofradio_cfg_describe(&C, "file x.json", "--soapy driver=plutosdr", text, sizeof text);
     CHECK(strstr(text, "b runs: R") && strstr(text, "RX 438.25 MHz, TX 438.0125 MHz") &&
-          strstr(text, "not used on this host: mqtt, wifi, R.power, R.hblink") && strstr(text, "driver=plutosdr"));
+          strstr(text, "not used on this host: mqtt, wifi, R.hblink") && strstr(text, "HBlink4: off") &&
+          strstr(text, "driver=plutosdr"));
+    /* the box's hblink section: the network on */
+    CHECK(parse("{\"name\": \"b\", \"hblink\": {\"host\": \"master.example\", \"port\": 62032}, \"radios\": [{\"type\": "
+                "\"repeater\", \"name\": \"R\", \"peer_id\": 3, \"rx_freq\": 438.25, \"tx_freq\": 438.0125, \"cc\": 1, "
+                "\"callsign\": \"N0CALL\"}]}") &&
+          C.has_hblink && !strcmp(C.cfg.master_host, "master.example") && C.cfg.master_port == 62032 && !C.unused[0]);
+    rdofradio_cfg_describe(&C, "file x.json", "", text, sizeof text);
+    CHECK(strstr(text, "HBlink4: master.example:62032, peer 3\n") != NULL);
     char tiny[16];
     CHECK(rdofradio_cfg_describe(&C, "x", "", tiny, sizeof tiny) == 15);
 

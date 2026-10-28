@@ -12,13 +12,14 @@
 #include "rdof/jsonp.h"
 
 /* What rdofradio applies: the box's keys, and the radio's */
-static const char *const BOX_USED[] = {"name", "cc", "channels", "radios", "run", NULL};
+static const char *const BOX_USED[] = {"name", "cc", "channels", "radios", "run", "hblink", "location", NULL};
 static const char *const RADIO_USED[] = {"type",          "name",        "peer_id",       "rx_freq",
                                          "tx_freq",       "cc",          "parrot",        "slots",
                                          "hang_s",        "call_hang_s", "short_lc_ts1_low", "prebuffer",
                                          "jitter_buffer", "jitter_min_ms", "jitter_max_ms", "cwid",
                                          "cwid_every_s",  "mode",        "duplex",        "enabled",
-                                         "idle",          "channels",    NULL};
+                                         "idle",          "channels",    "callsign",      "location",
+                                         "power",         NULL};
 
 static bool listed(const char *const *l, const char *k)
 {
@@ -39,9 +40,10 @@ static void add(char *out, size_t cap, const char *what)
 
 /* The keys set that rdofradio doesn't use: the box's, the radio's, and every other radio's section (v2: but an SDR
    device's, which the view adds). */
-static void unused(const char *text, size_t len, const char *radio, bool v2, char *out, size_t cap)
+static void unused(const char *text, size_t len, const char *radio, bool v2, char *out, size_t cap, bool *has_hblink)
 {
     out[0] = 0;
+    *has_hblink = false;
     enum { NODES = 2048 };
     rdof_jdoc_t d = {0};
     d.nodes = malloc(NODES * sizeof *d.nodes);
@@ -59,6 +61,8 @@ static void unused(const char *text, size_t len, const char *radio, bool v2, cha
         const rdof_jnode_t *e = rdof_jnode(&d, rdof_jat(&d, box, k));
         if (e && e->key && !listed(BOX_USED, e->key))
             add(out, cap, e->key);
+        if (e && e->key && !strcmp(e->key, "hblink"))
+            *has_hblink = true;
     }
     const int radios = rdof_jget(&d, box, "radios");
     for (int k = 0; radios >= 0 && k < rdof_jnode(&d, radios)->count; k++) {
@@ -135,7 +139,7 @@ bool rdofradio_cfg_parse(const char *text, size_t len, rdofradio_cfg_t *o, char 
     size_t v1len = len;
     char *owned = NULL, verr[8];
     if (rdof_config_as_v1(&v1, &v1len, roles.radio, &owned, verr, sizeof verr))
-        unused(v1, v1len, roles.radio, owned != NULL, o->unused, sizeof o->unused);
+        unused(v1, v1len, roles.radio, owned != NULL, o->unused, sizeof o->unused, &o->has_hblink);
     free(owned);
     return true;
 }
@@ -210,6 +214,11 @@ size_t rdofradio_cfg_describe(const rdofradio_cfg_t *o, const char *source, cons
         PUT("slots%s%s, hang %.1f s, call hang %.1f s, prebuffer %d%s%s%s\n", o->cfg.slot1 ? " 1" : "",
             o->cfg.slot2 ? " 2" : "", o->cfg.hang_s, o->cfg.call_hang_s, o->cfg.prebuffer,
             o->cfg.jitter_auto ? ", jitter buffer auto" : "", o->cfg.cwid[0] ? ", CW ID " : "", o->cfg.cwid);
+    if (o->has_hblink)
+        PUT("HBlink4: %s:%d, peer %u%s\n", o->cfg.master_host, o->cfg.master_port, (unsigned)o->peer_id,
+            strcmp(o->cfg.transport, "udp") ? " (UDP: SCTP isn't on this host yet)" : "");
+    else
+        PUT("HBlink4: off (no hblink section)\n");
     PUT("not used on this host: %s\n", o->unused[0] ? o->unused : "none");
     if (device && *device)
         PUT("\ndevice (command line): %s\n", device);

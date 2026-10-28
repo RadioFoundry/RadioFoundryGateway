@@ -23,6 +23,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "lwip/sockets.h"
+#include "rdof/hbpeer.h"
 #if CONFIG_RDOF_HBLINK_SCTP
 #include "tinysctp_esp.h"
 #endif
@@ -31,10 +32,8 @@ static const char *TAG = "hblink";
 
 struct roam_hb {
     int sock;
-    SemaphoreHandle_t lock;
-    uint8_t last_config[RDOF_DMRC_MAX];
-    size_t last_config_len;
-    int64_t last_pong;
+    SemaphoreHandle_t lock; /* sock and peer */
+    rdof_hb_peer_t peer;    /* the keepalive and the master's state (common/src/hbpeer.c) */
 #if CONFIG_RDOF_HBLINK_SCTP
     bool use_sctp;
     tsctp_esp_t *assoc; /* started once, never stopped: it reconnects by itself */
@@ -73,26 +72,15 @@ void roam_hb_send(roam_t *r, const uint8_t *data, size_t len)
     xSemaphoreGive(h->lock);
 }
 
+static double now_s(void) { return esp_timer_get_time() / 1e6; }
+
 static size_t config_packet(roam_t *r, uint8_t *out)
 {
-    const rdof_config_t *c = r->cfg;
-    const rdof_location_t *loc = c->has_location ? &c->location : NULL;
-    if (c->mode == RDOF_CFG_REPEATER) {
-        char slots = c->slot1 && c->slot2 ? '3' : c->slot1 ? '1' : c->slot2 ? '2' : '0';
-        return rdof_dmrc_packet(c->peer_id, c->callsign, c->rx_freq, c->tx_freq, c->cc, slots, c->power,
-                              c->sfr    ? "RadioFoundry Gateway SFR repeater"
-                              : c->dcdm ? "RadioFoundry Gateway DCDM gateway"
-                                        : "RadioFoundry Gateway repeater",
-                              c->sfr    ? "radiofoundry_gateway sfr repeater"
-                              : c->dcdm ? "radiofoundry_gateway dcdm"
-                                        : "radiofoundry_gateway duplex repeater",
-                              loc, NULL, NULL, out);
-    }
-    uint32_t freq, idle = c->idle.freq;
-    int cc, idle_cc = c->idle.cc;
-    radio_channel_now(r, &freq, &cc);
-    return rdof_dmrc_packet(c->peer_id, c->callsign, freq, freq, cc, '4', 0, "RadioFoundry Gateway roaming",
-                          "radiofoundry_gateway simplex", loc, &idle, &idle_cc, out);
+    uint32_t freq = 0;
+    int cc = 0;
+    if (r->cfg->mode != RDOF_CFG_REPEATER)
+        radio_channel_now(r, &freq, &cc);
+    return rdof_hb_role_dmrc(r->cfg, freq, cc, out);
 }
 
 void roam_hb_send_config(roam_t *r, bool force)
@@ -103,15 +91,11 @@ void roam_hb_send_config(roam_t *r, bool force)
         return;
     size_t n = config_packet(r, pkt);
     xSemaphoreTake(h->lock, portMAX_DELAY);
-    bool changed = n != h->last_config_len || memcmp(pkt, h->last_config, n) != 0;
-    if (force || changed) {
-        if (!USE_SCTP(r) && h->sock >= 0 && send(h->sock, pkt, n, 0) == (ssize_t)n)
-            r->st.hblink_tx++;
-        memcpy(h->last_config, pkt, n);
-        h->last_config_len = n;
-    }
+    const bool send_now = rdof_hb_peer_set_config(&h->peer, pkt, n, force, now_s());
+    if (send_now && !USE_SCTP(r) && h->sock >= 0 && send(h->sock, pkt, n, 0) == (ssize_t)n)
+        r->st.hblink_tx++;
     xSemaphoreGive(h->lock);
-    if (USE_SCTP(r) && (force || changed))
+    if (USE_SCTP(r) && send_now)
         sctp_send(r, pkt, n);
 }
 
@@ -127,72 +111,49 @@ static int open_socket(roam_t *r)
     return s;
 }
 
-static void dispatch(roam_t *r, const uint8_t *d, size_t n)
-{
-    char kind = rdof_hb_kind(d, n);
-#if RDOF_FEATURE_TX
-    if (r->cfg->mode == RDOF_CFG_ROAMER && r->txvr) {
-        if (kind == 'T') {
-            rdof_tune_t t;
-            if (rdof_parse_dmrt(d, n, &t))
-                rdof_txvr_on_tune(r->txvr, &t);
-        } else if (kind == 'D') {
-            rdof_net_burst_t b;
-            if (rdof_parse_dmrd(d, n, &b))
-                rdof_txvr_on_burst(r->txvr, &b);
-        }
-        return;
-    }
-#endif
-#if RDOF_FEATURE_REPEATER
-    if (r->cfg->mode == RDOF_CFG_REPEATER && r->rpt && kind == 'D') {
-        rdof_net_burst_t b;
-        if (rdof_parse_dmrd(d, n, &b))
-            rdof_repeater_on_burst(r->rpt, &b);
-        return;
-    }
-#endif
-#if !RDOF_FEATURE_TX
-    if (kind == 'T') { /* receive only: tunes refused */
-        rdof_tune_t t;
-        if (rdof_parse_dmrt(d, n, &t)) {
-            uint8_t k[RDOF_DMRK_LEN];
-            rdof_dmrk_packet(r->cfg->peer_id, t.stream_id, RDOF_DMRK_RADIO_ERROR, t.freq, t.cc, k);
-            roam_hb_send(r, k, sizeof k);
-        }
-    }
-#endif
-}
-
 /* A packet from the master. */
 static void received(roam_t *r, const uint8_t *buf, size_t n)
 {
+    struct roam_hb *h = r->hb;
     r->st.hblink_rx++;
-    char kind = rdof_hb_kind(buf, n);
-    if (kind == 'P') {
-        if (!r->st.hblink_up) {
-            ESP_LOGI(TAG, "peer %lu (%s) registered with %s:%d", (unsigned long)r->cfg->peer_id, r->cfg->name,
-                     r->cfg->master_host, r->cfg->master_port);
-            r->st.hblink_up = true;
-            roam_publish_status(r);
-        }
-        r->hb->last_pong = esp_timer_get_time();
-    } else if (kind == 'N') {
+    xSemaphoreTake(h->lock, portMAX_DELAY);
+    const rdof_hbp_event_t ev = rdof_hb_peer_received(&h->peer, buf, n, now_s());
+    xSemaphoreGive(h->lock);
+    if (ev == RDOF_HBP_REGISTERED) {
+        ESP_LOGI(TAG, "peer %lu (%s) registered with %s:%d", (unsigned long)r->cfg->peer_id, r->cfg->name,
+                 r->cfg->master_host, r->cfg->master_port);
+        r->st.hblink_up = true;
+        roam_publish_status(r);
+    } else if (ev == RDOF_HBP_REFUSED) {
         ESP_LOGW(TAG, "peer %lu refused by the master: %.6s", (unsigned long)r->cfg->peer_id, (const char *)buf);
         r->st.hblink_up = false;
-    } else {
-        dispatch(r, buf, n);
+    } else if (ev == RDOF_HBP_PACKET) {
+        rdof_repeater_t *rpt = NULL;
+        rdof_txvr_t *txvr = NULL;
+#if RDOF_FEATURE_REPEATER
+        rpt = r->cfg->mode == RDOF_CFG_REPEATER ? r->rpt : NULL;
+#endif
+#if RDOF_FEATURE_TX
+        txvr = r->cfg->mode == RDOF_CFG_ROAMER ? r->txvr : NULL;
+#endif
+        uint8_t k[RDOF_DMRK_LEN];
+        if (rdof_hb_dispatch(buf, n, rpt, txvr, r->cfg->peer_id, k))
+            roam_hb_send(r, k, sizeof k);
     }
 }
 
 /* DMRC as the keepalive; the master gone quiet after three. */
-static void keepalive(roam_t *r, int64_t now, int64_t *next_ka, int64_t keepalive_us)
+static void keepalive(roam_t *r)
 {
-    if (now < *next_ka)
+    struct roam_hb *h = r->hb;
+    rdof_hbp_event_t ev;
+    xSemaphoreTake(h->lock, portMAX_DELAY);
+    const bool due = rdof_hb_peer_tick(&h->peer, now_s(), &ev);
+    xSemaphoreGive(h->lock);
+    if (!due)
         return;
     roam_hb_send_config(r, true);
-    *next_ka = now + keepalive_us;
-    if (r->st.hblink_up && now - r->hb->last_pong > 3 * keepalive_us) {
+    if (ev == RDOF_HBP_QUIET) {
         ESP_LOGW(TAG, "peer %lu: no DMRP from the master", (unsigned long)r->cfg->peer_id);
         r->st.hblink_up = false;
         roam_publish_status(r);
@@ -217,7 +178,7 @@ static void sctp_event(void *user, tsctp_event_t ev, tsctp_reason_t why)
     r->hb->assoc_up = ev != TSCTP_EV_DOWN;
 }
 
-static void sctp_task(roam_t *r, int64_t keepalive_us)
+static void sctp_task(roam_t *r)
 {
     struct roam_hb *h = r->hb;
     int backoff_ms = 1000;
@@ -255,15 +216,17 @@ static void sctp_task(roam_t *r, int64_t keepalive_us)
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
     }
-    int64_t next_ka = 0;
     bool was_up = false;
     for (;;) {
         bool up = h->assoc_up;
-        if (up && !was_up)
-            next_ka = 0; /* DMRC as soon as the association is up */
+        if (up && !was_up) { /* DMRC as soon as the association is up */
+            xSemaphoreTake(h->lock, portMAX_DELAY);
+            rdof_hb_peer_link_up(&h->peer);
+            xSemaphoreGive(h->lock);
+        }
         was_up = up;
         if (up)
-            keepalive(r, esp_timer_get_time(), &next_ka, keepalive_us);
+            keepalive(r);
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
@@ -278,15 +241,13 @@ static void peer_task(void *arg)
 {
     roam_t *r = arg;
     struct roam_hb *h = r->hb;
-    const int64_t keepalive_us = (int64_t)((r->cfg->mode == RDOF_CFG_REPEATER ? RDOF_HB_KEEPALIVE_SECONDS
-                                                                            : RDOF_HB_ROAMING_KEEPALIVE_SECONDS) * 1e6);
     int backoff_ms = 1000;
     uint8_t *buf = r->i ? heap_caps_malloc(1500, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : NULL;
     if (!buf)
         buf = malloc(1500);
 #if CONFIG_RDOF_HBLINK_SCTP
     if (h->use_sctp)
-        sctp_task(r, keepalive_us);
+        sctp_task(r);
 #endif
     for (;;) {
         if (!g_board.wifi_up || !r->cfg->master_host[0]) {
@@ -303,12 +264,11 @@ static void peer_task(void *arg)
         }
         xSemaphoreTake(h->lock, portMAX_DELAY);
         h->sock = s;
+        rdof_hb_peer_link_up(&h->peer);
         xSemaphoreGive(h->lock);
         backoff_ms = 1000;
-        int64_t next_ka = 0;
-        h->last_pong = 0;
         while (g_board.wifi_up) {
-            keepalive(r, esp_timer_get_time(), &next_ka, keepalive_us);
+            keepalive(r);
             ssize_t n = recv(s, buf, 1500, 0);
             if (n < 0) {
                 if (errno == EAGAIN || errno == EWOULDBLOCK)
@@ -320,6 +280,7 @@ static void peer_task(void *arg)
         }
         xSemaphoreTake(h->lock, portMAX_DELAY);
         h->sock = -1;
+        rdof_hb_peer_link_down(&h->peer);
         xSemaphoreGive(h->lock);
         close(s);
         r->st.hblink_up = false;
@@ -332,6 +293,8 @@ void roam_hb_start(roam_t *r)
     struct roam_hb *h = calloc(1, sizeof *h);
     h->sock = -1;
     h->lock = xSemaphoreCreateMutex();
+    rdof_hb_peer_init(&h->peer, r->cfg->peer_id,
+                      r->cfg->mode == RDOF_CFG_REPEATER ? RDOF_HB_KEEPALIVE_SECONDS : RDOF_HB_ROAMING_KEEPALIVE_SECONDS);
     r->hb = h;
 #if CONFIG_RDOF_HBLINK_SCTP
     h->use_sctp = !strcmp(r->cfg->transport, "sctp");

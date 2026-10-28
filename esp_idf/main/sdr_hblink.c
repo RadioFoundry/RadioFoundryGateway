@@ -21,15 +21,14 @@
 #include "freertos/task.h"
 #include "lwip/sockets.h"
 #include "rdof/hblink.h"
+#include "rdof/hbpeer.h"
 
 static const char *TAG = "hblink";
 
 typedef struct {
     int channel;
-    uint32_t peer_id;
     int sock;
-    bool up;
-    int64_t last_pong;
+    rdof_hb_peer_t peer; /* the keepalive and the master's state (common/src/hbpeer.c) */
     rdof_hb_sink_t sink;
     SemaphoreHandle_t lock;
 } peer_t;
@@ -65,7 +64,7 @@ int sdr_hb_status(const char **ids, bool *up, int max)
     int n = 0;
     for (int i = 0; i < npeers && n < max; i++, n++) {
         ids[n] = g_scfg.ch[peers[i].channel].id;
-        up[n] = peers[i].up;
+        up[n] = peers[i].peer.up;
     }
     return n;
 }
@@ -73,11 +72,8 @@ int sdr_hb_status(const char **ids, bool *up, int max)
 static size_t dmrc(const peer_t *p, uint8_t *out)
 {
     const rdof_sdr_cfg_channel_t *ch = &g_scfg.ch[p->channel];
-    char callsign[9];
-    snprintf(callsign, sizeof callsign, "%.8s", ch->id); /* the channel id, 8 characters */
-    uint32_t f = (uint32_t)ch->freq;
-    return rdof_dmrc_packet(p->peer_id, callsign, f, f, ch->cc >= 0 ? ch->cc : 1, '3', 0, "radiofoundry-gateway",
-                          "RadioFoundry_Gateway_SDR", g_scfg.has_location ? &g_scfg.location : NULL, NULL, NULL, out);
+    return rdof_hb_channel_dmrc(p->peer.peer_id, ch->id, (uint32_t)ch->freq, ch->cc,
+                                g_scfg.has_location ? &g_scfg.location : NULL, out);
 }
 
 static int open_socket(void)
@@ -87,9 +83,7 @@ static int open_socket(void)
 
 static void peer_task(void *arg)
 {
-    const int64_t keepalive_us = (int64_t)(RDOF_HB_KEEPALIVE_SECONDS * 1e6);
     static uint8_t buf[1500];
-    int64_t next_ka = 0;
     for (;;) {
         if (!g_board.wifi_up) {
             vTaskDelay(pdMS_TO_TICKS(1000));
@@ -102,24 +96,26 @@ static void peer_task(void *arg)
                 xSemaphoreTake(p->lock, portMAX_DELAY);
                 p->sock = s;
                 xSemaphoreGive(p->lock);
+                if (s >= 0)
+                    rdof_hb_peer_link_up(&p->peer);
             }
         }
-        int64_t now = esp_timer_get_time();
-        if (now >= next_ka) {
-            next_ka = now + keepalive_us;
-            int up = 0;
-            for (int i = 0; i < npeers; i++) {
-                peer_t *p = &peers[i];
+        const double now = esp_timer_get_time() / 1e6;
+        int up = 0;
+        for (int i = 0; i < npeers; i++) {
+            peer_t *p = &peers[i];
+            rdof_hbp_event_t ev;
+            if (p->sock >= 0 && rdof_hb_peer_tick(&p->peer, now, &ev)) {
                 uint8_t pkt[RDOF_DMRC_MAX];
-                peer_send(p, pkt, dmrc(p, pkt));
-                if (p->up && now - p->last_pong > 3 * keepalive_us) {
-                    ESP_LOGW(TAG, "peer %lu: no DMRP from master", (unsigned long)p->peer_id);
-                    p->up = false;
-                }
-                up += p->up;
+                const size_t n = dmrc(p, pkt);
+                rdof_hb_peer_set_config(&p->peer, pkt, n, true, now);
+                peer_send(p, pkt, n);
+                if (ev == RDOF_HBP_QUIET)
+                    ESP_LOGW(TAG, "peer %lu: no DMRP from master", (unsigned long)p->peer.peer_id);
             }
-            g_sstat.hb_up = up;
+            up += p->peer.up;
         }
+        g_sstat.hb_up = up;
         fd_set fds;
         FD_ZERO(&fds);
         int maxfd = -1;
@@ -141,20 +137,16 @@ static void peer_task(void *arg)
                 close(p->sock);
                 p->sock = -1;
                 xSemaphoreGive(p->lock);
-                p->up = false;
+                rdof_hb_peer_link_down(&p->peer);
                 continue;
             }
-            char kind = rdof_hb_kind(buf, (size_t)n);
-            if (kind == 'P') {
-                if (!p->up)
-                    ESP_LOGI(TAG, "peer %lu (%s) registered with %s:%d", (unsigned long)p->peer_id,
-                             g_scfg.ch[p->channel].id, g_scfg.hb_host, g_scfg.hb_port);
-                p->up = true;
-                p->last_pong = esp_timer_get_time();
-            } else if (kind == 'N') {
-                ESP_LOGW(TAG, "peer %lu refused by the master: %.6s", (unsigned long)p->peer_id, (const char *)buf);
-                p->up = false;
-            }
+            const rdof_hbp_event_t ev = rdof_hb_peer_received(&p->peer, buf, (size_t)n, esp_timer_get_time() / 1e6);
+            if (ev == RDOF_HBP_REGISTERED)
+                ESP_LOGI(TAG, "peer %lu (%s) registered with %s:%d", (unsigned long)p->peer.peer_id,
+                         g_scfg.ch[p->channel].id, g_scfg.hb_host, g_scfg.hb_port);
+            else if (ev == RDOF_HBP_REFUSED)
+                ESP_LOGW(TAG, "peer %lu refused by the master: %.6s", (unsigned long)p->peer.peer_id,
+                         (const char *)buf);
         }
     }
 }
@@ -174,10 +166,10 @@ void sdr_hb_start(void)
             continue;
         peer_t *p = &peers[npeers];
         p->channel = c;
-        p->peer_id = (uint32_t)ch->peer_id;
+        rdof_hb_peer_init(&p->peer, (uint32_t)ch->peer_id, RDOF_HB_KEEPALIVE_SECONDS);
         p->sock = -1;
         p->lock = xSemaphoreCreateMutex();
-        rdof_hb_sink_init(&p->sink, p->peer_id);
+        rdof_hb_sink_init(&p->sink, p->peer.peer_id);
         p->sink.send = peer_send;
         p->sink.rand32 = peer_rand;
         p->sink.ctx = p;
