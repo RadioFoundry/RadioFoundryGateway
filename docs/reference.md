@@ -139,7 +139,8 @@ install script ([tools/pluto/bundle/README.md](../tools/pluto/bundle/README.md))
 `--example`) from a computer, over ssh, puts `rdofradio` (gzipped, 285 KB), the settings and a supervisor loop in the
 Pluto's persistent flash (`/mnt/jffs2`). The firmware's `/mnt/jffs2/autorun.sh` starts the loop at boot, and the loop
 starts `rdofradio` again 5 s after it exits. The settings stay in `/mnt/jffs2/rdof/config.json`, which the web page
-edits. The Pluto makes a new ssh host key at every boot, so the script doesn't check it. Tested on a Pluto+ style
+edits. The bundle's flags keep netclock's state in `/mnt/jffs2/rdof/netclock.state` and set the Pluto's clock from it
+(the Pluto has no NTP of its own and starts in 1970). The Pluto makes a new ssh host key at every boot, so the script doesn't check it. Tested on a Pluto+ style
 clone (Z7010, 1 GB, Ethernet, SD boot, ADI's v0.38): the web page answers about 25 s after power-on. At `--tx-gain 0`
 (the bundle's default) the start's calibration pulse isn't heard, so the outbound slot timing isn't measured.
 
@@ -175,7 +176,23 @@ The radio can come from a settings file instead: `--config FILE` takes the firmw
 name, `peer_id`, `rx_freq` / `tx_freq`, `cc`, `parrot`, and a repeater's `slots`, `hang_s`, `call_hang_s`,
 `short_lc_ts1_low`, `prebuffer`, the jitter buffer, `cwid` and `cwid_every_s`, as the firmware does. `mode` sfr and
 dcdm are refused. Every other key stays in the file and is listed as not used (at the start, and in
-`/api/resolved`). The device stays on the command line (`--soapy` or `--iio`, `-r`, `--gain`, `--tx-gain`, `--tx-offset`,
+`/api/resolved`).
+
+With an `hblink` section it's an HBlink4 peer, as the board's: the board's peer state (`common/src/hbpeer.c`:
+the keepalive, DMRP, the refusals, each role's DMRC with `callsign`, `location` and `power`, and the dispatch of the
+master's DMRD and DMRT) under a POSIX UDP socket polled from the main loop (`sdr/cli/rdofradio_net.c`). What the RX
+channel hears goes up as DMRD through the board's tracker sink; the master's calls go to the repeater or the
+transceiver, and the transceiver's DMRK back. UDP only: `transport` sctp falls back to UDP with a warning. Without
+an `hblink` section there's no network. The page shows the peer as the board's (`hblink`, `hblink_tx`,
+`hblink_rx`).
+
+The clock is the settings' `ntp`: with servers it's netclock, the board's NTP disciplined clock
+(`components/netclock`, its POSIX glue `netclock_posix`), and the page's clock card is the board's (`/api/clock`,
+`/api/time`: the browser's clock sets it when there's no NTP). `ntp.clock` `"os"` leaves the time to the OS
+(chrony, ntpd), and the page shows the kernel's sync state; that's also the default without servers.
+`--clock-state FILE` keeps netclock's learned rate across restarts, and `--set-os-clock` steps the OS clock to
+netclock's when it's 100 ms off (root; for a box with nothing else setting the time). `/api/status` `version` is
+the build's (`RDOF_VERSION`, else git describe at configure time). The device stays on the command line (`--soapy` or `--iio`, `-r`, `--gain`, `--tx-gain`, `--tx-offset`,
 `--bw`, `--center`, `--allow-tx`, `--seconds`, `--web`, `-v`, `--bursts`, `--monitor`, `--tx-lo`, `--stream`, `--fft`);
 `--rx`, `--tx`, `--cc`, `--duplex` and `--parrot` are refused alongside it. A repeater on the Pluto:
 

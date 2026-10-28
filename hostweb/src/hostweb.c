@@ -60,6 +60,10 @@ static struct {
     pthread_mutex_t set_mu;
     rdof_hostweb_settings_t set;
     bool have_set;
+    /* the board's clock, when the tool runs it; the version */
+    rdof_hostweb_clock_t clk;
+    bool have_clk;
+    const char *version;
     /* last heard */
     pthread_mutex_t lh_mu;
     rdof_lh_t lh;
@@ -150,7 +154,7 @@ void rdof_hostweb_net_call(const char *role, const char *radio, const char *acti
 static void host_board(void *ctx, rdof_webapi_board_t *b)
 {
     b->name = W.name;
-    b->version = "host";
+    b->version = W.version ? W.version : "host";
     b->idf = NULL;
     b->uptime_s = (long long)(time(NULL) - W.t0);
     b->reset = W.reset;
@@ -210,9 +214,33 @@ static bool host_memory(void *ctx, rdof_webapi_mem_t *m)
     return true;
 }
 
-/* The kernel's NTP state, read only (modes 0: nothing is set or adjusted). */
+void rdof_hostweb_clock(const rdof_hostweb_clock_t *c)
+{
+    W.have_clk = false;
+    if (c)
+        W.clk = *c;
+    W.have_clk = c != NULL;
+}
+
+void rdof_hostweb_version(const char *v) { W.version = v; }
+
+static size_t clk_json(void *ctx, char *out, size_t cap) { return W.clk.json(out, cap); }
+static bool clk_set(void *ctx, int64_t utc_us, const char **source)
+{
+    const bool ok = W.clk.set && W.clk.set(utc_us);
+    *source = W.clk.source();
+    return ok;
+}
+static size_t clk_settings(void *ctx, char *out, size_t cap) { return W.clk.settings_json(out, cap); }
+
+/* The board's clock when the tool runs it; else the kernel's NTP state, read only (modes 0: nothing is set or
+ * adjusted). */
 static bool host_clock(void *ctx, rdof_webapi_clock_t *c)
 {
+    if (W.have_clk) {
+        c->source = W.clk.source();
+        return true;
+    }
     struct timex tx;
     memset(&tx, 0, sizeof tx);
     tx.modes = 0;
@@ -300,7 +328,10 @@ static void host_status(void *ctx, rdof_json_t *j, rdof_webapi_at_t at)
     rdof_json_int(j, "bursts_heard", (long long)s.bursts_heard);
     rdof_json_int(j, "bursts_sent", (long long)s.bursts_sent);
     rdof_json_bool(j, "hblink", s.hblink);
-    rdof_json_bool(j, "mqtt", s.mqtt);
+    rdof_json_int(j, "hblink_tx", s.hblink_tx);
+    rdof_json_int(j, "hblink_rx", s.hblink_rx);
+    if (s.has_mqtt)
+        rdof_json_bool(j, "mqtt", s.mqtt);
     rdof_json_close(j);
     /* the page lists keys it doesn't know as cards: the host's own */
     rdof_json_open(j, "host");
@@ -382,7 +413,16 @@ static void platform(rdof_webapi_platform_t *p, rdof_hostweb_settings_t *set)
         *set = W.set;
     pthread_mutex_unlock(&W.set_mu);
     memset(p, 0, sizeof *p);
-    p->caps = RDOF_WEBAPI_CAP_SYS_MEM | RDOF_WEBAPI_CAP_OS_CLOCK;
+    p->caps = RDOF_WEBAPI_CAP_SYS_MEM | (W.have_clk ? RDOF_WEBAPI_CAP_NETCLOCK : RDOF_WEBAPI_CAP_OS_CLOCK);
+    pthread_mutex_lock(&W.st_mu);
+    if (W.have_st && W.st.links)
+        p->caps |= RDOF_WEBAPI_CAP_LINKS;
+    pthread_mutex_unlock(&W.st_mu);
+    if (W.have_clk) {
+        p->clock_json = clk_json;
+        p->clock_set = clk_set;
+        p->clock_settings_json = W.clk.settings_json ? clk_settings : NULL;
+    }
     p->board = host_board;
     p->memory = host_memory;
     p->clock = host_clock;

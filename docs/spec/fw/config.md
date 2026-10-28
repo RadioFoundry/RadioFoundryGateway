@@ -37,7 +37,7 @@ Role column: B = board / box, R = roamer, P = repeater, S = SDR, X = `sdr_transc
 | `uart` | `{tx, rx, num}` | tx 5, rx 6, num 1 | num 1\|2 | R, P | default UART pins (board key) |
 | `usb_hub` | bool | false | | B | a hub on the USB port: every USB role runs at once (board key) |
 | `wifi` | `{networks: [{ssid, password, priority, hidden}]}` | — | ≤ `WIFILIST_MAX_NETWORKS` 8 | B | moved to wifilist NVS on save; never stored in `rdof/config` |
-| `ntp` | `{servers, poll_s}` | — | §5 | B | moved to netclock NVS on save |
+| `ntp` | servers, or `{servers, poll_s, clock}` | — | §5 | B | moved to netclock NVS on save. `clock` (`netclock` or `os`) is the host tools' only: the board always runs netclock |
 | `bench` | `{radios, tx}` | none | §2.10 | B | bench API |
 | `ip_gateway` | object, or `false` / `null` | off | §2.13 | B | DMR packet data to and from the IP network ([ipgw.md](ipgw.md)) |
 | `selftest_load` | `{channels 8, rates [288000]}` | | rates ≤ 4 | S | self-test load runs (top level or in any section) |

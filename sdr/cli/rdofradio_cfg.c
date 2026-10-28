@@ -12,7 +12,7 @@
 #include "rdof/jsonp.h"
 
 /* What rdofradio applies: the box's keys, and the radio's */
-static const char *const BOX_USED[] = {"name", "cc", "channels", "radios", "run", "hblink", "location", NULL};
+static const char *const BOX_USED[] = {"name", "cc", "channels", "radios", "run", "hblink", "location", "ntp", NULL};
 static const char *const RADIO_USED[] = {"type",          "name",        "peer_id",       "rx_freq",
                                          "tx_freq",       "cc",          "parrot",        "slots",
                                          "hang_s",        "call_hang_s", "short_lc_ts1_low", "prebuffer",
@@ -93,6 +93,52 @@ done:
     free(clean);
 }
 
+/* ntp: a string of servers, or {servers, poll_s, clock}. The clock is netclock's when servers are set, unless
+   clock is "os"; "netclock" without servers runs it on the browser's time alone. */
+static bool clock_settings(const char *text, size_t len, rdofradio_cfg_t *o, char *err, size_t cap)
+{
+    enum { NODES = 2048 };
+    rdof_jdoc_t d = {0};
+    d.nodes = malloc(NODES * sizeof *d.nodes);
+    d.max = NODES;
+    char *clean = malloc(len + 1);
+    d.buf = malloc(len + 1);
+    d.cap = len + 1;
+    bool ok = false;
+    if (!d.nodes || !clean || !d.buf) {
+        snprintf(err, cap, "no memory");
+        goto done;
+    }
+    const int box = rdof_jparse(&d, clean, rdof_jsonc_strip(text, len, clean));
+    const int ntp = box >= 0 ? rdof_jget(&d, box, "ntp") : -1;
+    const rdof_jnode_t *n = rdof_jnode(&d, ntp);
+    const char *mode = NULL;
+    if (n && n->type == RDOF_JSTR) {
+        snprintf(o->ntp_servers, sizeof o->ntp_servers, "%s", n->str);
+    } else if (n && n->type == RDOF_JOBJ) {
+        const rdof_jnode_t *sv = rdof_jnode(&d, rdof_jget(&d, ntp, "servers"));
+        const rdof_jnode_t *ps = rdof_jnode(&d, rdof_jget(&d, ntp, "poll_s"));
+        const rdof_jnode_t *ck = rdof_jnode(&d, rdof_jget(&d, ntp, "clock"));
+        if (sv && sv->type == RDOF_JSTR)
+            snprintf(o->ntp_servers, sizeof o->ntp_servers, "%s", sv->str);
+        if (ps && ps->type == RDOF_JNUM && ps->num > 0)
+            o->ntp_poll_s = ps->num < 16 ? 16 : ps->num > 3600 ? 3600 : (unsigned)ps->num;
+        if (ck && ck->type == RDOF_JSTR)
+            mode = ck->str;
+    }
+    if (mode && strcmp(mode, "netclock") && strcmp(mode, "os")) {
+        snprintf(err, cap, "ntp.clock: netclock or os");
+        goto done;
+    }
+    o->own_clock = mode ? !strcmp(mode, "netclock") : o->ntp_servers[0] != 0;
+    ok = true;
+done:
+    free(d.nodes);
+    free(d.buf);
+    free(clean);
+    return ok;
+}
+
 bool rdofradio_cfg_parse(const char *text, size_t len, rdofradio_cfg_t *o, char *err, size_t cap)
 {
     memset(o, 0, sizeof *o);
@@ -134,6 +180,8 @@ bool rdofradio_cfg_parse(const char *text, size_t len, rdofradio_cfg_t *o, char 
         o->rx_hz = o->tx_hz = c->idle.freq;
         o->cc = c->idle.cc;
     }
+    if (!clock_settings(text, len, o, err, cap))
+        return false;
     /* version 2: the keys of its version 1 view, the shape the lists above name */
     const char *v1 = text;
     size_t v1len = len;
@@ -219,6 +267,10 @@ size_t rdofradio_cfg_describe(const rdofradio_cfg_t *o, const char *source, cons
             strcmp(o->cfg.transport, "udp") ? " (UDP: SCTP isn't on this host yet)" : "");
     else
         PUT("HBlink4: off (no hblink section)\n");
+    if (o->own_clock)
+        PUT("clock: netclock, from %s\n", o->ntp_servers[0] ? o->ntp_servers : "the browser only (no servers)");
+    else
+        PUT("clock: the OS's\n");
     PUT("not used on this host: %s\n", o->unused[0] ? o->unused : "none");
     if (device && *device)
         PUT("\ndevice (command line): %s\n", device);

@@ -179,7 +179,7 @@ function problems(s) {
     if (r.radio_error) bad(n + r.radio_error);
     else if (!r.radio_ready) bad(n + 'radio not ready');
     if (has(s, 'links') && !r.hblink) warn(n + 'HBlink4 down');
-    if (has(s, 'links') && !r.mqtt) warn(n + 'MQTT down');
+    if (has(s, 'links') && 'mqtt' in r && !r.mqtt) warn(n + 'MQTT down');
     if (r.queue_dropped || r.dropped) warn(n + num(r.queue_dropped || r.dropped) + ' bursts dropped');
   });
   const d = s.sdr;
@@ -316,11 +316,11 @@ function roamerFull(r, either) {
       ' underruns, ' + num(j.grown) + ' grown, ' + num(j.shrunk) + ' shrunk'],
     sl && ['Split', yes(sl.ready) + ' epoch ' + sl.epoch + ', ' + num(sl.tx) + ' sent, ' + num(sl.rx) + ' received, ' + cnt(sl.dropped) + ' dropped, ' + cnt(sl.failed) + ' failed'],
     has(S.s, 'links') && hbRow(r),
-    has(S.s, 'links') && ['MQTT', up(r.mqtt)],
+    has(S.s, 'links') && 'mqtt' in r && ['MQTT', up(r.mqtt)],
   ]) + more(r, R_KNOWN, 'r:' + r.name));
 }
 const roamerBrief = (r, either) => card(rname(r) + ' ' + rstate(r, either), kv((either && waiting(r, 'the radio')) ||
-  [radioRow(r), ['Channel', chan(r)], ['Heard', esc(r.heard || '-')], ['Sending', esc(r.sending || '-')], has(S.s, 'links') && ['HBlink4 / MQTT', up(r.hblink) + ' / ' + up(r.mqtt)]]));
+  [radioRow(r), ['Channel', chan(r)], ['Heard', esc(r.heard || '-')], ['Sending', esc(r.sending || '-')], has(S.s, 'links') && ('mqtt' in r ? ['HBlink4 / MQTT', up(r.hblink) + ' / ' + up(r.mqtt)] : ['HBlink4', up(r.hblink)])]));
 
 // ── the SDR ───────────────────────────────────────────────────────────────
 // What warming up is waiting on: each reading not yet 10 min long, or moving more than it may

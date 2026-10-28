@@ -1,6 +1,7 @@
 {
   "version": 2,
   "name": "pluto",
+  "ntp": "pool.ntp.org",
   "devices": {
     "pluto": {"kind": "sdr", "driver": "iio", "match": {"uri": "local:"}, "tx": {}}
   },

@@ -59,12 +59,22 @@
       }
     },
     "ntp": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "servers": {"type": "array", "items": {"type": "string"}},
-        "poll_s": {"type": "number", "minimum": 0}
-      }
+      "description": "The clock: NTP servers (spaces, commas or semicolons between them), or an object.",
+      "oneOf": [
+        {"type": "string"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "servers": {"type": "string"},
+            "poll_s": {"type": "number", "minimum": 0},
+            "clock": {
+              "enum": ["netclock", "os"],
+              "description": "Host tools only (the board always runs netclock): netclock disciplines its own clock from the servers; os leaves the time to the OS (chrony, ntpd). Default: netclock when servers are set, else os."
+            }
+          }
+        }
+      ]
     },
     "usb_hub": {"type": "boolean", "description": "A USB hub on the board's OTG port: a radio and an RTL-SDR at once."},
     "selftest_load": {"$ref": "#/$defs/selftest_load"},

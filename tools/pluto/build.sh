@@ -35,14 +35,15 @@ if [ ! -f "$OUT/libs/usr/include/iio.h" ]; then
     rm -rf "$OUT/libs/staging"
 fi
 
-docker run --rm -v "$ROOT":/src:ro -v "$OUT":/out -e RDOF_PLUTO_LIBS=/out/libs debian:stretch bash -euo pipefail -c '
+VERSION=${RDOF_VERSION:-$(git -C "$ROOT" describe --always --dirty 2>/dev/null || echo dev)}
+docker run --rm -v "$ROOT":/src:ro -v "$OUT":/out -e RDOF_PLUTO_LIBS=/out/libs -e RDOF_VERSION="$VERSION" debian:stretch bash -euo pipefail -c '
 echo "deb http://archive.debian.org/debian stretch main" > /etc/apt/sources.list
 apt-get -qq -o Acquire::Check-Valid-Until=false update
 apt-get -qq install -y --no-install-recommends gcc-arm-linux-gnueabihf libc6-dev-armhf-cross make >/dev/null
 mkdir -p /opt/cmake && tar -xzf /out/dl/cmake.tar.gz -C /opt/cmake --strip-components=1
 export PATH=/opt/cmake/bin:$PATH
 cmake -S /src -B /out/build -DCMAKE_TOOLCHAIN_FILE=/src/tools/pluto/armhf.cmake -DCMAKE_BUILD_TYPE=Release \
-    -DRDOF_BUILD_TESTS=OFF -DRDOF_HOST_WEB=ON -DRDOF_PFFFT=ON
+    -DRDOF_BUILD_TESTS=OFF -DRDOF_HOST_WEB=ON -DRDOF_PFFFT=ON -DRDOF_VERSION="$RDOF_VERSION"
 cmake --build /out/build --target rdofradio rdofsdr -j"$(nproc)"
 cd /out
 cp build/rdofradio build/rdofsdr .
@@ -54,7 +55,6 @@ chown -R '"$(id -u):$(id -g)"' /out
 '
 
 # the install bundle
-VERSION=${RDOF_VERSION:-$(git -C "$ROOT" describe --always --dirty 2>/dev/null || echo dev)}
 B=rdof-pluto-bundle-$VERSION
 rm -rf "$OUT/$B" && mkdir -p "$OUT/$B"
 cp "$ROOT"/tools/pluto/bundle/{install.sh,run.sh,config.example.json,flags.example,README.md} "$OUT/$B/"

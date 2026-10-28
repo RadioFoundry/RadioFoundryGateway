@@ -5,6 +5,7 @@
 #   SoapySDR (Debian / Ubuntu libsoapysdr-dev, Homebrew soapysdr): rdofsdr --soapy, rdofradio --soapy
 #   libiio 0.x (libiio-dev, or a PlutoSDR's own), with libad9361 if found: rdofradio --iio, an AD9361 straight
 #   RDOF_HOST_WEB: rdofradio --web
+#   RDOF_VERSION: the version rdofradio reports (default: git describe at configure time)
 set(RDOF_CLI ${CMAKE_CURRENT_LIST_DIR})
 find_package(Threads REQUIRED)
 
@@ -64,6 +65,24 @@ if(RDOF_RADIO_DEFS AND NOT WIN32)
     if(TARGET rdof_pffft)
         target_link_libraries(rdofradio PRIVATE rdof_pffft)
     endif()
+    # the clock: netclock's POSIX glue (components/netclock), the board's NTP disciplined clock or the OS's
+    if(UNIX AND NOT TARGET netclock_posix)
+        add_subdirectory(${RDOF_CLI}/../../components/netclock ${CMAKE_BINARY_DIR}/netclock-posix)
+    endif()
+    if(TARGET netclock_posix)
+        target_link_libraries(rdofradio PRIVATE netclock_posix)
+        target_compile_definitions(rdofradio PRIVATE RDOF_NETCLOCK)
+    endif()
+    # the version /api/status shows: RDOF_VERSION, else git describe, else "dev"
+    if(NOT RDOF_VERSION)
+        execute_process(COMMAND git -C ${RDOF_CLI} describe --always --dirty OUTPUT_VARIABLE RDOF_GIT
+                        OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        set(RDOF_VERSION "${RDOF_GIT}")
+        if(NOT RDOF_VERSION)
+            set(RDOF_VERSION dev)
+        endif()
+    endif()
+    target_compile_definitions(rdofradio PRIVATE RDOF_VERSION="${RDOF_VERSION}")
     option(RDOF_HOST_WEB "Link the web page server into the host tools (rdofradio --web [ADDR:]PORT)" OFF)
     if(RDOF_HOST_WEB)
         target_link_libraries(rdofradio PRIVATE rdof_hostweb)

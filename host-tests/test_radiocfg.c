@@ -83,7 +83,19 @@ int main(void)
                 "\"callsign\": \"N0CALL\"}]}") &&
           C.has_hblink && !strcmp(C.cfg.master_host, "master.example") && C.cfg.master_port == 62032 && !C.unused[0]);
     rdofradio_cfg_describe(&C, "file x.json", "", text, sizeof text);
-    CHECK(strstr(text, "HBlink4: master.example:62032, peer 3\n") != NULL);
+    CHECK(strstr(text, "HBlink4: master.example:62032, peer 3\n") != NULL && strstr(text, "clock: the OS's"));
+    /* the clock: netclock from servers, unless clock is os */
+    const char *R1 = "\"radios\": [{\"type\": \"repeater\", \"name\": \"R\", \"peer_id\": 3, \"rx_freq\": 438.25, "
+                     "\"tx_freq\": 438.0125, \"cc\": 1}]}";
+    char doc[512];
+    snprintf(doc, sizeof doc, "{\"name\": \"b\", \"ntp\": \"pool.ntp.org\", %s", R1);
+    CHECK(parse(doc) && C.own_clock && !strcmp(C.ntp_servers, "pool.ntp.org") && !C.unused[0]);
+    snprintf(doc, sizeof doc, "{\"name\": \"b\", \"ntp\": {\"servers\": \"a b\", \"poll_s\": 64, \"clock\": \"os\"}, %s", R1);
+    CHECK(parse(doc) && !C.own_clock && C.ntp_poll_s == 64);
+    snprintf(doc, sizeof doc, "{\"name\": \"b\", \"ntp\": {\"clock\": \"netclock\"}, %s", R1);
+    CHECK(parse(doc) && C.own_clock && !C.ntp_servers[0]);
+    snprintf(doc, sizeof doc, "{\"name\": \"b\", \"ntp\": {\"clock\": \"chrony\"}, %s", R1);
+    CHECK(!parse(doc) && strstr(err, "ntp.clock"));
     char tiny[16];
     CHECK(rdofradio_cfg_describe(&C, "x", "", tiny, sizeof tiny) == 15);
 

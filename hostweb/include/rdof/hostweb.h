@@ -53,7 +53,10 @@ typedef struct {
     char sending[48];  /* the same for what's going out */
     bool ready;
     bool keyed;
-    bool hblink, mqtt; /* links, if the tool has them (the page warns when down) */
+    bool links;        /* the tool has a network (HBlink4): the page shows hblink, and mqtt when has_mqtt */
+    bool has_mqtt;
+    bool hblink, mqtt; /* the links' state (the page warns when down) */
+    unsigned hblink_tx, hblink_rx; /* HBlink4 packets, as the board counts them */
     uint32_t rx_hz, tx_hz;
     int cc;
     double cpu_load; /* 0..1 of the tool's real-time loop, or -1 */
@@ -98,6 +101,19 @@ int rdof_hostweb_start(const char *bind_addr, int port, const char *name);
 /* Stop the server and join its thread. */
 void rdof_hostweb_stop(void);
 bool rdof_hostweb_running(void);
+
+/* The clock when the tool runs the board's (netclock): /api/status names its source and the page's clock card
+ * reads /api/clock. Without it (or NULL) the page shows the OS's clock (ntp_adjtime, read only). The callbacks run
+ * on the server's thread. */
+typedef struct {
+    const char *(*source)(void);                   /* "ntp", "browser", "none" */
+    size_t (*json)(char *out, size_t cap);          /* /api/clock: netclock_status_json */
+    bool (*set)(int64_t utc_us);                    /* the browser's clock; false: not taken */
+    size_t (*settings_json)(char *out, size_t cap); /* {"servers": ..., "poll_s": ...} */
+} rdof_hostweb_clock_t;
+void rdof_hostweb_clock(const rdof_hostweb_clock_t *c);
+/* The version /api/status shows (default "host"). The string is kept, not copied. */
+void rdof_hostweb_version(const char *v);
 
 /* Set the settings hooks (a copy is taken). Before start or after; without them /api/config answers 501. */
 void rdof_hostweb_settings(const rdof_hostweb_settings_t *s);

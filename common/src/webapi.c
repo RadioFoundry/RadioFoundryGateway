@@ -174,7 +174,8 @@ bool rdof_webapi_handle(const rdof_webapi_platform_t *p, const char *method, con
 {
     const bool get = !strcmp(method, "GET") || !strcmp(method, "HEAD"), post = !strcmp(method, "POST");
     const bool settings = (p->caps & RDOF_WEBAPI_CAP_SETTINGS) != 0;
-    enum { NONE, STATUS, CONFIG, SAVE, RESOLVED, LOG, HEARD, RESTART } route = NONE;
+    const bool clock = (p->caps & RDOF_WEBAPI_CAP_NETCLOCK) && p->clock_json;
+    enum { NONE, STATUS, CONFIG, SAVE, RESOLVED, LOG, HEARD, RESTART, CLOCK, TIME, CLOCK_SET, CLOCK_SAVE } route = NONE;
     if (get && !strcmp(path, "/api/status"))
         route = STATUS;
     else if (get && !strcmp(path, "/api/config") && settings && p->settings_get)
@@ -189,6 +190,14 @@ bool rdof_webapi_handle(const rdof_webapi_platform_t *p, const char *method, con
         route = HEARD;
     else if (post && !strcmp(path, "/api/restart") && (p->caps & RDOF_WEBAPI_CAP_RESTART) && p->restart)
         route = RESTART;
+    else if (get && !strcmp(path, "/api/clock") && clock)
+        route = CLOCK;
+    else if (post && !strcmp(path, "/api/time") && clock && p->clock_set)
+        route = TIME;
+    else if (get && !strcmp(path, "/api/clock/settings") && clock && p->clock_settings_json)
+        route = CLOCK_SET;
+    else if (post && !strcmp(path, "/api/clock/settings") && clock)
+        route = CLOCK_SAVE;
     if (route == NONE)
         return false;
 
@@ -267,6 +276,33 @@ bool rdof_webapi_handle(const rdof_webapi_platform_t *p, const char *method, con
     case RESTART:
         say(r, 200, "restarting");
         r->restart = true;
+        break;
+    case CLOCK: {
+        const size_t cap = 12288; /* as the board's */
+        if (take(p, r, cap, "application/json"))
+            r->len = p->clock_json(p->ctx, r->body, cap);
+        if (r->owned && !r->len)
+            say(r, 500, "too big");
+        break;
+    }
+    case TIME: {
+        /* {"utc_ms": the browser's Date.now() at send}: the page adds half the quickest round trip */
+        const char *k = body && len < 96 ? strstr(body, "\"utc_ms\"") : NULL;
+        const char *c = k ? strchr(k, ':') : NULL;
+        const double ms = c ? strtod(c + 1, NULL) : 0;
+        const char *source = "none";
+        const bool applied = ms > 1.6e12 && p->clock_set(p->ctx, (int64_t)(ms * 1000.0), &source); /* after 2020 */
+        if (take(p, r, 64, "application/json"))
+            r->len = (size_t)snprintf(r->body, 64, "{\"applied\":%s,\"source\":\"%s\"}", applied ? "true" : "false",
+                                      source ? source : "none");
+        break;
+    }
+    case CLOCK_SET:
+        if (take(p, r, 512, "application/json"))
+            r->len = p->clock_settings_json(p->ctx, r->body, 512);
+        break;
+    case CLOCK_SAVE:
+        say(r, 403, "the clock's servers are in the settings file here");
         break;
     default:
         break;

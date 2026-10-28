@@ -29,6 +29,10 @@ typedef struct {
     int cc;
     bool has_parrot;
     uint32_t parrot;    /* 0: everything */
+    /* the clock (ntp): the board's (netclock) from servers, or the OS's (chrony, ntpd: clock "os") */
+    bool own_clock;
+    char ntp_servers[256];
+    unsigned ntp_poll_s; /* 0: netclock's default */
     bool has_hblink;    /* an hblink section: a peer of cfg.master_host (no section: no network) */
     char unused[320];   /* the keys set that rdofradio doesn't apply, "mqtt", or "" */
     rdof_config_t cfg;  /* all of it, as the firmware resolves it */

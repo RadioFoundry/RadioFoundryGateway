@@ -105,6 +105,14 @@ typedef struct {
     size_t (*settings_resolved)(void *ctx, char *out, size_t cap); /* NULL: no /api/resolved */
     const char *settings_source; /* where the settings live, for the page ("file /x.json"); NULL: left out */
 
+    /* The board's clock servo (RDOF_WEBAPI_CAP_NETCLOCK) for a server that doesn't answer its routes itself (the
+     * board's netclock_http does; these aren't in rdof_webapi_routes): GET /api/clock (netclock_status_json), POST
+     * /api/time {"utc_ms"} (the browser's clock), GET /api/clock/settings; a POST there is refused (the settings
+     * file has them). */
+    size_t (*clock_json)(void *ctx, char *out, size_t cap);
+    bool (*clock_set)(void *ctx, int64_t utc_us, const char **source); /* source: the clock's after it */
+    size_t (*clock_settings_json)(void *ctx, char *out, size_t cap);
+
     /* the log and last heard */
     size_t log_cap; /* the most /api/log sends, NUL included */
     size_t (*log_read)(void *ctx, char *out, size_t cap); /* NULL: no /api/log */

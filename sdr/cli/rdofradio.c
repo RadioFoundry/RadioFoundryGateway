@@ -6,15 +6,20 @@
  * same parts as on a board (docs/reference.md, "Transmit: the SDR as a radio"): the receiver hears the RX
  * channel, the SDR modem (rdof/sdr/sdrmodem.h) takes what it hears and modulates what it's given, and the
  * repeater (full duplex) or the roaming transceiver (half duplex) drives the modem through an rdof_modem client,
- * as it would an MMDVM_HS. No network: the repeater repeats what it hears on its outbound (repeater.md 4), the
- * transceiver only listens. --parrot ID sends back what's heard once it ends (rdof/parrot.h), as a network call
- * would come: the transceiver's only way to transmit here, and the repeater's outbound after the call.
+ * as it would an MMDVM_HS. With an hblink section in the settings (--config) it's an HBlink4 peer as the board's
+ * (rdofradio_net.h, common/src/hbpeer.c): what it hears goes up as DMRD, and the master's calls go out; without
+ * one there's no network, and the repeater repeats what it hears on its outbound (repeater.md 4), the transceiver
+ * only listens. --parrot ID sends back what's heard once it ends (rdof/parrot.h), as a network call would come.
+ *
+ * The clock (the settings' ntp): netclock, the board's NTP disciplined clock (components/netclock, its POSIX glue),
+ * or the OS's (ntp.clock "os": chrony, ntpd). --clock-state FILE keeps netclock's learned rate across restarts;
+ * --set-os-clock steps the OS clock to it (root; for a box with nothing else setting the time, a PlutoSDR).
  *
  *   rdofradio DEVICE --allow-tx --rx MHZ [--tx MHZ] [--duplex full|half] [--cc CC] [-r RATE] [--bw MHZ]
  *             [--tx-gain DB] [--tx-lo MHZ] [--gain DB] [--center MHZ] [--monitor] [--tx-offset S]
  *             [--parrot ID] [--stream ARGS] [--seconds S] [--bursts] [--quiet] [-v] [--web [ADDR:]PORT]
  *             [--fft builtin|pffft]
- *   rdofradio DEVICE --allow-tx --config FILE [the device's flags as above]
+ *   rdofradio DEVICE --allow-tx --config FILE [--clock-state FILE] [--set-os-clock] [the device's flags as above]
  *   rdofradio DEVICE --allow-tx --split-tx PORT [--baud N] [--split-power-cap N] --rx MHZ --tx MHZ [--cc CC] [...]
  *
  * DEVICE is --soapy ARGS (SoapySDR; -r defaults to 2.4 MS/s) or --iio URI (an AD9361 through libiio: "local:" on a
@@ -62,6 +67,7 @@
 #include <poll.h>
 #include <unistd.h>
 
+#include "rdof/hbpeer.h"
 #include "rdof/layer2.h"
 #include "rdof/modem.h"
 #include "rdof/parrot.h"
@@ -72,12 +78,19 @@
 #include "rdof/txvr.h"
 #include "rdofradio_cfg.h"
 #include "rdofradio_dev.h"
+#include "rdofradio_net.h"
 #include "rdofradio_serial.h"
 #ifdef RDOF_PFFFT
 #include "rdof_pffft.h"
 #endif
 #ifdef RDOF_HOST_WEB
 #include "rdof/hostweb.h"
+#endif
+#ifdef RDOF_NETCLOCK
+#include "netclock_posix.h"
+#endif
+#ifndef RDOF_VERSION
+#define RDOF_VERSION "dev"
 #endif
 
 #define CHUNK 24000        /* receive samples a turn: 10 ms at 2.4 MS/s */
@@ -263,7 +276,7 @@ static void usage(void)
             "                 [--tx-gain DB] [--tx-lo MHZ] [--gain DB] [--center MHZ] [--monitor] [--tx-offset S]\n"
             "                 [--parrot ID] [--stream ARGS] [--seconds S] [--bursts] [--quiet] [-v] [--web [ADDR:]PORT]\n"
             "                 [--fft builtin|pffft]\n"
-            "       rdofradio DEVICE --allow-tx --config FILE [the device's flags]\n"
+            "       rdofradio DEVICE --allow-tx --config FILE [--clock-state FILE] [--set-os-clock] [the device's flags]\n"
             "       rdofradio DEVICE --allow-tx --split-tx PORT [--baud N] [--split-power-cap N] --rx MHZ --tx MHZ [--cc CC]\n"
             "                 [-r RATE] [--gain DB] [--center MHZ] [--parrot ID] [--seconds S] [-v] [--web [ADDR:]PORT]\n"
             "DEVICE: %s\n",
@@ -416,13 +429,126 @@ static void parrot_send(void *ctx, const rdof_net_burst_t *b)
     else
         rdof_txvr_on_burst(&R.t, b);
 }
-/* the transceiver's answer to a tune (DMRK), which would go to HBlink4 */
+/* the transceiver's answer to a tune (DMRK), to HBlink4 when it's on */
+static void net_send(const uint8_t *d, size_t n);
 static void txvr_send(void *ctx, const uint8_t *d, size_t n)
 {
     static const char *status[] = {"on air", "channel busy", "not allowed", "radio error", "transceiver busy"};
+    net_send(d, n);
     if (n >= 13 && !memcmp(d, "DMRK", 4))
         say("transceiver: %s\n", d[12] < 5 ? status[d[12]] : "?");
 }
+
+/* ── the network: an HBlink4 peer, as the board's ──────────────────────────────── */
+
+static rdofnet_peer_t NET;
+static bool net_on;
+static rdof_hb_sink_t NET_SINK; /* the RX channel's tracker -> DMRD */
+
+static void net_send(const uint8_t *d, size_t n)
+{
+    if (net_on)
+        rdofnet_peer_send(&NET, d, n);
+}
+static void net_say(const char *line) { say("%s\n", line); }
+/* the master's DMRD and DMRT, to the repeater or the transceiver (the main loop's thread, as their polls) */
+static void net_packet(void *ctx, const uint8_t *d, size_t n)
+{
+    uint8_t k[RDOF_DMRK_LEN];
+    if (rdof_hb_dispatch(d, n, R.full ? &R.r : NULL, R.full ? NULL : &R.t, rcfg.peer_id, k))
+        net_send(k, sizeof k);
+}
+static void net_config(void)
+{
+    uint8_t pkt[RDOF_DMRC_MAX];
+    rdofnet_peer_set_config(&NET, pkt, rdof_hb_role_dmrc(&rcfg.cfg, R.rx_hz, R.cc, pkt), now_s());
+}
+static void sink_send(void *ctx, const uint8_t *d, size_t n) { net_send(d, n); }
+static uint32_t sink_rand(void *ctx) { return (uint32_t)random() ^ ((uint32_t)random() << 16); }
+static void sink_before(void *ctx) { net_config(); } /* HBlink4 credits a stream to the peer's last DMRC */
+
+static void net_start(void)
+{
+    if (!rcfg.has_hblink)
+        return;
+    if (strcmp(rcfg.cfg.transport, "udp"))
+        fprintf(stderr, "hblink: transport %s isn't on this host: UDP\n", rcfg.cfg.transport);
+    rdofnet_peer_init(&NET, rcfg.cfg.master_host, rcfg.cfg.master_port, rcfg.peer_id,
+                      R.full ? RDOF_HB_KEEPALIVE_SECONDS : RDOF_HB_ROAMING_KEEPALIVE_SECONDS, rcfg.name);
+    NET.on_packet = net_packet;
+    NET.say = net_say;
+    srandom((unsigned)time(NULL) ^ (unsigned)getpid());
+    rdof_hb_sink_init(&NET_SINK, rcfg.peer_id);
+    NET_SINK.send = sink_send;
+    NET_SINK.rand32 = sink_rand;
+    if (!R.full)
+        NET_SINK.before_stream = sink_before;
+    const rdof_sink_t sk = rdof_hb_sink_as_sink(&NET_SINK);
+    rdof_sdr_rx_add_sink(&R.rx, 0, &sk);
+    net_on = true;
+    net_config();
+    fprintf(stderr, "hblink: %s, peer %u, to %s:%d\n", rcfg.name, (unsigned)rcfg.peer_id, rcfg.cfg.master_host,
+            rcfg.cfg.master_port);
+}
+
+static void net_poll(double now)
+{
+    if (net_on)
+        rdofnet_peer_poll(&NET, now);
+}
+
+/* ── the clock: netclock, or the OS's ─────────────────────────────────────────── */
+
+static const char *clock_state;
+static bool set_os_clock, clock_on;
+
+#ifdef RDOF_NETCLOCK
+#ifdef RDOF_HOST_WEB
+static const char *clk_source(void) { return netclock_source_name(netclock_posix_source()); }
+static size_t clk_json(char *out, size_t cap) { return netclock_posix_status_json(out, cap); }
+static bool clk_set(int64_t utc_us) { return netclock_posix_set_from_client(utc_us); }
+static size_t clk_settings(char *out, size_t cap)
+{
+    const int n = snprintf(out, cap, "{\"servers\":\"%s\",\"poll_s\":%u}", rcfg.ntp_servers, rcfg.ntp_poll_s);
+    return n < 0 ? 0 : (size_t)n < cap ? (size_t)n : cap - 1;
+}
+#endif
+
+static void clock_start(void)
+{
+    if (!rcfg.own_clock)
+        return;
+    const netclock_posix_opts_t o = {.mode = NETCLOCK_POSIX_DISCIPLINE, .servers = rcfg.ntp_servers,
+                                     .poll_s = rcfg.ntp_poll_s, .state_path = clock_state, .log = say_log,
+                                     .set_os_clock = set_os_clock};
+    if (netclock_posix_init(&o) || netclock_posix_start()) {
+        fprintf(stderr, "clock: %s\n", strerror(errno));
+        return;
+    }
+    clock_on = true;
+#ifdef RDOF_HOST_WEB
+    static const rdof_hostweb_clock_t hc = {clk_source, clk_json, clk_set, clk_settings};
+    rdof_hostweb_clock(&hc);
+#endif
+    fprintf(stderr, "clock: netclock from %s%s\n", rcfg.ntp_servers[0] ? rcfg.ntp_servers : "the browser only",
+            set_os_clock ? ", setting the OS clock" : "");
+}
+
+static void clock_stop(void)
+{
+    if (!clock_on)
+        return;
+    netclock_posix_save();
+    netclock_posix_stop();
+}
+#else
+static void clock_start(void)
+{
+    if (rcfg.own_clock)
+        fprintf(stderr, "clock: netclock isn't built in here: the OS's clock\n");
+}
+static void clock_stop(void) {}
+#endif
 
 /* ── the receiver's output ─────────────────────────────────────────────────── */
 
@@ -524,6 +650,9 @@ static void web_publish(double rx, double tx, int cc)
         w.parrot_src = R.parrot->src, w.parrot_dst = R.parrot->dst;
         w.parrot_replayed = R.parrot->replayed, w.parrot_ignored = R.parrot->ignored, w.parrot_cut = R.parrot->cut;
     }
+    w.links = net_on;
+    w.hblink = net_on && NET.peer.up;
+    w.hblink_tx = NET.peer.tx, w.hblink_rx = NET.peer.rx;
     w.nextra = R.split ? 0 : 2; /* the TX half's timing is the radio's own */
     snprintf(w.extra[0].name, sizeof w.extra[0].name, "tx late (us)");
     w.extra[0].value = R.m.tx_late48 * 1000 / 48;
@@ -852,6 +981,7 @@ static int split_main(int argc, char **argv, const char *port, int baud, int pow
                 rdof_parrot_poll(R.parrot, now);
             if (!rdof_repeater_poll(&R.r))
                 fprintf(stderr, "poll: %s\n", R.client.error);
+            net_poll(now);
             deliver_heard();
         }
 #ifdef RDOF_HOST_WEB
@@ -884,6 +1014,9 @@ out:
     if (R.parrot)
         say("parrot: %u sent back, %u not to it, %u bursts cut\n", R.parrot->replayed, R.parrot->ignored,
             R.parrot->cut);
+    if (net_on)
+        rdofnet_peer_close(&NET);
+    clock_stop();
     rdof_sdr_rx_free(&R.rx);
 #ifdef RDOF_HOST_WEB
     rdof_hostweb_stop();
@@ -992,6 +1125,11 @@ int main(int argc, char **argv)
         } else if (!strcmp(a, "--monitor")) {
             monitor = 1;
             tx_flags++;
+        } else if (!strcmp(a, "--clock-state")) {
+            NEXT();
+            clock_state = v;
+        } else if (!strcmp(a, "--set-os-clock")) {
+            set_os_clock = true;
         } else if (!strcmp(a, "--bursts")) {
             show_bursts = 1;
         } else if (!strcmp(a, "--quiet")) {
@@ -1125,6 +1263,11 @@ int main(int argc, char **argv)
     R.rx.muted = muted;
     R.rx.relabel = relabel; /* the tracker's JSON (calls, BER, RSSI) with the inbound slot, not slot 1 */
     R.rx.burst_ctx = &R;
+    net_start();
+    clock_start();
+#ifdef RDOF_HOST_WEB
+    rdof_hostweb_version(RDOF_VERSION);
+#endif
 
     /* the device: RX and TX at one rate, each on its own LO, the TX gain at its least */
     const rdofradio_dev_setup_t su = {rate, R.rx.center_hz, tx_lo, gain, bw, stream_args, R.split};
@@ -1312,6 +1455,7 @@ int main(int argc, char **argv)
                 rdof_parrot_poll(R.parrot, now);
             if (!(R.full ? rdof_repeater_poll(&R.r) : rdof_txvr_poll(&R.t)))
                 fprintf(stderr, "poll: %s\n", R.client.error);
+            net_poll(now);
         }
         /* as many transmit samples as were read, at the modem's position for them */
         const bool keyed = rdof_sdrmodem_pull_iq(&R.m, txn - lead + offset, out, n);
@@ -1491,6 +1635,9 @@ int main(int argc, char **argv)
     if (R.parrot)
         say("parrot: %u sent back, %u not to it, %u bursts cut\n", R.parrot->replayed, R.parrot->ignored,
                 R.parrot->cut);
+    if (net_on)
+        rdofnet_peer_close(&NET);
+    clock_stop();
     rdof_sdr_rx_free(&R.rx);
 #ifdef RDOF_HOST_WEB
     rdof_hostweb_stop();
