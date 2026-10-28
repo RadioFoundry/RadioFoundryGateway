@@ -158,8 +158,8 @@ static bool sends(const rdof_site_t *s, int k, int net)
     return p->tx_freq >= 0 && p->pol.net == net && (p->pol.dir & RDOF_FLOW_NET_RF);
 }
 
-uint64_t rdof_router_net(rdof_router_t *r, int net, uint32_t stream, const rdof_rcall_t *c, bool end, double now,
-                         uint64_t *preempt)
+uint64_t rdof_router_net(rdof_router_t *r, int net, uint64_t only, uint32_t stream, const rdof_rcall_t *c, bool end,
+                         double now, uint64_t *preempt)
 {
     const rdof_site_t *s = r->site;
     uint64_t mask = 0;
@@ -187,7 +187,7 @@ uint64_t rdof_router_net(rdof_router_t *r, int net, uint32_t stream, const rdof_
     const int boost = c->emergency ? RDOF_RANK_EMERGENCY : 0;
     if (c->group) {
         for (int k = 0; k < s->npath; k++) {
-            if (!sends(s, k, net))
+            if (!sends(s, k, net) || !(only >> k & 1))
                 continue;
             int rk = rdof_router_carries(r, k, c->dst, now);
             if (rk)
@@ -201,7 +201,7 @@ uint64_t rdof_router_net(rdof_router_t *r, int net, uint32_t stream, const rdof_
                 unplaced(r, stream);
             return 0;
         }
-        if (!sends(s, k, net) || !rdof_idset_has(&s->path[k].pol.pc, c->src)) {
+        if (!sends(s, k, net) || !(only >> k & 1) || !rdof_idset_has(&s->path[k].pol.pc, c->src)) {
             r->no_path++;
             if (!end)
                 unplaced(r, stream);

@@ -80,9 +80,10 @@ rdof_route_t rdof_router_rf(rdof_router_t *r, int path, const rdof_rcall_t *c, d
 
 /* A burst of stream from network net: the paths it goes out on (bit per path). The first burst decides; later
    ones keep the decision and keep the paths busy; end (the terminator) frees them. *preempt (optional): the paths
-   taken from another stream (the transmitter should drop that one). */
-uint64_t rdof_router_net(rdof_router_t *r, int net, uint32_t stream, const rdof_rcall_t *c, bool end, double now,
-                         uint64_t *preempt);
+   taken from another stream (the transmitter should drop that one). only: the paths it may go to (identity
+   per_path: the peer's that it came to), ~0 any. */
+uint64_t rdof_router_net(rdof_router_t *r, int net, uint64_t only, uint32_t stream, const rdof_rcall_t *c, bool end,
+                         double now, uint64_t *preempt);
 /* The platform couldn't send on path (no transmitter free): let the path go. */
 void rdof_router_drop(rdof_router_t *r, int path, uint32_t stream);
 

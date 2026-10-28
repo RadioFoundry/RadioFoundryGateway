@@ -67,10 +67,11 @@ bool rdof_siteroute_rf(rdof_siteroute_t *sr, uint32_t hz, int slot, uint32_t src
 /* Whether a call heard at hz on slot may reach app (the path's apps). */
 bool rdof_siteroute_reaches(const rdof_siteroute_t *sr, uint32_t hz, int slot, int app);
 
-/* A burst from network net: to the transmitters the router picks. Returns the paths it went out on. */
-uint64_t rdof_siteroute_burst(rdof_siteroute_t *sr, int net, const rdof_net_burst_t *b, double now);
-/* A DMRD packet from network net (other packets: false, the caller's). */
-bool rdof_siteroute_dmrd(rdof_siteroute_t *sr, int net, const uint8_t *d, size_t n, double now);
+/* A burst from network net, sent to peer (identity per_path: only that peer's paths take it; 0 any): to the
+   transmitters the router picks. Returns the paths it went out on. */
+uint64_t rdof_siteroute_burst(rdof_siteroute_t *sr, int net, uint32_t peer, const rdof_net_burst_t *b, double now);
+/* A DMRD packet from network net to peer (other packets: false, the caller's). */
+bool rdof_siteroute_dmrd(rdof_siteroute_t *sr, int net, uint32_t peer, const uint8_t *d, size_t n, double now);
 
 /* Whether stream sid was tuned here (the transceiver's DMRK for it goes nowhere). */
 bool rdof_siteroute_tuned(const rdof_siteroute_t *sr, const uint8_t sid[4]);

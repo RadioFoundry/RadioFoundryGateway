@@ -81,7 +81,7 @@ static int txvr_for(rdof_siteroute_t *sr, int k, uint32_t stream, double now)
     return free;
 }
 
-uint64_t rdof_siteroute_burst(rdof_siteroute_t *sr, int net, const rdof_net_burst_t *b, double now)
+uint64_t rdof_siteroute_burst(rdof_siteroute_t *sr, int net, uint32_t peer, const rdof_net_burst_t *b, double now)
 {
     const rdof_site_t *s = sr->router.site;
     const uint32_t stream = sid32(b->stream_id);
@@ -93,8 +93,14 @@ uint64_t rdof_siteroute_burst(rdof_siteroute_t *sr, int net, const rdof_net_burs
     }
     const rdof_rcall_t c = {.src = b->src, .dst = b->dst, .group = b->group,
                             .emergency = stream && sr->stream_emergency == stream};
-    uint64_t preempt = 0;
-    const uint64_t mask = rdof_router_net(&sr->router, net, stream, &c, b->terminator, now, &preempt);
+    uint64_t only = ~0ull, preempt = 0;
+    if (peer && net >= 0 && net < s->nnet && s->net[net].per_path) {
+        only = 0;
+        for (int k = 0; k < s->npath; k++)
+            if (s->path[k].peer_id == peer)
+                only |= 1ull << k;
+    }
+    const uint64_t mask = rdof_router_net(&sr->router, net, only, stream, &c, b->terminator, now, &preempt);
     uint64_t out = 0;
     for (int k = 0; k < s->npath; k++) {
         if (!(mask >> k & 1))
@@ -147,11 +153,11 @@ uint64_t rdof_siteroute_burst(rdof_siteroute_t *sr, int net, const rdof_net_burs
     return out;
 }
 
-bool rdof_siteroute_dmrd(rdof_siteroute_t *sr, int net, const uint8_t *d, size_t n, double now)
+bool rdof_siteroute_dmrd(rdof_siteroute_t *sr, int net, uint32_t peer, const uint8_t *d, size_t n, double now)
 {
     rdof_net_burst_t b;
     if (rdof_hb_kind(d, n) != 'D' || !rdof_parse_dmrd(d, n, &b))
         return false;
-    rdof_siteroute_burst(sr, net, &b, now);
+    rdof_siteroute_burst(sr, net, peer, &b, now);
     return true;
 }

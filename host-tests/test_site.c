@@ -213,19 +213,19 @@ static void test_router(const char *dir)
         rt = rdof_router_rf(&r, k, CALL(9800001, 9800002, false), 3);
         CHECK(rt.kind == RDOF_ROUTE_NET, "private calls up");
         /* down: TG 203 to its path only */
-        uint64_t m = rdof_router_net(&r, 0, 0x111, CALL(9800009, 203, true), false, 4, &pre);
+        uint64_t m = rdof_router_net(&r, 0, ~0ull, 0x111, CALL(9800009, 203, true), false, 4, &pre);
         CHECK(m == 1ull << rdof_site_path(&S, "438.1125"), "TG 203 down: %llx", (unsigned long long)m);
-        CHECK(rdof_router_net(&r, 0, 0x111, CALL(9800009, 203, true), false, 4.06, NULL) == m, "kept");
-        CHECK(rdof_router_net(&r, 0, 0x111, CALL(9800009, 203, true), true, 4.12, NULL) == m, "end");
+        CHECK(rdof_router_net(&r, 0, ~0ull, 0x111, CALL(9800009, 203, true), false, 4.06, NULL) == m, "kept");
+        CHECK(rdof_router_net(&r, 0, ~0ull, 0x111, CALL(9800009, 203, true), true, 4.12, NULL) == m, "end");
         CHECK(!r.busy[rdof_site_path(&S, "438.1125")].stream, "freed");
         /* a private call down: where the radio was last heard */
-        m = rdof_router_net(&r, 0, 0x222, CALL(9800009, 9800001, false), false, 5, &pre);
+        m = rdof_router_net(&r, 0, ~0ull, 0x222, CALL(9800009, 9800001, false), false, 5, &pre);
         CHECK(m == 1ull << k, "pc down to where 9800001 was heard: %llx", (unsigned long long)m);
-        m = rdof_router_net(&r, 0, 0x333, CALL(9800009, 9800077, false), false, 5, &pre);
+        m = rdof_router_net(&r, 0, ~0ull, 0x333, CALL(9800009, 9800077, false), false, 5, &pre);
         CHECK(m == 0 && r.pc_dropped == 1, "never heard: dropped");
-        m = rdof_router_net(&r, 0, 0x444, CALL(9800009, 9800001, false), false, 2000, &pre);
+        m = rdof_router_net(&r, 0, ~0ull, 0x444, CALL(9800009, 9800001, false), false, 2000, &pre);
         CHECK(m == 0 && r.pc_dropped == 2, "heard too long ago");
-        CHECK(rdof_router_net(&r, 0, 0x444, CALL(9800009, 9800001, false), false, 2000.06, &pre) == 0 &&
+        CHECK(rdof_router_net(&r, 0, ~0ull, 0x444, CALL(9800009, 9800001, false), false, 2000.06, &pre) == 0 &&
               r.pc_dropped == 2, "counted once a stream");
     }
     if (load(dir, "good-two-repeaters.json")) {
@@ -241,14 +241,14 @@ static void test_router(const char *dir)
         rt = rdof_router_rf(&r, r12, CALL(1, 3121, true), 0);
         CHECK(rt.kind == RDOF_ROUTE_NONE, "TS2: not listed");
         /* TG 3100 down: all four slots; the listed slots beat "*" */
-        uint64_t m = rdof_router_net(&r, 0, 0x10, CALL(7, 3100, true), false, 10, &pre);
+        uint64_t m = rdof_router_net(&r, 0, ~0ull, 0x10, CALL(7, 3100, true), false, 10, &pre);
         CHECK(m == (1ull << r11 | 1ull << r12 | 1ull << r21 | 1ull << r22), "fan-out: %llx", (unsigned long long)m);
-        m = rdof_router_net(&r, 0, 0x30, CALL(7, 3177, true), false, 10.6, &pre);
+        m = rdof_router_net(&r, 0, ~0ull, 0x30, CALL(7, 3177, true), false, 10.6, &pre);
         CHECK(m == 0 && r.refused == 4, "equals: the one there keeps it (%u)", r.refused);
-        m = rdof_router_net(&r, 0, 0x40, &(rdof_rcall_t){.src = 7, .dst = 555, .group = true, .emergency = true},
+        m = rdof_router_net(&r, 0, ~0ull, 0x40, &(rdof_rcall_t){.src = 7, .dst = 555, .group = true, .emergency = true},
                             false, 10.7, &pre);
         CHECK(m == (1ull << r11 | 1ull << r21) && pre == m, "an emergency on TS1");
-        m = rdof_router_net(&r, 0, 0x50, CALL(7, 3177, true), false, 20, &pre);
+        m = rdof_router_net(&r, 0, ~0ull, 0x50, CALL(7, 3177, true), false, 20, &pre);
         CHECK(m == (1ull << r11 | 1ull << r12 | 1ull << r21 | 1ull << r22) && !pre, "idle again after %g s",
               RDOF_ROUTER_IDLE_S);
         rdof_router_drop(&r, r22, 0x50);
@@ -257,14 +257,14 @@ static void test_router(const char *dir)
     if (load(dir, "good-sdr-repeater-forwarders.json")) {
         rdof_router_init(&r, &S);
         int r12 = rdof_site_path(&S, "R1/2"), fa = rdof_site_path(&S, "fwd A");
-        CHECK(!rdof_router_net(&r, 0, 1, CALL(7, 3250, true), false, 0, &pre), "PTT TG not held yet");
+        CHECK(!rdof_router_net(&r, 0, ~0ull, 1, CALL(7, 3250, true), false, 0, &pre), "PTT TG not held yet");
         rt = rdof_router_rf(&r, r12, CALL(1, 3250, true), 1);
         CHECK(rt.kind == RDOF_ROUTE_NET && rt.net == 0, "PTT keys it up");
-        CHECK(rdof_router_net(&r, 0, 2, CALL(7, 3250, true), false, 2, &pre) == 1ull << r12, "now carried");
+        CHECK(rdof_router_net(&r, 0, ~0ull, 2, CALL(7, 3250, true), false, 2, &pre) == 1ull << r12, "now carried");
         CHECK(rdof_router_carries(&r, r12, 3250, 700) == 0, "the hold ends");
         rt = rdof_router_rf(&r, fa, CALL(1, 31337, true), 3);
         CHECK(rt.kind == RDOF_ROUTE_NET && rt.net == 1, "a forwarder: to mqtt");
-        CHECK(!rdof_router_net(&r, 1, 3, CALL(7, 31337, true), false, 4, &pre), "a forwarder never transmits");
+        CHECK(!rdof_router_net(&r, 1, ~0ull, 3, CALL(7, 31337, true), false, 4, &pre), "a forwarder never transmits");
     }
     if (load(dir, "good-monitor.json")) {
         rdof_router_init(&r, &S);
@@ -279,10 +279,10 @@ static void test_router(const char *dir)
     char err[160];
     CHECK(rdof_site_parse(star, sizeof star - 1, &S, err, sizeof err), "%s", err);
     rdof_router_init(&r, &S);
-    CHECK(rdof_router_net(&r, 0, 1, CALL(7, 3101, true), false, 0, &pre) == 1 && !pre, "* takes it");
-    CHECK(rdof_router_net(&r, 0, 2, CALL(7, 3102, true), false, 0.1, &pre) == 0, "another * waits");
-    CHECK(rdof_router_net(&r, 0, 3, CALL(7, 3100, true), false, 0.2, &pre) == 1 && pre == 1, "listed takes it over");
-    CHECK(rdof_router_net(&r, 0, 1, CALL(7, 3101, true), false, 0.3, &pre) == 0, "the first lost it");
+    CHECK(rdof_router_net(&r, 0, ~0ull, 1, CALL(7, 3101, true), false, 0, &pre) == 1 && !pre, "* takes it");
+    CHECK(rdof_router_net(&r, 0, ~0ull, 2, CALL(7, 3102, true), false, 0.1, &pre) == 0, "another * waits");
+    CHECK(rdof_router_net(&r, 0, ~0ull, 3, CALL(7, 3100, true), false, 0.2, &pre) == 1 && pre == 1, "listed takes it over");
+    CHECK(rdof_router_net(&r, 0, ~0ull, 1, CALL(7, 3101, true), false, 0.3, &pre) == 0, "the first lost it");
 #undef CALL
 }
 
@@ -331,11 +331,11 @@ static void test_siteroute(const char *dir)
                   !rdof_siteroute_add_repeater(&sr, rdof_site_app(&S, "parrot"), &r1),
               "repeaters registered");
         rdof_net_burst_t b = net_burst(0x10, 7, 3100, true, 1, false, false);
-        uint64_t m = rdof_siteroute_burst(&sr, 0, &b, 10);
+        uint64_t m = rdof_siteroute_burst(&sr, 0, 0, &b, 10);
         CHECK(__builtin_popcountll(m) == 4 && r1.net_count == 2 && r2.net_count == 2, "TG 3100: both slots of both");
         CHECK(r1.net_in[0].slot + r1.net_in[1].slot == 3, "on each slot: %d %d", r1.net_in[0].slot, r1.net_in[1].slot);
         b = net_burst(0x40, 7, 555, true, 2, true, false); /* an emergency to TG 555: TS1 ("*") of each */
-        m = rdof_siteroute_burst(&sr, 0, &b, 10.5);
+        m = rdof_siteroute_burst(&sr, 0, 0, &b, 10.5);
         CHECK(m == (1ull << rdof_site_path(&S, "R1/1") | 1ull << rdof_site_path(&S, "R2/1")), "emergency: TS1");
         CHECK(r1.has_preempt && !memcmp(r1.preempt, b.stream_id, 4) && r1.net_in[2].slot == 1,
               "the repeater told: slot %d", r1.net_in[2].slot);
@@ -357,23 +357,36 @@ static void test_siteroute(const char *dir)
         rdof_siteroute_init(&sr, &S);
         CHECK(rdof_siteroute_add_txvr(&sr, &t, 0), "a transceiver");
         rdof_net_burst_t b = net_burst(0x111, 9800009, 203, true, 2, false, false);
-        uint64_t m = rdof_siteroute_burst(&sr, 0, &b, 1);
+        uint64_t m = rdof_siteroute_burst(&sr, 0, 0, &b, 1);
         CHECK(m == 1ull << rdof_site_path(&S, "438.1125"), "TG 203: its frequency");
         CHECK(cap.n == 1 && cap.freq == 438112500 && rdof_siteroute_tuned(&sr, b.stream_id),
               "tuned there (not ready: refused): %d %u", cap.n, cap.freq);
-        CHECK(rdof_siteroute_burst(&sr, 0, &b, 1.06) == m && cap.n == 1, "tuned once a stream");
+        CHECK(rdof_siteroute_burst(&sr, 0, 0, &b, 1.06) == m && cap.n == 1, "tuned once a stream");
         rdof_net_burst_t c = net_burst(0x222, 9800009, 204, true, 1, false, false);
-        CHECK(rdof_siteroute_burst(&sr, 0, &c, 1.1) == 0 && sr.no_txvr == 1, "one transceiver: busy");
+        CHECK(rdof_siteroute_burst(&sr, 0, 0, &c, 1.1) == 0 && sr.no_txvr == 1, "one transceiver: busy");
         b = net_burst(0x111, 9800009, 203, true, 2, false, true);
-        rdof_siteroute_burst(&sr, 0, &b, 1.2);
+        rdof_siteroute_burst(&sr, 0, 0, &b, 1.2);
         c = net_burst(0x333, 9800009, 204, true, 1, false, false);
-        CHECK(rdof_siteroute_burst(&sr, 0, &c, 1.3) == 1ull << rdof_site_path(&S, "438.1375") && cap.n == 2,
+        CHECK(rdof_siteroute_burst(&sr, 0, 0, &c, 1.3) == 1ull << rdof_site_path(&S, "438.1375") && cap.n == 2,
               "free after the terminator");
         uint8_t d[RDOF_DMRD_LEN];
         rdof_dmrd_packet(0, 9800009, 205, S.id, 1, true, RDOF_DT_VOICE_LC_HEADER, 0, 0x444, c.burst, 0, 0, d);
-        CHECK(rdof_siteroute_dmrd(&sr, 0, d, sizeof d, 5) && !rdof_siteroute_dmrd(&sr, 0, (const uint8_t *)"DMRP", 4, 5),
+        CHECK(rdof_siteroute_dmrd(&sr, 0, 0, d, sizeof d, 5) && !rdof_siteroute_dmrd(&sr, 0, 0, (const uint8_t *)"DMRP", 4, 5),
               "DMRD taken, others not");
     }
+    /* identity per_path: a stream goes only to the paths of the peer it came to */
+    static const char pp[] = "{\"version\": 3, \"id\": 9800700, \"defaults\": {\"cc\": 1, \"tg\": 3100}, "
+                             "\"devices\": [{\"kind\": \"sdr\", \"driver\": \"sim\"}], "
+                             "\"frequencies\": [438.0625, 438.0875], \"networks\": [{\"type\": \"hblink\", "
+                             "\"host\": \"h\", \"identity\": \"per_path\"}]}";
+    char err[160];
+    CHECK(rdof_site_parse(pp, sizeof pp - 1, &S, err, sizeof err), "%s", err);
+    static rdof_txvr_t t;
+    rdof_txvr_init(&t, NULL, S.id);
+    rdof_siteroute_init(&sr, &S);
+    rdof_siteroute_add_txvr(&sr, &t, 0);
+    rdof_net_burst_t b = net_burst(0x77, 7, 3100, true, 1, false, false);
+    CHECK(rdof_siteroute_burst(&sr, 0, 9800702, &b, 1) == 2, "per_path: the second frequency's peer");
 }
 
 /* Every fixture: good- taken, bad- refused; a good one runs as version 2. */
