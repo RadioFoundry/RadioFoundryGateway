@@ -8,7 +8,7 @@
  * Keywords: $ref (to #/$defs/...), type, enum, const, properties, additionalProperties, unevaluatedProperties (the
  * properties of the schema, its $ref and its allOf), required, propertyNames, min/maxProperties, items,
  * min/maxItems, uniqueItems, minimum, maximum, exclusiveMinimum, pattern, min/maxLength, allOf, anyOf, oneOf, not,
- * if/then. description and title are ignored.
+ * if/then/else. description and title are ignored.
  */
 (function (root, factory) {
     if (typeof module === "object" && module.exports) module.exports = factory();

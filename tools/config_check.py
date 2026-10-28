@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
-"""Check a settings file against config/rdof-config.schema.json (version 2).
+"""Check a settings file against config/rdof-config.schema.json (version 3 or 2).
 
     tools/config_check.py FILE [FILE ...]
 
 Uses the jsonschema package (MIT) when it's installed, else node with config/schema-check.js. The schema checks
-keys, types and ranges; the C parser also checks names, ownership and what fits the platform (docs/spec/fw/
-rxtx-combinations.md 4.1). Version 1 settings aren't checked here: the board upgrades them when it loads them.
-Exit 0 when every file passes.
+keys, types and ranges; the C parsers also check names, ownership and what fits the platform (docs/spec/fw/
+config-v3.md, rxtx-combinations.md 4.1). Version 1 settings aren't checked here: the board upgrades them when it
+loads them. Comments (// and /* */, as the board takes) are allowed. Exit 0 when every file passes.
 """
 import json
 import os
@@ -18,6 +18,37 @@ import sys
 
 TOP = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCHEMA = os.path.join(TOP, "config", "rdof-config.schema.json")
+
+
+def jsonc(text):
+    """The JSON in text, its // and /* */ comments (outside strings) taken out."""
+    out, i, n, string = [], 0, len(text), False
+    while i < n:
+        c = text[i]
+        if string:
+            out.append(c)
+            if c == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 1
+            elif c == '"':
+                string = False
+        elif c == '"':
+            string = True
+            out.append(c)
+        elif text.startswith("//", i):
+            i = text.find("\n", i)
+            if i < 0:
+                break
+            continue
+        elif text.startswith("/*", i):
+            i = text.find("*/", i + 2)
+            if i < 0:
+                break
+            i += 1
+        else:
+            out.append(c)
+        i += 1
+    return json.loads("".join(out))
 
 
 def errors_jsonschema(schema, doc):
@@ -56,13 +87,13 @@ def main():
     for name in sys.argv[1:]:
         try:
             with open(name) as f:
-                doc = json.load(f)
+                doc = jsonc(f.read())
         except (OSError, ValueError) as e:
             print("%s: %s" % (name, e))
             bad += 1
             continue
-        if not isinstance(doc, dict) or doc.get("version") != 2:
-            print("%s: not version 2 settings (version 1 is upgraded by the board when it loads it)" % name)
+        if not isinstance(doc, dict) or doc.get("version") not in (2, 3):
+            print("%s: not version 3 or 2 settings (version 1 is upgraded by the board when it loads it)" % name)
             bad += 1
             continue
         try:

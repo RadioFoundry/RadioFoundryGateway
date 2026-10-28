@@ -1,12 +1,18 @@
 {
-  "version": 2,
+  "version": 3,
   "name": "pluto",
+  "id": 9800001,
   "ntp": "pool.ntp.org",
-  "devices": {
-    "pluto": {"kind": "sdr", "driver": "iio", "match": {"uri": "local:"}, "tx": {}}
-  },
-  "roles": {
-    "R1": {"type": "repeater", "peer_id": 9800001, "rx_freq": 438.25, "tx_freq": 438.0125, "cc": 1, "parrot": 9990,
-           "modem": {"device": "pluto"}}
-  }
+  "defaults": {"cc": 1},
+  "devices": [
+    {"name": "pluto", "kind": "sdr", "driver": "iio", "match": {"uri": "local:"}, "tx": {}}
+  ],
+  "frequencies": [
+    {"name": "rpt in", "freq": 438.25},
+    {"name": "rpt out", "freq": 438.0125}
+  ],
+  "apps": [
+    {"name": "R1", "type": "repeater", "in": "rpt in", "out": "rpt out"},
+    {"type": "parrot", "tg": 9990}
+  ]
 }

@@ -32,13 +32,16 @@ starts again 5 s after it exits.
 | Keep it from starting | `touch /mnt/jffs2/rdof/disabled`, then reboot |
 | The web page | `http://192.168.2.1:8080/` |
 
-The settings are the firmware's settings document, version 2 (`config/rdof-config.schema.json` in the repo); a
-repeater on the Pluto's own SDR. The example's repeater receives on 438.25 MHz and transmits on 438.0125 MHz, with a
-parrot on talkgroup 9990. **It transmits whenever it hears a call: use frequencies you're licensed for.** The flags
-start at the lowest TX power (`--tx-gain 0`, 89 dB of attenuation); raise it in `flags`. At that power the start's
-calibration (a pulse sent and heard back) isn't heard, and it says so; it runs anyway.
+The settings are the firmware's settings document, version 3 ([config-v3.md](../../../docs/spec/fw/config-v3.md),
+checked by `tools/config_check.py` against `config/rdof-config.schema.json` in the repo); version 2 still loads. The
+example is a repeater on the Pluto's own SDR: it receives on 438.25 MHz and transmits on 438.0125 MHz, with a parrot
+on talkgroup 9990. **It transmits whenever it hears a call: use frequencies you're licensed for.** The flags start at
+the lowest TX power (`--tx-gain 0`, 89 dB of attenuation); raise it in `flags`. At that power the start's calibration
+(a pulse sent and heard back) isn't heard, and it says so; it runs anyway.
 
-The network: add an `hblink` section (`{"host": "your.master", "port": 62031}`) and a `callsign` on the role, and
-the repeater is an HBlink4 peer as a RadioFoundry Gateway board's. The clock: `ntp` names the servers; the Pluto's
-own clock (which starts in 1970) is set from it (`--set-os-clock`). Without a route to them, opening the web page
-sets it from the browser's clock.
+The network: add a `networks` list (`[{"type": "hblink", "host": "your.master", "port": 62031}]`) and a `callsign`,
+and the box is an HBlink4 peer with the DMR ID in `id`. Which talkgroups go up and come down is each path's policy
+(`tg` on the repeater app, or on its `slots`); with `"identity": "per_path"` on the network, each frequency or
+repeater is its own peer and the master decides. Without the `tg` keys, the repeater repeats locally and sends
+nothing up. The clock: `ntp` names the servers; the Pluto's own clock (which starts in 1970) is set from it
+(`--set-os-clock`). Without a route to them, opening the web page sets it from the browser's clock.
