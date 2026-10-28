@@ -11,6 +11,7 @@
 #include "rdof/broker.h"
 #include "rdof/config.h"
 #include "rdof/idset.h"
+#include "rdof/router.h"
 #include "rdof/sdr/config.h"
 #include "rdof/setup.h"
 #include "rdof/site.h"
@@ -185,6 +186,99 @@ static void test_scenarios(const char *dir)
     }
 }
 
+/* The router (rdof/router.h) on the spec's sites. */
+static void test_router(const char *dir)
+{
+    static rdof_router_t r;
+    rdof_route_t rt;
+    uint64_t pre;
+    int k;
+#define CALL(s, d, g) (&(rdof_rcall_t){.src = (s), .dst = (d), .group = (g)})
+    if (load(dir, "good-commercial.json")) {
+        rdof_router_init(&r, &S);
+        k = rdof_site_path(&S, "438.0875");
+        rt = rdof_router_rf(&r, k, CALL(9800001, 202, true), 0);
+        CHECK(rt.kind == RDOF_ROUTE_NET && rt.net == 0, "TG 202 up");
+        rt = rdof_router_rf(&r, k, CALL(9800001, 203, true), 1);
+        CHECK(rt.kind == RDOF_ROUTE_NONE && r.not_routed == 1, "TG 203 isn't this path's");
+        rt = rdof_router_rf(&r, k, CALL(9800001, 9990, true), 2);
+        CHECK(rt.kind == RDOF_ROUTE_APP && rt.app == rdof_site_app(&S, "parrot"), "the parrot from any path");
+        rt = rdof_router_rf(&r, k, CALL(9800001, 9800002, false), 3);
+        CHECK(rt.kind == RDOF_ROUTE_NET, "private calls up");
+        /* down: TG 203 to its path only */
+        uint64_t m = rdof_router_net(&r, 0, 0x111, CALL(9800009, 203, true), false, 4, &pre);
+        CHECK(m == 1ull << rdof_site_path(&S, "438.1125"), "TG 203 down: %llx", (unsigned long long)m);
+        CHECK(rdof_router_net(&r, 0, 0x111, CALL(9800009, 203, true), false, 4.06, NULL) == m, "kept");
+        CHECK(rdof_router_net(&r, 0, 0x111, CALL(9800009, 203, true), true, 4.12, NULL) == m, "end");
+        CHECK(!r.busy[rdof_site_path(&S, "438.1125")].stream, "freed");
+        /* a private call down: where the radio was last heard */
+        m = rdof_router_net(&r, 0, 0x222, CALL(9800009, 9800001, false), false, 5, &pre);
+        CHECK(m == 1ull << k, "pc down to where 9800001 was heard: %llx", (unsigned long long)m);
+        m = rdof_router_net(&r, 0, 0x333, CALL(9800009, 9800077, false), false, 5, &pre);
+        CHECK(m == 0 && r.pc_dropped == 1, "never heard: dropped");
+        m = rdof_router_net(&r, 0, 0x444, CALL(9800009, 9800001, false), false, 2000, &pre);
+        CHECK(m == 0 && r.pc_dropped == 2, "heard too long ago");
+        CHECK(rdof_router_net(&r, 0, 0x444, CALL(9800009, 9800001, false), false, 2000.06, &pre) == 0 &&
+              r.pc_dropped == 2, "counted once a stream");
+    }
+    if (load(dir, "good-two-repeaters.json")) {
+        rdof_router_init(&r, &S);
+        int r11 = rdof_site_path(&S, "R1/1"), r12 = rdof_site_path(&S, "R1/2"), r21 = rdof_site_path(&S, "R2/1"),
+            r22 = rdof_site_path(&S, "R2/2");
+        rt = rdof_router_rf(&r, r11, CALL(1, 9990, true), 0);
+        CHECK(rt.kind == RDOF_ROUTE_NET, "TS1: 9990 is a TG (apps false)");
+        rt = rdof_router_rf(&r, r11, CALL(1, 9, true), 0);
+        CHECK(rt.kind == RDOF_ROUTE_NONE, "TS1: 9 denied");
+        rt = rdof_router_rf(&r, r12, CALL(1, 9990, true), 0);
+        CHECK(rt.kind == RDOF_ROUTE_APP, "TS2: the parrot");
+        rt = rdof_router_rf(&r, r12, CALL(1, 3121, true), 0);
+        CHECK(rt.kind == RDOF_ROUTE_NONE, "TS2: not listed");
+        /* TG 3100 down: all four slots; the listed slots beat "*" */
+        uint64_t m = rdof_router_net(&r, 0, 0x10, CALL(7, 3100, true), false, 10, &pre);
+        CHECK(m == (1ull << r11 | 1ull << r12 | 1ull << r21 | 1ull << r22), "fan-out: %llx", (unsigned long long)m);
+        m = rdof_router_net(&r, 0, 0x30, CALL(7, 3177, true), false, 10.6, &pre);
+        CHECK(m == 0 && r.refused == 4, "equals: the one there keeps it (%u)", r.refused);
+        m = rdof_router_net(&r, 0, 0x40, &(rdof_rcall_t){.src = 7, .dst = 555, .group = true, .emergency = true},
+                            false, 10.7, &pre);
+        CHECK(m == (1ull << r11 | 1ull << r21) && pre == m, "an emergency on TS1");
+        m = rdof_router_net(&r, 0, 0x50, CALL(7, 3177, true), false, 20, &pre);
+        CHECK(m == (1ull << r11 | 1ull << r12 | 1ull << r21 | 1ull << r22) && !pre, "idle again after %g s",
+              RDOF_ROUTER_IDLE_S);
+        rdof_router_drop(&r, r22, 0x50);
+        CHECK(!r.busy[r22].stream, "dropped");
+    }
+    if (load(dir, "good-sdr-repeater-forwarders.json")) {
+        rdof_router_init(&r, &S);
+        int r12 = rdof_site_path(&S, "R1/2"), fa = rdof_site_path(&S, "fwd A");
+        CHECK(!rdof_router_net(&r, 0, 1, CALL(7, 3250, true), false, 0, &pre), "PTT TG not held yet");
+        rt = rdof_router_rf(&r, r12, CALL(1, 3250, true), 1);
+        CHECK(rt.kind == RDOF_ROUTE_NET && rt.net == 0, "PTT keys it up");
+        CHECK(rdof_router_net(&r, 0, 2, CALL(7, 3250, true), false, 2, &pre) == 1ull << r12, "now carried");
+        CHECK(rdof_router_carries(&r, r12, 3250, 700) == 0, "the hold ends");
+        rt = rdof_router_rf(&r, fa, CALL(1, 31337, true), 3);
+        CHECK(rt.kind == RDOF_ROUTE_NET && rt.net == 1, "a forwarder: to mqtt");
+        CHECK(!rdof_router_net(&r, 1, 3, CALL(7, 31337, true), false, 4, &pre), "a forwarder never transmits");
+    }
+    if (load(dir, "good-monitor.json")) {
+        rdof_router_init(&r, &S);
+        for (int p = 0; p < S.npath; p++) {
+            rt = rdof_router_rf(&r, p, CALL(1, 100 + (uint32_t)p, p & 1), p);
+            CHECK(rt.kind == RDOF_ROUTE_NET && rt.net == 0, "%s: everything to mqtt", S.path[p].name);
+        }
+    }
+    /* a listed talkgroup beats one matched only by "*" */
+    static const char star[] = "{\"version\": 3, \"defaults\": {\"cc\": 1}, \"networks\": [{\"type\": \"mqtt\", "
+                               "\"host\": \"b\"}], \"frequencies\": [{\"freq\": 438.0625, \"tg\": \"*,3100\"}]}";
+    char err[160];
+    CHECK(rdof_site_parse(star, sizeof star - 1, &S, err, sizeof err), "%s", err);
+    rdof_router_init(&r, &S);
+    CHECK(rdof_router_net(&r, 0, 1, CALL(7, 3101, true), false, 0, &pre) == 1 && !pre, "* takes it");
+    CHECK(rdof_router_net(&r, 0, 2, CALL(7, 3102, true), false, 0.1, &pre) == 0, "another * waits");
+    CHECK(rdof_router_net(&r, 0, 3, CALL(7, 3100, true), false, 0.2, &pre) == 1 && pre == 1, "listed takes it over");
+    CHECK(rdof_router_net(&r, 0, 1, CALL(7, 3101, true), false, 0.3, &pre) == 0, "the first lost it");
+#undef CALL
+}
+
 /* Every fixture: good- taken, bad- refused; a good one runs as version 2. */
 static void test_fixtures(const char *dir)
 {
@@ -242,6 +336,7 @@ int main(int argc, char **argv)
     const char *dir = argc > 1 ? argv[1] : "fixtures/config";
     test_idset();
     test_scenarios(dir);
+    test_router(dir);
     test_fixtures(dir);
     printf("%d checks, %d failed\n", checks, fails);
     return fails != 0;

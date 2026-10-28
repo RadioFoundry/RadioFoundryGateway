@@ -29,6 +29,7 @@ set(RDOF_COMMON_SRCS
     src/setup.c
     src/idset.c
     src/site.c
+    src/router.c
     src/broker.c
     src/status.c
     src/oled.c
