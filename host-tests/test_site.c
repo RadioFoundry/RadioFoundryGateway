@@ -412,6 +412,15 @@ static void test_siteroute(const char *dir)
     rdof_siteroute_add_txvr(&sr, &t, 0);
     rdof_net_burst_t b = net_burst(0x77, 7, 3100, true, 1, false, false);
     CHECK(rdof_siteroute_burst(&sr, 0, 9800702, &b, 1) == 2, "per_path: the second frequency's peer");
+    b = net_burst(0x77, 7, 3100, true, 1, false, true);
+    rdof_siteroute_burst(&sr, 0, 9800702, &b, 1.1);
+    /* a private call to a radio never heard here: the master chose the peer, so its path */
+    b = net_burst(0x78, 7, 9809999, false, 1, false, false);
+    CHECK(rdof_siteroute_burst(&sr, 0, 9800701, &b, 2) == 1 && sr.router.pc_dropped == 0,
+          "per_path: a private call to the peer's path, never heard (dropped %u)", sr.router.pc_dropped);
+    b = net_burst(0x79, 7, 9809999, false, 1, false, false);
+    CHECK(rdof_siteroute_burst(&sr, 0, 0, &b, 3) == 0 && sr.router.pc_dropped == 1,
+          "single identity: a private call to a radio never heard is dropped");
 }
 
 /* Every fixture: good- taken, bad- refused; a good one runs as version 2. */

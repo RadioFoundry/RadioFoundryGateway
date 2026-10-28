@@ -195,6 +195,12 @@ uint64_t rdof_router_net(rdof_router_t *r, int net, uint64_t only, uint32_t stre
         }
     } else {
         int k = rdof_router_heard(r, c->dst, now);
+        /* sent to one peer's paths (identity per_path): the master chose the path; heard here or not */
+        if (only != ~0ull && (k < 0 || !(only >> k & 1)))
+            for (k = 0; k < s->npath && !(only >> k & 1 && sends(s, k, net)); k++)
+                ;
+        if (k >= s->npath)
+            k = -1;
         if (k < 0) {
             r->pc_dropped++;
             if (!end)
