@@ -4,6 +4,7 @@
 # and host-tests/sdr.cmake once rdof_sdr (and rdof_pffft) exist; rdof_hostweb is added by whoever includes this.
 #   SoapySDR (Debian / Ubuntu libsoapysdr-dev, Homebrew soapysdr): rdofsdr --soapy, rdofradio --soapy
 #   libiio 0.x (libiio-dev, or a PlutoSDR's own), with libad9361 if found: rdofradio --iio, an AD9361 straight
+#   libmosquitto 2.x (libmosquitto-dev, Homebrew mosquitto; the PlutoSDR build makes its own): rdofradio's MQTT
 #   RDOF_HOST_WEB: rdofradio --web
 #   RDOF_VERSION: the version rdofradio reports (default: git describe at configure time)
 set(RDOF_CLI ${CMAKE_CURRENT_LIST_DIR})
@@ -21,6 +22,8 @@ find_path(SOAPYSDR_INCLUDE_DIR SoapySDR/Device.h)
 find_library(SOAPYSDR_LIBRARY SoapySDR)
 find_path(IIO_INCLUDE_DIR iio.h)
 find_library(IIO_LIBRARY iio)
+find_path(MOSQUITTO_INCLUDE_DIR mosquitto.h)
+find_library(MOSQUITTO_LIBRARY NAMES mosquitto_static mosquitto) # the static one first (the PlutoSDR build)
 find_path(AD9361_INCLUDE_DIR ad9361.h)
 find_library(AD9361_LIBRARY ad9361)
 set(RDOF_RADIO_SRCS ${RDOF_CLI}/rdofradio.c ${RDOF_CLI}/rdofradio_cfg.c ${RDOF_CLI}/rdofradio_serial.c
@@ -64,6 +67,16 @@ if(RDOF_RADIO_DEFS AND NOT WIN32)
     target_compile_options(rdofradio PRIVATE -Wall -Wno-unused-parameter)
     if(TARGET rdof_pffft)
         target_link_libraries(rdofradio PRIVATE rdof_pffft)
+    endif()
+    # MQTT, as the board publishes: libmosquitto (EPL-2.0 / EDL-1.0, linked)
+    if(MOSQUITTO_INCLUDE_DIR AND MOSQUITTO_LIBRARY)
+        message(STATUS "libmosquitto found: rdofradio publishes to MQTT")
+        target_sources(rdofradio PRIVATE ${RDOF_CLI}/rdofradio_mqtt.c)
+        target_compile_definitions(rdofradio PRIVATE RDOF_MQTT)
+        target_include_directories(rdofradio PRIVATE ${MOSQUITTO_INCLUDE_DIR})
+        target_link_libraries(rdofradio PRIVATE ${MOSQUITTO_LIBRARY})
+    else()
+        message(STATUS "libmosquitto not found: rdofradio without MQTT")
     endif()
     # the clock: netclock's POSIX glue (components/netclock), the board's NTP disciplined clock or the OS's
     if(UNIX AND NOT TARGET netclock_posix)

@@ -11,6 +11,9 @@
  * one there's no network, and the repeater repeats what it hears on its outbound (repeater.md 4), the transceiver
  * only listens. --parrot ID sends back what's heard once it ends (rdof/parrot.h), as a network call would come.
  *
+ * With an mqtt section it publishes as the board does (rdofradio_mqtt.h): the radio's calls, bursts, what it
+ * transmits and its status on the repeater's or roamer's topics, the monitored channels' on the SDR's.
+ *
  * The clock (the settings' ntp): netclock, the board's NTP disciplined clock (components/netclock, its POSIX glue),
  * or the OS's (ntp.clock "os": chrony, ntpd). --clock-state FILE keeps netclock's learned rate across restarts;
  * --set-os-clock steps the OS clock to it (root; for a box with nothing else setting the time, a PlutoSDR).
@@ -88,6 +91,13 @@
 #endif
 #ifdef RDOF_NETCLOCK
 #include "netclock_posix.h"
+#endif
+#ifdef RDOF_MQTT
+#include "rdof/netcalls.h"
+#include "rdof/rawburst.h"
+#include "rdof/sdr/status.h"
+#include "rdof/status.h"
+#include "rdofradio_mqtt.h"
 #endif
 #ifndef RDOF_VERSION
 #define RDOF_VERSION "dev"
@@ -397,15 +407,23 @@ static void on_nak(void *ctx, uint8_t cmd, int err)
         rdof_repeater_nak(&R.r, cmd, err);
 }
 
+/* MQTT (below) */
+static void mq_tx_event(const char *action, const rdof_tx_call_info_t *c, double d);
+static void mq_status_soon(void);
+static void on_sent(void *ctx, const rdof_tx_call_info_t *c, const rdof_net_burst_t *b);
+static long mq_overflows; /* the device's, for the SDR's status */
+
 static void on_tx(void *ctx, const char *action, const rdof_tx_call_info_t *c, double d)
 {
     say("repeater: %s slot %d %u -> %s%u (%.2f s)\n", action, c->slot, c->src, c->group ? "TG " : "",
             c->dst, d);
+    mq_tx_event(action, c, d);
 }
 static void on_key(void *ctx, bool keyed)
 {
     R.keyed = keyed;
     say("repeater: %s\n", keyed ? "keyed" : "unkeyed");
+    mq_status_soon(); /* as the board's */
 }
 
 /* the parrot's replay, as the network would send it: a transceiver's tune, then the bursts */
@@ -621,10 +639,238 @@ static void clock_start(void)
 static void clock_stop(void) {}
 #endif
 
+/* ── MQTT: the board's topics (esp_idf/main/roam_mqtt.c for the radio, sdr_mqtt.c for the monitored channels) ─ */
+
+#ifdef RDOF_MQTT
+static rdofmq_t *MQ, *MQ_SDR; /* the radio's connection; the monitored channels' (the board's SDR's own) */
+static char mq_status[96], mq_sdr_status[96];
+static char mq_alias[2][112], mq_sdr_alias[2 * RDOF_SDR_MAX_CHANNELS][112];
+static const char *mq_alias_p[2], *mq_sdr_alias_p[2 * RDOF_SDR_MAX_CHANNELS];
+static rdof_netcalls_t mq_calls;
+static double mq_next, mq_sdr_next; /* the next status (now_s) */
+static bool mq_hb_was;
+static void mq_status_soon(void) { mq_next = 0; }
+
+/* Unix time: netclock's when it runs, else the OS's */
+static double wall_s(void)
+{
+#ifdef RDOF_NETCLOCK
+    if (clock_on)
+        return (double)netclock_posix_now_ns() / 1e9;
+#endif
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (double)ts.tv_sec + ts.tv_nsec * 1e-9;
+}
+
+/* {root}/{radio}/{app}/{kind}, app "repeater" or "roaming"; {root}/{channel}/{app}/{kind} for the SDR's, app "sdr" */
+static void mq_topic(const char *kind, char *out, size_t cap)
+{
+    snprintf(out, cap, "%s/%s/%s/%s", rcfg.cfg.mqtt_root, rcfg.name, rcfg.cfg.mqtt_app, kind);
+}
+static void mq_sdr_topic(const char *ch, const char *kind, char *out, size_t cap)
+{
+    snprintf(out, cap, "%s/%s/%s/%s", rcfg.cfg.mqtt_root, ch, rcfg.mon_app, kind);
+}
+static bool is_monitored(const char *ch) { return strcmp(ch, "rx") && strcmp(ch, "out"); }
+
+static void mq_publish_status(void)
+{
+    char buf[600];
+    const bool hb = net_on && NET.peer.up;
+    if (R.full) {
+        const rdof_repeater_status_t st = {wall_s(), R.rx_hz, R.tx_hz, R.cc, R.r.ready, hb, rdof_repeater_on_air(&R.r),
+                                         {false, R.r.enabled[1], R.r.enabled[2]},
+                                         {false, rdof_repeater_busy(&R.r, 1), rdof_repeater_busy(&R.r, 2)}};
+        rdof_repeater_status_json(&st, buf, sizeof buf);
+    } else {
+        const rdof_roamer_status_t st = {wall_s(), R.rx_hz, R.cc, rdof_txvr_listening(&R.t), rdof_txvr_scanning(&R.t),
+                                       R.t.ready, hb, R.t.has_call && R.t.call.state == RDOF_CALL_ON_AIR};
+        rdof_roamer_status_json(&st, buf, sizeof buf);
+    }
+    rdofmq_publish(MQ, mq_status, buf, -1, 1, true);
+}
+
+static void mq_publish_receiver(void)
+{
+    char buf[512], t[112];
+    const rdof_location_t *loc = rcfg.cfg.has_location ? &rcfg.cfg.location : NULL;
+    if (R.full)
+        rdof_repeater_receiver_json(rcfg.name, R.rx_hz, R.tx_hz, R.cc, rcfg.cfg.callsign, loc, 0, buf, sizeof buf);
+    else
+        rdof_roamer_receiver_json(rcfg.name, R.rx_hz, R.cc, rcfg.cfg.callsign, loc, buf, sizeof buf);
+    mq_topic("json", t, sizeof t);
+    rdofmq_publish(MQ, t, buf, -1, 1, true);
+}
+
+static void mq_sdr_publish_receivers(void)
+{
+    char buf[512], t[112];
+    const rdof_location_t *loc = rcfg.cfg.has_location ? &rcfg.cfg.location : NULL;
+    for (int i = 0; i < nmon; i++) {
+        const rdof_sdr_cfg_channel_t *c = MON[i].ch;
+        rdof_sdr_receiver_json(c->name[0] ? c->name : c->id, c->freq, c->cc, rcfg.mon_name, c->tg, loc, buf, sizeof buf);
+        mq_sdr_topic(c->id, "json", t, sizeof t);
+        rdofmq_publish(MQ_SDR, t, buf, -1, 1, true);
+    }
+}
+
+/* the SDR's status: every receiver channel (the radio's RX among them, by the radio's name), the monitored
+   channels' peers */
+static void mq_sdr_publish_status(void)
+{
+    static char buf[3072];
+    const char *names[RDOF_SDR_MAX_CHANNELS] = {rcfg.name}, *ids[RDOF_SDR_MAX_CHANNELS];
+    bool up[RDOF_SDR_MAX_CHANNELS];
+    int nh = 0;
+    for (int i = 0; i < nmon; i++) {
+        names[MON[i].c] = MON[i].ch->name[0] ? MON[i].ch->name : NULL;
+        if (MON[i].peer)
+            ids[nh] = MON[i].ch->id, up[nh++] = MON[i].net.peer.up;
+    }
+    rdof_sdr_status_t st = {.name = rcfg.mon_name, .at = wall_s(), .cpu_load = NAN, .overflows = mq_overflows,
+                            .names = names, .n_hblink = nh, .hblink_ids = ids, .hblink_up = up};
+    if (rdof_sdr_status_json(&R.rx, &st, buf, sizeof buf))
+        rdofmq_publish(MQ_SDR, mq_sdr_status, buf, -1, 1, true);
+}
+
+static void mq_start(void)
+{
+    static char id[64], sid[64];
+    const rdof_config_t *c = &rcfg.cfg;
+    if (!c->has_mqtt || !c->mqtt_host[0])
+        return;
+    rdof_netcalls_init(&mq_calls);
+    snprintf(mq_status, sizeof mq_status, "%s/_sdr/%s/status", c->mqtt_root, rcfg.name);
+    snprintf(id, sizeof id, "rdof-%s-%s", R.full ? "repeater" : "roaming", rcfg.name);
+    mq_topic("raw", mq_alias[0], sizeof mq_alias[0]);
+    mq_topic("json", mq_alias[1], sizeof mq_alias[1]);
+    mq_alias_p[0] = mq_alias[0], mq_alias_p[1] = mq_alias[1];
+    rdofmq_opts_t o = {.host = c->mqtt_host, .user = c->mqtt_user, .pass = c->mqtt_pass, .port = c->mqtt_port,
+                       .tls = c->mqtt_tls, .client_id = id, .will_topic = mq_status, .will_msg = RDOF_STATUS_OFFLINE,
+                       .alias_topics = mq_alias_p, .n_alias = 2, .queue_max = 1000, .say = net_say};
+    MQ = rdofmq_start(&o);
+    if (nmon) {
+        snprintf(mq_sdr_status, sizeof mq_sdr_status, "%s/_sdr/%s/status", c->mqtt_root, rcfg.mon_name);
+        snprintf(sid, sizeof sid, "rdof-sdr-%s", rcfg.mon_name);
+        for (int k = 0; k < 2; k++) /* aliases: every channel's raw, then every channel's json */
+            for (int i = 0; i < nmon; i++) {
+                mq_sdr_topic(MON[i].ch->id, k ? "json" : "raw", mq_sdr_alias[k * nmon + i], sizeof mq_sdr_alias[0]);
+                mq_sdr_alias_p[k * nmon + i] = mq_sdr_alias[k * nmon + i];
+            }
+        o.client_id = sid, o.will_topic = mq_sdr_status, o.alias_topics = mq_sdr_alias_p, o.n_alias = 2 * nmon;
+        MQ_SDR = rdofmq_start(&o);
+    }
+    fprintf(stderr, "mqtt: %s:%d, root %s, as %s%s%s%s\n", c->mqtt_host, c->mqtt_port, c->mqtt_root, id,
+            nmon ? " and " : "", nmon ? sid : "", c->mqtt_tls ? ", TLS" : "");
+}
+
+/* the main loop's: the retained messages after each connect, the status every 10 s (the SDR's every
+   status_seconds) and when HBlink4 comes or goes */
+static void mq_poll(double now)
+{
+    if (MQ) {
+        const bool hb = net_on && NET.peer.up;
+        if (rdofmq_connected(MQ)) {
+            mq_publish_receiver();
+            mq_next = 0;
+        }
+        if (rdofmq_up(MQ) && (now >= mq_next || hb != mq_hb_was)) {
+            mq_hb_was = hb;
+            mq_publish_status();
+            mq_next = now + 10;
+        }
+    }
+    if (MQ_SDR) {
+        if (rdofmq_connected(MQ_SDR)) {
+            mq_sdr_publish_receivers();
+            mq_sdr_next = 0;
+        }
+        if (rdofmq_up(MQ_SDR) && now >= mq_sdr_next) {
+            mq_sdr_publish_status();
+            mq_sdr_next = now + (rcfg.mon_status_s > 1 ? rcfg.mon_status_s : 30);
+        }
+    }
+}
+
+static void mq_stop(void)
+{
+    rdofmq_stop(MQ);
+    rdofmq_stop(MQ_SDR);
+    MQ = MQ_SDR = NULL;
+}
+
+/* what the radio transmits: .../tx, and the network's calls on .../json and .../raw as the board's */
+static void mq_tx_event(const char *action, const rdof_tx_call_info_t *c, double d)
+{
+    char buf[512], t[112];
+    if (!MQ)
+        return;
+    const double now = wall_s();
+    rdof_tx_json(action, c, d, now, buf, sizeof buf);
+    mq_topic("tx", t, sizeof t);
+    rdofmq_publish(MQ, t, buf, -1, 1, false);
+    if (rdof_netcalls_event(&mq_calls, action, c, d, now, buf, sizeof buf)) {
+        mq_topic("json", t, sizeof t);
+        rdofmq_publish(MQ, t, buf, -1, 1, false);
+    }
+    if (!R.full)
+        mq_publish_status();
+}
+
+static void on_sent(void *ctx, const rdof_tx_call_info_t *c, const rdof_net_burst_t *b)
+{
+    rdof_rawburst_t raw;
+    uint8_t buf[RDOF_RAWBURST_MAX];
+    char t[112];
+    if (MQ && rdof_netcalls_burst_raw(&mq_calls, c, b->control, b->burst, wall_s(), &raw)) {
+        mq_topic("raw", t, sizeof t);
+        rdofmq_publish(MQ, t, buf, (int)rdof_rawburst_encode(&raw, buf), 0, false);
+    }
+}
+
+static void on_raw_burst(void *ctx, const char *ch, const rdof_rawburst_t *r)
+{
+    uint8_t buf[RDOF_RAWBURST_MAX];
+    char t[112];
+    if (!strcmp(ch, "out"))
+        return;
+    rdofmq_t *q = is_monitored(ch) ? MQ_SDR : MQ;
+    if (!q)
+        return;
+    if (q == MQ)
+        mq_topic("raw", t, sizeof t);
+    else
+        mq_sdr_topic(ch, "raw", t, sizeof t);
+    rdofmq_publish(q, t, buf, (int)rdof_rawburst_encode(r, buf), 0, false);
+}
+#else
+static void mq_start(void)
+{
+    if (rcfg.cfg.has_mqtt)
+        fprintf(stderr, "mqtt: rdofradio was built without libmosquitto (RDOF_MQTT): MQTT off\n");
+}
+static void mq_poll(double now) {}
+static void mq_stop(void) {}
+static void mq_tx_event(const char *action, const rdof_tx_call_info_t *c, double d) {}
+static void mq_status_soon(void) {}
+static void on_sent(void *ctx, const rdof_tx_call_info_t *c, const rdof_net_burst_t *b) {}
+#endif
+
 /* ── the receiver's output ─────────────────────────────────────────────────── */
 
 static void on_json(void *ctx, const char *ch, const char *json)
 {
+#ifdef RDOF_MQTT
+    char t[112];
+    if (is_monitored(ch) && MQ_SDR) {
+        mq_sdr_topic(ch, "json", t, sizeof t);
+        rdofmq_publish(MQ_SDR, t, json, -1, 1, false);
+    } else if (!strcmp(ch, "rx") && MQ) {
+        mq_topic("json", t, sizeof t);
+        rdofmq_publish(MQ, t, json, -1, 1, false);
+    }
+#endif
 #ifdef RDOF_HOST_WEB
     if (strcmp(ch, "rx") && strcmp(ch, "out")) /* a monitored channel: the SDR's, as on the board */
         rdof_hostweb_tracker_json("sdr", rcfg.box, ch, json);
@@ -726,6 +972,11 @@ static void web_publish(double rx, double tx, int cc)
         w.parrot_replayed = R.parrot->replayed, w.parrot_ignored = R.parrot->ignored, w.parrot_cut = R.parrot->cut;
     }
     w.links = net_on;
+#ifdef RDOF_MQTT
+    w.links = net_on || MQ;
+    w.has_mqtt = MQ != NULL;
+    w.mqtt = rdofmq_up(MQ);
+#endif
     w.hblink = net_on && NET.peer.up;
     w.hblink_tx = NET.peer.tx, w.hblink_rx = NET.peer.rx;
     for (int i = 0; i < nmon && w.nchan < 16; i++) {
@@ -1035,6 +1286,7 @@ static int split_main(int argc, char **argv, const char *port, int baud, int pow
         rdofradio_cfg_apply_repeater(&rcfg, &R.r);
     R.r.clock = p_clock;
     R.r.on_tx = on_tx;
+    R.r.on_sent = on_sent;
     R.r.on_key = on_key;
     R.r.ctx = &R;
     if (!rdof_repeater_start(&R.r)) {
@@ -1067,6 +1319,7 @@ static int split_main(int argc, char **argv, const char *port, int baud, int pow
             if (!rdof_repeater_poll(&R.r))
                 fprintf(stderr, "poll: %s\n", R.client.error);
             net_poll(now);
+            mq_poll(now);
             deliver_heard();
         }
 #ifdef RDOF_HOST_WEB
@@ -1099,6 +1352,7 @@ out:
     if (R.parrot)
         say("parrot: %u sent back, %u not to it, %u bursts cut\n", R.parrot->replayed, R.parrot->ignored,
             R.parrot->cut);
+    mq_stop();
     net_close();
     clock_stop();
     rdof_sdr_rx_free(&R.rx);
@@ -1349,6 +1603,10 @@ int main(int argc, char **argv)
         fprintf(stderr, "receiver: %d channels at most: %d monitored channels left out\n", RDOF_SDR_MAX_CHANNELS,
                 rcfg.nmon - nmon);
     rdof_sink_t sink = {.on_json = on_json};
+#ifdef RDOF_MQTT
+    if (rcfg.cfg.has_mqtt)
+        sink.on_raw_burst = on_raw_burst; /* every burst on .../raw, as the board's */
+#endif
     if (rdof_sdr_rx_init(&R.rx, &rc, ch, nch, &sink, (double)time(NULL))) {
         fprintf(stderr, "receiver: the rate isn't a multiple of 48 kS/s, or the channels don't fit one window%s\n",
                 nmon ? " (the monitored channels with the radio's: a wider --rate, or fewer)" : "");
@@ -1360,6 +1618,7 @@ int main(int argc, char **argv)
     R.rx.burst_ctx = &R;
     net_start();
     mon_start();
+    mq_start();
     clock_start();
 #ifdef RDOF_HOST_WEB
     rdof_hostweb_version(RDOF_VERSION);
@@ -1429,6 +1688,7 @@ int main(int argc, char **argv)
             rdofradio_cfg_apply_repeater(&rcfg, &R.r); /* slots, hangs, jitter buffer, CW ID, as the firmware */
         R.r.clock = p_clock;
         R.r.on_tx = on_tx;
+        R.r.on_sent = on_sent;
         R.r.on_key = on_key;
         R.r.ctx = &R;
         ok = rdof_repeater_start(&R.r);
@@ -1443,6 +1703,7 @@ int main(int argc, char **argv)
         R.t.clock = p_clock;
         R.t.send = txvr_send;
         R.t.on_tx = on_tx;
+        R.t.on_sent = on_sent;
         R.t.ctx = &R;
         ok = rdof_txvr_start(&R.t);
     }
@@ -1535,6 +1796,7 @@ int main(int argc, char **argv)
         timeouts = 0;
         if (n == RDOF_DEV_OVERFLOW) {
             overflows++;
+            mq_overflows++;
             continue;
         }
         if (n < 0) {
@@ -1552,6 +1814,7 @@ int main(int argc, char **argv)
             if (!(R.full ? rdof_repeater_poll(&R.r) : rdof_txvr_poll(&R.t)))
                 fprintf(stderr, "poll: %s\n", R.client.error);
             net_poll(now);
+            mq_poll(now);
         }
         /* as many transmit samples as were read, at the modem's position for them */
         const bool keyed = rdof_sdrmodem_pull_iq(&R.m, txn - lead + offset, out, n);
@@ -1731,6 +1994,7 @@ int main(int argc, char **argv)
     if (R.parrot)
         say("parrot: %u sent back, %u not to it, %u bursts cut\n", R.parrot->replayed, R.parrot->ignored,
                 R.parrot->cut);
+    mq_stop();
     net_close();
     clock_stop();
     rdof_sdr_rx_free(&R.rx);

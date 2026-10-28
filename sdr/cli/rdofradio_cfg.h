@@ -6,7 +6,8 @@
  * repeater, or sdr_transceiver with duplex full) or a half duplex transceiver (sdr_transceiver, duplex half, on
  * its idle channel). From it: the name, peer_id, rx_freq / tx_freq, cc, parrot, and a repeater's slots, hang_s,
  * call_hang_s, short_lc_ts1_low, prebuffer and the jitter buffer, cwid and cwid_every_s; hblink (the master),
- * callsign, location and power for its HBlink4 peer, as the board's; version 2: monitor roles on its SDR device
+ * callsign, location and power for its HBlink4 peer, as the board's; mqtt, published as the board does
+ * (rdofradio_mqtt.h); version 2: monitor roles on its SDR device
  * (receive-only channels, each its own peer). mode sfr and dcdm are
  * refused; every other key is kept in the file and listed as not used here. The SDR device stays on the command
  * line (--soapy, -r, --gain, --tx-gain ...). No I/O here: rdofradio reads and writes the file.
@@ -40,7 +41,9 @@ typedef struct {
        radio's own RX and TX; each with hblink and a peer_id is an HBlink4 peer of its own */
     int nmon;
     rdof_sdr_cfg_channel_t mon[RDOF_SDR_MAX_CHANNELS];
-    char unused[320];   /* the keys set that rdofradio doesn't apply, "mqtt", or "" */
+    char mon_name[32], mon_app[16]; /* their MQTT names, as the board's SDR's (name, app "sdr") */
+    double mon_status_s;            /* the SDR's status period (status_seconds) */
+    char unused[320];   /* the keys set that rdofradio doesn't apply, "wifi", or "" */
     rdof_config_t cfg;  /* all of it, as the firmware resolves it */
 } rdofradio_cfg_t;
 

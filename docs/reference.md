@@ -558,6 +558,11 @@ KB: the page and the shared code), DIRAM 72 bytes less (the log ring's state is 
 same; `16mb` 1935 KB (0x1E3D00), +3.5 KB, DIRAM 72 bytes less. The request bodies and the status are allocated in PSRAM as
 before.
 
+On 2026-10-28, after settings version 2 (devices, roles, the broker), the shared HBlink4 peer, the clock routes and
+the monitored channels on the page: `16mb` + `w12` 2037 KB (0x1FD330), 170 KB DIRAM used (51.0%); `16mb` 1960 KB, 167
+KB DIRAM (49.9%); `4mb` 1864 KB, 163 KB DIRAM (48.9%), 56 KB (2.9%) free in its 1.875 MB slot: the next feature on
+`4mb` needs room made first (a role overlay, or the self-test clip out).
+
 DIRAM went down because the roamer's state moved from `.bss` to the heap when it became a `roam_t`: the first
 radio's is still internal (about 5 KB, allocated when it starts), its settings in PSRAM. The `w12` build's 11 KB
 more DIRAM is the SPI master driver and the LR2021's state.

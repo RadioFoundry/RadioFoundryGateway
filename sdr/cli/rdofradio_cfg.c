@@ -13,7 +13,7 @@
 #include "rdof/jsonp.h"
 
 /* What rdofradio applies: the box's keys, and the radio's */
-static const char *const BOX_USED[] = {"name", "cc", "channels", "radios", "run", "hblink", "location", "ntp", NULL};
+static const char *const BOX_USED[] = {"name", "cc", "channels", "radios", "run", "hblink", "location", "ntp", "mqtt", NULL};
 static const char *const RADIO_USED[] = {"type",          "name",        "peer_id",       "rx_freq",
                                          "tx_freq",       "cc",          "parrot",        "slots",
                                          "hang_s",        "call_hang_s", "short_lc_ts1_low", "prebuffer",
@@ -153,6 +153,11 @@ static bool monitors(const char *text, size_t len, rdofradio_cfg_t *o, char *err
     const bool ok = rdof_sdr_config_parse_device(text, len, NULL, s, e, sizeof e);
     if (!ok)
         snprintf(err, cap, "the SDR device: %s", e);
+    if (ok) { /* the SDR's MQTT names, as the board's: {root}/{channel}/{app}, {root}/_sdr/{name}/status */
+        snprintf(o->mon_name, sizeof o->mon_name, "%s", s->name);
+        snprintf(o->mon_app, sizeof o->mon_app, "%s", s->mqtt_app);
+        o->mon_status_s = s->status_seconds;
+    }
     for (int i = 0; ok && i < s->nch; i++) {
         const uint32_t f = (uint32_t)llround(s->ch[i].freq);
         if (f != o->rx_hz && f != o->tx_hz)
@@ -302,6 +307,10 @@ size_t rdofradio_cfg_describe(const rdofradio_cfg_t *o, const char *source, cons
             PUT(", peer %ld", m->peer_id);
         PUT("\n");
     }
+    if (o->cfg.has_mqtt)
+        PUT("MQTT: %s:%d, root %s%s\n", o->cfg.mqtt_host, o->cfg.mqtt_port, o->cfg.mqtt_root, o->cfg.mqtt_tls ? ", TLS" : "");
+    else
+        PUT("MQTT: off (no mqtt section)\n");
     if (o->own_clock)
         PUT("clock: netclock, from %s\n", o->ntp_servers[0] ? o->ntp_servers : "the browser only (no servers)");
     else

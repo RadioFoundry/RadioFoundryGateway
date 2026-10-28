@@ -70,12 +70,15 @@ int main(void)
                 "\"hblink\": {\"master\": \"h\", \"port\": 62031, \"passphrase\": \"p\"}}]}"));
     if (err[0])
         printf("  %s\n", err);
-    CHECK(strstr(C.unused, "mqtt") && strstr(C.unused, "wifi") && !strstr(C.unused, "R.power") &&
+    CHECK(!strstr(C.unused, "mqtt") && strstr(C.unused, "wifi") && !strstr(C.unused, "R.power") &&
           strstr(C.unused, "R.hblink") && !strstr(C.unused, "rx_freq") && !C.has_hblink);
+    CHECK(C.cfg.has_mqtt && !strcmp(C.cfg.mqtt_host, "m") && C.cfg.mqtt_port == 1883 && !strcmp(C.cfg.mqtt_root, "DMR") &&
+          !strcmp(C.cfg.mqtt_app, "repeater"));
     char text[1024];
     rdofradio_cfg_describe(&C, "file x.json", "--soapy driver=plutosdr", text, sizeof text);
     CHECK(strstr(text, "b runs: R") && strstr(text, "RX 438.25 MHz, TX 438.0125 MHz") &&
-          strstr(text, "not used on this host: mqtt, wifi, R.hblink") && strstr(text, "HBlink4: off") &&
+          strstr(text, "not used on this host: wifi, R.hblink") && strstr(text, "HBlink4: off") &&
+          strstr(text, "MQTT: m:1883, root DMR\n") &&
           strstr(text, "driver=plutosdr"));
     /* the box's hblink section: the network on */
     CHECK(parse("{\"name\": \"b\", \"hblink\": {\"host\": \"master.example\", \"port\": 62032}, \"radios\": [{\"type\": "
@@ -119,7 +122,7 @@ int main(void)
                      "\"modem\": {\"device\": \"pluto\"}, \"cwid\": \"N0CALL\"}}, \"mqtt\": {\"host\": \"x\"}}";
     CHECK(parse(v2) && C.full && C.rx_hz == 438250000 && C.tx_hz == 438012500 && C.cc == 1 && C.parrot == 9990);
     CHECK(!strstr(C.unused, "version") && !strstr(C.unused, "devices") && !strstr(C.unused, "roles") &&
-          strstr(C.unused, "mqtt"));
+          !strstr(C.unused, "mqtt") && C.cfg.has_mqtt);
     if (err[0])
         printf("  %s / unused: %s\n", err, C.unused);
     CHECK(C.nmon == 0);
@@ -137,6 +140,9 @@ int main(void)
     CHECK(C.nmon == 2 && C.mon[0].freq == 438.075e6 && C.mon[0].cc == 1 && C.mon[0].hblink &&
           C.mon[0].peer_id == 9800101 && C.mon[1].freq == 438.15e6 && C.mon[1].cc == 3 && C.mon[1].peer_id == 9800102);
     CHECK(!strstr(C.unused, "MON"));
+    CHECK(!strcmp(C.mon_app, "sdr") && !strcmp(C.mon_name, "MON") && C.mon_status_s == 30);
+    if (strcmp(C.mon_name, "MON"))
+        printf("  SDR name %s app %s\n", C.mon_name, C.mon_app);
     rdofradio_cfg_describe(&C, "file x.json", "", text, sizeof text);
     CHECK(strstr(text, "monitor SDR01: 438.075 MHz, CC 1, peer 9800101\n") &&
           strstr(text, "monitor SDR02: 438.15 MHz, CC 3, peer 9800102\n"));
