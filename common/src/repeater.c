@@ -113,6 +113,14 @@ void rdof_repeater_on_burst(rdof_repeater_t *r, const rdof_net_burst_t *b)
     unlock(r);
 }
 
+void rdof_repeater_preempt(rdof_repeater_t *r, const uint8_t sid[4])
+{
+    lock(r);
+    memcpy(r->preempt, sid, 4);
+    r->has_preempt = true;
+    unlock(r);
+}
+
 static void rf_push(rdof_repeater_t *r, const rdof_rpt_rf_in_t *in)
 {
     lock(r);
@@ -1060,6 +1068,11 @@ static bool net(rdof_repeater_t *r, const rdof_net_burst_t *b, double at, double
     if (s->net >= 0 && !memcmp(r->calls[s->net].tune.stream_id, b->stream_id, 4)) {
         net_add(r, s, s->net, b, at, now);
         return true;
+    }
+    if (s->net >= 0 && !s->rf.active && r->has_preempt && !memcmp(r->preempt, b->stream_id, 4)) {
+        r->has_preempt = false;
+        if (!network_yields(r, s, now)) /* an emergency: the stream there ends */
+            return false;
     }
     if (s->net >= 0 || s->rf.active) {
         done_add(s, b->stream_id); /* another stream (R8.5), or an RF call (R8.2), has the slot */

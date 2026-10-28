@@ -273,6 +273,8 @@ pub struct RdofRepeater {
     pub inbound_flag: bool,
     pub dropped: u32,
     pub jb: RdofJb,
+    pub preempt: [u8; 4],
+    pub has_preempt: bool,
 }
 
 type R = *mut RdofRepeater;
@@ -388,6 +390,14 @@ pub unsafe extern "C" fn rdof_repeater_on_burst(r: R, b: &RdofNetBurst) {
     } else {
         (*r).dropped = (*r).dropped.wrapping_add(1);
     }
+    unlock(r);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_repeater_preempt(r: R, sid: &[u8; 4]) {
+    lock(r);
+    (*r).preempt = *sid;
+    (*r).has_preempt = true;
     unlock(r);
 }
 
@@ -1403,6 +1413,13 @@ unsafe fn net(r: R, b: &RdofNetBurst, at: f64, now: f64) -> bool {
     if (*s).net >= 0 && (*call(r, (*s).net)).tune.stream_id == b.stream_id {
         net_add(r, s, (*s).net, b, at, now);
         return true;
+    }
+    if (*s).net >= 0 && !(*s).rf.active && (*r).has_preempt && (*r).preempt == b.stream_id {
+        (*r).has_preempt = false;
+        if !network_yields(r, s, now) {
+            // an emergency: the stream there ends
+            return false;
+        }
     }
     if (*s).net >= 0 || (*s).rf.active {
         done_add(s, &b.stream_id); // another stream (R8.5), or an RF call (R8.2), has the slot

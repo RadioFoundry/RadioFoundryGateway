@@ -191,6 +191,8 @@ typedef struct rdof_repeater {
     bool inbound_flag;
     uint32_t dropped; /* inputs or bursts dropped for want of room */
     rdof_jb_t jb;     /* the network's jitter buffer: fixed at prebuffer unless jb.adaptive */
+    uint8_t preempt[4]; /* a network stream that takes its slot from another network stream (rdof_repeater_preempt) */
+    bool has_preempt;
 } rdof_repeater_t;
 
 /* Defaults: both slots, T_MSInactiv 5 s, call hang 3 s, prebuffer 6 (the jitter buffer fixed), CW ID every 900 s. */
@@ -203,6 +205,9 @@ void rdof_repeater_set_sfr(rdof_repeater_t *r, int inbound_slot);
 void rdof_repeater_set_dcdm(rdof_repeater_t *r);
 
 void rdof_repeater_on_burst(rdof_repeater_t *r, const rdof_net_burst_t *b);
+/* The network stream sid (its bursts to come, or already queued) takes its slot from the network stream there now
+   (an emergency, rdof/router.h): that one ends as an RF call would end it (R8.1). Not from an RF call. */
+void rdof_repeater_preempt(rdof_repeater_t *r, const uint8_t sid[4]);
 void rdof_repeater_heard(rdof_repeater_t *r, int slot, uint8_t control, const uint8_t burst[RDOF_BURST_BYTES], int rssi);
 void rdof_repeater_lost(rdof_repeater_t *r, int slot);
 void rdof_repeater_nak(rdof_repeater_t *r, uint8_t command, int err);
