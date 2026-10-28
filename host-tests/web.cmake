@@ -2,10 +2,9 @@
 # SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 # The host web page (hostweb/): the firmware's UI and status API for a host tool. Included from CMakeLists.txt after
 # sdr.cmake. A test of the server always builds (POSIX only), and rdofradio's settings (--config) with their test;
-# RDOF_HOST_WEB also links the server into rdofradio, defines RDOF_HOST_WEB for it, and so turns on its --web PORT
-# flag (hostweb/README.md).
+# RDOF_HOST_WEB (sdr/cli/tools.cmake) links the server into rdofradio and turns on its --web flag
+# (hostweb/README.md).
 if(NOT WIN32)
-    option(RDOF_HOST_WEB "Link the web page server into the host tools (rdofradio --web PORT)" OFF)
     add_subdirectory(../hostweb hostweb)
     add_executable(rdof_hostweb_tests ../hostweb/test/test_hostweb.c)
     target_link_libraries(rdof_hostweb_tests PRIVATE rdof_hostweb)
@@ -27,11 +26,4 @@ if(NOT WIN32)
         target_link_options(rdof_radiocfg_tests PRIVATE -fsanitize=address,undefined)
     endif()
     add_test(NAME rdof_radiocfg_tests COMMAND rdof_radiocfg_tests)
-    if(TARGET rdofradio)
-        target_sources(rdofradio PRIVATE ../sdr/cli/rdofradio_cfg.c)
-    endif()
-    if(RDOF_HOST_WEB AND TARGET rdofradio)
-        target_link_libraries(rdofradio PRIVATE rdof_hostweb)
-        target_compile_definitions(rdofradio PRIVATE RDOF_HOST_WEB)
-    endif()
 endif()

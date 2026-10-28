@@ -2,7 +2,7 @@ RadioFoundry Gateway
 Copyright (c) 2026 The RadioFoundry Gateway authors (see AUTHORS). MIT License (LICENSE).
 
 Source files that contain third-party code keep their notices; PROVENANCE.md lists them and LICENSES/ holds
-their license texts (Apache-2.0, BSD-2-Clause, BSD-3-Clause, BSD-3-Clause-Clear, ISC, MIT).
+their license texts (Apache-2.0, BSD-2-Clause, BSD-3-Clause, BSD-3-Clause-Clear, FFTPACK, ISC, MIT).
 
 Firmware binaries built from this project also contain:
 
@@ -18,4 +18,9 @@ Firmware binaries built from this project also contain:
   Systems. Apache-2.0.
 - With CONFIG_RDOF_RUST: the Rust core library (Espressif's Xtensa fork of rust-lang/rust), MIT OR Apache-2.0.
 
-The host tool rdofsdr, when built with SoapySDR, links it dynamically (Boost Software License 1.0).
+The host tool rdofsdr, when built with SoapySDR, links it dynamically (Boost Software License 1.0). rdofradio links
+SoapySDR, libiio and libad9361 dynamically when built with them (libiio and libad9361: LGPL-2.1-or-later).
+
+The host tools rdofsdr and rdofradio, built with pffft (RDOF_PFFFT, the default), contain pffft:
+Copyright (c) 2013 Julien Pommier; based on FFTPACKv4, Copyright (c) 2004 the University Corporation for
+Atmospheric Research ("UCAR"). Its license, conditions and disclaimer: LICENSES/FFTPACK-pffft.txt.

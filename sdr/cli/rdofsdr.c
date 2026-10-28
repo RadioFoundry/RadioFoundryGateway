@@ -4,11 +4,14 @@
  * rdofsdr: the SDR receive path on a host, for checking it against reference output
  * and for measuring its CPU cost. Not firmware: it uses stdio and POSIX time.
  *
- *   rdofsdr -i rec.cu8 [-r 1536000] [--center HZ] --ch SDR02:461.4625[:CC[:SLOT]] ...
+ *   rdofsdr -i rec.cu8 [-r 1536000] [--center HZ] --ch SDR02:438.4875[:CC[:SLOT]] ...
  *         [--rssi-offset DB] [--ppm PPM] [--no-afc] [--no-gate] [--t0 S] [--chunk N] [--bursts] [--quiet]
  *   rdofsdr --bench [--ghz 3.2] [--reps 3] (same input options)
  *   rdofsdr --soapy ARGS [--gain DB] [--setting KEY=VALUE ...] [--seconds S] (same channel and receiver options)
+ *   any of them [--fft builtin|pffft]
  *
+ * --fft picks the channelizer's FFT: pffft (sdr/pffft/) when it's built in (RDOF_PFFFT, the default), else the
+ * built-in one; "builtin" to compare.
  * The input is rtl_sdr's cu8, as rtl_sdr writes
  * it; or, when built with SoapySDR (RDOF_SOAPY), any SoapySDR device live: ARGS as SoapySDRUtil takes them
  * ("driver=rtlsdr", "driver=airspy,serial=..."), streamed as CF32 at the rate and tuned to the planned center. Output lines: "<id> json <text>", "<id> raw <text>", and with --bursts
@@ -29,6 +32,9 @@
 #include "rdof/sdr/fm.h"
 #include "rdof/sdr/iq.h"
 #include "rdof/sdr/receiver.h"
+#ifdef RDOF_PFFFT
+#include "rdof_pffft.h"
+#endif
 
 #ifdef RDOF_SOAPY
 #include <signal.h>
@@ -49,7 +55,8 @@ static void usage(void)
     fprintf(stderr, "usage: rdofsdr -i rec.cu8 [-r RATE] [--center HZ] --ch ID:MHZ[:CC[:SLOT]] ... [--rssi-offset DB]\n"
                     "             [--ppm PPM] [--no-afc] [--no-gate] [--t0 S] [--chunk N] [--bursts] [--quiet]\n"
                     "       rdofsdr --bench [--ghz GHZ] [--reps N] (same input options)\n"
-                    "       rdofsdr --soapy ARGS [--gain DB] [--setting KEY=VALUE ...] [--seconds S] (live; with SoapySDR)\n");
+                    "       rdofsdr --soapy ARGS [--gain DB] [--setting KEY=VALUE ...] [--seconds S] (live; with SoapySDR)\n"
+                    "       any of them [--fft builtin|pffft]\n");
     exit(2);
 }
 
@@ -217,6 +224,7 @@ int main(int argc, char **argv)
     rdof_sdr_rx_config_t cfg = {1536000.0, 0.0, -55.0, 0.0, true, 1 << 17};
     double t0 = 1760000000.0, ghz = 3.2;
     int do_bench = 0, reps = 3, gate = 1;
+    const char *fft = NULL;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         const char *v = i + 1 < argc ? argv[i + 1] : NULL;
@@ -268,6 +276,9 @@ int main(int argc, char **argv)
         } else if (!strcmp(a, "--seconds")) {
             NEXT();
             seconds = atof(v);
+        } else if (!strcmp(a, "--fft")) {
+            NEXT();
+            fft = v;
         } else if (!strcmp(a, "--bench")) {
             do_bench = 1;
         } else if (!strcmp(a, "--ghz")) {
@@ -306,6 +317,19 @@ int main(int argc, char **argv)
     }
     if ((!input && !soapy) || !nch || cfg.max_chunk < 1)
         usage();
+#ifdef RDOF_PFFFT
+    if (!fft || !strcmp(fft, "pffft"))
+        rdof_fft_set_backend(rdof_pffft_backend());
+    else if (strcmp(fft, "builtin"))
+        usage();
+    if (do_bench)
+        fprintf(stderr, "FFT: %s\n", fft && !strcmp(fft, "builtin") ? "built-in" : "pffft");
+#else
+    if (fft && strcmp(fft, "builtin")) {
+        fprintf(stderr, "rdofsdr was built without pffft (RDOF_PFFFT)\n");
+        return 2;
+    }
+#endif
     if (soapy) {
 #ifdef RDOF_SOAPY
         static rdof_sdr_rx_t live;
@@ -325,7 +349,7 @@ int main(int argc, char **argv)
         rdof_sdr_rx_free(&live);
         return rc;
 #else
-        (void)gain, (void)seconds, (void)n_settings;
+        (void)gain, (void)seconds, (void)settings, (void)n_settings;
         fprintf(stderr, "rdofsdr was built without SoapySDR (RDOF_SOAPY)\n");
         return 1;
 #endif

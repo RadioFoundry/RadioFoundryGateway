@@ -56,7 +56,8 @@ The listening socket is close-on-exec, so the new process can bind the same port
 cmake -S host-tests -B build/web -DRDOF_HOST_WEB=ON && cmake --build build/web
 ```
 
-`RDOF_HOST_WEB=ON` links `rdof_hostweb` into `rdofradio` and defines `RDOF_HOST_WEB` for it (`host-tests/web.cmake`).
+`RDOF_HOST_WEB=ON` links `rdof_hostweb` into `rdofradio` and defines `RDOF_HOST_WEB` for it (`sdr/cli/tools.cmake`),
+which turns on `--web [ADDR:]PORT`.
 `rdof_hostweb_tests` always builds and runs under ctest. `build/web/rdof_hostweb_tests --serve [PORT] [FILE]` serves
 moving fake state for a browser; with FILE, its settings are that file (editable; a save logs the restart it would
 do), without one there are none.

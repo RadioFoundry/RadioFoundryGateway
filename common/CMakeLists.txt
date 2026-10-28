@@ -78,8 +78,9 @@ else()
     target_include_directories(rdof_common PUBLIC include)
     set_target_properties(rdof_common PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
     target_compile_options(rdof_common PRIVATE -Wall -Wextra -Wno-unused-parameter)
-    find_library(MATH_LIB m)
-    if(MATH_LIB)
-        target_link_libraries(rdof_common PUBLIC ${MATH_LIB})
+    # libm by name: find_library misses a cross compiler's own (the PlutoSDR build), and the link then fails.
+    # macOS has it in libSystem.
+    if(NOT WIN32 AND NOT APPLE)
+        target_link_libraries(rdof_common PUBLIC m)
     endif()
 endif()

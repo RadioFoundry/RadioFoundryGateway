@@ -65,7 +65,8 @@ The Airspy R2 (2.5 and 10 MS/s only) doesn't fit. The tested Pluto's FPGA x8 dec
 directly), so run it at 2.4 MS/s or more; a Pluto whose decimator works may run at 1536000. The device API plan,
 [docs/spec/fw/sdr-device-api.md](spec/fw/sdr-device-api.md), takes the same model into the firmware's front ends.
 
-`rdofradio` (built with `rdofsdr`) transmits too: a SoapySDR device run as an `sdr_transceiver`, the repeater
+`rdofradio` (built with `rdofsdr`) transmits too: a SoapySDR device (`--soapy`), or an AD9361 through libiio
+(`--iio`, below), run as an `sdr_transceiver`, the repeater
 (`--duplex full`, repeating what it hears) or the roaming transceiver (`half`), with `--parrot ID` sending back
 what it hears ([parrot.h](../common/include/rdof/parrot.h); on a board, the `parrot` setting). `rdofradio --soapy driver=plutosdr -r 2400000 --allow-tx --rx 438.25 --tx 438.75
 --duplex full --cc 1 --gain 20 --tx-gain 65 --tx-offset 0.063`. On the Pluto above (2026-10-27), with the RX and
@@ -98,14 +99,49 @@ the 30 ms grid; half duplex sent back a whole call that the bench decoded with 0
   Pluto repeats a split up to its band (about 2.4 MS/s here), not 5 MHz while also hearing its own outbound. The
   modulator's phase table allows 16384 phases on a host (a 25 MHz split at 30 MS/s needs 6250), 1024 on the ESP32.
 
+### On the PlutoSDR itself
+
+`rdofradio --iio URI` drives an AD9361 or AD9363 through libiio 0.x straight (`sdr/cli/rdofradio_iio.c`), with no
+SoapySDR: the PlutoSDR family's firmware already has libiio and libad9361, so a build for its ARM runs on a stock
+Pluto with nothing installed. `tools/pluto/build.sh` (an x86_64 host with Docker) builds it in Debian 9, whose glibc
+is older than the firmware's, against the firmware's own libiio and libad9361 from ADI's v0.38 sysroot; it writes
+`build/pluto/rdof-pluto.tar.gz` (`rdofradio` and `rdofsdr`, 310 KB, needing only libiio, libad9361 and libc). On the
+Pluto, from `/tmp` (RAM):
+
+```sh
+gunzip -c rdof-pluto.tar.gz | tar -xf -
+./rdofradio --iio local: --allow-tx --rx 438.25 --tx 438.75 --duplex full --cc 1 --gain 20 --tx-gain 65 \
+    --parrot 9990 --web 0.0.0.0:8080
+```
+
+`--iio` defaults to 768 kS/s: libad9361's `ad9361_set_bb_rate` loads the chip's own FIR for rates under
+2.083 MS/s, and the FPGA's decimator (the one that streams a constant on the tested board) stays off. The RX and TX
+LOs are separate, so the split is anything both LOs tune to (70 MHz to 6 GHz on an AD9361, 325 MHz to 3.8 GHz on an
+AD9363) at the same rate and CPU; the receiver only hears its own outbound during the calibration, when it tunes to
+the TX LO. TX gain is 0..89 dB (89..0 dB attenuation), as SoapyPlutoSDR's. The LOs are powered up at the start and
+down at the end: SoapyPlutoSDR leaves both powered down when it closes, and the transmitter then sends nothing (the
+calibration's pulse "wasn't heard"). `ip:192.168.2.1` or `usb:` reach a Pluto from a host with libiio installed.
+
+Measured on a "PlutoSDR Rev.C (Z7010-AD9361)", firmware v0.38, its two Cortex-A9 cores at 667 MHz (2026-10-28):
+
+| Run | Real time | CPU |
+|---|---|---|
+| SoapySDR at 2.4 MS/s, the built-in FFT (3200 points) | 34%: samples lost every second | the main thread 100% of a core |
+| `rdofsdr --bench`, 2.4 MS/s, the built-in FFT | | 1989 ms per s of IQ (FFT 1829) |
+| `rdofsdr --bench`, 2.4 MS/s, pffft | | 762 ms per s of IQ (FFT 641) |
+| `--iio local:` at 768 kS/s, pffft (1024 points), full duplex, 438.0125 / 438.25 | 100% (60.0 s in 60.0 s) | 32% of the two cores (main thread 48%, writer 16%), 20 MB |
+
+The full duplex run calibrated at once ("the transmit path is 58.50 ms past its place"). The web page answered on
+the Pluto's USB network address.
+
 The radio can come from a settings file instead: `--config FILE` takes the firmware's settings document
 ([docs/spec/fw/config.md](spec/fw/config.md)), read by the firmware's parser. The radio is a `repeater` (or an
 `sdr_transceiver` with `duplex` full) or a half duplex `sdr_transceiver` on its idle channel. rdofradio applies its
 name, `peer_id`, `rx_freq` / `tx_freq`, `cc`, `parrot`, and a repeater's `slots`, `hang_s`, `call_hang_s`,
 `short_lc_ts1_low`, `prebuffer`, the jitter buffer, `cwid` and `cwid_every_s`, as the firmware does. `mode` sfr and
 dcdm are refused. Every other key stays in the file and is listed as not used (at the start, and in
-`/api/resolved`). The device stays on the command line (`--soapy`, `-r`, `--gain`, `--tx-gain`, `--tx-offset`,
-`--bw`, `--center`, `--allow-tx`, `--seconds`, `--web`, `-v`, `--bursts`, `--monitor`, `--tx-lo`, `--stream`);
+`/api/resolved`). The device stays on the command line (`--soapy` or `--iio`, `-r`, `--gain`, `--tx-gain`, `--tx-offset`,
+`--bw`, `--center`, `--allow-tx`, `--seconds`, `--web`, `-v`, `--bursts`, `--monitor`, `--tx-lo`, `--stream`, `--fft`);
 `--rx`, `--tx`, `--cc`, `--duplex` and `--parrot` are refused alongside it. A repeater on the Pluto:
 
 ```sh
@@ -153,7 +189,7 @@ Details: "Host tests", "Firmware: esp_idf" and "Flashing (SuperMini)" below.
 |---|---|
 | `common/` | `rdof_common`: portable C11, libc and libm only (no ESP-IDF, no POSIX). One `CMakeLists.txt` that is an ESP-IDF component when `ESP_PLATFORM` is set and a plain static library otherwise. Headers in `include/rdof/`. `src/radiofoundry/` holds the FEC, CACH, LC and CRC code from RadioFoundry (MIT). |
 | `sdr/` | `rdof_sdr`: the SDR receive path in portable C11 on top of `common/` ("SDR core" below); `cli/rdofsdr.c`, a host tool. |
-| `hostweb/` | the firmware's web page and its shared API (`common/src/webapi.c`) for a host tool (`rdofradio --web PORT`): a small POSIX HTTP server in its own thread; [hostweb/README.md](../hostweb/README.md). Off unless `-DRDOF_HOST_WEB=ON`. |
+| `hostweb/` | the firmware's web page and its shared API (`common/src/webapi.c`) for a host tool (`rdofradio --web [ADDR:]PORT`): a small POSIX HTTP server in its own thread; [hostweb/README.md](../hostweb/README.md). Off unless `-DRDOF_HOST_WEB=ON`. |
 | `rtlsdr/` | the RTL2832U + R820T / R828D driver: portable register logic, and `esp/rtl_usb.c`, the ESP-IDF USB host glue. |
 | `components/` | ESP-IDF components with nothing of the gateway in them, for any ESP-IDF project: `netclock` (a UTC clock disciplined by NTP or a browser) and `wifilist` (a prioritized list of Wi-Fi networks with a setup access point), each with its own README, Kconfig menu, NVS namespace, HTTP handlers and page section; `tinysctp` (SCTP over UDP, with PR-SCTP: the HBlink4 link's transport; its own README and Kconfig menu, no settings of its own); and `lr2021` (a Semtech LR2021 on SPI, from the datasheet; its own README). Each keeps its logic in plain C that the host tests build. |
 | `rust/` | `rdof_rust`: modules of `common/` ported to Rust, linked in place of their C behind a Kconfig switch, `CONFIG_RDOF_RUST`; [rust/README.md](../rust/README.md). |
@@ -198,7 +234,7 @@ reply, a clock) and calls the transceiver's or repeater's `poll` every 20 ms.
 
 `hostweb/` serves the firmware's own page (embedded from `esp_idf/main/web/index.html` and the components' scripts)
 from a host tool, so a running `rdofradio` can be watched in a browser. Build with `-DRDOF_HOST_WEB=ON`, run with
-`--web PORT` (127.0.0.1 only by default). The tool publishes a status snapshot, log lines and calls
+`--web [ADDR:]PORT` (127.0.0.1 unless ADDR is given; `0.0.0.0:8080` on a Pluto, to reach it over USB or Ethernet). The tool publishes a status snapshot, log lines and calls
 (`rdof/hostweb.h`), and may give settings hooks. The API is the firmware's own code (`rdof/webapi.h`): the server
 answers `/api/status`, `/api/lastheard`, `/api/log`, and with the hooks `/api/config`, `/api/resolved` and
 `/api/restart`, and `501 not on this platform` for the rest. The status's `caps` say what the server has; the page
@@ -817,7 +853,9 @@ edits. Headers in `include/rdof/sdr/`.
 | `sdrmodem`, `loopback` | the SDR as an MMDVM modem for an `sdr_transceiver`, and its end-to-end check ("Transmit: the SDR as a radio") |
 | `receiver` | one tuner: channelizer, a demod and a `common` call tracker per channel, AFC after each chunk |
 | `cli/rdofsdr.c` | host tool: a cu8 recording (or, with SoapySDR, a live device: `--soapy`) in, bursts and tracker JSON out; `--bench` times each stage |
-| `cli/rdofradio.c` | host tool, with SoapySDR: a device that transmits, run as an `sdr_transceiver` (repeater or roaming transceiver), with the parrot |
+| `cli/rdofradio.c` | host tool, with SoapySDR or libiio: a device that transmits, run as an `sdr_transceiver` (repeater or roaming transceiver), with the parrot; the device behind `rdofradio_dev.h` (`rdofradio_soapy.c`, `rdofradio_iio.c`) |
+| `cli/tools.cmake` | the host tools' build, shared by the top-level build and host-tests: SoapySDR, libiio and libad9361 found, pffft and the web page linked |
+| `pffft/` | pffft (FFTPACK license), unchanged, and `rdof_pffft.c`: an `rdof_fft` backend the host tools use (`--fft builtin` turns it off). 2.6 to 2.9 times the built-in FFT on a Cortex-A9; scalar there, as its NEON code was slower |
 
 Switches (`include/rdof/sdr/features.h`, Kconfig menu "RadioFoundry Gateway SDR (sdr)"; all on by default):
 

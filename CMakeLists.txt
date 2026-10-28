@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
-# The Linux (and any host) build: the portable libraries, the rdofsdr tool and the tests.
+# The Linux (and any host) build: the portable libraries, the host tools (sdr/cli/tools.cmake) and the tests.
 #   cmake -S . -B build/linux && cmake --build build/linux && ctest --test-dir build/linux
 # The ESP32-S3 firmware builds from esp_idf/ with idf.py instead (docs/reference.md).
 cmake_minimum_required(VERSION 3.16)
@@ -28,28 +28,10 @@ else()
     add_subdirectory(common common)
     add_subdirectory(sdr sdr)
     add_subdirectory(rtlsdr rtlsdr)
-    add_executable(rdofsdr sdr/cli/rdofsdr.c)
-    target_link_libraries(rdofsdr PRIVATE rdof_sdr m)
-    set_target_properties(rdofsdr PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
-    target_compile_options(rdofsdr PRIVATE -Wall -Wno-unused-parameter)
-
-    # rdofsdr's live input (--soapy): SoapySDR when it's installed (Debian / Ubuntu libsoapysdr-dev, Homebrew soapysdr).
-    find_path(SOAPYSDR_INCLUDE_DIR SoapySDR/Device.h)
-    find_library(SOAPYSDR_LIBRARY SoapySDR)
-    if(SOAPYSDR_INCLUDE_DIR AND SOAPYSDR_LIBRARY)
-        message(STATUS "SoapySDR found: rdofsdr --soapy")
-        target_compile_definitions(rdofsdr PRIVATE RDOF_SOAPY)
-        target_include_directories(rdofsdr PRIVATE ${SOAPYSDR_INCLUDE_DIR})
-        target_link_libraries(rdofsdr PRIVATE ${SOAPYSDR_LIBRARY})
-        find_package(Threads REQUIRED)
-        add_executable(rdofradio sdr/cli/rdofradio.c sdr/cli/rdofradio_cfg.c)
-        target_include_directories(rdofradio PRIVATE ${SOAPYSDR_INCLUDE_DIR})
-        target_link_libraries(rdofradio PRIVATE rdof_sdr ${SOAPYSDR_LIBRARY} Threads::Threads m)
-        set_target_properties(rdofradio PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
-        target_compile_options(rdofradio PRIVATE -Wall -Wno-unused-parameter)
-    else()
-        message(STATUS "SoapySDR not found: rdofsdr reads files only")
+    if(NOT WIN32)
+        add_subdirectory(hostweb hostweb)
     endif()
+    include(sdr/cli/tools.cmake)
 endif()
 
 include(GNUInstallDirs)

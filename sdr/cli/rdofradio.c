@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 /*
- * rdofradio: a SoapySDR device that receives and transmits, run as the gateway's sdr_transceiver on a host. The
+ * rdofradio: an SDR that receives and transmits, run as the gateway's sdr_transceiver on a host or on the SDR
+ * itself (a PlutoSDR's own ARM, through libiio: rdofradio_dev.h). The
  * same parts as on a board (docs/reference.md, "Transmit: the SDR as a radio"): the receiver hears the RX
  * channel, the SDR modem (rdof/sdr/sdrmodem.h) takes what it hears and modulates what it's given, and the
  * repeater (full duplex) or the roaming transceiver (half duplex) drives the modem through an rdof_modem client,
@@ -9,10 +10,16 @@
  * transceiver only listens. --parrot ID sends back what's heard once it ends (rdof/parrot.h), as a network call
  * would come: the transceiver's only way to transmit here, and the repeater's outbound after the call.
  *
- *   rdofradio --soapy ARGS --allow-tx --rx MHZ [--tx MHZ] [--duplex full|half] [--cc CC] [-r RATE] [--bw MHZ]
+ *   rdofradio DEVICE --allow-tx --rx MHZ [--tx MHZ] [--duplex full|half] [--cc CC] [-r RATE] [--bw MHZ]
  *             [--tx-gain DB] [--tx-lo MHZ] [--gain DB] [--center MHZ] [--monitor] [--tx-offset S]
- *             [--parrot ID] [--stream ARGS] [--seconds S] [--bursts] [--quiet] [-v] [--web PORT]
- *   rdofradio --soapy ARGS --allow-tx --config FILE [the device's flags as above]
+ *             [--parrot ID] [--stream ARGS] [--seconds S] [--bursts] [--quiet] [-v] [--web [ADDR:]PORT]
+ *             [--fft builtin|pffft]
+ *   rdofradio DEVICE --allow-tx --config FILE [the device's flags as above]
+ *
+ * DEVICE is --soapy ARGS (SoapySDR; -r defaults to 2.4 MS/s) or --iio URI (an AD9361 through libiio: "local:" on a
+ * PlutoSDR, "ip:192.168.2.1" from a host; -r defaults to 768 kS/s, which the chip's own FIR makes with
+ * libad9361). --web serves the page on 127.0.0.1 unless ADDR is given (0.0.0.0: every interface). --fft: the
+ * channelizer's FFT, pffft when it's built in (RDOF_PFFFT).
  *
  * --config FILE takes the radio from the firmware's settings document (rdofradio_cfg.h) in place of --rx, --tx,
  * --duplex, --cc and --parrot; the device stays on the command line. With --web, the page edits the file: a save
@@ -44,9 +51,6 @@
 #include <strings.h>
 #include <time.h>
 
-#include <SoapySDR/Device.h>
-#include <SoapySDR/Formats.h>
-
 #include "rdof/layer2.h"
 #include "rdof/modem.h"
 #include "rdof/parrot.h"
@@ -55,6 +59,10 @@
 #include "rdof/sdr/sdrmodem.h"
 #include "rdof/txvr.h"
 #include "rdofradio_cfg.h"
+#include "rdofradio_dev.h"
+#ifdef RDOF_PFFFT
+#include "rdof_pffft.h"
+#endif
 #ifdef RDOF_HOST_WEB
 #include "rdof/hostweb.h"
 #endif
@@ -62,6 +70,10 @@
 #define CHUNK 24000        /* receive samples a turn: 10 ms at 2.4 MS/s */
 #define POLL_S 0.02        /* the repeater's poll */
 #define RING (1 << 21)     /* transmit samples between the loop and the writer: 0.87 s at 2.4 MS/s */
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846 /* not in <math.h> under _POSIX_C_SOURCE alone (glibc) */
+#endif
 
 typedef struct {
     bool full;
@@ -102,14 +114,13 @@ static radio_t R;
 static volatile sig_atomic_t stop;
 static int quiet, show_bursts;
 #ifdef RDOF_HOST_WEB
-static int web_port = -1; /* --web PORT: the firmware's page on 127.0.0.1 (0: any free port) */
+static int web_port = -1;        /* --web [ADDR:]PORT: the firmware's page (0: any free port) */
+static char web_addr[64] = "127.0.0.1";
 
 /* what the page shows, from the modem, the tracker and the parrot */
 static void web_publish(double rx, double tx, int cc);
 #endif
-static SoapySDRDevice *dev;
-static SoapySDRStream *rx_st, *tx_st;
-static double tx_gain_min;
+static rdofradio_dev_t *dev;
 
 static void on_signal(int s) { stop = 1; }
 
@@ -188,9 +199,7 @@ static void *writer(void *arg)
         if (n > CHUNK)
             n = CHUNK;
         pthread_mutex_unlock(&W.mu);
-        const void *b[1] = {W.buf + at};
-        int flags = 0;
-        int k = SoapySDRDevice_writeStream(dev, tx_st, b, (size_t)n, &flags, 0, 100000);
+        int k = dev->write(dev, W.buf + at, n, 100000);
         pthread_mutex_lock(&W.mu);
         if (k <= 0) {
             W.errors++;
@@ -226,10 +235,20 @@ static double now_s(void)
 static void usage(void)
 {
     fprintf(stderr,
-            "usage: rdofradio --soapy ARGS --allow-tx --rx MHZ [--tx MHZ] [--duplex full|half] [--cc CC] [-r RATE] [--bw MHZ]\n"
+            "usage: rdofradio DEVICE --allow-tx --rx MHZ [--tx MHZ] [--duplex full|half] [--cc CC] [-r RATE] [--bw MHZ]\n"
             "                 [--tx-gain DB] [--tx-lo MHZ] [--gain DB] [--center MHZ] [--monitor] [--tx-offset S]\n"
-            "                 [--parrot ID] [--stream ARGS] [--seconds S] [--bursts] [--quiet] [-v] [--web PORT]\n"
-            "       rdofradio --soapy ARGS --allow-tx --config FILE [the device's flags]\n");
+            "                 [--parrot ID] [--stream ARGS] [--seconds S] [--bursts] [--quiet] [-v] [--web [ADDR:]PORT]\n"
+            "                 [--fft builtin|pffft]\n"
+            "       rdofradio DEVICE --allow-tx --config FILE [the device's flags]\n"
+            "DEVICE: %s\n",
+#if defined(RDOF_SOAPY) && defined(RDOF_IIO)
+            "--soapy ARGS | --iio URI"
+#elif defined(RDOF_SOAPY)
+            "--soapy ARGS"
+#else
+            "--iio URI"
+#endif
+            );
     exit(2);
 }
 
@@ -362,15 +381,15 @@ static int relabel(void *ctx, const rdof_sdr_burst_t *b) { return rdof_sdrmodem_
 
 static void tx_gain(double db)
 {
-    if (SoapySDRDevice_setGain(dev, SOAPY_SDR_TX, 0, db))
-        fprintf(stderr, "TX gain %.1f: %s\n", db, SoapySDRDevice_lastError());
+    if (dev->set_tx_gain(dev, db))
+        fprintf(stderr, "TX gain %.1f: %s\n", db, dev->error);
 }
 
 static void shutdown_tx(void)
 {
     if (!dev)
         return;
-    tx_gain(tx_gain_min);
+    tx_gain(dev->tx_gain_min);
     if (W.running) {
         pthread_mutex_lock(&W.mu);
         W.quit = true;
@@ -379,11 +398,7 @@ static void shutdown_tx(void)
         pthread_join(W.thread, NULL);
         W.running = false;
     }
-    if (tx_st) {
-        SoapySDRDevice_deactivateStream(dev, tx_st, 0, 0);
-        SoapySDRDevice_closeStream(dev, tx_st);
-        tx_st = NULL;
-    }
+    dev->stop_tx(dev);
 }
 
 #ifdef RDOF_HOST_WEB
@@ -394,7 +409,7 @@ static void web_publish(double rx, double tx, int cc)
     memset(&w, 0, sizeof w);
     w.role = R.full ? RDOF_HOSTWEB_REPEATER : RDOF_HOSTWEB_TRANSCEIVER;
     snprintf(w.name, sizeof w.name, "%s", rcfg.name);
-    snprintf(w.radio, sizeof w.radio, "SoapySDR");
+    snprintf(w.radio, sizeof w.radio, "%s", dev->name);
     snprintf(w.modem, sizeof w.modem, "SDR modem");
     snprintf(w.state, sizeof w.state, "%s", R.m.keyed ? "keyed" : "idle");
     w.ready = true;
@@ -492,8 +507,8 @@ static void web_settings(int argc, char **argv)
 
 int main(int argc, char **argv)
 {
-    const char *soapy = NULL, *stream_args = "";
-    double bw = 0, rate = 2400000, rx = 0, tx = 0, tx_lo = 0, center = 0, gain = NAN, txg = 0, seconds = 0, offset_s = 0;
+    const char *soapy = NULL, *iio = NULL, *stream_args = "", *fft = NULL;
+    double bw = 0, rate = 0, rx = 0, tx = 0, tx_lo = 0, center = 0, gain = NAN, txg = 0, seconds = 0, offset_s = 0;
     int cc = 1, allow = 0, monitor = 0, verbose = 0;
     const char *duplex = "full";
     for (int i = 1; i < argc; i++) {
@@ -507,6 +522,12 @@ int main(int argc, char **argv)
         if (!strcmp(a, "--soapy")) {
             NEXT();
             soapy = v;
+        } else if (!strcmp(a, "--iio")) {
+            NEXT();
+            iio = v;
+        } else if (!strcmp(a, "--fft")) {
+            NEXT();
+            fft = v;
         } else if (!strcmp(a, "--config")) {
             NEXT();
             config_path = v;
@@ -570,6 +591,11 @@ int main(int argc, char **argv)
 #ifdef RDOF_HOST_WEB
         } else if (!strcmp(a, "--web")) {
             NEXT();
+            const char *colon = strrchr(v, ':');
+            if (colon) {
+                snprintf(web_addr, sizeof web_addr, "%.*s", (int)(colon - v), v);
+                v = colon + 1;
+            }
             web_port = atoi(v);
 #endif
         } else {
@@ -611,8 +637,33 @@ int main(int argc, char **argv)
         }
     }
     R.full = !strcmp(duplex, "full");
-    if (!soapy || !rx || (!R.full && strcmp(duplex, "half")))
+    if (!soapy == !iio || !rx || (!R.full && strcmp(duplex, "half")))
         usage();
+#ifndef RDOF_SOAPY
+    if (soapy) {
+        fprintf(stderr, "rdofradio was built without SoapySDR (RDOF_SOAPY)\n");
+        return 2;
+    }
+#endif
+#ifndef RDOF_IIO
+    if (iio) {
+        fprintf(stderr, "rdofradio was built without libiio (RDOF_IIO)\n");
+        return 2;
+    }
+#endif
+    if (!rate)
+        rate = iio ? 768000 : 2400000;
+#ifdef RDOF_PFFFT
+    if (!fft || !strcmp(fft, "pffft"))
+        rdof_fft_set_backend(rdof_pffft_backend());
+    else if (strcmp(fft, "builtin"))
+        usage();
+#else
+    if (fft && strcmp(fft, "builtin")) {
+        fprintf(stderr, "rdofradio was built without pffft (RDOF_PFFFT)\n");
+        return 2;
+    }
+#endif
     if (!allow) {
         fprintf(stderr, "rdofradio transmits: pass --allow-tx\n");
         return 2;
@@ -655,54 +706,33 @@ int main(int argc, char **argv)
     R.rx.relabel = relabel; /* the tracker's JSON (calls, BER, RSSI) with the inbound slot, not slot 1 */
     R.rx.burst_ctx = &R;
 
-    /* the device: RX and TX at one rate, each on its own LO */
-    SoapySDRKwargs kw = SoapySDRKwargs_fromString(soapy);
-    dev = SoapySDRDevice_make(&kw);
-    SoapySDRKwargs_clear(&kw);
+    /* the device: RX and TX at one rate, each on its own LO, the TX gain at its least */
+    const rdofradio_dev_setup_t su = {rate, R.rx.center_hz, tx_lo, gain, bw, stream_args};
+    char derr[256] = "";
+#ifdef RDOF_IIO
+    if (iio)
+        dev = rdofradio_iio_open(iio, &su, derr, sizeof derr);
+#endif
+#ifdef RDOF_SOAPY
+    if (soapy)
+        dev = rdofradio_soapy_open(soapy, &su, derr, sizeof derr);
+#endif
     if (!dev) {
-        fprintf(stderr, "soapy %s: %s\n", soapy, SoapySDRDevice_lastError());
+        fprintf(stderr, "%s\n", derr);
         return 1;
     }
-    SoapySDRRange tr = SoapySDRDevice_getGainRange(dev, SOAPY_SDR_TX, 0);
-    tx_gain_min = tr.minimum;
-    if (txg < tr.minimum || txg > tr.maximum) {
-        fprintf(stderr, "TX gain %.1f outside the device's %.1f..%.1f\n", txg, tr.minimum, tr.maximum);
-        SoapySDRDevice_unmake(dev);
+    if (txg < dev->tx_gain_min || txg > dev->tx_gain_max) {
+        fprintf(stderr, "TX gain %.1f outside the device's %.1f..%.1f\n", txg, dev->tx_gain_min, dev->tx_gain_max);
+        dev->close(dev);
         return 1;
     }
-    tx_gain(tx_gain_min);
-    if (SoapySDRDevice_setSampleRate(dev, SOAPY_SDR_RX, 0, rate) ||
-        SoapySDRDevice_setSampleRate(dev, SOAPY_SDR_TX, 0, rate) ||
-        SoapySDRDevice_setFrequency(dev, SOAPY_SDR_RX, 0, R.rx.center_hz, NULL) ||
-        SoapySDRDevice_setFrequency(dev, SOAPY_SDR_TX, 0, tx_lo, NULL) ||
-        SoapySDRDevice_setGainMode(dev, SOAPY_SDR_RX, 0, isnan(gain)) ||
-        (!isnan(gain) && SoapySDRDevice_setGain(dev, SOAPY_SDR_RX, 0, gain)) ||
-        (bw > 0 && (SoapySDRDevice_setBandwidth(dev, SOAPY_SDR_RX, 0, bw) ||
-                    SoapySDRDevice_setBandwidth(dev, SOAPY_SDR_TX, 0, bw)))) {
-        fprintf(stderr, "soapy setup: %s\n", SoapySDRDevice_lastError());
-        SoapySDRDevice_unmake(dev);
-        return 1;
-    }
-    const double got = SoapySDRDevice_getSampleRate(dev, SOAPY_SDR_RX, 0);
+    const double got = dev->rate;
     if (fabs(got - rate) > 2.0)
-        fprintf(stderr, "soapy: the device runs at %.1f S/s, not %.0f\n", got, rate);
-    /* the streams' own arguments (--stream), for both. A PlutoSDR's own 65536-sample buffers made the loop delay
-     * vary by a buffer (27 ms at 2.4 MS/s) from run to run; 16384 underran its transmitter without a word (bit
-     * errors in every burst); 32768 holds the delay within a few ms and sends clean */
-    char *driver = SoapySDRDevice_getDriverKey(dev);
-    if (!*stream_args && driver && !strcasecmp(driver, "plutosdr"))
-        stream_args = "bufflen=32768";
-    free(driver);
-    SoapySDRKwargs sa = SoapySDRKwargs_fromString(stream_args);
-    rx_st = SoapySDRDevice_setupStream(dev, SOAPY_SDR_RX, SOAPY_SDR_CF32, NULL, 0, &sa);
-    tx_st = SoapySDRDevice_setupStream(dev, SOAPY_SDR_TX, SOAPY_SDR_CF32, NULL, 0, &sa);
-    SoapySDRKwargs_clear(&sa);
-    if (!rx_st || !tx_st) {
-        fprintf(stderr, "soapy streams: %s\n", SoapySDRDevice_lastError());
-        shutdown_tx();
-        SoapySDRDevice_unmake(dev);
-        return 1;
-    }
+        fprintf(stderr, "%s: the device runs at %.1f S/s, not %.0f\n", dev->name, got, rate);
+    /* the loop's turn: 10 ms of samples, so the repeater's 20 ms poll keeps its time at any rate */
+    int chunk = (int)(rate / 100);
+    if (chunk > CHUNK)
+        chunk = CHUNK;
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
 
@@ -750,35 +780,42 @@ int main(int argc, char **argv)
     if (!ok) {
         fprintf(stderr, "%s start: %s\n", R.full ? "repeater" : "transceiver", R.client.error);
         shutdown_tx();
-        SoapySDRDevice_unmake(dev);
+        dev->close(dev);
         return 1;
     }
     fprintf(stderr, "%s: %s, RX %.4f MHz (center %.4f), TX %.4f MHz (LO %.4f), cc %d, %.0f S/s, TX gain %.1f "
                     "(%.1f..%.1f), RX gain %s, analog bandwidth %.2f MHz\n",
             R.full ? "repeater" : "transceiver", R.client.version, rx / 1e6, R.rx.center_hz / 1e6, tx / 1e6,
-            tx_lo / 1e6, cc, got, txg, tr.minimum, tr.maximum, isnan(gain) ? "auto" : "set",
-            SoapySDRDevice_getBandwidth(dev, SOAPY_SDR_RX, 0) / 1e6);
+            tx_lo / 1e6, cc, got, txg, dev->tx_gain_min, dev->tx_gain_max, isnan(gain) ? "auto" : "set",
+            dev->bandwidth(dev) / 1e6);
+    fprintf(stderr, "device: %s; FFT: %s\n", dev->name,
+#ifdef RDOF_PFFFT
+            fft && !strcmp(fft, "builtin") ? "built-in" : "pffft"
+#else
+            "built-in"
+#endif
+    );
 
     static rdof_cf_t in[CHUNK], out[CHUNK];
     const int lead = (int)(rate * 0.05); /* 50 ms of zeros ahead of the first read */
     const int64_t offset = (int64_t)llround(offset_s * rate);
-    if (SoapySDRDevice_activateStream(dev, rx_st, 0, 0, 0) || SoapySDRDevice_activateStream(dev, tx_st, 0, 0, 0)) {
-        fprintf(stderr, "soapy activate: %s\n", SoapySDRDevice_lastError());
+    if (dev->start(dev)) {
+        fprintf(stderr, "start: %s\n", dev->error);
         shutdown_tx();
-        SoapySDRDevice_unmake(dev);
+        dev->close(dev);
         return 1;
     }
     memset(out, 0, sizeof out);
     int64_t txn = 0; /* transmit samples put in the ring */
-    for (int left = lead; left > 0; left -= CHUNK) {
-        const int k = left < CHUNK ? left : CHUNK;
+    for (int left = lead; left > 0; left -= chunk) {
+        const int k = left < chunk ? left : chunk;
         tx_put(out, k);
         txn += k;
     }
     if (pthread_create(&W.thread, NULL, writer, NULL)) {
         fprintf(stderr, "the transmit writer: no thread\n");
         shutdown_tx();
-        SoapySDRDevice_unmake(dev);
+        dev->close(dev);
         return 1;
     }
     W.running = true;
@@ -786,11 +823,11 @@ int main(int argc, char **argv)
 #ifdef RDOF_HOST_WEB
     if (web_port >= 0) {
         web_settings(argc, argv);
-        const int port = rdof_hostweb_start(NULL, web_port, rcfg.box);
+        const int port = rdof_hostweb_start(web_addr, web_port, rcfg.box);
         if (port < 0)
             fprintf(stderr, "web: %s\n", strerror(errno));
         else
-            fprintf(stderr, "web: http://127.0.0.1:%d/\n", port);
+            fprintf(stderr, "web: http://%s:%d/\n", web_addr, port);
     }
     double last_web = 0;
 #endif
@@ -806,8 +843,8 @@ int main(int argc, char **argv)
      * handheld's burst is in, and the receiver can't hear the outbound at a split wider than its band. So, first,
      * the receiver listens on the TX LO for a 20 ms pulse sent on the output frequency, then goes back. */
     if (R.full) {
-        if (SoapySDRDevice_setFrequency(dev, SOAPY_SDR_RX, 0, tx_lo, NULL))
-            say("calibration: can't tune the receiver to the TX LO: %s\n", SoapySDRDevice_lastError());
+        if (dev->set_rx_freq(dev, tx_lo))
+            say("calibration: can't tune the receiver to the TX LO: %s\n", dev->error);
         else
             R.cal = 1, R.cal_at = (long long)(rate * 0.3);
         tx_gain(txg); /* now: the gain step's LO leakage is in the baseline before the pulse, not taken for it */
@@ -816,27 +853,24 @@ int main(int argc, char **argv)
     long level_n = 0;
     double t_read = 0, t_write = 0, t_proc = 0; /* seconds spent in each, since the last status */
     while (!stop && (seconds <= 0 || total < (long long)(seconds * rate))) {
-        void *b[1] = {in};
-        int flags = 0;
-        long long t_ns = 0;
         const double t0 = now_s();
-        int n = SoapySDRDevice_readStream(dev, rx_st, b, CHUNK, &flags, &t_ns, 500000);
+        int n = dev->read(dev, in, chunk, 500000);
         t_read += now_s() - t0;
-        if (n == SOAPY_SDR_TIMEOUT) {
+        if (n == RDOF_DEV_TIMEOUT) {
             if (++timeouts >= 10) { /* 5 s: the stream is dead (a Pluto after a USB read error) */
-                fprintf(stderr, "soapy read: nothing for 5 s, stopping\n");
+                fprintf(stderr, "read: nothing for 5 s, stopping\n");
                 break;
             }
             continue;
         }
         timeouts = 0;
-        if (n == SOAPY_SDR_OVERFLOW) {
+        if (n == RDOF_DEV_OVERFLOW) {
             overflows++;
             continue;
         }
         if (n < 0) {
             if (++rx_errors > 10) {
-                fprintf(stderr, "soapy read: %d\n", n);
+                fprintf(stderr, "%s\n", dev->error);
                 break;
             }
             continue;
@@ -867,7 +901,7 @@ int main(int argc, char **argv)
                 R.lag_win = (double)total / rate;
             }
             if (R.recal && R.cal == 0 && !hot && !keyed && !R.m.in_call[0] && !R.m.in_call[1]) {
-                if (SoapySDRDevice_setFrequency(dev, SOAPY_SDR_RX, 0, tx_lo, NULL) == 0) {
+                if (dev->set_rx_freq(dev, tx_lo) == 0) {
                     R.recal = false;
                     R.cal = 1, R.cal_at = total + (long long)(rate * 0.3);
                     tx_gain(txg);
@@ -900,7 +934,7 @@ int main(int argc, char **argv)
                 R.onset = txn - lead + offset + i0;
             }
         } else if (hot && (double)txn / rate > keyed_until) {
-            tx_gain(tx_gain_min);
+            tx_gain(dev->tx_gain_min);
             hot = false;
         }
         for (int i = 0; i < n; i++)
@@ -951,7 +985,7 @@ int main(int argc, char **argv)
                         R.m.tx_late48 = (total + i - R.onset) * 48000 / (int64_t)rate;
                         say("calibration: the transmit path is %.2f ms past its place\n",
                                 1e3 * (double)(total + i - R.onset) / rate);
-                        SoapySDRDevice_setFrequency(dev, SOAPY_SDR_RX, 0, R.rx.center_hz, NULL);
+                        dev->set_rx_freq(dev, R.rx.center_hz);
                         R.cal = 0, R.cal_tries = 0;
                         R.ring_ref = -1; /* the ring's floor taken again against this */
                     } else {
@@ -966,7 +1000,7 @@ int main(int argc, char **argv)
             if (R.onset >= 0 && total - R.onset > (long long)rate) {
                 R.onset = -1; /* no edge within a second: too little leaks in to see it */
                 if (R.cal == 2) {
-                    SoapySDRDevice_setFrequency(dev, SOAPY_SDR_RX, 0, R.rx.center_hz, NULL);
+                    dev->set_rx_freq(dev, R.rx.center_hz);
                     R.cal = 0;
                     if (++R.cal_tries < 5) {
                         say("calibration: the pulse wasn't heard; trying again\n");
@@ -993,7 +1027,7 @@ int main(int argc, char **argv)
             level_n += (n + 15) / 16;
             if (now - last_status >= 1.0) {
                 fprintf(stderr, "status %.1f s (wall %.1f; read %.2f, ring wait %.2f, process %.2f s; ring %.0f ms): RX gain %.0f dB, level %.1f dBFS, %s, modem sent %u idle %u heard %u\n",
-                        total / rate, now - t_start, t_read, t_write, t_proc, 1e3 * (double)(W.head - W.tail) / rate, SoapySDRDevice_getGain(dev, SOAPY_SDR_RX, 0),
+                        total / rate, now - t_start, t_read, t_write, t_proc, 1e3 * (double)(W.head - W.tail) / rate, dev->rx_gain(dev),
                         10 * log10(level_sum / (level_n ? level_n : 1) + 1e-12), hot ? "TX on" : "TX off",
                         R.m.tx_bursts, R.m.idle_bursts, R.m.rx_bursts);
                 last_status = now;
@@ -1010,9 +1044,7 @@ int main(int argc, char **argv)
     if (R.full)
         rdof_repeater_stop(&R.r);
     shutdown_tx();
-    SoapySDRDevice_deactivateStream(dev, rx_st, 0, 0);
-    SoapySDRDevice_closeStream(dev, rx_st);
-    SoapySDRDevice_unmake(dev);
+    dev->close(dev);
 
     fprintf(stderr, "%.1f s (%.1f s wall), %d overflows, %d TX write errors; modem: %u bursts sent, %u idle, %u heard, "
                     "%u muted, %u lost, %u refused\n",

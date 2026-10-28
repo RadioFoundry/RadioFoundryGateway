@@ -58,6 +58,8 @@ Each board runs whatever its config names: up to **two roamers or repeaters plus
 | Handheld in hotspot mode ([OpenGD77](https://www.opengd77.com/), [RadioFoundry](https://github.com/RadioFoundry/RadioFoundry)) | USB or UART | ✅ | ✅ | half or full |
 | MMDVM_HS HAT | UART | ✅ | ✅ | half or full |
 | Any SoapySDR device (Linux / macOS): RTL-SDR and PlutoSDR tested; LimeSDR, HackRF, USRP B200 and others ([list](docs/reference.md)) | `rdofsdr` | ✅ multi-channel | — | — |
+| A SoapySDR device that transmits, or an AD9361 / AD9363 through libiio | `rdofradio` | ✅ | ✅ | half or full |
+| PlutoSDR family (7010 / 7020, stock firmware), on its own ARM | `rdofradio --iio local:` | ✅ | ✅ | half or full |
 
 Some combinations:
 
@@ -69,6 +71,7 @@ Some combinations:
 | ESP32-S3 + two handhelds | A **split duplex** repeater: one radio receives, the other transmits |
 | ESP32-S3 + HAT + RTL-SDR | A repeater plus a wide-area monitor, one box |
 | Raspberry Pi + any SoapySDR | 10+ channels from one dongle |
+| PlutoSDR alone | A full duplex repeater with its web page, any split, on the stock firmware |
 
 A powered USB hub runs two USB radios at once. An optional SSD1306 OLED shows the board's state.
 
@@ -130,7 +133,8 @@ The board doesn't just set its clock, it disciplines it, chrony style:
 | `4mb` | ESP32-S3 SuperMini | 4 MB flash, 2 MB PSRAM |
 | `16mb` | ESP32-S3 N16R8 | 16 MB flash, 8 MB PSRAM |
 | `16mb` + `w12` | Meshnology W12 | LR2021, OLED, L76K GNSS header. Best at 902–928 MHz; at UHF its filter costs about 46 dB, so it hears only nearby transmitters |
-| Linux / macOS | PC, Raspberry Pi | `rdofsdr`, live from SoapySDR or from a recording |
+| Linux / macOS | PC, Raspberry Pi | `rdofsdr`, live from SoapySDR or from a recording; `rdofradio` |
+| PlutoSDR | its Zynq's ARM | `rdofradio --iio`, built by `tools/pluto/build.sh` ([reference](docs/reference.md)) |
 
 ## Protocol additions
 

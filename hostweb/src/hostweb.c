@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -508,6 +509,16 @@ static void respond(int fd, int code, const char *type, const void *body, size_t
     respond_with(fd, code, type, body, n, NULL, false);
 }
 
+/* the first case-insensitive match of what in s (strcasestr is a GNU extension) */
+static const char *find_nocase(const char *s, const char *what)
+{
+    const size_t n = strlen(what);
+    for (; *s; s++)
+        if (!strncasecmp(s, what, n))
+            return s;
+    return NULL;
+}
+
 static void respond_str(int fd, int code, const char *type, const char *s)
 {
     respond(fd, code, type, s, strlen(s));
@@ -586,7 +597,7 @@ static void serve(int fd)
         respond_str(fd, 400, "text/plain", "bad request\n");
         return;
     }
-    const char *cl = strcasestr(req, "\r\ncontent-length:");
+    const char *cl = find_nocase(req, "\r\ncontent-length:");
     const long body_len = cl ? strtol(cl + 17, NULL, 10) : 0;
     const char *body_at = end + 4;
     const size_t body_have = n - (size_t)(body_at - req);

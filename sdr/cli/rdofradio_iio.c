@@ -1,0 +1,318 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
+/*
+ * rdofradio's device on libiio 0.x (rdofradio_dev.h): an AD9361 or AD9363 (the PlutoSDR family and its clones),
+ * through the Linux driver's IIO devices. URI: "local:" on the board, "ip:192.168.2.1" or "usb:" from a host.
+ *
+ *   ad9361-phy                 the chip: voltage0 in (RX gain, mode, bandwidth, rate), voltage0 out (TX
+ *                              attenuation as a negative "hardwaregain"), altvoltage0 / 1 out (the RX / TX LO,
+ *                              each with its "powerdown": SoapyPlutoSDR leaves both down when it closes)
+ *   cf-ad9361-lpc              the receive DMA: voltage0 and voltage1 (I, Q), 12 bits, LSB aligned
+ *   cf-ad9361-dds-core-lpc     the transmit DMA: voltage0 and voltage1, 16 bits, the DAC takes the top 12
+ *
+ * The rate: with libad9361 (RDOF_AD9361), ad9361_set_bb_rate, which loads the chip's own FIR for the rates under
+ * 2.083 MS/s (down to 521 kS/s); without it, the chip's rate as is, which the driver refuses there. The FPGA's
+ * decimation and interpolation (its own "sampling_frequency", 1/8 of the chip's) are kept off: one board's
+ * decimator gave nothing but noise (docs/reference.md, "PlutoSDR").
+ */
+#define _POSIX_C_SOURCE 200809L
+#include <errno.h>
+#include <math.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/types.h>
+
+#include <iio.h>
+#ifdef RDOF_AD9361
+#include <ad9361.h>
+#endif
+
+#include "rdofradio_dev.h"
+
+#define TX_ATTEN_MAX 89.0 /* dB; TX gain 0 is this much attenuation, 89 none (as SoapyPlutoSDR) */
+
+typedef struct {
+    rdofradio_dev_t d;
+    struct iio_context *ctx;
+    struct iio_device *phy, *rxd, *txd;
+    struct iio_channel *rx_ch, *tx_ch, *rx_lo, *tx_lo, *rx_i, *rx_q, *tx_i, *tx_q;
+    struct iio_buffer *rxb, *txb;
+    size_t len;          /* samples a DMA buffer */
+    const int16_t *rp;   /* the receive buffer's next sample, r_left of them */
+    size_t r_left;
+    int16_t *wp;         /* the transmit buffer's next free sample, w_left of them */
+    size_t w_left;
+} iio_t;
+
+static void fail(rdofradio_dev_t *d, const char *what, int err)
+{
+    char e[100];
+    iio_strerror(err < 0 ? -err : err, e, sizeof e);
+    snprintf(d->error, sizeof d->error, "%s: %s", what, e);
+}
+
+static int put_ll(rdofradio_dev_t *d, struct iio_channel *c, const char *attr, long long v)
+{
+    const int r = iio_channel_attr_write_longlong(c, attr, v);
+    if (r < 0) {
+        char what[64];
+        snprintf(what, sizeof what, "%s %lld", attr, v);
+        fail(d, what, r);
+    }
+    return r < 0 ? -1 : 0;
+}
+
+static int set_rx_freq(rdofradio_dev_t *d, double hz)
+{
+    return put_ll(d, ((iio_t *)d)->rx_lo, "frequency", llround(hz));
+}
+
+static int set_tx_gain(rdofradio_dev_t *d, double db)
+{
+    const int r = iio_channel_attr_write_double(((iio_t *)d)->tx_ch, "hardwaregain", db - TX_ATTEN_MAX);
+    if (r < 0)
+        fail(d, "TX gain", r);
+    return r < 0 ? -1 : 0;
+}
+
+static double rx_gain(rdofradio_dev_t *d)
+{
+    double g = NAN;
+    if (iio_channel_attr_read_double(((iio_t *)d)->rx_ch, "hardwaregain", &g) < 0)
+        return NAN;
+    return g;
+}
+
+static double bandwidth(rdofradio_dev_t *d)
+{
+    long long bw = 0;
+    if (iio_channel_attr_read_longlong(((iio_t *)d)->rx_ch, "rf_bandwidth", &bw) < 0)
+        return NAN;
+    return (double)bw;
+}
+
+static int start(rdofradio_dev_t *d)
+{
+    iio_t *s = (iio_t *)d;
+    s->rxb = iio_device_create_buffer(s->rxd, s->len, false);
+    if (!s->rxb) {
+        fail(d, "receive buffer", errno);
+        return -1;
+    }
+    s->txb = iio_device_create_buffer(s->txd, s->len, false);
+    if (!s->txb) {
+        fail(d, "transmit buffer", errno);
+        return -1;
+    }
+    s->wp = iio_buffer_start(s->txb);
+    s->w_left = s->len;
+    return 0;
+}
+
+static int rd(rdofradio_dev_t *d, rdof_cf_t *x, int n, long timeout_us)
+{
+    iio_t *s = (iio_t *)d;
+    if (!s->r_left) {
+        const ssize_t r = iio_buffer_refill(s->rxb);
+        if (r < 0) {
+            if (r == -ETIMEDOUT || r == -EAGAIN)
+                return RDOF_DEV_TIMEOUT;
+            fail(d, "read", (int)r);
+            return RDOF_DEV_ERROR;
+        }
+        s->rp = iio_buffer_start(s->rxb);
+        s->r_left = (size_t)((const char *)iio_buffer_end(s->rxb) - (const char *)s->rp) / (2 * sizeof(int16_t));
+    }
+    const int k = (size_t)n < s->r_left ? n : (int)s->r_left;
+    const float scale = 1.0f / 2048.0f;
+    for (int i = 0; i < k; i++) {
+        x[i].re = (float)s->rp[2 * i] * scale;
+        x[i].im = (float)s->rp[2 * i + 1] * scale;
+    }
+    s->rp += 2 * k;
+    s->r_left -= (size_t)k;
+    return k;
+}
+
+static int16_t dac(float v)
+{
+    const float y = v * 32767.0f;
+    return (int16_t)(y > 32767.0f ? 32767 : y < -32767.0f ? -32767 : lrintf(y));
+}
+
+static int wr(rdofradio_dev_t *d, const rdof_cf_t *x, int n, long timeout_us)
+{
+    iio_t *s = (iio_t *)d;
+    const int k = (size_t)n < s->w_left ? n : (int)s->w_left;
+    for (int i = 0; i < k; i++) {
+        s->wp[2 * i] = dac(x[i].re);
+        s->wp[2 * i + 1] = dac(x[i].im);
+    }
+    s->wp += 2 * k;
+    s->w_left -= (size_t)k;
+    if (!s->w_left) {
+        const ssize_t r = iio_buffer_push(s->txb); /* blocks while the driver's buffers are all queued */
+        s->wp = iio_buffer_start(s->txb);
+        s->w_left = s->len;
+        if (r < 0) {
+            fail(d, "write", (int)r);
+            return RDOF_DEV_ERROR;
+        }
+    }
+    return k;
+}
+
+/* an LO on or off; failures don't matter on the way down */
+static int lo_power(rdofradio_dev_t *d, struct iio_channel *lo, bool on)
+{
+    const int r = iio_channel_attr_write_bool(lo, "powerdown", !on);
+    if (r < 0)
+        fail(d, on ? "LO power up" : "LO power down", r);
+    return r < 0 ? -1 : 0;
+}
+
+static void stop_tx(rdofradio_dev_t *d)
+{
+    iio_t *s = (iio_t *)d;
+    if (s->txb) {
+        iio_buffer_destroy(s->txb);
+        s->txb = NULL;
+    }
+    if (s->tx_lo)
+        lo_power(d, s->tx_lo, false); /* no LO leakage once it's stopped */
+}
+
+static void close_dev(rdofradio_dev_t *d)
+{
+    iio_t *s = (iio_t *)d;
+    stop_tx(d);
+    if (s->rxb)
+        iio_buffer_destroy(s->rxb);
+    if (s->rx_lo)
+        lo_power(d, s->rx_lo, false);
+    if (s->ctx)
+        iio_context_destroy(s->ctx);
+    free(s);
+}
+
+/* a device's own rate as the chip's (no FPGA decimation), when it has the attribute */
+static void fpga_rate(struct iio_device *dev, bool output, long long rate)
+{
+    struct iio_channel *c = iio_device_find_channel(dev, "voltage0", output);
+    if (c && iio_channel_attr_write_longlong(c, "sampling_frequency", rate) < 0) {
+        /* boards without the FPGA decimator have no such attribute: nothing to turn off */
+    }
+}
+
+/* "bufflen=N" in --stream */
+static size_t stream_len(const char *stream, double rate)
+{
+    const char *p = stream ? strstr(stream, "bufflen=") : NULL;
+    if (p)
+        return (size_t)strtoul(p + 8, NULL, 10);
+    /* 13.7 ms, as 32768 samples at 2.4 MS/s (rdofradio_soapy.c): the loop delay steady, the transmitter fed */
+    size_t n = (size_t)(rate * 32768.0 / 2400000.0);
+    n = (n + 4095) / 4096 * 4096;
+    return n < 4096 ? 4096 : n;
+}
+
+rdofradio_dev_t *rdofradio_iio_open(const char *uri, const rdofradio_dev_setup_t *su, char *err, size_t cap)
+{
+    iio_t *s = calloc(1, sizeof *s);
+    if (!s) {
+        snprintf(err, cap, "out of memory");
+        return NULL;
+    }
+    rdofradio_dev_t *d = &s->d;
+    d->set_rx_freq = set_rx_freq;
+    d->set_tx_gain = set_tx_gain;
+    d->rx_gain = rx_gain;
+    d->bandwidth = bandwidth;
+    d->start = start;
+    d->read = rd;
+    d->write = wr;
+    d->stop_tx = stop_tx;
+    d->close = close_dev;
+    d->tx_gain_min = 0, d->tx_gain_max = TX_ATTEN_MAX;
+    snprintf(d->name, sizeof d->name, "libiio AD9361");
+    s->ctx = uri && *uri ? iio_create_context_from_uri(uri) : iio_create_default_context();
+    if (!s->ctx) {
+        char e[100];
+        iio_strerror(errno, e, sizeof e);
+        snprintf(err, cap, "iio %s: %s", uri && *uri ? uri : "(default)", e);
+        free(s);
+        return NULL;
+    }
+    s->phy = iio_context_find_device(s->ctx, "ad9361-phy");
+    s->rxd = iio_context_find_device(s->ctx, "cf-ad9361-lpc");
+    s->txd = iio_context_find_device(s->ctx, "cf-ad9361-dds-core-lpc");
+    if (s->phy) {
+        s->rx_ch = iio_device_find_channel(s->phy, "voltage0", false);
+        s->tx_ch = iio_device_find_channel(s->phy, "voltage0", true);
+        s->rx_lo = iio_device_find_channel(s->phy, "altvoltage0", true);
+        s->tx_lo = iio_device_find_channel(s->phy, "altvoltage1", true);
+    }
+    if (s->rxd) {
+        s->rx_i = iio_device_find_channel(s->rxd, "voltage0", false);
+        s->rx_q = iio_device_find_channel(s->rxd, "voltage1", false);
+    }
+    if (s->txd) {
+        s->tx_i = iio_device_find_channel(s->txd, "voltage0", true);
+        s->tx_q = iio_device_find_channel(s->txd, "voltage1", true);
+    }
+    if (!s->rx_ch || !s->tx_ch || !s->rx_lo || !s->tx_lo || !s->rx_i || !s->rx_q || !s->tx_i || !s->tx_q) {
+        snprintf(err, cap, "iio %s: no AD9361 there (ad9361-phy, cf-ad9361-lpc, cf-ad9361-dds-core-lpc)",
+                 uri && *uri ? uri : "(default)");
+        close_dev(d);
+        return NULL;
+    }
+    if (set_tx_gain(d, d->tx_gain_min)) {
+        snprintf(err, cap, "iio: %s", d->error);
+        close_dev(d);
+        return NULL;
+    }
+    const long long rate = llround(su->rate);
+    int r;
+#ifdef RDOF_AD9361
+    r = ad9361_set_bb_rate(s->phy, (unsigned long)rate);
+    if (r < 0)
+        fail(d, "rate", r);
+#else
+    r = put_ll(d, s->rx_ch, "sampling_frequency", rate);
+    if (rate < 2083334)
+        snprintf(d->error + strlen(d->error), sizeof d->error - strlen(d->error),
+                 " (under 2.083 MS/s needs libad9361)");
+#endif
+    fpga_rate(s->rxd, false, rate);
+    fpga_rate(s->txd, true, rate);
+    if (r < 0 || put_ll(d, s->rx_lo, "frequency", llround(su->rx_hz)) ||
+        put_ll(d, s->tx_lo, "frequency", llround(su->tx_hz)) || lo_power(d, s->rx_lo, true) ||
+        lo_power(d, s->tx_lo, true) ||
+        (su->bw > 0 && (put_ll(d, s->rx_ch, "rf_bandwidth", llround(su->bw)) ||
+                        put_ll(d, s->tx_ch, "rf_bandwidth", llround(su->bw))))) {
+        snprintf(err, cap, "iio setup: %s", d->error);
+        close_dev(d);
+        return NULL;
+    }
+    const char *mode = isnan(su->gain) ? "slow_attack" : "manual";
+    r = (int)iio_channel_attr_write(s->rx_ch, "gain_control_mode", mode);
+    if (r < 0 || (!isnan(su->gain) && (r = iio_channel_attr_write_double(s->rx_ch, "hardwaregain", su->gain)) < 0)) {
+        fail(d, "RX gain", r);
+        snprintf(err, cap, "iio setup: %s", d->error);
+        close_dev(d);
+        return NULL;
+    }
+    long long got = 0;
+    if (iio_channel_attr_read_longlong(s->rx_ch, "sampling_frequency", &got) < 0)
+        got = rate;
+    d->rate = (double)got;
+    iio_channel_enable(s->rx_i);
+    iio_channel_enable(s->rx_q);
+    iio_channel_enable(s->tx_i);
+    iio_channel_enable(s->tx_q);
+    s->len = stream_len(su->stream, d->rate);
+    return d;
+}
