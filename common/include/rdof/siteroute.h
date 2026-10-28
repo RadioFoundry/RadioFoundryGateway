@@ -32,6 +32,7 @@ extern "C" {
 
 #define RDOF_SITEROUTE_TXVRS 4
 #define RDOF_SITEROUTE_TUNED 16
+#define RDOF_SITEROUTE_MEMO 8 /* RF streams decided lately: another sink asking about one gets the same answer */
 
 struct rdof_repeater;
 struct rdof_txvr;
@@ -45,6 +46,12 @@ typedef struct {
 } rdof_siteroute_txvr_t;
 
 typedef struct {
+    uint32_t hz, src, dst;
+    int8_t slot, net;
+    double at;
+} rdof_siteroute_memo_t;
+
+typedef struct {
     rdof_router_t router;
     struct rdof_repeater *rpt[RDOF_SITE_MAX_APPS]; /* by app: a repeater app's */
     struct rdof_repeater *rpt_freq[RDOF_SITE_MAX_FREQS]; /* by frequency: an SFR or DCDM frequency's */
@@ -54,6 +61,8 @@ typedef struct {
     int tuned_next;
     uint32_t stream_emergency; /* the last stream whose header said emergency */
     const char *why;           /* the last RF call's: why it wasn't sent (rdof_router_rf) */
+    rdof_siteroute_memo_t memo[RDOF_SITEROUTE_MEMO];
+    int memo_next;
     unsigned no_txvr;          /* network streams with no transceiver free for a path */
 } rdof_siteroute_t;
 
@@ -66,7 +75,8 @@ bool rdof_siteroute_add_repeater_freq(rdof_siteroute_t *sr, int freq, struct rdo
 bool rdof_siteroute_add_txvr(rdof_siteroute_t *sr, struct rdof_txvr *t, uint64_t freqs);
 
 /* A stream heard at hz on slot, at its start: the network it goes to (rdof_router_rf), -1 none (why says why, or
-   it went to an app). */
+   it went to an app). Each receiver's sinks (HBlink, MQTT) ask in turn: the same stream asked again within a second
+   gets the first answer, and the router counts it once. */
 int rdof_siteroute_rf(rdof_siteroute_t *sr, uint32_t hz, int slot, uint32_t src, uint32_t dst, bool group, double now);
 /* Whether a call heard at hz on slot may reach app (the path's apps). */
 bool rdof_siteroute_reaches(const rdof_siteroute_t *sr, uint32_t hz, int slot, int app);
@@ -76,6 +86,13 @@ bool rdof_siteroute_reaches(const rdof_siteroute_t *sr, uint32_t hz, int slot, i
 uint64_t rdof_siteroute_burst(rdof_siteroute_t *sr, int net, uint32_t peer, const rdof_net_burst_t *b, double now);
 /* A DMRD packet from network net to peer (other packets: false, the caller's). */
 bool rdof_siteroute_dmrd(rdof_siteroute_t *sr, int net, uint32_t peer, const uint8_t *d, size_t n, double now);
+
+/* MQTT calls (docs/spec/fw/mqtt.md): a DMRD packet goes out on {root}/calls/{tg|pc}/{dst}/{box}; a box takes
+   {root}/calls/# but its own. The topic for a DMRD (0: not one, or no room). */
+size_t rdof_siteroute_calls_topic(const char *root, const char *box, const uint8_t *dmrd, size_t n, char *out,
+                                  size_t cap);
+/* Whether topic is a call another box sent (not box's, and the shape above). */
+bool rdof_siteroute_calls_theirs(const char *topic, const char *root, const char *box);
 
 /* Whether stream sid was tuned here (the transceiver's DMRK for it goes nowhere). */
 bool rdof_siteroute_tuned(const rdof_siteroute_t *sr, const uint8_t sid[4]);

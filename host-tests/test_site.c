@@ -347,6 +347,21 @@ static void test_siteroute(const char *dir)
         CHECK(rdof_siteroute_rf(&sr, 438750000, 1, 1, 9, true, 11) < 0 && sr.why, "TS1: 9 not");
         CHECK(rdof_siteroute_rf(&sr, 438750000, 2, 1, 9990, true, 11) < 0 && !sr.why, "TS2: 9990 to the parrot, not up");
         CHECK(rdof_siteroute_rf(&sr, 438025000, 1, 1, 3100, true, 11) < 0, "not a path");
+        const unsigned before = sr.router.to_net;
+        CHECK(rdof_siteroute_rf(&sr, 438750000, 1, 1, 9990, true, 11.5) == 0 && sr.router.to_net == before,
+              "asked again (the MQTT sink): the same answer, counted once");
+        uint8_t d[RDOF_DMRD_LEN], burst[RDOF_BURST_BYTES] = {0};
+        char t[96];
+        rdof_dmrd_packet(0, 9800001, 3100, S.id, 1, true, RDOF_DT_VOICE_LC_HEADER, 0, 9, burst, 0, 0, d);
+        CHECK(rdof_siteroute_calls_topic("DMR", "hilltop", d, sizeof d, t, sizeof t) && !strcmp(t, "DMR/calls/tg/3100/hilltop"),
+              "%s", t);
+        rdof_dmrd_packet(0, 9800001, 9800002, S.id, 2, false, RDOF_DT_VOICE_LC_HEADER, 0, 9, burst, 0, 0, d);
+        CHECK(rdof_siteroute_calls_topic("DMR", "hilltop", d, sizeof d, t, sizeof t) &&
+                  !strcmp(t, "DMR/calls/pc/9800002/hilltop"), "%s", t);
+        CHECK(rdof_siteroute_calls_theirs("DMR/calls/tg/3100/plant", "DMR", "hilltop") &&
+                  !rdof_siteroute_calls_theirs("DMR/calls/tg/3100/hilltop", "DMR", "hilltop") &&
+                  !rdof_siteroute_calls_theirs("DMR/x/calls/tg/3100/a", "DMR", "hilltop") &&
+                  !rdof_siteroute_calls_theirs("DMR/calls/tg/3100", "DMR", "hilltop"), "theirs");
     }
     if (load(dir, "good-commercial.json")) {
         static rdof_txvr_t t;

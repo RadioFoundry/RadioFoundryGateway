@@ -3,6 +3,7 @@
 /* The router on a running box (rdof/siteroute.h). */
 #include "rdof/siteroute.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "rdof/features.h"
@@ -45,10 +46,20 @@ bool rdof_siteroute_add_txvr(rdof_siteroute_t *sr, struct rdof_txvr *t, uint64_t
 
 int rdof_siteroute_rf(rdof_siteroute_t *sr, uint32_t hz, int slot, uint32_t src, uint32_t dst, bool group, double now)
 {
+    for (int k = 0; k < RDOF_SITEROUTE_MEMO; k++) {
+        const rdof_siteroute_memo_t *m = &sr->memo[k];
+        if (m->at > 0 && now - m->at < 1.0 && m->hz == hz && m->slot == slot && m->src == src && m->dst == dst)
+            return m->net;
+    }
     const rdof_rcall_t c = {.src = src, .dst = dst, .group = group};
     const rdof_route_t r = rdof_router_rf(&sr->router, rdof_site_path_rx(sr->router.site, hz, slot), &c, now);
     sr->why = r.kind == RDOF_ROUTE_NONE ? r.why : NULL;
-    return r.kind == RDOF_ROUTE_NET ? r.net : -1;
+    const int net = r.kind == RDOF_ROUTE_NET ? r.net : -1;
+    sr->memo[sr->memo_next].hz = hz, sr->memo[sr->memo_next].src = src, sr->memo[sr->memo_next].dst = dst;
+    sr->memo[sr->memo_next].slot = (int8_t)slot, sr->memo[sr->memo_next].net = (int8_t)net;
+    sr->memo[sr->memo_next].at = now > 0 ? now : 1e-9;
+    sr->memo_next = (sr->memo_next + 1) % RDOF_SITEROUTE_MEMO;
+    return net;
 }
 
 bool rdof_siteroute_reaches(const rdof_siteroute_t *sr, uint32_t hz, int slot, int app)
@@ -172,4 +183,25 @@ bool rdof_siteroute_dmrd(rdof_siteroute_t *sr, int net, uint32_t peer, const uin
         return false;
     rdof_siteroute_burst(sr, net, peer, &b, now);
     return true;
+}
+
+size_t rdof_siteroute_calls_topic(const char *root, const char *box, const uint8_t *d, size_t n, char *out, size_t cap)
+{
+    if (n < RDOF_DMRD_LEN || memcmp(d, "DMRD", 4))
+        return 0;
+    const unsigned dst = (unsigned)d[8] << 16 | (unsigned)d[9] << 8 | d[10];
+    const int k = snprintf(out, cap, "%s/calls/%s/%u/%s", root, (d[15] & 0x40) ? "pc" : "tg", dst, box);
+    return k > 0 && (size_t)k < cap ? (size_t)k : 0;
+}
+
+bool rdof_siteroute_calls_theirs(const char *topic, const char *root, const char *box)
+{
+    const size_t rl = strlen(root);
+    if (strncmp(topic, root, rl) || strncmp(topic + rl, "/calls/", 7))
+        return false;
+    const char *t = topic + rl + 7;
+    if (strncmp(t, "tg/", 3) && strncmp(t, "pc/", 3))
+        return false;
+    const char *b = strchr(t + 3, '/');
+    return b && b > t + 3 && b[1] && strcmp(b + 1, box);
 }
