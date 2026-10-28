@@ -1036,7 +1036,7 @@ static bool slot_path(ctx_t *c, rdof_site_t *s, const char *name, int freq, int 
 
 static bool make_paths(ctx_t *c, rdof_site_t *s)
 {
-    char name[RDOF_SITE_NAME + 4], p[80], bp[80];
+    char name[RDOF_SITE_NAME + 4], p[96], bp[80];
     for (int f = 0; f < s->nfreq; f++) {
         rdof_freq_t *fr = &s->freq[f];
         if (fr->app >= 0)
@@ -1053,7 +1053,7 @@ static bool make_paths(ctx_t *c, rdof_site_t *s)
         if (fr->mode == RDOF_FMODE_DCDM || (slots >= 0 && !fr->tx)) {
             for (int sl = 1; sl <= 2; sl++) {
                 snprintf(name, sizeof name, "%s/%d", fr->name, sl);
-                char sp[96];
+                char sp[112];
                 snprintf(sp, sizeof sp, "%s.%d", p, sl);
                 if (!slot_path(c, s, name, f, txf, -1, sl, sn[sl - 1], pn[sl - 1], sp, o, bp, true))
                     return false;
@@ -1078,7 +1078,7 @@ static bool make_paths(ctx_t *c, rdof_site_t *s)
             return false;
         for (int sl = 1; sl <= 2; sl++) {
             snprintf(name, sizeof name, "%s/%d", ap->name, sl);
-            char sp[96];
+            char sp[112];
             snprintf(sp, sizeof sp, "%s.%d", p, sl);
             ap->path[sl - 1] = s->npath;
             if (!slot_path(c, s, name, ap->in, ap->out, a, sl, sn[sl - 1], pn[sl - 1], sp, o, bp, false))

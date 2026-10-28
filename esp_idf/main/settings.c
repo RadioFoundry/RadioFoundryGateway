@@ -56,7 +56,7 @@ rdof_sdr_config_t g_scfg;
 #endif
 
 /* What a new board runs until it's set up (the softAP comes up: no Wi-Fi): a placeholder roamer (an OpenGD77 on
-   USB) and an SDR on five 461 MHz channels at 288 kS/s; with both on USB, whichever is plugged in runs. */
+   USB) and an SDR on five 439 MHz channels at 288 kS/s; with both on USB, whichever is plugged in runs. */
 static const char DEFAULT_JSON[] =
     "{\n"
     "  // RadioFoundry Gateway settings: a box config in JSON (docs/spec/fw/config.md). run: the radios this board runs\n"
@@ -68,12 +68,12 @@ static const char DEFAULT_JSON[] =
     "  \"mqtt\": {\"host\": \"192.0.2.115\", \"port\": 1883, \"username\": \"radios\", \"password\": \"\"},\n"
     "  \"hblink\": {\"host\": \"192.0.2.115\", \"port\": 62031},\n"
     "  \"cc\": 2,\n"
-    "  \"channels\": {\"1\": {\"freq\": 461.6875, \"name\": \"Ch 1\"},\n"
-    "               \"13\": {\"freq\": 461.0375, \"name\": \"Area 4\", \"tg\": 213},\n"
-    "               \"4\": {\"freq\": 461.0875, \"name\": \"Service Bravo\", \"tg\": 204},\n"
-    "               \"6\": {\"freq\": 461.1375, \"name\": \"Operations 3\", \"tg\": 206},\n"
-    "               \"8\": {\"freq\": 461.1875, \"name\": \"Service Desk\", \"tg\": 208},\n"
-    "               \"10\": {\"freq\": 461.2375, \"name\": \"Area 1\", \"tg\": 210}},\n"
+    "  \"channels\": {\"1\": {\"freq\": 438.5, \"name\": \"Ch 1\"},\n"
+    "               \"13\": {\"freq\": 438.0625, \"name\": \"Area 4\", \"tg\": 213},\n"
+    "               \"4\": {\"freq\": 438.1125, \"name\": \"Service Bravo\", \"tg\": 204},\n"
+    "               \"6\": {\"freq\": 438.1625, \"name\": \"Operations 3\", \"tg\": 206},\n"
+    "               \"8\": {\"freq\": 438.2125, \"name\": \"Service Desk\", \"tg\": 208},\n"
+    "               \"10\": {\"freq\": 438.2625, \"name\": \"Area 1\", \"tg\": 210}},\n"
     "  \"run\": " DEFAULT_RUN ",\n"
     "  \"radios\": [\n"
     "    {\"type\": \"radio_hotspot\", \"name\": \"ROAM1\", \"peer_id\": 9990301, \"callsign\": \"RT01\",\n"
@@ -374,6 +374,8 @@ void settings_load(void)
     if (!g_cfg_ok) {
         ESP_LOGE(TAG, "the stored settings don't parse (%s): running the defaults", g_cfg_error);
         resolve(DEFAULT_JSON, strlen(DEFAULT_JSON), false, &g_roles, error, sizeof error);
+    } else {
+        site_load(text, strlen(text)); /* version 3: the call router */
     }
     free(text);
     ESP_LOGI(TAG, "%s: %s%s%s", g_roles.box, g_roles.has_radio ? g_roles.radio : "",

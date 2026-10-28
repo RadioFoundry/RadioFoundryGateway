@@ -4,6 +4,10 @@
  * HBlink4: one receive-only peer per channel (hblink: true and a peer_id), each
  * with its own UDP socket, a DMRC every 10 s as the keepalive (DMRP back), and
  * the channel's DMRD from the tracker.
+ *
+ * Version 3 with one identity (site_run.c): every channel's DMRD goes through the box's peer, a roamer's or
+ * repeater's when one runs, else one peer here (the box's id, the first channel's DMRC). Each stream goes up only
+ * when its path's policy sends it to HBlink (site_rf); what the master sends a peer here goes to the call router.
  */
 #include <stdlib.h>
 #include <string.h>
@@ -27,6 +31,7 @@ static const char *TAG = "hblink";
 
 typedef struct {
     int channel;
+    bool via;  /* one identity: no socket of its own, sends through the box's peer */
     int sock;
     rdof_hb_peer_t peer; /* the keepalive and the master's state (common/src/hbpeer.c) */
     rdof_hb_sink_t sink;
@@ -35,6 +40,7 @@ typedef struct {
 
 static peer_t *peers; /* npeers of them, from the heap */
 static int npeers;
+static peer_t *box_peer; /* one identity, no roamer or repeater: the box's peer, here */
 static int chan_peer[RDOF_SDR_MAX_CHANNELS] = {-1};
 
 static void peer_send(void *ctx, const uint8_t *data, size_t len)
@@ -47,6 +53,25 @@ static void peer_send(void *ctx, const uint8_t *data, size_t len)
 }
 
 static uint32_t peer_rand(void *ctx) { return esp_random(); }
+
+/* one identity: through the roamer's or repeater's peer, else the box's here */
+static void via_send(void *ctx, const uint8_t *data, size_t len)
+{
+#if CONFIG_RDOF_ROAMER
+    roam_t *o = site_hb_peer();
+    if (o) {
+        roam_hb_send(o, data, len);
+        return;
+    }
+#endif
+    if (box_peer)
+        peer_send(box_peer, data, len);
+}
+
+static bool chan_admit(void *ctx, int slot, uint32_t src, uint32_t dst, bool group)
+{
+    return site_rf((uint32_t)g_scfg.ch[((peer_t *)ctx)->channel].freq, slot, src, dst, group);
+}
 
 static void on_frame(void *ctx, const char *ch, const rdof_frame_t *f) { rdof_hb_sink_on_frame(&((peer_t *)ctx)->sink, f); }
 
@@ -91,6 +116,8 @@ static void peer_task(void *arg)
         }
         for (int i = 0; i < npeers; i++) {
             peer_t *p = &peers[i];
+            if (p->via)
+                continue;
             if (p->sock < 0) {
                 int s = open_socket();
                 xSemaphoreTake(p->lock, portMAX_DELAY);
@@ -105,6 +132,8 @@ static void peer_task(void *arg)
         for (int i = 0; i < npeers; i++) {
             peer_t *p = &peers[i];
             rdof_hbp_event_t ev;
+            if (p->via)
+                continue;
             if (p->sock >= 0 && rdof_hb_peer_tick(&p->peer, now, &ev)) {
                 uint8_t pkt[RDOF_DMRC_MAX];
                 const size_t n = dmrc(p, pkt);
@@ -147,6 +176,8 @@ static void peer_task(void *arg)
             else if (ev == RDOF_HBP_REFUSED)
                 ESP_LOGW(TAG, "peer %lu refused by the master: %.6s", (unsigned long)p->peer.peer_id,
                          (const char *)buf);
+            else if (ev == RDOF_HBP_PACKET)
+                site_dmrd(p->peer.peer_id, buf, (size_t)n); /* version 3: the call router's, else nothing sends */
         }
     }
 }
@@ -160,21 +191,33 @@ void sdr_hb_start(void)
     peers = calloc(RDOF_SDR_MAX_CHANNELS, sizeof *peers);
     if (!peers)
         return;
+    const bool shared = site_shared_identity();
     for (int c = 0; c < g_scfg.nch; c++) {
         const rdof_sdr_cfg_channel_t *ch = &g_scfg.ch[c];
-        if (!ch->hblink || ch->peer_id < 0)
+        const bool via = shared && !ch->hblink;
+        if (!via && (!ch->hblink || ch->peer_id < 0))
             continue;
         peer_t *p = &peers[npeers];
         p->channel = c;
-        rdof_hb_peer_init(&p->peer, (uint32_t)ch->peer_id, RDOF_HB_KEEPALIVE_SECONDS);
+        p->via = via;
+        const uint32_t id = via ? site_id() : (uint32_t)ch->peer_id;
+        rdof_hb_peer_init(&p->peer, id, RDOF_HB_KEEPALIVE_SECONDS);
         p->sock = -1;
         p->lock = xSemaphoreCreateMutex();
-        rdof_hb_sink_init(&p->sink, p->peer.peer_id);
-        p->sink.send = peer_send;
+        rdof_hb_sink_init(&p->sink, id);
+        p->sink.send = via ? via_send : peer_send;
         p->sink.rand32 = peer_rand;
+        p->sink.admit = chan_admit;
         p->sink.ctx = p;
         chan_peer[c] = npeers++;
     }
+    /* one identity and no roamer or repeater: the box's peer is the first channel's, with a socket */
+    if (shared && !g_roles.has_radio)
+        for (int i = 0; i < npeers && !box_peer; i++)
+            if (peers[i].via) {
+                peers[i].via = false;
+                box_peer = &peers[i];
+            }
     g_sstat.hb_peers = npeers;
     if (npeers) {
         ESP_LOGI(TAG, "%d peers for %s:%d", npeers, g_scfg.hb_host, g_scfg.hb_port);

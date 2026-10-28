@@ -26,6 +26,15 @@ bool rdof_siteroute_add_repeater(rdof_siteroute_t *sr, int app, struct rdof_repe
     return true;
 }
 
+bool rdof_siteroute_add_repeater_freq(rdof_siteroute_t *sr, int freq, struct rdof_repeater *r)
+{
+    const rdof_site_t *s = sr->router.site;
+    if (freq < 0 || freq >= s->nfreq || s->freq[freq].mode == RDOF_FMODE_SIMPLEX)
+        return false;
+    sr->rpt_freq[freq] = r;
+    return true;
+}
+
 bool rdof_siteroute_add_txvr(rdof_siteroute_t *sr, struct rdof_txvr *t, uint64_t freqs)
 {
     if (sr->ntx >= RDOF_SITEROUTE_TXVRS)
@@ -110,9 +119,10 @@ uint64_t rdof_siteroute_burst(rdof_siteroute_t *sr, int net, uint32_t peer, cons
         const rdof_path_t *p = &s->path[k];
         rdof_net_burst_t o = *b;
         o.slot = p->tx_slot ? p->tx_slot : b->slot;
-        if (p->app >= 0) {
+        const bool by_freq = p->app < 0 && s->freq[p->tx_freq].mode != RDOF_FMODE_SIMPLEX;
+        if (p->app >= 0 || by_freq) {
 #if RDOF_FEATURE_REPEATER
-            struct rdof_repeater *r = sr->rpt[p->app];
+            struct rdof_repeater *r = by_freq ? sr->rpt_freq[p->tx_freq] : sr->rpt[p->app];
             if (r) {
                 if (preempt >> k & 1)
                     rdof_repeater_preempt(r, b->stream_id);

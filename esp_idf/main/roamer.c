@@ -140,6 +140,7 @@ static void start_one(int k)
     modem_port_init(r);
     roam_rx_start(r);
     radio_start(r);
+    site_add_role(r);
     roam_hb_start(r);
     roam_mqtt_start(r);
     if (!strcmp(c->modem_port, "sdr")) {

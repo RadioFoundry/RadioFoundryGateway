@@ -89,6 +89,19 @@ static void hb_out(void *ctx, const uint8_t *data, size_t len)
     roam_hb_send(ctx, data, len);
 }
 
+/* the frequency the radio hears on: the tracker's (where the modem said it was), else a repeater's RX */
+static uint32_t heard_hz(roam_t *r)
+{
+    const double f = r->rx->tracker.freq_hz;
+    return f > 0 ? (uint32_t)f : r->cfg->mode == RDOF_CFG_REPEATER ? r->cfg->rx_freq : r->cfg->idle.freq;
+}
+
+/* version 3: a stream goes up when its path's policy sends it to HBlink */
+static bool hb_admit(void *ctx, int slot, uint32_t src, uint32_t dst, bool group)
+{
+    return site_rf(heard_hz(ctx), slot, src, dst, group);
+}
+
 static void hb_before(void *ctx)
 {
     roam_hb_send_config(ctx, false); /* HBlink4 credits a stream to the channel in the peer's last DMRC */
@@ -114,6 +127,7 @@ static void rx_task(void *arg)
         if (r->cfg->mode == RDOF_CFG_ROAMER)
             hb_sink->before_stream = hb_before;
         hb_sink->rand32 = hb_rand;
+        hb_sink->admit = hb_admit;
         hb_sink->ctx = r;
         rdof_tracker_add_sink(tracker, rdof_hb_sink_as_sink(hb_sink));
     }

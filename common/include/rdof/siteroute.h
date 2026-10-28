@@ -6,7 +6,7 @@
  * picks. The platform registers its transmitters: a repeater for each repeater app, a transceiver (rdof/txvr.h)
  * for the simplex frequencies it may transmit on.
  *
- *   A network stream to a repeater's path goes to that repeater, on the path's slot; an emergency that takes the
+ *   A network stream to a repeater's path (or an SFR or DCDM frequency's) goes to that repeater, on the path's slot; an emergency that takes the
  *   slot from another network stream ends that one (rdof_repeater_preempt).
  *   A network stream to a simplex path tunes a transceiver that may transmit on its frequency (as a DMRT would:
  *   the frequency's cc and power), then sends its bursts on the frequency's slot. A transceiver sends one stream
@@ -47,6 +47,7 @@ typedef struct {
 typedef struct {
     rdof_router_t router;
     struct rdof_repeater *rpt[RDOF_SITE_MAX_APPS]; /* by app: a repeater app's */
+    struct rdof_repeater *rpt_freq[RDOF_SITE_MAX_FREQS]; /* by frequency: an SFR or DCDM frequency's */
     rdof_siteroute_txvr_t tx[RDOF_SITEROUTE_TXVRS];
     int ntx;
     uint32_t tuned[RDOF_SITEROUTE_TUNED]; /* the streams tuned here, newest last */
@@ -60,6 +61,8 @@ void rdof_siteroute_init(rdof_siteroute_t *sr, const rdof_site_t *site);
 /* Registered transmitters. A repeater for app (a repeater app); a transceiver for freqs (bit per frequency; 0: every
    frequency it could, the device's transmits). False: no room, or not such an app. */
 bool rdof_siteroute_add_repeater(rdof_siteroute_t *sr, int app, struct rdof_repeater *r);
+/* The repeater running an SFR or DCDM frequency (its paths' bursts go to it, on their slot). */
+bool rdof_siteroute_add_repeater_freq(rdof_siteroute_t *sr, int freq, struct rdof_repeater *r);
 bool rdof_siteroute_add_txvr(rdof_siteroute_t *sr, struct rdof_txvr *t, uint64_t freqs);
 
 /* A stream heard at hz on slot, at its start: the network it goes to (rdof_router_rf), -1 none (why says why, or

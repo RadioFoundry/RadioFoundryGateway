@@ -374,6 +374,16 @@ static void test_siteroute(const char *dir)
         CHECK(rdof_siteroute_dmrd(&sr, 0, 0, d, sizeof d, 5) && !rdof_siteroute_dmrd(&sr, 0, 0, (const uint8_t *)"DMRP", 4, 5),
               "DMRD taken, others not");
     }
+    if (load(dir, "good-dcdm-per-path.json")) { /* a DCDM frequency: its repeater, on the path's slot */
+        static rdof_repeater_t d;
+        rdof_repeater_init(&d, NULL, S.id, 438487500, 438487500, 1);
+        rdof_siteroute_init(&sr, &S);
+        CHECK(rdof_siteroute_add_repeater_freq(&sr, rdof_site_freq(&S, "dc"), &d) &&
+                  !rdof_siteroute_add_repeater_freq(&sr, rdof_site_freq(&S, "mon"), &d), "DCDM repeater");
+        rdof_net_burst_t b = net_burst(0x99, 7, 3105, true, 1, false, false);
+        CHECK(rdof_siteroute_burst(&sr, 0, path("dc/2")->peer_id, &b, 1) == 1ull << rdof_site_path(&S, "dc/2") &&
+                  d.net_count == 1 && d.net_in[0].slot == 2, "TG 3105: slot 2");
+    }
     /* identity per_path: a stream goes only to the paths of the peer it came to */
     static const char pp[] = "{\"version\": 3, \"id\": 9800700, \"defaults\": {\"cc\": 1, \"tg\": 3100}, "
                              "\"devices\": [{\"kind\": \"sdr\", \"driver\": \"sim\"}], "

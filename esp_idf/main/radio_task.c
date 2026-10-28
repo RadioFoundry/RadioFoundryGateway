@@ -205,6 +205,20 @@ static void parrot_send(void *ctx, const rdof_net_burst_t *b)
     rdof_txvr_on_burst(r->txvr, b);
 }
 
+/* version 3: the path it's heard on may reach the parrot */
+static bool parrot_admit(void *ctx, int slot, uint32_t src, uint32_t dst, bool group)
+{
+    roam_t *r = ctx;
+    uint32_t hz = r->cfg->rx_freq;
+    int cc;
+    if (r->cfg->mode == RDOF_CFG_ROAMER) {
+        radio_channel_now(r, &hz, &cc);
+        if (!hz)
+            hz = r->cfg->idle.freq;
+    }
+    return site_reaches_parrot(hz, slot);
+}
+
 static void parrot_setup(roam_t *r)
 {
     const rdof_config_t *c = r->cfg;
@@ -225,6 +239,8 @@ static void parrot_setup(roam_t *r)
     r->parrot->start = parrot_start;
     r->parrot->send = parrot_send;
     r->parrot->ctx = r;
+    if (site_on())
+        r->parrot->admit = parrot_admit;
     r->parrot_lock = xSemaphoreCreateMutex();
     ESP_LOGI(TAG, "parrot: on, %s", c->parrot ? "what's addressed to its id" : "everything");
 }

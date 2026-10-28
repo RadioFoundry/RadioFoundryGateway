@@ -59,6 +59,10 @@ static void sctp_send(roam_t *r, const uint8_t *data, size_t len)
 
 void roam_hb_send(roam_t *r, const uint8_t *data, size_t len)
 {
+    if (len >= 13 && !memcmp(data, "DMRK", 4) && site_tuned(data + 8))
+        return; /* a transceiver's answer to a tune the router made: the master sent no DMRT */
+    if (!r->hb && r->hb_via)
+        r = r->hb_via; /* one identity: through the owner's peer */
     if (!r->hb)
         return;
     if (USE_SCTP(r)) {
@@ -128,6 +132,8 @@ static void received(roam_t *r, const uint8_t *buf, size_t n)
         ESP_LOGW(TAG, "peer %lu refused by the master: %.6s", (unsigned long)r->cfg->peer_id, (const char *)buf);
         r->st.hblink_up = false;
     } else if (ev == RDOF_HBP_PACKET) {
+        if (site_dmrd(r->cfg->peer_id, buf, n))
+            return; /* version 3: to the paths the call policies pick, any role's */
         rdof_repeater_t *rpt = NULL;
         rdof_txvr_t *txvr = NULL;
 #if RDOF_FEATURE_REPEATER
@@ -290,6 +296,12 @@ static void peer_task(void *arg)
 
 void roam_hb_start(roam_t *r)
 {
+    roam_t *o = site_hb_owner(r);
+    if (o != r) { /* one identity: the box's peer is another role's */
+        r->hb_via = o;
+        ESP_LOGI(TAG, "%s: HBlink4 through %s's peer", r->cfg->name, o->cfg->name);
+        return;
+    }
     struct roam_hb *h = calloc(1, sizeof *h);
     h->sock = -1;
     h->lock = xSemaphoreCreateMutex();

@@ -191,6 +191,7 @@ typedef struct roam {
     modem_transport_t uart, usb, sdr; /* this radio's transports */
     struct roam_rx *rx;
     struct roam_hb *hb;
+    struct roam *hb_via;        /* version 3, one identity: the role whose HBlink peer it sends through */
     struct roam_mq *mq;
     bool psram_stacks;          /* its tasks' stacks are in PSRAM */
 } roam_t;
@@ -251,6 +252,21 @@ void roam_tx_event(roam_t *r, const char *action, const rdof_tx_call_info_t *cal
 void roam_tx_burst(roam_t *r, const rdof_tx_call_info_t *call, const rdof_net_burst_t *b);
 
 double now_mono(void);
+
+/* The call router for a version 3 document (site_run.c, rdof/siteroute.h). Without one: off, and everything is
+   as version 2 (site_rf true, site_dmrd false). */
+void site_load(const char *text, size_t len);
+bool site_on(void);
+bool site_shared_identity(void);           /* one HBlink identity: every path is the box's peer */
+uint32_t site_id(void);
+void site_add_role(roam_t *r);             /* its repeater or transceiver, once radio_start made it */
+roam_t *site_hb_owner(roam_t *r);          /* the role whose HBlink peer r uses (r itself unless one identity) */
+roam_t *site_hb_peer(void);                /* one identity: that role, NULL none (yet) */
+bool site_rf(uint32_t hz, int slot, uint32_t src, uint32_t dst, bool group); /* a stream heard: to HBlink? */
+bool site_reaches_parrot(uint32_t hz, int slot);
+bool site_dmrd(uint32_t peer, const uint8_t *d, size_t n); /* a DMRD from the master, by the call policies */
+bool site_tuned(const uint8_t sid[4]);     /* a stream the router tuned a transceiver for */
+size_t site_resolved(char *out, size_t cap);
 
 #endif
 
