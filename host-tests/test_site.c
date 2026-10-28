@@ -10,11 +10,18 @@
 
 #include "rdof/broker.h"
 #include "rdof/config.h"
+#include "rdof/hblink.h"
 #include "rdof/idset.h"
+#include "rdof/layer2.h"
+#include "rdof/mmdvm.h"
+#include "rdof/pdu.h"
+#include "rdof/repeater.h"
 #include "rdof/router.h"
 #include "rdof/sdr/config.h"
 #include "rdof/setup.h"
 #include "rdof/site.h"
+#include "rdof/siteroute.h"
+#include "rdof/txvr.h"
 
 static int fails, checks;
 #define CHECK(c, ...)                                                                                                  \
@@ -279,6 +286,96 @@ static void test_router(const char *dir)
 #undef CALL
 }
 
+/* A transceiver's answers (DMRK) */
+typedef struct {
+    int n;
+    uint8_t sid[4];
+    uint32_t freq;
+} dmrk_cap_t;
+static void dmrk_cap(void *ctx, const uint8_t *d, size_t n)
+{
+    dmrk_cap_t *c = ctx;
+    if (n >= 13 && !memcmp(d, "DMRK", 4)) {
+        c->n++;
+        memcpy(c->sid, d + 8, 4);
+        c->freq = (uint32_t)d[13] << 24 | (uint32_t)d[14] << 16 | (uint32_t)d[15] << 8 | d[16];
+    }
+}
+
+/* a network burst: a voice header, or a terminator */
+static rdof_net_burst_t net_burst(uint32_t sid, uint32_t src, uint32_t dst, bool group, int slot, bool emergency,
+                                  bool end)
+{
+    rdof_net_burst_t b = {.src = src, .dst = dst, .group = group, .slot = slot, .terminator = end};
+    b.stream_id[0] = (uint8_t)(sid >> 24), b.stream_id[1] = (uint8_t)(sid >> 16);
+    b.stream_id[2] = (uint8_t)(sid >> 8), b.stream_id[3] = (uint8_t)sid;
+    const int dt = end ? RDOF_DT_TERMINATOR_WITH_LC : RDOF_DT_VOICE_LC_HEADER;
+    b.control = RDOF_SYNC_DATA | dt;
+    uint8_t lc[9];
+    rdof_group_lc(src, dst, group, emergency ? 0x80 : 0, lc);
+    rdof_lc_burst(lc, dt, 1, RDOF_MS_VOICE ^ RDOF_DATA_XOR, b.burst);
+    return b;
+}
+
+/* The router on a running box (rdof/siteroute.h): network bursts to the repeaters and transceivers it picks. */
+static void test_siteroute(const char *dir)
+{
+    static rdof_siteroute_t sr;
+    if (load(dir, "good-two-repeaters.json")) {
+        static rdof_repeater_t r1, r2;
+        rdof_repeater_init(&r1, NULL, S.id, 438750000, 438500000, 1);
+        rdof_repeater_init(&r2, NULL, S.id, 438175000, 438550000, 1);
+        rdof_siteroute_init(&sr, &S);
+        CHECK(rdof_siteroute_add_repeater(&sr, rdof_site_app(&S, "R1"), &r1) &&
+                  rdof_siteroute_add_repeater(&sr, rdof_site_app(&S, "R2"), &r2) &&
+                  !rdof_siteroute_add_repeater(&sr, rdof_site_app(&S, "parrot"), &r1),
+              "repeaters registered");
+        rdof_net_burst_t b = net_burst(0x10, 7, 3100, true, 1, false, false);
+        uint64_t m = rdof_siteroute_burst(&sr, 0, &b, 10);
+        CHECK(__builtin_popcountll(m) == 4 && r1.net_count == 2 && r2.net_count == 2, "TG 3100: both slots of both");
+        CHECK(r1.net_in[0].slot + r1.net_in[1].slot == 3, "on each slot: %d %d", r1.net_in[0].slot, r1.net_in[1].slot);
+        b = net_burst(0x40, 7, 555, true, 2, true, false); /* an emergency to TG 555: TS1 ("*") of each */
+        m = rdof_siteroute_burst(&sr, 0, &b, 10.5);
+        CHECK(m == (1ull << rdof_site_path(&S, "R1/1") | 1ull << rdof_site_path(&S, "R2/1")), "emergency: TS1");
+        CHECK(r1.has_preempt && !memcmp(r1.preempt, b.stream_id, 4) && r1.net_in[2].slot == 1,
+              "the repeater told: slot %d", r1.net_in[2].slot);
+        /* RF: TS2 reaches the parrot, TS1 doesn't (apps false) */
+        const int parrot = rdof_site_app(&S, "parrot");
+        CHECK(rdof_siteroute_reaches(&sr, 438750000, 2, parrot) && !rdof_siteroute_reaches(&sr, 438750000, 1, parrot),
+              "the parrot: TS2 only");
+        CHECK(rdof_siteroute_rf(&sr, 438750000, 1, 1, 9990, true, 11) && !sr.why, "TS1: 9990 up");
+        CHECK(!rdof_siteroute_rf(&sr, 438750000, 1, 1, 9, true, 11) && sr.why, "TS1: 9 not");
+        CHECK(!rdof_siteroute_rf(&sr, 438750000, 2, 1, 9990, true, 11), "TS2: 9990 to the parrot, not up");
+        CHECK(!rdof_siteroute_rf(&sr, 438025000, 1, 1, 3100, true, 11), "not a path");
+    }
+    if (load(dir, "good-commercial.json")) {
+        static rdof_txvr_t t;
+        static dmrk_cap_t cap;
+        rdof_txvr_init(&t, NULL, S.id);
+        t.send = dmrk_cap;
+        t.ctx = &cap;
+        rdof_siteroute_init(&sr, &S);
+        CHECK(rdof_siteroute_add_txvr(&sr, &t, 0), "a transceiver");
+        rdof_net_burst_t b = net_burst(0x111, 9800009, 203, true, 2, false, false);
+        uint64_t m = rdof_siteroute_burst(&sr, 0, &b, 1);
+        CHECK(m == 1ull << rdof_site_path(&S, "438.1125"), "TG 203: its frequency");
+        CHECK(cap.n == 1 && cap.freq == 438112500 && rdof_siteroute_tuned(&sr, b.stream_id),
+              "tuned there (not ready: refused): %d %u", cap.n, cap.freq);
+        CHECK(rdof_siteroute_burst(&sr, 0, &b, 1.06) == m && cap.n == 1, "tuned once a stream");
+        rdof_net_burst_t c = net_burst(0x222, 9800009, 204, true, 1, false, false);
+        CHECK(rdof_siteroute_burst(&sr, 0, &c, 1.1) == 0 && sr.no_txvr == 1, "one transceiver: busy");
+        b = net_burst(0x111, 9800009, 203, true, 2, false, true);
+        rdof_siteroute_burst(&sr, 0, &b, 1.2);
+        c = net_burst(0x333, 9800009, 204, true, 1, false, false);
+        CHECK(rdof_siteroute_burst(&sr, 0, &c, 1.3) == 1ull << rdof_site_path(&S, "438.1375") && cap.n == 2,
+              "free after the terminator");
+        uint8_t d[RDOF_DMRD_LEN];
+        rdof_dmrd_packet(0, 9800009, 205, S.id, 1, true, RDOF_DT_VOICE_LC_HEADER, 0, 0x444, c.burst, 0, 0, d);
+        CHECK(rdof_siteroute_dmrd(&sr, 0, d, sizeof d, 5) && !rdof_siteroute_dmrd(&sr, 0, (const uint8_t *)"DMRP", 4, 5),
+              "DMRD taken, others not");
+    }
+}
+
 /* Every fixture: good- taken, bad- refused; a good one runs as version 2. */
 static void test_fixtures(const char *dir)
 {
@@ -337,6 +434,7 @@ int main(int argc, char **argv)
     test_idset();
     test_scenarios(dir);
     test_router(dir);
+    test_siteroute(dir);
     test_fixtures(dir);
     printf("%d checks, %d failed\n", checks, fails);
     return fails != 0;
