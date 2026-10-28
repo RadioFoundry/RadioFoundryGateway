@@ -175,8 +175,7 @@ The version 2 `hblink` keys (`host`, `port`, `transport`, the SCTP keys), plus:
 | Key | Default | Meaning |
 |---|---|---|
 | `identity` | `single` | `single`: the box is one peer (`id`), and its policies decide what goes where. `per_path`: each frequency or repeater is its own peer (`id` + 1, + 2, ... in list order, or `peer_ids`), and the master decides where a call goes: a stream sent to a peer goes only to that peer's paths |
-| `peer_ids` | | `{"<frequency or repeater>": id}`, for `per_path`; a repeater's two slots share its peer |
-| `peer_names` | | `{"<frequency or repeater>": "name"}`, for `per_path`: the name (1 to 8 characters) each peer gives the master in its callsign field, in place of the box's `callsign` or the receiver's `SDRnn` |
+| `peer_ids` | | `{"<frequency or repeater>": id}`, for `per_path`; a repeater's two slots share its peer. Each such peer gives the master its frequency's or repeater's name (the first 8 characters) as its callsign |
 | `roaming` | false | let the master move a device that `transmits` on several frequencies (DMRT / DMRK) |
 
 ### 7.2 `mqtt`

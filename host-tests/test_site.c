@@ -446,27 +446,23 @@ static void test_siteroute(const char *dir)
     CHECK(rdof_siteroute_burst(&sr, 0, 0, &b, 3) == 0 && sr.router.pc_dropped == 1,
           "single identity: a private call to a radio never heard is dropped");
 
-    /* peer_names: each peer's name for the master, on the roamer (its idle frequency's) and the receiver's channel */
+    /* identity per_path: each peer's name for the master is its frequency's, on the roamer (its idle frequency's)
+       and on the receiver's channel */
     static const char pn[] = "{\"version\": 3, \"name\": \"box\", \"id\": 9800700, \"callsign\": \"N0CALL\", "
                              "\"defaults\": {\"cc\": 1, \"tg\": 3100}, "
                              "\"devices\": [{\"name\": \"sdr\", \"kind\": \"sdr\", \"driver\": \"sim\", \"tx\": {}}], "
-                             "\"frequencies\": [{\"name\": \"a\", \"freq\": 438.0625}, {\"name\": \"b\", \"freq\": 438.0875}], "
-                             "\"networks\": [{\"type\": \"hblink\", \"host\": \"h\", \"identity\": \"per_path\", "
-                             "\"peer_names\": {\"a\": \"01-SIM\", \"b\": \"02-SIM\"}}]}";
-    CHECK(rdof_site_parse(pn, sizeof pn - 1, &S, err, sizeof err), "peer_names: %s", err);
-    CHECK(!strcmp(S.path[0].peer_name, "01-SIM") && !strcmp(S.path[1].peer_name, "02-SIM"), "peer_names: %s %s",
+                             "\"frequencies\": [{\"name\": \"01-SIM\", \"freq\": 438.0625}, {\"name\": \"02-SIM\", \"freq\": 438.0875}], "
+                             "\"networks\": [{\"type\": \"hblink\", \"host\": \"h\", \"identity\": \"per_path\"}]}";
+    CHECK(rdof_site_parse(pn, sizeof pn - 1, &S, err, sizeof err), "per_path names: %s", err);
+    CHECK(!strcmp(S.path[0].peer_name, "01-SIM") && !strcmp(S.path[1].peer_name, "02-SIM"), "per_path names: %s %s",
           S.path[0].peer_name, S.path[1].peer_name);
     static rdof_config_t rc;
     CHECK(rdof_config_parse_radio(pn, sizeof pn - 1, "sdr", &rc, err, sizeof err) && !strcmp(rc.callsign, "01-SIM"),
-          "peer_names: the roamer is its idle frequency's peer: %s", rc.callsign);
+          "per_path names: the roamer is its idle frequency's peer: %s", rc.callsign);
     static rdof_sdr_config_t sc;
     CHECK(rdof_sdr_config_parse(pn, sizeof pn - 1, &sc, err, sizeof err) && sc.nch == 2 &&
               !strcmp(sc.ch[1].id, "02-SIM"),
-          "peer_names: the receiver's channel: %s", err);
-    static const char pl[] = "{\"version\": 3, \"id\": 1, \"defaults\": {\"cc\": 1}, \"devices\": [{\"kind\": \"sdr\", "
-                             "\"driver\": \"sim\"}], \"frequencies\": [438.0625], \"networks\": [{\"type\": \"hblink\", "
-                             "\"host\": \"h\", \"identity\": \"per_path\", \"peer_names\": {\"438.0625\": \"TOO-LONG-1\"}}]}";
-    CHECK(!rdof_site_parse(pl, sizeof pl - 1, &S, err, sizeof err) && strstr(err, "1 to 8"), "peer_names: %s", err);
+          "per_path names: the receiver's channel: %s", err);
 }
 
 /* Every fixture: good- taken, bad- refused; a good one runs as version 2. */

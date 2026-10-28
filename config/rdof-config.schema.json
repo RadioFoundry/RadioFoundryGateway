@@ -721,7 +721,6 @@
         "sctp_ttl_ms": {"$ref": "#/$defs/hblink/properties/sctp_ttl_ms"},
         "identity": {"enum": ["single", "per_path"]},
         "peer_ids": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 1, "maximum": 4294967295}},
-        "peer_names": {"type": "object", "additionalProperties": {"type": "string", "minLength": 1, "maxLength": 8}},
         "roaming": {"type": "boolean"}
       }
     },
