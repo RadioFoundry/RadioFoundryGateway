@@ -197,6 +197,13 @@ void sdr_hb_start(void)
         const bool via = shared && !ch->hblink;
         if (!via && (!ch->hblink || ch->peer_id < 0))
             continue;
+        /* a roamer or repeater here is that peer already (version 3 per_path: the roamer is its idle frequency's
+           peer, and hears it itself), as rdofradio leaves out the channel its radio is on */
+        bool taken = false;
+        for (int k = 0; k < g_roles.nradios && !via; k++)
+            taken |= g_rcfg[k] && g_rcfg[k]->peer_id == (uint32_t)ch->peer_id;
+        if (taken)
+            continue;
         peer_t *p = &peers[npeers];
         p->channel = c;
         p->via = via;
