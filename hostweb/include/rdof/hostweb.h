@@ -85,6 +85,18 @@ typedef struct {
         int64_t value;
     } extra[8];
     bool spectrum; /* the tool makes the page's spectrum (rdof_hostweb_spectrum_row) */
+    /* every receiver channel (the radio's own first, then the monitored ones), for the page's Channels table, as the
+     * board's SDR lists them */
+    int nrx;
+    struct {
+        char id[24], name[32];
+        uint32_t freq;
+        bool in;        /* inside the receiver's span */
+        uint64_t bursts;
+        int rssi;       /* dBm, 0: none yet */
+        float afc_hz;   /* the channel's frequency correction */
+        float idle_pct; /* the share of chunks the idle gate skipped */
+    } rx[16];
 } rdof_hostweb_status_t;
 
 /* The tool's settings, for the page's Settings tab (GET / POST /api/config, GET /api/resolved), and its restart

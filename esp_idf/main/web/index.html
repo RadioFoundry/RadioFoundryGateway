@@ -72,8 +72,8 @@ canvas{display:block;width:100%;background:#0b0b10;border-radius:6px}#spec{heigh
 <div id="radios"></div>
 <div id="sdr" hidden>
 <div class="card" id="sdr_c"></div>
-<div class="card"><h2>Channels</h2><div class="wrap" id="chans"></div></div>
 </div>
+<div class="card" id="chanbox" hidden><h2>Channels</h2><div class="wrap" id="chans"></div></div>
 <div class="card" id="specbox" hidden><h2>Spectrum</h2>
 <p class="mute">The tuner's whole span, 512 bins, averaged over each row; the bands are the channels. dBFS at the
 configured gain. <span id="specinfo"></span></p>
@@ -301,7 +301,7 @@ const radioRow = r => ['Radio', yes(r.radio_ready) + ' ' + esc(r.modem || (r.mod
 const hbRow = r => ['HBlink4', up(r.hblink) + ' <span class="mute">(' + num(r.hblink_tx) + ' sent, ' + num(r.hblink_rx) + ' received)</span>' + (r.sctp ?
   '<br>SCTP ' + esc(r.sctp.state) + ', RTT ' + r.sctp.srtt_ms + ' ms, ' + cnt(r.sctp.retransmits + r.sctp.fast_retransmits) + ' resent, ' +
   cnt(r.sctp.abandoned) + ' given up, ' + cnt(r.sctp.failures) + ' lost' : '')];
-const R_KNOWN = 'name mode started port split modem_open radio_ready radio_error modem protocol radio requests no_reply refused bursts_heard state listening scanning status_misses queue_dropped keyed busy1 busy2 dropped jitter frequency colorCode hblink hblink_tx hblink_rx mqtt heard sending channels'.split(' ');
+const R_KNOWN = 'name rx_channels mode started port split modem_open radio_ready radio_error modem protocol radio requests no_reply refused bursts_heard state listening scanning status_misses queue_dropped keyed busy1 busy2 dropped jitter frequency colorCode hblink hblink_tx hblink_rx mqtt heard sending channels'.split(' ');
 function roamerFull(r, either) {
   const w = either && waiting(r, 'the radio'), j = r.jitter, sl = r.split;
   return card(rname(r) + ' ' + rstate(r, either), kv(w || [
@@ -395,8 +395,12 @@ function sdrFull(d, either) {
     ['HBlink4', sp(d.hblink_up < d.hblink_peers ? 'warn' : '', d.hblink_up + ' of ' + d.hblink_peers) + ' peers registered'],
   ]) + more(d, S_KNOWN, 's:' + d.name);
   spec.chans = d.channels;
+  chanTable(d.name, d.channels);
+}
+// The receiver's channels: the board's SDR's, or a host tool's radio's (rx_channels)
+function chanTable(radio, chans) {
   $('chans').innerHTML = '<table><tr><th>Id</th><th>Name</th><th class="n">MHz</th><th>In window</th><th class="n">Bursts</th><th class="n">RSSI</th>' +
-    '<th class="n w">AFC Hz</th><th class="n w">Idle</th></tr>' + d.channels.map(c => '<tr' + (busy(d.name, c.id) ? ' class="live"' : '') + '><td>' +
+    '<th class="n w">AFC Hz</th><th class="n w">Idle</th></tr>' + chans.map(c => '<tr' + (busy(radio, c.id) ? ' class="live"' : '') + '><td>' +
       esc(c.id) + '</td><td>' + esc(c.name) + '</td><td class="n">' + (c.freq / 1e6).toFixed(5) + '</td><td>' + yes(c.in) + '</td><td class="n">' +
       num(c.bursts) + '</td><td class="n">' + (c.rssi ? c.rssi + ' dBm' : '-') + '</td><td class="n w">' + c.afc + '</td><td class="n w">' +
       (c.idle == null ? '-' : c.idle + '%') + '</td></tr>').join('') + '</table>';
@@ -422,6 +426,9 @@ function render() {
     $('radios').innerHTML = rs.map((r, i) => roamerFull(r, s.usb_either && !i)).join('');
     $('sdr').hidden = !s.sdr;
     $('specbox').hidden = !(s.sdr || has(s, 'spectrum'));
+    const rc = rs.find(r => r.rx_channels);
+    $('chanbox').hidden = !(s.sdr || rc);
+    if (!s.sdr && rc) chanTable(rc.name, rc.rx_channels);
     $('noradio').hidden = !!(rs.length || s.sdr);
     if (s.sdr) sdrFull(s.sdr, s.usb_either);
   } else if (t == 'network') {

@@ -325,9 +325,16 @@ int main(int argc, char **argv)
     s.nchan = 1;
     snprintf(s.chan[0].id, sizeof s.chan[0].id, "M\"1");
     s.chan[0].freq = 438200000;
+    s.nrx = 1;
+    snprintf(s.rx[0].id, sizeof s.rx[0].id, "bench");
+    snprintf(s.rx[0].name, sizeof s.rx[0].name, "re\"ceive");
+    s.rx[0].freq = 438000000, s.rx[0].in = true, s.rx[0].bursts = 12, s.rx[0].rssi = -80;
+    s.rx[0].afc_hz = -12.34f, s.rx[0].idle_pct = 40.4f;
     rdof_hostweb_status(&s);
     http(port, "GET /api/status HTTP/1.1\r\n\r\n", b, sizeof b);
     CHECK(strstr(b, "\"spectrum\":true}"));
+    CHECK(strstr(b, "\"rx_channels\":[{\"id\":\"bench\",\"name\":\"receive\",\"freq\":438000000,\"in\":true,\"bursts\":12,"
+                    "\"rssi\":-80,\"afc\":-12.3,\"idle\":40}]"));
     http(port, "GET /api/spectrum HTTP/1.1\r\n\r\n", b, sizeof b);
     CHECK(strstr(b, "200 OK") && strstr(b, "\"seq\":0,") && strstr(b, "\"rows\":[]") && rdof_hostweb_spectrum_wanted());
     uint8_t row[RDOF_HOSTWEB_SPECTRUM_BINS];

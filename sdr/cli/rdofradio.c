@@ -1018,6 +1018,26 @@ static void web_publish(double rx, double tx, int cc)
     snprintf(w.extra[1].name, sizeof w.extra[1].name, "inbound off (%%)");
     w.extra[1].value = (int64_t)llround(R.m.inbound_off * 100);
     w.spectrum = true;
+    for (int c = 0; c < R.rx.C && w.nrx < 16; c++) {
+        const char *id = R.rx.trackers[c].channel, *name = "";
+        if (c == 0)
+            name = "receive";
+        else if (c == R.mon)
+            name = "transmit (heard back)";
+        for (int i = 0; i < nmon; i++)
+            if (MON[i].c == c)
+                name = MON[i].ch->name;
+        const double f = R.rx.trackers[c].freq_hz;
+        const int r = R.rx.rssi[c];
+        snprintf(w.rx[w.nrx].id, sizeof w.rx[w.nrx].id, "%s", c == 0 ? rcfg.name : id);
+        snprintf(w.rx[w.nrx].name, sizeof w.rx[w.nrx].name, "%s", name);
+        w.rx[w.nrx].freq = (uint32_t)llround(f);
+        w.rx[w.nrx].in = fabs(f - R.rx.center_hz) < R.rate / 2;
+        w.rx[w.nrx].bursts = (uint64_t)R.rx.bursts[c];
+        w.rx[w.nrx].rssi = r == INT32_MIN ? 0 : r;
+        w.rx[w.nrx].afc_hz = (float)R.rx.chz.correction_hz[c];
+        w.rx[w.nrx++].idle_pct = R.rx.chunks ? (float)(100.0 * (double)R.rx.gated[c] / (double)R.rx.chunks) : 0.0f;
+    }
     rdof_hostweb_status(&w);
 }
 

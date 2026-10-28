@@ -289,6 +289,16 @@ static void slot_json(rdof_json_t *j, const char *key, const rdof_hostweb_slot_t
 }
 
 /* The tool's state, as the firmware's roamer or repeater, and the host's own cards. */
+/* a name from the settings, for a JSON string: no quotes, backslashes or control characters */
+static void json_safe(char *out, size_t cap, const char *in, size_t in_cap)
+{
+    size_t k = 0;
+    for (size_t i = 0; i < in_cap && in[i] && k + 1 < cap; i++)
+        if ((unsigned char)in[i] >= 0x20 && in[i] != '"' && in[i] != '\\')
+            out[k++] = in[i];
+    out[k] = 0;
+}
+
 static void host_status(void *ctx, rdof_json_t *j, rdof_webapi_at_t at)
 {
     if (at != RDOF_WEBAPI_AT_RADIOS)
@@ -364,6 +374,25 @@ static void host_status(void *ctx, rdof_json_t *j, rdof_webapi_at_t at)
             a[n++] = ']';
             a[n] = 0;
             rdof_json_raw(j, "channels", a);
+        }
+    }
+    if (s.nrx > 0) { /* the board's SDR's channel rows */
+        char a[16 * 200] = "[";
+        size_t n = 1;
+        for (int i = 0; i < s.nrx && i < 16 && n < sizeof a - 2; i++) {
+            char id[24], name[32];
+            json_safe(id, sizeof id, s.rx[i].id, sizeof s.rx[i].id);
+            json_safe(name, sizeof name, s.rx[i].name, sizeof s.rx[i].name);
+            n += (size_t)snprintf(a + n, sizeof a - n,
+                                  "%s{\"id\":\"%s\",\"name\":\"%s\",\"freq\":%u,\"in\":%s,\"bursts\":%llu,\"rssi\":%d,"
+                                  "\"afc\":%.1f,\"idle\":%.0f}",
+                                  i ? "," : "", id, name, (unsigned)s.rx[i].freq, s.rx[i].in ? "true" : "false",
+                                  (unsigned long long)s.rx[i].bursts, s.rx[i].rssi, s.rx[i].afc_hz, s.rx[i].idle_pct);
+        }
+        if (n < sizeof a - 1) {
+            a[n++] = ']';
+            a[n] = 0;
+            rdof_json_raw(j, "rx_channels", a);
         }
     }
     rdof_json_close(j);
