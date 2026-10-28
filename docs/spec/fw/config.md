@@ -26,7 +26,7 @@ Role column: B = board / box, R = roamer, P = repeater, S = SDR, X = `sdr_transc
 | `name` | str | `"radiofoundry"` (`rdof_roles_t.box`); `DEFAULT_JSON` sets `"esp32"` | < 32 chars | B | box name; Wi-Fi hostname; prefix of default radio names |
 | `run` | str or [str] | — | ≤ `RDOF_MAX_RADIOS` (2) roamers / repeaters + ≤ 1 SDR; every name must exist in `radios` | B | which radios this board runs. Absent: the first roamer / repeater, else the first SDR |
 | `radios` | object name → section | — | types: `sdr`, `repeater`, `sdr_transceiver`, `auto`, `radio_hotspot`, `opengd77`, `mmdvm_hs`, `mmdvm` | B | radio sections |
-| `channels` | object number → freq or `{freq, cc, power}` | — | ≤ 64 entries; `cc` falls back to top `cc`, else error; `power` 255 | all | the channel plan |
+| `channels` | object number → freq or `{freq, cc, power, name, slot, tg, tx}` | — | ≤ 64 entries; `cc` falls back to top `cc`, else error; `power` 255; `tx` false: nothing transmits there (a roamer's `all` skips it, naming it or a repeater's `tx_freq` on it is refused; an idle channel with it is only heard) | all | the channel plan |
 | `cc` | int | — | 0..15 | all | default color code |
 | `location` | `{latitude\|lat, longitude\|lon, height}` | none | lat ±90, lon ±180; height 0, clamped 0..999 | all | default position (a section's own wins) |
 | `mqtt` | object | absent = off | §2.6 | all | broker |
@@ -57,7 +57,7 @@ Role column: B = board / box, R = roamer, P = repeater, S = SDR, X = `sdr_transc
 
 | Key | Type | Default | Rule |
 |---|---|---|---|
-| `channels` | `"all"` or [n or `{ch, cc, power}`] | `"all"` | ≤ `RDOF_CFG_CHANNELS` 32; none → error |
+| `channels` | `"all"` or [n or `{ch, cc, power}`] | `"all"` | ≤ `RDOF_CFG_CHANNELS` 32; none → error; `all`: the plan's channels but those with `tx` false |
 | `idle` | plan number or `{freq, cc}` | — | required; added to `channels` if missing |
 | `listen_s` | float | 0.3 | |
 | `clear_s` | float | 2.0 | |
