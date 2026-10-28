@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "rdof/jsonp.h"
+#include "rdof/setup.h"
 #include "rdof/sdr/frontend.h"
 #include "rdof/status.h"
 #include "sdr_private.h"
@@ -513,7 +514,58 @@ static bool parse_box(ctx_t *c, int box, rdof_sdr_config_t *g)
     return true;
 }
 
+static bool sdr_parse_v1(const char *text, size_t len, rdof_sdr_config_t *cfg, char *error, size_t cap);
+
+/* Version 2 (rdof/setup.h): the view of the first SDR a running role uses. */
 bool rdof_sdr_config_parse(const char *text, size_t len, rdof_sdr_config_t *cfg, char *error, size_t cap)
+{
+    return rdof_sdr_config_parse_device(text, len, NULL, cfg, error, cap);
+}
+
+bool rdof_sdr_config_parse_device(const char *text, size_t len, const char *device, rdof_sdr_config_t *cfg,
+                                  char *error, size_t cap)
+{
+    if (rdof_config_version(text, len) != 2)
+        return sdr_parse_v1(text, len, cfg, error, cap);
+    memset(cfg, 0, sizeof *cfg);
+    char focus[RDOF_SETUP_NAME] = "";
+    if (device) {
+        snprintf(focus, sizeof focus, "%s", device);
+    } else {
+        rdof_setup_t *s = rdof_sdr_alloc(sizeof *s);
+        if (!s) {
+            if (error && cap)
+                snprintf(error, cap, "no memory");
+            return false;
+        }
+        bool ok = rdof_setup_parse(text, len, s, error, cap);
+        for (int k = 0; ok && !focus[0] && k < s->nrole; k++)
+            for (int d = 0; s->role[k].run && d < 2 && !focus[0]; d++) {
+                int dev = d ? s->role[k].tx : s->role[k].rx;
+                if (dev >= 0 && s->dev[dev].kind == RDOF_DEV_SDR)
+                    snprintf(focus, sizeof focus, "%s", s->dev[dev].name);
+            }
+        rdof_sdr_free(s);
+        if (!ok)
+            return false;
+        if (!focus[0]) {
+            if (error && cap)
+                snprintf(error, cap, "run uses no SDR");
+            return false;
+        }
+    }
+    char *view;
+    if (!rdof_config_as_v1(&text, &len, focus, &view, error, cap))
+        return false;
+    char why[160];
+    bool ok = sdr_parse_v1(text, len, cfg, why, sizeof why);
+    if (!ok && error && cap)
+        snprintf(error, cap, "devices.%s: %s", focus, why);
+    free(view);
+    return ok;
+}
+
+static bool sdr_parse_v1(const char *text, size_t len, rdof_sdr_config_t *cfg, char *error, size_t cap)
 {
     char dummy[8];
     memset(cfg, 0, sizeof *cfg);

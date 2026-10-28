@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "name": "mixed",
+  "cc": 2,
+  "channels": {"1": 438.25, "13": 438.0625},
+  "devices": {
+    "pluto": {"kind": "sdr", "driver": "iio", "match": {"uri": "local:"},
+              "rx": {"rate": 960000, "center_hz": 438.15}, "tx": {"carriers": 1, "power_dbm": -10}},
+    "hs1": {"kind": "modem", "type": "radio_hotspot", "port": {"path": "/dev/ttyACM0"}, "needs": ["split"]},
+    "hs2": {"kind": "modem", "type": "mmdvm_hs", "port": {"path": "/dev/ttyUSB0", "baud": 460800}},
+    "rf1": {"kind": "radio", "port": {"path": "/dev/ttyACM5", "baud": 921600},
+            "bench": {"freqs_hz": [438487500], "max_key_s": 5}}
+  },
+  "roles": {
+    "R1": {"type": "repeater", "peer_id": 9800012, "rx_freq": 438.25, "tx_freq": 438.0125,
+           "rx": {"device": "pluto"}, "tx": {"device": "hs1"}},
+    "R2": {"type": "repeater", "peer_id": 9800013, "rx_freq": 438.4375, "tx_freq": 438.4, "modem": {"device": "pluto"}},
+    "HS": {"type": "repeater", "peer_id": 9800014, "rx_freq": 438.5, "tx_freq": 438.475, "modem": {"device": "hs2"},
+           "slots": [2]}
+  },
+  "run": ["R1", "R2", "HS"],
+  "bench": {"devices": ["rf1"], "tx": {"max_key_s": 10}}
+}

@@ -1,0 +1,8 @@
+{
+  "version": 2,
+  "name": "sfr",
+  "cc": 1,
+  "devices": {"radio1": {"kind": "modem", "type": "radio_hotspot", "port": {"usb": "auto", "serial": "S1"}, "needs": ["sfr"]}},
+  "roles": {"SFR": {"type": "sfr", "peer_id": 9800015, "freq": 438.5, "inbound_slot": 1, "modem": {"device": "radio1"}}},
+  "run": ["SFR"]
+}

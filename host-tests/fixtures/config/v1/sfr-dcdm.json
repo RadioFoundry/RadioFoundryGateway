@@ -1,0 +1,11 @@
+{
+  "name": "two",
+  "cc": 1,
+  "run": ["S1", "D1"],
+  "radios": [
+    {"type": "repeater", "mode": "sfr", "name": "S1", "peer_id": 9800005, "freq": 438.5, "inbound_slot": 2,
+     "usb": {"serial": "X1"}, "radio": {"type": "radio_hotspot"}},
+    {"type": "repeater", "mode": "dcdm", "name": "D1", "peer_id": 9800006, "freq": 438.4625, "usb": {"serial": "X2"},
+     "radio": {"type": "auto"}, "parrot": 0}
+  ]
+}

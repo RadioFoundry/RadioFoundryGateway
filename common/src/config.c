@@ -14,6 +14,7 @@
 #include "rdof/jitter.h"
 #include "rdof/json.h"
 #include "rdof/jsonp.h"
+#include "rdof/setup.h"
 #include "rdof/status.h"
 
 #define MAX_NODES 1200
@@ -1105,7 +1106,48 @@ bool rdof_config_parse(const char *text, size_t len, rdof_config_t *cfg, char *e
     return rdof_config_parse_radio(text, len, NULL, cfg, error, error_cap);
 }
 
+static bool parse_radio_v1(const char *text, size_t len, const char *want, rdof_config_t *cfg, char *error,
+                           size_t error_cap);
+
+/* Version 2: the role's section in its view (rdof/setup.h); its errors say which role. */
 bool rdof_config_parse_radio(const char *text, size_t len, const char *want, rdof_config_t *cfg, char *error,
+                           size_t error_cap)
+{
+    if (rdof_config_version(text, len) != 2)
+        return parse_radio_v1(text, len, want, cfg, error, error_cap);
+    memset(cfg, 0, sizeof *cfg);
+    rdof_roles_t *roles = NULL;
+    char name[RDOF_SETUP_NAME];
+    if (!want) {
+        roles = malloc(sizeof *roles);
+        if (!roles || !rdof_box_roles(text, len, roles, error, error_cap)) {
+            if (!roles && error && error_cap)
+                snprintf(error, error_cap, "no memory");
+            free(roles);
+            return false;
+        }
+        if (!roles->nradios) {
+            free(roles);
+            if (error && error_cap)
+                snprintf(error, error_cap, "run: no roamer or repeater");
+            return false;
+        }
+        snprintf(name, sizeof name, "%s", roles->radios[0]);
+        free(roles);
+        want = name;
+    }
+    char *view;
+    if (!rdof_config_as_v1(&text, &len, want, &view, error, error_cap))
+        return false;
+    char why[160];
+    bool ok = parse_radio_v1(text, len, want, cfg, why, sizeof why);
+    if (!ok && error && error_cap)
+        snprintf(error, error_cap, "roles.%s: %s", want, why);
+    free(view);
+    return ok;
+}
+
+static bool parse_radio_v1(const char *text, size_t len, const char *want, rdof_config_t *cfg, char *error,
                            size_t error_cap)
 {
     char dummy[8];
@@ -1429,10 +1471,67 @@ static const char *f3(double v, char *buf)
     return buf;
 }
 
+/* Version 2: the roles run names; a board's limits (RDOF_MAX_RADIOS, one SDR) as version 1's. */
+static bool box_roles_v2(const char *text, size_t len, rdof_roles_t *roles, char *error, size_t error_cap)
+{
+    rdof_setup_t *s = malloc(sizeof *s);
+    if (!s) {
+        if (error && error_cap)
+            snprintf(error, error_cap, "no memory");
+        return false;
+    }
+    bool ok = rdof_setup_parse(text, len, s, error, error_cap);
+    snprintf(roles->box, sizeof roles->box, "%s", s->name);
+    roles->usb_hub = s->usb_hub;
+    int sdr = -1;
+    for (int k = 0; ok && k < s->nrole; k++) {
+        const rdof_role_t *r = &s->role[k];
+        if (!r->run)
+            continue;
+        if (r->type != RDOF_ROLE_MONITOR) {
+            if (roles->nradios >= RDOF_MAX_RADIOS) {
+                snprintf(error, error_cap, "run: %d roamers or repeaters a board at most", RDOF_MAX_RADIOS);
+                ok = false;
+                break;
+            }
+            snprintf(roles->radios[roles->nradios++], sizeof roles->radios[0], "%s", r->name);
+        }
+        for (int d = 0; d < 2; d++) {
+            int dev = d ? r->tx : r->rx;
+            if (dev < 0 || s->dev[dev].kind != RDOF_DEV_SDR || dev == sdr)
+                continue;
+            if (sdr >= 0) {
+                snprintf(error, error_cap, "run uses devices.%s and devices.%s: a board runs one SDR",
+                         s->dev[sdr].name, s->dev[dev].name);
+                ok = false;
+                break;
+            }
+            sdr = dev;
+        }
+    }
+    if (ok) {
+        if ((roles->has_radio = roles->nradios > 0))
+            snprintf(roles->radio, sizeof roles->radio, "%s", roles->radios[0]);
+        if ((roles->has_sdr = sdr >= 0))
+            snprintf(roles->sdr, sizeof roles->sdr, "%s", rdof_setup_sdr_section(s, sdr));
+        if (!roles->nradios && sdr < 0) {
+            snprintf(error, error_cap, "run: nothing to run");
+            ok = false;
+        }
+    }
+    free(s);
+    return ok;
+}
+
 bool rdof_box_roles(const char *text, size_t len, rdof_roles_t *roles, char *error, size_t error_cap)
 {
     char dummy[8];
     memset(roles, 0, sizeof *roles);
+    if (rdof_config_version(text, len) == 2) {
+        if (!error || !error_cap)
+            error = dummy, error_cap = sizeof dummy;
+        return box_roles_v2(text, len, roles, error, error_cap);
+    }
     ctx_t *c = malloc(sizeof *c);
     char *clean = c ? malloc(len + 1) : NULL;
     if (!clean) {

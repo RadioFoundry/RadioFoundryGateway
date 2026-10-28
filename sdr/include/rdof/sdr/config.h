@@ -87,6 +87,10 @@ typedef struct {
 
 /* Parses and resolves. false with error set when the config is refused. */
 bool rdof_sdr_config_parse(const char *text, size_t len, rdof_sdr_config_t *cfg, char *error, size_t cap);
+/* Version 2 settings (rdof/setup.h): SDR device `device`'s (NULL: the first a running role uses). Version 1: as
+   rdof_sdr_config_parse. */
+bool rdof_sdr_config_parse_device(const char *text, size_t len, const char *device, rdof_sdr_config_t *cfg,
+                                  char *error, size_t cap);
 /* The RSSI offset in dB: the setting, else -gain - 25 (gain 30 when it's auto). */
 double rdof_sdr_config_rssi_offset(const rdof_sdr_config_t *cfg);
 /* One line per group, for the web page and the golden tests. */

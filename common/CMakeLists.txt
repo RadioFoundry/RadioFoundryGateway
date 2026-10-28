@@ -25,6 +25,8 @@ set(RDOF_COMMON_SRCS
     src/slotgrid.c
     src/jsonp.c
     src/config.c
+    src/setup.c
+    src/broker.c
     src/status.c
     src/oled.c
     src/oled_sdr.c

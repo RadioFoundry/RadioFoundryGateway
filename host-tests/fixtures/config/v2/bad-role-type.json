@@ -1,0 +1,2 @@
+{"version": 2, "devices": {"m": {"kind": "modem", "port": {"usb": "auto"}}},
+ "roles": {"R": {"type": "trunk", "modem": {"device": "m"}}}}

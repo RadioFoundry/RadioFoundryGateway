@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "rdof/jsonp.h"
+#include "rdof/setup.h"
 
 #define MAX_NODES 1024
 #define STR_BUF 8192
@@ -155,6 +156,9 @@ static int radio(ctx_t *c, int node, int i, rdof_bench_radio_t *r)
 
 int rdof_bench_radios_parse(const char *text, size_t len, rdof_bench_radio_t *out, int max, char *error, size_t cap)
 {
+    char *view = NULL; /* version 2: its view (rdof/setup.h) */
+    if (!rdof_config_as_v1(&text, &len, NULL, &view, error, cap))
+        return -1;
     ctx_t *c = calloc(1, sizeof *c);
     char *clean = malloc(len + 1);
     char dummy[8];
@@ -166,6 +170,7 @@ int rdof_bench_radios_parse(const char *text, size_t len, rdof_bench_radio_t *ou
     if (!c || !clean) {
         free(c);
         free(clean);
+    free(view);
         snprintf(error, cap, "no memory");
         return -1;
     }
@@ -209,12 +214,16 @@ int rdof_bench_radios_parse(const char *text, size_t len, rdof_bench_radio_t *ou
     n = rn->count;
 done:
     free(clean);
+    free(view);
     free(c);
     return n;
 }
 
 int rdof_bench_tx_parse(const char *text, size_t len, rdof_benchtx_policy_t *out, char *error, size_t cap)
 {
+    char *view = NULL; /* version 2: its view (rdof/setup.h) */
+    if (!rdof_config_as_v1(&text, &len, NULL, &view, error, cap))
+        return -1;
     memset(out, 0, sizeof *out);
     out->arm_gpio = -1;
     ctx_t *c = calloc(1, sizeof *c);
@@ -228,6 +237,7 @@ int rdof_bench_tx_parse(const char *text, size_t len, rdof_benchtx_policy_t *out
     if (!c || !clean) {
         free(c);
         free(clean);
+    free(view);
         snprintf(error, cap, "no memory");
         return -1;
     }
@@ -294,6 +304,7 @@ done:
     if (rc < 0)
         *out = (rdof_benchtx_policy_t){.arm_gpio = -1}; /* no TX, not half a policy */
     free(clean);
+    free(view);
     free(c);
     return rc;
 }

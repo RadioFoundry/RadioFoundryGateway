@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "name": "fourpair",
+  "cc": 1,
+  "devices": {
+    "a-rx": {"kind": "modem", "type": "radio_hotspot", "port": {"usb": "auto", "serial": "RA1"}, "needs": ["split"]},
+    "a-tx": {"kind": "modem", "type": "radio_hotspot", "port": {"uart": 1, "tx": 17, "rx": 18}, "needs": ["split"]},
+    "b-rx": {"kind": "modem", "type": "radio_hotspot", "port": {"usb": "auto", "serial": "RB1"}, "needs": ["split"]},
+    "b-tx": {"kind": "modem", "type": "radio_hotspot", "port": {"uart": 2, "tx": 4, "rx": 5}, "needs": ["split"]}
+  },
+  "roles": {
+    "RA": {"type": "repeater", "peer_id": 9800010, "rx_freq": 438.25, "tx_freq": 438.0125,
+           "rx": {"device": "a-rx"}, "tx": {"device": "a-tx"}, "split": {"power_cap": 1}},
+    "RB": {"type": "repeater", "peer_id": 9800011, "rx_freq": 438.375, "tx_freq": 438.35,
+           "rx": {"device": "b-rx"}, "tx": {"device": "b-tx"}}
+  },
+  "run": ["RA", "RB"]
+}

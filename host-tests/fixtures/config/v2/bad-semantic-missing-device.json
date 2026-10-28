@@ -1,0 +1,2 @@
+{"version": 2, "devices": {"m": {"kind": "modem", "port": {"usb": "auto"}}},
+ "roles": {"R": {"type": "sfr", "peer_id": 1, "freq": 438.5, "cc": 1, "modem": {"device": "nope"}}}}
