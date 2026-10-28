@@ -941,8 +941,10 @@ static void web_spectrum(const rdof_cf_t *in, int n)
     static int made; /* 1 made, -1 no memory */
     if (made < 0 || n <= 0 || R.cal || !rdof_hostweb_spectrum_wanted())
         return;
+    /* the loop's read, 10 ms (a read can come back shorter) */
+    const int chunk = (int)(R.rate / 100) < CHUNK ? (int)(R.rate / 100) : CHUNK;
     if (!made) {
-        const int per_row = (int)lrint(0.2 * R.rate / n);
+        const int per_row = (int)lrint(0.2 * R.rate / chunk);
         made = rdof_spectrum_init(&sp, RDOF_HOSTWEB_SPECTRUM_BINS, per_row > 0 ? per_row : 1) ? -1 : 1;
         if (made < 0) {
             say("web: no memory for the spectrum\n");
@@ -952,7 +954,7 @@ static void web_spectrum(const rdof_cf_t *in, int n)
     uint8_t row[RDOF_HOSTWEB_SPECTRUM_BINS];
     if (rdof_spectrum_feed(&sp, in, n, row))
         rdof_hostweb_spectrum_row(row, RDOF_HOSTWEB_SPECTRUM_BINS, R.rx.center_hz, R.rate,
-                                  (int)lrint(1e3 * sp.per_row * n / R.rate));
+                                  (int)lrint(1e3 * sp.per_row * chunk / R.rate));
 }
 
 static void web_publish(double rx, double tx, int cc)
