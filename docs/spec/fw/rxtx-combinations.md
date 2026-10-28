@@ -189,15 +189,19 @@ roles come out the same.
   - frequency plans that fit a window;
   - platform caps.
 - **Where it's used:**
-  - The web UI checks against it as you edit.
-  - `tools/config_check.py FILE` checks the schema, then (with `--board IP`) asks the board for the full check.
-    It uses the `jsonschema` package (MIT), outside the firmware.
+  - The web UI checks against it as you edit, with `config/schema-check.js` (our own checker of the keywords the
+    schema uses; it runs in the browser and in node). Not wired into the page yet.
+  - `tools/config_check.py FILE` checks the schema with the `jsonschema` package (MIT), outside the firmware, or
+    with node and `schema-check.js` when the package isn't installed. Asking the board for the full check
+    (`--board IP`) waits for `?check=1`.
   - The board serves the schema at `GET /api/config/schema`.
   - `POST /api/config?check=1` runs the full check (the schema's rules, then the broker run dry) and saves nothing. It
     answers `{"ok", "errors": [{"path", "message"}], "roles": [...]}`. A save runs the same check first.
-- **Kept in step:** a host test runs every fixture in `host-tests/fixtures/config/` through both the schema and
-  the C parser. Each fixture is marked good or bad, and both must agree, except for a bad fixture tagged
-  `"semantic"` (only C catches it). A key added to the C without the schema fails that test.
+- **Kept in step:** `host-tests/test_schema.js` (ctest `rdof_schema_tests`, when node is installed) runs every
+  version 2 fixture in `host-tests/fixtures/config/v2/` through the schema, and `test_setup.c` runs them through the
+  C parser. A fixture's name says good or bad; both must agree, except for `bad-semantic-*` (only the C catches it).
+  The test also compares each key list in `common/src/setup.c` with the schema's keys for that place, so a key
+  added to one and not the other fails it.
 - **Version 1 configs** are checked after the upgrade. The schema describes version 2 only.
 
 ## 5. SDR transmit: carriers

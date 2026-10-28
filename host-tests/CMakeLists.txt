@@ -118,6 +118,8 @@ if(NODE)
         get_filename_component(name ${js} NAME_WE)
         add_test(NAME js_${name} COMMAND ${NODE} --check ${js})
     endforeach()
+    # The settings schema and the C parser agree (fixtures and key lists).
+    add_test(NAME rdof_schema_tests COMMAND ${NODE} ${CMAKE_CURRENT_SOURCE_DIR}/test_schema.js)
 endif()
 
 # The components' portable parts (no ESP-IDF): netclock and wifilist.
