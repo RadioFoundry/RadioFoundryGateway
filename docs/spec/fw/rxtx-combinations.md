@@ -154,6 +154,8 @@ can fall back.
 
 ## 4. Config, version 2
 
+Version 3 (a draft: devices, frequencies, apps, networks and call policies, no roles) is in [config-v3.md](config-v3.md).
+
 `"version": 2` at the top. Version 1 (today's) still loads: `rdof_config_upgrade` turns it into version 2 on read, and the
 board saves version 2 from then on. A host test runs every version 1 fixture through the upgrade and checks that the
 roles come out the same.
