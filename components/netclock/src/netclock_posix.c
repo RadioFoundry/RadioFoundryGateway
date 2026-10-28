@@ -613,7 +613,10 @@ static void send_req(int sock, int i, uint32_t poll_s)
     uint8_t p[48];
     s->cookie = rng64();
     nc_ntp_request(p, s->cookie, poll_s);
-    struct sockaddr_in to = {.sin_family = AF_INET, .sin_port = htons(s_port[i])};
+    struct sockaddr_in to;
+    memset(&to, 0, sizeof to);
+    to.sin_family = AF_INET;
+    to.sin_port = htons(s_port[i]);
     memcpy(&to.sin_addr.s_addr, s->ip, 4);
     s->got = false;
     s->t1 = mono_us();

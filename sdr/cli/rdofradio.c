@@ -464,7 +464,13 @@ static void net_config(void)
     rdofnet_peer_set_config(&NET, pkt, rdof_hb_role_dmrc(&rcfg.cfg, R.rx_hz, R.cc, pkt), now_s());
 }
 static void sink_send(void *ctx, const uint8_t *d, size_t n) { net_send(d, n); }
-static uint32_t sink_rand(void *ctx) { return (uint32_t)random() ^ ((uint32_t)random() << 16); }
+static uint32_t rng_state;
+static uint32_t sink_rand(void *ctx) /* stream ids: xorshift32 */
+{
+    uint32_t x = rng_state;
+    x ^= x << 13, x ^= x >> 17, x ^= x << 5;
+    return rng_state = x;
+}
 static void sink_before(void *ctx) { net_config(); } /* HBlink4 credits a stream to the peer's last DMRC */
 
 static void net_start(void)
@@ -477,7 +483,9 @@ static void net_start(void)
                       R.full ? RDOF_HB_KEEPALIVE_SECONDS : RDOF_HB_ROAMING_KEEPALIVE_SECONDS, rcfg.name);
     NET.on_packet = net_packet;
     NET.say = net_say;
-    srandom((unsigned)time(NULL) ^ (unsigned)getpid());
+    rng_state = (uint32_t)time(NULL) ^ ((uint32_t)getpid() << 16) ^ (uint32_t)(now_s() * 1e6);
+    if (!rng_state)
+        rng_state = 1;
     rdof_hb_sink_init(&NET_SINK, rcfg.peer_id);
     NET_SINK.send = sink_send;
     NET_SINK.rand32 = sink_rand;
