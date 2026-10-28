@@ -54,6 +54,8 @@ HTTP and the status JSON are in [README.md](README.md).
 | `src/netclock.c:RESOLVE_EVERY` | 48 | re-resolve every this many polls |
 | `src/netclock.c:TEMP_EVERY_US` | 30000000 µs | temperature tick |
 | `src/netclock.c:ntp_task` (inline) | 4 misses; 100 ms `SO_RCVTIMEO`; 68 B receive buffer | re-resolve after 4 unanswered polls |
+| `src/netclock_posix.c:OS_STEP_MS` | 100 ms | `set_os_clock`: step the OS clock when it's this far off the model |
+| `src/netclock_posix.c:POLL_S`, `POLL_FAST_S` | 300 s, 120 s | as `CONFIG_NETCLOCK_POLL_S`, `_FAST_S` |
 | `src/netclock_http.c:post_time` (inline) | 1.6e12 ms | lower bound on a browser's `utc_ms` |
 
 ## NTP
@@ -123,6 +125,25 @@ flowchart TD
   so the first NTP reference comes about 6 s after start.
 - Interval: `slow = poll_s setting` (or `CONFIG_NETCLOCK_POLL_S`), `fast = min(CONFIG_NETCLOCK_POLL_FAST_S, slow)`;
   `slow` once the rate is settled (fit learned this run on ≥ 8 kept references), else `fast`.
+
+### The POSIX glue (`src/netclock_posix.c`)
+
+The same cycle, with these differences:
+
+- Local time is `CLOCK_MONOTONIC` (ns; the core sees µs). Before any reference, UTC is `CLOCK_REALTIME`.
+- A server may be `host:port` (one colon); the port is part of its identity (duplicates match address and port,
+  replies must come from both). Without one, 123.
+- The reply window waits in `poll()` on the socket and a stop pipe (no `SO_RCVTIMEO`); a stop ends a poll, the
+  window or the sleep at once. The server list is read at each start (an iburst each time); there is no settings
+  change while running.
+- The temperature tick runs in the NTP thread's sleep (every 30 s), from the `temp_c` callback.
+- No PPS, no GNSS. No `settimeofday`: with `set_os_clock`, after each non-outlier reference the OS clock is stepped
+  (`clock_settime`) to the model when it differs by more than `os_step_ms` (100 ms). Never slewed.
+- The rate and the table go to a text state file, by the rule in "Storing the rate"; `netclock_posix_save` also
+  writes them on demand.
+- OS mode (`NETCLOCK_POSIX_OS`): no thread and no model. UTC is `CLOCK_REALTIME`, the source `NETCLOCK_SRC_OS`.
+  Linux: synced when `ntp_adjtime` (modes 0) returns other than `TIME_ERROR` and `STA_UNSYNC` is clear; the quality
+  is `esterror` (µs), false when not synced. Elsewhere: synced, quality `NAN`.
 
 ### Combine (`nc_combine`)
 
@@ -204,7 +225,8 @@ Rank: PPS 4 > NTP 3 > GNSS 2 > browser 1 > none 0. `nc_clock_takes(src, t)`:
 
 - `rank(src) ≥ rank(current)` → take.
 - Current PPS, src NTP or GNSS, `t − last_sync > 60 s` → take.
-- Otherwise ignore (not logged, not passed to the model). A browser never displaces NTP, GNSS or PPS, and GNSS never
+- Otherwise ignore (not logged, not passed to the model).
+- `NETCLOCK_SRC_OS` (5, "os") is never a reference: the POSIX glue's OS mode reports it in place of the model. A browser never displaces NTP, GNSS or PPS, and GNSS never
   displaces NTP, even when they stop.
 
 `nc_clock_add` passes `new_source = (src ≠ current)` to the model, so every source change steps the clock (and

@@ -226,7 +226,7 @@ Details: "Host tests", "Firmware: esp_idf" and "Flashing (SuperMini)" below.
 | `sdr/` | `rdof_sdr`: the SDR receive path in portable C11 on top of `common/` ("SDR core" below); `cli/rdofsdr.c`, a host tool. |
 | `hostweb/` | the firmware's web page and its shared API (`common/src/webapi.c`) for a host tool (`rdofradio --web [ADDR:]PORT`): a small POSIX HTTP server in its own thread; [hostweb/README.md](../hostweb/README.md). Off unless `-DRDOF_HOST_WEB=ON`. |
 | `rtlsdr/` | the RTL2832U + R820T / R828D driver: portable register logic, and `esp/rtl_usb.c`, the ESP-IDF USB host glue. |
-| `components/` | ESP-IDF components with nothing of the gateway in them, for any ESP-IDF project: `netclock` (a UTC clock disciplined by NTP or a browser) and `wifilist` (a prioritized list of Wi-Fi networks with a setup access point), each with its own README, Kconfig menu, NVS namespace, HTTP handlers and page section; `tinysctp` (SCTP over UDP, with PR-SCTP: the HBlink4 link's transport; its own README and Kconfig menu, no settings of its own); and `lr2021` (a Semtech LR2021 on SPI, from the datasheet; its own README). Each keeps its logic in plain C that the host tests build. |
+| `components/` | ESP-IDF components with nothing of the gateway in them, for any ESP-IDF project: `netclock` (a UTC clock disciplined by NTP or a browser) and `wifilist` (a prioritized list of Wi-Fi networks with a setup access point), each with its own README, Kconfig menu, NVS namespace, HTTP handlers and page section; `tinysctp` (SCTP over UDP, with PR-SCTP: the HBlink4 link's transport; its own README and Kconfig menu, no settings of its own); and `lr2021` (a Semtech LR2021 on SPI, from the datasheet; its own README). Each keeps its logic in plain C that the host tests build. netclock also runs on Linux and macOS (`netclock_posix`) for host tools. |
 | `rust/` | `rdof_rust`: modules of `common/` ported to Rust, linked in place of their C behind a Kconfig switch, `CONFIG_RDOF_RUST`; [rust/README.md](../rust/README.md). |
 | `esp_idf/` | The ESP-IDF project for the S3 (`radiofoundry_gateway`): the SDR and the roamer / repeater as two roles of one app, each behind a Kconfig gate. `common/`, `sdr/`, `rtlsdr/` and `components/` come in through `EXTRA_COMPONENT_DIRS`. |
 | `host-tests/` | Host build of `common/`, `sdr/` and `rtlsdr/` and their tests: the golden fixtures (`vectors.h`, `scenarios.h`, `fixtures/sdr-vectors/`, `fixtures/mod-vectors/`), fake radios (`fake_radio.c`); and the components' portable parts with their tests. |
@@ -287,7 +287,7 @@ cmake -S host-tests -B build/host && cmake --build build/host && ctest --test-di
 
 Offline, in seconds, with no Python: the golden vectors and scenarios are committed fixtures (`host-tests/vectors.h`,
 `scenarios.h`, `fixtures/`). Six runs, with AddressSanitizer and UBSan (`-DRDOF_SANITIZE=OFF` to drop them): `rdof_tests` with every feature on
-(11691 checks) and `rdof_tests_min` with every `RDOF_FEATURE_*` off (1903), then `test_netclock` (138),
+(11691 checks) and `rdof_tests_min` with every `RDOF_FEATURE_*` off (1903), then `test_netclock` (138), `test_netclock_posix` (120, the POSIX glue against a fake NTP server),
 `test_wifilist` (29), `lr2021` (37, the LR2021's command encodings) and `tinysctp_tests` (11808, mostly one a
 message sent over its simulated links) for the components (their READMEs say what those cover). With cargo
 installed, `rdof_tests_rust` too: `rdof_tests` with `rust/`'s modules in place of their C. `rdof_tests` covers:

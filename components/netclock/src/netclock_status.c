@@ -16,6 +16,7 @@ const char *netclock_source_name(netclock_source_t s)
     case NETCLOCK_SRC_BROWSER: return "browser";
     case NETCLOCK_SRC_PPS: return "pps";
     case NETCLOCK_SRC_GNSS: return "gnss";
+    case NETCLOCK_SRC_OS: return "os";
     default: return "none";
     }
 }

@@ -26,9 +26,10 @@ typedef enum {
     NETCLOCK_SRC_NTP,
     NETCLOCK_SRC_PPS,         // a GNSS pulse per second (seconds numbered by the receiver's NMEA, or the clock)
     NETCLOCK_SRC_GNSS,        // a GNSS receiver's NMEA time alone (no pulse): to tens of ms; above a browser, below NTP
+    NETCLOCK_SRC_OS,          // the OS clock, trusted as it is (netclock_posix.h, OS mode); never a reference
 } netclock_source_t;
 
-const char *netclock_source_name(netclock_source_t s);  // "none", "browser", "ntp", "pps", "gnss"
+const char *netclock_source_name(netclock_source_t s);  // "none", "browser", "ntp", "pps", "gnss", "os"
 
 // One NTP server, as `chronyc sources` shows it.
 typedef struct {

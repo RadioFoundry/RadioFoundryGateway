@@ -1001,7 +1001,8 @@ static void status_edges(void)
     memset(&st, 0, sizeof(st));
     char buf[16384];
     CHECK(!strcmp(netclock_source_name(NETCLOCK_SRC_PPS), "pps") && !strcmp(netclock_source_name(NETCLOCK_SRC_NONE), "none") &&
-              !strcmp(netclock_source_name(NETCLOCK_SRC_BROWSER), "browser") && !strcmp(netclock_source_name((netclock_source_t)99), "none"),
+              !strcmp(netclock_source_name(NETCLOCK_SRC_BROWSER), "browser") && !strcmp(netclock_source_name((netclock_source_t)99), "none") &&
+              !strcmp(netclock_source_name(NETCLOCK_SRC_OS), "os"),
           "source names");
     CHECK(netclock_status_json(&st, buf, 0) == 0, "no buffer");
     st.die_c = NAN;

@@ -7,11 +7,12 @@ corrections instead of stepping, and rejects outliers.
 
 [SPEC.md](SPEC.md) is the behavior spec: the NTP wire format and poll, selection and combination, the clock model
 and rate fit, the source rules, PPS, the temperature table, and every constant. This file covers use, the API,
-storage, configuration, HTTP and tests.
+storage, configuration, HTTP and tests. The same clock runs on Linux and macOS for host tools ([POSIX](#posix)).
 
 | Part | Files | Platform |
 |---|---|---|
 | Portable core (plain C11, no ESP-IDF) | `include/netclock_{model,select,ntp,core,pps,tempcal,status}.h`, matching `src/*.c` | any; built as the static library `netclock_portable` when `ESP_PLATFORM` is unset |
+| POSIX glue | `include/netclock_posix.h`, `src/netclock_posix.c` (mutex, state file, NTP pthread, optional OS clock step) | Linux, macOS; the static library `netclock_posix` (the portable core plus this, linking Threads) when `ESP_PLATFORM` is unset |
 | ESP-IDF glue | `include/netclock.h`, `src/netclock.c` (lock, NVS, NTP task, PPS ISR, die sensor), `src/netclock_settings.c` (cJSON) | ESP-IDF |
 | Web | `include/netclock_http.h`, `src/netclock_http.c`, `web/netclock.js` (gzipped and embedded at build) | ESP-IDF, `CONFIG_NETCLOCK_HTTP` |
 
@@ -36,6 +37,83 @@ nvs_flash json esp_driver_tsens esp_driver_gpio`. Host build of the portable par
 
 Consumers in this repo: `esp_idf` (clock, settings, web page, PPS on GPIO 41 in one config; `sdr_task.c`
 reuses `nc_settle_t` and `nc_tcal_t` for the SDR dongle's crystal), `sdr/include/rdof/sdr/rate.h`.
+
+## POSIX
+
+`include/netclock_posix.h` is the board's API for Linux and macOS host tools (a PlutoSDR with no NTP daemon and no
+RTC, a desktop). The core, the poll, the selection and the outlier rules are the board's; what differs:
+
+| Board | POSIX |
+|---|---|
+| `esp_timer`, µs | `CLOCK_MONOTONIC`, ns (`netclock_posix_mono_ns()`): stamp events with it |
+| NVS (`rate_ppb`, `tcal`) | the state file `state_path` (NULL: none) |
+| settings from NVS and the web | `netclock_posix_opts_t`, at init |
+| die temperature sensor | the `temp_c` callback (NAN: unknown), read at each reference and every 30 s |
+| `settimeofday` on each step (`NETCLOCK_SET_SYSTEM_TIME`) | off; `set_os_clock` steps the OS clock when it's over `os_step_ms` (100 ms) off the model |
+| FreeRTOS task | one pthread (`start` / `stop`); a stop wakes it at once |
+| `ESP_LOG` | the `log` callback (NULL: silent) |
+| PPS, GNSS NMEA time, HTTP | not here (a browser reference is: `netclock_posix_set_from_client`) |
+
+```c
+#include "netclock_posix.h"
+
+static double xadc_temp(void *ctx) { /* read the Zynq XADC from sysfs */ return NAN; }
+
+netclock_posix_opts_t o = {
+    .servers = "pool.ntp.org", .poll_s = 300,
+    .state_path = "/mnt/jffs2/netclock.state", .temp_c = xadc_temp,
+    .mode = NETCLOCK_POSIX_DISCIPLINE,               // or NETCLOCK_POSIX_OS
+};
+if (netclock_posix_init(&o) != 0) { perror("netclock"); }
+netclock_posix_start();                              // the NTP thread (OS mode: nothing)
+int64_t t = netclock_posix_mono_ns();                // stamp an event...
+bool ok;
+int64_t utc_ns = netclock_posix_utc_ns(t, &ok);      // ...and give it a UTC time
+...
+netclock_posix_save();                               // at exit: what this run learned
+netclock_posix_stop();
+```
+
+Build: link `netclock_posix` (`add_subdirectory(components/netclock netclock)` from a host CMake project), or compile
+the seven portable sources and `src/netclock_posix.c` with `-lpthread -lm`. Plain C11 and POSIX; nothing assumes a 64-bit `long` (32-bit ARM Linux is a target).
+
+Picking a mode:
+
+- `NETCLOCK_POSIX_DISCIPLINE` (the default): the board's clock. For a machine with no time daemon (the Pluto: its
+  clock starts at 1970), or where one program wants the board's model and rate. It never touches the OS clock unless
+  `set_os_clock` is set (root or `CAP_SYS_TIME`; a failure is logged once). It steps only, never slews: `adjtime`
+  would bend `CLOCK_MONOTONIC` on Linux, the model's own timebase.
+- `NETCLOCK_POSIX_OS`: trust the OS clock, for a host running chrony or ntpd. No thread, no state file, no NTP. The
+  same calls report the OS clock with source `NETCLOCK_SRC_OS` ("os"). On Linux, `ntp_adjtime` (read only) says
+  whether the kernel counts itself synchronized and its estimated error: `synced` and `quality` follow it. On macOS
+  the OS doesn't say: synced is true and the error `NAN`.
+
+Calls (thread safe; `init` only while stopped):
+
+| Call | Behavior |
+|---|---|
+| `int netclock_posix_init(const netclock_posix_opts_t *o)` | Checks the options (servers as the board's `check_servers`, `poll_s` 0 or 16..3600: else -1, `EINVAL`), loads the state file and sets the prior as the board's init does. Again after a stop: starts over. NULL: defaults (no servers). -1 `EBUSY` while running |
+| `int netclock_posix_start(void)`, `void netclock_posix_stop(void)` | The NTP thread. Repeat calls do nothing. Stop wakes it and joins. The model is kept across a stop; a start parses the servers again and starts with an iburst |
+| `int64_t netclock_posix_utc_ns(int64_t mono_ns, bool *synced)`, `netclock_posix_now_ns()` | As `netclock_utc_ns`. Before any reference: `CLOCK_REALTIME` less the time since `mono_ns` |
+| `netclock_posix_source()`, `_synced()`, `_quality()`, `_rate()`, `_set_from_client()` | As the board's |
+| `void netclock_posix_os(netclock_posix_os_t *out)` | The kernel's view of the OS clock: `known`, `synced`, `esterror_us`, `maxerror_us` (Linux; elsewhere `known` false) |
+| `void netclock_posix_status(netclock_status_t *out)` | As `netclock_status`: no PPS (`pps_gpio` -1) or GNSS. OS mode: source, valid and `utc_us` only |
+| `size_t netclock_posix_status_json(char *buf, size_t cap)` | The `/api/clock` JSON below, plus `"mode": "discipline"` or `"os"` and `"os": {known, synced, esterror_us, maxerror_us}` (null when unknown) |
+| `int netclock_posix_save(void)` | Writes the state file now: the rate learned this run (else what the file had) and the table. The clock also stores on its own, by the board's rule (SPEC "Storing the rate"). Returns 0 or an errno |
+
+The state file is text, written to `<path>.tmp` and renamed over `<path>` (fsync'd first):
+
+```
+netclock 1
+rate_ppb 18342
+tcal 01020000...
+```
+
+`rate_ppb` is the board's NVS `rate_ppb`; `tcal` is the `nc_tcal_t` bytes in hex (this machine's layout: the file
+stays where it was written), checked with `nc_tcal_valid` on load. A line that doesn't parse is ignored.
+
+For tests, `test_gap_ms`, `test_poll_ms` and `test_wait_ms` shorten the iburst gap, the poll and the reply window.
+A server may carry a port (`127.0.0.1:12300`); without one it's 123.
 
 ## API (`include/netclock.h`)
 
@@ -246,7 +324,19 @@ a non-finite float is `null`. "omitted" = the key is left out.
 | `ntp_edges` | only separators, no list or no room, a name cut to 39 characters, a pool and a digit-first name; a reply with a negative delay (0), over 500 ms, transmit before receive, stratum 16, short, wrong mode, none outstanding; a missed poll; views of stratum 2 (refid as an address), stratum 1 (unprintable bytes dropped) and 0; `nc_combine` with no replies, two pairs that disagree (no majority, all `x`) and a list longer than the table |
 | `select_edges` | nobody answered, no candidates, touching intervals, identical samples, more than `NC_SELECT_MAX` candidates (only the first 16 are looked at) |
 | `tcal_edges` | `nc_tcal_valid` for another version, too many bins, NaN and infinite values, bins out of order; `nc_tcal_put` refuses NaN, infinite values and bins past an int8, accepts -128 and 126; binning rounds to the nearest even bin; `nc_tcal_get` empty, NaN, beyond either end, between each pair of three bins, at a bin |
-| `status_edges` | `netclock_source_name` for each source and an unknown one; no buffer; NaN and infinity as `null`; no die temperature when unknown, the table, escaping of quote, backslash and control characters in a server name; a missing mark and rate source; `-0` as `0`; results `slew`, `outlier` and `?`; residual and die temperature of a log entry only when known; every shorter buffer refused, exact fit |
+| `status_edges` | `netclock_source_name` for each source (`os` too) and an unknown one; no buffer; NaN and infinity as `null`; no die temperature when unknown, the table, escaping of quote, backslash and control characters in a server name; a missing mark and rate source; `-0` as `0`; results `slew`, `outlier` and `?`; residual and die temperature of a log entry only when known; every shorter buffer refused, exact fit |
+
+`test/test_netclock_posix.c` (host, `netclock_posix`; ctest `netclock_posix`, about 2 s) runs the POSIX glue
+against a fake NTP server on 127.0.0.1 (a thread answering with the OS clock plus an offset):
+
+| Test | Pins |
+|---|---|
+| `bad_opts` | a bad server list and a 5 s poll refused; NULL options are the defaults |
+| `sync` | the OS clock before a reference; synced with source `ntp` within 3 s; UTC the server's (123.457 s ahead) within 25 ms; a second of `CLOCK_MONOTONIC` is a second of UTC; quality; a browser refused; status (one server, `*`, reach, the temperature callback in the log) and its JSON with `mode` and `os`; a 2 s jump followed (outliers, then a step); still synced after a stop |
+| `unreachable` | a port with nothing behind it: not synced, the OS clock within 25 ms, no quality, the server `?` with reach 0; then a browser reference sets it |
+| `state` | a file with a rate and a two-bin table: the prior from the table at 40 C (12 ppm), the stored rate reported; saved and read back with no temp file left; with no temperature the stored rate is the prior; a damaged file ignored; saving into a missing directory fails softly |
+| `restart` | 20 start / stop cycles stopping at different points, repeat start and stop, init refused while running; then it syncs; two names on one address and port are one server (`-`) |
+| `os_mode` | source `os`, synced and quality as the kernel says (Linux) or unknown (macOS), no rate, no browser, `save` does nothing, JSON `mode` `os` |
 
 Measured (`ctest`, 2026-10-21; local clock 18 ppm off with a ±2 ppm 6 h wander unless noted; NTP 0..8 ms one-way
 jitter, 5% slow round trips of 80..300 ms; scored after the first hour):

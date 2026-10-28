@@ -2,7 +2,8 @@
 # SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 # netclock: an NTP / browser disciplined UTC clock. An ESP-IDF component when
 # ESP_PLATFORM is set; otherwise a static library of the portable maths
-# (netclock_portable) for host tests.
+# (netclock_portable) for host tests, and the clock for host tools on Linux and
+# macOS (netclock_posix: the portable maths, a pthread and a state file).
 set(NETCLOCK_PORTABLE_SRCS
     src/netclock_model.c
     src/netclock_select.c
@@ -50,11 +51,28 @@ else()
     if(MATH_LIB)
         target_link_libraries(netclock_portable PUBLIC ${MATH_LIB})
     endif()
+    if(UNIX)
+        find_package(Threads REQUIRED)
+        add_library(netclock_posix STATIC ${NETCLOCK_PORTABLE_SRCS} src/netclock_posix.c)
+        target_include_directories(netclock_posix PUBLIC include)
+        set_target_properties(netclock_posix PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+        target_compile_options(netclock_posix PRIVATE -Wall -Wextra -Wno-unused-parameter)
+        target_link_libraries(netclock_posix PUBLIC Threads::Threads)
+        if(MATH_LIB)
+            target_link_libraries(netclock_posix PUBLIC ${MATH_LIB})
+        endif()
+    endif()
     # Standalone: cmake -S <this dir> -B build && cmake --build build && ctest --test-dir build
     if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
         enable_testing()
         add_executable(test_netclock test/test_netclock.c)
         target_link_libraries(test_netclock PRIVATE netclock_portable)
         add_test(NAME netclock COMMAND test_netclock)
+        if(TARGET netclock_posix)
+            add_executable(test_netclock_posix test/test_netclock_posix.c)
+            target_link_libraries(test_netclock_posix PRIVATE netclock_posix)
+            add_test(NAME netclock_posix COMMAND test_netclock_posix)
+            set_tests_properties(netclock_posix PROPERTIES TIMEOUT 30)
+        endif()
     endif()
 endif()
