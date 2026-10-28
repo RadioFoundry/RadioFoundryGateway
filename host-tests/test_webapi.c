@@ -364,9 +364,54 @@ static void t_lastheard(void)
     rdof_webapi_done(&p, &R);
 }
 
+/* ── the board's clock on a host (netclock's routes, which the board's own server answers there) ── */
+
+static int64_t clock_us;
+static bool clk_status(void *ctx, rdof_webapi_clock_t *c)
+{
+    c->source = "ntp";
+    return true;
+}
+static size_t clk_json(void *ctx, char *out, size_t cap) { return (size_t)snprintf(out, cap, "{\"source\":\"ntp\"}"); }
+static bool clk_set(void *ctx, int64_t utc_us, const char **source)
+{
+    clock_us = utc_us;
+    *source = "browser";
+    return true;
+}
+static size_t clk_settings(void *ctx, char *out, size_t cap)
+{
+    return (size_t)snprintf(out, cap, "{\"servers\":\"pool.ntp.org\",\"poll_s\":0}");
+}
+
+static void t_clock(void)
+{
+    rdof_webapi_platform_t p = BOARD;
+    CHECK(!req(&p, "GET", "/api/clock", NULL, NULL)); /* the board's server answers these itself */
+    p.caps |= RDOF_WEBAPI_CAP_NETCLOCK;
+    p.clock = clk_status;
+    p.clock_json = clk_json;
+    p.clock_set = clk_set;
+    p.clock_settings_json = clk_settings;
+    CHECK(req(&p, "GET", "/api/clock", NULL, NULL) && R.status == 200 && !strcmp(R.body, "{\"source\":\"ntp\"}"));
+    rdof_webapi_done(&p, &R);
+    CHECK(req(&p, "POST", "/api/time", NULL, "{\"utc_ms\": 1793206505123}") && R.status == 200 &&
+          !strcmp(R.body, "{\"applied\":true,\"source\":\"browser\"}") && clock_us == 1793206505123000LL);
+    rdof_webapi_done(&p, &R);
+    clock_us = 0;
+    CHECK(req(&p, "POST", "/api/time", NULL, "{\"utc_ms\": 5}") && !strcmp(R.body, "{\"applied\":false,\"source\":\"ntp\"}") &&
+          !clock_us); /* before 2020: not a clock */
+    rdof_webapi_done(&p, &R);
+    CHECK(req(&p, "GET", "/api/clock/settings", NULL, NULL) && strstr(R.body, "pool.ntp.org"));
+    rdof_webapi_done(&p, &R);
+    CHECK(req(&p, "POST", "/api/clock/settings", NULL, "{}") && R.status == 403);
+    rdof_webapi_done(&p, &R);
+}
+
 int main(void)
 {
     t_status_board();
+    t_clock();
     t_status_host();
     t_routes();
     t_query();

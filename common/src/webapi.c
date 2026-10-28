@@ -166,6 +166,8 @@ static bool take(const rdof_webapi_platform_t *p, rdof_webapi_resp_t *r, size_t 
 
 bool rdof_webapi_body_ok(const char *path, size_t len)
 {
+    if (!strcmp(path, "/api/time"))
+        return len > 0 && len < 96; /* {"utc_ms": ...} */
     return !strcmp(path, "/api/config") && len > 0 && len <= RDOF_WEBAPI_MAX_CONFIG;
 }
 
@@ -291,6 +293,9 @@ bool rdof_webapi_handle(const rdof_webapi_platform_t *p, const char *method, con
         const char *c = k ? strchr(k, ':') : NULL;
         const double ms = c ? strtod(c + 1, NULL) : 0;
         const char *source = "none";
+        rdof_webapi_clock_t now = {0};
+        if (p->clock && p->clock(p->ctx, &now) && now.source)
+            source = now.source;
         const bool applied = ms > 1.6e12 && p->clock_set(p->ctx, (int64_t)(ms * 1000.0), &source); /* after 2020 */
         if (take(p, r, 64, "application/json"))
             r->len = (size_t)snprintf(r->body, 64, "{\"applied\":%s,\"source\":\"%s\"}", applied ? "true" : "false",

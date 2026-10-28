@@ -46,7 +46,7 @@ static struct {
     int lfd, wake[2];
     pthread_t thr;
     char name[32];
-    time_t t0;
+    double t0;         /* mono_s() at start: the uptime (the wall clock can step) */
     const char *reset; /* why this process started: "start", or "restart" after rdof_hostweb_reexec */
     /* the status: trylock to publish */
     pthread_mutex_t st_mu;
@@ -156,7 +156,7 @@ static void host_board(void *ctx, rdof_webapi_board_t *b)
     b->name = W.name;
     b->version = W.version ? W.version : "host";
     b->idf = NULL;
-    b->uptime_s = (long long)(time(NULL) - W.t0);
+    b->uptime_s = (long long)(mono_s() - W.t0);
     b->reset = W.reset;
 }
 
@@ -754,7 +754,7 @@ int rdof_hostweb_start(const char *bind_addr, int port, const char *name)
     fcntl(W.wake[1], F_SETFD, FD_CLOEXEC);
     W.lfd = fd;
     snprintf(W.name, sizeof W.name, "%s", name && *name ? name : "host");
-    W.t0 = time(NULL);
+    W.t0 = mono_s();
     if (!W.reset) {
         const char *e = getenv(RESTART_ENV);
         W.reset = e && *e == '1' ? "restart" : "start";
