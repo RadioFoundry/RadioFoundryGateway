@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 /* rdofradio's settings (rdofradio_cfg.h). */
 #include "rdofradio_cfg.h"
+#include "rdof/setup.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,8 +37,9 @@ static void add(char *out, size_t cap, const char *what)
         snprintf(out + n, cap - n, ", ...");
 }
 
-/* The keys set that rdofradio doesn't use: the box's, the radio's, and every other radio's section. */
-static void unused(const char *text, size_t len, const char *radio, char *out, size_t cap)
+/* The keys set that rdofradio doesn't use: the box's, the radio's, and every other radio's section (v2: but an SDR
+   device's, which the view adds). */
+static void unused(const char *text, size_t len, const char *radio, bool v2, char *out, size_t cap)
 {
     out[0] = 0;
     enum { NODES = 2048 };
@@ -64,6 +66,9 @@ static void unused(const char *text, size_t len, const char *radio, char *out, s
         const rdof_jnode_t *nm = rdof_jnode(&d, rdof_jget(&d, s, "name"));
         const char *name = nm && nm->type == RDOF_JSTR ? nm->str : "";
         if (strcmp(name, radio)) {
+            const rdof_jnode_t *ty = rdof_jnode(&d, rdof_jget(&d, s, "type"));
+            if (v2 && ty && ty->type == RDOF_JSTR && !strcmp(ty->str, "sdr"))
+                continue; /* the view's section for an SDR device: the device is on the command line */
             char t[48];
             snprintf(t, sizeof t, "radios %s", *name ? name : "(no name)");
             add(out, cap, t);
@@ -125,7 +130,13 @@ bool rdofradio_cfg_parse(const char *text, size_t len, rdofradio_cfg_t *o, char 
         o->rx_hz = o->tx_hz = c->idle.freq;
         o->cc = c->idle.cc;
     }
-    unused(text, len, roles.radio, o->unused, sizeof o->unused);
+    /* version 2: the keys of its version 1 view, the shape the lists above name */
+    const char *v1 = text;
+    size_t v1len = len;
+    char *owned = NULL, verr[8];
+    if (rdof_config_as_v1(&v1, &v1len, roles.radio, &owned, verr, sizeof verr))
+        unused(v1, v1len, roles.radio, owned != NULL, o->unused, sizeof o->unused);
+    free(owned);
     return true;
 }
 

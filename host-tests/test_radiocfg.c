@@ -92,6 +92,17 @@ int main(void)
         printf("  %s\n%s", err, text);
     CHECK(strstr(C.unused, "radios sdr"));
 
+    /* version 2: a repeater on one SDR; version, devices and roles are its own keys, not unused ones */
+    const char *v2 = "{\"version\": 2, \"name\": \"pluto\", \"devices\": {\"pluto\": {\"kind\": \"sdr\", "
+                     "\"driver\": \"iio\", \"tx\": {}}}, \"roles\": {\"R1\": {\"type\": \"repeater\", "
+                     "\"peer_id\": 9800001, \"rx_freq\": 438.25, \"tx_freq\": 438.0125, \"cc\": 1, \"parrot\": 9990, "
+                     "\"modem\": {\"device\": \"pluto\"}, \"cwid\": \"N0CALL\"}}, \"mqtt\": {\"host\": \"x\"}}";
+    CHECK(parse(v2) && C.full && C.rx_hz == 438250000 && C.tx_hz == 438012500 && C.cc == 1 && C.parrot == 9990);
+    CHECK(!strstr(C.unused, "version") && !strstr(C.unused, "devices") && !strstr(C.unused, "roles") &&
+          strstr(C.unused, "mqtt"));
+    if (err[0])
+        printf("  %s / unused: %s\n", err, C.unused);
+
     printf("radiocfg: %d checks, %d failed\n", checks, fails);
     return fails != 0;
 }
