@@ -450,7 +450,10 @@ static bool parse_box(ctx_t *c, int box, rdof_sdr_config_t *g)
         double f;
         if (!num(obj >= 0 ? get(c, obj, "freq") : rdof_jnode(&c->doc, e), &f))
             return fail(c, "channel %s: no freq", rdof_jnode(&c->doc, e)->key);
-        if (!(obj >= 0 && rdof_jget(&c->doc, obj, "cc") >= 0 ? get(c, obj, "cc") : dcc))
+        /* a channel nothing transmits on ("tx": false) may leave it out: any color code */
+        const rdof_jnode_t *txn = obj >= 0 ? get(c, obj, "tx") : NULL;
+        const bool rx_only = txn && txn->type == RDOF_JBOOL && !txn->b;
+        if (!(obj >= 0 && rdof_jget(&c->doc, obj, "cc") >= 0 ? get(c, obj, "cc") : dcc) && !rx_only)
             return fail(c, "channel %s: no color code (set cc on it or at the top)", rdof_jnode(&c->doc, e)->key);
     }
     char ids[32];
@@ -525,7 +528,7 @@ bool rdof_sdr_config_parse(const char *text, size_t len, rdof_sdr_config_t *cfg,
 bool rdof_sdr_config_parse_device(const char *text, size_t len, const char *device, rdof_sdr_config_t *cfg,
                                   char *error, size_t cap)
 {
-    if (rdof_config_version(text, len) != 2)
+    if (rdof_config_version(text, len) < 2)
         return sdr_parse_v1(text, len, cfg, error, cap);
     memset(cfg, 0, sizeof *cfg);
     char focus[RDOF_SETUP_NAME] = "";

@@ -1,0 +1,22 @@
+{
+  "version": 3,
+  "name": "listener",
+  "id": 9800400,
+  "defaults": {"tx": false, "tg": "*"},
+  "devices": [
+    {"kind": "sdr", "driver": "rtlsdr", "match": {"serial": "00000001"}, "rx": {"gain_db": 30}}
+  ],
+  "frequencies": [
+    {"name": "city rpt",   "freq": 438.5000, "cc": 1},
+    {"name": "county rpt", "freq": 438.5500, "cc": 3},
+    {"name": "fire rpt",   "freq": 438.6250, "cc": 1},
+    {"name": "water rpt",  "freq": 438.6750, "cc": 7},
+    {"name": "yard 1",     "freq": 438.0625},
+    {"name": "yard 2",     "freq": 438.0875},
+    {"name": "yard 3",     "freq": 438.1125},
+    {"name": "yard 4",     "freq": 438.1375}
+  ],
+  "networks": [
+    {"type": "mqtt", "host": "broker.example.net", "root": "DMR", "calls": true}
+  ]
+}

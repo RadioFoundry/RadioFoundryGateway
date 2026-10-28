@@ -1,0 +1,34 @@
+{
+  "version": 3,
+  "name": "plant",
+  "id": 9800100,
+  "defaults": {"cc": 2, "ts": 1},
+  "devices": [
+    {"kind": "sdr", "driver": "iio", "match": {"uri": "local:"}}
+  ],
+  "frequencies": [
+    {"freq": 438.0625, "tg": 201},
+    {"freq": 438.0875, "tg": 202},
+    {"freq": 438.1125, "tg": 203},
+    {"freq": 438.1375, "tg": 204},
+    {"freq": 438.1625, "tg": 205},
+    {"freq": 438.1875, "tg": 206},
+    {"freq": 438.2125, "tg": 207},
+    {"freq": 438.2375, "tg": 208},
+    {"freq": 438.2625, "tg": 209},
+    {"freq": 438.2875, "tg": 210},
+    {"freq": 438.3125, "tg": 211},
+    {"freq": 438.3375, "tg": 212},
+    {"freq": 438.3625, "tg": 213},
+    {"freq": 438.3875, "tg": 214},
+    {"freq": 438.4875, "tg": 215},
+    {"freq": 438.7125, "tg": 216}
+  ],
+  "apps": [
+    {"type": "parrot", "tg": 9990},
+    {"type": "ipgw",   "tg": 9991}
+  ],
+  "networks": [
+    {"type": "hblink", "host": "hb.example.net", "port": 62031}
+  ]
+}

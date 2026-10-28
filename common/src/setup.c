@@ -15,6 +15,7 @@
 #include "rdof/broker.h"
 #include "rdof/config.h"
 #include "rdof/jsonp.h"
+#include "rdof/site.h"
 #include "rdof/status.h"
 
 #define MAX_NODES 2000
@@ -79,7 +80,23 @@ static uint32_t hz(double f)
     return v <= 0 ? 0 : v >= 4294967295.0 ? UINT32_MAX : (uint32_t)v;
 }
 
+/* A version 3 document is read as the version 2 settings it runs as (rdof_site_lower); NULL with error set when
+   it's refused. */
+static ctx_t *open_raw(const char *text, size_t len, char *error, size_t cap);
 static ctx_t *open_doc(const char *text, size_t len, char *error, size_t cap)
+{
+    if (!rdof_site_is_v3(text, len))
+        return open_raw(text, len, error, cap);
+    size_t n;
+    char *v2 = rdof_site_lower(text, len, &n, error, cap);
+    if (!v2)
+        return NULL;
+    ctx_t *c = open_raw(v2, n, error, cap);
+    free(v2);
+    return c;
+}
+
+static ctx_t *open_raw(const char *text, size_t len, char *error, size_t cap)
 {
     ctx_t *c = malloc(sizeof *c);
     char *clean = c ? malloc(len + 1) : NULL;
@@ -118,7 +135,7 @@ static int version_of(ctx_t *c)
     int v = get(c, c->root, "version");
     if (v >= 0) {
         double d;
-        if (!num_of(c, v, &d) || (d != 1 && d != 2))
+        if (!num_of(c, v, &d) || (d != 1 && d != 2 && d != 3))
             return -1;
         return (int)d;
     }
@@ -131,7 +148,7 @@ static int version_of(ctx_t *c)
 
 int rdof_config_version(const char *text, size_t len)
 {
-    ctx_t *c = open_doc(text, len, NULL, 0);
+    ctx_t *c = open_raw(text, len, NULL, 0);
     if (!c)
         return -1;
     int v = version_of(c);
@@ -2044,7 +2061,7 @@ done:
 bool rdof_config_as_v1(const char **text, size_t *len, const char *focus, char **owned, char *error, size_t cap)
 {
     *owned = NULL;
-    if (rdof_config_version(*text, *len) != 2)
+    if (rdof_config_version(*text, *len) < 2)
         return true;
     size_t n;
     char *v = rdof_config_view(*text, *len, focus, &n, error, cap);

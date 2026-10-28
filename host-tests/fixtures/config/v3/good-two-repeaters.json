@@ -1,0 +1,31 @@
+{
+  "version": 3,
+  "name": "hilltop",
+  "id": 9800200,
+  "defaults": {"cc": 1},
+  "devices": [
+    {"name": "r1rx", "kind": "modem", "port": {"usb": "auto", "serial": "R1RX"}, "hears": {"idle": "r1 in"}, "transmits": false},
+    {"name": "r1tx", "kind": "modem", "port": {"uart": 1, "tx": 17, "rx": 18}, "hears": false, "transmits": ["r1 out"]},
+    {"name": "r2rx", "kind": "modem", "port": {"usb": "auto", "serial": "R2RX"}, "hears": {"idle": "r2 in"}, "transmits": false},
+    {"name": "r2tx", "kind": "modem", "port": {"uart": 2, "tx": 4, "rx": 5}, "hears": false, "transmits": ["r2 out"]}
+  ],
+  "frequencies": [
+    {"name": "r1 in",  "freq": 438.75},
+    {"name": "r1 out", "freq": 438.5},
+    {"name": "r2 in",  "freq": 438.175},
+    {"name": "r2 out", "freq": 438.55}
+  ],
+  "policies": [
+    {"name": "open",   "tg": "*,!9,!4000-4099", "apps": false},
+    {"name": "closed", "tg": "3100,3120,3177"}
+  ],
+  "apps": [
+    {"name": "R1", "type": "repeater", "in": "r1 in", "out": "r1 out", "slots": {"1": "open", "2": "closed"}},
+    {"name": "R2", "type": "repeater", "in": "r2 in", "out": "r2 out", "slots": {"1": "open", "2": "closed"}},
+    {"type": "parrot", "tg": 9990},
+    {"type": "ipgw",   "tg": 9991}
+  ],
+  "networks": [
+    {"type": "hblink", "host": "hb.example.net", "port": 62031}
+  ]
+}

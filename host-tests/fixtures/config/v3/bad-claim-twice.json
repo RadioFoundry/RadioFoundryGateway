@@ -1,0 +1,1 @@
+{"version": 3, "defaults": {"cc": 1}, "frequencies": [438.0625], "apps": [{"type": "parrot", "tg": 9990}, {"name": "p2", "type": "ipgw", "tg": "9980-9995"}]}

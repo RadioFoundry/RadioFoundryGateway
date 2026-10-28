@@ -1,0 +1,17 @@
+// a modem that waits on one frequency, scans two more and transmits on all three; HBlink4 may move it
+{
+  "version": 3,
+  "id": 9800016,
+  "callsign": "N0CALL",
+  "defaults": {"cc": 1},
+  "devices": [
+    {"name": "hs", "kind": "modem", "type": "radio_hotspot", "port": {"uart": 1, "tx": 17, "rx": 18},
+     "hears": {"idle": 438.0625, "scan": [438.0875, 438.1125], "dwell_s": 2},
+     "listen_s": 1.5}
+  ],
+  "frequencies": [438.0625, 438.0875, {"freq": 438.1125, "tg": "3100-3199"}],
+  "networks": [
+    {"type": "hblink", "host": "hb.example.net", "port": 62031, "roaming": true},
+    {"type": "mqtt", "host": "broker.example.net"}
+  ]
+}

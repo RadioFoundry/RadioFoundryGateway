@@ -113,8 +113,9 @@ typedef struct {
     int bench[RDOF_SETUP_MAX_DEVICES];
 } rdof_setup_t;
 
-/* 2 for version 2 settings, 1 for a version 1 box config, 0 for a plain SDR config (v1, not a box config), -1 for
-   anything else (not JSON, not an object, an unknown version). */
+/* 3 for version 3 settings (rdof/site.h), 2 for version 2, 1 for a version 1 box config, 0 for a plain SDR config
+   (v1, not a box config), -1 for anything else (not JSON, not an object, an unknown version). Everything here takes
+   version 3 as the version 2 settings it runs as (rdof_site_lower): its errors name version 3's places. */
 int rdof_config_version(const char *text, size_t len);
 
 /* Version 2 settings into setup: every key known (as the schema), names that exist, devices of the kind each role

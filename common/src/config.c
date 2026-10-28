@@ -1121,7 +1121,7 @@ static bool parse_radio_v1(const char *text, size_t len, const char *want, rdof_
 bool rdof_config_parse_radio(const char *text, size_t len, const char *want, rdof_config_t *cfg, char *error,
                            size_t error_cap)
 {
-    if (rdof_config_version(text, len) != 2)
+    if (rdof_config_version(text, len) < 2)
         return parse_radio_v1(text, len, want, cfg, error, error_cap);
     memset(cfg, 0, sizeof *cfg);
     rdof_roles_t *roles = NULL;
@@ -1236,20 +1236,21 @@ static bool parse_radio_v1(const char *text, size_t len, const char *want, rdof_
         double cc, power;
         int obj = N(c, ch)->type == RDOF_JOBJ ? ch : -1;
         int ccn = get(c, obj, "cc");
-        if (ccn >= 0 ? !num(c, ccn, &cc) : !has_default_cc) {
-            err(c, "channel %d: no color code (set cc on it or at the top)", p->number);
-            goto done;
-        }
-        if (ccn < 0)
-            cc = dcc;
-        if (!fget(c, obj, "power", 255, &power, "channel"))
-            goto done;
         const int txk = get(c, obj, "tx");
         if (txk >= 0 && N(c, txk)->type != RDOF_JBOOL) {
             err(c, "channel %d: tx: true or false", p->number);
             goto done;
         }
         p->no_tx = txk >= 0 && !N(c, txk)->b;
+        /* a channel nothing transmits on may leave the color code out: any (-1) */
+        if (ccn >= 0 ? !num(c, ccn, &cc) : !has_default_cc && !p->no_tx) {
+            err(c, "channel %d: no color code (set cc on it or at the top)", p->number);
+            goto done;
+        }
+        if (ccn < 0)
+            cc = has_default_cc ? dcc : -1;
+        if (!fget(c, obj, "power", 255, &power, "channel"))
+            goto done;
         p->cc = to_int(cc);
         p->power = to_int(power);
         plan_t *same = (plan_t *)plan_find(&plan, p->number);
@@ -1541,7 +1542,7 @@ bool rdof_box_roles(const char *text, size_t len, rdof_roles_t *roles, char *err
 {
     char dummy[8];
     memset(roles, 0, sizeof *roles);
-    if (rdof_config_version(text, len) == 2) {
+    if (rdof_config_version(text, len) >= 2) {
         if (!error || !error_cap)
             error = dummy, error_cap = sizeof dummy;
         return box_roles_v2(text, len, roles, error, error_cap);

@@ -1,0 +1,25 @@
+{
+  "version": 3,
+  "name": "tower",
+  "id": 9800300,
+  "defaults": {"cc": 1},
+  "devices": [
+    {"kind": "sdr", "driver": "iio", "match": {"uri": "local:"}}
+  ],
+  "frequencies": [
+    {"name": "rpt in",  "freq": 438.75},
+    {"name": "rpt out", "freq": 438.5},
+    {"name": "fwd A", "freq": 438.9375, "tx": false, "tg": "*", "net": "mqtt"},
+    {"name": "fwd B", "freq": 438.9625, "tx": false, "tg": "*", "net": "mqtt"},
+    {"name": "fwd C", "freq": 438.9875, "tx": false, "tg": "*", "net": "mqtt"},
+    {"name": "fwd D", "freq": 438.6, "tx": false, "tg": "*", "net": "mqtt"}
+  ],
+  "apps": [
+    {"name": "R1", "type": "repeater", "in": "rpt in", "out": "rpt out",
+     "slots": {"1": {"tg": 3100}, "2": {"tg": "3101-3199", "ptt": "3200-3299", "ptt_hold_s": 600}}}
+  ],
+  "networks": [
+    {"type": "hblink", "host": "hb.example.net", "port": 62031},
+    {"type": "mqtt", "host": "broker.example.net", "root": "DMR", "calls": true}
+  ]
+}

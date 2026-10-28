@@ -1,0 +1,16 @@
+{
+  "version": 3,
+  "id": 9800500,
+  "devices": [
+    {"name": "w12", "kind": "sdr", "driver": "lr2021"},
+    {"name": "hs", "kind": "modem", "port": {"usb": "auto"}, "transmits": ["dc"]}
+  ],
+  "frequencies": [
+    {"name": "dc", "freq": 438.4875, "cc": 1, "mode": "dcdm",
+     "slots": {"1": {"tg": 3100}, "2": {"tg": "3101-3110", "pc": false}}},
+    {"name": "mon", "freq": 438.5875, "tx": false, "slots": {"1": {"tg": "*"}, "2": {"tg": 3120}}}
+  ],
+  "networks": [
+    {"type": "hblink", "host": "hb.example.net", "identity": "per_path", "peer_ids": {"mon": 9800599}}
+  ]
+}
