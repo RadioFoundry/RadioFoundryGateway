@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 //! HBlink4 packets and the HBlink sink (rdof/hblink.h): a port of common/src/hblink.c. DMRC config, DMRD bursts up and down, DMRT tune and DMRK replies.
 
-use core::ffi::{c_char, c_int, c_void};
+use core::ffi::{c_char, c_int, c_uint, c_void};
 
 use crate::bits::slice;
 use crate::ffi::RDOF_BURST_BYTES;
@@ -61,11 +61,14 @@ pub struct RdofHbSink {
     pub send: Option<unsafe extern "C" fn(*mut c_void, *const u8, usize)>,
     pub before_stream: Option<unsafe extern "C" fn(*mut c_void)>,
     pub rand32: Option<unsafe extern "C" fn(*mut c_void) -> u32>,
+    pub admit: Option<unsafe extern "C" fn(*mut c_void, c_int, u32, u32, bool) -> bool>,
     pub ctx: *mut c_void,
     pub seq: [c_int; 2],
     pub stream: [u32; 2],
     pub held: [[RdofFrame; RDOF_HB_HOLD_FRAMES]; 2],
     pub nheld: [c_int; 2],
+    pub refused: [bool; 2],
+    pub not_sent: c_uint,
 }
 
 /// %.4f cut to `width` and space padded: RPTC's fields.
@@ -308,6 +311,19 @@ pub unsafe extern "C" fn rdof_hb_sink_on_frame(s: *mut RdofHbSink, f: &RdofFrame
             held[*nheld as usize] = *f;
             *nheld += 1;
         }
+        return;
+    }
+    if f.new_stream {
+        (*s).refused[i] = match (*s).admit {
+            Some(admit) => !admit((*s).ctx, f.slot, f.src, f.dst, f.group),
+            None => false,
+        };
+        if (*s).refused[i] {
+            (*s).not_sent += 1;
+            (*s).nheld[i] = 0;
+            return;
+        }
+    } else if (*s).refused[i] {
         return;
     }
     if f.new_stream {

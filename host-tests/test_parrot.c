@@ -198,6 +198,25 @@ static void test_id(void)
     CHECK(S.starts == 1 && S.src == 9990 && S.dst == 9800001 && S.n == 14);
 }
 
+/* the talk path's policy: slot 1 may not reach the parrot */
+static bool admit_slot2(void *ctx, int slot, uint32_t src, uint32_t dst, bool group)
+{
+    (void)ctx, (void)src, (void)dst, (void)group;
+    return slot == 2;
+}
+
+static void test_admit(void)
+{
+    reset(9990);
+    P.admit = admit_slot2;
+    call(1, 9800001, 9990, false, 2, true);
+    run(RDOF_PARROT_DELAY_S + 1.0);
+    CHECK(S.starts == 0 && P.ignored == 1 && P.state == RDOF_PARROT_IDLE);
+    call(2, 9800001, 9990, false, 2, true);
+    run(RDOF_PARROT_DELAY_S + 1.0);
+    CHECK(S.starts == 1 && S.slot == 2);
+}
+
 static void test_lost_and_late(void)
 {
     reset(0);
@@ -472,6 +491,7 @@ int main(void)
     test_voice();
     test_private_embedded();
     test_id();
+    test_admit();
     test_lost_and_late();
     test_data();
     test_data_reply();

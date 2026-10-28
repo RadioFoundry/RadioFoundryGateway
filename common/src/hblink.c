@@ -186,6 +186,16 @@ void rdof_hb_sink_on_frame(rdof_hb_sink_t *s, const rdof_frame_t *f)
         return;
     }
     if (f->new_stream) {
+        s->refused[i] = s->admit && !s->admit(s->ctx, f->slot, f->src, f->dst, f->group);
+        if (s->refused[i]) {
+            s->not_sent++;
+            s->nheld[i] = 0;
+            return;
+        }
+    } else if (s->refused[i]) {
+        return;
+    }
+    if (f->new_stream) {
         before_stream(s);
         s->stream[i] = new_stream_id(s);
         s->seq[i] = 0;

@@ -1574,6 +1574,41 @@ static void t_hb_hold(void)
               rdof_be32(cap.pkt[k] + 16) == 0x12345679;
     CHECK(ok == RDOF_HB_HOLD_FRAMES, "held frames resent in order, addressed: %d", ok);
 }
+
+/* admit: talkgroup 9 only */
+static bool hb_admit_9(void *ctx, int slot, uint32_t src, uint32_t dst, bool group)
+{
+    (void)ctx, (void)slot, (void)src;
+    return group && dst == 9;
+}
+
+/* The sink's admit: asked at each stream's start; a stream it refuses sends nothing until the next. */
+static void t_hb_admit(void)
+{
+    rdof_hb_sink_t s;
+    hb_cap_t cap = {0};
+    rdof_hb_sink_init(&s, 9990099);
+    s.send = hb_cap;
+    s.admit = hb_admit_9;
+    s.ctx = &cap;
+    rdof_frame_t h = {.slot = 1, .dt = RDOF_DT_VOICE_LC_HEADER, .has_addr = true, .src = 9990003, .dst = 8,
+                      .group = true, .new_stream = true};
+    rdof_hb_sink_on_frame(&s, &h);
+    rdof_frame_t v = {.slot = 1, .dt = RDOF_DT_VOICE, .has_addr = true, .src = 9990003, .dst = 8, .group = true};
+    rdof_hb_sink_on_frame(&s, &v);
+    CHECK(cap.n == 0 && s.not_sent == 1, "talkgroup 8 refused: %d %u", cap.n, s.not_sent);
+    h.dst = v.dst = 9;
+    rdof_hb_sink_on_frame(&s, &h);
+    rdof_hb_sink_on_frame(&s, &v);
+    CHECK(cap.n == 2 && s.not_sent == 1, "talkgroup 9 sent: %d", cap.n);
+    h.slot = v.slot = 2; /* the other slot keeps its own decision */
+    h.dst = v.dst = 8;
+    rdof_hb_sink_on_frame(&s, &h);
+    v.slot = 1;
+    v.dst = 9;
+    rdof_hb_sink_on_frame(&s, &v);
+    CHECK(cap.n == 3 && s.not_sent == 2, "slots apart: %d", cap.n);
+}
 #endif
 
 static void t_hblink(void)
@@ -1596,6 +1631,7 @@ static void t_hblink(void)
     CHECK(n == RDOF_DMRC_MAX && !memcmp(out, "DMRC", 4), "DMRC cut to %d: %zu", RDOF_DMRC_MAX, n);
 #if RDOF_FEATURE_TRACKER
     t_hb_hold();
+    t_hb_admit();
 #endif
 }
 

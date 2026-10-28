@@ -200,7 +200,7 @@ void rdof_parrot_heard(rdof_parrot_t *p, int slot, uint8_t control, const uint8_
         uint32_t src, dst;
         if (!starts(control, burst, &voice, &src, &dst, &group))
             return; /* late entry, or the rest of a transmission not kept */
-        if (p->id && dst != p->id) {
+        if ((p->id && dst != p->id) || (p->admit && !p->admit(p->ctx, slot, src, dst, group))) {
             p->ignored++;
             return;
         }

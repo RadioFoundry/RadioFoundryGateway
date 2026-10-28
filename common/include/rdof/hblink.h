@@ -89,11 +89,16 @@ typedef struct {
     void (*send)(void *ctx, const uint8_t *data, size_t len);
     void (*before_stream)(void *ctx);
     uint32_t (*rand32)(void *ctx);
+    /* optional: whether a stream heard on slot goes to the network (the talk path's policy, rdof/router.h); asked
+       once a stream, when its addresses are known. A stream it refuses sends nothing until the next. */
+    bool (*admit)(void *ctx, int slot, uint32_t src, uint32_t dst, bool group);
     void *ctx;
     int seq[2];
     uint32_t stream[2];
     rdof_frame_t held[2][RDOF_HB_HOLD_FRAMES];
     int nheld[2];
+    bool refused[2];  /* this slot's stream isn't sent (admit) */
+    unsigned not_sent; /* streams admit refused */
 } rdof_hb_sink_t;
 
 void rdof_hb_sink_init(rdof_hb_sink_t *s, uint32_t peer_id);

@@ -62,6 +62,8 @@ typedef struct rdof_parrot {
     /* the replay: start (optional) before the first burst, send each burst */
     void (*start)(void *ctx, const uint8_t stream_id[4], int slot, uint32_t src, uint32_t dst, bool group);
     void (*send)(void *ctx, const rdof_net_burst_t *b);
+    /* optional: whether a transmission to it heard on slot is kept (the talk path's policy may not reach it) */
+    bool (*admit)(void *ctx, int slot, uint32_t src, uint32_t dst, bool group);
     void *ctx;
 
     /* state */
