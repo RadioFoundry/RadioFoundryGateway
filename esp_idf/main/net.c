@@ -313,6 +313,11 @@ struct esp_mqtt_client *net_mqtt_start(net_mqtt_t *m)
         .session.last_will = {.topic = m->will_topic, .msg = m->will_msg, .qos = 1, .retain = 1},
         .network.reconnect_timeout_ms = 2000,
         .outbox.limit = (uint64_t)m->outbox_kb * 1024,
+        /* the largest message whole (header, alias and all), in PSRAM (over CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL).
+         * esp-mqtt sends one bigger than its buffer in pieces, and one built that way but not sent then (published
+         * while disconnected) leaves its data offset behind: the next publish sends its own last bytes twice, and the
+         * broker drops the connection for a malformed packet. */
+        .buffer.out_size = POST_MAX + 32,
     };
 #if CONFIG_MQTT_PROTOCOL_5
     /* MQTT 5 for the topic aliases; the fall back to 3.1.1 runs from the publish queue's task */
