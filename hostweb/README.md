@@ -13,9 +13,16 @@ own server (esp_http_server). Both route the shared API to the same handlers in 
 - The shared routes (`rdof_webapi_handle`):
   - `GET /api/status`: the board (name, uptime, `version` "host", `reset` "start" or "restart"), the process's and
     the system's memory (`rss`, `rss_peak`, `mem_total`, `mem_avail`: mach on macOS, `/proc` on Linux), the system
-    clock as the OS's NTP client keeps it (`clock` "os" and `clock_os`, read with `ntp_adjtime`), the radio as a
-    repeater or roamer card, extra cards `host`, `slots` (per slot call src / dst / group / BER / RSSI) and
-    `parrot`, and `caps`: what this server has (below).
+    clock as the OS's NTP client keeps it (`clock` "os" and `clock_os`, read with `ntp_adjtime`), each core's busy
+    share and the program's since the last status (`cpu`, `cpu_process`: `/proc/stat` on Linux, mach on macOS), the
+    radio as a repeater or roamer card, the devices (below), extra cards `host`, `slots` (per slot call src / dst /
+    group / BER / RSSI) and `parrot`, and `caps`: what this server has (below).
+  - The devices: `sdrs`, a card each as the board's SDR has (the board's names where they mean the same: `rtl`,
+    `rtl_open`, `receiving`, `sample_rate`, `center_hz`, `gain_db`, `cpu_load`, `cpu_stages`, `mqtt`, `hblink_peers`,
+    `channels`; a host's own: `samples_per_s`, `overflows`, `read_errors`, `lost_ms`, `tx_hz`, `tx_on`, ...), and
+    `modems`, a card each for a radio or modem on a port (a RadioFoundry radio's hotspot, an MMDVM: `kind`, `role`,
+    `port`, `open`, `ready`, `version`, `state`, `error`, and its counters). Up to four of each
+    (`rdof_hostweb_sdr_t`, `rdof_hostweb_modem_t` in the status).
   - `GET /api/lastheard` and `GET /api/log`: the last heard list and a 64 KB log ring.
   - `GET / POST /api/config`, `GET /api/resolved`, `POST /api/restart`: when the tool gives settings hooks
     (`rdof_hostweb_settings`). Read only, a POST answers 403. A POST is checked by the tool's own `save`; saved,
