@@ -72,7 +72,9 @@ void site_add_role(roam_t *r)
         return;
     xSemaphoreTakeRecursive(lock, portMAX_DELAY);
 #if RDOF_FEATURE_REPEATER
-    if (r->cfg->mode == RDOF_CFG_REPEATER && r->rpt)
+    if (r->cfg->mode == RDOF_CFG_REPEATER && r->rpt && (r->cfg->sfr || r->cfg->dcdm))
+        rdof_siteroute_add_repeater_freq(SR, rdof_site_freq_hz(S, r->cfg->tx_freq), r->rpt);
+    else if (r->cfg->mode == RDOF_CFG_REPEATER && r->rpt)
         for (int a = 0; a < S->napp; a++)
             if (S->app[a].type == RDOF_APP_REPEATER && S->freq[S->app[a].in].hz == r->cfg->rx_freq)
                 rdof_siteroute_add_repeater(SR, a, r->rpt);
