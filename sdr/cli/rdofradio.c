@@ -564,6 +564,8 @@ static void on_key(void *ctx, bool keyed)
 static rdof_siteroute_t SR;
 static bool sr_on;
 static int sr_hblink = -1, sr_parrot = -1; /* the site's HBlink network, its parrot app */
+static int sr_mqtt = -1;                   /* its MQTT network, when that carries calls */
+static bool mq_report = true;              /* the MQTT network's "report": status, call JSON, raw bursts */
 
 /* the frequency the radio hears on now: a repeater's RX, a transceiver's channel */
 static uint32_t heard_hz(void)
@@ -586,6 +588,11 @@ static void sr_start(void)
     for (int k = 0; k < s->nnet; k++)
         if (s->net[k].type == RDOF_NET_HBLINK && sr_hblink < 0)
             sr_hblink = k;
+        else if (s->net[k].type == RDOF_NET_MQTT) {
+            mq_report = s->net[k].report;
+            if (s->net[k].calls)
+                sr_mqtt = k;
+        }
     sr_parrot = rdof_site_app_of(s, RDOF_APP_PARROT);
     if (R.full) {
         for (int a = 0; a < s->napp; a++)
@@ -600,15 +607,20 @@ static void sr_start(void)
    goes up when its path's policy sends it to HBlink. */
 typedef struct mon mon_t;
 static uint32_t mon_hz(const mon_t *m);
-static bool rf_admit(void *ctx, int slot, uint32_t src, uint32_t dst, bool group)
+static int rf_net(void *ctx, int slot, uint32_t src, uint32_t dst, bool group)
 {
-    if (!sr_on)
-        return true;
     const uint32_t hz = ctx ? mon_hz(ctx) : R.rx_hz;
     const int net = rdof_siteroute_rf(&SR, hz, slot, src, dst, group, now_s());
     if (net < 0 && SR.why && R.verbose)
         say("router: %.5f MHz slot %d, %u -> %s%u: %s\n", hz / 1e6, slot, (unsigned)src, group ? "TG " : "",
             (unsigned)dst, SR.why);
+    return net;
+}
+static bool rf_admit(void *ctx, int slot, uint32_t src, uint32_t dst, bool group)
+{
+    if (!sr_on)
+        return true;
+    const int net = rf_net(ctx, slot, src, dst, group);
     return net >= 0 && net == sr_hblink;
 }
 /* The parrot's: the path it's heard on may reach it. */
@@ -1011,6 +1023,77 @@ static void mq_sdr_publish_status(void)
         rdofmq_publish(MQ_SDR, mq_sdr_status, buf, -1, 1, true);
 }
 
+/* MQTT calls (docs/spec/fw/mqtt.md): a call heard on a path whose policy sends it to the MQTT network goes out as
+   DMRD packets on {root}/calls/{tg|pc}/{dst}/{box}; other boxes' come in on {root}/calls/# to the router. Those
+   arrive on libmosquitto's thread and wait here for the main loop's. */
+static rdof_hb_sink_t mq_sinks[1 + RDOF_SDR_MAX_CHANNELS];
+static char mq_calls_sub[112];
+static pthread_mutex_t mq_in_mu = PTHREAD_MUTEX_INITIALIZER;
+static uint8_t mq_in[64][RDOF_DMRD_LEN];
+static int mq_in_head, mq_in_tail;
+static unsigned mq_in_dropped, mq_calls_out, mq_calls_in;
+
+static bool mq_call_admit(void *ctx, int slot, uint32_t src, uint32_t dst, bool group)
+{
+    return rf_net(ctx, slot, src, dst, group) == sr_mqtt;
+}
+static void mq_call_send(void *ctx, const uint8_t *d, size_t n)
+{
+    char t[160];
+    if (rdof_siteroute_calls_topic(rcfg.cfg.mqtt_root, rcfg.site.name, d, n, t, sizeof t) &&
+        rdofmq_publish(MQ, t, d, (int)n, 0, false))
+        mq_calls_out++;
+}
+static void mq_message(void *ctx, const char *topic, const void *data, int len)
+{
+    if (len != RDOF_DMRD_LEN || !rdof_siteroute_calls_theirs(topic, rcfg.cfg.mqtt_root, rcfg.site.name))
+        return;
+    pthread_mutex_lock(&mq_in_mu);
+    const int next = (mq_in_head + 1) % 64;
+    if (next == mq_in_tail)
+        mq_in_dropped++;
+    else {
+        memcpy(mq_in[mq_in_head], data, RDOF_DMRD_LEN);
+        mq_in_head = next;
+    }
+    pthread_mutex_unlock(&mq_in_mu);
+}
+/* the other boxes' calls, to the router (the main loop's) */
+static void mq_calls_poll(double now)
+{
+    uint8_t d[RDOF_DMRD_LEN];
+    for (;;) {
+        pthread_mutex_lock(&mq_in_mu);
+        const bool any = mq_in_tail != mq_in_head;
+        if (any) {
+            memcpy(d, mq_in[mq_in_tail], RDOF_DMRD_LEN);
+            mq_in_tail = (mq_in_tail + 1) % 64;
+        }
+        pthread_mutex_unlock(&mq_in_mu);
+        if (!any)
+            return;
+        if (rdof_siteroute_dmrd(&SR, sr_mqtt, 0, d, sizeof d, now))
+            mq_calls_in++;
+    }
+}
+/* a sink on the radio's RX and on each monitored channel */
+static void mq_calls_start(void)
+{
+    if (!MQ || sr_mqtt < 0)
+        return;
+    for (int i = 0; i <= nmon; i++) {
+        rdof_hb_sink_t *k = &mq_sinks[i];
+        rdof_hb_sink_init(k, rcfg.site.id);
+        k->send = mq_call_send;
+        k->rand32 = sink_rand;
+        k->admit = mq_call_admit;
+        k->ctx = i ? &MON[i - 1] : NULL;
+        const rdof_sink_t sk = rdof_hb_sink_as_sink(k);
+        rdof_sdr_rx_add_sink(&R.rx, i ? MON[i - 1].c : 0, &sk);
+    }
+    fprintf(stderr, "mqtt: calls on %s/calls/ as %s\n", rcfg.cfg.mqtt_root, rcfg.site.name);
+}
+
 static void mq_start(void)
 {
     static char id[64], sid[64];
@@ -1026,8 +1109,14 @@ static void mq_start(void)
     rdofmq_opts_t o = {.host = c->mqtt_host, .user = c->mqtt_user, .pass = c->mqtt_pass, .port = c->mqtt_port,
                        .tls = c->mqtt_tls, .client_id = id, .will_topic = mq_status, .will_msg = RDOF_STATUS_OFFLINE,
                        .alias_topics = mq_alias_p, .n_alias = 2, .queue_max = 1000, .say = net_say};
+    if (sr_mqtt >= 0) { /* the radio's connection takes the calls */
+        snprintf(mq_calls_sub, sizeof mq_calls_sub, "%s/calls/#", c->mqtt_root);
+        o.subscribe = mq_calls_sub, o.on_message = mq_message;
+    }
     MQ = rdofmq_start(&o);
-    if (nmon) {
+    o.subscribe = NULL, o.on_message = NULL;
+    mq_calls_start();
+    if (nmon && mq_report) {
         snprintf(mq_sdr_status, sizeof mq_sdr_status, "%s/_sdr/%s/status", c->mqtt_root, rcfg.mon_name);
         snprintf(sid, sizeof sid, "rdof-sdr-%s", rcfg.mon_name);
         for (int k = 0; k < 2; k++) /* aliases: every channel's raw, then every channel's json */
@@ -1039,13 +1128,17 @@ static void mq_start(void)
         MQ_SDR = rdofmq_start(&o);
     }
     fprintf(stderr, "mqtt: %s:%d, root %s, as %s%s%s%s\n", c->mqtt_host, c->mqtt_port, c->mqtt_root, id,
-            nmon ? " and " : "", nmon ? sid : "", c->mqtt_tls ? ", TLS" : "");
+            MQ_SDR ? " and " : "", MQ_SDR ? sid : "", c->mqtt_tls ? ", TLS" : "");
 }
 
 /* the main loop's: the retained messages after each connect, the status every 10 s (the SDR's every
    status_seconds) and when HBlink4 comes or goes */
 static void mq_poll(double now)
 {
+    if (sr_mqtt >= 0)
+        mq_calls_poll(now);
+    if (!mq_report)
+        return;
     if (MQ) {
         const bool hb = net_on && NET.peer.up;
         if (rdofmq_connected(MQ)) {
@@ -1081,7 +1174,7 @@ static void mq_stop(void)
 static void mq_tx_event(const char *action, const rdof_tx_call_info_t *c, double d)
 {
     char buf[512], t[112];
-    if (!MQ)
+    if (!MQ || !mq_report)
         return;
     const double now = wall_s();
     rdof_tx_json(action, c, d, now, buf, sizeof buf);
@@ -1100,7 +1193,7 @@ static void on_sent(void *ctx, const rdof_tx_call_info_t *c, const rdof_net_burs
     rdof_rawburst_t raw;
     uint8_t buf[RDOF_RAWBURST_MAX];
     char t[112];
-    if (MQ && rdof_netcalls_burst_raw(&mq_calls, c, b->control, b->burst, wall_s(), &raw)) {
+    if (MQ && mq_report && rdof_netcalls_burst_raw(&mq_calls, c, b->control, b->burst, wall_s(), &raw)) {
         mq_topic("raw", t, sizeof t);
         rdofmq_publish(MQ, t, buf, (int)rdof_rawburst_encode(&raw, buf), 0, false);
     }
@@ -1110,7 +1203,7 @@ static void on_raw_burst(void *ctx, const char *ch, const rdof_rawburst_t *r)
 {
     uint8_t buf[RDOF_RAWBURST_MAX];
     char t[112];
-    if (!strcmp(ch, "out"))
+    if (!strcmp(ch, "out") || !mq_report)
         return;
     rdofmq_t *q = is_monitored(ch) ? MQ_SDR : MQ;
     if (!q)
@@ -1140,7 +1233,9 @@ static void on_json(void *ctx, const char *ch, const char *json)
 {
 #ifdef RDOF_MQTT
     char t[112];
-    if (is_monitored(ch) && MQ_SDR) {
+    if (!mq_report)
+        ;
+    else if (is_monitored(ch) && MQ_SDR) {
         mq_sdr_topic(ch, "json", t, sizeof t);
         rdofmq_publish(MQ_SDR, t, json, -1, 1, false);
     } else if (!strcmp(ch, "rx") && MQ) {

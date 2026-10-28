@@ -25,6 +25,10 @@ typedef struct {
     int n_alias;
     int queue_max;                  /* QoS 1 messages not yet acked, past which a QoS 1 publish is dropped */
     void (*say)(const char *line);  /* the connection's news, a line at a time */
+    const char *subscribe;          /* a topic filter taken at each connect (QoS 0), NULL none */
+    /* its messages, on libmosquitto's thread */
+    void (*on_message)(void *ctx, const char *topic, const void *data, int len);
+    void *ctx;
 } rdofmq_opts_t;
 
 /* Connects in the background. NULL: libmosquitto refused the options (said why). */

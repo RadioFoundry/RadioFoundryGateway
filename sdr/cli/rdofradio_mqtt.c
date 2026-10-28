@@ -56,6 +56,8 @@ static void on_connect(struct mosquitto *m, void *ctx, int rc, int flags, const 
         pthread_mutex_unlock(&q->mu);
         say(q, "mqtt: %s connected to %s:%d (MQTT %s%s)", q->o.client_id, q->o.host, q->o.port, q->v5 ? "5" : "3.1.1",
             q->n_alias ? ", topic aliases" : "");
+        if (q->o.subscribe && mosquitto_subscribe_v5(m, NULL, q->o.subscribe, 0, 0, NULL) != MOSQ_ERR_SUCCESS)
+            say(q, "mqtt: %s couldn't take %s", q->o.client_id, q->o.subscribe);
         return;
     }
     /* 3.1.1's "unacceptable protocol version" (1), or 5's "unsupported protocol version" (0x84): the same on 3.1.1,
@@ -93,6 +95,14 @@ static void on_publish(struct mosquitto *m, void *ctx, int mid, int reason, cons
     pthread_mutex_unlock(&q->mu);
 }
 
+static void on_message(struct mosquitto *m, void *ctx, const struct mosquitto_message *msg,
+                       const mosquitto_property *props)
+{
+    rdofmq_t *q = ctx;
+    if (q->o.on_message && msg->topic)
+        q->o.on_message(q->o.ctx, msg->topic, msg->payload, msg->payloadlen);
+}
+
 rdofmq_t *rdofmq_start(const rdofmq_opts_t *o)
 {
     static bool init;
@@ -123,6 +133,7 @@ rdofmq_t *rdofmq_start(const rdofmq_opts_t *o)
     mosquitto_connect_v5_callback_set(m, on_connect);
     mosquitto_disconnect_v5_callback_set(m, on_disconnect);
     mosquitto_publish_v5_callback_set(m, on_publish);
+    mosquitto_message_v5_callback_set(m, on_message);
     mosquitto_reconnect_delay_set(m, 2, 30, true);
     const int rc = mosquitto_connect_async(m, o->host, o->port, 30);
     if (rc != MOSQ_ERR_SUCCESS) /* the loop tries again */
