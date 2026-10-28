@@ -70,6 +70,10 @@ static int set_rx_freq(rdofradio_dev_t *d, double hz)
 {
     return put_ll(d, ((iio_t *)d)->rx_lo, "frequency", llround(hz));
 }
+static int set_tx_freq(rdofradio_dev_t *d, double hz)
+{
+    return put_ll(d, ((iio_t *)d)->tx_lo, "frequency", llround(hz));
+}
 
 static int set_tx_gain(rdofradio_dev_t *d, double db)
 {
@@ -233,6 +237,7 @@ rdofradio_dev_t *rdofradio_iio_open(const char *uri, const rdofradio_dev_setup_t
     }
     rdofradio_dev_t *d = &s->d;
     d->set_rx_freq = set_rx_freq;
+    d->set_tx_freq = set_tx_freq;
     d->set_tx_gain = set_tx_gain;
     d->rx_gain = rx_gain;
     d->bandwidth = bandwidth;

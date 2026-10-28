@@ -20,7 +20,9 @@ static const char *const RADIO_USED[] = {"type",          "name",        "peer_i
                                          "jitter_buffer", "jitter_min_ms", "jitter_max_ms", "cwid",
                                          "cwid_every_s",  "mode",        "duplex",        "enabled",
                                          "idle",          "channels",    "callsign",      "location",
-                                         "power",         NULL};
+                                         "power",         "listen_s",      "clear_s",
+                                         "idle_after_s",  "csbk_preambles", "answer_s",   "answer_max_s",
+                                         NULL};
 
 static bool listed(const char *const *l, const char *k)
 {
@@ -81,7 +83,9 @@ static void unused(const char *text, size_t len, const char *radio, bool v2, cha
         }
         for (int i = 0; rdof_jnode(&d, s)->type == RDOF_JOBJ && i < rdof_jnode(&d, s)->count; i++) {
             const rdof_jnode_t *e = rdof_jnode(&d, rdof_jat(&d, s, i));
-            if (e && e->key && !listed(RADIO_USED, e->key)) {
+            /* hblink: true / false sends what it hears up (or not); another shape isn't a role's */
+            const bool used = e && e->key && (listed(RADIO_USED, e->key) || (!strcmp(e->key, "hblink") && e->type == RDOF_JBOOL));
+            if (e && e->key && !used) {
                 char t[48];
                 snprintf(t, sizeof t, "%s.%s", radio, e->key);
                 add(out, cap, t);
@@ -268,6 +272,28 @@ void rdofradio_cfg_apply_repeater(const rdofradio_cfg_t *o, rdof_repeater_t *r)
     r->jb.max = rdof_jb_bursts(c->jitter_max_ms);
     snprintf(r->cwid, sizeof r->cwid, "%s", c->cwid);
     r->cwid_every_s = c->cwid_every_s;
+}
+
+void rdofradio_cfg_apply_txvr(const rdofradio_cfg_t *o, rdof_txvr_t *t)
+{
+    const rdof_config_t *c = &o->cfg;
+    t->nchannels = 0;
+    for (int i = 0; i < c->nchannels && t->nchannels < RDOF_TXVR_MAX_CHANNELS; i++)
+        t->channels[t->nchannels++] = (rdof_channel_t){c->channels[i].freq, c->channels[i].cc, c->channels[i].power};
+    t->listen_s = c->listen_s;
+    t->clear_s = c->clear_s;
+    t->prebuffer = c->prebuffer;
+    t->jb.adaptive = c->jitter_auto;
+    t->jb.min = rdof_jb_bursts(c->jitter_min_ms);
+    t->jb.max = rdof_jb_bursts(c->jitter_max_ms);
+    t->csbk_preambles = c->csbk_preambles;
+    t->answer_s = c->answer_s;
+    t->answer_max_s = c->answer_max_s;
+    t->idle_after_s = c->idle_after_s;
+    t->has_idle = true;
+    t->idle = (rdof_channel_t){c->idle.freq, c->idle.cc, c->idle.power};
+    snprintf(t->cwid, sizeof t->cwid, "%s", c->cwid);
+    t->cwid_every_s = c->cwid_every_s;
 }
 
 size_t rdofradio_cfg_describe(const rdofradio_cfg_t *o, const char *source, const char *device, char *out, size_t cap)

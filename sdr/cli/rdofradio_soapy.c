@@ -37,6 +37,15 @@ static int set_rx_freq(rdofradio_dev_t *d, double hz)
     return 0;
 }
 
+static int set_tx_freq(rdofradio_dev_t *d, double hz)
+{
+    if (SoapySDRDevice_setFrequency(((soapy_t *)d)->dev, SOAPY_SDR_TX, 0, hz, NULL)) {
+        fail(d, "TX frequency");
+        return -1;
+    }
+    return 0;
+}
+
 static int set_tx_gain(rdofradio_dev_t *d, double db)
 {
     if (SoapySDRDevice_setGain(((soapy_t *)d)->dev, SOAPY_SDR_TX, 0, db)) {
@@ -120,6 +129,7 @@ rdofradio_dev_t *rdofradio_soapy_open(const char *args, const rdofradio_dev_setu
     }
     rdofradio_dev_t *d = &s->d;
     d->set_rx_freq = set_rx_freq;
+    d->set_tx_freq = set_tx_freq;
     d->set_tx_gain = set_tx_gain;
     d->rx_gain = rx_gain;
     d->bandwidth = bandwidth;

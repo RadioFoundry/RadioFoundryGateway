@@ -1048,6 +1048,12 @@ impl Cx {
         }
         for k in 0..count {
             let (pc, over) = if all { (plan.ch[k as usize], -1) } else { self.plan_ref(plan, self.at(refs, k))? };
+            if pc.no_tx {
+                if all {
+                    continue; // all: the channels it may transmit on
+                }
+                return self.err(&[S(b"channels: channel "), I(pc.number.into()), S(b" has tx false: nothing transmits on it")]);
+            }
             let cc = self.fget(over, c"cc", pc.cc.into(), b"channel")?;
             let power = self.fget(over, c"power", pc.power.into(), b"channel")?;
             let n = cfg.nchannels as usize;
@@ -1072,7 +1078,8 @@ impl Cx {
             let (pc, _) = self.plan_ref(plan, idle)?;
             self.channel_entry(freq_hz(pc.freq.into()), pc.cc.into(), 255.0, &mut cfg.idle)?;
             let n = cfg.nchannels as usize;
-            if !cfg.channels[..n].iter().any(|c| c.freq == pc.freq) {
+            // an idle channel with tx false: heard, never sent on
+            if !pc.no_tx && !cfg.channels[..n].iter().any(|c| c.freq == pc.freq) {
                 if n >= CHANNELS {
                     return self.err(&[S(b"too many channels")]);
                 }
@@ -1232,6 +1239,9 @@ impl Cx {
         self.peer_and_callsign(r, cfg)?;
         cfg.rx_freq = freq_hz(rx.into());
         cfg.tx_freq = freq_hz(tx.into());
+        if let Some(p) = plan.ch[..plan.n].iter().find(|p| p.no_tx && p.freq == cfg.tx_freq) {
+            return self.err(&[S(b"tx_freq: channel "), I(p.number.into()), S(b" has tx false: nothing transmits on it")]);
+        }
         cfg.power = self.iget(r, c"power", 255, b"radio")?.clamp(0, 255) as c_int;
         cfg.hang_s = self.fget(r, c"hang_s", 5.0, b"radio")?;
         cfg.call_hang_s = self.fget(r, c"call_hang_s", 3.0, b"radio")?;
@@ -1448,7 +1458,7 @@ impl Cx {
             }
         }
         // the plan
-        let mut plan = Plan { ch: [PlanCh { number: 0, freq: 0, cc: 0, power: 0 }; CHANNELS * 2], n: 0 };
+        let mut plan = Plan { ch: [PlanCh { number: 0, freq: 0, cc: 0, power: 0, no_tx: false }; CHANNELS * 2], n: 0 };
         let cc_node = self.get(bx, c"cc");
         let has_default_cc = cc_node >= 0 && self.n(cc_node).type_ != RDOF_JNULL;
         let mut dcc = 0.0;
@@ -1490,7 +1500,12 @@ impl Cx {
                 }
             };
             let power = self.fget(obj, c"power", 255.0, b"channel")?;
-            let p = PlanCh { number: pn, freq, cc: cc as c_int, power: power as c_int };
+            let txk = self.get(obj, c"tx");
+            if txk >= 0 && self.n(txk).type_ != RDOF_JBOOL {
+                return self.err(&[S(b"channel "), I(pn.into()), S(b": tx: true or false")]);
+            }
+            let no_tx = txk >= 0 && !self.n(txk).b;
+            let p = PlanCh { number: pn, freq, cc: cc as c_int, power: power as c_int, no_tx };
             match plan.ch[..plan.n].iter_mut().find(|q| q.number == pn) {
                 Some(same) => *same = p, // "1" and "01": the last one
                 None => {
@@ -1621,6 +1636,7 @@ struct PlanCh {
     freq: u32,
     cc: c_int,
     power: c_int,
+    no_tx: bool, // "tx": false: nothing transmits on it (a repeater's output, monitored)
 }
 
 struct Plan {

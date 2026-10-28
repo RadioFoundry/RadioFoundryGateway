@@ -21,6 +21,7 @@
 
 #include "rdof/config.h"
 #include "rdof/repeater.h"
+#include "rdof/txvr.h"
 #include "rdof/sdr/config.h"
 
 typedef struct {
@@ -54,6 +55,10 @@ size_t rdofradio_cfg_from_flags(char *out, size_t cap, bool full, uint32_t rx_hz
                                 bool has_parrot, uint32_t parrot, uint32_t peer_id);
 /* A repeater's settings past rdof_repeater_init's (slots, hangs, jitter buffer, CW ID), as the firmware sets them. */
 void rdofradio_cfg_apply_repeater(const rdofradio_cfg_t *c, rdof_repeater_t *r);
+/* A transceiver's settings past rdof_txvr_init's, as the firmware's roamer (radio_task.c): the channels it may be
+   tuned to (the roamer's channels and idle), listen and clear, the jitter buffer, CSBK preambles, the answer
+   window, the idle channel and the return to it, CW ID. Not the scan: the SDR hears every channel at once. */
+void rdofradio_cfg_apply_txvr(const rdofradio_cfg_t *c, rdof_txvr_t *t);
 /* /api/resolved: the radio as resolved, what's not used, and device (the command line's device flags). */
 size_t rdofradio_cfg_describe(const rdofradio_cfg_t *c, const char *source, const char *device, char *out,
                               size_t cap);

@@ -3674,6 +3674,24 @@ static void t_config_edges(void)
     ok = cfg_try(T_ROAM, ", \"channels\": {\"1\": 438.0625, \"01\": 438.125}", "", &cfg, error, sizeof error);
     CHECK(ok && cfg.nchannels == 1 && cfg.channels[0].freq == 438125000 && cfg.idle.freq == 438125000,
           "duplicate keys: %d %u %s", cfg.nchannels, cfg.channels[0].freq, error);
+    /* "tx": false: all leaves it out; naming it is refused; as the idle channel it's heard, never sent on; a
+       repeater can't send on it */
+    ok = cfg_try(T_ROAM, ", \"channels\": {\"1\": 438.0625, \"2\": {\"freq\": 438.1125, \"tx\": false}, \"3\": 438.125}",
+                 ", \"channels\": \"all\"", &cfg, error, sizeof error);
+    CHECK(ok && cfg.nchannels == 2 && cfg.channels[0].freq == 438062500 && cfg.channels[1].freq == 438125000,
+          "tx false, all: %d %s", cfg.nchannels, error);
+    ok = cfg_try(T_ROAM, ", \"channels\": {\"1\": 438.0625, \"2\": {\"freq\": 438.1125, \"tx\": false}}",
+                 ", \"channels\": [1, 2]", &cfg, error, sizeof error);
+    CHECK(!ok && strstr(error, "channel 2 has tx false"), "tx false, named: %s", error);
+    ok = cfg_try(T_ROAM, ", \"channels\": {\"1\": {\"freq\": 438.0625, \"tx\": false}, \"2\": 438.1125}",
+                 ", \"channels\": \"all\"", &cfg, error, sizeof error);
+    CHECK(ok && cfg.nchannels == 1 && cfg.channels[0].freq == 438112500 && cfg.idle.freq == 438062500,
+          "tx false, idle: %d %s", cfg.nchannels, error);
+    ok = cfg_try(T_ROAM, ", \"channels\": {\"1\": {\"freq\": 438.0625, \"tx\": 0}}", "", &cfg, error, sizeof error);
+    CHECK(!ok && strstr(error, "tx: true or false"), "tx 0: %s", error);
+    ok = cfg_try(T_REP, ", \"channels\": {\"1\": {\"freq\": 438.0375, \"tx\": false}}", FREQS ", \"cc\": 1",
+                 &cfg, error, sizeof error);
+    CHECK(!ok && strstr(error, "tx_freq: channel 1 has tx false"), "tx false, repeater: %s", error);
     /* a zero-size error buffer is left alone; none at all */
     char z[4] = "Z";
     CHECK(!rdof_config_parse("[1]", 3, &cfg, z, 0) && z[0] == 'Z', "config, cap 0: %c", z[0]);

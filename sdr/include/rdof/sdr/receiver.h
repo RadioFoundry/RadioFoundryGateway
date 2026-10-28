@@ -88,6 +88,11 @@ struct rdof_sdr_rx {
      * (a duplex repeater's inbound, by timing), 0 to keep it; called after on_burst, before the call tracker. c is
      * the channel. */
     int (*relabel)(void *ctx, int c, const rdof_sdr_burst_t *b);
+    /* Optional, with burst_ctx: true to drop a burst on channel c before anything sees it (on_burst, the tracker,
+     * its sinks): the platform's own transmission heard back, which must not go out again as heard. Counted in
+     * echoes. */
+    bool (*drop)(void *ctx, int c, const rdof_sdr_burst_t *b);
+    long echoes;           /* bursts drop took */
     double *afc_pending;   /* this chunk's AFC measurements: afc_cap a channel */
     int64_t *afc_at;       /* the channel sample each was measured at */
     int64_t *hist_at;      /* per channel, RDOF_AFC_HISTORY: the first channel sample a correction applied to */

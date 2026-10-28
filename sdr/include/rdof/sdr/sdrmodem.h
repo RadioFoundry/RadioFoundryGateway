@@ -109,11 +109,13 @@ extern "C" {
 #define RDOF_SDRMODEM_DESC "RadioFoundry Gateway SDR modem (MMDVM_HS compatible) DCDM"
 #endif
 #define RDOF_SDRMODEM_LOST_S 0.5   /* a call heard this long ago without a terminator is lost */
+#define RDOF_SDRMODEM_NOT_HEARD (-2) /* rx_channel: no channel hears it, but tune anyway (a visit to transmit) */
 
 typedef struct {
     /* A frame for the host. */
     void (*reply)(void *ctx, const uint8_t *frame, size_t len);
-    /* The receiver channel for an RX frequency, or -1 if none hears it. */
+    /* The receiver channel for an RX frequency, or -1 if none hears it (SET_FREQ refused), or
+     * RDOF_SDRMODEM_NOT_HEARD: none hears it but the modem may tune there to transmit (it hears nothing there). */
     int (*rx_channel)(void *ctx, uint32_t hz);
     /* Tune the transmitter: false if the front end can't; else where the modulator's carrier goes from its center
      * (Hz) in *offset_hz. */

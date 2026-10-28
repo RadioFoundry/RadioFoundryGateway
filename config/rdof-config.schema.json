@@ -28,7 +28,8 @@
               "power": {"$ref": "#/$defs/power"},
               "name": {"type": "string"},
               "slot": {"$ref": "#/$defs/slot"},
-              "tg": {"type": "integer", "minimum": 0}
+              "tg": {"type": "integer", "minimum": 0},
+              "tx": {"type": "boolean", "description": "false: nothing transmits on it (a repeater's output, heard only). Default true."}
             }
           }
         ]

@@ -213,6 +213,10 @@ void rdof_sdr_rx_demod(rdof_sdr_rx_t *rx, int c0, int c1)
             rdof_sdr_burst_t stamped = bs[i];
             const rdof_sdr_burst_t *b = &stamped;
             stamp(rx, &stamped);
+            if (rx->drop && rx->drop(rx->burst_ctx, c, b)) {
+                rx->echoes++;
+                continue;
+            }
             double t = rx->t0 + (double)b->position / RDOF_DEMOD_FS;
             if (b->b.dt != RDOF_DT_VOICE && rx->afc_chan[c] < rx->afc_cap &&
                 !(rx->muted && rx->muted(rx->burst_ctx, b->position))) {

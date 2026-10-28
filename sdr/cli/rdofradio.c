@@ -69,6 +69,7 @@
 #include <strings.h>
 #include <time.h>
 #include <poll.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "rdof/hbpeer.h"
@@ -148,6 +149,11 @@ typedef struct {
     double delay_sum;
     int delay_n;
     double delay_min, delay_max;
+    /* half duplex: the transmitter moves to the channel each call is for (io_tune). What it sends is heard back on
+     * that channel (and on its I/Q image): echo_drop keeps it from going out again as heard. */
+    int tx_ch, tx_img;     /* the receiver's channels for the tuned TX frequency and its image; -1 none */
+    int echo_ch, echo_img; /* the same for the last key-up */
+    int64_t echo_from, echo_to; /* the last key-up's span on the air, receiver positions (48 kS/s) */
 } radio_t;
 
 static radio_t R;
@@ -219,6 +225,7 @@ static void on_signal(int s) { stop = 1; }
 /* --config: the file, and the radio it (or the command line) sets */
 static const char *config_path;
 static rdofradio_cfg_t rcfg;
+static char held[300]; /* hold (below): why the settings don't run, "" when they do */
 
 /* a file whole, NUL terminated (malloc'd); NULL with errno set */
 static char *read_file(const char *path, size_t *len)
@@ -363,10 +370,77 @@ static void io_reply(void *ctx, const uint8_t *f, size_t n)
     else
         rdof_modem_feed(&R.client, f, n);
 }
-static int io_channel(void *ctx, uint32_t hz) { return hz == R.rx_hz ? 0 : -1; }
+/* The receiver's channels (main sets them) */
+static rdof_sdr_channel_t CH[RDOF_SDR_MAX_CHANNELS];
+static int NCH;
+static int channel_of(double hz)
+{
+    for (int c = 0; c < NCH; c++)
+        if (fabs(CH[c].freq_hz - hz) < 1000)
+            return c;
+    return -1;
+}
+/* The rate: -r, else the least that holds every receive channel in one window, from the device's usual rate up
+ * to the most it streams here: on a PlutoSDR's own ARM (--iio local:) 2.4 MS/s, what its CPU is known to keep up
+ * with; from a host over USB 2 or the network 3.84 MS/s (reference.md: about 3.5 to 4 MS/s each way); through
+ * SoapySDR 3.2 MS/s, an RTL-SDR's (give others -r). */
+static bool dev_iio, dev_local;
+static double rate_flag;
+static double span_of(const rdof_sdr_channel_t *c, int n)
+{
+    double lo = c[0].freq_hz, hi = c[0].freq_hz;
+    for (int i = 1; i < n; i++)
+        lo = fmin(lo, c[i].freq_hz), hi = fmax(hi, c[i].freq_hz);
+    return hi - lo;
+}
+static double plan_rate(const rdof_sdr_channel_t *c, int n, char *why, size_t cap)
+{
+    double f[RDOF_SDR_MAX_CHANNELS], center;
+    for (int i = 0; i < n; i++)
+        f[i] = c[i].freq_hz;
+    const double lo = rate_flag ? rate_flag : dev_iio ? 768000 : 2400000;
+    const double hi = rate_flag ? rate_flag : dev_local ? 2400000 : dev_iio ? 3840000 : 3200000;
+    for (double r = ceil(lo / 48000) * 48000; r <= hi; r += 48000)
+        if (!rdof_plan_center(f, n, r, &center))
+            return r;
+    double flo = f[0], fhi = f[0];
+    for (int i = 1; i < n; i++)
+        flo = fmin(flo, f[i]), fhi = fmax(fhi, f[i]);
+    snprintf(why, cap, "receive channels %.4f to %.4f MHz: wider than %.2f MS/s holds (%s); fewer channels%s",
+             flo / 1e6, fhi / 1e6, hi / 1e6, rate_flag ? "-r" : "this device's most here",
+             rate_flag ? ", or a wider -r" : "");
+    return 0;
+}
+/* A repeater hears on its RX channel. A transceiver hears on any channel the receiver has, and may go where none
+ * hears it to transmit (the modem then hears nothing there). */
+static int io_channel(void *ctx, uint32_t hz)
+{
+    if (R.full)
+        return hz == R.rx_hz ? 0 : -1;
+    const int c = channel_of(hz);
+    return c >= 0 ? c : RDOF_SDRMODEM_NOT_HEARD;
+}
 static bool io_tune(void *ctx, uint32_t hz, double *off)
 {
+    if (!R.full && fabs((double)hz - R.tx_lo) > R.rate * 0.4 - 12.5e3) {
+        /* past the modulator's reach: the TX LO moves, 100 kHz above (unkeyed: the gain is at its least) */
+        const double lo = (double)hz + 100e3;
+        if (!dev->set_tx_freq || dev->set_tx_freq(dev, lo)) {
+            fprintf(stderr, "transmit: can't move the TX LO to %.4f MHz: %s\n", lo / 1e6, dev->error);
+            return false;
+        }
+        R.tx_lo = lo;
+        if (R.verbose)
+            fprintf(stderr, "transmit: the TX LO to %.4f MHz\n", lo / 1e6);
+    }
     *off = (double)hz - R.tx_lo; /* the carrier from the TX LO */
+    if (!R.full) {
+        R.tx_hz = hz;
+        R.tx_ch = channel_of(hz);
+        R.tx_img = channel_of(2 * R.rx.center_hz - hz);
+        if (R.tx_img == R.tx_ch)
+            R.tx_img = -1;
+    }
     return fabs(*off) < R.rate * 0.4;
 }
 static bool p_write(void *ctx, const uint8_t *d, size_t n)
@@ -496,11 +570,27 @@ static void parrot_send(void *ctx, const rdof_net_burst_t *b)
 }
 /* the transceiver's answer to a tune (DMRK), to HBlink4 when it's on */
 static void net_send(const uint8_t *d, size_t n);
+/* The streams a monitored channel's peer was sent (below): the transceiver plays them, and its DMRK for them goes
+ * nowhere (the master sent no DMRT). */
+static uint8_t mon_sids[16][4];
+static int mon_sid_next;
+static bool mon_sid(const uint8_t *sid)
+{
+    for (int i = 0; i < 16; i++)
+        if (!memcmp(mon_sids[i], sid, 4))
+            return true;
+    return false;
+}
 static void txvr_send(void *ctx, const uint8_t *d, size_t n)
 {
     static const char *status[] = {"on air", "channel busy", "not allowed", "radio error", "transceiver busy"};
+    const bool dmrk = n >= 13 && !memcmp(d, "DMRK", 4);
+    if (dmrk && mon_sid(d + 8)) {
+        say("transceiver (a monitored channel's call): %s\n", d[12] < 5 ? status[d[12]] : "?");
+        return;
+    }
     net_send(d, n);
-    if (n >= 13 && !memcmp(d, "DMRK", 4))
+    if (dmrk)
         say("transceiver: %s\n", d[12] < 5 ? status[d[12]] : "?");
 }
 
@@ -526,7 +616,22 @@ static void net_packet(void *ctx, const uint8_t *d, size_t n)
 static void net_config(void)
 {
     uint8_t pkt[RDOF_DMRC_MAX];
-    rdofnet_peer_set_config(&NET, pkt, rdof_hb_role_dmrc(&rcfg.cfg, R.rx_hz, R.cc, pkt), now_s());
+    uint32_t f = R.rx_hz;
+    int cc = R.cc;
+    if (!R.full && R.t.ready) { /* a transceiver: where it is now */
+        uint32_t tf;
+        int tcc;
+        rdof_txvr_channel_now(&R.t, &tf, &tcc);
+        if (tf)
+            f = tf, cc = tcc;
+    }
+    rdofnet_peer_set_config(&NET, pkt, rdof_hb_role_dmrc(&rcfg.cfg, f, cc, pkt), now_s());
+}
+static void txvr_retune(void *ctx, uint32_t freq, int cc)
+{
+    say("transceiver: tuned to %.5f MHz CC%d\n", freq / 1e6, cc);
+    net_config();
+    mq_status_soon();
 }
 static void sink_send(void *ctx, const uint8_t *d, size_t n) { net_send(d, n); }
 static uint32_t rng_state;
@@ -557,7 +662,8 @@ static void net_start(void)
     if (!R.full)
         NET_SINK.before_stream = sink_before;
     const rdof_sink_t sk = rdof_hb_sink_as_sink(&NET_SINK);
-    rdof_sdr_rx_add_sink(&R.rx, 0, &sk);
+    if (rcfg.cfg.receiver_hblink) /* what it hears goes up (the role's "hblink", default true) */
+        rdof_sdr_rx_add_sink(&R.rx, 0, &sk);
     net_on = true;
     net_config();
     fprintf(stderr, "hblink: %s, peer %u, to %s:%d\n", rcfg.name, (unsigned)rcfg.peer_id, rcfg.cfg.master_host,
@@ -571,14 +677,46 @@ typedef struct {
     bool peer;
     rdofnet_peer_t net;
     rdof_hb_sink_t sink;
+    uint8_t sid[4]; /* the last stream the master sent it */
 } mon_t;
 static mon_t MON[RDOF_SDR_MAX_CHANNELS];
 static int nmon;
 
 static void mon_send(void *ctx, const uint8_t *d, size_t n) { rdofnet_peer_send(&((mon_t *)ctx)->net, d, n); }
+/* Whether the transceiver may go to a monitored channel: one of its channels (the roamer's). */
+static bool mon_sends(const mon_t *m, int *cc)
+{
+    if (R.full || !R.t.ready)
+        return false;
+    const uint32_t f = (uint32_t)llround(m->ch->freq);
+    for (int i = 0; i < R.t.nchannels; i++)
+        if (R.t.channels[i].freq + RDOF_TXVR_FREQ_TOLERANCE_HZ >= f && R.t.channels[i].freq <= f + RDOF_TXVR_FREQ_TOLERANCE_HZ) {
+            *cc = R.t.channels[i].cc;
+            return true;
+        }
+    return false;
+}
 static void mon_packet(void *ctx, const uint8_t *d, size_t n)
 {
     mon_t *m = ctx;
+    rdof_net_burst_t b;
+    int cc;
+    /* a simplex channel: what the master sends this channel's peer goes out on it, through the transceiver (one
+       channel at a time: a call while it's busy elsewhere is refused, as a DMRT would be) */
+    if (rdof_hb_kind(d, n) == 'D' && mon_sends(m, &cc) && rdof_parse_dmrd(d, n, &b)) {
+        if (memcmp(m->sid, b.stream_id, 4)) {
+            memcpy(m->sid, b.stream_id, 4);
+            memcpy(mon_sids[mon_sid_next], b.stream_id, 4);
+            mon_sid_next = (mon_sid_next + 1) % 16;
+            rdof_tune_t tu = {.freq = (uint32_t)llround(m->ch->freq), .cc = cc, .power = 255};
+            memcpy(tu.stream_id, b.stream_id, 4);
+            say("%s: a call from the network (%u to %u), to send on %.5f MHz\n", m->ch->id, (unsigned)b.src,
+                (unsigned)b.dst, tu.freq / 1e6);
+            rdof_txvr_on_tune(&R.t, &tu);
+        }
+        rdof_txvr_on_burst(&R.t, &b);
+        return;
+    }
     uint8_t k[RDOF_DMRK_LEN];
     if (rdof_hb_dispatch(d, n, NULL, NULL, m->net.peer.peer_id, k)) /* nothing here sends: a DMRT is refused */
         rdofnet_peer_send(&m->net, k, sizeof k);
@@ -953,6 +1091,15 @@ static void on_burst(void *ctx, int c, const rdof_sdr_burst_t *b, double t)
 }
 
 static bool muted(void *ctx, int64_t p) { return rdof_sdrmodem_muted_at(&R.m, p); }
+/* Our own transmission heard back (half duplex): on the channel it went out on, or its image, within its span on
+ * the air (60 ms either side: a burst's length and the loop's delay). Not passed on: a monitored channel's peer
+ * would send the network's call back to it. */
+static bool echo_drop(void *ctx, int c, const rdof_sdr_burst_t *b)
+{
+    if (R.full || (c != R.echo_ch && c != R.echo_img) || c < 0)
+        return false;
+    return b->position > R.echo_from - 2880 && b->position < R.echo_to + 2880;
+}
 /* the inbound slot by timing: the radio's RX channel only (a monitored channel keeps its own CACH) */
 static int relabel(void *ctx, int c, const rdof_sdr_burst_t *b) { return c ? 0 : rdof_sdrmodem_inbound(&R.m, b); }
 
@@ -1195,13 +1342,25 @@ static bool web_save(void *ctx, const char *text, size_t len, char *err, size_t 
         snprintf(err, cap, "out of memory");
         return false;
     }
-    const bool ok = rdofradio_cfg_parse(text, len, c, err, cap) &&
-                    rdof_hostweb_save_file(config_path, text, len, err, cap);
+    bool ok = rdofradio_cfg_parse(text, len, c, err, cap);
+    if (ok) { /* the receive channels in one window, as the start will ask: the radio's RX and the monitored */
+        rdof_sdr_channel_t ch[RDOF_SDR_MAX_CHANNELS];
+        int n = 0;
+        ch[n++] = (rdof_sdr_channel_t){"rx", (double)c->rx_hz, c->cc, 1};
+        for (int i = 0; i < c->nmon && n < RDOF_SDR_MAX_CHANNELS; i++)
+            ch[n++] = (rdof_sdr_channel_t){c->mon[i].id, c->mon[i].freq, c->mon[i].cc, c->mon[i].slot};
+        ok = plan_rate(ch, n, err, cap) > 0;
+    }
+    ok = ok && rdof_hostweb_save_file(config_path, text, len, err, cap);
     free(c);
     return ok;
 }
 static size_t web_resolved(void *ctx, char *out, size_t cap)
 {
+    if (held[0]) {
+        const int n = snprintf(out, cap, "not running: %s\n\nFix the settings and save: it starts again.\n", held);
+        return n < 0 ? 0 : (size_t)n < cap ? (size_t)n : cap - 1;
+    }
     char src[300];
     if (config_path)
         snprintf(src, sizeof src, "file %s", config_path);
@@ -1544,6 +1703,60 @@ out:
     return rc;
 }
 
+/* Settings that can't run (refused, or channels no window holds): with --config and --web, the page stays up
+ * with the reason, so the file can be fixed there; a save, or the file changing on disk, starts again. Without
+ * them, exits 2 (a supervisor that restarts it gets the same reason each time). */
+static int hold(int argc, char **argv, const char *why)
+{
+    fprintf(stderr, "%s\n", why);
+#ifdef RDOF_HOST_WEB
+    if (web_port < 0 || !config_path)
+        return 2;
+    snprintf(held, sizeof held, "%s", why);
+    struct stat st0;
+    const bool had = stat(config_path, &st0) == 0;
+    web_settings(argc, argv);
+    const int port = rdof_hostweb_start(web_addr, web_port, rcfg.box[0] ? rcfg.box : "rdofradio");
+    if (port < 0) {
+        fprintf(stderr, "web: %s\n", strerror(errno));
+        return 2;
+    }
+    fprintf(stderr, "web: http://%s:%d/ (not running: fix the settings there)\n", web_addr, port);
+    rdof_hostweb_logf("not running: %s", why);
+    rdof_hostweb_version(RDOF_VERSION);
+    signal(SIGINT, on_signal);
+    signal(SIGTERM, on_signal);
+    while (!stop) {
+        rdof_hostweb_status_t w;
+        memset(&w, 0, sizeof w);
+        w.role = rcfg.full ? RDOF_HOSTWEB_REPEATER : RDOF_HOSTWEB_TRANSCEIVER;
+        snprintf(w.name, sizeof w.name, "%s", rcfg.name[0] ? rcfg.name : "rdofradio");
+        snprintf(w.state, sizeof w.state, "not running");
+        snprintf(w.error, sizeof w.error, "%s", why);
+        w.cpu_load = -1;
+        rdof_hostweb_status(&w);
+        struct stat st;
+        if (had && stat(config_path, &st) == 0 &&
+            (st.st_mtime != st0.st_mtime || st.st_size != st0.st_size)) {
+            fprintf(stderr, "%s changed: starting again\n", config_path);
+            restart_asked = 1;
+            break;
+        }
+        usleep(500000);
+    }
+    rdof_hostweb_stop();
+    if (restart_asked) {
+        rdof_hostweb_reexec(argv);
+        fprintf(stderr, "restart: %s\n", strerror(errno));
+        return 1;
+    }
+    return 0;
+#else
+    (void)argc, (void)argv;
+    return 2;
+#endif
+}
+
 int main(int argc, char **argv)
 {
     const char *soapy = NULL, *iio = NULL, *stream_args = "", *fft = NULL, *split_tx = NULL;
@@ -1684,8 +1897,9 @@ int main(int argc, char **argv)
         const bool ok = rdofradio_cfg_parse(text, len, &rcfg, err, sizeof err);
         free(text);
         if (!ok) {
-            fprintf(stderr, "%s: %s\n", config_path, err);
-            return 2;
+            char why[300];
+            snprintf(why, sizeof why, "%s: %s", config_path, err);
+            return hold(argc, argv, why);
         }
         if (rcfg.unused[0])
             fprintf(stderr, "%s: not used here: %s\n", config_path, rcfg.unused);
@@ -1714,8 +1928,9 @@ int main(int argc, char **argv)
         return 2;
     }
 #endif
-    if (!rate)
-        rate = iio ? 768000 : 2400000;
+    dev_iio = iio != NULL;
+    dev_local = iio && !strncmp(iio, "local:", 6);
+    rate_flag = rate;
 #ifdef RDOF_PFFFT
     if (!fft || !strcmp(fft, "pffft"))
         rdof_fft_set_backend(rdof_pffft_backend());
@@ -1764,33 +1979,47 @@ int main(int argc, char **argv)
 
     /* the receiver: the RX channel, with --monitor the TX channel (our own outbound, heard back), then the
        monitor roles' channels on this device */
-    const rdof_sdr_rx_config_t rc = {rate, center, -55.0, 0.0, true, CHUNK};
-    rdof_sdr_channel_t ch[RDOF_SDR_MAX_CHANNELS] = {{"rx", rx, cc, 1}, {"out", tx, cc, 1}};
-    int nch = monitor && R.tx_hz != R.rx_hz ? 2 : 1;
-    if (nch == 2 || (monitor && R.tx_hz == R.rx_hz))
-        R.mon = nch - 1;
-    for (int i = 0; i < rcfg.nmon && nch < RDOF_SDR_MAX_CHANNELS; i++) {
+    CH[0] = (rdof_sdr_channel_t){"rx", rx, cc, 1};
+    CH[1] = (rdof_sdr_channel_t){"out", tx, cc, 1};
+    NCH = monitor && R.tx_hz != R.rx_hz ? 2 : 1;
+    if (NCH == 2 || (monitor && R.tx_hz == R.rx_hz))
+        R.mon = NCH - 1;
+    for (int i = 0; i < rcfg.nmon && NCH < RDOF_SDR_MAX_CHANNELS; i++) {
         const rdof_sdr_cfg_channel_t *m = &rcfg.mon[i];
-        MON[nmon].c = nch;
+        MON[nmon].c = NCH;
         MON[nmon++].ch = m;
-        ch[nch++] = (rdof_sdr_channel_t){m->id, m->freq, m->cc, m->slot};
+        CH[NCH++] = (rdof_sdr_channel_t){m->id, m->freq, m->cc, m->slot};
     }
     if (nmon < rcfg.nmon)
         fprintf(stderr, "receiver: %d channels at most: %d monitored channels left out\n", RDOF_SDR_MAX_CHANNELS,
                 rcfg.nmon - nmon);
+    {
+        char why[200];
+        const double fit = plan_rate(CH, NCH, why, sizeof why);
+        if (!fit)
+            return hold(argc, argv, why);
+        if (!rate)
+            fprintf(stderr, "receiver: %.0f S/s (%d channels over %.4f MHz)\n", fit, NCH, span_of(CH, NCH) / 1e6);
+        rate = fit;
+        R.rate = rate;
+    }
+    const rdof_sdr_rx_config_t rc = {rate, center, -55.0, 0.0, true, CHUNK};
     rdof_sink_t sink = {.on_json = on_json};
 #ifdef RDOF_MQTT
     if (rcfg.cfg.has_mqtt)
         sink.on_raw_burst = on_raw_burst; /* every burst on .../raw, as the board's */
 #endif
-    if (rdof_sdr_rx_init(&R.rx, &rc, ch, nch, &sink, (double)time(NULL))) {
-        fprintf(stderr, "receiver: the rate isn't a multiple of 48 kS/s, or the channels don't fit one window%s\n",
-                nmon ? " (the monitored channels with the radio's: a wider --rate, or fewer)" : "");
-        return 1;
+    if (rdof_sdr_rx_init(&R.rx, &rc, CH, NCH, &sink, (double)time(NULL))) {
+        char why[200];
+        snprintf(why, sizeof why, "receiver: the rate isn't a multiple of 48 kS/s, or the channels don't fit one "
+                                  "window%s", nmon ? " (the monitored channels with the radio's: a wider --rate, or fewer)" : "");
+        return hold(argc, argv, why);
     }
     R.rx.on_burst = on_burst;
     R.rx.muted = muted;
     R.rx.relabel = relabel; /* the tracker's JSON (calls, BER, RSSI) with the inbound slot, not slot 1 */
+    R.rx.drop = echo_drop;
+    R.tx_ch = R.tx_img = R.echo_ch = R.echo_img = -1;
     R.rx.burst_ctx = &R;
     net_start();
     mon_start();
@@ -1872,12 +2101,17 @@ int main(int argc, char **argv)
         ok = rdof_repeater_start(&R.r);
     } else {
         rdof_txvr_init(&R.t, &R.radio, rcfg.peer_id);
-        R.t.channels[0] = (rdof_channel_t){R.rx_hz, cc, 255};
-        R.t.nchannels = 1;
-        R.t.has_idle = true;
-        R.t.idle = R.t.channels[0];
-        if (R.tx_hz != R.rx_hz)
-            R.t.channels[R.t.nchannels++] = (rdof_channel_t){R.tx_hz, cc, 255};
+        if (config_path) {
+            rdofradio_cfg_apply_txvr(&rcfg, &R.t); /* its channels, listen, answer window, CW ID, as the firmware */
+        } else {
+            R.t.channels[0] = (rdof_channel_t){R.rx_hz, cc, 255};
+            R.t.nchannels = 1;
+            R.t.has_idle = true;
+            R.t.idle = R.t.channels[0];
+            if (R.tx_hz != R.rx_hz)
+                R.t.channels[R.t.nchannels++] = (rdof_channel_t){R.tx_hz, cc, 255};
+        }
+        R.t.on_retune = txvr_retune;
         R.t.clock = p_clock;
         R.t.send = txvr_send;
         R.t.on_tx = on_tx;
@@ -2052,7 +2286,10 @@ int main(int argc, char **argv)
                 R.first_sent = (txn - lead + offset + i0) * 48000 / (int64_t)rate + 16 * 10 + 48;
                 R.waiting = R.mon >= 0;
                 R.onset = txn - lead + offset + i0;
+                R.echo_ch = R.tx_ch, R.echo_img = R.tx_img;
+                R.echo_from = (int64_t)((double)(txn - lead + offset + i0) * 48000.0 / rate);
             }
+            R.echo_to = (int64_t)((double)(txn - lead + offset + n) * 48000.0 / rate);
         } else if (hot && (double)txn / rate > keyed_until) {
             tx_gain(dev->tx_gain_min);
             hot = false;
@@ -2179,8 +2416,10 @@ int main(int argc, char **argv)
                     "%u muted, %u lost, %u refused\n",
             total / rate, now_s() - t_start, overflows, W.errors, R.m.tx_bursts, R.m.idle_bursts, R.m.rx_bursts,
             R.m.muted, R.m.lost, R.m.refused);
-    for (int c = 0; c < nch; c++)
-        fprintf(stderr, "%s %.4f MHz: %ld bursts, AFC %.1f Hz\n", ch[c].id, ch[c].freq_hz / 1e6, R.rx.bursts[c],
+    if (R.rx.echoes)
+        fprintf(stderr, "receiver: %ld of our own bursts heard back and dropped\n", R.rx.echoes);
+    for (int c = 0; c < NCH; c++)
+        fprintf(stderr, "%s %.4f MHz: %ld bursts, AFC %.1f Hz\n", CH[c].id, CH[c].freq_hz / 1e6, R.rx.bursts[c],
                 R.rx.chz.correction_hz[c]);
     if (R.delay_n)
         fprintf(stderr, "monitor: a key-up heard %.2f ms after the modem's position (%.2f..%.2f, %d key-ups); "

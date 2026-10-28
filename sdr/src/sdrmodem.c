@@ -744,7 +744,9 @@ static void on_frame(void *ctx, uint8_t cmd, const uint8_t *p, size_t len)
         uint32_t rx = le32(p + 1), tx = le32(p + 5);
         int ch = m->io.rx_channel ? m->io.rx_channel(m->io.ctx, rx) : -1;
         double off = 0;
-        if (ch < 0 && m->role != ROLE_TX) {
+        if (ch == RDOF_SDRMODEM_NOT_HEARD)
+            ch = -1; /* transmit only: nothing is heard there */
+        else if (ch < 0 && m->role != ROLE_TX) {
             char e[64];
             snprintf(e, sizeof e, "%.5f MHz isn't one of the SDR's channels", rx / 1e6);
             nak(m, cmd, NAK_INVALID, e);

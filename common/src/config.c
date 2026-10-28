@@ -229,6 +229,7 @@ typedef struct {
     int number;
     uint32_t freq;
     int cc, power;
+    bool no_tx; /* "tx": false: nothing transmits on it (a repeater's output, monitored) */
 } plan_t;
 
 typedef struct {
@@ -744,8 +745,12 @@ static bool roamer(ctx_t *c, int box, int r, const plan_list_t *plan, rdof_confi
         if (all) {
             pc = &plan->ch[k];
             over = -1;
+            if (pc->no_tx)
+                continue; /* all: the channels it may transmit on */
         } else if (!plan_ref(c, plan, rdof_jat(&c->doc, refs, k), &pc, &over)) {
             return false;
+        } else if (pc->no_tx) {
+            return err(c, "channels: channel %d has tx false: nothing transmits on it", pc->number);
         }
         if (!fget(c, over, "cc", pc->cc, &cc, "channel") || !fget(c, over, "power", pc->power, &power, "channel"))
             return false;
@@ -770,7 +775,7 @@ static bool roamer(ctx_t *c, int box, int r, const plan_list_t *plan, rdof_confi
             return false;
         if (!channel_entry(c, freq_hz(pc->freq), pc->cc, 255, &cfg->idle))
             return false;
-        bool have = false;
+        bool have = pc->no_tx; /* an idle channel with tx false: heard, never sent on */
         for (int k = 0; k < cfg->nchannels; k++)
             have |= cfg->channels[k].freq == pc->freq;
         if (!have) {
@@ -929,6 +934,9 @@ static bool repeater(ctx_t *c, int box, int r, const plan_list_t *plan, rdof_con
     sor(c, r, "callsign", name8, cfg->callsign, sizeof cfg->callsign);
     cfg->rx_freq = freq_hz(rx);
     cfg->tx_freq = freq_hz(tx);
+    for (int k = 0; k < plan->n; k++)
+        if (plan->ch[k].no_tx && plan->ch[k].freq == cfg->tx_freq)
+            return err(c, "tx_freq: channel %d has tx false: nothing transmits on it", plan->ch[k].number);
     if (!iget(c, r, "power", 255, &lv, "radio"))
         return false;
     cfg->power = (int)(lv < 0 ? 0 : lv > 255 ? 255 : lv);
@@ -1236,6 +1244,12 @@ static bool parse_radio_v1(const char *text, size_t len, const char *want, rdof_
             cc = dcc;
         if (!fget(c, obj, "power", 255, &power, "channel"))
             goto done;
+        const int txk = get(c, obj, "tx");
+        if (txk >= 0 && N(c, txk)->type != RDOF_JBOOL) {
+            err(c, "channel %d: tx: true or false", p->number);
+            goto done;
+        }
+        p->no_tx = txk >= 0 && !N(c, txk)->b;
         p->cc = to_int(cc);
         p->power = to_int(power);
         plan_t *same = (plan_t *)plan_find(&plan, p->number);

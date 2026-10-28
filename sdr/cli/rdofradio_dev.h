@@ -40,6 +40,7 @@ struct rdofradio_dev {
     double tx_gain_min, tx_gain_max;
     char error[200]; /* the last failure */
     int (*set_rx_freq)(rdofradio_dev_t *d, double hz);
+    int (*set_tx_freq)(rdofradio_dev_t *d, double hz); /* the TX LO (not opened rx_only) */
     int (*set_tx_gain)(rdofradio_dev_t *d, double db);
     double (*rx_gain)(rdofradio_dev_t *d);
     double (*bandwidth)(rdofradio_dev_t *d); /* RX analog, Hz */
