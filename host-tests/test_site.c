@@ -433,6 +433,15 @@ static void test_siteroute(const char *dir)
     b = net_burst(0x78, 7, 9809999, false, 1, false, false);
     CHECK(rdof_siteroute_burst(&sr, 0, 9800701, &b, 2) == 1 && sr.router.pc_dropped == 0,
           "per_path: a private call to the peer's path, never heard (dropped %u)", sr.router.pc_dropped);
+    b = net_burst(0x78, 7, 9809999, false, 1, false, true);
+    rdof_siteroute_burst(&sr, 0, 9800701, &b, 2.1);
+    /* heard on the first frequency, sent to the second's peer: the master's choice wins */
+    rdof_siteroute_rf(&sr, 438062500, 1, 9809998, 3100, true, 3);
+    b = net_burst(0x7a, 7, 9809998, false, 1, false, false);
+    CHECK(rdof_siteroute_burst(&sr, 0, 9800702, &b, 4) == 2 && sr.router.pc_dropped == 0,
+          "per_path: a private call to the peer's path, heard on another (dropped %u)", sr.router.pc_dropped);
+    b = net_burst(0x7a, 7, 9809998, false, 1, false, true);
+    rdof_siteroute_burst(&sr, 0, 9800702, &b, 4.1);
     b = net_burst(0x79, 7, 9809999, false, 1, false, false);
     CHECK(rdof_siteroute_burst(&sr, 0, 0, &b, 3) == 0 && sr.router.pc_dropped == 1,
           "single identity: a private call to a radio never heard is dropped");
