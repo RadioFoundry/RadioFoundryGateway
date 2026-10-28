@@ -1,9 +1,12 @@
-# Config, version 3 (draft)
+# Config, version 3
 
 Covers: the version 3 box config: devices, frequencies, apps, networks and the policies that say which calls move
-between a talk path and a network. A design; nothing here is built yet.
-Related: [config.md](config.md) (version 1 keys, as the firmware reads them today), [rxtx-combinations.md](rxtx-combinations.md)
-(version 2, the broker, the channel usages), [hblink.md](hblink.md), [mqtt.md](mqtt.md), [ipgw.md](ipgw.md).
+between a talk path and a network; how a box runs it (§12); its limits (§13).
+Code: the parser and the resolved view `common/src/site.c` ([site.h](../../../common/include/rdof/site.h)), ID sets
+`idset.c`, the router `router.c` and, on a running box, `siteroute.c`; rdofradio (`sdr/cli/rdofradio.c`) and the
+firmware (`esp_idf/main/site_run.c`) run it. The schema is `config/rdof-config.schema.json` (`tools/config_check.py`).
+Related: [config.md](config.md) (version 1 keys), [rxtx-combinations.md](rxtx-combinations.md) (version 2, the broker,
+the channel usages), [hblink.md](hblink.md), [mqtt.md](mqtt.md), [ipgw.md](ipgw.md).
 
 ## 1. Why a version 3
 
@@ -46,7 +49,9 @@ must.
 |---|---|---|---|
 | `version` | 3 | | required |
 | `name` | str | `"radiofoundry"` | box name, as now |
-| `id` | int | | the box's DMR ID: its HBlink peer ID, and the base for per-path peer IDs (§7.1) |
+| `id` | int | | the box's DMR ID: its HBlink peer ID, and the base for per-path peer IDs (§7.1); required with an `hblink` network |
+| `callsign` | str | | the box's callsign, on every HBlink peer it runs |
+| `pc_hold_s` | int | 900 | how long a radio heard on a path takes the private calls to it (§9.3) |
 | `defaults` | object | `{}` | any frequency key, policy keys included, for every frequency that doesn't set it |
 | `devices`, `frequencies`, `apps`, `networks`, `policies` | list | `[]` | §4 to §8 |
 
@@ -101,6 +106,10 @@ An SDR has no `hears`: it hears every frequency inside its receive window, and t
 (as rdofradio's automatic rate does now). `hears.scan` on an SDR is reserved for later (frequencies outside its
 window).
 
+A modem's `type` (its firmware, `mmdvm` and the others) and its other keys are version 2's. A device that transmits
+on several frequencies also takes the version 2 roamer's wait-and-answer keys (`listen_s`, `clear_s`, `idle_after_s`,
+`csbk_preambles`, `answer_s`, `answer_max_s`, the jitter buffer, `cwid`).
+
 What version 2 called a roamer is a modem with `hears` and `transmits`. HBlink4 roaming (DMRT, the master moving the
 device to a frequency) is a network option (§7.1), not a role.
 
@@ -127,8 +136,8 @@ reported.
 
 | Type | Takes | Offers | Keys |
 |---|---|---|---|
-| `repeater` | `in` and `out` frequencies | paths `<name>/1`, `<name>/2` | `in`, `out`, `slots` (policy per slot), `hang_s`, `call_hang_s`, `cwid`, `local` (repeat locally; default true), and the version 2 repeater keys |
-| `parrot` | | answers the IDs in its `tg` or `pc` | `tg` or `pc`, `delay_s` |
+| `repeater` | `in` and `out` frequencies | paths `<name>/1`, `<name>/2` | `in`, `out`, `slots` (policy per slot), `hang_s`, `call_hang_s`, `cwid`, and the version 2 repeater keys |
+| `parrot` | | answers the IDs in its `tg` or `pc` | `tg` or `pc` |
 | `ipgw` | | answers its ID | `tg` or `pc`, and the version 2 `ip_gateway` keys |
 
 Later, each as an app type, with no new section: `voting` (the best copy of each burst from several receivers),
@@ -165,8 +174,8 @@ The version 2 `hblink` keys (`host`, `port`, `transport`, the SCTP keys), plus:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `identity` | `single` | `single`: the box is one peer (`id`), and its policies decide what goes where. `per_path`: each path is its own peer (`id` + 1, + 2, ... in list order, or `peer_ids` by path), and the master decides, as version 2's monitor does |
-| `peer_ids` | | `{"<path>": id}`, for `per_path` |
+| `identity` | `single` | `single`: the box is one peer (`id`), and its policies decide what goes where. `per_path`: each frequency or repeater is its own peer (`id` + 1, + 2, ... in list order, or `peer_ids`), and the master decides where a call goes: a stream sent to a peer goes only to that peer's paths |
+| `peer_ids` | | `{"<frequency or repeater>": id}`, for `per_path`; a repeater's two slots share its peer |
 | `roaming` | false | let the master move a device that `transmits` on several frequencies (DMRT / DMRK) |
 
 ### 7.2 `mqtt`
@@ -178,8 +187,9 @@ The version 2 `mqtt` keys (`host`, `port`, `username`, `password`, `root`, `tls`
 | `report` | true | status, the call JSON and the raw bursts, on today's topics ([mqtt.md](mqtt.md)) |
 | `calls` | false | carry calls: bursts in and out on topics per path and talkgroup. With it, MQTT can be the only network (no HBlink) |
 
-A box with `mqtt` and `report` only, and no other network, reports but carries no calls. The topics for `calls` are
-in [mqtt.md](mqtt.md) once designed.
+A box with `mqtt` and `report` only, and no other network, reports but carries no calls. With `calls`, a path whose
+`net` is the MQTT network sends what it carries as DMRD packets on `{root}/calls/{tg|pc}/{dst}/{box}` and takes
+the other boxes' from `{root}/calls/#` ([mqtt.md](mqtt.md) §10).
 
 ## 8. Policies
 
@@ -224,9 +234,9 @@ A call heard on a path:
 2. Else, a group call whose TG is in the path's `tg`, or in its `ptt` (which starts or renews the hold), goes to the
    path's network, if `dir` allows.
 3. Else, a private call whose called ID is in `pc` goes to the network, if `dir` allows.
-4. Else it is not sent. It still shows in last heard and the call JSON (`report`), marked not routed.
+4. Else it is not sent. It still shows in last heard and the call JSON (`report`).
 
-A repeater repeats locally first, whatever its policy (`local: false` turns that off).
+A repeater repeats locally first, whatever its policy.
 
 ### 9.2 Network to RF, group calls
 
@@ -245,11 +255,15 @@ A private call from a network goes to the path where the called radio was last h
 900 s), if that path's `pc` holds the calling ID and its `dir` allows. A radio not heard within the hold: the call is
 dropped and counted. The last-heard table is per box.
 
+With `identity: per_path` the master picks the peer, so a private call sent to a peer goes to that peer's path whether
+or not the box heard the radio there.
+
 ### 9.4 Transmitting
 
-A path's transmission goes to a device that `transmits` on its frequency and is free, preferring one already there.
-None free: the call waits for one up to `listen_s` (as the roamer now), then is refused. The receiver drops our own
-transmission heard back (as rdofradio does now), so it never goes back to the network.
+A path's transmission goes to a device that `transmits` on its frequency and is free, preferring one already there:
+a repeater app's repeater, an SFR or DCDM frequency's repeater, or a transceiver tuned to the frequency (its `cc` and
+`power`) for the call. None free: the call isn't sent on that path (counted). The receiver drops our own transmission
+heard back, so it never goes back to the network.
 
 ## 10. Scenarios
 
@@ -423,41 +437,62 @@ transmission heard back (as rdofradio does now), so it never goes back to the ne
 
 ## 11. The resolved view
 
-`GET /api/resolved` shows the config as it runs:
+`GET /api/resolved` ends, for a version 3 file, with the config as it runs (`rdof_site_resolved_text`, JSON with a
+line per entry):
 
-- each frequency with every key filled in from `defaults`;
-- each path with its policy expanded (ID sets as ranges, the source of each key: own, policy name, default);
-- the reverse view: each TG or range, the paths that carry it and how (static, PTT, `*`);
-- the devices serving each frequency, and the SDR's window and rate;
-- what was refused and why.
+- `frequencies`: each with every key filled in from `defaults`, and the devices that hear it and may send on it;
+- `paths`: each with its policy expanded (ID sets in their canonical form), its peer, and the source of each key
+  (`own`, `policy <name>`, `defaults`, `default`);
+- `talkgroups`: the reverse view, each TG or range with the path that carries it and how (`static`, `ptt`, `*`,
+  `ptt *`);
+- `apps`, `networks` and `devices`.
 
-The page can show a path's policy as a form, and a TG's paths as a table, both built from this view.
+A file the parser refuses doesn't run; the page's settings save says why (the field's path and the rule).
 
-## 12. Upgrade from version 2
+## 12. How a box runs it
 
-Version 1 and 2 files still load: each is turned into version 3 on read, and the board saves version 3 from then on.
-A host test runs every version 1 and 2 fixture through the upgrade and checks that the same things run.
+A version 3 file is parsed (`rdof_site_parse`) and lowered to the version 2 roles the box already runs
+(`rdof_site_lower`, which `rdof_setup_parse` calls on its own); the router then sits between those roles' receivers
+and the networks:
 
-| Version 2 | Version 3 |
+| Version 3 | Runs as |
 |---|---|
-| `channels` (keyed by number) | `frequencies`, each with `name` = the old key |
-| top-level `cc` | `defaults.cc` |
-| `devices` (keyed by name) | `devices`, each with `name` = the old key |
-| `hblink`, `mqtt` | `networks`: `hblink` first if present, then `mqtt` (`report: true`, `calls: false`) |
-| a `roamer` role | its device gets `hears` (`idle` or `scan`) and `transmits` (its `channels`); its frequencies get the role's `tg`, as now; `roaming: true` on the network |
-| a `repeater` role | a `repeater` app over two frequencies (added if not in `channels`); `slots` from the role's |
-| an `sfr` / `dcdm` role | its frequency with `mode` |
-| a `monitor` role | its channels, `tx: false` unless a roamer or repeater transmits there; `identity: per_path` with its `peer_ids` |
-| a role's `parrot` | a `parrot` app, its ID from the role's setting |
-| `ip_gateway` | an `ipgw` app |
-| `peer_id` | `id` (the first role's); other roles' as `peer_ids` with `per_path` |
-| `run` | dropped: a role not in `run` is left out |
-| a role's `hblink: false` | `dir` or `net` so the path doesn't reach HBlink |
+| `frequencies` | `channels`, numbered in list order, each with its `tg` when the path carries one talkgroup |
+| a `repeater` app | a `repeater` role on its `in` and `out` |
+| an `sfr` or `dcdm` frequency | an `sfr` or `dcdm` role on the device that may send there |
+| a device that transmits on simplex frequencies | a `roamer` role named after the device: those frequencies are its channels, `hears.idle` (else the first) its idle channel, `hears.scan` its scan list |
+| each SDR | a `monitor` role `<device>-rx` of every frequency it hears that no repeater takes; with `per_path`, each channel its frequency's peer |
+| a `parrot` app | the `parrot` of each role whose paths may reach it |
+| an `ipgw` app | `ip_gateway` |
+| `networks` | `hblink` and `mqtt`; each role's `peer_id` is its path's peer (§7.1) |
 
-Version 2 sets no talkgroup policy beyond a channel's `tg`, so the upgrade gives `tg` from the channel (or the role's
-talkgroups) and leaves `pc` and `apps` at their defaults.
+The router (`rdof_siteroute_*`) is asked at each stream's start, by every sink that would send it (the HBlink peer,
+MQTT calls), and once for the stream: the network it goes to, or none. A network's burst goes to the transmitters the
+router picks (§9.4). The parrot's admit is the path's `apps`.
 
-## 13. Later
+With `identity: single` the first roamer or repeater owns the box's HBlink peer and every other role and channel
+sends through it. HBlink4 credits a stream to the peer's last DMRC (its frequency), so a stream another role sends
+shows under the owner's frequency on the master.
+
+Version 1 and 2 files load and save as before: nothing is upgraded.
+
+## 13. Limits
+
+| What | At most |
+|---|---|
+| frequencies | 48 |
+| devices | 16 |
+| apps | 16 |
+| networks | 2: one `hblink`, one `mqtt` |
+| named policies | 16 |
+| talk paths | 64 |
+| ranges in an ID set (plain and `!` together, after merging) | 12 |
+| radios in the last-heard table | 256 |
+| talkgroups held by `ptt` on a path at once | 4 |
+| transceivers the router drives | 4 |
+| a name | 39 characters, no `/`, `"` or `\` |
+
+## 14. Later
 
 - **Bridges:** for what policies on paths don't do: TG rewrites (TG 9 on RF is TG 3100 on the network), one call on
   several paths as one (simulcast), and network-to-network links. A `bridges` list of members (path, network or app),
@@ -466,17 +501,25 @@ talkgroups) and leaves `pc` and `apps` at their defaults.
   receivers (`kind: remote`, `via`, `site`) and voting need it.
 - **A shared last-heard table** (over MQTT), so private calls find a radio heard at another box.
 - **`hears.scan` on an SDR:** scanning frequencies outside its window.
-- **`pc_home`:** a path for private calls to a radio never heard here (today: dropped).
+- **`pc_home`:** a path for private calls to a radio never heard here (today: dropped, with `identity: single`).
+- **SFR as an app:** the box itself as the SFR repeater (its SDR, or its SDR with another transmitter or a modem),
+  beside today's SFR frequency served by a connected radio.
+- **An emergency takes a transceiver:** today a transceiver sending one network call isn't taken by an emergency on
+  another path (a repeater's slot is).
+- **`apps` on SFR / DCDM paths** and the parrot on several transmitters at once.
 - **Scheduled talkgroups** (`mode: scheduled`).
 
-## 14. Decisions taken
+## 15. Decisions taken
 
 - Policy on the path, not a route table. The common sites are allow lists, deny lists and private calls on or off per
   path; those are cleanest as a property of the path. The reverse view (§11) answers "where does this TG go".
 - Lists with optional names for every section; a frequency's name defaults to its frequency.
 - One ID-set syntax for talkgroups and private-call IDs.
 - A group call from a network goes to every path that carries it (fan-out). A listed TG beats `*`.
-- A private call from a network goes where the radio was last heard; never heard here: dropped.
+- A private call from a network goes where the radio was last heard; never heard here: dropped. With `per_path`,
+  where the master sent it.
 - `tx: false` makes a path receive only, with `dir: rf>net`.
 - HBlink `identity` defaults to `single`.
+- No upgrade: version 1 and 2 files load and save as they are; a version 3 file runs as version 2 roles plus the
+  router (§12).
 - Apps claim IDs; `apps` on a path says which it may reach.

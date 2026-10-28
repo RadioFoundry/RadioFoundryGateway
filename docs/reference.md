@@ -171,7 +171,9 @@ and the repeater ran 60.0 s in 60.0 s with no samples lost. The TX half's round 
 yet run with a real radio.
 
 The radio can come from a settings file instead: `--config FILE` takes the firmware's settings document
-([docs/spec/fw/config.md](spec/fw/config.md)), read by the firmware's parser. The radio is a `repeater` (or an
+([docs/spec/fw/config.md](spec/fw/config.md)), read by the firmware's parser. A version 3 file
+([config-v3.md](spec/fw/config-v3.md)) is lowered to version 2 roles first and its calls go through the call router;
+an `mqtt` network with `calls` carries them over the broker. The radio is a `repeater` (or an
 `sdr_transceiver` with `duplex` full) or a half duplex `sdr_transceiver` on its idle channel. rdofradio applies its
 name, `peer_id`, `rx_freq` / `tx_freq`, `cc`, `parrot`, and a repeater's `slots`, `hang_s`, `call_hang_s`,
 `short_lc_ts1_low`, `prebuffer`, the jitter buffer, `cwid` and `cwid_every_s`, as the firmware does. `mode` sfr and
@@ -305,6 +307,8 @@ reply, a clock) and calls the transceiver's or repeater's `poll` every 20 ms.
 | `tracker` | the call tracker: MMDVMHost-style JSON, raw bursts, frames for HBlink4 |
 | `netcalls`, `status` | network calls, `tx`, status and Receiver messages |
 | `config`, `jsonp` | the settings: a box config in JSON resolved for one roamer or repeater; which radios a board runs (`run`) |
+| `site`, `idset` | settings version 3: the parser (devices, frequencies, apps, networks, policies, talk paths), ID sets, the resolved view, and the lowering to version 2 roles (C only) |
+| `router`, `siteroute` | version 3's call router: which network an RF call goes to and which paths a network call goes out on (ranks, PTT holds, private calls by where the radio was heard, emergency), and on a running box the repeaters and transceivers it hands bursts to; the MQTT calls topics (C only) |
 | `slotgrid` | the UTC slot grid, `slot_timing`, the gate, the sample clock |
 | `rawburst` | the binary raw burst: version 1 (49 bytes), version 2 (62, with the UTC start and grid slot) |
 | `usbmatch` | which radio a USB device goes to (VID / PID, serial, hub port) |
@@ -587,6 +591,12 @@ the monitored channels on the page: `16mb` + `w12` 2037 KB (0x1FD330), 170 KB DI
 KB DIRAM (49.9%); `4mb` 1864 KB, 163 KB DIRAM (48.9%), 56 KB (2.9%) free in its 1.875 MB slot: the next feature on
 `4mb` needs room made first (a role overlay, or the self-test clip out).
 
+Later on 2026-10-28, with settings version 3 (`site.c`, `idset.c`, `router.c`, `siteroute.c`, the board's
+`site_run.c` and `/api/resolved`'s version 3 view): `16mb` + `w12` 2072 KB (0x206110), +35 KB, 170 KB DIRAM used
+(51.0%); `4mb` 1899 KB (0x1DAF30), +35 KB, 163 KB DIRAM (48.9%), 20 KB (1%) free in its slot. The site and the
+router's state are allocated in PSRAM, and only for a version 3 document. `4mb` has no room left for a feature: take
+the self-test clip out (`CONFIG_RDOF_SDR_SELFTEST`) or build one role before adding code there.
+
 DIRAM went down because the roamer's state moved from `.bss` to the heap when it became a `roam_t`: the first
 radio's is still internal (about 5 KB, allocated when it starts), its settings in PSRAM. The `w12` build's 11 KB
 more DIRAM is the SPI master driver and the LR2021's state.
@@ -688,7 +698,9 @@ starts doesn't. Two radios and an SDR on the N16R8 is not measured on a board ye
 
 The settings are one box config in JSON (comments allowed), stored in NVS and edited on the web page (Settings:
 edit, Save and restart, Export, Import). They're checked in full before they're saved; the page also shows them as
-resolved. Every key is in [docs/spec/fw/config.md](spec/fw/config.md). The box keys: `name`, `location`,
+resolved. Every key is in [docs/spec/fw/config.md](spec/fw/config.md); version 3 (devices, frequencies, apps,
+networks and call policies, no roles) is in [docs/spec/fw/config-v3.md](spec/fw/config-v3.md), and runs as the
+version 2 roles it lowers to plus the call router. The version 2 box keys: `name`, `location`,
 `mqtt`, `hblink`, `cc`, `channels` (the plan), `radios`, `oled`. Then:
 
 - `run`: the radios this board runs, a name or a list of names (two roamers or repeaters and one SDR at most). Without

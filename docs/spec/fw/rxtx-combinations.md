@@ -154,7 +154,7 @@ can fall back.
 
 ## 4. Config, version 2
 
-Version 3 (a draft: devices, frequencies, apps, networks and call policies, no roles) is in [config-v3.md](config-v3.md).
+Version 3 (devices, frequencies, apps, networks and call policies, no roles) is in [config-v3.md](config-v3.md). A box runs it as version 2 roles plus the call router ([config-v3.md](config-v3.md) §12).
 
 `"version": 2` at the top. Version 1 (today's) still loads: `rdof_config_upgrade` turns it into version 2 on read, and the
 board saves version 2 from then on. A host test runs every version 1 fixture through the upgrade and checks that the
@@ -230,7 +230,8 @@ roles come out the same.
   C parser. A fixture's name says good or bad; both must agree, except for `bad-semantic-*` (only the C catches it).
   The test also compares each key list in `common/src/setup.c` with the schema's keys for that place, so a key
   added to one and not the other fails it.
-- **Version 1 configs** are checked after the upgrade. The schema describes version 2 only.
+- **Version 1 configs** are checked after the upgrade. The schema describes versions 2 and 3, picked by `version`;
+  `test_schema.js` checks it against the version 3 fixtures and site.c's key lists.
 
 ## 5. SDR transmit: carriers
 

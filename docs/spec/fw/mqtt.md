@@ -1,6 +1,6 @@
 # esp_idf MQTT
 
-Covers: the board's MQTT connections, every topic it publishes (it subscribes to none), payloads, QoS, retain, rates, the will, and what a subscriber needs to know.
+Covers: the board's MQTT connections, every topic it publishes (it subscribes only to calls, §10), payloads, QoS, retain, rates, the will, and what a subscriber needs to know; calls carried over MQTT (§10).
 Sources: `esp_idf/main/net.c`, `roam_mqtt.c`, `sdr_mqtt.c`, `radio_task.c`, `roam_hblink.c`; `common/src/tracker.c`, `netcalls.c`, `status.c`, `rawburst.c`, `config.c`; `sdr/src/status.c`, `config.c`.
 Related: [interfaces-http.md](interfaces-http.md), [hblink.md](hblink.md), [config.md](config.md) (the `mqtt` settings), [dmr-core.md](dmr-core.md) (the call tracker).
 
@@ -261,3 +261,27 @@ data topic is exactly `{root}` plus three levels: the channel id or radio name, 
 | SDR status `slotTiming` | absent; the slot timing state is in `/api/status` |
 | Network CSBK not decoded | `CSBK 0x%02X` |
 | Aliases | the raw and json topics, learned per connect |
+
+## 10. Calls (`calls`, version 3)
+
+An MQTT network with `"calls": true` ([config-v3.md](config-v3.md) §7.2) carries calls between boxes, as an HBlink4
+master would. Built in rdofradio (`sdr/cli/rdofradio.c`, `rdofradio_mqtt.c`); the board doesn't carry calls over MQTT
+yet. The topic helpers are `rdof_siteroute_calls_topic` and `rdof_siteroute_calls_theirs` (`common/src/siteroute.c`).
+
+| Topic | Payload | QoS | Retain | When |
+|---|---|---|---|---|
+| `{root}/calls/tg/{dst}/{box}` | a DMRD packet (55 bytes, as HBlink4's: `DMRD`, seq, src, dst, peer = the box's `id`, bits, stream id, the burst, BER, RSSI) | 0 | no | each burst of a group call heard on a path whose policy sends it to the MQTT network |
+| `{root}/calls/pc/{dst}/{box}` | the same, for a private call (bits byte bit 6) | 0 | no | the same |
+
+`{box}` is the box's `name`; `{dst}` the called talkgroup or radio, in decimal.
+
+| Side | Behavior |
+|---|---|
+| Out | Each receiver (the radio's and each monitored channel) has an MQTT sink beside its HBlink sink. At a stream's start both ask the router (one decision a stream, §12 of config-v3.md); the sink whose network won sends the stream |
+| In | The box subscribes to `{root}/calls/#` on its radio's connection (QoS 0) and drops its own box's topics and anything not 55 bytes. The packets go to the router as the MQTT network's: a group call to every path on that network that carries the TG, a private call to the path the radio was last heard on (config-v3.md §9) |
+| Threads | libmosquitto's thread queues the packets (64; more are dropped and counted), the main loop hands them to the router |
+| `report: false` | the status, call JSON, raw bursts and `tx` aren't published; the connection carries calls only |
+
+Every box on a root hears every other box's calls; the router's policies decide what each sends on RF. Two boxes that
+carry the same TG both transmit it. There's no master: a TG's calls from two boxes at once both arrive, and each path
+keeps the one that came first (config-v3.md §9.2).

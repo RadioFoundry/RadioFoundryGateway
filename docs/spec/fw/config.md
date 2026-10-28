@@ -2,7 +2,7 @@
 
 Covers: every box-config key the firmware reads, the firmware's own rules, Kconfig, NVS, and settings precedence.
 Sources: `common/src/config.c`, `common/include/rdof/config.h`, `sdr/src/config.c`, `common/src/benchcfg.c`, `common/src/ipgwcfg.c`, `esp_idf/main/settings.c`, `Kconfig.projbuild`, component Kconfigs.
-Related: [overview.md](overview.md), [interfaces-http.md](interfaces-http.md) (`/api/config`), [radio.md](radio.md), [sdr.md](sdr.md), [../repeater.md](../repeater.md) (`slot_timing`, split), [../bench-api.md](../bench-api.md), [../slot-timing.md](../slot-timing.md), [config-v3.md](config-v3.md) (version 3, a draft).
+Related: [overview.md](overview.md), [interfaces-http.md](interfaces-http.md) (`/api/config`), [radio.md](radio.md), [sdr.md](sdr.md), [../repeater.md](../repeater.md) (`slot_timing`, split), [../bench-api.md](../bench-api.md), [../slot-timing.md](../slot-timing.md), [config-v3.md](config-v3.md) (version 3).
 
 ## 1. Document format
 
