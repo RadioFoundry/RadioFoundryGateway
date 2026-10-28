@@ -222,7 +222,14 @@ bool rdofradio_cfg_parse(const char *text, size_t len, rdofradio_cfg_t *o, char 
         unused(v1, v1len, roles.radio, owned != NULL, o->unused, sizeof o->unused, &o->has_hblink);
     const bool v2 = owned != NULL;
     free(owned);
-    return v2 ? monitors(text, len, o, err, cap) : true;
+    if (v2 && !monitors(text, len, o, err, cap))
+        return false;
+    if (rdof_site_is_v3(text, len)) {
+        if (!rdof_site_parse(text, len, &o->site, err, cap))
+            return false;
+        o->v3 = true;
+    }
+    return true;
 }
 
 /* MHz with the trailing zeros off, 438.25 */

@@ -8,7 +8,8 @@
  * call_hang_s, short_lc_ts1_low, prebuffer and the jitter buffer, cwid and cwid_every_s; hblink (the master),
  * callsign, location and power for its HBlink4 peer, as the board's; mqtt, published as the board does
  * (rdofradio_mqtt.h); version 2: monitor roles on its SDR device
- * (receive-only channels, each its own peer). mode sfr and dcdm are
+ * (receive-only channels, each its own peer); version 3: the site too, for the call router (rdof/siteroute.h:
+ * what goes up and what comes down, through the radio's peer unless identity is per_path). mode sfr and dcdm are
  * refused; every other key is kept in the file and listed as not used here. The SDR device stays on the command
  * line (--soapy, -r, --gain, --tx-gain ...). No I/O here: rdofradio reads and writes the file.
  */
@@ -21,6 +22,7 @@
 
 #include "rdof/config.h"
 #include "rdof/repeater.h"
+#include "rdof/site.h"
 #include "rdof/txvr.h"
 #include "rdof/sdr/config.h"
 
@@ -45,6 +47,8 @@ typedef struct {
     char mon_name[32], mon_app[16]; /* their MQTT names, as the board's SDR's (name, app "sdr") */
     double mon_status_s;            /* the SDR's status period (status_seconds) */
     char unused[320];   /* the keys set that rdofradio doesn't apply, "wifi", or "" */
+    bool v3;            /* a version 3 document: site holds it */
+    rdof_site_t site;
     rdof_config_t cfg;  /* all of it, as the firmware resolves it */
 } rdofradio_cfg_t;
 

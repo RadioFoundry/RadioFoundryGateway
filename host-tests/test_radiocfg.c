@@ -149,6 +149,27 @@ int main(void)
     if (!strstr(text, "monitor SDR02"))
         printf("%s / unused: %s\n", text, C.unused);
 
+    /* version 3: the commercial site (a roamer on the SDR, every frequency monitored) and a repeater with forwarders */
+    CHECK(parse("{\"version\": 3, \"name\": \"plant\", \"id\": 9800100, \"defaults\": {\"cc\": 2}, "
+                "\"devices\": [{\"kind\": \"sdr\", \"driver\": \"iio\"}], "
+                "\"frequencies\": [{\"freq\": 438.0625, \"tg\": 201}, {\"freq\": 438.0875, \"tg\": 202}], "
+                "\"apps\": [{\"type\": \"parrot\", \"tg\": 9990}], "
+                "\"networks\": [{\"type\": \"hblink\", \"host\": \"h\"}]}"));
+    if (err[0])
+        printf("  %s\n", err);
+    CHECK(C.v3 && C.site.npath == 2 && !C.full && C.rx_hz == 438062500 && C.peer_id == 9800100);
+    CHECK(C.has_hblink && C.has_parrot && C.parrot == 9990 && C.nmon == 1 && C.mon[0].freq == 438087500);
+    CHECK(!C.mon[0].hblink); /* one identity: through the radio's peer */
+    CHECK(parse("{\"version\": 3, \"name\": \"tower\", \"id\": 9800300, \"defaults\": {\"cc\": 1}, "
+                "\"devices\": [{\"kind\": \"sdr\", \"driver\": \"iio\"}], "
+                "\"frequencies\": [{\"name\": \"in\", \"freq\": 438.75}, {\"name\": \"out\", \"freq\": 438.5}, "
+                "{\"freq\": 438.9375, \"tx\": false, \"tg\": \"*\"}], "
+                "\"apps\": [{\"name\": \"R1\", \"type\": \"repeater\", \"in\": \"in\", \"out\": \"out\"}], "
+                "\"networks\": [{\"type\": \"hblink\", \"host\": \"h\"}]}"));
+    if (err[0])
+        printf("  %s\n", err);
+    CHECK(C.v3 && C.full && C.rx_hz == 438750000 && C.tx_hz == 438500000 && C.nmon == 1 && !C.has_parrot);
+
     printf("radiocfg: %d checks, %d failed\n", checks, fails);
     return fails != 0;
 }

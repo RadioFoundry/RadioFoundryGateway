@@ -62,8 +62,9 @@ void rdof_siteroute_init(rdof_siteroute_t *sr, const rdof_site_t *site);
 bool rdof_siteroute_add_repeater(rdof_siteroute_t *sr, int app, struct rdof_repeater *r);
 bool rdof_siteroute_add_txvr(rdof_siteroute_t *sr, struct rdof_txvr *t, uint64_t freqs);
 
-/* A stream heard at hz on slot, at its start: true when it goes to the network (rdof_router_rf). */
-bool rdof_siteroute_rf(rdof_siteroute_t *sr, uint32_t hz, int slot, uint32_t src, uint32_t dst, bool group, double now);
+/* A stream heard at hz on slot, at its start: the network it goes to (rdof_router_rf), -1 none (why says why, or
+   it went to an app). */
+int rdof_siteroute_rf(rdof_siteroute_t *sr, uint32_t hz, int slot, uint32_t src, uint32_t dst, bool group, double now);
 /* Whether a call heard at hz on slot may reach app (the path's apps). */
 bool rdof_siteroute_reaches(const rdof_siteroute_t *sr, uint32_t hz, int slot, int app);
 

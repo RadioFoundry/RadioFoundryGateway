@@ -77,6 +77,7 @@
 #include "rdof/modem.h"
 #include "rdof/parrot.h"
 #include "rdof/repeater.h"
+#include "rdof/siteroute.h"
 #include "rdof/split.h"
 #include "rdof/sdr/receiver.h"
 #include "rdof/sdr/sdrmodem.h"
@@ -558,6 +559,64 @@ static void on_key(void *ctx, bool keyed)
     mq_status_soon(); /* as the board's */
 }
 
+/* ── the call router (version 3): what goes up, what comes down, where (rdof/siteroute.h) ─────────── */
+
+static rdof_siteroute_t SR;
+static bool sr_on;
+static int sr_hblink = -1, sr_parrot = -1; /* the site's HBlink network, its parrot app */
+
+/* the frequency the radio hears on now: a repeater's RX, a transceiver's channel */
+static uint32_t heard_hz(void)
+{
+    if (!R.full && R.t.ready) {
+        uint32_t f;
+        int cc;
+        rdof_txvr_channel_now(&R.t, &f, &cc);
+        if (f)
+            return f;
+    }
+    return R.rx_hz;
+}
+static void sr_start(void)
+{
+    if (!rcfg.v3)
+        return;
+    const rdof_site_t *s = &rcfg.site;
+    rdof_siteroute_init(&SR, s);
+    for (int k = 0; k < s->nnet; k++)
+        if (s->net[k].type == RDOF_NET_HBLINK && sr_hblink < 0)
+            sr_hblink = k;
+    sr_parrot = rdof_site_app_of(s, RDOF_APP_PARROT);
+    if (R.full) {
+        for (int a = 0; a < s->napp; a++)
+            if (s->app[a].type == RDOF_APP_REPEATER && s->freq[s->app[a].in].hz == R.rx_hz)
+                rdof_siteroute_add_repeater(&SR, a, &R.r);
+    } else {
+        rdof_siteroute_add_txvr(&SR, &R.t, 0);
+    }
+    sr_on = true;
+}
+/* The HBlink sinks' admit: a stream heard at the sink's frequency (ctx: a monitored channel, NULL the radio's RX)
+   goes up when its path's policy sends it to HBlink. */
+typedef struct mon mon_t;
+static uint32_t mon_hz(const mon_t *m);
+static bool rf_admit(void *ctx, int slot, uint32_t src, uint32_t dst, bool group)
+{
+    if (!sr_on)
+        return true;
+    const uint32_t hz = ctx ? mon_hz(ctx) : R.rx_hz;
+    const int net = rdof_siteroute_rf(&SR, hz, slot, src, dst, group, now_s());
+    if (net < 0 && SR.why && R.verbose)
+        say("router: %.5f MHz slot %d, %u -> %s%u: %s\n", hz / 1e6, slot, (unsigned)src, group ? "TG " : "",
+            (unsigned)dst, SR.why);
+    return net >= 0 && net == sr_hblink;
+}
+/* The parrot's: the path it's heard on may reach it. */
+static bool parrot_admit(void *ctx, int slot, uint32_t src, uint32_t dst, bool group)
+{
+    return !sr_on || rdof_siteroute_reaches(&SR, heard_hz(), slot, sr_parrot);
+}
+
 /* the parrot's replay, as the network would send it: a transceiver's tune, then the bursts */
 static void parrot_start(void *ctx, const uint8_t sid[4], int slot, uint32_t src, uint32_t dst, bool group)
 {
@@ -596,7 +655,7 @@ static void txvr_send(void *ctx, const uint8_t *d, size_t n)
 {
     static const char *status[] = {"on air", "channel busy", "not allowed", "radio error", "transceiver busy"};
     const bool dmrk = n >= 13 && !memcmp(d, "DMRK", 4);
-    if (dmrk && mon_sid(d + 8)) {
+    if (dmrk && (mon_sid(d + 8) || (sr_on && rdof_siteroute_tuned(&SR, d + 8)))) {
         say("transceiver (a monitored channel's call): %s\n", d[12] < 5 ? status[d[12]] : "?");
         return;
     }
@@ -621,6 +680,8 @@ static void net_say(const char *line) { say("%s\n", line); }
 static void net_packet(void *ctx, const uint8_t *d, size_t n)
 {
     uint8_t k[RDOF_DMRK_LEN];
+    if (sr_on && rdof_siteroute_dmrd(&SR, sr_hblink, rcfg.peer_id, d, n, now_s()))
+        return; /* by the call policies */
     if (rdof_hb_dispatch(d, n, R.full ? &R.r : NULL, R.full ? NULL : &R.t, rcfg.peer_id, k))
         net_send(k, sizeof k);
 }
@@ -672,6 +733,7 @@ static void net_start(void)
     NET_SINK.rand32 = sink_rand;
     if (!R.full)
         NET_SINK.before_stream = sink_before;
+    NET_SINK.admit = rf_admit;
     const rdof_sink_t sk = rdof_hb_sink_as_sink(&NET_SINK);
     if (rcfg.cfg.receiver_hblink) /* what it hears goes up (the role's "hblink", default true) */
         rdof_sdr_rx_add_sink(&R.rx, 0, &sk);
@@ -682,14 +744,16 @@ static void net_start(void)
 }
 
 /* The monitored channels (monitor roles on the device): receive only, each its own peer, as the board's SDR's */
-typedef struct {
+struct mon {
     int c; /* the receiver's channel */
     const rdof_sdr_cfg_channel_t *ch;
-    bool peer;
+    bool peer;  /* its own peer (version 2, or identity per_path) */
+    bool up;    /* its sink sends through the radio's peer (version 3, one identity) */
     rdofnet_peer_t net;
     rdof_hb_sink_t sink;
     uint8_t sid[4]; /* the last stream the master sent it */
-} mon_t;
+};
+static uint32_t mon_hz(const mon_t *m) { return (uint32_t)llround(m->ch->freq); }
 static mon_t MON[RDOF_SDR_MAX_CHANNELS];
 static int nmon;
 
@@ -712,6 +776,8 @@ static void mon_packet(void *ctx, const uint8_t *d, size_t n)
     mon_t *m = ctx;
     rdof_net_burst_t b;
     int cc;
+    if (sr_on && rdof_siteroute_dmrd(&SR, sr_hblink, m->net.peer.peer_id, d, n, now_s()))
+        return; /* by the call policies (identity per_path: this peer's paths) */
     /* a simplex channel: what the master sends this channel's peer goes out on it, through the transceiver (one
        channel at a time: a call while it's busy elsewhere is refused, as a DMRT would be) */
     if (rdof_hb_kind(d, n) == 'D' && mon_sends(m, &cc) && rdof_parse_dmrd(d, n, &b)) {
@@ -740,6 +806,20 @@ static void mon_start(void)
     const rdof_location_t *loc = rcfg.cfg.has_location ? &rcfg.cfg.location : NULL;
     for (int i = 0; i < nmon; i++) {
         mon_t *m = &MON[i];
+        if (rcfg.v3 && !m->ch->hblink && net_on) {
+            /* one identity: what it hears goes up through the radio's peer, as its policy says */
+            rdof_hb_sink_init(&m->sink, rcfg.peer_id);
+            m->sink.send = sink_send;
+            m->sink.rand32 = sink_rand;
+            if (!R.full)
+                m->sink.before_stream = sink_before;
+            m->sink.admit = rf_admit;
+            m->sink.ctx = m;
+            const rdof_sink_t sk = rdof_hb_sink_as_sink(&m->sink);
+            rdof_sdr_rx_add_sink(&R.rx, m->c, &sk);
+            m->up = true;
+            continue;
+        }
         if (!m->ch->hblink || m->ch->peer_id < 0)
             continue;
         rdofnet_peer_init(&m->net, rcfg.cfg.master_host, rcfg.cfg.master_port, (uint32_t)m->ch->peer_id,
@@ -750,6 +830,7 @@ static void mon_start(void)
         rdof_hb_sink_init(&m->sink, (uint32_t)m->ch->peer_id);
         m->sink.send = mon_send;
         m->sink.rand32 = sink_rand;
+        m->sink.admit = rf_admit;
         m->sink.ctx = m;
         const rdof_sink_t sk = rdof_hb_sink_as_sink(&m->sink);
         rdof_sdr_rx_add_sink(&R.rx, m->c, &sk);
@@ -1921,6 +2002,7 @@ int main(int argc, char **argv)
             rdof_parrot_init(&parrot, rcfg.parrot);
             parrot.start = parrot_start;
             parrot.send = parrot_send;
+            parrot.admit = parrot_admit;
             R.parrot = &parrot;
         }
     }
@@ -2032,6 +2114,7 @@ int main(int argc, char **argv)
     R.rx.drop = echo_drop;
     R.tx_ch = R.tx_img = R.echo_ch = R.echo_img = -1;
     R.rx.burst_ctx = &R;
+    sr_start();
     net_start();
     mon_start();
     mq_start();

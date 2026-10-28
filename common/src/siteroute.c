@@ -34,12 +34,12 @@ bool rdof_siteroute_add_txvr(rdof_siteroute_t *sr, struct rdof_txvr *t, uint64_t
     return true;
 }
 
-bool rdof_siteroute_rf(rdof_siteroute_t *sr, uint32_t hz, int slot, uint32_t src, uint32_t dst, bool group, double now)
+int rdof_siteroute_rf(rdof_siteroute_t *sr, uint32_t hz, int slot, uint32_t src, uint32_t dst, bool group, double now)
 {
     const rdof_rcall_t c = {.src = src, .dst = dst, .group = group};
     const rdof_route_t r = rdof_router_rf(&sr->router, rdof_site_path_rx(sr->router.site, hz, slot), &c, now);
     sr->why = r.kind == RDOF_ROUTE_NONE ? r.why : NULL;
-    return r.kind == RDOF_ROUTE_NET;
+    return r.kind == RDOF_ROUTE_NET ? r.net : -1;
 }
 
 bool rdof_siteroute_reaches(const rdof_siteroute_t *sr, uint32_t hz, int slot, int app)
@@ -62,6 +62,7 @@ bool rdof_siteroute_tuned(const rdof_siteroute_t *sr, const uint8_t sid[4])
     return false;
 }
 
+#if RDOF_FEATURE_TX
 /* The transceiver for path k sending stream (already, or free now), or -1. */
 static int txvr_for(rdof_siteroute_t *sr, int k, uint32_t stream, double now)
 {
@@ -80,6 +81,7 @@ static int txvr_for(rdof_siteroute_t *sr, int k, uint32_t stream, double now)
     }
     return free;
 }
+#endif
 
 uint64_t rdof_siteroute_burst(rdof_siteroute_t *sr, int net, uint32_t peer, const rdof_net_burst_t *b, double now)
 {

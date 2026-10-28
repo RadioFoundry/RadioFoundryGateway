@@ -343,10 +343,10 @@ static void test_siteroute(const char *dir)
         const int parrot = rdof_site_app(&S, "parrot");
         CHECK(rdof_siteroute_reaches(&sr, 438750000, 2, parrot) && !rdof_siteroute_reaches(&sr, 438750000, 1, parrot),
               "the parrot: TS2 only");
-        CHECK(rdof_siteroute_rf(&sr, 438750000, 1, 1, 9990, true, 11) && !sr.why, "TS1: 9990 up");
-        CHECK(!rdof_siteroute_rf(&sr, 438750000, 1, 1, 9, true, 11) && sr.why, "TS1: 9 not");
-        CHECK(!rdof_siteroute_rf(&sr, 438750000, 2, 1, 9990, true, 11), "TS2: 9990 to the parrot, not up");
-        CHECK(!rdof_siteroute_rf(&sr, 438025000, 1, 1, 3100, true, 11), "not a path");
+        CHECK(rdof_siteroute_rf(&sr, 438750000, 1, 1, 9990, true, 11) == 0 && !sr.why, "TS1: 9990 up");
+        CHECK(rdof_siteroute_rf(&sr, 438750000, 1, 1, 9, true, 11) < 0 && sr.why, "TS1: 9 not");
+        CHECK(rdof_siteroute_rf(&sr, 438750000, 2, 1, 9990, true, 11) < 0 && !sr.why, "TS2: 9990 to the parrot, not up");
+        CHECK(rdof_siteroute_rf(&sr, 438025000, 1, 1, 3100, true, 11) < 0, "not a path");
     }
     if (load(dir, "good-commercial.json")) {
         static rdof_txvr_t t;
