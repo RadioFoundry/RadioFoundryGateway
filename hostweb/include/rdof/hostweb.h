@@ -192,6 +192,12 @@ void rdof_hostweb_clock(const rdof_hostweb_clock_t *c);
 /* The version /api/status shows (default "host"). The string is kept, not copied. */
 void rdof_hostweb_version(const char *v);
 
+/* The file where the tool's supervisor records how it last ended, when that wasn't a clean stop (the Pluto bundle's
+ * run.sh): lines "rc=N" (the shell's exit status: 128 + the signal when a signal ended it) and "at=UNIX_S", a line
+ * "---", then the log's last lines. The status shows it as "exit" (the crash card), GET /api/crash answers the file,
+ * DELETE /api/crash removes it. Read when asked; the path is kept, not copied. NULL: none. */
+void rdof_hostweb_last_exit(const char *path);
+
 /* Set the settings hooks (a copy is taken). Before start or after; without them /api/config answers 501. */
 void rdof_hostweb_settings(const rdof_hostweb_settings_t *s);
 /* Write a file whole or not at all: a temporary file beside it, flushed, then renamed over it. False: err says
@@ -219,6 +225,10 @@ void rdof_hostweb_tracker_json(const char *role, const char *radio, const char *
 #define RDOF_HOSTWEB_SPECTRUM_BINS 512
 bool rdof_hostweb_spectrum_wanted(void);
 void rdof_hostweb_spectrum_row(const uint8_t *row, int bins, double center_hz, double rate, int row_ms);
+/* The same for the status's SDR sdr (0 .. RDOF_HOSTWEB_SDRS - 1; the calls above are SDR 0's): the page shows one
+ * SDR's at a time (GET /api/spectrum?sdr=N), and asks only for that one's. */
+bool rdof_hostweb_spectrum_wanted_sdr(int sdr);
+void rdof_hostweb_spectrum_row_sdr(int sdr, const uint8_t *row, int bins, double center_hz, double rate, int row_ms);
 /* A call going out ("start" or "end"; the on_tx hook's arguments), for the last heard list. */
 void rdof_hostweb_net_call(const char *role, const char *radio, const char *action, const rdof_tx_call_info_t *call,
                            double duration);

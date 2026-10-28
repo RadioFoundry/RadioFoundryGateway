@@ -21,14 +21,15 @@
  *   rdofradio DEVICE --allow-tx --rx MHZ [--tx MHZ] [--duplex full|half] [--cc CC] [-r RATE] [--bw MHZ]
  *             [--tx-gain DB] [--tx-lo MHZ] [--gain DB] [--center MHZ] [--monitor] [--tx-offset S]
  *             [--parrot ID] [--stream ARGS] [--seconds S] [--bursts] [--quiet] [-v] [--web [ADDR:]PORT]
- *             [--fft builtin|pffft]
+ *             [--last-exit FILE] [--fft builtin|pffft]
  *   rdofradio DEVICE --allow-tx --config FILE [--clock-state FILE] [--set-os-clock] [the device's flags as above]
  *   rdofradio DEVICE --allow-tx --split-tx PORT [--baud N] [--split-power-cap N] --rx MHZ --tx MHZ [--cc CC] [...]
  *
  * DEVICE is --soapy ARGS (SoapySDR; -r defaults to 2.4 MS/s) or --iio URI (an AD9361 through libiio: "local:" on a
  * PlutoSDR, "ip:192.168.2.1" from a host; -r defaults to 768 kS/s, which the chip's own FIR makes with
  * libad9361). --web serves the page on 127.0.0.1 unless ADDR is given (0.0.0.0: every interface). --fft: the
- * channelizer's FFT, pffft when it's built in (RDOF_PFFFT).
+ * channelizer's FFT, pffft when it's built in (RDOF_PFFFT). --last-exit FILE: where a supervisor records how the
+ * last run ended (rdof_hostweb_last_exit; the Pluto bundle's run.sh): the page's crash card.
  *
  * --split-tx PORT: a split duplex repeater (docs/spec/repeater.md): a RadioFoundry radio on PORT (its hotspot, with
  * the split duplex extension) transmits, and the SDR, opened receive only, is the RX half. Any receiver does, an
@@ -331,7 +332,7 @@ static void usage(void)
             "usage: rdofradio DEVICE --allow-tx --rx MHZ [--tx MHZ] [--duplex full|half] [--cc CC] [-r RATE] [--bw MHZ]\n"
             "                 [--tx-gain DB] [--tx-lo MHZ] [--gain DB] [--center MHZ] [--monitor] [--tx-offset S]\n"
             "                 [--parrot ID] [--stream ARGS] [--seconds S] [--bursts] [--quiet] [-v] [--web [ADDR:]PORT]\n"
-            "                 [--fft builtin|pffft]\n"
+            "                 [--last-exit FILE] [--fft builtin|pffft]\n"
             "       rdofradio DEVICE --allow-tx --config FILE [--clock-state FILE] [--set-os-clock] [the device's flags]\n"
             "       rdofradio DEVICE --allow-tx --split-tx PORT [--baud N] [--split-power-cap N] --rx MHZ --tx MHZ [--cc CC]\n"
             "                 [-r RATE] [--gain DB] [--center MHZ] [--parrot ID] [--seconds S] [-v] [--web [ADDR:]PORT]\n"
@@ -1656,6 +1657,9 @@ int main(int argc, char **argv)
                 v = colon + 1;
             }
             web_port = atoi(v);
+        } else if (!strcmp(a, "--last-exit")) {
+            NEXT();
+            rdof_hostweb_last_exit(v);
 #endif
         } else {
             usage();

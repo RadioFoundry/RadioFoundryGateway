@@ -74,7 +74,7 @@ canvas{display:block;width:100%;background:#0b0b10;border-radius:6px}#spec{heigh
 <div id="sdrs"></div>
 <div id="modems"></div>
 <div class="card" id="chanbox" hidden><h2>Channels</h2><div class="wrap" id="chans"></div></div>
-<div class="card" id="specbox" hidden><h2>Spectrum</h2>
+<div class="card" id="specbox" hidden><h2>Spectrum <select id="specsdr" hidden onchange="specPick(+this.value)"></select></h2>
 <p class="mute">The tuner's whole span, 512 bins, averaged over each row; the bands are the channels. dBFS at the
 configured gain. <span id="specinfo"></span></p>
 <canvas id="spec"></canvas>
@@ -124,7 +124,7 @@ set one).</p>
 <input type="file" id="fw" accept=".bin"><br><button type="button" onclick="ota()">Upload</button></div>
 <button type="button" class="dang" data-cap="restart" onclick="restart()">Restart</button>
 <p id="otamsg"></p></div>
-<div class="card" data-cap="coredump" id="m_crash"></div>
+<div class="card" data-cap="coredump crash" id="m_crash"></div>
 <div class="card" data-cap="board_mem sys_mem" id="m_mem"></div>
 <div class="card" id="tests" hidden><h2>SDR tests</h2>
 <p class="mute">The self-test runs a built-in 0.6 s recording through the SDR receiver and checks it against the
@@ -175,6 +175,7 @@ function problems(s) {
   if (has(s, 'netclock') && s.clock == 'none') warn('Clock not set');
   if (has(s, 'os_clock') && s.clock_os && !(s.clock_os.known && s.clock_os.synced)) warn('System clock not synchronized');
   if (has(s, 'coredump') && s.crash) warn('A core dump is saved (Logs & maintenance)');
+  if (has(s, 'crash') && s.last_exit) warn((s.last_exit.signal ? 'It crashed' : 'It stopped on its own') + ' before this start (Logs & maintenance)');
   if (/-dirty$/.test(s.version)) warn('Built from uncommitted source');
   radios(s).forEach((r, i) => {
     const n = (r.mode == 'roamer' ? 'Roamer ' : 'Repeater ') + r.name + ': ';
@@ -215,7 +216,7 @@ function problems(s) {
 }
 
 // ── anything in /api/status this page doesn't know: shown as it comes ─────
-const KNOWN = 'name version idf uptime_s reset crash heap_free psram_free cpu memory settings_ok settings_error wifi ap_mode ip clock usb_either build_roamer build_sdr selftest spike roamer roamers sdr sdrs modems cpu_process caps clock_os settings_source rss rss_peak mem_total mem_avail'.split(' ');
+const KNOWN = 'name version idf uptime_s reset crash heap_free psram_free cpu memory settings_ok settings_error wifi ap_mode ip clock usb_either build_roamer build_sdr selftest spike roamer roamers sdr sdrs modems cpu_process last_exit caps clock_os settings_source rss rss_peak mem_total mem_avail'.split(' ');
 const extras = s => Object.entries(s).filter(([k]) => !KNOWN.includes(k));
 const flat = (o, pre = '') => Object.entries(o).flatMap(([k, v]) => v && typeof v == 'object' ?
   (Array.isArray(v) && v.every(x => typeof x != 'object') ? [[pre + k, v.join(', ')]] : flat(v, pre + k + '.')) : [[pre + k, v]]);
@@ -258,7 +259,7 @@ const boardRows = s => [
   has(s, 'settings') && ['Settings', s.settings_ok ? sp('ok', 'ok') : sp('bad', esc(s.settings_error) + ' (running the defaults)')],
   has(s, 'wifi') && ['Wi-Fi', wifiText(s)], clockRow(s), memRow(s), cpuRow(s),
   ['Up', dur(s.uptime_s) + ' <span class="mute">(last ' + (has(s, 'coredump') ? 'reset' : 'start') + ': ' + esc(s.reset) + ')</span>'],
-  has(s, 'coredump') && ['Crash', crashText(s.crash)], buildRow(s)];
+  has(s, 'coredump') && ['Crash', crashText(s.crash)], has(s, 'crash') && ['Last exit', exitText(s.last_exit)], buildRow(s)];
 // A host's memory: the process's, and the system's.
 const hostMemCard = s => '<h2>Memory</h2>' + kv([['Process', kb(s.rss) + ' resident, ' + kb(s.rss_peak) + ' peak'],
   s.mem_total != null && ['System', kb(s.mem_avail) + ' available of ' + kb(s.mem_total)]]);
@@ -294,6 +295,12 @@ function memCard(m) {
       roles.map(([k, r]) => '<tr><td>' + esc(k) + '</td><td style="white-space:normal">' + state(r) + '</td><td class="n">' + kb(r.internal) +
         '</td><td class="n">' + kb(r.dma) + '</td><td class="n">' + kb(r.psram) + '</td><td class="n">' + kb(r.budget) + '</td></tr>').join('') +
       '</table></div>' + roles.map(([k, r]) => claims(k, r)).join('') : '');
+}
+// A host tool's last exit, as its supervisor recorded it
+function exitText(x) {
+  if (!x) return 'none recorded';
+  return sp(x.signal ? 'bad' : 'warn', x.signal ? 'killed by ' + esc(x.signal_name || 'signal ' + x.signal) : 'exited with code ' + x.rc) +
+    (x.at ? ', ' + ago(Date.now() / 1000 - x.at) : '') + ' · <a href="/api/crash">its log</a>';
 }
 function crashText(c) {
   if (!c) return 'none saved';
@@ -466,6 +473,14 @@ function render() {
     $('chanbox').hidden = !cs.length;
     if (cs.length) chanTables(cs);
     if (s.sdr) spec.chans = s.sdr.channels;
+    const many = has(s, 'spectrum') && ds.length > 1, names = ds.map(d => d.name).join('\n'), pick = $('specsdr');
+    pick.hidden = !many;
+    if (many && pick.dataset.names != names) {                         // a host tool's SDRs: one spectrum at a time
+      pick.dataset.names = names;
+      pick.innerHTML = ds.map((d, i) => '<option value="' + i + '">' + esc(d.name) + '</option>').join('');
+      if (spec.sdr >= ds.length) specPick(0);
+      pick.value = spec.sdr;
+    }
     $('noradio').hidden = !!(rs.length || ds.length || modems(s).length);
   } else if (t == 'network') {
     $('links').innerHTML = has(s, 'wifi') || has(s, 'links') ? card('Links', kv([has(s, 'wifi') && ['Wi-Fi', wifiText(s)], clockRow(s),
@@ -477,8 +492,11 @@ function render() {
     $('m_board').innerHTML = '<h2>' + (has(s, 'coredump') ? 'Board' : 'Program') + '</h2>' + kv([buildRow(s), ['Up', dur(s.uptime_s)],
       [has(s, 'coredump') ? 'Last reset' : 'Last start', esc(s.reset)], memRow(s), cpuRow(s),
       has(s, 'coredump') && ['Built with', [s.build_roamer && 'roamer', s.build_sdr && 'SDR'].filter(Boolean).join(', ') || '-']]);
-    const c = s.crash;
-    $('m_crash').innerHTML = '<h2>Crash ' + (c ? pill('bad', 'core dump saved') : pill('ok', 'none')) + '</h2>' + kv([['Last', crashText(c)],
+    const c = s.crash, x = s.last_exit;
+    if (has(s, 'crash')) $('m_crash').innerHTML = '<h2>Last exit ' + (x ? pill(x.signal ? 'bad' : 'warn', x.signal ? 'crashed' : 'stopped') : pill('ok', 'none')) +
+      '</h2>' + kv([['Last', exitText(x)], x && x.last_line && ['Its last line', '<code>' + esc(x.last_line) + '</code>']]) +
+      (x ? '<button type="button" class="sec" onclick="eraseExit()">Erase the record</button>' : '');
+    else $('m_crash').innerHTML = '<h2>Crash ' + (c ? pill('bad', 'core dump saved') : pill('ok', 'none')) + '</h2>' + kv([['Last', crashText(c)],
       c && c.exccause != null && ['Cause', esc(c.cause) + ' (' + c.exccause + '), address ' + esc(c.excvaddr)],
       c && c.backtrace && ['Backtrace', '<code>' + esc(c.backtrace) + '</code>' + (c.backtrace_corrupted ? ' ' + sp('warn', '(corrupted)') : '')],
       c && ['Size', kb(c.size)]]) + (c ? '<button type="button" class="sec" onclick="eraseDump()">Erase the core dump</button>' : '');
@@ -613,6 +631,7 @@ async function tasks() {
   $('tasks').textContent = r.ok ? await r.text() : 'Not in this build (FreeRTOS run-time stats are off).';
 }
 async function restart() { if (confirm(has(S.s, 'coredump') ? 'Restart the board?' : 'Restart the program?')) $('otamsg').textContent = await (await fetch('/api/restart', {method: 'POST'})).text(); }
+async function eraseExit() { if (confirm('Erase the record of the last exit?')) { await fetch('/api/crash', {method: 'DELETE'}); status(); } }
 async function eraseDump() { if (confirm('Erase the saved core dump?')) { await fetch('/api/coredump', {method: 'DELETE'}); status(); } }
 async function ota() {
   const f = $('fw').files[0];
@@ -622,7 +641,7 @@ async function ota() {
   $('otamsg').innerHTML = r.ok ? sp('ok', esc(await r.text())) : sp('bad', esc(await r.text()));
 }
 // ── spectrum and waterfall ───────────────────────────────────────────────────
-const spec = {seq: 0, last: null, lo: -110, hi: -30, chans: [], center: 0, rate: 0, busy: false, hover: null};
+const spec = {sdr: 0, seq: 0, last: null, lo: -110, hi: -30, chans: [], center: 0, rate: 0, busy: false, hover: null};
 const turbo = [[0,0,0],[20,20,90],[0,90,200],[0,190,200],[120,230,60],[250,220,0],[250,90,0],[255,255,255]];
 const lut = Array.from({length: 256}, (_, i) => {
   const x = i / 255 * (turbo.length - 1), k = Math.min(Math.floor(x), turbo.length - 2), f = x - k;
@@ -679,11 +698,17 @@ function wfRow(row) {
   }
   g.putImageData(img, 0, 0);
 }
+function specPick(i) {
+  spec.sdr = i; spec.seq = 0; spec.last = null; spec.chans = [];
+  const c = $('wf'); c.getContext('2d').clearRect(0, 0, c.width, c.height);
+  drawSpec();
+}
 async function spectrum() {
   if (spec.busy || document.hidden || S.tab != 'radios' || $('specbox').hidden) return;
   spec.busy = true;
   try {
-    const d = await (await fetch('/api/spectrum?since=' + spec.seq)).json();
+    const d = await (await fetch('/api/spectrum?since=' + spec.seq + (spec.sdr ? '&sdr=' + spec.sdr : ''))).json();
+    if ((d.sdr || 0) != spec.sdr) throw 0;                           // picked another meanwhile
     if (d.seq < spec.seq) spec.seq = 0;                               // the board restarted
     spec.center = d.center; spec.rate = d.rate;
     if (d.channels) spec.chans = d.channels;                         // a host tool: its radio's and monitored channels

@@ -143,7 +143,7 @@ static void t_status_board(void)
         "\"settings_error\":\"\",\"wifi\":true,\"ap_mode\":false,\"ip\":\"10.0.0.2\",\"clock\":\"ntp\","
         "\"build_sdr\":true,\"caps\":{\"ota\":true,\"restart\":true,\"wifi\":true,\"tasks\":false,"
         "\"coredump\":true,\"board_mem\":true,\"sys_mem\":false,\"netclock\":true,\"os_clock\":false,"
-        "\"links\":true,\"settings\":true,\"settings_edit\":true,\"spectrum\":false}}";
+        "\"links\":true,\"settings\":true,\"settings_edit\":true,\"spectrum\":false,\"crash\":false}}";
     CHECK(n == strlen(want) && !strcmp(buf, want));
     if (strcmp(buf, want))
         printf("  got  %s\n  want %s\n", buf, want);
@@ -206,7 +206,7 @@ static void t_status_host(void)
         "\"synced\":true,\"est_error_us\":120,\"max_error_us\":5000,\"offset_us\":-1.25,\"freq_ppm\":3.5},"
         "\"settings_source\":\"command line flags\",\"caps\":{\"ota\":false,\"restart\":false,\"wifi\":false,"
         "\"tasks\":false,\"coredump\":false,\"board_mem\":false,\"sys_mem\":true,\"netclock\":false,"
-        "\"os_clock\":true,\"links\":false,\"settings\":true,\"settings_edit\":false,\"spectrum\":false}}";
+        "\"os_clock\":true,\"links\":false,\"settings\":true,\"settings_edit\":false,\"spectrum\":false,\"crash\":false}}";
     CHECK(!strcmp(buf, want));
     if (strcmp(buf, want))
         printf("  got  %s\n  want %s\n", buf, want);

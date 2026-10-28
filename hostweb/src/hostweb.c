@@ -15,6 +15,7 @@
 #include <netinet/in.h>
 #include <poll.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -44,6 +45,14 @@
 #define SPEC_ROWS 64          /* the spectrum's ring */
 #define SPEC_MAX 16           /* rows an answer, at most */
 
+typedef struct {
+    uint8_t rows[SPEC_ROWS][RDOF_HOSTWEB_SPECTRUM_BINS];
+    uint32_t seq;
+    int bins, row_ms;
+    double center, rate;
+    atomic_llong want_ms; /* mono ms: the page asked until then */
+} spec_t;
+
 static struct {
     atomic_bool running;
     int lfd, wake[2];
@@ -71,13 +80,11 @@ static struct {
     pthread_mutex_t lh_mu;
     rdof_lh_t lh;
     rdof_lh_entry_t lh_e[RDOF_LH_DEFAULT];
-    /* the spectrum: the tool's rows, newest at sp_seq */
+    /* the spectrum: each SDR's rows, newest at seq */
     pthread_mutex_t sp_mu;
-    uint8_t sp_rows[SPEC_ROWS][RDOF_HOSTWEB_SPECTRUM_BINS];
-    uint32_t sp_seq;
-    int sp_bins, sp_row_ms;
-    double sp_center, sp_rate;
-    atomic_llong sp_want_ms; /* mono ms: the page asked until then */
+    spec_t sp[RDOF_HOSTWEB_SDRS];
+    /* the supervisor's record of the last exit (rdof_hostweb_last_exit) */
+    const char *exit_path;
 } W = {.st_mu = PTHREAD_MUTEX_INITIALIZER, .log_mu = PTHREAD_MUTEX_INITIALIZER, .lh_mu = PTHREAD_MUTEX_INITIALIZER,
        .set_mu = PTHREAD_MUTEX_INITIALIZER, .sp_mu = PTHREAD_MUTEX_INITIALIZER};
 
@@ -516,10 +523,93 @@ static void host_cpu(rdof_json_t *j)
     n0 = n, proc0 = proc, t0 = now;
 }
 
+/* ── the last exit, as the supervisor recorded it ──────────────────────────── */
+
+void rdof_hostweb_last_exit(const char *path) { W.exit_path = path; }
+
+#define EXIT_MAX 16384
+
+/* The record (malloc'd, NUL terminated), or NULL when there's none. */
+static char *exit_read(size_t *n)
+{
+    const char *path = W.exit_path;
+    FILE *f = path ? fopen(path, "r") : NULL;
+    if (!f)
+        return NULL;
+    char *b = malloc(EXIT_MAX);
+    if (b) {
+        *n = fread(b, 1, EXIT_MAX - 1, f);
+        b[*n] = 0;
+    }
+    fclose(f);
+    return b;
+}
+
+static const char *signal_name(int sig)
+{
+    static const struct {
+        int n;
+        const char *name;
+    } S[] = {{SIGSEGV, "SIGSEGV (segmentation fault)"}, {SIGBUS, "SIGBUS (bus error)"},
+             {SIGILL, "SIGILL (illegal instruction)"},  {SIGFPE, "SIGFPE (arithmetic)"},
+             {SIGABRT, "SIGABRT (abort)"},              {SIGKILL, "SIGKILL (killed: out of memory?)"},
+             {SIGTERM, "SIGTERM"},                       {SIGINT, "SIGINT"},
+             {SIGPIPE, "SIGPIPE"},                       {SIGHUP, "SIGHUP"}};
+    for (size_t i = 0; i < sizeof S / sizeof S[0]; i++)
+        if (S[i].n == sig)
+            return S[i].name;
+    return NULL;
+}
+
+/* "last_exit": how it ended (rc, the signal), when, and the log's last line before it */
+static void exit_json(rdof_json_t *j)
+{
+    size_t n = 0;
+    char *b = exit_read(&n);
+    if (!b)
+        return;
+    const char *p = strstr(b, "rc=");
+    const int rc = p ? atoi(p + 3) : -1;
+    p = strstr(b, "at=");
+    const long long at = p ? atoll(p + 3) : 0;
+    const char *tail = strstr(b, "\n---\n");
+    tail = tail ? tail + 5 : b + n;
+    /* the last line of the log that isn't the supervisor's own ("== ...") */
+    char last[192] = "";
+    for (const char *e = b + n; e > tail;) {
+        const char *s0 = e - 1;
+        while (s0 > tail && s0[-1] != '\n')
+            s0--;
+        const size_t len = (size_t)(e - s0);
+        if (len > 1 && strncmp(s0, "== ", 3)) {
+            const size_t k = len - (s0[len - 1] == '\n') < sizeof last ? len - (s0[len - 1] == '\n') : sizeof last - 1;
+            memcpy(last, s0, k);
+            last[k] = 0;
+            break;
+        }
+        e = s0;
+    }
+    rdof_json_open(j, "last_exit");
+    rdof_json_int(j, "rc", rc);
+    if (rc > 128) {
+        const char *name = signal_name(rc - 128);
+        rdof_json_int(j, "signal", rc - 128);
+        if (name)
+            rdof_json_str(j, "signal_name", name);
+    }
+    if (at > 0)
+        rdof_json_int(j, "at", at);
+    rdof_json_str(j, "last_line", last);
+    rdof_json_close(j);
+    free(b);
+}
+
 static void host_status(void *ctx, rdof_json_t *j, rdof_webapi_at_t at)
 {
-    if (at == RDOF_WEBAPI_AT_BOARD)
+    if (at == RDOF_WEBAPI_AT_BOARD) {
         host_cpu(j);
+        exit_json(j);
+    }
     if (at != RDOF_WEBAPI_AT_RADIOS)
         return;
     rdof_hostweb_status_t s;
@@ -674,22 +764,31 @@ static void set_restart(void *ctx)
 /* The platform for one request; set holds the tool's hooks meanwhile. */
 /* ── the spectrum ──────────────────────────────────────────────────────────── */
 
-bool rdof_hostweb_spectrum_wanted(void)
+bool rdof_hostweb_spectrum_wanted_sdr(int sdr)
 {
-    return atomic_load(&W.running) && (long long)(mono_s() * 1e3) < atomic_load(&W.sp_want_ms);
+    return sdr >= 0 && sdr < RDOF_HOSTWEB_SDRS && atomic_load(&W.running) &&
+           (long long)(mono_s() * 1e3) < atomic_load(&W.sp[sdr].want_ms);
+}
+
+bool rdof_hostweb_spectrum_wanted(void) { return rdof_hostweb_spectrum_wanted_sdr(0); }
+
+void rdof_hostweb_spectrum_row_sdr(int sdr, const uint8_t *row, int bins, double center_hz, double rate, int row_ms)
+{
+    if (sdr < 0 || sdr >= RDOF_HOSTWEB_SDRS || bins <= 0 || bins > RDOF_HOSTWEB_SPECTRUM_BINS)
+        return;
+    pthread_mutex_lock(&W.sp_mu);
+    spec_t *p = &W.sp[sdr];
+    if (bins != p->bins) /* a new size: the old rows don't fit it */
+        p->seq = 0;
+    p->bins = bins, p->row_ms = row_ms, p->center = center_hz, p->rate = rate;
+    memcpy(p->rows[(p->seq + 1) % SPEC_ROWS], row, (size_t)bins);
+    p->seq++;
+    pthread_mutex_unlock(&W.sp_mu);
 }
 
 void rdof_hostweb_spectrum_row(const uint8_t *row, int bins, double center_hz, double rate, int row_ms)
 {
-    if (bins <= 0 || bins > RDOF_HOSTWEB_SPECTRUM_BINS)
-        return;
-    pthread_mutex_lock(&W.sp_mu);
-    if (bins != W.sp_bins) /* a new size: the old rows don't fit it */
-        W.sp_seq = 0;
-    W.sp_bins = bins, W.sp_row_ms = row_ms, W.sp_center = center_hz, W.sp_rate = rate;
-    memcpy(W.sp_rows[(W.sp_seq + 1) % SPEC_ROWS], row, (size_t)bins);
-    W.sp_seq++;
-    pthread_mutex_unlock(&W.sp_mu);
+    rdof_hostweb_spectrum_row_sdr(0, row, bins, center_hz, rate, row_ms);
 }
 
 /* a channel's band on the page, when it's in the span */
@@ -707,15 +806,20 @@ static void spec_chan(char *out, size_t cap, size_t *len, const char *id, uint32
                              out[*len - 1] == '[' ? "" : ",", safe, (unsigned)hz, in ? "true" : "false");
 }
 
-/* GET /api/spectrum?since=N: the rows newer than row N, as the board's (esp_idf/main/web.c), and the channels */
+/* GET /api/spectrum?since=N[&sdr=K]: SDR K's rows newer than row N, as the board's (esp_idf/main/web.c), and the
+ * channels */
 static char *spectrum_json(const char *query, size_t *n)
 {
-    atomic_store(&W.sp_want_ms, (long long)(mono_s() * 1e3) + 10000);
     char v[16];
     const uint32_t since = rdof_webapi_query(query, "since", v, sizeof v) ? (uint32_t)strtoul(v, NULL, 10) : 0;
+    int sdr = rdof_webapi_query(query, "sdr", v, sizeof v) ? atoi(v) : 0;
+    if (sdr < 0 || sdr >= RDOF_HOSTWEB_SDRS)
+        sdr = 0;
+    atomic_store(&W.sp[sdr].want_ms, (long long)(mono_s() * 1e3) + 10000);
     static uint8_t rows[SPEC_MAX][RDOF_HOSTWEB_SPECTRUM_BINS]; /* the server's thread only */
     pthread_mutex_lock(&W.sp_mu);
-    const uint32_t last = W.sp_seq;
+    const spec_t *p = &W.sp[sdr];
+    const uint32_t last = p->seq;
     uint32_t from = since > last ? 0 : since; /* ahead of us: the tool restarted */
     if (last - from > SPEC_MAX)
         from = last - SPEC_MAX;
@@ -723,17 +827,17 @@ static char *spectrum_json(const char *query, size_t *n)
         from = last - SPEC_ROWS;
     int k = 0;
     for (uint32_t q = from + 1; q <= last; q++, k++)
-        memcpy(rows[k], W.sp_rows[q % SPEC_ROWS], (size_t)W.sp_bins);
-    const int bins = W.sp_bins, row_ms = W.sp_row_ms;
-    const double center = W.sp_center, rate = W.sp_rate;
+        memcpy(rows[k], p->rows[q % SPEC_ROWS], (size_t)p->bins);
+    const int bins = p->bins, row_ms = p->row_ms;
+    const double center = p->center, rate = p->rate;
     pthread_mutex_unlock(&W.sp_mu);
 
     const size_t cap = 1024 + 24 * 64 + (size_t)k * (4 * ((size_t)bins + 2) / 3 + 8);
     char *out = malloc(cap);
     if (!out)
         return NULL;
-    size_t len = (size_t)snprintf(out, cap, "{\"seq\":%u,\"bins\":%d,\"row_ms\":%d,\"rate\":%.0f,\"center\":%.0f,\"rows\":[",
-                                  (unsigned)last, bins, row_ms, rate, center);
+    size_t len = (size_t)snprintf(out, cap, "{\"sdr\":%d,\"seq\":%u,\"bins\":%d,\"row_ms\":%d,\"rate\":%.0f,\"center\":%.0f,"
+                                  "\"rows\":[", sdr, (unsigned)last, bins, row_ms, rate, center);
     for (int i = 0; i < k; i++) {
         if (i)
             out[len++] = ',';
@@ -750,7 +854,15 @@ static char *spectrum_json(const char *query, size_t *n)
         if (have)
             *st = W.st;
         pthread_mutex_unlock(&W.st_mu);
-        if (have) {
+        if (have && sdr > 0 && sdr < st->nsdr) { /* another SDR: its own channels */
+            const rdof_hostweb_sdr_t *d = &st->sdrs[sdr];
+            for (int i = 0; i < d->nchan && i < 16; i++) {
+                char id[24];
+                memcpy(id, d->chan[i].id, sizeof id);
+                id[sizeof id - 1] = 0;
+                spec_chan(out, cap, &len, id, d->chan[i].freq, center, rate);
+            }
+        } else if (have) {
             st->name[sizeof st->name - 1] = 0;
             spec_chan(out, cap, &len, st->name[0] ? st->name : "RX", st->rx_hz, center, rate);
             if (st->tx_hz != st->rx_hz)
@@ -776,6 +888,8 @@ static void platform(rdof_webapi_platform_t *p, rdof_hostweb_settings_t *set)
     pthread_mutex_unlock(&W.set_mu);
     memset(p, 0, sizeof *p);
     p->caps = RDOF_WEBAPI_CAP_SYS_MEM | (W.have_clk ? RDOF_WEBAPI_CAP_NETCLOCK : RDOF_WEBAPI_CAP_OS_CLOCK);
+    if (W.exit_path)
+        p->caps |= RDOF_WEBAPI_CAP_CRASH;
     pthread_mutex_lock(&W.st_mu);
     if (W.have_st && W.st.links)
         p->caps |= RDOF_WEBAPI_CAP_LINKS;
@@ -1026,6 +1140,22 @@ static void serve(int fd)
         else
             respond_str(fd, 500, "text/plain", "no memory\n");
         free(js);
+        return;
+    }
+    if (!strcmp(target, "/api/crash") && W.exit_path && (get || !strcmp(method, "DELETE"))) {
+        drop_body(fd, (long)body_have, body_len);
+        if (!get) {
+            const bool gone = !unlink(W.exit_path) || errno == ENOENT;
+            respond_str(fd, gone ? 200 : 500, "text/plain", gone ? "erased\n" : "couldn't erase it\n");
+            return;
+        }
+        size_t len = 0;
+        char *b = exit_read(&len);
+        if (b)
+            respond_with(fd, 200, "text/plain; charset=utf-8", b, len, NULL, head);
+        else
+            respond_str(fd, 404, "text/plain", "no exit recorded\n");
+        free(b);
         return;
     }
     if (!strncmp(target, "/api/", 5)) {

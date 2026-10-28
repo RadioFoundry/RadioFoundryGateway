@@ -198,6 +198,9 @@ int main(int argc, char **argv)
             perror("start");
             return 1;
         }
+        const char *last_exit = getenv("RDOF_HOSTWEB_LAST_EXIT"); /* a supervisor's record, for the crash card */
+        if (last_exit)
+            rdof_hostweb_last_exit(last_exit);
         printf("http://127.0.0.1:%d/\n", port);
         fflush(stdout);
         for (int t = 0;; t++) {
@@ -212,6 +215,12 @@ int main(int argc, char **argv)
                     row[i] = (uint8_t)(200 + rand() % 10);
                 row[(t * 5 + r) % RDOF_HOSTWEB_SPECTRUM_BINS] = 80;
                 rdof_hostweb_spectrum_row(row, RDOF_HOSTWEB_SPECTRUM_BINS, 438.1e6, 768000, 200);
+                if (rdof_hostweb_spectrum_wanted_sdr(1)) { /* the second SDR: two steady carriers */
+                    for (int i = 0; i < RDOF_HOSTWEB_SPECTRUM_BINS; i++)
+                        row[i] = (uint8_t)(190 + rand() % 10);
+                    row[100] = row[400] = 90;
+                    rdof_hostweb_spectrum_row_sdr(1, row, RDOF_HOSTWEB_SPECTRUM_BINS, 438.525e6, 2400000, 200);
+                }
             }
             if (t % 8 == 0)
                 rdof_hostweb_logf("parrot: sending back slot 2 call %d", t / 8);
@@ -229,11 +238,11 @@ int main(int argc, char **argv)
     CHECK(http(port, "GET /api/status HTTP/1.1\r\n\r\n", b, sizeof b) > 0);
     CHECK(strstr(b, "200 OK") && strstr(b, "\"name\":\"test box\"") && !strstr(b, "\"roamer\""));
     CHECK(strstr(b, "\"rss\":") && !strstr(b, "\"rss\":0,") && strstr(b, "\"mem_total\":") && strstr(b, "\"mem_avail\":"));
-    CHECK(strstr(b, "\"rss_peak\":") && !strstr(b, "heap_free") && !strstr(b, "\"crash\""));
+    CHECK(strstr(b, "\"rss_peak\":") && !strstr(b, "heap_free") && !strstr(b, "\"crash\":{"));
     CHECK(strstr(b, "\"clock\":\"os\"") && strstr(b, "\"clock_os\":{\"source\":") && strstr(b, "\"known\":"));
     CHECK(strstr(b, "\"caps\":{\"ota\":false,\"restart\":false,\"wifi\":false,\"tasks\":false,\"coredump\":false,"
                     "\"board_mem\":false,\"sys_mem\":true,\"netclock\":false,\"os_clock\":true,\"links\":false,"
-                    "\"settings\":false,\"settings_edit\":false,\"spectrum\":false}}"));
+                    "\"settings\":false,\"settings_edit\":false,\"spectrum\":false,\"crash\":false}}"));
     CHECK(!strstr(b, "settings_source") && strstr(b, "\"reset\":\"start\""));
 
     CHECK(http(port, "GET / HTTP/1.1\r\nHost: x\r\n\r\n", b, sizeof b) > 40000);
@@ -371,7 +380,7 @@ int main(int argc, char **argv)
     fake_devices(&s, 0);
     rdof_hostweb_status(&s);
     http(port, "GET /api/status HTTP/1.1\r\n\r\n", b, sizeof b);
-    CHECK(strstr(b, "\"spectrum\":true}"));
+    CHECK(strstr(b, "\"spectrum\":true,"));
     CHECK(strstr(b, "\"sdrs\":[{\"name\":\"pluto\",\"started\":true,\"frontend\":\"host\",\"rtl_open\":true,"
                     "\"rtl\":\"libiio AD9361 local:\",\"receiving\":true,\"sample_rate\":768000,\"center_hz\":438100000,"
                     "\"gain_db\":40.0,\"agc\":false,\"samples_per_s\":767900,"));
@@ -395,7 +404,7 @@ int main(int argc, char **argv)
         rdof_hostweb_spectrum_row(row, RDOF_HOSTWEB_SPECTRUM_BINS, 438.1e6, 768000, 200);
     }
     http(port, "GET /api/spectrum?since=0 HTTP/1.1\r\n\r\n", b, sizeof b);
-    CHECK(strstr(b, "{\"seq\":3,\"bins\":512,\"row_ms\":200,\"rate\":768000,\"center\":438100000,\"rows\":[\"yMjI"));
+    CHECK(strstr(b, "{\"sdr\":0,\"seq\":3,\"bins\":512,\"row_ms\":200,\"rate\":768000,\"center\":438100000,\"rows\":[\"yMjI"));
     CHECK(strstr(b, "\"channels\":[{\"id\":\"bench\",\"freq\":438000000,\"in\":true},"
                     "{\"id\":\"TX\",\"freq\":438500000,\"in\":false},{\"id\":\"M_1\",\"freq\":438200000,\"in\":true}]}"));
     http(port, "GET /api/spectrum?since=2 HTTP/1.1\r\n\r\n", b, sizeof b);
@@ -403,6 +412,41 @@ int main(int argc, char **argv)
     CHECK(rows && strlen(rows) > 9 + 684 && !strncmp(rows + 9 + 684, "\"],", 3));
     http(port, "GET /api/spectrum?since=99 HTTP/1.1\r\n\r\n", b, sizeof b); /* ahead: the tool restarted */
     CHECK(strstr(b, "\"seq\":3,") && strstr(b, "\"rows\":[\"yMjI"));
+    /* another SDR's: its own rows and channels, wanted on its own */
+    CHECK(!rdof_hostweb_spectrum_wanted_sdr(1) && !rdof_hostweb_spectrum_wanted_sdr(9));
+    http(port, "GET /api/spectrum?sdr=1&since=0 HTTP/1.1\r\n\r\n", b, sizeof b);
+    CHECK(strstr(b, "{\"sdr\":1,\"seq\":0,") && rdof_hostweb_spectrum_wanted_sdr(1));
+    memset(row, 100, sizeof row);
+    rdof_hostweb_spectrum_row_sdr(1, row, 256, 438.525e6, 2400000, 100);
+    http(port, "GET /api/spectrum?sdr=1&since=0 HTTP/1.1\r\n\r\n", b, sizeof b);
+    CHECK(strstr(b, "{\"sdr\":1,\"seq\":1,\"bins\":256,\"row_ms\":100,\"rate\":2400000,\"center\":438525000,"));
+    CHECK(strstr(b, "\"channels\":[{\"id\":\"M1\",\"freq\":438425000,\"in\":true}]}"));
+    http(port, "GET /api/spectrum?since=0 HTTP/1.1\r\n\r\n", b, sizeof b); /* SDR 0's as they were */
+    CHECK(strstr(b, "{\"sdr\":0,\"seq\":3,"));
+
+    /* the last exit, as a supervisor recorded it: the status, the record, erasing it */
+    char exit_path[600];
+    snprintf(exit_path, sizeof exit_path, "%s.exit", cfg_path);
+    unlink(exit_path);
+    http(port, "GET /api/crash HTTP/1.1\r\n\r\n", b, sizeof b);
+    CHECK(strstr(b, "501"));
+    rdof_hostweb_last_exit(exit_path);
+    http(port, "GET /api/status HTTP/1.1\r\n\r\n", b, sizeof b);
+    CHECK(strstr(b, "\"crash\":true") && !strstr(b, "\"last_exit\""));
+    FILE *ef = fopen(exit_path, "w");
+    CHECK(ef);
+    fputs("rc=139\nat=1761600000\n---\n== start x\nsome line\nthe \"last\" line\n== exit 139 x\n", ef);
+    fclose(ef);
+    http(port, "GET /api/status HTTP/1.1\r\n\r\n", b, sizeof b);
+    CHECK(strstr(b, "\"last_exit\":{\"rc\":139,\"signal\":11,\"signal_name\":\"SIGSEGV (segmentation fault)\","
+                    "\"at\":1761600000,\"last_line\":\"the \\\"last\\\" line\"}"));
+    http(port, "GET /api/crash HTTP/1.1\r\n\r\n", b, sizeof b);
+    CHECK(strstr(b, "200 OK") && strstr(b, "rc=139\nat=1761600000\n---\n"));
+    http(port, "DELETE /api/crash HTTP/1.1\r\n\r\n", b, sizeof b);
+    CHECK(strstr(b, "200 OK") && access(exit_path, F_OK) != 0);
+    http(port, "GET /api/crash HTTP/1.1\r\n\r\n", b, sizeof b);
+    CHECK(strstr(b, "404"));
+    rdof_hostweb_last_exit(NULL);
 
     /* publishing from a thread while requests run */
     pthread_t th;

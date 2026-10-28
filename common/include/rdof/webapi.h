@@ -48,6 +48,7 @@ enum {
     RDOF_WEBAPI_CAP_SETTINGS = 1 << 10,     /* "settings": GET /api/config and /api/resolved */
     RDOF_WEBAPI_CAP_SETTINGS_EDIT = 1 << 11, /* "settings_edit": POST /api/config */
     RDOF_WEBAPI_CAP_SPECTRUM = 1 << 12,     /* "spectrum": GET /api/spectrum (a board's SDR shows it by its card) */
+    RDOF_WEBAPI_CAP_CRASH = 1 << 13,        /* "crash": a host tool's last exit ("last_exit"; GET / DELETE /api/crash) */
 };
 
 /* The board, first in /api/status. */

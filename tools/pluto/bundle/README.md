@@ -28,6 +28,7 @@ starts again 5 s after it exits.
 | The device's flags (RX gain, TX gain, web address, the clock's state file) | `/mnt/jffs2/rdof/flags` |
 | The clock's learned rate | `/mnt/jffs2/rdof/netclock.state` |
 | The log (RAM: the last 1 MB, then `log.1`) | `/tmp/rdof/log` |
+| How it last ended on its own (a crash, an error): the page's crash card (Logs & maintenance) | `/tmp/rdof/last_exit` |
 | Keep it from starting | `touch /mnt/jffs2/rdof/disabled`, then reboot |
 | The web page | `http://192.168.2.1:8080/` |
 
