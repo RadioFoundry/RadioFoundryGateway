@@ -36,6 +36,29 @@ if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
 endif()
 add_test(NAME rdof_lastheard_tests COMMAND rdof_lastheard_tests)
 
+# The parrot (rdof/parrot.h).
+add_executable(rdof_parrot_tests test_parrot.c)
+target_include_directories(rdof_parrot_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(rdof_parrot_tests PRIVATE rdof_common)
+set_target_properties(rdof_parrot_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_compile_options(rdof_parrot_tests PRIVATE -Wall -Wno-unused-parameter)
+if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+    target_compile_options(rdof_parrot_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(rdof_parrot_tests PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME rdof_parrot_tests COMMAND rdof_parrot_tests)
+
+# The web API's shared part (rdof/webapi.h), with fake platforms.
+add_executable(rdof_webapi_tests test_webapi.c)
+target_link_libraries(rdof_webapi_tests PRIVATE rdof_common)
+set_target_properties(rdof_webapi_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_compile_options(rdof_webapi_tests PRIVATE -Wall -Wno-unused-parameter)
+if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+    target_compile_options(rdof_webapi_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(rdof_webapi_tests PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME rdof_webapi_tests COMMAND rdof_webapi_tests)
+
 # The memory plan (rdof/memplan.h).
 add_executable(rdof_memplan_tests test_memplan.c)
 target_link_libraries(rdof_memplan_tests PRIVATE rdof_common)
@@ -102,6 +125,9 @@ add_subdirectory(../components/netclock netclock)
 
 # sdr: the SDR receive path.
 include(sdr.cmake)
+
+# hostweb: the firmware's web page for host tools.
+include(web.cmake)
 
 add_subdirectory(../components/wifilist wifilist)
 add_subdirectory(../components/gnss gnss)

@@ -100,9 +100,9 @@ A receiver box's screen, for one board. 21 columns of 6 px; the top 16 rows are 
  -------------------------------   y 18
  RX [4] 13                         y 20  a badge per channel, inverted while it hears a call, struck through when it's out of the tuner's window
   4 T9<9990123                     y 29  the calls being heard (badge, T group / P private, dst<src), 3 lines; "+N more" on the last when they don't fit
- 13 461.0375 Short Eve             y 37  with no call: each channel, badge, MHz, name; with the front end's error: the error, wrapped
+ 13 438.0625 Short Eve             y 37  with no call: each channel, badge, MHz, name; with the front end's error: the error, wrapped
  -------------------------------   y 54
- 461.0475 576k cpu 19%             y 56  the tuner: center MHz, rate, DSP load; "starting" while not receiving. With a roamer: TX row
+ 438.0725 576k cpu 19%             y 56  the tuner: center MHz, rate, DSP load; "starting" while not receiving. With a roamer: TX row
 ```
 
 | Element | Rule | Source (`oled_task.c:render_sdr`) |
@@ -176,8 +176,8 @@ The output check (`selftest_core.c`) is portable and also runs on the host (`sdr
 | Constant | Value |
 |---|---|
 | `CLIP_RATE` | 288000 S/s, cu8, 0.6 s |
-| `CLIP_CENTER` | 461.1225 MHz |
-| `CLIP_CHANNELS` | 5: `SDR13` 461.0375, `SDR04` 461.0875, `SDR06` 461.1375, `SDR08` 461.1875, `SDR10` 461.2375 MHz; all CC 2, slot 1 |
+| `CLIP_CENTER` | 438.1475 MHz |
+| `CLIP_CHANNELS` | 5: `SDR13` 438.0625, `SDR04` 438.1125, `SDR06` 438.1625, `SDR08` 438.2125, `SDR10` 438.2625 MHz; all CC 2, slot 1 |
 | `CLIP_CHUNK` | 4096 samples |
 | `CLIP_RSSI_OFFSET` | -55.0 |
 | `CLIP_T0` | 1760000000.0 (Unix s) |
@@ -209,7 +209,7 @@ output <pass|FAIL> / <pass|FAIL|->, transmit <pass|FAIL|->; <total> Mcycles/s of
 
 ### USB spike (`selftest.c:spike_run`, `CONFIG_RDOF_SDR_SPIKE`)
 
-Triggered by `POST /api/spike` (NVS flag `rdof/spike`, restart) or `"spike": true` in the SDR section; runs from the DSP task once the RTL-SDR is open (`sdr_task.c`). Rates 288000, 250000, 240000, 300000, 960000 S/s × transfer plans 8×8192, 4×16384, 16×4096 B, 5 s each at 461.1625 MHz. Results in `g_sstat.spike` (384 chars) as `rate:NxB pct%; …`, in `/api/status` as `spike`. The log line says `Full Speed keeps up` when 288 kS/s reached ≥ 99.5 %, else `SAMPLES LOST at 288 kS/s: try 240000`.
+Triggered by `POST /api/spike` (NVS flag `rdof/spike`, restart) or `"spike": true` in the SDR section; runs from the DSP task once the RTL-SDR is open (`sdr_task.c`). Rates 288000, 250000, 240000, 300000, 960000 S/s × transfer plans 8×8192, 4×16384, 16×4096 B, 5 s each at 438.1875 MHz. Results in `g_sstat.spike` (384 chars) as `rate:NxB pct%; …`, in `/api/status` as `spike`. The log line says `Full Speed keeps up` when 288 kS/s reached ≥ 99.5 %, else `SAMPLES LOST at 288 kS/s: try 240000`.
 
 ## 4. Log ring
 
@@ -224,7 +224,7 @@ Every ESP-IDF log line (`esp_log_set_vprintf` hook) is copied into a RAM ring as
 
 Format: the console text exactly as `vprintf` formats it (the ESP-IDF prefix `I (<ms>) <tag>: `, ANSI color codes if enabled, the trailing newline). Not persistent: lost on any reset. `logring_init` runs right after the LED, before NVS and settings, so it catches the boot.
 
-Read: `GET /api/log` (`web.c:get_log`) returns `text/plain`, `Cache-Control: no-store`, the oldest to newest bytes held (whole ring once wrapped; the first line may start mid-line). Writes and reads take a spinlock (`portMUX`).
+Read: `GET /api/log` (`webapi.c`, through `web.c:fw_log`) returns `text/plain`, `Cache-Control: no-store`, the oldest to newest bytes held (whole ring once wrapped; the first line may start mid-line). Writes and reads take a spinlock (`portMUX`).
 
 ## 5. Watchdogs, faults and resets
 
@@ -242,7 +242,7 @@ Only the self-test touches the task watchdog (removes core 1's idle task while i
 
 ### Reset reason and crash report
 
-`GET /api/status` (`web.c:get_status`) carries:
+`GET /api/status` (`webapi.c:rdof_webapi_status`, the firmware's fields from `web.c:fw_status`) carries:
 
 | Field | Content |
 |---|---|

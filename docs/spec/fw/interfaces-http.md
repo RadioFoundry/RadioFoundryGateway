@@ -17,6 +17,7 @@ Related: [bench-api.md](../bench-api.md) (`/api/bench/v1`), [mqtt.md](mqtt.md), 
 | TLS | none | |
 | Errors | `httpd_resp_send_err`: status + `text/plain` body (the text in the tables below) | `web.c` |
 | Out of memory | 500 `no memory` on any handler that allocates | `web.c` |
+| Shared routes | `GET /api/status`, `GET`/`POST /api/config`, `GET /api/resolved`, `GET /api/log`, `GET /api/lastheard`, `POST /api/restart`: one handler, `web.c:api_shared`, calls `rdof_webapi_handle` (`common/src/webapi.c`) with the firmware's platform (`web.c:WEB`). The host tools' server (`hostweb/`) calls the same code with its own | `rdof/webapi.h` |
 
 The setup access point is `radiofoundry-<suffix>` (format `"radiofoundry-%s"`), password `radiofoundry`, page at
 `http://192.168.4.1/`. It comes up after 20 s with no station connection (`wifi.c:wifi_start`, `ap_after_ms = 20000`,
@@ -29,7 +30,7 @@ The setup access point is `radiofoundry-<suffix>` (format `"radiofoundry-%s"`), 
 | GET | `/` | always | none | the page, gzipped (`Content-Encoding: gzip`, `text/html`): `index.html` with `CONFIG_RDOF_WEB_FULL` (default y), else `mini.html` | none |
 | GET | `/api/status` | always | none | `application/json`, `Cache-Control: no-store`, at most 6144 bytes (§3) | none |
 | GET | `/api/config` | always | `?download` (any value) adds `Content-Disposition: attachment; filename="<box>.json"` | `application/json`: `settings_export()`, the stored JSONC text with `wifi` and `ntp` added (§4) | none |
-| POST | `/api/config` | always | body: the settings JSON(C), 1 to 16384 bytes (`web.c:MAX_CONFIG`) | 200 `saved; restarting` | stores the settings in NVS, then restarts after 1 s (`web.c:restart_task`, `vTaskDelay(1000 ms)`) |
+| POST | `/api/config` | always | body: the settings JSON(C), 1 to 16384 bytes (`RDOF_WEBAPI_MAX_CONFIG`) | 200 `saved; restarting` | stores the settings in NVS, then restarts after 1 s (`web.c:restart_task`, `vTaskDelay(1000 ms)`) |
 | GET | `/api/resolved` | always | none | `text/plain`, at most 5120 bytes (§5) | none |
 | GET | `/api/log` | always | none | `text/plain`, `no-store`: the log ring, oldest first, the last `CONFIG_RDOF_LOG_RING_KB` KB (default 16; 0 = off, empty body) | none |
 | GET | `/api/lastheard` | always | `?since=N` (u32, default 0) | JSON (§7a): the recent calls changed after N, newest first | none |
@@ -61,9 +62,10 @@ The netclock and wifilist paths sit under `CONFIG_NETCLOCK_HTTP_BASE` / `CONFIG_
 
 | Endpoint | Status | Body | When |
 |---|---|---|---|
-| POST `/api/config` | 400 | `settings: 1 to 16384 bytes of JSON` | empty body or more than `MAX_CONFIG` |
+| POST `/api/config` | 400 | `settings: 1 to 16384 bytes of JSON` | empty body or more than `RDOF_WEBAPI_MAX_CONFIG` |
 | POST `/api/config` | 500 | `read failed` | socket read error or short body |
 | POST `/api/config` | 400 | the parser's or resolver's error text | `settings_save` refused it: nothing stored, no restart |
+| POST `/api/config` | 403 | `the settings are read only here: <source>` | a server whose settings are read only (`caps.settings_edit` false; a host tool without `--config`). Never on the firmware |
 | POST `/api/ota` | 500 | `no OTA partition` | no next OTA partition |
 | POST `/api/ota` | 500 | `write failed` | read or flash write error |
 | POST `/api/ota` | 500 | `image rejected` | `esp_ota_end` or `esp_ota_set_boot_partition` failed (bad image) |
@@ -71,7 +73,10 @@ The netclock and wifilist paths sit under `CONFIG_NETCLOCK_HTTP_BASE` / `CONFIG_
 
 ## 3. `GET /api/status`
 
-One JSON object, built by `web.c` with `rdof_json` (cap 14336). Non-finite numbers are `null`.
+One JSON object, built by `rdof_webapi_status` (`common/src/webapi.c`) with `rdof_json` (cap 14848 on the
+firmware), in this order: the board's fields, memory, settings, network, clock, radios, each followed by the
+platform's own fields at that point (`web.c:fw_status`), then `settings_source` and `caps`. Non-finite numbers are
+`null`.
 
 ### 3.1 Board
 
@@ -102,6 +107,14 @@ One JSON object, built by `web.c` with `rdof_json` (cap 14336). Non-finite numbe
 | `roamer` | object | | the first radio (§3.2) | a radio is configured |
 | `roamers` | array | | every radio (§3.2), the first again included | 2 or more radios started |
 | `sdr` | object | | the SDR (§3.3) | the SDR role is configured |
+| `caps` | object | | what this server has, each a bool, always all twelve in this order: `ota` (`/api/ota`), `restart` (`/api/restart`), `wifi` (`/api/wifi*`, the Wi-Fi card), `tasks` (`/api/tasks`), `coredump` (`crash`, `/api/coredump`), `board_mem` (`heap_free`, `psram_free`, `memory`), `sys_mem` (`rss`, `rss_peak`, `mem_total`, `mem_avail`), `netclock` (`/api/clock*`), `os_clock` (`clock_os`), `links` (HBlink4 and MQTT), `settings` (`GET /api/config`, `/api/resolved`), `settings_edit` (`POST /api/config`). The firmware: everything but `sys_mem` and `os_clock`; `ota` with `CONFIG_RDOF_OTA`, `tasks` with the FreeRTOS run-time stats. The page takes a status without `caps` as the firmware with everything | always (last) |
+
+A host tool's server (`hostweb/`) sends the same shared fields and, in place of the board's own: `version` `host`,
+`reset` `start` or `restart`, no `idf`, `crash`, `heap_free`, `psram_free`, `memory`, `wifi`, `ap_mode`, `ip`;
+`rss` and `rss_peak` (the process, bytes), `mem_total` and `mem_avail` (the system, bytes), `clock` `os` and
+`clock_os` (`source`, `known`, and when known `synced`, `est_error_us`, `max_error_us`, `offset_us`, `freq_ppm`:
+the OS's NTP discipline read with `ntp_adjtime`, never set), `settings_source` (where the settings come from, when
+the tool gives them).
 
 ### 3.2 `roamer` / `roamers[]` (`roamer.c:one_json`)
 
@@ -263,7 +276,7 @@ For people. Not a stable machine format.
 ## 6. `GET /api/spectrum?since=N`
 
 ```json
-{"seq": 1234, "bins": 512, "row_ms": 200, "rate": 288000, "center": 461100000, "rows": ["<base64>", ...]}
+{"seq": 1234, "bins": 512, "row_ms": 200, "rate": 288000, "center": 438125000, "rows": ["<base64>", ...]}
 ```
 
 | Field | Meaning |
@@ -371,7 +384,7 @@ its stored password; no `password`: keep it), or one network to add, `{"ssid", "
 
 | Page | Built when | Uses |
 |---|---|---|
-| `index.html` | `CONFIG_RDOF_WEB_FULL=y` (default) | `GET /api/status` every 2 s; `GET /api/lastheard?since=` every 2 s on Overview, Last heard and Radios, every 15 s on the others; `GET /api/tasks` and `POST /api/restart`, `DELETE /api/coredump` (buttons); nothing while the browser tab is hidden; `GET /api/spectrum?since=` every 400 ms while the SDR panel is shown and the tab is visible; `GET`/`POST /api/config` (the editor), `GET /api/config?download=1` (export); `GET /api/resolved`; `GET /api/log`; `GET /api/coredump` (a link by the crash row); `POST /api/ota`; `POST /api/selftest`; `POST /api/spike`; `/wifilist.js` and `/netclock.js`, which use `/api/wifi*`, `/api/clock*` and `/api/time` |
+| `index.html` | `CONFIG_RDOF_WEB_FULL=y` (default) | `GET /api/status` every 2 s (its `caps` decide what the page shows and loads); `GET /api/lastheard?since=` every 2 s on Overview, Last heard and Radios, every 15 s on the others; `GET /api/tasks` and `POST /api/restart`, `DELETE /api/coredump` (buttons); nothing while the browser tab is hidden; `GET /api/spectrum?since=` every 400 ms while the SDR panel is shown and the tab is visible; `GET`/`POST /api/config` (the editor), `GET /api/config?download=1` (export); `GET /api/resolved`; `GET /api/log`; `GET /api/coredump` (a link by the crash row); `POST /api/ota`; `POST /api/selftest`; `POST /api/spike`; `/wifilist.js` and `/netclock.js`, which use `/api/wifi*`, `/api/clock*` and `/api/time` |
 | `mini.html` | `CONFIG_RDOF_WEB_FULL=n` | the last ten calls from `/api/lastheard` every 3 s; links to `/api/status`, `/api/resolved`, `/api/log`, `/api/coredump`, `/api/config?download`; the config editor (`GET`/`POST /api/config`); `/wifilist.js`, `/netclock.js` |
 
 The full page has a header (the board's name, a health pill counting problems and warnings, the board's UTC
@@ -388,6 +401,11 @@ clock and uptime) and six tabs, by URL hash:
 
 Counts of trouble (errors, overflows, dropped, refused, ...) show orange when not zero, and what's down or failed red.
 Light and dark follow the browser's `prefers-color-scheme`. Below 640 px wide the less needed table columns go.
+
+What it shows follows `caps`: a tab, card, row or button for something the server doesn't have is hidden (a tab
+that goes is left for Overview), `/wifilist.js` and `/netclock.js` load only with `wifi` and `netclock`, the
+settings editor is read only without `settings_edit` (it then says where the settings come from), and with
+`os_clock` the Network tab has a card for the system clock. Without `caps` it shows everything, as before.
 
 The page uses only the endpoints above. It holds no state of its own beyond what the board returns. A rewrite that
 serves the same endpoints can serve the same page.

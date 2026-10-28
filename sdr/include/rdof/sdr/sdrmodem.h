@@ -46,8 +46,8 @@
  *
  * Role 2, RX half: it never transmits (DMR_DATA NAKed), takes SET_CONFIG's
  * duplex flag and a TX frequency it can't send on, and labels each burst from
- * the epoch SET_EPOCH gives (TS2 in an even outbound slot after it, TS1 in an
- * odd one); without a valid epoch (none, or older than 120 s) it goes up as
+ * the epoch SET_EPOCH gives (TS1 in an even outbound slot after it, TS2 in an
+ * odd one: aligned timing, a radio's TSx under outbound TSx); without a valid epoch (none, or older than 120 s) it goes up as
  * DMR_DATA2 and is counted.
  *
  * Role 1, TX half: the duplex downlink above on a slot clock that runs from
@@ -70,7 +70,7 @@
  * slot) it snaps there; keyed it is steered a sample a slot at most (a sample
  * slipped or inserted between slots: 21 µs at 48 kS/s), so a key-up never
  * jumps. GET_EPOCH's counter is then n mod 2^32. Heard bursts are labeled from
- * the grid (inbound TS2 in even n) instead of an epoch. Without a map (the
+ * the grid (inbound TS1 in even n: aligned timing) instead of an epoch. Without a map (the
  * gate free, or no clock yet) the slot clock runs on as it is. The gate saying
  * stop unkeys it and refuses DMR data. The carrier is moved by the crystal
  * error the platform gives (rdof_sdrmodem_carrier_ppm).
@@ -153,6 +153,9 @@ typedef struct rdof_sdrmodem {
     int64_t dc_next[2];         /* DCDM: per slot, its next burst no sooner than this */
     uint32_t dc_timings;        /* DCDM: times the timing was taken from a burst heard */
     bool keyed, unkey;          /* duplex: DMR_START on; off asked */
+    double inbound_off;         /* duplex: the last handheld burst's place against its inbound slot, in slots */
+    int64_t tx_late48;          /* duplex: the transmit path's delay past what's assumed, at 48 kS/s, set by the platform
+                                 * from what it measures (an SDR's buffers vary key-up to key-up); 0: none */
     int64_t base;               /* duplex: slot 0's start (its CACH's first symbol) */
     long slot_k;                /* duplex: the next slot to queue */
     bool ramp_up;               /* duplex: the next slot queued is the key-up's first */
@@ -242,6 +245,8 @@ int rdof_sdrmodem_at(const rdof_sdrmodem_t *m);
 /* Split RX half: the slot (1, 2) a burst starting at 48 kS/s position pos48 is labeled with, 0 without a valid epoch
  * (counts nothing; for tests). */
 int rdof_sdrmodem_label(rdof_sdrmodem_t *m, int64_t pos48);
+/* Duplex repeater, keyed: the inbound slot (1, 2) of a handheld's burst by its timing; 0 for any other burst. */
+int rdof_sdrmodem_inbound(rdof_sdrmodem_t *m, const rdof_sdr_burst_t *sb);
 /* Duplex: the inbound slots busy now (bit 0 TS1, bit 1 TS2), what the CACH's AT bits say. */
 int rdof_sdrmodem_busy(const rdof_sdrmodem_t *m);
 /* Duplex: the 3 CACH bytes (24 bits, first on air in the top bit of byte 0) before outbound slot k (k even: TS1). */
@@ -256,7 +261,7 @@ void rdof_sdrmodem_grid_map(rdof_sdrmodem_t *m, bool ok, int64_t i0, int64_t t0_
 void rdof_sdrmodem_set_transmit(rdof_sdrmodem_t *m, bool transmit);
 /* The front end's crystal error the transmitter isn't corrected for: the carrier moves by -ppm of the TX frequency. */
 void rdof_sdrmodem_carrier_ppm(rdof_sdrmodem_t *m, double ppm);
-/* A heard burst's UTC slot (inbound: TS2 in even n) from the map; false without one. */
+/* A heard burst's UTC slot (inbound: TS1 in even n, aligned timing) from the map; false without one. */
 bool rdof_sdrmodem_utc_slot(const rdof_sdrmodem_t *m, int64_t pos48, int64_t *n, int *ts, int64_t *utc_ns);
 
 /* The end-to-end check (loopback.c; needs the receiver and RDOF_FEATURE_TX): a modem client, this modem, the

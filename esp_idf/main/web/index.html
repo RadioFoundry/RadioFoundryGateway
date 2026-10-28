@@ -44,12 +44,13 @@ details summary{cursor:pointer;color:var(--mute);font-size:13px;margin-top:8px}
 input[type=file]{max-width:100%;margin-top:8px}
 canvas{display:block;width:100%;background:#0b0b10;border-radius:6px}#spec{height:180px}#wf{height:220px;margin-top:2px;image-rendering:pixelated}
 @media (max-width:640px){.w{display:none}}
+.nocap{display:none!important}
 </style>
 </head>
 <body>
 <header>
 <div class="top"><h1 id="title">RadioFoundry Gateway</h1><a id="health" class="pill" href="#overview">...</a><span id="clock"></span></div>
-<nav id="nav"><a href="#overview">Overview</a><a href="#heard">Last heard</a><a href="#radios">Radios</a><a href="#network">Network</a><a href="#settings">Settings</a><a href="#maint">Logs &amp; maintenance</a></nav>
+<nav id="nav"><a href="#overview">Overview</a><a href="#heard">Last heard</a><a href="#radios">Radios</a><a href="#network" data-cap="wifi netclock os_clock">Network</a><a href="#settings" data-cap="settings">Settings</a><a href="#maint">Logs &amp; maintenance</a></nav>
 </header>
 <main>
 <section data-tab="overview">
@@ -84,8 +85,9 @@ configured gain. <span id="specinfo"></span></p>
 
 <section data-tab="network">
 <div class="cards" id="links"></div>
-<div class="card"><h2>Wi-Fi networks</h2><div data-wifilist></div></div>
-<div class="card"><h2>Clock</h2><div data-netclock></div></div>
+<div class="card" data-cap="wifi"><h2>Wi-Fi networks</h2><div data-wifilist></div></div>
+<div class="card" data-cap="netclock"><h2>Clock</h2><div data-netclock></div></div>
+<div class="card nocap" data-cap="os_clock" id="osclock"></div>
 </section>
 
 <section data-tab="settings">
@@ -100,11 +102,12 @@ still name it). For the roamer, on the box or on each radio: modem
 before it's saved. The Wi-Fi networks and the NTP servers show as wifi {networks} and ntp {servers,
 poll_s}: passwords never leave the board, so a network without a "password" keeps the one it has (add "password" to
 set one).</p>
+<p id="cfgsrc" class="mute" hidden></p>
 <textarea id="cfg" spellcheck="false"></textarea>
 <div>
-<button type="button" onclick="save()">Save and restart</button>
+<button type="button" data-cap="settings_edit" onclick="save()">Save and restart</button>
 <a class="btn sec" href="/api/config?download=1">Export</a>
-<button type="button" class="sec" onclick="$('imp').click()">Import</button>
+<button type="button" class="sec" data-cap="settings_edit" onclick="$('imp').click()">Import</button>
 <button type="button" class="sec" onclick="config()">Reload</button>
 <input type="file" id="imp" accept=".json,application/json" hidden>
 </div>
@@ -116,13 +119,13 @@ set one).</p>
 <section data-tab="maint">
 <div class="cards">
 <div class="card" id="m_board"></div>
-<div class="card"><h2>Firmware update</h2>
-<p class="mute">Upload an app image (.bin): the board writes it to the other slot and restarts into it.</p>
-<input type="file" id="fw" accept=".bin"><br><button type="button" onclick="ota()">Upload</button>
-<button type="button" class="dang" onclick="restart()">Restart</button>
+<div class="card" data-cap="ota restart"><h2 id="fwh">Firmware update</h2>
+<div data-cap="ota"><p class="mute">Upload an app image (.bin): the board writes it to the other slot and restarts into it.</p>
+<input type="file" id="fw" accept=".bin"><br><button type="button" onclick="ota()">Upload</button></div>
+<button type="button" class="dang" data-cap="restart" onclick="restart()">Restart</button>
 <p id="otamsg"></p></div>
-<div class="card" id="m_crash"></div>
-<div class="card" id="m_mem"></div>
+<div class="card" data-cap="coredump" id="m_crash"></div>
+<div class="card" data-cap="board_mem sys_mem" id="m_mem"></div>
 <div class="card" id="tests" hidden><h2>SDR tests</h2>
 <p class="mute">The self-test runs a built-in 0.6 s recording through the SDR receiver and checks it against the
 expected output (no dongle needed). The USB spike measures how much of the RTL-SDR's stream Full Speed USB delivers at 288,
@@ -135,7 +138,7 @@ expected output (no dongle needed). The USB spike measures how much of the RTL-S
 <div class="card"><h2>Log <button type="button" class="sec" onclick="loadLog()">Refresh</button>
 <label class="mute"><input type="checkbox" id="logauto"> every 5 s</label><a class="mute" href="/api/log" target="_blank">as text</a></h2>
 <pre id="log"></pre></div>
-<div class="card"><h2>Tasks <button type="button" class="sec" onclick="tasks()">Load</button></h2>
+<div class="card" data-cap="tasks"><h2>Tasks <button type="button" class="sec" onclick="tasks()">Load</button></h2>
 <p class="mute">Each task's core, priority and share of a core since the last load.</p><pre id="tasks" hidden></pre></div>
 </section>
 </main>
@@ -164,18 +167,19 @@ const waiting = (s, what) => s.started ? null : [['Waiting', 'for ' + what + ' t
 // ── health: what's wrong, the worst first ─────────────────────────────────
 function problems(s) {
   const p = [], bad = t => p.push(['bad', t]), warn = t => p.push(['warn', t]);
-  if (!s.settings_ok) bad('Settings: ' + s.settings_error + ' (running the defaults)');
-  if (!s.wifi) (s.ap_mode ? warn : bad)('Wi-Fi not connected' + (s.ap_mode ? ' (setup access point on)' : ''));
-  if (s.clock == 'none') warn('Clock not set');
-  if (s.crash) warn('A core dump is saved (Logs & maintenance)');
+  if (has(s, 'settings') && !s.settings_ok) bad('Settings: ' + s.settings_error + ' (running the defaults)');
+  if (has(s, 'wifi') && !s.wifi) (s.ap_mode ? warn : bad)('Wi-Fi not connected' + (s.ap_mode ? ' (setup access point on)' : ''));
+  if (has(s, 'netclock') && s.clock == 'none') warn('Clock not set');
+  if (has(s, 'os_clock') && s.clock_os && !(s.clock_os.known && s.clock_os.synced)) warn('System clock not synchronized');
+  if (has(s, 'coredump') && s.crash) warn('A core dump is saved (Logs & maintenance)');
   if (/-dirty$/.test(s.version)) warn('Built from uncommitted source');
   radios(s).forEach((r, i) => {
     const n = (r.mode == 'roamer' ? 'Roamer ' : 'Repeater ') + r.name + ': ';
     if (s.usb_either && !i && !r.started) return;
     if (r.radio_error) bad(n + r.radio_error);
     else if (!r.radio_ready) bad(n + 'radio not ready');
-    if (!r.hblink) warn(n + 'HBlink4 down');
-    if (!r.mqtt) warn(n + 'MQTT down');
+    if (has(s, 'links') && !r.hblink) warn(n + 'HBlink4 down');
+    if (has(s, 'links') && !r.mqtt) warn(n + 'MQTT down');
     if (r.queue_dropped || r.dropped) warn(n + num(r.queue_dropped || r.dropped) + ' bursts dropped');
   });
   const d = s.sdr;
@@ -198,7 +202,7 @@ function problems(s) {
 }
 
 // ── anything in /api/status this page doesn't know: shown as it comes ─────
-const KNOWN = 'name version idf uptime_s reset crash heap_free psram_free cpu memory settings_ok settings_error wifi ap_mode ip clock usb_either build_roamer build_sdr selftest spike roamer roamers sdr'.split(' ');
+const KNOWN = 'name version idf uptime_s reset crash heap_free psram_free cpu memory settings_ok settings_error wifi ap_mode ip clock usb_either build_roamer build_sdr selftest spike roamer roamers sdr caps clock_os settings_source rss rss_peak mem_total mem_avail'.split(' ');
 const extras = s => Object.entries(s).filter(([k]) => !KNOWN.includes(k));
 const flat = (o, pre = '') => Object.entries(o).flatMap(([k, v]) => v && typeof v == 'object' ?
   (Array.isArray(v) && v.every(x => typeof x != 'object') ? [[pre + k, v.join(', ')]] : flat(v, pre + k + '.')) : [[pre + k, v]]);
@@ -220,18 +224,39 @@ const more = (o, known, key) => { const r = flat(o).filter(([k]) => !known.inclu
 
 // ── the board ─────────────────────────────────────────────────────────────
 const clockName = c => c === 'pps' ? sp('ok', 'GNSS PPS') : c === 'ntp' ? sp('ok', 'NTP') : c === 'browser' ? sp('warn', 'from a browser') : sp('bad', 'not set');
+// The system clock (a host): what the OS's NTP client reports.
+const osSync = o => !o || !o.known ? sp('mute', 'sync state not known') : o.synced ? sp('ok', 'synchronized') : sp('warn', 'not synchronized');
+const usText = v => v == null ? '-' : Math.abs(v) >= 1000 ? (v / 1000).toFixed(2) + ' ms' : Number(v).toFixed(0) + ' us';
+const clockRow = s => has(s, 'netclock') ? ['Clock', clockName(s.clock)] : has(s, 'os_clock') ? ['Clock', 'system clock, ' + osSync(s.clock_os)] : null;
 const wifiText = s => yes(s.wifi) + (s.ip ? ' ' + esc(s.ip) : '') + (s.ap_mode ? ' ' + sp('warn', '(setup access point on)') : '');
-const memRow = s => ['Memory free', kb(s.heap_free) + ' internal, ' + kb(s.psram_free) + ' PSRAM'];
+// What this server has (caps in /api/status). A board without them is firmware with everything.
+const FW_CAPS = {ota: true, restart: true, wifi: true, tasks: true, coredump: true, board_mem: true, netclock: true, links: true, settings: true, settings_edit: true};
+const caps = s => (s && s.caps) || FW_CAPS;
+const has = (s, c) => !!caps(s)[c];
+const memRow = s => has(s, 'board_mem') ? ['Memory free', kb(s.heap_free) + ' internal, ' + kb(s.psram_free) + ' PSRAM'] :
+  has(s, 'sys_mem') ? ['Process memory', kb(s.rss) + ' resident, ' + kb(s.rss_peak) + ' peak'] : null;
 // Each core's busy share (cpu: one figure per core, with the FreeRTOS run-time stats built in).
 const cpuRow = s => s.cpu && ['CPU', s.cpu.map((v, c) => 'core ' + c + ' ' + sp(v > 0.9 ? 'bad' : v > 0.75 ? 'warn' : '', pct(v))).join(', ')];
 const buildRow = s => ['Build', (/-dirty$/.test(s.version) ? sp('bad', esc(s.version)) : esc(s.version)) + (s.idf ? ' · IDF ' + esc(s.idf) : '')];
 const boardRows = s => [
   ['Runs', (radios(s).concat([s.sdr]).filter(Boolean).map(x => x.name).filter(Boolean).map(esc).join(', ') || '-') +
     (s.usb_either ? ' <span class="mute">(both on USB: whichever is plugged in runs)</span>' : '')],
-  ['Settings', s.settings_ok ? sp('ok', 'ok') : sp('bad', esc(s.settings_error) + ' (running the defaults)')],
-  ['Wi-Fi', wifiText(s)], ['Clock', clockName(s.clock)], memRow(s), cpuRow(s),
-  ['Up', dur(s.uptime_s) + ' <span class="mute">(last reset: ' + esc(s.reset) + ')</span>'],
-  ['Crash', crashText(s.crash)], buildRow(s)];
+  has(s, 'settings') && ['Settings', s.settings_ok ? sp('ok', 'ok') : sp('bad', esc(s.settings_error) + ' (running the defaults)')],
+  has(s, 'wifi') && ['Wi-Fi', wifiText(s)], clockRow(s), memRow(s), cpuRow(s),
+  ['Up', dur(s.uptime_s) + ' <span class="mute">(last ' + (has(s, 'coredump') ? 'reset' : 'start') + ': ' + esc(s.reset) + ')</span>'],
+  has(s, 'coredump') && ['Crash', crashText(s.crash)], buildRow(s)];
+// A host's memory: the process's, and the system's.
+const hostMemCard = s => '<h2>Memory</h2>' + kv([['Process', kb(s.rss) + ' resident, ' + kb(s.rss_peak) + ' peak'],
+  s.mem_total != null && ['System', kb(s.mem_avail) + ' available of ' + kb(s.mem_total)]]);
+// The system clock's card (Network): the OS's NTP discipline, read only.
+function osClockCard(s) {
+  const o = s.clock_os || {};
+  return '<h2>Clock ' + (o.known && o.synced ? pill('ok', 'synchronized') : o.known ? pill('warn', 'not synchronized') : '') + '</h2>' +
+    kv([['Source', esc(o.source || 'system clock')], ['State', osSync(o)],
+      o.known && ['Estimated error', usText(o.est_error_us)], o.known && ['Maximum error', usText(o.max_error_us)],
+      o.known && ['Offset', usText(o.offset_us)], o.known && ['Frequency', (o.freq_ppm == null ? '-' : Number(o.freq_ppm).toFixed(3) + ' ppm')]]) +
+    '<p class="mute">The operating system sets this clock (its NTP client); this page only reads it.</p>';
+}
 // The memory plan (docs/spec/fw/memory.md): what each role claimed at boot, and the heap now.
 const freeLargest = (o, label) => o ? kb(o.free) + ' free, ' + kb(o.largest) + ' in one piece' + (label || '') : '-';
 function memCard(m) {
@@ -290,12 +315,12 @@ function roamerFull(r, either) {
       (j.min_ms != null ? ' (' + j.min_ms + ' to ' + j.max_ms + ' ms)' : '') + '<br>' + num(j.streams) + ' streams, ' + cnt(j.underruns) +
       ' underruns, ' + num(j.grown) + ' grown, ' + num(j.shrunk) + ' shrunk'],
     sl && ['Split', yes(sl.ready) + ' epoch ' + sl.epoch + ', ' + num(sl.tx) + ' sent, ' + num(sl.rx) + ' received, ' + cnt(sl.dropped) + ' dropped, ' + cnt(sl.failed) + ' failed'],
-    hbRow(r),
-    ['MQTT', up(r.mqtt)],
+    has(S.s, 'links') && hbRow(r),
+    has(S.s, 'links') && ['MQTT', up(r.mqtt)],
   ]) + more(r, R_KNOWN, 'r:' + r.name));
 }
 const roamerBrief = (r, either) => card(rname(r) + ' ' + rstate(r, either), kv((either && waiting(r, 'the radio')) ||
-  [radioRow(r), ['Channel', chan(r)], ['Heard', esc(r.heard || '-')], ['Sending', esc(r.sending || '-')], ['HBlink4 / MQTT', up(r.hblink) + ' / ' + up(r.mqtt)]]));
+  [radioRow(r), ['Channel', chan(r)], ['Heard', esc(r.heard || '-')], ['Sending', esc(r.sending || '-')], has(S.s, 'links') && ['HBlink4 / MQTT', up(r.hblink) + ' / ' + up(r.mqtt)]]));
 
 // ── the SDR ───────────────────────────────────────────────────────────────
 // What warming up is waiting on: each reading not yet 10 min long, or moving more than it may
@@ -385,7 +410,7 @@ function render() {
   h.textContent = nb ? nb + (nb > 1 ? ' problems' : ' problem') : p.length ? p.length + (p.length > 1 ? ' warnings' : ' warning') : 'All good';
   const t = S.tab, rs = radios(s);
   if (t == 'overview') {
-    $('ov_health').innerHTML = '<h2>Board ' + (p.length ? '' : pill('ok', 'all good')) + '</h2>' + (p.length ? '<ul class="prob">' +
+    $('ov_health').innerHTML = '<h2>' + (has(s, 'coredump') ? 'Board ' : 'Program ') + (p.length ? '' : pill('ok', 'all good')) + '</h2>' + (p.length ? '<ul class="prob">' +
       p.map(x => '<li class="' + x[0] + '">' + esc(x[1]) + '</li>').join('') + '</ul>' : '') + kv(boardRows(s));
     $('ov_cards').innerHTML = rs.map((r, i) => roamerBrief(r, s.usb_either && !i)).join('') + (s.sdr ? sdrBrief(s.sdr, s.usb_either) : '');
     $('ov_more').innerHTML = extras(s).map(([k, v]) => card(esc(k.replace(/_/g, ' ')), v && typeof v == 'object' ? fields(flat(v)) : fv(k, v))).join('');
@@ -395,18 +420,20 @@ function render() {
     $('noradio').hidden = !!(rs.length || s.sdr);
     if (s.sdr) sdrFull(s.sdr, s.usb_either);
   } else if (t == 'network') {
-    $('links').innerHTML = card('Links', kv([['Wi-Fi', wifiText(s)], ['Clock', clockName(s.clock)],
-      ...rs.map(r => [esc(r.name), 'HBlink4 ' + up(r.hblink) + ', MQTT ' + up(r.mqtt) + (r.sctp ? ', SCTP ' + esc(r.sctp.state) + ' (RTT ' + r.sctp.srtt_ms + ' ms)' : '')]),
-      s.sdr && [esc(s.sdr.name), 'MQTT ' + up(s.sdr.mqtt) + ', HBlink4 ' + s.sdr.hblink_up + ' of ' + s.sdr.hblink_peers + ' peers']]));
+    $('links').innerHTML = has(s, 'wifi') || has(s, 'links') ? card('Links', kv([has(s, 'wifi') && ['Wi-Fi', wifiText(s)], clockRow(s),
+      ...(has(s, 'links') ? rs.map(r => [esc(r.name), 'HBlink4 ' + up(r.hblink) + ', MQTT ' + up(r.mqtt) + (r.sctp ? ', SCTP ' + esc(r.sctp.state) + ' (RTT ' + r.sctp.srtt_ms + ' ms)' : '')]) : []),
+      has(s, 'links') && s.sdr && [esc(s.sdr.name), 'MQTT ' + up(s.sdr.mqtt) + ', HBlink4 ' + s.sdr.hblink_up + ' of ' + s.sdr.hblink_peers + ' peers']])) : '';
+    if (has(s, 'os_clock')) $('osclock').innerHTML = osClockCard(s);
   } else if (t == 'maint') {
-    $('m_board').innerHTML = '<h2>Board</h2>' + kv([buildRow(s), ['Up', dur(s.uptime_s)], ['Last reset', esc(s.reset)], memRow(s), cpuRow(s),
-      ['Built with', [s.build_roamer && 'roamer', s.build_sdr && 'SDR'].filter(Boolean).join(', ') || '-']]);
+    $('m_board').innerHTML = '<h2>' + (has(s, 'coredump') ? 'Board' : 'Program') + '</h2>' + kv([buildRow(s), ['Up', dur(s.uptime_s)],
+      [has(s, 'coredump') ? 'Last reset' : 'Last start', esc(s.reset)], memRow(s), cpuRow(s),
+      has(s, 'coredump') && ['Built with', [s.build_roamer && 'roamer', s.build_sdr && 'SDR'].filter(Boolean).join(', ') || '-']]);
     const c = s.crash;
     $('m_crash').innerHTML = '<h2>Crash ' + (c ? pill('bad', 'core dump saved') : pill('ok', 'none')) + '</h2>' + kv([['Last', crashText(c)],
       c && c.exccause != null && ['Cause', esc(c.cause) + ' (' + c.exccause + '), address ' + esc(c.excvaddr)],
       c && c.backtrace && ['Backtrace', '<code>' + esc(c.backtrace) + '</code>' + (c.backtrace_corrupted ? ' ' + sp('warn', '(corrupted)') : '')],
       c && ['Size', kb(c.size)]]) + (c ? '<button type="button" class="sec" onclick="eraseDump()">Erase the core dump</button>' : '');
-    $('m_mem').innerHTML = memCard(s.memory);
+    $('m_mem').innerHTML = has(s, 'board_mem') ? memCard(s.memory) : hostMemCard(s);
     $('tests').hidden = !s.build_sdr;
     if (s.build_sdr) $('tests_t').innerHTML = '<dt>Self-test</dt><dd>' + esc(s.selftest || 'not run') + '</dd><dt>USB spike</dt><dd>' + esc(s.spike || 'not run') + '</dd>';
   }
@@ -423,13 +450,14 @@ function callRow(c, now, brief) {
   const tt = c.start_ms ? new Date(c.start_ms).toISOString().replace('T', ' ').slice(0, 19) + ' UTC' : '';
   return '<tr' + (c.active ? ' class="live"' : '') + '><td title="' + tt + '">' + (c.active ? sp('ok', '&#9679; live') : ago(a)) + '</td><td>' +
     pill(c.dir, c.dir.toUpperCase()) + '</td><td class="n">' + c.src + '</td><td>' + (c.group ? 'TG ' : '') + c.dst + '</td>' +
-    (brief ? '' : '<td class="n w">' + c.slot + '</td>') + '<td>' + esc(c.radio) + (c.channel ? ' / ' + esc(c.channel) : '') + '</td>' +
+    (brief ? '' : '<td class="n">' + c.slot + '</td>') + '<td>' + esc(c.radio) + (c.channel ? ' / ' + esc(c.channel) : '') +
+    (brief ? ' <span class="mute">TS' + c.slot + (c.freq ? ' ' + (c.freq / 1e6).toFixed(4) : '') + '</span>' : '') + '</td>' +
     (brief ? '' : '<td class="w">' + (c.freq ? (c.freq / 1e6).toFixed(5) : '') + (c.cc != null ? ' CC' + c.cc : '') + '</td>') +
     '<td class="n">' + (c.kind == 'csbk' ? '' : dur(d)) + '</td>' + (brief ? '' : '<td class="w">' + sig + '</td><td>' + info + '</td>') + '</tr>';
 }
 function renderHeard() {
   const now = Date.now(), all = [...S.calls.values()].sort((a, b) => b.id - a.id);
-  const head = brief => '<table><tr><th>When</th><th></th><th class="n">From</th><th>To</th>' + (brief ? '' : '<th class="n w">Slot</th>') +
+  const head = brief => '<table><tr><th>When</th><th></th><th class="n">From</th><th>To</th>' + (brief ? '' : '<th class="n">Slot</th>') +
     '<th>Radio</th>' + (brief ? '' : '<th class="w">MHz</th>') + '<th class="n">Length</th>' + (brief ? '' : '<th class="w">Signal</th><th></th>') + '</tr>';
   const none = '<p class="mute">No calls yet.</p>';
   if (S.tab == 'overview') {
@@ -462,6 +490,7 @@ async function status() {
     if (S.s && s.uptime_s < S.s.uptime_s) { S.calls.clear(); S.seq = 0; }
     S.s = s;
     S.statusAt = Date.now();
+    applyCaps(s);
     $('title').textContent = 'RadioFoundry ' + S.s.name;
     document.title = S.s.name + ' · RadioFoundry';
   } catch (e) { $('health').className = 'pill bad'; $('health').textContent = 'no answer'; return; }
@@ -492,12 +521,31 @@ function show() {
   render();
 }
 window.onhashchange = show;
+// Show what this server has (data-cap: any of the caps named), load the cards' scripts it has, and leave a tab it
+// doesn't.
+const loaded = {};
+function applyCaps(s) {
+  const c = caps(s), key = JSON.stringify(c);
+  if (key == S.capsKey) return;
+  S.capsKey = key;
+  for (const el of document.querySelectorAll('[data-cap]')) el.classList.toggle('nocap', !el.dataset.cap.split(' ').some(k => c[k]));
+  for (const [k, src] of [['wifi', '/wifilist.js'], ['netclock', '/netclock.js']])
+    if (c[k] && !loaded[k]) { loaded[k] = true; const e = document.createElement('script'); e.src = src; document.body.appendChild(e); }
+  $('fwh').textContent = c.ota ? 'Firmware update' : 'Restart';
+  $('cfg').readOnly = !c.settings_edit;
+  $('cfgsrc').hidden = !s.settings_source && c.settings_edit;
+  $('cfgsrc').textContent = (c.settings_edit ? 'From ' : 'Read only here: ') + (s.settings_source || 'this program\'s command line');
+  if (!c.ota && !c.coredump && !S.hostSeen) { S.hostSeen = true; $('logauto').checked = true; }
+  const a = [...$('nav').children].find(x => x.hash == '#' + S.tab);
+  if (a && a.classList.contains('nocap')) { history.replaceState(null, '', '#overview'); show(); }
+}
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { n = 0; tick(); } });
 
 // ── settings, log, maintenance ────────────────────────────────────────────
 async function config() {
-  $('cfg').value = await (await fetch('/api/config')).text();
-  $('resolved').textContent = await (await fetch('/api/resolved')).text();
+  const r = await fetch('/api/config'), d = await fetch('/api/resolved');
+  $('cfg').value = r.ok ? await r.text() : '';
+  $('resolved').textContent = d.ok ? await d.text() : '';
 }
 async function post(url) { $('testmsg').textContent = await (await fetch(url, {method: 'POST'})).text(); }
 async function save() {
@@ -515,7 +563,7 @@ async function tasks() {
   $('tasks').hidden = false;
   $('tasks').textContent = r.ok ? await r.text() : 'Not in this build (FreeRTOS run-time stats are off).';
 }
-async function restart() { if (confirm('Restart the board?')) $('otamsg').textContent = await (await fetch('/api/restart', {method: 'POST'})).text(); }
+async function restart() { if (confirm(has(S.s, 'coredump') ? 'Restart the board?' : 'Restart the program?')) $('otamsg').textContent = await (await fetch('/api/restart', {method: 'POST'})).text(); }
 async function eraseDump() { if (confirm('Erase the saved core dump?')) { await fetch('/api/coredump', {method: 'DELETE'}); status(); } }
 async function ota() {
   const f = $('fw').files[0];
@@ -602,7 +650,5 @@ $('spec').onmouseleave = () => { spec.hover = null; drawSpec(); };
 setInterval(spectrum, 400);
 show(); tick(); setInterval(tick, 1000);
 </script>
-<script src="/wifilist.js" defer></script>
-<script src="/netclock.js" defer></script>
 </body>
 </html>

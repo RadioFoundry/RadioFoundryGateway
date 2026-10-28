@@ -70,7 +70,7 @@ bool rdof_sdrmodem_transmitting(const rdof_sdrmodem_t *m)
 /* Where the receiver reports a burst whose symbol 0 the modulator put at tx sample s. */
 static int64_t heard_at(const rdof_sdrmodem_t *m, int64_t s)
 {
-    return s * 48000 / (int64_t)m->tx_fs + RX_DELAY_48K(m);
+    return s * 48000 / (int64_t)m->tx_fs + RX_DELAY_48K(m) + m->tx_late48;
 }
 
 static void remember(rdof_sdrmodem_t *m, int64_t start)
@@ -326,8 +326,9 @@ static int flags_of(const rdof_sdrmodem_t *m, int64_t now)
            (m->role == ROLE_TX && m->clock_running ? 0x08 : 0);
 }
 
-/* Outbound slot n after the epoch holds a burst whose slot started at t: TS2 when n is even (inbound TSx starts a
- * slot after outbound TSx), TS1 when odd; 0 without a valid epoch. */
+/* Outbound slot n after the epoch holds a burst whose slot started at t: TS1 when n is even, TS2 when odd (aligned
+ * timing, ETSI TS 102 361-1 5.1.1 table 5.1: a radio's TSx burst is under outbound TSx, as an MMDVM labels it); 0
+ * without a valid epoch. */
 static int label_of(rdof_sdrmodem_t *m, int64_t pos48)
 {
     if (!epoch_valid(m, m->now48))
@@ -336,7 +337,7 @@ static int label_of(rdof_sdrmodem_t *m, int64_t pos48)
     int64_t p = m->period_ns;
     int64_t n = dt_ns >= 0 ? (dt_ns + p / 2) / p : -((-dt_ns + p / 2) / p);
     m->residual_us = (int32_t)((dt_ns - n * p) / 1000);
-    return (n & 1) == 0 ? 2 : 1;
+    return (n & 1) == 0 ? 1 : 2;
 }
 
 int rdof_sdrmodem_label(rdof_sdrmodem_t *m, int64_t pos48) { return label_of(m, pos48); }
@@ -870,7 +871,10 @@ int rdof_sdrmodem_busy(const rdof_sdrmodem_t *m)
 
 /* Where the modulator would have put symbol 0 of a burst the receiver reports at 48 kS/s position p (heard_at's
  * inverse). */
-static int64_t tx_at(const rdof_sdrmodem_t *m, int64_t p) { return (p - RX_DELAY_48K(m)) * (int64_t)m->tx_fs / 48000; }
+static int64_t tx_at(const rdof_sdrmodem_t *m, int64_t p)
+{
+    return (p - RX_DELAY_48K(m) - m->tx_late48) * (int64_t)m->tx_fs / 48000;
+}
 
 /* DCDM: a TS1 (i 0) or TS2 (i 1) burst heard at p. The channel's slot timing, unless ours is in use: a burst of ours
  * queued or sent within 60 ms before it (the other station keeps to ours then, and moving would cost a slot). */
@@ -912,6 +916,25 @@ static bool data_over(rdof_sdrmodem_t *m, int i, const rdof_burst_t *b)
     return false;
 }
 
+/* Duplex, keyed: a handheld's burst (MS sync, no CACH) is in the inbound slot its timing against our outbound says:
+ * a duplex repeater's inbound TSx is under its outbound TSx, as an MMDVM labels it (measured with a handheld on a
+ * 5 MHz split, 2026-10-27). The 1-2 crossover is a single frequency repeater's only. */
+int rdof_sdrmodem_inbound(rdof_sdrmodem_t *m, const rdof_sdr_burst_t *sb)
+{
+#if RDOF_FEATURE_REPEATER
+    if (m->duplex && !m->role && m->keyed && m->slot_k >= 0 && sb->b.family == RDOF_FAMILY_MS) {
+        const double slot48 = (double)rdof_mod_slot_samples(&m->mod) * 48000 / m->tx_fs;
+        const double dt = (double)(sb->position - heard_at(m, m->base)) - SLOT_GUARD_US * 48 / 1000;
+        const int64_t k = (int64_t)floor(dt / slot48 + 0.5); /* outbound slot k: even TS1 */
+        m->inbound_off = dt / slot48 - (double)k;
+        return (int)(k & 1) + 1;
+    }
+#else
+    (void)m, (void)sb;
+#endif
+    return 0;
+}
+
 void rdof_sdrmodem_heard(rdof_sdrmodem_t *m, int channel, const rdof_sdr_burst_t *sb)
 {
     const rdof_burst_t *b = &sb->b;
@@ -931,7 +954,18 @@ void rdof_sdrmodem_heard(rdof_sdrmodem_t *m, int channel, const rdof_sdr_burst_t
     else
         p[0] = (uint8_t)(RDOF_SYNC_DATA | (b->dt & 0x0F));
     memcpy(p + 1, b->burst, RDOF_BURST_BYTES);
+    /* Duplex with the transmitter off: a BS_Dwn_Act (a handheld's wakeup) goes up marked idle, as an MMDVM's idle
+     * receiver sends it, so a repeater takes it as its wakeup (repeater.md R3.1). The rest goes up as heard. */
+    if (m->duplex && !m->role && !m->keyed && b->dt == RDOF_DT_CSBK) {
+        rdof_csbk_t c;
+        rdof_decode_csbk(b->burst, &c);
+        if (c.crc_ok && c.opcode == RDOF_CSBK_BS_DWN_ACT)
+            p[0] |= RDOF_CONTROL_IDLE;
+    }
     int i = m->duplex && b->slot == 1 ? 0 : 1;
+    const int inbound = rdof_sdrmodem_inbound(m, sb); /* a handheld's burst under our outbound: by its timing */
+    if (inbound)
+        i = inbound - 1;
     if (m->dcdm) { /* by its sync: TS1 is slot 1; TS2, and MS (plain direct mode), slot 2 */
         i = b->family == RDOF_FAMILY_TS1 ? 0 : 1;
         if (b->family == RDOF_FAMILY_TS1 || b->family == RDOF_FAMILY_TS2)
@@ -1035,7 +1069,9 @@ void rdof_sdrmodem_cach(rdof_sdrmodem_t *m, long k, uint8_t out3[3])
     if (q == 0)
         memcpy(m->slc, m->slc_next, sizeof m->slc); /* a new short LC starts on a multiple of 4 */
     uint8_t bits[24];
-    rdof_encode_cach_lc(s + 1, (rdof_sdrmodem_at(m) >> s) & 1, lcss[q], m->slc[q], bits);
+    /* the AT bit speaks for the inbound slot that starts a slot later (ETSI TS 102 361-1 4.5 figure 4.8): with aligned
+     * timing, the radios on the other channel, as an MMDVM sends it */
+    rdof_encode_cach_lc(s + 1, (rdof_sdrmodem_at(m) >> (s ^ 1)) & 1, lcss[q], m->slc[q], bits);
     memset(out3, 0, 3);
     for (int i = 0; i < 24; i++)
         out3[i / 8] |= (uint8_t)((bits[i] & 1) << (7 - i % 8));

@@ -6,6 +6,7 @@ Related: [overview.md](overview.md), [interfaces-http.md](interfaces-http.md) (`
 
 ## 1. Document format
 
+- The host tool `rdofradio --config FILE` reads the same document with the same parser (`sdr/cli/rdofradio_cfg.c`); what it applies and leaves unused is in [docs/reference.md](../../reference.md) (rdofradio).
 - One JSON document: the box config, plus board keys (`wifi`, `ntp`, `modem`, `uart`, `usb_hub`, `usb`, the `oled` pins). JSONC is taken: `//` and `/* */` comments, trailing commas (`rdof_jsonc_strip`).
 - Parser `rdof_jdoc` (`common/src/jsonp.c`): at most `MAX_NODES` 1200 nodes and `STR_BUF` 8192 bytes of strings. Larger documents are refused.
 - Two shapes:
@@ -69,6 +70,7 @@ Role column: B = board / box, R = roamer, P = repeater, S = SDR, X = `sdr_transc
 | `csbk_preambles` | int | 2 | |
 | `cwid` | str | `""` | ≤ 40 |
 | `cwid_every_s` | float | 900 | |
+| `parrot` | DMR id | off | 0..16777215: sends back over the air what's heard once it ends, voice and data ([parrot.h](../../../common/include/rdof/parrot.h)); only what's addressed to the id, or with 0 everything; needs `CONFIG_RDOF_FEATURE_TX` |
 | `scan` | `true` or `{channels, dwell_s 0.45, hang_s 3.0, carrier_s 0}` | off | dwell > 0; hang ≥ 0; 0 ≤ carrier < dwell; `CONFIG_RDOF_SCAN` |
 | covered (derived) | | every SDR section's channel freqs, deduped, sorted | the roamer leaves these to the SDR |
 
@@ -85,6 +87,7 @@ Role column: B = board / box, R = roamer, P = repeater, S = SDR, X = `sdr_transc
 | `hang_s` | float | 5.0 | > 0 |
 | `call_hang_s` | float | 3.0 | ≥ 0 |
 | `cwid_every_s` | float | 900 | |
+| `parrot` | DMR id | off | 0..16777215: sends back over the air what's heard once it ends, voice and data ([parrot.h](../../../common/include/rdof/parrot.h)); only what's addressed to the id, or with 0 everything; needs `CONFIG_RDOF_FEATURE_TX` |
 | `jitter_buffer` | `"auto"` or ms | `"auto"` | ms 0..3000, rounded up to whole 60 ms bursts (fixed size); not with `prebuffer` |
 | `jitter_min_ms`, `jitter_max_ms` | ms | 180, 480 | auto's bounds; 60 ≤ min ≤ max ≤ 3000, each rounded up to whole 60 ms bursts |
 | `prebuffer` | int | 6 | the older fixed size, in bursts; set, it turns auto off; not with `jitter_buffer` |
@@ -429,6 +432,6 @@ An NVS partition with no free pages or a new version is erased at boot (`main.c`
 | Web component pages (`/api/wifi/*`, `/api/clock/settings`) | their component's NVS directly | the last upload, for that component |
 | One-shot flags | self-test / spike on next boot | `selftest` / `spike` keys (either turns it on) |
 
-`DEFAULT_JSON`: name `esp32`; mqtt `192.0.2.115:1883` user `radios`; hblink `192.0.2.115:62031`; cc 2; channels 1 = 461.6875, 13 = 461.0375, 4 = 461.0875, 6 = 461.1375, 8 = 461.1875, 10 = 461.2375 MHz; run `["ROAM1", "s3-sdr"]` (one name in a one-role build); `ROAM1` (`radio_hotspot`, peer 9990301, callsign RT01, idle 1, channels all); `s3-sdr` (sample_rate 288000, gain 30, hblink false, peer_ids 9990100, channels [13, 4, 6, 8, 10]).
+`DEFAULT_JSON`: name `esp32`; mqtt `192.0.2.115:1883` user `radios`; hblink `192.0.2.115:62031`; cc 2; channels 1 = 438.7125, 13 = 438.0625, 4 = 438.1125, 6 = 438.1625, 8 = 438.2125, 10 = 438.2625 MHz; run `["ROAM1", "s3-sdr"]` (one name in a one-role build); `ROAM1` (`radio_hotspot`, peer 9990301, callsign RT01, idle 1, channels all); `s3-sdr` (sample_rate 288000, gain 30, hblink false, peer_ids 9990100, channels [13, 4, 6, 8, 10]).
 
 Export (GET `/api/config`) is the stored text with `wifi` (no passwords) and `ntp` added back (`rdof_jsonc_add`).

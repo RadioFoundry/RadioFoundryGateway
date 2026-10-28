@@ -226,6 +226,11 @@ void rdof_sdr_rx_demod(rdof_sdr_rx_t *rx, int c0, int c1)
             }
             if (rx->on_burst)
                 rx->on_burst(rx->burst_ctx, c, b, t);
+            if (rx->relabel) {
+                const int slot = rx->relabel(rx->burst_ctx, b);
+                if (slot == 1 || slot == 2)
+                    stamped.b.slot = slot;
+            }
             rdof_tracker_feed(&rx->trackers[c], &b->b, t);
         }
     }

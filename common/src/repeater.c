@@ -12,7 +12,6 @@
 #include "rdof/layer2.h"
 #include "rdof/pdu.h"
 
-#define BS_DWN_ACT 0x38
 #define HEADER (RDOF_SYNC_DATA | RDOF_DT_VOICE_LC_HEADER)
 #define TERMINATOR (RDOF_SYNC_DATA | RDOF_DT_TERMINATOR_WITH_LC)
 
@@ -781,7 +780,7 @@ static int repeat(rdof_repeater_t *r, rdof_rpt_slot_t *s, uint8_t control, const
         if (dt == RDOF_DT_CSBK) {
             rdof_csbk_t c;
             rdof_decode_csbk(burst, &c);
-            if (!c.crc_ok || c.opcode == BS_DWN_ACT)
+            if (!c.crc_ok || c.opcode == RDOF_CSBK_BS_DWN_ACT)
                 return 0;
             if (c.src_id != RDOF_NONE) {
                 s->has_last_rf = true;
@@ -881,7 +880,7 @@ static bool rf(rdof_repeater_t *r, const rdof_rpt_rf_in_t *in, double now)
         if ((control & RDOF_SYNC_DATA) && (control & 0x0F) == RDOF_DT_CSBK) {
             rdof_csbk_t c;
             rdof_decode_csbk(in->burst, &c);
-            if (c.crc_ok && c.opcode == BS_DWN_ACT) {
+            if (c.crc_ok && c.opcode == RDOF_CSBK_BS_DWN_ACT) {
                 if (!key(r))
                     return false;
                 restart(r, now);

@@ -82,6 +82,7 @@ pub struct RdofVoiceRegen {
     pub lc9: [u8; 9],
     pub cc: c_int,
     pub regen_ambe: bool,
+    pub swap: bool,
     pub lc_raw: [u8; 128],
     pub sending: [u8; 128],
     pub heard: [[u8; 32]; 5],

@@ -36,7 +36,9 @@ set(RDOF_COMMON_SRCS
     src/ipgwcfg.c
     src/ipgwtx.c
     src/lastheard.c
+    src/parrot.c
     src/memplan.c
+    src/webapi.c
     src/radiofoundry/dmrFec.c src/radiofoundry/dmrCach.c src/radiofoundry/dmr_lc.c src/radiofoundry/dmrTrellis.c src/radiofoundry/dmrDataCrc.c
 )
 # split.c's clock arithmetic matches the golden scenarios to the bit: no fused multiply-add.

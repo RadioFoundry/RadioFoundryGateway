@@ -768,8 +768,8 @@ static void t_modem_edges(void)
           "init");
     /* each command's frame */
     CHECK(rdof_modem_set_mode(&m, RDOF_MODE_DMR) && c.len == 4 && !memcmp(c.last, "\xE0\x04\x03\x02", 4), "SET_MODE");
-    CHECK(rdof_modem_set_freq(&m, 461137500, 466137500, 200) && c.len == 17 && c.last[2] == RDOF_MMDVM_SET_FREQ &&
-              c.last[3] == 0 && c.last[4] == 0x5C && c.last[12] == 200 && m.requests == 2,
+    CHECK(rdof_modem_set_freq(&m, 438162500, 438250000, 200) && c.len == 17 && c.last[2] == RDOF_MMDVM_SET_FREQ &&
+              c.last[3] == 0 && c.last[4] == 0x44 && c.last[12] == 200 && m.requests == 2,
           "SET_FREQ");
     CHECK(rdof_modem_send_cwid(&m, "w1aw/r\xc3\xa9") && c.len == 3 + 6 && !memcmp(c.last + 3, "W1AW/R", 6),
           "CW ID: upper case, ASCII only");
@@ -953,16 +953,16 @@ static void t_radio_edges(void)
     rdof_radio_init(&r, &m, RDOF_RADIO_HOTSPOT);
     r.rx_offset_hz = -500;
     r.tx_offset_hz = 250;
-    CHECK(rdof_radio_tune_duplex(&r, 461000000, 466000000, 3, 9) && c.last[2] == RDOF_MMDVM_SET_MODE, "tuned");
+    CHECK(rdof_radio_tune_duplex(&r, 438025000, 438500000, 3, 9) && c.last[2] == RDOF_MMDVM_SET_MODE, "tuned");
     /* SET_FREQ was the first of the three writes; check it alone */
     cap_on(&m, &c, P_ACK);
     r.modem = &m;
-    rdof_modem_set_freq(&m, 461000000 - 500, 466000000 + 250, 9);
+    rdof_modem_set_freq(&m, 438025000 - 500, 438500000 + 250, 9);
     uint8_t want[17];
     memcpy(want, c.last, 17);
     cap_on(&m, &c, P_SILENT);
     m.timeout_ms = 0;
-    CHECK(!rdof_radio_tune_duplex(&r, 461000000, 466000000, 3, 9) && c.len == 17 && !memcmp(c.last, want, 17),
+    CHECK(!rdof_radio_tune_duplex(&r, 438025000, 438500000, 3, 9) && c.len == 17 && !memcmp(c.last, want, 17),
           "the offsets added");
     r.rx_offset_hz = -1000;
     CHECK(!rdof_radio_tune(&r, 500, 3, 9) && c.last[4] == 0x0C && c.last[7] == 0xFF, "below 0: wraps (%02x %02x)",
@@ -970,11 +970,11 @@ static void t_radio_edges(void)
     /* the fixed tuner's window */
     modem_on(&m, &p, P_ACK);
     rdof_radio_init(&r, &m, RDOF_RADIO_MMDVM);
-    r.fixed_hz = 461000000;
-    CHECK(rdof_radio_tune(&r, 461000100, 1, 0) && rdof_radio_tune(&r, 460999900, 1, 0), "100 Hz either way");
-    CHECK(!rdof_radio_tune(&r, 461000101, 1, 0) && !strcmp(m.error, "this radio is fixed on 461.00000 MHz"), "101: %s",
+    r.fixed_hz = 438025000;
+    CHECK(rdof_radio_tune(&r, 438025100, 1, 0) && rdof_radio_tune(&r, 438024900, 1, 0), "100 Hz either way");
+    CHECK(!rdof_radio_tune(&r, 438025101, 1, 0) && !strcmp(m.error, "this radio is fixed on 438.02500 MHz"), "101: %s",
           m.error);
-    CHECK(!rdof_radio_tune(&r, 460999899, 1, 0), "-101");
+    CHECK(!rdof_radio_tune(&r, 438024899, 1, 0), "-101");
     r.fixed_hz = 4294967295u;
     CHECK(!rdof_radio_tune(&r, 0, 1, 0) && !strcmp(m.error, "this radio is fixed on 4294.96730 MHz"), "the u32 end: %s",
           m.error);
@@ -985,11 +985,11 @@ static void t_radio_edges(void)
     rdof_radio_init(&r, &m, RDOF_RADIO_MMDVM_HS);
     m.protocol = 2;
     const int w = p.writes;
-    CHECK(rdof_radio_tune(&r, 461000000, 1, 0) && p.writes == w + 3 && p.sleeps == 0, "set_freq, config, mode");
+    CHECK(rdof_radio_tune(&r, 438025000, 1, 0) && p.writes == w + 3 && p.sleeps == 0, "set_freq, config, mode");
     modem_on(&m, &p, P_NAK);
     rdof_radio_init(&r, &m, RDOF_RADIO_MMDVM);
-    r.fixed_hz = 461000000;
-    CHECK(!rdof_radio_tune(&r, 461000000, 1, 0) && p.writes == 1 && strstr(m.error, "0x02"), "a refused config: %s",
+    r.fixed_hz = 438025000;
+    CHECK(!rdof_radio_tune(&r, 438025000, 1, 0) && p.writes == 1 && strstr(m.error, "0x02"), "a refused config: %s",
           m.error);
 }
 
@@ -1012,38 +1012,38 @@ static void t_radio(void)
     modem_on(&m, &p, P_ACK);
     rdof_radio_init(&r, &m, RDOF_RADIO_MMDVM);
     int dbm;
-    CHECK(!rdof_radio_rssi(&r, -1, 461e6, &dbm), "no RSSI reported");
+    CHECK(!rdof_radio_rssi(&r, -1, 439e6, &dbm), "no RSSI reported");
     r.rssi_map = map;
-    CHECK(rdof_radio_rssi(&r, 30, 461e6, &dbm) && dbm == -105, "through the map");
-    CHECK(!rdof_radio_rssi(&r, -1, 461e6, &dbm) && rdof_radio_rssi(&r, 0, 461e6, &dbm), "a map: -1 still none, 0 read");
+    CHECK(rdof_radio_rssi(&r, 30, 439e6, &dbm) && dbm == -105, "through the map");
+    CHECK(!rdof_radio_rssi(&r, -1, 439e6, &dbm) && rdof_radio_rssi(&r, 0, 439e6, &dbm), "a map: -1 still none, 0 read");
     r.rssi_map.n = 0;
     r.hotspot_rssi = true;
-    CHECK(rdof_radio_rssi(&r, 300, 461e6, &dbm) && dbm == rdof_radio_hotspot_dbm(300, 461e6), "a hotspot's conversion");
+    CHECK(rdof_radio_rssi(&r, 300, 439e6, &dbm) && dbm == rdof_radio_hotspot_dbm(300, 439e6), "a hotspot's conversion");
     r.hotspot_rssi = false;
-    CHECK(!rdof_radio_rssi(&r, 300, 461e6, &dbm), "no conversion");
+    CHECK(!rdof_radio_rssi(&r, 300, 439e6, &dbm), "no conversion");
     /* tuners */
     r.tuner = RDOF_TUNER_NONE;
-    CHECK(!rdof_radio_tune(&r, 461e6, 1, 50) && !strcmp(m.error, "no tuner"), "no tuner: %s", m.error);
+    CHECK(!rdof_radio_tune(&r, 439e6, 1, 50) && !strcmp(m.error, "no tuner"), "no tuner: %s", m.error);
     r.tuner = RDOF_TUNER_FIXED;
-    r.fixed_hz = 461000000;
-    CHECK(!rdof_radio_tune(&r, 461001000, 1, 50) && strstr(m.error, "fixed on 461.00000"), "off its channel: %s",
+    r.fixed_hz = 438025000;
+    CHECK(!rdof_radio_tune(&r, 438026000, 1, 50) && strstr(m.error, "fixed on 438.02500"), "off its channel: %s",
           m.error);
     r.settle_ms = 25;
     const int w = p.writes;
-    CHECK(rdof_radio_tune(&r, 461000050, 1, 50) && p.sleeps == 25 && p.writes == w + 2,
+    CHECK(rdof_radio_tune(&r, 438025050, 1, 50) && p.sleeps == 25 && p.writes == w + 2,
           "on it (within 100 Hz): settle, configure, mode");
-    CHECK(rdof_radio_tune_duplex(&r, 461000000, 461000000, 1, 50) && p.sleeps == 50, "duplex: settles too");
-    CHECK(!rdof_radio_tune_duplex(&r, 466000000, 461500000, 1, 50), "duplex off its channel");
+    CHECK(rdof_radio_tune_duplex(&r, 438025000, 438025000, 1, 50) && p.sleeps == 50, "duplex: settles too");
+    CHECK(!rdof_radio_tune_duplex(&r, 438500000, 438525000, 1, 50), "duplex off its channel");
     r.settle_ms = 1;
-    CHECK(rdof_radio_tune(&r, 461000000, 1, 50) && p.sleeps == 51, "1 ms settles too");
+    CHECK(rdof_radio_tune(&r, 438025000, 1, 50) && p.sleeps == 51, "1 ms settles too");
     r.tuner = RDOF_TUNER_MODEM;
     r.settle_ms = 0;
-    CHECK(rdof_radio_tune_duplex(&r, 466000000, 461000000, 1, 50) && p.sleeps == 51, "modem tuner, no settle");
+    CHECK(rdof_radio_tune_duplex(&r, 438500000, 438025000, 1, 50) && p.sleeps == 51, "modem tuner, no settle");
     m.port.sleep_ms = NULL;
     r.settle_ms = 10;
-    CHECK(rdof_radio_tune(&r, 461000000, 1, 50), "a settle time with no sleep: skipped");
+    CHECK(rdof_radio_tune(&r, 438025000, 1, 50), "a settle time with no sleep: skipped");
     modem_on(&m, &p, P_NAK);
-    CHECK(!rdof_radio_tune(&r, 461000000, 1, 50) && p.writes == 1, "a refused SET_FREQ stops the tune");
+    CHECK(!rdof_radio_tune(&r, 438025000, 1, 50) && p.writes == 1, "a refused SET_FREQ stops the tune");
     t_modem_edges();
     t_radio_edges();
 }
@@ -1200,9 +1200,9 @@ static void t_benchcfg_edges(void)
     } badtx[] = {
         {"5", "bench.tx: an object"},
         {"{\"freqs_hz\": [29999999]}", "bench.tx.freqs_hz[0]: a frequency in whole Hz"},
-        {"{\"freqs_hz\": [461137500, 3000000001]}", "bench.tx.freqs_hz[1]: a frequency in whole Hz"},
-        {"{\"freqs_hz\": [\"461137500\"]}", "bench.tx.freqs_hz[0]: a frequency in whole Hz"},
-        {"{\"freqs_hz\": [461137500.5]}", "bench.tx.freqs_hz[0]: a frequency in whole Hz"},
+        {"{\"freqs_hz\": [438162500, 3000000001]}", "bench.tx.freqs_hz[1]: a frequency in whole Hz"},
+        {"{\"freqs_hz\": [\"438162500\"]}", "bench.tx.freqs_hz[0]: a frequency in whole Hz"},
+        {"{\"freqs_hz\": [438162500.5]}", "bench.tx.freqs_hz[0]: a frequency in whole Hz"},
         {"{\"freqs_hz\": {}}", "bench.tx.freqs_hz: a list of frequencies in Hz"},
         {"{\"max_key_s\": -0.5}", "bench.tx.max_key_s: 0 to 60 seconds"},
         {"{\"max_key_s\": 60.001}", "bench.tx.max_key_s: 0 to 60 seconds"},
@@ -1211,7 +1211,7 @@ static void t_benchcfg_edges(void)
         {"{\"arm_gpio\": -2}", "bench.tx.arm_gpio: a GPIO 0 to 48 (a jumper to ground), or none"},
         {"{\"arm_gpio\": 1e12}", "bench.tx.arm_gpio: a GPIO 0 to 48 (a jumper to ground), or none"},
         /* a good list, then a bad field: the frequencies don't stay */
-        {"{\"freqs_hz\": [461137500], \"rf_level\": 999}", "bench.tx.rf_level: 0 to 255 (0: the lowest)"},
+        {"{\"freqs_hz\": [438162500], \"rf_level\": 999}", "bench.tx.rf_level: 0 to 255 (0: the lowest)"},
     };
     for (size_t i = 0; i < sizeof badtx / sizeof badtx[0]; i++) {
         char json[300];
@@ -1221,15 +1221,15 @@ static void t_benchcfg_edges(void)
               "%s: want \"%s\", got \"%s\"", badtx[i].tx, badtx[i].error, err);
         CHECK(pol.nfreqs == 0 && pol.max_key_s == 0 && pol.rf_level == 0 && pol.arm_gpio == -1, "%s: no TX", badtx[i].tx);
     }
-    const char *full = "{\"bench\": {\"tx\": {\"freqs_hz\": [30000000, 3000000000, 461137500, 461137500, 1, 2, 3, 4], "
+    const char *full = "{\"bench\": {\"tx\": {\"freqs_hz\": [30000000, 3000000000, 438162500, 438162500, 1, 2, 3, 4], "
                        "\"max_key_s\": 60, \"rf_level\": 255, \"arm_gpio\": 48}}}";
     CHECK(rdof_bench_tx_parse(full, strlen(full), &pol, err, sizeof err) < 0 &&
               !strcmp(err, "bench.tx.freqs_hz[4]: a frequency in whole Hz"),
           "eight, the fifth bad: %s", err);
-    const char *ends = "{\"bench\": {\"tx\": {\"freqs_hz\": [30000000, 3000000000, 461137500, 4.611e8, 461137500, "
-                       "461137500, 461137500, 461137500], \"max_key_s\": 60, \"rf_level\": 255, \"arm_gpio\": 48}}}";
+    const char *ends = "{\"bench\": {\"tx\": {\"freqs_hz\": [30000000, 3000000000, 438162500, 4.38125e8, 438162500, "
+                       "438162500, 438162500, 438162500], \"max_key_s\": 60, \"rf_level\": 255, \"arm_gpio\": 48}}}";
     CHECK(rdof_bench_tx_parse(ends, strlen(ends), &pol, err, sizeof err) == 0 && pol.nfreqs == 8 &&
-              pol.freqs_hz[0] == 30000000 && pol.freqs_hz[1] == 3000000000u && pol.freqs_hz[3] == 461100000 &&
+              pol.freqs_hz[0] == 30000000 && pol.freqs_hz[1] == 3000000000u && pol.freqs_hz[3] == 438125000 &&
               pol.max_key_s == 60 && pol.rf_level == 255 && pol.arm_gpio == 48 && !err[0],
           "at the ends: %s", err);
     const char *nulls = "{\"bench\": {\"tx\": {\"freqs_hz\": null, \"max_key_s\": null, \"rf_level\": null}}}";
@@ -1287,9 +1287,9 @@ static void t_benchcfg(void)
         const char *tx, *why;
     } badtx[] = {
         {"[]", "bench.tx: an object"},
-        {"{\"freqs_hz\": 461137500}", "a list of frequencies"},
+        {"{\"freqs_hz\": 438162500}", "a list of frequencies"},
         {"{\"freqs_hz\": [1, 2, 3, 4, 5, 6, 7, 8, 9]}", "freqs_hz[0]"},
-        {"{\"freqs_hz\": [461e6, 461e6, 461e6, 461e6, 461e6, 461e6, 461e6, 461e6, 461e6]}", "at most 8"},
+        {"{\"freqs_hz\": [439e6, 439e6, 439e6, 439e6, 439e6, 439e6, 439e6, 439e6, 439e6]}", "at most 8"},
         {"{\"rf_level\": 300}", "rf_level: 0 to 255"},
         {"{\"rf_level\": \"x\"}", "rf_level"},
         {"{\"arm_gpio\": 49}", "arm_gpio"},
@@ -1303,7 +1303,7 @@ static void t_benchcfg(void)
     }
     CHECK(rdof_bench_tx_parse(broken, strlen(broken), &pol, err, sizeof err) < 0 && strstr(err, "JSON"), "tx: bad JSON");
     CHECK(rdof_bench_tx_parse(broken, strlen(broken), &pol, NULL, 0) < 0, "tx: no error buffer");
-    const char *lvl = "{\"bench\": {\"tx\": {\"freqs_hz\": [461137500], \"rf_level\": \"12\", \"arm_gpio\": null}}}";
+    const char *lvl = "{\"bench\": {\"tx\": {\"freqs_hz\": [438162500], \"rf_level\": \"12\", \"arm_gpio\": null}}}";
     CHECK(rdof_bench_tx_parse(lvl, strlen(lvl), &pol, err, sizeof err) == 0 && pol.rf_level == 12 && pol.arm_gpio == -1,
           "rf_level as a string: %s", err);
     t_benchcfg_edges();
@@ -1345,8 +1345,8 @@ static void t_oled(void)
           "SSD1306 page");
     CHECK(rdof_oled_page_cmds(true, 0, c, 2) == 0 && rdof_oled_page_cmds(false, 0, c, 5) == 0, "no room");
     /* a repeater's line shows both frequencies */
-    rdof_oled_status_t s = {.name = "rpt", .ip = "10.0.0.2", .wifi = true, .repeater = true, .freq = 461137500,
-                          .tx_freq = 466137500, .state = "on air", .clock = "12:00:00"};
+    rdof_oled_status_t s = {.name = "rpt", .ip = "10.0.0.2", .wifi = true, .repeater = true, .freq = 438162500,
+                          .tx_freq = 438250000, .state = "on air", .clock = "12:00:00"};
     rdof_oled_render(&f, &s);
     int lit = 0;
     for (int y = 21; y < 28; y++)
@@ -1354,9 +1354,9 @@ static void t_oled(void)
             lit += rdof_oled_get(&f, x, y);
     CHECK(lit > 100, "repeater line drawn (%d pixels)", lit);
     /* whole screens, pinned by a hash of the frame (the C's output: there's no reference screen to compare with) */
-    CHECK(frame_hash(&f) == 0x56478498u, "repeater screen %08x", (unsigned)frame_hash(&f));
+    CHECK(frame_hash(&f) == 0x29b008d8u, "repeater screen %08x", (unsigned)frame_hash(&f));
     rdof_oled_status_t r = {.name = "a receiver name long enough that the line is cut at 39", .wifi = false,
-                          .freq = 461022500, .cc = 12, .rx_line = "T201<9990123", .tx_active = true,
+                          .freq = 438047500, .cc = 12, .rx_line = "T201<9990123", .tx_active = true,
                           .tx_line = "T1>9 ~"};
     rdof_oled_render(&f, &r); /* ip, state, clock NULL; struck-through tags */
     CHECK(frame_hash(&f) == 0xa6d4133fu, "roamer screen %08x", (unsigned)frame_hash(&f));
@@ -1399,13 +1399,13 @@ static void t_oled_sdr(void)
               rdof_oled_bars(-70) == 2 && rdof_oled_bars(-80) == 1 && rdof_oled_bars(-85) == 1 && rdof_oled_bars(-90) == 0,
           "bars");
     /* the tuner's line */
-    rdof_oled_sdr_t t = {.receiving = true, .center_hz = 461047500, .sample_rate = 288000, .cpu_load = 0.189};
+    rdof_oled_sdr_t t = {.receiving = true, .center_hz = 438072500, .sample_rate = 288000, .cpu_load = 0.189};
     rdof_oled_tuner_line(&t, line, sizeof line);
-    CHECK(!strcmp(line, "461.0475 288k cpu 19%"), "tuner line: %s", line);
+    CHECK(!strcmp(line, "438.0725 288k cpu 19%"), "tuner line: %s", line);
     t.cpu_load = NAN;
-    t.center_hz = 467e6;
+    t.center_hz = 445e6;
     rdof_oled_tuner_line(&t, line, sizeof line);
-    CHECK(!strcmp(line, "467 288k"), "no load, whole MHz: %s", line);
+    CHECK(!strcmp(line, "445 288k"), "no load, whole MHz: %s", line);
     t.receiving = false;
     rdof_oled_tuner_line(&t, line, sizeof line);
     CHECK(!strcmp(line, "starting"), "not receiving: %s", line);
@@ -1413,11 +1413,11 @@ static void t_oled_sdr(void)
 
     /* the W12's two channels, nothing heard */
     rdof_frame_buf_t f;
-    rdof_oled_channel_t ch[8] = {{"SDR04", "Towing Bravo", 461087500, true},
-                                 {"SDR13", "Short Event 4", 461037500, true}};
+    rdof_oled_channel_t ch[8] = {{"SDR04", "Towing Bravo", 438112500, true},
+                                 {"SDR13", "Short Event 4", 438062500, true}};
     rdof_oled_sdr_t s = {.wifi = true, .wifi_dbm = -62, .ip = "192.0.2.8", .mqtt = RDOF_OLED_UP,
                          .hblink = RDOF_OLED_DOWN, .sdr = RDOF_OLED_UP, .radio = RDOF_OLED_NONE, .clock = "12:41:07",
-                         .ch = ch, .nch = 2, .error = "", .receiving = true, .center_hz = 461047500,
+                         .ch = ch, .nch = 2, .error = "", .receiving = true, .center_hz = 438072500,
                          .sample_rate = 288000, .cpu_load = 0.189};
     rdof_oled_render_sdr(&f, &s);
     CHECK(lit_in(&f, 0, 8, 12, 15) > 40 && lit_in(&f, 0, 16, 127, 17) == 0, "MQ inverted, in the top 16 rows");
@@ -1425,7 +1425,7 @@ static void t_oled_sdr(void)
     CHECK(lit_in(&f, 0, 18, 127, 18) == 128 && lit_in(&f, 0, 54, 127, 54) == 128, "the rules");
     CHECK(lit_in(&f, 0, 29, 127, 36) > 60 && lit_in(&f, 0, 37, 127, 44) > 60 && lit_in(&f, 0, 45, 127, 52) == 0,
           "a line for each channel");
-    CHECK(frame_hash(&f) == 0x5855a538u, "idle screen %08x", (unsigned)frame_hash(&f));
+    CHECK(frame_hash(&f) == 0xd65cac02u, "idle screen %08x", (unsigned)frame_hash(&f));
     /* a call on 13: its badge inverted, the call in place of the channels */
     ch[1].active = true;
     ch[1].src = 9990123;
@@ -1434,11 +1434,11 @@ static void t_oled_sdr(void)
     rdof_oled_render_sdr(&f, &s);
     CHECK(lit_in(&f, 21, 20, 33, 27) > 50, "13's badge lit");
     CHECK(lit_in(&f, 0, 37, 127, 44) == 0, "one call line");
-    CHECK(frame_hash(&f) == 0x6a965956u, "call screen %08x", (unsigned)frame_hash(&f));
+    CHECK(frame_hash(&f) == 0x2e35be9au, "call screen %08x", (unsigned)frame_hash(&f));
     /* more calls than lines; a badge out of the window; a roamer's TX row; no Wi-Fi */
     for (int i = 2; i < 6; i++) {
         static const char *ids[] = {"SDR01", "SDR02", "SDR03", "SDR05"};
-        ch[i] = (rdof_oled_channel_t){ids[i - 2], "", 461000000 + 25000.0 * i, i != 3, true, 9990700 + (uint32_t)i, 9993100,
+        ch[i] = (rdof_oled_channel_t){ids[i - 2], "", 438025000 + 25000.0 * i, i != 3, true, 9990700 + (uint32_t)i, 9993100,
                                       false};
     }
     s.nch = 6;
@@ -1460,7 +1460,7 @@ static void t_oled_sdr(void)
     s.wifi_dbm = 0;
     s.ip = "192.168.4.1";
     rdof_oled_render_sdr(&f, &s);
-    CHECK(frame_hash(&f) == 0x7c6fa602u, "many channels %08x", (unsigned)frame_hash(&f));
+    CHECK(frame_hash(&f) == 0x6c0da7fcu, "many channels %08x", (unsigned)frame_hash(&f));
     /* the front end's error in place of the channels, wrapped */
     s.error = "LR2021: no answer on SPI (BUSY stuck high) after reset";
     s.has_tx = false;
@@ -1475,10 +1475,10 @@ static void t_oled_sdr(void)
     CHECK(frame_hash(&f) == 0x4f6bd5b6u, "no channels %08x", (unsigned)frame_hash(&f));
     static const char *many[] = {"SDR101", "SDR102", "SDR103", "SDR104", "SDR105", "SDR106", "SDR107", "SDR108"};
     for (int i = 0; i < 8; i++)
-        ch[i] = (rdof_oled_channel_t){many[i], NULL, 462e6, true};
+        ch[i] = (rdof_oled_channel_t){many[i], NULL, 440e6, true};
     s.nch = 8;
     rdof_oled_render_sdr(&f, &s);
-    CHECK(lit_in(&f, 0, 20, 11, 27) > 0 && frame_hash(&f) == 0x68fcfc58u, "badges cut with a + %08x",
+    CHECK(lit_in(&f, 0, 20, 11, 27) > 0 && frame_hash(&f) == 0x9277c350u, "badges cut with a + %08x",
           (unsigned)frame_hash(&f));
 
     /* the settings */
@@ -1585,14 +1585,14 @@ static void t_hblink(void)
     CHECK(!rdof_hb_kind((const uint8_t *)"DMR", 3) && !rdof_hb_kind((const uint8_t *)"RPTL", 4), "short, or unknown");
     /* a DMRC packet longer than the limit is cut to it: only (unsigned) of a negative cc and power gets there */
     uint8_t out[RDOF_DMRC_MAX];
-    const uint32_t idle = 461000000;
+    const uint32_t idle = 438025000;
     const int idle_cc = 1;
     rdof_location_t loc = {41.5, -81.7, 10};
-    size_t n = rdof_dmrc_packet(9990301, "N0CALL", 461e6, 466e6, 1, '3', 50,
+    size_t n = rdof_dmrc_packet(9990301, "N0CALL", 439e6, 438.75e6, 1, '3', 50,
                               "a version string much longer than forty characters, so it's cut",
                               "software string also much longer than forty characters", &loc, &idle, &idle_cc, out);
-    CHECK(n == 8 + 111 + 20 + 11 && !memcmp(out + 8 + 111, "41.5000 -81.7000 010461000000", 29), "DMRC %zu", n);
-    n = rdof_dmrc_packet(9990301, "N0CALL", 461e6, 466e6, -1, '3', -1, "v", "s", &loc, &idle, &idle_cc, out);
+    CHECK(n == 8 + 111 + 20 + 11 && !memcmp(out + 8 + 111, "41.5000 -81.7000 010438025000", 29), "DMRC %zu", n);
+    n = rdof_dmrc_packet(9990301, "N0CALL", 439e6, 438.75e6, -1, '3', -1, "v", "s", &loc, &idle, &idle_cc, out);
     CHECK(n == RDOF_DMRC_MAX && !memcmp(out, "DMRC", 4), "DMRC cut to %d: %zu", RDOF_DMRC_MAX, n);
 #if RDOF_FEATURE_TRACKER
     t_hb_hold();
@@ -1980,11 +1980,11 @@ static void t_tracker_edges(void)
     trk_feed(RDOF_DT_VOICE_LC_HEADER, 0, 3, b, NAN, 100.0);
     CHECK(trk.n == 0 && trk.nframes == 0 && trk_tr.mode == 0, "idle and bad slots: nothing");
     /* a header, the same again, a new one over it */
-    trk_on(-10, 461037500);
+    trk_on(-10, 438062500);
     trk_feed(RDOF_DT_VOICE_LC_HEADER, 0, 1, b, -60.4, 100.0);
     CHECK(trk_said("J {\"MMDVM\":{\"timestamp\":\"1970-01-01T00:01:40.000Z\",\"mode\":\"DMR\"}}") &&
               trk_said("\"action\":\"start\",\"slot\":1,\"src_id\":9992345,\"dst_id\":9,\"group\":\"yes\",\"src_info\":"
-                       "\"9992345\",\"frequency\":\"461.03750\",\"colorCode\":1}}") &&
+                       "\"9992345\",\"frequency\":\"438.06250\",\"colorCode\":1}}") &&
               trk_said("C start 9992345 9") && trk.nframes == 1 && trk.frames[0].new_stream && trk.frames[0].has_addr &&
               trk.frames[0].rssi == -70,
           "start: %s", trk.log);
@@ -2228,10 +2228,10 @@ static void t_tracker_edges(void)
     CHECK(trk.frames[trk.nframes - 1].synthetic && !memcmp(trk.frames[trk.nframes - 1].burst, want, sizeof want),
           "a terminator with the call's LC, family and color code");
     /* a color code below 0 reads as 0; a negative frequency is still one; a huge one is cut */
-    trk_on(0, -461025000);
+    trk_on(0, -438050000);
     trk_lc(RDOF_DT_VOICE_LC_HEADER, 1, 2, 0, b);
     trk_feed_as(RDOF_DT_VOICE_LC_HEADER, 0, 1, b, NAN, 100.0, RDOF_FAMILY_MS, -1);
-    CHECK(trk_said("\"frequency\":\"-461.02500\",\"colorCode\":0}"), "negative frequency, cc -1: %s", trk.log);
+    CHECK(trk_said("\"frequency\":\"-438.05000\",\"colorCode\":0}"), "negative frequency, cc -1: %s", trk.log);
     trk_on(0, 1e30);
     trk_feed(RDOF_DT_VOICE_LC_HEADER, 0, 1, b, NAN, 100.0);
     CHECK(trk_said("\"frequency\":\"99999999999999998322278\","), "frequency cut: %s", trk.log);
@@ -2338,7 +2338,7 @@ static void t_netcalls(void)
 {
     rdof_netcalls_t n;
     rdof_netcalls_init(&n);
-    rdof_tx_call_info_t c = {.src = 9992345, .dst = 9, .group = true, .freq = 461037500, .cc = 1, .slot = 1,
+    rdof_tx_call_info_t c = {.src = 9992345, .dst = 9, .group = true, .freq = 438062500, .cc = 1, .slot = 1,
                            .frames = -1};
     char out[640], ts[32], want[640];
     const double t = 1758800000.25;
@@ -2346,7 +2346,7 @@ static void t_netcalls(void)
     CHECK(rdof_netcalls_event(&n, "start", &c, 0, t, out, sizeof out), "start");
     snprintf(want, sizeof want,
              "{\"DMR\":{\"timestamp\":\"%s\",\"source\":\"network\",\"action\":\"start\",\"slot\":1,"
-             "\"src_id\":9992345,\"dst_id\":9,\"group\":\"yes\",\"src_info\":\"9992345\",\"frequency\":\"461.03750\","
+             "\"src_id\":9992345,\"dst_id\":9,\"group\":\"yes\",\"src_info\":\"9992345\",\"frequency\":\"438.06250\","
              "\"colorCode\":1}}",
              ts);
     CHECK(!strcmp(out, want), "start: %s", out);
@@ -2396,7 +2396,7 @@ static void t_netcalls(void)
     csbk_burst(0x3D, c.csbk);
     CHECK(rdof_netcalls_event(&n, "start", &c, 0, t, out, sizeof out) &&
               strstr(out, "\"action\":\"csbk\",\"slot\":2,\"src_id\":9992345,") &&
-              strstr(out, "\"src_info\":\"9992345\",\"csbk_desc\":\"Preamble\",\"frequency\":\"461.03750\","
+              strstr(out, "\"src_info\":\"9992345\",\"csbk_desc\":\"Preamble\",\"frequency\":\"438.06250\","
                           "\"colorCode\":1}}") &&
               !strstr(out, "frames"),
           "csbk start: %s", out);
@@ -2410,7 +2410,7 @@ static void t_netcalls(void)
     rdof_tx_json("start", &c, 2, t, out, sizeof out);
     snprintf(want, sizeof want,
              "{\"TX\":{\"timestamp\":\"%s\",\"action\":\"start\",\"slot\":0,\"src_id\":9992345,\"dst_id\":9,"
-             "\"group\":\"yes\",\"frequency\":\"461.03750\",\"colorCode\":1}}",
+             "\"group\":\"yes\",\"frequency\":\"438.06250\",\"colorCode\":1}}",
              ts);
     CHECK(!strcmp(out, want), "tx start: %s", out);
     rdof_tx_json("end", &c, 2.25, t, out, sizeof out);
@@ -2449,7 +2449,7 @@ static void t_status_edges(void)
     CHECK(s[0] == 0, "repr in 1");
 
     char out[512];
-    rdof_repeater_receiver_json("R", 461037500, 466037500, 2, "N0CALL", NULL, 2, out, sizeof out);
+    rdof_repeater_receiver_json("R", 438062500, 438037500, 2, "N0CALL", NULL, 2, out, sizeof out);
     CHECK(strstr(out, "\"device\":\"N0CALL\",\"sfr\":{\"inboundSlot\":2,\"outboundSlot\":1}}}") != NULL,
           "sfr: %s", out);
     rdof_repeater_receiver_json("R", 1, 1, 2, "D", NULL, INT_MIN, out, sizeof out);
@@ -2635,8 +2635,8 @@ static void t_mmdvm_edges(void)
     /* RSSI: floor division below 300 MHz; INT_MAX and INT_MIN clamped, not overflowed */
     CHECK(rdof_radio_hotspot_dbm(-1, 146000000) == -166 && rdof_radio_hotspot_dbm(27, 146000000) == -132 &&
               rdof_radio_hotspot_dbm(-27, 299999999) == -196 && rdof_radio_hotspot_dbm(10, 300000000) == -141 &&
-              rdof_radio_hotspot_dbm(INT_MAX, 461000000) == INT_MAX - 151 &&
-              rdof_radio_hotspot_dbm(INT_MIN, 461000000) == INT_MIN && rdof_radio_hotspot_dbm(INT_MAX, 1) == INT_MAX &&
+              rdof_radio_hotspot_dbm(INT_MAX, 438025000) == INT_MAX - 151 &&
+              rdof_radio_hotspot_dbm(INT_MIN, 438025000) == INT_MIN && rdof_radio_hotspot_dbm(INT_MAX, 1) == INT_MAX &&
               rdof_radio_hotspot_dbm(INT_MIN, 1) == INT_MIN,
           "dbm");
 
@@ -2885,28 +2885,28 @@ static void t_grid_edges(void)
         int out_ts;
         int64_t out_err;
     } v[] = {
-        {INT64_MIN, 0, -307445734562LL, 1, 5224192LL, -307445734561LL, -9223372036830000000LL, -307445734562LL, 2, 3974192LL, -307445734562LL, 1, 2724192LL},
-        {INT64_MIN, 15000, 307445734561LL, 2, 9775808LL, 307445734562LL, -9223372036834551616LL, 307445734561LL, 1, 8525808LL, 307445734561LL, 2, 7275808LL},
-        {INT64_MIN, -15000, -307445734562LL, 1, 20224192LL, -307445734561LL, -9223372036845000000LL, -307445734561LL, 1, -11025808LL, -307445734561LL, 2, -12275808LL},
-        {INT64_MIN, INT_MAX, 307445662979LL, 2, 1128808LL, 307445662980LL, -9223372036825904616LL, 307445662979LL, 1, -121192LL, 307445662979LL, 2, -1371192LL},
-        {INT64_MIN, INT_MIN, -307445662980LL, 1, 28872192LL, -307445662979LL, -9223372036853648000LL, -307445662979LL, 1, -2377808LL, -307445662979LL, 2, -3627808LL},
-        {INT64_MIN + 1, 0, -307445734562LL, 1, 5224193LL, -307445734561LL, -9223372036830000000LL, -307445734562LL, 2, 3974193LL, -307445734562LL, 1, 2724193LL},
-        {INT64_MIN + 1, -15000, -307445734562LL, 1, 20224193LL, -307445734561LL, -9223372036845000000LL, -307445734561LL, 1, -11025807LL, -307445734561LL, 2, -12275807LL},
-        {INT64_MAX, 0, 307445734561LL, 2, 24775807LL, 307445734562LL, -9223372036849551616LL, -307445734562LL, 2, 3974191LL, -307445734562LL, 1, 2724191LL},
-        {INT64_MAX, 15000, 307445734561LL, 2, 9775807LL, 307445734562LL, -9223372036834551616LL, 307445734561LL, 1, 8525807LL, 307445734561LL, 2, 7275807LL},
-        {INT64_MAX, -15000, -307445734562LL, 1, 20224191LL, -307445734561LL, -9223372036845000000LL, -307445734561LL, 1, -11025809LL, -307445734561LL, 2, -12275809LL},
-        {INT64_MAX, INT_MAX, 307445662979LL, 2, 1128807LL, 307445662980LL, -9223372036825904616LL, 307445662979LL, 1, -121193LL, 307445662979LL, 2, -1371193LL},
-        {INT64_MAX, INT_MIN, -307445662980LL, 1, 28872191LL, -307445662979LL, -9223372036853648000LL, -307445662979LL, 1, -2377809LL, -307445662979LL, 2, -3627809LL},
-        {INT64_MAX - 14999999, 0, 307445734561LL, 2, 9775808LL, 307445734562LL, -9223372036849551616LL, 307445734561LL, 1, 8525808LL, 307445734561LL, 2, 7275808LL},
-        {INT64_MAX - 14999999, 15000, 307445734560LL, 1, 24775808LL, 307445734561LL, 9223372036845000000LL, 307445734561LL, 1, -6474192LL, 307445734561LL, 2, -7724192LL},
-        {INT64_MAX - 14999999, INT_MAX, 307445662978LL, 1, 16128808LL, 307445662979LL, 9223372036853647000LL, 307445662978LL, 2, 14878808LL, 307445662978LL, 1, 13628808LL},
-        {INT64_MAX - 15000000, 0, 307445734561LL, 2, 9775807LL, 307445734562LL, -9223372036849551616LL, 307445734561LL, 1, 8525807LL, 307445734561LL, 2, 7275807LL},
-        {INT64_MAX - 15000000, -15000, 307445734561LL, 2, 24775807LL, 307445734562LL, 9223372036845000000LL, -307445734562LL, 2, 3974191LL, -307445734562LL, 1, 2724191LL},
-        {INT64_MAX - 15000000, INT_MIN, -307445662980LL, 1, 13872191LL, -307445662979LL, -9223372036853648000LL, -307445662980LL, 2, 12622191LL, -307445662980LL, 1, 11372191LL},
-        {0, 15000, -1LL, 2, 15000000LL, 0LL, 15000000LL, -1LL, 1, 13750000LL, -1LL, 2, 12500000LL},
-        {0, -15000, 0LL, 1, 15000000LL, 1LL, 15000000LL, 0LL, 2, 13750000LL, 0LL, 1, 12500000LL},
-        {0, INT_MAX, -71583LL, 2, 6353000LL, -71582LL, 23647000LL, -71583LL, 1, 5103000LL, -71583LL, 2, 3853000LL},
-        {0, INT_MIN, 71582LL, 1, 23648000LL, 71583LL, 6352000LL, 71583LL, 1, -7602000LL, 71583LL, 2, -8852000LL},
+        {INT64_MIN, 0, -307445734562LL, 1, 5224192LL, -307445734561LL, -9223372036830000000LL, -307445734562LL, 1, 3974192LL, -307445734562LL, 1, 2724192LL},
+        {INT64_MIN, 15000, 307445734561LL, 2, 9775808LL, 307445734562LL, -9223372036834551616LL, 307445734561LL, 2, 8525808LL, 307445734561LL, 2, 7275808LL},
+        {INT64_MIN, -15000, -307445734562LL, 1, 20224192LL, -307445734561LL, -9223372036845000000LL, -307445734561LL, 2, -11025808LL, -307445734561LL, 2, -12275808LL},
+        {INT64_MIN, INT_MAX, 307445662979LL, 2, 1128808LL, 307445662980LL, -9223372036825904616LL, 307445662979LL, 2, -121192LL, 307445662979LL, 2, -1371192LL},
+        {INT64_MIN, INT_MIN, -307445662980LL, 1, 28872192LL, -307445662979LL, -9223372036853648000LL, -307445662979LL, 2, -2377808LL, -307445662979LL, 2, -3627808LL},
+        {INT64_MIN + 1, 0, -307445734562LL, 1, 5224193LL, -307445734561LL, -9223372036830000000LL, -307445734562LL, 1, 3974193LL, -307445734562LL, 1, 2724193LL},
+        {INT64_MIN + 1, -15000, -307445734562LL, 1, 20224193LL, -307445734561LL, -9223372036845000000LL, -307445734561LL, 2, -11025807LL, -307445734561LL, 2, -12275807LL},
+        {INT64_MAX, 0, 307445734561LL, 2, 24775807LL, 307445734562LL, -9223372036849551616LL, -307445734562LL, 1, 3974191LL, -307445734562LL, 1, 2724191LL},
+        {INT64_MAX, 15000, 307445734561LL, 2, 9775807LL, 307445734562LL, -9223372036834551616LL, 307445734561LL, 2, 8525807LL, 307445734561LL, 2, 7275807LL},
+        {INT64_MAX, -15000, -307445734562LL, 1, 20224191LL, -307445734561LL, -9223372036845000000LL, -307445734561LL, 2, -11025809LL, -307445734561LL, 2, -12275809LL},
+        {INT64_MAX, INT_MAX, 307445662979LL, 2, 1128807LL, 307445662980LL, -9223372036825904616LL, 307445662979LL, 2, -121193LL, 307445662979LL, 2, -1371193LL},
+        {INT64_MAX, INT_MIN, -307445662980LL, 1, 28872191LL, -307445662979LL, -9223372036853648000LL, -307445662979LL, 2, -2377809LL, -307445662979LL, 2, -3627809LL},
+        {INT64_MAX - 14999999, 0, 307445734561LL, 2, 9775808LL, 307445734562LL, -9223372036849551616LL, 307445734561LL, 2, 8525808LL, 307445734561LL, 2, 7275808LL},
+        {INT64_MAX - 14999999, 15000, 307445734560LL, 1, 24775808LL, 307445734561LL, 9223372036845000000LL, 307445734561LL, 2, -6474192LL, 307445734561LL, 2, -7724192LL},
+        {INT64_MAX - 14999999, INT_MAX, 307445662978LL, 1, 16128808LL, 307445662979LL, 9223372036853647000LL, 307445662978LL, 1, 14878808LL, 307445662978LL, 1, 13628808LL},
+        {INT64_MAX - 15000000, 0, 307445734561LL, 2, 9775807LL, 307445734562LL, -9223372036849551616LL, 307445734561LL, 2, 8525807LL, 307445734561LL, 2, 7275807LL},
+        {INT64_MAX - 15000000, -15000, 307445734561LL, 2, 24775807LL, 307445734562LL, 9223372036845000000LL, -307445734562LL, 1, 3974191LL, -307445734562LL, 1, 2724191LL},
+        {INT64_MAX - 15000000, INT_MIN, -307445662980LL, 1, 13872191LL, -307445662979LL, -9223372036853648000LL, -307445662980LL, 1, 12622191LL, -307445662980LL, 1, 11372191LL},
+        {0, 15000, -1LL, 2, 15000000LL, 0LL, 15000000LL, -1LL, 2, 13750000LL, -1LL, 2, 12500000LL},
+        {0, -15000, 0LL, 1, 15000000LL, 1LL, 15000000LL, 0LL, 1, 13750000LL, 0LL, 1, 12500000LL},
+        {0, INT_MAX, -71583LL, 2, 6353000LL, -71582LL, 23647000LL, -71583LL, 2, 5103000LL, -71583LL, 2, 3853000LL},
+        {0, INT_MIN, 71582LL, 1, 23648000LL, 71583LL, 6352000LL, 71583LL, 2, -7602000LL, 71583LL, 2, -8852000LL},
     };
     for (size_t i = 0; i < sizeof v / sizeof v[0]; i++) {
         int ts, its, ots;
@@ -2946,10 +2946,10 @@ static void t_grid_edges(void)
     int ts;
     int64_t err;
     const int64_t b0 = rdof_grid_boundary(7, 0);
-    CHECK(rdof_grid_inbound(b0 + RDOF_IN_START_NS + RDOF_SLOT_NS / 2, 0, &ts, &err) == 8 && ts == 2 &&
+    CHECK(rdof_grid_inbound(b0 + RDOF_IN_START_NS + RDOF_SLOT_NS / 2, 0, &ts, &err) == 8 && ts == 1 &&
               err == -RDOF_SLOT_NS / 2,
           "inbound half a slot late: %d %lld", ts, (long long)err);
-    CHECK(rdof_grid_inbound(b0 + RDOF_IN_START_NS + RDOF_SLOT_NS / 2 - 1, 0, &ts, &err) == 7 && ts == 1 &&
+    CHECK(rdof_grid_inbound(b0 + RDOF_IN_START_NS + RDOF_SLOT_NS / 2 - 1, 0, &ts, &err) == 7 && ts == 2 &&
               err == RDOF_SLOT_NS / 2 - 1,
           "inbound a hair under half a slot late");
     CHECK(rdof_grid_outbound(b0 + RDOF_CACH_NS - RDOF_SLOT_NS / 2, 0, &ts, &err) == 7 && ts == 2 &&
@@ -3254,15 +3254,15 @@ static void t_sample_clock_edges(void)
    the template's (the last one wins). */
 enum { T_ROAM, T_ROAM_SDR, T_REP };
 static const char *const TMPL[] = {
-    "{\"name\": \"b\", \"cc\": 1, \"channels\": {\"1\": 461.0375, \"2\": 461.0875}%s,"
+    "{\"name\": \"b\", \"cc\": 1, \"channels\": {\"1\": 438.0625, \"2\": 438.1125}%s,"
     " \"radios\": [{\"type\": \"opengd77\", \"name\": \"R\", \"peer_id\": 1, \"idle\": 1%s}]}",
-    "{\"name\": \"b\", \"cc\": 1, \"channels\": {\"1\": 461.0375, \"2\": 461.0875}%s,"
+    "{\"name\": \"b\", \"cc\": 1, \"channels\": {\"1\": 438.0625, \"2\": 438.1125}%s,"
     " \"radios\": [{\"type\": \"opengd77\", \"name\": \"R\", \"peer_id\": 1, \"idle\": 1%s},"
     " {\"type\": \"sdr\", \"name\": \"S\", \"channels\": [2, 1]}]}",
-    "{\"name\": \"b\", \"cc\": 1, \"channels\": {\"1\": 461.0375}%s,"
+    "{\"name\": \"b\", \"cc\": 1, \"channels\": {\"1\": 438.0625}%s,"
     " \"radios\": [{\"type\": \"repeater\", \"name\": \"R\", \"peer_id\": 3%s}]}",
 };
-#define FREQS ", \"rx_freq\": 461.0375, \"tx_freq\": 466.0375"
+#define FREQS ", \"rx_freq\": 438.0625, \"tx_freq\": 438.0375"
 #define SPLIT(tx, rx) FREQS ", \"radio\": {\"type\": \"split\", \"tx\": " tx ", \"rx\": " rx
 
 static bool cfg_try(int t, const char *top, const char *radio, rdof_config_t *cfg, char *error, size_t cap)
@@ -3277,11 +3277,11 @@ static void t_config_dcdm(void)
 {
     static rdof_config_t cfg;
     char error[160];
-    bool ok = cfg_try(T_REP, "", ", \"mode\": \"dcdm\", \"freq\": 461.0375", &cfg, error, sizeof error);
-    CHECK(ok && cfg.mode == RDOF_CFG_REPEATER && cfg.dcdm && !cfg.sfr && cfg.rx_freq == 461037500 &&
-              cfg.tx_freq == 461037500 && cfg.slot1 && cfg.slot2,
+    bool ok = cfg_try(T_REP, "", ", \"mode\": \"dcdm\", \"freq\": 438.0625", &cfg, error, sizeof error);
+    CHECK(ok && cfg.mode == RDOF_CFG_REPEATER && cfg.dcdm && !cfg.sfr && cfg.rx_freq == 438062500 &&
+              cfg.tx_freq == 438062500 && cfg.slot1 && cfg.slot2,
           "dcdm: %s", ok ? "" : error);
-    ok = cfg_try(T_REP, "", ", \"mode\": \"dcdm\", \"freq\": 461.0375, \"slots\": [2], \"radio\": {\"type\": \"opengd77\"}",
+    ok = cfg_try(T_REP, "", ", \"mode\": \"dcdm\", \"freq\": 438.0625, \"slots\": [2], \"radio\": {\"type\": \"opengd77\"}",
                  &cfg, error, sizeof error);
     CHECK(ok && cfg.dcdm && !cfg.slot1 && cfg.slot2 && !strcmp(cfg.radio_type, "radio_hotspot"),
           "dcdm on a radio_hotspot, slot 2 only: %s", ok ? "" : error);
@@ -3289,13 +3289,32 @@ static void t_config_dcdm(void)
     CHECK(ok && !cfg.dcdm, "duplex isn't dcdm");
     for (int full = 0; full < 2; full++) {
         ok = cfg_try(T_ROAM_SDR, "",
-                     full ? ", \"type\": \"sdr_transceiver\", \"duplex\": \"full\", \"mode\": \"dcdm\", \"freq\": 461.0375"
-                          : ", \"type\": \"sdr_transceiver\", \"mode\": \"dcdm\", \"freq\": 461.0375",
+                     full ? ", \"type\": \"sdr_transceiver\", \"duplex\": \"full\", \"mode\": \"dcdm\", \"freq\": 438.0625"
+                          : ", \"type\": \"sdr_transceiver\", \"mode\": \"dcdm\", \"freq\": 438.0625",
                      &cfg, error, sizeof error);
         CHECK(ok && cfg.mode == RDOF_CFG_REPEATER && cfg.dcdm && !strcmp(cfg.modem_port, "sdr") &&
                   cfg.sdr_duplex == (full ? RDOF_SDR_DUPLEX_FULL : RDOF_SDR_DUPLEX_HALF),
               "sdr_transceiver dcdm (full %d): %s", full, ok ? "" : error);
     }
+}
+
+/* parrot: an id, 0 for everything, absent off; a roamer's or a repeater's; in the description only when set. */
+static void t_config_parrot(void)
+{
+    static rdof_config_t cfg;
+    static char desc[4096];
+    char error[160];
+    bool ok = cfg_try(T_ROAM, "", "", &cfg, error, sizeof error);
+    rdof_config_describe(&cfg, desc, sizeof desc);
+    CHECK(ok && !cfg.has_parrot && !strstr(desc, "parrot"), "no parrot: %s", ok ? desc : error);
+    ok = cfg_try(T_ROAM, "", ", \"parrot\": 9990", &cfg, error, sizeof error);
+    rdof_config_describe(&cfg, desc, sizeof desc);
+    CHECK(ok && cfg.has_parrot && cfg.parrot == 9990 && strstr(desc, ";parrot=9990;"), "roamer parrot: %s",
+          ok ? desc : error);
+    ok = cfg_try(T_REP, "", FREQS ", \"parrot\": 0", &cfg, error, sizeof error);
+    rdof_config_describe(&cfg, desc, sizeof desc);
+    CHECK(ok && cfg.has_parrot && cfg.parrot == 0 && strstr(desc, ";parrot=0;"), "repeater parrot 0: %s",
+          ok ? desc : error);
 }
 
 static void t_config_errors(void)
@@ -3309,8 +3328,8 @@ static void t_config_errors(void)
         {T_ROAM, ", \"channels\": {\"x\": 461}", "", "channel x: not a number"},
         {T_ROAM, ", \"channels\": {\"3\": {\"cc\": 1}}", "", "channel 3: no freq"},
         {T_ROAM, ", \"channels\": {\"3\": \"high\"}", "", "channel: bad frequency"},
-        {T_ROAM, ", \"channels\": {\"3\": {\"freq\": 461.2, \"power\": \"x\"}}", "", "channel: power isn't a number"},
-        {T_ROAM, ", \"cc\": null, \"channels\": {\"1\": 461.0}", "",
+        {T_ROAM, ", \"channels\": {\"3\": {\"freq\": 438.225, \"power\": \"x\"}}", "", "channel: power isn't a number"},
+        {T_ROAM, ", \"cc\": null, \"channels\": {\"1\": 438.025}", "",
          "channel 1: no color code (set cc on it or at the top)"},
         /* a roamer's channels and idle */
         {T_ROAM, "", ", \"channels\": 5", "channels: numbers, or all"},
@@ -3320,9 +3339,9 @@ static void t_config_errors(void)
         {T_ROAM, "", ", \"channels\": [1, {\"ch\": 2, \"power\": \"x\"}]", "channel: power isn't a number"},
         {T_ROAM, "", ", \"channels\": [{\"ch\": 1, \"cc\": 16}]", "color code 16"},
         {T_ROAM, "", ", \"channels\": [{\"ch\": 1, \"cc\": 1.5}]", "color code 1.5"},
-        {T_ROAM, "", ", \"idle\": {\"freq\": 461.1}", "idle: freq and cc"},
-        {T_ROAM, "", ", \"idle\": {\"freq\": 461.1, \"cc\": 16}", "color code 16"},
-        {T_ROAM, "", ", \"channels\": [], \"idle\": {\"freq\": 461.1, \"cc\": 1}",
+        {T_ROAM, "", ", \"idle\": {\"freq\": 438.125}", "idle: freq and cc"},
+        {T_ROAM, "", ", \"idle\": {\"freq\": 438.125, \"cc\": 16}", "color code 16"},
+        {T_ROAM, "", ", \"channels\": [], \"idle\": {\"freq\": 438.125, \"cc\": 1}",
          "no channels: list the simplex channels this radio may use"},
         {T_ROAM, "", ", \"idle\": 7", "channel 7 isn't in the plan (channels:)"},
         /* a roamer's numbers */
@@ -3330,6 +3349,9 @@ static void t_config_errors(void)
         {T_ROAM, "", ", \"listen_s\": \"soon\"", "radio: listen_s isn't a number"},
         {T_ROAM, "", ", \"prebuffer\": \"6.5\"", "radio: prebuffer isn't a whole number"},
         {T_ROAM, "", ", \"csbk_preambles\": [1]", "radio: csbk_preambles isn't a number"},
+        {T_ROAM, "", ", \"parrot\": -1", "radio: parrot -1 isn't a DMR id (0 for everything)"},
+        {T_ROAM, "", ", \"parrot\": 16777216", "radio: parrot 16777216 isn't a DMR id (0 for everything)"},
+        {T_ROAM, "", ", \"parrot\": \"me\"", "radio: parrot isn't a whole number"},
         /* scan */
         {T_ROAM, "", ", \"scan\": {\"channels\": [1, 2], \"dwell_s\": 0}",
          "scan: dwell_s > 0, hang_s >= 0, and carrier_s (0 = off) under dwell_s"},
@@ -3382,17 +3404,17 @@ static void t_config_errors(void)
         {T_REP, "", ", \"rx_freq\": \"x\", \"tx_freq\": 466", "rx_freq: bad frequency"},
         {T_REP, "", ", \"mode\": \"sfr\"", "no freq (MHz)"},
         {T_REP, "", ", \"mode\": \"sfr\", \"freq\": \"x\"", "freq: bad frequency"},
-        {T_REP, "", ", \"mode\": \"sfr\", \"freq\": 461.0375, \"inbound_slot\": \"x\"",
+        {T_REP, "", ", \"mode\": \"sfr\", \"freq\": 438.0625, \"inbound_slot\": \"x\"",
          "radio: inbound_slot isn't a whole number"},
-        {T_REP, "", ", \"mode\": \"sfr\", \"freq\": 461.0375, \"inbound_slot\": 3", "inbound_slot: 1 or 2"},
-        {T_REP, "", ", \"mode\": \"sfr\", \"freq\": 461.0375, \"radio\": {\"type\": \"mmdvm\"}",
+        {T_REP, "", ", \"mode\": \"sfr\", \"freq\": 438.0625, \"inbound_slot\": 3", "inbound_slot: 1 or 2"},
+        {T_REP, "", ", \"mode\": \"sfr\", \"freq\": 438.0625, \"radio\": {\"type\": \"mmdvm\"}",
          "radio.type mmdvm: a single frequency repeater is a radio_hotspot (a radio in hotspot mode with SFR "
          "firmware)"},
         {T_REP, "", FREQS ", \"mode\": \"simplex\"", "mode simplex: duplex, sfr or dcdm"},
         {T_REP, "", ", \"mode\": \"dcdm\"", "no freq (MHz)"},
-        {T_REP, "", ", \"mode\": \"dcdm\", \"freq\": 461.0375, \"radio\": {\"type\": \"split\"}",
+        {T_REP, "", ", \"mode\": \"dcdm\", \"freq\": 438.0625, \"radio\": {\"type\": \"split\"}",
          "radio.type split: a split is a duplex pair; dual capacity direct mode is one radio on one frequency"},
-        {T_REP, "", ", \"mode\": \"dcdm\", \"freq\": 461.0375, \"slot_timing\": \"utc\"",
+        {T_REP, "", ", \"mode\": \"dcdm\", \"freq\": 438.0625, \"slot_timing\": \"utc\"",
          "slot_timing utc: in dual capacity direct mode the modem times its slots from the channel"},
         {T_REP, "", FREQS ", \"cc\": \"x\"", "radio: cc isn't a whole number"},
         {T_REP, ", \"cc\": null", FREQS, "channel 1: no color code (set cc on it or at the top)"},
@@ -3448,11 +3470,11 @@ static void t_config_errors(void)
         {T_ROAM, "", ", \"channels\": [4294967297]", "channel 4294967297 isn't in the plan (channels:)"},
         {T_ROAM, "", ", \"channels\": [1e300]", "channel 9223372036854775807 isn't in the plan (channels:)"},
         {T_ROAM, "", ", \"channels\": [-1e300]", "channel -9223372036854775808 isn't in the plan (channels:)"},
-        {T_ROAM, ", \"channels\": {\"1\": {\"freq\": 461.0375, \"cc\": 1e300}}", "", "color code 2.14748e+09"},
-        {T_ROAM, "", ", \"idle\": {\"freq\": 461.1, \"cc\": 1e300}", "color code 9.22337e+18"},
+        {T_ROAM, ", \"channels\": {\"1\": {\"freq\": 438.0625, \"cc\": 1e300}}", "", "color code 2.14748e+09"},
+        {T_ROAM, "", ", \"idle\": {\"freq\": 438.125, \"cc\": 1e300}", "color code 9.22337e+18"},
         {T_REP, "", FREQS ", \"cc\": 1e300", "color code 9223372036854775807"},
         {T_REP, "", FREQS ", \"slots\": [1e300]", "slots: 1, 2 or both"},
-        {T_REP, ", \"cc\": null, \"channels\": {\"1\": {\"freq\": 461.0375, \"cc\": 1}}", FREQS,
+        {T_REP, ", \"cc\": null, \"channels\": {\"1\": {\"freq\": 438.0625, \"cc\": 1}}", FREQS,
          "no color code (set cc on it or at the top)"},
         {T_ROAM, "", ", \"channels\": [\"nan\"]", "channel 0 isn't in the plan (channels:)"},
         /* each side of each check */
@@ -3477,7 +3499,7 @@ static void t_config_errors(void)
         {T_ROAM, "", ", \"channels\": [{\"ch\": \"x\"}]", "a channel entry needs ch"},
         {T_ROAM, "", ", \"channels\": [{\"ch\": 1, \"cc\": \"x\"}]", "channel: cc isn't a number"},
         {T_ROAM, "", ", \"idle\": {\"freq\": \"x\", \"cc\": 1}", "idle: freq and cc"},
-        {T_ROAM, ", \"channels\": {\"1\": {\"freq\": 461.0375, \"cc\": 16}}", ", \"channels\": []", "color code 16"},
+        {T_ROAM, ", \"channels\": {\"1\": {\"freq\": 438.0625, \"cc\": 16}}", ", \"channels\": []", "color code 16"},
         {T_ROAM, "", ", \"location\": {\"lon\": 1}", "location: latitude and longitude"},
         {T_ROAM, "", ", \"location\": {\"lat\": -91, \"lon\": 0}", "location -91, 0 out of range"},
         {T_ROAM, "", ", \"location\": {\"lat\": 0, \"lon\": 181}", "location 0, 181 out of range"},
@@ -3525,13 +3547,13 @@ static void t_config_errors(void)
         {"{\"radios\": \"R\"}", "radios: a list"},
         {"{\"radios\": null}", "no radios"},
         {"{\"cc\": 1}", "no radios"},
-        {"{\"cc\": 1, \"channels\": {\"1\": 461.0375}, \"radios\": [{\"type\": \"mmdvm_hs\", \"idle\": 1}]}", "no peer_id"},
-        {"{\"cc\": 1, \"channels\": {\"1\": 461.0375}, \"radios\": [{\"type\": \"repeater\", \"rx_freq\": 461,"
+        {"{\"cc\": 1, \"channels\": {\"1\": 438.0625}, \"radios\": [{\"type\": \"mmdvm_hs\", \"idle\": 1}]}", "no peer_id"},
+        {"{\"cc\": 1, \"channels\": {\"1\": 438.0625}, \"radios\": [{\"type\": \"repeater\", \"rx_freq\": 461,"
          " \"tx_freq\": 466}]}", "no peer_id"},
         /* a number in run isn't a name, not even "" */
         {"{\"run\": [5], \"radios\": [{\"type\": \"sdr\", \"name\": \"\"}, {\"type\": \"sdr\", \"name\": \"\"}]}",
          "run: a radio's name or a list of names"},
-        {"{\"cc\": 1, \"channels\": {\"1\": 461.0375}, \"radios\": [{\"type\": \"mmdvm_hs\", \"peer_id\": 1, \"idle\": 1},"
+        {"{\"cc\": 1, \"channels\": {\"1\": 438.0625}, \"radios\": [{\"type\": \"mmdvm_hs\", \"peer_id\": 1, \"idle\": 1},"
          " {\"type\": \"sdr\", \"channels\": [9]}]}", "channel 9 isn't in the plan (channels:)"},
     };
     for (size_t i = 0; i < sizeof whole / sizeof whole[0]; i++)
@@ -3587,18 +3609,18 @@ static void t_config_values(void)
     CHECK(ok && cfg.tuner == RDOF_TUNER_MODEM && cfg.rssi.n == 2 && cfg.rssi.raw[0] == 10 && cfg.headers == -1 &&
               cfg.terminators == 3,
           "radio settings: %s", error);
-    ok = cfg_try(T_ROAM, "", ", \"radio\": {\"tuner\": {\"type\": \"fixed\", \"freq\": 461.0375, \"settle_ms\": 20}}", &cfg,
+    ok = cfg_try(T_ROAM, "", ", \"radio\": {\"tuner\": {\"type\": \"fixed\", \"freq\": 438.0625, \"settle_ms\": 20}}", &cfg,
                  error, sizeof error);
-    CHECK(ok && cfg.tuner == RDOF_TUNER_FIXED && cfg.tuner_freq == 461037500 && cfg.settle_ms == 20, "fixed tuner: %s",
+    CHECK(ok && cfg.tuner == RDOF_TUNER_FIXED && cfg.tuner_freq == 438062500 && cfg.settle_ms == 20, "fixed tuner: %s",
           error);
     /* location: height clamped; idle by frequency */
     ok = cfg_try(T_ROAM, "", ", \"location\": {\"latitude\": 41.5, \"longitude\": -81.7, \"height\": 5000}, "
-                 "\"idle\": {\"freq\": 461.1, \"cc\": 2}", &cfg, error, sizeof error);
-    CHECK(ok && cfg.has_location && cfg.location.height_m == 999 && cfg.idle.freq == 461100000 && cfg.idle.cc == 2,
+                 "\"idle\": {\"freq\": 438.125, \"cc\": 2}", &cfg, error, sizeof error);
+    CHECK(ok && cfg.has_location && cfg.location.height_m == 999 && cfg.idle.freq == 438125000 && cfg.idle.cc == 2,
           "location and idle: %s", error);
     /* the box's SDR channels, sorted */
     ok = cfg_try(T_ROAM_SDR, "", "", &cfg, error, sizeof error);
-    CHECK(ok && cfg.ncovered == 2 && cfg.covered[0] == 461037500 && cfg.covered[1] == 461087500, "covered: %s", error);
+    CHECK(ok && cfg.ncovered == 2 && cfg.covered[0] == 438062500 && cfg.covered[1] == 438112500, "covered: %s", error);
     /* scan on given channels */
     ok = cfg_try(T_ROAM, "", ", \"scan\": {\"channels\": [{\"ch\": 2, \"cc\": 3}]}", &cfg, error, sizeof error);
     CHECK(ok && cfg.has_scan && cfg.nscan == 1 && cfg.scan_channels[0].cc == 3, "scan: %s", error);
@@ -3607,7 +3629,7 @@ static void t_config_values(void)
                  error, sizeof error);
     CHECK(ok && cfg.has_oled && cfg.oled_address == 61 && cfg.oled_sh1106 && cfg.oled_rotate180, "oled: %s", error);
     /* a repeater: SFR on slot 2, and slot 2 only */
-    ok = cfg_try(T_REP, "", ", \"mode\": \"sfr\", \"freq\": 461.0375, \"inbound_slot\": 2", &cfg, error, sizeof error);
+    ok = cfg_try(T_REP, "", ", \"mode\": \"sfr\", \"freq\": 438.0625, \"inbound_slot\": 2", &cfg, error, sizeof error);
     CHECK(ok && cfg.sfr && cfg.slot1 && !cfg.slot2 && cfg.oled_channel == 1, "sfr: %s", error);
     ok = cfg_try(T_REP, "", FREQS ", \"slots\": [2]", &cfg, error, sizeof error);
     CHECK(ok && !cfg.slot1 && cfg.slot2, "slot 2: %s", error);
@@ -3626,8 +3648,8 @@ static void t_config_edges(void)
     static rdof_config_t cfg, other;
     char error[200];
     /* str(): -0 is 0, a float as repr */
-    bool ok = cfg_try(T_ROAM, "", ", \"callsign\": 461.0375, \"cwid\": -0", &cfg, error, sizeof error);
-    CHECK(ok && !strcmp(cfg.callsign, "461.0375") && !strcmp(cfg.cwid, "0"), "str: %s %s %s", cfg.callsign, cfg.cwid,
+    bool ok = cfg_try(T_ROAM, "", ", \"callsign\": 438.0625, \"cwid\": -0", &cfg, error, sizeof error);
+    CHECK(ok && !strcmp(cfg.callsign, "438.0625") && !strcmp(cfg.cwid, "0"), "str: %s %s %s", cfg.callsign, cfg.cwid,
           error);
     ok = cfg_try(T_ROAM, "", ", \"callsign\": 1e22, \"cwid\": 0.1", &cfg, error, sizeof error);
     CHECK(ok && !strcmp(cfg.callsign, "1e+22") && !strcmp(cfg.cwid, "0.1"), "str: %s %s", cfg.callsign, cfg.cwid);
@@ -3642,15 +3664,15 @@ static void t_config_edges(void)
     ok = cfg_try(T_ROAM, "", ", \"location\": {\"lat\": 1, \"lon\": 2, \"height\": -1e300}", &cfg, error, sizeof error);
     CHECK(ok && cfg.location.height_m == 0, "height -1e300: %d %s", cfg.location.height_m, error);
     /* frequencies and powers past their range */
-    ok = cfg_try(T_ROAM, ", \"channels\": {\"1\": 461.0375, \"2\": -5, \"3\": 1e300}",
+    ok = cfg_try(T_ROAM, ", \"channels\": {\"1\": 438.0625, \"2\": -5, \"3\": 1e300}",
                  ", \"channels\": [{\"ch\": 1, \"power\": 1e300}, {\"ch\": 2, \"power\": -1e300}, 3]", &cfg, error,
                  sizeof error);
     CHECK(ok && cfg.nchannels == 3 && cfg.channels[0].power == 255 && cfg.channels[1].freq == 0 &&
               cfg.channels[1].power == 0 && cfg.channels[2].freq == UINT32_MAX,
           "range: %u %u %s", cfg.channels[1].freq, cfg.channels[2].freq, error);
     /* "1" and "01" are one channel: the last */
-    ok = cfg_try(T_ROAM, ", \"channels\": {\"1\": 461.0375, \"01\": 461.1}", "", &cfg, error, sizeof error);
-    CHECK(ok && cfg.nchannels == 1 && cfg.channels[0].freq == 461100000 && cfg.idle.freq == 461100000,
+    ok = cfg_try(T_ROAM, ", \"channels\": {\"1\": 438.0625, \"01\": 438.125}", "", &cfg, error, sizeof error);
+    CHECK(ok && cfg.nchannels == 1 && cfg.channels[0].freq == 438125000 && cfg.idle.freq == 438125000,
           "duplicate keys: %d %u %s", cfg.nchannels, cfg.channels[0].freq, error);
     /* a zero-size error buffer is left alone; none at all */
     char z[4] = "Z";
@@ -3661,7 +3683,7 @@ static void t_config_edges(void)
     CHECK(!rdof_config_parse("{", 1, &cfg, z, 1) && z[0] == 0, "cap 1: %d", z[0]);
     /* names past rdof_roles_t's 23 characters: a radio's own, and the default from a long box name */
     static const char named[] =
-        "{\"name\": \"b\", \"cc\": 1, \"channels\": {\"1\": 461.0375}, \"radios\": [{\"type\": \"mmdvm_hs\","
+        "{\"name\": \"b\", \"cc\": 1, \"channels\": {\"1\": 438.0625}, \"radios\": [{\"type\": \"mmdvm_hs\","
         " \"name\": \"a-radio-name-longer-than-23\", \"peer_id\": 1, \"idle\": 1}]}";
     ok = rdof_box_roles(named, strlen(named), &roles, error, sizeof error) &&
          rdof_config_parse_radio(named, strlen(named), roles.radios[0], &cfg, error, sizeof error);
@@ -3669,7 +3691,7 @@ static void t_config_edges(void)
               strlen(cfg.name) == 23,
           "a long radio name: %s %s", roles.radios[0], error);
     static const char boxed[] =
-        "{\"name\": \"boxboxboxboxboxboxboxboxboxbox\", \"cc\": 1, \"channels\": {\"1\": 461.0375},"
+        "{\"name\": \"boxboxboxboxboxboxboxboxboxbox\", \"cc\": 1, \"channels\": {\"1\": 438.0625},"
         " \"run\": \"boxboxboxboxboxboxboxboxboxbox-mmdvm_hs1\", \"radios\": [{\"type\": \"mmdvm_hs\", \"peer_id\": 1,"
         " \"idle\": 1}]}";
     ok = rdof_box_roles(boxed, strlen(boxed), &roles, error, sizeof error);
@@ -3712,7 +3734,7 @@ static void t_config_edges(void)
     rdof_config_describe(&other, past, sizeof past);
     CHECK(!strcmp(at_most, past), "describe past the arrays:\n%s\n%s", at_most, past);
     /* the ends of each range, which are in it */
-    ok = cfg_try(T_ROAM, ", \"channels\": {\"1\": 461.0375, \"2\": 99999, \"3\": 100000}",
+    ok = cfg_try(T_ROAM, ", \"channels\": {\"1\": 438.0625, \"2\": 99999, \"3\": 100000}",
                  ", \"location\": {\"lat\": 90, \"lon\": 180}, \"radio\": {\"tuner\": {\"freq\": 10000}}", &cfg, error,
                  sizeof error);
     CHECK(ok && cfg.channels[1].freq == UINT32_MAX && cfg.channels[2].freq == 100000 && cfg.has_location &&
@@ -3727,16 +3749,16 @@ static void t_config_edges(void)
               cfg.split_prebuffer == 4 && cfg.prebuffer == 9 && cfg.cc == 15,
           "split's ends: %s", error);
     /* the OLED's channel: the plan's within 100 Hz of the repeater's receive frequency */
-    ok = cfg_try(T_REP, ", \"channels\": {\"1\": 461.0, \"2\": 461.0005}", ", \"rx_freq\": 461.0005, \"tx_freq\": 466",
+    ok = cfg_try(T_REP, ", \"channels\": {\"1\": 438.025, \"2\": 438.0255}", ", \"rx_freq\": 438.0255, \"tx_freq\": 466",
                  &cfg, error, sizeof error);
     CHECK(ok && cfg.oled_channel == 2, "oled channel, 0 Hz: %d %s", cfg.oled_channel, error);
-    ok = cfg_try(T_REP, ", \"channels\": {\"1\": 461.0001}", ", \"rx_freq\": 461.0002, \"tx_freq\": 466", &cfg, error,
+    ok = cfg_try(T_REP, ", \"channels\": {\"1\": 438.0251}", ", \"rx_freq\": 438.0252, \"tx_freq\": 466", &cfg, error,
                  sizeof error);
     CHECK(ok && cfg.oled_channel == 1, "oled channel, 100 Hz: %d %s", cfg.oled_channel, error);
-    ok = cfg_try(T_REP, ", \"channels\": {\"1\": 461.0001}", ", \"rx_freq\": 461.000201, \"tx_freq\": 466", &cfg, error,
+    ok = cfg_try(T_REP, ", \"channels\": {\"1\": 438.0251}", ", \"rx_freq\": 438.025201, \"tx_freq\": 466", &cfg, error,
                  sizeof error);
     CHECK(ok && cfg.oled_channel == 0, "oled channel, 101 Hz: %d %s", cfg.oled_channel, error);
-    ok = cfg_try(T_REP, ", \"channels\": {\"1\": 461.0001}", ", \"rx_freq\": 461.0, \"tx_freq\": 466", &cfg, error,
+    ok = cfg_try(T_REP, ", \"channels\": {\"1\": 438.0251}", ", \"rx_freq\": 438.025, \"tx_freq\": 466", &cfg, error,
                  sizeof error);
     CHECK(ok && cfg.oled_channel == 1, "oled channel, -100 Hz: %d %s", cfg.oled_channel, error);
     /* int() of text is decimal; an empty modem_address is none; a success leaves no error */
@@ -3798,28 +3820,28 @@ static void t_config_edges(void)
     }
     /* an SDR channel listed twice is covered once */
     static const char twice[] =
-        "{\"cc\": 1, \"channels\": {\"1\": 461.0375, \"2\": 461.0875}, \"radios\": [{\"type\": \"mmdvm_hs\", \"peer_id\": 1,"
+        "{\"cc\": 1, \"channels\": {\"1\": 438.0625, \"2\": 438.1125}, \"radios\": [{\"type\": \"mmdvm_hs\", \"peer_id\": 1,"
         " \"idle\": 1}, {\"type\": \"sdr\", \"channels\": [2, 1, 2]}]}";
     ok = rdof_config_parse(twice, strlen(twice), &cfg, error, sizeof error);
-    CHECK(ok && cfg.ncovered == 2 && cfg.covered[0] == 461037500 && cfg.covered[1] == 461087500, "covered twice: %d %s",
+    CHECK(ok && cfg.ncovered == 2 && cfg.covered[0] == 438062500 && cfg.covered[1] == 438112500, "covered twice: %d %s",
           cfg.ncovered, error);
     /* the box's slot timing reaches a duplex repeater on an auto radio, not a single frequency one */
     ok = cfg_try(T_REP, ", \"slot_timing\": \"utc\"", FREQS, &cfg, error, sizeof error);
     CHECK(ok && cfg.slot_timing.utc, "box utc, duplex: %s", error);
-    ok = cfg_try(T_REP, ", \"slot_timing\": \"utc\"", ", \"mode\": \"sfr\", \"freq\": 461.0375", &cfg, error, sizeof error);
+    ok = cfg_try(T_REP, ", \"slot_timing\": \"utc\"", ", \"mode\": \"sfr\", \"freq\": 438.0625", &cfg, error, sizeof error);
     CHECK(ok && !cfg.slot_timing.utc, "box utc, sfr: %s", error);
-    ok = cfg_try(T_REP, "", ", \"mode\": \"sfr\", \"freq\": 461.0375, \"slot_timing\": \"utc\"", &cfg, error, sizeof error);
+    ok = cfg_try(T_REP, "", ", \"mode\": \"sfr\", \"freq\": 438.0625, \"slot_timing\": \"utc\"", &cfg, error, sizeof error);
     CHECK(!ok && !strcmp(error, "slot_timing utc: a single frequency repeater's radio times its own slots"),
           "sfr's own utc: %s", error);
     /* offsets, headers and terminators that aren't numbers are left at their defaults; a tuner with no type */
     ok = cfg_try(T_ROAM, "", ", \"radio\": {\"rx_offset_hz\": \"x\", \"tx_offset_hz\": [1], \"headers\": \"x\","
-                 " \"terminators\": null, \"tuner\": {\"freq\": 461.1}}", &cfg, error, sizeof error);
+                 " \"terminators\": null, \"tuner\": {\"freq\": 438.125}}", &cfg, error, sizeof error);
     CHECK(ok && cfg.rx_offset_hz == 0 && cfg.tx_offset_hz == 0 && cfg.headers == -1 && cfg.terminators == -1 &&
-              cfg.tuner == RDOF_TUNER_NONE && cfg.tuner_freq == 461100000,
+              cfg.tuner == RDOF_TUNER_NONE && cfg.tuner_freq == 438125000,
           "not numbers: %s", error);
-    ok = cfg_try(T_ROAM, "", ", \"radio\": {\"tuner\": {\"type\": \"fixed\", \"freq\": 461.0375, \"settle_ms\": 20}}", &cfg,
+    ok = cfg_try(T_ROAM, "", ", \"radio\": {\"tuner\": {\"type\": \"fixed\", \"freq\": 438.0625, \"settle_ms\": 20}}", &cfg,
                  error, sizeof error);
-    CHECK(ok && rdof_config_describe(&cfg, full, sizeof full) && strstr(full, ";tuner=fixed:461037500:20;"),
+    CHECK(ok && rdof_config_describe(&cfg, full, sizeof full) && strstr(full, ";tuner=fixed:438062500:20;"),
           "describe, fixed tuner: %s", full);
     ok = cfg_try(T_ROAM, "", ", \"radio\": {\"tuner\": \"modem\"}", &cfg, error, sizeof error);
     CHECK(ok && rdof_config_describe(&cfg, full, sizeof full) && strstr(full, ";tuner=modem:0:0;"),
@@ -3892,6 +3914,7 @@ void test_core(void)
     t_hblink();
     t_config_errors();
     t_config_dcdm();
+    t_config_parrot();
     t_config_values();
     t_config_edges();
     t_json_writer();

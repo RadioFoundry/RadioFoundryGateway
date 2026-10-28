@@ -56,7 +56,7 @@ int64_t rdof_grid_inbound(int64_t start_ns, int offset_us, int *ts, int64_t *err
 {
     int64_t x = sub64(sub64(start_ns, RDOF_IN_START_NS), (int64_t)offset_us * 1000);
     int64_t n = floor_div(add64(x, RDOF_SLOT_NS / 2), RDOF_SLOT_NS);
-    *ts = (n & 1) == 0 ? 2 : 1;
+    *ts = (n & 1) == 0 ? 1 : 2; /* aligned timing: under outbound TSx, logical channel x */
     *err_ns = sub64(x, mul64(n, RDOF_SLOT_NS));
     return n;
 }

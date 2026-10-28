@@ -104,7 +104,7 @@ def test_status_headers_and_size():
     assert code == 200
     assert hdrs["Content-Type"].startswith("application/json")
     assert hdrs["Cache-Control"] == "no-store"
-    assert len(body) <= 8192  # the memory plan is about 4 KB with two roles (the W12)
+    assert len(body) < 14848  # the board's status buffer (esp_idf/main/web.c); the W12 with two roles sends about 8 KB
 
 
 def test_crash_report(status):

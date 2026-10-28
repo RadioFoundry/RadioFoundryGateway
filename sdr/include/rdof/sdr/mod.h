@@ -39,7 +39,9 @@ extern "C" {
 #define RDOF_MOD_SYMBOL_RATE 4800
 #define RDOF_MOD_DEVIATION_HZ 648.0
 #define RDOF_MOD_TAPS 9               /* pulse taps per output sample (8 symbols) */
-#define RDOF_MOD_MAX_PHASES 1024      /* fs / gcd(fs, 4800) at most */
+#ifndef RDOF_MOD_MAX_PHASES
+#define RDOF_MOD_MAX_PHASES 1024      /* fs / gcd(fs, 4800) at most: the taps are P x 9 floats */
+#endif
 #define RDOF_MOD_MAX_RAMP 6.0         /* symbols */
 #define RDOF_MOD_MAX_SYMBOLS 144      /* per segment: CACH + burst */
 #define RDOF_MOD_SLOT_SYMBOLS 144     /* 30 ms */

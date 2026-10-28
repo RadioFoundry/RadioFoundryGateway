@@ -45,14 +45,18 @@
 
     async function load() {
       try {
-        const c = await (await fetch(base + '/clock', {cache: 'no-store'})).json();
+        const r = await fetch(base + '/clock', {cache: 'no-store'});
+        if (!r.ok) throw new Error(r.status); /* a server without the clock: nothing to show */
+        const c = await r.json();
         clk = {dev: c.utc_ms, at: performance.now(), c};
         render(c);
         if (auto && c.source !== 'ntp' && c.source !== 'pps' && c.source !== 'gnss' && (c.source === 'none' || (Date.now() - lastPush > 600000 && c.since_sync_s > 600))) push(false);
       } catch (e) { /* next tick */ }
       if (!formLoaded) {
         try {
-          const s = await (await fetch(base + '/clock/settings', {cache: 'no-store'})).json();
+          const r = await fetch(base + '/clock/settings', {cache: 'no-store'});
+          if (!r.ok) throw new Error(r.status);
+          const s = await r.json();
           const f = $('set'); f.servers.value = s.servers; f.poll_s.value = s.poll_s; formLoaded = true;
         } catch (e) { /* next tick */ }
       }

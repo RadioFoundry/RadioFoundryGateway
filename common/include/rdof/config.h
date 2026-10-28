@@ -112,6 +112,8 @@ typedef struct {
 
     char cwid[41];
     double cwid_every_s;
+    bool has_parrot; /* parrot: send back what's heard (rdof/parrot.h) */
+    uint32_t parrot; /* only what's addressed to this id; 0: everything */
 
     bool has_location;
     rdof_location_t location;

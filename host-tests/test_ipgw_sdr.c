@@ -42,9 +42,9 @@ static int fails, checks;
 #include "rdof/txvr.h"
 
 #define FS 288000
-#define CENTER 461000000.0
-#define RX_CH 461037500u
-#define TX_CH 461087500u
+#define CENTER 438025000.0
+#define RX_CH 438062500u
+#define TX_CH 438112500u
 #define CHUNK 4608
 #define CC 1
 #define IP(a, b, c, d) ((uint32_t)(a) << 24 | (uint32_t)(b) << 16 | (uint32_t)(c) << 8 | (uint32_t)(d))
@@ -356,15 +356,15 @@ static int on_air(const sx_t *e, int c, uint8_t *out, rdof_family_t *fam, int *s
     return -1;
 }
 
-/* the radio's packet from a station on RX_CH, MS framed, one burst every 60 ms from 50 ms on */
-static int station(rdof_mod_t *st, rdof_ipgw_dmr_t *p)
+/* the radio's packet from a station on RX_CH, MS framed, its first `upto` bursts queued one every 60 ms from 50 ms on */
+static int station(rdof_mod_t *st, rdof_ipgw_dmr_t *p, int upto)
 {
     uint8_t d[128];
     size_t n = rdof_ipgw_udp_datagram(RADIO_IP, 5000, PEER_IP, 53, 7, (const uint8_t *)"query", 5, d, sizeof d);
     CHECK(rdof_ipgw_build_dmr(RADIO, GW_ID, RDOF_SAP_IP, d, n, CC, rdof_data_sync(RDOF_MS_VOICE), p), "build");
     rdof_mod_init(st, FS, (double)RX_CH - CENTER, 4.0, 1.0f, 64, 0);
     const int64_t two = 2 * rdof_mod_slot_samples(st);
-    for (int k = 0; k < p->nbursts; k++)
+    for (int k = 0; k < p->nbursts && k < upto; k++)
         rdof_mod_queue_burst(st, FS / 20 + k * two, p->bursts[k], NULL, RDOF_MOD_RAMPS);
     return p->nbursts;
 }
@@ -374,7 +374,7 @@ static void t_half(void)
     sx_t *e = sx_new(false, 2);
     static rdof_ipgw_dmr_t p;
     rdof_mod_t st;
-    int nb = station(&st, &p);
+    int nb = station(&st, &p, 1000);
     sx_run(e, &st, 0.05 + 0.06 * nb + 0.04, -1); /* to just after the last block: the reply as quick as an ACK */
     CHECK(e->udp == 1 && e->udp_ip == PEER_IP && e->udp_len == 5 && !memcmp(e->udp_data, "query", 5) &&
               e->g.n.up_packets == 1 && e->g.n.rx_dup == 1,
@@ -403,8 +403,18 @@ static void t_full(int slot)
     sx_t *e = sx_new(true, slot);
     static rdof_ipgw_dmr_t p;
     rdof_mod_t st;
-    int nb = station(&st, &p);
-    sx_run(e, &st, 0.05 + 0.06 * nb + 0.04, -1);
+    int nb = station(&st, &p, 1);
+    /* As a radio does: its header wakes the repeater (heard on the channel's slot), then the rest in the inbound
+     * slot's timing against the outbound (inbound TSx under outbound TSx: TS1 an even slot k). */
+    sx_run(e, &st, 0.2, -1);
+    CHECK(e->m.keyed && e->m.slot_k >= 0, "full slot %d: keyed by the header", slot);
+    const int64_t sl = rdof_mod_slot_samples(&e->m.mod), guard = FS / 800; /* 1.25 ms */
+    int64_t k = (e->rx.samples - e->m.base) / sl + 2;
+    if ((k & 1) != (slot == 2 ? 1 : 0))
+        k++;
+    for (int i = 1; i < nb; i++)
+        rdof_mod_queue_burst(&st, e->m.base + (k + 2 * (i - 1)) * sl + guard, p.bursts[i], NULL, RDOF_MOD_RAMPS);
+    sx_run(e, &st, 0.06 * nb + 0.1, -1);
     CHECK(e->udp == 1 && e->udp_ip == PEER_IP && !memcmp(e->udp_data, "query", 5) && e->g.n.up_packets == 1,
           "full slot %d: up once: %d", slot, e->udp);
     sx_run(e, &st, 2.5, e->t_now);

@@ -2,7 +2,8 @@
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 /*
  * Bursts as a repeater sends them, and the CACH short LC
- * (docs/spec/repeater.md, sections 5 and 9).
+ * (docs/spec/repeater.md, sections 5 and 9). The bursts need only TX: the parrot (rdof/parrot.h) regenerates
+ * what it sends back with them on a transceiver too.
  */
 #ifndef RDOF_DUPLEX_H
 #define RDOF_DUPLEX_H
@@ -17,7 +18,7 @@
 extern "C" {
 #endif
 
-#if RDOF_FEATURE_REPEATER
+#if RDOF_FEATURE_TX
 
 /* An idle burst with this color code (the idle message of ETSI TS 102 361-1 D.2). */
 void rdof_duplex_idle(int cc, uint8_t out[RDOF_BURST_BYTES]);
@@ -36,6 +37,7 @@ typedef struct {
     uint8_t lc9[9];
     int cc;
     bool regen_ambe;
+    bool swap; /* a unit to unit LC heard embedded goes out with its ids swapped (the parrot's reply) */
     uint8_t lc_raw[128], sending[128];
     uint8_t heard[5][32];
     uint8_t have; /* bit n: heard[n] holds burst n's fragment (1..4) */
@@ -46,6 +48,8 @@ void rdof_voice_regen_init(rdof_voice_regen_t *v, const uint8_t lc9[9], int cc);
 /* control: SYNC_AUDIO (burst A) or the burst's number 1-5. */
 void rdof_voice_regen_burst(rdof_voice_regen_t *v, uint8_t control, const uint8_t in[RDOF_BURST_BYTES],
                           uint8_t out[RDOF_BURST_BYTES]);
+
+#if RDOF_FEATURE_REPEATER
 
 /* The CACH short LC: lc5 is 4 zero bits, the 28-bit short LC and its CRC-8; out9 / sl9 the 9 bytes
  * DMR_SHORTLC takes. Decode corrects one error per Hamming row and checks the column parity and CRC. */
@@ -70,6 +74,8 @@ typedef struct {
 void rdof_activity_lc(const rdof_activity_t *slot1, const rdof_activity_t *slot2, bool ts1_low, uint8_t out9[9]);
 
 #endif /* RDOF_FEATURE_REPEATER */
+
+#endif /* RDOF_FEATURE_TX */
 
 #ifdef __cplusplus
 }

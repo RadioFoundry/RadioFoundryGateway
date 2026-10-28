@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
+# The host web page (hostweb/): the firmware's UI and status API for a host tool. Included from CMakeLists.txt after
+# sdr.cmake. A test of the server always builds (POSIX only), and rdofradio's settings (--config) with their test;
+# RDOF_HOST_WEB also links the server into rdofradio, defines RDOF_HOST_WEB for it, and so turns on its --web PORT
+# flag (hostweb/README.md).
+if(NOT WIN32)
+    option(RDOF_HOST_WEB "Link the web page server into the host tools (rdofradio --web PORT)" OFF)
+    add_subdirectory(../hostweb hostweb)
+    add_executable(rdof_hostweb_tests ../hostweb/test/test_hostweb.c)
+    target_link_libraries(rdof_hostweb_tests PRIVATE rdof_hostweb)
+    set_target_properties(rdof_hostweb_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+    target_compile_options(rdof_hostweb_tests PRIVATE -Wall -Wno-unused-parameter)
+    if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+        target_compile_options(rdof_hostweb_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(rdof_hostweb_tests PRIVATE -fsanitize=address,undefined)
+    endif()
+    add_test(NAME rdof_hostweb_tests COMMAND rdof_hostweb_tests)
+    # rdofradio's settings (--config FILE): the firmware's document as rdofradio runs it
+    add_executable(rdof_radiocfg_tests test_radiocfg.c ../sdr/cli/rdofradio_cfg.c)
+    target_include_directories(rdof_radiocfg_tests PRIVATE ../sdr/cli)
+    target_link_libraries(rdof_radiocfg_tests PRIVATE rdof_common)
+    set_target_properties(rdof_radiocfg_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+    target_compile_options(rdof_radiocfg_tests PRIVATE -Wall -Wno-unused-parameter)
+    if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+        target_compile_options(rdof_radiocfg_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(rdof_radiocfg_tests PRIVATE -fsanitize=address,undefined)
+    endif()
+    add_test(NAME rdof_radiocfg_tests COMMAND rdof_radiocfg_tests)
+    if(TARGET rdofradio)
+        target_sources(rdofradio PRIVATE ../sdr/cli/rdofradio_cfg.c)
+    endif()
+    if(RDOF_HOST_WEB AND TARGET rdofradio)
+        target_link_libraries(rdofradio PRIVATE rdof_hostweb)
+        target_compile_definitions(rdofradio PRIVATE RDOF_HOST_WEB)
+    endif()
+endif()

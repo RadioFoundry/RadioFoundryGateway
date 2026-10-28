@@ -20,11 +20,36 @@ every site loses or doubles one slot at that instant.
 | Burst | Where it is |
 |---|---|
 | outbound (BS) slot n | the CACH starts at b(n), the burst at b(n) + 2.5 ms, its sync center at b(n) + 16.25 ms |
-| inbound (MS) slot n | starts at b(n) + 1.25 ms, sync center at b(n) + 15 ms; **TS2 when n is even** (inbound TSx is a slot after outbound TSx) |
+| inbound (MS) slot n | starts at b(n) + 1.25 ms, sync center at b(n) + 15 ms; **TS1 when n is even**: under outbound slot n, by aligned timing (below) |
 
 Internally n is 64-bit (it's about 5.9 × 10^10 now). At a radio's interface it is a 32-bit counter, n mod
 2^32. That keeps the parity, so TS1 is still even. Counters compare by signed 32-bit difference
 (`rdof_slot_counter`, `rdof_n_of_counter`).
+
+## Aligned timing
+
+A repeater's inbound and outbound slots can be paired two ways (ETSI TS 102 361-1 5.1.1, table 5.1):
+
+| Timing | Logical channel 1 (what a radio calls TS1) | Logical channel 2 |
+|---|---|---|
+| aligned | the radio transmits under outbound TS1, receives outbound TS1 | under outbound TS2, receives TS2 |
+| offset | the radio transmits a slot after outbound TS1 (under TS2) | a slot after outbound TS2 |
+
+Every slot number in this project is the logical channel, with **aligned** timing: a handheld's TSx burst falls
+under outbound TSx, is labeled TSx and is repeated on TSx. That is what the CACH implies (the CACH before outbound
+TSx marks the receiver's TSx window) and what radios set up for a repeater expect. Offset timing isn't supported.
+
+Two things in -1 read the other way, and are about the physical inbound numbering, not the channel:
+
+- 4.x: "the channel 1 and 2 bursts in the inbound channel are offset 30 ms in time from the channel 1 and 2
+  bursts in the outbound channel": physical inbound slot 2 runs under outbound TS1. Table 5.1 maps it back:
+  aligned logical channel 1 is inbound slot 2 with outbound slot 1.
+- 4.5, figure 4.8: the CACH before outbound TSx gives the access type (AT) of the inbound slot one slot later. With
+  aligned timing that slot is the other channel's, so the AT bit before outbound TS1 is TS2's busy state and the
+  one before TS2 is TS1's, as an MMDVM sends it.
+
+A single frequency repeater (SFR) is its own case: it listens on one slot and repeats on the other ("TS1 in, TS2
+out"), and keeps its own slot clock.
 
 ## The setting
 

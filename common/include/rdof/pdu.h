@@ -52,6 +52,7 @@ enum {
 #define RDOF_DPF_PROPRIETARY 15
 
 #define RDOF_CSBK_PREAMBLE 0x3D
+#define RDOF_CSBK_BS_DWN_ACT 0x38 /* BS outbound activation: a radio wakes a repeater */
 
 /* "Not present" for the optional ids and fields. */
 #define RDOF_NONE (-1)

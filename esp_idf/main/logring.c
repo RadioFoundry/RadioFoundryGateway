@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
-/* The log, kept in a ring as well as printed, so the web page can show it with no serial adapter. */
+/* The log, kept in a ring (rdof_bring_t, rdof/webapi.h) as well as printed, so the web page can show it with no
+ * serial adapter. */
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -9,12 +10,11 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "rdof/webapi.h"
 
 #if CONFIG_RDOF_LOG_RING_KB > 0
 
-static char *ring;
-static size_t ring_size, head; /* head: where the next byte goes */
-static bool wrapped;
+static rdof_bring_t ring;
 static vprintf_like_t original;
 static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -28,13 +28,7 @@ static int ring_vprintf(const char *fmt, va_list args)
     if (n > 0) {
         size_t len = (size_t)n < sizeof line ? (size_t)n : sizeof line - 1;
         portENTER_CRITICAL(&lock);
-        for (size_t i = 0; i < len; i++) {
-            ring[head++] = line[i];
-            if (head == ring_size) {
-                head = 0;
-                wrapped = true;
-            }
-        }
+        rdof_bring_put(&ring, line, len);
         portEXIT_CRITICAL(&lock);
     }
     return original(fmt, args);
@@ -42,30 +36,23 @@ static int ring_vprintf(const char *fmt, va_list args)
 
 void logring_init(void)
 {
-    ring_size = (size_t)CONFIG_RDOF_LOG_RING_KB * 1024;
-    ring = heap_caps_malloc(ring_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!ring)
-        ring = heap_caps_malloc(ring_size, MALLOC_CAP_8BIT);
-    if (ring)
-        original = esp_log_set_vprintf(ring_vprintf);
+    const size_t size = (size_t)CONFIG_RDOF_LOG_RING_KB * 1024;
+    char *buf = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf)
+        buf = heap_caps_malloc(size, MALLOC_CAP_8BIT);
+    if (!buf)
+        return;
+    rdof_bring_init(&ring, buf, size);
+    original = esp_log_set_vprintf(ring_vprintf);
 }
 
 size_t logring_read(char *out, size_t cap)
 {
-    size_t n = 0;
-    if (!ring || cap == 0)
+    if (!ring.buf || cap == 0)
         return 0;
     portENTER_CRITICAL(&lock);
-    size_t total = wrapped ? ring_size : head;
-    size_t start = wrapped ? head : 0;
-    if (total > cap - 1) {
-        start = (start + total - (cap - 1)) % ring_size;
-        total = cap - 1;
-    }
-    for (; n < total; n++)
-        out[n] = ring[(start + n) % ring_size];
+    size_t n = rdof_bring_read(&ring, out, cap);
     portEXIT_CRITICAL(&lock);
-    out[n] = 0;
     return n;
 }
 

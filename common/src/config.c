@@ -302,12 +302,25 @@ static bool location(ctx_t *c, int i, rdof_config_t *cfg)
 static const char *const ROAMER_KEYS[] = {"type", "name", "peer_id", "callsign", "idle", "channels", "listen_s",
                                           "clear_s", "prebuffer", "jitter_buffer", "jitter_min_ms", "jitter_max_ms", "idle_after_s", "cwid", "cwid_every_s", "hblink",
                                           "location", "radio", "scan", "csbk_preambles", "answer_s", "answer_max_s",
-                                          NULL};
+                                          "parrot", NULL};
 static const char *const REPEATER_KEYS[] = {"type", "name", "peer_id", "callsign", "rx_freq", "tx_freq", "cc",
                                             "power", "slots", "hang_s", "call_hang_s", "prebuffer", "jitter_buffer",
                                             "jitter_min_ms", "jitter_max_ms", "cwid",
                                             "cwid_every_s", "hblink", "location", "radio", "mode", "freq",
-                                            "inbound_slot", "short_lc_ts1_low", "slot_timing", NULL};
+                                            "inbound_slot", "short_lc_ts1_low", "slot_timing", "parrot", NULL};
+
+/* parrot: a DMR id (only what's addressed to it is sent back) or 0 (everything); absent: off */
+static bool parrot(ctx_t *c, int r, rdof_config_t *cfg)
+{
+    long lv;
+    cfg->has_parrot = get(c, r, "parrot") >= 0;
+    if (!iget(c, r, "parrot", 0, &lv, "radio"))
+        return false;
+    if (lv < 0 || lv > 0xFFFFFF)
+        return err(c, "radio: parrot %ld isn't a DMR id (0 for everything)", lv);
+    cfg->parrot = (uint32_t)lv;
+    return true;
+}
 
 /* The jitter buffer: jitter_buffer "auto" (the default) or a fixed size in ms, rounded up to whole 60 ms bursts;
  * prebuffer, the older key, a fixed size in bursts. jitter_min_ms and jitter_max_ms bound auto. */
@@ -801,6 +814,8 @@ static bool roamer(ctx_t *c, int box, int r, const plan_list_t *plan, rdof_confi
         return false;
     cfg->csbk_preambles = (int)lv;
     sget(c, r, "cwid", "", cfg->cwid, sizeof cfg->cwid);
+    if (!parrot(c, r, cfg))
+        return false;
     /* covered: this box's SDR channels */
     cfg->ncovered = 0;
     int radios = get(c, box, "radios");
@@ -922,6 +937,8 @@ static bool repeater(ctx_t *c, int box, int r, const plan_list_t *plan, rdof_con
     if (!jitter(c, r, cfg))
         return false;
     sget(c, r, "cwid", "", cfg->cwid, sizeof cfg->cwid);
+    if (!parrot(c, r, cfg))
+        return false;
     cfg->short_lc_ts1_low = bget(c, r, "short_lc_ts1_low", false);
     if (!radio_settings(c, r, K, cfg))
         return false;
@@ -1532,6 +1549,8 @@ size_t rdof_config_describe(const rdof_config_t *c, char *out, size_t cap)
         add(&s, "sfr=%d;inbound=%d;ts1low=%d;timing=%s;", c->sfr, c->inbound_slot, c->short_lc_ts1_low, tm);
     }
     add(&s, "cwid=%s,%s;", c->cwid, f3(c->cwid_every_s, a));
+    if (c->has_parrot)
+        add(&s, "parrot=%lu;", (unsigned long)c->parrot);
     if (c->has_location)
         add(&s, "location=%.6f,%.6f,%d;", c->location.latitude, c->location.longitude, c->location.height_m);
     else

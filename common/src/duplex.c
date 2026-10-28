@@ -3,7 +3,7 @@
 /* Bursts as a repeater sends them, and the CACH short LC (docs/spec/repeater.md, sections 5 and 9). */
 #include "rdof/duplex.h"
 
-#if RDOF_FEATURE_REPEATER
+#if RDOF_FEATURE_TX
 
 #include <string.h>
 
@@ -99,6 +99,12 @@ void rdof_voice_regen_burst(rdof_voice_regen_t *v, uint8_t control, const uint8_
                 memcpy(raw + 32 * (n - 1), v->heard[n], 32);
             decoded = rdof_embedded_lc_decode(raw, lc);
         }
+        if (decoded && v->swap && (lc[0] & 0x3F) == 0x03) {
+            uint8_t t[3];
+            memcpy(t, lc + 3, 3);
+            memcpy(lc + 3, lc + 6, 3);
+            memcpy(lc + 6, t, 3);
+        }
         if (decoded)
             rdof_embedded_lc_encode(lc, v->sending);
         else
@@ -125,6 +131,8 @@ void rdof_voice_regen_burst(rdof_voice_regen_t *v, uint8_t control, const uint8_
     rdof_set_field(out, 108, 8, rdof_bits_to_u64(emb, 8));
     rdof_set_field(out, 148, 8, rdof_bits_to_u64(emb + 8, 8));
 }
+
+#if RDOF_FEATURE_REPEATER
 
 /* ── the CACH short LC ─────────────────────────────────────────────────────────
  * RadioFoundry's src/radiofoundry/dmrCach.c (ETSI TS 102 361-1 7.1.4, B.2.3, B.3.3,
@@ -210,3 +218,5 @@ void rdof_activity_lc(const rdof_activity_t *slot1, const rdof_activity_t *slot2
 }
 
 #endif /* RDOF_FEATURE_REPEATER */
+
+#endif /* RDOF_FEATURE_TX */

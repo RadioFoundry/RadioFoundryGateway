@@ -10,6 +10,7 @@
 
 #include "app.h"
 #include "heard.h"
+#include "rdof/bits.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -56,6 +57,15 @@ __attribute__((unused)) static void on_sent(void *ctx, const rdof_tx_call_info_t
 
 __attribute__((unused)) static void send_fn(void *ctx, const uint8_t *data, size_t len)
 {
+#if RDOF_FEATURE_TX
+    /* the transceiver's answer to the parrot's tune is the parrot's, not HBlink4's */
+    roam_t *r = ctx;
+    if (r->parrot && len == RDOF_DMRK_LEN && !memcmp(data, "DMRK", 4) && (rdof_be32(data + 8) & 0xFFFF0000u) == RDOF_PARROT_STREAM) {
+        if (data[12] != RDOF_DMRK_ON_AIR)
+            ESP_LOGW(TAG, "parrot: the transceiver refused the replay (%d)", data[12]);
+        return;
+    }
+#endif
     roam_hb_send(ctx, data, len);
 }
 
@@ -166,11 +176,81 @@ static bool build_radio(roam_t *r)
     return true;
 }
 
+#if RDOF_FEATURE_TX
+/* The parrot (rdof/parrot.h): what's heard, sent back as a network call would come. */
+static void parrot_start(void *ctx, const uint8_t sid[4], int slot, uint32_t src, uint32_t dst, bool group)
+{
+    roam_t *r = ctx;
+    ESP_LOGI(TAG, "parrot: sending back slot %d %lu > %s%lu, %d bursts", slot, (unsigned long)src, group ? "TG " : "",
+             (unsigned long)dst, r->parrot->n);
+    if (r->cfg->mode != RDOF_CFG_ROAMER)
+        return;
+    rdof_tune_t t;
+    memset(&t, 0, sizeof t);
+    memcpy(t.stream_id, sid, 4);
+    radio_channel_now(r, &t.freq, &t.cc); /* where it was heard */
+    t.power = 255;                       /* the channel's own */
+    rdof_txvr_on_tune(r->txvr, &t);
+}
+
+static void parrot_send(void *ctx, const rdof_net_burst_t *b)
+{
+    roam_t *r = ctx;
+#if RDOF_FEATURE_REPEATER
+    if (r->cfg->mode == RDOF_CFG_REPEATER) {
+        rdof_repeater_on_burst(r->rpt, b);
+        return;
+    }
+#endif
+    rdof_txvr_on_burst(r->txvr, b);
+}
+
+static void parrot_setup(roam_t *r)
+{
+    const rdof_config_t *c = r->cfg;
+    if (!c->has_parrot)
+        return;
+    bool has_tx = r->txvr != NULL;
+#if RDOF_FEATURE_REPEATER
+    has_tx = has_tx || r->rpt;
+#endif
+    if (!has_tx)
+        return;
+    r->parrot = big_alloc(sizeof *r->parrot);
+    if (!r->parrot) {
+        ESP_LOGE(TAG, "parrot: no room for it (%u bytes)", (unsigned)sizeof *r->parrot);
+        return;
+    }
+    rdof_parrot_init(r->parrot, c->parrot);
+    r->parrot->start = parrot_start;
+    r->parrot->send = parrot_send;
+    r->parrot->ctx = r;
+    r->parrot_lock = xSemaphoreCreateMutex();
+    ESP_LOGI(TAG, "parrot: on, %s", c->parrot ? "what's addressed to its id" : "everything");
+}
+
+static void parrot_poll(roam_t *r)
+{
+    if (!r->parrot)
+        return;
+    xSemaphoreTake(r->parrot_lock, portMAX_DELAY);
+    rdof_parrot_poll(r->parrot, now_mono());
+    xSemaphoreGive(r->parrot_lock);
+}
+#endif
+
 static void modem_rx(void *ctx, int slot, uint8_t control, const uint8_t *burst, int rssi)
 {
     roam_t *r = ctx;
     const rdof_config_t *c = r->cfg;
     r->st.bursts_heard++;
+#if RDOF_FEATURE_TX
+    if (r->parrot) {
+        xSemaphoreTake(r->parrot_lock, portMAX_DELAY);
+        rdof_parrot_heard(r->parrot, slot, control, burst, now_mono());
+        xSemaphoreGive(r->parrot_lock);
+    }
+#endif
 #if RDOF_FEATURE_REPEATER
     if (c->mode == RDOF_CFG_REPEATER) {
         rdof_repeater_heard(r->rpt, slot, control, burst, rssi);
@@ -190,6 +270,13 @@ static void modem_rx(void *ctx, int slot, uint8_t control, const uint8_t *burst,
 static void modem_lost(void *ctx, int slot)
 {
     roam_t *r = ctx;
+#if RDOF_FEATURE_TX
+    if (r->parrot) {
+        xSemaphoreTake(r->parrot_lock, portMAX_DELAY);
+        rdof_parrot_lost(r->parrot, slot, now_mono());
+        xSemaphoreGive(r->parrot_lock);
+    }
+#endif
 #if RDOF_FEATURE_REPEATER
     if (r->cfg->mode == RDOF_CFG_REPEATER)
         rdof_repeater_lost(r->rpt, slot);
@@ -321,8 +408,10 @@ static void radio_task(void *arg)
                 backoff_ms = 1000;
                 roam_publish_status(r);
                 TickType_t wake = xTaskGetTickCount();
-                while (rdof_repeater_poll(r->rpt))
+                while (rdof_repeater_poll(r->rpt)) {
+                    parrot_poll(r);
                     vTaskDelayUntil(&wake, pdMS_TO_TICKS(20));
+                }
                 rdof_repeater_stop(r->rpt);
             }
         }
@@ -339,6 +428,7 @@ static void radio_task(void *arg)
                 int64_t next_log = 0;
                 while (rdof_txvr_poll(r->txvr)) {
                     r->st.radio_ready = r->txvr->ready;
+                    parrot_poll(r);
                     if (esp_log_timestamp() >= next_log) {
                         ESP_LOGI(TAG, "%lu requests, %lu without a reply, %lu refused; %lu bursts heard; %s",
                                  (unsigned long)r->modem.requests, (unsigned long)r->modem.no_reply,
@@ -419,6 +509,10 @@ void radio_start(roam_t *r)
 #if RDOF_FEATURE_TX
     if (c->mode == RDOF_CFG_ROAMER)
         setup_txvr(r);
+    parrot_setup(r);
+#else
+    if (c->has_parrot)
+        ESP_LOGE(TAG, "parrot is set, but this build can't transmit (CONFIG_RDOF_FEATURE_TX)");
 #endif
     roam_task(r, radio_task, "radio", 8192, 11);
 }

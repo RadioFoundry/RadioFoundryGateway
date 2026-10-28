@@ -22,6 +22,7 @@
 #include "rdof/hblink.h"
 #include "rdof/modem.h"
 #include "rdof/netcalls.h"
+#include "rdof/parrot.h"
 #include "rdof/repeater.h"
 #include "rdof/txvr.h"
 #endif
@@ -177,6 +178,8 @@ typedef struct roam {
     rdof_radio_t radio;
 #if RDOF_FEATURE_TX
     rdof_txvr_t *txvr;
+    rdof_parrot_t *parrot;      /* the parrot setting: NULL off */
+    void *parrot_lock;          /* its own: its replay goes on to the transceiver's or repeater's, under theirs */
 #endif
 #if RDOF_FEATURE_REPEATER
     rdof_repeater_t *rpt;

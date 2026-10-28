@@ -127,6 +127,8 @@ pub struct RdofConfig {
 
     pub cwid: [u8; 41],
     pub cwid_every_s: f64,
+    pub has_parrot: bool,
+    pub parrot: u32,
 
     pub has_location: bool,
     pub location: RdofLocation,
@@ -196,6 +198,7 @@ const ROAMER_KEYS: &[&[u8]] = &[
     b"idle_after_s",
     b"cwid",
     b"cwid_every_s",
+    b"parrot",
     b"hblink",
     b"location",
     b"radio",
@@ -222,6 +225,7 @@ const REPEATER_KEYS: &[&[u8]] = &[
     b"jitter_max_ms",
     b"cwid",
     b"cwid_every_s",
+    b"parrot",
     b"hblink",
     b"location",
     b"radio",
@@ -372,6 +376,17 @@ impl Cx {
             c.err::<()>(&[S(b"JSON: "), S(c_bytes(x.doc.error.as_ptr()))]);
         }
         Some((c, root))
+    }
+
+    /// parrot: a DMR id (only what's addressed to it is sent back) or 0 (everything); absent: off
+    fn parrot(&self, r: c_int, cfg: &mut RdofConfig) -> R<()> {
+        cfg.has_parrot = self.get(r, c"parrot") >= 0;
+        let v = self.iget(r, c"parrot", 0, b"radio")?;
+        if !(0..=0xFF_FFFF).contains(&v) {
+            return self.err(&[S(b"radio: parrot "), I(v as i64), S(b" isn't a DMR id (0 for everything)")]);
+        }
+        cfg.parrot = v as u32;
+        Some(())
     }
 
     /// The jitter buffer: jitter_buffer "auto" (the default) or a fixed size in ms, rounded up to whole 60 ms bursts;
@@ -1087,6 +1102,7 @@ impl Cx {
         self.jitter(r, cfg)?;
         cfg.csbk_preambles = self.iget(r, c"csbk_preambles", 2, b"radio")? as c_int;
         self.sget(r, c"cwid", b"", &mut cfg.cwid);
+        self.parrot(r, cfg)?;
         // covered: this box's SDR channels
         cfg.ncovered = 0;
         let radios = self.get(bx, c"radios");
@@ -1222,6 +1238,7 @@ impl Cx {
         cfg.cwid_every_s = self.fget(r, c"cwid_every_s", 900.0, b"radio")?;
         self.jitter(r, cfg)?;
         self.sget(r, c"cwid", b"", &mut cfg.cwid);
+        self.parrot(r, cfg)?;
         cfg.short_lc_ts1_low = self.bget(r, c"short_lc_ts1_low", false);
         self.radio_settings(r, REPEATER_KEYS, cfg)?;
         self.sget(self.get(r, c"radio"), c"type", b"auto", &mut cfg.radio_type);
@@ -2017,6 +2034,11 @@ fn describe(c: &RdofConfig, o: &mut Out) {
     o.byte(b',');
     o.bytes(f3(c.cwid_every_s, &mut a));
     o.byte(b';');
+    if c.has_parrot {
+        o.bytes(b"parrot=");
+        int(o, c.parrot);
+        o.byte(b';');
+    }
     if c.has_location {
         o.bytes(b"location=");
         o.fixed(c.location.latitude, 6);

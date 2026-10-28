@@ -43,7 +43,11 @@ Moving a network renumbers the priorities in the new order. A blank password kee
     const msg = (t, bad) => { $('msg').textContent = t; $('msg').style.color = bad ? 'var(--wl-bad)' : ''; };
 
     async function load() {
-      try { st = await (await fetch(base + '/wifi', {cache: 'no-store'})).json(); render(); } catch (e) { /* next tick */ }
+      try {
+        const r = await fetch(base + '/wifi', {cache: 'no-store'});
+        if (!r.ok) throw new Error(r.status); /* a server without Wi-Fi: nothing to show */
+        st = await r.json(); render();
+      } catch (e) { /* next tick */ }
     }
 
     // The whole list goes back; entries without "password" keep theirs (by "was", the name they had).

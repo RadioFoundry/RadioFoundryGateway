@@ -21,6 +21,8 @@
  *                         one byte a bin, -2 x dBFS, lowest frequency first); asking keeps it running 10 s
  *   POST /api/ota         a new app image as the body (CONFIG_RDOF_OTA)
  *   POST /api/restart
+ * status, config, resolved, log, lastheard and restart are the shared API's (rdof/webapi.h): the board is its
+ * platform here, and api_shared hands each request over;
  * and the components' own: /api/clock, /api/time, /api/clock/settings and /netclock.js (netclock_http.h),
  * /api/wifi, /api/wifi/networks, /api/wifi/scan and /wifilist.js (wifilist_http.h).
  */
@@ -49,6 +51,7 @@
 #include "netclock.h"
 #include "netclock_http.h"
 #include "rdof/json.h"
+#include "rdof/webapi.h"
 #include "wifilist_http.h"
 #if CONFIG_RDOF_OTA
 #include "esp_ota_ops.h"
@@ -59,8 +62,6 @@
 
 static const char *TAG = "web";
 
-#define MAX_CONFIG 16384
-
 extern const uint8_t page_start[] asm("_binary_index_html_gz_start");
 extern const uint8_t page_end[] asm("_binary_index_html_gz_end");
 
@@ -69,13 +70,6 @@ static esp_err_t get_page(httpd_req_t *req)
     httpd_resp_set_type(req, "text/html");
     httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
     return httpd_resp_send(req, (const char *)page_start, page_end - page_start);
-}
-
-static esp_err_t send_json(httpd_req_t *req, const char *buf, size_t len)
-{
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    return httpd_resp_send(req, buf, (ssize_t)len);
 }
 
 static const char *reset_name(esp_reset_reason_t r)
@@ -132,94 +126,108 @@ static void cpu_json(rdof_json_t *j)
 }
 #endif
 
-static esp_err_t get_status(httpd_req_t *req)
+/* ── the shared API (rdof/webapi.h): the board as its platform ─────────────── */
+
+static void restart_task(void *arg)
 {
-    const size_t cap = 14336; /* two roamers with SCTP and jitter status, the SDR, the IP gateway, the memory plan */
-    char *buf = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!buf)
-        buf = malloc(cap);
-    if (!buf)
-        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory");
-    rdof_json_t j;
-    rdof_json_init(&j, buf, cap);
-    rdof_json_open(&j, NULL);
-    rdof_json_str(&j, "name", g_roles.box);
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_restart();
+}
+
+static void fw_board(void *ctx, rdof_webapi_board_t *b)
+{
     const esp_app_desc_t *app = esp_app_get_description();
-    rdof_json_str(&j, "version", app->version); /* git describe --always --tags --dirty, from ESP-IDF */
-    rdof_json_str(&j, "idf", app->idf_ver);
-    rdof_json_int(&j, "uptime_s", esp_timer_get_time() / 1000000);
-    rdof_json_str(&j, "reset", reset_name(esp_reset_reason()));
-    rdof_json_bool(&j, "safe_mode", g_board.safe_mode);
-    crash_status_json(&j); /* the core dump in flash, if any (crash.c) */
-    rdof_json_int(&j, "heap_free", (long long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
-    rdof_json_int(&j, "psram_free", (long long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    b->name = g_roles.box;
+    b->version = app->version; /* git describe --always --tags --dirty, from ESP-IDF */
+    b->idf = app->idf_ver;
+    b->uptime_s = esp_timer_get_time() / 1000000;
+    b->reset = reset_name(esp_reset_reason());
+}
+
+static bool fw_memory(void *ctx, rdof_webapi_mem_t *m)
+{
+    m->has_heap = true;
+    m->heap_free = (long long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    m->psram_free = (long long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    return true;
+}
+
+static bool fw_clock(void *ctx, rdof_webapi_clock_t *c)
+{
+    c->source = netclock_source_name(netclock_source());
+    return true;
+}
+
+static bool fw_settings_ok(void *ctx, const char **error)
+{
+    *error = g_cfg_error;
+    return g_cfg_ok;
+}
+
+/* /api/status's board fields: the shared code writes name to reset, the memory numbers, settings_ok and
+ * settings_error, clock and caps; these go between, in the order the page has always had them. */
+static void fw_status(void *ctx, rdof_json_t *j, rdof_webapi_at_t at)
+{
+    switch (at) {
+    case RDOF_WEBAPI_AT_BOARD:
+        rdof_json_bool(j, "safe_mode", g_board.safe_mode);
+        crash_status_json(j); /* the core dump in flash, if any (crash.c) */
+        break;
+    case RDOF_WEBAPI_AT_MEMORY:
 #if CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS
-    cpu_json(&j); /* each core's busy share */
+        cpu_json(j); /* each core's busy share */
 #endif
-    mem_status_json(&j); /* the plan: each role's claims, internal / DMA / PSRAM free and largest, the margin */
-    rdof_json_bool(&j, "settings_ok", g_cfg_ok);
-    rdof_json_str(&j, "settings_error", g_cfg_error);
-    rdof_json_bool(&j, "wifi", g_board.wifi_up);
-    rdof_json_bool(&j, "ap_mode", g_board.ap_mode);
-    rdof_json_str(&j, "ip", g_board.ip);
-    rdof_json_str(&j, "clock", netclock_source_name(netclock_source()));
+        mem_status_json(j); /* the plan: each role's claims, internal / DMA / PSRAM free and largest, the margin */
+        break;
+    case RDOF_WEBAPI_AT_NETWORK:
+        rdof_json_bool(j, "wifi", g_board.wifi_up);
+        rdof_json_bool(j, "ap_mode", g_board.ap_mode);
+        rdof_json_str(j, "ip", g_board.ip);
+        break;
+    case RDOF_WEBAPI_AT_RADIOS:
 #if CONFIG_GNSS_UART_RX_GPIO >= 0
     {
         EXT_RAM_BSS_ATTR static char g[900]; /* the GNSS receiver's status (gnss.h); one status at a time (the web server's task) */
         if (gnss_status_json(g, sizeof g))
-            rdof_json_raw(&j, "gnss", g);
+            rdof_json_raw(j, "gnss", g);
     }
 #endif
-    rdof_json_bool(&j, "usb_either", g_board.usb_either);
+        rdof_json_bool(j, "usb_either", g_board.usb_either);
 #if CONFIG_RDOF_ROAMER
-    rdof_json_bool(&j, "build_roamer", true);
+        rdof_json_bool(j, "build_roamer", true);
 #endif
 #if CONFIG_RDOF_SDR
-    rdof_json_bool(&j, "build_sdr", true);
-    rdof_json_str(&j, "selftest", g_sstat.selftest);
-    rdof_json_str(&j, "spike", g_sstat.spike);
+        rdof_json_bool(j, "build_sdr", true);
+        rdof_json_str(j, "selftest", g_sstat.selftest);
+        rdof_json_str(j, "spike", g_sstat.spike);
 #endif
 #if CONFIG_RDOF_ROAMER
-    if (g_roles.has_radio)
-        roamer_status_json(&j);
+        if (g_roles.has_radio)
+            roamer_status_json(j);
 #endif
 #if CONFIG_RDOF_SDR
-    if (g_roles.has_sdr)
-        sdr_status_json(&j);
+        if (g_roles.has_sdr)
+            sdr_status_json(j);
 #endif
 #if CONFIG_RDOF_IPGW
-    ipgw_status_json(&j);
+        ipgw_status_json(j);
 #endif
-    rdof_json_close(&j);
-    esp_err_t e = send_json(req, buf, j.len);
-    free(buf);
-    return e;
-}
-
-static esp_err_t get_config(httpd_req_t *req)
-{
-    char q[32];
-    char *text = settings_export();
-    if (!text)
-        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory");
-    if (httpd_req_get_url_query_str(req, q, sizeof q) == ESP_OK && strstr(q, "download")) {
-        static char disp[80];
-        snprintf(disp, sizeof disp, "attachment; filename=\"%s.json\"", g_roles.box);
-        httpd_resp_set_hdr(req, "Content-Disposition", disp);
+        break;
     }
-    esp_err_t e = send_json(req, text, strlen(text));
-    free(text);
-    return e;
 }
 
-static esp_err_t get_resolved(httpd_req_t *req)
+static char *fw_settings_get(void *ctx)
 {
-    const size_t cap = 5120;
-    char *buf = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!buf)
-        buf = malloc(cap);
-    if (!buf)
-        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory");
+    return settings_export();
+}
+
+static bool fw_settings_save(void *ctx, char *text, size_t len, char *error, size_t cap)
+{
+    return settings_save(text, len, error, cap);
+}
+
+static size_t fw_resolved(void *ctx, char *buf, size_t cap)
+{
     size_t n = (size_t)snprintf(buf, cap, "%s runs: ", g_roles.box);
     for (int k = 0; k < g_roles.nradios; k++)
         n += (size_t)snprintf(buf + n, cap - n, "%s%s", k ? ", " : "", g_roles.radios[k]);
@@ -238,56 +246,122 @@ static esp_err_t get_resolved(httpd_req_t *req)
         n += sdr_resolved(buf + n, cap - n);
     }
 #endif
-    httpd_resp_set_type(req, "text/plain");
-    esp_err_t e = httpd_resp_send(req, buf, (ssize_t)(n < cap ? n : cap - 1));
-    free(buf);
-    return e;
+    return n;
 }
 
-static void restart_task(void *arg)
+static size_t fw_log(void *ctx, char *out, size_t cap)
 {
-    vTaskDelay(pdMS_TO_TICKS(1000));
-    esp_restart();
+    return logring_read(out, cap);
 }
 
-static esp_err_t post_config(httpd_req_t *req)
+/* The recent calls changed after since (heard.c). */
+static size_t fw_lastheard(void *ctx, uint32_t since, char *out, size_t cap)
 {
-    if (req->content_len == 0 || req->content_len > MAX_CONFIG)
-        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "settings: 1 to 16384 bytes of JSON");
-    char *body = heap_caps_malloc(req->content_len + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!body)
-        body = malloc(req->content_len + 1);
-    if (!body)
-        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory");
-    size_t total = 0;
-    while (total < req->content_len) {
-        int n = httpd_req_recv(req, body + total, req->content_len - total);
-        if (n == HTTPD_SOCK_ERR_TIMEOUT)
-            continue;
-        if (n <= 0) {
-            free(body);
-            return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "read failed");
+    return heard_json(since, out, cap);
+}
+
+static void fw_restart(void *ctx)
+{
+    xTaskCreate(restart_task, "restart", 2048, NULL, 5, NULL);
+}
+
+/* The answers' buffers in PSRAM when there is some. */
+static void *fw_alloc(size_t n)
+{
+    void *b = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    return b ? b : malloc(n);
+}
+
+static const rdof_webapi_platform_t WEB = {
+    .caps = RDOF_WEBAPI_CAP_RESTART | RDOF_WEBAPI_CAP_WIFI | RDOF_WEBAPI_CAP_COREDUMP | RDOF_WEBAPI_CAP_BOARD_MEM |
+            RDOF_WEBAPI_CAP_NETCLOCK | RDOF_WEBAPI_CAP_LINKS | RDOF_WEBAPI_CAP_SETTINGS | RDOF_WEBAPI_CAP_SETTINGS_EDIT
+#if CONFIG_RDOF_OTA
+            | RDOF_WEBAPI_CAP_OTA
+#endif
+#if CONFIG_FREERTOS_USE_TRACE_FACILITY && CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS
+            | RDOF_WEBAPI_CAP_TASKS
+#endif
+    ,
+    .board = fw_board,
+    .memory = fw_memory,
+    .clock = fw_clock,
+    .status_json = fw_status,
+    .status_cap = 14848, /* two roamers with SCTP and jitter status, the SDR, the IP gateway, the memory plan */
+    .settings_ok = fw_settings_ok,
+    .settings_get = fw_settings_get,
+    .settings_save = fw_settings_save,
+    .settings_resolved = fw_resolved,
+    .log_cap = (size_t)CONFIG_RDOF_LOG_RING_KB * 1024 + 1,
+    .log_read = fw_log,
+    .lastheard = fw_lastheard,
+    .restart = fw_restart,
+    .alloc_fn = fw_alloc,
+};
+
+static httpd_err_code_t err_code(int status)
+{
+    switch (status) {
+    case 400: return HTTPD_400_BAD_REQUEST;
+    case 403: return HTTPD_403_FORBIDDEN;
+    case 404: return HTTPD_404_NOT_FOUND;
+    case 501: return HTTPD_501_METHOD_NOT_IMPLEMENTED;
+    default: return HTTPD_500_INTERNAL_SERVER_ERROR;
+    }
+}
+
+/* Every route in rdof_webapi_routes: the request to the shared code, its answer back. */
+static esp_err_t api_shared(httpd_req_t *req)
+{
+    char path[32], q[48];
+    size_t k = strcspn(req->uri, "?");
+    if (k >= sizeof path)
+        k = sizeof path - 1;
+    memcpy(path, req->uri, k);
+    path[k] = 0;
+    const bool hasq = httpd_req_get_url_query_str(req, q, sizeof q) == ESP_OK;
+    const bool post = req->method == HTTP_POST;
+    char *body = NULL;
+    const size_t len = post ? req->content_len : 0;
+    if (post && rdof_webapi_body_ok(path, len)) {
+        body = fw_alloc(len + 1);
+        if (!body)
+            return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory");
+        size_t total = 0;
+        while (total < len) {
+            int n = httpd_req_recv(req, body + total, len - total);
+            if (n == HTTPD_SOCK_ERR_TIMEOUT)
+                continue;
+            if (n <= 0) {
+                free(body);
+                return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "read failed");
+            }
+            total += (size_t)n;
         }
-        total += (size_t)n;
+        body[total] = 0;
     }
-    body[total] = 0;
-    char error[160];
-    bool ok = settings_save(body, total, error, sizeof error);
+    rdof_webapi_resp_t r;
+    if (!rdof_webapi_handle(&WEB, post ? "POST" : "GET", path, hasq ? q : NULL, body, len, &r)) {
+        free(body);
+        return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "not here");
+    }
     free(body);
-    if (!ok) {
-        httpd_resp_set_status(req, "400 Bad Request");
-        return httpd_resp_sendstr(req, error);
+    esp_err_t e;
+    if (r.status >= 400) {
+        e = httpd_resp_send_err(req, err_code(r.status), r.body);
+    } else {
+        char disp[96];
+        httpd_resp_set_type(req, r.type);
+        httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+        if (r.filename[0]) {
+            snprintf(disp, sizeof disp, "attachment; filename=\"%s\"", r.filename);
+            httpd_resp_set_hdr(req, "Content-Disposition", disp);
+        }
+        e = httpd_resp_send(req, r.body, (ssize_t)r.len);
     }
-    httpd_resp_sendstr(req, "saved; restarting");
-    xTaskCreate(restart_task, "restart", 2048, NULL, 5, NULL);
-    return ESP_OK;
-}
-
-static esp_err_t post_restart(httpd_req_t *req)
-{
-    httpd_resp_sendstr(req, "restarting");
-    xTaskCreate(restart_task, "restart", 2048, NULL, 5, NULL);
-    return ESP_OK;
+    rdof_webapi_done(&WEB, &r);
+    if (r.restart)
+        rdof_webapi_restart(&WEB);
+    return e;
 }
 
 #if CONFIG_RDOF_SDR
@@ -841,44 +915,6 @@ static esp_err_t post_spike(httpd_req_t *req)
 }
 #endif
 
-static esp_err_t get_log(httpd_req_t *req)
-{
-    size_t cap = (size_t)CONFIG_RDOF_LOG_RING_KB * 1024 + 1;
-    if (cap < 64)
-        cap = 64;
-    char *buf = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!buf)
-        buf = malloc(cap);
-    if (!buf)
-        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory");
-    size_t n = logring_read(buf, cap);
-    httpd_resp_set_type(req, "text/plain");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    esp_err_t e = httpd_resp_send(req, buf, (ssize_t)n);
-    free(buf);
-    return e;
-}
-
-/* The recent calls changed after ?since=N (heard.c). */
-static esp_err_t get_lastheard(httpd_req_t *req)
-{
-    char q[32], v[16];
-    uint32_t since = 0;
-    if (httpd_req_get_url_query_str(req, q, sizeof q) == ESP_OK &&
-        httpd_query_key_value(q, "since", v, sizeof v) == ESP_OK)
-        since = (uint32_t)strtoul(v, NULL, 10);
-    const size_t cap = 20480; /* 50 calls at about 380 bytes at most */
-    char *buf = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!buf)
-        buf = malloc(cap);
-    if (!buf)
-        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no memory");
-    size_t n = heard_json(since, buf, cap);
-    esp_err_t e = send_json(req, buf, n);
-    free(buf);
-    return e;
-}
-
 #if CONFIG_FREERTOS_USE_TRACE_FACILITY && CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS
 /* Each task's share of a core since the last ask, by its task number (the run-time counter is esp_timer us). */
 static esp_err_t get_tasks(httpd_req_t *req)
@@ -986,16 +1022,9 @@ void web_start(void)
     }
     const httpd_uri_t uris[] = {
         {.uri = "/", .method = HTTP_GET, .handler = get_page},
-        {.uri = "/api/status", .method = HTTP_GET, .handler = get_status},
-        {.uri = "/api/config", .method = HTTP_GET, .handler = get_config},
-        {.uri = "/api/config", .method = HTTP_POST, .handler = post_config},
-        {.uri = "/api/resolved", .method = HTTP_GET, .handler = get_resolved},
-        {.uri = "/api/log", .method = HTTP_GET, .handler = get_log},
-        {.uri = "/api/lastheard", .method = HTTP_GET, .handler = get_lastheard},
 #if CONFIG_FREERTOS_USE_TRACE_FACILITY && CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS
         {.uri = "/api/tasks", .method = HTTP_GET, .handler = get_tasks},
 #endif
-        {.uri = "/api/restart", .method = HTTP_POST, .handler = post_restart},
 #if CONFIG_RDOF_SDR
         {.uri = "/api/selftest", .method = HTTP_POST, .handler = post_selftest},
         {.uri = "/api/spike", .method = HTTP_POST, .handler = post_spike},
@@ -1021,6 +1050,11 @@ void web_start(void)
     };
     for (size_t i = 0; i < sizeof uris / sizeof uris[0]; i++)
         httpd_register_uri_handler(server, &uris[i]);
+    for (const rdof_webapi_route_t *w = rdof_webapi_routes; w->path; w++) {
+        const httpd_uri_t u = {.uri = w->path, .method = strcmp(w->method, "POST") ? HTTP_GET : HTTP_POST,
+                               .handler = api_shared};
+        httpd_register_uri_handler(server, &u);
+    }
     crash_register(server);
 #if CONFIG_RDOF_BENCH
     bench_api_register(server);

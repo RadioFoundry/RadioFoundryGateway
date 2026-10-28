@@ -44,7 +44,7 @@ cmake -S . -B build/linux -DRADIOFOUNDRY_DIR=/path/to/radiofoundry && cmake --bu
 ```
 
 With SoapySDR installed (Debian / Ubuntu `libsoapysdr-dev`, Homebrew `soapysdr`) the build finds it and `rdofsdr`
-also runs live from any SoapySDR device: `rdofsdr --soapy driver=rtlsdr -r 1536000 --ch C1:461.4625 ...
+also runs live from any SoapySDR device: `rdofsdr --soapy driver=rtlsdr -r 1536000 --ch C1:438.4875 ...
 [--gain DB] [--setting biastee=true] [--seconds S]`. The device streams CF32 at the rate, tuned to the planned
 center; `--ppm` stays the receiver's software correction. The rate must be a multiple of 48000 that the device
 can run at exactly (`rdofsdr` warns when it can't).
@@ -64,6 +64,67 @@ The Airspy R2 (2.5 and 10 MS/s only) doesn't fit. The tested Pluto's FPGA x8 dec
 2.08 MS/s SoapyPlutoSDR turns it on, and the board then streams a constant (also when read through libiio
 directly), so run it at 2.4 MS/s or more; a Pluto whose decimator works may run at 1536000. The device API plan,
 [docs/spec/fw/sdr-device-api.md](spec/fw/sdr-device-api.md), takes the same model into the firmware's front ends.
+
+`rdofradio` (built with `rdofsdr`) transmits too: a SoapySDR device run as an `sdr_transceiver`, the repeater
+(`--duplex full`, repeating what it hears) or the roaming transceiver (`half`), with `--parrot ID` sending back
+what it hears ([parrot.h](../common/include/rdof/parrot.h); on a board, the `parrot` setting). `rdofradio --soapy driver=plutosdr -r 2400000 --allow-tx --rx 438.25 --tx 438.75
+--duplex full --cc 1 --gain 20 --tx-gain 65 --tx-offset 0.063`. On the Pluto above (2026-10-27), with the RX and
+TX antennas on one bench, both ran: full duplex decoded the inbound throughout while transmitting, the outbound on
+the 30 ms grid; half duplex sent back a whole call that the bench decoded with 0 FEC failures. What it took:
+
+- A thread for the transmit stream. The Pluto's read and write both block on USB, one thread doing both fell
+  behind, and libiio drops receive samples that aren't read in time without reporting an overflow.
+- The stream's `bufflen` (`--stream`, default `bufflen=32768` on a Pluto). With the driver's 65536 the loop delay
+  (TX written to RX read) changed by up to 27 ms from one start to the next; with 16384 the transmit stream
+  underran without an error, and the bursts had bit errors. With 32768 it stays at 61-65 ms: `--tx-offset 0.063`.
+  `--monitor` measures it, by hearing the outbound back.
+- RX gain 20 dB and TX gain 65 with the antennas close: more RX gain and the transmitter's own signal clips the
+  receiver.
+- Which slot a handheld's burst is in comes from where it falls against our outbound, so the transmit path's delay
+  has to be known to a few ms. At the start (and again whenever it's needed), the receiver tunes to the TX LO and
+  times a 20 ms pulse sent 100 kHz below it ("calibration: the transmit path is ... ms past its place"); a pulse
+  not heard is tried again, 5 times. A 5 MHz split is wider than the receiver's band, so the outbound can't be
+  heard while repeating.
+- The delay moves when either stream stalls. A writer stall lets the Pluto run dry, and everything after goes out
+  one buffer (13.65 ms at 2.4 MS/s) later: the TX ring's floor grows by that much, and idle, rdofradio takes it
+  out ("transmit: ... ms of delay taken out"; keyed, the labels follow it). A reader stall past the Pluto's buffers
+  loses receive samples without an overflow: the stream falls behind the wall clock, and rdofradio calibrates
+  again at the next idle moment ("receive: ... ms of samples lost"). Before both, two such stalls during other
+  heavy work on the Mac put every call on the other slot.
+- Slots are numbered by aligned timing ([docs/spec/slot-timing.md](spec/slot-timing.md), "Aligned timing"): a
+  handheld's TSx burst falls under outbound TSx and is repeated on TSx; the CACH's AT bit before outbound TSx is
+  the other channel's.
+- A Pluto over USB 2 streams about 3.5 to 4 MS/s each way in full duplex; 6 MS/s ran at 54% of real time. So one
+  Pluto repeats a split up to its band (about 2.4 MS/s here), not 5 MHz while also hearing its own outbound. The
+  modulator's phase table allows 16384 phases on a host (a 25 MHz split at 30 MS/s needs 6250), 1024 on the ESP32.
+
+The radio can come from a settings file instead: `--config FILE` takes the firmware's settings document
+([docs/spec/fw/config.md](spec/fw/config.md)), read by the firmware's parser. The radio is a `repeater` (or an
+`sdr_transceiver` with `duplex` full) or a half duplex `sdr_transceiver` on its idle channel. rdofradio applies its
+name, `peer_id`, `rx_freq` / `tx_freq`, `cc`, `parrot`, and a repeater's `slots`, `hang_s`, `call_hang_s`,
+`short_lc_ts1_low`, `prebuffer`, the jitter buffer, `cwid` and `cwid_every_s`, as the firmware does. `mode` sfr and
+dcdm are refused. Every other key stays in the file and is listed as not used (at the start, and in
+`/api/resolved`). The device stays on the command line (`--soapy`, `-r`, `--gain`, `--tx-gain`, `--tx-offset`,
+`--bw`, `--center`, `--allow-tx`, `--seconds`, `--web`, `-v`, `--bursts`, `--monitor`, `--tx-lo`, `--stream`);
+`--rx`, `--tx`, `--cc`, `--duplex` and `--parrot` are refused alongside it. A repeater on the Pluto:
+
+```sh
+cat > example.json <<'JSON'
+{
+  "name": "example",
+  "radios": [
+    {"type": "repeater", "name": "example", "peer_id": 9990601,
+     "rx_freq": 438.25, "tx_freq": 438.0125, "cc": 1, "parrot": 9990}
+  ]
+}
+JSON
+rdofradio --soapy driver=plutosdr -r 2400000 --allow-tx --config example.json --gain 20 --tx-gain 65 --tx-offset 0.063 --web 8080
+```
+
+With `--web`, the page's Settings tab edits the file: a save is checked by the same parser, written whole (a
+temporary file renamed over it), and rdofradio restarts: the main loop stops, the TX gain goes to its minimum and
+the streams close as at any exit, and it starts again with the same command line. Without `--config` the tab shows
+the flags as a settings document, read only (a start for a file).
 
 Checked on macOS (arm64; Apple clang, and GCC 15 with `-DRDOF_SANITIZE=OFF -DTINYSCTP_SANITIZE=OFF`, as GCC there
 has no sanitizer runtime) and Linux (Ubuntu 24.04 x86_64, GCC 13, LeakSanitizer included; Debian 13
@@ -92,6 +153,7 @@ Details: "Host tests", "Firmware: esp_idf" and "Flashing (SuperMini)" below.
 |---|---|
 | `common/` | `rdof_common`: portable C11, libc and libm only (no ESP-IDF, no POSIX). One `CMakeLists.txt` that is an ESP-IDF component when `ESP_PLATFORM` is set and a plain static library otherwise. Headers in `include/rdof/`. `src/radiofoundry/` holds the FEC, CACH, LC and CRC code from RadioFoundry (MIT). |
 | `sdr/` | `rdof_sdr`: the SDR receive path in portable C11 on top of `common/` ("SDR core" below); `cli/rdofsdr.c`, a host tool. |
+| `hostweb/` | the firmware's web page and its shared API (`common/src/webapi.c`) for a host tool (`rdofradio --web PORT`): a small POSIX HTTP server in its own thread; [hostweb/README.md](../hostweb/README.md). Off unless `-DRDOF_HOST_WEB=ON`. |
 | `rtlsdr/` | the RTL2832U + R820T / R828D driver: portable register logic, and `esp/rtl_usb.c`, the ESP-IDF USB host glue. |
 | `components/` | ESP-IDF components with nothing of the gateway in them, for any ESP-IDF project: `netclock` (a UTC clock disciplined by NTP or a browser) and `wifilist` (a prioritized list of Wi-Fi networks with a setup access point), each with its own README, Kconfig menu, NVS namespace, HTTP handlers and page section; `tinysctp` (SCTP over UDP, with PR-SCTP: the HBlink4 link's transport; its own README and Kconfig menu, no settings of its own); and `lr2021` (a Semtech LR2021 on SPI, from the datasheet; its own README). Each keeps its logic in plain C that the host tests build. |
 | `rust/` | `rdof_rust`: modules of `common/` ported to Rust, linked in place of their C behind a Kconfig switch, `CONFIG_RDOF_RUST`; [rust/README.md](../rust/README.md). |
@@ -130,6 +192,21 @@ reply, a clock) and calls the transceiver's or repeater's `poll` every 20 ms.
 | `oled_sdr` | the SDR's status screen and the `oled` settings (C only, no Rust port) |
 | `ipgw`, `ipgwcfg` | the IP gateway: DMR packet data put together, relayed to UDP by route or NAT, replies sent back as packet data; the `ip_gateway` settings (C only, no Rust port) |
 | `json` | a compact JSON writer (no spaces after `,` and `:`), byte for byte stable for the golden tests |
+| `webapi` | the web page's API shared by the firmware and the host tools: `/api/status`'s shared sections and `caps`, the settings (`/api/config`, `/api/resolved`, save and restart), `/api/log` (and its byte ring), `/api/lastheard`, `/api/restart`; each server gives a platform (optional hooks and capability flags) and routes those paths to `rdof_webapi_handle` |
+
+## Host web page
+
+`hostweb/` serves the firmware's own page (embedded from `esp_idf/main/web/index.html` and the components' scripts)
+from a host tool, so a running `rdofradio` can be watched in a browser. Build with `-DRDOF_HOST_WEB=ON`, run with
+`--web PORT` (127.0.0.1 only by default). The tool publishes a status snapshot, log lines and calls
+(`rdof/hostweb.h`), and may give settings hooks. The API is the firmware's own code (`rdof/webapi.h`): the server
+answers `/api/status`, `/api/lastheard`, `/api/log`, and with the hooks `/api/config`, `/api/resolved` and
+`/api/restart`, and `501 not on this platform` for the rest. The status's `caps` say what the server has; the page
+shows that and hides the rest (OTA, Wi-Fi, the firmware's clock, tasks, the core dump, the board's memory). Here it
+shows the process's and the system's memory and the system clock as the OS's NTP client keeps it. Publishing never
+waits on the server. `rdof_hostweb_tests` (the server) and `rdof_webapi_tests` (the shared API, with a fake
+platform, byte for byte against the firmware's status) cover it; `rdof_radiocfg_tests` covers rdofradio's
+`--config`.
 
 ## Host tests
 
@@ -375,6 +452,16 @@ image), 6.7 KB of it the component's `linker.lf` (its read and transmit paths in
 with it, 36% without, and the heap had no more free without it); `16mb` 1924 KB (0x1E0DE0); `4mb` 1827 KB
 (0x1C8C80), 92 KB (5%) free in its slot; `w12` + `rust` 2063 KB.
 
+Later on 2026-10-27, with the parrot (`parrot.c`, its setting and the radio task's part): `16mb` + `w12` is 2007 KB
+(0x1F5AF0) with 170 KB DIRAM used (51.0%). The parrot's recording (34 KB) is allocated in PSRAM, and only when the
+setting is on.
+
+Later on 2026-10-27, with the web API shared with the host tools (`common/src/webapi.c`, the page keyed off `caps`),
+against the same tree without it: `16mb` + `w12` 2011 KB (0x1F6DD0), +3.3 KB (code +1.3 KB, read-only data +2.0
+KB: the page and the shared code), DIRAM 72 bytes less (the log ring's state is a `rdof_bring_t`), PSRAM `.bss` the
+same; `16mb` 1935 KB (0x1E3D00), +3.5 KB, DIRAM 72 bytes less. The request bodies and the status are allocated in PSRAM as
+before.
+
 DIRAM went down because the roamer's state moved from `.bss` to the heap when it became a `roam_t`: the first
 radio's is still internal (about 5 KB, allocated when it starts), its settings in PSRAM. The `w12` build's 11 KB
 more DIRAM is the SPI master driver and the LR2021's state.
@@ -519,7 +606,7 @@ radios it runs in `run`, and Import or paste it. An S3's SDR takes a `sample_rat
 
 With no Wi-Fi networks, or none reached within 20 s (at boot or after losing the connection), the board opens an
 access point `radiofoundry-XXXX` (password `radiofoundry`) with the page at <http://192.168.4.1/>, while the station keeps
-trying. A new board starts with a placeholder roamer (an OpenGD77 on USB, peer 9990301) and an SDR on five 461 MHz
+trying. A new board starts with a placeholder roamer (an OpenGD77 on USB, peer 9990301) and an SDR on five 439 MHz
 channels at 288 kS/s, both on USB: whichever is plugged in runs. A one-role build starts with its one.
 
 ### The IP gateway
@@ -730,6 +817,7 @@ edits. Headers in `include/rdof/sdr/`.
 | `sdrmodem`, `loopback` | the SDR as an MMDVM modem for an `sdr_transceiver`, and its end-to-end check ("Transmit: the SDR as a radio") |
 | `receiver` | one tuner: channelizer, a demod and a `common` call tracker per channel, AFC after each chunk |
 | `cli/rdofsdr.c` | host tool: a cu8 recording (or, with SoapySDR, a live device: `--soapy`) in, bursts and tracker JSON out; `--bench` times each stage |
+| `cli/rdofradio.c` | host tool, with SoapySDR: a device that transmits, run as an `sdr_transceiver` (repeater or roaming transceiver), with the parrot |
 
 Switches (`include/rdof/sdr/features.h`, Kconfig menu "RadioFoundry Gateway SDR (sdr)"; all on by default):
 
@@ -957,7 +1045,7 @@ The S3's USB is Full Speed: 64-byte bulk packets, at most 19 a 1 ms frame, about
 1.536 MS/s needs 3 MB/s, so the ten-channel plan is out. 288 kS/s (576 KB/s) and 240 kS/s (480 KB/s) are the
 RTL's lowest rates that are a multiple of 48 kS/s; they cover 230 or 192 kHz (80% of the rate). With the 25 kHz
 DC guard, the 461 group's 12.5 kHz-step channels fit 4 at a time (the window planner picks which) or 5 with one
-near DC; the first five (461.0375 to 461.2375) is the default.
+near DC; the first five (438.0625 to 438.2625) is the default.
 
 Measured on the SuperMini (the spike, 2026-10-21): 240, 250, 288 and 300 kS/s arrive whole with every transfer
 plan; 960 kS/s (1.92 MB/s asked) delivers 1152 KB/s, 60%, the same with every plan. 1152 KB/s is 18 of the 64-byte
@@ -991,7 +1079,7 @@ R828D's inputs), and our bench findings above. Its section 3 lists what no sourc
 Where it differs from what was there before (not yet run on a dongle):
 - **Tuning.** The PLL's fraction is rounded, not truncated, and the DDC's IF is set to the IF the PLL really gives
   (LO minus the center), so the center lands within the DDC's 6.9 Hz step instead of up to one PLL step (220 Hz at
-  461 MHz) off. The sign of that correction is to be checked with a carrier (spec G.4).
+  439 MHz) off. The sign of that correction is to be checked with a carrier (spec G.4).
 - **IF filter.** The IF is 3.57 MHz at every rate, with webrtlsdr's filter setting (the narrowest coarse band, the
   calibrated fine code, HPF 11) also at 225 to 300 kS/s. It passes far more than the narrow rates need; a narrower
   setting waits for the sweep in spec G.2. The table it comes from takes the measured values directly.
@@ -1047,7 +1135,7 @@ continuous, then the gain step (SetRx forces step 13; spec R2.25). It runs in on
   the DSP core to the settings' rate.
 - **Wide, 120001 to 576000:** the FSK modem with its receive bandwidth as the rate code (spec R2.19), and the
   route's own rate converter making the settings' rate exactly (source 0, int8 I/Q; R2.21). No resampler on the
-  ESP: the DSP gets the int8 samples as they came (the front end's format is CS8). 576000 gives about 355 kHz of channels; 131 of 131 bench bursts decoded at 461 MHz.
+  ESP: the DSP gets the int8 samples as they came (the front end's format is CS8). 576000 gives about 355 kHz of channels; 131 of 131 bench bursts decoded at 439 MHz.
 - **Wide in int16, `device.settings.iq_bits` 16, 120001 to 240000:** the FSK modem's own rate (source 2, int16),
   resampled on the DSP core. About 50 dB more headroom than int8, for a box near strong radios; 240000 gives about
   77 kHz of channels (250 kS/s, 1 MB/s of SPI). 130 of 131 bench bursts. 288000 needs the SPI at 20 MHz (R2.29).
@@ -1091,8 +1179,8 @@ matter here:
 PA, and a transmit bypass; it has **no receive bypass**. DIO9, 10 and 11 drive its CTX, CPS and CSD: receive is
 CTX 0, CSD 1; transmit is CTX 1, with CPS 1 for the PA (inside `CONFIG_RDOF_LR2021_PA_LO_MHZ` to `_HI_MHZ`) or 0
 for the bypass. GPIO4 powers it. So the W12 receives well only in 902–928 MHz: elsewhere the SAW takes about 46 dB,
-and at 461 MHz only strong signals decode (the noise there is the chip's own, after its gain; the gain step and RX
-boost can't make it up). Transmit at 461 MHz through the bypass gives about +3 dBm.
+and at 439 MHz only strong signals decode (the noise there is the chip's own, after its gain; the gain step and RX
+boost can't make it up). Transmit at 439 MHz through the bypass gives about +3 dBm.
 
 The W12 also has: ESP32-S3R8 (8 MB octal PSRAM, so GPIO33 to 37 are taken), 16 MB flash, a 32 MHz crystal for the
 LR2021 (no TCXO), native USB only, OLED on I2C SDA 17 / SCL 18, VEXT_EN 45, and an 8-pin header for an L76K GNSS
@@ -1126,7 +1214,7 @@ one I2C write, and it takes no lock the DSP holds.
  13 T9<9990123
 
  -------------------------------
- 461.0475 576k cpu 19%
+ 438.0725 576k cpu 19%
 ```
 
 On the board (2026-10-24) the panel takes the init commands at 0x3C with GPIO45 low (no "no display" warning in
@@ -1145,7 +1233,7 @@ which is low (an external PA for useful power). Nothing written yet.
 
 Built and run on the host and in the self-test; on a board with `sim` (which loops what it sends back into what it
 receives) and the LR2021, half duplex. On the W12 (2026-10-24) a 29-burst call sent through the bench's `WS /tx
-via=modem` at +10 dBm on 461.2375 MHz decoded whole on the SDR bench: 0 FEC failures, about 0.9% bit errors, the
+via=modem` at +10 dBm on 438.2625 MHz decoded whole on the SDR bench: 0 FEC failures, about 0.9% bit errors, the
 bursts within 26 us of the TDMA grid. The roamer on it (an `sdr_transceiver`) hasn't been run against HBlink4 yet.
 
 - **Config.** A radio of type `sdr_transceiver` in `radios` (and in `run`, with the SDR): `duplex: half` (the
@@ -1172,8 +1260,10 @@ bursts within 26 us of the TDMA grid. The roamer on it (an `sdr_transceiver`) ha
 - **Full duplex**: DMR_START keys a continuous BS downlink, slot 1 first: each slot a CACH and the slot's queued
   burst, or an idle burst; ramps only at key up and down (DMR_START off ramps down the next slot). The CACH carries
   the short LC (the Null message until DMR_SHORTLC brings one; a new one starts on a slot counter that's a multiple
-  of 4, a quarter in each CACH) and its AT bit is the inbound slot's busy state (a call from its first burst to
-  its terminator or DMR_LOST, 360 ms after a data burst). Heard bursts go up as DMR_DATA1 or 2 by their slot,
+  of 4, a quarter in each CACH) and its AT bit is the other channel's busy state (a call from its first burst to
+  its terminator or DMR_LOST, 360 ms after a data burst): the CACH before outbound TSx speaks for the inbound slot
+  a slot later, which with aligned timing is the other channel's, as an MMDVM sends it. Heard bursts go up as
+  DMR_DATA1 or 2 by their slot (aligned timing: a burst under outbound TSx is TSx),
   DMR_LOST1 or 2 likewise. Only on a front end whose caps say `RDOF_FE_FULL_DUPLEX` (just `sim` for now).
 - **Dual capacity direct mode** (SET_CONFIG simplex with 0x40; [docs/spec/repeater.md](spec/repeater.md)
   section 13, the contract in [docs/spec/fw/radio.md](spec/fw/radio.md) 1.6): two simplex calls at once on
@@ -1305,7 +1395,7 @@ is this plus its number), `channels` (plan numbers, or `{ch, ...}` to override `
 `tg`, `peer_id`, `hblink`), `callsign`, `hblink` (false: no peers), `location`, `rssi_offset`, `afc`,
 `status_seconds`; the box's `mqtt` (app `sdr`), `hblink` (`host`, `port`) and `location`. Board keys in the
 section: `usb {transfers, transfer_kb}` (8 x 8 KB by default), `dsp_cores` (1 or 2), `selftest`, `spike` (run at
-boot), `sim` (no dongle: the self-test clip, five busy channels around 461.1225 MHz at 288 kS/s, looped in real
+boot), `sim` (no dongle: the self-test clip, five busy channels around 438.1475 MHz at 288 kS/s, looped in real
 time; a chunk more than half a second late is dropped and counted, as the USB ring would. For measuring the DSP
 and testing the board end to end; needs `CONFIG_RDOF_SDR_SELFTEST`), `sim_ppm` (with `sim`: a simulated tuner this
 many ppm fast, to watch `learn_ppm` work), `idle_gate` (default true; "The idle gate" below) and `learn_ppm`
@@ -1491,7 +1581,7 @@ The page's "Self-test" row shows the verdict. If it says two cores, set `"dsp_co
 VBUS; the dongle draws about 280 mA, plus the bias tee if on). Expect:
 - `RTL-SDR 0BDA:2838 "Realtek" "RTL2838UHIDIR" ..., Full Speed`, the device and configuration descriptor dump,
   `bulk IN 0x81: 64-byte packets`, then `R820T tuner, bulk FIFO set for 64-byte packets`.
-- then from `sdr`: `tuned 461.12250 MHz at 288000 S/s, ppm 0, gain 29.7 dB` (or the window it picked), and
+- then from `sdr`: `tuned 438.14750 MHz at 288000 S/s, ppm 0, gain 29.7 dB` (or the window it picked), and
   `streaming: 8 transfers of 8192 bytes in flight`.
 
 What a failure means:
@@ -1529,7 +1619,7 @@ What a failure means:
 - `bytes_lost` / `bytes_filled`: transfers dropped because the ring was full, read back as mid-scale filler (up
   to 250 ms a gap) so the stream keeps its timing and only the bursts in the gap are lost.
 - Bursts never appear but USB is at 100%: check the frequency, the ppm (the AFC follows up to 5 kHz, `RDOF_AFC_LIMIT_HZ`, about
-  10.8 ppm at 461 MHz; past that set `ppm`), the color code and the gain (look at `peakDbfs` / `clipPct` in the status).
+  10.8 ppm at 439 MHz; past that set `ppm`), the color code and the gain (look at `peakDbfs` / `clipPct` in the status).
 
 ### CPU budget on the S3 (measured)
 

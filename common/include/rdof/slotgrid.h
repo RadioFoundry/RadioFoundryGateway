@@ -7,7 +7,9 @@
  * Slot n's boundary is b(n) = n * 30 ms + offset, UTC (POSIX: at a leap second
  * every site steps together, so the grid stays common). Outbound TS1 is n
  * even. Outbound: the CACH starts at b(n), the burst at + 2.5 ms. Inbound: a
- * burst starts at b(n) + 1.25 ms and is TS2 when n is even. n is always the
+ * burst starts at b(n) + 1.25 ms, under outbound slot n, and is TS1 when n is
+ * even: aligned timing (ETSI TS 102 361-1 5.1.1 table 5.1), so the slot is the
+ * logical channel a radio and an MMDVM call it. n is always the
  * whole 64 bits here; a radio's slot counter is n mod 2^32 (rdof/split.h).
  * Times that don't fit in int64 (before 1677, after 2262) wrap.
  *
@@ -37,7 +39,7 @@ int64_t rdof_grid_boundary(int64_t n, int offset_us);
 int64_t rdof_grid_slot_at(int64_t t_ns, int offset_us, int *ts, int64_t *phase_ns);
 /* The first boundary at or after t_ns: n, and b(n) in *b. */
 int64_t rdof_grid_next_boundary(int64_t t_ns, int offset_us, int64_t *b);
-/* An inbound (MS) burst that started at start_ns: the nearest slot n, its slot (TS2 when n is even), how far off. */
+/* An inbound (MS) burst that started at start_ns: the nearest slot n, its slot (TS1 when n is even: aligned timing), how far off. */
 int64_t rdof_grid_inbound(int64_t start_ns, int offset_us, int *ts, int64_t *err_ns);
 /* An outbound (BS) burst (its first symbol after the CACH) that started at start_ns. */
 int64_t rdof_grid_outbound(int64_t start_ns, int offset_us, int *ts, int64_t *err_ns);

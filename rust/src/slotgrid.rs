@@ -118,7 +118,7 @@ fn nearest(x: i64) -> (i64, i64) {
 #[no_mangle]
 pub extern "C" fn rdof_grid_inbound(start_ns: i64, offset_us: c_int, ts: &mut c_int, err_ns: &mut i64) -> i64 {
     let (n, err) = nearest(start_ns.wrapping_sub(RDOF_IN_START_NS).wrapping_sub(off_ns(offset_us)));
-    *ts = ts_of(n, 2, 1);
+    *ts = ts_of(n, 1, 2); // aligned timing: under outbound TSx, logical channel x
     *err_ns = err;
     n
 }

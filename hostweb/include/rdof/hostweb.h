@@ -1,0 +1,130 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
+/*
+ * The firmware's web page on a host (Linux / macOS) tool: a small HTTP server in its own thread, for watching a
+ * running rdofradio (or any host tool built on rdof_common) live in a browser. POSIX sockets and pthreads only.
+ *
+ * The page is the firmware's own (esp_idf/main/web/index.html, with the netclock and wifilist scripts), embedded
+ * at build time. The API is the firmware's too: the server hands /api/status, /api/config, /api/resolved,
+ * /api/log, /api/lastheard and /api/restart to the shared code (rdof/webapi.h), with the host as the platform:
+ * the process's and the system's memory, the OS's clock, the log and last heard kept here, and the settings and
+ * the restart from the tool's hooks. Every other /api/ path answers 501 with {"error":"not on this platform"}.
+ *
+ * Publishing is cheap and never waits on the server: rdof_hostweb_status copies one struct and drops the update
+ * when the server holds the lock (the next one replaces it); the log and last-heard calls hold a lock for
+ * microseconds (the server copies under it and does its I/O outside). All calls are safe from any thread, and do
+ * nothing before rdof_hostweb_start or after rdof_hostweb_stop (but the log, which keeps a tool's startup lines).
+ */
+#ifndef RDOF_HOSTWEB_H
+#define RDOF_HOSTWEB_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include "rdof/netcalls.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef enum { RDOF_HOSTWEB_REPEATER = 0, RDOF_HOSTWEB_TRANSCEIVER } rdof_hostweb_role_t;
+
+/* One slot's call now. */
+typedef struct {
+    bool active;
+    bool group;
+    uint32_t src, dst;
+    bool has_ber, has_rssi;
+    float ber; /* % */
+    int rssi;  /* dBm */
+} rdof_hostweb_slot_t;
+
+/* What the page shows. Zero it, fill what the tool knows, publish. Strings are cut to fit. */
+typedef struct {
+    rdof_hostweb_role_t role;
+    char name[24];     /* the radio's name; "" uses the name given to start */
+    char radio[48];    /* the front end, "SoapySDR PlutoSDR" */
+    char modem[48];    /* what answers as the modem, "SDR modem" */
+    char protocol[16]; /* "" shows "host" */
+    char state[16];    /* free text, "idle", "hang" */
+    char error[96];    /* a radio error; non-empty shows the radio as not ready */
+    char heard[48];    /* "src to dst" now heard on the air, or "" */
+    char sending[48];  /* the same for what's going out */
+    bool ready;
+    bool keyed;
+    bool hblink, mqtt; /* links, if the tool has them (the page warns when down) */
+    uint32_t rx_hz, tx_hz;
+    int cc;
+    double cpu_load; /* 0..1 of the tool's real-time loop, or -1 */
+    uint64_t bursts_heard, bursts_sent, dropped;
+    rdof_hostweb_slot_t slot[2];
+    /* the parrot, when one runs */
+    bool parrot_on;
+    char parrot_state[16]; /* "idle", "recording", "waiting", "replaying" */
+    int parrot_slot;
+    uint32_t parrot_id, parrot_src, parrot_dst;
+    uint32_t parrot_replayed, parrot_ignored, parrot_cut;
+    /* a free-form counters block shown as "tool" on the page: up to 8 name / value pairs */
+    int nextra;
+    struct {
+        char name[24];
+        int64_t value;
+    } extra[8];
+} rdof_hostweb_status_t;
+
+/* The tool's settings, for the page's Settings tab (GET / POST /api/config, GET /api/resolved), and its restart
+ * (POST /api/restart, and after a save). Called from the server's thread: the callbacks must be safe to call while
+ * the tool runs. */
+typedef struct {
+    bool writable;    /* false: the page shows them read-only (say why in source) */
+    char source[160]; /* where they come from: "file /etc/x.json", "command line flags" */
+    /* the settings text: malloc'd, the server frees it; NULL if there is none */
+    char *(*get)(void *ctx);
+    /* Validate and store a new document (text is NUL terminated). True: stored; the server answers "saved;
+     * restarting" and calls restart. False: err holds the reason, nothing was stored (the answer is 400 with it). */
+    bool (*save)(void *ctx, const char *text, size_t len, char *err, size_t err_cap);
+    /* A text description of the settings as the tool resolved them (GET /api/resolved); may be NULL. */
+    size_t (*resolved)(void *ctx, char *out, size_t cap);
+    /* Restart the tool (rdof_hostweb_reexec, once it has stopped cleanly): ask for it and return at once; the
+     * answer goes out first. NULL: no restart (and saved settings take effect at the next start). */
+    void (*restart)(void *ctx);
+    void *ctx;
+} rdof_hostweb_settings_t;
+
+/* Start the server on bind_addr (NULL: 127.0.0.1) and port (0: any free one). name is the box name the page shows.
+ * Returns the port, or -1 (errno set; say why with strerror). A second start while running returns -1 / EALREADY. */
+int rdof_hostweb_start(const char *bind_addr, int port, const char *name);
+/* Stop the server and join its thread. */
+void rdof_hostweb_stop(void);
+bool rdof_hostweb_running(void);
+
+/* Set the settings hooks (a copy is taken). Before start or after; without them /api/config answers 501. */
+void rdof_hostweb_settings(const rdof_hostweb_settings_t *s);
+/* Write a file whole or not at all: a temporary file beside it, flushed, then renamed over it. False: err says
+ * why, and the file is as it was. */
+bool rdof_hostweb_save_file(const char *path, const char *text, size_t len, char *err, size_t err_cap);
+/* Start this program again with argv (argv[0] found as the shell would): the page then says the last start was a
+ * restart. Stop the server and close the devices first. Returns only if the exec failed (errno set). */
+int rdof_hostweb_reexec(char *const argv[]);
+/* Publish the current state (a copy is taken). */
+void rdof_hostweb_status(const rdof_hostweb_status_t *s);
+/* A line for /api/log, stamped with the time of day (UTC). printf style; cut at 191 bytes. Kept from before the
+ * server starts. */
+void rdof_hostweb_logf(const char *fmt, ...)
+#if defined(__GNUC__)
+    __attribute__((format(printf, 1, 2)))
+#endif
+    ;
+/* A call tracker's JSON line (the SDR modem's tracker output), for the last heard list: role "repeater" or
+ * "roamer", radio the radio's name, channel NULL for a radio. */
+void rdof_hostweb_tracker_json(const char *role, const char *radio, const char *channel, const char *json);
+/* A call going out ("start" or "end"; the on_tx hook's arguments), for the last heard list. */
+void rdof_hostweb_net_call(const char *role, const char *radio, const char *action, const rdof_tx_call_info_t *call,
+                           double duration);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

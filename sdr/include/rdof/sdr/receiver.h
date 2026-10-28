@@ -84,6 +84,9 @@ struct rdof_sdr_rx {
     /* Optional, with burst_ctx: true for a 48 kS/s position the platform's own transmitter keyed (half duplex):
      * a burst there gives no AFC measurement (so no ppm learning either). */
     bool (*muted)(void *ctx, int64_t position);
+    /* Optional, with burst_ctx: the slot (1, 2) a burst is in when the platform knows better than its sync and CACH
+     * (a duplex repeater's inbound, by timing), 0 to keep it; called after on_burst, before the call tracker. */
+    int (*relabel)(void *ctx, const rdof_sdr_burst_t *b);
     double *afc_pending;   /* this chunk's AFC measurements: afc_cap a channel */
     int64_t *afc_at;       /* the channel sample each was measured at */
     int64_t *hist_at;      /* per channel, RDOF_AFC_HISTORY: the first channel sample a correction applied to */

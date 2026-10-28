@@ -111,17 +111,18 @@ static void test_cach(void)
     CHECK(m.bad_short_lcs == 1 && read_short_lc(&m, 12, lc5) && !lc5[0] && !lc5[3], "a bad one dropped");
     CHECK(m.short_lcs == 2, "%u taken", (unsigned)m.short_lcs);
 
-    /* AT: the inbound slot's busy state, in the CACH before the outbound slot with its number */
+    /* AT: a channel's busy state, in the CACH before the other outbound slot (the inbound slot a slot later; aligned
+     * timing, as an MMDVM sends it) */
     m.duplex = true;
     m.mode = RDOF_MODE_DMR;
     m.channel = 0;
     CHECK(at_bit(&m, 0) == 0 && at_bit(&m, 1) == 0, "idle inbound");
     heard(&m, 2, RDOF_DT_VOICE_LC_HEADER, 1000);
-    CHECK(at_bit(&m, 0) == 0 && at_bit(&m, 1) == 1 && rdof_sdrmodem_busy(&m) == 2, "TS2 voice busy");
+    CHECK(at_bit(&m, 0) == 1 && at_bit(&m, 1) == 0 && rdof_sdrmodem_busy(&m) == 2, "TS2 voice busy: before outbound TS1");
     heard(&m, 2, RDOF_DT_TERMINATOR_WITH_LC, 2000);
     CHECK(rdof_sdrmodem_busy(&m) == 0, "a terminator ends it");
     heard(&m, 1, RDOF_DT_CSBK, 3000);
-    CHECK(at_bit(&m, 0) == 1 && rdof_sdrmodem_busy(&m) == 1, "TS1 data busy");
+    CHECK(at_bit(&m, 1) == 1 && rdof_sdrmodem_busy(&m) == 1, "TS1 data busy: before outbound TS2");
     m.now48 = 3000 + 17280;
     CHECK(rdof_sdrmodem_busy(&m) == 0, "for 360 ms");
     rdof_sdrmodem_free(&m);
@@ -135,8 +136,8 @@ static void test_cach(void)
  * and the RX half's epoch must sit on the TX half's real slot starts. The SDR TX half also keys up, sends what the
  * repeater queues, carries the AT bits the split sends, and drops its role when the host goes quiet. */
 
-#define RXF 461037500u
-#define TXF 466037500u
+#define RXF 438062500u
+#define TXF 438037500u
 
 enum { RADIO = 0, SDR = 1 };
 
@@ -297,13 +298,14 @@ static double epoch_error_us(const pair_t *p)
     return (k - round(k)) * 2 * slot_s * 1e6;
 }
 
-/* The start (host time) of the first inbound burst on slot at least ahead s from now, on the TX half's grid. */
+/* The start (host time) of the first inbound burst on slot at least ahead s from now, on the TX half's grid: TS1 under
+ * outbound TS1 (aligned timing). */
 static double slot_time(const pair_t *p, int slot, double ahead, double *e)
 {
     double slot_s;
     tx_grid(p, e, &slot_s);
     double m = ceil((p->clock + ahead - *e) / (2 * slot_s));
-    return *e + (2 * m + (slot == 1)) * slot_s + 0.00125;
+    return *e + (2 * m + (slot == 2)) * slot_s + 0.00125;
 }
 
 static void inject(pair_t *p, int slot, int dt, double t)
@@ -528,8 +530,8 @@ static void test_split_rx_solo(void)
     CHECK(solo_last_result == 0 && m.has_epoch, "SET_EPOCH");
     d6(&m, (uint8_t[]){4, 0, 0, 0, 0, 0x00, 0x00, 0x00, 0x02}, 9);
     CHECK(solo_last_result == 4, "a period 11 %% off refused");
-    CHECK(rdof_sdrmodem_label(&m, 48 * 30 * 2 + 60) == 2 && rdof_sdrmodem_label(&m, 48 * 30 * 3 + 60) == 1,
-          "even slot TS2, odd TS1");
+    CHECK(rdof_sdrmodem_label(&m, 48 * 30 * 2 + 60) == 1 && rdof_sdrmodem_label(&m, 48 * 30 * 3 + 60) == 2,
+          "even slot TS1, odd TS2 (aligned)");
     solo_now = 4 * 48000; /* past the lease */
     m.mode = RDOF_MODE_DMR, m.channel = 0;
     heard(&m, 1, RDOF_DT_CSBK, solo_now);
@@ -792,7 +794,7 @@ static void test_utc_tx(void)
     rdof_sdrmodem_free(&U.m);
 }
 
-/* Heard bursts labeled from the grid: an inbound burst starts 1.25 ms into its slot, TS2 when n is even. */
+/* Heard bursts labeled from the grid: an inbound burst starts 1.25 ms into its slot, TS1 when n is even (aligned timing). */
 static void test_utc_rx(void)
 {
     for (int offset = 0; offset <= 7000; offset += 7000) {
@@ -812,8 +814,8 @@ static void test_utc_rx(void)
             memset(&sb, 0, sizeof sb);
             sb.b.slot = 1, sb.b.dt = RDOF_DT_CSBK, sb.position = pos;
             rdof_sdrmodem_heard(&U.m, 0, &sb);
-            const int want = (n & 1) ? RDOF_MMDVM_DMR_DATA1 : RDOF_MMDVM_DMR_DATA2;
-            wrong += !ok || gn != n || ts != ((n & 1) ? 1 : 2) || U.last_cmd != want;
+            const int want = (n & 1) ? RDOF_MMDVM_DMR_DATA2 : RDOF_MMDVM_DMR_DATA1;
+            wrong += !ok || gn != n || ts != ((n & 1) ? 2 : 1) || U.last_cmd != want;
         }
         CHECK(!wrong && U.m.grid_labeled == 40, "offset %d: %d of 40 labeled wrong", offset, wrong);
         rdof_sdrmodem_free(&U.m);
@@ -1027,8 +1029,8 @@ static void test_pair_utc(int rx_kind)
 #include "rdof/sdr/receiver.h"
 
 #define DC_FS 288000
-#define DC_CENTER 461000000.0
-#define DC_CH 461037500u
+#define DC_CENTER 438025000.0
+#define DC_CH 438062500u
 #define DC_CHUNK 4608
 #define DC_CC 1
 
