@@ -191,8 +191,9 @@ The bench daemon's `dmr-bursts` field names:
 | `cc` | color code from slot type or EMB |
 | `cfo_hz`, `level_dbfs`, `dev_hz`, `sym_err` | demodulator measurements |
 | `grid_err_ms` | offset from the 30 ms TDMA grid of this run |
-| `fec` | `{"bit_err_est", "fec_ok"}` |
-| `lc` | decoded link control when the burst completes one: `src`, `dst`, `group`, `flco` |
+| `pi`, `lcss` | voice B-F's EMB; `null` otherwise |
+| `fec` | what each code corrected: `slot_type_corrected`, `bptc_ok` and `bptc_corrected` (of 196 bits), `rs129_ok` (voice LC), `crc_ok` (CSBK, data and PI headers); voice: `emb_corrected` (B-F), `ambe_corrected` (each frame's Golay data bits), `ambe_bad` (a frame past 3); then `bit_err_est` (their sum, a floor) and `fec_ok` |
+| `lc` | decoded link control when the burst completes one, else `null`: the voice LC on headers and terminators, voice E's embedded LC (with `emb_flco`), a CSBK's `csbko`, `fid`, `crc_ok`, `src`, `dst`. An LC has `type` (`grp_voice`, `priv_voice`, `talker_alias_hdr`, `talker_alias_blk1`-`3`, `gps_info`), `flco`, `fid`, `raw`, and by type `src`, `dst`, `group`, `so` and its flags, `lat`/`lon`, or the alias `format`/`length` |
 | `raw_hex` | the 33-byte burst |
 
 ### 6.4 Calls
@@ -454,7 +455,7 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
 - `trigger` sends the channel's 48 kS/s samples (cf32 or cs16), as section 6.2's level trigger.
 - `bursts` and `listen` send the receiver channel's bursts at `freq` as `dmr-bursts` records (section 6.3's fields
   with the daemon's names: `t`, `dt_prev_ms`, `grid_err_ms`, `slot_ab`, `sync`, `kind`, `cc`, `cfo_hz`,
-  `level_dbfs`, `dev_hz`, `sym_err`, `fec`, `lc`, `raw_hex`), the summary the daemon's (`bursts`, `kinds`,
+  `level_dbfs`, `dev_hz`, `pi`, `lcss`, `fec`, `lc`, `raw_hex`; no `sym_err` yet), the summary the daemon's (`bursts`, `kinds`,
   `first_t`, `last_t`, `seconds`, `cfo_hz`, `level_dbfs`, `ended`).
 
 ### 14.3 Jobs
