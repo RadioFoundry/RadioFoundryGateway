@@ -625,9 +625,11 @@ same tree without it: `16mb` + `w12` 2118 KB (0x2116E0), +45 KB, and 200 bytes m
 The roamer role costs 132 KB of flash and the SDR 436 KB (338 KB of it the self-test clip), against about 945 KB for
 the board both share. The SDR only image is 64 KB smaller than with everything built `-O2`.
 
-Everything, the self-test clip too, fits the 4 MB part with two OTA slots (92 KB to spare on 2026-10-27), so
-nothing is gated off in `4mb`. If that changes, drop the self-test clip (`CONFIG_RDOF_SDR_SELFTEST`, 338 KB) first, then the
-repeater, OLED or the full page, before giving up a slot or a role. IRAM shows 100% in `idf.py size`: that's
+Everything, the self-test clip too, fit the 4 MB part with two OTA slots until 2026-10-29 (92 KB to spare on
+2026-10-27); the bench's line protocol took it 25 KB over its slot, so `4mb` builds without the self-test clip
+(`CONFIG_RDOF_SDR_SELFTEST`, 338 KB), and so without the CPU self-test and the `sim` input, which need the clip:
+1575 KB (0x189D90), 345 KB free in its slot. If it runs out again, drop the
+repeater, OLED or the full page next, before giving up a slot or a role. IRAM shows 100% in `idf.py size`: that's
 the fixed 16 KB vector / cache-miss region filling as usual. The transceiver (about 20 KB), the repeater (about 55
 KB), the settings parser (under 65 KB, while parsing) and the log ring are allocated in PSRAM.
 

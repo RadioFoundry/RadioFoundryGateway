@@ -15,6 +15,7 @@
 #if CONFIG_RDOF_BENCH && CONFIG_RDOF_BENCH_LINE_PORT > 0
 
 #include "esp_app_desc.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_pthread.h"
 #include "esp_timer.h"
@@ -135,6 +136,10 @@ void bench_line_start(void)
 {
     if (bl)
         return;
+    if (heap_caps_get_total_size(MALLOC_CAP_SPIRAM) < 1024 * 1024) { /* its 410 KB would starve internal RAM */
+        ESP_LOGW(TAG, "line protocol: off (it needs PSRAM)");
+        return;
+    }
     static const rdof_bl_platform_t pf = {.device = bl_device, .window = bl_window, .freqs = bl_freqs,
                                           .iq_read = bl_iq_read, .iq_warm = bl_iq_warm, .utc = bl_utc,
                                           .sc_utc = bl_sc_utc, .rx_stats = bl_rx_stats, .can_tx = bl_can_tx,
