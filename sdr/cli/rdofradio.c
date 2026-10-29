@@ -1291,6 +1291,7 @@ static void bl_window(void *ctx, rdof_bl_window_t *w)
     w->lo_hz = R.rx.center_hz - 0.4 * R.rate;
     w->hi_hz = R.rx.center_hz + 0.4 * R.rate;
     w->gain_db = dev ? dev->rx_gain(dev) : 0;
+    w->iq_scale_db = 20 * log10(BL.ring.scale > 0 ? BL.ring.scale : 1);
 }
 
 static int bl_freqs(void *ctx, rdof_bl_freq_t *out, int max)
@@ -1377,6 +1378,9 @@ static void bench_start(void)
         fprintf(stderr, "bench: no memory for the history\n");
         return;
     }
+    /* cs8 from a 12-bit ADC (an AD9361 at 1/2048 a step): its low 8 bits, where a bench signal is (a call at
+     * -53 dBFS is a few steps); a signal over -24 dBFS clips, and the capture's clip_pct says so */
+    BL.ring.scale = 16;
     static const rdof_bl_platform_t pf = {bl_device, bl_window, bl_freqs, bl_iq_read, NULL, bl_utc, bl_sc_utc,
                                           bl_rx_stats, bl_can_tx, NULL};
     BL.bl = rdof_bl_new(&pf);

@@ -1136,10 +1136,10 @@ static void tick_capture(rdof_bl_t *bl, conn_t *c, double now)
             emit(bl, c,
                  "{\"done\":{\"freq\":%.1f,\"center\":%.1f,\"fs\":%.1f,\"fmt\":\"cs8\",\"gain\":%.1f,\"ppm\":%.3f,"
                  "\"t0\":%.6f,\"sc0\":%llu,\"seconds\":%.3f,\"samples\":%lld,\"overflows\":%ld,\"gap_samples\":%ld,"
-                 "\"clip_pct\":%.3f,\"pre_s\":%.3f,\"source\":\"rfg\"}}",
+                 "\"clip_pct\":%.3f,\"pre_s\":%.3f,\"scale_db\":%.2f,\"source\":\"rfg\"}}",
                  c->freq_hz, w.center_hz, w.fs, c->gain, w.ppm, t0, (unsigned long long)c->sc0, secs,
                  (long long)(c->sc_end - c->sc0), c->gaps ? 1L : 0L, c->gaps,
-                 c->sent_iq ? 100.0 * (double)c->clipped / (double)(2 * c->sent_iq) : 0.0, c->pre_s);
+                 c->sent_iq ? 100.0 * (double)c->clipped / (double)(2 * c->sent_iq) : 0.0, c->pre_s, w.iq_scale_db);
             c->state = C_DONE;
             return;
         }
@@ -1203,6 +1203,7 @@ bool rdof_bl_ring_init(rdof_bl_ring_t *r, long n)
     r->buf = malloc((size_t)n * 2);
     r->n = r->buf ? n : 0;
     r->w = 0;
+    r->scale = 1.0f;
     return r->buf != NULL;
 }
 
@@ -1213,9 +1214,9 @@ void rdof_bl_ring_free(rdof_bl_ring_t *r)
     r->n = 0;
 }
 
-static inline int8_t sat8(float x)
+static inline int8_t sat8(float x, float k)
 {
-    const float v = x * 127.0f;
+    const float v = x * k;
     return v >= 127.0f ? 127 : v <= -128.0f ? -128 : (int8_t)lrintf(v);
 }
 
@@ -1225,8 +1226,9 @@ void rdof_bl_ring_put(rdof_bl_ring_t *r, const float *iq, long n, long *clipped)
         return;
     long k = (long)(r->w % (uint64_t)r->n);
     long clip = 0;
+    const float g = 127.0f * r->scale;
     for (long i = 0; i < n; i++) {
-        const int8_t a = sat8(iq[2 * i]), b = sat8(iq[2 * i + 1]);
+        const int8_t a = sat8(iq[2 * i], g), b = sat8(iq[2 * i + 1], g);
         clip += (a == 127 || a == -128) + (b == 127 || b == -128);
         r->buf[2 * k] = a, r->buf[2 * k + 1] = b;
         if (++k == r->n)

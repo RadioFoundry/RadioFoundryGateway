@@ -448,7 +448,9 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
   to `pre_s` seconds from before the request (the I/Q history, section 9). The receiver isn't retuned: `gain` and
   `offset_khz` are noted in the metadata and otherwise ignored, and a frequency outside the window is `refused`.
   `meta` is what `FILE.json` holds: `freq` and `center` (Hz), `fs`, `fmt` `"cs8"`, `gain`, `ppm`, `t0` (UTC of
-  sample 0), `seconds`, `overflows`, `clip_pct`, `pre_s`.
+  sample 0), `seconds`, `overflows`, `clip_pct`, `pre_s`, `scale_db`. A front end with a wider ADC gives its low
+  bits, where a bench signal is: `scale_db` is how far cs8's full scale is under the ADC's (24.08 on a PlutoSDR:
+  ×16, clipping over -24 dBFS; a level in the capture less `scale_db` is the ADC's dBFS).
 - `trigger` sends the channel's 48 kS/s samples (cf32 or cs16), as section 6.2's level trigger.
 - `bursts` and `listen` send the receiver channel's bursts at `freq` as `dmr-bursts` records (section 6.3's fields
   with the daemon's names: `t`, `dt_prev_ms`, `grid_err_ms`, `slot_ab`, `sync`, `kind`, `cc`, `cfo_hz`,

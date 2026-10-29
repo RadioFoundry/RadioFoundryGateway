@@ -50,6 +50,7 @@ typedef struct {
 typedef struct {
     bool running;        /* the receiver runs */
     double center_hz, fs, lo_hz, hi_hz, gain_db, dc_guard_hz, ppm;
+    double iq_scale_db;  /* the captures' cs8 full scale under the ADC's (the ring's scale, in dB; 0: the same) */
 } rdof_bl_window_t;
 
 /* A burst the receiver heard (the platform's burst, in plain terms). */
@@ -116,6 +117,8 @@ typedef struct {
     int8_t *buf;         /* [n][2] */
     long n;
     uint64_t w;          /* samples written */
+    float scale;         /* the samples are multiplied by it before they go to int8 (1 from init): a wider ADC's
+                          * low bits, where a weak signal is; window's iq_scale_db is 20 log10 of it */
 } rdof_bl_ring_t;
 
 bool rdof_bl_ring_init(rdof_bl_ring_t *r, long n);
