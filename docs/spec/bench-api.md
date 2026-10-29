@@ -462,7 +462,7 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
   `no_signal`. `meta` is the daemon's: `freq`, `center`, `fs` and `rate` (the channel's), `wide_fs`, `fmt`, `bw`,
   `t0`, `trigger_time`, `signal_start_sample`, `trigger_sc`, `level_db`, `floor_db`, `snr_db`, `threshold_db`,
   `seconds`, `samples`, `pre_s`, `gap_samples`, `clip_pct`, `scale_db`. The engine filters on its own thread
-  (about 40 ms of input a tick), about 20 multiplies a wideband sample for one trigger.
+  (up to twice the input since the last tick), about 20 multiplies a wideband sample for one trigger.
 - `bursts` and `listen` send the receiver channel's bursts at `freq` as `dmr-bursts` records (section 6.3's fields
   with the daemon's names: `t`, `dt_prev_ms`, `grid_err_ms`, `slot_ab`, `sync`, `kind`, `cc`, `cfo_hz`,
   `level_dbfs`, `dev_hz`, `pi`, `lcss`, `fec`, `lc`, `raw_hex`; no `sym_err` yet), the summary the daemon's (`bursts`, `kinds`,

@@ -60,7 +60,7 @@ typedef struct {
     int di;
     double step;              /* the mixer's radians a sample */
     uint64_t sc, next_out;    /* the next input to take; the input that completes the next output */
-    double rate, bw, thr, min_ms, pre_s, post_s, max_s, floor_s, timeout, started;
+    double rate, bw, thr, min_ms, pre_s, post_s, max_s, floor_s, timeout, started, last_tick;
     bool cs16, until_end, fired;
     int have_floor;           /* 0 learning, 1 learned, 2 given */
     double floor_db, level_db;
@@ -1770,7 +1770,11 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
     rdof_bl_window_t w;
     get_window(bl, &w);
     const uint64_t g = (uint64_t)(t->ntaps - 1) / 2, d = (uint64_t)t->d;
-    long budget = (long)(0.04 * w.fs) + RDOF_BL_IQ_CHUNK; /* about 40 ms of input a tick: the lock is held */
+    /* twice the input since the last tick, so it catches up, at most 0.25 s of it: the lock is held */
+    double dt = t->last_tick > 0 ? now - t->last_tick : 0.02;
+    t->last_tick = now;
+    dt = dt < 0.02 ? 0.02 : dt > 0.125 ? 0.125 : dt;
+    long budget = (long)(2 * dt * w.fs) + RDOF_BL_IQ_CHUNK;
     while (budget > 0) {
         if (t->fired && t->next_out - g >= t->end_sc) {
             uint64_t oldest = 0, next = 0;
