@@ -139,9 +139,18 @@ static int rd(rdofradio_dev_t *d, rdof_cf_t *x, int n, long timeout_us)
     }
     const int k = (size_t)n < s->r_left ? n : (int)s->r_left;
     const float scale = 1.0f / 2048.0f;
-    for (int i = 0; i < k; i++) {
-        x[i].re = (float)s->rp[2 * i] * scale;
-        x[i].im = (float)s->rp[2 * i + 1] * scale;
+    /* one wide copy out of the DMA buffer, then the conversion: on a PlutoSDR, 16-bit loads straight from the buffer
+     * took a fifth of a core, this a twentieth */
+    enum { STAGE = 8192 };
+    static int16_t stage[2 * STAGE];
+    for (int done = 0; done < k;) {
+        const int m = k - done < STAGE ? k - done : STAGE;
+        memcpy(stage, s->rp + 2 * done, (size_t)m * 2 * sizeof(int16_t));
+        for (int i = 0; i < m; i++) {
+            x[done + i].re = (float)stage[2 * i] * scale;
+            x[done + i].im = (float)stage[2 * i + 1] * scale;
+        }
+        done += m;
     }
     s->rp += 2 * k;
     s->r_left -= (size_t)k;
