@@ -551,6 +551,9 @@ static void on_tx(void *ctx, const char *action, const rdof_tx_call_info_t *c, d
     say("repeater: %s slot %d %u -> %s%u (%.2f s)\n", action, c->slot, c->src, c->group ? "TG " : "",
             c->dst, d);
     mq_tx_event(action, c, d);
+#ifdef RDOF_HOST_WEB
+    rdof_hostweb_net_call(R.full ? "repeater" : "roamer", rcfg.name, action, c, d); /* last heard: NET */
+#endif
 }
 static void on_key(void *ctx, bool keyed)
 {
