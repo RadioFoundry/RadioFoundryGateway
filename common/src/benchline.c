@@ -896,6 +896,8 @@ static void op_capture(rdof_bl_t *bl, conn_t *c, int root, double now)
     memcpy(big, c->out + c->oh, c->ol);
     free(c->out);
     c->out = big, c->ocap = RDOF_BL_OUT_IQ, c->oh = 0;
+    if (bl->p.iq_warm) /* a history kept only while warm starts now */
+        bl->p.iq_warm(bl->p.ctx);
     uint64_t oldest = 0, next = 0;
     int8_t probe[2];
     bl->p.iq_read(bl->p.ctx, UINT64_MAX, probe, 0, &oldest, &next);
@@ -916,8 +918,8 @@ static void op_capture(rdof_bl_t *bl, conn_t *c, int root, double now)
     if (bl->p.iq_warm)
         bl->p.iq_warm(bl->p.ctx);
     const double t0 = bl->p.sc_utc ? bl->p.sc_utc(bl->p.ctx, c->sc0) : now - c->pre_s;
-    emit(bl, c, "{\"ready\":%.6f,\"shared\":true,\"center\":%.6f,\"pre_s\":%.3f,\"fs\":%.1f}", t0, w.center_hz / 1e6,
-         c->pre_s, w.fs);
+    emit(bl, c, "{\"ready\":%.6f,\"shared\":true,\"center\":%.6f,\"pre_s\":%.3f,\"fs\":%.1f,\"sc0\":%llu}", t0,
+         w.center_hz / 1e6, c->pre_s, w.fs, (unsigned long long)c->sc0);
 }
 
 /* ── run: the bench tools' jobs (section 14.3) ────────────────────────────── */

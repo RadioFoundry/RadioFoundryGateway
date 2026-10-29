@@ -439,7 +439,7 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
 | `run` | `session`, `job` (section 14.3), `argv`, `kind`, `expect_s`, `max_s`, `wait_max` | queued / granted, `{"started": ID}`, `{"out": line}` and `{"err": line}`, `{"exit": code}` |
 | `bursts` | `session`, `freq`, `seconds`, `max_bursts`, `until_end`, `cc`, `soft` | `{"ready": t0}`, `{"burst": record}`, `{"done": summary}`, or `no_signal` |
 | `listen` | `freq`, `seconds` | `{"burst": record}` |
-| `capture` | `session`, `freq`, `seconds`, `pre_s`, `gain`, `mode`, `offset_khz` | `{"ready": t0, "shared": true, "center": MHz, "pre_s"}`, `{"iq": {"seq", "n", "sc", "flags"}, "bytes": N}` + cs8 samples, `{"done": meta}` |
+| `capture` | `session`, `freq`, `seconds`, `pre_s`, `gain`, `mode`, `offset_khz` | `{"ready": t0, "shared": true, "center": MHz, "pre_s", "fs", "sc0"}` (sc0: the first sample's, so a client places every frame, gaps as zeros), `{"iq": {"seq", "n", "sc", "flags"}, "bytes": N}` + cs8 samples, `{"done": meta}` |
 | `trigger` | `session`, `freq`, `bw`, `pre_s`, `post_s`, `threshold_db`, `min_ms`, `timeout_s`, `fmt`, `until_end`, `max_s`, `floor_db` | `{"armed": {"floor_db"}}`, `{"iq": ...}` + samples, `{"done": meta}`, or `no_signal` |
 | `activity`, `burstlog`, `bridge` | | `unsupported` |
 

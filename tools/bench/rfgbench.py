@@ -286,6 +286,8 @@ def write_iq(a, req: dict, fmt_bytes: int) -> int:
 
     def on(d, data):
         if "ready" in d or "armed" in d:
+            if d.get("sc0") is not None:
+                st["sc0"] = d["sc0"]
             t0 = d.get("ready") or time.time()
             if "ready" in d:
                 print(f"READY {time.strftime('%H:%M:%S', time.localtime(t0))}.{int(t0 * 1000) % 1000:03d} t0={t0:.3f} "
@@ -305,6 +307,9 @@ def write_iq(a, req: dict, fmt_bytes: int) -> int:
             st["pos"] += len(data)
         elif "done" in d:
             m = d["done"]
+            end = m.get("samples", 0) * fmt_bytes
+            if end > st["pos"]:
+                f.write(b"\0" * (end - st["pos"]))      # a gap at the end, or no samples at all
             f.close()
             with open(out + ".json", "w") as j:
                 json.dump(m, j, indent=1)

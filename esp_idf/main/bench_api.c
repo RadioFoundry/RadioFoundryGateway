@@ -1620,15 +1620,20 @@ long bench_wide_read(uint64_t sc, int8_t *out, long n, uint64_t *oldest, uint64_
         return 0;
     }
     xSemaphoreTake(hist_mu, portMAX_DELAY);
-    const uint64_t w = hist_on && hist_wide_n ? hist_wide_w : 0;
+    if (!hist_on || !hist_wide_n || hist_run != run_id) { /* cold: nothing kept, the run is at its own count */
+        *oldest = *next = g_rx_ready && g_rx.samples > 0 ? (uint64_t)g_rx.samples : 0;
+        xSemaphoreGive(hist_mu);
+        return 0;
+    }
+    const uint64_t w = hist_wide_w;
     /* a tenth of the ring's margin: the DSP may be filling it while this copies */
     const uint64_t keep = (uint64_t)hist_wide_n - hist_wide_n / 10;
     uint64_t old = w > keep ? w - keep : 0;
-    if (hist_on && old < hist_wide_from)
+    if (old < hist_wide_from)
         old = hist_wide_from;
     *oldest = old, *next = w;
     long k = 0;
-    if (w && n > 0 && sc >= old && sc < w) {
+    if (n > 0 && sc >= old && sc < w) {
         k = (uint64_t)n > w - sc ? (long)(w - sc) : n;
         uint32_t x = (uint32_t)(sc % hist_wide_n);
         for (long i = 0; i < k; i++) {
