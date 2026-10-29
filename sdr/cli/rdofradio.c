@@ -3066,20 +3066,25 @@ int main(int argc, char **argv)
         WS.mod += now_s() - t_mod;
         /* Samples the receiver lost (a stall longer than the device's buffers: the stream falls behind the wall
          * clock) move what's heard against what's sent, and the transmitter's samples are paced by what's read: the
-         * calibration no longer holds. Its floor over half a second against the last one's: a step is a loss. */
-        if (R.full) {
+         * calibration no longer holds. Its floor over half a second against the last one's: a step is a loss. Half
+         * duplex says so too (the bench's timing and a repeater job's slots move with it). */
+        {
             const double lag = (now - t_start) * rate - (double)total;
             if (lag < R.lag_min)
                 R.lag_min = lag;
             if ((double)total / rate - R.lag_win >= 0.5) {
                 if (!isnan(R.lag_prev) && R.lag_min - R.lag_prev > rate / 500) {
                     WS.lost += llround(R.lag_min - R.lag_prev);
-                    say("receive: %.1f ms of samples lost; calibrating again once idle\n", 1e3 * (R.lag_min - R.lag_prev) / rate);
-                    R.recal = true, R.cal_tries = 0;
+                    say("receive: %.1f ms of samples lost%s\n", 1e3 * (R.lag_min - R.lag_prev) / rate,
+                        R.full ? "; calibrating again once idle" : "");
+                    if (R.full)
+                        R.recal = true, R.cal_tries = 0;
                 }
                 R.lag_prev = R.lag_min, R.lag_min = INFINITY;
                 R.lag_win = (double)total / rate;
             }
+        }
+        if (R.full) {
             if (R.recal && R.cal == 0 && !hot && !keyed && !R.m.in_call[0] && !R.m.in_call[1]) {
                 if (dev->set_rx_freq(dev, tx_lo) == 0) {
                     R.recal = false;
