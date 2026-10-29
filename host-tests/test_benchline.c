@@ -20,6 +20,9 @@
 #include "rdof/benchline.h"
 #include "rdof/benchnet.h"
 #include "rdof/jsonp.h"
+#include "rdof/layer2.h"
+#include "rdof/mmdvm.h"
+#include "rdof/pdu.h"
 
 static int checks, failures;
 
@@ -153,11 +156,43 @@ static void tx_air(rdof_bl_t *bl, double now, int ch)
     }
 }
 
+/* the repeater jobs: a fake repeater whose events the test queues */
+static struct {
+    bool open, closed;
+    rdof_bl_rpt_cfg_t cfg;
+    int polls, wakes;
+    uint8_t wake_control;
+    rdof_bl_rpt_ev_t ev[64];
+    int nev;
+} rp;
+static bool f_rpt_open(void *ctx, const rdof_bl_rpt_cfg_t *cfg, char *why, size_t cap)
+{
+    rp.open = true, rp.closed = false, rp.cfg = *cfg, rp.polls = 0;
+    return true;
+}
+static int f_rpt_state(void *ctx, char *why, size_t cap) { return ++rp.polls > 2 ? 1 : 0; }
+static bool f_rpt_event(void *ctx, rdof_bl_rpt_ev_t *ev)
+{
+    if (!rp.nev)
+        return false;
+    *ev = rp.ev[0];
+    memmove(rp.ev, rp.ev + 1, sizeof rp.ev[0] * (size_t)--rp.nev);
+    return true;
+}
+static void f_rpt_wake(void *ctx, uint8_t control, const uint8_t b[33])
+{
+    rp.wakes++, rp.wake_control = control;
+    rp.ev[rp.nev++] = (rdof_bl_rpt_ev_t){.kind = RDOF_BL_RPT_HEARD, .slot = 1, .control = control, .rssi = -60};
+    memcpy(rp.ev[rp.nev - 1].burst, b, 33);
+}
+static void f_rpt_close(void *ctx) { rp.open = false, rp.closed = true; }
+
 static const rdof_bl_platform_t PLAT = {.device = f_device, .window = f_window, .freqs = f_freqs,
                                         .iq_read = f_iq_read, .utc = f_utc, .sc_utc = f_sc_utc,
                                         .can_tx = f_can_tx, .tx_open = f_tx_open, .tx_space = f_tx_space,
                                         .tx_push = f_tx_push, .tx_unkey = f_tx_unkey, .tx_idle = f_tx_idle,
-                                        .tx_close = f_tx_close};
+                                        .tx_close = f_tx_close, .rpt_open = f_rpt_open, .rpt_state = f_rpt_state,
+                                        .rpt_event = f_rpt_event, .rpt_wake = f_rpt_wake, .rpt_close = f_rpt_close};
 
 /* ── helpers ── */
 
@@ -732,6 +767,87 @@ static void test_run(void)
 
 /* ── over TCP ── */
 
+/* ── bench_repeater jobs ── */
+
+static void test_repeater(void)
+{
+    static char out[1 << 16];
+    rdof_bl_t *bl = rdof_bl_new(&PLAT);
+    double now = 3000;
+    memset(&rp, 0, sizeof rp);
+    /* refused: the input isn't a receiver channel, an option it can't honor, one frequency */
+    int c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_repeater\",\"rx\":438.6,\"tx\":438.1125}}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"refused\"") && strstr(out, "input"), "no receiver at the input: %s", out);
+    rdof_bl_closed(bl, c, now);
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_repeater\",\"rx\":438.0625,\"tx\":438.1125,"
+                "\"rx_offset\":120}}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"unsupported\"") && strstr(out, "--rx-offset"), "an offset: %s", out);
+    rdof_bl_closed(bl, c, now);
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_repeater\",\"rx\":438.1125,\"tx\":438.1125}}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "separate RX and TX"), "one frequency: %s", out);
+    rdof_bl_closed(bl, c, now);
+
+    /* a repeater with beacons: a radio wakes it and calls through it */
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_repeater\",\"rx\":438.0625,\"tx\":438.1125,\"cc\":3,"
+                "\"seconds\":3,\"json\":true,\"hang\":4,\"call_hang\":2,\"slots\":\"1,2\",\"beacon\":1.5,"
+                "\"beacon_len\":0.5,\"beacon_phase\":0.2}}", now);
+    size_t n = 0;
+    bool heard = false;
+    for (int i = 0; i < 500 && !rdof_bl_finished(bl, c); i++) {
+        now += 0.01;
+        rdof_bl_tick(bl, now);
+        if (rp.open && rp.polls > 2 && !heard && now > 3000.5) { /* a radio: BS_Dwn_Act, the key, a voice header */
+            heard = true;
+            rdof_bl_rpt_ev_t *e = &rp.ev[rp.nev++];
+            *e = (rdof_bl_rpt_ev_t){.kind = RDOF_BL_RPT_HEARD, .slot = 2, .rssi = -70};
+            e->control = rdof_bj_rpt_wake_burst(3, e->burst);
+            rp.ev[rp.nev++] = (rdof_bl_rpt_ev_t){.kind = RDOF_BL_RPT_KEY, .keyed = true};
+            rdof_bj_job_t j = {.cmd = RDOF_BJ_VOICE, .cc = 3, .burst_cc = 3, .src = 9990301, .dst = 91,
+                               .family = RDOF_FAMILY_MS, .superframes = 1, .calls = 1, .headers = 1,
+                               .terminators = 1};
+            rdof_bj_burst_t b[64];
+            char note[200], done[200], err[200];
+            const int nb = rdof_bj_build(&j, 0, b, 64, note, done, sizeof note, err, sizeof err);
+            for (int k = 0; k < nb && rp.nev < 60; k++) {
+                rp.ev[rp.nev] = (rdof_bl_rpt_ev_t){.kind = RDOF_BL_RPT_HEARD, .slot = 2, .control = b[k].control};
+                memcpy(rp.ev[rp.nev++].burst, b[k].burst, 33);
+            }
+            rp.ev[rp.nev++] = (rdof_bl_rpt_ev_t){.kind = RDOF_BL_RPT_LOST, .slot = 2};
+            rp.ev[rp.nev++] = (rdof_bl_rpt_ev_t){.kind = RDOF_BL_RPT_KEY, .keyed = false};
+        }
+        n = drain_all(bl, c, out, sizeof out, n);
+    }
+    CHECK(rp.cfg.rx_hz == 438062500 && rp.cfg.tx_hz == 438112500 && rp.cfg.cc == 3 && rp.cfg.slots == 6 &&
+              rp.cfg.hang_s == 0.5 && rp.cfg.call_hang_s == 2, "its setup: %u %u cc %d slots %u hang %.1f %.1f",
+          rp.cfg.rx_hz, rp.cfg.tx_hz, rp.cfg.cc, rp.cfg.slots, rp.cfg.hang_s, rp.cfg.call_hang_s);
+    CHECK(is_json_lines(out) && strstr(out, "\"started\"") && strstr(out, "\"exit\":0") && rp.closed && !rp.open,
+          "the job: %.300s", out);
+    CHECK(strstr(out, "rfg repeater RX 438.0625 TX 438.1125 MHz cc 3"), "its log: %.600s", out);
+    CHECK(strstr(out, "\\\"wakeup\\\": 0, \\\"slot\\\": 2, \\\"while_down\\\": true"), "the wakeup: %.2000s", out);
+    CHECK(strstr(out, "\\\"src\\\": 9990301, \\\"dst\\\": 91, \\\"flco\\\": 0"), "the header's LC: %.2000s", out);
+    CHECK(strstr(out, "\\\"key\\\": true") && strstr(out, "\\\"key\\\": false") && strstr(out, "\\\"lost\\\": 2"),
+          "key and lost: %.2000s", out);
+    CHECK(rp.wakes >= 1 && rp.wake_control == (RDOF_SYNC_DATA | RDOF_DT_CSBK | RDOF_CONTROL_IDLE) &&
+              strstr(out, "\\\"beacon\\\": 1, \\\"len_s\\\": 0.5"), "a beacon: %d wakes", rp.wakes);
+    CHECK(strstr(out, "\\\"skipped\\\": \\\"keyed\\\"") || rp.wakes == 2, "the second beacon: %d wakes", rp.wakes);
+    const char *sum = strstr(out, "\\\"summary\\\"");
+    CHECK(sum && strstr(sum, "\\\"2\\\": {\\\"dt2\\\": 1, \\\"dt3\\\": 1, \\\"voice\\\": 6, \\\"wakeups\\\": 1}"),
+          "the summary: %s", sum ? sum : "(none)");
+    rdof_bl_closed(bl, c, now);
+    /* closing mid-job gives the transmitter back */
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_repeater\",\"rx\":438.0625,\"tx\":438.1125,\"seconds\":30}}",
+            now);
+    for (int i = 0; i < 20; i++)
+        rdof_bl_tick(bl, now += 0.01);
+    CHECK(rp.open, "running");
+    rdof_bl_closed(bl, c, now);
+    CHECK(rp.closed && !rp.open, "closing ends the repeater");
+    rdof_bl_free(bl);
+}
+
 static double mono(void)
 {
     struct timespec ts;
@@ -957,6 +1073,7 @@ int main(int argc, char **argv)
     test_trigger();
     test_decode();
     test_run();
+    test_repeater();
     test_tcp();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

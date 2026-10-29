@@ -32,7 +32,7 @@ enum { C_FREE = 0, C_LINE, C_ACTIVE, C_DONE };
 enum { OP_NONE = 0, OP_SESSION, OP_CLAIM, OP_HOLD, OP_RUN, OP_BURSTS, OP_LISTEN, OP_CAPTURE, OP_TRIGGER };
 enum { W_NONE = 0, W_MODEM, W_FREQ };
 /* a run's job */
-enum { J_WAIT = 0, J_OPEN, J_SEND, J_DRAIN, J_GAP, J_LISTEN };
+enum { J_WAIT = 0, J_OPEN, J_SEND, J_DRAIN, J_GAP, J_LISTEN, J_RPT_SETUP, J_RPT_RUN };
 
 typedef struct {
     rdof_bj_job_t job;
@@ -43,6 +43,11 @@ typedef struct {
     double until, started, max_s;
     bool tx_open, listening;
     rdof_bj_listener_t lis;
+    /* bench_repeater */
+    bool rpt_open, keyed;
+    rdof_bj_rpt_t rpt;
+    int beacons;
+    double ends;
     long id;
     char note[200], done[200];
     char esc[7000];           /* an out line, as a JSON string */
@@ -1170,6 +1175,8 @@ static void job_end(rdof_bl_t *bl, conn_t *c)
         return;
     if (J->tx_open && bl->p.tx_close)
         bl->p.tx_close(bl->p.ctx);
+    if (J->rpt_open && bl->p.rpt_close)
+        bl->p.rpt_close(bl->p.ctx);
     if (bl->tx_conn >= 0 && &bl->c[bl->tx_conn] == c)
         bl->tx_conn = -1;
     if (J->listening)
@@ -1188,6 +1195,41 @@ static void run_listen(rdof_bl_t *bl, conn_t *c, double now, double secs)
     bl->n_bursts++;
     J->until = now + secs;
     J->state = J_LISTEN;
+}
+
+/* A bench_repeater job: it waits for the modem, as a transmit job, with both frequencies claimed. */
+static void rpt_run(rdof_bl_t *bl, conn_t *c, job_t *J, int root, double now)
+{
+    const rdof_bj_job_t *j = &J->job;
+    const char *no = !bl->p.rpt_open ? "this bench runs no duplex repeater jobs"
+                   : bl->p.can_tx ? bl->p.can_tx(bl->p.ctx) : NULL;
+    if (no) {
+        free(J);
+        fail(bl, c, "unsupported", "%s", no);
+        return;
+    }
+    const double rx = j->rx_mhz, tx = j->tx_mhz;
+    const int kr = freq_index(bl, rx), kt = freq_index(bl, tx);
+    if (kr < 0 || bl->f[kr].ch < 0 || !(bl->f[kr].caps & RDOF_BL_CAP_DMR)) {
+        free(J);
+        fail(bl, c, "refused", "no receiver channel decodes DMR at %.4f MHz (the repeater's input) on this bench", rx);
+        return;
+    }
+    if (kt < 0 || !(bl->f[kt].caps & RDOF_BL_CAP_TX)) {
+        free(J);
+        fail(bl, c, "refused", "%.4f MHz isn't a transmit frequency of this bench", tx);
+        return;
+    }
+    c->job = J;
+    c->op = OP_RUN;
+    c->ch = bl->f[kr].ch;
+    J->max_s = jnum(bl, root, "max_s", 0);
+    J->id = ++bl->next_seq;
+    c->nfreqs = 2;
+    c->freqs[0] = j->rx_mhz, c->freqs[1] = j->tx_mhz;
+    wait_start(bl, c, W_MODEM, root, now);
+    if (c->expect_s <= 0)
+        c->expect_s = j->seconds + 3.0;
 }
 
 static void op_run(rdof_bl_t *bl, conn_t *c, int ci, int root, double now)
@@ -1213,6 +1255,10 @@ static void op_run(rdof_bl_t *bl, conn_t *c, int ci, int root, double now)
         return;
     }
     const rdof_bj_job_t *j = &J->job;
+    if (j->cmd == RDOF_BJ_REPEATER) {
+        rpt_run(bl, c, J, root, now);
+        return;
+    }
     const double mhz = j->freq_mhz;
     const bool tx = j->cmd != RDOF_BJ_LISTEN;
     const bool hears = !tx || j->listen_after > 0;
@@ -1298,6 +1344,101 @@ static bool run_build(rdof_bl_t *bl, conn_t *c, double now)
     return true;
 }
 
+/* A repeater record: an out line with --json, else the tool's log line. */
+static void rpt_out(void *ctx, const char *line)
+{
+    run_ctx_t *r = ctx;
+    if (r->c->job->job.json)
+        run_out(ctx, line);
+    else
+        run_log(r->bl, r->c, 0, "%s", line);
+}
+
+static void tick_rpt(rdof_bl_t *bl, conn_t *c, double now)
+{
+    job_t *J = c->job;
+    const rdof_bj_job_t *j = &J->job;
+    run_ctx_t rc = {bl, c};
+    char why[200] = "", body[96];
+    switch (J->state) {
+    case J_OPEN: {
+        const rdof_bl_rpt_cfg_t cfg = {(uint32_t)lround(j->rx_mhz * 1e6), (uint32_t)lround(j->tx_mhz * 1e6), j->cc,
+                                       j->power, j->hang, j->call_hang, j->slots};
+        if (!bl->p.rpt_open(bl->p.ctx, &cfg, why, sizeof why)) {
+            run_log(bl, c, now, "can't run the repeater: %s", why[0] ? why : "the transmitter is busy");
+            run_exit(bl, c, 1, NULL);
+            return;
+        }
+        J->rpt_open = true;
+        if (why[0])
+            run_log(bl, c, now, "%s", why);
+        J->until = now + 15.0;
+        J->state = J_RPT_SETUP;
+        break;
+    }
+    case J_RPT_SETUP: {
+        const int st = bl->p.rpt_state(bl->p.ctx, why, sizeof why);
+        if (st < 0 || (st == 0 && now > J->until)) {
+            run_log(bl, c, now, "the repeater didn't start: %s", st < 0 ? why : "no answer in 15 s");
+            run_exit(bl, c, 1, NULL);
+            return;
+        }
+        if (st == 0)
+            break;
+        run_log(bl, c, now, "rfg repeater RX %.4f TX %.4f MHz cc %d", j->rx_mhz, j->tx_mhz, j->cc);
+        if (j->beacon)
+            run_log(bl, c, now, "beacon every %.1f s for %.1f s, first after %.1f s", j->beacon, j->beacon_len,
+                    j->beacon_phase);
+        J->started = now;
+        J->ends = now + j->seconds;
+        J->state = J_RPT_RUN;
+    } /* fall through */
+    case J_RPT_RUN: {
+        rdof_bl_rpt_ev_t ev;
+        while (bl->p.rpt_event(bl->p.ctx, &ev)) {
+            const double t = ev.t > 0 ? ev.t : utc_now(bl, now);
+            if (ev.kind == RDOF_BL_RPT_HEARD) {
+                rdof_bj_rpt_heard(&J->rpt, t, ev.slot, ev.control, ev.burst, ev.rssi, rpt_out, &rc);
+            } else if (ev.kind == RDOF_BL_RPT_LOST) {
+                snprintf(body, sizeof body, ", \"lost\": %d", ev.slot);
+                rdof_bj_rpt_record(t, body, rpt_out, &rc);
+            } else if (ev.kind == RDOF_BL_RPT_KEY) {
+                J->keyed = ev.keyed;
+                snprintf(body, sizeof body, ", \"key\": %s", ev.keyed ? "true" : "false");
+                rdof_bj_rpt_record(t, body, rpt_out, &rc);
+            }
+        }
+        const int st = bl->p.rpt_state(bl->p.ctx, why, sizeof why);
+        if (st < 0) {
+            run_log(bl, c, now, "the repeater stopped: %s", why);
+            run_exit(bl, c, 1, NULL);
+            return;
+        }
+        if (j->beacon && now >= J->started + j->beacon_phase + J->beacons * j->beacon && now < J->ends) {
+            /* an idle beacon: a local BS_Dwn_Act, as if a radio had asked; not while keyed (traffic) */
+            J->beacons++;
+            if (J->keyed) {
+                snprintf(body, sizeof body, ", \"beacon\": %d, \"skipped\": \"keyed\"", J->beacons);
+            } else {
+                uint8_t b[33];
+                const uint8_t control = rdof_bj_rpt_wake_burst(j->cc, b);
+                bl->p.rpt_wake(bl->p.ctx, control, b);
+                snprintf(body, sizeof body, ", \"beacon\": %d, \"len_s\": %g", J->beacons, j->beacon_len);
+            }
+            rdof_bj_rpt_record(utc_now(bl, now), body, rpt_out, &rc);
+        }
+        if (now < J->ends)
+            break;
+        bl->p.rpt_close(bl->p.ctx);
+        J->rpt_open = false;
+        bl->tx_conn = -1;
+        rdof_bj_rpt_summary(&J->rpt, utc_now(bl, now), rpt_out, &rc);
+        run_exit(bl, c, 0, NULL);
+        break;
+    }
+    }
+}
+
 static void tick_run(rdof_bl_t *bl, conn_t *c, int ci, double now)
 {
     (void)ci;
@@ -1308,6 +1449,10 @@ static void tick_run(rdof_bl_t *bl, conn_t *c, int ci, double now)
         char k[80];
         snprintf(k, sizeof k, "the job ran past max_s %.0f s", J->max_s);
         run_exit(bl, c, -9, k);
+        return;
+    }
+    if (j->cmd == RDOF_BJ_REPEATER) {
+        tick_rpt(bl, c, now);
         return;
     }
     switch (J->state) {

@@ -82,6 +82,26 @@ typedef struct {
     uint8_t raw[33];
 } rdof_bl_burst_t;
 
+/* A duplex repeater job's setup (bench_repeater). */
+typedef struct {
+    uint32_t rx_hz, tx_hz;
+    int cc, power;
+    double hang_s, call_hang_s; /* T_MSInactiv, T_CallHt */
+    unsigned slots;             /* bit 1: slot 1, bit 2: slot 2 */
+} rdof_bl_rpt_cfg_t;
+
+enum { RDOF_BL_RPT_HEARD = 1, RDOF_BL_RPT_LOST, RDOF_BL_RPT_KEY };
+
+/* What a repeater job's repeater heard or did. */
+typedef struct {
+    int kind;
+    double t;                   /* UTC, 0: when the engine takes it */
+    int slot, rssi;
+    uint8_t control;            /* heard: the MMDVM control byte */
+    uint8_t burst[33];
+    bool keyed;                 /* key */
+} rdof_bl_rpt_ev_t;
+
 typedef struct {
     /* What the bench is: kind ("rdofradio", "esp32s3-gateway"), name, version. */
     void (*device)(void *ctx, char *kind, size_t kcap, char *name, size_t ncap, char *version, size_t vcap);
@@ -114,6 +134,15 @@ typedef struct {
     void (*tx_unkey)(void *ctx);
     bool (*tx_idle)(void *ctx);
     void (*tx_close)(void *ctx);
+    /* Duplex repeater jobs (bench_repeater; NULL: none), as the transmit jobs: rpt_open takes the transmitter for a
+     * repeater on cfg (setting it up may take a while); false with why when it can't. rpt_state: 1 it repeats, 0 not
+     * yet, -1 it failed (why). rpt_event: the next thing it heard or did (false: none). rpt_wake: a burst into its
+     * receive path as if heard (an idle beacon's BS_Dwn_Act). rpt_close: the job is over: the transmitter back. */
+    bool (*rpt_open)(void *ctx, const rdof_bl_rpt_cfg_t *cfg, char *why, size_t cap);
+    int (*rpt_state)(void *ctx, char *why, size_t cap);
+    bool (*rpt_event)(void *ctx, rdof_bl_rpt_ev_t *ev);
+    void (*rpt_wake)(void *ctx, uint8_t control, const uint8_t burst[33]);
+    void (*rpt_close)(void *ctx);
 } rdof_bl_platform_t;
 
 typedef struct rdof_bl rdof_bl_t;

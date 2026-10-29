@@ -100,14 +100,74 @@ static int unhex(const char *s, uint8_t *out, size_t cap)
     return s[0] ? -1 : (int)n;
 }
 
+/* bench_repeater.py's options. */
+static bool parse_repeater(const rdof_jdoc_t *d, int obj, rdof_bj_job_t *j, char *error, size_t ecap)
+{
+    static const char *const OFFSETS[] = {"rx_offset", "tx_offset", "port"};
+    for (int i = 0; i < 3; i++)
+        if (node(d, obj, OFFSETS[i])) {
+            snprintf(error, ecap, "bench_repeater --%s isn't done here (the gateway's own receiver and transmitter)",
+                     OFFSETS[i]);
+            for (char *p = error; *p; p++)
+                if (*p == '_')
+                    *p = '-';
+            return false;
+        }
+    j->cmd = RDOF_BJ_REPEATER;
+    j->rx_mhz = num(d, obj, "rx", 0);
+    j->tx_mhz = j->freq_mhz = num(d, obj, "tx", 0);
+    j->cc = (int)num(d, obj, "cc", 2);
+    j->power = (int)num(d, obj, "power", 255);
+    j->seconds = num(d, obj, "seconds", 60);
+    j->json = flag(d, obj, "json");
+    j->hang = num(d, obj, "hang", 4.0);
+    j->call_hang = num(d, obj, "call_hang", 3.0);
+    j->beacon = num(d, obj, "beacon", 0);
+    j->beacon_len = num(d, obj, "beacon_len", 4.0);
+    j->beacon_phase = num(d, obj, "beacon_phase", 2.0);
+    char s[16];
+    if (!text(d, obj, "slots", s, sizeof s))
+        snprintf(s, sizeof s, "1,2");
+    for (const char *p = s; *p; p++)
+        if (*p == '1' || *p == '2')
+            j->slots |= 1u << (*p - '0');
+        else if (*p != ',' && *p != ' ') {
+            j->slots = 0;
+            break;
+        }
+    if (!(j->rx_mhz > 0) || !(j->tx_mhz > 0)) {
+        snprintf(error, ecap, "bench_repeater needs --rx and --tx");
+        return false;
+    }
+    if (fabs(j->rx_mhz - j->tx_mhz) < 0.0125) {
+        snprintf(error, ecap, "a duplex repeater needs separate RX and TX frequencies");
+        return false;
+    }
+    if (j->cc < 0 || j->cc > 15 || !j->slots || j->seconds <= 0 || j->seconds > 3600 || j->hang < 0 || j->hang > 60 ||
+        j->call_hang < 0 || j->call_hang > 60) {
+        snprintf(error, ecap, "--cc 0-15, --slots 1,2, --seconds 0-3600, --hang and --call-hang 0-60");
+        return false;
+    }
+    if (j->beacon) {
+        if (!(j->beacon_len > 0 && j->beacon_len < j->beacon) || j->beacon_phase < 0) {
+            snprintf(error, ecap, "--beacon-len must be shorter than --beacon");
+            return false;
+        }
+        j->hang = j->beacon_len; /* a beacon is a wakeup with nothing to repeat: it lasts the hang time */
+    }
+    return true;
+}
+
 bool rdof_bj_parse(const rdof_jdoc_t *d, int obj, rdof_bj_job_t *j, uint8_t *ambe_buf, size_t cap, char *error,
                    size_t ecap)
 {
     memset(j, 0, sizeof *j);
     char s[64];
     text(d, obj, "tool", s, sizeof s);
+    if (!strcmp(s, "bench_repeater"))
+        return parse_repeater(d, obj, j, error, ecap);
     if (strcmp(s, "bench_tx")) {
-        snprintf(error, ecap, "%s jobs aren't done here yet: bench_tx only", s[0] ? s : "no tool:");
+        snprintf(error, ecap, "%s jobs aren't done here: bench_tx and bench_repeater", s[0] ? s : "no tool:");
         return false;
     }
     text(d, obj, "cmd", s, sizeof s);
@@ -1241,4 +1301,81 @@ size_t rdof_bj_burst_decode(rdof_bj_emb_t *emb, const rdof_bl_burst_t *b, char *
     k = cat(out, k, cap, ",\"bit_err_est\":%d,\"fec_ok\":%s},\"lc\":%s", bits, ok ? "true" : "false", lc);
     (void)lk;
     return k;
+}
+
+/* ── bench_repeater's records ─────────────────────────────────────────────── */
+
+void rdof_bj_rpt_record(double t, const char *body, rdof_bj_emit_fn emit, void *ctx)
+{
+    char line[400];
+    snprintf(line, sizeof line, "{\"t\": %.3f%s}", t, body);
+    emit(ctx, line);
+}
+
+void rdof_bj_rpt_heard(rdof_bj_rpt_t *r, double t, int slot, uint8_t control, const uint8_t burst[33], int rssi,
+                       rdof_bj_emit_fn emit, void *ctx)
+{
+    rdof_bj_rpt_slot_t *st = &r->s[slot == 2 ? 2 : 1];
+    char rec[300], body[340];
+    int k = snprintf(rec, sizeof rec, "{\"slot\": %d, \"control\": %d, \"rssi\": %d", slot, control, rssi);
+    if (control & RDOF_SYNC_DATA) {
+        const int dt = control & 0x0F;
+        k += snprintf(rec + k, sizeof rec - (size_t)k, ", \"dt\": %d", dt);
+        if (dt == RDOF_DT_CSBK) {
+            rdof_csbk_t c;
+            rdof_decode_csbk(burst, &c);
+            k += snprintf(rec + k, sizeof rec - (size_t)k, ", \"csbk_opcode\": %d, \"crc_ok\": %s, \"src\": %ld",
+                          c.opcode, c.crc_ok ? "true" : "false", (long)c.src_id);
+            if (c.opcode == RDOF_CSBK_BS_DWN_ACT && c.crc_ok) {
+                st->wakeups++;
+                snprintf(body, sizeof body, ", \"wakeup\": %ld, \"slot\": %d, \"while_down\": %s", (long)c.src_id,
+                         slot, control & RDOF_CONTROL_IDLE ? "true" : "false");
+                rdof_bj_rpt_record(t, body, emit, ctx);
+            }
+        } else if (dt == RDOF_DT_VOICE_LC_HEADER || dt == RDOF_DT_TERMINATOR_WITH_LC) {
+            rdof_full_lc_t lc;
+            if (rdof_decode_voice_lc(burst, dt, &lc))
+                k += snprintf(rec + k, sizeof rec - (size_t)k, ", \"src\": %ld, \"dst\": %ld, \"flco\": %d",
+                              (long)lc.src_id, (long)lc.dst_id, lc.flco);
+        }
+        st->dt[dt]++;
+    } else {
+        k += snprintf(rec + k, sizeof rec - (size_t)k, ", \"voice\": %d", control & RDOF_SYNC_AUDIO ? 0 : control & 0x0F);
+        st->voice++;
+    }
+    snprintf(body, sizeof body, ", \"rx\": %s}", rec);
+    rdof_bj_rpt_record(t, body, emit, ctx);
+}
+
+void rdof_bj_rpt_summary(const rdof_bj_rpt_t *r, double t, rdof_bj_emit_fn emit, void *ctx)
+{
+    char body[1200];
+    size_t k = (size_t)snprintf(body, sizeof body, ", \"summary\": {");
+    for (int s = 1; s <= 2; s++) {
+        const rdof_bj_rpt_slot_t *st = &r->s[s];
+        k += (size_t)snprintf(body + k, sizeof body - k, "%s\"%d\": {", s == 2 ? ", " : "", s);
+        const char *sep = "";
+        for (int dt = 0; dt < 16; dt++)
+            if (st->dt[dt]) {
+                k += (size_t)snprintf(body + k, sizeof body - k, "%s\"dt%d\": %ld", sep, dt, st->dt[dt]);
+                sep = ", ";
+            }
+        if (st->voice) {
+            k += (size_t)snprintf(body + k, sizeof body - k, "%s\"voice\": %ld", sep, st->voice);
+            sep = ", ";
+        }
+        if (st->wakeups)
+            k += (size_t)snprintf(body + k, sizeof body - k, "%s\"wakeups\": %ld", sep, st->wakeups);
+        k += (size_t)snprintf(body + k, sizeof body - k, "}");
+    }
+    snprintf(body + k, sizeof body - k, "}");
+    rdof_bj_rpt_record(t, body, emit, ctx);
+}
+
+uint8_t rdof_bj_rpt_wake_burst(int cc, uint8_t out[33])
+{
+    uint8_t info[12];
+    csbk_info(RDOF_CSBK_BS_DWN_ACT, 0, 0, 0, 0xFFFFFF, 0, info);
+    rdof_data_burst(info, RDOF_DT_CSBK, cc, rdof_data_sync(rdof_family_voice_sync(RDOF_FAMILY_MS)), out);
+    return (uint8_t)(RDOF_SYNC_DATA | RDOF_DT_CSBK | RDOF_CONTROL_IDLE);
 }

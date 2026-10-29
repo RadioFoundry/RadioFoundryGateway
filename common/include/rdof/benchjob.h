@@ -29,7 +29,7 @@ extern "C" {
 #define RDOF_BJ_UDP 600         /* --udp-payload octets */
 #define RDOF_BJ_CALLS 16        /* calls a listener keeps for its summary */
 
-enum { RDOF_BJ_VOICE = 1, RDOF_BJ_CSBK, RDOF_BJ_DATA, RDOF_BJ_LISTEN };
+enum { RDOF_BJ_VOICE = 1, RDOF_BJ_CSBK, RDOF_BJ_DATA, RDOF_BJ_LISTEN, RDOF_BJ_REPEATER };
 
 typedef struct {
     int cmd;
@@ -60,6 +60,9 @@ typedef struct {
     /* listen */
     double seconds;
     bool json;
+    /* bench_repeater (cmd RDOF_BJ_REPEATER; freq_mhz is tx_mhz) */
+    double rx_mhz, tx_mhz, hang, call_hang, beacon, beacon_len, beacon_phase;
+    unsigned slots;             /* bit 1: slot 1, bit 2: slot 2 */
 } rdof_bj_job_t;
 
 /* The job object of a run request (bench-api.md 14.3): false with error set when it can't be done here. ambe_buf
@@ -137,6 +140,25 @@ typedef struct {
 } rdof_bj_emb_t;
 
 size_t rdof_bj_burst_decode(rdof_bj_emb_t *emb, const rdof_bl_burst_t *b, char *out, size_t cap);
+
+/* bench_repeater's records (each {"t": UTC, ...}): what the repeater heard on its input, lost, keyed, and at the end
+ * a summary per slot. */
+typedef struct {
+    long wakeups, voice, dt[16];
+} rdof_bj_rpt_slot_t;
+
+typedef struct {
+    rdof_bj_rpt_slot_t s[3];    /* 1 and 2 */
+} rdof_bj_rpt_t;
+
+/* A burst heard on the input (its MMDVM control byte): an "rx" record, and a "wakeup" before it for a BS_Dwn_Act. */
+void rdof_bj_rpt_heard(rdof_bj_rpt_t *r, double t, int slot, uint8_t control, const uint8_t burst[33], int rssi,
+                       rdof_bj_emit_fn emit, void *ctx);
+/* Any other record: body is its fields after "t" (",\"key\":true"). */
+void rdof_bj_rpt_record(double t, const char *body, rdof_bj_emit_fn emit, void *ctx);
+void rdof_bj_rpt_summary(const rdof_bj_rpt_t *r, double t, rdof_bj_emit_fn emit, void *ctx);
+/* The BS_Dwn_Act an idle beacon hands the repeater (as a radio's, on cc): its control byte. */
+uint8_t rdof_bj_rpt_wake_burst(int cc, uint8_t out[33]);
 
 #ifdef __cplusplus
 }
