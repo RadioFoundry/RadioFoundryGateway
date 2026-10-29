@@ -2147,6 +2147,61 @@ static void *port_reader(void *arg)
     return NULL;
 }
 
+/* The channelizer's per-channel part on a second core: the loop runs the forward FFTs and its share of the channels,
+ * a helper the rest, and every demod (and so every sink, the modem and the bench) stays on the loop's thread. A
+ * PlutoSDR's loop had one of its two cores to itself and fell behind the stream while a repeater job transmitted. */
+static struct {
+    pthread_t th;
+    pthread_mutex_t mu;
+    pthread_cond_t cv;
+    int c0, c1;
+    bool go, on, failed;
+} HX = {.mu = PTHREAD_MUTEX_INITIALIZER, .cv = PTHREAD_COND_INITIALIZER};
+
+static void *chz_helper(void *arg)
+{
+    for (;;) {
+        pthread_mutex_lock(&HX.mu);
+        while (!HX.go)
+            pthread_cond_wait(&HX.cv, &HX.mu);
+        const int c0 = HX.c0, c1 = HX.c1;
+        pthread_mutex_unlock(&HX.mu);
+        rdof_chz_channels(&R.rx.chz, c0, c1, 1, R.rx.y, R.rx.stride);
+        pthread_mutex_lock(&HX.mu);
+        HX.go = false;
+        pthread_cond_broadcast(&HX.cv);
+        pthread_mutex_unlock(&HX.mu);
+    }
+    return NULL;
+}
+
+/* rdof_sdr_rx_process, its channelizer shared with the helper (a third of the channels here: the loop has the rest
+ * of its work) */
+static void rx_chunk(const rdof_cf_t *in, int n)
+{
+    if (!HX.on && !HX.failed && R.rx.C > 1) {
+        HX.on = pthread_create(&HX.th, NULL, chz_helper, NULL) == 0;
+        HX.failed = !HX.on;
+    }
+    rdof_sdr_rx_forward(&R.rx, in, n);
+    if (HX.on && !R.rx.fused) {
+        const int split = R.rx.C / 3 > 0 ? R.rx.C / 3 : 1;
+        pthread_mutex_lock(&HX.mu);
+        HX.c0 = split, HX.c1 = R.rx.C, HX.go = true;
+        pthread_cond_broadcast(&HX.cv);
+        pthread_mutex_unlock(&HX.mu);
+        rdof_chz_channels(&R.rx.chz, 0, split, 0, R.rx.y, R.rx.stride);
+        pthread_mutex_lock(&HX.mu);
+        while (HX.go)
+            pthread_cond_wait(&HX.cv, &HX.mu);
+        pthread_mutex_unlock(&HX.mu);
+    } else if (!R.rx.fused) {
+        rdof_chz_channels(&R.rx.chz, 0, R.rx.C, 0, R.rx.y, R.rx.stride);
+    }
+    rdof_sdr_rx_demod(&R.rx, 0, R.rx.C);
+    rdof_sdr_rx_finish(&R.rx);
+}
+
 /* The receive stream against the wall clock: lag = wall-clock samples - samples read. Its least over half a second
  * is the freshest read; floor follows it (a crystal's ppm moves it slowly). A floor that stays over by more than
  * 2 ms for a second is samples the device dropped: zeros go to the receiver in their place. */
@@ -2176,7 +2231,7 @@ static void clock_read(double t)
         SC.total += lost;
         for (; lost > 0; lost -= CHUNK) {
             bench_feed(zeros, lost < CHUNK ? (int)lost : CHUNK);
-            rdof_sdr_rx_process(&R.rx, zeros, lost < CHUNK ? (int)lost : CHUNK);
+            rx_chunk(zeros, lost < CHUNK ? (int)lost : CHUNK);
         }
     }
     SC.last_win = w;
@@ -2281,7 +2336,7 @@ static void split_turn(void)
 #endif
         bench_feed(in, n);
         const double t3 = now_s();
-        rdof_sdr_rx_process(&R.rx, in, n);
+        rx_chunk(in, n);
         const double t4 = now_s();
         WS.spec += t3 - t, WS.rx += t4 - t3;
     }
@@ -3156,7 +3211,7 @@ int main(int argc, char **argv)
 #endif
         bench_feed(in, n);
         const double t3 = now_s();
-        rdof_sdr_rx_process(&R.rx, in, n);
+        rx_chunk(in, n);
         const double t4 = now_s();
         t_proc += t4 - t2;
         WS.spec += t3 - t2, WS.rx += t4 - t3;
