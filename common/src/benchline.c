@@ -2086,8 +2086,11 @@ void rdof_bl_ring_free(rdof_bl_ring_t *r)
 
 static inline int8_t sat8(float x, float k)
 {
-    const float v = x * k;
-    return v >= 127.0f ? 127 : v <= -128.0f ? -128 : (int8_t)lrintf(v);
+    float v = x * k;
+    v = v > 127.0f ? 127.0f : v < -128.0f ? -128.0f : v;
+    /* to the nearest, ties to even, as lrintf without its call (a PlutoSDR spent a fifth of a core on it): adding
+     * 1.5 * 2^23 leaves no fraction */
+    return (int8_t)(int)((v + 12582912.0f) - 12582912.0f);
 }
 
 void rdof_bl_ring_put(rdof_bl_ring_t *r, const float *iq, long n, long *clipped)
@@ -2097,11 +2100,16 @@ void rdof_bl_ring_put(rdof_bl_ring_t *r, const float *iq, long n, long *clipped)
     long k = (long)(r->w % (uint64_t)r->n);
     long clip = 0;
     const float g = 127.0f * r->scale;
-    for (long i = 0; i < n; i++) {
-        const int8_t a = sat8(iq[2 * i], g), b = sat8(iq[2 * i + 1], g);
-        clip += (a == 127 || a == -128) + (b == 127 || b == -128);
-        r->buf[2 * k] = a, r->buf[2 * k + 1] = b;
-        if (++k == r->n)
+    for (long i = 0; i < n;) { /* up to the ring's end, then from its start */
+        const long m = n - i < r->n - k ? n - i : r->n - k;
+        int8_t *o = r->buf + 2 * k;
+        const float *x = iq + 2 * i;
+        for (long j = 0; j < 2 * m; j++) {
+            o[j] = sat8(x[j], g);
+            clip += o[j] == 127 || o[j] == -128;
+        }
+        i += m, k += m;
+        if (k == r->n)
             k = 0;
     }
     __atomic_store_n(&r->w, r->w + (uint64_t)n, __ATOMIC_RELEASE);
