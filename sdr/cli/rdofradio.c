@@ -1323,6 +1323,7 @@ static struct {
     pthread_mutex_t mu;     /* ring and the clock's reference, between the receive loop and the server */
     uint64_t ref_sc;        /* a wideband sample and its UTC */
     double ref_utc;
+    double late_min, late_from; /* the least a chunk came late against the reference, since late_from */
     long clipped, seen;
     double t_start;
 } BL = {.mu = PTHREAD_MUTEX_INITIALIZER};
@@ -1699,11 +1700,23 @@ static void bench_feed(const rdof_cf_t *in, int n)
     BL.clipped += clip, BL.seen += n;
     if (BL.seen > (long)(10 * R.rate))
         BL.clipped /= 2, BL.seen /= 2; /* the last ten seconds or so */
-    /* the chunk's last sample is about now: the stream's own count between, a step only when it drifts */
+    /* The chunk's last sample is at most now: the stream's own count between. A read may come late (the device
+     * buffers a stall's samples), so the reference follows the freshest read: at once when a chunk would be in the
+     * future, and by the least it came late over a second when that stays over 20 ms (a crystal's drift, a loss). */
     const uint64_t sc = BL.ring.w;
-    const double pred = BL.ref_utc + ((double)sc - (double)BL.ref_sc) / R.rate;
-    if (!BL.ref_utc || fabs(utc - pred) > 0.02)
+    const double late = utc - (BL.ref_utc + ((double)sc - (double)BL.ref_sc) / R.rate);
+    if (!BL.ref_utc || late < 0) {
         BL.ref_sc = sc, BL.ref_utc = utc;
+        BL.late_min = INFINITY, BL.late_from = utc;
+    } else {
+        if (late < BL.late_min)
+            BL.late_min = late;
+        if (utc - BL.late_from >= 1.0) {
+            if (BL.late_min > 0.02)
+                BL.ref_utc += BL.late_min;
+            BL.late_min = INFINITY, BL.late_from = utc;
+        }
+    }
     pthread_mutex_unlock(&BL.mu);
 }
 
