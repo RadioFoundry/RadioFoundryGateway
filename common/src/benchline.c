@@ -1780,8 +1780,8 @@ static void tick_bursts(rdof_bl_t *bl, double now)
         const rdof_bl_burst_t *b = &bl->q[bl->qh];
         for (int i = 0; i < RDOF_BL_CONNS; i++) {
             conn_t *c = &bl->c[i];
-            if (c->state == C_ACTIVE && (c->op == OP_BURSTS || c->op == OP_LISTEN) && c->ch == b->ch &&
-                b->dt != 9 /* idle */)
+            if (c->state == C_ACTIVE && c->ch == b->ch &&
+                (c->op == OP_BURSTS || (c->op == OP_LISTEN && b->dt != 9 /* idle: a repeater's hang */)))
                 burst_out(bl, c, b, now);
             else if (c->state == C_ACTIVE && c->op == OP_RUN && c->job && c->job->listening && c->ch == b->ch &&
                      b->dt != 9)

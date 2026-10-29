@@ -358,7 +358,7 @@ static void test_ops(void)
     CHECK(strstr(out, "{\"ended\":\"max_s\"}") && rdof_bl_finished(bl, s1), "max_s: %s", out);
     rdof_bl_closed(bl, s1, now);
 
-    /* bursts: records for the channel's bursts, idle left out; until_end */
+    /* bursts: records for the channel's bursts, idle ones too (a repeater's hang); until_end */
     c = ask(bl, "{\"op\": \"bursts\", \"freq\": 438.1125, \"seconds\": 10, \"until_end\": true}", now);
     CHECK(rdof_bl_wants_bursts(bl), "bursts are wanted");
     for (int i = 0; i < 4; i++) {
@@ -374,12 +374,12 @@ static void test_ops(void)
     CHECK(is_json_lines(out) && strstr(out, "{\"ready\":1800000000.000}") &&
               strstr(out, "\"kind\":\"VLC_HDR\"") && strstr(out, "\"kind\":\"VLC_HDR\",\"dt\":1") && strstr(out, "\"sync\":\"MS_DATA\",") && strstr(out, "\"sync\":\"MS_VOICE\",") &&
               strstr(out, "\"dt_prev_ms\":60.000,\"grid_n\":2,\"grid_err_ms\":0.000,\"slot_ab\":\"A\"") &&
-              !strstr(out, "\"kind\":\"IDLE\"") && !strstr(out, "\"t_rel_ms\":180"),
+              strstr(out, "\"kind\":\"IDLE\"") && !strstr(out, "\"t_rel_ms\":180"),
           "burst records: %s", out);
     rdof_bl_tick(bl, now + 0.5);
     drain(bl, c, out, sizeof out);
-    CHECK(strstr(out, "\"done\":{\"bursts\":3,\"reason\":\"ended\"") &&
-              strstr(out, "\"kinds\":{\"VLC_HDR\":1,\"VOICE_A\":2}") && strstr(out, "\"MS_DATA\":1"),
+    CHECK(strstr(out, "\"done\":{\"bursts\":4,\"reason\":\"ended\"") &&
+              strstr(out, "\"kinds\":{\"VLC_HDR\":1,\"IDLE\":1,\"VOICE_A\":2}") && strstr(out, "\"MS_DATA\":2"),
           "the summary: %s", out);
     rdof_bl_closed(bl, c, now);
     CHECK(!rdof_bl_wants_bursts(bl), "no bursts wanted once it's done");
