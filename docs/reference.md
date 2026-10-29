@@ -146,19 +146,24 @@ clone (Z7010, 1 GB, Ethernet, SD boot, ADI's v0.38): the web page answers about 
 
 **The bench's line protocol:** `--bench [ADDR:]PORT` (the bundle's flags: 7373) serves
 [bench-api.md section 14](spec/bench-api.md) for `tools/bench/rfgbench.py`: the receiver channels' bursts, wideband
-cs8 captures from a 2.5 s history, and `bench_tx` jobs (`voice`, `csbk`, `data`, `listen`). A transmit job needs
+cs8 captures from a 2.5 s history, level-triggered channel captures (`capture-trigger`, cut from that history at
+48 kS/s), and `bench_tx` jobs (`voice`, `csbk`, `data`, `listen`). A transmit job needs
 `--bench-tx MHZ[,MHZ...]` (the frequencies it may use) and the half duplex transceiver: it takes the SDR modem from
 the transceiver for its length, at `--tx-gain` (bench_tx's `--power` is noted, not applied).
 
 The ESP32 boards serve the same protocol on TCP `CONFIG_RDOF_BENCH_LINE_PORT` (7373; 0 turns it off) with the bench
-API (`bench_line.c`): the receiver channels' bursts, cs8 captures from the bench API's 2 s wideband history (kept
-only while a capture or an I/Q stream has used it in the last ten minutes, so a first capture has no pre-roll), and
+API (`bench_line.c`): the receiver channels' bursts, cs8 captures and level triggers from the bench API's 2 s
+wideband history (kept only while a capture or an I/Q stream has used it in the last ten minutes, so a first capture
+has no pre-roll), and
 `bench_tx` jobs through the SDR modem under `bench.tx`'s gates, in WS /tx's one job slot (bench_tx's `--power`
 capped at `bench.tx.rf_level`). A roamer keeps its SDR modem, so a W12 running as one refuses transmit jobs. In
 PSRAM: about 410 KB at rest (the engine 71 KB, its request parser's strings 197 KB, the server's send buffers
-144 KB), and while in use 16 KB a connection, 115 KB a job, 256 KB a capture; the server thread's stack too. A wideband capture needs 2 bytes a
+144 KB), and while in use 16 KB a connection, 115 KB a job, 256 KB a capture, a trigger its whole capture (pre +
+post, 1 MB at most); the server thread's stack too. A wideband capture needs 2 bytes a
 sample (768 KB/s at 384 kS/s), more than one TCP stream from the W12 carries with lwIP's 5.76 KB send buffer: on
-2026-10-29 a 4 s capture got 14% of its samples, the rest reported as `gap_samples`.
+2026-10-29 a 4 s capture got 14% of its samples, the rest reported as `gap_samples`. A trigger's channel is
+smaller (cs16 at 48 kS/s, 192 KB/s) and buffered whole: on 2026-10-29 a W12 trigger on a bench call (0.5 s pre,
+1 s post, until the end) came whole, 3.5 s, SNR 29 dB.
 
 ### A radio transmits, the SDR receives (split duplex)
 
