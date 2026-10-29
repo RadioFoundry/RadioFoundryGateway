@@ -1801,8 +1801,13 @@ static bool echo_drop(void *ctx, int c, const rdof_sdr_burst_t *b)
     bench_burst(c, b);
     return true;
 }
-/* the inbound slot by timing: the radio's RX channel only (a monitored channel keeps its own CACH) */
-static int relabel(void *ctx, int c, const rdof_sdr_burst_t *b) { return c ? 0 : rdof_sdrmodem_inbound(&R.m, b); }
+/* the inbound slot by timing: the radio's RX channel only (a monitored channel keeps its own CACH); a repeater job's
+ * RX may be any receiver channel */
+static int relabel(void *ctx, int c, const rdof_sdr_burst_t *b)
+{
+    const int rx = BR.active ? channel_of(BR.cfg.rx_hz) : 0;
+    return c == rx ? rdof_sdrmodem_inbound(&R.m, b) : 0;
+}
 
 static void tx_gain(double db)
 {
