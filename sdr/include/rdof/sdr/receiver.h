@@ -143,6 +143,9 @@ void rdof_sdr_rx_finish(rdof_sdr_rx_t *rx);
  * channelizer and demod (worker 0 on one core, 1 on the other), then finish. Same result. */
 int rdof_sdr_rx_forward(rdof_sdr_rx_t *rx, const rdof_cf_t *iq, int n);
 void rdof_sdr_rx_channels(rdof_sdr_rx_t *rx, int c0, int c1, int worker);
+/* Or the forward FFTs shared as well: gather (each block's input, on one core), then rdof_chz_forward_blocks on
+ * rx->chz over disjoint block ranges (rdof_chz_gather's), then rdof_sdr_rx_channels and finish. Same result. */
+int rdof_sdr_rx_gather(rdof_sdr_rx_t *rx, const rdof_cf_t *iq, int n);
 
 #endif /* RDOF_FEATURE_SDR_RECEIVER */
 

@@ -182,6 +182,23 @@ int rdof_sdr_rx_forward(rdof_sdr_rx_t *rx, const rdof_cf_t *iq, int n)
     return rx->got;
 }
 
+int rdof_sdr_rx_gather(rdof_sdr_rx_t *rx, const rdof_cf_t *iq, int n)
+{
+    if (n > rx->cfg.max_chunk)
+        n = rx->cfg.max_chunk;
+    /* the stores, once; without the memory, the whole channelizer here, as rdof_sdr_rx_forward */
+    rx->fused = (!rx->chz.xs_cap && rdof_chz_reserve(&rx->chz, rx->cfg.max_chunk) != 0) ||
+                (rx->chz.ws_cap < rx->chz.xs_cap && rdof_chz_reserve_gather(&rx->chz) != 0);
+    if (rx->fused)
+        rx->chz.nblk = 0;
+    rx->got = rx->fused ? rdof_chz_process(&rx->chz, iq, n, rx->y, rx->stride) : rdof_chz_gather(&rx->chz, iq, n);
+    rx->samples += n;
+    rx->out_index += rx->got;
+    if (rx->got)
+        rx->chunks++;
+    return rx->got;
+}
+
 void rdof_sdr_rx_channels(rdof_sdr_rx_t *rx, int c0, int c1, int worker)
 {
     if (!rx->fused)

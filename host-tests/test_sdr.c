@@ -682,15 +682,15 @@ static void test_window(void)
         int k = rdof_plan_window(p->freqs, p->n, p->fs, &c, in);
         CHECK(k == p->n && c == p->center, "window %s: %d inside at %.1f, want all at %.1f", p->name, k, c, p->center);
     }
-    /* the ten 461 MHz channels at 288 kS/s: no window holds more, and every one inside is usable */
-    const double f[10] = {461.4625e6, 462e6, 461.0875e6, 461.1375e6, 461.1875e6, 461.2375e6, 461.2875e6,
-                          461.0375e6, 461.3375e6, 461.6875e6};
+    /* the ten 438 MHz channels at 288 kS/s: no window holds more, and every one inside is usable */
+    const double f[10] = {438.4875e6, 440e6, 438.1125e6, 438.1625e6, 438.2125e6, 438.2625e6, 438.3125e6,
+                          438.0625e6, 438.3625e6, 438.7125e6};
     const double half = 288e3 * 0.8 / 2;
     double c = 0;
     bool in[10];
     int k = rdof_plan_window(f, 10, 288e3, &c, in);
     int best = 0;
-    for (double t = 460.8e6; t < 462.2e6; t += 250.0) {
+    for (double t = 437.825e6; t < 439.225e6; t += 250.0) {
         int m = 0;
         for (int i = 0; i < 10; i++)
             m += fabs(f[i] - t) <= half && fabs(f[i] - t) >= 25e3;
@@ -703,13 +703,13 @@ static void test_window(void)
             ok &= fabs(f[i] - c) <= half && fabs(f[i] - c) >= 25e3;
         }
     CHECK(k == best && count == k && ok, "window at 288k: %d at %.0f (best %d)", k, c, best);
-    printf("  window: the ten 461 MHz channels at 288 kS/s: %d at %.4f MHz (", k, c / 1e6);
+    printf("  window: the ten 438 MHz channels at 288 kS/s: %d at %.4f MHz (", k, c / 1e6);
     for (int i = 0; i < 10; i++)
         if (in[i])
             printf(" %.4f", f[i] / 1e6);
     printf(" )\n");
     /* one channel far from everything */
-    const double one[1] = {467.375e6};
+    const double one[1] = {438.6e6};
     k = rdof_plan_window(one, 1, 288e3, &c, in);
     CHECK(k == 1 && fabs(c - one[0]) >= 25e3 && fabs(c - one[0]) <= half, "window one: %d at %.0f", k, c);
 }
@@ -728,7 +728,7 @@ static void test_config(void)
         }
     }
     const char *jsonc = "{ // a comment\n \"device\": {\"sample_rate\": 288000, /* block */},\n"
-                        " \"channels\": [{\"id\": \"A\", \"freq\": 461.0375,},],}";
+                        " \"channels\": [{\"id\": \"A\", \"freq\": 438.0625,},],}";
     char err[160];
     CHECK(rdof_sdr_config_parse(jsonc, strlen(jsonc), &cfg, err, sizeof err) && cfg.nch == 1, "JSONC: %s", err);
 }
@@ -742,22 +742,22 @@ static void test_frontend(void)
               rdof_fe_type_parse("sim") == RDOF_FE_SIM && rdof_fe_type_parse("hackrf") == -1,
           "fe type parse");
     CHECK(!strcmp(rdof_fe_type_name(RDOF_FE_SX1255), "sx1255"), "fe type name");
-    const char *a = "{\"device\": {\"sample_rate\": 288000}, \"channels\": [{\"id\": \"A\", \"freq\": 461.0375}]}";
+    const char *a = "{\"device\": {\"sample_rate\": 288000}, \"channels\": [{\"id\": \"A\", \"freq\": 438.0625}]}";
     CHECK(rdof_sdr_config_parse(a, strlen(a), &cfg, err, sizeof err) && cfg.frontend == RDOF_FE_RTLSDR && !cfg.sim,
           "default front end: %s", err);
     const char *b = "{\"device\": {\"type\": \"lr2021\", \"sample_rate\": 288000}, \"channels\": [{\"id\": \"A\", "
-                    "\"freq\": 461.0375}]}";
+                    "\"freq\": 438.0625}]}";
     CHECK(rdof_sdr_config_parse(b, strlen(b), &cfg, err, sizeof err) && cfg.frontend == RDOF_FE_LR2021, "lr2021: %s", err);
     const char *c = "{\"device\": {\"type\": \"lr2021\", \"sample_rate\": 288000}, \"sim\": true, \"channels\": "
-                    "[{\"id\": \"A\", \"freq\": 461.0375}]}";
+                    "[{\"id\": \"A\", \"freq\": 438.0625}]}";
     CHECK(rdof_sdr_config_parse(c, strlen(c), &cfg, err, sizeof err) && cfg.frontend == RDOF_FE_SIM && cfg.sim,
           "sim: true wins: %s", err);
     const char *d = "{\"device\": {\"type\": \"sim\", \"sample_rate\": 288000}, \"channels\": [{\"id\": \"A\", "
-                    "\"freq\": 461.0375}]}";
+                    "\"freq\": 438.0625}]}";
     CHECK(rdof_sdr_config_parse(d, strlen(d), &cfg, err, sizeof err) && cfg.frontend == RDOF_FE_SIM && cfg.sim,
           "type sim is sim: %s", err);
     const char *e = "{\"device\": {\"type\": 3, \"sample_rate\": 288000}, \"channels\": [{\"id\": \"A\", "
-                    "\"freq\": 461.0375}]}";
+                    "\"freq\": 438.0625}]}";
     CHECK(!rdof_sdr_config_parse(e, strlen(e), &cfg, err, sizeof err) && strstr(err, "device.type"), "type 3: %s", err);
 
     /* formats: the same floats as the iq converters, filler reads back as (near) zero */
@@ -780,7 +780,7 @@ static void test_frontend(void)
     static const double rtl_rates[] = {240000, 288000};
     rdof_fe_caps_t rtl = {.kind = "RTL-SDR", .rates = rtl_rates, .n_rates = 2, .freq_min = 24e6, .freq_max = 1766e6};
     rdof_fe_caps_t lr = {.kind = "LR2021", .rate_min = 48000, .rate_max = 192000, .freq_min = 150e6, .freq_max = 960e6};
-    const double f[2] = {461.0375e6, 461.2375e6}, far[1] = {2.4e9};
+    const double f[2] = {438.0625e6, 438.2625e6}, far[1] = {2.4e9};
     CHECK(rdof_fe_check(&rtl, 288000, f, 2, err, sizeof err) == 0, "rtl 288k: %s", err);
     CHECK(rdof_fe_check(&rtl, 1536000, f, 2, err, sizeof err) < 0 && !strcmp(err, "the RTL-SDR takes sample_rate 240000 or 288000"),
           "rtl 1.536M: %s", err);
@@ -977,7 +977,7 @@ static void test_atan2(void)
  * signals low, each transmitter a little off, one far off), looked at every 5 s. */
 static void test_ppm(void)
 {
-    const double f[4] = {461.0375e6, 461.0875e6, 461.1375e6, 461.1875e6};
+    const double f[4] = {438.0625e6, 438.1125e6, 438.1625e6, 438.2125e6};
     const double radio[4] = {0.3, -0.4, 0.1, 4.0}; /* ppm of their own; the last one disagrees */
     double tuner = 5.3, age[4] = {1, 2, 3, 400}, corr[4];
     rdof_ppm_t p;
@@ -1187,15 +1187,17 @@ static void test_settle(void)
 static void test_chz_split(void)
 {
     const double fs = 288000, off[5] = {-100e3, -37.5e3, 12.5e3, 50e3, 87.5e3};
-    rdof_chz_t a, b;
+    rdof_chz_t a, b, g;
     CHECK(rdof_chz_init(&a, fs, off, 5, 6, RDOF_CHZ_OUT_FFT, RDOF_CHZ_CUTOFF_HZ) == 0 &&
-              rdof_chz_init(&b, fs, off, 5, 6, RDOF_CHZ_OUT_FFT, RDOF_CHZ_CUTOFF_HZ) == 0 && rdof_chz_reserve(&b, 5000) == 0,
+              rdof_chz_init(&b, fs, off, 5, 6, RDOF_CHZ_OUT_FFT, RDOF_CHZ_CUTOFF_HZ) == 0 && rdof_chz_reserve(&b, 5000) == 0 &&
+              rdof_chz_init(&g, fs, off, 5, 6, RDOF_CHZ_OUT_FFT, RDOF_CHZ_CUTOFF_HZ) == 0 && rdof_chz_reserve(&g, 5000) == 0 &&
+              rdof_chz_reserve_gather(&g) == 0,
           "split channelizer init");
     const int stride = rdof_chz_out_len(&a, 5000) + a.out_per_hop;
     rdof_cf_t *x = malloc(sizeof(rdof_cf_t) * 5000), *ya = malloc(sizeof(rdof_cf_t) * 5 * stride),
-            *yb = malloc(sizeof(rdof_cf_t) * 5 * stride);
+            *yb = malloc(sizeof(rdof_cf_t) * 5 * stride), *yg = malloc(sizeof(rdof_cf_t) * 5 * stride);
     uint32_t r = 7;
-    int same = 1, total = 0;
+    int same = 1, gsame = 1, total = 0;
     for (int call = 0; call < 40; call++) {
         const int n = 700 + (call * 977) % 4300;
         for (int i = 0; i < n; i++) {
@@ -1205,7 +1207,7 @@ static void test_chz_split(void)
             x[i].im = (float)(r >> 8) / 16777216.0f - 0.5f;
         }
         for (int c = 0; c < 5; c++)
-            a.correction_hz[c] = b.correction_hz[c] = 30.0 * c + call;
+            a.correction_hz[c] = b.correction_hz[c] = g.correction_hz[c] = 30.0 * c + call;
         int ga = rdof_chz_process(&a, x, n, ya, stride), gb = rdof_chz_forward(&b, x, n);
         rdof_chz_channels(&b, 2, 5, 1, yb, stride);
         rdof_chz_channels(&b, 0, 2, 0, yb, stride);
@@ -1214,15 +1216,29 @@ static void test_chz_split(void)
             same &= !memcmp(ya + (size_t)c * stride, yb + (size_t)c * stride, sizeof(rdof_cf_t) * (size_t)ga);
             same &= a.level[c] == b.level[c];
         }
+        /* and the forward FFTs shared too: the later blocks first, as a second core may */
+        const int gg = rdof_chz_gather(&g, x, n), half = (g.nblk + 1) / 2;
+        rdof_chz_forward_blocks(&g, half, g.nblk, 1);
+        rdof_chz_forward_blocks(&g, 0, half, 0);
+        rdof_chz_channels(&g, 1, 5, 1, yg, stride);
+        rdof_chz_channels(&g, 0, 1, 0, yg, stride);
+        gsame &= ga == gg;
+        for (int c = 0; c < 5 && ga == gg; c++) {
+            gsame &= !memcmp(ya + (size_t)c * stride, yg + (size_t)c * stride, sizeof(rdof_cf_t) * (size_t)ga);
+            gsame &= a.level[c] == g.level[c];
+        }
         total += ga;
     }
     CHECK(same, "the two-step channelizer differs from rdof_chz_process");
-    printf("channelizer split by channel: %d samples a channel, bit-exact with one step\n", total);
+    CHECK(gsame, "the gathered channelizer differs from rdof_chz_process");
+    printf("channelizer split by channel and by block: %d samples a channel, bit-exact with one step\n", total);
     rdof_chz_free(&a);
     rdof_chz_free(&b);
+    rdof_chz_free(&g);
     free(x);
     free(ya);
     free(yb);
+    free(yg);
 }
 
 int main(void)

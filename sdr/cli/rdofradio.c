@@ -2154,7 +2154,7 @@ static struct {
     pthread_t th;
     pthread_mutex_t mu;
     pthread_cond_t cv;
-    int c0, c1;
+    int job, c0, c1; /* 1: forward FFTs of blocks c0 to c1; 2: the channelizer's channels c0 to c1 */
     bool go, on, failed;
 } HX = {.mu = PTHREAD_MUTEX_INITIALIZER, .cv = PTHREAD_COND_INITIALIZER};
 
@@ -2164,9 +2164,12 @@ static void *chz_helper(void *arg)
         pthread_mutex_lock(&HX.mu);
         while (!HX.go)
             pthread_cond_wait(&HX.cv, &HX.mu);
-        const int c0 = HX.c0, c1 = HX.c1;
+        const int job = HX.job, c0 = HX.c0, c1 = HX.c1;
         pthread_mutex_unlock(&HX.mu);
-        rdof_chz_channels(&R.rx.chz, c0, c1, 1, R.rx.y, R.rx.stride);
+        if (job == 1)
+            rdof_chz_forward_blocks(&R.rx.chz, c0, c1, 1);
+        else
+            rdof_chz_channels(&R.rx.chz, c0, c1, 1, R.rx.y, R.rx.stride);
         pthread_mutex_lock(&HX.mu);
         HX.go = false;
         pthread_cond_broadcast(&HX.cv);
@@ -2175,28 +2178,47 @@ static void *chz_helper(void *arg)
     return NULL;
 }
 
-/* rdof_sdr_rx_process, its channelizer shared with the helper (a third of the channels here: the loop has the rest
- * of its work) */
+/* the helper's job, while this thread does its share */
+static void hx_run(int job, int c0, int c1)
+{
+    pthread_mutex_lock(&HX.mu);
+    HX.job = job, HX.c0 = c0, HX.c1 = c1, HX.go = true;
+    pthread_cond_broadcast(&HX.cv);
+    pthread_mutex_unlock(&HX.mu);
+}
+
+static void hx_join(void)
+{
+    pthread_mutex_lock(&HX.mu);
+    while (HX.go)
+        pthread_cond_wait(&HX.cv, &HX.mu);
+    pthread_mutex_unlock(&HX.mu);
+}
+
+/* rdof_sdr_rx_process, its channelizer shared with the helper: half the forward FFTs, then two thirds of the
+ * channels (the loop has the rest of its work) */
 static void rx_chunk(const rdof_cf_t *in, int n)
 {
     if (!HX.on && !HX.failed && R.rx.C > 1) {
         HX.on = pthread_create(&HX.th, NULL, chz_helper, NULL) == 0;
         HX.failed = !HX.on;
     }
-    rdof_sdr_rx_forward(&R.rx, in, n);
+    if (!HX.on) {
+        rdof_sdr_rx_forward(&R.rx, in, n);
+        if (!R.rx.fused)
+            rdof_chz_channels(&R.rx.chz, 0, R.rx.C, 0, R.rx.y, R.rx.stride);
+    } else {
+        rdof_sdr_rx_gather(&R.rx, in, n);
+    }
     if (HX.on && !R.rx.fused) {
+        const int nb = R.rx.chz.nblk, half = (nb + 1) / 2;
+        hx_run(1, half, nb);
+        rdof_chz_forward_blocks(&R.rx.chz, 0, half, 0);
+        hx_join();
         const int split = R.rx.C / 3 > 0 ? R.rx.C / 3 : 1;
-        pthread_mutex_lock(&HX.mu);
-        HX.c0 = split, HX.c1 = R.rx.C, HX.go = true;
-        pthread_cond_broadcast(&HX.cv);
-        pthread_mutex_unlock(&HX.mu);
+        hx_run(2, split, R.rx.C);
         rdof_chz_channels(&R.rx.chz, 0, split, 0, R.rx.y, R.rx.stride);
-        pthread_mutex_lock(&HX.mu);
-        while (HX.go)
-            pthread_cond_wait(&HX.cv, &HX.mu);
-        pthread_mutex_unlock(&HX.mu);
-    } else if (!R.rx.fused) {
-        rdof_chz_channels(&R.rx.chz, 0, R.rx.C, 0, R.rx.y, R.rx.stride);
+        hx_join();
     }
     rdof_sdr_rx_demod(&R.rx, 0, R.rx.C);
     rdof_sdr_rx_finish(&R.rx);

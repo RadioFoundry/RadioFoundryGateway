@@ -61,6 +61,10 @@ typedef struct {
     float xs_noise;
     rdof_fft_t *inv2;       /* a second core's inverse FFT and scratch: a plan isn't safe on two cores at once */
     rdof_cf_t *Y2, *y2;
+    /* the forward FFTs on two cores too (rdof_chz_gather, rdof_chz_forward_blocks) */
+    rdof_cf_t *Ws;          /* each block's input, N apiece */
+    int ws_cap;
+    rdof_fft_t *fwd2;       /* the second core's forward FFT */
 } rdof_chz_t;
 
 /* Kaiser-windowed sinc low-pass (beta 5), unity DC gain: channelizer._lowpass. out has num_taps. */
@@ -94,6 +98,13 @@ extern rdof_chz_prof_t rdof_chz_prof;
 void rdof_chz_set_clock(uint32_t (*ticks)(void));
 int rdof_chz_forward(rdof_chz_t *s, const rdof_cf_t *in, int n_in);
 void rdof_chz_channels(rdof_chz_t *s, int c0, int c1, int worker, rdof_cf_t *out, int stride);
+/* The forward FFTs shared too: rdof_chz_gather keeps each block's input (rdof_chz_reserve_gather sizes that store
+ * after rdof_chz_reserve; 0, or -1 out of memory), then rdof_chz_forward_blocks over disjoint block ranges, worker 0
+ * with block 0 (its spectrum measures the noise floor) and 1 the rest, then rdof_chz_channels as above. Returns the
+ * samples per channel; the output is rdof_chz_forward's. */
+int rdof_chz_reserve_gather(rdof_chz_t *s);
+int rdof_chz_gather(rdof_chz_t *s, const rdof_cf_t *in, int n_in);
+void rdof_chz_forward_blocks(rdof_chz_t *s, int b0, int b1, int worker);
 
 /* channelizer.plan_center: a tuner center keeping every channel in the usable band, away from DC and
  * from the other channels' IQ images. Returns 0 and sets *center, or -1 if there is none. */

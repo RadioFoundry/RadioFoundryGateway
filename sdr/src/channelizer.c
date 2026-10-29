@@ -47,6 +47,8 @@ void rdof_chz_lowpass(int num_taps, double cutoff_hz, double fs, double *out)
 void rdof_chz_free(rdof_chz_t *s)
 {
     rdof_fft_free(s->fwd);
+    rdof_fft_free(s->fwd2);
+    rdof_sdr_free(s->Ws);
     rdof_fft_free(s->inv);
     rdof_sdr_free(s->k);
     rdof_sdr_free(s->residual_hz);
@@ -293,10 +295,10 @@ void rdof_chz_set_clock(uint32_t (*ticks)(void)) { chz_clock = ticks; }
 static inline uint32_t chz_now(void) { return chz_clock ? chz_clock() : 0; }
 
 /* The next block's window is full: its forward FFT into X, the noise floor on a call's first block. */
-static void forward_block(rdof_chz_t *s, rdof_cf_t *X, bool *first)
+static void forward_block(rdof_chz_t *s, rdof_fft_t *fwd, const rdof_cf_t *win, rdof_cf_t *X, bool *first)
 {
     const uint32_t t0 = chz_now();
-    rdof_fft_run(s->fwd, s->win, X);
+    rdof_fft_run(fwd, win, X);
     const uint32_t t1 = chz_now();
     if (*first) { /* the floor moves slowly: every 8th call */
         if (s->noise_in == 0.0f || ++s->noise_age >= 8) {
@@ -331,7 +333,7 @@ int rdof_chz_process(rdof_chz_t *s, const rdof_cf_t *in, int n_in, rdof_cf_t *ou
         used += take;
         if (s->fill < N)
             break;
-        forward_block(s, s->X, &first);
+        forward_block(s, s->fwd, s->win, s->X, &first);
         const float noise = s->noise_in * s->hnoise;
         const unsigned boff = s->boff;
         s->boff = (boff + (unsigned)s->hop) % (unsigned)N;
@@ -390,7 +392,7 @@ int rdof_chz_forward(rdof_chz_t *s, const rdof_cf_t *in, int n_in)
         used += take;
         if (s->fill < N)
             break;
-        forward_block(s, s->Xs + (size_t)s->nblk * N, &first);
+        forward_block(s, s->fwd, s->win, s->Xs + (size_t)s->nblk * N, &first);
         s->xs_boff[s->nblk++] = s->boff;
         s->boff = (s->boff + (unsigned)s->hop) % (unsigned)N;
         s->block++;
@@ -402,6 +404,55 @@ int rdof_chz_forward(rdof_chz_t *s, const rdof_cf_t *in, int n_in)
     }
     s->xs_noise = s->noise_in * s->hnoise;
     return s->nblk * s->out_per_hop;
+}
+
+int rdof_chz_reserve_gather(rdof_chz_t *s)
+{
+    if (s->ws_cap >= s->xs_cap && s->fwd2)
+        return s->xs_cap ? 0 : -1;
+    rdof_sdr_free(s->Ws);
+    s->Ws = rdof_sdr_alloc(sizeof(rdof_cf_t) * (size_t)s->N * (size_t)s->xs_cap);
+    s->ws_cap = s->Ws ? s->xs_cap : 0;
+    if (!s->fwd2)
+        s->fwd2 = rdof_fft_new(s->N, false);
+    return s->ws_cap && s->fwd2 ? 0 : -1;
+}
+
+int rdof_chz_gather(rdof_chz_t *s, const rdof_cf_t *in, int n_in)
+{
+    const int N = s->N;
+    int used = 0;
+    s->nblk = 0;
+    for (int c = 0; c < s->C; c++)
+        s->level[c] = 0.0f;
+    while (used < n_in && s->nblk < s->ws_cap) {
+        int take = N - s->fill;
+        if (take > n_in - used)
+            take = n_in - used;
+        memcpy(s->win + s->fill, in + used, sizeof(rdof_cf_t) * take);
+        s->fill += take;
+        used += take;
+        if (s->fill < N)
+            break;
+        memcpy(s->Ws + (size_t)s->nblk * N, s->win, sizeof(rdof_cf_t) * N);
+        s->xs_boff[s->nblk++] = s->boff;
+        s->boff = (s->boff + (unsigned)s->hop) % (unsigned)N;
+        s->block++;
+        memmove(s->win, s->win + s->hop, sizeof(rdof_cf_t) * (N - s->hop));
+        s->fill = N - s->hop;
+    }
+    s->xs_noise = s->noise_in * s->hnoise; /* block 0's worker measures it again */
+    return s->nblk * s->out_per_hop;
+}
+
+void rdof_chz_forward_blocks(rdof_chz_t *s, int b0, int b1, int worker)
+{
+    for (int b = b0; b < b1 && b < s->nblk; b++) {
+        bool first = b == 0;
+        forward_block(s, worker ? s->fwd2 : s->fwd, s->Ws + (size_t)b * s->N, s->Xs + (size_t)b * s->N, &first);
+        if (b == 0)
+            s->xs_noise = s->noise_in * s->hnoise;
+    }
 }
 
 void rdof_chz_channels(rdof_chz_t *s, int c0, int c1, int worker, rdof_cf_t *out, int stride)
