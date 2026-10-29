@@ -419,10 +419,16 @@ def bench_repeater_parser() -> argparse.ArgumentParser:
     ap.add_argument("--tx", type=float, required=True)
     ap.add_argument("--cc", type=int, default=2)
     ap.add_argument("--power", type=int, default=255)
-    ap.add_argument("--seconds", type=float, default=30)
+    ap.add_argument("--seconds", type=float, default=60)
+    ap.add_argument("--slots", default="1,2")
+    ap.add_argument("--hang", type=float, default=4.0)
+    ap.add_argument("--call-hang", type=float, default=3.0)
     ap.add_argument("--json", action="store_true")
-    ap.add_argument("--beacon", action="store_true")
-    ap.add_argument("--beacon-len", type=float)
+    ap.add_argument("--beacon", type=float, default=0.0)     # seconds between idle beacons (0: none)
+    ap.add_argument("--beacon-len", type=float, default=4.0)
+    ap.add_argument("--beacon-phase", type=float, default=2.0)
+    ap.add_argument("--rx-offset", type=float)                # refused by the gateway: its own receiver and transmitter
+    ap.add_argument("--tx-offset", type=float)
     ap.add_argument("--port")
     return ap
 

@@ -504,6 +504,39 @@ static struct {
 static int heard_n;
 static void deliver_heard(void);
 
+/* A duplex repeater job (bench_repeater, from the bench's line protocol): the transceiver pauses, a repeater with no
+ * network runs on the modem, and what it hears and does goes to the job. The bench's thread asks (the engine's rpt
+ * hooks); the main loop runs it (bench_rpt_poll), as the transmit jobs. */
+#define BR_EVENTS 64
+static struct {
+    pthread_mutex_t mu;    /* all but r, which is the main loop's */
+    int want;              /* 1 open, 2 close */
+    bool active, ready, failed;
+    char why[120];
+    rdof_bl_rpt_cfg_t cfg;
+    double asked;
+    rdof_bl_rpt_ev_t ev[BR_EVENTS];
+    int nev;
+    struct {
+        uint8_t control, burst[RDOF_BURST_BYTES];
+    } wake[4];
+    int nwake;
+    bool cal;              /* the first key-up's edge sets the slot timing */
+    int64_t late48;        /* the modem's tx_late48 before the job */
+    rdof_repeater_t r;
+} BR = {.mu = PTHREAD_MUTEX_INITIALIZER};
+
+static double wall_s(void);
+static void br_event(const rdof_bl_rpt_ev_t *e)
+{
+    pthread_mutex_lock(&BR.mu);
+    if (BR.nev < BR_EVENTS) {
+        BR.ev[BR.nev] = *e;
+        BR.ev[BR.nev++].t = wall_s();
+    }
+    pthread_mutex_unlock(&BR.mu);
+}
+
 static void on_rx(void *ctx, int slot, uint8_t control, const uint8_t *burst, int rssi)
 {
     if (in_wait) {
@@ -517,10 +550,16 @@ static void on_rx(void *ctx, int slot, uint8_t control, const uint8_t *burst, in
         fprintf(stderr, "inbound: slot %d, %+.2f slots from its place\n", slot, R.m.inbound_off);
     if (R.parrot)
         rdof_parrot_heard(R.parrot, slot, control, burst, now_s());
-    if (R.full)
+    if (R.full) {
         rdof_repeater_heard(&R.r, slot, control, burst, rssi);
-    else
+    } else if (BR.active) {
+        rdof_bl_rpt_ev_t e = {.kind = RDOF_BL_RPT_HEARD, .slot = slot, .rssi = rssi, .control = control};
+        memcpy(e.burst, burst, sizeof e.burst);
+        br_event(&e);
+        rdof_repeater_heard(&BR.r, slot, control, burst, rssi);
+    } else {
         rdof_txvr_heard(&R.t, slot, control, burst, rssi);
+    }
 }
 static void on_lost(void *ctx, int slot)
 {
@@ -531,8 +570,12 @@ static void on_lost(void *ctx, int slot)
     }
     if (R.parrot)
         rdof_parrot_lost(R.parrot, slot, now_s());
-    if (R.full)
+    if (R.full) {
         rdof_repeater_lost(&R.r, slot);
+    } else if (BR.active) {
+        br_event(&(rdof_bl_rpt_ev_t){.kind = RDOF_BL_RPT_LOST, .slot = slot});
+        rdof_repeater_lost(&BR.r, slot);
+    }
 }
 static void deliver_heard(void)
 {
@@ -549,6 +592,8 @@ static void on_nak(void *ctx, uint8_t cmd, int err)
     fprintf(stderr, "modem NAK 0x%02x err %d\n", cmd, err);
     if (R.full)
         rdof_repeater_nak(&R.r, cmd, err);
+    else if (BR.active)
+        rdof_repeater_nak(&BR.r, cmd, err);
 }
 
 /* MQTT (below) */
@@ -1392,7 +1437,7 @@ static struct {
 static bool bl_tx_open(void *ctx, uint32_t freq, int cc, int power, char *why, size_t cap)
 {
     pthread_mutex_lock(&BT.mu);
-    const bool busy = BT.want || BT.active;
+    const bool busy = BT.want || BT.active || BR.want || BR.active;
     if (!busy) {
         BT.want = 1, BT.freq = freq, BT.cc = cc, BT.asked = now_s();
         BT.ready = BT.failed = BT.idle = false;
@@ -1509,6 +1554,139 @@ static bool bench_tx_poll(double now)
     return true;
 }
 
+static bool bl_rpt_open(void *ctx, const rdof_bl_rpt_cfg_t *cfg, char *why, size_t cap)
+{
+    pthread_mutex_lock(&BR.mu);
+    const bool busy = BR.want || BR.active || BT.want || BT.active;
+    if (!busy) {
+        BR.want = 1, BR.cfg = *cfg, BR.asked = now_s();
+        BR.ready = BR.failed = false;
+        BR.nev = BR.nwake = 0;
+    }
+    pthread_mutex_unlock(&BR.mu);
+    if (busy)
+        snprintf(why, cap, "the transmitter is still busy with the last job");
+    else if (cfg->power != 255)
+        snprintf(why, cap, "--power %d isn't applied: the SDR transmits at --tx-gain %.0f", cfg->power, bench_txg);
+    return !busy;
+}
+
+static int bl_rpt_state(void *ctx, char *why, size_t cap)
+{
+    pthread_mutex_lock(&BR.mu);
+    const int st = BR.failed ? -1 : BR.ready ? 1 : 0;
+    if (BR.failed)
+        snprintf(why, cap, "%s", BR.why);
+    pthread_mutex_unlock(&BR.mu);
+    return st;
+}
+
+static bool bl_rpt_event(void *ctx, rdof_bl_rpt_ev_t *ev)
+{
+    pthread_mutex_lock(&BR.mu);
+    const bool any = BR.nev > 0;
+    if (any) {
+        *ev = BR.ev[0];
+        memmove(BR.ev, BR.ev + 1, sizeof BR.ev[0] * (size_t)--BR.nev);
+    }
+    pthread_mutex_unlock(&BR.mu);
+    return any;
+}
+
+static void bl_rpt_wake(void *ctx, uint8_t control, const uint8_t burst[33])
+{
+    pthread_mutex_lock(&BR.mu);
+    if (BR.nwake < (int)(sizeof BR.wake / sizeof BR.wake[0])) {
+        BR.wake[BR.nwake].control = control;
+        memcpy(BR.wake[BR.nwake++].burst, burst, RDOF_BURST_BYTES);
+    }
+    pthread_mutex_unlock(&BR.mu);
+}
+
+static void bl_rpt_close(void *ctx)
+{
+    pthread_mutex_lock(&BR.mu);
+    BR.want = 2;
+    pthread_mutex_unlock(&BR.mu);
+}
+
+static void br_on_key(void *ctx, bool keyed)
+{
+    say("bench: the job's repeater %s\n", keyed ? "keyed" : "unkeyed");
+    br_event(&(rdof_bl_rpt_ev_t){.kind = RDOF_BL_RPT_KEY, .keyed = keyed});
+}
+
+/* The main loop's turn (POLL_S): true while a repeater job has the modem (the transceiver isn't polled). */
+static bool bench_rpt_poll(double now)
+{
+    if (!BL.bl)
+        return false;
+    pthread_mutex_lock(&BR.mu);
+    if (BR.want == 1 && !BR.active) {
+        if (R.t.has_call && now - BR.asked < 10.0) { /* the transceiver's call ends first */
+            pthread_mutex_unlock(&BR.mu);
+            return false;
+        }
+        BR.want = 0, BR.active = true;
+        const rdof_bl_rpt_cfg_t cfg = BR.cfg;
+        pthread_mutex_unlock(&BR.mu);
+        rdof_repeater_init(&BR.r, &R.radio, rcfg.peer_id, cfg.rx_hz, cfg.tx_hz, cfg.cc);
+        BR.r.enabled[1] = cfg.slots & 2u, BR.r.enabled[2] = cfg.slots & 4u;
+        BR.r.inactivity_s = cfg.hang_s;
+        rdof_repeater_set_call_hang(&BR.r, cfg.call_hang_s);
+        BR.r.clock = p_clock;
+        BR.r.on_key = br_on_key;
+        BR.r.ctx = &R;
+        /* the inbound slots follow the transmit path's delay: the first key-up's edge in what's received sets it */
+        BR.late48 = R.m.tx_late48;
+        BR.cal = true;
+        const bool ok = rdof_modem_start(&R.client, 1) && rdof_repeater_start(&BR.r);
+        pthread_mutex_lock(&BR.mu);
+        BR.ready = ok, BR.failed = !ok;
+        if (!ok)
+            snprintf(BR.why, sizeof BR.why, "%s", R.client.error);
+        pthread_mutex_unlock(&BR.mu);
+        say("bench: a job's repeater has the transmitter: RX %.4f TX %.4f MHz cc %d%s%s\n", cfg.rx_hz / 1e6,
+            cfg.tx_hz / 1e6, cfg.cc, ok ? "" : ": ", ok ? "" : R.client.error);
+        return true;
+    }
+    if (!BR.active) {
+        pthread_mutex_unlock(&BR.mu);
+        return false;
+    }
+    if (BR.want == 2) { /* the job is over: the modem back to the transceiver */
+        BR.want = 0, BR.nwake = 0;
+        pthread_mutex_unlock(&BR.mu);
+        rdof_repeater_stop(&BR.r);
+        R.m.tx_late48 = BR.late48;
+        pthread_mutex_lock(&BR.mu);
+        BR.active = false, BR.nev = 0;
+        pthread_mutex_unlock(&BR.mu);
+        if (!rdof_modem_start(&R.client, 1) || !rdof_txvr_start(&R.t))
+            say("bench: the transceiver didn't start again: %s\n", R.client.error);
+        else
+            say("bench: the transmitter is the transceiver's again\n");
+        return true;
+    }
+    const int nwake = BR.nwake;
+    __typeof__(BR.wake[0]) wake[sizeof BR.wake / sizeof BR.wake[0]];
+    memcpy(wake, BR.wake, sizeof wake[0] * (size_t)nwake);
+    BR.nwake = 0;
+    const bool failed = BR.failed;
+    pthread_mutex_unlock(&BR.mu);
+    if (failed)
+        return true;
+    for (int i = 0; i < nwake; i++) /* an idle beacon: as if a radio had asked on slot 1 */
+        rdof_repeater_heard(&BR.r, 1, wake[i].control, wake[i].burst, 0);
+    if (!rdof_repeater_poll(&BR.r)) {
+        pthread_mutex_lock(&BR.mu);
+        BR.failed = true;
+        snprintf(BR.why, sizeof BR.why, "%s", R.client.error[0] ? R.client.error : "the modem stopped");
+        pthread_mutex_unlock(&BR.mu);
+    }
+    return true;
+}
+
 /* A chunk of the wideband stream, before the receiver: into the history (2.5 s), with the clock's reference. */
 static void bench_feed(const rdof_cf_t *in, int n)
 {
@@ -1559,7 +1737,9 @@ static void bench_start(void)
                                           .iq_read = bl_iq_read, .utc = bl_utc, .sc_utc = bl_sc_utc,
                                           .rx_stats = bl_rx_stats, .can_tx = bl_can_tx, .tx_open = bl_tx_open,
                                           .tx_space = bl_tx_space, .tx_push = bl_tx_push, .tx_unkey = bl_tx_unkey,
-                                          .tx_idle = bl_tx_idle, .tx_close = bl_tx_close};
+                                          .tx_idle = bl_tx_idle, .tx_close = bl_tx_close, .rpt_open = bl_rpt_open,
+                                          .rpt_state = bl_rpt_state, .rpt_event = bl_rpt_event,
+                                          .rpt_wake = bl_rpt_wake, .rpt_close = bl_rpt_close};
     BL.bl = rdof_bl_new(&pf);
     char err[160];
     BL.net = BL.bl ? rdof_bnet_start(BL.bl, bench_addr, bench_port, now_s, 0, err, sizeof err) : NULL;
@@ -2776,7 +2956,8 @@ int main(int argc, char **argv)
             last_poll = now;
             if (R.parrot)
                 rdof_parrot_poll(R.parrot, now);
-            if (!bench_tx_poll(now) && !(R.full ? rdof_repeater_poll(&R.r) : rdof_txvr_poll(&R.t)))
+            if (!bench_tx_poll(now) && !bench_rpt_poll(now) &&
+                !(R.full ? rdof_repeater_poll(&R.r) : rdof_txvr_poll(&R.t)))
                 fprintf(stderr, "poll: %s\n", R.client.error);
             net_poll(now);
             mq_poll(now);
@@ -2893,6 +3074,12 @@ int main(int argc, char **argv)
                         dev->set_rx_freq(dev, R.rx.center_hz);
                         R.cal = 0, R.cal_tries = 0;
                         R.ring_ref = -1; /* the ring's floor taken again against this */
+                    } else if (BR.active && BR.cal) {
+                        /* a repeater job's first key-up, heard in the receiver's band: its inbound slots follow it */
+                        R.m.tx_late48 = (total + i - R.onset) * 48000 / (int64_t)rate;
+                        BR.cal = false;
+                        say("bench: the job's transmit path is %.2f ms past its place\n",
+                            1e3 * (double)(total + i - R.onset) / rate);
                     } else {
                         /* at a split wider than the receiver's band, this is the first inbound burst, not the TX */
                         say("loop delay: the key-up reached the receiver %.2f ms after its place\n",
