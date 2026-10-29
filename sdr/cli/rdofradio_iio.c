@@ -102,6 +102,10 @@ static double bandwidth(rdofradio_dev_t *d)
 static int start(rdofradio_dev_t *d)
 {
     iio_t *s = (iio_t *)d;
+    /* 16 receive buffers (about 230 ms at 864 kS/s), not libiio's 4: the loop's slower turns (a key-up, the modem's
+     * polls) are caught up, not lost (a PlutoSDR dropped about 0.5% of the samples while transmitting, 2026-10-29).
+     * The transmit side keeps 4: its delay is the outbound's timing. */
+    iio_device_set_kernel_buffers_count(s->rxd, 16);
     s->rxb = iio_device_create_buffer(s->rxd, s->len, false);
     if (!s->rxb) {
         fail(d, "receive buffer", errno);
