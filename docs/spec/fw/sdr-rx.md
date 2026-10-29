@@ -187,8 +187,10 @@ start, skip candidates before `sp + POST + CACH`.
 - Slicer: `x − center` against `±(2/3)·outer` and 0, giving +3/+1/−1/−3, sampled every SPS from `sp − PRE`.
 - Sync bit errors ≤ `RDOF_DEMOD_MAX_SYNC_BIT_ERRORS` (4).
 - Slot: for BS syncs, from the CACH TACT. Otherwise the channel's `slot_hint` (`{0, 0, 1, 2}`), else `guess_slot`:
-  the gap from the last burst, rounded to 144-symbol bursts, must be within 30 samples and under 40 bursts; an odd
-  count flips the slot.
+  the gap from the last burst, rounded to 144-symbol bursts, must be within a quarter burst (360 samples, 7.5 ms)
+  and under 40 bursts; an odd count flips the slot. Two radios on one repeater's inbound each time their bursts from
+  the outbound in their own way (two handhelds were 0.5 ms apart, and 3.2 ms in a test); 30 samples put the other
+  radio's syncs on the frequency's slot, where the "weaker" rule below dropped them.
 - `power = 10·log10(mean |x|² over the burst + 1e-12)` dBFS (`log10f`).
 - "Weaker": a voice sync whose power over the sync (24·SPS) is more than `RDOF_DEMOD_WEAKER_DB` (15 dB) under the
   slot's held call can't take the slot over.

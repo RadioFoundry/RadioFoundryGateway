@@ -419,14 +419,17 @@ static void fly(rdof_demod_t *d, int64_t end)
 /* ── sync ───────────────────────────────────────────────────────────────── */
 
 /* A burst with no slot on the air (direct mode, or a CACH that didn't decode): beside a call still going, the slot
- * by its timing from that call's; else the frequency's slot. */
+ * by its timing from that call's; else the frequency's slot. Two radios on a repeater's inbound each time their
+ * bursts from the outbound in their own way: a quarter slot either side of the call's grid is still its frame (two
+ * handhelds were 0.6 and 3.2 ms apart, and a sync put on the other one's slot was dropped as the weaker). */
 static int guess_slot(const rdof_demod_t *d, int64_t start)
 {
     if (d->last_slot && (d->tracks[0].active || d->tracks[1].active)) {
         int64_t gap = start - d->last_pos;
         double bursts_f = nearbyint((double)gap / (BURST_SYMBOLS + CACH_SYMBOLS) / SPS);
         long long bursts = (long long)bursts_f;
-        if (llabs(gap - bursts * (BURST_SYMBOLS + CACH_SYMBOLS) * SPS) < 3 * SPS && bursts < 40) {
+        if (llabs(gap - bursts * (BURST_SYMBOLS + CACH_SYMBOLS) * SPS) < (BURST_SYMBOLS + CACH_SYMBOLS) * SPS / 4 &&
+            bursts < 40) {
             long long odd = ((bursts % 2) + 2) % 2;
             return odd == 0 ? d->last_slot : (d->last_slot == 1 ? 2 : 1);
         }

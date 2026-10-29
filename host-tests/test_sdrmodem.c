@@ -1034,9 +1034,10 @@ static void test_pair_utc(int rx_kind)
 #define DC_CHUNK 4608
 #define DC_CC 1
 
-static uint64_t ts_voice(int ts) { return ts == 1 ? RDOF_TS1_VOICE : RDOF_TS2_VOICE; }
+static uint64_t ts_voice(int ts) { return ts == 1 ? RDOF_TS1_VOICE : ts == 2 ? RDOF_TS2_VOICE : RDOF_MS_VOICE; }
 
-/* A voice call's bursts on slot ts, direct mode framed: `headers` LC headers, nvoice voice bursts, a terminator.
+/* A voice call's bursts on slot ts, direct mode framed (ts 0: a radio to a repeater, MS framed, no slot on the air):
+ * `headers` LC headers, nvoice voice bursts, a terminator.
  * Returns the count; controls[] gets each one's DMR_DATA control byte. */
 static int dc_call(int ts, uint32_t src, uint32_t dst, int headers, int nvoice, uint8_t (*out)[RDOF_BURST_BYTES],
                    uint8_t *controls)
@@ -1179,6 +1180,52 @@ static void test_dcdm_receive(void)
     rdof_mod_free(&ma);
     rdof_mod_free(&mb);
     rdof_sdr_rx_free(&rx);
+}
+
+/* A repeater's inbound (MS framed: no slot on the air) from two radios at once, one 22 dB under the other and each
+ * timed from the outbound its own way: the weaker one's bursts a little off the other's grid (a DB25-D came 0.5 ms
+ * early, and 3.2 ms off was seen). Its syncs go on the other slot by their timing, not the frequency's slot, where
+ * the stronger call would drop them as a leak. */
+static void test_ms_two_radios(void)
+{
+    static const double off_ms[] = {-0.6, 3.2};
+    for (int o = 0; o < 2; o++) {
+        static dcrx_t d;
+        static rdof_sdr_rx_t rx;
+        memset(&d, 0, sizeof d);
+        const rdof_sink_t js = {.on_json = dcrx_json, .ctx = &d};
+        const rdof_sdr_rx_config_t rc = {DC_FS, DC_CENTER, 0, 0, true, DC_CHUNK};
+        const rdof_sdr_channel_t ch = {"A", DC_CH, DC_CC, 1};
+        CHECK(rdof_sdr_rx_init(&rx, &rc, &ch, 1, &js, 0) == 0, "receiver");
+        rx.on_burst = dcrx_burst;
+        rx.burst_ctx = &d;
+        static uint8_t a[40][RDOF_BURST_BYTES], b[40][RDOF_BURST_BYTES], ca[40], cb[40];
+        const int na = dc_call(0, 9990011, 91, 3, 24, a, ca), nb = dc_call(0, 9990012, 92, 3, 12, b, cb);
+        static rdof_mod_t ma, mb;
+        const int64_t slot = DC_FS * 30 / 1000;
+        dc_station(&ma, DC_FS / 10, a, na);
+        dc_station(&mb, DC_FS / 10 + slot + llround(off_ms[o] * DC_FS / 1000) + 4 * 2 * slot, b, nb);
+        static rdof_cf_t ia[DC_CHUNK], ib[DC_CHUNK];
+        dc_rng = 777;
+        for (int c = 0; c < (int)(2.5 * DC_FS / DC_CHUNK); c++) {
+            rdof_mod_iq(&ma, ia, DC_CHUNK);
+            rdof_mod_iq(&mb, ib, DC_CHUNK);
+            for (int i = 0; i < DC_CHUNK; i++) {
+                ia[i].re = 0.5f * ia[i].re + 0.04f * ib[i].re + 0.004f * dc_noise(); /* 22 dB weaker */
+                ia[i].im = 0.5f * ia[i].im + 0.04f * ib[i].im + 0.004f * dc_noise();
+            }
+            rdof_sdr_rx_process(&rx, ia, DC_CHUNK);
+        }
+        CHECK(d.starts[1] == 1 && d.ends[1] == 1 && d.starts[2] == 1 && d.ends[2] == 1 && !d.json_other,
+              "%+.1f ms: two calls, one a slot: starts %d %d, ends %d %d, other %d", off_ms[o], d.starts[1], d.starts[2],
+              d.ends[1], d.ends[2], d.json_other);
+        CHECK(d.family[1][RDOF_FAMILY_MS] == na && d.family[2][RDOF_FAMILY_MS] == nb,
+              "%+.1f ms: every burst on its slot: %d of %d, %d of %d", off_ms[o], d.family[1][RDOF_FAMILY_MS], na,
+              d.family[2][RDOF_FAMILY_MS], nb);
+        rdof_mod_free(&ma);
+        rdof_mod_free(&mb);
+        rdof_sdr_rx_free(&rx);
+    }
 }
 
 /* The SDR modem on its own: DCDM asked for and offered, both slots' space, slot 1 data taken. */
@@ -1494,6 +1541,7 @@ int main(void)
 #endif
 #if RDOF_FEATURE_REPEATER && RDOF_FEATURE_SDR_RECEIVER
     test_dcdm_receive();
+    test_ms_two_radios();
     test_dcdm_modem();
     test_dcdm_e2e();
 #endif
