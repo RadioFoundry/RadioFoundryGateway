@@ -1791,12 +1791,15 @@ static void on_burst(void *ctx, int c, const rdof_sdr_burst_t *b, double t)
 static bool muted(void *ctx, int64_t p) { return rdof_sdrmodem_muted_at(&R.m, p); }
 /* Our own transmission heard back (half duplex): on the channel it went out on, or its image, within its span on
  * the air (60 ms either side: a burst's length and the loop's delay). Not passed on: a monitored channel's peer
- * would send the network's call back to it. */
+ * would send the network's call back to it. The bench's line protocol still gets it: it watches the air. */
 static bool echo_drop(void *ctx, int c, const rdof_sdr_burst_t *b)
 {
     if (R.full || (c != R.echo_ch && c != R.echo_img) || c < 0)
         return false;
-    return b->position > R.echo_from - 2880 && b->position < R.echo_to + 2880;
+    if (b->position <= R.echo_from - 2880 || b->position >= R.echo_to + 2880)
+        return false;
+    bench_burst(c, b);
+    return true;
 }
 /* the inbound slot by timing: the radio's RX channel only (a monitored channel keeps its own CACH) */
 static int relabel(void *ctx, int c, const rdof_sdr_burst_t *b) { return c ? 0 : rdof_sdrmodem_inbound(&R.m, b); }
