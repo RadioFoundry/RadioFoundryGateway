@@ -21,7 +21,7 @@
  *   rdofradio DEVICE --allow-tx --rx MHZ [--tx MHZ] [--duplex full|half] [--cc CC] [-r RATE] [--bw MHZ]
  *             [--tx-gain DB] [--tx-lo MHZ] [--gain DB] [--center MHZ] [--monitor] [--tx-offset S]
  *             [--parrot ID] [--stream ARGS] [--seconds S] [--bursts] [--quiet] [-v] [--web [ADDR:]PORT]
- *             [--last-exit FILE] [--fft builtin|pffft] [--bench [ADDR:]PORT]
+ *             [--last-exit FILE] [--fft builtin|pffft] [--bench [ADDR:]PORT] [--bench-tx MHZ,...]
  *   rdofradio DEVICE --allow-tx --config FILE [--clock-state FILE] [--set-os-clock] [the device's flags as above]
  *   rdofradio DEVICE --allow-tx --split-tx PORT [--baud N] [--split-power-cap N] --rx MHZ --tx MHZ [--cc CC] [...]
  *
@@ -31,7 +31,9 @@
  * channelizer's FFT, pffft when it's built in (RDOF_PFFFT). --last-exit FILE: where a supervisor records how the
  * last run ended (rdof_hostweb_last_exit; the Pluto bundle's run.sh): the page's crash card. --bench serves the
  * bench's line protocol (docs/spec/bench-api.md section 14) on PORT (7373 by convention), every interface unless
- * ADDR is given: the receiver's bursts and wideband captures for tools/bench/rfgbench.py.
+ * ADDR is given: the receiver's bursts and wideband captures for tools/bench/rfgbench.py, and its transmit jobs
+ * (bench_tx's voice, csbk, data) on the --bench-tx frequencies, at --tx-gain, in the transceiver's place while
+ * they run (not in a duplex repeater).
  *
  * --split-tx PORT: a split duplex repeater (docs/spec/repeater.md): a RadioFoundry radio on PORT (its hotspot, with
  * the split duplex extension) transmits, and the SDR, opened receive only, is the RX half. Any receiver does, an
@@ -76,6 +78,7 @@
 
 #include "rdof/benchline.h"
 #include "rdof/benchnet.h"
+#include "rdof/benchtx.h"
 #include "rdof/hbpeer.h"
 #include "rdof/layer2.h"
 #include "rdof/modem.h"
@@ -344,7 +347,7 @@ static void usage(void)
             "usage: rdofradio DEVICE --allow-tx --rx MHZ [--tx MHZ] [--duplex full|half] [--cc CC] [-r RATE] [--bw MHZ]\n"
             "                 [--tx-gain DB] [--tx-lo MHZ] [--gain DB] [--center MHZ] [--monitor] [--tx-offset S]\n"
             "                 [--parrot ID] [--stream ARGS] [--seconds S] [--bursts] [--quiet] [-v] [--web [ADDR:]PORT]\n"
-            "                 [--last-exit FILE] [--fft builtin|pffft] [--bench [ADDR:]PORT]\n"
+            "                 [--last-exit FILE] [--fft builtin|pffft] [--bench [ADDR:]PORT] [--bench-tx MHZ,...]\n"
             "       rdofradio DEVICE --allow-tx --config FILE [--clock-state FILE] [--set-os-clock] [the device's flags]\n"
             "       rdofradio DEVICE --allow-tx --split-tx PORT [--baud N] [--split-power-cap N] --rx MHZ --tx MHZ [--cc CC]\n"
             "                 [-r RATE] [--gain DB] [--center MHZ] [--parrot ID] [--seconds S] [-v] [--web [ADDR:]PORT]\n"
@@ -368,8 +371,12 @@ static double mhz(const char *s)
 
 /* ── the modem's io and the client's port: synchronous, one thread ───────── */
 
+static bool bench_modem_reply(const uint8_t *f, size_t n);
+
 static void io_reply(void *ctx, const uint8_t *f, size_t n)
 {
+    if (bench_modem_reply(f, n))
+        return; /* a bench job has the modem */
     if (R.split)
         rdof_split_from_half(&S, RDOF_SPLIT_RX, f, n, now_s()); /* the RX half's reply; split_flush takes it on */
     else
@@ -1294,16 +1301,6 @@ static void bl_window(void *ctx, rdof_bl_window_t *w)
     w->iq_scale_db = 20 * log10(BL.ring.scale > 0 ? BL.ring.scale : 1);
 }
 
-static int bl_freqs(void *ctx, rdof_bl_freq_t *out, int max)
-{
-    int k = 0;
-    for (int c = 0; c < NCH && k < max; c++, k++) {
-        out[k] = (rdof_bl_freq_t){CH[c].freq_hz, c, "", RDOF_BL_CAP_RX | RDOF_BL_CAP_DMR | RDOF_BL_CAP_IQ};
-        snprintf(out[k].id, sizeof out[k].id, "%s", CH[c].id);
-    }
-    return k;
-}
-
 static long bl_iq_read(void *ctx, uint64_t sc, int8_t *out, long n, uint64_t *oldest, uint64_t *next)
 {
     pthread_mutex_lock(&BL.mu);
@@ -1333,7 +1330,184 @@ static void bl_rx_stats(void *ctx, double *seconds, long *overflows, double *cli
     *dropped = 0;
 }
 
-static const char *bl_can_tx(void *ctx) { return "this bench runs no transmit jobs yet"; }
+/* --bench-tx MHZ[,MHZ...]: where the bench's jobs may transmit (none: no transmit jobs). */
+static double bench_tx_mhz[RDOF_BENCHTX_MAX_FREQS];
+static int bench_ntx;
+static double bench_txg; /* --tx-gain: what a job transmits at */
+
+static bool bench_tx_listed(double hz)
+{
+    for (int i = 0; i < bench_ntx; i++)
+        if (fabs(bench_tx_mhz[i] * 1e6 - hz) < 100.0)
+            return true;
+    return false;
+}
+
+static int bl_freqs(void *ctx, rdof_bl_freq_t *out, int max)
+{
+    int k = 0;
+    for (int c = 0; c < NCH && k < max; c++, k++) {
+        out[k] = (rdof_bl_freq_t){.freq_hz = CH[c].freq_hz, .ch = c,
+                                  .caps = RDOF_BL_CAP_RX | RDOF_BL_CAP_DMR | RDOF_BL_CAP_IQ |
+                                          (bench_tx_listed(CH[c].freq_hz) ? RDOF_BL_CAP_TX : 0)};
+        snprintf(out[k].id, sizeof out[k].id, "%s", CH[c].id);
+    }
+    for (int i = 0; i < bench_ntx && k < max; i++) { /* a transmit frequency no channel hears */
+        bool heard = false;
+        for (int c = 0; c < NCH; c++)
+            heard |= fabs(CH[c].freq_hz - bench_tx_mhz[i] * 1e6) < 100.0;
+        if (!heard)
+            out[k++] = (rdof_bl_freq_t){.freq_hz = bench_tx_mhz[i] * 1e6, .ch = -1, .caps = RDOF_BL_CAP_TX};
+    }
+    return k;
+}
+
+static const char *bl_can_tx(void *ctx)
+{
+    if (R.split)
+        return "a split repeater's radio transmits, not the SDR: no transmit jobs here";
+    if (R.full)
+        return "a duplex repeater keeps the transmitter: transmit jobs need --duplex half";
+    if (!bench_ntx)
+        return "no transmit frequencies (--bench-tx)";
+    return NULL;
+}
+
+/* A transmit job: the bench's thread asks (the engine's tx hooks), the main loop does it, since the SDR modem and
+ * the transceiver over it are the main loop's. The transceiver pauses for the job (no polls: the network's calls
+ * wait), rdof_benchtx_t drives the modem in DMO, then the modem is set up again and the transceiver goes on. */
+static struct {
+    pthread_mutex_t mu;     /* all but tx, which is the main loop's */
+    int want;               /* 1 open, 2 close */
+    bool active, ready, failed, idle;
+    char why[120];
+    uint32_t freq;
+    int cc;
+    double asked;
+    rdof_benchtx_item_t in[RDOF_BENCHTX_QUEUE]; /* pushed, not yet in the job's queue */
+    int nin, queued;
+    rdof_benchtx_t tx;
+} BT = {.mu = PTHREAD_MUTEX_INITIALIZER};
+
+static bool bl_tx_open(void *ctx, uint32_t freq, int cc, int power, char *why, size_t cap)
+{
+    pthread_mutex_lock(&BT.mu);
+    const bool busy = BT.want || BT.active;
+    if (!busy) {
+        BT.want = 1, BT.freq = freq, BT.cc = cc, BT.asked = now_s();
+        BT.ready = BT.failed = BT.idle = false;
+        BT.nin = BT.queued = 0;
+    }
+    pthread_mutex_unlock(&BT.mu);
+    if (busy)
+        snprintf(why, cap, "the transmitter is still busy with the last job");
+    else
+        snprintf(why, cap, "--power %d isn't applied: the SDR transmits at --tx-gain %.0f", power, bench_txg);
+    return !busy;
+}
+
+static int bl_tx_space(void *ctx, char *why, size_t cap)
+{
+    pthread_mutex_lock(&BT.mu);
+    int n = BT.failed ? -1 : !BT.ready ? 0 : RDOF_BENCHTX_QUEUE - BT.nin - BT.queued;
+    if (BT.failed)
+        snprintf(why, cap, "%s", BT.why);
+    pthread_mutex_unlock(&BT.mu);
+    return n;
+}
+
+static void bl_tx_push(void *ctx, uint8_t control, const uint8_t burst[33])
+{
+    pthread_mutex_lock(&BT.mu);
+    if (BT.nin < RDOF_BENCHTX_QUEUE) {
+        BT.in[BT.nin].control = control;
+        memcpy(BT.in[BT.nin++].burst, burst, 33);
+        BT.idle = false;
+    }
+    pthread_mutex_unlock(&BT.mu);
+}
+
+static void bl_tx_unkey(void *ctx) {} /* the job's modem unkeys once its queue has gone out */
+
+static bool bl_tx_idle(void *ctx)
+{
+    pthread_mutex_lock(&BT.mu);
+    const bool idle = (BT.ready && !BT.nin && BT.idle) || BT.failed;
+    pthread_mutex_unlock(&BT.mu);
+    return idle;
+}
+
+static void bl_tx_close(void *ctx)
+{
+    pthread_mutex_lock(&BT.mu);
+    BT.want = 2;
+    pthread_mutex_unlock(&BT.mu);
+}
+
+static void bt_to_modem(void *ctx, const uint8_t *b, size_t n) { rdof_sdrmodem_write(&R.m, b, n); }
+static void bt_to_tool(void *ctx, const char *json, size_t n) {}
+static void bt_keying(void *ctx, double start, double seconds, int bursts, const char *why)
+{
+    say("bench: keyed %.2f s, %d bursts (%s)\n", seconds, bursts, why);
+}
+
+/* The modem's replies while a job has it (the main loop's thread, as BT.active's writes). */
+static bool bench_modem_reply(const uint8_t *f, size_t n)
+{
+    if (!BT.active)
+        return false;
+    rdof_benchtx_modem(&BT.tx, f, n, now_s());
+    return true;
+}
+
+/* The main loop's turn (POLL_S): true while a job has the modem (the transceiver isn't polled). */
+static bool bench_tx_poll(double now)
+{
+    if (!BL.bl)
+        return false;
+    pthread_mutex_lock(&BT.mu);
+    if (BT.want == 1 && !BT.active) {
+        if (R.t.has_call && now - BT.asked < 10.0) { /* the transceiver's call ends first */
+            pthread_mutex_unlock(&BT.mu);
+            return false;
+        }
+        BT.want = 0, BT.active = true;
+        const rdof_benchtx_io_t io = {bt_to_modem, bt_to_tool, bt_keying, NULL, NULL};
+        rdof_benchtx_init(&BT.tx, &io, BT.freq, BT.cc, 0, 120.0, now);
+        say("bench: a job has the transmitter: %.4f MHz cc %d\n", BT.freq / 1e6, BT.cc);
+    }
+    if (!BT.active) {
+        pthread_mutex_unlock(&BT.mu);
+        return false;
+    }
+    if (BT.want == 2) { /* the job is over: the modem back to the transceiver */
+        BT.want = 0, BT.nin = 0;
+        pthread_mutex_unlock(&BT.mu);
+        rdof_benchtx_stop(&BT.tx, NULL, "closed", now);
+        pthread_mutex_lock(&BT.mu);
+        BT.active = false;
+        pthread_mutex_unlock(&BT.mu);
+        if (!rdof_modem_start(&R.client, 1) || !rdof_txvr_start(&R.t))
+            say("bench: the transceiver didn't start again: %s\n", R.client.error);
+        else
+            say("bench: the transmitter is the transceiver's again\n");
+        return true;
+    }
+    for (int i = 0; i < BT.nin && BT.tx.qn < RDOF_BENCHTX_QUEUE; i++)
+        BT.tx.q[(BT.tx.qh + BT.tx.qn++) % RDOF_BENCHTX_QUEUE] = BT.in[i];
+    BT.nin = 0;
+    rdof_benchtx_alive(&BT.tx, now); /* the job's connection is its dead-man */
+    rdof_benchtx_tick(&BT.tx, now);
+    BT.ready = BT.tx.state == RDOF_TXS_READY;
+    BT.queued = BT.tx.qn;
+    BT.idle = !BT.tx.keyed && !BT.tx.qn;
+    if (BT.tx.state == RDOF_TXS_DONE && !BT.failed) {
+        BT.failed = true;
+        snprintf(BT.why, sizeof BT.why, "%s", BT.tx.error[0] ? BT.tx.error : "the modem stopped");
+    }
+    pthread_mutex_unlock(&BT.mu);
+    return true;
+}
 
 /* A chunk of the wideband stream, before the receiver: into the history (2.5 s), with the clock's reference. */
 static void bench_feed(const rdof_cf_t *in, int n)
@@ -1364,7 +1538,7 @@ static void bench_burst(int c, const rdof_sdr_burst_t *b)
     o.pos48 = b->position;
     o.t = bl_sc_utc(NULL, (uint64_t)((double)b->position * R.rate / 48000.0));
     o.cfo_hz = (float)b->freq_offset_hz, o.dev_hz = (float)b->deviation_hz, o.level_dbfs = b->b.power_dbfs;
-    o.dt = (int8_t)b->b.dt, o.n = (int8_t)b->b.n, o.slot = (int8_t)b->b.slot, o.family = (int8_t)b->b.family;
+    o.dt = (uint8_t)b->b.dt, o.n = (int8_t)b->b.n, o.slot = (int8_t)b->b.slot, o.family = (int8_t)b->b.family;
     o.cc = (int8_t)b->b.cc, o.sync_errors = (int8_t)b->b.sync_errors;
     memcpy(o.raw, b->b.burst, sizeof o.raw);
     rdof_bl_burst(BL.bl, &o);
@@ -1381,8 +1555,11 @@ static void bench_start(void)
     /* cs8 from a 12-bit ADC (an AD9361 at 1/2048 a step): its low 8 bits, where a bench signal is (a call at
      * -53 dBFS is a few steps); a signal over -24 dBFS clips, and the capture's clip_pct says so */
     BL.ring.scale = 16;
-    static const rdof_bl_platform_t pf = {bl_device, bl_window, bl_freqs, bl_iq_read, NULL, bl_utc, bl_sc_utc,
-                                          bl_rx_stats, bl_can_tx, NULL};
+    static const rdof_bl_platform_t pf = {.device = bl_device, .window = bl_window, .freqs = bl_freqs,
+                                          .iq_read = bl_iq_read, .utc = bl_utc, .sc_utc = bl_sc_utc,
+                                          .rx_stats = bl_rx_stats, .can_tx = bl_can_tx, .tx_open = bl_tx_open,
+                                          .tx_space = bl_tx_space, .tx_push = bl_tx_push, .tx_unkey = bl_tx_unkey,
+                                          .tx_idle = bl_tx_idle, .tx_close = bl_tx_close};
     BL.bl = rdof_bl_new(&pf);
     char err[160];
     BL.net = BL.bl ? rdof_bnet_start(BL.bl, bench_addr, bench_port, now_s, 0, err, sizeof err) : NULL;
@@ -2220,6 +2397,13 @@ int main(int argc, char **argv)
                 v = colon + 1;
             }
             bench_port = atoi(v);
+        } else if (!strcmp(a, "--bench-tx")) {
+            NEXT();
+            for (const char *t = v; *t && bench_ntx < RDOF_BENCHTX_MAX_FREQS;) {
+                bench_tx_mhz[bench_ntx++] = mhz(t) / 1e6;
+                const char *comma = strchr(t, ',');
+                t = comma ? comma + 1 : t + strlen(t);
+            }
 #ifdef RDOF_HOST_WEB
         } else if (!strcmp(a, "--web")) {
             NEXT();
@@ -2534,6 +2718,7 @@ int main(int argc, char **argv)
     }
     double last_web = 0;
 #endif
+    bench_txg = txg;
     bench_start();
     const double t_start = now_s();
     double last_poll = 0, keyed_until = -1;
@@ -2591,7 +2776,7 @@ int main(int argc, char **argv)
             last_poll = now;
             if (R.parrot)
                 rdof_parrot_poll(R.parrot, now);
-            if (!(R.full ? rdof_repeater_poll(&R.r) : rdof_txvr_poll(&R.t)))
+            if (!bench_tx_poll(now) && !(R.full ? rdof_repeater_poll(&R.r) : rdof_txvr_poll(&R.t)))
                 fprintf(stderr, "poll: %s\n", R.client.error);
             net_poll(now);
             mq_poll(now);

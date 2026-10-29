@@ -144,6 +144,12 @@ edits. The bundle's flags keep netclock's state in `/mnt/jffs2/rdof/netclock.sta
 clone (Z7010, 1 GB, Ethernet, SD boot, ADI's v0.38): the web page answers about 25 s after power-on. At `--tx-gain 0`
 (the bundle's default) the start's calibration pulse isn't heard, so the outbound slot timing isn't measured.
 
+**The bench's line protocol:** `--bench [ADDR:]PORT` (the bundle's flags: 7373) serves
+[bench-api.md section 14](spec/bench-api.md) for `tools/bench/rfgbench.py`: the receiver channels' bursts, wideband
+cs8 captures from a 2.5 s history, and `bench_tx` jobs (`voice`, `csbk`, `data`, `listen`). A transmit job needs
+`--bench-tx MHZ[,MHZ...]` (the frequencies it may use) and the half duplex transceiver: it takes the SDR modem from
+the transceiver for its length, at `--tx-gain` (bench_tx's `--power` is noted, not applied).
+
 ### A radio transmits, the SDR receives (split duplex)
 
 `rdofradio DEVICE --allow-tx --split-tx PORT --rx MHZ --tx MHZ` runs a split duplex repeater

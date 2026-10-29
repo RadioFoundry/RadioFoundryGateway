@@ -3,6 +3,9 @@
 /*
  * The bench's line protocol engine (rdof/benchline.h, docs/spec/bench-api.md section 14).
  */
+#if !defined(ESP_PLATFORM) && !defined(_DEFAULT_SOURCE)
+#define _DEFAULT_SOURCE /* glibc: gmtime_r with -std=c11 */
+#endif
 #include "rdof/benchline.h"
 
 #include <math.h>
@@ -11,10 +14,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
+#include "rdof/benchjob.h"
 #include "rdof/jsonp.h"
 
-#define NODES 256
+#define NODES 384
 #define WAIT_MAX_S 900.0       /* a wait with no wait_max */
 #define UNTIL_END_S 0.3        /* bursts --until-end: quiet this long after a burst ends the watch */
 #define SLOT_MS 30.0
@@ -22,11 +27,27 @@
 enum { C_FREE = 0, C_LINE, C_ACTIVE, C_DONE };
 enum { OP_NONE = 0, OP_SESSION, OP_CLAIM, OP_HOLD, OP_RUN, OP_BURSTS, OP_LISTEN, OP_CAPTURE };
 enum { W_NONE = 0, W_MODEM, W_FREQ };
+/* a run's job */
+enum { J_WAIT = 0, J_OPEN, J_SEND, J_DRAIN, J_GAP, J_LISTEN };
+
+typedef struct {
+    rdof_bj_job_t job;
+    uint8_t ambe[RDOF_BL_LINE_MAX / 2];
+    rdof_bj_burst_t *b;       /* the key-up's bursts */
+    int nb, bi, maxb, part, nparts;
+    int state;
+    double until, started, max_s;
+    bool tx_open, listening;
+    rdof_bj_listener_t lis;
+    long id;
+    char note[200], done[200];
+    char esc[7000];           /* an out line, as a JSON string */
+} job_t;
 
 typedef struct {
     int state, op;
-    char line[RDOF_BL_LINE];
-    size_t ln;
+    char *line;
+    size_t ln, lcap;
     bool overlong;
     uint8_t *out;
     size_t ocap, oh, ol;      /* the output: ol bytes from oh */
@@ -56,6 +77,8 @@ typedef struct {
     uint32_t iseq;
     long gaps, clipped, sent_iq;
     double freq_hz, pre_s, gain;
+    /* run */
+    job_t *job;
 } conn_t;
 
 typedef struct {
@@ -87,11 +110,12 @@ struct rdof_bl {
     long qdrops;
     volatile int n_bursts, n_iq;
     /* the request parser */
+    int tx_conn;              /* the run transmitting now, -1 none */
     rdof_jnode_t nodes[NODES];
-    char strbuf[RDOF_BL_LINE + 64];
+    char *strbuf;
     rdof_jdoc_t doc;
     int8_t iq[RDOF_BL_IQ_CHUNK * 2];
-    char tmp[2048];
+    char tmp[8192];
 };
 
 static void lock(rdof_bl_t *bl) { pthread_mutex_lock(&bl->mu); }
@@ -262,7 +286,14 @@ rdof_bl_t *rdof_bl_new(const rdof_bl_platform_t *p)
     bl->p = *p;
     pthread_mutex_init(&bl->mu, NULL);
     bl->holder = -1;
+    bl->tx_conn = -1;
     bl->next_id = 1;
+    bl->strbuf = malloc(RDOF_BL_LINE_MAX + 64);
+    if (!bl->strbuf) {
+        pthread_mutex_destroy(&bl->mu);
+        free(bl);
+        return NULL;
+    }
     for (int s = 0; s < RDOF_BL_SESSIONS; s++)
         bl->s[s].conn = -1;
     return bl;
@@ -272,8 +303,11 @@ void rdof_bl_free(rdof_bl_t *bl)
 {
     if (!bl)
         return;
-    for (int i = 0; i < RDOF_BL_CONNS; i++)
+    for (int i = 0; i < RDOF_BL_CONNS; i++) {
         free(bl->c[i].out);
+        free(bl->c[i].line);
+    }
+    free(bl->strbuf);
     pthread_mutex_destroy(&bl->mu);
     free(bl);
 }
@@ -293,8 +327,11 @@ int rdof_bl_open(rdof_bl_t *bl, double now)
             continue;
         uint8_t *out = c->out;
         size_t ocap = c->ocap;
+        char *line = c->line;
+        size_t lcap = c->lcap;
         memset(c, 0, sizeof *c);
         c->out = out, c->ocap = ocap;
+        c->line = line, c->lcap = lcap;
         if (!c->out || c->ocap != RDOF_BL_OUT) {
             free(c->out);
             c->out = malloc(RDOF_BL_OUT);
@@ -313,6 +350,7 @@ int rdof_bl_open(rdof_bl_t *bl, double now)
 }
 
 static void request(rdof_bl_t *bl, int ci, double now);
+static void job_end(rdof_bl_t *bl, conn_t *c);
 
 void rdof_bl_input(rdof_bl_t *bl, int ci, const char *data, size_t n, double now)
 {
@@ -324,10 +362,19 @@ void rdof_bl_input(rdof_bl_t *bl, int ci, const char *data, size_t n, double now
         if (data[i] == '\n') {
             c->line[c->ln] = 0;
             if (c->overlong)
-                fail(bl, c, "bad_request", "the request is longer than %d bytes", RDOF_BL_LINE - 1);
+                fail(bl, c, "bad_request", "the request is longer than %d bytes", RDOF_BL_LINE_MAX - 1);
             else
                 request(bl, ci, now);
-        } else if (c->ln + 1 < sizeof c->line) {
+        } else if (c->ln + 1 < c->lcap) {
+            c->line[c->ln++] = data[i];
+        } else if (c->lcap < RDOF_BL_LINE_MAX) {
+            const size_t nc = c->lcap ? (c->lcap * 4 > RDOF_BL_LINE_MAX ? RDOF_BL_LINE_MAX : c->lcap * 4) : RDOF_BL_LINE;
+            char *p = realloc(c->line, nc);
+            if (!p) {
+                c->overlong = true;
+                continue;
+            }
+            c->line = p, c->lcap = nc;
             c->line[c->ln++] = data[i];
         } else {
             c->overlong = true;
@@ -352,6 +399,8 @@ void rdof_bl_closed(rdof_bl_t *bl, int ci, double now)
         bl->n_bursts--;
     if (c->op == OP_CAPTURE)
         bl->n_iq--;
+    if (c->job)
+        job_end(bl, c); /* a transmission unkeys */
     c->state = C_FREE;
     c->op = OP_NONE;
     c->ol = c->oh = 0;
@@ -857,10 +906,294 @@ static void op_capture(rdof_bl_t *bl, conn_t *c, int root, double now)
          c->pre_s, w.fs);
 }
 
+/* ── run: the bench tools' jobs (section 14.3) ────────────────────────────── */
+
+static double utc_now(const rdof_bl_t *bl, double now) { return bl->p.utc ? bl->p.utc(bl->p.ctx) : now; }
+
+/* A line of the tool's log (Python logging's "%(asctime)s %(message)s") on err. */
+static void run_log(rdof_bl_t *bl, conn_t *c, double now, const char *fmt, ...)
+{
+    char msg[300], line[340];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof msg, fmt, ap);
+    va_end(ap);
+    const double t = utc_now(bl, now);
+    const time_t s = (time_t)t;
+    struct tm tm;
+    gmtime_r(&s, &tm);
+    char ts[32];
+    strftime(ts, sizeof ts, "%Y-%m-%d %H:%M:%S", &tm);
+    snprintf(line, sizeof line, "%s,%03d %s", ts, (int)((t - (double)s) * 1000) % 1000, msg);
+    jstr(line, c->job->esc, sizeof c->job->esc);
+    emit(bl, c, "{\"err\":%s}", c->job->esc);
+}
+
+static void run_exit(rdof_bl_t *bl, conn_t *c, int code, const char *killed)
+{
+    if (killed) {
+        char q[200];
+        jstr(killed, q, sizeof q);
+        emit(bl, c, "{\"exit\":%d,\"killed\":%s}", code, q);
+    } else {
+        emit(bl, c, "{\"exit\":%d}", code);
+    }
+    c->state = C_DONE;
+}
+
+typedef struct {
+    rdof_bl_t *bl;
+    conn_t *c;
+} run_ctx_t;
+
+/* A record of the listener: an out line. */
+static void run_out(void *ctx, const char *line)
+{
+    run_ctx_t *r = ctx;
+    jstr(line, r->c->job->esc, sizeof r->c->job->esc);
+    emit(r->bl, r->c, "{\"out\":%s}", r->c->job->esc);
+}
+
+/* A file the job writes (--ambe-out): its bytes go to the client, the output buffer grown to hold them. */
+static void run_file(void *ctx, const char *name, const uint8_t *b, size_t n)
+{
+    run_ctx_t *r = ctx;
+    conn_t *c = r->c;
+    char q[160], hdr[220];
+    jstr(name, q, sizeof q);
+    const int hn = snprintf(hdr, sizeof hdr, "{\"file\":%s,\"bytes\":%zu}\n", q, n);
+    if (room(c) < (size_t)hn + n) {
+        const size_t need = c->ol + (size_t)hn + n + RDOF_BL_OUT;
+        uint8_t *p = malloc(need);
+        if (!p) {
+            run_log(r->bl, c, 0, "%s: no memory for %zu bytes", name, n);
+            return;
+        }
+        memcpy(p, c->out + c->oh, c->ol);
+        free(c->out);
+        c->out = p, c->ocap = need, c->oh = 0;
+    }
+    put_bytes(c, hdr, (size_t)hn);
+    put_bytes(c, b, n);
+}
+
+static void job_end(rdof_bl_t *bl, conn_t *c)
+{
+    job_t *J = c->job;
+    if (!J)
+        return;
+    if (J->tx_open && bl->p.tx_close)
+        bl->p.tx_close(bl->p.ctx);
+    if (bl->tx_conn >= 0 && &bl->c[bl->tx_conn] == c)
+        bl->tx_conn = -1;
+    if (J->listening)
+        bl->n_bursts--;
+    rdof_bj_listen_free(&J->lis);
+    free(J->b);
+    free(J);
+    c->job = NULL;
+}
+
+static void run_listen(rdof_bl_t *bl, conn_t *c, double now, double secs)
+{
+    job_t *J = c->job;
+    rdof_bj_listen_init(&J->lis, J->job.json, J->job.ambe_out[0] != 0);
+    J->listening = true;
+    bl->n_bursts++;
+    J->until = now + secs;
+    J->state = J_LISTEN;
+}
+
+static void op_run(rdof_bl_t *bl, conn_t *c, int ci, int root, double now)
+{
+    (void)ci;
+    if (!req_session(bl, c, root, false))
+        return;
+    const int jo = jget(bl, root, "job");
+    const rdof_jnode_t *jn = rdof_jnode(&bl->doc, jo);
+    if (!jn || jn->type != RDOF_JOBJ) {
+        fail(bl, c, "unsupported", "the gateway runs the bench tools' jobs (bench_tx.py), not programs");
+        return;
+    }
+    job_t *J = calloc(1, sizeof *J);
+    if (!J) {
+        fail(bl, c, "busy", "no memory for the job");
+        return;
+    }
+    char why[200];
+    if (!rdof_bj_parse(&bl->doc, jo, &J->job, J->ambe, sizeof J->ambe, why, sizeof why)) {
+        free(J);
+        fail(bl, c, "unsupported", "%s", why);
+        return;
+    }
+    const rdof_bj_job_t *j = &J->job;
+    const double mhz = j->freq_mhz;
+    const bool tx = j->cmd != RDOF_BJ_LISTEN;
+    const bool hears = !tx || j->listen_after > 0;
+    const int k = freq_index(bl, j->freq_mhz);
+    if (hears && (k < 0 || bl->f[k].ch < 0 || !(bl->f[k].caps & RDOF_BL_CAP_DMR))) {
+        free(J);
+        fail(bl, c, "refused", "no receiver channel decodes DMR at %.4f MHz on this bench", mhz);
+        return;
+    }
+    if (tx) {
+        const char *no = !bl->p.tx_open ? "this bench runs no transmit jobs" : bl->p.can_tx ? bl->p.can_tx(bl->p.ctx) : NULL;
+        if (no) {
+            free(J);
+            fail(bl, c, "unsupported", "%s", no);
+            return;
+        }
+        if (k < 0 || !(bl->f[k].caps & RDOF_BL_CAP_TX)) {
+            free(J);
+            fail(bl, c, "refused", "%.4f MHz isn't a transmit frequency of this bench", mhz);
+            return;
+        }
+        J->maxb = rdof_bj_max_bursts(j);
+        J->b = J->maxb > 0 ? malloc(sizeof *J->b * (size_t)J->maxb) : NULL;
+        if (!J->b) {
+            free(J);
+            fail(bl, c, "busy", "no memory for the job's bursts");
+            return;
+        }
+        J->nparts = rdof_bj_parts(j);
+    }
+    c->job = J;
+    c->op = OP_RUN;
+    c->ch = k >= 0 ? bl->f[k].ch : -1;
+    J->max_s = jnum(bl, root, "max_s", 0);
+    J->id = ++bl->next_seq;
+    if (tx) {
+        c->nfreqs = 1;
+        c->freqs[0] = j->freq_mhz;
+        wait_start(bl, c, W_MODEM, root, now);
+        if (c->expect_s <= 0)
+            c->expect_s = J->nparts * (rdof_bj_gap(j) + 0.06 * J->maxb) + 1.0;
+        return;
+    }
+    c->state = C_ACTIVE;
+    J->started = now;
+    emit(bl, c, "{\"started\":%ld}", J->id);
+    run_log(bl, c, now, "listening on %.4f MHz cc %d for %.0f s", j->freq_mhz, j->cc, j->seconds);
+    run_listen(bl, c, now, j->seconds);
+}
+
+/* The modem is the job's: key up. */
+static void run_granted(rdof_bl_t *bl, conn_t *c, int ci, double now)
+{
+    job_t *J = c->job;
+    bl->tx_conn = ci;
+    J->started = now;
+    J->state = J_OPEN;
+    emit(bl, c, "{\"started\":%ld}", J->id);
+}
+
+static void run_heard(rdof_bl_t *bl, conn_t *c, const rdof_bl_burst_t *b)
+{
+    run_ctx_t r = {bl, c};
+    rdof_bj_listen_burst(&c->job->lis, b, run_out, &r);
+}
+
+/* The next key-up's bursts: false when the job ended (an error). */
+static bool run_build(rdof_bl_t *bl, conn_t *c, double now)
+{
+    job_t *J = c->job;
+    char err[200];
+    J->note[0] = J->done[0] = 0;
+    J->nb = rdof_bj_build(&J->job, J->part, J->b, J->maxb, J->note, J->done, sizeof J->note, err, sizeof err);
+    if (J->nb < 0) {
+        run_log(bl, c, now, "%s", err);
+        run_exit(bl, c, 1, NULL);
+        return false;
+    }
+    if (J->note[0])
+        run_log(bl, c, now, "%s", J->note);
+    J->bi = 0;
+    J->state = J_SEND;
+    return true;
+}
+
+static void tick_run(rdof_bl_t *bl, conn_t *c, int ci, double now)
+{
+    (void)ci;
+    job_t *J = c->job;
+    const rdof_bj_job_t *j = &J->job;
+    char why[200] = "";
+    if (J->max_s > 0 && now - J->started > J->max_s) {
+        char k[80];
+        snprintf(k, sizeof k, "the job ran past max_s %.0f s", J->max_s);
+        run_exit(bl, c, -9, k);
+        return;
+    }
+    switch (J->state) {
+    case J_OPEN: {
+        static const char *const CMDS[] = {"", "voice", "csbk", "data", "listen"};
+        if (!bl->p.tx_open(bl->p.ctx, (uint32_t)lround(j->freq_mhz * 1e6), j->cc, j->power, why, sizeof why)) {
+            run_log(bl, c, now, "can't transmit: %s", why[0] ? why : "the transmitter is busy");
+            run_exit(bl, c, 1, NULL);
+            return;
+        }
+        J->tx_open = true;
+        if (why[0])
+            run_log(bl, c, now, "%s", why);
+        run_log(bl, c, now, "%s on %.4f MHz cc %d", CMDS[j->cmd], j->freq_mhz, j->cc);
+        J->part = 0;
+        run_build(bl, c, now);
+        break;
+    }
+    case J_SEND: {
+        int n = bl->p.tx_space(bl->p.ctx, why, sizeof why);
+        if (n < 0) {
+            run_log(bl, c, now, "transmit failed: %s", why);
+            run_exit(bl, c, 1, NULL);
+            return;
+        }
+        for (; n > 0 && J->bi < J->nb; n--, J->bi++)
+            bl->p.tx_push(bl->p.ctx, J->b[J->bi].control, J->b[J->bi].burst);
+        if (J->bi == J->nb) {
+            bl->p.tx_unkey(bl->p.ctx);
+            J->state = J_DRAIN;
+        }
+        break;
+    }
+    case J_DRAIN:
+        if (!bl->p.tx_idle(bl->p.ctx))
+            break;
+        run_log(bl, c, now, "sent %d bursts", J->nb);
+        if (J->done[0])
+            run_log(bl, c, now, "%s", J->done);
+        if (++J->part < J->nparts) {
+            J->until = now + rdof_bj_gap(j);
+            J->state = J_GAP;
+            break;
+        }
+        bl->p.tx_close(bl->p.ctx);
+        J->tx_open = false;
+        bl->tx_conn = -1;
+        if (j->listen_after > 0) {
+            run_log(bl, c, now, "listening on %.4f MHz for %.0f s", j->freq_mhz, j->listen_after);
+            run_listen(bl, c, now, j->listen_after);
+        } else {
+            run_exit(bl, c, 0, NULL);
+        }
+        break;
+    case J_GAP:
+        if (now >= J->until)
+            run_build(bl, c, now);
+        break;
+    case J_LISTEN:
+        if (now >= J->until) {
+            run_ctx_t r = {bl, c};
+            rdof_bj_listen_summary(&J->lis, j->ambe_out, run_out, run_file, &r);
+            run_exit(bl, c, 0, NULL);
+        }
+        break;
+    }
+}
+
 static void request(rdof_bl_t *bl, int ci, double now)
 {
     conn_t *c = &bl->c[ci];
-    bl->doc = (rdof_jdoc_t){.nodes = bl->nodes, .max = NODES, .buf = bl->strbuf, .cap = sizeof bl->strbuf};
+    bl->doc = (rdof_jdoc_t){.nodes = bl->nodes, .max = NODES, .buf = bl->strbuf, .cap = RDOF_BL_LINE_MAX + 64};
     const int root = rdof_jparse(&bl->doc, c->line, c->ln);
     const rdof_jnode_t *r = rdof_jnode(&bl->doc, root);
     if (!r || r->type != RDOF_JOBJ) {
@@ -890,7 +1223,9 @@ static void request(rdof_bl_t *bl, int ci, double now)
         op_bursts(bl, c, root, now, true);
     else if (!strcmp(op, "capture"))
         op_capture(bl, c, root, now);
-    else if (!strcmp(op, "run") || !strcmp(op, "trigger") || !strcmp(op, "activity") || !strcmp(op, "burstlog") ||
+    else if (!strcmp(op, "run"))
+        op_run(bl, c, ci, root, now);
+    else if (!strcmp(op, "trigger") || !strcmp(op, "activity") || !strcmp(op, "burstlog") ||
              !strcmp(op, "bridge"))
         fail(bl, c, "unsupported", "this bench has no %s yet", op);
     else
@@ -971,8 +1306,16 @@ static void tick_waits(rdof_bl_t *bl, double now)
             }
         } else if (c->wait == W_MODEM) {
             const bool mine = bl->holder >= 0 && bl->holder == c->sess;
-            if ((bl->holder < 0 && modem_next(bl) == i) || mine) {
+            int blocker = -1;
+            for (int f = 0; f < c->nfreqs && blocker < 0; f++) {
+                const int s = claimed_by(bl, c->freqs[f]);
+                if (s >= 0 && s != c->sess)
+                    blocker = s;
+            }
+            if (((bl->holder < 0 && modem_next(bl) == i) || mine) && bl->tx_conn < 0 && blocker < 0) {
                 granted(bl, c, now, "modem");
+                if (c->op == OP_RUN)
+                    run_granted(bl, c, i, now);
                 if (c->op == OP_HOLD) {
                     session_t *s = &bl->s[c->sess];
                     s->hold = (int)(++bl->next_seq);
@@ -1000,7 +1343,7 @@ static const char *kind_name(int dt, int n, char tmp[12])
 {
     static const char *const names[] = {"PI_HDR", "VLC_HDR", "TERM_LC", "CSBK", "MBC_HDR", "MBC_CONT",
                                         "DATA_HDR", "R1/2", "R3/4", "IDLE", "R1", "USBD"};
-    if ((uint8_t)dt == 0x10 || (uint8_t)dt == 0x11) {
+    if (dt == RDOF_BL_VOICE_SYNC || dt == RDOF_BL_VOICE) {
         snprintf(tmp, 12, "VOICE_%c", 'A' + (n >= 0 && n < 6 ? n : 0));
         return tmp;
     }
@@ -1013,11 +1356,11 @@ static const char *kind_name(int dt, int n, char tmp[12])
 /* 0-7 BS/MS/TS1/TS2 voice/data, 8 EMB */
 static int sync_index(int family, int dt)
 {
-    if ((uint8_t)dt == 0x11)
+    if (dt == RDOF_BL_VOICE)
         return 8;
     if (family < 0 || family > 3)
         return -1;
-    return family * 2 + ((uint8_t)dt == 0x10 ? 0 : 1);
+    return family * 2 + (dt == RDOF_BL_VOICE_SYNC ? 0 : 1);
 }
 
 static const char *const SYNC_NAMES[9] = {"BS_VOICE", "BS_DATA", "MS_VOICE", "MS_DATA", "TS1_VOICE",
@@ -1025,7 +1368,7 @@ static const char *const SYNC_NAMES[9] = {"BS_VOICE", "BS_DATA", "MS_VOICE", "MS
 
 static void burst_out(rdof_bl_t *bl, conn_t *c, const rdof_bl_burst_t *b, double now)
 {
-    const bool voice = (uint8_t)b->dt == 0x10 || (uint8_t)b->dt == 0x11;
+    const bool voice = b->dt == RDOF_BL_VOICE_SYNC || b->dt == RDOF_BL_VOICE;
     if (c->cc >= 0 && voice && b->cc >= 0 && b->cc != c->cc)
         return;
     if (isnan(c->first_t))
@@ -1049,7 +1392,7 @@ static void burst_out(rdof_bl_t *bl, conn_t *c, const rdof_bl_burst_t *b, double
              "\"dt\":%d,\"n\":%d,\"cc\":%d,\"cfo_hz\":%.1f,\"level_dbfs\":%.1f,\"dev_hz\":%.1f,\"freq\":%.1f,"
              "\"raw_hex\":\"%s\"}}",
              b->t, rel, prev, gn, gerr, gn % 2 == 0 ? 'A' : 'B', si >= 0 ? SYNC_NAMES[si] : "?",
-             b->sync_errors, b->slot, voice ? "true" : "false", kind, (uint8_t)b->dt, b->n, b->cc, b->cfo_hz,
+             b->sync_errors, b->slot, voice ? "true" : "false", kind, b->dt, b->n, b->cc, b->cfo_hz,
              b->level_dbfs, b->dev_hz, c->freq_hz, hex);
     if (!emit(bl, c, "%s", line)) {
         c->dropped++;
@@ -1063,7 +1406,7 @@ static void burst_out(rdof_bl_t *bl, conn_t *c, const rdof_bl_burst_t *b, double
     c->lvl_max = fmax(c->lvl_max, b->level_dbfs);
     if (voice)
         c->kinds[12 + (b->n >= 0 && b->n < 6 ? b->n : 0)]++;
-    else if (b->dt >= 0 && b->dt < 12)
+    else if (b->dt < 12)
         c->kinds[b->dt]++;
     if (si >= 0)
         c->syncs[si]++;
@@ -1080,7 +1423,7 @@ static void bursts_done(rdof_bl_t *bl, conn_t *c, const char *reason, double now
     for (int i = 0; i < 18; i++)
         if (c->kinds[i] && k < sizeof kinds)
             k += (size_t)snprintf(kinds + k, sizeof kinds - k, "%s\"%s\":%d", k ? "," : "",
-                                  i < 12 ? kind_name(i, 0, kt) : kind_name(0x11, i - 12, kt), c->kinds[i]);
+                                  i < 12 ? kind_name(i, 0, kt) : kind_name(RDOF_BL_VOICE, i - 12, kt), c->kinds[i]);
     for (int i = 0; i < 9; i++)
         if (c->syncs[i] && m < sizeof syncs)
             m += (size_t)snprintf(syncs + m, sizeof syncs - m, "%s\"%s\":%d", m ? "," : "", SYNC_NAMES[i], c->syncs[i]);
@@ -1105,8 +1448,11 @@ static void tick_bursts(rdof_bl_t *bl, double now)
         for (int i = 0; i < RDOF_BL_CONNS; i++) {
             conn_t *c = &bl->c[i];
             if (c->state == C_ACTIVE && (c->op == OP_BURSTS || c->op == OP_LISTEN) && c->ch == b->ch &&
-                (uint8_t)b->dt != 9 /* idle */)
+                b->dt != 9 /* idle */)
                 burst_out(bl, c, b, now);
+            else if (c->state == C_ACTIVE && c->op == OP_RUN && c->job && c->job->listening && c->ch == b->ch &&
+                     b->dt != 9)
+                run_heard(bl, c, b);
         }
         bl->qh = (bl->qh + 1) % RDOF_BL_BURSTQ;
         bl->qn--;
@@ -1181,6 +1527,8 @@ void rdof_bl_tick(rdof_bl_t *bl, double now)
         conn_t *c = &bl->c[i];
         if (c->state == C_ACTIVE && c->op == OP_CAPTURE)
             tick_capture(bl, c, now);
+        else if (c->state == C_ACTIVE && c->op == OP_RUN && c->job && c->wait == W_NONE)
+            tick_run(bl, c, i, now);
         else if (c->state == C_ACTIVE && c->op == OP_SESSION && c->ends > 0 && now >= c->ends && c->sess >= 0)
             session_end(bl, c->sess, "max_s");
         else if (c->state == C_LINE && now - c->opened > 30.0)
@@ -1192,6 +1540,8 @@ void rdof_bl_tick(rdof_bl_t *bl, double now)
                 bl->n_bursts--;
             c->op = OP_NONE; /* counted out once */
         }
+        if (c->state == C_DONE && c->job)
+            job_end(bl, c);
     }
     unlock(bl);
 }

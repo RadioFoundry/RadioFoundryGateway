@@ -5,6 +5,7 @@
 #define _DEFAULT_SOURCE
 #define _DARWIN_C_SOURCE
 #include <math.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -69,9 +70,93 @@ static double f_utc(void *ctx) { return 1.8e9; }
 static double f_sc_utc(void *ctx, uint64_t sc) { return 1.8e9 + (double)sc / 768000; }
 static const char *f_can_tx(void *ctx) { return can_tx ? NULL : "no bench.tx"; }
 
+static pthread_mutex_t txmu = PTHREAD_MUTEX_INITIALIZER; /* serve: the server's thread and the loop */
+/* The fake transmitter: a 4-burst queue that airs a burst every 60 ms of the test's clock (tx_air). */
+static struct {
+    bool open, unkeyed;
+    uint32_t freq;
+    int cc, power;
+    uint8_t q[4][34];
+    int qn;
+    double next;
+    uint8_t aired[600][34];
+    int naired, keyups;
+} tx;
+static bool f_tx_open(void *ctx, uint32_t f, int cc, int power, char *why, size_t cap)
+{
+    if (tx.open) {
+        snprintf(why, cap, "already open");
+        return false;
+    }
+    tx.open = true, tx.freq = f, tx.cc = cc, tx.power = power, tx.qn = 0, tx.unkeyed = false;
+    snprintf(why, cap, "power %d noted", power);
+    return true;
+}
+static int f_tx_space(void *ctx, char *why, size_t cap)
+{
+    pthread_mutex_lock(&txmu);
+    const int n = 4 - tx.qn;
+    pthread_mutex_unlock(&txmu);
+    return n;
+}
+static void f_tx_push(void *ctx, uint8_t control, const uint8_t b[33])
+{
+    pthread_mutex_lock(&txmu);
+    if (tx.qn == 0 && tx.unkeyed)
+        tx.keyups++;
+    tx.unkeyed = false;
+    tx.q[tx.qn][0] = control;
+    memcpy(tx.q[tx.qn++] + 1, b, 33);
+    pthread_mutex_unlock(&txmu);
+}
+static void f_tx_unkey(void *ctx) { tx.unkeyed = true; }
+static bool f_tx_idle(void *ctx)
+{
+    pthread_mutex_lock(&txmu);
+    const bool idle = tx.qn == 0 && tx.unkeyed;
+    pthread_mutex_unlock(&txmu);
+    return idle;
+}
+static void f_tx_close(void *ctx) { tx.open = false; }
+/* Air what's due by now (outside the engine's lock): the bursts, back to the engine as heard on channel ch. */
+static void tx_air(rdof_bl_t *bl, double now, int ch)
+{
+    for (;;) {
+        pthread_mutex_lock(&txmu);
+        if (!tx.qn || now < tx.next) {
+            pthread_mutex_unlock(&txmu);
+            return;
+        }
+        uint8_t q[34];
+        memcpy(q, tx.q[0], 34);
+        if (tx.naired < 600)
+            memcpy(tx.aired[tx.naired++], q, 34);
+        memmove(tx.q[0], tx.q[1], sizeof tx.q[0] * 3);
+        tx.qn--;
+        tx.next = now + 0.06;
+        const int cc = tx.cc;
+        pthread_mutex_unlock(&txmu);
+        rdof_bl_burst_t b = {.t = 1.8e9 + now, .ch = ch, .cc = (int8_t)cc, .family = 0};
+        const uint8_t control = q[0];
+        if (control & 0x40) {
+            b.dt = control & 0x0F;
+        } else if (control & 0x20) {
+            b.dt = RDOF_BL_VOICE_SYNC;
+        } else {
+            b.dt = RDOF_BL_VOICE;
+            b.n = (int8_t)(control & 0x0F);
+        }
+        memcpy(b.raw, q + 1, 33);
+        if (ch >= 0)
+            rdof_bl_burst(bl, &b);
+    }
+}
+
 static const rdof_bl_platform_t PLAT = {.device = f_device, .window = f_window, .freqs = f_freqs,
                                         .iq_read = f_iq_read, .utc = f_utc, .sc_utc = f_sc_utc,
-                                        .can_tx = f_can_tx};
+                                        .can_tx = f_can_tx, .tx_open = f_tx_open, .tx_space = f_tx_space,
+                                        .tx_push = f_tx_push, .tx_unkey = f_tx_unkey, .tx_idle = f_tx_idle,
+                                        .tx_close = f_tx_close};
 
 /* ── helpers ── */
 
@@ -88,7 +173,7 @@ static size_t drain(rdof_bl_t *bl, int c, char *out, size_t cap)
 static int ask(rdof_bl_t *bl, const char *req, double now)
 {
     const int c = rdof_bl_open(bl, now);
-    char line[1024];
+    static char line[8192];
     snprintf(line, sizeof line, "%s\n", req);
     rdof_bl_input(bl, c, line, strlen(line), now);
     return c;
@@ -242,7 +327,7 @@ static void test_ops(void)
     CHECK(rdof_bl_wants_bursts(bl), "bursts are wanted");
     for (int i = 0; i < 4; i++) {
         rdof_bl_burst_t b = {.ch = i < 3 ? 1 : 2, .t = 1.8e9 + 0.06 * i, .cfo_hz = 10.0f * i, .level_dbfs = -40,
-                             .dt = i == 0 ? 1 : 0x10, .n = 0, .slot = 1, .family = 1, .cc = 2};
+                             .dt = i == 0 ? 1 : RDOF_BL_VOICE_SYNC, .n = 0, .slot = 1, .family = 1, .cc = 2};
         b.raw[0] = (uint8_t)i;
         rdof_bl_burst(bl, &b);
     }
@@ -341,6 +426,111 @@ static void test_ops(void)
     for (int k = 0; k < RDOF_BL_CONNS; k++)
         rdof_bl_closed(bl, cs[k], now);
     rdof_bl_ring_free(&ring);
+    rdof_bl_free(bl);
+}
+
+/* ── run: bench_tx jobs on the fake transmitter, heard back by a listen job ── */
+
+static size_t drain_all(rdof_bl_t *bl, int c, char *out, size_t cap, size_t have)
+{
+    size_t k;
+    while (have + 1 < cap && (k = rdof_bl_output(bl, c, (uint8_t *)out + have, cap - 1 - have)) > 0)
+        have += k;
+    out[have] = 0;
+    return have;
+}
+
+static int count(const char *text, const char *needle)
+{
+    int n = 0;
+    for (const char *p = text; (p = strstr(p, needle)) != NULL; p += strlen(needle))
+        n++;
+    return n;
+}
+
+static void test_run(void)
+{
+    static char out[1 << 20], lis[1 << 20];
+    rdof_bl_t *bl = rdof_bl_new(&PLAT);
+    double now = 2000;
+    memset(&tx, 0, sizeof tx);
+
+    /* refused: not a TX frequency, no job, an option it can't read */
+    int c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"freq\":438.0625}}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"refused\""), "not a TX frequency: %s", out);
+    rdof_bl_closed(bl, c, now);
+    c = ask(bl, "{\"op\":\"run\",\"argv\":[\"ls\"]}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"unsupported\""), "no job: %s", out);
+    rdof_bl_closed(bl, c, now);
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"freq\":438.1125,"
+                "\"family\":\"xx\"}}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"unsupported\"") && strstr(out, "--family"), "a bad option: %s", out);
+    rdof_bl_closed(bl, c, now);
+
+    /* a listen job on the TX frequency's channel (1), then two voice calls with a talker alias heard by it */
+    const int cl = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"listen\",\"freq\":438.1125,"
+                           "\"seconds\":5,\"json\":true}}", now);
+    const int ct = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"freq\":438.1125,\"cc\":2,"
+                           "\"power\":32,\"src\":9990301,\"dst\":9990199,\"private\":true,\"superframes\":2,"
+                           "\"calls\":2,\"talker_alias\":\"BENCH\"}}", now);
+    /* a second voice job waits for the first */
+    const int cw = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"csbk\",\"freq\":438.1125,"
+                           "\"count\":3}}", now);
+    size_t no = 0, nl = 0, nw = 0;
+    static char ow[65536];
+    bool overlap = false;
+    for (int i = 0; i < 700 && !(rdof_bl_finished(bl, ct) && rdof_bl_finished(bl, cw) && rdof_bl_finished(bl, cl)); i++) {
+        now += 0.01;
+        rdof_bl_tick(bl, now);
+        tx_air(bl, now, 1);
+        no = drain_all(bl, ct, out, sizeof out, no);
+        nl = drain_all(bl, cl, lis, sizeof lis, nl);
+        nw = drain_all(bl, cw, ow, sizeof ow, nw);
+        overlap |= strstr(ow, "\"started\"") && !strstr(out, "\"exit\"");
+    }
+    CHECK(is_json_lines(out) && strstr(out, "\"started\"") && strstr(out, "\"exit\":0"), "the voice job: %.300s", out);
+    CHECK(strstr(out, "voice on 438.1125 MHz cc 2") && strstr(out, "power 32 noted"), "its log: %.600s", out);
+    CHECK(count(out, "call from ") == 2 && strstr(out, "call 2 from 9990302 done"), "two calls: %.900s", out);
+    CHECK(tx.cc == 2 && tx.freq == 438112500 && tx.power == 255, "the last job opened at %u cc %d power %d", tx.freq,
+          tx.cc, tx.power);
+    CHECK(strstr(ow, "\"state\":\"queued\"") && strstr(ow, "\"exit\":0") && !overlap, "the csbk job waited: %s", ow);
+    CHECK(strstr(ow, "csbk: 3 burst(s) sent"), "the csbk job's log: %s", ow);
+    CHECK(!tx.open, "the transmitter is given back");
+    CHECK(is_json_lines(lis) && strstr(lis, "\"exit\":0"), "the listen job: %.300s", lis);
+    CHECK(strstr(lis, "\\\"src\\\": 9990301") || strstr(lis, "9990301"), "heard the first call: %.600s", lis);
+    CHECK(strstr(lis, "9990302") && strstr(lis, "BENCH"), "heard the second call and its alias: %.2000s",
+          lis + (nl > 2000 ? nl - 2000 : 0));
+    CHECK(!rdof_bl_wants_bursts(bl), "no bursts wanted after the jobs");
+    rdof_bl_closed(bl, cl, now);
+    rdof_bl_closed(bl, ct, now);
+    rdof_bl_closed(bl, cw, now);
+
+    /* closing the connection mid-call unkeys */
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"freq\":438.1125,\"superframes\":5}}",
+            now);
+    for (int i = 0; i < 50; i++) {
+        now += 0.01;
+        rdof_bl_tick(bl, now);
+        tx_air(bl, now, -1);
+    }
+    CHECK(tx.open, "keyed");
+    rdof_bl_closed(bl, c, now);
+    CHECK(!tx.open, "closing gives the transmitter back");
+    /* max_s ends a job */
+    c = ask(bl, "{\"op\":\"run\",\"max_s\":0.5,\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"freq\":438.1125,"
+                "\"superframes\":5}}", now);
+    no = 0;
+    for (int i = 0; i < 100; i++) {
+        now += 0.01;
+        rdof_bl_tick(bl, now);
+        tx_air(bl, now, -1);
+        no = drain_all(bl, c, out, sizeof out, no);
+    }
+    CHECK(strstr(out, "\"exit\":-9") && strstr(out, "max_s") && !tx.open, "max_s: %.400s", out);
+    rdof_bl_closed(bl, c, now);
     rdof_bl_free(bl);
 }
 
@@ -479,7 +669,7 @@ static void test_tcp(void)
     }
     usleep(50000);
     for (int i = 0; i < 5; i++) {
-        rdof_bl_burst_t b = {.ch = 1, .t = 1.8e9 + 0.06 * i, .dt = 0x10, .family = 1, .cc = 1};
+        rdof_bl_burst_t b = {.ch = 1, .t = 1.8e9 + 0.06 * i, .dt = RDOF_BL_VOICE_SYNC, .family = 1, .cc = 1};
         rdof_bl_burst(bl, &b);
         rdof_bl_ring_put(&ring, iq, 1000, NULL);
         rdof_bl_ring_put(&ring, iq, 1000, NULL); /* 10 ms more in all than the capture asks */
@@ -549,8 +739,9 @@ static int serve(int port, double seconds)
         for (int i = 0; i < 2 * 7680; i++)
             iq[i] = (float)((rand() % 200) - 100) / 400.0f;
         rdof_bl_ring_put(&ring, iq, 7680, NULL);
-        if (k % 6 == 0) {
-            rdof_bl_burst_t b = {.ch = 1, .t = 1.8e9 + 0.01 * k, .dt = k % 36 ? 0x11 : 0x10, .n = (int8_t)(k / 6 % 6),
+        tx_air(bl, mono(), 1); /* a run's bursts, heard back on 438.1125 */
+        if (k % 6 == 0 && !tx.open) {
+            rdof_bl_burst_t b = {.ch = 1, .t = 1.8e9 + 0.01 * k, .dt = k % 36 ? RDOF_BL_VOICE : RDOF_BL_VOICE_SYNC, .n = (int8_t)(k / 6 % 6),
                                  .slot = 1, .family = 1, .cc = 1, .level_dbfs = -40};
             rdof_bl_burst(bl, &b);
         }
@@ -567,6 +758,7 @@ int main(int argc, char **argv)
     if (argc == 4 && !strcmp(argv[1], "serve"))
         return serve(atoi(argv[2]), atof(argv[3]));
     test_ops();
+    test_run();
     test_tcp();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

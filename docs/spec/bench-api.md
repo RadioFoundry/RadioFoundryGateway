@@ -474,7 +474,10 @@ by their long names with `_` for `-`:
   the receiver channel at `freq` hears, as the tool's `--json` lines and per-call summaries.
 - `bench_repeater` runs a duplex repeater on the job's `rx` / `tx` pair (rdofradio in full duplex only).
 - An option the gateway can't honor is `unsupported` with the option named, before anything keys. `power` is
-  clamped to `bench.tx.rf_level`.
+  clamped to `bench.tx.rf_level` (rdofradio: see 14.4).
+- The tool's log lines (Python logging's `asctime message`, UTC) come as `err`, its records as `out`; the exit code
+  is 0, 1 when the transmitter failed, or -9 with `killed` when the job ran past `max_s`. A TX job's `started`
+  comes when it has the modem; `listen` starts at once.
 - Files a job writes (`--ambe-out`) are the client's: the job sends their bytes as `{"file": name, "bytes": N}`.
 
 ### 14.4 Arbitration
@@ -485,8 +488,10 @@ straight on. A claimed frequency is the claiming session's: another session's `r
 wait with `timeout`; a session that would wait on itself is `deadlock`. The modem's queue estimates come from each
 job's `expect_s` (else its length as the gateway works it out).
 
-On rdofradio, a TX job borrows the SDR modem from the repeater or roaming transceiver for its length: they pause
-(the network's calls wait, as during a key-up's calibration), and the modem is theirs again after the job.
+On rdofradio, a TX job borrows the SDR modem from the roaming transceiver for its length: it pauses (the network's
+calls wait; a call on the air ends first, up to 10 s), the job drives the modem in DMO, and the modem is set up again
+for the transceiver after the job. A duplex repeater keeps the transmitter (`unsupported`). The frequencies are
+`--bench-tx`'s; the job transmits at `--tx-gain`, and the log says `power` isn't applied.
 
 ### 14.5 The client
 

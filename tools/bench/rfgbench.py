@@ -371,7 +371,7 @@ def bench_tx_parser() -> argparse.ArgumentParser:
         p.add_argument("--family", choices=("ms", "bs", "ts1", "ts2"), default="ms")
         p.add_argument("--burst-cc", type=int)
     v = sub.add_parser("voice", add_help=False)
-    common(v, 1)
+    common(v, 215)
     v.add_argument("--private", action="store_true")
     v.add_argument("--superframes", type=int, default=3)
     v.add_argument("--headers", type=int)
@@ -388,7 +388,7 @@ def bench_tx_parser() -> argparse.ArgumentParser:
     v.add_argument("--emergency", action="store_true")
     c = sub.add_parser("csbk", add_help=False)
     common(c, 9801276)
-    c.add_argument("--count", type=int, default=10)
+    c.add_argument("--count", type=int, default=4)
     c.add_argument("--opcode")
     c.add_argument("--fid", default="0")
     c.add_argument("--octet3", default="0")
@@ -398,11 +398,11 @@ def bench_tx_parser() -> argparse.ArgumentParser:
         d.add_argument(o, action="store_true")
     for o in ("--tms", "--etsi", "--ip-text", "--udp-payload"):
         d.add_argument(o)
-    for o, dflt in (("--octets", 40), ("--tms-seq", 1), ("--udp-port", None), ("--udp-src-port", 50000),
+    for o, dflt in (("--octets", 40), ("--tms-seq", 1), ("--udp-port", None), ("--udp-src-port", None),
                     ("--udp-octets", 40), ("--preambles", 2), ("--repeat", 1), ("--repeat-gap-ms", 0)):
         d.add_argument(o, type=int, default=dflt)
     ls = sub.add_parser("listen", add_help=False)
-    ls.add_argument("--seconds", type=float, default=10)
+    ls.add_argument("--seconds", type=float, default=20)
     ls.add_argument("--json", action="store_true")
     sub.add_parser("selftest", add_help=False)
     return ap

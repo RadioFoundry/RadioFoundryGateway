@@ -26,7 +26,8 @@ extern "C" {
 #define RDOF_BL_SESSIONS 8
 #define RDOF_BL_FREQS 24       /* frequencies the bench lists: receiver channels and TX */
 #define RDOF_BL_CLAIMS 8       /* frequencies one session may claim */
-#define RDOF_BL_LINE 4096      /* a request line */
+#define RDOF_BL_LINE 4096      /* a request line, at first */
+#define RDOF_BL_LINE_MAX 196608 /* a request line at most (a run's job carries its AMBE file) */
 #define RDOF_BL_BURSTQ 256     /* bursts between the receiver and the connections */
 #define RDOF_BL_OUT 16384      /* a connection's output buffer */
 #define RDOF_BL_OUT_IQ 262144  /* a capture's */
@@ -53,13 +54,16 @@ typedef struct {
     double iq_scale_db;  /* the captures' cs8 full scale under the ADC's (the ring's scale, in dB; 0: the same) */
 } rdof_bl_window_t;
 
+#define RDOF_BL_VOICE_SYNC 0xF0 /* RDOF_DT_VOICE_SYNC */
+#define RDOF_BL_VOICE 0xF1      /* RDOF_DT_VOICE */
+
 /* A burst the receiver heard (the platform's burst, in plain terms). */
 typedef struct {
     int ch;              /* receiver channel */
     double t;            /* UTC seconds at the burst's start */
     int64_t pos48;       /* the channel's 48 kS/s sample at its start */
     float cfo_hz, dev_hz, level_dbfs;
-    int8_t dt;           /* data type, 0x10 voice sync (A), 0x11 voice (B-F), as rdof_burst_t */
+    uint8_t dt;          /* data type 0-11, RDOF_BL_VOICE_SYNC (A), RDOF_BL_VOICE (B-F), as rdof_burst_t */
     int8_t n, slot, family, cc, sync_errors;
     uint8_t raw[33];
 } rdof_bl_burst_t;
@@ -84,6 +88,18 @@ typedef struct {
     /* Whether the bench can transmit at all (its build, its front end, bench.tx): NULL yes, else why not. */
     const char *(*can_tx)(void *ctx);
     void *ctx;
+    /* Transmit jobs (NULL: none), called from the engine's thread with its lock held. tx_open: take the transmitter
+     * for a job on freq_hz at the job's power (bench_tx --power, 0-255: the platform says in why, a note, how it
+     * applied it; why "" none) (setting it up may take a while); false with why when it can't. tx_space: bursts it
+     * takes now (0: not yet), -1 when it failed (why). tx_push: a burst (its MMDVM DMR_DATA control byte).
+     * tx_unkey: the key-up ends after what was pushed. tx_idle: everything pushed went out and it's unkeyed.
+     * tx_close: the job is over (or cancelled): give the transmitter back. */
+    bool (*tx_open)(void *ctx, uint32_t freq_hz, int cc, int power, char *why, size_t cap);
+    int (*tx_space)(void *ctx, char *why, size_t cap);
+    void (*tx_push)(void *ctx, uint8_t control, const uint8_t burst[33]);
+    void (*tx_unkey)(void *ctx);
+    bool (*tx_idle)(void *ctx);
+    void (*tx_close)(void *ctx);
 } rdof_bl_platform_t;
 
 typedef struct rdof_bl rdof_bl_t;
