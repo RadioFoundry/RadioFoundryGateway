@@ -121,7 +121,7 @@ device to a frequency) is a network option (§7.1), not a role.
 | `name` | str | the frequency | §2.1 |
 | `cc` | 0..15 | `defaults.cc` | color code. A frequency with `tx: false` may leave it out: any color code is taken |
 | `mode` | `simplex` \| `sfr` \| `dcdm` | `simplex` | what the frequency carries when no app takes it (§6.1) |
-| `ts` | 1 \| 2 | 1 | the slot a simplex transmission uses |
+| `ts` | 1 \| 2 | 1 | a simplex call's slot: plain direct mode carries none on the air, so a call heard here goes to the master, last heard and MQTT as `ts`, and the answer comes back on it |
 | `tx` | bool | true | false: nothing ever transmits here; its paths are receive only |
 | `power` | int | | transmit power, as now |
 | `devices` | list | any | pin the devices that may serve it |

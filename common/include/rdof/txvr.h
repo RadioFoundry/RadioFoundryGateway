@@ -64,6 +64,7 @@ typedef struct {
 typedef struct {
     uint32_t freq;
     int cc, power;
+    int slot; /* 1 or 2 (0: 1): a direct mode call's here, as it's heard and reported */
 } rdof_channel_t;
 
 typedef struct {

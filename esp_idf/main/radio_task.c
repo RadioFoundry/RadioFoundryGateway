@@ -337,6 +337,7 @@ static void setup_txvr(roam_t *r)
         t->channels[i].freq = c->channels[i].freq;
         t->channels[i].cc = c->channels[i].cc;
         t->channels[i].power = c->channels[i].power;
+        t->channels[i].slot = c->channels[i].slot;
         t->nchannels = i + 1;
     }
     t->listen_s = c->listen_s;
@@ -354,6 +355,7 @@ static void setup_txvr(roam_t *r)
     t->idle.freq = c->idle.freq;
     t->idle.cc = c->idle.cc;
     t->idle.power = c->idle.power;
+    t->idle.slot = c->idle.slot;
     t->idle_after_s = c->idle_after_s;
     snprintf(t->cwid, sizeof t->cwid, "%s", c->cwid);
     t->cwid_every_s = c->cwid_every_s;
@@ -365,6 +367,7 @@ static void setup_txvr(roam_t *r)
             t->scan.channels[i].freq = c->scan_channels[i].freq;
             t->scan.channels[i].cc = c->scan_channels[i].cc;
             t->scan.channels[i].power = c->scan_channels[i].power;
+            t->scan.channels[i].slot = c->scan_channels[i].slot;
             t->scan.nchannels = i + 1;
         }
         t->scan.dwell_s = c->dwell_s;

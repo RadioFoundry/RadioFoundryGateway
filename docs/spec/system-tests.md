@@ -149,7 +149,7 @@ the gateway's `rdof_modem` a port whose writes go to radiosim and whose waits ad
   was asked to enter the hotspot and tuned to the frequency;
 - a call down: a voice LC header, two superframes of voice and a terminator as DMR_DATA2; on air, the header and
   terminator carry the call's LC and the twelve voice bursts go out in order, A to F;
-- a call up: a subscriber's header, a superframe and a terminator heard; the gateway gets them all on slot 2, the
+- a call up: a subscriber's header, a superframe and a terminator heard; the gateway gets them all on the frequency's slot, the
   header's and terminator's LC intact.
 
 ## Dependencies

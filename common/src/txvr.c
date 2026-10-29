@@ -493,6 +493,15 @@ const char *rdof_txvr_state_name(const rdof_txvr_t *t)
     }
 }
 
+/* A direct mode call's slot at freq: the channel's (nothing on the air says), else 1. */
+static int slot_at(const rdof_txvr_t *t, uint32_t freq)
+{
+    for (int i = 0; i < t->nchannels; i++)
+        if (t->channels[i].freq == freq)
+            return t->channels[i].slot == 2 ? 2 : 1;
+    return t->has_idle && t->idle.freq == freq && t->idle.slot == 2 ? 2 : 1;
+}
+
 void rdof_txvr_heard(rdof_txvr_t *t, int slot, uint8_t control, const uint8_t burst[RDOF_BURST_BYTES], int rssi)
 {
     if (slot != 2)
@@ -507,7 +516,7 @@ void rdof_txvr_heard(rdof_txvr_t *t, int slot, uint8_t control, const uint8_t bu
     }
     int dbm;
     double d = rdof_radio_rssi(t->radio, rssi, freq, &dbm) ? (double)dbm : NAN;
-    t->receiver.hear(t->receiver.ctx, 2, control, burst, d, cc, freq);
+    t->receiver.hear(t->receiver.ctx, slot_at(t, freq), control, burst, d, cc, freq);
 }
 
 /* ── the worker ────────────────────────────────────────────────────────────── */

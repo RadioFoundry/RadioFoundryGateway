@@ -306,7 +306,7 @@ typedef struct {
     int nsent;
     uint8_t pkt[64];
     size_t pkt_len;
-    int retunes, scans, starts, ends, nbursts, nterms, nheard;
+    int retunes, scans, starts, ends, nbursts, nterms, nheard, heard_slot;
     double duration; /* the last end's */
     rdof_net_burst_t last;
 } ex_t;
@@ -382,6 +382,7 @@ static void ex_sent(void *ctx, const rdof_tx_call_info_t *c, const rdof_net_burs
 static void ex_hear(void *ctx, int slot, uint8_t control, const uint8_t *burst, double dbm, int cc, uint32_t freq)
 {
     ((ex_t *)ctx)->nheard++;
+    ((ex_t *)ctx)->heard_slot = slot;
 }
 
 static void ex_rx(void *ctx, int slot, uint8_t control, const uint8_t *burst, int rssi)
@@ -819,6 +820,15 @@ static void t_txvr_heard(void)
     CHECK(e->nheard == 0, "tuning");
     rdof_txvr_heard(t, 2, RDOF_SYNC_AUDIO, burst, -1);
     CHECK(e->nheard == 1, "%d", e->nheard);
+    /* passed on as the slot of the frequency it's tuned to (direct mode: nothing on the air says): 1 unless set */
+    CHECK(e->heard_slot == 1, "heard as slot %d", e->heard_slot);
+    for (int i = 0; i < t->nchannels; i++)
+        if (t->channels[i].freq == t->tuned_freq)
+            t->channels[i].slot = 2;
+    if (t->has_idle && t->idle.freq == t->tuned_freq)
+        t->idle.slot = 2;
+    rdof_txvr_heard(t, 2, RDOF_SYNC_AUDIO, burst, -1);
+    CHECK(e->nheard == 2 && e->heard_slot == 2, "a slot 2 frequency: heard as slot %d", e->heard_slot);
     /* on the air: nothing heard */
     rdof_tune_t tu = ex_tune(40, CH_B);
     rdof_txvr_on_tune(t, &tu);
@@ -826,7 +836,7 @@ static void t_txvr_heard(void)
     ex_to_air(e);
     CHECK(!strcmp(rdof_txvr_state_name(t), "on_air"), "%s", rdof_txvr_state_name(t));
     rdof_txvr_heard(t, 2, RDOF_SYNC_AUDIO, burst, -1);
-    CHECK(e->nheard == 1, "%d", e->nheard);
+    CHECK(e->nheard == 2, "%d", e->nheard);
 }
 
 static void t_txvr_modem_errors(void)

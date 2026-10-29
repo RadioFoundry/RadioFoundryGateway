@@ -1536,7 +1536,7 @@ static bool web_save(void *ctx, const char *text, size_t len, char *err, size_t 
     if (ok) { /* the receive channels in one window, as the start will ask: the radio's RX and the monitored */
         rdof_sdr_channel_t ch[RDOF_SDR_MAX_CHANNELS];
         int n = 0;
-        ch[n++] = (rdof_sdr_channel_t){"rx", (double)c->rx_hz, c->cc, 1};
+        ch[n++] = (rdof_sdr_channel_t){"rx", (double)c->rx_hz, c->cc, c->rx_slot};
         for (int i = 0; i < c->nmon && n < RDOF_SDR_MAX_CHANNELS; i++)
             ch[n++] = (rdof_sdr_channel_t){c->mon[i].id, c->mon[i].freq, c->mon[i].cc, c->mon[i].slot};
         ok = plan_rate(ch, n, err, cap) > 0;
@@ -1957,7 +1957,7 @@ int main(int argc, char **argv)
     const char *soapy = NULL, *iio = NULL, *stream_args = "", *fft = NULL, *split_tx = NULL;
     int baud = 115200, power_cap = 0, tx_flags = 0;
     double bw = 0, rate = 0, rx = 0, tx = 0, tx_lo = 0, center = 0, gain = NAN, txg = 0, seconds = 0, offset_s = 0;
-    int cc = 1, allow = 0, monitor = 0, verbose = 0;
+    int cc = 1, rx_slot = 1, allow = 0, monitor = 0, verbose = 0;
     const char *duplex = "full";
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
@@ -2098,7 +2098,7 @@ int main(int argc, char **argv)
         }
         if (rcfg.unused[0])
             fprintf(stderr, "%s: not used here: %s\n", config_path, rcfg.unused);
-        rx = rcfg.rx_hz, tx = rcfg.tx_hz, cc = rcfg.cc;
+        rx = rcfg.rx_hz, tx = rcfg.tx_hz, cc = rcfg.cc, rx_slot = rcfg.rx_slot;
         duplex = rcfg.full ? "full" : "half";
         if (rcfg.has_parrot) {
             static rdof_parrot_t parrot;
@@ -2175,7 +2175,7 @@ int main(int argc, char **argv)
 
     /* the receiver: the RX channel, with --monitor the TX channel (our own outbound, heard back), then the
        monitor roles' channels on this device */
-    CH[0] = (rdof_sdr_channel_t){"rx", rx, cc, 1};
+    CH[0] = (rdof_sdr_channel_t){"rx", rx, cc, rx_slot};
     CH[1] = (rdof_sdr_channel_t){"out", tx, cc, 1};
     NCH = monitor && R.tx_hz != R.rx_hz ? 2 : 1;
     if (NCH == 2 || (monitor && R.tx_hz == R.rx_hz))

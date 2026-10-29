@@ -44,6 +44,7 @@ extern "C" {
 typedef struct {
     uint32_t freq;
     int cc, power;
+    int slot; /* 1 or 2: a direct mode call's here (the plan's slot; nothing on the air says) */
 } rdof_cfg_channel_t;
 
 typedef enum { RDOF_CFG_ROAMER = 1, RDOF_CFG_REPEATER } rdof_cfg_mode_t;

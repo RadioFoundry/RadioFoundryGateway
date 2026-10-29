@@ -229,6 +229,7 @@ typedef struct {
     int number;
     uint32_t freq;
     int cc, power;
+    int slot;   /* 1 or 2: a direct mode call's here */
     bool no_tx; /* "tx": false: nothing transmits on it (a repeater's output, monitored) */
 } plan_t;
 
@@ -715,7 +716,7 @@ static bool pick_radios(ctx_t *c, int box, const char *box_name, int *radio, int
 
 /* ── the box ───────────────────────────────────────────────────────────────── */
 
-static bool channel_entry(ctx_t *c, uint32_t freq, double cc, double power, rdof_cfg_channel_t *out)
+static bool channel_entry(ctx_t *c, uint32_t freq, double cc, double power, int slot, rdof_cfg_channel_t *out)
 {
     if (!(cc >= 0 && cc <= 15) || (long)cc != cc)
         return err(c, "color code %g", cc);
@@ -723,6 +724,7 @@ static bool channel_entry(ctx_t *c, uint32_t freq, double cc, double power, rdof
     out->freq = freq;
     out->cc = (int)cc;
     out->power = (int)(p < 0 ? 0 : p > 255 ? 255 : p);
+    out->slot = slot == 2 ? 2 : 1;
     return true;
 }
 
@@ -756,7 +758,7 @@ static bool roamer(ctx_t *c, int box, int r, const plan_list_t *plan, rdof_confi
             return false;
         if (cfg->nchannels >= RDOF_CFG_CHANNELS)
             return err(c, "too many channels (%d at most)", RDOF_CFG_CHANNELS);
-        if (!channel_entry(c, freq_hz(pc->freq), cc, power, &cfg->channels[cfg->nchannels++]))
+        if (!channel_entry(c, freq_hz(pc->freq), cc, power, pc->slot, &cfg->channels[cfg->nchannels++]))
             return false;
     }
     /* idle */
@@ -768,12 +770,12 @@ static bool roamer(ctx_t *c, int box, int r, const plan_list_t *plan, rdof_confi
         double cc;
         if (!box_hz(c, get(c, idle, "freq"), &f, "idle") || !num(c, get(c, idle, "cc"), &cc))
             return err(c, "idle: freq and cc");
-        if (!channel_entry(c, freq_hz(f), (double)to_long(cc), 255, &cfg->idle))
+        if (!channel_entry(c, freq_hz(f), (double)to_long(cc), 255, 1, &cfg->idle))
             return false;
     } else {
         if (!plan_ref(c, plan, idle, &pc, &over))
             return false;
-        if (!channel_entry(c, freq_hz(pc->freq), pc->cc, 255, &cfg->idle))
+        if (!channel_entry(c, freq_hz(pc->freq), pc->cc, 255, pc->slot, &cfg->idle))
             return false;
         bool have = pc->no_tx; /* an idle channel with tx false: heard, never sent on */
         for (int k = 0; k < cfg->nchannels; k++)
@@ -781,7 +783,7 @@ static bool roamer(ctx_t *c, int box, int r, const plan_list_t *plan, rdof_confi
         if (!have) {
             if (cfg->nchannels >= RDOF_CFG_CHANNELS)
                 return err(c, "too many channels");
-            if (!channel_entry(c, pc->freq, pc->cc, pc->power, &cfg->channels[cfg->nchannels++]))
+            if (!channel_entry(c, pc->freq, pc->cc, pc->power, pc->slot, &cfg->channels[cfg->nchannels++]))
                 return false;
         }
         cfg->oled_channel = pc->number;
@@ -868,7 +870,7 @@ static bool roamer(ctx_t *c, int box, int r, const plan_list_t *plan, rdof_confi
                     return false;
                 if (cfg->nscan >= RDOF_CFG_CHANNELS)
                     return err(c, "scan: too many channels");
-                if (!channel_entry(c, freq_hz(pc->freq), cc, 255, &cfg->scan_channels[cfg->nscan++]))
+                if (!channel_entry(c, freq_hz(pc->freq), cc, 255, pc->slot, &cfg->scan_channels[cfg->nscan++]))
                     return false;
             }
         }
@@ -1253,6 +1255,14 @@ static bool parse_radio_v1(const char *text, size_t len, const char *want, rdof_
             goto done;
         p->cc = to_int(cc);
         p->power = to_int(power);
+        double slot;
+        if (!fget(c, obj, "slot", 1, &slot, "channel"))
+            goto done;
+        if (slot != 1 && slot != 2) {
+            err(c, "channel %d: slot 1 or 2", p->number);
+            goto done;
+        }
+        p->slot = (int)slot;
         plan_t *same = (plan_t *)plan_find(&plan, p->number);
         if (same) /* "1" and "01": the last one */
             *same = *p;

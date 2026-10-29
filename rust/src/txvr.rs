@@ -97,6 +97,7 @@ pub struct RdofChannel {
     pub freq: u32,
     pub cc: c_int,
     pub power: c_int,
+    pub slot: c_int, // 1 or 2 (0: 1): a direct mode call's here, as it's heard and reported
 }
 
 /// rdof_scan_t
@@ -748,6 +749,21 @@ pub unsafe extern "C" fn rdof_txvr_state_name(t: *const RdofTxvr) -> *const c_ch
     .as_ptr()
 }
 
+/// A direct mode call's slot at freq: the channel's (nothing on the air says), else 1.
+unsafe fn slot_at(t: *const RdofTxvr, freq: u32) -> c_int {
+    let t = &*t;
+    for c in &t.channels[..t.nchannels.max(0) as usize] {
+        if c.freq == freq {
+            return if c.slot == 2 { 2 } else { 1 };
+        }
+    }
+    if t.has_idle && t.idle.freq == freq && t.idle.slot == 2 {
+        2
+    } else {
+        1
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn rdof_txvr_heard(t: *mut RdofTxvr, slot: c_int, control: u8, burst: *const u8, rssi: c_int) {
     if slot != 2 {
@@ -767,7 +783,7 @@ pub unsafe extern "C" fn rdof_txvr_heard(t: *mut RdofTxvr, slot: c_int, control:
     }
     let mut dbm = 0;
     let d = if rdof_radio_rssi(&*(*t).radio, rssi, freq, &mut dbm) { f64::from(dbm) } else { f64::NAN };
-    hear((*t).receiver.ctx, 2, control, burst, d, cc, freq);
+    hear((*t).receiver.ctx, slot_at(t, freq), control, burst, d, cc, freq);
 }
 
 // ── the worker ──

@@ -33,6 +33,7 @@ typedef struct {
     uint32_t peer_id;
     uint32_t rx_hz, tx_hz;
     int cc;
+    int rx_slot;        /* a direct mode call's slot on rx_hz (the plan's; a repeater: 1) */
     bool has_parrot;
     uint32_t parrot;    /* 0: everything */
     /* the clock (ntp): the board's (netclock) from servers, or the OS's (chrony, ntpd: clock "os") */

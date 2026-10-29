@@ -403,10 +403,10 @@ frequency only at the next SET_CONFIG, hence the order.
 
 ## 5. The roaming transceiver (txvr)
 
-`common/src/txvr.c`. One simplex radio, always slot 2 framing
-(simplex flag set, MS sync), tuned per call to wherever HBlink4's DMRT says ([hblink.md](hblink.md)); a receiver
+`common/src/txvr.c`. One simplex radio, always slot 2 framing to the modem
+(simplex flag set, MS sync; plain direct mode has no slot on the air), tuned per call to wherever HBlink4's DMRT says ([hblink.md](hblink.md)); a receiver
 on its idle channel, or scanning, between calls. Scanning and what it reports are in [roamer.md](roamer.md).
-It stays single slot: HBlink4 routes roaming calls on slot 2 only. Two calls at once on one frequency need the
+It stays single slot. A call heard is reported, and its answer taken, on the frequency's slot (the plan's `slot`, v3 `ts`, 1 by default). Two calls at once on one frequency need the
 repeater in `mode: dcdm` (§1.6).
 
 ### 5.1 Constants
@@ -516,8 +516,8 @@ from the call's end. No CW ID in this case.
 
 ### 5.5 Receiving
 
-`rdof_txvr_heard` (the modem's `on_rx`): slot 2 only. Dropped while tuning, while on air, or when not listening
-(listening = on the idle channel, on a scan channel, or in an answer window). Passes `(slot 2, control, burst,
+`rdof_txvr_heard` (the modem's `on_rx`): the modem's slot 2 only. Dropped while tuning, while on air, or when not listening
+(listening = on the idle channel, on a scan channel, or in an answer window). Passes `(the frequency's slot, control, burst,
 dBm or NaN, tuned cc, tuned freq)` to the receiver ([dmr-core.md](dmr-core.md) tracker).
 
 ### 5.6 CSBK preambles

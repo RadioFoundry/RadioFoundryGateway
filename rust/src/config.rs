@@ -47,6 +47,7 @@ pub struct RdofCfgChannel {
     pub freq: u32,
     pub cc: c_int,
     pub power: c_int,
+    pub slot: c_int, // 1 or 2: a direct mode call's here (the plan's slot; nothing on the air says)
 }
 
 /// rdof_cfg_port_t
@@ -1020,12 +1021,17 @@ impl Cx {
 
     // ── the box ──
 
-    fn channel_entry(&self, freq: u32, cc: f64, power: f64, out: &mut RdofCfgChannel) -> R {
+    fn channel_entry(&self, freq: u32, cc: f64, power: f64, slot: c_int, out: &mut RdofCfgChannel) -> R {
         if !(0.0..=15.0).contains(&cc) || cc as c_long as f64 != cc {
             let mut a = [0u8; 32];
             return self.err(&[S(b"color code "), S(g(cc, &mut a))]);
         }
-        *out = RdofCfgChannel { freq, cc: cc as c_int, power: (power as c_long).clamp(0, 255) as c_int };
+        *out = RdofCfgChannel {
+            freq,
+            cc: cc as c_int,
+            power: (power as c_long).clamp(0, 255) as c_int,
+            slot: if slot == 2 { 2 } else { 1 },
+        };
         Some(())
     }
 
@@ -1061,7 +1067,7 @@ impl Cx {
                 return self.err(&[S(b"too many channels ("), I(CHANNELS as i64), S(b" at most)")]);
             }
             cfg.nchannels += 1;
-            self.channel_entry(freq_hz(pc.freq.into()), cc, power, &mut cfg.channels[n])?;
+            self.channel_entry(freq_hz(pc.freq.into()), cc, power, pc.slot, &mut cfg.channels[n])?;
         }
         // idle
         let idle = self.get(r, c"idle");
@@ -1073,10 +1079,10 @@ impl Cx {
             let (Some(f), Some(cc)) = (f, f.and_then(|_| self.num(self.get(idle, c"cc")))) else {
                 return self.err(&[S(b"idle: freq and cc")]);
             };
-            self.channel_entry(freq_hz(f.into()), cc as c_long as f64, 255.0, &mut cfg.idle)?;
+            self.channel_entry(freq_hz(f.into()), cc as c_long as f64, 255.0, 1, &mut cfg.idle)?;
         } else {
             let (pc, _) = self.plan_ref(plan, idle)?;
-            self.channel_entry(freq_hz(pc.freq.into()), pc.cc.into(), 255.0, &mut cfg.idle)?;
+            self.channel_entry(freq_hz(pc.freq.into()), pc.cc.into(), 255.0, pc.slot, &mut cfg.idle)?;
             let n = cfg.nchannels as usize;
             // an idle channel with tx false: heard, never sent on
             if !pc.no_tx && !cfg.channels[..n].iter().any(|c| c.freq == pc.freq) {
@@ -1084,7 +1090,7 @@ impl Cx {
                     return self.err(&[S(b"too many channels")]);
                 }
                 cfg.nchannels += 1;
-                self.channel_entry(pc.freq, pc.cc.into(), pc.power.into(), &mut cfg.channels[n])?;
+                self.channel_entry(pc.freq, pc.cc.into(), pc.power.into(), pc.slot, &mut cfg.channels[n])?;
             }
             cfg.oled_channel = pc.number;
         }
@@ -1158,7 +1164,7 @@ impl Cx {
                         return self.err(&[S(b"scan: too many channels")]);
                     }
                     cfg.nscan += 1;
-                    self.channel_entry(freq_hz(pc.freq.into()), cc, 255.0, &mut cfg.scan_channels[n])?;
+                    self.channel_entry(freq_hz(pc.freq.into()), cc, 255.0, pc.slot, &mut cfg.scan_channels[n])?;
                 }
             }
             if cfg.nscan == 0 {
@@ -1458,7 +1464,7 @@ impl Cx {
             }
         }
         // the plan
-        let mut plan = Plan { ch: [PlanCh { number: 0, freq: 0, cc: 0, power: 0, no_tx: false }; CHANNELS * 2], n: 0 };
+        let mut plan = Plan { ch: [PlanCh { number: 0, freq: 0, cc: 0, power: 0, slot: 1, no_tx: false }; CHANNELS * 2], n: 0 };
         let cc_node = self.get(bx, c"cc");
         let has_default_cc = cc_node >= 0 && self.n(cc_node).type_ != RDOF_JNULL;
         let mut dcc = 0.0;
@@ -1507,7 +1513,11 @@ impl Cx {
                 }
             };
             let power = self.fget(obj, c"power", 255.0, b"channel")?;
-            let p = PlanCh { number: pn, freq, cc: cc as c_int, power: power as c_int, no_tx };
+            let slot = self.fget(obj, c"slot", 1.0, b"channel")?;
+            if slot != 1.0 && slot != 2.0 {
+                return self.err(&[S(b"channel "), I(pn.into()), S(b": slot 1 or 2")]);
+            }
+            let p = PlanCh { number: pn, freq, cc: cc as c_int, power: power as c_int, slot: slot as c_int, no_tx };
             match plan.ch[..plan.n].iter_mut().find(|q| q.number == pn) {
                 Some(same) => *same = p, // "1" and "01": the last one
                 None => {
@@ -1638,6 +1648,7 @@ struct PlanCh {
     freq: u32,
     cc: c_int,
     power: c_int,
+    slot: c_int, // 1 or 2: a direct mode call's here
     no_tx: bool, // "tx": false: nothing transmits on it (a repeater's output, monitored)
 }
 

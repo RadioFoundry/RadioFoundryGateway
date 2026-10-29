@@ -418,9 +418,11 @@ static void fly(rdof_demod_t *d, int64_t end)
 
 /* ── sync ───────────────────────────────────────────────────────────────── */
 
+/* A burst with no slot on the air (direct mode, or a CACH that didn't decode): beside a call still going, the slot
+ * by its timing from that call's; else the frequency's slot. */
 static int guess_slot(const rdof_demod_t *d, int64_t start)
 {
-    if (d->last_slot) {
+    if (d->last_slot && (d->tracks[0].active || d->tracks[1].active)) {
         int64_t gap = start - d->last_pos;
         double bursts_f = nearbyint((double)gap / (BURST_SYMBOLS + CACH_SYMBOLS) / SPS);
         long long bursts = (long long)bursts_f;

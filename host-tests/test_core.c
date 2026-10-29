@@ -3725,6 +3725,13 @@ static void t_config_edges(void)
           "tx false, idle: %d %s", cfg.nchannels, error);
     ok = cfg_try(T_ROAM, ", \"channels\": {\"1\": {\"freq\": 438.0625, \"tx\": 0}}", "", &cfg, error, sizeof error);
     CHECK(!ok && strstr(error, "tx: true or false"), "tx 0: %s", error);
+    /* "slot": a direct mode call's slot here, 1 by default; only 1 or 2 */
+    ok = cfg_try(T_ROAM, ", \"channels\": {\"1\": {\"freq\": 438.0625, \"slot\": 2}, \"2\": 438.1125}",
+                 ", \"channels\": \"all\"", &cfg, error, sizeof error);
+    CHECK(ok && cfg.channels[0].slot == 2 && cfg.channels[1].slot == 1 && cfg.idle.slot == 2,
+          "slot 2: %d %d %d %s", cfg.channels[0].slot, cfg.channels[1].slot, cfg.idle.slot, error);
+    ok = cfg_try(T_ROAM, ", \"channels\": {\"1\": {\"freq\": 438.0625, \"slot\": 3}}", "", &cfg, error, sizeof error);
+    CHECK(!ok && strstr(error, "slot 1 or 2"), "slot 3: %s", error);
     ok = cfg_try(T_REP, ", \"channels\": {\"1\": {\"freq\": 438.0375, \"tx\": false}}", FREQS ", \"cc\": 1",
                  &cfg, error, sizeof error);
     CHECK(!ok && strstr(error, "tx_freq: channel 1 has tx false"), "tx false, repeater: %s", error);

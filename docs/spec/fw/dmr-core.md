@@ -342,7 +342,7 @@ From an MMDVM modem (`tracker.c:rdof_modem_burst`): `rdof_control_to_dt(control)
 | else bit `RDOF_SYNC_AUDIO` (0x20) set | `RDOF_DT_VOICE_SYNC` | 0 |
 | else | `RDOF_DT_VOICE` | control & 0x0F |
 
-and `family` = MS, `sync_errors` = 0, `power_dbfs` = the modem's RSSI in dBm, `cc` and `slot` from the caller (`rx_path.c`; simplex slot 2). From the SDR: [sdr.md](sdr.md).
+and `family` = MS, `sync_errors` = 0, `power_dbfs` = the modem's RSSI in dBm, `cc` and `slot` from the caller (`rx_path.c`; simplex: the frequency's slot). From the SDR: [sdr.md](sdr.md).
 
 Feeding: `rdof_tracker_feed(tr, b, t)`, `t` = Unix seconds (netclock). Idle bursts (dt 9) and slots outside 1–2 are dropped. Ticking: `rdof_tracker_tick(tr, t)`: the roamer's receive task at least every 100 ms (`rx_path.c`, queue wait `pdMS_TO_TICKS(100)`); the SDR after each chunk (`sdr/src/receiver.c`).
 

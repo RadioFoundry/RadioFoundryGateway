@@ -178,8 +178,8 @@ static void free_demod(void) { rdof_demod_free(&g_demod); }
 static rdof_sdr_rx_t g_rx;
 static int init_rx(void)
 {
-    const rdof_sdr_rx_config_t cfg = {288000, 461000000.0, -60.0, 0, true, 4608};
-    const rdof_sdr_channel_t ch[2] = {{"A", 461037500.0, 1, 1}, {"B", 461087500.0, 1, 2}};
+    const rdof_sdr_rx_config_t cfg = {288000, 438025000.0, -60.0, 0, true, 4608};
+    const rdof_sdr_channel_t ch[2] = {{"A", 438062500.0, 1, 1}, {"B", 438112500.0, 1, 2}};
     return rdof_sdr_rx_init(&g_rx, &cfg, ch, 2, NULL, 0);
 }
 static void free_rx(void) { rdof_sdr_rx_free(&g_rx); }
@@ -211,8 +211,8 @@ static void free_mod(void) { rdof_mod_free(&g_mod); }
 static int init_plan(void)
 {
     /* nine channels that don't all fit: the window search allocates */
-    const double f[9] = {461.0375e6, 461.0875e6, 461.1375e6, 461.1875e6, 461.2375e6, 461.2875e6, 461.3375e6,
-                         461.4625e6, 461.6875e6};
+    const double f[9] = {438.0625e6, 438.1125e6, 438.1625e6, 438.2125e6, 438.2625e6, 438.3125e6, 438.3625e6,
+                         438.4875e6, 438.7125e6};
     double c;
     return rdof_plan_window(f, 9, 288e3, &c, NULL) > 0 ? 0 : -1;
 }
@@ -221,7 +221,7 @@ static void free_nothing(void) {}
 static int init_config(void)
 {
     static rdof_sdr_config_t cfg;
-    const char *json = "{\"device\":{\"sample_rate\":288000},\"channels\":[{\"id\":\"A\",\"freq\":461.0375}]}";
+    const char *json = "{\"device\":{\"sample_rate\":288000},\"channels\":[{\"id\":\"A\",\"freq\":438.0625}]}";
     char err[64];
     bool ok = rdof_sdr_config_parse(json, strlen(json), &cfg, err, sizeof err);
     return ok ? 0 : (strstr(err, "no memory") ? 1 : 2);
@@ -715,8 +715,8 @@ static void test_plan_edges(void)
     CHECK(rdof_plan_center(f, 0, 288e3, &c) == -1 && c == -1, "no channels, no center");
     CHECK(rdof_plan_window(f, 0, 288e3, &c, in) == 0 && c == -1, "no channels, no window");
     /* 300 kHz apart: wider than the usable 230.4 kHz */
-    f[0] = 461.0e6;
-    f[1] = 461.3e6;
+    f[0] = 438.025e6;
+    f[1] = 438.325e6;
     CHECK(rdof_plan_center(f, 2, 288e3, &c) == -1, "channels too far apart for one center");
     CHECK(rdof_plan_window(f, 2, 288e3, &c, in) == 1 && in[0] + in[1] == 1 && fabs(c - (in[0] ? f[0] : f[1])) >= 25e3,
           "a window takes one of them");
@@ -728,7 +728,7 @@ static void test_plan_edges(void)
     /* a rate with no band at all */
     CHECK(rdof_plan_window(f, 2, 0.0, &c, NULL) == 0, "rate 0");
     /* a window that has to put a center where plan_center would sit a channel on DC */
-    const double g[5] = {461000000, 461087500, 461475000, 461387500, 461600000};
+    const double g[5] = {438025000, 438112500, 438500000, 438412500, 438625000};
     int k = rdof_plan_window(g, 5, 288e3, &c, in);
     const int kg = k;
     int ok = 1;
@@ -739,19 +739,19 @@ static void test_plan_edges(void)
           best_window(g, 5, 288e3));
     /* channels every 40 kHz: any center leaves one within the 25 kHz of DC that can't be used, so the window is the
      * best that does */
-    const double h[5] = {461.000e6, 461.040e6, 461.080e6, 461.120e6, 461.160e6};
+    const double h[5] = {438.025e6, 438.065e6, 438.105e6, 438.145e6, 438.185e6};
     k = rdof_plan_window(h, 5, 288e3, &c, in);
     ok = 1;
     for (int i = 0; i < 5; i++)
         if (in[i])
             ok &= fabs(h[i] - c) <= 115200.0 && fabs(h[i] - c) >= 25e3;
     CHECK(k == best_window(h, 5, 288e3) && k == 4 && ok, "40 kHz apart: %d inside (best %d)", k, best_window(h, 5, 288e3));
-    CHECK(rdof_plan_center(h, 5, 288e3, &c) == 0 && fabs(c - 461.08e6) <= 40e3, "plan_center still finds a center");
+    CHECK(rdof_plan_center(h, 5, 288e3, &c) == 0 && fabs(c - 438.105e6) <= 40e3, "plan_center still finds a center");
     /* inside may be NULL */
     CHECK(rdof_plan_window(g, 5, 288e3, &c, NULL) == kg, "no inside array");
     /* a narrow front end (the LR2021 at 125 kS/s resampled to 96: channels within +-8 kHz, DC guard 5 kHz): one
      * channel goes 5 kHz off the center, two 50 kHz apart don't fit, and the window takes one of them */
-    const double lr[2] = {461.0375e6, 461.0875e6}, u = 16e3 / 96e3;
+    const double lr[2] = {438.0625e6, 438.1125e6}, u = 16e3 / 96e3;
     CHECK(rdof_plan_center_band(lr + 1, 1, 96e3, u, 5e3, &c) == 0 && fabs(fabs(c - lr[1]) - 5e3) < 1e-6,
           "one channel, 5 kHz off: %.0f", c - lr[1]);
     CHECK(rdof_plan_center_band(lr, 2, 96e3, u, 5e3, &c) == -1, "two channels don't fit the narrow band");
@@ -767,7 +767,7 @@ static void test_plan_edges(void)
 /* ── a scene: three channels at 288 kS/s, one with a few bursts after the idle gate has closed ─────────────── */
 
 #define FS 288000
-#define CENTER 461000000.0
+#define CENTER 438025000.0
 #define CHUNK 4608
 #define NSCENE_CH 3
 #define SCENE_CHUNKS 200   /* 3.2 s */
@@ -801,7 +801,7 @@ static void scene_burst(void *ctx, int c, const rdof_sdr_burst_t *b, double t)
 }
 
 static const rdof_sdr_channel_t scene_chans[NSCENE_CH] = {
-    {"A", 461037500.0, 1, 1}, {"B", 461087500.0, 1, 2}, {"C", 460937500.0, 1, 1}};
+    {"A", 438062500.0, 1, 1}, {"B", 438112500.0, 1, 2}, {"C", 437962500.0, 1, 1}};
 
 /* The whole recording, a chunk at a time (a fresh modulator and the same noise each run). mode: 0 process;
  * 1 channelize, demod in two halves, finish; 2 forward, channels on two workers, finish; 3 as 2 with no
@@ -1108,7 +1108,7 @@ static void test_rx_edges(void)
     rdof_sdr_rx_free(&rx);
     cfg = good;
     cfg.center_hz = 0.0;
-    const rdof_sdr_channel_t far[2] = {{"A", 461.0e6, 1, 1}, {"B", 461.5e6, 1, 1}};
+    const rdof_sdr_channel_t far[2] = {{"A", 438.025e6, 1, 1}, {"B", 438.525e6, 1, 1}};
     CHECK(rdof_sdr_rx_init(&rx, &cfg, far, 2, NULL, 0) == -1, "channels too far apart to plan a center");
     rdof_sdr_rx_free(&rx);
     CHECK(rdof_sdr_rx_init(&rx, &cfg, scene_chans, 3, NULL, 0) == 0 && rx.center_hz != 0.0, "center planned");
@@ -1217,7 +1217,7 @@ static void test_frontend_edges(void)
           "type parse: empty is the default, the rest is exact");
     static const double three[] = {240000, 250000, 288000};
     rdof_fe_caps_t list = {.kind = "X", .rates = three, .n_rates = 3, .freq_min = 100e6, .freq_max = 500e6};
-    const double ok[1] = {461e6}, low[1] = {99.9e6}, high[1] = {500.1e6};
+    const double ok[1] = {439e6}, low[1] = {99.9e6}, high[1] = {500.1e6};
     CHECK(rdof_fe_check(&list, 250000.4, ok, 1, err, sizeof err) == 0, "a rate within half a sample/second");
     CHECK(rdof_fe_check(&list, 250001, ok, 1, err, sizeof err) < 0 && !strcmp(err, "the X takes sample_rate 240000, 250000 or 288000"),
           "three rates: %s", err);
@@ -1236,7 +1236,7 @@ static void test_frontend_edges(void)
               strstr(err, "100.000 to 500.000 MHz"),
           "below the tuner: %s", err);
     CHECK(rdof_fe_check(&range, 96000, high, 1, err, sizeof err) < 0 && strstr(err, "500.10000 MHz"), "above: %s", err);
-    const double mixed[3] = {461e6, 300e6, 600e6};
+    const double mixed[3] = {439e6, 300e6, 600e6};
     CHECK(rdof_fe_check(&range, 96000, mixed, 3, err, sizeof err) < 0 && strstr(err, "600.00000 MHz"),
           "the first one out of range is named: %s", err);
     CHECK(rdof_fe_check(&range, 96000, mixed, 0, err, sizeof err) == 0, "no frequencies");
@@ -1452,7 +1452,7 @@ static void test_config_edges(void)
 {
     static rdof_sdr_config_t cfg;
     char err[200];
-    const char *one = "\"channels\":[{\"id\":\"A\",\"freq\":461.0375}]";
+    const char *one = "\"channels\":[{\"id\":\"A\",\"freq\":438.0625}]";
     char buf[8192];
 
     /* not settings at all */
@@ -1486,7 +1486,7 @@ static void test_config_edges(void)
     CHECK(!parse(buf, &cfg, err, sizeof err), "a stray slash after the object is an error");
     snprintf(buf, sizeof buf, "{\"device\":{\"sample_rate\":288000}, %s} /* never closed", one);
     CHECK(parse(buf, &cfg, err, sizeof err), "an unterminated block comment is dropped: %s", err);
-    snprintf(buf, sizeof buf, "{\"name\":\"x\\\\\",\"channels\":[{\"id\":\"A\\\"B\",\"freq\":461.0375},],}");
+    snprintf(buf, sizeof buf, "{\"name\":\"x\\\\\",\"channels\":[{\"id\":\"A\\\"B\",\"freq\":438.0625},],}");
     CHECK(parse(buf, &cfg, err, sizeof err) && !strcmp(cfg.name, "x\\") && !strcmp(cfg.ch[0].id, "A\"B"),
           "escapes in strings: %s / %s", cfg.name, cfg.ch[0].id);
 
@@ -1494,12 +1494,12 @@ static void test_config_edges(void)
     size_t o = (size_t)snprintf(buf, sizeof buf, "{\"device\":{\"sample_rate\":288000},\"channels\":[");
     for (int i = 0; i < RDOF_SDR_MAX_CHANNELS + 1; i++)
         o += (size_t)snprintf(buf + o, sizeof buf - o, "%s{\"id\":\"C%d\",\"freq\":%d}", i ? "," : "", i,
-                              461000000 + 12500 * i);
+                              438025000 + 12500 * i);
     snprintf(buf + o, sizeof buf - o, "]}");
     CHECK(!parse(buf, &cfg, err, sizeof err) && !strcmp(err, "17 channels: this board takes 16"), "17 channels: %s", err);
     o = (size_t)snprintf(buf, sizeof buf, "{\"cc\":1,\"channels\":{");
     for (int i = 0; i < RDOF_SDR_MAX_CHANNELS + 1; i++)
-        o += (size_t)snprintf(buf + o, sizeof buf - o, "%s\"%d\":%d", i ? "," : "", i + 1, 461000000 + 12500 * i);
+        o += (size_t)snprintf(buf + o, sizeof buf - o, "%s\"%d\":%d", i ? "," : "", i + 1, 438025000 + 12500 * i);
     o += (size_t)snprintf(buf + o, sizeof buf - o, "},\"radios\":[{\"type\":\"sdr\",\"name\":\"s\",\"channels\":[");
     for (int i = 0; i < RDOF_SDR_MAX_CHANNELS + 1; i++)
         o += (size_t)snprintf(buf + o, sizeof buf - o, "%s%d", i ? "," : "", i + 1);
@@ -1509,7 +1509,7 @@ static void test_config_edges(void)
     o = (size_t)snprintf(buf, sizeof buf, "{\"device\":{\"sample_rate\":288000},\"channels\":[");
     for (int i = 0; i < RDOF_SDR_MAX_CHANNELS; i++)
         o += (size_t)snprintf(buf + o, sizeof buf - o, "%s{\"id\":\"C%d\",\"freq\":%d}", i ? "," : "", i,
-                              461000000 + 12500 * i);
+                              438025000 + 12500 * i);
     snprintf(buf + o, sizeof buf - o, "]}");
     CHECK(parse(buf, &cfg, err, sizeof err) && cfg.nch == 16, "16 channels: %s", err);
     /* a document with more nodes than the parser has room for, or more text */
@@ -1549,14 +1549,14 @@ static void test_config_edges(void)
               "height %s -> %d", heights[i], cfg.location.height_m);
     }
     /* names that are longer than their fields are cut, not overrun */
-    snprintf(buf, sizeof buf, "{\"name\":\"%.60s\",\"device\":{\"sample_rate\":288000},\"channels\":[{\"id\":\"%.40s\",\"freq\":461.0375}]}",
+    snprintf(buf, sizeof buf, "{\"name\":\"%.60s\",\"device\":{\"sample_rate\":288000},\"channels\":[{\"id\":\"%.40s\",\"freq\":438.0625}]}",
              "0123456789012345678901234567890123456789012345678901234567890123", "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz");
     CHECK(parse(buf, &cfg, err, sizeof err) && strlen(cfg.name) == sizeof cfg.name - 1 &&
               strlen(cfg.ch[0].id) == sizeof cfg.ch[0].id - 1,
           "long names: %zu / %zu", strlen(cfg.name), strlen(cfg.ch[0].id));
 
     /* receiver_ids in a box: what str.format would take and the board doesn't, and the escapes it does */
-    const char *box_head = "{\"cc\":1,\"channels\":{\"4\":461.0875,\"6\":461.1375},\"radios\":[{\"type\":\"sdr\",\"name\":\"s\",";
+    const char *box_head = "{\"cc\":1,\"channels\":{\"4\":438.1125,\"6\":438.1625},\"radios\":[{\"type\":\"sdr\",\"name\":\"s\",";
     static const struct {
         const char *fmt, *want_id, *err;
     } ids[] = {
@@ -1596,7 +1596,7 @@ static void test_describe_edges(void)
     static rdof_sdr_config_t cfg;
     char err[100];
     const char *json = "{\"name\":\"n\",\"device\":{\"sample_rate\":288000,\"gain\":30},\"location\":{\"lat\":1,\"lon\":2},"
-                       "\"channels\":[{\"id\":\"A\",\"freq\":461.0375}]}";
+                       "\"channels\":[{\"id\":\"A\",\"freq\":438.0625}]}";
     CHECK(rdof_sdr_config_parse(json, strlen(json), &cfg, err, sizeof err), "%s", err);
     char full[1024], cut[64];
     size_t n = rdof_sdr_config_describe(&cfg, full, sizeof full);
@@ -1670,7 +1670,7 @@ static void test_status_edges(void)
     st.peak_dbfs = NAN;
     len = rdof_sdr_status_json(&rx, &st, json, sizeof json);
     CHECK(len > 0 && count_of(json, "\"id\":") == 2 && strstr(json, "\"name\":\"Race control\"") &&
-              strstr(json, "\"name\":\"\",\"freqHz\":461137500.0") && !strstr(json, "\"SDR08\"") &&
+              strstr(json, "\"name\":\"\",\"freqHz\":438162500.0") && !strstr(json, "\"SDR08\"") &&
               strstr(json, "\"clipPct\":null,\"peakDbfs\":null") && !strstr(json, "gainDb") && !strstr(json, "\"agc\"") &&
               !strstr(json, "hblink"),
           "names, leave_out, level: %s", json);
@@ -1711,16 +1711,16 @@ static void test_status_edges(void)
 
     /* the Receiver message: a color code and talkgroup that mean 'any', with and without a location */
     char rj[400];
-    CHECK(rdof_sdr_receiver_json("X", 461087500.0, -1, "any", -1, NULL, rj, sizeof rj) > 0 &&
+    CHECK(rdof_sdr_receiver_json("X", 438112500.0, -1, "any", -1, NULL, rj, sizeof rj) > 0 &&
               !strcmp(rj, V_RECEIVER_ANY_JSON),
           "receiver message:\n  got  %s\n  want %s", rj, V_RECEIVER_ANY_JSON);
     rdof_location_t loc = {31.793, -74.034, 12};
-    size_t rl = rdof_sdr_receiver_json("X", 461087500.0, 0, "any", 0, &loc, rj, sizeof rj);
+    size_t rl = rdof_sdr_receiver_json("X", 438112500.0, 0, "any", 0, &loc, rj, sizeof rj);
     CHECK(rl > 0 && strstr(rj, "\"colorCode\":0") && strstr(rj, "\"tg\":0,\"latitude\":31.793,\"longitude\":-74.034,\"height\":12"),
           "cc 0 and tg 0 are values, not 'any': %s", rj);
     for (size_t cap = 0; cap < rl; cap += 5) {
         char *tight = malloc(cap ? cap : 1);
-        CHECK(rdof_sdr_receiver_json("X", 461087500.0, 0, "any", 0, &loc, tight, cap) == 0, "cap %zu refused", cap);
+        CHECK(rdof_sdr_receiver_json("X", 438112500.0, 0, "any", 0, &loc, tight, cap) == 0, "cap %zu refused", cap);
         free(tight);
     }
 }
@@ -2159,6 +2159,50 @@ static void run_voice(int first_slot, int lose, int cc_sent, voice_out_t *o)
     rdof_sdr_rx_free(&rx);
 }
 
+/* Two direct mode calls one after the other on a channel whose slot is 1, the second starting an odd number of 30 ms
+ * slots after the first's last burst, once the first is over: both are slot 1 (no slot on the air: the frequency's),
+ * not the second taken for the other slot by its timing. */
+static void run_two_calls(voice_out_t *o)
+{
+    memset(o, 0, sizeof *o);
+    static rdof_sdr_rx_t rx;
+    const rdof_sdr_rx_config_t cfg = {FS, CENTER, -60.0, 0, true, CHUNK};
+    const rdof_sdr_channel_t ch = {"A", scene_chans[0].freq_hz, 1, 1};
+    CHECK(rdof_sdr_rx_init(&rx, &cfg, &ch, 1, NULL, 0) == 0, "two calls rx init");
+    rx.on_burst = voice_burst;
+    rx.burst_ctx = o;
+    rdof_mod_t m;
+    CHECK(rdof_mod_init(&m, FS, ch.freq_hz - CENTER, 4.0, 1.0f, 8, 0) == 0, "mod init");
+    const int64_t slot = rdof_mod_slot_samples(&m), t0 = FS / 4;
+    int64_t at[12];
+    uint8_t bursts[12][RDOF_BURST_BYTES];
+    for (int k = 0; k < 12; k++) { /* the first call's A-F every other slot from 0, the second's from slot 25 */
+        at[k] = t0 + (k < 6 ? 2 * k : 25 + 2 * (k - 6)) * slot;
+        rdof_silence_burst(k % 6, 1, false, NULL, bursts[k]);
+    }
+    rdof_cf_t *iq = malloc(sizeof(rdof_cf_t) * CHUNK), *sig = malloc(sizeof(rdof_cf_t) * CHUNK);
+    int queued = 0;
+    rng_state = 99;
+    for (int c = 0; c < 140; c++) {
+        const int64_t pos = (int64_t)c * CHUNK;
+        while (queued < 12 && at[queued] < pos + 3 * slot) {
+            CHECK(rdof_mod_queue_burst(&m, at[queued], bursts[queued], NULL, RDOF_MOD_RAMPS) == 0, "queue %d", queued);
+            queued++;
+        }
+        rdof_mod_iq(&m, sig, CHUNK);
+        for (int i = 0; i < CHUNK; i++) {
+            iq[i].re = 0.5f * sig[i].re + 0.01f * noise();
+            iq[i].im = 0.5f * sig[i].im + 0.01f * noise();
+        }
+        rdof_sdr_rx_process(&rx, iq, CHUNK);
+    }
+    CHECK(queued == 12, "%d of 12 bursts sent", queued);
+    free(iq);
+    free(sig);
+    rdof_mod_free(&m);
+    rdof_sdr_rx_free(&rx);
+}
+
 /* One slot's bursts in the order they came: A to F, 60 ms apart, from pos0 (-1: don't check where). */
 static void check_slot(const voice_out_t *o, int slot, int want, int64_t pos0, const char *what)
 {
@@ -2214,6 +2258,13 @@ static void test_voice(void)
     /* another color code than the demod's: the A is held, B never confirms it, nothing comes out */
     run_voice(2, 12, 7, &other);
     CHECK(other.count == 0, "a call on color code 7 gives %d bursts to a demod on 1", other.count);
+    /* a direct mode call soon after another, an odd number of slots on: the frequency's slot, as the first */
+    static voice_out_t two;
+    run_two_calls(&two);
+    int on1 = 0;
+    for (int i = 0; i < two.count; i++)
+        on1 += two.b[i].slot == 1;
+    CHECK(two.count == 12 && on1 == 12, "two calls one after the other: %d bursts, %d on slot 1", two.count, on1);
 }
 
 /* ── bursts built symbol by symbol, straight into the demod at 48 kS/s ───── */
@@ -2476,7 +2527,7 @@ static void test_config_board_keys(void)
 {
     static rdof_sdr_config_t cfg;
     char err[200], buf[2048];
-    const char *one = "\"channels\":[{\"id\":\"A\",\"freq\":461.0375}]";
+    const char *one = "\"channels\":[{\"id\":\"A\",\"freq\":438.0625}]";
     snprintf(buf, sizeof buf, "{\"device\":{\"sample_rate\":288000}, %s}", one);
     CHECK(rdof_sdr_config_parse(buf, strlen(buf), &cfg, err, sizeof err), "%s", err);
     CHECK(cfg.status_seconds == 30.0 && cfg.usb_transfers == 8 && cfg.usb_transfer_kb == 8 && cfg.dsp_cores == 1 &&
@@ -2507,7 +2558,7 @@ static void test_config_board_keys(void)
     CHECK(rdof_sdr_config_parse(buf, strlen(buf), &cfg, err, sizeof err) && cfg.dsp_cores == 1, "dsp_cores 0");
     /* the same keys in a box's radio, and a radio whose name isn't the default */
     snprintf(buf, sizeof buf,
-             "{\"cc\":1,\"channels\":{\"4\":461.0875},\"radios\":[{\"type\":\"mmdvm_hs\",\"name\":\"R\"},{\"type\":\"sdr\","
+             "{\"cc\":1,\"channels\":{\"4\":438.1125},\"radios\":[{\"type\":\"mmdvm_hs\",\"name\":\"R\"},{\"type\":\"sdr\","
              "\"usb\":{\"transfers\":3},\"dsp_cores\":2,\"idle_gate\":0,\"learn_ppm\":false,\"selftest\":true,"
              "\"channels\":[4]}]}");
     CHECK(rdof_sdr_config_parse(buf, strlen(buf), &cfg, err, sizeof err) && cfg.usb_transfers == 3 && cfg.usb_transfer_kb == 8 &&
@@ -2521,7 +2572,7 @@ static void test_config_board_keys(void)
 /* Two channels whose corrections both say the tuner is est ppm off. */
 static int ppm_step(rdof_ppm_t *p, double est, double t)
 {
-    const double f[2] = {461.0375e6, 461.0875e6}, age[2] = {1, 2};
+    const double f[2] = {438.0625e6, 438.1125e6}, age[2] = {1, 2};
     const double corr[2] = {-est * f[0] * 1e-6, -est * f[1] * 1e-6};
     return rdof_ppm_update(p, corr, f, age, 2, t);
 }
@@ -2561,44 +2612,44 @@ static void test_ppm_edges(void)
     CHECK(fabs(p.residual - 2.1) < 1e-9 && p.steady_s == 5.0, "a quarter of the way: %g", p.residual);
 
     /* which channels count: fresh (0..30 s old) with a frequency; the rest are ignored */
-    const double f[5] = {461.0375e6, 461.0875e6, 461.1375e6, 0.0, 461.2375e6};
+    const double f[5] = {438.0625e6, 438.1125e6, 438.1625e6, 0.0, 438.2625e6};
     const double age[5] = {10, 31, -1, 5, 30};
     double corr[5];
     for (int i = 0; i < 5; i++)
-        corr[i] = -(i == 4 ? 2.2 : 2.0) * 461e6 * 1e-6;
+        corr[i] = -(i == 4 ? 2.2 : 2.0) * 438.025e6 * 1e-6;
     rdof_ppm_init(&p, 0.0, NAN);
     rdof_ppm_update(&p, corr, f, age, 5, 0);
     CHECK(p.channels == 2 && fabs(p.residual - 2.1) < 0.05, "channels counted: %d, residual %g (the stale, future and unknown ones out)",
           p.channels, p.residual);
     /* an odd number of agreeing channels takes the middle one, an even number the mean of the middle two */
-    const double f3[3] = {461.0e6, 461.0e6, 461.0e6}, a3[3] = {1, 1, 1};
-    const double c3[3] = {-1.0 * 461, -2.0 * 461, -2.4 * 461};
+    const double f3[3] = {438.025e6, 438.025e6, 438.025e6}, a3[3] = {1, 1, 1};
+    const double c3[3] = {-1.0 * 438.025, -2.0 * 438.025, -2.4 * 438.025};
     rdof_ppm_init(&p, 0.0, NAN);
     rdof_ppm_update(&p, c3, f3, a3, 3, 0);
     CHECK(p.channels == 3 && fabs(p.residual - 2.0) < 1e-9, "median of three: %g", p.residual);
-    const double f4[4] = {461.0e6, 461.0e6, 461.0e6, 461.0e6}, a4[4] = {1, 1, 1, 1};
-    const double c4[4] = {-1.8 * 461, -2.0 * 461, -2.4 * 461, -2.6 * 461};
+    const double f4[4] = {438.025e6, 438.025e6, 438.025e6, 438.025e6}, a4[4] = {1, 1, 1, 1};
+    const double c4[4] = {-1.8 * 438.025, -2.0 * 438.025, -2.4 * 438.025, -2.6 * 438.025};
     rdof_ppm_init(&p, 0.0, NAN);
     rdof_ppm_update(&p, c4, f4, a4, 4, 0);
     CHECK(p.channels == 4 && fabs(p.residual - 2.2) < 1e-9, "median of four: %g", p.residual);
     /* an outlier more than 1 ppm from the median is dropped */
-    const double c5[4] = {-2.0 * 461, -2.1 * 461, -2.2 * 461, -5.0 * 461};
+    const double c5[4] = {-2.0 * 438.025, -2.1 * 438.025, -2.2 * 438.025, -5.0 * 438.025};
     rdof_ppm_init(&p, 0.0, NAN);
     rdof_ppm_update(&p, c5, f4, a4, 4, 0);
     CHECK(p.channels == 3 && fabs(p.residual - 2.1) < 1e-9, "outlier out: %d channels, %g", p.channels, p.residual);
     /* more channels than the 64 it looks at */
     double f70[70], a70[70], c70[70];
     for (int i = 0; i < 70; i++) {
-        f70[i] = 461.0e6;
+        f70[i] = 438.025e6;
         a70[i] = 1;
-        c70[i] = -(i < 64 ? 2.0 : 9.0) * 461;
+        c70[i] = -(i < 64 ? 2.0 : 9.0) * 438.025;
     }
     rdof_ppm_init(&p, 0.0, NAN);
     rdof_ppm_update(&p, c70, f70, a70, 70, 0);
     CHECK(p.channels == 64 && fabs(p.residual - 2.0) < 1e-9, "64 of 70 channels: %d, %g", p.channels, p.residual);
     /* one channel alone says nothing, and keeps the confidence it had */
     CHECK(ppm_step(&p, 2.0, 5) == 0 && p.channels == 2, "two channels again");
-    const double one_f[1] = {461e6}, one_a[1] = {1}, one_c[1] = {-2 * 461.0};
+    const double one_f[1] = {439e6}, one_a[1] = {1}, one_c[1] = {-2 * 438.025};
     const double steady = p.steady_s, res = p.residual;
     CHECK(rdof_ppm_update(&p, one_c, one_f, one_a, 1, 10) == 0 && p.channels == 0 && p.steady_s == steady && p.residual == res,
           "a lone channel: nothing learned, nothing lost");

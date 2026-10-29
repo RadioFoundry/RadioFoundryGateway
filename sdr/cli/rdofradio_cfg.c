@@ -202,6 +202,7 @@ bool rdofradio_cfg_parse(const char *text, size_t len, rdofradio_cfg_t *o, char 
         o->rx_hz = c->rx_freq;
         o->tx_hz = c->tx_freq;
         o->cc = c->cc;
+        o->rx_slot = 1;
     } else {
         /* a half duplex transceiver: listens and sends on its idle channel */
         if (!c->idle.freq) {
@@ -211,6 +212,7 @@ bool rdofradio_cfg_parse(const char *text, size_t len, rdofradio_cfg_t *o, char 
         o->full = false;
         o->rx_hz = o->tx_hz = c->idle.freq;
         o->cc = c->idle.cc;
+        o->rx_slot = c->idle.slot == 2 ? 2 : 1;
     }
     if (!clock_settings(text, len, o, err, cap))
         return false;
@@ -286,7 +288,7 @@ void rdofradio_cfg_apply_txvr(const rdofradio_cfg_t *o, rdof_txvr_t *t)
     const rdof_config_t *c = &o->cfg;
     t->nchannels = 0;
     for (int i = 0; i < c->nchannels && t->nchannels < RDOF_TXVR_MAX_CHANNELS; i++)
-        t->channels[t->nchannels++] = (rdof_channel_t){c->channels[i].freq, c->channels[i].cc, c->channels[i].power};
+        t->channels[t->nchannels++] = (rdof_channel_t){c->channels[i].freq, c->channels[i].cc, c->channels[i].power, c->channels[i].slot};
     t->listen_s = c->listen_s;
     t->clear_s = c->clear_s;
     t->prebuffer = c->prebuffer;
@@ -298,7 +300,7 @@ void rdofradio_cfg_apply_txvr(const rdofradio_cfg_t *o, rdof_txvr_t *t)
     t->answer_max_s = c->answer_max_s;
     t->idle_after_s = c->idle_after_s;
     t->has_idle = true;
-    t->idle = (rdof_channel_t){c->idle.freq, c->idle.cc, c->idle.power};
+    t->idle = (rdof_channel_t){c->idle.freq, c->idle.cc, c->idle.power, c->idle.slot};
     snprintf(t->cwid, sizeof t->cwid, "%s", c->cwid);
     t->cwid_every_s = c->cwid_every_s;
 }

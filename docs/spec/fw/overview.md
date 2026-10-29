@@ -341,7 +341,7 @@ Each has its own README.
 | Two-core demod, idle gate, ppm learning, self-test, spike | yes |
 | Roamer | yes, up to 2 radios a board |
 | Repeater duplex / SFR | yes |
-| Dual capacity direct mode (`mode: dcdm`) | yes on the SDR modem; a radio needs DCDM firmware (none yet); the roamer stays slot 2 (HBlink4 roams on slot 2) |
+| Dual capacity direct mode (`mode: dcdm`) | yes on the SDR modem; a radio needs DCDM firmware (none yet); a roamer's plain direct mode calls take their frequency's `ts` (1 by default) |
 | Split duplex, radio halves | yes |
 | Split duplex, SDR half | refused for now (`split_port.c`) |
 | `sdr_transceiver` | yes (any SDR in `radios`) |
