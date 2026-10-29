@@ -21,7 +21,7 @@
  *   rdofradio DEVICE --allow-tx --rx MHZ [--tx MHZ] [--duplex full|half] [--cc CC] [-r RATE] [--bw MHZ]
  *             [--tx-gain DB] [--tx-lo MHZ] [--gain DB] [--center MHZ] [--monitor] [--tx-offset S]
  *             [--parrot ID] [--stream ARGS] [--seconds S] [--bursts] [--quiet] [-v] [--web [ADDR:]PORT]
- *             [--last-exit FILE] [--fft builtin|pffft]
+ *             [--last-exit FILE] [--fft builtin|pffft] [--bench [ADDR:]PORT]
  *   rdofradio DEVICE --allow-tx --config FILE [--clock-state FILE] [--set-os-clock] [the device's flags as above]
  *   rdofradio DEVICE --allow-tx --split-tx PORT [--baud N] [--split-power-cap N] --rx MHZ --tx MHZ [--cc CC] [...]
  *
@@ -29,7 +29,9 @@
  * PlutoSDR, "ip:192.168.2.1" from a host; -r defaults to 768 kS/s, which the chip's own FIR makes with
  * libad9361). --web serves the page on 127.0.0.1 unless ADDR is given (0.0.0.0: every interface). --fft: the
  * channelizer's FFT, pffft when it's built in (RDOF_PFFFT). --last-exit FILE: where a supervisor records how the
- * last run ended (rdof_hostweb_last_exit; the Pluto bundle's run.sh): the page's crash card.
+ * last run ended (rdof_hostweb_last_exit; the Pluto bundle's run.sh): the page's crash card. --bench serves the
+ * bench's line protocol (docs/spec/bench-api.md section 14) on PORT (7373 by convention), every interface unless
+ * ADDR is given: the receiver's bursts and wideband captures for tools/bench/rfgbench.py.
  *
  * --split-tx PORT: a split duplex repeater (docs/spec/repeater.md): a RadioFoundry radio on PORT (its hotspot, with
  * the split duplex extension) transmits, and the SDR, opened receive only, is the RX half. Any receiver does, an
@@ -72,6 +74,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "rdof/benchline.h"
+#include "rdof/benchnet.h"
 #include "rdof/hbpeer.h"
 #include "rdof/layer2.h"
 #include "rdof/modem.h"
@@ -340,7 +344,7 @@ static void usage(void)
             "usage: rdofradio DEVICE --allow-tx --rx MHZ [--tx MHZ] [--duplex full|half] [--cc CC] [-r RATE] [--bw MHZ]\n"
             "                 [--tx-gain DB] [--tx-lo MHZ] [--gain DB] [--center MHZ] [--monitor] [--tx-offset S]\n"
             "                 [--parrot ID] [--stream ARGS] [--seconds S] [--bursts] [--quiet] [-v] [--web [ADDR:]PORT]\n"
-            "                 [--last-exit FILE] [--fft builtin|pffft]\n"
+            "                 [--last-exit FILE] [--fft builtin|pffft] [--bench [ADDR:]PORT]\n"
             "       rdofradio DEVICE --allow-tx --config FILE [--clock-state FILE] [--set-os-clock] [the device's flags]\n"
             "       rdofradio DEVICE --allow-tx --split-tx PORT [--baud N] [--split-power-cap N] --rx MHZ --tx MHZ [--cc CC]\n"
             "                 [-r RATE] [--gain DB] [--center MHZ] [--parrot ID] [--seconds S] [-v] [--web [ADDR:]PORT]\n"
@@ -1256,9 +1260,152 @@ static void on_json(void *ctx, const char *ch, const char *json)
         printf("%s json %s\n", ch, json);
 }
 
+/* --bench [ADDR:]PORT: the bench's line protocol (docs/spec/bench-api.md section 14): the receiver's bursts and
+ * captures from a history of the wideband stream, for the bench tools (tools/bench/rfgbench.py). */
+static int bench_port = -1;
+static char bench_addr[64] = "0.0.0.0";
+static struct {
+    rdof_bl_t *bl;
+    rdof_bnet_t *net;
+    rdof_bl_ring_t ring;
+    pthread_mutex_t mu;     /* ring and the clock's reference, between the receive loop and the server */
+    uint64_t ref_sc;        /* a wideband sample and its UTC */
+    double ref_utc;
+    long clipped, seen;
+    double t_start;
+} BL = {.mu = PTHREAD_MUTEX_INITIALIZER};
+
+static void bl_device(void *ctx, char *kind, size_t kcap, char *name, size_t ncap, char *version, size_t vcap)
+{
+    snprintf(kind, kcap, "rdofradio");
+    snprintf(name, ncap, "%s", rcfg.name[0] ? rcfg.name : "rdofradio");
+    snprintf(version, vcap, "%s", RDOF_VERSION);
+}
+
+static void bl_window(void *ctx, rdof_bl_window_t *w)
+{
+    memset(w, 0, sizeof *w);
+    w->running = BL.ring.w > 0;
+    w->center_hz = R.rx.center_hz;
+    w->fs = R.rate;
+    w->lo_hz = R.rx.center_hz - 0.4 * R.rate;
+    w->hi_hz = R.rx.center_hz + 0.4 * R.rate;
+    w->gain_db = dev ? dev->rx_gain(dev) : 0;
+}
+
+static int bl_freqs(void *ctx, rdof_bl_freq_t *out, int max)
+{
+    int k = 0;
+    for (int c = 0; c < NCH && k < max; c++, k++) {
+        out[k] = (rdof_bl_freq_t){CH[c].freq_hz, c, "", RDOF_BL_CAP_RX | RDOF_BL_CAP_DMR | RDOF_BL_CAP_IQ};
+        snprintf(out[k].id, sizeof out[k].id, "%s", CH[c].id);
+    }
+    return k;
+}
+
+static long bl_iq_read(void *ctx, uint64_t sc, int8_t *out, long n, uint64_t *oldest, uint64_t *next)
+{
+    pthread_mutex_lock(&BL.mu);
+    const long k = rdof_bl_ring_read(&BL.ring, sc, out, n, oldest, next);
+    pthread_mutex_unlock(&BL.mu);
+    return k;
+}
+
+static double bl_utc(void *ctx) { return wall_s(); }
+
+static double bl_sc_utc(void *ctx, uint64_t sc)
+{
+    pthread_mutex_lock(&BL.mu);
+    const double t = BL.ref_utc + ((double)sc - (double)BL.ref_sc) / R.rate;
+    pthread_mutex_unlock(&BL.mu);
+    return t;
+}
+
+static void bl_rx_stats(void *ctx, double *seconds, long *overflows, double *clip_pct, long *dsp_skipped, long *dropped)
+{
+    pthread_mutex_lock(&BL.mu);
+    *seconds = (double)BL.ring.w / R.rate;
+    *clip_pct = BL.seen ? 100.0 * (double)BL.clipped / (double)BL.seen : 0;
+    pthread_mutex_unlock(&BL.mu);
+    *overflows = (long)WS.overflows;
+    *dsp_skipped = 0;
+    *dropped = 0;
+}
+
+static const char *bl_can_tx(void *ctx) { return "this bench runs no transmit jobs yet"; }
+
+/* A chunk of the wideband stream, before the receiver: into the history (2.5 s), with the clock's reference. */
+static void bench_feed(const rdof_cf_t *in, int n)
+{
+    if (!BL.bl)
+        return;
+    const double utc = wall_s();
+    pthread_mutex_lock(&BL.mu);
+    long clip = 0;
+    rdof_bl_ring_put(&BL.ring, (const float *)in, n, &clip);
+    BL.clipped += clip, BL.seen += n;
+    if (BL.seen > (long)(10 * R.rate))
+        BL.clipped /= 2, BL.seen /= 2; /* the last ten seconds or so */
+    /* the chunk's last sample is about now: the stream's own count between, a step only when it drifts */
+    const uint64_t sc = BL.ring.w;
+    const double pred = BL.ref_utc + ((double)sc - (double)BL.ref_sc) / R.rate;
+    if (!BL.ref_utc || fabs(utc - pred) > 0.02)
+        BL.ref_sc = sc, BL.ref_utc = utc;
+    pthread_mutex_unlock(&BL.mu);
+}
+
+static void bench_burst(int c, const rdof_sdr_burst_t *b)
+{
+    if (!BL.bl || !rdof_bl_wants_bursts(BL.bl))
+        return;
+    rdof_bl_burst_t o = {0};
+    o.ch = c;
+    o.pos48 = b->position;
+    o.t = bl_sc_utc(NULL, (uint64_t)((double)b->position * R.rate / 48000.0));
+    o.cfo_hz = (float)b->freq_offset_hz, o.dev_hz = (float)b->deviation_hz, o.level_dbfs = b->b.power_dbfs;
+    o.dt = (int8_t)b->b.dt, o.n = (int8_t)b->b.n, o.slot = (int8_t)b->b.slot, o.family = (int8_t)b->b.family;
+    o.cc = (int8_t)b->b.cc, o.sync_errors = (int8_t)b->b.sync_errors;
+    memcpy(o.raw, b->b.burst, sizeof o.raw);
+    rdof_bl_burst(BL.bl, &o);
+}
+
+static void bench_start(void)
+{
+    if (bench_port < 0)
+        return;
+    if (!rdof_bl_ring_init(&BL.ring, (long)(2.5 * R.rate))) {
+        fprintf(stderr, "bench: no memory for the history\n");
+        return;
+    }
+    static const rdof_bl_platform_t pf = {bl_device, bl_window, bl_freqs, bl_iq_read, NULL, bl_utc, bl_sc_utc,
+                                          bl_rx_stats, bl_can_tx, NULL};
+    BL.bl = rdof_bl_new(&pf);
+    char err[160];
+    BL.net = BL.bl ? rdof_bnet_start(BL.bl, bench_addr, bench_port, now_s, 0, err, sizeof err) : NULL;
+    if (!BL.net) {
+        fprintf(stderr, "bench: %s\n", BL.bl ? err : "no memory");
+        rdof_bl_free(BL.bl);
+        BL.bl = NULL;
+        rdof_bl_ring_free(&BL.ring);
+        return;
+    }
+    fprintf(stderr, "bench: %s:%d\n", bench_addr, rdof_bnet_port(BL.net));
+}
+
+static void bench_stop(void)
+{
+    if (!BL.bl)
+        return;
+    rdof_bnet_stop(BL.net);
+    rdof_bl_free(BL.bl);
+    BL.bl = NULL, BL.net = NULL;
+    rdof_bl_ring_free(&BL.ring);
+}
+
 static void on_burst(void *ctx, int c, const rdof_sdr_burst_t *b, double t)
 {
     rdof_sdrmodem_heard(&R.m, c, b);
+    bench_burst(c, b);
     if (c == R.mon && R.waiting && R.first_sent) {
         const double d = (double)(b->position - R.first_sent) / 48000.0;
         R.waiting = false;
@@ -1645,8 +1792,10 @@ static void clock_read(double t)
         SC.filled += lost;
         WS.lost += lost;
         SC.total += lost;
-        for (; lost > 0; lost -= CHUNK)
+        for (; lost > 0; lost -= CHUNK) {
+            bench_feed(zeros, lost < CHUNK ? (int)lost : CHUNK);
             rdof_sdr_rx_process(&R.rx, zeros, lost < CHUNK ? (int)lost : CHUNK);
+        }
     }
     SC.last_win = w;
 }
@@ -1748,6 +1897,7 @@ static void split_turn(void)
 #ifdef RDOF_HOST_WEB
         web_spectrum(in, n);
 #endif
+        bench_feed(in, n);
         const double t3 = now_s();
         rdof_sdr_rx_process(&R.rx, in, n);
         const double t4 = now_s();
@@ -1835,6 +1985,7 @@ static int split_main(int argc, char **argv, const char *port, int baud, int pow
     }
     double last_web = 0;
 #endif
+    bench_start();
     double last_poll = 0, last_status = now_s();
     while (!stop && (seconds <= 0 || SC.total < (long long)(seconds * R.rate))) {
         split_turn();
@@ -1879,6 +2030,7 @@ out:
     if (R.parrot)
         say("parrot: %u sent back, %u not to it, %u bursts cut\n", R.parrot->replayed, R.parrot->ignored,
             R.parrot->cut);
+    bench_stop();
     mq_stop();
     net_close();
     clock_stop();
@@ -2056,6 +2208,14 @@ int main(int argc, char **argv)
         } else if (!strcmp(a, "-v") || !strcmp(a, "--verbose")) {
             verbose = 1;
             R.verbose = true;
+        } else if (!strcmp(a, "--bench")) {
+            NEXT();
+            const char *colon = strrchr(v, ':');
+            if (colon) {
+                snprintf(bench_addr, sizeof bench_addr, "%.*s", (int)(colon - v), v);
+                v = colon + 1;
+            }
+            bench_port = atoi(v);
 #ifdef RDOF_HOST_WEB
         } else if (!strcmp(a, "--web")) {
             NEXT();
@@ -2370,6 +2530,7 @@ int main(int argc, char **argv)
     }
     double last_web = 0;
 #endif
+    bench_start();
     const double t_start = now_s();
     double last_poll = 0, keyed_until = -1;
     long long total = 0;
@@ -2596,6 +2757,7 @@ int main(int argc, char **argv)
 #ifdef RDOF_HOST_WEB
         web_spectrum(in, n);
 #endif
+        bench_feed(in, n);
         const double t3 = now_s();
         rdof_sdr_rx_process(&R.rx, in, n);
         const double t4 = now_s();
@@ -2626,6 +2788,7 @@ int main(int argc, char **argv)
     if (R.parrot)
         say("parrot: %u sent back, %u not to it, %u bursts cut\n", R.parrot->replayed, R.parrot->ignored,
                 R.parrot->cut);
+    bench_stop();
     mq_stop();
     net_close();
     clock_stop();

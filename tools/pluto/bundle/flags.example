@@ -1,1 +1,1 @@
---gain 20 --tx-gain 0 --web 0.0.0.0:8080 --clock-state /mnt/jffs2/rdof/netclock.state --set-os-clock
+--gain 20 --tx-gain 0 --web 0.0.0.0:8080 --clock-state /mnt/jffs2/rdof/netclock.state --set-os-clock --bench 7373
