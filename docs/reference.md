@@ -150,6 +150,16 @@ cs8 captures from a 2.5 s history, and `bench_tx` jobs (`voice`, `csbk`, `data`,
 `--bench-tx MHZ[,MHZ...]` (the frequencies it may use) and the half duplex transceiver: it takes the SDR modem from
 the transceiver for its length, at `--tx-gain` (bench_tx's `--power` is noted, not applied).
 
+The ESP32 boards serve the same protocol on TCP `CONFIG_RDOF_BENCH_LINE_PORT` (7373; 0 turns it off) with the bench
+API (`bench_line.c`): the receiver channels' bursts, cs8 captures from the bench API's 2 s wideband history (kept
+only while a capture or an I/Q stream has used it in the last ten minutes, so a first capture has no pre-roll), and
+`bench_tx` jobs through the SDR modem under `bench.tx`'s gates, in WS /tx's one job slot (bench_tx's `--power`
+capped at `bench.tx.rf_level`). A roamer keeps its SDR modem, so a W12 running as one refuses transmit jobs. In
+PSRAM: about 410 KB at rest (the engine 71 KB, its request parser's strings 197 KB, the server's send buffers
+144 KB), and while in use 16 KB a connection, 115 KB a job, 256 KB a capture; the server thread's stack too. A wideband capture needs 2 bytes a
+sample (768 KB/s at 384 kS/s), more than one TCP stream from the W12 carries with lwIP's 5.76 KB send buffer: on
+2026-10-29 a 4 s capture got 14% of its samples, the rest reported as `gap_samples`.
+
 ### A radio transmits, the SDR receives (split duplex)
 
 `rdofradio DEVICE --allow-tx --split-tx PORT --rx MHZ --tx MHZ` runs a split duplex repeater
@@ -606,6 +616,11 @@ the self-test clip out (`CONFIG_RDOF_SDR_SELFTEST`) or build one role before add
 DIRAM went down because the roamer's state moved from `.bss` to the heap when it became a `roam_t`: the first
 radio's is still internal (about 5 KB, allocated when it starts), its settings in PSRAM. The `w12` build's 11 KB
 more DIRAM is the SPI master driver and the LR2021's state.
+
+On 2026-10-29, with the bench's line protocol on the ESP32 (`bench_line.c`, the line protocol's jobs in
+`bench_tx.c`; the engine's `benchline.c`, `benchnet.c` and `benchjob.c` linked in for the first time), against the
+same tree without it: `16mb` + `w12` 2118 KB (0x2116E0), +45 KB, and 200 bytes more DIRAM. Its buffers are in PSRAM
+(see "The bench's line protocol").
 
 The roamer role costs 132 KB of flash and the SDR 436 KB (338 KB of it the self-test clip), against about 945 KB for
 the board both share. The SDR only image is 64 KB smaller than with everything built `-O2`.

@@ -308,7 +308,7 @@ menu "RadioFoundry Gateway"
         help
             docs/spec/bench-api.md section 14, for tools/bench/rfgbench.py: the receiver channels' bursts,
             captures from the wideband history and bench_tx jobs (through RDOF_BENCH_TX and bench.tx).
-            About 230 KB of PSRAM and a server thread with its stack in PSRAM.
+            About 410 KB of PSRAM at rest, more while in use; a server thread with its stack in PSRAM.
 
     config RDOF_SDR_LR2021
         bool "LR2021 front end on SPI (device.type lr2021; not run on a chip yet)"
