@@ -1813,9 +1813,10 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
             return; /* not written yet */
         budget -= got;
         const long idx0 = t->fired ? (long)((t->next_out - g - t->out_sc0) / d) : 0;
-        double ph = fmod(t->step * (double)t->sc, 2 * M_PI);
-        double pr = cos(ph), pq = sin(ph);
-        const double rr = cos(t->step), rq = sin(t->step);
+        /* the mixer in float (an ESP32's FPU has no double), its phase exact again each chunk */
+        const double ph = fmod(t->step * (double)t->sc, 2 * M_PI);
+        float pr = (float)cos(ph), pq = (float)sin(ph);
+        const float rr = (float)cos(t->step), rq = (float)sin(t->step);
         const float k127 = 1.0f / 127;
         int nout = 0;
         bool restarted = false;
@@ -1827,9 +1828,9 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
             }
             const float xi = xi8 * k127, xq = xq8 * k127;
             float *a = t->dl + 2 * t->di, *b = a + 2 * t->ntaps;
-            a[0] = b[0] = (float)(xi * pr - xq * pq);
-            a[1] = b[1] = (float)(xi * pq + xq * pr);
-            const double npr = pr * rr - pq * rq;
+            a[0] = b[0] = xi * pr - xq * pq;
+            a[1] = b[1] = xi * pq + xq * pr;
+            const float npr = pr * rr - pq * rq;
             pq = pr * rq + pq * rr, pr = npr;
             if (++t->di == t->ntaps)
                 t->di = 0;
@@ -1845,7 +1846,7 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
                 t->y[2 * nout] = yi, t->y[2 * nout + 1] = yq, nout++;
             if (!t->bn++)
                 t->block_sc = center;
-            t->bp += (double)yi * yi + (double)yq * yq;
+            t->bp += yi * yi + yq * yq;
             if (t->bn == t->bsize) {
                 const double lin = t->bp / t->bsize;
                 t->bn = 0, t->bp = 0;
