@@ -31,6 +31,7 @@ extern "C" {
 #define RDOF_BL_BURSTQ 256     /* bursts between the receiver and the connections */
 #define RDOF_BL_OUT 16384      /* a connection's output buffer */
 #define RDOF_BL_OUT_IQ 262144  /* a capture's */
+#define RDOF_BL_OUT_TRIG 4194304 /* a trigger's at most (its whole capture where it fits) */
 #define RDOF_BL_IQ_CHUNK 8192  /* samples a capture frame */
 
 /* The engine's small buffers (request lines, a listener's frames): on an ESP32 in PSRAM when there is some, since
