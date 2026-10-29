@@ -69,6 +69,7 @@ typedef struct {
     bool until_end, idle;
     int cc;                   /* -1 any */
     double first_t, prev_t, last_t, last_mono;
+    rdof_bj_emb_t emb;         /* dmr-bursts: the embedded LC so far */
     double cfo_sum, cfo_min, cfo_max, lvl_sum, lvl_max;
     int kinds[18];
     int syncs[9];
@@ -841,6 +842,7 @@ static void op_bursts(rdof_bl_t *bl, conn_t *c, int root, double now, bool liste
     c->until_end = jbool(bl, root, "until_end");
     c->cc = (int)jnum(bl, root, "cc", -1);
     c->first_t = c->prev_t = c->last_t = NAN;
+    memset(&c->emb, 0, sizeof c->emb);
     c->cfo_min = INFINITY, c->cfo_max = -INFINITY, c->lvl_max = -INFINITY;
     c->state = C_ACTIVE;
     bl->n_bursts++;
@@ -1385,15 +1387,16 @@ static void burst_out(rdof_bl_t *bl, conn_t *c, const rdof_bl_burst_t *b, double
         snprintf(hex + 2 * i, 3, "%02x", b->raw[i]);
     const int si = sync_index(b->family, b->dt);
     const char *kind = kind_name(b->dt, b->n, kt);
-    char line[600];
+    char dec[1200], line[2048];
+    rdof_bj_burst_decode(&c->emb, b, dec, sizeof dec);
     snprintf(line, sizeof line,
              "{\"burst\":{\"t\":%.6f,\"t_rel_ms\":%.3f,\"dt_prev_ms\":%s,\"grid_n\":%ld,\"grid_err_ms\":%.3f,"
              "\"slot_ab\":\"%c\",\"sync\":\"%s\",\"sync_errors\":%d,\"slot\":%d,\"voice\":%s,\"kind\":\"%s\","
-             "\"dt\":%d,\"n\":%d,\"cc\":%d,\"cfo_hz\":%.1f,\"level_dbfs\":%.1f,\"dev_hz\":%.1f,\"freq\":%.1f,"
+             "\"dt\":%d,\"n\":%d,\"cc\":%d,\"cfo_hz\":%.1f,\"level_dbfs\":%.1f,\"dev_hz\":%.1f,\"freq\":%.1f%s,"
              "\"raw_hex\":\"%s\"}}",
              b->t, rel, prev, gn, gerr, gn % 2 == 0 ? 'A' : 'B', si >= 0 ? SYNC_NAMES[si] : "?",
              b->sync_errors, b->slot, voice ? "true" : "false", kind, b->dt, b->n, b->cc, b->cfo_hz,
-             b->level_dbfs, b->dev_hz, c->freq_hz, hex);
+             b->level_dbfs, b->dev_hz, c->freq_hz, dec, hex);
     if (!emit(bl, c, "%s", line)) {
         c->dropped++;
         return;

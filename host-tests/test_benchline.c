@@ -16,6 +16,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 
+#include "rdof/benchjob.h"
 #include "rdof/benchline.h"
 #include "rdof/benchnet.h"
 #include "rdof/jsonp.h"
@@ -448,6 +449,69 @@ static int count(const char *text, const char *needle)
     return n;
 }
 
+/* dmr-bursts records' decode: a voice call and CSBKs built by the job code, clean and with bit errors. */
+static void decode_job(const char *json, rdof_bj_burst_t *out, int *n)
+{
+    static rdof_jnode_t nodes[64];
+    static char sb[1024];
+    static uint8_t ambe[64];
+    rdof_jdoc_t d = {.nodes = nodes, .max = 64, .buf = sb, .cap = sizeof sb};
+    rdof_bj_job_t j;
+    char e[200], note[200], done[200];
+    const int root = rdof_jparse(&d, json, strlen(json));
+    e[0] = 0;
+    CHECK(root >= 0 && rdof_bj_parse(&d, root, &j, ambe, sizeof ambe, e, sizeof e), "job parses (%d): %s", root, e);
+    *n = rdof_bj_build(&j, 0, out, 64, note, done, sizeof note, e, sizeof e);
+    CHECK(*n > 0, "job builds: %s", e);
+}
+
+static rdof_bl_burst_t heard(const rdof_bj_burst_t *q)
+{
+    rdof_bl_burst_t b = {.cc = 2};
+    b.dt = q->control & 0x40 ? q->control & 0x0F : q->control & 0x20 ? RDOF_BL_VOICE_SYNC : RDOF_BL_VOICE;
+    b.n = (int8_t)(b.dt == RDOF_BL_VOICE ? q->control & 0x0F : 0);
+    memcpy(b.raw, q->burst, 33);
+    return b;
+}
+
+static void test_decode(void)
+{
+    rdof_bj_burst_t q[64];
+    int n = 0;
+    char out[1200];
+    decode_job("{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"freq\":438.1125,\"cc\":2,\"src\":9990301,\"dst\":215,\"superframes\":1}", q, &n);
+    rdof_bj_emb_t emb = {0};
+    int lcs = 0, ok = 0;
+    for (int i = 0; i < n; i++) {
+        rdof_bl_burst_t b = heard(&q[i]);
+        if (i == 0)
+            b.raw[5] ^= 0x10; /* one bit in the header's BPTC */
+        rdof_bj_burst_decode(&emb, &b, out, sizeof out);
+        ok += strstr(out, "\"fec_ok\":true") != NULL;
+        if (i == 0)
+            CHECK(strstr(out, "\"bptc_corrected\":1") && strstr(out, "\"rs129_ok\":true") &&
+                      strstr(out, "\"bit_err_est\":1") && strstr(out, "\"type\":\"grp_voice\"") &&
+                      strstr(out, "\"src\":9990301,\"dst\":215"),
+                  "the header's decode: %s", out);
+        if (b.dt == RDOF_BL_VOICE && b.n == 4) {
+            lcs++;
+            CHECK(strstr(out, "\"lc\":{\"type\":\"grp_voice\"") && strstr(out, "\"emb_flco\":0") &&
+                      strstr(out, "\"emb_corrected\":0"),
+                  "voice E's embedded LC: %s", out);
+        } else if (b.dt == RDOF_BL_VOICE || b.dt == RDOF_BL_VOICE_SYNC) {
+            CHECK(strstr(out, "\"lc\":null") && strstr(out, "\"ambe_corrected\":[0,0,0]"), "voice: %s", out);
+        }
+    }
+    CHECK(lcs == 1 && ok == n, "one embedded LC (%d), every burst's FEC ok (%d of %d)", lcs, ok, n);
+    decode_job("{\"tool\":\"bench_tx\",\"cmd\":\"csbk\",\"freq\":438.1125,\"cc\":2,\"count\":1}", q, &n);
+    rdof_bl_burst_t b = heard(&q[0]);
+    rdof_bj_burst_decode(&emb, &b, out, sizeof out);
+    CHECK(strstr(out, "\"crc_ok\":true") && strstr(out, "\"lc\":{\"type\":\"csbk\",\"csbko\":"), "csbk: %s", out);
+    memset(b.raw, 0x55, 12); /* past what the BPTC corrects */
+    rdof_bj_burst_decode(&emb, &b, out, sizeof out);
+    CHECK(strstr(out, "\"fec_ok\":false"), "a ruined csbk: %s", out);
+}
+
 static void test_run(void)
 {
     static char out[1 << 20], lis[1 << 20];
@@ -758,6 +822,7 @@ int main(int argc, char **argv)
     if (argc == 4 && !strcmp(argv[1], "serve"))
         return serve(atoi(argv[2]), atof(argv[3]));
     test_ops();
+    test_decode();
     test_run();
     test_tcp();
     printf("%d checks, %d failures\n", checks, failures);

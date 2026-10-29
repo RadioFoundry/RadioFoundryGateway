@@ -1105,3 +1105,140 @@ void rdof_bj_listen_summary(rdof_bj_listener_t *l, const char *prefix, rdof_bj_e
         emit(ctx, rec);
     }
 }
+
+/* ── a dmr-bursts record's decode ─────────────────────────────────────────── */
+
+static size_t lc_json(const rdof_full_lc_t *lc, char *o, size_t k, size_t cap)
+{
+    k = cat(o, k, cap, "{\"type\":\"%s\",\"flco\":%d,\"fid\":%d,\"raw\":", lc_type_name(lc->flco, lc->fid), lc->flco,
+            lc->fid);
+    k = cat_hex(o, k, cap, lc->raw, 9);
+    if (lc->src_id != RDOF_NONE) {
+        const int so = lc->service_options;
+        k = cat(o, k, cap,
+                ",\"src\":%ld,\"dst\":%ld,\"group\":%s,\"so\":%d,\"emergency\":%s,\"privacy\":%s,\"broadcast\":%s,"
+                "\"ovcm\":%s,\"priority\":%d",
+                (long)lc->src_id, (long)lc->dst_id, lc->group ? "true" : "false", so, so & 0x80 ? "true" : "false",
+                so & 0x40 ? "true" : "false", so & 0x08 ? "true" : "false", so & 0x04 ? "true" : "false", so & 3);
+    } else if (lc->has_gps) {
+        k = cat(o, k, cap, ",\"lat\":%.6f,\"lon\":%.6f,\"position_error\":%d", lc->lat, lc->lon, lc->position_error);
+    } else if (lc->ta_format != RDOF_NONE) {
+        k = cat(o, k, cap, ",\"format\":%d,\"length\":%d", lc->ta_format, lc->ta_length);
+    }
+    return k;
+}
+
+/* bits (0/1 bytes) that differ */
+static int bit_diff(const uint8_t *a, const uint8_t *b, size_t n)
+{
+    int d = 0;
+    for (size_t i = 0; i < n; i++)
+        d += a[i] != b[i];
+    return d;
+}
+
+size_t rdof_bj_burst_decode(rdof_bj_emb_t *emb, const rdof_bl_burst_t *b, char *out, size_t cap)
+{
+    size_t k = 0;
+    out[0] = 0;
+    const bool voice = b->dt == RDOF_BL_VOICE_SYNC || b->dt == RDOF_BL_VOICE;
+    if (voice) {
+        const int n = b->dt == RDOF_BL_VOICE ? b->n : 0;
+        int cc = -1, pi = 0, lcss = 0, emb_err = 0;
+        bool emb_ok = true;
+        if (n) {
+            emb_ok = rdof_decode_emb(b->raw, &cc, &pi, &lcss, &emb_err);
+            k = cat(out, k, cap, ",\"pi\":%d,\"lcss\":%d", pi, lcss);
+        } else {
+            k = cat(out, k, cap, ",\"pi\":null,\"lcss\":null");
+            emb->have = 0;
+        }
+        uint8_t f[3][9];
+        rdof_ambe_frames(b->raw, f);
+        int corr[3], bits = emb_err;
+        bool bad = false;
+        for (int i = 0; i < 3; i++) {
+            corr[i] = rdof_ambe_decode_frame(f[i], NULL);
+            bits += corr[i];
+            if (corr[i] > 3) /* past what the first Golay word corrects */
+                bad = true;
+        }
+        k = cat(out, k, cap, ",\"fec\":{");
+        if (n)
+            k = cat(out, k, cap, "\"emb_corrected\":%d,", emb_err);
+        k = cat(out, k, cap, "\"ambe_corrected\":[%d,%d,%d],\"ambe_bad\":%s,\"bit_err_est\":%d,\"fec_ok\":%s}",
+                corr[0], corr[1], corr[2], bad ? "true" : "false", bits, emb_ok && !bad ? "true" : "false");
+        /* the embedded LC: B-E carry it, decoded at E */
+        bool lc_out = false;
+        if (n >= 1 && n <= 4 && emb_ok) {
+            if (n == 1)
+                emb->have = 0;
+            rdof_embedded_signalling(b->raw, emb->frag[n - 1]);
+            emb->have |= 1u << (n - 1);
+        }
+        if (n == 4 && emb->have == 0xF) {
+            uint8_t raw128[128], lc9[9];
+            for (int i = 0; i < 4; i++)
+                memcpy(raw128 + 32 * i, emb->frag[i], 32);
+            if (rdof_embedded_lc_decode(raw128, lc9)) {
+                rdof_full_lc_t lc;
+                rdof_parse_full_lc(lc9, &lc);
+                k = cat(out, k, cap, ",\"lc\":");
+                k = lc_json(&lc, out, k, cap);
+                k = cat(out, k, cap, ",\"emb_flco\":%d}", lc.flco);
+                lc_out = true;
+            }
+        }
+        if (!lc_out)
+            k = cat(out, k, cap, ",\"lc\":null");
+        return k;
+    }
+    const int dt = b->dt;
+    int cc = -1, sdt = 0, st_err = 0;
+    const bool st_ok = rdof_decode_slot_type(b->raw, &cc, &sdt, &st_err);
+    k = cat(out, k, cap, ",\"pi\":null,\"lcss\":null,\"fec\":{\"slot_type_corrected\":%d", st_err);
+    int bits = st_err;
+    bool ok = st_ok;
+    char lc[600];
+    size_t lk = cat(lc, 0, sizeof lc, "null");
+    if (dt == RDOF_DT_VOICE_LC_HEADER || dt == RDOF_DT_TERMINATOR_WITH_LC || dt == RDOF_DT_CSBK ||
+        dt == RDOF_DT_DATA_HEADER || dt == RDOF_DT_RATE_12 || dt == RDOF_DT_PI_HEADER) {
+        uint8_t info[12], got[196], want[196];
+        const bool bptc = rdof_bptc196_decode(b->raw, info);
+        rdof_info_bits(b->raw, got);
+        rdof_bptc196_encode(info, want); /* the 196 bits it corrected to */
+        const int corr = bptc ? bit_diff(got, want, 196) : 0;
+        bits += corr;
+        ok = ok && bptc;
+        k = cat(out, k, cap, ",\"bptc_ok\":%s,\"bptc_corrected\":%d", bptc ? "true" : "false", corr);
+        if (dt == RDOF_DT_VOICE_LC_HEADER || dt == RDOF_DT_TERMINATOR_WITH_LC) {
+            rdof_full_lc_t l;
+            const bool rs = rdof_decode_voice_lc(b->raw, dt, &l);
+            k = cat(out, k, cap, ",\"rs129_ok\":%s", rs ? "true" : "false");
+            ok = ok && rs;
+            if (rs) {
+                lk = lc_json(&l, lc, 0, sizeof lc);
+                lk = cat(lc, lk, sizeof lc, "}");
+            }
+        } else if (dt != RDOF_DT_RATE_12) {
+            const uint16_t mask = dt == RDOF_DT_CSBK ? RDOF_MASK_CSBK
+                                  : dt == RDOF_DT_DATA_HEADER ? RDOF_MASK_DATA_HEADER
+                                                              : RDOF_MASK_PI_HEADER;
+            const bool crc = bptc && rdof_check_crc16(info, mask);
+            k = cat(out, k, cap, ",\"crc_ok\":%s", crc ? "true" : "false");
+            ok = ok && crc;
+            if (dt == RDOF_DT_CSBK) {
+                rdof_csbk_t cs;
+                rdof_decode_csbk(b->raw, &cs);
+                lk = cat(lc, 0, sizeof lc, "{\"type\":\"csbk\",\"csbko\":%d,\"fid\":%d,\"crc_ok\":%s", cs.opcode,
+                         cs.fid, crc ? "true" : "false");
+                if (cs.src_id != RDOF_NONE)
+                    lk = cat(lc, lk, sizeof lc, ",\"src\":%ld,\"dst\":%ld", (long)cs.src_id, (long)cs.dst_id);
+                lk = cat(lc, lk, sizeof lc, "}");
+            }
+        }
+    }
+    k = cat(out, k, cap, ",\"bit_err_est\":%d,\"fec_ok\":%s},\"lc\":%s", bits, ok ? "true" : "false", lc);
+    (void)lk;
+    return k;
+}

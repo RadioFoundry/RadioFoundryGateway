@@ -129,6 +129,15 @@ void rdof_bj_listen_burst(rdof_bj_listener_t *l, const rdof_bl_burst_t *b, rdof_
 void rdof_bj_listen_summary(rdof_bj_listener_t *l, const char *prefix, rdof_bj_emit_fn emit,
                             void (*file)(void *ctx, const char *name, const uint8_t *b, size_t n), void *ctx);
 
+/* A dmr-bursts record's decode (bench-api.md 14.2): ",\"pi\":..,\"lcss\":..,\"fec\":{..},\"lc\":.." for burst b into out
+ * (cap bytes); its length. emb carries the embedded LC's fragments from burst to burst (zero it at the start). */
+typedef struct {
+    uint8_t frag[4][32];
+    unsigned have;
+} rdof_bj_emb_t;
+
+size_t rdof_bj_burst_decode(rdof_bj_emb_t *emb, const rdof_bl_burst_t *b, char *out, size_t cap);
+
 #ifdef __cplusplus
 }
 #endif
