@@ -64,9 +64,9 @@ wideband sample (3.5 us at 288 kS/s). On the daemon, `sc` is the capture's sampl
 ```json
 {"api": "v1", "device": {"kind": "esp32s3-gateway", "name": "...", "version": "0.3.0"},
  "sdr": {"frontend": "rtlsdr", "tuner": "R820T", "rate": 288000.0, "rates": [240000, 288000],
-         "center_hz": 461122500.0, "gain_db": 29.7, "gains_db": [0, 0.9, ...], "ppm": 0.42,
-         "window": {"lo_hz": 461007300.0, "hi_hz": 461237700.0}, "tx": false},
- "channels": [{"id": "SDR06", "name": "Operations 3", "freq_hz": 461137500.0, "cc": 2, "slot": 1,
+         "center_hz": 438147500.0, "gain_db": 29.7, "gains_db": [0, 0.9, ...], "ppm": 0.42,
+         "window": {"lo_hz": 438032300.0, "hi_hz": 438262700.0}, "tx": false},
+ "channels": [{"id": "SDR06", "name": "Operations 3", "freq_hz": 438162500.0, "cc": 2, "slot": 1,
                "caps": ["rx", "dmr", "nfm", "iq"], "in_band": true}],
  "radios": [{"name": "radio1", "kind": "odr", "caps": ["tune", "ptt", "mmdvm"], "port": "usb"}],
  "tx": {"freqs_hz": [], "max_key_s": 0, "power": null},
@@ -137,7 +137,7 @@ every 200 ms, as the start frame says, whatever the query asks); `seconds=` ends
 
 ### 6.2 I/Q
 
-`WS /iq?freq_hz=461137500&fmt=cs16&seconds=5&pre_s=0.3` gives a channel tap at 48 kS/s, centered on `freq_hz`
+`WS /iq?freq_hz=438162500&fmt=cs16&seconds=5&pre_s=0.3` gives a channel tap at 48 kS/s, centered on `freq_hz`
 (any frequency in the window, not only a configured channel). `bw_hz` sets the tap filter. `rate=wide` gives the
 front end's wideband samples instead (`fmt=cs8`, the RTL's own format; one such stream at a time). Other parameters:
 `seconds` (or until close), `pre_s` (pre-roll from the bench's ring, up to `limits.preroll_s`) and
@@ -154,7 +154,7 @@ minutes), so the first stream after a quiet spell gets what it has, possibly non
 Start frame:
 
 ```json
-{"type": "start", "run": 7, "fmt": "cs16", "rate": 48000.0, "freq_hz": 461137500.0, "center_hz": 461137500.0,
+{"type": "start", "run": 7, "fmt": "cs16", "rate": 48000.0, "freq_hz": 438162500.0, "center_hz": 438162500.0,
  "scale": 32767, "sc_rate": 288000.0, "clock": {...}, "gain_db": 29.7}
 ```
 
@@ -207,7 +207,7 @@ yet. Client: `Esp32Bench.calls()`.
 
 ## 7. Transmit
 
-`WS /tx?session=s-3f2a&lease=L&freq_hz=461462500&via=sdr|modem|radio:NAME`. Gates, all of which must be open, or
+`WS /tx?session=s-3f2a&lease=L&freq_hz=438487500&via=sdr|modem|radio:NAME`. Gates, all of which must be open, or
 the socket closes with `refused`:
 
 1. The bench was built with TX (`CONFIG_RDOF_BENCH_TX` on the board) and its front end can transmit (`info.sdr.tx`).
@@ -404,3 +404,93 @@ The MQTT fallback has one catch: several receivers publish the same channel ids 
 3. Burst analysis and SDR bench helpers for the HIL tests: the existing ones import modules from the bench daemon's
    package, whose origin is GPL or unclear. Write them on this project's own code rather than copy
    them.
+
+## 14. The line protocol (TCP)
+
+The bench daemon's own protocol, served by the gateway over TCP, so that a tool written for the daemon's client works
+against a board or rdofradio with a client of this project in place of the daemon's: `tools/bench/rfgbench.py`, with
+the daemon client's subcommands, options, output and exit codes (section 14.5). It sits beside v1 (sections 3-8) and
+shares its parts: the sessions, the burst feed, the I/Q history and the transmit job.
+
+### 14.1 Framing
+
+- TCP, port 7373 by default: `bench.port` in the board's settings (0: off), `--bench [ADDR:]PORT` on rdofradio.
+- One request a connection: a JSON object on one line. The replies are JSON objects, one a line. A reply line with
+  `"bytes": N` is followed by N bytes of payload (I/Q samples) before the next line.
+- Closing the connection cancels the request: a capture stops, a transmission unkeys, a session ends.
+- Errors are `{"error": "text", "code": "..."}`, the request's last line, with the codes of section 1 plus the
+  daemon's `deadlock`. A wait is reported as the daemon's: `{"state": "queued", "kind", "eta_s", "worst_s",
+  "ahead", "blockers"}`, then `{"state": "granted", "kind", "waited_s"}`. `{"note": "text"}` is for the user.
+- At most 8 connections at a time; one more is answered with `busy` and closed.
+
+### 14.2 Ops
+
+Field names are the daemon's (frequencies in MHz, unlike v1).
+
+| op | request | replies |
+|---|---|---|
+| `info` | | `window` (`enabled`, `lo`, `hi`, `center` MHz, `fs`, `gain`, `dc_guard_khz`), `sdr` (`"shared"` when the receiver runs), `channels` (one per receiver channel and TX frequency: `freq`, `ch`, `in_window`, `listed`, `caps`, `claimed_by`, `keyed`), `stations` (`modem`: the gateway's own SDR modem, `kind` `sdrmodem`, `tx`, `held_by`, `waiting`), `modem` (`held_by`, `waiting`, `next_job_eta`), `default_caps`, `device` (kind, name, version) |
+| `status` | | `sdr`, `receiver` (`seconds`, `overflows`, `clip_pct`, `dsp_skipped`, `decode_dropped`, `captures`), `held`, `waiting`, `sessions`, `tx` (section 7's) |
+| `session` | `label`, `expect_s`, `max_s` | `{"session": ID, "label"}`, then nothing until the connection closes (the session ends with it) or the session's `max_s` runs out (`{"ended": "max_s"}`) |
+| `claim` | `session`, `freqs`, `caps`, `wait_max` | queued / granted, `{"claimed": [MHz], "window"}` |
+| `release` | `session`, `freqs` (none: all), `hold` | `{"released": [MHz]}` |
+| `hold` | `session`, `expect_s`, `max_s`, `wait_max` | queued / granted, `{"held": ID}`: the modem is the session's until `release --hold ID` or the session ends |
+| `run` | `session`, `job` (section 14.3), `argv`, `kind`, `expect_s`, `max_s`, `wait_max` | queued / granted, `{"started": ID}`, `{"out": line}` and `{"err": line}`, `{"exit": code}` |
+| `bursts` | `session`, `freq`, `seconds`, `max_bursts`, `until_end`, `cc`, `soft` | `{"ready": t0}`, `{"burst": record}`, `{"done": summary}`, or `no_signal` |
+| `listen` | `freq`, `seconds` | `{"burst": record}` |
+| `capture` | `session`, `freq`, `seconds`, `pre_s`, `gain`, `mode`, `offset_khz` | `{"ready": t0, "shared": true, "center": MHz, "pre_s"}`, `{"iq": {"seq", "n", "sc", "flags"}, "bytes": N}` + cs8 samples, `{"done": meta}` |
+| `trigger` | `session`, `freq`, `bw`, `pre_s`, `post_s`, `threshold_db`, `min_ms`, `timeout_s`, `fmt`, `until_end`, `max_s`, `floor_db` | `{"armed": {"floor_db"}}`, `{"iq": ...}` + samples, `{"done": meta}`, or `no_signal` |
+| `activity`, `burstlog`, `bridge` | | `unsupported` |
+
+- `claim` refuses a frequency the bench doesn't list (no receiver channel, not in `bench.tx`). Receiving needs no
+  claim; the HIL tools claim anyway, and a claim keeps another session's job off the frequency.
+- `capture` sends the receiver's wideband samples, cs8 (int8 I, Q; full scale 127), at the front end's rate, with up
+  to `pre_s` seconds from before the request (the I/Q history, section 9). The receiver isn't retuned: `gain` and
+  `offset_khz` are noted in the metadata and otherwise ignored, and a frequency outside the window is `refused`.
+  `meta` is what `FILE.json` holds: `freq` and `center` (Hz), `fs`, `fmt` `"cs8"`, `gain`, `ppm`, `t0` (UTC of
+  sample 0), `seconds`, `overflows`, `clip_pct`, `pre_s`.
+- `trigger` sends the channel's 48 kS/s samples (cf32 or cs16), as section 6.2's level trigger.
+- `bursts` and `listen` send the receiver channel's bursts at `freq` as `dmr-bursts` records (section 6.3's fields
+  with the daemon's names: `t`, `dt_prev_ms`, `grid_err_ms`, `slot_ab`, `sync`, `kind`, `cc`, `cfo_hz`,
+  `level_dbfs`, `dev_hz`, `sym_err`, `fec`, `lc`, `raw_hex`), the summary the daemon's (`bursts`, `kinds`,
+  `first_t`, `last_t`, `seconds`, `cfo_hz`, `level_dbfs`, `ended`).
+
+### 14.3 Jobs
+
+`run` doesn't run a program: the client reads the bench tool's command line (`bench_tx.py` and `bench_repeater.py`,
+the tools the HIL tests run on the daemon's modem) and sends the job it describes; the gateway does it with its own
+DMR stack and transmitter and answers in the tool's output (its JSON lines on `out`). `job` is the tool's options,
+by their long names with `_` for `-`:
+
+```json
+{"tool": "bench_tx", "freq": 438.1125, "cc": 2, "power": 32, "cmd": "voice", "listen_after": 0,
+ "src": 9990301, "dst": 9990199, "private": true, "superframes": 6, "family": "ms", ...}
+```
+
+- `bench_tx` `voice`, `csbk`, `data` go out through the bench's TX path (section 7: the SDR modem, `bench.tx`'s
+  frequencies, key time and power) in DMO timing, one burst every 60 ms; `listen` (and `listen_after`) reports what
+  the receiver channel at `freq` hears, as the tool's `--json` lines and per-call summaries.
+- `bench_repeater` runs a duplex repeater on the job's `rx` / `tx` pair (rdofradio in full duplex only).
+- An option the gateway can't honor is `unsupported` with the option named, before anything keys. `power` is
+  clamped to `bench.tx.rf_level`.
+- Files a job writes (`--ambe-out`) are the client's: the job sends their bytes as `{"file": name, "bytes": N}`.
+
+### 14.4 Arbitration
+
+One SDR modem: a `run` with a TX job (and a `hold`) waits for it, in order; jobs of one session holding it go
+straight on. A claimed frequency is the claiming session's: another session's `run` there waits. Receive ops
+(`bursts`, `listen`, `capture`, `trigger`) never wait: the receiver is shared and never retuned. `wait_max` ends a
+wait with `timeout`; a session that would wait on itself is `deadlock`. The modem's queue estimates come from each
+job's `expect_s` (else its length as the gateway works it out).
+
+On rdofradio, a TX job borrows the SDR modem from the repeater or roaming transceiver for its length: they pause
+(the network's calls wait, as during a key-up's calibration), and the modem is theirs again after the job.
+
+### 14.5 The client
+
+`tools/bench/rfgbench.py --bench HOST[:PORT] SUBCOMMAND ...` (or `$RDOF_BENCH_LINE`): `info`, `status`,
+`session`, `claim`, `release`, `hold`, `run`, `capture`, `capture-trigger`, `dmr-bursts`, `listen`, with the
+daemon client's options. Its stdout and stderr are the daemon client's (the `READY` and `wrote` lines, the
+`rfoundry-bench:` notes, the JSON lines), and so are its exit codes: 0, 1, 3 nothing heard, 69 the gateway can't be
+reached or can't do it, 75 busy or timed out, 77 refused. `run -- python bench_tx.py ARGS` (any interpreter, any
+directory) sends the job; `--file` and `--out` files are written where the client runs.

@@ -1,0 +1,573 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
+/* The bench's line protocol (rdof/benchline.h, rdof/benchnet.h) against a fake receiver: the ops through the engine
+ * directly, then a session, a claim and a capture over a real TCP connection. */
+#define _DEFAULT_SOURCE
+#define _DARWIN_C_SOURCE
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+
+#include "rdof/benchline.h"
+#include "rdof/benchnet.h"
+#include "rdof/jsonp.h"
+
+static int checks, failures;
+
+#define CHECK(cond, ...)                                                                                     \
+    do {                                                                                                     \
+        checks++;                                                                                            \
+        if (!(cond)) {                                                                                       \
+            failures++;                                                                                      \
+            printf("FAIL %s:%d: %s: ", __FILE__, __LINE__, #cond);                                           \
+            printf(__VA_ARGS__);                                                                             \
+            printf("\n");                                                                                    \
+        }                                                                                                    \
+    } while (0)
+
+/* ── the fake receiver: 4 channels in a 768 kS/s window, a TX frequency, a history ring ── */
+
+static rdof_bl_ring_t ring;
+static bool can_tx = true;
+
+static void f_device(void *ctx, char *k, size_t kc, char *n, size_t nc, char *v, size_t vc)
+{
+    snprintf(k, kc, "test");
+    snprintf(n, nc, "bench \"one\"");
+    snprintf(v, vc, "1.0");
+}
+static void f_window(void *ctx, rdof_bl_window_t *w)
+{
+    *w = (rdof_bl_window_t){.running = true, .center_hz = 438.225e6, .fs = 768000, .lo_hz = 438.5125e6,
+                            .hi_hz = 438.525e6, .gain_db = 20, .dc_guard_hz = 25e3};
+}
+static int f_freqs(void *ctx, rdof_bl_freq_t *out, int max)
+{
+    static const double f[] = {438.0625e6, 438.1125e6, 438.1625e6, 438.2125e6};
+    int n = 0;
+    for (int i = 0; i < 4 && n < max; i++, n++) {
+        out[n] = (rdof_bl_freq_t){.freq_hz = f[i], .ch = i,
+                                  .caps = RDOF_BL_CAP_RX | RDOF_BL_CAP_DMR | RDOF_BL_CAP_IQ | (i == 1 ? RDOF_BL_CAP_TX : 0)};
+        snprintf(out[n].id, sizeof out[n].id, "CH%d", i + 1);
+    }
+    if (n < max)
+        out[n++] = (rdof_bl_freq_t){.freq_hz = 438.6e6, .ch = -1, .caps = RDOF_BL_CAP_TX};
+    return n;
+}
+static long f_iq_read(void *ctx, uint64_t sc, int8_t *out, long n, uint64_t *oldest, uint64_t *next)
+{
+    return rdof_bl_ring_read(&ring, sc, out, n, oldest, next);
+}
+static double f_utc(void *ctx) { return 1.8e9; }
+static double f_sc_utc(void *ctx, uint64_t sc) { return 1.8e9 + (double)sc / 768000; }
+static const char *f_can_tx(void *ctx) { return can_tx ? NULL : "no bench.tx"; }
+
+static const rdof_bl_platform_t PLAT = {.device = f_device, .window = f_window, .freqs = f_freqs,
+                                        .iq_read = f_iq_read, .utc = f_utc, .sc_utc = f_sc_utc,
+                                        .can_tx = f_can_tx};
+
+/* ── helpers ── */
+
+/* Everything c has to send, as text (binary payloads kept, NULs and all). */
+static size_t drain(rdof_bl_t *bl, int c, char *out, size_t cap)
+{
+    size_t n = 0, k;
+    while (n + 1 < cap && (k = rdof_bl_output(bl, c, (uint8_t *)out + n, cap - 1 - n)) > 0)
+        n += k;
+    out[n] = 0;
+    return n;
+}
+
+static int ask(rdof_bl_t *bl, const char *req, double now)
+{
+    const int c = rdof_bl_open(bl, now);
+    char line[1024];
+    snprintf(line, sizeof line, "%s\n", req);
+    rdof_bl_input(bl, c, line, strlen(line), now);
+    return c;
+}
+
+/* The value of "key":"..." or "key":N in text, as text. */
+static bool field(const char *text, const char *key, char *out, size_t cap)
+{
+    char pat[64];
+    snprintf(pat, sizeof pat, "\"%s\":", key);
+    const char *p = strstr(text, pat);
+    if (!p)
+        return false;
+    p += strlen(pat);
+    size_t k = 0;
+    if (*p == '"') {
+        for (p++; *p && *p != '"' && k + 1 < cap; p++)
+            out[k++] = *p;
+    } else {
+        for (; *p && *p != ',' && *p != '}' && k + 1 < cap; p++)
+            out[k++] = *p;
+    }
+    out[k] = 0;
+    return true;
+}
+
+static bool is_json_lines(const char *text)
+{
+    static rdof_jnode_t nodes[2048];
+    static char sb[65536];
+    const char *p = text;
+    while (*p) {
+        const char *e = strchr(p, '\n');
+        if (!e)
+            return false;
+        rdof_jdoc_t d = {.nodes = nodes, .max = 2048, .buf = sb, .cap = sizeof sb};
+        if (rdof_jparse(&d, p, (size_t)(e - p)) < 0) {
+            printf("not JSON (%s): %.*s\n", d.error, (int)(e - p), p);
+            return false;
+        }
+        p = e + 1;
+    }
+    return true;
+}
+
+static void test_ops(void)
+{
+    rdof_bl_t *bl = rdof_bl_new(&PLAT);
+    char out[65536], v[64];
+    double now = 100;
+
+    /* info: the window, the channels with their caps, the modem */
+    int c = ask(bl, "{\"op\": \"info\"}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(is_json_lines(out) && strstr(out, "\"center\":438.225000") && strstr(out, "\"fs\":768000.0"),
+          "info: %s", out);
+    CHECK(strstr(out, "{\"freq\":438.112500,\"ch\":1,\"id\":\"CH2\",\"in_window\":true,\"listed\":true,"
+                      "\"caps\":[\"rx\",\"dmr\",\"iq\",\"mmdvm_tx\",\"sdr_tx\"],\"claimed_by\":null}") &&
+              strstr(out, "{\"freq\":438.600000,\"ch\":null,\"id\":\"\",\"in_window\":false"),
+          "info's channels: %s", out);
+    CHECK(strstr(out, "\"name\":\"bench \\\"one\\\"\"") && strstr(out, "\"kind\":\"sdrmodem\"") &&
+              strstr(out, "\"tx\":true"),
+          "info's device and modem: %s", out);
+    CHECK(rdof_bl_finished(bl, c), "info is one line");
+    rdof_bl_closed(bl, c, now);
+
+    /* a session, held by its connection; a second one */
+    const int s1 = ask(bl, "{\"op\": \"session\", \"label\": \"hil-a\", \"max_s\": 60}", now);
+    drain(bl, s1, out, sizeof out);
+    char id1[16] = "", id2[16] = "";
+    CHECK(field(out, "session", id1, sizeof id1) && !rdof_bl_finished(bl, s1), "session: %s", out);
+    const int s2 = ask(bl, "{\"op\": \"session\", \"label\": \"hil-b\"}", now);
+    drain(bl, s2, out, sizeof out);
+    field(out, "session", id2, sizeof id2);
+    CHECK(strcmp(id1, id2), "two sessions, two ids: %s %s", id1, id2);
+
+    /* claims: a listed frequency, then the other session waits for it */
+    char req[256];
+    snprintf(req, sizeof req, "{\"op\": \"claim\", \"session\": \"%s\", \"freqs\": [438.1125]}", id1);
+    c = ask(bl, req, now);
+    rdof_bl_tick(bl, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "{\"claimed\":[438.112500],\"window\":{\"enabled\":true") && rdof_bl_finished(bl, c),
+          "claim: %s", out);
+    rdof_bl_closed(bl, c, now);
+    snprintf(req, sizeof req, "{\"op\": \"claim\", \"session\": \"%s\", \"freqs\": [438.1125], \"wait_max\": 5}", id2);
+    const int w = ask(bl, req, now);
+    rdof_bl_tick(bl, now);
+    drain(bl, w, out, sizeof out);
+    CHECK(strstr(out, "\"state\":\"queued\",\"kind\":\"channel\"") && strstr(out, "\"label\":\"hil-a\"") &&
+              !rdof_bl_finished(bl, w),
+          "the second claim waits: %s", out);
+    c = ask(bl, "{\"op\": \"status\"}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(is_json_lines(out) && strstr(out, "\"kind\":\"claim\"") && strstr(out, "\"waiting\":[{"), "status: %s", out);
+    rdof_bl_closed(bl, c, now);
+    /* not listed, and a cap it lacks */
+    snprintf(req, sizeof req, "{\"op\": \"claim\", \"session\": \"%s\", \"freqs\": [439.525]}", id1);
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"refused\""), "an unlisted frequency: %s", out);
+    rdof_bl_closed(bl, c, now);
+    snprintf(req, sizeof req, "{\"op\": \"claim\", \"session\": \"%s\", \"freqs\": [438.0625], \"caps\": [\"mmdvm_tx\"]}",
+             id1);
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"refused\""), "no TX cap there: %s", out);
+    rdof_bl_closed(bl, c, now);
+    /* the first session releases: the wait is granted */
+    snprintf(req, sizeof req, "{\"op\": \"release\", \"session\": \"%s\", \"freqs\": [438.1125]}", id1);
+    c = ask(bl, req, now + 1);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "{\"released\":[438.112500]"), "release: %s", out);
+    rdof_bl_closed(bl, c, now);
+    rdof_bl_tick(bl, now + 1);
+    drain(bl, w, out, sizeof out);
+    CHECK(strstr(out, "\"state\":\"granted\"") && strstr(out, "\"claimed\":[438.112500]"), "granted: %s", out);
+    rdof_bl_closed(bl, w, now);
+
+    /* the modem: a hold, then the other session waits for it and times out */
+    snprintf(req, sizeof req, "{\"op\": \"hold\", \"session\": \"%s\", \"expect_s\": 20}", id2);
+    c = ask(bl, req, now);
+    rdof_bl_tick(bl, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(field(out, "held", v, sizeof v) && atoi(v) > 0, "hold: %s", out);
+    rdof_bl_closed(bl, c, now);
+    snprintf(req, sizeof req, "{\"op\": \"hold\", \"session\": \"%s\", \"wait_max\": 2}", id1);
+    c = ask(bl, req, now);
+    rdof_bl_tick(bl, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"kind\":\"modem\"") && strstr(out, "\"eta_s\":20.0"), "the modem is held: %s", out);
+    rdof_bl_tick(bl, now + 3);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"timeout\"") && rdof_bl_finished(bl, c), "the wait times out: %s", out);
+    rdof_bl_closed(bl, c, now);
+
+    /* the session's connection closes: its claims and hold go */
+    rdof_bl_closed(bl, s2, now + 4);
+    c = ask(bl, "{\"op\": \"info\"}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(!strstr(out, "hil-b"), "the session's claims went with it: %s", out);
+    rdof_bl_closed(bl, c, now);
+    /* max_s ends a session */
+    rdof_bl_tick(bl, now + 61);
+    drain(bl, s1, out, sizeof out);
+    CHECK(strstr(out, "{\"ended\":\"max_s\"}") && rdof_bl_finished(bl, s1), "max_s: %s", out);
+    rdof_bl_closed(bl, s1, now);
+
+    /* bursts: records for the channel's bursts, idle left out; until_end */
+    c = ask(bl, "{\"op\": \"bursts\", \"freq\": 438.1125, \"seconds\": 10, \"until_end\": true}", now);
+    CHECK(rdof_bl_wants_bursts(bl), "bursts are wanted");
+    for (int i = 0; i < 4; i++) {
+        rdof_bl_burst_t b = {.ch = i < 3 ? 1 : 2, .t = 1.8e9 + 0.06 * i, .cfo_hz = 10.0f * i, .level_dbfs = -40,
+                             .dt = i == 0 ? 1 : 0x10, .n = 0, .slot = 1, .family = 1, .cc = 2};
+        b.raw[0] = (uint8_t)i;
+        rdof_bl_burst(bl, &b);
+    }
+    rdof_bl_burst_t idle = {.ch = 1, .t = 1.8e9 + 0.3, .dt = 9, .family = 1};
+    rdof_bl_burst(bl, &idle);
+    rdof_bl_tick(bl, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(is_json_lines(out) && strstr(out, "{\"ready\":1800000000.000}") &&
+              strstr(out, "\"kind\":\"VLC_HDR\"") && strstr(out, "\"kind\":\"VLC_HDR\",\"dt\":1") && strstr(out, "\"sync\":\"MS_DATA\",") && strstr(out, "\"sync\":\"MS_VOICE\",") &&
+              strstr(out, "\"dt_prev_ms\":60.000,\"grid_n\":2,\"grid_err_ms\":0.000,\"slot_ab\":\"A\"") &&
+              !strstr(out, "\"kind\":\"IDLE\"") && !strstr(out, "\"t_rel_ms\":180"),
+          "burst records: %s", out);
+    rdof_bl_tick(bl, now + 0.5);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"done\":{\"bursts\":3,\"reason\":\"ended\"") &&
+              strstr(out, "\"kinds\":{\"VLC_HDR\":1,\"VOICE_A\":2}") && strstr(out, "\"MS_DATA\":1"),
+          "the summary: %s", out);
+    rdof_bl_closed(bl, c, now);
+    CHECK(!rdof_bl_wants_bursts(bl), "no bursts wanted once it's done");
+    c = ask(bl, "{\"op\": \"bursts\", \"freq\": 438.6}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"refused\""), "no receiver channel there: %s", out);
+    rdof_bl_closed(bl, c, now);
+
+    /* a capture: pre-roll from the ring, then what comes, cs8 frames, the metadata */
+    rdof_bl_ring_init(&ring, 768000);
+    float iq[2 * 1000];
+    long clipped = 0;
+    for (int k = 0; k < 2000; k++)
+        iq[k] = k == 0 ? 2.0f : 0.5f;
+    for (int k = 0; k < 77; k++) /* 77000 samples: 0.1 s */
+        rdof_bl_ring_put(&ring, iq, 1000, &clipped);
+    CHECK(clipped == 77, "the clipped samples counted: %ld", clipped);
+    c = ask(bl, "{\"op\": \"capture\", \"freq\": 438.1125, \"seconds\": 0.05, \"pre_s\": 0.05}", now);
+    rdof_bl_tick(bl, now);
+    size_t n = drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "{\"ready\":1800000000.05026") && strstr(out, "\"pre_s\":0.050"), "capture ready: %.200s", out);
+    CHECK(rdof_bl_wants_iq(bl), "I/Q wanted");
+    static char all[300000];
+    size_t total = n;
+    memcpy(all, out, n);
+    for (int k = 0; k < 40; k++)
+        rdof_bl_ring_put(&ring, iq, 1000, &clipped);
+    rdof_bl_tick(bl, now + 0.1);
+    total += drain(bl, c, all + total, sizeof all - total);
+    all[total] = 0;
+    /* parse it: lines and payloads */
+    long samples = 0, frames = 0;
+    bool bad = false;
+    char *p = all, *done = NULL;
+    while (p < all + total) {
+        char *e = memchr(p, '\n', (size_t)(all + total - p));
+        if (!e)
+            break;
+        *e = 0;
+        char b[32];
+        if (field(p, "bytes", b, sizeof b)) {
+            const long nb = atol(b);
+            char *pl = e + 1;
+            for (long i = 0; i < nb; i++)
+                bad |= pl[i] != 64 && pl[i] != 127;
+            samples += nb / 2, frames++;
+            p = pl + nb;
+        } else {
+            if (strstr(p, "\"done\""))
+                done = p;
+            p = e + 1;
+        }
+    }
+    CHECK(samples == 76800 && frames >= 10 && !bad, "%ld samples in %ld frames (bad %d)", samples, frames, bad);
+    CHECK(done && strstr(done, "\"fmt\":\"cs8\"") && strstr(done, "\"samples\":76800") &&
+              strstr(done, "\"fs\":768000.0") && strstr(done, "\"t0\":1800000000.050260"),
+          "the metadata: %s", done ? done : "(none)");
+    CHECK(rdof_bl_finished(bl, c), "the capture is over");
+    rdof_bl_closed(bl, c, now);
+    CHECK(!rdof_bl_wants_iq(bl), "no I/Q wanted after it");
+    c = ask(bl, "{\"op\": \"capture\", \"freq\": 438.6, \"seconds\": 1}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"refused\""), "outside the window: %s", out);
+    rdof_bl_closed(bl, c, now);
+
+    /* what isn't here yet, and nonsense */
+    c = ask(bl, "{\"op\": \"bridge\"}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"unsupported\""), "bridge: %s", out);
+    rdof_bl_closed(bl, c, now);
+    c = ask(bl, "{\"op\": ", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"bad_request\""), "a broken request: %s", out);
+    rdof_bl_closed(bl, c, now);
+    /* all connections in use */
+    int cs[RDOF_BL_CONNS];
+    for (int k = 0; k < RDOF_BL_CONNS; k++)
+        cs[k] = rdof_bl_open(bl, now);
+    CHECK(rdof_bl_open(bl, now) < 0, "a ninth connection is refused");
+    for (int k = 0; k < RDOF_BL_CONNS; k++)
+        rdof_bl_closed(bl, cs[k], now);
+    rdof_bl_ring_free(&ring);
+    rdof_bl_free(bl);
+}
+
+/* ── over TCP ── */
+
+static double mono(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec + ts.tv_nsec * 1e-9;
+}
+
+static int dial(int port)
+{
+    const int fd = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in sa = {.sin_family = AF_INET, .sin_port = htons((uint16_t)port)};
+    sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (connect(fd, (struct sockaddr *)&sa, sizeof sa)) {
+        close(fd);
+        return -1;
+    }
+    struct timeval tv = {3, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    return fd;
+}
+
+/* One line from fd (without the newline). */
+static bool readline(int fd, char *out, size_t cap)
+{
+    size_t k = 0;
+    while (k + 1 < cap) {
+        char ch;
+        if (recv(fd, &ch, 1, 0) != 1)
+            return false;
+        if (ch == '\n')
+            break;
+        out[k++] = ch;
+    }
+    out[k] = 0;
+    return true;
+}
+
+static void test_tcp(void)
+{
+    rdof_bl_t *bl = rdof_bl_new(&PLAT);
+    char err[128], line[8192];
+    rdof_bnet_t *n = rdof_bnet_start(bl, "127.0.0.1", 0, mono, 0, err, sizeof err);
+    CHECK(n && rdof_bnet_port(n) > 0, "the server starts: %s", n ? "" : err);
+    if (!n) {
+        rdof_bl_free(bl);
+        return;
+    }
+    const int port = rdof_bnet_port(n);
+    /* a session, held open, and a claim in it over another connection */
+    const int s = dial(port);
+    const char *req = "{\"op\":\"session\",\"label\":\"tcp\"}\n";
+    send(s, req, strlen(req), 0);
+    char id[16] = "";
+    CHECK(readline(s, line, sizeof line) && field(line, "session", id, sizeof id), "session over TCP: %s", line);
+    int c = dial(port);
+    char r2[160];
+    snprintf(r2, sizeof r2, "{\"op\":\"claim\",\"session\":\"%s\",\"freqs\":[438.1625]}\n", id);
+    send(c, r2, strlen(r2), 0);
+    CHECK(readline(c, line, sizeof line) && strstr(line, "\"claimed\":[438.162500]"), "claim over TCP: %s", line);
+    char ch;
+    CHECK(recv(c, &ch, 1, 0) == 0, "the server closes a finished request");
+    close(c);
+    /* closing the session's connection ends it */
+    close(s);
+    usleep(50000);
+    c = dial(port);
+    send(c, "{\"op\":\"status\"}\n", 16, 0);
+    CHECK(readline(c, line, sizeof line) && strstr(line, "\"sessions\":[]"), "the session ended with its socket: %s",
+          line);
+    close(c);
+    /* a capture's binary frames come through whole */
+    rdof_bl_ring_init(&ring, 768000);
+    float iq[2000];
+    for (int k = 0; k < 2000; k++)
+        iq[k] = -0.25f;
+    for (int k = 0; k < 10; k++)
+        rdof_bl_ring_put(&ring, iq, 1000, NULL);
+    c = dial(port);
+    const char *cap = "{\"op\":\"capture\",\"freq\":438.0625,\"seconds\":0.02,\"pre_s\":0.01}\n";
+    send(c, cap, strlen(cap), 0);
+    CHECK(readline(c, line, sizeof line) && strstr(line, "\"ready\""), "capture over TCP: %s", line);
+    for (int k = 0; k < 20; k++)
+        rdof_bl_ring_put(&ring, iq, 1000, NULL);
+    long samples = 0;
+    bool good = true, done = false;
+    while (readline(c, line, sizeof line)) {
+        char b[32];
+        if (field(line, "bytes", b, sizeof b)) {
+            long nb = atol(b);
+            while (nb > 0) {
+                char buf[4096];
+                const ssize_t k = recv(c, buf, nb < (long)sizeof buf ? (size_t)nb : sizeof buf, 0);
+                if (k <= 0) {
+                    good = false;
+                    break;
+                }
+                for (ssize_t i = 0; i < k; i++)
+                    good &= buf[i] == -32;
+                nb -= k, samples += k / 2;
+            }
+        } else if (strstr(line, "\"done\"")) {
+            done = true;
+        }
+    }
+    CHECK(done && good && samples == (long)(0.03 * 768000), "%ld samples over TCP (good %d, done %d)", samples, good,
+          done);
+    close(c);
+
+    /* several clients at once: three watch one channel (two bursts, one listen) and a capture runs beside them, while
+     * two sessions queue for the modem; each gets all of its own */
+    int w[3];
+    const char *wreq[3] = {"{\"op\":\"bursts\",\"freq\":438.1125,\"seconds\":5,\"max_bursts\":5}\n",
+                           "{\"op\":\"bursts\",\"freq\":438.1125,\"seconds\":5,\"max_bursts\":5}\n",
+                           "{\"op\":\"listen\",\"freq\":438.1125,\"seconds\":1}\n"};
+    for (int k = 0; k < 3; k++) {
+        w[k] = dial(port);
+        send(w[k], wreq[k], strlen(wreq[k]), 0);
+    }
+    for (int k = 0; k < 2; k++)
+        CHECK(readline(w[k], line, sizeof line) && strstr(line, "\"ready\""), "watcher %d ready: %s", k, line);
+    const int cap2 = dial(port);
+    const char *creq = "{\"op\":\"capture\",\"freq\":438.0625,\"seconds\":0.01,\"pre_s\":0.005}\n";
+    send(cap2, creq, strlen(creq), 0);
+    int sess[2];
+    char sid[2][16];
+    for (int k = 0; k < 2; k++) {
+        sess[k] = dial(port);
+        send(sess[k], req, strlen(req), 0);
+        readline(sess[k], line, sizeof line);
+        field(line, "session", sid[k], sizeof sid[k]);
+    }
+    usleep(50000);
+    for (int i = 0; i < 5; i++) {
+        rdof_bl_burst_t b = {.ch = 1, .t = 1.8e9 + 0.06 * i, .dt = 0x10, .family = 1, .cc = 1};
+        rdof_bl_burst(bl, &b);
+        rdof_bl_ring_put(&ring, iq, 1000, NULL);
+        rdof_bl_ring_put(&ring, iq, 1000, NULL); /* 10 ms more in all than the capture asks */
+    }
+    for (int k = 0; k < 3; k++) {
+        int got = 0;
+        while (readline(w[k], line, sizeof line))
+            got += strstr(line, "\"burst\"") != NULL;
+        CHECK(got == 5, "watcher %d got %d bursts of 5", k, got);
+        close(w[k]);
+    }
+    bool cdone = false;
+    while (readline(cap2, line, sizeof line)) {
+        char b[32];
+        if (field(line, "bytes", b, sizeof b)) {
+            char buf[20000];
+            long nb = atol(b);
+            while (nb > 0) {
+                const ssize_t k = recv(cap2, buf, nb < (long)sizeof buf ? (size_t)nb : sizeof buf, 0);
+                if (k <= 0)
+                    break;
+                nb -= k;
+            }
+        }
+        cdone |= strstr(line, "\"done\"") != NULL;
+    }
+    CHECK(cdone, "the capture beside them finished");
+    close(cap2);
+    int hd[2];
+    for (int k = 0; k < 2; k++) {
+        char hreq[160];
+        snprintf(hreq, sizeof hreq, "{\"op\":\"hold\",\"session\":\"%s\",\"wait_max\":10}\n", sid[k]);
+        hd[k] = dial(port);
+        send(hd[k], hreq, strlen(hreq), 0);
+        usleep(30000);
+    }
+    CHECK(readline(hd[0], line, sizeof line) && strstr(line, "\"held\""), "the first session holds the modem: %s",
+          line);
+    CHECK(readline(hd[1], line, sizeof line) && strstr(line, "\"queued\""), "the second waits: %s", line);
+    close(sess[0]); /* the first session ends: the modem passes on */
+    CHECK(readline(hd[1], line, sizeof line) && strstr(line, "\"granted\"") && readline(hd[1], line, sizeof line) &&
+              strstr(line, "\"held\""),
+          "the second gets it: %s", line);
+    close(hd[0]), close(hd[1]), close(sess[1]);
+    rdof_bnet_stop(n);
+    rdof_bl_ring_free(&ring);
+    rdof_bl_free(bl);
+}
+
+/* `rdof_benchline_tests serve PORT SECONDS`: the fake receiver behind a real port for the client
+ * (tools/bench/rfgbench.py), a voice burst on CH2 every 60 ms and noise in the I/Q. */
+static int serve(int port, double seconds)
+{
+    rdof_bl_t *bl = rdof_bl_new(&PLAT);
+    char err[128];
+    rdof_bnet_t *n = rdof_bnet_start(bl, "127.0.0.1", port, mono, 0, err, sizeof err);
+    if (!n) {
+        fprintf(stderr, "%s\n", err);
+        return 1;
+    }
+    rdof_bl_ring_init(&ring, 768000 * 3);
+    printf("serving on %d\n", rdof_bnet_port(n));
+    fflush(stdout);
+    float iq[2 * 7680];
+    const double t0 = mono();
+    for (long k = 0; mono() - t0 < seconds; k++) {
+        for (int i = 0; i < 2 * 7680; i++)
+            iq[i] = (float)((rand() % 200) - 100) / 400.0f;
+        rdof_bl_ring_put(&ring, iq, 7680, NULL);
+        if (k % 6 == 0) {
+            rdof_bl_burst_t b = {.ch = 1, .t = 1.8e9 + 0.01 * k, .dt = k % 36 ? 0x11 : 0x10, .n = (int8_t)(k / 6 % 6),
+                                 .slot = 1, .family = 1, .cc = 1, .level_dbfs = -40};
+            rdof_bl_burst(bl, &b);
+        }
+        usleep(10000);
+    }
+    rdof_bnet_stop(n);
+    rdof_bl_ring_free(&ring);
+    rdof_bl_free(bl);
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc == 4 && !strcmp(argv[1], "serve"))
+        return serve(atoi(argv[2]), atof(argv[3]));
+    test_ops();
+    test_tcp();
+    printf("%d checks, %d failures\n", checks, failures);
+    return failures ? 1 : 0;
+}

@@ -39,6 +39,8 @@ set(RDOF_COMMON_SRCS
     src/benchguard.c
     src/benchcfg.c
     src/benchtx.c
+    src/benchline.c
+    src/benchnet.c
     src/ipgw.c
     src/ipgwcfg.c
     src/ipgwtx.c
@@ -90,4 +92,7 @@ else()
     if(NOT WIN32 AND NOT APPLE)
         target_link_libraries(rdof_common PUBLIC m)
     endif()
+    # The bench's line protocol (benchline.c, benchnet.c): a lock and a server thread.
+    find_package(Threads REQUIRED)
+    target_link_libraries(rdof_common PUBLIC Threads::Threads)
 endif()
