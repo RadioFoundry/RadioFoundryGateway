@@ -279,6 +279,7 @@ static void add(rdof_txvr_t *t, rdof_txcall_t *c, const rdof_net_burst_t *b, dou
         c->src = b->src;
         c->dst = b->dst;
         c->group = b->group;
+        c->slot = b->slot;
     }
     if (!c->wants_reply && asks_reply(c, b))
         c->wants_reply = true;
@@ -584,7 +585,7 @@ void rdof_txvr_call_info(const rdof_txvr_t *t, const rdof_txcall_t *c, rdof_tx_c
     info->group = c->group;
     info->freq = c->tune.freq;
     info->cc = c->tune.cc;
-    info->slot = 2;
+    info->slot = c->slot == 1 ? 1 : 2; /* the call's slot: in and out match */
     info->has_csbk = c->has_csbk;
     memcpy(info->csbk, c->csbk, RDOF_BURST_BYTES);
     info->frames = -1; /* data_frames(): from the bursts still queued */

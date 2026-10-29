@@ -24,7 +24,9 @@ it used (`radiodesk.dmr`). It was copied out on 2026-10-23 with no history, from
   also rebuilds `e2e_288k.cu8` around it; their expected values are regression vectors from the C. Also on
   2026-10-24 the test radio and peer IDs moved to 999xxxx, a range RadioID has never assigned: the Python was rerun
   with the new IDs and only the rows that changed taken, the changes above kept (`host-tests/fixtures/README.md`,
-  "Test IDs").
+  "Test IDs"). On 2026-10-29 the transceiver scenarios' expected TX and network-call outputs (`scenarios.h`) took
+  the call's own slot where the Python reported slot 2 for every simplex call: a call that comes in on slot 1 goes
+  out as slot 1.
 - The checks below were carried over from RadioDesk's `PROVENANCE.md` as they stood at that commit.
 
 ## Open items

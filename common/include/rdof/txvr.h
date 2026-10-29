@@ -93,6 +93,7 @@ typedef struct {
     double quiet_at;
     uint32_t src, dst;
     bool group;
+    int slot; /* the network's slot for it: the slot the call it answers came in on, which it goes out as */
     double on_air_at;
     bool has_csbk;
     uint8_t csbk[RDOF_BURST_BYTES];

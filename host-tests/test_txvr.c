@@ -286,8 +286,8 @@ static void run(const struct sc_txvr *sc)
         }                                                                                                    \
     } while (0)
 
-#define CH_A 462562500u
-#define CH_B 462587500u
+#define CH_A 438500000u
+#define CH_B 438600000u
 #define SRC 9992001u
 #define DST 91u
 
@@ -612,7 +612,7 @@ static void t_txvr_call_edges(void)
     ex_to_air(e);
     ex_run(e, 200);
     CHECK(!t->has_call && t->tuned_freq == CH_A, "%lu", (unsigned long)t->tuned_freq);
-    e->rig.radio.band_hi = 462570000;
+    e->rig.radio.band_hi = 438395000;
     e->rig.clock += 0.02;
     CHECK(!rdof_txvr_poll(t) && !t->ready && !t->has_tuned, "idle retune");
 
@@ -856,7 +856,7 @@ static void t_txvr_modem_errors(void)
     e = ex_new(false);
     t = &e->t;
     rdof_txvr_start(t);
-    e->rig.radio.band_hi = 462570000;
+    e->rig.radio.band_hi = 438395000;
     tu = ex_tune(51, CH_B);
     rdof_txvr_on_tune(t, &tu);
     CHECK(!rdof_txvr_poll(t) && !t->has_call && ex_answered(e, 51, RDOF_DMRK_RADIO_ERROR, CH_B), "tune");
@@ -955,12 +955,12 @@ static void t_txvr_cwid(void)
     for (int n = RDOF_TXVR_IDS; n <= 1000; n += 1000 - RDOF_TXVR_IDS) {
         e = ex_cw_call();
         for (int i = 0; i < RDOF_TXVR_IDS; i++) {
-            e->t.last_id[i].freq = 440000000u + (uint32_t)i;
+            e->t.last_id[i].freq = 438900000u + (uint32_t)i;
             e->t.last_id[i].at = i == 5 ? -1e9 : 100.0 + i;
         }
         e->t.nlast_id = n;
         ex_run(e, 200);
-        CHECK(e->rig.radio.ncw == 1 && e->t.last_id[5].freq == CH_A && e->t.last_id[4].freq == 440000004u,
+        CHECK(e->rig.radio.ncw == 1 && e->t.last_id[5].freq == CH_A && e->t.last_id[4].freq == 438900004u,
               "n %d: %d %lu", n, e->rig.radio.ncw, (unsigned long)e->t.last_id[5].freq);
         CHECK(e->t.nlast_id == n, "%d", e->t.nlast_id);
     }
@@ -1365,6 +1365,16 @@ static void t_txvr_more(void)
     rdof_txvr_on_burst(t, &b);
     rdof_txvr_call_info(t, &t->call, &info);
     CHECK(info.frames == -1, "%d", info.frames);
+
+    /* the call goes out as the slot it came in on: a TS1 call is slot 1, a TS2 call slot 2 */
+    CHECK(info.slot == 2, "%d", info.slot);
+    e = ex_call(false, 90);
+    t = &e->t;
+    b = ex_burst(90, RDOF_SYNC_AUDIO, false);
+    b.slot = 1;
+    rdof_txvr_on_burst(t, &b);
+    rdof_txvr_call_info(t, &t->call, &info);
+    CHECK(info.slot == 1, "%d", info.slot);
 
     /* scanning: a burst heard at the very moment of the tune isn't heard on this channel */
     e = ex_new(false);

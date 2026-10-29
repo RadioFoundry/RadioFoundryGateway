@@ -135,6 +135,7 @@ pub struct RdofTxcall {
     pub src: u32,
     pub dst: u32,
     pub group: bool,
+    pub slot: c_int, // the network's slot for it: the slot the call it answers came in on, which it goes out as
     pub on_air_at: f64,
     pub has_csbk: bool,
     pub csbk: Burst,
@@ -524,6 +525,7 @@ unsafe fn add(t: *mut RdofTxvr, b: &RdofNetBurst, at: f64) {
         c.src = b.src;
         c.dst = b.dst;
         c.group = b.group;
+        c.slot = b.slot;
     }
     if !c.wants_reply && asks_reply(c, b) {
         c.wants_reply = true;
@@ -850,7 +852,7 @@ pub unsafe extern "C" fn rdof_txvr_call_info(_t: *const RdofTxvr, c: *const Rdof
     info.group = c.group;
     info.freq = c.tune.freq;
     info.cc = c.tune.cc;
-    info.slot = 2;
+    info.slot = if c.slot == 1 { 1 } else { 2 }; // the call's slot: in and out match
     info.has_csbk = c.has_csbk;
     info.csbk = c.csbk;
     info.frames = -1; // data_frames(): from the bursts still queued
