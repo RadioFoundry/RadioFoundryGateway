@@ -31,7 +31,6 @@ extern "C" {
 #define RDOF_BL_BURSTQ 256     /* bursts between the receiver and the connections */
 #define RDOF_BL_OUT 16384      /* a connection's output buffer */
 #define RDOF_BL_OUT_IQ 262144  /* a capture's */
-#define RDOF_BL_OUT_TRIG 4194304 /* a trigger's at most (its whole capture where it fits) */
 #define RDOF_BL_IQ_CHUNK 8192  /* samples a capture frame */
 
 /* The engine's small buffers (request lines, a listener's frames): on an ESP32 in PSRAM when there is some, since
@@ -41,7 +40,9 @@ extern "C" {
 #define RDOF_BL_MALLOC(n) heap_caps_malloc_prefer((n), 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_8BIT)
 #define RDOF_BL_REALLOC(p, n) \
     heap_caps_realloc_prefer((p), (n), 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_8BIT)
+#define RDOF_BL_OUT_TRIG 1048576 /* a trigger's output at most (its whole capture where it fits): 5 s of cs16 */
 #else
+#define RDOF_BL_OUT_TRIG 4194304
 #define RDOF_BL_MALLOC(n) malloc(n)
 #define RDOF_BL_REALLOC(p, n) realloc((p), (n))
 #endif

@@ -1043,7 +1043,7 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now)
     }
     /* room for the whole capture where there's memory for it: a slow link (an ESP32's Wi-Fi) sends it late, not
      * with gaps from a history that moved on */
-    const double whole_s = pre + (jbool(bl, root, "until_end") ? max_s : post) + 0.5;
+    const double whole_s = pre + post + (jbool(bl, root, "until_end") ? 2 : 0) + 0.5;
     const double whole = whole_s * rate * (fmt && !strcmp(fmt, "cs16") ? 4 : 8);
     if (!t || !t->taps || !t->dl || !t->y || !big_out(c, whole < RDOF_BL_OUT_TRIG ? (size_t)whole : RDOF_BL_OUT_TRIG)) {
         trig_free(t);
