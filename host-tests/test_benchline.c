@@ -432,6 +432,138 @@ static void test_ops(void)
 
 /* ── run: bench_tx jobs on the fake transmitter, heard back by a listen job ── */
 
+/* ── trigger: a channel cut from the history, a level trigger on it ── */
+
+static uint32_t rng = 1;
+static float noise(void)
+{
+    rng = rng * 1664525u + 1013904223u;
+    return ((float)(rng >> 8) / 16777216.0f - 0.5f) * 0.04f; /* about +-2.5 LSB of cs8 */
+}
+
+/* fs = 768 kS/s from 438.225 MHz: `ms` of noise, plus a tone at off_hz from center (amplitude amp, 0 none). */
+static void put_tone(double ms, double off_hz, float amp)
+{
+    static uint64_t n_all;
+    float iq[2 * 768];
+    for (int b = 0; b < (int)(ms + 0.5); b++) {
+        for (int i = 0; i < 768; i++, n_all++) {
+            const double ph = 2 * M_PI * off_hz * (double)n_all / 768000;
+            iq[2 * i] = noise() + amp * (float)cos(ph);
+            iq[2 * i + 1] = noise() + amp * (float)sin(ph);
+        }
+        rdof_bl_ring_put(&ring, iq, 768, NULL);
+    }
+}
+
+/* Ticks and drains c while `ms` of signal goes in, 10 ms at a time. */
+static size_t trig_run(rdof_bl_t *bl, int c, double *now, double ms, double off_hz, float amp, char *all,
+                       size_t total, size_t cap)
+{
+    for (double t = 0; t < ms; t += 10) {
+        put_tone(10, off_hz, amp);
+        *now += 0.01;
+        rdof_bl_tick(bl, *now);
+        total += drain(bl, c, all + total, cap - total);
+    }
+    rdof_bl_tick(bl, *now);
+    total += drain(bl, c, all + total, cap - total);
+    all[total] = 0;
+    return total;
+}
+
+static void test_trigger(void)
+{
+    rdof_bl_t *bl = rdof_bl_new(&PLAT);
+    double now = 2000;
+    static char all[1 << 20];
+    rdof_bl_ring_init(&ring, 768000);
+    put_tone(300, 0, 0); /* 0.3 s of noise in the history: the floor */
+    int c = ask(bl, "{\"op\":\"trigger\",\"freq\":438.1125,\"bw\":12500,\"pre_s\":0.05,\"post_s\":0.1,"
+                    "\"threshold_db\":10,\"min_ms\":5,\"floor_s\":0.2,\"timeout_s\":5,\"fmt\":\"cf32\"}", now);
+    /* a strong tone 50 kHz away first (another channel): it mustn't fire */
+    size_t total = trig_run(bl, c, &now, 200, 438.1625e6 - 438.225e6, 0.3f, all, 0, sizeof all);
+    CHECK(strstr(all, "{\"armed\":{\"floor_db\":") && !strstr(all, "\"iq\"") && !strstr(all, "\"error\""),
+          "armed from the history, a neighbor ignored: %.300s", all);
+    CHECK(rdof_bl_wants_iq(bl), "a trigger wants I/Q");
+    /* then the channel's own: 1 kHz up, 0.3 s */
+    total = trig_run(bl, c, &now, 300, 438.1125e6 + 1000 - 438.225e6, 0.3f, all, total, sizeof all);
+    total = trig_run(bl, c, &now, 100, 0, 0, all, total, sizeof all);
+    long samples = 0, frames = 0, next_idx = 0;
+    bool order = true;
+    double p_pre = 0, p_sig = 0;
+    long n_pre = 0, n_sig = 0;
+    char *p = all, *done = NULL;
+    while (p < all + total) {
+        char *e = memchr(p, '\n', (size_t)(all + total - p));
+        if (!e)
+            break;
+        *e = 0;
+        char b[32], sc[32];
+        if (field(p, "bytes", b, sizeof b) && field(p, "sc", sc, sizeof sc)) {
+            const long nb = atol(b), idx = atol(sc);
+            order &= idx == next_idx;
+            const float *y = (const float *)(e + 1);
+            for (long i = 0; i < nb / 8; i++) {
+                float v[2];
+                memcpy(v, (const char *)y + 8 * i, 8);
+                const double pw = (double)v[0] * v[0] + (double)v[1] * v[1];
+                if (idx + i < 2000)
+                    p_pre += pw, n_pre++;
+                else if (idx + i > 2600 && idx + i < 6000)
+                    p_sig += pw, n_sig++;
+            }
+            samples += nb / 8, frames++;
+            next_idx = idx + nb / 8;
+            p = e + 1 + nb;
+        } else {
+            if (strstr(p, "\"done\""))
+                done = p;
+            p = e + 1;
+        }
+    }
+    char v[32];
+    CHECK(done && field(done, "samples", v, sizeof v) && atol(v) == samples && samples > 7000 && samples < 7400 &&
+              order, "%ld samples in %ld frames, in order %d: %s", samples, frames, order, done ? done : "(none)");
+    CHECK(done && field(done, "signal_start_sample", v, sizeof v) && labs(atol(v) - 2400) < 60,
+          "the rise 50 ms in: %s", v);
+    CHECK(done && field(done, "snr_db", v, sizeof v) && atof(v) > 25 && strstr(done, "\"rate\":48000.000") &&
+              strstr(done, "\"fmt\":\"cf32\""), "the metadata: %s", done ? done : "(none)");
+    const double db = 10 * log10((p_sig / n_sig) / (p_pre / n_pre + 1e-30));
+    CHECK(n_pre && n_sig && db > 25, "the tone in the samples, not before: %.1f dB", db);
+    rdof_bl_tick(bl, now);
+    CHECK(rdof_bl_finished(bl, c) && !rdof_bl_wants_iq(bl), "the trigger is over");
+    rdof_bl_closed(bl, c, now);
+
+    /* until_end and cs16: it runs while the signal lasts, then post_s more */
+    c = ask(bl, "{\"op\":\"trigger\",\"freq\":438.1125,\"pre_s\":0,\"post_s\":0.05,\"min_ms\":5,\"floor_db\":-50,"
+                "\"until_end\":true,\"max_s\":5,\"timeout_s\":5,\"fmt\":\"cs16\"}", now);
+    total = trig_run(bl, c, &now, 50, 0, 0, all, 0, sizeof all);
+    CHECK(strstr(all, "\"armed\":{\"floor_db\":-50.0"), "a given floor arms at once: %s", all);
+    total = trig_run(bl, c, &now, 400, 438.1125e6 - 438.225e6, 0.3f, all, total, sizeof all);
+    total = trig_run(bl, c, &now, 200, 0, 0, all, total, sizeof all);
+    done = NULL;
+    for (size_t i = 0; i + 7 < total && !done; i++)
+        if (!memcmp(all + i, "{\"done\"", 7))
+            done = all + i;
+    CHECK(done && field(done, "samples", v, sizeof v) && labs(atol(v) - 21600) < 300 &&
+              strstr(done, "\"fmt\":\"cs16\""), "0.4 s of signal and 50 ms after: %s", done ? done : "(none)");
+    rdof_bl_closed(bl, c, now);
+
+    /* nothing comes */
+    c = ask(bl, "{\"op\":\"trigger\",\"freq\":438.1125,\"floor_db\":-50,\"timeout_s\":0.1}", now);
+    trig_run(bl, c, &now, 200, 0, 0, all, 0, sizeof all);
+    CHECK(strstr(all, "\"code\":\"no_signal\""), "no_signal: %s", all);
+    rdof_bl_closed(bl, c, now);
+    c = ask(bl, "{\"op\":\"trigger\",\"freq\":438.6}", now);
+    drain(bl, c, all, sizeof all);
+    CHECK(strstr(all, "\"code\":\"refused\""), "outside the window: %s", all);
+    rdof_bl_closed(bl, c, now);
+    CHECK(!rdof_bl_wants_iq(bl), "no I/Q wanted after them");
+    rdof_bl_ring_free(&ring);
+    rdof_bl_free(bl);
+}
+
 static size_t drain_all(rdof_bl_t *bl, int c, char *out, size_t cap, size_t have)
 {
     size_t k;
@@ -822,6 +954,7 @@ int main(int argc, char **argv)
     if (argc == 4 && !strcmp(argv[1], "serve"))
         return serve(atoi(argv[2]), atof(argv[3]));
     test_ops();
+    test_trigger();
     test_decode();
     test_run();
     test_tcp();

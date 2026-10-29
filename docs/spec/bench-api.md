@@ -440,7 +440,7 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
 | `bursts` | `session`, `freq`, `seconds`, `max_bursts`, `until_end`, `cc`, `soft` | `{"ready": t0}`, `{"burst": record}`, `{"done": summary}`, or `no_signal` |
 | `listen` | `freq`, `seconds` | `{"burst": record}` |
 | `capture` | `session`, `freq`, `seconds`, `pre_s`, `gain`, `mode`, `offset_khz` | `{"ready": t0, "shared": true, "center": MHz, "pre_s", "fs", "sc0"}` (sc0: the first sample's, so a client places every frame, gaps as zeros), `{"iq": {"seq", "n", "sc", "flags"}, "bytes": N}` + cs8 samples, `{"done": meta}` |
-| `trigger` | `session`, `freq`, `bw`, `pre_s`, `post_s`, `threshold_db`, `min_ms`, `timeout_s`, `fmt`, `until_end`, `max_s`, `floor_db` | `{"armed": {"floor_db"}}`, `{"iq": ...}` + samples, `{"done": meta}`, or `no_signal` |
+| `trigger` | `session`, `freq`, `bw`, `pre_s`, `post_s`, `threshold_db`, `min_ms`, `timeout_s`, `fmt`, `until_end`, `max_s`, `floor_db`, `floor_s` | `{"armed": {"floor_db", "rate"}}`, `{"iq": ...}` + samples (`sc` the channel sample's index), `{"done": meta}`, or `no_signal` |
 | `activity`, `burstlog`, `bridge` | | `unsupported` |
 
 - `claim` refuses a frequency the bench doesn't list (no receiver channel, not in `bench.tx`). Receiving needs no
@@ -452,7 +452,17 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
   sample 0), `seconds`, `overflows`, `clip_pct`, `pre_s`, `scale_db`. A front end with a wider ADC gives its low
   bits, where a bench signal is: `scale_db` is how far cs8's full scale is under the ADC's (24.08 on a PlutoSDR:
   ×16, clipping over -24 dBFS; a level in the capture less `scale_db` is the ADC's dBFS).
-- `trigger` sends the channel's 48 kS/s samples (cf32 or cs16), as section 6.2's level trigger.
+- `trigger` cuts the channel at `freq` from the wideband history: mixed to 0 Hz, low-pass filtered to `bw` (a
+  Hamming-windowed sinc, 8 taps a decimated sample), decimated to about 48 kS/s (`fs / round(fs / 48000)`, the
+  metadata's `rate`). It learns the floor as the median 1 ms block over the first `floor_s` (1 s; from the history
+  when it is warm, else live), unless `floor_db` is given, and says `armed`. It fires when `min_ms` blocks in a row
+  are `threshold_db` over the floor, then sends from `pre_s` before the rise (as far as the history goes) to
+  `post_s` after it; with `until_end`, to `post_s` after the last block over half the threshold, at most `max_s`
+  after the rise. Samples are cf32 or cs16, full scale 1.0 = cs8's 127. Nothing in `timeout_s` (60) is
+  `no_signal`. `meta` is the daemon's: `freq`, `center`, `fs` and `rate` (the channel's), `wide_fs`, `fmt`, `bw`,
+  `t0`, `trigger_time`, `signal_start_sample`, `trigger_sc`, `level_db`, `floor_db`, `snr_db`, `threshold_db`,
+  `seconds`, `samples`, `pre_s`, `gap_samples`, `clip_pct`, `scale_db`. The engine filters on its own thread
+  (about 40 ms of input a tick), about 20 multiplies a wideband sample for one trigger.
 - `bursts` and `listen` send the receiver channel's bursts at `freq` as `dmr-bursts` records (section 6.3's fields
   with the daemon's names: `t`, `dt_prev_ms`, `grid_err_ms`, `slot_ab`, `sync`, `kind`, `cc`, `cfo_hz`,
   `level_dbfs`, `dev_hz`, `pi`, `lcss`, `fec`, `lc`, `raw_hex`; no `sym_err` yet), the summary the daemon's (`bursts`, `kinds`,

@@ -339,7 +339,7 @@ def cmd_capture(a) -> int:
 def cmd_capture_trigger(a) -> int:
     req = {"op": "trigger", "session": a.session, "freq": a.freq, "bw": a.bw, "pre_s": a.pre, "post_s": a.post,
            "threshold_db": a.threshold, "min_ms": a.min_ms, "timeout_s": a.timeout, "fmt": a.fmt,
-           "until_end": a.until_end, "max_s": a.max_s, "floor_db": a.floor_db}
+           "until_end": a.until_end, "max_s": a.max_s, "floor_db": a.floor_db, "floor_s": a.floor_s}
     return write_iq(a, req, 8 if a.fmt == "cf32" else 4)
 
 

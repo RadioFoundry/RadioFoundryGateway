@@ -19,13 +19,17 @@
 #include "rdof/benchjob.h"
 #include "rdof/jsonp.h"
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 #define NODES 384
 #define WAIT_MAX_S 900.0       /* a wait with no wait_max */
 #define UNTIL_END_S 0.3        /* bursts --until-end: quiet this long after a burst ends the watch */
 #define SLOT_MS 30.0
 
 enum { C_FREE = 0, C_LINE, C_ACTIVE, C_DONE };
-enum { OP_NONE = 0, OP_SESSION, OP_CLAIM, OP_HOLD, OP_RUN, OP_BURSTS, OP_LISTEN, OP_CAPTURE };
+enum { OP_NONE = 0, OP_SESSION, OP_CLAIM, OP_HOLD, OP_RUN, OP_BURSTS, OP_LISTEN, OP_CAPTURE, OP_TRIGGER };
 enum { W_NONE = 0, W_MODEM, W_FREQ };
 /* a run's job */
 enum { J_WAIT = 0, J_OPEN, J_SEND, J_DRAIN, J_GAP, J_LISTEN };
@@ -43,6 +47,34 @@ typedef struct {
     char note[200], done[200];
     char esc[7000];           /* an out line, as a JSON string */
 } job_t;
+
+/* a trigger: a channel cut from the wideband history (mixed down, filtered, decimated to about 48 kS/s), a level
+ * trigger on it, then the pre-roll and what follows, cut again from the history */
+#define TRIG_HIST 300          /* the floor's histogram: 0.5 dB bins from -150 dB */
+
+typedef struct {
+    int d, ntaps;             /* decimation, filter length (odd) */
+    float *taps;
+    float *dl;                /* the delay line, [2 * ntaps][2]: each sample twice, so a window is contiguous */
+    float *y;                 /* a chunk's outputs, [n][2] */
+    int di;
+    double step;              /* the mixer's radians a sample */
+    uint64_t sc, next_out;    /* the next input to take; the input that completes the next output */
+    double rate, bw, thr, min_ms, pre_s, post_s, max_s, floor_s, timeout, started;
+    bool cs16, until_end, fired;
+    int have_floor;           /* 0 learning, 1 learned, 2 given */
+    double floor_db, level_db;
+    int hist[TRIG_HIST];
+    long floor_blocks;
+    int bsize, bn;            /* outputs in a 1 ms block, so far */
+    double bp;
+    uint64_t block_sc;
+    int run;                  /* blocks over the threshold in a row */
+    uint64_t run_sc;
+    double run_p;
+    uint64_t trig_sc, out_sc0, end_sc;
+    long sent, gaps, clipped, inputs;
+} trig_t;
 
 typedef struct {
     int state, op;
@@ -80,6 +112,7 @@ typedef struct {
     double freq_hz, pre_s, gain;
     /* run */
     job_t *job;
+    trig_t *trig;
 } conn_t;
 
 typedef struct {
@@ -300,6 +333,16 @@ rdof_bl_t *rdof_bl_new(const rdof_bl_platform_t *p)
     return bl;
 }
 
+static void trig_free(trig_t *t)
+{
+    if (t) {
+        free(t->taps);
+        free(t->dl);
+        free(t->y);
+        free(t);
+    }
+}
+
 void rdof_bl_free(rdof_bl_t *bl)
 {
     if (!bl)
@@ -307,6 +350,7 @@ void rdof_bl_free(rdof_bl_t *bl)
     for (int i = 0; i < RDOF_BL_CONNS; i++) {
         free(bl->c[i].out);
         free(bl->c[i].line);
+        trig_free(bl->c[i].trig);
     }
     free(bl->strbuf);
     pthread_mutex_destroy(&bl->mu);
@@ -398,10 +442,12 @@ void rdof_bl_closed(rdof_bl_t *bl, int ci, double now)
     }
     if (c->op == OP_BURSTS || c->op == OP_LISTEN)
         bl->n_bursts--;
-    if (c->op == OP_CAPTURE)
+    if (c->op == OP_CAPTURE || c->op == OP_TRIGGER)
         bl->n_iq--;
     if (c->job)
         job_end(bl, c); /* a transmission unkeys */
+    trig_free(c->trig);
+    c->trig = NULL;
     c->state = C_FREE;
     c->op = OP_NONE;
     c->ol = c->oh = 0;
@@ -863,6 +909,18 @@ static void op_bursts(rdof_bl_t *bl, conn_t *c, int root, double now, bool liste
         emit(bl, c, "{\"ready\":%.3f}", bl->p.utc ? bl->p.utc(bl->p.ctx) : now);
 }
 
+/* A capture's output buffer: the lines so far go along into it. */
+static bool big_out(conn_t *c)
+{
+    uint8_t *big = malloc(RDOF_BL_OUT_IQ);
+    if (!big)
+        return false;
+    memcpy(big, c->out + c->oh, c->ol);
+    free(c->out);
+    c->out = big, c->ocap = RDOF_BL_OUT_IQ, c->oh = 0;
+    return true;
+}
+
 static void op_capture(rdof_bl_t *bl, conn_t *c, int root, double now)
 {
     if (!req_session(bl, c, root, false))
@@ -887,15 +945,10 @@ static void op_capture(rdof_bl_t *bl, conn_t *c, int root, double now)
         fail(bl, c, "bad_request", "seconds is 0-600");
         return;
     }
-    uint8_t *big = malloc(RDOF_BL_OUT_IQ);
-    if (!big) {
+    if (!big_out(c)) {
         fail(bl, c, "unavailable", "no memory for a capture");
         return;
     }
-    /* the lines so far go along into the big buffer */
-    memcpy(big, c->out + c->oh, c->ol);
-    free(c->out);
-    c->out = big, c->ocap = RDOF_BL_OUT_IQ, c->oh = 0;
     if (bl->p.iq_warm) /* a history kept only while warm starts now */
         bl->p.iq_warm(bl->p.ctx);
     uint64_t oldest = 0, next = 0;
@@ -920,6 +973,116 @@ static void op_capture(rdof_bl_t *bl, conn_t *c, int root, double now)
     const double t0 = bl->p.sc_utc ? bl->p.sc_utc(bl->p.ctx, c->sc0) : now - c->pre_s;
     emit(bl, c, "{\"ready\":%.6f,\"shared\":true,\"center\":%.6f,\"pre_s\":%.3f,\"fs\":%.1f,\"sc0\":%llu}", t0,
          w.center_hz / 1e6, c->pre_s, w.fs, (unsigned long long)c->sc0);
+}
+
+/* ── trigger ──────────────────────────────────────────────────────────────── */
+
+/* Start (or restart) the channel so its first output is centered on wideband sample `first`: the filter fills from
+ * (ntaps - 1) / 2 before it. */
+static void trig_restart(trig_t *t, uint64_t first)
+{
+    const int g = (t->ntaps - 1) / 2;
+    memset(t->dl, 0, sizeof(float) * 4 * (size_t)t->ntaps);
+    t->di = 0;
+    t->sc = first >= (uint64_t)g ? first - (uint64_t)g : 0;
+    t->next_out = first + (uint64_t)g;
+    t->bn = 0, t->bp = 0, t->run = 0;
+}
+
+static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now)
+{
+    if (!req_session(bl, c, root, false))
+        return;
+    if (!bl->p.iq_read) {
+        fail(bl, c, "unsupported", "this bench keeps no I/Q");
+        return;
+    }
+    rdof_bl_window_t w;
+    get_window(bl, &w);
+    const double mhz = jnum(bl, root, "freq", NAN);
+    if (!w.running || w.fs <= 0) {
+        fail(bl, c, "unavailable", "the receiver isn't running");
+        return;
+    }
+    if (!isfinite(mhz) || mhz * 1e6 < w.lo_hz || mhz * 1e6 > w.hi_hz) {
+        fail(bl, c, "refused", "%.4f MHz is outside the receiver's window (%.4f-%.4f MHz)", mhz, w.lo_hz / 1e6,
+             w.hi_hz / 1e6);
+        return;
+    }
+    const char *fmt = jstrv(bl, root, "fmt");
+    if (fmt && strcmp(fmt, "cf32") && strcmp(fmt, "cs16")) {
+        fail(bl, c, "bad_request", "fmt is cf32 or cs16");
+        return;
+    }
+    int d = (int)lround(w.fs / 48000.0);
+    if (d < 1)
+        d = 1;
+    const double rate = w.fs / d;
+    const double bw = jnum(bl, root, "bw", 12500), thr = jnum(bl, root, "threshold_db", 10),
+                 min_ms = jnum(bl, root, "min_ms", 10), pre = jnum(bl, root, "pre_s", 1),
+                 post = jnum(bl, root, "post_s", 2), max_s = jnum(bl, root, "max_s", 30),
+                 floor_s = jnum(bl, root, "floor_s", 1), timeout = jnum(bl, root, "timeout_s", 60),
+                 floor_db = jnum(bl, root, "floor_db", NAN);
+    if (!(bw > 0 && bw <= 0.9 * rate) || !(thr > 0) || !(min_ms >= 0) || !(pre >= 0 && pre <= 2) ||
+        !(post >= 0 && post <= 120) || !(max_s > 0 && max_s <= 120) || !(floor_s > 0 && floor_s <= 10) ||
+        !(timeout > 0 && timeout <= 3600)) {
+        fail(bl, c, "bad_request", "bw 0-%.0f Hz, threshold_db > 0, pre_s 0-2, post_s 0-120, max_s 0-120, "
+             "floor_s 0-10, timeout_s 0-3600", 0.9 * rate);
+        return;
+    }
+    trig_t *t = calloc(1, sizeof *t);
+    if (t) {
+        t->d = d;
+        t->ntaps = 8 * d + 1;
+        t->taps = RDOF_BL_MALLOC(sizeof(float) * (size_t)t->ntaps);
+        t->dl = RDOF_BL_MALLOC(sizeof(float) * 4 * (size_t)t->ntaps);
+        t->y = RDOF_BL_MALLOC(sizeof(float) * 2 * (size_t)(RDOF_BL_IQ_CHUNK / d + 2));
+    }
+    if (!t || !t->taps || !t->dl || !t->y || !big_out(c)) {
+        trig_free(t);
+        fail(bl, c, "unavailable", "no memory for a trigger");
+        return;
+    }
+    /* the low-pass: a Hamming-windowed sinc, cut off at bw / 2, unity gain */
+    const double fc = bw / 2 / w.fs, mid = (t->ntaps - 1) / 2.0;
+    double sum = 0;
+    for (int i = 0; i < t->ntaps; i++) {
+        const double x = i - mid;
+        const double h = (x == 0 ? 2 * fc : sin(2 * M_PI * fc * x) / (M_PI * x)) *
+                         (0.54 - 0.46 * cos(2 * M_PI * i / (t->ntaps - 1)));
+        t->taps[i] = (float)h;
+        sum += h;
+    }
+    for (int i = 0; i < t->ntaps; i++)
+        t->taps[i] = (float)(t->taps[i] / sum);
+    t->step = -2 * M_PI * (mhz * 1e6 - w.center_hz) / w.fs;
+    t->rate = rate, t->bw = bw, t->thr = thr, t->min_ms = min_ms, t->pre_s = pre, t->post_s = post;
+    t->max_s = max_s, t->floor_s = floor_s, t->timeout = timeout, t->started = now;
+    t->cs16 = fmt && !strcmp(fmt, "cs16");
+    t->until_end = jbool(bl, root, "until_end");
+    t->bsize = (int)lround(rate / 1000);
+    if (t->bsize < 1)
+        t->bsize = 1;
+    if (isfinite(floor_db))
+        t->floor_db = floor_db, t->have_floor = 2;
+    c->trig = t;
+    c->op = OP_TRIGGER;
+    c->freq_hz = mhz * 1e6;
+    c->gain = w.gain_db;
+    c->state = C_ACTIVE;
+    bl->n_iq++;
+    if (bl->p.iq_warm)
+        bl->p.iq_warm(bl->p.ctx);
+    /* the floor from the history when there is some (a history kept only while warm has none yet) */
+    uint64_t oldest = 0, next = 0;
+    int8_t probe[2];
+    bl->p.iq_read(bl->p.ctx, UINT64_MAX, probe, 0, &oldest, &next);
+    uint64_t back = t->have_floor ? 0 : (uint64_t)(floor_s * w.fs) + (uint64_t)t->ntaps;
+    if (back > next - oldest)
+        back = next - oldest;
+    trig_restart(t, next - back + (uint64_t)t->ntaps / 2);
+    if (t->have_floor)
+        emit(bl, c, "{\"armed\":{\"floor_db\":%.1f,\"rate\":%.1f}}", t->floor_db, t->rate);
 }
 
 /* ── run: the bench tools' jobs (section 14.3) ────────────────────────────── */
@@ -1241,8 +1404,9 @@ static void request(rdof_bl_t *bl, int ci, double now)
         op_capture(bl, c, root, now);
     else if (!strcmp(op, "run"))
         op_run(bl, c, ci, root, now);
-    else if (!strcmp(op, "trigger") || !strcmp(op, "activity") || !strcmp(op, "burstlog") ||
-             !strcmp(op, "bridge"))
+    else if (!strcmp(op, "trigger"))
+        op_trigger(bl, c, root, now);
+    else if (!strcmp(op, "activity") || !strcmp(op, "burstlog") || !strcmp(op, "bridge"))
         fail(bl, c, "unsupported", "this bench has no %s yet", op);
     else
         fail(bl, c, "bad_request", "no op %s", op);
@@ -1534,6 +1698,186 @@ static void tick_capture(rdof_bl_t *bl, conn_t *c, double now)
     }
 }
 
+static double trig_utc(const rdof_bl_t *bl, uint64_t sc, double now, uint64_t next, double fs)
+{
+    return bl->p.sc_utc ? bl->p.sc_utc(bl->p.ctx, sc) : now - ((double)next - (double)sc) / fs;
+}
+
+/* A 1 ms block's power is in: the floor, the rise, the end. True when it fired (the channel restarts). */
+static bool trig_block(rdof_bl_t *bl, conn_t *c, double lin, const rdof_bl_window_t *w)
+{
+    trig_t *t = c->trig;
+    const double db = 10 * log10(lin + 1e-30);
+    if (!t->have_floor) { /* the floor: the median block */
+        int k = (int)((db + 150) * 2);
+        t->hist[k < 0 ? 0 : k >= TRIG_HIST ? TRIG_HIST - 1 : k]++;
+        if (++t->floor_blocks >= t->floor_s * 1000) {
+            long acc = 0;
+            int m = 0;
+            while (m < TRIG_HIST - 1 && (acc += t->hist[m]) <= t->floor_blocks / 2)
+                m++;
+            t->floor_db = -150 + m * 0.5 + 0.25;
+            t->have_floor = 1;
+            emit(bl, c, "{\"armed\":{\"floor_db\":%.1f,\"rate\":%.1f}}", t->floor_db, t->rate);
+        }
+        return false;
+    }
+    const bool over = db >= t->floor_db + t->thr;
+    if (t->fired) {
+        if (t->until_end && t->block_sc >= t->trig_sc && db >= t->floor_db + t->thr / 2) {
+            const uint64_t cap = t->trig_sc + (uint64_t)(t->max_s * w->fs);
+            uint64_t e = t->block_sc + (uint64_t)t->bsize * (uint64_t)t->d + (uint64_t)(t->post_s * w->fs);
+            if (e > cap)
+                e = cap;
+            if (e > t->end_sc)
+                t->end_sc = e;
+        }
+        return false;
+    }
+    if (!over) {
+        t->run = 0;
+        return false;
+    }
+    if (!t->run++)
+        t->run_sc = t->block_sc, t->run_p = 0;
+    t->run_p += lin;
+    if (t->run < t->min_ms)
+        return false;
+    /* fired: back to pre_s before the rise, as far as the history goes */
+    t->fired = true;
+    t->trig_sc = t->run_sc;
+    t->level_db = 10 * log10(t->run_p / t->run + 1e-30);
+    uint64_t oldest = 0, next = 0;
+    int8_t probe[2];
+    bl->p.iq_read(bl->p.ctx, UINT64_MAX, probe, 0, &oldest, &next);
+    const uint64_t pre = (uint64_t)(t->pre_s * w->fs), lo = oldest + (uint64_t)t->ntaps;
+    t->out_sc0 = t->trig_sc > lo + pre ? t->trig_sc - pre : lo < t->trig_sc ? lo : t->trig_sc;
+    t->end_sc = t->trig_sc + (uint64_t)(t->post_s * w->fs);
+    trig_restart(t, t->out_sc0);
+    return true;
+}
+
+static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
+{
+    trig_t *t = c->trig;
+    rdof_bl_window_t w;
+    get_window(bl, &w);
+    const uint64_t g = (uint64_t)(t->ntaps - 1) / 2, d = (uint64_t)t->d;
+    long budget = (long)(0.04 * w.fs) + RDOF_BL_IQ_CHUNK; /* about 40 ms of input a tick: the lock is held */
+    while (budget > 0) {
+        if (t->fired && t->next_out - g >= t->end_sc) {
+            uint64_t oldest = 0, next = 0;
+            int8_t probe[2];
+            bl->p.iq_read(bl->p.ctx, UINT64_MAX, probe, 0, &oldest, &next);
+            const long samples = (long)((t->end_sc - t->out_sc0 + d - 1) / d);
+            emit(bl, c,
+                 "{\"done\":{\"freq\":%.1f,\"center\":%.1f,\"fs\":%.3f,\"rate\":%.3f,\"wide_fs\":%.1f,"
+                 "\"fmt\":\"%s\",\"bw\":%.0f,\"gain\":%.1f,\"ppm\":%.3f,\"t0\":%.6f,\"trigger_time\":%.6f,"
+                 "\"signal_start_sample\":%llu,\"trigger_sc\":%llu,\"level_db\":%.1f,\"floor_db\":%.1f,"
+                 "\"snr_db\":%.1f,\"threshold_db\":%.1f,\"seconds\":%.3f,\"samples\":%ld,\"pre_s\":%.3f,"
+                 "\"gap_samples\":%ld,\"overflows\":%ld,\"clip_pct\":%.3f,\"scale_db\":%.2f,\"source\":\"rfg\"}}",
+                 c->freq_hz, w.center_hz, t->rate, t->rate, w.fs, t->cs16 ? "cs16" : "cf32", t->bw, c->gain, w.ppm,
+                 trig_utc(bl, t->out_sc0, now, next, w.fs), trig_utc(bl, t->trig_sc, now, next, w.fs),
+                 (unsigned long long)((t->trig_sc - t->out_sc0) / d), (unsigned long long)t->trig_sc, t->level_db,
+                 t->floor_db, t->level_db - t->floor_db, t->thr, samples / t->rate, samples,
+                 (double)(t->trig_sc - t->out_sc0) / w.fs, t->gaps, t->gaps ? 1L : 0L,
+                 t->inputs ? 100.0 * (double)t->clipped / (double)(2 * t->inputs) : 0.0, w.iq_scale_db);
+            c->state = C_DONE;
+            return;
+        }
+        if (!t->fired && now - t->started > t->timeout) {
+            if (t->have_floor)
+                fail(bl, c, "no_signal", "nothing rose %.0f dB over the floor (%.1f dB) in %.0f s", t->thr,
+                     t->floor_db, t->timeout);
+            else
+                fail(bl, c, "no_signal", "no samples to learn the floor from in %.0f s", t->timeout);
+            return;
+        }
+        const size_t frame = (size_t)(RDOF_BL_IQ_CHUNK / t->d + 2) * 8 + 160;
+        if (t->fired && room(c) < frame)
+            return; /* the client is behind: later */
+        uint64_t oldest = 0, next = 0;
+        const long got = bl->p.iq_read(bl->p.ctx, t->sc, bl->iq, RDOF_BL_IQ_CHUNK, &oldest, &next);
+        if (got <= 0 && t->sc < oldest) { /* overwritten before it went: on from the oldest, the outputs between lost */
+            if (!t->fired) {
+                trig_restart(t, oldest + g);
+                continue;
+            }
+            const uint64_t want = oldest + g, first = t->next_out - g;
+            const uint64_t k = want > first ? (want - first + d - 1) / d : 0;
+            t->gaps += (long)k;
+            trig_restart(t, first + k * d);
+            continue;
+        }
+        if (got <= 0)
+            return; /* not written yet */
+        budget -= got;
+        const long idx0 = t->fired ? (long)((t->next_out - g - t->out_sc0) / d) : 0;
+        double ph = fmod(t->step * (double)t->sc, 2 * M_PI);
+        double pr = cos(ph), pq = sin(ph);
+        const double rr = cos(t->step), rq = sin(t->step);
+        const float k127 = 1.0f / 127;
+        int nout = 0;
+        bool restarted = false;
+        for (long i = 0; i < got; i++) {
+            const int8_t xi8 = bl->iq[2 * i], xq8 = bl->iq[2 * i + 1];
+            if (t->fired) {
+                t->inputs++;
+                t->clipped += (xi8 >= 127 || xi8 <= -127) + (xq8 >= 127 || xq8 <= -127);
+            }
+            const float xi = xi8 * k127, xq = xq8 * k127;
+            float *a = t->dl + 2 * t->di, *b = a + 2 * t->ntaps;
+            a[0] = b[0] = (float)(xi * pr - xq * pq);
+            a[1] = b[1] = (float)(xi * pq + xq * pr);
+            const double npr = pr * rr - pq * rq;
+            pq = pr * rq + pq * rr, pr = npr;
+            if (++t->di == t->ntaps)
+                t->di = 0;
+            if (t->sc + (uint64_t)i != t->next_out)
+                continue;
+            t->next_out += d;
+            const float *x = t->dl + 2 * t->di; /* oldest to newest (the taps are symmetric) */
+            float yi = 0, yq = 0;
+            for (int k = 0; k < t->ntaps; k++)
+                yi += t->taps[k] * x[2 * k], yq += t->taps[k] * x[2 * k + 1];
+            const uint64_t center = t->sc + (uint64_t)i - g;
+            if (t->fired && center < t->end_sc)
+                t->y[2 * nout] = yi, t->y[2 * nout + 1] = yq, nout++;
+            if (!t->bn++)
+                t->block_sc = center;
+            t->bp += (double)yi * yi + (double)yq * yq;
+            if (t->bn == t->bsize) {
+                const double lin = t->bp / t->bsize;
+                t->bn = 0, t->bp = 0;
+                if (trig_block(bl, c, lin, &w)) {
+                    restarted = true;
+                    break;
+                }
+            }
+        }
+        if (restarted)
+            continue;
+        t->sc += (uint64_t)got;
+        if (!nout)
+            continue;
+        size_t nb = (size_t)nout * 8;
+        if (t->cs16) {
+            int16_t *o = (int16_t *)t->y;
+            for (int k = 0; k < 2 * nout; k++) {
+                const float v = t->y[k] * 32767.0f;
+                o[k] = (int16_t)(v > 32767.0f ? 32767 : v < -32768.0f ? -32768 : lrintf(v));
+            }
+            nb = (size_t)nout * 4;
+        }
+        char hdr[160];
+        const int hn = snprintf(hdr, sizeof hdr, "{\"iq\":{\"seq\":%lu,\"n\":%d,\"sc\":%ld,\"flags\":0},\"bytes\":%zu}\n",
+                                (unsigned long)c->iseq++, nout, idx0, nb);
+        put_bytes(c, hdr, (size_t)hn);
+        put_bytes(c, t->y, nb);
+        t->sent += nout;
+    }
+}
+
 void rdof_bl_tick(rdof_bl_t *bl, double now)
 {
     lock(bl);
@@ -1543,14 +1887,17 @@ void rdof_bl_tick(rdof_bl_t *bl, double now)
         conn_t *c = &bl->c[i];
         if (c->state == C_ACTIVE && c->op == OP_CAPTURE)
             tick_capture(bl, c, now);
+        else if (c->state == C_ACTIVE && c->op == OP_TRIGGER)
+            tick_trigger(bl, c, now);
         else if (c->state == C_ACTIVE && c->op == OP_RUN && c->job && c->wait == W_NONE)
             tick_run(bl, c, i, now);
         else if (c->state == C_ACTIVE && c->op == OP_SESSION && c->ends > 0 && now >= c->ends && c->sess >= 0)
             session_end(bl, c->sess, "max_s");
         else if (c->state == C_LINE && now - c->opened > 30.0)
             fail(bl, c, "bad_request", "no request in 30 s");
-        if (c->state == C_DONE && (c->op == OP_BURSTS || c->op == OP_LISTEN || c->op == OP_CAPTURE)) {
-            if (c->op == OP_CAPTURE)
+        if (c->state == C_DONE &&
+            (c->op == OP_BURSTS || c->op == OP_LISTEN || c->op == OP_CAPTURE || c->op == OP_TRIGGER)) {
+            if (c->op == OP_CAPTURE || c->op == OP_TRIGGER)
                 bl->n_iq--;
             else
                 bl->n_bursts--;
