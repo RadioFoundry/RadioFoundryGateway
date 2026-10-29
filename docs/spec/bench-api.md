@@ -466,7 +466,9 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
 - `bursts` and `listen` send the receiver channel's bursts at `freq` as `dmr-bursts` records (section 6.3's fields
   with the daemon's names: `t`, `dt_prev_ms`, `grid_err_ms`, `slot_ab`, `sync`, `kind`, `cc`, `cfo_hz`,
   `level_dbfs`, `dev_hz`, `pi`, `lcss`, `fec`, `lc`, `raw_hex`; no `sym_err` yet), the summary the daemon's (`bursts`, `kinds`,
-  `first_t`, `last_t`, `seconds`, `cfo_hz`, `level_dbfs`, `ended`).
+  `first_t`, `last_t`, `seconds`, `cfo_hz`, `level_dbfs`, `ended`). `bursts` includes idle bursts (a repeater's hang
+  is all idle); `listen` leaves them out. The bench's own transmission is in them: the receiver hears it as any
+  other signal.
 
 ### 14.3 Jobs
 
@@ -483,7 +485,13 @@ by their long names with `_` for `-`:
 - `bench_tx` `voice`, `csbk`, `data` go out through the bench's TX path (section 7: the SDR modem, `bench.tx`'s
   frequencies, key time and power) in DMO timing, one burst every 60 ms; `listen` (and `listen_after`) reports what
   the receiver channel at `freq` hears, as the tool's `--json` lines and per-call summaries.
-- `bench_repeater` runs a duplex repeater on the job's `rx` / `tx` pair (rdofradio in full duplex only).
+- `bench_repeater` runs a duplex repeater with no network on the job's `rx` (a receiver channel that decodes DMR)
+  and `tx` (a TX frequency) for `seconds`: `slots`, `hang` (T_MSInactiv), `call_hang`, and idle beacons every
+  `beacon` seconds from `beacon_phase` on (a local BS_Dwn_Act into its receive path, the hang `beacon_len`; skipped
+  while keyed). Its records are the tool's: `wakeup` (a BS_Dwn_Act heard: `src`, `slot`, `while_down`), `rx` (each
+  burst heard: `slot`, `control`, `rssi`, `dt`, and the CSBK opcode, LC or voice frame), `lost`, `key`, `beacon`,
+  then `summary` per slot (wakeups, voice frames, data types). `rx_offset`, `tx_offset` and `port` are
+  `unsupported`: the gateway's own receiver and transmitter.
 - An option the gateway can't honor is `unsupported` with the option named, before anything keys. `power` is
   clamped to `bench.tx.rf_level` (rdofradio: see 14.4).
 - The tool's log lines (Python logging's `asctime message`, UTC) come as `err`, its records as `out`; the exit code
@@ -501,8 +509,11 @@ job's `expect_s` (else its length as the gateway works it out).
 
 On rdofradio, a TX job borrows the SDR modem from the roaming transceiver for its length: it pauses (the network's
 calls wait; a call on the air ends first, up to 10 s), the job drives the modem in DMO, and the modem is set up again
-for the transceiver after the job. A duplex repeater keeps the transmitter (`unsupported`). The frequencies are
-`--bench-tx`'s; the job transmits at `--tx-gain`, and the log says `power` isn't applied.
+for the transceiver after the job. A `bench_repeater` job does the same with a repeater in the transceiver's place:
+the modem goes duplex, and the job's first key-up, heard back in the receiver's band, sets the inbound slot timing
+(the transmit path's delay; the transceiver's own is restored after). An instance started as a duplex repeater
+(`--duplex full`) keeps its transmitter (`unsupported`). The frequencies are `--bench-tx`'s; the job transmits at
+`--tx-gain`, and the log says `power` isn't applied. The ESP32 boards run no repeater jobs (`unsupported`).
 
 ### 14.5 The client
 

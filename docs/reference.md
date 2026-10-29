@@ -147,9 +147,11 @@ clone (Z7010, 1 GB, Ethernet, SD boot, ADI's v0.38): the web page answers about 
 **The bench's line protocol:** `--bench [ADDR:]PORT` (the bundle's flags: 7373) serves
 [bench-api.md section 14](spec/bench-api.md) for `tools/bench/rfgbench.py`: the receiver channels' bursts, wideband
 cs8 captures from a 2.5 s history, level-triggered channel captures (`capture-trigger`, cut from that history at
-48 kS/s), and `bench_tx` jobs (`voice`, `csbk`, `data`, `listen`). A transmit job needs
-`--bench-tx MHZ[,MHZ...]` (the frequencies it may use) and the half duplex transceiver: it takes the SDR modem from
-the transceiver for its length, at `--tx-gain` (bench_tx's `--power` is noted, not applied).
+48 kS/s), `bench_tx` jobs (`voice`, `csbk`, `data`, `listen`) and `bench_repeater` jobs (a duplex repeater with no
+network, its RX a receiver channel). A transmit job needs `--bench-tx MHZ[,MHZ...]` (the frequencies it may use) and
+the half duplex transceiver: it takes the SDR modem from the transceiver for its length, at `--tx-gain`
+(bench_tx's `--power` is noted, not applied). On the PlutoSDR (2026-10-29) a repeater job's beacons went out as idle
+bursts on both slots, on the 30 ms grid to within a microsecond; the transmit path was 55 ms past its place.
 
 The ESP32 boards serve the same protocol on TCP `CONFIG_RDOF_BENCH_LINE_PORT` (7373; 0 turns it off) with the bench
 API (`bench_line.c`): the receiver channels' bursts, cs8 captures and level triggers from the bench API's 2 s
