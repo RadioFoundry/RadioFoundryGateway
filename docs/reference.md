@@ -130,9 +130,18 @@ Measured on a "PlutoSDR Rev.C (Z7010-AD9361)", firmware v0.38, its two Cortex-A9
 | `rdofsdr --bench`, 2.4 MS/s, the built-in FFT | | 1989 ms per s of IQ (FFT 1829) |
 | `rdofsdr --bench`, 2.4 MS/s, pffft | | 762 ms per s of IQ (FFT 641) |
 | `--iio local:` at 768 kS/s, pffft (1024 points), full duplex, 438.0125 / 438.25 | 100% (60.0 s in 60.0 s) | 32% of the two cores (main thread 48%, writer 16%), 20 MB |
+| `--iio local:` at 864 kS/s, pffft (1152 points), 9 channels, half duplex, a bench repeater job with two handhelds keyed at once, one a slot (2026-10-29) | 100%, no samples lost | main thread 70% (50% idle), helper 34%, writer 20% |
 
 The full duplex run calibrated at once ("the transmit path is 58.50 ms past its place"). The web page answered on
 the Pluto's USB network address.
+
+The receiver shares a chunk with a helper thread on the other core: the loop gathers the forward FFTs' input and
+runs half of them, then a third of the channels (channelizer and demod); the helper runs the rest; then every
+channel's bursts go to the sinks (the modem, the bench, the network) on the loop's thread. Before that, in the
+two-handheld run, the main thread needed 90% of a core and lost 10 to 100 ms of samples every half second while
+keyed, and the receiver dropped both calls: handhelds a few feet away (-8 and -30 dBFS) lift every channel above
+the idle gate, so every channel's demod runs (0.3 of a core). Reading the IIO buffer took 20% of a core with
+16-bit loads straight from the DMA buffer, 4% with a copy out of it first.
 
 **To run it at every boot:** `tools/pluto/build.sh` also writes `build/pluto/rdof-pluto-bundle-VERSION.tar.gz`, with an
 install script ([tools/pluto/bundle/README.md](../tools/pluto/bundle/README.md)). `./install.sh --config FILE` (or

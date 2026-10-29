@@ -865,6 +865,19 @@ static void run_scene_opt(const scene_opt_t *opt, scene_out_t *o)
             rdof_sdr_rx_demod(&rx, 0, 2);
             rdof_sdr_rx_demod(&rx, 2, 3);
             rdof_sdr_rx_finish(&rx);
+        } else if (mode == 4) {
+            /* rdofradio's: the forward FFTs and the channels shared, then the demods fed on two workers (the second
+             * one's first: order mustn't matter), then the bursts to the sinks on one */
+            rdof_sdr_rx_gather(&rx, iq, CHUNK);
+            const int nb = rx.chz.nblk;
+            rdof_chz_forward_blocks(&rx.chz, nb / 2, nb, 1);
+            rdof_chz_forward_blocks(&rx.chz, 0, nb / 2, 0);
+            rdof_chz_channels(&rx.chz, 1, 3, 1, rx.y, rx.stride);
+            rdof_chz_channels(&rx.chz, 0, 1, 0, rx.y, rx.stride);
+            rdof_sdr_rx_feed(&rx, 1, 3);
+            rdof_sdr_rx_feed(&rx, 0, 1);
+            rdof_sdr_rx_bursts(&rx, 0, 3);
+            rdof_sdr_rx_finish(&rx);
         } else {
             rdof_sdr_rx_forward(&rx, iq, CHUNK);
             rdof_sdr_rx_channels(&rx, 0, 1, 0);
@@ -909,7 +922,7 @@ static void same_scene(const char *what, const scene_out_t *a, const scene_out_t
 
 static void test_scene(void)
 {
-    static scene_out_t on, off, split, fwd, fused;
+    static scene_out_t on, off, split, fwd, fused, fed;
     run_scene(false, 0, &off);
     run_scene(true, 0, &on);
     CHECK(off.n >= 7 && off.bursts[0] >= 7 && off.bursts[1] == 0 && off.bursts[2] == 0, "%d bursts in the scene, %ld on A",
@@ -933,6 +946,9 @@ static void test_scene(void)
     same_scene("forward and channels on two workers", &on, &fwd);
     run_scene(true, 3, &fused);
     same_scene("forward with no memory for the store", &on, &fused);
+    run_scene(true, 4, &fed);
+    same_scene("blocks, channels and demods fed on two workers, bursts on one", &on, &fed);
+    CHECK(fed.gated[1] == on.gated[1], "fed gated %ld, whole %ld", fed.gated[1], on.gated[1]);
 }
 
 /* ── the demod ───────────────────────────────────────────────────────────── */

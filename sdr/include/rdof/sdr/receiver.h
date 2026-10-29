@@ -105,6 +105,8 @@ struct rdof_sdr_rx {
     bool *was_hot;         /* per channel: the last chunk rose above RDOF_GATE_LEVEL */
     int64_t *last_pos;     /* per channel: the channel sample of its last burst (any kind); 0 at the start */
     long *gated;           /* per channel: chunks skipped */
+    const rdof_sdr_burst_t **fed; /* per channel: rdof_sdr_rx_feed's bursts (the demod's buffer), nfed of them */
+    int *nfed;
     long chunks;           /* chunks that gave channel output */
     bool fused;            /* rdof_sdr_rx_forward had no memory for the blocks: it channelized them all itself */
     /* Slot timing utc (rdof_sdr_rx_utc_map): channel sample utc_i0 is UTC utc_t0 ns, utc_rate samples a UTC second */
@@ -137,6 +139,11 @@ void rdof_sdr_rx_process(rdof_sdr_rx_t *rx, const rdof_cf_t *iq, int n);
 int rdof_sdr_rx_channelize(rdof_sdr_rx_t *rx, const rdof_cf_t *iq, int n);
 void rdof_sdr_rx_demod(rdof_sdr_rx_t *rx, int c0, int c1);
 void rdof_sdr_rx_finish(rdof_sdr_rx_t *rx);
+/* rdof_sdr_rx_demod in two steps, for sinks that must stay on one thread: feed (each channel's idle gate and
+ * demod, over disjoint channel ranges on either core; it calls nothing of the platform's), then bursts (the
+ * channels' bursts to drop, on_burst, relabel and the trackers, on the sinks' thread), for every channel fed. */
+void rdof_sdr_rx_feed(rdof_sdr_rx_t *rx, int c0, int c1);
+void rdof_sdr_rx_bursts(rdof_sdr_rx_t *rx, int c0, int c1);
 
 /* Or split by channel end to end, so two cores share the channelizer's per-channel part too: forward (the
  * forward FFTs only, on one core), then rdof_sdr_rx_channels over disjoint channel ranges, each a channel's

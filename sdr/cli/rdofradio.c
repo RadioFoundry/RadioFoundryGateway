@@ -2147,14 +2147,15 @@ static void *port_reader(void *arg)
     return NULL;
 }
 
-/* The channelizer's per-channel part on a second core: the loop runs the forward FFTs and its share of the channels,
- * a helper the rest, and every demod (and so every sink, the modem and the bench) stays on the loop's thread. A
- * PlutoSDR's loop had one of its two cores to itself and fell behind the stream while a repeater job transmitted. */
+/* The receiver on a second core: the loop runs its share of the forward FFTs and of the channels (channelizer and
+ * demod), a helper the rest, and every burst then goes to the sinks (the modem, the bench, the network) on the loop's
+ * thread. A PlutoSDR's loop had one of its two cores to itself and fell behind the stream while a repeater job
+ * transmitted and strong calls kept every channel's demod busy. */
 static struct {
     pthread_t th;
     pthread_mutex_t mu;
     pthread_cond_t cv;
-    int job, c0, c1; /* 1: forward FFTs of blocks c0 to c1; 2: the channelizer's channels c0 to c1 */
+    int job, c0, c1; /* 1: forward FFTs of blocks c0 to c1; 2: channels c0 to c1, channelizer and demod; 3: demod */
     bool go, on, failed;
 } HX = {.mu = PTHREAD_MUTEX_INITIALIZER, .cv = PTHREAD_COND_INITIALIZER};
 
@@ -2168,8 +2169,10 @@ static void *chz_helper(void *arg)
         pthread_mutex_unlock(&HX.mu);
         if (job == 1)
             rdof_chz_forward_blocks(&R.rx.chz, c0, c1, 1);
-        else
+        if (job == 2)
             rdof_chz_channels(&R.rx.chz, c0, c1, 1, R.rx.y, R.rx.stride);
+        if (job >= 2)
+            rdof_sdr_rx_feed(&R.rx, c0, c1);
         pthread_mutex_lock(&HX.mu);
         HX.go = false;
         pthread_cond_broadcast(&HX.cv);
@@ -2195,8 +2198,8 @@ static void hx_join(void)
     pthread_mutex_unlock(&HX.mu);
 }
 
-/* rdof_sdr_rx_process, its channelizer shared with the helper: half the forward FFTs, then two thirds of the
- * channels (the loop has the rest of its work) */
+/* rdof_sdr_rx_process shared with the helper: half the forward FFTs, then two thirds of the channels (the loop has
+ * the rest of its work), then the bursts */
 static void rx_chunk(const rdof_cf_t *in, int n)
 {
     if (!HX.on && !HX.failed && R.rx.C > 1) {
@@ -2210,17 +2213,24 @@ static void rx_chunk(const rdof_cf_t *in, int n)
     } else {
         rdof_sdr_rx_gather(&R.rx, in, n);
     }
+    const int split = R.rx.C / 3 > 0 ? R.rx.C / 3 : 1;
     if (HX.on && !R.rx.fused) {
         const int nb = R.rx.chz.nblk, half = (nb + 1) / 2;
         hx_run(1, half, nb);
         rdof_chz_forward_blocks(&R.rx.chz, 0, half, 0);
         hx_join();
-        const int split = R.rx.C / 3 > 0 ? R.rx.C / 3 : 1;
         hx_run(2, split, R.rx.C);
         rdof_chz_channels(&R.rx.chz, 0, split, 0, R.rx.y, R.rx.stride);
+        rdof_sdr_rx_feed(&R.rx, 0, split);
         hx_join();
+    } else if (HX.on) {
+        hx_run(3, split, R.rx.C);
+        rdof_sdr_rx_feed(&R.rx, 0, split);
+        hx_join();
+    } else {
+        rdof_sdr_rx_feed(&R.rx, 0, R.rx.C);
     }
-    rdof_sdr_rx_demod(&R.rx, 0, R.rx.C);
+    rdof_sdr_rx_bursts(&R.rx, 0, R.rx.C);
     rdof_sdr_rx_finish(&R.rx);
 }
 

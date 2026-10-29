@@ -39,6 +39,8 @@ void rdof_sdr_rx_free(rdof_sdr_rx_t *rx)
     rdof_sdr_free(rx->was_hot);
     rdof_sdr_free(rx->last_pos);
     rdof_sdr_free(rx->gated);
+    rdof_sdr_free(rx->fed);
+    rdof_sdr_free(rx->nfed);
     memset(rx, 0, sizeof *rx);
 }
 
@@ -122,9 +124,11 @@ int rdof_sdr_rx_init(rdof_sdr_rx_t *rx, const rdof_sdr_rx_config_t *cfg, const r
     rx->was_hot = rdof_sdr_alloc(sizeof(bool) * (size_t)n);
     rx->last_pos = rdof_sdr_alloc(sizeof(int64_t) * (size_t)n);
     rx->gated = rdof_sdr_zalloc(sizeof(long) * (size_t)n);
+    rx->fed = rdof_sdr_zalloc(sizeof(*rx->fed) * (size_t)n);
+    rx->nfed = rdof_sdr_zalloc(sizeof(int) * (size_t)n);
     if (!rx->y || !rx->demods || !rx->trackers || !rx->bursts || !rx->afc_pending || !rx->afc_chan ||
         !rx->last_burst || !rx->rssi || !rx->was_hot || !rx->last_pos || !rx->gated || !rx->afc_at || !rx->hist_at ||
-        !rx->hist_corr || !rx->hist_n)
+        !rx->hist_corr || !rx->hist_n || !rx->fed || !rx->nfed)
         return -1;
     for (int c = 0; c < n; c++) {
         rx->hist_at[c * RDOF_AFC_HISTORY] = 0;
@@ -209,9 +213,17 @@ void rdof_sdr_rx_channels(rdof_sdr_rx_t *rx, int c0, int c1, int worker)
 void rdof_sdr_rx_demod(rdof_sdr_rx_t *rx, int c0, int c1)
 {
     for (int c = c0; c < c1 && c < rx->C; c++) {
-        int nb;
-        double *afc = rx->afc_pending + (size_t)c * rx->afc_cap;
+        rdof_sdr_rx_feed(rx, c, c + 1);
+        rdof_sdr_rx_bursts(rx, c, c + 1);
+    }
+}
+
+void rdof_sdr_rx_feed(rdof_sdr_rx_t *rx, int c0, int c1)
+{
+    for (int c = c0; c < c1 && c < rx->C; c++) {
+        int nb = 0;
         rx->afc_chan[c] = 0;
+        rx->nfed[c] = 0;
         /* a chunk too short to give output says nothing about the channel */
         const bool hot = rx->chz.level[c] > RDOF_GATE_LEVEL, idle = rx->gate && rx->got && !hot && !rx->was_hot[c];
         if (rx->got)
@@ -226,6 +238,16 @@ void rdof_sdr_rx_demod(rdof_sdr_rx_t *rx, int c0, int c1)
         const rdof_sdr_burst_t *bs = rdof_demod_feed(&rx->demods[c], rx->y + (size_t)c * rx->stride, rx->got, &nb);
         if (nb)
             rx->last_pos[c] = bs[nb - 1].position;
+        rx->fed[c] = bs, rx->nfed[c] = nb;
+    }
+}
+
+void rdof_sdr_rx_bursts(rdof_sdr_rx_t *rx, int c0, int c1)
+{
+    for (int c = c0; c < c1 && c < rx->C; c++) {
+        double *afc = rx->afc_pending + (size_t)c * rx->afc_cap;
+        const rdof_sdr_burst_t *bs = rx->fed[c];
+        const int nb = rx->nfed[c];
         for (int i = 0; i < nb; i++) {
             rdof_sdr_burst_t stamped = bs[i];
             const rdof_sdr_burst_t *b = &stamped;
