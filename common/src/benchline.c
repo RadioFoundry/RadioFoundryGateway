@@ -491,11 +491,22 @@ static bool req_session(rdof_bl_t *bl, conn_t *c, int root, bool required)
     return true;
 }
 
+/* The platform's window, with what it doesn't know yet (NAN) as 0: JSON has no NaN. */
+static void get_window(rdof_bl_t *bl, rdof_bl_window_t *w)
+{
+    memset(w, 0, sizeof *w);
+    if (bl->p.window)
+        bl->p.window(bl->p.ctx, w);
+    double *v[] = {&w->center_hz, &w->fs, &w->lo_hz, &w->hi_hz, &w->gain_db, &w->dc_guard_hz, &w->ppm, &w->iq_scale_db};
+    for (size_t i = 0; i < sizeof v / sizeof v[0]; i++)
+        if (!isfinite(*v[i]))
+            *v[i] = 0;
+}
+
 static void put_window(rdof_bl_t *bl, char *out, size_t cap)
 {
-    rdof_bl_window_t w = {0};
-    if (bl->p.window)
-        bl->p.window(bl->p.ctx, &w);
+    rdof_bl_window_t w;
+    get_window(bl, &w);
     if (!w.running || w.fs <= 0)
         snprintf(out, cap, "{\"enabled\":false}");
     else
@@ -522,9 +533,8 @@ static void op_info(rdof_bl_t *bl, conn_t *c, double now)
     jstr(name, qn, sizeof qn);
     snprintf(dev, sizeof dev, "{\"kind\":\"%s\",\"name\":%s,\"version\":\"%s\"}", kind, qn, ver);
     put_window(bl, win, sizeof win);
-    rdof_bl_window_t w = {0};
-    if (bl->p.window)
-        bl->p.window(bl->p.ctx, &w);
+    rdof_bl_window_t w;
+    get_window(bl, &w);
     /* built piece by piece: the channel list can be long */
     char line[RDOF_BL_OUT / 2];
     size_t k = (size_t)snprintf(line, sizeof line, "{\"window\":%s,\"sdr\":\"%s\",\"device\":%s,\"channels\":[", win,
@@ -587,13 +597,16 @@ static void op_status(rdof_bl_t *bl, conn_t *c, double now)
     long ovf = 0, skip = 0, drop = 0;
     if (bl->p.rx_stats)
         bl->p.rx_stats(bl->p.ctx, &secs, &ovf, &clip, &skip, &drop);
+    if (!isfinite(secs))
+        secs = 0;
+    if (!isfinite(clip))
+        clip = 0;
     int captures = 0;
     for (int i = 0; i < RDOF_BL_CONNS; i++)
         if (bl->c[i].state == C_ACTIVE && bl->c[i].op == OP_CAPTURE)
             captures++;
-    rdof_bl_window_t w = {0};
-    if (bl->p.window)
-        bl->p.window(bl->p.ctx, &w);
+    rdof_bl_window_t w;
+    get_window(bl, &w);
     char line[RDOF_BL_OUT / 2];
     size_t k = (size_t)snprintf(line, sizeof line,
                                 "{\"sdr\":\"%s\",\"receiver\":{\"seconds\":%.1f,\"overflows\":%ld,\"clip_pct\":%.2f,"
@@ -858,9 +871,8 @@ static void op_capture(rdof_bl_t *bl, conn_t *c, int root, double now)
         fail(bl, c, "unsupported", "this bench keeps no I/Q");
         return;
     }
-    rdof_bl_window_t w = {0};
-    if (bl->p.window)
-        bl->p.window(bl->p.ctx, &w);
+    rdof_bl_window_t w;
+    get_window(bl, &w);
     const double mhz = jnum(bl, root, "freq", NAN), secs = jnum(bl, root, "seconds", 0);
     if (!w.running || w.fs <= 0) {
         fail(bl, c, "unavailable", "the receiver isn't running");
@@ -1475,9 +1487,8 @@ static void tick_bursts(rdof_bl_t *bl, double now)
 
 static void tick_capture(rdof_bl_t *bl, conn_t *c, double now)
 {
-    rdof_bl_window_t w = {0};
-    if (bl->p.window)
-        bl->p.window(bl->p.ctx, &w);
+    rdof_bl_window_t w;
+    get_window(bl, &w);
     for (;;) {
         if (c->sc >= c->sc_end) {
             const double secs = (double)(c->sc_end - c->sc0) / (w.fs > 0 ? w.fs : 1);
