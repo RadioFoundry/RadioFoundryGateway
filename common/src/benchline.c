@@ -370,7 +370,7 @@ void rdof_bl_input(rdof_bl_t *bl, int ci, const char *data, size_t n, double now
             c->line[c->ln++] = data[i];
         } else if (c->lcap < RDOF_BL_LINE_MAX) {
             const size_t nc = c->lcap ? (c->lcap * 4 > RDOF_BL_LINE_MAX ? RDOF_BL_LINE_MAX : c->lcap * 4) : RDOF_BL_LINE;
-            char *p = realloc(c->line, nc);
+            char *p = RDOF_BL_REALLOC(c->line, nc);
             if (!p) {
                 c->overlong = true;
                 continue;
@@ -1512,8 +1512,8 @@ static void tick_capture(rdof_bl_t *bl, conn_t *c, double now)
             if (bl->iq[i] == 127 || bl->iq[i] == -128 || bl->iq[i] == -127)
                 c->clipped++;
         char hdr[160];
-        const int hn = snprintf(hdr, sizeof hdr, "{\"iq\":{\"seq\":%u,\"n\":%ld,\"sc\":%llu,\"flags\":%u},\"bytes\":%ld}\n",
-                                c->iseq++, got, (unsigned long long)c->sc, flags, 2 * got);
+        const int hn = snprintf(hdr, sizeof hdr, "{\"iq\":{\"seq\":%lu,\"n\":%ld,\"sc\":%llu,\"flags\":%u},\"bytes\":%ld}\n",
+                                (unsigned long)c->iseq++, got, (unsigned long long)c->sc, flags, 2 * got);
         put_bytes(c, hdr, (size_t)hn);
         put_bytes(c, bl->iq, (size_t)(2 * got));
         c->sc += (uint64_t)got;

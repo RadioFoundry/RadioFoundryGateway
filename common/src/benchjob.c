@@ -997,7 +997,7 @@ void rdof_bj_listen_burst(rdof_bj_listener_t *l, const rdof_bl_burst_t *b, rdof_
                 if (l->keep_ambe) {
                     if (c->ambe_n + 9 > c->ambe_cap) {
                         const size_t nc = c->ambe_cap ? 2 * c->ambe_cap : 9 * 300;
-                        uint8_t *p = realloc(c->ambe, nc);
+                        uint8_t *p = RDOF_BL_REALLOC(c->ambe, nc);
                         if (p)
                             c->ambe = p, c->ambe_cap = nc;
                     }
@@ -1083,7 +1083,7 @@ void rdof_bj_listen_summary(rdof_bj_listener_t *l, const char *prefix, rdof_bj_e
                 /* DSD's .amb: ".amb", then a frame each: errors corrected, 49 parameter bits in 7 octets (the
                  * last holds one bit, as its value) */
                 const size_t nf = c->ambe_n / 9;
-                uint8_t *amb = malloc(4 + 8 * nf);
+                uint8_t *amb = RDOF_BL_MALLOC(4 + 8 * nf);
                 if (amb) {
                     memcpy(amb, ".amb", 4);
                     for (size_t f = 0; f < nf; f++) {

@@ -455,6 +455,21 @@ int bench_tx_register(void *server);
 size_t bench_tx_info_json(char *buf, size_t cap);
 size_t bench_tx_status_json(char *buf, size_t cap);
 bool bench_tx_enabled(void);
+/* The line protocol's transmit jobs (bench_line.c, through bench_tx.c's slot): the engine's tx hooks. */
+bool bench_tx_listed(uint32_t freq);
+int bench_tx_freqs(uint32_t *out, int max); /* bench.tx's frequencies */
+const char *bench_tx_line_why(void);
+bool bench_tx_line_open(uint32_t freq, int cc, int power, char *why, size_t cap);
+int bench_tx_line_space(char *why, size_t cap);
+void bench_tx_line_push(uint8_t control, const uint8_t burst[33]);
+bool bench_tx_line_idle(void);
+void bench_tx_line_close(void);
+/* The line protocol (bench_line.c, bench-api.md section 14): its server on CONFIG_RDOF_BENCH_LINE_PORT; a burst heard
+ * (from bench_on_burst); the wideband history (bench_api.c's ring) for its captures. */
+void bench_line_start(void);
+void bench_line_burst(int channel, const rdof_sdr_burst_t *b, double t);
+long bench_wide_read(uint64_t sc, int8_t *out, long n, uint64_t *oldest, uint64_t *next);
+void bench_wide_warm(void);
 bool bench_session_label(const char *id, char *label, size_t cap);
 bool bench_query(void *req, const char *key, char *val, size_t cap); /* percent-decoded; false: absent */
 /* modem_sdr.c: the SDR's modem for a bench transmit job (via=modem): NULL, or why it can't */

@@ -301,6 +301,15 @@ menu "RadioFoundry Gateway"
             bench.tx in the settings (the frequencies and the key time), a lease, and the arm jumper
             when bench.tx.arm_gpio names one: built in, it transmits nothing until those allow it.
 
+    config RDOF_BENCH_LINE_PORT
+        int "The bench's line protocol: TCP port (0: off)"
+        depends on RDOF_BENCH
+        default 7373
+        help
+            docs/spec/bench-api.md section 14, for tools/bench/rfgbench.py: the receiver channels' bursts,
+            captures from the wideband history and bench_tx jobs (through RDOF_BENCH_TX and bench.tx).
+            About 230 KB of PSRAM and a server thread with its stack in PSRAM.
+
     config RDOF_SDR_LR2021
         bool "LR2021 front end on SPI (device.type lr2021; not run on a chip yet)"
         depends on RDOF_SDR

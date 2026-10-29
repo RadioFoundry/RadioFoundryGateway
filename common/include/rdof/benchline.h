@@ -33,6 +33,18 @@ extern "C" {
 #define RDOF_BL_OUT_IQ 262144  /* a capture's */
 #define RDOF_BL_IQ_CHUNK 8192  /* samples a capture frame */
 
+/* The engine's small buffers (request lines, a listener's frames): on an ESP32 in PSRAM when there is some, since
+ * malloc keeps blocks this small in internal RAM, the scarce one. */
+#ifdef ESP_PLATFORM
+#include "esp_heap_caps.h"
+#define RDOF_BL_MALLOC(n) heap_caps_malloc_prefer((n), 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_8BIT)
+#define RDOF_BL_REALLOC(p, n) \
+    heap_caps_realloc_prefer((p), (n), 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_8BIT)
+#else
+#define RDOF_BL_MALLOC(n) malloc(n)
+#define RDOF_BL_REALLOC(p, n) realloc((p), (n))
+#endif
+
 enum {
     RDOF_BL_CAP_RX = 1,     /* in the receiver's window */
     RDOF_BL_CAP_DMR = 2,    /* a receiver channel decodes DMR there */

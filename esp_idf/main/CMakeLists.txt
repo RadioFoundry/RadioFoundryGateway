@@ -17,7 +17,7 @@ set(sdr_dsp sdr_task.c dsp_esp.c kbench.c fir_s3.S)
 if(CONFIG_RDOF_SDR)
     list(APPEND srcs sdr.c ${sdr_dsp} slot_timing.c sdr_mqtt.c sdr_hblink.c selftest.c selftest_core.c fe_rtlsdr.c fe_sim.c)
     if(CONFIG_RDOF_BENCH)
-        list(APPEND srcs bench_api.c bench_radio.c bench_tx.c)
+        list(APPEND srcs bench_api.c bench_radio.c bench_tx.c bench_line.c)
     endif()
     if(CONFIG_RDOF_SDR_LR2021)
         list(APPEND srcs fe_lr2021.c)
@@ -29,7 +29,7 @@ idf_component_register(
     SRCS ${srcs}
     INCLUDE_DIRS .
     LDFRAGMENTS linker.lf
-    REQUIRES common sdr rtlsdr lr2021 netclock wifilist gnss tinysctp json nvs_flash esp_wifi esp_netif esp_event esp_http_server
+    REQUIRES common pthread sdr rtlsdr lr2021 netclock wifilist gnss tinysctp json nvs_flash esp_wifi esp_netif esp_event esp_http_server
              esp_timer esp_driver_uart esp_driver_i2c esp_driver_gpio esp_driver_rmt usb mqtt app_update esp_app_format mbedtls lwip esp_hw_support
              espcoredump spi_flash)
 

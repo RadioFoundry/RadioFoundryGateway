@@ -51,6 +51,7 @@ typedef struct {
     char session[16], label[32], via[32];
     uint32_t freq;
     bool radio;           /* via=radio:NAME, else the SDR modem */
+    bool line;            /* the line protocol's job (bench_line.c): no socket of its own, no lease */
     const char *code;     /* refused at the handshake: sent once the socket is up, then closed */
     char why[128];
     rdof_benchtx_t *job;
@@ -82,7 +83,11 @@ static void ws_text(int fd, const char *s, size_t n)
     httpd_ws_send_frame_async(hd, fd, &f);
 }
 
-static void job_to_tool(void *ctx, const char *js, size_t n) { ws_text(J.fd, js, n); }
+static void job_to_tool(void *ctx, const char *js, size_t n)
+{
+    if (!J.line)
+        ws_text(J.fd, js, n);
+}
 
 static void job_to_modem(void *ctx, const uint8_t *b, size_t n)
 {
@@ -127,7 +132,8 @@ static void job_end(void)
         else
             sdr_modem_bench_close();
     }
-    httpd_sess_trigger_close(hd, J.fd);
+    if (!J.line)
+        httpd_sess_trigger_close(hd, J.fd);
     J.on = false;
 }
 
@@ -144,6 +150,17 @@ static void tx_task(void *arg)
             continue;
         }
         const double now = now_s();
+        if (J.line) { /* its connection is the engine's; bench_tx_line_close ends it */
+            size_t n;
+            while ((n = xStreamBufferReceive(J.from_modem, buf, sizeof buf, 0)) > 0)
+                rdof_benchtx_modem(J.job, buf, n, now);
+            if (!armed())
+                rdof_benchtx_stop(J.job, "refused", "the TX arm jumper came out", now);
+            rdof_benchtx_alive(J.job, now);
+            rdof_benchtx_tick(J.job, now);
+            xSemaphoreGive(mu);
+            continue;
+        }
         const bool up = httpd_ws_get_fd_info(hd, J.fd) == HTTPD_WS_CLIENT_WEBSOCKET;
         if (!up) {
             if (esp_timer_get_time() - J.opened_us > 2000000) /* not still finishing its handshake */
@@ -325,6 +342,113 @@ size_t bench_tx_status_json(char *buf, size_t cap)
 
 bool bench_tx_enabled(void) { return policy.nfreqs > 0 && policy.max_key_s > 0; }
 
+/* ── the line protocol's jobs (bench_line.c, bench-api.md 14.3) ─────────────
+ * The engine's tx hooks, from its thread: the SDR modem in DMO under bench.tx's gates, in the slot WS /tx uses (one
+ * job at a time between them). */
+
+int bench_tx_freqs(uint32_t *out, int max)
+{
+    int k = 0;
+    for (; k < policy.nfreqs && k < max; k++)
+        out[k] = policy.freqs_hz[k];
+    return k;
+}
+
+bool bench_tx_listed(uint32_t freq)
+{
+    for (int i = 0; i < policy.nfreqs; i++)
+        if (policy.freqs_hz[i] == freq)
+            return true;
+    return false;
+}
+
+const char *bench_tx_line_why(void)
+{
+    if (!bench_tx_enabled())
+        return policy_err[0] ? policy_err : "no transmit frequencies (bench.tx in the settings)";
+    if (!J.job || !J.from_modem)
+        return "no memory for a transmit job";
+    const char *why = sdr_modem_bench_why();
+    return why && strstr(why, "another") ? NULL : why; /* busy is the job's to wait out, not a refusal */
+}
+
+bool bench_tx_line_open(uint32_t freq, int cc, int power, char *why, size_t cap)
+{
+    why[0] = 0;
+    xSemaphoreTake(mu, portMAX_DELAY);
+    const char *no = NULL;
+    if (J.on)
+        no = "the transmitter is busy with another bench job";
+    else if ((no = rdof_benchtx_gates(&policy, true, true, freq, &freq, 1, armed())) == NULL) {
+        const int level = power < policy.rf_level ? power : policy.rf_level;
+        const rdof_fe_caps_t *c = sdr_fe_caps();
+        const double dbm = c ? c->tx_power_min + (c->tx_power_max - c->tx_power_min) * level / 255.0 : 0;
+        StreamBufferHandle_t sb = J.from_modem;
+        rdof_benchtx_t *job = J.job;
+        J = (txjob_t){.on = true, .line = true, .fd = -1, .freq = freq, .job = job, .from_modem = sb};
+        snprintf(J.session, sizeof J.session, "line");
+        snprintf(J.label, sizeof J.label, "line protocol");
+        snprintf(J.via, sizeof J.via, "modem");
+        xStreamBufferReset(J.from_modem);
+        if ((no = sdr_modem_bench_open(modem_bytes, NULL, dbm)) != NULL) {
+            J.on = false;
+        } else {
+            const rdof_benchtx_io_t io = {job_to_modem, job_to_tool, job_keying, job_utc, NULL};
+            rdof_benchtx_init(J.job, &io, freq, cc, level, policy.max_key_s, now_s());
+            if (power > level)
+                snprintf(why, cap, "--power %d is over bench.tx's rf_level: %d (%.0f dBm)", power, level, dbm);
+            ESP_LOGI(TAG, "tx: a line protocol job on %.5f MHz, cc %d, level %d", freq / 1e6, cc, level);
+        }
+    }
+    xSemaphoreGive(mu);
+    if (no)
+        snprintf(why, cap, "%s", no);
+    return !no;
+}
+
+int bench_tx_line_space(char *why, size_t cap)
+{
+    xSemaphoreTake(mu, portMAX_DELAY);
+    int n = 0;
+    if (!J.on || !J.line || J.job->state == RDOF_TXS_DONE) {
+        snprintf(why, cap, "%s", J.on && J.job->error[0] ? J.job->error : "the modem stopped");
+        n = -1;
+    } else if (J.job->state == RDOF_TXS_READY) {
+        n = RDOF_BENCHTX_QUEUE - J.job->qn;
+    }
+    xSemaphoreGive(mu);
+    return n;
+}
+
+void bench_tx_line_push(uint8_t control, const uint8_t burst[33])
+{
+    xSemaphoreTake(mu, portMAX_DELAY);
+    rdof_benchtx_t *t = J.job;
+    if (J.on && J.line && t->qn < RDOF_BENCHTX_QUEUE) {
+        rdof_benchtx_item_t *it = &t->q[(t->qh + t->qn++) % RDOF_BENCHTX_QUEUE];
+        it->control = control;
+        memcpy(it->burst, burst, 33);
+    }
+    xSemaphoreGive(mu);
+}
+
+bool bench_tx_line_idle(void)
+{
+    xSemaphoreTake(mu, portMAX_DELAY);
+    const bool idle = !J.on || !J.line || J.job->state == RDOF_TXS_DONE ||
+                      (J.job->state == RDOF_TXS_READY && !J.job->keyed && !J.job->qn);
+    xSemaphoreGive(mu);
+    return idle;
+}
+
+void bench_tx_line_close(void)
+{
+    xSemaphoreTake(mu, portMAX_DELAY);
+    if (J.on && J.line)
+        job_end();
+    xSemaphoreGive(mu);
+}
+
 int bench_tx_register(void *server)
 {
     hd = server;
@@ -360,6 +484,18 @@ int bench_tx_register(void *server)
 
 size_t bench_tx_status_json(char *buf, size_t cap) { return (size_t)snprintf(buf, cap, "{\"state\":\"idle\"}"); }
 bool bench_tx_enabled(void) { return false; }
+bool bench_tx_listed(uint32_t freq) { return false; }
+int bench_tx_freqs(uint32_t *out, int max) { return 0; }
+const char *bench_tx_line_why(void) { return "this build has no bench TX (CONFIG_RDOF_BENCH_TX)"; }
+bool bench_tx_line_open(uint32_t freq, int cc, int power, char *why, size_t cap)
+{
+    snprintf(why, cap, "%s", bench_tx_line_why());
+    return false;
+}
+int bench_tx_line_space(char *why, size_t cap) { return -1; }
+void bench_tx_line_push(uint8_t control, const uint8_t burst[33]) {}
+bool bench_tx_line_idle(void) { return true; }
+void bench_tx_line_close(void) {}
 int bench_tx_register(void *server) { return 0; }
 
 #endif

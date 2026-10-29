@@ -924,6 +924,7 @@ void bench_on_burst(void *ctx, int channel, const rdof_sdr_burst_t *b, double t)
     const bool voice = b->b.dt == RDOF_DT_VOICE_SYNC || b->b.dt == RDOF_DT_VOICE;
     if (voice && channel >= 0 && channel < RDOF_SDR_MAX_CHANNELS && (b->b.slot == 1 || b->b.slot == 2))
         voice_bursts[channel][b->b.slot - 1]++;
+    bench_line_burst(channel, b, t);
     if (!(n_burst_streams || (n_ambe_streams && voice)) || !burst_q)
         return;
     burst_rec_t r = {.channel = channel, .position = b->position, .t = t, .cfo_hz = b->freq_offset_hz,
@@ -1610,6 +1611,38 @@ static void hist_write(const rdof_sdr_rx_t *rx, const rdof_cf_t *iq, int n)
     }
 }
 
+/* The line protocol's captures (bench_line.c): the wideband ring from sample sc (the run's own count), as
+ * rdof_bl_ring_read: how many it copied; *oldest and *next what it holds. */
+long bench_wide_read(uint64_t sc, int8_t *out, long n, uint64_t *oldest, uint64_t *next)
+{
+    if (!hist_mu) {
+        *oldest = *next = 0;
+        return 0;
+    }
+    xSemaphoreTake(hist_mu, portMAX_DELAY);
+    const uint64_t w = hist_on && hist_wide_n ? hist_wide_w : 0;
+    /* a tenth of the ring's margin: the DSP may be filling it while this copies */
+    const uint64_t keep = (uint64_t)hist_wide_n - hist_wide_n / 10;
+    uint64_t old = w > keep ? w - keep : 0;
+    if (hist_on && old < hist_wide_from)
+        old = hist_wide_from;
+    *oldest = old, *next = w;
+    long k = 0;
+    if (w && n > 0 && sc >= old && sc < w) {
+        k = (uint64_t)n > w - sc ? (long)(w - sc) : n;
+        uint32_t x = (uint32_t)(sc % hist_wide_n);
+        for (long i = 0; i < k; i++) {
+            out[2 * i] = hist_wide[2 * x], out[2 * i + 1] = hist_wide[2 * x + 1];
+            if (++x == hist_wide_n)
+                x = 0;
+        }
+    }
+    xSemaphoreGive(hist_mu);
+    return k;
+}
+
+void bench_wide_warm(void) { hist_warm_until = esp_timer_get_time() + HIST_WARM_US; }
+
 /* The pre-roll marker, through the I/Q ring ahead of a stream's live frames: send `count` samples from the history
  * from `from` (the stream's own sample index), then `post` (a trigger's; 0: the stream's own length) live. */
 typedef struct __attribute__((packed)) {
@@ -2099,6 +2132,7 @@ int bench_api_register(void *server)
     };
     int n = bench_radio_register(server); /* its link handler goes before the radios list */
     n += bench_tx_register(server);
+    bench_line_start();
     for (size_t i = 0; i < sizeof uris / sizeof uris[0]; i++)
         n += httpd_register_uri_handler(server, &uris[i]) == ESP_OK;
     return n;
