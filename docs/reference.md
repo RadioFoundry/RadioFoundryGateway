@@ -86,9 +86,17 @@ the 30 ms grid; half duplex sent back a whole call that the bench decoded with 0
   times a 20 ms pulse sent 100 kHz below it ("calibration: the transmit path is ... ms past its place"); a pulse
   not heard is tried again, 5 times. A 5 MHz split is wider than the receiver's band, so the outbound can't be
   heard while repeating.
-- The delay moves when either stream stalls. A writer stall lets the Pluto run dry, and everything after goes out
-  one buffer (13.65 ms at 2.4 MS/s) later: the TX ring's floor grows by that much, and idle, rdofradio takes it
-  out ("transmit: ... ms of delay taken out"; keyed, the labels follow it). A reader stall past the Pluto's buffers
+- A stall of the loop longer than the transmit queue (`--iio`: 3 buffers, two queued and one being filled, 28.4 ms
+  at 864 kS/s queued, under the stream's 50 ms lead) would let the Pluto run dry, and everything after would go out that much later, for good: a bench
+  repeater's outbound moved 4.85 ms twice in one call (2026-10-29), and one CPU hog on the Pluto moved it 1.05 s
+  in 12 s. So the writer keeps time: a push that waits says the queue is full again, and when the loop hasn't
+  given it enough to finish a buffer 6 ms before the queue would run out, it finishes the buffer with zeros and
+  drops as many of the late samples (`rdof/sdr/txguard.h`; "transmit: the loop fell behind; ... ms of zeros kept
+  the stream's timing"). The air has a gap and the slots stay where they were. The writer runs at real-time
+  priority (SCHED_FIFO), since a late writer can still run the queue dry ("transmit: the device ran dry"). A
+  writer stall with SoapySDR (no guard) lets the device run dry, and everything after goes out one buffer
+  (13.65 ms at 2.4 MS/s) later: the TX ring's floor grows by that much, and idle, rdofradio takes it out
+  ("transmit: ... ms of delay taken out"; keyed, the labels follow it). A reader stall past the Pluto's buffers
   loses receive samples without an overflow: the stream falls behind the wall clock, and rdofradio calibrates
   again at the next idle moment ("receive: ... ms of samples lost"). Before both, two such stalls during other
   heavy work on the Mac put every call on the other slot.

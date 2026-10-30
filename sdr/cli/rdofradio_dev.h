@@ -19,6 +19,7 @@
 #include <stddef.h>
 
 #include "rdof/sdr/fft.h" /* rdof_cf_t */
+#include "rdof/sdr/txguard.h"
 
 #define RDOF_DEV_TIMEOUT (-1)  /* read: nothing in the time given */
 #define RDOF_DEV_OVERFLOW (-2) /* read: samples were dropped before these */
@@ -50,6 +51,12 @@ struct rdofradio_dev {
     /* up to n samples: how many were taken, or RDOF_DEV_* */
     int (*write)(rdofradio_dev_t *d, const rdof_cf_t *x, int n, long timeout_us);
     void (*stop_tx)(rdofradio_dev_t *d);     /* the transmit stream down; the writer has stopped */
+    /* A device that takes its transmit samples in blocks (rdof/sdr/txguard.h): tx_block samples a push, tx_nbuf
+     * blocks queued when a push returns; tx_room the samples the block being filled still takes. 0 and NULL: no guard. The caller sets
+     * txguard before start, and write reports each push to it. */
+    int tx_block, tx_nbuf;
+    int (*tx_room)(rdofradio_dev_t *d);
+    rdof_txguard_t *txguard;
     void (*close)(rdofradio_dev_t *d);       /* everything, and frees d */
 };
 

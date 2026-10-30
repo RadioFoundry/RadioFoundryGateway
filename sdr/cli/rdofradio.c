@@ -282,23 +282,85 @@ static void say_log(void *ctx, const char *msg) { say("%s\n", msg); }
 
 /* ── the transmit writer ───────────────────────────────────────────────────── */
 
+#define GUARD_MARGIN_S 0.006 /* the guard's zeros go in this long before the device's queue would run out */
+
 static struct {
     rdof_cf_t buf[RING];
     int64_t head, tail;    /* samples put in, samples written to the device */
     bool quit;
     int errors;
     pthread_mutex_t mu;
-    pthread_cond_t cv;
+    pthread_cond_t cv;     /* on CLOCK_MONOTONIC (writer_init) */
     pthread_t thread;
     bool running;
+    bool guarded;          /* the device takes blocks: the guard keeps the stream's timing through a stall */
+    rdof_txguard_t guard;  /* the writer's thread alone (the device's write reports to it) */
 } W = {.mu = PTHREAD_MUTEX_INITIALIZER, .cv = PTHREAD_COND_INITIALIZER};
+
+static double now_s(void);
+
+static void writer_init(void)
+{
+#ifndef __APPLE__ /* macOS has no condattr clock: the writer's waits go by the wall clock there (writer_wait) */
+    pthread_condattr_t a;
+    pthread_condattr_init(&a);
+    pthread_condattr_setclock(&a, CLOCK_MONOTONIC);
+    pthread_cond_destroy(&W.cv);
+    pthread_cond_init(&W.cv, &a);
+    pthread_condattr_destroy(&a);
+#endif
+    W.guarded = dev->tx_block > 0 && dev->tx_nbuf > 0 && dev->tx_room;
+    if (W.guarded) {
+        rdof_txguard_init(&W.guard, dev->rate, dev->tx_block, dev->tx_nbuf);
+        dev->txguard = &W.guard;
+    }
+}
+
+/* W.cv until due (now_s's seconds), W.mu held */
+static void writer_wait(double due)
+{
+#ifdef __APPLE__
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    due += (double)ts.tv_sec + 1e-9 * (double)ts.tv_nsec - now_s();
+#endif
+    const struct timespec at = {(time_t)due, (long)((due - floor(due)) * 1e9)};
+    pthread_cond_timedwait(&W.cv, &W.mu, &at);
+}
+
+/* The loop is late and the device's queue nearly out: zeros finish the block being filled, and as many of the
+ * samples that come late are dropped (rdof/sdr/txguard.h). W.mu held; let go while writing. */
+static void writer_pad(void)
+{
+    static const rdof_cf_t zeros[CHUNK];
+    int room = dev->tx_room(dev), sent = 0;
+    pthread_mutex_unlock(&W.mu);
+    while (room > 0) {
+        const int k = dev->write(dev, zeros, room < CHUNK ? room : CHUNK, 100000);
+        if (k <= 0)
+            break;
+        room -= k, sent += k;
+    }
+    pthread_mutex_lock(&W.mu);
+    if (room > 0)
+        W.errors++;
+    rdof_txguard_padded(&W.guard, sent);
+}
 
 static void *writer(void *arg)
 {
     pthread_mutex_lock(&W.mu);
     for (;;) {
-        while (W.head == W.tail && !W.quit)
-            pthread_cond_wait(&W.cv, &W.mu);
+        while (W.head == W.tail && !W.quit) {
+            const double due = W.guarded ? rdof_txguard_deadline(&W.guard, GUARD_MARGIN_S) : NAN;
+            if (isnan(due)) {
+                pthread_cond_wait(&W.cv, &W.mu);
+            } else if (now_s() < due) {
+                writer_wait(due);
+            } else {
+                writer_pad();
+            }
+        }
         if (W.quit)
             break;
         const int at = (int)(W.tail % RING);
@@ -307,6 +369,11 @@ static void *writer(void *arg)
             n = RING - at;
         if (n > CHUNK)
             n = CHUNK;
+        if (W.guarded && W.guard.skip > 0) { /* what the guard's zeros stood in for */
+            W.tail += rdof_txguard_drop(&W.guard, n);
+            pthread_cond_broadcast(&W.cv);
+            continue;
+        }
         pthread_mutex_unlock(&W.mu);
         int k = dev->write(dev, W.buf + at, n, 100000);
         pthread_mutex_lock(&W.mu);
@@ -2981,6 +3048,7 @@ int main(int argc, char **argv)
         return 1;
     }
     memset(out, 0, sizeof out);
+    writer_init();
     int64_t txn = 0; /* transmit samples put in the ring */
     for (int left = lead; left > 0; left -= chunk) {
         const int k = left < chunk ? left : chunk;
@@ -2994,6 +3062,12 @@ int main(int argc, char **argv)
         return 1;
     }
     W.running = true;
+    { /* the writer first: the guard covers a late loop, not a late writer */
+        const struct sched_param sp = {.sched_priority = 10};
+        const int e = pthread_setschedparam(W.thread, SCHED_FIFO, &sp);
+        if (e)
+            fprintf(stderr, "the transmit writer: no real-time priority (%s)\n", strerror(e));
+    }
 
 #ifdef RDOF_HOST_WEB
     if (web_port >= 0) {
@@ -3092,6 +3166,20 @@ int main(int argc, char **argv)
                 }
                 R.lag_prev = R.lag_min, R.lag_min = INFINITY;
                 R.lag_win = (double)total / rate;
+                if (W.guarded) { /* what the transmit guard did this half second */
+                    static uint32_t pads, dry;
+                    static int64_t padded;
+                    pthread_mutex_lock(&W.mu);
+                    const uint32_t p = W.guard.pads, d = W.guard.dry;
+                    const int64_t z = W.guard.padded;
+                    pthread_mutex_unlock(&W.mu);
+                    if (p != pads)
+                        say("transmit: the loop fell behind; %.1f ms of zeros kept the stream's timing\n",
+                            1e3 * (double)(z - padded) / rate);
+                    if (d != dry)
+                        say("transmit: the device ran dry %u times; what follows goes out later\n", d - dry);
+                    pads = p, dry = d, padded = z;
+                }
             }
         }
         if (R.full) {
@@ -3264,6 +3352,9 @@ int main(int argc, char **argv)
                     "%u muted, %u lost, %u refused\n",
             total / rate, now_s() - t_start, overflows, W.errors, R.m.tx_bursts, R.m.idle_bursts, R.m.rx_bursts,
             R.m.muted, R.m.lost, R.m.refused);
+    if (W.guarded && (W.guard.pads || W.guard.dry))
+        fprintf(stderr, "transmit guard: %u blocks finished with zeros (%.1f ms), ran dry %u times\n", W.guard.pads,
+                1e3 * (double)W.guard.padded / rate, W.guard.dry);
     if (R.rx.echoes)
         fprintf(stderr, "receiver: %ld of our own bursts heard back and dropped\n", R.rx.echoes);
     for (int c = 0; c < NCH; c++)

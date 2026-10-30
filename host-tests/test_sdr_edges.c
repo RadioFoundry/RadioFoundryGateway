@@ -33,6 +33,7 @@
 #include "rdof/sdr/resample.h"
 #include "rdof/sdr/spectrum.h"
 #include "rdof/sdr/status.h"
+#include "rdof/sdr/txguard.h"
 #include "sdr_vectors.h"
 
 #ifndef RDOF_SDR_DATA
@@ -2593,6 +2594,106 @@ static int ppm_step(rdof_ppm_t *p, double est, double t)
     return rdof_ppm_update(p, corr, f, age, 2, t);
 }
 
+/* A device with a queue of nbuf blocks, fed by a loop that stalls once: where each real sample goes on the air,
+ * against where it would without the stall. Returns the worst move (seconds); guarded or not. */
+static double txguard_sim(bool guarded, double stall_at, double stall_s, rdof_txguard_t *g)
+{
+    const double rate = 864000, one = 12288 / rate, lead = 0.05;
+    const int block = 12288, nbuf = 3;
+    rdof_txguard_init(g, rate, block, nbuf);
+    double fin[64]; /* finish times of the blocks pushed, oldest first */
+    int nfin = 0;
+    double t = 0, dry_true = 0;
+    int64_t taken = 0;  /* ring samples taken (written or dropped) */
+    int64_t cur = 0;    /* samples in the block being filled */
+    int64_t first = 0;  /* ring index of the first real sample in the block */
+    int real = 0;       /* real samples in it */
+    double worst = 0, ref = NAN;
+    /* samples the loop has put in by time t: the lead, then the rate, frozen through the stall, caught up after */
+    #define MADE(t) ((int64_t)((lead + ((t) < stall_at ? (t) : (t) < stall_at + stall_s ? stall_at : (t)) - 1e-9) * rate))
+    while (t < 3.0) {
+        int64_t avail = MADE(t) - taken;
+        if (guarded && g->skip > 0 && avail > 0) {
+            taken += rdof_txguard_drop(g, (int)(avail < INT32_MAX ? avail : INT32_MAX));
+            continue;
+        }
+        if (avail > 0 && !(guarded && g->skip > 0)) { /* into the block being filled */
+            const int64_t k = avail < block - cur ? avail : block - cur;
+            if (real == 0)
+                first = taken;
+            taken += k, cur += k, real += (int)k;
+        }
+        const double due = guarded ? rdof_txguard_deadline(g, 0.006) : NAN;
+        bool pad = false;
+        if (cur < block) {
+            /* wait for samples (to the next 0.1 ms) or the deadline */
+            const double next = t + 0.0001;
+            if (guarded && !isnan(due) && due <= next) {
+                t = due > t ? due : t;
+                pad = true;
+                rdof_txguard_padded(g, (int)(block - cur));
+                cur = block;
+            } else {
+                t = next;
+                continue;
+            }
+        }
+        /* push: wait while the queue is full */
+        while (nfin && fin[0] <= t)
+            memmove(fin, fin + 1, sizeof fin[0] * (size_t)--nfin);
+        const double t0 = t;
+        if (nfin == nbuf) {
+            t = fin[0];
+            memmove(fin, fin + 1, sizeof fin[0] * (size_t)--nfin);
+        }
+        const double start = dry_true > t ? dry_true : t;
+        dry_true = start + one;
+        fin[nfin++] = dry_true;
+        if (guarded)
+            rdof_txguard_pushed(g, t0, t);
+        if (real) { /* its first real sample on the air, against its place in the stream */
+            const double off = start - (double)first / rate;
+            if (isnan(ref))
+                ref = off;
+            if (fabs(off - ref) > worst)
+                worst = fabs(off - ref);
+        }
+        (void)pad;
+        cur = 0, real = 0;
+    }
+    #undef MADE
+    return worst;
+}
+
+static void test_txguard(void)
+{
+    rdof_txguard_t g;
+    rdof_txguard_init(&g, 864000, 12288, 3);
+    const double one = 12288 / 864000.0;
+    CHECK(isnan(rdof_txguard_deadline(&g, 0.006)), "no deadline before a push waits");
+    rdof_txguard_pushed(&g, 0.0, 0.00001);
+    CHECK(isnan(rdof_txguard_deadline(&g, 0.006)), "a quick push at the start: the queue isn't full yet");
+    rdof_txguard_pushed(&g, 1.0, 1.01);
+    CHECK(fabs(rdof_txguard_deadline(&g, 0.006) - (1.01 + 3 * one - 0.006)) < 1e-9, "a push that waited: three blocks");
+    rdof_txguard_pushed(&g, 1.02, 1.0201);
+    CHECK(fabs(g.dry_at - (1.01 + 4 * one)) < 1e-9 && g.dry == 0, "a quick push adds a block");
+    rdof_txguard_pushed(&g, 2.0, 2.0001);
+    CHECK(g.dry == 1 && fabs(g.dry_at - (2.0001 + one)) < 1e-9, "a push after the queue ran out: counted, and it plays now");
+    rdof_txguard_padded(&g, 5000);
+    CHECK(g.skip == 5000 && g.padded == 5000 && g.pads == 1, "zeros sent");
+    CHECK(rdof_txguard_drop(&g, 3000) == 3000 && rdof_txguard_drop(&g, 3000) == 2000 && rdof_txguard_drop(&g, 10) == 0,
+          "as many dropped after");
+
+    /* a 60 ms stall (more than the 42.7 ms queue): unguarded the stream moves, guarded it doesn't */
+    const double moved = txguard_sim(false, 1.0, 0.06, &g);
+    CHECK(moved > 0.005, "unguarded, the stall moves the stream (%.2f ms)", 1e3 * moved);
+    const double kept = txguard_sim(true, 1.0, 0.06, &g);
+    CHECK(kept < 1e-4 && g.pads > 0 && g.dry == 0, "guarded, it stays put (%.3f ms, %u pads, %u dry)", 1e3 * kept, g.pads,
+          g.dry);
+    CHECK(txguard_sim(true, 1.0, 0.02, &g) < 1e-4 && g.pads == 0, "a stall the queue covers needs no zeros");
+    CHECK(txguard_sim(true, 1.0, 0.4, &g) < 1e-4 && g.dry == 0, "nor a long one");
+}
+
 static void test_ppm_edges(void)
 {
     rdof_ppm_t p;
@@ -2723,7 +2824,7 @@ int main(void)
         test_alloc, test_bench, test_rx_utc, test_bench_busy, test_chz_args, test_chz_odd, test_chz_clock, test_chz_level,
         test_rrc, test_fm_edges, test_plan_edges, test_scene, test_demod_edges, test_demod_bent, test_demod_small_feed, test_demod_weaker, test_voice, test_rx_edges, test_frontend_edges,
         test_mod_edges, test_resamp_edges, test_resamp_tones, test_fft_edges, test_rate_edges, test_ppm_edges, test_config_edges, test_config_board_keys, test_describe_edges,
-        test_status_edges, test_agc_empty,
+        test_status_edges, test_agc_empty, test_txguard,
 #if RDOF_FEATURE_SDR_AGC
         test_agc_reference,
 #endif

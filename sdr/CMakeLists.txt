@@ -23,6 +23,7 @@ set(RDOF_SDR_SRCS
     src/mod.c
     src/sdrmodem.c
     src/loopback.c
+    src/txguard.c
 )
 
 if(ESP_PLATFORM)

@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
+#include <time.h>
 
 #include <iio.h>
 #ifdef RDOF_AD9361
@@ -33,6 +34,7 @@
 #include "rdofradio_dev.h"
 
 #define TX_ATTEN_MAX 89.0 /* dB; TX gain 0 is this much attenuation, 89 none (as SoapyPlutoSDR) */
+#define TX_BUFFERS 3      /* the transmit queue, in buffers (start) */
 
 typedef struct {
     rdofradio_dev_t d;
@@ -104,7 +106,9 @@ static int start(rdofradio_dev_t *d)
     iio_t *s = (iio_t *)d;
     /* 16 receive buffers (about 230 ms at 864 kS/s), not libiio's 4: the loop's slower turns (a key-up, the modem's
      * polls) are caught up, not lost (a PlutoSDR dropped about 0.5% of the samples while transmitting, 2026-10-29).
-     * The transmit side keeps 4: its delay is the outbound's timing. */
+     * The transmit side's 3 are the one being filled and two queued (28.4 ms at 864 kS/s; a push takes the next
+     * free one, so with 4 the queue was 42.7 ms): less than the 50 ms the stream runs ahead, so its pushes wait for
+     * a block to play out, the guard's clock (rdof/sdr/txguard.h). */
     iio_device_set_kernel_buffers_count(s->rxd, 16);
     s->rxb = iio_device_create_buffer(s->rxd, s->len, false);
     if (!s->rxb) {
@@ -113,6 +117,7 @@ static int start(rdofradio_dev_t *d)
     }
     if (s->rx_only)
         return 0;
+    iio_device_set_kernel_buffers_count(s->txd, TX_BUFFERS);
     s->txb = iio_device_create_buffer(s->txd, s->len, false);
     if (!s->txb) {
         fail(d, "transmit buffer", errno);
@@ -157,6 +162,15 @@ static int rd(rdofradio_dev_t *d, rdof_cf_t *x, int n, long timeout_us)
     return k;
 }
 
+static double mono_s(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + 1e-9 * (double)ts.tv_nsec;
+}
+
+static int tx_room(rdofradio_dev_t *d) { return ((iio_t *)d)->txb ? (int)((iio_t *)d)->w_left : 0; }
+
 static int16_t dac(float v)
 {
     const float y = v * 32767.0f;
@@ -176,7 +190,10 @@ static int wr(rdofradio_dev_t *d, const rdof_cf_t *x, int n, long timeout_us)
     s->wp += 2 * k;
     s->w_left -= (size_t)k;
     if (!s->w_left) {
+        const double t0 = mono_s();
         const ssize_t r = iio_buffer_push(s->txb); /* blocks while the driver's buffers are all queued */
+        if (d->txguard && r >= 0)
+            rdof_txguard_pushed(d->txguard, t0, mono_s());
         s->wp = iio_buffer_start(s->txb);
         s->w_left = s->len;
         if (r < 0) {
@@ -340,5 +357,7 @@ rdofradio_dev_t *rdofradio_iio_open(const char *uri, const rdofradio_dev_setup_t
         iio_channel_enable(s->tx_q);
     }
     s->len = stream_len(su->stream, d->rate);
+    if (!s->rx_only)
+        d->tx_block = (int)s->len, d->tx_nbuf = TX_BUFFERS - 1, d->tx_room = tx_room; /* the one being filled */
     return d;
 }
