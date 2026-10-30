@@ -70,12 +70,22 @@ typedef struct {
     char ip[16];
     bool usb_either; /* both roles want the USB port: whichever device is plugged in decides */
     bool safe_mode;  /* crashed soon after boot SAFE_CRASHES times running: no roles started (main.c) */
+    volatile int batt_mv, batt_pct;  /* the battery (power.c); -1: no battery or no monitor */
+    const char *volatile powering_off; /* why the board is turning off (the OLED says it); NULL while on */
 } board_status_t;
 
 extern board_status_t g_board;
 
 /* The OLED (oled_task.c): the SDR's screen when the board runs one, else the first roamer's or repeater's. */
 void oled_start(void);
+/* The power key and the battery (power.c). power_boot first thing in app_main: after a wake by the key, the key let
+ * go too soon sends the board back to sleep from here. power_start: the key's and the battery's task. power_off:
+ * the radios stopped, the supplies off, then sleep until the key (it doesn't return). */
+void power_boot(void);
+void power_start(void);
+void power_off(const char *why);
+void power_status_json(rdof_json_t *j);
+void status_led_off(void);
 void logring_init(void);
 size_t logring_read(char *out, size_t cap);
 void wifi_start(void);

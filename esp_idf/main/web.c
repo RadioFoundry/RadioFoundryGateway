@@ -21,6 +21,7 @@
  *                         one byte a bin, -2 x dBFS, lowest frequency first); asking keeps it running 10 s
  *   POST /api/ota         a new app image as the body (CONFIG_RDOF_OTA)
  *   POST /api/restart
+ *   POST /api/power_off   the board off, as the power key turns it off (CONFIG_RDOF_POWER_KEY_GPIO)
  * status, config, resolved, log, lastheard and restart are the shared API's (rdof/webapi.h): the board is its
  * platform here, and api_shared hands each request over;
  * and the components' own: /api/clock, /api/time, /api/clock/settings and /netclock.js (netclock_http.h),
@@ -171,6 +172,7 @@ static void fw_status(void *ctx, rdof_json_t *j, rdof_webapi_at_t at)
     switch (at) {
     case RDOF_WEBAPI_AT_BOARD:
         rdof_json_bool(j, "safe_mode", g_board.safe_mode);
+        power_status_json(j); /* the power key and the battery, when the board has them (power.c) */
         crash_status_json(j); /* the core dump in flash, if any (crash.c) */
         break;
     case RDOF_WEBAPI_AT_MEMORY:
@@ -967,6 +969,21 @@ static esp_err_t get_tasks(httpd_req_t *req)
 }
 #endif
 
+#if CONFIG_RDOF_POWER_KEY_GPIO >= 0
+static void power_off_task(void *arg)
+{
+    vTaskDelay(pdMS_TO_TICKS(500)); /* the answer out first */
+    power_off("asked on the web page");
+}
+
+static esp_err_t post_power_off(httpd_req_t *req)
+{
+    httpd_resp_sendstr(req, "turning off; hold the power key to turn it on");
+    xTaskCreate(power_off_task, "power_off", 3072, NULL, 5, NULL);
+    return ESP_OK;
+}
+#endif
+
 #if CONFIG_RDOF_OTA
 static esp_err_t post_ota(httpd_req_t *req)
 {
@@ -1051,6 +1068,9 @@ void web_start(void)
 #endif
 #if CONFIG_RDOF_OTA
         {.uri = "/api/ota", .method = HTTP_POST, .handler = post_ota},
+#endif
+#if CONFIG_RDOF_POWER_KEY_GPIO >= 0
+        {.uri = "/api/power_off", .method = HTTP_POST, .handler = post_power_off},
 #endif
     };
     for (size_t i = 0; i < sizeof uris / sizeof uris[0]; i++)

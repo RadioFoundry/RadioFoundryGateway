@@ -123,6 +123,7 @@ set one).</p>
 <div data-cap="ota"><p class="mute">Upload an app image (.bin): the board writes it to the other slot and restarts into it.</p>
 <input type="file" id="fw" accept=".bin"><br><button type="button" onclick="ota()">Upload</button></div>
 <button type="button" class="dang" data-cap="restart" onclick="restart()">Restart</button>
+<button type="button" class="dang" id="pwroff" hidden onclick="powerOff()">Turn off</button>
 <p id="otamsg"></p></div>
 <div class="card" data-cap="coredump crash" id="m_crash"></div>
 <div class="card" data-cap="board_mem sys_mem" id="m_mem"></div>
@@ -216,7 +217,7 @@ function problems(s) {
 }
 
 // ── anything in /api/status this page doesn't know: shown as it comes ─────
-const KNOWN = 'name version idf uptime_s reset crash heap_free psram_free cpu memory settings_ok settings_error wifi ap_mode ip clock usb_either build_roamer build_sdr selftest spike roamer roamers sdr sdrs modems cpu_process last_exit caps clock_os settings_source rss rss_peak mem_total mem_avail'.split(' ');
+const KNOWN = 'name version idf uptime_s reset crash heap_free psram_free cpu memory settings_ok settings_error wifi ap_mode ip clock usb_either build_roamer build_sdr selftest spike roamer roamers sdr sdrs modems cpu_process last_exit caps clock_os settings_source rss rss_peak mem_total mem_avail power'.split(' ');
 const extras = s => Object.entries(s).filter(([k]) => !KNOWN.includes(k));
 const flat = (o, pre = '') => Object.entries(o).flatMap(([k, v]) => v && typeof v == 'object' ?
   (Array.isArray(v) && v.every(x => typeof x != 'object') ? [[pre + k, v.join(', ')]] : flat(v, pre + k + '.')) : [[pre + k, v]]);
@@ -252,12 +253,16 @@ const memRow = s => has(s, 'board_mem') ? ['Memory free', kb(s.heap_free) + ' in
 // Each core's busy share (cpu: one figure per core, with the FreeRTOS run-time stats built in).
 const cpuRow = s => (s.cpu || s.cpu_process != null) && ['CPU', (s.cpu || []).map((v, c) => 'core ' + c + ' ' + sp(v > 0.9 ? 'bad' : v > 0.75 ? 'warn' : '', pct(v))).join(', ') +
   (s.cpu_process != null ? (s.cpu ? '; ' : '') + 'this program ' + pct(s.cpu_process) : '')];
+// The battery (power: a board with a power key or a battery monitor).
+const battRow = s => s.power && s.power.battery_mv != null && ['Battery', (s.power.battery_pct < 0 ? sp('mute', 'none') :
+  sp(s.power.battery_pct < 15 ? 'bad' : s.power.battery_pct < 30 ? 'warn' : '', s.power.battery_pct + '%')) +
+  ' <span class="mute">(' + (s.power.battery_mv / 1000).toFixed(2) + ' V)</span>'];
 const buildRow = s => ['Build', (/-dirty$/.test(s.version) ? sp('bad', esc(s.version)) : esc(s.version)) + (s.idf ? ' · IDF ' + esc(s.idf) : '')];
 const boardRows = s => [
   ['Runs', (radios(s).concat(sdrs(s), modems(s)).map(x => x.name).filter(Boolean).map(esc).join(', ') || '-') +
     (s.usb_either ? ' <span class="mute">(both on USB: whichever is plugged in runs)</span>' : '')],
   has(s, 'settings') && ['Settings', s.settings_ok ? sp('ok', 'ok') : sp('bad', esc(s.settings_error) + ' (running the defaults)')],
-  has(s, 'wifi') && ['Wi-Fi', wifiText(s)], clockRow(s), memRow(s), cpuRow(s),
+  has(s, 'wifi') && ['Wi-Fi', wifiText(s)], clockRow(s), memRow(s), cpuRow(s), battRow(s),
   ['Up', dur(s.uptime_s) + ' <span class="mute">(last ' + (has(s, 'coredump') ? 'reset' : 'start') + ': ' + esc(s.reset) + ')</span>'],
   has(s, 'coredump') && ['Crash', crashText(s.crash)], has(s, 'crash') && ['Last exit', exitText(s.last_exit)], buildRow(s)];
 // A host's memory: the process's, and the system's.
@@ -490,8 +495,9 @@ function render() {
     if (has(s, 'os_clock')) $('osclock').innerHTML = osClockCard(s);
   } else if (t == 'maint') {
     $('m_board').innerHTML = '<h2>' + (has(s, 'coredump') ? 'Board' : 'Program') + '</h2>' + kv([buildRow(s), ['Up', dur(s.uptime_s)],
-      [has(s, 'coredump') ? 'Last reset' : 'Last start', esc(s.reset)], memRow(s), cpuRow(s),
+      [has(s, 'coredump') ? 'Last reset' : 'Last start', esc(s.reset)], memRow(s), cpuRow(s), battRow(s),
       has(s, 'coredump') && ['Built with', [s.build_roamer && 'roamer', s.build_sdr && 'SDR'].filter(Boolean).join(', ') || '-']]);
+    $('pwroff').hidden = !(s.power && s.power.key);
     const c = s.crash, x = s.last_exit;
     if (has(s, 'crash')) $('m_crash').innerHTML = '<h2>Last exit ' + (x ? pill(x.signal ? 'bad' : 'warn', x.signal ? 'crashed' : 'stopped') : pill('ok', 'none')) +
       '</h2>' + kv([['Last', exitText(x)], x && x.last_line && ['Its last line', '<code>' + esc(x.last_line) + '</code>']]) +
@@ -630,6 +636,7 @@ async function tasks() {
   $('tasks').hidden = false;
   $('tasks').textContent = r.ok ? await r.text() : 'Not in this build (FreeRTOS run-time stats are off).';
 }
+async function powerOff() { if (confirm('Turn the board off? Only its power key turns it on again.')) $('otamsg').textContent = await (await fetch('/api/power_off', {method: 'POST'})).text(); }
 async function restart() { if (confirm(has(S.s, 'coredump') ? 'Restart the board?' : 'Restart the program?')) $('otamsg').textContent = await (await fetch('/api/restart', {method: 'POST'})).text(); }
 async function eraseExit() { if (confirm('Erase the record of the last exit?')) { await fetch('/api/crash', {method: 'DELETE'}); status(); } }
 async function eraseDump() { if (confirm('Erase the saved core dump?')) { await fetch('/api/coredump', {method: 'DELETE'}); status(); } }

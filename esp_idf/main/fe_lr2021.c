@@ -11,9 +11,9 @@
  * The W12's sub-GHz front end (a GC1109) has an LNA, a PA for about 860 to 930
  * MHz and a transmit bypass; the DIOs pick the PA inside that band, the bypass
  * outside it. A 902-928 MHz SAW filter follows its LNA (schematic W12-MB-V0.2),
- * so 461 MHz reaches the LR2021 about 46 dB down: strong signals only.
+ * so 439 MHz reaches the LR2021 about 46 dB down: strong signals only.
  *
- * First run on the W12 (2026-10-23): a bench MMDVM's DMR call on 461.0875 MHz decoded 131 of 131 bursts, BER
+ * First run on the W12 (2026-10-23): a bench MMDVM's DMR call on 438.1125 MHz decoded 131 of 131 bursts, BER
  * 0.5%. That board's crystal ran 28 ppm slow (device.ppm -28). The chip's filter passes the LoRa bandwidth only:
  * one DMR channel a tune at 125 kS/s (band_usable). Samples come out a few counts of 16 bits (lr2021-iq.md R2.17).
  */
@@ -1031,6 +1031,24 @@ int fe_lr2021_hold(bool on, bool keep, int patch)
 }
 
 bool fe_lr2021_held(void) { return st.held; }
+
+int fe_lr2021_power_off(void)
+{
+    if (!st.dev || !st.spi)
+        return -1;
+    lock(); /* kept: nothing reaches the chip again before the board sleeps */
+    st.streaming = false;
+    lr2021_iq_stop(&iq);
+    /* standby first, so the RF switch's DIOs go low (its standby mask) before the GC1109's rail goes: they mustn't
+     * be above its VBAT (its datasheet); then sleep, no clock or context kept (a boot sets it up from reset) */
+    uint8_t f[8];
+    cmd(f, lr2021_radio_set_standby(f, false));
+    cmd(f, lr2021_radio_set_sleep(f, false, false, 0));
+#if CONFIG_RDOF_LR2021_PA_EN_GPIO >= 0
+    gpio_set_level(CONFIG_RDOF_LR2021_PA_EN_GPIO, 0);
+#endif
+    return 0;
+}
 
 int fe_lr2021_cmd(const uint8_t *frame, size_t len, uint8_t *out, size_t n, uint8_t status[2])
 {

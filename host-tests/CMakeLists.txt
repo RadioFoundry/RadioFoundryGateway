@@ -81,6 +81,17 @@ if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
 endif()
 add_test(NAME rdof_memplan_tests COMMAND rdof_memplan_tests)
 
+# The firmware's power key and battery numbers (esp_idf/main/power_core.c).
+add_executable(rdof_power_tests test_power.c ../esp_idf/main/power_core.c)
+target_include_directories(rdof_power_tests PRIVATE ../esp_idf/main)
+set_target_properties(rdof_power_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_compile_options(rdof_power_tests PRIVATE -Wall -Wno-unused-parameter)
+if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+    target_compile_options(rdof_power_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(rdof_power_tests PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME rdof_power_tests COMMAND rdof_power_tests)
+
 # The shared components' own tests.
 add_subdirectory(../components/tinysctp/test tinysctp)
 

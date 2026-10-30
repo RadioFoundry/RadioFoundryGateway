@@ -39,6 +39,7 @@ The setup access point is `radiofoundry-<suffix>` (format `"radiofoundry-%s"`), 
 | DELETE | `/api/coredump` | `CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH` | none | 200 `erased`, or 500 with the error's name | erases the partition (`esp_core_dump_image_erase`); `crash` leaves `/api/status` |
 | POST | `/api/crash` | `CONFIG_RDOF_CRASH_TEST` (default n; debug builds only) | none | 200 `crashing: the board saves a core dump and restarts` | 500 ms later a task `crash_test` stores to address 0 (StoreProhibited): core dump, reboot |
 | POST | `/api/restart` | always | none (ignored) | 200 `restarting` | restart after 1 s |
+| POST | `/api/power_off` | `CONFIG_RDOF_POWER_KEY_GPIO` >= 0 | none (ignored) | 200 `turning off; hold the power key to turn it on` | 500 ms later the board turns off as the power key does ([device.md](device.md) §6) |
 | POST | `/api/selftest` | `CONFIG_RDOF_SDR` | none | 200 `restarting to run the self-test (about 20 s; then see the log)` | NVS `rd`/`selftest` = 1 (u8), restart after 1 s; the boot runs the DSP self-test and clears the flag; the verdict is `/api/status` `selftest` and the log |
 | POST | `/api/spike` | `CONFIG_RDOF_SDR` | none | 200 `restarting to run the USB spike once the RTL-SDR is in (about a minute; see the log)` | NVS `rd`/`spike` = 1 (u8), restart after 1 s; results in `/api/status` `spike` and the log |
 | GET | `/api/spectrum` | `CONFIG_RDOF_SDR` | `?since=N` (u32, default 0) | JSON (§6) | keeps the spectrum computed for 10 s (`sdr_task.c:sdr_spectrum_rows`, `spec_want_until`) |
@@ -87,6 +88,7 @@ platform's own fields at that point (`web.c:fw_status`), then `settings_source` 
 | `idf` | string | | ESP-IDF version | always |
 | `uptime_s` | int | s | since boot | always |
 | `reset` | string | | last reset: `power on`, `reset pin`, `restart`, `panic`, `interrupt watchdog`, `task watchdog`, `watchdog`, `deep sleep`, `brownout`, `sdio`, `usb`, `jtag`, `unknown` | always |
+| `power` | object | | `key` (bool: a power key), `battery_mv`, `battery_pct` (int, -1: no battery), the battery's once read ([device.md](device.md) §6) | a power key or a battery monitor in the build |
 | `crash` | object | | the core dump in flash (the last crash, maybe of an earlier image): `size` (bytes); then either `error` (the dump fails its check: the IDF error's name) or `elf` (the start of the crashed image's ELF SHA-256, hex), `this_image` (bool: the running image), `task` (string), `pc` (`"0x%08lx"`), `exccause` (int: EXCCAUSE, or the IDF's own causes from 64), `cause` (its name: `LoadProhibited`, `StoreProhibited`, `CacheError`, ...; `unknown`), `excvaddr` (`"0x%08lx"`), `backtrace` (space-separated hex, up to 16), `backtrace_corrupted` (bool), `details` (abort()'s or the task watchdog's message; only when there is one) | a core dump exists (`CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH`, ELF) |
 | `heap_free` | int | bytes | internal heap free | always |
 | `psram_free` | int | bytes | PSRAM free | always |

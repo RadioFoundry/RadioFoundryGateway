@@ -24,6 +24,9 @@ int fe_lr2021_hold(bool on, bool keep, int patch); /* patch 1: load Semtech's pa
 bool fe_lr2021_held(void);
 int fe_lr2021_cmd(const uint8_t *frame, size_t len, uint8_t *out, size_t n, uint8_t status[2]);
 const char *fe_lr2021_error(void);
+/* The board turning off (power.c): streaming stopped, the chip in sleep, the front end's supply off. The chip stays
+ * locked; -1 if there's none. */
+int fe_lr2021_power_off(void);
 int fe_lr2021_capture(uint8_t *buf, size_t n, size_t *got, unsigned *overflows, int64_t *us);
 int fe_lr2021_spi(int hz, int delay_ns);
 /* Frames in order, each timed to BUSY low; a length of 0 is a chip reset. Returns how many ran (-1: not held). */

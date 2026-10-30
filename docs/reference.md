@@ -651,6 +651,9 @@ On 2026-10-29, with the bench's line protocol on the ESP32 (`bench_line.c`, the 
 same tree without it: `16mb` + `w12` 2118 KB (0x2116E0), +45 KB, and 200 bytes more DIRAM. Its buffers are in PSRAM
 (see "The bench's line protocol").
 
+On 2026-10-30, with the power key and the battery (`power.c`, `power_core.c`, the `esp_adc` driver; `w12` only, the
+other profiles name no pins): `16mb` + `w12` 2150 KB (0x219750), 173 KB DIRAM used (51.8%).
+
 The roamer role costs 132 KB of flash and the SDR 436 KB (338 KB of it the self-test clip), against about 945 KB for
 the board both share. The SDR only image is 64 KB smaller than with everything built `-O2`.
 
@@ -1383,6 +1386,15 @@ position and satellites are in `/api/status` (`gnss`). Checked on a board on 202
 9600, a 3D fix with 6 of 10 satellites, every pulse edge after the first numbered by the NMEA, the burst 29 ms
 after the pulse, and SDR decodes unchanged with the reader on (131 of 131 three times at 384 kS/s). Its L76K said
 `ANTENNA OPEN` (no active antenna seen) and still had its fix.
+
+**The W12 in its enclosure** (with a battery and two buttons) is the same board: the top button is the USER key
+(GPIO0), the bottom one RST. Nothing turns its 3.3 V off while a battery is in, so `w12` turns it "off" in deep sleep
+([device.md](spec/fw/device.md) §6): the top button held 2 s stops the radios, puts the LR2021 to sleep, turns off
+the front end's, OLED's and GNSS receiver's supplies and sleeps; held 1 s it turns the board on (a tap leaves it
+off). The battery is read through the board's switched divider (GPIO2 on, GPIO1 in, 390k over 100k) every 2 s, in
+`/api/status` `power` and the page's Battery row; under 3.3 V for 30 s the board turns off. `POST /api/power_off`
+(the page's "Turn off") does the same as the key. Checked on the enclosure board on 2026-10-30: off and on by the
+key, a tap while off back to sleep in about 1 s, the battery read 3.617 V steady to 1 mV.
 
 **The W12's factory firmware** (the whole 16 MB flash, read before it was first flashed) is kept in
 `firmware-backups.local/w12/` (git-ignored, not published: a vendor image), with its SHA-256 and how to write it back

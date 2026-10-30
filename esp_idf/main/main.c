@@ -87,6 +87,7 @@ static void gnss_begin(void)
 
 void app_main(void)
 {
+    power_boot(); /* first: woken by the power key and let go too soon, the board goes back to sleep from here */
     status_led_start(); /* red until Wi-Fi is up, then orange or green by the devices */
 #if CONFIG_USJ_ENABLE_USB_SERIAL_JTAG && !CONFIG_RDOF_USB_HOST
     /* the USB PHY back to the serial / JTAG port: an image that used USB OTG (TinyUSB, a USB host) leaves it there
@@ -137,6 +138,7 @@ void app_main(void)
     wifi_start();
     web_start();
     oled_start(); /* it shows the roles as they start */
+    power_start(); /* the power key and the battery */
 #if CONFIG_RDOF_IPGW
     ipgw_start(); /* before the roles: their receivers hand it data bursts */
 #endif

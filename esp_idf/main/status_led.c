@@ -18,7 +18,7 @@
 
 #define LEVEL 24 /* of 255 */
 
-enum { LED_RED, LED_ORANGE, LED_GREEN };
+enum { LED_RED, LED_ORANGE, LED_GREEN, LED_OFF };
 
 static rmt_channel_handle_t chan;
 static rmt_encoder_handle_t enc;
@@ -29,6 +29,7 @@ static void show(int color)
         [LED_RED] = {0, LEVEL, 0},
         [LED_ORANGE] = {LEVEL / 3, LEVEL, 0},
         [LED_GREEN] = {LEVEL, 0, 0},
+        [LED_OFF] = {0, 0, 0},
     };
     const rmt_transmit_config_t tc = {.loop_count = 0};
     rmt_transmit(chan, enc, grb[color], 3, &tc);
@@ -78,7 +79,7 @@ static void led_task(void *arg)
 {
     int shown = -1;
     for (;;) {
-        const int c = !g_board.wifi_up ? LED_RED : devices_ok() ? LED_GREEN : LED_ORANGE;
+        const int c = g_board.powering_off ? LED_OFF : !g_board.wifi_up ? LED_RED : devices_ok() ? LED_GREEN : LED_ORANGE;
         if (c != shown)
             show(shown = c);
         vTaskDelay(pdMS_TO_TICKS(500));
@@ -109,8 +110,12 @@ void status_led_start(void)
     xTaskCreate(led_task, "led", 2048, NULL, 1, NULL);
 }
 
+/* The board turning off: led_task writes it dark within 0.5 s (power.c waits that long). */
+void status_led_off(void) {}
+
 #else
 
 void status_led_start(void) {}
+void status_led_off(void) {}
 
 #endif

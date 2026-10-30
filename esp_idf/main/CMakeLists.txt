@@ -3,7 +3,7 @@
 # The board (settings, Wi-Fi, web, MQTT, USB host) and each role's files, by CONFIG_RDOF_ROAMER and CONFIG_RDOF_SDR.
 # REQUIRES can't depend on Kconfig (it's resolved before the config is): a role that's off leaves its components
 # built but not linked.
-set(srcs main.c mem.c settings.c logring.c crash.c wifi.c web.c net.c usb_host.c status_led.c oled_task.c heard.c site_run.c)
+set(srcs main.c mem.c settings.c logring.c crash.c wifi.c web.c net.c usb_host.c status_led.c oled_task.c heard.c site_run.c power.c power_core.c)
 if(CONFIG_RDOF_ROAMER)
     list(APPEND srcs roamer.c modem_port.c usb_modem.c uart_modem.c split_port.c radio_task.c roam_hblink.c rx_path.c roam_mqtt.c)
 endif()
@@ -30,7 +30,7 @@ idf_component_register(
     INCLUDE_DIRS .
     LDFRAGMENTS linker.lf
     REQUIRES common pthread sdr rtlsdr lr2021 netclock wifilist gnss tinysctp json nvs_flash esp_wifi esp_netif esp_event esp_http_server
-             esp_timer esp_driver_uart esp_driver_i2c esp_driver_gpio esp_driver_rmt usb mqtt app_update esp_app_format mbedtls lwip esp_hw_support
+             esp_timer esp_adc esp_driver_uart esp_driver_i2c esp_driver_gpio esp_driver_rmt usb mqtt app_update esp_app_format mbedtls lwip esp_hw_support
              espcoredump spi_flash)
 
 if(CONFIG_RDOF_SDR AND CONFIG_RDOF_SDR_FAST)

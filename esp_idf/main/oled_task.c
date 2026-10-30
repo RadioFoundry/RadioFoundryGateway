@@ -257,8 +257,19 @@ static void oled_task(void *arg)
         char clock[16];
         clock_text(clock, sizeof clock);
         bool drawn = false;
+        const char *off = g_board.powering_off;
+        if (off) { /* the last screen, until the panel's power goes (power.c) */
+            rdof_oled_clear(&frame);
+            rdof_oled_text(&frame, 0, 0, "Turning off", false, false);
+            rdof_oled_text(&frame, 0, 20, off, false, false);
+#if CONFIG_RDOF_POWER_KEY_GPIO >= 0
+            rdof_oled_text(&frame, 0, 40, "Hold the key to", false, false);
+            rdof_oled_text(&frame, 0, 50, "turn it on", false, false);
+#endif
+            drawn = true;
+        }
 #if CONFIG_RDOF_SDR
-        if (g_roles.has_sdr && g_sstat.started) {
+        if (!drawn && g_roles.has_sdr && g_sstat.started) {
             render_sdr(&frame, clock);
             drawn = true;
         }
@@ -282,7 +293,10 @@ static void oled_task(void *arg)
             ESP_LOGW(TAG, "display write failed; reopening");
         }
         int ms = (int)(S.refresh_s * 1000);
-        vTaskDelay(pdMS_TO_TICKS(ms > 500 ? ms : 500));
+        if (ms < 500)
+            ms = 500;
+        for (int w = 0; w < ms && (off || !g_board.powering_off); w += 100) /* turning off: drawn at once */
+            vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 

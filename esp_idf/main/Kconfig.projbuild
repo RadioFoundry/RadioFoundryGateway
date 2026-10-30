@@ -175,6 +175,64 @@ menu "RadioFoundry Gateway"
         range 0 1
         default 0
 
+    config RDOF_POWER_KEY_GPIO
+        int "Power key GPIO (pressed low; an RTC GPIO, 0 to 21), -1 for none"
+        range -1 21
+        default -1
+        help
+            Held RDOF_POWER_KEY_OFF_MS, the board turns off: the radios stop, the board's
+            switched supplies go off and the ESP32 sleeps until the key is pressed again,
+            then held RDOF_POWER_KEY_ON_MS (power.c). The W12's USER key: GPIO0.
+
+    config RDOF_POWER_KEY_OFF_MS
+        int "Power key: held this long to turn off (ms)"
+        depends on RDOF_POWER_KEY_GPIO >= 0
+        range 500 10000
+        default 2000
+
+    config RDOF_POWER_KEY_ON_MS
+        int "Power key: held this long to turn on (ms; shorter goes back to sleep)"
+        depends on RDOF_POWER_KEY_GPIO >= 0
+        range 0 5000
+        default 1000
+
+    config RDOF_POWER_OFF_LOW_GPIOS
+        string "More GPIOs held low while off (comma separated)"
+        depends on RDOF_POWER_KEY_GPIO >= 0
+        default ""
+        help
+            Supply enables the firmware doesn't otherwise drive. The W12's 2.4 GHz PA_EN: "3".
+
+    config RDOF_BATT_ADC_GPIO
+        int "Battery voltage ADC GPIO (ADC1), -1 for none"
+        range -1 10
+        default -1
+        help
+            The W12: GPIO1, through 390k over 100k, switched on by GPIO2 high.
+
+    config RDOF_BATT_CTRL_GPIO
+        int "Battery divider switch GPIO, -1 for none"
+        depends on RDOF_BATT_ADC_GPIO >= 0
+        range -1 48
+        default -1
+
+    config RDOF_BATT_CTRL_LEVEL
+        int "Level that switches the battery divider on"
+        depends on RDOF_BATT_ADC_GPIO >= 0
+        range 0 1
+        default 1
+
+    config RDOF_BATT_RATIO_X1000
+        int "Battery divider ratio x 1000 (battery mV over ADC mV)"
+        depends on RDOF_BATT_ADC_GPIO >= 0
+        default 4900
+
+    config RDOF_BATT_CUTOFF_MV
+        int "Battery: turn off under this for 30 s (mV; 0 never)"
+        depends on RDOF_BATT_ADC_GPIO >= 0
+        range 0 4000
+        default 3300
+
     config RDOF_MEM_MARGIN_KB
         int "Memory plan: internal RAM kept free for Wi-Fi, lwIP and what isn't planned (KB)"
         default 80

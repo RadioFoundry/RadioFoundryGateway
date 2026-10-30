@@ -1,7 +1,7 @@
-# Device: status LED, OLED, self-test, log ring, watchdog and faults
+# Device: status LED, OLED, self-test, log ring, watchdog and faults, power
 
-Covers: the board-level indicators and diagnostics of the ESP32-S3 RF gateway (`esp_idf`): the RGB status LED, the OLED status screen, the CPU self-test and USB spike, the log ring, and watchdog, crash and reset handling.
-Sources: `esp_idf/main/{status_led,oled_task,selftest,selftest_core,kbench,logring,sdr,web,main,settings,rx_path,radio_task}.c`, `selftest/clip.h`, `Kconfig.projbuild`, `sdkconfig.defaults*`, `partitions-*.csv`; `common/src/{oled,oled_sdr,config}.c`.
+Covers: the board-level indicators and diagnostics of the ESP32-S3 RF gateway (`esp_idf`): the RGB status LED, the OLED status screen, the CPU self-test and USB spike, the log ring, watchdog, crash and reset handling, and the power key and battery.
+Sources: `esp_idf/main/{status_led,oled_task,power,power_core,selftest,selftest_core,kbench,logring,sdr,web,main,settings,rx_path,radio_task}.c`, `selftest/clip.h`, `Kconfig.projbuild`, `sdkconfig.defaults*`, `partitions-*.csv`; `common/src/{oled,oled_sdr,config}.c`.
 Related: [radio.md](radio.md) (modem readiness), [overview.md](overview.md), [config.md](config.md), [interfaces-http.md](interfaces-http.md) (`/api/status`, `/api/log`, `/api/selftest`), [mqtt.md](mqtt.md) (the retained `status` message), [sdr.md](sdr.md), [bench-api.md](../bench-api.md).
 
 ## 1. Status LED
@@ -250,6 +250,7 @@ Only the self-test touches the task watchdog (removes core 1's idle task while i
 | `reset` | `esp_reset_reason()` named: `power on`, `reset pin`, `restart`, `panic`, `interrupt watchdog`, `task watchdog`, `watchdog`, `deep sleep`, `brownout`, `sdio`, `usb`, `jtag`, `unknown` (`web.c:reset_name`) |
 | `crash` | only with a core dump in flash: `{"size": <bytes>, "elf": <hex>, "this_image": bool, "task": <15 chars>, "pc": "0x%08x", "exccause": <int>, "cause": <name>, "excvaddr": "0x%08x", "backtrace": "0x… 0x…", "backtrace_corrupted": bool, "details": <abort or watchdog message, when there is one>}` (up to 16 frames) from `esp_core_dump_get_summary` and `esp_core_dump_get_panic_reason`, or `{"size", "error"}` when the dump fails its CRC; read once at boot (`crash.c:crash_init`, which logs it in one line, `W crash: core dump in flash (...)`), cleared by `DELETE /api/coredump`; the dump stays until the next crash overwrites it, so it may come from an earlier image. `elf` is the start of the crashed image's ELF SHA-256 (`CONFIG_APP_RETRIEVE_LEN_ELF_SHA` hex digits; `shasum -a 256` of a build's `.elf`), `this_image` whether that is the running one. Decode the backtrace with `xtensa-esp32s3-elf-addr2line` against that `.elf`, or the whole dump (`GET /api/coredump`) with `esp-coredump` ([reference.md](../../reference.md), "Crashes") |
 | `heap_free`, `psram_free` | free internal and PSRAM bytes |
+| `power` | only with a power key or a battery monitor (§6): `{"key": bool, "battery_mv": <int>, "battery_pct": <int>}`; the battery fields once read, `battery_pct` -1 under 2.5 V (no battery) |
 | `cpu` | each core's busy share, `[core 0, core 1]`: 1 less the idle task's share of the run-time counter (esp_timer µs) since the last sample, sampled at most every 2 s so several viewers see the same window (`web.c:cpu_json`); absent until a second sample |
 
 ### Firmware-initiated restarts
@@ -263,3 +264,39 @@ Only the self-test touches the task watchdog (removes core 1's idle task while i
 NVS init that finds no free pages or a new version erases NVS and retries (`main.c:app_main`): the stored settings are lost.
 
 Other failures do not reset: a missing OLED retries every 5 s; a missing LED is logged once (`no status LED on GPIO<n>`); a radio or SDR fault is reported through `radio_error` / `rtl_error`, the LED (orange) and MQTT status ([radio.md](radio.md), [sdr.md](sdr.md)).
+
+## 6. Power key and battery (`power.c`, `power_core.c`)
+
+A board on a battery with no power switch: the W12's 3.3 V regulator is on whenever a battery is in (its enable is
+tied to its input), so "off" is deep sleep. Both parts are off unless the board's Kconfig names their pins; `w12`
+names them all.
+
+| Item | Value | Where |
+|---|---|---|
+| Key | `CONFIG_RDOF_POWER_KEY_GPIO` (an RTC GPIO, pressed low; the W12's USER key, GPIO0, the top button on the enclosure version; the bottom one is RST), polled every 20 ms, a release counted after 30 ms up | `power_core.c:rdof_pk_step` |
+| Off | held `CONFIG_RDOF_POWER_KEY_OFF_MS` (2000), and only after the key has been up since it turned the board on | `power.c:power_task` |
+| On | woken by the key, it must stay down `CONFIG_RDOF_POWER_KEY_ON_MS` (1000) from the boot, or the board goes back to sleep at once (`power_boot`, first in `app_main`) | `power.c:power_boot` |
+| Battery | ADC1 on `CONFIG_RDOF_BATT_ADC_GPIO`, 2.5 dB, curve-fitting calibration, 8 readings averaged every 2 s with the divider switched on (`CONFIG_RDOF_BATT_CTRL_GPIO` at `_LEVEL`) for them; times `CONFIG_RDOF_BATT_RATIO_X1000` / 1000 (the W12: 390k over 100k, 4900); smoothed 3:1 | `power.c:batt_read` |
+| Charge | a coarse table for a Li-ion cell at rest, 4.2 V 100% to 3.3 V 0%, interpolated; -1 under 2.5 V | `power_core.c:rdof_batt_percent` |
+| Low | under `CONFIG_RDOF_BATT_CUTOFF_MV` (3300) for 15 readings in a row (30 s): off | `power_core.c:rdof_batt_low_step` |
+| Web | `POST /api/power_off` with a key ([interfaces-http.md](interfaces-http.md)); the page's "Turn off" button | `web.c:post_power_off` |
+
+Turning off (`power.c:power_off`), from the key, the battery or the web:
+
+1. `powering_off` set: the OLED draws "Turning off", the reason and "Hold the key to turn it on" at once; the LED's
+   next write (0.5 s at most) is dark.
+2. The SDR paused (`sdr_pause`), then the LR2021: streaming stopped, standby (the RF switch's DIOs go low first: the
+   GC1109's inputs mustn't be above its supply), sleep without a context kept, the front end's supply enable low.
+   The chip's lock is kept, so nothing transmits after this.
+3. 700 ms for the OLED and the LED, then it waits for the key to be let go (down, it would wake the board at once).
+4. Each pin held at its off level through the sleep (`gpio_hold_en`, `gpio_deep_sleep_hold_en`): the LR2021's
+   supply enable low, its NSS and NRESET high (NSS low would wake it; reset draws more than its sleep), the OLED's
+   and the GNSS receiver's power switches off, the LED's data line low, the battery divider off, and
+   `CONFIG_RDOF_POWER_OFF_LOW_GPIOS` low (the W12's 2.4 GHz PA enable, GPIO3).
+5. Deep sleep, woken by the key going low (ext0, the RTC pull-up on). With no key, only a reset wakes it.
+
+A boot released by the key lets the pins go (`gpio_hold_dis`) before anything drives them. The RST button (the
+chip's enable) still restarts the board, asleep or not; held with USER, it starts the ROM's download mode.
+
+The RGB LED (a WS2812 type) is on the 3.3 V rail, so it draws its idle current while the board is off: probably the
+largest part of the board's sleep current. Not measured.

@@ -40,3 +40,10 @@ CONFIG_RDOF_SDR_RING_KB=1024
 # The memory plan's margin: with the SDR and an sdr_transceiver, what isn't planned (Wi-Fi, lwIP, TLS, the web
 # server) took more than 80 KB, and the roamer's stacks, planned into the 80's spare, left the heap with 0.3 KB.
 CONFIG_RDOF_MEM_MARGIN_KB=96
+# Power: the USER key (GPIO0) held 2 s turns the board off (deep sleep; nothing else turns its 3.3 V off while a
+# battery is in), held 1 s turns it on. Off, the 2.4 GHz PA's enable (GPIO3) is held low too. The battery through
+# 390k over 100k on GPIO1, the divider switched on by GPIO2 high; under 3.3 V for 30 s, it turns off.
+CONFIG_RDOF_POWER_KEY_GPIO=0
+CONFIG_RDOF_POWER_OFF_LOW_GPIOS="3"
+CONFIG_RDOF_BATT_ADC_GPIO=1
+CONFIG_RDOF_BATT_CTRL_GPIO=2
