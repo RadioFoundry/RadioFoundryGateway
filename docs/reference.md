@@ -98,7 +98,9 @@ the 30 ms grid; half duplex sent back a whole call that the bench decoded with 0
   (13.65 ms at 2.4 MS/s) later: the TX ring's floor grows by that much, and idle, rdofradio takes it out
   ("transmit: ... ms of delay taken out"; keyed, the labels follow it). A reader stall past the Pluto's buffers
   loses receive samples without an overflow: the stream falls behind the wall clock, and rdofradio calibrates
-  again at the next idle moment ("receive: ... ms of samples lost"). Before both, two such stalls during other
+  again at the next idle moment ("receive: ... ms of samples lost"). Only a half second with a read that waited for
+  the device counts: while the loop works through a backlog the device still holds, every read comes late but
+  nothing is lost (that once said "samples lost" four times under a CPU hog, 2026-10-29). Before both, two such stalls during other
   heavy work on the Mac put every call on the other slot.
 - Slots are numbered by aligned timing ([docs/spec/slot-timing.md](spec/slot-timing.md), "Aligned timing"): a
   handheld's TSx burst falls under outbound TSx and is repeated on TSx; the CACH's AT bit before outbound TSx is
@@ -199,7 +201,10 @@ programming cable's UART (`--baud`, default 115200). `--split-power-cap` caps th
   the freshest read. Its least lag over half a second follows the device's crystal.
 - **Dropped samples.** A lag that stays more than 2 ms over that floor for a second is samples the device dropped.
   Zeros take their place in the receiver ("receive: ... ms of samples lost; zeros in their place"), so the count
-  keeps real time and the clock fit holds.
+  keeps real time and the clock fit holds. As in the repeater, a window with no read that waited (the loop behind,
+  the device holding the samples) isn't judged until one does. The bench's burst times use the same rule: their
+  reference moves only after a second the loop caught up in, so a backlog doesn't move them (it moved a repeater's
+  outbound 1.35 ms in the bench's view).
 - **The port** is read by a thread that stamps each read, so a TIME round trip doesn't include the main loop's wait
   on the receive stream.
 - **Waits.** While the repeater waits for the radio's reply, the receiver keeps reading. What it hears in that time

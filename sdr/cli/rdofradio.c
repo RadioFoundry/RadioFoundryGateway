@@ -116,6 +116,7 @@
 
 #define CHUNK 24000        /* receive samples a turn: 10 ms at 2.4 MS/s */
 #define POLL_S 0.02        /* the repeater's poll */
+#define FRESH_S 0.0003     /* a read that waited this long found the device's buffers empty: its samples are now */
 #define RING (1 << 21)     /* transmit samples between the loop and the writer: 0.87 s at 2.4 MS/s */
 
 #ifndef M_PI
@@ -150,6 +151,7 @@ typedef struct {
     int cal_tries;
     double lag_min, lag_prev; /* the stream behind the wall clock (samples): this window's floor, the last one's */
     double lag_win;        /* stream time the lag's window started */
+    bool lag_fresh;        /* a read in the lag's window waited (FRESH_S): the loop had caught up */
     int64_t cal48;         /* the calibrated tx_late48, with the ring at ring_ref samples (-1: not yet taken) */
     int64_t ring_ref, ring_min;
     double ring_win;       /* stream time the ring's current window started */
@@ -1391,6 +1393,7 @@ static struct {
     uint64_t ref_sc;        /* a wideband sample and its UTC */
     double ref_utc;
     double late_min, late_from; /* the least a chunk came late against the reference, since late_from */
+    bool late_fresh;        /* a read since late_from waited (the loop had caught up) */
     long clipped, seen;
     double t_start;
 } BL = {.mu = PTHREAD_MUTEX_INITIALIZER};
@@ -1755,8 +1758,9 @@ static bool bench_rpt_poll(double now)
     return true;
 }
 
-/* A chunk of the wideband stream, before the receiver: into the history (2.5 s), with the clock's reference. */
-static void bench_feed(const rdof_cf_t *in, int n)
+/* A chunk of the wideband stream, before the receiver: into the history (2.5 s), with the clock's reference.
+ * fresh: the read that gave it waited for the device (FRESH_S), so the loop wasn't behind. */
+static void bench_feed(const rdof_cf_t *in, int n, bool fresh)
 {
     if (!BL.bl)
         return;
@@ -1769,19 +1773,22 @@ static void bench_feed(const rdof_cf_t *in, int n)
         BL.clipped /= 2, BL.seen /= 2; /* the last ten seconds or so */
     /* The chunk's last sample is at most now: the stream's own count between. A read may come late (the device
      * buffers a stall's samples), so the reference follows the freshest read: at once when a chunk would be in the
-     * future, and by the least it came late over a second when that stays over 20 ms (a crystal's drift, a loss). */
+     * future, and by the least it came late over a second when that stays over 20 ms (a crystal's drift, a loss).
+     * Only a second the loop caught up in counts: while it works through a backlog every chunk comes late, the
+     * samples on time (the device held them), and moving the reference then would move the bursts' times. */
     const uint64_t sc = BL.ring.w;
     const double late = utc - (BL.ref_utc + ((double)sc - (double)BL.ref_sc) / R.rate);
     if (!BL.ref_utc || late < 0) {
         BL.ref_sc = sc, BL.ref_utc = utc;
-        BL.late_min = INFINITY, BL.late_from = utc;
+        BL.late_min = INFINITY, BL.late_from = utc, BL.late_fresh = false;
     } else {
         if (late < BL.late_min)
             BL.late_min = late;
-        if (utc - BL.late_from >= 1.0) {
+        BL.late_fresh |= fresh;
+        if (utc - BL.late_from >= 1.0 && BL.late_fresh) {
             if (BL.late_min > 0.02)
                 BL.ref_utc += BL.late_min;
-            BL.late_min = INFINITY, BL.late_from = utc;
+            BL.late_min = INFINITY, BL.late_from = utc, BL.late_fresh = false;
         }
     }
     pthread_mutex_unlock(&BL.mu);
@@ -2303,22 +2310,25 @@ static void rx_chunk(const rdof_cf_t *in, int n)
 
 /* The receive stream against the wall clock: lag = wall-clock samples - samples read. Its least over half a second
  * is the freshest read; floor follows it (a crystal's ppm moves it slowly). A floor that stays over by more than
- * 2 ms for a second is samples the device dropped: zeros go to the receiver in their place. */
+ * 2 ms for a second is samples the device dropped: zeros go to the receiver in their place. Only a window with a
+ * read that waited (FRESH_S) counts: one the loop spent behind runs on until it catches up. */
 static struct {
+    bool win_fresh;
     double t0, rate, floor, win_start, win_min, last_win;
     long long total, filled;
     int chunk, timeouts, errors, overflows;
 } SC;
 
-static void clock_read(double t)
+static void clock_read(double t, bool fresh)
 {
     const double lag = (t - SC.t0) * SC.rate - (double)SC.total;
     if (lag < SC.win_min)
         SC.win_min = lag;
-    if (t - SC.win_start < 0.5)
+    SC.win_fresh |= fresh;
+    if (t - SC.win_start < 0.5 || !SC.win_fresh)
         return;
     const double w = SC.win_min, thr = SC.rate / 500;
-    SC.win_start = t, SC.win_min = INFINITY;
+    SC.win_start = t, SC.win_min = INFINITY, SC.win_fresh = false;
     if (!isfinite(SC.floor) || w < SC.floor + thr) {
         SC.floor = w;
     } else if (SC.last_win >= SC.floor + thr) {
@@ -2329,7 +2339,7 @@ static void clock_read(double t)
         WS.lost += lost;
         SC.total += lost;
         for (; lost > 0; lost -= CHUNK) {
-            bench_feed(zeros, lost < CHUNK ? (int)lost : CHUNK);
+            bench_feed(zeros, lost < CHUNK ? (int)lost : CHUNK, false);
             rx_chunk(zeros, lost < CHUNK ? (int)lost : CHUNK);
         }
     }
@@ -2429,11 +2439,11 @@ static void split_turn(void)
         SC.total += n;
         WS.last_samples = t;
         WS.n += n;
-        clock_read(t);
+        clock_read(t, t - t_in >= FRESH_S);
 #ifdef RDOF_HOST_WEB
         web_spectrum(in, n);
 #endif
-        bench_feed(in, n);
+        bench_feed(in, n, t - t_in >= FRESH_S);
         const double t3 = now_s();
         rx_chunk(in, n);
         const double t4 = now_s();
@@ -3151,12 +3161,15 @@ int main(int argc, char **argv)
         /* Samples the receiver lost (a stall longer than the device's buffers: the stream falls behind the wall
          * clock) move what's heard against what's sent, and the transmitter's samples are paced by what's read: the
          * calibration no longer holds. Its floor over half a second against the last one's: a step is a loss. Half
-         * duplex says so too (the bench's timing and a repeater job's slots move with it). */
+         * duplex says so too (the bench's timing and a repeater job's slots move with it). A window the loop spent
+         * behind (no read waited: the device's buffers held the samples) shows a lag that isn't a loss; it runs on
+         * until a read waits. */
         {
             const double lag = (now - t_start) * rate - (double)total;
             if (lag < R.lag_min)
                 R.lag_min = lag;
-            if ((double)total / rate - R.lag_win >= 0.5) {
+            R.lag_fresh |= dt_read >= FRESH_S;
+            if ((double)total / rate - R.lag_win >= 0.5 && R.lag_fresh) {
                 if (!isnan(R.lag_prev) && R.lag_min - R.lag_prev > rate / 500) {
                     WS.lost += llround(R.lag_min - R.lag_prev);
                     say("receive: %.1f ms of samples lost%s\n", 1e3 * (R.lag_min - R.lag_prev) / rate,
@@ -3164,7 +3177,7 @@ int main(int argc, char **argv)
                     if (R.full)
                         R.recal = true, R.cal_tries = 0;
                 }
-                R.lag_prev = R.lag_min, R.lag_min = INFINITY;
+                R.lag_prev = R.lag_min, R.lag_min = INFINITY, R.lag_fresh = false;
                 R.lag_win = (double)total / rate;
                 if (W.guarded) { /* what the transmit guard did this half second */
                     static uint32_t pads, dry;
@@ -3334,7 +3347,7 @@ int main(int argc, char **argv)
 #ifdef RDOF_HOST_WEB
         web_spectrum(in, n);
 #endif
-        bench_feed(in, n);
+        bench_feed(in, n, dt_read >= FRESH_S);
         const double t3 = now_s();
         rx_chunk(in, n);
         const double t4 = now_s();
