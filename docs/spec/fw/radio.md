@@ -2,7 +2,7 @@
 
 Covers: the host side of the MMDVM serial protocol, the modem transports (USB CDC-ACM, UART, the SDR modem), radio type detection and profiles, tuners, the roaming transceiver's call cycle (txvr), and the bench radio guard and transmit job.
 Sources: `common/src/{mmdvm,modem,txvr,duplex,usbmatch,benchguard,benchtx,benchcfg}.c`, `esp_idf/main/{radio_task,modem_port,usb_host,usb_modem,uart_modem,modem_sdr,bench_radio,bench_tx,roamer}.c`.
-Related: [roamer.md](roamer.md) (scan, reporting), [dmr-core.md](dmr-core.md) (burst layouts, FEC), [device.md](device.md), [config.md](config.md), [hblink.md](hblink.md) (DMRT / DMRK), [mqtt.md](mqtt.md), [sdr.md](sdr.md), [../repeater.md](../repeater.md) and [../slot-timing.md](../slot-timing.md) (repeater, split duplex, slot timing), [../bench-api.md](../bench-api.md) (bench wire format), RadioFoundry's `docs/spec/mmdvm-protocol.md` (cited as MP).
+Related: [roamer.md](roamer.md) (scan, reporting), [dmr-core.md](dmr-core.md) (burst layouts, FEC), [device.md](device.md), [config-v3.md](config-v3.md), [hblink.md](hblink.md) (DMRT / DMRK), [mqtt.md](mqtt.md), [sdr.md](sdr.md), [../repeater.md](../repeater.md) and [../slot-timing.md](../slot-timing.md) (repeater, split duplex, slot timing), [../bench-api.md](../bench-api.md) (bench wire format), RadioFoundry's `docs/spec/mmdvm-protocol.md` (cited as MP).
 
 Paths below are relative to the repository root. `path:symbol` names the constant.
 
@@ -249,8 +249,8 @@ modem UART (`uart_modem.c:uart_modem_start`, `UART_HW_FLOWCTRL_DISABLE`).
 
 Each roamer or repeater (`roam_t`) has one transport (`modem_transport_t {name, write, ctx}`) chosen by its
 `modem_port` setting (`esp_idf/main/roamer.c`): `usb` (default for `auto` and `radio_hotspot`), `uart`
-(default otherwise), `sdr` (an `sdr_transceiver`), `split` ([../repeater.md](../repeater.md)). The settings are in
-[config.md](config.md).
+(default otherwise), `sdr` (a unit on the SDR), `split` ([../repeater.md](../repeater.md)). The settings are in
+[config-v3.md](config-v3.md).
 
 ### 2.1 The port under rdof_modem
 
@@ -319,7 +319,7 @@ programming cable (3.3 V).
 
 The UART is always "up": no hot-plug. A board that resets when the line opens is covered by the 6 GET_VERSION tries.
 
-### 2.4 The SDR modem (sdr_transceiver)
+### 2.4 The SDR modem (a unit on the SDR)
 
 `esp_idf/main/modem_sdr.c` over `sdr/src/sdrmodem.c` (internals in [sdr.md](sdr.md)). The SDR's front end
 is the radio; the roamer or repeater talks MMDVM to an emulated modem, so `txvr.c` and `repeater.c` run unchanged.
@@ -357,8 +357,8 @@ MMDVM over UDP (`radio.protocol: udp`) is refused by the settings:
 | 4 | `MMDVM` | `RDOF_RADIO_MMDVM` | `mmdvm` |
 | — | none | `RDOF_RADIO_UNKNOWN` | `unknown` (error: set the type) |
 
-The config type `opengd77` is an alias of `radio_hotspot`; `sdr_transceiver` becomes `auto`
-(`common/src/config.c:canonical_type`).
+A unit on the SDR runs with type `auto` (`common/src/config.c`); the settings' modem `type` is `auto`,
+`radio_hotspot`, `mmdvm_hs` or `mmdvm` ([config-v3.md](config-v3.md) §4.2).
 
 Profiles and defaults (`common/src/modem.c:rdof_radio_init`):
 
@@ -393,7 +393,7 @@ repeater ([../repeater.md](../repeater.md)).
 | `command` | no (refused) | (a shell command per tune) | `common/src/config.c` |
 
 Tuner choice (`radio_task.c:build_radio`): `modem` if set, or unset and the kind isn't MMDVM. `fixed` if set, or
-the radio is a repeater (fixed at `tuner.freq`, else its `tx_freq`); fixed without a frequency is an error. An
+the radio is a repeater (fixed at `tuner.freq`, else its `out` frequency); fixed without a frequency is an error. An
 MMDVM roamer without a tuner: error "an MMDVM board needs radio.tuner: fixed".
 
 A tune (`rdof_radio_tune`, simplex RX = TX; `rdof_radio_tune_duplex` for a repeater; `rdof_radio_tune_dcdm` for a
@@ -562,19 +562,19 @@ Build switches `CONFIG_RDOF_BENCH` (y), `CONFIG_RDOF_BENCH_TX` (y).
 
 ### 6.1 Settings
 
-`common/src/benchcfg.c` (`bench.radios`, `bench.tx`):
+`common/src/benchcfg.c` (`bench.devices`, `bench.tx`, and each device's `bench`; [config-v3.md](config-v3.md) §4.6):
 
 | Key | Rule | Where |
 |---|---|---|
-| `radios` | up to 4 (`RDOF_BENCH_MAX_RADIOS`) | `common/include/rdof/benchcfg.h` |
-| `name` | 1-23 chars of `[A-Za-z0-9_-]`, unique | `benchcfg.c:radio` |
-| `proto` | `odr-debug` (default) or `mmdvm` | |
-| `port.uart` | 1 or 2, `tx` / `rx` GPIO 0-48 (different), optional `rts` / `cts`; not a roamer's UART | `benchcfg.c:radio`, `bench_radio.c:uart_start` |
+| `devices` | device names, up to 4 (`RDOF_BENCH_MAX_RADIOS`) | `common/include/rdof/benchcfg.h` |
+| the device's `name` | 1-23 chars of `[A-Za-z0-9_-]`, unique | `benchcfg.c:rdof_plan_bench_radios` |
+| `proto` | from the device's kind: `odr-debug` for a `radio`, `mmdvm` for a `modem` | |
+| `port.uart` | 1 or 2, `tx` / `rx` GPIO 0-48 (different), optional `rts` / `cts`; not a roamer's UART | `benchcfg.c:radio_port`, `bench_radio.c:uart_start` |
 | `port.usb` | `cdc-acm` (vid and pid required) or `uart` (a USB-serial bridge; vid / pid optional) | |
 | `baud` | 1200-6000000, default 115200 | |
 | `serial`, `usb_port` | parsed, not used: the first matching device opens | `bench_radio.c:usb_task` |
 | Bridges | FTDI `0403:*`; CP210x `10C4:EA60/EA70/EA71`; CH34x `1A86:7523/7522/5523`; VID `0BDA` refused | `benchcfg.c:rdof_bench_usb_bridge` |
-| `tx.freqs_hz` | up to 8, whole Hz, 30 MHz-3 GHz; none: no TX | `benchcfg.c:rdof_bench_tx_parse` |
+| `tx.freqs_hz` | up to 8, whole Hz, 30 MHz-3 GHz, with the devices' own; none: no TX | `benchcfg.c:rdof_plan_bench_tx` |
 | `tx.max_key_s` | 0-60, default 10 | |
 | `tx.rf_level` | 0-255, default 0 (lowest) | |
 | `tx.arm_gpio` | −1 (none) or 0-48: a jumper to ground that must be in | |

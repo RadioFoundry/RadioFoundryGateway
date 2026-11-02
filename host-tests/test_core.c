@@ -1050,112 +1050,135 @@ static void t_radio(void)
 
 /* ── bench config ─────────────────────────────────────────────────────────── */
 
-static int radios(const char *list, char *err)
+/* Settings with the bench devices: devices (a list of device objects) and bench.devices (a list of names). */
+static int radios(const char *devices, const char *names, int max, char *err)
 {
-    char json[600];
+    char json[900];
     rdof_bench_radio_t r[RDOF_BENCH_MAX_RADIOS];
-    snprintf(json, sizeof json, "{\"bench\": {\"radios\": %s}}", list);
-    return rdof_bench_radios_parse(json, strlen(json), r, 2, err, 160);
+    snprintf(json, sizeof json, "{\"version\": 3, \"devices\": %s, \"bench\": {\"devices\": %s}}", devices, names);
+    return rdof_bench_radios_parse(json, strlen(json), r, max, err, 160);
 }
 
-/* Each rejected radio list's whole error text (the Rust's must be the C's, byte for byte). */
+/* One radio "a" on a port (NULL: none): its count, or -1 with err set. */
+static int radio_on(const char *port, char *err)
+{
+    char devs[400];
+    if (port)
+        snprintf(devs, sizeof devs, "[{\"kind\": \"radio\", \"name\": \"a\", \"port\": %s}]", port);
+    else
+        snprintf(devs, sizeof devs, "[{\"kind\": \"radio\", \"name\": \"a\"}]");
+    return radios(devs, "[\"a\"]", 2, err);
+}
+
+/* Settings with bench.tx (and nothing else). */
+static int bench_tx(const char *tx, rdof_benchtx_policy_t *pol, char *err, size_t cap)
+{
+    char json[400];
+    snprintf(json, sizeof json, "{\"version\": 3, \"bench\": {\"tx\": %s}}", tx);
+    return rdof_bench_tx_parse(json, strlen(json), pol, err, cap);
+}
+
+/* Each rejected bench device's whole error text. */
 static void t_benchcfg_edges(void)
 {
     char err[160];
     static const struct {
-        const char *list, *error;
+        const char *port, *error; /* error NULL: taken */
     } bad[] = {
-        {"[{\"port\": {\"uart\": 1}}]", "bench.radios[0]: a name (up to 23 characters)"},
-        {"[{\"name\": \"\", \"port\": {\"uart\": 1}}]", "bench.radios[0]: a name (up to 23 characters)"},
-        {"[{\"name\": \"abcdefghijklmnopqrstuvwx\"}]", "bench.radios[0]: a name (up to 23 characters)"},
-        {"[{\"name\": 7}]", "bench.radios[0]: a name (up to 23 characters)"},
-        {"[{\"name\": \"a b\"}]", "bench radio a b: a name of letters, digits, - and _"},
-        {"[{\"name\": \"a.b\"}]", "bench radio a.b: a name of letters, digits, - and _"},
-        {"[{\"name\": \"a\", \"proto\": \"dmr\"}]", "bench radio a: proto dmr: odr-debug or mmdvm"},
-        {"[{\"name\": \"a\", \"proto\": \"odr-debug-long\"}]", "bench radio a: proto odr-debug or mmdvm"},
-        {"[{\"name\": \"a\", \"port\": {}}]", "bench radio a: the port is a uart or usb, one of them"},
-        {"[{\"name\": \"a\", \"port\": {\"uart\": 1, \"usb\": \"uart\"}}]",
-         "bench radio a: the port is a uart or usb, one of them"},
-        {"[{\"name\": \"a\", \"port\": {\"uart\": 1, \"tx\": 1, \"rx\": 2, \"baud\": 6000001}}]",
-         "bench radio a: baud 1200 to 6000000"},
-        {"[{\"name\": \"a\", \"port\": {\"uart\": 1, \"tx\": 1, \"rx\": 2, \"baud\": 1199}}]",
-         "bench radio a: baud 1200 to 6000000"},
-        {"[{\"name\": \"a\", \"port\": {\"uart\": 1, \"tx\": 1, \"rx\": 2, \"baud\": 115200.5}}]",
-         "bench radio a: baud 1200 to 6000000"},
-        /* 2^32 + 115200: once (long) and the range check passed it where long is 32 bits */
-        {"[{\"name\": \"a\", \"port\": {\"uart\": 1, \"tx\": 1, \"rx\": 2, \"baud\": 4295082496}}]",
-         "bench radio a: baud 1200 to 6000000"},
-        {"[{\"name\": \"a\", \"port\": {\"uart\": 0, \"tx\": 1, \"rx\": 2}}]",
-         "bench radio a: uart 1 or 2 (UART0 is the console)"},
-        {"[{\"name\": \"a\", \"port\": {\"uart\": 3, \"tx\": 1, \"rx\": 2}}]",
-         "bench radio a: uart 1 or 2 (UART0 is the console)"},
-        {"[{\"name\": \"a\", \"port\": {\"uart\": \"1\", \"tx\": 1, \"rx\": 2}}]", NULL}, /* a string number: fine */
-        {"[{\"name\": \"a\", \"port\": {\"uart\": 1, \"rx\": 2}}]", "bench radio a: tx, a GPIO 0 to 48"},
-        {"[{\"name\": \"a\", \"port\": {\"uart\": 1, \"tx\": 1, \"rx\": 49}}]", "bench radio a: rx, a GPIO 0 to 48"},
-        {"[{\"name\": \"a\", \"port\": {\"uart\": 1, \"tx\": 1, \"rx\": 2, \"rts\": -2}}]",
-         "bench radio a: rts, a GPIO 0 to 48 (or none)"},
-        {"[{\"name\": \"a\", \"port\": {\"uart\": 1, \"tx\": 1, \"rx\": 2, \"cts\": 49}}]",
-         "bench radio a: cts, a GPIO 0 to 48 (or none)"},
-        {"[{\"name\": \"a\", \"port\": {\"uart\": 1, \"tx\": 3, \"rx\": 3}}]", "bench radio a: tx and rx on the same GPIO"},
-        {"[{\"name\": \"a\", \"port\": {\"uart\": 1, \"tx\": 1, \"rx\": 2, \"rts\": 2}}]",
-         "bench radio a: rx and rts on the same GPIO"},
-        {"[{\"name\": \"a\", \"port\": {\"uart\": 1, \"tx\": 1, \"rx\": 2, \"rts\": 5, \"cts\": 5}}]",
-         "bench radio a: rts and cts on the same GPIO"},
-        {"[{\"name\": \"a\", \"port\": {\"uart\": 1, \"tx\": 1, \"rx\": 2, \"cts\": 1}}]",
-         "bench radio a: tx and cts on the same GPIO"},
-        {"[{\"name\": \"a\", \"port\": {\"uart\": 1, \"tx\": 1, \"rx\": 2, \"rts\": 0, \"cts\": 0}}]",
-         "bench radio a: rts and cts on the same GPIO"},
-        {"[{\"name\": \"a\", \"port\": {\"uart\": 1, \"tx\": 0, \"rx\": 0}}]", "bench radio a: tx and rx on the same GPIO"},
-        {"[{\"name\": \"a\", \"port\": {\"uart\": 1, \"tx\": 1, \"rx\": 2, \"rts\": -1, \"cts\": -1}}]", NULL},
-        {"[{\"name\": \"a\", \"port\": {\"usb\": \"cdc\"}}]", "bench radio a: usb cdc-acm or uart"},
-        {"[{\"name\": \"a\", \"port\": {\"usb\": \"cdc-acm-long\"}}]", "bench radio a: usb cdc-acm or uart"},
-        {"[{\"name\": \"a\", \"port\": {\"usb\": \"uart\", \"vid\": -1}}]", "bench radio a: vid, four hex digits"},
-        {"[{\"name\": \"a\", \"port\": {\"usb\": \"uart\", \"vid\": 65536}}]", "bench radio a: vid, four hex digits"},
-        {"[{\"name\": \"a\", \"port\": {\"usb\": \"uart\", \"vid\": \"\"}}]", "bench radio a: vid, four hex digits"},
-        {"[{\"name\": \"a\", \"port\": {\"usb\": \"uart\", \"vid\": \"0403\", \"pid\": \"10000\"}}]",
-         "bench radio a: pid, four hex digits"},
-        {"[{\"name\": \"a\", \"port\": {\"usb\": \"uart\", \"vid\": \"0403\", \"pid\": -1}}]",
-         "bench radio a: pid, four hex digits"},
-        {"[{\"name\": \"a\", \"port\": {\"usb\": \"uart\", \"pid\": \"6001\"}}]", "bench radio a: a pid needs its vid"},
-        {"[{\"name\": \"a\", \"port\": {\"usb\": \"cdc-acm\", \"vid\": \"0483\"}}]",
-         "bench radio a: a cdc-acm radio needs its vid and pid"},
-        {"[{\"name\": \"a\", \"port\": {\"usb\": \"cdc-acm\"}}]", "bench radio a: a cdc-acm radio needs its vid and pid"},
-        {"[{\"name\": \"a\", \"port\": {\"usb\": \"uart\", \"vid\": \"0bda\"}}]",
-         "bench radio a: 0BDA is the RTL-SDR's vendor"},
-        {"[{\"name\": \"a\", \"port\": {\"usb\": \"uart\", \"vid\": \"10c4\", \"pid\": \"ea61\"}}]",
-         "bench radio a: 10C4:EA61 isn't a USB-serial bridge this firmware knows (FTDI, CP210x, CH34x)"},
-        {"[{\"name\": \"a\", \"port\": {\"usb\": \"uart\", \"vid\": \"10c4\"}}]", NULL}, /* any CP210x */
-        {"[{\"name\": \"a\", \"port\": {\"usb\": \"cdc-acm\", \"vid\": \"0483\", \"pid\": \"ea61\"}}]", NULL},
-        {"[{\"name\": \"a\", \"port\": {\"usb\": \"uart\", \"serial\": \"0123456789012345678901234567890\"}}]", NULL},
-        {"[{\"name\": \"a\", \"port\": {\"usb\": \"uart\", \"serial\": \"01234567890123456789012345678901\"}}]",
-         "bench radio a: serial and usb_port are strings"},
-        {"[{\"name\": \"a\", \"port\": {\"usb\": \"uart\"}}, {\"name\": \"a\", \"port\": {\"usb\": \"uart\"}}]",
-         "bench radios: two named a"},
-        {"[{\"name\": \"a\", \"port\": {\"uart\": 2, \"tx\": 1, \"rx\": 2}}, "
-         "{\"name\": \"b\", \"port\": {\"uart\": 2, \"tx\": 3, \"rx\": 4}}]",
-         "bench radios a and b: both on UART2"},
-        {"[{\"name\": \"a\", \"port\": {\"uart\": 1, \"tx\": 1, \"rx\": 2}}, "
-         "{\"name\": \"b\", \"port\": {\"uart\": 2, \"tx\": 3, \"rx\": 4}}]",
-         NULL},
-        {"[{\"name\": \"a\", \"port\": {\"uart\": 1, \"tx\": 1, \"rx\": 2}}, {\"name\": \"b\", \"port\": 3}]",
-         "bench radio b: a port {\"uart\": ...} or {\"usb\": ...}"},
-        {"[{\"name\": \"a\", \"port\": {\"uart\": 1, \"tx\": 1, \"rx\": 2}}, 4]", "bench.radios[1]: an object"},
-        {"[{}, {}, {}]", "bench.radios: at most 2"},
-        {"\"x\"", "bench.radios: a list"},
+        {"{\"uart\": 1, \"tx\": 1, \"rx\": 2, \"rts\": -1, \"cts\": -1}", NULL},
+        {NULL, "devices.a.port: a port {\"uart\": ...}, {\"usb\": ...} or {\"path\": ...}"},
+        {"3", "devices.a.port: a port {\"uart\": ...}, {\"usb\": ...} or {\"path\": ...}"},
+        {"{}", "devices.a.port: one of uart, usb or path"},
+        {"{\"uart\": 1, \"usb\": \"uart\"}", "devices.a.port: one of uart, usb or path"},
+        {"{\"uart\": 1, \"tx\": 1, \"rx\": 2, \"baud\": 6000001}", "devices.a.port.baud: 1200 to 6000000"},
+        {"{\"uart\": 1, \"tx\": 1, \"rx\": 2, \"baud\": 1199}", "devices.a.port.baud: 1200 to 6000000"},
+        {"{\"uart\": 1, \"tx\": 1, \"rx\": 2, \"baud\": 115200.5}", "devices.a.port.baud: 1200 to 6000000"},
+        {"{\"uart\": 1, \"tx\": 1, \"rx\": 2, \"baud\": 4295082496}", "devices.a.port.baud: 1200 to 6000000"},
+        {"{\"uart\": 1, \"tx\": 1, \"rx\": 2, \"baud\": \"fast\"}", "devices.a.port.baud: 1200 to 6000000"},
+        {"{\"uart\": 0, \"tx\": 1, \"rx\": 2}", "devices.a.port.uart: 1 or 2 (UART0 is the console)"},
+        {"{\"uart\": 3, \"tx\": 1, \"rx\": 2}", "devices.a.port.uart: 1 or 2 (UART0 is the console)"},
+        {"{\"uart\": \"1\", \"tx\": 1, \"rx\": 2}", "devices.a.port.uart: 1 or 2 (UART0 is the console)"},
+        {"{\"uart\": 1, \"rx\": 2}", "devices.a.port.tx: the GPIO"},
+        {"{\"uart\": 1, \"tx\": 1, \"rx\": 49}", "devices.a.port.rx: a GPIO 0 to 48"},
+        {"{\"uart\": 1, \"tx\": 1, \"rx\": 2, \"rts\": -2}", "devices.a.port.rts: a GPIO 0 to 48"},
+        {"{\"uart\": 1, \"tx\": 1, \"rx\": 2, \"cts\": 49}", "devices.a.port.cts: a GPIO 0 to 48"},
+        {"{\"uart\": 1, \"tx\": 3, \"rx\": 3}", "devices.a.port: tx and rx on the same GPIO"},
+        {"{\"uart\": 1, \"tx\": 1, \"rx\": 2, \"rts\": 2}", "devices.a.port: rx and rts on the same GPIO"},
+        {"{\"uart\": 1, \"tx\": 1, \"rx\": 2, \"rts\": 5, \"cts\": 5}", "devices.a.port: rts and cts on the same GPIO"},
+        {"{\"uart\": 1, \"tx\": 1, \"rx\": 2, \"cts\": 1}", "devices.a.port: tx and cts on the same GPIO"},
+        {"{\"uart\": 1, \"tx\": 1, \"rx\": 2, \"rts\": 0, \"cts\": 0}", "devices.a.port: rts and cts on the same GPIO"},
+        {"{\"uart\": 1, \"tx\": 0, \"rx\": 0}", "devices.a.port: tx and rx on the same GPIO"},
+        {"{\"usb\": \"cdc\"}", "devices.a.port.usb: auto, cdc-acm or uart"},
+        {"{\"usb\": 3}", "devices.a.port.usb: auto, cdc-acm or uart"},
+        {"{\"usb\": \"auto\"}", "devices.a.port.usb: a bench device is cdc-acm (with vid and pid) or uart"},
+        {"{\"usb\": \"uart\", \"vid\": -1}", "devices.a.port: vid and pid, four hex digits"},
+        {"{\"usb\": \"uart\", \"vid\": 65536}", "devices.a.port: vid and pid, four hex digits"},
+        {"{\"usb\": \"uart\", \"vid\": \"\"}", "devices.a.port: vid and pid, four hex digits"},
+        {"{\"usb\": \"uart\", \"vid\": \"xyz1\"}", "devices.a.port: vid and pid, four hex digits"},
+        {"{\"usb\": \"uart\", \"vid\": \"0403\", \"pid\": \"10000\"}", "devices.a.port: vid and pid, four hex digits"},
+        {"{\"usb\": \"uart\", \"vid\": \"0403\", \"pid\": true}", "devices.a.port: vid and pid, four hex digits"},
+        {"{\"usb\": \"uart\", \"pid\": \"6001\"}", "devices.a.port: a pid needs its vid"},
+        {"{\"usb\": \"cdc-acm\", \"vid\": \"0483\"}", "devices.a.port: a cdc-acm radio needs its vid and pid"},
+        {"{\"usb\": \"cdc-acm\"}", "devices.a.port: a cdc-acm radio needs its vid and pid"},
+        {"{\"usb\": \"uart\", \"vid\": \"0bda\"}", "devices.a.port: 0BDA is the RTL-SDR's vendor"},
+        {"{\"usb\": \"uart\", \"vid\": \"10c4\", \"pid\": \"ea61\"}", "devices.a.port: 10C4:EA61 isn't a USB-serial bridge this firmware knows (FTDI, CP210x, CH34x)"},
+        {"{\"usb\": \"uart\", \"vid\": \"10c4\"}", NULL},
+        {"{\"usb\": \"cdc-acm\", \"vid\": \"0483\", \"pid\": \"ea61\"}", NULL},
+        {"{\"usb\": \"uart\", \"serial\": \"0000000000000000000000000000000\"}", NULL},
+        {"{\"usb\": \"uart\", \"serial\": \"00000000000000000000000000000000\"}", "devices.a.port.serial: a string"},
+        {"{\"usb\": \"uart\", \"serial\": 5}", "devices.a.port.serial: a string"},
+        {"{\"usb\": \"uart\", \"usb_port\": \"1.2.3.4.5.6.7.8.9.10\"}", "devices.a.port.usb_port: a string"},
+        {"{\"path\": \"/dev/ttyUSB0\"}", "devices.a.port: a bench device is on a UART or USB, not a path"},
     };
     for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
-        int n = radios(bad[i].list, err);
+        err[0] = 0;
+        int n = radio_on(bad[i].port, err);
         if (bad[i].error)
-            CHECK(n < 0 && !strcmp(err, bad[i].error), "%s: want \"%s\", got \"%s\"", bad[i].list, bad[i].error, err);
+            CHECK(n < 0 && !strcmp(err, bad[i].error), "%s: want \"%s\", got \"%s\"", bad[i].port ? bad[i].port : "-",
+                  bad[i].error, err);
         else
-            CHECK(n > 0 && !err[0], "%s: fine, got \"%s\"", bad[i].list, err);
+            CHECK(n == 1 && !err[0], "%s: fine, got \"%s\"", bad[i].port, err);
     }
-    /* each field, and the defaults */
+    /* the list: names, two radios on one UART, how many */
+    static const struct {
+        const char *devices, *names, *error;
+    } lists[] = {
+        {"[{\"kind\": \"radio\", \"name\": \"a\", \"port\": {\"uart\": 2, \"tx\": 1, \"rx\": 2}}, {\"kind\": \"radio\", "
+         "\"name\": \"b\", \"port\": {\"uart\": 2, \"tx\": 3, \"rx\": 4}}]",
+         "[\"a\", \"b\"]", "bench radios a and b: both on UART2"},
+        {"[{\"kind\": \"radio\", \"name\": \"a\", \"port\": {\"uart\": 1, \"tx\": 1, \"rx\": 2}}, {\"kind\": \"radio\", "
+         "\"name\": \"b\", \"port\": {\"uart\": 2, \"tx\": 3, \"rx\": 4}}]",
+         "[\"a\", \"b\"]", NULL},
+        {"[{\"kind\": \"radio\", \"name\": \"a\", \"port\": {\"usb\": \"uart\"}}]", "[\"a\", \"a\"]",
+         "bench.devices[1]: a twice"},
+        {"[{\"kind\": \"radio\", \"name\": \"a\", \"port\": {\"usb\": \"uart\"}}]", "[\"a\", \"b\"]",
+         "bench.devices[1]: b isn't in devices"},
+        {"[{\"kind\": \"radio\", \"name\": \"a\", \"port\": {\"usb\": \"uart\"}}]", "[\"a\", 4]",
+         "bench.devices[1]: (not a name) isn't in devices"},
+        {"[{\"kind\": \"radio\", \"name\": \"a\", \"port\": {\"usb\": \"uart\"}}]", "\"a\"",
+         "bench.devices: a list of device names"},
+        {"[{\"kind\": \"radio\", \"name\": \"a\", \"port\": {\"usb\": \"uart\"}}, {\"kind\": \"radio\", \"name\": \"b\", "
+         "\"port\": {\"usb\": \"uart\"}}, {\"kind\": \"radio\", \"name\": \"c\", \"port\": {\"usb\": \"uart\"}}]",
+         "[\"a\", \"b\", \"c\"]", "bench.devices: 2 radios and modems at most"},
+        {"[{\"kind\": \"radio\", \"name\": \"a b\", \"port\": {\"usb\": \"uart\"}}]", "[\"a b\"]",
+         "devices[0].name: letters, digits, '-', '_' and '.'"},
+    };
+    for (size_t i = 0; i < sizeof lists / sizeof lists[0]; i++) {
+        err[0] = 0;
+        int n = radios(lists[i].devices, lists[i].names, 2, err);
+        if (lists[i].error)
+            CHECK(n < 0 && !strcmp(err, lists[i].error), "list %zu: want \"%s\", got \"%s\"", i, lists[i].error, err);
+        else
+            CHECK(n == 2 && !err[0], "list %zu: fine, got \"%s\"", i, err);
+    }
+    /* each field, and the defaults: a radio speaks odr-debug, a modem mmdvm */
     rdof_bench_radio_t r[RDOF_BENCH_MAX_RADIOS];
     memset(r, 0x5A, sizeof r);
-    const char *two = "// a comment\n{\"bench\": {\"radios\": [{\"name\": \"odr-1_A\", \"port\": {\"uart\": 2, \"tx\": 17, "
-                      "\"rx\": 18, \"cts\": 0}}, {\"name\": \"b\", \"proto\": \"mmdvm\", \"port\": {\"usb\": \"uart\", "
-                      "\"vid\": \"1A86\", \"pid\": \"0x7523\", \"baud\": \"921600\", \"serial\": \"A502\", \"usb_port\": \"1.3\"}}]}}";
+    const char *two = "// a comment\n{\"version\": 3, \"devices\": [{\"kind\": \"radio\", \"name\": \"odr-1_A\", "
+                      "\"port\": {\"uart\": 2, \"tx\": 17, \"rx\": 18, \"cts\": 0}}, {\"kind\": \"modem\", \"name\": "
+                      "\"b\", \"transmits\": false, \"hears\": false, \"port\": {\"usb\": \"uart\", \"vid\": \"1A86\", "
+                      "\"pid\": \"0x7523\", \"baud\": 921600, \"serial\": \"A502\", \"usb_port\": \"1.3\"}}], "
+                      "\"bench\": {\"devices\": [\"odr-1_A\", \"b\"]}}";
     CHECK(rdof_bench_radios_parse(two, strlen(two), r, RDOF_BENCH_MAX_RADIOS, err, sizeof err) == 2, "two radios: %s", err);
     CHECK(!strcmp(r[0].name, "odr-1_A") && !strcmp(r[0].proto, "odr-debug") && r[0].port == RDOF_BPORT_UART &&
               r[0].uart == 2 && r[0].tx == 17 && r[0].rx == 18 && r[0].rts == -1 && r[0].cts == 0 && r[0].baud == 115200 &&
@@ -1164,10 +1187,10 @@ static void t_benchcfg_edges(void)
     CHECK(!strcmp(r[1].proto, "mmdvm") && r[1].port == RDOF_BPORT_USB_UART && r[1].vid == 0x1A86 && r[1].pid == 0x7523 &&
               r[1].baud == 921600 && !strcmp(r[1].serial, "A502") && !strcmp(r[1].usb_port, "1.3") && r[1].rts == -1 &&
               r[1].tx == 0,
-          "a USB radio's fields");
+          "a USB modem's fields");
     CHECK(r[2].port == 0x5A5A5A5A, "past the count: untouched");
-    const char *none[] = {"{}", "{\"bench\": 5}", "{\"bench\": {}}", "{\"bench\": {\"radios\": null}}",
-                          "{\"bench\": {\"radios\": []}}", "[1, 2]"};
+    const char *none[] = {"{\"version\": 3}", "{\"version\": 3, \"bench\": 5}", "{\"version\": 3, \"bench\": {}}",
+                          "{\"version\": 3, \"bench\": {\"devices\": []}}"};
     for (size_t i = 0; i < sizeof none / sizeof none[0]; i++) {
         strcpy(err, "x");
         CHECK(rdof_bench_radios_parse(none[i], strlen(none[i]), r, 2, err, sizeof err) == 0 && !err[0], "no radios: %s",
@@ -1175,11 +1198,13 @@ static void t_benchcfg_edges(void)
     }
     /* the error cut to the caller's buffer */
     char small[12];
-    CHECK(radios("[1]", err) < 0, "setup");
-    const char *one = "{\"bench\": {\"radios\": [1]}}";
-    CHECK(rdof_bench_radios_parse(one, strlen(one), r, 2, small, sizeof small) < 0 && !strcmp(small, "bench.radio"),
+    const char *one = "{\"version\": 3, \"bench\": {\"devices\": [1]}}";
+    CHECK(rdof_bench_radios_parse(one, strlen(one), r, 2, small, sizeof small) < 0 && !strcmp(small, "bench.devic"),
           "cut: %s", small);
-    CHECK(rdof_bench_radios_parse(one, strlen(one), r, 0, err, sizeof err) < 0 && !strcmp(err, "bench.radios: at most 0"),
+    const char *ok1 = "{\"version\": 3, \"devices\": [{\"kind\": \"radio\", \"name\": \"a\", \"port\": {\"usb\": "
+                      "\"uart\"}}], \"bench\": {\"devices\": [\"a\"]}}";
+    CHECK(rdof_bench_radios_parse(ok1, strlen(ok1), r, 0, err, sizeof err) < 0 &&
+              !strcmp(err, "bench.devices: 0 radios and modems at most"),
           "max 0: %s", err);
     /* the USB-serial bridges */
     static const struct {
@@ -1199,113 +1224,76 @@ static void t_benchcfg_edges(void)
         const char *tx, *error;
     } badtx[] = {
         {"5", "bench.tx: an object"},
+        {"[]", "bench.tx: an object"},
         {"{\"freqs_hz\": [29999999]}", "bench.tx.freqs_hz[0]: a frequency in whole Hz"},
         {"{\"freqs_hz\": [438162500, 3000000001]}", "bench.tx.freqs_hz[1]: a frequency in whole Hz"},
         {"{\"freqs_hz\": [\"438162500\"]}", "bench.tx.freqs_hz[0]: a frequency in whole Hz"},
         {"{\"freqs_hz\": [438162500.5]}", "bench.tx.freqs_hz[0]: a frequency in whole Hz"},
         {"{\"freqs_hz\": {}}", "bench.tx.freqs_hz: a list of frequencies in Hz"},
+        {"{\"freqs_hz\": 438162500}", "bench.tx.freqs_hz: a list of frequencies in Hz"},
+        {"{\"freqs_hz\": [439e6, 439e6, 439e6, 439e6, 439e6, 439e6, 439e6, 439e6, 439e6]}", "bench.tx.freqs_hz: at most 8"},
         {"{\"max_key_s\": -0.5}", "bench.tx.max_key_s: 0 to 60 seconds"},
         {"{\"max_key_s\": 60.001}", "bench.tx.max_key_s: 0 to 60 seconds"},
+        {"{\"max_key_s\": \"5\"}", "bench.tx.max_key_s: 0 to 60 seconds"},
         {"{\"rf_level\": -1}", "bench.tx.rf_level: 0 to 255 (0: the lowest)"},
         {"{\"rf_level\": 256}", "bench.tx.rf_level: 0 to 255 (0: the lowest)"},
+        {"{\"rf_level\": \"x\"}", "bench.tx.rf_level: 0 to 255 (0: the lowest)"},
         {"{\"arm_gpio\": -2}", "bench.tx.arm_gpio: a GPIO 0 to 48 (a jumper to ground), or none"},
+        {"{\"arm_gpio\": 49}", "bench.tx.arm_gpio: a GPIO 0 to 48 (a jumper to ground), or none"},
         {"{\"arm_gpio\": 1e12}", "bench.tx.arm_gpio: a GPIO 0 to 48 (a jumper to ground), or none"},
         /* a good list, then a bad field: the frequencies don't stay */
         {"{\"freqs_hz\": [438162500], \"rf_level\": 999}", "bench.tx.rf_level: 0 to 255 (0: the lowest)"},
     };
     for (size_t i = 0; i < sizeof badtx / sizeof badtx[0]; i++) {
-        char json[300];
-        snprintf(json, sizeof json, "{\"bench\": {\"tx\": %s}}", badtx[i].tx);
         memset(&pol, 0x5A, sizeof pol);
-        CHECK(rdof_bench_tx_parse(json, strlen(json), &pol, err, sizeof err) < 0 && !strcmp(err, badtx[i].error),
+        CHECK(bench_tx(badtx[i].tx, &pol, err, sizeof err) < 0 && !strcmp(err, badtx[i].error),
               "%s: want \"%s\", got \"%s\"", badtx[i].tx, badtx[i].error, err);
         CHECK(pol.nfreqs == 0 && pol.max_key_s == 0 && pol.rf_level == 0 && pol.arm_gpio == -1, "%s: no TX", badtx[i].tx);
     }
-    const char *full = "{\"bench\": {\"tx\": {\"freqs_hz\": [30000000, 3000000000, 438162500, 438162500, 1, 2, 3, 4], "
-                       "\"max_key_s\": 60, \"rf_level\": 255, \"arm_gpio\": 48}}}";
-    CHECK(rdof_bench_tx_parse(full, strlen(full), &pol, err, sizeof err) < 0 &&
+    CHECK(bench_tx("{\"freqs_hz\": [30000000, 3000000000, 438162500, 438162500, 1, 2, 3, 4], \"max_key_s\": 60, "
+                   "\"rf_level\": 255, \"arm_gpio\": 48}", &pol, err, sizeof err) < 0 &&
               !strcmp(err, "bench.tx.freqs_hz[4]: a frequency in whole Hz"),
           "eight, the fifth bad: %s", err);
-    const char *ends = "{\"bench\": {\"tx\": {\"freqs_hz\": [30000000, 3000000000, 438162500, 4.38125e8, 438162500, "
-                       "438162500, 438162500, 438162500], \"max_key_s\": 60, \"rf_level\": 255, \"arm_gpio\": 48}}}";
-    CHECK(rdof_bench_tx_parse(ends, strlen(ends), &pol, err, sizeof err) == 0 && pol.nfreqs == 8 &&
-              pol.freqs_hz[0] == 30000000 && pol.freqs_hz[1] == 3000000000u && pol.freqs_hz[3] == 438125000 &&
-              pol.max_key_s == 60 && pol.rf_level == 255 && pol.arm_gpio == 48 && !err[0],
+    CHECK(bench_tx("{\"freqs_hz\": [30000000, 3000000000, 438162500, 4.38125e8, 438162500, 438162500, 438162500, "
+                   "438162500], \"max_key_s\": 60, \"rf_level\": 255, \"arm_gpio\": 48}", &pol, err, sizeof err) == 0 &&
+              pol.nfreqs == 8 && pol.freqs_hz[0] == 30000000 && pol.freqs_hz[1] == 3000000000u &&
+              pol.freqs_hz[3] == 438125000 && pol.max_key_s == 60 && pol.rf_level == 255 && pol.arm_gpio == 48 && !err[0],
           "at the ends: %s", err);
-    const char *nulls = "{\"bench\": {\"tx\": {\"freqs_hz\": null, \"max_key_s\": null, \"rf_level\": null}}}";
-    CHECK(rdof_bench_tx_parse(nulls, strlen(nulls), &pol, err, sizeof err) == 0 && pol.nfreqs == 0 && pol.max_key_s == 10 &&
-              pol.rf_level == 0 && pol.arm_gpio == -1,
+    CHECK(bench_tx("{\"freqs_hz\": null, \"max_key_s\": null, \"rf_level\": null}", &pol, err, sizeof err) == 0 &&
+              pol.nfreqs == 0 && pol.max_key_s == 10 && pol.rf_level == 0 && pol.arm_gpio == -1,
           "nulls are the defaults: %s", err);
-    const char *zero = "{\"bench\": {\"tx\": {\"freqs_hz\": [], \"max_key_s\": 0, \"arm_gpio\": 0}}}";
-    CHECK(rdof_bench_tx_parse(zero, strlen(zero), &pol, err, sizeof err) == 0 && pol.nfreqs == 0 && pol.max_key_s == 0 &&
-              pol.arm_gpio == 0,
+    CHECK(bench_tx("{\"freqs_hz\": [], \"max_key_s\": 0, \"arm_gpio\": 0}", &pol, err, sizeof err) == 0 &&
+              pol.nfreqs == 0 && pol.max_key_s == 0 && pol.arm_gpio == 0,
           "zeros: %s", err);
-    const char *txnull = "{\"bench\": {\"tx\": null}}";
     memset(&pol, 0x5A, sizeof pol);
-    CHECK(rdof_bench_tx_parse(txnull, strlen(txnull), &pol, err, sizeof err) == 0 && pol.nfreqs == 0 && pol.max_key_s == 0 &&
-              pol.arm_gpio == -1,
+    CHECK(bench_tx("null", &pol, err, sizeof err) == 0 && pol.nfreqs == 0 && pol.max_key_s == 0 && pol.arm_gpio == -1,
           "tx null: none");
+    CHECK(bench_tx("{\"freqs_hz\": [438162500], \"rf_level\": \"12\", \"arm_gpio\": null}", &pol, err, sizeof err) == 0 &&
+              pol.rf_level == 12 && pol.arm_gpio == -1,
+          "rf_level as a string: %s", err);
 }
 
 static void t_benchcfg(void)
 {
     char err[160];
-    static const struct {
-        const char *list, *why;
-    } bad[] = {
-        {"[1]", "an object"},
-        {"[{\"name\": \"a\", \"proto\": 5, \"port\": {\"uart\": 1, \"tx\": 1, \"rx\": 2}}]", "proto odr-debug or mmdvm"},
-        {"[{\"name\": \"a\", \"port\": []}]", "a port"},
-        {"[{\"name\": \"a\"}]", "a port"},
-        {"[{\"name\": \"a\", \"port\": {\"uart\": 1, \"tx\": 1, \"rx\": 2, \"baud\": 300}}]", "baud 1200 to 6000000"},
-        {"[{\"name\": \"a\", \"port\": {\"uart\": 1, \"tx\": 1, \"rx\": 2, \"baud\": \"fast\"}}]", "baud"},
-        {"[{\"name\": \"a\", \"port\": {\"usb\": \"uart\", \"vid\": \"xyz1\"}}]", "vid, four hex digits"},
-        {"[{\"name\": \"a\", \"port\": {\"usb\": \"uart\", \"vid\": \"10000\"}}]", "vid, four hex digits"},
-        {"[{\"name\": \"a\", \"port\": {\"usb\": \"uart\", \"vid\": \"0403\", \"pid\": true}}]", "pid, four hex digits"},
-        {"[{\"name\": \"a\", \"port\": {\"usb\": \"uart\", \"serial\": 5}}]", "serial and usb_port are strings"},
-        {"[{\"name\": \"a\", \"port\": {\"usb\": \"uart\", \"usb_port\": \"1.2.3.4.5.6.7.8.9.10\"}}]", "strings"},
-        {"[{\"name\": \"a\", \"port\": {\"usb\": 3}}]", "usb cdc-acm or uart"},
-        {"{\"a\": 1}", "a list"},
-        {"[{}, {}, {}]", "at most 2"},
-    };
-    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++)
-        CHECK(radios(bad[i].list, err) < 0 && strstr(err, bad[i].why), "%s: want \"%s\", got \"%s\"", bad[i].list,
-              bad[i].why, err);
-    const char *broken = "{\"bench\": ";
+    const char *broken = "{\"version\": 3, \"bench\": ";
     CHECK(rdof_bench_radios_parse(broken, strlen(broken), NULL, 2, err, sizeof err) < 0 && strstr(err, "JSON"),
           "bad JSON: %s", err);
     CHECK(rdof_bench_radios_parse(broken, strlen(broken), NULL, 2, NULL, 0) < 0, "no error buffer");
-    /* numbers as well as hex strings */
+    const char *v2 = "{\"bench\": {\"radios\": []}}";
+    CHECK(rdof_bench_radios_parse(v2, strlen(v2), NULL, 2, err, sizeof err) < 0 && !strcmp(err, "version: 3"),
+          "not version 3: %s", err);
+    /* vid as a number as well as a hex string; a modem speaks mmdvm */
     rdof_bench_radio_t r[2];
-    const char *ok = "{\"bench\": {\"radios\": [{\"name\": \"hs\", \"proto\": \"mmdvm\", \"port\": {\"usb\": \"cdc-acm\", "
-                     "\"vid\": 1155, \"pid\": \"5740\", \"serial\": null}}]}}";
-    CHECK(rdof_bench_radios_parse(ok, strlen(ok), r, 2, err, sizeof err) == 1 && r[0].vid == 0x0483 && r[0].pid == 0x5740,
+    const char *ok = "{\"version\": 3, \"devices\": [{\"kind\": \"modem\", \"name\": \"hs\", \"transmits\": false, "
+                     "\"hears\": false, \"port\": {\"usb\": \"cdc-acm\", \"vid\": 1155, \"pid\": \"5740\"}}], "
+                     "\"bench\": {\"devices\": [\"hs\"]}}";
+    CHECK(rdof_bench_radios_parse(ok, strlen(ok), r, 2, err, sizeof err) == 1 && r[0].vid == 0x0483 &&
+              r[0].pid == 0x5740 && !strcmp(r[0].proto, "mmdvm"),
           "vid as a number: %s", err);
-    /* bench.tx */
     rdof_benchtx_policy_t pol;
-    static const struct {
-        const char *tx, *why;
-    } badtx[] = {
-        {"[]", "bench.tx: an object"},
-        {"{\"freqs_hz\": 438162500}", "a list of frequencies"},
-        {"{\"freqs_hz\": [1, 2, 3, 4, 5, 6, 7, 8, 9]}", "freqs_hz[0]"},
-        {"{\"freqs_hz\": [439e6, 439e6, 439e6, 439e6, 439e6, 439e6, 439e6, 439e6, 439e6]}", "at most 8"},
-        {"{\"rf_level\": 300}", "rf_level: 0 to 255"},
-        {"{\"rf_level\": \"x\"}", "rf_level"},
-        {"{\"arm_gpio\": 49}", "arm_gpio"},
-        {"{\"max_key_s\": \"5\"}", "max_key_s"},
-    };
-    for (size_t i = 0; i < sizeof badtx / sizeof badtx[0]; i++) {
-        char json[300];
-        snprintf(json, sizeof json, "{\"bench\": {\"tx\": %s}}", badtx[i].tx);
-        CHECK(rdof_bench_tx_parse(json, strlen(json), &pol, err, sizeof err) < 0 && strstr(err, badtx[i].why),
-              "%s: want \"%s\", got \"%s\"", badtx[i].tx, badtx[i].why, err);
-    }
     CHECK(rdof_bench_tx_parse(broken, strlen(broken), &pol, err, sizeof err) < 0 && strstr(err, "JSON"), "tx: bad JSON");
     CHECK(rdof_bench_tx_parse(broken, strlen(broken), &pol, NULL, 0) < 0, "tx: no error buffer");
-    const char *lvl = "{\"bench\": {\"tx\": {\"freqs_hz\": [438162500], \"rf_level\": \"12\", \"arm_gpio\": null}}}";
-    CHECK(rdof_bench_tx_parse(lvl, strlen(lvl), &pol, err, sizeof err) == 0 && pol.rf_level == 12 && pol.arm_gpio == -1,
-          "rf_level as a string: %s", err);
     t_benchcfg_edges();
 }
 
@@ -3310,70 +3298,97 @@ static void t_sample_clock_edges(void)
 
 /* ── box config: each check, and the value conversions (int, float, string) ── */
 
-/* Each template takes two strings: extra top-level keys, then extra keys on the radio. A repeated key overrides
-   the template's (the last one wins). */
-enum { T_ROAM, T_ROAM_SDR, T_REP };
+/* Each template takes two strings: extra top-level keys (after defaults, so a "defaults" there replaces it), then
+   extra keys on the place the template is about: the transceiver's device (T_ROAM, T_ROAM_SDR: a modem, with an
+   SDR hearing both frequencies; T_SDRTX: the SDR), the repeater app (T_REP, T_SPLIT) or its modem (T_REPDEV), or
+   the one frequency (T_FREQ). A repeated key overrides the template's (the last one wins). */
+enum { T_ROAM, T_ROAM_SDR, T_SDRTX, T_REP, T_REPDEV, T_FREQ, T_SPLIT };
 static const char *const TMPL[] = {
-    "{\"name\": \"b\", \"cc\": 1, \"channels\": {\"1\": 438.0625, \"2\": 438.1125}%s,"
-    " \"radios\": [{\"type\": \"opengd77\", \"name\": \"R\", \"peer_id\": 1, \"idle\": 1%s}]}",
-    "{\"name\": \"b\", \"cc\": 1, \"channels\": {\"1\": 438.0625, \"2\": 438.1125}%s,"
-    " \"radios\": [{\"type\": \"opengd77\", \"name\": \"R\", \"peer_id\": 1, \"idle\": 1%s},"
-    " {\"type\": \"sdr\", \"name\": \"S\", \"channels\": [2, 1]}]}",
-    "{\"name\": \"b\", \"cc\": 1, \"channels\": {\"1\": 438.0625}%s,"
-    " \"radios\": [{\"type\": \"repeater\", \"name\": \"R\", \"peer_id\": 3%s}]}",
+    /* T_ROAM */
+    "{\"version\": 3, \"name\": \"b\", \"id\": 1, \"defaults\": {\"cc\": 1}%s, \"devices\": [{\"name\": \"R\","
+    " \"kind\": \"modem\", \"type\": \"radio_hotspot\", \"port\": {\"usb\": \"auto\"}%s}],"
+    " \"frequencies\": [438.0625, 438.1125]}",
+    /* T_ROAM_SDR */
+    "{\"version\": 3, \"name\": \"b\", \"id\": 1, \"defaults\": {\"cc\": 1}%s, \"devices\": [{\"name\": \"R\","
+    " \"kind\": \"modem\", \"type\": \"radio_hotspot\", \"port\": {\"usb\": \"auto\"}%s}, {\"name\": \"S\","
+    " \"kind\": \"sdr\"}], \"frequencies\": [{\"freq\": 438.0625, \"devices\": [\"R\", \"S\"]},"
+    " {\"freq\": 438.1125, \"devices\": [\"R\", \"S\"]}]}",
+    /* T_SDRTX */
+    "{\"version\": 3, \"name\": \"b\", \"id\": 1, \"defaults\": {\"cc\": 1}%s, \"devices\": [{\"name\": \"T\","
+    " \"kind\": \"sdr\", \"driver\": \"lr2021\"%s}], \"frequencies\": [438.0625, 438.1125]}",
+    /* T_REP */
+    "{\"version\": 3, \"name\": \"b\", \"id\": 3, \"defaults\": {\"cc\": 1}%s, \"devices\": [{\"name\": \"M\","
+    " \"kind\": \"modem\", \"type\": \"mmdvm_hs\", \"port\": {\"usb\": \"auto\"}, \"hears\": {\"idle\": \"in\"}}],"
+    " \"frequencies\": [{\"freq\": 438.0625, \"name\": \"in\"}, {\"freq\": 438.0375, \"name\": \"out\"}],"
+    " \"apps\": [{\"name\": \"R\", \"type\": \"repeater\", \"in\": \"in\", \"out\": \"out\"%s}]}",
+    /* T_REPDEV */
+    "{\"version\": 3, \"name\": \"b\", \"id\": 3, \"defaults\": {\"cc\": 1}%s, \"devices\": [{\"name\": \"M\","
+    " \"kind\": \"modem\", \"type\": \"mmdvm_hs\", \"port\": {\"usb\": \"auto\"},"
+    " \"hears\": {\"idle\": \"in\"}%s}], \"frequencies\": [{\"freq\": 438.0625, \"name\": \"in\"},"
+    " {\"freq\": 438.0375, \"name\": \"out\"}], \"apps\": [{\"name\": \"R\", \"type\": \"repeater\","
+    " \"in\": \"in\", \"out\": \"out\"}]}",
+    /* T_FREQ */
+    "{\"version\": 3, \"name\": \"b\", \"id\": 3, \"defaults\": {\"cc\": 1}%s, \"devices\": [{\"name\": \"M\","
+    " \"kind\": \"modem\", \"type\": \"radio_hotspot\", \"port\": {\"usb\": \"auto\"}}],"
+    " \"frequencies\": [{\"freq\": 438.0625%s}]}",
+    /* T_SPLIT */
+    "{\"version\": 3, \"name\": \"b\", \"id\": 3, \"defaults\": {\"cc\": 1}%s, \"devices\": [{\"name\": \"TX\","
+    " \"kind\": \"modem\", \"type\": \"radio_hotspot\", \"port\": {\"usb\": \"auto\"}, \"hears\": false},"
+    " {\"name\": \"RX\", \"kind\": \"modem\", \"type\": \"radio_hotspot\", \"port\": {\"uart\": 2, \"tx\": 17,"
+    " \"rx\": 18}, \"hears\": {\"idle\": \"in\"}, \"transmits\": false}],"
+    " \"frequencies\": [{\"freq\": 438.0625, \"name\": \"in\"}, {\"freq\": 438.0375, \"name\": \"out\"}],"
+    " \"apps\": [{\"name\": \"R\", \"type\": \"repeater\", \"in\": \"in\", \"out\": \"out\"%s}]}",
 };
-#define FREQS ", \"rx_freq\": 438.0625, \"tx_freq\": 438.0375"
-#define SPLIT(tx, rx) FREQS ", \"radio\": {\"type\": \"split\", \"tx\": " tx ", \"rx\": " rx
 
-static bool cfg_try(int t, const char *top, const char *radio, rdof_config_t *cfg, char *error, size_t cap)
+static bool cfg_try(int t, const char *top, const char *place, rdof_config_t *cfg, char *error, size_t cap)
 {
     static char json[4096];
-    snprintf(json, sizeof json, TMPL[t], top, radio);
+    snprintf(json, sizeof json, TMPL[t], top, place);
     return rdof_config_parse(json, strlen(json), cfg, error, cap);
 }
 
-/* mode dcdm: one frequency, both slots, a repeater's settings; an sdr_transceiver half or full duplex takes it too. */
+/* mode dcdm: one frequency, both slots unless active_slots, a repeater's settings; on the SDR, half or full. */
 static void t_config_dcdm(void)
 {
     static rdof_config_t cfg;
-    char error[160];
-    bool ok = cfg_try(T_REP, "", ", \"mode\": \"dcdm\", \"freq\": 438.0625", &cfg, error, sizeof error);
+    char error[200];
+    bool ok = cfg_try(T_FREQ, "", ", \"mode\": \"dcdm\"", &cfg, error, sizeof error);
     CHECK(ok && cfg.mode == RDOF_CFG_REPEATER && cfg.dcdm && !cfg.sfr && cfg.rx_freq == 438062500 &&
-              cfg.tx_freq == 438062500 && cfg.slot1 && cfg.slot2,
+              cfg.tx_freq == 438062500 && cfg.slot1 && cfg.slot2 && !strcmp(cfg.radio_type, "radio_hotspot"),
           "dcdm: %s", ok ? "" : error);
-    ok = cfg_try(T_REP, "", ", \"mode\": \"dcdm\", \"freq\": 438.0625, \"slots\": [2], \"radio\": {\"type\": \"opengd77\"}",
-                 &cfg, error, sizeof error);
-    CHECK(ok && cfg.dcdm && !cfg.slot1 && cfg.slot2 && !strcmp(cfg.radio_type, "radio_hotspot"),
-          "dcdm on a radio_hotspot, slot 2 only: %s", ok ? "" : error);
-    ok = cfg_try(T_REP, "", FREQS, &cfg, error, sizeof error);
-    CHECK(ok && !cfg.dcdm, "duplex isn't dcdm");
+    ok = cfg_try(T_FREQ, "", ", \"mode\": \"dcdm\", \"active_slots\": [2]", &cfg, error, sizeof error);
+    CHECK(ok && cfg.dcdm && !cfg.slot1 && cfg.slot2, "dcdm, slot 2 only: %s", ok ? "" : error);
+    ok = cfg_try(T_REP, "", "", &cfg, error, sizeof error);
+    CHECK(ok && !cfg.dcdm && !cfg.sfr, "duplex isn't dcdm: %s", error);
     for (int full = 0; full < 2; full++) {
-        ok = cfg_try(T_ROAM_SDR, "",
-                     full ? ", \"type\": \"sdr_transceiver\", \"duplex\": \"full\", \"mode\": \"dcdm\", \"freq\": 438.0625"
-                          : ", \"type\": \"sdr_transceiver\", \"mode\": \"dcdm\", \"freq\": 438.0625",
-                     &cfg, error, sizeof error);
+        char json[512];
+        snprintf(json, sizeof json,
+                 "{\"version\": 3, \"name\": \"b\", \"id\": 1, \"devices\": [{\"name\": \"T\", \"kind\": \"sdr\", "
+                 "\"driver\": \"sx1255\"}], \"frequencies\": [{\"freq\": 438.0625, \"cc\": 1, \"mode\": \"dcdm\"%s}]}",
+                 full ? ", \"duplex\": \"full\"" : "");
+        ok = rdof_config_parse(json, strlen(json), &cfg, error, sizeof error);
         CHECK(ok && cfg.mode == RDOF_CFG_REPEATER && cfg.dcdm && !strcmp(cfg.modem_port, "sdr") &&
                   cfg.sdr_duplex == (full ? RDOF_SDR_DUPLEX_FULL : RDOF_SDR_DUPLEX_HALF),
-              "sdr_transceiver dcdm (full %d): %s", full, ok ? "" : error);
+              "dcdm on the SDR (full %d): %s", full, ok ? "" : error);
     }
 }
 
-/* parrot: an id, 0 for everything, absent off; a roamer's or a repeater's; in the description only when set. */
+/* parrot: a parrot app a unit's paths reach; its ID; in the description only when set. */
 static void t_config_parrot(void)
 {
     static rdof_config_t cfg;
     static char desc[4096];
-    char error[160];
+    char error[200];
     bool ok = cfg_try(T_ROAM, "", "", &cfg, error, sizeof error);
     rdof_config_describe(&cfg, desc, sizeof desc);
     CHECK(ok && !cfg.has_parrot && !strstr(desc, "parrot"), "no parrot: %s", ok ? desc : error);
-    ok = cfg_try(T_ROAM, "", ", \"parrot\": 9990", &cfg, error, sizeof error);
+    ok = cfg_try(T_ROAM, ", \"apps\": [{\"type\": \"parrot\", \"tg\": 9990}]", "", &cfg, error, sizeof error);
     rdof_config_describe(&cfg, desc, sizeof desc);
-    CHECK(ok && cfg.has_parrot && cfg.parrot == 9990 && strstr(desc, ";parrot=9990;"), "roamer parrot: %s",
+    CHECK(ok && cfg.has_parrot && cfg.parrot == 9990 && strstr(desc, ";parrot=9990;"), "transceiver parrot: %s",
           ok ? desc : error);
-    ok = cfg_try(T_REP, "", FREQS ", \"parrot\": 0", &cfg, error, sizeof error);
+    ok = cfg_try(T_REP, "", "}, {\"type\": \"parrot\", \"pc\": 9990", &cfg, error, sizeof error);
     rdof_config_describe(&cfg, desc, sizeof desc);
-    CHECK(ok && cfg.has_parrot && cfg.parrot == 0 && strstr(desc, ";parrot=0;"), "repeater parrot 0: %s",
+    CHECK(ok && cfg.has_parrot && cfg.parrot == 9990 && strstr(desc, ";parrot=9990;"), "repeater parrot: %s",
           ok ? desc : error);
 }
 
@@ -3381,268 +3396,283 @@ static void t_config_errors(void)
 {
     static const struct {
         int t;
-        const char *top, *radio, *want;
+        const char *top, *place, *want;
     } bad[] = {
-        /* the plan */
-        {T_ROAM, ", \"cc\": \"one\"", "", "cc isn't a number"},
-        {T_ROAM, ", \"channels\": {\"x\": 461}", "", "channel x: not a number"},
-        {T_ROAM, ", \"channels\": {\"3\": {\"cc\": 1}}", "", "channel 3: no freq"},
-        {T_ROAM, ", \"channels\": {\"3\": \"high\"}", "", "channel: bad frequency"},
-        {T_ROAM, ", \"channels\": {\"3\": {\"freq\": 438.225, \"power\": \"x\"}}", "", "channel: power isn't a number"},
-        {T_ROAM, ", \"cc\": null, \"channels\": {\"1\": 438.025}", "",
-         "channel 1: no color code (set cc on it or at the top)"},
-        /* a roamer's channels and idle */
-        {T_ROAM, "", ", \"channels\": 5", "channels: numbers, or all"},
-        {T_ROAM, "", ", \"channels\": [{\"cc\": 2}]", "a channel entry needs ch"},
-        {T_ROAM, "", ", \"channels\": [[1]]", "bad channel reference"},
-        {T_ROAM, "", ", \"channels\": [9]", "channel 9 isn't in the plan (channels:)"},
-        {T_ROAM, "", ", \"channels\": [1, {\"ch\": 2, \"power\": \"x\"}]", "channel: power isn't a number"},
-        {T_ROAM, "", ", \"channels\": [{\"ch\": 1, \"cc\": 16}]", "color code 16"},
-        {T_ROAM, "", ", \"channels\": [{\"ch\": 1, \"cc\": 1.5}]", "color code 1.5"},
-        {T_ROAM, "", ", \"idle\": {\"freq\": 438.125}", "idle: freq and cc"},
-        {T_ROAM, "", ", \"idle\": {\"freq\": 438.125, \"cc\": 16}", "color code 16"},
-        {T_ROAM, "", ", \"channels\": [], \"idle\": {\"freq\": 438.125, \"cc\": 1}",
-         "no channels: list the simplex channels this radio may use"},
-        {T_ROAM, "", ", \"idle\": 7", "channel 7 isn't in the plan (channels:)"},
-        /* a roamer's numbers */
-        {T_ROAM, "", ", \"peer_id\": \"x\"", "no peer_id"},
-        {T_ROAM, "", ", \"listen_s\": \"soon\"", "radio: listen_s isn't a number"},
-        {T_ROAM, "", ", \"prebuffer\": \"6.5\"", "radio: prebuffer isn't a whole number"},
-        {T_ROAM, "", ", \"csbk_preambles\": [1]", "radio: csbk_preambles isn't a number"},
-        {T_ROAM, "", ", \"parrot\": -1", "radio: parrot -1 isn't a DMR id (0 for everything)"},
-        {T_ROAM, "", ", \"parrot\": 16777216", "radio: parrot 16777216 isn't a DMR id (0 for everything)"},
-        {T_ROAM, "", ", \"parrot\": \"me\"", "radio: parrot isn't a whole number"},
-        /* scan */
-        {T_ROAM, "", ", \"scan\": {\"channels\": [1, 2], \"dwell_s\": 0}",
-         "scan: dwell_s > 0, hang_s >= 0, and carrier_s (0 = off) under dwell_s"},
-        {T_ROAM, "", ", \"scan\": {\"carrier_s\": 1}",
-         "scan: dwell_s > 0, hang_s >= 0, and carrier_s (0 = off) under dwell_s"},
-        {T_ROAM, "", ", \"scan\": {\"channels\": [9]}", "channel 9 isn't in the plan (channels:)"},
-        {T_ROAM, "", ", \"scan\": {\"channels\": [{\"ch\": 1, \"cc\": \"x\"}]}", "scan: cc isn't a number"},
-        {T_ROAM, "", ", \"scan\": {\"channels\": [{\"ch\": 1, \"cc\": 20}]}", "color code 20"},
-        {T_ROAM, "", ", \"scan\": {\"channels\": []}", "scan: no channels"},
-        {T_ROAM, "", ", \"scan\": {\"dwell_s\": \"x\"}", "scan: dwell_s isn't a number"},
-        /* radio settings */
-        {T_ROAM, "", ", \"rx_level\": \"loud\"", "radio.rx_level isn't a number"},
-        {T_ROAM, "", ", \"radio\": {\"tuner\": {\"type\": \"fixed\", \"freq\": \"x\"}}", "radio.tuner.freq"},
-        {T_ROAM, "", ", \"radio\": {\"tuner\": \"rigctld\"}",
-         "radio.tuner rigctld: not on this board (modem or fixed only)"},
-        {T_ROAM, "", ", \"radio\": {\"tuner\": \"magic\"}", "radio.tuner magic"},
-        {T_ROAM, "", ", \"radio\": {\"rssi\": 5}", "radio.rssi wants [[raw, dBm], ...]"},
-        {T_ROAM, "", ", \"radio\": {\"rssi\": [[1]]}", "radio.rssi wants [[raw, dBm], ...]"},
-        {T_ROAM, "", ", \"radio\": {\"protocol\": \"UDP\"}", "radio.protocol udp needs radio.modem_address"},
-        {T_ROAM, "", ", \"radio\": {\"protocol\": \"udp\", \"modem_address\": \"10.0.0.9\"}",
-         "radio.protocol udp: not on this board"},
-        {T_ROAM, "", ", \"radio\": {\"protocol\": \"tcp\"}", "radio.protocol tcp: uart or udp"},
-        /* location */
-        {T_ROAM, "", ", \"location\": {\"lat\": 1}", "location: latitude and longitude"},
-        {T_ROAM, ", \"location\": {\"lat\": 91, \"lon\": 0}", "", "location 91, 0 out of range"},
-        {T_ROAM, "", ", \"location\": {\"lat\": 41, \"lon\": -81, \"height\": \"tall\"}",
+        {T_ROAM, ", \"defaults\": {\"cc\": \"one\"}", "",
+         "frequencies[0].cc: 0 to 15"},
+        {T_FREQ, "", ", \"cc\": 16",
+         "frequencies[0].cc: 0 to 15"},
+        {T_FREQ, "", ", \"cc\": 1.5",
+         "frequencies[0].cc: 0 to 15"},
+        {T_FREQ, "", ", \"cc\": \"x\"",
+         "frequencies[0].cc: 0 to 15"},
+        {T_FREQ, "", ", \"cc\": -1",
+         "frequencies[0].cc: 0 to 15"},
+        {T_FREQ, "", ", \"cc\": 1e300",
+         "frequencies[0].cc: 0 to 15"},
+        {T_FREQ, ", \"defaults\": {}", "",
+         "frequencies[0].cc: the color code (or defaults.cc); only a frequency with \"tx\": false may leave it out"},
+        {T_FREQ, "", ", \"power\": \"x\"",
+         "frequencies[0].power: 0 to 255"},
+        {T_FREQ, "", ", \"freq\": \"high\"",
+         "frequencies[0].freq: a frequency (MHz, or Hz)"},
+        {T_FREQ, "", ", \"ts\": 3",
+         "frequencies[0].ts: 1 or 2"},
+        {T_FREQ, "", ", \"tx\": 0",
+         "frequencies[0].tx: true or false"},
+        {T_ROAM, "", ", \"hears\": {\"idle\": 438.125}",
+         "devices.R.hears.idle: 438.125 isn't in frequencies"},
+        {T_ROAM, "", ", \"hears\": {\"idle\": 7}",
+         "devices.R.hears.idle: 7 isn't in frequencies"},
+        {T_ROAM, "", ", \"hears\": 5",
+         "devices.R.hears: {\"idle\": frequency}, {\"scan\": [frequencies]} or false"},
+        {T_ROAM, "", ", \"hears\": {\"scan\": [438.0625, 438.1125], \"dwell_s\": 0}",
+         "devices.R.hears: dwell_s > 0, hang_s >= 0, and carrier_s (0 = off) under dwell_s"},
+        {T_ROAM, "", ", \"hears\": {\"scan\": [438.0625], \"carrier_s\": 1, \"dwell_s\": 0.5}",
+         "devices.R.hears: dwell_s > 0, hang_s >= 0, and carrier_s (0 = off) under dwell_s"},
+        {T_ROAM, "", ", \"hears\": {\"carrier_s\": 1}",
+         "devices.R.hears: idle or scan"},
+        {T_ROAM, "", ", \"hears\": {\"scan\": [438.925]}",
+         "devices.R.hears.scan[0]: 438.925 isn't in frequencies"},
+        {T_ROAM, "", ", \"hears\": {\"scan\": []}",
+         "devices.R.hears.scan: no frequencies"},
+        {T_ROAM, "", ", \"hears\": {\"scan\": [438.0625], \"dwell_s\": \"x\"}",
+         "devices.R.hears: dwell_s isn't a number"},
+        {T_ROAM, "", ", \"hears\": {\"scan\": [438.0625], \"hang_s\": \"x\"}",
+         "devices.R.hears: hang_s isn't a number"},
+        {T_ROAM, "", ", \"hears\": {\"scan\": [438.0625], \"carrier_s\": \"x\"}",
+         "devices.R.hears: carrier_s isn't a number"},
+        {T_ROAM, "", ", \"hears\": {\"scan\": [438.0625], \"hang_s\": -1}",
+         "devices.R.hears: dwell_s > 0, hang_s >= 0, and carrier_s (0 = off) under dwell_s"},
+        {T_ROAM, "", ", \"hears\": {\"scan\": [438.0625], \"carrier_s\": -0.1}",
+         "devices.R.hears: dwell_s > 0, hang_s >= 0, and carrier_s (0 = off) under dwell_s"},
+        {T_ROAM, "", ", \"transmits\": [438.925]",
+         "devices.R.transmits[0]: 438.925 isn't in frequencies"},
+        {T_ROAM, "", ", \"listen_s\": \"soon\"",
+         "devices.R: listen_s isn't a number"},
+        {T_ROAM, "", ", \"listen_s\": \"0x10\"",
+         "devices.R: listen_s isn't a number"},
+        {T_ROAM, "", ", \"prebuffer\": \"6.5\"",
+         "devices.R: prebuffer isn't a whole number"},
+        {T_ROAM, "", ", \"prebuffer\": \"\"",
+         "devices.R: prebuffer isn't a whole number"},
+        {T_ROAM, "", ", \"csbk_preambles\": [1]",
+         "devices.R: csbk_preambles isn't a number"},
+        {T_ROAM, "", ", \"mmdvm\": {\"rx_level\": \"loud\"}",
+         "devices.R.mmdvm.rx_level isn't a number"},
+        {T_ROAM, "", ", \"mmdvm\": {\"tuner\": {\"type\": \"fixed\", \"freq\": \"x\"}}",
+         "devices.R.mmdvm.tuner.freq"},
+        {T_ROAM, "", ", \"mmdvm\": {\"tuner\": \"rigctld\"}",
+         "devices.R.mmdvm.tuner rigctld: not on this board (modem or fixed only)"},
+        {T_ROAM, "", ", \"mmdvm\": {\"tuner\": \"command\"}",
+         "devices.R.mmdvm.tuner command: not on this board (modem or fixed only)"},
+        {T_ROAM, "", ", \"mmdvm\": {\"tuner\": \"magic\"}",
+         "devices.R.mmdvm.tuner magic"},
+        {T_ROAM, "", ", \"mmdvm\": {\"tuner\": {\"type\": \"fixed\", \"settle_ms\": \"x\"}}",
+         "devices.R.mmdvm.tuner: settle_ms isn't a number"},
+        {T_ROAM, "", ", \"mmdvm\": {\"rssi\": 5}",
+         "devices.R.mmdvm.rssi wants [[raw, dBm], ...]"},
+        {T_ROAM, "", ", \"mmdvm\": {\"rssi\": [[1]]}",
+         "devices.R.mmdvm.rssi wants [[raw, dBm], ...]"},
+        {T_ROAM, "", ", \"mmdvm\": {\"rssi\": [5]}",
+         "devices.R.mmdvm.rssi wants [[raw, dBm], ...]"},
+        {T_ROAM, "", ", \"mmdvm\": {\"rssi\": [[1, 2, 3]]}",
+         "devices.R.mmdvm.rssi wants [[raw, dBm], ...]"},
+        {T_ROAM, "", ", \"mmdvm\": {\"rssi\": [[\"x\", 2]]}",
+         "devices.R.mmdvm.rssi wants [[raw, dBm], ...]"},
+        {T_ROAM, "", ", \"mmdvm\": {\"rssi\": [[1, \"x\"]]}",
+         "devices.R.mmdvm.rssi wants [[raw, dBm], ...]"},
+        {T_ROAM, "", ", \"mmdvm\": {\"protocol\": \"UDP\"}",
+         "devices.R.mmdvm.protocol udp needs devices.R.mmdvm.modem_address"},
+        {T_ROAM, "", ", \"mmdvm\": {\"protocol\": \"udp\", \"modem_address\": \"10.0.0.9\"}",
+         "devices.R.mmdvm.protocol udp: not on this board"},
+        {T_ROAM, "", ", \"mmdvm\": {\"protocol\": \"udp\", \"modem_address\": \"\"}",
+         "devices.R.mmdvm.protocol udp needs devices.R.mmdvm.modem_address"},
+        {T_ROAM, "", ", \"mmdvm\": {\"protocol\": \"tcp\"}",
+         "devices.R.mmdvm.protocol tcp: uart or udp"},
+        {T_ROAM, "", ", \"mmdvm\": {\"bogus\": 1}",
+         "devices.R.mmdvm.bogus: not a key here"},
+        {T_ROAM, ", \"location\": {\"lat\": 1}", "",
+         "location: latitude and longitude"},
+        {T_ROAM, ", \"location\": {\"lon\": 1}", "",
+         "location: latitude and longitude"},
+        {T_ROAM, ", \"location\": {\"lat\": 91, \"lon\": 0}", "",
+         "location 91, 0 out of range"},
+        {T_ROAM, ", \"location\": {\"lat\": -91, \"lon\": 0}", "",
+         "location -91, 0 out of range"},
+        {T_ROAM, ", \"location\": {\"lat\": 0, \"lon\": 181}", "",
+         "location 0, 181 out of range"},
+        {T_ROAM, ", \"location\": {\"lat\": 0, \"lon\": -181}", "",
+         "location 0, -181 out of range"},
+        {T_ROAM, ", \"location\": {\"lat\": \"nan\", \"lon\": 0}", "",
+         "location nan, 0 out of range"},
+        {T_ROAM, ", \"location\": {\"lat\": 41, \"lon\": -81, \"height\": \"tall\"}", "",
          "location: height isn't a number"},
-        /* the port, MQTT, HBlink4, the OLED */
-        {T_ROAM, "", ", \"uart\": {\"num\": 3}", "uart.num 3: 1 or 2 (UART0 is the console)"},
-        {T_ROAM, "", ", \"uart\": {\"tx\": \"a\"}", "uart: tx isn't a whole number"},
-        {T_ROAM, ", \"uart\": {\"rx\": [1]}", "", "uart: rx isn't a number"},
-        {T_ROAM, "", ", \"uart\": {\"num\": \"x\"}", "uart: num isn't a whole number"},
-        {T_ROAM, "", ", \"speed\": \"fast\"", "radio: speed isn't a whole number"},
-        {T_ROAM, ", \"mqtt\": {\"port\": \"x\"}", "", "mqtt: port isn't a whole number"},
-        {T_ROAM, ", \"hblink\": {\"port\": \"x\"}", "", "hblink: port isn't a whole number"},
-        {T_ROAM, ", \"oled\": {\"address\": \"x\"}", "", "oled: address isn't a whole number"},
-        {T_ROAM, ", \"oled\": {\"i2c\": {\"address\": []}}", "", "oled: address isn't a number"},
-        {T_ROAM, ", \"oled\": {\"refresh_s\": \"x\"}", "", "oled: refresh_s isn't a number"},
-        {T_ROAM, ", \"oled\": {\"sda\": \"x\"}", "", "oled: sda isn't a whole number"},
-        {T_ROAM, ", \"oled\": {\"scl\": \"x\"}", "", "oled: scl isn't a whole number"},
-        /* which radio */
-        {T_ROAM, ", \"run\": [\"R\", 5]", "", "run: a radio's name or a list of names"},
-        {T_ROAM_SDR, "", ", \"type\": \"sdr_transceiver\", \"tx_power_dbm\": \"x\"",
-         "radio: tx_power_dbm isn't a number"},
-        {T_ROAM_SDR, "", ", \"type\": \"sdr_transceiver\", \"duplex\": \"full\", \"mode\": \"sfr\"",
-         "an sdr_transceiver with duplex: full is a duplex repeater (no mode: sfr)"},
-        /* a repeater */
-        {T_REP, "", "", "no rx_freq (MHz)"},
-        {T_REP, "", ", \"rx_freq\": 461", "no tx_freq (MHz)"},
-        {T_REP, "", ", \"rx_freq\": \"x\", \"tx_freq\": 466", "rx_freq: bad frequency"},
-        {T_REP, "", ", \"mode\": \"sfr\"", "no freq (MHz)"},
-        {T_REP, "", ", \"mode\": \"sfr\", \"freq\": \"x\"", "freq: bad frequency"},
-        {T_REP, "", ", \"mode\": \"sfr\", \"freq\": 438.0625, \"inbound_slot\": \"x\"",
-         "radio: inbound_slot isn't a whole number"},
-        {T_REP, "", ", \"mode\": \"sfr\", \"freq\": 438.0625, \"inbound_slot\": 3", "inbound_slot: 1 or 2"},
-        {T_REP, "", ", \"mode\": \"sfr\", \"freq\": 438.0625, \"radio\": {\"type\": \"mmdvm\"}",
-         "radio.type mmdvm: a single frequency repeater is a radio_hotspot (a radio in hotspot mode with SFR "
-         "firmware)"},
-        {T_REP, "", FREQS ", \"mode\": \"simplex\"", "mode simplex: duplex, sfr or dcdm"},
-        {T_REP, "", ", \"mode\": \"dcdm\"", "no freq (MHz)"},
-        {T_REP, "", ", \"mode\": \"dcdm\", \"freq\": 438.0625, \"radio\": {\"type\": \"split\"}",
-         "radio.type split: a split is a duplex pair; dual capacity direct mode is one radio on one frequency"},
-        {T_REP, "", ", \"mode\": \"dcdm\", \"freq\": 438.0625, \"slot_timing\": \"utc\"",
-         "slot_timing utc: in dual capacity direct mode the modem times its slots from the channel"},
-        {T_REP, "", FREQS ", \"cc\": \"x\"", "radio: cc isn't a whole number"},
-        {T_REP, ", \"cc\": null", FREQS, "channel 1: no color code (set cc on it or at the top)"},
-        {T_REP, "", FREQS ", \"cc\": 16", "color code 16"},
-        {T_REP, "", FREQS ", \"peer_id\": [3]", "no peer_id"},
-        {T_REP, "", FREQS ", \"power\": \"x\"", "radio: power isn't a whole number"},
-        {T_REP, "", FREQS ", \"hang_s\": \"x\"", "radio: hang_s isn't a number"},
-        {T_REP, "", FREQS ", \"prebuffer\": \"x\"", "radio: prebuffer isn't a whole number"},
-        {T_REP, "", FREQS ", \"hang_s\": 0", "hang_s > 0 and call_hang_s >= 0"},
-        {T_REP, "", FREQS ", \"slots\": [3]", "slots: 1, 2 or both"},
-        {T_REP, "", FREQS ", \"slots\": []", "slots: 1, 2 or both"},
-        {T_REP, "", FREQS ", \"radio\": {\"type\": \"yaesu\"}",
-         "radio type yaesu: auto or one of radio_hotspot, mmdvm_hs, mmdvm, split"},
-        {T_REP, "", FREQS ", \"radio\": {\"type\": \"opengd77\"}",
-         "a radio_hotspot (a radio in hotspot mode) is simplex: a repeater needs a duplex MMDVM_HS board, an MMDVM "
-         "board or two radios as a split (but see mode: sfr)"},
-        {T_REP, "", FREQS ", \"radio\": {\"rx_level\": \"x\"}", "radio.rx_level isn't a number"},
-        /* a split's halves */
-        {T_REP, "", FREQS ", \"radio\": {\"type\": \"split\"}", "radio type split needs radio.tx: the TX half's port"},
-        {T_REP, "", SPLIT("{}", "5") "}", "radio type split needs radio.rx: the RX half's port"},
-        {T_REP, "", SPLIT("{\"type\": \"mmdvm\"}", "{}") "}",
-         "radio.tx.type mmdvm: a split half is a radio in hotspot mode with the split duplex extension "
-         "(OpenDigitalRadio)"},
-        {T_REP, "", SPLIT("{\"protocol\": \"tcp\"}", "{}") "}", "radio.tx.protocol tcp: uart or udp"},
-        {T_REP, "", SPLIT("{}", "{\"protocol\": \"UDP\"}") "}", "radio.rx.protocol udp needs radio.rx.modem_address"},
-        {T_REP, "", SPLIT("{\"protocol\": \"udp\", \"modem_address\": \"h\"}", "{}") "}",
-         "radio.tx.protocol udp: not on this board"},
-        {T_REP, "", SPLIT("{\"modem\": \"wifi\"}", "{}") "}",
-         "radio.tx.modem wifi: usb, uart, or sdr (the board's SDR modem)"},
-        {T_REP, "", SPLIT("{\"uart\": {\"tx\": \"a\"}}", "{}") "}", "uart: tx isn't a whole number"},
-        {T_REP, "", SPLIT("{\"uart\": {\"rx\": \"a\"}}", "{}") "}", "uart: rx isn't a whole number"},
-        {T_REP, "", SPLIT("{\"uart\": {\"num\": \"a\"}}", "{}") "}", "uart: num isn't a whole number"},
-        {T_REP, "", SPLIT("{}", "{\"modem\": \"uart\", \"uart\": {\"num\": 3}}") "}",
-         "radio.rx.uart.num 3: 1 or 2 (UART0 is the console)"},
-        {T_REP, "", SPLIT("{\"speed\": \"x\"}", "{}") "}", "radio: speed isn't a whole number"},
-        {T_REP, "", SPLIT("{\"modem\": \"uart\"}", "{\"modem\": \"uart\"}") "}",
-         "radio.tx and radio.rx are both on UART1: give one \"uart\": {\"num\": 2, ...}"},
-        {T_REP, "", SPLIT("{\"modem\": \"uart\"}", "{\"modem\": \"uart\", \"uart\": {\"num\": 2}}") "}",
-         "radio.tx and radio.rx share a UART pin"},
-        {T_REP, "", SPLIT("{\"modem\": \"uart\"}", "{\"modem\": \"uart\", \"uart\": {\"num\": 2, \"tx\": 6, \"rx\": 7}}") "}",
-         "radio.tx and radio.rx share a UART pin"},
-        {T_REP, "", SPLIT("{}", "{\"modem\": \"uart\"}") ", \"power_cap\": 300}", "radio.power_cap: 0 to 255"},
-        {T_REP, "", SPLIT("{}", "{\"modem\": \"uart\"}") ", \"lease_s\": \"x\"}", "radio.lease_s: 0 to 255"},
-        {T_REP, "", SPLIT("{}", "{\"modem\": \"uart\"}") ", \"max_key_s\": 700}", "radio.max_key_s: 0 to 600"},
-        /* NaN, hex, huge numbers, and keys that aren't integers */
-        {T_REP, "", SPLIT("{}", "{\"modem\": \"uart\"}") ", \"power_cap\": \"nan\"}", "radio.power_cap: 0 to 255"},
-        {T_REP, "", SPLIT("{}", "{\"modem\": \"uart\"}") ", \"max_key_s\": \"nan\"}", "radio.max_key_s: 0 to 600"},
-        {T_ROAM, "", ", \"location\": {\"lat\": \"nan\", \"lon\": 0}", "location nan, 0 out of range"},
-        {T_ROAM, "", ", \"listen_s\": \"0x10\"", "radio: listen_s isn't a number"},
-        {T_ROAM, "", ", \"radio\": {\"tuner\": {\"type\": \"fixed\", \"settle_ms\": \"x\"}}", "tuner: settle_ms isn't a number"},
-        {T_ROAM, ", \"channels\": {\"\": 461}", "", "channel : not a number"},
-        {T_ROAM, ", \"channels\": {\"4294967297\": 461}", "", "channel 4294967297: not a number"},
-        {T_ROAM, "", ", \"channels\": [4294967297]", "channel 4294967297 isn't in the plan (channels:)"},
-        {T_ROAM, "", ", \"channels\": [1e300]", "channel 9223372036854775807 isn't in the plan (channels:)"},
-        {T_ROAM, "", ", \"channels\": [-1e300]", "channel -9223372036854775808 isn't in the plan (channels:)"},
-        {T_ROAM, ", \"channels\": {\"1\": {\"freq\": 438.0625, \"cc\": 1e300}}", "", "color code 2.14748e+09"},
-        {T_ROAM, "", ", \"idle\": {\"freq\": 438.125, \"cc\": 1e300}", "color code 9.22337e+18"},
-        {T_REP, "", FREQS ", \"cc\": 1e300", "color code 9223372036854775807"},
-        {T_REP, "", FREQS ", \"slots\": [1e300]", "slots: 1, 2 or both"},
-        {T_REP, ", \"cc\": null, \"channels\": {\"1\": {\"freq\": 438.0625, \"cc\": 1}}", FREQS,
-         "no color code (set cc on it or at the top)"},
-        {T_ROAM, "", ", \"channels\": [\"nan\"]", "channel 0 isn't in the plan (channels:)"},
-        /* each side of each check */
-        {T_ROAM, "", ", \"prebuffer\": \"\"", "radio: prebuffer isn't a whole number"},
-        /* the jitter buffer */
-        {T_ROAM, "", ", \"jitter_buffer\": \"x\"", "radio: jitter_buffer: \"auto\" or milliseconds, 0 to 3000"},
-        {T_ROAM, "", ", \"jitter_buffer\": true", "radio: jitter_buffer: \"auto\" or milliseconds, 0 to 3000"},
-        {T_ROAM, "", ", \"jitter_buffer\": -1", "radio: jitter_buffer: \"auto\" or milliseconds, 0 to 3000"},
-        {T_ROAM, "", ", \"jitter_buffer\": 3000.5", "radio: jitter_buffer: \"auto\" or milliseconds, 0 to 3000"},
-        {T_ROAM, "", ", \"jitter_buffer\": null", "radio: jitter_buffer: \"auto\" or milliseconds, 0 to 3000"},
-        {T_REP, "", FREQS ", \"jitter_buffer\": \"Auto\"", "radio: jitter_buffer: \"auto\" or milliseconds, 0 to 3000"},
+        {T_ROAM, "", ", \"port\": {\"uart\": 3, \"tx\": 5, \"rx\": 6}",
+         "devices.R.port.uart: 1 or 2 (UART0 is the console)"},
+        {T_ROAM, "", ", \"port\": {\"uart\": 1, \"tx\": \"a\", \"rx\": 6}",
+         "devices.R.port.tx: a GPIO 0 to 48"},
+        {T_ROAM, "", ", \"port\": {\"uart\": 1, \"tx\": 5, \"rx\": [1]}",
+         "devices.R.port.rx: a GPIO 0 to 48"},
+        {T_ROAM, "", ", \"port\": {\"uart\": \"x\", \"tx\": 5, \"rx\": 6}",
+         "devices.R.port.uart: 1 or 2 (UART0 is the console)"},
+        {T_ROAM, "", ", \"port\": {\"uart\": 1, \"tx\": 5, \"rx\": 6, \"baud\": \"fast\"}",
+         "devices.R.port.baud: 1200 to 6000000"},
+        {T_ROAM, "", ", \"port\": {\"usb\": \"auto\", \"serial\": 5}",
+         "devices.R.port.serial: a string"},
+        {T_ROAM, ", \"networks\": [{\"type\": \"mqtt\", \"host\": \"h\", \"port\": \"x\"}]", "",
+         "networks.mqtt: port isn't a whole number"},
+        {T_ROAM, ", \"networks\": [{\"type\": \"hblink\", \"host\": \"h\", \"port\": \"x\"}]", "",
+         "networks.hblink: port isn't a whole number"},
+        {T_ROAM, ", \"networks\": [{\"type\": \"hblink\", \"host\": \"h\", \"transport\": \"sctp\", \"sctp_ttl_ms\": -1}]", "",
+         "networks.hblink: sctp_ttl_ms -1 out of range (0 to 60000)"},
+        {T_ROAM, ", \"oled\": {\"address\": \"x\"}", "",
+         "oled: address isn't a whole number"},
+        {T_ROAM, ", \"oled\": {\"i2c\": {\"address\": []}}", "",
+         "oled: address isn't a number"},
+        {T_ROAM, ", \"oled\": {\"refresh_s\": \"x\"}", "",
+         "oled: refresh_s isn't a number"},
+        {T_ROAM, ", \"oled\": {\"sda\": \"x\"}", "",
+         "oled: sda isn't a whole number"},
+        {T_ROAM, ", \"oled\": {\"scl\": \"x\"}", "",
+         "oled: scl isn't a whole number"},
+        {T_SDRTX, "", ", \"tx\": {\"power_dbm\": \"x\"}",
+         "devices.T.tx.power_dbm: -60 to 30"},
+        {T_REP, "", ", \"in\": \"nope\"",
+         "apps.R.in: \"nope\" isn't in frequencies"},
+        {T_REP, "", ", \"out\": \"in\"",
+         "apps.R.out: in is R's already"},
+        {T_REP, "", ", \"hang_s\": \"x\"",
+         "apps.R: hang_s isn't a number"},
+        {T_REP, "", ", \"hang_s\": 0",
+         "apps.R: hang_s > 0 and call_hang_s >= 0"},
+        {T_REP, "", ", \"call_hang_s\": \"x\"",
+         "apps.R: call_hang_s isn't a number"},
+        {T_REP, "", ", \"call_hang_s\": -1",
+         "apps.R: hang_s > 0 and call_hang_s >= 0"},
+        {T_REP, "", ", \"cwid_every_s\": \"x\"",
+         "apps.R: cwid_every_s isn't a number"},
+        {T_REP, "", ", \"prebuffer\": \"x\"",
+         "apps.R: prebuffer isn't a whole number"},
+        {T_REP, "", ", \"active_slots\": [3]",
+         "apps.R.active_slots: [1], [2] or [1, 2]"},
+        {T_REP, "", ", \"active_slots\": []",
+         "apps.R.active_slots: [1], [2] or [1, 2]"},
+        {T_REP, "", ", \"active_slots\": 2",
+         "apps.R.active_slots: [1], [2] or [1, 2]"},
+        {T_REP, "", ", \"active_slots\": [\"x\"]",
+         "apps.R.active_slots: [1], [2] or [1, 2]"},
+        {T_REP, "", ", \"active_slots\": [1e300]",
+         "apps.R.active_slots: [1], [2] or [1, 2]"},
+        {T_REP, "", ", \"slot_timing\": \"nope\"",
+         "apps.R.slot_timing.mode: free or utc"},
+        {T_REPDEV, "", ", \"type\": \"yaesu\"",
+         "devices.M.type: auto, radio_hotspot, mmdvm_hs or mmdvm"},
+        {T_REPDEV, "", ", \"type\": \"radio_hotspot\"",
+         "apps.R: devices.M is a radio_hotspot (a radio in hotspot mode), which is simplex: a repeater needs a duplex MMDVM_HS board, an MMDVM board or two radios as a split (or a frequency with mode sfr)"},
+        {T_REPDEV, "", ", \"mmdvm\": {\"rx_level\": \"x\"}",
+         "devices.M.mmdvm.rx_level isn't a number"},
+        {T_FREQ, "", ", \"mode\": \"sfr\", \"inbound_slot\": \"x\"",
+         "frequencies.438.0625: inbound_slot isn't a whole number"},
+        {T_FREQ, "", ", \"mode\": \"sfr\", \"inbound_slot\": 3",
+         "frequencies.438.0625.inbound_slot: 1 or 2"},
+        {T_FREQ, "", ", \"inbound_slot\": 2",
+         "frequencies[0].inbound_slot: for mode sfr or dcdm"},
+        {T_FREQ, "", ", \"mode\": \"dcdm\", \"slot_timing\": \"utc\"",
+         "frequencies.438.0625.slot_timing: utc: in dual capacity direct mode the modem times its slots from the channel"},
+        {T_FREQ, "", ", \"mode\": \"sfr\", \"slot_timing\": \"utc\"",
+         "frequencies.438.0625.slot_timing: utc: a single frequency repeater's radio times its own slots"},
+        {T_FREQ, "", ", \"mode\": \"dcdm\", \"active_slots\": [3]",
+         "frequencies[0].active_slots: [1], [2] or [1, 2]"},
+        {T_FREQ, "", ", \"mode\": \"sfr\", \"active_slots\": [2]",
+         "frequencies[0].active_slots: for mode dcdm (an SFR repeater's slots are inbound_slot's)"},
+        {T_FREQ, "", ", \"mode\": \"dcdm\", \"duplex\": \"fool\"",
+         "frequencies[0].duplex: half or full"},
+        {T_FREQ, "", ", \"mode\": \"sfr\", \"hang_s\": 0",
+         "frequencies.438.0625: hang_s > 0 and call_hang_s >= 0"},
+        {T_FREQ, "", ", \"mode\": \"sfr\", \"jitter_buffer\": \"x\"",
+         "frequencies.438.0625: jitter_buffer: \"auto\" or milliseconds, 0 to 3000"},
+        {T_FREQ, "", ", \"cwid\": \"N0CALL\"",
+         "frequencies[0].cwid: for mode sfr or dcdm"},
+        {T_SPLIT, "", ", \"split\": {\"power_cap\": 300}",
+         "apps.R.split.power_cap: 0 to 255"},
+        {T_SPLIT, "", ", \"split\": {\"lease_s\": \"x\"}",
+         "apps.R.split.lease_s: 0 to 255"},
+        {T_SPLIT, "", ", \"split\": {\"max_key_s\": 700}",
+         "apps.R.split.max_key_s: 0 to 600"},
+        {T_SPLIT, "", ", \"split\": {\"power_cap\": \"nan\"}",
+         "apps.R.split.power_cap: 0 to 255"},
+        {T_SPLIT, "", ", \"split\": {\"max_key_s\": \"nan\"}",
+         "apps.R.split.max_key_s: 0 to 600"},
+        {T_SPLIT, "", ", \"split\": {\"max_key_s\": \"x\"}",
+         "apps.R.split.max_key_s: 0 to 600"},
+        {T_SPLIT, "", ", \"split\": {\"bogus\": 1}",
+         "apps.R.split.bogus: not a key here"},
+        {T_ROAM, "", ", \"jitter_buffer\": \"x\"",
+         "devices.R: jitter_buffer: \"auto\" or milliseconds, 0 to 3000"},
+        {T_ROAM, "", ", \"jitter_buffer\": true",
+         "devices.R: jitter_buffer: \"auto\" or milliseconds, 0 to 3000"},
+        {T_ROAM, "", ", \"jitter_buffer\": -1",
+         "devices.R: jitter_buffer: \"auto\" or milliseconds, 0 to 3000"},
+        {T_ROAM, "", ", \"jitter_buffer\": 3000.5",
+         "devices.R: jitter_buffer: \"auto\" or milliseconds, 0 to 3000"},
+        {T_ROAM, "", ", \"jitter_buffer\": null",
+         "devices.R: jitter_buffer: \"auto\" or milliseconds, 0 to 3000"},
+        {T_REP, "", ", \"jitter_buffer\": \"Auto\"",
+         "apps.R: jitter_buffer: \"auto\" or milliseconds, 0 to 3000"},
         {T_ROAM, "", ", \"jitter_buffer\": 300, \"prebuffer\": 5",
-         "radio: prebuffer and jitter_buffer: set one (prebuffer is a fixed size in bursts)"},
-        {T_REP, "", FREQS ", \"jitter_buffer\": \"auto\", \"prebuffer\": 5",
-         "radio: prebuffer and jitter_buffer: set one (prebuffer is a fixed size in bursts)"},
-        {T_ROAM, "", ", \"jitter_min_ms\": \"x\"", "radio: jitter_min_ms isn't a number"},
-        {T_ROAM, "", ", \"jitter_max_ms\": \"x\"", "radio: jitter_max_ms isn't a number"},
-        {T_ROAM, "", ", \"jitter_min_ms\": 59.9", "radio: jitter_min_ms and jitter_max_ms: 60 <= min <= max <= 3000"},
-        {T_ROAM, "", ", \"jitter_min_ms\": 500", "radio: jitter_min_ms and jitter_max_ms: 60 <= min <= max <= 3000"},
-        {T_REP, "", FREQS ", \"jitter_max_ms\": 3001", "radio: jitter_min_ms and jitter_max_ms: 60 <= min <= max <= 3000"},
-        {T_REP, "", FREQS ", \"jitter_min_ms\": \"nan\"", "radio: jitter_min_ms and jitter_max_ms: 60 <= min <= max <= 3000"},
-        {T_ROAM, "", ", \"channels\": [{\"ch\": \"x\"}]", "a channel entry needs ch"},
-        {T_ROAM, "", ", \"channels\": [{\"ch\": 1, \"cc\": \"x\"}]", "channel: cc isn't a number"},
-        {T_ROAM, "", ", \"idle\": {\"freq\": \"x\", \"cc\": 1}", "idle: freq and cc"},
-        {T_ROAM, ", \"channels\": {\"1\": {\"freq\": 438.0625, \"cc\": 16}}", ", \"channels\": []", "color code 16"},
-        {T_ROAM, "", ", \"location\": {\"lon\": 1}", "location: latitude and longitude"},
-        {T_ROAM, "", ", \"location\": {\"lat\": -91, \"lon\": 0}", "location -91, 0 out of range"},
-        {T_ROAM, "", ", \"location\": {\"lat\": 0, \"lon\": 181}", "location 0, 181 out of range"},
-        {T_ROAM, "", ", \"location\": {\"lat\": 0, \"lon\": -181}", "location 0, -181 out of range"},
-        {T_ROAM, "", ", \"radio\": {\"tuner\": \"command\"}", "radio.tuner command: not on this board (modem or fixed only)"},
-        {T_ROAM, "", ", \"radio\": {\"rssi\": [5]}", "radio.rssi wants [[raw, dBm], ...]"},
-        {T_ROAM, "", ", \"radio\": {\"rssi\": [[1, 2, 3]]}", "radio.rssi wants [[raw, dBm], ...]"},
-        {T_ROAM, "", ", \"radio\": {\"rssi\": [[\"x\", 2]]}", "radio.rssi wants [[raw, dBm], ...]"},
-        {T_ROAM, "", ", \"radio\": {\"rssi\": [[1, \"x\"]]}", "radio.rssi wants [[raw, dBm], ...]"},
-        {T_ROAM, "", ", \"scan\": {\"hang_s\": \"x\"}", "scan: hang_s isn't a number"},
-        {T_ROAM, "", ", \"scan\": {\"carrier_s\": \"x\"}", "scan: carrier_s isn't a number"},
-        {T_ROAM, "", ", \"scan\": {\"hang_s\": -1}",
-         "scan: dwell_s > 0, hang_s >= 0, and carrier_s (0 = off) under dwell_s"},
-        {T_ROAM, "", ", \"scan\": {\"carrier_s\": -0.1}",
-         "scan: dwell_s > 0, hang_s >= 0, and carrier_s (0 = off) under dwell_s"},
-        {T_REP, "", ", \"rx_freq\": 461, \"tx_freq\": \"x\"", "tx_freq: bad frequency"},
-        {T_REP, "", FREQS ", \"cc\": -1", "color code -1"},
-        {T_REP, "", FREQS ", \"call_hang_s\": \"x\"", "radio: call_hang_s isn't a number"},
-        {T_REP, "", FREQS ", \"cwid_every_s\": \"x\"", "radio: cwid_every_s isn't a number"},
-        {T_REP, "", FREQS ", \"call_hang_s\": -1", "hang_s > 0 and call_hang_s >= 0"},
-        {T_REP, "", FREQS ", \"slots\": 2", "slots: 1, 2 or both"},
-        {T_REP, "", FREQS ", \"slots\": [\"x\"]", "slots: 1, 2 or both"},
-        {T_REP, "", SPLIT("{\"modem\": \"uart\"}", "{\"modem\": \"uart\", \"uart\": {\"num\": 2, \"tx\": 7, \"rx\": 5}}") "}",
-         "radio.tx and radio.rx share a UART pin"},
-        {T_REP, "", SPLIT("{\"modem\": \"uart\"}", "{\"modem\": \"uart\", \"uart\": {\"num\": 2, \"tx\": 8, \"rx\": 6}}") "}",
-         "radio.tx and radio.rx share a UART pin"},
-        {T_REP, "", SPLIT("{}", "{\"modem\": \"uart\"}") ", \"max_key_s\": \"x\"}", "radio.max_key_s: 0 to 600"},
+         "devices.R: prebuffer and jitter_buffer: set one (prebuffer is a fixed size in bursts)"},
+        {T_REP, "", ", \"jitter_buffer\": \"auto\", \"prebuffer\": 5",
+         "apps.R: prebuffer and jitter_buffer: set one (prebuffer is a fixed size in bursts)"},
+        {T_ROAM, "", ", \"jitter_min_ms\": \"x\"",
+         "devices.R: jitter_min_ms isn't a number"},
+        {T_ROAM, "", ", \"jitter_max_ms\": \"x\"",
+         "devices.R: jitter_max_ms isn't a number"},
+        {T_ROAM, "", ", \"jitter_min_ms\": 59.9",
+         "devices.R: jitter_min_ms and jitter_max_ms: 60 <= min <= max <= 3000"},
+        {T_ROAM, "", ", \"jitter_min_ms\": 500",
+         "devices.R: jitter_min_ms and jitter_max_ms: 60 <= min <= max <= 3000"},
+        {T_REP, "", ", \"jitter_max_ms\": 3001",
+         "apps.R: jitter_min_ms and jitter_max_ms: 60 <= min <= max <= 3000"},
+        {T_REP, "", ", \"jitter_min_ms\": \"nan\"",
+         "apps.R: jitter_min_ms and jitter_max_ms: 60 <= min <= max <= 3000"},
     };
     static rdof_config_t cfg;
     char error[200];
     for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
-        bool ok = cfg_try(bad[i].t, bad[i].top, bad[i].radio, &cfg, error, sizeof error);
+        bool ok = cfg_try(bad[i].t, bad[i].top, bad[i].place, &cfg, error, sizeof error);
         CHECK(!ok && !strcmp(error, bad[i].want), "config %zu (%s%s): want \"%s\", got %s", i, bad[i].top,
-              bad[i].radio, bad[i].want, ok ? "ok" : error);
+              bad[i].place, bad[i].want, ok ? "ok" : error);
     }
-    /* not JSON, not an object, and no error buffer */
+    /* not JSON, not an object, not version 3, and no error buffer */
     CHECK(!rdof_config_parse("{", 1, &cfg, error, sizeof error) && strstr(error, "JSON:"), "bad JSON: %s", error);
-    CHECK(!rdof_config_parse("[1]", 3, &cfg, error, sizeof error) && !strcmp(error, "the settings are a JSON object"), "array: %s", error);
+    CHECK(!rdof_config_parse("[1]", 3, &cfg, error, sizeof error) && !strcmp(error, "the settings are a JSON object"),
+          "array: %s", error);
     CHECK(!rdof_config_parse("[1]", 3, &cfg, NULL, 0), "no error buffer");
-    /* two SDRs named in run; an SDR's channel that isn't in the plan */
     static const char *const whole[][2] = {
-        {"{\"cc\": 1, \"run\": [\"S\", \"T\"], \"radios\": [{\"type\": \"sdr\", \"name\": \"S\"}, {\"type\": \"sdr\","
-         " \"name\": \"T\"}]}", "run: one SDR a board"},
-        {"{\"radios\": {\"a\": 1}}", "radios: a list"},
-        {"{\"radios\": \"R\"}", "radios: a list"},
-        {"{\"radios\": null}", "no radios"},
-        {"{\"cc\": 1}", "no radios"},
-        {"{\"cc\": 1, \"channels\": {\"1\": 438.0625}, \"radios\": [{\"type\": \"mmdvm_hs\", \"idle\": 1}]}", "no peer_id"},
-        {"{\"cc\": 1, \"channels\": {\"1\": 438.0625}, \"radios\": [{\"type\": \"repeater\", \"rx_freq\": 461,"
-         " \"tx_freq\": 466}]}", "no peer_id"},
-        /* a number in run isn't a name, not even "" */
-        {"{\"run\": [5], \"radios\": [{\"type\": \"sdr\", \"name\": \"\"}, {\"type\": \"sdr\", \"name\": \"\"}]}",
-         "run: a radio's name or a list of names"},
-        {"{\"cc\": 1, \"channels\": {\"1\": 438.0625}, \"radios\": [{\"type\": \"mmdvm_hs\", \"peer_id\": 1, \"idle\": 1},"
-         " {\"type\": \"sdr\", \"channels\": [9]}]}", "channel 9 isn't in the plan (channels:)"},
+        {"{\"radios\": [{\"type\": \"mmdvm_hs\"}]}", "version: 3"},
+        {"{\"version\": 2, \"devices\": {}, \"roles\": {}}", "version: 3"},
+        {"{\"version\": 3, \"id\": 1, \"defaults\": {\"cc\": 1}, \"devices\": [{\"kind\": \"sdr\"}], "
+         "\"frequencies\": [438.0625]}",
+         "nothing transmits: no repeater, SFR or DCDM frequency, or device transmitting"},
+        {"{\"version\": 3, \"id\": 1, \"devices\": {\"a\": 1}}", "devices: a list"},
+        {"{\"version\": 3, \"id\": 1, \"run\": \"R\", \"devices\": []}", "run: not a key here"},
     };
     for (size_t i = 0; i < sizeof whole / sizeof whole[0]; i++)
-        CHECK(!rdof_config_parse(whole[i][0], strlen(whole[i][0]), &cfg, error, sizeof error) && !strcmp(error, whole[i][1]),
+        CHECK(!rdof_config_parse(whole[i][0], strlen(whole[i][0]), &cfg, error, sizeof error) &&
+                  !strcmp(error, whole[i][1]),
               "whole %zu: want \"%s\", got %s", i, whole[i][1], error);
-    /* more channels than the plan holds, and than a roamer takes */
+    /* more frequencies than a transceiver takes, and than its scan does */
     static char json[8192];
-    size_t n = (size_t)snprintf(json, sizeof json, "{\"cc\": 1, \"channels\": {");
-    for (int k = 1; k <= 2 * RDOF_CFG_CHANNELS + 1; k++)
-        n += (size_t)snprintf(json + n, sizeof json - n, "%s\"%d\": %.4f", k > 1 ? ", " : "", k, 450 + k * 0.0125);
-    snprintf(json + n, sizeof json - n, "}, \"radios\": [{\"type\": \"mmdvm_hs\", \"peer_id\": 1, \"idle\": 1}]}");
-    CHECK(!rdof_config_parse(json, strlen(json), &cfg, error, sizeof error) && !strcmp(error, "too many channels in the plan"),
-          "plan: %s", error);
-    char *cut = strstr(json, ", \"65\"");
-    snprintf(cut, sizeof json - (size_t)(cut - json), "}, \"radios\": [{\"type\": \"mmdvm_hs\", \"peer_id\": 1, \"idle\": 1}]}");
-    CHECK(!rdof_config_parse(json, strlen(json), &cfg, error, sizeof error) && !strcmp(error, "too many channels (32 at most)"),
-          "roamer, all: %s", error);
-    cut = strstr(json, "\"radios\"");
-    snprintf(cut, sizeof json - (size_t)(cut - json), "\"radios\": [{\"type\": \"mmdvm_hs\", \"peer_id\": 1, \"idle\": 1, "
-             "\"channels\": [1], \"scan\": {\"channels\": [%s]}}]}", "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,"
-             "28,29,30,31,32,33");
-    CHECK(!rdof_config_parse(json, strlen(json), &cfg, error, sizeof error) && !strcmp(error, "scan: too many channels"),
-          "scan: %s", error);
-    cut = strstr(json, "\"radios\"");
-    snprintf(cut, sizeof json - (size_t)(cut - json), "\"radios\": [{\"type\": \"mmdvm_hs\", \"peer_id\": 1, \"idle\": 33,"
-             " \"channels\": [%s]}]}", "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,"
-             "31,32");
-    CHECK(!rdof_config_parse(json, strlen(json), &cfg, error, sizeof error) && !strcmp(error, "too many channels"),
-          "idle past 32: %s", error);
+    size_t n = (size_t)snprintf(json, sizeof json, "{\"version\": 3, \"id\": 1, \"defaults\": {\"cc\": 1}, "
+                                "\"devices\": [{\"name\": \"R\", \"kind\": \"modem\", \"type\": \"mmdvm_hs\", "
+                                "\"port\": {\"usb\": \"auto\"}}], \"frequencies\": [");
+    for (int k = 1; k <= RDOF_CFG_CHANNELS + 1; k++)
+        n += (size_t)snprintf(json + n, sizeof json - n, "%s%.4f", k > 1 ? ", " : "", 450 + k * 0.0125);
+    snprintf(json + n, sizeof json - n, "]}");
+    CHECK(!rdof_config_parse(json, strlen(json), &cfg, error, sizeof error) &&
+              !strcmp(error, "devices.R.transmits: 33 frequencies, and a transceiver holds 32"),
+          "too many: %s", error);
 }
 
 static void t_config_values(void)
@@ -3650,56 +3680,76 @@ static void t_config_values(void)
     static rdof_config_t cfg;
     char error[200];
     /* str() of each JSON kind, float() of a bool and of padded text */
-    bool ok = cfg_try(T_ROAM, "", ", \"callsign\": 123, \"cwid\": null, \"listen_s\": true, \"clear_s\": \"2.5  \"",
+    bool ok = cfg_try(T_ROAM, ", \"callsign\": 123", ", \"cwid\": null, \"listen_s\": true, \"clear_s\": \"2.5  \"",
                       &cfg, error, sizeof error);
     CHECK(ok && !strcmp(cfg.callsign, "123") && !strcmp(cfg.cwid, "None") && cfg.listen_s == 1 && cfg.clear_s == 2.5,
           "values: %s %s %g %g %s", cfg.callsign, cfg.cwid, cfg.listen_s, cfg.clear_s, error);
-    ok = cfg_try(T_ROAM, "", ", \"callsign\": 1.5, \"cwid\": true", &cfg, error, sizeof error);
+    ok = cfg_try(T_ROAM, ", \"callsign\": 1.5", ", \"cwid\": true", &cfg, error, sizeof error);
     CHECK(ok && !strcmp(cfg.callsign, "1.5") && !strcmp(cfg.cwid, "True"), "values: %s %s", cfg.callsign, cfg.cwid);
     ok = cfg_try(T_ROAM, "", ", \"cwid\": [1]", &cfg, error, sizeof error);
     CHECK(ok && !strcmp(cfg.cwid, "?"), "a list as text: %s", cfg.cwid);
     /* the MQTT root's slashes stripped, both ends */
-    ok = cfg_try(T_ROAM, ", \"mqtt\": {\"host\": \"h\", \"root\": \"/a/b//\"}", "", &cfg, error, sizeof error);
+    ok = cfg_try(T_ROAM, ", \"networks\": [{\"type\": \"mqtt\", \"host\": \"h\", \"root\": \"/a/b//\"}]", "", &cfg,
+                 error, sizeof error);
     CHECK(ok && !strcmp(cfg.mqtt_root, "a/b"), "root: '%s' %s", cfg.mqtt_root, error);
-    ok = cfg_try(T_ROAM, ", \"mqtt\": {\"host\": \"h\", \"root\": \"///\"}", "", &cfg, error, sizeof error);
+    ok = cfg_try(T_ROAM, ", \"networks\": [{\"type\": \"mqtt\", \"host\": \"h\", \"root\": \"///\"}]", "", &cfg, error,
+                 sizeof error);
     CHECK(ok && !strcmp(cfg.mqtt_root, ""), "root of slashes: '%s' %s", cfg.mqtt_root, error);
     /* tuners, RSSI map, headers and terminators */
-    ok = cfg_try(T_ROAM, "", ", \"radio\": {\"tuner\": \"modem\", \"rssi\": [[100, -60], [10, -120]], \"headers\": null,"
+    ok = cfg_try(T_ROAM, "", ", \"mmdvm\": {\"tuner\": \"modem\", \"rssi\": [[100, -60], [10, -120]], \"headers\": null,"
                  " \"terminators\": 3}", &cfg, error, sizeof error);
     CHECK(ok && cfg.tuner == RDOF_TUNER_MODEM && cfg.rssi.n == 2 && cfg.rssi.raw[0] == 10 && cfg.headers == -1 &&
               cfg.terminators == 3,
           "radio settings: %s", error);
-    ok = cfg_try(T_ROAM, "", ", \"radio\": {\"tuner\": {\"type\": \"fixed\", \"freq\": 438.0625, \"settle_ms\": 20}}", &cfg,
-                 error, sizeof error);
+    ok = cfg_try(T_ROAM, "", ", \"mmdvm\": {\"tuner\": {\"type\": \"fixed\", \"freq\": 438.0625, \"settle_ms\": 20}}",
+                 &cfg, error, sizeof error);
     CHECK(ok && cfg.tuner == RDOF_TUNER_FIXED && cfg.tuner_freq == 438062500 && cfg.settle_ms == 20, "fixed tuner: %s",
           error);
-    /* location: height clamped; idle by frequency */
-    ok = cfg_try(T_ROAM, "", ", \"location\": {\"latitude\": 41.5, \"longitude\": -81.7, \"height\": 5000}, "
-                 "\"idle\": {\"freq\": 438.125, \"cc\": 2}", &cfg, error, sizeof error);
-    CHECK(ok && cfg.has_location && cfg.location.height_m == 999 && cfg.idle.freq == 438125000 && cfg.idle.cc == 2,
+    /* location: height clamped; the idle frequency by name */
+    ok = cfg_try(T_ROAM, ", \"location\": {\"latitude\": 41.5, \"longitude\": -81.7, \"height\": 5000}",
+                 ", \"hears\": {\"idle\": \"438.1125\"}", &cfg, error, sizeof error);
+    CHECK(ok && cfg.has_location && cfg.location.height_m == 999 && cfg.idle.freq == 438112500 && cfg.idle.cc == 1,
           "location and idle: %s", error);
-    /* the box's SDR channels, sorted */
+    /* the box's SDR covers both, sorted */
     ok = cfg_try(T_ROAM_SDR, "", "", &cfg, error, sizeof error);
     CHECK(ok && cfg.ncovered == 2 && cfg.covered[0] == 438062500 && cfg.covered[1] == 438112500, "covered: %s", error);
-    /* scan on given channels */
-    ok = cfg_try(T_ROAM, "", ", \"scan\": {\"channels\": [{\"ch\": 2, \"cc\": 3}]}", &cfg, error, sizeof error);
-    CHECK(ok && cfg.has_scan && cfg.nscan == 1 && cfg.scan_channels[0].cc == 3, "scan: %s", error);
+    /* scan on one frequency, with its own color code */
+    ok = cfg_try(T_ROAM, "", ", \"hears\": {\"scan\": [\"438.1125\"]}", &cfg, error, sizeof error);
+    CHECK(ok && cfg.has_scan && cfg.nscan == 1 && cfg.scan_channels[0].freq == 438112500, "scan: %s", error);
     /* the OLED's settings under i2c */
     ok = cfg_try(T_ROAM, ", \"oled\": {\"i2c\": {\"address\": 61, \"sh1106\": true, \"rotate180\": true}}", "", &cfg,
                  error, sizeof error);
     CHECK(ok && cfg.has_oled && cfg.oled_address == 61 && cfg.oled_sh1106 && cfg.oled_rotate180, "oled: %s", error);
-    /* a repeater: SFR on slot 2, and slot 2 only */
-    ok = cfg_try(T_REP, "", ", \"mode\": \"sfr\", \"freq\": 438.0625, \"inbound_slot\": 2", &cfg, error, sizeof error);
-    CHECK(ok && cfg.sfr && cfg.slot1 && !cfg.slot2 && cfg.oled_channel == 1, "sfr: %s", error);
-    ok = cfg_try(T_REP, "", FREQS ", \"slots\": [2]", &cfg, error, sizeof error);
+    /* SFR on slot 2; a repeater on slot 2 only */
+    ok = cfg_try(T_FREQ, "", ", \"mode\": \"sfr\", \"inbound_slot\": 2", &cfg, error, sizeof error);
+    CHECK(ok && cfg.sfr && cfg.slot1 && !cfg.slot2 && cfg.inbound_slot == 2, "sfr: %s", error);
+    ok = cfg_try(T_REP, "", ", \"active_slots\": [2]", &cfg, error, sizeof error);
     CHECK(ok && !cfg.slot1 && cfg.slot2, "slot 2: %s", error);
+    ok = cfg_try(T_REP, "", ", \"active_slots\": [1]", &cfg, error, sizeof error);
+    CHECK(ok && cfg.slot1 && !cfg.slot2, "slot 1: %s", error);
     /* a split's two ports */
-    ok = cfg_try(T_REP, "", SPLIT("{\"modem\": \"uart\"}", "{\"modem\": \"uart\", \"uart\": {\"num\": 2, \"tx\": 17,"
-                                  " \"rx\": 18}}") "}", &cfg, error, sizeof error);
+    static char sp[1024];
+    snprintf(sp, sizeof sp, TMPL[T_SPLIT], "", "");
+    char *usb = strstr(sp, "{\"usb\": \"auto\"}");
+    const char uart1[] = "{\"uart\": 1, \"tx\": 5, \"rx\": 6}";
+    memmove(usb + strlen(uart1), usb + 15, strlen(usb + 15) + 1);
+    memcpy(usb, uart1, strlen(uart1));
+    ok = rdof_config_parse(sp, strlen(sp), &cfg, error, sizeof error);
     rdof_cfg_port_t p[2];
     CHECK(ok && rdof_config_ports(&cfg, p) == 2 && p[0].uart_num == 1 && p[1].uart_num == 2 && p[1].uart_tx == 17 &&
               !rdof_config_uses_usb(&cfg),
           "split on two UARTs: %s", error);
+    /* the two halves on one UART, then sharing a pin */
+    char *u2 = strstr(sp, "\"uart\": 2");
+    u2[8] = '1';
+    CHECK(!rdof_config_parse(sp, strlen(sp), &cfg, error, sizeof error) &&
+              !strcmp(error, "apps.R: devices.TX and devices.RX are both on UART1"),
+          "split, one UART: %s", error);
+    u2[8] = '2';
+    memcpy(strstr(sp, "\"tx\": 17"), "\"tx\": 06", 8);
+    CHECK(!rdof_config_parse(sp, strlen(sp), &cfg, error, sizeof error) &&
+              !strcmp(error, "apps.R: devices.TX and devices.RX share a UART pin"),
+          "split, a shared pin: %s", error);
 }
 
 /* the value conversions at their edges, names past the roles' cut, and the buffers at theirs */
@@ -3708,57 +3758,44 @@ static void t_config_edges(void)
     static rdof_config_t cfg, other;
     char error[200];
     /* str(): -0 is 0, a float as repr */
-    bool ok = cfg_try(T_ROAM, "", ", \"callsign\": 438.0625, \"cwid\": -0", &cfg, error, sizeof error);
+    bool ok = cfg_try(T_ROAM, ", \"callsign\": 438.0625", ", \"cwid\": -0", &cfg, error, sizeof error);
     CHECK(ok && !strcmp(cfg.callsign, "438.0625") && !strcmp(cfg.cwid, "0"), "str: %s %s %s", cfg.callsign, cfg.cwid,
           error);
-    ok = cfg_try(T_ROAM, "", ", \"callsign\": 1e22, \"cwid\": 0.1", &cfg, error, sizeof error);
+    ok = cfg_try(T_ROAM, ", \"callsign\": 1e22", ", \"cwid\": 0.1", &cfg, error, sizeof error);
     CHECK(ok && !strcmp(cfg.callsign, "1e+22") && !strcmp(cfg.cwid, "0.1"), "str: %s %s", cfg.callsign, cfg.cwid);
     /* int() saturates; NaN is 0 */
-    ok = cfg_try(T_ROAM, "", ", \"radio\": {\"tx_delay_ms\": 1e300, \"rx_offset_hz\": -1e300, \"tx_offset_hz\": 1e300,"
-                 " \"dmr_delay\": \"nan\", \"headers\": 1e300, \"terminators\": -1e300, \"rssi\": [[1e300, -1e300]]},"
-                 " \"location\": {\"lat\": 1, \"lon\": 2, \"height\": 1e300}", &cfg, error, sizeof error);
+    ok = cfg_try(T_ROAM, ", \"location\": {\"lat\": 1, \"lon\": 2, \"height\": 1e300}",
+                 ", \"mmdvm\": {\"tx_delay_ms\": 1e300, \"rx_offset_hz\": -1e300, \"tx_offset_hz\": 1e300,"
+                 " \"dmr_delay\": \"nan\", \"headers\": 1e300, \"terminators\": -1e300, \"rssi\": [[1e300, -1e300]]}",
+                 &cfg, error, sizeof error);
     CHECK(ok && cfg.modem.tx_delay_ms == INT_MAX && cfg.rx_offset_hz == INT_MIN && cfg.tx_offset_hz == INT_MAX &&
               cfg.modem.dmr_delay == 0 && cfg.headers == INT_MAX && cfg.terminators == INT_MIN && cfg.rssi.n == 1 &&
               cfg.rssi.raw[0] == INT_MAX && cfg.rssi.dbm[0] == INT_MIN && cfg.location.height_m == 999,
           "huge: %s", error);
-    ok = cfg_try(T_ROAM, "", ", \"location\": {\"lat\": 1, \"lon\": 2, \"height\": -1e300}", &cfg, error, sizeof error);
+    ok = cfg_try(T_ROAM, ", \"location\": {\"lat\": 1, \"lon\": 2, \"height\": -1e300}", "", &cfg, error, sizeof error);
     CHECK(ok && cfg.location.height_m == 0, "height -1e300: %d %s", cfg.location.height_m, error);
-    /* frequencies and powers past their range */
-    ok = cfg_try(T_ROAM, ", \"channels\": {\"1\": 438.0625, \"2\": -5, \"3\": 1e300}",
-                 ", \"channels\": [{\"ch\": 1, \"power\": 1e300}, {\"ch\": 2, \"power\": -1e300}, 3]", &cfg, error,
-                 sizeof error);
-    CHECK(ok && cfg.nchannels == 3 && cfg.channels[0].power == 255 && cfg.channels[1].freq == 0 &&
-              cfg.channels[1].power == 0 && cfg.channels[2].freq == UINT32_MAX,
-          "range: %u %u %s", cfg.channels[1].freq, cfg.channels[2].freq, error);
-    /* "1" and "01" are one channel: the last */
-    ok = cfg_try(T_ROAM, ", \"channels\": {\"1\": 438.0625, \"01\": 438.125}", "", &cfg, error, sizeof error);
-    CHECK(ok && cfg.nchannels == 1 && cfg.channels[0].freq == 438125000 && cfg.idle.freq == 438125000,
-          "duplicate keys: %d %u %s", cfg.nchannels, cfg.channels[0].freq, error);
-    /* "tx": false: all leaves it out; naming it is refused; as the idle channel it's heard, never sent on; a
-       repeater can't send on it */
-    ok = cfg_try(T_ROAM, ", \"channels\": {\"1\": 438.0625, \"2\": {\"freq\": 438.1125, \"tx\": false}, \"3\": 438.125}",
-                 ", \"channels\": \"all\"", &cfg, error, sizeof error);
-    CHECK(ok && cfg.nchannels == 2 && cfg.channels[0].freq == 438062500 && cfg.channels[1].freq == 438125000,
-          "tx false, all: %d %s", cfg.nchannels, error);
-    ok = cfg_try(T_ROAM, ", \"channels\": {\"1\": 438.0625, \"2\": {\"freq\": 438.1125, \"tx\": false}}",
-                 ", \"channels\": [1, 2]", &cfg, error, sizeof error);
-    CHECK(!ok && strstr(error, "channel 2 has tx false"), "tx false, named: %s", error);
-    ok = cfg_try(T_ROAM, ", \"channels\": {\"1\": {\"freq\": 438.0625, \"tx\": false}, \"2\": 438.1125}",
-                 ", \"channels\": \"all\"", &cfg, error, sizeof error);
-    CHECK(ok && cfg.nchannels == 1 && cfg.channels[0].freq == 438112500 && cfg.idle.freq == 438062500,
-          "tx false, idle: %d %s", cfg.nchannels, error);
-    ok = cfg_try(T_ROAM, ", \"channels\": {\"1\": {\"freq\": 438.0625, \"tx\": 0}}", "", &cfg, error, sizeof error);
-    CHECK(!ok && strstr(error, "tx: true or false"), "tx 0: %s", error);
-    /* "slot": a direct mode call's slot here, 1 by default; only 1 or 2 */
-    ok = cfg_try(T_ROAM, ", \"channels\": {\"1\": {\"freq\": 438.0625, \"slot\": 2}, \"2\": 438.1125}",
-                 ", \"channels\": \"all\"", &cfg, error, sizeof error);
+    /* "tx": false: a transceiver leaves it out; naming it is refused */
+    static const char rxonly[] =
+        "{\"version\": 3, \"id\": 1, \"defaults\": {\"cc\": 1}, \"devices\": [{\"name\": \"R\", \"kind\": \"modem\","
+        " \"type\": \"radio_hotspot\", \"port\": {\"usb\": \"auto\"}%s}], \"frequencies\": [{\"freq\": 438.0625, \"tx\":"
+        " false}, 438.1125, 438.125]}";
+    static char json[1024];
+    snprintf(json, sizeof json, rxonly, "");
+    ok = rdof_config_parse(json, strlen(json), &cfg, error, sizeof error);
+    CHECK(ok && cfg.nchannels == 2 && cfg.channels[0].freq == 438112500 && cfg.channels[1].freq == 438125000 &&
+              cfg.idle.freq == 438112500,
+          "tx false: %d %s", cfg.nchannels, error);
+    snprintf(json, sizeof json, rxonly, ", \"transmits\": [\"438.0625\"]");
+    ok = rdof_config_parse(json, strlen(json), &cfg, error, sizeof error);
+    CHECK(!ok && !strcmp(error, "devices.R.transmits: 438.0625 has \"tx\": false"), "tx false, named: %s", error);
+    /* "ts": a direct mode call's slot there, 1 by default */
+    static const char ts[] =
+        "{\"version\": 3, \"id\": 1, \"defaults\": {\"cc\": 1}, \"devices\": [{\"name\": \"R\", \"kind\": \"modem\","
+        " \"type\": \"radio_hotspot\", \"port\": {\"usb\": \"auto\"}}], \"frequencies\": [{\"freq\": 438.0625, \"ts\":"
+        " 2}, 438.1125]}";
+    ok = rdof_config_parse(ts, strlen(ts), &cfg, error, sizeof error);
     CHECK(ok && cfg.channels[0].slot == 2 && cfg.channels[1].slot == 1 && cfg.idle.slot == 2,
-          "slot 2: %d %d %d %s", cfg.channels[0].slot, cfg.channels[1].slot, cfg.idle.slot, error);
-    ok = cfg_try(T_ROAM, ", \"channels\": {\"1\": {\"freq\": 438.0625, \"slot\": 3}}", "", &cfg, error, sizeof error);
-    CHECK(!ok && strstr(error, "slot 1 or 2"), "slot 3: %s", error);
-    ok = cfg_try(T_REP, ", \"channels\": {\"1\": {\"freq\": 438.0375, \"tx\": false}}", FREQS ", \"cc\": 1",
-                 &cfg, error, sizeof error);
-    CHECK(!ok && strstr(error, "tx_freq: channel 1 has tx false"), "tx false, repeater: %s", error);
+          "ts 2: %d %d %d %s", cfg.channels[0].slot, cfg.channels[1].slot, cfg.idle.slot, error);
     /* a zero-size error buffer is left alone; none at all */
     char z[4] = "Z";
     CHECK(!rdof_config_parse("[1]", 3, &cfg, z, 0) && z[0] == 'Z', "config, cap 0: %c", z[0]);
@@ -3766,39 +3803,28 @@ static void t_config_edges(void)
     CHECK(!rdof_box_roles("[1]", 3, &roles, z, 0) && z[0] == 'Z', "roles, cap 0: %c", z[0]);
     CHECK(!rdof_box_roles("[1]", 3, &roles, NULL, 0), "roles, no buffer");
     CHECK(!rdof_config_parse("{", 1, &cfg, z, 1) && z[0] == 0, "cap 1: %d", z[0]);
-    /* names past rdof_roles_t's 23 characters: a radio's own, and the default from a long box name */
+    /* names past rdof_roles_t's 23 characters: a device's own, and the box's */
     static const char named[] =
-        "{\"name\": \"b\", \"cc\": 1, \"channels\": {\"1\": 438.0625}, \"radios\": [{\"type\": \"mmdvm_hs\","
-        " \"name\": \"a-radio-name-longer-than-23\", \"peer_id\": 1, \"idle\": 1}]}";
+        "{\"version\": 3, \"name\": \"boxboxboxboxboxboxboxboxboxbox\", \"id\": 1, \"defaults\": {\"cc\": 1},"
+        " \"devices\": [{\"name\": \"a-device-name-longer-than-23\", \"kind\": \"modem\", \"type\": \"mmdvm_hs\","
+        " \"port\": {\"usb\": \"auto\"}}], \"frequencies\": [438.0625]}";
     ok = rdof_box_roles(named, strlen(named), &roles, error, sizeof error) &&
          rdof_config_parse_radio(named, strlen(named), roles.radios[0], &cfg, error, sizeof error);
-    CHECK(ok && !strcmp(roles.radios[0], "a-radio-name-longer-tha") && !strcmp(cfg.name, roles.radios[0]) &&
-              strlen(cfg.name) == 23,
-          "a long radio name: %s %s", roles.radios[0], error);
-    static const char boxed[] =
-        "{\"name\": \"boxboxboxboxboxboxboxboxboxbox\", \"cc\": 1, \"channels\": {\"1\": 438.0625},"
-        " \"run\": \"boxboxboxboxboxboxboxboxboxbox-mmdvm_hs1\", \"radios\": [{\"type\": \"mmdvm_hs\", \"peer_id\": 1,"
-        " \"idle\": 1}]}";
-    ok = rdof_box_roles(boxed, strlen(boxed), &roles, error, sizeof error);
-    CHECK(ok && !strcmp(roles.box, "boxboxboxboxboxboxboxboxboxbox") && !strcmp(roles.radios[0],
-              "boxboxboxboxboxboxboxbo"),
-          "a long box name: %s %s %s", roles.box, roles.radios[0], error);
-    ok = rdof_config_parse(boxed, strlen(boxed), &cfg, error, sizeof error) &&
-         rdof_config_parse_radio(boxed, strlen(boxed), roles.radios[0], &other, error, sizeof error);
-    CHECK(ok && !strcmp(cfg.name, "boxboxboxboxboxboxboxbo") && !strcmp(cfg.callsign, "boxboxbo") &&
-              !strcmp(other.name, cfg.name),
-          "a long box name, parsed: %s %s", cfg.name, error);
+    CHECK(ok && !strcmp(roles.radios[0], "a-device-name-longer-th") && !strcmp(cfg.name, roles.radios[0]) &&
+              strlen(cfg.name) == 23 && !strcmp(roles.box, "boxboxboxboxboxboxboxboxboxbox") &&
+              !strcmp(cfg.callsign, "a-device"),
+          "a long device name: %s %s %s", roles.radios[0], cfg.callsign, error);
     /* ports: no error buffer, whatever cap comes with it */
-    ok = cfg_try(T_ROAM, "", ", \"modem\": \"uart\"", &cfg, error, sizeof error);
+    ok = cfg_try(T_ROAM, "", ", \"port\": {\"uart\": 1, \"tx\": 5, \"rx\": 6}", &cfg, error, sizeof error);
     other = cfg;
     const rdof_config_t *same[2] = {&cfg, &other};
     CHECK(ok && !rdof_config_check_ports(same, 2, NULL, 100) && !rdof_config_check_ports(same, 2, NULL, 0) &&
               rdof_config_check_ports(same, 1, NULL, 100) && rdof_config_check_ports(same, 0, error, sizeof error),
           "ports, no buffer: %s", error);
     /* describe: cut to the buffer, nothing for cap 0, and counts past their arrays as far as they go */
-    ok = cfg_try(T_ROAM_SDR, "", ", \"scan\": true, \"radio\": {\"rssi\": [[1, -120], [2, -110], [3, -100], [4, -90],"
-                 " [5, -80], [6, -70], [7, -60], [8, -50], [9, -40], [10, -30], [11, -20], [12, -10], [13, 0], [14, 10],"
-                 " [15, 20], [16, 30], [17, 40]]}", &cfg, error, sizeof error);
+    ok = cfg_try(T_ROAM_SDR, "", ", \"hears\": {\"scan\": [\"438.0625\", \"438.1125\"]}, \"mmdvm\": {\"rssi\": [[1, -120],"
+                 " [2, -110], [3, -100], [4, -90], [5, -80], [6, -70], [7, -60], [8, -50], [9, -40], [10, -30], [11, -20],"
+                 " [12, -10], [13, 0], [14, 10], [15, 20], [16, 30], [17, 40]]}", &cfg, error, sizeof error);
     CHECK(ok && cfg.rssi.n == RDOF_RSSI_POINTS, "16 RSSI points: %d %s", cfg.rssi.n, error);
     static char full[4096], cut[16];
     size_t n = rdof_config_describe(&cfg, full, sizeof full);
@@ -3819,34 +3845,18 @@ static void t_config_edges(void)
     rdof_config_describe(&other, past, sizeof past);
     CHECK(!strcmp(at_most, past), "describe past the arrays:\n%s\n%s", at_most, past);
     /* the ends of each range, which are in it */
-    ok = cfg_try(T_ROAM, ", \"channels\": {\"1\": 438.0625, \"2\": 99999, \"3\": 100000}",
-                 ", \"location\": {\"lat\": 90, \"lon\": 180}, \"radio\": {\"tuner\": {\"freq\": 10000}}", &cfg, error,
-                 sizeof error);
-    CHECK(ok && cfg.channels[1].freq == UINT32_MAX && cfg.channels[2].freq == 100000 && cfg.has_location &&
-              cfg.tuner_freq == 10000,
-          "ends: %u %u %u %s", cfg.channels[1].freq, cfg.channels[2].freq, cfg.tuner_freq, error);
-    ok = cfg_try(T_ROAM, "", ", \"location\": {\"lat\": -90, \"lon\": -180}, \"radio\": {\"tuner\": {\"freq\": 9999.5}}",
+    ok = cfg_try(T_ROAM, ", \"location\": {\"lat\": 90, \"lon\": 180}", ", \"mmdvm\": {\"tuner\": {\"freq\": 10000}}",
+                 &cfg, error, sizeof error);
+    CHECK(ok && cfg.has_location && cfg.tuner_freq == 10000, "ends: %u %s", cfg.tuner_freq, error);
+    ok = cfg_try(T_ROAM, ", \"location\": {\"lat\": -90, \"lon\": -180}", ", \"mmdvm\": {\"tuner\": {\"freq\": 9999.5}}",
                  &cfg, error, sizeof error);
     CHECK(ok && cfg.has_location && cfg.tuner_freq == UINT32_MAX, "ends: %u %s", cfg.tuner_freq, error);
-    ok = cfg_try(T_REP, "", SPLIT("{}", "{\"modem\": \"uart\"}") ", \"power_cap\": 255, \"lease_s\": 0, \"max_key_s\": 600,"
-                 " \"prebuffer\": 4}, \"prebuffer\": 9, \"cc\": 15", &cfg, error, sizeof error);
+    ok = cfg_try(T_SPLIT, "", ", \"split\": {\"power_cap\": 255, \"lease_s\": 0, \"max_key_s\": 600, \"prebuffer\": 4},"
+                 " \"prebuffer\": 9", &cfg, error, sizeof error);
     CHECK(ok && cfg.split_power_cap == 255 && cfg.split_lease_s == 0 && cfg.split_max_key_s == 600 &&
-              cfg.split_prebuffer == 4 && cfg.prebuffer == 9 && cfg.cc == 15,
+              cfg.split_prebuffer == 4 && cfg.prebuffer == 9,
           "split's ends: %s", error);
-    /* the OLED's channel: the plan's within 100 Hz of the repeater's receive frequency */
-    ok = cfg_try(T_REP, ", \"channels\": {\"1\": 438.025, \"2\": 438.0255}", ", \"rx_freq\": 438.0255, \"tx_freq\": 466",
-                 &cfg, error, sizeof error);
-    CHECK(ok && cfg.oled_channel == 2, "oled channel, 0 Hz: %d %s", cfg.oled_channel, error);
-    ok = cfg_try(T_REP, ", \"channels\": {\"1\": 438.0251}", ", \"rx_freq\": 438.0252, \"tx_freq\": 466", &cfg, error,
-                 sizeof error);
-    CHECK(ok && cfg.oled_channel == 1, "oled channel, 100 Hz: %d %s", cfg.oled_channel, error);
-    ok = cfg_try(T_REP, ", \"channels\": {\"1\": 438.0251}", ", \"rx_freq\": 438.025201, \"tx_freq\": 466", &cfg, error,
-                 sizeof error);
-    CHECK(ok && cfg.oled_channel == 0, "oled channel, 101 Hz: %d %s", cfg.oled_channel, error);
-    ok = cfg_try(T_REP, ", \"channels\": {\"1\": 438.0251}", ", \"rx_freq\": 438.025, \"tx_freq\": 466", &cfg, error,
-                 sizeof error);
-    CHECK(ok && cfg.oled_channel == 1, "oled channel, -100 Hz: %d %s", cfg.oled_channel, error);
-    /* int() of text is decimal; an empty modem_address is none; a success leaves no error */
+    /* int() of text is decimal; a success leaves no error */
     snprintf(error, sizeof error, "junk");
     ok = cfg_try(T_ROAM, "", ", \"prebuffer\": \"010\"", &cfg, error, sizeof error);
     CHECK(ok && cfg.prebuffer == 10 && !error[0], "\"010\": %d %s", cfg.prebuffer, error);
@@ -3859,7 +3869,7 @@ static void t_config_edges(void)
     CHECK(ok && !cfg.jitter_auto && cfg.prebuffer == 4, "prebuffer 4: %d %d", cfg.jitter_auto, cfg.prebuffer);
     static const struct {
         int t;
-        const char *radio;
+        const char *place;
         bool aut;
         int prebuffer, lo, hi;
         const char *describe;
@@ -3872,86 +3882,81 @@ static void t_config_edges(void)
         {T_ROAM, ", \"jitter_buffer\": 60.001", false, 2, 180, 480, ";prebuffer=2;jitter=fixed;"},
         {T_ROAM, ", \"jitter_min_ms\": 200, \"jitter_max_ms\": \"200\"", true, 6, 240, 240, ";jitter=auto:240-240;"},
         {T_ROAM, ", \"jitter_min_ms\": 60, \"jitter_max_ms\": 3000", true, 6, 60, 3000, ";jitter=auto:60-3000;"},
-        {T_REP, FREQS, true, 6, 180, 480, ";prebuffer=6;jitter=auto:180-480;sfr=0;"},
-        {T_REP, FREQS ", \"jitter_buffer\": 120", false, 2, 180, 480, ";prebuffer=2;jitter=fixed;sfr=0;"},
-        {T_REP, FREQS ", \"prebuffer\": 9, \"jitter_max_ms\": 900", false, 9, 180, 900, ";prebuffer=9;jitter=fixed;"},
+        {T_REP, "", true, 6, 180, 480, ";prebuffer=6;jitter=auto:180-480;sfr=0;"},
+        {T_REP, ", \"jitter_buffer\": 120", false, 2, 180, 480, ";prebuffer=2;jitter=fixed;sfr=0;"},
+        {T_REP, ", \"prebuffer\": 9, \"jitter_max_ms\": 900", false, 9, 180, 900, ";prebuffer=9;jitter=fixed;"},
+        {T_FREQ, ", \"mode\": \"sfr\", \"jitter_buffer\": 120", false, 2, 180, 480, ";prebuffer=2;jitter=fixed;sfr=1;"},
     };
     for (size_t i = 0; i < sizeof jv / sizeof jv[0]; i++) {
-        ok = cfg_try(jv[i].t, "", jv[i].radio, &cfg, error, sizeof error);
+        ok = cfg_try(jv[i].t, "", jv[i].place, &cfg, error, sizeof error);
         char d[2048];
         rdof_config_describe(&cfg, d, sizeof d);
         CHECK(ok && cfg.jitter_auto == jv[i].aut && cfg.prebuffer == jv[i].prebuffer && cfg.jitter_min_ms == jv[i].lo &&
                   cfg.jitter_max_ms == jv[i].hi && strstr(d, jv[i].describe),
-              "jitter %s: %d %d %d %d %s %s", jv[i].radio, cfg.jitter_auto, cfg.prebuffer, cfg.jitter_min_ms,
+              "jitter %s: %d %d %d %d %s %s", jv[i].place, cfg.jitter_auto, cfg.prebuffer, cfg.jitter_min_ms,
               cfg.jitter_max_ms, error, d);
     }
-    ok = cfg_try(T_ROAM, "", ", \"radio\": {\"protocol\": \"udp\", \"modem_address\": \"\"}", &cfg, error, sizeof error);
-    CHECK(!ok && !strcmp(error, "radio.protocol udp needs radio.modem_address"), "empty modem_address: %s", error);
+    /* the talker keys on an SFR frequency */
+    ok = cfg_try(T_FREQ, "", ", \"mode\": \"sfr\", \"cwid\": \"N0CALL\", \"cwid_every_s\": 600", &cfg, error,
+                 sizeof error);
+    CHECK(ok && !strcmp(cfg.cwid, "N0CALL") && cfg.cwid_every_s == 600, "sfr cwid: %s %g %s", cfg.cwid,
+          cfg.cwid_every_s, error);
     /* env references: falsy, and "" as text; almost-references are text */
-    ok = cfg_try(T_ROAM, "", ", \"callsign\": \"${CALL}\", \"cwid\": \"${CWID}\"", &cfg, error, sizeof error);
+    ok = cfg_try(T_ROAM, ", \"callsign\": \"${CALL}\"", ", \"cwid\": \"${CWID}\"", &cfg, error, sizeof error);
     CHECK(ok && !strcmp(cfg.callsign, "R") && !strcmp(cfg.cwid, ""), "env: %s %s %s", cfg.callsign, cfg.cwid, error);
-    ok = cfg_try(T_ROAM, "", ", \"callsign\": \"$x}\", \"cwid\": \"${\"", &cfg, error, sizeof error);
+    ok = cfg_try(T_ROAM, ", \"callsign\": \"$x}\"", ", \"cwid\": \"${\"", &cfg, error, sizeof error);
     CHECK(ok && !strcmp(cfg.callsign, "$x}") && !strcmp(cfg.cwid, "${"), "not env: %s %s", cfg.callsign, cfg.cwid);
-    ok = cfg_try(T_ROAM, "", ", \"callsign\": \"{x}\", \"cwid\": \"${ab\"", &cfg, error, sizeof error);
+    ok = cfg_try(T_ROAM, ", \"callsign\": \"{x}\"", ", \"cwid\": \"${ab\"", &cfg, error, sizeof error);
     CHECK(ok && !strcmp(cfg.callsign, "{x}") && !strcmp(cfg.cwid, "${ab"), "not env: %s %s", cfg.callsign, cfg.cwid);
     /* falsy: 0, [], {}; float(false) is 0 */
     static const char *const falsy[] = {"0", "[]", "{}", "false", "\"\""};
     for (size_t i = 0; i < sizeof falsy / sizeof falsy[0]; i++) {
-        char radio[64];
-        snprintf(radio, sizeof radio, ", \"callsign\": %s, \"listen_s\": false", falsy[i]);
-        ok = cfg_try(T_ROAM, "", radio, &cfg, error, sizeof error);
+        char top[64];
+        snprintf(top, sizeof top, ", \"callsign\": %s", falsy[i]);
+        ok = cfg_try(T_ROAM, top, ", \"listen_s\": false", &cfg, error, sizeof error);
         CHECK(ok && !strcmp(cfg.callsign, "R") && cfg.listen_s == 0, "falsy %s: %s %g %s", falsy[i], cfg.callsign,
               cfg.listen_s, error);
     }
-    /* an SDR channel listed twice is covered once */
-    static const char twice[] =
-        "{\"cc\": 1, \"channels\": {\"1\": 438.0625, \"2\": 438.1125}, \"radios\": [{\"type\": \"mmdvm_hs\", \"peer_id\": 1,"
-        " \"idle\": 1}, {\"type\": \"sdr\", \"channels\": [2, 1, 2]}]}";
-    ok = rdof_config_parse(twice, strlen(twice), &cfg, error, sizeof error);
-    CHECK(ok && cfg.ncovered == 2 && cfg.covered[0] == 438062500 && cfg.covered[1] == 438112500, "covered twice: %d %s",
-          cfg.ncovered, error);
-    /* the box's slot timing reaches a duplex repeater on an auto radio, not a single frequency one */
-    ok = cfg_try(T_REP, ", \"slot_timing\": \"utc\"", FREQS, &cfg, error, sizeof error);
-    CHECK(ok && cfg.slot_timing.utc, "box utc, duplex: %s", error);
-    ok = cfg_try(T_REP, ", \"slot_timing\": \"utc\"", ", \"mode\": \"sfr\", \"freq\": 438.0625", &cfg, error, sizeof error);
+    /* the box's slot timing reaches a duplex repeater on the SDR, not a modem's or an SFR one */
+    static const char sdrrep[] =
+        "{\"version\": 3, \"id\": 1, \"defaults\": {\"cc\": 1}, \"slot_timing\": \"utc\", \"devices\": [{\"name\":"
+        " \"T\", \"kind\": \"sdr\", \"driver\": \"sx1255\"}], \"frequencies\": [{\"freq\": 438.0625, \"name\": \"in\"},"
+        " {\"freq\": 438.0375, \"name\": \"out\"}], \"apps\": [{\"name\": \"R\", \"type\": \"repeater\", \"in\": \"in\","
+        " \"out\": \"out\"}]}";
+    ok = rdof_config_parse(sdrrep, strlen(sdrrep), &cfg, error, sizeof error);
+    CHECK(ok && cfg.slot_timing.utc, "box utc, duplex on the SDR: %s", error);
+    ok = cfg_try(T_REP, ", \"slot_timing\": \"utc\"", "", &cfg, error, sizeof error);
+    CHECK(ok && !cfg.slot_timing.utc, "box utc, a modem's: %s", error);
+    ok = cfg_try(T_FREQ, ", \"slot_timing\": \"utc\"", ", \"mode\": \"sfr\"", &cfg, error, sizeof error);
     CHECK(ok && !cfg.slot_timing.utc, "box utc, sfr: %s", error);
-    ok = cfg_try(T_REP, "", ", \"mode\": \"sfr\", \"freq\": 438.0625, \"slot_timing\": \"utc\"", &cfg, error, sizeof error);
-    CHECK(!ok && !strcmp(error, "slot_timing utc: a single frequency repeater's radio times its own slots"),
-          "sfr's own utc: %s", error);
     /* offsets, headers and terminators that aren't numbers are left at their defaults; a tuner with no type */
-    ok = cfg_try(T_ROAM, "", ", \"radio\": {\"rx_offset_hz\": \"x\", \"tx_offset_hz\": [1], \"headers\": \"x\","
+    ok = cfg_try(T_ROAM, "", ", \"mmdvm\": {\"rx_offset_hz\": \"x\", \"tx_offset_hz\": [1], \"headers\": \"x\","
                  " \"terminators\": null, \"tuner\": {\"freq\": 438.125}}", &cfg, error, sizeof error);
     CHECK(ok && cfg.rx_offset_hz == 0 && cfg.tx_offset_hz == 0 && cfg.headers == -1 && cfg.terminators == -1 &&
               cfg.tuner == RDOF_TUNER_NONE && cfg.tuner_freq == 438125000,
           "not numbers: %s", error);
-    ok = cfg_try(T_ROAM, "", ", \"radio\": {\"tuner\": {\"type\": \"fixed\", \"freq\": 438.0625, \"settle_ms\": 20}}", &cfg,
-                 error, sizeof error);
+    ok = cfg_try(T_ROAM, "", ", \"mmdvm\": {\"tuner\": {\"type\": \"fixed\", \"freq\": 438.0625, \"settle_ms\": 20}}",
+                 &cfg, error, sizeof error);
     CHECK(ok && rdof_config_describe(&cfg, full, sizeof full) && strstr(full, ";tuner=fixed:438062500:20;"),
           "describe, fixed tuner: %s", full);
-    ok = cfg_try(T_ROAM, "", ", \"radio\": {\"tuner\": \"modem\"}", &cfg, error, sizeof error);
+    ok = cfg_try(T_ROAM, "", ", \"mmdvm\": {\"tuner\": \"modem\"}", &cfg, error, sizeof error);
     CHECK(ok && rdof_config_describe(&cfg, full, sizeof full) && strstr(full, ";tuner=modem:0:0;"),
           "describe, modem tuner: %s", full);
-    /* scan on all channels, by name */
-    ok = cfg_try(T_ROAM, "", ", \"scan\": {\"channels\": \"all\"}", &cfg, error, sizeof error);
-    CHECK(ok && cfg.has_scan && cfg.nscan == 2, "scan all: %d %s", cfg.nscan, error);
-    /* a repeater's power clamped, slot 1 alone */
-    ok = cfg_try(T_REP, "", FREQS ", \"power\": -5, \"slots\": [1]", &cfg, error, sizeof error);
-    CHECK(ok && cfg.power == 0 && cfg.slot1 && !cfg.slot2, "power -5, slot 1: %d %s", cfg.power, error);
-    ok = cfg_try(T_REP, "", FREQS ", \"power\": 300", &cfg, error, sizeof error);
-    CHECK(ok && cfg.power == 255, "power 300: %d %s", cfg.power, error);
+    /* a frequency's power at its ends */
+    ok = cfg_try(T_FREQ, "", ", \"power\": 0", &cfg, error, sizeof error);
+    CHECK(ok && cfg.channels[0].power == 0, "power 0: %d %s", cfg.channels[0].power, error);
+    ok = cfg_try(T_FREQ, "", ", \"mode\": \"sfr\", \"power\": 255", &cfg, error, sizeof error);
+    CHECK(ok && cfg.power == 255, "power 255: %d %s", cfg.power, error);
     /* the OLED off; its own rotate180 over i2c's */
     ok = cfg_try(T_ROAM, ", \"oled\": false", "", &cfg, error, sizeof error);
     CHECK(ok && !cfg.has_oled, "oled false: %s", error);
     ok = cfg_try(T_ROAM, ", \"oled\": {\"rotate180\": true, \"sh1106\": false, \"i2c\": {\"rotate180\": false,"
                  " \"sh1106\": true}}", "", &cfg, error, sizeof error);
     CHECK(ok && cfg.has_oled && cfg.oled_rotate180 && !cfg.oled_sh1106, "oled's own: %s", error);
-    /* roles: not JSON; an SDR config with radios isn't a plain one */
+    /* roles: not JSON */
     CHECK(!rdof_box_roles("{", 1, &roles, error, sizeof error) && !strncmp(error, "JSON: ", 6), "roles, JSON: %s", error);
-    static const char sdr_radios[] = "{\"device\": {}, \"radios\": [{\"type\": \"sdr\", \"name\": \"S\"}]}";
-    ok = rdof_box_roles(sdr_radios, strlen(sdr_radios), &roles, error, sizeof error);
-    CHECK(ok && roles.has_sdr && !roles.sdr_plain && !strcmp(roles.sdr, "S"), "roles, device and radios: %s", error);
     /* ports: each pin pair, and USB devices told apart or not */
-    ok = cfg_try(T_ROAM, "", ", \"modem\": \"uart\"", &cfg, error, sizeof error);
+    ok = cfg_try(T_ROAM, "", ", \"port\": {\"uart\": 1, \"tx\": 5, \"rx\": 6}", &cfg, error, sizeof error);
     other = cfg;
     other.uart_num = 2;
     static const int pins[][2] = {{5, 7}, {7, 6}, {6, 8}, {8, 5}, {7, 8}};
@@ -3962,7 +3967,7 @@ static void t_config_edges(void)
         CHECK(apart == (i == 4) && (apart || !strcmp(error, "R and R share a UART pin")), "pins %d/%d: %s",
               other.uart_tx, other.uart_rx, error);
     }
-    ok = cfg_try(T_ROAM, "", ", \"modem\": \"usb\"", &cfg, error, sizeof error);
+    ok = cfg_try(T_ROAM, "", "", &cfg, error, sizeof error);
     static const struct {
         const char *serial[2], *port[2];
         bool apart;
@@ -3982,8 +3987,8 @@ static void t_config_edges(void)
     }
 }
 
-/* Versions 2 and 3 go through setup.c's view (the C and the Rust config the same); a channel nothing transmits on may
-   leave its color code out. */
+/* A version 3 roamer as a whole; a file with nothing that transmits; a frequency nothing transmits on may leave
+   its color code out. */
 static void t_config_versions(void)
 {
     static const char v3[] =
@@ -4005,13 +4010,24 @@ static void t_config_versions(void)
           "v3 roamer: %s %s", error, d);
     static const char bad3[] = "{\"version\": 3, \"id\": 1, \"devices\": []}";
     ok = rdof_box_roles(bad3, strlen(bad3), &roles, error, sizeof error);
-    CHECK(!ok && !strcmp(error, "roles: none"), "v3, nothing to run (roles): %s", error);
+    CHECK(!ok && !strcmp(error, "nothing to run: no device transmits or hears"), "v3, nothing to run (roles): %s",
+          error);
     ok = rdof_config_parse(bad3, strlen(bad3), &cfg, error, sizeof error);
-    CHECK(!ok && !strcmp(error, "roles: none"), "v3, nothing to run: %s", error);
-    static const char v1[] = "{\"channels\": {\"1\": {\"freq\": 438.0625, \"cc\": 2}, \"2\": {\"freq\": 438.0875, \"tx\": false}},"
-                             " \"radios\": [{\"type\": \"mmdvm_hs\", \"peer_id\": 1, \"idle\": 1, \"cc\": 2, \"scan\": [2]}]}";
-    ok = rdof_config_parse(v1, strlen(v1), &cfg, error, sizeof error);
-    CHECK(ok, "a receive-only channel without a color code: %s", error);
+    CHECK(!ok && !strcmp(error, "nothing transmits: no repeater, SFR or DCDM frequency, or device transmitting"),
+          "v3, nothing to run: %s", error);
+    static const char rx[] =
+        "{\"version\": 3, \"id\": 1, \"devices\": [{\"name\": \"hs\", \"kind\": \"modem\", \"type\": \"mmdvm_hs\","
+        " \"port\": {\"usb\": \"auto\"}%s}], \"frequencies\": [{\"freq\": 438.0625, \"cc\": 2}, {\"freq\": 438.0875,"
+        " \"tx\": false}]}";
+    static char doc[512];
+    snprintf(doc, sizeof doc, rx, "");
+    ok = rdof_config_parse(doc, strlen(doc), &cfg, error, sizeof error);
+    CHECK(ok, "a receive-only frequency without a color code: %s", error);
+    /* but a transceiver can't scan it */
+    snprintf(doc, sizeof doc, rx, ", \"hears\": {\"idle\": 438.0625, \"scan\": [438.0875]}");
+    ok = rdof_config_parse(doc, strlen(doc), &cfg, error, sizeof error);
+    CHECK(!ok && !strcmp(error, "devices.hs: frequencies.438.0875 has no color code"), "scanned without one: %s",
+          error);
 }
 
 void test_core(void)

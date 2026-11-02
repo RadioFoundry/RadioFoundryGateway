@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
-/* The IP gateway's settings ("ip_gateway") and its address helpers (rdof/ipgw.h). */
+/* The IP gateway's settings (the ipgw app) and its address helpers (rdof/ipgw.h). */
 #include "rdof/ipgw.h"
 
 #include <ctype.h>
@@ -10,11 +10,9 @@
 #include <string.h>
 
 #include "rdof/jsonp.h"
-#include "rdof/setup.h"
 #include "rdof/site.h"
+#include "rdof/siteplan.h"
 
-#define MAX_NODES 1200 /* the whole settings document: as config.c */
-#define STR_BUF 8192
 #define MAX_ID 16777215u
 
 /* The private and shared ranges, and 13.0.0.0/8 (the dispatch side of the 12/13 convention): NAT is for the
@@ -145,18 +143,17 @@ void rdof_ipgw_config_default(rdof_ipgw_config_t *c)
 /* ── the settings ──────────────────────────────────────────────────────────── */
 
 typedef struct {
-    rdof_jdoc_t doc;
-    rdof_jnode_t nodes[MAX_NODES];
-    char strs[STR_BUF];
+    const rdof_jdoc_t *doc;
     char *error;
     size_t cap;
+    const char *prefix; /* "apps.NAME." */
 } ctx_t;
 
 static bool fail(ctx_t *c, const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
-    int n = snprintf(c->error, c->cap, "ip_gateway: ");
+    int n = snprintf(c->error, c->cap, "%s", c->prefix);
     if (n > 0 && (size_t)n < c->cap)
         vsnprintf(c->error + n, c->cap - (size_t)n, fmt, ap);
     va_end(ap);
@@ -165,13 +162,13 @@ static bool fail(ctx_t *c, const char *fmt, ...)
 
 static const rdof_jnode_t *N(ctx_t *c, int i)
 {
-    return rdof_jnode(&c->doc, i);
+    return rdof_jnode(c->doc, i);
 }
 
 static bool only_keys(ctx_t *c, int obj, const char *where, const char *const *keys)
 {
     for (int i = 0; i < N(c, obj)->count; i++) {
-        const char *k = N(c, rdof_jat(&c->doc, obj, i))->key;
+        const char *k = N(c, rdof_jat(c->doc, obj, i))->key;
         bool known = false;
         for (const char *const *p = keys; *p && !known; p++)
             known = !strcmp(*p, k);
@@ -184,7 +181,7 @@ static bool only_keys(ctx_t *c, int obj, const char *where, const char *const *k
 /* An optional bool; absent or null: dflt. */
 static bool boolean(ctx_t *c, int obj, const char *key, const char *where, bool dflt, bool *out)
 {
-    const rdof_jnode_t *n = N(c, rdof_jget(&c->doc, obj, key));
+    const rdof_jnode_t *n = N(c, rdof_jget(c->doc, obj, key));
     *out = dflt;
     if (!n || n->type == RDOF_JNULL)
         return true;
@@ -196,7 +193,7 @@ static bool boolean(ctx_t *c, int obj, const char *key, const char *where, bool 
 
 static bool number(ctx_t *c, int obj, const char *key, double lo, double hi, bool whole, double *out)
 {
-    const rdof_jnode_t *n = N(c, rdof_jget(&c->doc, obj, key));
+    const rdof_jnode_t *n = N(c, rdof_jget(c->doc, obj, key));
     if (!n || n->type == RDOF_JNULL)
         return true;
     if (n->type != RDOF_JNUM || (whole && !n->integer) || n->num < lo || n->num > hi)
@@ -250,7 +247,7 @@ static bool route(ctx_t *c, int node, int i, rdof_ipgw_route_t *r)
     if (!only_keys(c, node, where, keys))
         return false;
     memset(r, 0, sizeof *r);
-    const rdof_jnode_t *n = N(c, rdof_jget(&c->doc, node, "name"));
+    const rdof_jnode_t *n = N(c, rdof_jget(c->doc, node, "name"));
     if (n && n->type != RDOF_JNULL) {
         if (n->type != RDOF_JSTR || strlen(n->str) >= sizeof r->name)
             return fail(c, "%s: name, up to %d characters", where, (int)sizeof r->name - 1);
@@ -260,8 +257,8 @@ static bool route(ctx_t *c, int node, int i, rdof_ipgw_route_t *r)
         snprintf(r->name, sizeof r->name, "route%d", i + 1);
     if (!boolean(c, node, "all", where, false, &r->all))
         return false;
-    const rdof_jnode_t *pv = N(c, rdof_jget(&c->doc, node, "private")), *gr = N(c, rdof_jget(&c->doc, node, "group")),
-                       *fr = N(c, rdof_jget(&c->doc, node, "from"));
+    const rdof_jnode_t *pv = N(c, rdof_jget(c->doc, node, "private")), *gr = N(c, rdof_jget(c->doc, node, "group")),
+                       *fr = N(c, rdof_jget(c->doc, node, "from"));
     char what[48];
     if (pv && gr)
         return fail(c, "%s: private or group, not both", where);
@@ -281,13 +278,13 @@ static bool route(ctx_t *c, int node, int i, rdof_ipgw_route_t *r)
         return fail(c, "%s: all, or private / group / from: not both", where);
     if (!r->all && !pv && !gr && !fr)
         return fail(c, "%s: which traffic: all: true, private, group or from", where);
-    n = N(c, rdof_jget(&c->doc, node, "payload"));
+    n = N(c, rdof_jget(c->doc, node, "payload"));
     if (n && n->type != RDOF_JNULL) {
         if (n->type != RDOF_JSTR || (strcmp(n->str, "udp") && strcmp(n->str, "ip")))
             return fail(c, "%s: payload udp or ip", where);
         r->payload = strcmp(n->str, "ip") ? RDOF_IPGW_PAYLOAD_UDP : RDOF_IPGW_PAYLOAD_IP;
     }
-    n = N(c, rdof_jget(&c->doc, node, "to"));
+    n = N(c, rdof_jget(c->doc, node, "to"));
     if (!n || n->type != RDOF_JSTR)
         return fail(c, "%s: to, \"host:port\" (or \"host\" to keep each datagram's port)", where);
     char host[80];
@@ -319,14 +316,14 @@ static bool route(ctx_t *c, int node, int i, rdof_ipgw_route_t *r)
 
 static bool nets(ctx_t *c, int obj, const char *key, rdof_ipgw_net_t *out, int *n)
 {
-    int a = rdof_jget(&c->doc, obj, key);
+    int a = rdof_jget(c->doc, obj, key);
     if (a < 0 || N(c, a)->type == RDOF_JNULL)
         return true;
     if (N(c, a)->type != RDOF_JARR || N(c, a)->count > RDOF_IPGW_MAX_NETS)
         return fail(c, "nat.%s: a list of up to %d networks (\"a.b.c.d/n\")", key, RDOF_IPGW_MAX_NETS);
     *n = 0;
     for (int i = 0; i < N(c, a)->count; i++) {
-        const rdof_jnode_t *e = N(c, rdof_jat(&c->doc, a, i));
+        const rdof_jnode_t *e = N(c, rdof_jat(c->doc, a, i));
         if (e->type != RDOF_JSTR || !rdof_ipgw_parse_cidr(e->str, &out[*n]))
             return fail(c, "nat.%s[%d]: a network \"a.b.c.d/n\" (host bits zero) or an address", key, i);
         (*n)++;
@@ -334,27 +331,12 @@ static bool nets(ctx_t *c, int obj, const char *key, rdof_ipgw_net_t *out, int *
     return true;
 }
 
+/* o: the ipgw app, its id already in cfg. */
 static bool gateway(ctx_t *c, int o, rdof_ipgw_config_t *cfg)
 {
-    static const char *const keys[] = {"enabled", "id",     "radio_net", "tx",        "ack",    "max_bytes",
-                                       "up_pps",  "down_pps", "idle_s",  "max_flows", "routes", "nat", NULL};
-    const rdof_jnode_t *on = N(c, o);
-    if (on->type == RDOF_JNULL || (on->type == RDOF_JBOOL && !on->b))
-        return true;
-    if (on->type != RDOF_JBOOL && on->type != RDOF_JOBJ)
-        return fail(c, "an object (or false)");
-    cfg->on = true;
-    if (on->type == RDOF_JBOOL)
-        return fail(c, "nothing to do: give it routes or nat");
-    if (!only_keys(c, o, "", keys) || !boolean(c, o, "enabled", "", true, &cfg->on))
-        return false;
-    if (!cfg->on)
-        return true;
     double v = 0;
-    if (!number(c, o, "id", 0, MAX_ID, true, &v))
-        return false;
-    cfg->id = (uint32_t)v;
-    const rdof_jnode_t *n = N(c, rdof_jget(&c->doc, o, "radio_net"));
+    cfg->on = true;
+    const rdof_jnode_t *n = N(c, rdof_jget(c->doc, o, "radio_net"));
     if (n && n->type != RDOF_JNULL) {
         rdof_ipgw_net_t net;
         if (n->type != RDOF_JSTR || !rdof_ipgw_parse_cidr(n->str, &net) || net.mask < 0xFF000000u ||
@@ -362,10 +344,10 @@ static bool gateway(ctx_t *c, int o, rdof_ipgw_config_t *cfg)
             return fail(c, "radio_net: a network \"a.b.c.d/n\", n 8 to 30 (12.0.0.0/8: an id's 24 bits fit)");
         cfg->radio_net = net;
     }
-    n = N(c, rdof_jget(&c->doc, o, "tx"));
+    n = N(c, rdof_jget(c->doc, o, "tx"));
     if (n && n->type != RDOF_JNULL) {
         if (n->type != RDOF_JSTR || strlen(n->str) >= sizeof cfg->tx)
-            return fail(c, "tx: a radio's name in run, up to %d characters", (int)sizeof cfg->tx - 1);
+            return fail(c, "tx: a unit's name, up to %d characters", (int)sizeof cfg->tx - 1);
         strcpy(cfg->tx, n->str);
     }
     if (!boolean(c, o, "ack", "", true, &cfg->ack))
@@ -382,12 +364,12 @@ static bool gateway(ctx_t *c, int o, rdof_ipgw_config_t *cfg)
     if (!number(c, o, "max_flows", 1, RDOF_IPGW_MAX_FLOWS, true, &v))
         return false;
     cfg->max_flows = (int)v;
-    int rs = rdof_jget(&c->doc, o, "routes");
+    int rs = rdof_jget(c->doc, o, "routes");
     if (rs >= 0 && N(c, rs)->type != RDOF_JNULL) {
         if (N(c, rs)->type != RDOF_JARR || N(c, rs)->count > RDOF_IPGW_MAX_ROUTES)
             return fail(c, "routes: a list of up to %d routes", RDOF_IPGW_MAX_ROUTES);
         for (int i = 0; i < N(c, rs)->count; i++) {
-            if (!route(c, rdof_jat(&c->doc, rs, i), i, &cfg->routes[i]))
+            if (!route(c, rdof_jat(c->doc, rs, i), i, &cfg->routes[i]))
                 return false;
             for (int k = 0; k < i; k++)
                 if (!strcmp(cfg->routes[k].name, cfg->routes[i].name))
@@ -395,7 +377,7 @@ static bool gateway(ctx_t *c, int o, rdof_ipgw_config_t *cfg)
             cfg->nroutes++;
         }
     }
-    int nat = rdof_jget(&c->doc, o, "nat");
+    int nat = rdof_jget(c->doc, o, "nat");
     const rdof_jnode_t *nn = N(c, nat);
     if (nn && nn->type == RDOF_JBOOL) {
         cfg->nat = nn->b;
@@ -408,11 +390,17 @@ static bool gateway(ctx_t *c, int o, rdof_ipgw_config_t *cfg)
         return fail(c, "nat: true, false or {\"allow\": [...], \"deny\": [...]}");
     }
     if (!cfg->nroutes && !cfg->nat)
-        return fail(c, "nothing to do: give it routes or nat");
+        return fail(c, "routes: none, and no nat: nothing to do");
     return true;
 }
 
-bool rdof_ipgw_settings_parse(const char *text, size_t len, rdof_ipgw_config_t *out, char *error, size_t cap)
+static uint32_t first_id(const rdof_idset_t *set)
+{
+    rdof_idrange_t r[1];
+    return rdof_idset_ranges(set, r, 1) ? r[0].lo : 0;
+}
+
+bool rdof_plan_ipgw(const rdof_plan_t *p, rdof_ipgw_config_t *out, char *error, size_t cap)
 {
     char dummy[8];
     if (!error || !cap) {
@@ -421,45 +409,36 @@ bool rdof_ipgw_settings_parse(const char *text, size_t len, rdof_ipgw_config_t *
     }
     error[0] = 0;
     rdof_ipgw_config_default(out);
-    if (rdof_config_version(text, len) == 3) { /* its ipgw app is the version 2 settings' ip_gateway */
-        size_t n = 0;
-        char *v2 = rdof_site_lower(text, len, &n, error, cap);
-        if (!v2) {
-            out->on = false;
-            return false;
-        }
-        const bool ok = rdof_ipgw_settings_parse(v2, n, out, error, cap);
-        free(v2);
-        return ok;
-    }
-    ctx_t *c = malloc(sizeof *c);
-    char *clean = c ? malloc(len + 1) : NULL;
-    if (!clean) {
-        free(c);
-        snprintf(error, cap, "no memory");
-        return false;
-    }
-    c->error = error;
-    c->cap = cap;
-    size_t n = rdof_jsonc_strip(text, len, clean);
-    c->doc = (rdof_jdoc_t){.nodes = c->nodes, .max = MAX_NODES, .buf = c->strs, .cap = STR_BUF};
-    int root = rdof_jparse(&c->doc, clean, n);
-    bool ok = true;
-    if (root < 0) {
-        snprintf(error, cap, "JSON: %s", c->doc.error);
-        ok = false;
-    } else if (N(c, root)->type != RDOF_JOBJ) {
-        snprintf(error, cap, "the settings are a JSON object");
-        ok = false;
-    } else {
-        int o = rdof_jget(&c->doc, root, "ip_gateway");
-        if (o >= 0)
-            ok = gateway(c, o, out);
+    const rdof_site_t *s = rdof_plan_site(p);
+    int a = rdof_site_app_of(s, RDOF_APP_IPGW);
+    if (a < 0)
+        return true;
+    char prefix[RDOF_SITE_NAME + 8];
+    snprintf(prefix, sizeof prefix, "apps.%s.", s->app[a].name);
+    ctx_t c = {.doc = rdof_plan_doc(p), .error = error, .cap = cap, .prefix = prefix};
+    uint32_t id = first_id(&s->app[a].tg);
+    out->id = id ? id : first_id(&s->app[a].pc);
+    bool ok = gateway(&c, rdof_plan_app_node(p, a), out);
+    if (ok && out->tx[0]) {
+        int u = rdof_plan_unit_find(p, out->tx);
+        if (u < 0 || rdof_plan_unit(p, u)->kind == RDOF_UNIT_RECEIVER)
+            ok = fail(&c, "tx: %s isn't a unit that transmits (a repeater, an SFR or DCDM frequency, or a device "
+                          "transmitting on simplex frequencies)", out->tx);
     }
     if (!ok)
         out->on = false;
-    free(clean);
-    free(c);
+    return ok;
+}
+
+bool rdof_ipgw_settings_parse(const char *text, size_t len, rdof_ipgw_config_t *out, char *error, size_t cap)
+{
+    rdof_plan_t *p = rdof_plan_open(text, len, error, cap);
+    if (!p) {
+        rdof_ipgw_config_default(out);
+        return false;
+    }
+    bool ok = rdof_plan_ipgw(p, out, error, cap);
+    rdof_plan_close(p);
     return ok;
 }
 

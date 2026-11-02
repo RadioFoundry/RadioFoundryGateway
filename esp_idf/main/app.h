@@ -16,6 +16,7 @@
 #include "rdof/benchguard.h"
 #include "rdof/config.h"
 #include "rdof/json.h"
+#include "rdof/site.h"
 #include "sdkconfig.h"
 
 #if CONFIG_RDOF_ROAMER
@@ -263,9 +264,9 @@ void roam_tx_burst(roam_t *r, const rdof_tx_call_info_t *call, const rdof_net_bu
 
 double now_mono(void);
 
-/* The call router for a version 3 document (site_run.c, rdof/siteroute.h). Without one: off, and everything is
-   as version 2 (site_rf true, site_dmrd false). */
-void site_load(const char *text, size_t len);
+/* The call router (site_run.c, rdof/siteroute.h), from the settings' site. Without one (no memory): off
+   (site_rf true, site_dmrd false). */
+void site_load(const rdof_site_t *site);
 bool site_on(void);
 bool site_shared_identity(void);           /* one HBlink identity: every path is the box's peer */
 uint32_t site_id(void);
@@ -293,7 +294,7 @@ void site_status_json(rdof_json_t *j); /* "router": the pool's transmitters, the
 #endif
 
 /* The IP gateway (ipgw_task.c, CONFIG_RDOF_IPGW; docs/spec/fw/ipgw.md): DMR packet data to and from the IP network.
- * ipgw_start before the roles start (it reads "ip_gateway"); then each receiver's tracker takes ipgw_sink (false:
+ * ipgw_start before the roles start (it reads the ipgw app); then each receiver's tracker takes ipgw_sink (false:
  * the gateway is off). source: an SDR channel's index, or IPGW_SOURCE_RADIO + a radio's; freq_now: a tracker's
  * frequency that follows its radio (NULL: freq). */
 #if CONFIG_RDOF_IPGW

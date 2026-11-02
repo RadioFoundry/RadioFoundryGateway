@@ -156,7 +156,7 @@ static bool send_icmp(void *ctx, uint32_t ip, const uint8_t *m, size_t len, int 
 
 #if CONFIG_RDOF_ROAMER
 
-/* The radio that transmits: ip_gateway.tx by name, else the first that runs. */
+/* The radio that transmits: the ipgw app's tx (a unit) by name, else the first that runs. */
 static roam_t *tx_radio(void)
 {
     for (int k = 0; k < g_nroam; k++) {
@@ -321,7 +321,8 @@ static void ipgw_task(void *arg)
     }
 }
 
-/* The settings' ip_gateway, parsed once (for the memory plan, then the start): NULL if it's off or doesn't parse. */
+/* The settings' ipgw app, parsed once (for the memory plan, then the start): NULL if there's none or it doesn't
+   parse. */
 static rdof_ipgw_config_t *s_cfg;
 static bool s_prepared;
 

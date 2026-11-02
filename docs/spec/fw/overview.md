@@ -2,26 +2,28 @@
 
 Covers: what the firmware is, its roles, build profiles and gates, boot, tasks, data flow, module map, the port boundary, and the feature limits.
 Sources: `esp_idf/main/*`, `common`, `sdr`, `rtlsdr`, `components/*`, `sdkconfig.defaults*`, `partitions-*.csv`, `Kconfig.projbuild`.
-Related: [config.md](config.md), [memory.md](memory.md), [interfaces-http.md](interfaces-http.md), [mqtt.md](mqtt.md), [mqtt-net.md](mqtt-net.md), [transmitters.md](transmitters.md), [hblink.md](hblink.md), [sdr.md](sdr.md), [radio.md](radio.md), [device.md](device.md), [../repeater.md](../repeater.md), [../bench-api.md](../bench-api.md), [../slot-timing.md](../slot-timing.md).
+Related: [config-v3.md](config-v3.md), [memory.md](memory.md), [interfaces-http.md](interfaces-http.md), [mqtt.md](mqtt.md), [mqtt-net.md](mqtt-net.md), [transmitters.md](transmitters.md), [hblink.md](hblink.md), [sdr.md](sdr.md), [radio.md](radio.md), [device.md](device.md), [../repeater.md](../repeater.md), [../bench-api.md](../bench-api.md), [../slot-timing.md](../slot-timing.md).
 
 ## 1. What it is
 
-One ESP-IDF v5.5 app (`esp_idf`, project `radiofoundry_gateway`) for an ESP32-S3. It takes a box config (JSON), publishes MMDVMHost-compatible MQTT (call JSON, raw bursts, status) and peers with HBlink4. One image does every role; the settings pick which run (`settings.c:resolve`, `rdof_box_roles`).
+One ESP-IDF v5.5 app (`esp_idf`, project `radiofoundry_gateway`) for an ESP32-S3. It takes the settings (JSON, version 3: [config-v3.md](config-v3.md)), publishes MMDVMHost-compatible MQTT (call JSON, raw bursts, status) and peers with HBlink4. One image does every role; what runs follows from the settings (`settings.c:resolve`, `rdof_plan_open`, `rdof_plan_roles`).
 
 ## 2. Roles
 
-| Role | Box `type` | Runs | Limit per board | Spec |
+What runs is the settings' units ([config-v3.md](config-v3.md) §12); a role here is the code that runs a unit.
+
+| Role | In the settings | Runs | Limit per board | Spec |
 |---|---|---|---|---|
-| SDR receiver | `sdr` | front end → channelizer → per-channel 4FSK demod → tracker → MQTT / HBlink4 (one RX-only peer per channel) | 1 (`rdof_roles_t.sdr`) | [sdr.md](sdr.md) |
-| Roamer | `radio_hotspot` (alias `opengd77`), `mmdvm_hs`, `mmdvm`, `auto` | an MMDVM modem (USB CDC-ACM or UART) under `rdof_txvr`; HBlink4 roaming peer; MQTT app `roaming` | `RDOF_MAX_RADIOS` = 2 (`rdof/config.h`), counted with repeaters | [radio.md](radio.md) |
-| Repeater | `repeater` (`mode` duplex, sfr or dcdm) | `rdof_repeater` on a duplex modem (dcdm: a DCDM modem, both slots on one frequency); HBlink4 repeater peer; MQTT app `repeater` | as roamer | [../repeater.md](../repeater.md) |
-| Split halves | `repeater` with `radio.type: split` | two radios (TX half, RX half; RadioFoundry split duplex) as one duplex modem (`split_port.c`, `rdof/split.h`) | 1 USB half, 1 SDR half max | [../repeater.md](../repeater.md), [../slot-timing.md](../slot-timing.md) |
-| SDR transmitter | `sdr_transceiver` (`duplex` half → roamer, full → duplex repeater; `mode: dcdm` → DCDM gateway) | the SDR front end as the radio, through `rdof/sdr/sdrmodem.h` (an emulated MMDVM modem) | needs the SDR in `run` and a front end that can TX | [sdr.md](sdr.md), [radio.md](radio.md) |
-| Hub | `usb_hub: true` (box key) | every USB role at once behind a hub; devices matched by `usb.serial` / `usb.port` | build needs `CONFIG_USB_HOST_HUBS_SUPPORTED` (`.16mb`, `.hub`, `.w12`) | [config.md](config.md) |
-| Bench | `bench` key (`bench.radios`, `bench.tx`) | `/api/bench/v1`: spectrum, bursts, I/Q, sessions, radios link, TX jobs | `CONFIG_RDOF_BENCH` | [../bench-api.md](../bench-api.md) |
+| SDR receiver | a device with `kind: sdr` (its receiver unit, `<device>-rx`) | front end → channelizer → per-channel 4FSK demod → tracker → MQTT / HBlink4 (one RX-only peer per channel) | 1 (`rdof_roles_t.sdr`) | [sdr.md](sdr.md) |
+| Roamer | a `modem` device that `transmits` on simplex frequencies (a transceiver unit; `type` `radio_hotspot`, `mmdvm_hs`, `mmdvm`, `auto`) | an MMDVM modem (USB CDC-ACM or UART) under `rdof_txvr`; HBlink4 roaming peer; MQTT app `roaming` | `RDOF_MAX_RADIOS` = 2 (`rdof/config.h`), counted with repeaters | [radio.md](radio.md) |
+| Repeater | a `repeater` app, or a frequency with `mode` `sfr` or `dcdm` | `rdof_repeater` on a duplex modem (dcdm: a DCDM modem, both slots on one frequency); HBlink4 repeater peer; MQTT app `repeater` | counted with roamers | [../repeater.md](../repeater.md) |
+| Split halves | a `repeater` app whose `in` one modem hears and whose `out` another sends | two radios (TX half, RX half; RadioFoundry split duplex) as one duplex modem (`split_port.c`, `rdof/split.h`) | 1 USB half, 1 SDR half max | [../repeater.md](../repeater.md), [../slot-timing.md](../slot-timing.md) |
+| SDR transmitter | an SDR that transmits (a transceiver unit, a repeater app on it, or a DCDM frequency) | the SDR front end as the radio, through `rdof/sdr/sdrmodem.h` (an emulated MMDVM modem); a transceiver is tuned per stream ([transmitters.md](transmitters.md)) | a front end that can TX | [sdr.md](sdr.md), [radio.md](radio.md) |
+| Hub | `usb_hub: true` (box key) | every USB role at once behind a hub; devices matched by `port.serial` / `port.usb_port` | build needs `CONFIG_USB_HOST_HUBS_SUPPORTED` (`.16mb`, `.hub`, `.w12`) | [config-v3.md](config-v3.md) §2 |
+| Bench | `bench` key (`bench.devices`, `bench.tx`) | `/api/bench/v1`: spectrum, bursts, I/Q, sessions, radios link, TX jobs | `CONFIG_RDOF_BENCH` | [../bench-api.md](../bench-api.md) |
 
 Rules:
-- A board runs up to 2 roamers / repeaters plus 1 SDR (`rdof_box_roles`). The second radio starts only if PSRAM exists (`settings.c:resolve`) and the memory plan has room for it ([memory.md](memory.md)); unplanned ("either" mode), ≥ `EXTRA_RADIO_INTERNAL` = 20 KB internal RAM must be free (`roamer.c`).
+- A board runs up to 2 units that transmit plus 1 SDR (`rdof_plan_roles`). The second radio starts only if PSRAM exists (`settings.c:resolve`) and the memory plan has room for it ([memory.md](memory.md)); unplanned ("either" mode), ≥ `EXTRA_RADIO_INTERNAL` = 20 KB internal RAM must be free (`roamer.c`).
 - "Either" mode (`usb_host_either`): a radio on USB and an RTL-SDR, no `usb_hub`. The first device of either kind plugged in picks the role; the other kind plugged in later restarts the board (`usb_host.c:watch_task`, 500 ms then `esp_restart`). RTL is VID `0x0BDA`, PID `0x2838`/`0x2832` (`usb_host.c:usb_host_is_rtl`); the radio is `CONFIG_RDOF_USB_VID`/`PID`.
 
 ## 3. Profiles and overlays
@@ -54,7 +56,7 @@ Partitions:
 
 ## 4. Feature gates
 
-App gates (`main/Kconfig.projbuild`; full table with ranges in [config.md](config.md#4-kconfig)):
+App gates (`main/Kconfig.projbuild`; every option with its range in §4.1):
 
 | Gate | Default | Builds |
 |---|---|---|
@@ -73,6 +75,101 @@ App gates (`main/Kconfig.projbuild`; full table with ranges in [config.md](confi
 
 Portable-core gates (compile-time macros, defaults 1; `common/Kconfig`, `sdr/Kconfig`, `rdof/features.h`, `rdof/sdr/features.h`): `RDOF_FEATURE_TX`, `RDOF_FEATURE_DATA_BLOCKS`, `RDOF_FEATURE_TRACKER`, `RDOF_FEATURE_REPEATER` (needs TX), `RDOF_FEATURE_SDR`, `RDOF_SDR_AGC`, `RDOF_SDR_BUILTIN_FFT`, `RDOF_SDR_RECEIVER` (needs TRACKER), `RDOF_SDR_FAST_ATAN2`; `RDOF_SDR_DSP_IRAM` default 0.
 
+### 4.1 `main/Kconfig.projbuild` ("RadioFoundry Gateway"), every option
+
+| Option | Type | Default | Range |
+|---|---|---|---|
+| `RDOF_ROAMER` | bool | y | |
+| `RDOF_SDR` | bool | y | |
+| `RDOF_MQTT` | bool | y | |
+| `RDOF_MQTT_RAW` | bool | y | |
+| `RDOF_MQTT_TLS` | bool | n | selects CA bundle |
+| `RDOF_WEB_FULL` | bool | y | |
+| `RDOF_OTA` | bool | y | |
+| `RDOF_SOFTAP` | bool | y | |
+| `RDOF_STATUS_LED_GPIO` | int | −1 | −1..48 |
+| `RDOF_GNSS_EN_GPIO` | int | −1 | −1..48 |
+| `RDOF_GNSS_EN_LEVEL` | int | 0 | 0..1 |
+| `RDOF_LOG_RING_KB` | int | 16 | 0..1024 |
+| `RDOF_CRASH_TEST` | bool | n | `POST /api/crash` (debug builds only; needs `ESP_COREDUMP_ENABLE_TO_FLASH`) |
+| `RDOF_MODEM_USB` | bool | y | |
+| `RDOF_USB_VID` | hex | 0x1FC9 | |
+| `RDOF_USB_PID` | hex | 0x0094 | |
+| `RDOF_USB_INTERFACE` | int | 0 | |
+| `RDOF_MODEM_UART` | bool | y | |
+| `RDOF_MEM_MARGIN_KB` | int | 80 | 8..200; internal RAM the memory plan keeps free ([memory.md](memory.md#4-the-margin)) |
+| `RDOF_MEM_STRICT` | bool | n | a role over the margin is refused |
+| `RDOF_IPGW` | bool | y | needs `RDOF_FEATURE_DATA_BLOCKS` and `_TRACKER`; `ipgw_task.c` |
+| `RDOF_IPGW_MAX_SOCKETS` | int | 8 | 1..16 |
+| `RDOF_HBLINK_SCTP` | bool | y | |
+| `RDOF_SCAN` | bool | y | |
+| `RDOF_OLED` | bool | y | depends on `RDOF_ROAMER` or `RDOF_SDR` |
+| `RDOF_OLED_BUILTIN` | bool | n | y in `w12`: on with no `oled` key |
+| `RDOF_OLED_SDA` / `_SCL` | int | 8 / 9 | 17 / 18 in `w12` |
+| `RDOF_OLED_POWER_GPIO` / `_LEVEL` | int | -1 / 0 | 45 / 0 in `w12` (VEXT_EN) |
+| `RDOF_SDR_HBLINK` | bool | y | |
+| `RDOF_SDR_FAST` | bool | y | |
+| `RDOF_SDR_ESP_DSP` | bool | y | |
+| `RDOF_SDR_TWO_CORES` | bool | y | |
+| `RDOF_SDR_HELPER_STACK` | int | 6144 | 3072..16384 |
+| `RDOF_SDR_CHUNK` | int | 4096 | 1024..32768 |
+| `RDOF_SDR_RING_KB` | int | 256 | 32..1536 |
+| `RDOF_SDR_INTERNAL_RESERVE_KB` | int | 40 | 0..256 |
+| `RDOF_SDR_SELFTEST` | bool | y | |
+| `RDOF_SDR_SPIKE` | bool | y | |
+| `RDOF_BENCH` | bool | y | depends on `RDOF_SDR` |
+| `RDOF_BENCH_TX` | bool | y | |
+| `RDOF_SDR_LR2021` | bool | n | |
+| `RDOF_USB_HOST` | bool | y | n in `w12` (no USB host port) |
+| `RDOF_BENCH_LINE_PORT` | int | 7373 | the bench's line protocol TCP port; 0: off |
+| `RDOF_POWER_KEY_GPIO` | int | −1 | −1..21 (an RTC GPIO, pressed low); 0 in `w12` |
+| `RDOF_POWER_KEY_OFF_MS` / `_ON_MS` | int | 2000 / 1000 | 500..10000 / 0..5000 |
+| `RDOF_POWER_OFF_LOW_GPIOS` | string | `""` | more GPIOs held low while off; `"3"` in `w12` |
+| `RDOF_BATT_ADC_GPIO` | int | −1 | −1..10 (ADC1); 1 in `w12` |
+| `RDOF_BATT_CTRL_GPIO` / `_LEVEL` | int | −1 / 1 | the divider switch; 2 in `w12` |
+| `RDOF_BATT_CUTOFF_MV` | int | 3300 | 0..4000; off under this for 30 s; 0: never |
+| `RDOF_BATT_RATIO_X1000` | int | 4900 | battery mV over ADC mV, × 1000 |
+
+LR2021 submenu (`RDOF_LR2021_*`):
+
+| Option | Default | Range |
+|---|---|---|
+| `SPI_HOST` | 1 | 1..2 |
+| `SPI_HZ` | 16000000 | |
+| `NSS` / `SCK` / `MOSI` / `MISO` | 8 / 9 / 10 / 11 | |
+| `NRESET` / `BUSY` / `IRQ` | 12 / 13 / 7 | |
+| `PA_EN_GPIO` | 4 | |
+| `TCXO_TUNE` | −1 | −1..7 |
+| `RX_BOOST` | 0 | 0..7 |
+| `PA_LO_MHZ` / `PA_HI_MHZ` | 860 / 930 | |
+| `DIO9_PA` / `DIO10_PA` / `DIO11_PA` | 0x04 / 0x06 / 0x06 | |
+| `DIO9_BYPASS` / `DIO10_BYPASS` / `DIO11_BYPASS` | 0x04 / 0x00 / 0x06 | |
+
+### 4.2 Portable-core and component Kconfig, every option
+
+| File | Option | Default |
+|---|---|---|
+| `common/Kconfig` | `RDOF_FEATURE_TX`, `RDOF_FEATURE_DATA_BLOCKS`, `RDOF_FEATURE_TRACKER`, `RDOF_FEATURE_REPEATER` (needs TX) | y |
+| `sdr/Kconfig` | `RDOF_FEATURE_SDR`, `RDOF_SDR_AGC`, `RDOF_SDR_BUILTIN_FFT`, `RDOF_SDR_RECEIVER` (needs TRACKER) | y |
+| | `RDOF_SDR_DSP_IRAM` | n (~33 KB IRAM) |
+| `rdof/sdr/features.h` | `RDOF_SDR_FAST_ATAN2` | 1 |
+| netclock | `DEFAULT_SERVERS` | `"pool.ntp.org"` |
+| | `POLL_S` | 300 (16..3600) |
+| | `POLL_FAST_S` | 120 |
+| | `START_ON_IP`, `SET_SYSTEM_TIME`, `DIE_TEMP`, `HTTP` | y |
+| | `PPS_GPIO` / `PPS_FALLING` | −1 / n |
+| | `GNSS_EVERY` / `GNSS_LAG_MS` | 16 / 0 |
+| | `HTTP_BASE` / `NVS_NAMESPACE` | `/api` / `netclock` |
+| | `TASK_PRIORITY` / `TASK_CORE` | 8 / 0 |
+| gnss | `UART_RX_GPIO` / `UART_TX_GPIO` | −1 / −1 (39 / 38 in `w12`) |
+| | `UART_NUM` / `BAUD` / `AUTODETECT` | 1 / 9600 / y |
+| | `TASK_PRIORITY` / `TASK_CORE` | 9 / 0 |
+| wifilist | `MAX_NETWORKS` | 8 (1..32) |
+| | `CONNECT_TIMEOUT_S` / `RESCAN_MAX_S` | 15 / 30 |
+| | `SOFTAP`, `HTTP` | y |
+| | `HTTP_BASE` / `NVS_NAMESPACE` / `TASK_PRIORITY` | `/api` / `wifilist` / 5 |
+| tinysctp | `MAX_STREAMS` / `RX_WINDOW` / `TASK_STACK` / `TASK_PRIORITY` | 8 / 64 / 4096 / 8 |
+
 ## 5. Boot sequence
 
 `main.c:app_main`:
@@ -83,7 +180,7 @@ flowchart TD
   B --> C[logring_init]
   C --> D[nvs_flash_init<br/>NO_FREE_PAGES / NEW_VERSION: erase, retry]
   D --> E[netclock_init]
-  E --> F[settings_load: NVS rdof/config, else DEFAULT_JSON; resolve roles]
+  E --> F[settings_load: NVS rd/config, else DEFAULT_JSON; resolve units]
   F --> G[log version]
   G --> H{selftest flag or<br/>SDR selftest: true}
   H -- yes --> H1[sdr_boot_selftest: task 'selftest' on core 1, wait]
@@ -105,7 +202,7 @@ Per role start:
   while the heap is whole; neither the SDR nor the radios when one USB port decides the role ([memory.md](memory.md)).
   The roles start on what the plan gave them; a refused role doesn't start and says why.
 - `sdr_role_start` (`sdr.c`): take the `spike` flag, `dsp_setup` (allocators: the receiver's per-sample buffers from the plan's hot arena, the rest internal RAM while `CONFIG_RDOF_SDR_INTERNAL_RESERVE_KB` stays free, else PSRAM; esp-dsp install and check), `sdr_hb_start`, `sdr_mqtt_start`, `sdr_start` (front end + DSP tasks).
-- A failed stored config runs `DEFAULT_JSON` instead, with `g_cfg_ok = false` and the error on the page ([config.md](config.md#6-precedence)).
+- A failed stored config runs `DEFAULT_JSON` instead, with `g_cfg_ok = false` and the error on the page ([config-v3.md](config-v3.md) §16).
 
 ## 6. FreeRTOS tasks
 
@@ -230,9 +327,11 @@ flowchart LR
 | | `split.c`, `splitops.c` | split duplex transport and half ops |
 | | `slotgrid.c` | UTC slot grid, `slot_timing`, slot gate |
 | Net | `hblink.c` | HBlink4 packets (DMRC, DMRD, DMRT, DMRP) |
-| Config | `config.c` | box config → `rdof_config_t`, roles, port checks |
+| Config | `site.c` | the settings' parser and resolved view (`rdof_site_t`) |
+| | `siteplan.c` | the plan: the run units, the devices' keys, the checks |
+| | `config.c` | a unit's settings → `rdof_config_t`, roles, port checks |
 | | `benchcfg.c` | `bench` settings |
-| | `ipgwcfg.c` | `ip_gateway` settings, address helpers |
+| | `ipgwcfg.c` | the `ipgw` app's settings, address helpers |
 | IP | `ipgw.c` | IP gateway: packet data put together, routes, NAT flows, replies as packet data ([ipgw.md](ipgw.md)) |
 | | `ipgwtx.c` | the IP gateway's packets on air: through a transceiver or a repeater ([ipgw.md](ipgw.md) §11) |
 | Bench | `benchguard.c` | bench radio serial guard |
@@ -327,7 +426,7 @@ Each has its own README.
 | Hot allocator | `rdof_sdr_set_hot_allocator(alloc)` | internal RAM for the per-sample buffers, whatever the reserve | `sdr.c:hot_alloc` |
 | DSP kernels | `dsp_esp_install` hooks | FFT, FIR replacements (optional) | `dsp_esp.c` |
 | Clock | — | UTC ns (`netclock_now_ns`), monotonic µs (`esp_timer_get_time`) | netclock, IDF |
-| Storage | — | one blob of box JSON; per-component small records ([config.md](config.md#5-nvs)) | `settings.c`, components |
+| Storage | — | one blob of the settings' JSON; per-component small records ([config-v3.md](config-v3.md) §16) | `settings.c`, components |
 | Network | — | MQTT publish (QoS 0/1, retain, last will), UDP socket, SCTP over UDP | `net.c`, tinysctp |
 
 ## 10. Features and limits
@@ -344,12 +443,12 @@ Each has its own README.
 | Dual capacity direct mode (`mode: dcdm`) | yes on the SDR modem; a radio needs DCDM firmware (none yet); a roamer's plain direct mode calls take their frequency's `ts` (1 by default) |
 | Split duplex, radio halves | yes |
 | Split duplex, SDR half | refused for now (`split_port.c`) |
-| `sdr_transceiver` | yes (any SDR in `radios`) |
+| SDR transmitter | yes (a front end that can TX) |
 | UTC slot timing | yes (`slotgrid.c`) |
 | HBlink4 SCTP | tinysctp, SCTP in UDP |
 | Modem protocol `udp`, `rigctld` / `command` tuners | refused |
 | MQTT TLS | 16mb builds |
-| `${VAR}` in config | empty |
+| `${VAR}` in the settings | taken as written (no environment) |
 | OLED | `sda` / `scl` |
 | Web page, OTA, setup AP, log ring | yes |
 | Bench API | yes (`/api/bench/v1`) |

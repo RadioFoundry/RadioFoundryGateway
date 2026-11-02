@@ -42,10 +42,10 @@
 #define RADIO_IP IP(12, 152, 129, 71)
 #define GW_ID 9990u
 #define PEER_IP IP(8, 8, 8, 8)
-#define RX_HZ 467550000u
-#define TX_HZ 462550000u
-#define CH_A 462562500u
-#define CH_B 462587500u
+#define RX_HZ 438250000u
+#define TX_HZ 438750000u
+#define CH_A 438500000u
+#define CH_B 438600000u
 #define MAXW 512
 
 typedef enum { M_TXVR, M_DUPLEX, M_SFR, M_DCDM } mode_t_;
@@ -186,7 +186,9 @@ static md_t *md_new(mode_t_ mode, const char *kind)
     rdof_sink_t s = {.on_frame = md_frame, .on_call = md_call, .ctx = &e};
     rdof_tracker_add_sink(&e.tr, s);
     rdof_ipgw_config_t c;
-    const char *json = "{\"ip_gateway\": {\"id\": 9990, \"nat\": true, \"up_pps\": 0, \"down_pps\": 0}}";
+    const char *json = "{\"version\": 3, \"name\": \"b\", \"id\": 9990100, \"defaults\": {\"cc\": 1}, \"frequencies\": [438.075],"
+                       " \"devices\": [{\"name\": \"w12\", \"kind\": \"sdr\", \"driver\": \"lr2021\"}],"
+                       " \"apps\": [{\"type\": \"ipgw\", \"pc\": 9990, \"nat\": true, \"up_pps\": 0, \"down_pps\": 0}]}";
     char err[160];
     CHECK(rdof_ipgw_settings_parse(json, strlen(json), &c, err, sizeof err), "settings: %s", err);
     rdof_ipgw_init(&e.g, &c);
@@ -614,7 +616,9 @@ static void t_chain(void)
         rdof_tracker_add_sink(&c.tr, s);
         rdof_lh_init(&c.lh, c.ring, 16);
         rdof_ipgw_config_t cfg;
-        const char *json = "{\"ip_gateway\": {\"nat\": true, \"up_pps\": 0}}";
+        const char *json = "{\"version\": 3, \"name\": \"b\", \"id\": 9990100, \"defaults\": {\"cc\": 1}, \"frequencies\": [438.075],"
+                       " \"devices\": [{\"name\": \"w12\", \"kind\": \"sdr\", \"driver\": \"lr2021\"}],"
+                       " \"apps\": [{\"type\": \"ipgw\", \"pc\": 9990, \"nat\": true, \"up_pps\": 0}]}";
         char err[160];
         CHECK(rdof_ipgw_settings_parse(json, strlen(json), &cfg, err, sizeof err), "settings: %s", err);
         rdof_ipgw_init(&c.g, &cfg);

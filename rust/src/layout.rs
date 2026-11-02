@@ -18,6 +18,10 @@ use crate::mmdvm::{RdofMmdvmReader, RdofMmdvmStatus, RdofModemConfig};
 use crate::modem::{RdofModem, RdofModemPort, RdofRadio, RdofRssiMap};
 use crate::netcalls::{RdofNetcalls, RdofTxCallInfo};
 use crate::oled::{RdofFrameBuf, RdofOledStatus};
+use crate::plan::{
+    RdofApp3, RdofDevBench, RdofDevice3, RdofFreq, RdofIdrange, RdofIdset, RdofNet3, RdofPath, RdofPlanDev, RdofPlanExtra,
+    RdofPolicy, RdofPort, RdofSite, RdofUnit,
+};
 use crate::pdu::{RdofCsbk, RdofDataBlock, RdofDataHeader, RdofFullLc};
 use crate::rawburst::RdofRawburst;
 use crate::repeater::{
@@ -99,6 +103,20 @@ static LAYOUTS: &[Layout] = &layouts![
     ("rdof_cfg_port_t", RdofCfgPort),
     ("rdof_config_t", RdofConfig),
     ("rdof_roles_t", RdofRoles),
+    ("rdof_idrange_t", RdofIdrange),
+    ("rdof_idset_t", RdofIdset),
+    ("rdof_policy_t", RdofPolicy),
+    ("rdof_freq_t", RdofFreq),
+    ("rdof_device3_t", RdofDevice3),
+    ("rdof_app3_t", RdofApp3),
+    ("rdof_net3_t", RdofNet3),
+    ("rdof_path_t", RdofPath),
+    ("rdof_site_t", RdofSite),
+    ("rdof_port_t", RdofPort),
+    ("rdof_dev_bench_t", RdofDevBench),
+    ("rdof_plan_dev_t", RdofPlanDev),
+    ("rdof_unit_t", RdofUnit),
+    ("rdof_plan_extra_t", RdofPlanExtra),
     ("rdof_voice_regen_t", RdofVoiceRegen),
     ("rdof_activity_t", RdofActivity),
     ("rdof_rpt_out_t", RdofRptOut),

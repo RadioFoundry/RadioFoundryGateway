@@ -38,6 +38,24 @@ static bool parse(const char *json, rdof_ipgw_config_t *c, char *err)
     return rdof_ipgw_settings_parse(json, strlen(json), c, err, 160);
 }
 
+/* A box whose SDR transmits on one frequency (unit "w12"), with an ipgw app answering pc id and these keys. */
+static const char *app_id(unsigned id, const char *keys)
+{
+    static char doc[1400];
+    snprintf(doc, sizeof doc,
+             "{\"version\": 3, \"name\": \"b\", \"id\": 9990100, \"defaults\": {\"cc\": 1},"
+             " \"frequencies\": [{\"freq\": 438.075, \"name\": \"438.075\"}],"
+             " \"devices\": [{\"name\": \"w12\", \"kind\": \"sdr\", \"driver\": \"lr2021\"}],"
+             " \"apps\": [{\"name\": \"gw\", \"type\": \"ipgw\", \"pc\": %u%s%s}]}",
+             id, keys[0] ? ", " : "", keys);
+    return doc;
+}
+
+static const char *app(const char *keys)
+{
+    return app_id(9990, keys);
+}
+
 static void bad(const char *json, const char *want)
 {
     rdof_ipgw_config_t c;
@@ -50,13 +68,7 @@ static void t_settings(void)
 {
     rdof_ipgw_config_t c;
     char err[160];
-    CHECK(parse("{}", &c, err) && !c.on, "absent: off");
-    CHECK(parse("{\"ip_gateway\": false}", &c, err) && !c.on, "false: off");
-    CHECK(parse("{\"ip_gateway\": null}", &c, err) && !c.on, "null: off");
-    CHECK(parse("{\"ip_gateway\": {\"enabled\": false, \"nat\": true}}", &c, err) && !c.on, "enabled false");
-    bad("{\"ip_gateway\": true}", "nothing to do");
-    bad("{\"ip_gateway\": {}}", "nothing to do");
-    bad("{\"ip_gateway\": 3}", "an object");
+    bad(app(""), "apps.gw.routes: none, and no nat: nothing to do");
     /* version 3: the ipgw app */
     const char *v3 = "{\"version\": 3, \"name\": \"b\", \"id\": 9990100, \"defaults\": {\"cc\": 1},"
                      " \"frequencies\": [{\"freq\": 438.075, \"name\": \"438.075\"}],"
@@ -68,16 +80,16 @@ static void t_settings(void)
                         " \"devices\": [{\"name\": \"w12\", \"kind\": \"sdr\", \"driver\": \"lr2021\"}]}";
     CHECK(parse(v3off, &c, err) && !c.on, "version 3 without one: off (%s)", err);
 
-    const char *full = "{\"radios\": {}, // a comment\n"
-                       " \"ip_gateway\": {\"id\": 9990, \"tx\": \"hs1\", \"ack\": false, \"max_bytes\": 600,\n"
+    const char *full = app("// a comment\n"
+                       " \"tx\": \"w12\", \"ack\": false, \"max_bytes\": 600,\n"
                        "  \"up_pps\": 4, \"down_pps\": 1.5, \"idle_s\": 60, \"max_flows\": 3,\n"
                        "  \"radio_net\": \"12.0.0.0/8\",\n"
                        "  \"routes\": [{\"name\": \"ars\", \"private\": 9990, \"to\": \"192.0.2.20:5005\"},\n"
                        "             {\"group\": \"9-10\", \"from\": \"1000-1999\", \"to\": \"10.0.0.5\"},\n"
                        "             {\"all\": true, \"to\": \"tunnel.example.com:7000\", \"payload\": \"ip\"}],\n"
-                       "  \"nat\": {\"allow\": [\"0.0.0.0/0\"], \"deny\": [\"8.8.4.0/24\"]}}}";
+                       "  \"nat\": {\"allow\": [\"0.0.0.0/0\"], \"deny\": [\"8.8.4.0/24\"]}");
     CHECK(parse(full, &c, err), "full: %s", err);
-    CHECK(c.on && c.id == 9990 && !strcmp(c.tx, "hs1") && !c.ack && c.max_bytes == 600 && c.up_pps == 4 &&
+    CHECK(c.on && c.id == 9990 && !strcmp(c.tx, "w12") && !c.ack && c.max_bytes == 600 && c.up_pps == 4 &&
               c.down_pps == 1.5 && c.idle_s == 60 && c.max_flows == 3,
           "full: the scalars");
     CHECK(c.nroutes == 3 && !strcmp(c.routes[0].name, "ars") && c.routes[0].dst_kind == RDOF_IPGW_DST_PRIVATE &&
@@ -96,7 +108,7 @@ static void t_settings(void)
           "nat lists");
     char d[600];
     rdof_ipgw_describe(&c, d, sizeof d);
-    CHECK(!strcmp(d, "id 9990, radios 12.0.0.0/8, tx hs1, ack off, max 600 B, up 4/s, down 1.5/s, idle 60 s, flows 3; "
+    CHECK(!strcmp(d, "id 9990, radios 12.0.0.0/8, tx w12, ack off, max 600 B, up 4/s, down 1.5/s, idle 60 s, flows 3; "
                      "ars: private 9990-9990 -> 192.0.2.20:5005 udp; route2: group 9-10 from 1000-1999 -> 10.0.0.5 "
                      "udp; route3: all -> tunnel.example.com:7000 ip; nat on, allow 0.0.0.0/0, deny 8.8.4.0/24"),
           "describe: %s", d);
@@ -106,64 +118,64 @@ static void t_settings(void)
     CHECK(!strcmp(d, "off"), "describe off: %s", d);
 
     /* nat on its own: the default deny list */
-    CHECK(parse("{\"ip_gateway\": {\"nat\": true}}", &c, err) && c.on && c.nat && c.ndeny == 5 && c.nroutes == 0 &&
+    CHECK(parse(app("\"nat\": true"), &c, err) && c.on && c.nat && c.ndeny == 5 && c.nroutes == 0 &&
               c.ack && c.max_bytes == 1500 && c.max_flows == 8,
           "nat true: %s", err);
-    CHECK(parse("{\"ip_gateway\": {\"nat\": {\"deny\": []}}}", &c, err) && c.nat && c.ndeny == 0, "deny []: %s", err);
-    CHECK(parse("{\"ip_gateway\": {\"nat\": {\"enabled\": false}, \"routes\": [{\"all\": true, \"to\": \"1.2.3.4\"}]}}",
+    CHECK(parse(app("\"nat\": {\"deny\": []}"), &c, err) && c.nat && c.ndeny == 0, "deny []: %s", err);
+    CHECK(parse(app("\"nat\": {\"enabled\": false}, \"routes\": [{\"all\": true, \"to\": \"1.2.3.4\"}]"),
                 &c, err) &&
               !c.nat && c.nroutes == 1,
           "nat enabled false: %s", err);
 
     /* the examples in docs/spec/fw/config.md and docs/reference.md */
-    const char *doc = "{\"ip_gateway\": {\n  \"id\": 9990,\n  \"routes\": [\n"
+    const char *doc = app("\n  \"routes\": [\n"
                       "    {\"name\": \"ars\", \"private\": 9990, \"to\": \"192.0.2.20:4005\"},  // ARS\n"
                       "    {\"name\": \"tms\", \"private\": \"9991-9999\", \"to\": \"192.0.2.20\"},\n"
                       "    {\"name\": \"fleet\", \"from\": \"9995000-9995999\", \"to\": \"gw.example.com:7000\", "
-                      "\"payload\": \"ip\"}\n  ],\n  \"nat\": {\"allow\": [\"0.0.0.0/0\"]}  // the rest\n}}";
+                      "\"payload\": \"ip\"}\n  ],\n  \"nat\": {\"allow\": [\"0.0.0.0/0\"]}  // the rest\n");
     CHECK(parse(doc, &c, err) && c.nroutes == 3 && c.nat && c.ndeny == 5 && c.routes[2].has_from, "config.md: %s",
           err);
-    CHECK(parse("{\"ip_gateway\": {\n  \"routes\": [{\"name\": \"ars\", \"private\": 9990, \"to\": "
-                "\"192.0.2.20:4005\"}],\n  \"nat\": true\n}}",
+    CHECK(parse(app("\n  \"routes\": [{\"name\": \"ars\", \"private\": 9990, \"to\": "
+                   "\"192.0.2.20:4005\"}],\n  \"nat\": true\n"),
                 &c, err) &&
               c.nroutes == 1 && c.nat,
           "reference.md: %s", err);
 
-    bad("{\"ip_gateway\": {\"nat\": true, \"bogus\": 1}}", "unknown key \"bogus\"");
-    bad("{\"ip_gateway\": {\"routes\": [{\"to\": \"1.2.3.4\"}]}}", "which traffic");
-    bad("{\"ip_gateway\": {\"routes\": [{\"private\": 1, \"group\": 2, \"to\": \"1.2.3.4\"}]}}", "not both");
-    bad("{\"ip_gateway\": {\"routes\": [{\"all\": true, \"from\": 2, \"to\": \"1.2.3.4\"}]}}", "not both");
-    bad("{\"ip_gateway\": {\"routes\": [{\"private\": \"5-3\", \"to\": \"1.2.3.4\"}]}}", "routes[0].private: a DMR id");
-    bad("{\"ip_gateway\": {\"routes\": [{\"private\": 0, \"to\": \"1.2.3.4\"}]}}", "a DMR id");
-    bad("{\"ip_gateway\": {\"routes\": [{\"group\": 16777216, \"to\": \"1.2.3.4\"}]}}", "a DMR id");
-    bad("{\"ip_gateway\": {\"routes\": [{\"from\": \"x\", \"to\": \"1.2.3.4\"}]}}", "routes[0].from");
-    bad("{\"ip_gateway\": {\"routes\": [{\"all\": true}]}}", "to, \"host:port\"");
-    bad("{\"ip_gateway\": {\"routes\": [{\"all\": true, \"to\": \"1.2.3.4:0\"}]}}", "port 1 to 65535");
-    bad("{\"ip_gateway\": {\"routes\": [{\"all\": true, \"to\": \"1.2.3.4:x\"}]}}", "port 1 to 65535");
-    bad("{\"ip_gateway\": {\"routes\": [{\"all\": true, \"to\": \"300.1.1.1\"}]}}", "isn't an IPv4 address");
-    bad("{\"ip_gateway\": {\"routes\": [{\"all\": true, \"to\": \"224.0.0.1:5\"}]}}", "isn't one host's address");
-    bad("{\"ip_gateway\": {\"routes\": [{\"all\": true, \"to\": \"a b:5\"}]}}", "an IPv4 address or a host name");
-    bad("{\"ip_gateway\": {\"routes\": [{\"all\": true, \"to\": \"1.2.3.4\", \"payload\": \"ip\"}]}}",
+    bad(app("\"nat\": true, \"bogus\": 1"), "apps.gw.bogus: not a key here");
+    bad(app("\"routes\": [{\"to\": \"1.2.3.4\"}]"), "which traffic");
+    bad(app("\"routes\": [{\"private\": 1, \"group\": 2, \"to\": \"1.2.3.4\"}]"), "not both");
+    bad(app("\"routes\": [{\"all\": true, \"from\": 2, \"to\": \"1.2.3.4\"}]"), "not both");
+    bad(app("\"routes\": [{\"private\": \"5-3\", \"to\": \"1.2.3.4\"}]"), "routes[0].private: a DMR id");
+    bad(app("\"routes\": [{\"private\": 0, \"to\": \"1.2.3.4\"}]"), "a DMR id");
+    bad(app("\"routes\": [{\"group\": 16777216, \"to\": \"1.2.3.4\"}]"), "a DMR id");
+    bad(app("\"routes\": [{\"from\": \"x\", \"to\": \"1.2.3.4\"}]"), "routes[0].from");
+    bad(app("\"routes\": [{\"all\": true}]"), "to, \"host:port\"");
+    bad(app("\"routes\": [{\"all\": true, \"to\": \"1.2.3.4:0\"}]"), "port 1 to 65535");
+    bad(app("\"routes\": [{\"all\": true, \"to\": \"1.2.3.4:x\"}]"), "port 1 to 65535");
+    bad(app("\"routes\": [{\"all\": true, \"to\": \"300.1.1.1\"}]"), "isn't an IPv4 address");
+    bad(app("\"routes\": [{\"all\": true, \"to\": \"224.0.0.1:5\"}]"), "isn't one host's address");
+    bad(app("\"routes\": [{\"all\": true, \"to\": \"a b:5\"}]"), "an IPv4 address or a host name");
+    bad(app("\"routes\": [{\"all\": true, \"to\": \"1.2.3.4\", \"payload\": \"ip\"}]"),
         "payload ip needs a port");
-    bad("{\"ip_gateway\": {\"routes\": [{\"all\": true, \"to\": \"1.2.3.4\", \"payload\": \"tcp\"}]}}",
+    bad(app("\"routes\": [{\"all\": true, \"to\": \"1.2.3.4\", \"payload\": \"tcp\"}]"),
         "payload udp or ip");
-    bad("{\"ip_gateway\": {\"routes\": [{\"all\": true, \"to\": \"1.2.3.4\", \"oops\": 1}]}}",
+    bad(app("\"routes\": [{\"all\": true, \"to\": \"1.2.3.4\", \"oops\": 1}]"),
         "routes[0]: unknown key \"oops\"");
-    bad("{\"ip_gateway\": {\"routes\": [{\"name\": \"a\", \"all\": true, \"to\": \"1.2.3.4\"}, {\"name\": \"a\", "
-        "\"all\": true, \"to\": \"1.2.3.4\"}]}}",
+    bad(app("\"routes\": [{\"name\": \"a\", \"all\": true, \"to\": \"1.2.3.4\"}, {\"name\": \"a\", "
+           "\"all\": true, \"to\": \"1.2.3.4\"}]"),
         "name a is taken");
-    bad("{\"ip_gateway\": {\"routes\": [1]}}", "routes[0]: an object");
-    bad("{\"ip_gateway\": {\"routes\": {}}}", "a list of up to 8 routes");
-    bad("{\"ip_gateway\": {\"nat\": {\"deny\": [\"10.0.0.1/8\"]}}}", "nat.deny[0]");
-    bad("{\"ip_gateway\": {\"nat\": {\"allow\": \"0.0.0.0/0\"}}}", "nat.allow: a list");
-    bad("{\"ip_gateway\": {\"nat\": 1}}", "nat: true, false");
-    bad("{\"ip_gateway\": {\"nat\": true, \"radio_net\": \"12.0.0.0/4\"}}", "radio_net");
-    bad("{\"ip_gateway\": {\"nat\": true, \"max_flows\": 17}}", "max_flows: a whole number 1 to 16");
-    bad("{\"ip_gateway\": {\"nat\": true, \"max_bytes\": 2000}}", "max_bytes");
-    bad("{\"ip_gateway\": {\"nat\": true, \"up_pps\": -1}}", "up_pps");
-    bad("{\"ip_gateway\": {\"nat\": true, \"ack\": 1}}", "ack: true or false");
-    bad("{\"ip_gateway\": {\"nat\": true, \"tx\": 5}}", "tx: a radio's name");
-    bad("{\"ip_gateway\": {\"nat\": true, \"id\": 1.5}}", "id: a whole number");
+    bad(app("\"routes\": [1]"), "routes[0]: an object");
+    bad(app("\"routes\": {}"), "a list of up to 8 routes");
+    bad(app("\"nat\": {\"deny\": [\"10.0.0.1/8\"]}"), "nat.deny[0]");
+    bad(app("\"nat\": {\"allow\": \"0.0.0.0/0\"}"), "nat.allow: a list");
+    bad(app("\"nat\": 1"), "nat: true, false");
+    bad(app("\"nat\": true, \"radio_net\": \"12.0.0.0/4\""), "radio_net");
+    bad(app("\"nat\": true, \"max_flows\": 17"), "max_flows: a whole number 1 to 16");
+    bad(app("\"nat\": true, \"max_bytes\": 2000"), "max_bytes");
+    bad(app("\"nat\": true, \"up_pps\": -1"), "up_pps");
+    bad(app("\"nat\": true, \"ack\": 1"), "ack: true or false");
+    bad(app("\"nat\": true, \"tx\": 5"), "apps.gw.tx: a unit's name");
+    bad(app("\"nat\": true, \"id\": 9991"), "apps.gw.id: not a key here");
     bad("[1]", "a JSON object");
     bad("{", "JSON:");
 }
@@ -292,8 +304,10 @@ static bool f_dmr(void *ctx, const rdof_ipgw_dmr_t *p)
     return true;
 }
 
-static rdof_ipgw_t *gw(fake_t *f, const char *json)
+/* A gateway from an ipgw app answering pc id, with these keys (app_id). */
+static rdof_ipgw_t *gw(fake_t *f, unsigned id, const char *keys)
 {
+    const char *json = app_id(id, keys);
     rdof_ipgw_config_t c;
     char err[160];
     if (!rdof_ipgw_settings_parse(json, strlen(json), &c, err, sizeof err)) {
@@ -442,9 +456,9 @@ static void t_packets(void)
 static void t_route(void)
 {
     fake_t f;
-    rdof_ipgw_t *g = gw(&f, "{\"ip_gateway\": {\"id\": 7, \"routes\": ["
+    rdof_ipgw_t *g = gw(&f, 7, "\"routes\": ["
                             "{\"name\": \"ars\", \"private\": 9990, \"to\": \"192.0.2.20:5005\"},"
-                            "{\"group\": 9, \"to\": \"192.0.2.21\"}]}}");
+                            "{\"group\": 9, \"to\": \"192.0.2.21\"}]");
     uint8_t d[2048], back[2048];
     size_t n = datagram(RADIO_IP, 4001, IP(13, 0, 0, 1), 4005, "hello ars", d);
     radio_sends(g, RADIO, 9990, false, d, n, 10.0);
@@ -526,7 +540,7 @@ static void t_route(void)
 static void t_nat(void)
 {
     fake_t f;
-    rdof_ipgw_t *g = gw(&f, "{\"ip_gateway\": {\"nat\": true, \"max_flows\": 2, \"up_pps\": 0, \"down_pps\": 0}}");
+    rdof_ipgw_t *g = gw(&f, 9990, "\"nat\": true, \"max_flows\": 2, \"up_pps\": 0, \"down_pps\": 0");
     uint8_t d[2048], back[2048];
     size_t n = datagram(RADIO_IP, 5000, IP(8, 8, 8, 8), 53, "query", d);
     radio_sends(g, RADIO, 9990, false, d, n, 1.0);
@@ -645,7 +659,7 @@ static int confirmed(uint32_t src, uint32_t dst, int ns, const uint8_t *data, si
 static void t_confirmed(void)
 {
     fake_t f;
-    rdof_ipgw_t *g = gw(&f, "{\"ip_gateway\": {\"routes\": [{\"private\": 9990, \"to\": \"192.0.2.20:4005\"}]}}");
+    rdof_ipgw_t *g = gw(&f, 9990, "\"routes\": [{\"private\": 9990, \"to\": \"192.0.2.20:4005\"}]");
     uint8_t d[2048];
     static rdof_ipgw_dmr_t p;
     size_t n = datagram(RADIO_IP, 4005, IP(13, 0, 0, 1), 4005, "ARS registration", d);
@@ -684,7 +698,7 @@ static void t_confirmed(void)
 static void t_assembly(void)
 {
     fake_t f;
-    rdof_ipgw_t *g = gw(&f, "{\"ip_gateway\": {\"nat\": {\"deny\": []}, \"up_pps\": 0}}");
+    rdof_ipgw_t *g = gw(&f, 9990, "\"nat\": {\"deny\": []}, \"up_pps\": 0");
     uint8_t d[2048];
     static rdof_ipgw_dmr_t p;
     uint64_t sync = rdof_data_sync(RDOF_MS_VOICE);
@@ -796,7 +810,7 @@ static void t_assembly(void)
 static void t_limits(void)
 {
     fake_t f;
-    rdof_ipgw_t *g = gw(&f, "{\"ip_gateway\": {\"nat\": true, \"up_pps\": 1, \"down_pps\": 0.5, \"max_bytes\": 100}}");
+    rdof_ipgw_t *g = gw(&f, 9990, "\"nat\": true, \"up_pps\": 1, \"down_pps\": 0.5, \"max_bytes\": 100");
     uint8_t d[2048], big[200];
     for (int k = 0; k < 4; k++) {
         size_t n = datagram(RADIO_IP, 5000, IP(8, 8, 8, 8), 53, "rate", d);
@@ -846,8 +860,8 @@ static void t_limits(void)
 static void t_ip_payload(void)
 {
     fake_t f;
-    rdof_ipgw_t *g = gw(&f, "{\"ip_gateway\": {\"routes\": [{\"all\": true, \"to\": \"tunnel.example.com:7000\", "
-                            "\"payload\": \"ip\"}]}}");
+    rdof_ipgw_t *g = gw(&f, 9990, "\"routes\": [{\"all\": true, \"to\": \"tunnel.example.com:7000\", "
+                            "\"payload\": \"ip\"}]");
     uint8_t d[2048], back[2048];
     size_t n = datagram(RADIO_IP, 4001, IP(13, 0, 0, 1), 4005, "tunneled", d);
     radio_sends(g, RADIO, 9990, false, d, n, 1.0);
@@ -923,7 +937,7 @@ static size_t sap3(uint8_t daid, uint8_t spid, uint8_t dpid, const uint16_t *ext
 static void t_any_gateway(void)
 {
     fake_t f;
-    rdof_ipgw_t *g = gw(&f, "{\"ip_gateway\": {\"id\": 9990, \"up_pps\": 0, \"down_pps\": 0, \"nat\": true}}");
+    rdof_ipgw_t *g = gw(&f, 9990, "\"up_pps\": 0, \"down_pps\": 0, \"nat\": true");
     uint8_t d[2048], back[2048];
     rdof_data_header_t h;
     size_t n = datagram(IP(12, 0, 0, 2), 6001, IP(203, 0, 113, 6), 7000, "any gw", d);
@@ -954,9 +968,9 @@ static void t_any_gateway(void)
 static void t_radios(void)
 {
     fake_t f;
-    rdof_ipgw_t *g = gw(&f, "{\"ip_gateway\": {\"id\": 9990, \"up_pps\": 0, \"down_pps\": 0, \"routes\": ["
+    rdof_ipgw_t *g = gw(&f, 9990, "\"up_pps\": 0, \"down_pps\": 0, \"routes\": ["
                             "{\"private\": 9990, \"from\": 1, \"to\": \"192.0.2.20\"},"
-                            "{\"group\": 9, \"to\": \"192.0.2.21:6000\"}], \"nat\": true}}");
+                            "{\"group\": 9, \"to\": \"192.0.2.21:6000\"}], \"nat\": true");
     uint8_t d[2048], back[2048];
     static rdof_ipgw_dmr_t p;
     uint64_t sync = rdof_data_sync(RDOF_MS_VOICE);
@@ -1053,8 +1067,8 @@ static void t_radios(void)
     free(g);
 
     /* payload ip: the datagram goes on one hop down, its checksum redone; and so does what comes back */
-    g = gw(&f, "{\"ip_gateway\": {\"down_pps\": 0, \"routes\": [{\"all\": true, \"to\": \"198.51.100.7:7000\", "
-               "\"payload\": \"ip\"}]}}");
+    g = gw(&f, 9990, "\"down_pps\": 0, \"routes\": [{\"all\": true, \"to\": \"198.51.100.7:7000\", "
+               "\"payload\": \"ip\"}]");
     n = datagram(RADIO_IP, 4001, IP(13, 0, 0, 1), 4005, "tunnel", d);
     radio_sends(g, RADIO, 9990, false, d, n, 1.0);
     CHECK(f.sent == 1 && f.last_ttl == 0 && f.last[8] == 63 && sums_ok(f.last, n) && !memcmp(f.last + 20, d + 20, n - 20),
@@ -1127,8 +1141,8 @@ static size_t icmp_dgram(uint32_t src, uint32_t dst, int ttl, int type, int code
 static void t_icmp(void)
 {
     fake_t f;
-    rdof_ipgw_t *g = gw(&f, "{\"ip_gateway\": {\"id\": 9990, \"up_pps\": 0, \"down_pps\": 0, \"nat\": true, "
-                            "\"routes\": [{\"private\": 5555, \"to\": \"192.0.2.20:5005\"}]}}");
+    rdof_ipgw_t *g = gw(&f, 9990, "\"up_pps\": 0, \"down_pps\": 0, \"nat\": true, "
+                            "\"routes\": [{\"private\": 5555, \"to\": \"192.0.2.20:5005\"}]");
     uint8_t d[2048], net[2048], got[2048];
     rdof_data_header_t h;
 

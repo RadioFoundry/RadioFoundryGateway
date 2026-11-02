@@ -78,7 +78,7 @@ a terminator; a data packet's call ends at its last block instead, `sdrmodem.c:d
 **Firmware transport** (`modem_sdr.c`): one mutex covers the modem, so the roamer's writes, the DSP's
 `sdr_tx_heard` / `sdr_tx_muted` and the front end's pulls are serialized. `io_tx_tune` accepts
 `|hz − center| ≤ rate·usable/2`, in IQ mode only. A modem needs `duplex ≠ RX_ONLY`, `tx_mode = IQ` and `tx_set`.
-`tx_fs = caps.tx_rate` or the RX rate. Owners: an `sdr_transceiver` radio (the roamer's or repeater's `rdof_modem`
+`tx_fs = caps.tx_rate` or the RX rate. Owners: a unit on the SDR (the roamer's or repeater's `rdof_modem`
 transport `"sdr"`), or a bench job, one at a time.
 
 ## 3. Loopback check (`loopback.c:rdof_sdrmodem_loopback(full, report, cap)`)
@@ -87,8 +87,8 @@ Portable; run by `sdrmodem_tests` and the firmware self-test.
 
 | Setting | Value |
 |---|---|
-| rate / center | `FS` 288000 / 461.000 MHz |
-| channels | `CH0` 461.0375, `CH1` 461.0875 MHz |
+| rate / center | `FS` 288000 / 438.025 MHz |
+| channels | `CH0` 438.0625, `CH1` 438.1125 MHz |
 | chunk | `CHUNK` 4608 samples, for 0.9 s |
 | bursts | `NB` 3 CSBK preambles ours, 3 another station's (in the gaps, on CH0) |
 | mix | `0.5·(ours + other) + 0.02·noise` (an LCG, a sum of 4 uniforms) |

@@ -23,6 +23,7 @@
 #include "rdof/rawburst.h"
 #include "rdof/repeater.h"
 #include "rdof/rust.h"
+#include "rdof/siteplan.h"
 #include "rdof/slotgrid.h"
 #include "rdof/status.h"
 #include "rdof/tracker.h"
@@ -95,6 +96,20 @@ static const rdof_rust_layout_t c_layouts[] = {
     L(rdof_cfg_port_t),
     L(rdof_config_t),
     L(rdof_roles_t),
+    L(rdof_idrange_t),
+    L(rdof_idset_t),
+    L(rdof_policy_t),
+    L(rdof_freq_t),
+    L(rdof_device3_t),
+    L(rdof_app3_t),
+    L(rdof_net3_t),
+    L(rdof_path_t),
+    L(rdof_site_t),
+    L(rdof_port_t),
+    L(rdof_dev_bench_t),
+    L(rdof_plan_dev_t),
+    L(rdof_unit_t),
+    L(rdof_plan_extra_t),
 #if RDOF_FEATURE_REPEATER
     L(rdof_voice_regen_t),
     L(rdof_activity_t),

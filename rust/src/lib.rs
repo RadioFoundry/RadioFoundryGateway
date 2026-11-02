@@ -23,6 +23,7 @@ pub mod modem;
 pub mod netcalls;
 pub mod oled;
 pub mod pdu;
+mod plan;
 pub mod rawburst;
 pub mod repeater;
 pub mod slotgrid;

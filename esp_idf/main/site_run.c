@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 /*
- * The call router on the board (rdof/siteroute.h), for a version 3 document: the site, parsed once at boot, and the
+ * The call router on the board (rdof/siteroute.h): the site (a copy of the settings' plan's, made at boot) and the
  * router's state, in PSRAM, under one lock (the receivers' tasks, the HBlink tasks and the radios' tasks all ask).
  *
  * One identity (hblink identity "box", the default): every path is the box's peer. The first roamer or repeater
  * with HBlink owns the socket (site_hb_owner); the others, and the SDR's monitored channels, send through it.
- * With identity per_path each role and channel is its own peer, as in version 2.
+ * With identity per_path each unit and channel is its own peer.
  *
  * The box's parrot (docs/spec/fw/transmitters.md §5): with a parrot app and a transceiver in the router's pool, one
  * parrot hears every frequency (the SDR receiver's channels, a modem roamer's channel) and plays back on the path a
@@ -47,19 +47,17 @@ static void *ps_alloc(size_t n)
 
 static double mono(void) { return esp_timer_get_time() / 1e6; }
 
-void site_load(const char *text, size_t len)
+void site_load(const rdof_site_t *site)
 {
-    if (!rdof_site_is_v3(text, len))
-        return;
-    char err[160];
     rdof_site_t *s = ps_alloc(sizeof *s);
     rdof_siteroute_t *r = ps_alloc(sizeof *r);
-    if (!s || !r || !rdof_site_parse(text, len, s, err, sizeof err)) {
-        ESP_LOGE(TAG, "version 3: %s; no call router", s && r ? err : "no memory");
+    if (!s || !r) {
+        ESP_LOGE(TAG, "no memory for the call router");
         free(s);
         free(r);
         return;
     }
+    *s = *site;
     rdof_siteroute_init(r, s);
     for (int k = 0; k < s->nnet; k++)
         if (s->net[k].type == RDOF_NET_HBLINK && hblink < 0)
@@ -114,7 +112,7 @@ static bool parrot_admit(void *ctx, int slot, uint32_t src, uint32_t dst, bool g
     return r;
 }
 
-/* With the lowering's parrot id of the roamer whose transceiver joined the pool. */
+/* With the parrot id of the roamer whose transceiver joined the pool (its config's). */
 static void parrot_setup(const roam_t *r)
 {
     if (P || parrot < 0 || !r->cfg->has_parrot)

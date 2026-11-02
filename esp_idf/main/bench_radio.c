@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 /*
- * The bench API's radios (docs/spec/bench-api.md section 8): radios wired to the bench, from "bench": {"radios"}
- * in the settings (rdof/benchcfg.h), on one of the MCU's UARTs or on the USB host port (CDC-ACM, or a USB-serial
- * bridge: FTDI, CP210x, CH34x through Espressif's drivers). A tool reaches one over WS /radios/{name}/link: binary
- * frames are the radio's serial bytes, both ways, through the guard (rdof/benchguard.h); text frames from the board
- * are the guard's events. One link a radio at a time.
+ * The bench API's radios (docs/spec/bench-api.md section 8): radios wired to the bench, the devices "bench":
+ * {"devices"} names in the settings (rdof/benchcfg.h), on one of the MCU's UARTs or on the USB host port (CDC-ACM,
+ * or a USB-serial bridge: FTDI, CP210x, CH34x through Espressif's drivers). A tool reaches one over WS
+ * /radios/{name}/link: binary frames are the radio's serial bytes, both ways, through the guard (rdof/benchguard.h);
+ * text frames from the board are the guard's events. One link a radio at a time.
  *
  * A transmit job (bench_tx.c, via=radio:NAME) holds an MMDVM radio the same way, through the same guard, in place of
  * a link: its frames go to the guard as a tool's would, and what the guard passes back goes to the job.

@@ -2,7 +2,7 @@
 
 Covers: the board's MQTT connections, every topic it publishes (it subscribes only to calls, §10), payloads, QoS, retain, rates, the will, and what a subscriber needs to know; calls carried over MQTT (§10).
 Sources: `esp_idf/main/net.c`, `roam_mqtt.c`, `sdr_mqtt.c`, `radio_task.c`, `roam_hblink.c`; `common/src/tracker.c`, `netcalls.c`, `status.c`, `rawburst.c`, `config.c`; `sdr/src/status.c`, `config.c`.
-Related: [interfaces-http.md](interfaces-http.md), [hblink.md](hblink.md), [config.md](config.md) (the `mqtt` settings), [dmr-core.md](dmr-core.md) (the call tracker).
+Related: [interfaces-http.md](interfaces-http.md), [hblink.md](hblink.md), [config-v3.md](config-v3.md) (the `mqtt` settings, §7.2), [dmr-core.md](dmr-core.md) (the call tracker).
 
 ## 1. Connections
 

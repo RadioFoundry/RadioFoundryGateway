@@ -1,8 +1,8 @@
 # RadioFoundry Gateway
 
 DMR gateway firmware for the ESP32-S3: a roaming transceiver, a repeater and a multi-channel SDR receiver, linked
-to an HBlink4 network and reporting calls over MQTT. One firmware (`esp_idf`) runs what a box config's `radios`
-name for the board: an SDR receiver (an RTL-SDR on USB, 4 or 5 channels), a roamer or repeater (a radio in hotspot
+to an HBlink4 network and reporting calls over MQTT. One firmware (`esp_idf`) runs what its settings
+([docs/spec/fw/config-v3.md](spec/fw/config-v3.md)) make: an SDR receiver (an RTL-SDR on USB, 4 or 5 channels), a roamer or repeater (a radio in hotspot
 mode over USB, `radio_hotspot`: RadioFoundry or OpenGD77; or an MMDVM_HS HAT on a UART), or one of each.
 Ten-channel SDRs come later on an ESP32-P4 (High Speed USB), and eventually everything on an ESP32-S31. The core
 is portable C11, so a Linux build can come later.
@@ -66,7 +66,7 @@ directly), so run it at 2.4 MS/s or more; a Pluto whose decimator works may run 
 [docs/spec/fw/sdr-device-api.md](spec/fw/sdr-device-api.md), takes the same model into the firmware's front ends.
 
 `rdofradio` (built with `rdofsdr`) transmits too: a SoapySDR device (`--soapy`), or an AD9361 through libiio
-(`--iio`, below), run as an `sdr_transceiver`, the repeater
+(`--iio`, below), run as the SDR's unit, the repeater
 (`--duplex full`, repeating what it hears) or the roaming transceiver (`half`), with `--parrot ID` sending back
 what it hears ([parrot.h](../common/include/rdof/parrot.h); on a board, the `parrot` setting). `rdofradio --soapy driver=plutosdr -r 2400000 --allow-tx --rx 438.25 --tx 438.75
 --duplex full --cc 1 --gain 20 --tx-gain 65 --tx-offset 0.063`. On the Pluto above (2026-10-27), with the RX and
@@ -215,34 +215,32 @@ On the Pluto (2026-10-28), `--iio local:` at 768 kS/s with the host tests' simul
 and the repeater ran 60.0 s in 60.0 s with no samples lost. The TX half's round trip bound settled at 1.1 ms. Not
 yet run with a real radio.
 
-The radio can come from a settings file instead: `--config FILE` takes the firmware's settings document
-([docs/spec/fw/config.md](spec/fw/config.md)), read by the firmware's parser. A version 3 file
-([config-v3.md](spec/fw/config-v3.md)) is lowered to version 2 roles first and its calls go through the call router;
-an `mqtt` network with `calls` carries them over the broker. The radio is a `repeater` (or an
-`sdr_transceiver` with `duplex` full) or a half duplex `sdr_transceiver` on its idle channel. rdofradio applies its
-name, `peer_id`, `rx_freq` / `tx_freq`, `cc`, `parrot`, and a repeater's `slots`, `hang_s`, `call_hang_s`,
-`short_lc_ts1_low`, `prebuffer`, the jitter buffer, `cwid` and `cwid_every_s`, as the firmware does. `mode` sfr and
-dcdm are refused. Every other key stays in the file and is listed as not used (at the start, and in
-`/api/resolved`).
+The radio can come from a settings file instead: `--config FILE` takes the firmware's settings, version 3
+([docs/spec/fw/config-v3.md](spec/fw/config-v3.md)), opened by the firmware's parser for a host
+(`rdof_plan_open`, `rdof_plan_check` with `rdof_plan_host`) and its calls go through the call router; an `mqtt`
+network with `calls` carries them over MQTT. rdofradio runs the file's one unit that transmits: a repeater, or a
+transceiver on the SDR (half duplex, on its idle frequency). A transceiver on a modem, and `mode` sfr or dcdm, are
+refused. It takes the unit's settings as the firmware does (`rdof_plan_radio`): its name, peer ID, `in` / `out`,
+`cc`, the parrot, and a repeater's `slots`, `hang_s`, `call_hang_s`, `short_lc_ts1_low`, the jitter buffer, `cwid`
+and `cwid_every_s`. A key a place doesn't take is refused, as on the board.
 
-With an `hblink` section it's an HBlink4 peer, as the board's: the board's peer state (`common/src/hbpeer.c`:
+With an `hblink` network it's an HBlink4 peer, as the board's: the board's peer state (`common/src/hbpeer.c`:
 the keepalive, DMRP, the refusals, each role's DMRC with `callsign`, `location` and `power`, and the dispatch of the
 master's DMRD and DMRT) under a POSIX UDP socket polled from the main loop (`sdr/cli/rdofradio_net.c`). What the RX
 channel hears goes up as DMRD through the board's tracker sink; the master's calls go to the repeater or the
 transceiver, and the transceiver's DMRK back. UDP only: `transport` sctp falls back to UDP with a warning. Without
-an `hblink` section there's no network. The page shows the peer as the board's (`hblink`, `hblink_tx`,
+an `hblink` network there's no network. The page shows the peer as the board's (`hblink`, `hblink_tx`,
 `hblink_rx`).
 
-Version 2 settings can put `monitor` roles on the same SDR device. rdofradio resolves the device's channels with the
-board's SDR parser (`rdof_sdr_config_parse_device`) and receives every channel other than the radio's own RX and TX
-as an extra receiver channel. All of them must fit the sample rate's window, up to 16 channels. Each channel with
-`hblink` and a peer id is an HBlink4 peer of its own, as on the board's SDR (`rdof_hb_channel_dmrc`). A DMRT sent
-to one of them gets a refusal. The repeater's slot timing (`relabel`) applies only to its own RX channel. The
-radio's card on the page lists the monitored channels with their bursts, RSSI and peer state, and their calls show
-in Last heard as the SDR's.
+The SDR's other frequencies are its monitor channels. rdofradio resolves them with the board's SDR parser
+(`rdof_plan_sdr`) and receives every frequency the SDR hears other than the radio's own RX and TX as an extra
+receiver channel. All of them must fit the sample rate's window, up to 16 channels. With `identity: per_path` each
+is an HBlink4 peer of its own, as on the board's SDR (`rdof_hb_channel_dmrc`). A DMRT sent to one of them gets a
+refusal. The repeater's slot timing (`relabel`) applies only to its own RX channel. The radio's card on the page
+lists the monitored channels with their bursts, RSSI and peer state, and their calls show in Last heard as the SDR's.
 
-**Simplex on every channel** (a roamer and a monitor on one SDR). The transceiver takes the roamer's `channels`
-(and `listen_s`, `clear_s`, the answer window, `idle_after_s`, CW ID, as the firmware's roamer) and hears on any
+**Simplex on every channel** (a transceiver on the SDR). The transceiver takes every frequency the SDR `transmits`
+on (and the talker keys: `listen_s`, `clear_s`, the answer window, `idle_after_s`, CW ID, as the firmware's roamer) and hears on any
 receiver channel (`io_channel`); a channel the window doesn't hold can still be sent on (the modem hears nothing
 there, `RDOF_SDRMODEM_NOT_HEARD`). The TX LO moves when a call's channel is past the modulator's reach (0.4 of the
 rate, less half a channel): to 100 kHz above it, unkeyed (`set_tx_freq`). A DMRT to the roamer's peer sends the
@@ -250,10 +248,9 @@ call where the master says. DMRD to a monitored channel's peer, when that channe
 on that channel through the same transceiver: one channel at a time, the next call refused while it's busy (as a
 DMRT would be; the DMRK goes nowhere, since the master sent no DMRT). What we transmit is heard back on its channel
 (and its I/Q image): the receiver drops those bursts (`drop`, counted in `echoes`) within the key-up's span on the
-air, 60 ms either side, so a monitored channel's peer never sends the network's call back as heard. The plan's
-`"tx": false` on a channel keeps everything off it: a roamer's `all` leaves it out, naming it is refused, an idle
-channel with it is heard and never sent on, and no repeater's `tx_freq` may be it. That's how a repeater's output is
-monitored: a monitor channel with `"tx": false`.
+air, 60 ms either side, so a monitored channel's peer never sends the network's call back as heard. `"tx": false` on
+a frequency keeps everything off it: no device transmits there, an idle frequency with it is heard and never sent
+on, and no repeater's `out` may be it. That's how a repeater's output is monitored: a frequency with `"tx": false`.
 
 **The rate** without `-r` is the least multiple of 48 kS/s, from the device's usual rate (768 kS/s through libiio,
 2.4 MS/s through SoapySDR), whose window holds every receive channel and which the channelizer takes (its FFT is 64
@@ -278,10 +275,15 @@ the build's (`RDOF_VERSION`, else git describe at configure time). The device st
 ```sh
 cat > example.json <<'JSON'
 {
+  "version": 3,
   "name": "example",
-  "radios": [
-    {"type": "repeater", "name": "example", "peer_id": 9990601,
-     "rx_freq": 438.25, "tx_freq": 438.0125, "cc": 1, "parrot": 9990}
+  "id": 9990601,
+  "defaults": {"cc": 1},
+  "devices": [{"name": "pluto", "kind": "sdr", "driver": "soapy"}],
+  "frequencies": [{"name": "in", "freq": 438.25}, {"name": "out", "freq": 438.75}],
+  "apps": [
+    {"name": "example", "type": "repeater", "in": "in", "out": "out"},
+    {"type": "parrot", "tg": 9990}
   ]
 }
 JSON
@@ -291,7 +293,7 @@ rdofradio --soapy driver=plutosdr -r 2400000 --allow-tx --config example.json --
 With `--web`, the page's Settings tab edits the file: a save is checked by the same parser, written whole (a
 temporary file renamed over it), and rdofradio restarts: the main loop stops, the TX gain goes to its minimum and
 the streams close as at any exit, and it starts again with the same command line. Without `--config` the tab shows
-the flags as a settings document, read only (a start for a file).
+the flags as a version 3 settings document, read only (a start for a file).
 
 Checked on macOS (arm64; Apple clang, and GCC 15 with `-DRDOF_SANITIZE=OFF -DTINYSCTP_SANITIZE=OFF`, as GCC there
 has no sanitizer runtime) and Linux (Ubuntu 24.04 x86_64, GCC 13, LeakSanitizer included; Debian 13
@@ -351,8 +353,9 @@ reply, a clock) and calls the transceiver's or repeater's `poll` every 20 ms.
 | `hblink` | DMRC, DMRD, DMRT, DMRK, and the HBlink sink |
 | `tracker` | the call tracker: MMDVMHost-style JSON, raw bursts, frames for HBlink4 |
 | `netcalls`, `status` | network calls, `tx`, status and Receiver messages |
-| `config`, `jsonp` | the settings: a box config in JSON resolved for one roamer or repeater; which radios a board runs (`run`) |
-| `site`, `idset` | settings version 3: the parser (devices, frequencies, apps, networks, policies, talk paths), ID sets, the resolved view, and the lowering to version 2 roles (C only) |
+| `site`, `idset` | the settings (version 3, the only format): the parser (devices, frequencies, apps, networks, policies, talk paths; `site_ctx.h`, its parse state, shared with `siteplan`), ID sets, the resolved view (C only) |
+| `siteplan` | the plan: one parse of the settings, the run units (repeater, SFR, DCDM, transceiver, receiver), the devices' own keys, the units' and the SDRs' checks and the platform checks (`rdof/siteplan.h`, [config-v3.md](spec/fw/config-v3.md) §12, §13.1) (C only) |
+| `config`, `jsonp` | a unit's settings from the plan (`rdof_plan_radio`: one roamer or repeater as `rdof_config_t`), what a board runs (`rdof_box_roles`), the ports' checks; the JSON reader |
 | `router`, `siteroute` | version 3's call router: which network an RF call goes to and which paths a network call goes out on (ranks, PTT holds, private calls by where the radio was heard, emergency), and on a running box the repeaters and transceivers it hands bursts to; the MQTT calls topics (C only) |
 | `txpool` | the transmitter pool: which transceiver sends a stream on a path (free, sending, holding for an answer; emergency preemption), for the router's network streams and the box's apps ([transmitters.md](spec/fw/transmitters.md)) (C only) |
 | `slotgrid` | the UTC slot grid, `slot_timing`, the gate, the sample clock |
@@ -360,7 +363,7 @@ reply, a clock) and calls the transceiver's or repeater's `poll` every 20 ms.
 | `usbmatch` | which radio a USB device goes to (VID / PID, serial, hub port) |
 | `oled` | the frame, font and panel commands; the roamer's status screen |
 | `oled_sdr` | the SDR's status screen and the `oled` settings (C only, no Rust port) |
-| `ipgw`, `ipgwcfg` | the IP gateway: DMR packet data put together, relayed to UDP by route or NAT, replies sent back as packet data; the `ip_gateway` settings (C only, no Rust port) |
+| `ipgw`, `ipgwcfg` | the IP gateway: DMR packet data put together, relayed to UDP by route or NAT, replies sent back as packet data; the `ipgw` app's settings (C only, no Rust port) |
 | `json` | a compact JSON writer (no spaces after `,` and `:`), byte for byte stable for the golden tests |
 | `webapi` | the web page's API shared by the firmware and the host tools: `/api/status`'s shared sections and `caps`, the settings (`/api/config`, `/api/resolved`, save and restart), `/api/log` (and its byte ring), `/api/lastheard`, `/api/restart`; each server gives a platform (optional hooks and capability flags) and routes those paths to `rdof_webapi_handle` |
 
@@ -415,9 +418,11 @@ installed, `rdof_tests_rust` too: `rdof_tests` with `rust/`'s modules in place o
   bursts, then network calls through the transceiver and the repeater on a modeled air (one burst per 60 ms):
   steady, jittered, bursty after a stall, a late storm and lost bursts, auto against fixed, each checked for gaps,
   superframe positions, EMB and embedded LC, missing bursts and delay;
-- the settings: 37 box configs (15 that run, 22 that must be refused) resolved as the fixtures say, SFR descriptions, the status
-  and Receiver messages; the `wifi` and `ntp` keys moved out of and back into the settings text with its comments;
-  the `hblink.sctp_*` keys; which radios a board runs (`run`, and without it), and the roamer `run` picks;
+- the settings: SFR descriptions, the status and Receiver messages; the `wifi` and `ntp` keys moved out of and back
+  into the settings text with its comments; the `hblink.sctp_*` keys; what a board runs; rdofradio's settings
+  (`test_radiocfg.c`). The version 3 fixtures (`fixtures/config/v3/`) run in `rdof_site_tests` (`test_site.c`: the
+  parser, the router, the pool) and `rdof_plan_tests` (`test_plan.c`: the plan, its units and each part's settings,
+  the text forms giving the same), and through the schema in `rdof_schema_tests` (node; [config-v3.md](spec/fw/config-v3.md) §13.2);
 - two radios a board: each parsed by name with its own port, ports that clash refused (a split's halves each
   counted), and which radio a USB device goes to (`rdof/usbmatch.h`).
 
@@ -465,10 +470,9 @@ settings format (a box config), one page.
 
 ### One app, two roles
 
-- **What runs** is what the box config's `radios` name for this board: the firmware key `run` (a name or a list,
-  two roamers or repeaters and one SDR at most; "More than one radio" below), else the first roamer or repeater, else the first SDR. A plain
-  SDR config on its own (no `radios`: "Settings" under "The SDR role") runs the SDR.
-- **Both at once** works with the modem on a UART (`"modem": "uart"`, an MMDVM_HS HAT or a RadioFoundry radio's
+- **What runs** is every unit the settings make ([config-v3.md](spec/fw/config-v3.md) §12): two that transmit
+  (roamers or repeaters) and one SDR at most ("More than one radio" below).
+- **Both at once** works with the modem on a UART (`"port": {"uart": 1, ...}`, an MMDVM_HS HAT or a RadioFoundry radio's
   programming cable) and the RTL-SDR on the USB port, or with both on a powered USB hub (`"usb_hub": true` and a build with hub
   support: `16mb`, or the `hub` overlay). Without `usb_hub`, with both roles set to use USB, whichever device is
   plugged in runs (a USB client looks at its VID / PID and starts that role), and plugging in the other kind later
@@ -497,7 +501,7 @@ settings format (a box config), one page.
 | `main.c`, `settings.c`, `wifi.c`, `web.c`, `net.c`, `usb_host.c`, `logring.c`, `crash.c` (the core dump: "Crashes" below), `status_led.c`, `oled_task.c` (`CONFIG_RDOF_OLED`) | the board |
 | `roamer.c`, `radio_task.c`, `modem_port.c`, `usb_modem.c`, `uart_modem.c`, `roam_hblink.c`, `rx_path.c`, `roam_mqtt.c` | the roamers or repeaters (`CONFIG_RDOF_ROAMER`), a `roam_t` each |
 | `sdr.c`, `sdr_task.c`, `dsp_esp.c`, `kbench.c`, `fir_s3.S`, `fe_rtlsdr.c`, `fe_sim.c`, `fe_lr2021.c` (`CONFIG_RDOF_SDR_LR2021`), `sdr_mqtt.c`, `sdr_hblink.c`, `selftest.c`, `selftest_core.c`, `selftest/` | the SDR (`CONFIG_RDOF_SDR`) |
-| `modem_sdr.c` | an `sdr_transceiver`'s modem port, the SDR (with either role) |
+| `modem_sdr.c` | the modem port of a unit on the SDR (with either role) |
 
 ### Toolchain
 
@@ -569,7 +573,7 @@ Firmware options (`main/Kconfig.projbuild`, menu "RadioFoundry Gateway"):
 | `CONFIG_RDOF_MODEM_UART` | y | an MMDVM_HS or MMDVM board on a UART (UART1, or UART2 for a second radio) |
 | `CONFIG_RDOF_HBLINK_SCTP` | y | the roamer's HBlink4 link over SCTP in UDP (`hblink.transport: sctp`, tinysctp): 16 KB of flash, 2 KB of RAM, and about 5 KB of heap when in use; off: UDP only |
 | `CONFIG_RDOF_SCAN` | y | a roamer's scanning between calls |
-| `CONFIG_RDOF_IPGW`, `_MAX_SOCKETS` | y, 8 | the IP gateway ("The IP gateway" below), and the flows (UDP sockets) it may hold; off unless the settings have `ip_gateway` |
+| `CONFIG_RDOF_IPGW`, `_MAX_SOCKETS` | y, 8 | the IP gateway ("The IP gateway" below), and the flows (UDP sockets) it may hold; off unless the settings have an `ipgw` app |
 | `CONFIG_RDOF_OLED` | y | the OLED status screen (I2C): the SDR's channels and calls, else the roamer's or repeater's state |
 | `CONFIG_RDOF_OLED_BUILTIN`, `_SDA`, `_SCL`, `_POWER_GPIO`, `_POWER_LEVEL` | n, 8, 9, -1, 0 (y, 17, 18, 45, 0 in `w12`) | a board's own display: on with no `oled` key, its pins, its power switch |
 | `CONFIG_RDOF_SDR_*` | | the SDR's: see "The SDR role" below |
@@ -661,6 +665,10 @@ On 2026-11-01, with the transmitter pool, the box parrot and the blind span (`tx
 621 KB free in its slot, 135 KB DIRAM used (40.3%).
 With bench TX through the router (`benchroute.c`): `16mb` + `w12` 2157 KB (0x21B570), 174 KB DIRAM used (52.1%).
 
+On 2026-11-02, with one parse of the settings (version 3 only: `siteplan.c`; the version 1 and 2 parsers, the
+lowering and the broker gone): `16mb` + `w12` 2133 KB (0x214E80), 24 KB less, 174 KB DIRAM used (52.1%); `4mb`
+without the SDR 1279 KB (0x13FB80), 20 KB less, 641 KB free in its slot, 134 KB DIRAM used (40.3%).
+
 The roamer role costs 132 KB of flash and the SDR 436 KB (338 KB of it the self-test clip), against about 945 KB for
 the board both share. The SDR only image is 64 KB smaller than with everything built `-O2`.
 
@@ -710,23 +718,23 @@ settings carry over.
 
 ### More than one radio
 
-`run` may name two roamers or repeaters (`RDOF_MAX_RADIOS`), with or without an SDR. Each is a `roam_t` (`app.h`):
+The settings may make two units that transmit, roamers or repeaters (`RDOF_MAX_RADIOS`), with or without an SDR. Each is a `roam_t` (`app.h`):
 its own modem and port, transceiver or repeater, tracker, HBlink4 peer and MQTT connection. The OLED shows the
 first (or, with an SDR, the SDR's screen with the first one's TX row). The page shows each; `/api/status` has `roamer` (the first) and, with two, `roamers`.
 
-**Ports.** Each radio takes its port from its own keys, else the box's: `modem` (`usb` or `uart`), `uart {tx, rx,
-num}` and `speed` (the serial speed, 8N1, 115200 by default). UART1 is the first UART (`num` 1) and UART2 the
-second; UART0 is the console. A RadioFoundry radio without USB runs its hotspot on the programming cable's UART at
+**Ports.** Each modem takes its port from its device's `port`: `{"usb": "auto"}`, or `{"uart": 1, "tx", "rx"}` and
+`baud` (8N1, 115200 by default) ([config-v3.md](spec/fw/config-v3.md) §4.3). UART1 is the first UART (`uart` 1)
+and UART2 the second; UART0 is the console. A RadioFoundry radio without USB runs its hotspot on the programming cable's UART at
 115200 (3.3 V levels: check the cable). Radios can't share a UART or a pin (`rdof_config_check_ports`).
 
-**A split** (a repeater with `radio.type: split`; [docs/spec/repeater.md](spec/repeater.md) and
-[docs/spec/fw/radio.md](spec/fw/radio.md)) is one radio with two ports,
-`radio.tx` and `radio.rx`, each with these keys. `split_port.c` runs each half on its usual transport and
+**A split** (a repeater app whose `in` one modem hears and whose `out` another sends;
+[docs/spec/repeater.md](spec/repeater.md) and [docs/spec/fw/radio.md](spec/fw/radio.md)) is one unit on two
+devices, each with its own `port`. `split_port.c` runs each half on its usual transport and
 `rdof_split_t` between them; the repeater sees one modem. At most one half on USB (it takes the radio's USB device
 slot); the other on a UART. It adds a 4 KB task and the second half's transport task. Not run on a board yet.
 
-**USB.** Two radios on USB need a hub, and each needs telling apart: `usb {serial}` (its USB serial number, as the
-board's log prints it when it's plugged in) or `usb {port}` (where it's plugged in: the hub ports from the board
+**USB.** Two radios on USB need a hub, and each needs telling apart: `port.serial` (its USB serial number, as the
+board's log prints it when it's plugged in) or `port.usb_port` (where it's plugged in: the hub ports from the board
 down, `"2"` or `"1.3"`). A watcher client in `usb_host.c` looks at each device as it arrives and gives it to the
 radio it matches (`rdof/usbmatch.h`: VID / PID, then the serial and port where they're set, the radio that named
 more winning; host-tested), and each radio's CDC-ACM driver opens only that address. A replug lands on the same
@@ -758,24 +766,16 @@ starts doesn't. Two radios and an SDR on the N16R8 is not measured on a board ye
 
 ### Settings
 
-The settings are one box config in JSON (comments allowed), stored in NVS and edited on the web page (Settings:
-edit, Save and restart, Export, Import). They're checked in full before they're saved; the page also shows them as
-resolved. Every key is in [docs/spec/fw/config.md](spec/fw/config.md); version 3 (devices, frequencies, apps,
-networks and call policies, no roles) is in [docs/spec/fw/config-v3.md](spec/fw/config-v3.md), and runs as the
-version 2 roles it lowers to plus the call router. The version 2 box keys: `name`, `location`,
-`mqtt`, `hblink`, `cc`, `channels` (the plan), `radios`, `oled`. Then:
+The settings are one JSON document, version 3 (comments allowed), stored in NVS and edited on the web page
+(Settings: edit, Save and restart, Export, Import). Every key, what runs, the checks and the schema are in
+[docs/spec/fw/config-v3.md](spec/fw/config-v3.md): devices, frequencies, apps, networks and call policies, no roles.
+They're opened and checked in full before they're saved (the board check, the units, the ports, the front end in the
+build); the page also shows them as resolved (`/api/resolved`). A file without `"version": 3` is refused: versions 1
+and 2 are gone. The board's own keys besides the sections:
 
-- `run`: the radios this board runs, a name or a list of names (two roamers or repeaters and one SDR at most). Without
-  it, the first roamer or repeater runs, else the first SDR. SDR sections that don't run still tell a roamer which
-  channels are `covered`.
-- on any radio, `"enabled": false` (the default is true): the radio is left out as if it weren't in `radios`, and
-  isn't checked. `run` may still name it. So two SDR sections, say a `sim` and an `rtlsdr` both in `run`, switch by
-  flipping their `enabled`. A disabled SDR covers no channels.
-- for the roamer or repeater, on the box or on each radio: `modem` (`usb` or `uart`; `usb` for an OpenGD77),
-  `uart {tx, rx, num}` (`num` 1 or 2), `speed`; on a radio, `usb {serial, port}`;
-- for the screen, whatever runs: `oled {sda, scl}`;
+- `oled {sda, scl, ...}` for the screen, whatever runs;
 - `usb_hub`: `true` when the USB port has a hub, so a radio and an RTL-SDR on it both run ("More than one radio");
-- in the SDR's section: `usb {transfers, transfer_kb}`, `dsp_cores`, `selftest`, `spike` ("The SDR role" below);
+- on the SDR device: `usb {transfers, transfer_kb}`, `dsp_cores`, `selftest`, `spike` ("The SDR role" below);
 - and:
 
 - `wifi`: `{"networks": [{"ssid", "priority", "hidden", "password", "was"}]}`, the Wi-Fi list (wifilist's format;
@@ -800,8 +800,9 @@ HBlink4's), `sctp_heartbeat_ms` (10000), `sctp_max_retransmit` (3) and `sctp_ttl
 not acknowledged by then is given up (PR-SCTP) instead of holding up the ones behind it; 0 keeps every burst. DMRC
 and DMRK are always reliable.
 
-To set up a board, start from its default settings (Export on the page), or write the box config by hand, name the
-radios it runs in `run`, and Import or paste it. An S3's SDR takes a `sample_rate` of 288000 or 240000.
+To set up a board, start from its default settings (Export on the page), or write the settings by hand (a W12's:
+[config-v3.md](spec/fw/config-v3.md) §10.5), and Import or paste them. An S3's RTL-SDR takes an `rx.rate` of 288000 or
+240000.
 
 With no Wi-Fi networks, or none reached within 20 s (at boot or after losing the connection), the board opens an
 access point `radiofoundry-XXXX` (password `radiofoundry`) with the page at <http://192.168.4.1/>, while the station keeps
@@ -810,7 +811,7 @@ channels at 288 kS/s, both on USB: whichever is plugged in runs. A one-role buil
 
 ### The IP gateway
 
-Optional, off unless the settings have `ip_gateway`: radios' IPv4 datagrams, sent as DMR packet data (ARS,
+Optional, off unless the settings have an `ipgw` app: radios' IPv4 datagrams, sent as DMR packet data (ARS,
 text messages, location, any app on UDP), relayed to the network, and the replies sent back to the radio. The
 board puts each message back together from the bursts any of its receivers hear (the SDR's channels, each
 roamer's or repeater's radio), checks it, and then:
@@ -824,21 +825,22 @@ roamer's or repeater's radio), checks it, and then:
 It takes the full IPv4 header (SAP 4) and the compressed UDP/IPv4 header (SAP 3, the addresses rebuilt from the
 DMR ids), packets chained in one transmission, and ping through NAT (echo, and ICMP errors for a flow rewritten
 back to the radio); it routes TTL as a router does. Replies on a flow come back to the radio as unconfirmed packet
-data, from the address it sent to, through a roamer (a hotspot, or an `sdr_transceiver` half duplex) or a repeater
-(duplex on either slot, SFR, DCDM, or an `sdr_transceiver` full duplex) (`ip_gateway.tx`, else the first), on the
+data, from the address it sent to, through the transmitter pool on the path the radio was last heard on, or a roamer (a hotspot) or a repeater
+(duplex on either slot, SFR, DCDM, or a repeater on a full-duplex SDR) (the app's `tx`, else the first), on the
 radio's frequency and slot, waiting for the slot when the repeater is busy; an SDR-only board relays but can't
 answer. Confirmed data the gateway takes is ACKed. Radios that send off-net traffic to an IP gateway id take
-`ip_gateway.id` there. Rate limits each way, a flow cap, an idle timeout and a size cap bound it; the counters
+the app's `tg` or `pc` there. Rate limits each way, a flow cap, an idle timeout and a size cap bound it; the counters
 are in `GET /api/status` under `ip_gateway`.
 
 ```jsonc
-"ip_gateway": {
-  "routes": [{"name": "ars", "private": 9990, "to": "192.0.2.20:4005"}],
-  "nat": true
-}
+"apps": [
+  {"type": "ipgw", "pc": 9991,
+   "routes": [{"name": "ars", "private": 9990, "to": "192.0.2.20:4005"}],
+   "nat": true}
+]
 ```
 
-Keys: [docs/spec/fw/config.md](spec/fw/config.md) §2.13; how it works and what it doesn't do yet:
+Keys: [docs/spec/fw/config-v3.md](spec/fw/config-v3.md) §6.3; how it works and what it doesn't do yet:
 [docs/spec/fw/ipgw.md](spec/fw/ipgw.md).
 
 ### Wi-Fi and the clock
@@ -950,10 +952,10 @@ The roamer or repeater here; the SDR under "The SDR role", then both:
    `migrated the single network`). Add a second network, switch the first off, and watch the board fall back and
    the failure show on the page; switch it on and force a reconnect. The Clock section should show the servers
    with reach 377 after 8 polls, the rate learned after about 10 minutes, and the stored rate after a restart.
-10. Both roles. With the default settings (or a roamer on USB and an SDR in `run`): plug in the OpenGD77, and the
+10. Both roles. With the default settings (or a modem on USB and an SDR in the settings): plug in the OpenGD77, and the
     log says `1FC9:0094: running the roamer / repeater`; plug in the dongle instead, and the board restarts and runs
-    the SDR. Then an MMDVM_HS HAT on the UART with the dongle on USB (both
-    names in `run`, `"modem": "uart"`): both run; key the HAT's idle channel and an SDR channel at once, and check the SDR's DSP load, its
+    the SDR. Then an MMDVM_HS HAT on the UART with the dongle on USB (the
+    modem's `port` a `uart`): both run; key the HAT's idle channel and an SDR channel at once, and check the SDR's DSP load, its
     `droppedChunks`, the roamer's "without a reply" count, and internal RAM free on the page.
 
 ## Scope
@@ -980,7 +982,7 @@ What the roamer, repeater and their settings do, and the limits:
 | The call tracker | in |
 | MQTT | esp-mqtt; TLS behind `CONFIG_RDOF_MQTT_TLS` |
 | OLED | the board shows its own state (`CONFIG_RDOF_OLED`): the frame, font and panel commands |
-| Radios a board | two roamers or repeaters and one SDR at most (`run`), as roles of one app; a settings change restarts it; the web page checks settings |
+| Radios a board | two units that transmit (roamers or repeaters) and one SDR at most, as roles of one app; a settings change restarts it; the web page checks settings |
 | The SDR receiver (channelizer, demod, receiver, AGC) | in (`sdr`); on the S3 at 288 kS/s, eight busy channels take 116% of one core, 93% of the wall clock on two ("CPU budget on the S3"); ten at 1.536 MS/s on an ESP32-P4, later |
 
 Other notes: JSON timestamps are wrong until NTP (or a browser on the page) has set the clock. The HBlink4 peers
@@ -1013,10 +1015,10 @@ edits. Headers in `include/rdof/sdr/`.
 | `demod` | squelch, sync search over the four families, 4FSK slicing, CACH slot, slot guess, voice flywheel with EMB checks; bursts carry position, power, level center (AFC) and deviation |
 | `agc` | clip measurement (float or straight from cu8), the gain control law, level stats |
 | `mod` | the transmit side: DMR 4FSK modulator, bursts to I/Q or shaped frequency ("Modulator" below) |
-| `sdrmodem`, `loopback` | the SDR as an MMDVM modem for an `sdr_transceiver`, and its end-to-end check ("Transmit: the SDR as a radio") |
+| `sdrmodem`, `loopback` | the SDR as an MMDVM modem for a unit on the SDR, and its end-to-end check ("Transmit: the SDR as a radio") |
 | `receiver` | one tuner: channelizer, a demod and a `common` call tracker per channel, AFC after each chunk |
 | `cli/rdofsdr.c` | host tool: a cu8 recording (or, with SoapySDR, a live device: `--soapy`) in, bursts and tracker JSON out; `--bench` times each stage |
-| `cli/rdofradio.c` | host tool, with SoapySDR or libiio: a device that transmits, run as an `sdr_transceiver` (repeater or roaming transceiver), with the parrot; or receive only as a split's RX half with a RadioFoundry radio transmitting (`--split-tx`, over `rdofradio_serial.c`); the device behind `rdofradio_dev.h` (`rdofradio_soapy.c`, `rdofradio_iio.c`) |
+| `cli/rdofradio.c` | host tool, with SoapySDR or libiio: a device that transmits, run as the SDR's unit (repeater or roaming transceiver), with the parrot; or receive only as a split's RX half with a RadioFoundry radio transmitting (`--split-tx`, over `rdofradio_serial.c`); the device behind `rdofradio_dev.h` (`rdofradio_soapy.c`, `rdofradio_iio.c`) |
 | `cli/tools.cmake` | the host tools' build, shared by the top-level build and host-tests: SoapySDR, libiio and libad9361 found, pffft and the web page linked |
 | `pffft/` | pffft (FFTPACK license), unchanged, and `rdof_pffft.c`: an `rdof_fft` backend the host tools use (`--fft builtin` turns it off). 2.6 to 2.9 times the built-in FFT on a Cortex-A9; scalar there, as its NEON code was slower |
 
@@ -1444,13 +1446,14 @@ which is low (an external PA for useful power). Nothing written yet.
 Built and run on the host and in the self-test; on a board with `sim` (which loops what it sends back into what it
 receives) and the LR2021, half duplex. On the W12 (2026-10-24) a 29-burst call sent through the bench's `WS /tx
 via=modem` at +10 dBm on 438.2625 MHz decoded whole on the SDR bench: 0 FEC failures, about 0.9% bit errors, the
-bursts within 26 us of the TDMA grid. The roamer on it (an `sdr_transceiver`) hasn't been run against HBlink4 yet.
+bursts within 26 us of the TDMA grid. The roamer on it (a transceiver on the SDR) is the router's pool transmitter
+([docs/spec/fw/transmitters.md](spec/fw/transmitters.md)).
 
-- **Config.** A radio of type `sdr_transceiver` in `radios` (and in `run`, with the SDR): `duplex: half` (the
-  default) is a roamer, with a roamer's keys (`idle`, `channels`, `scan` ...); `duplex: full` is a duplex repeater,
-  with a repeater's keys (`rx_freq`, `tx_freq`, `cc`, `slots` ...). `tx_power_dbm` (10 by default) is the power.
-  Its modem port is the SDR (`modem_port` "sdr"; a `modem` key is ignored), one a board. It's checked as the
-  roamer or repeater it is, its frequencies on one of the SDR's channels. Saving settings on the board also refuses
+- **Config.** An SDR device that transmits ([config-v3.md](spec/fw/config-v3.md) §4.1): on simplex frequencies
+  it's a transceiver unit (a roamer, with the talker keys); a repeater app on it is a duplex repeater (a full-duplex
+  front end); a DCDM frequency it sends on is a DCDM gateway. `tx.power_dbm` (10 by default) is the power. Its
+  modem port is the SDR (`modem_port` "sdr"), one a board. It's checked as the roamer or repeater it is, its
+  frequencies heard by the SDR. Saving settings on the board also refuses
   a front end that can't transmit, `full` on a half duplex front end, a frequency the SDR doesn't hear, and a TX
   frequency outside the front end's range.
 - **The modem** (`sdr/src/sdrmodem.c`, `rdof/sdr/sdrmodem.h`): an emulated MMDVM modem, protocol 1, describing
@@ -1598,22 +1601,17 @@ on a board yet). The output is the same either way (`sdr_selftest_tests` checks 
 
 ### Settings
 
-The board's box config ("Settings" above) with an `sdr` section in `radios` ([docs/spec/fw/config.md](spec/fw/config.md)):
-`name`, `device {sample_rate, center ("auto" or MHz / Hz), gain (dB or "auto"), agc
-(true or {min, ...}), ppm, settings {biastee}}`, `receiver_ids` (`"SDR{ch:02d}"`), `peer_ids` (each channel's peer
-is this plus its number), `channels` (plan numbers, or `{ch, ...}` to override `id`, `name`, `freq`, `cc`, `slot`,
-`tg`, `peer_id`, `hblink`), `callsign`, `hblink` (false: no peers), `location`, `rssi_offset`, `afc`,
-`status_seconds`; the box's `mqtt` (app `sdr`), `hblink` (`host`, `port`) and `location`. Board keys in the
-section: `usb {transfers, transfer_kb}` (8 x 8 KB by default), `dsp_cores` (1 or 2), `selftest`, `spike` (run at
-boot), `sim` (no dongle: the self-test clip, five busy channels around 438.1475 MHz at 288 kS/s, looped in real
-time; a chunk more than half a second late is dropped and counted, as the USB ring would. For measuring the DSP
-and testing the board end to end; needs `CONFIG_RDOF_SDR_SELFTEST`), `sim_ppm` (with `sim`: a simulated tuner this
-many ppm fast, to watch `learn_ppm` work), `idle_gate` (default true; "The idle gate" below) and `learn_ppm`
-(default true; "The tuner's ppm, learned" below). `rdof_sdr_tests` checks the resolving against golden results,
-for a full box config and hand-made ones.
-
-A plain SDR config (no `radios`: `defaults` and `channels [{id, name, freq, ...}]`, the board keys at the top) is
-taken too.
+An SDR device in the settings ("Settings" above; every key in [config-v3.md](spec/fw/config-v3.md) §4.1): `name`,
+`driver`, `rx {rate, center_hz ("auto" or MHz / Hz), gain_db (dB or "auto"), agc (true or {min, ...}), ppm,
+biastee}`, `rssi_offset`, `afc`, `status_seconds`. It hears every frequency in its window (or the ones pinned to
+it); the top level's `callsign`, `location` and `slot_timing`, the `mqtt` network (app `sdr`) and the `hblink`
+network (a peer per channel with `identity: per_path`, else through the box's peer) apply. Board keys on the device:
+`usb {transfers, transfer_kb}` (8 x 8 KB by default), `dsp_cores` (1 or 2), `selftest`, `spike` (run at boot),
+`sim` (no dongle: the self-test clip, five busy channels around 438.1475 MHz at 288 kS/s, looped in real time; a
+chunk more than half a second late is dropped and counted, as the USB ring would. For measuring the DSP and testing
+the board end to end; needs `CONFIG_RDOF_SDR_SELFTEST`), `sim_ppm` (with `sim`: a simulated tuner this many ppm
+fast, to watch `learn_ppm` work), `idle_gate` (default true; "The idle gate" below) and `learn_ppm` (default true;
+"The tuner's ppm, learned" below). `rdof_plan_tests` checks it against the version 3 fixtures.
 
 #### The idle gate
 
@@ -1751,7 +1749,7 @@ without it the dongle needs power from an OTG adapter or hub.
 to 512): in use` and `matched filter: int16 SIMD`.
 Each is checked against the built-in code at boot; `LEFT OUT` (FFT) or `dsps_fir_f32` / `built-in` (the filter)
 means it didn't match, and the board runs anyway, only slower. Then `USB host up`,
-`USB host up (ring 256 KB)` from the driver, and `waiting for an RTL-SDR (0BDA:2838)`. (With the roamer in `run` too
+`USB host up (ring 256 KB)` from the driver, and `waiting for an RTL-SDR (0BDA:2838)`. (With a modem in the settings too
 and on USB, the role starts, with these lines, only once the dongle is plugged in.) With no Wi-Fi networks, the access point
 `radiofoundry-XXXX` (password `radiofoundry`) comes up, page at <http://192.168.4.1/>.
 
@@ -1986,7 +1984,7 @@ bench tools written for the authors' bench daemon run against it in its place (`
 info, status, spectrum, bursts, capture, radios, link, tune, tx; the HIL tests use it). HTTP for the snapshots, WebSockets for the streams (bursts,
 I/Q channel taps and the wideband samples, with up to 1 s of pre-roll and a level trigger), a run-time retune of the
 SDR (`PUT /sdr`: center, gain, taps at any frequency in the window, under an exclusive lease that puts the settings
-back when it ends), radios wired to the bench (`"bench": {"radios": [...]}` in the settings: an MCU UART, or USB
+back when it ends), radios wired to the bench (devices named in `"bench": {"devices": [...]}` in the settings: an MCU UART, or USB
 CDC-ACM or a USB-serial bridge on the host port) behind the bench daemon's guard, a RadioFoundry radio's tune, and DMR
 burst transmit (`WS /tx`) through the SDR's modem or an MMDVM bench radio, only on what `"bench": {"tx": {...}}`
 allows. No auth: it's for a private test network. Code in `bench_api.c`, `bench_radio.c` and `bench_tx.c`

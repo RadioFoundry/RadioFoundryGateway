@@ -14,9 +14,7 @@
  * (the path's own keys, then its named policy, then defaults, then the table). The router (rdof/router.h) decides
  * where calls go from it.
  *
- * What runs on which device is still the version 2 machinery's: rdof_site_lower writes the document as the version
- * 2 settings (roles on devices) that rdof/setup.h, the broker and the role parsers take. setup.c does that by
- * itself for a version 3 document, so everything that reads settings takes version 3.
+ * What runs on which device (the run units) and each part's own settings are rdof/siteplan.h's, on this parse.
  *
  * Portable C. rdof_site_t is large (about 40 KB): allocate it.
  */
@@ -75,7 +73,7 @@ typedef struct {
 
 typedef struct {
     char name[RDOF_SITE_NAME];
-    int kind;        /* rdof_dev_kind_t (rdof/setup.h): 1 sdr, 2 modem, 3 radio */
+    int kind;        /* rdof_dev_kind_t (rdof/siteplan.h): 1 sdr, 2 modem, 3 radio */
     char driver[16];
     uint8_t hears;   /* rdof_hears_t */
     int idle;        /* RDOF_HEARS_IDLE / SCAN: the frequency it waits on, -1 none */
@@ -126,9 +124,6 @@ typedef struct {
     rdof_path_t path[RDOF_SITE_MAX_PATHS];
 } rdof_site_t;
 
-/* True when text is a version 3 document ("version": 3). */
-bool rdof_site_is_v3(const char *text, size_t len);
-
 /* Version 3 settings into s. false with err set: "path: message", path as frequencies[3].tg or apps.R1.in. */
 bool rdof_site_parse(const char *text, size_t len, rdof_site_t *s, char *err, size_t cap);
 
@@ -143,9 +138,6 @@ int rdof_site_app(const rdof_site_t *s, const char *name);
 int rdof_site_path_rx(const rdof_site_t *s, uint32_t hz, int slot);
 /* The apps of a type the site has: the first, -1 none. */
 int rdof_site_app_of(const rdof_site_t *s, int type);
-
-/* The document as version 2 settings (malloc'd, NUL terminated), or NULL with err set. */
-char *rdof_site_lower(const char *text, size_t len, size_t *out_len, char *err, size_t cap);
 
 /* The resolved view (docs/spec/fw/config-v3.md section 11) as JSON: the frequencies, the paths and their policies
    (each key's source), the reverse talkgroup view, the networks. Returns the length (out NUL terminated, cut at

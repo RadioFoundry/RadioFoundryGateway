@@ -737,17 +737,17 @@ static void t_policy(void)
 {
     rdof_benchtx_policy_t p;
     char err[160];
-    const char *a = "{\"bench\": {\"tx\": {\"freqs_hz\": [438162500, 438112500], \"max_key_s\": 5, \"arm_gpio\": 4}}}";
+    const char *a = "{\"version\": 3, \"bench\": {\"tx\": {\"freqs_hz\": [438162500, 438112500], \"max_key_s\": 5, \"arm_gpio\": 4}}}";
     CHECK(rdof_bench_tx_parse(a, strlen(a), &p, err, sizeof err) == 0 && p.nfreqs == 2 && p.freqs_hz[1] == 438112500 &&
               p.max_key_s == 5 && p.rf_level == 0 && p.arm_gpio == 4,
           "parsed: %s", err);
-    const char *b = "{\"bench\": {\"radios\": []}}";
+    const char *b = "{\"version\": 3, \"bench\": {\"devices\": []}}";
     CHECK(rdof_bench_tx_parse(b, strlen(b), &p, err, sizeof err) == 0 && p.nfreqs == 0 && p.arm_gpio == -1, "none");
-    const char *c = "{\"bench\": {\"tx\": {\"freqs_hz\": [438.1625]}}}";
+    const char *c = "{\"version\": 3, \"bench\": {\"tx\": {\"freqs_hz\": [438.1625]}}}";
     CHECK(rdof_bench_tx_parse(c, strlen(c), &p, err, sizeof err) < 0 && strstr(err, "whole Hz"), "MHz: %s", err);
-    const char *d = "{\"bench\": {\"tx\": {\"freqs_hz\": [438162500], \"max_key_s\": 120}}}";
+    const char *d = "{\"version\": 3, \"bench\": {\"tx\": {\"freqs_hz\": [438162500], \"max_key_s\": 120}}}";
     CHECK(rdof_bench_tx_parse(d, strlen(d), &p, err, sizeof err) < 0 && strstr(err, "max_key_s"), "too long: %s", err);
-    const char *e = "{\"bench\": {\"tx\": {\"freqs_hz\": [438162500]}}}";
+    const char *e = "{\"version\": 3, \"bench\": {\"tx\": {\"freqs_hz\": [438162500]}}}";
     CHECK(rdof_bench_tx_parse(e, strlen(e), &p, err, sizeof err) == 0 && p.max_key_s == 10, "default key time");
 }
 

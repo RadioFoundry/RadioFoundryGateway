@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
-/* Box config JSON -> one roamer or repeater (rdof/config.h, docs/spec/fw/config.md). */
+/* The settings (version 3) -> one repeater, SFR or DCDM gateway, or transceiver (rdof/config.h,
+   docs/spec/fw/config-v3.md section 12). */
 #include "rdof/config.h"
 #include "rdof/slotgrid.h"
 
@@ -14,19 +15,15 @@
 #include "rdof/jitter.h"
 #include "rdof/json.h"
 #include "rdof/jsonp.h"
-#include "rdof/setup.h"
+#include "rdof/siteplan.h"
 #include "rdof/status.h"
 
-#define MAX_NODES 1200
-#define STR_BUF 8192
-
 typedef struct {
-    rdof_jdoc_t doc;
-    rdof_jnode_t nodes[MAX_NODES];
-    char strs[STR_BUF];
-    char *text; /* comments stripped */
+    const rdof_jdoc_t *doc;
     char *error;
     size_t error_cap;
+    int mm[2];       /* the modem's MMDVM settings: a split's TX half's, then its RX half's */
+    const char *mmw; /* where they are: devices.NAME.mmdvm */
 } ctx_t;
 
 /* s into out[cap], cut to cap - 1 bytes (as snprintf "%s" cuts it, without its truncation warning). */
@@ -70,12 +67,12 @@ static uint32_t to_u32(double v)
 
 static const rdof_jnode_t *N(ctx_t *c, int i)
 {
-    return rdof_jnode(&c->doc, i);
+    return rdof_jnode(c->doc, i);
 }
 
 static int get(ctx_t *c, int obj, const char *key)
 {
-    return rdof_jget(&c->doc, obj, key);
+    return rdof_jget(c->doc, obj, key);
 }
 
 static bool is_env(const rdof_jnode_t *n)
@@ -207,70 +204,10 @@ static bool bget(ctx_t *c, int obj, const char *key, bool dflt)
     return i < 0 ? dflt : truthy(c, i);
 }
 
-/* box._hz: MHz below 1e5 */
-static bool box_hz(ctx_t *c, int i, uint32_t *out, const char *what)
-{
-    double f;
-    if (!num(c, i, &f))
-        return err(c, "%s: bad frequency", what);
-    *out = to_u32(rint(f < 1e5 ? f * 1e6 : f));
-    return true;
-}
-
 /* mmdvm.config.freq_hz: MHz below 10000 */
 static uint32_t freq_hz(double f)
 {
     return to_u32(rint(f < 10000 ? f * 1e6 : f));
-}
-
-/* ── the plan ──────────────────────────────────────────────────────────────── */
-
-typedef struct {
-    int number;
-    uint32_t freq;
-    int cc, power;
-    int slot;   /* 1 or 2: a direct mode call's here */
-    bool no_tx; /* "tx": false: nothing transmits on it (a repeater's output, monitored) */
-} plan_t;
-
-typedef struct {
-    plan_t ch[RDOF_CFG_CHANNELS * 2];
-    int n;
-} plan_list_t;
-
-static const plan_t *plan_find(const plan_list_t *p, long number)
-{
-    for (int i = 0; i < p->n; i++)
-        if (p->ch[i].number == number)
-            return &p->ch[i];
-    return NULL;
-}
-
-/* A radio's channel entry -> (plan channel, override object or -1). */
-static bool plan_ref(ctx_t *c, const plan_list_t *plan, int ref, const plan_t **pc, int *over)
-{
-    long n;
-    *over = -1;
-    if (N(c, ref)->type == RDOF_JOBJ) {
-        *over = ref;
-        if (!iget(c, ref, "ch", 0, &n, "channel") || get(c, ref, "ch") < 0)
-            return err(c, "a channel entry needs ch");
-    } else {
-        double v;
-        if (!num(c, ref, &v))
-            return err(c, "bad channel reference");
-        n = to_long(v);
-    }
-    *pc = plan_find(plan, n);
-    if (!*pc)
-        return err(c, "channel %ld isn't in the plan (channels:)", n);
-    return true;
-}
-
-static int cmp_plan(const void *a, const void *b)
-{
-    int x = ((const plan_t *)a)->number, y = ((const plan_t *)b)->number;
-    return (x > y) - (x < y);
 }
 
 /* ── the location ──────────────────────────────────────────────────────────── */
@@ -302,38 +239,15 @@ static bool location(ctx_t *c, int i, rdof_config_t *cfg)
 
 /* ── the radio section ─────────────────────────────────────────────────────── */
 
-static const char *const ROAMER_KEYS[] = {"type", "name", "peer_id", "callsign", "idle", "channels", "listen_s",
-                                          "clear_s", "prebuffer", "jitter_buffer", "jitter_min_ms", "jitter_max_ms", "idle_after_s", "cwid", "cwid_every_s", "hblink",
-                                          "location", "radio", "scan", "csbk_preambles", "answer_s", "answer_max_s",
-                                          "parrot", NULL};
-static const char *const REPEATER_KEYS[] = {"type", "name", "peer_id", "callsign", "rx_freq", "tx_freq", "cc",
-                                            "power", "slots", "hang_s", "call_hang_s", "prebuffer", "jitter_buffer",
-                                            "jitter_min_ms", "jitter_max_ms", "cwid",
-                                            "cwid_every_s", "hblink", "location", "radio", "mode", "freq",
-                                            "inbound_slot", "short_lc_ts1_low", "slot_timing", "parrot", NULL};
-
-/* parrot: a DMR id (only what's addressed to it is sent back) or 0 (everything); absent: off */
-static bool parrot(ctx_t *c, int r, rdof_config_t *cfg)
-{
-    long lv;
-    cfg->has_parrot = get(c, r, "parrot") >= 0;
-    if (!iget(c, r, "parrot", 0, &lv, "radio"))
-        return false;
-    if (lv < 0 || lv > 0xFFFFFF)
-        return err(c, "radio: parrot %ld isn't a DMR id (0 for everything)", lv);
-    cfg->parrot = (uint32_t)lv;
-    return true;
-}
-
 /* The jitter buffer: jitter_buffer "auto" (the default) or a fixed size in ms, rounded up to whole 60 ms bursts;
  * prebuffer, the older key, a fixed size in bursts. jitter_min_ms and jitter_max_ms bound auto. */
-static bool jitter(ctx_t *c, int r, rdof_config_t *cfg)
+static bool jitter(ctx_t *c, int r, const char *what, rdof_config_t *cfg)
 {
     long lv;
     int jb = get(c, r, "jitter_buffer"), pb = get(c, r, "prebuffer");
     if (jb >= 0 && pb >= 0)
-        return err(c, "radio: prebuffer and jitter_buffer: set one (prebuffer is a fixed size in bursts)");
-    if (!iget(c, r, "prebuffer", 6, &lv, "radio"))
+        return err(c, "%s: prebuffer and jitter_buffer: set one (prebuffer is a fixed size in bursts)", what);
+    if (!iget(c, r, "prebuffer", 6, &lv, what))
         return false;
     cfg->prebuffer = (int)lv;
     cfg->jitter_auto = pb < 0;
@@ -346,40 +260,28 @@ static bool jitter(ctx_t *c, int r, rdof_config_t *cfg)
             cfg->jitter_auto = false;
             cfg->prebuffer = rdof_jb_bursts(ms);
         } else {
-            return err(c, "radio: jitter_buffer: \"auto\" or milliseconds, 0 to %d", RDOF_JB_MAX_MS);
+            return err(c, "%s: jitter_buffer: \"auto\" or milliseconds, 0 to %d", what, RDOF_JB_MAX_MS);
         }
     }
     double lo, hi;
-    if (!fget(c, r, "jitter_min_ms", RDOF_JB_MIN_MS, &lo, "radio") ||
-        !fget(c, r, "jitter_max_ms", RDOF_JB_MAX_DEFAULT_MS, &hi, "radio"))
+    if (!fget(c, r, "jitter_min_ms", RDOF_JB_MIN_MS, &lo, what) ||
+        !fget(c, r, "jitter_max_ms", RDOF_JB_MAX_DEFAULT_MS, &hi, what))
         return false;
     if (!(lo >= RDOF_JB_BURST_MS && lo <= hi && hi <= RDOF_JB_MAX_MS))
-        return err(c, "radio: jitter_min_ms and jitter_max_ms: %d <= min <= max <= %d", RDOF_JB_BURST_MS, RDOF_JB_MAX_MS);
+        return err(c, "%s: jitter_min_ms and jitter_max_ms: %d <= min <= max <= %d", what, RDOF_JB_BURST_MS, RDOF_JB_MAX_MS);
     cfg->jitter_min_ms = rdof_jb_bursts(lo) * RDOF_JB_BURST_MS;
     cfg->jitter_max_ms = rdof_jb_bursts(hi) * RDOF_JB_BURST_MS;
     return true;
 }
 
-static bool own_key(const char *const *keys, const char *k)
+/* A radio setting: the TX half's, else the RX half's (one modem: both are its own). */
+static int rget(ctx_t *c, const char *key)
 {
-    for (; *keys; keys++)
-        if (!strcmp(*keys, k))
-            return true;
-    return false;
+    int i = get(c, c->mm[0], key);
+    return i >= 0 ? i : get(c, c->mm[1], key);
 }
 
-/* A radio setting: the section's own key (not one of its section keys) wins over radio.{key}. */
-static int rget(ctx_t *c, int r, const char *const *keys, const char *key)
-{
-    if (!own_key(keys, key)) {
-        int i = get(c, r, key);
-        if (i >= 0)
-            return i;
-    }
-    return get(c, get(c, r, "radio"), key);
-}
-
-static bool radio_settings(ctx_t *c, int r, const char *const *keys, rdof_config_t *cfg)
+static bool radio_settings(ctx_t *c, rdof_config_t *cfg)
 {
     double v;
     int i;
@@ -396,14 +298,14 @@ static bool radio_settings(ctx_t *c, int r, const char *const *keys, rdof_config
         {"tx_dc_offset", 1, &cfg->modem.tx_dc_offset}, {"dmr_delay", 1, &cfg->modem.dmr_delay},
     };
     for (size_t k = 0; k < sizeof f / sizeof f[0]; k++) {
-        i = rget(c, r, keys, f[k].k);
+        i = rget(c, f[k].k);
         if (i < 0)
             continue;
         if (f[k].t == 0) {
             *(bool *)f[k].p = truthy(c, i);
         } else {
             if (!num(c, i, &v))
-                return err(c, "radio.%s isn't a number", f[k].k);
+                return err(c, "%s.%s isn't a number", c->mmw, f[k].k);
             if (f[k].t == 1)
                 *(int *)f[k].p = to_int(v);
             else
@@ -411,20 +313,20 @@ static bool radio_settings(ctx_t *c, int r, const char *const *keys, rdof_config
         }
     }
     cfg->rx_offset_hz = cfg->tx_offset_hz = 0;
-    if ((i = rget(c, r, keys, "rx_offset_hz")) >= 0 && num(c, i, &v))
+    if ((i = rget(c, "rx_offset_hz")) >= 0 && num(c, i, &v))
         cfg->rx_offset_hz = to_int(v);
-    if ((i = rget(c, r, keys, "tx_offset_hz")) >= 0 && num(c, i, &v))
+    if ((i = rget(c, "tx_offset_hz")) >= 0 && num(c, i, &v))
         cfg->tx_offset_hz = to_int(v);
     cfg->headers = cfg->terminators = -1;
-    if ((i = rget(c, r, keys, "headers")) >= 0 && N(c, i)->type != RDOF_JNULL && num(c, i, &v))
+    if ((i = rget(c, "headers")) >= 0 && N(c, i)->type != RDOF_JNULL && num(c, i, &v))
         cfg->headers = to_int(v);
-    if ((i = rget(c, r, keys, "terminators")) >= 0 && N(c, i)->type != RDOF_JNULL && num(c, i, &v))
+    if ((i = rget(c, "terminators")) >= 0 && N(c, i)->type != RDOF_JNULL && num(c, i, &v))
         cfg->terminators = to_int(v);
     /* tuner: "fixed" / {type, freq, settle_ms}; rigctld and command tuners need a computer */
     cfg->tuner = RDOF_TUNER_NONE; /* the kind's default */
     cfg->tuner_freq = 0;
     cfg->settle_ms = 0;
-    i = rget(c, r, keys, "tuner");
+    i = rget(c, "tuner");
     if (truthy(c, i)) {
         char t[16] = "";
         if (N(c, i)->type == RDOF_JSTR) {
@@ -433,10 +335,12 @@ static bool radio_settings(ctx_t *c, int r, const char *const *keys, rdof_config
             sget(c, i, "type", "", t, sizeof t);
             if (get(c, i, "freq") >= 0) {
                 if (!num(c, get(c, i, "freq"), &v))
-                    return err(c, "radio.tuner.freq");
+                    return err(c, "%s.tuner.freq", c->mmw);
                 cfg->tuner_freq = freq_hz(v);
             }
-            if (!fget(c, i, "settle_ms", 0, &v, "tuner"))
+            char tw[96];
+            snprintf(tw, sizeof tw, "%s.tuner", c->mmw);
+            if (!fget(c, i, "settle_ms", 0, &v, tw))
                 return false;
             cfg->settle_ms = to_int(v);
         }
@@ -445,21 +349,21 @@ static bool radio_settings(ctx_t *c, int r, const char *const *keys, rdof_config
         else if (!strcmp(t, "fixed"))
             cfg->tuner = RDOF_TUNER_FIXED;
         else if (!strcmp(t, "rigctld") || !strcmp(t, "command"))
-            return err(c, "radio.tuner %s: not on this board (modem or fixed only)", t);
+            return err(c, "%s.tuner %s: not on this board (modem or fixed only)", c->mmw, t);
         else if (t[0])
-            return err(c, "radio.tuner %s", t);
+            return err(c, "%s.tuner %s", c->mmw, t);
     }
     cfg->rssi.n = 0;
-    i = rget(c, r, keys, "rssi");
+    i = rget(c, "rssi");
     if (truthy(c, i)) {
         if (N(c, i)->type != RDOF_JARR)
-            return err(c, "radio.rssi wants [[raw, dBm], ...]");
+            return err(c, "%s.rssi wants [[raw, dBm], ...]", c->mmw);
         for (int k = 0; k < N(c, i)->count && k < RDOF_RSSI_POINTS; k++) {
-            int p = rdof_jat(&c->doc, i, k);
+            int p = rdof_jat(c->doc, i, k);
             double a, b;
-            if (N(c, p)->type != RDOF_JARR || N(c, p)->count != 2 || !num(c, rdof_jat(&c->doc, p, 0), &a) ||
-                !num(c, rdof_jat(&c->doc, p, 1), &b))
-                return err(c, "radio.rssi wants [[raw, dBm], ...]");
+            if (N(c, p)->type != RDOF_JARR || N(c, p)->count != 2 || !num(c, rdof_jat(c->doc, p, 0), &a) ||
+                !num(c, rdof_jat(c->doc, p, 1), &b))
+                return err(c, "%s.rssi wants [[raw, dBm], ...]", c->mmw);
             cfg->rssi.raw[k] = to_int(a);
             cfg->rssi.dbm[k] = to_int(b);
             cfg->rssi.n = k + 1;
@@ -468,7 +372,7 @@ static bool radio_settings(ctx_t *c, int r, const char *const *keys, rdof_config
     }
     /* check_radio */
     char proto[12];
-    i = rget(c, r, keys, "protocol");
+    i = rget(c, "protocol");
     if (i >= 0)
         text_of(c, i, proto, sizeof proto);
     else
@@ -477,244 +381,19 @@ static bool radio_settings(ctx_t *c, int r, const char *const *keys, rdof_config
         if (*p >= 'A' && *p <= 'Z')
             *p += 32;
     if (strcmp(proto, "uart") && strcmp(proto, "udp"))
-        return err(c, "radio.protocol %s: uart or udp", proto);
+        return err(c, "%s.protocol %s: uart or udp", c->mmw, proto);
     if (!strcmp(proto, "udp")) {
-        if (!truthy(c, rget(c, r, keys, "modem_address")))
-            return err(c, "radio.protocol udp needs radio.modem_address");
-        return err(c, "radio.protocol udp: not on this board");
+        if (!truthy(c, rget(c, "modem_address")))
+            return err(c, "%s.protocol udp needs %s.modem_address", c->mmw, c->mmw);
+        return err(c, "%s.protocol udp: not on this board", c->mmw);
     }
-    return true;
-}
-
-/* A radio type, or opengd77, radio_hotspot's old name (canonical_type). */
-static bool known_type(const char *t);
-static void canonical_type(char *t, size_t cap);
-
-/* A split's halves (radio.tx, radio.rx): a radio's checks on each. Their board ports come later. */
-static bool split_halves(ctx_t *c, int r)
-{
-    static const char *const names[2] = {"tx", "rx"};
-    for (int k = 0; k < 2; k++) {
-        int h = rget(c, r, REPEATER_KEYS, names[k]);
-        if (h < 0 || N(c, h)->type != RDOF_JOBJ)
-            return err(c, "radio type split needs radio.%s: the %s half's port", names[k], k ? "RX" : "TX");
-        char t[16];
-        sget(c, h, "type", "auto", t, sizeof t);
-        canonical_type(t, sizeof t);
-        if (strcmp(t, "auto") && strcmp(t, "radio_hotspot"))
-            return err(c, "radio.%s.type %s: a split half is a radio in hotspot mode with the split duplex extension "
-                          "(OpenDigitalRadio)", names[k], t);
-        char proto[12] = "uart";
-        int i = get(c, h, "protocol");
-        if (i >= 0)
-            text_of(c, i, proto, sizeof proto);
-        for (char *p = proto; *p; p++)
-            if (*p >= 'A' && *p <= 'Z')
-                *p += 32;
-        if (strcmp(proto, "uart") && strcmp(proto, "udp"))
-            return err(c, "radio.%s.protocol %s: uart or udp", names[k], proto);
-        if (!strcmp(proto, "udp")) {
-            if (!truthy(c, get(c, h, "modem_address")))
-                return err(c, "radio.%s.protocol udp needs radio.%s.modem_address", names[k], names[k]);
-            return err(c, "radio.%s.protocol udp: not on this board", names[k]);
-        }
-    }
-    return true;
-}
-
-/* Firmware only: each half's port on the board (modem, uart, speed, usb, as a radio's own) and SET_ROLE's
- * parameters. */
-static bool split_ports(ctx_t *c, int r, rdof_config_t *cfg)
-{
-    static const char *const names[2] = {"tx", "rx"};
-    int usb = 0, uart = 0, sdr = 0;
-    for (int k = 0; k < 2; k++) {
-        int h = rget(c, r, REPEATER_KEYS, names[k]);
-        rdof_cfg_port_t *p = &cfg->split[k];
-        long v;
-        sget(c, h, "modem", "usb", p->modem_port, sizeof p->modem_port);
-        if (strcmp(p->modem_port, "usb") && strcmp(p->modem_port, "uart") && strcmp(p->modem_port, "sdr"))
-            return err(c, "radio.%s.modem %s: usb, uart, or sdr (the board's SDR modem)", names[k], p->modem_port);
-        int u = get(c, h, "uart");
-        if (!iget(c, u, "tx", 5, &v, "uart"))
-            return false;
-        p->uart_tx = (int)v;
-        if (!iget(c, u, "rx", 6, &v, "uart"))
-            return false;
-        p->uart_rx = (int)v;
-        if (!iget(c, u, "num", 1, &v, "uart"))
-            return false;
-        if (v != 1 && v != 2)
-            return err(c, "radio.%s.uart.num %ld: 1 or 2 (UART0 is the console)", names[k], v);
-        p->uart_num = (int)v;
-        if (!iget(c, h, "speed", 115200, &p->uart_speed, "radio"))
-            return false;
-        int ub = get(c, h, "usb");
-        sget(c, ub, "serial", "", p->usb_serial, sizeof p->usb_serial);
-        sget(c, ub, "port", "", p->usb_port, sizeof p->usb_port);
-        sdr += !strcmp(p->modem_port, "sdr");
-        if (!strcmp(p->modem_port, "usb")) {
-            usb++;
-            snprintf(cfg->usb_serial, sizeof cfg->usb_serial, "%s", p->usb_serial);
-            snprintf(cfg->usb_port, sizeof cfg->usb_port, "%s", p->usb_port);
-        } else if (!strcmp(p->modem_port, "uart") && !uart++) {
-            cfg->uart_tx = p->uart_tx, cfg->uart_rx = p->uart_rx, cfg->uart_num = p->uart_num;
-            cfg->uart_speed = p->uart_speed;
-        }
-    }
-    if (sdr > 1)
-        return err(c, "radio.tx and radio.rx are both the SDR: the board runs one SDR modem (two SDRs as a split "
-                      "need two boards, or a radio for one half)");
-    if (usb > 1)
-        return err(c, "radio.tx and radio.rx are both on USB: one half on USB at most (the other on a UART, or the "
-                      "SDR as the RX half)");
-    if (uart > 1) {
-        const rdof_cfg_port_t *a = &cfg->split[0], *b = &cfg->split[1];
-        if (a->uart_num == b->uart_num)
-            return err(c, "radio.tx and radio.rx are both on UART%d: give one \"uart\": {\"num\": 2, ...}", a->uart_num);
-        if (a->uart_tx == b->uart_tx || a->uart_rx == b->uart_rx || a->uart_tx == b->uart_rx || a->uart_rx == b->uart_tx)
-            return err(c, "radio.tx and radio.rx share a UART pin");
-    }
-    struct {
-        const char *k;
-        int *p;
-    } params[] = {{"power_cap", &cfg->split_power_cap}, {"prebuffer", &cfg->split_prebuffer},
-                  {"lease_s", &cfg->split_lease_s}, {"cooldown_s", &cfg->split_cooldown_s}};
-    for (size_t k = 0; k < sizeof params / sizeof params[0]; k++) {
-        double v;
-        int i = rget(c, r, REPEATER_KEYS, params[k].k);
-        if (i < 0)
-            continue;
-        if (!num(c, i, &v) || !(v >= 0 && v <= 255)) /* NaN too */
-            return err(c, "radio.%s: 0 to 255", params[k].k);
-        *params[k].p = (int)v;
-    }
-    int i = rget(c, r, REPEATER_KEYS, "max_key_s");
-    if (i >= 0 && (!num(c, i, &cfg->split_max_key_s) || !(cfg->split_max_key_s >= 0 && cfg->split_max_key_s <= 600)))
-        return err(c, "radio.max_key_s: 0 to 600");
-    snprintf(cfg->modem_port, sizeof cfg->modem_port, "split");
     return true;
 }
 
 static bool known_type(const char *t)
 {
-    return !strcmp(t, "auto") || !strcmp(t, "radio_hotspot") || !strcmp(t, "opengd77") || !strcmp(t, "mmdvm_hs") ||
-           !strcmp(t, "mmdvm");
+    return !strcmp(t, "auto") || !strcmp(t, "radio_hotspot") || !strcmp(t, "mmdvm_hs") || !strcmp(t, "mmdvm");
 }
-
-/* The old name opengd77 becomes radio_hotspot. */
-static void canonical_type(char *t, size_t cap)
-{
-    if (!strcmp(t, "opengd77"))
-        snprintf(t, cap, "radio_hotspot");
-}
-
-/* A radio's name: its own, else the default "{box}-{type}{n}". */
-static void radio_name(ctx_t *c, int r, int k, const char *box_name, char *out, size_t cap)
-{
-    int t = get(c, r, "type");
-    char dflt[96];
-    snprintf(dflt, sizeof dflt, "%s-%s%d", box_name, t >= 0 && N(c, t)->type == RDOF_JSTR ? N(c, t)->str : "", k + 1);
-    sget(c, r, "name", dflt, out, cap);
-}
-
-/* A radio's "enabled": 1 (true or not there), 0 (false: left out, as if it weren't in radios), -1 (not a bool). */
-static int enabled(ctx_t *c, int r)
-{
-    int e = get(c, r, "enabled");
-    if (e < 0)
-        return 1;
-    return N(c, e)->type == RDOF_JBOOL ? N(c, e)->b : -1;
-}
-
-/* Is `name` in "run" (a name or a list of names)? */
-static bool in_run(ctx_t *c, int run, const char *name)
-{
-    const rdof_jnode_t *n = N(c, run);
-    if (n->type == RDOF_JSTR)
-        return !strcmp(n->str, name);
-    for (int k = 0; n->type == RDOF_JARR && k < n->count; k++) {
-        const rdof_jnode_t *e = N(c, rdof_jat(&c->doc, run, k));
-        if (e->type == RDOF_JSTR && !strcmp(e->str, name))
-            return true;
-    }
-    return false;
-}
-
-/*
- * The radios this board runs (indexes into radios, -1 for none): with the
- * firmware key "run", the ones it names (up to RDOF_MAX_RADIOS roamers or
- * repeaters and one SDR); without it, the first roamer or repeater, or failing
- * that the first SDR. radio[] and radio_k[] get *nradio entries. A radio with
- * "enabled": false is left out; "run" may name it.
- */
-static bool pick_radios(ctx_t *c, int box, const char *box_name, int *radio, int *radio_k, int *nradio, int *sdr,
-                        int *sdr_k)
-{
-    int radios = get(c, box, "radios"), run = get(c, box, "run");
-    *nradio = 0;
-    *sdr = -1;
-    *sdr_k = 0;
-    int on = 0, off_in_run = 0; /* radios enabled; disabled ones "run" names */
-    if (radios >= 0 && N(c, radios)->type != RDOF_JARR && N(c, radios)->type != RDOF_JNULL)
-        return err(c, "radios: a list");
-    for (int k = 0; radios >= 0 && k < N(c, radios)->count; k++) {
-        int s = rdof_jat(&c->doc, radios, k);
-        const int en = enabled(c, s);
-        if (en < 0)
-            return err(c, "radios[%d]: enabled: true or false", k);
-        if (!en) {
-            char name[96];
-            radio_name(c, s, k, box_name, name, sizeof name);
-            off_in_run += run >= 0 && in_run(c, run, name);
-            continue;
-        }
-        on++;
-        int t = get(c, s, "type");
-        const char *type = t >= 0 && N(c, t)->type == RDOF_JSTR ? N(c, t)->str : "";
-        if (strcmp(type, "sdr") && strcmp(type, "repeater") && strcmp(type, "sdr_transceiver") && !known_type(type))
-            return err(c, "radios[%d]: type %s: sdr, repeater, sdr_transceiver or a roamer (auto, mmdvm_hs, "
-                          "radio_hotspot, mmdvm; opengd77 = radio_hotspot)", k, type);
-        bool is_sdr = !strcmp(type, "sdr");
-        if (run >= 0) {
-            char name[96];
-            radio_name(c, s, k, box_name, name, sizeof name);
-            if (!in_run(c, run, name))
-                continue;
-            if (is_sdr && *sdr >= 0)
-                return err(c, "run: one SDR a board");
-            if (!is_sdr && *nradio >= RDOF_MAX_RADIOS)
-                return err(c, "run: %d roamers or repeaters a board at most", RDOF_MAX_RADIOS);
-        } else if (is_sdr ? *sdr >= 0 || *nradio : *nradio) {
-            continue;
-        }
-        if (is_sdr) {
-            *sdr = s;
-            *sdr_k = k;
-        } else {
-            radio[*nradio] = s;
-            radio_k[(*nradio)++] = k;
-            if (run < 0)
-                *sdr = -1; /* without run, a roamer or repeater wins */
-        }
-    }
-    if (!on)
-        return err(c, "no radios");
-    if (run >= 0) {
-        const rdof_jnode_t *n = N(c, run);
-        if (n->type != RDOF_JSTR && n->type != RDOF_JARR)
-            return err(c, "run: a radio's name or a list of names");
-        for (int k = 0; n->type == RDOF_JARR && k < n->count; k++)
-            if (N(c, rdof_jat(&c->doc, run, k))->type != RDOF_JSTR)
-                return err(c, "run: a radio's name or a list of names");
-        int names = n->type == RDOF_JSTR ? 1 : n->count;
-        if (names != *nradio + (*sdr >= 0) + off_in_run)
-            return err(c, "run: a name that isn't in radios");
-    }
-    return true;
-}
-
-/* ── the box ───────────────────────────────────────────────────────────────── */
 
 static bool channel_entry(ctx_t *c, uint32_t freq, double cc, double power, int slot, rdof_cfg_channel_t *out)
 {
@@ -725,338 +404,6 @@ static bool channel_entry(ctx_t *c, uint32_t freq, double cc, double power, int 
     out->cc = (int)cc;
     out->power = (int)(p < 0 ? 0 : p > 255 ? 255 : p);
     out->slot = slot == 2 ? 2 : 1;
-    return true;
-}
-
-static bool roamer(ctx_t *c, int box, int r, const plan_list_t *plan, rdof_config_t *cfg, const char *box_name)
-{
-    const char *const *K = ROAMER_KEYS;
-    cfg->mode = RDOF_CFG_ROAMER;
-    double v;
-    const plan_t *pc;
-    int over;
-    /* channels */
-    int refs = get(c, r, "channels");
-    cfg->nchannels = 0;
-    bool all = refs < 0 || (N(c, refs)->type == RDOF_JSTR && !strcmp(N(c, refs)->str, "all"));
-    int count = all ? plan->n : (truthy(c, refs) ? N(c, refs)->count : 0);
-    if (!all && truthy(c, refs) && N(c, refs)->type != RDOF_JARR)
-        return err(c, "channels: numbers, or all");
-    for (int k = 0; k < count; k++) {
-        double cc, power;
-        if (all) {
-            pc = &plan->ch[k];
-            over = -1;
-            if (pc->no_tx)
-                continue; /* all: the channels it may transmit on */
-        } else if (!plan_ref(c, plan, rdof_jat(&c->doc, refs, k), &pc, &over)) {
-            return false;
-        } else if (pc->no_tx) {
-            return err(c, "channels: channel %d has tx false: nothing transmits on it", pc->number);
-        }
-        if (!fget(c, over, "cc", pc->cc, &cc, "channel") || !fget(c, over, "power", pc->power, &power, "channel"))
-            return false;
-        if (cfg->nchannels >= RDOF_CFG_CHANNELS)
-            return err(c, "too many channels (%d at most)", RDOF_CFG_CHANNELS);
-        if (!channel_entry(c, freq_hz(pc->freq), cc, power, pc->slot, &cfg->channels[cfg->nchannels++]))
-            return false;
-    }
-    /* idle */
-    int idle = get(c, r, "idle");
-    if (idle < 0)
-        return err(c, "no idle channel (idle: a channel number)");
-    if (N(c, idle)->type == RDOF_JOBJ && get(c, idle, "freq") >= 0) {
-        uint32_t f;
-        double cc;
-        if (!box_hz(c, get(c, idle, "freq"), &f, "idle") || !num(c, get(c, idle, "cc"), &cc))
-            return err(c, "idle: freq and cc");
-        if (!channel_entry(c, freq_hz(f), (double)to_long(cc), 255, 1, &cfg->idle))
-            return false;
-    } else {
-        if (!plan_ref(c, plan, idle, &pc, &over))
-            return false;
-        if (!channel_entry(c, freq_hz(pc->freq), pc->cc, 255, pc->slot, &cfg->idle))
-            return false;
-        bool have = pc->no_tx; /* an idle channel with tx false: heard, never sent on */
-        for (int k = 0; k < cfg->nchannels; k++)
-            have |= cfg->channels[k].freq == pc->freq;
-        if (!have) {
-            if (cfg->nchannels >= RDOF_CFG_CHANNELS)
-                return err(c, "too many channels");
-            if (!channel_entry(c, pc->freq, pc->cc, pc->power, pc->slot, &cfg->channels[cfg->nchannels++]))
-                return false;
-        }
-        cfg->oled_channel = pc->number;
-    }
-    /* the radio */
-    snprintf(cfg->radio_type, sizeof cfg->radio_type, "%s", N(c, get(c, r, "type"))->str);
-    canonical_type(cfg->radio_type, sizeof cfg->radio_type);
-    if (!strcmp(cfg->radio_type, "sdr_transceiver"))
-        snprintf(cfg->radio_type, sizeof cfg->radio_type, "auto"); /* the SDR's emulated modem answers as one */
-    if (!radio_settings(c, r, K, cfg))
-        return false;
-    if (!known_type(cfg->radio_type))
-        return err(c, "radio type %s", cfg->radio_type);
-    long lv;
-    if (!iget(c, r, "peer_id", 0, &lv, "radio") || get(c, r, "peer_id") < 0)
-        return err(c, "no peer_id");
-    cfg->peer_id = (uint32_t)lv;
-    char name8[9];
-    memcpy(name8, cfg->name, 8); /* name[:8] */
-    name8[8] = 0;
-    sor(c, r, "callsign", name8, cfg->callsign, sizeof cfg->callsign);
-    /* Config.from_dict's numbers */
-    struct {
-        const char *k;
-        double d;
-        double *p;
-    } fl[] = {{"listen_s", 0.3, &cfg->listen_s}, {"clear_s", 2.0, &cfg->clear_s}, {"answer_s", 0.75, &cfg->answer_s},
-              {"answer_max_s", 5.0, &cfg->answer_max_s}, {"idle_after_s", 0, &cfg->idle_after_s},
-              {"cwid_every_s", 900, &cfg->cwid_every_s}};
-    for (size_t k = 0; k < sizeof fl / sizeof fl[0]; k++)
-        if (!fget(c, r, fl[k].k, fl[k].d, fl[k].p, "radio"))
-            return false;
-    if (!jitter(c, r, cfg))
-        return false;
-    if (!iget(c, r, "csbk_preambles", 2, &lv, "radio"))
-        return false;
-    cfg->csbk_preambles = (int)lv;
-    sget(c, r, "cwid", "", cfg->cwid, sizeof cfg->cwid);
-    if (!parrot(c, r, cfg))
-        return false;
-    /* covered: this box's SDR channels */
-    cfg->ncovered = 0;
-    int radios = get(c, box, "radios");
-    for (int k = 0; k < (radios >= 0 ? N(c, radios)->count : 0); k++) {
-        int s = rdof_jat(&c->doc, radios, k);
-        int t = get(c, s, "type");
-        if (t < 0 || N(c, t)->type != RDOF_JSTR || strcmp(N(c, t)->str, "sdr") || enabled(c, s) != 1)
-            continue;
-        int chs = get(c, s, "channels");
-        for (int m = 0; chs >= 0 && m < N(c, chs)->count; m++) {
-            if (!plan_ref(c, plan, rdof_jat(&c->doc, chs, m), &pc, &over))
-                return false;
-            uint32_t f = pc->freq;
-            bool dup = false;
-            for (int q = 0; q < cfg->ncovered; q++)
-                dup |= cfg->covered[q] == f;
-            if (!dup && cfg->ncovered < RDOF_CFG_CHANNELS)
-                cfg->covered[cfg->ncovered++] = f;
-        }
-    }
-    for (int a = 1; a < cfg->ncovered; a++) /* sorted */
-        for (int b = a; b > 0 && cfg->covered[b - 1] > cfg->covered[b]; b--) {
-            uint32_t t = cfg->covered[b];
-            cfg->covered[b] = cfg->covered[b - 1];
-            cfg->covered[b - 1] = t;
-        }
-    /* scan */
-    cfg->has_scan = false;
-    int sc = get(c, r, "scan");
-    if (truthy(c, sc)) {
-        cfg->has_scan = true;
-        bool is_obj = N(c, sc)->type == RDOF_JOBJ;
-        int sref = is_obj ? get(c, sc, "channels") : -1;
-        bool sall = sref < 0 || (N(c, sref)->type == RDOF_JSTR && !strcmp(N(c, sref)->str, "all"));
-        cfg->nscan = 0;
-        if (sall) {
-            memcpy(cfg->scan_channels, cfg->channels, sizeof cfg->channels);
-            cfg->nscan = cfg->nchannels;
-        } else {
-            for (int k = 0; k < N(c, sref)->count; k++) {
-                double cc;
-                if (!plan_ref(c, plan, rdof_jat(&c->doc, sref, k), &pc, &over) ||
-                    !fget(c, over, "cc", pc->cc, &cc, "scan"))
-                    return false;
-                if (cfg->nscan >= RDOF_CFG_CHANNELS)
-                    return err(c, "scan: too many channels");
-                if (!channel_entry(c, freq_hz(pc->freq), cc, 255, pc->slot, &cfg->scan_channels[cfg->nscan++]))
-                    return false;
-            }
-        }
-        if (!cfg->nscan)
-            return err(c, "scan: no channels");
-        int so = is_obj ? sc : -1;
-        if (!fget(c, so, "dwell_s", 0.45, &cfg->dwell_s, "scan") ||
-            !fget(c, so, "hang_s", 3.0, &cfg->hang_s_scan, "scan") || !fget(c, so, "carrier_s", 0, &cfg->carrier_s, "scan"))
-            return false;
-        if (cfg->dwell_s <= 0 || cfg->hang_s_scan < 0 || !(0 <= cfg->carrier_s && cfg->carrier_s < cfg->dwell_s))
-            return err(c, "scan: dwell_s > 0, hang_s >= 0, and carrier_s (0 = off) under dwell_s");
-    }
-    if (!cfg->nchannels)
-        return err(c, "no channels: list the simplex channels this radio may use");
-    (void)v;
-    (void)box_name;
-    return true;
-}
-
-static bool repeater(ctx_t *c, int box, int r, const plan_list_t *plan, rdof_config_t *cfg, long default_cc,
-                     bool has_default_cc)
-{
-    const char *const *K = REPEATER_KEYS;
-    cfg->mode = RDOF_CFG_REPEATER;
-    char mode[12];
-    sget(c, r, "mode", "duplex", mode, sizeof mode);
-    bool sfr = !strcmp(mode, "sfr"), dcdm = !strcmp(mode, "dcdm");
-    uint32_t rx, tx;
-    if (sfr || dcdm) {
-        if (get(c, r, "freq") < 0)
-            return err(c, "no freq (MHz)");
-        if (!box_hz(c, get(c, r, "freq"), &rx, "freq"))
-            return false;
-        tx = rx;
-    } else {
-        if (get(c, r, "rx_freq") < 0)
-            return err(c, "no rx_freq (MHz)");
-        if (get(c, r, "tx_freq") < 0)
-            return err(c, "no tx_freq (MHz)");
-        if (!box_hz(c, get(c, r, "rx_freq"), &rx, "rx_freq") || !box_hz(c, get(c, r, "tx_freq"), &tx, "tx_freq"))
-            return false;
-    }
-    long lv;
-    if (get(c, r, "cc") >= 0) {
-        if (!iget(c, r, "cc", 0, &lv, "radio"))
-            return false;
-    } else if (has_default_cc) {
-        lv = default_cc;
-    } else {
-        return err(c, "no color code (set cc on it or at the top)");
-    }
-    if (strcmp(mode, "duplex") && strcmp(mode, "sfr") && !dcdm)
-        return err(c, "mode %s: duplex, sfr or dcdm", mode);
-    if (lv < 0 || lv > 15)
-        return err(c, "color code %ld", lv);
-    cfg->cc = (int)lv;
-    if (!iget(c, r, "peer_id", 0, &lv, "radio") || get(c, r, "peer_id") < 0)
-        return err(c, "no peer_id");
-    cfg->peer_id = (uint32_t)lv;
-    char name8[9];
-    memcpy(name8, cfg->name, 8); /* name[:8] */
-    name8[8] = 0;
-    sor(c, r, "callsign", name8, cfg->callsign, sizeof cfg->callsign);
-    cfg->rx_freq = freq_hz(rx);
-    cfg->tx_freq = freq_hz(tx);
-    for (int k = 0; k < plan->n; k++)
-        if (plan->ch[k].no_tx && plan->ch[k].freq == cfg->tx_freq)
-            return err(c, "tx_freq: channel %d has tx false: nothing transmits on it", plan->ch[k].number);
-    if (!iget(c, r, "power", 255, &lv, "radio"))
-        return false;
-    cfg->power = (int)(lv < 0 ? 0 : lv > 255 ? 255 : lv);
-    if (!fget(c, r, "hang_s", 5.0, &cfg->hang_s, "radio") || !fget(c, r, "call_hang_s", 3.0, &cfg->call_hang_s, "radio") ||
-        !fget(c, r, "cwid_every_s", 900, &cfg->cwid_every_s, "radio"))
-        return false;
-    if (!jitter(c, r, cfg))
-        return false;
-    sget(c, r, "cwid", "", cfg->cwid, sizeof cfg->cwid);
-    if (!parrot(c, r, cfg))
-        return false;
-    cfg->short_lc_ts1_low = bget(c, r, "short_lc_ts1_low", false);
-    if (!radio_settings(c, r, K, cfg))
-        return false;
-    sget(c, get(c, r, "radio"), "type", "auto", cfg->radio_type, sizeof cfg->radio_type);
-    canonical_type(cfg->radio_type, sizeof cfg->radio_type);
-    if (sfr) {
-        long inbound;
-        if (!iget(c, r, "inbound_slot", 1, &inbound, "radio"))
-            return false;
-        if (inbound != 1 && inbound != 2)
-            return err(c, "inbound_slot: 1 or 2");
-        if (strcmp(cfg->radio_type, "auto") && strcmp(cfg->radio_type, "radio_hotspot"))
-            return err(c, "radio.type %s: a single frequency repeater is a radio_hotspot (a radio in hotspot mode "
-                          "with SFR firmware)", cfg->radio_type);
-        cfg->sfr = true;
-        cfg->inbound_slot = (int)inbound;
-        cfg->slot1 = inbound == 2;
-        cfg->slot2 = inbound == 1;
-    } else {
-        cfg->sfr = false;
-        cfg->dcdm = dcdm;
-        cfg->inbound_slot = 1;
-        int s = get(c, r, "slots");
-        if (s < 0) {
-            cfg->slot1 = cfg->slot2 = true;
-        } else {
-            cfg->slot1 = cfg->slot2 = false;
-            bool bad = N(c, s)->type != RDOF_JARR || N(c, s)->count == 0;
-            for (int k = 0; !bad && k < N(c, s)->count; k++) {
-                double v;
-                if (!num(c, rdof_jat(&c->doc, s, k), &v) || (to_long(v) != 1 && to_long(v) != 2))
-                    bad = true;
-                else if (to_long(v) == 1)
-                    cfg->slot1 = true;
-                else
-                    cfg->slot2 = true;
-            }
-            if (bad)
-                return err(c, "slots: 1, 2 or both");
-        }
-        if (dcdm && !strcmp(cfg->radio_type, "split"))
-            return err(c, "radio.type split: a split is a duplex pair; dual capacity direct mode is one radio on one "
-                          "frequency");
-        if (!strcmp(cfg->radio_type, "split")) {
-            if (!split_halves(c, r))
-                return false;
-        } else if (!known_type(cfg->radio_type)) {
-            return err(c, "radio type %s: auto or one of radio_hotspot, mmdvm_hs, mmdvm, split", cfg->radio_type);
-        }
-        if (!dcdm && !strcmp(cfg->radio_type, "radio_hotspot"))
-            return err(c, "a radio_hotspot (a radio in hotspot mode) is simplex: a repeater needs a duplex MMDVM_HS "
-                          "board, an MMDVM board or two radios as a split (but see mode: sfr)");
-    }
-    if (cfg->hang_s <= 0 || cfg->call_hang_s < 0)
-        return err(c, "hang_s > 0 and call_hang_s >= 0");
-    /* slot timing (docs/spec/slot-timing.md): the box's reaches a duplex repeater on a split or auto radio (the SDR
-       transceiver's is auto); a HAT or an SFR radio keeps its own slot clock, so utc is refused there */
-    {
-        bool timed = !sfr && !dcdm && (!strcmp(cfg->radio_type, "split") || !strcmp(cfg->radio_type, "auto"));
-        char why[96];
-        if (!rdof_slot_timing_parse(&c->doc, timed ? get(c, box, "slot_timing") : -1, get(c, r, "slot_timing"),
-                                  &cfg->slot_timing, why, sizeof why))
-            return err(c, "%s", why);
-        if (cfg->slot_timing.utc && sfr)
-            return err(c, "slot_timing utc: a single frequency repeater's radio times its own slots");
-        if (cfg->slot_timing.utc && dcdm)
-            return err(c, "slot_timing utc: in dual capacity direct mode the modem times its slots from the channel");
-        if (cfg->slot_timing.utc && !timed)
-            return err(c, "slot_timing utc: a %s keeps its own slot clock (its firmware times the slots, and MMDVM "
-                          "has no command to move it): only a split or the board's SDR can follow the UTC grid",
-                       cfg->radio_type);
-    }
-    /* The OLED's channel number: the plan's, by frequency. */
-    cfg->oled_channel = 0;
-    for (int k = 0; k < plan->n; k++) {
-        int64_t d = (int64_t)plan->ch[k].freq - cfg->rx_freq;
-        if (d >= -100 && d <= 100) {
-            cfg->oled_channel = plan->ch[k].number;
-            break;
-        }
-    }
-    (void)box;
-    return true;
-}
-
-static bool mqtt(ctx_t *c, int box, rdof_config_t *cfg)
-{
-    int m = get(c, box, "mqtt");
-    cfg->has_mqtt = truthy(c, m);
-    if (!cfg->has_mqtt)
-        return true;
-    long port;
-    sget(c, m, "host", "localhost", cfg->mqtt_host, sizeof cfg->mqtt_host);
-    if (!iget(c, m, "port", 1883, &port, "mqtt"))
-        return false;
-    cfg->mqtt_port = (int)port;
-    sor(c, m, "username", "", cfg->mqtt_user, sizeof cfg->mqtt_user);
-    sor(c, m, "password", "", cfg->mqtt_pass, sizeof cfg->mqtt_pass);
-    sget(c, m, "root", "DMR", cfg->mqtt_root, sizeof cfg->mqtt_root);
-    /* the root's slashes are stripped, both ends */
-    size_t rl = strlen(cfg->mqtt_root), lead = strspn(cfg->mqtt_root, "/");
-    while (rl > lead && cfg->mqtt_root[rl - 1] == '/')
-        rl--;
-    memmove(cfg->mqtt_root, cfg->mqtt_root + lead, rl - lead);
-    cfg->mqtt_root[rl - lead] = 0;
-    snprintf(cfg->mqtt_app, sizeof cfg->mqtt_app, "%s", cfg->mode == RDOF_CFG_ROAMER ? "roaming" : "repeater");
-    cfg->mqtt_tls = bget(c, m, "tls", false);
     return true;
 }
 
@@ -1089,8 +436,9 @@ static bool oled(ctx_t *c, int box, rdof_config_t *cfg)
     return true;
 }
 
-/* hblink.sctp_*: the firmware's SCTP (over UDP); defaults as MMDVMHost's and HBlink4's. */
-static bool sctp_settings(ctx_t *c, int hb, rdof_config_t *cfg)
+/* The hblink network's sctp_*: the firmware's SCTP (over UDP); defaults as MMDVMHost's and HBlink4's. what: where
+   it is (networks.NAME). */
+static bool sctp_settings(ctx_t *c, int hb, const char *what, rdof_config_t *cfg)
 {
     static const struct {
         const char *key;
@@ -1102,13 +450,502 @@ static bool sctp_settings(ctx_t *c, int hb, rdof_config_t *cfg)
     int *out[] = {&cfg->sctp_encap_port, &cfg->sctp_heartbeat_ms, &cfg->sctp_max_retransmit, &cfg->sctp_ttl_ms};
     for (size_t i = 0; i < sizeof keys / sizeof keys[0]; i++) {
         long v;
-        if (!iget(c, hb, keys[i].key, keys[i].dflt, &v, "hblink"))
+        if (!iget(c, hb, keys[i].key, keys[i].dflt, &v, what))
             return false;
         if (v < keys[i].lo || v > keys[i].hi)
-            return err(c, "hblink: %s %ld out of range (%ld to %ld)", keys[i].key, v, keys[i].lo, keys[i].hi);
+            return err(c, "%s: %s %ld out of range (%ld to %ld)", what, keys[i].key, v, keys[i].lo, keys[i].hi);
         *out[i] = (int)v;
     }
     return true;
+}
+
+/* ── version 3: a unit of the plan (rdof/siteplan.h) ───────────────────────── */
+
+static uint32_t first_id(const rdof_idset_t *set)
+{
+    rdof_idrange_t r[1];
+    return rdof_idset_ranges(set, r, 1) ? r[0].lo : 0;
+}
+
+/* A frequency's color code: its own, else the defaults' (-1: any). */
+static int freq_cc(ctx_t *c, const rdof_plan_t *p, int f)
+{
+    const rdof_site_t *s = rdof_plan_site(p);
+    double v;
+    if (s->freq[f].cc >= 0)
+        return s->freq[f].cc;
+    int d = get(c, get(c, rdof_plan_root(p), "defaults"), "cc");
+    return d >= 0 && N(c, d)->type != RDOF_JNULL && num(c, d, &v) ? to_int(v) : -1;
+}
+
+/* A frequency's channel number on the OLED: its place in frequencies, from 1. */
+static int oled_number(const rdof_site_t *s, uint32_t hz)
+{
+    for (int f = 0; f < s->nfreq; f++) {
+        int64_t d = (int64_t)s->freq[f].hz - hz;
+        if (d >= -100 && d <= 100)
+            return f + 1;
+    }
+    return 0;
+}
+
+/* The HBlink peer a unit is (its path's), and its callsign: the path's peer name, else the top-level callsign, else
+   its name's first 8 characters. */
+static bool unit_peer(ctx_t *c, const rdof_plan_t *p, int path, const char *where, rdof_config_t *cfg)
+{
+    const rdof_site_t *s = rdof_plan_site(p);
+    int hb = rdof_plan_net_of(p, RDOF_NET_HBLINK);
+    cfg->receiver_hblink = path >= 0 && hb >= 0 && s->path[path].pol.net == hb;
+    cfg->peer_id = path >= 0 ? s->path[path].peer_id : 0;
+    if (!cfg->peer_id && hb >= 0) /* a peer ID only for an hblink network */
+        return err(c, "%s: no HBlink peer ID (the top-level id)", where);
+    if (path >= 0 && s->path[path].peer_name[0]) {
+        copy_str(cfg->callsign, sizeof cfg->callsign, s->path[path].peer_name);
+    } else {
+        char name8[9];
+        memcpy(name8, cfg->name, 8); /* name[:8] */
+        name8[8] = 0;
+        sor(c, rdof_plan_root(p), "callsign", name8, cfg->callsign, sizeof cfg->callsign);
+    }
+    return true;
+}
+
+/* The parrot app's ID when one of the unit's paths may reach it (reach: the apps they reach). */
+static bool unit_parrot(ctx_t *c, const rdof_site_t *s, uint32_t reach, rdof_config_t *cfg)
+{
+    int a = rdof_site_app_of(s, RDOF_APP_PARROT);
+    cfg->has_parrot = a >= 0 && (reach >> a & 1);
+    cfg->parrot = 0;
+    if (!cfg->has_parrot)
+        return true;
+    uint32_t id = first_id(&s->app[a].tg);
+    cfg->parrot = id ? id : first_id(&s->app[a].pc);
+    if (cfg->parrot > 0xFFFFFF)
+        return err(c, "apps.%s: %lu isn't a DMR id", s->app[a].name, (unsigned long)cfg->parrot);
+    return true;
+}
+
+/* A modem's port as the radio's: a UART, or USB (a path is the host's: USB too). */
+static void unit_port(const rdof_port_t *pt, rdof_cfg_port_t *out)
+{
+    memset(out, 0, sizeof *out);
+    out->uart_tx = 5, out->uart_rx = 6, out->uart_num = 1;
+    out->uart_speed = pt->baud;
+    if (pt->kind == RDOF_PORT_UART) {
+        snprintf(out->modem_port, sizeof out->modem_port, "uart");
+        out->uart_num = pt->uart, out->uart_tx = pt->tx, out->uart_rx = pt->rx;
+    } else {
+        snprintf(out->modem_port, sizeof out->modem_port, "usb");
+        copy_str(out->usb_serial, sizeof out->usb_serial, pt->serial);
+        copy_str(out->usb_port, sizeof out->usb_port, pt->usb_port);
+    }
+}
+
+static void use_port(rdof_config_t *cfg, const rdof_cfg_port_t *pt)
+{
+    snprintf(cfg->modem_port, sizeof cfg->modem_port, "%s", pt->modem_port);
+    cfg->uart_tx = pt->uart_tx, cfg->uart_rx = pt->uart_rx, cfg->uart_num = pt->uart_num;
+    cfg->uart_speed = pt->uart_speed;
+    copy_str(cfg->usb_serial, sizeof cfg->usb_serial, pt->usb_serial);
+    copy_str(cfg->usb_port, sizeof cfg->usb_port, pt->usb_port);
+}
+
+/* A split repeater's halves ([0] TX, [1] RX): each one's port, and app.split's SET_ROLE parameters. */
+static bool unit_split(ctx_t *c, const rdof_plan_t *p, const rdof_unit_t *u, const char *where, rdof_config_t *cfg)
+{
+    const rdof_site_t *s = rdof_plan_site(p);
+    int usb = 0, uart = 0;
+    for (int k = 0; k < 2; k++) {
+        int d = k ? u->rx : u->tx;
+        rdof_cfg_port_t *pt = &cfg->split[k];
+        if (s->dev[d].kind == RDOF_DEV_SDR) {
+            rdof_port_t none = {.baud = 115200};
+            unit_port(&none, pt);
+            snprintf(pt->modem_port, sizeof pt->modem_port, "sdr");
+        } else {
+            unit_port(&rdof_plan_dev(p, d)->port, pt);
+        }
+        bool path = s->dev[d].kind != RDOF_DEV_SDR && rdof_plan_dev(p, d)->port.kind == RDOF_PORT_PATH;
+        if (!strcmp(pt->modem_port, "usb")) {
+            usb += !path; /* a path (the host's) isn't the board's one USB port */
+            copy_str(cfg->usb_serial, sizeof cfg->usb_serial, pt->usb_serial);
+            copy_str(cfg->usb_port, sizeof cfg->usb_port, pt->usb_port);
+        } else if (!strcmp(pt->modem_port, "uart") && !uart++) {
+            cfg->uart_tx = pt->uart_tx, cfg->uart_rx = pt->uart_rx, cfg->uart_num = pt->uart_num;
+            cfg->uart_speed = pt->uart_speed;
+        }
+    }
+    const char *tx = s->dev[u->tx].name, *rx = s->dev[u->rx].name;
+    if (usb > 1)
+        return err(c, "%s: devices.%s and devices.%s are both on USB: one half on USB at most (the other on a UART, "
+                      "or the SDR as the RX half)", where, tx, rx);
+    if (uart > 1) {
+        const rdof_cfg_port_t *a = &cfg->split[0], *b = &cfg->split[1];
+        if (a->uart_num == b->uart_num)
+            return err(c, "%s: devices.%s and devices.%s are both on UART%d", where, tx, rx, a->uart_num);
+        if (a->uart_tx == b->uart_tx || a->uart_rx == b->uart_rx || a->uart_tx == b->uart_rx || a->uart_rx == b->uart_tx)
+            return err(c, "%s: devices.%s and devices.%s share a UART pin", where, tx, rx);
+    }
+    int sp = get(c, rdof_plan_app_node(p, u->app), "split");
+    struct {
+        const char *k;
+        int *p;
+    } params[] = {{"power_cap", &cfg->split_power_cap}, {"prebuffer", &cfg->split_prebuffer},
+                  {"lease_s", &cfg->split_lease_s}, {"cooldown_s", &cfg->split_cooldown_s}};
+    for (size_t k = 0; k < sizeof params / sizeof params[0]; k++) {
+        double v;
+        int i = get(c, sp, params[k].k);
+        if (i < 0)
+            continue;
+        if (!num(c, i, &v) || !(v >= 0 && v <= 255)) /* NaN too */
+            return err(c, "%s.split.%s: 0 to 255", where, params[k].k);
+        *params[k].p = (int)v;
+    }
+    int i = get(c, sp, "max_key_s");
+    if (i >= 0 && (!num(c, i, &cfg->split_max_key_s) || !(cfg->split_max_key_s >= 0 && cfg->split_max_key_s <= 600)))
+        return err(c, "%s.split.max_key_s: 0 to 600", where);
+    snprintf(cfg->modem_port, sizeof cfg->modem_port, "split");
+    return true;
+}
+
+/* A plan channel: a frequency of the site as a roamer's channel (power 255 when it has none). */
+static bool unit_channel(ctx_t *c, const rdof_plan_t *p, int f, bool with_power, const char *where,
+                         rdof_cfg_channel_t *out)
+{
+    const rdof_freq_t *fr = &rdof_plan_site(p)->freq[f];
+    int cc = freq_cc(c, p, f);
+    if (cc < 0 || cc > 15)
+        return err(c, "%s: frequencies.%s has no color code", where, fr->name);
+    return channel_entry(c, fr->hz, cc, with_power && fr->power >= 0 ? fr->power : 255, fr->ts, out);
+}
+
+/* The frequencies the board's SDRs hear (its receivers' and the units' on them), sorted: a roamer leaves those to
+   the SDR. */
+static void unit_covered(const rdof_plan_t *p, rdof_config_t *cfg)
+{
+    const rdof_site_t *s = rdof_plan_site(p);
+    cfg->ncovered = 0;
+    for (int d = 0; d < s->ndev; d++) {
+        if (s->dev[d].kind != RDOF_DEV_SDR || !rdof_plan_sdr_used(p, d))
+            continue;
+        uint32_t f[RDOF_SITE_MAX_FREQS + 64];
+        int n = 0, r = rdof_plan_receiver(p, d);
+        for (int x = 0; r >= 0 && x < s->nfreq; x++)
+            if (rdof_plan_unit(p, r)->freqs >> x & 1)
+                f[n++] = s->freq[x].hz;
+        for (int x = 0; x < rdof_plan_nextra(p); x++)
+            if (rdof_plan_extra(p, x)->dev == d)
+                f[n++] = rdof_plan_extra(p, x)->hz;
+        for (int k = 0; k < n; k++) {
+            bool dup = false;
+            for (int q = 0; q < cfg->ncovered; q++)
+                dup |= cfg->covered[q] == f[k];
+            if (!dup && cfg->ncovered < RDOF_CFG_CHANNELS)
+                cfg->covered[cfg->ncovered++] = f[k];
+        }
+    }
+    for (int a = 1; a < cfg->ncovered; a++) /* sorted */
+        for (int b = a; b > 0 && cfg->covered[b - 1] > cfg->covered[b]; b--) {
+            uint32_t t = cfg->covered[b];
+            cfg->covered[b] = cfg->covered[b - 1];
+            cfg->covered[b - 1] = t;
+        }
+}
+
+/* A transceiver: the frequencies its device transmits on; the talker keys on the device. */
+static bool unit_roamer(ctx_t *c, const rdof_plan_t *p, const rdof_unit_t *u, const char *where, rdof_config_t *cfg)
+{
+    const rdof_site_t *s = rdof_plan_site(p);
+    const rdof_device3_t *dv = &s->dev[u->rx];
+    int r = rdof_plan_dev_node(p, u->rx);
+    cfg->mode = RDOF_CFG_ROAMER;
+    cfg->nchannels = 0;
+    uint32_t reach = 0;
+    for (int f = 0; f < s->nfreq; f++) {
+        if (!(u->freqs >> f & 1))
+            continue;
+        if (cfg->nchannels >= RDOF_CFG_CHANNELS)
+            return err(c, "%s.transmits: %d frequencies at most", where, RDOF_CFG_CHANNELS);
+        if (!unit_channel(c, p, f, true, where, &cfg->channels[cfg->nchannels++]))
+            return false;
+        int pa = rdof_site_path_rx(s, s->freq[f].hz, s->freq[f].ts);
+        if (pa >= 0)
+            reach |= s->path[pa].pol.apps;
+    }
+    if (!cfg->nchannels)
+        return err(c, "%s: no frequencies to transmit on", where);
+    if (!unit_channel(c, p, u->freq, false, where, &cfg->idle))
+        return false;
+    cfg->oled_channel = u->freq + 1;
+    if (!unit_peer(c, p, rdof_site_path_rx(s, s->freq[u->freq].hz, s->freq[u->freq].ts), where, cfg))
+        return false;
+    struct {
+        const char *k;
+        double d;
+        double *p;
+    } fl[] = {{"listen_s", 0.3, &cfg->listen_s}, {"clear_s", 2.0, &cfg->clear_s}, {"answer_s", 0.75, &cfg->answer_s},
+              {"answer_max_s", 5.0, &cfg->answer_max_s}, {"idle_after_s", 0, &cfg->idle_after_s},
+              {"cwid_every_s", 900, &cfg->cwid_every_s}};
+    for (size_t k = 0; k < sizeof fl / sizeof fl[0]; k++)
+        if (!fget(c, r, fl[k].k, fl[k].d, fl[k].p, where))
+            return false;
+    if (!jitter(c, r, where, cfg))
+        return false;
+    long lv;
+    if (!iget(c, r, "csbk_preambles", 2, &lv, where))
+        return false;
+    cfg->csbk_preambles = (int)lv;
+    sget(c, r, "cwid", "", cfg->cwid, sizeof cfg->cwid);
+    if (!unit_parrot(c, s, reach, cfg))
+        return false;
+    unit_covered(p, cfg);
+    cfg->has_scan = dv->hears == RDOF_HEARS_SCAN;
+    if (cfg->has_scan) {
+        cfg->nscan = 0;
+        for (int f = 0; f < s->nfreq; f++) {
+            if (!(dv->scan >> f & 1))
+                continue;
+            if (cfg->nscan >= RDOF_CFG_CHANNELS)
+                return err(c, "%s.hears.scan: %d frequencies at most", where, RDOF_CFG_CHANNELS);
+            if (!unit_channel(c, p, f, false, where, &cfg->scan_channels[cfg->nscan++]))
+                return false;
+        }
+        char sw[80];
+        snprintf(sw, sizeof sw, "%s.hears", where);
+        int h = get(c, r, "hears");
+        if (!cfg->nscan)
+            return err(c, "%s.scan: no frequencies", sw);
+        if (!fget(c, h, "dwell_s", 0.45, &cfg->dwell_s, sw) || !fget(c, h, "hang_s", 3.0, &cfg->hang_s_scan, sw) ||
+            !fget(c, h, "carrier_s", 0, &cfg->carrier_s, sw))
+            return false;
+        if (cfg->dwell_s <= 0 || cfg->hang_s_scan < 0 || !(0 <= cfg->carrier_s && cfg->carrier_s < cfg->dwell_s))
+            return err(c, "%s: dwell_s > 0, hang_s >= 0, and carrier_s (0 = off) under dwell_s", sw);
+    }
+    return true;
+}
+
+/* A repeater app, or an SFR or DCDM frequency: the repeater's code. r: the app's or the frequency's object. */
+static bool unit_repeater(ctx_t *c, const rdof_plan_t *p, const rdof_unit_t *u, const char *where, rdof_config_t *cfg)
+{
+    const rdof_site_t *s = rdof_plan_site(p);
+    bool sfr = u->kind == RDOF_UNIT_SFR, dcdm = u->kind == RDOF_UNIT_DCDM;
+    int r, in, out, p0, p1;
+    if (u->kind == RDOF_UNIT_REPEATER) {
+        const rdof_app3_t *ap = &s->app[u->app];
+        r = rdof_plan_app_node(p, u->app);
+        in = ap->in, out = ap->out, p0 = ap->path[0], p1 = ap->path[1];
+    } else {
+        r = rdof_plan_freq_node(p, u->freq);
+        in = out = u->freq;
+        p0 = rdof_site_path_rx(s, s->freq[in].hz, 1);
+        p1 = rdof_site_path_rx(s, s->freq[in].hz, 2);
+    }
+    cfg->mode = RDOF_CFG_REPEATER;
+    cfg->rx_freq = s->freq[in].hz;
+    cfg->tx_freq = s->freq[out].hz;
+    if (s->freq[out].cc < 0 || s->freq[out].cc > 15)
+        return err(c, "%s: frequencies.%s has no color code", where, s->freq[out].name);
+    cfg->cc = s->freq[out].cc;
+    if (!unit_peer(c, p, p0, where, cfg))
+        return false;
+    for (int f = 0; f < s->nfreq; f++)
+        if (!s->freq[f].tx && s->freq[f].hz == cfg->tx_freq)
+            return err(c, "%s: frequencies.%s has tx false: nothing transmits on it", where, s->freq[f].name);
+    int power = s->freq[out].power;
+    cfg->power = power < 0 ? 255 : power > 255 ? 255 : power;
+    if (!fget(c, r, "hang_s", 5.0, &cfg->hang_s, where) || !fget(c, r, "call_hang_s", 3.0, &cfg->call_hang_s, where) ||
+        !fget(c, r, "cwid_every_s", 900, &cfg->cwid_every_s, where))
+        return false;
+    if (!jitter(c, r, where, cfg))
+        return false;
+    sget(c, r, "cwid", "", cfg->cwid, sizeof cfg->cwid);
+    if (!unit_parrot(c, s, (p0 >= 0 ? s->path[p0].pol.apps : 0) | (p1 >= 0 ? s->path[p1].pol.apps : 0), cfg))
+        return false;
+    cfg->short_lc_ts1_low = bget(c, r, "short_lc_ts1_low", false);
+    cfg->sfr = sfr;
+    cfg->dcdm = dcdm;
+    cfg->inbound_slot = 1;
+    if (sfr) {
+        long inbound;
+        if (!iget(c, r, "inbound_slot", 1, &inbound, where))
+            return false;
+        if (inbound != 1 && inbound != 2)
+            return err(c, "%s.inbound_slot: 1 or 2", where);
+        cfg->inbound_slot = (int)inbound;
+        cfg->slot1 = inbound == 2;
+        cfg->slot2 = inbound == 1;
+    } else {
+        int a = get(c, r, "active_slots");
+        cfg->slot1 = cfg->slot2 = a < 0;
+        for (int k = 0; a >= 0 && k < N(c, a)->count; k++) { /* checked in the parse: [1], [2] or [1, 2] */
+            double v;
+            if (num(c, rdof_jat(c->doc, a, k), &v))
+                *(to_long(v) == 1 ? &cfg->slot1 : &cfg->slot2) = true;
+        }
+        if (!sfr && !dcdm && !strcmp(cfg->radio_type, "radio_hotspot"))
+            return err(c, "%s: devices.%s is a radio_hotspot (a radio in hotspot mode), which is simplex: a repeater "
+                          "needs a duplex MMDVM_HS board, an MMDVM board or two radios as a split (or a frequency "
+                          "with mode sfr)", where, s->dev[u->rx].name);
+    }
+    if (cfg->hang_s <= 0 || cfg->call_hang_s < 0)
+        return err(c, "%s: hang_s > 0 and call_hang_s >= 0", where);
+    /* slot timing (docs/spec/slot-timing.md): the board's reaches a duplex repeater on a split or the SDR; a modem
+       or an SFR radio keeps its own slot clock, so utc is refused there */
+    bool timed = !sfr && !dcdm && (!strcmp(cfg->radio_type, "split") || !strcmp(cfg->radio_type, "auto"));
+    char why[96];
+    if (!rdof_slot_timing_parse(c->doc, timed ? get(c, rdof_plan_root(p), "slot_timing") : -1,
+                                get(c, r, "slot_timing"), &cfg->slot_timing, why, sizeof why))
+        return err(c, "%s.%s", where, why);
+    if (cfg->slot_timing.utc && sfr)
+        return err(c, "%s.slot_timing: utc: a single frequency repeater's radio times its own slots", where);
+    if (cfg->slot_timing.utc && dcdm)
+        return err(c, "%s.slot_timing: utc: in dual capacity direct mode the modem times its slots from the channel",
+                   where);
+    if (cfg->slot_timing.utc && !timed)
+        return err(c, "%s.slot_timing: utc: a %s keeps its own slot clock (its firmware times the slots, and MMDVM "
+                      "has no command to move it): only a split or the board's SDR can follow the UTC grid",
+                   where, cfg->radio_type);
+    cfg->oled_channel = oled_number(s, cfg->rx_freq);
+    return true;
+}
+
+static bool unit_mqtt(ctx_t *c, const rdof_plan_t *p, rdof_config_t *cfg)
+{
+    int k = rdof_plan_net_of(p, RDOF_NET_MQTT);
+    const rdof_net3_t *n = k >= 0 ? &rdof_plan_site(p)->net[k] : NULL;
+    cfg->has_mqtt = n && (n->report || n->calls);
+    if (!cfg->has_mqtt)
+        return true;
+    int m = rdof_plan_net_node(p, k);
+    char what[RDOF_SITE_NAME + 16];
+    snprintf(what, sizeof what, "networks.%s", n->name);
+    long port;
+    sget(c, m, "host", "localhost", cfg->mqtt_host, sizeof cfg->mqtt_host);
+    if (!iget(c, m, "port", 1883, &port, what))
+        return false;
+    cfg->mqtt_port = (int)port;
+    sor(c, m, "username", "", cfg->mqtt_user, sizeof cfg->mqtt_user);
+    sor(c, m, "password", "", cfg->mqtt_pass, sizeof cfg->mqtt_pass);
+    sget(c, m, "root", "DMR", cfg->mqtt_root, sizeof cfg->mqtt_root);
+    size_t rl = strlen(cfg->mqtt_root), lead = strspn(cfg->mqtt_root, "/"); /* slashes stripped, both ends */
+    while (rl > lead && cfg->mqtt_root[rl - 1] == '/')
+        rl--;
+    memmove(cfg->mqtt_root, cfg->mqtt_root + lead, rl - lead);
+    cfg->mqtt_root[rl - lead] = 0;
+    snprintf(cfg->mqtt_app, sizeof cfg->mqtt_app, "%s", cfg->mode == RDOF_CFG_ROAMER ? "roaming" : "repeater");
+    cfg->mqtt_tls = bget(c, m, "tls", false);
+    return true;
+}
+
+/* A unit's place in the settings, for its errors. */
+static void unit_where(const rdof_plan_t *p, const rdof_unit_t *u, char *out, size_t cap)
+{
+    const rdof_site_t *s = rdof_plan_site(p);
+    if (u->kind == RDOF_UNIT_REPEATER)
+        snprintf(out, cap, "apps.%s", s->app[u->app].name);
+    else if (u->kind == RDOF_UNIT_SFR || u->kind == RDOF_UNIT_DCDM)
+        snprintf(out, cap, "frequencies.%s", s->freq[u->freq].name);
+    else
+        snprintf(out, cap, "devices.%s", s->dev[u->rx].name);
+}
+
+bool rdof_plan_radio(const rdof_plan_t *p, const char *name, rdof_config_t *cfg, char *error, size_t error_cap)
+{
+    char dummy[8];
+    ctx_t cx = {.doc = rdof_plan_doc(p), .error = error ? error : dummy, .error_cap = error ? error_cap : sizeof dummy,
+                .mm = {-1, -1}};
+    ctx_t *c = &cx;
+    if (c->error_cap)
+        c->error[0] = 0;
+    memset(cfg, 0, sizeof *cfg);
+    const rdof_site_t *s = rdof_plan_site(p);
+    int k = -1;
+    for (int i = 0; i < rdof_plan_nunits(p) && k < 0; i++)
+        if (rdof_plan_unit(p, i)->kind != RDOF_UNIT_RECEIVER &&
+            (!name || !strncmp(rdof_plan_unit(p, i)->name, name, sizeof cfg->name - 1)))
+            k = i;
+    if (k < 0)
+        return name ? err(c, "%s isn't a unit that transmits (a repeater, an SFR or DCDM frequency, or a device "
+                             "transmitting on simplex frequencies)", name)
+                    : err(c, "nothing transmits: no repeater, SFR or DCDM frequency, or device transmitting");
+    const rdof_unit_t *u = rdof_plan_unit(p, k);
+    int root = rdof_plan_root(p);
+    char where[RDOF_SITE_NAME + 16];
+    unit_where(p, u, where, sizeof where);
+    copy_str(cfg->name, sizeof cfg->name, u->name);
+    {
+        rdof_slot_timing_t t; /* the board's, checked whether or not anything inherits it */
+        char why[96];
+        if (!rdof_slot_timing_parse(c->doc, -1, get(c, root, "slot_timing"), &t, why, sizeof why))
+            return err(c, "%s", why);
+    }
+    /* the network */
+    int hbk = rdof_plan_net_of(p, RDOF_NET_HBLINK);
+    int hb = rdof_plan_net_node(p, hbk);
+    long port;
+    char hbw[RDOF_SITE_NAME + 16];
+    snprintf(hbw, sizeof hbw, "networks.%s", hbk >= 0 ? s->net[hbk].name : "hblink");
+    sget(c, hb, "host", "localhost", cfg->master_host, sizeof cfg->master_host);
+    if (!iget(c, hb, "port", 62031, &port, hbw))
+        return false;
+    cfg->master_port = (int)port;
+    sget(c, hb, "transport", "udp", cfg->transport, sizeof cfg->transport);
+    if (!sctp_settings(c, hb, hbw, cfg) || !location(c, get(c, root, "location"), cfg))
+        return false;
+    /* the radio: the board's SDR (an sdr_transceiver), one modem, or a split's two */
+    bool split = u->rx != u->tx, on_sdr = !split && s->dev[u->rx].kind == RDOF_DEV_SDR;
+    c->mm[0] = get(c, rdof_plan_dev_node(p, u->tx), "mmdvm");
+    c->mm[1] = get(c, rdof_plan_dev_node(p, u->rx), "mmdvm");
+    char mmw[RDOF_SITE_NAME + 24];
+    snprintf(mmw, sizeof mmw, "devices.%s.mmdvm", s->dev[c->mm[0] >= 0 ? u->tx : u->rx].name);
+    c->mmw = mmw;
+    if (!radio_settings(c, cfg))
+        return false;
+    const char *drv = s->dev[u->rx].driver;
+    snprintf(cfg->radio_type, sizeof cfg->radio_type, "%s", on_sdr ? "auto" : split ? "split" : drv);
+    if (!split && !known_type(cfg->radio_type))
+        return err(c, "devices.%s.type %s", s->dev[u->rx].name, cfg->radio_type);
+    cfg->sdr_duplex = RDOF_SDR_DUPLEX_NONE;
+    cfg->tx_power_dbm = 10;
+    if (on_sdr) {
+        const rdof_plan_dev_t *dv = rdof_plan_dev(p, u->rx);
+        cfg->sdr_duplex = u->kind == RDOF_UNIT_REPEATER || u->duplex_full ? RDOF_SDR_DUPLEX_FULL
+                                                                          : RDOF_SDR_DUPLEX_HALF;
+        if (dv->has_tx_power)
+            cfg->tx_power_dbm = dv->tx_power_dbm;
+    }
+    if (u->kind == RDOF_UNIT_TRANSCEIVER ? !unit_roamer(c, p, u, where, cfg) : !unit_repeater(c, p, u, where, cfg))
+        return false;
+    if (!unit_mqtt(c, p, cfg) || !oled(c, root, cfg))
+        return false;
+    /* the port */
+    rdof_cfg_port_t pt;
+    rdof_port_t none = {.baud = 115200};
+    unit_port(&none, &pt);
+    if (on_sdr)
+        snprintf(pt.modem_port, sizeof pt.modem_port, "sdr");
+    else if (split)
+        snprintf(pt.modem_port, sizeof pt.modem_port, "uart");
+    else
+        unit_port(&rdof_plan_dev(p, u->rx)->port, &pt);
+    use_port(cfg, &pt);
+    if (split && !unit_split(c, p, u, where, cfg))
+        return false;
+    return true;
+}
+
+/* The text forms: a plan each. */
+bool rdof_config_parse_radio(const char *text, size_t len, const char *name, rdof_config_t *cfg, char *error,
+                             size_t error_cap)
+{
+    rdof_plan_t *p = rdof_plan_open(text, len, error, error_cap);
+    if (!p) {
+        memset(cfg, 0, sizeof *cfg);
+        return false;
+    }
+    bool ok = rdof_plan_radio(p, name, cfg, error, error_cap);
+    rdof_plan_close(p);
+    return ok;
 }
 
 bool rdof_config_parse(const char *text, size_t len, rdof_config_t *cfg, char *error, size_t error_cap)
@@ -1116,282 +953,15 @@ bool rdof_config_parse(const char *text, size_t len, rdof_config_t *cfg, char *e
     return rdof_config_parse_radio(text, len, NULL, cfg, error, error_cap);
 }
 
-static bool parse_radio_v1(const char *text, size_t len, const char *want, rdof_config_t *cfg, char *error,
-                           size_t error_cap);
-
-/* Version 2: the role's section in its view (rdof/setup.h); its errors say which role. */
-bool rdof_config_parse_radio(const char *text, size_t len, const char *want, rdof_config_t *cfg, char *error,
-                           size_t error_cap)
+bool rdof_box_roles(const char *text, size_t len, rdof_roles_t *roles, char *error, size_t error_cap)
 {
-    if (rdof_config_version(text, len) < 2)
-        return parse_radio_v1(text, len, want, cfg, error, error_cap);
-    memset(cfg, 0, sizeof *cfg);
-    rdof_roles_t *roles = NULL;
-    char name[RDOF_SETUP_NAME];
-    if (!want) {
-        roles = malloc(sizeof *roles);
-        if (!roles || !rdof_box_roles(text, len, roles, error, error_cap)) {
-            if (!roles && error && error_cap)
-                snprintf(error, error_cap, "no memory");
-            free(roles);
-            return false;
-        }
-        if (!roles->nradios) {
-            free(roles);
-            if (error && error_cap)
-                snprintf(error, error_cap, "run: no roamer or repeater");
-            return false;
-        }
-        snprintf(name, sizeof name, "%s", roles->radios[0]);
-        free(roles);
-        want = name;
-    }
-    char *view;
-    if (!rdof_config_as_v1(&text, &len, want, &view, error, error_cap))
-        return false;
-    char why[160];
-    bool ok = parse_radio_v1(text, len, want, cfg, why, sizeof why);
-    if (!ok && error && error_cap)
-        snprintf(error, error_cap, "roles.%s: %s", want, why);
-    free(view);
-    return ok;
-}
-
-static bool parse_radio_v1(const char *text, size_t len, const char *want, rdof_config_t *cfg, char *error,
-                           size_t error_cap)
-{
-    char dummy[8];
-    ctx_t *c = malloc(sizeof *c); /* large (the node array): from the heap, not the stack */
-    if (!c) {
-        if (error && error_cap)
-            snprintf(error, error_cap, "no memory");
+    rdof_plan_t *p = rdof_plan_open(text, len, error, error_cap);
+    if (!p) {
+        memset(roles, 0, sizeof *roles);
         return false;
     }
-    c->error = error ? error : dummy;
-    c->error_cap = error ? error_cap : sizeof dummy;
-    if (c->error_cap)
-        c->error[0] = 0;
-    memset(cfg, 0, sizeof *cfg);
-    char *clean = malloc(len + 1);
-    if (!clean) {
-        free(c);
-        if (error && error_cap)
-            snprintf(error, error_cap, "no memory");
-        return false;
-    }
-    size_t n = rdof_jsonc_strip(text, len, clean);
-    c->doc.nodes = c->nodes;
-    c->doc.max = MAX_NODES;
-    c->doc.buf = c->strs;
-    c->doc.cap = STR_BUF;
-    int box = rdof_jparse(&c->doc, clean, n);
-    bool ok = false;
-    if (box < 0) {
-        err(c, "JSON: %s", c->doc.error);
-        goto done;
-    }
-    if (N(c, box)->type != RDOF_JOBJ) {
-        err(c, "the settings are a JSON object");
-        goto done;
-    }
-    {
-        rdof_slot_timing_t t; /* the box's, checked whether or not anything inherits it */
-        char why[96];
-        if (!rdof_slot_timing_parse(&c->doc, -1, get(c, box, "slot_timing"), &t, why, sizeof why)) {
-            err(c, "box: %s", why);
-            goto done;
-        }
-    }
-    /* the plan */
-    plan_list_t plan;
-    plan.n = 0;
-    int cc_node = get(c, box, "cc");
-    bool has_default_cc = cc_node >= 0 && N(c, cc_node)->type != RDOF_JNULL;
-    double dcc = 0;
-    if (has_default_cc && !num(c, cc_node, &dcc)) {
-        err(c, "cc isn't a number");
-        goto done;
-    }
-    int chans = get(c, box, "channels");
-    for (int k = 0; chans >= 0 && N(c, chans)->type == RDOF_JOBJ && k < N(c, chans)->count; k++) {
-        int ch = rdof_jat(&c->doc, chans, k);
-        plan_t *p;
-        if (plan.n >= (int)(sizeof plan.ch / sizeof plan.ch[0])) {
-            err(c, "too many channels in the plan");
-            goto done;
-        }
-        p = &plan.ch[plan.n];
-        char *e;
-        long number = strtol(N(c, ch)->key, &e, 10);
-        p->number = (int)number;
-        if (!N(c, ch)->key[0] || *e || number != p->number) { /* "" isn't 0; nor 2^32 + 1 channel 1 */
-            err(c, "channel %s: not a number", N(c, ch)->key);
-            goto done;
-        }
-        int f = N(c, ch)->type == RDOF_JOBJ ? get(c, ch, "freq") : ch;
-        if (f < 0) {
-            err(c, "channel %d: no freq", p->number);
-            goto done;
-        }
-        if (!box_hz(c, f, &p->freq, "channel"))
-            goto done;
-        double cc, power;
-        int obj = N(c, ch)->type == RDOF_JOBJ ? ch : -1;
-        int ccn = get(c, obj, "cc");
-        const int txk = get(c, obj, "tx");
-        if (txk >= 0 && N(c, txk)->type != RDOF_JBOOL) {
-            err(c, "channel %d: tx: true or false", p->number);
-            goto done;
-        }
-        p->no_tx = txk >= 0 && !N(c, txk)->b;
-        /* a channel nothing transmits on may leave the color code out: any (-1) */
-        if (ccn >= 0 ? !num(c, ccn, &cc) : !has_default_cc && !p->no_tx) {
-            err(c, "channel %d: no color code (set cc on it or at the top)", p->number);
-            goto done;
-        }
-        if (ccn < 0)
-            cc = has_default_cc ? dcc : -1;
-        if (!fget(c, obj, "power", 255, &power, "channel"))
-            goto done;
-        p->cc = to_int(cc);
-        p->power = to_int(power);
-        double slot;
-        if (!fget(c, obj, "slot", 1, &slot, "channel"))
-            goto done;
-        if (slot != 1 && slot != 2) {
-            err(c, "channel %d: slot 1 or 2", p->number);
-            goto done;
-        }
-        p->slot = (int)slot;
-        plan_t *same = (plan_t *)plan_find(&plan, p->number);
-        if (same) /* "1" and "01": the last one */
-            *same = *p;
-        else
-            plan.n++;
-    }
-    qsort(plan.ch, (size_t)plan.n, sizeof plan.ch[0], cmp_plan);
-    /* the radio: the one "run" names, else the first that isn't an SDR */
-    char box_name[64];
-    sor(c, box, "name", "radiofoundry", box_name, sizeof box_name);
-    int rs[RDOF_MAX_RADIOS], ks[RDOF_MAX_RADIOS], nr, sdr_unused, sdr_index_unused;
-    if (!pick_radios(c, box, box_name, rs, ks, &nr, &sdr_unused, &sdr_index_unused))
-        goto done;
-    if (!nr) {
-        err(c, "no roamer or repeater in radios");
-        goto done;
-    }
-    int r = rs[0], index = ks[0];
-    if (want) {
-        int k = 0;
-        for (; k < nr; k++) {
-            char name[96];
-            radio_name(c, rs[k], ks[k], box_name, name, sizeof name);
-            if (!strncmp(name, want, sizeof cfg->name - 1)) /* as far as rdof_roles_t and cfg->name keep it */
-                break;
-        }
-        if (k == nr) {
-            err(c, "%s isn't a roamer or repeater this board runs", want);
-            goto done;
-        }
-        r = rs[k];
-        index = ks[k];
-    }
-    const char *type = N(c, get(c, r, "type"))->str;
-    char dflt_name[96];
-    snprintf(dflt_name, sizeof dflt_name, "%s-%s%d", box_name, type, index + 1);
-    sget(c, r, "name", dflt_name, cfg->name, sizeof cfg->name);
-    int hb = get(c, box, "hblink");
-    long port;
-    sget(c, hb, "host", "localhost", cfg->master_host, sizeof cfg->master_host);
-    if (!iget(c, hb, "port", 62031, &port, "hblink"))
-        goto done;
-    cfg->master_port = (int)port;
-    sget(c, hb, "transport", "udp", cfg->transport, sizeof cfg->transport);
-    if (!sctp_settings(c, hb, cfg))
-        goto done;
-    cfg->receiver_hblink = bget(c, r, "hblink", true);
-    int loc = get(c, r, "location");
-    if (!location(c, loc >= 0 ? loc : get(c, box, "location"), cfg))
-        goto done;
-    /* sdr_transceiver: the board's SDR front end as the radio (docs/reference.md, "Transmit"): half duplex is a roamer,
-       full a duplex repeater; its modem is the SDR's emulated one. */
-    const bool sdrtx = !strcmp(type, "sdr_transceiver");
-    bool sdr_dcdm = false; /* mode dcdm: a DCDM gateway (the repeater's code), half or full duplex */
-    cfg->sdr_duplex = RDOF_SDR_DUPLEX_NONE;
-    cfg->tx_power_dbm = 10;
-    if (sdrtx) {
-        char duplex[8];
-        sget(c, r, "duplex", "half", duplex, sizeof duplex);
-        if (strcmp(duplex, "half") && strcmp(duplex, "full")) {
-            err(c, "duplex %s: half (a roamer) or full (a duplex repeater)", duplex);
-            goto done;
-        }
-        cfg->sdr_duplex = !strcmp(duplex, "full") ? RDOF_SDR_DUPLEX_FULL : RDOF_SDR_DUPLEX_HALF;
-        if (!fget(c, r, "tx_power_dbm", 10, &cfg->tx_power_dbm, "radio"))
-            goto done;
-        char mode[8];
-        sget(c, r, "mode", "duplex", mode, sizeof mode);
-        if (cfg->sdr_duplex == RDOF_SDR_DUPLEX_FULL && strcmp(mode, "duplex") && strcmp(mode, "dcdm")) {
-            err(c, "an sdr_transceiver with duplex: full is a duplex repeater (no mode: sfr)");
-            goto done;
-        }
-        sdr_dcdm = !strcmp(mode, "dcdm");
-        bool any_sdr = false;
-        int radios = get(c, box, "radios");
-        for (int k = 0; radios >= 0 && k < N(c, radios)->count; k++) {
-            int s = rdof_jat(&c->doc, radios, k), t = get(c, s, "type");
-            any_sdr |= t >= 0 && N(c, t)->type == RDOF_JSTR && !strcmp(N(c, t)->str, "sdr") && enabled(c, s) == 1;
-        }
-        if (!any_sdr) {
-            err(c, "an sdr_transceiver needs an SDR in radios: its front end is the radio");
-            goto done;
-        }
-    }
-    if (!strcmp(type, "repeater") || (sdrtx && (cfg->sdr_duplex == RDOF_SDR_DUPLEX_FULL || sdr_dcdm))) {
-        if (!repeater(c, box, r, &plan, cfg, to_long(dcc), has_default_cc))
-            goto done;
-    } else if (!roamer(c, box, r, &plan, cfg, box_name)) {
-        goto done;
-    }
-    if (!mqtt(c, box, cfg) || !oled(c, box, cfg))
-        goto done;
-    /* firmware only (wifi and ntp belong to the board's Wi-Fi and clock, not here) */
-    const char *dflt_port = !strcmp(cfg->radio_type, "radio_hotspot") || !strcmp(cfg->radio_type, "auto") ? "usb" : "uart";
-    char box_port[8];
-    sget(c, box, "modem", dflt_port, box_port, sizeof box_port);
-    sget(c, r, "modem", box_port, cfg->modem_port, sizeof cfg->modem_port); /* the radio's own, else the box's */
-    if (sdrtx)
-        snprintf(cfg->modem_port, sizeof cfg->modem_port, "sdr");
-    else if (strcmp(cfg->modem_port, "usb") && strcmp(cfg->modem_port, "uart")) {
-        err(c, "modem %s: usb or uart", cfg->modem_port);
-        goto done;
-    }
-    int u = get(c, r, "uart") >= 0 ? get(c, r, "uart") : get(c, box, "uart");
-    long v;
-    if (!iget(c, u, "tx", 5, &v, "uart"))
-        goto done;
-    cfg->uart_tx = (int)v;
-    if (!iget(c, u, "rx", 6, &v, "uart"))
-        goto done;
-    cfg->uart_rx = (int)v;
-    if (!iget(c, u, "num", 1, &v, "uart"))
-        goto done;
-    if (v != 1 && v != 2) {
-        err(c, "uart.num %ld: 1 or 2 (UART0 is the console)", v);
-        goto done;
-    }
-    cfg->uart_num = (int)v;
-    if (!iget(c, r, "speed", 115200, &cfg->uart_speed, "radio"))
-        goto done;
-    int usb = get(c, r, "usb");
-    sget(c, usb, "serial", "", cfg->usb_serial, sizeof cfg->usb_serial);
-    sget(c, usb, "port", "", cfg->usb_port, sizeof cfg->usb_port);
-    if (!strcmp(cfg->radio_type, "split") && !split_ports(c, r, cfg))
-        goto done;
-    ok = true;
-done:
-    free(clean);
-    free(c);
+    bool ok = rdof_plan_roles(p, roles, error, error_cap);
+    rdof_plan_close(p);
     return ok;
 }
 
@@ -1421,7 +991,7 @@ bool rdof_config_uses_usb(const rdof_config_t *cfg)
     return false;
 }
 
-/* Two ports (of radios a and b) that can't both be: false with error set. */
+/* Two ports (of units a and b) that can't both be: false with error set. */
 static bool ports_apart(const char *a_name, const rdof_cfg_port_t *a, const char *b_name, const rdof_cfg_port_t *b,
                         char *error, size_t cap)
 {
@@ -1433,8 +1003,8 @@ static bool ports_apart(const char *a_name, const rdof_cfg_port_t *a, const char
     }
     if (!strcmp(a->modem_port, "uart")) {
         if (a->uart_num == b->uart_num) {
-            snprintf(error, cap, "%s and %s are both on UART%d: give one \"uart\": {\"num\": 2, ...}", a_name, b_name,
-                     a->uart_num);
+            snprintf(error, cap, "%s and %s are both on UART%d: give one's device \"port\": {\"uart\": %d, ...}",
+                     a_name, b_name, a->uart_num, 3 - a->uart_num);
             return false;
         }
         if (a->uart_tx == b->uart_tx || a->uart_rx == b->uart_rx || a->uart_tx == b->uart_rx ||
@@ -1443,8 +1013,8 @@ static bool ports_apart(const char *a_name, const rdof_cfg_port_t *a, const char
             return false;
         }
     } else if ((!a->usb_serial[0] && !a->usb_port[0]) || (!b->usb_serial[0] && !b->usb_port[0])) {
-        snprintf(error, cap, "%s and %s are both radios on USB: tell them apart with \"usb\": {\"serial\": ...} "
-                 "or {\"port\": ...} on each", a_name, b_name);
+        snprintf(error, cap, "%s and %s are both on USB: tell their devices apart with \"serial\" or \"usb_port\" in "
+                 "each one's port", a_name, b_name);
         return false;
     } else if ((a->usb_serial[0] && !strcmp(a->usb_serial, b->usb_serial) &&
                 (!a->usb_port[0] || !b->usb_port[0] || !strcmp(a->usb_port, b->usb_port))) ||
@@ -1494,65 +1064,6 @@ static const char *f3(double v, char *buf)
 {
     rdof_format_float3(v, buf, 40);
     return buf;
-}
-
-bool rdof_box_roles(const char *text, size_t len, rdof_roles_t *roles, char *error, size_t error_cap)
-{
-    char dummy[8];
-    memset(roles, 0, sizeof *roles);
-    if (rdof_config_version(text, len) >= 2) {
-        if (!error || !error_cap)
-            error = dummy, error_cap = sizeof dummy;
-        return rdof_setup_box_roles(text, len, roles, error, error_cap);
-    }
-    ctx_t *c = malloc(sizeof *c);
-    char *clean = c ? malloc(len + 1) : NULL;
-    if (!clean) {
-        free(c);
-        if (error && error_cap)
-            snprintf(error, error_cap, "no memory");
-        return false;
-    }
-    c->error = error ? error : dummy;
-    c->error_cap = error ? error_cap : sizeof dummy;
-    if (c->error_cap)
-        c->error[0] = 0;
-    size_t n = rdof_jsonc_strip(text, len, clean);
-    c->doc.nodes = c->nodes;
-    c->doc.max = MAX_NODES;
-    c->doc.buf = c->strs;
-    c->doc.cap = STR_BUF;
-    int box = rdof_jparse(&c->doc, clean, n);
-    bool ok = false;
-    if (box < 0) {
-        err(c, "JSON: %s", c->doc.error);
-    } else if (N(c, box)->type != RDOF_JOBJ) {
-        err(c, "the settings are a JSON object");
-    } else if (get(c, box, "radios") < 0 && get(c, box, "device") >= 0) {
-        roles->has_sdr = roles->sdr_plain = true; /* a plain SDR config on its own */
-        sor(c, box, "name", "sdr", roles->sdr, sizeof roles->sdr);
-        snprintf(roles->box, sizeof roles->box, "%s", roles->sdr);
-        ok = true;
-    } else {
-        char box_name[64];
-        sor(c, box, "name", "radiofoundry", box_name, sizeof box_name);
-        snprintf(roles->box, sizeof roles->box, "%.*s", (int)sizeof roles->box - 1, box_name);
-        int r[RDOF_MAX_RADIOS], rk[RDOF_MAX_RADIOS], nr, s, sk;
-        roles->usb_hub = bget(c, box, "usb_hub", false);
-        if (pick_radios(c, box, box_name, r, rk, &nr, &s, &sk)) {
-            roles->nradios = nr;
-            for (int k = 0; k < nr; k++)
-                radio_name(c, r[k], rk[k], box_name, roles->radios[k], sizeof roles->radios[k]);
-            if ((roles->has_radio = nr > 0))
-                snprintf(roles->radio, sizeof roles->radio, "%s", roles->radios[0]);
-            if ((roles->has_sdr = s >= 0))
-                radio_name(c, s, sk, box_name, roles->sdr, sizeof roles->sdr);
-            ok = true;
-        }
-    }
-    free(clean);
-    free(c);
-    return ok;
 }
 
 /* jitter=auto:min-max (ms) or fixed (at prebuffer) */

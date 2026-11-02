@@ -727,13 +727,14 @@ static void test_config(void)
             CHECK(strcmp(desc, v->describe) == 0, "config %s:\n  got  %s\n  want %s", v->name, desc, v->describe);
         }
     }
-    const char *jsonc = "{ // a comment\n \"device\": {\"sample_rate\": 288000, /* block */},\n"
-                        " \"channels\": [{\"id\": \"A\", \"freq\": 438.0625,},],}";
+    const char *jsonc = "{ // a comment\n \"version\": 3, \"name\": \"b\", \"id\": 1, \"defaults\": {\"cc\": 1},\n"
+                        " \"devices\": [{\"name\": \"s\", \"kind\": \"sdr\", \"rx\": {\"rate\": 288000, /* block */},},],\n"
+                        " \"frequencies\": [{\"name\": \"A\", \"freq\": 438.0625, \"tx\": false,},],}";
     char err[160];
     CHECK(rdof_sdr_config_parse(jsonc, strlen(jsonc), &cfg, err, sizeof err) && cfg.nch == 1, "JSONC: %s", err);
 }
 
-/* The front end's portable part: device.type, "sim", the sample formats, the settings check. */
+/* The front end's portable part: the driver, "sim", the sample formats, the settings check. */
 static void test_frontend(void)
 {
     static rdof_sdr_config_t cfg;
@@ -742,23 +743,26 @@ static void test_frontend(void)
               rdof_fe_type_parse("sim") == RDOF_FE_SIM && rdof_fe_type_parse("hackrf") == -1,
           "fe type parse");
     CHECK(!strcmp(rdof_fe_type_name(RDOF_FE_SX1255), "sx1255"), "fe type name");
-    const char *a = "{\"device\": {\"sample_rate\": 288000}, \"channels\": [{\"id\": \"A\", \"freq\": 438.0625}]}";
+    /* one receiving SDR with these keys */
+#define SDR3(keys)                                                                                                 \
+    "{\"version\": 3, \"name\": \"b\", \"id\": 1, \"defaults\": {\"cc\": 1}, \"frequencies\": [{\"name\": \"A\", \"freq\": " \
+    "438.0625, \"tx\": false}], \"devices\": [{\"name\": \"s\", \"kind\": \"sdr\", \"rx\": {\"rate\": 288000}" keys "}]}"
+    const char *a = SDR3("");
     CHECK(rdof_sdr_config_parse(a, strlen(a), &cfg, err, sizeof err) && cfg.frontend == RDOF_FE_RTLSDR && !cfg.sim,
           "default front end: %s", err);
-    const char *b = "{\"device\": {\"type\": \"lr2021\", \"sample_rate\": 288000}, \"channels\": [{\"id\": \"A\", "
-                    "\"freq\": 438.0625}]}";
+    const char *b = SDR3(", \"driver\": \"lr2021\"");
     CHECK(rdof_sdr_config_parse(b, strlen(b), &cfg, err, sizeof err) && cfg.frontend == RDOF_FE_LR2021, "lr2021: %s", err);
-    const char *c = "{\"device\": {\"type\": \"lr2021\", \"sample_rate\": 288000}, \"sim\": true, \"channels\": "
-                    "[{\"id\": \"A\", \"freq\": 438.0625}]}";
+    const char *c = SDR3(", \"driver\": \"lr2021\", \"sim\": true");
     CHECK(rdof_sdr_config_parse(c, strlen(c), &cfg, err, sizeof err) && cfg.frontend == RDOF_FE_SIM && cfg.sim,
           "sim: true wins: %s", err);
-    const char *d = "{\"device\": {\"type\": \"sim\", \"sample_rate\": 288000}, \"channels\": [{\"id\": \"A\", "
-                    "\"freq\": 438.0625}]}";
+    const char *d = SDR3(", \"driver\": \"sim\"");
     CHECK(rdof_sdr_config_parse(d, strlen(d), &cfg, err, sizeof err) && cfg.frontend == RDOF_FE_SIM && cfg.sim,
-          "type sim is sim: %s", err);
-    const char *e = "{\"device\": {\"type\": 3, \"sample_rate\": 288000}, \"channels\": [{\"id\": \"A\", "
-                    "\"freq\": 438.0625}]}";
-    CHECK(!rdof_sdr_config_parse(e, strlen(e), &cfg, err, sizeof err) && strstr(err, "device.type"), "type 3: %s", err);
+          "driver sim is sim: %s", err);
+    const char *e = SDR3(", \"driver\": 3");
+    CHECK(!rdof_sdr_config_parse(e, strlen(e), &cfg, err, sizeof err) &&
+              !strcmp(err, "devices.s.driver: rtlsdr, lr2021, sx1255, sim, soapy or iio"),
+          "driver 3: %s", err);
+#undef SDR3
 
     /* formats: the same floats as the iq converters, filler reads back as (near) zero */
     const uint8_t u8[4] = {0, 255, 128, 0x80};

@@ -1,35 +1,35 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
-//! Box config JSON -> one roamer or repeater (rdof/config.h, docs/spec/fw/config.md). A port of
-//! common/src/config.c.
+//! The settings (version 3) -> one repeater, SFR or DCDM gateway, or transceiver (rdof/config.h,
+//! docs/spec/fw/config-v3.md section 12). A port of common/src/config.c: it reads the plan (rdof/siteplan.h, C) as
+//! the C does.
 //!
 //! The settings text is untrusted. Numbers in strings go through the C library's strtod and strtol, %g and floats
 //! through its snprintf, so they read and print as the C's did.
 
 use core::ffi::{c_char, c_int, c_long, CStr};
-use core::mem::size_of;
 use core::ptr;
 
 use crate::bits::slice_mut;
-use crate::ffi::{calloc, free, rint, snprintf, strtod, strtol};
+use crate::ffi::{rint, snprintf, strtod, strtol};
 use crate::hblink::RdofLocation;
 use crate::jitter::{rdof_jb_bursts, RDOF_JB_BURST_MS, RDOF_JB_MAX_DEFAULT_MS, RDOF_JB_MAX_MS, RDOF_JB_MIN_MS};
 use crate::json::rdof_format_float3;
-use crate::jsonp::{
-    rdof_jat, rdof_jget, rdof_jnode, rdof_jparse, rdof_jsonc_strip, JDoc, JNode, RDOF_JARR, RDOF_JBOOL, RDOF_JNULL, RDOF_JNUM, RDOF_JOBJ,
-    RDOF_JSTR,
-};
+use crate::jsonp::{rdof_jat, rdof_jget, rdof_jnode, JDoc, JNode, RDOF_JARR, RDOF_JBOOL, RDOF_JNULL, RDOF_JNUM, RDOF_JOBJ, RDOF_JSTR};
 use crate::mmdvm::{rdof_modem_config_default, RdofModemConfig};
 use crate::modem::{rdof_rssi_map_sort, RdofRssiMap};
+use crate::plan::{
+    field, first_id, rdof_plan_close, rdof_plan_open, Plan, RdofPlan, RdofPort, RdofUnit, APP_PARROT, DEV_SDR, HEARS_SCAN,
+    NET_HBLINK, NET_MQTT, PORT_PATH, PORT_UART, UNIT_DCDM, UNIT_RECEIVER, UNIT_REPEATER, UNIT_SFR, UNIT_TRANSCEIVER,
+};
 use crate::slotgrid::{rdof_slot_timing_describe, rdof_slot_timing_parse, RdofSlotTiming};
 use crate::status::rdof_format_repr;
-use crate::text::{c_bytes, c_out, fixed, print, Out, Piece, Piece::I, Piece::S};
+use crate::text::{c_out, fixed, print, Out, Piece, Piece::I, Piece::S};
 
-const MAX_NODES: usize = 1200;
-const STR_BUF: usize = 8192;
 const CHANNELS: usize = 32; // RDOF_CFG_CHANNELS
 const MAX_RADIOS: usize = 2; // RDOF_MAX_RADIOS
 const RSSI_POINTS: usize = 16; // RDOF_RSSI_POINTS
+const SITE_MAX_FREQS: usize = 48; // RDOF_SITE_MAX_FREQS
 
 const ROAMER: u32 = 1; // RDOF_CFG_ROAMER
 const REPEATER: u32 = 2;
@@ -169,6 +169,7 @@ pub struct RdofConfig {
     pub split_max_key_s: f64,
 }
 
+
 /// rdof_roles_t
 #[repr(C)]
 pub struct RdofRoles {
@@ -180,62 +181,7 @@ pub struct RdofRoles {
     pub usb_hub: bool,
     pub radios: [[u8; 24]; MAX_RADIOS],
     pub sdr: [u8; 32],
-    pub sdr_plain: bool,
 }
-
-const ROAMER_KEYS: &[&[u8]] = &[
-    b"type",
-    b"name",
-    b"peer_id",
-    b"callsign",
-    b"idle",
-    b"channels",
-    b"listen_s",
-    b"clear_s",
-    b"prebuffer",
-    b"jitter_buffer",
-    b"jitter_min_ms",
-    b"jitter_max_ms",
-    b"idle_after_s",
-    b"cwid",
-    b"cwid_every_s",
-    b"parrot",
-    b"hblink",
-    b"location",
-    b"radio",
-    b"scan",
-    b"csbk_preambles",
-    b"answer_s",
-    b"answer_max_s",
-];
-const REPEATER_KEYS: &[&[u8]] = &[
-    b"type",
-    b"name",
-    b"peer_id",
-    b"callsign",
-    b"rx_freq",
-    b"tx_freq",
-    b"cc",
-    b"power",
-    b"slots",
-    b"hang_s",
-    b"call_hang_s",
-    b"prebuffer",
-    b"jitter_buffer",
-    b"jitter_min_ms",
-    b"jitter_max_ms",
-    b"cwid",
-    b"cwid_every_s",
-    b"parrot",
-    b"hblink",
-    b"location",
-    b"radio",
-    b"mode",
-    b"freq",
-    b"inbound_slot",
-    b"short_lc_ts1_low",
-    b"slot_timing",
-];
 
 /// What rdof_jnode gives for no node, as a node: the C's checks of NULL are the ones of null.
 const NONE: JNode = JNode {
@@ -251,11 +197,6 @@ const NONE: JNode = JNode {
 };
 
 // ── text ────────────────────────────────────────────────────────────────────
-
-/// A NUL-terminated field's text.
-fn field(f: &[u8]) -> &[u8] {
-    &f[..f.iter().position(|&c| c == 0).unwrap_or(f.len())]
-}
 
 /// %ld (long is 32 bits on the S3, 64 on the host)
 #[allow(clippy::useless_conversion)]
@@ -277,7 +218,7 @@ fn g(v: f64, buf: &mut [u8; 32]) -> &[u8] {
 /// A string node's text; "" for any other.
 fn s(n: &JNode) -> &[u8] {
     if n.type_ == RDOF_JSTR {
-        unsafe { c_bytes(n.str_) }
+        unsafe { crate::text::c_bytes(n.str_) }
     } else {
         b""
     }
@@ -288,16 +229,8 @@ fn is_env(n: &JNode) -> bool {
     t.len() >= 3 && t[0] == b'$' && t[1] == b'{' && t[t.len() - 1] == b'}'
 }
 
-/// The old name opengd77 becomes radio_hotspot.
-fn canonical(t: &mut [u8]) {
-    if field(t) == b"opengd77" {
-        put(t, b"radio_hotspot");
-    }
-}
-
-/// A radio type, or opengd77, radio_hotspot's old name.
 fn known_type(t: &[u8]) -> bool {
-    matches!(t, b"auto" | b"radio_hotspot" | b"opengd77" | b"mmdvm_hs" | b"mmdvm")
+    matches!(t, b"auto" | b"radio_hotspot" | b"mmdvm_hs" | b"mmdvm")
 }
 
 /// The C's lower-casing: A to Z only.
@@ -310,129 +243,36 @@ fn same_n(a: &[u8], b: &[u8], n: usize) -> bool {
     a[..a.len().min(n)] == b[..b.len().min(n)]
 }
 
-// ── the parsed settings ─────────────────────────────────────────────────────
-
-#[repr(C)]
-struct Ctx {
-    doc: JDoc,
-    nodes: [JNode; MAX_NODES],
-    strs: [c_char; STR_BUF],
+/// mmdvm.config.freq_hz: MHz below 10000
+fn freq_hz(f: f64) -> u32 {
+    unsafe { rint(if f < 10000.0 { f * 1e6 } else { f }) as u32 }
 }
 
-/// The parsed settings (the doc and its buffers on the heap, freed on drop) and where errors go.
-struct Cx {
-    ctx: *mut Ctx,
-    clean: *mut c_char,
-    out: *mut u8,
-    cap: usize,
-}
-
-impl Drop for Cx {
-    fn drop(&mut self) {
-        unsafe {
-            free(self.ctx.cast());
-            free(self.clean.cast());
-        }
-    }
-}
+// ── the plan and where errors go ────────────────────────────────────────────
 
 type R<T = ()> = Option<T>;
 
-impl Cx {
-    /// The settings parsed, and the root (-1: not JSON, the error said); None: no memory (said when there's
-    /// an error buffer). Errors go to `error`, else to `dummy`; emptied.
-    unsafe fn new(
-        text: *const c_char,
-        len: usize,
-        error: *mut c_char,
-        cap: usize,
-        dummy: &mut [u8; 8],
-    ) -> R<(Cx, c_int)> {
-        let c = Cx {
-            ctx: calloc(1, size_of::<Ctx>()).cast(),
-            clean: calloc(len + 1, 1).cast(),
-            out: dummy.as_mut_ptr(),
-            cap: dummy.len(),
-        };
-        if c.ctx.is_null() || c.clean.is_null() {
-            if !error.is_null() {
-                print(slice_mut(error.cast(), cap), &[S(b"no memory")]);
-            }
-            return None;
-        }
-        let mut c = c;
-        if !error.is_null() {
-            (c.out, c.cap) = (error.cast(), cap);
-        }
-        if let Some(b) = slice_mut(c.out, c.cap).first_mut() {
-            *b = 0;
-        }
-        let x = &mut *c.ctx;
-        x.doc.nodes = x.nodes.as_mut_ptr();
-        x.doc.max = MAX_NODES as c_int;
-        x.doc.buf = x.strs.as_mut_ptr();
-        x.doc.cap = STR_BUF;
-        let root = rdof_jparse(&mut x.doc, c.clean, rdof_jsonc_strip(text, len, c.clean));
-        if root < 0 {
-            c.err::<()>(&[S(b"JSON: "), S(c_bytes(x.doc.error.as_ptr()))]);
-        }
-        Some((c, root))
-    }
+struct Cx<'a> {
+    plan: Plan<'a>,
+    out: *mut u8,
+    cap: usize,
+    mm: [c_int; 2], // the modem's MMDVM settings: a split's TX half's, then its RX half's
+    mmw: [u8; 64],  // where they are: devices.NAME.mmdvm
+}
 
-    /// parrot: a DMR id (only what's addressed to it is sent back) or 0 (everything); absent: off
-    fn parrot(&self, r: c_int, cfg: &mut RdofConfig) -> R<()> {
-        cfg.has_parrot = self.get(r, c"parrot") >= 0;
-        let v = self.iget(r, c"parrot", 0, b"radio")?;
-        if !(0..=0xFF_FFFF).contains(&v) {
-            return self.err(&[S(b"radio: parrot "), I(v as i64), S(b" isn't a DMR id (0 for everything)")]);
-        }
-        cfg.parrot = v as u32;
-        Some(())
-    }
-
-    /// The jitter buffer: jitter_buffer "auto" (the default) or a fixed size in ms, rounded up to whole 60 ms bursts;
-    /// prebuffer, the older key, a fixed size in bursts. jitter_min_ms and jitter_max_ms bound auto.
-    fn jitter(&self, r: c_int, cfg: &mut RdofConfig) -> R<()> {
-        let (jb, pb) = (self.get(r, c"jitter_buffer"), self.get(r, c"prebuffer"));
-        if jb >= 0 && pb >= 0 {
-            return self.err(&[S(b"radio: prebuffer and jitter_buffer: set one (prebuffer is a fixed size in bursts)")]);
-        }
-        cfg.prebuffer = self.iget(r, c"prebuffer", 6, b"radio")? as c_int;
-        cfg.jitter_auto = pb < 0;
-        if jb >= 0 {
-            let n = self.n(jb);
-            if n.type_ == RDOF_JSTR && s(n) == b"auto" {
-                cfg.jitter_auto = true;
-            } else if let Some(ms) = self.num(jb).filter(|&ms| n.type_ != RDOF_JBOOL && (0.0..=RDOF_JB_MAX_MS).contains(&ms)) {
-                cfg.jitter_auto = false;
-                cfg.prebuffer = rdof_jb_bursts(ms);
-            } else {
-                return self.err(&[S(b"radio: jitter_buffer: \"auto\" or milliseconds, 0 to "), I(RDOF_JB_MAX_MS as i64)]);
-            }
-        }
-        let lo = self.fget(r, c"jitter_min_ms", RDOF_JB_MIN_MS, b"radio")?;
-        let hi = self.fget(r, c"jitter_max_ms", RDOF_JB_MAX_DEFAULT_MS, b"radio")?;
-        if !(lo >= f64::from(RDOF_JB_BURST_MS) && lo <= hi && hi <= RDOF_JB_MAX_MS) {
-            return self.err(&[
-                S(b"radio: jitter_min_ms and jitter_max_ms: "),
-                I(RDOF_JB_BURST_MS.into()),
-                S(b" <= min <= max <= "),
-                I(RDOF_JB_MAX_MS as i64),
-            ]);
-        }
-        cfg.jitter_min_ms = rdof_jb_bursts(lo) * RDOF_JB_BURST_MS;
-        cfg.jitter_max_ms = rdof_jb_bursts(hi) * RDOF_JB_BURST_MS;
-        Some(())
-    }
-
+impl Cx<'_> {
     fn doc(&self) -> &JDoc {
-        unsafe { &(*self.ctx).doc }
+        self.plan.doc
     }
 
     /// snprintf(error, cap, ...); None, to return.
     fn err<T>(&self, pieces: &[Piece]) -> R<T> {
         print(unsafe { slice_mut(self.out, self.cap) }, pieces);
         None
+    }
+
+    fn mmw(&self) -> &[u8] {
+        field(&self.mmw)
     }
 
     /// Node i; NONE for -1 (or any node the parse didn't make).
@@ -556,38 +396,6 @@ impl Cx {
         }
     }
 
-    /// box._hz: MHz below 1e5
-    fn box_hz(&self, i: c_int, what: &[u8]) -> R<u32> {
-        match self.num(i) {
-            Some(f) => Some(unsafe { rint(if f < 1e5 { f * 1e6 } else { f }) } as u32),
-            None => self.err(&[S(what), S(b": bad frequency")]),
-        }
-    }
-
-    // ── the plan ──
-
-    /// A radio's channel entry -> (plan channel, override object or -1).
-    fn plan_ref(&self, plan: &Plan, r: c_int) -> R<(PlanCh, c_int)> {
-        let mut over = -1;
-        let n: c_long;
-        if self.n(r).type_ == RDOF_JOBJ {
-            over = r;
-            match self.iget(r, c"ch", 0, b"channel") {
-                Some(v) if self.get(r, c"ch") >= 0 => n = v,
-                _ => return self.err(&[S(b"a channel entry needs ch")]),
-            }
-        } else {
-            match self.num(r) {
-                Some(v) => n = v as c_long,
-                None => return self.err(&[S(b"bad channel reference")]),
-            }
-        }
-        match plan.find(n) {
-            Some(pc) => Some((pc, over)),
-            None => self.err(&[S(b"channel "), long(n), S(b" isn't in the plan (channels:)")]),
-        }
-    }
-
     // ── the location ──
 
     fn location(&self, i: c_int, cfg: &mut RdofConfig) -> R {
@@ -618,39 +426,53 @@ impl Cx {
 
     // ── the radio section ──
 
-    /// A radio setting: the section's own key (not one of its section keys) wins over radio.{key}.
-    fn rget(&self, r: c_int, keys: &[&[u8]], key: &CStr) -> c_int {
-        if !keys.contains(&key.to_bytes()) {
-            let i = self.get(r, key);
-            if i >= 0 {
-                return i;
+    /// The jitter buffer: jitter_buffer "auto" (the default) or a fixed size in ms, rounded up to whole 60 ms bursts;
+    /// prebuffer, the older key, a fixed size in bursts. jitter_min_ms and jitter_max_ms bound auto.
+    fn jitter(&self, r: c_int, what: &[u8], cfg: &mut RdofConfig) -> R<()> {
+        let (jb, pb) = (self.get(r, c"jitter_buffer"), self.get(r, c"prebuffer"));
+        if jb >= 0 && pb >= 0 {
+            return self.err(&[S(what), S(b": prebuffer and jitter_buffer: set one (prebuffer is a fixed size in bursts)")]);
+        }
+        cfg.prebuffer = self.iget(r, c"prebuffer", 6, what)? as c_int;
+        cfg.jitter_auto = pb < 0;
+        if jb >= 0 {
+            let n = self.n(jb);
+            if n.type_ == RDOF_JSTR && s(n) == b"auto" {
+                cfg.jitter_auto = true;
+            } else if let Some(ms) = self.num(jb).filter(|&ms| n.type_ != RDOF_JBOOL && (0.0..=RDOF_JB_MAX_MS).contains(&ms)) {
+                cfg.jitter_auto = false;
+                cfg.prebuffer = rdof_jb_bursts(ms);
+            } else {
+                return self.err(&[S(what), S(b": jitter_buffer: \"auto\" or milliseconds, 0 to "), I(RDOF_JB_MAX_MS as i64)]);
             }
         }
-        self.get(self.get(r, c"radio"), key)
-    }
-
-    /// radio.protocol (or a split half's): uart, else refused. `what`: "radio." or "radio.tx." ...
-    fn protocol(&self, i: c_int, h: c_int, what: &[u8], name: &[u8]) -> R {
-        let mut proto = [0u8; 12];
-        put(&mut proto, b"uart");
-        if i >= 0 {
-            self.text_of(i, &mut proto);
+        let lo = self.fget(r, c"jitter_min_ms", RDOF_JB_MIN_MS, what)?;
+        let hi = self.fget(r, c"jitter_max_ms", RDOF_JB_MAX_DEFAULT_MS, what)?;
+        if !(lo >= f64::from(RDOF_JB_BURST_MS) && lo <= hi && hi <= RDOF_JB_MAX_MS) {
+            return self.err(&[
+                S(what),
+                S(b": jitter_min_ms and jitter_max_ms: "),
+                I(RDOF_JB_BURST_MS.into()),
+                S(b" <= min <= max <= "),
+                I(RDOF_JB_MAX_MS as i64),
+            ]);
         }
-        lower(&mut proto);
-        let p = field(&proto);
-        if p != b"uart" && p != b"udp" {
-            return self.err(&[S(what), S(b"protocol "), S(p), S(b": uart or udp")]);
-        }
-        if p == b"udp" {
-            if !self.truthy(h) {
-                return self.err(&[S(what), S(b"protocol udp needs radio."), S(name), S(b"modem_address")]);
-            }
-            return self.err(&[S(what), S(b"protocol udp: not on this board")]);
-        }
+        cfg.jitter_min_ms = rdof_jb_bursts(lo) * RDOF_JB_BURST_MS;
+        cfg.jitter_max_ms = rdof_jb_bursts(hi) * RDOF_JB_BURST_MS;
         Some(())
     }
 
-    fn radio_settings(&self, r: c_int, keys: &[&[u8]], cfg: &mut RdofConfig) -> R {
+    /// A radio setting: the TX half's, else the RX half's (one modem: both are its own).
+    fn rget(&self, key: &CStr) -> c_int {
+        let i = self.get(self.mm[0], key);
+        if i >= 0 {
+            i
+        } else {
+            self.get(self.mm[1], key)
+        }
+    }
+
+    fn radio_settings(&self, cfg: &mut RdofConfig) -> R {
         rdof_modem_config_default(&mut cfg.modem);
         // 0 bool, 1 int, 2 double
         const F: [(&CStr, u8); 10] = [
@@ -665,8 +487,9 @@ impl Cx {
             (c"tx_dc_offset", 1),
             (c"dmr_delay", 1),
         ];
+        let mmw = self.mmw();
         for (k, &(key, t)) in F.iter().enumerate() {
-            let i = self.rget(r, keys, key);
+            let i = self.rget(key);
             if i < 0 {
                 continue;
             }
@@ -675,7 +498,7 @@ impl Cx {
             } else {
                 match self.num(i) {
                     Some(v) => (false, v),
-                    None => return self.err(&[S(b"radio."), S(key.to_bytes()), S(b" isn't a number")]),
+                    None => return self.err(&[S(mmw), S(b"."), S(key.to_bytes()), S(b" isn't a number")]),
                 }
             };
             let m = &mut cfg.modem;
@@ -694,19 +517,19 @@ impl Cx {
         }
         cfg.rx_offset_hz = 0;
         cfg.tx_offset_hz = 0;
-        if let Some(v) = self.num(self.rget(r, keys, c"rx_offset_hz")) {
+        if let Some(v) = self.num(self.rget(c"rx_offset_hz")) {
             cfg.rx_offset_hz = v as i32;
         }
-        if let Some(v) = self.num(self.rget(r, keys, c"tx_offset_hz")) {
+        if let Some(v) = self.num(self.rget(c"tx_offset_hz")) {
             cfg.tx_offset_hz = v as i32;
         }
         cfg.headers = -1;
         cfg.terminators = -1;
-        let i = self.rget(r, keys, c"headers");
+        let i = self.rget(c"headers");
         if let Some(v) = self.num(i).filter(|_| self.n(i).type_ != RDOF_JNULL) {
             cfg.headers = v as c_int;
         }
-        let i = self.rget(r, keys, c"terminators");
+        let i = self.rget(c"terminators");
         if let Some(v) = self.num(i).filter(|_| self.n(i).type_ != RDOF_JNULL) {
             cfg.terminators = v as c_int;
         }
@@ -714,7 +537,7 @@ impl Cx {
         cfg.tuner = TUNER_NONE; // the kind's default
         cfg.tuner_freq = 0;
         cfg.settle_ms = 0;
-        let i = self.rget(r, keys, c"tuner");
+        let i = self.rget(c"tuner");
         if self.truthy(i) {
             let mut t = [0u8; 16];
             if self.n(i).type_ == RDOF_JSTR {
@@ -725,27 +548,29 @@ impl Cx {
                 if f >= 0 {
                     match self.num(f) {
                         Some(v) => cfg.tuner_freq = freq_hz(v),
-                        None => return self.err(&[S(b"radio.tuner.freq")]),
+                        None => return self.err(&[S(mmw), S(b".tuner.freq")]),
                     }
                 }
-                cfg.settle_ms = self.fget(i, c"settle_ms", 0.0, b"tuner")? as c_int;
+                let mut tw = [0u8; 96];
+                print(&mut tw, &[S(mmw), S(b".tuner")]);
+                cfg.settle_ms = self.fget(i, c"settle_ms", 0.0, field(&tw))? as c_int;
             }
             match field(&t) {
                 b"modem" => cfg.tuner = TUNER_MODEM,
                 b"fixed" => cfg.tuner = TUNER_FIXED,
                 t @ (b"rigctld" | b"command") => {
-                    return self.err(&[S(b"radio.tuner "), S(t), S(b": not on this board (modem or fixed only)")])
+                    return self.err(&[S(mmw), S(b".tuner "), S(t), S(b": not on this board (modem or fixed only)")])
                 }
                 b"" => {}
-                t => return self.err(&[S(b"radio.tuner "), S(t)]),
+                t => return self.err(&[S(mmw), S(b".tuner "), S(t)]),
             }
         }
         cfg.rssi.n = 0;
-        let i = self.rget(r, keys, c"rssi");
+        let i = self.rget(c"rssi");
         if self.truthy(i) {
-            const WANTS: Piece = S(b"radio.rssi wants [[raw, dBm], ...]");
+            let wants = [S(mmw), S(b".rssi wants [[raw, dBm], ...]")];
             if self.n(i).type_ != RDOF_JARR {
-                return self.err(&[WANTS]);
+                return self.err(&wants);
             }
             for k in 0..self.n(i).count.min(RSSI_POINTS as c_int) {
                 let p = self.at(i, k);
@@ -754,7 +579,7 @@ impl Cx {
                 let (Some(a), Some(b)) =
                     (if pair { (self.num(self.at(p, 0)), self.num(self.at(p, 1))) } else { (None, None) })
                 else {
-                    return self.err(&[WANTS]);
+                    return self.err(&wants);
                 };
                 cfg.rssi.raw[k as usize] = a as c_int;
                 cfg.rssi.dbm[k as usize] = b as c_int;
@@ -763,263 +588,26 @@ impl Cx {
             rdof_rssi_map_sort(&mut cfg.rssi);
         }
         // check_radio
-        self.protocol(self.rget(r, keys, c"protocol"), self.rget(r, keys, c"modem_address"), b"radio.", b"")
-    }
-
-    /// A split's halves (radio.tx, radio.rx): a radio's checks on each. Their board ports come
-    /// later.
-    fn split_halves(&self, r: c_int) -> R {
-        for (k, key) in [c"tx", c"rx"].into_iter().enumerate() {
-            let name = key.to_bytes();
-            let h = self.rget(r, REPEATER_KEYS, key);
-            if h < 0 || self.n(h).type_ != RDOF_JOBJ {
-                let half: &[u8] = if k == 1 { b"RX" } else { b"TX" };
-                return self.err(&[
-                    S(b"radio type split needs radio."),
-                    S(name),
-                    S(b": the "),
-                    S(half),
-                    S(b" half's port"),
-                ]);
-            }
-            let mut t = [0u8; 16];
-            self.sget(h, c"type", b"auto", &mut t);
-            canonical(&mut t);
-            let t = field(&t);
-            if t != b"auto" && t != b"radio_hotspot" {
-                return self.err(&[
-                    S(b"radio."),
-                    S(name),
-                    S(b".type "),
-                    S(t),
-                    S(b": a split half is a radio in hotspot mode with the split duplex extension (OpenDigitalRadio)"),
-                ]);
-            }
-            let mut what = [0u8; 12];
-            print(&mut what, &[S(b"radio."), S(name), S(b".")]);
-            let mut prefix = [0u8; 12];
-            print(&mut prefix, &[S(name), S(b".")]);
-            self.protocol(self.get(h, c"protocol"), self.get(h, c"modem_address"), field(&what), field(&prefix))?;
-        }
-        Some(())
-    }
-
-    /// Firmware only: each half's port on the board (modem, uart, speed, usb, as a radio's own) and SET_ROLE's
-    /// parameters.
-    fn split_ports(&self, r: c_int, cfg: &mut RdofConfig) -> R {
-        let (mut usb, mut uart, mut sdr) = (0, 0, 0);
-        for (k, key) in [c"tx", c"rx"].into_iter().enumerate() {
-            let name = key.to_bytes();
-            let h = self.rget(r, REPEATER_KEYS, key);
-            let p = &mut cfg.split[k];
-            self.sget(h, c"modem", b"usb", &mut p.modem_port);
-            let mp = field(&p.modem_port);
-            if mp != b"usb" && mp != b"uart" && mp != b"sdr" {
-                return self.err(&[
-                    S(b"radio."),
-                    S(name),
-                    S(b".modem "),
-                    S(mp),
-                    S(b": usb, uart, or sdr (the board's SDR modem)"),
-                ]);
-            }
-            let u = self.get(h, c"uart");
-            p.uart_tx = self.iget(u, c"tx", 5, b"uart")? as c_int;
-            p.uart_rx = self.iget(u, c"rx", 6, b"uart")? as c_int;
-            let v = self.iget(u, c"num", 1, b"uart")?;
-            if v != 1 && v != 2 {
-                return self.err(&[
-                    S(b"radio."),
-                    S(name),
-                    S(b".uart.num "),
-                    long(v),
-                    S(b": 1 or 2 (UART0 is the console)"),
-                ]);
-            }
-            p.uart_num = v as c_int;
-            p.uart_speed = self.iget(h, c"speed", 115200, b"radio")?;
-            let ub = self.get(h, c"usb");
-            self.sget(ub, c"serial", b"", &mut p.usb_serial);
-            self.sget(ub, c"port", b"", &mut p.usb_port);
-            let p = *p;
-            match field(&p.modem_port) {
-                b"sdr" => sdr += 1,
-                b"usb" => {
-                    usb += 1;
-                    put(&mut cfg.usb_serial, field(&p.usb_serial));
-                    put(&mut cfg.usb_port, field(&p.usb_port));
-                }
-                _ => {
-                    uart += 1;
-                    if uart == 1 {
-                        cfg.uart_tx = p.uart_tx;
-                        cfg.uart_rx = p.uart_rx;
-                        cfg.uart_num = p.uart_num;
-                        cfg.uart_speed = p.uart_speed;
-                    }
-                }
-            }
-        }
-        if sdr > 1 {
-            return self
-                .err(&[S(b"radio.tx and radio.rx are both the SDR: the board runs one SDR modem (two SDRs as a \
-                                   split need two boards, or a radio for one half)")]);
-        }
-        if usb > 1 {
-            return self
-                .err(&[S(b"radio.tx and radio.rx are both on USB: one half on USB at most (the other on a UART, \
-                                   or the SDR as the RX half)")]);
-        }
-        if uart > 1 {
-            let (a, b) = (&cfg.split[0], &cfg.split[1]);
-            if a.uart_num == b.uart_num {
-                return self.err(&[
-                    S(b"radio.tx and radio.rx are both on UART"),
-                    I(a.uart_num.into()),
-                    S(b": give one \"uart\": {\"num\": 2, ...}"),
-                ]);
-            }
-            if a.uart_tx == b.uart_tx || a.uart_rx == b.uart_rx || a.uart_tx == b.uart_rx || a.uart_rx == b.uart_tx {
-                return self.err(&[S(b"radio.tx and radio.rx share a UART pin")]);
-            }
-        }
-        for (k, key) in [c"power_cap", c"prebuffer", c"lease_s", c"cooldown_s"].into_iter().enumerate() {
-            let i = self.rget(r, REPEATER_KEYS, key);
-            if i < 0 {
-                continue;
-            }
-            let v = match self.num(i) {
-                Some(v) if (0.0..=255.0).contains(&v) => v as c_int, // NaN refused too
-                _ => return self.err(&[S(b"radio."), S(key.to_bytes()), S(b": 0 to 255")]),
-            };
-            *[&mut cfg.split_power_cap, &mut cfg.split_prebuffer, &mut cfg.split_lease_s, &mut cfg.split_cooldown_s]
-                [k] = v;
-        }
-        let i = self.rget(r, REPEATER_KEYS, c"max_key_s");
+        let mut proto = [0u8; 12];
+        let i = self.rget(c"protocol");
         if i >= 0 {
-            match self.num(i) {
-                Some(v) if (0.0..=600.0).contains(&v) => cfg.split_max_key_s = v,
-                _ => return self.err(&[S(b"radio.max_key_s: 0 to 600")]),
-            }
+            self.text_of(i, &mut proto);
+        } else {
+            put(&mut proto, b"uart");
         }
-        put(&mut cfg.modem_port, b"split");
+        lower(&mut proto);
+        let p = field(&proto);
+        if p != b"uart" && p != b"udp" {
+            return self.err(&[S(mmw), S(b".protocol "), S(p), S(b": uart or udp")]);
+        }
+        if p == b"udp" {
+            if !self.truthy(self.rget(c"modem_address")) {
+                return self.err(&[S(mmw), S(b".protocol udp needs "), S(mmw), S(b".modem_address")]);
+            }
+            return self.err(&[S(mmw), S(b".protocol udp: not on this board")]);
+        }
         Some(())
     }
-
-    /// A radio's name: its own, else the default "{box}-{type}{n}".
-    fn radio_name(&self, r: c_int, k: c_int, box_name: &[u8], out: &mut [u8]) {
-        let t = self.get(r, c"type");
-        let mut dflt = [0u8; 96];
-        print(&mut dflt, &[S(box_name), S(b"-"), S(s(self.n(t))), I((k + 1).into())]);
-        self.sget(r, c"name", field(&dflt), out);
-    }
-
-    /// A radio's "enabled": 1 (true or not there), 0 (false: left out, as if it weren't in radios), -1 (not a bool).
-    fn enabled(&self, r: c_int) -> c_int {
-        let e = self.get(r, c"enabled");
-        if e < 0 {
-            return 1;
-        }
-        let n = self.n(e);
-        if n.type_ == RDOF_JBOOL { c_int::from(n.b) } else { -1 }
-    }
-
-    /// Is `name` in "run" (a name or a list of names)?
-    fn in_run(&self, run: c_int, name: &[u8]) -> bool {
-        let n = self.n(run);
-        if n.type_ == RDOF_JSTR {
-            return s(n) == name;
-        }
-        n.type_ == RDOF_JARR
-            && (0..n.count).any(|k| {
-                let e = self.n(self.at(run, k));
-                e.type_ == RDOF_JSTR && s(e) == name
-            })
-    }
-
-    /// The radios this board runs: with the firmware key "run", the ones it names (up to RDOF_MAX_RADIOS roamers or
-    /// repeaters and one SDR); without it, the first roamer or repeater, or failing that the first SDR. A radio with
-    /// "enabled": false is left out; "run" may name it.
-    fn pick_radios(&self, bx: c_int, box_name: &[u8]) -> R<Picked> {
-        let (radios, run) = (self.get(bx, c"radios"), self.get(bx, c"run"));
-        let mut p = Picked { radio: [-1; MAX_RADIOS], radio_k: [0; MAX_RADIOS], nradio: 0, sdr: -1, sdr_k: 0 };
-        let rn = self.n(radios);
-        if radios >= 0 && rn.type_ != RDOF_JARR && rn.type_ != RDOF_JNULL {
-            return self.err(&[S(b"radios: a list")]);
-        }
-        let (mut on, mut off_in_run) = (0, 0); // radios enabled; disabled ones "run" names
-        for k in 0..rn.count {
-            let sx = self.at(radios, k);
-            match self.enabled(sx) {
-                -1 => return self.err(&[S(b"radios["), I(k.into()), S(b"]: enabled: true or false")]),
-                0 => {
-                    let mut name = [0u8; 96];
-                    self.radio_name(sx, k, box_name, &mut name);
-                    off_in_run += c_int::from(run >= 0 && self.in_run(run, field(&name)));
-                    continue;
-                }
-                _ => on += 1,
-            }
-            let ty = s(self.n(self.get(sx, c"type")));
-            if ty != b"sdr" && ty != b"repeater" && ty != b"sdr_transceiver" && !known_type(ty) {
-                return self.err(&[
-                    S(b"radios["),
-                    I(k.into()),
-                    S(b"]: type "),
-                    S(ty),
-                    S(b": sdr, repeater, sdr_transceiver or a roamer (auto, mmdvm_hs, radio_hotspot, mmdvm; \
-                         opengd77 = radio_hotspot)"),
-                ]);
-            }
-            let is_sdr = ty == b"sdr";
-            if run >= 0 {
-                let mut name = [0u8; 96];
-                self.radio_name(sx, k, box_name, &mut name);
-                if !self.in_run(run, field(&name)) {
-                    continue;
-                }
-                if is_sdr && p.sdr >= 0 {
-                    return self.err(&[S(b"run: one SDR a board")]);
-                }
-                if !is_sdr && p.nradio >= MAX_RADIOS {
-                    return self.err(&[S(b"run: "), I(MAX_RADIOS as i64), S(b" roamers or repeaters a board at most")]);
-                }
-            } else if p.nradio > 0 || (is_sdr && p.sdr >= 0) {
-                continue;
-            }
-            if is_sdr {
-                p.sdr = sx;
-                p.sdr_k = k;
-            } else {
-                p.radio[p.nradio] = sx;
-                p.radio_k[p.nradio] = k;
-                p.nradio += 1;
-                if run < 0 {
-                    p.sdr = -1; // without run, a roamer or repeater wins
-                }
-            }
-        }
-        if on == 0 {
-            return self.err(&[S(b"no radios")]);
-        }
-        if run >= 0 {
-            const NAMES: Piece = S(b"run: a radio's name or a list of names");
-            let n = self.n(run);
-            if n.type_ != RDOF_JSTR && n.type_ != RDOF_JARR {
-                return self.err(&[NAMES]);
-            }
-            if n.type_ == RDOF_JARR && (0..n.count).any(|k| self.n(self.at(run, k)).type_ != RDOF_JSTR) {
-                return self.err(&[NAMES]);
-            }
-            let names = if n.type_ == RDOF_JSTR { 1 } else { n.count };
-            if names != (p.nradio + usize::from(p.sdr >= 0)) as c_int + off_in_run {
-                return self.err(&[S(b"run: a name that isn't in radios")]);
-            }
-        }
-        Some(p)
-    }
-
-    // ── the box ──
 
     fn channel_entry(&self, freq: u32, cc: f64, power: f64, slot: c_int, out: &mut RdofCfgChannel) -> R {
         if !(0.0..=15.0).contains(&cc) || cc as c_long as f64 != cc {
@@ -1032,355 +620,6 @@ impl Cx {
             power: (power as c_long).clamp(0, 255) as c_int,
             slot: if slot == 2 { 2 } else { 1 },
         };
-        Some(())
-    }
-
-    fn roamer(&self, bx: c_int, r: c_int, plan: &Plan, cfg: &mut RdofConfig) -> R {
-        cfg.mode = ROAMER;
-        // channels
-        let refs = self.get(r, c"channels");
-        cfg.nchannels = 0;
-        let rn = self.n(refs);
-        let all = refs < 0 || (rn.type_ == RDOF_JSTR && s(rn) == b"all");
-        let count = if all {
-            plan.n as c_int
-        } else if self.truthy(refs) {
-            rn.count
-        } else {
-            0
-        };
-        if !all && self.truthy(refs) && rn.type_ != RDOF_JARR {
-            return self.err(&[S(b"channels: numbers, or all")]);
-        }
-        for k in 0..count {
-            let (pc, over) = if all { (plan.ch[k as usize], -1) } else { self.plan_ref(plan, self.at(refs, k))? };
-            if pc.no_tx {
-                if all {
-                    continue; // all: the channels it may transmit on
-                }
-                return self.err(&[S(b"channels: channel "), I(pc.number.into()), S(b" has tx false: nothing transmits on it")]);
-            }
-            let cc = self.fget(over, c"cc", pc.cc.into(), b"channel")?;
-            let power = self.fget(over, c"power", pc.power.into(), b"channel")?;
-            let n = cfg.nchannels as usize;
-            if n >= CHANNELS {
-                return self.err(&[S(b"too many channels ("), I(CHANNELS as i64), S(b" at most)")]);
-            }
-            cfg.nchannels += 1;
-            self.channel_entry(freq_hz(pc.freq.into()), cc, power, pc.slot, &mut cfg.channels[n])?;
-        }
-        // idle
-        let idle = self.get(r, c"idle");
-        if idle < 0 {
-            return self.err(&[S(b"no idle channel (idle: a channel number)")]);
-        }
-        if self.n(idle).type_ == RDOF_JOBJ && self.get(idle, c"freq") >= 0 {
-            let f = self.box_hz(self.get(idle, c"freq"), b"idle");
-            let (Some(f), Some(cc)) = (f, f.and_then(|_| self.num(self.get(idle, c"cc")))) else {
-                return self.err(&[S(b"idle: freq and cc")]);
-            };
-            self.channel_entry(freq_hz(f.into()), cc as c_long as f64, 255.0, 1, &mut cfg.idle)?;
-        } else {
-            let (pc, _) = self.plan_ref(plan, idle)?;
-            self.channel_entry(freq_hz(pc.freq.into()), pc.cc.into(), 255.0, pc.slot, &mut cfg.idle)?;
-            let n = cfg.nchannels as usize;
-            // an idle channel with tx false: heard, never sent on
-            if !pc.no_tx && !cfg.channels[..n].iter().any(|c| c.freq == pc.freq) {
-                if n >= CHANNELS {
-                    return self.err(&[S(b"too many channels")]);
-                }
-                cfg.nchannels += 1;
-                self.channel_entry(pc.freq, pc.cc.into(), pc.power.into(), pc.slot, &mut cfg.channels[n])?;
-            }
-            cfg.oled_channel = pc.number;
-        }
-        // the radio
-        put(&mut cfg.radio_type, s(self.n(self.get(r, c"type"))));
-        canonical(&mut cfg.radio_type);
-        if field(&cfg.radio_type) == b"sdr_transceiver" {
-            put(&mut cfg.radio_type, b"auto"); // the SDR's emulated modem answers as one
-        }
-        self.radio_settings(r, ROAMER_KEYS, cfg)?;
-        if !known_type(field(&cfg.radio_type)) {
-            return self.err(&[S(b"radio type "), S(field(&cfg.radio_type))]);
-        }
-        self.peer_and_callsign(r, cfg)?;
-        // Config.from_dict's numbers
-        cfg.listen_s = self.fget(r, c"listen_s", 0.3, b"radio")?;
-        cfg.clear_s = self.fget(r, c"clear_s", 2.0, b"radio")?;
-        cfg.answer_s = self.fget(r, c"answer_s", 0.75, b"radio")?;
-        cfg.answer_max_s = self.fget(r, c"answer_max_s", 5.0, b"radio")?;
-        cfg.idle_after_s = self.fget(r, c"idle_after_s", 0.0, b"radio")?;
-        cfg.cwid_every_s = self.fget(r, c"cwid_every_s", 900.0, b"radio")?;
-        self.jitter(r, cfg)?;
-        cfg.csbk_preambles = self.iget(r, c"csbk_preambles", 2, b"radio")? as c_int;
-        self.sget(r, c"cwid", b"", &mut cfg.cwid);
-        self.parrot(r, cfg)?;
-        // covered: this box's SDR channels
-        cfg.ncovered = 0;
-        let radios = self.get(bx, c"radios");
-        for k in 0..self.n(radios).count {
-            let sx = self.at(radios, k);
-            let t = self.get(sx, c"type");
-            if t < 0 || s(self.n(t)) != b"sdr" || self.enabled(sx) != 1 {
-                continue;
-            }
-            let chs = self.get(sx, c"channels");
-            for m in 0..self.n(chs).count {
-                let (pc, _) = self.plan_ref(plan, self.at(chs, m))?;
-                let n = cfg.ncovered as usize;
-                if !cfg.covered[..n].contains(&pc.freq) && n < CHANNELS {
-                    cfg.covered[n] = pc.freq;
-                    cfg.ncovered += 1;
-                }
-            }
-        }
-        let covered = &mut cfg.covered[..cfg.ncovered as usize]; // sorted
-        for a in 1..covered.len() {
-            let mut b = a;
-            while b > 0 && covered[b - 1] > covered[b] {
-                covered.swap(b, b - 1);
-                b -= 1;
-            }
-        }
-        // scan
-        cfg.has_scan = false;
-        let sc = self.get(r, c"scan");
-        if self.truthy(sc) {
-            cfg.has_scan = true;
-            let is_obj = self.n(sc).type_ == RDOF_JOBJ;
-            let sref = if is_obj { self.get(sc, c"channels") } else { -1 };
-            let sall = sref < 0 || (self.n(sref).type_ == RDOF_JSTR && s(self.n(sref)) == b"all");
-            cfg.nscan = 0;
-            if sall {
-                cfg.scan_channels = cfg.channels;
-                cfg.nscan = cfg.nchannels;
-            } else {
-                for k in 0..self.n(sref).count {
-                    let (pc, over) = self.plan_ref(plan, self.at(sref, k))?;
-                    let cc = self.fget(over, c"cc", pc.cc.into(), b"scan")?;
-                    let n = cfg.nscan as usize;
-                    if n >= CHANNELS {
-                        return self.err(&[S(b"scan: too many channels")]);
-                    }
-                    cfg.nscan += 1;
-                    self.channel_entry(freq_hz(pc.freq.into()), cc, 255.0, pc.slot, &mut cfg.scan_channels[n])?;
-                }
-            }
-            if cfg.nscan == 0 {
-                return self.err(&[S(b"scan: no channels")]);
-            }
-            let so = if is_obj { sc } else { -1 };
-            cfg.dwell_s = self.fget(so, c"dwell_s", 0.45, b"scan")?;
-            cfg.hang_s_scan = self.fget(so, c"hang_s", 3.0, b"scan")?;
-            cfg.carrier_s = self.fget(so, c"carrier_s", 0.0, b"scan")?;
-            if cfg.dwell_s <= 0.0 || cfg.hang_s_scan < 0.0 || !(0.0 <= cfg.carrier_s && cfg.carrier_s < cfg.dwell_s) {
-                return self.err(&[S(b"scan: dwell_s > 0, hang_s >= 0, and carrier_s (0 = off) under dwell_s")]);
-            }
-        }
-        if cfg.nchannels == 0 {
-            return self.err(&[S(b"no channels: list the simplex channels this radio may use")]);
-        }
-        Some(())
-    }
-
-    /// peer_id, and the callsign (else name[:8]).
-    fn peer_and_callsign(&self, r: c_int, cfg: &mut RdofConfig) -> R {
-        match self.iget(r, c"peer_id", 0, b"radio") {
-            Some(v) if self.get(r, c"peer_id") >= 0 => cfg.peer_id = v as u32,
-            _ => return self.err(&[S(b"no peer_id")]),
-        }
-        let mut name8 = [0u8; 9];
-        name8[..8].copy_from_slice(&cfg.name[..8]); // name[:8]
-        self.sor(r, c"callsign", field(&name8), &mut cfg.callsign);
-        Some(())
-    }
-
-    fn repeater(
-        &self,
-        bx: c_int,
-        r: c_int,
-        plan: &Plan,
-        cfg: &mut RdofConfig,
-        default_cc: c_long,
-        has_default_cc: bool,
-    ) -> R {
-        cfg.mode = REPEATER;
-        let mut mode = [0u8; 12];
-        self.sget(r, c"mode", b"duplex", &mut mode);
-        let mode = field(&mode);
-        let sfr = mode == b"sfr";
-        let dcdm = mode == b"dcdm";
-        let (rx, tx);
-        if sfr || dcdm {
-            if self.get(r, c"freq") < 0 {
-                return self.err(&[S(b"no freq (MHz)")]);
-            }
-            rx = self.box_hz(self.get(r, c"freq"), b"freq")?;
-            tx = rx;
-        } else {
-            if self.get(r, c"rx_freq") < 0 {
-                return self.err(&[S(b"no rx_freq (MHz)")]);
-            }
-            if self.get(r, c"tx_freq") < 0 {
-                return self.err(&[S(b"no tx_freq (MHz)")]);
-            }
-            rx = self.box_hz(self.get(r, c"rx_freq"), b"rx_freq")?;
-            tx = self.box_hz(self.get(r, c"tx_freq"), b"tx_freq")?;
-        }
-        let cc = if self.get(r, c"cc") >= 0 {
-            self.iget(r, c"cc", 0, b"radio")?
-        } else if has_default_cc {
-            default_cc
-        } else {
-            return self.err(&[S(b"no color code (set cc on it or at the top)")]);
-        };
-        if mode != b"duplex" && mode != b"sfr" && !dcdm {
-            return self.err(&[S(b"mode "), S(mode), S(b": duplex, sfr or dcdm")]);
-        }
-        if !(0..=15).contains(&cc) {
-            return self.err(&[S(b"color code "), long(cc)]);
-        }
-        cfg.cc = cc as c_int;
-        self.peer_and_callsign(r, cfg)?;
-        cfg.rx_freq = freq_hz(rx.into());
-        cfg.tx_freq = freq_hz(tx.into());
-        if let Some(p) = plan.ch[..plan.n].iter().find(|p| p.no_tx && p.freq == cfg.tx_freq) {
-            return self.err(&[S(b"tx_freq: channel "), I(p.number.into()), S(b" has tx false: nothing transmits on it")]);
-        }
-        cfg.power = self.iget(r, c"power", 255, b"radio")?.clamp(0, 255) as c_int;
-        cfg.hang_s = self.fget(r, c"hang_s", 5.0, b"radio")?;
-        cfg.call_hang_s = self.fget(r, c"call_hang_s", 3.0, b"radio")?;
-        cfg.cwid_every_s = self.fget(r, c"cwid_every_s", 900.0, b"radio")?;
-        self.jitter(r, cfg)?;
-        self.sget(r, c"cwid", b"", &mut cfg.cwid);
-        self.parrot(r, cfg)?;
-        cfg.short_lc_ts1_low = self.bget(r, c"short_lc_ts1_low", false);
-        self.radio_settings(r, REPEATER_KEYS, cfg)?;
-        self.sget(self.get(r, c"radio"), c"type", b"auto", &mut cfg.radio_type);
-        canonical(&mut cfg.radio_type);
-        let rt = cfg.radio_type;
-        let rt = field(&rt);
-        if sfr {
-            let inbound = self.iget(r, c"inbound_slot", 1, b"radio")?;
-            if inbound != 1 && inbound != 2 {
-                return self.err(&[S(b"inbound_slot: 1 or 2")]);
-            }
-            if rt != b"auto" && rt != b"radio_hotspot" {
-                return self.err(&[
-                    S(b"radio.type "),
-                    S(rt),
-                    S(b": a single frequency repeater is a radio_hotspot (a radio in hotspot mode with SFR firmware)"),
-                ]);
-            }
-            cfg.sfr = true;
-            cfg.inbound_slot = inbound as c_int;
-            cfg.slot1 = inbound == 2;
-            cfg.slot2 = inbound == 1;
-        } else {
-            cfg.sfr = false;
-            cfg.dcdm = dcdm;
-            cfg.inbound_slot = 1;
-            let sl = self.get(r, c"slots");
-            if sl < 0 {
-                cfg.slot1 = true;
-                cfg.slot2 = true;
-            } else {
-                cfg.slot1 = false;
-                cfg.slot2 = false;
-                let n = self.n(sl);
-                let mut bad = n.type_ != RDOF_JARR || n.count == 0;
-                let mut k = 0;
-                while !bad && k < n.count {
-                    match self.num(self.at(sl, k)).map(|v| v as c_long) {
-                        Some(1) => cfg.slot1 = true,
-                        Some(2) => cfg.slot2 = true,
-                        _ => bad = true,
-                    }
-                    k += 1;
-                }
-                if bad {
-                    return self.err(&[S(b"slots: 1, 2 or both")]);
-                }
-            }
-            if dcdm && rt == b"split" {
-                return self.err(&[S(b"radio.type split: a split is a duplex pair; dual capacity direct mode is one \
-                                       radio on one frequency")]);
-            }
-            if rt == b"split" {
-                self.split_halves(r)?;
-            } else if !known_type(rt) {
-                return self.err(&[
-                    S(b"radio type "),
-                    S(rt),
-                    S(b": auto or one of radio_hotspot, mmdvm_hs, mmdvm, split"),
-                ]);
-            }
-            if !dcdm && rt == b"radio_hotspot" {
-                return self
-                    .err(&[S(b"a radio_hotspot (a radio in hotspot mode) is simplex: a repeater needs a duplex \
-                                       MMDVM_HS board, an MMDVM board or two radios as a split (but see mode: sfr)")]);
-            }
-        }
-        if cfg.hang_s <= 0.0 || cfg.call_hang_s < 0.0 {
-            return self.err(&[S(b"hang_s > 0 and call_hang_s >= 0")]);
-        }
-        // slot timing (docs/spec/slot-timing.md): the box's reaches a duplex repeater on a split or auto radio (the
-        // SDR transceiver's is auto); a HAT or an SFR radio keeps its own slot clock, so utc is refused there
-        let timed = !sfr && !dcdm && (rt == b"split" || rt == b"auto");
-        let mut why = [0u8; 96];
-        let base = if timed { self.get(bx, c"slot_timing") } else { -1 };
-        let own = self.get(r, c"slot_timing");
-        if !unsafe {
-            rdof_slot_timing_parse(self.doc(), base, own, &mut cfg.slot_timing, why.as_mut_ptr().cast(), why.len())
-        } {
-            return self.err(&[S(field(&why))]);
-        }
-        if cfg.slot_timing.utc && sfr {
-            return self.err(&[S(b"slot_timing utc: a single frequency repeater's radio times its own slots")]);
-        }
-        if cfg.slot_timing.utc && dcdm {
-            return self.err(&[S(b"slot_timing utc: in dual capacity direct mode the modem times its slots from the \
-                                   channel")]);
-        }
-        if cfg.slot_timing.utc && !timed {
-            return self.err(&[
-                S(b"slot_timing utc: a "),
-                S(rt),
-                S(b" keeps its own slot clock (its firmware times the slots, and MMDVM has no command to move it): \
-                     only a split or the board's SDR can follow the UTC grid"),
-            ]);
-        }
-        // The OLED's channel number: the plan's, by frequency.
-        cfg.oled_channel = plan.ch[..plan.n]
-            .iter()
-            .find(|p| (-100..=100).contains(&(i64::from(p.freq) - i64::from(cfg.rx_freq))))
-            .map_or(0, |p| p.number);
-        Some(())
-    }
-
-    fn mqtt(&self, bx: c_int, cfg: &mut RdofConfig) -> R {
-        let m = self.get(bx, c"mqtt");
-        cfg.has_mqtt = self.truthy(m);
-        if !cfg.has_mqtt {
-            return Some(());
-        }
-        self.sget(m, c"host", b"localhost", &mut cfg.mqtt_host);
-        cfg.mqtt_port = self.iget(m, c"port", 1883, b"mqtt")? as c_int;
-        self.sor(m, c"username", b"", &mut cfg.mqtt_user);
-        self.sor(m, c"password", b"", &mut cfg.mqtt_pass);
-        self.sget(m, c"root", b"DMR", &mut cfg.mqtt_root);
-        // the root's slashes are stripped, both ends
-        let root = cfg.mqtt_root;
-        let t = field(&root);
-        let lead = t.iter().take_while(|&&c| c == b'/').count();
-        let mut rl = t.len();
-        while rl > lead && t[rl - 1] == b'/' {
-            rl -= 1;
-        }
-        put(&mut cfg.mqtt_root, &t[lead..rl]);
-        put(&mut cfg.mqtt_app, if cfg.mode == ROAMER { b"roaming" } else { b"repeater" });
-        cfg.mqtt_tls = self.bget(m, c"tls", false);
         Some(())
     }
 
@@ -1408,8 +647,9 @@ impl Cx {
         Some(())
     }
 
-    /// hblink.sctp_*: the firmware's SCTP (over UDP); defaults as MMDVMHost's and HBlink4's.
-    fn sctp_settings(&self, hb: c_int, cfg: &mut RdofConfig) -> R {
+    /// The hblink network's sctp_*: the firmware's SCTP (over UDP); defaults as MMDVMHost's and HBlink4's. what:
+    /// where it is (networks.NAME).
+    fn sctp_settings(&self, hb: c_int, what: &[u8], cfg: &mut RdofConfig) -> R {
         const KEYS: [(&CStr, c_long, c_long, c_long); 4] = [
             (c"sctp_encap_port", 9899, 1, 65535),
             (c"sctp_heartbeat_ms", 10000, 0, 600000),
@@ -1417,10 +657,11 @@ impl Cx {
             (c"sctp_ttl_ms", 0, 0, 60000),
         ];
         for (k, &(key, dflt, lo, hi)) in KEYS.iter().enumerate() {
-            let v = self.iget(hb, key, dflt, b"hblink")?;
+            let v = self.iget(hb, key, dflt, what)?;
             if v < lo || v > hi {
                 return self.err(&[
-                    S(b"hblink: "),
+                    S(what),
+                    S(b": "),
                     S(key.to_bytes()),
                     S(b" "),
                     long(v),
@@ -1441,235 +682,588 @@ impl Cx {
         Some(())
     }
 
-    /// rdof_config_parse_radio's work, the settings parsed.
-    unsafe fn parse(&self, bx: c_int, want: *const c_char, cfg: &mut RdofConfig) -> R {
-        if bx < 0 {
-            return None; // the JSON error, said
+    // ── version 3: a unit of the plan (rdof/siteplan.h) ──
+
+    /// A frequency's color code: its own, else the defaults' (-1: any).
+    fn freq_cc(&self, f: c_int) -> c_int {
+        let cc = self.plan.site.freq[f as usize].cc;
+        if cc >= 0 {
+            return cc;
         }
-        if self.n(bx).type_ != RDOF_JOBJ {
-            return self.err(&[S(b"the settings are a JSON object")]);
+        let d = self.get(self.get(self.plan.root(), c"defaults"), c"cc");
+        match self.num(d) {
+            Some(v) if d >= 0 && self.n(d).type_ != RDOF_JNULL => v as c_int,
+            _ => -1,
         }
-        {
-            let mut t: RdofSlotTiming = core::mem::zeroed(); // the box's, checked whether or not anything inherits it
-            let mut why = [0u8; 96];
-            if !rdof_slot_timing_parse(
-                self.doc(),
-                -1,
-                self.get(bx, c"slot_timing"),
-                &mut t,
-                why.as_mut_ptr().cast(),
-                why.len(),
-            ) {
-                return self.err(&[S(b"box: "), S(field(&why))]);
+    }
+
+    /// The HBlink peer a unit is (its path's), and its callsign: the path's peer name, else the top-level callsign,
+    /// else its name's first 8 characters.
+    fn unit_peer(&self, path: c_int, where_: &[u8], cfg: &mut RdofConfig) -> R {
+        let s = self.plan.site;
+        let hb = self.plan.net_of(NET_HBLINK);
+        let pa = (path >= 0).then(|| &s.path[path as usize]);
+        cfg.receiver_hblink = pa.is_some_and(|pa| hb >= 0 && pa.pol.net == hb);
+        cfg.peer_id = pa.map_or(0, |pa| pa.peer_id);
+        if cfg.peer_id == 0 && hb >= 0 {
+            // a peer ID only for an hblink network
+            return self.err(&[S(where_), S(b": no HBlink peer ID (the top-level id)")]);
+        }
+        match pa.filter(|pa| pa.peer_name[0] != 0) {
+            Some(pa) => put(&mut cfg.callsign, field(&pa.peer_name)),
+            None => {
+                let mut name8 = [0u8; 9];
+                name8[..8].copy_from_slice(&cfg.name[..8]); // name[:8]
+                self.sor(self.plan.root(), c"callsign", field(&name8), &mut cfg.callsign);
             }
         }
-        // the plan
-        let mut plan = Plan { ch: [PlanCh { number: 0, freq: 0, cc: 0, power: 0, slot: 1, no_tx: false }; CHANNELS * 2], n: 0 };
-        let cc_node = self.get(bx, c"cc");
-        let has_default_cc = cc_node >= 0 && self.n(cc_node).type_ != RDOF_JNULL;
-        let mut dcc = 0.0;
-        if has_default_cc {
-            dcc = self.num(cc_node).or_else(|| self.err(&[S(b"cc isn't a number")]))?;
+        Some(())
+    }
+
+    /// The parrot app's ID when one of the unit's paths may reach it (reach: the apps they reach).
+    fn unit_parrot(&self, reach: u32, cfg: &mut RdofConfig) -> R {
+        let s = self.plan.site;
+        let a = self.plan.app_of(APP_PARROT);
+        cfg.has_parrot = a >= 0 && (reach >> a & 1) != 0;
+        cfg.parrot = 0;
+        if !cfg.has_parrot {
+            return Some(());
         }
-        let chans = self.get(bx, c"channels");
-        let count = if self.n(chans).type_ == RDOF_JOBJ { self.n(chans).count } else { 0 };
-        for k in 0..count {
-            let ch = self.at(chans, k);
-            let cn = self.n(ch);
-            if plan.n >= plan.ch.len() {
-                return self.err(&[S(b"too many channels in the plan")]);
-            }
-            let key = c_bytes(cn.key);
-            let mut e: *mut c_char = ptr::null_mut();
-            let number = strtol(cn.key, &mut e, 10);
-            let pn = number as c_int;
-            if key.is_empty() || *e != 0 || number != c_long::from(pn) {
-                // "" isn't 0; nor 2^32 + 1 channel 1
-                return self.err(&[S(b"channel "), S(key), S(b": not a number")]);
-            }
-            let f = if cn.type_ == RDOF_JOBJ { self.get(ch, c"freq") } else { ch };
-            if f < 0 {
-                return self.err(&[S(b"channel "), I(pn.into()), S(b": no freq")]);
-            }
-            let freq = self.box_hz(f, b"channel")?;
-            let obj = if cn.type_ == RDOF_JOBJ { ch } else { -1 };
-            let ccn = self.get(obj, c"cc");
-            let txk = self.get(obj, c"tx");
-            if txk >= 0 && self.n(txk).type_ != RDOF_JBOOL {
-                return self.err(&[S(b"channel "), I(pn.into()), S(b": tx: true or false")]);
-            }
-            let no_tx = txk >= 0 && !self.n(txk).b;
-            // a channel nothing transmits on may leave the color code out: any (-1)
-            let cc = match (ccn >= 0, self.num(ccn)) {
-                (true, Some(v)) => v,
-                (false, _) if has_default_cc => dcc,
-                (false, _) if no_tx => -1.0,
-                _ => {
-                    return self.err(&[
-                        S(b"channel "),
-                        I(pn.into()),
-                        S(b": no color code (set cc on it or at the top)"),
-                    ])
-                }
+        let ap = &s.app[a as usize];
+        let id = first_id(&ap.tg);
+        cfg.parrot = if id != 0 { id } else { first_id(&ap.pc) };
+        if cfg.parrot > 0xFF_FFFF {
+            return self.err(&[S(b"apps."), S(field(&ap.name)), S(b": "), I(cfg.parrot.into()), S(b" isn't a DMR id")]);
+        }
+        Some(())
+    }
+
+    /// A split repeater's halves ([0] TX, [1] RX): each one's port, and app.split's SET_ROLE parameters.
+    fn unit_split(&self, u: &RdofUnit, where_: &[u8], cfg: &mut RdofConfig) -> R {
+        let s = self.plan.site;
+        let (mut usb, mut uart) = (0, 0);
+        for k in 0..2 {
+            let d = if k == 1 { u.rx } else { u.tx };
+            let pt = if s.dev[d as usize].kind == DEV_SDR {
+                let mut pt = unit_port(None);
+                put(&mut pt.modem_port, b"sdr");
+                pt
+            } else {
+                unit_port(Some(&self.plan.dev(d).port))
             };
-            let power = self.fget(obj, c"power", 255.0, b"channel")?;
-            let slot = self.fget(obj, c"slot", 1.0, b"channel")?;
-            if slot != 1.0 && slot != 2.0 {
-                return self.err(&[S(b"channel "), I(pn.into()), S(b": slot 1 or 2")]);
+            let path = s.dev[d as usize].kind != DEV_SDR && self.plan.dev(d).port.kind == PORT_PATH;
+            match field(&pt.modem_port) {
+                b"usb" => {
+                    // a path (the host's) isn't the board's one USB port
+                    usb += i32::from(!path);
+                    put(&mut cfg.usb_serial, field(&pt.usb_serial));
+                    put(&mut cfg.usb_port, field(&pt.usb_port));
+                }
+                b"uart" => {
+                    uart += 1;
+                    if uart == 1 {
+                        cfg.uart_tx = pt.uart_tx;
+                        cfg.uart_rx = pt.uart_rx;
+                        cfg.uart_num = pt.uart_num;
+                        cfg.uart_speed = pt.uart_speed;
+                    }
+                }
+                _ => {}
             }
-            let p = PlanCh { number: pn, freq, cc: cc as c_int, power: power as c_int, slot: slot as c_int, no_tx };
-            match plan.ch[..plan.n].iter_mut().find(|q| q.number == pn) {
-                Some(same) => *same = p, // "1" and "01": the last one
-                None => {
-                    plan.ch[plan.n] = p;
-                    plan.n += 1;
+            cfg.split[k] = pt;
+        }
+        let (tx, rx) = (field(&s.dev[u.tx as usize].name), field(&s.dev[u.rx as usize].name));
+        if usb > 1 {
+            return self.err(&[
+                S(where_),
+                S(b": devices."),
+                S(tx),
+                S(b" and devices."),
+                S(rx),
+                S(b" are both on USB: one half on USB at most (the other on a UART, or the SDR as the RX half)"),
+            ]);
+        }
+        if uart > 1 {
+            let (a, b) = (&cfg.split[0], &cfg.split[1]);
+            if a.uart_num == b.uart_num {
+                return self.err(&[
+                    S(where_),
+                    S(b": devices."),
+                    S(tx),
+                    S(b" and devices."),
+                    S(rx),
+                    S(b" are both on UART"),
+                    I(a.uart_num.into()),
+                ]);
+            }
+            if a.uart_tx == b.uart_tx || a.uart_rx == b.uart_rx || a.uart_tx == b.uart_rx || a.uart_rx == b.uart_tx {
+                return self.err(&[S(where_), S(b": devices."), S(tx), S(b" and devices."), S(rx), S(b" share a UART pin")]);
+            }
+        }
+        let sp = self.get(self.plan.app_node(u.app), c"split");
+        for (k, key) in [c"power_cap", c"prebuffer", c"lease_s", c"cooldown_s"].into_iter().enumerate() {
+            let i = self.get(sp, key);
+            if i < 0 {
+                continue;
+            }
+            let v = match self.num(i) {
+                Some(v) if (0.0..=255.0).contains(&v) => v as c_int, // NaN refused too
+                _ => return self.err(&[S(where_), S(b".split."), S(key.to_bytes()), S(b": 0 to 255")]),
+            };
+            *[&mut cfg.split_power_cap, &mut cfg.split_prebuffer, &mut cfg.split_lease_s, &mut cfg.split_cooldown_s]
+                [k] = v;
+        }
+        let i = self.get(sp, c"max_key_s");
+        if i >= 0 {
+            let v = self.num(i);
+            if let Some(v) = v {
+                cfg.split_max_key_s = v;
+            }
+            if !v.is_some_and(|v| (0.0..=600.0).contains(&v)) {
+                return self.err(&[S(where_), S(b".split.max_key_s: 0 to 600")]);
+            }
+        }
+        put(&mut cfg.modem_port, b"split");
+        Some(())
+    }
+
+    /// A plan channel: a frequency of the site as a roamer's channel (power 255 when it has none).
+    fn unit_channel(&self, f: c_int, with_power: bool, where_: &[u8], out: &mut RdofCfgChannel) -> R {
+        let fr = &self.plan.site.freq[f as usize];
+        let cc = self.freq_cc(f);
+        if !(0..=15).contains(&cc) {
+            return self.err(&[S(where_), S(b": frequencies."), S(field(&fr.name)), S(b" has no color code")]);
+        }
+        let power = if with_power && fr.power >= 0 { fr.power } else { 255 };
+        self.channel_entry(fr.hz, cc.into(), power.into(), fr.ts.into(), out)
+    }
+
+    /// The frequencies the board's SDRs hear (its receivers' and the units' on them), sorted: a roamer leaves those
+    /// to the SDR.
+    fn unit_covered(&self, cfg: &mut RdofConfig) {
+        let (s, p) = (self.plan.site, &self.plan);
+        cfg.ncovered = 0;
+        for d in 0..s.ndev {
+            if s.dev[d as usize].kind != DEV_SDR || !p.sdr_used(d) {
+                continue;
+            }
+            let mut f = [0u32; SITE_MAX_FREQS + 64];
+            let mut n = 0;
+            let r = p.receiver(d);
+            for x in 0..s.nfreq {
+                if r >= 0 && p.unit(r).freqs >> x & 1 != 0 {
+                    f[n] = s.freq[x as usize].hz;
+                    n += 1;
+                }
+            }
+            for x in 0..p.nextra() {
+                if p.extra(x).dev == d {
+                    f[n] = p.extra(x).hz;
+                    n += 1;
+                }
+            }
+            for &hz in &f[..n] {
+                let nc = cfg.ncovered as usize;
+                if !cfg.covered[..nc].contains(&hz) && nc < CHANNELS {
+                    cfg.covered[nc] = hz;
+                    cfg.ncovered += 1;
                 }
             }
         }
-        let ch = &mut plan.ch[..plan.n]; // sorted by number
-        for a in 1..ch.len() {
-            let mut b = a;
-            while b > 0 && ch[b - 1].number > ch[b].number {
-                ch.swap(b, b - 1);
-                b -= 1;
+        cfg.covered[..cfg.ncovered as usize].sort_unstable(); // sorted
+    }
+
+    /// A transceiver: the frequencies its device transmits on; the talker keys on the device.
+    fn unit_roamer(&self, u: &RdofUnit, where_: &[u8], cfg: &mut RdofConfig) -> R {
+        let s = self.plan.site;
+        let dv = &s.dev[u.rx as usize];
+        let r = self.plan.dev_node(u.rx);
+        cfg.mode = ROAMER;
+        cfg.nchannels = 0;
+        let mut reach = 0u32;
+        for f in 0..s.nfreq {
+            if u.freqs >> f & 1 == 0 {
+                continue;
+            }
+            if cfg.nchannels as usize >= CHANNELS {
+                return self.err(&[S(where_), S(b".transmits: "), I(CHANNELS as i64), S(b" frequencies at most")]);
+            }
+            let k = cfg.nchannels as usize;
+            cfg.nchannels += 1;
+            self.unit_channel(f, true, where_, &mut cfg.channels[k])?;
+            let fr = &s.freq[f as usize];
+            let pa = self.plan.path_rx(fr.hz, fr.ts.into());
+            if pa >= 0 {
+                reach |= s.path[pa as usize].pol.apps;
             }
         }
-        // the radio: the one "run" names, else the first that isn't an SDR
-        let mut box_name = [0u8; 64];
-        self.sor(bx, c"name", b"radiofoundry", &mut box_name);
-        let box_name = field(&box_name);
-        let pk = self.pick_radios(bx, box_name)?;
-        if pk.nradio == 0 {
-            return self.err(&[S(b"no roamer or repeater in radios")]);
+        if cfg.nchannels == 0 {
+            return self.err(&[S(where_), S(b": no frequencies to transmit on")]);
         }
-        let mut k = 0;
-        if !want.is_null() {
-            let want = c_bytes(want);
-            while k < pk.nradio {
-                let mut name = [0u8; 96];
-                self.radio_name(pk.radio[k], pk.radio_k[k], box_name, &mut name);
-                if same_n(field(&name), want, cfg.name.len() - 1) {
-                    break; // as far as rdof_roles_t and cfg->name keep it
+        self.unit_channel(u.freq, false, where_, &mut cfg.idle)?;
+        cfg.oled_channel = u.freq + 1;
+        let idle = &s.freq[u.freq as usize];
+        self.unit_peer(self.plan.path_rx(idle.hz, idle.ts.into()), where_, cfg)?;
+        cfg.listen_s = self.fget(r, c"listen_s", 0.3, where_)?;
+        cfg.clear_s = self.fget(r, c"clear_s", 2.0, where_)?;
+        cfg.answer_s = self.fget(r, c"answer_s", 0.75, where_)?;
+        cfg.answer_max_s = self.fget(r, c"answer_max_s", 5.0, where_)?;
+        cfg.idle_after_s = self.fget(r, c"idle_after_s", 0.0, where_)?;
+        cfg.cwid_every_s = self.fget(r, c"cwid_every_s", 900.0, where_)?;
+        self.jitter(r, where_, cfg)?;
+        cfg.csbk_preambles = self.iget(r, c"csbk_preambles", 2, where_)? as c_int;
+        self.sget(r, c"cwid", b"", &mut cfg.cwid);
+        self.unit_parrot(reach, cfg)?;
+        self.unit_covered(cfg);
+        cfg.has_scan = dv.hears == HEARS_SCAN;
+        if cfg.has_scan {
+            cfg.nscan = 0;
+            for f in 0..s.nfreq {
+                if dv.scan >> f & 1 == 0 {
+                    continue;
                 }
-                k += 1;
+                if cfg.nscan as usize >= CHANNELS {
+                    return self.err(&[S(where_), S(b".hears.scan: "), I(CHANNELS as i64), S(b" frequencies at most")]);
+                }
+                let k = cfg.nscan as usize;
+                cfg.nscan += 1;
+                self.unit_channel(f, false, where_, &mut cfg.scan_channels[k])?;
             }
-            if k == pk.nradio {
-                return self.err(&[S(want), S(b" isn't a roamer or repeater this board runs")]);
+            let mut sw = [0u8; 80];
+            print(&mut sw, &[S(where_), S(b".hears")]);
+            let sw = field(&sw);
+            let h = self.get(r, c"hears");
+            if cfg.nscan == 0 {
+                return self.err(&[S(sw), S(b".scan: no frequencies")]);
+            }
+            cfg.dwell_s = self.fget(h, c"dwell_s", 0.45, sw)?;
+            cfg.hang_s_scan = self.fget(h, c"hang_s", 3.0, sw)?;
+            cfg.carrier_s = self.fget(h, c"carrier_s", 0.0, sw)?;
+            if cfg.dwell_s <= 0.0 || cfg.hang_s_scan < 0.0 || !(0.0 <= cfg.carrier_s && cfg.carrier_s < cfg.dwell_s) {
+                return self.err(&[S(sw), S(b": dwell_s > 0, hang_s >= 0, and carrier_s (0 = off) under dwell_s")]);
             }
         }
-        let (r, index) = (pk.radio[k], pk.radio_k[k]);
-        let ty = s(self.n(self.get(r, c"type")));
-        let mut dflt_name = [0u8; 96];
-        print(&mut dflt_name, &[S(box_name), S(b"-"), S(ty), I((index + 1).into())]);
-        self.sget(r, c"name", field(&dflt_name), &mut cfg.name);
-        let hb = self.get(bx, c"hblink");
+        Some(())
+    }
+
+    /// A repeater app, or an SFR or DCDM frequency: the repeater's code. r: the app's or the frequency's object.
+    fn unit_repeater(&self, u: &RdofUnit, where_: &[u8], cfg: &mut RdofConfig) -> R {
+        let s = self.plan.site;
+        let (sfr, dcdm) = (u.kind == UNIT_SFR, u.kind == UNIT_DCDM);
+        let (r, inf, outf, p0, p1);
+        if u.kind == UNIT_REPEATER {
+            let ap = &s.app[u.app as usize];
+            r = self.plan.app_node(u.app);
+            (inf, outf, p0, p1) = (ap.in_, ap.out, ap.path[0], ap.path[1]);
+        } else {
+            r = self.plan.freq_node(u.freq);
+            (inf, outf) = (u.freq, u.freq);
+            let hz = s.freq[inf as usize].hz;
+            p0 = self.plan.path_rx(hz, 1);
+            p1 = self.plan.path_rx(hz, 2);
+        }
+        let fo = &s.freq[outf as usize];
+        cfg.mode = REPEATER;
+        cfg.rx_freq = s.freq[inf as usize].hz;
+        cfg.tx_freq = fo.hz;
+        if !(0..=15).contains(&fo.cc) {
+            return self.err(&[S(where_), S(b": frequencies."), S(field(&fo.name)), S(b" has no color code")]);
+        }
+        cfg.cc = fo.cc;
+        self.unit_peer(p0, where_, cfg)?;
+        if let Some(f) = s.freq[..s.nfreq as usize].iter().find(|f| !f.tx && f.hz == cfg.tx_freq) {
+            return self.err(&[
+                S(where_),
+                S(b": frequencies."),
+                S(field(&f.name)),
+                S(b" has tx false: nothing transmits on it"),
+            ]);
+        }
+        cfg.power = if fo.power < 0 { 255 } else { fo.power.min(255) };
+        cfg.hang_s = self.fget(r, c"hang_s", 5.0, where_)?;
+        cfg.call_hang_s = self.fget(r, c"call_hang_s", 3.0, where_)?;
+        cfg.cwid_every_s = self.fget(r, c"cwid_every_s", 900.0, where_)?;
+        self.jitter(r, where_, cfg)?;
+        self.sget(r, c"cwid", b"", &mut cfg.cwid);
+        let apps = |p: c_int| if p >= 0 { s.path[p as usize].pol.apps } else { 0 };
+        self.unit_parrot(apps(p0) | apps(p1), cfg)?;
+        cfg.short_lc_ts1_low = self.bget(r, c"short_lc_ts1_low", false);
+        cfg.sfr = sfr;
+        cfg.dcdm = dcdm;
+        cfg.inbound_slot = 1;
+        let rt = cfg.radio_type;
+        let rt = field(&rt);
+        if sfr {
+            let inbound = self.iget(r, c"inbound_slot", 1, where_)?;
+            if inbound != 1 && inbound != 2 {
+                return self.err(&[S(where_), S(b".inbound_slot: 1 or 2")]);
+            }
+            cfg.inbound_slot = inbound as c_int;
+            cfg.slot1 = inbound == 2;
+            cfg.slot2 = inbound == 1;
+        } else {
+            let a = self.get(r, c"active_slots");
+            cfg.slot1 = a < 0;
+            cfg.slot2 = a < 0;
+            // checked in the parse: [1], [2] or [1, 2]
+            for k in 0..if a >= 0 { self.n(a).count } else { 0 } {
+                if let Some(v) = self.num(self.at(a, k)) {
+                    if v as c_long == 1 {
+                        cfg.slot1 = true;
+                    } else {
+                        cfg.slot2 = true;
+                    }
+                }
+            }
+            if !dcdm && rt == b"radio_hotspot" {
+                return self.err(&[
+                    S(where_),
+                    S(b": devices."),
+                    S(field(&s.dev[u.rx as usize].name)),
+                    S(b" is a radio_hotspot (a radio in hotspot mode), which is simplex: a repeater needs a duplex \
+                         MMDVM_HS board, an MMDVM board or two radios as a split (or a frequency with mode sfr)"),
+                ]);
+            }
+        }
+        if cfg.hang_s <= 0.0 || cfg.call_hang_s < 0.0 {
+            return self.err(&[S(where_), S(b": hang_s > 0 and call_hang_s >= 0")]);
+        }
+        // slot timing (docs/spec/slot-timing.md): the board's reaches a duplex repeater on a split or the SDR; a
+        // modem or an SFR radio keeps its own slot clock, so utc is refused there
+        let timed = !sfr && !dcdm && (rt == b"split" || rt == b"auto");
+        let mut why = [0u8; 96];
+        let base = if timed { self.get(self.plan.root(), c"slot_timing") } else { -1 };
+        let own = self.get(r, c"slot_timing");
+        if !unsafe {
+            rdof_slot_timing_parse(self.doc(), base, own, &mut cfg.slot_timing, why.as_mut_ptr().cast(), why.len())
+        } {
+            return self.err(&[S(where_), S(b"."), S(field(&why))]);
+        }
+        if cfg.slot_timing.utc && sfr {
+            return self.err(&[S(where_), S(b".slot_timing: utc: a single frequency repeater's radio times its own slots")]);
+        }
+        if cfg.slot_timing.utc && dcdm {
+            return self.err(&[
+                S(where_),
+                S(b".slot_timing: utc: in dual capacity direct mode the modem times its slots from the channel"),
+            ]);
+        }
+        if cfg.slot_timing.utc && !timed {
+            return self.err(&[
+                S(where_),
+                S(b".slot_timing: utc: a "),
+                S(rt),
+                S(b" keeps its own slot clock (its firmware times the slots, and MMDVM has no command to move it): \
+                     only a split or the board's SDR can follow the UTC grid"),
+            ]);
+        }
+        // the OLED's channel number: its place in frequencies, from 1
+        cfg.oled_channel = s.freq[..s.nfreq as usize]
+            .iter()
+            .position(|f| (-100..=100).contains(&(i64::from(f.hz) - i64::from(cfg.rx_freq))))
+            .map_or(0, |f| f as c_int + 1);
+        Some(())
+    }
+
+    fn unit_mqtt(&self, cfg: &mut RdofConfig) -> R {
+        let k = self.plan.net_of(NET_MQTT);
+        let n = (k >= 0).then(|| &self.plan.site.net[k as usize]);
+        cfg.has_mqtt = n.is_some_and(|n| n.report || n.calls);
+        let Some(n) = n.filter(|_| cfg.has_mqtt) else {
+            return Some(());
+        };
+        let m = self.plan.net_node(k);
+        let mut what = [0u8; 56];
+        print(&mut what, &[S(b"networks."), S(field(&n.name))]);
+        let what = field(&what);
+        self.sget(m, c"host", b"localhost", &mut cfg.mqtt_host);
+        cfg.mqtt_port = self.iget(m, c"port", 1883, what)? as c_int;
+        self.sor(m, c"username", b"", &mut cfg.mqtt_user);
+        self.sor(m, c"password", b"", &mut cfg.mqtt_pass);
+        self.sget(m, c"root", b"DMR", &mut cfg.mqtt_root);
+        // the root's slashes are stripped, both ends
+        let root = cfg.mqtt_root;
+        let t = field(&root);
+        let lead = t.iter().take_while(|&&c| c == b'/').count();
+        let mut rl = t.len();
+        while rl > lead && t[rl - 1] == b'/' {
+            rl -= 1;
+        }
+        put(&mut cfg.mqtt_root, &t[lead..rl]);
+        put(&mut cfg.mqtt_app, if cfg.mode == ROAMER { b"roaming" } else { b"repeater" });
+        cfg.mqtt_tls = self.bget(m, c"tls", false);
+        Some(())
+    }
+
+    /// rdof_plan_radio's work: the unit called want (NULL: the first that transmits).
+    unsafe fn radio(&mut self, want: *const c_char, cfg: &mut RdofConfig) -> R {
+        let (s, p) = (self.plan.site, self.plan);
+        let want = if want.is_null() { None } else { Some(CStr::from_ptr(want).to_bytes()) };
+        let Some(k) = (0..p.nunits()).find(|&i| {
+            let u = p.unit(i);
+            u.kind != UNIT_RECEIVER && want.is_none_or(|w| same_n(field(&u.name), w, cfg.name.len() - 1))
+        }) else {
+            return match want {
+                Some(w) => self.err(&[
+                    S(w),
+                    S(b" isn't a unit that transmits (a repeater, an SFR or DCDM frequency, or a device transmitting \
+                         on simplex frequencies)"),
+                ]),
+                None => self.err(&[S(b"nothing transmits: no repeater, SFR or DCDM frequency, or device transmitting")]),
+            };
+        };
+        let u = p.unit(k);
+        let root = p.root();
+        let mut where_ = [0u8; 56];
+        let wn = match u.kind {
+            UNIT_REPEATER => [S(b"apps."), S(field(&s.app[u.app as usize].name))],
+            UNIT_SFR | UNIT_DCDM => [S(b"frequencies."), S(field(&s.freq[u.freq as usize].name))],
+            _ => [S(b"devices."), S(field(&s.dev[u.rx as usize].name))],
+        };
+        print(&mut where_, &wn);
+        let where_ = field(&where_);
+        put(&mut cfg.name, field(&u.name));
+        {
+            // the board's, checked whether or not anything inherits it
+            let mut t = core::mem::zeroed::<RdofSlotTiming>();
+            let mut why = [0u8; 96];
+            if !rdof_slot_timing_parse(self.doc(), -1, self.get(root, c"slot_timing"), &mut t, why.as_mut_ptr().cast(), why.len()) {
+                return self.err(&[S(field(&why))]);
+            }
+        }
+        // the network
+        let hbk = p.net_of(NET_HBLINK);
+        let hb = p.net_node(hbk);
+        let mut hbw = [0u8; 56];
+        print(&mut hbw, &[S(b"networks."), S(if hbk >= 0 { field(&s.net[hbk as usize].name) } else { b"hblink" })]);
+        let hbw = field(&hbw);
         self.sget(hb, c"host", b"localhost", &mut cfg.master_host);
-        cfg.master_port = self.iget(hb, c"port", 62031, b"hblink")? as c_int;
+        cfg.master_port = self.iget(hb, c"port", 62031, hbw)? as c_int;
         self.sget(hb, c"transport", b"udp", &mut cfg.transport);
-        self.sctp_settings(hb, cfg)?;
-        cfg.receiver_hblink = self.bget(r, c"hblink", true);
-        let loc = self.get(r, c"location");
-        self.location(if loc >= 0 { loc } else { self.get(bx, c"location") }, cfg)?;
-        // sdr_transceiver: the board's SDR front end as the radio (docs/reference.md, "Transmit"): half duplex is a
-        // roamer, full a duplex repeater; its modem is the SDR's emulated one.
-        let sdrtx = ty == b"sdr_transceiver";
-        let mut sdr_dcdm = false; // mode dcdm: a DCDM gateway (the repeater's code), half or full duplex
+        self.sctp_settings(hb, hbw, cfg)?;
+        self.location(self.get(root, c"location"), cfg)?;
+        // the radio: the board's SDR (an sdr_transceiver), one modem, or a split's two
+        let split = u.rx != u.tx;
+        let on_sdr = !split && s.dev[u.rx as usize].kind == DEV_SDR;
+        self.mm = [self.get(p.dev_node(u.tx), c"mmdvm"), self.get(p.dev_node(u.rx), c"mmdvm")];
+        let md = if self.mm[0] >= 0 { u.tx } else { u.rx };
+        print(&mut self.mmw, &[S(b"devices."), S(field(&s.dev[md as usize].name)), S(b".mmdvm")]);
+        self.radio_settings(cfg)?;
+        let drv = field(&s.dev[u.rx as usize].driver);
+        put(&mut cfg.radio_type, if on_sdr { b"auto" } else if split { b"split" } else { drv });
+        if !split && !known_type(field(&cfg.radio_type)) {
+            return self.err(&[
+                S(b"devices."),
+                S(field(&s.dev[u.rx as usize].name)),
+                S(b".type "),
+                S(field(&cfg.radio_type)),
+            ]);
+        }
         cfg.sdr_duplex = DUPLEX_NONE;
         cfg.tx_power_dbm = 10.0;
-        if sdrtx {
-            let mut duplex = [0u8; 8];
-            self.sget(r, c"duplex", b"half", &mut duplex);
-            let duplex = field(&duplex);
-            if duplex != b"half" && duplex != b"full" {
-                return self.err(&[S(b"duplex "), S(duplex), S(b": half (a roamer) or full (a duplex repeater)")]);
-            }
-            cfg.sdr_duplex = if duplex == b"full" { DUPLEX_FULL } else { DUPLEX_HALF };
-            cfg.tx_power_dbm = self.fget(r, c"tx_power_dbm", 10.0, b"radio")?;
-            let mut mode = [0u8; 8];
-            self.sget(r, c"mode", b"duplex", &mut mode);
-            if cfg.sdr_duplex == DUPLEX_FULL && field(&mode) != b"duplex" && field(&mode) != b"dcdm" {
-                return self.err(&[S(b"an sdr_transceiver with duplex: full is a duplex repeater (no mode: sfr)")]);
-            }
-            sdr_dcdm = field(&mode) == b"dcdm";
-            let radios = self.get(bx, c"radios");
-            if !(0..self.n(radios).count).any(|k| {
-                let sx = self.at(radios, k);
-                s(self.n(self.get(sx, c"type"))) == b"sdr" && self.enabled(sx) == 1
-            }) {
-                return self.err(&[S(b"an sdr_transceiver needs an SDR in radios: its front end is the radio")]);
+        if on_sdr {
+            let dv = p.dev(u.rx);
+            cfg.sdr_duplex = if u.kind == UNIT_REPEATER || u.duplex_full { DUPLEX_FULL } else { DUPLEX_HALF };
+            if dv.has_tx_power {
+                cfg.tx_power_dbm = dv.tx_power_dbm;
             }
         }
-        if ty == b"repeater" || (sdrtx && (cfg.sdr_duplex == DUPLEX_FULL || sdr_dcdm)) {
-            self.repeater(bx, r, &plan, cfg, dcc as c_long, has_default_cc)?;
+        if u.kind == UNIT_TRANSCEIVER {
+            self.unit_roamer(u, where_, cfg)?;
         } else {
-            self.roamer(bx, r, &plan, cfg)?;
+            self.unit_repeater(u, where_, cfg)?;
         }
-        self.mqtt(bx, cfg)?;
-        self.oled(bx, cfg)?;
-        // firmware only (wifi and ntp belong to the board's Wi-Fi and clock, not here)
-        let rt = field(&cfg.radio_type);
-        let dflt_port: &[u8] = if rt == b"radio_hotspot" || rt == b"auto" { b"usb" } else { b"uart" };
-        let mut box_port = [0u8; 8];
-        self.sget(bx, c"modem", dflt_port, &mut box_port);
-        self.sget(r, c"modem", field(&box_port), &mut cfg.modem_port); // the radio's own, else the box's
-        let mp = field(&cfg.modem_port);
-        if sdrtx {
-            put(&mut cfg.modem_port, b"sdr");
-        } else if mp != b"usb" && mp != b"uart" {
-            return self.err(&[S(b"modem "), S(mp), S(b": usb or uart")]);
+        self.unit_mqtt(cfg)?;
+        self.oled(root, cfg)?;
+        // the port
+        let mut pt = unit_port(None);
+        if on_sdr {
+            put(&mut pt.modem_port, b"sdr");
+        } else if split {
+            put(&mut pt.modem_port, b"uart");
+        } else {
+            pt = unit_port(Some(&p.dev(u.rx).port));
         }
-        let u = if self.get(r, c"uart") >= 0 { self.get(r, c"uart") } else { self.get(bx, c"uart") };
-        cfg.uart_tx = self.iget(u, c"tx", 5, b"uart")? as c_int;
-        cfg.uart_rx = self.iget(u, c"rx", 6, b"uart")? as c_int;
-        let v = self.iget(u, c"num", 1, b"uart")?;
-        if v != 1 && v != 2 {
-            return self.err(&[S(b"uart.num "), long(v), S(b": 1 or 2 (UART0 is the console)")]);
-        }
-        cfg.uart_num = v as c_int;
-        cfg.uart_speed = self.iget(r, c"speed", 115200, b"radio")?;
-        let usb = self.get(r, c"usb");
-        self.sget(usb, c"serial", b"", &mut cfg.usb_serial);
-        self.sget(usb, c"port", b"", &mut cfg.usb_port);
-        if field(&cfg.radio_type) == b"split" {
-            self.split_ports(r, cfg)?;
+        use_port(cfg, &pt);
+        if split {
+            self.unit_split(u, where_, cfg)?;
         }
         Some(())
     }
 }
 
-/// mmdvm.config.freq_hz: MHz below 10000
-fn freq_hz(f: f64) -> u32 {
-    unsafe { rint(if f < 10000.0 { f * 1e6 } else { f }) as u32 }
-}
-
-#[derive(Clone, Copy)]
-struct PlanCh {
-    number: c_int,
-    freq: u32,
-    cc: c_int,
-    power: c_int,
-    slot: c_int, // 1 or 2: a direct mode call's here
-    no_tx: bool, // "tx": false: nothing transmits on it (a repeater's output, monitored)
-}
-
-struct Plan {
-    ch: [PlanCh; CHANNELS * 2],
-    n: usize,
-}
-
-impl Plan {
-    fn find(&self, number: c_long) -> Option<PlanCh> {
-        self.ch[..self.n].iter().find(|p| c_long::from(p.number) == number).copied()
+/// A modem's port as the radio's: a UART, or USB (a path is the host's: USB too). None: no port (115200 baud).
+fn unit_port(pt: Option<&RdofPort>) -> RdofCfgPort {
+    let mut out = RdofCfgPort {
+        modem_port: [0; 8],
+        uart_tx: 5,
+        uart_rx: 6,
+        uart_num: 1,
+        uart_speed: pt.map_or(115200, |pt| pt.baud),
+        usb_serial: [0; 32],
+        usb_port: [0; 16],
+    };
+    match pt {
+        Some(pt) if pt.kind == PORT_UART => {
+            put(&mut out.modem_port, b"uart");
+            (out.uart_num, out.uart_tx, out.uart_rx) = (pt.uart, pt.tx, pt.rx);
+        }
+        _ => {
+            put(&mut out.modem_port, b"usb");
+            if let Some(pt) = pt {
+                put(&mut out.usb_serial, field(&pt.serial));
+                put(&mut out.usb_port, field(&pt.usb_port));
+            }
+        }
     }
+    out
 }
 
-/// The radios pick_radios found: indexes into radios (-1 for none) and their places there.
-struct Picked {
-    radio: [c_int; MAX_RADIOS],
-    radio_k: [c_int; MAX_RADIOS],
-    nradio: usize,
-    sdr: c_int,
-    sdr_k: c_int,
+fn use_port(cfg: &mut RdofConfig, pt: &RdofCfgPort) {
+    put(&mut cfg.modem_port, field(&pt.modem_port));
+    (cfg.uart_tx, cfg.uart_rx, cfg.uart_num) = (pt.uart_tx, pt.uart_rx, pt.uart_num);
+    cfg.uart_speed = pt.uart_speed;
+    put(&mut cfg.usb_serial, field(&pt.usb_serial));
+    put(&mut cfg.usb_port, field(&pt.usb_port));
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_plan_radio(
+    p: *const RdofPlan,
+    name: *const c_char,
+    cfg: &mut RdofConfig,
+    error: *mut c_char,
+    cap: usize,
+) -> bool {
+    let mut dummy = [0u8; 8];
+    let (out, cap) = if error.is_null() { (dummy.as_mut_ptr(), dummy.len()) } else { (error.cast(), cap) };
+    if let Some(b) = slice_mut(out, cap).first_mut() {
+        *b = 0;
+    }
+    ptr::write_bytes(cfg as *mut RdofConfig, 0, 1);
+    let mut c = Cx { plan: Plan::new(p), out, cap, mm: [-1, -1], mmw: [0; 64] };
+    c.radio(name, cfg).is_some()
+}
+
+// The text forms: a plan each.
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_config_parse_radio(
+    text: *const c_char,
+    len: usize,
+    name: *const c_char,
+    cfg: &mut RdofConfig,
+    error: *mut c_char,
+    cap: usize,
+) -> bool {
+    let p = rdof_plan_open(text, len, error, cap);
+    if p.is_null() {
+        ptr::write_bytes(cfg as *mut RdofConfig, 0, 1);
+        return false;
+    }
+    let ok = rdof_plan_radio(p, name, cfg, error, cap);
+    rdof_plan_close(p);
+    ok
 }
 
 #[no_mangle]
@@ -1683,101 +1277,27 @@ pub unsafe extern "C" fn rdof_config_parse(
     rdof_config_parse_radio(text, len, ptr::null(), cfg, error, cap)
 }
 
-// rdof/setup.h and setup.c's part of rdof/config.h (C): versions 2 and 3 as the version 1 the parser reads.
 extern "C" {
-    fn rdof_config_version(text: *const c_char, len: usize) -> c_int;
-    fn rdof_config_as_v1(
-        text: *mut *const c_char,
-        len: *mut usize,
-        focus: *const c_char,
-        owned: *mut *mut c_char,
-        error: *mut c_char,
-        cap: usize,
-    ) -> bool;
-    fn rdof_setup_box_roles(text: *const c_char, len: usize, roles: &mut RdofRoles, error: *mut c_char, cap: usize)
-        -> bool;
-}
-
-/// Version 2 or 3: the role's section in its view (rdof/setup.h); its errors say which role.
-unsafe fn parse_radio_v2(
-    mut text: *const c_char,
-    mut len: usize,
-    want: *const c_char,
-    cfg: &mut RdofConfig,
-    error: *mut c_char,
-    cap: usize,
-) -> bool {
-    ptr::write_bytes(cfg as *mut RdofConfig, 0, 1);
-    let mut name = [0u8; 24];
-    let mut want = want;
-    if want.is_null() {
-        let roles: *mut RdofRoles = calloc(1, size_of::<RdofRoles>()).cast();
-        if roles.is_null() {
-            if !error.is_null() {
-                print(slice_mut(error.cast(), cap), &[S(b"no memory")]);
-            }
-            return false;
-        }
-        if !rdof_box_roles(text, len, &mut *roles, error, cap) {
-            free(roles.cast());
-            return false;
-        }
-        if (*roles).nradios == 0 {
-            free(roles.cast());
-            if !error.is_null() {
-                print(slice_mut(error.cast(), cap), &[S(b"run: no roamer or repeater")]);
-            }
-            return false;
-        }
-        put(&mut name, field(&(*roles).radios[0]));
-        free(roles.cast());
-        want = name.as_ptr().cast();
-    }
-    let mut view: *mut c_char = ptr::null_mut();
-    if !rdof_config_as_v1(&mut text, &mut len, want, &mut view, error, cap) {
-        return false;
-    }
-    let mut why = [0u8; 160];
-    let ok = parse_radio_v1(text, len, want, cfg, why.as_mut_ptr().cast(), why.len());
-    if !ok && !error.is_null() {
-        print(
-            slice_mut(error.cast(), cap),
-            &[S(b"roles."), S(c_bytes(want)), S(b": "), S(c_bytes(why.as_ptr().cast()))],
-        );
-    }
-    free(view.cast());
-    ok
+    // siteplan.c: what a board runs
+    fn rdof_plan_roles(p: *const RdofPlan, roles: &mut RdofRoles, err: *mut c_char, cap: usize) -> bool;
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rdof_config_parse_radio(
+pub unsafe extern "C" fn rdof_box_roles(
     text: *const c_char,
     len: usize,
-    want: *const c_char,
-    cfg: &mut RdofConfig,
+    roles: &mut RdofRoles,
     error: *mut c_char,
     cap: usize,
 ) -> bool {
-    if rdof_config_version(text, len) >= 2 {
-        return parse_radio_v2(text, len, want, cfg, error, cap);
-    }
-    parse_radio_v1(text, len, want, cfg, error, cap)
-}
-
-unsafe fn parse_radio_v1(
-    text: *const c_char,
-    len: usize,
-    want: *const c_char,
-    cfg: &mut RdofConfig,
-    error: *mut c_char,
-    cap: usize,
-) -> bool {
-    let mut dummy = [0u8; 8];
-    let Some((c, root)) = Cx::new(text, len, error, cap, &mut dummy) else {
+    let p = rdof_plan_open(text, len, error, cap);
+    if p.is_null() {
+        ptr::write_bytes(roles as *mut RdofRoles, 0, 1);
         return false;
-    };
-    ptr::write_bytes(cfg as *mut RdofConfig, 0, 1);
-    c.parse(root, want, cfg).is_some()
+    }
+    let ok = rdof_plan_roles(p, roles, error, cap);
+    rdof_plan_close(p);
+    ok
 }
 
 #[no_mangle]
@@ -1803,7 +1323,7 @@ pub unsafe extern "C" fn rdof_config_ports(cfg: &RdofConfig, out: *mut RdofCfgPo
     1
 }
 
-/// The board's ports a radio uses: one, or a split's two.
+/// The board's ports a unit uses: one, or a split's two.
 fn ports(cfg: &RdofConfig) -> ([RdofCfgPort; 2], usize) {
     let mut p = [cfg.split[0]; 2];
     let n = unsafe { rdof_config_ports(cfg, p.as_mut_ptr()) };
@@ -1816,14 +1336,14 @@ pub extern "C" fn rdof_config_uses_usb(cfg: &RdofConfig) -> bool {
     p[..n].iter().any(|p| field(&p.modem_port) == b"usb")
 }
 
-/// Two ports (of radios a and b) that can't both be: false with error set.
+/// Two ports (of units a and b) that can't both be: false with error set.
 fn ports_apart(a_name: &[u8], a: &RdofCfgPort, b_name: &[u8], b: &RdofCfgPort, error: &mut [u8]) -> bool {
     let mp = field(&a.modem_port);
     if mp != field(&b.modem_port) {
         return true;
     }
     let both = |error: &mut [u8], why: &[Piece]| {
-        let mut pieces = [S(b""); 6];
+        let mut pieces = [S(b""); 8];
         pieces[..3].copy_from_slice(&[S(a_name), S(b" and "), S(b_name)]);
         pieces[3..3 + why.len()].copy_from_slice(why);
         print(error, &pieces[..3 + why.len()]);
@@ -1837,7 +1357,13 @@ fn ports_apart(a_name: &[u8], a: &RdofCfgPort, b_name: &[u8], b: &RdofCfgPort, e
         if a.uart_num == b.uart_num {
             return both(
                 error,
-                &[S(b" are both on UART"), I(a.uart_num.into()), S(b": give one \"uart\": {\"num\": 2, ...}")],
+                &[
+                    S(b" are both on UART"),
+                    I(a.uart_num.into()),
+                    S(b": give one's device \"port\": {\"uart\": "),
+                    I((3 - a.uart_num).into()),
+                    S(b", ...}"),
+                ],
             );
         }
         if a.uart_tx == b.uart_tx || a.uart_rx == b.uart_rx || a.uart_tx == b.uart_rx || a.uart_rx == b.uart_tx {
@@ -1846,9 +1372,7 @@ fn ports_apart(a_name: &[u8], a: &RdofCfgPort, b_name: &[u8], b: &RdofCfgPort, e
     } else if (sa.is_empty() && pa.is_empty()) || (sb.is_empty() && pb.is_empty()) {
         return both(
             error,
-            &[S(
-                b" are both radios on USB: tell them apart with \"usb\": {\"serial\": ...} or {\"port\": ...} on each",
-            )],
+            &[S(b" are both on USB: tell their devices apart with \"serial\" or \"usb_port\" in each one's port")],
         );
     } else if (!sa.is_empty() && sa == sb && (pa.is_empty() || pb.is_empty() || pa == pb))
         || (sa.is_empty() && sb.is_empty() && pa == pb)
@@ -1879,60 +1403,6 @@ pub unsafe extern "C" fn rdof_config_check_ports(
                 }
             }
         }
-    }
-    true
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rdof_box_roles(
-    text: *const c_char,
-    len: usize,
-    roles: &mut RdofRoles,
-    error: *mut c_char,
-    cap: usize,
-) -> bool {
-    ptr::write_bytes(roles as *mut RdofRoles, 0, 1);
-    let mut dummy = [0u8; 8];
-    if rdof_config_version(text, len) >= 2 {
-        let (error, cap) = if error.is_null() || cap == 0 { (dummy.as_mut_ptr().cast(), dummy.len()) } else { (error, cap) };
-        return rdof_setup_box_roles(text, len, roles, error, cap);
-    }
-    let Some((c, bx)) = Cx::new(text, len, error, cap, &mut dummy) else {
-        return false;
-    };
-    if bx < 0 {
-        return false; // the JSON error, said
-    }
-    if c.n(bx).type_ != RDOF_JOBJ {
-        return c.err::<()>(&[S(b"the settings are a JSON object")]).is_some();
-    }
-    if c.get(bx, c"radios") < 0 && c.get(bx, c"device") >= 0 {
-        roles.has_sdr = true; // a plain SDR config on its own
-        roles.sdr_plain = true;
-        c.sor(bx, c"name", b"sdr", &mut roles.sdr);
-        put(&mut roles.box_, field(&roles.sdr));
-        return true;
-    }
-    let mut box_name = [0u8; 64];
-    c.sor(bx, c"name", b"radiofoundry", &mut box_name);
-    let box_name = field(&box_name);
-    put(&mut roles.box_, box_name);
-    roles.usb_hub = c.bget(bx, c"usb_hub", false);
-    let Some(pk) = c.pick_radios(bx, box_name) else {
-        return false;
-    };
-    roles.nradios = pk.nradio as c_int;
-    for k in 0..pk.nradio {
-        c.radio_name(pk.radio[k], pk.radio_k[k], box_name, &mut roles.radios[k]);
-    }
-    roles.has_radio = pk.nradio > 0;
-    if roles.has_radio {
-        let first = roles.radios[0];
-        put(&mut roles.radio, field(&first));
-    }
-    roles.has_sdr = pk.sdr >= 0;
-    if roles.has_sdr {
-        c.radio_name(pk.sdr, pk.sdr_k, box_name, &mut roles.sdr);
     }
     true
 }

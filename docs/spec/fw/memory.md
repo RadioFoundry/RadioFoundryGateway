@@ -130,7 +130,7 @@ Per role, what is declared (bytes; "×n" a count). Sizes are the code's; the SDR
 
 | Role | Claim | Size | Where | How | When |
 |---|---|---|---|---|---|
-| `sdr` | `iq` | `CONFIG_RDOF_SDR_CHUNK` × 8 (32 KB at 4096) | internal, 16-aligned | alloc | an SDR in `run` (not "either") |
+| `sdr` | `iq` | `CONFIG_RDOF_SDR_CHUNK` × 8 (32 KB at 4096) | internal, 16-aligned | alloc | an SDR in the settings (not "either") |
 | | `raw` | chunk × the front end's sample bytes (8 KB for the LR2021's int8) | internal, 16-aligned; PSRAM for the LR2021 | alloc | |
 | | `hot` | measured (§5); with PSRAM, from 16 bytes up to that (elastic) | internal, 16-aligned (fallback) | alloc | |
 | | `hot_ps` | measured (§5) | PSRAM, 16-aligned | alloc | a board with PSRAM |

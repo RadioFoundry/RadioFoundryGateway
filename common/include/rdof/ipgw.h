@@ -81,7 +81,7 @@ typedef struct {
     bool on;
     uint32_t id;               /* the gateway's DMR id: the source of replies to talkgroup data (0: the talkgroup) */
     rdof_ipgw_net_t radio_net; /* radio id <-> IPv4 (12.0.0.0/8: id 9994567 is 12.152.129.71) */
-    char tx[24];               /* the roamer or repeater that transmits replies ("": the first that runs) */
+    char tx[24];               /* the unit that transmits replies ("": the first that runs) */
     bool ack;                  /* answer confirmed data the gateway takes */
     int max_bytes;             /* the longest datagram either way */
     double up_pps, down_pps;   /* datagrams a second, each way (0: no limit); bursts of twice that */
@@ -100,9 +100,11 @@ typedef struct {
  * no routes, NAT off, deny the private and shared ranges (RDOF_IPGW_DEFAULT_DENY). */
 void rdof_ipgw_config_default(rdof_ipgw_config_t *cfg);
 
-/* "ip_gateway" from the board's settings (JSONC; version 3: its ipgw app, as rdof_site_lower writes it). Absent, null
- * or false: off (true with cfg->on false). false with error set when it's there and wrong. */
+/* The ipgw app of the settings (version 3; none: off, true with cfg->on false). false with error set when the
+   settings are refused ("apps.gw.routes[0]: ..."). rdof_plan_ipgw: the same from a plan (rdof/siteplan.h). */
 bool rdof_ipgw_settings_parse(const char *text, size_t len, rdof_ipgw_config_t *out, char *error, size_t cap);
+struct rdof_plan;
+bool rdof_plan_ipgw(const struct rdof_plan *p, rdof_ipgw_config_t *out, char *error, size_t cap);
 /* One line for /api/resolved and the log. */
 size_t rdof_ipgw_describe(const rdof_ipgw_config_t *cfg, char *out, size_t cap);
 

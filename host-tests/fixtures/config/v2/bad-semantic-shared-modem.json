@@ -1,3 +1,0 @@
-{"version": 2, "cc": 1, "devices": {"m": {"kind": "modem", "type": "mmdvm", "port": {"path": "/dev/ttyUSB0"}}},
- "roles": {"A": {"type": "repeater", "peer_id": 1, "rx_freq": 438.25, "tx_freq": 438.0125, "modem": {"device": "m"}},
-           "B": {"type": "repeater", "peer_id": 2, "rx_freq": 438.375, "tx_freq": 438.35, "modem": {"device": "m"}}}}

@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 /* The settings, version 3 (rdof/site.h) and ID sets (rdof/idset.h): every fixture in fixtures/config/v3 is taken or
- * refused as its name says; the spec's four sites resolve to the paths and policies it describes; each good one
- * runs as version 2 settings the broker and the role parsers take. */
+ * refused as its name says; the spec's four sites resolve to the paths and policies it describes; each good one's
+ * units and SDR parse. */
 #include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "rdof/broker.h"
 #include "rdof/config.h"
 #include "rdof/hblink.h"
 #include "rdof/idset.h"
@@ -18,7 +17,6 @@
 #include "rdof/repeater.h"
 #include "rdof/router.h"
 #include "rdof/sdr/config.h"
-#include "rdof/setup.h"
 #include "rdof/site.h"
 #include "rdof/siteroute.h"
 #include "rdof/txpool.h"
@@ -556,7 +554,7 @@ static void test_siteroute(const char *dir)
           "per_path names: the receiver's channel: %s", err);
 }
 
-/* Every fixture: good- taken, bad- refused; a good one runs as version 2. */
+/* Every fixture: good- taken, bad- refused; a good one's units and SDR parse. */
 static void test_fixtures(const char *dir)
 {
     char p[512], err[200];
@@ -576,21 +574,12 @@ static void test_fixtures(const char *dir)
         CHECK(ok == good, "%s: %s", e->d_name, ok ? "taken" : err);
         if (!good)
             printf("  %s: %s\n", e->d_name, err);
-        CHECK(rdof_config_version(t, len) == 3, "%s: version 3", e->d_name);
         if (good && ok) {
-            size_t vl;
-            char *v2 = rdof_site_lower(t, len, &vl, err, sizeof err);
-            CHECK(v2, "%s: lower: %s", e->d_name, err);
-            static rdof_setup_t s;
-            rdof_platform_t any = rdof_platform_host;
-            any.uart_ports = true;
-            bool sok = v2 && rdof_setup_parse(t, len, &s, err, sizeof err);
-            CHECK(sok, "%s: as version 2: %s\n%s", e->d_name, err, v2 ? v2 : "");
-            if (sok)
-                CHECK(rdof_broker_check(&s, &any, err, sizeof err), "%s: broker: %s", e->d_name, err);
             static rdof_roles_t roles;
             static rdof_config_t cfg;
-            if (sok && rdof_box_roles(t, len, &roles, err, sizeof err)) {
+            bool rok = rdof_box_roles(t, len, &roles, err, sizeof err);
+            CHECK(rok, "%s: roles: %s", e->d_name, err);
+            if (rok) {
                 for (int k = 0; k < roles.nradios; k++)
                     CHECK(rdof_config_parse_radio(t, len, roles.radios[k], &cfg, err, sizeof err),
                           "%s: radio %s: %s", e->d_name, roles.radios[k], err);
@@ -598,7 +587,6 @@ static void test_fixtures(const char *dir)
                 if (roles.has_sdr)
                     CHECK(rdof_sdr_config_parse(t, len, &sc, err, sizeof err), "%s: sdr: %s", e->d_name, err);
             }
-            free(v2);
         }
         free(t);
         n++;

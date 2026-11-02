@@ -1,2 +1,0 @@
-{"version": 2, "devices": {"p": {"kind": "sdr", "driver": "iio", "tx": {"carriers": 5}}},
- "roles": {"R": {"type": "repeater", "peer_id": 1, "rx_freq": 438.25, "tx_freq": 438.0125, "cc": 1, "modem": {"device": "p"}}}}

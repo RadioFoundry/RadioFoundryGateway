@@ -10,10 +10,8 @@
 #include <string.h>
 
 #include "rdof/jsonp.h"
-#include "rdof/setup.h"
+#include "rdof/siteplan.h"
 
-#define MAX_NODES 1024
-#define STR_BUF 8192
 
 char rdof_bench_usb_bridge(uint16_t vid, uint16_t pid)
 {
@@ -27,9 +25,7 @@ char rdof_bench_usb_bridge(uint16_t vid, uint16_t pid)
 }
 
 typedef struct {
-    rdof_jdoc_t doc;
-    rdof_jnode_t nodes[MAX_NODES];
-    char strs[STR_BUF];
+    const rdof_jdoc_t *doc;
     char *error;
     size_t cap;
 } ctx_t;
@@ -45,7 +41,7 @@ static int fail(ctx_t *c, const char *fmt, ...)
 
 static const rdof_jnode_t *at(ctx_t *c, int obj, const char *key)
 {
-    return rdof_jnode(&c->doc, rdof_jget(&c->doc, obj, key));
+    return rdof_jnode(c->doc, rdof_jget(c->doc, obj, key));
 }
 
 /* A number, or a hex string for vid / pid; dflt when absent. false: there but not one. */
@@ -83,228 +79,206 @@ static bool str(const rdof_jnode_t *n, char *out, size_t cap)
     return true;
 }
 
-static int radio(ctx_t *c, int node, int i, rdof_bench_radio_t *r)
+/* r's port (its name and proto set). */
+static int radio_port(ctx_t *c, int port, rdof_bench_radio_t *r)
 {
-    const rdof_jnode_t *n = rdof_jnode(&c->doc, node);
-    if (n->type != RDOF_JOBJ)
-        return fail(c, "bench.radios[%d]: an object", i);
-    memset(r, 0, sizeof *r);
-    r->rts = r->cts = -1;
-    if (!str(at(c, node, "name"), r->name, sizeof r->name) || !r->name[0])
-        return fail(c, "bench.radios[%d]: a name (up to %d characters)", i, (int)sizeof r->name - 1);
-    for (const char *p = r->name; *p; p++)
-        if (!isalnum((unsigned char)*p) && *p != '-' && *p != '_')
-            return fail(c, "bench radio %s: a name of letters, digits, - and _", r->name);
-    if (!str(at(c, node, "proto"), r->proto, sizeof r->proto))
-        return fail(c, "bench radio %s: proto odr-debug or mmdvm", r->name);
-    if (!r->proto[0])
-        strcpy(r->proto, "odr-debug");
-    if (strcmp(r->proto, "odr-debug") && strcmp(r->proto, "mmdvm"))
-        return fail(c, "bench radio %s: proto %s: odr-debug or mmdvm", r->name, r->proto);
-    int port = rdof_jget(&c->doc, node, "port");
-    if (port < 0 || rdof_jnode(&c->doc, port)->type != RDOF_JOBJ)
-        return fail(c, "bench radio %s: a port {\"uart\": ...} or {\"usb\": ...}", r->name);
+    if (port < 0 || rdof_jnode(c->doc, port)->type != RDOF_JOBJ)
+        return fail(c, "devices.%s.port: a port {\"uart\": ...} or {\"usb\": ...}", r->name);
     const rdof_jnode_t *uart = at(c, port, "uart"), *usb = at(c, port, "usb");
     if (!!uart == !!usb)
-        return fail(c, "bench radio %s: the port is a uart or usb, one of them", r->name);
+        return fail(c, "devices.%s.port: the port is a uart or usb, one of them", r->name);
     long v;
     if (!num(at(c, port, "baud"), false, 115200, &v) || v < 1200 || v > 6000000)
-        return fail(c, "bench radio %s: baud 1200 to 6000000", r->name);
+        return fail(c, "devices.%s.port: baud 1200 to 6000000", r->name);
     r->baud = v;
     if (uart) {
         r->port = RDOF_BPORT_UART;
         if (!num(uart, false, 0, &v) || (v != 1 && v != 2))
-            return fail(c, "bench radio %s: uart 1 or 2 (UART0 is the console)", r->name);
+            return fail(c, "devices.%s.port: uart 1 or 2 (UART0 is the console)", r->name);
         r->uart = (int)v;
         static const char *const pins[] = {"tx", "rx", "rts", "cts"};
         int *dst[] = {&r->tx, &r->rx, &r->rts, &r->cts};
         for (int k = 0; k < 4; k++) {
             if (!num(at(c, port, pins[k]), false, -1, &v) || v < -1 || v > 48 || (k < 2 && v < 0))
-                return fail(c, "bench radio %s: %s, a GPIO 0 to 48%s", r->name, pins[k], k < 2 ? "" : " (or none)");
+                return fail(c, "devices.%s.port: %s, a GPIO 0 to 48%s", r->name, pins[k], k < 2 ? "" : " (or none)");
             *dst[k] = (int)v;
         }
         for (int a = 0; a < 4; a++)
             for (int b = a + 1; b < 4; b++)
                 if (*dst[a] >= 0 && *dst[a] == *dst[b])
-                    return fail(c, "bench radio %s: %s and %s on the same GPIO", r->name, pins[a], pins[b]);
+                    return fail(c, "devices.%s.port: %s and %s on the same GPIO", r->name, pins[a], pins[b]);
         return 0;
     }
     char kind[12];
     if (!str(usb, kind, sizeof kind) || (strcmp(kind, "cdc-acm") && strcmp(kind, "uart")))
-        return fail(c, "bench radio %s: usb cdc-acm or uart", r->name);
+        return fail(c, "devices.%s.port: usb cdc-acm or uart", r->name);
     r->port = strcmp(kind, "uart") ? RDOF_BPORT_CDC_ACM : RDOF_BPORT_USB_UART;
     if (!num(at(c, port, "vid"), true, 0, &v) || v < 0 || v > 0xFFFF)
-        return fail(c, "bench radio %s: vid, four hex digits", r->name);
+        return fail(c, "devices.%s.port: vid, four hex digits", r->name);
     r->vid = (uint16_t)v;
     if (!num(at(c, port, "pid"), true, 0, &v) || v < 0 || v > 0xFFFF)
-        return fail(c, "bench radio %s: pid, four hex digits", r->name);
+        return fail(c, "devices.%s.port: pid, four hex digits", r->name);
     r->pid = (uint16_t)v;
     if (r->pid && !r->vid)
-        return fail(c, "bench radio %s: a pid needs its vid", r->name);
+        return fail(c, "devices.%s.port: a pid needs its vid", r->name);
     if (r->port == RDOF_BPORT_CDC_ACM && (!r->vid || !r->pid))
-        return fail(c, "bench radio %s: a cdc-acm radio needs its vid and pid", r->name);
+        return fail(c, "devices.%s.port: a cdc-acm radio needs its vid and pid", r->name);
     if (r->vid == 0x0BDA)
-        return fail(c, "bench radio %s: %04X is the RTL-SDR's vendor", r->name, r->vid);
+        return fail(c, "devices.%s.port: %04X is the RTL-SDR's vendor", r->name, r->vid);
     if (r->port == RDOF_BPORT_USB_UART && r->vid && r->pid && !rdof_bench_usb_bridge(r->vid, r->pid))
-        return fail(c, "bench radio %s: %04X:%04X isn't a USB-serial bridge this firmware knows (FTDI, CP210x, CH34x)",
+        return fail(c, "devices.%s.port: %04X:%04X isn't a USB-serial bridge this firmware knows (FTDI, CP210x, CH34x)",
                     r->name, r->vid, r->pid);
     if (!str(at(c, port, "serial"), r->serial, sizeof r->serial) ||
         !str(at(c, port, "usb_port"), r->usb_port, sizeof r->usb_port))
-        return fail(c, "bench radio %s: serial and usb_port are strings", r->name);
+        return fail(c, "devices.%s.port: serial and usb_port are strings", r->name);
     return 0;
 }
 
-int rdof_bench_radios_parse(const char *text, size_t len, rdof_bench_radio_t *out, int max, char *error, size_t cap)
+/* Two radios with one name, or on one UART: refused (out[0..n-1] checked, out[n] new). */
+static int radio_apart(ctx_t *c, const rdof_bench_radio_t *out, int n)
 {
-    char *view = NULL; /* version 2: its view (rdof/setup.h) */
-    if (!rdof_config_as_v1(&text, &len, NULL, &view, error, cap))
-        return -1;
-    ctx_t *c = calloc(1, sizeof *c);
-    char *clean = malloc(len + 1);
+    for (int k = 0; k < n; k++) {
+        if (!strcmp(out[k].name, out[n].name))
+            return fail(c, "bench radios: two named %s", out[n].name);
+        if (out[k].port == RDOF_BPORT_UART && out[n].port == RDOF_BPORT_UART && out[k].uart == out[n].uart)
+            return fail(c, "bench radios %s and %s: both on UART%d", out[k].name, out[n].name, out[n].uart);
+    }
+    return 0;
+}
+
+int rdof_plan_bench_radios(const rdof_plan_t *p, rdof_bench_radio_t *out, int max, char *error, size_t cap)
+{
     char dummy[8];
     if (!error) {
         error = dummy;
         cap = sizeof dummy;
     }
     error[0] = 0;
-    if (!c || !clean) {
-        free(c);
-        free(clean);
-    free(view);
-        snprintf(error, cap, "no memory");
+    ctx_t cx = {.doc = rdof_plan_doc(p), .error = error, .cap = cap}, *c = &cx;
+    const rdof_site_t *s = rdof_plan_site(p);
+    int n = 0;
+    for (int k = 0; k < rdof_plan_nbench(p); k++) {
+        int d = rdof_plan_bench(p, k);
+        if (s->dev[d].kind == RDOF_DEV_SDR)
+            continue;
+        if (n >= max)
+            return fail(c, "bench.devices: %d radios and modems at most", max);
+        rdof_bench_radio_t *r = &out[n];
+        memset(r, 0, sizeof *r);
+        r->rts = r->cts = -1;
+        if (strlen(s->dev[d].name) >= sizeof r->name)
+            return fail(c, "bench.devices[%d]: a name up to %d characters", k, (int)sizeof r->name - 1);
+        strcpy(r->name, s->dev[d].name);
+        for (const char *q = r->name; *q; q++)
+            if (!isalnum((unsigned char)*q) && *q != '-' && *q != '_')
+                return fail(c, "bench.devices[%d]: %s: a name of letters, digits, - and _", k, r->name);
+        strcpy(r->proto, s->dev[d].kind == RDOF_DEV_RADIO ? "odr-debug" : "mmdvm");
+        if (rdof_plan_dev(p, d)->port.kind == RDOF_PORT_PATH)
+            return fail(c, "devices.%s.port: a bench device is on a UART or USB, not a path", r->name);
+        if (radio_port(c, rdof_jget(c->doc, rdof_plan_dev_node(p, d), "port"), r) < 0 || radio_apart(c, out, n) < 0)
+            return -1;
+        n++;
+    }
+    return n;
+}
+
+/* bench.tx: tx's freqs_hz, then more (each not there already), and its other keys. */
+static int policy(ctx_t *c, int tx, const uint32_t *more, int nmore, rdof_benchtx_policy_t *out)
+{
+    const rdof_jnode_t *t = rdof_jnode(c->doc, tx);
+    if (t && t->type == RDOF_JNULL)
+        t = NULL;
+    if (!t && !nmore)
+        return 0;
+    if (t && t->type != RDOF_JOBJ)
+        return fail(c, "bench.tx: an object");
+    int fl = t ? rdof_jget(c->doc, tx, "freqs_hz") : -1;
+    const rdof_jnode_t *f = rdof_jnode(c->doc, fl);
+    if (f && f->type == RDOF_JNULL)
+        f = NULL; /* none, as no freqs_hz */
+    if (f && f->type != RDOF_JARR)
+        return fail(c, "bench.tx.freqs_hz: a list of frequencies in Hz");
+    for (int i = 0; f && i < f->count; i++) {
+        const rdof_jnode_t *v = rdof_jnode(c->doc, rdof_jat(c->doc, fl, i));
+        if (i >= RDOF_BENCHTX_MAX_FREQS)
+            return fail(c, "bench.tx.freqs_hz: at most %d", RDOF_BENCHTX_MAX_FREQS);
+        if (v->type != RDOF_JNUM || v->num < 30e6 || v->num > 3e9 || v->num != (double)(uint32_t)v->num)
+            return fail(c, "bench.tx.freqs_hz[%d]: a frequency in whole Hz", i);
+        out->freqs_hz[out->nfreqs++] = (uint32_t)v->num;
+    }
+    for (int i = 0; i < nmore; i++) {
+        bool dup = false;
+        for (int k = 0; k < out->nfreqs; k++)
+            dup |= out->freqs_hz[k] == more[i];
+        if (dup)
+            continue;
+        if (out->nfreqs >= RDOF_BENCHTX_MAX_FREQS)
+            return fail(c, "bench.tx.freqs_hz and the bench devices' freqs_hz: at most %d", RDOF_BENCHTX_MAX_FREQS);
+        out->freqs_hz[out->nfreqs++] = more[i];
+    }
+    const rdof_jnode_t *k = t ? at(c, tx, "max_key_s") : NULL;
+    if (k && k->type == RDOF_JNULL)
+        k = NULL; /* the default, as null is for the others */
+    if (k && (k->type != RDOF_JNUM || k->num < 0 || k->num > 60))
+        return fail(c, "bench.tx.max_key_s: 0 to 60 seconds");
+    out->max_key_s = k ? k->num : 10;
+    long v;
+    if (!num(t ? at(c, tx, "rf_level") : NULL, false, 0, &v) || v < 0 || v > 255)
+        return fail(c, "bench.tx.rf_level: 0 to 255 (0: the lowest)");
+    out->rf_level = (int)v;
+    if (!num(t ? at(c, tx, "arm_gpio") : NULL, false, -1, &v) || v < -1 || v > 48)
+        return fail(c, "bench.tx.arm_gpio: a GPIO 0 to 48 (a jumper to ground), or none");
+    out->arm_gpio = (int)v;
+    return 0;
+}
+
+int rdof_plan_bench_tx(const rdof_plan_t *p, rdof_benchtx_policy_t *out, char *error, size_t cap)
+{
+    memset(out, 0, sizeof *out);
+    out->arm_gpio = -1;
+    char dummy[8];
+    if (!error) {
+        error = dummy;
+        cap = sizeof dummy;
+    }
+    error[0] = 0;
+    ctx_t c = {.doc = rdof_plan_doc(p), .error = error, .cap = cap};
+    int bench = rdof_jget(c.doc, rdof_plan_root(p), "bench");
+    if (bench < 0)
+        return 0;
+    /* the bench devices' own frequencies, after bench.tx's */
+    uint32_t more[RDOF_SITE_MAX_DEVICES * 8];
+    int nmore = 0;
+    for (int k = 0; k < rdof_plan_nbench(p); k++) {
+        const rdof_dev_bench_t *b = &rdof_plan_dev(p, rdof_plan_bench(p, k))->bench;
+        for (int i = 0; i < b->nfreqs; i++)
+            more[nmore++] = b->freqs_hz[i];
+    }
+    int rc = policy(&c, rdof_jget(c.doc, bench, "tx"), more, nmore, out);
+    if (rc < 0)
+        *out = (rdof_benchtx_policy_t){.arm_gpio = -1}; /* no TX, not half a policy */
+    return rc;
+}
+
+/* The text forms: a plan each. */
+int rdof_bench_radios_parse(const char *text, size_t len, rdof_bench_radio_t *out, int max, char *error, size_t cap)
+{
+    rdof_plan_t *p = rdof_plan_open(text, len, error, cap);
+    if (!p)
         return -1;
-    }
-    c->error = error;
-    c->cap = cap;
-    c->doc = (rdof_jdoc_t){.nodes = c->nodes, .max = MAX_NODES, .buf = c->strs, .cap = STR_BUF};
-    int n = -1, root = rdof_jparse(&c->doc, clean, rdof_jsonc_strip(text, len, clean));
-    if (root < 0) {
-        fail(c, "JSON: %s", c->doc.error);
-        goto done;
-    }
-    int bench = rdof_jget(&c->doc, root, "bench");
-    int radios = bench >= 0 ? rdof_jget(&c->doc, bench, "radios") : -1;
-    const rdof_jnode_t *rn = rdof_jnode(&c->doc, radios);
-    if (!rn || rn->type == RDOF_JNULL) {
-        n = 0;
-        goto done;
-    }
-    if (rn->type != RDOF_JARR) {
-        fail(c, "bench.radios: a list");
-        goto done;
-    }
-    if (rn->count > max) {
-        fail(c, "bench.radios: at most %d", max);
-        goto done;
-    }
-    for (int i = 0; i < rn->count; i++) {
-        if (radio(c, rdof_jat(&c->doc, radios, i), i, &out[i]) < 0)
-            goto done;
-        for (int k = 0; k < i; k++) {
-            if (!strcmp(out[k].name, out[i].name)) {
-                fail(c, "bench radios: two named %s", out[i].name);
-                goto done;
-            }
-            if (out[k].port == RDOF_BPORT_UART && out[i].port == RDOF_BPORT_UART && out[k].uart == out[i].uart) {
-                fail(c, "bench radios %s and %s: both on UART%d", out[k].name, out[i].name, out[i].uart);
-                goto done;
-            }
-        }
-    }
-    n = rn->count;
-done:
-    free(clean);
-    free(view);
-    free(c);
+    int n = rdof_plan_bench_radios(p, out, max, error, cap);
+    rdof_plan_close(p);
     return n;
 }
 
 int rdof_bench_tx_parse(const char *text, size_t len, rdof_benchtx_policy_t *out, char *error, size_t cap)
 {
-    char *view = NULL; /* version 2: its view (rdof/setup.h) */
-    if (!rdof_config_as_v1(&text, &len, NULL, &view, error, cap))
-        return -1;
-    memset(out, 0, sizeof *out);
-    out->arm_gpio = -1;
-    ctx_t *c = calloc(1, sizeof *c);
-    char *clean = malloc(len + 1);
-    char dummy[8];
-    if (!error) {
-        error = dummy;
-        cap = sizeof dummy;
-    }
-    error[0] = 0;
-    if (!c || !clean) {
-        free(c);
-        free(clean);
-    free(view);
-        snprintf(error, cap, "no memory");
+    rdof_plan_t *p = rdof_plan_open(text, len, error, cap);
+    if (!p) {
+        *out = (rdof_benchtx_policy_t){.arm_gpio = -1};
         return -1;
     }
-    c->error = error;
-    c->cap = cap;
-    c->doc = (rdof_jdoc_t){.nodes = c->nodes, .max = MAX_NODES, .buf = c->strs, .cap = STR_BUF};
-    int rc = -1, root = rdof_jparse(&c->doc, clean, rdof_jsonc_strip(text, len, clean));
-    if (root < 0) {
-        fail(c, "JSON: %s", c->doc.error);
-        goto done;
-    }
-    int bench = rdof_jget(&c->doc, root, "bench");
-    int tx = bench >= 0 ? rdof_jget(&c->doc, bench, "tx") : -1;
-    const rdof_jnode_t *t = rdof_jnode(&c->doc, tx);
-    if (!t || t->type == RDOF_JNULL) {
-        rc = 0;
-        goto done;
-    }
-    if (t->type != RDOF_JOBJ) {
-        fail(c, "bench.tx: an object");
-        goto done;
-    }
-    int fl = rdof_jget(&c->doc, tx, "freqs_hz");
-    const rdof_jnode_t *f = rdof_jnode(&c->doc, fl);
-    if (f && f->type == RDOF_JNULL)
-        f = NULL; /* none, as no freqs_hz */
-    if (f && f->type != RDOF_JARR) {
-        fail(c, "bench.tx.freqs_hz: a list of frequencies in Hz");
-        goto done;
-    }
-    for (int i = 0; f && i < f->count; i++) {
-        const rdof_jnode_t *v = rdof_jnode(&c->doc, rdof_jat(&c->doc, fl, i));
-        if (i >= RDOF_BENCHTX_MAX_FREQS) {
-            fail(c, "bench.tx.freqs_hz: at most %d", RDOF_BENCHTX_MAX_FREQS);
-            goto done;
-        }
-        if (v->type != RDOF_JNUM || v->num < 30e6 || v->num > 3e9 || v->num != (double)(uint32_t)v->num) {
-            fail(c, "bench.tx.freqs_hz[%d]: a frequency in whole Hz", i);
-            goto done;
-        }
-        out->freqs_hz[out->nfreqs++] = (uint32_t)v->num;
-    }
-    const rdof_jnode_t *k = at(c, tx, "max_key_s");
-    if (k && k->type == RDOF_JNULL)
-        k = NULL; /* the default, as null is for the others */
-    if (k && (k->type != RDOF_JNUM || k->num < 0 || k->num > 60)) {
-        fail(c, "bench.tx.max_key_s: 0 to 60 seconds");
-        goto done;
-    }
-    out->max_key_s = k ? k->num : 10;
-    long v;
-    if (!num(at(c, tx, "rf_level"), false, 0, &v) || v < 0 || v > 255) {
-        fail(c, "bench.tx.rf_level: 0 to 255 (0: the lowest)");
-        goto done;
-    }
-    out->rf_level = (int)v;
-    if (!num(at(c, tx, "arm_gpio"), false, -1, &v) || v < -1 || v > 48) {
-        fail(c, "bench.tx.arm_gpio: a GPIO 0 to 48 (a jumper to ground), or none");
-        goto done;
-    }
-    out->arm_gpio = (int)v;
-    rc = 0;
-done:
-    if (rc < 0)
-        *out = (rdof_benchtx_policy_t){.arm_gpio = -1}; /* no TX, not half a policy */
-    free(clean);
-    free(view);
-    free(c);
+    int rc = rdof_plan_bench_tx(p, out, error, cap);
+    rdof_plan_close(p);
     return rc;
 }

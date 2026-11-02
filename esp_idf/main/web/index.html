@@ -93,15 +93,15 @@ configured gain. <span id="specinfo"></span></p>
 <section data-tab="settings">
 <div class="card">
 <h2>Settings</h2>
-<p class="mute">A box config in JSON: name, location, mqtt, hblink, cc, channels and radios, plus run: the radios this board runs (a name or a list; two roamers or repeaters and one SDR at most;
-without it, the first roamer or repeater, else the first SDR). "enabled": false on a radio leaves it out (run may
-still name it). For the roamer, on the box or on each radio: modem
-(usb / uart), uart {tx, rx, num (1 or 2)}, speed; on a radio, usb {serial, port} to tell two on a hub apart; oled
-{sda, scl}. In the SDR's section: usb {transfers, transfer_kb}, dsp_cores (1 or 2); its sample_rate is 288000 or
-240000 here. A roamer on USB and an SDR both run: whichever is plugged in runs, unless "usb_hub": true. Comments are fine. It's checked
-before it's saved. The Wi-Fi networks and the NTP servers show as wifi {networks} and ntp {servers,
-poll_s}: passwords never leave the board, so a network without a "password" keeps the one it has (add "password" to
-set one).</p>
+<p class="mute">A box config in JSON, version 3: name, id, callsign, location, defaults, devices, frequencies, apps,
+networks and policies. Every unit it makes runs: a repeater app, an SFR or DCDM frequency, a device that transmits
+on simplex frequencies, an SDR that hears; two units that transmit and one SDR at most. On a modem: type, port
+{uart, tx, rx} or {usb, serial, usb_port} (to tell two on a hub apart), hears and transmits. On the SDR: driver, rx
+{rate, gain_db}, usb {transfers, transfer_kb}, dsp_cores (1 or 2); its rate is 288000 or 240000 here. At the top:
+oled {sda, scl}. A modem on USB and an SDR both run: whichever is plugged in runs, unless "usb_hub": true. Comments
+are fine. It's checked before it's saved. The Wi-Fi networks and the NTP servers show as wifi {networks} and ntp
+{servers, poll_s}: passwords never leave the board, so a network without a "password" keeps the one it has (add
+"password" to set one).</p>
 <p id="cfgsrc" class="mute" hidden></p>
 <textarea id="cfg" spellcheck="false"></textarea>
 <div>

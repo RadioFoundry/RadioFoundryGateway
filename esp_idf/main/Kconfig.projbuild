@@ -252,13 +252,13 @@ menu "RadioFoundry Gateway"
             Off: a role over the margin still starts, and the plan says it's over. On: it doesn't start.
 
     config RDOF_IPGW
-        bool "IP gateway: DMR packet data to and from the IP network (\"ip_gateway\")"
+        bool "IP gateway: DMR packet data to and from the IP network (an \"ipgw\" app)"
         depends on (RDOF_ROAMER || RDOF_SDR) && RDOF_FEATURE_DATA_BLOCKS && RDOF_FEATURE_TRACKER
         default y
         help
             Radios' IPv4 datagrams, put together from the data bursts the SDR and the
             radios hear, relayed over UDP by route or by NAT; replies go back down
-            through a roamer or repeater. Off unless the settings have "ip_gateway"
+            through a roamer or repeater. Off unless the settings have an "ipgw" app
             (docs/spec/fw/ipgw.md).
 
     config RDOF_IPGW_MAX_SOCKETS

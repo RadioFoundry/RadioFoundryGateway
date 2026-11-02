@@ -250,7 +250,7 @@ static size_t fw_resolved(void *ctx, char *buf, size_t cap)
     }
 #endif
     if (site_on() && n < cap - 64) {
-        n += (size_t)snprintf(buf + n, cap - n, "\nversion 3, as it runs (paths, policies, talkgroups):\n");
+        n += (size_t)snprintf(buf + n, cap - n, "\nthe site, as it runs (paths, policies, talkgroups):\n");
         n += site_resolved(buf + n, cap - n);
     }
     return n;

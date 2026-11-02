@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "rdof/ambe.h"
+#include "rdof/benchcfg.h"
 #include "rdof/bits.h"
 #include "rdof/config.h"
 #include "rdof/status.h"
@@ -27,6 +28,7 @@
 #include "rdof/split.h"
 #include "rdof/tracker.h"
 #include "rdof/rust.h"
+#include "rdof/siteplan.h"
 #include "rdof/usbmatch.h"
 #include "../common/src/radiofoundry/dmrFec.h"
 #include "vectors.h"
@@ -684,167 +686,288 @@ static void test_config_sctp(void)
     }
 }
 
-/* Which radios a board runs ("run", else the first roamer or repeater, else the first SDR), and the roamer that
-   rdof_config_parse picks with "run". */
+/* What a board runs: its units (at most RDOF_MAX_RADIOS that transmit) and its one SDR, and what's refused. */
+#define V3_HEAD "\"version\":3,\"name\":\"b\",\"id\":1,\"defaults\":{\"cc\":1},"
 static void test_roles(void)
 {
     static const struct {
-        const char *json;
-        int ok, radio, sdr, plain;
-        const char *radio_name, *sdr_name;
+        const char *json, *error; /* error: NULL ok */
+        const char *box, *radios, *sdr; /* radios: the units that transmit, comma-separated; sdr "" none */
+        bool hub;
     } cases[] = {
-        {"{\"name\":\"b\",\"radios\":[{\"type\":\"sdr\",\"name\":\"S\"},{\"type\":\"opengd77\",\"name\":\"R\"}]}", 1, 1, 0,
-         0, "R", ""},
-        {"{\"name\":\"b\",\"radios\":[{\"type\":\"sdr\",\"name\":\"S\"},{\"type\":\"sdr\",\"name\":\"T\"}]}", 1, 0, 1, 0,
-         "", "S"},
-        {"{\"name\":\"b\",\"radios\":[{\"type\":\"sdr\"},{\"type\":\"repeater\"}]}", 1, 1, 0, 0, "b-repeater2", ""},
-        {"{\"name\":\"b\",\"run\":[\"S\",\"R\"],\"radios\":[{\"type\":\"sdr\",\"name\":\"S\"},{\"type\":\"mmdvm_hs\","
-         "\"name\":\"R\"}]}",
-         1, 1, 1, 0, "R", "S"},
-        {"{\"name\":\"b\",\"run\":\"b-sdr2\",\"radios\":[{\"type\":\"mmdvm_hs\"},{\"type\":\"sdr\"}]}", 1, 0, 1, 0, "",
-         "b-sdr2"},
-        {"{\"run\":\"R2\",\"radios\":[{\"type\":\"mmdvm_hs\",\"name\":\"R1\"},{\"type\":\"opengd77\",\"name\":\"R2\"}]}",
-         1, 1, 0, 0, "R2", ""},
-        {"{\"name\":\"x\",\"device\":{\"sample_rate\":288000},\"channels\":[]}", 1, 0, 1, 1, "", "x"},
-        {"{\"run\":[\"R1\",\"R2\"],\"radios\":[{\"type\":\"mmdvm_hs\",\"name\":\"R1\"},{\"type\":\"opengd77\","
-         "\"name\":\"R2\"}]}",
-         1, 1, 0, 0, "R1", ""},
-        {"{\"run\":[\"R1\",\"R2\",\"R3\"],\"radios\":[{\"type\":\"mmdvm_hs\",\"name\":\"R1\"},{\"type\":"
-         "\"opengd77\",\"name\":\"R2\"},{\"type\":\"opengd77\",\"name\":\"R3\"}]}",
-         0, 0, 0, 0, "", ""},
-        {"{\"run\":\"nope\",\"radios\":[{\"type\":\"mmdvm_hs\",\"name\":\"R1\"}]}", 0, 0, 0, 0, "", ""},
-        {"{\"run\":5,\"radios\":[{\"type\":\"mmdvm_hs\",\"name\":\"R1\"}]}", 0, 0, 0, 0, "", ""},
-        {"{\"radios\":[]}", 0, 0, 0, 0, "", ""},
-        {"{\"radios\":[{\"type\":\"yaesu\"}]}", 0, 0, 0, 0, "", ""},
-        {"[1]", 0, 0, 0, 0, "", ""},
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"S\",\"kind\":\"sdr\"},{\"name\":\"R\",\"kind\":\"modem\",\"type\":"
+         "\"radio_hotspot\",\"port\":{\"usb\":\"auto\"}}],\"frequencies\":[438.0625]}",
+         NULL, "b", "R", "S-rx", false},
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"S\",\"kind\":\"sdr\"},{\"name\":\"T\",\"kind\":\"sdr\"}],"
+         "\"frequencies\":[438.0625]}",
+         "devices.S and devices.T: a board runs one SDR", "", "", "", false},
+        {"{" V3_HEAD "\"devices\":[{\"kind\":\"sdr\"},{\"kind\":\"modem\",\"type\":\"mmdvm_hs\",\"port\":{\"uart\":1,"
+         "\"tx\":17,\"rx\":18},\"hears\":{\"idle\":\"in\"}}],\"frequencies\":[{\"freq\":438.0625,\"name\":\"in\","
+         "\"devices\":[\"modem0\"]},{\"freq\":438.0375,\"name\":\"out\"}],\"apps\":[{\"type\":\"repeater\",\"in\":"
+         "\"in\",\"out\":\"out\"}]}",
+         NULL, "b", "repeater", "", false},
+        {"{\"version\":3,\"id\":1,\"defaults\":{\"cc\":1},\"devices\":[{\"name\":\"R1\",\"kind\":\"modem\",\"type\":"
+         "\"mmdvm_hs\",\"port\":{\"usb\":\"auto\"}},{\"name\":\"R2\",\"kind\":\"modem\",\"type\":\"radio_hotspot\","
+         "\"port\":{\"usb\":\"auto\"}}],\"frequencies\":[{\"freq\":438.0625,\"devices\":[\"R1\"]},{\"freq\":438.1125,"
+         "\"devices\":[\"R2\"]}]}",
+         NULL, "radiofoundry", "R1,R2", "", false},
+        {"{\"version\":3,\"id\":1,\"defaults\":{\"cc\":1},\"devices\":[{\"name\":\"R1\",\"kind\":\"modem\",\"type\":"
+         "\"mmdvm_hs\",\"port\":{\"usb\":\"auto\"}},{\"name\":\"R2\",\"kind\":\"modem\",\"type\":\"radio_hotspot\","
+         "\"port\":{\"usb\":\"auto\"}},{\"name\":\"R3\",\"kind\":\"modem\",\"type\":\"radio_hotspot\",\"port\":"
+         "{\"usb\":\"auto\"}}],\"frequencies\":[438.0625]}",
+         "a board runs 2 units that transmit at most: R1, R2 and R3", "", "", "", false},
+        {"{\"version\":3,\"name\":\"x\",\"id\":1,\"usb_hub\":true,\"defaults\":{\"cc\":1},\"devices\":[{\"kind\":"
+         "\"sdr\"}],\"frequencies\":[438.0625]}",
+         NULL, "x", "", "sdr0-rx", true},
+        {"{\"version\":3,\"name\":\"x\",\"id\":1,\"devices\":[],\"frequencies\":[]}",
+         "nothing to run: no device transmits or hears", "", "", "", false},
+        {"{\"version\":1,\"radios\":[]}", "version: 3", "", "", "", false},
+        {"[1]", "the settings are a JSON object", "", "", "", false},
+        {"{" V3_HEAD "\"devices\":[{\"kind\":\"yaesu\"}],\"frequencies\":[438.0625]}",
+         "devices[0].kind: sdr, modem or radio", "", "", "", false},
     };
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
         rdof_roles_t r;
-        char error[128];
+        char error[128] = "";
         bool ok = rdof_box_roles(cases[i].json, strlen(cases[i].json), &r, error, sizeof error);
-        CHECK(ok == cases[i].ok, "roles %zu: %d (%s)", i, ok, error);
-        if (ok && cases[i].ok)
-            CHECK(!strcmp(r.box, i == 5 || i == 7 ? "radiofoundry" : i == 6 ? "x" : "b") && r.has_radio == cases[i].radio && r.has_sdr == cases[i].sdr && r.sdr_plain == cases[i].plain &&
-                      !strcmp(r.has_radio ? r.radio : "", cases[i].radio_name) &&
-                      !strcmp(r.has_sdr ? r.sdr : "", cases[i].sdr_name),
-                  "roles %zu: radio %d %s, sdr %d %s, plain %d", i, r.has_radio, r.radio, r.has_sdr, r.sdr,
-                  r.sdr_plain);
+        if (cases[i].error) {
+            CHECK(!ok && !strcmp(error, cases[i].error), "roles %zu: want \"%s\", got %s", i, cases[i].error,
+                  ok ? "ok" : error);
+            continue;
+        }
+        char radios[64] = "";
+        for (int k = 0; ok && k < r.nradios; k++)
+            snprintf(radios + strlen(radios), sizeof radios - strlen(radios), "%s%s", k ? "," : "", r.radios[k]);
+        CHECK(ok && !strcmp(r.box, cases[i].box) && r.has_radio == !!cases[i].radios[0] &&
+                  !strcmp(radios, cases[i].radios) && (!r.has_radio || !strcmp(r.radio, r.radios[0])) &&
+                  r.has_sdr == !!cases[i].sdr[0] && !strcmp(r.has_sdr ? r.sdr : "", cases[i].sdr) &&
+                  r.usb_hub == cases[i].hub,
+              "roles %zu: box %s, radios %s, sdr %s, hub %d (%s)", i, r.box, radios, r.has_sdr ? r.sdr : "-",
+              r.usb_hub, error);
     }
-    /* "run" picks the roamer: the second of two in a box vector, and refuses a box whose run names only the SDR */
-    static char json[16384], got[2048];
-    static rdof_config_t cfg;
-    char error[128];
-    const char *base = v_box[0].json, *at = strstr(base, "\"radios\": [");
-    CHECK(at != NULL, "a box vector with radios");
-    if (!at)
-        return;
-    snprintf(json, sizeof json, "%.*s\"run\": \"R2\", \"radios\": [{\"type\": \"opengd77\", \"name\": \"R2\", "
-             "\"peer_id\": 9990302, \"idle\": 1}, %s", (int)(at - base), base, at + strlen("\"radios\": ["));
-    bool ok = rdof_config_parse(json, strlen(json), &cfg, error, sizeof error);
-    CHECK(ok && !strcmp(cfg.name, "R2") && cfg.peer_id == 9990302, "run R2: %s %s", ok ? cfg.name : "", error);
-    snprintf(json, sizeof json, "%.*s\"run\": \"ROAM1\", %s", (int)(at - base), base, at);
-    ok = rdof_config_parse(json, strlen(json), &cfg, error, sizeof error);
-    if (ok)
-        rdof_config_describe(&cfg, got, sizeof got);
-    CHECK(ok && !strcmp(got, v_box[0].want), "run ROAM1: the same as without run (%s)", error);
-    snprintf(json, sizeof json, "%.*s\"run\": \"sdr-461\", %s", (int)(at - base), base, at);
-    ok = rdof_config_parse(json, strlen(json), &cfg, error, sizeof error);
-    CHECK(!ok &&
-              !strcmp(error, "no roamer or repeater in radios"), "run naming only the SDR: %s", ok ? "taken" : error);
 }
 
-/* "enabled": false leaves a radio out: unchecked, "run" may name it, its index still counts in the
-   next one's default name; anything but true or false is refused; a disabled SDR covers no channels and is no
-   sdr_transceiver's front end. */
-static void test_enabled(void)
+/* What a device can do (the open) and what a platform opens (rdof_plan_check): each limit refused past it, at it
+   taken. */
+#define MODEM_AT(port) "{\"name\":\"M\",\"kind\":\"modem\",\"type\":\"mmdvm_hs\",\"port\":" port "}"
+#define UART "{\"uart\":1,\"tx\":17,\"rx\":18}"
+#define ONE_FREQ "\"frequencies\":[{\"freq\":438.0625,\"name\":\"A\"}]}"
+#define REP_APP                                                                                                    \
+    "\"frequencies\":[{\"freq\":438.1125,\"name\":\"in\"},{\"freq\":438.75,\"name\":\"out\"}],\"apps\":"        \
+    "[{\"name\":\"R\",\"type\":\"repeater\",\"in\":\"in\",\"out\":\"out\"}]}"
+static void test_plan_checks(void)
 {
     static const struct {
-        const char *json, *sdr, *radio, *error;
+        const char *json;
+        char plat;          /* 'b' the board, 'h' a host, 0 the open only */
+        const char *error;  /* NULL: taken */
     } cases[] = {
-        {"{\"name\":\"b\",\"run\":[\"sim\",\"rtl\"],\"radios\":[{\"type\":\"sdr\",\"name\":\"sim\",\"enabled\":false},"
-         "{\"type\":\"sdr\",\"name\":\"rtl\",\"enabled\":true}]}", "rtl", "", NULL},
-        {"{\"name\":\"b\",\"radios\":[{\"type\":\"mmdvm_hs\",\"name\":\"R\",\"enabled\":false},{\"type\":\"sdr\","
-         "\"name\":\"S\"}]}", "S", "", NULL},
-        {"{\"name\":\"b\",\"radios\":[{\"type\":\"yaesu\",\"enabled\":false},{\"type\":\"sdr\"}]}", "b-sdr2", "", NULL},
-        {"{\"name\":\"b\",\"run\":[\"S\",\"T\",\"R\"],\"radios\":[{\"type\":\"sdr\",\"name\":\"S\"},{\"type\":\"sdr\","
-         "\"name\":\"T\",\"enabled\":false},{\"type\":\"opengd77\",\"name\":\"R\"}]}", "S", "R", NULL},
-        {"{\"radios\":[{\"type\":\"sdr\",\"enabled\":\"no\"}]}", NULL, NULL, "radios[0]: enabled: true or false"},
-        {"{\"radios\":[{\"type\":\"sdr\"},{\"type\":\"sdr\",\"enabled\":0}]}", NULL, NULL,
-         "radios[1]: enabled: true or false"},
-        {"{\"radios\":[{\"type\":\"sdr\",\"enabled\":false}]}", NULL, NULL, "no radios"},
-        {"{\"run\":[\"S\",\"X\"],\"radios\":[{\"type\":\"sdr\",\"name\":\"S\"}]}", NULL, NULL,
-         "run: a name that isn't in radios"},
+        /* port kinds */
+        {"{" V3_HEAD "\"devices\":[" MODEM_AT("{\"path\":\"/dev/ttyACM0\"}") "]," ONE_FREQ, 'b',
+         "devices.M.port: a serial path is for a host; this board has uart and usb ports"},
+        {"{" V3_HEAD "\"devices\":[" MODEM_AT("{\"path\":\"/dev/ttyACM0\"}") "]," ONE_FREQ, 'h', NULL},
+        {"{" V3_HEAD "\"devices\":[" MODEM_AT(UART) "]," ONE_FREQ, 'h',
+         "devices.M.port: this host has no UARTs of its own (give the serial device's path)"},
+        {"{" V3_HEAD "\"devices\":[" MODEM_AT(UART) "]," ONE_FREQ, 'b', NULL},
+        {"{" V3_HEAD "\"devices\":[" MODEM_AT("{\"usb\":\"auto\"}") "]," ONE_FREQ, 'b', NULL},
+        {"{" V3_HEAD "\"devices\":[" MODEM_AT("{\"usb\":\"auto\"}") "]," ONE_FREQ, 'h', NULL},
+        /* soapy and iio: the host tool's */
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"S\",\"kind\":\"sdr\",\"driver\":\"soapy\"}]," ONE_FREQ, 'b',
+         "devices.S.driver: soapy is the host tool's, not this board's"},
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"S\",\"kind\":\"sdr\",\"driver\":\"iio\"}]," ONE_FREQ, 'b',
+         "devices.S.driver: iio is the host tool's, not this board's"},
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"S\",\"kind\":\"sdr\",\"driver\":\"soapy\"}]," ONE_FREQ, 'h', NULL},
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"S\",\"kind\":\"sdr\",\"driver\":\"iio\"}]," ONE_FREQ, 'h', NULL},
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"S\",\"kind\":\"sdr\",\"driver\":\"lr2021\"}]," ONE_FREQ, 'b', NULL},
+        /* what the rtlsdr tunes, and how fast it samples */
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"S\",\"kind\":\"sdr\"}],\"frequencies\":[{\"freq\":1766.0001,"
+         "\"name\":\"hi\"}]}", 0,
+         "frequencies.hi: devices.S can't hear 1766.00010 MHz (the rtlsdr tunes 24 to 1766 MHz)"},
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"S\",\"kind\":\"sdr\"}],\"frequencies\":[{\"freq\":1766,"
+         "\"name\":\"hi\"}]}", 0, NULL},
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"S\",\"kind\":\"sdr\",\"rx\":{\"rate\":3216000}}]," ONE_FREQ, 0,
+         "devices.S.rx.rate: 3216000, and the rtlsdr samples 3200000 a second at most"},
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"S\",\"kind\":\"sdr\",\"rx\":{\"rate\":3168000}}]," ONE_FREQ, 0, NULL},
+        /* the rx window: center +- rate / 2 (rx.rate 1536000 unless said) */
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"S\",\"kind\":\"sdr\",\"rx\":{\"rate\":288000,\"center_hz\":"
+         "438025000}}],\"frequencies\":[{\"freq\":438.17,\"name\":\"A\"}]}", 0,
+         "frequencies.A: 438.17000 MHz is outside devices.S's window (438.02500 MHz, 288000 S/s)"},
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"S\",\"kind\":\"sdr\",\"rx\":{\"rate\":288000,\"center_hz\":"
+         "438025000}}],\"frequencies\":[{\"freq\":437.881,\"name\":\"A\"},{\"freq\":438.169,\"name\":\"B\"}]}", 0,
+         NULL},
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"S\",\"kind\":\"sdr\",\"rx\":{\"center_hz\":438.025}}],\"frequencies\":"
+         "[{\"freq\":438.793,\"name\":\"A\"},{\"freq\":437.257,\"name\":\"B\"}]}", 0, NULL},
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"S\",\"kind\":\"sdr\",\"rx\":{\"center_hz\":438.025}}],\"frequencies\":"
+         "[{\"freq\":438.7935,\"name\":\"A\"}]}", 0,
+         "frequencies.A: 438.79350 MHz is outside devices.S's window (438.02500 MHz, 1536000 S/s)"},
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"S\",\"kind\":\"sdr\",\"rx\":{\"center_hz\":\"auto\",\"rate\":288000}}],"
+         "\"frequencies\":[{\"freq\":470,\"name\":\"A\"}]}", 0, NULL},
+        /* carriers: the driver's (one a transmitter for now), and the units on them */
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"T\",\"kind\":\"sdr\",\"driver\":\"lr2021\",\"tx\":{\"carriers\":2}}],"
+         ONE_FREQ, 0, "devices.T.tx.carriers: 2, and the lr2021 sends 1 (one carrier a transmitter for now)"},
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"T\",\"kind\":\"sdr\",\"driver\":\"lr2021\",\"tx\":{\"carriers\":1}}],"
+         ONE_FREQ, 0, NULL},
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"S\",\"kind\":\"sdr\",\"tx\":{}}]," ONE_FREQ, 0,
+         "devices.S: the rtlsdr can't transmit"},
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"T\",\"kind\":\"sdr\",\"driver\":\"sx1255\"}],\"frequencies\":[{\"freq\":"
+         "438.1125,\"name\":\"in\"},{\"freq\":438.75,\"name\":\"out\"},{\"freq\":438.0625,\"name\":\"A\"}],\"apps\":"
+         "[{\"name\":\"R\",\"type\":\"repeater\",\"in\":\"in\",\"out\":\"out\"}]}", 0,
+         "devices.T: carrier 2 of 1 (R transmits on it already)"},
+        /* half duplex: the LR2021 is one chain, switched */
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"T\",\"kind\":\"sdr\",\"driver\":\"lr2021\"}]," REP_APP, 0,
+         "apps.R: devices.T (lr2021) is half duplex: one chain, switched; a duplex repeater needs RX while it "
+         "transmits"},
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"T\",\"kind\":\"sdr\",\"driver\":\"sx1255\"}]," REP_APP, 0, NULL},
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"T\",\"kind\":\"sdr\",\"driver\":\"lr2021\"}],\"frequencies\":[{\"freq\":"
+         "438.0625,\"name\":\"D\",\"mode\":\"dcdm\",\"duplex\":\"full\"}]}", 0,
+         "frequencies.D.duplex: full, and devices.T (lr2021) is half duplex"},
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"T\",\"kind\":\"sdr\",\"driver\":\"lr2021\"}],\"frequencies\":[{\"freq\":"
+         "438.0625,\"name\":\"D\",\"mode\":\"dcdm\",\"duplex\":\"half\"}]}", 0, NULL},
+        /* the bench's devices: a modem on the bench serves no unit */
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"S\",\"kind\":\"sdr\"}," MODEM_AT(UART) "],\"bench\":{\"devices\":"
+         "[\"M\"]},\"frequencies\":[{\"freq\":438.0625,\"name\":\"A\",\"devices\":[\"M\"]}]}", 0,
+         "devices.M: on the bench and devices.M takes it: one or the other"},
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"S\",\"kind\":\"sdr\"}," MODEM_AT(UART) "],\"bench\":{\"devices\":"
+         "[\"M\"]}," ONE_FREQ, 0, NULL},
+        {"{" V3_HEAD "\"devices\":[" MODEM_AT(UART) "],\"bench\":{\"devices\":[\"M\"]}," ONE_FREQ, 0, NULL},
+        /* an SDR's bench: bench or tx.bench */
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"T\",\"kind\":\"sdr\",\"driver\":\"lr2021\",\"bench\":{},\"tx\":"
+         "{\"bench\":{}}}]," ONE_FREQ, 0, "devices.T: bench and tx.bench: one or the other"},
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"T\",\"kind\":\"sdr\",\"driver\":\"lr2021\",\"tx\":{\"bench\":"
+         "{}}}]," ONE_FREQ, 0, NULL},
+        /* defaults.devices isn't a key */
+        {"{\"version\":3,\"name\":\"b\",\"id\":1,\"defaults\":{\"cc\":1,\"devices\":[\"M\"]},\"devices\":["
+         MODEM_AT(UART) "],\"frequencies\":[438.0625]}", 0, "defaults.devices: not a key here"},
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"S\",\"kind\":\"sdr\"},{\"name\":\"M\",\"kind\":\"modem\",\"type\":"
+         "\"mmdvm_hs\",\"port\":" UART ",\"transmits\":false,\"hears\":false}],\"bench\":{\"devices\":[\"M\"]},"
+         ONE_FREQ, 0, NULL},
     };
-    char error[128];
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
-        rdof_roles_t r;
-        error[0] = 0;
-        bool ok = rdof_box_roles(cases[i].json, strlen(cases[i].json), &r, error, sizeof error);
+        char error[200] = "";
+        rdof_plan_t *p = rdof_plan_open(cases[i].json, strlen(cases[i].json), error, sizeof error);
+        bool ok = p != NULL;
+        if (ok && cases[i].plat)
+            ok = rdof_plan_check(p, cases[i].plat == 'b' ? &rdof_plan_board : &rdof_plan_host, error, sizeof error);
+        rdof_plan_close(p);
         if (cases[i].error)
-            CHECK(!ok && !strcmp(error, cases[i].error), "enabled %zu: want \"%s\", got %s", i, cases[i].error,
+            CHECK(!ok && !strcmp(error, cases[i].error), "plan check %zu: want \"%s\", got %s", i, cases[i].error,
                   ok ? "ok" : error);
         else
-            CHECK(ok && r.has_sdr && !strcmp(r.sdr, cases[i].sdr) && r.has_radio == !!cases[i].radio[0] &&
-                      !strcmp(r.has_radio ? r.radio : "", cases[i].radio),
-                  "enabled %zu: sdr %s, radio %s (%s)", i, r.has_sdr ? r.sdr : "-", r.has_radio ? r.radio : "-", error);
+            CHECK(ok, "plan check %zu: %s", i, error);
     }
-    static rdof_config_t cfg;
-    static const char covered[] =
-        "{\"cc\": 1, \"channels\": {\"1\": 438.0625, \"2\": 438.1125}, \"radios\": [{\"type\": \"mmdvm_hs\","
-        " \"peer_id\": 1, \"idle\": 1}, {\"type\": \"sdr\", \"channels\": [1]}, {\"type\": \"sdr\", \"enabled\": false,"
-        " \"channels\": [2, 9]}]}";
-    bool ok = rdof_config_parse(covered, strlen(covered), &cfg, error, sizeof error);
-    CHECK(ok && cfg.ncovered == 1 && cfg.covered[0] == 438062500, "a disabled SDR covers nothing: %d (%s)",
-          ok ? cfg.ncovered : -1, error);
-    static const char sdrtx[] =
-        "{\"cc\": 1, \"channels\": {\"1\": 438.0625}, \"radios\": [{\"type\": \"sdr_transceiver\", \"peer_id\": 1,"
-        " \"idle\": 1}, {\"type\": \"sdr\", \"enabled\": false, \"channels\": [1]}]}";
-    ok = rdof_config_parse(sdrtx, strlen(sdrtx), &cfg, error, sizeof error);
-    CHECK(!ok && !strcmp(error, "an sdr_transceiver needs an SDR in radios: its front end is the radio"),
-          "a disabled SDR is no front end: %s", ok ? "taken" : error);
 }
 
-/* Two radios a board: "run" names both, each parsed by name, each with its own port; ports that clash refused; and
-   which radio a USB device goes to. */
+/* Without an hblink network a unit needs no peer ID; a bench modem is the bench's alone; a transceiver holds
+   RDOF_CFG_CHANNELS frequencies. */
+static void test_plan_units(void)
+{
+    static rdof_config_t c;
+    char error[200] = "";
+    static const char noid[] = "{\"version\":3,\"defaults\":{\"cc\":1},\"devices\":[{\"name\":\"M\",\"kind\":"
+                               "\"modem\",\"type\":\"mmdvm_hs\",\"port\":{\"usb\":\"auto\"}}],\"frequencies\":"
+                               "[438.0625]%s}";
+    char doc[512];
+    snprintf(doc, sizeof doc, noid, "");
+    bool ok = rdof_config_parse_radio(doc, strlen(doc), "M", &c, error, sizeof error);
+    CHECK(ok && c.peer_id == 0, "no id, no hblink: %s", ok ? "" : error);
+    snprintf(doc, sizeof doc, noid, ",\"networks\":[{\"type\":\"mqtt\",\"host\":\"h\"}]");
+    ok = rdof_config_parse_radio(doc, strlen(doc), "M", &c, error, sizeof error);
+    CHECK(ok && c.peer_id == 0, "no id, mqtt: %s", ok ? "" : error);
+    snprintf(doc, sizeof doc, noid, ",\"networks\":[{\"type\":\"hblink\",\"host\":\"h\"}]");
+    CHECK(!rdof_config_parse_radio(doc, strlen(doc), "M", &c, error, sizeof error) &&
+              !strcmp(error, "id: the box's DMR ID (its HBlink peer ID), 1 to 16777215"),
+          "no id, hblink: %s", error);
+
+    /* a bench modem with neither hears nor transmits: no unit, on the bench */
+    static const char bench[] =
+        "{" V3_HEAD "\"devices\":[{\"name\":\"S\",\"kind\":\"sdr\"},{\"name\":\"M\",\"kind\":\"modem\","
+        "\"port\":{\"uart\":1,\"tx\":17,\"rx\":18}}],\"bench\":{\"devices\":[\"M\"]},\"frequencies\":[438.0625]}";
+    rdof_plan_t *p = rdof_plan_open(bench, strlen(bench), error, sizeof error);
+    CHECK(p && rdof_plan_nunits(p) == 1 && rdof_plan_unit(p, 0)->kind == RDOF_UNIT_RECEIVER && rdof_plan_nbench(p) == 1,
+          "bench modem: %s", p ? "" : error);
+    rdof_plan_close(p);
+    static rdof_bench_radio_t br[RDOF_BENCH_MAX_RADIOS];
+    int n = rdof_bench_radios_parse(bench, strlen(bench), br, RDOF_BENCH_MAX_RADIOS, error, sizeof error);
+    CHECK(n == 1 && !strcmp(br[0].name, "M"), "bench modem's radios: %d %s", n, error);
+
+    /* a transceiver: RDOF_CFG_CHANNELS frequencies, one more refused */
+    for (int more = 0; more < 2; more++) {
+        static char big[8192];
+        int o = snprintf(big, sizeof big, "{" V3_HEAD "\"devices\":[{\"name\":\"M\",\"kind\":\"modem\","
+                                          "\"type\":\"mmdvm_hs\",\"port\":{\"usb\":\"auto\"}}],\"frequencies\":[");
+        for (int i = 0; i < RDOF_CFG_CHANNELS + more; i++)
+            o += snprintf(big + o, sizeof big - (size_t)o, "%s%d", i ? "," : "", 438025000 + 12500 * i);
+        snprintf(big + o, sizeof big - (size_t)o, "]}");
+        ok = rdof_config_parse_radio(big, strlen(big), "M", &c, error, sizeof error);
+        if (more)
+            CHECK(!ok && !strcmp(error, "devices.M.transmits: 33 frequencies, and a transceiver holds 32"),
+                  "33 frequencies: %s", ok ? "ok" : error);
+        else
+            CHECK(ok && c.nchannels == RDOF_CFG_CHANNELS, "32 frequencies: %s", ok ? "" : error);
+    }
+}
+
+/* What an SDR covers for a unit (the frequencies it hears that a modem uses): its whole window, less the ones a
+   frequency pins to other devices; nothing with "hears": false. */
+static void test_hears(void)
+{
+    static const char pinned[] =
+        "{" V3_HEAD "\"devices\":[{\"name\":\"M\",\"kind\":\"modem\",\"type\":\"mmdvm_hs\",\"port\":{\"usb\":\"auto\"}},"
+        "{\"name\":\"S\",\"kind\":\"sdr\"}],\"frequencies\":[438.0625,{\"freq\":438.1125,\"devices\":[\"M\"]}]}";
+    static const char deaf[] =
+        "{" V3_HEAD "\"devices\":[{\"name\":\"M\",\"kind\":\"modem\",\"type\":\"mmdvm_hs\",\"port\":{\"usb\":\"auto\"}},"
+        "{\"name\":\"S\",\"kind\":\"sdr\",\"hears\":false}],\"frequencies\":[438.0625,438.1125]}";
+    static rdof_config_t cfg;
+    rdof_roles_t r;
+    char error[160];
+    bool ok = rdof_config_parse(pinned, strlen(pinned), &cfg, error, sizeof error);
+    CHECK(ok && cfg.nchannels == 2 && cfg.ncovered == 1 && cfg.covered[0] == 438062500,
+          "the SDR covers the frequency it isn't pinned off: %d (%s)", ok ? cfg.ncovered : -1, error);
+    ok = rdof_config_parse(deaf, strlen(deaf), &cfg, error, sizeof error);
+    CHECK(ok && cfg.ncovered == 0, "an SDR that hears nothing covers nothing: %d (%s)", ok ? cfg.ncovered : -1,
+          error);
+    ok = rdof_box_roles(deaf, strlen(deaf), &r, error, sizeof error);
+    CHECK(ok && !r.has_sdr && r.nradios == 1, "and runs no receiver: %s", ok ? (r.has_sdr ? r.sdr : "-") : error);
+}
+
+/* Two units a board: each parsed by name, each with its own port; ports that clash refused; and which unit a USB
+   device goes to. */
 static void test_radios(void)
 {
     static const char box[] =
-        "{\"name\": \"b\", \"cc\": 1, \"modem\": \"uart\", \"uart\": {\"tx\": 5, \"rx\": 6},"
-        " \"channels\": {\"1\": 438.0625, \"2\": 438.1125},"
-        " \"run\": [\"A\", \"B\", \"S\"], \"radios\": ["
-        "{\"type\": \"opengd77\", \"name\": \"A\", \"peer_id\": 1, \"idle\": 1, \"modem\": \"usb\","
-        " \"usb\": {\"serial\": \"ODR-17\"}},"
-        "{\"type\": \"radio_hotspot\", \"name\": \"B\", \"peer_id\": 2, \"idle\": 2, \"speed\": 57600,"
-        " \"uart\": {\"num\": 2, \"tx\": 17, \"rx\": 18}},"
-        "{\"type\": \"sdr\", \"name\": \"S\", \"device\": {\"sample_rate\": 288000}, \"channels\": [1]}]}";
+        "{" V3_HEAD "\"devices\":[{\"name\":\"A\",\"kind\":\"modem\",\"type\":\"radio_hotspot\",\"port\":{\"usb\":"
+        "\"auto\",\"serial\":\"ODR-17\"}},{\"name\":\"B\",\"kind\":\"modem\",\"type\":\"radio_hotspot\",\"port\":"
+        "{\"uart\":2,\"tx\":17,\"rx\":18,\"baud\":57600}},{\"name\":\"S\",\"kind\":\"sdr\",\"rx\":{\"rate\":288000}}],"
+        "\"frequencies\":[{\"freq\":438.0625,\"devices\":[\"A\",\"S\"]},{\"freq\":438.1125,\"devices\":[\"B\"]}]}";
     rdof_roles_t r;
     char error[160];
     bool ok = rdof_box_roles(box, strlen(box), &r, error, sizeof error);
     CHECK(ok && r.nradios == 2 && !strcmp(r.radios[0], "A") && !strcmp(r.radios[1], "B") && r.has_sdr &&
-              !strcmp(r.radio, "A"),
-          "two radios and an SDR: %s", error);
+              !strcmp(r.sdr, "S-rx") && !strcmp(r.radio, "A"),
+          "two units and an SDR: %s", error);
     static rdof_config_t a, b, c;
     ok = rdof_config_parse_radio(box, strlen(box), "B", &b, error, sizeof error) &&
          rdof_config_parse_radio(box, strlen(box), "A", &a, error, sizeof error) &&
          rdof_config_parse(box, strlen(box), &c, error, sizeof error);
     CHECK(ok && !strcmp(a.name, "A") && !strcmp(b.name, "B") && !strcmp(c.name, "A"), "parsed by name: %s", error);
     CHECK(!strcmp(a.modem_port, "usb") && !strcmp(a.usb_serial, "ODR-17") && !a.usb_port[0] && a.uart_num == 1 &&
-              a.uart_speed == 115200,
+              a.uart_speed == 115200 && a.idle.freq == 438062500,
           "A's port: %s %s", a.modem_port, a.usb_serial);
     CHECK(!strcmp(b.modem_port, "uart") && b.uart_num == 2 && b.uart_tx == 17 && b.uart_rx == 18 &&
-              b.uart_speed == 57600 && !strcmp(b.radio_type, "radio_hotspot"),
+              b.uart_speed == 57600 && !strcmp(b.radio_type, "radio_hotspot") && b.idle.freq == 438112500,
           "B's port: %s UART%d %d/%d at %ld", b.modem_port, b.uart_num, b.uart_tx, b.uart_rx, b.uart_speed);
-    CHECK(!rdof_config_parse_radio(box, strlen(box), "S", &c, error, sizeof error) &&
-              !strcmp(error, "S isn't a roamer or repeater this board runs"),
-          "the SDR by name: %s", error);
+    CHECK(!rdof_config_parse_radio(box, strlen(box), "S-rx", &c, error, sizeof error) &&
+              !strcmp(error, "S-rx isn't a unit that transmits (a repeater, an SFR or DCDM frequency, or a device "
+                             "transmitting on simplex frequencies)"),
+          "the receiver by name: %s", error);
     const rdof_config_t *two[2] = {&a, &b};
     CHECK(rdof_config_check_ports(two, 2, error, sizeof error), "USB and UART2: %s", error);
-    /* the same UART, then shared pins, then two USB radios with nothing to tell them apart */
+    /* the same UART, then shared pins, then two USB units with nothing to tell them apart */
     c = b;
     snprintf(c.name, sizeof c.name, "C");
     const rdof_config_t *same[2] = {&b, &c};
     CHECK(!rdof_config_check_ports(same, 2, error, sizeof error) &&
-              !strcmp(error, "B and C are both on UART2: give one \"uart\": {\"num\": 2, ...}"),
+              !strcmp(error, "B and C are both on UART2: give one's device \"port\": {\"uart\": 1, ...}"),
           "same UART: %s", error);
     c.uart_num = 1;
     CHECK(!rdof_config_check_ports(same, 2, error, sizeof error) &&
@@ -856,8 +979,8 @@ static void test_radios(void)
     c.usb_serial[0] = 0;
     const rdof_config_t *usb2[2] = {&a, &c};
     CHECK(!rdof_config_check_ports(usb2, 2, error, sizeof error) &&
-              !strcmp(error, "A and A are both radios on USB: tell them apart with \"usb\": {\"serial\": ...} or "
-                             "{\"port\": ...} on each"), "usb: %s", error);
+              !strcmp(error, "A and A are both on USB: tell their devices apart with \"serial\" or \"usb_port\" in "
+                             "each one's port"), "usb: %s", error);
     snprintf(c.usb_port, sizeof c.usb_port, "2");
     CHECK(rdof_config_check_ports(usb2, 2, error, sizeof error), "serial and port: %s", error);
     snprintf(c.usb_serial, sizeof c.usb_serial, "ODR-17");
@@ -865,61 +988,61 @@ static void test_radios(void)
     CHECK(!rdof_config_check_ports(usb2, 2, error, sizeof error) &&
               !strcmp(error, "A and A would match the same USB device"), "same serial: %s",
           error);
-    /* modem must be usb or uart */
-    static char bad[sizeof box + 16];
+    /* port.usb: auto, cdc-acm or uart */
+    static char bad[sizeof box];
     snprintf(bad, sizeof bad, "%s", box);
-    char *m = strstr(bad, "\"modem\": \"usb\"");
-    memcpy(m + 10, "udp", 3);
+    memcpy(strstr(bad, "\"usb\":\"auto\"") + 7, "udp\" ", 5);
     CHECK(!rdof_config_parse_radio(bad, strlen(bad), "A", &c, error, sizeof error) &&
-              !strcmp(error, "modem udp: usb or uart"),
-          "modem udp: %s", error);
+              !strcmp(error, "devices.A.port.usb: auto, cdc-acm or uart"),
+          "port.usb udp: %s", error);
 
-    /* sdr_transceiver: the SDR's front end as a roamer (half) or a repeater (full); its port is the SDR */
+    /* a transceiver on the SDR (half: simplex frequencies), a repeater on a full duplex one; an RTL-SDR doesn't
+       transmit */
     static const char tx[] =
-        "{\"name\": \"b\", \"cc\": 1, \"channels\": {\"1\": 438.0625, \"2\": 438.1125}, \"run\": [\"T\", \"S\"],"
-        " \"radios\": [{\"type\": \"sdr_transceiver\", \"name\": \"T\", \"peer_id\": 3, \"idle\": 1,"
-        " \"tx_power_dbm\": 14, \"modem\": \"uart\"},"
-        "{\"type\": \"sdr\", \"name\": \"S\", \"device\": {\"sample_rate\": 288000}, \"channels\": [1, 2]}]}";
+        "{" V3_HEAD "\"devices\":[{\"name\":\"T\",\"kind\":\"sdr\",\"driver\":\"lr2021\",\"rx\":{\"rate\":288000},"
+        "\"tx\":{\"power_dbm\":14}}],\"frequencies\":[438.0625,438.1125]}";
     ok = rdof_config_parse_radio(tx, strlen(tx), "T", &c, error, sizeof error);
     CHECK(ok && c.mode == RDOF_CFG_ROAMER && c.sdr_duplex == RDOF_SDR_DUPLEX_HALF && c.tx_power_dbm == 14 &&
-              !strcmp(c.modem_port, "sdr") && !strcmp(c.radio_type, "auto") && c.idle.freq == 438062500,
-          "sdr_transceiver, half: %s", error);
-    static char txf[sizeof tx + 64];
-    snprintf(txf, sizeof txf, "%s", tx);
-    char *at = strstr(txf, "\"idle\": 1,");
-    const char full[] = "\"duplex\": \"full\", \"rx_freq\": 438.1125, \"tx_freq\": 438.75,";
-    memmove(at + strlen(full), at + 10, strlen(at + 10) + 1);
-    memcpy(at, full, strlen(full));
-    ok = rdof_config_parse_radio(txf, strlen(txf), "T", &c, error, sizeof error);
+              !strcmp(c.modem_port, "sdr") && !strcmp(c.radio_type, "auto") && c.idle.freq == 438062500 &&
+              c.ncovered == 2,
+          "SDR transceiver, half: %s", error);
+    static const char txf[] =
+        "{" V3_HEAD "\"devices\":[{\"name\":\"T\",\"kind\":\"sdr\",\"driver\":\"sx1255\",\"rx\":{\"rate\":288000},"
+        "\"tx\":{\"power_dbm\":14}}],\"frequencies\":[438.1125,438.75],\"apps\":[{\"name\":\"R\",\"type\":"
+        "\"repeater\",\"in\":\"438.1125\",\"out\":\"438.75\"}]}";
+    ok = rdof_config_parse_radio(txf, strlen(txf), "R", &c, error, sizeof error);
     CHECK(ok && c.mode == RDOF_CFG_REPEATER && c.sdr_duplex == RDOF_SDR_DUPLEX_FULL && c.rx_freq == 438112500 &&
               c.tx_freq == 438750000 && !strcmp(c.modem_port, "sdr"),
-          "sdr_transceiver, full: %s", error);
-    memcpy(strstr(txf, "full"), "fool", 4);
-    CHECK(!rdof_config_parse_radio(txf, strlen(txf), "T", &c, error, sizeof error) &&
-              !strcmp(error, "duplex fool: half (a roamer) or full (a duplex repeater)"),
-          "duplex fool: %s", error);
-    snprintf(txf, sizeof txf, "%s", tx);
-    memcpy(strstr(txf, "\"type\": \"sdr\","), "\"type\":\"auto\",", 14);
-    CHECK(!rdof_config_parse_radio(txf, strlen(txf), "T", &c, error, sizeof error) &&
-              !strcmp(error, "an sdr_transceiver needs an SDR in radios: its front end is the radio"),
-          "no SDR: %s", error);
+          "SDR repeater, full: %s", error);
+    static const char rtltx[] =
+        "{" V3_HEAD "\"devices\":[{\"name\":\"T\",\"kind\":\"sdr\",\"transmits\":[\"438.0625\"]}],"
+        "\"frequencies\":[438.0625]}";
+    CHECK(!rdof_config_parse_radio(rtltx, strlen(rtltx), "T", &c, error, sizeof error) &&
+              !strcmp(error, "devices.T.transmits: devices.T is an rtlsdr SDR: it doesn't transmit"),
+          "an RTL-SDR transmitting: %s", error);
+    static const char dcdm[] =
+        "{" V3_HEAD "\"devices\":[{\"name\":\"T\",\"kind\":\"sdr\",\"driver\":\"lr2021\"}],\"frequencies\":"
+        "[{\"freq\":438.0625,\"mode\":\"dcdm\",\"duplex\":\"fool\"}]}";
+    CHECK(!rdof_config_parse(dcdm, strlen(dcdm), &c, error, sizeof error) &&
+              !strcmp(error, "frequencies[0].duplex: half or full"), "duplex fool: %s", error);
     rdof_config_t t2;
-    ok = rdof_config_parse_radio(tx, strlen(tx), "T", &t2, error, sizeof error);
+    rdof_config_parse_radio(tx, strlen(tx), "T", &t2, error, sizeof error);
     snprintf(t2.name, sizeof t2.name, "T2");
-    const rdof_config_t *twotx[2] = {&c, &t2};
     rdof_config_parse_radio(tx, strlen(tx), "T", &c, error, sizeof error);
+    const rdof_config_t *twotx[2] = {&c, &t2};
     CHECK(!rdof_config_check_ports(twotx, 2, error, sizeof error) &&
               !strcmp(error, "T and T2 both use the SDR's modem: the board has one SDR"), "two on the SDR: %s",
           error);
 
 #if RDOF_FEATURE_REPEATER
-    /* a split repeater: each half's port on the board */
+    /* a split repeater: a device transmits on its out, another hears its in; each one's port on the board */
     static const char sp[] =
-        "{\"name\": \"b\", \"cc\": 1, \"channels\": {\"1\": 438.0625},"
-        " \"radios\": [{\"type\": \"repeater\", \"name\": \"R\", \"peer_id\": 3, \"rx_freq\": 438.0625,"
-        " \"tx_freq\": 438.0375, \"radio\": {\"type\": \"split\", \"power_cap\": 32, \"max_key_s\": 120,"
-        " \"tx\": {\"usb\": {\"serial\": \"ODR-9\"}},"
-        " \"rx\": {\"modem\": \"uart\", \"uart\": {\"num\": 2, \"tx\": 17, \"rx\": 18}, \"speed\": 57600}}}]}";
+        "{" V3_HEAD "\"devices\":[{\"name\":\"TX\",\"kind\":\"modem\",\"type\":\"radio_hotspot\",\"port\":{\"usb\":"
+        "\"auto\",\"serial\":\"ODR-9\"},\"hears\":false},{\"name\":\"RX\",\"kind\":\"modem\",\"type\":"
+        "\"radio_hotspot\",\"port\":{\"uart\":2,\"tx\":17,\"rx\":18,\"baud\":57600},\"hears\":{\"idle\":\"in\"},"
+        "\"transmits\":false}],\"frequencies\":[{\"freq\":438.0625,\"name\":\"in\"},{\"freq\":438.0375,\"name\":"
+        "\"out\"}],\"apps\":[{\"name\":\"R\",\"type\":\"repeater\",\"in\":\"in\",\"out\":\"out\",\"split\":"
+        "{\"power_cap\":32,\"max_key_s\":120}}]}";
     ok = rdof_config_parse_radio(sp, strlen(sp), "R", &c, error, sizeof error);
     CHECK(ok && !strcmp(c.radio_type, "split") && !strcmp(c.modem_port, "split") &&
               !strcmp(c.split[0].modem_port, "usb") && !strcmp(c.split[0].usb_serial, "ODR-9") &&
@@ -927,42 +1050,54 @@ static void test_radios(void)
               !strcmp(c.usb_serial, "ODR-9") && c.uart_num == 2 && c.split_power_cap == 32 &&
               c.split_max_key_s == 120 && rdof_config_uses_usb(&c),
           "split: %s", error);
-    /* its UART half against another radio on UART2 */
+    /* its UART half against another unit on UART2 */
     const rdof_config_t *sb[2] = {&c, &b};
     CHECK(!rdof_config_check_ports(sb, 2, error, sizeof error) &&
-              !strcmp(error, "R and B are both on UART2: give one \"uart\": {\"num\": 2, ...}"),
+              !strcmp(error, "R and B are both on UART2: give one's device \"port\": {\"uart\": 1, ...}"),
           "split vs B: %s", error);
-    /* both halves on USB; the SDR as the TX half; the SDR as the RX half */
-    static char sp2[sizeof sp + 32];
-    snprintf(sp2, sizeof sp2, "%s", sp);
-    memcpy(strstr(sp2, "\"modem\": \"uart\""), "\"modem\": \"usb\" ", 15);
-    CHECK(!rdof_config_parse_radio(sp2, strlen(sp2), "R", &a, error, sizeof error) &&
-              !strcmp(error, "radio.tx and radio.rx are both on USB: one half on USB at most (the other on a UART, or "
-                             "the SDR as the RX half)"),
-          "two USB halves: %s", error);
+    /* both halves on USB; the SDR as the TX half (not done yet); the SDR as the RX half */
+    static char sp2[sizeof sp];
     snprintf(sp2, sizeof sp2, "%s", sp);
     {
-        char *t = strstr(sp2, "\"tx\": {\"usb\"") + 7;
-        const char ins[] = "\"modem\": \"sdr\", ";
-        memmove(t + strlen(ins), t, strlen(t) + 1);
-        memcpy(t, ins, strlen(ins));
+        char *u = strstr(sp2, "{\"uart\":2,\"tx\":17,\"rx\":18,\"baud\":57600}");
+        const char usb[] = "{\"usb\":\"auto\"}";
+        memmove(u + strlen(usb), u + 39, strlen(u + 39) + 1);
+        memcpy(u, usb, strlen(usb));
     }
-    ok = rdof_config_parse_radio(sp2, strlen(sp2), "R", &a, error, sizeof error);
-    CHECK(ok && !strcmp(a.split[0].modem_port, "sdr"), "SDR TX half: %s", error);
-    memcpy(strstr(sp2, "\"modem\": \"uart\""), "\"modem\": \"sdr\" ", 15);
     CHECK(!rdof_config_parse_radio(sp2, strlen(sp2), "R", &a, error, sizeof error) &&
-              !strcmp(error, "radio.tx and radio.rx are both the SDR: the board runs one SDR modem (two SDRs as a "
-                             "split need two boards, or a radio for one half)"),
-          "two SDR halves: %s", error);
-    snprintf(sp2, sizeof sp2, "%s", sp);
-    memcpy(strstr(sp2, "\"modem\": \"uart\""), "\"modem\": \"sdr\" ", 15);
-    ok = rdof_config_parse_radio(sp2, strlen(sp2), "R", &a, error, sizeof error);
-    CHECK(ok && !strcmp(a.split[1].modem_port, "sdr"), "SDR RX half: %s", error);
+              !strcmp(error, "apps.R: devices.TX and devices.RX are both on USB: one half on USB at most (the other "
+                             "on a UART, or the SDR as the RX half)"),
+          "two USB halves: %s", error);
+    /* both halves on a path (the host's): a path isn't the board's USB port */
+    static const char spp[] =
+        "{" V3_HEAD "\"devices\":[{\"name\":\"TX\",\"kind\":\"modem\",\"type\":\"radio_hotspot\",\"port\":{\"path\":"
+        "\"/dev/ttyACM0\"},\"hears\":false},{\"name\":\"RX\",\"kind\":\"modem\",\"type\":\"radio_hotspot\","
+        "\"port\":{\"path\":\"/dev/ttyACM1\"},\"hears\":{\"idle\":\"in\"},\"transmits\":false}],\"frequencies\":"
+        "[{\"freq\":438.0625,\"name\":\"in\"},{\"freq\":438.0375,\"name\":\"out\"}],\"apps\":[{\"name\":\"R\","
+        "\"type\":\"repeater\",\"in\":\"in\",\"out\":\"out\"}]}";
+    ok = rdof_config_parse_radio(spp, strlen(spp), "R", &a, error, sizeof error);
+    CHECK(ok && !strcmp(a.modem_port, "split"), "two path halves: %s", ok ? "" : error);
+    static const char sptx[] =
+        "{" V3_HEAD "\"devices\":[{\"name\":\"TX\",\"kind\":\"sdr\",\"driver\":\"lr2021\",\"hears\":false},"
+        "{\"name\":\"RX\",\"kind\":\"modem\",\"type\":\"radio_hotspot\",\"port\":{\"uart\":2,\"tx\":17,\"rx\":18},"
+        "\"hears\":{\"idle\":\"in\"},\"transmits\":false}],\"frequencies\":[{\"freq\":438.0625,\"name\":\"in\","
+        "\"devices\":[\"RX\"]},{\"freq\":438.0375,\"name\":\"out\"}],\"apps\":[{\"name\":\"R\",\"type\":\"repeater\","
+        "\"in\":\"in\",\"out\":\"out\"}]}";
+    CHECK(!rdof_config_parse_radio(sptx, strlen(sptx), "R", &a, error, sizeof error) &&
+              !strcmp(error, "apps.R: devices.TX is an SDR: an SDR as a split's TX half isn't done yet (its sample "
+                             "clock and the split's need tying together)"),
+          "SDR TX half: %s", error);
+    static const char sprx[] =
+        "{" V3_HEAD "\"devices\":[{\"name\":\"TX\",\"kind\":\"modem\",\"type\":\"radio_hotspot\",\"port\":{\"usb\":"
+        "\"auto\",\"serial\":\"ODR-9\"},\"hears\":false},{\"name\":\"RX\",\"kind\":\"sdr\"}],\"frequencies\":"
+        "[{\"freq\":438.0625,\"name\":\"in\"},{\"freq\":438.0375,\"name\":\"out\"}],\"apps\":[{\"name\":\"R\","
+        "\"type\":\"repeater\",\"in\":\"in\",\"out\":\"out\"}]}";
+    ok = rdof_config_parse_radio(sprx, strlen(sprx), "R", &a, error, sizeof error);
+    CHECK(ok && !strcmp(a.radio_type, "split") && !strcmp(a.split[1].modem_port, "sdr"), "SDR RX half: %s", error);
     const rdof_config_t *st[2] = {&a, &t2};
     CHECK(!rdof_config_check_ports(st, 2, error, sizeof error) &&
               !strcmp(error, "R and T2 both use the SDR's modem: the board has one SDR"), "SDR half and T: %s", error);
 #endif
-
     /* devices to radios: by serial, by port, else the first free one of the kind */
     const rdof_usb_want_t w[4] = {{0x1FC9, 0x0094, "ODR-17", ""}, {0x1FC9, 0x0094, "", "1.2"}, {0x1FC9, 0x0094, "", ""},
                                 {0x0BDA, 0x2838, "", ""}};
@@ -1036,7 +1171,9 @@ static void test_config(void)
     }
     test_config_sctp();
     test_roles();
-    test_enabled();
+    test_plan_checks();
+    test_plan_units();
+    test_hears();
     test_radios();
 }
 

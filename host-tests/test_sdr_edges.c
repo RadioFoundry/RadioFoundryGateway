@@ -222,7 +222,8 @@ static void free_nothing(void) {}
 static int init_config(void)
 {
     static rdof_sdr_config_t cfg;
-    const char *json = "{\"device\":{\"sample_rate\":288000},\"channels\":[{\"id\":\"A\",\"freq\":438.0625}]}";
+    const char *json = "{\"version\":3,\"name\":\"b\",\"id\":1,\"defaults\":{\"cc\":1},\"frequencies\":[{\"freq\":"
+                       "438.0625,\"tx\":false}],\"devices\":[{\"name\":\"s\",\"kind\":\"sdr\",\"rx\":{\"rate\":288000}}]}";
     char err[64];
     bool ok = rdof_sdr_config_parse(json, strlen(json), &cfg, err, sizeof err);
     return ok ? 0 : (strstr(err, "no memory") ? 1 : 2);
@@ -256,8 +257,9 @@ static void test_alloc(void)
     CHECK(n == 3, "modulator init makes %ld allocations", n);
     n = alloc_sweep("window planner", init_plan, free_nothing);
     CHECK(n == 2, "window planner makes %ld allocations", n);
+    /* the settings' plan is the C library's (rdof/siteplan.h), none of the SDR allocator's */
     n = alloc_sweep("config parse", init_config, free_nothing);
-    CHECK(n == 2, "config parse makes %ld allocations", n);
+    CHECK(n == 0, "config parse makes %ld allocations", n);
 
     /* the bench: every allocation failing in turn must be reported */
     g_bench_cu8 = load("e2e_288k.cu8", (size_t *)&n);
@@ -1465,30 +1467,38 @@ static bool parse(const char *json, rdof_sdr_config_t *cfg, char *err, size_t ca
     return rdof_sdr_config_parse(json, strlen(json), cfg, err, cap);
 }
 
+/* Settings with one receiving SDR "s": its rx keys after the rate, the box's keys after its devices, and its
+   frequencies (NULL: one, A). */
+static void sdr_doc(char *buf, size_t cap, const char *rx, const char *box, const char *freqs)
+{
+    snprintf(buf, cap,
+             "{\"version\":3,\"name\":\"b\",\"id\":1,\"defaults\":{\"cc\":1},\"frequencies\":%s,"
+             "\"devices\":[{\"name\":\"s\",\"kind\":\"sdr\",\"rx\":{\"rate\":288000%s}}]%s}",
+             freqs ? freqs : "[{\"freq\":438.0625,\"name\":\"A\",\"tx\":false}]", rx, box);
+}
+
 static void test_config_edges(void)
 {
     static rdof_sdr_config_t cfg;
     char err[200];
-    const char *one = "\"channels\":[{\"id\":\"A\",\"freq\":438.0625}]";
     char buf[8192];
 
     /* not settings at all */
     CHECK(!parse("{", &cfg, err, sizeof err) && !strncmp(err, "JSON: ", 6), "bad JSON: %s", err);
-    CHECK(!parse("[1,2]", &cfg, err, sizeof err) && !strcmp(err, "the settings must be a JSON object"), "array: %s", err);
+    CHECK(!parse("[1,2]", &cfg, err, sizeof err) && !strcmp(err, "the settings are a JSON object"), "array: %s", err);
     CHECK(!parse("", &cfg, err, sizeof err) && !strncmp(err, "JSON: ", 6), "empty: %s", err);
     /* an error with nowhere to put it, and with room for a few characters */
     CHECK(!rdof_sdr_config_parse("{", 1, &cfg, NULL, 0), "no error buffer");
-    /* device.settings.iq_bits: 8 or 16, absent 0 */
-    snprintf(buf, sizeof buf, "{\"device\":{\"settings\":{\"iq_bits\":16}},%s}", one);
+    /* rx.iq_bits: 8 or 16, absent 0 */
+    sdr_doc(buf, sizeof buf, ",\"iq_bits\":16", "", NULL);
     CHECK(parse(buf, &cfg, err, sizeof err) && cfg.iq_bits == 16, "iq_bits 16: %s", err);
-    snprintf(buf, sizeof buf, "{\"device\":{\"settings\":{\"iq_bits\":8}},%s}", one);
+    sdr_doc(buf, sizeof buf, ",\"iq_bits\":8", "", NULL);
     CHECK(parse(buf, &cfg, err, sizeof err) && cfg.iq_bits == 8, "iq_bits 8: %s", err);
-    snprintf(buf, sizeof buf, "{%s}", one);
+    sdr_doc(buf, sizeof buf, "", "", NULL);
     CHECK(parse(buf, &cfg, err, sizeof err) && cfg.iq_bits == 0, "iq_bits absent: %s", err);
-    snprintf(buf, sizeof buf, "{\"device\":{\"settings\":{\"iq_bits\":12}},%s}", one);
-    CHECK(!parse(buf, &cfg, err, sizeof err) && !strcmp(err, "device.settings.iq_bits must be 8 or 16"), "iq_bits 12: %s",
-          err);
-    snprintf(buf, sizeof buf, "{\"device\":{\"settings\":{\"iq_bits\":\"16\"}},%s}", one);
+    sdr_doc(buf, sizeof buf, ",\"iq_bits\":12", "", NULL);
+    CHECK(!parse(buf, &cfg, err, sizeof err) && !strcmp(err, "devices.s.rx.iq_bits: 8 or 16"), "iq_bits 12: %s", err);
+    sdr_doc(buf, sizeof buf, ",\"iq_bits\":\"16\"", "", NULL);
     CHECK(parse(buf, &cfg, err, sizeof err) && cfg.iq_bits == 16, "iq_bits as a string, as numbers are elsewhere: %s",
           err);
     char tiny[6];
@@ -1497,49 +1507,51 @@ static void test_config_edges(void)
     CHECK(!parse("[1]", &cfg, tiny, 0) && tiny[0] == 'x', "a zero-size buffer is left alone");
 
     /* JSON with comments: at the very end, inside and outside strings, a lone slash, nested trailing commas */
-    snprintf(buf, sizeof buf, "{\"name\":\"a//b/*c*/\", /* one */ \"device\":{\"sample_rate\":288000,}, %s,} // end", one);
-    CHECK(parse(buf, &cfg, err, sizeof err) && !strcmp(cfg.name, "a//b/*c*/") && cfg.nch == 1, "comments: %s", err);
-    snprintf(buf, sizeof buf, "{\"device\":{\"sample_rate\":288000}, %s} /", one);
+    sdr_doc(buf, sizeof buf, ", /* one */", ",\"callsign\":\"a//b/*c*/\", // end\n",
+            "[{\"freq\":438.0625,\"name\":\"A\",\"tx\":false,},]");
+    CHECK(parse(buf, &cfg, err, sizeof err) && !strcmp(cfg.hb_callsign, "a//b/*c*/") && cfg.nch == 1, "comments: %s",
+          err);
+    sdr_doc(buf, sizeof buf, "", "", NULL);
+    strcat(buf, " /");
     CHECK(!parse(buf, &cfg, err, sizeof err), "a stray slash after the object is an error");
-    snprintf(buf, sizeof buf, "{\"device\":{\"sample_rate\":288000}, %s} /* never closed", one);
+    sdr_doc(buf, sizeof buf, "", "", NULL);
+    strcat(buf, " /* never closed");
     CHECK(parse(buf, &cfg, err, sizeof err), "an unterminated block comment is dropped: %s", err);
-    snprintf(buf, sizeof buf, "{\"name\":\"x\\\\\",\"channels\":[{\"id\":\"A\\\"B\",\"freq\":438.0625},],}");
-    CHECK(parse(buf, &cfg, err, sizeof err) && !strcmp(cfg.name, "x\\") && !strcmp(cfg.ch[0].id, "A\"B"),
-          "escapes in strings: %s / %s", cfg.name, cfg.ch[0].id);
+    sdr_doc(buf, sizeof buf, "", ",\"callsign\":\"x\\\\\\\"y\"", NULL);
+    CHECK(parse(buf, &cfg, err, sizeof err) && !strcmp(cfg.hb_callsign, "x\\\"y"), "escapes in strings: %s",
+          cfg.hb_callsign);
 
-    /* more than the board holds, in a settings file and in a box */
-    size_t o = (size_t)snprintf(buf, sizeof buf, "{\"device\":{\"sample_rate\":288000},\"channels\":[");
+    /* more than the board holds */
+    char fl[2048];
+    size_t o = (size_t)snprintf(fl, sizeof fl, "[");
     for (int i = 0; i < RDOF_SDR_MAX_CHANNELS + 1; i++)
-        o += (size_t)snprintf(buf + o, sizeof buf - o, "%s{\"id\":\"C%d\",\"freq\":%d}", i ? "," : "", i,
+        o += (size_t)snprintf(fl + o, sizeof fl - o, "%s{\"name\":\"C%d\",\"freq\":%d,\"tx\":false}", i ? "," : "", i,
                               438025000 + 12500 * i);
-    snprintf(buf + o, sizeof buf - o, "]}");
-    CHECK(!parse(buf, &cfg, err, sizeof err) && !strcmp(err, "17 channels: this board takes 16"), "17 channels: %s", err);
-    o = (size_t)snprintf(buf, sizeof buf, "{\"cc\":1,\"channels\":{");
-    for (int i = 0; i < RDOF_SDR_MAX_CHANNELS + 1; i++)
-        o += (size_t)snprintf(buf + o, sizeof buf - o, "%s\"%d\":%d", i ? "," : "", i + 1, 438025000 + 12500 * i);
-    o += (size_t)snprintf(buf + o, sizeof buf - o, "},\"radios\":[{\"type\":\"sdr\",\"name\":\"s\",\"channels\":[");
-    for (int i = 0; i < RDOF_SDR_MAX_CHANNELS + 1; i++)
-        o += (size_t)snprintf(buf + o, sizeof buf - o, "%s%d", i ? "," : "", i + 1);
-    snprintf(buf + o, sizeof buf - o, "]}]}");
-    CHECK(!parse(buf, &cfg, err, sizeof err) && !strcmp(err, "17 channels: this board takes 16"), "17 in a box: %s", err);
+    snprintf(fl + o, sizeof fl - o, "]");
+    sdr_doc(buf, sizeof buf, "", "", fl);
+    CHECK(!parse(buf, &cfg, err, sizeof err) &&
+              !strcmp(err, "devices.s: no receive channel left for frequencies.C16 (438.22500 MHz, 16 at most)"),
+          "17 frequencies: %s", err);
     /* 16 do fit */
-    o = (size_t)snprintf(buf, sizeof buf, "{\"device\":{\"sample_rate\":288000},\"channels\":[");
+    o = (size_t)snprintf(fl, sizeof fl, "[");
     for (int i = 0; i < RDOF_SDR_MAX_CHANNELS; i++)
-        o += (size_t)snprintf(buf + o, sizeof buf - o, "%s{\"id\":\"C%d\",\"freq\":%d}", i ? "," : "", i,
+        o += (size_t)snprintf(fl + o, sizeof fl - o, "%s{\"name\":\"C%d\",\"freq\":%d,\"tx\":false}", i ? "," : "", i,
                               438025000 + 12500 * i);
-    snprintf(buf + o, sizeof buf - o, "]}");
-    CHECK(parse(buf, &cfg, err, sizeof err) && cfg.nch == 16, "16 channels: %s", err);
-    /* a document with more nodes than the parser has room for, or more text */
+    snprintf(fl + o, sizeof fl - o, "]");
+    sdr_doc(buf, sizeof buf, "", "", fl);
+    CHECK(parse(buf, &cfg, err, sizeof err) && cfg.nch == 16, "16 frequencies: %s", err);
+    /* a document with more nodes than the parser has room for */
     o = (size_t)snprintf(buf, sizeof buf, "{\"x\":[");
-    for (int i = 0; i < 1500 && o + 8 < sizeof buf; i++)
+    for (int i = 0; i < 2100 && o + 8 < sizeof buf; i++)
         o += (size_t)snprintf(buf + o, sizeof buf - o, "%s1", i ? "," : "");
     snprintf(buf + o, sizeof buf - o, "]}");
     CHECK(!parse(buf, &cfg, err, sizeof err) && !strncmp(err, "JSON: ", 6), "too many values: %s", err);
 
     /* what the board refuses that the reference doesn't look at */
-    snprintf(buf, sizeof buf, "{\"device\":{\"sample_rate\":288000,\"agc\":true}, %s}", one);
-    CHECK(!parse(buf, &cfg, err, sizeof err) && strstr(err, "device.agc needs a fixed device.gain"), "agc without gain: %s", err);
-    snprintf(buf, sizeof buf, "{\"device\":{\"sample_rate\":288000,\"agc\":{\"min\":10},\"gain\":40}, %s}", one);
+    sdr_doc(buf, sizeof buf, ",\"agc\":true", "", NULL);
+    CHECK(!parse(buf, &cfg, err, sizeof err) && strstr(err, "devices.s.rx.agc needs a fixed rx.gain_db"),
+          "agc without gain: %s", err);
+    sdr_doc(buf, sizeof buf, ",\"agc\":{\"min\":10},\"gain_db\":40", "", NULL);
     CHECK(parse(buf, &cfg, err, sizeof err) && cfg.agc && cfg.agc_cfg[0] == 10.0 && cfg.agc_cfg[2] == 6.0 &&
               cfg.has_gain && cfg.gain == 40.0,
           "agc with a gain and one setting: %s", err);
@@ -1550,7 +1562,7 @@ static void test_config_edges(void)
     CHECK(ac.min == v_agc_defaults[0] && ac.clip == v_agc_defaults[1] && ac.headroom_db == v_agc_defaults[2] &&
               ac.hold_s == v_agc_defaults[3] && ac.relax_s == v_agc_defaults[4] && ac.settle_s == v_agc_defaults[5],
           "AgcConfig defaults");
-    snprintf(buf, sizeof buf, "{\"device\":{\"sample_rate\":288000,\"agc\":true,\"gain\":40}, %s}", one);
+    sdr_doc(buf, sizeof buf, ",\"agc\":true,\"gain_db\":40", "", NULL);
     CHECK(parse(buf, &cfg, err, sizeof err), "agc: true: %s", err);
     for (int i = 0; i < 6; i++)
         CHECK(cfg.agc_cfg[i] == v_agc_defaults[i], "agc setting %d defaults to %g, got %g", i, v_agc_defaults[i],
@@ -1560,50 +1572,21 @@ static void test_config_edges(void)
     static const char *const heights[] = {"-5", "0", "999", "1000", "12.5", "0.5", "1.5"};
     static const int want_h[] = {0, 0, 999, 999, 12, 0, 2};
     for (int i = 0; i < 7; i++) {
-        snprintf(buf, sizeof buf, "{\"device\":{\"sample_rate\":288000},\"location\":{\"lat\":1,\"lon\":2,\"height\":%s}, %s}",
-                 heights[i], one);
+        char loc[96];
+        snprintf(loc, sizeof loc, ",\"location\":{\"lat\":1,\"lon\":2,\"height\":%s}", heights[i]);
+        sdr_doc(buf, sizeof buf, "", loc, NULL);
         CHECK(parse(buf, &cfg, err, sizeof err) && cfg.has_location && cfg.location.height_m == want_h[i],
               "height %s -> %d", heights[i], cfg.location.height_m);
     }
-    /* names that are longer than their fields are cut, not overrun */
-    snprintf(buf, sizeof buf, "{\"name\":\"%.60s\",\"device\":{\"sample_rate\":288000},\"channels\":[{\"id\":\"%.40s\",\"freq\":438.0625}]}",
-             "0123456789012345678901234567890123456789012345678901234567890123", "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz");
-    CHECK(parse(buf, &cfg, err, sizeof err) && strlen(cfg.name) == sizeof cfg.name - 1 &&
-              strlen(cfg.ch[0].id) == sizeof cfg.ch[0].id - 1,
-          "long names: %zu / %zu", strlen(cfg.name), strlen(cfg.ch[0].id));
-
-    /* receiver_ids in a box: what str.format would take and the board doesn't, and the escapes it does */
-    const char *box_head = "{\"cc\":1,\"channels\":{\"4\":438.1125,\"6\":438.1625},\"radios\":[{\"type\":\"sdr\",\"name\":\"s\",";
-    static const struct {
-        const char *fmt, *want_id, *err;
-    } ids[] = {
-        {"R{ch}", "R4", NULL},
-        {"{{x}}{ch}", "{x}4", NULL},
-        {"{ch:d}", "4", NULL},
-        {"{ch:03d}", "004", NULL},
-        {"{ch:3d}", "  4", NULL},
-        {"{ch:x}", NULL, "receiver_ids {ch:x}: only {ch} or {ch:02d}"},
-        {"{ch:10d}", NULL, "receiver_ids {ch:10d}: only {ch} or {ch:02d}"},
-        {"{channel}", NULL, "receiver_ids {channel}: only {ch} or {ch:02d}"},
-        {"R{ch", NULL, "receiver_ids R{ch: only {ch} or {ch:02d}"},
-    };
-    for (size_t i = 0; i < sizeof ids / sizeof ids[0]; i++) {
-        snprintf(buf, sizeof buf, "%s\"receiver_ids\":\"%s\",\"channels\":[4,6]}]}", box_head, ids[i].fmt);
-        bool ok = parse(buf, &cfg, err, sizeof err);
-        if (ids[i].want_id)
-            CHECK(ok && !strcmp(cfg.ch[0].id, ids[i].want_id), "receiver_ids %s -> '%s': %s", ids[i].fmt, cfg.ch[0].id, err);
-        else
-            CHECK(!ok && !strcmp(err, ids[i].err), "receiver_ids %s: %s", ids[i].fmt, err);
-    }
-    snprintf(buf, sizeof buf, "%s\"receiver_ids\":\"%.30s{ch}\",\"channels\":[4]}]}", box_head,
-             "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
-    CHECK(parse(buf, &cfg, err, sizeof err) && strlen(cfg.ch[0].id) == 23, "a long receiver id is cut to the field: %zu", strlen(cfg.ch[0].id));
-    snprintf(buf, sizeof buf, "%s\"receiver_ids\":\"%.22s{ch:02d}\",\"channels\":[4]}]}", box_head,
-             "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
-    CHECK(parse(buf, &cfg, err, sizeof err) && strlen(cfg.ch[0].id) == 23 && !strncmp(cfg.ch[0].id + 22, "0", 1),
-          "a field that runs past the end of the id: '%s'", cfg.ch[0].id);
-    /* a value of the wrong kind where a number goes is the default (the reference refuses some of these) */
-    snprintf(buf, sizeof buf, "{\"device\":{\"sample_rate\":288000,\"ppm\":[1],\"gain\":{}}, %s}", one);
+    /* a name longer than its field is cut, not overrun: "<device>-rx" */
+    snprintf(buf, sizeof buf,
+             "{\"version\":3,\"name\":\"b\",\"id\":1,\"defaults\":{\"cc\":1},\"frequencies\":[{\"freq\":438.0625,"
+             "\"tx\":false}],\"devices\":[{\"name\":\"%.36s\",\"kind\":\"sdr\",\"rx\":{\"rate\":288000}}]}",
+             "0123456789012345678901234567890123456789");
+    CHECK(parse(buf, &cfg, err, sizeof err) && strlen(cfg.name) == sizeof cfg.name - 1, "a long name: %zu (%s)",
+          strlen(cfg.name), err);
+    /* a value of the wrong kind where a number goes is the default */
+    sdr_doc(buf, sizeof buf, ",\"ppm\":[1],\"gain_db\":{}", "", NULL);
     CHECK(parse(buf, &cfg, err, sizeof err) && cfg.ppm == 0.0 && !cfg.has_gain, "arrays and objects aren't numbers: %s", err);
 }
 
@@ -1612,8 +1595,9 @@ static void test_describe_edges(void)
 {
     static rdof_sdr_config_t cfg;
     char err[100];
-    const char *json = "{\"name\":\"n\",\"device\":{\"sample_rate\":288000,\"gain\":30},\"location\":{\"lat\":1,\"lon\":2},"
-                       "\"channels\":[{\"id\":\"A\",\"freq\":438.0625}]}";
+    const char *json = "{\"version\":3,\"name\":\"b\",\"id\":1,\"defaults\":{\"cc\":1},\"location\":{\"lat\":1,"
+                       "\"lon\":2},\"frequencies\":[{\"freq\":438.0625,\"name\":\"A\",\"tx\":false}],\"devices\":"
+                       "[{\"name\":\"n\",\"kind\":\"sdr\",\"rx\":{\"rate\":288000,\"gain_db\":30}}]}";
     CHECK(rdof_sdr_config_parse(json, strlen(json), &cfg, err, sizeof err), "%s", err);
     char full[1024], cut[64];
     size_t n = rdof_sdr_config_describe(&cfg, full, sizeof full);
@@ -2544,44 +2528,43 @@ static void test_config_board_keys(void)
 {
     static rdof_sdr_config_t cfg;
     char err[200], buf[2048];
-    const char *one = "\"channels\":[{\"id\":\"A\",\"freq\":438.0625}]";
-    snprintf(buf, sizeof buf, "{\"device\":{\"sample_rate\":288000}, %s}", one);
+    /* one SDR "s" hearing A, with these keys of its own and the box's */
+#define BOARD(dev, box)                                                                                         \
+    "{\"version\":3,\"name\":\"b\",\"id\":1,\"defaults\":{\"cc\":1},\"frequencies\":[{\"freq\":438.0625,\"name\":" \
+    "\"A\",\"tx\":false" box "}],\"devices\":[{\"name\":\"s\",\"kind\":\"sdr\",\"rx\":{\"rate\":288000}" dev "}]}"
+    snprintf(buf, sizeof buf, BOARD("", ""));
     CHECK(rdof_sdr_config_parse(buf, strlen(buf), &cfg, err, sizeof err), "%s", err);
     CHECK(cfg.status_seconds == 30.0 && cfg.usb_transfers == 8 && cfg.usb_transfer_kb == 8 && cfg.dsp_cores == 1 &&
               !cfg.spike && !cfg.selftest && !cfg.sim && cfg.idle_gate && cfg.learn_ppm && cfg.sim_ppm == 0.0 &&
               cfg.frontend == RDOF_FE_RTLSDR && !cfg.has_mqtt && !cfg.mqtt_tls && !strcmp(cfg.mqtt_host, "localhost") &&
               cfg.mqtt_port == 1883 && !strcmp(cfg.mqtt_root, "DMR") && !strcmp(cfg.mqtt_app, "sdr") && !cfg.hb_enabled &&
-              cfg.hb_port == 62031 && !strcmp(cfg.hb_callsign, "SDR") && cfg.afc && !cfg.has_rssi_offset,
+              cfg.hb_port == 62031 && !strcmp(cfg.hb_callsign, "SDR") && cfg.afc && !cfg.has_rssi_offset &&
+              !strcmp(cfg.name, "s-rx") && !strcmp(cfg.ch[0].id, "SDR01"),
           "defaults");
+    /* the networks go after the frequency's net: its own peer with identity per_path */
     snprintf(buf, sizeof buf,
-             "{\"device\":{\"sample_rate\":288000},\"status_seconds\":10,\"usb\":{\"transfers\":4,\"transfer_kb\":16},"
+             "{\"version\":3,\"name\":\"b\",\"id\":1,\"callsign\":\"CALL\",\"defaults\":{\"cc\":1},\"frequencies\":"
+             "[{\"freq\":438.0625,\"name\":\"A\",\"tx\":false,\"net\":\"hb\"}],\"devices\":[{\"name\":\"s\",\"kind\":"
+             "\"sdr\",\"rx\":{\"rate\":288000},\"status_seconds\":10,\"usb\":{\"transfers\":4,\"transfer_kb\":16},"
              "\"dsp_cores\":2,\"spike\":true,\"selftest\":1,\"sim\":true,\"sim_ppm\":3.5,\"idle_gate\":false,"
-             "\"learn_ppm\":0,\"rssi_offset\":-61.5,\"mqtt\":{\"host\":\"h\",\"username\":\"u\",\"password\":\"p\","
-             "\"root\":\"//X//\",\"app\":\"a\",\"tls\":true},\"hblink\":{\"enabled\":true,\"host\":\"hb\",\"port\":1,"
-             "\"callsign\":\"CALL\",\"peer_id_base\":9990200}, %s}", one);
+             "\"learn_ppm\":0,\"rssi_offset\":-61.5}],\"networks\":[{\"name\":\"mq\",\"type\":\"mqtt\",\"host\":\"h\","
+             "\"username\":\"u\",\"password\":\"p\",\"root\":\"//X//\",\"tls\":true,\"report\":true},{\"name\":\"hb\","
+             "\"type\":\"hblink\",\"host\":\"hb\",\"port\":1,\"identity\":\"per_path\",\"peer_ids\":{\"A\":9990200}}]}");
     CHECK(rdof_sdr_config_parse(buf, strlen(buf), &cfg, err, sizeof err), "%s", err);
     CHECK(cfg.status_seconds == 10.0 && cfg.usb_transfers == 4 && cfg.usb_transfer_kb == 16 && cfg.dsp_cores == 2 &&
               cfg.spike && cfg.selftest && cfg.sim && cfg.frontend == RDOF_FE_SIM && cfg.sim_ppm == 3.5 && !cfg.idle_gate &&
               !cfg.learn_ppm && cfg.has_rssi_offset && cfg.rssi_offset == -61.5 && cfg.has_mqtt &&
               !strcmp(cfg.mqtt_host, "h") && !strcmp(cfg.mqtt_user, "u") && !strcmp(cfg.mqtt_pass, "p") &&
-              !strcmp(cfg.mqtt_root, "X") && !strcmp(cfg.mqtt_app, "a") && cfg.mqtt_tls && cfg.hb_enabled &&
+              !strcmp(cfg.mqtt_root, "X") && !strcmp(cfg.mqtt_app, "sdr") && cfg.mqtt_tls && cfg.hb_enabled &&
               !strcmp(cfg.hb_host, "hb") && cfg.hb_port == 1 && !strcmp(cfg.hb_callsign, "CALL") &&
-              cfg.ch[0].peer_id == 9990200,
+              cfg.ch[0].peer_id == 9990200 && cfg.ch[0].hblink && !strcmp(cfg.ch[0].id, "A"),
           "board keys");
     /* dsp_cores is 1 or 2 */
-    snprintf(buf, sizeof buf, "{\"device\":{\"sample_rate\":288000},\"dsp_cores\":7, %s}", one);
+    snprintf(buf, sizeof buf, BOARD(",\"dsp_cores\":7", ""));
     CHECK(rdof_sdr_config_parse(buf, strlen(buf), &cfg, err, sizeof err) && cfg.dsp_cores == 2, "dsp_cores 7");
-    snprintf(buf, sizeof buf, "{\"device\":{\"sample_rate\":288000},\"dsp_cores\":0, %s}", one);
+    snprintf(buf, sizeof buf, BOARD(",\"dsp_cores\":0", ""));
     CHECK(rdof_sdr_config_parse(buf, strlen(buf), &cfg, err, sizeof err) && cfg.dsp_cores == 1, "dsp_cores 0");
-    /* the same keys in a box's radio, and a radio whose name isn't the default */
-    snprintf(buf, sizeof buf,
-             "{\"cc\":1,\"channels\":{\"4\":438.1125},\"radios\":[{\"type\":\"mmdvm_hs\",\"name\":\"R\"},{\"type\":\"sdr\","
-             "\"usb\":{\"transfers\":3},\"dsp_cores\":2,\"idle_gate\":0,\"learn_ppm\":false,\"selftest\":true,"
-             "\"channels\":[4]}]}");
-    CHECK(rdof_sdr_config_parse(buf, strlen(buf), &cfg, err, sizeof err) && cfg.usb_transfers == 3 && cfg.usb_transfer_kb == 8 &&
-              cfg.dsp_cores == 2 && !cfg.idle_gate && !cfg.learn_ppm && cfg.selftest && !strcmp(cfg.name, "radiofoundry-sdr2") &&
-              !strcmp(cfg.ch[0].id, "SDR04"),
-          "box radio: %s / %s", cfg.name, err);
+#undef BOARD
 }
 
 /* ── learning the tuner's ppm ────────────────────────────────────────────── */

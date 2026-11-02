@@ -2,7 +2,7 @@
 
 Covers: every HTTP endpoint the board serves (pages, status, settings, maintenance, clock, Wi-Fi), the `/api/status` schema, the web page.
 Sources: `esp_idf/main/web.c`, `heard.c`, `common/src/lastheard.c`, `settings.c`, `sdr.c`, `roamer.c`, `logring.c`, `fe_rtlsdr.c`, `web/index.html`, `web/mini.html`; `components/netclock/src/netclock_http.c`, `components/wifilist/src/wifilist_http.c`.
-Related: [bench-api.md](../bench-api.md) (`/api/bench/v1`), [mqtt.md](mqtt.md), [hblink.md](hblink.md), [config.md](config.md) (the settings JSON), [netclock](../../../components/netclock/README.md), [wifilist](../../../components/wifilist/README.md).
+Related: [bench-api.md](../bench-api.md) (`/api/bench/v1`), [mqtt.md](mqtt.md), [hblink.md](hblink.md), [config-v3.md](config-v3.md) (the settings JSON), [netclock](../../../components/netclock/README.md), [wifilist](../../../components/wifilist/README.md).
 
 ## 1. Server
 
@@ -250,13 +250,12 @@ The boot memory plan and the heap now ([memory.md](memory.md)). Sizes in bytes.
 | Step | What | Source |
 |---|---|---|
 | Store | NVS namespace `rd`, blob key `config` (the text as posted, comments kept) | `settings.c` |
-| Legacy | key `sdr` is read when `config` is missing, and erased on the next save | `settings.c` |
 | Export | the stored text, with `"wifi"` (`wifilist_export_json`: networks without passwords) and `"ntp"` (`{servers, poll_s}`) put in | `settings.c:settings_export` |
-| Import | `wifi` and `ntp` go to their components (`take_board_keys`) and are removed (`drop_board_keys`); the rest is parsed and resolved (`resolve()`: `run`, each radio, the ports, PSRAM for a second radio, the SDR front end, the SDR transceiver), then stored | `settings.c:settings_save` |
+| Import | `wifi` and `ntp` go to their components (`take_board_keys`) and are removed (`drop_board_keys`); the rest is opened and checked (`resolve()`: `rdof_plan_open`, the board check, the units, each radio unit, the ports, PSRAM for a second unit, the SDR front end, a unit on the SDR; [config-v3.md](config-v3.md) §13.1), then stored | `settings.c:settings_save` |
 | Wi-Fi passwords | an exported network has no password; on import an entry without `password` keeps the stored one | wifilist |
 | Defaults | nothing stored or it doesn't resolve: `DEFAULT_JSON`, `settings_ok` false | `settings.c` |
 
-The schema itself is in [config.md](config.md).
+The settings are in [config-v3.md](config-v3.md); the schema, `config/rdof-config.schema.json`, is its §13.2.
 
 ## 5. `GET /api/resolved`
 
@@ -272,11 +271,11 @@ port: <usb|uart|sdr|split>[ serial <s>][ at port <p>]
 <rdof_sdr_config_describe>
 plan: <the channel plan>
 
-version 3, as it runs (paths, policies, talkgroups):
+the site, as it runs (paths, policies, talkgroups):
 <rdof_site_resolved_text: the frequencies, paths, talkgroups, apps, networks and devices, as JSON>
 ```
 
-The last part only for a version 3 document ([config-v3.md](config-v3.md) §11). For people. Not a stable machine format.
+The last part is the resolved view ([config-v3.md](config-v3.md) §11), when the site runs. For people. Not a stable machine format.
 
 ## 6. `GET /api/spectrum?since=N`
 

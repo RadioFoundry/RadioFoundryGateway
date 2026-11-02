@@ -1,2 +1,0 @@
-{"version": 2, "cc": 1, "devices": {"r": {"kind": "sdr", "driver": "rtlsdr", "tx": {}}},
- "roles": {"A": {"type": "roamer", "peer_id": 1, "idle": {"freq": 438.0625, "cc": 1}, "channels": [], "modem": {"device": "r"}}}}

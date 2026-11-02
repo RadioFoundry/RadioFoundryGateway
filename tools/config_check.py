@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
-"""Check a settings file against config/rdof-config.schema.json (version 3 or 2).
+"""Check a settings file against config/rdof-config.schema.json (version 3).
 
     tools/config_check.py FILE [FILE ...]
 
 Uses the jsonschema package (MIT) when it's installed, else node with config/schema-check.js. The schema checks
 keys, types and ranges; the C parsers also check names, ownership and what fits the platform (docs/spec/fw/
-config-v3.md, rxtx-combinations.md 4.1). Version 1 settings aren't checked here: the board upgrades them when it
-loads them. Comments (// and /* */, as the board takes) are allowed. Exit 0 when every file passes.
+config-v3.md). Comments (// and /* */, as the board takes) are allowed. Exit 0 when every file passes.
 """
 import json
 import os
@@ -92,8 +91,8 @@ def main():
             print("%s: %s" % (name, e))
             bad += 1
             continue
-        if not isinstance(doc, dict) or doc.get("version") not in (2, 3):
-            print("%s: not version 3 or 2 settings (version 1 is upgraded by the board when it loads it)" % name)
+        if not isinstance(doc, dict) or doc.get("version") != 3:
+            print("%s: not version 3 settings" % name)
             bad += 1
             continue
         try:

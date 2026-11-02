@@ -49,7 +49,7 @@ flowchart LR
 
 ## Mix and match radios
 
-Each board runs whatever its config names: up to **two roamers or repeaters plus one SDR**, as roles of one app.
+Each board runs what its settings make ([config-v3.md](docs/spec/fw/config-v3.md)): up to **two roamers or repeaters plus one SDR**, as roles of one app.
 
 | Radio | Connects by | Receive | Transmit | Duplex |
 |---|---|:-:|:-:|---|

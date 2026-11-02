@@ -28,7 +28,7 @@ flowchart LR
   AFC -. correction .-> CH
   AFC --> PPM["ppm learning (5 s)"]
   PPM -. whole ppm .-> FE
-  BURST --> MDM["SDR modem<br/>(sdr_transceiver)"]
+  BURST --> MDM["SDR modem<br/>(a unit on the SDR)"]
   MDM -. pull_iq .-> MOD["modulator 4FSK<br/>at tx_fs"] -.-> FE
 ```
 
@@ -74,16 +74,16 @@ faster, else reverts and waits 8 windows. Core 1 keeps at least one channel. The
 
 ## 3. Settings (`sdr/src/config.c`)
 
-A plain SDR config, or a box's SDR section, resolved to the same settings ([config.md](config.md)).
+An SDR device in the settings, read by `rdof_plan_sdr` ([config-v3.md](config-v3.md) §4.1, which has every key).
 
 | Key | Default | Note |
 |---|---|---|
-| `device.sample_rate` | 1.536e6 (the board's default settings, `settings.c`, set 288000) | must be a multiple of 48000 |
-| `device.center` | auto (0) | MHz if < 1e5, else Hz |
-| `device.gain` | auto | dB |
-| `device.agc` | off | `{min, clip, headroom_db, hold_s, relax_s, settle_s}`; needs `gain` |
-| `device.ppm` | 0 | whole ppm on the chip; the start value for learning |
-| `device.type` | rtlsdr | rtlsdr, lr2021, sim, sx1255 |
+| `rx.rate` | 1.536e6 (the board's default settings, `settings.c`, set 288000) | must be a multiple of 48000 |
+| `rx.center_hz` | auto | MHz if < 1e5, else Hz |
+| `rx.gain_db` | auto | dB |
+| `rx.agc` | off | `{min, clip, headroom_db, hold_s, relax_s, settle_s}`; needs `gain_db` |
+| `rx.ppm` | 0 | whole ppm on the chip; the start value for learning |
+| `driver` | rtlsdr | rtlsdr, lr2021, sim, sx1255 (soapy, iio: the host tool's) |
 | `rssi_offset` | `−gain − 25` (gain 30 if auto) | |
 | `afc` | true | |
 | `status_seconds` | 30 | |
@@ -93,7 +93,7 @@ A plain SDR config, or a box's SDR section, resolved to the same settings ([conf
 | `learn_ppm` | true | |
 | `sim`, `sim_ppm` | false, 0 | |
 | `spike`, `selftest` | false | |
-| `slot_timing` | the box's | [../slot-timing.md](../slot-timing.md) |
+| `slot_timing` | the top level's | [../slot-timing.md](../slot-timing.md) |
 
 Compile-time switches (`sdr/include/rdof/sdr/features.h`, Kconfig "RadioFoundry Gateway SDR (sdr)"):
 `RDOF_FEATURE_SDR`, `_SDR_AGC`, `_SDR_BUILTIN_FFT`, `_SDR_RECEIVER` (needs `RDOF_FEATURE_TRACKER`), `RDOF_SDR_FAST_ATAN2`,

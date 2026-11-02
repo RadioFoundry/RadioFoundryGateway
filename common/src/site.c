@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
-/* The settings, version 3: the parse, the talk paths and their policies, the version 2 settings it runs as, and the
-   resolved view (rdof/site.h, docs/spec/fw/config-v3.md). */
+/* The settings, version 3: the parse, the talk paths and their policies, and the resolved view (rdof/site.h,
+   docs/spec/fw/config-v3.md). */
 #include "rdof/site.h"
 
 #include <ctype.h>
@@ -12,23 +12,12 @@
 #include <string.h>
 
 #include "rdof/jsonp.h"
+#include "site_ctx.h"
 
-#define MAX_NODES 2000
-#define STR_BUF 16384
+#define MAX_NODES RDOF_SITE_MAX_NODES
+#define STR_BUF RDOF_SITE_STR_BUF
 
-typedef struct {
-    rdof_jdoc_t doc;
-    rdof_jnode_t nodes[MAX_NODES];
-    char strs[STR_BUF];
-    char *clean;
-    int root;
-    char *error;
-    size_t cap;
-    /* where each entry is in the document */
-    int fnode[RDOF_SITE_MAX_FREQS], dnode[RDOF_SITE_MAX_DEVICES], anode[RDOF_SITE_MAX_APPS],
-        nnode[RDOF_SITE_MAX_NETS], pnode[RDOF_SITE_MAX_POLICIES];
-    int defaults;
-} ctx_t;
+typedef rdof_site_ctx_t ctx_t;
 
 static bool fail(ctx_t *c, const char *fmt, ...)
 {
@@ -102,16 +91,12 @@ static void close_doc(ctx_t *c)
     }
 }
 
-bool rdof_site_is_v3(const char *text, size_t len)
+rdof_site_ctx_t *rdof_site_ctx_open(const char *text, size_t len, char *error, size_t cap)
 {
-    ctx_t *c = open_doc(text, len, NULL, 0);
-    if (!c)
-        return false;
-    double v;
-    bool yes = is_type(c, c->root, RDOF_JOBJ) && num_of(c, get(c, c->root, "version"), &v) && v == 3;
-    close_doc(c);
-    return yes;
+    return open_doc(text, len, error, cap);
 }
+
+void rdof_site_ctx_close(rdof_site_ctx_t *c) { close_doc(c); }
 
 /* ── the keys each place takes (as the schema) ─────────────────────────────── */
 
@@ -119,46 +104,36 @@ bool rdof_site_is_v3(const char *text, size_t len)
 static const char *const TOP_KEYS[] = {"version", "name", "id", "callsign", "location", "defaults", "devices",
                                        "frequencies", "apps", "networks", "policies", "pc_hold_s", "wifi", "ntp",
                                        "oled", "slot_timing", "usb_hub", "selftest_load", "bench", NULL};
-/* A frequency's own; the SFR / DCDM keys go with mode sfr or dcdm. */
+/* A frequency's own; the SFR / DCDM keys go with mode sfr or dcdm (inbound_slot with sfr; duplex and active_slots
+   with dcdm). */
+#define FREQ_RADIO_KEYS                                                                                                \
+    "hang_s", "call_hang_s", "inbound_slot", "short_lc_ts1_low", "slot_timing", "duplex", "active_slots", "cwid",   \
+        "cwid_every_s", "prebuffer", "jitter_buffer", "jitter_min_ms", "jitter_max_ms"
 static const char *const FREQ_KEYS[] = {"freq", "name", "cc", "mode", "ts", "tx", "power", "devices", "slots",
-                                        "policy", POLICY_KEYS, "hang_s", "call_hang_s", "inbound_slot",
-                                        "short_lc_ts1_low", "slot_timing", "duplex", NULL};
-static const char *const RADIO_FREQ_KEYS[] = {"hang_s", "call_hang_s", "inbound_slot", "short_lc_ts1_low",
-                                              "slot_timing", "duplex", NULL};
+                                        "policy", POLICY_KEYS, FREQ_RADIO_KEYS, NULL};
+static const char *const RADIO_FREQ_KEYS[] = {FREQ_RADIO_KEYS, NULL};
 static const char *const DEFAULT_KEYS[] = {"cc", "mode", "ts", "tx", "power", "policy", POLICY_KEYS, NULL};
 static const char *const POL_KEYS[] = {"name", POLICY_KEYS, NULL};
 static const char *const SLOT_KEYS[] = {"policy", POLICY_KEYS, NULL};
-/* A device's own (the rest are version 2's, checked there). The talker keys: how a device that transmits on
-   several frequencies waits and answers (a version 2 roamer's). */
+/* The talker keys: how a device that transmits on several frequencies waits and answers. A device's other keys
+   are checked in siteplan.c. */
 #define TALKER_KEYS                                                                                                \
     "listen_s", "clear_s", "idle_after_s", "csbk_preambles", "answer_s", "answer_max_s", "prebuffer",             \
         "jitter_buffer", "jitter_min_ms", "jitter_max_ms", "cwid", "cwid_every_s"
-static const char *const DEV_OWN_KEYS[] = {"name", "hears", "transmits", TALKER_KEYS, NULL};
 static const char *const DEV_TALKER_KEYS[] = {TALKER_KEYS, NULL};
 static const char *const HEARS_KEYS[] = {"idle", "scan", "dwell_s", "hang_s", "carrier_s", NULL};
 static const char *const REPEATER_KEYS[] = {"name", "type", "in", "out", "slots", "policy", POLICY_KEYS, "hang_s",
                                             "call_hang_s", "cwid", "cwid_every_s", "short_lc_ts1_low",
                                             "slot_timing", "split", "prebuffer", "jitter_buffer", "jitter_min_ms",
-                                            "jitter_max_ms", NULL};
-static const char *const REPEATER_V2_KEYS[] = {"hang_s", "call_hang_s", "cwid", "cwid_every_s", "short_lc_ts1_low",
-                                               "slot_timing", "split", "prebuffer", "jitter_buffer",
-                                               "jitter_min_ms", "jitter_max_ms", NULL};
+                                            "jitter_max_ms", "active_slots", NULL};
 static const char *const PARROT_KEYS[] = {"name", "type", "tg", "pc", NULL};
 static const char *const IPGW_KEYS[] = {"name", "type", "tg", "pc", "radio_net", "tx", "ack", "max_bytes",
                                         "up_pps", "down_pps", "idle_s", "max_flows", "routes", "nat", NULL};
-static const char *const IPGW_V2_KEYS[] = {"radio_net", "tx", "ack", "max_bytes", "up_pps", "down_pps", "idle_s",
-                                           "max_flows", "routes", "nat", NULL};
 static const char *const HBLINK_KEYS[] = {"name", "type", "host", "port", "transport", "sctp_encap_port",
                                           "sctp_heartbeat_ms", "sctp_max_retransmit", "sctp_ttl_ms", "identity",
                                           "peer_ids", "roaming", NULL};
-static const char *const HBLINK_V2_KEYS[] = {"host", "port", "transport", "sctp_encap_port", "sctp_heartbeat_ms",
-                                             "sctp_max_retransmit", "sctp_ttl_ms", NULL};
 static const char *const MQTT_KEYS[] = {"name", "type", "host", "port", "username", "password", "root", "tls",
                                         "report", "calls", NULL};
-static const char *const MQTT_V2_KEYS[] = {"host", "port", "username", "password", "root", "tls", NULL};
-/* The board's own sections, passed to version 2 as they are. */
-static const char *const BOARD_KEYS[] = {"location", "wifi", "ntp", "oled", "slot_timing", "usb_hub",
-                                         "selftest_load", "bench", NULL};
 
 static bool in_list(const char *const *keys, const char *k)
 {
@@ -188,6 +163,25 @@ static bool name_ok(const char *s)
         if ((unsigned char)*s < 0x20 || *s == '"' || *s == '\\' || *s == '/')
             return false;
     return true;
+}
+
+/* active_slots: [1], [2] or [1, 2], the slots a repeater or a DCDM gateway carries. */
+static bool active_slots_ok(ctx_t *c, int node, const char *path)
+{
+    if (node < 0)
+        return true;
+    bool ok = is_type(c, node, RDOF_JARR) && count(c, node) >= 1 && count(c, node) <= 2;
+    for (int k = 0; ok && k < count(c, node); k++) {
+        double v;
+        ok = num_of(c, at(c, node, k), &v) && (v == 1 || v == 2);
+    }
+    if (ok && count(c, node) == 2) {
+        double a, b;
+        num_of(c, at(c, node, 0), &a);
+        num_of(c, at(c, node, 1), &b);
+        ok = a != b;
+    }
+    return ok || fail(c, "%s.active_slots: [1], [2] or [1, 2]", path);
 }
 
 /* ── lookups ───────────────────────────────────────────────────────────────── */
@@ -540,6 +534,17 @@ static bool parse_freqs(ctx_t *c, rdof_site_t *s)
         for (int x = 0; f->mode == RDOF_FMODE_SIMPLEX && RADIO_FREQ_KEYS[x]; x++)
             if (get(c, o, RADIO_FREQ_KEYS[x]) >= 0)
                 return fail(c, "%s.%s: for mode sfr or dcdm", path, RADIO_FREQ_KEYS[x]);
+        if (f->mode == RDOF_FMODE_SFR && get(c, o, "duplex") >= 0)
+            return fail(c, "%s.duplex: for mode dcdm (an SFR repeater is half duplex)", path);
+        if (f->mode == RDOF_FMODE_SFR && get(c, o, "active_slots") >= 0)
+            return fail(c, "%s.active_slots: for mode dcdm (an SFR repeater's slots are inbound_slot's)", path);
+        if (f->mode == RDOF_FMODE_DCDM && get(c, o, "inbound_slot") >= 0)
+            return fail(c, "%s.inbound_slot: for mode sfr", path);
+        const char *dx = str_of(c, get(c, o, "duplex"));
+        if (get(c, o, "duplex") >= 0 && (!dx || (strcmp(dx, "half") && strcmp(dx, "full"))))
+            return fail(c, "%s.duplex: half or full", path);
+        if (!active_slots_ok(c, get(c, o, "active_slots"), path))
+            return false;
         i = PICK("ts");
         f->ts = 1;
         if (i >= 0) {
@@ -697,6 +702,8 @@ static bool parse_apps(ctx_t *c, rdof_site_t *s)
             if (a->in == a->out)
                 return fail(c, "%s: in and out are one frequency (an SFR repeater is a frequency with mode sfr)",
                             path);
+            if (!active_slots_ok(c, get(c, e, "active_slots"), path))
+                return false;
         } else {
             int tg = get(c, e, "tg"), pc = get(c, e, "pc");
             if (tg < 0 && pc < 0)
@@ -785,8 +792,19 @@ static bool freq_list(ctx_t *c, const rdof_site_t *s, int node, const char *path
     return true;
 }
 
+/* A device bench.devices lists. */
+static bool on_bench(ctx_t *c, const char *name)
+{
+    int bd = get(c, get(c, c->root, "bench"), "devices");
+    for (int k = 0; is_type(c, bd, RDOF_JARR) && k < count(c, bd); k++)
+        if (str_of(c, at(c, bd, k)) && !strcmp(str_of(c, at(c, bd, k)), name))
+            return true;
+    return false;
+}
+
 static bool parse_devices(ctx_t *c, rdof_site_t *s)
 {
+    uint32_t bench = 0; /* bench.devices with neither hears nor transmits: the bench's alone, unless pinned */
     int dl = get(c, c->root, "devices");
     if (dl >= 0 && !is_type(c, dl, RDOF_JARR))
         return fail(c, "devices: a list");
@@ -821,12 +839,19 @@ static bool parse_devices(ctx_t *c, rdof_site_t *s)
             if (!strcmp(s->dev[b].name, d->name))
                 return fail(c, "%s.name: two devices called %s", path, d->name);
         snprintf(path, sizeof path, "devices.%s", d->name);
-        /* an SDR's driver; a modem's is its "type" (version 2's key) */
+        /* an SDR's driver; a modem's is its "type" */
         const char *drv = str_of(c, get(c, e, d->kind == 1 ? "driver" : "type"));
         snprintf(d->driver, sizeof d->driver, "%s", drv ? drv : d->kind == 1 ? "rtlsdr" : "auto");
         int h = get(c, e, "hears"), t = get(c, e, "transmits");
         char p[80];
         d->idle = -1;
+        if (d->kind == 2 && h < 0 && t < 0 && on_bench(c, d->name)) {
+            bench |= 1u << s->ndev;
+            d->hears = RDOF_HEARS_NONE;
+            d->can_tx = true; /* on what pins it, below */
+            s->ndev++;
+            continue;
+        }
         if (d->kind == 3) {
             if (h >= 0 || t >= 0)
                 return fail(c, "%s: a radio is a bench device on its debug link: no hears or transmits", path);
@@ -911,8 +936,6 @@ static bool parse_devices(ctx_t *c, rdof_site_t *s)
         int o = c->fnode[f];
         int i = get(c, o, "devices");
         if (i < 0)
-            i = get(c, c->defaults, "devices");
-        if (i < 0)
             continue;
         char p[80];
         snprintf(p, sizeof p, "frequencies.%s.devices", s->freq[f].name);
@@ -934,6 +957,20 @@ static bool parse_devices(ctx_t *c, rdof_site_t *s)
         for (int dv = 0; s->freq[f].devices && dv < s->ndev; dv++)
             if (!(s->freq[f].devices >> dv & 1))
                 s->dev[dv].transmits &= ~(1ull << f);
+    /* a bench modem: only what pins it (and a unit that takes it is refused, rdof/siteplan.h) */
+    for (int dv = 0; dv < s->ndev; dv++) {
+        if (!(bench >> dv & 1))
+            continue;
+        rdof_device3_t *d = &s->dev[dv];
+        for (int f = 0; f < s->nfreq; f++)
+            if ((s->freq[f].devices >> dv & 1) && s->freq[f].tx)
+                d->transmits |= 1ull << f;
+        for (int f = 0; f < s->nfreq && d->idle < 0; f++)
+            if (d->transmits >> f & 1)
+                d->idle = f;
+        if (d->idle >= 0)
+            d->hears = RDOF_HEARS_IDLE;
+    }
     return true;
 }
 
@@ -1168,6 +1205,8 @@ static bool parse_site(ctx_t *c, rdof_site_t *s)
            parse_devices(c, s) && make_paths(c, s) && peer_ids(c, s);
 }
 
+bool rdof_site_ctx_parse(rdof_site_ctx_t *c, rdof_site_t *s) { return parse_site(c, s); }
+
 bool rdof_site_parse(const char *text, size_t len, rdof_site_t *s, char *err, size_t cap)
 {
     ctx_t *c = open_doc(text, len, err, cap);
@@ -1283,60 +1322,10 @@ static void w_bool(jw_t *w, const char *k, bool v)
     puts_(w, v ? "true" : "false");
 }
 
-static void emit_value(jw_t *w, ctx_t *c, int i);
+/* ── what the plan shares ──────────────────────────────────────────────────── */
 
-static void emit(jw_t *w, ctx_t *c, const char *k, int i)
-{
-    key(w, k);
-    emit_value(w, c, i);
-}
-
-static void emit_value(jw_t *w, ctx_t *c, int i)
-{
-    const rdof_jnode_t *n = N(c, i);
-    switch (n->type) {
-    case RDOF_JNULL: puts_(w, "null"); break;
-    case RDOF_JBOOL: puts_(w, n->b ? "true" : "false"); break;
-    case RDOF_JNUM: {
-        char t[48];
-        if (n->integer && fabs(n->num) < 1e15)
-            snprintf(t, sizeof t, "%.0f", n->num + 0.0);
-        else
-            snprintf(t, sizeof t, "%.17g", n->num);
-        puts_(w, t);
-        break;
-    }
-    case RDOF_JSTR: put_str(w, n->str); break;
-    case RDOF_JARR:
-    case RDOF_JOBJ: {
-        bool obj = n->type == RDOF_JOBJ;
-        put(w, obj ? "{" : "[", 1);
-        if (w->depth < 23)
-            w->first[++w->depth] = true;
-        for (int k = 0; k < n->count; k++) {
-            int ch = at(c, i, k);
-            emit(w, c, obj ? N(c, ch)->key : NULL, ch);
-        }
-        close_(w, obj ? '}' : ']');
-        break;
-    }
-    }
-}
-
-/* Each member of obj whose key is (in) or isn't (out) in keys. */
-static void emit_keys(jw_t *w, ctx_t *c, int obj, const char *const *keys, bool in)
-{
-    for (int k = 0; is_type(c, obj, RDOF_JOBJ) && k < count(c, obj); k++) {
-        int m = at(c, obj, k);
-        if (in_list(keys, N(c, m)->key) == in)
-            emit(w, c, N(c, m)->key, m);
-    }
-}
-
-/* ── version 3 -> version 2 ────────────────────────────────────────────────── */
-
-/* The device that serves a frequency for receive (hears it) or transmit: pinned first, else the first that can. */
-static bool dev_hears(const rdof_site_t *s, int d, int f)
+/* Device d hears (receives) / transmits on frequency f: its hears and transmits, and the frequency's devices. */
+bool rdof_site_dev_hears(const rdof_site_t *s, int d, int f)
 {
     const rdof_device3_t *dv = &s->dev[d];
     if (s->freq[f].devices && !(s->freq[f].devices >> d & 1))
@@ -1349,42 +1338,23 @@ static bool dev_hears(const rdof_site_t *s, int d, int f)
     }
 }
 
-static bool dev_sends(const rdof_site_t *s, int d, int f) { return s->dev[d].can_tx && (s->dev[d].transmits >> f & 1); }
+bool rdof_site_dev_sends(const rdof_site_t *s, int d, int f)
+{
+    return s->dev[d].can_tx && (s->dev[d].transmits >> f & 1);
+}
 
-/* The first id of an ID set, for version 2's one-TG channel and parrot keys. */
-static uint32_t first_id(const rdof_idset_t *set)
+#define dev_hears rdof_site_dev_hears
+#define dev_sends rdof_site_dev_sends
+
+/* The first ID of a set, 0 if it's empty. */
+uint32_t rdof_site_first_id(const rdof_idset_t *set)
 {
     rdof_idrange_t r[1];
     return rdof_idset_ranges(set, r, 1) ? r[0].lo : 0;
 }
 
-static void w_chan_ref(jw_t *w, int f) { w_num(w, NULL, f + 1); }
-
-/* The version 2 device: its own keys less version 3's, and "tx": {} when an SDR transmits and doesn't say. */
-static void w_device(jw_t *w, ctx_t *c, const rdof_site_t *s, int d, bool sends)
-{
-    int e = c->dnode[d];
-    open_(w, s->dev[d].name, '{');
-    emit_keys(w, c, e, DEV_OWN_KEYS, false);
-    if (s->dev[d].kind == 1 && sends && get(c, e, "tx") < 0) {
-        open_(w, "tx", '{');
-        close_(w, '}');
-    }
-    close_(w, '}');
-}
-
-/* The parrot's and IP gateway's IDs for a talker's role: the parrot when one of the role's paths may reach it. */
-static void w_parrot(jw_t *w, const rdof_site_t *s, uint32_t reach)
-{
-    int a = rdof_site_app_of(s, RDOF_APP_PARROT);
-    if (a < 0 || !(reach >> a & 1))
-        return;
-    uint32_t id = first_id(&s->app[a].tg);
-    w_num(w, "parrot", id ? id : first_id(&s->app[a].pc));
-}
-
-/* The HBlink peer a role is: the hblink network, and its paths' peer. */
-static int hb_net(const rdof_site_t *s)
+/* The hblink network, -1 none. */
+int rdof_site_hb_net(const rdof_site_t *s)
 {
     for (int k = 0; k < s->nnet; k++)
         if (s->net[k].type == RDOF_NET_HBLINK)
@@ -1392,286 +1362,6 @@ static int hb_net(const rdof_site_t *s)
     return -1;
 }
 
-static void w_role_net(jw_t *w, const rdof_site_t *s, int path)
-{
-    const rdof_path_t *p = &s->path[path];
-    int hb = hb_net(s);
-    bool on = hb >= 0 && p->pol.net == hb;
-    if (!on)
-        w_bool(w, "hblink", false);
-    if (p->peer_id)
-        w_num(w, "peer_id", p->peer_id);
-}
-
-/* The callsign on each role (version 2 has it per role): with identity per_path its path's name, else the box's. */
-static void w_callsign(jw_t *w, ctx_t *c, const rdof_site_t *s, int path)
-{
-    if (path >= 0 && s->path[path].peer_name[0]) {
-        w_str(w, "callsign", s->path[path].peer_name);
-        return;
-    }
-    int i = get(c, c->root, "callsign");
-    if (i >= 0)
-        emit(w, c, "callsign", i);
-}
-
-static char *lower(ctx_t *c, const rdof_site_t *s, size_t *out_len)
-{
-    jw_t w = {0};
-    open_(&w, NULL, '{');
-    w_num(&w, "version", 2);
-    w_str(&w, "name", s->name);
-    emit_keys(&w, c, c->root, BOARD_KEYS, true);
-    double v;
-    if (num_of(c, get(c, c->defaults, "cc"), &v))
-        w_num(&w, "cc", v);
-    /* networks: the first of each type */
-    for (int k = 0; k < s->nnet; k++) {
-        if (s->net[k].type == RDOF_NET_HBLINK) {
-            open_(&w, "hblink", '{');
-            emit_keys(&w, c, c->nnode[k], HBLINK_V2_KEYS, true);
-            close_(&w, '}');
-        } else if (s->net[k].report || s->net[k].calls) {
-            open_(&w, "mqtt", '{');
-            emit_keys(&w, c, c->nnode[k], MQTT_V2_KEYS, true);
-            close_(&w, '}');
-        }
-    }
-    int ipgw = rdof_site_app_of(s, RDOF_APP_IPGW);
-    if (ipgw >= 0) {
-        open_(&w, "ip_gateway", '{');
-        uint32_t id = first_id(&s->app[ipgw].tg);
-        w_num(&w, "id", id ? id : first_id(&s->app[ipgw].pc));
-        emit_keys(&w, c, c->anode[ipgw], IPGW_V2_KEYS, true);
-        close_(&w, '}');
-    }
-    /* the plan: every frequency, numbered from 1 in list order */
-    open_(&w, "channels", '{');
-    for (int f = 0; f < s->nfreq; f++) {
-        const rdof_freq_t *fr = &s->freq[f];
-        char num[8];
-        snprintf(num, sizeof num, "%d", f + 1);
-        open_(&w, num, '{');
-        w_num(&w, "freq", fr->hz);
-        if (fr->cc >= 0)
-            w_num(&w, "cc", fr->cc);
-        if (fr->power >= 0)
-            w_num(&w, "power", fr->power);
-        w_str(&w, "name", fr->name);
-        w_num(&w, "slot", fr->ts);
-        int path = fr->app < 0 ? rdof_site_path_rx(s, fr->hz, fr->ts) : -1;
-        uint32_t tg = path >= 0 ? rdof_idset_single(&s->path[path].pol.tg) : 0;
-        if (tg)
-            w_num(&w, "tg", tg);
-        if (!fr->tx)
-            w_bool(&w, "tx", false);
-        close_(&w, '}');
-    }
-    close_(&w, '}');
-    /* devices: the ones roles use (an SDR's "tx" when something transmits on it) */
-    bool used_tx[RDOF_SITE_MAX_DEVICES] = {0};
-    for (int d = 0; d < s->ndev; d++)
-        for (int f = 0; f < s->nfreq; f++)
-            if (dev_sends(s, d, f))
-                used_tx[d] = true;
-    open_(&w, "devices", '{');
-    for (int d = 0; d < s->ndev; d++)
-        w_device(&w, c, s, d, used_tx[d]);
-    close_(&w, '}');
-    open_(&w, "roles", '{');
-    /* repeaters */
-    uint64_t done = 0;
-    for (int a = 0; a < s->napp; a++) {
-        const rdof_app3_t *ap = &s->app[a];
-        if (ap->type != RDOF_APP_REPEATER)
-            continue;
-        int rx = -1, tx = -1;
-        for (int d = 0; d < s->ndev && tx < 0; d++)
-            if (dev_sends(s, d, ap->out))
-                tx = d;
-        if (tx >= 0 && dev_hears(s, tx, ap->in) && s->dev[tx].kind == 1)
-            rx = tx; /* an SDR: in and out on one device */
-        for (int d = 0; d < s->ndev && rx < 0; d++)
-            if (dev_hears(s, d, ap->in))
-                rx = d;
-        open_(&w, ap->name, '{');
-        w_str(&w, "type", "repeater");
-        if (rx >= 0 && rx == tx) {
-            open_(&w, "modem", '{');
-            w_str(&w, "device", s->dev[rx].name);
-            close_(&w, '}');
-        } else {
-            open_(&w, "rx", '{');
-            w_str(&w, "device", rx >= 0 ? s->dev[rx].name : "auto");
-            close_(&w, '}');
-            open_(&w, "tx", '{');
-            w_str(&w, "device", tx >= 0 ? s->dev[tx].name : "auto");
-            close_(&w, '}');
-        }
-        w_num(&w, "rx_freq", s->freq[ap->in].hz);
-        w_num(&w, "tx_freq", s->freq[ap->out].hz);
-        w_num(&w, "cc", s->freq[ap->out].cc);
-        if (s->freq[ap->out].power >= 0)
-            w_num(&w, "power", s->freq[ap->out].power);
-        w_role_net(&w, s, ap->path[0]);
-        w_callsign(&w, c, s, ap->path[0]);
-        w_parrot(&w, s, s->path[ap->path[0]].pol.apps | s->path[ap->path[1]].pol.apps);
-        emit_keys(&w, c, c->anode[a], REPEATER_V2_KEYS, true);
-        close_(&w, '}');
-        done |= 1ull << ap->in | 1ull << ap->out;
-    }
-    /* SFR and DCDM frequencies: a radio there */
-    for (int f = 0; f < s->nfreq; f++) {
-        const rdof_freq_t *fr = &s->freq[f];
-        if (fr->mode == RDOF_FMODE_SIMPLEX)
-            continue;
-        int d = -1;
-        for (int x = 0; x < s->ndev && d < 0; x++)
-            if (dev_sends(s, x, f))
-                d = x;
-        char nm[RDOF_SITE_NAME + 8];
-        snprintf(nm, sizeof nm, "%s", fr->name);
-        for (char *q = nm; *q; q++)
-            if (!isalnum((unsigned char)*q) && *q != '-' && *q != '_' && *q != '.')
-                *q = '_';
-        open_(&w, nm, '{');
-        w_str(&w, "type", fr->mode == RDOF_FMODE_SFR ? "sfr" : "dcdm");
-        open_(&w, "modem", '{');
-        w_str(&w, "device", d >= 0 ? s->dev[d].name : "auto");
-        close_(&w, '}');
-        w_num(&w, "freq", fr->hz);
-        w_num(&w, "cc", fr->cc);
-        if (fr->power >= 0)
-            w_num(&w, "power", fr->power);
-        int p0 = rdof_site_path_rx(s, fr->hz, 1), p1 = rdof_site_path_rx(s, fr->hz, 2);
-        w_role_net(&w, s, p0);
-        w_callsign(&w, c, s, p0);
-        w_parrot(&w, s, s->path[p0].pol.apps | s->path[p1].pol.apps);
-        emit_keys(&w, c, c->fnode[f], RADIO_FREQ_KEYS, true);
-        close_(&w, '}');
-        done |= 1ull << f;
-    }
-    /* each device that transmits on simplex frequencies: a roamer over them */
-    for (int d = 0; d < s->ndev; d++) {
-        const rdof_device3_t *dv = &s->dev[d];
-        uint64_t ch = 0;
-        for (int f = 0; f < s->nfreq; f++)
-            if (dev_sends(s, d, f) && !(done >> f & 1) && s->freq[f].mode == RDOF_FMODE_SIMPLEX && s->freq[f].app < 0)
-                ch |= 1ull << f;
-        if (!ch)
-            continue;
-        int idle = dv->idle >= 0 && (ch >> dv->idle & 1) ? dv->idle : -1;
-        for (int f = 0; f < s->nfreq && idle < 0; f++)
-            if (ch >> f & 1)
-                idle = f;
-        open_(&w, dv->name, '{');
-        w_str(&w, "type", "roamer");
-        open_(&w, "modem", '{');
-        w_str(&w, "device", dv->name);
-        close_(&w, '}');
-        open_(&w, "channels", '[');
-        for (int f = 0; f < s->nfreq; f++)
-            if (ch >> f & 1)
-                w_chan_ref(&w, f);
-        close_(&w, ']');
-        w_num(&w, "idle", idle + 1);
-        if (dv->hears == RDOF_HEARS_SCAN) {
-            open_(&w, "scan", '{');
-            open_(&w, "channels", '[');
-            for (int f = 0; f < s->nfreq; f++)
-                if (dv->scan >> f & 1)
-                    w_chan_ref(&w, f);
-            close_(&w, ']');
-            int h = get(c, c->dnode[d], "hears");
-            static const char *const sk[] = {"dwell_s", "hang_s", "carrier_s", NULL};
-            emit_keys(&w, c, h, sk, true);
-            close_(&w, '}');
-        }
-        int ip = rdof_site_path_rx(s, s->freq[idle].hz, s->freq[idle].ts);
-        w_role_net(&w, s, ip);
-        w_callsign(&w, c, s, ip);
-        uint32_t reach = 0;
-        for (int f = 0; f < s->nfreq; f++)
-            if (ch >> f & 1) {
-                int p = rdof_site_path_rx(s, s->freq[f].hz, s->freq[f].ts);
-                if (p >= 0)
-                    reach |= s->path[p].pol.apps;
-            }
-        w_parrot(&w, s, reach);
-        emit_keys(&w, c, c->dnode[d], DEV_TALKER_KEYS, true);
-        close_(&w, '}');
-    }
-    /* each SDR: a monitor of every frequency it hears, past its repeaters' own */
-    for (int d = 0; d < s->ndev; d++) {
-        const rdof_device3_t *dv = &s->dev[d];
-        if (dv->kind != 1 || dv->hears != RDOF_HEARS_WINDOW)
-            continue;
-        /* a repeater reports its own input */
-        uint64_t mine = 0;
-        for (int a = 0; a < s->napp; a++)
-            if (s->app[a].type == RDOF_APP_REPEATER)
-                mine |= 1ull << s->app[a].in | 1ull << s->app[a].out;
-        int n = 0;
-        for (int f = 0; f < s->nfreq; f++)
-            if (dev_hears(s, d, f) && !(mine >> f & 1))
-                n++;
-        if (!n)
-            continue;
-        char nm[RDOF_SITE_NAME + 8];
-        snprintf(nm, sizeof nm, "%s-rx", dv->name);
-        open_(&w, nm, '{');
-        w_str(&w, "type", "monitor");
-        w_callsign(&w, c, s, -1);
-        open_(&w, "rx", '{');
-        w_str(&w, "device", dv->name);
-        close_(&w, '}');
-        open_(&w, "channels", '[');
-        int hb = hb_net(s);
-        for (int f = 0; f < s->nfreq; f++) {
-            if (!dev_hears(s, d, f) || (mine >> f & 1))
-                continue;
-            int p = rdof_site_path_rx(s, s->freq[f].hz, s->freq[f].ts);
-            open_(&w, NULL, '{');
-            w_num(&w, "ch", f + 1);
-            /* its own peer only with identity per_path; with single the box's peer carries it (rdof/router.h) */
-            bool own = p >= 0 && hb >= 0 && s->net[hb].per_path && s->path[p].pol.net == hb;
-            w_bool(&w, "hblink", own);
-            if (own)
-                w_num(&w, "peer_id", s->path[p].peer_id);
-            if (own && s->path[p].peer_name[0])
-                w_str(&w, "id", s->path[p].peer_name); /* the channel's peer name for the master */
-            close_(&w, '}');
-        }
-        close_(&w, ']');
-        close_(&w, '}');
-    }
-    close_(&w, '}');
-    close_(&w, '}');
-    if (w.oom || !w.s) {
-        free(w.s);
-        fail(c, "no memory");
-        return NULL;
-    }
-    if (out_len)
-        *out_len = w.len;
-    return w.s;
-}
-
-char *rdof_site_lower(const char *text, size_t len, size_t *out_len, char *err, size_t cap)
-{
-    rdof_site_t *s = malloc(sizeof *s);
-    ctx_t *c = s ? open_doc(text, len, err, cap) : NULL;
-    if (!c) {
-        free(s);
-        if (err && cap)
-            snprintf(err, cap, "no memory");
-        return NULL;
-    }
-    char *out = parse_site(c, s) ? lower(c, s, out_len) : NULL;
-    close_doc(c);
-    free(s);
-    return out;
-}
 
 /* ── the resolved view ─────────────────────────────────────────────────────── */
 

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 //! The C this crate calls: common's FEC (rdof/fec.h) and repeater bursts (rdof/duplex.h), RadioFoundry's block
-//! codes (common/src/radiofoundry), and the C library's snprintf, strtod, strtol, ceil, floor, rint, modf, calloc
-//! and free.
+//! codes (common/src/radiofoundry), and the C library's snprintf, strtod, strtol, ceil, floor, rint and
+//! modf.
 
 use core::ffi::{c_char, c_int};
 
@@ -39,10 +39,6 @@ extern "C" {
     // the C library's number parsing, as the C modules use it
     pub fn strtod(s: *const c_char, end: *mut *mut c_char) -> f64;
     pub fn strtol(s: *const c_char, end: *mut *mut c_char, base: c_int) -> core::ffi::c_long;
-
-    // the C library's heap, for buffers too big for a task's stack
-    pub fn calloc(n: usize, size: usize) -> *mut core::ffi::c_void;
-    pub fn free(p: *mut core::ffi::c_void);
 
     // the C library's math (no_std Rust has none)
     pub fn ceil(x: f64) -> f64;

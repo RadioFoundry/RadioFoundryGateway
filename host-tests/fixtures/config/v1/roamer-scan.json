@@ -1,8 +1,0 @@
-{
-  "channels": {"1": {"freq": 438.0625, "cc": 1}, "2": {"freq": 438.0875, "cc": 2}, "3": {"freq": 438.1125, "cc": 1}},
-  "radios": [
-    {"type": "opengd77", "peer_id": 9800007, "idle": 1, "channels": [1, {"ch": 2, "power": 5}, 3],
-     "scan": {"channels": [2, 3], "dwell_s": 0.5}, "jitter_buffer": 240, "tx_invert": true,
-     "radio": {"rx_offset_hz": -150, "headers": 3}}
-  ]
-}

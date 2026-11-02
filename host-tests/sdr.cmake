@@ -181,18 +181,7 @@ if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
 endif()
 add_test(NAME ipgw_sdr_tests COMMAND ipgw_sdr_tests)
 
-# The settings, version 2: devices, roles, the upgrade, the view, the broker (rdof/setup.h, rdof/broker.h).
-add_executable(rdof_setup_tests test_setup.c)
-target_link_libraries(rdof_setup_tests PRIVATE rdof_sdr)
-set_target_properties(rdof_setup_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
-target_compile_options(rdof_setup_tests PRIVATE -Wall -Wno-unused-parameter)
-if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
-    target_compile_options(rdof_setup_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
-    target_link_options(rdof_setup_tests PRIVATE -fsanitize=address,undefined)
-endif()
-add_test(NAME rdof_setup_tests COMMAND rdof_setup_tests ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/config)
-
-# The settings, version 3: ID sets, the parse, the paths and policies, the version 2 settings it runs as (rdof/site.h).
+# The settings, version 3: ID sets, the parse, the paths and policies (rdof/site.h).
 add_executable(rdof_site_tests test_site.c)
 target_link_libraries(rdof_site_tests PRIVATE rdof_sdr)
 set_target_properties(rdof_site_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
@@ -202,3 +191,15 @@ if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
     target_link_options(rdof_site_tests PRIVATE -fsanitize=address,undefined)
 endif()
 add_test(NAME rdof_site_tests COMMAND rdof_site_tests ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/config)
+
+# The plan and the parsers on it, on every version 3 fixture (rdof/siteplan.h).
+add_executable(rdof_plan_tests test_plan.c)
+target_link_libraries(rdof_plan_tests PRIVATE rdof_sdr)
+set_target_properties(rdof_plan_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_compile_options(rdof_plan_tests PRIVATE -Wall -Wno-unused-parameter)
+file(GLOB RDOF_PLAN_FIXTURES ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/config/v3/*.json)
+add_test(NAME rdof_plan_tests COMMAND rdof_plan_tests ${RDOF_PLAN_FIXTURES})
+if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+    target_compile_options(rdof_plan_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(rdof_plan_tests PRIVATE -fsanitize=address,undefined)
+endif()

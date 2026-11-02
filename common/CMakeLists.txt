@@ -26,13 +26,12 @@ set(RDOF_COMMON_SRCS
     src/slotgrid.c
     src/jsonp.c
     src/config.c
-    src/setup.c
     src/idset.c
     src/site.c
+    src/siteplan.c
     src/router.c
     src/siteroute.c
     src/txpool.c
-    src/broker.c
     src/status.c
     src/oled.c
     src/oled_sdr.c

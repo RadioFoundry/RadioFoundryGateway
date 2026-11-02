@@ -709,8 +709,6 @@ static uint32_t heard_hz(void)
 }
 static void sr_start(void)
 {
-    if (!rcfg.v3)
-        return;
     const rdof_site_t *s = &rcfg.site;
     rdof_siteroute_init(&SR, s);
     for (int k = 0; k < s->nnet; k++)
@@ -887,7 +885,7 @@ static void net_start(void)
 struct mon {
     int c; /* the receiver's channel */
     const rdof_sdr_cfg_channel_t *ch;
-    bool peer;  /* its own peer (version 2, or identity per_path) */
+    bool peer;  /* its own peer (identity per_path) */
     bool up;    /* its sink sends through the radio's peer (version 3, one identity) */
     rdofnet_peer_t net;
     rdof_hb_sink_t sink;
@@ -946,7 +944,7 @@ static void mon_start(void)
     const rdof_location_t *loc = rcfg.cfg.has_location ? &rcfg.cfg.location : NULL;
     for (int i = 0; i < nmon; i++) {
         mon_t *m = &MON[i];
-        if (rcfg.v3 && !m->ch->hblink && net_on) {
+        if (!m->ch->hblink && net_on) {
             /* one identity: what it hears goes up through the radio's peer, as its policy says */
             rdof_hb_sink_init(&m->sink, rcfg.peer_id);
             m->sink.send = sink_send;
@@ -2124,8 +2122,8 @@ static char *web_get(void *ctx)
         return read_file(config_path, &len);
     char *t = malloc(1024);
     if (t)
-        rdofradio_cfg_from_flags(t, 1024, rcfg.full, rcfg.rx_hz, rcfg.tx_hz, rcfg.cc, rcfg.has_parrot, rcfg.parrot,
-                                 rcfg.peer_id);
+        rdofradio_cfg_from_flags(t, 1024, dev_iio ? "iio" : "soapy", rcfg.full, rcfg.rx_hz, rcfg.tx_hz, rcfg.cc,
+                                 rcfg.has_parrot, rcfg.parrot, rcfg.peer_id);
     return t;
 }
 static bool web_save(void *ctx, const char *text, size_t len, char *err, size_t cap)
@@ -2160,8 +2158,8 @@ static size_t web_resolved(void *ctx, char *out, size_t cap)
     else
         snprintf(src, sizeof src, "command line flags");
     size_t n = rdofradio_cfg_describe(&rcfg, src, web_device, out, cap);
-    if (rcfg.v3 && n < cap - 64) {
-        n += (size_t)snprintf(out + n, cap - n, "\nversion 3, as it runs (paths, policies, talkgroups):\n");
+    if (n < cap - 64) {
+        n += (size_t)snprintf(out + n, cap - n, "\nthe site, as it runs (paths, policies, talkgroups):\n");
         n += rdof_site_resolved_text(&rcfg.site, out + n, cap - n);
     }
     return n;
@@ -2809,8 +2807,6 @@ int main(int argc, char **argv)
             snprintf(why, sizeof why, "%s: %s", config_path, err);
             return hold(argc, argv, why);
         }
-        if (rcfg.unused[0])
-            fprintf(stderr, "%s: not used here: %s\n", config_path, rcfg.unused);
         rx = rcfg.rx_hz, tx = rcfg.tx_hz, cc = rcfg.cc, rx_slot = rcfg.rx_slot;
         duplex = rcfg.full ? "full" : "half";
         if (rcfg.has_parrot) {
@@ -2877,12 +2873,14 @@ int main(int argc, char **argv)
     if (!config_path) {
         /* the flags as a settings document: the page shows it, and it starts a file for --config */
         char doc[1024], err[200];
-        rdofradio_cfg_from_flags(doc, sizeof doc, R.full, R.rx_hz, R.tx_hz, cc, R.parrot != NULL,
-                                 R.parrot ? R.parrot->id : 0, 9990601);
+        rdofradio_cfg_from_flags(doc, sizeof doc, dev_iio ? "iio" : "soapy", R.full, R.rx_hz, R.tx_hz, cc,
+                                 R.parrot != NULL, R.parrot ? R.parrot->id : 0, 9990601);
         if (!rdofradio_cfg_parse(doc, strlen(doc), &rcfg, err, sizeof err)) {
             fprintf(stderr, "the command line's radio: %s\n", err);
             return 2;
         }
+        rcfg.has_parrot = R.parrot != NULL; /* --parrot 0 (everything) is no parrot app */
+        rcfg.parrot = R.parrot ? R.parrot->id : 0;
     }
     setvbuf(stdout, NULL, _IOLBF, 0);
 

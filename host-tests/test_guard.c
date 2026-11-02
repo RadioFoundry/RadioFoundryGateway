@@ -172,7 +172,7 @@ static bool tool_got(const bench_t *b, uint8_t cmd, uint8_t seq)
 static void test_guard_odr(void)
 {
     static bench_t b;
-    const uint32_t tx[] = {446100000};
+    const uint32_t tx[] = {438100000};
     uint8_t f[64];
 
     /* the lease's check: power down to the lowest, APRS too; the tool hears none of it */
@@ -200,7 +200,7 @@ static void test_guard_odr(void)
     CHECK(tool_got(&b, 0x8A, 7) && !tool_got(&b, 0xFF, 7), "power down passes and is answered");
 
     /* PTT on the declared frequency: held for the check, then passed; what came after it waits its turn */
-    b.tx_hz = 446100000;
+    b.tx_hz = 438100000;
     b.power = 0;
     b.norder = 0;
     b.ntool = 0;
@@ -223,7 +223,7 @@ static void test_guard_odr(void)
 
     /* PTT on a frequency the lease didn't declare */
     b.tx = false;
-    b.tx_hz = 446200000;
+    b.tx_hz = 438200000;
     b.ntool = 0;
     rdof_guard_tool(&b.g, f, odr(0x07, 10, ptt, 3, f), 4);
     run(&b, 4, 4.5);
@@ -277,7 +277,7 @@ static void test_guard_odr(void)
     /* the lease ends mid-transmission: the check finds it and releases PTT; then PTT is refused */
     setup(&b, RDOF_GUARD_ODR, tx, 1);
     b.tx = true;
-    b.tx_hz = 446100000;
+    b.tx_hz = 438100000;
     rdof_guard_set_tx(&b.g, NULL, 0, 0);
     run(&b, 0, 1);
     CHECK(!b.tx && b.g.stats.violations == 1, "lease gone: released (%ld)", b.g.stats.violations);
@@ -287,7 +287,7 @@ static void test_guard_odr(void)
     /* a lease that still covers it: no violation */
     setup(&b, RDOF_GUARD_ODR, NULL, 0);
     b.tx = true;
-    b.tx_hz = 446100000;
+    b.tx_hz = 438100000;
     rdof_guard_set_tx(&b.g, tx, 1, 0);
     run(&b, 0, 1);
     CHECK(b.tx && !b.g.stats.violations, "lease covers it");
@@ -308,7 +308,7 @@ static void test_guard_odr(void)
 static void test_guard_mmdvm(void)
 {
     static bench_t b;
-    const uint32_t tx[] = {446100000};
+    const uint32_t tx[] = {438100000};
     uint8_t f[32] = {0xE0, 17, 0x04, 0};
     setup(&b, RDOF_GUARD_MMDVM, tx, 1);
     b.answers = false;
@@ -321,7 +321,7 @@ static void test_guard_mmdvm(void)
 
     /* SET_FREQ off the lease: NAK */
     b.ntool = 0;
-    uint32_t rx_hz = 446100000, bad = 446200000;
+    uint32_t rx_hz = 438100000, bad = 438200000;
     memcpy(f + 4, &rx_hz, 4);
     memcpy(f + 8, &bad, 4);
     f[12] = 255;
@@ -354,7 +354,7 @@ static void test_guard_mmdvm(void)
     setup(&b, RDOF_GUARD_MMDVM, tx, 1);
     b.answers = false;
     rdof_guard_tool(&b.g, f, 17, 0);
-    const uint32_t both[] = {446100000, 446200000}, other[] = {446200000};
+    const uint32_t both[] = {438100000, 438200000}, other[] = {438200000};
     rdof_guard_set_tx(&b.g, both, 2, 0);
     b.nrx = b.ntool = 0;
     rdof_guard_tool(&b.g, d, sizeof d, 0);
@@ -380,43 +380,59 @@ static int parse(const char *json, rdof_bench_radio_t *r, char *err)
     return rdof_bench_radios_parse(json, strlen(json), r, RDOF_BENCH_MAX_RADIOS, err, 160);
 }
 
+/* Settings with these devices, all on the bench. */
+static int bench(const char *devices, const char *names, rdof_bench_radio_t *r, char *err)
+{
+    char json[700];
+    snprintf(json, sizeof json, "{\"version\": 3, \"devices\": %s, \"bench\": {\"devices\": %s}}", devices, names);
+    return parse(json, r, err);
+}
+
 static void test_bench_radios(void)
 {
     rdof_bench_radio_t r[RDOF_BENCH_MAX_RADIOS];
     char err[160];
-    CHECK(parse("{\"name\": \"box\"}", r, err) == 0, "no bench: none");
-    CHECK(parse("{\n // the spec's three\n \"bench\": {\"radios\": [\n"
-                "{\"name\": \"odr1\", \"proto\": \"odr-debug\", \"port\": {\"uart\": 1, \"tx\": 17, \"rx\": 18, \"baud\": 921600}},\n"
-                "{\"name\": \"hs1\", \"proto\": \"mmdvm\", \"port\": {\"usb\": \"cdc-acm\", \"vid\": \"0483\", \"pid\": \"5740\"}},\n"
-                "{\"name\": \"odr2\", \"port\": {\"usb\": \"uart\", \"serial\": \"FT1A2B3C\", \"baud\": 921600}},]}}",
+    CHECK(parse("{\"version\": 3, \"name\": \"box\"}", r, err) == 0, "no bench: none");
+    CHECK(parse("{\n // the spec's three\n \"version\": 3, \"devices\": [\n"
+                "{\"name\": \"odr1\", \"kind\": \"radio\", \"port\": {\"uart\": 1, \"tx\": 17, \"rx\": 18, \"baud\": 921600}},\n"
+                "{\"name\": \"hs1\", \"kind\": \"modem\", \"transmits\": false, \"hears\": false,"
+                " \"port\": {\"usb\": \"cdc-acm\", \"vid\": \"0483\", \"pid\": \"5740\"}},\n"
+                "{\"name\": \"odr2\", \"kind\": \"radio\", \"port\": {\"usb\": \"uart\", \"serial\": \"FT1A2B3C\", \"baud\": 921600}},],\n"
+                " \"bench\": {\"devices\": [\"odr1\", \"hs1\", \"odr2\"]}}",
                 r, err) == 3, "%s", err);
     CHECK(r[0].port == RDOF_BPORT_UART && r[0].uart == 1 && r[0].tx == 17 && r[0].rx == 18 && r[0].rts == -1 &&
               r[0].baud == 921600, "uart");
     CHECK(r[1].port == RDOF_BPORT_CDC_ACM && r[1].vid == 0x0483 && r[1].pid == 0x5740 && !strcmp(r[1].proto, "mmdvm"),
           "cdc-acm");
     CHECK(r[2].port == RDOF_BPORT_USB_UART && !r[2].vid && !strcmp(r[2].serial, "FT1A2B3C") &&
-              !strcmp(r[2].proto, "odr-debug"), "usb uart, proto by default");
-    static const char *const bad[] = {
-        "{\"bench\": {\"radios\": {}}}",
-        "{\"bench\": {\"radios\": [{\"port\": {\"uart\": 1, \"tx\": 1, \"rx\": 2}}]}}",
-        "{\"bench\": {\"radios\": [{\"name\": \"a b\", \"port\": {\"uart\": 1, \"tx\": 1, \"rx\": 2}}]}}",
-        "{\"bench\": {\"radios\": [{\"name\": \"a\", \"proto\": \"p25\", \"port\": {\"uart\": 1, \"tx\": 1, \"rx\": 2}}]}}",
-        "{\"bench\": {\"radios\": [{\"name\": \"a\", \"port\": {\"uart\": 0, \"tx\": 1, \"rx\": 2}}]}}",
-        "{\"bench\": {\"radios\": [{\"name\": \"a\", \"port\": {\"uart\": 1, \"tx\": 1}}]}}",
-        "{\"bench\": {\"radios\": [{\"name\": \"a\", \"port\": {\"uart\": 1, \"tx\": 1, \"rx\": 1}}]}}",
-        "{\"bench\": {\"radios\": [{\"name\": \"a\", \"port\": {\"uart\": 1, \"usb\": \"cdc-acm\", \"tx\": 1, \"rx\": 2}}]}}",
-        "{\"bench\": {\"radios\": [{\"name\": \"a\", \"port\": {\"usb\": \"hid\"}}]}}",
-        "{\"bench\": {\"radios\": [{\"name\": \"a\", \"port\": {\"usb\": \"uart\", \"vid\": \"0483\", \"pid\": \"5740\"}}]}}",
-        "{\"bench\": {\"radios\": [{\"name\": \"a\", \"port\": {\"usb\": \"cdc-acm\", \"pid\": \"5740\"}}]}}",
-        "{\"bench\": {\"radios\": [{\"name\": \"a\", \"port\": {\"usb\": \"uart\"}},"
-        " {\"name\": \"a\", \"port\": {\"usb\": \"uart\"}}]}}",
-        "{\"bench\": {\"radios\": [{\"name\": \"a\", \"port\": {\"usb\": \"cdc-acm\"}}]}}",
-        "{\"bench\": {\"radios\": [{\"name\": \"a\", \"port\": {\"usb\": \"cdc-acm\", \"vid\": \"0bda\", \"pid\": \"2838\"}}]}}",
-        "{\"bench\": {\"radios\": [{\"name\": \"a\", \"port\": {\"uart\": 1, \"tx\": 1, \"rx\": 2}},"
-        " {\"name\": \"b\", \"port\": {\"uart\": 1, \"tx\": 3, \"rx\": 4}}]}}",
+              !strcmp(r[2].proto, "odr-debug"), "usb uart, a radio's proto");
+    static const struct {
+        const char *devices, *names;
+    } bad[] = {
+        {"[{\"name\": \"a\", \"kind\": \"radio\", \"port\": {\"uart\": 1, \"tx\": 1, \"rx\": 2}}]", "{}"},
+        {"[{\"kind\": \"radio\", \"port\": {\"uart\": 1, \"tx\": 1, \"rx\": 2}}]", "[\"a\"]"},
+        {"[{\"name\": \"a b\", \"kind\": \"radio\", \"port\": {\"uart\": 1, \"tx\": 1, \"rx\": 2}}]", "[\"a b\"]"},
+        {"[{\"name\": \"a\", \"kind\": \"radio\", \"port\": {\"uart\": 1, \"tx\": 1, \"rx\": 2}}]", "[\"b\"]"},
+        {"[{\"name\": \"a\", \"kind\": \"radio\", \"port\": {\"uart\": 0, \"tx\": 1, \"rx\": 2}}]", "[\"a\"]"},
+        {"[{\"name\": \"a\", \"kind\": \"radio\", \"port\": {\"uart\": 1, \"tx\": 1}}]", "[\"a\"]"},
+        {"[{\"name\": \"a\", \"kind\": \"radio\", \"port\": {\"uart\": 1, \"tx\": 1, \"rx\": 1}}]", "[\"a\"]"},
+        {"[{\"name\": \"a\", \"kind\": \"radio\", \"port\": {\"uart\": 1, \"usb\": \"cdc-acm\", \"tx\": 1, \"rx\": 2}}]",
+         "[\"a\"]"},
+        {"[{\"name\": \"a\", \"kind\": \"radio\", \"port\": {\"usb\": \"hid\"}}]", "[\"a\"]"},
+        {"[{\"name\": \"a\", \"kind\": \"radio\", \"port\": {\"usb\": \"uart\", \"vid\": \"0483\", \"pid\": \"5740\"}}]",
+         "[\"a\"]"},
+        {"[{\"name\": \"a\", \"kind\": \"radio\", \"port\": {\"usb\": \"cdc-acm\", \"pid\": \"5740\"}}]", "[\"a\"]"},
+        {"[{\"name\": \"a\", \"kind\": \"radio\", \"port\": {\"usb\": \"uart\"}},"
+         " {\"name\": \"a\", \"kind\": \"radio\", \"port\": {\"usb\": \"uart\"}}]", "[\"a\"]"},
+        {"[{\"name\": \"a\", \"kind\": \"radio\", \"port\": {\"usb\": \"uart\"}}]", "[\"a\", \"a\"]"},
+        {"[{\"name\": \"a\", \"kind\": \"radio\", \"port\": {\"usb\": \"cdc-acm\"}}]", "[\"a\"]"},
+        {"[{\"name\": \"a\", \"kind\": \"radio\", \"port\": {\"usb\": \"cdc-acm\", \"vid\": \"0bda\", \"pid\": \"2838\"}}]",
+         "[\"a\"]"},
+        {"[{\"name\": \"a\", \"kind\": \"radio\", \"port\": {\"uart\": 1, \"tx\": 1, \"rx\": 2}},"
+         " {\"name\": \"b\", \"kind\": \"radio\", \"port\": {\"uart\": 1, \"tx\": 3, \"rx\": 4}}]", "[\"a\", \"b\"]"},
     };
     for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++)
-        CHECK(parse(bad[i], r, err) == -1 && err[0], "bad %zu: %s", i, bad[i]);
+        CHECK(bench(bad[i].devices, bad[i].names, r, err) == -1 && err[0], "bad %zu: %s", i, bad[i].devices);
     CHECK(rdof_bench_usb_bridge(0x0403, 0x6001) == 'f' && rdof_bench_usb_bridge(0x10C4, 0xEA60) == 'c' &&
               rdof_bench_usb_bridge(0x1A86, 0x7523) == 'h' && !rdof_bench_usb_bridge(0x1A86, 0x55D4), "bridges");
 }
@@ -428,13 +444,13 @@ static void test_guard_tune(void)
     b.power = 2;
     b.hotspot = true;
     b.busy_left = 2;
-    rdof_guard_tune_t t = {.freq_hz = 451775000, .cc = 3, .slot = 1, .tg = 9};
+    rdof_guard_tune_t t = {.freq_hz = 438500000, .cc = 3, .slot = 1, .tg = 9};
     CHECK(rdof_guard_tune(&b.g, &t, 0), "%s", b.g.tune_error);
     pump(&b, 0);
     CHECK(rdof_guard_tune_state(&b.g) == RDOF_TUNE_RUNNING, "running");
     run(&b, 0, 2);
     CHECK(rdof_guard_tune_state(&b.g) == RDOF_TUNE_OK, "tuned: %s", b.g.tune_error);
-    CHECK(b.rx_hz == 451775000 && b.mode == 1 && b.cc == 3 && b.ts == 1 && b.target == 9 && !b.hotspot,
+    CHECK(b.rx_hz == 438500000 && b.mode == 1 && b.cc == 3 && b.ts == 1 && b.target == 9 && !b.hotspot,
           "rx %u mode %d cc %d ts %d target %u", b.rx_hz, b.mode, b.cc, b.ts, b.target);
     CHECK(b.power == 0 && !rdof_guard_busy(&b.g) && b.ntool == 0, "power %d after the tune's check", b.power);
     CHECK(b.order[0] == 0x0A && b.g.stats.checks == 1, "requests first, then one check");
@@ -454,10 +470,10 @@ static void test_guard_tune(void)
 
     setup(&b, RDOF_GUARD_ODR, NULL, 0); /* answers OK but stays where it was */
     b.ignore_vfo = true;
-    b.rx_hz = 461000000;
+    b.rx_hz = 438025000;
     rdof_guard_tune(&b.g, &t, 0);
     run(&b, 0, 2);
-    CHECK(rdof_guard_tune_state(&b.g) == RDOF_TUNE_FAILED && strstr(b.g.tune_error, "461.00000"), "%s", b.g.tune_error);
+    CHECK(rdof_guard_tune_state(&b.g) == RDOF_TUNE_FAILED && strstr(b.g.tune_error, "438.02500"), "%s", b.g.tune_error);
 
     setup(&b, RDOF_GUARD_ODR, NULL, 0); /* a radio that never answers */
     b.answers = false;
@@ -475,7 +491,7 @@ static void test_guard_tune(void)
 static void test_guard_faults(void)
 {
     static bench_t b;
-    const uint32_t tx[] = {446100000};
+    const uint32_t tx[] = {438100000};
     uint8_t f[64];
     const uint8_t on = 1;
     /* no view: the check fails, and a PTT it held is refused */

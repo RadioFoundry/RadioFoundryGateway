@@ -14,12 +14,12 @@ the network), [sdr-tx.md](sdr-tx.md) (the modulator, the SDR modem), [sdr-rx.md]
 A W12 should hear 3 to 5 frequencies at once and, when a call has to go out, key its one transmitter on that call's
 frequency. Today it can't, quite:
 
-- Config v3 lowers a transmitting SDR to a `roamer` over its simplex frequencies plus a `monitor` of all of them
+- The settings made a transmitting SDR a `roamer` over its simplex frequencies plus a `monitor` of all of them
   (config-v3.md §12). The roamer is a modem's state machine: one receive channel and the transmitter, tuned together.
 - The router already tunes that roamer to a network call's frequency (config-v3.md §9.4, `txvr_for`). Nothing else
   uses that: the parrot and the IP gateway are options of a role and answer on the roamer's channel only, and they
   hear only that channel (`sdrmodem.c` feeds the roamer's modem from its tuned channel).
-- A version 2 `sdr_transceiver` scans to get near this: it hears one channel at a time.
+- An SDR transceiver that scans gets near this, but it hears one channel at a time.
 
 ## 2. The model
 
@@ -123,15 +123,13 @@ transmits.
 ## 7. Config
 
 No new keys. A version 3 file already says what a device hears and where it may transmit (`hears`, `transmits`,
-config-v3.md §4). The lowering (config-v3.md §12) changes for an SDR that transmits on simplex frequencies:
+config-v3.md §4). What runs (the units, config-v3.md §12) changes for an SDR that transmits on simplex frequencies:
 
 | Version 3 | Runs as today | Runs as |
 |---|---|---|
-| an SDR that transmits on simplex frequencies | a `roamer` named after the device, plus `<device>-rx` | a `transmitter` named after the device, plus `<device>-rx` |
-| a modem or radio that transmits | a `roamer` | the same |
-| `parrot`, `ipgw` apps | the `parrot` of each role, `ip_gateway` with its `tx` role | apps on the router (§5); `ipgw.tx` is not needed |
-
-A version 2 `sdr_transceiver` runs as it does now; a box that wants the split uses a version 3 file.
+| an SDR that transmits on simplex frequencies | a transceiver unit named after the device, plus `<device>-rx` | a `transmitter` named after the device, plus `<device>-rx` |
+| a modem or radio that transmits | a transceiver unit | the same |
+| `parrot`, `ipgw` apps | the parrot of each unit, the IP gateway on its `tx` unit | apps on the router (§5); `ipgw.tx` is not needed |
 
 The W12 with three frequencies:
 
@@ -139,12 +137,13 @@ The W12 with three frequencies:
 {
   "version": 3,
   "name": "w12",
+  "id": 9990501,
   "defaults": {"cc": 1},
   "devices": [{"name": "w12", "kind": "sdr", "driver": "lr2021"}],
   "frequencies": [
     {"freq": 438.075, "power": 22}, {"freq": 438.1, "power": 22}, {"freq": 438.125, "power": 22}
   ],
-  "apps": [{"type": "parrot", "pc": "9990"}, {"type": "ipgw", "pc": "9991"}]
+  "apps": [{"type": "parrot", "pc": "9990"}, {"type": "ipgw", "pc": "9991", "nat": true}]
 }
 ```
 
@@ -170,7 +169,7 @@ The OLED's TX row shows the transmitter's path while it sends or holds.
 | Step | What | Test |
 |---|---|---|
 | 1 | The pool in `common/` (`txpool.c`: requests, holding, preemption), used by `siteroute.c` in place of `txvr_for`. Done | `test_site.c:test_txpool`, every rule in §4 |
-| 2 | The transmitter: the SDR modem's transmit half, tuned per stream. Done as the roamer (§12) | host test of the lowering; the W12 on the §7 file, a network call on each frequency |
+| 2 | The transmitter: the SDR modem's transmit half, tuned per stream. Done as the roamer (§12) | host test of the units (`test_plan.c`); the W12 on the §7 file, a network call on each frequency |
 | 3 | Apps on the router: calls carry their path; the parrot and IP gateway hear every path and answer by request. Done; the W12's parrot answered on each of its three frequencies (2026-11-01) | `test_site.c` (app bursts), `test_parrot.c:test_frequencies`; the parrot called on each of the W12's three frequencies |
 | 4 | Half duplex: the blind span (§6). Done, but not the slot timing | `test_sdr.c`; the W12 with calls on two frequencies while it transmits |
 | 5 | The MQTT network (mqtt-net.md phase 1): `dl` and `tg` streams make the same requests (`rdof_siteroute_app_burst` with the path byte, or the network path with `take_hold`) | mqtt-net.md §13 |
@@ -186,10 +185,10 @@ The OLED's TX row shows the transmitter's path while it sends or holds.
 
 ## 12. How it's built
 
-- **The transmitter is the roamer.** The lowering is unchanged: an SDR that transmits on simplex frequencies is a
-  `roamer` named after the device, plus `<device>-rx`. The roamer's transceiver (`rdof_txvr` over the SDR modem) is
-  in the router's pool with those frequencies, and the router tunes it per stream (`rdof_txvr_on_tune`). Under version
-  3 the roamer reports nothing it hears (the receiver reports it), has no parrot of its own, and still hears its tuned
+- **The transmitter is the roamer.** An SDR that transmits on simplex frequencies is a transceiver unit named after
+  the device, run as a roamer, plus `<device>-rx`. The roamer's transceiver (`rdof_txvr` over the SDR modem) is
+  in the router's pool with those frequencies, and the router tunes it per stream (`rdof_txvr_on_tune`). The roamer
+  reports nothing it hears (the receiver reports it), has no parrot of its own, and still hears its tuned
   channel to listen before talking (`rx_path.c`, `radio_task.c`).
 - **Apps** call `rdof_siteroute_app_burst(path, burst, take_hold)`: the pool's transceiver, tuned at the stream's first
   burst, the burst on the path's slot. `rdof_siteroute_app_ready` says whether one would take a new stream now.
@@ -199,14 +198,13 @@ The OLED's TX row shows the transmitter's path while it sends or holds.
     transmitter (`ready`, up to `RDOF_PARROT_WAIT_S`), and plays back on the path it heard. A repeater keeps its own
     parrot, and the box parrot takes nothing heard on a repeater's paths.
   - The IP gateway sends on the path the radio was last heard on (its frequency and slot), with `take_hold`. Its
-    settings are the ipgw app's, as the lowering writes them (`rdof_ipgw_settings_parse` lowers a version 3
-    document). Tested on a W12 (2026-11-01) with a DM-32UV on 438.075: a UDP datagram through NAT to an echo server
+    settings are the ipgw app's (`rdof_plan_ipgw`, config-v3.md §6.3). Tested on a W12 (2026-11-01) with a DM-32UV on 438.075: a UDP datagram through NAT to an echo server
     and its reply back on air (a header and five blocks), and a confirmed one whose ACK went out the same way.
   - A bench job (`WS /tx via=modem`, or the line protocol's) goes through the pool when the roamer has the SDR modem
     (bench-api.md section 7): `rdof_benchroute` answers it as an MMDVM modem would, each call a stream
     (`0x4245nnnn`) on the path at the job's frequency, without `take_hold`. It sends at the device's power, not
     `bench.tx.rf_level`.
-- **Power:** the SDR modem transmits at the device's `tx.power_dbm` (default 10 dBm), lowered to the roamer's
+- **Power:** the SDR modem transmits at the device's `tx.power_dbm` (default 10 dBm), copied to the roamer's
   `tx_power_dbm`. A frequency's `power` (the 0-255 level of a modem's `SET_FREQ`) doesn't reach it.
 - **The blind span** is the receiver's, not a path's: the LR2021 front end sets `blind_when_muted`, and while the SDR
   modem's transmission covers the stream every channel's tracker stops aging (`rdof_tracker_blind` moves its calls'

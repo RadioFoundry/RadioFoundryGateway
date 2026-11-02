@@ -102,7 +102,7 @@ static void prof_start(void)
 
 static double load_run(int nch, int rate, const double *off, int split, const uint8_t burst[33], int *split_used)
 {
-    const double center = 461e6;
+    const double center = 439e6;
     rdof_sdr_channel_t ch[RDOF_SDR_MAX_CHANNELS];
     rdof_mod_t *mods = heap_caps_calloc(nch, sizeof *mods, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     rdof_cf_t *iq = heap_caps_malloc(sizeof(rdof_cf_t) * CLIP_CHUNK, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
@@ -171,8 +171,7 @@ static void load_test(void)
 {
     int nch = 8, rates[4] = {288000}, nr = 1;
     /* The stored settings are JSON with comments (and maybe trailing commas): strip them first, as the settings'
-     * own parser does, or cJSON gives up and the defaults would run without a word. "selftest_load" at the top,
-     * or in the SDR's section of radios. */
+     * own parser does, or cJSON gives up and the defaults would run without a word. "selftest_load" at the top. */
     char *text = settings_text();
     size_t tl = text ? strlen(text) : 0;
     char *clean = text ? malloc(tl + 1) : NULL;
@@ -184,9 +183,7 @@ static void load_test(void)
     if (!root)
         ESP_LOGW(TAG, "load: the stored settings didn't parse here: the defaults run");
     o = cJSON_GetObjectItem(root, "selftest_load");
-    const cJSON *radios = cJSON_GetObjectItem(root, "radios"), *e;
-    cJSON_ArrayForEach(e, radios) if (!o && cJSON_IsObject(e) && !cJSON_IsFalse(cJSON_GetObjectItem(e, "enabled")))
-        o = cJSON_GetObjectItem(e, "selftest_load");
+    const cJSON *e;
     if (o && !cJSON_IsObject(o))
         ESP_LOGW(TAG, "load: selftest_load is an object, {\"channels\": 8, \"rates\": [288000]}: the defaults run");
     if (cJSON_IsObject(o)) {
@@ -425,7 +422,7 @@ void spike_run(void)
     rtl_spike_result_t r[RATES * PLANS];
     ESP_LOGI(TAG, "USB throughput spike: %d rates x %d transfer plans, 5 s each (about a minute and a half)", RATES,
              PLANS);
-    int n = rtl_usb_spike(rates, RATES, plans, PLANS, 461162500, 5, r, RATES * PLANS);
+    int n = rtl_usb_spike(rates, RATES, plans, PLANS, 438187500, 5, r, RATES * PLANS);
     size_t o = 0;
     for (int i = 0; i < n && o < sizeof g_sstat.spike; i++)
         o += (size_t)snprintf(g_sstat.spike + o, sizeof g_sstat.spike - o, "%lu:%dx%d %.1f%%; ",

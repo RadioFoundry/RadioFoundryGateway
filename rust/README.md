@@ -30,6 +30,9 @@ all of them, and needs every `RDOF_FEATURE_*` on (the Rust is that build). `RDOF
 | `slotgrid.rs` | `common/src/slotgrid.c` (`floor` and `%.3f` through the C library) |
 | `status.rs` | `common/src/status.c` (`repr()` through the C library's `snprintf` and `strtod`) |
 
+`config.rs` and `benchcfg.rs` read the version 3 plan, which stays C (`siteplan.c`, `site.c`): `src/plan.rs`
+mirrors its structs and declares the accessors they call.
+
 Code copied from RadioFoundry (`common/src/radiofoundry`) stays C for now; the Rust calls it through `src/ffi.rs`.
 
 ## Structs shared with C

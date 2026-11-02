@@ -221,7 +221,9 @@ static sx_t *sx_new(bool full, int inbound_slot)
     rdof_tracker_add_sink(&e->tr, rs);
 
     rdof_ipgw_config_t c;
-    const char *json = "{\"ip_gateway\": {\"id\": 9990, \"nat\": true, \"up_pps\": 0, \"down_pps\": 0}}";
+    const char *json = "{\"version\": 3, \"name\": \"b\", \"id\": 9990100, \"defaults\": {\"cc\": 1}, \"frequencies\": [438.075],"
+                       " \"devices\": [{\"name\": \"w12\", \"kind\": \"sdr\", \"driver\": \"lr2021\"}],"
+                       " \"apps\": [{\"type\": \"ipgw\", \"pc\": 9990, \"nat\": true, \"up_pps\": 0, \"down_pps\": 0}]}";
     char err[160];
     CHECK(rdof_ipgw_settings_parse(json, strlen(json), &c, err, sizeof err), "settings: %s", err);
     rdof_ipgw_init(&e->g, &c);

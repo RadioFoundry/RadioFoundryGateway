@@ -2,12 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://radiofoundry.org/schema/rdof-config.schema.json",
   "title": "RadioFoundry Gateway settings",
-  "description": "Version 3 (docs/spec/fw/config-v3.md) or version 2 (docs/spec/fw/rxtx-combinations.md section 4). The C parsers (common/src/site.c, common/src/setup.c) are the authority: they also check that names exist, who owns what, and what fits the platform.",
-  "type": "object",
-  "required": ["version"],
-  "if": {"properties": {"version": {"const": 3}}},
-  "then": {"$ref": "#/$defs/v3"},
-  "else": {"$ref": "#/$defs/v2"},
+  "description": "Version 3 (docs/spec/fw/config-v3.md). The C parsers (common/src/site.c, common/src/siteplan.c and each part's own) are the authority: they also check that names exist, who owns what, and what fits the platform.",
+  "$ref": "#/$defs/v3",
   "$defs": {
     "name": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,39}$", "description": "Letters, digits, '-', '_' and '.'."},
     "freq": {"type": "number", "exclusiveMinimum": 0, "description": "MHz (below 10000) or Hz."},
@@ -31,31 +27,6 @@
         "longitude": {"type": "number", "minimum": -180, "maximum": 180},
         "lon": {"type": "number", "minimum": -180, "maximum": 180},
         "height": {"type": "number"}
-      }
-    },
-    "mqtt": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "host": {"type": "string"},
-        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
-        "username": {"type": "string"},
-        "password": {"type": "string"},
-        "root": {"type": "string"},
-        "tls": {"type": "boolean"}
-      }
-    },
-    "hblink": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "host": {"type": "string"},
-        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
-        "transport": {"enum": ["udp", "sctp"]},
-        "sctp_encap_port": {"type": "integer", "minimum": 0, "maximum": 65535},
-        "sctp_heartbeat_ms": {"type": "integer", "minimum": 0},
-        "sctp_max_retransmit": {"type": "integer", "minimum": 0},
-        "sctp_ttl_ms": {"type": "integer", "minimum": 0}
       }
     },
     "slot_timing": {
@@ -136,16 +107,6 @@
         {"type": "integer", "minimum": 0, "maximum": 65535}
       ]
     },
-    "device": {
-      "type": "object",
-      "required": ["kind"],
-      "properties": {"kind": {"enum": ["sdr", "modem", "radio"]}},
-      "allOf": [
-        {"if": {"properties": {"kind": {"const": "sdr"}}}, "then": {"$ref": "#/$defs/sdr_device"}},
-        {"if": {"properties": {"kind": {"const": "modem"}}}, "then": {"$ref": "#/$defs/modem_device"}},
-        {"if": {"properties": {"kind": {"const": "radio"}}}, "then": {"$ref": "#/$defs/radio_device"}}
-      ]
-    },
     "sdr_keys": {
       "description": "A sample stream in, and out if it has \"tx\".",
       "properties": {
@@ -189,7 +150,7 @@
         },
         "tx": {
           "type": "object",
-          "description": "It transmits. The broker gives each role on it a carrier at the role's frequency.",
+          "description": "It transmits: the router tunes a carrier for each stream it sends.",
           "additionalProperties": false,
           "properties": {
             "carriers": {
@@ -221,11 +182,9 @@
         "sim_ppm": {"type": "number"},
         "afc": {},
         "rssi_offset": {"type": "number"},
-        "status_seconds": {"type": "number", "minimum": 0},
-        "selftest_load": {"$ref": "#/$defs/selftest_load"}
+        "status_seconds": {"type": "number", "minimum": 0}
       }
     },
-    "sdr_device": {"$ref": "#/$defs/sdr_keys", "unevaluatedProperties": false},
     "modem_keys": {
       "description": "Anything that speaks MMDVM on a serial port.",
       "required": ["port"],
@@ -269,7 +228,6 @@
         "bench": {"$ref": "#/$defs/dev_bench"}
       }
     },
-    "modem_device": {"$ref": "#/$defs/modem_keys", "unevaluatedProperties": false},
     "radio_keys": {
       "description": "A RadioFoundry radio on its debug link (a bench device).",
       "required": ["port"],
@@ -279,52 +237,9 @@
         "bench": {"$ref": "#/$defs/dev_bench"}
       }
     },
-    "radio_device": {"$ref": "#/$defs/radio_keys", "unevaluatedProperties": false},
-    "devref": {
-      "type": "object",
-      "required": ["device"],
-      "additionalProperties": false,
-      "properties": {"device": {"type": "string", "description": "A device's name, or \"auto\"."}}
-    },
-    "chan_ref": {
-      "oneOf": [
-        {"type": "integer", "minimum": 0},
-        {
-          "type": "object",
-          "required": ["ch"],
-          "additionalProperties": false,
-          "properties": {
-            "ch": {"type": "integer", "minimum": 0},
-            "cc": {"$ref": "#/$defs/cc"},
-            "power": {"$ref": "#/$defs/power"}
-          }
-        }
-      ]
-    },
-    "mon_chan_ref": {
-      "oneOf": [
-        {"type": "integer", "minimum": 0},
-        {
-          "type": "object",
-          "required": ["ch"],
-          "additionalProperties": false,
-          "properties": {
-            "ch": {"type": "integer", "minimum": 0},
-            "id": {},
-            "freq": {"$ref": "#/$defs/freq"},
-            "name": {"type": "string"},
-            "cc": {"$ref": "#/$defs/cc"},
-            "slot": {"$ref": "#/$defs/slot"},
-            "tg": {"type": "integer", "minimum": 0},
-            "hblink": {"type": "boolean"},
-            "peer_id": {"type": "integer", "minimum": 0}
-          }
-        }
-      ]
-    },
     "split": {
       "type": "object",
-      "description": "A role whose RX and TX are two devices.",
+      "description": "A repeater app whose in and out are two devices.",
       "additionalProperties": false,
       "properties": {
         "power_cap": {},
@@ -332,151 +247,6 @@
         "lease_s": {"type": "number", "minimum": 0},
         "cooldown_s": {"type": "number", "minimum": 0},
         "max_key_s": {"type": "number", "minimum": 0}
-      }
-    },
-    "talker": {
-      "description": "The keys every role but a monitor takes: a modem, or rx and tx.",
-      "properties": {
-        "enabled": {"type": "boolean"},
-        "modem": {"$ref": "#/$defs/devref"},
-        "rx": {"$ref": "#/$defs/devref"},
-        "tx": {"$ref": "#/$defs/devref"},
-        "hblink": {},
-        "location": {"$ref": "#/$defs/location"},
-        "peer_id": {"type": "integer", "minimum": 0},
-        "callsign": {"type": "string"},
-        "cwid": {"type": "string"},
-        "cwid_every_s": {"type": "number", "minimum": 0},
-        "parrot": {},
-        "prebuffer": {},
-        "jitter_buffer": {},
-        "jitter_min_ms": {"type": "number", "minimum": 0},
-        "jitter_max_ms": {"type": "number", "minimum": 0}
-      },
-      "oneOf": [
-        {"required": ["modem"], "not": {"anyOf": [{"required": ["rx"]}, {"required": ["tx"]}]}},
-        {"required": ["rx", "tx"], "not": {"required": ["modem"]}}
-      ]
-    },
-    "role": {
-      "type": "object",
-      "required": ["type"],
-      "properties": {"type": {"enum": ["roamer", "repeater", "sfr", "dcdm", "monitor"]}},
-      "allOf": [
-        {"if": {"properties": {"type": {"const": "roamer"}}}, "then": {"$ref": "#/$defs/roamer"}},
-        {"if": {"properties": {"type": {"const": "repeater"}}}, "then": {"$ref": "#/$defs/repeater"}},
-        {"if": {"properties": {"type": {"const": "sfr"}}}, "then": {"$ref": "#/$defs/sfr"}},
-        {"if": {"properties": {"type": {"const": "dcdm"}}}, "then": {"$ref": "#/$defs/dcdm"}},
-        {"if": {"properties": {"type": {"const": "monitor"}}}, "then": {"$ref": "#/$defs/monitor"}}
-      ]
-    },
-    "roamer": {
-      "description": "A roaming transceiver.",
-      "$ref": "#/$defs/talker",
-      "required": ["idle"],
-      "unevaluatedProperties": false,
-      "properties": {
-        "type": {"const": "roamer"},
-        "idle": {
-          "description": "Where it waits: a channel number, or {\"freq\", \"cc\"}.",
-          "oneOf": [
-            {"$ref": "#/$defs/chan_ref"},
-            {
-              "type": "object",
-              "required": ["freq", "cc"],
-              "additionalProperties": false,
-              "properties": {"freq": {"$ref": "#/$defs/freq"}, "cc": {"$ref": "#/$defs/cc"}}
-            }
-          ]
-        },
-        "channels": {"oneOf": [{"const": "all"}, {"type": "array", "items": {"$ref": "#/$defs/chan_ref"}}]},
-        "listen_s": {"type": "number", "minimum": 0},
-        "clear_s": {"type": "number", "minimum": 0},
-        "idle_after_s": {"type": "number", "minimum": 0},
-        "scan": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "channels": {},
-            "dwell_s": {"type": "number"},
-            "hang_s": {"type": "number"},
-            "carrier_s": {"type": "number"}
-          }
-        },
-        "csbk_preambles": {"type": "integer", "minimum": 0},
-        "answer_s": {"type": "number", "minimum": 0},
-        "answer_max_s": {"type": "number", "minimum": 0}
-      }
-    },
-    "repeater": {
-      "description": "A duplex repeater.",
-      "$ref": "#/$defs/talker",
-      "required": ["rx_freq", "tx_freq"],
-      "unevaluatedProperties": false,
-      "properties": {
-        "type": {"const": "repeater"},
-        "rx_freq": {"$ref": "#/$defs/freq"},
-        "tx_freq": {"$ref": "#/$defs/freq"},
-        "cc": {"$ref": "#/$defs/cc"},
-        "power": {"$ref": "#/$defs/power"},
-        "slots": {"type": "array", "items": {"$ref": "#/$defs/slot"}, "minItems": 1, "maxItems": 2},
-        "hang_s": {"type": "number", "minimum": 0},
-        "call_hang_s": {"type": "number", "minimum": 0},
-        "short_lc_ts1_low": {"type": "boolean"},
-        "slot_timing": {"$ref": "#/$defs/slot_timing"},
-        "split": {"$ref": "#/$defs/split"}
-      }
-    },
-    "sfr": {
-      "description": "A single frequency repeater (a radio in hotspot mode times its slots).",
-      "$ref": "#/$defs/talker",
-      "required": ["freq"],
-      "unevaluatedProperties": false,
-      "properties": {
-        "type": {"const": "sfr"},
-        "freq": {"$ref": "#/$defs/freq"},
-        "cc": {"$ref": "#/$defs/cc"},
-        "power": {"$ref": "#/$defs/power"},
-        "hang_s": {"type": "number", "minimum": 0},
-        "call_hang_s": {"type": "number", "minimum": 0},
-        "inbound_slot": {"$ref": "#/$defs/slot"},
-        "short_lc_ts1_low": {"type": "boolean"},
-        "slot_timing": {"$ref": "#/$defs/slot_timing"}
-      }
-    },
-    "dcdm": {
-      "description": "Dual capacity direct mode.",
-      "$ref": "#/$defs/talker",
-      "required": ["freq"],
-      "unevaluatedProperties": false,
-      "properties": {
-        "type": {"const": "dcdm"},
-        "freq": {"$ref": "#/$defs/freq"},
-        "cc": {"$ref": "#/$defs/cc"},
-        "power": {"$ref": "#/$defs/power"},
-        "slots": {"type": "array", "items": {"$ref": "#/$defs/slot"}, "minItems": 1, "maxItems": 2},
-        "hang_s": {"type": "number", "minimum": 0},
-        "call_hang_s": {"type": "number", "minimum": 0},
-        "short_lc_ts1_low": {"type": "boolean"},
-        "slot_timing": {"$ref": "#/$defs/slot_timing"},
-        "duplex": {"enum": ["half", "full"], "description": "On an SDR: full transmits while it receives."}
-      }
-    },
-    "monitor": {
-      "description": "Receive only: channels on one SDR.",
-      "required": ["rx", "channels"],
-      "additionalProperties": false,
-      "properties": {
-        "type": {"const": "monitor"},
-        "enabled": {"type": "boolean"},
-        "rx": {"$ref": "#/$defs/devref"},
-        "channels": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/mon_chan_ref"}},
-        "receiver_ids": {"type": "string"},
-        "peer_ids": {"type": "integer", "minimum": 0},
-        "callsign": {"type": "string"},
-        "hblink": {"type": "boolean"},
-        "location": {"$ref": "#/$defs/location"},
-        "slot_timing": {"$ref": "#/$defs/slot_timing"}
       }
     },
     "idset": {
@@ -558,6 +328,14 @@
       },
       "unevaluatedProperties": false
     },
+    "active_slots": {
+      "type": "array",
+      "items": {"enum": [1, 2]},
+      "minItems": 1,
+      "maxItems": 2,
+      "uniqueItems": true,
+      "description": "The slots it repeats (default both)."
+    },
     "freq3": {
       "anyOf": [
         {"$ref": "#/$defs/freq"},
@@ -576,12 +354,19 @@
             "devices": {"type": "array", "items": {"type": "string"}},
             "slots": {"$ref": "#/$defs/slots3"},
             "policy": {"type": "string"},
-            "hang_s": {"$ref": "#/$defs/repeater/properties/hang_s"},
-            "call_hang_s": {"$ref": "#/$defs/repeater/properties/call_hang_s"},
-            "inbound_slot": {"$ref": "#/$defs/sfr/properties/inbound_slot"},
-            "short_lc_ts1_low": {"$ref": "#/$defs/repeater/properties/short_lc_ts1_low"},
-            "slot_timing": {"$ref": "#/$defs/repeater/properties/slot_timing"},
-            "duplex": {"$ref": "#/$defs/dcdm/properties/duplex"}
+            "hang_s": {"type": "number", "minimum": 0},
+            "call_hang_s": {"type": "number", "minimum": 0},
+            "inbound_slot": {"$ref": "#/$defs/slot"},
+            "short_lc_ts1_low": {"type": "boolean"},
+            "slot_timing": {"$ref": "#/$defs/slot_timing"},
+            "duplex": {"enum": ["half", "full"], "description": "On an SDR: full transmits while it receives."},
+            "active_slots": {"$ref": "#/$defs/active_slots"},
+            "cwid": {"type": "string"},
+            "cwid_every_s": {"type": "number", "minimum": 0},
+            "prebuffer": {},
+            "jitter_buffer": {},
+            "jitter_min_ms": {"type": "number", "minimum": 0},
+            "jitter_max_ms": {"type": "number", "minimum": 0}
           },
           "unevaluatedProperties": false
         }
@@ -608,18 +393,18 @@
           ]
         },
         "transmits": {"anyOf": [{"const": false}, {"type": "array", "items": {"$ref": "#/$defs/fref"}}]},
-        "listen_s": {"$ref": "#/$defs/roamer/properties/listen_s"},
-        "clear_s": {"$ref": "#/$defs/roamer/properties/clear_s"},
-        "idle_after_s": {"$ref": "#/$defs/roamer/properties/idle_after_s"},
-        "csbk_preambles": {"$ref": "#/$defs/roamer/properties/csbk_preambles"},
-        "answer_s": {"$ref": "#/$defs/roamer/properties/answer_s"},
-        "answer_max_s": {"$ref": "#/$defs/roamer/properties/answer_max_s"},
-        "prebuffer": {"$ref": "#/$defs/talker/properties/prebuffer"},
-        "jitter_buffer": {"$ref": "#/$defs/talker/properties/jitter_buffer"},
-        "jitter_min_ms": {"$ref": "#/$defs/talker/properties/jitter_min_ms"},
-        "jitter_max_ms": {"$ref": "#/$defs/talker/properties/jitter_max_ms"},
-        "cwid": {"$ref": "#/$defs/talker/properties/cwid"},
-        "cwid_every_s": {"$ref": "#/$defs/talker/properties/cwid_every_s"}
+        "listen_s": {"type": "number", "minimum": 0},
+        "clear_s": {"type": "number", "minimum": 0},
+        "idle_after_s": {"type": "number", "minimum": 0},
+        "csbk_preambles": {"type": "integer", "minimum": 0},
+        "answer_s": {"type": "number", "minimum": 0},
+        "answer_max_s": {"type": "number", "minimum": 0},
+        "prebuffer": {},
+        "jitter_buffer": {},
+        "jitter_min_ms": {"type": "number", "minimum": 0},
+        "jitter_max_ms": {"type": "number", "minimum": 0},
+        "cwid": {"type": "string"},
+        "cwid_every_s": {"type": "number", "minimum": 0}
       }
     },
     "sdr_device3": {
@@ -654,17 +439,18 @@
         "out": {"$ref": "#/$defs/fref"},
         "slots": {"$ref": "#/$defs/slots3"},
         "policy": {"type": "string"},
-        "hang_s": {"$ref": "#/$defs/repeater/properties/hang_s"},
-        "call_hang_s": {"$ref": "#/$defs/repeater/properties/call_hang_s"},
-        "short_lc_ts1_low": {"$ref": "#/$defs/repeater/properties/short_lc_ts1_low"},
-        "slot_timing": {"$ref": "#/$defs/repeater/properties/slot_timing"},
-        "split": {"$ref": "#/$defs/repeater/properties/split"},
-        "cwid": {"$ref": "#/$defs/talker/properties/cwid"},
-        "cwid_every_s": {"$ref": "#/$defs/talker/properties/cwid_every_s"},
-        "prebuffer": {"$ref": "#/$defs/talker/properties/prebuffer"},
-        "jitter_buffer": {"$ref": "#/$defs/talker/properties/jitter_buffer"},
-        "jitter_min_ms": {"$ref": "#/$defs/talker/properties/jitter_min_ms"},
-        "jitter_max_ms": {"$ref": "#/$defs/talker/properties/jitter_max_ms"}
+        "hang_s": {"type": "number", "minimum": 0},
+        "call_hang_s": {"type": "number", "minimum": 0},
+        "short_lc_ts1_low": {"type": "boolean"},
+        "slot_timing": {"$ref": "#/$defs/slot_timing"},
+        "split": {"$ref": "#/$defs/split"},
+        "cwid": {"type": "string"},
+        "cwid_every_s": {"type": "number", "minimum": 0},
+        "prebuffer": {},
+        "jitter_buffer": {},
+        "jitter_min_ms": {"type": "number", "minimum": 0},
+        "jitter_max_ms": {"type": "number", "minimum": 0},
+        "active_slots": {"$ref": "#/$defs/active_slots"}
       },
       "unevaluatedProperties": false
     },
@@ -678,7 +464,7 @@
       }
     },
     "ipgw3": {
-      "description": "The IP gateway: its keys as version 2's ip_gateway (common/src/ipgwcfg.c checks them).",
+      "description": "The IP gateway (common/src/ipgwcfg.c checks its keys).",
       "additionalProperties": false,
       "properties": {
         "name": {"$ref": "#/$defs/name3"},
@@ -712,13 +498,13 @@
       "properties": {
         "name": {"$ref": "#/$defs/name3"},
         "type": {"const": "hblink"},
-        "host": {"$ref": "#/$defs/hblink/properties/host"},
-        "port": {"$ref": "#/$defs/hblink/properties/port"},
-        "transport": {"$ref": "#/$defs/hblink/properties/transport"},
-        "sctp_encap_port": {"$ref": "#/$defs/hblink/properties/sctp_encap_port"},
-        "sctp_heartbeat_ms": {"$ref": "#/$defs/hblink/properties/sctp_heartbeat_ms"},
-        "sctp_max_retransmit": {"$ref": "#/$defs/hblink/properties/sctp_max_retransmit"},
-        "sctp_ttl_ms": {"$ref": "#/$defs/hblink/properties/sctp_ttl_ms"},
+        "host": {"type": "string"},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "transport": {"enum": ["udp", "sctp"]},
+        "sctp_encap_port": {"type": "integer", "minimum": 0, "maximum": 65535},
+        "sctp_heartbeat_ms": {"type": "integer", "minimum": 0},
+        "sctp_max_retransmit": {"type": "integer", "minimum": 0},
+        "sctp_ttl_ms": {"type": "integer", "minimum": 0},
         "identity": {"enum": ["single", "per_path"]},
         "peer_ids": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 1, "maximum": 4294967295}},
         "roaming": {"type": "boolean"}
@@ -729,12 +515,12 @@
       "properties": {
         "name": {"$ref": "#/$defs/name3"},
         "type": {"const": "mqtt"},
-        "host": {"$ref": "#/$defs/mqtt/properties/host"},
-        "port": {"$ref": "#/$defs/mqtt/properties/port"},
-        "username": {"$ref": "#/$defs/mqtt/properties/username"},
-        "password": {"$ref": "#/$defs/mqtt/properties/password"},
-        "root": {"$ref": "#/$defs/mqtt/properties/root"},
-        "tls": {"$ref": "#/$defs/mqtt/properties/tls"},
+        "host": {"type": "string"},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "username": {"type": "string"},
+        "password": {"type": "string"},
+        "root": {"type": "string"},
+        "tls": {"type": "boolean"},
         "report": {"type": "boolean"},
         "calls": {"type": "boolean"}
       }
@@ -762,8 +548,8 @@
           "maximum": 16777215,
           "description": "The box's DMR ID: its HBlink peer ID."
         },
-        "callsign": {"$ref": "#/$defs/talker/properties/callsign"},
-        "location": {"$ref": "#/$defs/v2/properties/location"},
+        "callsign": {"type": "string"},
+        "location": {"$ref": "#/$defs/location"},
         "defaults": {"$ref": "#/$defs/defaults3"},
         "devices": {"type": "array", "maxItems": 16, "items": {"$ref": "#/$defs/device3"}},
         "frequencies": {"type": "array", "maxItems": 48, "items": {"$ref": "#/$defs/freq3"}},
@@ -771,134 +557,67 @@
         "networks": {"type": "array", "maxItems": 2, "items": {"$ref": "#/$defs/net3"}},
         "policies": {"type": "array", "maxItems": 16, "items": {"$ref": "#/$defs/policy3"}},
         "pc_hold_s": {"type": "integer", "minimum": 0},
-        "wifi": {"$ref": "#/$defs/v2/properties/wifi"},
-        "ntp": {"$ref": "#/$defs/v2/properties/ntp"},
-        "oled": {"$ref": "#/$defs/v2/properties/oled"},
-        "slot_timing": {"$ref": "#/$defs/v2/properties/slot_timing"},
-        "usb_hub": {"$ref": "#/$defs/v2/properties/usb_hub"},
-        "selftest_load": {"$ref": "#/$defs/v2/properties/selftest_load"},
-        "bench": {"$ref": "#/$defs/v2/properties/bench"}
+        "wifi": {"$ref": "#/$defs/wifi"},
+        "ntp": {"$ref": "#/$defs/ntp"},
+        "oled": {"$ref": "#/$defs/oled"},
+        "slot_timing": {"$ref": "#/$defs/slot_timing"},
+        "usb_hub": {"$ref": "#/$defs/usb_hub"},
+        "selftest_load": {"$ref": "#/$defs/selftest_load"},
+        "bench": {"$ref": "#/$defs/bench"}
       }
     },
-    "v2": {
-      "description": "Version 2: the devices a box has, the roles it runs on them, and which run (docs/spec/fw/rxtx-combinations.md section 4). Version 1 settings are checked after rdof_config_upgrade.",
+    "wifi": {
       "type": "object",
-      "required": ["version", "roles"],
       "additionalProperties": false,
       "properties": {
-        "version": {"const": 2, "description": "The format: 2."},
-        "name": {"type": "string", "description": "The box's name (MQTT topics, the screen)."},
-        "location": {"$ref": "#/$defs/location"},
-        "cc": {"$ref": "#/$defs/cc", "description": "The color code a channel or role takes when it gives none."},
-        "channels": {
-          "type": "object",
-          "description": "The channel plan: a channel number to its frequency (MHz or Hz), or to {\"freq\", ...}.",
-          "propertyNames": {"pattern": "^[0-9]+$"},
-          "additionalProperties": {
-            "oneOf": [
-              {"$ref": "#/$defs/freq"},
-              {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["freq"],
-                "properties": {
-                  "freq": {"$ref": "#/$defs/freq"},
-                  "cc": {"$ref": "#/$defs/cc"},
-                  "power": {"$ref": "#/$defs/power"},
-                  "name": {"type": "string"},
-                  "slot": {"$ref": "#/$defs/slot"},
-                  "tg": {"type": "integer", "minimum": 0},
-                  "tx": {
-                    "type": "boolean",
-                    "description": "false: nothing transmits on it (a repeater's output, heard only). Default true."
-                  }
-                }
-              }
-            ]
+        "networks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "ssid": {"type": "string"},
+              "password": {"type": "string"},
+              "priority": {"type": "integer"},
+              "hidden": {"type": "boolean"}
+            }
           }
-        },
-        "mqtt": {"$ref": "#/$defs/mqtt"},
-        "hblink": {"$ref": "#/$defs/hblink"},
-        "slot_timing": {"$ref": "#/$defs/slot_timing"},
-        "oled": {"$ref": "#/$defs/oled"},
-        "ip_gateway": {"type": "object", "description": "The IP gateway's settings (common/src/ipgwcfg.c checks them)."},
-        "wifi": {
+        }
+      }
+    },
+    "ntp": {
+      "description": "The clock: NTP servers (spaces, commas or semicolons between them), or an object.",
+      "oneOf": [
+        {"type": "string"},
+        {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "networks": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "ssid": {"type": "string"},
-                  "password": {"type": "string"},
-                  "priority": {"type": "integer"},
-                  "hidden": {"type": "boolean"}
-                }
-              }
+            "servers": {"type": "string"},
+            "poll_s": {"type": "number", "minimum": 0},
+            "clock": {
+              "enum": ["netclock", "os"],
+              "description": "Host tools only (the board always runs netclock): netclock disciplines its own clock from the servers; os leaves the time to the OS (chrony, ntpd). Default: netclock when servers are set, else os."
             }
           }
-        },
-        "ntp": {
-          "description": "The clock: NTP servers (spaces, commas or semicolons between them), or an object.",
-          "oneOf": [
-            {"type": "string"},
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "servers": {"type": "string"},
-                "poll_s": {"type": "number", "minimum": 0},
-                "clock": {
-                  "enum": ["netclock", "os"],
-                  "description": "Host tools only (the board always runs netclock): netclock disciplines its own clock from the servers; os leaves the time to the OS (chrony, ntpd). Default: netclock when servers are set, else os."
-                }
-              }
-            }
-          ]
-        },
-        "usb_hub": {
-          "type": "boolean",
-          "description": "A USB hub on the board's OTG port: a radio and an RTL-SDR at once."
-        },
-        "selftest_load": {"$ref": "#/$defs/selftest_load"},
-        "devices": {
+        }
+      ]
+    },
+    "usb_hub": {"type": "boolean", "description": "A USB hub on the board's OTG port: a radio and an RTL-SDR at once."},
+    "bench": {
+      "type": "object",
+      "description": "What the bench API may use (docs/spec/bench-api.md).",
+      "additionalProperties": false,
+      "properties": {
+        "devices": {"type": "array", "items": {"$ref": "#/$defs/name"}, "uniqueItems": true},
+        "tx": {
           "type": "object",
-          "description": "Every piece of hardware the box opens, by name.",
-          "maxProperties": 16,
-          "propertyNames": {"$ref": "#/$defs/name"},
-          "additionalProperties": {"$ref": "#/$defs/device"}
-        },
-        "roles": {
-          "type": "object",
-          "description": "What runs, by name.",
-          "minProperties": 1,
-          "maxProperties": 16,
-          "propertyNames": {"$ref": "#/$defs/name"},
-          "additionalProperties": {"$ref": "#/$defs/role"}
-        },
-        "run": {
-          "description": "The roles that run: a name or a list of names. Without it, every role not \"enabled\": false.",
-          "oneOf": [{"$ref": "#/$defs/name"}, {"type": "array", "items": {"$ref": "#/$defs/name"}}]
-        },
-        "bench": {
-          "type": "object",
-          "description": "What the bench API may use (docs/spec/bench-api.md).",
           "additionalProperties": false,
           "properties": {
-            "devices": {"type": "array", "items": {"$ref": "#/$defs/name"}, "uniqueItems": true},
-            "tx": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "freqs_hz": {"$ref": "#/$defs/freqs_hz"},
-                "max_key_s": {"$ref": "#/$defs/max_key_s"},
-                "rf_level": {"type": "integer", "minimum": 0, "maximum": 255},
-                "arm_gpio": {"type": "integer", "minimum": -1, "maximum": 48}
-              }
-            }
+            "freqs_hz": {"$ref": "#/$defs/freqs_hz"},
+            "max_key_s": {"$ref": "#/$defs/max_key_s"},
+            "rf_level": {"type": "integer", "minimum": 0, "maximum": 255},
+            "arm_gpio": {"type": "integer", "minimum": -1, "maximum": 48}
           }
         }
       }

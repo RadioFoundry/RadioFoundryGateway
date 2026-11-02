@@ -1,9 +1,0 @@
-{
-  "name": "split2",
-  "cc": 1,
-  "radios": [
-    {"type": "repeater", "name": "R2", "peer_id": 9800003, "rx_freq": 438.375, "tx_freq": 438.35,
-     "radio": {"type": "split", "tx": {"modem": "uart", "uart": {"num": 1, "tx": 17, "rx": 18}, "speed": 921600},
-               "rx": {"modem": "usb"}, "prebuffer": 3, "lease_s": 30}}
-  ]
-}

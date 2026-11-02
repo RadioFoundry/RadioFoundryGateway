@@ -33,7 +33,7 @@ starts again 5 s after it exits.
 | The web page | `http://192.168.2.1:8080/` |
 
 The settings are the firmware's settings document, version 3 ([config-v3.md](../../../docs/spec/fw/config-v3.md),
-checked by `tools/config_check.py` against `config/rdof-config.schema.json` in the repo); version 2 still loads. The
+checked by `tools/config_check.py` against `config/rdof-config.schema.json` in the repo). The
 example is a repeater on the Pluto's own SDR: it receives on 438.25 MHz and transmits on 438.0125 MHz, with a parrot
 on talkgroup 9990. **It transmits whenever it hears a call: use frequencies you're licensed for.** The flags start at
 the lowest TX power (`--tx-gain 0`, 89 dB of attenuation); raise it in `flags`. At that power the start's calibration

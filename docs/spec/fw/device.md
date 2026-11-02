@@ -2,7 +2,7 @@
 
 Covers: the board-level indicators and diagnostics of the ESP32-S3 RF gateway (`esp_idf`): the RGB status LED, the OLED status screen, the CPU self-test and USB spike, the log ring, watchdog, crash and reset handling, and the power key and battery.
 Sources: `esp_idf/main/{status_led,oled_task,power,power_core,selftest,selftest_core,kbench,logring,sdr,web,main,settings,rx_path,radio_task}.c`, `selftest/clip.h`, `Kconfig.projbuild`, `sdkconfig.defaults*`, `partitions-*.csv`; `common/src/{oled,oled_sdr,config}.c`.
-Related: [radio.md](radio.md) (modem readiness), [overview.md](overview.md), [config.md](config.md), [interfaces-http.md](interfaces-http.md) (`/api/status`, `/api/log`, `/api/selftest`), [mqtt.md](mqtt.md) (the retained `status` message), [sdr.md](sdr.md), [bench-api.md](../bench-api.md).
+Related: [radio.md](radio.md) (modem readiness), [overview.md](overview.md), [config-v3.md](config-v3.md), [interfaces-http.md](interfaces-http.md) (`/api/status`, `/api/log`, `/api/selftest`), [mqtt.md](mqtt.md) (the retained `status` message), [sdr.md](sdr.md), [bench-api.md](../bench-api.md).
 
 ## 1. Status LED
 

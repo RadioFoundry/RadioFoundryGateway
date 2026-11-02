@@ -2,7 +2,7 @@
 
 Covers: the roamer role: the radio task's life cycle, the transceiver call cycle (DMRT → listen → on air → after the call), the idle channel, the answer window, scanning, and how it reports over HBlink4 and MQTT.
 Sources: `common/src/txvr.c`, `common/include/rdof/txvr.h`, `esp_idf/main/{roamer.c,radio_task.c,roam_hblink.c,roam_mqtt.c,rx_path.c}`, `common/src/config.c` (`roamer`).
-Related: [radio.md](radio.md) (MMDVM protocol, modem, radio types, tuners), [dmr-core.md](dmr-core.md) (bursts, regeneration, tracker), [hblink.md](hblink.md) (DMRC / DMRT / DMRK / DMRD bytes), [mqtt.md](mqtt.md) (topics and JSON), [config.md](config.md), [../repeater.md](../repeater.md) (simplex framing rules R5–R11, the repeater role).
+Related: [radio.md](radio.md) (MMDVM protocol, modem, radio types, tuners), [dmr-core.md](dmr-core.md) (bursts, regeneration, tracker), [hblink.md](hblink.md) (DMRC / DMRT / DMRK / DMRD bytes), [mqtt.md](mqtt.md) (topics and JSON), [config-v3.md](config-v3.md), [../repeater.md](../repeater.md) (simplex framing rules R5–R11, the repeater role).
 
 A roamer is one simplex radio on an MMDVM modem (USB, UART or the board's SDR modem; [radio.md](radio.md)). Between calls it is
 a receiver on its idle channel (or scanning). HBlink4 retunes it per call with DMRT; it answers DMRK and plays the call out
@@ -339,7 +339,7 @@ otherwise it hops to `scan_next`, the channel after the one it was on when the c
 | HBlink4 reconnect backoff | 1 s → ×2 → 30 s | `roam_hblink.c:peer_task` |
 | MQTT status heartbeat | 10 s | `roam_mqtt.c:heartbeat_task` |
 
-Settings (defaults; `common/src/config.c:roamer`, `rdof_txvr_init`; details in [config.md](config.md)):
+Settings (defaults; `common/src/config.c:roamer`, `rdof_txvr_init`; details in [config-v3.md](config-v3.md)):
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -352,10 +352,12 @@ Settings (defaults; `common/src/config.c:roamer`, `rdof_txvr_init`; details in [
 | `answer_s` / `answer_max_s` | 0.75 / 5.0 | answer window, restart / cap |
 | `idle_after_s` | 0 | delay before going back to idle / scanning |
 | `cwid`, `cwid_every_s` | "" / 900 | CW ID after a call, per frequency |
-| `channels` | all plan channels if absent | allowed (freq, cc, power); the idle channel is added if missing |
-| `idle` | required | plan channel or `{freq, cc}`; power 255 |
-| `covered` | derived | the box's `sdr` radios' channel frequencies, sorted, deduplicated |
-| `scan` | off | `true`, or `{channels: "all" or plan refs, dwell_s 0.45, hang_s 3.0, carrier_s 0}`; scan channels' power 255 (`all`: the channels' own); require `dwell_s > 0`, `hang_s ≥ 0`, `0 ≤ carrier_s < dwell_s` |
+| frequencies | every frequency the device `transmits` on (no app's) | allowed (freq, cc, power); the idle frequency is added if missing |
+| `hears.idle` | the first of them | its idle frequency; power 255 |
+| covered | derived | the frequencies the box's SDR hears, sorted, deduplicated |
+| `hears.scan` | off | a list of frequencies, with `dwell_s` 0.45, `hang_s` 3.0, `carrier_s` 0; require `dwell_s > 0`, `hang_s ≥ 0`, `0 ≤ carrier_s < dwell_s` |
+
+The talker keys are the device's; `hears` is the device's ([config-v3.md](config-v3.md) §4.4, §4.5).
 
 ## 7. Reporting
 

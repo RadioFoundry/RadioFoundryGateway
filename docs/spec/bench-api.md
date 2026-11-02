@@ -288,13 +288,13 @@ stations.
   bridge, over a WebSocket.
 - Burst TX through a radio is section 7 with `via=radio:NAME`.
 
-Where a radio is attached comes from the bench's config, one entry per radio (on the board, `bench.radios` in the
-JSON settings):
+Where a radio is attached comes from the bench's config. On the board each is a device in the settings (a `radio`
+speaks `odr-debug`, a `modem` speaks `mmdvm`), named in `bench.devices` (fw/config-v3.md §4.6):
 
 ```json
-{"name": "rf1",  "proto": "odr-debug", "port": {"uart": 1, "tx": 17, "rx": 18, "baud": 921600}}
-{"name": "hs1",  "proto": "mmdvm",     "port": {"usb": "cdc-acm", "vid": "0483", "pid": "5740"}}
-{"name": "rf2",  "proto": "odr-debug", "port": {"usb": "uart", "serial": "FT1A2B3C", "baud": 921600}}
+{"name": "rf1", "kind": "radio", "port": {"uart": 1, "tx": 17, "rx": 18, "baud": 921600}}
+{"name": "hs1", "kind": "modem", "port": {"usb": "cdc-acm", "vid": "0483", "pid": "5740"}, "hears": false, "transmits": false}
+{"name": "rf2", "kind": "radio", "port": {"usb": "uart", "serial": "FT1A2B3C", "baud": 921600}}
 ```
 
 - `uart`: one of the MCU's UARTs, with its pins (and optional `rts` / `cts`).
@@ -323,7 +323,7 @@ data is refused (a NAK) until a `SET_FREQ` names a declared TX frequency.
 | `common/src/benchguard.c` | the link's guard, the bench daemon's as a state machine (host tests in `host-tests/test_guard.c`) |
 | `esp_idf/main/bench_tx.c` | `WS /tx` (section 7): opens the path, runs the job from a task of its own, checks the lease and the arm jumper, keeps the keying log |
 | `common/src/benchtx.c` | the transmit job: gates, queue, pacing, key time, dead-man rule (host tests in `host-tests/test_benchtx.c`) |
-| `common/src/benchcfg.c` | `bench.radios` and `bench.tx` from the settings |
+| `common/src/benchcfg.c` | `bench.devices` and `bench.tx` from the settings |
 
 How it hooks in:
 

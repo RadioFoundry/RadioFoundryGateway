@@ -2,7 +2,7 @@
 
 Covers: how the board's roamer, repeater and SDR channels talk to HBlink4: the MMDVMHost DMRC protocol (no login) with HBlink4's DMRC tails and its DMRT / DMRK roaming packets, the packet byte layouts, keepalive, stream ids and reconnects, over UDP or SCTP.
 Sources: `common/src/hblink.c`, `common/include/rdof/hblink.h`, `esp_idf/main/roam_hblink.c`, `sdr_hblink.c`; HBlink4's DMRC handler (`_handle_dmrc`) and its `docs/protocol.md` ("Roaming Transceivers", "DMRC location tail").
-Related: [mqtt.md](mqtt.md), [interfaces-http.md](interfaces-http.md), [tinysctp README](../../../components/tinysctp/README.md), [roamer.md](roamer.md), [config.md](config.md) (the `hblink` / `master` settings).
+Related: [mqtt.md](mqtt.md), [interfaces-http.md](interfaces-http.md), [tinysctp README](../../../components/tinysctp/README.md), [roamer.md](roamer.md), [config-v3.md](config-v3.md) (the `hblink` settings, §7.1).
 
 ## 1. Peers
 
@@ -10,7 +10,7 @@ Related: [mqtt.md](mqtt.md), [interfaces-http.md](interfaces-http.md), [tinysctp
 |---|---|---|---|---|---|
 | Roamer | one per roamer radio | UDP or SCTP | §3.2, with location and idle tails | 5 s (`RDOF_HB_ROAMING_KEEPALIVE_SECONDS`) | `roam_hblink.c` |
 | Repeater | one per repeater radio | UDP or SCTP | §3.3, with location tail | 10 s (`RDOF_HB_KEEPALIVE_SECONDS`) | `roam_hblink.c` |
-| SDR channel | one per channel with `hblink` and a `peer_id` | UDP only | §3.4, with location tail | 10 s | `sdr_hblink.c` |
+| SDR channel | one per channel with its own peer (`identity: per_path`); with `single`, the channels send through the box's peer | UDP only | §3.4, with location tail | 10 s | `sdr_hblink.c` |
 
 There is no RPTL / RPTK / RPTC login and no password. HBlink4 accepts a DMRC peer whose id and callsign match one of
 its `repeater_configurations` patterns, and otherwise ignores it. A roamer's pattern needs `roaming: true`.
@@ -124,8 +124,8 @@ status is sent are in [roamer.md](roamer.md).
 
 | Field | Value |
 |---|---|
-| peer id | the radio's / channel's `peer_id` |
-| callsign | the radio's `callsign` |
+| peer id | the top-level `id`, or with `identity: per_path` the path's own ([config-v3.md](config-v3.md) §7.1) |
+| callsign | the top-level `callsign`, else the unit's name (its first 8 characters); with `per_path`, the path's name |
 | location tail | when the settings have a location |
 
 ### 3.2 Roamer (`roam_hblink.c`)
