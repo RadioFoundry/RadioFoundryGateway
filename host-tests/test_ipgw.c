@@ -57,6 +57,16 @@ static void t_settings(void)
     bad("{\"ip_gateway\": true}", "nothing to do");
     bad("{\"ip_gateway\": {}}", "nothing to do");
     bad("{\"ip_gateway\": 3}", "an object");
+    /* version 3: the ipgw app */
+    const char *v3 = "{\"version\": 3, \"name\": \"b\", \"id\": 9990100, \"defaults\": {\"cc\": 1},"
+                     " \"frequencies\": [{\"freq\": 438.075, \"name\": \"438.075\"}],"
+                     " \"devices\": [{\"name\": \"w12\", \"kind\": \"sdr\", \"driver\": \"lr2021\"}],"
+                     " \"apps\": [{\"type\": \"ipgw\", \"pc\": \"9991\", \"nat\": {\"enabled\": true, \"deny\": []}}]}";
+    CHECK(parse(v3, &c, err) && c.on && c.nat && c.id == 9991 && c.ndeny == 0, "version 3's ipgw app: %s", err);
+    const char *v3off = "{\"version\": 3, \"name\": \"b\", \"id\": 9990100, \"defaults\": {\"cc\": 1},"
+                        " \"frequencies\": [{\"freq\": 438.075, \"name\": \"438.075\"}],"
+                        " \"devices\": [{\"name\": \"w12\", \"kind\": \"sdr\", \"driver\": \"lr2021\"}]}";
+    CHECK(parse(v3off, &c, err) && !c.on, "version 3 without one: off (%s)", err);
 
     const char *full = "{\"radios\": {}, // a comment\n"
                        " \"ip_gateway\": {\"id\": 9990, \"tx\": \"hs1\", \"ack\": false, \"max_bytes\": 600,\n"
@@ -303,7 +313,7 @@ static rdof_ipgw_t *gw(fake_t *f, const char *json)
     return g;
 }
 
-static const rdof_ipgw_where_t W = {.source = 0, .slot = 1, .freq = 462562500, .cc = 1};
+static const rdof_ipgw_where_t W = {.source = 0, .slot = 1, .freq = 438500000, .cc = 1};
 
 /* A radio's UDP datagram. */
 static size_t datagram(uint32_t sip, uint16_t sport, uint32_t dip, uint16_t dport, const char *payload, uint8_t *out)
@@ -446,7 +456,7 @@ static void t_route(void)
 
     /* the reply goes back to the radio, from where it sent to */
     rdof_ipgw_from_net(g, f.last_flow, IP(192, 0, 2, 20), 5005, (const uint8_t *)"ok", 2, 10.5);
-    CHECK(f.dmr == 1 && f.out.slot == 1 && f.out.freq == 462562500 && f.out.cc == 1, "sent down");
+    CHECK(f.dmr == 1 && f.out.slot == 1 && f.out.freq == 438500000 && f.out.cc == 1, "sent down");
     rdof_data_header_t h;
     int len = unpack(&f.out, &h, back);
     CHECK(len == 30 && h.dst_id == RADIO && h.src_id == 9990 && !h.group && h.sap == 4, "reply header: len %d", len);

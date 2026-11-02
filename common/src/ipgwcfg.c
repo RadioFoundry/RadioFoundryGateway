@@ -10,6 +10,8 @@
 #include <string.h>
 
 #include "rdof/jsonp.h"
+#include "rdof/setup.h"
+#include "rdof/site.h"
 
 #define MAX_NODES 1200 /* the whole settings document: as config.c */
 #define STR_BUF 8192
@@ -419,6 +421,17 @@ bool rdof_ipgw_settings_parse(const char *text, size_t len, rdof_ipgw_config_t *
     }
     error[0] = 0;
     rdof_ipgw_config_default(out);
+    if (rdof_config_version(text, len) == 3) { /* its ipgw app is the version 2 settings' ip_gateway */
+        size_t n = 0;
+        char *v2 = rdof_site_lower(text, len, &n, error, cap);
+        if (!v2) {
+            out->on = false;
+            return false;
+        }
+        const bool ok = rdof_ipgw_settings_parse(v2, n, out, error, cap);
+        free(v2);
+        return ok;
+    }
     ctx_t *c = malloc(sizeof *c);
     char *clean = c ? malloc(len + 1) : NULL;
     if (!clean) {

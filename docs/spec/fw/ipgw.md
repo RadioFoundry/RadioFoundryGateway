@@ -201,7 +201,8 @@ talkgroup, and a route or NAT took it (not when it's someone else's: no route, n
 same message again after `RDOF_IPGW_ACK_AGAIN_S` 0.5 s is answered again (the radio didn't hear the first) but
 not relayed. No NACKs or selective ACKs: a message that fails is not answered and the radio sends it again.
 RadioFoundry radios never chain confirmed packets. The ACK goes out through the same transmitter as replies (§11),
-as soon as the channel lets it. Untested against radios.
+as soon as the channel lets it. Tested on air 2026-11-01: a DM-32UV on RadioFoundry sent a confirmed UDP datagram to
+a W12 (version 3, the ACK through the router's pool), and counted the ACK on its first try.
 
 ## 11. Transmitting (`rdof/ipgwtx.h`, `ipgw_task.c:send_dmr`)
 

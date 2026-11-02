@@ -198,7 +198,10 @@ The OLED's TX row shows the transmitter's path while it sends or holds.
     channel, keeps one transmission at a time (`rdof_parrot_heard_at`: the first frequency heard wins), waits for a
     transmitter (`ready`, up to `RDOF_PARROT_WAIT_S`), and plays back on the path it heard. A repeater keeps its own
     parrot, and the box parrot takes nothing heard on a repeater's paths.
-  - The IP gateway sends on the path the radio was last heard on (its frequency and slot), with `take_hold`.
+  - The IP gateway sends on the path the radio was last heard on (its frequency and slot), with `take_hold`. Its
+    settings are the ipgw app's, as the lowering writes them (`rdof_ipgw_settings_parse` lowers a version 3
+    document). Tested on a W12 (2026-11-01) with a DM-32UV on 438.075: a UDP datagram through NAT to an echo server
+    and its reply back on air (a header and five blocks), and a confirmed one whose ACK went out the same way.
   - A bench job (`WS /tx via=modem`, or the line protocol's) goes through the pool when the roamer has the SDR modem
     (bench-api.md section 7): `rdof_benchroute` answers it as an MMDVM modem would, each call a stream
     (`0x4245nnnn`) on the path at the job's frequency, without `take_hold`. It sends at the device's power, not

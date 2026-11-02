@@ -100,8 +100,8 @@ typedef struct {
  * no routes, NAT off, deny the private and shared ranges (RDOF_IPGW_DEFAULT_DENY). */
 void rdof_ipgw_config_default(rdof_ipgw_config_t *cfg);
 
-/* "ip_gateway" from the board's settings (JSONC). Absent, null or false: off (true with cfg->on false). false with
- * error set when it's there and wrong. */
+/* "ip_gateway" from the board's settings (JSONC; version 3: its ipgw app, as rdof_site_lower writes it). Absent, null
+ * or false: off (true with cfg->on false). false with error set when it's there and wrong. */
 bool rdof_ipgw_settings_parse(const char *text, size_t len, rdof_ipgw_config_t *out, char *error, size_t cap);
 /* One line for /api/resolved and the log. */
 size_t rdof_ipgw_describe(const rdof_ipgw_config_t *cfg, char *out, size_t cap);
