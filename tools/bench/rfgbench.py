@@ -34,6 +34,7 @@ import shlex
 import signal
 import socket
 import sys
+import threading
 import time
 from typing import Callable, Iterator, Optional, Tuple
 
@@ -65,6 +66,14 @@ class Conn:
         except OSError as e:
             raise Gone(f"the gateway at {where[0]}:{where[1]} doesn't answer ({e})")
         self.s.settimeout(None)
+        # a board that restarts or drops off the network mid-request ends it (else the read waits for ever)
+        self.s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        for opt, v in (("TCP_KEEPIDLE", 10), ("TCP_KEEPALIVE", 10), ("TCP_KEEPINTVL", 5), ("TCP_KEEPCNT", 3)):
+            if hasattr(socket, opt):
+                try:
+                    self.s.setsockopt(socket.IPPROTO_TCP, getattr(socket, opt), v)
+                except OSError:
+                    pass
         self.f = self.s.makefile("rb")
 
     def send(self, req: dict) -> None:
@@ -80,6 +89,13 @@ class Conn:
                 if len(data) < d["bytes"]:
                     return
             yield d, data
+
+    def end(self) -> None:
+        """From another thread: the reads see the end of the stream."""
+        try:
+            self.s.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
 
     def close(self) -> None:
         for x in (self.f, self.s):
@@ -109,9 +125,13 @@ def request(where, req: dict) -> dict:
         c.close()
 
 
-def stream(where, req: dict, on_line: Callable[[dict, Optional[bytes]], Optional[int]]) -> int:
-    """Send req; waits and notes to stderr, every other line to on_line (which may return an exit code)."""
+def stream(where, req: dict, on_line: Callable[[dict, Optional[bytes]], Optional[int]],
+           hold: Optional[dict] = None) -> int:
+    """Send req; waits and notes to stderr, every other line to on_line (which may return an exit code). hold: gets
+    the connection as hold["conn"], for a deadline to end it."""
     c = Conn(where)
+    if hold is not None:
+        hold["conn"] = c
 
     def stop(signum, frame):
         c.close()
@@ -250,18 +270,25 @@ def cmd_dmr_bursts(a) -> int:
     out = open(a.out, "w") if a.out else sys.stdout
     human = sys.stdout if a.out else sys.stderr
     n = [0]
+    hold = {"done": False}
+    timer = []
 
     def on(d, data):
         if "ready" in d:
             t0 = d["ready"] or time.time()
             print(f"READY {time.strftime('%H:%M:%S', time.localtime(t0))}.{int(t0 * 1000) % 1000:03d} t0={t0:.3f}",
                   file=sys.stderr, flush=True)
+            if a.seconds and not a.until_end:     # the gateway ends it at --seconds; this is in case it doesn't
+                timer.append(threading.Timer(a.seconds + 5.0, lambda: hold["conn"].end()))
+                timer[0].daemon = True
+                timer[0].start()
         elif "burst" in d:
             n[0] += 1
             out.write(json.dumps(d["burst"]) + "\n")
             out.flush()
         elif "done" in d:
             s = d["done"]
+            hold["done"] = True
             out.write(json.dumps({"summary": s}) + "\n")
             out.flush()
             kinds = ", ".join(f"{v} {k}" for k, v in sorted(s.get("kinds", {}).items()))
@@ -270,10 +297,20 @@ def cmd_dmr_bursts(a) -> int:
             return 0 if s["bursts"] else EX_NO_SIGNAL
         return None
     try:
-        return stream(a.where, {"op": "bursts", "session": a.session, "freq": a.freq, "seconds": a.seconds,
-                                "max_bursts": a.bursts, "until_end": a.until_end, "cc": a.cc, "soft": a.soft,
-                                "wait_max": a.wait_max}, on)
+        rc = stream(a.where, {"op": "bursts", "session": a.session, "freq": a.freq, "seconds": a.seconds,
+                              "max_bursts": a.bursts, "until_end": a.until_end, "cc": a.cc, "soft": a.soft,
+                              "wait_max": a.wait_max}, on, hold)
+        if not hold["done"] and rc == 0:          # the stream ended with no summary: one from here
+            s = {"bursts": n[0], "freq": a.freq * 1e6, "reason": "the gateway stopped answering"
+                 if timer else "the connection ended"}
+            out.write(json.dumps({"summary": s}) + "\n")
+            out.flush()
+            print(f"{n[0]} bursts on {a.freq:.5f} MHz ({s['reason']})", file=human, flush=True)
+            rc = 0 if n[0] else EX_NO_SIGNAL
+        return rc
     finally:
+        for t in timer:
+            t.cancel()
         if a.out:
             out.close()
 
@@ -406,6 +443,12 @@ def bench_tx_parser() -> argparse.ArgumentParser:
     for o, dflt in (("--octets", 40), ("--tms-seq", 1), ("--udp-port", None), ("--udp-src-port", None),
                     ("--udp-octets", 40), ("--preambles", 2), ("--repeat", 1), ("--repeat-gap-ms", 0)):
         d.add_argument(o, type=int, default=dflt)
+    ob = sub.add_parser("outbound", add_help=False)     # a repeater's downlink: BS idle bursts, the CACH, both slots
+    ob.add_argument("--seconds", type=float, default=10)
+    ob.add_argument("--src", type=int)
+    ob.add_argument("--slots", default="1,2")            # the slots reported (both are sent)
+    ob.add_argument("--voice-slot", type=int)            # refused by the gateway: idle bursts only for now
+    ob.add_argument("--family", choices=("ms", "bs", "ts1", "ts2"))
     ls = sub.add_parser("listen", add_help=False)
     ls.add_argument("--seconds", type=float, default=20)
     ls.add_argument("--json", action="store_true")

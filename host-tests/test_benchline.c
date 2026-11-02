@@ -187,12 +187,69 @@ static void f_rpt_wake(void *ctx, uint8_t control, const uint8_t b[33])
 }
 static void f_rpt_close(void *ctx) { rp.open = false, rp.closed = true; }
 
+/* a path that frames the bursts again (the router's): only MS bursts go as built */
+static bool routed;
+static const char *f_why_family(void *ctx, int family)
+{
+    return routed && family != RDOF_FAMILY_MS ? "the router's transmitter frames the bursts with MS sync" : NULL;
+}
+
+/* the outbound jobs: a fake slot clock, a slot every 30 ms of the test's time from the key-up */
+static struct {
+    bool open, closed, unkeyed;
+    rdof_bl_ob_cfg_t cfg;
+    int polls;
+    double now, t_key;
+    long first, stop, skip_at;
+    int skip_n;
+} ob;
+#define OB_BASE 1000000
+static bool f_ob_open(void *ctx, const rdof_bl_ob_cfg_t *cfg, char *why, size_t cap)
+{
+    ob.open = true, ob.closed = ob.unkeyed = false, ob.cfg = *cfg, ob.polls = 0, ob.stop = -1;
+    return true;
+}
+static int f_ob_state(void *ctx, rdof_bl_ob_state_t *s, char *why, size_t cap)
+{
+    memset(s, 0, sizeof *s);
+    s->base = OB_BASE, s->slot = 1440, s->rate = 48000, s->sync_off = 120 + 655, s->first = -1;
+    s->ppm = -28;
+    if (++ob.polls < 3)
+        return 0;
+    if (ob.polls == 3)
+        ob.t_key = ob.now;
+    s->keyed = s->on_air = true;
+    s->first = ob.first;
+    s->map_pos = OB_BASE, s->map_t = 1.9e9;
+    s->next = ob.first + 2 + (long)((ob.now - ob.t_key) / 0.030); /* two slots queued ahead */
+    if (ob.skip_n && s->next > ob.skip_at) { /* the clock fell behind once */
+        s->skips = 1, s->last_from = ob.skip_at, s->last_to = ob.skip_at + ob.skip_n;
+        s->next += ob.skip_n;
+    }
+    if (ob.stop >= 0 && s->next > ob.stop + 1) {
+        s->next = ob.stop + 1;
+        return 2;
+    }
+    return 1;
+}
+static void f_ob_unkey(void *ctx)
+{
+    rdof_bl_ob_state_t s;
+    char why[8];
+    ob.polls--; /* this poll doesn't count */
+    f_ob_state(ctx, &s, why, sizeof why);
+    ob.unkeyed = true, ob.stop = s.next;
+}
+static void f_ob_close(void *ctx) { ob.open = false, ob.closed = true; }
+
 static const rdof_bl_platform_t PLAT = {.device = f_device, .window = f_window, .freqs = f_freqs,
                                         .iq_read = f_iq_read, .utc = f_utc, .sc_utc = f_sc_utc,
                                         .can_tx = f_can_tx, .tx_open = f_tx_open, .tx_space = f_tx_space,
                                         .tx_push = f_tx_push, .tx_unkey = f_tx_unkey, .tx_idle = f_tx_idle,
                                         .tx_close = f_tx_close, .rpt_open = f_rpt_open, .rpt_state = f_rpt_state,
-                                        .rpt_event = f_rpt_event, .rpt_wake = f_rpt_wake, .rpt_close = f_rpt_close};
+                                        .rpt_event = f_rpt_event, .rpt_wake = f_rpt_wake, .rpt_close = f_rpt_close,
+                                        .tx_why_family = f_why_family, .ob_open = f_ob_open, .ob_state = f_ob_state,
+                                        .ob_unkey = f_ob_unkey, .ob_close = f_ob_close};
 
 /* ── helpers ── */
 
@@ -362,7 +419,8 @@ static void test_ops(void)
     c = ask(bl, "{\"op\": \"bursts\", \"freq\": 438.1125, \"seconds\": 10, \"until_end\": true}", now);
     CHECK(rdof_bl_wants_bursts(bl), "bursts are wanted");
     for (int i = 0; i < 4; i++) {
-        rdof_bl_burst_t b = {.ch = i < 3 ? 1 : 2, .t = 1.8e9 + 0.06 * i, .cfo_hz = 10.0f * i, .level_dbfs = -40,
+        rdof_bl_burst_t b = {.ch = i < 3 ? 1 : 2, .t = 1.8e9 + 0.06 * i, .pos48 = 2880 * i, .cfo_hz = 10.0f * i,
+                             .level_dbfs = -40,
                              .dt = i == 0 ? 1 : RDOF_BL_VOICE_SYNC, .n = 0, .slot = 1, .family = 1, .cc = 2};
         b.raw[0] = (uint8_t)i;
         rdof_bl_burst(bl, &b);
@@ -376,6 +434,9 @@ static void test_ops(void)
               strstr(out, "\"dt_prev_ms\":60.000,\"grid_n\":2,\"grid_err_ms\":0.000,\"slot_ab\":\"A\"") &&
               strstr(out, "\"kind\":\"IDLE\"") && !strstr(out, "\"t_rel_ms\":180"),
           "burst records: %s", out);
+    /* t and sc at the sync's center: 655 samples (48 kS/s) past the start, sc in the 768 kS/s window's count */
+    CHECK(strstr(out, "\"t\":1800000000.013646,\"sc\":10480,") &&
+              strstr(out, "\"t\":1800000000.073646,\"sc\":56560,"), "sync centers: %s", out);
     rdof_bl_tick(bl, now + 0.5);
     drain(bl, c, out, sizeof out);
     CHECK(strstr(out, "\"done\":{\"bursts\":4,\"reason\":\"ended\"") &&
@@ -765,6 +826,143 @@ static void test_run(void)
     rdof_bl_free(bl);
 }
 
+/* ── bench_tx outbound and --family ── */
+
+/* Each `"key": N` in the tool's out lines (JSON escaped in JSON) after p, into v (up to max): how many. */
+static int out_values(const char *p, const char *key, double *v, int max)
+{
+    char pat[48];
+    snprintf(pat, sizeof pat, "\\\"%s\\\": ", key);
+    int n = 0;
+    for (; (p = strstr(p, pat)) != NULL && n < max; p += strlen(pat))
+        v[n++] = atof(p + strlen(pat));
+    return n;
+}
+
+static int run_ob(rdof_bl_t *bl, const char *req, double *now, char *out, size_t cap)
+{
+    const int c = ask(bl, req, *now);
+    size_t n = 0;
+    for (int i = 0; i < 300 && !rdof_bl_finished(bl, c); i++) {
+        *now += 0.01;
+        ob.now = *now;
+        rdof_bl_tick(bl, *now);
+        n = drain_all(bl, c, out, cap, n);
+    }
+    return c;
+}
+
+static void test_outbound(void)
+{
+    static char out[1 << 18];
+    static double sc[200], slot[200], nn[200];
+    rdof_bl_t *bl = rdof_bl_new(&PLAT);
+    double now = 4000;
+    memset(&ob, 0, sizeof ob);
+    memset(&tx, 0, sizeof tx);
+
+    /* refused before anything keys: a family the routed path frames again, --voice-slot, a family on an outbound,
+     * too long, not a TX frequency */
+    routed = true;
+    int c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"freq\":438.1125,"
+                    "\"family\":\"bs\"}}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"unsupported\"") && strstr(out, "--family: the router") && !tx.open,
+          "a BS family through the router: %s", out);
+    rdof_bl_closed(bl, c, now);
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"csbk\",\"freq\":438.1125,"
+                "\"family\":\"ts2\"}}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"unsupported\"") && strstr(out, "--family"), "a TS2 CSBK through the router: %s",
+          out);
+    rdof_bl_closed(bl, c, now);
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"data\",\"freq\":438.1125,"
+                "\"family\":\"ms\"}}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(!strstr(out, "\"error\""), "MS goes through the router: %s", out);
+    rdof_bl_closed(bl, c, now);
+    routed = false;
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"outbound\",\"freq\":438.1125,"
+                "\"voice_slot\":1}}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"unsupported\"") && strstr(out, "--voice-slot"), "--voice-slot: %s", out);
+    rdof_bl_closed(bl, c, now);
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"outbound\",\"freq\":438.1125,"
+                "\"family\":\"ms\"}}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"unsupported\"") && strstr(out, "--family ms"), "an MS outbound: %s", out);
+    rdof_bl_closed(bl, c, now);
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"outbound\",\"freq\":438.1125,"
+                "\"seconds\":61}}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"unsupported\"") && strstr(out, "--seconds 0.5-60"), "61 s: %s", out);
+    rdof_bl_closed(bl, c, now);
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"outbound\",\"freq\":438.0625}}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"refused\""), "not a TX frequency: %s", out);
+    rdof_bl_closed(bl, c, now);
+    CHECK(!ob.open && !ob.polls, "nothing keyed");
+
+    /* 1 s from TS1: 33 slots, a record each, 30 ms (1440 samples) apart, the slots alternating */
+    ob.first = 8;
+    c = run_ob(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"outbound\",\"freq\":438.1125,"
+                   "\"cc\":1,\"seconds\":1,\"power\":10}}", &now, out, sizeof out);
+    CHECK(ob.cfg.freq_hz == 438112500 && ob.cfg.cc == 1 && ob.cfg.power == 10 && ob.cfg.seconds == 1,
+          "its setup: %u cc %d power %d %.1f s", ob.cfg.freq_hz, ob.cfg.cc, ob.cfg.power, ob.cfg.seconds);
+    CHECK(is_json_lines(out) && strstr(out, "\"started\"") && strstr(out, "\"exit\":0") && ob.closed && !ob.open &&
+              ob.unkeyed, "the job: %.400s", out);
+    CHECK(strstr(out, "outbound on 438.1125 MHz cc 1: BS idle bursts with the CACH on both slots, 33 slots"),
+          "its log: %.800s", out);
+    const char *st = strstr(out, "\\\"start\\\"");
+    CHECK(st && strstr(st, "\\\"first_slot\\\": 1") && strstr(st, "\\\"period_samples\\\": 1440.0") &&
+              strstr(st, "\\\"sc0\\\": 1012295") && strstr(st, "\\\"t0\\\": 1900000000.256146") &&
+              strstr(st, "\\\"ppm\\\": -28.00"), "the start record: %.400s", st ? st : out);
+    const char *recs = st ? strstr(st, "\n") : out;
+    const int k = out_values(recs, "sc", sc, 200);
+    out_values(recs, "slot", slot, 200);
+    out_values(recs, "n", nn, 200);
+    bool steady = k >= 33;
+    for (int i = 1; i < 33; i++)
+        steady &= sc[i] - sc[i - 1] == 1440 && nn[i] == i && slot[i] == (i % 2 ? 2 : 1);
+    CHECK(steady && sc[0] == OB_BASE + 8 * 1440 + 775, "%d records, 1440 samples apart, TS1 first: %.0f %.0f", k, sc[0],
+          sc[1]);
+    const int idles = count(out, "\\\"kind\\\": \\\"IDLE\\\"");
+    CHECK(idles >= 33 && idles <= 35 && count(out, "\\\"sync\\\": \\\"BS_DATA\\\"") == idles, "an idle burst each: %d",
+          idles);
+    const char *sum = strstr(out, "\\\"summary\\\"");
+    CHECK(sum && strstr(sum, "\\\"skips\\\": 0") && strstr(sum, "\\\"sc0\\\": 1012295"), "the summary: %.300s",
+          sum ? sum : "(none)");
+    rdof_bl_closed(bl, c, now);
+
+    /* TS2 only, the slot clock jumping 3 slots once: TS2's records, and the skip */
+    ob.first = 7, ob.skip_at = 20, ob.skip_n = 3;
+    c = run_ob(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"outbound\",\"freq\":438.1125,"
+                   "\"seconds\":1,\"slots\":\"2\"}}", &now, out, sizeof out);
+    st = strstr(out, "\\\"start\\\"");
+    const int k2 = out_values(st ? st : out, "slot", slot, 200);
+    bool ts2 = k2 > 10;
+    for (int i = 0; i < k2; i++)
+        ts2 &= slot[i] == 2;
+    CHECK(ts2 && st && strstr(st, "\\\"first_slot\\\": 2"), "TS2 only: %d records", k2);
+    CHECK(strstr(out, "\\\"skip\\\": {\\\"from_n\\\": 13, \\\"to_n\\\": 16, \\\"slots\\\": 3") &&
+              strstr(out, "\\\"skips\\\": 1"), "the skip: %.3000s", out);
+    CHECK(strstr(out, "\"exit\":0") && ob.closed, "the TS2 job: %.300s", out);
+    rdof_bl_closed(bl, c, now);
+
+    /* closing mid-job gives the modem back */
+    ob.skip_n = 0;
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"outbound\",\"freq\":438.1125,"
+                "\"seconds\":15}}", now);
+    for (int i = 0; i < 20; i++) {
+        ob.now = now += 0.01;
+        rdof_bl_tick(bl, now);
+    }
+    CHECK(ob.open, "running");
+    rdof_bl_closed(bl, c, now);
+    CHECK(ob.closed && !ob.open, "closing ends the outbound");
+    rdof_bl_free(bl);
+}
+
 /* ── over TCP ── */
 
 /* ── bench_repeater jobs ── */
@@ -1074,6 +1272,7 @@ int main(int argc, char **argv)
     test_decode();
     test_run();
     test_repeater();
+    test_outbound();
     test_tcp();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

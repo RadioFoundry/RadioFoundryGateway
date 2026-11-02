@@ -10,7 +10,9 @@
  * the modem: the roamer's writes, the DSP's bursts and pulls.
  *
  * The bench API's transmit (bench_tx.c, via=modem) opens the same modem when
- * no roamer owns it, for the length of one WS /tx job.
+ * no roamer owns it, for the length of one WS /tx job. A bench outbound job
+ * borrows the front end from a roamer: the roamer's modem is parked (its
+ * writes still taken, nothing sent or heard) and comes back after the job.
  */
 #include <math.h>
 #include <stdio.h>
@@ -38,6 +40,7 @@ static roam_t *owner;
 /* the bench's job (bench_tx.c), while it holds the modem */
 static void (*bench_reply)(void *ctx, const uint8_t *frame, size_t len);
 static void *bench_ctx;
+static rdof_sdrmodem_t *parked; /* the roamer's modem while the bench borrows the front end */
 
 #define TAKE() xSemaphoreTake(lock, portMAX_DELAY)
 #define GIVE() xSemaphoreGive(lock)
@@ -143,16 +146,44 @@ static const char *modem_up(const rdof_sdrmodem_io_t *io, double power_dbm)
     return NULL;
 }
 
-const char *sdr_modem_bench_why(void)
+/* The roamer's modem back on the front end after a borrow: what it had queued dropped, unkeyed, on its frequency and
+ * power again. */
+static void unpark(void)
 {
+    if (!parked)
+        return;
+    TAKE();
+    rdof_sdrmodem_t *m = parked;
+    parked = NULL;
+    m->keyed = m->unkey = false;
+    m->qn[0] = m->qn[1] = 0;
+    m->slot_k = -1;
+    double off;
+    if (m->tx_hz && !io_tx_tune(NULL, m->tx_hz, &off))
+        ESP_LOGW(TAG, "the roamer's %.5f MHz didn't tune again", m->tx_hz / 1e6);
+    mdm = m;
+    GIVE();
 #if CONFIG_RDOF_ROAMER
-    if (owner)
-        return "the SDR's modem belongs to a roamer (an sdr_transceiver)";
+    fe.ops->tx_set(fe.ctx, &source, owner ? owner->cfg->tx_power_dbm : 0);
 #endif
+}
+
+const char *sdr_modem_bench_borrow_why(bool borrow)
+{
     if (bench_reply)
         return "the SDR's modem is in use by another bench job";
+#if CONFIG_RDOF_ROAMER
+    if (owner && !borrow)
+        return "the SDR's modem belongs to a roamer (an sdr_transceiver)";
+    if (owner && !mdm)
+        return "the roamer's SDR modem isn't up yet";
+    if (owner && rdof_sdrmodem_transmitting(mdm))
+        return "the roamer is transmitting";
+#endif
     return frontend_why();
 }
+
+const char *sdr_modem_bench_why(void) { return sdr_modem_bench_borrow_why(false); }
 
 static void bench_io_reply(void *ctx, const uint8_t *frame, size_t len)
 {
@@ -161,22 +192,45 @@ static void bench_io_reply(void *ctx, const uint8_t *frame, size_t len)
 }
 
 const char *sdr_modem_bench_open(void (*reply)(void *ctx, const uint8_t *frame, size_t len), void *ctx,
-                                 double power_dbm)
+                                 double power_dbm, bool borrow)
 {
     if (!lock)
         lock = xSemaphoreCreateMutex();
-    const char *why = sdr_modem_bench_why();
+    TAKE();
+    const char *why = sdr_modem_bench_borrow_why(borrow);
+    if (!why && mdm) { /* the roamer's: parked, the front end the bench's */
+        parked = mdm;
+        mdm = NULL;
+    }
+    GIVE();
     if (why)
         return why;
+    if (parked)
+        fe.ops->tx_set(fe.ctx, NULL, 0);
     bench_reply = reply;
     bench_ctx = ctx;
     const rdof_sdrmodem_io_t io = {bench_io_reply, io_channel, io_tx_tune, NULL, NULL};
     if ((why = modem_up(&io, power_dbm)) != NULL) {
         bench_reply = NULL;
+        unpark();
         return why;
     }
-    ESP_LOGI(TAG, "the bench holds the SDR modem (%s, %.0f dBm)", fe.caps->kind, power_dbm);
+    ESP_LOGI(TAG, "the bench holds the SDR modem (%s, %.0f dBm%s)", fe.caps->kind, power_dbm,
+             parked ? ", the roamer's parked" : "");
     return NULL;
+}
+
+bool sdr_modem_bench_slots(sdr_modem_slots_t *s)
+{
+    TAKE();
+    const rdof_sdrmodem_t *m = bench_reply ? mdm : NULL;
+    if (m)
+        *s = (sdr_modem_slots_t){.keyed = m->keyed, .clock = m->slot_k >= 0, .base = m->base, .slot_k = m->slot_k,
+                                 .key_k = m->key_k, .skips = m->slot_skips, .skip_from = m->skip_from,
+                                 .skip_to = m->skip_to, .slot = (double)rdof_mod_slot_samples(&m->mod),
+                                 .tx_fs = m->tx_fs};
+    GIVE();
+    return m != NULL;
 }
 
 void sdr_modem_bench_write(const uint8_t *data, size_t len)
@@ -201,7 +255,9 @@ void sdr_modem_bench_close(void)
         rdof_sdrmodem_free(m);
         free(m);
     }
-    ESP_LOGI(TAG, "the bench let the SDR modem go");
+    const bool back = parked != NULL;
+    unpark();
+    ESP_LOGI(TAG, "the bench let the SDR modem go%s", back ? ": the roamer's back" : "");
 }
 
 #if CONFIG_RDOF_ROAMER
@@ -211,7 +267,7 @@ static void io_reply(void *ctx, const uint8_t *frame, size_t len) { modem_on_byt
 static bool sdr_write(void *ctx, const uint8_t *data, size_t len)
 {
     TAKE();
-    rdof_sdrmodem_write(mdm, data, len);
+    rdof_sdrmodem_write(parked ? parked : mdm, data, len);
     GIVE();
     return true;
 }

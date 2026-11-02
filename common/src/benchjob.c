@@ -100,6 +100,51 @@ static int unhex(const char *s, uint8_t *out, size_t cap)
     return s[0] ? -1 : (int)n;
 }
 
+/* --slots "1,2": bit 1 slot 1, bit 2 slot 2 (both when it isn't given; 0 when it's bad). */
+static unsigned slots(const rdof_jdoc_t *d, int obj)
+{
+    char s[16];
+    unsigned m = 0;
+    if (!text(d, obj, "slots", s, sizeof s))
+        snprintf(s, sizeof s, "1,2");
+    for (const char *p = s; *p; p++)
+        if (*p == '1' || *p == '2')
+            m |= 1u << (*p - '0');
+        else if (*p != ',' && *p != ' ')
+            return 0;
+    return m;
+}
+
+/* bench_tx.py outbound: a repeater's downlink with no traffic (BS idle bursts with the CACH, both slots), keyed for
+ * --seconds. */
+static bool parse_outbound(const rdof_jdoc_t *d, int obj, rdof_bj_job_t *j, char *error, size_t ecap)
+{
+    char s[16];
+    j->cmd = RDOF_BJ_OUTBOUND;
+    j->freq_mhz = num(d, obj, "freq", 0);
+    j->cc = (int)num(d, obj, "cc", 1);
+    j->power = (int)num(d, obj, "power", 255);
+    j->seconds = num(d, obj, "seconds", 10);
+    j->src = (uint32_t)num(d, obj, "src", 9990301);
+    j->slots = slots(d, obj);
+    j->family = RDOF_FAMILY_BS;
+    if (text(d, obj, "family", s, sizeof s) && strcmp(s, "bs")) {
+        snprintf(error, ecap, "bench_tx outbound --family %s isn't done here: an outbound is BS bursts", s);
+        return false;
+    }
+    if (num(d, obj, "voice_slot", 0) != 0) {
+        snprintf(error, ecap, "bench_tx outbound --voice-slot isn't done here yet (idle bursts only)");
+        return false;
+    }
+    if (!(j->freq_mhz > 0) || j->cc < 0 || j->cc > 15 || !j->slots || !(j->seconds >= 0.5) ||
+        j->seconds > RDOF_BJ_OUTBOUND_MAX_S) {
+        snprintf(error, ecap, "outbound needs --freq; --cc 0-15, --slots 1,2, --seconds 0.5-%d",
+                 RDOF_BJ_OUTBOUND_MAX_S);
+        return false;
+    }
+    return true;
+}
+
 /* bench_repeater.py's options. */
 static bool parse_repeater(const rdof_jdoc_t *d, int obj, rdof_bj_job_t *j, char *error, size_t ecap)
 {
@@ -125,16 +170,7 @@ static bool parse_repeater(const rdof_jdoc_t *d, int obj, rdof_bj_job_t *j, char
     j->beacon = num(d, obj, "beacon", 0);
     j->beacon_len = num(d, obj, "beacon_len", 4.0);
     j->beacon_phase = num(d, obj, "beacon_phase", 2.0);
-    char s[16];
-    if (!text(d, obj, "slots", s, sizeof s))
-        snprintf(s, sizeof s, "1,2");
-    for (const char *p = s; *p; p++)
-        if (*p == '1' || *p == '2')
-            j->slots |= 1u << (*p - '0');
-        else if (*p != ',' && *p != ' ') {
-            j->slots = 0;
-            break;
-        }
+    j->slots = slots(d, obj);
     if (!(j->rx_mhz > 0) || !(j->tx_mhz > 0)) {
         snprintf(error, ecap, "bench_repeater needs --rx and --tx");
         return false;
@@ -171,10 +207,12 @@ bool rdof_bj_parse(const rdof_jdoc_t *d, int obj, rdof_bj_job_t *j, uint8_t *amb
         return false;
     }
     text(d, obj, "cmd", s, sizeof s);
+    if (!strcmp(s, "outbound"))
+        return parse_outbound(d, obj, j, error, ecap);
     j->cmd = !strcmp(s, "voice") ? RDOF_BJ_VOICE : !strcmp(s, "csbk") ? RDOF_BJ_CSBK : !strcmp(s, "data") ? RDOF_BJ_DATA
            : !strcmp(s, "listen") ? RDOF_BJ_LISTEN : 0;
     if (!j->cmd) {
-        snprintf(error, ecap, "bench_tx %s isn't done here (voice, csbk, data, listen)", s);
+        snprintf(error, ecap, "bench_tx %s isn't done here (voice, csbk, data, listen, outbound)", s);
         return false;
     }
     j->freq_mhz = num(d, obj, "freq", 438.5);

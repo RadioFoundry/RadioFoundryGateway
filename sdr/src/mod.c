@@ -14,7 +14,7 @@
 
 #include "sdr_private.h"
 
-#define BLOCK 256          /* samples per inner block (bounds the stack) */
+#define BLOCK 64 /* samples per inner block: its two float arrays are on the stack of a front end's reader (512 bytes) */
 #define LUT_BITS 8
 #define HALF (RDOF_MOD_TAPS / 2)
 

@@ -29,7 +29,9 @@ extern "C" {
 #define RDOF_BJ_UDP 600         /* --udp-payload octets */
 #define RDOF_BJ_CALLS 16        /* calls a listener keeps for its summary */
 
-enum { RDOF_BJ_VOICE = 1, RDOF_BJ_CSBK, RDOF_BJ_DATA, RDOF_BJ_LISTEN, RDOF_BJ_REPEATER };
+enum { RDOF_BJ_VOICE = 1, RDOF_BJ_CSBK, RDOF_BJ_DATA, RDOF_BJ_LISTEN, RDOF_BJ_REPEATER, RDOF_BJ_OUTBOUND };
+
+#define RDOF_BJ_OUTBOUND_MAX_S 60 /* an outbound job's --seconds at most (bench.tx's max_key_s doesn't apply) */
 
 typedef struct {
     int cmd;
@@ -62,7 +64,7 @@ typedef struct {
     bool json;
     /* bench_repeater (cmd RDOF_BJ_REPEATER; freq_mhz is tx_mhz) */
     double rx_mhz, tx_mhz, hang, call_hang, beacon, beacon_len, beacon_phase;
-    unsigned slots;             /* bit 1: slot 1, bit 2: slot 2 */
+    unsigned slots;             /* bit 1: slot 1, bit 2: slot 2 (outbound: the slots it reports) */
 } rdof_bj_job_t;
 
 /* The job object of a run request (bench-api.md 14.3): false with error set when it can't be done here. ambe_buf

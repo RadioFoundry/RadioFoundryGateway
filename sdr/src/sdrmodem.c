@@ -97,6 +97,7 @@ int rdof_sdrmodem_init(rdof_sdrmodem_t *m, const rdof_sdrmodem_io_t *io, uint32_
     m->can_full = can_full;
     m->channel = -1;
     m->dc_last = INT64_MIN;
+    m->key_k = -1;
 #if RDOF_FEATURE_REPEATER
     const uint8_t null5[5] = {0};
     uint8_t sl9[9];
@@ -818,6 +819,7 @@ static void on_frame(void *ctx, uint8_t cmd, const uint8_t *p, size_t len)
                 m->keyed = true;
                 m->unkey = false;
                 m->ramp_up = true;
+                m->key_k = -1;
                 m->keyed_at48 = m->now48;
                 if (m->role != ROLE_TX)
                     m->slot_k = -1; /* placed at the next pull; the TX half's slot clock runs on */
@@ -1083,6 +1085,35 @@ void rdof_sdrmodem_cach(rdof_sdrmodem_t *m, long k, uint8_t out3[3])
 #endif
 }
 
+size_t rdof_sdrmodem_outbound_frames(uint32_t hz, int cc, int rf_level, int lease_s, int max_key_s, uint8_t *out,
+                                     size_t cap)
+{
+    uint8_t role[7] = {1, ROLE_TX, (uint8_t)(lease_s < 1 ? 1 : lease_s > 255 ? 255 : lease_s), 0, 1,
+                       (uint8_t)((max_key_s + 9) / 10 < 1 ? 1 : (max_key_s + 9) / 10 > 255 ? 255 : (max_key_s + 9) / 10),
+                       1};
+    uint8_t config[23] = {0}; /* protocol 1's layout, duplex (no simplex flag) */
+    config[1] = RDOF_DMR_ENABLED;
+    config[3] = RDOF_MODE_DMR;
+    config[6] = (uint8_t)(cc & 0x0F);
+    uint8_t freq[14];
+    const size_t fl = rdof_mmdvm_set_freq_payload(hz, hz, rf_level, freq);
+    const uint8_t mode = RDOF_MODE_DMR, on = 1;
+    size_t n = 0, k;
+#define FRAME(cmd, p, len)                                                     \
+    do {                                                                       \
+        if (!(k = rdof_mmdvm_frame((cmd), (p), (len), out + n, cap - n)))     \
+            return 0;                                                          \
+        n += k;                                                                \
+    } while (0)
+    FRAME(ODR_SPLIT, role, sizeof role); /* first: the role takes the duplex flag on a half duplex front end */
+    FRAME(RDOF_MMDVM_SET_CONFIG, config, sizeof config);
+    FRAME(RDOF_MMDVM_SET_FREQ, freq, fl);
+    FRAME(RDOF_MMDVM_SET_MODE, &mode, 1);
+    FRAME(RDOF_MMDVM_DMR_START, &on, 1);
+#undef FRAME
+    return n;
+}
+
 #if RDOF_FEATURE_REPEATER
 static bool sched_pending(const rdof_sdrmodem_t *m)
 {
@@ -1145,9 +1176,16 @@ static void queue_duplex(rdof_sdrmodem_t *m, int64_t pos, int n)
         m->clock_running = tx_half;
     } else if (m->base + m->slot_k * slot < pos + lead) {
         if (tx_half) { /* unkeyed, or fell behind: the slot clock runs on */
+            const long from = m->slot_k;
             m->slot_k = (long)((pos + lead - m->base + slot - 1) / slot);
-            if (m->keyed)
+            if (m->keyed) {
                 m->ramp_up = true;
+                if (m->key_k >= 0) { /* slots lost mid key-up */
+                    m->slot_skips++;
+                    m->skip_from = from;
+                    m->skip_to = m->slot_k;
+                }
+            }
         } else { /* fell behind (a skip): carry on from now */
             m->base = pos + lead;
             m->slot_k = 0;
@@ -1230,6 +1268,8 @@ static void queue_duplex(rdof_sdrmodem_t *m, int64_t pos, int n)
         unsigned flags = (m->ramp_up ? RDOF_MOD_RAMP_UP : 0) | (m->unkey ? RDOF_MOD_RAMP_DOWN : 0);
         if (rdof_mod_queue_burst(&m->mod, at + cach, burst, c3, flags) != 0)
             break;
+        if (m->key_k < 0)
+            m->key_k = m->slot_k;
         m->ramp_up = false;
         m->cach_bursts++;
         if (!idle) {
@@ -1259,10 +1299,10 @@ static void advance(rdof_sdrmodem_t *m, int64_t pos, int n)
 {
     if (pos > m->mod.pos) { /* the front end skipped samples: let the modulator's clock catch up */
         rdof_mod_skip(&m->mod, pos); /* idle: at once (a front end starting hours into the stream) */
-        rdof_cf_t junk[64];
+        rdof_cf_t junk[16]; /* small: this runs deep in a front end reader's stack */
         while (m->mod.pos < pos) {
             int64_t k = pos - m->mod.pos;
-            rdof_mod_iq(&m->mod, junk, k < 64 ? (int)k : 64);
+            rdof_mod_iq(&m->mod, junk, k < 16 ? (int)k : 16);
         }
     }
     pos = m->mod.pos;

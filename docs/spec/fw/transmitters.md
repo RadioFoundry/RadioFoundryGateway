@@ -203,9 +203,13 @@ The OLED's TX row shows the transmitter's path while it sends or holds.
   - A bench job (`WS /tx via=modem`, or the line protocol's) goes through the pool when the roamer has the SDR modem
     (bench-api.md section 7): `rdof_benchroute` answers it as an MMDVM modem would, each call a stream
     (`0x4245nnnn`) on the path at the job's frequency, without `take_hold`. It sends at the device's power, not
-    `bench.tx.rf_level`.
+    `bench.tx.rf_level`. Its BS family is refused there (the pool frames MS sync), before anything keys.
+  - A bench `outbound` job (a repeater's idle outbound, BS sync on both slots) doesn't go through the pool: it
+    borrows the raw SDR modem from the roamer (`sdr_modem_bench_open` with `borrow`; the roamer's modem is parked
+    and its writes go to it), keys it duplex in the modem's own TX half for the job's length, and gives it back
+    re-tuned to the roamer's frequency and power. It waits while the roamer is transmitting.
 - **Power:** the SDR modem transmits at the device's `tx.power_dbm` (default 10 dBm), copied to the roamer's
-  `tx_power_dbm`. A frequency's `power` (the 0-255 level of a modem's `SET_FREQ`) doesn't reach it.
+  `tx_power_dbm`. The W12's front end sends at most 21 dBm: at 22 its PA setup sends noise (lr2021-iq.md R3.49). A frequency's `power` (the 0-255 level of a modem's `SET_FREQ`) doesn't reach it.
 - **The blind span** is the receiver's, not a path's: the LR2021 front end sets `blind_when_muted`, and while the SDR
   modem's transmission covers the stream every channel's tracker stops aging (`rdof_tracker_blind` moves its calls'
   last burst on by the span). `/api/status` `sdr.blinds` (a span per burst transmitted, as the SDR modem mutes each),

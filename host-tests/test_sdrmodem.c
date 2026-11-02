@@ -1523,6 +1523,93 @@ static void test_dcdm_e2e(void)
     dce_free(e);
 }
 
+/* bench_tx outbound (bench_tx.c): the TX half keyed by rdof_sdrmodem_outbound_frames, its signal into the receiver.
+ * BS idle bursts on both slots every 30 ms (1440 samples at 48 kS/s), the slot from the CACH alternating from the
+ * key-up's first slot, AT 0, the slot clock steady (no skips); DMR_START 00 unkeys; a front end that skips samples
+ * mid key-up is a skip, counted with the slots lost. */
+static struct {
+    int n;
+    int64_t pos[256];
+    int slot[256], dt[256], cc[256], fam[256];
+} obr;
+
+static void ob_burst(void *ctx, int c, const rdof_sdr_burst_t *b, double t)
+{
+    if (obr.n < 256) {
+        obr.pos[obr.n] = b->position, obr.slot[obr.n] = b->b.slot, obr.dt[obr.n] = b->b.dt;
+        obr.cc[obr.n] = b->b.cc, obr.fam[obr.n] = b->b.family;
+    }
+    obr.n++;
+}
+
+static void ob_run(rdof_sdrmodem_t *m, rdof_sdr_rx_t *rx, double s, int64_t jump)
+{
+    static rdof_cf_t iq[DC_CHUNK];
+    for (int c = 0; c < (int)(s * DC_FS / DC_CHUNK); c++) {
+        rdof_sdrmodem_pull_iq(m, rx->samples + (c >= 10 ? jump : 0), iq, DC_CHUNK);
+        for (int i = 0; i < DC_CHUNK; i++)
+            iq[i].re = 0.5f * iq[i].re + 0.02f * dc_noise(), iq[i].im = 0.5f * iq[i].im + 0.02f * dc_noise();
+        rdof_sdr_rx_process(rx, iq, DC_CHUNK);
+    }
+}
+
+static void test_outbound(void)
+{
+    static rdof_sdrmodem_t m;
+    static rdof_sdr_rx_t rx;
+    const rdof_sdrmodem_io_t io = {no_reply, NULL, dcm_tune, NULL, NULL};
+    CHECK(rdof_sdrmodem_init(&m, &io, DC_FS, DC_FS, false) == 0, "init");
+    const rdof_sdr_rx_config_t rc = {DC_FS, DC_CENTER, 0, 0, true, DC_CHUNK};
+    const rdof_sdr_channel_t ch = {"A", DC_CH, DC_CC, 2};
+    CHECK(rdof_sdr_rx_init(&rx, &rc, &ch, 1, NULL, 0) == 0, "receiver");
+    rx.on_burst = ob_burst;
+    memset(&obr, 0, sizeof obr);
+    uint8_t f[160];
+    const size_t n = rdof_sdrmodem_outbound_frames(DC_CH, DC_CC, 0, 25, 15, f, sizeof f);
+    CHECK(n > 0 && rdof_sdrmodem_outbound_frames(DC_CH, DC_CC, 0, 25, 15, f, 20) == 0, "the frames: %zu bytes", n);
+    rdof_sdrmodem_write(&m, f, n);
+    CHECK(m.role == 1 && m.duplex && m.keyed && m.tuned && m.mode == RDOF_MODE_DMR && m.cc == DC_CC &&
+              m.lease_s == 25 && m.max_key48 == 20 * 48000, "a keyed TX half: role %d duplex %d keyed %d lease %d",
+          m.role, m.duplex, m.keyed, m.lease_s);
+    ob_run(&m, &rx, 2.0, 0);
+    bool idle = obr.n >= 60, steady = true, alternate = true;
+    for (int i = 0; i < obr.n && i < 256; i++) {
+        idle &= obr.dt[i] == RDOF_DT_IDLE && obr.cc[i] == DC_CC && obr.fam[i] == RDOF_FAMILY_BS;
+        if (i) {
+            steady &= llabs(obr.pos[i] - obr.pos[i - 1] - 1440) <= 1;
+            alternate &= obr.slot[i] == 3 - obr.slot[i - 1];
+        }
+    }
+    CHECK(idle, "%d bursts heard, every one a BS idle burst on cc %d", obr.n, DC_CC);
+    CHECK(steady && alternate, "30 ms apart (%lld), the slot alternating from the CACH",
+          obr.n > 1 ? (long long)(obr.pos[1] - obr.pos[0]) : 0LL);
+    CHECK(m.key_k >= 0 && obr.n && obr.slot[0] == (int)(m.key_k & 1) + 1 && m.slot_skips == 0 &&
+              rdof_sdrmodem_at(&m) == 0, "the first slot %ld (TS%d heard first), %u skips, AT %d", m.key_k,
+          obr.n ? obr.slot[0] : 0, (unsigned)m.slot_skips, rdof_sdrmodem_at(&m));
+    /* slot k's burst has its sync center at base + k * slot + 120 + 655 at 48 kS/s (bench_tx.c's records); the
+     * receiver's position is symbol 0's peak plus the FM filter's delay and the channel filter's (8 samples here) */
+    const int64_t k0 = m.key_k, at0 = (m.base + k0 * rdof_mod_slot_samples(&m.mod)) * 48000 / DC_FS + 120;
+    CHECK(obr.n && obr.pos[0] - at0 - RDOF_FM_DELAY >= 0 && obr.pos[0] - at0 - RDOF_FM_DELAY <= 12,
+          "the first burst heard at %lld, queued at %lld", (long long)obr.pos[0], (long long)at0);
+    /* unkeyed: nothing more */
+    const uint8_t off = 0;
+    rdof_sdrmodem_write(&m, f, rdof_mmdvm_frame(RDOF_MMDVM_DMR_START, &off, 1, f, sizeof f));
+    ob_run(&m, &rx, 0.3, 0);
+    const int heard = obr.n;
+    ob_run(&m, &rx, 0.5, 0);
+    CHECK(!m.keyed && obr.n == heard, "DMR_START 00 unkeys: %d then %d", heard, obr.n);
+    /* keyed again, the front end skipping 10 slots' samples: a skip, from the slot it would have queued */
+    const uint8_t on = 1;
+    rdof_sdrmodem_write(&m, f, rdof_mmdvm_frame(RDOF_MMDVM_DMR_START, &on, 1, f, sizeof f));
+    ob_run(&m, &rx, 1.0, 10 * 1440 * (DC_FS / 48000));
+    CHECK(m.slot_skips == 1 && m.skip_to - m.skip_from >= 9 && m.skip_to - m.skip_from <= 11 && m.keyed,
+          "a skip: %u, slots %ld to %ld", (unsigned)m.slot_skips, m.skip_from, m.skip_to);
+    rdof_sdr_rx_free(&rx);
+    rdof_sdrmodem_free(&m);
+    printf("outbound: %d BS idle bursts 1440 samples apart, TS%d first, a skip counted\n", heard,
+           heard ? obr.slot[0] : 0);
+}
+
 #endif
 
 int main(void)
@@ -1544,6 +1631,7 @@ int main(void)
     test_ms_two_radios();
     test_dcdm_modem();
     test_dcdm_e2e();
+    test_outbound();
 #endif
     for (int full = 0; full < 2; full++) {
         int f = rdof_sdrmodem_loopback(full, report, sizeof report);

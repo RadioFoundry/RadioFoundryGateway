@@ -161,6 +161,9 @@ typedef struct rdof_sdrmodem {
     int64_t base;               /* duplex: slot 0's start (its CACH's first symbol) */
     long slot_k;                /* duplex: the next slot to queue */
     bool ramp_up;               /* duplex: the next slot queued is the key-up's first */
+    long key_k;                 /* duplex: the slot DMR_START's key-up started on, -1 none queued yet */
+    uint32_t slot_skips;        /* split TX half: the slot clock fell behind mid key-up and jumped */
+    long skip_from, skip_to;    /* the last jump: slots skip_from to skip_to - 1 never went out */
     uint32_t slc[4], slc_next[4]; /* duplex: the short LC's CACH payloads on air, and the next */
     int64_t sent48[8];          /* 48 kS/s positions the receiver would report for bursts sent (for the mute) */
     int nsent;
@@ -254,6 +257,12 @@ int rdof_sdrmodem_busy(const rdof_sdrmodem_t *m);
 /* Duplex: the 3 CACH bytes (24 bits, first on air in the top bit of byte 0) before outbound slot k (k even: TS1). */
 void rdof_sdrmodem_cach(rdof_sdrmodem_t *m, long k, uint8_t out3[3]);
 
+/* The host frames that make a split TX half (this modem with RDOF_FEATURE_REPEATER, or any SPLIT1 modem) a repeater's
+ * downlink with no traffic, keyed: SET_ROLE 1 (lease_s, the key-up limit max_key_s rounded up to 10 s, prebuffer 1),
+ * SET_CONFIG duplex on cc, SET_FREQ (RX = TX = hz, rf_level), SET_MODE DMR, DMR_START 01. Idle bursts with the CACH
+ * on both slots from the next slot on, until DMR_START 00. Returns the bytes written to out (0: cap too small). */
+size_t rdof_sdrmodem_outbound_frames(uint32_t hz, int cc, int rf_level, int lease_s, int max_key_s, uint8_t *out,
+                                     size_t cap);
 /* UTC slot timing: the mode (slot_timing utc) and the site's offset. */
 void rdof_sdrmodem_grid(rdof_sdrmodem_t *m, bool on, int offset_us);
 /* The map from 48 kS/s positions to UTC (ok false: none now, the slot clock runs on as it is): position i0 is UTC

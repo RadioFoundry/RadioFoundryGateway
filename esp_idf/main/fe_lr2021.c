@@ -80,7 +80,7 @@ static rdof_fe_caps_t caps = {
     .tx_freq_min = 150e6,
     .tx_freq_max = 960e6,
     .tx_power_min = -9.5, /* the LF PA, 0.5 dB steps (7.4.3) */
-    .tx_power_max = 22,
+    .tx_power_max = 21,   /* 22 dBm sends noise, not the signal, with the board's PA setup (spec R3.49) */
     .tx_power_step = 0.5,
     .turnaround_us = 107, /* RX to TX, typical (table 3-23); TX to RX 91 */
 };
@@ -575,7 +575,14 @@ static struct {
     unsigned runs, late, early, failed, cut, underflows, calibrated;
     int err_min, err_max;      /* key-up's time against the run's, us */
     int64_t zeros;             /* samples filled in */
+    double sent_dbm;           /* the power the last run went out at */
     lr2021_err_t last_err;
+    unsigned long_runs, long_seams; /* long key-ups (tx_run_long), their seams */
+    unsigned caught_up;             /* long key-ups already due, started from a later sample */
+    int64_t caught_up_samples;      /* the samples skipped for them */
+    int64_t long_skipped;           /* samples skipped at the seams */
+    int long_seam_us;
+    double long_s;                  /* seconds sent in long key-ups */
 } tx = {.key = -1};
 
 static int64_t tx_now48(int64_t us) { return tx.a_pos + (us - tx.a_us) * TX_RATE / 1000000; }
@@ -672,6 +679,7 @@ static void tx_run(int64_t k0, int n, int64_t t_key)
         .at_us = t_key,
     };
     struct stage_span span = {k0, k0 + n};
+    tx.sent_dbm = t.power_dbm;
     lr2021_tx_stream_stats_t s;
     if (lr2021_iq_tx_calibrates(&iq, &t))
         tx.calibrated++;
@@ -702,16 +710,164 @@ static void tx_run(int64_t k0, int n, int64_t t_key)
         tx_zero_fill(gap);
 }
 
+/* A key-up longer than TX_MAX_RUN (a repeater's downlink, bench_tx outbound): one streamed transmission in runs of
+ * TX_LONG_RUN samples, fed from the stage and then from the source as the FIFO takes them, until the source stays
+ * unkeyed for TX_MERGE samples. Each run after the first starts its TX_DONE delay late (R3.49: 161-180 us for
+ * freq once settled, the first few seams up to 230), so that much is skipped at each seam and the stream's later samples keep the anchor's time. The receiver
+ * is off throughout: its stream is filled with zeros up to real time as it goes. */
+#define TX_LONG_RUN 64800 /* 1.35 s, 45 slots: the runs' 16-bit count (R3.43) */
+#define TX_SEAM_US 171    /* the seam's delay when none is learned yet (R3.49) */
+
+struct long_span {
+    int64_t at;       /* the next sample to send */
+    int64_t end;      /* past the last keyed sample found */
+    int64_t sent;     /* samples sent */
+    double skip;      /* samples owed to the seams, not yet skipped */
+    int seam_us;
+    unsigned seams;
+    int64_t skipped;
+    const lr2021_tx_stream_stats_t *st; /* the stream's counts, live */
+    int runs_seen;
+    int64_t done_us[16];                /* each run's TX_DONE as the stream saw it */
+};
+
+static size_t long_pull(void *ctx, uint8_t *buf, size_t max)
+{
+    struct long_span *p = ctx;
+    while (p->st && p->runs_seen < p->st->runs) {
+        if (p->runs_seen < 16)
+            p->done_us[p->runs_seen] = p->st->end_us;
+        p->runs_seen++;
+    }
+    const int64_t gap = native_at(tx_now48(esp_timer_get_time())) - rx_count;
+    if (gap > 0 && gap < (int64_t)(st.native * 0.5))
+        tx_zero_fill(gap);
+    if (p->sent && p->sent % TX_LONG_RUN == 0 && p->seams < p->sent / TX_LONG_RUN) { /* a seam: skip its delay */
+        p->seams++;
+        p->skip += p->seam_us * (TX_RATE / 1e6);
+        const int64_t k = (int64_t)p->skip;
+        p->skip -= (double)k;
+        p->at += k;
+        p->skipped += k;
+        if (p->end < p->at)
+            p->end = p->at;
+    }
+    /* keyed up to end; past it, keyed again within TX_MERGE goes on, else the transmission ends */
+    while (p->at + TX_MERGE >= p->end) {
+        while (tx.src && tx.pos < p->end + TX_MERGE + TX_BLOCK && tx.pos - p->at < TX_STAGE - TX_BLOCK)
+            tx_fill(tx.pos + TX_BLOCK, 1, true);
+        int64_t g = p->end;
+        while (g < tx.pos && !stage.k[g & (TX_STAGE - 1)])
+            g++;
+        if (g < tx.pos) {
+            while (g < tx.pos && stage.k[g & (TX_STAGE - 1)])
+                g++;
+            p->end = g;
+            continue;
+        }
+        if (!tx.src || tx.pos >= p->end + TX_MERGE)
+            break; /* no more keyed samples: the end */
+    }
+    if (p->at >= p->end)
+        return 0;
+    /* a run's last byte goes in on its own, so the seam falls where it's counted */
+    const int64_t to_seam = TX_LONG_RUN - p->sent % TX_LONG_RUN;
+    size_t k = (size_t)(p->end - p->at);
+    if (k > max)
+        k = max;
+    if ((int64_t)k > to_seam)
+        k = (size_t)to_seam;
+    for (size_t j = 0; j < k; j++)
+        buf[j] = (uint8_t)stage.s[(p->at + (int64_t)j) & (TX_STAGE - 1)];
+    p->at += (int64_t)k;
+    p->sent += (int64_t)k;
+    return k;
+}
+
+/* The long transmission from k0, keyed up at esp_timer t_key. Returns where it stopped (the first sample not sent).
+ * The caller holds the lock, in a session. */
+static int64_t tx_run_long(int64_t k0, int64_t k1, int64_t t_key)
+{
+    const lr2021_iq_tx_t t = {
+        .mode = LR2021_TX_FREQ,
+        .center_hz = tx.hz,
+        .ppm = st.ppm,
+        .rate = TX_RATE,
+        .fdev_hz = TX_FDEV,
+        .power_dbm = tx.power,
+        .samples = TX_LONG_RUN,
+        .streamed = true,
+        .at_us = t_key,
+    };
+    const bool same = iq.tx_learned_for == ((uint32_t)LR2021_TX_FREQ << 24 ^ TX_RATE);
+    const int learned = !same ? -1 : iq.tx_learned[1] >= 0 ? iq.tx_learned[1] : iq.tx_learned[0];
+    /* static: this runs deep in the reader's stack (the modem's pull inside the stream's), the reader alone */
+    EXT_RAM_BSS_ATTR static lr2021_tx_stream_stats_t s;
+    EXT_RAM_BSS_ATTR static struct long_span span;
+    span = (struct long_span){.at = k0, .end = k1, .seam_us = learned > 0 ? learned : TX_SEAM_US, .st = &s};
+    tx.sent_dbm = t.power_dbm;
+    if (lr2021_iq_tx_calibrates(&iq, &t))
+        tx.calibrated++;
+    const lr2021_err_t e = lr2021_iq_transmit(&iq, &t, long_pull, &span, &s);
+    clk_break = true;
+    if (s.late) {
+        tx.late++;
+    } else if (s.early) {
+        tx.early++;
+    } else if (e == ESP_OK) {
+        const int err = (int)(s.key_us - t_key);
+        if (!tx.runs || err < tx.err_min)
+            tx.err_min = err;
+        if (!tx.runs || err > tx.err_max)
+            tx.err_max = err;
+        tx.runs++;
+    }
+    if (s.tx_flags & LR2021_FIFO_UNDERFLOW)
+        tx.underflows++;
+    if (e != ESP_OK && !s.late && !s.early) {
+        tx.failed++;
+        tx.last_err = e;
+    }
+    {
+        EXT_RAM_BSS_ATTR static char line[160];
+        int n = snprintf(line, sizeof line, "TX long: key-up %+d us; TX_DONE past each run's length:",
+                         (int)(s.key_us - t_key));
+        for (int i = 0; i < span.runs_seen && i < 12 && n < (int)sizeof line - 8; i++)
+            n += snprintf(line + n, sizeof line - n, " %d",
+                          (int)(span.done_us[i] - (i ? span.done_us[i - 1] : s.key_us) - TX_LONG_RUN * 1000000LL / TX_RATE));
+        say("%s", line); /* the log from the timer's task, not the reader's stack */
+    }
+    tx.long_runs++;
+    tx.long_seams += span.seams;
+    tx.long_skipped += span.skipped;
+    tx.long_seam_us = span.seam_us;
+    tx.long_s += span.sent / (double)TX_RATE;
+    tx.last_us = esp_timer_get_time();
+    const int64_t gap = native_at(tx_now48(esp_timer_get_time())) - rx_count;
+    if (gap > 0 && gap < (int64_t)(st.native * 0.5))
+        tx_zero_fill(gap);
+    return span.at;
+}
+
 /* The end of a transmission: its line in the log, the counts cleared. */
 static void tx_said(void)
 {
     if (tx.runs || tx.late || tx.early || tx.failed)
         say("TX at %.5f MHz, %.1f dBm: %u runs, %u late, %u early (R3.17), %u failed%s%s, %u cut, %u underflows, "
             "%u calibrated; key-up %+d to %+d us of its time; %lld samples filled",
-            tx.hz / 1e6, tx.power, tx.runs, tx.late, tx.early, tx.failed, tx.failed ? ": " : "",
+            tx.hz / 1e6, tx.sent_dbm, tx.runs, tx.late, tx.early, tx.failed, tx.failed ? ": " : "",
             tx.failed ? esp_err_to_name(tx.last_err) : "", tx.cut, tx.underflows, tx.calibrated, tx.err_min,
             tx.err_max, (long long)tx.zeros);
-    tx.runs = tx.late = tx.early = tx.failed = tx.cut = tx.underflows = tx.calibrated = 0;
+    if (tx.long_runs)
+        say("TX: %u long key-ups, %.2f s, %u seams, %lld samples skipped (%d us a seam); %u started late, %lld "
+            "samples skipped for them; TX_DONE learned %d/%d/%d us", tx.long_runs, tx.long_s, tx.long_seams,
+            (long long)tx.long_skipped, tx.long_seam_us, tx.caught_up, (long long)tx.caught_up_samples,
+            iq.tx_learned[0], iq.tx_learned[1], iq.tx_learned[2]);
+    tx.long_runs = tx.long_seams = tx.caught_up = 0;
+    tx.caught_up_samples = 0;
+    tx.long_skipped = 0;
+    tx.long_s = 0;
+    tx.runs =tx.late = tx.early = tx.failed = tx.cut = tx.underflows = tx.calibrated = 0;
     tx.err_min = tx.err_max = 0;
     tx.zeros = 0;
 }
@@ -777,17 +933,26 @@ static bool tx_service(void)
         }
         k1 = g; /* keyed again soon: one run */
     }
-    if (k1 - k0 > TX_MAX_RUN) {
-        k1 = k0 + TX_MAX_RUN;
-        tx.cut++;
-    }
+    const bool longer = k1 - k0 >= TX_MAX_RUN; /* still keyed: one long transmission (tx_run_long) */
     bool ran = false;
-    if (t_key - esp_timer_get_time() < TX_LATE_US) {
+    int64_t t_go = t_key, k_go = k0;
+    if (longer && t_key - esp_timer_get_time() < TX_LATE_US) {
+        /* a long key-up already due (it follows a run straight on): from the first sample there's still time for,
+         * what's past due skipped, the rest on its time */
+        k_go = tx_now48(esp_timer_get_time() + TX_PREP_US);
+        t_go = tx_at_us(k_go);
+        tx.caught_up++;
+        tx.caught_up_samples += k_go - k0;
+    }
+    if (t_go - esp_timer_get_time() < TX_LATE_US) {
         tx.late++;
     } else {
         lock();
         if (iq.in_session && !st.held) {
-            tx_run(k0, (int)(k1 - k0), t_key);
+            if (longer)
+                k1 = tx_run_long(k_go, k1 > k_go ? k1 : k_go, t_go);
+            else
+                tx_run(k0, (int)(k1 - k0), t_key);
             ran = true;
         }
         unlock();
@@ -803,7 +968,7 @@ static bool tx_service(void)
 
 static int tx_set(void *ctx, const rdof_fe_tx_source_t *src, double power_dbm)
 {
-    tx.power = power_dbm;
+    tx.power = power_dbm > caps.tx_power_max ? caps.tx_power_max : power_dbm;
     tx.src = src; /* the reader picks it up */
     return 0;
 }

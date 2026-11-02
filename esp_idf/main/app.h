@@ -487,6 +487,13 @@ int bench_tx_line_space(char *why, size_t cap);
 void bench_tx_line_push(uint8_t control, const uint8_t burst[33]);
 bool bench_tx_line_idle(void);
 void bench_tx_line_close(void);
+/* bench_tx outbound: the SDR modem taken (a roamer's parked) and keyed as a repeater's downlink for seconds */
+const char *bench_tx_ob_why(void);
+bool bench_tx_ob_open(uint32_t freq, int cc, int power, double seconds, char *why, size_t cap);
+int bench_tx_ob_check(char *why, size_t cap); /* 0, or -1 with why: it stopped */
+void bench_tx_ob_unkey(void);
+void bench_tx_ob_close(void);
+const char *bench_tx_why_family(int family); /* a voice, csbk or data job's --family: NULL, or why it can't go */
 /* The line protocol (bench_line.c, bench-api.md section 14): its server on CONFIG_RDOF_BENCH_LINE_PORT; a burst heard
  * (from bench_on_burst); the wideband history (bench_api.c's ring) for its captures. */
 void bench_line_start(void);
@@ -497,8 +504,21 @@ bool bench_session_label(const char *id, char *label, size_t cap);
 bool bench_query(void *req, const char *key, char *val, size_t cap); /* percent-decoded; false: absent */
 /* modem_sdr.c: the SDR's modem for a bench transmit job (via=modem): NULL, or why it can't */
 const char *sdr_modem_bench_why(void);
+/* borrow: a roamer's modem is parked for the job (bench_tx outbound), not a refusal */
+const char *sdr_modem_bench_borrow_why(bool borrow);
 const char *sdr_modem_bench_open(void (*reply)(void *ctx, const uint8_t *frame, size_t len), void *ctx,
-                                 double power_dbm);
+                                 double power_dbm, bool borrow);
+/* The bench modem's slot clock: slot k starts its CACH at TX sample base + k * slot (tx_fs a second); false: none */
+typedef struct {
+    bool keyed, clock;
+    int64_t base;
+    long slot_k, key_k;     /* the next slot to queue; the key-up's first (-1 none yet) */
+    unsigned long skips;    /* the clock jumped mid key-up: skip_from to skip_to - 1 never went out (the last) */
+    long skip_from, skip_to;
+    double slot;
+    uint32_t tx_fs;
+} sdr_modem_slots_t;
+bool sdr_modem_bench_slots(sdr_modem_slots_t *s);
 void sdr_modem_bench_write(const uint8_t *data, size_t len);
 void sdr_modem_bench_close(void);
 bool sdr_tx_muted(void *ctx, int64_t position);

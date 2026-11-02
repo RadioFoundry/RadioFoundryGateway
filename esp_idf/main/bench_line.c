@@ -117,6 +117,41 @@ static void bl_tx_push(void *ctx, uint8_t control, const uint8_t burst[33]) { be
 static void bl_tx_unkey(void *ctx) {} /* the job's modem unkeys once its queue has gone out */
 static bool bl_tx_idle(void *ctx) { return bench_tx_line_idle(); }
 static void bl_tx_close(void *ctx) { bench_tx_line_close(); }
+static const char *bl_why_family(void *ctx, int family) { return bench_tx_why_family(family); }
+
+/* bench_tx outbound: the SDR modem's own slot clock (modem_sdr.c), its TX samples on the receiver's timeline (the
+ * front end sends TX sample p when the stream's count reaches p at 48 kS/s), so UTC from the stream's start. */
+static const char *bl_ob_can(void *ctx) { return bench_tx_ob_why(); }
+
+static bool bl_ob_open(void *ctx, const rdof_bl_ob_cfg_t *cfg, char *why, size_t cap)
+{
+    return bench_tx_ob_open(cfg->freq_hz, cfg->cc, cfg->power, cfg->seconds, why, cap);
+}
+
+static int bl_ob_state(void *ctx, rdof_bl_ob_state_t *s, char *why, size_t cap)
+{
+    if (bench_tx_ob_check(why, cap) < 0)
+        return -1;
+    sdr_modem_slots_t m;
+    if (!sdr_modem_bench_slots(&m) || !m.tx_fs) {
+        snprintf(why, cap, "the SDR modem went");
+        return -1;
+    }
+    sdr_ppm_status_t p;
+    sdr_ppm_status(&p);
+    *s = (rdof_bl_ob_state_t){.keyed = m.keyed && m.key_k >= 0, .first = m.key_k, .next = m.slot_k, .base = m.base,
+                              .slot = m.slot, .rate = m.tx_fs, .skips = (long)m.skips, .last_from = m.skip_from,
+                              .last_to = m.skip_to, .on_air = m.keyed && m.key_k >= 0 && g_rx_ready, .map_pos = 0,
+                              .map_t = g_rx.t0, .ppm = isfinite(p.learned) ? p.learned : 0};
+    /* the CACH (12 symbols) and the burst's first 65.5 symbols, at 10 samples a symbol at 48 kS/s */
+    s->sync_off = (int)llround(775.0 * m.tx_fs / 48000.0);
+    if (!m.keyed && m.key_k >= 0)
+        return 2;
+    return s->keyed ? 1 : 0;
+}
+
+static void bl_ob_unkey(void *ctx) { bench_tx_ob_unkey(); }
+static void bl_ob_close(void *ctx) { bench_tx_ob_close(); }
 
 /* From the DSP cores: a copy only while a connection wants bursts (the engine queues it). */
 void bench_line_burst(int channel, const rdof_sdr_burst_t *b, double t)
@@ -144,7 +179,10 @@ void bench_line_start(void)
                                           .iq_read = bl_iq_read, .iq_warm = bl_iq_warm, .utc = bl_utc,
                                           .sc_utc = bl_sc_utc, .rx_stats = bl_rx_stats, .can_tx = bl_can_tx,
                                           .tx_open = bl_tx_open, .tx_space = bl_tx_space, .tx_push = bl_tx_push,
-                                          .tx_unkey = bl_tx_unkey, .tx_idle = bl_tx_idle, .tx_close = bl_tx_close};
+                                          .tx_unkey = bl_tx_unkey, .tx_idle = bl_tx_idle, .tx_close = bl_tx_close,
+                                          .tx_why_family = bl_why_family, .ob_open = bl_ob_open,
+                                          .ob_state = bl_ob_state, .ob_unkey = bl_ob_unkey, .ob_close = bl_ob_close,
+                                          .ob_can = bl_ob_can};
     if (!(bl = rdof_bl_new(&pf))) {
         ESP_LOGE(TAG, "line protocol: no memory");
         return;
@@ -157,7 +195,8 @@ void bench_line_start(void)
     cfg.stack_alloc_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
     esp_pthread_set_cfg(&cfg);
     char err[160];
-    net = rdof_bnet_start(bl, NULL, CONFIG_RDOF_BENCH_LINE_PORT, now_s, 8192, err, sizeof err);
+    /* 16 KB: a job's records and JSON parse nest deep (8 KB overflowed in burst_out) */
+    net = rdof_bnet_start(bl, NULL, CONFIG_RDOF_BENCH_LINE_PORT, now_s, 16384, err, sizeof err);
     const esp_pthread_cfg_t dflt = esp_pthread_get_default_config();
     esp_pthread_set_cfg(&dflt);
     if (!net) {

@@ -27,12 +27,13 @@
 #define WAIT_MAX_S 900.0       /* a wait with no wait_max */
 #define UNTIL_END_S 0.3        /* bursts --until-end: quiet this long after a burst ends the watch */
 #define SLOT_MS 30.0
+#define SYNC_CENTER_48 655     /* a burst's sync center past its start, 48 kS/s samples (symbol 65.5) */
 
 enum { C_FREE = 0, C_LINE, C_ACTIVE, C_DONE };
 enum { OP_NONE = 0, OP_SESSION, OP_CLAIM, OP_HOLD, OP_RUN, OP_BURSTS, OP_LISTEN, OP_CAPTURE, OP_TRIGGER };
 enum { W_NONE = 0, W_MODEM, W_FREQ };
 /* a run's job */
-enum { J_WAIT = 0, J_OPEN, J_SEND, J_DRAIN, J_GAP, J_LISTEN, J_RPT_SETUP, J_RPT_RUN };
+enum { J_WAIT = 0, J_OPEN, J_SEND, J_DRAIN, J_GAP, J_LISTEN, J_RPT_SETUP, J_RPT_RUN, J_OB_SETUP, J_OB_RUN, J_OB_DRAIN };
 
 typedef struct {
     rdof_bj_job_t job;
@@ -48,6 +49,12 @@ typedef struct {
     rdof_bj_rpt_t rpt;
     int beacons;
     double ends;
+    /* bench_tx outbound */
+    bool ob_open;
+    rdof_bl_ob_state_t ob;
+    long ob_rep, ob_last, ob_skips, ob_n[3]; /* the next slot to report; the slot to unkey after; skips told */
+    int64_t ob_pos;           /* the map, latched once on the air: TX sample ob_pos at UTC ob_t */
+    double ob_t;
     long id;
     char note[200], done[200];
     char esc[7000];           /* an out line, as a JSON string */
@@ -115,6 +122,7 @@ typedef struct {
     uint32_t iseq;
     long gaps, clipped, sent_iq;
     double freq_hz, pre_s, gain;
+    double fs;                /* bursts: the wideband rate, for a record's sc */
     /* run */
     job_t *job;
     trig_t *trig;
@@ -155,6 +163,7 @@ struct rdof_bl {
     rdof_jdoc_t doc;
     int8_t iq[RDOF_BL_IQ_CHUNK * 2];
     char tmp[8192];
+    char bdec[1200], bline[2048]; /* a burst record (under the lock: off the server thread's stack) */
 };
 
 static void lock(rdof_bl_t *bl) { pthread_mutex_lock(&bl->mu); }
@@ -908,6 +917,9 @@ static void op_bursts(rdof_bl_t *bl, conn_t *c, int root, double now, bool liste
     c->first_t = c->prev_t = c->last_t = NAN;
     memset(&c->emb, 0, sizeof c->emb);
     c->cfo_min = INFINITY, c->cfo_max = -INFINITY, c->lvl_max = -INFINITY;
+    rdof_bl_window_t w;
+    get_window(bl, &w);
+    c->fs = w.fs;
     c->state = C_ACTIVE;
     bl->n_bursts++;
     if (!listen)
@@ -1177,6 +1189,8 @@ static void job_end(rdof_bl_t *bl, conn_t *c)
         bl->p.tx_close(bl->p.ctx);
     if (J->rpt_open && bl->p.rpt_close)
         bl->p.rpt_close(bl->p.ctx);
+    if (J->ob_open && bl->p.ob_close)
+        bl->p.ob_close(bl->p.ctx);
     if (bl->tx_conn >= 0 && &bl->c[bl->tx_conn] == c)
         bl->tx_conn = -1;
     if (J->listening)
@@ -1232,6 +1246,45 @@ static void rpt_run(rdof_bl_t *bl, conn_t *c, job_t *J, int root, double now)
         c->expect_s = j->seconds + 3.0;
 }
 
+/* A bench_tx outbound job: it waits for the modem, as a transmit job, its frequency claimed. */
+static void ob_run(rdof_bl_t *bl, conn_t *c, job_t *J, int root, double now)
+{
+    const rdof_bj_job_t *j = &J->job;
+    const char *no = !bl->p.ob_open ? "this bench runs no outbound jobs"
+                   : bl->p.ob_can ? bl->p.ob_can(bl->p.ctx)
+                   : bl->p.can_tx ? bl->p.can_tx(bl->p.ctx) : NULL;
+    if (no) {
+        free(J);
+        fail(bl, c, "unsupported", "%s", no);
+        return;
+    }
+    const double mhz = j->freq_mhz;
+    const int k = freq_index(bl, mhz);
+    if (k < 0 || !(bl->f[k].caps & RDOF_BL_CAP_TX)) {
+        free(J);
+        fail(bl, c, "refused", "%.4f MHz isn't a transmit frequency of this bench", mhz);
+        return;
+    }
+    c->job = J;
+    c->op = OP_RUN;
+    c->ch = bl->f[k].ch;
+    J->max_s = jnum(bl, root, "max_s", 0);
+    J->id = ++bl->next_seq;
+    c->nfreqs = 1;
+    c->freqs[0] = j->freq_mhz;
+    wait_start(bl, c, W_MODEM, root, now);
+    if (c->expect_s <= 0)
+        c->expect_s = j->seconds + 3.0;
+}
+
+/* Why a transmit job's burst family can't go as built on the bench's path now (NULL: it can). */
+static const char *family_why(rdof_bl_t *bl, const rdof_bj_job_t *j)
+{
+    if (j->cmd != RDOF_BJ_VOICE && j->cmd != RDOF_BJ_CSBK && j->cmd != RDOF_BJ_DATA)
+        return NULL;
+    return bl->p.tx_why_family ? bl->p.tx_why_family(bl->p.ctx, j->family) : NULL;
+}
+
 static void op_run(rdof_bl_t *bl, conn_t *c, int ci, int root, double now)
 {
     (void)ci;
@@ -1257,6 +1310,16 @@ static void op_run(rdof_bl_t *bl, conn_t *c, int ci, int root, double now)
     const rdof_bj_job_t *j = &J->job;
     if (j->cmd == RDOF_BJ_REPEATER) {
         rpt_run(bl, c, J, root, now);
+        return;
+    }
+    if (j->cmd == RDOF_BJ_OUTBOUND) {
+        ob_run(bl, c, J, root, now);
+        return;
+    }
+    const char *fam = family_why(bl, j);
+    if (fam) {
+        free(J);
+        fail(bl, c, "unsupported", "--family: %s", fam);
         return;
     }
     const double mhz = j->freq_mhz;
@@ -1439,6 +1502,128 @@ static void tick_rpt(rdof_bl_t *bl, conn_t *c, double now)
     }
 }
 
+/* ── bench_tx outbound ── */
+
+#define OB_SETUP_S 5.0         /* from the modem's setup to the first slot on the air, at most */
+#define OB_DRAIN_S 2.0         /* from the unkey to the modem saying so, at most */
+
+/* Slot k's burst: its sync center as a TX sample, and that sample's UTC from the latched map. */
+static int64_t ob_sc(const job_t *J, long k) { return J->ob.base + (int64_t)llround(k * J->ob.slot) + J->ob.sync_off; }
+static double ob_utc(const job_t *J, int64_t sc) { return J->ob_t + (double)(sc - J->ob_pos) / J->ob.rate; }
+
+/* The records of the slots queued since the last tick: one a burst (in the job's --slots), a skip where the slot
+ * clock jumped. As many as the connection has room for; the rest next time. */
+static void ob_report(rdof_bl_t *bl, conn_t *c)
+{
+    job_t *J = c->job;
+    const rdof_bj_job_t *j = &J->job;
+    run_ctx_t rc = {bl, c};
+    char line[256];
+    while (J->ob_rep < J->ob.next && room(c) > 1024) {
+        const long k = J->ob_rep;
+        if (J->ob.skips > J->ob_skips && k >= J->ob.last_from && J->ob.last_to > k) {
+            const int64_t sc = ob_sc(J, J->ob.last_to);
+            snprintf(line, sizeof line,
+                     "{\"t\": %.6f, \"skip\": {\"from_n\": %ld, \"to_n\": %ld, \"slots\": %ld, \"sc\": %lld}}",
+                     ob_utc(J, sc), k - J->ob.first, J->ob.last_to - J->ob.first, J->ob.last_to - k, (long long)sc);
+            run_out(&rc, line);
+            J->ob_skips = J->ob.skips;
+            J->ob_rep = J->ob.last_to;
+            continue;
+        }
+        const int ts = (int)(k & 1) + 1;
+        J->ob_n[ts]++;
+        J->ob_rep++;
+        if (!(j->slots & (1u << ts)))
+            continue;
+        const int64_t sc = ob_sc(J, k);
+        snprintf(line, sizeof line,
+                 "{\"t\": %.6f, \"sc\": %lld, \"n\": %ld, \"slot\": %d, \"sync\": \"BS_DATA\", \"kind\": \"IDLE\", "
+                 "\"cc\": %d}",
+                 ob_utc(J, sc), (long long)sc, k - J->ob.first, ts, j->cc);
+        run_out(&rc, line);
+    }
+    if (J->ob.skips > J->ob_skips && J->ob_rep >= J->ob.last_to)
+        J->ob_skips = J->ob.skips; /* a jump before the key-up's first slot: nothing went out there */
+}
+
+static void tick_ob(rdof_bl_t *bl, conn_t *c, double now)
+{
+    job_t *J = c->job;
+    const rdof_bj_job_t *j = &J->job;
+    run_ctx_t rc = {bl, c};
+    char why[200] = "", line[512];
+    if (J->state == J_OPEN) {
+        const rdof_bl_ob_cfg_t cfg = {(uint32_t)lround(j->freq_mhz * 1e6), j->cc, j->power, j->seconds};
+        if (!bl->p.ob_open(bl->p.ctx, &cfg, why, sizeof why)) {
+            run_log(bl, c, now, "can't transmit: %s", why[0] ? why : "the transmitter is busy");
+            run_exit(bl, c, 1, NULL);
+            return;
+        }
+        J->ob_open = true;
+        if (why[0])
+            run_log(bl, c, now, "%s", why);
+        J->until = now + OB_SETUP_S;
+        J->state = J_OB_SETUP;
+        return;
+    }
+    const int st = bl->p.ob_state(bl->p.ctx, &J->ob, why, sizeof why);
+    if (st < 0) {
+        run_log(bl, c, now, "the outbound stopped: %s", why[0] ? why : "the modem failed");
+        run_exit(bl, c, 1, NULL);
+        return;
+    }
+    if (J->state == J_OB_SETUP) {
+        if (st < 1 || !J->ob.keyed || !J->ob.on_air || J->ob.first < 0) {
+            if (now > J->until) {
+                run_log(bl, c, now, "the outbound didn't key up in %.0f s", OB_SETUP_S);
+                run_exit(bl, c, 1, NULL);
+            }
+            return;
+        }
+        J->ob_pos = J->ob.map_pos;
+        J->ob_t = J->ob.map_t;
+        J->ob_rep = J->ob.first;
+        J->ob_skips = J->ob.skips;
+        const long n = lround(j->seconds * 1000.0 / SLOT_MS);
+        J->ob_last = J->ob.first + (n > 1 ? n : 1) - 1;
+        const int64_t sc0 = ob_sc(J, J->ob.first);
+        run_log(bl, c, now, "outbound on %.4f MHz cc %d: BS idle bursts with the CACH on both slots, %ld slots", j->freq_mhz,
+                j->cc, J->ob_last - J->ob.first + 1);
+        snprintf(line, sizeof line,
+                 "{\"t\": %.6f, \"start\": {\"freq\": %.4f, \"cc\": %d, \"slots\": %ld, \"first_slot\": %d, "
+                 "\"rate\": %.1f, \"period_samples\": %.1f, \"period_ms\": %.3f, \"sync_off\": %d, \"sc0\": %lld, "
+                 "\"t0\": %.6f, \"ppm\": %.2f}}",
+                 utc_now(bl, now), j->freq_mhz, j->cc, J->ob_last - J->ob.first + 1, (int)(J->ob.first & 1) + 1,
+                 J->ob.rate, J->ob.slot, 1e3 * J->ob.slot / J->ob.rate, J->ob.sync_off, (long long)sc0,
+                 ob_utc(J, sc0), J->ob.ppm);
+        run_out(&rc, line);
+        J->state = J_OB_RUN;
+    }
+    if (J->state == J_OB_RUN && J->ob.next >= J->ob_last) {
+        bl->p.ob_unkey(bl->p.ctx); /* the slot queued next is the last */
+        J->until = now + OB_DRAIN_S;
+        J->state = J_OB_DRAIN;
+    }
+    ob_report(bl, c);
+    if (J->state != J_OB_DRAIN || J->ob_rep < J->ob.next || (st != 2 && now < J->until))
+        return;
+    if (st != 2)
+        run_log(bl, c, now, "the modem didn't say it unkeyed in %.0f s", OB_DRAIN_S);
+    bl->p.ob_close(bl->p.ctx);
+    J->ob_open = false;
+    bl->tx_conn = -1;
+    const long sent = J->ob_rep - J->ob.first;
+    run_log(bl, c, now, "sent %ld slots (%ld TS1, %ld TS2), %ld skips", sent, J->ob_n[1], J->ob_n[2], J->ob.skips);
+    snprintf(line, sizeof line,
+             "{\"t\": %.6f, \"summary\": {\"slots\": %ld, \"ts1\": %ld, \"ts2\": %ld, \"skips\": %ld, "
+             "\"seconds\": %.3f, \"sc0\": %lld, \"t0\": %.6f, \"period_samples\": %.1f, \"rate\": %.1f}}",
+             utc_now(bl, now), sent, J->ob_n[1], J->ob_n[2], J->ob.skips, sent * SLOT_MS / 1000.0,
+             (long long)ob_sc(J, J->ob.first), ob_utc(J, ob_sc(J, J->ob.first)), J->ob.slot, J->ob.rate);
+    run_out(&rc, line);
+    run_exit(bl, c, 0, NULL);
+}
+
 static void tick_run(rdof_bl_t *bl, conn_t *c, int ci, double now)
 {
     (void)ci;
@@ -1455,9 +1640,19 @@ static void tick_run(rdof_bl_t *bl, conn_t *c, int ci, double now)
         tick_rpt(bl, c, now);
         return;
     }
+    if (j->cmd == RDOF_BJ_OUTBOUND) {
+        tick_ob(bl, c, now);
+        return;
+    }
     switch (J->state) {
     case J_OPEN: {
         static const char *const CMDS[] = {"", "voice", "csbk", "data", "listen"};
+        const char *fam = family_why(bl, j); /* the path may have changed while the job waited */
+        if (fam) {
+            run_log(bl, c, now, "can't transmit: --family: %s", fam);
+            run_exit(bl, c, 1, NULL);
+            return;
+        }
         if (!bl->p.tx_open(bl->p.ctx, (uint32_t)lround(j->freq_mhz * 1e6), j->cc, j->power, why, sizeof why)) {
             run_log(bl, c, now, "can't transmit: %s", why[0] ? why : "the transmitter is busy");
             run_exit(bl, c, 1, NULL);
@@ -1703,35 +1898,40 @@ static void burst_out(rdof_bl_t *bl, conn_t *c, const rdof_bl_burst_t *b, double
     const bool voice = b->dt == RDOF_BL_VOICE_SYNC || b->dt == RDOF_BL_VOICE;
     if (c->cc >= 0 && voice && b->cc >= 0 && b->cc != c->cc)
         return;
+    /* t and sc at the sync's center (bench-api.md 6.3): 65.5 symbols past the burst's start */
+    const double t = b->t + SYNC_CENTER_48 / 48000.0;
+    char sc[32] = "null";
+    if (c->fs > 0)
+        snprintf(sc, sizeof sc, "%lld", (long long)llround((double)(b->pos48 + SYNC_CENTER_48) * c->fs / 48000.0));
     if (isnan(c->first_t))
-        c->first_t = b->t;
-    const double rel = 1e3 * (b->t - c->first_t);
+        c->first_t = t;
+    const double rel = 1e3 * (t - c->first_t);
     const long gn = lround(rel / SLOT_MS);
     double gerr = rel - gn * SLOT_MS;
     if (fabs(gerr) < 0.0005)
         gerr = 0; /* not -0.000 */
     char kt[12], prev[24] = "null", hex[67];
     if (!isnan(c->prev_t))
-        snprintf(prev, sizeof prev, "%.3f", 1e3 * (b->t - c->prev_t));
+        snprintf(prev, sizeof prev, "%.3f", 1e3 * (t - c->prev_t));
     for (int i = 0; i < 33; i++)
         snprintf(hex + 2 * i, 3, "%02x", b->raw[i]);
     const int si = sync_index(b->family, b->dt);
     const char *kind = kind_name(b->dt, b->n, kt);
-    char dec[1200], line[2048];
-    rdof_bj_burst_decode(&c->emb, b, dec, sizeof dec);
-    snprintf(line, sizeof line,
-             "{\"burst\":{\"t\":%.6f,\"t_rel_ms\":%.3f,\"dt_prev_ms\":%s,\"grid_n\":%ld,\"grid_err_ms\":%.3f,"
+    char *dec = bl->bdec, *line = bl->bline;
+    rdof_bj_burst_decode(&c->emb, b, dec, sizeof bl->bdec);
+    snprintf(line, sizeof bl->bline,
+             "{\"burst\":{\"t\":%.6f,\"sc\":%s,\"t_rel_ms\":%.3f,\"dt_prev_ms\":%s,\"grid_n\":%ld,\"grid_err_ms\":%.3f,"
              "\"slot_ab\":\"%c\",\"sync\":\"%s\",\"sync_errors\":%d,\"slot\":%d,\"voice\":%s,\"kind\":\"%s\","
              "\"dt\":%d,\"n\":%d,\"cc\":%d,\"cfo_hz\":%.1f,\"level_dbfs\":%.1f,\"dev_hz\":%.1f,\"freq\":%.1f%s,"
              "\"raw_hex\":\"%s\"}}",
-             b->t, rel, prev, gn, gerr, gn % 2 == 0 ? 'A' : 'B', si >= 0 ? SYNC_NAMES[si] : "?",
+             t, sc, rel, prev, gn, gerr, gn % 2 == 0 ? 'A' : 'B', si >= 0 ? SYNC_NAMES[si] : "?",
              b->sync_errors, b->slot, voice ? "true" : "false", kind, b->dt, b->n, b->cc, b->cfo_hz,
              b->level_dbfs, b->dev_hz, c->freq_hz, dec, hex);
     if (!emit(bl, c, "%s", line)) {
         c->dropped++;
         return;
     }
-    c->prev_t = c->last_t = b->t;
+    c->prev_t = c->last_t = t;
     c->last_mono = now;
     c->sent++;
     c->cfo_sum += b->cfo_hz, c->lvl_sum += b->level_dbfs;

@@ -92,6 +92,30 @@ typedef struct {
 
 enum { RDOF_BL_RPT_HEARD = 1, RDOF_BL_RPT_LOST, RDOF_BL_RPT_KEY };
 
+/* An outbound job's setup (bench_tx outbound): a BS downlink keyed for seconds. */
+typedef struct {
+    uint32_t freq_hz;
+    int cc, power;
+    double seconds;
+} rdof_bl_ob_cfg_t;
+
+/* An outbound job's slot clock, as the platform has it now. Slot k (the modem's count) starts its CACH at TX sample
+ * base + k * slot; even k is TS1. Each slot's burst is queued ahead of its air time: next is the slot to queue. */
+typedef struct {
+    bool keyed;                 /* the key-up's first slot is queued */
+    long first;                 /* the key-up's first slot, -1 none yet */
+    long next;
+    int64_t base;               /* TX samples at rate */
+    double slot, rate;          /* samples a slot (1440 at 48 kS/s), TX samples a second */
+    int sync_off;               /* from a slot's start to its burst's sync center, samples (CACH and 65.5 symbols) */
+    long skips;                 /* the slot clock jumped (it fell behind): last_from to last_to was the last */
+    long last_from, last_to;
+    bool on_air;                /* the transmitter is sending the key-up: map_pos and map_t hold */
+    int64_t map_pos;            /* TX sample map_pos goes out at UTC map_t */
+    double map_t;
+    double ppm;                 /* the transmitter's crystal error, not in the map (0 unknown) */
+} rdof_bl_ob_state_t;
+
 /* What a repeater job's repeater heard or did. */
 typedef struct {
     int kind;
@@ -143,6 +167,20 @@ typedef struct {
     bool (*rpt_event)(void *ctx, rdof_bl_rpt_ev_t *ev);
     void (*rpt_wake)(void *ctx, uint8_t control, const uint8_t burst[33]);
     void (*rpt_close)(void *ctx);
+    /* Optional, for transmit jobs: NULL when the path sends a burst family (rdof_family_t) as built, else why not (a
+     * path that frames the bursts again). Asked before anything keys. NULL hook: every family goes as built. */
+    const char *(*tx_why_family)(void *ctx, int family);
+    /* Outbound jobs (bench_tx outbound; NULL: none), as the repeater jobs: ob_open takes the SDR modem itself (never
+     * through a router) and keys a BS downlink on cfg; false with why. ob_state: 1 keyed, 0 not yet, -1 failed (why),
+     * 2 unkeyed after ob_unkey; *s the slot clock. ob_unkey: the key-up ends after the slot being queued. ob_close:
+     * the modem back to whoever had it. */
+    bool (*ob_open)(void *ctx, const rdof_bl_ob_cfg_t *cfg, char *why, size_t cap);
+    int (*ob_state)(void *ctx, rdof_bl_ob_state_t *s, char *why, size_t cap);
+    void (*ob_unkey)(void *ctx);
+    void (*ob_close)(void *ctx);
+    /* Why an outbound can't run here (NULL: it can), in place of can_tx (NULL hook: can_tx's answer): it takes the
+     * modem from whatever has it */
+    const char *(*ob_can)(void *ctx);
 } rdof_bl_platform_t;
 
 typedef struct rdof_bl rdof_bl_t;

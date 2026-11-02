@@ -10,6 +10,9 @@
  *                    the path at the job's frequency, as the parrot's answers go
  *   via=radio:NAME   a bench radio's MMDVM modem, through the link's guard (lowest power, TX only on the lease)
  *
+ * The line protocol's outbound job (bench_tx outbound) takes the SDR modem itself, never through the router: a
+ * roamer's modem is parked for it (modem_sdr.c) and comes back after.
+ *
  * What the bench may transmit comes from bench.tx in the settings (rdof/benchcfg.h), never from the API. Every keying
  * is logged: the board's log, and the last few in /status.
  */
@@ -36,6 +39,9 @@
 #include "rdof/benchcfg.h"
 #include "rdof/benchroute.h"
 #include "rdof/benchtx.h"
+#include "rdof/layer2.h"
+#include "rdof/mmdvm.h"
+#include "rdof/sdr/sdrmodem.h"
 
 static const char *TAG = "bench";
 
@@ -57,6 +63,11 @@ typedef struct {
     bool routed;          /* via=modem through the router's pool (version 3, a roamer owns the modem) */
     int path;             /* routed: the path at freq */
     bool line;            /* the line protocol's job (bench_line.c): no socket of its own, no lease */
+    bool ob;              /* line, an outbound: the modem keyed by its own frames, no rdof_benchtx job */
+    bool ob_unkeyed;      /* outbound: DMR_START 00 sent */
+    double ob_start;      /* outbound: opened (UTC) */
+    int ob_naks;          /* outbound: the modem's NAKs */
+    uint8_t ob_nak[2];    /* the last one: its command and reason */
     const char *code;     /* refused at the handshake: sent once the socket is up, then closed */
     char why[128];
     rdof_benchtx_t *job;
@@ -172,6 +183,11 @@ static double job_utc(void *ctx)
 /* Let the path go and close the socket. Under mu. */
 static void job_end(void)
 {
+    if (J.ob) {
+        sdr_modem_bench_close();
+        J.on = false;
+        return;
+    }
     if (!J.code) { /* the job was started and its path opened */
         if (J.job->state != RDOF_TXS_DONE)
             rdof_benchtx_stop(J.job, NULL, "closed", now_s());
@@ -198,6 +214,24 @@ static void tx_task(void *arg)
             continue;
         }
         const double now = now_s();
+        if (J.ob) { /* the modem's answers: a NAK fails the job */
+            size_t n;
+            while ((n = xStreamBufferReceive(J.from_modem, buf, sizeof buf, 0)) > 0)
+                for (size_t i = 0; i + 4 < n; i++)
+                    if (buf[i] == RDOF_MMDVM_FRAME_START && buf[i + 1] == 5 && buf[i + 2] == RDOF_MMDVM_NAK) {
+                        J.ob_naks++;
+                        J.ob_nak[0] = buf[i + 3], J.ob_nak[1] = buf[i + 4];
+                    }
+            if (!armed() && !J.ob_unkeyed) {
+                const uint8_t off = 0;
+                uint8_t f[8];
+                sdr_modem_bench_write(f, rdof_mmdvm_frame(RDOF_MMDVM_DMR_START, &off, 1, f, sizeof f));
+                J.ob_unkeyed = true;
+                snprintf(J.why, sizeof J.why, "the TX arm jumper came out");
+            }
+            xSemaphoreGive(mu);
+            continue;
+        }
         if (J.line) { /* its connection is the engine's; bench_tx_line_close ends it */
             size_t n;
             while ((n = xStreamBufferReceive(J.from_modem, buf, sizeof buf, 0)) > 0)
@@ -307,7 +341,7 @@ static esp_err_t tx_open(httpd_req_t *req)
         const rdof_fe_caps_t *c = sdr_fe_caps();
         const double dbm = c ? c->tx_power_min + (c->tx_power_max - c->tx_power_min) * policy.rf_level / 255.0 : 0;
         why = J.radio ? bench_radio_tx_open(via + 6, session, J.freq, modem_bytes, NULL)
-                      : sdr_modem_bench_open(modem_bytes, NULL, dbm);
+                      : sdr_modem_bench_open(modem_bytes, NULL, dbm, false);
         code = "unavailable";
     }
     if (why) {
@@ -443,7 +477,7 @@ bool bench_tx_line_open(uint32_t freq, int cc, int power, char *why, size_t cap)
         snprintf(J.label, sizeof J.label, "line protocol");
         snprintf(J.via, sizeof J.via, "modem");
         xStreamBufferReset(J.from_modem);
-        if ((no = via_router() ? route_open(freq) : sdr_modem_bench_open(modem_bytes, NULL, dbm)) != NULL) {
+        if ((no = via_router() ? route_open(freq) : sdr_modem_bench_open(modem_bytes, NULL, dbm, false)) != NULL) {
             J.on = false;
         } else {
             const rdof_benchtx_io_t io = {job_to_modem, job_to_tool, job_keying, job_utc, NULL};
@@ -504,6 +538,114 @@ void bench_tx_line_close(void)
     xSemaphoreGive(mu);
 }
 
+/* ── the line protocol's outbound (bench_tx outbound, bench-api.md 14.3) ───
+ * The SDR modem as the TX half of a repeater, keyed for the job by its own frames (rdof_sdrmodem_outbound_frames):
+ * the modem sends the idle bursts and the CACH. bench.tx's gates and power apply; its max_key_s doesn't (the job's
+ * --seconds, at most RDOF_BJ_OUTBOUND_MAX_S). */
+
+const char *bench_tx_ob_why(void)
+{
+    if (!bench_tx_enabled())
+        return policy_err[0] ? policy_err : "no transmit frequencies (bench.tx in the settings)";
+    if (!J.job || !J.from_modem)
+        return "no memory for a transmit job";
+    const char *why = sdr_modem_bench_borrow_why(true);
+    return why && (strstr(why, "another") || strstr(why, "roamer")) ? NULL : why; /* busy: the job's to wait out */
+}
+
+bool bench_tx_ob_open(uint32_t freq, int cc, int power, double seconds, char *why, size_t cap)
+{
+    why[0] = 0;
+    xSemaphoreTake(mu, portMAX_DELAY);
+    const char *no = NULL;
+    const int level = power < policy.rf_level ? power : policy.rf_level;
+    const rdof_fe_caps_t *c = sdr_fe_caps();
+    const double dbm = c ? c->tx_power_min + (c->tx_power_max - c->tx_power_min) * level / 255.0 : 0;
+    if (!bench_tx_enabled())
+        no = policy_err[0] ? policy_err : "no transmit frequencies (bench.tx in the settings)";
+    else if (!J.job || !J.from_modem)
+        no = "no memory for a transmit job";
+    else if (J.on)
+        no = "the transmitter is busy with another bench job";
+    else if ((no = rdof_benchtx_gates(&policy, true, true, freq, &freq, 1, armed())) == NULL &&
+             (no = sdr_modem_bench_open(modem_bytes, NULL, dbm, true)) == NULL) {
+        StreamBufferHandle_t sb = J.from_modem;
+        rdof_benchtx_t *job = J.job;
+        J = (txjob_t){.on = true, .line = true, .ob = true, .fd = -1, .freq = freq, .job = job, .from_modem = sb,
+                      .ob_start = job_utc(NULL)};
+        snprintf(J.session, sizeof J.session, "line");
+        snprintf(J.label, sizeof J.label, "outbound");
+        snprintf(J.via, sizeof J.via, "modem");
+        xStreamBufferReset(J.from_modem);
+        const int s = (int)ceil(seconds);
+        uint8_t f[160];
+        const size_t n = rdof_sdrmodem_outbound_frames(freq, cc, level, s + 15, s + 10, f, sizeof f);
+        sdr_modem_bench_write(f, n);
+        if (power > level)
+            snprintf(why, cap, "--power %d is over bench.tx's rf_level: %d (%.0f dBm)", power, level, dbm);
+        ESP_LOGW(TAG, "TX: outbound on %.5f MHz, cc %d, %.1f s, level %d (%.0f dBm)", freq / 1e6, cc, seconds, level,
+                 dbm);
+    }
+    xSemaphoreGive(mu);
+    if (no)
+        snprintf(why, cap, "%s", no);
+    return !no;
+}
+
+/* 0, or -1 with why: the job's modem stopped (a NAK, the arm jumper, the job gone). */
+int bench_tx_ob_check(char *why, size_t cap)
+{
+    xSemaphoreTake(mu, portMAX_DELAY);
+    int r = 0;
+    if (!J.on || !J.ob) {
+        snprintf(why, cap, "the outbound's modem was let go");
+        r = -1;
+    } else if (J.ob_naks) {
+        snprintf(why, cap, "the modem refused command 0x%02X (reason %u)", J.ob_nak[0], J.ob_nak[1]);
+        r = -1;
+    } else if (J.why[0]) {
+        snprintf(why, cap, "%s", J.why);
+        r = -1;
+    }
+    xSemaphoreGive(mu);
+    return r;
+}
+
+void bench_tx_ob_unkey(void)
+{
+    xSemaphoreTake(mu, portMAX_DELAY);
+    if (J.on && J.ob && !J.ob_unkeyed) {
+        const uint8_t off = 0;
+        uint8_t f[8];
+        sdr_modem_bench_write(f, rdof_mmdvm_frame(RDOF_MMDVM_DMR_START, &off, 1, f, sizeof f));
+        J.ob_unkeyed = true;
+    }
+    xSemaphoreGive(mu);
+}
+
+void bench_tx_ob_close(void)
+{
+    xSemaphoreTake(mu, portMAX_DELAY);
+    if (J.on && J.ob) {
+        const double t = job_utc(NULL);
+        job_keying(NULL, J.ob_start, t - J.ob_start, (int)((t - J.ob_start) / 0.03), "outbound");
+        job_end();
+    }
+    xSemaphoreGive(mu);
+}
+
+/* A voice, csbk or data job's --family: through the router the pool's transmitter frames each burst with MS sync, so
+ * only MS goes as asked; the SDR modem itself sends the burst as built. */
+const char *bench_tx_why_family(int family)
+{
+    static char why[128];
+    if (family == RDOF_FAMILY_MS || !via_router())
+        return NULL;
+    snprintf(why, sizeof why, "the router's transmitter frames the bursts with MS sync (%s isn't done through it)",
+             family == RDOF_FAMILY_BS ? "bs" : "a direct mode family");
+    return why;
+}
+
 int bench_tx_register(void *server)
 {
     hd = server;
@@ -552,6 +694,16 @@ void bench_tx_line_push(uint8_t control, const uint8_t burst[33]) {}
 bool bench_tx_line_idle(void) { return true; }
 void bench_tx_line_close(void) {}
 int bench_tx_register(void *server) { return 0; }
+bool bench_tx_ob_open(uint32_t freq, int cc, int power, double seconds, char *why, size_t cap)
+{
+    snprintf(why, cap, "%s", bench_tx_line_why());
+    return false;
+}
+const char *bench_tx_ob_why(void) { return bench_tx_line_why(); }
+int bench_tx_ob_check(char *why, size_t cap) { return -1; }
+void bench_tx_ob_unkey(void) {}
+void bench_tx_ob_close(void) {}
+const char *bench_tx_why_family(int family) { return NULL; }
 
 #endif
 

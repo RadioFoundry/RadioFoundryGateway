@@ -473,7 +473,10 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
   `level_dbfs`, `dev_hz`, `pi`, `lcss`, `fec`, `lc`, `raw_hex`; no `sym_err` yet), the summary the daemon's (`bursts`, `kinds`,
   `first_t`, `last_t`, `seconds`, `cfo_hz`, `level_dbfs`, `ended`). `bursts` includes idle bursts (a repeater's hang
   is all idle); `listen` leaves them out. The bench's own transmission is in them: the receiver hears it as any
-  other signal.
+  other signal. BS-sync bursts (a repeater's outbound) carry the slot from their CACH; `t` and `sc` are at the
+  sync's center, the same point as an outbound job's records. Several streams can run at once, one a channel.
+  With `seconds`, the client ends the stream itself 5 s past it if the gateway hasn't, and writes the summary, so
+  `--out` is always complete.
 
 ### 14.3 Jobs
 
@@ -490,6 +493,18 @@ by their long names with `_` for `-`:
 - `bench_tx` `voice`, `csbk`, `data` go out through the bench's TX path (section 7: the SDR modem, `bench.tx`'s
   frequencies, key time and power) in DMO timing, one burst every 60 ms; `listen` (and `listen_after`) reports what
   the receiver channel at `freq` hears, as the tool's `--json` lines and per-call summaries.
+- `bench_tx` `outbound` sends a repeater's idle outbound on `freq`: a BS-sync idle burst every 30 ms on both
+  slots, each with the CACH as an MMDVM sends it (AT 0, TS1/TS2 alternating) and `cc`, keyed from the first slot
+  for `seconds` (0.5-60) with no handshake. `slots` (`1,2`, `1` or `2`) picks which slots' records are written;
+  both go out. The slot clock is the modem's own and never steered: a jump is counted in `skips`. Records: one
+  `start` (`freq`, `cc`, `slots`, `first_slot`, `rate`, `period_samples`, `period_ms`, `sync_off`, `sc0`, `t0`,
+  `ppm`), then one per burst with `slot`, `sc` and `t` at the sync's center (the TX sample clock: the slot's start
+  plus `sync_off`, 775 at 48 kS/s), then `summary` (`slots`, `ts1`, `ts2`, `skips`, `seconds`). It doesn't go
+  through the router: on a roamer it takes the raw SDR modem (the roamer pauses; it waits while the roamer is
+  transmitting) and gives it back after. On the W12 a key-up this long is one streamed transmission in 1.35 s
+  runs; their seams are in lr2021-iq.md R3.49.
+- `family` on `voice`, `csbk` and `data` (`ms` or `bs`): `bs` is `unsupported` when the job goes through the
+  router's transmitter pool, which frames bursts with MS sync. `outbound` is BS only.
 - `bench_repeater` runs a duplex repeater with no network on the job's `rx` (a receiver channel that decodes DMR)
   and `tx` (a TX frequency) for `seconds`: `slots`, `hang` (T_MSInactiv), `call_hang`, and idle beacons every
   `beacon` seconds from `beacon_phase` on (a local BS_Dwn_Act into its receive path, the hang `beacon_len`; skipped
