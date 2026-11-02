@@ -186,6 +186,7 @@ The version 2 `mqtt` keys (`host`, `port`, `username`, `password`, `root`, `tls`
 |---|---|---|
 | `report` | true | status, the call JSON and the raw bursts, on today's topics ([mqtt.md](mqtt.md)) |
 | `calls` | false | carry calls: bursts in and out on topics per path and talkgroup. With it, MQTT can be the only network (no HBlink) |
+| `format` | `dmrd` | with `calls`: `dmrd` (today's DMRD calls) or `v3` (the MQTT network, [mqtt-net.md](mqtt-net.md) §10; planned) |
 
 A box with `mqtt` and `report` only, and no other network, reports but carries no calls. With `calls`, a path whose
 `net` is the MQTT network sends what it carries as DMRD packets on `{root}/calls/{tg|pc}/{dst}/{box}` and takes
@@ -262,8 +263,10 @@ or not the box heard the radio there.
 
 A path's transmission goes to a device that `transmits` on its frequency and is free, preferring one already there:
 a repeater app's repeater, an SFR or DCDM frequency's repeater, or a transceiver tuned to the frequency (its `cc` and
-`power`) for the call. None free: the call isn't sent on that path (counted). The receiver drops our own transmission
-heard back, so it never goes back to the network.
+`power`) for the call. The transmitter pool picks the transceiver ([transmitters.md](transmitters.md) §4): an
+emergency takes one from a call that isn't one. None free: the call isn't sent on that path (counted). The receiver
+drops our own transmission heard back, so it never goes back to the network. Planned: an SDR's transmitter as a
+pool the apps also send through, tuned per stream ([transmitters.md](transmitters.md)).
 
 ## 10. Scenarios
 
@@ -460,9 +463,9 @@ and the networks:
 | `frequencies` | `channels`, numbered in list order, each with its `tg` when the path carries one talkgroup |
 | a `repeater` app | a `repeater` role on its `in` and `out` |
 | an `sfr` or `dcdm` frequency | an `sfr` or `dcdm` role on the device that may send there |
-| a device that transmits on simplex frequencies | a `roamer` role named after the device: those frequencies are its channels, `hears.idle` (else the first) its idle channel, `hears.scan` its scan list |
+| a device that transmits on simplex frequencies | a `roamer` role named after the device: those frequencies are its channels, `hears.idle` (else the first) its idle channel, `hears.scan` its scan list. For an SDR the roamer is the box's transmitter: the router tunes it per stream, and the receiver reports what's heard ([transmitters.md](transmitters.md) §12) |
 | each SDR | a `monitor` role `<device>-rx` of every frequency it hears that no repeater takes; with `per_path`, each channel its frequency's peer |
-| a `parrot` app | the `parrot` of each role whose paths may reach it |
+| a `parrot` app | the `parrot` of each repeater whose paths may reach it; with a transceiver in the router, one box parrot that hears every frequency and answers through the router ([transmitters.md](transmitters.md) §5) |
 | an `ipgw` app | `ip_gateway` |
 | `networks` | `hblink` and `mqtt`; each role's `peer_id` is its path's peer (§7.1) |
 
@@ -499,14 +502,13 @@ Version 1 and 2 files load and save as before: nothing is upgraded.
   each with its own TG and activation. Added beside policies, not instead.
 - **A system file:** one file for several boxes, with `site` on each device; each box runs what's local to it. Remote
   receivers (`kind: remote`, `via`, `site`) and voting need it.
-- **A shared last-heard table** (over MQTT), so private calls find a radio heard at another box.
+- **A shared last-heard table** (over MQTT), so private calls find a radio heard at another box: the MQTT network's
+  router ([mqtt-net.md](mqtt-net.md) §9.1).
 - **`hears.scan` on an SDR:** scanning frequencies outside its window.
 - **`pc_home`:** a path for private calls to a radio never heard here (today: dropped, with `identity: single`).
 - **SFR as an app:** the box itself as the SFR repeater (its SDR, or its SDR with another transmitter or a modem),
   beside today's SFR frequency served by a connected radio.
-- **An emergency takes a transceiver:** today a transceiver sending one network call isn't taken by an emergency on
-  another path (a repeater's slot is).
-- **`apps` on SFR / DCDM paths** and the parrot on several transmitters at once.
+- **`apps` on SFR / DCDM paths** and the parrot on several transmitters at once ([transmitters.md](transmitters.md) §5).
 - **Scheduled talkgroups** (`mode: scheduled`).
 
 ## 15. Decisions taken

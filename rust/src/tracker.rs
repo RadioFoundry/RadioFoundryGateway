@@ -844,6 +844,19 @@ pub extern "C" fn rdof_tracker_feed(tr: &mut RdofTracker, b: &RdofBurst, t: f64)
 }
 
 #[no_mangle]
+pub extern "C" fn rdof_tracker_blind(tr: &mut RdofTracker, dt: f64) {
+    if !(dt > 0.0) {
+        return;
+    }
+    for st in tr.slots.iter_mut() {
+        if st.call.active {
+            st.call.last += dt;
+        }
+    }
+    tr.last_activity += dt;
+}
+
+#[no_mangle]
 pub extern "C" fn rdof_tracker_tick(tr: &mut RdofTracker, t: f64) {
     for s in 0..2 {
         let c = &tr.slots[s].call;

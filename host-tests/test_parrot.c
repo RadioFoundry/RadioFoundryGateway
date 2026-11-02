@@ -217,6 +217,59 @@ static void test_admit(void)
     CHECK(S.starts == 1 && S.slot == 2);
 }
 
+/* A receiver of several frequencies: the recording keeps to the one it began on; admit sees where; a replay waits
+   for a transmitter (ready), then gives up. */
+static bool ready_now;
+static uint32_t admit_hz;
+static bool ready(void *ctx) { return ready_now; }
+static bool admit_where(void *ctx, int slot, uint32_t src, uint32_t dst, bool group)
+{
+    admit_hz = P.hz;
+    return true;
+}
+
+static void test_frequencies(void)
+{
+    reset(9990);
+    P.admit = admit_where;
+    uint8_t b[RDOF_BURST_BYTES], o[RDOF_BURST_BYTES];
+    lc_burst(RDOF_DT_VOICE_LC_HEADER, 9800001, 9990, false, b);
+    lc_burst(RDOF_DT_VOICE_LC_HEADER, 9800002, 9990, false, o);
+    rdof_parrot_heard_at(&P, 438075000, 1, RDOF_SYNC_DATA | RDOF_DT_VOICE_LC_HEADER, b, clock_now);
+    CHECK(P.state == RDOF_PARROT_RECORDING && P.hz == 438075000 && admit_hz == 438075000);
+    clock_now += 0.06;
+    rdof_parrot_heard_at(&P, 438100000, 1, RDOF_SYNC_DATA | RDOF_DT_VOICE_LC_HEADER, o, clock_now);
+    for (int k = 0; k < 6; k++) {
+        clock_now += 0.06;
+        memset(b, k, sizeof b);
+        rdof_parrot_heard_at(&P, 438075000, 1, k ? (uint8_t)k : RDOF_SYNC_AUDIO, b, clock_now);
+        rdof_parrot_heard_at(&P, 438100000, 1, k ? (uint8_t)k : RDOF_SYNC_AUDIO, b, clock_now);
+    }
+    CHECK(P.n == 7 && P.src == 9990 && P.dst == 9800001); /* the other frequency's left out */
+    rdof_parrot_lost_at(&P, 438100000, 1, clock_now);
+    CHECK(P.state == RDOF_PARROT_RECORDING); /* another frequency's loss isn't this one's */
+    rdof_parrot_lost_at(&P, 438075000, 1, clock_now);
+    CHECK(P.state == RDOF_PARROT_WAITING);
+    /* no transmitter: it waits past its due time, then starts when one is free, its frames from then */
+    P.ready = ready;
+    ready_now = false;
+    run(RDOF_PARROT_DELAY_S + 3.0);
+    CHECK(P.state == RDOF_PARROT_WAITING && S.starts == 0);
+    ready_now = true;
+    const double t0 = clock_now;
+    run(0.03);
+    CHECK(S.starts == 1 && S.n == 1 + RDOF_PARROT_AHEAD);
+    run(1.0);
+    CHECK(S.n == 7 && P.state == RDOF_PARROT_IDLE && S.at[6] - t0 < 0.4);
+    /* never free: given up after RDOF_PARROT_WAIT_S */
+    ready_now = false;
+    call(1, 9800001, 9990, false, 1, true);
+    run(RDOF_PARROT_DELAY_S + RDOF_PARROT_WAIT_S - 0.5);
+    CHECK(P.state == RDOF_PARROT_WAITING);
+    run(1.0);
+    CHECK(P.state == RDOF_PARROT_IDLE && P.gave_up == 1 && S.starts == 1);
+}
+
 static void test_lost_and_late(void)
 {
     reset(0);
@@ -493,6 +546,7 @@ int main(void)
     test_id();
     test_admit();
     test_lost_and_late();
+    test_frequencies();
     test_data();
     test_data_reply();
     test_busy_and_full();

@@ -295,13 +295,16 @@ Here `residual` is the error left after `chip` (the whole ppm set on the front e
 in a run, the AFC is never used again in that run.
 
 **Start** (`ppm_start`, per front-end serial): `chip = lrint(kept)`, where kept is the temperature table's value at
-the die temperature (`nc_tcal_get`), else the legacy NVS "learned" record, else the `ppm` setting. The fraction goes
+the die temperature (`nc_tcal_get`), else the tuner's "learned" record (the sample clock's coarse move), else the
+`ppm` setting. The fraction goes
 into the channels: `ppm_shift_channels(−(kept − chip))`. The same serial again (a stream restart) resumes the
 previous `chip`. With `learn_ppm: false`, the setting is the chip's and nothing is learned (the clock is still
 timed for the page).
 
-**NVS** (namespace `rdof_ppm`): `"cal"` = `{serial[64], nc_tcal_t}` (read and written), `"learned"` =
-`{serial[64], float}` (read only, from before the table).
+**NVS** (namespace `rdof_ppm`), a key per tuner (`ppm_key`: a prefix and the FNV-1a hash of its serial in 8 hex
+digits; the record's serial settles a collision): `c<hash>` = `{serial[64], nc_tcal_t}`, the table; `l<hash>` =
+`{serial[64], float}`, written at the sample clock's coarse move while the table has nothing for the die's
+temperature. The single keys from before, `"cal"` and `"learned"`, are read when a tuner has no key of its own.
 
 **Temperature table** (`netclock_tempcal.h`): `NC_TCAL_N` 24 bins of `NC_TCAL_BIN_C` 2 °C,
 `bin = lrint(T/2)·2` clamped to −128..127. `put`: `v += (x − v)/min(n+1, NC_TCAL_WEIGHT=4)`; when full, the least

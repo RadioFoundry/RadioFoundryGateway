@@ -16,6 +16,7 @@ void rdof_siteroute_init(rdof_siteroute_t *sr, const rdof_site_t *site)
 {
     memset(sr, 0, sizeof *sr);
     rdof_router_init(&sr->router, site);
+    rdof_txpool_init(&sr->pool, RDOF_ROUTER_IDLE_S);
 }
 
 bool rdof_siteroute_add_repeater(rdof_siteroute_t *sr, int app, struct rdof_repeater *r)
@@ -38,9 +39,15 @@ bool rdof_siteroute_add_repeater_freq(rdof_siteroute_t *sr, int freq, struct rdo
 
 bool rdof_siteroute_add_txvr(rdof_siteroute_t *sr, struct rdof_txvr *t, uint64_t freqs)
 {
-    if (sr->ntx >= RDOF_SITEROUTE_TXVRS)
+#if RDOF_FEATURE_TX
+    const double answer_s = t ? t->answer_s : 0;
+#else
+    const double answer_s = 0;
+#endif
+    const int i = rdof_txpool_add(&sr->pool, freqs, answer_s);
+    if (i < 0)
         return false;
-    sr->tx[sr->ntx++] = (rdof_siteroute_txvr_t){.t = t, .freqs = freqs ? freqs : ~0ull};
+    sr->tx[i] = t;
     return true;
 }
 
@@ -83,23 +90,34 @@ bool rdof_siteroute_tuned(const rdof_siteroute_t *sr, const uint8_t sid[4])
 }
 
 #if RDOF_FEATURE_TX
-/* The transceiver for path k sending stream (already, or free now), or -1. */
-static int txvr_for(rdof_siteroute_t *sr, int k, uint32_t stream, double now)
+/* Burst o of a stream on path k, through the pool: its transceiver, tuned at the stream's first burst. False: none
+   free. */
+static bool send_txvr(rdof_siteroute_t *sr, int k, const rdof_net_burst_t *o, bool urgent, bool take_hold,
+                      bool path_preempt, double now)
 {
-    const rdof_path_t *p = &sr->router.site->path[k];
-    int free = -1;
-    for (int i = 0; i < sr->ntx; i++) {
-        rdof_siteroute_txvr_t *x = &sr->tx[i];
-        if (!(x->freqs >> p->tx_freq & 1))
-            continue;
-        if (x->stream == stream && x->path == k)
-            return i;
-        if (x->stream && now - x->last > RDOF_ROUTER_IDLE_S)
-            x->stream = 0;
-        if (!x->stream && free < 0)
-            free = i;
+    const rdof_site_t *s = sr->router.site;
+    const rdof_path_t *p = &s->path[k];
+    const uint32_t stream = sid32(o->stream_id);
+    const rdof_txp_req_t rq = {.stream = stream ? stream : 1, .src = o->src, .dst = o->dst, .group = o->group,
+                               .path = k, .freq = p->tx_freq, .urgent = urgent, .take_hold = take_hold};
+    const rdof_txp_take_t got = rdof_txpool_take(&sr->pool, &rq, now);
+    if (got.i < 0)
+        return false;
+    if (got.preempt && got.ended_path >= 0)
+        rdof_router_drop(&sr->router, got.ended_path, got.ended);
+    if (got.fresh) {
+        const rdof_freq_t *f = &s->freq[p->tx_freq];
+        rdof_tune_t tu = {.freq = f->hz, .cc = f->cc, .power = f->power >= 0 ? f->power : 255,
+                          .preempt = got.preempt || path_preempt};
+        memcpy(tu.stream_id, o->stream_id, 4);
+        sr->tuned[sr->tuned_next] = stream;
+        sr->tuned_next = (sr->tuned_next + 1) % RDOF_SITEROUTE_TUNED;
+        rdof_txvr_on_tune(sr->tx[got.i], &tu);
     }
-    return free;
+    rdof_txvr_on_burst(sr->tx[got.i], o);
+    if (o->terminator)
+        rdof_txpool_end(&sr->pool, got.i, now);
+    return true;
 }
 #endif
 
@@ -146,34 +164,54 @@ uint64_t rdof_siteroute_burst(rdof_siteroute_t *sr, int net, uint32_t peer, cons
             continue;
         }
 #if RDOF_FEATURE_TX
-        const int i = txvr_for(sr, k, stream, now);
-        if (i < 0) {
+        if (!send_txvr(sr, k, &o, c.emergency, true, (preempt >> k & 1) != 0, now)) {
             sr->no_txvr++;
             rdof_router_drop(&sr->router, k, stream);
             continue;
         }
-        rdof_siteroute_txvr_t *x = &sr->tx[i];
-        if (x->stream != stream) {
-            const rdof_freq_t *f = &s->freq[p->tx_freq];
-            rdof_tune_t tu = {.freq = f->hz, .cc = f->cc, .power = f->power >= 0 ? f->power : 255,
-                              .preempt = (preempt >> k & 1) != 0};
-            memcpy(tu.stream_id, b->stream_id, 4);
-            sr->tuned[sr->tuned_next] = stream;
-            sr->tuned_next = (sr->tuned_next + 1) % RDOF_SITEROUTE_TUNED;
-            x->stream = stream;
-            x->path = k;
-            rdof_txvr_on_tune(x->t, &tu);
-        }
-        x->last = now;
-        rdof_txvr_on_burst(x->t, &o);
-        if (b->terminator)
-            x->stream = 0;
         out |= 1ull << k;
 #else
         rdof_router_drop(&sr->router, k, stream);
 #endif
     }
     return out;
+}
+
+int rdof_siteroute_path_at(const rdof_siteroute_t *sr, uint32_t hz, int slot)
+{
+    return rdof_site_path_rx(sr->router.site, hz, slot);
+}
+
+/* An app's path: one a transceiver may serve (a simplex frequency's). */
+static bool app_path(const rdof_siteroute_t *sr, int path)
+{
+    const rdof_site_t *s = sr->router.site;
+    return path >= 0 && path < s->npath && s->path[path].app < 0 &&
+           s->freq[s->path[path].tx_freq].mode == RDOF_FMODE_SIMPLEX && s->freq[s->path[path].tx_freq].tx;
+}
+
+bool rdof_siteroute_app_ready(const rdof_siteroute_t *sr, int path, double now)
+{
+    if (!app_path(sr, path))
+        return false;
+    const rdof_path_t *p = &sr->router.site->path[path];
+    const rdof_txp_req_t rq = {.stream = 1, .path = path, .freq = p->tx_freq};
+    return rdof_txpool_peek(&sr->pool, &rq, now).i >= 0;
+}
+
+bool rdof_siteroute_app_burst(rdof_siteroute_t *sr, int path, const rdof_net_burst_t *b, bool take_hold, double now)
+{
+#if RDOF_FEATURE_TX
+    if (app_path(sr, path)) {
+        const rdof_path_t *p = &sr->router.site->path[path];
+        rdof_net_burst_t o = *b;
+        o.slot = p->tx_slot ? p->tx_slot : b->slot;
+        if (send_txvr(sr, path, &o, false, take_hold, false, now))
+            return true;
+    }
+#endif
+    sr->app_no_txvr++;
+    return false;
 }
 
 bool rdof_siteroute_dmrd(rdof_siteroute_t *sr, int net, uint32_t peer, const uint8_t *d, size_t n, double now)

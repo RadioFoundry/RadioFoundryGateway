@@ -277,6 +277,18 @@ bool site_reaches_parrot(uint32_t hz, int slot);
 bool site_dmrd(uint32_t peer, const uint8_t *d, size_t n); /* a DMRD from the master, by the call policies */
 bool site_tuned(const uint8_t sid[4]);     /* a stream the router tuned a transceiver for */
 size_t site_resolved(char *out, size_t cap);
+/* The box's parrot (site_run.c): on with a parrot app and a transceiver in the pool. It hears every frequency and
+   answers through the router; a roamer then has none of its own. */
+bool site_parrot_on(void);
+void site_parrot_heard(uint32_t hz, int slot, uint8_t control, const uint8_t *burst);
+void site_parrot_lost(uint32_t hz, int slot);
+void site_parrot_poll(void);
+bool site_parrot_stream(const uint8_t sid[4]); /* a replay's stream (its transceiver's DMRK answer) */
+/* An app's stream through the router's pool (rdof_siteroute_app_burst): on when a transceiver is in the pool. */
+bool site_pool_on(void);
+int site_app_path(uint32_t hz, int slot); /* the path heard at hz, slot; -1 none */
+bool site_app_burst(int path, const rdof_net_burst_t *b, bool take_hold);
+void site_status_json(rdof_json_t *j); /* "router": the pool's transmitters, the box parrot; nothing without v3 */
 
 #endif
 

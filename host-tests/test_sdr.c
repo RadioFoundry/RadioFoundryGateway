@@ -1109,6 +1109,38 @@ static void test_rate(void)
     }
     CHECK(r.valid && fabs(r.ppm) < 0.05 && r.steps == 0, "rate: through a stall %.3f ppm, %u restarts", r.ppm, r.steps);
 
+    /* breaks (the LR2021: a FIFO emptied, its receiver off to transmit): samples lost, how many unknown, every 2
+     * minutes; each segment its own offset, one slope through them all, no restart */
+    rdof_rate_bin_init(&b, fs);
+    rdof_rate_init(&r);
+    sent = made = 0;
+    uint32_t breaks = 0;
+    const double e2 = -28.0;
+    double recent0 = NAN;
+    for (int blk = 0;; blk++) {
+        made += 8192;
+        sent += 8192;
+        const double t_true = made / (fs * (1 + e2 * 1e-6));
+        if (t_true > 1800)
+            break;
+        seed = seed * 1664525u + 1013904223u;
+        const int64_t t_us = (int64_t)(t_true * 1e6 + 100 + (seed >> 8) % 1900);
+        if (blk && blk % 3500 == 0) { /* about 2 minutes */
+            made += 1000 + (seed >> 12) % 400000; /* made, never sent */
+            rdof_rate_bin_break(&b);
+            breaks++;
+            continue;
+        }
+        double ts, xs;
+        if (rdof_rate_bin_add(&b, t_us, sent, &ts, &xs))
+            rdof_rate_point_seg(&r, ts, xs, b.seg);
+    }
+    CHECK(r.valid && fabs(r.ppm - e2) < 0.05 && r.steps == 0, "rate: through %u breaks %.3f ppm (want %.1f), %u restarts",
+          breaks, r.ppm, e2, r.steps);
+    CHECK(rdof_rate_recent(&r, 300, &recent0) && fabs(recent0 - e2) < 0.3, "rate: the last 300 s through breaks %.3f",
+          recent0);
+    printf("  rate through %u breaks: %.4f ppm +-%.4f\n", breaks, r.ppm, r.se_ppm);
+
     /* the ppm learning from it: steady, moves the RTL by the whole ppm after RDOF_PPM_APPLY_S, saves later */
     rdof_ppm_t p;
     rdof_ppm_init(&p, 0.0, NAN);

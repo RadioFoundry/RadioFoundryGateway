@@ -42,6 +42,7 @@ void rdof_sdr_rx_free(rdof_sdr_rx_t *rx)
     rdof_sdr_free(rx->fed);
     rdof_sdr_free(rx->nfed);
     memset(rx, 0, sizeof *rx);
+    rx->blind_from = -1;
 }
 
 void rdof_sdr_rx_utc_map(rdof_sdr_rx_t *rx, bool ok, int64_t i0, int64_t t0_ns, double rate, int offset_us)
@@ -74,6 +75,7 @@ int rdof_sdr_rx_init(rdof_sdr_rx_t *rx, const rdof_sdr_rx_config_t *cfg, const r
                    const rdof_sink_t *sink, double t0)
 {
     memset(rx, 0, sizeof *rx);
+    rx->blind_from = -1;
     rx->cfg = *cfg;
     rx->C = n;
     rx->t0 = t0;
@@ -283,7 +285,19 @@ void rdof_sdr_rx_finish(rdof_sdr_rx_t *rx)
 {
     /* Every channel's bursts, then the trackers' ticks, then AFC in channel order. */
     double t_now = rx->t0 + (double)rx->out_index / RDOF_DEMOD_FS;
-    for (int c = 0; c < rx->C; c++)
+    /* blind (our half-duplex transmitter keyed): no ticks; after it, every call waits as long as it lasted */
+    const bool blind = rx->blind_when_muted && rx->muted && rx->muted(rx->burst_ctx, rx->out_index);
+    if (blind && rx->blind_from < 0) {
+        rx->blind_from = t_now;
+        rx->blinds++;
+    } else if (!blind && rx->blind_from >= 0) {
+        const double dt = t_now - rx->blind_from;
+        rx->blind_from = -1;
+        rx->blind_s += dt;
+        for (int c = 0; c < rx->C; c++)
+            rdof_tracker_blind(&rx->trackers[c], dt);
+    }
+    for (int c = 0; !blind && c < rx->C; c++)
         rdof_tracker_tick(&rx->trackers[c], t_now);
     if (!rx->cfg.afc)
         return;

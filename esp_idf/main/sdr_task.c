@@ -10,6 +10,7 @@
  * While the page shows it, a display spectrum of the span (rdof/sdr/spectrum.h)
  * is kept too.
  */
+#include <inttypes.h>
 #include <math.h>
 #include <string.h>
 
@@ -21,6 +22,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "rdof/mmdvm.h"
+#include "rdof/pdu.h"
 #include "rdof/sdr/agc.h"
 #include "rdof/sdr/channelizer.h"
 #include "rdof/sdr/demod.h"
@@ -414,6 +417,23 @@ static volatile int rt_state; /* 0 idle, 1 asked (the DSP task applies it betwee
 static volatile bool rt_restore; /* back to the settings (a lease ended), applied the same way */
 static char rt_why[96];
 
+/* Each burst the receiver hears: the bench API's hook (an sdr_transceiver's modem, the streams), then the box's
+   parrot (site_run.c), which hears every configured channel (not a retune's taps), not our own transmission. */
+static void rx_on_burst(void *ctx, int channel, const rdof_sdr_burst_t *b, double t)
+{
+    bench_on_burst(ctx, channel, b, t);
+#if RDOF_FEATURE_TX
+    const rdof_burst_t *d = &b->b;
+    if (channel < 0 || channel >= g_rx.C - live_taps || d->dt == RDOF_DT_IDLE || (d->slot != 1 && d->slot != 2) ||
+        !site_parrot_on() || sdr_tx_muted(ctx, b->position))
+        return;
+    const uint8_t control = d->dt == RDOF_DT_VOICE_SYNC ? RDOF_SYNC_AUDIO
+                            : d->dt == RDOF_DT_VOICE    ? (uint8_t)(d->n & 0x0F)
+                                                        : (uint8_t)(RDOF_SYNC_DATA | (d->dt & 0x0F));
+    site_parrot_heard((uint32_t)rx_freq[channel], d->slot, control, d->burst);
+#endif
+}
+
 const rdof_sdr_cfg_channel_t *sdr_rx_cfg_channel(int k)
 {
     int i = 0;
@@ -564,8 +584,9 @@ static bool rx_setup(void)
 #endif
     }
     g_rx.gate = g_scfg.idle_gate;
-    g_rx.on_burst = bench_on_burst; /* an sdr_transceiver's modem hears through the receiver, the bench API's streams */
+    g_rx.on_burst = rx_on_burst; /* an sdr_transceiver's modem hears through the receiver, the bench API's streams */
     g_rx.muted = sdr_tx_muted;
+    g_rx.blind_when_muted = g_scfg.frontend == RDOF_FE_LR2021; /* half duplex: deaf while it transmits */
     g_rx.burst_ctx = NULL;
     bench_rx_started();
     g_rx_ready = true;
@@ -632,6 +653,11 @@ static bool tune(void)
 #define RATE_TRUST_PPM 0.3       /* a crystal estimate this good is the learned value... */
 #define RATE_TRUST_SPAN_S 300.0  /* ...once its fit spans this long */
 #define RATE_STORED_ERR_PPM 0.5  /* the board's rate from the last run, not fitted in this one: assume this off */
+/* Coarse: before it's trusted, a fit this good that far from the chip's setting moves the chip at once, warm or not
+ * (a crystal 28 ppm off puts every signal 12 kHz away at 438 MHz: nothing decodes, so the AFC has nothing to learn
+ * from, and the transmitter is as far off) */
+#define RATE_COARSE_ERR_PPM 1.0
+#define RATE_COARSE_PPM 3.0
 /* Settled: the board's die temperature and the sample rate (over the last RATE_RECENT_S) held for SETTLE_WINDOW_S.
  * Until then the crystals are warming (about 15 minutes from room temperature to 50 C on the bench), so nothing
  * learned is saved and the sample clock isn't trusted. */
@@ -644,7 +670,7 @@ static bool tune(void)
 static portMUX_TYPE rate_lock = portMUX_INITIALIZER_UNLOCKED;
 static rdof_rate_bin_t rate_bin;          /* rate_lock: the front end's task adds to it */
 static bool rate_on;                    /* rate_lock */
-static double rate_pend[RATE_PENDING][2];
+static double rate_pend[RATE_PENDING][3]; /* t, x, segment */
 static int rate_npend;                  /* rate_lock */
 static rdof_rate_t rate_fit;              /* rx_lock, from here down */
 static double rate_corr;                /* the ppm the front end's correction takes out of its sample rate */
@@ -662,8 +688,17 @@ void sdr_rate_block(int64_t t_us, uint64_t samples)
     if (rate_on && rdof_rate_bin_add(&rate_bin, t_us, samples, &t, &x) && rate_npend < RATE_PENDING) {
         rate_pend[rate_npend][0] = t;
         rate_pend[rate_npend][1] = x;
+        rate_pend[rate_npend][2] = rate_bin.seg;
         rate_npend++;
     }
+    portEXIT_CRITICAL(&rate_lock);
+}
+
+void sdr_rate_break(void)
+{
+    portENTER_CRITICAL(&rate_lock);
+    if (rate_on)
+        rdof_rate_bin_break(&rate_bin);
     portEXIT_CRITICAL(&rate_lock);
 }
 
@@ -711,14 +746,14 @@ static void settle_tick(double t)
 /* The bins closed since the last look, into the fit; then the crystal's error. Under rx_lock. */
 static void rate_tick(double t)
 {
-    double pend[RATE_PENDING][2];
+    double pend[RATE_PENDING][3];
     portENTER_CRITICAL(&rate_lock);
     const int n = rate_npend;
     memcpy(pend, rate_pend, sizeof pend[0] * n);
     rate_npend = 0;
     portEXIT_CRITICAL(&rate_lock);
     for (int i = 0; i < n; i++)
-        rdof_rate_point(&rate_fit, pend[i][0], pend[i][1]);
+        rdof_rate_point_seg(&rate_fit, pend[i][0], pend[i][1], (uint32_t)pend[i][2]);
     settle_tick(t);
     double skew = 0;
     if (!netclock_rate(&board_ppm, &skew, &board_learned)) {
@@ -778,15 +813,32 @@ static double ppm_assumed = NAN; /* what the chip and the channels' corrections 
 static int cal_put_bin = INT32_MIN;
 static double cal_put_t;
 
+/* Each tuner's records under its own keys, so a board that has had several (dongles swapped, or more than one
+ * connected) keeps a value for each: the prefix and a hash of the serial ("l1a2b3c4d", NVS keys are at most 15
+ * characters). The record still holds the serial, which settles a hash collision. Before this there was one key of
+ * each ("learned", "cal"): read when a tuner has none of its own yet. */
+static void ppm_key(char key[16], char prefix, const char *serial)
+{
+    uint32_t h = 2166136261u; /* FNV-1a */
+    for (const char *c = serial; *c; c++)
+        h = (h ^ (uint8_t)*c) * 16777619u;
+    snprintf(key, 16, "%c%08" PRIx32, prefix, h);
+}
+
 static double ppm_load(const char *serial)
 {
     nvs_handle_t h;
     ppm_rec_t r;
-    size_t len = sizeof r;
+    char key[16];
     double v = NAN;
+    ppm_key(key, 'l', serial);
     if (nvs_open(PPM_NS, NVS_READONLY, &h) == ESP_OK) {
-        if (nvs_get_blob(h, "learned", &r, &len) == ESP_OK && len == sizeof r && !strncmp(r.serial, serial, sizeof r.serial))
-            v = r.ppm;
+        for (int i = 0; i < 2 && isnan(v); i++) {
+            size_t len = sizeof r;
+            if (nvs_get_blob(h, i ? "learned" : key, &r, &len) == ESP_OK && len == sizeof r &&
+                !strncmp(r.serial, serial, sizeof r.serial))
+                v = r.ppm;
+        }
         nvs_close(h);
     }
     return v;
@@ -796,13 +848,35 @@ static void cal_load(const char *serial)
 {
     static cal_rec_t r; /* not on the DSP task's stack */
     nvs_handle_t h;
-    size_t len = sizeof r;
+    char key[16];
     nc_tcal_init(&cal);
+    ppm_key(key, 'c', serial);
     if (nvs_open(PPM_NS, NVS_READONLY, &h) != ESP_OK)
         return;
-    if (nvs_get_blob(h, "cal", &r, &len) == ESP_OK && len == sizeof r && !strncmp(r.serial, serial, sizeof r.serial) &&
-        nc_tcal_valid(&r.cal))
-        cal = r.cal;
+    for (int i = 0; i < 2 && !cal.count; i++) {
+        size_t len = sizeof r;
+        if (nvs_get_blob(h, i ? "cal" : key, &r, &len) == ESP_OK && len == sizeof r &&
+            !strncmp(r.serial, serial, sizeof r.serial) && nc_tcal_valid(&r.cal))
+            cal = r.cal;
+    }
+    nvs_close(h);
+}
+
+/* A rough value (the sample clock's coarse move) kept as "learned", so the next boot starts near it rather than at the
+ * setting; the table, once it has the die's temperature, supersedes it. */
+static void ppm_store(const char *serial, double v)
+{
+    ppm_rec_t r;
+    nvs_handle_t h;
+    memset(&r, 0, sizeof r);
+    snprintf(r.serial, sizeof r.serial, "%s", serial);
+    char key[16];
+    r.ppm = (float)v;
+    ppm_key(key, 'l', serial);
+    if (nvs_open(PPM_NS, NVS_READWRITE, &h) != ESP_OK)
+        return;
+    if (nvs_set_blob(h, key, &r, sizeof r) != ESP_OK || nvs_commit(h) != ESP_OK)
+        ESP_LOGW(TAG, "ppm: can't save %.2f", v);
     nvs_close(h);
 }
 
@@ -812,10 +886,12 @@ static void cal_store(const char *serial)
     nvs_handle_t h;
     memset(&r, 0, sizeof r);
     snprintf(r.serial, sizeof r.serial, "%s", serial);
+    char key[16];
     r.cal = cal;
+    ppm_key(key, 'c', serial);
     if (nvs_open(PPM_NS, NVS_READWRITE, &h) != ESP_OK)
         return;
-    if (nvs_set_blob(h, "cal", &r, sizeof r) != ESP_OK || nvs_commit(h) != ESP_OK)
+    if (nvs_set_blob(h, key, &r, sizeof r) != ESP_OK || nvs_commit(h) != ESP_OK)
         ESP_LOGW(TAG, "ppm: can't save the table");
     nvs_close(h);
 }
@@ -944,6 +1020,14 @@ static void ppm_tick(void)
     int step = xtal_trusted ? rdof_ppm_measured(&ppm, xtal, t)
                : xtal_ever  ? 0
                             : rdof_ppm_update(&ppm, corr, rx_freq, age, g_rx.C, t);
+    bool coarse = false;
+    if (!xtal_trusted && rate_fit.valid && rate_fit.count >= RDOF_RATE_MIN_POINTS && xtal_err <= RATE_COARSE_ERR_PPM &&
+        fabs(xtal - ppm.chip) >= RATE_COARSE_PPM) {
+        step = (int)lrint(xtal - ppm.chip);
+        coarse = true;
+        ESP_LOGI(TAG, "ppm: the sample clock says %.1f ppm (+-%.1f, over %.0f s): a coarse move", xtal, xtal_err,
+                 rate_fit.span_s);
+    }
     if (step) {
         const int to = (int)ppm.chip + step;
         if (set_chip_ppm(to)) {
@@ -951,7 +1035,12 @@ static void ppm_tick(void)
         } else {
             ppm_shift_channels(step);
             rdof_ppm_applied(&ppm, step);
-            if (ppm.measured)
+            if (coarse) {
+                double expect;
+                if (!nc_tcal_get(&cal, die_c, &expect)) /* nothing better kept for this temperature */
+                    ppm_store(ppm_serial, xtal);
+                ESP_LOGI(TAG, "ppm: %s moved to %d ppm", chip(), to);
+            } else if (ppm.measured)
                 ESP_LOGI(TAG, "ppm: the tuner is %.2f ppm off (its sample clock, +-%.2f): %s moved to %d ppm",
                          rdof_ppm_learned(&ppm), xtal_err, chip(), to);
             else

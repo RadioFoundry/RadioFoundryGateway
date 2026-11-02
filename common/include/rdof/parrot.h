@@ -19,7 +19,8 @@
  * of their time: start() (optional) once before the first, then send() each, so a transceiver gets a tune
  * (rdof_txvr_on_tune) and then its bursts (rdof_txvr_on_burst), a repeater its bursts (rdof_repeater_on_burst).
  *
- * One transmission at a time: while one is recorded or replayed, what's heard on the other slot is not kept.
+ * One transmission at a time: while one is recorded or replayed, what's heard on the other slot (or, through
+ * rdof_parrot_heard_at, on another frequency) is not kept.
  * Bounded: RDOF_PARROT_BURSTS bursts (60 s of voice); a longer transmission is cut there and its terminator kept.
  * The caller locks: nothing here is thread safe.
  */
@@ -47,6 +48,7 @@ extern "C" {
 #define RDOF_PARROT_GAP_S 0.5   /* a transmission with no terminator (data, a CSBK, a lost call) ends this quiet */
 #define RDOF_PARROT_AHEAD 3     /* bursts sent ahead of their frame */
 #define RDOF_PARROT_STREAM 0x50410000u /* a replay's stream id: "PA" and the replay's count */
+#define RDOF_PARROT_WAIT_S 10.0 /* with ready: how long a replay waits for a transmitter before it's given up */
 
 typedef enum { RDOF_PARROT_IDLE = 0, RDOF_PARROT_RECORDING, RDOF_PARROT_WAITING, RDOF_PARROT_REPLAYING } rdof_parrot_state_t;
 
@@ -64,10 +66,13 @@ typedef struct rdof_parrot {
     void (*send)(void *ctx, const rdof_net_burst_t *b);
     /* optional: whether a transmission to it heard on slot is kept (the talk path's policy may not reach it) */
     bool (*admit)(void *ctx, int slot, uint32_t src, uint32_t dst, bool group);
+    /* optional: whether a transmitter is free for the replay now; while not, it waits, up to RDOF_PARROT_WAIT_S */
+    bool (*ready)(void *ctx);
     void *ctx;
 
     /* state */
     rdof_parrot_state_t state;
+    uint32_t hz; /* where the transmission was heard (rdof_parrot_heard_at; admit sees it), 0 not known */
     int slot;
     uint32_t src, dst;
     bool group, voice;
@@ -80,6 +85,7 @@ typedef struct rdof_parrot {
     uint32_t replayed; /* transmissions sent back */
     uint32_t cut;      /* bursts left out of a full recording */
     uint32_t ignored;  /* transmissions not to the id */
+    uint32_t gave_up;  /* replays no transmitter was free for */
     rdof_parrot_burst_t bursts[RDOF_PARROT_BURSTS];
 #if RDOF_FEATURE_DATA_BLOCKS
     uint32_t data_replies; /* packet data sent back to its sender */
@@ -91,6 +97,11 @@ typedef struct rdof_parrot {
 void rdof_parrot_init(rdof_parrot_t *p, uint32_t id);
 void rdof_parrot_heard(rdof_parrot_t *p, int slot, uint8_t control, const uint8_t burst[RDOF_BURST_BYTES], double now);
 void rdof_parrot_lost(rdof_parrot_t *p, int slot, double now);
+/* The same from a receiver of several frequencies: a recording keeps to the frequency it began on (hz), so the
+   same transmission heard on a neighbor, or another one elsewhere, isn't mixed in. */
+void rdof_parrot_heard_at(rdof_parrot_t *p, uint32_t hz, int slot, uint8_t control,
+                          const uint8_t burst[RDOF_BURST_BYTES], double now);
+void rdof_parrot_lost_at(rdof_parrot_t *p, uint32_t hz, int slot, double now);
 void rdof_parrot_poll(rdof_parrot_t *p, double now);
 const char *rdof_parrot_state_name(const rdof_parrot_t *p);
 

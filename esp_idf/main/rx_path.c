@@ -53,9 +53,19 @@ static const char *role(const roam_t *r)
     return r->cfg->mode == RDOF_CFG_ROAMER ? "roamer" : "repeater";
 }
 
+/* Version 3, an SDR's roamer (its transmitter): the receiver (<device>-rx) reports what's heard on every frequency,
+   this one too, so the roamer's own reports would be a second copy. It still hears its channel to listen before
+   talking. */
+static bool quiet(const roam_t *r)
+{
+    return site_on() && r->cfg->mode == RDOF_CFG_ROAMER && r->transport == &r->sdr;
+}
+
 static void on_json(void *ctx, const char *channel, const char *json)
 {
     roam_t *r = ctx;
+    if (quiet(r))
+        return;
     heard_rf_json(role(r), r->cfg->name, "", json); /* last heard: RF */
     roam_publish(ctx, "json", json, 1);
     ESP_LOGI(TAG, "%s", json);
@@ -63,6 +73,8 @@ static void on_json(void *ctx, const char *channel, const char *json)
 
 static void on_raw_burst(void *ctx, const char *channel, const rdof_rawburst_t *b)
 {
+    if (quiet(ctx))
+        return;
     heard_burst(((roam_t *)ctx)->cfg->name, "", b->slot, b->dt); /* a PI header: the call's encrypted */
 #if CONFIG_RDOF_MQTT_RAW
     roam_publish_raw(ctx, b);
@@ -99,7 +111,7 @@ static uint32_t heard_hz(roam_t *r)
 /* version 3: a stream goes up when its path's policy sends it to HBlink */
 static bool hb_admit(void *ctx, int slot, uint32_t src, uint32_t dst, bool group)
 {
-    return site_rf(heard_hz(ctx), slot, src, dst, group);
+    return !quiet(ctx) && site_rf(heard_hz(ctx), slot, src, dst, group);
 }
 
 static void hb_before(void *ctx)

@@ -363,8 +363,11 @@ static bool wait(void *ctx, int timeout_ms) { return st.dev != NULL; }
 
 /* A new session with st.cfg (any running one ends first: standby, reset, setup, spec 2.5). The caller holds the
  * lock. */
+static volatile bool clk_break; /* a new session: what the FIFO held is gone (the sample clock's break) */
+
 static int session_start(void)
 {
+    clk_break = true;
     if (!st.iq_ok)
         return -1; /* st.error has why */
     return lr2021_iq_start(&iq, &st.cfg) == ESP_OK ? 0 : iq_failed();
@@ -450,10 +453,24 @@ static void put(const uint8_t *b, size_t n)
     portEXIT_CRITICAL(&st.lock);
 }
 
-/* The session's samples, as the FIFO had them, into the ring (read() converts them, on the DSP's core). */
+/* The samples the chip sent, only those read (rx_count also counts the zeros that fill in for its transmitting):
+ * the sample clock's count. The reader's alone. */
+static uint64_t clk_n;
+
+/* The session's samples, as the FIFO had them, into the ring (read() converts them, on the DSP's core). Their
+ * count and when the read ended time the chip's crystal (sdr_rate_block): its rate converter's output is exact to
+ * the crystal its PLL runs from (spec R2.21), so the sample rate's error is the LO's. A loss or a new session is a
+ * break in that count. */
 static void sink(void *ctx, const uint8_t *data, size_t n, unsigned flags, int64_t t_us)
 {
     put(data, n * (size_t)st.sbytes);
+    if ((flags & LR2021_IQ_GAP) || clk_break) {
+        clk_break = false;
+        sdr_rate_break();
+    }
+    clk_n += n;
+    /* in samples at the rate tune gave the receiver (the resampler's output) */
+    sdr_rate_block(t_us, (uint64_t)llround((double)clk_n * st.rate * st.native_den / st.native_num));
 }
 
 static void count_error(void)
@@ -465,6 +482,7 @@ static void count_error(void)
 
 /* The session's losses and errors since the last look into st.stats. The caller holds the lock. */
 static volatile unsigned losses; /* for report's line */
+static volatile unsigned tx_busy; /* TX look-ahead pulls put off, the source's lock taken (for report's line) */
 static void count_session(void)
 {
     const unsigned dl = iq.stats.losses - seen.losses, de = iq.stats.errors - seen.errors;
@@ -504,13 +522,13 @@ static void report(void *arg)
         s0 = (lr2021_iq_stats_t){0}; /* a new session state (iq_reinit) */
     if (t0 && st.streaming) {
         double w = (now - t0) / 100.0;
-        ESP_LOGI(TAG, "reader: %.1f%% of core 0, %u reads, %u IRQs late, %u lost, %u yields, %u SPI bounces in all; "
-                      "DSP core: %.1f%% converting and resampling",
+        ESP_LOGI(TAG, "reader: %.1f%% of core 0, %u reads, %u IRQs late, %u lost, %u yields, %u SPI bounces in all, "
+                      "%u TX pulls put off; DSP core: %.1f%% converting and resampling",
                  (uint32_t)(run - run0) / w, (unsigned)(s.reads - s0.reads), (unsigned)(s.irq_late - s0.irq_late),
-                 losses, dbg.yields, st.dev ? (unsigned)lr2021_hal_esp_bounces(&st.hal) : 0, dbg.conv_us / w);
+                 losses, dbg.yields, st.dev ? (unsigned)lr2021_hal_esp_bounces(&st.hal) : 0, tx_busy, dbg.conv_us / w);
     }
     memset((void *)&dbg, 0, sizeof dbg);
-    losses = 0;
+    losses = tx_busy = 0;
     s0 = s;
     t0 = now;
     run0 = run;
@@ -568,12 +586,29 @@ static int64_t native_at(int64_t pos48) { return pos48 * (int64_t)st.native_num 
 
 /* Pull the source up to sample upto, a block at a time, at most blocks of them, into the stage;
  * note the first keyed sample. */
-static void tx_fill(int64_t upto, int blocks)
+/* wait: for the source's lock (inside a run being built); else a busy source ends this turn's fill */
+static void tx_fill(int64_t upto, int blocks, bool wait)
 {
     EXT_RAM_BSS_ATTR static float hz[TX_BLOCK], env[TX_BLOCK];
     const rdof_fe_tx_source_t *src = tx.src;
     while (src && tx.pos < upto && blocks-- > 0) {
-        const bool keyed = src->pull_freq(src->ctx, tx.pos, hz, env, TX_BLOCK);
+        const int got = src->try_pull_freq && !wait ? src->try_pull_freq(src->ctx, tx.pos, hz, env, TX_BLOCK)
+                                           : src->pull_freq(src->ctx, tx.pos, hz, env, TX_BLOCK);
+        if (got < 0) {
+            tx_busy++;
+            return; /* staged TX_LOOK ahead: the next turn catches up */
+        }
+        const bool keyed = got > 0;
+        if (!keyed && (tx.pos & (TX_STAGE - 1)) + TX_BLOCK <= TX_STAGE && hz[0] == hz[TX_BLOCK - 1]) {
+            /* idle, the bare carrier: one conversion for the block (the reader's turn while nothing is sent was
+             * about a ninth of core 0, and cost the RX FIFO samples) */
+            const int8_t c = lr2021_raw_freq_sample(hz[0], TX_FDEV);
+            const size_t at = (size_t)(tx.pos & (TX_STAGE - 1));
+            memset(&stage.s[at], (uint8_t)c, sizeof stage.s[0] * TX_BLOCK);
+            memset(&stage.k[at], 0, sizeof stage.k[0] * TX_BLOCK);
+            tx.pos += TX_BLOCK;
+            continue;
+        }
         for (int i = 0; i < TX_BLOCK; i++) {
             const int64_t p = tx.pos + i;
             const bool k = keyed && env[i] > 0;
@@ -641,6 +676,7 @@ static void tx_run(int64_t k0, int n, int64_t t_key)
     if (lr2021_iq_tx_calibrates(&iq, &t))
         tx.calibrated++;
     const lr2021_err_t e = lr2021_iq_transmit(&iq, &t, stage_pull, &span, &s);
+    clk_break = true; /* the receiver was off */
     if (s.late) {
         tx.late++;
     } else if (s.early) {
@@ -705,7 +741,7 @@ static bool tx_service(void)
     /* a block a turn: after a run the source is a run's length behind, and pulling all of it at once held the reader
      * 2.8 ms, past the RX FIFO (1.3 ms at 384 kS/s): about 2.5 FIFO losses a burst. 5 ms blocks still lost about
      * one a burst; 2 ms blocks none */
-    tx_fill(n48 + TX_LOOK, 1);
+    tx_fill(n48 + TX_LOOK, 1, false);
     if (tx.key < 0) {
         if (tx.hold && now - tx.last_us > TX_HOLD_US) {
             tx.hold = false;
@@ -727,7 +763,7 @@ static bool tx_service(void)
         while (k1 < tx.pos && stage.k[k1 & (TX_STAGE - 1)])
             k1++;
         if (k1 >= tx.pos) {
-            tx_fill(tx.pos + TX_BLOCK, 1);
+            tx_fill(tx.pos + TX_BLOCK, 1, true);
             continue;
         }
         int64_t g = k1;
@@ -736,7 +772,7 @@ static bool tx_service(void)
         if (g >= k1 + TX_MERGE)
             break; /* a real gap: the span ends at k1 */
         if (g >= tx.pos) {
-            tx_fill(tx.pos + TX_BLOCK, 1);
+            tx_fill(tx.pos + TX_BLOCK, 1, true);
             continue;
         }
         k1 = g; /* keyed again soon: one run */
@@ -865,6 +901,7 @@ static int start(void *ctx)
     xStreamBufferReset(st.ring);
     memset(&st.stats, 0, sizeof st.stats);
     rx_count = 0;
+    clk_n = 0;
     cfg_update();
     lock();
     int r = session_start();
@@ -966,6 +1003,8 @@ static void stats(void *ctx, rdof_fe_stats_t *out)
 
 static const char *identity(void *ctx) { return st.id; }
 static const char *error(void *ctx) { return st.error; }
+/* The crystal correction moves the PLL, not the rate converter: the sample rate keeps the crystal's whole error. */
+static double sample_ppm(void *ctx) { return 0.0; }
 
 static const rdof_fe_ops_t ops = {
     .init = init,
@@ -981,6 +1020,7 @@ static const rdof_fe_ops_t ops = {
     .stats = stats,
     .identity = identity,
     .error = error,
+    .sample_ppm = sample_ppm,
     .tx_set = tx_set,
     .tx_tune = tx_tune,
 };

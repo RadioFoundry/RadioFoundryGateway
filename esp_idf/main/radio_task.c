@@ -60,7 +60,8 @@ __attribute__((unused)) static void send_fn(void *ctx, const uint8_t *data, size
 #if RDOF_FEATURE_TX
     /* the transceiver's answer to the parrot's tune is the parrot's, not HBlink4's */
     roam_t *r = ctx;
-    if (r->parrot && len == RDOF_DMRK_LEN && !memcmp(data, "DMRK", 4) && (rdof_be32(data + 8) & 0xFFFF0000u) == RDOF_PARROT_STREAM) {
+    if ((r->parrot || site_parrot_on()) && len == RDOF_DMRK_LEN && !memcmp(data, "DMRK", 4) &&
+        (rdof_be32(data + 8) & 0xFFFF0000u) == RDOF_PARROT_STREAM) {
         if (data[12] != RDOF_DMRK_ON_AIR)
             ESP_LOGW(TAG, "parrot: the transceiver refused the replay (%d)", data[12]);
         return;
@@ -228,7 +229,7 @@ static void parrot_setup(roam_t *r)
 #if RDOF_FEATURE_REPEATER
     has_tx = has_tx || r->rpt;
 #endif
-    if (!has_tx)
+    if (!has_tx || (site_on() && c->mode == RDOF_CFG_ROAMER)) /* version 3: the box's parrot (site_run.c) */
         return;
     r->parrot = big_alloc(sizeof *r->parrot);
     if (!r->parrot) {
@@ -247,11 +248,25 @@ static void parrot_setup(roam_t *r)
 
 static void parrot_poll(roam_t *r)
 {
+    site_parrot_poll();
     if (!r->parrot)
         return;
     xSemaphoreTake(r->parrot_lock, portMAX_DELAY);
     rdof_parrot_poll(r->parrot, now_mono());
     xSemaphoreGive(r->parrot_lock);
+}
+#endif
+
+#if RDOF_FEATURE_TX
+/* The frequency a modem roamer hears for the box's parrot; 0 when the SDR receiver hears it already (or none). */
+static uint32_t box_parrot_hz(roam_t *r)
+{
+    if (r->parrot || !site_parrot_on() || r->cfg->mode != RDOF_CFG_ROAMER || r->transport == &r->sdr)
+        return 0;
+    uint32_t hz = 0;
+    int cc;
+    radio_channel_now(r, &hz, &cc);
+    return hz;
 }
 #endif
 
@@ -266,6 +281,9 @@ static void modem_rx(void *ctx, int slot, uint8_t control, const uint8_t *burst,
         rdof_parrot_heard(r->parrot, slot, control, burst, now_mono());
         xSemaphoreGive(r->parrot_lock);
     }
+    const uint32_t box_hz = box_parrot_hz(r);
+    if (box_hz)
+        site_parrot_heard(box_hz, slot, control, burst);
 #endif
 #if RDOF_FEATURE_REPEATER
     if (c->mode == RDOF_CFG_REPEATER) {
@@ -292,6 +310,9 @@ static void modem_lost(void *ctx, int slot)
         rdof_parrot_lost(r->parrot, slot, now_mono());
         xSemaphoreGive(r->parrot_lock);
     }
+    const uint32_t box_hz = box_parrot_hz(r);
+    if (box_hz)
+        site_parrot_lost(box_hz, slot);
 #endif
 #if RDOF_FEATURE_REPEATER
     if (r->cfg->mode == RDOF_CFG_REPEATER)

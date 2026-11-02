@@ -354,6 +354,7 @@ reply, a clock) and calls the transceiver's or repeater's `poll` every 20 ms.
 | `config`, `jsonp` | the settings: a box config in JSON resolved for one roamer or repeater; which radios a board runs (`run`) |
 | `site`, `idset` | settings version 3: the parser (devices, frequencies, apps, networks, policies, talk paths), ID sets, the resolved view, and the lowering to version 2 roles (C only) |
 | `router`, `siteroute` | version 3's call router: which network an RF call goes to and which paths a network call goes out on (ranks, PTT holds, private calls by where the radio was heard, emergency), and on a running box the repeaters and transceivers it hands bursts to; the MQTT calls topics (C only) |
+| `txpool` | the transmitter pool: which transceiver sends a stream on a path (free, sending, holding for an answer; emergency preemption), for the router's network streams and the box's apps ([transmitters.md](spec/fw/transmitters.md)) (C only) |
 | `slotgrid` | the UTC slot grid, `slot_timing`, the gate, the sample clock |
 | `rawburst` | the binary raw burst: version 1 (49 bytes), version 2 (62, with the UTC start and grid slot) |
 | `usbmatch` | which radio a USB device goes to (VID / PID, serial, hub port) |
@@ -654,13 +655,18 @@ same tree without it: `16mb` + `w12` 2118 KB (0x2116E0), +45 KB, and 200 bytes m
 On 2026-10-30, with the power key and the battery (`power.c`, `power_core.c`, the `esp_adc` driver; `w12` only, the
 other profiles name no pins): `16mb` + `w12` 2150 KB (0x219750), 173 KB DIRAM used (51.8%).
 
+On 2026-11-01, with the transmitter pool, the box parrot and the blind span (`txpool.c`, `siteroute.c`'s app entry,
+`site_run.c`) and the OLED's battery and GNSS icons: `16mb` + `w12` 2156 KB (0x21B1D0), 174 KB DIRAM used (52.1%).
+`4mb` builds without the SDR (`CONFIG_RDOF_SDR=n`: a roamer or repeater on a modem or radio): 1299 KB (0x144CA0),
+621 KB free in its slot, 135 KB DIRAM used (40.3%).
+
 The roamer role costs 132 KB of flash and the SDR 436 KB (338 KB of it the self-test clip), against about 945 KB for
 the board both share. The SDR only image is 64 KB smaller than with everything built `-O2`.
 
 Everything, the self-test clip too, fit the 4 MB part with two OTA slots until 2026-10-29 (92 KB to spare on
 2026-10-27); the bench's line protocol took it 25 KB over its slot, so `4mb` builds without the self-test clip
 (`CONFIG_RDOF_SDR_SELFTEST`, 338 KB), and so without the CPU self-test and the `sim` input, which need the clip:
-1575 KB (0x189D90), 345 KB free in its slot. If it runs out again, drop the
+1575 KB (0x189D90), 345 KB free in its slot. Since 2026-11-01 it builds without the SDR at all. If it runs out again, drop the
 repeater, OLED or the full page next, before giving up a slot or a role. IRAM shows 100% in `idf.py size`: that's
 the fixed 16 KB vector / cache-miss region filling as usual. The transceiver (about 20 KB), the repeater (about 55
 KB), the settings parser (under 65 KB, while parsing) and the log ring are allocated in PSRAM.
@@ -1635,8 +1641,8 @@ corrections say what the tuner's error is (`rdof/sdr/ppm.h`), plus each transmit
 off). Every 5 s the board takes the channels with a burst in the last 30 s: when two or more agree within 1 ppm
 of their median, the median is the estimate; held within 0.5 ppm for 60 s, the RTL's correction moves by the
 whole ppm and every channel's correction by the same amount the other way, so nothing jumps. What it learns
-goes into a temperature table in NVS (namespace `rdof_ppm`, key `cal`, with the dongle's `VID:PID serial`; another
-dongle starts from the setting): the board's die temperature in 2 C bins against the learned ppm, averaged with
+goes into a temperature table in NVS (namespace `rdof_ppm`, a key per tuner, `c` and a hash of its serial (the dongle's `VID:PID serial`), so a board keeps a table for each
+tuner it has had; a new one starts from the setting): the board's die temperature in 2 C bins against the learned ppm, averaged with
 what the bin had (netclock's `nc_tcal`). A value goes in only once the board has settled (below) and the estimate
 has been steady 15 minutes, and the same bin at most every 2 hours in one run (`CAL_AGAIN_S`). At boot the table's
 value for the die's temperature sets the RTL (whole ppm) and the channels (the rest), so the AFC starts near zero;

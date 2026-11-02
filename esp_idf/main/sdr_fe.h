@@ -102,6 +102,9 @@ void fe_lr2021(rdof_fe_t *fe);
 /* A block of samples arrived at t_us (esp_timer), the front end having sent `samples` since its stream started,
  * dropped ones included: timing its sample clock (sdr_task.c, rdof/sdr/rate.h). From the front end's own task. */
 void sdr_rate_block(int64_t t_us, uint64_t samples);
+/* Samples were lost and the front end doesn't know how many (a FIFO emptied, the receiver off to transmit): the
+ * count may jump at the next sdr_rate_block, a new segment of the fit. From the same task. */
+void sdr_rate_break(void);
 
 /* The front end the settings name, or false (and why) if this build doesn't have it. */
 bool sdr_fe_pick(int type, rdof_fe_t *fe, const char **why);

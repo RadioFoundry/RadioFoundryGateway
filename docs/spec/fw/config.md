@@ -410,8 +410,9 @@ Profile values (`sdkconfig.defaults.*`) are in [overview.md §3](overview.md#3-p
 | `rd` | `sdr` | blob | legacy SDR-only firmware's JSON | read when `config` is absent; erased on the next store |
 | `rd` | `selftest` | u8 | one-shot flag | set by POST `/api/selftest`; taken (erased) at boot by `sdr.c:sdr_boot_selftest` |
 | `rd` | `spike` | u8 | one-shot flag | set by POST `/api/spike`; taken at `sdr_role_start` |
-| `rdof_ppm` | `learned` | blob `{char serial[64]; float ppm}` | legacy | read only |
-| `rdof_ppm` | `cal` | blob `{char serial[64]; nc_tcal_t cal}` | dongle's ppm by die temperature | `sdr_task.c` when settled; a bin again at most every `CAL_AGAIN_S` 7200 s; sampled every `PPM_EVERY_US` 5 s; follows ppm within `CAL_FOLLOW_PPM` 0.25 |
+| `rdof_ppm` | `l<hash>` | blob `{char serial[64]; float ppm}` | a tuner's coarse value (the sample clock's coarse move); `<hash>` is 8 hex digits of FNV-1a over the serial | `sdr_task.c`, when the table has nothing for the die's temperature |
+| `rdof_ppm` | `learned`, `cal` | as `l<hash>`, `c<hash>` | one tuner, from before the per-tuner keys | read only, when a tuner has no key of its own |
+| `rdof_ppm` | `c<hash>` | blob `{char serial[64]; nc_tcal_t cal}` | dongle's ppm by die temperature | `sdr_task.c` when settled; a bin again at most every `CAL_AGAIN_S` 7200 s; sampled every `PPM_EVERY_US` 5 s; follows ppm within `CAL_FOLLOW_PPM` 0.25 |
 | `netclock` | `servers` | str | ≤ `NETCLOCK_SERVERS_LEN` 128 | settings / `/api/clock/settings` |
 | `netclock` | `poll_s` | u32 | 16..3600 | same |
 | `netclock` | `rate_ppb` | i32 | board crystal rate | after ≥ `NC_RATE_SAVE_MIN_N` 8 refs, moved ≥ 0.3 ppm, ≤ once / 3600 s |

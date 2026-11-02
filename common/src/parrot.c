@@ -191,8 +191,16 @@ static void clean(rdof_parrot_t *p, uint8_t control, const uint8_t burst[RDOF_BU
 
 void rdof_parrot_heard(rdof_parrot_t *p, int slot, uint8_t control, const uint8_t burst[RDOF_BURST_BYTES], double now)
 {
+    rdof_parrot_heard_at(p, 0, slot, control, burst, now);
+}
+
+void rdof_parrot_heard_at(rdof_parrot_t *p, uint32_t hz, int slot, uint8_t control,
+                          const uint8_t burst[RDOF_BURST_BYTES], double now)
+{
     if (p->state == RDOF_PARROT_WAITING || p->state == RDOF_PARROT_REPLAYING)
         return;
+    if (p->state == RDOF_PARROT_RECORDING && hz != p->hz)
+        return; /* another frequency's */
     if ((control & RDOF_SYNC_DATA) && (control & 0x0F) == RDOF_DT_IDLE)
         return;
     if (p->state == RDOF_PARROT_IDLE) {
@@ -200,6 +208,7 @@ void rdof_parrot_heard(rdof_parrot_t *p, int slot, uint8_t control, const uint8_
         uint32_t src, dst;
         if (!starts(control, burst, &voice, &src, &dst, &group))
             return; /* late entry, or the rest of a transmission not kept */
+        p->hz = hz;
         if ((p->id && dst != p->id) || (p->admit && !p->admit(p->ctx, slot, src, dst, group))) {
             p->ignored++;
             return;
@@ -254,7 +263,12 @@ void rdof_parrot_heard(rdof_parrot_t *p, int slot, uint8_t control, const uint8_
 
 void rdof_parrot_lost(rdof_parrot_t *p, int slot, double now)
 {
-    if (p->state == RDOF_PARROT_RECORDING && slot == p->slot)
+    rdof_parrot_lost_at(p, 0, slot, now);
+}
+
+void rdof_parrot_lost_at(rdof_parrot_t *p, uint32_t hz, int slot, double now)
+{
+    if (p->state == RDOF_PARROT_RECORDING && slot == p->slot && hz == p->hz)
         end(p, now + p->delay_s);
 }
 
@@ -281,7 +295,16 @@ void rdof_parrot_poll(rdof_parrot_t *p, double now)
         const double due = p->last + p->delay_s;
         end(p, due > now ? due : now);
     }
+    if (p->state == RDOF_PARROT_WAITING && now >= p->due && p->ready && !p->ready(p->ctx)) {
+        if (now - p->due >= RDOF_PARROT_WAIT_S) { /* no transmitter came free */
+            p->gave_up++;
+            p->state = RDOF_PARROT_IDLE;
+        }
+        return;
+    }
     if (p->state == RDOF_PARROT_WAITING && now >= p->due) {
+        if (p->ready)
+            p->due = now; /* the replay's frames from here, after any wait */
         p->streams++;
         p->sent = 0;
         p->state = RDOF_PARROT_REPLAYING;

@@ -5,14 +5,14 @@
  * and the roamer's screen), and the board's oled settings, read from the box
  * config whatever radios it runs.
  *
- *     ((( 192.0.2.8                    the network: Wi-Fi bars, the address
+ *     ((( 192.0.2.8          (o) [=]87%    the network: Wi-Fi bars, the address; GNSS and battery when the board has them
  *     MQ HB SDR          12:41:07      health: inverted = up, struck through = down
  *     ----------------------------
  *     RX 4 13                          a badge per channel, inverted while it hears a call
  *      4 T9<9990123                    the calls being heard (then "+N more"); with none,
  *     13 P9990456<9990123              each channel: badge, MHz, name
  *     ----------------------------
- *     461.0475 288k cpu 19%            the tuner: center, rate, DSP load (or a roamer's TX row)
+ *     438.0725 288k cpu 19%            the tuner: center, rate, DSP load (or a roamer's TX row)
  */
 #ifndef RDOF_OLED_SDR_INCLUDED
 #define RDOF_OLED_SDR_INCLUDED
@@ -53,7 +53,10 @@ typedef struct {
     double center_hz, sample_rate, cpu_load; /* cpu_load: 0..1, NAN not known */
     /* A roamer or repeater beside the SDR: its TX row in place of the tuner's line. */
     bool has_tx, tx_active;
-    const char *tx_line; /* the call it's sending, or "idle 467.375" */
+    const char *tx_line; /* the call it's sending, or "idle 438.6" */
+    rdof_oled_gnss_t gnss; /* top right, with the battery (rdof_oled_board_icons) */
+    bool has_batt;
+    int batt_pct;
 } rdof_oled_sdr_t;
 
 void rdof_oled_render_sdr(rdof_frame_buf_t *f, const rdof_oled_sdr_t *s);
@@ -63,7 +66,7 @@ void rdof_oled_render_sdr(rdof_frame_buf_t *f, const rdof_oled_sdr_t *s);
 char *rdof_oled_badge(const char *id, char out[8]);
 /* Wi-Fi bars for a signal: 0 to 4 (-55, -65, -75, -85 dBm and up), -1 for none (0 dBm). */
 int rdof_oled_bars(int dbm);
-/* The bottom line: "461.0475 288k cpu 19%", or "starting" while it isn't receiving. */
+/* The bottom line: "438.0725 288k cpu 19%", or "starting" while it isn't receiving. */
 size_t rdof_oled_tuner_line(const rdof_oled_sdr_t *s, char *out, size_t cap);
 
 /* The box config's "oled": on, its address and panel, and its pins. */

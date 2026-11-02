@@ -2,7 +2,7 @@
 
 Covers: what the firmware is, its roles, build profiles and gates, boot, tasks, data flow, module map, the port boundary, and the feature limits.
 Sources: `esp_idf/main/*`, `common`, `sdr`, `rtlsdr`, `components/*`, `sdkconfig.defaults*`, `partitions-*.csv`, `Kconfig.projbuild`.
-Related: [config.md](config.md), [memory.md](memory.md), [interfaces-http.md](interfaces-http.md), [mqtt.md](mqtt.md), [hblink.md](hblink.md), [sdr.md](sdr.md), [radio.md](radio.md), [device.md](device.md), [../repeater.md](../repeater.md), [../bench-api.md](../bench-api.md), [../slot-timing.md](../slot-timing.md).
+Related: [config.md](config.md), [memory.md](memory.md), [interfaces-http.md](interfaces-http.md), [mqtt.md](mqtt.md), [mqtt-net.md](mqtt-net.md), [transmitters.md](transmitters.md), [hblink.md](hblink.md), [sdr.md](sdr.md), [radio.md](radio.md), [device.md](device.md), [../repeater.md](../repeater.md), [../bench-api.md](../bench-api.md), [../slot-timing.md](../slot-timing.md).
 
 ## 1. What it is
 

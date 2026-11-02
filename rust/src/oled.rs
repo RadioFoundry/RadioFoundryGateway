@@ -35,7 +35,13 @@ pub struct RdofOledStatus {
     pub tx_line: *const c_char,
     pub tx_active: bool,
     pub clock: *const c_char,
+    pub gnss: c_int, // rdof_oled_gnss_t: 0 none, 1 no fix, 2 a fix
+    pub has_batt: bool,
+    pub batt_pct: c_int,
 }
+
+const GNSS_NONE: c_int = 0;
+const GNSS_FIX: c_int = 2;
 
 /// The classic 5x7 bitmap font (Adafruit GFX glcdfont.c, BSD license), printable ASCII from 0x20.
 static GLYPHS: [[u8; 5]; 95] = [
@@ -290,6 +296,53 @@ pub unsafe extern "C" fn rdof_oled_page_cmds(sh1106: bool, page: c_int, out: *mu
     cmds.len()
 }
 
+/// The board's own icons, right-aligned to end at right: the GNSS receiver (a ring, filled with a fix) and the
+/// battery (its level and "87%"), each only when the board has it. Returns the x where they begin.
+#[no_mangle]
+pub extern "C" fn rdof_oled_board_icons(
+    f: &mut RdofFrameBuf,
+    right: c_int,
+    y: c_int,
+    gnss: c_int,
+    has_batt: bool,
+    batt_pct: c_int,
+) -> c_int {
+    let mut x = right;
+    if has_batt {
+        let pct = batt_pct.clamp(0, 100);
+        let mut buf = [0u8; 8];
+        let mut t = Out::new(&mut buf);
+        t.int(i64::from(pct), 0);
+        t.byte(b'%');
+        let t = cut(&t);
+        x -= text_width(t, false) - 1; // its last gap off the edge
+        text(f, x, y, t, false, false);
+        // the body 10 x 7 and its nub, filled to the level
+        x -= 12;
+        rdof_oled_rect(f, x, y, 10, 7, false, true);
+        rdof_oled_rect(f, x + 10, y + 2, 1, 3, true, true);
+        let fill = (pct * 8 + 50) / 100;
+        if fill > 0 {
+            rdof_oled_rect(f, x + 1, y + 1, fill, 5, true, true);
+        }
+    }
+    if gnss != GNSS_NONE {
+        // a 7 x 7 ring, filled with a fix
+        const RING: [u8; 7] = [0x1C, 0x22, 0x41, 0x41, 0x41, 0x22, 0x1C];
+        const DISC: [u8; 7] = [0x1C, 0x3E, 0x7F, 0x7F, 0x7F, 0x3E, 0x1C];
+        let m = if gnss == GNSS_FIX { &DISC } else { &RING };
+        x -= if has_batt { 9 } else { 7 };
+        for (r, &bits) in m.iter().enumerate() {
+            for c in 0..7 {
+                if bits & (0x40 >> c) != 0 {
+                    rdof_oled_pixel(f, x + c, y + r as c_int, true);
+                }
+            }
+        }
+    }
+    x
+}
+
 /// A health tag: inverted when up, struck through when down.
 fn tag(f: &mut RdofFrameBuf, x: c_int, y: c_int, s: &[u8], up: bool) -> c_int {
     let x1 = text(f, x, y, s, up, false);
@@ -303,11 +356,16 @@ fn tag(f: &mut RdofFrameBuf, x: c_int, y: c_int, s: &[u8], up: bool) -> c_int {
 pub unsafe extern "C" fn rdof_oled_render(f: &mut RdofFrameBuf, s: &RdofOledStatus) {
     let mut buf = [0u8; 40];
     rdof_oled_clear(f);
-    // the network
+    // the network, the board's icons at the right
+    let icons = rdof_oled_board_icons(f, W, 0, s.gnss, s.has_batt, s.batt_pct);
     let mut line = Out::new(&mut buf);
     line.bytes(if s.wifi { b"WiFi " } else { b"no WiFi " });
     line.bytes(c_bytes(s.ip));
-    text(f, 0, 0, cut(&line), false, true);
+    let mut l = cut(&line);
+    while !l.is_empty() && text_width(l, true) > icons - 2 {
+        l = &l[..l.len() - 1]; // the icons win
+    }
+    text(f, 0, 0, l, false, true);
     // health and the time
     let mut x = tag(f, 0, 9, b"MQ", s.mqtt);
     x = tag(f, x, 9, b"HB", s.hblink);

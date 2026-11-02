@@ -21,6 +21,7 @@
 #include "rdof/setup.h"
 #include "rdof/site.h"
 #include "rdof/siteroute.h"
+#include "rdof/txpool.h"
 #include "rdof/txvr.h"
 
 static int fails, checks;
@@ -332,6 +333,77 @@ static rdof_net_burst_t net_burst(uint32_t sid, uint32_t src, uint32_t dst, bool
     return b;
 }
 
+/* The transmitter pool (rdof/txpool.h, docs/spec/fw/transmitters.md §4): every rule in turn. */
+static void test_txpool(void)
+{
+    static rdof_txpool_t p;
+    rdof_txpool_init(&p, 1.5);
+    CHECK(rdof_txpool_add(&p, 0x7, 0.75) == 0 && rdof_txpool_add(&p, 0x4, 0.75) == 1, "two transmitters");
+    CHECK(rdof_txpool_reaches(&p, 2) && !rdof_txpool_reaches(&p, 3), "reaches");
+    const rdof_txp_req_t a = {.stream = 0xA, .src = 100, .dst = 9, .group = true, .path = 0, .freq = 0};
+    rdof_txp_take_t k = rdof_txpool_take(&p, &a, 10);
+    CHECK(k.i == 0 && k.fresh && !k.preempt && !k.ended, "a free one: the first that reaches it");
+    k = rdof_txpool_take(&p, &a, 10.06);
+    CHECK(k.i == 0 && !k.fresh, "1. the same stream: the same transmitter, no retune");
+    const rdof_txp_req_t b = {.stream = 0xB, .src = 101, .dst = 9, .group = true, .path = 1, .freq = 1};
+    CHECK(rdof_txpool_take(&p, &b, 10.1).i < 0, "frequency 1: only transmitter 0 reaches it, and it's sending");
+    const rdof_txp_req_t c = {.stream = 0xC, .src = 102, .dst = 7, .group = true, .path = 2, .freq = 2};
+    CHECK(rdof_txpool_take(&p, &c, 10.1).i == 1, "3. frequency 2: the other one, free");
+    /* the terminator: it holds path 0 */
+    rdof_txpool_end(&p, 0, 11);
+    CHECK(rdof_txpool_state(&p, 0, 11.2) == RDOF_TXP_HOLDING, "holding after the terminator");
+    CHECK(rdof_txpool_take(&p, &b, 11.2).i < 0, "a hold isn't taken for another path");
+    const rdof_txp_req_t reply = {.stream = 0xD, .src = 300, .dst = 100, .group = false, .path = 0, .freq = 0};
+    k = rdof_txpool_take(&p, &reply, 11.3);
+    CHECK(k.i == 0 && k.fresh && !k.ended, "2. a reply to the talker: the holding transmitter");
+    rdof_txpool_end(&p, 0, 11.5);
+    const rdof_txp_req_t same_tg = {.stream = 0xE, .src = 301, .dst = 9, .group = true, .path = 0, .freq = 0};
+    rdof_txpool_end(&p, 0, 11.5);
+    CHECK(rdof_txpool_take(&p, &same_tg, 11.6).i < 0, "a private reply's hold: a group call isn't its answer");
+    CHECK(rdof_txpool_state(&p, 0, 12.25) == RDOF_TXP_FREE, "the hold over: free");
+    k = rdof_txpool_take(&p, &b, 12.3);
+    CHECK(k.i == 0 && k.fresh && !k.ended, "free again: frequency 1");
+    rdof_txpool_end(&p, 0, 12.5);
+    CHECK(rdof_txpool_take(&p, &same_tg, 12.6).i < 0, "another path's hold");
+    const rdof_txp_req_t same_grp = {.stream = 0xF, .src = 400, .dst = 9, .group = true, .path = 1, .freq = 1};
+    CHECK(rdof_txpool_take(&p, &same_grp, 12.6).i == 0, "2. the same group on the held path");
+    rdof_txpool_end(&p, 0, 13);
+    /* 4. a hold taken by a stream that may */
+    rdof_txp_req_t data = {.stream = 0x10, .src = 500, .dst = 600, .path = 0, .freq = 0, .take_hold = true};
+    k = rdof_txpool_take(&p, &data, 13.1);
+    CHECK(k.i == 0 && k.ended == 0xF && k.ended_path == 1 && !k.preempt && p.held_taken == 1,
+          "4. a confirmed-data answer takes another path's hold");
+    /* idle: a stream with no burst for idle_s ends and holds */
+    CHECK(rdof_txpool_state(&p, 0, 14.5) == RDOF_TXP_SENDING && rdof_txpool_state(&p, 0, 14.7) == RDOF_TXP_HOLDING,
+          "no burst for 1.5 s: holding");
+    CHECK(rdof_txpool_state(&p, 0, 15.4) == RDOF_TXP_FREE, "its hold counted from the last burst");
+    /* 5. an urgent stream preempts one that isn't, never one that is */
+    k = rdof_txpool_take(&p, &a, 20);
+    rdof_txp_req_t emerg = {.stream = 0x11, .src = 700, .dst = 9, .group = true, .path = 1, .freq = 1, .urgent = true};
+    k = rdof_txpool_take(&p, &emerg, 20.1);
+    CHECK(k.i == 0 && k.preempt && k.ended == 0xA && k.ended_path == 0 && p.preempted == 1, "5. the emergency preempts");
+    rdof_txp_req_t emerg2 = emerg;
+    emerg2.stream = 0x12;
+    emerg2.path = 0;
+    emerg2.freq = 0;
+    CHECK(rdof_txpool_take(&p, &emerg2, 20.2).i < 0, "an urgent stream isn't preempted");
+    rdof_txpool_end(&p, 0, 21);
+    CHECK(rdof_txpool_take(&p, &emerg2, 21.1).i == 0, "4. an urgent stream takes a hold");
+    /* no answer_s: free at once */
+    rdof_txpool_init(&p, 1.5);
+    rdof_txpool_add(&p, 0, 0);
+    rdof_txpool_take(&p, &a, 1);
+    rdof_txpool_end(&p, 0, 2);
+    CHECK(rdof_txpool_state(&p, 0, 2) == RDOF_TXP_FREE && rdof_txpool_take(&p, &b, 2).i == 0,
+          "no hold: free after the terminator");
+    CHECK(!strcmp(rdof_txpool_state_name(RDOF_TXP_HOLDING), "holding"), "names");
+    const rdof_txp_req_t bad = {.stream = 0, .path = 0, .freq = 0};
+    CHECK(rdof_txpool_take(&p, &bad, 3).i < 0, "no stream: refused");
+    for (int i = 0; i < RDOF_TXPOOL_MAX; i++)
+        rdof_txpool_add(&p, 0, 0);
+    CHECK(rdof_txpool_add(&p, 0, 0) < 0, "full");
+}
+
 /* The router on a running box (rdof/siteroute.h): network bursts to the repeaters and transceivers it picks. */
 static void test_siteroute(const char *dir)
 {
@@ -403,6 +475,25 @@ static void test_siteroute(const char *dir)
         rdof_dmrd_packet(0, 9800009, 205, S.id, 1, true, RDOF_DT_VOICE_LC_HEADER, 0, 0x444, c.burst, 0, 0, d);
         CHECK(rdof_siteroute_dmrd(&sr, 0, 0, d, sizeof d, 5) && !rdof_siteroute_dmrd(&sr, 0, 0, (const uint8_t *)"DMRP", 4, 5),
               "DMRD taken, others not");
+        /* an app (the parrot) answers on the path a call was heard on, through the pool */
+        c = net_burst(0x333, 9800009, 204, true, 1, false, true);
+        rdof_siteroute_burst(&sr, 0, 0, &c, 5.1);
+        const int ap = rdof_siteroute_path_at(&sr, 438112500, 1);
+        CHECK(ap == rdof_site_path(&S, "438.1125") && rdof_siteroute_path_at(&sr, 438975000, 1) < 0, "heard at: %d", ap);
+        CHECK(!rdof_siteroute_app_ready(&sr, ap, 5.2), "held for an answer on another path: an app waits");
+        const int n0 = cap.n;
+        rdof_net_burst_t a = net_burst(0x555, 9990, 9800009, false, 1, false, false);
+        CHECK(!rdof_siteroute_app_burst(&sr, ap, &a, false, 5.2) && sr.app_no_txvr == 1, "not sent while held");
+        CHECK(rdof_siteroute_app_ready(&sr, ap, 9) && rdof_siteroute_app_burst(&sr, ap, &a, false, 9) && cap.n == n0 + 1 &&
+                  cap.freq == 438112500 && rdof_siteroute_tuned(&sr, a.stream_id), "free: tuned to it (%d %u)", cap.n, cap.freq);
+        CHECK(rdof_siteroute_app_burst(&sr, ap, &a, false, 9.06) && cap.n == n0 + 1 && !rdof_siteroute_app_ready(&sr, ap, 9.1),
+              "tuned once; busy for another");
+        c = net_burst(0x666, 9800009, 204, true, 1, false, false);
+        CHECK(rdof_siteroute_burst(&sr, 0, 0, &c, 9.1) == 0, "a network stream doesn't preempt an app's");
+        a = net_burst(0x555, 9990, 9800009, false, 1, false, true);
+        rdof_siteroute_app_burst(&sr, ap, &a, false, 9.12);
+        CHECK(rdof_siteroute_burst(&sr, 0, 0, &c, 9.2) != 0, "but takes its hold");
+        CHECK(!rdof_siteroute_app_ready(&sr, -1, 11) && !rdof_siteroute_app_burst(&sr, 99, &a, false, 11), "no path");
     }
     if (load(dir, "good-dcdm-per-path.json")) { /* a DCDM frequency: its repeater, on the path's slot */
         static rdof_repeater_t d;
@@ -523,6 +614,7 @@ int main(int argc, char **argv)
     test_idset();
     test_scenarios(dir);
     test_router(dir);
+    test_txpool();
     test_siteroute(dir);
     test_fixtures(dir);
     printf("%d checks, %d failed\n", checks, fails);

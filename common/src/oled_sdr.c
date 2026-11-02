@@ -47,7 +47,7 @@ int rdof_oled_bars(int dbm)
     return 0;
 }
 
-/* MHz with the trailing zeros off: 461.0875, 467.375, 446. */
+/* MHz with the trailing zeros off: 438.1125, 438.6, 446. */
 static void mhz(double hz, char *out, size_t cap)
 {
     snprintf(out, cap, "%.4f", hz / 1e6);
@@ -140,8 +140,12 @@ void rdof_oled_render_sdr(rdof_frame_buf_t *f, const rdof_oled_sdr_t *s)
     char b[64], lb[8];
     rdof_oled_clear(f);
     /* the network */
+    const int icons = rdof_oled_board_icons(f, RDOF_OLED_W, 0, s->gnss, s->has_batt, s->batt_pct);
     int x = wifi_icon(f, 0, 0, s->wifi, s->wifi_dbm);
     snprintf(b, sizeof b, "%s%s", s->ap ? "AP " : "", s->ip && s->ip[0] ? s->ip : "no address");
+    const int room = (icons - 2 - x) / 6; /* the icons win */
+    if (room >= 0 && room < (int)sizeof b)
+        b[room] = 0;
     rdof_oled_text(f, x, 0, b, false, false);
     /* health and the time */
     x = flag(f, 0, FLAGS_Y, "MQ", s->mqtt);

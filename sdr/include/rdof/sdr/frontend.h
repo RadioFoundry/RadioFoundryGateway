@@ -97,6 +97,9 @@ typedef struct {
     bool (*pull_iq)(void *ctx, int64_t pos, rdof_cf_t *iq, int n);
     bool (*pull_freq)(void *ctx, int64_t pos, float *hz, float *env, int n);
     void *ctx;
+    /* Optional: pull_freq that doesn't wait for the source's lock, for a reader that can't stall (the LR2021's,
+     * whose RX FIFO holds 1.3 ms): 1 keyed, 0 not, -1 busy (nothing pulled; try again on the next turn). */
+    int (*try_pull_freq)(void *ctx, int64_t pos, float *hz, float *env, int n);
 } rdof_fe_tx_source_t;
 
 typedef struct {
@@ -141,8 +144,9 @@ typedef struct rdof_fe_ops {
     /* The last failure, for the log and the page. */
     const char *(*error)(void *ctx);
     /* Optional: the ppm the crystal correction (set_ppm) takes out of the sample rate, as the device really sets
-     * it (the RTL's register has steps of 1/16.8 ppm). NULL: the correction doesn't touch the sample rate. Used to
-     * work the crystal's error out from the sample rate (rdof/sdr/rate.h). */
+     * it (the RTL's register has steps of 1/16.8 ppm); 0 when the correction doesn't touch it (the LR2021). Its
+     * presence says the front end times its sample clock (sdr_rate_block), so the crystal's error is worked out from
+     * the sample rate (rdof/sdr/rate.h); NULL: no sample clock. */
     double (*sample_ppm)(void *ctx);
     /* Optional: run on each chunk after the conversion (sim: its simulated crystal error). */
     void (*post)(void *ctx, rdof_cf_t *iq, int n);

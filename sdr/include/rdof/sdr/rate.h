@@ -10,7 +10,10 @@
  * come e ppm fast. Arrival is never early, only late by a varying latency (USB frames, the task's turn), so the
  * least late in each RDOF_RATE_BIN_S tracks the stream itself; those minima are fitted with a line over up to
  * RDOF_RATE_POINTS bins. Samples the device lost without saying so (the RTL's FIFO overflowing) make x jump: a bin
- * that far off the line starts the fit over, keeping the last estimate until the new one has enough bins.
+ * that far off the line starts the fit over, keeping the last estimate until the new one has enough bins. Samples
+ * a driver knows it lost, but not how many (the LR2021's FIFO emptied after an overflow, its receiver off while it
+ * transmits), are a break instead (rdof_rate_bin_break): the stream after it is a new segment with its own offset,
+ * and the fit is one slope through every segment, each with its own intercept.
  *
  * Two halves, so the driver's side stays cheap: rdof_rate_bin_add per block (the driver's task, O(1)), which hands
  * back a bin's minimum when one closes; rdof_rate_point with those (the caller's own task), which fits. Portable C.
@@ -40,16 +43,23 @@ typedef struct {
     int64_t bin_end;     /* local us the bin closes at */
     bool any;            /* a block in this bin */
     double min_x, min_t; /* its least late block: x (us) and when (s since the origin) */
+    uint32_t seg;        /* the segment: breaks so far */
+    bool rebase;         /* a break: the next block is the new segment's origin */
+    double x0;           /* the segment's x offset (us) */
 } rdof_rate_bin_t;
 
 void rdof_rate_bin_init(rdof_rate_bin_t *b, double nominal);
 /* A block arrived at local t_us, the device having sent n samples in all since its stream started. Returns true
  * when a bin closed, with its point (seconds since the origin, us late) for rdof_rate_point. */
 bool rdof_rate_bin_add(rdof_rate_bin_t *b, int64_t t_us, uint64_t n, double *t_s, double *x_us);
+/* Samples were lost, how many unknown: the bin so far is dropped, and the next block starts a new segment (its
+ * count may jump anywhere). A closed bin's point is in segment b->seg. */
+void rdof_rate_bin_break(rdof_rate_bin_t *b);
 
 /* The fit. */
 typedef struct {
     double t[RDOF_RATE_POINTS], x[RDOF_RATE_POINTS];
+    uint32_t seg[RDOF_RATE_POINTS];
     int head, count;
     bool valid;      /* ppm and se_ppm hold an estimate (perhaps from before the last step) */
     double ppm;      /* the samples come this fast against the local clock (ppm; positive: more than nominal) */
@@ -60,8 +70,10 @@ typedef struct {
 } rdof_rate_t;
 
 void rdof_rate_init(rdof_rate_t *r);
-/* A bin's point: start over if it's off the line, else add it and fit. */
+/* A bin's point: start over if it's off the line, else add it and fit. _seg: the point's segment (a new one: no
+ * check against the line); without, the last point's. */
 void rdof_rate_point(rdof_rate_t *r, double t_s, double x_us);
+void rdof_rate_point_seg(rdof_rate_t *r, double t_s, double x_us, uint32_t seg);
 /* The rate over only the last span_s of points (false: too few), to see whether it's still moving. */
 bool rdof_rate_recent(const rdof_rate_t *r, double span_s, double *ppm);
 /* Forget the points before t_s (a warm-up the line can't follow) and fit what's left. */

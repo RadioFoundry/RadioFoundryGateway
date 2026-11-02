@@ -1480,6 +1480,30 @@ static void t_oled_sdr(void)
     rdof_oled_render_sdr(&f, &s);
     CHECK(lit_in(&f, 0, 20, 11, 27) > 0 && frame_hash(&f) == 0x9277c350u, "badges cut with a + %08x",
           (unsigned)frame_hash(&f));
+    /* the board's icons, top right: a GNSS fix and the battery, the address still whole */
+    s.ap = false;
+    s.ip = "198.51.100.4";
+    s.gnss = RDOF_OLED_GNSS_FIX;
+    s.has_batt = true;
+    s.batt_pct = 87;
+    rdof_oled_render_sdr(&f, &s);
+    CHECK(lit_in(&f, 99, 0, 109, 6) > 30 && lit_in(&f, 111, 0, 127, 6) > 15, "the battery and its percent");
+    CHECK(rdof_oled_get(&f, 93, 3) && rdof_oled_get(&f, 90, 3), "a fix: the ring filled");
+    CHECK(lit_in(&f, 76, 0, 80, 6) > 0 && lit_in(&f, 82, 0, 89, 7) == 0, "the address whole, a gap before the icons");
+    s.gnss = RDOF_OLED_GNSS_NOFIX;
+    s.batt_pct = 100;
+    rdof_oled_render_sdr(&f, &s);
+    CHECK(!rdof_oled_get(&f, 87, 3) && rdof_oled_get(&f, 84, 3) && lit_in(&f, 76, 0, 80, 6) > 0,
+          "no fix: an empty ring; 100%% still leaves the address whole");
+    s.ip = "203.0.113.200";
+    rdof_oled_render_sdr(&f, &s);
+    CHECK(lit_in(&f, 82, 0, 83, 7) == 0, "a longer address cut short of the icons");
+    rdof_oled_status_t r = {.name = "w12", .ip = "198.51.100.4", .wifi = true, .gnss = RDOF_OLED_GNSS_FIX,
+                            .has_batt = true, .batt_pct = 5};
+    rdof_oled_render(&f, &r);
+    CHECK(lit_in(&f, 117, 0, 127, 6) > 10 && rdof_oled_get(&f, 105, 3) && !rdof_oled_get(&f, 108, 3) &&
+              rdof_oled_get(&f, 99, 3),
+          "the roamer's screen: the icons, the battery nearly empty");
 
     /* the settings */
     rdof_oled_settings_t o;

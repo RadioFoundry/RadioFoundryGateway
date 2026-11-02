@@ -231,6 +231,37 @@ size_t rdof_oled_page_cmds(bool sh1106, int page, uint8_t *out, size_t cap)
 }
 
 /* A health tag: inverted when up, struck through when down. */
+int rdof_oled_board_icons(rdof_frame_buf_t *f, int right, int y, rdof_oled_gnss_t gnss, bool has_batt, int batt_pct)
+{
+    int x = right;
+    if (has_batt) {
+        char t[8];
+        const int pct = batt_pct < 0 ? 0 : batt_pct > 100 ? 100 : batt_pct;
+        snprintf(t, sizeof t, "%d%%", pct);
+        x -= rdof_oled_text_width(t, false) - 1; /* its last gap off the edge */
+        rdof_oled_text(f, x, y, t, false, false);
+        /* the body 10 x 7 and its nub, filled to the level */
+        x -= 12;
+        rdof_oled_rect(f, x, y, 10, 7, false, true);
+        rdof_oled_rect(f, x + 10, y + 2, 1, 3, true, true);
+        const int fill = (pct * 8 + 50) / 100;
+        if (fill > 0)
+            rdof_oled_rect(f, x + 1, y + 1, fill, 5, true, true);
+    }
+    if (gnss != RDOF_OLED_GNSS_NONE) {
+        /* a 7 x 7 ring, filled with a fix */
+        static const uint8_t ring[7] = {0x1C, 0x22, 0x41, 0x41, 0x41, 0x22, 0x1C};
+        static const uint8_t disc[7] = {0x1C, 0x3E, 0x7F, 0x7F, 0x7F, 0x3E, 0x1C};
+        const uint8_t *m = gnss == RDOF_OLED_GNSS_FIX ? disc : ring;
+        x -= has_batt ? 9 : 7;
+        for (int r = 0; r < 7; r++)
+            for (int c = 0; c < 7; c++)
+                if (m[r] & (0x40 >> c))
+                    rdof_oled_pixel(f, x + c, y + r, true);
+    }
+    return x;
+}
+
 static int tag(rdof_frame_buf_t *f, int x, int y, const char *s, bool up)
 {
     int x1 = rdof_oled_text(f, x, y, s, up, false);
@@ -244,7 +275,10 @@ void rdof_oled_render(rdof_frame_buf_t *f, const rdof_oled_status_t *s)
     char line[40];
     rdof_oled_clear(f);
     /* the network */
+    const int icons = rdof_oled_board_icons(f, RDOF_OLED_W, 0, s->gnss, s->has_batt, s->batt_pct);
     snprintf(line, sizeof line, "%s %s", s->wifi ? "WiFi" : "no WiFi", s->ip ? s->ip : "");
+    while (line[0] && rdof_oled_text_width(line, true) > icons - 2) /* the icons win */
+        line[strlen(line) - 1] = 0;
     rdof_oled_text(f, 0, 0, line, false, true);
     /* health and the time */
     int x = tag(f, 0, 9, "MQ", s->mqtt);

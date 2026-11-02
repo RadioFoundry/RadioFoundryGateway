@@ -656,6 +656,16 @@ void rdof_tracker_feed(rdof_tracker_t *tr, const rdof_burst_t *b, double t)
     }
 }
 
+void rdof_tracker_blind(rdof_tracker_t *tr, double dt)
+{
+    if (!(dt > 0))
+        return;
+    for (int i = 0; i < 2; i++)
+        if (tr->slots[i].call.active)
+            tr->slots[i].call.last += dt;
+    tr->last_activity += dt;
+}
+
 void rdof_tracker_tick(rdof_tracker_t *tr, double t)
 {
     bool any = false;

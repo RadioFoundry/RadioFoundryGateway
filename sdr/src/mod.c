@@ -286,10 +286,34 @@ void rdof_mod_iq(rdof_mod_t *m, rdof_cf_t *out, int n)
     }
 }
 
+/* Whether no queued burst reaches into the next n samples: they're the bare carrier, unkeyed. */
+static bool quiet_for(const rdof_mod_t *m, int n)
+{
+    for (int i = 0; i < m->qn; i++) {
+        const rdof_mod_seg_t *g = seg_at(m, i);
+        if (g->hi > m->pos && g->lo < m->pos + n)
+            return false;
+    }
+    return true;
+}
+
 void rdof_mod_freq(rdof_mod_t *m, float *hz, float *env_out, int n)
 {
     float s[BLOCK], env[BLOCK];
     const float off = (float)m->offset_hz, dev = (float)RDOF_MOD_DEVIATION_HZ;
+    if (quiet_for(m, n)) { /* idle (a transmitter waiting most of the time): what render would give, without it */
+        for (int i = 0; i < n; i++)
+            hz[i] = off;
+        if (env_out)
+            memset(env_out, 0, sizeof(float) * (size_t)n);
+        m->phase += (uint32_t)n * m->base_inc;
+        m->pos += n;
+        while (m->qn > 0 && seg_at(m, 0)->hi <= m->pos) {
+            m->qhead = (m->qhead + 1) % m->qcap;
+            m->qn--;
+        }
+        return;
+    }
     for (int done = 0; done < n;) {
         const int k = n - done < BLOCK ? n - done : BLOCK;
         render(m, s, env, k);

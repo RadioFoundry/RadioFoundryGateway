@@ -285,3 +285,6 @@ yet. The topic helpers are `rdof_siteroute_calls_topic` and `rdof_siteroute_call
 Every box on a root hears every other box's calls; the router's policies decide what each sends on RF. Two boxes that
 carry the same TG both transmit it. There's no master: a TG's calls from two boxes at once both arrive, and each path
 keeps the one that came first (config-v3.md §9.2).
+
+The MQTT network ([mqtt-net.md](mqtt-net.md), planned) replaces these calls: decoded items in place of DMRD packets,
+node state, and a private-call router. A network picks it with `"format": "v3"`.

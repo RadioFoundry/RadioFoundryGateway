@@ -9,9 +9,10 @@
  *   A network stream to a repeater's path (or an SFR or DCDM frequency's) goes to that repeater, on the path's slot; an emergency that takes the
  *   slot from another network stream ends that one (rdof_repeater_preempt).
  *   A network stream to a simplex path tunes a transceiver that may transmit on its frequency (as a DMRT would:
- *   the frequency's cc and power), then sends its bursts on the frequency's slot. A transceiver sends one stream
- *   at a time; an emergency takes it from another (the tune's preempt). A path no transceiver is free for is let
- *   go (rdof_router_drop).
+ *   the frequency's cc and power), then sends its bursts on the frequency's slot. The pool (rdof/txpool.h) picks
+ *   it: a transceiver sends one stream at a time, then holds the path for its answer_s; a network stream may take
+ *   a hold, and an emergency takes one from a stream that isn't (the tune's preempt; the router lets the other
+ *   path go). A path no transceiver is free for is let go (rdof_router_drop).
  *
  * A transceiver's answers (DMRK) to a tune made here go nowhere: the master sent no DMRT (rdof_siteroute_tuned).
  * Portable C, no allocation, no locking: call it from one thread.
@@ -25,25 +26,19 @@
 #include "rdof/hblink.h"
 #include "rdof/router.h"
 #include "rdof/site.h"
+#include "rdof/txpool.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define RDOF_SITEROUTE_TXVRS 4
+#define RDOF_SITEROUTE_TXVRS RDOF_TXPOOL_MAX
 #define RDOF_SITEROUTE_TUNED 16
 #define RDOF_SITEROUTE_MEMO 8 /* RF streams decided lately: another sink asking about one gets the same answer */
 
 struct rdof_repeater;
 struct rdof_txvr;
 
-typedef struct {
-    struct rdof_txvr *t;
-    uint64_t freqs;  /* the frequencies it may transmit on (bit per frequency) */
-    uint32_t stream; /* the network stream it's sending, 0: none */
-    int path;        /* on that path */
-    double last;     /* that stream's last burst */
-} rdof_siteroute_txvr_t;
 
 typedef struct {
     uint32_t hz, src, dst;
@@ -55,8 +50,8 @@ typedef struct {
     rdof_router_t router;
     struct rdof_repeater *rpt[RDOF_SITE_MAX_APPS]; /* by app: a repeater app's */
     struct rdof_repeater *rpt_freq[RDOF_SITE_MAX_FREQS]; /* by frequency: an SFR or DCDM frequency's */
-    rdof_siteroute_txvr_t tx[RDOF_SITEROUTE_TXVRS];
-    int ntx;
+    struct rdof_txvr *tx[RDOF_SITEROUTE_TXVRS]; /* by the pool's index */
+    rdof_txpool_t pool;                         /* which one sends what (rdof/txpool.h) */
     uint32_t tuned[RDOF_SITEROUTE_TUNED]; /* the streams tuned here, newest last */
     int tuned_next;
     uint32_t stream_emergency; /* the last stream whose header said emergency */
@@ -64,6 +59,7 @@ typedef struct {
     rdof_siteroute_memo_t memo[RDOF_SITEROUTE_MEMO];
     int memo_next;
     unsigned no_txvr;          /* network streams with no transceiver free for a path */
+    unsigned app_no_txvr;      /* apps' bursts with none free */
 } rdof_siteroute_t;
 
 void rdof_siteroute_init(rdof_siteroute_t *sr, const rdof_site_t *site);
@@ -86,6 +82,17 @@ bool rdof_siteroute_reaches(const rdof_siteroute_t *sr, uint32_t hz, int slot, i
 uint64_t rdof_siteroute_burst(rdof_siteroute_t *sr, int net, uint32_t peer, const rdof_net_burst_t *b, double now);
 /* A DMRD packet from network net to peer (other packets: false, the caller's). */
 bool rdof_siteroute_dmrd(rdof_siteroute_t *sr, int net, uint32_t peer, const uint8_t *d, size_t n, double now);
+
+/* Apps on the box (the parrot, the IP gateway; docs/spec/fw/transmitters.md §5) send as a network does, through
+   the pool, on a path: the one a call was heard on (rdof_siteroute_path_at), or where a radio was last heard.
+   The path heard at hz on slot, -1 none. */
+int rdof_siteroute_path_at(const rdof_siteroute_t *sr, uint32_t hz, int slot);
+/* Whether a transmitter would take an app's new stream on path now (the parrot waits while not). */
+bool rdof_siteroute_app_ready(const rdof_siteroute_t *sr, int path, double now);
+/* A burst of an app's stream on path: the pool's transceiver, tuned at the stream's first burst (the path's
+   frequency, cc and power), the burst on the path's slot. take_hold: may take a transceiver holding another path
+   (a confirmed-data answer). False: none free (app_no_txvr). */
+bool rdof_siteroute_app_burst(rdof_siteroute_t *sr, int path, const rdof_net_burst_t *b, bool take_hold, double now);
 
 /* MQTT calls (docs/spec/fw/mqtt.md): a DMRD packet goes out on {root}/calls/{tg|pc}/{dst}/{box}; a box takes
    {root}/calls/# but its own. The topic for a DMRD (0: not one, or no room). */

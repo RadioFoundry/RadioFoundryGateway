@@ -296,6 +296,8 @@ void sdr_status_json(rdof_json_t *j)
         jnum(j, chz_names[k], s->chz_load[k]);
     rdof_json_close(j);
     if (g_rx_ready) {
+        rdof_json_int(j, "blinds", g_rx.blinds); /* half duplex: spans deaf while transmitting, and their total */
+        jnum(j, "blind_s", g_rx.blind_s);
         char where[200];
         sdr_prof_placement(&g_rx, where, sizeof where);
         rdof_json_str(j, "dsp_buffers", where); /* internal or PSRAM, each of the receiver's buffers */

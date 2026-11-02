@@ -30,6 +30,5 @@ CONFIG_RDOF_LOG_RING_KB=16
 CONFIG_RDOF_SOFTAP=y
 # A crash saves a core dump to the last 128 KB of flash (GET /api/coredump).
 CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
-# The 4 MB part no longer fits everything (2026-10-29, with the bench's line protocol): the self-test clip goes
-# first (docs/reference.md "Size").
-CONFIG_RDOF_SDR_SELFTEST=n
+# No SDR on the 4 MB part (2026-11-01): it runs a roamer or repeater on a modem or radio (docs/reference.md "Size").
+CONFIG_RDOF_SDR=n

@@ -26,6 +26,7 @@
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "gnss.h"
 #include "netclock.h"
 #include "rdof/oled.h"
 #include "rdof/oled_sdr.h"
@@ -102,6 +103,22 @@ static void clock_text(char *out, size_t cap)
     }
 }
 
+
+/* The top row's GNSS and battery icons, each only on a board that has it: a receiver heard (its fix or not), a
+   battery read (power.c). */
+static void board_icons(rdof_oled_gnss_t *gnss, bool *has_batt, int *batt_pct)
+{
+    *gnss = RDOF_OLED_GNSS_NONE;
+#if CONFIG_GNSS_UART_RX_GPIO >= 0
+    static gnss_status_t g; /* not on the task's stack */
+    gnss_status(&g);
+    if (g.running && g.found)
+        *gnss = g.nmea.valid || g.nmea.quality > 0 ? RDOF_OLED_GNSS_FIX : RDOF_OLED_GNSS_NOFIX;
+#endif
+    *has_batt = g_board.batt_mv >= 0 && g_board.batt_pct >= 0;
+    *batt_pct = g_board.batt_pct;
+}
+
 #if CONFIG_RDOF_ROAMER
 /* The first roamer's or repeater's screen. */
 static void render_roamer(rdof_frame_buf_t *frame, roam_t *R, const char *clock)
@@ -124,7 +141,8 @@ static void render_roamer(rdof_frame_buf_t *frame, roam_t *R, const char *clock)
     snprintf(tx, sizeof tx, "%s", R->st.on_air ? R->st.sending : "");
     rdof_oled_status_t s = {R->cfg->name, g_board.ip, g_board.wifi_up, R->st.mqtt_up, R->st.hblink_up,
                           R->st.radio_ready, R->cfg->mode == RDOF_CFG_REPEATER, freq, R->cfg->tx_freq, cc, state, rx,
-                          R->st.hearing, tx, R->st.on_air, clock};
+                          R->st.hearing, tx, R->st.on_air, clock, RDOF_OLED_GNSS_NONE, false, -1};
+    board_icons(&s.gnss, &s.has_batt, &s.batt_pct);
     rdof_oled_render(frame, &s);
 }
 #endif
@@ -179,6 +197,7 @@ static void render_sdr(rdof_frame_buf_t *frame, const char *clock)
         .sample_rate = g_scfg.sample_rate,
         .cpu_load = st->cpu_load,
     };
+    board_icons(&s.gnss, &s.has_batt, &s.batt_pct);
     wifi_ap_record_t ap;
     if (s.wifi && !s.ap && esp_wifi_sta_get_ap_info(&ap) == ESP_OK)
         s.wifi_dbm = ap.rssi;

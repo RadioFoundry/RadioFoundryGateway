@@ -123,6 +123,9 @@ void rdof_tracker_init(rdof_tracker_t *tr, const char *channel, double rssi_offs
 bool rdof_tracker_add_sink(rdof_tracker_t *tr, rdof_sink_t sink);
 void rdof_tracker_feed(rdof_tracker_t *tr, const rdof_burst_t *b, double t);
 void rdof_tracker_tick(rdof_tracker_t *tr, double t);
+/* The receiver was blind for dt seconds (a half-duplex radio transmitting): the calls in progress, and the idle
+   hang, wait that much longer before they're lost (docs/spec/fw/transmitters.md §6). */
+void rdof_tracker_blind(rdof_tracker_t *tr, double dt);
 #endif /* RDOF_FEATURE_TRACKER */
 
 

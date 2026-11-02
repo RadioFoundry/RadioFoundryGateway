@@ -82,7 +82,18 @@ static bool pull_freq(void *ctx, int64_t pos, float *hz, float *env, int n)
     return r;
 }
 
-static const rdof_fe_tx_source_t source = {pull_iq, pull_freq, NULL};
+static int try_pull_freq(void *ctx, int64_t pos, float *hz, float *env, int n)
+{
+    if (xSemaphoreTake(lock, 0) != pdTRUE)
+        return -1; /* the radio task's turn (a reply into the roamer): the LR2021's reader doesn't wait for it */
+    if (mdm)
+        slot_timing_apply(mdm);
+    bool r = mdm && rdof_sdrmodem_pull_freq(mdm, pos, hz, env, n);
+    GIVE();
+    return r;
+}
+
+static const rdof_fe_tx_source_t source = {pull_iq, pull_freq, NULL, try_pull_freq};
 
 static int io_channel(void *ctx, uint32_t hz) { return sdr_rx_channel(hz); }
 

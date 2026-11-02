@@ -177,6 +177,20 @@ static bool send_dmr(void *ctx, const rdof_ipgw_dmr_t *p)
     uint32_t rnd = esp_random();
     uint8_t sid[4] = {(uint8_t)(rnd >> 24), (uint8_t)(rnd >> 16), (uint8_t)(rnd >> 8), (uint8_t)rnd};
 #if RDOF_FEATURE_TX
+    if (site_pool_on() && r->cfg->mode == RDOF_CFG_ROAMER) {
+        /* version 3: on the path the radio was heard on, through the router's pool; it may take a transceiver
+           holding another path (an answer to the radio's data) */
+        const int path = site_app_path(p->freq, p->slot);
+        if (path < 0 || p->nbursts <= 0)
+            return false;
+        for (int i = 0; i < p->nbursts; i++) {
+            rdof_net_burst_t b;
+            rdof_ipgw_net_burst(p, i, sid, p->slot, s_tx->seq++, &b);
+            if (!site_app_burst(path, &b, true))
+                return false;
+        }
+        return true;
+    }
     if (r->cfg->mode == RDOF_CFG_ROAMER && r->txvr)
         return rdof_ipgw_tx_txvr(s_tx, r->txvr, p, sid);
 #endif

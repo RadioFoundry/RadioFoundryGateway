@@ -84,6 +84,12 @@ struct rdof_sdr_rx {
     /* Optional, with burst_ctx: true for a 48 kS/s position the platform's own transmitter keyed (half duplex):
      * a burst there gives no AFC measurement (so no ppm learning either). */
     bool (*muted)(void *ctx, int64_t position);
+    /* With muted, a half-duplex radio: while muted it hears nothing on any channel, so each tracker's calls wait out
+     * the span (rdof_tracker_blind) rather than end as lost (docs/spec/fw/transmitters.md §6). */
+    bool blind_when_muted;
+    double blind_s;        /* seconds spent blind */
+    long blinds;           /* blind spans */
+    double blind_from;     /* stream time the current span began, -1 none */
     /* Optional, with burst_ctx: the slot (1, 2) a burst is in when the platform knows better than its sync and CACH
      * (a duplex repeater's inbound, by timing), 0 to keep it; called after on_burst, before the call tracker. c is
      * the channel. */
