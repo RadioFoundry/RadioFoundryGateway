@@ -5,7 +5,9 @@
  * gates, the queue, pacing, the key-time limit, the dead-man rule) is common's rdof/benchtx.h; this file opens its
  * path, feeds it the tool's frames and the modem's bytes, and ticks it from a task of its own.
  *
- *   via=modem        the board's SDR modem (sdrmodem), when the SDR's front end can transmit and no roamer owns it
+ *   via=modem        the board's SDR modem (sdrmodem), when the SDR's front end can transmit and no roamer owns it;
+ *                    under version 3, when a roamer owns it, the router's transmitter pool (rdof/benchroute.h), on
+ *                    the path at the job's frequency, as the parrot's answers go
  *   via=radio:NAME   a bench radio's MMDVM modem, through the link's guard (lowest power, TX only on the lease)
  *
  * What the bench may transmit comes from bench.tx in the settings (rdof/benchcfg.h), never from the API. Every keying
@@ -32,6 +34,7 @@
 #include "freertos/task.h"
 #include "netclock.h"
 #include "rdof/benchcfg.h"
+#include "rdof/benchroute.h"
 #include "rdof/benchtx.h"
 
 static const char *TAG = "bench";
@@ -51,6 +54,8 @@ typedef struct {
     char session[16], label[32], via[32];
     uint32_t freq;
     bool radio;           /* via=radio:NAME, else the SDR modem */
+    bool routed;          /* via=modem through the router's pool (version 3, a roamer owns the modem) */
+    int path;             /* routed: the path at freq */
     bool line;            /* the line protocol's job (bench_line.c): no socket of its own, no lease */
     const char *code;     /* refused at the handshake: sent once the socket is up, then closed */
     char why[128];
@@ -70,6 +75,7 @@ static SemaphoreHandle_t mu;
 EXT_RAM_BSS_ATTR static txjob_t J;
 EXT_RAM_BSS_ATTR static keying_t keylog[KEYLOG];
 static int nkeys;
+EXT_RAM_BSS_ATTR static rdof_benchroute_t route;
 
 static double now_s(void) { return esp_timer_get_time() / 1e6; }
 
@@ -89,19 +95,61 @@ static void job_to_tool(void *ctx, const char *js, size_t n)
         ws_text(J.fd, js, n);
 }
 
-static void job_to_modem(void *ctx, const uint8_t *b, size_t n)
-{
-    if (J.radio)
-        bench_radio_tx_write(J.via + 6, b, n);
-    else
-        sdr_modem_bench_write(b, n);
-}
-
 /* From the modem (the SDR modem's lock or the radio's link task): queued, never waiting. */
 static void modem_bytes(void *ctx, const uint8_t *b, size_t n)
 {
     if (J.from_modem)
         xStreamBufferSend(J.from_modem, b, n, 0);
+}
+
+static void job_to_modem(void *ctx, const uint8_t *b, size_t n)
+{
+    if (J.radio)
+        bench_radio_tx_write(J.via + 6, b, n);
+    else if (J.routed)
+        rdof_benchroute_write(&route, b, n);
+    else
+        sdr_modem_bench_write(b, n);
+}
+
+/* ── via=modem through the router ─────────────────────────────────────────── */
+
+/* Version 3 with a roamer on the SDR: the modem is the router's, so a job's bursts are an app's stream for the pool. */
+static bool via_router(void)
+{
+#if RDOF_FEATURE_TX
+    const char *why = sdr_modem_bench_why();
+    return site_pool_on() && why && strstr(why, "roamer");
+#else
+    return false;
+#endif
+}
+
+/* A burst to the pool (under mu, then the site's lock); false: no transmitter free, the burst is NAKed. */
+static bool route_burst(void *ctx, const rdof_net_burst_t *b)
+{
+#if RDOF_FEATURE_TX
+    return site_app_burst(J.path, b, false);
+#else
+    return false;
+#endif
+}
+
+/* Open the routed path at freq: NULL, or why not. */
+static const char *route_open(uint32_t freq)
+{
+#if RDOF_FEATURE_TX
+    J.path = site_app_path(freq, 2);
+    if (J.path < 0)
+        J.path = site_app_path(freq, 1);
+    if (J.path < 0)
+        return "no talk path at that frequency (the site's frequencies)";
+    J.routed = true;
+    rdof_benchroute_init(&route, modem_bytes, route_burst, NULL);
+    return NULL;
+#else
+    return "no router in this build";
+#endif
 }
 
 static void job_keying(void *ctx, double start, double seconds, int bursts, const char *why)
@@ -129,7 +177,7 @@ static void job_end(void)
             rdof_benchtx_stop(J.job, NULL, "closed", now_s());
         if (J.radio)
             bench_radio_tx_close(J.via + 6);
-        else
+        else if (!J.routed)
             sdr_modem_bench_close();
     }
     if (!J.line)
@@ -247,6 +295,9 @@ static esp_err_t tx_open(httpd_req_t *req)
         why = "via is modem or radio:NAME (no SDR I/Q transmit on this board)";
         code = "unsupported";
     } else if ((why = rdof_benchtx_gates(&policy, true, true, J.freq, lease, nlease, armed())) != NULL) {
+    } else if (!J.radio && via_router()) {
+        why = route_open(J.freq);
+        code = "unavailable";
     } else if ((why = J.radio ? bench_radio_tx_why(via + 6) : sdr_modem_bench_why()) != NULL) {
         code = J.radio && strstr(why, "no such") ? "bad_request"
              : J.radio && strstr(why, "ODR") ? "unsupported"
@@ -368,6 +419,8 @@ const char *bench_tx_line_why(void)
         return policy_err[0] ? policy_err : "no transmit frequencies (bench.tx in the settings)";
     if (!J.job || !J.from_modem)
         return "no memory for a transmit job";
+    if (via_router())
+        return NULL;
     const char *why = sdr_modem_bench_why();
     return why && strstr(why, "another") ? NULL : why; /* busy is the job's to wait out, not a refusal */
 }
@@ -390,12 +443,14 @@ bool bench_tx_line_open(uint32_t freq, int cc, int power, char *why, size_t cap)
         snprintf(J.label, sizeof J.label, "line protocol");
         snprintf(J.via, sizeof J.via, "modem");
         xStreamBufferReset(J.from_modem);
-        if ((no = sdr_modem_bench_open(modem_bytes, NULL, dbm)) != NULL) {
+        if ((no = via_router() ? route_open(freq) : sdr_modem_bench_open(modem_bytes, NULL, dbm)) != NULL) {
             J.on = false;
         } else {
             const rdof_benchtx_io_t io = {job_to_modem, job_to_tool, job_keying, job_utc, NULL};
             rdof_benchtx_init(J.job, &io, freq, cc, level, policy.max_key_s, now_s());
-            if (power > level)
+            if (J.routed)
+                snprintf(why, cap, "through the router: its transmitter sends at the frequency's power");
+            else if (power > level)
                 snprintf(why, cap, "--power %d is over bench.tx's rf_level: %d (%.0f dBm)", power, level, dbm);
             ESP_LOGI(TAG, "tx: a line protocol job on %.5f MHz, cc %d, level %d", freq / 1e6, cc, level);
         }
@@ -513,11 +568,13 @@ size_t bench_tx_info_json(char *buf, size_t cap)
     else
         ADD("null");
 #if CONFIG_RDOF_BENCH_TX
+    const bool routed = via_router(); /* version 3: through the router's pool */
     ADD(",\"built\":true,\"via\":[");
 #else
+    const bool routed = false;
     ADD(",\"built\":false,\"via\":[");
 #endif
-    const char *why = sdr_modem_bench_why();
+    const char *why = routed ? NULL : sdr_modem_bench_why();
     size_t first = n;
     if (!why || !strstr(why, "can't transmit"))
         ADD("\"modem\"");
@@ -538,6 +595,7 @@ size_t bench_tx_info_json(char *buf, size_t cap)
         ADD("\"");
     } else
         ADD("\"ready\"");
+    ADD(",\"router\":%s", routed ? "true" : "false");
     if (policy_err[0])
         ADD(",\"error\":\"%s\"", policy_err);
     ADD("}");

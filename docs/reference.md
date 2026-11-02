@@ -659,6 +659,7 @@ On 2026-11-01, with the transmitter pool, the box parrot and the blind span (`tx
 `site_run.c`) and the OLED's battery and GNSS icons: `16mb` + `w12` 2156 KB (0x21B1D0), 174 KB DIRAM used (52.1%).
 `4mb` builds without the SDR (`CONFIG_RDOF_SDR=n`: a roamer or repeater on a modem or radio): 1299 KB (0x144CA0),
 621 KB free in its slot, 135 KB DIRAM used (40.3%).
+With bench TX through the router (`benchroute.c`): `16mb` + `w12` 2157 KB (0x21B570), 174 KB DIRAM used (52.1%).
 
 The roamer role costs 132 KB of flash and the SDR 436 KB (338 KB of it the self-test clip), against about 945 KB for
 the board both share. The SDR only image is 64 KB smaller than with everything built `-O2`.

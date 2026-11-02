@@ -40,6 +40,7 @@ set(RDOF_COMMON_SRCS
     src/benchguard.c
     src/benchcfg.c
     src/benchtx.c
+    src/benchroute.c
     src/benchjob.c
     src/benchline.c
     src/benchnet.c

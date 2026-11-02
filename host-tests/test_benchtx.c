@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "rdof/benchcfg.h"
+#include "rdof/benchroute.h"
 #include "rdof/benchtx.h"
 #include "rdof/bits.h"
 #include "rdof/layer2.h"
@@ -192,7 +193,7 @@ static void start(double max_key_s)
     memset(&tb, 0, sizeof tb);
     clock_now = 100.0;
     const rdof_benchtx_io_t io = {to_modem, to_tool, keying, NULL, &tb};
-    rdof_benchtx_init(&tb.t, &io, 461137500, 1, 0, max_key_s, clock_now);
+    rdof_benchtx_init(&tb.t, &io, 438162500, 1, 0, max_key_s, clock_now);
 }
 
 /* Time passing in 20 ms ticks, the modem answering; the tool pings every 0.5 s when ping. */
@@ -218,19 +219,19 @@ static bool said(const char *needle) { return strstr(tb.frames, needle) != NULL;
 
 static void t_gates(void)
 {
-    rdof_benchtx_policy_t p = {.freqs_hz = {461137500}, .nfreqs = 1, .max_key_s = 10, .arm_gpio = -1};
-    const uint32_t lease[] = {461137500}, other[] = {461087500};
-    CHECK(!rdof_benchtx_gates(&p, true, true, 461137500, lease, 1, false), "all open");
-    CHECK(rdof_benchtx_gates(&p, false, true, 461137500, lease, 1, false), "built without TX");
-    CHECK(rdof_benchtx_gates(&p, true, false, 461137500, lease, 1, false), "the path can't");
-    CHECK(rdof_benchtx_gates(&p, true, true, 461087500, other, 1, false), "not in the list");
-    CHECK(rdof_benchtx_gates(&p, true, true, 461137500, other, 1, false), "the lease doesn't cover it");
-    CHECK(rdof_benchtx_gates(&p, true, true, 461137500, lease, 0, false), "no lease");
+    rdof_benchtx_policy_t p = {.freqs_hz = {438162500}, .nfreqs = 1, .max_key_s = 10, .arm_gpio = -1};
+    const uint32_t lease[] = {438162500}, other[] = {438112500};
+    CHECK(!rdof_benchtx_gates(&p, true, true, 438162500, lease, 1, false), "all open");
+    CHECK(rdof_benchtx_gates(&p, false, true, 438162500, lease, 1, false), "built without TX");
+    CHECK(rdof_benchtx_gates(&p, true, false, 438162500, lease, 1, false), "the path can't");
+    CHECK(rdof_benchtx_gates(&p, true, true, 438112500, other, 1, false), "not in the list");
+    CHECK(rdof_benchtx_gates(&p, true, true, 438162500, other, 1, false), "the lease doesn't cover it");
+    CHECK(rdof_benchtx_gates(&p, true, true, 438162500, lease, 0, false), "no lease");
     p.arm_gpio = 5;
-    CHECK(rdof_benchtx_gates(&p, true, true, 461137500, lease, 1, false), "the jumper is out");
-    CHECK(!rdof_benchtx_gates(&p, true, true, 461137500, lease, 1, true), "the jumper is in");
+    CHECK(rdof_benchtx_gates(&p, true, true, 438162500, lease, 1, false), "the jumper is out");
+    CHECK(!rdof_benchtx_gates(&p, true, true, 438162500, lease, 1, true), "the jumper is in");
     rdof_benchtx_policy_t none = {.arm_gpio = -1};
-    CHECK(rdof_benchtx_gates(&none, true, true, 461137500, lease, 1, true), "no bench.tx");
+    CHECK(rdof_benchtx_gates(&none, true, true, 438162500, lease, 1, true), "no bench.tx");
 }
 
 static void t_control(void)
@@ -434,7 +435,7 @@ static void t_edges(void)
     start(10);
     CHECK(!strcmp(rdof_benchtx_state(&tb.t), "setup"), "setup first");
     run(0.2, true);
-    CHECK(!strcmp(frame("{\"type\":\"ready\""), "{\"type\":\"ready\",\"freq_hz\":461137500,\"protocol\":1}"), "ready: %s",
+    CHECK(!strcmp(frame("{\"type\":\"ready\""), "{\"type\":\"ready\",\"freq_hz\":438162500,\"protocol\":1}"), "ready: %s",
           frame("{\"type\":\"ready\""));
     CHECK(tb.config_len == 23 && tb.freq_payload[9] == 0, "protocol 1: the short config; RF level 0");
     call_frame(f, sizeof f, true, 12, true);
@@ -559,17 +560,17 @@ static void t_edges(void)
     tb.version2 = true;
     clock_now = 100.0;
     const rdof_benchtx_io_t io = {to_modem, to_tool, keying, fixed_utc, &tb};
-    rdof_benchtx_init(&tb.t, &io, 461137500, 1, 300, 10, clock_now);
+    rdof_benchtx_init(&tb.t, &io, 438162500, 1, 300, 10, clock_now);
     run(0.2, true);
     CHECK(tb.config_len == 37 && tb.freq_payload[9] == 255 && said("\"protocol\":2"), "protocol 2, RF 255: %zu",
           tb.config_len);
     call_frame(f, sizeof f, true, 0, true);
     tool_says(f);
     run(0.5, true);
-    CHECK(!strcmp(frame("{\"type\":\"keyed\""), "{\"type\":\"keyed\",\"t\":1700000000.250000,\"freq_hz\":461137500}"),
+    CHECK(!strcmp(frame("{\"type\":\"keyed\""), "{\"type\":\"keyed\",\"t\":1700000000.250000,\"freq_hz\":438162500}"),
           "keyed: %s", frame("{\"type\":\"keyed\""));
     memset(&tb, 0, sizeof tb);
-    rdof_benchtx_init(&tb.t, &io, 461137500, 1, -5, 10, clock_now);
+    rdof_benchtx_init(&tb.t, &io, 438162500, 1, -5, 10, clock_now);
     run(0.2, true);
     CHECK(tb.freq_payload[9] == 0, "RF -5: 0");
     /* a burst NAKed with reason 0, and with none */
@@ -705,49 +706,134 @@ static void t_edges(void)
     /* no callbacks but to_tool: nothing breaks */
     memset(&tb, 0, sizeof tb);
     const rdof_benchtx_io_t bare = {NULL, to_tool, NULL, NULL, &tb};
-    rdof_benchtx_init(&tb.t, &bare, 461137500, 1, 0, 10, clock_now);
+    rdof_benchtx_init(&tb.t, &bare, 438162500, 1, 0, 10, clock_now);
     for (int i = 0; i < 200; i++) {
         rdof_benchtx_alive(&tb.t, clock_now += 0.02);
         rdof_benchtx_tick(&tb.t, clock_now);
     }
     CHECK(rdof_benchtx_done(&tb.t) && said("didn't answer GET_VERSION"), "no modem: %s", tb.t.error);
     /* gates at their edges */
-    rdof_benchtx_policy_t p = {.freqs_hz = {461137500}, .nfreqs = 1, .max_key_s = 10, .arm_gpio = -1};
-    const uint32_t lease[] = {461137500};
-    CHECK(!strcmp(rdof_benchtx_gates(&p, true, true, 461137500, lease, -1, true),
+    rdof_benchtx_policy_t p = {.freqs_hz = {438162500}, .nfreqs = 1, .max_key_s = 10, .arm_gpio = -1};
+    const uint32_t lease[] = {438162500};
+    CHECK(!strcmp(rdof_benchtx_gates(&p, true, true, 438162500, lease, -1, true),
                   "the session holds no TX lease on that frequency"),
           "a negative lease count");
     p.max_key_s = 0;
-    CHECK(!strcmp(rdof_benchtx_gates(&p, true, true, 461137500, lease, 1, true),
+    CHECK(!strcmp(rdof_benchtx_gates(&p, true, true, 438162500, lease, 1, true),
                   "the settings allow no TX (bench.tx: freqs_hz and max_key_s)"),
           "no key time");
     p.max_key_s = 10;
     p.nfreqs = 0;
-    CHECK(rdof_benchtx_gates(&p, true, true, 461137500, lease, 1, true), "no frequencies");
+    CHECK(rdof_benchtx_gates(&p, true, true, 438162500, lease, 1, true), "no frequencies");
     p.nfreqs = 2;
-    p.freqs_hz[1] = 461087500;
-    const uint32_t lease2[] = {1, 461087500};
-    CHECK(!rdof_benchtx_gates(&p, true, true, 461087500, lease2, 2, true), "the second of each");
+    p.freqs_hz[1] = 438112500;
+    const uint32_t lease2[] = {1, 438112500};
+    CHECK(!rdof_benchtx_gates(&p, true, true, 438112500, lease2, 2, true), "the second of each");
     p.arm_gpio = 0;
-    CHECK(!strcmp(rdof_benchtx_gates(&p, true, true, 461087500, lease2, 2, false), "the TX arm jumper is out"), "GPIO 0");
+    CHECK(!strcmp(rdof_benchtx_gates(&p, true, true, 438112500, lease2, 2, false), "the TX arm jumper is out"), "GPIO 0");
 }
 
 static void t_policy(void)
 {
     rdof_benchtx_policy_t p;
     char err[160];
-    const char *a = "{\"bench\": {\"tx\": {\"freqs_hz\": [461137500, 461087500], \"max_key_s\": 5, \"arm_gpio\": 4}}}";
-    CHECK(rdof_bench_tx_parse(a, strlen(a), &p, err, sizeof err) == 0 && p.nfreqs == 2 && p.freqs_hz[1] == 461087500 &&
+    const char *a = "{\"bench\": {\"tx\": {\"freqs_hz\": [438162500, 438112500], \"max_key_s\": 5, \"arm_gpio\": 4}}}";
+    CHECK(rdof_bench_tx_parse(a, strlen(a), &p, err, sizeof err) == 0 && p.nfreqs == 2 && p.freqs_hz[1] == 438112500 &&
               p.max_key_s == 5 && p.rf_level == 0 && p.arm_gpio == 4,
           "parsed: %s", err);
     const char *b = "{\"bench\": {\"radios\": []}}";
     CHECK(rdof_bench_tx_parse(b, strlen(b), &p, err, sizeof err) == 0 && p.nfreqs == 0 && p.arm_gpio == -1, "none");
-    const char *c = "{\"bench\": {\"tx\": {\"freqs_hz\": [461.1375]}}}";
+    const char *c = "{\"bench\": {\"tx\": {\"freqs_hz\": [438.1625]}}}";
     CHECK(rdof_bench_tx_parse(c, strlen(c), &p, err, sizeof err) < 0 && strstr(err, "whole Hz"), "MHz: %s", err);
-    const char *d = "{\"bench\": {\"tx\": {\"freqs_hz\": [461137500], \"max_key_s\": 120}}}";
+    const char *d = "{\"bench\": {\"tx\": {\"freqs_hz\": [438162500], \"max_key_s\": 120}}}";
     CHECK(rdof_bench_tx_parse(d, strlen(d), &p, err, sizeof err) < 0 && strstr(err, "max_key_s"), "too long: %s", err);
-    const char *e = "{\"bench\": {\"tx\": {\"freqs_hz\": [461137500]}}}";
+    const char *e = "{\"bench\": {\"tx\": {\"freqs_hz\": [438162500]}}}";
     CHECK(rdof_bench_tx_parse(e, strlen(e), &p, err, sizeof err) == 0 && p.max_key_s == 10, "default key time");
+}
+
+/* A job through the router (rdof/benchroute.h) in place of a modem: bursts become a stream the router sends. */
+static rdof_benchroute_t br;
+static rdof_net_burst_t routed[64];
+static int nrouted, refuse_after = -1;
+
+static void route_reply(void *ctx, const uint8_t *f, size_t n)
+{
+    txb_t *b = ctx;
+    if (b->npend + n <= sizeof b->pending) {
+        memcpy(b->pending + b->npend, f, n);
+        b->npend += n;
+    }
+}
+
+static bool route_burst(void *ctx, const rdof_net_burst_t *b)
+{
+    (void)ctx;
+    if (refuse_after >= 0 && nrouted >= refuse_after)
+        return false;
+    if (nrouted < 64)
+        routed[nrouted] = *b;
+    nrouted++;
+    return true;
+}
+
+static void route_to_modem(void *ctx, const uint8_t *f, size_t n)
+{
+    (void)ctx;
+    rdof_benchroute_write(&br, f, n);
+}
+
+static void route_start(int refuse)
+{
+    memset(&tb, 0, sizeof tb);
+    nrouted = 0;
+    refuse_after = refuse;
+    clock_now = 100.0;
+    rdof_benchroute_init(&br, route_reply, route_burst, &tb);
+    const rdof_benchtx_io_t io = {route_to_modem, to_tool, keying, NULL, &tb};
+    rdof_benchtx_init(&tb.t, &io, 438075000, 1, 0, 10, clock_now);
+}
+
+static uint32_t sid(const rdof_net_burst_t *b) { return rdof_be32(b->stream_id); }
+
+static void t_route(void)
+{
+    route_start(-1);
+    run(0.2, true);
+    CHECK(said("\"type\":\"ready\"") && !strcmp(rdof_benchtx_state(&tb.t), "armed"), "ready: %s", tb.frames);
+    static char f[8192];
+    call_frame(f, sizeof f, true, 12, true);
+    tool_says(f);
+    run(1.6, true);
+    CHECK(nrouted == 14 && br.bursts == 14, "14 bursts routed: %d", nrouted);
+    CHECK(sid(&routed[0]) == (RDOF_BENCHROUTE_STREAM | 1) && sid(&routed[13]) == sid(&routed[0]), "one stream: %08x",
+          (unsigned)sid(&routed[0]));
+    CHECK(routed[0].src == 9990003 && routed[0].dst == 9 && !routed[0].group && routed[5].dst == 9, "addresses");
+    CHECK(routed[0].slot == 2 && routed[3].seq == 3, "slot 2, sequence");
+    CHECK(!routed[12].terminator && routed[13].terminator && !br.streaming, "the terminator ends it");
+    CHECK(said("\"type\":\"unkeyed\",\"why\":\"end\""), "unkeyed: %s", tb.frames);
+    /* a call's further terminators are dropped, not a stream of their own */
+    call_frame(f, sizeof f, false, 0, true);
+    tool_says(f);
+    run(0.3, true);
+    CHECK(nrouted == 14 && br.dropped == 1 && br.count == 1, "terminator dropped: %d routed, %ld dropped", nrouted,
+          br.dropped);
+    /* the next call is a new stream */
+    call_frame(f, sizeof f, true, 3, false);
+    tool_says(f);
+    run(0.6, true);
+    CHECK(nrouted == 18 && sid(&routed[14]) == (RDOF_BENCHROUTE_STREAM | 2), "second stream: %08x",
+          (unsigned)sid(&routed[14]));
+    /* stopped mid-call: SET_MODE idle closes the stream, so a later burst starts another */
+    rdof_benchtx_stop(&tb.t, NULL, "closed", clock_now);
+    CHECK(rdof_benchtx_done(&tb.t) && !br.streaming, "closed: the stream ends");
+
+    /* the router refuses (no transmitter free): the burst is NAKed and the job stops */
+    route_start(2);
+    run(0.2, true);
+    call_frame(f, sizeof f, true, 12, true);
+    tool_says(f);
+    run(1.0, true);
+    CHECK(br.refused >= 1 && rdof_benchtx_done(&tb.t) && said("refused a burst"), "refused: %s", tb.frames);
 }
 
 void test_benchtx(void)
@@ -762,4 +848,5 @@ void test_benchtx(void)
     t_refusals();
     t_policy();
     t_edges();
+    t_route();
 }

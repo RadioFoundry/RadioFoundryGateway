@@ -199,10 +199,19 @@ The OLED's TX row shows the transmitter's path while it sends or holds.
     transmitter (`ready`, up to `RDOF_PARROT_WAIT_S`), and plays back on the path it heard. A repeater keeps its own
     parrot, and the box parrot takes nothing heard on a repeater's paths.
   - The IP gateway sends on the path the radio was last heard on (its frequency and slot), with `take_hold`.
+  - A bench job (`WS /tx via=modem`, or the line protocol's) goes through the pool when the roamer has the SDR modem
+    (bench-api.md section 7): `rdof_benchroute` answers it as an MMDVM modem would, each call a stream
+    (`0x4245nnnn`) on the path at the job's frequency, without `take_hold`. It sends at the device's power, not
+    `bench.tx.rf_level`.
+- **Power:** the SDR modem transmits at the device's `tx.power_dbm` (default 10 dBm), lowered to the roamer's
+  `tx_power_dbm`. A frequency's `power` (the 0-255 level of a modem's `SET_FREQ`) doesn't reach it.
 - **The blind span** is the receiver's, not a path's: the LR2021 front end sets `blind_when_muted`, and while the SDR
   modem's transmission covers the stream every channel's tracker stops aging (`rdof_tracker_blind` moves its calls'
   last burst on by the span). `/api/status` `sdr.blinds` (a span per burst transmitted, as the SDR modem mutes each),
   `sdr.blind_s` (their total).
+- **Tested** on a W12 (2026-11-01): a line protocol voice job on 438.075 (8 headers, 12 voice, 3 terminators) went
+  out through the pool as one stream, at 10 dBm: 11 bursts on air (one header, one terminator, and the jitter
+  buffer's trim of the silent voice).
 - **Status:** `/api/status` `router`: `no_txvr`, `app_no_txvr`, `preempted`, `held_taken`, and per transmitter `state`,
   `path`, `stream_id`; `router.parrot`: `state`, `hz`, `gave_up`.
 

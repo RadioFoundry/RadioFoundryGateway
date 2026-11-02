@@ -237,7 +237,12 @@ start, length and peak power, in `/status` and in the bench's log.
 On the board (`bench_tx.c`, the job in `common/src/benchtx.c`, host-tested in `host-tests/test_benchtx.c`):
 
 - `via=modem` is the board's SDR modem (sdrmodem), when its front end can transmit (not an RTL-SDR) and no roamer
-  has it; `via=radio:NAME` is a bench radio with `"proto": "mmdvm"`, through its link's guard (lowest power, TX
+  has it. Under version 3, when the roamer has it (an SDR that transmits), the job goes through the router's
+  transmitter pool instead, as the parrot's answers do ([transmitters.md](fw/transmitters.md) §12): an MMDVM modem in
+  `common/src/benchroute.c` answers the job and hands each burst on as an app's stream on the site's path at the
+  job's frequency. The transmitter then sends at the device's power (`tx.power_dbm`), not `rf_level`, and with the
+  transceiver's own count of headers and terminators a call; a burst it can't take (the transmitter busy with another
+  stream) is NAKed, and the job stops. `info.tx.router` is true on this path. `via=radio:NAME` is a bench radio with `"proto": "mmdvm"`, through its link's guard (lowest power, TX
   data only on the frequency), and not while it's linked. `via=sdr` (I/Q, `fm`) is `unsupported`. Both paths drive
   an MMDVM modem in simplex: `SET_CONFIG`, `SET_FREQ` (RX = TX), `SET_MODE` DMR, one `DMR_DATA2` a burst, paced at
   60 ms a burst, three ahead of air time. A burst's control byte comes from its sync (voice sync, data sync with its
