@@ -124,7 +124,10 @@ is older than the firmware's, against the firmware's own libiio and libad9361 fr
 libc). `rdofchz` brings up the FPGA channelizer on a Pluto running its bitstream (`chzhw.h`): `--probe` reads its ID
 and CAPS through `/dev/mem`; with `--fs`, `--center`, `--ch MHZ ...` (and `--cic R` for a wide span) it starts the
 block, reads its frames from the RX DMA and prints the frames, gaps and each channel's level once a second. It leaves
-the AD9361 as it is. On the Pluto, from `/tmp` (RAM):
+the AD9361 as it is. First run (2026-11-03, a 7010 Pluto clone, the block without a CIC, loaded by hand through the
+FPGA manager): 10 channels from 2.4 MS/s at 438.525 MHz, 48 kS/s each with no frame lost over 6 s; a 20 dB RX gain step
+moved every channel 19 to 20 dB; each channel's spectrum flat to 3 kHz, -3 dB near 5.5 kHz, -14 dB at 8 to 10 kHz,
+-59 dB beyond 14 kHz. On the Pluto, from `/tmp` (RAM):
 
 ```sh
 gunzip -c rdof-pluto.tar.gz | tar -xf -
