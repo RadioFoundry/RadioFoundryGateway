@@ -290,6 +290,7 @@ bool site_parrot_stream(const uint8_t sid[4]); /* a replay's stream (its transce
 bool site_pool_on(void);
 int site_app_path(uint32_t hz, int slot); /* the path heard at hz, slot; -1 none */
 bool site_app_burst(int path, const rdof_net_burst_t *b, bool take_hold);
+bool site_app_holds(const uint8_t sid[4]); /* a transceiver still holds a burst of the stream */
 void site_status_json(rdof_json_t *j); /* "router": the pool's transmitters, the box parrot; nothing without v3 */
 
 #endif

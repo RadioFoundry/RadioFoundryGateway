@@ -199,6 +199,16 @@ bool rdof_siteroute_app_ready(const rdof_siteroute_t *sr, int path, double now)
     return rdof_txpool_peek(&sr->pool, &rq, now).i >= 0;
 }
 
+bool rdof_siteroute_holds(const rdof_siteroute_t *sr, const uint8_t sid[4])
+{
+#if RDOF_FEATURE_TX
+    for (int i = 0; i < RDOF_SITEROUTE_TXVRS; i++)
+        if (sr->tx[i] && rdof_txvr_holds(sr->tx[i], sid))
+            return true;
+#endif
+    return false;
+}
+
 bool rdof_siteroute_app_burst(rdof_siteroute_t *sr, int path, const rdof_net_burst_t *b, bool take_hold, double now)
 {
 #if RDOF_FEATURE_TX

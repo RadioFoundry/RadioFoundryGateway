@@ -183,6 +183,16 @@ bool site_app_burst(int path, const rdof_net_burst_t *b, bool take_hold)
     return sent;
 }
 
+bool site_app_holds(const uint8_t sid[4])
+{
+    if (!SR)
+        return false;
+    xSemaphoreTakeRecursive(lock, portMAX_DELAY);
+    const bool held = rdof_siteroute_holds(SR, sid);
+    xSemaphoreGiveRecursive(lock);
+    return held;
+}
+
 bool site_parrot_stream(const uint8_t sid[4])
 {
     return P && (rdof_be32(sid) & 0xFFFF0000u) == RDOF_PARROT_STREAM;

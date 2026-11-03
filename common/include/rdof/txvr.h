@@ -213,6 +213,8 @@ bool rdof_txvr_on_idle_channel(const rdof_txvr_t *t);
 bool rdof_txvr_listening(const rdof_txvr_t *t);
 bool rdof_txvr_scanning(const rdof_txvr_t *t);
 const char *rdof_txvr_state_name(const rdof_txvr_t *t);
+/* Whether it still holds a burst of the stream sid: its call (until it ends), the call waiting or an orphan. */
+bool rdof_txvr_holds(rdof_txvr_t *t, const uint8_t sid[4]);
 /* The call's details, as the network calls report them (rdof/netcalls.h). */
 void rdof_txvr_call_info(const rdof_txvr_t *t, const rdof_txcall_t *call, rdof_tx_call_info_t *info);
 

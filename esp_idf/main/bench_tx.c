@@ -531,8 +531,12 @@ void bench_tx_line_push(uint8_t control, const uint8_t burst[33])
 bool bench_tx_line_idle(void)
 {
     xSemaphoreTake(mu, portMAX_DELAY);
-    const bool idle = !J.on || !J.line || J.job->state == RDOF_TXS_DONE ||
-                      (J.job->state == RDOF_TXS_READY && !J.job->keyed && !J.job->qn);
+    bool idle = !J.on || !J.line || J.job->state == RDOF_TXS_DONE ||
+                (J.job->state == RDOF_TXS_READY && !J.job->keyed && !J.job->qn);
+#if RDOF_FEATURE_TX
+    if (idle && J.on && J.line && J.routed && route.count) /* handed on: the transceiver still to send it */
+        idle = !site_app_holds(route.sid);
+#endif
     xSemaphoreGive(mu);
     return idle;
 }

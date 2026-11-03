@@ -502,6 +502,17 @@ bool rdof_txvr_scanning(const rdof_txvr_t *t)
     return t->has_scan && !t->has_call && !t->stopped;
 }
 
+bool rdof_txvr_holds(rdof_txvr_t *t, const uint8_t sid[4])
+{
+    lock(t);
+    bool held = (t->has_call && !memcmp(t->call.tune.stream_id, sid, 4)) ||
+                (t->next.used && !memcmp(t->next.tune.stream_id, sid, 4));
+    for (int i = 0; i < RDOF_TXVR_ORPHANS && !held; i++)
+        held = t->orphans[i].used && !memcmp(t->orphans[i].stream_id, sid, 4);
+    unlock(t);
+    return held;
+}
+
 const char *rdof_txvr_state_name(const rdof_txvr_t *t)
 {
     if (!t->has_call)

@@ -486,6 +486,9 @@ static void test_siteroute(const char *dir)
                   cap.freq == 438112500 && rdof_siteroute_tuned(&sr, a.stream_id), "free: tuned to it (%d %u)", cap.n, cap.freq);
         CHECK(rdof_siteroute_app_burst(&sr, ap, &a, false, 9.06) && cap.n == n0 + 1 && !rdof_siteroute_app_ready(&sr, ap, 9.1),
               "tuned once; busy for another");
+        static const uint8_t none[4] = {0, 0, 0x77, 0x77};
+        CHECK(rdof_siteroute_holds(&sr, a.stream_id) == (t.has_call || t.next.used) && !rdof_siteroute_holds(&sr, none),
+              "holds its stream while the transceiver does (%d), not another", t.has_call);
         c = net_burst(0x666, 9800009, 204, true, 1, false, false);
         CHECK(rdof_siteroute_burst(&sr, 0, 0, &c, 9.1) == 0, "a network stream doesn't preempt an app's");
         a = net_burst(0x555, 9990, 9800009, false, 1, false, true);
