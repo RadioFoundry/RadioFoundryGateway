@@ -153,7 +153,8 @@ int rdof_chzfx_check(const rdof_chzfx_cfg_t *cfg)
     if (cfg->decim < 1 || cfg->decim > RDOF_CHZFX_MAX_DECIM || cfg->taps < 1 || cfg->taps > RDOF_CHZFX_MAX_TAPS ||
         cfg->taps + cfg->decim > RDOF_CHZFX_HIST || cfg->channels < 1 || cfg->channels > RDOF_CHZFX_MAX_CH ||
         cfg->out_shift < 1 || cfg->out_shift > 47 || cfg->cic_r < 0 || cfg->cic_r > RDOF_CHZFX_MAX_CIC ||
-        cfg->cic_shift < 0 || cfg->cic_shift > RDOF_CHZFX_CIC_N * 6)
+        cfg->cic_shift < 0 || cfg->cic_shift > RDOF_CHZFX_CIC_N * 6 ||
+        (cfg->cic_r > 1 && cfg->cic_r * cfg->decim > RDOF_CHZFX_MAX_STEP))
         return -1;
     for (int m = 0; m < cfg->taps; m++)
         if (cfg->coef[m] != sat(cfg->coef[m], RDOF_CHZFX_COEF_BITS))

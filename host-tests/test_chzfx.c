@@ -684,6 +684,11 @@ static void test_cfg(void)
     CHECK(rdof_chzfx_check(&g) == 0, "-2^17 fits");
     g.out_shift = 0;
     CHECK(rdof_chzfx_check(&g) == -1, "shift 0");
+    const double woff[1] = {1e6};
+    CHECK(rdof_chzfx_design_cic(&g, 23040000.0, 60, 8, woff, 1, RDOF_CHZ_CUTOFF_HZ) == 0 && g.cic_shift == 24 &&
+              g.taps == 129,
+          "CIC 60, D 8: shift %d, %d taps", g.cic_shift, g.taps);
+    CHECK(rdof_chzfx_design_cic(&g, 30720000.0, 64, 10, woff, 1, RDOF_CHZ_CUTOFF_HZ) == -1, "R D 640: past 512");
 
     /* reset: back to phase0 and empty histories, the same output again */
     rdof_chzfx_design(&g, 2400000.0, 50, off, 2, RDOF_CHZ_CUTOFF_HZ);

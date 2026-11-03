@@ -51,6 +51,7 @@ extern "C" {
 #define RDOF_CHZFX_CIC_N 4        /* CIC stages */
 #define RDOF_CHZFX_MAX_CIC 64     /* R: 2^17 R^N fits the registers' 42 bits */
 #define RDOF_CHZFX_CIC_BITS 42
+#define RDOF_CHZFX_MAX_STEP 512   /* R D with a CIC: the inputs of an output instant, which the block buffers */
 
 /* The quarter-wave table: qcos[i] = round(32767 cos(2 pi (i + 0.5) / 4096)). The half step keeps the quarter
  * symmetric: the full table at k = 1024 q + i is qcos[i], -qcos[1023 - i], -qcos[i], qcos[1023 - i] for quadrants
