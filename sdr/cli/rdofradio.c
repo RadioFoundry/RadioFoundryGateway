@@ -250,7 +250,9 @@ static void on_signal(int s) { stop = 1; }
 /* --config: the file, and the radio it (or the command line) sets */
 static const char *config_path;
 static rdofradio_cfg_t rcfg;
+#ifdef RDOF_HOST_WEB
 static char held[300]; /* hold (below): why the settings don't run, "" when they do */
+#endif
 
 /* a file whole, NUL terminated (malloc'd); NULL with errno set */
 static char *read_file(const char *path, size_t *len)
