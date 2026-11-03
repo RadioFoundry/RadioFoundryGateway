@@ -260,7 +260,7 @@ size_t rdofradio_cfg_describe(const rdofradio_cfg_t *o, const char *source, cons
         if (n < cap)                                                                                                   \
             n += (size_t)snprintf(out + n, cap - n, __VA_ARGS__);                                                      \
     } while (0)
-    PUT("%s runs: %s (rdofradio, a SoapySDR device)\nsettings: %s\n\n%s:\n", o->box, o->name, source, o->name);
+    PUT("%s runs: %s (rdofradio; its device below)\nsettings: %s\n\n%s:\n", o->box, o->name, source, o->name);
     PUT("%s, RX %s MHz, TX %s MHz, CC %d, peer id %u", o->full ? "repeater (full duplex)" : "transceiver (half duplex)",
         rx, tx, o->cc, (unsigned)o->peer_id);
     if (o->has_parrot)
