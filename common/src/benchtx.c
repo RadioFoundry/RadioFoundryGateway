@@ -51,7 +51,14 @@ int rdof_benchtx_control(const uint8_t burst[33], int n, int *voice_n)
             return -1;
         return RDOF_SYNC_DATA | (dt & 0x0F);
     }
-    if (n < 1 || n > 5) {
+    int cc, pi, lcss;
+    if ((n < 1 || n > 5) && rdof_decode_emb(burst, &cc, &pi, &lcss, NULL) && lcss >= 0 && lcss <= 3 &&
+        *voice_n < 5) {
+        /* By its EMB's LCSS (first B, last E, single F; continuation C, or D after C), so a late entry with no voice
+         * sync yet goes too. A late entry starting at D is taken as C: give n. */
+        static const int at[4] = {5, 1, 4, 2};
+        n = lcss == 3 && *voice_n == 2 ? 3 : at[lcss];
+    } else if (n < 1 || n > 5) {
         if (*voice_n < 0 || *voice_n >= 5)
             return -1; /* no sync, and no voice superframe to place it in */
         n = *voice_n + 1;

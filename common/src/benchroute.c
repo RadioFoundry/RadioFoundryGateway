@@ -8,6 +8,11 @@
 #include "rdof/fec.h"
 #include "rdof/pdu.h"
 
+/* Streams of every route, each job's route new: a count of its own started every job's stream at the same ID, so a
+ * job keyed right after another's was taken as more of the same call (its voice added, its headers and terminators
+ * dropped as repeats). */
+static uint32_t streams;
+
 void rdof_benchroute_init(rdof_benchroute_t *r, void (*reply)(void *ctx, const uint8_t *frame, size_t n),
                           bool (*burst)(void *ctx, const rdof_net_burst_t *b), void *ctx)
 {
@@ -52,7 +57,7 @@ static void data(rdof_benchroute_t *r, uint8_t cmd, const uint8_t *p, size_t len
     r->ended = false;
     if (!r->streaming) {
         r->count++;
-        const uint32_t id = RDOF_BENCHROUTE_STREAM | r->count;
+        const uint32_t id = RDOF_BENCHROUTE_STREAM | (++streams & 0xFFFF);
         r->sid[0] = (uint8_t)(id >> 24);
         r->sid[1] = (uint8_t)(id >> 16);
         r->sid[2] = (uint8_t)(id >> 8);

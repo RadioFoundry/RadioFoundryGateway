@@ -246,7 +246,9 @@ On the board (`bench_tx.c`, the job in `common/src/benchtx.c`, host-tested in `h
   data only on the frequency), and not while it's linked. `via=sdr` (I/Q, `fm`) is `unsupported`. Both paths drive
   an MMDVM modem in simplex: `SET_CONFIG`, `SET_FREQ` (RX = TX), `SET_MODE` DMR, one `DMR_DATA2` a burst, paced at
   60 ms a burst, three ahead of air time. A burst's control byte comes from its sync (voice sync, data sync with its
-  slot type's data type) or, for voice B-F, from `n` or its place after the last voice sync.
+  slot type's data type) or, for voice B-F, from `n`, its EMB (LCSS: first B, last E, single F; continuation C, or D
+  after C) or its place after the last voice sync. So a late entry may start at B-F with no voice sync before it (one
+  starting at D is taken as C unless `n` says so); a B-F after F with no A between is refused.
 - What may go out is `bench.tx` in the settings: `{"freqs_hz": [whole Hz, up to 8], "max_key_s": 10 (60 at most),
   "rf_level": 0 (SET_FREQ's RF level, 0-255), "arm_gpio": -1}`. Without it nothing transmits. `arm_gpio` is a
   jumper to ground, read with the pull-up on; pulling it stops a keying.

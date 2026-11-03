@@ -242,8 +242,20 @@ static void t_control(void)
     int vn = -1;
     lc_burst(RDOF_DT_VOICE_LC_HEADER, b);
     CHECK(rdof_benchtx_control(b, -1, &vn) == (RDOF_SYNC_DATA | 1), "voice LC header");
+    /* a late entry: no voice sync yet, placed by the EMB (C and D share one: the first is C), the next from there */
+    for (int first = 1; first <= 5; first++) {
+        vn = -1;
+        for (int n = first; n <= 5; n++) {
+            voice_burst(n, b);
+            int c = rdof_benchtx_control(b, -1, &vn);
+            CHECK(c == (n == 3 && first == 3 ? 2 : n), "late from %c: voice %c is %d", 'A' + first, 'A' + n, c);
+            /* (one starting at D: that one is taken as C, the rest placed right) */
+        }
+    }
     voice_burst(1, b);
-    CHECK(rdof_benchtx_control(b, -1, &vn) == -1, "voice B with no voice sync before it");
+    vn = 5;
+    CHECK(rdof_benchtx_control(b, -1, &vn) == -1, "B after F, its A missing: refused");
+    vn = -1;
     voice_burst(0, b);
     CHECK(rdof_benchtx_control(b, -1, &vn) == RDOF_SYNC_AUDIO, "voice A");
     for (int n = 1; n <= 5; n++) {
@@ -398,13 +410,23 @@ static void t_refusals(void)
     CHECK(rdof_benchtx_done(&tb.t) && said("unsupported"), "no FM through a modem");
     start(10);
     run(0.2, true);
-    uint8_t b[33]; /* voice C with no voice A before it: it can't be placed */
+    uint8_t b[33]; /* voice C with no voice A before it: a late entry, placed by its EMB */
     char h[67];
     voice_burst(2, b);
     hex(b, h);
     snprintf(f, sizeof f, "{\"type\":\"bursts\",\"items\":[{\"raw_hex\":\"%s\"}]}", h);
     tool_says(f);
-    CHECK(rdof_benchtx_done(&tb.t) && said("no sync"), "voice C alone: %s", tb.frames);
+    CHECK(!rdof_benchtx_done(&tb.t) && tb.t.qn == 1 && tb.t.q[tb.t.qh].control == 2, "voice C alone: %s", tb.frames);
+    start(10);
+    run(0.2, true);
+    char h2[67];
+    voice_burst(5, b); /* a late entry at F, then B with no A between: refused */
+    hex(b, h);
+    voice_burst(1, b);
+    hex(b, h2);
+    snprintf(f, sizeof f, "{\"type\":\"bursts\",\"items\":[{\"raw_hex\":\"%s\"},{\"raw_hex\":\"%s\"}]}", h, h2);
+    tool_says(f);
+    CHECK(rdof_benchtx_done(&tb.t) && said("no sync"), "B after F with no A: %s", tb.frames);
 }
 
 static double fixed_utc(void *ctx) { return 1700000000.25; }
@@ -589,7 +611,7 @@ static void t_edges(void)
     tool_says(f);
     run(0.3, true);
     CHECK(rdof_benchtx_done(&tb.t) && said("refused a burst (no NAK reason)"), "no reason: %s", tb.frames);
-    /* unkey while not keyed drops the voice count too: voice B can't follow */
+    /* unkey while not keyed drops the voice count too: voice B starts again, a late entry by its EMB */
     start(10);
     voice_burst(0, b);
     one_burst(f, sizeof f, b, "");
@@ -599,7 +621,7 @@ static void t_edges(void)
     voice_burst(1, b);
     one_burst(f, sizeof f, b, "");
     tool_says(f);
-    CHECK(rdof_benchtx_done(&tb.t) && said("no sync"), "voice B after an unkey: %s", tb.frames);
+    CHECK(!rdof_benchtx_done(&tb.t) && tb.t.voice_n == 1, "voice B after an unkey: %s", tb.frames);
     /* n: a number in range places it; anything else counts from the sync */
     static const struct {
         const char *n;
@@ -796,6 +818,7 @@ static void route_start(int refuse)
 }
 
 static uint32_t sid(const rdof_net_burst_t *b) { return rdof_be32(b->stream_id); }
+static uint32_t route_last; /* t_route's last stream */
 
 static void t_route(void)
 {
@@ -807,8 +830,9 @@ static void t_route(void)
     tool_says(f);
     run(1.6, true);
     CHECK(nrouted == 14 && br.bursts == 14, "14 bursts routed: %d", nrouted);
-    CHECK(sid(&routed[0]) == (RDOF_BENCHROUTE_STREAM | 1) && sid(&routed[13]) == sid(&routed[0]), "one stream: %08x",
-          (unsigned)sid(&routed[0]));
+    const uint32_t first = sid(&routed[0]);
+    CHECK((first & 0xFFFF0000u) == RDOF_BENCHROUTE_STREAM && sid(&routed[13]) == first, "one stream: %08x",
+          (unsigned)first);
     CHECK(routed[0].src == 9990003 && routed[0].dst == 9 && !routed[0].group && routed[5].dst == 9, "addresses");
     CHECK(routed[0].slot == 2 && routed[3].seq == 3, "slot 2, sequence");
     CHECK(!routed[12].terminator && routed[13].terminator && !br.streaming, "the terminator ends it");
@@ -823,8 +847,8 @@ static void t_route(void)
     call_frame(f, sizeof f, true, 3, false);
     tool_says(f);
     run(0.6, true);
-    CHECK(nrouted == 18 && sid(&routed[14]) == (RDOF_BENCHROUTE_STREAM | 2), "second stream: %08x",
-          (unsigned)sid(&routed[14]));
+    CHECK(nrouted == 18 && sid(&routed[14]) == first + 1, "second stream: %08x", (unsigned)sid(&routed[14]));
+    route_last = sid(&routed[14]);
     /* stopped mid-call: SET_MODE idle closes the stream, so a later burst starts another */
     rdof_benchtx_stop(&tb.t, NULL, "closed", clock_now);
     CHECK(rdof_benchtx_done(&tb.t) && !br.streaming, "closed: the stream ends");
@@ -854,6 +878,10 @@ static void t_route_late(void)
         rdof_benchroute_write(&br, f, m);
     }
     CHECK(nrouted == 10 && br.count == 1, "one stream of 10 bursts: %d", nrouted);
+    /* the next job's route: a stream ID of its own (each route counting from 1, a job right after another's was taken
+     * as more of its call) */
+    CHECK(sid(&routed[0]) != route_last && (sid(&routed[0]) & 0xFFFF0000u) == RDOF_BENCHROUTE_STREAM,
+          "a new job, a new stream ID: %08x after %08x", (unsigned)sid(&routed[0]), (unsigned)route_last);
     CHECK(routed[0].src == 0 && routed[7].src == 0, "no addresses before a whole B-E: %u %u", (unsigned)routed[0].src,
           (unsigned)routed[7].src); /* the first superframe's C-E don't make one */
     CHECK(routed[8].src == 9990005 && routed[8].dst == 9990 && routed[8].group && routed[9].src == 9990005,

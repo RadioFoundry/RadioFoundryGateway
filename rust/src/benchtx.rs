@@ -8,7 +8,7 @@ use core::ffi::{c_char, c_int, c_long, c_void, CStr};
 use crate::bits::slice;
 use crate::ffi::{RDOF_BURST_BYTES, RDOF_DT_TERMINATOR_WITH_LC};
 use crate::jsonp::{rdof_jat, rdof_jget, rdof_jnode, rdof_jparse, JDoc, JNode, RDOF_JARR, RDOF_JNUM, RDOF_JSTR};
-use crate::layer2::{rdof_decode_slot_type, rdof_detect_sync};
+use crate::layer2::{rdof_decode_emb, rdof_decode_slot_type, rdof_detect_sync};
 use crate::mmdvm::{
     rdof_mmdvm_config_v1, rdof_mmdvm_config_v2, rdof_mmdvm_frame, rdof_mmdvm_parse_version, rdof_mmdvm_reader_feed,
     rdof_mmdvm_reader_init, rdof_mmdvm_set_freq_payload, rdof_modem_config_default, RdofMmdvmReader, RdofModemConfig,
@@ -173,7 +173,16 @@ pub extern "C" fn rdof_benchtx_control(burst: &Burst, mut n: c_int, voice_n: &mu
         }
         return c_int::from(RDOF_SYNC_DATA) | (dt & 0x0F);
     }
-    if !(1..=5).contains(&n) {
+    let mut lcss = -1;
+    if !(1..=5).contains(&n)
+        && rdof_decode_emb(burst, None, None, Some(&mut lcss), None)
+        && (0..4).contains(&lcss)
+        && *voice_n < 5
+    {
+        // By its EMB's LCSS (first B, last E, single F; continuation C, or D after C), so a late entry with no voice
+        // sync yet goes too. A late entry starting at D is taken as C: give n.
+        n = if lcss == 3 && *voice_n == 2 { 3 } else { [5, 1, 4, 2][lcss as usize] };
+    } else if !(1..=5).contains(&n) {
         if !(0..5).contains(voice_n) {
             return -1; // no sync, and no voice superframe to place it in
         }
