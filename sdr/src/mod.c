@@ -252,9 +252,36 @@ static void render(rdof_mod_t *m, float *s, float *env, int n)
     }
 }
 
+/* Whether no queued burst reaches into the next n samples: they're the bare carrier, unkeyed. */
+static bool quiet_for(const rdof_mod_t *m, int n)
+{
+    for (int i = 0; i < m->qn; i++) {
+        const rdof_mod_seg_t *g = seg_at(m, i);
+        if (g->hi > m->pos && g->lo < m->pos + n)
+            return false;
+    }
+    return true;
+}
+
+/* Unkeyed through the next n samples: zeros, the phase and the position moved on as render's would. */
+static void skip_quiet(rdof_mod_t *m, int n)
+{
+    m->phase += (uint32_t)n * m->base_inc;
+    m->pos += n;
+    while (m->qn > 0 && seg_at(m, 0)->hi <= m->pos) {
+        m->qhead = (m->qhead + 1) % m->qcap;
+        m->qn--;
+    }
+}
+
 void rdof_mod_iq(rdof_mod_t *m, rdof_cf_t *out, int n)
 {
     float s[BLOCK], env[BLOCK];
+    if (quiet_for(m, n)) { /* idle, most of the time: zeros without rendering them (a PlutoSDR's tenth of a core) */
+        memset(out, 0, sizeof *out * (size_t)n);
+        skip_quiet(m, n);
+        return;
+    }
     for (int done = 0; done < n;) {
         const int k = n - done < BLOCK ? n - done : BLOCK;
         render(m, s, env, k);
@@ -277,17 +304,6 @@ void rdof_mod_iq(rdof_mod_t *m, rdof_cf_t *out, int n)
     }
 }
 
-/* Whether no queued burst reaches into the next n samples: they're the bare carrier, unkeyed. */
-static bool quiet_for(const rdof_mod_t *m, int n)
-{
-    for (int i = 0; i < m->qn; i++) {
-        const rdof_mod_seg_t *g = seg_at(m, i);
-        if (g->hi > m->pos && g->lo < m->pos + n)
-            return false;
-    }
-    return true;
-}
-
 void rdof_mod_freq(rdof_mod_t *m, float *hz, float *env_out, int n)
 {
     float s[BLOCK], env[BLOCK];
@@ -297,12 +313,7 @@ void rdof_mod_freq(rdof_mod_t *m, float *hz, float *env_out, int n)
             hz[i] = off;
         if (env_out)
             memset(env_out, 0, sizeof(float) * (size_t)n);
-        m->phase += (uint32_t)n * m->base_inc;
-        m->pos += n;
-        while (m->qn > 0 && seg_at(m, 0)->hi <= m->pos) {
-            m->qhead = (m->qhead + 1) % m->qcap;
-            m->qn--;
-        }
+        skip_quiet(m, n);
         return;
     }
     for (int done = 0; done < n;) {

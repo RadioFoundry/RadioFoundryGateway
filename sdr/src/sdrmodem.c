@@ -1462,9 +1462,10 @@ bool rdof_sdrmodem_pull_iq(rdof_sdrmodem_t *m, int64_t pos, rdof_cf_t *iq, int n
     if (m->sig_on)
         return sig_pull(m, pos, iq, NULL, NULL, n);
     advance(m, pos, n);
+    const bool idle = rdof_mod_idle(&m->mod); /* nothing queued reaches past here: zeros, unkeyed */
     rdof_mod_iq(&m->mod, iq, n);
     m->pos = m->mod.pos;
-    return keyed_in(m, NULL, iq, n);
+    return !idle && keyed_in(m, NULL, iq, n);
 }
 
 bool rdof_sdrmodem_pull_freq(rdof_sdrmodem_t *m, int64_t pos, float *hz, float *env, int n)
