@@ -1,14 +1,19 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
-/* An analog FM receiver that measures as it goes (rdof/fmrx.h). */
-#include "rdof/fmrx.h"
+/* An analog FM receiver that measures as it goes (rdof/sdr/fmrx.h). */
+#include "rdof/sdr/fmrx.h"
 
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "rdof/fmgen.h"
+#include "rdof/sdr/features.h"
+#if RDOF_FEATURE_SDR
+
+#include "rdof/sdr/filters.h"
+#include "rdof/sdr/fm.h"
+#include "rdof/sdr/fmgen.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -18,51 +23,6 @@
 #define RING 2048                /* the subaudio's last quarter second (about 4 kS/s) and room */
 #define BLOCKS 64                /* finished blocks waiting to be taken */
 #define DCS_ENTRIES (2 * 104)
-
-typedef struct {
-    float b0, b1, b2, a1, a2, z1, z2;
-} bq_t;
-
-static float bq(bq_t *f, float x)
-{
-    const float y = f->b0 * x + f->z1;
-    f->z1 = f->b1 * x - f->a1 * y + f->z2;
-    f->z2 = f->b2 * x - f->a2 * y;
-    return y;
-}
-
-enum { LP, HP, NOTCH };
-
-/* RBJ's cookbook: a low-pass, high-pass or notch at f (Hz), quality q, rate fs. */
-static void bq_set(bq_t *f, int kind, double hz, double q, double fs)
-{
-    const double w = 2 * M_PI * hz / fs, cw = cos(w), al = sin(w) / (2 * q), a0 = 1 + al;
-    double b0, b1, b2;
-    if (kind == LP)
-        b0 = (1 - cw) / 2, b1 = 1 - cw, b2 = (1 - cw) / 2;
-    else if (kind == HP)
-        b0 = (1 + cw) / 2, b1 = -(1 + cw), b2 = (1 + cw) / 2;
-    else
-        b0 = 1, b1 = -2 * cw, b2 = 1;
-    *f = (bq_t){(float)(b0 / a0), (float)(b1 / a0), (float)(b2 / a0), (float)(-2 * cw / a0), (float)((1 - al) / a0), 0, 0};
-}
-
-/* |H| of a cascade at hz. */
-static double bq_mag(const bq_t *f, int n, double hz, double fs)
-{
-    const double w = 2 * M_PI * hz / fs;
-    double m = 1;
-    for (int i = 0; i < n; i++) {
-        const double c1 = cos(w), s1 = -sin(w), c2 = cos(2 * w), s2 = -sin(2 * w);
-        const double nr = f[i].b0 + f[i].b1 * c1 + f[i].b2 * c2, ni = f[i].b1 * s1 + f[i].b2 * s2;
-        const double dr = 1 + f[i].a1 * c1 + f[i].a2 * c2, di = f[i].a1 * s1 + f[i].a2 * s2;
-        m *= sqrt((nr * nr + ni * ni) / (dr * dr + di * di));
-    }
-    return m;
-}
-
-static const double BW4[2] = {0.5411961, 1.3065630};            /* Butterworth, 4th order */
-static const double BW6[3] = {0.5176381, 0.7071068, 1.9318517}; /* 6th */
 
 typedef struct {
     double psum, gfsum;
@@ -80,15 +40,17 @@ struct rdof_fmrx {
     void (*dealloc)(void *);
     double fs, ar, sr;
     int da, ds, dk, sk;
-    float pi, pq, scale;
+    rdof_cf_t prev;              /* the discriminator's last sample */
+    float scale;
     /* the input rate: the gate (the power, 2 ms smoothed, over the squelch for DELAY_S each side of a sample) and
      * the samples it delays */
     float ps, ps_a, sq_lin;
+    float pf, pf_a;              /* the power 0.25 ms smoothed: the 2 ms one takes 14 ms to fall 30 dB, past DELAY_S */
     long since_on, since_off;    /* samples the power has been over the squelch, and under it */
     int D, di;
     float dly[2 * 2000];         /* DELAY_S at 200 kS/s */
     bool gate;
-    bq_t lp5[2];
+    rdof_bq_t lp5[2];
     double pos;                  /* input samples out of the delay */
     long bsize;
     acc_t b;
@@ -97,16 +59,13 @@ struct rdof_fmrx {
     long learn, settle;
     double learn_sum;
     float cfo, cfo_a;
-    bq_t hp[3], lp3[2], notch;
+    rdof_bq_t hp[3], lp3[2], notch;
     bool notching;
     float de, de_a, de_g;
     float sub_acc;
-    bq_t lps[3];
+    rdof_bq_t lps[3];
     /* the spectrum */
-    float re[N], im[N], win[N], cs[N / 2], sn[N / 2];
-    double acc[N / 2 + 1];
-    int fn;
-    long frames;
+    rdof_psd_t psd;
     /* the subaudio's last quarter second */
     float ring[RING];
     int rlen, rn, rw, rsince;
@@ -190,52 +149,6 @@ int rdof_dcs_lookup(uint32_t word, bool *inv)
 
 /* ── the spectrum ── */
 
-static void fft(float *re, float *im, const float *cs, const float *sn)
-{
-    for (int i = 1, j = 0; i < N; i++) {
-        int bit = N >> 1;
-        for (; j & bit; bit >>= 1)
-            j ^= bit;
-        j ^= bit;
-        if (i < j) {
-            float t = re[i];
-            re[i] = re[j], re[j] = t;
-            t = im[i], im[i] = im[j], im[j] = t;
-        }
-    }
-    for (int len = 2; len <= N; len <<= 1) {
-        const int step = N / len;
-        for (int i = 0; i < N; i += len)
-            for (int j = 0; j < len / 2; j++) {
-                const float wr = cs[j * step], wi = -sn[j * step];
-                float *ar = &re[i + j], *ai = &im[i + j], *br = &re[i + j + len / 2], *bi = &im[i + j + len / 2];
-                const float tr = *br * wr - *bi * wi, ti = *br * wi + *bi * wr;
-                *br = *ar - tr, *bi = *ai - ti;
-                *ar += tr, *ai += ti;
-            }
-    }
-}
-
-static void spectrum_in(rdof_fmrx_t *r, float x)
-{
-    r->re[r->fn++] = x;
-    if (r->fn < N)
-        return;
-    r->fn = 0;
-    double wsum2 = 0;
-    for (int i = 0; i < N; i++) {
-        r->re[i] *= r->win[i];
-        r->im[i] = 0;
-        wsum2 += (double)r->win[i] * r->win[i];
-    }
-    fft(r->re, r->im, r->cs, r->sn);
-    /* one-sided, so a tone of amplitude A sums to A^2 / 2 over its bins */
-    for (int k = 0; k <= N / 2; k++)
-        r->acc[k] += (k && k < N / 2 ? 2.0 : 1.0) * ((double)r->re[k] * r->re[k] + (double)r->im[k] * r->im[k]) /
-                     (N * wsum2);
-    r->frames++;
-}
-
 /* ── the subaudio ── */
 
 /* The last quarter second of subaudio: a CTCSS tone (or the DCS turn-off), by its zero crossings and a Goertzel
@@ -284,10 +197,10 @@ static void ctcss_window(rdof_fmrx_t *r)
             best = i;
     r->ct_hits[best]++;
     r->ct_fsum += f;
-    r->ct_devsum += sqrt(2 * tone) / bq_mag(r->lps, 3, f, r->sr);
+    r->ct_devsum += sqrt(2 * tone) / rdof_bq_mag(r->lps, 3, f, r->sr);
     r->ct_n++;
     if (!r->notching) { /* the filtered audio loses it from here on */
-        bq_set(&r->notch, NOTCH, f, 4.0, r->ar);
+        rdof_bq_set(&r->notch, RDOF_BQ_NOTCH, f, 4.0, r->ar);
         r->notching = true;
     }
     if (!(r->ct_w > 0)) {
@@ -370,7 +283,7 @@ static void dcs_in(rdof_fmrx_t *r, float x)
 static void sub_in(rdof_fmrx_t *r, float x, bool measure)
 {
     for (int i = 0; i < 3; i++)
-        x = bq(&r->lps[i], x);
+        x = rdof_bq(&r->lps[i], x);
     r->sub_n++;
     if (!measure) {
         r->rn = 0;
@@ -437,6 +350,7 @@ rdof_fmrx_t *rdof_fmrx_new(double fs, const rdof_fmrx_opts_t *o, void *(*alloc)(
     r->fs = fs;
     r->scale = (float)(fs / (2 * M_PI));
     r->ps_a = (float)(1 / (0.002 * fs));
+    r->pf_a = (float)(1 / (0.00025 * fs));
     r->sq_lin = (float)pow(10, r->o.squelch_dbfs / 10);
     r->D = (int)lround(DELAY_S * fs);
     r->da = (int)lround(fs / 16000);
@@ -448,24 +362,20 @@ rdof_fmrx_t *rdof_fmrx_new(double fs, const rdof_fmrx_opts_t *o, void *(*alloc)(
     r->bsize = lround(r->o.block_s * fs);
     if (r->bsize < 1)
         r->bsize = 1;
-    for (int i = 0; i < 2; i++)
-        bq_set(&r->lp5[i], LP, 5000, BW4[i], fs);
-    for (int i = 0; i < 3; i++)
-        bq_set(&r->hp[i], HP, 300, BW6[i], r->ar);
-    for (int i = 0; i < 2; i++)
-        bq_set(&r->lp3[i], LP, 3000, BW4[i], r->ar);
-    for (int i = 0; i < 3; i++)
-        bq_set(&r->lps[i], LP, 270, BW6[i], r->sr);
+    rdof_bq_butter(r->lp5, 2, RDOF_BQ_LP, 5000, fs);
+    rdof_bq_butter(r->hp, 3, RDOF_BQ_HP, 300, r->ar);
+    rdof_bq_butter(r->lp3, 2, RDOF_BQ_LP, 3000, r->ar);
+    rdof_bq_butter(r->lps, 3, RDOF_BQ_LP, 270, r->sr);
     if (r->o.deemph_us > 0) {
         const double tau = r->o.deemph_us * 1e-6;
         r->de_a = (float)(1 - exp(-1 / (tau * r->ar)));
         r->de_g = (float)sqrt(1 + pow(2 * M_PI * 1000 * tau, 2));
     }
     r->cfo_a = (float)(1 / (0.5 * r->ar));
-    for (int i = 0; i < N; i++)
-        r->win[i] = (float)(0.5 - 0.5 * cos(2 * M_PI * i / N));
-    for (int i = 0; i < N / 2; i++)
-        r->cs[i] = (float)cos(2 * M_PI * i / N), r->sn[i] = (float)sin(2 * M_PI * i / N);
+    if (rdof_psd_init(&r->psd, N) < 0) {
+        r->dealloc(r);
+        return NULL;
+    }
     r->rlen = (int)lround(r->sr / 4);
     if (r->rlen > RING)
         r->rlen = RING;
@@ -479,8 +389,10 @@ rdof_fmrx_t *rdof_fmrx_new(double fs, const rdof_fmrx_opts_t *o, void *(*alloc)(
 
 void rdof_fmrx_free(rdof_fmrx_t *r)
 {
-    if (r)
-        r->dealloc(r);
+    if (!r)
+        return;
+    rdof_psd_free(&r->psd);
+    r->dealloc(r);
 }
 
 double rdof_fmrx_audio_rate(const rdof_fmrx_t *r) { return r->ar; }
@@ -488,11 +400,10 @@ double rdof_fmrx_audio_rate(const rdof_fmrx_t *r) { return r->ar; }
 double rdof_fmrx_delay_s(const rdof_fmrx_t *r) { return r->D / r->fs; }
 
 /* One sample out of the delay: carrier (gate), noise (quiet), or neither (an edge). */
-static void sample(rdof_fmrx_t *r, float x, float y, bool gate, bool quiet, float *raw, float *audio, int *na)
+static void sample(rdof_fmrx_t *r, float x, float y, float f, bool gate, bool quiet, float *raw, float *audio,
+                   int *na)
 {
     const float p = x * x + y * y, e = sqrtf(p);
-    const float f = atan2f(y * r->pi - x * r->pq, x * r->pi + y * r->pq) * r->scale;
-    r->pi = x, r->pq = y;
     if (raw)
         *raw = f;
     acc_t *a = &r->b;
@@ -509,7 +420,7 @@ static void sample(rdof_fmrx_t *r, float x, float y, bool gate, bool quiet, floa
     if (gate && !r->gate)
         r->gated = 0, r->learn_sum = 0;
     r->gate = gate;
-    const float f5 = bq(&r->lp5[1], bq(&r->lp5[0], f));
+    const float f5 = rdof_bq(&r->lp5[1], rdof_bq(&r->lp5[0], f));
     if (++r->dk < r->da)
         return;
     r->dk = 0; /* the audio rate */
@@ -534,14 +445,14 @@ static void sample(rdof_fmrx_t *r, float x, float y, bool gate, bool quiet, floa
         r->dpos = d > r->dpos ? d : r->dpos;
         r->dneg = d < r->dneg ? d : r->dneg;
         r->d2_sum += (double)d * d, r->d_n++;
-        spectrum_in(r, d);
+        rdof_psd_in(&r->psd, d);
     }
     float u = d;
     for (int k = 0; k < 3; k++)
-        u = bq(&r->hp[k], u);
+        u = rdof_bq(&r->hp[k], u);
     if (r->notching)
-        u = bq(&r->notch, u);
-    u = bq(&r->lp3[1], bq(&r->lp3[0], u));
+        u = rdof_bq(&r->notch, u);
+    u = rdof_bq(&r->lp3[1], rdof_bq(&r->lp3[0], u));
     if (measure) {
         a->a2sum += (double)u * u, a->na++;
         r->a2_sum += (double)u * u, r->a_n++;
@@ -565,24 +476,40 @@ static void sample(rdof_fmrx_t *r, float x, float y, bool gate, bool quiet, floa
 
 void rdof_fmrx_feed(rdof_fmrx_t *r, const float *iq, int n, float *raw, float *audio, int *naudio)
 {
+    enum { B = 64 };
+    rdof_cf_t x[B];
+    float f[B];
+    uint8_t g[B];
     int na = 0;
-    for (int i = 0; i < n; i++) {
-        const float x = iq[2 * i], y = iq[2 * i + 1];
-        r->ps += (x * x + y * y - r->ps) * r->ps_a;
-        r->since_on = r->ps >= r->sq_lin ? r->since_on + 1 : 0;
-        if (r->since_on)
-            r->carrier_s += 1 / r->fs;
-        r->since_off = r->ps < r->sq_lin ? r->since_off + 1 : 0;
-        /* the sample DELAY_S back: gated when the power was over the squelch from DELAY_S before it to DELAY_S after */
-        float *d = &r->dly[2 * r->di];
-        const float dx = d[0], dy = d[1];
-        d[0] = x, d[1] = y;
-        if (++r->di == r->D)
-            r->di = 0;
-        sample(r, dx, dy, r->since_on > 2 * r->D, r->since_off > 2 * r->D, raw ? &raw[i] : NULL, audio, &na);
-        r->pos++;
-        if (r->b.n >= r->bsize)
-            block_end(r);
+    for (int i0 = 0; i0 < n; i0 += B) {
+        const int m = n - i0 < B ? n - i0 : B;
+        for (int j = 0; j < m; j++) {
+            const int i = i0 + j;
+            const float xi = iq[2 * i], xq = iq[2 * i + 1];
+            r->ps += (xi * xi + xq * xq - r->ps) * r->ps_a;
+            r->pf += (xi * xi + xq * xq - r->pf) * r->pf_a;
+            /* on: the smoothed power over the squelch, and the fast one not 6 dB under it (a carrier that stopped) */
+            const bool on = r->ps >= r->sq_lin && r->pf >= 0.25f * r->sq_lin;
+            r->since_on = on ? r->since_on + 1 : 0;
+            if (r->since_on)
+                r->carrier_s += 1 / r->fs;
+            r->since_off = r->ps < r->sq_lin ? r->since_off + 1 : 0;
+            /* the sample DELAY_S back: gated when the power was over the squelch from DELAY_S before it to DELAY_S
+             * after */
+            float *d = &r->dly[2 * r->di];
+            x[j] = (rdof_cf_t){d[0], d[1]};
+            d[0] = xi, d[1] = xq;
+            if (++r->di == r->D)
+                r->di = 0;
+            g[j] = (uint8_t)((r->since_on > 2 * r->D) | (r->since_off > 2 * r->D) << 1);
+        }
+        rdof_fm_discriminate(&r->prev, r->scale, x, m, f); /* the shared one (its fast atan2) */
+        for (int j = 0; j < m; j++) {
+            sample(r, x[j].re, x[j].im, f[j], g[j] & 1, g[j] & 2, raw ? &raw[i0 + j] : NULL, audio, &na);
+            r->pos++;
+            if (r->b.n >= r->bsize)
+                block_end(r);
+        }
     }
     if (naudio)
         *naudio = na;
@@ -639,8 +566,8 @@ void rdof_fmrx_summary(rdof_fmrx_t *r, rdof_fmrx_summary_t *s)
     s->reverse_burst_t = -1;
     s->dcs_code = -1;
     /* the spectrum: the audio band's strongest tone, its SINAD and THD; the peaks anywhere */
-    if (r->frames) {
-        const double *sp = r->acc, inv = 1.0 / (double)r->frames; /* sums: the mean is inv times */
+    if (r->psd.frames) {
+        const double *sp = r->psd.acc, inv = 1.0 / (double)r->psd.frames; /* sums: the mean is inv times */
         const double bh = bin_hz(r);
         const int lo = (int)ceil(300 / bh), hi = (int)floor(3000 / bh);
         int k0 = lo;
@@ -766,12 +693,12 @@ size_t rdof_fmrx_summary_json(rdof_fmrx_t *r, const rdof_fmrx_summary_t *s, char
             s->dcs_turnoff ? "true" : "false");
     else
         PUT("{\"kind\":\"none\",\"rms_hz\":%.1f}", s->sub_rms_hz);
-    if (r->o.spectrum_hz > 0 && r->frames) {
+    if (r->o.spectrum_hz > 0 && r->psd.frames) {
         const double bh = bin_hz(r);
         const int top = (int)fmin(N / 2, floor(r->o.spectrum_hz / bh));
         PUT(",\"spectrum\":{\"bin_hz\":%.4f,\"unit\":\"dB Hz^2\",\"db\":[", bh);
         for (int k = 0; k <= top; k++)
-            PUT("%s%.1f", k ? "," : "", 10 * log10(r->acc[k] / r->frames + 1e-12));
+            PUT("%s%.1f", k ? "," : "", 10 * log10(r->psd.acc[k] / r->psd.frames + 1e-12));
         PUT("]}");
     }
     PUT("}");
@@ -788,3 +715,5 @@ size_t rdof_fmrx_block_json(const rdof_fmrx_block_t *b, char *out, size_t cap)
         b->dev_pos_hz, b->dev_neg_hz, b->audio_rms_hz, b->sub_rms_hz);
     return at;
 }
+
+#endif

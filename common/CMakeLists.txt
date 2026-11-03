@@ -38,8 +38,6 @@ set(RDOF_COMMON_SRCS
     src/usbmatch.c
     src/benchguard.c
     src/benchcfg.c
-    src/fmgen.c
-    src/fmrx.c
     src/benchtx.c
     src/benchroute.c
     src/benchjob.c
@@ -52,6 +50,7 @@ set(RDOF_COMMON_SRCS
     src/parrot.c
     src/memplan.c
     src/webapi.c
+    src/sigmode.c
     src/radiofoundry/dmrFec.c src/radiofoundry/dmrCach.c src/radiofoundry/dmr_lc.c src/radiofoundry/dmrTrellis.c src/radiofoundry/dmrDataCrc.c
 )
 # split.c's clock arithmetic matches the golden scenarios to the bit: no fused multiply-add.

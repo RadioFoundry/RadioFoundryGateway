@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
-/* An analog FM test signal (rdof/fmgen.h). */
-#include "rdof/fmgen.h"
+/* An analog FM test signal (rdof/sdr/fmgen.h). */
+#include "rdof/sdr/fmgen.h"
+
+#include "rdof/sdr/features.h"
+#if RDOF_FEATURE_SDR
 
 #include <math.h>
 #include <string.h>
@@ -449,3 +452,5 @@ int rdof_fmg_render(rdof_fmg_t *g, float *dev_hz, float *env, int n)
     }
     return keyed;
 }
+
+#endif

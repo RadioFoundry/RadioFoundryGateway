@@ -14,7 +14,7 @@
  *   deviation and reverse burst) or a DCS code (its polarity, aliases and turn-off).
  *
  * Deviation is measured in a 5 kHz band (the discriminator low-passed there), the subaudio below 270 Hz. DCS words
- * are read as rdof/fmgen.h sends them. The processing runs in float, at the input rate only for the discriminator
+ * are read as rdof/sdr/fmgen.h sends them. The processing runs in float, at the input rate only for the discriminator
  * and a 5 kHz low-pass; the rest at a third of it or less (about 16 and 4 kS/s), so it fits an ESP32's core beside
  * other work.
  *

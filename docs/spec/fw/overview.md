@@ -346,10 +346,11 @@ flowchart LR
 | `frontend.c` | front-end types, formats, conversion, plan-vs-caps check |
 | `iq.c` | I/Q helpers |
 | `agc.c` | clip-driven AGC |
-| `fft.c` | built-in mixed-radix FFT |
+| `fft.c` | built-in mixed-radix FFT, or the platform's (pffft on a host, esp-dsp) |
 | `channelizer.c` | polyphase channelizer, plan center / window |
 | `resample.c` | rate conversion (LR2021 rates) |
-| `fm.c` | FM discriminator |
+| `fm.c` | FM discriminator (every FM-family mode's), RRC matched filter |
+| `filters.c` | biquads, Goertzel, Welch spectrum |
 | `demod.c` | 4FSK demod, sync search, flywheel, AFC |
 | `receiver.c` | `rdof_sdr` receiver: channelizer + demods + trackers |
 | `ppm.c`, `rate.c` | crystal-error learning; sample-clock timing |
@@ -357,6 +358,8 @@ flowchart LR
 | `mod.c` | DMR 4FSK modulator |
 | `sdrmodem.c` | emulated MMDVM modem over a front end |
 | `loopback.c` | TX → RX loopback |
+| `modes.c` | the signal modes (`rdof/sigmode.h` in `common`): each modulation besides DMR as one table, for the bench to send and analyze |
+| `mode_fm.c`, `fmgen.c`, `fmrx.c` | analog FM: test signal generator (tones, sweeps, DTMF, AFSK, noise, PCM; CTCSS, DCS) and a measuring receiver |
 | `status.c` | SDR status JSON |
 | `bench.c` | stage timing (`rdof_sdr_bench`) |
 

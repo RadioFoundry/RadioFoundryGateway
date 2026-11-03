@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
-/* The analog FM generator (rdof/fmgen.h) and receiver (rdof/fmrx.h): the one's signal through a channel into the
+/* The analog FM generator (rdof/sdr/fmgen.h) and receiver (rdof/sdr/fmrx.h): the one's signal through a channel into the
  * other, and what it measures against what was sent. */
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "rdof/fmgen.h"
-#include "rdof/fmrx.h"
+#include "rdof/sdr/fmgen.h"
+#include "rdof/sdr/fmrx.h"
+#include "rdof/sdr/modes.h"
+#include "rdof/jsonp.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -342,6 +344,115 @@ static void t_pcm(void)
     free(pcm);
 }
 
+/* The mode through its table only, as the bench line drives it: a job's JSON in, its samples integrated to I/Q, the
+ * receiver's streams, records and summary out. */
+static void t_mode(void)
+{
+    const rdof_sig_mode_t *m = rdof_sig_find(rdof_sdr_modes, "fm");
+    CHECK(m && m->tx_new && m->rx_new, "fm is listed, both ways");
+    CHECK(!rdof_sig_find(rdof_sdr_modes, "p25"), "no p25 yet");
+    char names[64];
+    CHECK(rdof_sig_names_json(rdof_sdr_modes, true, names, sizeof names) && strstr(names, "\"fm\""), "names %s", names);
+
+    static rdof_jnode_t nodes[256];
+    static char buf[2048];
+    rdof_jdoc_t d = {nodes, 256, 0, buf, sizeof buf, 0, ""};
+    const char *job = "{\"mode\":\"fm\",\"dev_hz\":2500,\"ctcss\":100.0,\"sub_dev_hz\":500,\"lead_s\":0,"
+                      "\"pcm\":{\"rate\":8000,\"samples\":8000},"
+                      "\"program\":[{\"kind\":\"tone\",\"hz\":1000,\"s\":1,\"level\":0.8},{\"kind\":\"pcm\",\"s\":1}]}";
+    int root = rdof_jparse(&d, job, strlen(job));
+    CHECK(root >= 0, "the job parses");
+    char err[160] = "";
+    double secs = 0;
+    void *tx = m->tx_new(&d, root, FS, &secs, err, sizeof err);
+    CHECK(tx != NULL, "tx_new: %s", err);
+    if (!tx)
+        return;
+    NEAR(secs, 2.4, 0.05, "keyed seconds (1 + 1 + tail and the reverse burst)");
+    /* the PCM: 1 s of 500 Hz, given in odd-sized pieces, with backpressure */
+    CHECK(m->tx_in_want(tx) == 16000, "wants 16000 bytes");
+    static uint8_t pcm[16000];
+    for (int i = 0; i < 8000; i++) {
+        const int16_t v = (int16_t)lrint(16000 * sin(2 * M_PI * 500 * i / 8000.0));
+        pcm[2 * i] = (uint8_t)v, pcm[2 * i + 1] = (uint8_t)((uint16_t)v >> 8);
+    }
+    size_t at = 0;
+    while (at < sizeof pcm) {
+        size_t k = m->tx_in_room(tx);
+        k = k > 333 ? 333 : k;
+        CHECK(k > 0, "room for the PCM");
+        if (!k)
+            break;
+        at += m->tx_in(tx, pcm + at, k);
+    }
+    CHECK(m->tx_in_want(tx) == 0, "all of it taken");
+    rdof_sig_src_t src = m->tx_src(tx);
+    NEAR(src.peak_hz, 2500 + 500, 1, "the source's peak");
+
+    const char *rq = "{\"mode\":\"fm\",\"streams\":\"audio,disc\",\"spectrum_hz\":1500}";
+    root = rdof_jparse(&d, rq, strlen(rq));
+    void *rx = m->rx_new(&d, root, FS, -40, err, sizeof err); /* the noise is at -47 dBFS */
+    CHECK(rx != NULL, "rx_new: %s", err);
+    rdof_sig_stream_t st[RDOF_SIG_STREAMS];
+    const int ns = m->rx_streams(rx, st, RDOF_SIG_STREAMS);
+    CHECK(ns == 2 && !strcmp(st[0].name, "audio") && !strcmp(st[1].name, "disc"), "two streams");
+    enum { B = 480 };
+    float hz[B], env[B], iq[2 * B], a[B], dsc[B];
+    float *outs[2] = {a, dsc};
+    int nout[2];
+    double ph = 0, pw = 0;
+    long audio = 0, disc = 0, recs = 0;
+    for (int blk = 0; blk < 400; blk++) { /* 4 s: the key and quiet after */
+        const int got = src.freq(src.ctx, hz, env, B);
+        for (int i = 0; i < B; i++) {
+            const float e = i < got ? env[i] : 0;
+            ph += 2 * M_PI * (i < got ? hz[i] : 0) / FS;
+            iq[2 * i] = (float)(e * cos(ph) + 0.003 * gauss()), iq[2 * i + 1] = (float)(e * sin(ph) + 0.003 * gauss());
+        }
+        m->rx_feed(rx, iq, B, outs, nout);
+        audio += nout[0], disc += nout[1];
+        for (int i = 0; i < nout[0]; i++) {
+            pw = fmax(pw, fabs(a[i]));
+        }
+        char rec[1024];
+        while (m->rx_record(rx, rec, sizeof rec)) {
+            recs++;
+            CHECK(!strncmp(rec, "{\"block\":{", 10), "a block record");
+        }
+    }
+    CHECK(src.done(src.ctx), "the source is done");
+    CHECK(disc == 400 * B, "the discriminator: every sample");
+    NEAR((double)audio / disc, st[0].rate / FS, 0.01, "audio at its rate");
+    CHECK(pw > 1000 && pw < st[0].full, "audio within its full scale, no click at key-off (%.0f)", pw);
+    CHECK(recs >= 35, "records %ld", recs);
+    static char sum[8192];
+    const size_t n = m->rx_summary(rx, sum, sizeof sum);
+    CHECK(n > 0 && strstr(sum, "\"ctcss\"") && strstr(sum, "100.0"), "the summary names the tone: %.300s", sum);
+    char rep[256];
+    CHECK(m->tx_report(tx, rep, sizeof rep) && strstr(rep, "\"underruns\":0"), "report %s", rep);
+    m->rx_free(rx);
+    m->tx_free(tx);
+
+    /* refusals name the problem */
+    const char *bad[][2] = {{"{\"program\":[{\"kind\":\"chirp\"}]}", "chirp"},
+                            {"{\"ctcss\":100,\"dcs\":\"023N\",\"program\":[{\"kind\":\"tone\",\"hz\":1000}]}", "not both"},
+                            {"{\"dcs\":\"089N\",\"program\":[{\"kind\":\"tone\",\"hz\":1000}]}", "octal"},
+                            {"{\"program\":[{\"kind\":\"pcm\"}]}", "pcm"},
+                            {"{\"program\":[{\"kind\":\"fsk\"}]}", "hex or text"}};
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        root = rdof_jparse(&d, bad[i][0], strlen(bad[i][0]));
+        err[0] = 0;
+        CHECK(!m->tx_new(&d, root, FS, &secs, err, sizeof err) && strstr(err, bad[i][1]), "refused (%s): %s", bad[i][1],
+              err);
+    }
+    /* AFSK: Bell 202 by default */
+    const char *afsk = "{\"program\":[{\"kind\":\"fsk\",\"text\":\"hi\"}]}";
+    root = rdof_jparse(&d, afsk, strlen(afsk));
+    tx = m->tx_new(&d, root, FS, &secs, err, sizeof err);
+    CHECK(tx != NULL, "AFSK: %s", err);
+    m->tx_free(tx);
+}
+
 int main(void)
 {
     t_dcs_words();
@@ -351,6 +462,7 @@ int main(void)
     t_dcs();
     t_afsk_dtmf_sweep();
     t_pcm();
+    t_mode();
     printf("fm: %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
 }

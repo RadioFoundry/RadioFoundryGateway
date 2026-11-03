@@ -70,9 +70,10 @@ if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
 endif()
 add_test(NAME rdof_benchline_tests COMMAND rdof_benchline_tests)
 
-# The analog FM generator and receiver (rdof/fmgen.h, rdof/fmrx.h), one through the other.
+# The analog FM generator and receiver (rdof/sdr/fmgen.h, rdof/sdr/fmrx.h), one through the other, and the signal
+# modes (rdof/sigmode.h, rdof/sdr/modes.h).
 add_executable(rdof_fm_tests test_fm.c)
-target_link_libraries(rdof_fm_tests PRIVATE rdof_common m)
+target_link_libraries(rdof_fm_tests PRIVATE rdof_sdr m)
 set_target_properties(rdof_fm_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 target_compile_options(rdof_fm_tests PRIVATE -Wall -Wno-unused-parameter)
 if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")

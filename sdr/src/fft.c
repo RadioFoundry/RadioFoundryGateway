@@ -149,7 +149,7 @@ static const rdof_fft_backend_t *backend;
 
 void rdof_fft_set_backend(const rdof_fft_backend_t *b) { backend = b; }
 
-rdof_fft_t *rdof_fft_new(int n, bool inverse)
+static rdof_fft_t *fft_new(int n, bool inverse, bool hot)
 {
     if (n < 1)
         return NULL;
@@ -181,7 +181,7 @@ rdof_fft_t *rdof_fft_new(int n, bool inverse)
         rdof_sdr_free(f);
         return NULL;
     }
-    f->tw = rdof_sdr_alloc_hot(sizeof(rdof_cf_t) * (size_t)n);
+    f->tw = hot ? rdof_sdr_alloc_hot(sizeof(rdof_cf_t) * (size_t)n) : rdof_sdr_alloc(sizeof(rdof_cf_t) * (size_t)n);
     if (!f->tw) {
         rdof_sdr_free(f);
         return NULL;
@@ -194,6 +194,9 @@ rdof_fft_t *rdof_fft_new(int n, bool inverse)
     }
     return f;
 }
+
+rdof_fft_t *rdof_fft_new(int n, bool inverse) { return fft_new(n, inverse, true); }
+rdof_fft_t *rdof_fft_new_cold(int n, bool inverse) { return fft_new(n, inverse, false); }
 
 void rdof_fft_free(rdof_fft_t *f)
 {
@@ -218,4 +221,9 @@ void rdof_fft_run(rdof_fft_t *f, const rdof_cf_t *in, rdof_cf_t *out)
     work(out, in, 1, f->factors, f);
 }
 
+#endif
+
+#if RDOF_FEATURE_SDR && !RDOF_FEATURE_SDR_BUILTIN_FFT
+/* A platform's own FFT: its plans are its own business. */
+rdof_fft_t *rdof_fft_new_cold(int n, bool inverse) { return rdof_fft_new(n, inverse); }
 #endif

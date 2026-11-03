@@ -33,6 +33,9 @@ typedef struct rdof_fft rdof_fft_t;
 /* A plan for size n; inverse is e^{+j...} and unnormalized (like FFTW_BACKWARD).
  * NULL if n isn't supported or out of memory. */
 rdof_fft_t *rdof_fft_new(int n, bool inverse);
+/* The same with its tables from the plain allocator: for analysis off the sample path (on the S3 the hot one takes
+ * internal RAM whatever the reserve). */
+rdof_fft_t *rdof_fft_new_cold(int n, bool inverse);
 void rdof_fft_free(rdof_fft_t *f);
 /* out = FFT(in). in and out must not overlap. */
 void rdof_fft_run(rdof_fft_t *f, const rdof_cf_t *in, rdof_cf_t *out);

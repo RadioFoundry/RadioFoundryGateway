@@ -24,6 +24,11 @@ set(RDOF_SDR_SRCS
     src/sdrmodem.c
     src/loopback.c
     src/txguard.c
+    src/filters.c
+    src/fmgen.c
+    src/fmrx.c
+    src/mode_fm.c
+    src/modes.c
 )
 
 if(ESP_PLATFORM)
