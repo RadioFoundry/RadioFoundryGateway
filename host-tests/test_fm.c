@@ -265,7 +265,7 @@ static void t_dcs(void)
     for (int i = 0; i < 3; i++) {
         rdof_fmg_cfg_t c = base();
         c.sub = RDOF_FMG_SUB_DCS, c.dcs = cases[i].code, c.dcs_inv = cases[i].inv, c.sub_dev_hz = 600;
-        c.sub_end_s = 0.3f;
+        c.sub_end_s = i == 2 ? 0.18f : 0.3f; /* the last: the transmitter's own default, shorter than CTCSS's window */
         tone(&c, 1000, 3, 0.8f);
         rdof_fmrx_summary_t s;
         chan_t ch = {.cfo = -250, .snr_db = 30, .pre_s = 0.2, .post_s = 0.2};
@@ -275,7 +275,7 @@ static void t_dcs(void)
               cases[i].code, cases[i].inv ? 'I' : 'N', s.dcs_code, s.dcs_inv ? 'I' : 'N');
         CHECK(!cases[i].alias[0] || strstr(s.dcs_aliases, cases[i].alias), "aliases %s", s.dcs_aliases);
         CHECK(s.dcs_words >= 15, "words %ld", s.dcs_words);
-        CHECK(s.dcs_turnoff, "the turn-off tone");
+        CHECK(s.dcs_turnoff, "the turn-off tone, %.2f s", c.sub_end_s);
         NEAR(s.tone_hz, 1000, 1, "the tone over DCS");
         NEAR(s.cfo_hz, -250, 12, "the carrier offset, the code's mean out (the turn-off pulls it a little)");
         NEAR(s.dcs_dev_hz, 600, 60, "DCS deviation");

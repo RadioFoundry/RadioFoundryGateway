@@ -164,10 +164,11 @@ int rdof_dcs_lookup(uint32_t word, bool *inv)
 /* ── the subaudio ── */
 
 /* The last quarter second of subaudio: a CTCSS tone (or the DCS turn-off), by its zero crossings and a Goertzel
- * there. */
+ * there. Once DCS is heard, only the last eighth of a second: a turn-off is shorter than the quarter (0.18 s from
+ * this project's transmitter). */
 static void ctcss_window(rdof_fmrx_t *r)
 {
-    const int L = r->rlen;
+    const int L = r->dc_words ? r->rlen / 2 : r->rlen;
     double p = 0, mean = 0;
     for (int i = 0; i < L; i++)
         mean += r->ring[(r->rw - L + i + RING) % RING];
