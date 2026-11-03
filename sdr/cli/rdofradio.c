@@ -1431,6 +1431,14 @@ static void on_json(void *ctx, const char *ch, const char *json)
         printf("%s json %s\n", ch, json);
 }
 
+/* the RX channel's calls: the transceiver's listen-before-talk, as the board's roamer (a reply to the call just heard
+ * isn't held off by that call); with --mmdvm the modem's tracker does it (mm_on_call) */
+static void on_call(void *ctx, const char *ch, const char *action, uint32_t src, uint32_t dst)
+{
+    if (!R.full && !R.mmdvm && !strcmp(ch, "rx"))
+        rdof_txvr_heard_call(&R.t, action, src, dst);
+}
+
 /* --bench [ADDR:]PORT: the bench's line protocol (docs/spec/bench-api.md section 14): the receiver's bursts and
  * captures from a history of the wideband stream, for the bench tools (tools/bench/rfgbench.py). */
 static int bench_port = -1;
@@ -3643,7 +3651,7 @@ int main(int argc, char **argv)
         R.rate = rate;
     }
     const rdof_sdr_rx_config_t rc = {rate, center, -55.0, 0.0, true, CHUNK};
-    rdof_sink_t sink = {.on_json = on_json};
+    rdof_sink_t sink = {.on_json = on_json, .on_call = on_call};
 #ifdef RDOF_MQTT
     if (rcfg.cfg.has_mqtt)
         sink.on_raw_burst = on_raw_burst; /* every burst on .../raw, as the board's */
