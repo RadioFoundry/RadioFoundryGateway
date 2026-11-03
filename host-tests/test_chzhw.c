@@ -28,6 +28,7 @@ static int checks, failures;
 typedef struct {
     uint32_t reg[RDOF_CHZHW_SPAN / 4];
     int started;          /* AP_CTRL written: the read-only registers show */
+    uint32_t caps0_top;   /* CAPS0 31..24: the largest CIC */
     int id_delay;         /* reads of ID before it shows */
     uint32_t ctrl_log[16];
     int nctrl;
@@ -39,7 +40,7 @@ static uint32_t fake_rd(void *ctx, uint32_t off)
     if (off == RDOF_CHZHW_ID || off == RDOF_CHZHW_CAPS0 || off == RDOF_CHZHW_CAPS1) {
         if (!f->started || (off == RDOF_CHZHW_ID && f->id_delay-- > 0))
             return 0;
-        return off == RDOF_CHZHW_ID ? RDOF_CHZHW_ID_RCH1 : off == RDOF_CHZHW_CAPS0 ? 60u << 16 | 8u << 8 | 16u
+        return off == RDOF_CHZHW_ID ? RDOF_CHZHW_ID_RCH1 : off == RDOF_CHZHW_CAPS0 ? f->caps0_top << 24 | 60u << 16 | 8u << 8 | 16u
                                                                                   : 1024u << 16 | 1024u;
     }
     return f->reg[off / 4];
@@ -65,7 +66,8 @@ static void test_registers(void)
     char err[160];
     CHECK(rdof_chzhw_probe(&h, &io, err, sizeof err) == 0, "%s", err);
     CHECK(f.started && f.reg[0] == RDOF_CHZHW_AP_RUN, "AP_CTRL 0x81 written");
-    CHECK(h.channels == 16 && h.lanes == 8 && h.max_decim == 60 && h.max_taps == 1024 && h.hist == 1024,
+    CHECK(h.channels == 16 && h.lanes == 8 && h.max_decim == 60 && h.max_taps == 1024 && h.hist == 1024 &&
+              h.max_cic == 0,
           "CAPS: %d ch, %d lanes, D %d, %d taps, history %d", h.channels, h.lanes, h.max_decim, h.max_taps, h.hist);
 
     static rdof_chzfx_cfg_t cfg;
@@ -111,6 +113,27 @@ static void test_registers(void)
     dead.id_delay = 1 << 30;
     rdof_chzhw_io_t dio = {fake_rd, fake_wr, &dead};
     CHECK(rdof_chzhw_probe(&h, &dio, err, sizeof err) == -1 && strstr(err, "ID"), "no ID: %s", err);
+
+    /* a CIC: refused by a block without one; with one, CIC_R and CIC_SHIFT written, no RAW frames */
+    static rdof_chzfx_cfg_t wide;
+    const double woff[2] = {-7.8e6, 8.075e6};
+    CHECK(rdof_chzfx_design_cic(&wide, 23.04e6, 60, 8, woff, 2, 7.5e3) == 0 && wide.cic_shift == 24, "design CIC 60");
+    memset(&f, 0, sizeof f);
+    CHECK(rdof_chzhw_probe(&h, &io, err, sizeof err) == 0, "%s", err);
+    CHECK(rdof_chzhw_start(&h, &wide, 0, 0, err, sizeof err) == -1 && strstr(err, "CIC"), "no CIC: %s", err);
+    CHECK(f.reg[RDOF_CHZHW_CIC_R / 4] == 0, "an old block's CIC_R untouched");
+    rdof_chzhw_start(&h, &cfg, 0, 0, err, sizeof err);
+    CHECK(f.reg[RDOF_CHZHW_CIC_R / 4] == 0, "nor by a start without one");
+    memset(&f, 0, sizeof f);
+    f.caps0_top = 64;
+    CHECK(rdof_chzhw_probe(&h, &io, err, sizeof err) == 0 && h.max_cic == 64, "CAPS0 CIC %d", h.max_cic);
+    CHECK(rdof_chzhw_start(&h, &wide, 0, 0, err, sizeof err) == 0, "%s", err);
+    CHECK(f.reg[RDOF_CHZHW_CIC_R / 4] == 60 && f.reg[RDOF_CHZHW_CIC_SHIFT / 4] == 24 &&
+              f.reg[RDOF_CHZHW_DECIM / 4] == 8 && f.reg[RDOF_CHZHW_TAPS / 4] == 129,
+          "CIC_R %u CIC_SHIFT %u", f.reg[RDOF_CHZHW_CIC_R / 4], f.reg[RDOF_CHZHW_CIC_SHIFT / 4]);
+    CHECK(rdof_chzhw_start(&h, &wide, 100, 1, err, sizeof err) == -1, "RAW frames with a CIC");
+    rdof_chzhw_start(&h, &cfg, 0, 0, err, sizeof err);
+    CHECK(f.reg[RDOF_CHZHW_CIC_R / 4] == 1 && f.reg[RDOF_CHZHW_CIC_SHIFT / 4] == 0, "no CIC: R 1");
 }
 
 /* What the parser hands over, kept to compare. */

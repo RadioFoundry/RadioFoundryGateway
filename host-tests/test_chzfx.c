@@ -7,7 +7,8 @@
  *   they were made; an HLS testbench checks the FPGA block against the same files), the model fed in chunks, the
  *   frames, the table, the configuration checks;
  * - within a tolerance (printed): an ideal DDC in double (the same steps without rounding: what the fixed point
- *   costs), and the float overlap-save channelizer (channelizer.h) on the same input.
+ *   costs), and the float overlap-save channelizer (channelizer.h) on the same input (not with a CIC: its FFT at
+ *   23 MS/s is past what it is for).
  *
  * `rdof_chzfx_tests --write` makes the golden vectors again (after a deliberate change to the model).
  */
@@ -54,7 +55,7 @@ typedef struct {
 } tone_t;
 
 typedef struct {
-    int at;       /* before input sample at * decim: latched after output at */
+    int at;       /* before input sample at * R * decim: latched after output at */
     int c;
     double shift; /* Hz added to the channel's offset */
 } retune_t;
@@ -62,7 +63,7 @@ typedef struct {
 typedef struct {
     const char *name;
     double fs;
-    int decim, channels, n;
+    int cic, decim, channels, n; /* cic: R, 1 for none */
     double offsets[RDOF_CHZFX_MAX_CH];
     tone_t tones[24];
     int ntones;
@@ -78,6 +79,7 @@ static const chzcase_t cases[] = {
          * from 6 to 190 LSB, noise; an AFC step on one channel */
         "2400k_16ch",
         2400000.0,
+        1,
         50,
         16,
         48000,
@@ -110,6 +112,7 @@ static const chzcase_t cases[] = {
         /* 1.536 MS/s, three channels, a tone past 12 bits: the mixer and the output saturate */
         "1536k_sat",
         1536000.0,
+        1,
         32,
         3,
         16384,
@@ -120,6 +123,41 @@ static const chzcase_t cases[] = {
         {{100, 0, -150.0}},
         1,
         0,
+    },
+    {
+        /* The 15-channel event plan (438.0125 to 438.6 MHz) at 23.04 MS/s around 438.5 MHz: CIC 60, then D 8. A tone
+         * in each channel within DMR's deviation, 8 to 200 LSB; two strong ones between channels (the CIC's
+         * aliases and the FIR's stopband); noise; an AFC step on one channel */
+        "23040k_15ch",
+        23040000.0,
+        60,
+        8,
+        15,
+        480 * 100,
+        {8075000, 2162500, 2700000, 1787500, -7525000, 1837500, -7400000, 1887500, -7800000, 1937500, -7425000,
+         1987500, 1737500, 2037500, 2387500},
+        {{8075000 + 1000, 120},
+         {2162500 - 1500, 60},
+         {2700000 + 300, 190},
+         {1787500 - 1944, 90},
+         {-7525000 + 648, 40},
+         {1837500 - 648, 150},
+         {-7400000 + 1944, 25},
+         {1887500 - 250, 110},
+         {-7800000 + 1200, 70},
+         {1937500 - 1800, 180},
+         {-7425000 + 500, 8},
+         {1987500 - 900, 130},
+         {1737500 + 1700, 85},
+         {2037500 - 100, 160},
+         {2387500 + 1944, 45},
+         {-3000000, 400},  /* nothing near: the CIC */
+         {2212500, 300}},  /* between 2.1625 and 2.3875: the FIR's stopband */
+        17,
+        3,
+        {{50, 3, 200.0}},
+        1,
+        1,
     },
 };
 #define NCASES ((int)(sizeof cases / sizeof cases[0]))
@@ -212,9 +250,11 @@ static int write_cfg(const chzcase_t *k, const rdof_chzfx_cfg_t *g, const uint32
     fprintf(f, "# Input %s_in.cs16, output %s_out.cs16: int16 I, Q pairs, little-endian; the output has\n", k->name,
             k->name);
     fprintf(f, "# a pair per channel per output instant, channel order. 'retune K C INC': once the inputs before\n");
-    fprintf(f, "# sample K * decim are in, channel C's step becomes INC (latched after output K).\n");
+    fprintf(f, "# sample K * cic_r * decim are in, channel C's step becomes INC (latched after output K).\n");
     fprintf(f, "fs %.0f\ndecim %d\ntaps %d\nchannels %d\nout_shift %d\ninputs %d\n", k->fs, g->decim, g->taps,
             g->channels, g->out_shift, k->n);
+    if (g->cic_r > 1)
+        fprintf(f, "cic_r %d\ncic_shift %d\n", g->cic_r, g->cic_shift);
     fprintf(f, "inc");
     for (int c = 0; c < g->channels; c++)
         fprintf(f, " %u", (unsigned)g->inc[c]);
@@ -234,8 +274,14 @@ static int write_cfg(const chzcase_t *k, const rdof_chzfx_cfg_t *g, const uint32
  * (whose phase at the start comes from its bin shift and from where its NCO sits, after the filter). */
 static int case_cfg(const chzcase_t *k, rdof_chzfx_cfg_t *g, uint32_t *retune_inc)
 {
-    if (rdof_chzfx_design(g, k->fs, k->decim, k->offsets, k->channels, RDOF_CHZ_CUTOFF_HZ) != 0)
+    if (rdof_chzfx_design_cic(g, k->fs, k->cic, k->decim, k->offsets, k->channels, RDOF_CHZ_CUTOFF_HZ) != 0)
         return -1;
+    for (int r = 0; r < k->nretunes; r++) {
+        const retune_t *rt = &k->retunes[r];
+        retune_inc[r] = rdof_chzfx_inc(k->offsets[rt->c] + rt->shift, k->fs);
+    }
+    if (k->cic > 1)
+        return 0; /* phases 0: nothing to line up with */
     rdof_chz_t chz;
     if (rdof_chz_init(&chz, k->fs, k->offsets, k->channels, k->decim, RDOF_CHZ_OUT_FFT, RDOF_CHZ_CUTOFF_HZ) != 0) {
         rdof_chz_free(&chz);
@@ -249,10 +295,6 @@ static int case_cfg(const chzcase_t *k, rdof_chzfx_cfg_t *g, uint32_t *retune_in
         g->phase0[c] = (uint32_t)((uint64_t)llround(t * 4294967296.0) & 0xFFFFFFFFu);
     }
     rdof_chz_free(&chz);
-    for (int r = 0; r < k->nretunes; r++) {
-        const retune_t *rt = &k->retunes[r];
-        retune_inc[r] = rdof_chzfx_inc(k->offsets[rt->c] + rt->shift, k->fs);
-    }
     return 0;
 }
 
@@ -266,8 +308,8 @@ static int run_model(const chzcase_t *k, const rdof_chzfx_cfg_t *g, const uint32
     int done = 0, out = 0, r = 0;
     while (done < k->n) {
         int stop = k->n;
-        if (r < nretunes && k->retunes[r].at * g->decim < stop)
-            stop = k->retunes[r].at * g->decim;
+        if (r < nretunes && k->retunes[r].at * rdof_chzfx_step(g) < stop)
+            stop = k->retunes[r].at * rdof_chzfx_step(g);
         if (chunk && done + chunk < stop)
             stop = done + chunk;
         if (stop > done) {
@@ -277,7 +319,7 @@ static int run_model(const chzcase_t *k, const rdof_chzfx_cfg_t *g, const uint32
             out += got;
             done = stop;
         }
-        while (r < nretunes && k->retunes[r].at * g->decim <= done) {
+        while (r < nretunes && k->retunes[r].at * rdof_chzfx_step(g) <= done) {
             rdof_chzfx_set_inc(s, k->retunes[r].c, retune_inc[r]);
             r++;
         }
@@ -291,10 +333,24 @@ static int run_model(const chzcase_t *k, const rdof_chzfx_cfg_t *g, const uint32
 static void ideal_ddc(const chzcase_t *k, const rdof_chzfx_cfg_t *g, const uint32_t *retune_inc, int nretunes,
                       const rdof_iq16_t *x, int nout, double *yi, double *yq)
 {
-    const int C = g->channels, L = g->taps;
+    const int C = g->channels, L = g->taps, R = g->cic_r > 1 ? g->cic_r : 1;
     double *h = malloc(sizeof(double) * (size_t)L);
     double *mi = malloc(sizeof(double) * (size_t)k->n), *mq = malloc(sizeof(double) * (size_t)k->n);
-    rdof_chz_lowpass(L, RDOF_CHZ_CUTOFF_HZ, k->fs, h);
+    rdof_chz_lowpass(L, RDOF_CHZ_CUTOFF_HZ, k->fs / R, h);
+    /* the CIC as its FIR, ((1 - z^-R) / (1 - z^-1))^N, with unity gain (the design folds the CIC's into the taps) */
+    const int nb = RDOF_CHZFX_CIC_N * (R - 1) + 1;
+    double *b = calloc((size_t)nb, sizeof(double));
+    b[0] = 1.0;
+    for (int st = 0, len = 1; R > 1 && st < RDOF_CHZFX_CIC_N; st++) {
+        /* times the boxcar of R */
+        double *t = calloc((size_t)(len + R - 1), sizeof(double));
+        for (int i = 0; i < len; i++)
+            for (int j = 0; j < R; j++)
+                t[i + j] += b[i] / R;
+        len += R - 1;
+        memcpy(b, t, sizeof(double) * (size_t)len);
+        free(t);
+    }
     for (int c = 0; c < C; c++) {
         uint32_t ph = g->phase0[c], inc = g->inc[c];
         for (int n = 0; n < k->n; n++) {
@@ -303,21 +359,28 @@ static void ideal_ddc(const chzcase_t *k, const rdof_chzfx_cfg_t *g, const uint3
             mq[n] = x[n].q * co - x[n].i * si;
             ph += inc;
             for (int r = 0; r < nretunes; r++)
-                if (k->retunes[r].c == c && n == k->retunes[r].at * g->decim)
+                if (k->retunes[r].c == c && n == k->retunes[r].at * rdof_chzfx_step(g))
                     inc = retune_inc[r];
         }
         for (int j = 0; j < nout; j++) {
-            const int n = j * g->decim;
+            const int n = j * g->decim; /* in history samples */
             double ai = 0.0, aq = 0.0;
             for (int m = 0; m < L && m <= n; m++) {
-                ai += h[m] * mi[n - m];
-                aq += h[m] * mq[n - m];
+                const int at = (n - m) * R; /* the input of history sample n - m */
+                double vi = 0.0, vq = 0.0;
+                for (int i = 0; i < nb && i <= at; i++) {
+                    vi += b[i] * mi[at - i];
+                    vq += b[i] * mq[at - i];
+                }
+                ai += h[m] * vi;
+                aq += h[m] * vq;
             }
             yi[(size_t)j * C + c] = ai * (1 << RDOF_CHZFX_OUT_FRAC);
             yq[(size_t)j * C + c] = aq * (1 << RDOF_CHZFX_OUT_FRAC);
         }
     }
     free(h);
+    free(b);
     free(mi);
     free(mq);
 }
@@ -367,7 +430,7 @@ static int write_vectors(void)
         if (case_cfg(k, &g, rinc) != 0)
             return -1;
         rdof_iq16_t *x = malloc(sizeof *x * (size_t)k->n);
-        rdof_iq16_t *y = malloc(sizeof *y * (size_t)(k->n / k->decim + 1) * (size_t)k->channels);
+        rdof_iq16_t *y = malloc(sizeof *y * (size_t)(k->n / rdof_chzfx_step(&g) + 1) * (size_t)k->channels);
         uint8_t *b = malloc((size_t)k->n * 4);
         make_input(k, x);
         const int nout = run_model(k, &g, rinc, k->nretunes, x, 0, y);
@@ -393,11 +456,13 @@ static void check_cfg_file(const chzcase_t *k, const rdof_chzfx_cfg_t *g, const 
     CHECK(txt != NULL, "%s.cfg missing", k->name);
     if (!txt)
         return;
-    int decim = -1, taps = -1, chans = -1, shift = -1, coef_ok = 0, inc_ok = 0, ph_ok = 0, rt = 0;
+    int decim = -1, taps = -1, chans = -1, shift = -1, coef_ok = 0, inc_ok = 0, ph_ok = 0, rt = 0, cic_r = 1,
+        cic_shift = 0;
     for (char *line = strtok(txt, "\n"); line; line = strtok(NULL, "\n")) {
         char *p;
         if (sscanf(line, "decim %d", &decim) == 1 || sscanf(line, "taps %d", &taps) == 1 ||
-            sscanf(line, "channels %d", &chans) == 1 || sscanf(line, "out_shift %d", &shift) == 1)
+            sscanf(line, "channels %d", &chans) == 1 || sscanf(line, "out_shift %d", &shift) == 1 ||
+            sscanf(line, "cic_r %d", &cic_r) == 1 || sscanf(line, "cic_shift %d", &cic_shift) == 1)
             continue;
         if (!strncmp(line, "coef ", 5)) {
             p = line + 5;
@@ -420,11 +485,44 @@ static void check_cfg_file(const chzcase_t *k, const rdof_chzfx_cfg_t *g, const 
             rt++;
         }
     }
-    CHECK(decim == g->decim && taps == g->taps && chans == g->channels && shift == g->out_shift,
-          "%s.cfg: decim %d taps %d channels %d out_shift %d", k->name, decim, taps, chans, shift);
+    CHECK(decim == g->decim && taps == g->taps && chans == g->channels && shift == g->out_shift &&
+              cic_r == (g->cic_r > 1 ? g->cic_r : 1) && cic_shift == g->cic_shift,
+          "%s.cfg: decim %d taps %d channels %d out_shift %d cic %d/%d", k->name, decim, taps, chans, shift, cic_r,
+          cic_shift);
     CHECK(coef_ok && inc_ok && ph_ok && rt == k->nretunes, "%s.cfg: coef %d inc %d phase0 %d retunes %d", k->name,
           coef_ok, inc_ok, ph_ok, rt);
     free(txt);
+}
+
+/* With a CIC, the filters themselves: each channel's own tone (tone c) at its level, eight times the input's (the
+ * output's 3 fraction bits), and every other tone gone. From output 20, the filters full; not a retuned channel. */
+static void check_tones(const chzcase_t *k, const rdof_chzfx_cfg_t *g, const rdof_iq16_t *y, int nout)
+{
+    const int C = g->channels;
+    for (int c = 0; c < C; c++) {
+        int retuned = 0; /* its tone moves: the ideal DDC has checked it */
+        for (int r = 0; r < k->nretunes; r++)
+            retuned |= k->retunes[r].c == c;
+        if (retuned)
+            continue;
+        const double f = k->tones[c].hz - k->offsets[c], fo = k->fs / rdof_chzfx_step(g);
+        /* the tone's complex amplitude, and what's left once it's taken out */
+        double re = 0.0, im = 0.0, p = 0.0;
+        const int n = nout - 20;
+        for (int j = 20; j < nout; j++) {
+            const double th = -2.0 * PI * f * j / fo, a = y[(size_t)j * C + c].i, b = y[(size_t)j * C + c].q;
+            re += a * cos(th) - b * sin(th);
+            im += a * sin(th) + b * cos(th);
+            p += a * a + b * b;
+        }
+        re /= n;
+        im /= n;
+        const double amp = hypot(re, im), rest = sqrt(fmax(0.0, p / n - amp * amp));
+        const double want = k->tones[c].amp * (1 << RDOF_CHZFX_OUT_FRAC);
+        CHECK(fabs(amp / want - 1.0) < 0.01, "%s: channel %d's tone %.1f, want %.1f", k->name, c, amp, want);
+        /* the noise in 12.5 kHz of 23 MHz, +-3 LSB uniform: about 0.08 LSB in, 0.6 out; the rest under 2 LSB */
+        CHECK(rest < 2.0, "%s: channel %d: %.2f LSB RMS besides its tone", k->name, c, rest);
+    }
 }
 
 static void test_case(const chzcase_t *k)
@@ -443,7 +541,7 @@ static void test_case(const chzcase_t *k)
     rdof_iq16_t *x = malloc(sizeof *x * (size_t)k->n);
     from_le(bx, (size_t)k->n, x);
     free(bx);
-    const int C = g.channels, cap = k->n / g.decim + 1;
+    const int C = g.channels, cap = k->n / rdof_chzfx_step(&g) + 1;
     rdof_iq16_t *y = malloc(sizeof *y * (size_t)cap * C), *y2 = malloc(sizeof *y2 * (size_t)cap * C);
     const int nout = run_model(k, &g, rinc, k->nretunes, x, 0, y);
 
@@ -491,6 +589,18 @@ static void test_case(const chzcase_t *k)
     double rel_ideal, rel_chz;
     const double r_ideal = check_err("the ideal DDC", k->name, y, ri, rq, nout, C, 0, TOL_IDEAL_REL, TOL_IDEAL_LSB,
                                      &rel_ideal);
+    if (k->cic > 1) {
+        check_tones(k, &g, y, nout);
+        printf("  chzfx %s: %d outputs a channel match the golden file. RMS error / RMS, the worst channel over 100 "
+               "LSB: %.2e against the ideal DDC (%.0f%% of the allowance)\n",
+               k->name, nout, rel_ideal, 100 * r_ideal);
+        free(ri);
+        free(rq);
+        free(x);
+        free(y);
+        free(y2);
+        return;
+    }
 
     /* against the float channelizer: no AFC step (the two apply one differently), input at full scale 2048 */
     const int n0 = run_model(k, &g, rinc, 0, x, 0, y2);

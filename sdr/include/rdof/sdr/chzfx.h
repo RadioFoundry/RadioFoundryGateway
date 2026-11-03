@@ -5,9 +5,12 @@
  * against the float channelizer (channelizer.h) and an HLS testbench against the same golden vectors.
  *
  * One wideband stream of 12-bit I/Q in (int16, the AD9361's samples as the DMA carries them), C channels of int16
- * I/Q out at fs / D. Per channel, per input sample: a 32-bit NCO picks e^{-j theta} from a 4096-point cosine table
- * (a quarter of it stored), the sample is mixed down and kept in that channel's history. Every D-th input sample
- * (the first included) every channel puts out one sample: its L-tap FIR over the history, rounded and saturated.
+ * I/Q out at fs / (R D). Per channel, per input sample: a 32-bit NCO picks e^{-j theta} from a 4096-point cosine
+ * table (a quarter of it stored) and the sample is mixed down. With no CIC (R = 1) the mixed sample goes into that
+ * channel's history; with one, into an N-stage CIC decimator, whose every R-th output (the first included) goes
+ * there. Every D-th history sample (the first included) every channel puts out one sample: its L-tap FIR over the
+ * history, rounded and saturated. The CIC is for a wide span (15 MHz of channels at 23.04 MS/s: R 60, D 8); without
+ * it D is at most 60, 2.88 MS/s.
  * A direct-form DDC, where the float channelizer is overlap-save: the same filter (rdof_chz_lowpass, 16 D + 1
  * taps) on the same output grid, so the outputs agree within the filter's stopband and the fixed point.
  *
@@ -16,6 +19,9 @@
  *   mixed  = sat18(round((x_i cos + x_q sin) / 2^11)), sat18(round((x_q cos - x_i sin) / 2^11))
  *   acc    = sum over m < L of coef[m] * mixed[n - m] (45 bits at most: inside the DSP48's 48)
  *   y      = sat16(round(acc / 2^out_shift))
+ *   cic    = (R = 1: mixed) the N integrators every input sample, then every R-th input the N combs (delay 1)
+ *            on the last integrator: sat18(round(comb / 2^cic_shift)). Two's complement; the hardware's
+ *            RDOF_CHZFX_CIC_BITS-bit registers wrap, which the combs undo exactly (the result fits)
  *   phase += inc after each input sample
  * round() is half up (add half, shift right arithmetically). A 12-bit input comes out 16 times larger after the
  * mixer (4 fraction bits) and, with rdof_chzfx_design's shift, 8 times larger at the output (3 fraction bits, one
@@ -42,6 +48,9 @@ extern "C" {
 #define RDOF_CHZFX_MIX_SHIFT 11
 #define RDOF_CHZFX_OUT_FRAC 3     /* output LSB: an eighth of the input's */
 #define RDOF_CHZFX_LO_AMP 32767   /* the cosine table's peak */
+#define RDOF_CHZFX_CIC_N 4        /* CIC stages */
+#define RDOF_CHZFX_MAX_CIC 64     /* R: 2^17 R^N fits the registers' 42 bits */
+#define RDOF_CHZFX_CIC_BITS 42
 
 /* The quarter-wave table: qcos[i] = round(32767 cos(2 pi (i + 0.5) / 4096)). The half step keeps the quarter
  * symmetric: the full table at k = 1024 q + i is qcos[i], -qcos[1023 - i], -qcos[i], qcos[1023 - i] for quadrants
@@ -58,6 +67,8 @@ typedef struct {
     int taps;                           /* L, 1..RDOF_CHZFX_MAX_TAPS, L + D <= RDOF_CHZFX_HIST */
     int channels;                       /* C, 1..RDOF_CHZFX_MAX_CH */
     int out_shift;                      /* 1..47 */
+    int cic_r;                          /* R, 0 or 1: no CIC; 2..RDOF_CHZFX_MAX_CIC */
+    int cic_shift;                      /* 0..RDOF_CHZFX_CIC_N * 6: the CIC's output scale */
     int32_t coef[RDOF_CHZFX_MAX_TAPS];  /* signed RDOF_CHZFX_COEF_BITS bits */
     uint32_t inc[RDOF_CHZFX_MAX_CH];    /* NCO step per input sample, 2^32 a turn: offset / fs */
     uint32_t phase0[RDOF_CHZFX_MAX_CH]; /* NCO phase at the first input sample */
@@ -69,8 +80,11 @@ typedef struct {
     uint32_t pending[RDOF_CHZFX_MAX_CH]; /* a step set since the last output */
     uint32_t pending_mask;
     int32_t hist_i[RDOF_CHZFX_MAX_CH][RDOF_CHZFX_HIST], hist_q[RDOF_CHZFX_MAX_CH][RDOF_CHZFX_HIST];
-    unsigned wr;                        /* where the next input goes */
-    int count;                          /* inputs until the next output, 0: this one */
+    uint64_t integ[RDOF_CHZFX_MAX_CH][2][RDOF_CHZFX_CIC_N]; /* I, Q (mod 2^64: the hardware's 42 bits wrap alike) */
+    uint64_t comb[RDOF_CHZFX_MAX_CH][2][RDOF_CHZFX_CIC_N];  /* each comb's last input */
+    int cic_count;                      /* inputs until the next CIC output, 0: this one */
+    unsigned wr;                        /* where the next history sample goes */
+    int count;                          /* history samples until the next output, 0: this one */
     uint32_t seq;                       /* outputs so far (the frame number) */
 } rdof_chzfx_t;
 
@@ -85,6 +99,13 @@ uint32_t rdof_chzfx_inc(double offset_hz, double fs);
  * each channel's step from offsets_hz, phases 0. Returns 0, or -1 (bad arguments, a filter that doesn't fit). */
 int rdof_chzfx_design(rdof_chzfx_cfg_t *cfg, double fs, int decim, const double *offsets_hz, int channels,
                       double cutoff_hz);
+/* The same with a CIC of cic_r before the FIR: the filter at fs / cic_r, its taps scaled for the CIC's gain
+ * (R^N / 2^cic_shift, cic_shift the smallest that keeps it at most 1). Total decimation cic_r * decim. */
+int rdof_chzfx_design_cic(rdof_chzfx_cfg_t *cfg, double fs, int cic_r, int decim, const double *offsets_hz,
+                          int channels, double cutoff_hz);
+
+/* Input samples an output instant takes: R D. */
+static inline int rdof_chzfx_step(const rdof_chzfx_cfg_t *cfg) { return (cfg->cic_r > 1 ? cfg->cic_r : 1) * cfg->decim; }
 
 /* 0 when the hardware takes cfg, else -1. */
 int rdof_chzfx_check(const rdof_chzfx_cfg_t *cfg);
@@ -109,7 +130,8 @@ int rdof_chzfx_process(rdof_chzfx_t *s, const rdof_iq16_t *in, int n_in, rdof_iq
  * first in bits 31..0: I in 15..0, Q in 31..16), the last word zero-padded:
  *   bits 63..48  RDOF_CHZFX_MAGIC
  *   bits 47..44  type: RDOF_CHZFX_FRAME_CH (one output instant, a sample per channel) or RDOF_CHZFX_FRAME_RAW
- *                (the D input samples since the last output instant, for the noise floor and the spectrum)
+ *                (the D input samples since the last output instant, for the noise floor and the spectrum; not
+ *                with a CIC)
  *   bits 43..32  samples in the frame
  *   bits 31..0   the output instant's number (both types)
  * Read as the IIO buffer of cf-ad9361-lpc with its four channels on, a word is one sample of voltage0..3.

@@ -37,6 +37,7 @@ int rdof_chzhw_probe(rdof_chzhw_t *h, const rdof_chzhw_io_t *io, char *err, size
     h->channels = (int)(c0 & 0xFF);
     h->lanes = (int)(c0 >> 8 & 0xFF);
     h->max_decim = (int)(c0 >> 16 & 0xFF);
+    h->max_cic = (int)(c0 >> 24);
     h->max_taps = (int)(c1 & 0xFFFF);
     h->hist = (int)(c1 >> 16);
     if (h->channels < 1 || h->max_decim < 1 || h->max_taps < 1 || h->hist < 2) {
@@ -59,8 +60,13 @@ int rdof_chzhw_start(rdof_chzhw_t *h, const rdof_chzfx_cfg_t *cfg, int snap_peri
                  cfg->decim, cfg->taps, h->channels, h->max_decim, h->max_taps, h->hist);
         return -1;
     }
-    if (snap_period < 0 || snap_len < 0 || (snap_len && snap_len > snap_period)) {
-        snprintf(err, cap, "RAW frames: %d every %d", snap_len, snap_period);
+    const int R = cfg->cic_r > 1 ? cfg->cic_r : 1;
+    if (R > 1 && R > h->max_cic) {
+        snprintf(err, cap, "a CIC of %d: the block takes %d", R, h->max_cic);
+        return -1;
+    }
+    if (snap_period < 0 || snap_len < 0 || (snap_len && snap_len > snap_period) || (snap_len && R > 1)) {
+        snprintf(err, cap, "RAW frames: %d every %d%s", snap_len, snap_period, R > 1 ? ", with a CIC" : "");
         return -1;
     }
     h->ctrl = 0;
@@ -71,6 +77,10 @@ int rdof_chzhw_start(rdof_chzhw_t *h, const rdof_chzfx_cfg_t *cfg, int snap_peri
     wr(h, RDOF_CHZHW_OUT_SHIFT, (uint32_t)cfg->out_shift);
     wr(h, RDOF_CHZHW_SNAP_PERIOD, (uint32_t)snap_period);
     wr(h, RDOF_CHZHW_SNAP_LEN, (uint32_t)snap_len);
+    if (h->max_cic) {
+        wr(h, RDOF_CHZHW_CIC_R, (uint32_t)R);
+        wr(h, RDOF_CHZHW_CIC_SHIFT, (uint32_t)cfg->cic_shift);
+    }
     for (int i = 0; i < cfg->taps; i++)
         wr(h, RDOF_CHZHW_COEF + 4u * (uint32_t)i, (uint32_t)cfg->coef[i]);
     for (int c = 0; c < cfg->channels; c++) {

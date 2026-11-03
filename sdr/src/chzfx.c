@@ -111,7 +111,13 @@ static int64_t asr(int64_t v, int s)
 /* round(v / 2^s), half up */
 static int64_t round_shift(int64_t v, int s)
 {
-    return asr(v + ((int64_t)1 << (s - 1)), s);
+    return s ? asr(v + ((int64_t)1 << (s - 1)), s) : v;
+}
+
+/* a two's complement word as signed, without C's implementation-defined conversion */
+static int64_t as_signed(uint64_t v)
+{
+    return v >> 63 ? -(int64_t)(~v) - 1 : (int64_t)v;
 }
 
 static int64_t sat(int64_t v, int bits)
@@ -146,7 +152,8 @@ int rdof_chzfx_check(const rdof_chzfx_cfg_t *cfg)
 {
     if (cfg->decim < 1 || cfg->decim > RDOF_CHZFX_MAX_DECIM || cfg->taps < 1 || cfg->taps > RDOF_CHZFX_MAX_TAPS ||
         cfg->taps + cfg->decim > RDOF_CHZFX_HIST || cfg->channels < 1 || cfg->channels > RDOF_CHZFX_MAX_CH ||
-        cfg->out_shift < 1 || cfg->out_shift > 47)
+        cfg->out_shift < 1 || cfg->out_shift > 47 || cfg->cic_r < 0 || cfg->cic_r > RDOF_CHZFX_MAX_CIC ||
+        cfg->cic_shift < 0 || cfg->cic_shift > RDOF_CHZFX_CIC_N * 6)
         return -1;
     for (int m = 0; m < cfg->taps; m++)
         if (cfg->coef[m] != sat(cfg->coef[m], RDOF_CHZFX_COEF_BITS))
@@ -157,17 +164,35 @@ int rdof_chzfx_check(const rdof_chzfx_cfg_t *cfg)
 int rdof_chzfx_design(rdof_chzfx_cfg_t *cfg, double fs, int decim, const double *offsets_hz, int channels,
                       double cutoff_hz)
 {
+    return rdof_chzfx_design_cic(cfg, fs, 1, decim, offsets_hz, channels, cutoff_hz);
+}
+
+int rdof_chzfx_design_cic(rdof_chzfx_cfg_t *cfg, double fs, int cic_r, int decim, const double *offsets_hz,
+                          int channels, double cutoff_hz)
+{
     memset(cfg, 0, sizeof *cfg);
     cfg->decim = decim;
     cfg->taps = RDOF_CHZ_OUT_FFT / 4 * decim + 1; /* rdof_chz_init's N / 4 + 1 */
     cfg->channels = channels;
     cfg->out_shift = 1;
-    if (fs <= 0.0 || rdof_chzfx_check(cfg) != 0)
+    cfg->cic_r = cic_r;
+    if (fs <= 0.0 || cic_r < 1 || rdof_chzfx_check(cfg) != 0)
         return -1;
+    /* the CIC's gain R^N over 2^cic_shift, at most 1 (the mixer's headroom stays) */
+    double gain = 1.0;
+    if (cic_r > 1) {
+        gain = pow(cic_r, RDOF_CHZFX_CIC_N);
+        while (gain > 1.0) {
+            gain /= 2.0;
+            cfg->cic_shift++;
+        }
+    }
     double h[RDOF_CHZFX_MAX_TAPS], peak = 0.0;
-    rdof_chz_lowpass(cfg->taps, cutoff_hz, fs, h);
-    for (int m = 0; m < cfg->taps; m++)
+    rdof_chz_lowpass(cfg->taps, cutoff_hz, fs / cic_r, h);
+    for (int m = 0; m < cfg->taps; m++) {
+        h[m] /= gain;
         peak = fmax(peak, fabs(h[m]));
+    }
     /* the largest scale 2^sh that keeps every tap in the coefficient's bits */
     const double top = (double)((1 << (RDOF_CHZFX_COEF_BITS - 1)) - 1);
     int sh = 0;
@@ -189,6 +214,9 @@ void rdof_chzfx_reset(rdof_chzfx_t *s)
     for (int c = 0; c < RDOF_CHZFX_MAX_CH; c++)
         s->phase[c] = s->cfg.phase0[c];
     s->pending_mask = 0;
+    memset(s->integ, 0, sizeof s->integ);
+    memset(s->comb, 0, sizeof s->comb);
+    s->cic_count = 0;
     s->wr = 0;
     s->count = 0;
     s->seq = 0;
@@ -221,9 +249,32 @@ void rdof_chzfx_set_inc(rdof_chzfx_t *s, int c, uint32_t inc)
 
 int rdof_chzfx_out_len(const rdof_chzfx_t *s, int n_in)
 {
-    if (n_in <= s->count)
+    int w = n_in; /* history samples */
+    if (s->cfg.cic_r > 1)
+        w = n_in <= s->cic_count ? 0 : (n_in - s->cic_count - 1) / s->cfg.cic_r + 1;
+    if (w <= s->count)
         return 0;
-    return (n_in - s->count - 1) / s->cfg.decim + 1;
+    return (w - s->count - 1) / s->cfg.decim + 1;
+}
+
+/* One channel's mixed sample through the CIC; at a CIC output (out), its sample to *yi, *yq. */
+static void cic(rdof_chzfx_t *s, int c, int64_t mi, int64_t mq, int out, int32_t *yi, int32_t *yq)
+{
+    for (int p = 0; p < 2; p++) {
+        uint64_t *in = s->integ[c][p], v = (uint64_t)(p ? mq : mi);
+        for (int k = 0; k < RDOF_CHZFX_CIC_N; k++)
+            v = in[k] += v;
+        if (!out)
+            continue;
+        uint64_t *cb = s->comb[c][p];
+        for (int k = 0; k < RDOF_CHZFX_CIC_N; k++) {
+            const uint64_t d = v - cb[k];
+            cb[k] = v;
+            v = d;
+        }
+        const int32_t y = (int32_t)sat(round_shift(as_signed(v), s->cfg.cic_shift), RDOF_CHZFX_MIX_BITS);
+        *(p ? yq : yi) = y;
+    }
 }
 
 /* One channel's output: the FIR over its newest taps samples (the newest at wr). */
@@ -245,16 +296,28 @@ int rdof_chzfx_process(rdof_chzfx_t *s, const rdof_iq16_t *in, int n_in, rdof_iq
     const rdof_chzfx_cfg_t *g = &s->cfg;
     const int C = g->channels;
     int produced = 0;
+    const int R = g->cic_r > 1 ? g->cic_r : 1;
     for (int n = 0; n < n_in; n++) {
         const int64_t xi = in[n].i, xq = in[n].q;
         const unsigned wr = s->wr;
+        const int write = R == 1 || s->cic_count == 0; /* a history sample this input */
         for (int c = 0; c < C; c++) {
             const int64_t co = rdof_chzfx_lo(s->phase[c]), si = rdof_chzfx_lo(s->phase[c] - (1u << 30));
             /* x e^{-j theta} = (xi cos + xq sin) + j (xq cos - xi sin) */
-            s->hist_i[c][wr] = (int32_t)sat(round_shift(xi * co + xq * si, RDOF_CHZFX_MIX_SHIFT), RDOF_CHZFX_MIX_BITS);
-            s->hist_q[c][wr] = (int32_t)sat(round_shift(xq * co - xi * si, RDOF_CHZFX_MIX_SHIFT), RDOF_CHZFX_MIX_BITS);
+            const int64_t mi = sat(round_shift(xi * co + xq * si, RDOF_CHZFX_MIX_SHIFT), RDOF_CHZFX_MIX_BITS);
+            const int64_t mq = sat(round_shift(xq * co - xi * si, RDOF_CHZFX_MIX_SHIFT), RDOF_CHZFX_MIX_BITS);
+            if (R == 1) {
+                s->hist_i[c][wr] = (int32_t)mi;
+                s->hist_q[c][wr] = (int32_t)mq;
+            } else {
+                cic(s, c, mi, mq, write, &s->hist_i[c][wr], &s->hist_q[c][wr]);
+            }
             s->phase[c] += g->inc[c];
         }
+        if (R > 1)
+            s->cic_count = write ? R - 1 : s->cic_count - 1;
+        if (!write)
+            continue;
         if (s->count == 0) {
             for (int c = 0; c < C; c++)
                 out[(size_t)produced * C + c] = fir(s, c, wr);
