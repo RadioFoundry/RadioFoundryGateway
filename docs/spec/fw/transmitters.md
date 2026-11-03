@@ -202,9 +202,11 @@ The OLED's TX row shows the transmitter's path while it sends or holds.
     and its reply back on air (a header and five blocks), and a confirmed one whose ACK went out the same way.
   - A bench job (`WS /tx via=modem`, or the line protocol's) goes through the pool when the roamer has the SDR modem
     (bench-api.md section 7): `rdof_benchroute` answers it as an MMDVM modem would, each call a stream
-    (`0x4245nnnn`) on the path at the job's frequency, without `take_hold`. It sends at the path's power lowered to
-    the job's level (`--power`, capped by `bench.tx.rf_level`): before 2026-11-03 the level was dropped and a
-    `--power 0` job went out at the path's 21 dBm. Its BS family is refused there (the pool frames MS sync), before anything keys.
+    (`0x4245nnnn`) on the path at the job's frequency, without `take_hold`. It sends at the job's level (`--power`,
+    capped by `bench.tx.rf_level`) at most: `power_max` lowers a modem's tune, and since a frequency's power never
+    reaches an SDR, the SDR roamer's `tx.power_dbm` is capped at the level's dBm while the job runs
+    (`sdr_modem_tx_cap`), streams other than the job's included. Before 2026-11-03 a W12's `--power 0` job went out
+    at its 21 dBm. Its BS family is refused there (the pool frames MS sync), before anything keys.
   - A bench `outbound` job (a repeater's idle outbound, BS sync on both slots) doesn't go through the pool: it
     borrows the raw SDR modem from the roamer (`sdr_modem_bench_open` with `borrow`; the roamer's modem is parked
     and its writes go to it), keys it duplex in the modem's own TX half for the job's length, and gives it back

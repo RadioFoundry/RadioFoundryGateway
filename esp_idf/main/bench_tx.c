@@ -159,6 +159,9 @@ static const char *route_open(uint32_t freq)
         return "no talk path at that frequency (the site's frequencies)";
     J.routed = true;
     rdof_benchroute_init(&route, modem_bytes, route_burst, NULL);
+    const rdof_fe_caps_t *c = sdr_fe_caps();
+    if (c) /* the SDR roamer's transmitter at the job's level (the router's tune doesn't reach an SDR's power) */
+        sdr_modem_tx_cap(c->tx_power_min + (c->tx_power_max - c->tx_power_min) * J.level / 255.0);
     return NULL;
 #else
     return "no router in this build";
@@ -198,6 +201,10 @@ static void job_end(void)
         else if (!J.routed)
             sdr_modem_bench_close();
     }
+#if RDOF_FEATURE_TX
+    if (J.routed)
+        sdr_modem_tx_cap(NAN);
+#endif
     if (!J.line)
         httpd_sess_trigger_close(hd, J.fd);
     J.on = false;

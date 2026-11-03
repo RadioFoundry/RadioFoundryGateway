@@ -536,6 +536,9 @@ typedef struct {
 bool sdr_modem_bench_slots(sdr_modem_slots_t *s);
 void sdr_modem_bench_write(const uint8_t *data, size_t len);
 void sdr_modem_bench_close(void);
+/* A routed bench job's power: the roamer's modem sends at most dbm (its own if lower) until NAN lifts it. A
+ * frequency's power level never reaches an SDR (config-v3.md), so the router's tune can't carry it. */
+void sdr_modem_tx_cap(double dbm);
 /* A signal mode's transmission on the bench's modem (rdof_sdrmodem_signal; src NULL ends it): NULL, or why not
  * (written to why). Its state: rdof_sdrmodem_signal_state's, -1 when the bench holds no modem. */
 const char *sdr_modem_bench_signal(uint32_t hz, const rdof_sig_src_t *src, char *why, size_t cap);

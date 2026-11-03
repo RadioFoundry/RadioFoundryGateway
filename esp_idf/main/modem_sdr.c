@@ -41,6 +41,7 @@ static roam_t *owner;
 static void (*bench_reply)(void *ctx, const uint8_t *frame, size_t len);
 static void *bench_ctx;
 static rdof_sdrmodem_t *parked; /* the roamer's modem while the bench borrows the front end */
+static double cap_dbm = NAN;    /* a routed bench job's power on the roamer's modem, at most (NAN: none) */
 
 #define TAKE() xSemaphoreTake(lock, portMAX_DELAY)
 #define GIVE() xSemaphoreGive(lock)
@@ -146,6 +147,27 @@ static const char *modem_up(const rdof_sdrmodem_io_t *io, double power_dbm)
     return NULL;
 }
 
+#if CONFIG_RDOF_ROAMER
+/* The roamer's power: its device's, under a routed bench job's cap. */
+static double roamer_dbm(void)
+{
+    const double d = owner ? owner->cfg->tx_power_dbm : 0;
+    return isnan(cap_dbm) || d <= cap_dbm ? d : cap_dbm;
+}
+#endif
+
+void sdr_modem_tx_cap(double dbm)
+{
+    cap_dbm = dbm;
+#if CONFIG_RDOF_ROAMER
+    TAKE();
+    const bool roamers = owner && mdm && !parked && !bench_reply; /* the roamer's modem is on the front end */
+    GIVE();
+    if (roamers)
+        fe.ops->tx_set(fe.ctx, &source, roamer_dbm());
+#endif
+}
+
 /* The roamer's modem back on the front end after a borrow: what it had queued dropped, unkeyed, on its frequency and
  * power again. */
 static void unpark(void)
@@ -164,7 +186,7 @@ static void unpark(void)
     mdm = m;
     GIVE();
 #if CONFIG_RDOF_ROAMER
-    fe.ops->tx_set(fe.ctx, &source, owner ? owner->cfg->tx_power_dbm : 0);
+    fe.ops->tx_set(fe.ctx, &source, roamer_dbm());
 #endif
 }
 
