@@ -159,8 +159,10 @@ def stream(where, req: dict, on_line: Callable[[dict, Optional[bytes]], Optional
                 print(f"{NOTE} got the {d.get('kind')} after {d.get('waited_s', 0):.0f} s", file=sys.stderr, flush=True)
                 continue
             if "note" in d:
-                print(f"{NOTE} {d['note']}", file=sys.stderr, flush=True)
-                continue
+                if d["note"]:
+                    print(f"{NOTE} {d['note']}", file=sys.stderr, flush=True)
+                if len(d) == 1:
+                    continue
             rc = on_line(d, data)
             if rc is not None:
                 return rc

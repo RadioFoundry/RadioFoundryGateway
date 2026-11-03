@@ -581,7 +581,8 @@ op's own are the mode's.
 | `rx` | `session`, `mode`, `freq`, `seconds`, `bw`, `squelch_dbfs`, `squelch_over_db`, the mode's fields | `{"rx": header}`, `{"rec": record}`, `{"pcm": {"stream", "seq", "n"}, "bytes": 2n}` + int16 LE, `{"gap": ...}`, `{"done": {"mode", "freq", "seconds", "samples", "gap_samples", "summary"}}` |
 
 - `tx` is a transmit job: it waits for the modem as `run` does (`expect_s` its length plus 3 s), on a frequency of
-  `bench.tx`, at `power` capped by its `rf_level`, for at most `max_key_s`. The source renders on the transmitting
+  `bench.tx`, at `power` capped by its `rf_level`, for at most `max_key_s`. While the gateway's own roamer is
+  transmitting it notes `waiting to transmit` and tries again each tick, for up to 10 s (then `busy`). The source renders on the transmitting
   thread, so nothing on the network can make it stutter, except PCM that comes too slowly (counted in `underruns`).
   `done` comes once the last sample has gone out, or at `max_s` (`cut` true). `seconds` is the length the mode
   works out (FM: lead, program, repeats, the subaudio's end, tail).

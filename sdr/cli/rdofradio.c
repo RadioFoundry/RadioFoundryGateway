@@ -1596,8 +1596,8 @@ static struct {
     double asked;
 } BS = {.mu = PTHREAD_MUTEX_INITIALIZER};
 
-static bool bl_sig_open(void *ctx, uint32_t freq, int power, double seconds, const rdof_sig_src_t *src, char *why,
-                        size_t cap)
+static int bl_sig_open(void *ctx, uint32_t freq, int power, double seconds, const rdof_sig_src_t *src, char *why,
+                       size_t cap)
 {
     pthread_mutex_lock(&BS.mu);
     pthread_mutex_lock(&BT.mu);
@@ -1612,7 +1612,7 @@ static bool bl_sig_open(void *ctx, uint32_t freq, int power, double seconds, con
         snprintf(why, cap, "the transmitter is still busy with the last job");
     else
         snprintf(why, cap, "power %d isn't applied: the SDR transmits at --tx-gain %.0f", power, bench_txg);
-    return !busy;
+    return busy ? 0 : 1;
 }
 
 static int bl_sig_state(void *ctx, char *why, size_t cap)

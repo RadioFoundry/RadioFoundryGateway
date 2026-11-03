@@ -640,7 +640,7 @@ void bench_tx_ob_close(void)
 }
 
 /* A signal mode's transmission: the outbound's way to the modem (a roamer's parked), then the source keyed. */
-bool bench_tx_sig_open(uint32_t freq, int power, double seconds, const rdof_sig_src_t *src, char *why, size_t cap)
+int bench_tx_sig_open(uint32_t freq, int power, double seconds, const rdof_sig_src_t *src, char *why, size_t cap)
 {
     why[0] = 0;
     xSemaphoreTake(mu, portMAX_DELAY);
@@ -677,9 +677,14 @@ bool bench_tx_sig_open(uint32_t freq, int power, double seconds, const rdof_sig_
         }
     }
     xSemaphoreGive(mu);
-    if (no)
-        snprintf(why, cap, "%s", no);
-    return !no;
+    if (!no)
+        return 1;
+    snprintf(why, cap, "%s", no);
+    /* a roamer's or another job's key-up ends: asked again */
+    return strstr(no, "is transmitting") || strstr(no, "busy with another") || strstr(no, "in use by another") ||
+                   strstr(no, "isn't up yet")
+               ? 0
+               : -1;
 }
 
 int bench_tx_sig_state(char *why, size_t cap)
@@ -782,10 +787,10 @@ bool bench_tx_ob_open(uint32_t freq, int cc, int power, double seconds, char *wh
 }
 const char *bench_tx_ob_why(void) { return bench_tx_line_why(); }
 int bench_tx_ob_check(char *why, size_t cap) { return -1; }
-bool bench_tx_sig_open(uint32_t freq, int power, double seconds, const rdof_sig_src_t *src, char *why, size_t cap)
+int bench_tx_sig_open(uint32_t freq, int power, double seconds, const rdof_sig_src_t *src, char *why, size_t cap)
 {
     snprintf(why, cap, "%s", bench_tx_line_why());
-    return false;
+    return -1;
 }
 int bench_tx_sig_state(char *why, size_t cap) { return -1; }
 void bench_tx_sig_close(void) {}

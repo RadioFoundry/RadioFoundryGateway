@@ -1762,6 +1762,7 @@ typedef struct sigtx {
     uint32_t freq_hz;
     int power;
     double seconds, started, max_s;
+    double retry_until;       /* sig_open said not yet: asked again each tick until then (0: not waiting) */
     bool open;
     long id;
     uint8_t in[STX_IN];
@@ -2008,17 +2009,39 @@ static void op_tx(rdof_bl_t *bl, conn_t *c, int root, double now)
         c->expect_s = t->seconds + 3.0;
 }
 
+static void stx_open(rdof_bl_t *bl, conn_t *c, double now);
+
 static void stx_granted(rdof_bl_t *bl, conn_t *c, int ci, double now)
 {
     sigtx_t *t = c->stx;
     bl->tx_conn = ci;
     t->started = now;
     stx_feed(t); /* the stream so far is in before the key-up: a prebuffer */
+    t->retry_until = 0;
+    stx_open(bl, c, now);
+}
+
+#define STX_RETRY_S 10.0
+
+/* The source keyed (started), not yet (asked again from tick_tx) or refused. */
+static void stx_open(rdof_bl_t *bl, conn_t *c, double now)
+{
+    sigtx_t *t = c->stx;
     t->why[0] = 0;
-    if (!bl->p.sig_open(bl->p.ctx, t->freq_hz, t->power, t->seconds, &t->src, t->why, sizeof t->why)) {
-        fail(bl, c, "unavailable", "can't transmit: %s", t->why[0] ? t->why : "the transmitter is busy");
+    const int r = bl->p.sig_open(bl->p.ctx, t->freq_hz, t->power, t->seconds, &t->src, t->why, sizeof t->why);
+    if (r == 0 && (!t->retry_until || now < t->retry_until)) {
+        if (!t->retry_until) {
+            t->retry_until = now + STX_RETRY_S;
+            emit(bl, c, "{\"note\":\"waiting to transmit: %s\"}", t->why[0] ? t->why : "the transmitter is busy");
+        }
         return;
     }
+    if (r <= 0) {
+        fail(bl, c, r ? "unavailable" : "busy", "can't transmit: %s", t->why[0] ? t->why : "the transmitter is busy");
+        return;
+    }
+    t->retry_until = 0;
+    t->started = now;
     t->open = true;
     char q[220] = "null";
     if (t->why[0])
@@ -2030,6 +2053,8 @@ static void tick_tx(rdof_bl_t *bl, conn_t *c, double now)
 {
     sigtx_t *t = c->stx;
     stx_feed(t);
+    if (!t->open && t->retry_until && c->wait == W_NONE)
+        stx_open(bl, c, now);
     if (!t->open || c->wait != W_NONE)
         return;
     char why[200] = "";
@@ -2283,7 +2308,7 @@ static void tick_rx(rdof_bl_t *bl, conn_t *c, double now)
             const float k = 32767.0f / (float)r->st[s].full;
             for (int i = 0; i < nout[s]; i++) {
                 const float v = r->out[s][i] * k;
-                r->pcm[i] = (int16_t)(v > 32767.0f ? 32767 : v < -32768.0f ? -32768 : lrintf(v));
+                r->pcm[i] = (int16_t)(v > 32767.0f ? 32767 : v < -32768.0f ? -32768 : rdof_bl_round(v));
             }
             char hdr[160];
             const int hn = snprintf(hdr, sizeof hdr, "{\"pcm\":{\"stream\":\"%s\",\"seq\":%lu,\"n\":%d},\"bytes\":%d}\n",

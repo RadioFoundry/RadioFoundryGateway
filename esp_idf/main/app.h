@@ -500,7 +500,7 @@ void bench_tx_ob_unkey(void);
 void bench_tx_ob_close(void);
 /* a signal mode's transmission (bench-api.md section 14.6): the SDR modem taken as for an outbound, src keyed on freq;
  * its state as rdof_bl_platform_t.sig_state's */
-bool bench_tx_sig_open(uint32_t freq, int power, double seconds, const rdof_sig_src_t *src, char *why, size_t cap);
+int bench_tx_sig_open(uint32_t freq, int power, double seconds, const rdof_sig_src_t *src, char *why, size_t cap);
 int bench_tx_sig_state(char *why, size_t cap);
 void bench_tx_sig_close(void);
 double bench_tx_sig_rate(void);

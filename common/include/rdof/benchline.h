@@ -190,13 +190,14 @@ typedef struct {
      * on a channel cut from the wideband history (iq_read), one with a transmitter through sig_open. */
     const rdof_sig_mode_t *const *modes;
     /* A signal mode's transmission (NULL: none), as the transmit jobs: sig_open takes the transmitter and keys what
-     * src renders on freq_hz at power (as tx_open's; a note in why) for about seconds; false with why when it can't
-     * (a duplex repeater runs, a key-up that long, the source's peak deviation past the front end's). src is the
-     * transmitter's thread's until sig_close.
+     * src renders on freq_hz at power (as tx_open's; a note in why) for about seconds: 1; 0 with why when not yet (a
+     * roamer is transmitting: asked again each tick, for up to 10 s); -1 with why when it can't (a duplex repeater
+     * runs, a key-up that long, the source's peak deviation past the front end's). src is the transmitter's thread's
+     * until sig_close.
      * sig_state: 1 sending, 2 the source is done and what it sent went out, -1 failed (why). sig_close: unkey and give
      * the transmitter back; src is never called again after it returns. */
-    bool (*sig_open)(void *ctx, uint32_t freq_hz, int power, double seconds, const rdof_sig_src_t *src, char *why,
-                     size_t cap);
+    int (*sig_open)(void *ctx, uint32_t freq_hz, int power, double seconds, const rdof_sig_src_t *src, char *why,
+                    size_t cap);
     int (*sig_state)(void *ctx, char *why, size_t cap);
     void (*sig_close)(void *ctx);
     /* The rate the transmitter pulls a source at, samples a second (NULL: 48000). */

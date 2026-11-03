@@ -59,12 +59,18 @@ static struct {
     int power;
     rdof_sig_src_t src;
 } tx;
-static bool f_sig_open(void *ctx, uint32_t hz, int power, double seconds, const rdof_sig_src_t *src, char *why,
-                       size_t cap)
+static int busy_n; /* sig_open says not yet this many times first */
+static int f_sig_open(void *ctx, uint32_t hz, int power, double seconds, const rdof_sig_src_t *src, char *why,
+                      size_t cap)
 {
+    if (busy_n > 0) {
+        busy_n--;
+        snprintf(why, cap, "the roamer is transmitting");
+        return 0;
+    }
     tx.open = true, tx.closed = tx.done = false, tx.freq = hz, tx.power = power, tx.src = *src;
     snprintf(why, cap, "power %d as 21 dBm", power);
-    return true;
+    return 1;
 }
 static int f_sig_state(void *ctx, char *why, size_t cap) { return tx.done ? 2 : 1; }
 static void f_sig_close(void *ctx) { tx.open = false, tx.closed = true; }
@@ -342,6 +348,27 @@ static void test_refusals(void)
     CHECK(tx.open, "not keyed");
     rdof_bl_closed(bl, c, clock_s);
     CHECK(tx.closed && !tx.open, "the transmitter wasn't given back");
+    /* a roamer transmitting: asked again each tick, then keyed */
+    static const char *tone = "{\"op\":\"tx\",\"mode\":\"fm\",\"freq\":438.075,\"program\":[{\"kind\":\"tone\",\"hz\":1000,\"s\":1}]}";
+    tx = (typeof(tx)){0}, busy_n = 2, ntext = 0;
+    const int w = ask(bl, tone);
+    rdof_bl_tick(bl, clock_s);
+    take(bl, w);
+    CHECK(!tx.open && strstr(text, "waiting to transmit: the roamer is transmitting"), "not waiting: %s", text);
+    for (int i = 0; i < 3; i++)
+        clock_s += 0.05, rdof_bl_tick(bl, clock_s);
+    take(bl, w);
+    CHECK(tx.open && strstr(text, "\"started\":"), "not keyed after the roamer: %s", text);
+    rdof_bl_closed(bl, w, clock_s);
+    /* and one that never ends: busy after 10 s */
+    tx = (typeof(tx)){0}, busy_n = 1000000, ntext = 0;
+    const int z = ask(bl, tone);
+    for (int i = 0; i < 120 && !rdof_bl_finished(bl, z); i++)
+        clock_s += 0.1, rdof_bl_tick(bl, clock_s);
+    take(bl, z);
+    CHECK(!tx.open && strstr(text, "\"code\":\"busy\"") && rdof_bl_finished(bl, z), "no busy: %s", text);
+    rdof_bl_closed(bl, z, clock_s);
+    busy_n = 0;
     rdof_bl_free(bl);
 }
 

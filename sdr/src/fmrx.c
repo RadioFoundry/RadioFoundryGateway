@@ -31,6 +31,14 @@ typedef struct {
     long n, gn, na, ns;
 } acc_t;
 
+/* The per-sample sums, in float: an ESP32's FPU has no double, so a double add in the sample loop is a library call.
+ * Folded into the doubles (fold) every FOLD input samples and before they are read. */
+typedef struct {
+    float psum, gfsum, a2sum, s2sum;                         /* the block's */
+    float p, noise, env, env2, a2, d2, s2, cfo;              /* the summary's */
+} part_t;
+#define FOLD 256
+
 #define DELAY_S 0.01             /* the gate looks this far ahead and back */
 #define LEARN_S 0.03             /* after the gate opens: the carrier's offset learned, nothing measured */
 #define SETTLE_S 0.03            /* then the filters settle: still nothing measured */
@@ -51,13 +59,15 @@ struct rdof_fmrx {
     float dly[2 * 2000];         /* DELAY_S at 200 kS/s */
     bool gate;
     rdof_bq_t lp5[2];
-    double pos;                  /* input samples out of the delay */
+    int64_t pos;                 /* input samples out of the delay */
+    part_t fp;
+    int fpn;
     long bsize;
     acc_t b;
     /* the audio rate */
     long gated;                  /* audio samples since the gate opened */
     long learn, settle;
-    double learn_sum;
+    float learn_sum;
     float cfo, cfo_a;
     rdof_bq_t hp[3], lp3[2], notch;
     bool notching;
@@ -69,17 +79,18 @@ struct rdof_fmrx {
     /* the subaudio's last quarter second */
     float ring[RING];
     int rlen, rn, rw, rsince;
-    double sub_n;                /* subaudio samples, all */
+    long sub_n;                  /* subaudio samples, all */
     /* CTCSS */
     long ct_hits[64];
     double ct_fsum, ct_devsum;
     long ct_n;
-    double ct_ph, ct_w;          /* the reverse burst's correlator, radians and its step */
-    double zr, zi, zr1, zi1, zr2, zi2, zmag;
+    double ct_w;                 /* the reverse burst's correlator's step, radians */
+    float ct_pr, ct_pq, ct_rr, ct_rq; /* its phasor, and the turn a sample */
+    float zr, zi, zr1, zi1, zr2, zi2, zmag;
     int zn, zlen, zk;
     double reverse_t;
     /* DCS */
-    float dc_mean, dc_ph, dc_step;
+    float dc_mean, dc_ph, dc_step, dc_a;
     float dc_x[3];               /* the last three bit centers' values (relative to the tracked carrier) */
     int dc_b[3];
     double dc_sp, dc_sn;         /* sums at the middle of three equal bits, + and - */
@@ -93,7 +104,8 @@ struct rdof_fmrx {
     int dc_code;
     bool dc_inv, dc_turnoff;
     /* the summary's sums (over gated samples) */
-    double carrier_s, p_sum, noise_sum, env_sum, env2_sum, a2_sum, d2_sum, s2_sum, cfo_sum;
+    long carrier_n;              /* input samples with a carrier */
+    double p_sum, noise_sum, env_sum, env2_sum, a2_sum, d2_sum, s2_sum, cfo_sum;
     long p_n, noise_n, env_n, a_n, d_n, s_n, cfo_n, blocks_on;
     float p_min, p_max, cfo_min, cfo_max, dpos, dneg, apos, aneg;
     rdof_fmrx_block_t q[BLOCKS];
@@ -205,6 +217,7 @@ static void ctcss_window(rdof_fmrx_t *r)
     }
     if (!(r->ct_w > 0)) {
         r->ct_w = w;
+        r->ct_pr = 1, r->ct_pq = 0, r->ct_rr = (float)cos(w), r->ct_rq = (float)sin(w);
         r->zlen = (int)lround(0.04 * r->sr);
     }
 }
@@ -214,15 +227,18 @@ static void reverse_in(rdof_fmrx_t *r, float x)
 {
     if (!(r->ct_w > 0))
         return;
-    r->zr += x * cos(r->ct_ph), r->zi -= x * sin(r->ct_ph);
-    r->ct_ph = fmod(r->ct_ph + r->ct_w, 2 * M_PI);
+    r->zr += x * r->ct_pr, r->zi -= x * r->ct_pq;
+    const float pr = r->ct_pr * r->ct_rr - r->ct_pq * r->ct_rq;
+    r->ct_pq = r->ct_pr * r->ct_rq + r->ct_pq * r->ct_rr, r->ct_pr = pr;
     if (++r->zn < r->zlen)
         return;
+    const float g = 1.5f - 0.5f * (r->ct_pr * r->ct_pr + r->ct_pq * r->ct_pq); /* back to unit length */
+    r->ct_pr *= g, r->ct_pq *= g;
     const double m = hypot(r->zr, r->zi), m2 = hypot(r->zr2, r->zi2);
     if (r->zk >= 2 && m > 0.5 * r->zmag && m2 > 0.5 * r->zmag) {
         const double d = atan2(r->zi * r->zr2 - r->zr * r->zi2, r->zr * r->zr2 + r->zi * r->zi2);
         if (fabs(d) > 0.8 * M_PI)
-            r->reverse_t = (r->sub_n - 1.5 * r->zlen) / r->sr;
+            r->reverse_t = ((double)r->sub_n - 1.5 * r->zlen) / r->sr;
     }
     r->zmag = r->zk ? 0.9 * r->zmag + 0.1 * m : m;
     r->zr2 = r->zr1, r->zi2 = r->zi1, r->zr1 = r->zr, r->zi1 = r->zi;
@@ -232,7 +248,7 @@ static void reverse_in(rdof_fmrx_t *r, float x)
 /* DCS: the bits at 134.4 a second, the clock from their edges; the words they make. */
 static void dcs_in(rdof_fmrx_t *r, float x)
 {
-    r->dc_mean += (x - r->dc_mean) * (float)(1 / r->sr);
+    r->dc_mean += (x - r->dc_mean) * r->dc_a;
     const float v = x - (r->dc_mean - r->dc_bias); /* about the levels' midpoint */
     const int s = v >= 0 ? 1 : -1;
     const float was = r->dc_ph;
@@ -290,8 +306,8 @@ static void sub_in(rdof_fmrx_t *r, float x, bool measure)
         r->zk = r->zn = 0, r->zr = r->zi = 0;
         return;
     }
-    r->b.s2sum += (double)x * x, r->b.ns++;
-    r->s2_sum += (double)x * x, r->s_n++;
+    r->fp.s2sum += x * x, r->b.ns++;
+    r->fp.s2 += x * x, r->s_n++;
     r->ring[r->rw] = x;
     r->rw = (r->rw + 1) % RING;
     if (r->rn < r->rlen)
@@ -304,11 +320,23 @@ static void sub_in(rdof_fmrx_t *r, float x, bool measure)
     dcs_in(r, x);
 }
 
+static void fold(rdof_fmrx_t *r)
+{
+    part_t *f = &r->fp;
+    acc_t *a = &r->b;
+    a->psum += f->psum, a->gfsum += f->gfsum, a->a2sum += f->a2sum, a->s2sum += f->s2sum;
+    r->p_sum += f->p, r->noise_sum += f->noise, r->env_sum += f->env, r->env2_sum += f->env2;
+    r->a2_sum += f->a2, r->d2_sum += f->d2, r->s2_sum += f->s2, r->cfo_sum += f->cfo;
+    memset(f, 0, sizeof *f);
+    r->fpn = 0;
+}
+
 static void block_end(rdof_fmrx_t *r)
 {
+    fold(r);
     acc_t *a = &r->b;
     rdof_fmrx_block_t b = {0};
-    b.t = (r->pos - (double)a->n) / r->fs;
+    b.t = (double)(r->pos - a->n) / r->fs;
     const double p = a->n ? a->psum / (double)a->n : 0;
     b.power_dbfs = (float)(10 * log10(p + 1e-20));
     b.carrier = a->gn * 2 > a->n;
@@ -380,6 +408,7 @@ rdof_fmrx_t *rdof_fmrx_new(double fs, const rdof_fmrx_opts_t *o, void *(*alloc)(
     if (r->rlen > RING)
         r->rlen = RING;
     r->dc_step = (float)(RDOF_FMG_DCS_BAUD / r->sr);
+    r->dc_a = (float)(1 / r->sr);
     r->dc_sign = 1;
     r->dc_code = -1;
     r->reverse_t = -1;
@@ -407,15 +436,17 @@ static void sample(rdof_fmrx_t *r, float x, float y, float f, bool gate, bool qu
     if (raw)
         *raw = f;
     acc_t *a = &r->b;
-    a->psum += p, a->n++;
+    r->fp.psum += p, a->n++;
+    if (++r->fpn == FOLD)
+        fold(r);
     if (gate) {
-        a->gfsum += f, a->gn++;
+        r->fp.gfsum += f, a->gn++;
         a->emin = e < a->emin ? e : a->emin;
         a->emax = e > a->emax ? e : a->emax;
-        r->p_sum += p, r->p_n++;
-        r->env_sum += e, r->env2_sum += (double)e * e, r->env_n++;
+        r->fp.p += p, r->p_n++;
+        r->fp.env += e, r->fp.env2 += p, r->env_n++;
     } else if (quiet) {
-        r->noise_sum += p, r->noise_n++;
+        r->fp.noise += p, r->noise_n++;
     }
     if (gate && !r->gate)
         r->gated = 0, r->learn_sum = 0;
@@ -431,7 +462,7 @@ static void sample(rdof_fmrx_t *r, float x, float y, float f, bool gate, bool qu
         if (r->gated <= r->learn) { /* the offset first: what the carrier sits at */
             r->learn_sum += f5;
             if (r->gated == r->learn)
-                r->cfo = (float)(r->learn_sum / r->learn);
+                r->cfo = r->learn_sum / (float)r->learn;
         } else {
             r->cfo += (f5 - r->cfo) * r->cfo_a;
             d = f5 - r->cfo;
@@ -439,12 +470,12 @@ static void sample(rdof_fmrx_t *r, float x, float y, float f, bool gate, bool qu
         }
     }
     if (measure) {
-        r->cfo_sum += r->cfo, r->cfo_n++;
+        r->fp.cfo += r->cfo, r->cfo_n++;
         a->dpos = d > a->dpos ? d : a->dpos;
         a->dneg = d < a->dneg ? d : a->dneg;
         r->dpos = d > r->dpos ? d : r->dpos;
         r->dneg = d < r->dneg ? d : r->dneg;
-        r->d2_sum += (double)d * d, r->d_n++;
+        r->fp.d2 += d * d, r->d_n++;
         rdof_psd_in(&r->psd, d);
     }
     float u = d;
@@ -454,8 +485,8 @@ static void sample(rdof_fmrx_t *r, float x, float y, float f, bool gate, bool qu
         u = rdof_bq(&r->notch, u);
     u = rdof_bq(&r->lp3[1], rdof_bq(&r->lp3[0], u));
     if (measure) {
-        a->a2sum += (double)u * u, a->na++;
-        r->a2_sum += (double)u * u, r->a_n++;
+        r->fp.a2sum += u * u, a->na++;
+        r->fp.a2 += u * u, r->a_n++;
         r->apos = u > r->apos ? u : r->apos;
         r->aneg = u < r->aneg ? u : r->aneg;
     }
@@ -492,7 +523,7 @@ void rdof_fmrx_feed(rdof_fmrx_t *r, const float *iq, int n, float *raw, float *a
             const bool on = r->ps >= r->sq_lin && r->pf >= 0.25f * r->sq_lin;
             r->since_on = on ? r->since_on + 1 : 0;
             if (r->since_on)
-                r->carrier_s += 1 / r->fs;
+                r->carrier_n++;
             r->since_off = r->ps < r->sq_lin ? r->since_off + 1 : 0;
             /* the sample DELAY_S back: gated when the power was over the squelch from DELAY_S before it to DELAY_S
              * after */
@@ -540,9 +571,10 @@ static double lobe(const rdof_fmrx_t *r, const double *s, int k, double *hz)
 
 void rdof_fmrx_summary(rdof_fmrx_t *r, rdof_fmrx_summary_t *s)
 {
+    fold(r);
     memset(s, 0, sizeof *s);
-    s->seconds = r->pos / r->fs;
-    s->carrier_s = r->carrier_s;
+    s->seconds = (double)r->pos / r->fs;
+    s->carrier_s = r->carrier_n / r->fs;
     s->power_dbfs = r->p_n ? (float)(10 * log10(r->p_sum / r->p_n + 1e-20)) : NAN;
     s->power_min_dbfs = r->blocks_on ? r->p_min : NAN;
     s->power_max_dbfs = r->blocks_on ? r->p_max : NAN;
