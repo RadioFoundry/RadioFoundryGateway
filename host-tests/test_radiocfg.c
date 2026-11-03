@@ -57,16 +57,37 @@ int main(void)
     CHECK(!r.enabled[1] && r.enabled[2] && r.inactivity_s == 7 && r.call_hang_s == 2 && !strcmp(r.cwid, "N0CALL"));
     CHECK(!C.has_parrot && C.cc == 2);
 
-    /* what it can't run: SFR, a transceiver on a modem, nothing that transmits, not JSON, version 2 */
+    /* what it can't run: SFR, nothing that transmits, not JSON, version 2 */
     CHECK(!parse("{\"version\": 3, \"name\": \"b\", \"id\": 3, \"devices\": [{\"kind\": \"sdr\", \"driver\": "
                  "\"soapy\"}], \"frequencies\": [{\"freq\": 438.25, \"cc\": 1, \"mode\": \"sfr\"}]}") &&
           strstr(err, "SFR"));
     if (!strstr(err, "SFR"))
         printf("  %s\n", err);
-    CHECK(!parse("{\"version\": 3, \"name\": \"b\", \"id\": 1, \"defaults\": {\"cc\": 1}, \"devices\": [{\"name\": "
-                 "\"R\", \"kind\": \"modem\", \"type\": \"radio_hotspot\", \"port\": {\"usb\": \"auto\"}}], "
-                 "\"frequencies\": [438.0625]}") &&
-          strstr(err, "a transceiver on a modem"));
+    /* a transceiver on a modem: rdofradio --mmdvm runs it, with the modem's settings */
+    CHECK(parse("{\"version\": 3, \"name\": \"b\", \"id\": 1, \"defaults\": {\"cc\": 1}, \"devices\": [{\"name\": "
+                "\"R\", \"kind\": \"modem\", \"type\": \"mmdvm_hs\", \"port\": {\"path\": \"/dev/ttyS0\"}, "
+                "\"mmdvm\": {\"rx_offset_hz\": -150, \"tx_offset_hz\": -175, \"tx_level\": 50, \"rx_level\": 100}}], "
+                "\"frequencies\": [{\"freq\": 438.0625, \"power\": 0}]}") &&
+          C.on_modem && !C.full && C.rx_hz == 438062500 && C.cfg.nchannels == 1 && C.cfg.channels[0].power == 0);
+    {
+        rdof_modem_t m;
+        rdof_radio_t r;
+        char why[120];
+        CHECK(rdofradio_cfg_radio(&C, &r, &m, "MMDVM_HS_Dual_Hat-v1.6.1", why, sizeof why) &&
+              r.kind == RDOF_RADIO_MMDVM_HS && r.rx_offset_hz == -150 && r.tx_offset_hz == -175 &&
+              r.config.tx_level == 50 && r.config.rx_level == 100 && r.tuner == RDOF_TUNER_MODEM);
+    }
+    /* a repeater on a modem: on the modem too */
+    CHECK(parse("{\"version\": 3, \"name\": \"b\", \"id\": 1, \"defaults\": {\"cc\": 1}, \"devices\": [{\"name\": "
+                "\"R\", \"kind\": \"modem\", \"type\": \"mmdvm_hs\", \"port\": {\"path\": \"/dev/ttyS0\"}, "
+                "\"hears\": {\"idle\": \"in\"}}], "
+                "\"frequencies\": [{\"name\": \"in\", \"freq\": 438.0375, \"devices\": [\"R\"]}, "
+                "{\"name\": \"out\", \"freq\": 438.0625, \"devices\": [\"R\"]}], "
+                "\"apps\": [{\"name\": \"A\", \"type\": \"repeater\", \"in\": \"in\", \"out\": \"out\"}]}") &&
+          C.on_modem && C.full && C.rx_hz == 438037500 && C.tx_hz == 438062500);
+    if (err[0])
+        printf("  %s\n", err);
+    /* an SDR alone: nothing transmits */
     CHECK(!parse("{\"version\": 3, \"name\": \"b\", \"id\": 1, \"defaults\": {\"cc\": 1}, \"devices\": [{\"kind\": "
                  "\"sdr\"}], \"frequencies\": [438.0625]}") &&
           strstr(err, "nothing transmits"));

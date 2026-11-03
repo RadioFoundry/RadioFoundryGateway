@@ -80,11 +80,9 @@ static bool from_plan(const rdof_plan_t *p, rdofradio_cfg_t *o, char *err, size_
     rdof_config_t *c = &o->cfg;
     if (!rdof_plan_radio(p, roles.radio, c, err, cap))
         return false;
-    if (c->sdr_duplex == RDOF_SDR_DUPLEX_NONE && c->mode != RDOF_CFG_REPEATER) {
-        snprintf(err, cap, "%s: a transceiver on a modem; rdofradio runs a repeater, or a transceiver on the SDR",
-                 c->name);
-        return false;
-    }
+    /* a unit on a modem (an MMDVM_HS hat, a hotspot) runs with --mmdvm PORT; a split's halves are the SDR and a
+       radio (--split-tx) */
+    o->on_modem = c->sdr_duplex == RDOF_SDR_DUPLEX_NONE && strcmp(c->modem_port, "split");
     if (c->sfr || c->dcdm) {
         snprintf(err, cap, "%s: mode %s isn't on rdofradio (duplex only)", c->name, c->sfr ? "sfr" : "dcdm");
         return false;
@@ -203,6 +201,52 @@ void rdofradio_cfg_apply_txvr(const rdofradio_cfg_t *o, rdof_txvr_t *t)
     t->idle = (rdof_channel_t){c->idle.freq, c->idle.cc, c->idle.power, c->idle.slot};
     snprintf(t->cwid, sizeof t->cwid, "%s", c->cwid);
     t->cwid_every_s = c->cwid_every_s;
+}
+
+bool rdofradio_cfg_radio(const rdofradio_cfg_t *o, rdof_radio_t *r, rdof_modem_t *modem, const char *description,
+                         char *err, size_t cap)
+{
+    const rdof_config_t *c = &o->cfg;
+    rdof_radio_kind_t kind = RDOF_RADIO_UNKNOWN;
+    if (!c->radio_type[0] || !strcmp(c->radio_type, "auto")) {
+        kind = rdof_radio_detect(description);
+        if (kind == RDOF_RADIO_UNKNOWN) {
+            snprintf(err, cap, "can't tell what '%.40s' is: set the radio's type", description);
+            return false;
+        }
+    } else {
+        kind = rdof_radio_kind_of(c->radio_type);
+        if (kind == RDOF_RADIO_UNKNOWN)
+            kind = RDOF_RADIO_MMDVM;
+    }
+    rdof_radio_init(r, modem, kind);
+    r->config = c->modem;
+    r->rx_offset_hz = c->rx_offset_hz;
+    r->tx_offset_hz = c->tx_offset_hz;
+    const uint32_t fixed = c->mode == RDOF_CFG_REPEATER ? c->tx_freq : 0;
+    if (c->tuner == RDOF_TUNER_MODEM || (c->tuner == RDOF_TUNER_NONE && kind != RDOF_RADIO_MMDVM)) {
+        r->tuner = RDOF_TUNER_MODEM;
+    } else if (c->tuner == RDOF_TUNER_FIXED || fixed) {
+        r->tuner = RDOF_TUNER_FIXED;
+        r->fixed_hz = c->tuner_freq ? c->tuner_freq : fixed;
+        if (!r->fixed_hz) {
+            snprintf(err, cap, "radio.tuner fixed needs its freq");
+            return false;
+        }
+    } else {
+        snprintf(err, cap, "an MMDVM board needs radio.tuner: fixed");
+        return false;
+    }
+    if (c->rssi.n) {
+        r->rssi_map = c->rssi;
+        r->hotspot_rssi = false;
+    }
+    if (c->headers >= 0)
+        r->headers = c->headers;
+    if (c->terminators >= 0)
+        r->terminators = c->terminators;
+    r->settle_ms = c->settle_ms;
+    return true;
 }
 
 size_t rdofradio_cfg_describe(const rdofradio_cfg_t *o, const char *source, const char *device, char *out, size_t cap)

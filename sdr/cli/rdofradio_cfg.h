@@ -3,14 +3,16 @@
 /*
  * rdofradio's settings (--config FILE): the firmware's settings document (version 3, docs/spec/fw/config-v3.md),
  * read by the firmware's parser (rdof/siteplan.h), and the part of it rdofradio applies. The radio is the first
- * unit that transmits: a repeater (a repeater app on the SDR) or a half duplex transceiver (the SDR transmitting on
- * simplex frequencies, on its idle frequency). From it: the name, peer id, rx / tx frequencies, cc, parrot, and a
- * repeater's slots, hang_s, call_hang_s, short_lc_ts1_low, prebuffer and the jitter buffer, cwid and cwid_every_s;
- * the hblink network (the master), callsign, location and power for its HBlink4 peer, as the board's; the mqtt
- * network, published as the board does (rdofradio_mqtt.h); the SDR's other frequencies (receive-only channels, as
- * the board's SDR resolves them); and the site, for the call router (rdof/siteroute.h: what goes up and what comes
- * down, through the radio's peer unless identity is per_path). mode sfr and dcdm are refused. The SDR device stays
- * on the command line (--soapy, -r, --gain, --tx-gain ...). No I/O here: rdofradio reads and writes the file.
+ * unit that transmits: a repeater (a repeater app on the SDR or on a modem) or a half duplex transceiver (the SDR
+ * or a modem transmitting on simplex frequencies, on its idle frequency); a unit on a modem runs with --mmdvm. From
+ * it: the name, peer id, rx / tx frequencies, cc, parrot, and a repeater's slots, hang_s, call_hang_s,
+ * short_lc_ts1_low, prebuffer and the jitter buffer, cwid and cwid_every_s; a modem's mmdvm settings (levels,
+ * offsets, the RF level of each frequency); the hblink network (the master), callsign, location and power for its
+ * HBlink4 peer, as the board's; the mqtt network, published as the board does (rdofradio_mqtt.h); the SDR's other
+ * frequencies (receive-only channels, as the board's SDR resolves them); and the site, for the call router
+ * (rdof/siteroute.h: what goes up and what comes down, through the radio's peer unless identity is per_path). mode
+ * sfr and dcdm are refused. The devices stay on the command line (--soapy, -r, --gain, --tx-gain ..., --mmdvm PORT).
+ * No I/O here: rdofradio reads and writes the file.
  */
 #ifndef RDOFRADIO_CFG_H
 #define RDOFRADIO_CFG_H
@@ -27,6 +29,7 @@
 
 typedef struct {
     bool full;          /* a repeater (full duplex); false: a transceiver (half duplex) */
+    bool on_modem;      /* the unit is on a modem device (rdofradio --mmdvm PORT), not on the SDR */
     char box[32];       /* the box's name */
     char name[24];      /* the unit's */
     uint32_t peer_id;
@@ -63,6 +66,11 @@ void rdofradio_cfg_apply_repeater(const rdofradio_cfg_t *c, rdof_repeater_t *r);
    tuned to (the roamer's channels and idle), listen and clear, the jitter buffer, CSBK preambles, the answer
    window, the idle channel and the return to it, CW ID. Not the scan: the SDR hears every channel at once. */
 void rdofradio_cfg_apply_txvr(const rdofradio_cfg_t *c, rdof_txvr_t *t);
+/* A unit on a modem (on_modem): its radio from the device's type and mmdvm settings, as the firmware's radio task
+   sets it up once the modem has answered GET_VERSION (description: its reply). False with err set when the type
+   can't be told ("auto" and a description rdof_radio_detect doesn't know) or an MMDVM board has no tuner. */
+bool rdofradio_cfg_radio(const rdofradio_cfg_t *c, rdof_radio_t *r, rdof_modem_t *modem, const char *description,
+                         char *err, size_t cap);
 /* /api/resolved: the radio as resolved, and device (the command line's device flags). */
 size_t rdofradio_cfg_describe(const rdofradio_cfg_t *c, const char *source, const char *device, char *out,
                               size_t cap);
