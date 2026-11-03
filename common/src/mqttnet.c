@@ -374,6 +374,77 @@ size_t rdof_mn_data_result_event(const char *node, double wall, int path, int sl
     return ev_done(&j);
 }
 
+/* ── data_result ─────────────────────────────────────────────────────────── */
+
+void rdof_mn_results_add(rdof_mn_results_t *r, const rdof_mn_hdr_t *h, bool confirmed, const char *from, int path,
+                         double now)
+{
+    int k, use = 0;
+    for (k = 0; k < RDOF_MN_PENDING; k++) {
+        if (!r->p[k].used) {
+            use = k;
+            break;
+        }
+        if (r->p[k].at < r->p[use].at)
+            use = k;
+    }
+    rdof_mn_pending_t *p = &r->p[use];
+    memset(p, 0, sizeof *p);
+    p->used = true;
+    p->confirmed = confirmed;
+    p->stream = h->stream;
+    p->src = h->src;
+    p->dst = h->dst;
+    p->path = path;
+    p->slot = (h->flags & RDOF_MN_F_SLOT2) ? 2 : 1;
+    snprintf(p->from, sizeof p->from, "%s", from ? from : "");
+    p->at = now;
+}
+
+static const char *result_done(rdof_mn_pending_t *p, rdof_mn_pending_t *out, const char *result)
+{
+    *out = *p;
+    p->used = false;
+    return result;
+}
+
+const char *rdof_mn_results_sent(rdof_mn_results_t *r, uint32_t stream, double now, rdof_mn_pending_t *out)
+{
+    for (int k = 0; k < RDOF_MN_PENDING; k++) {
+        rdof_mn_pending_t *p = &r->p[k];
+        if (!p->used || p->sent || p->stream != stream)
+            continue;
+        if (!p->confirmed)
+            return result_done(p, out, "unconfirmed");
+        p->sent = true;
+        p->at = now;
+    }
+    return NULL;
+}
+
+const char *rdof_mn_results_response(rdof_mn_results_t *r, uint32_t src, uint32_t dst, int klass, int type,
+                                     rdof_mn_pending_t *out)
+{
+    for (int k = 0; k < RDOF_MN_PENDING; k++) {
+        rdof_mn_pending_t *p = &r->p[k];
+        if (p->used && p->confirmed && p->dst == src && p->src == dst)
+            return result_done(p, out, klass == 0 && type == 1 ? "delivered" : "failed");
+    }
+    return NULL;
+}
+
+const char *rdof_mn_results_tick(rdof_mn_results_t *r, double now, rdof_mn_pending_t *out)
+{
+    for (int k = 0; k < RDOF_MN_PENDING; k++) {
+        rdof_mn_pending_t *p = &r->p[k];
+        if (p->used && p->sent && now - p->at > RDOF_MN_RESPONSE_S)
+            return result_done(p, out, "no_response");
+        if (p->used && !p->sent && now - p->at > RDOF_MN_ON_AIR_S)
+            return result_done(p, out, "failed");
+    }
+    return NULL;
+}
+
 /* ── the uplink ──────────────────────────────────────────────────────────── */
 
 void rdof_mn_up_init(rdof_mn_up_t *u, const char *node)
@@ -1393,6 +1464,8 @@ static void down_data(rdof_mn_down_t *d, rdof_mn_dstream_t *s, int rate, int nh,
     for (int k = 0; k < n; k++)
         emit(d, s, controls[k], bursts[k], false, dl);
     s->ended = true;
+    if (d->data)
+        d->data(d->ctx, &s->h, nh > 0 && (headers[0] & 0x0F) == RDOF_DPF_CONFIRMED, s->node);
 }
 #endif
 
@@ -1426,7 +1499,7 @@ static rdof_mn_dstream_t *find_stream(rdof_mn_down_t *d, const char *node, uint3
 bool rdof_mn_down_message(rdof_mn_down_t *d, const char *node, bool dl, const uint8_t *msg, size_t len, double now)
 {
     rdof_mn_hdr_t h;
-    if (!rdof_mn_parse(msg, len, &h) || rdof_mn_count(msg, len) < 0) {
+    if (!rdof_mn_parse(msg, len, &h) || rdof_mn_count(msg, len) < 1) { /* one or more items (section 4) */
         d->bad++;
         return false;
     }
@@ -1584,6 +1657,17 @@ void rdof_mn_down_tick(rdof_mn_down_t *d, double now)
 
 static bool path_on(const rdof_site_t *s, int k, int net) { return s->path[k].pol.net == net; }
 
+uint16_t rdof_mn_crc16(const uint8_t *data, size_t len)
+{
+    uint16_t crc = 0xFFFF;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= (uint16_t)(data[i] << 8);
+        for (int b = 0; b < 8; b++)
+            crc = (uint16_t)(crc & 0x8000 ? (crc << 1) ^ 0x1021 : crc << 1);
+    }
+    return crc;
+}
+
 uint16_t rdof_mn_paths_rev(const rdof_site_t *s, int net)
 {
     uint8_t buf[RDOF_SITE_MAX_PATHS * (RDOF_SITE_NAME + 6)];
@@ -1596,7 +1680,7 @@ uint16_t rdof_mn_paths_rev(const rdof_site_t *s, int net)
         memcpy(buf + n, s->path[k].name, l + 1);
         n += l + 1;
     }
-    return rdof_crc16_ccitt(buf, n);
+    return rdof_mn_crc16(buf, n);
 }
 
 static void mhz(rdof_json_t *j, const char *key, uint32_t hz)

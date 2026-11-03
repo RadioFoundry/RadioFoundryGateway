@@ -26,6 +26,8 @@ typedef struct {
     int queue_max;                  /* QoS 1 messages not yet acked, past which a QoS 1 publish is dropped */
     void (*say)(const char *line);  /* the connection's news, a line at a time */
     const char *subscribe;          /* a topic filter taken at each connect (QoS 0), NULL none */
+    bool no_local;                  /* MQTT 5: the broker doesn't send this client's own messages back */
+    bool nodelay;                   /* TCP_NODELAY: small messages go at once (the MQTT network's voice) */
     /* its messages, on libmosquitto's thread */
     void (*on_message)(void *ctx, const char *topic, const void *data, int len);
     void *ctx;
@@ -33,6 +35,10 @@ typedef struct {
 
 /* Connects in the background. NULL: libmosquitto refused the options (said why). */
 rdofmq_t *rdofmq_start(const rdofmq_opts_t *o);
+#define RDOFMQ_SUBS 32
+/* The topic filters to hold (QoS 0) besides subscribe: those no longer listed are dropped, new ones taken now,
+   and all of them again at each connect. Up to RDOFMQ_SUBS, each under 160 characters. */
+void rdofmq_subscribe(rdofmq_t *q, const char *const *filters, int n);
 /* len < 0: data is a string. False: dropped (QoS 0 while down, or the queue full). */
 bool rdofmq_publish(rdofmq_t *q, const char *topic, const void *data, int len, int qos, bool retain);
 bool rdofmq_up(rdofmq_t *q);

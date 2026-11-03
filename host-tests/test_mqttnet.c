@@ -527,6 +527,9 @@ static void test_downlink_loss(void)
     /* garbage */
     const uint8_t bad[5] = {3, 0, 0, 0, 0};
     CHECK(!rdof_mn_down_message(&d, "app", false, bad, sizeof bad, 0.2) && d.bad == 1);
+    /* a header and no items: one or more items (section 4) */
+    const uint8_t bare[RDOF_MN_HEADER] = {3, 2, 1, 0, 0x78, 0x56, 0x34, 0x12, 0x32, 0x52, 0x2F, 0x5B, 0, 0};
+    CHECK(!rdof_mn_down_message(&d, "app", false, bare, sizeof bare, 0.3) && d.bad == 2);
 }
 
 #if RDOF_FEATURE_DATA_BLOCKS
@@ -552,6 +555,57 @@ static void test_data_bursts(void)
     CHECK(rdof_mn_data_bursts(RDOF_MN_RATE_12, 1, h, data, 3000, SC_DSYNC, controls, bursts) == 0);
     CHECK(rdof_mn_rate_of_dt(RDOF_DT_RATE_34) == RDOF_MN_RATE_34 && rdof_mn_dt_of_rate(RDOF_MN_RATE_1) == RDOF_DT_RATE_1);
     CHECK(rdof_mn_rate_of_dt(RDOF_DT_CSBK) == -1);
+}
+
+/* data_result: the downlink's data hook, then the transmitter's end, the radio's answer or none. */
+static rdof_mn_results_t results;
+static int data_calls;
+static void on_data(void *ctx, const rdof_mn_hdr_t *h, bool confirmed, const char *from)
+{
+    data_calls++;
+    rdof_mn_results_add(&results, h, confirmed, from, h->path, 0);
+}
+
+static void test_results(void)
+{
+    sc_run_all();
+    static const char *const names[] = {"unconfirmed_data", "confirmed_rate1"};
+    rdof_mn_hdr_t hs[2];
+    for (int k = 0; k < 2; k++) {
+        const sc_out_t *o = scene(names[k]);
+        CHECK(o != NULL);
+        if (!o)
+            return;
+        static rdof_mn_down_t d;
+        rdof_mn_down_init(&d);
+        d.data = on_data;
+        for (int m = 0; m < o->nmsg; m++)
+            rdof_mn_down_message(&d, "box-b", true, o->msg[m].msg, o->msg[m].len, 0);
+        rdof_mn_parse(o->msg[0].msg, o->msg[0].len, &hs[k]);
+    }
+    CHECK(data_calls == 2);
+    rdof_mn_pending_t p;
+    /* unconfirmed: done when it's sent */
+    const char *r = rdof_mn_results_sent(&results, hs[0].stream, 1.0, &p);
+    CHECK(r && !strcmp(r, "unconfirmed") && p.dst == 9990002 && !strcmp(p.from, "box-b") && p.path == 1);
+    /* confirmed: the radio's ACK, from the called radio to the caller */
+    CHECK(!rdof_mn_results_sent(&results, hs[1].stream, 1.0, &p));
+    CHECK(!rdof_mn_results_response(&results, 9990001, 9990002, 0, 1, &p)); /* the other way round: not it */
+    r = rdof_mn_results_response(&results, 9990002, 9990001, 0, 1, &p);
+    CHECK(r && !strcmp(r, "delivered") && p.confirmed);
+    /* no answer, and never on air */
+    rdof_mn_results_add(&results, &hs[1], true, "box-b", 1, 2.0);
+    CHECK(!rdof_mn_results_sent(&results, hs[1].stream, 2.5, &p));
+    CHECK(!rdof_mn_results_tick(&results, 3.4, &p));
+    r = rdof_mn_results_tick(&results, 3.6, &p);
+    CHECK(r && !strcmp(r, "no_response"));
+    rdof_mn_results_add(&results, &hs[1], true, "box-b", 1, 10.0);
+    r = rdof_mn_results_response(&results, 9990002, 9990001, 1, 0, &p);
+    CHECK(r && !strcmp(r, "failed")); /* a NAK */
+    rdof_mn_results_add(&results, &hs[0], false, "box-b", 1, 20.0);
+    CHECK(!rdof_mn_results_tick(&results, 24.0, &p));
+    r = rdof_mn_results_tick(&results, 25.5, &p);
+    CHECK(r && !strcmp(r, "failed") && !rdof_mn_results_tick(&results, 26, &p));
 }
 #endif
 
@@ -600,6 +654,12 @@ static void test_info(void)
         printf("  %s\n", out);
     CHECK(strstr(out, "\"kind\":\"box\"") && strstr(out, "\"schema\":1"));
     CHECK(rdof_jnode(&jd, rdof_jget(&jd, root, "paths_rev"))->num == rdof_mn_paths_rev(&s, net));
+    /* paths_rev: CRC-16/CCITT-FALSE; the router's node vectors (§6's example list gives 2754) */
+    CHECK(rdof_mn_crc16((const uint8_t *)"123456789", 9) == 0x29B1);
+    CHECK(rdof_mn_crc16(NULL, 0) == 65535);
+    static const uint8_t one[] = "\x00hb-9801234", three[] = "\x00rpt1/1\0\x01rpt1/2\0\x02" "438.1";
+    CHECK(rdof_mn_crc16(one, sizeof one) == 27753);
+    CHECK(rdof_mn_crc16(three, sizeof three) == 2754);
     /* the repeater's two paths: app repeater, ts 1 / 2, tx_ok; the monitor: no ts, no tx */
     const int p0 = rdof_jat(&jd, paths, rdof_site_path(&s, "R1/1"));
     CHECK(!strcmp(rdof_jnode(&jd, rdof_jget(&jd, p0, "app"))->str, "repeater"));
@@ -685,6 +745,7 @@ int main(void)
     test_downlink_loss();
 #if RDOF_FEATURE_DATA_BLOCKS
     test_data_bursts();
+    test_results();
 #endif
     test_info();
     test_config();

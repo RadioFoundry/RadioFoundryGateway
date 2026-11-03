@@ -283,6 +283,8 @@ typedef struct rdof_mn_down {
     int max_preambles; /* the most CSBK preambles sent for a csbk item's count (default 8) */
     /* a burst to transmit: path the message's path byte (RDOF_MN_PATH_NONE: none), dl: from {root}/dl/{node} */
     void (*burst)(void *ctx, const rdof_net_burst_t *b, int path, bool dl, uint8_t flags, const char *from);
+    /* a data call's bursts went to burst (all of them, just now): for its data_result (rdof_mn_results_t); NULL none */
+    void (*data)(void *ctx, const rdof_mn_hdr_t *h, bool confirmed, const char *from);
     void *ctx;
     rdof_mn_dstream_t s[RDOF_MN_DOWN_STREAMS];
     uint32_t messages, bad, gaps, late, parts_lost, raw_dropped, streams, replaced;
@@ -295,6 +297,37 @@ bool rdof_mn_down_message(rdof_mn_down_t *d, const char *node, bool dl, const ui
 void rdof_mn_down_tick(rdof_mn_down_t *d, double now);
 /* The publisher of stream id lately, NULL none (for the tx event's "from"). */
 const char *rdof_mn_down_from(const rdof_mn_down_t *d, uint32_t stream);
+
+/* ── data_result: what became of a data call this box delivered ───────────── */
+
+#define RDOF_MN_PENDING 4
+#define RDOF_MN_RESPONSE_S 1.0 /* after the call's last burst on air, the radio's answer comes within this */
+#define RDOF_MN_ON_AIR_S 5.0   /* a data call not on air within this failed (no transmitter) */
+
+typedef struct {
+    bool used, confirmed, sent;
+    uint32_t stream, src, dst;
+    int path, slot;
+    char from[RDOF_MN_NODE_MAX + 1];
+    double at; /* added; once sent, when its transmission ended */
+} rdof_mn_pending_t;
+
+typedef struct {
+    rdof_mn_pending_t p[RDOF_MN_PENDING];
+} rdof_mn_results_t;
+
+/* A data call handed to the transmitters (the downlink's data hook). The oldest pending one makes room. */
+void rdof_mn_results_add(rdof_mn_results_t *r, const rdof_mn_hdr_t *h, bool confirmed, const char *from, int path,
+                         double now);
+/* Each returns a result ("unconfirmed", "delivered", "failed", "no_response") with the call in out, NULL none.
+   sent: the transmitter finished stream (its tx "end"); an unconfirmed call is done then. */
+const char *rdof_mn_results_sent(rdof_mn_results_t *r, uint32_t stream, double now, rdof_mn_pending_t *out);
+/* response: a radio's data response heard (rdof_mn_up_t.response): from src, to dst; ACK (class 0, type 1)
+   delivered, the others failed. */
+const char *rdof_mn_results_response(rdof_mn_results_t *r, uint32_t src, uint32_t dst, int klass, int type,
+                                     rdof_mn_pending_t *out);
+/* tick: no answer in RDOF_MN_RESPONSE_S (no_response), never on air (failed). Call until it returns NULL. */
+const char *rdof_mn_results_tick(rdof_mn_results_t *r, double now, rdof_mn_pending_t *out);
 
 /* ── data calls, both ways ───────────────────────────────────────────────── */
 
@@ -322,8 +355,11 @@ typedef struct {
     const char *location_source; /* "config", "gnss" */
 } rdof_mn_info_t;
 size_t rdof_mn_info_json(const rdof_site_t *s, int net, const rdof_mn_info_t *i, char *out, size_t cap);
-/* paths_rev: the CRC-16 of the path list (names and indexes in order) for the paths on net. */
+/* paths_rev: CRC-16/CCITT-FALSE over, for each path on net in order, its index byte, its name and a zero byte;
+ * 0xFFFF for none. */
 uint16_t rdof_mn_paths_rev(const rdof_site_t *s, int net);
+/* CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF, not reflected, no final XOR): "123456789" gives 0x29B1. */
+uint16_t rdof_mn_crc16(const uint8_t *data, size_t len);
 
 #define RDOF_MN_SUBS 24      /* topic filters a box takes at once */
 #define RDOF_MN_SUBS_EXPAND 16 /* a tg set with more than this after expanding: {root}/tg/+/+ */
