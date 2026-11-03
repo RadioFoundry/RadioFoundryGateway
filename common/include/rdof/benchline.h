@@ -6,7 +6,9 @@
  * queue, the burst fan-out and the capture streams. It owns no socket and no thread: the server (benchnet.h, or a
  * test) hands it each connection's bytes and sends what it gives back; the receiver feeds it bursts; the platform
  * answers its questions through rdof_bl_platform_t. Every call takes the engine's lock, so the server, the receiver
- * and the modem's thread may call it from their own threads.
+ * and the modem's thread may call it from their own threads. The platform's hooks run with that lock held: a hook
+ * must not wait for a lock that a caller holds while it calls in (a receiver's, around rdof_bl_burst), or the two
+ * deadlock.
  *
  * Portable C (POSIX threads for the lock).
  */

@@ -50,9 +50,7 @@ static void bl_window(void *ctx, rdof_bl_window_t *w)
     w->lo_hz = g_sstat.center_hz - 0.4 * rate;
     w->hi_hz = g_sstat.center_hz + 0.4 * rate;
     w->gain_db = isfinite(g_sstat.gain_db) ? g_sstat.gain_db : 0;
-    sdr_ppm_status_t p;
-    sdr_ppm_status(&p);
-    w->ppm = p.learned;
+    w->ppm = sdr_ppm_learned(); /* not sdr_ppm_status: rx_lock under the engine's lock deadlocks with a burst */
     w->iq_scale_db = bench_wide_scale_db();
 }
 
@@ -141,12 +139,11 @@ static int bl_ob_state(void *ctx, rdof_bl_ob_state_t *s, char *why, size_t cap)
         snprintf(why, cap, "the SDR modem went");
         return -1;
     }
-    sdr_ppm_status_t p;
-    sdr_ppm_status(&p);
+    const double ppm = sdr_ppm_learned();
     *s = (rdof_bl_ob_state_t){.keyed = m.keyed && m.key_k >= 0, .first = m.key_k, .next = m.slot_k, .base = m.base,
                               .slot = m.slot, .rate = m.tx_fs, .skips = (long)m.skips, .last_from = m.skip_from,
                               .last_to = m.skip_to, .on_air = m.keyed && m.key_k >= 0 && g_rx_ready, .map_pos = 0,
-                              .map_t = g_rx.t0, .ppm = isfinite(p.learned) ? p.learned : 0};
+                              .map_t = g_rx.t0, .ppm = isfinite(ppm) ? ppm : 0};
     /* the CACH (12 symbols) and the burst's first 65.5 symbols, at 10 samples a symbol at 48 kS/s */
     s->sync_off = (int)llround(775.0 * m.tx_fs / 48000.0);
     if (!m.keyed && m.key_k >= 0)

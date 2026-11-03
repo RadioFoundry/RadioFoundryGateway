@@ -570,6 +570,9 @@ typedef struct {
     double cal_ppm;         /* what it expects at the die's temperature now, NAN: empty */
 } sdr_ppm_status_t;
 void sdr_ppm_status(sdr_ppm_status_t *out);
+/* The learned ppm (NAN none) as of the DSP's last chunk, without rx_lock: for a caller holding a lock the DSP
+ * takes while it holds rx_lock (the bench line protocol's, which a decoded burst takes). */
+double sdr_ppm_learned(void);
 /* The display spectrum: rows newer than since (at most max, the newest ones), SPEC bins each, into out; the
  * newest row's number in seq; each row's last wideband sample in sc (NULL: not wanted). Asking keeps it running
  * for 10 s. */

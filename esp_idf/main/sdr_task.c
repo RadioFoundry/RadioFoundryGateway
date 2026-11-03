@@ -805,6 +805,7 @@ typedef struct {
 } cal_rec_t;
 
 static rdof_ppm_t ppm;
+static volatile float ppm_learned = NAN; /* rdof_ppm_learned(&ppm) at the last chunk; a float: read whole without a lock */
 static bool ppm_on, ppm_inited;
 static char ppm_serial[64];
 static int64_t ppm_last_us;
@@ -1052,6 +1053,8 @@ static void ppm_tick(void)
     cal_learn(t); /* only once settled: learned while warming, it holds only for that moment */
 }
 
+double sdr_ppm_learned(void) { return ppm_learned; }
+
 void sdr_ppm_status(sdr_ppm_status_t *out)
 {
     rx_lock();
@@ -1192,6 +1195,7 @@ static void chunk(const uint8_t *raw, int n, int split, bool *first, int filler)
     spectrum_feed(iq, n);
     stage_us[SDR_STAGE_INPUT] += esp_timer_get_time() - t0;
     rx_lock();
+    ppm_learned = (float)rdof_ppm_learned(&ppm);
     /* Re-anchor stream time if it has drifted from the clock (dropped samples, NTP arriving): 1 s at
      * once. Once netclock is synced, also 100 ms, from the least lag over 2 s: netclock slews in what its first
      * reference says (a soft restart keeps the RTC's time, often a fraction of a second off), which never
