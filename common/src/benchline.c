@@ -2890,7 +2890,7 @@ int rdof_bl_iq_convert(const float *iq, int n, int fmt, float k, uint8_t *out)
             x = -scale;
             clipped++;
         }
-        const int q = (int)lrintf(x);
+        const int q = rdof_bl_round(x); /* lrintf cost a W12 a tenth of a core (lr2021-iq.md R2.37) */
         if (fmt == RDOF_BL_IQ_CS16) {
             out[2 * (size_t)i] = (uint8_t)(uint16_t)(int16_t)q; /* little-endian */
             out[2 * (size_t)i + 1] = (uint8_t)((uint16_t)(int16_t)q >> 8);

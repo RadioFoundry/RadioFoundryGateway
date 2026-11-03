@@ -239,12 +239,23 @@ enum { RDOF_BL_IQ_CS8 = 1, RDOF_BL_IQ_CU8 = 2, RDOF_BL_IQ_CS16 = 3, RDOF_BL_IQ_C
  * low bits, where a weak signal is (an LR2021's channel noise is about 1.4 of cs16's 32767: at k 1 cs8 is all
  * zeros). Returns how many values clipped. */
 int rdof_bl_iq_convert(const float *iq, int n, int fmt, float k, uint8_t *out);
+/* lrintf's rounding (to nearest, ties to even) for |x| < 2^22, without its call (a library call on the ESP32-S3):
+ * adding 1.5 * 2^23 rounds x to a whole number, which the sum's low bits then hold. A union, not memcpy: at -Os
+ * memcpy stays a call. */
+static inline int rdof_bl_round(float x)
+{
+    const union {
+        float f;
+        int32_t i;
+    } t = {.f = x + 12582912.0f};
+    return (int)(t.i - 0x4B400000);
+}
 /* fmt's full scale under the ADC's, in dB (20 log10 k for 8-bit, 0 else): a level less it is dBFS. */
 double rdof_bl_iq_scale_db(int fmt, float k);
 
 /* Where a history holds filler, for iq_filled: the last RDOF_BL_FILLS runs of it, by sample. A run that follows the
  * last one merges with it; with no room the oldest goes (the captures read near the newest). The caller locks. */
-#define RDOF_BL_FILLS 32
+#define RDOF_BL_FILLS 128 /* a 2 s history losing a bit of every 20 ms chunk has about 100 */
 
 typedef struct {
     uint64_t from[RDOF_BL_FILLS];

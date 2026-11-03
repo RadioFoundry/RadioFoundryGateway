@@ -147,10 +147,11 @@ rise, then `post_s` after it, or a `done` with `why: "no_signal"` if nothing ros
 not `rate=wide`.
 
 Pre-roll frames come first, flagged 32 (pre-roll), with a `seq` of their own from 0; the live frames follow with
-no gap between. The board keeps its history only while I/Q is in use (an I/Q stream opened in the last 10
+no gap between. The board keeps its history only while it is in use (a stream that reads it opened in the last 10
 minutes), so the first stream after a quiet spell gets what it has, possibly none: count the flagged samples
-(`benchapi` writes `preroll_samples`). A line protocol capture or trigger (section 14) keeps only the wideband
-history warm: the channels' histories cost the DSP more, and those requests don't read them.
+(`benchapi` writes `preroll_samples`). A wideband stream, or a line protocol capture or trigger (section 14), keeps
+only the wideband history warm; a channel's stream keeps the channels' histories warm only with `pre_s` or a
+trigger. The channels' histories cost the DSP more.
 
 Where the front end lost samples (its ring was full), the board puts zeros in their place so the samples keep real
 time. A frame with such filler is flagged 1 (gap), and the done frame's `filled` counts it, in the stream's own
@@ -360,8 +361,12 @@ How it hooks in:
 
 - Pre-roll: `bench_on_chunk` keeps 2 s of every channel (cs16) and of the wideband samples (cs8) in PSRAM rings,
   about 4.5 MB with five channels, and skips the channels' ring if that would leave less than 1.5 MB free. Writing
-  them costs about 0.11 of a core (`history_load` in the v1 status), so it runs only within 10 minutes of an I/Q
-  stream being opened. A stream's pre-roll goes out from the stream task, read from the rings; it doesn't hold up
+  them costs about 0.11 of a core (`history_load` in the v1 status; the wideband ring alone 0.04 on a W12), so it
+  runs only within 10 minutes of a stream that reads it being opened. The wideband ring rounds as the streams do, so
+  a wide cs8 or cu8 stream's frames go from the DSP as references to the ring, and the stream task copies the bytes in
+  (`stream_load`: the DSP's share for the I/Q streams' frames). A reference the ring has moved past (the stream more
+  than 1.8 s behind) is dropped: the client sees the samples missing. A stream past its `seconds` ends 2 s after its
+  last frame (or 20 s late), not while frames still come. A stream's pre-roll goes out from the stream task, read from the rings; it doesn't hold up
   the DSP. The level trigger is measured in `bench_on_chunk` on each chunk of the channel's output.
 
 I/Q at a frequency that isn't a configured channel's needs a tap (`PUT /sdr`, section 5); `benchapi`'s

@@ -711,6 +711,22 @@ static void test_iq_formats(void)
     const float big[4] = {2.0f, -2.0f, 0.5f, -0.5f};
     CHECK(rdof_bl_iq_convert(big, 2, RDOF_BL_IQ_CS16, 1.0f, out) == 2 && (int16_t)(out[0] | out[1] << 8) == 32767 &&
               (int16_t)(out[2] | out[3] << 8) == -32767, "cs16 clips at its full scale");
+    /* rounded as lrintf rounds (ties to even), its call left out: every value, halves and their neighbors too */
+    int bad = 0;
+    for (int i = -70000; i <= 70000 && !bad; i++) {
+        const float x[6] = {i / 2.0f, i / 2.0f + 1e-3f, i / 2.0f - 1e-3f, i / 7.3f, i * 0.4999f, i * 0.5001f};
+        for (int j = 0; j < 6; j++) {
+            const float v[2] = {x[j] / 32767.0f, x[j] / 127.0f / 128.0f};
+            uint8_t o16[4], o8[2];
+            rdof_bl_iq_convert(v, 1, RDOF_BL_IQ_CS16, 1.0f, o16);
+            rdof_bl_iq_convert(v, 1, RDOF_BL_IQ_CS8, 128.0f, o8);
+            float a = v[0] * 32767.0f, b = v[1] * 127.0f * 128.0f;
+            a = a > 32767 ? 32767 : a < -32767 ? -32767 : a;
+            b = b > 127 ? 127 : b < -127 ? -127 : b;
+            bad += (int16_t)(o16[0] | o16[1] << 8) != (int16_t)lrintf(a) || (int8_t)o8[1] != (int8_t)lrintf(b);
+        }
+    }
+    CHECK(!bad, "rounds as lrintf does");
 }
 
 /* n samples of filler (zeros where the front end lost samples) into the history */

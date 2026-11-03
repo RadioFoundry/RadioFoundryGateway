@@ -84,6 +84,7 @@ typedef struct {
     double rate;
     long long want;     /* samples to send, 0: until closed */
     long long samples;  /* sent */
+    int64_t sent_us;    /* when a frame last went */
     uint32_t gaps;
     long long filled;   /* of those, filler (zeros where the front end lost samples) */
     uint32_t pre_n;     /* pre-roll samples asked for */
@@ -143,9 +144,12 @@ static uint32_t hist_run;          /* the run the rings are for */
 static volatile uint64_t hist_ch_w, hist_wide_w; /* samples written (channel samples, wideband samples) */
 static SemaphoreHandle_t hist_mu;  /* the rings while bench_iq reads them, against a new run's */
 static int64_t hist_us, hist_from_us; /* time spent writing them, since (status's history_load) */
-/* The rings are written only while warm: an I/Q stream opened in the last HIST_WARM_US (they cost about a tenth of
- * a core). The line protocol's captures read only the wideband ring, so they warm only it (wide_warm_until): the
- * channels' rings are most of that cost, on a DSP core with little to spare. hist_*_from: where the samples kept
+static int64_t iq_us; /* the I/Q streams' share of the DSP (their frames converted and queued), since hist_from_us
+                       * (status's stream_load) */
+/* The rings are written only while warm: a stream that reads them opened in the last HIST_WARM_US (they cost about a
+ * tenth of a core). A wideband stream and the line protocol's captures read only the wideband ring, so they warm only
+ * it (wide_warm_until); a channel's stream warms the channels' rings (hist_warm_until) only with pre-roll or a
+ * trigger: those rings are most of the cost, on a DSP core with little to spare. hist_*_from: where the samples kept
  * since warming up start. */
 #define HIST_WARM_US (600LL * 1000000)
 static volatile int64_t hist_warm_until, wide_warm_until;
@@ -494,8 +498,9 @@ static esp_err_t get_status(httpd_req_t *req)
     put_num(&o, ",\"cpu_load\":%.3f", load);
     const int64_t now_us = esp_timer_get_time(); /* the pre-roll history's share of a core since the last status */
     if (hist_from_us && now_us > hist_from_us)
-        put(&o, ",\"history_load\":%.3f", (double)hist_us / (double)(now_us - hist_from_us));
-    hist_us = 0;
+        put(&o, ",\"history_load\":%.3f,\"stream_load\":%.3f", (double)hist_us / (double)(now_us - hist_from_us),
+            (double)iq_us / (double)(now_us - hist_from_us));
+    hist_us = iq_us = 0;
     hist_from_us = now_us;
     put(&o, ",\"dropped_chunks\":%ld,\"overflows\":%ld,\"usb_errors\":%ld,\"bytes_lost\":%llu,\"stream_restarts\":%d},",
         dropped, overflows, (long)u.errors, (unsigned long long)u.bytes_lost, s->stream_restarts);
@@ -1473,6 +1478,7 @@ enum { IQ_CS8 = RDOF_BL_IQ_CS8, IQ_CU8 = RDOF_BL_IQ_CU8, IQ_CS16 = RDOF_BL_IQ_CS
 #define IQ_FLAG_RETUNED 4
 #define IQ_FLAG_PREROLL 32 /* from the history, before the stream's live frames (their own seq) */
 #define IQ_FLAG_LAST 16
+#define IQ_REF_LEN (1 + IQ_HDR + 4 + 4) /* a reference frame (iq_frames): stream, header, filler count, run */
 
 static int iq_sample_bytes(int fmt) { return fmt == IQ_CF32 ? 8 : fmt == IQ_CS16 ? 4 : 2; }
 
@@ -1530,10 +1536,17 @@ static inline int16_t sat16(float x)
     return (int16_t)(q > 32767 ? 32767 : q < -32767 ? -32767 : q);
 }
 
-static inline int8_t sat8(float x)
+/* The wideband history's cs8: rounded as a stream's cs8 is (rdof_bl_iq_convert), so a wide cs8 or cu8 stream's
+ * frames are the history's bytes (iq_frames). Exact for |x| under 2^22: the LR2021's samples times 16256 are, at
+ * any AGC step. clip counts values past full scale (rounded past it: a value within half a count over isn't). */
+static inline int8_t wide8(float x, int *clip)
 {
-    const int q = (int)x;
-    return (int8_t)(q > 127 ? 127 : q < -127 ? -127 : q);
+    const int q = rdof_bl_round(x);
+    if (q > 127 || q < -127) {
+        (*clip)++;
+        return q > 0 ? 127 : -127;
+    }
+    return (int8_t)q;
 }
 
 /* The 8-bit samples' gain over full scale (cs8, cu8: the history, the captures, WS /iq wideband or a channel's). The
@@ -1575,9 +1588,13 @@ long bench_wide_filled(uint64_t sc, long n)
     return k;
 }
 
+static int hist_chunk_clip;  /* this chunk's clipped values in the wideband history (the DSP's) */
+static bool hist_chunk_ok;   /* this chunk is in the wideband history: a wide cs8 / cu8 stream's frame is a reference */
+
 /* From the DSP, each chunk: this chunk into the rings (a new run sizes them again). */
 static void hist_write(const rdof_sdr_rx_t *rx, const rdof_cf_t *iq, int n)
 {
+    hist_chunk_ok = false;
     const int64_t now = esp_timer_get_time();
     const bool ch_warm = now <= hist_warm_until;
     if (!ch_warm && now > wide_warm_until) {
@@ -1628,13 +1645,16 @@ static void hist_write(const rdof_sdr_rx_t *rx, const rdof_cf_t *iq, int n)
     if (hist_wide_n) {
         uint32_t w = (uint32_t)(hist_wide_w % hist_wide_n);
         const float g = 127.0f * wide_k();
+        int clip = 0;
         for (int j = 0; j < n; j++) {
-            hist_wide[2 * w] = sat8(iq[j].re * g);
-            hist_wide[2 * w + 1] = sat8(iq[j].im * g);
+            hist_wide[2 * w] = wide8(iq[j].re * g, &clip);
+            hist_wide[2 * w + 1] = wide8(iq[j].im * g, &clip);
             if (++w == hist_wide_n)
                 w = 0;
         }
         hist_wide_w += (uint64_t)n;
+        hist_chunk_clip = clip;
+        hist_chunk_ok = true;
     }
 }
 
@@ -1687,6 +1707,8 @@ typedef struct __attribute__((packed)) {
     float level, floor;
 } hist_marker_t;
 
+static void iq_frames(const rdof_sdr_rx_t *rx, const rdof_cf_t *iq, int n, long fill_n);
+
 void bench_on_chunk(const rdof_sdr_rx_t *rx, const rdof_cf_t *iq, int n)
 {
     const long fill_n = chunk_fill < n ? chunk_fill : n; /* its first fill_n samples are filler */
@@ -1698,6 +1720,14 @@ void bench_on_chunk(const rdof_sdr_rx_t *rx, const rdof_cf_t *iq, int n)
     }
     if (!n_iq_streams || !iq_mb)
         return;
+    const int64_t t_iq = esp_timer_get_time();
+    iq_frames(rx, iq, n, fill_n);
+    iq_us += esp_timer_get_time() - t_iq;
+}
+
+/* bench_on_chunk's I/Q streams: this chunk's frames into the ring */
+static void iq_frames(const rdof_sdr_rx_t *rx, const rdof_cf_t *iq, int n, long fill_n)
+{
     tap_t t[MAX_STREAMS];
     taskENTER_CRITICAL(&tap_mux);
     memcpy(t, taps, sizeof t);
@@ -1756,12 +1786,18 @@ void bench_on_chunk(const rdof_sdr_rx_t *rx, const rdof_cf_t *iq, int n)
             taskEXIT_CRITICAL(&tap_mux);
             xMessageBufferSend(iq_mb, &mk, sizeof mk, pdMS_TO_TICKS(5));
         }
-        const size_t need = 1 + IQ_HDR + (size_t)m * (size_t)iq_sample_bytes(t[i].fmt) + 4;
+        /* a wide cs8 or cu8 stream: the history holds this chunk's bytes already, so the frame goes as a reference
+         * to them (no samples, its run after the filler count) and bench_iq copies them in on its own core: converting
+         * here cost the DSP about 0.1 of its core (lr2021-iq.md R2.37) */
+        const bool ref = t[i].wide && t[i].fmt != IQ_CS16 && hist_chunk_ok;
+        const size_t need = ref ? IQ_REF_LEN : 1 + IQ_HDR + (size_t)m * (size_t)iq_sample_bytes(t[i].fmt) + 4;
         if (need > iq_frame_cap)
             continue;
         const rdof_cf_t *src = t[i].wide ? iq : rx->y + (size_t)t[i].channel * rx->stride;
         uint8_t *h = iq_frame + 1;
-        int clipped = convert(src, m, t[i].fmt, wide_k(), h + IQ_HDR);
+        int clipped = ref ? hist_chunk_clip : convert(src, m, t[i].fmt, wide_k(), h + IQ_HDR);
+        if (ref)
+            put_u32(h + IQ_HDR + 4, run_id);
         /* the chunk's filler, in this stream's samples (a channel's share of it), after the samples: bench_iq
          * counts it */
         const uint32_t fill = !fill_n ? 0 : t[i].wide ? (uint32_t)fill_n
@@ -1775,7 +1811,7 @@ void bench_on_chunk(const rdof_sdr_rx_t *rx, const rdof_cf_t *iq, int n)
         h[5] = (uint8_t)t[i].fmt;
         put_u16(h + 6, (uint16_t)((t[i].gap || fill ? IQ_FLAG_GAP : 0) | (clipped ? IQ_FLAG_CLIP : 0) |
                                    (t[i].run != run_id ? IQ_FLAG_RETUNED : 0)));
-        memcpy(h + IQ_HDR + (size_t)m * (size_t)iq_sample_bytes(t[i].fmt), &fill, 4);
+        memcpy(h + IQ_HDR + (ref ? 0 : (size_t)m * (size_t)iq_sample_bytes(t[i].fmt)), &fill, 4);
         put_u32(h + 8, t[i].seq);
         put_u32(h + 12, (uint32_t)m);
         put_u64(h + 16, sc);
@@ -1912,6 +1948,48 @@ static void send_history(stream_t *st, const hist_marker_t *mk, uint8_t *fr, siz
     xSemaphoreGive(hist_mu);
 }
 
+/* bench_iq: a reference frame (iq_frames) made whole, its samples from the wideband history, the filler count after
+ * them. Returns the frame's length, or 0 if the history has moved past them (the frame is dropped: the client sees
+ * the samples missing, as when the I/Q ring is full). */
+static size_t wide_frame(stream_t *st, uint8_t *buf, size_t cap)
+{
+    uint8_t *h = buf + 1;
+    const uint32_t m = h[12] | h[13] << 8 | h[14] << 16 | (uint32_t)h[15] << 24;
+    uint64_t sc = 0;
+    for (int k = 0; k < 8; k++)
+        sc |= (uint64_t)h[16 + k] << (8 * k);
+    uint32_t fill, run;
+    memcpy(&fill, h + IQ_HDR, 4);
+    memcpy(&run, h + IQ_HDR + 4, 4);
+    if (1 + IQ_HDR + (size_t)m * 2 + 4 > cap)
+        return 0;
+    bool ok = false;
+    xSemaphoreTake(hist_mu, portMAX_DELAY);
+    const uint64_t w = hist_wide_w;
+    /* the oldest sample still safe to read: the DSP writes on while this copies (0.2 s of room) */
+    const uint64_t room = hist_wide_n - (uint64_t)(0.2 * g_scfg.sample_rate);
+    uint64_t oldest = w > room ? w - room : 0;
+    if (oldest < hist_wide_from)
+        oldest = hist_wide_from;
+    if (hist_on && hist_wide_n && hist_run == run && sc >= oldest && sc + m <= w) {
+        uint8_t *o = h + IQ_HDR;
+        const uint32_t x = (uint32_t)(sc % hist_wide_n), a = m < hist_wide_n - x ? m : hist_wide_n - x;
+        memcpy(o, hist_wide + 2 * (size_t)x, (size_t)a * 2); /* to the ring's end, then from its start */
+        memcpy(o + (size_t)a * 2, hist_wide, (size_t)(m - a) * 2);
+        if (st->fmt == IQ_CU8)
+            for (uint32_t j = 0; j < 2 * m; j++)
+                o[j] += 128;
+        ok = true;
+    }
+    xSemaphoreGive(hist_mu);
+    if (!ok) {
+        st->gaps++;
+        return 0;
+    }
+    memcpy(h + IQ_HDR + (size_t)m * 2, &fill, 4);
+    return 1 + IQ_HDR + (size_t)m * 2 + 4;
+}
+
 static void bench_iq(void *arg)
 {
     const size_t cap = iq_frame_cap;
@@ -1936,9 +2014,15 @@ static void bench_iq(void *arg)
                 finish(st, "retuned");
             else if (st->trigger && !st->fired && st->until_us && now >= st->until_us)
                 finish(st, "no_signal"); /* the wait ended with nothing heard */
-            else if (st->until_us && now >= st->until_us + 2000000) /* no samples came (no receiver?) */
+            /* no samples for 2 s past its time (no receiver?), or 20 s late. Samples still coming carry on: two
+             * streams at once (wide cs8 and a channel's cs16) fell 2.3 s behind in 4 s on a W12, core 0 busy
+             * sending, and this cut them short at 99% (lr2021-iq.md R2.37) */
+            else if (st->until_us && now >= st->until_us + 2000000 &&
+                     (now - (st->sent_us ? st->sent_us : st->opened_us) >= 2000000 || now >= st->until_us + 20000000))
                 finish(st, "seconds");
         }
+        if (len == IQ_REF_LEN && buf[0] < MAX_STREAMS && streams[buf[0]].kind == ST_IQ && streams[buf[0]].started)
+            len = wide_frame(&streams[buf[0]], buf, cap);
         if (len == sizeof(hist_marker_t) && !memcmp(buf + 1, "HIST", 4)) {
             hist_marker_t mk;
             memcpy(&mk, buf, sizeof mk);
@@ -1967,6 +2051,7 @@ static void bench_iq(void *arg)
                 drop_stream(st);
             else {
                 st->samples += m;
+                st->sent_us = now;
                 st->filled += fill;
                 if (st->want && st->samples >= st->want)
                     finish(st, "seconds");
@@ -2042,7 +2127,14 @@ static esp_err_t ws_iq(httpd_req_t *req)
                      .min_n = (uint32_t)llround(query_num(req, "min_ms", 10) / 1000.0 * rate),
                      .post_n = (uint32_t)llround(query_num(req, "post_s", 2) * rate)};
     n_iq_streams++;
-    hist_warm_until = esp_timer_get_time() + HIST_WARM_US; /* keeps the pre-roll history going */
+    /* keeps the pre-roll history going, only what the stream reads: a wideband stream the wideband history (its cs8
+     * and cu8 frames come from it), a channel's the channels' rings if it asks for pre-roll or a trigger. Warm, the
+     * channels' rings cost a W12's DSP 0.045 of its core, and back-to-back wideband captures then lost samples
+     * (lr2021-iq.md R2.37) */
+    if (wide)
+        wide_warm_until = esp_timer_get_time() + HIST_WARM_US;
+    else if (pre_s > 0 || trigger)
+        hist_warm_until = esp_timer_get_time() + HIST_WARM_US;
     tap_set((int)(st - streams), st);
     give();
     return ESP_OK;
