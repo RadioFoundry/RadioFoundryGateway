@@ -21,7 +21,7 @@
  *   rdofradio DEVICE --allow-tx --rx MHZ [--tx MHZ] [--duplex full|half] [--cc CC] [-r RATE] [--bw MHZ]
  *             [--tx-gain DB] [--tx-lo MHZ] [--gain DB] [--center MHZ] [--monitor] [--tx-offset S]
  *             [--parrot ID] [--stream ARGS] [--seconds S] [--bursts] [--quiet] [-v] [--web [ADDR:]PORT]
- *             [--last-exit FILE] [--fft builtin|pffft] [--bench [ADDR:]PORT] [--bench-tx MHZ,...]
+ *             [--last-exit FILE] [--ota FILE] [--fft builtin|pffft] [--bench [ADDR:]PORT] [--bench-tx MHZ,...]
  *   rdofradio DEVICE --allow-tx --config FILE [--clock-state FILE] [--set-os-clock] [the device's flags as above]
  *   rdofradio DEVICE --allow-tx --split-tx PORT [--baud N] [--split-power-cap N] --rx MHZ --tx MHZ [--cc CC] [...]
  *   rdofradio [DEVICE] --allow-tx --mmdvm PORT [--baud N] [--rf-level N] [--rx-offset-hz HZ] [--tx-offset-hz HZ]
@@ -31,7 +31,8 @@
  * PlutoSDR, "ip:192.168.2.1" from a host; -r defaults to 768 kS/s, which the chip's own FIR makes with
  * libad9361). --web serves the page on 127.0.0.1 unless ADDR is given (0.0.0.0: every interface). --fft: the
  * channelizer's FFT, pffft when it's built in (RDOF_PFFFT). --last-exit FILE: where a supervisor records how the
- * last run ended (rdof_hostweb_last_exit; the Pluto bundle's run.sh): the page's crash card. --bench serves the
+ * last run ended (rdof_hostweb_last_exit; the Pluto bundle's run.sh): the page's crash card. --ota FILE: the page's
+ * update (POST /api/ota) writes the new program there and stops, for the supervisor to start it. --bench serves the
  * bench's line protocol (docs/spec/bench-api.md section 14) on PORT (7373 by convention), every interface unless
  * ADDR is given: the receiver's bursts and wideband captures for tools/bench/rfgbench.py, and its transmit jobs
  * (bench_tx's voice, csbk, data) on the --bench-tx frequencies, at --tx-gain, in the transceiver's place while
@@ -434,7 +435,7 @@ static void usage(void)
             "usage: rdofradio DEVICE --allow-tx --rx MHZ [--tx MHZ] [--duplex full|half] [--cc CC] [-r RATE] [--bw MHZ]\n"
             "                 [--tx-gain DB] [--tx-lo MHZ] [--gain DB] [--center MHZ] [--monitor] [--tx-offset S]\n"
             "                 [--parrot ID] [--stream ARGS] [--seconds S] [--bursts] [--quiet] [-v] [--web [ADDR:]PORT]\n"
-            "                 [--last-exit FILE] [--fft builtin|pffft] [--bench [ADDR:]PORT] [--bench-tx MHZ,...]\n"
+            "                 [--last-exit FILE] [--ota FILE] [--fft builtin|pffft] [--bench [ADDR:]PORT] [--bench-tx MHZ,...]\n"
             "       rdofradio DEVICE --allow-tx --config FILE [--clock-state FILE] [--set-os-clock] [the device's flags]\n"
             "       rdofradio DEVICE --allow-tx --split-tx PORT [--baud N] [--split-power-cap N] --rx MHZ --tx MHZ [--cc CC]\n"
             "                 [-r RATE] [--gain DB] [--center MHZ] [--parrot ID] [--seconds S] [-v] [--web [ADDR:]PORT]\n"
@@ -2571,6 +2572,45 @@ static void web_settings(int argc, char **argv)
     s.restart = web_restart;
     rdof_hostweb_settings(&s);
 }
+
+/* --ota FILE: the page's update (POST /api/ota) writes a new program there, gzipped as the Pluto bundle's
+ * rdofradio.gz or an ELF for this machine (the class, byte order and machine of the one running), and this program
+ * stops: its supervisor (the bundle's run.sh) puts the image in place and starts it. */
+static bool ota_check(void *ctx, const uint8_t *img, size_t len, char *err, size_t cap)
+{
+    if (len >= 18 && img[0] == 0x1f && img[1] == 0x8b && img[2] == 8)
+        return true; /* gzip, deflate: run.sh tests it whole before it takes it */
+    if (len < 64 || memcmp(img, "\x7f" "ELF", 4)) {
+        snprintf(err, cap, "not a program: a gzipped rdofradio (the bundle's rdofradio.gz) or an ELF");
+        return false;
+    }
+    uint8_t me[20];
+    FILE *f = fopen("/proc/self/exe", "rb");
+    const bool mine = f && fread(me, 1, sizeof me, f) == sizeof me && !memcmp(me, "\x7f" "ELF", 4);
+    if (f)
+        fclose(f);
+    if (mine && (img[4] != me[4] || img[5] != me[5] || img[18] != me[18] || img[19] != me[19])) {
+        snprintf(err, cap, "an ELF for another machine (class %u, data %u, machine %u; this one runs %u, %u, %u)",
+                 img[4], img[5], img[18] | img[19] << 8, me[4], me[5], me[18] | me[19] << 8);
+        return false;
+    }
+    const unsigned type = img[5] == 2 ? (unsigned)(img[16] << 8 | img[17]) : (unsigned)(img[16] | img[17] << 8);
+    if (type != 2 && type != 3) { /* a program, or a PIE (shared objects too: run.sh tries it before it takes it) */
+        snprintf(err, cap, "an ELF that isn't a program (type %u)", type);
+        return false;
+    }
+    return true;
+}
+static void ota_done(void *ctx)
+{
+    stop = 1; /* not a restart: the supervisor starts the new program */
+}
+static void web_ota(const char *path)
+{
+    rdof_hostweb_ota_t o = {.max = 16u << 20, .check = ota_check, .done = ota_done};
+    snprintf(o.path, sizeof o.path, "%s", path);
+    rdof_hostweb_ota(&o);
+}
 #endif
 
 /* ── --split-tx: the radio transmits, the SDR is the split's RX half ─────────── */
@@ -3473,6 +3513,9 @@ int main(int argc, char **argv)
         } else if (!strcmp(a, "--last-exit")) {
             NEXT();
             rdof_hostweb_last_exit(v);
+        } else if (!strcmp(a, "--ota")) {
+            NEXT();
+            web_ota(v);
 #endif
         } else {
             usage();

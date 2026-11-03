@@ -164,7 +164,10 @@ install script ([tools/pluto/bundle/README.md](../tools/pluto/bundle/README.md))
 Pluto's persistent flash (`/mnt/jffs2`). The firmware's `/mnt/jffs2/autorun.sh` starts the loop at boot, and the loop
 starts `rdofradio` again 5 s after it exits. The settings stay in `/mnt/jffs2/rdof/config.json`, which the web page
 edits. The bundle's flags keep netclock's state in `/mnt/jffs2/rdof/netclock.state` and set the Pluto's clock from it
-(the Pluto has no NTP of its own and starts in 1970). The Pluto makes a new ssh host key at every boot, so the script doesn't check it. Tested on a Pluto+ style
+(the Pluto has no NTP of its own and starts in 1970). The page's Firmware update (`POST /api/ota`, rdofradio's
+`--ota FILE`: the bundle's `rdofradio.gz`, or an ELF for this machine) leaves the new program in RAM and stops
+rdofradio; `run.sh` checks it runs, puts it in the flash in place of the old one (there's no room for both), and puts
+the old one back if the new one ends in error within 30 s. The Pluto makes a new ssh host key at every boot, so the script doesn't check it. Tested on a Pluto+ style
 clone (Z7010, 1 GB, Ethernet, SD boot, ADI's v0.38): the web page answers about 25 s after power-on. At `--tx-gain 0`
 (the bundle's default) the start's calibration pulse isn't heard, so the outbound slot timing isn't measured.
 

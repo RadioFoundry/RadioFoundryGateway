@@ -166,6 +166,17 @@ static void settings(bool writable)
     rdof_hostweb_settings(&h);
 }
 
+/* the update's hooks: an image starting "IMG" will do */
+static int ota_done;
+static bool ota_check(void *ctx, const uint8_t *img, size_t len, char *err, size_t cap)
+{
+    if (len >= 3 && !memcmp(img, "IMG", 3))
+        return true;
+    snprintf(err, cap, "not an image for this machine");
+    return false;
+}
+static void ota_finish(void *ctx) { ota_done++; }
+
 /* a POST with a body */
 static size_t post(int port, const char *path, const char *body, char *out, size_t cap)
 {
@@ -369,6 +380,31 @@ int main(int argc, char **argv)
     char err[200] = "";
     CHECK(!rdof_hostweb_save_file("/nonexistent-dir/x.json", "{}", 2, err, sizeof err) && err[0]);
     unlink(cfg_path);
+
+    /* the program's update: refused (none, a wrong image, too big), then written whole and the tool asked to stop */
+    rdof_hostweb_ota_t o = {.max = 64, .check = ota_check, .done = ota_finish};
+    snprintf(o.path, sizeof o.path, "%s.ota", cfg_path);
+    rdof_hostweb_ota(&o);
+    http(port, "GET /api/status HTTP/1.1\r\n\r\n", b, sizeof b);
+    CHECK(strstr(b, "\"ota\":true"));
+    post(port, "/api/ota", "ELF?", b, sizeof b);
+    CHECK(strstr(b, "400") && strstr(b, "not an image for this machine") && !ota_done);
+    post(port, "/api/ota", "IMG 0123456789012345678901234567890123456789012345678901234567890123", b, sizeof b);
+    CHECK(strstr(b, "413") && !ota_done);
+    http(port, "POST /api/ota HTTP/1.1\r\nContent-Length: 0\r\n\r\n", b, sizeof b);
+    CHECK(strstr(b, "400") && !ota_done);
+    CHECK(stat(o.path, &st) != 0); /* nothing written */
+    post(port, "/api/ota", "IMG\x01\x02 new", b, sizeof b);
+    CHECK(strstr(b, "200 OK") && strstr(b, "updated; restarting") && ota_done == 1);
+    t = read_all(o.path);
+    CHECK(t && !strcmp(t, "IMG\x01\x02 new"));
+    free(t);
+    http(port, "GET /api/log HTTP/1.1\r\n\r\n", b, sizeof b);
+    CHECK(strstr(b, "OTA: refused: not an image") && strstr(b, "OTA: written to "));
+    unlink(o.path);
+    rdof_hostweb_ota(NULL);
+    post(port, "/api/ota", "IMG", b, sizeof b);
+    CHECK(strstr(b, "501") && ota_done == 1);
 
     /* the spectrum: wanted once the page asks; rows newer than since, the channels in the span */
     CHECK(!rdof_hostweb_spectrum_wanted());

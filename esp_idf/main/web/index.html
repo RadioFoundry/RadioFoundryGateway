@@ -120,7 +120,7 @@ are fine. It's checked before it's saved. The Wi-Fi networks and the NTP servers
 <div class="cards">
 <div class="card" id="m_board"></div>
 <div class="card" data-cap="ota restart"><h2 id="fwh">Firmware update</h2>
-<div data-cap="ota"><p class="mute">Upload an app image (.bin): the board writes it to the other slot and restarts into it.</p>
+<div data-cap="ota"><p class="mute" id="otahelp">Upload an app image (.bin): the board writes it to the other slot and restarts into it.</p>
 <input type="file" id="fw" accept=".bin"><br><button type="button" onclick="ota()">Upload</button></div>
 <button type="button" class="dang" data-cap="restart" onclick="restart()">Restart</button>
 <button type="button" class="dang" id="pwroff" hidden onclick="powerOff()">Turn off</button>
@@ -605,6 +605,10 @@ function applyCaps(s) {
   for (const [k, src] of [['wifi', '/wifilist.js'], ['netclock', '/netclock.js']])
     if (c[k] && !loaded[k]) { loaded[k] = true; const e = document.createElement('script'); e.src = src; document.body.appendChild(e); }
   $('fwh').textContent = c.ota ? 'Firmware update' : 'Restart';
+  if (c.ota && !c.coredump) { /* a host program (rdofradio): its supervisor puts the new one in place */
+    $('fw').accept = '';
+    $('otahelp').textContent = 'Upload a new program (the bundle\'s rdofradio.gz, or rdofradio): it stops, and its supervisor puts the new one in place and starts it.';
+  }
   $('cfg').readOnly = !c.settings_edit;
   $('cfgsrc').hidden = !s.settings_source && c.settings_edit;
   $('cfgsrc').textContent = (c.settings_edit ? 'From ' : 'Read only here: ') + (s.settings_source || 'this program\'s command line');

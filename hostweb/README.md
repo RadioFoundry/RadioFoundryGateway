@@ -37,13 +37,17 @@ own server (esp_http_server). Both route the shared API to the same handlers in 
   the last 10 s. With more than one SDR the page has a picker and shows one at a time.
 - `GET /api/crash`: the supervisor's record of the last exit, as text (404: none); `DELETE /api/crash` erases it.
   Only with `rdof_hostweb_last_exit`.
+- `POST /api/ota`: a new program as the body, with `rdof_hostweb_ota` (a path, a size cap, the tool's check of the
+  image, and a hook that stops the tool): checked (400 with the reason), written whole to the path, answered
+  "updated; restarting" as the board's, then the tool stops for its supervisor to start the new one (rdofradio's
+  `--ota FILE` and the Pluto bundle's `run.sh`). Without it, 501.
 - Every other `/api/` path, and every other POST / DELETE, answers 501 with `{"error":"not on this platform", ...}`:
-  OTA, core dump, Wi-Fi, the firmware's clock, tasks.
+  core dump, Wi-Fi, the firmware's clock, tasks.
 
 `caps` in the status: `ota`, `restart`, `wifi`, `tasks`, `coredump`, `board_mem`, `sys_mem`, `netclock`,
 `os_clock`, `links`, `settings`, `settings_edit`, `spectrum`, `crash`. The page shows what's set and hides the rest (a status without
 `caps` is firmware with everything). Here: `sys_mem` and `os_clock`; `settings`, `settings_edit` (writable) and
-`restart` with the settings hooks; `spectrum` when the status says the tool makes one; `crash` with
+`restart` with the settings hooks; `ota` with `rdof_hostweb_ota`; `spectrum` when the status says the tool makes one; `crash` with
 `rdof_hostweb_last_exit`.
 
 One thread serves one connection at a time, bound to 127.0.0.1 unless told otherwise (there is no
@@ -61,6 +65,7 @@ authentication: bind to another address only on a network you trust). A client t
 | `rdof_hostweb_net_call(role, radio, action, call, duration)` | a call going out ("start" / "end"), for last heard |
 | `rdof_hostweb_spectrum_wanted()` / `rdof_hostweb_spectrum_row(row, bins, center, rate, row_ms)` | the page's spectrum: make rows only while wanted |
 | `rdof_hostweb_spectrum_wanted_sdr(k)` / `rdof_hostweb_spectrum_row_sdr(k, ...)` | the same for the status's SDR k (the calls above are SDR 0's) |
+| `rdof_hostweb_ota(&o)` | `POST /api/ota`: where the image goes, its size cap, the tool's check and its stop (NULL: none) |
 | `rdof_hostweb_last_exit(path)` | the file a supervisor records the last exit in (format in `rdof/hostweb.h`): `last_exit`, `/api/crash` |
 | `rdof_hostweb_settings(&hooks)` | the settings: `get`, `save`, `resolved`, `restart`, `writable`, `source` |
 | `rdof_hostweb_save_file(path, text, len, err, cap)` | write a file whole or not at all (a temporary file, fsync, rename) |

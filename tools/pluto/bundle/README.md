@@ -29,8 +29,16 @@ starts again 5 s after it exits.
 | The clock's learned rate | `/mnt/jffs2/rdof/netclock.state` |
 | The log (RAM: the last 1 MB, then `log.1`) | `/tmp/rdof/log` |
 | How it last ended on its own (a crash, an error): the page's crash card (Logs & maintenance) | `/tmp/rdof/last_exit` |
+| An update from the web page (Logs & maintenance, Firmware update): the bundle's `rdofradio.gz`, or `rdofradio` itself | `/tmp/rdof/rdofradio.ota` until `run.sh` takes it |
 | Keep it from starting | `touch /mnt/jffs2/rdof/disabled`, then reboot |
 | The web page | `http://192.168.2.1:8080/` |
+
+**Updates:** the web page's Firmware update (or `curl --data-binary @rdofradio.gz http://192.168.2.1:8080/api/ota`)
+sends a new `rdofradio`: gzipped (the bundle's `rdofradio.gz`) or not, an ELF for the Pluto's ARM. rdofradio stops,
+and `run.sh` checks that it unpacks and runs, puts it in place of the one in flash and starts it. The flash has no
+room for both, so the old one stays in RAM until the next boot: if the new one ends in error within 30 s of its first
+start, the old one goes back. `install.sh` updates `run.sh` and `VERSION` too; an update from the page doesn't
+(the page shows the program's own version).
 
 The settings are the firmware's settings document, version 3 ([config-v3.md](../../../docs/spec/fw/config-v3.md),
 checked by `tools/config_check.py` against `config/rdof-config.schema.json` in the repo). The

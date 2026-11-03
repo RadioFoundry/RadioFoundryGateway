@@ -200,6 +200,19 @@ void rdof_hostweb_last_exit(const char *path);
 
 /* Set the settings hooks (a copy is taken). Before start or after; without them /api/config answers 501. */
 void rdof_hostweb_settings(const rdof_hostweb_settings_t *s);
+/* POST /api/ota, as the board's: a new program image as the body, at most max bytes. check (may be NULL) says
+ * whether the image will do (false: err holds why, the answer is 400 with it); the server then writes it to path
+ * whole or not at all (rdof_hostweb_save_file), answers "updated; restarting" and calls done, which asks the tool to
+ * stop and returns at once: the tool's supervisor puts the image in place and starts it. The status's caps then
+ * have "ota". Called on the server's thread; the path is copied. NULL: none (501). */
+typedef struct {
+    char path[512];
+    size_t max;
+    bool (*check)(void *ctx, const uint8_t *img, size_t len, char *err, size_t err_cap);
+    void (*done)(void *ctx);
+    void *ctx;
+} rdof_hostweb_ota_t;
+void rdof_hostweb_ota(const rdof_hostweb_ota_t *o);
 /* Write a file whole or not at all: a temporary file beside it, flushed, then renamed over it. False: err says
  * why, and the file is as it was. */
 bool rdof_hostweb_save_file(const char *path, const char *text, size_t len, char *err, size_t err_cap);

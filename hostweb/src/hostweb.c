@@ -85,6 +85,9 @@ static struct {
     spec_t sp[RDOF_HOSTWEB_SDRS];
     /* the supervisor's record of the last exit (rdof_hostweb_last_exit) */
     const char *exit_path;
+    /* the program's update (rdof_hostweb_ota), under set_mu */
+    rdof_hostweb_ota_t ota;
+    bool have_ota;
 } W = {.st_mu = PTHREAD_MUTEX_INITIALIZER, .log_mu = PTHREAD_MUTEX_INITIALIZER, .lh_mu = PTHREAD_MUTEX_INITIALIZER,
        .set_mu = PTHREAD_MUTEX_INITIALIZER, .sp_mu = PTHREAD_MUTEX_INITIALIZER};
 
@@ -109,6 +112,16 @@ void rdof_hostweb_settings(const rdof_hostweb_settings_t *s)
         W.set = *s;
     W.set.source[sizeof W.set.source - 1] = 0;
     W.have_set = s != NULL;
+    pthread_mutex_unlock(&W.set_mu);
+}
+
+void rdof_hostweb_ota(const rdof_hostweb_ota_t *o)
+{
+    pthread_mutex_lock(&W.set_mu);
+    if (o)
+        W.ota = *o;
+    W.ota.path[sizeof W.ota.path - 1] = 0;
+    W.have_ota = o != NULL && o->path[0];
     pthread_mutex_unlock(&W.set_mu);
 }
 
@@ -882,12 +895,14 @@ static char *spectrum_json(const char *query, size_t *n)
 static void platform(rdof_webapi_platform_t *p, rdof_hostweb_settings_t *set)
 {
     pthread_mutex_lock(&W.set_mu);
-    const bool have = W.have_set;
+    const bool have = W.have_set, ota = W.have_ota;
     if (have)
         *set = W.set;
     pthread_mutex_unlock(&W.set_mu);
     memset(p, 0, sizeof *p);
     p->caps = RDOF_WEBAPI_CAP_SYS_MEM | (W.have_clk ? RDOF_WEBAPI_CAP_NETCLOCK : RDOF_WEBAPI_CAP_OS_CLOCK);
+    if (ota)
+        p->caps |= RDOF_WEBAPI_CAP_OTA;
     if (W.exit_path)
         p->caps |= RDOF_WEBAPI_CAP_CRASH;
     pthread_mutex_lock(&W.st_mu);
@@ -1089,6 +1104,40 @@ static void drop_body(int fd, long have, long len)
     }
 }
 
+/* POST /api/ota: checked, written whole, answered, then the tool asked to stop */
+static void serve_ota(int fd, const rdof_hostweb_ota_t *o, const char *body_at, size_t body_have, long body_len)
+{
+    char err[300] = "";
+    if (body_len <= 0 || (o->max && (size_t)body_len > o->max)) {
+        drop_body(fd, (long)body_have, body_len);
+        snprintf(err, sizeof err, "an image of 1 to %zu bytes, as the body\n", o->max);
+        respond_str(fd, body_len <= 0 ? 400 : 413, "text/plain", err);
+        return;
+    }
+    char *img = read_body(fd, body_at, body_have, (size_t)body_len);
+    if (!img) {
+        respond_str(fd, 400, "text/plain", "the image didn't come whole\n");
+        return;
+    }
+    const size_t len = (size_t)body_len;
+    rdof_hostweb_logf("OTA: %zu bytes", len);
+    if (o->check && !o->check(o->ctx, (const uint8_t *)img, len, err, sizeof err - 1)) {
+        rdof_hostweb_logf("OTA: refused: %s", err);
+        strcat(err, "\n");
+        respond_str(fd, 400, "text/plain", err);
+    } else if (!rdof_hostweb_save_file(o->path, img, len, err, sizeof err - 1)) {
+        rdof_hostweb_logf("OTA: %s", err);
+        strcat(err, "\n");
+        respond_str(fd, 500, "text/plain", err);
+    } else {
+        rdof_hostweb_logf("OTA: written to %s; restarting", o->path);
+        respond_str(fd, 200, "text/plain", "updated; restarting");
+        if (o->done)
+            o->done(o->ctx);
+    }
+    free(img);
+}
+
 static void serve(int fd)
 {
     struct timeval tv = {2, 0};
@@ -1158,6 +1207,16 @@ static void serve(int fd)
             respond_str(fd, 404, "text/plain", "no exit recorded\n");
         free(b);
         return;
+    }
+    if (!strcmp(target, "/api/ota") && !strcmp(method, "POST")) {
+        pthread_mutex_lock(&W.set_mu);
+        const bool have = W.have_ota;
+        const rdof_hostweb_ota_t o = W.ota;
+        pthread_mutex_unlock(&W.set_mu);
+        if (have) {
+            serve_ota(fd, &o, body_at, body_have, body_len);
+            return;
+        }
     }
     if (!strncmp(target, "/api/", 5)) {
         rdof_hostweb_settings_t set;
