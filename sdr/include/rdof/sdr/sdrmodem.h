@@ -233,6 +233,10 @@ typedef struct rdof_sdrmodem {
     double sig_off_hz;          /* the carrier from the stream's center (tx_tune's) */
     uint32_t sig_phase;         /* I/Q: the phase accumulator, 2^32 a turn */
     int64_t sig_done_at;        /* the first sample past the source's last keyed one, -1 not yet */
+    int sig_d;                  /* the stream's samples a source sample (tx_fs / its rate) */
+    int sig_k;                  /* the stream's samples into the source sample's interval (sig_pull) */
+    float sig_h0, sig_h1, sig_e0, sig_e1; /* the interval's ends: frequency (I/Q: the phase step), envelope */
+    rdof_cf_t sig_x0, sig_x1;   /* or I/Q */
 } rdof_sdrmodem_t;
 
 /* rx_fs: the receiver's wideband rate (a multiple of 48 kS/s); tx_fs: the modulator's; can_full: full duplex.
@@ -251,6 +255,9 @@ bool rdof_sdrmodem_pull_freq(rdof_sdrmodem_t *m, int64_t pos, float *hz, float *
  * then the pulls render src from the next one on. Refused (false, why) while DMR is keyed or queued, in duplex or a
  * split role, or where tx_tune can't reach hz. src NULL ends it (at once) and tunes back to SET_FREQ's frequency. */
 bool rdof_sdrmodem_signal(rdof_sdrmodem_t *m, uint32_t hz, const rdof_sig_src_t *src, char *why, size_t cap);
+/* The rate for a signal's source (its rate): tx_fs, or a fast stream's divided down to about 48 kS/s. The pulls spread
+ * each of a slower source's samples over tx_fs / its rate of the stream's, linearly. */
+double rdof_sdrmodem_signal_rate(const rdof_sdrmodem_t *m);
 /* 0 none, 1 sending, 2 the source is done and a quarter second more has been pulled (what it keyed went out). */
 int rdof_sdrmodem_signal_state(const rdof_sdrmodem_t *m);
 /* Transmitting or about to (anything queued). */

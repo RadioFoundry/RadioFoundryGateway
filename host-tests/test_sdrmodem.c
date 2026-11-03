@@ -1612,6 +1612,94 @@ static void test_outbound(void)
 
 #endif
 
+/* A signal mode's source on a fast stream (a PlutoSDR's 864 kS/s, the carrier 100 kHz from its center): rendered at
+ * rdof_sdrmodem_signal_rate's 48 kS/s, spread over 18 stream samples each, linearly (a 1 kHz tone's deviation is
+ * then within 5.4 Hz of the curve: the straight line's error); or at the stream's own rate, exact. */
+#define SG_FS 864000
+#define SG_OFF (-100000.0)
+#define SG_N 24000 /* 0.5 s at 48 kS/s */
+
+static bool sg_tune(void *ctx, uint32_t hz, double *off)
+{
+    *off = SG_OFF;
+    return true;
+}
+
+typedef struct {
+    double rate;
+    long n, sent;
+} sg_src_t;
+
+static double sg_dev(double t) { return 2500.0 * sin(2 * M_PI * 1000.0 * t); }
+
+static int sg_freq(void *ctx, float *hz, float *env, int n)
+{
+    sg_src_t *s = ctx;
+    int k = 0;
+    for (; k < n && s->sent < s->n; k++, s->sent++)
+        hz[k] = (float)sg_dev((double)s->sent / s->rate), env[k] = 1;
+    for (int i = k; i < n; i++)
+        hz[i] = 0, env[i] = 0;
+    return k;
+}
+
+static bool sg_done(void *ctx) { return ((sg_src_t *)ctx)->sent >= ((sg_src_t *)ctx)->n; }
+
+static void test_signal(bool slow)
+{
+    static rdof_sdrmodem_t m;
+    const rdof_sdrmodem_io_t io = {no_reply, NULL, sg_tune, NULL, NULL};
+    CHECK(rdof_sdrmodem_init(&m, &io, SG_FS, SG_FS, false) == 0, "init");
+    const double rate = slow ? rdof_sdrmodem_signal_rate(&m) : SG_FS;
+    CHECK(!slow || rate == 48000.0, "the source's rate at 864 kS/s: %.1f", rate);
+    const int d = (int)lround(SG_FS / rate);
+    sg_src_t s = {rate, slow ? SG_N : SG_N * 18, 0};
+    const rdof_sig_src_t src = {.freq = sg_freq, .done = sg_done, .peak_hz = 2500, .rate = slow ? rate : 0, .ctx = &s};
+    char why[96];
+    CHECK(rdof_sdrmodem_signal(&m, 438487500, &src, why, sizeof why), "signal: %s", why);
+    const long cap = SG_FS; /* a second: the signal, the quarter second after, room */
+    rdof_cf_t *x = calloc((size_t)cap, sizeof *x);
+    long got = 0;
+    int64_t pos = 1000;
+    while (got + 1000 <= cap && rdof_sdrmodem_signal_state(&m) == 1) {
+        rdof_sdrmodem_pull_iq(&m, pos, x + got, 1000);
+        pos += 1000, got += 1000;
+    }
+    CHECK(rdof_sdrmodem_signal_state(&m) == 2, "the signal's end after %ld samples", got);
+    long keyed = 0, worst_i = 0;
+    double amp_err = 0, sum_e2 = 0, worst = 0, cfo = 0;
+    const double a = m.mod.amplitude;
+    for (long j = 0; j < got; j++)
+        if (x[j].re != 0 || x[j].im != 0) {
+            keyed++;
+            if (j >= d && j < (long)SG_N * 18 - d) /* past the first interval's rise (from nothing) */
+                amp_err = fmax(amp_err, fabs(hypot(x[j].re, x[j].im) - a));
+        }
+    long n = 0;
+    for (long j = d; j + 1 < (long)SG_N * 18 - d; j++) { /* the step into j + 1: source sample (j + 1) / d - 1 + ... */
+        const double ph = atan2(x[j + 1].im * x[j].re - x[j + 1].re * x[j].im, x[j + 1].re * x[j].re + x[j + 1].im * x[j].im);
+        const double f = ph * SG_FS / (2 * M_PI) - SG_OFF;
+        const long jj = j + 1;
+        const double src_t = slow ? ((double)(jj / d) - 1 + (double)(jj % d + 1) / d) / rate : (double)jj / SG_FS;
+        const double e = f - sg_dev(src_t);
+        cfo += f, n++;
+        sum_e2 += e * e;
+        if (fabs(e) > worst)
+            worst = fabs(e), worst_i = j;
+    }
+    const double rms = sqrt(sum_e2 / (double)n);
+    CHECK(keyed >= (long)SG_N * 18 && keyed <= (long)SG_N * 18 + d, "keyed %ld samples, not %d", keyed, SG_N * 18);
+    CHECK(amp_err < 2e-3 * a, "the envelope off by %.4f of %.3f", amp_err, a);
+    CHECK(fabs(cfo / (double)n) < 1.0 && rms < 4.0 && worst < 6.0,
+          "the frequency: mean %.2f Hz off the tone, %.2f Hz rms from it, %.1f Hz at worst (sample %ld)", cfo / n, rms,
+          worst, worst_i);
+    printf("signal at %.0f S/s on a %d S/s stream: %ld keyed, %.2f Hz rms off the tone (%.1f worst), |x| within %.4f\n",
+           rate, SG_FS, keyed, rms, worst, amp_err);
+    rdof_sdrmodem_signal(&m, 0, NULL, why, sizeof why);
+    free(x);
+    rdof_sdrmodem_free(&m);
+}
+
 int main(void)
 {
     char report[1024];
@@ -1633,6 +1721,8 @@ int main(void)
     test_dcdm_e2e();
     test_outbound();
 #endif
+    test_signal(true);
+    test_signal(false);
     for (int full = 0; full < 2; full++) {
         int f = rdof_sdrmodem_loopback(full, report, sizeof report);
         printf("%s%s\n", f ? "FAIL " : "", report);

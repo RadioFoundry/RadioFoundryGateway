@@ -47,6 +47,7 @@ typedef struct {
     /* Everything is sent (the source keys no more). */
     bool (*done)(void *ctx);
     double peak_hz;          /* freq's largest |Hz|: a front end that sends frequency sets its scale from it */
+    double rate;             /* samples a second it renders at (the platform's sig_rate; 0: the transmitter's own) */
     void *ctx;
 } rdof_sig_src_t;
 

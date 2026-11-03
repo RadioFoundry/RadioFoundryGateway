@@ -17,6 +17,7 @@
 #include "rdof/duplex.h"
 #include "rdof/layer2.h"
 #include "rdof/pdu.h"
+#include "rdof/sdr/fmgen.h"
 
 #define LEAD_SYMBOLS 24  /* how far ahead of the pull position a burst is queued: 5 ms */
 #define MUTE_48K 720     /* half a slot: a heard burst this close to one sent is ours */
@@ -1359,6 +1360,10 @@ bool rdof_sdrmodem_signal(rdof_sdrmodem_t *m, uint32_t hz, const rdof_sig_src_t 
     m->sig_off_hz = off;
     m->sig_phase = 0;
     m->sig_done_at = -1;
+    m->sig_d = src->rate > 0 && src->rate < m->tx_fs ? (int)lround(m->tx_fs / src->rate) : 1;
+    m->sig_k = 0;
+    m->sig_h0 = m->sig_h1 = m->sig_e0 = m->sig_e1 = 0;
+    m->sig_x0 = m->sig_x1 = (rdof_cf_t){0, 0};
     return true;
 }
 
@@ -1369,52 +1374,80 @@ int rdof_sdrmodem_signal_state(const rdof_sdrmodem_t *m)
     return m->sig_done_at >= 0 && m->pos >= m->sig_done_at + m->tx_fs / 4 ? 2 : 1;
 }
 
-static rdof_cf_t sig_rot(uint32_t phase)
+/* A fast stream divided down to about 48 kS/s (a PlutoSDR's 864 kS/s: 18), where a source renders for a fraction of
+ * the time. */
+double rdof_sdrmodem_signal_rate(const rdof_sdrmodem_t *m)
 {
-    const float a = (float)(int32_t)phase * (float)(2.0 * 3.14159265358979323846 / 4294967296.0);
-    return (rdof_cf_t){cosf(a), sinf(a)};
+    return m->tx_fs >= 96000 ? m->tx_fs / (double)lround(m->tx_fs / 48000.0) : (double)m->tx_fs;
 }
 
-/* n samples of the source from pos: frequency (Hz, the offset in) and envelope, or I/Q. Whether any is keyed. */
+/* The next count source samples into h and e (frequency from the carrier, envelope) or x (I/Q): zeros past its end,
+ * where sig_done_at is set (at stream sample `at` for the first missing one). Whether any is keyed. */
+static bool sig_fetch(rdof_sdrmodem_t *m, bool iq, float *h, float *e, rdof_cf_t *x, int count, int64_t at, int d)
+{
+    int got = 0;
+    if (m->sig_done_at < 0 && iq && m->sig.iq) {
+        got = m->sig.iq(m->sig.ctx, (float *)x, count);
+        for (int i = 0; i < got; i++)
+            h[i] = 0, e[i] = 1;
+    } else if (m->sig_done_at < 0 && m->sig.freq)
+        got = m->sig.freq(m->sig.ctx, h, e, count);
+    if (got < 0)
+        got = 0;
+    if (got < count && m->sig_done_at < 0 && m->sig.done && m->sig.done(m->sig.ctx))
+        m->sig_done_at = at + (int64_t)got * d;
+    for (int i = got; i < count; i++) {
+        h[i] = 0, e[i] = 0;
+        x[i] = (rdof_cf_t){0, 0};
+    }
+    if (iq && !m->sig.iq) /* the frequency as the phase's step a stream sample, 2^32 a turn */
+        for (int i = 0; i < count; i++)
+            h[i] = (float)(((double)h[i] + m->sig_off_hz) * (4294967296.0 / m->tx_fs));
+    return got > 0;
+}
+
+/* n samples of the source from pos: frequency (Hz, the offset in) and envelope, or I/Q. Whether any is keyed. The
+ * source runs at tx_fs / d (its rate): the stream's sample j is source sample j / d's interval, linear from the one
+ * before ((j % d + 1) / d of the way: with d 1, the source's sample itself). The phase steps through a sine table. */
 static bool sig_pull(rdof_sdrmodem_t *m, int64_t pos, rdof_cf_t *iq, float *hz, float *env, int n)
 {
-    bool keyed = false;
-    float fb[64], eb[64];
-    const double turn = 4294967296.0 / m->tx_fs; /* phase steps a Hz */
-    for (int done = 0; done < n;) {
-        const int k = n - done < 64 ? n - done : 64;
-        float *h = hz ? hz + done : fb, *e = env ? env + done : eb;
-        int got = 0;
-        if (m->sig_done_at < 0 && iq && m->sig.iq) {
-            got = m->sig.iq(m->sig.ctx, (float *)(iq + done), k);
-            const uint32_t inc = (uint32_t)(int64_t)llround(m->sig_off_hz * turn);
-            for (int i = 0; i < got; i++) { /* to the carrier's offset */
-                const rdof_cf_t r = sig_rot(m->sig_phase), x = iq[done + i];
-                iq[done + i] = (rdof_cf_t){x.re * r.re - x.im * r.im, x.re * r.im + x.im * r.re};
-                m->sig_phase += inc;
+    enum { B = 64 };
+    const int d = m->sig_d;
+    const float inv_d = 1.0f / (float)d, amp = m->mod.amplitude;
+    const uint32_t off_step = (uint32_t)(int64_t)llround(m->sig_off_hz * (4294967296.0 / m->tx_fs));
+    float sh[B], se[B];
+    rdof_cf_t sx[B];
+    int have = 0, next = 0; /* fetched source samples, the next one to take */
+    bool keyed = m->sig_e1 > 0 || m->sig_x1.re != 0 || m->sig_x1.im != 0;
+    for (int i = 0; i < n; i++) {
+        if (m->sig_k == 0) { /* a new interval: from where the last ended to the next source sample */
+            if (next == have) {
+                int left = 1 + (n - 1 - i) / d; /* intervals starting in this pull */
+                have = left < B ? left : B, next = 0;
+                keyed |= sig_fetch(m, iq != NULL, sh, se, sx, have, pos + i, d);
             }
-        } else if (m->sig_done_at < 0 && m->sig.freq) {
-            got = m->sig.freq(m->sig.ctx, h, e, k);
+            m->sig_h0 = m->sig_h1, m->sig_e0 = m->sig_e1, m->sig_x0 = m->sig_x1;
+            m->sig_h1 = sh[next], m->sig_e1 = se[next], m->sig_x1 = sx[next];
+            next++;
         }
-        if (got < k && m->sig_done_at < 0 && m->sig.done && m->sig.done(m->sig.ctx))
-            m->sig_done_at = pos + done + got;
-        for (int i = got; i < k; i++)
-            h[i] = 0, e[i] = 0;
-        if (iq && !(m->sig.iq && got)) {
-            for (int i = 0; i < k; i++) {
-                m->sig_phase += (uint32_t)(int64_t)llround((h[i] + m->sig_off_hz) * turn);
-                const rdof_cf_t r = sig_rot(m->sig_phase);
-                iq[done + i] = (rdof_cf_t){r.re * m->mod.amplitude * e[i], r.im * m->mod.amplitude * e[i]};
-            }
-        } else if (iq && got < k) {
-            for (int i = got; i < k; i++)
-                iq[done + i] = (rdof_cf_t){0, 0};
+        const float w = (float)(m->sig_k + 1) * inv_d;
+        if (++m->sig_k == d)
+            m->sig_k = 0;
+        const float e = m->sig_e0 + (m->sig_e1 - m->sig_e0) * w;
+        if (iq && m->sig.iq) { /* I/Q, to the carrier's offset */
+            const rdof_cf_t x = {m->sig_x0.re + (m->sig_x1.re - m->sig_x0.re) * w,
+                                 m->sig_x0.im + (m->sig_x1.im - m->sig_x0.im) * w};
+            const rdof_cf_t r = {rdof_fm_sin(m->sig_phase + 0x40000000u), rdof_fm_sin(m->sig_phase)};
+            iq[i] = (rdof_cf_t){x.re * r.re - x.im * r.im, x.re * r.im + x.im * r.re};
+            m->sig_phase += off_step;
+        } else if (iq) {
+            const float step = m->sig_h0 + (m->sig_h1 - m->sig_h0) * w;
+            m->sig_phase += (uint32_t)(int32_t)(step + (step >= 0 ? 0.5f : -0.5f));
+            iq[i] = (rdof_cf_t){rdof_fm_sin(m->sig_phase + 0x40000000u) * amp * e, rdof_fm_sin(m->sig_phase) * amp * e};
+        } else {
+            hz[i] = m->sig_h0 + (m->sig_h1 - m->sig_h0) * w + (float)m->sig_off_hz;
+            env[i] = e;
         }
-        if (hz)
-            for (int i = 0; i < k; i++)
-                h[i] += (float)m->sig_off_hz;
-        keyed = keyed || got > 0;
-        done += k;
     }
     rdof_mod_skip(&m->mod, pos + n); /* the DMR clock goes on with the stream */
     m->pos = pos + n;

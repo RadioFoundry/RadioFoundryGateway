@@ -602,6 +602,10 @@ op's own are the mode's.
   client fills them) or `{"gap": {"sc", "filler"}}` (the front end's zeros, already in the stream). `seconds` is
   at most 3600.
 - A half-duplex front end can't hear its own `tx`: the receiver stops while it transmits. Use a second board.
+- The source renders at the platform's rate for it (`sig_rate`): on rdofradio about 48 kS/s (the stream's rate
+  divided, 864 kS/s by 18), each sample spread over the stream's linearly (`rdof_sdrmodem_signal_rate`); a 1 kHz
+  tone's deviation is then within 5.4 Hz of the curve. Rendered at 864 kS/s it took most of a Pluto core, and the
+  receiver lost samples. A PlutoSDR hears its own `tx` (full duplex): `rx` on the same frequency works there.
 
 FM `tx` fields: `dev_hz` (2500: the program at level 1), `ctcss` (Hz) or `dcs` (`"023N"`, `"023I"`: octal, normal
 or inverted), `sub_dev_hz` (0.2 of `dev_hz`), `sub_end_s` (the CTCSS reverse burst, 0.15; the DCS turn-off code,

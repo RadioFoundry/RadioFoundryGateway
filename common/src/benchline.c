@@ -2006,6 +2006,7 @@ static void op_tx(rdof_bl_t *bl, conn_t *c, int root, double now)
     }
     t->m = m;
     t->src = m->tx_src(t->tx);
+    t->src.rate = fs;
     t->freq_hz = (uint32_t)lround(mhz * 1e6);
     t->power = (int)jnum(bl, root, "power", 0);
     t->max_s = jnum(bl, root, "max_s", t->seconds + STX_TAIL_S);

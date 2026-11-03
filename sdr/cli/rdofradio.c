@@ -1648,7 +1648,7 @@ static void bl_sig_close(void *ctx)
         say("bench: the main loop kept a signal's source past 2 s\n");
 }
 
-static double bl_sig_rate(void *ctx) { return R.m.tx_fs; }
+static double bl_sig_rate(void *ctx) { return rdof_sdrmodem_signal_rate(&R.m); }
 
 /* The main loop's turn for a signal: true while one has the modem. */
 static bool bench_sig_poll(double now)
