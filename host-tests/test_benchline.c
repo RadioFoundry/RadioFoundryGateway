@@ -1377,7 +1377,7 @@ static void test_tcp(void)
                     break;
                 }
                 for (ssize_t i = 0; i < k; i++)
-                    good &= buf[i] == -32;
+                    good &= (int8_t)buf[i] == -32; /* char is unsigned on aarch64 Linux */
                 nb -= k, samples += k / 2;
             }
         } else if (strstr(line, "\"done\"")) {
