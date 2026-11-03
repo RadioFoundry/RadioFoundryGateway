@@ -1126,7 +1126,8 @@ on below about 2.08 MS/s, and the board then streams a constant (through libiio 
 ### rdofradio
 
 A device that transmits, run as the SDR's unit, with the board's code: a SoapySDR device (`--soapy`) or an AD9361 /
-AD9363 through libiio (`--iio`). `--duplex full` is the repeater, `half` the roaming transceiver; `--parrot ID` sends
+AD9363 through libiio (`--iio`), or files (`--file RX[,TX]`: RX cf32 or .cu8 played in real time, then silence; TX
+written as cf32, zeros while idle; for runs with no radio, such as two rdofradios over a local broker). `--duplex full` is the repeater, `half` the roaming transceiver; `--parrot ID` sends
 back what it hears.
 
 ```sh
@@ -1206,7 +1207,8 @@ rdofradio --soapy driver=plutosdr -r 2400000 --allow-tx --config example.json --
 
 - **HBlink4:** with an `hblink` network it's a peer, the board's peer state (`common/src/hbpeer.c`) under a POSIX
   UDP socket (`sdr/cli/rdofradio_net.c`). UDP only: `transport` sctp falls back to UDP with a warning.
-- **MQTT:** an `mqtt` network with `calls` carries the calls.
+- **MQTT:** an `mqtt` network with `calls` carries the calls: as DMRD packets, or with `format: "v3"` as the MQTT
+  network's call messages ([mqtt-net.md](spec/fw/mqtt-net.md)) on a connection of its own (`rdof-net-{name}`).
 - **Channels:** the receiver's channels are the SDR's as the board resolves them (`rdof_plan_sdr`): its receiver's
   frequencies, then the ones it hears for the unit (a transceiver's, a repeater's input), all in the rate's window,
   up to 16. They're all alike: with `identity: per_path` each is a peer of its own (one with the unit's peer id is the

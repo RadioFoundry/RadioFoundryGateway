@@ -999,8 +999,12 @@ unsafe fn quiet_since(t: *const RdofTxvr) -> f64 {
 }
 
 unsafe fn listen(t: *mut RdofTxvr, n: f64) {
-    let mut busy = (*modem(t)).last_rx > quiet_since(t);
-    if !busy && n - (*t).last_status >= STATUS_EVERY_S {
+    let quiet = quiet_since(t);
+    let mut busy = (*modem(t)).last_rx > quiet;
+    // Carrier inside the tail of the call this one answers is that call's (a modem's carrier lingers after the
+    // last burst: an ACK keyed at once would see it).
+    let reply_tail = quiet > (*t).call.quiet_since && n < quiet;
+    if !busy && !reply_tail && n - (*t).last_status >= STATUS_EVERY_S {
         // Carrier detect, where the modem has it: anything on the channel, DMR or not.
         let mut st = no_status();
         (*t).last_status = n;

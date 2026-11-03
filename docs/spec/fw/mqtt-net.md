@@ -260,7 +260,7 @@ place a call comes in or goes out, so the slot is part of the path where the slo
   "transport": "mqtt/tls",
   "bundle": 1,
   "location": {"lat": 35.12345, "lon": -80.12345, "source": "gnss"},
-  "paths_rev": 40213,
+  "paths_rev": 2754,
   "paths": [
     {"i": 0, "name": "rpt1/1", "app": "repeater", "rx": 438.25, "tx": 438.75, "cc": 1, "ts": 1,
      "tx_ok": true, "tg": "91,3100", "ptt": "3101-3199", "pc": "*"},
@@ -277,7 +277,7 @@ place a call comes in or goes out, so the slot is part of the path where the slo
 | `schema` | this JSON's version |
 | `kind` | `box`, `app`, `bridge` (an outside network through an adapter) or `router` |
 | `transport`, `bundle` | how this node connects (§5) |
-| `paths_rev` | u16, the CRC-16 of the path list (names and indexes in order); changes whenever the list does |
+| `paths_rev` | u16, CRC-16/CCITT-FALSE over, for each path in order, its index byte, its name in UTF-8 and a zero byte (65535 for none); changes whenever the list does |
 | `paths[].i` | the index in the header's path byte: the path's position in the resolved view, from 0; at most 63 |
 | `paths[].name` | the path's name in config v3 |
 | `paths[].app` | the app that offers the path (`repeater`), or absent for a frequency |

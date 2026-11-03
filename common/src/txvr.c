@@ -698,8 +698,12 @@ static double quiet_since(const rdof_txvr_t *t, const rdof_txcall_t *c)
 
 static void listen(rdof_txvr_t *t, rdof_txcall_t *c, double n)
 {
-    bool busy = modem(t)->last_rx > quiet_since(t, c);
-    if (!busy && n - t->last_status >= RDOF_TXVR_STATUS_EVERY_S) {
+    const double quiet = quiet_since(t, c);
+    bool busy = modem(t)->last_rx > quiet;
+    /* Carrier inside the tail of the call this one answers is that call's (a modem's carrier lingers after the
+     * last burst: an ACK keyed at once would see it). */
+    const bool reply_tail = quiet > c->quiet_since && n < quiet;
+    if (!busy && !reply_tail && n - t->last_status >= RDOF_TXVR_STATUS_EVERY_S) {
         /* Carrier detect, where the modem has it: anything on the channel, DMR or not. */
         rdof_mmdvm_status_t st;
         t->last_status = n;
