@@ -237,7 +237,7 @@ static void voice(rdof_txvr_t *t, rdof_txcall_t *c, const rdof_net_burst_t *q)
             return;
         gap = d - c->vfilled;
     }
-    if (t->jb.adaptive) {
+    if (t->jb.adaptive && !c->tune.local) {
         double n = now(t), a = ahead(c, n);
         int keep = rdof_jb_fill(&t->jb, &c->jbs, gap, a);
         if (keep < gap) { /* the silence past the target isn't needed */
@@ -269,11 +269,11 @@ static void voice(rdof_txvr_t *t, rdof_txcall_t *c, const rdof_net_burst_t *q)
     c->vfilled = 0;
 }
 
-/* at: when it came, to measure the network by; < 0 not measured (held for its DMRT). */
+/* at: when it came, to measure the network by; < 0 not measured (held for its DMRT, or a local app's). */
 static void add(rdof_txvr_t *t, rdof_txcall_t *c, const rdof_net_burst_t *b, double at)
 {
     rdof_jb_key(&t->jb, &c->jbs, b->dst, b->group, b->slot, c->started);
-    if (at >= 0)
+    if (at >= 0 && !c->tune.local)
         rdof_jb_arrival(&t->jb, &c->jbs, at, b->seq);
     if (!c->src && b->src) {
         c->src = b->src;

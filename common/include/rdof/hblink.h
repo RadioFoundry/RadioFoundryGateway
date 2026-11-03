@@ -66,6 +66,7 @@ typedef struct {
     uint32_t freq;
     int cc, power;
     bool preempt;
+    bool local; /* an app's stream on this box (the bench, the parrot): paced by the app, no jitter buffer */
 } rdof_tune_t;
 
 bool rdof_parse_dmrt(const uint8_t *data, size_t len, rdof_tune_t *out);

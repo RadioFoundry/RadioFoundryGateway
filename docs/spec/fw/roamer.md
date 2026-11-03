@@ -244,6 +244,12 @@ its new position: the roamer uses the embedded LC fragments it has seen for that
 LC (R7.3). So header, terminator and embedded LC continuity hold, and every burst stays on the 60 ms slot grid; only
 when TX starts and how deep the queue runs change.
 
+**Local streams.** A stream from an app on the box through the router's pool (the bench's transmit, the parrot, the IP
+gateway) isn't network voice: its app paces it and hands it over ahead of the air on purpose. Its tune is marked
+`local`, and the buffer neither measures it nor fills, moves or drops any of it; a gap is filled with silence as with
+a fixed buffer. Before this, a bench job's voice that was all silence frames was dropped whole, being always "ahead"
+(a W12's bench voice call went out as its 8 headers and 3 terminators, no voice).
+
 **Numbers.**
 
 | Name | Value | Where |

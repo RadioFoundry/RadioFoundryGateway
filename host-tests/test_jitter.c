@@ -36,7 +36,7 @@
 #define CC 1
 #define SRC 9992001u
 #define TG 91u
-#define FREQ 462562500u
+#define FREQ 438500000u
 #define PEER 9990301u
 #define C_HEADER (RDOF_SYNC_DATA | RDOF_DT_VOICE_LC_HEADER)
 #define C_TERM (RDOF_SYNC_DATA | RDOF_DT_TERMINATOR_WITH_LC)
@@ -331,6 +331,8 @@ static tx_t *tx_new(bool adaptive, double listen_s)
     return &h;
 }
 
+static bool tx_local; /* the calls tx_run tunes are a local app's (rdof_tune_t.local) */
+
 /* Poll every 20 ms and deliver what arrives, until `until`. */
 static void tx_run(tx_t *h, const stream_t *s, uint32_t sid, double until)
 {
@@ -344,7 +346,7 @@ static void tx_run(tx_t *h, const stream_t *s, uint32_t sid, double until)
         if (next <= p) {
             h->rig.clock = next;
             if (!tuned) {
-                rdof_tune_t tu = {.freq = FREQ, .cc = CC, .power = 255};
+                rdof_tune_t tu = {.freq = FREQ, .cc = CC, .power = 255, .local = tx_local};
                 rdof_put_be32(tu.stream_id, sid);
                 rdof_txvr_on_tune(&h->t, &tu);
                 tuned = true;
@@ -427,8 +429,8 @@ static rp_t *rp_new(bool adaptive)
     rdof_modem_init(&h.m, &port);
     rdof_modem_start(&h.m, 1);
     rdof_radio_init(&h.radio, &h.m, RDOF_RADIO_MMDVM);
-    h.radio.fixed_hz = 462550000;
-    rdof_repeater_init(&h.r, &h.radio, PEER, 467550000, 462550000, CC);
+    h.radio.fixed_hz = 438750000;
+    rdof_repeater_init(&h.r, &h.radio, PEER, 438250000, 438750000, CC);
     h.r.jb.adaptive = adaptive;
     h.r.clock = rp_clock;
     h.r.ctx = &h;
@@ -808,6 +810,36 @@ static void t_txvr_steady(void)
     CHECK(fabs(r.h.max_delay - 0.32) < 0.021 && r.h.silences == 0, "fixed: %.3f", r.h.max_delay);
 }
 
+/* A call whose voice is all silence (a bench job's), handed over well ahead of the air: a network stream that far
+ * ahead gives its silence back; a local app's (the bench, the parrot) goes out whole. */
+static int silent_call(bool local, int *shrunk)
+{
+    tx_t *h = tx_new(true, 0);
+    stream_t *s = &g_stream;
+    make_call(s, 9, 2, 2, ceil(h->rig.clock) + 1.0);
+    for (int k = 1; k < s->n - 1; k++)
+        s->b[k].control = rdof_silence_burst((k - 1) % 6, CC, false, NULL, s->b[k].burst);
+    for (int k = 0; k < s->n; k++)
+        s->at[k] = s->t0 + 0.001 * k; /* all at once */
+    tx_local = local;
+    const uint32_t before = h->t.jb.shrunk;
+    tx_run(h, s, 9, s->t0 + 4.0);
+    tx_local = false;
+    *shrunk = (int)(h->t.jb.shrunk - before);
+    int voice = 0;
+    for (int i = 0; i < h->air.n; i++)
+        voice += is_voice(h->air.a[i].control);
+    return voice;
+}
+
+static void t_txvr_local(void)
+{
+    int shrunk, v = silent_call(false, &shrunk);
+    CHECK(v < 12 && shrunk > 0, "a network stream ahead: silence dropped (%d voice, %d shrunk)", v, shrunk);
+    v = silent_call(true, &shrunk);
+    CHECK(v == 12 && shrunk == 0, "a local app's: all 12 voice bursts on the air (%d, %d shrunk)", v, shrunk);
+}
+
 static void t_txvr_jitter(void)
 {
     result_t r;
@@ -1004,6 +1036,7 @@ void test_jitter(void)
     t_reframe();
     t_json();
     t_txvr_steady();
+    t_txvr_local();
     t_txvr_jitter();
     t_txvr_events();
     t_repeater();

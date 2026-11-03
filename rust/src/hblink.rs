@@ -53,6 +53,7 @@ pub struct RdofTune {
     pub cc: c_int,
     pub power: c_int,
     pub preempt: bool,
+    pub local: bool, // an app's stream on this box (the bench, the parrot): paced by the app, no jitter buffer
 }
 
 #[repr(C)]
@@ -212,6 +213,7 @@ pub unsafe extern "C" fn rdof_parse_dmrt(data: *const u8, len: usize, out: &mut 
         cc: c_int::from(d[16] & 0x0F),
         power: c_int::from(d[17]),
         preempt: d.get(18).is_some_and(|b| b & 1 != 0),
+        local: false,
     };
     true
 }

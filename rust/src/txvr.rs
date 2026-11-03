@@ -479,7 +479,7 @@ unsafe fn voice(t: *mut RdofTxvr, c: &mut RdofTxcall, q: &RdofNetBurst) {
         d - c.vfilled
     };
     let jb = &mut *addr_of_mut!((*t).jb);
-    if jb.adaptive {
+    if jb.adaptive && !c.tune.local {
         let n = now(t);
         let a = ahead(c, n);
         let keep = rdof_jb_fill(jb, &mut c.jbs, gap, a);
@@ -514,12 +514,12 @@ unsafe fn voice(t: *mut RdofTxvr, c: &mut RdofTxcall, q: &RdofNetBurst) {
     c.vfilled = 0;
 }
 
-/// at: when it came, to measure the network by; < 0 not measured (held for its DMRT). Called locked.
+/// at: when it came, to measure the network by; < 0 not measured (held for its DMRT, or a local app's). Called locked.
 unsafe fn add(t: *mut RdofTxvr, b: &RdofNetBurst, at: f64) {
     let c = &mut *addr_of_mut!((*t).call);
     let jb = &mut *addr_of_mut!((*t).jb);
     rdof_jb_key(jb, &mut c.jbs, b.dst, b.group, b.slot, c.started);
-    if at >= 0.0 {
+    if at >= 0.0 && !c.tune.local {
         rdof_jb_arrival(jb, &mut c.jbs, at, c_int::from(b.seq));
     }
     if c.src == 0 && b.src != 0 {
