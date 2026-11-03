@@ -143,6 +143,9 @@ static void rx_task(void *arg)
         hb_sink->ctx = r;
         rdof_tracker_add_sink(tracker, rdof_hb_sink_as_sink(hb_sink));
     }
+    rdof_sink_t ms; /* the MQTT network's uplink: not a roamer the SDR's receiver reports for (quiet) */
+    if (!quiet(r) && mn_sink(100 + r->i, 0, &tracker->freq_hz, &ms))
+        rdof_tracker_add_sink(tracker, ms);
 #if CONFIG_RDOF_IPGW
     rdof_sink_t gs; /* data bursts to the IP gateway, at the frequency the radio is on */
     if (ipgw_sink(IPGW_SOURCE_RADIO + r->i, 0, -1, &tracker->freq_hz, &gs))

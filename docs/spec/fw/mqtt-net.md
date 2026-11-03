@@ -2,8 +2,9 @@
 
 Covers: calls between boxes, apps and a private-call router over one MQTT broker, with no master: topics, the binary
 call message, node state and events, arbitration, private-call routing, transports, security, and what phase 1 builds.
-Status: design, 2026-10-30. Not built. Today's MQTT calls (`{root}/calls/...`, DMRD packets) are in
-[mqtt.md](mqtt.md) §10; this replaces them.
+Status: phase 1 built, 2026-11-02 (§1.1): `common/src/mqttnet.c`, run by rdofradio and the board
+(`esp_idf/main/mqttnet_task.c`; built, not yet tested on hardware). Today's MQTT calls (`{root}/calls/...`, DMRD
+packets, [mqtt.md](mqtt.md) §10) stay the default; this replaces them later.
 Related: [config-v3.md](config-v3.md) (talk paths, policies, networks), [dmr-core.md](dmr-core.md) (PDU layouts),
 [mqtt.md](mqtt.md) (today's topics), [ipgw.md](ipgw.md) (data reassembly, confirmed ACK).
 
@@ -20,6 +21,40 @@ Related: [config-v3.md](config-v3.md) (talk paths, policies, networks), [dmr-cor
 | `format: "v3"` beside today's DMRD calls (§10) | `cmd` |
 
 Order: rdofradio first (it already carries MQTT calls, [mqtt.md](mqtt.md) §10), then the board.
+
+### 1.1 What's built
+
+| Part | Where |
+|---|---|
+| The message, its items, the topics, `info`, `activity`, the TG subscriptions | `common/src/mqttnet.c`, `rdof/mqttnet.h`; host tests in `host-tests/test_mqttnet.c` |
+| Uplink: a receiver's tracker frames to messages (late entry held, CSBKs counted, data calls whole or in parts, `quality`) | `rdof_mn_up_t` |
+| Downlink: messages to bursts for the router's transmitters, the jitter buffer, arbitration, a header made when voice comes first | `rdof_mn_down_t`, then `rdof_siteroute_burst_on` |
+| `data_result` for data this box delivered | `rdof_mn_results_*` |
+| rdofradio: `format: "v3"`, `--file RX[,TX]` to run it with no radio | `sdr/cli/rdofradio.c` |
+| The board: one connection, every receiver's tracker, the router's transmitters, `/api/status` `mqtt_net` | `esp_idf/main/mqttnet_task.c` |
+| The vectors (§13) and seven RF scenes, for the router and the apps to test against | `host-tests/fixtures/mqtt-net/vectors.json` |
+
+Decisions taken while building it:
+
+- **Connection.** Its own, client ID `rdof-net-{node}`, will `{root}/node/{node}/online` `"0"` (retained, QoS 1),
+  `"1"` and `info` on connect. MQTT 5 with No Local on every subscription; TCP_NODELAY where the stack allows it.
+  The node is the box's `name`.
+- **Subscriptions.** `dl/{node}` and `tg/{tg}/+` for each TG a transmitting path carries (or `tg/+/+` when one
+  carries `*`), refreshed every 5 s: held `ptt` TGs come and go.
+- **`dl` path 0xFF.** The box picks: the router's last-heard table for a private call, the paths whose policy carries
+  the TG for a group call. It does not pick by slot.
+- **`activity` `path`** is `null` when no path applies (an app, a flood). The box reads no other node's activity.
+- **Late entry.** Voice held until an embedded LC gives the addresses (at most 6 bursts), then sent with the late
+  flag. A receiver of voice with no `lc_header` makes the header itself; the embedded LC applies one superframe late.
+- **Late messages.** The jitter buffer drops a message whose seq is 128 or more behind (a wrap, not a reorder).
+- **CSBK preambles** fold into one `csbk` with a count. **DPF data** drops its CRC-32 and pad.
+- **Confirmed data.** The hearing box answers ACK only (no selective NAK yet). The delivering box waits 1 s for the
+  radio's response after its transmission ends and 5 s for it to go on air; `tries` is 1.
+- **Priority** (flag bit 3) is carried, not acted on. **`info.paths`** lists the paths on this network only.
+- **paths_rev** is CRC-16/CCITT-FALSE (init 0xFFFF, poly 0x1021), as the router computes it.
+- **A message with no items** is dropped. `origin` source IDs are little endian, as the header. `seq` counts every
+  item, `quality` included; `quality` is last.
+- **Settings.** `format`, `bundle` and `raw_tx` need `calls`; `transport: "mqtt/tls"` is `tls: true`.
 
 ## 2. The idea
 
@@ -288,7 +323,8 @@ place a call comes in or goes out, so the slot is part of the path where the slo
 
 ## 7. `activity` events
 
-One JSON object per message. Every event has `ev`, `at` (UTC ISO 8601, ms), `node`, `path` (the index, §6), `slot`
+One JSON object per message. Every event has `ev`, `at` (UTC ISO 8601, ms), `node`, `path` (the index, §6; `null`
+when none applies), `slot`
 (heard on), `source` (`rf` heard here, `net` sent here from the network) and `stream_id`. Apps that read several boxes
 merge duplicates by `call_key`.
 
@@ -457,8 +493,8 @@ The router's settings (`pc_hold_s`, the flood policy, the claims and priority al
 
 ## 13. Test vectors
 
-The C reproduces these byte for byte (host tests). The header vectors below are normative; the agent adds the rest to
-`host-tests/` from real bursts, as the other golden fixtures are made.
+The C reproduces these byte for byte (host tests). The header vectors below are normative. They and the rest, made
+from real bursts, are in `host-tests/fixtures/mqtt-net/vectors.json` (format in `host-tests/fixtures/README.md`).
 
 Common: stream 0x12345678, src 9801234 (0x958E12), heard on path 1, `quality` 3 bits corrected at −87 dBm.
 
@@ -490,9 +526,10 @@ Private call to 9990 (0x2706), call start, seq 0:
 The same call's first message as the router forwards it on `dl` to a box where 9990's path is 0: identical but byte 2
 = `00`.
 
-Still to make, from real bursts: burst F with `embedded_lc`; a late-entry stream; a terminator; a CSBK with count;
-a `pi_header`; an unconfirmed and a confirmed data call, one of them in parts; a `raw` item; three bundled voice items;
-an item with the u16 length; an unknown item type skipped.
+The fixture adds: three bundled voice items, a `raw` item, an unknown item type skipped and an `origin`; and scenes
+(every message and event of a call heard on RF): a group call (burst F with `embedded_lc`, the talker alias, the
+terminator), a late-entry stream, a `pi_header` call, a radio check (CSBK with count), an unconfirmed data call and
+two confirmed ones, one in parts (with the u16 length).
 
 ## 14. Later
 

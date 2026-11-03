@@ -1,0 +1,572 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
+/*
+ * The MQTT network on the board (docs/spec/fw/mqtt-net.md, rdof/mqttnet.h): an mqtt network with calls and format
+ * "v3" carries the calls as call messages, on a connection of its own (client rdof-net-{name}, will online "0").
+ *
+ * Up: each receiver's tracker (the SDR's channels, each radio's) hands its frames to mn_sink's queue; the task runs
+ * them through an uplink per receiver (rdof_mn_up) and publishes on {root}/tg|pc/{dst}/{node}. Down: esp-mqtt's
+ * task copies {root}/dl/{node} and the subscribed {root}/tg/{tg}/+ into a message buffer; the task runs them through
+ * the downlink (rdof_mn_down) to the router's transmitters (site_mn_burst). Confirmed data heard here and sent up is
+ * answered on RF with an ACK (section 4.4). The transmitters' tx events come through mn_tx_event's queue.
+ *
+ * Everything lives in PSRAM: the uplinks, the downlink, the queues and the task's stack (it never writes flash).
+ */
+#include <stdio.h>
+#include <string.h>
+
+#include "app.h"
+
+#if CONFIG_RDOF_MQTT && CONFIG_RDOF_ROAMER && RDOF_FEATURE_TRACKER
+
+#include "esp_app_desc.h"
+#include "esp_attr.h"
+#include "esp_heap_caps.h"
+#include "esp_log.h"
+#include "esp_random.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/message_buffer.h"
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
+#include "mqtt_client.h"
+#if CONFIG_RDOF_MQTT_TLS
+#include "esp_crt_bundle.h"
+#endif
+#if CONFIG_MQTT_PROTOCOL_5
+#include "mqtt5_client.h"
+#endif
+#include "rdof/bits.h"
+#include "rdof/ipgw.h"
+#include "rdof/ipgwtx.h"
+#include "rdof/mmdvm.h"
+#include "rdof/mqttnet.h"
+#if CONFIG_RDOF_SDR
+#include "rdof/sdr/config.h"
+#endif
+
+static const char *TAG = "mqtt-net";
+
+#define MAX_SOURCES (24 + RDOF_MAX_RADIOS) /* the SDR's channels and taps, then the radios */
+#define FRAMES 96                          /* frames queued for the uplinks */
+#define IN_KB 16                           /* messages queued from the broker */
+#define TXQ 8                              /* tx events queued */
+#define TOPIC_MAX 96
+
+typedef struct {
+    uint8_t source;
+    rdof_frame_t f;
+} frame_in_t;
+
+typedef struct {
+    bool end;
+    uint32_t stream, src, dst, freq;
+    int slot;
+} tx_in_t;
+
+typedef struct {
+    bool used;
+    int id; /* mn_sink's source */
+    volatile uint32_t freq;
+    const double *freq_now;
+    rdof_mn_up_t *up;
+} source_t;
+
+typedef struct {
+    const rdof_site_t *site;
+    int net;
+    char node[RDOF_MN_NODE_MAX + 1], root[16];
+    char online[TOPIC_MAX], info[TOPIC_MAX], act[TOPIC_MAX], dl[TOPIC_MAX];
+    esp_mqtt_client_handle_t client;
+    volatile bool up, connected_edge;
+    bool tls;
+    QueueHandle_t frames, txq;
+    SemaphoreHandle_t sink_lock; /* mn_sink's */
+    MessageBufferHandle_t in;
+    source_t src[MAX_SOURCES];
+    rdof_mn_down_t down;
+    rdof_mn_results_t results;
+    char subs[RDOF_MN_SUBS + 1][TOPIC_MAX]; /* the filters subscribed now */
+    int nsubs;
+    uint8_t msg[RDOF_MN_MSG_MAX + TOPIC_MAX + 2];
+    char json[4096];
+    uint32_t in_dropped, frames_dropped, acks;
+} mn_t;
+
+static mn_t *M;
+
+static double mono(void) { return esp_timer_get_time() / 1e6; }
+static double wall(void *ctx) { return now_unix(); }
+static uint32_t rand32(void *ctx) { return esp_random(); }
+
+static uint32_t hz_of(const source_t *s)
+{
+    return s->freq_now && *s->freq_now > 0 ? (uint32_t)*s->freq_now : s->freq;
+}
+
+static void pub(const char *topic, const void *data, int len, int qos, bool retain)
+{
+    if (M->up)
+        esp_mqtt_client_publish(M->client, topic, data, len, qos, retain);
+}
+
+/* ── the uplinks' hooks (the task's) ───────────────────────────────────────── */
+
+static int path_of(void *ctx, int slot) { return site_mn_path_at(hz_of(ctx), slot); }
+
+static bool admit(void *ctx, int slot, uint32_t src, uint32_t dst, bool group)
+{
+    return site_rf_net(hz_of(ctx), slot, src, dst, group) == M->net;
+}
+
+static void publish(void *ctx, int kind, uint32_t dst, const uint8_t *msg, size_t len)
+{
+    char t[TOPIC_MAX];
+    if (rdof_mn_topic(t, sizeof t, M->root, kind, dst, M->node))
+        pub(t, msg, (int)len, 0, false);
+}
+
+static void activity(void *ctx, const char *json) { pub(M->act, json, 0, 1, false); }
+
+static void result(const char *r, const rdof_mn_pending_t *p)
+{
+    char buf[512];
+    if (rdof_mn_data_result_event(M->node, now_unix(), p->path, p->slot, p->stream, p->src, p->dst, p->from,
+                                  p->stream, r, 1, buf, sizeof buf))
+        pub(M->act, buf, 0, 1, false);
+    ESP_LOGI(TAG, "data %lu > %lu from %s: %s", (unsigned long)p->src, (unsigned long)p->dst, p->from, r);
+}
+
+static void response(void *ctx, int slot, uint32_t src, uint32_t dst, int klass, int type, int status)
+{
+    rdof_mn_pending_t p;
+    const char *r = rdof_mn_results_response(&M->results, src, dst, klass, type, &p);
+    if (r)
+        result(r, &p);
+}
+
+/* Confirmed data heard here and sent up: the radio's ACK from this box, on the path it was heard on, unless the
+   called radio was last heard there too (the radios answer each other). */
+static void data_done(void *ctx, const rdof_mn_data_t *d)
+{
+#if RDOF_FEATURE_DATA_BLOCKS && RDOF_FEATURE_TX
+    if (!d->confirmed || d->group || !d->sent || d->path < 0 || site_heard_path(d->dst) == d->path)
+        return;
+    const rdof_path_t *p = &M->site->path[d->path];
+    if (p->tx_freq < 0)
+        return;
+    static EXT_RAM_BSS_ATTR rdof_ipgw_dmr_t ack;
+    const int cc = M->site->freq[p->tx_freq].cc >= 0 ? M->site->freq[p->tx_freq].cc : 1;
+    const bool rpt = p->app >= 0;
+    rdof_ipgw_build_ack(d->dst, d->src, d->sap, d->ns, cc, rdof_data_sync(rpt ? RDOF_BS_VOICE : RDOF_MS_VOICE), &ack);
+    uint8_t sid[4];
+    rdof_put_be32(sid, esp_random());
+    for (int i = 0; i < ack.nbursts; i++) {
+        rdof_net_burst_t b;
+        rdof_ipgw_net_burst(&ack, i, sid, d->slot, (uint8_t)i, &b);
+        if (!site_app_burst(d->path, &b, true, 255) && !site_mn_burst(1ull << d->path, false, &b)) /* a repeater's path */
+            return;
+    }
+    M->acks++;
+    ESP_LOGI(TAG, "answered %lu's confirmed data to %lu (N(S) %d)", (unsigned long)d->src, (unsigned long)d->dst,
+             d->ns);
+#endif
+}
+
+/* ── the downlink's hooks ──────────────────────────────────────────────────── */
+
+/* A dl message goes out on the path in its path byte; a tg message, or path 0xFF, where the router says (its TG
+   paths; a private call where the radio was last heard). */
+static void burst(void *ctx, const rdof_net_burst_t *b, int path, bool dl, uint8_t flags, const char *from)
+{
+    uint64_t only = ~0ull;
+    if (dl && path != RDOF_MN_PATH_NONE) {
+        if (path >= M->site->npath)
+            return;
+        only = 1ull << path;
+    }
+    site_mn_burst(only, (flags & RDOF_MN_F_EMERGENCY) != 0, b);
+}
+
+static void data(void *ctx, const rdof_mn_hdr_t *h, bool confirmed, const char *from)
+{
+    rdof_mn_results_add(&M->results, h, confirmed, from, h->path, mono());
+}
+
+/* ── in: the trackers' sinks, esp-mqtt's task, the transmitters ───────────── */
+
+static void on_frame(void *ctx, const char *channel, const rdof_frame_t *f)
+{
+    frame_in_t in = {.source = (uint8_t)((source_t *)ctx - M->src), .f = *f};
+    if (xQueueSend(M->frames, &in, 0) != pdTRUE)
+        M->frames_dropped++;
+}
+
+/* Called from each receiver's task as it sets up (the SDR's, each radio's), maybe at once and more than once. */
+bool mn_sink(int source, uint32_t freq, const double *freq_now, rdof_sink_t *out)
+{
+    if (!M)
+        return false;
+    xSemaphoreTake(M->sink_lock, portMAX_DELAY);
+    source_t *s = NULL;
+    for (int i = 0; i < MAX_SOURCES && !s; i++)
+        if (M->src[i].used && M->src[i].id == source)
+            s = &M->src[i];
+    if (s) { /* the receiver set up again (a retune, a restart): the same uplink, its calls time out on their own */
+        s->freq_now = freq_now;
+        s->freq = freq;
+        xSemaphoreGive(M->sink_lock);
+        *out = (rdof_sink_t){.on_frame = on_frame, .ctx = s};
+        return true;
+    }
+    for (int i = 0; i < MAX_SOURCES && !s; i++)
+        if (!M->src[i].used)
+            s = &M->src[i];
+    rdof_mn_up_t *u = s ? heap_caps_calloc(1, sizeof *u, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : NULL;
+    if (!u) {
+        ESP_LOGE(TAG, "no %s for receiver %d's uplink", s ? "memory" : "room", source);
+        xSemaphoreGive(M->sink_lock);
+        return false;
+    }
+    rdof_mn_up_init(u, M->node);
+    u->path_of = path_of;
+    u->admit = admit;
+    u->publish = publish;
+    u->activity = activity;
+    u->data_done = data_done;
+    u->response = response;
+    u->rand32 = rand32;
+    u->wall = wall;
+    u->ctx = s;
+    for (int k = 0; k < M->site->npath && k < 64; k++)
+        if (M->site->path[k].tx_freq >= 0)
+            u->tx_ok |= 1ull << k;
+    s->id = source;
+    s->freq = freq;
+    s->freq_now = freq_now;
+    s->up = u;
+    __atomic_store_n(&s->used, true, __ATOMIC_RELEASE); /* last: the task polls the ones in use */
+    xSemaphoreGive(M->sink_lock);
+    *out = (rdof_sink_t){.on_frame = on_frame, .ctx = s};
+    return true;
+}
+
+void mn_tx_event(const char *action, const rdof_tx_call_info_t *c)
+{
+    if (!M)
+        return;
+    const bool end = !strcmp(action, "end") || !strcmp(action, "lost");
+    if (!end && strcmp(action, "start"))
+        return;
+    const tx_in_t t = {.end = end, .stream = rdof_be32(c->stream_id), .src = c->src, .dst = c->dst, .freq = c->freq,
+                       .slot = c->slot};
+    xQueueSend(M->txq, &t, 0);
+}
+
+static void on_event(void *arg, esp_event_base_t base, int32_t id, void *ev)
+{
+    esp_mqtt_event_handle_t e = ev;
+    switch ((esp_mqtt_event_id_t)id) {
+    case MQTT_EVENT_CONNECTED:
+        ESP_LOGI(TAG, "connected to the broker as rdof-net-%s", M->node);
+        M->nsubs = 0; /* a new session: subscribe again */
+        M->up = true;
+        M->connected_edge = true;
+        break;
+    case MQTT_EVENT_DISCONNECTED:
+        if (M->up)
+            ESP_LOGW(TAG, "disconnected from the broker");
+        M->up = false;
+        break;
+    case MQTT_EVENT_DATA: {
+        /* whole messages only (the buffer takes the largest call message); [topic length][topic][message] */
+        if (e->current_data_offset || e->data_len != e->total_data_len || e->topic_len <= 0 ||
+            e->topic_len >= TOPIC_MAX || e->data_len <= 0 || e->data_len > RDOF_MN_MSG_MAX) {
+            M->in_dropped++;
+            break;
+        }
+        static EXT_RAM_BSS_ATTR uint8_t buf[RDOF_MN_MSG_MAX + TOPIC_MAX + 1]; /* esp-mqtt's task only */
+        buf[0] = (uint8_t)e->topic_len;
+        memcpy(buf + 1, e->topic, (size_t)e->topic_len);
+        memcpy(buf + 1 + e->topic_len, e->data, (size_t)e->data_len);
+        const size_t n = 1 + (size_t)e->topic_len + (size_t)e->data_len;
+        if (xMessageBufferSend(M->in, buf, n, 0) != n)
+            M->in_dropped++;
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+/* ── the task ──────────────────────────────────────────────────────────────── */
+
+static void subscribe(void)
+{
+    static EXT_RAM_BSS_ATTR char want[RDOF_MN_SUBS + 1][TOPIC_MAX];
+    uint32_t tgs[RDOF_MN_SUBS];
+    bool all = false;
+    const int n = site_mn_sub_tgs(tgs, RDOF_MN_SUBS - 1, &all);
+    int k = 0;
+    snprintf(want[k++], TOPIC_MAX, "%s", M->dl);
+    if (all)
+        snprintf(want[k++], TOPIC_MAX, "%s/tg/+/+", M->root);
+    else
+        for (int i = 0; i < n; i++)
+            snprintf(want[k++], TOPIC_MAX, "%s/tg/%lu/+", M->root, (unsigned long)tgs[i]);
+    for (int i = 0; i < M->nsubs; i++) { /* dropped ones */
+        bool keep = false;
+        for (int j = 0; j < k && !keep; j++)
+            keep = !strcmp(M->subs[i], want[j]);
+        if (!keep)
+            esp_mqtt_client_unsubscribe(M->client, M->subs[i]);
+    }
+    for (int j = 0; j < k; j++) { /* new ones */
+        bool had = false;
+        for (int i = 0; i < M->nsubs && !had; i++)
+            had = !strcmp(M->subs[i], want[j]);
+        if (had)
+            continue;
+#if CONFIG_MQTT_PROTOCOL_5
+        const esp_mqtt5_subscribe_property_config_t sp = {.no_local_flag = true}; /* our own messages stay out */
+        esp_mqtt5_client_set_subscribe_property(M->client, &sp);
+#endif
+        esp_mqtt_client_subscribe_single(M->client, want[j], 0);
+    }
+    memcpy(M->subs, want, sizeof want);
+    M->nsubs = k;
+}
+
+static void publish_info(void)
+{
+    const rdof_mn_info_t in = {.node = M->node, .name = M->site->name, .firmware = esp_app_get_description()->version,
+                               .transport = M->tls ? "mqtt/tls" : "mqtt/tcp", .dmr_id = M->site->id, .bundle = 1};
+    if (rdof_mn_info_json(M->site, M->net, &in, M->json, sizeof M->json))
+        pub(M->info, M->json, 0, 1, true);
+}
+
+static void handle_message(size_t n)
+{
+    const size_t tl = M->msg[0];
+    if (n < 1 + tl)
+        return;
+    char topic[TOPIC_MAX];
+    memcpy(topic, M->msg + 1, tl);
+    topic[tl] = 0;
+    const uint8_t *msg = M->msg + 1 + tl;
+    const size_t len = n - 1 - tl;
+    uint32_t id;
+    char node[RDOF_MN_NODE_MAX + 1];
+    const int kind = rdof_mn_topic_parse(topic, M->root, &id, node, sizeof node);
+    if (kind == RDOF_MN_T_DL && !strcmp(node, M->node)) /* from the router: the node in the topic is ours */
+        rdof_mn_down_message(&M->down, "router", true, msg, len, mono());
+    else if (kind == RDOF_MN_T_TG && strcmp(node, M->node))
+        rdof_mn_down_message(&M->down, node, false, msg, len, mono());
+}
+
+static void handle_tx(const tx_in_t *t)
+{
+    const char *from = rdof_mn_down_from(&M->down, t->stream);
+    if (!from)
+        return; /* not the network's stream */
+    int path = -1;
+    const int f = rdof_site_freq_hz(M->site, t->freq);
+    for (int k = 0; k < M->site->npath && f >= 0; k++)
+        if (M->site->path[k].tx_freq == f && (!M->site->path[k].tx_slot || M->site->path[k].tx_slot == t->slot))
+            path = k;
+    char buf[512];
+    if (rdof_mn_tx_event(M->node, now_unix(), path, t->slot, t->stream, t->end ? "end" : "start", t->src, t->dst,
+                         from, buf, sizeof buf))
+        pub(M->act, buf, 0, 1, false);
+    rdof_mn_pending_t p;
+    const char *r = t->end ? rdof_mn_results_sent(&M->results, t->stream, mono(), &p) : NULL;
+    if (r)
+        result(r, &p);
+}
+
+static void mn_task(void *arg)
+{
+    double ticked = 0, subs_at = -10;
+    for (;;) {
+        frame_in_t fi;
+        /* frames first: a call's bursts every 60 ms on each receiver */
+        while (xQueueReceive(M->frames, &fi, 0) == pdTRUE)
+            if (fi.source < MAX_SOURCES && M->src[fi.source].used)
+                rdof_mn_up_frame(M->src[fi.source].up, &fi.f, mono());
+        size_t n;
+        while ((n = xMessageBufferReceive(M->in, M->msg, sizeof M->msg, 0)) > 0)
+            handle_message(n);
+        tx_in_t t;
+        while (xQueueReceive(M->txq, &t, 0) == pdTRUE)
+            handle_tx(&t);
+        const double now = mono();
+        if (now - ticked >= 0.1) {
+            ticked = now;
+            rdof_mn_down_tick(&M->down, now);
+            for (int i = 0; i < MAX_SOURCES; i++)
+                if (M->src[i].used)
+                    rdof_mn_up_tick(M->src[i].up, now);
+            rdof_mn_pending_t p;
+            const char *r;
+            while ((r = rdof_mn_results_tick(&M->results, now, &p)))
+                result(r, &p);
+        }
+        if (M->connected_edge) {
+            M->connected_edge = false;
+            pub(M->online, "1", 1, 1, true);
+            publish_info();
+            subs_at = -10;
+        }
+        if (M->up && now - subs_at >= 5) { /* held ptt TGs come and go */
+            subs_at = now;
+            subscribe();
+        }
+        /* wake for the next frame, or every 20 ms for the broker's messages and the timers */
+        xQueuePeek(M->frames, &fi, pdMS_TO_TICKS(20));
+    }
+}
+
+/* The connection's settings: the SDR's mqtt network, else the first radio's (one mqtt network in version 3). */
+static bool conn(const char **host, int *port, const char **user, const char **pass, const char **root, bool *tls)
+{
+#if CONFIG_RDOF_SDR
+    if (g_roles.has_sdr && g_scfg.has_mqtt && g_scfg.mqtt_host[0]) {
+        *host = g_scfg.mqtt_host, *port = g_scfg.mqtt_port, *user = g_scfg.mqtt_user, *pass = g_scfg.mqtt_pass;
+        *root = g_scfg.mqtt_root, *tls = g_scfg.mqtt_tls;
+        return true;
+    }
+#endif
+    for (int i = 0; i < g_roles.nradios; i++) {
+        const rdof_config_t *c = g_rcfg[i];
+        if (c && c->has_mqtt && c->mqtt_host[0]) {
+            *host = c->mqtt_host, *port = c->mqtt_port, *user = c->mqtt_user, *pass = c->mqtt_pass;
+            *root = c->mqtt_root, *tls = c->mqtt_tls;
+            return true;
+        }
+    }
+    return false;
+}
+
+void mn_start(void)
+{
+    const int net = site_mn_net();
+    const rdof_site_t *site = site_get();
+    if (net < 0 || !site)
+        return;
+    const char *host, *user, *pass, *root;
+    int port;
+    bool tls;
+    if (!conn(&host, &port, &user, &pass, &root, &tls)) {
+        ESP_LOGW(TAG, "format v3, but no broker in the settings: off");
+        return;
+    }
+    if (!rdof_mn_node_ok(site->name)) {
+        ESP_LOGE(TAG, "the box's name \"%s\" can't be a node (letters, digits, . _ -, at most 39): off", site->name);
+        return;
+    }
+    mn_t *m = heap_caps_calloc(1, sizeof *m, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!m) {
+        ESP_LOGE(TAG, "no memory (%u bytes): off", (unsigned)sizeof *m);
+        return;
+    }
+    m->site = site;
+    m->net = net;
+    m->tls = tls;
+    snprintf(m->node, sizeof m->node, "%s", site->name);
+    snprintf(m->root, sizeof m->root, "%s", root);
+    rdof_mn_node_topic(m->online, sizeof m->online, root, m->node, "online");
+    rdof_mn_node_topic(m->info, sizeof m->info, root, m->node, "info");
+    rdof_mn_node_topic(m->act, sizeof m->act, root, m->node, "activity");
+    rdof_mn_topic(m->dl, sizeof m->dl, root, RDOF_MN_T_DL, 0, m->node);
+    rdof_mn_down_init(&m->down);
+    m->down.raw_tx = site->net[net].raw_tx;
+    m->down.burst = burst;
+    m->down.data = data;
+    m->frames = xQueueCreateWithCaps(FRAMES, sizeof(frame_in_t), MALLOC_CAP_SPIRAM);
+    m->txq = xQueueCreateWithCaps(TXQ, sizeof(tx_in_t), MALLOC_CAP_SPIRAM);
+    m->in = xMessageBufferCreateWithCaps(IN_KB * 1024, MALLOC_CAP_SPIRAM);
+    m->sink_lock = xSemaphoreCreateMutex();
+    if (!m->frames || !m->txq || !m->in || !m->sink_lock) {
+        ESP_LOGE(TAG, "no memory for the queues: off");
+        return;
+    }
+    static EXT_RAM_BSS_ATTR char uri[112], id[64];
+    bool use_tls = false;
+#if CONFIG_RDOF_MQTT_TLS
+    use_tls = tls;
+#else
+    if (tls)
+        ESP_LOGW(TAG, "mqtt/tls, but this build has no TLS (CONFIG_RDOF_MQTT_TLS): plain MQTT");
+#endif
+    snprintf(uri, sizeof uri, "%s://%s:%d", use_tls ? "mqtts" : "mqtt", host, port);
+    snprintf(id, sizeof id, "rdof-net-%s", m->node);
+    const esp_mqtt_client_config_t c = {
+        .broker.address.uri = uri,
+#if CONFIG_RDOF_MQTT_TLS
+        .broker.verification.crt_bundle_attach = use_tls ? esp_crt_bundle_attach : NULL,
+#endif
+        .credentials.client_id = id,
+        .credentials.username = user[0] ? user : NULL,
+        .credentials.authentication.password = pass[0] ? pass : NULL,
+        .session.keepalive = 30,
+        .session.last_will = {.topic = m->online, .msg = "0", .msg_len = 1, .qos = 1, .retain = 1},
+#if CONFIG_MQTT_PROTOCOL_5
+        .session.protocol_ver = MQTT_PROTOCOL_V_5, /* No Local on the subscriptions */
+#endif
+        .network.reconnect_timeout_ms = 2000,
+        .network.disable_auto_reconnect = false,
+        /* a call message whole, both ways (esp-mqtt sends a bigger one in pieces: net.c), and over
+         * CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL so both buffers are in PSRAM */
+        .buffer.size = RDOF_MN_MSG_MAX + TOPIC_MAX + 1024,
+        .buffer.out_size = RDOF_MN_MSG_MAX + TOPIC_MAX + 1024,
+        .outbox.limit = 16 * 1024,
+    };
+    M = m; /* before the client: its events use M */
+    m->client = esp_mqtt_client_init(&c);
+    if (!m->client) {
+        ESP_LOGE(TAG, "no MQTT client: off");
+        M = NULL;
+        return;
+    }
+    esp_mqtt_client_register_event(m->client, ESP_EVENT_ANY_ID, on_event, NULL);
+    /* on core 0 with the network, off the DSP's core 1 */
+    if (xTaskCreatePinnedToCoreWithCaps(mn_task, "mqtt_net", 8192, NULL, 5, NULL, 0, MALLOC_CAP_SPIRAM) != pdPASS) {
+        ESP_LOGE(TAG, "the task didn't start: off");
+        M = NULL;
+        return;
+    }
+    esp_mqtt_client_start(m->client);
+    ESP_LOGI(TAG, "node %s on %s/{tg,pc,dl,node}/ at %s, as %s (%u KB PSRAM)", m->node, root, uri, id,
+             (unsigned)(sizeof *m / 1024));
+}
+
+void mn_status_json(rdof_json_t *j)
+{
+    if (!M)
+        return;
+    rdof_json_open(j, "mqtt_net");
+    rdof_json_bool(j, "connected", M->up);
+    rdof_json_str(j, "node", M->node);
+    rdof_json_int(j, "messages_in", (long)M->down.messages);
+    rdof_json_int(j, "bad_in", (long)M->down.bad);
+    rdof_json_int(j, "late_in", (long)M->down.late);
+    rdof_json_int(j, "in_dropped", (long)M->in_dropped);
+    rdof_json_int(j, "frames_dropped", (long)M->frames_dropped);
+    rdof_json_int(j, "acks", (long)M->acks);
+    long out = 0;
+    for (int i = 0; i < MAX_SOURCES; i++)
+        if (M->src[i].used)
+            out += (long)M->src[i].up->messages;
+    rdof_json_int(j, "messages_out", out);
+    rdof_json_close(j);
+}
+
+#else
+
+void mn_start(void) {}
+bool mn_sink(int source, uint32_t freq, const double *freq_now, rdof_sink_t *out) { return false; }
+void mn_tx_event(const char *action, const rdof_tx_call_info_t *c) {}
+void mn_status_json(rdof_json_t *j) {}
+
+#endif

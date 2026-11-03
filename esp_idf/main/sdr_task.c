@@ -585,6 +585,10 @@ static bool rx_setup(void)
         if (ipgw_sink(i, (uint32_t)rx_freq[i], ch[i].cc, NULL, &hs)) /* data bursts to the IP gateway */
             rdof_sdr_rx_add_sink(&g_rx, i, &hs);
 #endif
+#if CONFIG_RDOF_ROAMER
+        if (i < n - live_taps && mn_sink(i, (uint32_t)rx_freq[i], NULL, &hs)) /* the MQTT network's uplink */
+            rdof_sdr_rx_add_sink(&g_rx, i, &hs);
+#endif
     }
     g_rx.gate = g_scfg.idle_gate;
     g_rx.on_burst = rx_on_burst; /* an sdr_transceiver's modem hears through the receiver, the bench API's streams */

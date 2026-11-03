@@ -606,6 +606,13 @@ static void test_results(void)
     CHECK(!rdof_mn_results_tick(&results, 24.0, &p));
     r = rdof_mn_results_tick(&results, 25.5, &p);
     CHECK(r && !strcmp(r, "failed") && !rdof_mn_results_tick(&results, 26, &p));
+    /* the events: path null when there is none */
+    char ev[512];
+    CHECK(rdof_mn_tx_event("box-a", 0, -1, 1, 0x12345678, "start", 9990001, 91, "box-b", ev, sizeof ev) &&
+          strstr(ev, "\"path\":null,\"slot\":1"));
+    CHECK(rdof_mn_data_result_event("box-a", 0, 2, 1, 7, 9990001, 9990002, "router", 7, "delivered", 1, ev,
+                                    sizeof ev) &&
+          strstr(ev, "\"path\":2,"));
 }
 #endif
 
