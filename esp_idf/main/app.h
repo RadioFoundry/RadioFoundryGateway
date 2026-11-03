@@ -445,6 +445,9 @@ void bench_on_burst(void *ctx, int channel, const rdof_sdr_burst_t *b, double t)
 void bench_rx_started(void);
 bool bench_uri_match(const char *tmpl, const char *uri, size_t len);
 void bench_on_chunk(const rdof_sdr_rx_t *rx, const rdof_cf_t *iq, int n); /* after each chunk, from the DSP task */
+/* From the DSP task, before the chunk that starts at wideband sample sc: its first n samples are filler (the front
+ * end lost them); the history notes where, the I/Q streams count them */
+void bench_wide_filler(uint64_t sc, long n);
 bool bench_call_sink(int channel, rdof_sink_t *s); /* the calls stream's tracker sink for a receiver channel */
 #else
 #define bench_api_register(server) 0
@@ -452,6 +455,7 @@ bool bench_call_sink(int channel, rdof_sink_t *s); /* the calls stream's tracker
 #define bench_rx_started() ((void)0)
 #define bench_uri_match httpd_uri_match_wildcard
 #define bench_on_chunk(rx, iq, n) ((void)0)
+#define bench_wide_filler(sc, n) ((void)0)
 #define bench_call_sink(channel, s) false
 #endif
 /* bench_radio.c: the radios wired to the bench; their JSON (NULL: all, else just that name); the session's
@@ -499,6 +503,7 @@ const char *bench_tx_why_family(int family); /* a voice, csbk or data job's --fa
 void bench_line_start(void);
 void bench_line_burst(int channel, const rdof_sdr_burst_t *b, double t);
 long bench_wide_read(uint64_t sc, int8_t *out, long n, uint64_t *oldest, uint64_t *next);
+long bench_wide_filled(uint64_t sc, long n); /* how many of the history's samples [sc, sc + n) are filler */
 void bench_wide_warm(void);
 double bench_wide_scale_db(void); /* the wideband 8-bit samples' gain over full scale */
 bool bench_session_label(const char *id, char *label, size_t cap);

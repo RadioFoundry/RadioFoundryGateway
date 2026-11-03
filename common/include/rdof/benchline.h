@@ -135,6 +135,9 @@ typedef struct {
     /* The wideband history, cs8: samples [sc, sc + n) into out (2n bytes). Returns how many it copied from sc on (0:
      * none yet). *oldest: the oldest sample kept; *next: the next one the receiver will write. NULL: no captures. */
     long (*iq_read)(void *ctx, uint64_t sc, int8_t *out, long n, uint64_t *oldest, uint64_t *next);
+    /* How many of the history's samples [sc, sc + n) are filler (optional): zeros the receiver put where the front
+     * end lost samples, so its count kept real time (rdof_bl_fills_t). A capture counts them in gap_samples. */
+    long (*iq_filled)(void *ctx, uint64_t sc, long n);
     /* A capture is open: keep the history warm (optional). */
     void (*iq_warm)(void *ctx);
     /* UTC now, and of a wideband sample (optional: then the server's clock). */
@@ -209,6 +212,32 @@ bool rdof_bl_wants_bursts(const rdof_bl_t *bl);
 /* Whether a capture is open (the receiver keeps the history then). */
 bool rdof_bl_wants_iq(const rdof_bl_t *bl);
 
+/* I/Q stream formats (bench-api.md section 6.2's fmt byte). */
+enum { RDOF_BL_IQ_CS8 = 1, RDOF_BL_IQ_CU8 = 2, RDOF_BL_IQ_CS16 = 3, RDOF_BL_IQ_CF32 = 4 };
+
+/* n float I/Q samples (full scale 1.0) into fmt at out, the 8-bit ones (cs8, cu8) k times full scale: a front end's
+ * low bits, where a weak signal is (an LR2021's channel noise is about 1.4 of cs16's 32767: at k 1 cs8 is all
+ * zeros). Returns how many values clipped. */
+int rdof_bl_iq_convert(const float *iq, int n, int fmt, float k, uint8_t *out);
+/* fmt's full scale under the ADC's, in dB (20 log10 k for 8-bit, 0 else): a level less it is dBFS. */
+double rdof_bl_iq_scale_db(int fmt, float k);
+
+/* Where a history holds filler, for iq_filled: the last RDOF_BL_FILLS runs of it, by sample. A run that follows the
+ * last one merges with it; with no room the oldest goes (the captures read near the newest). The caller locks. */
+#define RDOF_BL_FILLS 32
+
+typedef struct {
+    uint64_t from[RDOF_BL_FILLS];
+    uint32_t n[RDOF_BL_FILLS];
+    int head, count;
+} rdof_bl_fills_t;
+
+void rdof_bl_fills_reset(rdof_bl_fills_t *f);
+/* Samples [sc, sc + n) are filler. */
+void rdof_bl_fills_note(rdof_bl_fills_t *f, uint64_t sc, long n);
+/* How many of [sc, sc + n) are. */
+long rdof_bl_fills_count(const rdof_bl_fills_t *f, uint64_t sc, long n);
+
 /* A wideband history the platform may use for iq_read: a ring of cs8 samples. */
 typedef struct {
     int8_t *buf;         /* [n][2] */
@@ -216,13 +245,18 @@ typedef struct {
     uint64_t w;          /* samples written */
     float scale;         /* the samples are multiplied by it before they go to int8 (1 from init): a wider ADC's
                           * low bits, where a weak signal is; window's iq_scale_db is 20 log10 of it */
+    rdof_bl_fills_t fills; /* where it holds filler (rdof_bl_ring_mark_filler) */
 } rdof_bl_ring_t;
 
 bool rdof_bl_ring_init(rdof_bl_ring_t *r, long n);
 void rdof_bl_ring_free(rdof_bl_ring_t *r);
 /* Float samples (full scale 1.0) in; the count that hit the int8 rails is added to *clipped. */
 void rdof_bl_ring_put(rdof_bl_ring_t *r, const float *iq, long n, long *clipped);
+/* The last n samples put are filler (zeros where the receiver lost samples). */
+void rdof_bl_ring_mark_filler(rdof_bl_ring_t *r, long n);
 long rdof_bl_ring_read(const rdof_bl_ring_t *r, uint64_t sc, int8_t *out, long n, uint64_t *oldest, uint64_t *next);
+/* As iq_filled: how many of [sc, sc + n) are filler. */
+long rdof_bl_ring_filled(const rdof_bl_ring_t *r, uint64_t sc, long n);
 
 #ifdef __cplusplus
 }

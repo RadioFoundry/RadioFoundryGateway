@@ -5,7 +5,7 @@ The bench API's client (docs/spec/bench-api.md): one interface over the two benc
     b = open_bench("http://BOARD")             # an ESP32 board (esp_idf): the v1 API, else its /api/* today
     b = open_bench("daemon")                   # the bench daemon on $RDOF_BENCH_DAEMON_HOST over ssh, or its local socket
     b = open_bench("daemon://HOST")
-    b.info(); b.status(); b.spectrum(); b.bursts(freq_hz=461.4625e6, seconds=10); b.capture(...)
+    b.info(); b.status(); b.spectrum(); b.bursts(freq_hz=438.4875e6, seconds=10); b.capture(...)
 
 Each backend answers in the spec's shapes (info, status, spectrum, burst records, capture metadata), so a tool
 doesn't care which bench it has. What a backend can't do raises Unsupported (the spec's "unsupported" code, exit
@@ -851,7 +851,8 @@ def iq_to_file(messages: Iterator[Any], out: str) -> Dict[str, Any]:
                 pre += h["n"]
             nxt = h["sc"] + h["n"] * ratio
             last = bool(h["flags"] & FLAG_LAST)
-    meta["gap_samples"] = gaps
+    # samples missing between frames, and those the board sent as filler (zeros where its front end lost samples)
+    meta["gap_samples"] = gaps + int(meta.get("filled") or 0)
     if pre:
         meta["preroll_samples"] = pre
     with open(out + ".json", "w") as f:

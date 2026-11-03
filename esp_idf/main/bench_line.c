@@ -85,6 +85,8 @@ static long bl_iq_read(void *ctx, uint64_t sc, int8_t *out, long n, uint64_t *ol
     return bench_wide_read(sc, out, n, oldest, next);
 }
 
+static long bl_iq_filled(void *ctx, uint64_t sc, long n) { return bench_wide_filled(sc, n); }
+
 static void bl_iq_warm(void *ctx) { bench_wide_warm(); }
 
 static double bl_utc(void *ctx)
@@ -177,7 +179,8 @@ void bench_line_start(void)
         return;
     }
     static const rdof_bl_platform_t pf = {.device = bl_device, .window = bl_window, .freqs = bl_freqs,
-                                          .iq_read = bl_iq_read, .iq_warm = bl_iq_warm, .utc = bl_utc,
+                                          .iq_read = bl_iq_read, .iq_filled = bl_iq_filled,
+                                          .iq_warm = bl_iq_warm, .utc = bl_utc,
                                           .sc_utc = bl_sc_utc, .rx_stats = bl_rx_stats, .can_tx = bl_can_tx,
                                           .tx_open = bl_tx_open, .tx_space = bl_tx_space, .tx_push = bl_tx_push,
                                           .tx_unkey = bl_tx_unkey, .tx_idle = bl_tx_idle, .tx_close = bl_tx_close,

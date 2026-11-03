@@ -43,6 +43,7 @@
 #include "lr2021_tx.h"
 #include "mem.h"
 #include "rdof/sdr/resample.h"
+#include "rtlsdr/gaps.h"
 #include "sdr_fe.h"
 
 #if CONFIG_RDOF_SDR_LR2021
@@ -434,17 +435,37 @@ static int gain_steps(void *ctx, const double **db)
  * reader's alone. */
 static int64_t rx_count;
 
+/* Where the ring lost samples (it was full), so read() puts zeros in their place and the stream's count keeps real
+ * time: a capture's samples then span the time they say. Noted at the ring's byte offset (ring_in: bytes into it
+ * since start(), the reader's); read() takes data up to a gap, then its filler (ring_out: bytes it took, the
+ * DSP's). Under st.lock. A gap is noted at the ring's newest byte while the ring is full, so read() (which takes at
+ * most a chunk, far less than the ring) can't have taken bytes past it. Each gap is filled up to GAP_FILL_S. */
+#define GAP_FILL_S 1.0
+static rtl_gaps_t gaps;
+static uint64_t ring_in, ring_out;
+
+/* n bytes into the ring, all or none; a loss is noted as a gap there. */
+static size_t ring_put(const uint8_t *b, size_t n)
+{
+    const size_t sent = xStreamBufferSpacesAvailable(st.ring) >= n ? xStreamBufferSend(st.ring, b, n, 0) : 0;
+    ring_in += sent;
+    if (sent < n) {
+        portENTER_CRITICAL(&st.lock);
+        st.stats.overflows++;
+        st.stats.bytes_lost += n - sent;
+        rtl_gaps_note(&gaps, ring_in, (uint32_t)(n - sent));
+        portEXIT_CRITICAL(&st.lock);
+    }
+    return sent;
+}
+
 static void put(const uint8_t *b, size_t n)
 {
     rx_count += (int64_t)(n / (size_t)st.sbytes);
-    size_t sent = xStreamBufferSpacesAvailable(st.ring) >= n ? xStreamBufferSend(st.ring, b, n, 0) : 0;
+    size_t sent = ring_put(b, n);
     size_t used = xStreamBufferBytesAvailable(st.ring);
     portENTER_CRITICAL(&st.lock);
     st.stats.bytes += sent;
-    if (sent < n) {
-        st.stats.overflows++;
-        st.stats.bytes_lost += n - sent;
-    }
     if (used > st.stats.ring_peak)
         st.stats.ring_peak = used;
     portEXIT_CRITICAL(&st.lock);
@@ -633,14 +654,10 @@ static void tx_zero_fill(int64_t n)
     tx.zeros += n;
     while (n > 0) {
         const size_t k = n > (int64_t)max ? max : (size_t)n;
-        size_t sent = xStreamBufferSpacesAvailable(st.ring) >= k * sb ? xStreamBufferSend(st.ring, z, k * sb, 0) : 0;
+        size_t sent = ring_put(z, k * sb);
         rx_count += (int64_t)k;
         portENTER_CRITICAL(&st.lock);
         st.stats.bytes_filled += sent;
-        if (sent < k * sb) {
-            st.stats.overflows++;
-            st.stats.bytes_lost += k * sb - sent;
-        }
         portEXIT_CRITICAL(&st.lock);
         n -= (int64_t)k;
     }
@@ -1063,6 +1080,10 @@ static int start(void *ctx)
     xStreamBufferReset(st.ring);
     memset(&st.stats, 0, sizeof st.stats);
     rx_count = 0;
+    ring_in = ring_out = 0;
+    portENTER_CRITICAL(&st.lock);
+    rtl_gaps_reset(&gaps, (uint32_t)(GAP_FILL_S * st.native) * (uint32_t)st.sbytes);
+    portEXIT_CRITICAL(&st.lock);
     clk_n = 0;
     cfg_update();
     lock();
@@ -1095,10 +1116,27 @@ static void stop(void *ctx)
     unlock();
 }
 
+/* What read() takes next from the ring: up to want bytes of data, or (*fill) of a gap's filler, which it then takes.
+ * Filler comes only first in a read (filled: what it has so far is all filler): after data, a gap ends the read
+ * (stop), so the receiver knows where its filler is (rdof_fe_ops_t's read). */
+static size_t next_take(size_t want, bool filled, bool *fill, bool *stop)
+{
+    portENTER_CRITICAL(&st.lock);
+    size_t k = rtl_gaps_next(&gaps, ring_out, want, fill);
+    *stop = *fill && !filled;
+    if (*fill && !*stop) {
+        rtl_gaps_took(&gaps, k);
+        st.stats.bytes_filled += k;
+    }
+    portEXIT_CRITICAL(&st.lock);
+    return k;
+}
+
 /* The ring's samples: int8 as they came (caps.format CS8), or BLOCK at a time converted to float, resampled to the
  * settings' rate and written as int16 I/Q: len bytes, or what came in timeout_ms. On the DSP's core, off the reader's. It
  * waits for the whole len: taking what's there gave a DSP with time to spare chunks of a millisecond or two, whose
- * per-chunk costs then used the time up (the load read 0.94 with 5 channels or 6, 2026-10-27). */
+ * per-chunk costs then used the time up (the load read 0.94 with 5 channels or 6, 2026-10-27). Where the ring lost
+ * samples, zeros in their place (*filled), at the start of a read: a read with data ends at the next gap. */
 static size_t read(void *ctx, uint8_t *out, size_t len, int timeout_ms, size_t *filled)
 {
     *filled = 0;
@@ -1112,17 +1150,29 @@ static size_t read(void *ctx, uint8_t *out, size_t len, int timeout_ms, size_t *
         size_t done = 0;
         len -= len % 2;
         while (done < len) {
+            bool fill, stop;
+            const size_t k = next_take(len - done, done == *filled, &fill, &stop);
+            if (stop)
+                break;
+            if (fill) {
+                memset(out + done, 0, k);
+                done += k;
+                *filled += k;
+                continue;
+            }
             const TickType_t left = until - xTaskGetTickCount();
             const TickType_t wait = left <= pdMS_TO_TICKS(timeout_ms) ? left : 0;
-            size_t got = xStreamBufferReceive(st.ring, out + done, len - done, wait);
+            size_t got = xStreamBufferReceive(st.ring, out + done, k, wait);
             if (!got)
                 break;
+            ring_out += got;
             done += got;
         }
         return done;
     }
     int16_t *z = (int16_t *)out;
-    size_t room = len / 4, done = 0;
+    size_t room = len / 4, done = 0, fill_out = 0;
+    bool data = false; /* it took data from the ring: a gap now ends the read */
     for (;;) {
         /* inputs whose outputs fit in what's left */
         size_t n = st.resample ? (room > 2 ? (room - 2) * (size_t)st.rs.M / (size_t)st.rs.L : 0) : room;
@@ -1130,10 +1180,23 @@ static size_t read(void *ctx, uint8_t *out, size_t len, int timeout_ms, size_t *
             n = BLOCK;
         if (!n)
             break;
-        /* whole samples: the reader puts whole ones, and this asks for whole ones */
-        const TickType_t left = until - xTaskGetTickCount(); /* past the deadline it wraps: then don't wait */
-        const TickType_t wait = left <= pdMS_TO_TICKS(timeout_ms) ? left : 0;
-        size_t got = xStreamBufferReceive(st.ring, raw, n * (size_t)sb, wait) / (size_t)sb;
+        /* whole samples: the reader puts whole ones (and loses whole ones), and this asks for whole ones */
+        bool fill, stop;
+        const size_t k = next_take(n * (size_t)sb, !data, &fill, &stop);
+        if (stop)
+            break;
+        size_t got;
+        if (fill) {
+            memset(raw, 0, k);
+            got = k / (size_t)sb;
+        } else {
+            const TickType_t left = until - xTaskGetTickCount(); /* past the deadline it wraps: then don't wait */
+            const TickType_t wait = left <= pdMS_TO_TICKS(timeout_ms) ? left : 0;
+            const size_t b = xStreamBufferReceive(st.ring, raw, k, wait);
+            ring_out += b;
+            got = b / (size_t)sb;
+            data |= got > 0;
+        }
         if (!got)
             break;
         int64_t t0 = esp_timer_get_time();
@@ -1149,7 +1212,10 @@ static size_t read(void *ctx, uint8_t *out, size_t len, int timeout_ms, size_t *
         z += 2 * m;
         done += (size_t)m;
         room -= (size_t)m;
+        if (fill)
+            fill_out += (size_t)m; /* the filler's outputs (the resampler's delay smears its edges a little) */
     }
+    *filled = fill_out * 4;
     return done * 4;
 }
 

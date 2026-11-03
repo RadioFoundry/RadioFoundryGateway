@@ -1307,7 +1307,8 @@ in `esp_idf/main/fe_*.c`). The SDR section's `device.type` picks one: `rtlsdr` (
   steps or sits on USB; and for transmit, rx-only / half / full duplex, the TX mode (I/Q, frequency, or native
   4FSK), TX rate and format, TX tuning and power range, and the RX/TX turnaround.
 - **`rdof_fe_ops_t`**: init, wait (for a device), tune (rate, center, ppm; returns the real rate), set_ppm,
-  set_gain / gain_steps, start, stop, read (with a count of bytes filled for gaps), gone, stats, identity, error,
+  set_gain / gain_steps, start, stop, read (with a count of bytes filled for gaps, the filler first in what it
+  returns: a read that took data ends at the next gap), gone, stats, identity, error,
   and optional post (after the DSP), spike and tx_set (transmit) hooks.
 - **`rdof_fe_check`** checks a rate and the channels against the caps when settings are saved, with a message that
   says what the front end takes. The RTL-SDR is also checked when it tunes.

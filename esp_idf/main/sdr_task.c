@@ -1149,8 +1149,9 @@ int sdr_spectrum_rows(uint32_t since, uint8_t *out, int max, uint32_t *seq, sdr_
     return k;
 }
 
-/* filler: the chunk has filler where the front end lost data (its level says nothing about the gain) */
-static void chunk(const uint8_t *raw, int n, int split, bool *first, bool filler)
+/* filler: the chunk's first `filler` samples stand in for what the front end lost (their level says nothing about
+ * the gain; the bench's history notes where they are) */
+static void chunk(const uint8_t *raw, int n, int split, bool *first, int filler)
 {
     int64_t t0 = esp_timer_get_time();
     double peak, clipped;
@@ -1240,6 +1241,8 @@ static void chunk(const uint8_t *raw, int n, int split, bool *first, bool filler
         }
     }
     slot_timing_rx(&g_rx);
+    if (filler > 0)
+        bench_wide_filler((uint64_t)g_rx.samples, filler);
     sdr_process_chunk(&g_rx, iq, n, split);
     ppm_tick();
     rx_unlock();
@@ -1402,7 +1405,7 @@ static void dsp_task(void *arg)
             last_data = now;
             stream_samples += (int64_t)(got / fe_bytes);
             slot_timing_arrived(stream_samples, now);
-            chunk(raw, (int)(got / fe_bytes), split, &first, filled > 0);
+            chunk(raw, (int)(got / fe_bytes), split, &first, (int)(filled / fe_bytes));
             if (!stacks_logged && now - wall_from_us > 60000000) { /* a minute in: how much stack each used */
                 int d, h;
                 sdr_dsp_stacks(&d, &h);

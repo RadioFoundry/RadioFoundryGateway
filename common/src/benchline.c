@@ -86,6 +86,7 @@ typedef struct {
     double run_p;
     uint64_t trig_sc, out_sc0, end_sc;
     long sent, gaps, clipped, inputs;
+    long filled;              /* wideband filler in what it sent, [out_sc0, end_sc) */
 } trig_t;
 
 typedef struct {
@@ -120,7 +121,8 @@ typedef struct {
     /* capture */
     uint64_t sc, sc0, sc_end;
     uint32_t iseq;
-    long gaps, clipped, sent_iq;
+    long gaps, clipped, sent_iq; /* gaps: samples skipped (overwritten before they went) or filler */
+    bool gapped;              /* samples were skipped since the last frame: the next one says so (flag 1) */
     double freq_hz, pre_s, gain;
     double fs;                /* bursts: the wideband rate, for a record's sc */
     /* run */
@@ -2035,10 +2037,17 @@ static void tick_capture(rdof_bl_t *bl, conn_t *c, double now)
             const uint64_t skip = (oldest < c->sc_end ? oldest : c->sc_end) - c->sc;
             c->gaps += (long)skip;
             c->sc += skip;
+            c->gapped = true;
             continue;
         }
         if (got <= 0)
             return; /* not written yet */
+        /* filler in the history (the front end lost samples, zeros kept the count): a gap too */
+        const long fill = bl->p.iq_filled ? bl->p.iq_filled(bl->p.ctx, c->sc, got) : 0;
+        c->gaps += fill;
+        if (fill > 0 || c->gapped)
+            flags |= 1;
+        c->gapped = false;
         for (long i = 0; i < 2 * got; i++)
             if (bl->iq[i] == 127 || bl->iq[i] == -128 || bl->iq[i] == -127)
                 c->clipped++;
@@ -2128,6 +2137,7 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
             int8_t probe[2];
             bl->p.iq_read(bl->p.ctx, UINT64_MAX, probe, 0, &oldest, &next);
             const long samples = (long)((t->end_sc - t->out_sc0 + d - 1) / d);
+            const long gaps = t->gaps + (t->filled + (long)d - 1) / (long)d; /* filler, in the channel's samples */
             emit(bl, c,
                  "{\"done\":{\"freq\":%.1f,\"center\":%.1f,\"fs\":%.3f,\"rate\":%.3f,\"wide_fs\":%.1f,"
                  "\"fmt\":\"%s\",\"bw\":%.0f,\"gain\":%.1f,\"ppm\":%.3f,\"t0\":%.6f,\"trigger_time\":%.6f,"
@@ -2138,7 +2148,7 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
                  trig_utc(bl, t->out_sc0, now, next, w.fs), trig_utc(bl, t->trig_sc, now, next, w.fs),
                  (unsigned long long)((t->trig_sc - t->out_sc0) / d), (unsigned long long)t->trig_sc, t->level_db,
                  t->floor_db, t->level_db - t->floor_db, t->thr, samples / t->rate, samples,
-                 (double)(t->trig_sc - t->out_sc0) / w.fs, t->gaps, t->gaps ? 1L : 0L,
+                 (double)(t->trig_sc - t->out_sc0) / w.fs, gaps, gaps ? 1L : 0L,
                  t->inputs ? 100.0 * (double)t->clipped / (double)(2 * t->inputs) : 0.0, w.iq_scale_db);
             c->state = C_DONE;
             return;
@@ -2170,6 +2180,12 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
         if (got <= 0)
             return; /* not written yet */
         budget -= got;
+        if (t->fired && bl->p.iq_filled) { /* filler in the inputs of what it sends: a gap there */
+            const uint64_t a = t->sc > t->out_sc0 ? t->sc : t->out_sc0, e = t->sc + (uint64_t)got;
+            const uint64_t b = e < t->end_sc ? e : t->end_sc;
+            if (b > a)
+                t->filled += bl->p.iq_filled(bl->p.ctx, a, (long)(b - a));
+        }
         const long idx0 = t->fired ? (long)((t->next_out - g - t->out_sc0) / d) : 0;
         /* the mixer in float (an ESP32's FPU has no double), its phase exact again each chunk */
         const double ph = fmod(t->step * (double)t->sc, 2 * M_PI);
@@ -2268,6 +2284,81 @@ void rdof_bl_tick(rdof_bl_t *bl, double now)
     unlock(bl);
 }
 
+/* ── I/Q formats ──────────────────────────────────────────────────────────── */
+
+int rdof_bl_iq_convert(const float *iq, int n, int fmt, float k, uint8_t *out)
+{
+    if (fmt == RDOF_BL_IQ_CF32) {
+        memcpy(out, iq, (size_t)n * 8);
+        return 0;
+    }
+    int clipped = 0;
+    const float scale = fmt == RDOF_BL_IQ_CS16 ? 32767.0f : 127.0f, g = fmt == RDOF_BL_IQ_CS16 ? scale : scale * k;
+    for (int i = 0; i < 2 * n; i++) {
+        float x = iq[i] * g;
+        if (x > scale) {
+            x = scale;
+            clipped++;
+        } else if (x < -scale) {
+            x = -scale;
+            clipped++;
+        }
+        const int q = (int)lrintf(x);
+        if (fmt == RDOF_BL_IQ_CS16) {
+            out[2 * (size_t)i] = (uint8_t)(uint16_t)(int16_t)q; /* little-endian */
+            out[2 * (size_t)i + 1] = (uint8_t)((uint16_t)(int16_t)q >> 8);
+        } else
+            out[i] = (uint8_t)(fmt == RDOF_BL_IQ_CU8 ? q + 128 : (int8_t)q);
+    }
+    return clipped;
+}
+
+double rdof_bl_iq_scale_db(int fmt, float k)
+{
+    return (fmt == RDOF_BL_IQ_CS8 || fmt == RDOF_BL_IQ_CU8) && k > 0 ? 20.0 * log10(k) : 0.0;
+}
+
+/* ── filler in a history ──────────────────────────────────────────────────── */
+
+void rdof_bl_fills_reset(rdof_bl_fills_t *f) { memset(f, 0, sizeof *f); }
+
+void rdof_bl_fills_note(rdof_bl_fills_t *f, uint64_t sc, long n)
+{
+    if (n <= 0)
+        return;
+    if (f->count) {
+        const int last = (f->head + f->count - 1) % RDOF_BL_FILLS;
+        if (f->from[last] + f->n[last] == sc && f->n[last] <= UINT32_MAX - (uint64_t)n) {
+            f->n[last] += (uint32_t)n;
+            return;
+        }
+    }
+    if (f->count == RDOF_BL_FILLS) { /* no room: the oldest goes */
+        f->head = (f->head + 1) % RDOF_BL_FILLS;
+        f->count--;
+    }
+    const int i = (f->head + f->count) % RDOF_BL_FILLS;
+    f->from[i] = sc;
+    f->n[i] = (uint32_t)(n > (long)UINT32_MAX ? UINT32_MAX : n);
+    f->count++;
+}
+
+long rdof_bl_fills_count(const rdof_bl_fills_t *f, uint64_t sc, long n)
+{
+    if (n <= 0)
+        return 0;
+    const uint64_t end = sc + (uint64_t)n;
+    long k = 0;
+    for (int j = 0; j < f->count; j++) {
+        const int i = (f->head + j) % RDOF_BL_FILLS;
+        const uint64_t a = f->from[i] > sc ? f->from[i] : sc, e = f->from[i] + f->n[i];
+        const uint64_t b = e < end ? e : end;
+        if (b > a)
+            k += (long)(b - a);
+    }
+    return k;
+}
+
 /* ── the history ring ─────────────────────────────────────────────────────── */
 
 bool rdof_bl_ring_init(rdof_bl_ring_t *r, long n)
@@ -2276,8 +2367,17 @@ bool rdof_bl_ring_init(rdof_bl_ring_t *r, long n)
     r->n = r->buf ? n : 0;
     r->w = 0;
     r->scale = 1.0f;
+    rdof_bl_fills_reset(&r->fills);
     return r->buf != NULL;
 }
+
+void rdof_bl_ring_mark_filler(rdof_bl_ring_t *r, long n)
+{
+    if (n > 0 && (uint64_t)n <= r->w)
+        rdof_bl_fills_note(&r->fills, r->w - (uint64_t)n, n);
+}
+
+long rdof_bl_ring_filled(const rdof_bl_ring_t *r, uint64_t sc, long n) { return rdof_bl_fills_count(&r->fills, sc, n); }
 
 void rdof_bl_ring_free(rdof_bl_ring_t *r)
 {

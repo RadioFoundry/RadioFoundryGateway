@@ -1423,6 +1423,14 @@ static long bl_iq_read(void *ctx, uint64_t sc, int8_t *out, long n, uint64_t *ol
     return k;
 }
 
+static long bl_iq_filled(void *ctx, uint64_t sc, long n)
+{
+    pthread_mutex_lock(&BL.mu);
+    const long k = rdof_bl_ring_filled(&BL.ring, sc, n);
+    pthread_mutex_unlock(&BL.mu);
+    return k;
+}
+
 static double bl_utc(void *ctx) { return wall_s(); }
 
 static double bl_sc_utc(void *ctx, uint64_t sc)
@@ -1757,8 +1765,9 @@ static bool bench_rpt_poll(double now)
 }
 
 /* A chunk of the wideband stream, before the receiver: into the history (2.5 s), with the clock's reference.
- * fresh: the read that gave it waited for the device (FRESH_S), so the loop wasn't behind. */
-static void bench_feed(const rdof_cf_t *in, int n, bool fresh)
+ * fresh: the read that gave it waited for the device (FRESH_S), so the loop wasn't behind. filler: zeros in place of
+ * samples the device lost (a capture counts them in gap_samples). */
+static void bench_feed(const rdof_cf_t *in, int n, bool fresh, bool filler)
 {
     if (!BL.bl)
         return;
@@ -1766,6 +1775,8 @@ static void bench_feed(const rdof_cf_t *in, int n, bool fresh)
     pthread_mutex_lock(&BL.mu);
     long clip = 0;
     rdof_bl_ring_put(&BL.ring, (const float *)in, n, &clip);
+    if (filler)
+        rdof_bl_ring_mark_filler(&BL.ring, n);
     BL.clipped += clip, BL.seen += n;
     if (BL.seen > (long)(10 * R.rate))
         BL.clipped /= 2, BL.seen /= 2; /* the last ten seconds or so */
@@ -1819,7 +1830,8 @@ static void bench_start(void)
      * -53 dBFS is a few steps); a signal over -24 dBFS clips, and the capture's clip_pct says so */
     BL.ring.scale = 16;
     static const rdof_bl_platform_t pf = {.device = bl_device, .window = bl_window, .freqs = bl_freqs,
-                                          .iq_read = bl_iq_read, .utc = bl_utc, .sc_utc = bl_sc_utc,
+                                          .iq_read = bl_iq_read, .iq_filled = bl_iq_filled, .utc = bl_utc,
+                                          .sc_utc = bl_sc_utc,
                                           .rx_stats = bl_rx_stats, .can_tx = bl_can_tx, .tx_open = bl_tx_open,
                                           .tx_space = bl_tx_space, .tx_push = bl_tx_push, .tx_unkey = bl_tx_unkey,
                                           .tx_idle = bl_tx_idle, .tx_close = bl_tx_close, .rpt_open = bl_rpt_open,
@@ -2337,7 +2349,7 @@ static void clock_read(double t, bool fresh)
         WS.lost += lost;
         SC.total += lost;
         for (; lost > 0; lost -= CHUNK) {
-            bench_feed(zeros, lost < CHUNK ? (int)lost : CHUNK, false);
+            bench_feed(zeros, lost < CHUNK ? (int)lost : CHUNK, false, true);
             rx_chunk(zeros, lost < CHUNK ? (int)lost : CHUNK);
         }
     }
@@ -2441,7 +2453,7 @@ static void split_turn(void)
 #ifdef RDOF_HOST_WEB
         web_spectrum(in, n);
 #endif
-        bench_feed(in, n, t - t_in >= FRESH_S);
+        bench_feed(in, n, t - t_in >= FRESH_S, false);
         const double t3 = now_s();
         rx_chunk(in, n);
         const double t4 = now_s();
@@ -3345,7 +3357,7 @@ int main(int argc, char **argv)
 #ifdef RDOF_HOST_WEB
         web_spectrum(in, n);
 #endif
-        bench_feed(in, n, dt_read >= FRESH_S);
+        bench_feed(in, n, dt_read >= FRESH_S, false);
         const double t3 = now_s();
         rx_chunk(in, n);
         const double t4 = now_s();

@@ -147,7 +147,8 @@ typedef struct rdof_fe_ops {
     int (*start)(void *ctx);
     void (*stop)(void *ctx);
     /* Up to len bytes (a whole number of samples): blocks until len are there or timeout_ms. Returns the bytes
-     * read. Where the stream lost data, filler stands in so time keeps its place; *filled says how much. */
+     * read. Where the stream lost data, filler stands in so time keeps its place; *filled says how much. The filler
+     * is what's returned first (a read that took data ends at the next gap), so the receiver knows where it is. */
     size_t (*read)(void *ctx, uint8_t *out, size_t len, int timeout_ms, size_t *filled);
     /* The device went away (unplugged, bus error): stop and wait() again. */
     bool (*gone)(void *ctx);

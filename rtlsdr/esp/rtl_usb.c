@@ -229,11 +229,14 @@ size_t rtl_usb_read(uint8_t *out, size_t len, TickType_t timeout, size_t *filled
         bool fill;
         portENTER_CRITICAL(&stats_lock);
         size_t k = rtl_gaps_next(&gaps, data_read, len - got, &fill);
-        if (fill) {
+        const bool stop = fill && got > fill_n; /* filler only first: after data, a gap ends the read */
+        if (fill && !stop) {
             rtl_gaps_took(&gaps, k);
             stats.bytes_filled += k;
         }
         portEXIT_CRITICAL(&stats_lock);
+        if (stop)
+            break;
         if (fill) {
             memset(out + got, 0x80, k);
             got += k;

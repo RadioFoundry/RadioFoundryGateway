@@ -149,13 +149,23 @@ not `rate=wide`.
 Pre-roll frames come first, flagged 32 (pre-roll), with a `seq` of their own from 0; the live frames follow with
 no gap between. The board keeps its history only while I/Q is in use (an I/Q stream opened in the last 10
 minutes), so the first stream after a quiet spell gets what it has, possibly none: count the flagged samples
-(`benchapi` writes `preroll_samples`).
+(`benchapi` writes `preroll_samples`). A line protocol capture or trigger (section 14) keeps only the wideband
+history warm: the channels' histories cost the DSP more, and those requests don't read them.
+
+Where the front end lost samples (its ring was full), the board puts zeros in their place so the samples keep real
+time. A frame with such filler is flagged 1 (gap), and the done frame's `filled` counts it, in the stream's own
+samples (a channel's share of the wideband filler); `benchapi` adds it to `gap_samples`.
+
+cs8 and cu8 have the wideband 8-bit gain for a channel tap too: the front end's full scale is `scale_db` under
+cs8's (42.14 dB on the LR2021, whose channel noise is about 1.4 of cs16's 32767: at the ADC's full scale cs8 was all
+zeros; 0 on the RTL-SDR). The start and done frames give `scale_db` for every format (0 for cs16 and cf32): a level
+in the samples less `scale_db` is dBFS.
 
 Start frame:
 
 ```json
 {"type": "start", "run": 7, "fmt": "cs16", "rate": 48000.0, "freq_hz": 438162500.0, "center_hz": 438162500.0,
- "scale": 32767, "sc_rate": 288000.0, "clock": {...}, "gain_db": 29.7}
+ "scale": 32767, "sc_rate": 288000.0, "scale_db": 0.0, "gain_db": 29.7, "clock": {...}}
 ```
 
 Binary frames: a 32-byte little-endian header, then `n` samples.
@@ -173,8 +183,9 @@ Binary frames: a 32-byte little-endian header, then `n` samples.
 
 A client writes the samples in order, filling a gap with zeros so file position equals sample index
 (`benchapi.iq_to_file` does this and writes `FILE.json`). The done frame carries `why` (`seconds`, `no_signal`,
-`retuned`), `samples`, `gaps`, `clip_pct`, and for a trigger `trigger_sc`, `level_db`, `floor_db` (the channel's
-power when it fired and its floor before, in dB full scale).
+`retuned`), `samples`, `gaps` (frames flagged gap), `filled` (filler samples, above), `scale_db`, `clip_pct`, and
+for a trigger `trigger_sc`, `level_db`, `floor_db` (the channel's power when it fired and its floor before, in dB
+full scale).
 
 ### 6.3 Bursts
 
@@ -457,7 +468,10 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
   (the other half is room for the client to be behind; about 0.9 s on a board). The receiver isn't retuned: `gain` and
   `offset_khz` are noted in the metadata and otherwise ignored, and a frequency outside the window is `refused`.
   `meta` is what `FILE.json` holds: `freq` and `center` (Hz), `fs`, `fmt` `"cs8"`, `gain`, `ppm`, `t0` (UTC of
-  sample 0), `seconds`, `overflows`, `clip_pct`, `pre_s`, `scale_db`. A front end with a wider ADC gives its low
+  sample 0), `seconds`, `overflows`, `gap_samples`, `clip_pct`, `pre_s`, `scale_db`. `gap_samples` counts the
+  samples the capture doesn't have: those the history overwrote before they went (sent as nothing: the client
+  fills them from `sc`) and the board's filler where the front end lost samples (zeros, kept in the history with
+  where they are; their frames are flagged 1). `overflows` is 1 when there are any. A front end with a wider ADC gives its low
   bits, where a bench signal is: `scale_db` is how far cs8's full scale is under the ADC's (24.08 on a PlutoSDR:
   ×16, clipping over -24 dBFS; 42.14 on the LR2021: ×128, clipping over -42 dBFS, its noise about 2 counts rms at
   53.5 dB gain; a level in the capture less `scale_db` is the ADC's dBFS). The board's `WS /iq?rate=wide` cs8 and cu8
@@ -471,7 +485,8 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
   after the rise. Samples are cf32 or cs16, full scale 1.0 = cs8's 127. Nothing in `timeout_s` (60) is
   `no_signal`. `meta` is the daemon's: `freq`, `center`, `fs` and `rate` (the channel's), `wide_fs`, `fmt`, `bw`,
   `t0`, `trigger_time`, `signal_start_sample`, `trigger_sc`, `level_db`, `floor_db`, `snr_db`, `threshold_db`,
-  `seconds`, `samples`, `pre_s`, `gap_samples`, `clip_pct`, `scale_db`. The engine filters on its own thread
+  `seconds`, `samples`, `pre_s`, `gap_samples` (output samples lost, and the wideband filler in what it sent, in
+  output samples), `clip_pct`, `scale_db`. The engine filters on its own thread
   (up to twice the input since the last tick), about 20 multiplies a wideband sample for one trigger.
 - `bursts` and `listen` send the receiver channel's bursts at `freq` as `dmr-bursts` records (section 6.3's fields
   with the daemon's names: `t`, `dt_prev_ms`, `grid_err_ms`, `slot_ab`, `sync`, `kind`, `cc`, `cfo_hz`,

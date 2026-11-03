@@ -74,7 +74,8 @@ esp_err_t rtl_usb_stream_start(int n_transfers, int transfer_bytes);
 void rtl_usb_stream_stop(void);
 bool rtl_usb_streaming(void);
 /* Up to len bytes from the ring: blocks until len are there or the timeout. Returns the count. Where transfers
- * were dropped, mid-scale filler (0x80) stands in for them; *filled (if not NULL) says how many bytes of it. */
+ * were dropped, mid-scale filler (0x80) stands in for them; *filled (if not NULL) says how many bytes of it. The
+ * filler comes first: a read that took data ends at the next gap, so the filler is the first *filled bytes. */
 size_t rtl_usb_read(uint8_t *out, size_t len, TickType_t timeout, size_t *filled);
 void rtl_usb_stats(rtl_usb_stats_t *out);
 /* The bulk endpoint's packet size (64 at Full Speed, 512 at High Speed), 0 before open. */

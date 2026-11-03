@@ -70,6 +70,7 @@ static long f_iq_read(void *ctx, uint64_t sc, int8_t *out, long n, uint64_t *old
 {
     return rdof_bl_ring_read(&ring, sc, out, n, oldest, next);
 }
+static long f_iq_filled(void *ctx, uint64_t sc, long n) { return rdof_bl_ring_filled(&ring, sc, n); }
 static double f_utc(void *ctx) { return 1.8e9; }
 static double f_sc_utc(void *ctx, uint64_t sc) { return 1.8e9 + (double)sc / 768000; }
 static const char *f_can_tx(void *ctx) { return can_tx ? NULL : "no bench.tx"; }
@@ -243,8 +244,8 @@ static void f_ob_unkey(void *ctx)
 static void f_ob_close(void *ctx) { ob.open = false, ob.closed = true; }
 
 static const rdof_bl_platform_t PLAT = {.device = f_device, .window = f_window, .freqs = f_freqs,
-                                        .iq_read = f_iq_read, .utc = f_utc, .sc_utc = f_sc_utc,
-                                        .can_tx = f_can_tx, .tx_open = f_tx_open, .tx_space = f_tx_space,
+                                        .iq_read = f_iq_read, .iq_filled = f_iq_filled, .utc = f_utc,
+                                        .sc_utc = f_sc_utc, .can_tx = f_can_tx, .tx_open = f_tx_open, .tx_space = f_tx_space,
                                         .tx_push = f_tx_push, .tx_unkey = f_tx_unkey, .tx_idle = f_tx_idle,
                                         .tx_close = f_tx_close, .rpt_open = f_rpt_open, .rpt_state = f_rpt_state,
                                         .rpt_event = f_rpt_event, .rpt_wake = f_rpt_wake, .rpt_close = f_rpt_close,
@@ -656,6 +657,164 @@ static void test_trigger(void)
     CHECK(strstr(all, "\"code\":\"refused\""), "outside the window: %s", all);
     rdof_bl_closed(bl, c, now);
     CHECK(!rdof_bl_wants_iq(bl), "no I/Q wanted after them");
+    rdof_bl_ring_free(&ring);
+    rdof_bl_free(bl);
+}
+
+/* ── I/Q formats: a channel's weak signal in cs8 at the wideband's gain ── */
+
+static void test_iq_formats(void)
+{
+    /* an LR2021 channel's idle noise: about 1.4 of cs16's 32767 rms, a few counts at most */
+    float iq[2 * 1000];
+    double p = 0;
+    for (int i = 0; i < 2000; i++) {
+        iq[i] = (float)(2.0 * sin(0.37 * i) / 32767.0);
+        p += (double)iq[i] * iq[i];
+    }
+    uint8_t out[4 * 1000];
+    long nz = 0;
+    rdof_bl_iq_convert(iq, 1000, RDOF_BL_IQ_CS8, 1.0f, out);
+    for (int i = 0; i < 2000; i++)
+        nz += out[i] != 0;
+    CHECK(nz == 0, "at the ADC's full scale cs8 rounds it to nothing: %ld nonzero", nz);
+    const int clipped = rdof_bl_iq_convert(iq, 1000, RDOF_BL_IQ_CS8, 128.0f, out);
+    double q = 0;
+    nz = 0;
+    for (int i = 0; i < 2000; i++) {
+        const int v = (int8_t)out[i];
+        nz += v != 0;
+        q += (double)v * v;
+    }
+    CHECK(nz > 1000 && clipped == 0, "at k 128 it's there: %ld of 2000 nonzero, %d clipped", nz, clipped);
+    /* the gain, on a signal well over a count (rounding adds to a weak one's power) */
+    float loud[2 * 1000];
+    p = q = 0;
+    for (int i = 0; i < 2000; i++) {
+        loud[i] = 10 * iq[i];
+        p += (double)loud[i] * loud[i];
+    }
+    rdof_bl_iq_convert(loud, 1000, RDOF_BL_IQ_CS8, 128.0f, out);
+    for (int i = 0; i < 2000; i++)
+        q += (double)(int8_t)out[i] * (int8_t)out[i];
+    const double db = 10 * log10(q / 2000) - 10 * log10(p / 2000);
+    CHECK(fabs(db - (20 * log10(127.0) + rdof_bl_iq_scale_db(RDOF_BL_IQ_CS8, 128.0f))) < 0.2,
+          "its level less scale_db is the ADC's: %.2f dB", db);
+    CHECK(fabs(rdof_bl_iq_scale_db(RDOF_BL_IQ_CS8, 128.0f) - 42.14) < 0.01 &&
+              fabs(rdof_bl_iq_scale_db(RDOF_BL_IQ_CU8, 128.0f) - 42.14) < 0.01 &&
+              rdof_bl_iq_scale_db(RDOF_BL_IQ_CS16, 128.0f) == 0 && rdof_bl_iq_scale_db(RDOF_BL_IQ_CF32, 128.0f) == 0,
+          "scale_db for every format");
+    rdof_bl_iq_convert(iq, 1000, RDOF_BL_IQ_CU8, 128.0f, out);
+    CHECK(out[0] == 128 && out[2] != 128, "cu8 about 128: %u %u", out[0], out[2]);
+    rdof_bl_iq_convert(iq, 1000, RDOF_BL_IQ_CS16, 128.0f, out);
+    CHECK((int16_t)(out[2] | out[3] << 8) == (int16_t)lrintf(iq[1] * 32767.0f), "cs16 at full scale, little-endian");
+    const float big[4] = {2.0f, -2.0f, 0.5f, -0.5f};
+    CHECK(rdof_bl_iq_convert(big, 2, RDOF_BL_IQ_CS16, 1.0f, out) == 2 && (int16_t)(out[0] | out[1] << 8) == 32767 &&
+              (int16_t)(out[2] | out[3] << 8) == -32767, "cs16 clips at its full scale");
+}
+
+/* n samples of filler (zeros where the front end lost samples) into the history */
+static void put_filler(long n)
+{
+    static const float z[2 * 768];
+    for (long k = 0; k < n; k += 768)
+        rdof_bl_ring_put(&ring, z, n - k < 768 ? n - k : 768, NULL);
+    rdof_bl_ring_mark_filler(&ring, n);
+}
+
+/* ── filler: the history's record of it, a capture's and a trigger's gap_samples ── */
+
+static void test_filler(void)
+{
+    /* the record: runs merge when they follow, counts by overlap, the oldest goes when it's full */
+    rdof_bl_fills_t f;
+    rdof_bl_fills_reset(&f);
+    rdof_bl_fills_note(&f, 100, 50);
+    rdof_bl_fills_note(&f, 150, 10); /* follows: one run, [100, 160) */
+    rdof_bl_fills_note(&f, 400, 20);
+    CHECK(f.count == 2 && rdof_bl_fills_count(&f, 0, 1000) == 80, "two runs, 80 samples: %d, %ld", f.count,
+          rdof_bl_fills_count(&f, 0, 1000));
+    CHECK(rdof_bl_fills_count(&f, 90, 20) == 10 && rdof_bl_fills_count(&f, 155, 250) == 10 &&
+              rdof_bl_fills_count(&f, 160, 240) == 0 && rdof_bl_fills_count(&f, 410, 1) == 1,
+          "counted by overlap");
+    for (int k = 0; k < RDOF_BL_FILLS; k++)
+        rdof_bl_fills_note(&f, 1000 + 10 * (uint64_t)k, 5);
+    CHECK(f.count == RDOF_BL_FILLS && rdof_bl_fills_count(&f, 0, 1000) == 0 &&
+              rdof_bl_fills_count(&f, 1000, 10 * RDOF_BL_FILLS) == 5 * RDOF_BL_FILLS,
+          "full: the oldest went (%ld before 1000)", rdof_bl_fills_count(&f, 0, 1000));
+
+    /* a capture over filler: gap_samples counts what's in it (not what's before), the frame says gap */
+    rdof_bl_t *bl = rdof_bl_new(&PLAT);
+    double now = 3000;
+    static char all[300000];
+    char out[4096];
+    rdof_bl_ring_init(&ring, 768000);
+    float iq[2 * 1000];
+    for (int k = 0; k < 2000; k++)
+        iq[k] = 0.5f;
+    for (int k = 0; k < 10; k++)
+        rdof_bl_ring_put(&ring, iq, 1000, NULL);
+    put_filler(1000); /* [10000, 11000): before the capture */
+    for (int k = 0; k < 66; k++)
+        rdof_bl_ring_put(&ring, iq, 1000, NULL);
+    CHECK(ring.w == 77000, "the history: %llu", (unsigned long long)ring.w);
+    int c = ask(bl, "{\"op\": \"capture\", \"freq\": 438.1125, \"seconds\": 0.05, \"pre_s\": 0.05}", now);
+    size_t total = drain(bl, c, out, sizeof out); /* sc0 38600, to 115400 */
+    memcpy(all, out, total);
+    for (int k = 0; k < 10; k++)
+        rdof_bl_ring_put(&ring, iq, 1000, NULL);
+    put_filler(1500); /* [87000, 88500): in it */
+    for (int k = 0; k < 30; k++)
+        rdof_bl_ring_put(&ring, iq, 1000, NULL);
+    rdof_bl_tick(bl, now + 0.1);
+    total += drain(bl, c, all + total, sizeof all - total);
+    all[total] = 0;
+    long samples = 0, zeros = 0, flagged = 0;
+    char *p = all, *done = NULL;
+    while (p < all + total) {
+        char *e = memchr(p, '\n', (size_t)(all + total - p));
+        if (!e)
+            break;
+        *e = 0;
+        char b[32], fl[16];
+        if (field(p, "bytes", b, sizeof b)) {
+            const long nb = atol(b);
+            if (field(p, "flags", fl, sizeof fl) && atoi(fl) & 1)
+                flagged++;
+            for (long i = 0; i < nb; i += 2)
+                zeros += !e[1 + i] && !e[2 + i];
+            samples += nb / 2;
+            p = e + 1 + nb;
+        } else {
+            if (strstr(p, "\"done\""))
+                done = p;
+            p = e + 1;
+        }
+    }
+    /* frames of 8192 from 38600: the filler is in two of them */
+    CHECK(samples == 76800 && zeros == 1500 && flagged == 2, "%ld samples, %ld zeros, %ld frames flagged", samples,
+          zeros, flagged);
+    CHECK(done && strstr(done, "\"gap_samples\":1500,") && strstr(done, "\"overflows\":1,"),
+          "the filler in gap_samples: %s", done ? done : "(none)");
+    rdof_bl_closed(bl, c, now);
+    rdof_bl_ring_free(&ring);
+
+    /* a trigger: the filler in what it sends, in the channel's samples (16 wideband ones each) */
+    rdof_bl_ring_init(&ring, 768000);
+    put_tone(100, 0, 0);
+    c = ask(bl, "{\"op\":\"trigger\",\"freq\":438.1125,\"pre_s\":0.02,\"post_s\":0.2,\"min_ms\":5,"
+                "\"floor_db\":-50,\"timeout_s\":5,\"fmt\":\"cs16\"}", now);
+    total = trig_run(bl, c, &now, 20, 0, 0, all, 0, sizeof all);
+    total = trig_run(bl, c, &now, 50, 438.1125e6 - 438.225e6, 0.3f, all, total, sizeof all);
+    put_filler(7680); /* 10 ms: 480 of the channel's samples */
+    total = trig_run(bl, c, &now, 300, 438.1125e6 - 438.225e6, 0.3f, all, total, sizeof all);
+    done = NULL;
+    for (size_t i = 0; i + 7 < total && !done; i++)
+        if (!memcmp(all + i, "{\"done\"", 7))
+            done = all + i;
+    CHECK(done && strstr(done, "\"gap_samples\":480,") && strstr(done, "\"overflows\":1,"),
+          "the trigger's gap_samples: %s", done ? done : "(none)");
+    rdof_bl_closed(bl, c, now);
     rdof_bl_ring_free(&ring);
     rdof_bl_free(bl);
 }
@@ -1311,6 +1470,8 @@ int main(int argc, char **argv)
         return serve(atoi(argv[2]), atof(argv[3]));
     test_ops();
     test_trigger();
+    test_filler();
+    test_iq_formats();
     test_decode();
     test_late();
     test_run();
