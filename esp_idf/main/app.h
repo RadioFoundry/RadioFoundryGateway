@@ -500,6 +500,7 @@ void bench_line_start(void);
 void bench_line_burst(int channel, const rdof_sdr_burst_t *b, double t);
 long bench_wide_read(uint64_t sc, int8_t *out, long n, uint64_t *oldest, uint64_t *next);
 void bench_wide_warm(void);
+double bench_wide_scale_db(void); /* the wideband 8-bit samples' gain over full scale */
 bool bench_session_label(const char *id, char *label, size_t cap);
 bool bench_query(void *req, const char *key, char *val, size_t cap); /* percent-decoded; false: absent */
 /* modem_sdr.c: the SDR's modem for a bench transmit job (via=modem): NULL, or why it can't */

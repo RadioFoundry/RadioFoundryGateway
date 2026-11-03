@@ -1121,7 +1121,7 @@ static void test_tcp(void)
     float iq[2000];
     for (int k = 0; k < 2000; k++)
         iq[k] = -0.25f;
-    for (int k = 0; k < 10; k++)
+    for (int k = 0; k < 20; k++) /* pre_s takes at most half of what's kept */
         rdof_bl_ring_put(&ring, iq, 1000, NULL);
     c = dial(port);
     const char *cap = "{\"op\":\"capture\",\"freq\":438.0625,\"seconds\":0.02,\"pre_s\":0.01}\n";

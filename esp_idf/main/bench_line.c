@@ -52,6 +52,7 @@ static void bl_window(void *ctx, rdof_bl_window_t *w)
     sdr_ppm_status_t p;
     sdr_ppm_status(&p);
     w->ppm = p.learned;
+    w->iq_scale_db = bench_wide_scale_db();
 }
 
 static int bl_freqs(void *ctx, rdof_bl_freq_t *out, int max)

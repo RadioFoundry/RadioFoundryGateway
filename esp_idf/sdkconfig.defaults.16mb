@@ -16,6 +16,9 @@ CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
 # .bss marked EXT_RAM_BSS_ATTR in PSRAM: the bench API's buffers, so internal RAM stays the DSP's
 CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+# TCP send buffer: 16 segments (lwIP's in PSRAM, above). The default 4 held a bench capture's 384 kB/s cs8 over
+# Wi-Fi to about 300 kB/s.
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=23040
 # Internal RAM is the scarce thing here, not PSRAM: TLS buffers in PSRAM, and the DSP leaves more internal RAM free
 # (octal PSRAM is fast enough that the DSP barely notices).
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y

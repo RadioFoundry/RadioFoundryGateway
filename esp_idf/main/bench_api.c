@@ -1500,17 +1500,17 @@ static void tap_set(int i, const stream_t *st)
 static void put_u16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
 static void put_u32(uint8_t *p, uint32_t v) { for (int k = 0; k < 4; k++) p[k] = (uint8_t)(v >> (8 * k)); }
 
-/* Samples in fmt; returns the clipped count. */
-static int convert(const rdof_cf_t *in, int n, int fmt, uint8_t *out)
+/* Samples in fmt, the 8-bit ones k times full scale (wide_k); returns the clipped count. */
+static int convert(const rdof_cf_t *in, int n, int fmt, float k, uint8_t *out)
 {
     int clipped = 0;
     if (fmt == IQ_CF32) {
         memcpy(out, in, (size_t)n * sizeof *in);
         return 0;
     }
-    const float scale = fmt == IQ_CS16 ? 32767.0f : 127.0f;
+    const float scale = fmt == IQ_CS16 ? 32767.0f : 127.0f, g = fmt == IQ_CS16 ? scale : scale * k;
     for (int i = 0; i < n; i++) {
-        float v[2] = {in[i].re * scale, in[i].im * scale};
+        float v[2] = {in[i].re * g, in[i].im * g};
         for (int k = 0; k < 2; k++) {
             float x = v[k];
             if (x > scale) {
@@ -1553,6 +1553,14 @@ static inline int8_t sat8(float x)
     const int q = (int)x;
     return (int8_t)(q > 127 ? 127 : q < -127 ? -127 : q);
 }
+
+/* The wideband 8-bit samples' gain over full scale (cs8, cu8: the history, the captures, WS /iq rate=wide). The
+ * LR2021's I/Q sits far under its full scale (noise about 3.6 of 32767 at 53.5 dB gain, a W12 2026-11-02), so 127
+ * of full scale gave all zeros: it gets 128 (42.14 dB), its noise about 2 counts and full scale at its sample 256.
+ * The RTL's own samples are 8-bit: 1. */
+static float wide_k(void) { return g_scfg.frontend == RDOF_FE_LR2021 ? 128.0f : 1.0f; }
+
+double bench_wide_scale_db(void) { return 20.0 * log10(wide_k()); }
 
 /* From the DSP, each chunk: this chunk into the rings (a new run sizes them again). */
 static void hist_write(const rdof_sdr_rx_t *rx, const rdof_cf_t *iq, int n)
@@ -1601,9 +1609,10 @@ static void hist_write(const rdof_sdr_rx_t *rx, const rdof_cf_t *iq, int n)
     hist_ch_w += (uint64_t)(rx->got > 0 ? rx->got : 0);
     if (hist_wide_n) {
         uint32_t w = (uint32_t)(hist_wide_w % hist_wide_n);
+        const float g = 127.0f * wide_k();
         for (int j = 0; j < n; j++) {
-            hist_wide[2 * w] = sat8(iq[j].re * 127.0f);
-            hist_wide[2 * w + 1] = sat8(iq[j].im * 127.0f);
+            hist_wide[2 * w] = sat8(iq[j].re * g);
+            hist_wide[2 * w + 1] = sat8(iq[j].im * g);
             if (++w == hist_wide_n)
                 w = 0;
         }
@@ -1732,7 +1741,7 @@ void bench_on_chunk(const rdof_sdr_rx_t *rx, const rdof_cf_t *iq, int n)
             continue;
         const rdof_cf_t *src = t[i].wide ? iq : rx->y + (size_t)t[i].channel * rx->stride;
         uint8_t *h = iq_frame + 1;
-        int clipped = convert(src, m, t[i].fmt, h + IQ_HDR);
+        int clipped = convert(src, m, t[i].fmt, t[i].wide ? wide_k() : 1.0f, h + IQ_HDR);
         /* the sample clock of the first sample: wideband samples since the receiver started */
         const uint64_t sc = t[i].wide ? (uint64_t)(rx->samples - n) : (uint64_t)llround((double)(rx->out_index - rx->got) * ratio);
         const double t_s = rx->t0 + (double)sc / g_scfg.sample_rate;
@@ -1772,6 +1781,8 @@ static void iq_start(stream_t *st)
         put_num(&o, "\"center_hz\":%.1f,", g_sstat.center_hz);
     put(&o, "\"scale\":%d,\"sc_rate\":%.1f,", st->fmt == IQ_CS16 ? 32767 : st->fmt == IQ_CF32 ? 1 : 127,
         g_scfg.sample_rate);
+    if (st->wide && (st->fmt == IQ_CS8 || st->fmt == IQ_CU8))
+        put(&o, "\"scale_db\":%.2f,", bench_wide_scale_db());
     put_num(&o, "\"gain_db\":%.1f,", g_sstat.gain_db);
     put_clock(&o);
     put(&o, "}");
@@ -1824,12 +1835,16 @@ static void send_history(stream_t *st, const hist_marker_t *mk, uint8_t *fr, siz
             flags |= IQ_FLAG_LAST;
         }
         uint8_t *h = fr + 1, *o = h + IQ_HDR;
+        const int up = wide ? (int)(256.0f / wide_k()) : 1; /* the wide history's 8 bits to cs16's full scale */
         for (uint32_t j = 0; j < k; j++) {
             const uint32_t x = (uint32_t)((from + j) % ring);
-            /* the history's samples, as cs16 */
-            const int a = wide ? hist_wide[2 * x] * 256 : hist_ch[((size_t)st->channel * HIST_CH_N + x) * 2];
-            const int b = wide ? hist_wide[2 * x + 1] * 256 : hist_ch[((size_t)st->channel * HIST_CH_N + x) * 2 + 1];
-            if (st->fmt == IQ_CF32) {
+            /* the history's samples, as cs16 (a wide 8-bit stream takes the history's own bytes, below) */
+            const int a = wide ? hist_wide[2 * x] * up : hist_ch[((size_t)st->channel * HIST_CH_N + x) * 2];
+            const int b = wide ? hist_wide[2 * x + 1] * up : hist_ch[((size_t)st->channel * HIST_CH_N + x) * 2 + 1];
+            if (wide && st->fmt != IQ_CF32 && st->fmt != IQ_CS16) {
+                o[2 * (size_t)j] = (uint8_t)(hist_wide[2 * x] + (st->fmt == IQ_CU8 ? 128 : 0));
+                o[2 * (size_t)j + 1] = (uint8_t)(hist_wide[2 * x + 1] + (st->fmt == IQ_CU8 ? 128 : 0));
+            } else if (st->fmt == IQ_CF32) {
                 const float v[2] = {a / 32767.0f, b / 32767.0f};
                 memcpy(o + 8 * (size_t)j, v, 8);
             } else if (st->fmt == IQ_CS16) {

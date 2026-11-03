@@ -977,9 +977,11 @@ static void op_capture(rdof_bl_t *bl, conn_t *c, int root, double now)
     double pre = jnum(bl, root, "pre_s", 2.0);
     if (pre < 0)
         pre = 0;
+    /* at most half of what the history holds: the other half is room for the reader to be behind (a W12's 2 s
+     * ring, read from its oldest sample over Wi-Fi, lost more than half of a 10 s capture) */
     uint64_t pre_n = (uint64_t)(pre * w.fs);
-    if (pre_n > next - oldest)
-        pre_n = next - oldest;
+    if (pre_n > (next - oldest) / 2)
+        pre_n = (next - oldest) / 2;
     c->op = OP_CAPTURE;
     c->sc0 = c->sc = next - pre_n;
     c->sc_end = next + (uint64_t)(secs * w.fs);

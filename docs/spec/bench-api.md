@@ -451,12 +451,15 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
 - `claim` refuses a frequency the bench doesn't list (no receiver channel, not in `bench.tx`). Receiving needs no
   claim; the HIL tools claim anyway, and a claim keeps another session's job off the frequency.
 - `capture` sends the receiver's wideband samples, cs8 (int8 I, Q; full scale 127), at the front end's rate, with up
-  to `pre_s` seconds from before the request (the I/Q history, section 9). The receiver isn't retuned: `gain` and
+  to `pre_s` seconds from before the request (the I/Q history, section 9), at most half of what the history holds
+  (the other half is room for the client to be behind; about 0.9 s on a board). The receiver isn't retuned: `gain` and
   `offset_khz` are noted in the metadata and otherwise ignored, and a frequency outside the window is `refused`.
   `meta` is what `FILE.json` holds: `freq` and `center` (Hz), `fs`, `fmt` `"cs8"`, `gain`, `ppm`, `t0` (UTC of
   sample 0), `seconds`, `overflows`, `clip_pct`, `pre_s`, `scale_db`. A front end with a wider ADC gives its low
   bits, where a bench signal is: `scale_db` is how far cs8's full scale is under the ADC's (24.08 on a PlutoSDR:
-  ×16, clipping over -24 dBFS; a level in the capture less `scale_db` is the ADC's dBFS).
+  ×16, clipping over -24 dBFS; 42.14 on the LR2021: ×128, clipping over -42 dBFS, its noise about 2 counts rms at
+  53.5 dB gain; a level in the capture less `scale_db` is the ADC's dBFS). The board's `WS /iq?rate=wide` cs8 and cu8
+  have the same gain, and their `start` message gives `scale_db`.
 - `trigger` cuts the channel at `freq` from the wideband history: mixed to 0 Hz, low-pass filtered to `bw` (a
   Hamming-windowed sinc, 8 taps a decimated sample), decimated to about 48 kS/s (`fs / round(fs / 48000)`, the
   metadata's `rate`). It learns the floor as the median 1 ms block over the first `floor_s` (1 s; from the history
