@@ -2965,7 +2965,7 @@ void rdof_bl_fills_note(rdof_bl_fills_t *f, uint64_t sc, long n)
     }
     const int i = (f->head + f->count) % RDOF_BL_FILLS;
     f->from[i] = sc;
-    f->n[i] = (uint32_t)(n > (long)UINT32_MAX ? UINT32_MAX : n);
+    f->n[i] = (uint64_t)n > UINT32_MAX ? UINT32_MAX : (uint32_t)n; /* not (long)UINT32_MAX: -1 where long is 32 bits */
     f->count++;
 }
 
