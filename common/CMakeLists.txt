@@ -38,6 +38,8 @@ set(RDOF_COMMON_SRCS
     src/usbmatch.c
     src/benchguard.c
     src/benchcfg.c
+    src/fmgen.c
+    src/fmrx.c
     src/benchtx.c
     src/benchroute.c
     src/benchjob.c
