@@ -334,35 +334,22 @@ static void add(rdof_txvr_t *t, rdof_txcall_t *c, const rdof_net_burst_t *b, dou
         c->ended = true;
 }
 
-void rdof_txvr_on_tune(rdof_txvr_t *t, const rdof_tune_t *in)
+/* A call tuned with none in hand: refused, or the call. Called locked. */
+static void accept(rdof_txvr_t *t, rdof_tune_t tune)
 {
-    rdof_tune_t tune = *in;
-    lock(t);
-    if (t->has_call && !memcmp(t->call.tune.stream_id, tune.stream_id, 4)) {
-        unlock(t);
-        return; /* a repeat */
-    }
-    if (t->has_call) {
-        answer(t, &tune, RDOF_DMRK_TXVR_BUSY);
-        unlock(t);
-        return;
-    }
     if (!t->ready) {
         answer(t, &tune, RDOF_DMRK_RADIO_ERROR);
-        unlock(t);
         return;
     }
     if (now(t) - modem(t)->last_rx < RDOF_TXVR_RX_HOLD_S && t->has_tuned && !near(t->tuned_freq, tune.freq)) {
         if (!tune.preempt) {
             answer(t, &tune, RDOF_DMRK_TXVR_BUSY); /* receiving a call here */
-            unlock(t);
             return;
         }
     }
     const rdof_channel_t *ch = allowed(t, tune.freq, tune.cc);
     if (!ch) {
         answer(t, &tune, RDOF_DMRK_NOT_ALLOWED);
-        unlock(t);
         return;
     }
     /* HBlink4 sends power 255 for "the radio's own"; a channel's own setting wins. */
@@ -382,6 +369,32 @@ void rdof_txvr_on_tune(rdof_txvr_t *t, const rdof_tune_t *in)
             for (int k = 0; k < upto(t->orphans[i].n, RDOF_TXVR_ORPHAN_BURSTS); k++)
                 add(t, &t->call, &t->orphans[i].bursts[k], -1);
         }
+}
+
+void rdof_txvr_on_tune(rdof_txvr_t *t, const rdof_tune_t *in)
+{
+    lock(t);
+    if ((t->has_call && !memcmp(t->call.tune.stream_id, in->stream_id, 4)) ||
+        (t->next.used && !memcmp(t->next.tune.stream_id, in->stream_id, 4))) {
+        unlock(t);
+        return; /* a repeat */
+    }
+    if (t->has_call && t->call.ended && !t->next.used) {
+        /* Back to back: the last call is all in, its end still going out. This one starts after it. */
+        t->next.used = true;
+        t->next.tune = *in;
+        t->next.n = 0;
+        for (int i = 0; i < RDOF_TXVR_ORPHANS; i++)
+            if (t->orphans[i].used && !memcmp(t->orphans[i].stream_id, in->stream_id, 4)) {
+                t->orphans[i].used = false;
+                for (int k = 0; k < upto(t->orphans[i].n, RDOF_TXVR_ORPHAN_BURSTS); k++)
+                    t->next.bursts[t->next.n++] = t->orphans[i].bursts[k];
+            }
+    } else if (t->has_call) {
+        answer(t, in, RDOF_DMRK_TXVR_BUSY);
+    } else {
+        accept(t, *in);
+    }
     unlock(t);
 }
 
@@ -399,6 +412,12 @@ void rdof_txvr_on_burst(rdof_txvr_t *t, const rdof_net_burst_t *b)
     if (t->has_call && !memcmp(t->call.tune.stream_id, b->stream_id, 4)) {
         if (t->call.state != RDOF_CALL_DONE)
             add(t, &t->call, b, now(t));
+        unlock(t);
+        return;
+    }
+    if (t->next.used && !memcmp(t->next.tune.stream_id, b->stream_id, 4)) {
+        if (t->next.n < RDOF_TXVR_NEXT_BURSTS)
+            t->next.bursts[t->next.n++] = *b;
         unlock(t);
         return;
     }
@@ -937,6 +956,12 @@ bool rdof_txvr_poll(rdof_txvr_t *t)
     for (int i = 0; i < RDOF_TXVR_ORPHANS; i++)
         if (t->orphans[i].used && n - t->orphans[i].at > RDOF_TXVR_ORPHAN_S)
             t->orphans[i].used = false;
+    if (!t->has_call && t->next.used) { /* the last call's end is out: the one that waited for it */
+        t->next.used = false;
+        accept(t, t->next.tune);
+        for (int k = 0; t->has_call && k < upto(t->next.n, RDOF_TXVR_NEXT_BURSTS); k++)
+            add(t, &t->call, &t->next.bursts[k], -1);
+    }
     bool has_call = t->has_call;
     rdof_txcall_state_t state = t->call.state;
     unlock(t);

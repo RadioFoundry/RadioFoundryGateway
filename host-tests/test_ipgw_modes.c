@@ -415,10 +415,12 @@ static void t_txvr_channel(void)
     CHECK(rdof_ipgw_tx_txvr(&e->x, &e->t, &p, sid) && e->t.call.tune.freq == CH_A && e->t.call.tune.cc == 1,
           "on channel A: %lu", (unsigned long)e->t.call.tune.freq);
     sid[3] = 5;
-    CHECK(!rdof_ipgw_tx_txvr(&e->x, &e->t, &p, sid), "a call already: refused");
+    CHECK(rdof_ipgw_tx_txvr(&e->x, &e->t, &p, sid), "a call all in already: this one after it");
+    sid[3] = 8;
+    CHECK(!rdof_ipgw_tx_txvr(&e->x, &e->t, &p, sid), "a call and one after it: refused");
     md_run(e, 3.0);
     int on_a = e->nw[2];
-    CHECK(on_a == p.nbursts && e->f.freq != 0, "sent %d of %d", on_a, p.nbursts);
+    CHECK(on_a == 2 * p.nbursts && e->f.freq != 0, "sent %d of 2 x %d", on_a, p.nbursts);
     p.freq = 470000000; /* not a channel of ours: where it is now */
     sid[3] = 6;
     uint32_t fn;

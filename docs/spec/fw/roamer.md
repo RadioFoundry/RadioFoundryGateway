@@ -90,8 +90,9 @@ Checked in this order:
 
 | # | Condition | Answer |
 |---|---|---|
-| 1 | A call with the same stream id exists | nothing (a repeat) |
-| 2 | Any other call exists | `TXVR_BUSY` (4) |
+| 1 | A call with the same stream id exists, or waits | nothing (a repeat) |
+| 2 | The call in hand has ended (its terminator in, or timed out) and none waits | waits: starts once that call finishes (its end on the air, the tail), checked then from row 3 on; its DMRD held, up to 128 (`RDOF_TXVR_NEXT_BURSTS`) |
+| 2a | Any other call exists | `TXVR_BUSY` (4) |
 | 3 | `!ready` | `RADIO_ERROR` (3) |
 | 4 | `now - modem.last_rx < RX_HOLD_S` and tuned and tune freq not within 100 Hz of the tuned freq, and not `preempt` | `TXVR_BUSY` (4) |
 | 5 | (freq ±100 Hz, cc) not in `channels` | `NOT_ALLOWED` (2) |
@@ -109,6 +110,7 @@ not the transceiver is listening.
 | Case | Action |
 |---|---|
 | Stream is the current call's, state not `DONE` | `add` to the call |
+| Stream is the waiting call's (3.2 row 2) | held for it; replayed into it when it starts |
 | Stream refused | dropped |
 | Otherwise (DMRD before its DMRT) | held as an orphan: up to 4 streams (`RDOF_TXVR_ORPHANS`) of 16 bursts (`RDOF_TXVR_ORPHAN_BURSTS`); a 5th stream replaces the oldest; extra bursts dropped; expired after `RDOF_TXVR_ORPHAN_S` (0.5 s) in `rdof_txvr_poll` |
 
@@ -337,6 +339,7 @@ otherwise it hops to `scan_next`, the channel after the one it was on when the c
 | Heard call's tail (reply rule) | 0.5 s | `txvr.h:RDOF_TXVR_CALL_TAIL_S` |
 | Call queue | 256 bursts | `txvr.h:RDOF_TXVR_QUEUE` |
 | Orphan streams × bursts | 4 × 16 | `txvr.h:RDOF_TXVR_ORPHANS`, `RDOF_TXVR_ORPHAN_BURSTS` |
+| A waiting call's bursts | 128 (an IP gateway packet; 7.7 s of voice) | `txvr.h:RDOF_TXVR_NEXT_BURSTS` |
 | Refused stream ids | 64 | `txvr.h:RDOF_TXVR_REFUSED` |
 | Channels, covered | 32 each | `txvr.h:RDOF_TXVR_MAX_CHANNELS`, `RDOF_TXVR_MAX_COVERED`; `config.h:RDOF_CFG_CHANNELS` |
 | CW ID frequency table | 16 | `txvr.h:RDOF_TXVR_IDS` |

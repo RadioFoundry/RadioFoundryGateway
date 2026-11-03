@@ -885,6 +885,48 @@ static void t_txvr_late(void)
           "%d terminators, %d misplaced)", first, voice, terms, misplaced);
 }
 
+/* Two calls back to back: the second's first burst `gap` after the first's terminator arrived, while the radio still
+ * sends the first's end. Both go out whole, the second after the first. Counted: voice bursts and headers on the air,
+ * and the radio's start of the second call's header. */
+static stream_t g_stream2;
+
+static void two_calls(bool local, double gap, int *voice, int *headers, double *second_at, double *first_end)
+{
+    tx_t *h = tx_new(true, 0);
+    stream_t *a = &g_stream, *b = &g_stream2;
+    make_call(a, 21, 2, 2, ceil(h->rig.clock) + 1.0);
+    make_call(b, 22, 2, 2, a->at[a->n - 1] + gap);
+    tx_local = local;
+    tx_run(h, a, 21, b->at[0] - 0.01);
+    tx_run(h, b, 22, b->at[b->n - 1] + 6.0);
+    tx_local = false;
+    *voice = *headers = 0;
+    *second_at = *first_end = -1;
+    for (int i = 0; i < h->air.n; i++) {
+        const aired_t *e = &h->air.a[i];
+        if (is_voice(e->control))
+            (*voice)++;
+        if (e->control == C_HEADER && ++*headers > 0 && *second_at < 0 && *first_end >= 0)
+            *second_at = e->start;
+        if (e->control == C_TERM && *second_at < 0)
+            *first_end = e->start + 0.06;
+    }
+}
+
+static void t_txvr_back_to_back(void)
+{
+    static const double gaps[] = {0.06, 0.3, 0.8, 2.0};
+    for (int l = 0; l < 2; l++)
+        for (size_t g = 0; g < sizeof gaps / sizeof gaps[0]; g++) {
+            int voice, headers;
+            double second_at, first_end;
+            two_calls(l, gaps[g], &voice, &headers, &second_at, &first_end);
+            CHECK(voice == 24 && headers >= 2 && second_at >= first_end, "%s call %.2f s after the last one's "
+                  "terminator: both on the air, one after the other (%d voice, %d headers, second at +%.2f s)",
+                  l ? "a local" : "a network", gaps[g], voice, headers, second_at - first_end);
+        }
+}
+
 static void t_txvr_jitter(void)
 {
     result_t r;
@@ -1083,6 +1125,7 @@ void test_jitter(void)
     t_txvr_steady();
     t_txvr_local();
     t_txvr_late();
+    t_txvr_back_to_back();
     t_txvr_jitter();
     t_txvr_events();
     t_repeater();

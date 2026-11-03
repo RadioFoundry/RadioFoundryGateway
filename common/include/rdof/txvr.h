@@ -12,7 +12,8 @@
  *
  * Bounded: RDOF_TXVR_QUEUE bursts queued for a call
  * (the rest dropped and counted), RDOF_TXVR_ORPHANS streams of up to
- * RDOF_TXVR_ORPHAN_BURSTS bursts held for a DMRT still to come.
+ * RDOF_TXVR_ORPHAN_BURSTS bursts held for a DMRT still to come, and one call of
+ * up to RDOF_TXVR_NEXT_BURSTS bursts waiting for the last one's end to go out.
  */
 #ifndef RDOF_TXVR_H
 #define RDOF_TXVR_H
@@ -56,6 +57,7 @@ typedef struct {
 #endif
 #define RDOF_TXVR_ORPHANS 4
 #define RDOF_TXVR_ORPHAN_BURSTS 16
+#define RDOF_TXVR_NEXT_BURSTS 128 /* an IP gateway packet's 128 bursts, or 7.7 s of voice */
 #define RDOF_TXVR_REFUSED 64
 #define RDOF_TXVR_MAX_CHANNELS 32
 #define RDOF_TXVR_MAX_COVERED 32
@@ -180,6 +182,12 @@ typedef struct rdof_txvr {
     int nlast_id;
     uint32_t status_misses; /* missed status replies ridden out (diagnostics) */
     rdof_jb_t jb;           /* the jitter buffer: fixed at prebuffer unless jb.adaptive */
+    struct {                /* a call tuned while the last one's end still goes out: it starts after */
+        bool used;
+        rdof_tune_t tune;
+        rdof_net_burst_t bursts[RDOF_TXVR_NEXT_BURSTS];
+        int n;
+    } next;
 } rdof_txvr_t;
 
 /* Defaults (listen 0.3 s, clear 2 s, prebuffer 6, 2 preambles, answer 0.75 / 5 s, CW ID every 900 s); the jitter

@@ -42,6 +42,7 @@ const CALL_TAIL_S: f64 = 0.5;
 pub const RDOF_TXVR_QUEUE: usize = 256;
 const ORPHANS: usize = 4;
 const ORPHAN_BURSTS: usize = 16;
+const NEXT_BURSTS: usize = 128;
 const REFUSED: usize = 64;
 pub const RDOF_TXVR_MAX_CHANNELS: usize = 32;
 const MAX_COVERED: usize = 32;
@@ -161,6 +162,15 @@ pub struct RdofOrphan {
     pub n: c_int,
 }
 
+/// A call tuned while the last one's end still goes out: it starts after.
+#[repr(C)]
+pub struct RdofNext {
+    pub used: bool,
+    pub tune: RdofTune,
+    pub bursts: [RdofNetBurst; NEXT_BURSTS],
+    pub n: c_int,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct RdofLastId {
@@ -240,6 +250,7 @@ pub struct RdofTxvr {
     pub nlast_id: c_int,
     pub status_misses: u32,
     pub jb: RdofJb,
+    pub next: RdofNext,
 }
 
 /// A count from the struct, as far as its array goes.
@@ -580,17 +591,9 @@ unsafe fn add(t: *mut RdofTxvr, b: &RdofNetBurst, at: f64) {
     }
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn rdof_txvr_on_tune(t: *mut RdofTxvr, tune: &RdofTune) {
-    let mut tune = *tune;
-    lock(t);
-    if (*t).has_call && (*t).call.tune.stream_id == tune.stream_id {
-        unlock(t);
-        return; // a repeat
-    }
-    let refuse = if (*t).has_call {
-        Some(DMRK_TXVR_BUSY)
-    } else if !(*t).ready {
+/// A call tuned with none in hand: refused, or the call. Called locked.
+unsafe fn accept(t: *mut RdofTxvr, mut tune: RdofTune) {
+    let refuse = if !(*t).ready {
         Some(DMRK_RADIO_ERROR)
     } else if now(t) - (*modem(t)).last_rx < RX_HOLD_S
         && (*t).has_tuned
@@ -604,7 +607,6 @@ pub unsafe extern "C" fn rdof_txvr_on_tune(t: *mut RdofTxvr, tune: &RdofTune) {
     let ch = if refuse.is_none() { allowed(t, tune.freq, tune.cc) } else { None };
     let Some(ch) = ch else {
         answer(t, &tune, refuse.unwrap_or(DMRK_NOT_ALLOWED));
-        unlock(t);
         return;
     };
     // HBlink4 sends power 255 for "the radio's own"; a channel's own setting wins.
@@ -630,6 +632,38 @@ pub unsafe extern "C" fn rdof_txvr_on_tune(t: *mut RdofTxvr, tune: &RdofTune) {
             }
         }
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_txvr_on_tune(t: *mut RdofTxvr, tune: &RdofTune) {
+    lock(t);
+    if ((*t).has_call && (*t).call.tune.stream_id == tune.stream_id)
+        || ((*t).next.used && (*t).next.tune.stream_id == tune.stream_id)
+    {
+        unlock(t);
+        return; // a repeat
+    }
+    if (*t).has_call && (*t).call.ended && !(*t).next.used {
+        // Back to back: the last call is all in, its end still going out. This one starts after it.
+        let nx = addr_of_mut!((*t).next);
+        (*nx).used = true;
+        (*nx).tune = *tune;
+        (*nx).n = 0;
+        for i in 0..ORPHANS {
+            let o = addr_of_mut!((*t).orphans[i]);
+            if (*o).used && (*o).stream_id == tune.stream_id {
+                (*o).used = false;
+                for k in 0..upto((*o).n, ORPHAN_BURSTS) {
+                    (*nx).bursts[(*nx).n as usize] = (*o).bursts[k];
+                    (*nx).n += 1;
+                }
+            }
+        }
+    } else if (*t).has_call {
+        answer(t, tune, DMRK_TXVR_BUSY);
+    } else {
+        accept(t, *tune);
+    }
     unlock(t);
 }
 
@@ -643,6 +677,15 @@ pub unsafe extern "C" fn rdof_txvr_on_burst(t: *mut RdofTxvr, b: &RdofNetBurst) 
     if (*t).has_call && (*t).call.tune.stream_id == b.stream_id {
         if (*t).call.state != CALL_DONE {
             add(t, b, now(t));
+        }
+        unlock(t);
+        return;
+    }
+    if (*t).next.used && (*t).next.tune.stream_id == b.stream_id {
+        let nx = addr_of_mut!((*t).next);
+        if let Some(dst) = (*nx).bursts.get_mut(upto((*nx).n, NEXT_BURSTS)) {
+            *dst = *b;
+            (*nx).n += 1;
         }
         unlock(t);
         return;
@@ -1242,6 +1285,19 @@ pub unsafe extern "C" fn rdof_txvr_poll(t: *mut RdofTxvr) -> bool {
     for o in (*t).orphans.iter_mut() {
         if o.used && n - o.at > ORPHAN_S {
             o.used = false;
+        }
+    }
+    if !(*t).has_call && (*t).next.used {
+        // the last call's end is out: the one that waited for it
+        let nx = addr_of_mut!((*t).next);
+        (*nx).used = false;
+        accept(t, (*nx).tune);
+        for k in 0..upto((*nx).n, NEXT_BURSTS) {
+            if !(*t).has_call {
+                break;
+            }
+            let b = (*nx).bursts[k];
+            add(t, &b, -1.0);
         }
     }
     let has_call = (*t).has_call;

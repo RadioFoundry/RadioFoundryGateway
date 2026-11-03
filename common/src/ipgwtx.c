@@ -60,7 +60,8 @@ bool rdof_ipgw_tx_txvr(rdof_ipgw_tx_t *x, struct rdof_txvr *t, const rdof_ipgw_d
     rdof_txvr_on_tune(t, &tune);
     if (t->lock)
         t->lock(t->ctx);
-    bool ours = t->has_call && !memcmp(t->call.tune.stream_id, sid, 4);
+    bool ours = (t->has_call && !memcmp(t->call.tune.stream_id, sid, 4)) ||
+                (t->next.used && !memcmp(t->next.tune.stream_id, sid, 4)); /* after the call going out */
     if (t->unlock)
         t->unlock(t->ctx);
     if (!ours)
