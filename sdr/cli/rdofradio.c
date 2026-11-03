@@ -3128,7 +3128,8 @@ static int hold(int argc, char **argv, const char *why)
             restart_asked = 1;
             break;
         }
-        usleep(500000);
+        const struct timespec half = {0, 500000000L}; /* usleep isn't POSIX 2008 (glibc hides it) */
+        nanosleep(&half, NULL);
     }
     rdof_hostweb_stop();
     if (restart_asked) {
