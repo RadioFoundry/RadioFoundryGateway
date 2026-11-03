@@ -78,6 +78,10 @@ size_t rdof_mmdvm_config_v2(const rdof_modem_config_t *c, int cc, int state, boo
 /* SET_FREQ payload: flags, RX, TX (little endian), RF level, POCSAG = TX. 14 bytes. */
 size_t rdof_mmdvm_set_freq_payload(uint32_t rx_hz, uint32_t tx_hz, int rf_level, uint8_t out[14]);
 
+/* A host's cap on a modem's transmit power: frame (one whole frame, as a client writes it) is a SET_FREQ whose RF
+   level is over cap: lower it to cap. True when it changed the frame. */
+bool rdof_mmdvm_cap_rf_level(uint8_t *frame, size_t len, int cap);
+
 /* Bytes off the port -> frames; skips junk. */
 typedef void (*rdof_mmdvm_frame_cb)(void *ctx, uint8_t command, const uint8_t *payload, size_t len);
 typedef struct {

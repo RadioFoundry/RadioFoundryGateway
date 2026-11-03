@@ -2583,6 +2583,21 @@ static void t_mmdvm_edges(void)
     CHECK(fq[0] == 0 && fq[1] == 0x6C && fq[4] == 0x1B && fq[5] == 0xFF && fq[9] == 0xFF && fq[10] == 0xFF &&
               fq[13] == 0xFF,
           "freq payload");
+    /* a host's RF level cap (rdofradio --rf-level): only a SET_FREQ over it changes */
+    uint8_t ff[20];
+    const size_t fl = rdof_mmdvm_frame(RDOF_MMDVM_SET_FREQ, fq, 14, ff, sizeof ff);
+    CHECK(fl == 17 && rdof_mmdvm_cap_rf_level(ff, fl, 0) && ff[12] == 0 && ff[11] == 0xFF && ff[13] == 0xFF,
+          "cap 0: %02x", ff[12]);
+    CHECK(!rdof_mmdvm_cap_rf_level(ff, fl, 0) && !rdof_mmdvm_cap_rf_level(ff, fl, 64), "under the cap");
+    ff[12] = 200;
+    CHECK(rdof_mmdvm_cap_rf_level(ff, fl, 64) && ff[12] == 64 && !rdof_mmdvm_cap_rf_level(ff, fl - 1, 0) &&
+              !rdof_mmdvm_cap_rf_level(ff, fl, 300) && ff[12] == 64,
+          "cap 64: %02x", ff[12]);
+    uint8_t mode[4];
+    const uint8_t dmr = RDOF_MODE_DMR;
+    CHECK(rdof_mmdvm_frame(RDOF_MMDVM_SET_MODE, &dmr, 1, mode, sizeof mode) == 4 &&
+              !rdof_mmdvm_cap_rf_level(mode, 4, 0) && mode[3] == RDOF_MODE_DMR,
+          "not a SET_FREQ");
 
     /* the reader: junk, lengths 1 and 2 skipped, a long frame, frames split anywhere */
     static uint8_t in[1200];

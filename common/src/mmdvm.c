@@ -110,6 +110,18 @@ size_t rdof_mmdvm_set_freq_payload(uint32_t rx_hz, uint32_t tx_hz, int rf_level,
     return 14;
 }
 
+bool rdof_mmdvm_cap_rf_level(uint8_t *frame, size_t len, int cap)
+{
+    /* E0 <len> 04 <flags> <rx 4> <tx 4> <rf level> ... */
+    if (len < 13 || frame[0] != RDOF_MMDVM_FRAME_START || frame[1] != len || frame[2] != RDOF_MMDVM_SET_FREQ)
+        return false;
+    const int c = cap < 0 ? 0 : cap > 255 ? 255 : cap;
+    if (frame[12] <= c)
+        return false;
+    frame[12] = (uint8_t)c;
+    return true;
+}
+
 /* ── frame reader ──────────────────────────────────────────────────────────── */
 
 void rdof_mmdvm_reader_init(rdof_mmdvm_reader_t *r)

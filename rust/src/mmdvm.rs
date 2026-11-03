@@ -185,6 +185,26 @@ pub extern "C" fn rdof_mmdvm_set_freq_payload(rx_hz: u32, tx_hz: u32, rf_level: 
     14
 }
 
+/// # Safety
+/// frame points to len bytes.
+#[no_mangle]
+pub unsafe extern "C" fn rdof_mmdvm_cap_rf_level(frame: *mut u8, len: usize, cap: c_int) -> bool {
+    // E0 <len> 04 <flags> <rx 4> <tx 4> <rf level> ...
+    if len < 13 {
+        return false;
+    }
+    let f = slice_mut(frame, len);
+    if f[0] != FRAME_START || f[1] as usize != len || f[2] != 0x04 {
+        return false;
+    }
+    let c = cap.clamp(0, 255) as u8;
+    if f[12] <= c {
+        return false;
+    }
+    f[12] = c;
+    true
+}
+
 // ── frame reader ──
 
 #[no_mangle]
