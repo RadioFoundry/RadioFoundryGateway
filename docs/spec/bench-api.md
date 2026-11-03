@@ -561,7 +561,10 @@ calls wait; a call on the air ends first, up to 10 s), the job drives the modem 
 for the transceiver after the job. A `bench_repeater` job does the same with a repeater in the transceiver's place:
 the modem goes duplex, and the job's first key-up, heard back in the receiver's band, sets the inbound slot timing
 (the transmit path's delay; the transceiver's own is restored after). An instance started as a duplex repeater
-(`--duplex full`) keeps its transmitter (`unsupported`). The frequencies are `--bench-tx`'s; the job transmits at
+(`--duplex full`) keeps its transmitter (`unsupported`). A `bench_tx` `outbound` takes the modem the same way, as a
+repeater's TX half keyed with no traffic; after it the modem is unkeyed, its role dropped, and set up again for the
+transceiver. Its records' times are the modem's slot clock on the receiver's timeline plus the transmit path's
+delay. On `--mmdvm` (the MMDVM modem transmits) there is no `outbound`. The frequencies are `--bench-tx`'s; the job transmits at
 `--tx-gain`, and the log says `power` isn't applied. The ESP32 boards run no repeater jobs (`unsupported`).
 
 ### 14.5 The client

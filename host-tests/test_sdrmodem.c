@@ -1610,6 +1610,77 @@ static void test_outbound(void)
            heard ? obr.slot[0] : 0);
 }
 
+/* rdofradio's outbound (bench_ob_poll): the transceiver's modem, full duplex capable (a PlutoSDR), taken from a
+ * simplex client for the job and given back. Keyed by the outbound frames (the replies the job's: no NAK), unkeyed
+ * by DMR_START 00 (the slot clock's key_k stays: the engine's state 2), the role dropped by SET_ROLE 0 (0xD6 1 0);
+ * then the client's start and tune (rdof_txvr_start's) leave a simplex modem whose bursts go out MS, not BS. */
+static int obk_job, obk_naks; /* replies to the job (1) or the client (0); NAKs the job saw */
+
+static void obk_reply(void *ctx, const uint8_t *f, size_t n)
+{
+    if (!obk_job) {
+        rdof_modem_feed(&((dcm_t *)ctx)->client, f, n);
+        return;
+    }
+    obk_naks += n >= 5 && f[2] == RDOF_MMDVM_NAK;
+}
+
+static void test_outbound_back(void)
+{
+    static dcm_t x;
+    static rdof_sdr_rx_t rx;
+    memset(&x, 0, sizeof x);
+    const rdof_sdrmodem_io_t io = {obk_reply, dcm_channel, dcm_tune, &x, NULL};
+    CHECK(rdof_sdrmodem_init(&x.m, &io, DC_FS, DC_FS, true) == 0, "init");
+    const rdof_modem_port_t port = {dcm_write, dcm_wait, NULL, dcm_clock, dcm_sleep, &x};
+    rdof_modem_init(&x.client, &port);
+    obk_job = obk_naks = 0;
+    CHECK(rdof_modem_start(&x.client, 1), "version");
+    rdof_radio_init(&x.radio, &x.client, rdof_radio_detect(x.client.version));
+    CHECK(rdof_radio_tune(&x.radio, DC_CH, DC_CC, 100) && !x.m.duplex && !x.m.role, "the transceiver's: simplex");
+    const rdof_sdr_rx_config_t rc = {DC_FS, DC_CENTER, 0, 0, true, DC_CHUNK};
+    const rdof_sdr_channel_t ch = {"A", DC_CH, DC_CC, 2};
+    CHECK(rdof_sdr_rx_init(&rx, &rc, &ch, 1, NULL, 0) == 0, "receiver");
+    rx.on_burst = ob_burst;
+    memset(&obr, 0, sizeof obr);
+    /* the job's */
+    obk_job = 1;
+    uint8_t f[160];
+    rdof_sdrmodem_write(&x.m, f, rdof_sdrmodem_outbound_frames(DC_CH, DC_CC, 255, 16, 11, f, sizeof f));
+    CHECK(!obk_naks && x.m.role == 1 && x.m.duplex && x.m.keyed, "keyed: %d NAKs, role %d", obk_naks, x.m.role);
+    ob_run(&x.m, &rx, 1.0, 0);
+    const int keyed_n = obr.n;
+    bool bs = keyed_n >= 25;
+    for (int i = 0; i < keyed_n && i < 256; i++)
+        bs &= obr.fam[i] == RDOF_FAMILY_BS && obr.dt[i] == RDOF_DT_IDLE;
+    CHECK(bs && x.m.key_k >= 0 && x.m.slot_k > x.m.key_k, "%d BS idle bursts, slots %ld to %ld", keyed_n, x.m.key_k,
+          x.m.slot_k);
+    const uint8_t off = 0, none[2] = {1, 0};
+    rdof_sdrmodem_write(&x.m, f, rdof_mmdvm_frame(RDOF_MMDVM_DMR_START, &off, 1, f, sizeof f));
+    ob_run(&x.m, &rx, 0.3, 0);
+    CHECK(!x.m.keyed && x.m.key_k >= 0, "unkeyed, the first slot kept (state 2)");
+    rdof_sdrmodem_write(&x.m, f, rdof_mmdvm_frame(0xD6, none, sizeof none, f, sizeof f));
+    CHECK(!obk_naks && x.m.role == 0 && x.m.slot_k == -1 && !x.m.clock_running, "SET_ROLE 0: role %d, %d NAKs",
+          x.m.role, obk_naks);
+    /* back to the transceiver */
+    obk_job = 0;
+    CHECK(rdof_modem_start(&x.client, 1) && rdof_modem_set_mode(&x.client, RDOF_MODE_DMR) &&
+              rdof_radio_tune(&x.radio, DC_CH, DC_CC, 100) && !x.m.duplex && !x.m.role,
+          "simplex again: %s", x.client.error);
+    const int before = obr.n;
+    uint8_t b[RDOF_BURST_BYTES], p12[12] = {0x3D, 0x80}; /* a CSBK on DC_CC, MS sync */
+    rdof_data_burst(p12, RDOF_DT_CSBK, DC_CC, RDOF_MS_VOICE ^ RDOF_DATA_XOR, b);
+    rdof_modem_write_dmr(&x.client, RDOF_SYNC_DATA | RDOF_DT_CSBK, b, 2);
+    ob_run(&x.m, &rx, 0.5, 0);
+    bool ms = obr.n == before + 1;
+    for (int i = before; i < obr.n && i < 256; i++)
+        ms &= obr.fam[i] == RDOF_FAMILY_MS;
+    CHECK(ms && !x.m.keyed, "the transceiver's burst: %d heard, MS", obr.n - before);
+    rdof_sdr_rx_free(&rx);
+    rdof_sdrmodem_free(&x.m);
+    printf("outbound and back: %d BS idle bursts, unkeyed, role dropped, a simplex MS burst after\n", keyed_n);
+}
+
 #endif
 
 /* A signal mode's source on a fast stream (a PlutoSDR's 864 kS/s, the carrier 100 kHz from its center): rendered at
@@ -1720,6 +1791,7 @@ int main(void)
     test_dcdm_modem();
     test_dcdm_e2e();
     test_outbound();
+    test_outbound_back();
 #endif
     test_signal(true);
     test_signal(false);

@@ -1546,6 +1546,24 @@ static const char *bl_can_tx(void *ctx)
     return NULL;
 }
 
+/* An outbound job (bench_tx outbound, bench-api.md 14.3), as a transmit job: the bench's thread asks, the main loop
+ * keys the SDR modem as a repeater's TX half with no traffic (rdof_sdrmodem_outbound_frames: idle bursts and the
+ * CACH on both slots), copies its slot clock out each turn, and at the end unkeys, drops the role and gives the modem
+ * back to the transceiver. */
+static struct {
+    pthread_mutex_t mu;     /* all of it: the main loop writes active, keyed and the clock, the bench's thread reads */
+    int want;               /* 1 open, 2 unkey, 3 close */
+    bool active, unkeyed, failed;
+    char why[120];
+    rdof_bl_ob_cfg_t cfg;
+    double asked;
+    rdof_bl_ob_state_t s;   /* the slot clock, as the main loop last saw it */
+    int state;              /* ob_state's answer from s */
+    bool mapped;            /* the key-up's edge was heard back: modem sample map_pos was on the air at map_t */
+    int64_t map_pos;
+    double map_t, keyed_at; /* first seen keyed (0: not yet) */
+} BO = {.mu = PTHREAD_MUTEX_INITIALIZER};
+
 /* A transmit job: the bench's thread asks (the engine's tx hooks), the main loop does it, since the SDR modem and
  * the transceiver over it are the main loop's. The transceiver pauses for the job (no polls: the network's calls
  * wait), rdof_benchtx_t drives the modem in DMO, then the modem is set up again and the transceiver goes on. */
@@ -1565,7 +1583,7 @@ static struct {
 static bool bl_tx_open(void *ctx, uint32_t freq, int cc, int power, bool as_built, char *why, size_t cap)
 {
     pthread_mutex_lock(&BT.mu);
-    const bool busy = BT.want || BT.active || BR.want || BR.active;
+    const bool busy = BT.want || BT.active || BR.want || BR.active || BO.want || BO.active;
     if (!busy) {
         BT.want = 1, BT.freq = freq, BT.cc = cc, BT.asked = now_s();
         BT.ready = BT.failed = BT.idle = false;
@@ -1637,6 +1655,17 @@ static void bt_keying(void *ctx, double start, double seconds, int bursts, const
 /* The modem's replies while a job has it (the main loop's thread, as BT.active's writes). */
 static bool bench_modem_reply(const uint8_t *f, size_t n)
 {
+    if (BO.active) { /* an outbound's: the setup's ACKs swallowed, a NAK fails it */
+        if (n >= 5 && f[2] == RDOF_MMDVM_NAK) {
+            pthread_mutex_lock(&BO.mu);
+            if (!BO.failed) {
+                BO.failed = true;
+                snprintf(BO.why, sizeof BO.why, "the modem refused command 0x%02X (reason %u)", f[3], f[4]);
+            }
+            pthread_mutex_unlock(&BO.mu);
+        }
+        return true;
+    }
     if (!BT.active)
         return false;
     rdof_benchtx_modem(&BT.tx, f, n, now_s());
@@ -1661,7 +1690,7 @@ static int bl_sig_open(void *ctx, uint32_t freq, int power, double seconds, cons
 {
     pthread_mutex_lock(&BS.mu);
     pthread_mutex_lock(&BT.mu);
-    const bool busy = BS.want || BS.active || BT.want || BT.active || BR.want || BR.active;
+    const bool busy = BS.want || BS.active || BT.want || BT.active || BR.want || BR.active || BO.want || BO.active;
     pthread_mutex_unlock(&BT.mu);
     if (!busy) {
         BS.want = 1, BS.freq = freq, BS.src = *src, BS.asked = now_s();
@@ -1710,6 +1739,136 @@ static void bl_sig_close(void *ctx)
 
 static double bl_sig_rate(void *ctx) { return rdof_sdrmodem_signal_rate(&R.m); }
 
+/* bench_tx outbound's hooks. The modem's own slot clock, its TX samples on the receiver's timeline: the key-up's edge,
+ * heard back (the AD9361 hears its own transmitter), ties the modem sample it was put at to the receiver's sample
+ * and so to UTC (the bursts' times as the receiver reports them). Unheard within a second, modem sample p is taken to
+ * be on the air at wideband sample p plus tx_late48. */
+static const char *bl_ob_can(void *ctx)
+{
+    if (R.mmdvm)
+        return "the MMDVM modem transmits here, and an outbound job keys the SDR's own: none on --mmdvm";
+    return bl_can_tx(ctx);
+}
+
+static bool bl_ob_open(void *ctx, const rdof_bl_ob_cfg_t *cfg, char *why, size_t cap)
+{
+    pthread_mutex_lock(&BS.mu);
+    pthread_mutex_lock(&BT.mu);
+    pthread_mutex_lock(&BO.mu);
+    const bool busy = BO.want || BO.active || BT.want || BT.active || BR.want || BR.active || BS.want || BS.active;
+    if (!busy) {
+        BO.want = 1, BO.cfg = *cfg, BO.asked = now_s();
+        BO.unkeyed = BO.failed = false, BO.why[0] = 0;
+        BO.s = (rdof_bl_ob_state_t){.first = -1, .next = -1};
+        BO.state = 0, BO.mapped = false, BO.keyed_at = 0;
+    }
+    pthread_mutex_unlock(&BO.mu);
+    pthread_mutex_unlock(&BT.mu);
+    pthread_mutex_unlock(&BS.mu);
+    if (busy)
+        snprintf(why, cap, "the transmitter is still busy with the last job");
+    else if (cfg->power != 255)
+        snprintf(why, cap, "--power %d isn't applied: the SDR transmits at --tx-gain %.0f", cfg->power, bench_txg);
+    return !busy;
+}
+
+static int bl_ob_state(void *ctx, rdof_bl_ob_state_t *s, char *why, size_t cap)
+{
+    pthread_mutex_lock(&BO.mu);
+    *s = BO.s;
+    const int st = BO.failed ? -1 : BO.state;
+    if (BO.failed)
+        snprintf(why, cap, "%s", BO.why);
+    pthread_mutex_unlock(&BO.mu);
+    return st;
+}
+
+static void bl_ob_unkey(void *ctx)
+{
+    pthread_mutex_lock(&BO.mu);
+    if (BO.want != 3 && (BO.want == 1 || BO.active))
+        BO.want = 2;
+    pthread_mutex_unlock(&BO.mu);
+}
+
+static void bl_ob_close(void *ctx)
+{
+    pthread_mutex_lock(&BO.mu);
+    if (BO.want == 1 && !BO.active)
+        BO.want = 0; /* never keyed */
+    else if (BO.active)
+        BO.want = 3;
+    pthread_mutex_unlock(&BO.mu);
+}
+
+/* The main loop's turn for an outbound: true while one has the modem. */
+static bool bench_ob_poll(double now)
+{
+    pthread_mutex_lock(&BO.mu);
+    if (BO.want == 1 && !BO.active) {
+        if ((R.t.has_call || rdof_sdrmodem_transmitting(&R.m)) && now - BO.asked < 10.0) { /* its call ends first */
+            pthread_mutex_unlock(&BO.mu);
+            return false;
+        }
+        BO.want = 0, BO.active = true;
+        const rdof_bl_ob_cfg_t c = BO.cfg;
+        pthread_mutex_unlock(&BO.mu);
+        const int s = (int)ceil(c.seconds);
+        uint8_t f[160];
+        const size_t n = rdof_sdrmodem_outbound_frames(c.freq_hz, c.cc, 255, s + 15, s + 10, f, sizeof f);
+        rdof_sdrmodem_write(&R.m, f, n); /* the replies to bench_modem_reply: a NAK fails the job */
+        say("bench: an outbound has the transmitter: %.4f MHz cc %d, %.1f s\n", c.freq_hz / 1e6, c.cc, c.seconds);
+        pthread_mutex_lock(&BO.mu);
+    }
+    if (!BO.active) {
+        pthread_mutex_unlock(&BO.mu);
+        return false;
+    }
+    if (BO.want == 2 && !BO.unkeyed) { /* the key-up ends after the slot being queued */
+        BO.unkeyed = true, BO.want = 0;
+        pthread_mutex_unlock(&BO.mu); /* the modem's reply comes back through bench_modem_reply */
+        const uint8_t off = 0;
+        uint8_t f[8];
+        rdof_sdrmodem_write(&R.m, f, rdof_mmdvm_frame(RDOF_MMDVM_DMR_START, &off, 1, f, sizeof f));
+        pthread_mutex_lock(&BO.mu);
+    }
+    if (BO.want == 3) { /* over: the role dropped (SET_ROLE none), the modem back to the transceiver */
+        BO.want = 0;
+        pthread_mutex_unlock(&BO.mu);
+        static const uint8_t off = 0, none[2] = {1, 0}; /* 0xD6 SET_ROLE 0 */
+        uint8_t f[8];
+        if (!BO.unkeyed)
+            rdof_sdrmodem_write(&R.m, f, rdof_mmdvm_frame(RDOF_MMDVM_DMR_START, &off, 1, f, sizeof f));
+        rdof_sdrmodem_write(&R.m, f, rdof_mmdvm_frame(0xD6, none, sizeof none, f, sizeof f));
+        pthread_mutex_lock(&BO.mu);
+        BO.active = false;
+        pthread_mutex_unlock(&BO.mu);
+        if (!rdof_modem_start(&R.client, 1) || !rdof_txvr_start(&R.t))
+            say("bench: the transceiver didn't start again: %s\n", R.client.error);
+        else
+            say("bench: the transmitter is the transceiver's again\n");
+        return true;
+    }
+    const rdof_sdrmodem_t *m = &R.m;
+    const bool keyed = m->keyed && m->key_k >= 0;
+    if (keyed && !BO.keyed_at)
+        BO.keyed_at = now;
+    if (keyed && !BO.mapped && now - BO.keyed_at > 1.5) { /* the edge not heard: as the modem has it */
+        BO.mapped = true, BO.map_pos = 0;
+        BO.map_t = bl_sc_utc(NULL, (uint64_t)(m->tx_late48 > 0 ? m->tx_late48 : 0) * (uint64_t)m->tx_fs / 48000);
+        say("bench: the outbound's key-up wasn't heard back: its times are the modem's\n");
+    }
+    BO.s = (rdof_bl_ob_state_t){.keyed = keyed, .first = m->key_k, .next = m->slot_k, .base = m->base,
+                                .slot = (double)rdof_mod_slot_samples(&m->mod), .rate = m->tx_fs,
+                                .skips = (long)m->slot_skips, .last_from = m->skip_from, .last_to = m->skip_to,
+                                .on_air = keyed && BO.mapped, .map_pos = BO.map_pos, .map_t = BO.map_t};
+    /* the CACH (12 symbols) and the burst's first 65.5 symbols, 10 samples a symbol at 48 kS/s */
+    BO.s.sync_off = (int)llround(775.0 * m->tx_fs / 48000.0);
+    BO.state = !m->keyed && m->key_k >= 0 ? 2 : keyed ? 1 : 0;
+    pthread_mutex_unlock(&BO.mu);
+    return true;
+}
+
 /* The main loop's turn for a signal: true while one has the modem. */
 static bool bench_sig_poll(double now)
 {
@@ -1744,7 +1903,7 @@ static bool bench_tx_poll(double now)
 {
     if (!BL.bl)
         return false;
-    if (bench_sig_poll(now))
+    if (bench_sig_poll(now) || bench_ob_poll(now))
         return true;
     pthread_mutex_lock(&BT.mu);
     if (BT.want == 1 && !BT.active) {
@@ -1793,7 +1952,7 @@ static bool bench_tx_poll(double now)
 static bool bl_rpt_open(void *ctx, const rdof_bl_rpt_cfg_t *cfg, char *why, size_t cap)
 {
     pthread_mutex_lock(&BR.mu);
-    const bool busy = BR.want || BR.active || BT.want || BT.active;
+    const bool busy = BR.want || BR.active || BT.want || BT.active || BO.want || BO.active;
     if (!busy) {
         BR.want = 1, BR.cfg = *cfg, BR.asked = now_s();
         BR.ready = BR.failed = false;
@@ -2001,7 +2160,8 @@ static void bench_start(void)
                                           .rpt_wake = bl_rpt_wake, .rpt_close = bl_rpt_close,
                                           .modes = rdof_sdr_modes, .sig_open = bl_sig_open,
                                           .sig_state = bl_sig_state, .sig_close = bl_sig_close,
-                                          .sig_rate = bl_sig_rate};
+                                          .sig_rate = bl_sig_rate, .ob_open = bl_ob_open, .ob_state = bl_ob_state,
+                                          .ob_unkey = bl_ob_unkey, .ob_close = bl_ob_close, .ob_can = bl_ob_can};
     rdof_bl_platform_t p = pf;
     if (R.mmdvm) /* the modem transmits DMR only: no signal modes */
         p.sig_open = NULL, p.sig_state = NULL, p.sig_close = NULL;
@@ -3871,6 +4031,14 @@ int main(int argc, char **argv)
                         R.m.tx_late48 = (total + i - R.onset) * 48000 / (int64_t)rate;
                         BR.cal = false;
                         say("bench: the job's transmit path is %.2f ms past its place\n",
+                            1e3 * (double)(total + i - R.onset) / rate);
+                    } else if (BO.active && !BO.mapped) {
+                        /* an outbound's key-up: its modem samples on the receiver's timeline */
+                        const double t = bl_sc_utc(NULL, (uint64_t)(total + i));
+                        pthread_mutex_lock(&BO.mu);
+                        BO.mapped = true, BO.map_pos = R.onset, BO.map_t = t;
+                        pthread_mutex_unlock(&BO.mu);
+                        say("bench: the outbound's key-up heard back %.2f ms after its place\n",
                             1e3 * (double)(total + i - R.onset) / rate);
                     } else {
                         /* at a split wider than the receiver's band, this is the first inbound burst, not the TX */
