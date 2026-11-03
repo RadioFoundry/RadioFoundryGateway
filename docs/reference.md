@@ -120,8 +120,11 @@ the 30 ms grid; half duplex sent back a whole call that the bench decoded with 0
 SoapySDR: the PlutoSDR family's firmware already has libiio and libad9361, so a build for its ARM runs on a stock
 Pluto with nothing installed. `tools/pluto/build.sh` (an x86_64 host with Docker) builds it in Debian 9, whose glibc
 is older than the firmware's, against the firmware's own libiio and libad9361 from ADI's v0.38 sysroot; it writes
-`build/pluto/rdof-pluto.tar.gz` (`rdofradio` and `rdofsdr`, 310 KB, needing only libiio, libad9361 and libc). On the
-Pluto, from `/tmp` (RAM):
+`build/pluto/rdof-pluto.tar.gz` (`rdofradio`, `rdofsdr` and `rdofchz`, 610 KB, needing only libiio, libad9361 and
+libc). `rdofchz` brings up the FPGA channelizer on a Pluto running its bitstream (`chzhw.h`): `--probe` reads its ID
+and CAPS through `/dev/mem`; with `--fs`, `--center`, `--ch MHZ ...` (and `--cic R` for a wide span) it starts the
+block, reads its frames from the RX DMA and prints the frames, gaps and each channel's level once a second. It leaves
+the AD9361 as it is. On the Pluto, from `/tmp` (RAM):
 
 ```sh
 gunzip -c rdof-pluto.tar.gz | tar -xf -

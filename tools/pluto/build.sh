@@ -80,13 +80,13 @@ if [ ! -f /out/libs/usr/lib/libmosquitto_static.a ]; then
 fi
 cmake -S /src -B /out/build -DCMAKE_TOOLCHAIN_FILE=/src/tools/pluto/armhf.cmake -DCMAKE_BUILD_TYPE=Release \
     -DRDOF_BUILD_TESTS=OFF -DRDOF_HOST_WEB=ON -DRDOF_PFFFT=ON -DRDOF_VERSION="$RDOF_VERSION"
-cmake --build /out/build --target rdofradio rdofsdr -j"$(nproc)"
+cmake --build /out/build --target rdofradio rdofsdr rdofchz -j"$(nproc)"
 cd /out
-cp build/rdofradio build/rdofsdr .
-arm-linux-gnueabihf-strip rdofradio rdofsdr
+cp build/rdofradio build/rdofsdr build/rdofchz .
+arm-linux-gnueabihf-strip rdofradio rdofsdr rdofchz
 echo "needs:"; arm-linux-gnueabihf-readelf -d rdofradio | grep NEEDED
 echo "newest glibc symbol:"; arm-linux-gnueabihf-objdump -T rdofradio | grep -oE "GLIBC_[0-9.]+" | sort -uV | tail -1
-tar -czf rdof-pluto.tar.gz rdofradio rdofsdr
+tar -czf rdof-pluto.tar.gz rdofradio rdofsdr rdofchz
 chown -R '"$(id -u):$(id -g)"' /out
 '
 
