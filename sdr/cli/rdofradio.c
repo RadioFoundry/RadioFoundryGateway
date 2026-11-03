@@ -84,6 +84,7 @@
 #include <strings.h>
 #include <time.h>
 #include <poll.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -3824,6 +3825,20 @@ int main(int argc, char **argv)
 #endif
     bench_txg = txg;
     bench_start();
+    /* The receive loop ahead of the rest: it paces the transmitter, and a busy moment elsewhere (three ssh logins at
+     * once on a PlutoSDR) left it behind, half a second of the transmit guard's zeros on the air at a time. Real-time
+     * under the writer (the receiver's helper, made by this thread, takes it too); else, on Linux, nice -10 (the
+     * thread's own there); elsewhere as it is. The kernel keeps 5% of each second for the rest (sched_rt_runtime_us). */
+    {
+        const struct sched_param sp = {.sched_priority = 5};
+        const int e = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
+#ifdef __linux__
+        if (e && setpriority(PRIO_PROCESS, 0, -10))
+            say("the receive loop: no higher priority (%s)\n", strerror(e));
+#else
+        (void)e; /* elsewhere as it is */
+#endif
+    }
     const double t_start = now_s();
     double last_poll = 0, keyed_until = -1;
     long long total = 0;

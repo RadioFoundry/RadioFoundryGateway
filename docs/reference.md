@@ -93,7 +93,9 @@ the 30 ms grid; half duplex sent back a whole call that the bench decoded with 0
   given it enough to finish a buffer 6 ms before the queue would run out, it finishes the buffer with zeros and
   drops as many of the late samples (`rdof/sdr/txguard.h`; "transmit: the loop fell behind; ... ms of zeros kept
   the stream's timing"). The air has a gap and the slots stay where they were. The writer runs at real-time
-  priority (SCHED_FIFO), since a late writer can still run the queue dry ("transmit: the device ran dry"). A
+  priority (SCHED_FIFO), since a late writer can still run the queue dry ("transmit: the device ran dry"). So does
+  the receive loop, under the writer (and the receiver's helper with it): at normal priority three ssh logins at once
+  on a Pluto left it behind, 0.25 to 0.5 s of the guard's zeros at a time during a `tx fm`; none since (2026-11-03). A
   writer stall with SoapySDR (no guard) lets the device run dry, and everything after goes out one buffer
   (13.65 ms at 2.4 MS/s) later: the TX ring's floor grows by that much, and idle, rdofradio takes it out
   ("transmit: ... ms of delay taken out"; keyed, the labels follow it). A reader stall past the Pluto's buffers
