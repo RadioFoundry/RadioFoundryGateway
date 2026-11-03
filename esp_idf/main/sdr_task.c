@@ -1330,6 +1330,21 @@ const char *sdr_retune(const sdr_retune_t *r, bool wait)
     return rt_why[0] ? rt_why : NULL;
 }
 
+int sdr_retune_poll(char *why, size_t cap)
+{
+    if (!dsp_task_handle) {
+        snprintf(why, cap, "no SDR running");
+        return -1;
+    }
+    if (rt_state || rt_restore)
+        return 0;
+    if (rt_why[0]) {
+        snprintf(why, cap, "%s", rt_why);
+        return -1;
+    }
+    return 1;
+}
+
 static volatile bool paused; /* sdr_pause: the front end stopped, the DSP idle */
 
 bool sdr_pause(bool on)

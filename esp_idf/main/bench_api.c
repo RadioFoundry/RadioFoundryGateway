@@ -438,8 +438,11 @@ static esp_err_t get_info(httpd_req_t *req)
     return send_json(req, &o);
 }
 
-/* PUT /sdr's retune lasts as long as the exclusive lease of the session that asked: then the settings again. */
-static char retune_owner[16];
+/* PUT /sdr's retune lasts as long as the exclusive lease of the session that asked: then the settings again. A line
+ * protocol session's tune (bench_retune_line) is "line:" and its id, for as long as the line engine says. */
+static char retune_owner[24];
+#define LINE_OWNER "line:"
+static bool line_owns(void) { return !strncmp(retune_owner, LINE_OWNER, strlen(LINE_OWNER)); }
 
 static void retune_ends(const char *id)
 {
@@ -638,6 +641,28 @@ static bool json_auto(const char *js, const char *key)
     return !strncmp(p, "\"auto\"", 6);
 }
 
+/* A retune's checks, PUT /sdr's and the line protocol's tune's: NULL, or an error code with why. */
+static const char *retune_check(const sdr_retune_t *r, char *why, size_t cap)
+{
+    if (isfinite(r->center_hz) && r->center_hz != 0 && !(r->center_hz > 24e6 && r->center_hz < 1.766e9))
+        snprintf(why, cap, "the center is 24 MHz to 1766 MHz");
+    else if (isfinite(r->gain_db) && r->gain_db != SDR_RETUNE_SETTINGS && !(r->gain_db >= 0 && r->gain_db <= 60))
+        snprintf(why, cap, "the gain is 0 to 60 dB");
+    else if (r->ntaps > SDR_MAX_TAPS)
+        snprintf(why, cap, "%d taps at most", SDR_MAX_TAPS);
+    else
+        return NULL;
+    return "bad_request";
+}
+
+/* sdr_retune's why not, as an error code and HTTP status. */
+static const char *retune_code(const char *why, int *http)
+{
+    const bool down = strstr(why, "no SDR") || strstr(why, "come back"), busy = strstr(why, "under way");
+    *http = down ? 503 : busy ? 409 : 400;
+    return down ? "unavailable" : busy ? "busy" : "bad_request";
+}
+
 /* PUT /sdr?session=ID {"center_hz": Hz | "auto", "gain_db": dB | "auto", "taps_hz": [Hz, ...]}: a retune for as
  * long as the session's exclusive lease lasts (spec section 5); fields left out stay as they are. */
 static esp_err_t put_sdr(httpd_req_t *req)
@@ -660,18 +685,12 @@ static esp_err_t put_sdr(httpd_req_t *req)
     double v;
     if (json_auto(js, "center_hz"))
         r.center_hz = 0;
-    else if (json_num(js, "center_hz", &v)) {
-        if (!(v > 24e6 && v < 1.766e9))
-            return send_error(req, 400, "bad_request", "center_hz: 24 MHz to 1766 MHz");
-        r.center_hz = v;
-    }
+    else if (json_num(js, "center_hz", &v))
+        r.center_hz = isfinite(v) && v > 0 ? v : -1; /* -1: refused below */
     if (json_auto(js, "gain_db"))
         r.gain_db = SDR_RETUNE_SETTINGS;
-    else if (json_num(js, "gain_db", &v)) {
-        if (!(v >= 0 && v <= 60))
-            return send_error(req, 400, "bad_request", "gain_db: 0 to 60");
-        r.gain_db = v;
-    }
+    else if (json_num(js, "gain_db", &v))
+        r.gain_db = isfinite(v) ? v : -1;
     if (json_num(js, "rate", &v) && fabs(v - g_scfg.sample_rate) > 1)
         return send_error(req, 400, "unsupported", "the rate is the settings' (%.0f S/s) on this board",
                           g_scfg.sample_rate);
@@ -685,11 +704,15 @@ static esp_err_t put_sdr(httpd_req_t *req)
         r.ntaps = nt;
         memcpy(r.taps_hz, taps, sizeof(double) * (size_t)nt);
     }
+    char bad[64];
+    const char *code = retune_check(&r, bad, sizeof bad);
+    if (code)
+        return send_error(req, 400, code, "%s", bad);
     const char *why = sdr_retune(&r, true);
     if (why) {
-        const bool down = strstr(why, "no SDR") || strstr(why, "come back"), busy = strstr(why, "under way");
-        return send_error(req, down ? 503 : busy ? 409 : 400, down ? "unavailable" : busy ? "busy" : "bad_request",
-                          "%s", why);
+        int http;
+        code = retune_code(why, &http);
+        return send_error(req, http, code, "%s", why);
     }
     take();
     snprintf(retune_owner, sizeof retune_owner, "%s", session);
@@ -790,6 +813,12 @@ static esp_err_t post_session(httpd_req_t *req)
         s->rx = json_bool(js, "rx", true);
         s->tx = json_bool(js, "tx", false);
         s->exclusive = json_bool(js, "exclusive", false);
+        if (s->exclusive && line_owns()) {
+            s->exclusive = false;
+            give();
+            return send_error(req, 409, "busy", "the line protocol's session %s has the SDR tuned",
+                              retune_owner + strlen(LINE_OWNER));
+        }
         for (int i = 0; s->exclusive && i < MAX_SESSIONS; i++)
             if (sessions[i].used && &sessions[i] != s && sessions[i].leased && sessions[i].exclusive) {
                 s->exclusive = false;
@@ -833,6 +862,65 @@ static esp_err_t post_session(httpd_req_t *req)
     put_session(&o, s);
     give();
     return send_json(req, &o);
+}
+
+const char *bench_retune_line(const sdr_retune_t *r, const char *who, char *why, size_t cap)
+{
+    const char *code = retune_check(r, why, cap);
+    if (code)
+        return code;
+    take();
+    expire_sessions();
+    for (int i = 0; i < MAX_SESSIONS; i++)
+        if (sessions[i].used && sessions[i].leased && sessions[i].exclusive) {
+            snprintf(why, cap, "the HTTP API's session %s (%s) holds the SDR", sessions[i].id, sessions[i].label);
+            give();
+            return "busy";
+        }
+    const bool had = line_owns();
+    snprintf(retune_owner, sizeof retune_owner, LINE_OWNER "%.16s", who);
+    give();
+    const char *e = sdr_retune(r, false); /* the engine's lock is held: never wait for the DSP here */
+    if (e) {
+        snprintf(why, cap, "%s", e);
+        if (!had) {
+            take();
+            retune_owner[0] = 0;
+            give();
+        }
+        int http;
+        return retune_code(e, &http);
+    }
+    ESP_LOGI(TAG, "line session %s retunes the SDR", who);
+    return NULL;
+}
+
+int bench_retune_line_state(char *why, size_t cap)
+{
+    const int st = sdr_retune_poll(why, cap);
+    double c, g, taps[SDR_MAX_TAPS];
+    int nt;
+    sdr_retune_get(&c, &g, taps, &nt);
+    if (st < 0 && isnan(c) && isnan(g) && !nt) { /* refused, and no tune before it: nobody's */
+        take();
+        if (line_owns())
+            retune_owner[0] = 0;
+        give();
+    }
+    return st;
+}
+
+void bench_retune_line_end(void)
+{
+    take();
+    const bool mine = line_owns();
+    if (mine) {
+        ESP_LOGI(TAG, "line session %s's tune ends: back to the settings", retune_owner + strlen(LINE_OWNER));
+        retune_owner[0] = 0;
+    }
+    give();
+    if (mine)
+        sdr_retune_restore();
 }
 
 /* For a radio link (bench_radio.c): the TX frequencies the session's lease declared; -1: no session. */

@@ -130,6 +130,16 @@ typedef struct {
     bool keyed;                 /* key */
 } rdof_bl_rpt_ev_t;
 
+/* A retune of the receiver (the tune op; a trigger or rx outside the window): what changes, the rest as it is. */
+#define RDOF_BL_TAPS 8              /* taps a tune may ask for (the platform may refuse more) */
+#define RDOF_BL_TUNE_AUTO (-1e9)    /* gain_db: the settings' */
+typedef struct {
+    double center_hz;               /* 0: the settings' plan ("auto"), NAN: as it is */
+    double gain_db;                 /* RDOF_BL_TUNE_AUTO: the settings', NAN: as it is */
+    double taps_hz[RDOF_BL_TAPS];   /* receiver channels at any frequency in the window */
+    int ntaps;                      /* -1: as they are */
+} rdof_bl_tune_t;
+
 typedef struct {
     /* What the bench is: kind ("rdofradio", "esp32s3-gateway"), name, version. */
     void (*device)(void *ctx, char *kind, size_t kcap, char *name, size_t ncap, char *version, size_t vcap);
@@ -206,6 +216,14 @@ typedef struct {
     void (*sig_close)(void *ctx);
     /* The rate the transmitter pulls a source at, samples a second (NULL: 48000). */
     double (*sig_rate)(void *ctx);
+    /* Retuning the receiver (the tune op; NULL: it can't), with the engine's lock held, so none of them waits for the
+     * receiver: tune asks for t for session `who` and returns NULL, or an error code ("busy", "refused",
+     * "unavailable", "bad_request") with why. tune_state: 1 the receiver runs at what was last asked (a tune or an
+     * untune), 0 not yet, -1 the last tune was refused (why; the one before it stays). untune: back to the
+     * settings. */
+    const char *(*tune)(void *ctx, const rdof_bl_tune_t *t, const char *who, char *why, size_t cap);
+    int (*tune_state)(void *ctx, char *why, size_t cap);
+    void (*untune)(void *ctx);
 } rdof_bl_platform_t;
 
 typedef struct rdof_bl rdof_bl_t;

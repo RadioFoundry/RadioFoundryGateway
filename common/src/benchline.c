@@ -30,8 +30,11 @@
 #define SLOT_MS 30.0
 #define SYNC_CENTER_48 655     /* a burst's sync center past its start, 48 kS/s samples (symbol 65.5) */
 
+#define RETUNE_MAX_S 15.0      /* a tune or untune that hasn't applied by then failed */
+
 enum { C_FREE = 0, C_LINE, C_ACTIVE, C_DONE };
-enum { OP_NONE = 0, OP_SESSION, OP_CLAIM, OP_HOLD, OP_RUN, OP_BURSTS, OP_LISTEN, OP_CAPTURE, OP_TRIGGER, OP_TX, OP_RX };
+enum { OP_NONE = 0, OP_SESSION, OP_CLAIM, OP_HOLD, OP_RUN, OP_BURSTS, OP_LISTEN, OP_CAPTURE, OP_TRIGGER, OP_TX, OP_RX,
+       OP_TUNE };
 enum { W_NONE = 0, W_MODEM, W_FREQ };
 /* a run's job */
 enum { J_WAIT = 0, J_OPEN, J_SEND, J_DRAIN, J_GAP, J_LISTEN, J_RPT_SETUP, J_RPT_RUN, J_OB_SETUP, J_OB_RUN, J_OB_DRAIN };
@@ -126,6 +129,8 @@ typedef struct {
     bool gapped;              /* samples were skipped since the last frame: the next one says so (flag 1) */
     double freq_hz, pre_s, gain;
     double fs;                /* bursts: the wideband rate, for a record's sc */
+    /* tune: a trigger or rx outside the window waits for its own tune, then runs again (autotune) */
+    bool autotune;
     /* run */
     job_t *job;
     trig_t *trig;
@@ -161,6 +166,13 @@ struct rdof_bl {
     int qh, qn;
     long qdrops;
     volatile int n_bursts, n_iq;
+    /* the receiver's tune (the tune op, or a trigger's or rx's own): the session it's for (-1 none); a trigger's or
+     * rx's own ends with its connection (tune_conn, -1: the session's, from the tune op); the connection waiting for
+     * it to apply; a tune (1) or an untune (2) asked and not applied yet; a tune in force; the owner went while its
+     * tune was being applied */
+    int tune_sess, tune_conn, tune_wait, retuning;
+    bool tuned, untune_after;
+    double retune_since;
     /* the request parser */
     int tx_conn;              /* the run transmitting now, -1 none */
     rdof_jnode_t nodes[NODES];
@@ -239,6 +251,10 @@ static void fail(rdof_bl_t *bl, conn_t *c, const char *code, const char *fmt, ..
     c->state = C_DONE;
 }
 
+static bool tuned_for_other(const rdof_bl_t *bl, const conn_t *c);
+static void fail_tuned(rdof_bl_t *bl, conn_t *c, double mhz);
+static void outside(rdof_bl_t *bl, conn_t *c, int root, double mhz, const rdof_bl_window_t *w, double now);
+
 /* ── frequencies ──────────────────────────────────────────────────────────── */
 
 static void refresh_freqs(rdof_bl_t *bl)
@@ -309,13 +325,17 @@ static int session_find(const rdof_bl_t *bl, const char *id)
     return -1;
 }
 
-static void session_end(rdof_bl_t *bl, int s, const char *why)
+static void tune_end(rdof_bl_t *bl, double now);
+
+static void session_end(rdof_bl_t *bl, int s, const char *why, double now)
 {
     session_t *ss = &bl->s[s];
     if (!ss->used)
         return;
     if (bl->holder == s)
         bl->holder = -1;
+    if (bl->tune_sess == s) /* its tune: the settings again */
+        tune_end(bl, now);
     for (int i = 0; i < RDOF_BL_CONNS; i++) { /* its waits and streams go with it */
         conn_t *c = &bl->c[i];
         if (c->state == C_ACTIVE && c->sess == s && c->op != OP_SESSION)
@@ -340,6 +360,7 @@ rdof_bl_t *rdof_bl_new(const rdof_bl_platform_t *p)
     pthread_mutex_init(&bl->mu, NULL);
     bl->holder = -1;
     bl->tx_conn = -1;
+    bl->tune_sess = bl->tune_conn = bl->tune_wait = -1;
     bl->next_id = 1;
     bl->strbuf = malloc(RDOF_BL_LINE_MAX + 64);
     if (!bl->strbuf) {
@@ -467,14 +488,13 @@ size_t rdof_bl_input_room(rdof_bl_t *bl, int ci)
 
 void rdof_bl_closed(rdof_bl_t *bl, int ci, double now)
 {
-    (void)now;
     if (ci < 0 || ci >= RDOF_BL_CONNS)
         return;
     lock(bl);
     conn_t *c = &bl->c[ci];
     if (c->op == OP_SESSION && c->sess >= 0 && bl->s[c->sess].conn == ci) {
         bl->s[c->sess].conn = -1;
-        session_end(bl, c->sess, "closed");
+        session_end(bl, c->sess, "closed", now);
     }
     if (c->op == OP_BURSTS || c->op == OP_LISTEN)
         bl->n_bursts--;
@@ -482,6 +502,11 @@ void rdof_bl_closed(rdof_bl_t *bl, int ci, double now)
         bl->n_iq--;
     if (c->job)
         job_end(bl, c); /* a transmission unkeys */
+    if (bl->tune_conn == ci) /* a trigger's or rx's own tune */
+        tune_end(bl, now);
+    if (bl->tune_wait == ci)
+        bl->tune_wait = -1;
+    c->autotune = false;
     if (c->op == OP_RX)
         bl->n_iq--;
     sig_end(bl, c);
@@ -542,6 +567,13 @@ void rdof_bl_burst(rdof_bl_t *bl, const rdof_bl_burst_t *b)
 /* ── requests ─────────────────────────────────────────────────────────────── */
 
 static int jget(rdof_bl_t *bl, int root, const char *key) { return rdof_jget(&bl->doc, root, key); }
+
+/* The request has key, and not as null (a client's unset option). */
+static bool jhas(rdof_bl_t *bl, int root, const char *key)
+{
+    const rdof_jnode_t *n = rdof_jnode(&bl->doc, jget(bl, root, key));
+    return n && n->type != RDOF_JNULL;
+}
 
 static double jnum(rdof_bl_t *bl, int root, const char *key, double dflt)
 {
@@ -621,8 +653,19 @@ static void op_info(rdof_bl_t *bl, conn_t *c, double now)
     rdof_bl_window_t w;
     get_window(bl, &w);
     /* built piece by piece: the channel list can be long */
+    /* the receiver's tune: null (the settings'), or whose it is */
+    char tune[160] = "null";
+    if (bl->tune_sess >= 0) {
+        char ql[64];
+        jstr(bl->s[bl->tune_sess].label, ql, sizeof ql);
+        snprintf(tune, sizeof tune, "{\"session\":\"%s\",\"label\":%s,\"for\":\"%s\",\"state\":\"%s\"}",
+                 bl->s[bl->tune_sess].id, ql, bl->tune_conn >= 0 ? "request" : "session",
+                 bl->retuning ? "tuning" : "tuned");
+    } else if (bl->retuning)
+        snprintf(tune, sizeof tune, "{\"session\":null,\"state\":\"%s\"}", bl->retuning == 2 ? "restoring" : "tuning");
     char line[RDOF_BL_OUT / 2];
-    size_t k = (size_t)snprintf(line, sizeof line, "{\"window\":%s,\"sdr\":\"%s\",\"device\":%s,\"channels\":[", win,
+    size_t k = (size_t)snprintf(line, sizeof line,
+                                "{\"window\":%s,\"tune\":%s,\"sdr\":\"%s\",\"device\":%s,\"channels\":[", win, tune,
                                 w.running ? "shared" : "stopped", dev);
     for (int i = 0; i < bl->nf && k < sizeof line; i++) {
         const rdof_bl_freq_t *f = &bl->f[i];
@@ -865,7 +908,7 @@ static void op_claim(rdof_bl_t *bl, conn_t *c, int root, double now)
     wait_start(bl, c, W_FREQ, root, now);
 }
 
-static void op_release(rdof_bl_t *bl, conn_t *c, int root)
+static void op_release(rdof_bl_t *bl, conn_t *c, int root, double now)
 {
     if (!req_session(bl, c, root, true))
         return;
@@ -898,8 +941,16 @@ static void op_release(rdof_bl_t *bl, conn_t *c, int root)
         s->hold = 0;
         released_hold = true;
     }
+    /* the session's tune: asked for, or everything released */
+    bool released_tune = false;
+    const bool all = (!a || a->type != RDOF_JARR || !a->count) && hold <= 0 && !jhas(bl, root, "tune");
+    if (bl->tune_sess == c->sess && bl->tune_conn < 0 && (jbool(bl, root, "tune") || all)) {
+        tune_end(bl, now);
+        released_tune = true;
+    }
     if (k < sizeof out)
-        snprintf(out + k, sizeof out - k, "],\"hold\":%s}", released_hold ? "true" : "false");
+        snprintf(out + k, sizeof out - k, "],\"hold\":%s,\"tune\":%s}", released_hold ? "true" : "false",
+                 released_tune ? "true" : "false");
     emit(bl, c, "%s", out);
     c->state = C_DONE;
 }
@@ -934,7 +985,10 @@ static void op_bursts(rdof_bl_t *bl, conn_t *c, int root, double now, bool liste
     const double mhz = jnum(bl, root, "freq", NAN);
     const int k = isfinite(mhz) ? freq_index(bl, mhz) : -1;
     if (k < 0 || bl->f[k].ch < 0 || !(bl->f[k].caps & RDOF_BL_CAP_DMR)) {
-        fail(bl, c, "refused", "no receiver channel decodes DMR at %.4f MHz on this bench", mhz);
+        if (isfinite(mhz) && tuned_for_other(bl, c))
+            fail_tuned(bl, c, mhz);
+        else
+            fail(bl, c, "refused", "no receiver channel decodes DMR at %.4f MHz on this bench", mhz);
         return;
     }
     c->op = listen ? OP_LISTEN : OP_BURSTS;
@@ -988,8 +1042,11 @@ static void op_capture(rdof_bl_t *bl, conn_t *c, int root, double now)
         return;
     }
     if (!isfinite(mhz) || mhz * 1e6 < w.lo_hz || mhz * 1e6 > w.hi_hz) {
-        fail(bl, c, "refused", "%.4f MHz is outside the receiver's window (%.4f-%.4f MHz)", mhz, w.lo_hz / 1e6,
-             w.hi_hz / 1e6);
+        if (isfinite(mhz) && tuned_for_other(bl, c))
+            fail_tuned(bl, c, mhz);
+        else
+            fail(bl, c, "refused", "%.4f MHz is outside the receiver's window (%.4f-%.4f MHz)", mhz, w.lo_hz / 1e6,
+                 w.hi_hz / 1e6);
         return;
     }
     if (!(secs > 0) || secs > 600) {
@@ -1058,8 +1115,7 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now)
         return;
     }
     if (!isfinite(mhz) || mhz * 1e6 < w.lo_hz || mhz * 1e6 > w.hi_hz) {
-        fail(bl, c, "refused", "%.4f MHz is outside the receiver's window (%.4f-%.4f MHz)", mhz, w.lo_hz / 1e6,
-             w.hi_hz / 1e6);
+        outside(bl, c, root, mhz, &w, now);
         return;
     }
     const char *fmt = jstrv(bl, root, "fmt");
@@ -1140,6 +1196,270 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now)
     trig_restart(t, next - back + (uint64_t)t->ntaps / 2);
     if (t->have_floor)
         emit(bl, c, "{\"armed\":{\"floor_db\":%.1f,\"rate\":%.1f}}", t->floor_db, t->rate);
+}
+
+/* ── tune: the receiver's window (section 14.2) ─────────────────────────── */
+
+static void bursts_done(rdof_bl_t *bl, conn_t *c, const char *reason, double now);
+
+/* Whether the receiver's tune is someone else's than c's (or being applied): then a request that needs another
+ * window is busy, not refused. */
+static bool tuned_for_other(const rdof_bl_t *bl, const conn_t *c)
+{
+    if (bl->retuning)
+        return true;
+    if (bl->tune_conn >= 0)
+        return bl->tune_conn != (int)(c - bl->c);
+    return bl->tune_sess >= 0 && bl->tune_sess != c->sess;
+}
+
+static void fail_tuned(rdof_bl_t *bl, conn_t *c, double mhz)
+{
+    if (bl->tune_sess < 0) {
+        fail(bl, c, "busy", "the receiver is being retuned (%.4f MHz): try again in a moment", mhz);
+        return;
+    }
+    const session_t *s = &bl->s[bl->tune_sess];
+    fail(bl, c, "busy", "%.4f MHz is outside the receiver's window, which session %s (%s) has tuned%s", mhz, s->id,
+         s->label, bl->tune_conn >= 0 ? " for a request" : " until it ends or releases it");
+}
+
+/* Ask the platform for t on c's behalf (c's session must be set): false when it failed c. */
+static bool tune_ask(rdof_bl_t *bl, conn_t *c, const rdof_bl_tune_t *t, double now)
+{
+    char why[200] = "";
+    const char *code = bl->p.tune(bl->p.ctx, t, bl->s[c->sess].id, why, sizeof why);
+    if (code) {
+        fail(bl, c, code, "%s", why[0] ? why : "the receiver can't be tuned so");
+        return false;
+    }
+    bl->retuning = 1;
+    bl->retune_since = now;
+    bl->tune_sess = c->sess;
+    bl->tune_wait = (int)(c - bl->c);
+    bl->untune_after = false;
+    return true;
+}
+
+static void untune_now(rdof_bl_t *bl, double now)
+{
+    if (bl->p.untune)
+        bl->p.untune(bl->p.ctx);
+    bl->tuned = false;
+    bl->retuning = 2;
+    bl->retune_since = now;
+}
+
+/* The tune's owner went (its session, its request, a release): the settings again, once a tune being applied has. */
+static void tune_end(rdof_bl_t *bl, double now)
+{
+    bl->tune_sess = bl->tune_conn = -1;
+    if (bl->retuning == 1)
+        bl->untune_after = true;
+    else if (bl->tuned && !bl->retuning)
+        untune_now(bl, now);
+}
+
+/* The window changed: the streams cut from it end (but `except`, the request the tune was for). */
+static void window_changed(rdof_bl_t *bl, int except, double now, const char *what)
+{
+    for (int i = 0; i < RDOF_BL_CONNS; i++) {
+        conn_t *c = &bl->c[i];
+        if (i == except || c->state != C_ACTIVE)
+            continue;
+        if (c->op == OP_BURSTS || c->op == OP_LISTEN)
+            bursts_done(bl, c, "retuned", now);
+        else if (c->op == OP_CAPTURE || c->op == OP_TRIGGER || c->op == OP_RX)
+            fail(bl, c, "busy", "the receiver %s", what);
+    }
+}
+
+/* The tune's reply: the window and the receiver channels it has now. */
+static void tuned_reply(rdof_bl_t *bl, conn_t *c)
+{
+    char win[320], list[1200];
+    put_window(bl, win, sizeof win);
+    size_t k = 0;
+    list[0] = 0;
+    for (int i = 0; i < bl->nf && k < sizeof list; i++) {
+        const rdof_bl_freq_t *f = &bl->f[i];
+        char qid[40];
+        if (f->ch < 0)
+            continue;
+        jstr(f->id, qid, sizeof qid);
+        k += (size_t)snprintf(list + k, sizeof list - k, "%s{\"freq\":%.6f,\"ch\":%d,\"id\":%s}", k ? "," : "",
+                              f->freq_hz / 1e6, f->ch, qid);
+    }
+    emit(bl, c, "{\"tuned\":{\"session\":\"%s\",\"window\":%s,\"channels\":[%s]}}", bl->s[c->sess].id, win, list);
+    c->state = C_DONE;
+}
+
+/* A tune or untune being applied: done, failed, or still under way. */
+static void tick_tune(rdof_bl_t *bl, double now)
+{
+    if (!bl->retuning)
+        return;
+    char why[200] = "";
+    const int st = bl->p.tune_state ? bl->p.tune_state(bl->p.ctx, why, sizeof why) : 1;
+    if (st == 0 && now - bl->retune_since < RETUNE_MAX_S)
+        return;
+    const int was = bl->retuning;
+    bl->retuning = 0;
+    refresh_freqs(bl);
+    if (was == 2) {
+        window_changed(bl, -1, now, "went back to its settings");
+        return;
+    }
+    const int wi = bl->tune_wait;
+    bl->tune_wait = -1;
+    conn_t *wc = wi >= 0 && bl->c[wi].state == C_ACTIVE && bl->c[wi].op == OP_TUNE ? &bl->c[wi] : NULL;
+    if (st != 1) { /* refused (the tune before it stays), or it never came back (then the settings again) */
+        if (st == 0)
+            snprintf(why, sizeof why, "the receiver didn't come back in %.0f s", RETUNE_MAX_S);
+        if (wc)
+            fail(bl, wc, st == 0 ? "unavailable" : "refused", "%s", why[0] ? why : "the receiver can't be tuned so");
+        if (st == 0)
+            bl->tuned = true; /* it may yet */
+        if (!bl->tuned || st == 0 || bl->untune_after || bl->tune_conn >= 0) {
+            bl->tune_sess = bl->tune_conn = -1;
+            if (bl->tuned)
+                untune_now(bl, now);
+        }
+        return;
+    }
+    bl->tuned = true;
+    window_changed(bl, wi, now, "was retuned");
+    if (bl->untune_after) { /* the owner went meanwhile */
+        if (wc)
+            fail(bl, wc, "refused", "the session ended");
+        untune_now(bl, now);
+        return;
+    }
+    if (!wc)
+        return;
+    if (wc->autotune) { /* a trigger or rx: in the window now */
+        wc->op = OP_NONE;
+        request(bl, wi, now);
+    } else
+        tuned_reply(bl, wc);
+}
+
+/* A tune's number or "auto" from a request: *v NAN when absent, autov for "auto"; false when it's neither. */
+static bool tune_num(rdof_bl_t *bl, int root, const char *key, double *v, double autov)
+{
+    const rdof_jnode_t *n = rdof_jnode(&bl->doc, jget(bl, root, key));
+    *v = NAN;
+    if (!n || n->type == RDOF_JNULL)
+        return true;
+    if (n->type == RDOF_JSTR && !strcmp(n->str, "auto")) {
+        *v = autov;
+        return true;
+    }
+    if (n->type != RDOF_JNUM || !isfinite(n->num))
+        return false;
+    *v = n->num;
+    return true;
+}
+
+/* {"op":"tune","session":S,"center":MHz|"auto","gain":dB|"auto","taps":[MHz,...]}: the receiver's window is the
+ * session's until it ends or releases it ("tune": true), as PUT /sdr under an exclusive lease. */
+static void op_tune(rdof_bl_t *bl, conn_t *c, int root, double now)
+{
+    if (!req_session(bl, c, root, true))
+        return;
+    if (!bl->p.tune) {
+        fail(bl, c, "unsupported", "this bench can't retune its receiver");
+        return;
+    }
+    if (tuned_for_other(bl, c)) {
+        if (bl->tune_sess < 0)
+            fail(bl, c, "busy", "the receiver is being retuned: try again in a moment");
+        else
+            fail(bl, c, "busy", "session %s (%s) has the receiver tuned", bl->s[bl->tune_sess].id,
+                 bl->s[bl->tune_sess].label);
+        return;
+    }
+    rdof_bl_tune_t t = {.ntaps = -1};
+    double center, gain;
+    if (!tune_num(bl, root, "center", &center, 0) || (isfinite(center) && center < 0)) {
+        fail(bl, c, "bad_request", "center is MHz or \"auto\"");
+        return;
+    }
+    if (!tune_num(bl, root, "gain", &gain, RDOF_BL_TUNE_AUTO)) {
+        fail(bl, c, "bad_request", "gain is dB or \"auto\"");
+        return;
+    }
+    t.center_hz = center > 0 ? center * 1e6 : center; /* 0: "auto"; NAN: as it is */
+    t.gain_db = gain;
+    if (jhas(bl, root, "rate") || jhas(bl, root, "ppm")) {
+        fail(bl, c, "unsupported", "a tune sets the center, the gain and the taps; the rate and ppm are the bench's");
+        return;
+    }
+    const int arr = jget(bl, root, "taps");
+    const rdof_jnode_t *a = rdof_jnode(&bl->doc, arr);
+    if (a && a->type != RDOF_JNULL) {
+        if (a->type != RDOF_JARR || a->count > RDOF_BL_TAPS) {
+            fail(bl, c, "bad_request", "taps is a list of up to %d frequencies (MHz)", RDOF_BL_TAPS);
+            return;
+        }
+        t.ntaps = 0;
+        for (int i = 0; i < a->count; i++) {
+            const rdof_jnode_t *f = rdof_jnode(&bl->doc, rdof_jat(&bl->doc, arr, i));
+            if (!f || f->type != RDOF_JNUM || !(f->num > 0)) {
+                fail(bl, c, "bad_request", "a tap isn't a frequency (MHz)");
+                return;
+            }
+            t.taps_hz[t.ntaps++] = f->num * 1e6;
+        }
+    }
+    if (!tune_ask(bl, c, &t, now))
+        return;
+    bl->tune_conn = -1;
+    c->op = OP_TUNE;
+    c->state = C_ACTIVE;
+}
+
+/* A trigger's or rx's frequency is outside the window: busy while the tune is someone else's; with a session and
+ * nothing else using the window, a tune of its own there (the frequency an eighth of the rate above the center, clear
+ * of the DC, with a tap on it, as benchapi's capture() does) for as long as the request lasts; else refused. */
+static void outside(rdof_bl_t *bl, conn_t *c, int root, double mhz, const rdof_bl_window_t *w, double now)
+{
+    const int ci = (int)(c - bl->c);
+    if (isfinite(mhz) && tuned_for_other(bl, c)) {
+        fail_tuned(bl, c, mhz);
+        return;
+    }
+    const char *why = NULL;
+    if (!isfinite(mhz) || !bl->p.tune || (jhas(bl, root, "tune") && !jbool(bl, root, "tune")))
+        why = "";
+    else if (bl->tune_conn == ci)
+        why = " (after its tune)";
+    else if (c->sess < 0)
+        why = " (a request with a session has it tuned there)";
+    else if (bl->tune_sess >= 0)
+        why = " (as the session tuned it)";
+    for (int i = 0; !why && i < RDOF_BL_CONNS; i++) {
+        const conn_t *o = &bl->c[i];
+        const bool window = o->op == OP_BURSTS || o->op == OP_LISTEN || o->op == OP_CAPTURE ||
+                            o->op == OP_TRIGGER || o->op == OP_RX;
+        if (i != ci && o->state == C_ACTIVE && window) {
+            fail(bl, c, "busy", "%.4f MHz is outside the receiver's window, and another request is using it", mhz);
+            return;
+        }
+    }
+    if (why) {
+        fail(bl, c, "refused", "%.4f MHz is outside the receiver's window (%.4f-%.4f MHz)%s", mhz, w->lo_hz / 1e6,
+             w->hi_hz / 1e6, why);
+        return;
+    }
+    rdof_bl_tune_t t = {.center_hz = mhz * 1e6 - w->fs / 8, .gain_db = NAN, .ntaps = 1, .taps_hz = {mhz * 1e6}};
+    if (!tune_ask(bl, c, &t, now))
+        return;
+    bl->tune_conn = ci;
+    c->op = OP_TUNE;
+    c->autotune = true;
+    c->state = C_ACTIVE;
+    emit(bl, c, "{\"note\":\"tuning the receiver to %.4f MHz for this request\"}", mhz);
 }
 
 /* ── run: the bench tools' jobs (section 14.3) ────────────────────────────── */
@@ -2094,7 +2414,6 @@ static void tick_tx(rdof_bl_t *bl, conn_t *c, double now)
 /* {"op":"rx","mode":M,"freq":MHz,"seconds":S,"bw":Hz,"streams":"audio,disc", the mode's parameters} */
 static void op_rx(rdof_bl_t *bl, conn_t *c, int root, double now)
 {
-    (void)now;
     if (!req_session(bl, c, root, false))
         return;
     const rdof_sig_mode_t *m = sig_mode(bl, c, root, false);
@@ -2114,8 +2433,7 @@ static void op_rx(rdof_bl_t *bl, conn_t *c, int root, double now)
         return;
     }
     if (!isfinite(mhz) || mhz * 1e6 < w.lo_hz || mhz * 1e6 > w.hi_hz) {
-        fail(bl, c, "refused", "%.4f MHz is outside the receiver's window (%.4f-%.4f MHz)", mhz, w.lo_hz / 1e6,
-             w.hi_hz / 1e6);
+        outside(bl, c, root, mhz, &w, now);
         return;
     }
     if (!(secs > 0 && secs <= 3600) || !(bw >= 1000 && bw <= 40000) || !(over > 0 && over <= 60)) {
@@ -2358,7 +2676,7 @@ static void request(rdof_bl_t *bl, int ci, double now)
     else if (!strcmp(op, "claim"))
         op_claim(bl, c, root, now);
     else if (!strcmp(op, "release"))
-        op_release(bl, c, root);
+        op_release(bl, c, root, now);
     else if (!strcmp(op, "hold"))
         op_hold(bl, c, root, now);
     else if (!strcmp(op, "bursts"))
@@ -2375,6 +2693,8 @@ static void request(rdof_bl_t *bl, int ci, double now)
         op_tx(bl, c, root, now);
     else if (!strcmp(op, "rx"))
         op_rx(bl, c, root, now);
+    else if (!strcmp(op, "tune"))
+        op_tune(bl, c, root, now);
     else if (!strcmp(op, "activity") || !strcmp(op, "burstlog") || !strcmp(op, "bridge"))
         fail(bl, c, "unsupported", "this bench has no %s yet", op);
     else
@@ -2876,6 +3196,7 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
 void rdof_bl_tick(rdof_bl_t *bl, double now)
 {
     lock(bl);
+    tick_tune(bl, now);
     tick_waits(bl, now);
     tick_bursts(bl, now);
     for (int i = 0; i < RDOF_BL_CONNS; i++) {
@@ -2891,7 +3212,7 @@ void rdof_bl_tick(rdof_bl_t *bl, double now)
         else if (c->state == C_ACTIVE && c->op == OP_RX && c->srx)
             tick_rx(bl, c, now);
         else if (c->state == C_ACTIVE && c->op == OP_SESSION && c->ends > 0 && now >= c->ends && c->sess >= 0)
-            session_end(bl, c->sess, "max_s");
+            session_end(bl, c->sess, "max_s", now);
         else if (c->state == C_LINE && now - c->opened > 30.0)
             fail(bl, c, "bad_request", "no request in 30 s");
         if (c->state == C_DONE && (c->op == OP_BURSTS || c->op == OP_LISTEN || c->op == OP_CAPTURE ||
@@ -2904,6 +3225,8 @@ void rdof_bl_tick(rdof_bl_t *bl, double now)
         }
         if (c->state == C_DONE && c->job)
             job_end(bl, c);
+        if (c->state == C_DONE && bl->tune_conn == i) /* a trigger's or rx's own tune ends with it */
+            tune_end(bl, now);
         if (c->state == C_DONE && (c->stx || c->srx))
             sig_end(bl, c);
     }

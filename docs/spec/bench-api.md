@@ -118,7 +118,9 @@ reply comes once it runs) and `clock.run` bumps. A stream bound to one channel e
 all-channel and wideband streams go on, wideband I/Q frames with the `retuned` flag. A retune the board can't do
 (a tap outside the window, too many channels) is refused and the tune before it stays. `GET /sdr` shows the retune
 in force (`retune`, or null). `benchapi`'s `retune()` does this, and its `capture()` at a frequency with no
-channel makes a tap for the capture and puts the settings back after it.
+channel makes a tap for the capture and puts the settings back after it. The line protocol's `tune` (section 14.2)
+is the same retune: while one is in force an exclusive lease is `busy`, and while an exclusive lease is held a
+`tune` is.
 
 ## 6. Streams
 
@@ -456,11 +458,12 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
 
 | op | request | replies |
 |---|---|---|
-| `info` | | `window` (`enabled`, `lo`, `hi`, `center` MHz, `fs`, `gain`, `dc_guard_khz`), `sdr` (`"shared"` when the receiver runs), `channels` (one per receiver channel and TX frequency: `freq`, `ch`, `in_window`, `listed`, `caps`, `claimed_by`, `keyed`), `stations` (`modem`: the gateway's own SDR modem, `kind` `sdrmodem`, `tx`, `held_by`, `waiting`), `modem` (`held_by`, `waiting`, `next_job_eta`), `default_caps`, `device` (kind, name, version), `signal_modes` (section 14.6) |
+| `info` | | `window` (`enabled`, `lo`, `hi`, `center` MHz, `fs`, `gain`, `dc_guard_khz`), `tune` (null, or `session`, `label`, `for` `"session"` or `"request"`, `state` `"tuning"` or `"tuned"`), `sdr` (`"shared"` when the receiver runs), `channels` (one per receiver channel and TX frequency: `freq`, `ch`, `in_window`, `listed`, `caps`, `claimed_by`, `keyed`), `stations` (`modem`: the gateway's own SDR modem, `kind` `sdrmodem`, `tx`, `held_by`, `waiting`), `modem` (`held_by`, `waiting`, `next_job_eta`), `default_caps`, `device` (kind, name, version), `signal_modes` (section 14.6) |
 | `status` | | `sdr`, `receiver` (`seconds`, `overflows`, `clip_pct`, `dsp_skipped`, `decode_dropped`, `captures`), `held`, `waiting`, `sessions`, `tx` (section 7's) |
 | `session` | `label`, `expect_s`, `max_s` | `{"session": ID, "label"}`, then nothing until the connection closes (the session ends with it) or the session's `max_s` runs out (`{"ended": "max_s"}`) |
 | `claim` | `session`, `freqs`, `caps`, `wait_max` | queued / granted, `{"claimed": [MHz], "window"}` |
-| `release` | `session`, `freqs` (none: all), `hold` | `{"released": [MHz]}` |
+| `release` | `session`, `freqs` (none: all), `hold`, `tune` | `{"released": [MHz], "hold", "tune"}` |
+| `tune` | `session`, `center` (MHz or `"auto"`), `gain` (dB or `"auto"`), `taps` ([MHz]) | `{"tuned": {"session", "window", "channels": [{"freq", "ch", "id"}]}}` once the receiver runs at it |
 | `hold` | `session`, `expect_s`, `max_s`, `wait_max` | queued / granted, `{"held": ID}`: the modem is the session's until `release --hold ID` or the session ends |
 | `run` | `session`, `job` (section 14.3), `argv`, `kind`, `expect_s`, `max_s`, `wait_max` | queued / granted, `{"started": ID}`, `{"out": line}` and `{"err": line}`, `{"exit": code}` |
 | `bursts` | `session`, `freq`, `seconds`, `max_bursts`, `until_end`, `cc`, `soft` | `{"ready": t0}`, `{"burst": record}`, `{"done": summary}`, or `no_signal` |
@@ -469,6 +472,22 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
 | `trigger` | `session`, `freq`, `bw`, `pre_s`, `post_s`, `threshold_db`, `min_ms`, `timeout_s`, `fmt`, `until_end`, `max_s`, `floor_db`, `floor_s` | `{"armed": {"floor_db", "rate"}}`, `{"iq": ...}` + samples (`sc` the channel sample's index), `{"done": meta}`, or `no_signal` |
 | `activity`, `burstlog`, `bridge` | | `unsupported` |
 
+- `tune` moves the receiver's window for the session, as `PUT /sdr` under an exclusive lease (section 5; the same
+  code on a board): fields left out stay as they are, `"auto"` is the settings', `taps` (up to 4 on a board) are
+  receiver channels at any frequency in the window (ids `T1`...) that decode like configured ones, `[]` drops them.
+  A center with no channel in the window gets a tap an eighth of the rate above it. The reply comes once the
+  receiver runs at the new tune (about 0.3 s); a tune the bench can't do is `refused` (or `bad_request`) and the
+  one before it stays. The window is the session's until `release` with `"tune": true` (or a release of
+  everything) or the session ends, its connection dropped included: then the settings again. Meanwhile another
+  session's `tune` is `busy`, and so is its request for a frequency outside the window (`bursts`, `listen`,
+  `capture`, `trigger`, `rx`); one inside the window runs. On a board an HTTP exclusive lease makes `tune` `busy`
+  and the reverse. A tune or its end ends the streams cut from the window (`bursts` and `listen` with `done.reason`
+  `"retuned"`, `capture`, `trigger` and `rx` with `busy`). rdofradio can't retune its receiver: `unsupported`.
+- `trigger` and `rx` at a frequency outside the window, with a session, tune for themselves when nobody holds the
+  window and no other request is using it: `{"note": "tuning the receiver to F MHz for this request"}`, the center an
+  eighth of the rate under the frequency (clear of the DC) with a tap on it, then the op as usual; the settings come
+  back when the request ends. `"tune": false` refuses instead; with no session, or while another request uses the
+  window, it is `refused` or `busy` as before.
 - `claim` refuses a frequency the bench doesn't list (no receiver channel, not in `bench.tx`). Receiving needs no
   claim; the HIL tools claim anyway, and a claim keeps another session's job off the frequency.
 - `capture` sends the receiver's wideband samples, cs8 (int8 I, Q; full scale 127), at the front end's rate, with up
@@ -553,7 +572,8 @@ by their long names with `_` for `-`:
 
 One SDR modem: a `run` with a TX job (and a `hold`) waits for it, in order; jobs of one session holding it go
 straight on. A claimed frequency is the claiming session's: another session's `run` there waits. Receive ops
-(`bursts`, `listen`, `capture`, `trigger`) never wait: the receiver is shared and never retuned. `wait_max` ends a
+(`bursts`, `listen`, `capture`, `trigger`) never wait: the receiver is shared, and retuned only by a `tune` (or a
+`trigger` or `rx` of its own, section 14.2), under which a request outside the window is `busy`. `wait_max` ends a
 wait with `timeout`; a session that would wait on itself is `deadlock`. The modem's queue estimates come from each
 job's `expect_s` (else its length as the gateway works it out).
 
@@ -572,7 +592,8 @@ delay. On `--mmdvm` (the MMDVM modem transmits) there is no `outbound`. The freq
 
 `tools/bench/rfgbench.py --bench HOST[:PORT] SUBCOMMAND ...` (or `$RDOF_BENCH_LINE`): `info`, `status`, `session`,
 `claim`, `release`, `hold`, `run`, `capture`, `capture-trigger`, `dmr-bursts`, `listen`, with the daemon client's
-options, and `tx fm` and `rx fm` (section 14.6) of its own. Its stdout and stderr are the daemon client's (the
+options, and `tx fm`, `rx fm` (section 14.6), `tune --session ID [--center MHz|auto] [--gain dB|auto] [--taps
+MHz...]` and `release --tune` of its own. Its stdout and stderr are the daemon client's (the
 `READY` and `wrote` lines, the `rfoundry-bench:` notes, the JSON lines), and so are its exit codes: 0, 1, 3 nothing
 heard, 69 the gateway can't be reached or can't do it, 75 busy or timed out, 77 refused. `run -- python bench_tx.py
 ARGS` (any interpreter, any directory) sends the job; `--file` and `--out` files are written where the client runs.

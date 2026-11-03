@@ -433,6 +433,9 @@ typedef struct {
 } sdr_retune_t;
 const char *sdr_retune(const sdr_retune_t *r, bool wait);
 void sdr_retune_restore(void); /* back to the settings, without waiting (a lease ended) */
+/* Without waiting: 1 the receiver runs at what was last asked (a retune or a restore), 0 not yet, -1 the last retune
+ * was refused (why) and the one before it stays. */
+int sdr_retune_poll(char *why, size_t cap);
 void sdr_retune_get(double *center_hz, double *gain_db, double *taps_hz, int *n); /* NAN: the settings' */
 /* Receiver channel k: a configured one in the window, or a tap (NULL: none). sdr_is_tap: a tap's id. */
 const rdof_sdr_cfg_channel_t *sdr_rx_cfg_channel(int k);
@@ -514,6 +517,12 @@ void bench_line_burst(int channel, const rdof_sdr_burst_t *b, double t);
 long bench_wide_read(uint64_t sc, int8_t *out, long n, uint64_t *oldest, uint64_t *next);
 long bench_wide_filled(uint64_t sc, long n); /* how many of the history's samples [sc, sc + n) are filler */
 void bench_wide_warm(void);
+/* The line protocol's tune (bench_api.c): PUT /sdr's retune for line session `who` until bench_retune_line_end;
+ * busy while an HTTP session holds an exclusive lease. NULL when asked (bench_retune_line_state: applied yet), else an
+ * error code with why. */
+const char *bench_retune_line(const sdr_retune_t *r, const char *who, char *why, size_t cap);
+int bench_retune_line_state(char *why, size_t cap);
+void bench_retune_line_end(void);
 double bench_wide_scale_db(void); /* the wideband 8-bit samples' gain over full scale */
 bool bench_session_label(const char *id, char *label, size_t cap);
 bool bench_query(void *req, const char *key, char *val, size_t cap); /* percent-decoded; false: absent */

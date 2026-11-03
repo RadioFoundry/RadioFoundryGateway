@@ -182,13 +182,17 @@ network, its RX a receiver channel). A transmit job needs `--bench-tx MHZ[,MHZ..
 the half duplex transceiver: it takes the SDR modem from the transceiver for its length, at `--tx-gain`
 (bench_tx's `--power` is noted, not applied). On the PlutoSDR (2026-10-29) a repeater job's beacons went out as idle
 bursts on both slots, on the 30 ms grid to within a microsecond; the transmit path was 55 ms past its place.
+rdofradio can't retune its receiver at run time: the `tune` op is `unsupported` there, and a `trigger` or `rx`
+outside its window is refused.
 
 The ESP32 boards serve the same protocol on TCP `CONFIG_RDOF_BENCH_LINE_PORT` (7373; 0 turns it off) with the bench
 API (`bench_line.c`): the receiver channels' bursts, cs8 captures and level triggers from the bench API's 2 s
 wideband history (kept only while a capture or an I/Q stream has used it in the last ten minutes, so a first capture
 has no pre-roll), and
 `bench_tx` jobs through the SDR modem under `bench.tx`'s gates, in WS /tx's one job slot (bench_tx's `--power`
-capped at `bench.tx.rf_level`). A roamer keeps its SDR modem, so a W12 running as one refuses transmit jobs. In
+capped at `bench.tx.rf_level`). The `tune` op moves the receiver's window for a session through `PUT /sdr`'s
+retune (`bench_retune_line` in `bench_api.c`, asked without waiting under the engine's lock), until the session
+ends or releases it; a `trigger` or `rx` outside the window tunes for itself for its length. A roamer keeps its SDR modem, so a W12 running as one refuses transmit jobs. In
 PSRAM: about 410 KB at rest (the engine 71 KB, its request parser's strings 197 KB, the server's send buffers
 144 KB), and while in use 16 KB a connection, 115 KB a job, 256 KB a capture, a trigger its whole capture (pre +
 post, 1 MB at most); the server thread's stack too. A wideband capture needs 2 bytes a
@@ -707,7 +711,8 @@ without the SDR 1279 KB (0x13FB80), 20 KB less, 641 KB free in its slot, 134 KB 
 
 On 2026-11-03, with the signal modes (analog FM's generator and measuring receiver) and the line protocol's `tx` and
 `rx` ops: `16mb` + `w12` 2189 KB (0x2234E3), 180 KB DIRAM used (53.9%). The FM receiver and its channel filter are
-allocated only while an `rx` runs.
+allocated only while an `rx` runs. With the line protocol's `tune` op, against the same tree without it: `16mb` +
+`w12` 2198 KB (0x225970), +5 KB, 8 bytes more DIRAM.
 
 The roamer role costs 132 KB of flash and the SDR 436 KB (338 KB of it the self-test clip), against about 945 KB for
 the board both share. The SDR only image is 64 KB smaller than with everything built `-O2`.

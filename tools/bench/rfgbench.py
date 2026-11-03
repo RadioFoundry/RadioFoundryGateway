@@ -10,7 +10,8 @@ the daemon's client only changes the command it runs.
     rfgbench.py ... status [--json]
     rfgbench.py ... session --label L [--expect S] [--max S]     prints {"session": ID}; held until stdin closes
     rfgbench.py ... claim --session ID MHz... [--caps rx,dmr] [--wait-max S]
-    rfgbench.py ... release --session ID [MHz...] [--hold ID]
+    rfgbench.py ... release --session ID [MHz...] [--hold ID] [--tune]
+    rfgbench.py ... tune --session ID [--center MHz|auto] [--gain dB|auto] [--taps MHz...]   the session's own window
     rfgbench.py ... hold --session ID [--expect S] [--max S] [--wait-max S]
     rfgbench.py ... run [--session ID] [--modem] [--expect S] [--kind K] -- [python] bench_tx.py ARGS...
     rfgbench.py ... capture [--session ID] --freq MHz --seconds S --out FILE [--pre S] [--gain dB] [--offset-khz K]
@@ -257,7 +258,22 @@ def cmd_claim(a) -> int:
 
 
 def cmd_release(a) -> int:
-    return stream(a.where, {"op": "release", "session": a.session, "freqs": a.freqs, "hold": a.hold}, printer)
+    req = {"op": "release", "session": a.session, "freqs": a.freqs, "hold": a.hold}
+    if a.tune:
+        req["tune"] = True
+    return stream(a.where, req, printer)
+
+
+def _mhz_or_auto(x: str):
+    return x if x == "auto" else float(x)
+
+
+def cmd_tune(a) -> int:
+    req = {"op": "tune", "session": a.session}
+    for k in ("center", "gain", "taps"):
+        if getattr(a, k) is not None:
+            req[k] = getattr(a, k)
+    return stream(a.where, req, printer)
 
 
 def cmd_hold(a) -> int:
@@ -773,6 +789,12 @@ def main(argv=None) -> int:
     s = p("release", cmd_release)
     s.add_argument("freqs", type=float, nargs="*")
     s.add_argument("--hold", type=int, default=None)
+    s.add_argument("--tune", action="store_true", help="the session's tune: the receiver back to its settings")
+    s = p("tune", cmd_tune)
+    s.add_argument("--center", type=_mhz_or_auto, default=None, help="MHz, or auto (the settings' plan)")
+    s.add_argument("--gain", type=_mhz_or_auto, default=None, help="dB, or auto (the settings')")
+    s.add_argument("--taps", type=float, nargs="*", default=None,
+                   help="receiver channels in the window, MHz (none: drop the taps)")
     s = p("hold", cmd_hold)
     s.add_argument("--station", default="modem")
     s.add_argument("--expect", type=float, default=None)

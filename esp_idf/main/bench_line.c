@@ -160,6 +160,24 @@ static int bl_sig_state(void *ctx, char *why, size_t cap) { return bench_tx_sig_
 static void bl_sig_close(void *ctx) { bench_tx_sig_close(); }
 static double bl_sig_rate(void *ctx) { return bench_tx_sig_rate(); }
 
+/* tune: PUT /sdr's retune (bench_api.c), asked without waiting: the engine's lock is held, and the DSP may be
+ * waiting for it with a burst */
+static const char *bl_tune(void *ctx, const rdof_bl_tune_t *t, const char *who, char *why, size_t cap)
+{
+    if (t->ntaps > SDR_MAX_TAPS) {
+        snprintf(why, cap, "%d taps at most", SDR_MAX_TAPS);
+        return "bad_request";
+    }
+    sdr_retune_t r = {.center_hz = t->center_hz,
+                      .gain_db = t->gain_db == RDOF_BL_TUNE_AUTO ? SDR_RETUNE_SETTINGS : t->gain_db,
+                      .ntaps = t->ntaps};
+    for (int i = 0; i < t->ntaps; i++)
+        r.taps_hz[i] = t->taps_hz[i];
+    return bench_retune_line(&r, who, why, cap);
+}
+static int bl_tune_state(void *ctx, char *why, size_t cap) { return bench_retune_line_state(why, cap); }
+static void bl_untune(void *ctx) { bench_retune_line_end(); }
+
 static void bl_ob_unkey(void *ctx) { bench_tx_ob_unkey(); }
 static void bl_ob_close(void *ctx) { bench_tx_ob_close(); }
 
@@ -195,7 +213,8 @@ void bench_line_start(void)
                                           .ob_state = bl_ob_state, .ob_unkey = bl_ob_unkey, .ob_close = bl_ob_close,
                                           .ob_can = bl_ob_can, .modes = rdof_sdr_modes, .sig_open = bl_sig_open,
                                           .sig_state = bl_sig_state, .sig_close = bl_sig_close,
-                                          .sig_rate = bl_sig_rate};
+                                          .sig_rate = bl_sig_rate, .tune = bl_tune, .tune_state = bl_tune_state,
+                                          .untune = bl_untune};
     if (!(bl = rdof_bl_new(&pf))) {
         ESP_LOGE(TAG, "line protocol: no memory");
         return;

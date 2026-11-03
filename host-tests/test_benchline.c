@@ -48,15 +48,36 @@ static void f_device(void *ctx, char *k, size_t kc, char *n, size_t nc, char *v,
     snprintf(n, nc, "bench \"one\"");
     snprintf(v, vc, "1.0");
 }
+/* the fake receiver's tune (test_tune): a center (NAN: the settings', 438.225 MHz) and its taps, the only channels
+ * then */
+static struct {
+    double center, gain, taps[RDOF_BL_TAPS];
+    int ntaps;
+    rdof_bl_tune_t asked;
+    int kind, polls;   /* asked: 1 a tune, 2 an untune; polls before it applies */
+    bool refuse;       /* the next tune is refused when it applies */
+    const char *busy;  /* tune refuses at once with this code */
+    int tunes, untunes;
+    char who[16];
+} ft = {.center = NAN, .gain = NAN};
 static void f_window(void *ctx, rdof_bl_window_t *w)
 {
-    *w = (rdof_bl_window_t){.running = true, .center_hz = 438.225e6, .fs = 768000, .lo_hz = 438.5125e6,
-                            .hi_hz = 438.525e6, .gain_db = 20, .dc_guard_hz = 25e3};
+    const double c = isnan(ft.center) ? 438.225e6 : ft.center;
+    *w = (rdof_bl_window_t){.running = true, .center_hz = c, .fs = 768000, .lo_hz = c - 0.3e6,
+                            .hi_hz = c + 0.3e6, .gain_db = isnan(ft.gain) ? 20 : ft.gain, .dc_guard_hz = 25e3};
 }
 static int f_freqs(void *ctx, rdof_bl_freq_t *out, int max)
 {
     static const double f[] = {438.0625e6, 438.1125e6, 438.1625e6, 438.2125e6};
     int n = 0;
+    if (!isnan(ft.center)) {
+        for (int i = 0; i < ft.ntaps && n < max; i++, n++) {
+            out[n] = (rdof_bl_freq_t){.freq_hz = ft.taps[i], .ch = i,
+                                      .caps = RDOF_BL_CAP_RX | RDOF_BL_CAP_DMR | RDOF_BL_CAP_IQ};
+            snprintf(out[n].id, sizeof out[n].id, "T%d", i + 1);
+        }
+        return n;
+    }
     for (int i = 0; i < 4 && n < max; i++, n++) {
         out[n] = (rdof_bl_freq_t){.freq_hz = f[i], .ch = i,
                                   .caps = RDOF_BL_CAP_RX | RDOF_BL_CAP_DMR | RDOF_BL_CAP_IQ | (i == 1 ? RDOF_BL_CAP_TX : 0)};
@@ -72,6 +93,46 @@ static long f_iq_read(void *ctx, uint64_t sc, int8_t *out, long n, uint64_t *old
 }
 static long f_iq_filled(void *ctx, uint64_t sc, long n) { return rdof_bl_ring_filled(&ring, sc, n); }
 static double f_utc(void *ctx) { return 1.8e9; }
+static const char *f_tune(void *ctx, const rdof_bl_tune_t *t, const char *who, char *why, size_t cap)
+{
+    if (ft.busy) {
+        snprintf(why, cap, "the HTTP API's session s-1234 holds the SDR");
+        return ft.busy;
+    }
+    if (t->ntaps > 4) {
+        snprintf(why, cap, "4 taps at most");
+        return "bad_request";
+    }
+    ft.asked = *t, ft.kind = 1, ft.polls = 2, ft.tunes++;
+    snprintf(ft.who, sizeof ft.who, "%s", who);
+    return NULL;
+}
+static int f_tune_state(void *ctx, char *why, size_t cap)
+{
+    if (ft.polls > 0) {
+        ft.polls--;
+        return 0;
+    }
+    if (ft.kind == 1 && ft.refuse) {
+        ft.refuse = false, ft.kind = 0;
+        snprintf(why, cap, "a tap outside the window");
+        return -1;
+    }
+    if (ft.kind == 1) {
+        const rdof_bl_tune_t *t = &ft.asked;
+        ft.center = t->center_hz == 0 ? NAN : isnan(t->center_hz) ? ft.center : t->center_hz;
+        ft.gain = t->gain_db == RDOF_BL_TUNE_AUTO ? NAN : isnan(t->gain_db) ? ft.gain : t->gain_db;
+        if (t->ntaps >= 0) {
+            ft.ntaps = t->ntaps;
+            memcpy(ft.taps, t->taps_hz, sizeof ft.taps);
+        }
+    } else if (ft.kind == 2) {
+        ft.center = ft.gain = NAN, ft.ntaps = 0;
+    }
+    ft.kind = 0;
+    return 1;
+}
+static void f_untune(void *ctx) { ft.kind = 2, ft.polls = 1, ft.untunes++; }
 static double f_sc_utc(void *ctx, uint64_t sc) { return 1.8e9 + (double)sc / 768000; }
 static const char *f_can_tx(void *ctx) { return can_tx ? NULL : "no bench.tx"; }
 
@@ -1497,6 +1558,270 @@ static int serve(int port, double seconds)
     return 0;
 }
 
+/* Tick until c has something to say (at most n ticks, 20 ms apart). */
+static void tick_for(rdof_bl_t *bl, int c, double *now, int n, char *out, size_t cap)
+{
+    out[0] = 0;
+    for (int i = 0; i < n && !out[0]; i++) {
+        *now += 0.02;
+        rdof_bl_tick(bl, *now);
+        drain(bl, c, out, cap);
+    }
+}
+
+/* tune: the session's own window until it ends or releases it; others busy meanwhile; a trigger outside the window
+ * tunes for itself */
+static void test_tune(void)
+{
+    rdof_bl_platform_t pt = PLAT;
+    pt.tune = f_tune, pt.tune_state = f_tune_state, pt.untune = f_untune;
+    rdof_bl_t *bl = rdof_bl_new(&pt);
+    rdof_bl_ring_init(&ring, 768000);
+    char out[65536], req[512], ida[16] = "", idb[16] = "";
+    double now = 100;
+
+    int c = ask(bl, "{\"op\": \"info\"}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"tune\":null") && strstr(out, "\"center\":438.225000"), "untuned: %s", out);
+    rdof_bl_closed(bl, c, now);
+    const int sa = ask(bl, "{\"op\": \"session\", \"label\": \"md9600\"}", now);
+    drain(bl, sa, out, sizeof out);
+    field(out, "session", ida, sizeof ida);
+    const int sb = ask(bl, "{\"op\": \"session\", \"label\": \"other\"}", now);
+    drain(bl, sb, out, sizeof out);
+    field(out, "session", idb, sizeof idb);
+
+    /* the requests a tune refuses at once */
+    c = ask(bl, "{\"op\": \"tune\", \"center\": 145.05}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"bad_request\"") && rdof_bl_finished(bl, c), "no session: %s", out);
+    rdof_bl_closed(bl, c, now);
+    const char *bad[] = {"\"center\": \"high\"", "\"gain\": [1]", "\"taps\": 145.05", "\"taps\": [\"x\"]",
+                         "\"taps\": [1,2,3,4,5,6,7,8,9]"};
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        snprintf(req, sizeof req, "{\"op\": \"tune\", \"session\": \"%s\", %s}", ida, bad[i]);
+        c = ask(bl, req, now);
+        drain(bl, c, out, sizeof out);
+        CHECK(strstr(out, "\"code\":\"bad_request\""), "%s: %s", bad[i], out);
+        rdof_bl_closed(bl, c, now);
+    }
+    snprintf(req, sizeof req, "{\"op\": \"tune\", \"session\": \"%s\", \"rate\": 1e6}", ida);
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"unsupported\""), "a rate: %s", out);
+    rdof_bl_closed(bl, c, now);
+    snprintf(req, sizeof req, "{\"op\": \"tune\", \"session\": \"%s\", \"taps\": [145.05, 145.1875, 145.2875, 145.3875, 145.4875]}",
+             ida);
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"bad_request\"") && strstr(out, "4 taps at most") && ft.tunes == 0,
+          "the platform's refusal: %s", out);
+    rdof_bl_closed(bl, c, now);
+    ft.busy = "busy";
+    snprintf(req, sizeof req, "{\"op\": \"tune\", \"session\": \"%s\", \"center\": 145.05}", ida);
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"busy\"") && strstr(out, "HTTP"), "an HTTP lease holds it: %s", out);
+    rdof_bl_closed(bl, c, now);
+    ft.busy = NULL;
+
+    /* a's bursts stream on a channel of the settings' window: the tune ends it */
+    c = ask(bl, "{\"op\": \"bursts\", \"freq\": 438.1125, \"seconds\": 30}", now);
+    const int bursts = c;
+    drain(bl, c, out, sizeof out);
+
+    /* a tunes: the reply once it applies, with the window and its channels */
+    snprintf(req, sizeof req,
+             "{\"op\": \"tune\", \"session\": \"%s\", \"center\": 144.9, \"gain\": 30, \"taps\": [145.1]}", ida);
+    const int t = ask(bl, req, now);
+    drain(bl, t, out, sizeof out);
+    CHECK(!out[0] && ft.tunes == 1 && fabs(ft.asked.center_hz - 144.9e6) < 1 && ft.asked.gain_db == 30 &&
+              ft.asked.ntaps == 1 && fabs(ft.asked.taps_hz[0] - 145.1e6) < 1 && !strcmp(ft.who, ida),
+          "asked: %s, center %.0f", out, ft.asked.center_hz);
+    c = ask(bl, "{\"op\": \"info\"}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"state\":\"tuning\""), "info while it's being applied: %s", out);
+    rdof_bl_closed(bl, c, now);
+    snprintf(req, sizeof req, "{\"op\": \"tune\", \"session\": \"%s\"}", idb);
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"busy\""), "another tune while one is applied: %s", out);
+    rdof_bl_closed(bl, c, now);
+    tick_for(bl, t, &now, 10, out, sizeof out);
+    CHECK(strstr(out, "{\"tuned\":{\"session\":\"") && strstr(out, "\"center\":144.900000") &&
+              strstr(out, "\"gain\":30.0") &&
+              strstr(out, "\"channels\":[{\"freq\":145.100000,\"ch\":0,\"id\":\"T1\"}]") && rdof_bl_finished(bl, t),
+          "tuned: %s", out);
+    rdof_bl_closed(bl, t, now);
+    drain(bl, bursts, out, sizeof out);
+    CHECK(strstr(out, "\"reason\":\"retuned\"") && rdof_bl_finished(bl, bursts), "the bursts stream ends: %s", out);
+    rdof_bl_closed(bl, bursts, now);
+    c = ask(bl, "{\"op\": \"info\"}", now);
+    drain(bl, c, out, sizeof out);
+    snprintf(req, sizeof req,
+             "\"tune\":{\"session\":\"%s\",\"label\":\"md9600\",\"for\":\"session\",\"state\":\"tuned\"}", ida);
+    CHECK(strstr(out, req) && strstr(out, "\"center\":144.900000") && strstr(out, "{\"freq\":145.100000,\"ch\":0"),
+          "info shows the tune: %s", out);
+    rdof_bl_closed(bl, c, now);
+
+    /* b meanwhile: its own tune busy; outside the window busy; inside it a capture runs */
+    snprintf(req, sizeof req, "{\"op\": \"tune\", \"session\": \"%s\", \"center\": \"auto\"}", idb);
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"busy\"") && strstr(out, "(md9600)"), "b's tune: %s", out);
+    rdof_bl_closed(bl, c, now);
+    const char *others[] = {"bursts\", \"freq\": 438.1125", "capture\", \"freq\": 438.1125, \"seconds\": 1",
+                            "trigger\", \"freq\": 438.1125"};
+    for (size_t i = 0; i < sizeof others / sizeof others[0]; i++) {
+        snprintf(req, sizeof req, "{\"op\": \"%s, \"session\": \"%s\"}", others[i], idb);
+        c = ask(bl, req, now);
+        drain(bl, c, out, sizeof out);
+        CHECK(strstr(out, "\"code\":\"busy\"") && strstr(out, "has tuned until it ends"), "b's %s: %s", others[i],
+              out);
+        rdof_bl_closed(bl, c, now);
+    }
+    snprintf(req, sizeof req, "{\"op\": \"capture\", \"session\": \"%s\", \"freq\": 145.1, \"seconds\": 1}", idb);
+    const int cap = ask(bl, req, now);
+    drain(bl, cap, out, sizeof out);
+    CHECK(strstr(out, "{\"ready\":") && strstr(out, "\"center\":144.900000"), "b's capture in the window: %s", out);
+
+    /* a tunes again (the gain back to the settings'): b's capture ends */
+    snprintf(req, sizeof req, "{\"op\": \"tune\", \"session\": \"%s\", \"gain\": \"auto\"}", ida);
+    c = ask(bl, req, now);
+    tick_for(bl, c, &now, 10, out, sizeof out);
+    CHECK(strstr(out, "\"tuned\"") && strstr(out, "\"center\":144.900000") && strstr(out, "\"gain\":20.0") &&
+              strstr(out, "\"id\":\"T1\""),
+          "a's second tune: %s", out);
+    rdof_bl_closed(bl, c, now);
+    drain(bl, cap, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"busy\"") && strstr(out, "retuned"), "b's capture ends: %s", out);
+    rdof_bl_closed(bl, cap, now);
+
+    /* a releases its claims and hold: the tune stays; then the tune: the settings again */
+    snprintf(req, sizeof req, "{\"op\": \"release\", \"session\": \"%s\", \"freqs\": [438.1125]}", ida);
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"tune\":false") && ft.untunes == 0, "a release of a frequency: %s", out);
+    rdof_bl_closed(bl, c, now);
+    snprintf(req, sizeof req, "{\"op\": \"release\", \"session\": \"%s\", \"tune\": true}", idb);
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"tune\":false") && ft.untunes == 0, "b can't release a's tune: %s", out);
+    rdof_bl_closed(bl, c, now);
+    snprintf(req, sizeof req, "{\"op\": \"release\", \"session\": \"%s\", \"tune\": true}", ida);
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"tune\":true") && ft.untunes == 1, "a releases its tune: %s", out);
+    rdof_bl_closed(bl, c, now);
+    c = ask(bl, "{\"op\": \"capture\", \"freq\": 438.1125, \"seconds\": 1}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"busy\"") && strstr(out, "being retuned"), "while it goes back: %s", out);
+    rdof_bl_closed(bl, c, now);
+    for (int i = 0; i < 5; i++)
+        rdof_bl_tick(bl, now += 0.02);
+    c = ask(bl, "{\"op\": \"info\"}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"tune\":null") && strstr(out, "\"center\":438.225000") && strstr(out, "\"id\":\"CH2\""),
+          "the settings again: %s", out);
+    rdof_bl_closed(bl, c, now);
+
+    /* a refused tune: nobody's */
+    ft.refuse = true;
+    snprintf(req, sizeof req, "{\"op\": \"tune\", \"session\": \"%s\", \"taps\": [470]}", ida);
+    c = ask(bl, req, now);
+    tick_for(bl, c, &now, 10, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"refused\"") && strstr(out, "outside the window"), "refused: %s", out);
+    rdof_bl_closed(bl, c, now);
+    c = ask(bl, "{\"op\": \"info\"}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"tune\":null") && ft.untunes == 1, "nobody's after a refusal: %s", out);
+    rdof_bl_closed(bl, c, now);
+
+    /* the session's connection drops: its tune goes with it */
+    snprintf(req, sizeof req, "{\"op\": \"tune\", \"session\": \"%s\", \"center\": 144.9}", ida);
+    c = ask(bl, req, now);
+    tick_for(bl, c, &now, 10, out, sizeof out);
+    CHECK(strstr(out, "\"tuned\""), "tuned again: %s", out);
+    rdof_bl_closed(bl, c, now);
+    rdof_bl_closed(bl, sa, now);
+    CHECK(ft.untunes == 2, "the session's end untunes (%d)", ft.untunes);
+    for (int i = 0; i < 5; i++)
+        rdof_bl_tick(bl, now += 0.02);
+    CHECK(isnan(ft.center), "the settings' window");
+    /* a session dropping while its tune is applied: the settings once it has */
+    const int sc = ask(bl, "{\"op\": \"session\", \"label\": \"brief\"}", now);
+    char idc[16] = "";
+    drain(bl, sc, out, sizeof out);
+    field(out, "session", idc, sizeof idc);
+    snprintf(req, sizeof req, "{\"op\": \"tune\", \"session\": \"%s\", \"center\": 144.9}", idc);
+    c = ask(bl, req, now);
+    rdof_bl_closed(bl, sc, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"refused\""), "the tune's request ends with the session: %s", out);
+    rdof_bl_closed(bl, c, now);
+    for (int i = 0; i < 8; i++)
+        rdof_bl_tick(bl, now += 0.02);
+    CHECK(isnan(ft.center) && ft.untunes == 3, "applied, then untuned (%d, %.0f)", ft.untunes, ft.center);
+
+    /* a trigger outside the window, with a session: it tunes for itself, then the settings once it ends */
+    c = ask(bl, "{\"op\": \"trigger\", \"freq\": 145.1, \"floor_db\": -60}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"refused\"") && strstr(out, "with a session"), "no session, no tune: %s", out);
+    rdof_bl_closed(bl, c, now);
+    snprintf(req, sizeof req, "{\"op\": \"trigger\", \"session\": \"%s\", \"freq\": 145.1, \"tune\": false}", idb);
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"refused\"") && ft.tunes == 5, "tune false: %s (%d)", out, ft.tunes);
+    rdof_bl_closed(bl, c, now);
+    c = ask(bl, "{\"op\": \"bursts\", \"freq\": 438.1125, \"seconds\": 30}", now);
+    const int busy = c;
+    snprintf(req, sizeof req, "{\"op\": \"trigger\", \"session\": \"%s\", \"freq\": 145.1, \"floor_db\": -60}", idb);
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"busy\"") && strstr(out, "another request"), "a stream uses the window: %s", out);
+    rdof_bl_closed(bl, c, now);
+    rdof_bl_closed(bl, busy, now);
+    const int tr = ask(bl, req, now);
+    drain(bl, tr, out, sizeof out);
+    CHECK(strstr(out, "{\"note\":\"tuning the receiver to 145.1000 MHz for this request\"}") && ft.tunes == 6 &&
+              fabs(ft.asked.center_hz - (145.1e6 - 96000)) < 1 && ft.asked.ntaps == 1 && isnan(ft.asked.gain_db),
+          "the trigger tunes: %s (center %.0f)", out, ft.asked.center_hz);
+    tick_for(bl, tr, &now, 10, out, sizeof out);
+    CHECK(strstr(out, "{\"armed\":{\"floor_db\":-60.0"), "then it's armed: %s", out);
+    c = ask(bl, "{\"op\": \"info\"}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"for\":\"request\",\"state\":\"tuned\"") && strstr(out, "\"center\":145.004000"),
+          "info: the request's tune: %s", out);
+    rdof_bl_closed(bl, c, now);
+    snprintf(req, sizeof req, "{\"op\": \"tune\", \"session\": \"%s\"}", idb);
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"busy\"") && strstr(out, "has the receiver tuned"), "even its own session's: %s",
+          out);
+    rdof_bl_closed(bl, c, now);
+    rdof_bl_closed(bl, tr, now);
+    CHECK(ft.untunes == 4, "the trigger's end untunes (%d)", ft.untunes);
+    for (int i = 0; i < 5; i++)
+        rdof_bl_tick(bl, now += 0.02);
+    CHECK(isnan(ft.center), "the settings again");
+    rdof_bl_closed(bl, sb, now);
+    rdof_bl_ring_free(&ring);
+    rdof_bl_free(bl);
+
+    /* a bench with no tune */
+    bl = rdof_bl_new(&PLAT);
+    const int s = ask(bl, "{\"op\": \"session\"}", now);
+    drain(bl, s, out, sizeof out);
+    field(out, "session", ida, sizeof ida);
+    snprintf(req, sizeof req, "{\"op\": \"tune\", \"session\": \"%s\", \"center\": 144.9}", ida);
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"unsupported\""), "no tune here: %s", out);
+    rdof_bl_closed(bl, c, now);
+    rdof_bl_closed(bl, s, now);
+    rdof_bl_free(bl);
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 4 && !strcmp(argv[1], "serve"))
@@ -1510,6 +1835,7 @@ int main(int argc, char **argv)
     test_run();
     test_repeater();
     test_outbound();
+    test_tune();
     test_tcp();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
