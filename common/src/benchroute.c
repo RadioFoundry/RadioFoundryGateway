@@ -5,6 +5,7 @@
 
 #include <string.h>
 
+#include "rdof/fec.h"
 #include "rdof/pdu.h"
 
 void rdof_benchroute_init(rdof_benchroute_t *r, void (*reply)(void *ctx, const uint8_t *frame, size_t n),
@@ -59,6 +60,7 @@ static void data(rdof_benchroute_t *r, uint8_t cmd, const uint8_t *p, size_t len
         r->seq = 0;
         r->src = r->dst = 0;
         r->group = false;
+        r->frag_have = 0;
         r->streaming = true;
     }
     rdof_full_lc_t lc;
@@ -67,6 +69,24 @@ static void data(rdof_benchroute_t *r, uint8_t cmd, const uint8_t *p, size_t len
         r->src = (uint32_t)lc.src_id;
         r->dst = (uint32_t)lc.dst_id;
         r->group = lc.group;
+    } else if (!sync_data && !(control & RDOF_SYNC_AUDIO) && dt >= 1 && dt <= 4 && !r->src) {
+        /* a late entry (no header): the addresses from the embedded LC of voice B-E, a call's LC only (a talker
+         * alias or GPS Info LC has none) */
+        if (dt == 1)
+            r->frag_have = 0;
+        rdof_embedded_signalling(burst, r->frag[dt - 1]);
+        r->frag_have |= 1u << (dt - 1);
+        uint8_t raw[128], lc9[9];
+        for (int i = 0; dt == 4 && r->frag_have == 0xF && i < 4; i++)
+            memcpy(raw + 32 * i, r->frag[i], 32);
+        if (dt == 4 && r->frag_have == 0xF && rdof_embedded_lc_decode(raw, lc9)) {
+            rdof_parse_full_lc(lc9, &lc);
+            if (lc.src_id >= 0 && lc.dst_id >= 0) {
+                r->src = (uint32_t)lc.src_id;
+                r->dst = (uint32_t)lc.dst_id;
+                r->group = lc.group;
+            }
+        }
     }
     rdof_net_burst_t b;
     memset(&b, 0, sizeof b);

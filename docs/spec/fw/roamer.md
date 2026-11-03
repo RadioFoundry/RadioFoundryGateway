@@ -248,7 +248,11 @@ when TX starts and how deep the queue runs change.
 gateway) isn't network voice: its app paces it and hands it over ahead of the air on purpose. Its tune is marked
 `local`, and the buffer neither measures it nor fills, moves or drops any of it; a gap is filled with silence as with
 a fixed buffer. Before this, a bench job's voice that was all silence frames was dropped whole, being always "ahead"
-(a W12's bench voice call went out as its 8 headers and 3 terminators, no voice).
+(a W12's bench voice call went out as its 8 headers and 3 terminators, no voice). A local stream also starts at its
+first voice burst, not the next A (R6.5): a bench late entry (`--late`) goes on the air as it was asked for, where a
+network stream that starts mid-superframe still waits for its A. With no header, the bench route takes the call's
+addresses from the embedded LC of B-E once it has all four (a talker alias or GPS Info LC doesn't count); the parrot
+of a roamer is local too. `rdof_parse_dmrt` sets `local` false: a DMRT is always the network's.
 
 **Numbers.**
 

@@ -456,10 +456,10 @@ unsafe fn voice(t: *mut RdofTxvr, c: &mut RdofTxcall, q: &RdofNetBurst) {
         return;
     }
     if c.vpos < 0 {
-        if pos != 0 {
-            return;
+        if pos != 0 && !c.tune.local {
+            return; // R6.5; a local app's from its first voice burst (a late entry as it was asked for)
         }
-        c.vpos = 0;
+        c.vpos = pos;
         c.vfilled = 0;
     }
     if (1..=4).contains(&pos) {

@@ -208,9 +208,10 @@ static double ahead(const rdof_txcall_t *c, double n)
     return c->count + (held > 0 ? held / RDOF_TXVR_BURST_S : 0.0);
 }
 
-/* A voice burst's place in the call (section 6): from the first A (R6.5), a gap filled with silence (R6.2), a
- * burst whose position went out as silence dropped (R6.4). Adaptive (jitter buffer): positions moved by vshift, the
- * gap filled only up to the target, a burst dropped when the stream is ahead of it. */
+/* A voice burst's place in the call (section 6): from the first A (R6.5; a local app's from its first voice burst, a
+ * late entry as it was asked for), a gap filled with silence (R6.2), a burst whose position went out as silence
+ * dropped (R6.4). Adaptive (jitter buffer): positions moved by vshift, the gap filled only up to the target, a burst
+ * dropped when the stream is ahead of it. */
 static void voice(rdof_txvr_t *t, rdof_txcall_t *c, const rdof_net_burst_t *q)
 {
     int pos = (q->control & RDOF_SYNC_AUDIO) ? 0 : (q->control & 0x0F), gap;
@@ -219,9 +220,10 @@ static void voice(rdof_txvr_t *t, rdof_txcall_t *c, const rdof_net_burst_t *q)
         return;
     }
     if (c->vpos < 0) {
-        if (pos != 0)
+        if (pos != 0 && !c->tune.local)
             return;
-        c->vpos = c->vfilled = 0;
+        c->vpos = pos;
+        c->vfilled = 0;
     }
     if (pos >= 1 && pos <= 4) {
         for (int i = 0; i < 32; i++)

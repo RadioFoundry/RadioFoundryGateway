@@ -9,7 +9,9 @@
 #include "rdof/benchroute.h"
 #include "rdof/benchtx.h"
 #include "rdof/bits.h"
+#include "rdof/fec.h"
 #include "rdof/layer2.h"
+#include "rdof/mmdvm.h"
 #include "rdof/pdu.h"
 
 extern int checks, failures;
@@ -836,6 +838,29 @@ static void t_route(void)
     CHECK(br.refused >= 1 && rdof_benchtx_done(&tb.t) && said("refused a burst"), "refused: %s", tb.frames);
 }
 
+#if RDOF_FEATURE_TX
+/* A late entry through the router: no header, so the addresses come from the embedded LC once B-E are in (the
+ * second superframe here, the stream starting at C), on every burst from E on. */
+static void t_route_late(void)
+{
+    route_start(-1);
+    uint8_t lc9[9], raw[128], p[1 + RDOF_BURST_BYTES], f[64];
+    rdof_group_lc(9990005, 9990, true, 0, lc9);
+    rdof_embedded_lc_encode(lc9, raw);
+    for (int k = 2; k < 12; k++) {
+        const int n = k % 6;
+        p[0] = rdof_silence_burst(n, 1, false, n >= 1 && n <= 4 ? raw + 32 * (n - 1) : NULL, p + 1);
+        const size_t m = rdof_mmdvm_frame(RDOF_MMDVM_DMR_DATA2, p, sizeof p, f, sizeof f);
+        rdof_benchroute_write(&br, f, m);
+    }
+    CHECK(nrouted == 10 && br.count == 1, "one stream of 10 bursts: %d", nrouted);
+    CHECK(routed[0].src == 0 && routed[7].src == 0, "no addresses before a whole B-E: %u %u", (unsigned)routed[0].src,
+          (unsigned)routed[7].src); /* the first superframe's C-E don't make one */
+    CHECK(routed[8].src == 9990005 && routed[8].dst == 9990 && routed[8].group && routed[9].src == 9990005,
+          "from E on, the embedded LC's: %u %u %d", (unsigned)routed[8].src, (unsigned)routed[8].dst, routed[8].group);
+}
+#endif
+
 void test_benchtx(void)
 {
     t_gates();
@@ -849,4 +874,7 @@ void test_benchtx(void)
     t_policy();
     t_edges();
     t_route();
+#if RDOF_FEATURE_TX
+    t_route_late();
+#endif
 }

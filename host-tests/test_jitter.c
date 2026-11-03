@@ -840,6 +840,51 @@ static void t_txvr_local(void)
     CHECK(v == 12 && shrunk == 0, "a local app's: all 12 voice bursts on the air (%d, %d shrunk)", v, shrunk);
 }
 
+/* A late entry: no header, the first 8 bursts of a 6-superframe call left out (it starts at C of the second), the
+ * rest on time. A network stream starts at the next A (R6.5); a local app's (a bench late-entry test) as it was
+ * given. Every voice burst goes out at the position it carries, and the terminator after it. */
+static void late_call(bool local, int *first, int *voice, int *terms, int *misplaced)
+{
+    tx_t *h = tx_new(true, 0);
+    stream_t *s = &g_stream;
+    make_call(s, 11, 6, 2, ceil(h->rig.clock) + 1.0);
+    for (int k = 0; k <= 8; k++)
+        s->lost[k] = true; /* the header (0) and voice bursts 1-8 (A-F, A, B of the first two superframes) */
+    tx_local = local;
+    tx_run(h, s, 11, s->at[s->n - 1] + 4.0);
+    tx_local = false;
+    *first = -1;
+    *voice = *terms = *misplaced = 0;
+    int next = -1;
+    for (int i = 0; i < h->air.n; i++) {
+        const aired_t *e = &h->air.a[i];
+        if (e->control == C_TERM) {
+            (*terms)++;
+            continue;
+        }
+        if (!is_voice(e->control))
+            continue;
+        const int pos = (e->control & RDOF_SYNC_AUDIO) ? 0 : e->control & 0x0F;
+        if (*first < 0)
+            *first = pos;
+        else if (pos != next)
+            (*misplaced)++;
+        next = (pos + 1) % 6;
+        (*voice)++;
+    }
+}
+
+static void t_txvr_late(void)
+{
+    int first, voice, terms, misplaced;
+    late_call(false, &first, &voice, &terms, &misplaced);
+    CHECK(first == 0 && voice == 24 && terms >= 1 && misplaced == 0, "network late entry: from the next A (%d, %d voice, "
+          "%d terminators, %d misplaced)", first, voice, terms, misplaced);
+    late_call(true, &first, &voice, &terms, &misplaced);
+    CHECK(first == 2 && voice == 28 && terms >= 1 && misplaced == 0, "local late entry: from its C (%d, %d voice, "
+          "%d terminators, %d misplaced)", first, voice, terms, misplaced);
+}
+
 static void t_txvr_jitter(void)
 {
     result_t r;
@@ -1037,6 +1082,7 @@ void test_jitter(void)
     t_json();
     t_txvr_steady();
     t_txvr_local();
+    t_txvr_late();
     t_txvr_jitter();
     t_txvr_events();
     t_repeater();

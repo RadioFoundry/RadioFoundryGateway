@@ -523,10 +523,11 @@ static void test_hblink(void)
     for (size_t i = 0; i < V_DMRT_N; i++) {
         const struct v_dmrt *v = &v_dmrt[i];
         rdof_tune_t t;
+        memset(&t, 0xFF, sizeof t); /* what's on the stack: every field is set */
         size_t n = unhex(v->packet, in);
         bool ok = rdof_parse_dmrt(in, n, &t);
         CHECK(ok == v->ok && (!ok || (hex_eq(t.stream_id, 4, v->stream) && t.freq == v->freq && t.cc == v->cc &&
-                                      t.power == v->power && t.preempt == v->preempt)),
+                                      t.power == v->power && t.preempt == v->preempt && !t.local)),
               "dmrt %zu", i);
     }
     for (size_t i = 0; i < V_DMRK_N; i++) {

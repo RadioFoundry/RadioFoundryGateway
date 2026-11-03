@@ -4,8 +4,9 @@
  * The bench's transmit through the router (docs/spec/fw/transmitters.md §5): an MMDVM modem as a bench job
  * (rdof/benchtx.h) sees it, whose bursts become an app's stream for the router's pool, as the parrot's do. It
  * answers GET_VERSION, ACKs SET_CONFIG, SET_FREQ and SET_MODE, and hands each DMR_DATA1 / DMR_DATA2 on as a network
- * burst: its stream ID (RDOF_BENCHROUTE_STREAM and a count), the addresses from the call's LC header or terminator,
- * terminator set on a voice terminator. A stream ends there, or at SET_MODE idle (the job unkeyed or stopped): the
+ * burst: its stream ID (RDOF_BENCHROUTE_STREAM and a count), the addresses from the call's LC header or terminator
+ * (a late entry's from its embedded LC), terminator set on a voice terminator. A stream ends there, or at SET_MODE
+ * idle (the job unkeyed or stopped): the
  * next burst starts a new one. A call's further terminators are dropped (the router's transceiver sends its own
  * count of headers and terminators a call, R11.4). A burst the router refuses (no transmitter free) is NAKed, so the job stops.
  *
@@ -39,6 +40,8 @@ typedef struct {
     uint8_t sid[4], seq;
     uint32_t src, dst;
     bool group;
+    uint8_t frag[4][32];            /* a late entry's embedded signalling of B-E, for its addresses */
+    unsigned frag_have;
     uint16_t count;                 /* streams so far */
     long bursts, refused, dropped;
 } rdof_benchroute_t;

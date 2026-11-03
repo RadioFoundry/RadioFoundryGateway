@@ -191,6 +191,7 @@ static void parrot_start(void *ctx, const uint8_t sid[4], int slot, uint32_t src
     memcpy(t.stream_id, sid, 4);
     radio_channel_now(r, &t.freq, &t.cc); /* where it was heard */
     t.power = 255;                       /* the channel's own */
+    t.local = true;                      /* played back from here, not the network */
     rdof_txvr_on_tune(r->txvr, &t);
 }
 

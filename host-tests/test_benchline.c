@@ -740,6 +740,48 @@ static void test_decode(void)
     CHECK(strstr(out, "\"fec_ok\":false"), "a ruined csbk: %s", out);
 }
 
+static void no_emit(void *ctx, const char *line) { (void)ctx, (void)line; }
+
+/* A late entry (--late K): no header, the call's first K bursts left out, each burst at its own position; the
+ * listener takes it as one call, "late entry", its addresses from the embedded LC, ended by its terminators. */
+static void test_late(void)
+{
+    rdof_bj_burst_t q[64];
+    int n = 0;
+    decode_job("{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"freq\":438.1125,\"cc\":2,\"src\":9990301,\"dst\":215,"
+               "\"superframes\":6,\"late\":8,\"terminators\":3}", q, &n);
+    CHECK(n == 36 - 8 + 3, "28 voice bursts and 3 terminators: %d", n);
+    int headers = 0, misplaced = 0;
+    for (int i = 0; i < n; i++) {
+        headers += q[i].control == (RDOF_SYNC_DATA | RDOF_DT_VOICE_LC_HEADER);
+        if (i < 28) {
+            const int pos = (8 + i) % 6, got = q[i].control == RDOF_SYNC_AUDIO ? 0 : q[i].control;
+            misplaced += got != pos;
+        }
+    }
+    CHECK(headers == 0 && misplaced == 0 && q[28].control == (RDOF_SYNC_DATA | RDOF_DT_TERMINATOR_WITH_LC),
+          "no header (%d), from voice C on at each position (%d misplaced), then the terminator", headers, misplaced);
+    static rdof_bj_listener_t l;
+    rdof_bj_listen_init(&l, true, false);
+    for (int i = 0; i < n; i++) {
+        rdof_bl_burst_t b = heard(&q[i]);
+        b.t = 100.0 + 0.06 * i;
+        rdof_bj_listen_burst(&l, &b, no_emit, NULL);
+    }
+    const rdof_bj_call_t *c = &l.calls[0];
+    CHECK(l.ncalls == 1 && c->start && !strcmp(c->start, "late entry") && c->headers == 0 && c->voice == 28,
+          "one late entry call, 28 voice bursts: %d %s %d", l.ncalls, c->start ? c->start : "-", c->voice);
+    CHECK(c->has_src && c->src == 9990301 && c->dst == 215 && c->terminators == 3 && c->ended_by &&
+              !strcmp(c->ended_by, "terminator"),
+          "its addresses from the embedded LC, ended by its terminators: %d %u %u %d", c->has_src, (unsigned)c->src,
+          (unsigned)c->dst, c->terminators);
+    rdof_bj_listen_free(&l);
+    /* --late 0: no header, the whole call from its first A */
+    decode_job("{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"freq\":438.1125,\"cc\":2,\"superframes\":2,\"late\":0}", q, &n);
+    CHECK(n >= 12 && q[0].control == RDOF_SYNC_AUDIO, "late 0: from A, no header (%d bursts, first %02x)", n,
+          q[0].control);
+}
+
 static void test_run(void)
 {
     static char out[1 << 20], lis[1 << 20];
@@ -1270,6 +1312,7 @@ int main(int argc, char **argv)
     test_ops();
     test_trigger();
     test_decode();
+    test_late();
     test_run();
     test_repeater();
     test_outbound();

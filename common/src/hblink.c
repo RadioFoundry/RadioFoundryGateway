@@ -108,6 +108,7 @@ bool rdof_parse_dmrt(const uint8_t *d, size_t len, rdof_tune_t *o)
     o->cc = d[16] & 0x0F;
     o->power = d[17];
     o->preempt = len >= 19 && (d[18] & 0x01);
+    o->local = false; /* from the network */
     return true;
 }
 
