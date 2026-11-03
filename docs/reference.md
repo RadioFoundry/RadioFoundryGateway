@@ -218,12 +218,34 @@ On the Pluto (2026-10-28), `--iio local:` at 768 kS/s with the host tests' simul
 and the repeater ran 60.0 s in 60.0 s with no samples lost. The TX half's round trip bound settled at 1.1 ms. Not
 yet run with a real radio.
 
+### An MMDVM modem on a serial port
+
+`rdofradio --allow-tx --mmdvm PORT --rx MHZ [--tx MHZ]` runs the repeater (`--duplex full`, the default) or the
+roaming transceiver (`--duplex half`) on an MMDVM modem, as the board runs one on its UART: an MMDVM_HS hat on a
+Linux board's UART (`/dev/ttyS0`), a hotspot or an MMDVM board on USB. A duplex modem (an MMDVM_HS dual hat, an
+MMDVM board) runs the repeater, any modem the transceiver. The radio's type comes from the modem's description
+(`rdof_radio_detect`), and the repeater and the transceiver are the board's. What the modem hears goes through a
+call tracker of its own, as on the board: to the page, MQTT and HBlink4, and to the transceiver's listen before
+talk. The port is read by a thread, as with `--split-tx`.
+
+- `--rf-level N` caps every SET_FREQ's RF level (MMDVM scale 0-255; 255, the default, no cap), whatever sent it:
+  the repeater, the transceiver or a bench job (`rdof_mmdvm_cap_rf_level`).
+- `--rx-offset-hz`, `--tx-offset-hz`, `--rx-level` and `--tx-level` are the modem's settings (its `mmdvm` keys).
+  With `--config` they come from the modem device's `mmdvm` settings, and each frequency's `power` is its RF level.
+- **An SDR beside it** (DEVICE, optional): opened receive only, so an RTL-SDR does. It hears the modem's RX
+  frequency as a channel of its own (`modem-rx`) and the monitored channels, with the spectrum on the page, and it
+  carries the bench's line protocol (`--bench`). The bench's DMR jobs transmit on the modem in simplex (the
+  transceiver's, or a repeater on a simplex frequency), at their `--power` under the cap. Signal modes are the
+  SDR's transmitter's, so a bench without one has none. The SDR's flags for its transmitter (`--tx-gain`,
+  `--tx-lo`, `--tx-offset`, `--monitor`) and `--split-tx` are refused.
+- **Without an SDR**, the modem runs alone: no monitored channels and no line protocol.
+
 The radio can come from a settings file instead: `--config FILE` takes the firmware's settings, version 3
 ([docs/spec/fw/config-v3.md](spec/fw/config-v3.md)), opened by the firmware's parser for a host
 (`rdof_plan_open`, `rdof_plan_check` with `rdof_plan_host`) and its calls go through the call router; an `mqtt`
 network with `calls` carries them over MQTT. rdofradio runs the file's one unit that transmits: a repeater, or a
-transceiver on the SDR (half duplex, on its idle frequency). A transceiver on a modem, and `mode` sfr or dcdm, are
-refused. It takes the unit's settings as the firmware does (`rdof_plan_radio`): its name, peer ID, `in` / `out`,
+transceiver on the SDR (half duplex, on its idle frequency), or either on a modem with `--mmdvm PORT` (the modem's
+port stays on the command line). `mode` sfr or dcdm is refused. It takes the unit's settings as the firmware does (`rdof_plan_radio`): its name, peer ID, `in` / `out`,
 `cc`, the parrot, and a repeater's `slots`, `hang_s`, `call_hang_s`, `short_lc_ts1_low`, the jitter buffer, `cwid`
 and `cwid_every_s`. A key a place doesn't take is refused, as on the board.
 
@@ -272,7 +294,8 @@ The clock is the settings' `ntp`: with servers it's netclock, the board's NTP di
 `--clock-state FILE` keeps netclock's learned rate across restarts, and `--set-os-clock` steps the OS clock to
 netclock's when it's 100 ms off (root; for a box with nothing else setting the time). `/api/status` `version` is
 the build's (`RDOF_VERSION`, else git describe at configure time). The device stays on the command line (`--soapy` or `--iio`, `-r`, `--gain`, `--tx-gain`, `--tx-offset`,
-`--bw`, `--center`, `--allow-tx`, `--seconds`, `--web`, `-v`, `--bursts`, `--monitor`, `--tx-lo`, `--stream`, `--fft`);
+`--bw`, `--center`, `--allow-tx`, `--seconds`, `--web`, `-v`, `--bursts`, `--monitor`, `--tx-lo`, `--stream`, `--fft`,
+`--mmdvm`, `--baud`, `--rf-level`);
 `--rx`, `--tx`, `--cc`, `--duplex` and `--parrot` are refused alongside it. A repeater on the Pluto:
 
 ```sh
@@ -1027,7 +1050,8 @@ edits. Headers in `include/rdof/sdr/`.
 | `sdrmodem`, `loopback` | the SDR as an MMDVM modem for a unit on the SDR, and its end-to-end check ("Transmit: the SDR as a radio") |
 | `receiver` | one tuner: channelizer, a demod and a `common` call tracker per channel, AFC after each chunk |
 | `cli/rdofsdr.c` | host tool: a cu8 recording (or, with SoapySDR, a live device: `--soapy`) in, bursts and tracker JSON out; `--bench` times each stage |
-| `cli/rdofradio.c` | host tool, with SoapySDR or libiio: a device that transmits, run as the SDR's unit (repeater or roaming transceiver), with the parrot; or receive only as a split's RX half with a RadioFoundry radio transmitting (`--split-tx`, over `rdofradio_serial.c`); the device behind `rdofradio_dev.h` (`rdofradio_soapy.c`, `rdofradio_iio.c`) |
+| `cli/rdofradio.c` | host tool, with SoapySDR or libiio: a device that transmits, run as the SDR's unit (repeater or roaming transceiver), with the parrot; or receive only as a split's RX half with a RadioFoundry radio transmitting (`--split-tx`, over `rdofradio_serial.c`),
+or beside an MMDVM modem on a serial port that runs the unit (`--mmdvm`, the SDR optional); the device behind `rdofradio_dev.h` (`rdofradio_soapy.c`, `rdofradio_iio.c`) |
 | `cli/tools.cmake` | the host tools' build, shared by the top-level build and host-tests: SoapySDR, libiio and libad9361 found, pffft and the web page linked |
 | `pffft/` | pffft (FFTPACK license), unchanged, and `rdof_pffft.c`: an `rdof_fft` backend the host tools use (`--fft builtin` turns it off). 2.6 to 2.9 times the built-in FFT on a Cortex-A9; scalar there, as its NEON code was slower |
 

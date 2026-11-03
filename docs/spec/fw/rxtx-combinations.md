@@ -27,7 +27,7 @@ Related: [config-v3.md](config-v3.md), [transmitters.md](transmitters.md), [sdr-
 | One carrier per SDR | every driver's carriers are 1 (`siteplan.c:sdr_caps`); `tx.carriers` above it is refused | missing feature (§5) |
 | RX and TX from two devices only through a split | `split.h`: `halves[2]` behind one `rdof_modem_t` | by design (keep) |
 | The bench: one TX job, `via=sdr\|modem\|radio:NAME` | `bench_tx.c`, `benchtx.c` | API |
-| Host tool: one SDR, one unit that transmits | `rdofradio_cfg.c`; `--split-tx` | wiring (host) |
+| Host tool: one SDR, one unit that transmits (on the SDR, a split, or an MMDVM modem with the SDR receiving) | `rdofradio_cfg.c`; `--split-tx`, `--mmdvm` | wiring (host) |
 
 Already general, and kept:
 - `rdof_sdr_rx_t` is multi-channel (up to `RDOF_SDR_MAX_CHANNELS` 16, channels plus taps), with one
