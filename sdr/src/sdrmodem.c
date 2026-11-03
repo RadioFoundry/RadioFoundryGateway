@@ -17,7 +17,6 @@
 #include "rdof/duplex.h"
 #include "rdof/layer2.h"
 #include "rdof/pdu.h"
-#include "rdof/sdr/fmgen.h"
 
 #define LEAD_SYMBOLS 24  /* how far ahead of the pull position a burst is queued: 5 ms */
 #define MUTE_48K 720     /* half a slot: a heard burst this close to one sent is ours */
@@ -1408,7 +1407,8 @@ static bool sig_fetch(rdof_sdrmodem_t *m, bool iq, float *h, float *e, rdof_cf_t
 
 /* n samples of the source from pos: frequency (Hz, the offset in) and envelope, or I/Q. Whether any is keyed. The
  * source runs at tx_fs / d (its rate): the stream's sample j is source sample j / d's interval, linear from the one
- * before ((j % d + 1) / d of the way: with d 1, the source's sample itself). The phase steps through a sine table. */
+ * before ((j % d + 1) / d of the way: with d 1, the source's sample itself). The phase goes through the modulator's
+ * table (rdof_mod_expj). */
 static bool sig_pull(rdof_sdrmodem_t *m, int64_t pos, rdof_cf_t *iq, float *hz, float *env, int n)
 {
     enum { B = 64 };
@@ -1437,13 +1437,14 @@ static bool sig_pull(rdof_sdrmodem_t *m, int64_t pos, rdof_cf_t *iq, float *hz, 
         if (iq && m->sig.iq) { /* I/Q, to the carrier's offset */
             const rdof_cf_t x = {m->sig_x0.re + (m->sig_x1.re - m->sig_x0.re) * w,
                                  m->sig_x0.im + (m->sig_x1.im - m->sig_x0.im) * w};
-            const rdof_cf_t r = {rdof_fm_sin(m->sig_phase + 0x40000000u), rdof_fm_sin(m->sig_phase)};
+            const rdof_cf_t r = rdof_mod_expj(m->mod.lut, m->sig_phase);
             iq[i] = (rdof_cf_t){x.re * r.re - x.im * r.im, x.re * r.im + x.im * r.re};
             m->sig_phase += off_step;
         } else if (iq) {
             const float step = m->sig_h0 + (m->sig_h1 - m->sig_h0) * w;
             m->sig_phase += (uint32_t)(int32_t)(step + (step >= 0 ? 0.5f : -0.5f));
-            iq[i] = (rdof_cf_t){rdof_fm_sin(m->sig_phase + 0x40000000u) * amp * e, rdof_fm_sin(m->sig_phase) * amp * e};
+            const rdof_cf_t r = rdof_mod_expj(m->mod.lut, m->sig_phase);
+            iq[i] = (rdof_cf_t){r.re * amp * e, r.im * amp * e};
         } else {
             hz[i] = m->sig_h0 + (m->sig_h1 - m->sig_h0) * w + (float)m->sig_off_hz;
             env[i] = e;

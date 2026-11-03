@@ -15,7 +15,7 @@
 #include "sdr_private.h"
 
 #define BLOCK 64 /* samples per inner block: its two float arrays are on the stack of a front end's reader (512 bytes) */
-#define LUT_BITS 8
+#define LUT_BITS RDOF_MOD_LUT_BITS
 #define HALF (RDOF_MOD_TAPS / 2)
 
 static uint32_t gcd_u(uint32_t a, uint32_t b)
@@ -43,16 +43,7 @@ static double rrc(double t, double alpha)
 /* Round half away from zero */
 static inline int32_t round_i(float x) { return (int32_t)(x + (x >= 0.0f ? 0.5f : -0.5f)); }
 
-/* e^{j 2 pi phase / 2^32}: the nearest of 256 table entries, then a second-order step of at most pi / 256
- * (error under 4e-7). */
-static inline rdof_cf_t expj(const rdof_cf_t *lut, uint32_t phase)
-{
-    const uint32_t i = (phase + (1u << (31 - LUT_BITS))) >> (32 - LUT_BITS);
-    const float d = (float)(int32_t)(phase - (i << (32 - LUT_BITS))) * (float)(2.0 * RDOF_PI / 4294967296.0);
-    const rdof_cf_t t = lut[i & ((1u << LUT_BITS) - 1)];
-    const float c = 1.0f - 0.5f * d * d;
-    return (rdof_cf_t){t.re * c - t.im * d, t.im * c + t.re * d};
-}
+static inline rdof_cf_t expj(const rdof_cf_t *lut, uint32_t phase) { return rdof_mod_expj(lut, phase); }
 
 void rdof_mod_free(rdof_mod_t *m)
 {

@@ -60,7 +60,7 @@ typedef struct {
 typedef struct {
     uint32_t fs, P, Q;              /* fs / 4800 = P / Q in lowest terms */
     float *taps;                    /* P x RDOF_MOD_TAPS */
-    rdof_cf_t *lut;                   /* e^{j 2 pi i / 256}, 256 entries */
+    rdof_cf_t *lut;                   /* e^{j 2 pi i / 256}, 256 entries (rdof_mod_expj) */
     float ramp;                     /* symbols */
     float inv_ramp, inv_p;
     float amplitude;
@@ -72,6 +72,19 @@ typedef struct {
     rdof_mod_seg_t *q;                /* ring of queued segments, in start order */
     int qcap, qhead, qn;
 } rdof_mod_t;
+
+#define RDOF_MOD_LUT_BITS 8
+
+/* e^{j 2 pi phase / 2^32} from lut (rdof_mod_t's): the nearest of 256 table entries, then a second-order step of at
+ * most pi / 256 (error under 4e-7). */
+static inline rdof_cf_t rdof_mod_expj(const rdof_cf_t *lut, uint32_t phase)
+{
+    const uint32_t i = (phase + (1u << (31 - RDOF_MOD_LUT_BITS))) >> (32 - RDOF_MOD_LUT_BITS);
+    const float d = (float)(int32_t)(phase - (i << (32 - RDOF_MOD_LUT_BITS))) * (float)(2.0 * 3.14159265358979323846 / 4294967296.0);
+    const rdof_cf_t t = lut[i & ((1u << RDOF_MOD_LUT_BITS) - 1)];
+    const float c = 1.0f - 0.5f * d * d;
+    return (rdof_cf_t){t.re * c - t.im * d, t.im * c + t.re * d};
+}
 
 /* fs: whole samples a second, above 9600, with fs / gcd(fs, 4800) <= RDOF_MOD_MAX_PHASES. ramp_symbols 0..6 (4 is
  * 0.83 ms; a 132-symbol burst with both ramps then keys 29.2 ms of the 30 ms slot). queue: segments it can hold
