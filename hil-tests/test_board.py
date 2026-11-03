@@ -398,6 +398,50 @@ def test_iq_stream(info):
     assert abs(n - 0.5 * start["rate"]) < 0.2 * start["rate"]
 
 
+def iq_zero_runs(msgs, min_n):
+    """Samples in runs of at least min_n exact zeros (I and Q), over the stream's frames in order."""
+    import array
+    run = total = 0
+    for m in msgs:
+        if not isinstance(m, bytes):
+            continue
+        h = iq_header(m)
+        is16 = h["fmt"] == "cs16"
+        a = array.array("h" if is16 else "b", m[32:32 + h["n"] * (4 if is16 else 2)])
+        for k in range(0, len(a) - 1, 2):
+            if a[k] == 0 and a[k + 1] == 0:
+                run += 1
+            else:
+                total += run if run >= min_n else 0
+                run = 0
+    return total + (run if run >= min_n else 0)
+
+
+def test_concurrent_iq_streams_count_filler(info):
+    """A wideband cs8 stream and a channel's cs16 stream at once: where either holds zeros for 5 ms or more (filler
+    where the front end lost samples), its done frame's `filled` counts them. Without a loss both are 0."""
+    import threading
+    if not info["caps"].get("iq_wideband") or not info["channels"]:
+        pytest.skip("no wideband I/Q")
+    f = info["channels"][0]["freq_hz"]
+    got = {}
+
+    def run(key, q):
+        got[key] = list(ws_messages(URL, API + "/iq", q, 20))
+
+    ts = [threading.Thread(target=run, args=("wide", {"rate": "wide", "fmt": "cs8", "seconds": 3})),
+          threading.Thread(target=run, args=("ch", {"freq_hz": f, "fmt": "cs16", "seconds": 3}))]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    for key, msgs in got.items():
+        texts = text_frames(msgs)
+        start, done = texts[0], texts[-1]
+        assert done["type"] == "done", (key, done)
+        zeros = iq_zero_runs(msgs, int(0.005 * start["rate"]))
+        # the channel's filter smears the edges of a run a little: zeros may be a little fewer than the filler
+        assert zeros <= done.get("filled", 0) + 0.002 * start["rate"], (key, zeros, done)
+
+
 def test_stream_limit_frees_on_close(info):
     """Streams opened and closed one after another never run the board out of stream slots."""
     for _ in range(info["limits"]["streams"] + 2):
