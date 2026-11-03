@@ -78,7 +78,7 @@ static const char *f_can_tx(void *ctx) { return can_tx ? NULL : "no bench.tx"; }
 static pthread_mutex_t txmu = PTHREAD_MUTEX_INITIALIZER; /* serve: the server's thread and the loop */
 /* The fake transmitter: a 4-burst queue that airs a burst every 60 ms of the test's clock (tx_air). */
 static struct {
-    bool open, unkeyed;
+    bool open, unkeyed, as_built;
     uint32_t freq;
     int cc, power;
     uint8_t q[4][34];
@@ -87,13 +87,13 @@ static struct {
     uint8_t aired[600][34];
     int naired, keyups;
 } tx;
-static bool f_tx_open(void *ctx, uint32_t f, int cc, int power, char *why, size_t cap)
+static bool f_tx_open(void *ctx, uint32_t f, int cc, int power, bool as_built, char *why, size_t cap)
 {
     if (tx.open) {
         snprintf(why, cap, "already open");
         return false;
     }
-    tx.open = true, tx.freq = f, tx.cc = cc, tx.power = power, tx.qn = 0, tx.unkeyed = false;
+    tx.open = true, tx.freq = f, tx.cc = cc, tx.power = power, tx.qn = 0, tx.unkeyed = false, tx.as_built = as_built;
     snprintf(why, cap, "power %d noted", power);
     return true;
 }
@@ -1025,9 +1025,24 @@ static void test_run(void)
         rdof_bl_tick(bl, now);
         tx_air(bl, now, -1);
     }
-    CHECK(tx.open, "keyed");
+    CHECK(tx.open && !tx.as_built, "keyed (%d), may be framed on the way (%d)", tx.open, tx.as_built);
     rdof_bl_closed(bl, c, now);
     CHECK(!tx.open, "closing gives the transmitter back");
+    /* headers, terminators or late entry: the bursts as built */
+    static const char *const BUILT[] = {"\"headers\":0", "\"terminators\":2", "\"late\":2"};
+    for (int k = 0; k < 3; k++) {
+        char req[200];
+        snprintf(req, sizeof req, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"freq\":438.1125,%s}}",
+                 BUILT[k]);
+        c = ask(bl, req, now);
+        for (int i = 0; i < 20; i++) {
+            now += 0.01;
+            rdof_bl_tick(bl, now);
+            tx_air(bl, now, -1);
+        }
+        CHECK(tx.open && tx.as_built, "%s: as built (%d %d)", BUILT[k], tx.open, tx.as_built);
+        rdof_bl_closed(bl, c, now);
+    }
     /* max_s ends a job */
     c = ask(bl, "{\"op\":\"run\",\"max_s\":0.5,\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"freq\":438.1125,"
                 "\"superframes\":5}}", now);
@@ -1078,21 +1093,23 @@ static void test_outbound(void)
     memset(&ob, 0, sizeof ob);
     memset(&tx, 0, sizeof tx);
 
-    /* refused before anything keys: a family the routed path frames again, --voice-slot, a family on an outbound,
-     * too long, not a TX frequency */
+    /* a family the routed path would frame again goes as built (the raw modem), not refused */
     routed = true;
-    int c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"freq\":438.1125,"
-                    "\"family\":\"bs\"}}", now);
-    drain(bl, c, out, sizeof out);
-    CHECK(strstr(out, "\"code\":\"unsupported\"") && strstr(out, "--family: the router") && !tx.open,
-          "a BS family through the router: %s", out);
-    rdof_bl_closed(bl, c, now);
-    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"csbk\",\"freq\":438.1125,"
-                "\"family\":\"ts2\"}}", now);
-    drain(bl, c, out, sizeof out);
-    CHECK(strstr(out, "\"code\":\"unsupported\"") && strstr(out, "--family"), "a TS2 CSBK through the router: %s",
-          out);
-    rdof_bl_closed(bl, c, now);
+    static const char *const FAM[] = {"{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"freq\":438.1125,"
+                                      "\"family\":\"bs\"}}",
+                                      "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"csbk\",\"freq\":438.1125,"
+                                      "\"family\":\"ts2\"}}"};
+    int c = -1;
+    for (int k = 0; k < 2; k++) {
+        c = ask(bl, FAM[k], now);
+        for (int i = 0; i < 20; i++) {
+            now += 0.01;
+            rdof_bl_tick(bl, now);
+            tx_air(bl, now, -1);
+        }
+        CHECK(tx.open && tx.as_built, "%s: as built (%d %d)", FAM[k], tx.open, tx.as_built);
+        rdof_bl_closed(bl, c, now);
+    }
     c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"data\",\"freq\":438.1125,"
                 "\"family\":\"ms\"}}", now);
     drain(bl, c, out, sizeof out);

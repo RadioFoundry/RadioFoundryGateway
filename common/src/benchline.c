@@ -18,6 +18,7 @@
 
 #include "rdof/benchjob.h"
 #include "rdof/jsonp.h"
+#include "rdof/layer2.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -1310,10 +1311,21 @@ static void ob_run(rdof_bl_t *bl, conn_t *c, job_t *J, int root, double now)
 }
 
 /* Why a transmit job's burst family can't go as built on the bench's path now (NULL: it can). */
+/* A job whose bursts must go out as it built them (tx_open's as_built). */
+static bool as_built(const rdof_bj_job_t *j)
+{
+    if (j->cmd != RDOF_BJ_VOICE && j->cmd != RDOF_BJ_CSBK && j->cmd != RDOF_BJ_DATA)
+        return false;
+    return j->family != RDOF_FAMILY_MS ||
+           (j->cmd == RDOF_BJ_VOICE && (j->headers >= 0 || j->terminators >= 0 || j->late >= 0));
+}
+
 static const char *family_why(rdof_bl_t *bl, const rdof_bj_job_t *j)
 {
     if (j->cmd != RDOF_BJ_VOICE && j->cmd != RDOF_BJ_CSBK && j->cmd != RDOF_BJ_DATA)
         return NULL;
+    if (as_built(j))
+        return NULL; /* not through the router: the family goes as asked */
     return bl->p.tx_why_family ? bl->p.tx_why_family(bl->p.ctx, j->family) : NULL;
 }
 
@@ -1685,7 +1697,8 @@ static void tick_run(rdof_bl_t *bl, conn_t *c, int ci, double now)
             run_exit(bl, c, 1, NULL);
             return;
         }
-        if (!bl->p.tx_open(bl->p.ctx, (uint32_t)lround(j->freq_mhz * 1e6), j->cc, j->power, why, sizeof why)) {
+        if (!bl->p.tx_open(bl->p.ctx, (uint32_t)lround(j->freq_mhz * 1e6), j->cc, j->power, as_built(j), why,
+                           sizeof why)) {
             run_log(bl, c, now, "can't transmit: %s", why[0] ? why : "the transmitter is busy");
             run_exit(bl, c, 1, NULL);
             return;

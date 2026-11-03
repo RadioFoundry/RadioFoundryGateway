@@ -464,7 +464,7 @@ const char *bench_tx_line_why(void)
     return why && strstr(why, "another") ? NULL : why; /* busy is the job's to wait out, not a refusal */
 }
 
-bool bench_tx_line_open(uint32_t freq, int cc, int power, char *why, size_t cap)
+bool bench_tx_line_open(uint32_t freq, int cc, int power, bool as_built, char *why, size_t cap)
 {
     why[0] = 0;
     xSemaphoreTake(mu, portMAX_DELAY);
@@ -482,7 +482,9 @@ bool bench_tx_line_open(uint32_t freq, int cc, int power, char *why, size_t cap)
         snprintf(J.label, sizeof J.label, "line protocol");
         snprintf(J.via, sizeof J.via, "modem");
         xStreamBufferReset(J.from_modem);
-        if ((no = via_router() ? route_open(freq) : sdr_modem_bench_open(modem_bytes, NULL, dbm, false)) != NULL) {
+        /* as built: the router's transmitter would frame the call itself (its own headers and terminators) */
+        const bool routed = via_router() && !as_built;
+        if ((no = routed ? route_open(freq) : sdr_modem_bench_open(modem_bytes, NULL, dbm, as_built)) != NULL) {
             J.on = false;
         } else {
             const rdof_benchtx_io_t io = {job_to_modem, job_to_tool, job_keying, job_utc, NULL};
@@ -770,7 +772,7 @@ bool bench_tx_enabled(void) { return false; }
 bool bench_tx_listed(uint32_t freq) { return false; }
 int bench_tx_freqs(uint32_t *out, int max) { return 0; }
 const char *bench_tx_line_why(void) { return "this build has no bench TX (CONFIG_RDOF_BENCH_TX)"; }
-bool bench_tx_line_open(uint32_t freq, int cc, int power, char *why, size_t cap)
+bool bench_tx_line_open(uint32_t freq, int cc, int power, bool as_built, char *why, size_t cap)
 {
     snprintf(why, cap, "%s", bench_tx_line_why());
     return false;

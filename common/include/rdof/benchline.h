@@ -153,11 +153,13 @@ typedef struct {
     void *ctx;
     /* Transmit jobs (NULL: none), called from the engine's thread with its lock held. tx_open: take the transmitter
      * for a job on freq_hz at the job's power (bench_tx --power, 0-255: the platform says in why, a note, how it
-     * applied it; why "" none) (setting it up may take a while); false with why when it can't. tx_space: bursts it
+     * applied it; why "" none) (setting it up may take a while); false with why when it can't. as_built: the bursts
+     * go out as the job built them (its headers, terminators, late entry, a family other than MS), not through a path
+     * that frames a call itself (a router's transmitter). tx_space: bursts it
      * takes now (0: not yet), -1 when it failed (why). tx_push: a burst (its MMDVM DMR_DATA control byte).
      * tx_unkey: the key-up ends after what was pushed. tx_idle: everything pushed went out and it's unkeyed.
      * tx_close: the job is over (or cancelled): give the transmitter back. */
-    bool (*tx_open)(void *ctx, uint32_t freq_hz, int cc, int power, char *why, size_t cap);
+    bool (*tx_open)(void *ctx, uint32_t freq_hz, int cc, int power, bool as_built, char *why, size_t cap);
     int (*tx_space)(void *ctx, char *why, size_t cap);
     void (*tx_push)(void *ctx, uint8_t control, const uint8_t burst[33]);
     void (*tx_unkey)(void *ctx);

@@ -528,8 +528,10 @@ by their long names with `_` for `-`:
   through the router: on a roamer it takes the raw SDR modem (the roamer pauses; it waits while the roamer is
   transmitting) and gives it back after. On the W12 a key-up this long is one streamed transmission in 1.35 s
   runs; their seams are in lr2021-iq.md R3.49.
-- `family` on `voice`, `csbk` and `data` (`ms` or `bs`): `bs` is `unsupported` when the job goes through the
-  router's transmitter pool, which frames bursts with MS sync. `outbound` is BS only.
+- `family` on `voice`, `csbk` and `data` (`ms`, `bs`, `ts1`, `ts2`), and a voice job's `headers`, `terminators`
+  or `late`: such a job doesn't go through the router's transmitter pool, which frames a call itself (its own
+  headers and terminators, MS sync). It takes the raw SDR modem as `outbound` does (a roamer's parked, given back
+  after), so its bursts go out as built. `outbound` is BS only.
 - `bench_repeater` runs a duplex repeater with no network on the job's `rx` (a receiver channel that decodes DMR)
   and `tx` (a TX frequency) for `seconds`: `slots`, `hang` (T_MSInactiv), `call_hang`, and idle beacons every
   `beacon` seconds from `beacon_phase` on (a local BS_Dwn_Act into its receive path, the hang `beacon_len`; skipped

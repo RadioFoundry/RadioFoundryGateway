@@ -487,7 +487,8 @@ bool bench_tx_enabled(void);
 bool bench_tx_listed(uint32_t freq);
 int bench_tx_freqs(uint32_t *out, int max); /* bench.tx's frequencies */
 const char *bench_tx_line_why(void);
-bool bench_tx_line_open(uint32_t freq, int cc, int power, char *why, size_t cap);
+/* as_built: the job's bursts as it built them, on the raw SDR modem (a roamer's parked), never the router */
+bool bench_tx_line_open(uint32_t freq, int cc, int power, bool as_built, char *why, size_t cap);
 int bench_tx_line_space(char *why, size_t cap);
 void bench_tx_line_push(uint8_t control, const uint8_t burst[33]);
 bool bench_tx_line_idle(void);

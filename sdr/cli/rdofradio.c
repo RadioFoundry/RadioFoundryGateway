@@ -1512,7 +1512,7 @@ static struct {
     rdof_benchtx_t tx;
 } BT = {.mu = PTHREAD_MUTEX_INITIALIZER};
 
-static bool bl_tx_open(void *ctx, uint32_t freq, int cc, int power, char *why, size_t cap)
+static bool bl_tx_open(void *ctx, uint32_t freq, int cc, int power, bool as_built, char *why, size_t cap)
 {
     pthread_mutex_lock(&BT.mu);
     const bool busy = BT.want || BT.active || BR.want || BR.active;

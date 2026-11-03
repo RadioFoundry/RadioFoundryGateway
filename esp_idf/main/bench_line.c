@@ -111,9 +111,9 @@ static void bl_rx_stats(void *ctx, double *seconds, long *overflows, double *cli
 
 static const char *bl_can_tx(void *ctx) { return bench_tx_line_why(); }
 
-static bool bl_tx_open(void *ctx, uint32_t freq, int cc, int power, char *why, size_t cap)
+static bool bl_tx_open(void *ctx, uint32_t freq, int cc, int power, bool as_built, char *why, size_t cap)
 {
-    return bench_tx_line_open(freq, cc, power, why, cap);
+    return bench_tx_line_open(freq, cc, power, as_built, why, cap);
 }
 
 static int bl_tx_space(void *ctx, char *why, size_t cap) { return bench_tx_line_space(why, cap); }
