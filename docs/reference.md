@@ -1045,6 +1045,7 @@ edits. Headers in `include/rdof/sdr/`.
 | `fft` | complex float FFT behind `rdof_fft_new` / `rdof_fft_run` / `rdof_fft_free`; built in: mixed radix 4, 2, 3, 5 (2048 at 1.536 MS/s, 384 at 288 kS/s, 3200 at 2.4 MS/s) |
 | `iq` | cu8 (lookup table), cs8, cs16 to complex float |
 | `channelizer` | overlap-save channelizer (N = 64 x decimation, hop 3N/4), the Kaiser filter, bin-shift fix, per-channel NCO; `plan_center` |
+| `chzfx` | host only: the bit-exact integer model of the channelizer planned for a PlutoSDR's FPGA (a 32-bit NCO with a 4096-point cosine table, an 18-bit mixer and the channelizer's own filter as a decimating FIR, up to 16 channels; int16 I/Q in and out) and the frames it writes to the RX DMA. `rdof_chzfx_tests` checks it against golden vectors in `host-tests/fixtures/chzfx/` (which the HLS testbench reuses), an ideal DDC and the float channelizer |
 | `fm` | RRC taps, discriminator (a polynomial atan2), symmetric 81-tap matched filter, power |
 | `demod` | squelch, sync search over the four families, 4FSK slicing, CACH slot, slot guess, voice flywheel with EMB checks; bursts carry position, power, level center (AFC) and deviation |
 | `agc` | clip measurement (float or straight from cu8), the gain control law, level stats |

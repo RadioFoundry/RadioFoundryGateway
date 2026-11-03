@@ -25,6 +25,19 @@ if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
 endif()
 add_test(NAME rdof_sdr_tests COMMAND rdof_sdr_tests)
 
+# The FPGA channelizer's model (chzfx.c) against its golden vectors (fixtures/chzfx/, made by the test itself with
+# --write), an ideal DDC and the float channelizer.
+add_executable(rdof_chzfx_tests test_chzfx.c)
+target_compile_definitions(rdof_chzfx_tests PRIVATE RDOF_CHZFX_DATA="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/chzfx/")
+target_link_libraries(rdof_chzfx_tests PRIVATE rdof_sdr m)
+set_target_properties(rdof_chzfx_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_compile_options(rdof_chzfx_tests PRIVATE -Wall -Wno-unused-parameter)
+if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+    target_compile_options(rdof_chzfx_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(rdof_chzfx_tests PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME rdof_chzfx_tests COMMAND rdof_chzfx_tests)
+
 # The DMR modulator (mod.c) against the golden vectors, and round trips through the C receiver.
 set(RDOF_MOD_GEN ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/mod-vectors)
 add_custom_target(rdof_mod_vectors)

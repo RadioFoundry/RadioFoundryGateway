@@ -10,6 +10,7 @@ kind of data for the DMR core.
 |---|---|---|
 | `sdr-vectors/` | `rdof_sdr_tests`, `rdof_sdr_tests_min`, `rdof_sdr_edge_tests` | `sdr_vectors.h` (tables, configs, expected bursts and tracker output) and `sdr-data/`: cu8 recordings in, the channelizer's cf32 and the FM discriminator's f32 out |
 | `mod-vectors/` | `rdof_mod_tests` | `mod_vectors.h` and `mod-data/`: the DMR modulator's expected output, and round trips through the receiver |
+| `chzfx/` | `rdof_chzfx_tests`, the FPGA channelizer's HLS testbench | The FPGA channelizer model's (`sdr/src/chzfx.c`) golden vectors: per case a `.cfg` (the registers), `_in.cs16` and `_out.cs16`; `qcos.txt`, its cosine table. Made by this project's model (`rdof_chzfx_tests --write`), not the reference |
 
 The recordings in `sdr-data/` are synthetic: DMR bursts built and modulated by the reference, with added noise.
 
