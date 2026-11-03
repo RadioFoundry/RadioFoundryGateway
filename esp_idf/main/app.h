@@ -16,6 +16,7 @@
 #include "rdof/benchguard.h"
 #include "rdof/config.h"
 #include "rdof/json.h"
+#include "rdof/sigmode.h"
 #include "rdof/site.h"
 #include "sdkconfig.h"
 
@@ -497,6 +498,12 @@ bool bench_tx_ob_open(uint32_t freq, int cc, int power, double seconds, char *wh
 int bench_tx_ob_check(char *why, size_t cap); /* 0, or -1 with why: it stopped */
 void bench_tx_ob_unkey(void);
 void bench_tx_ob_close(void);
+/* a signal mode's transmission (bench-api.md section 14.6): the SDR modem taken as for an outbound, src keyed on freq;
+ * its state as rdof_bl_platform_t.sig_state's */
+bool bench_tx_sig_open(uint32_t freq, int power, double seconds, const rdof_sig_src_t *src, char *why, size_t cap);
+int bench_tx_sig_state(char *why, size_t cap);
+void bench_tx_sig_close(void);
+double bench_tx_sig_rate(void);
 const char *bench_tx_why_family(int family); /* a voice, csbk or data job's --family: NULL, or why it can't go */
 /* The line protocol (bench_line.c, bench-api.md section 14): its server on CONFIG_RDOF_BENCH_LINE_PORT; a burst heard
  * (from bench_on_burst); the wideband history (bench_api.c's ring) for its captures. */
@@ -527,6 +534,10 @@ typedef struct {
 bool sdr_modem_bench_slots(sdr_modem_slots_t *s);
 void sdr_modem_bench_write(const uint8_t *data, size_t len);
 void sdr_modem_bench_close(void);
+/* A signal mode's transmission on the bench's modem (rdof_sdrmodem_signal; src NULL ends it): NULL, or why not
+ * (written to why). Its state: rdof_sdrmodem_signal_state's, -1 when the bench holds no modem. */
+const char *sdr_modem_bench_signal(uint32_t hz, const rdof_sig_src_t *src, char *why, size_t cap);
+int sdr_modem_bench_signal_state(void);
 bool sdr_tx_muted(void *ctx, int64_t position);
 /* The tuner's crystal error, as learned from its sample clock or the AFC (sdr_task.c). NAN where there's nothing. */
 typedef struct {

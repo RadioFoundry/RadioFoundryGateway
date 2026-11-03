@@ -98,6 +98,7 @@ typedef struct {
     double tx_freq_min, tx_freq_max;
     double tx_power_min, tx_power_max, tx_power_step; /* dBm */
     double turnaround_us;       /* half duplex: RX to TX (or back) and settled */
+    double tx_dev_max_hz;       /* RDOF_FE_TX_FREQ: the largest deviation it sends (0: no limit known) */
 } rdof_fe_caps_t;
 
 /*

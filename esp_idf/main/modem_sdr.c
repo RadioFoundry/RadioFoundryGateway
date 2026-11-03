@@ -233,6 +233,32 @@ bool sdr_modem_bench_slots(sdr_modem_slots_t *s)
     return m != NULL;
 }
 
+const char *sdr_modem_bench_signal(uint32_t hz, const rdof_sig_src_t *src, char *why, size_t cap)
+{
+    if (src && fe.caps->tx_mode == RDOF_FE_TX_FREQ && fe.caps->tx_dev_max_hz > 0 &&
+        src->peak_hz > fe.caps->tx_dev_max_hz) {
+        snprintf(why, cap, "the %s sends at most %.0f Hz of deviation (this source peaks at %.0f Hz)", fe.caps->kind,
+                 fe.caps->tx_dev_max_hz, src->peak_hz);
+        return why;
+    }
+    TAKE();
+    const char *no = !mdm || !bench_reply ? "the bench doesn't hold the SDR modem" : NULL;
+    if (!no && !rdof_sdrmodem_signal(mdm, hz, src, why, cap))
+        no = why;
+    GIVE();
+    if (no && no != why)
+        snprintf(why, cap, "%s", no);
+    return no ? why : NULL;
+}
+
+int sdr_modem_bench_signal_state(void)
+{
+    TAKE();
+    const int s = mdm && bench_reply ? rdof_sdrmodem_signal_state(mdm) : -1;
+    GIVE();
+    return s;
+}
+
 void sdr_modem_bench_write(const uint8_t *data, size_t len)
 {
     TAKE();

@@ -1329,10 +1329,104 @@ static bool keyed_in(const rdof_sdrmodem_t *m, const float *env, const rdof_cf_t
     return false;
 }
 
+/* ── a signal mode's transmission ── */
+
+bool rdof_sdrmodem_signal(rdof_sdrmodem_t *m, uint32_t hz, const rdof_sig_src_t *src, char *why, size_t cap)
+{
+    if (!src) {
+        if (m->sig_on && m->tuned && m->io.tx_tune) { /* back where DMR was */
+            double off = 0;
+            if (m->io.tx_tune(m->io.ctx, m->tx_hz, &off))
+                rdof_mod_set_offset(&m->mod, off);
+        }
+        m->sig_on = false;
+        return true;
+    }
+    const char *no = !m->mod_ok                  ? "the modulator isn't running"
+                   : m->duplex || m->role        ? "the modem runs a duplex or split role"
+                   : rdof_sdrmodem_transmitting(m) ? "the modem is sending DMR"
+                   : !src->freq && !src->iq      ? "the source renders nothing"
+                                                 : NULL;
+    double off = 0;
+    if (!no && (!m->io.tx_tune || !m->io.tx_tune(m->io.ctx, hz, &off)))
+        no = "the transmitter can't tune there";
+    if (no) {
+        snprintf(why, cap, "%s", no);
+        return false;
+    }
+    m->sig = *src;
+    m->sig_on = true;
+    m->sig_off_hz = off;
+    m->sig_phase = 0;
+    m->sig_done_at = -1;
+    return true;
+}
+
+int rdof_sdrmodem_signal_state(const rdof_sdrmodem_t *m)
+{
+    if (!m->sig_on)
+        return 0;
+    return m->sig_done_at >= 0 && m->pos >= m->sig_done_at + m->tx_fs / 4 ? 2 : 1;
+}
+
+static rdof_cf_t sig_rot(uint32_t phase)
+{
+    const float a = (float)(int32_t)phase * (float)(2.0 * 3.14159265358979323846 / 4294967296.0);
+    return (rdof_cf_t){cosf(a), sinf(a)};
+}
+
+/* n samples of the source from pos: frequency (Hz, the offset in) and envelope, or I/Q. Whether any is keyed. */
+static bool sig_pull(rdof_sdrmodem_t *m, int64_t pos, rdof_cf_t *iq, float *hz, float *env, int n)
+{
+    bool keyed = false;
+    float fb[64], eb[64];
+    const double turn = 4294967296.0 / m->tx_fs; /* phase steps a Hz */
+    for (int done = 0; done < n;) {
+        const int k = n - done < 64 ? n - done : 64;
+        float *h = hz ? hz + done : fb, *e = env ? env + done : eb;
+        int got = 0;
+        if (m->sig_done_at < 0 && iq && m->sig.iq) {
+            got = m->sig.iq(m->sig.ctx, (float *)(iq + done), k);
+            const uint32_t inc = (uint32_t)(int64_t)llround(m->sig_off_hz * turn);
+            for (int i = 0; i < got; i++) { /* to the carrier's offset */
+                const rdof_cf_t r = sig_rot(m->sig_phase), x = iq[done + i];
+                iq[done + i] = (rdof_cf_t){x.re * r.re - x.im * r.im, x.re * r.im + x.im * r.re};
+                m->sig_phase += inc;
+            }
+        } else if (m->sig_done_at < 0 && m->sig.freq) {
+            got = m->sig.freq(m->sig.ctx, h, e, k);
+        }
+        if (got < k && m->sig_done_at < 0 && m->sig.done && m->sig.done(m->sig.ctx))
+            m->sig_done_at = pos + done + got;
+        for (int i = got; i < k; i++)
+            h[i] = 0, e[i] = 0;
+        if (iq && !(m->sig.iq && got)) {
+            for (int i = 0; i < k; i++) {
+                m->sig_phase += (uint32_t)(int64_t)llround((h[i] + m->sig_off_hz) * turn);
+                const rdof_cf_t r = sig_rot(m->sig_phase);
+                iq[done + i] = (rdof_cf_t){r.re * m->mod.amplitude * e[i], r.im * m->mod.amplitude * e[i]};
+            }
+        } else if (iq && got < k) {
+            for (int i = got; i < k; i++)
+                iq[done + i] = (rdof_cf_t){0, 0};
+        }
+        if (hz)
+            for (int i = 0; i < k; i++)
+                h[i] += (float)m->sig_off_hz;
+        keyed = keyed || got > 0;
+        done += k;
+    }
+    rdof_mod_skip(&m->mod, pos + n); /* the DMR clock goes on with the stream */
+    m->pos = pos + n;
+    return keyed;
+}
+
 bool rdof_sdrmodem_pull_iq(rdof_sdrmodem_t *m, int64_t pos, rdof_cf_t *iq, int n)
 {
     if (!m->mod_ok)
         return false;
+    if (m->sig_on)
+        return sig_pull(m, pos, iq, NULL, NULL, n);
     advance(m, pos, n);
     rdof_mod_iq(&m->mod, iq, n);
     m->pos = m->mod.pos;
@@ -1343,6 +1437,8 @@ bool rdof_sdrmodem_pull_freq(rdof_sdrmodem_t *m, int64_t pos, float *hz, float *
 {
     if (!m->mod_ok)
         return false;
+    if (m->sig_on)
+        return sig_pull(m, pos, NULL, hz, env, n);
     advance(m, pos, n);
     rdof_mod_freq(&m->mod, hz, env, n);
     m->pos = m->mod.pos;

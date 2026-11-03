@@ -186,6 +186,11 @@ static const char *fm_cfg(const rdof_jdoc_t *d, int job, rdof_fmg_cfg_t *c, char
         has_pcm |= c->seg[i].kind == RDOF_FMG_PCM;
     if (has_pcm && !c->pcm_samples)
         return "a pcm segment needs pcm: {rate, samples}";
+    if (!has_pcm && c->pcm_samples) { /* pcm with no program: the program is the PCM */
+        if (c->nseg >= RDOF_FMG_SEGS)
+            return "program: 32 segments at most";
+        c->seg[c->nseg++] = (rdof_fmg_seg_t){.kind = RDOF_FMG_PCM, .level = 1};
+    }
     return rdof_fmg_check(c);
 }
 

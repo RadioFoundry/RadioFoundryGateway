@@ -17,6 +17,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "rdof/sigmode.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -184,6 +186,21 @@ typedef struct {
     /* Why an outbound can't run here (NULL: it can), in place of can_tx (NULL hook: can_tx's answer): it takes the
      * modem from whatever has it */
     const char *(*ob_can)(void *ctx);
+    /* Signal modes (rdof/sigmode.h): the platform's list (NULL-terminated; NULL: none). A mode with a receiver runs
+     * on a channel cut from the wideband history (iq_read), one with a transmitter through sig_open. */
+    const rdof_sig_mode_t *const *modes;
+    /* A signal mode's transmission (NULL: none), as the transmit jobs: sig_open takes the transmitter and keys what
+     * src renders on freq_hz at power (as tx_open's; a note in why) for about seconds; false with why when it can't
+     * (a duplex repeater runs, a key-up that long, the source's peak deviation past the front end's). src is the
+     * transmitter's thread's until sig_close.
+     * sig_state: 1 sending, 2 the source is done and what it sent went out, -1 failed (why). sig_close: unkey and give
+     * the transmitter back; src is never called again after it returns. */
+    bool (*sig_open)(void *ctx, uint32_t freq_hz, int power, double seconds, const rdof_sig_src_t *src, char *why,
+                     size_t cap);
+    int (*sig_state)(void *ctx, char *why, size_t cap);
+    void (*sig_close)(void *ctx);
+    /* The rate the transmitter pulls a source at, samples a second (NULL: 48000). */
+    double (*sig_rate)(void *ctx);
 } rdof_bl_platform_t;
 
 typedef struct rdof_bl rdof_bl_t;
@@ -198,6 +215,9 @@ int rdof_bl_open(rdof_bl_t *bl, double now);
 const char *rdof_bl_refusal(void);
 void rdof_bl_input(rdof_bl_t *bl, int c, const char *data, size_t n, double now);
 void rdof_bl_closed(rdof_bl_t *bl, int c, double now);
+/* How many bytes c's request takes now (the server reads no more than this; 0: read later). After the request line
+ * a tx op's stream (a mode's PCM) follows, taken as the mode has room; any other request's are dropped. */
+size_t rdof_bl_input_room(rdof_bl_t *bl, int c);
 /* What to send on c now (copied into buf, up to cap): its length. */
 size_t rdof_bl_output(rdof_bl_t *bl, int c, uint8_t *buf, size_t cap);
 /* Its request is over and everything it had went out: close it. */

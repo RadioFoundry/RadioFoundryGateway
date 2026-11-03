@@ -448,7 +448,7 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
 
 | op | request | replies |
 |---|---|---|
-| `info` | | `window` (`enabled`, `lo`, `hi`, `center` MHz, `fs`, `gain`, `dc_guard_khz`), `sdr` (`"shared"` when the receiver runs), `channels` (one per receiver channel and TX frequency: `freq`, `ch`, `in_window`, `listed`, `caps`, `claimed_by`, `keyed`), `stations` (`modem`: the gateway's own SDR modem, `kind` `sdrmodem`, `tx`, `held_by`, `waiting`), `modem` (`held_by`, `waiting`, `next_job_eta`), `default_caps`, `device` (kind, name, version) |
+| `info` | | `window` (`enabled`, `lo`, `hi`, `center` MHz, `fs`, `gain`, `dc_guard_khz`), `sdr` (`"shared"` when the receiver runs), `channels` (one per receiver channel and TX frequency: `freq`, `ch`, `in_window`, `listed`, `caps`, `claimed_by`, `keyed`), `stations` (`modem`: the gateway's own SDR modem, `kind` `sdrmodem`, `tx`, `held_by`, `waiting`), `modem` (`held_by`, `waiting`, `next_job_eta`), `default_caps`, `device` (kind, name, version), `signal_modes` (section 14.6) |
 | `status` | | `sdr`, `receiver` (`seconds`, `overflows`, `clip_pct`, `dsp_skipped`, `decode_dropped`, `captures`), `held`, `waiting`, `sessions`, `tx` (section 7's) |
 | `session` | `label`, `expect_s`, `max_s` | `{"session": ID, "label"}`, then nothing until the connection closes (the session ends with it) or the session's `max_s` runs out (`{"ended": "max_s"}`) |
 | `claim` | `session`, `freqs`, `caps`, `wait_max` | queued / granted, `{"claimed": [MHz], "window"}` |
@@ -557,9 +557,66 @@ the modem goes duplex, and the job's first key-up, heard back in the receiver's 
 
 ### 14.5 The client
 
-`tools/bench/rfgbench.py --bench HOST[:PORT] SUBCOMMAND ...` (or `$RDOF_BENCH_LINE`): `info`, `status`,
-`session`, `claim`, `release`, `hold`, `run`, `capture`, `capture-trigger`, `dmr-bursts`, `listen`, with the
-daemon client's options. Its stdout and stderr are the daemon client's (the `READY` and `wrote` lines, the
-`rfoundry-bench:` notes, the JSON lines), and so are its exit codes: 0, 1, 3 nothing heard, 69 the gateway can't be
-reached or can't do it, 75 busy or timed out, 77 refused. `run -- python bench_tx.py ARGS` (any interpreter, any
-directory) sends the job; `--file` and `--out` files are written where the client runs.
+`tools/bench/rfgbench.py --bench HOST[:PORT] SUBCOMMAND ...` (or `$RDOF_BENCH_LINE`): `info`, `status`, `session`,
+`claim`, `release`, `hold`, `run`, `capture`, `capture-trigger`, `dmr-bursts`, `listen`, with the daemon client's
+options, and `tx fm` and `rx fm` (section 14.6) of its own. Its stdout and stderr are the daemon client's (the
+`READY` and `wrote` lines, the `rfoundry-bench:` notes, the JSON lines), and so are its exit codes: 0, 1, 3 nothing
+heard, 69 the gateway can't be reached or can't do it, 75 busy or timed out, 77 refused. `run -- python bench_tx.py
+ARGS` (any interpreter, any directory) sends the job; `--file` and `--out` files are written where the client runs.
+
+### 14.6 Signal modes: tx and rx
+
+A signal mode is a modulation other than DMR, as one table (`rdof/sigmode.h`; the list in `rdof/sdr/modes.h`). Analog
+FM (`fm`) is the first. `info`'s `signal_modes` lists them: `{"tx": [names], "rx": [names]}`. The fields after the
+op's own are the mode's.
+
+| op | request | replies |
+|---|---|---|
+| `tx` | `session`, `mode`, `freq`, `power`, `max_s`, `wait_max`, the mode's fields; input bytes after the line | `{"tx": {"mode", "freq", "seconds", "input_bytes"}}`, queued / granted, `{"started": ID, "t"}`, `{"done": {"mode", "freq", "on_air_s", "input_bytes", "cut", ...}}` |
+| `rx` | `session`, `mode`, `freq`, `seconds`, `bw`, `squelch_dbfs`, `squelch_over_db`, the mode's fields | `{"rx": header}`, `{"rec": record}`, `{"pcm": {"stream", "seq", "n"}, "bytes": 2n}` + int16 LE, `{"gap": ...}`, `{"done": {"mode", "freq", "seconds", "samples", "gap_samples", "summary"}}` |
+
+- `tx` is a transmit job: it waits for the modem as `run` does (`expect_s` its length plus 3 s), on a frequency of
+  `bench.tx`, at `power` capped by its `rf_level`, for at most `max_key_s`. The source renders on the transmitting
+  thread, so nothing on the network can make it stutter, except PCM that comes too slowly (counted in `underruns`).
+  `done` comes once the last sample has gone out, or at `max_s` (`cut` true). `seconds` is the length the mode
+  works out (FM: lead, program, repeats, the subaudio's end, tail).
+- Input: a mode that takes audio (FM's `pcm`) reads the bytes the client sends after the request line, int16 LE.
+  The gateway reads only as its buffer empties, so TCP's flow control paces the client: send it all at once.
+  `input_bytes` in the header is what the job expects; `done` gives what came.
+- `rx` cuts the channel from the wideband history as `trigger` does (`bw` 16000 by default, 1000 to 0.9 of the
+  rate; about 48 kS/s) and feeds the mode's receiver. Without `squelch_dbfs` it first learns the floor (the median
+  1 ms block over 0.3 s of history) and sets the squelch `squelch_over_db` (10) over it. The header gives `rate`,
+  `bw`, `t0` and `sc0` (the first channel sample's UTC and wideband index), `seconds`, `floor_dbfs`,
+  `squelch_dbfs`, `scale_db` and the streams asked for (`name`, `unit`, `rate`, `full`: the value at int16 full
+  scale). A gap is `{"gap": {"sc", "samples"}}` (channel samples the history overwrote before they went: the
+  client fills them) or `{"gap": {"sc", "filler"}}` (the front end's zeros, already in the stream). `seconds` is
+  at most 3600.
+- A half-duplex front end can't hear its own `tx`: the receiver stops while it transmits. Use a second board.
+
+FM `tx` fields: `dev_hz` (2500: the program at level 1), `ctcss` (Hz) or `dcs` (`"023N"`, `"023I"`: octal, normal
+or inverted), `sub_dev_hz` (0.2 of `dev_hz`), `sub_end_s` (the CTCSS reverse burst, 0.15; the DCS turn-off code,
+0.18), `preemph_us`, `lead_s` and `tail_s` (carrier and subaudio before and after the program, 0.25), `repeat`,
+`seed` (noise), `pcm` (`{"rate", "samples"}`: the input), and `program`, a list of segments, each with `kind`, `s`
+(seconds) and `level` (0-1 of `dev_hz`):
+
+| kind | fields |
+|---|---|
+| `tone` | `hz`: a number, or a list (up to 4 tones summed) |
+| `sweep` | `hz`: `[from, to]`, `log` |
+| `dtmf` | `digits`, `s` a digit (0.1), `gap_s` (0.05) |
+| `fsk` | `text` or `hex`, `bits` (all), `baud` (1200), `hz` `[mark, space]` (Bell 202's 1200, 2200), `nrzi`, `lsb`: AFSK, audio on the FM |
+| `noise`, `silence` | |
+| `pcm` | where the input goes (with `pcm` and no program, the program is the input) |
+
+`done` adds `dev_hz`, `peak_hz`, `seconds`, `ctcss` or `dcs` with `sub_dev_hz`, `pcm_samples` and `underruns`. On
+the W12 the LR2021 sends deviation as int8 samples at 32 Hz a count: a source that peaks over 4064 Hz is refused.
+
+FM `rx` fields: `streams` (`"audio"`, `"disc"` or both: the filtered audio, about 16 kS/s, 300 Hz to 3 kHz with the
+CTCSS tone notched; the raw discriminator at the channel's rate), `audio_full_hz` (5000), `block_s` (0.1, a record
+each), `deemph_us` (0; 750 for TIA-603), `nominal_dev_hz` (for ratios), `spectrum_hz` (0: no spectrum bins in the
+summary). A record is `{"block": {"t", "carrier", "power_dbfs", "env_min", "env_max", "cfo_hz", "dev_pos_hz",
+"dev_neg_hz", "audio_rms_hz", "sub_rms_hz"}}`. The summary: `carrier_s`, `power_dbfs` (mean, min, max),
+`noise_dbfs`, `envelope` (mean, `am_pct`), `cfo_hz` (mean, min, max), `deviation` (`pos_hz`, `neg_hz`, `rms_hz`),
+`audio` (`rms_hz`, peaks, `rms_db`), `tone` (the strongest: `hz`, `dev_hz`, `sinad_db`, `thd_pct`), `peaks`, and
+`sub`: `{"kind": "ctcss", "hz", "nominal_hz", "dev_hz", "reverse_burst_t"}`, `{"kind": "dcs", "code", "aliases",
+"words", "dev_hz", "turnoff"}` or `{"kind": "none"}`.

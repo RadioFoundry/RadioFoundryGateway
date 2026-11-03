@@ -24,6 +24,7 @@
 #include "rdof/benchnet.h"
 #include "rdof/benchtx.h"
 #include "rdof/pdu.h"
+#include "rdof/sdr/modes.h"
 
 static const char *TAG = "bench";
 
@@ -153,6 +154,15 @@ static int bl_ob_state(void *ctx, rdof_bl_ob_state_t *s, char *why, size_t cap)
     return s->keyed ? 1 : 0;
 }
 
+static bool bl_sig_open(void *ctx, uint32_t freq, int power, double seconds, const rdof_sig_src_t *src, char *why,
+                        size_t cap)
+{
+    return bench_tx_sig_open(freq, power, seconds, src, why, cap);
+}
+static int bl_sig_state(void *ctx, char *why, size_t cap) { return bench_tx_sig_state(why, cap); }
+static void bl_sig_close(void *ctx) { bench_tx_sig_close(); }
+static double bl_sig_rate(void *ctx) { return bench_tx_sig_rate(); }
+
 static void bl_ob_unkey(void *ctx) { bench_tx_ob_unkey(); }
 static void bl_ob_close(void *ctx) { bench_tx_ob_close(); }
 
@@ -186,7 +196,9 @@ void bench_line_start(void)
                                           .tx_unkey = bl_tx_unkey, .tx_idle = bl_tx_idle, .tx_close = bl_tx_close,
                                           .tx_why_family = bl_why_family, .ob_open = bl_ob_open,
                                           .ob_state = bl_ob_state, .ob_unkey = bl_ob_unkey, .ob_close = bl_ob_close,
-                                          .ob_can = bl_ob_can};
+                                          .ob_can = bl_ob_can, .modes = rdof_sdr_modes, .sig_open = bl_sig_open,
+                                          .sig_state = bl_sig_state, .sig_close = bl_sig_close,
+                                          .sig_rate = bl_sig_rate};
     if (!(bl = rdof_bl_new(&pf))) {
         ESP_LOGE(TAG, "line protocol: no memory");
         return;

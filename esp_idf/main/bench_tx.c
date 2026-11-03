@@ -65,6 +65,7 @@ typedef struct {
     bool line;            /* the line protocol's job (bench_line.c): no socket of its own, no lease */
     bool ob;              /* line, an outbound: the modem keyed by its own frames, no rdof_benchtx job */
     bool ob_unkeyed;      /* outbound: DMR_START 00 sent */
+    bool sig;             /* line, a signal mode's transmission (with ob: the modem the job's alone) */
     double ob_start;      /* outbound: opened (UTC) */
     int ob_naks;          /* outbound: the modem's NAKs */
     uint8_t ob_nak[2];    /* the last one: its command and reason */
@@ -222,7 +223,11 @@ static void tx_task(void *arg)
                         J.ob_naks++;
                         J.ob_nak[0] = buf[i + 3], J.ob_nak[1] = buf[i + 4];
                     }
-            if (!armed() && !J.ob_unkeyed) {
+            if (!armed() && J.sig && !J.why[0]) {
+                char w[8];
+                sdr_modem_bench_signal(0, NULL, w, sizeof w);
+                snprintf(J.why, sizeof J.why, "the TX arm jumper came out");
+            } else if (!armed() && !J.ob_unkeyed && !J.sig) {
                 const uint8_t off = 0;
                 uint8_t f[8];
                 sdr_modem_bench_write(f, rdof_mmdvm_frame(RDOF_MMDVM_DMR_START, &off, 1, f, sizeof f));
@@ -634,6 +639,82 @@ void bench_tx_ob_close(void)
     xSemaphoreGive(mu);
 }
 
+/* A signal mode's transmission: the outbound's way to the modem (a roamer's parked), then the source keyed. */
+bool bench_tx_sig_open(uint32_t freq, int power, double seconds, const rdof_sig_src_t *src, char *why, size_t cap)
+{
+    why[0] = 0;
+    xSemaphoreTake(mu, portMAX_DELAY);
+    const char *no = NULL;
+    const int level = power < policy.rf_level ? power : policy.rf_level;
+    const rdof_fe_caps_t *c = sdr_fe_caps();
+    const double dbm = c ? c->tx_power_min + (c->tx_power_max - c->tx_power_min) * level / 255.0 : 0;
+    char w[160] = "";
+    if (!bench_tx_enabled())
+        no = policy_err[0] ? policy_err : "no transmit frequencies (bench.tx in the settings)";
+    else if (!J.job || !J.from_modem)
+        no = "no memory for a transmit job";
+    else if (J.on)
+        no = "the transmitter is busy with another bench job";
+    else if (seconds > policy.max_key_s)
+        snprintf(w, sizeof w, "%.1f s is longer than bench.tx's max_key_s %.1f s", seconds, policy.max_key_s), no = w;
+    else if ((no = rdof_benchtx_gates(&policy, true, true, freq, &freq, 1, armed())) == NULL &&
+             (no = sdr_modem_bench_open(modem_bytes, NULL, dbm, true)) == NULL) {
+        if (sdr_modem_bench_signal(freq, src, w, sizeof w)) {
+            no = w;
+            sdr_modem_bench_close();
+        } else {
+            StreamBufferHandle_t sb = J.from_modem;
+            rdof_benchtx_t *job = J.job;
+            J = (txjob_t){.on = true, .line = true, .ob = true, .sig = true, .fd = -1, .freq = freq, .job = job,
+                          .from_modem = sb, .ob_start = job_utc(NULL)};
+            snprintf(J.session, sizeof J.session, "line");
+            snprintf(J.label, sizeof J.label, "signal");
+            snprintf(J.via, sizeof J.via, "modem");
+            xStreamBufferReset(J.from_modem);
+            if (power > level)
+                snprintf(why, cap, "power %d is over bench.tx's rf_level: %d (%.0f dBm)", power, level, dbm);
+            ESP_LOGW(TAG, "TX: a signal on %.5f MHz, %.1f s, level %d (%.0f dBm)", freq / 1e6, seconds, level, dbm);
+        }
+    }
+    xSemaphoreGive(mu);
+    if (no)
+        snprintf(why, cap, "%s", no);
+    return !no;
+}
+
+int bench_tx_sig_state(char *why, size_t cap)
+{
+    xSemaphoreTake(mu, portMAX_DELAY);
+    int r;
+    if (!J.on || !J.sig)
+        r = -1, snprintf(why, cap, "the signal's modem was let go");
+    else if (J.why[0])
+        r = -1, snprintf(why, cap, "%s", J.why);
+    else if ((r = sdr_modem_bench_signal_state()) < 1)
+        r = -1, snprintf(why, cap, "the SDR modem stopped sending");
+    xSemaphoreGive(mu);
+    return r;
+}
+
+void bench_tx_sig_close(void)
+{
+    xSemaphoreTake(mu, portMAX_DELAY);
+    if (J.on && J.sig) {
+        char w[8];
+        sdr_modem_bench_signal(0, NULL, w, sizeof w);
+        const double t = job_utc(NULL);
+        job_keying(NULL, J.ob_start, t - J.ob_start, 0, "signal");
+        job_end();
+    }
+    xSemaphoreGive(mu);
+}
+
+double bench_tx_sig_rate(void)
+{
+    const rdof_fe_caps_t *c = sdr_fe_caps();
+    return c && c->tx_rate > 0 ? c->tx_rate : g_scfg.sample_rate;
+}
+
 /* A voice, csbk or data job's --family: through the router the pool's transmitter frames each burst with MS sync, so
  * only MS goes as asked; the SDR modem itself sends the burst as built. */
 const char *bench_tx_why_family(int family)
@@ -701,6 +782,14 @@ bool bench_tx_ob_open(uint32_t freq, int cc, int power, double seconds, char *wh
 }
 const char *bench_tx_ob_why(void) { return bench_tx_line_why(); }
 int bench_tx_ob_check(char *why, size_t cap) { return -1; }
+bool bench_tx_sig_open(uint32_t freq, int power, double seconds, const rdof_sig_src_t *src, char *why, size_t cap)
+{
+    snprintf(why, cap, "%s", bench_tx_line_why());
+    return false;
+}
+int bench_tx_sig_state(char *why, size_t cap) { return -1; }
+void bench_tx_sig_close(void) {}
+double bench_tx_sig_rate(void) { return 48000; }
 void bench_tx_ob_unkey(void) {}
 void bench_tx_ob_close(void) {}
 const char *bench_tx_why_family(int family) { return NULL; }

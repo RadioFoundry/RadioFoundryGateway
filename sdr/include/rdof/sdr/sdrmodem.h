@@ -94,6 +94,7 @@
 #include "rdof/mmdvm.h"
 #include "rdof/sdr/demod.h"
 #include "rdof/sdr/mod.h"
+#include "rdof/sigmode.h"
 #include "rdof/slotgrid.h"
 #include "rdof/splitops.h"
 
@@ -226,6 +227,12 @@ typedef struct rdof_sdrmodem {
     /* counters */
     uint32_t tx_bursts, idle_bursts, rx_bursts, muted, lost, refused;
     char error[96];
+    /* a signal mode's transmission (rdof_sdrmodem_signal) */
+    bool sig_on;
+    rdof_sig_src_t sig;
+    double sig_off_hz;          /* the carrier from the stream's center (tx_tune's) */
+    uint32_t sig_phase;         /* I/Q: the phase accumulator, 2^32 a turn */
+    int64_t sig_done_at;        /* the first sample past the source's last keyed one, -1 not yet */
 } rdof_sdrmodem_t;
 
 /* rx_fs: the receiver's wideband rate (a multiple of 48 kS/s); tx_fs: the modulator's; can_full: full duplex.
@@ -240,6 +247,12 @@ void rdof_sdrmodem_heard(rdof_sdrmodem_t *m, int channel, const rdof_sdr_burst_t
  * offset tx_tune gave, or the frequency (Hz) and envelope. Returns whether any of them is keyed. */
 bool rdof_sdrmodem_pull_iq(rdof_sdrmodem_t *m, int64_t pos, rdof_cf_t *iq, int n);
 bool rdof_sdrmodem_pull_freq(rdof_sdrmodem_t *m, int64_t pos, float *hz, float *env, int n);
+/* A signal mode's transmission (rdof/sigmode.h) in place of DMR, for the bench: the transmitter tuned to hz (tx_tune),
+ * then the pulls render src from the next one on. Refused (false, why) while DMR is keyed or queued, in duplex or a
+ * split role, or where tx_tune can't reach hz. src NULL ends it (at once) and tunes back to SET_FREQ's frequency. */
+bool rdof_sdrmodem_signal(rdof_sdrmodem_t *m, uint32_t hz, const rdof_sig_src_t *src, char *why, size_t cap);
+/* 0 none, 1 sending, 2 the source is done and a quarter second more has been pulled (what it keyed went out). */
+int rdof_sdrmodem_signal_state(const rdof_sdrmodem_t *m);
 /* Transmitting or about to (anything queued). */
 bool rdof_sdrmodem_transmitting(const rdof_sdrmodem_t *m);
 /* The receiver's 48 kS/s position p: inside a span this modem keyed (half duplex: what the receiver heard there

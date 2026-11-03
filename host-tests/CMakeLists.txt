@@ -60,6 +60,16 @@ endif()
 add_test(NAME rdof_webapi_tests COMMAND rdof_webapi_tests)
 
 # The bench's line protocol (rdof/benchline.h, rdof/benchnet.h), with a fake receiver.
+add_executable(rdof_benchsig_tests test_benchsig.c)
+target_link_libraries(rdof_benchsig_tests PRIVATE rdof_common rdof_sdr m)
+set_target_properties(rdof_benchsig_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_compile_options(rdof_benchsig_tests PRIVATE -Wall -Wno-unused-parameter)
+if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+    target_compile_options(rdof_benchsig_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(rdof_benchsig_tests PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME benchsig COMMAND rdof_benchsig_tests)
+
 add_executable(rdof_benchline_tests test_benchline.c)
 target_link_libraries(rdof_benchline_tests PRIVATE rdof_common)
 set_target_properties(rdof_benchline_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)

@@ -83,6 +83,7 @@ static rdof_fe_caps_t caps = {
     .tx_power_max = 21,   /* 22 dBm sends noise, not the signal, with the board's PA setup (spec R3.49) */
     .tx_power_step = 0.5,
     .turnaround_us = 107, /* RX to TX, typical (table 3-23); TX to RX 91 */
+    .tx_dev_max_hz = 4064, /* int8 samples, 32 Hz a count at TX_FDEV (R3.10) */
 };
 
 /* The session (the component's): in PSRAM, as the reader's buffer was (internal RAM is the DSP's) */

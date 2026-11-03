@@ -84,7 +84,8 @@ static void *serve(void *arg)
         for (int c = 0; c < RDOF_BL_CONNS; c++) {
             if (n->fd[c] < 0)
                 continue;
-            FD_SET(n->fd[c], &rd);
+            if (rdof_bl_input_room(n->bl, c)) /* a tx stream the mode has no room for waits in the socket */
+                FD_SET(n->fd[c], &rd);
             if (n->pend[c] > n->off[c])
                 FD_SET(n->fd[c], &wr);
             if (n->fd[c] > top)
@@ -116,7 +117,10 @@ static void *serve(void *arg)
         for (int c = 0; r > 0 && c < RDOF_BL_CONNS; c++) {
             if (n->fd[c] < 0 || !FD_ISSET(n->fd[c], &rd))
                 continue;
-            const ssize_t k = recv(n->fd[c], in, sizeof in, 0);
+            size_t want = rdof_bl_input_room(n->bl, c);
+            if (!want)
+                continue;
+            const ssize_t k = recv(n->fd[c], in, want < sizeof in ? want : sizeof in, 0);
             if (k > 0)
                 rdof_bl_input(n->bl, c, in, (size_t)k, now);
             else if (k == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))

@@ -671,6 +671,10 @@ On 2026-11-02, with one parse of the settings (version 3 only: `siteplan.c`; the
 lowering and the broker gone): `16mb` + `w12` 2133 KB (0x214E80), 24 KB less, 174 KB DIRAM used (52.1%); `4mb`
 without the SDR 1279 KB (0x13FB80), 20 KB less, 641 KB free in its slot, 134 KB DIRAM used (40.3%).
 
+On 2026-11-03, with the signal modes (analog FM's generator and measuring receiver) and the line protocol's `tx` and
+`rx` ops: `16mb` + `w12` 2189 KB (0x2234E3), 180 KB DIRAM used (53.9%). The FM receiver and its channel filter are
+allocated only while an `rx` runs.
+
 The roamer role costs 132 KB of flash and the SDR 436 KB (338 KB of it the self-test clip), against about 945 KB for
 the board both share. The SDR only image is 64 KB smaller than with everything built `-O2`.
 

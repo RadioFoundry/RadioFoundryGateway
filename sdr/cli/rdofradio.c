@@ -86,6 +86,7 @@
 #include "rdof/repeater.h"
 #include "rdof/siteroute.h"
 #include "rdof/split.h"
+#include "rdof/sdr/modes.h"
 #include "rdof/sdr/receiver.h"
 #include "rdof/sdr/sdrmodem.h"
 #include "rdof/sdr/spectrum.h"
@@ -1582,11 +1583,109 @@ static bool bench_modem_reply(const uint8_t *f, size_t n)
     return true;
 }
 
+/* A signal mode's transmission (bench-api.md section 14.6), as a transmit job: the bench's thread asks, the main loop
+ * (whose are the modem and its pulls) keys the source on the modem, and lets it go when asked. */
+static struct {
+    pthread_mutex_t mu;
+    int want;               /* 1 open, 2 close */
+    bool active, failed;
+    int state;              /* rdof_sdrmodem_signal_state's, once active */
+    char why[120];
+    uint32_t freq;
+    rdof_sig_src_t src;
+    double asked;
+} BS = {.mu = PTHREAD_MUTEX_INITIALIZER};
+
+static bool bl_sig_open(void *ctx, uint32_t freq, int power, double seconds, const rdof_sig_src_t *src, char *why,
+                        size_t cap)
+{
+    pthread_mutex_lock(&BS.mu);
+    pthread_mutex_lock(&BT.mu);
+    const bool busy = BS.want || BS.active || BT.want || BT.active || BR.want || BR.active;
+    pthread_mutex_unlock(&BT.mu);
+    if (!busy) {
+        BS.want = 1, BS.freq = freq, BS.src = *src, BS.asked = now_s();
+        BS.failed = false, BS.state = 0, BS.why[0] = 0;
+    }
+    pthread_mutex_unlock(&BS.mu);
+    if (busy)
+        snprintf(why, cap, "the transmitter is still busy with the last job");
+    else
+        snprintf(why, cap, "power %d isn't applied: the SDR transmits at --tx-gain %.0f", power, bench_txg);
+    return !busy;
+}
+
+static int bl_sig_state(void *ctx, char *why, size_t cap)
+{
+    pthread_mutex_lock(&BS.mu);
+    const int st = BS.failed ? -1 : BS.active ? (BS.state == 2 ? 2 : 1) : 1;
+    if (BS.failed)
+        snprintf(why, cap, "%s", BS.why);
+    pthread_mutex_unlock(&BS.mu);
+    return st;
+}
+
+/* Back only once the main loop let the source go: the engine frees it after this returns. */
+static void bl_sig_close(void *ctx)
+{
+    pthread_mutex_lock(&BS.mu);
+    const bool on = BS.want == 1 || BS.active;
+    if (BS.want == 1)
+        BS.want = 0; /* never keyed */
+    else if (BS.active)
+        BS.want = 2;
+    pthread_mutex_unlock(&BS.mu);
+    for (int i = 0; on && i < 2000; i++) {
+        pthread_mutex_lock(&BS.mu);
+        const bool done = !BS.active;
+        pthread_mutex_unlock(&BS.mu);
+        if (done)
+            return;
+        const struct timespec ts = {0, 1000000};
+        nanosleep(&ts, NULL);
+    }
+    if (on)
+        say("bench: the main loop kept a signal's source past 2 s\n");
+}
+
+static double bl_sig_rate(void *ctx) { return R.m.tx_fs; }
+
+/* The main loop's turn for a signal: true while one has the modem. */
+static bool bench_sig_poll(double now)
+{
+    pthread_mutex_lock(&BS.mu);
+    if (BS.want == 1 && !BS.active) {
+        if ((R.t.has_call || rdof_sdrmodem_transmitting(&R.m)) && now - BS.asked < 10.0) { /* its call ends first */
+            pthread_mutex_unlock(&BS.mu);
+            return false;
+        }
+        BS.want = 0;
+        if (rdof_sdrmodem_signal(&R.m, BS.freq, &BS.src, BS.why, sizeof BS.why)) {
+            BS.active = true;
+            say("bench: a signal has the transmitter: %.4f MHz\n", BS.freq / 1e6);
+        } else {
+            BS.failed = true;
+        }
+    }
+    if (BS.active && BS.want == 2) {
+        rdof_sdrmodem_signal(&R.m, 0, NULL, BS.why, sizeof BS.why);
+        BS.want = 0, BS.active = false;
+        say("bench: the transmitter is the transceiver's again\n");
+    }
+    if (BS.active)
+        BS.state = rdof_sdrmodem_signal_state(&R.m);
+    const bool active = BS.active;
+    pthread_mutex_unlock(&BS.mu);
+    return active;
+}
+
 /* The main loop's turn (POLL_S): true while a job has the modem (the transceiver isn't polled). */
 static bool bench_tx_poll(double now)
 {
     if (!BL.bl)
         return false;
+    if (bench_sig_poll(now))
+        return true;
     pthread_mutex_lock(&BT.mu);
     if (BT.want == 1 && !BT.active) {
         if (R.t.has_call && now - BT.asked < 10.0) { /* the transceiver's call ends first */
@@ -1836,7 +1935,10 @@ static void bench_start(void)
                                           .tx_space = bl_tx_space, .tx_push = bl_tx_push, .tx_unkey = bl_tx_unkey,
                                           .tx_idle = bl_tx_idle, .tx_close = bl_tx_close, .rpt_open = bl_rpt_open,
                                           .rpt_state = bl_rpt_state, .rpt_event = bl_rpt_event,
-                                          .rpt_wake = bl_rpt_wake, .rpt_close = bl_rpt_close};
+                                          .rpt_wake = bl_rpt_wake, .rpt_close = bl_rpt_close,
+                                          .modes = rdof_sdr_modes, .sig_open = bl_sig_open,
+                                          .sig_state = bl_sig_state, .sig_close = bl_sig_close,
+                                          .sig_rate = bl_sig_rate};
     BL.bl = rdof_bl_new(&pf);
     char err[160];
     BL.net = BL.bl ? rdof_bnet_start(BL.bl, bench_addr, bench_port, now_s, 0, err, sizeof err) : NULL;

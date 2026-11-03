@@ -17,6 +17,13 @@ the daemon's client only changes the command it runs.
     rfgbench.py ... dmr-bursts --freq MHz [--seconds S] [--bursts N] [--until-end] [--cc CC] [--out FILE]
     rfgbench.py ... listen --freq MHz [--seconds S]
     rfgbench.py ... capture-trigger --freq MHz --out FILE [--bw Hz] [--pre S] [--post S] [--timeout S] ...
+    rfgbench.py ... tx fm --freq MHz [SEGMENT...] [--pcm FILE] [--ctcss HZ | --dcs 023N] [--dev HZ] [--sub-dev HZ] ...
+    rfgbench.py ... rx fm --freq MHz --seconds S [--audio FILE.wav] [--disc FILE.wav] [--records FILE] [--bw HZ] ...
+
+A tx fm SEGMENT is KIND:ARG:ARG..., with key=value arguments and @LEVEL anywhere (level 0-1 of the deviation):
+tone:1000:2 (Hz, seconds; 1000+1500 for two tones), sweep:300-3000:5[:log], dtmf:123#[:0.1] (seconds a digit),
+silence:0.5, noise:1, afsk:TEXT or afsk:hex=C0FF (Bell 202, 1200 baud; baud=300:hz=1600+1800 for others), pcm (where
+the --pcm audio goes; without it the PCM is the program). --program JSON gives the segments as bench-api.md's list.
 
 The gateway: --bench, else $RDOF_BENCH_LINE (HOST or HOST:PORT; port 7373 by default). Any number of clients may use
 one gateway at once: sessions, claims and the modem queue keep them apart, and the receive ops share the receiver.
@@ -36,6 +43,7 @@ import socket
 import sys
 import threading
 import time
+import wave
 from typing import Callable, Iterator, Optional, Tuple
 
 PORT = 7373
@@ -380,6 +388,203 @@ def cmd_capture_trigger(a) -> int:
     return write_iq(a, req, 8 if a.fmt == "cf32" else 4)
 
 
+# ── signal modes: tx / rx (bench-api.md section 14.6) ──
+
+def _num(x: str) -> float:
+    try:
+        return float(x)
+    except ValueError:
+        raise ValueError(f"{x!r} isn't a number")
+
+
+def _hz(x: str):
+    v = [_num(h) for h in x.replace("-", "+").split("+")]
+    return v[0] if len(v) == 1 else v
+
+
+def segment(spec: str) -> dict:
+    """One tx fm SEGMENT (KIND:ARG...) as a program entry."""
+    level = None
+    if "@" in spec:
+        spec, _, lv = spec.rpartition("@")
+        level = _num(lv)
+    kind, *args = spec.split(":")
+    kv = dict(x.split("=", 1) for x in args if "=" in x)
+    pos = [x for x in args if "=" not in x]
+    seg: dict = {"kind": kind}
+    if kind == "tone":
+        if not pos:
+            raise ValueError("tone:HZ[:S]")
+        seg["hz"] = _hz(pos[0])
+        if len(pos) > 1:
+            seg["s"] = _num(pos[1])
+    elif kind == "sweep":
+        if not pos or "-" not in pos[0]:
+            raise ValueError("sweep:FROM-TO[:S][:log]")
+        seg["hz"] = [_num(h) for h in pos[0].split("-")]
+        for x in pos[1:]:
+            if x == "log":
+                seg["log"] = True
+            else:
+                seg["s"] = _num(x)
+    elif kind == "dtmf":
+        if not pos:
+            raise ValueError("dtmf:DIGITS[:S]")
+        seg["digits"] = pos[0]
+        if len(pos) > 1:
+            seg["s"] = _num(pos[1])
+    elif kind in ("silence", "noise"):
+        if pos:
+            seg["s"] = _num(pos[0])
+    elif kind == "pcm":
+        pass
+    elif kind in ("afsk", "fsk"):
+        seg["kind"] = "fsk"
+        if "hex" in kv:
+            seg["hex"] = kv.pop("hex")
+        elif pos:
+            seg["text"] = ":".join(pos)
+        else:
+            raise ValueError("afsk:TEXT or afsk:hex=HEX")
+    else:
+        raise ValueError(f"no segment kind {kind!r} (tone, sweep, dtmf, silence, noise, afsk, pcm)")
+    for k, v in kv.items():
+        if k == "hz":
+            seg["hz"] = _hz(v)
+        elif k in ("nrzi", "lsb", "log"):
+            seg[k] = v not in ("0", "false", "no")
+        elif k in ("text", "hex", "digits"):
+            seg[k] = v
+        else:
+            seg[k] = _num(v)
+    if level is not None:
+        seg["level"] = level
+    return seg
+
+
+def read_pcm(path: str, rate: Optional[float]) -> Tuple[bytes, float]:
+    """A WAV (its first channel), or raw int16 LE mono at rate: (int16 LE bytes, rate)."""
+    if path.lower().endswith(".wav"):
+        with wave.open(path, "rb") as w:
+            ch, width, fs = w.getnchannels(), w.getsampwidth(), w.getframerate()
+            raw = w.readframes(w.getnframes())
+        if width not in (1, 2):
+            raise ValueError(f"{path}: {8 * width}-bit WAV (16 or 8 bit PCM only)")
+        n = len(raw) // (width * ch)
+        if width == 2:
+            pcm = b"".join(raw[i * 2 * ch:i * 2 * ch + 2] for i in range(n)) if ch > 1 else raw[:2 * n]
+        else:   # unsigned 8 bit
+            pcm = b"".join(((b - 128) << 8).to_bytes(2, "little", signed=True) for b in raw[::ch][:n])
+        return pcm, float(rate or fs)
+    with open(path, "rb") as f:
+        raw = f.read()
+    return raw[:len(raw) & ~1], float(rate or 8000)
+
+
+def cmd_tx_fm(a) -> int:
+    try:
+        prog = json.loads(a.program) if a.program else [segment(x) for x in a.segments]
+    except (ValueError, TypeError) as e:
+        print(f"{NOTE} {e}", file=sys.stderr)
+        return 1
+    req: dict = {"op": "tx", "mode": "fm", "freq": a.freq, "session": a.session, "wait_max": a.wait_max,
+                 "label": a.label, "dev_hz": a.dev}
+    for k, v in (("power", a.power), ("ctcss", a.ctcss), ("dcs", a.dcs), ("sub_dev_hz", a.sub_dev),
+                 ("sub_end_s", a.sub_end), ("preemph_us", a.preemph_us), ("lead_s", a.lead), ("tail_s", a.tail),
+                 ("repeat", a.repeat), ("seed", a.seed)):
+        if v is not None:
+            req[k] = v
+    if prog:
+        req["program"] = prog
+    pcm = b""
+    if a.pcm:
+        try:
+            pcm, rate = read_pcm(a.pcm, a.pcm_rate)
+        except (OSError, ValueError, wave.Error) as e:
+            print(f"{NOTE} {e}", file=sys.stderr)
+            return 1
+        req["pcm"] = {"rate": rate, "samples": len(pcm) // 2}
+    elif any(s.get("kind") == "pcm" for s in prog):
+        print(f"{NOTE} a pcm segment needs --pcm FILE", file=sys.stderr)
+        return 1
+    hold: dict = {}
+
+    def send_pcm():    # TCP's flow control paces it: the gateway reads as its buffer empties
+        try:
+            hold["conn"].s.sendall(pcm)
+        except OSError:
+            pass
+
+    def on(d, data):
+        if "tx" in d and pcm:
+            threading.Thread(target=send_pcm, daemon=True).start()
+        print(json.dumps(d), flush=True)
+        if "done" in d:
+            return 1 if d["done"].get("cut") else 0
+        return None
+    return stream(a.where, req, on, hold)
+
+
+class _Wav:
+    def __init__(self, path: str, rate: float) -> None:
+        self.w = wave.open(path, "wb")
+        self.w.setnchannels(1)
+        self.w.setsampwidth(2)
+        self.w.setframerate(int(round(rate)))
+        self.rate = rate
+
+    def zeros(self, n: int) -> None:
+        self.w.writeframes(b"\0\0" * n)
+
+
+def cmd_rx_fm(a) -> int:
+    streams = [x for x, f in (("audio", a.audio), ("disc", a.disc)) if f]
+    req: dict = {"op": "rx", "mode": "fm", "freq": a.freq, "seconds": a.seconds, "session": a.session,
+                 "wait_max": a.wait_max, "label": a.label, "streams": ",".join(streams)}
+    for k, v in (("bw", a.bw), ("squelch_dbfs", a.squelch_dbfs), ("squelch_over_db", a.squelch_over),
+                 ("deemph_us", a.deemph_us), ("block_s", a.block_s), ("nominal_dev_hz", a.nominal_dev),
+                 ("spectrum_hz", a.spectrum_hz), ("audio_full_hz", a.audio_full_hz)):
+        if v is not None:
+            req[k] = v
+    files = {"audio": a.audio, "disc": a.disc}
+    st: dict = {"wavs": {}, "rate": None}
+    rec = open(a.records, "w") if a.records else None
+
+    def on(d, data):
+        if "rx" in d:
+            h = d["rx"]
+            st["rate"] = h.get("rate")
+            for sd in h.get("streams", []):
+                if files.get(sd["name"]):
+                    st["wavs"][sd["name"]] = _Wav(files[sd["name"]], sd["rate"])
+            print(json.dumps(d), flush=True)
+            return None
+        if "pcm" in d and data is not None:
+            w = st["wavs"].get(d["pcm"]["stream"])
+            if w:
+                w.w.writeframes(data)
+            return None
+        if "gap" in d and "samples" in d["gap"] and st["rate"]:     # lost: zeros keep the audio's timing
+            for w in st["wavs"].values():
+                w.zeros(int(round(d["gap"]["samples"] * w.rate / st["rate"])))
+        if rec:
+            rec.write(json.dumps(d) + "\n")
+        if "rec" in d and not a.quiet:
+            print(json.dumps(d), flush=True)
+        elif "rec" not in d:
+            print(json.dumps(d), flush=True)
+        if "done" in d:
+            return 0 if d["done"].get("samples") else EX_NO_SIGNAL
+        return None
+    try:
+        return stream(a.where, req, on)
+    finally:
+        for w in st["wavs"].values():
+            w.w.close()
+        if rec:
+            rec.close()
+
+
 def cmd_unsupported(a) -> int:
     return stream(a.where, {"op": a.cmd_name}, printer)
 
@@ -619,6 +824,45 @@ def main(argv=None) -> int:
     s.add_argument("--until-end", action="store_true")
     s.add_argument("--max-s", type=float, default=30.0)
     s.add_argument("--json", action="store_true")
+    for op, fn in (("tx", cmd_tx_fm), ("rx", cmd_rx_fm)):
+        s = sub.add_parser(op, help=f"{'send' if op == 'tx' else 'receive'} a signal mode")
+        modes = s.add_subparsers(dest="mode_name", required=True)
+        s = modes.add_parser("fm", help="analog FM")
+        s.set_defaults(fn=fn)
+        s.add_argument("--session", default=None)
+        s.add_argument("--wait-max", type=float, default=None, help="give up after this many seconds (exit 75)")
+        s.add_argument("--label", default=None)
+        s.add_argument("--freq", type=float, required=True, help="MHz")
+        if op == "tx":
+            s.add_argument("segments", nargs="*", help="KIND:ARG... (see above)")
+            s.add_argument("--program", default=None, help="the segments as a JSON list")
+            s.add_argument("--pcm", default=None, help="audio to send: a WAV, or raw int16 LE mono")
+            s.add_argument("--pcm-rate", type=float, default=None, help="raw PCM's rate (8000), or a WAV's override")
+            s.add_argument("--dev", type=float, default=2500.0, help="the program's peak deviation, Hz")
+            s.add_argument("--ctcss", type=float, default=None, help="tone squelch, Hz")
+            s.add_argument("--dcs", default=None, help="digital squelch: octal code, N or I (023N, 023I)")
+            s.add_argument("--sub-dev", type=float, default=None, help="the CTCSS/DCS deviation, Hz (0.2 of --dev)")
+            s.add_argument("--sub-end", type=float, default=None, help="reverse burst / turn-off code, seconds")
+            s.add_argument("--preemph-us", type=float, default=None)
+            s.add_argument("--lead", type=float, default=None, help="carrier before the program, s (0.25)")
+            s.add_argument("--tail", type=float, default=None, help="carrier after it, s (0.25)")
+            s.add_argument("--repeat", type=int, default=None)
+            s.add_argument("--seed", type=int, default=None)
+            s.add_argument("--power", type=int, default=None, help="0-255, capped by the gateway's rf_level")
+        else:
+            s.add_argument("--seconds", type=float, required=True)
+            s.add_argument("--audio", default=None, help="write the filtered audio to this WAV")
+            s.add_argument("--disc", default=None, help="write the raw discriminator to this WAV")
+            s.add_argument("--records", default=None, help="write every line (records, gaps, done) to this file")
+            s.add_argument("--quiet", action="store_true", help="don't print the records")
+            s.add_argument("--bw", type=float, default=None, help="channel bandwidth, Hz (16000)")
+            s.add_argument("--squelch-dbfs", type=float, default=None, help="else learned from the noise floor")
+            s.add_argument("--squelch-over", type=float, default=None, help="dB over the learned floor (10)")
+            s.add_argument("--deemph-us", type=float, default=None)
+            s.add_argument("--block-s", type=float, default=None, help="seconds a record (0.1)")
+            s.add_argument("--nominal-dev", type=float, default=None, help="Hz, for the records' deviation ratio")
+            s.add_argument("--spectrum-hz", type=float, default=None)
+            s.add_argument("--audio-full-hz", type=float, default=None, help="deviation at full scale in the WAV")
     for name in ("activity", "burstlog", "bridge"):
         s = p(name, cmd_unsupported, False)
         s.add_argument("rest", nargs=argparse.REMAINDER)

@@ -30,7 +30,7 @@
 #define SYNC_CENTER_48 655     /* a burst's sync center past its start, 48 kS/s samples (symbol 65.5) */
 
 enum { C_FREE = 0, C_LINE, C_ACTIVE, C_DONE };
-enum { OP_NONE = 0, OP_SESSION, OP_CLAIM, OP_HOLD, OP_RUN, OP_BURSTS, OP_LISTEN, OP_CAPTURE, OP_TRIGGER };
+enum { OP_NONE = 0, OP_SESSION, OP_CLAIM, OP_HOLD, OP_RUN, OP_BURSTS, OP_LISTEN, OP_CAPTURE, OP_TRIGGER, OP_TX, OP_RX };
 enum { W_NONE = 0, W_MODEM, W_FREQ };
 /* a run's job */
 enum { J_WAIT = 0, J_OPEN, J_SEND, J_DRAIN, J_GAP, J_LISTEN, J_RPT_SETUP, J_RPT_RUN, J_OB_SETUP, J_OB_RUN, J_OB_DRAIN };
@@ -128,6 +128,8 @@ typedef struct {
     /* run */
     job_t *job;
     trig_t *trig;
+    struct sigtx *stx;        /* tx */
+    struct sigrx *srx;        /* rx */
 } conn_t;
 
 typedef struct {
@@ -412,6 +414,10 @@ int rdof_bl_open(rdof_bl_t *bl, double now)
 
 static void request(rdof_bl_t *bl, int ci, double now);
 static void job_end(rdof_bl_t *bl, conn_t *c);
+static void stx_input(rdof_bl_t *bl, conn_t *c, const uint8_t *b, size_t n);
+static size_t stx_room(const conn_t *c);
+static void sig_end(rdof_bl_t *bl, conn_t *c);
+static double trig_utc(const rdof_bl_t *bl, uint64_t sc, double now, uint64_t next, double fs);
 
 void rdof_bl_input(rdof_bl_t *bl, int ci, const char *data, size_t n, double now)
 {
@@ -419,7 +425,8 @@ void rdof_bl_input(rdof_bl_t *bl, int ci, const char *data, size_t n, double now
         return;
     lock(bl);
     conn_t *c = &bl->c[ci];
-    for (size_t i = 0; i < n && c->state == C_LINE; i++) {
+    size_t i = 0;
+    for (; i < n && c->state == C_LINE; i++) {
         if (data[i] == '\n') {
             c->line[c->ln] = 0;
             if (c->overlong)
@@ -441,8 +448,20 @@ void rdof_bl_input(rdof_bl_t *bl, int ci, const char *data, size_t n, double now
             c->overlong = true;
         }
     }
-    /* After the request, the client sends nothing the engine reads; closing is what counts. */
+    /* After the request only a tx op's stream counts (the rest is dropped); closing is what counts. */
+    if (i < n && c->stx)
+        stx_input(bl, c, (const uint8_t *)data + i, n - i);
     unlock(bl);
+}
+
+size_t rdof_bl_input_room(rdof_bl_t *bl, int ci)
+{
+    if (ci < 0 || ci >= RDOF_BL_CONNS)
+        return 0;
+    lock(bl);
+    const size_t n = stx_room(&bl->c[ci]);
+    unlock(bl);
+    return n;
 }
 
 void rdof_bl_closed(rdof_bl_t *bl, int ci, double now)
@@ -462,6 +481,9 @@ void rdof_bl_closed(rdof_bl_t *bl, int ci, double now)
         bl->n_iq--;
     if (c->job)
         job_end(bl, c); /* a transmission unkeys */
+    if (c->op == OP_RX)
+        bl->n_iq--;
+    sig_end(bl, c);
     trig_free(c->trig);
     c->trig = NULL;
     c->state = C_FREE;
@@ -637,14 +659,20 @@ static void op_info(rdof_bl_t *bl, conn_t *c, double now)
     char why[160] = "null";
     if (notx)
         jstr(notx, why, sizeof why);
+    char stx[160] = "[]", srx[160] = "[]";
+    if (bl->p.sig_open && !rdof_sig_names_json(bl->p.modes, true, stx, sizeof stx))
+        strcpy(stx, "[]");
+    if (bl->p.iq_read && !rdof_sig_names_json(bl->p.modes, false, srx, sizeof srx))
+        strcpy(srx, "[]");
     if (k < sizeof line)
         k += (size_t)snprintf(line + k, sizeof line - k,
                               "],\"stations\":[{\"name\":\"modem\",\"kind\":\"sdrmodem\",\"model\":\"the gateway's SDR "
                               "modem\",\"port\":\"\",\"present\":%s,\"tx\":%s,\"why_not\":%s,\"modes\":[\"dmr\"],"
                               "\"bands\":[],\"held_by\":%s,\"waiting\":%s}],"
                               "\"modem\":{\"held_by\":%s,\"waiting\":%s,\"next_job_eta\":{\"eta_s\":%.1f,"
-                              "\"worst_s\":%.1f}},\"default_caps\":[]}",
-                              notx ? "false" : "true", notx ? "false" : "true", why, held, wq, held, wq, eta, eta);
+                              "\"worst_s\":%.1f}},\"signal_modes\":{\"tx\":%s,\"rx\":%s},\"default_caps\":[]}",
+                              notx ? "false" : "true", notx ? "false" : "true", why, held, wq, held, wq, eta, eta, stx,
+                              srx);
     if (k >= sizeof line) {
         fail(bl, c, "internal", "info doesn't fit");
         return;
@@ -1720,6 +1748,553 @@ static void tick_run(rdof_bl_t *bl, conn_t *c, int ci, double now)
     }
 }
 
+/* ── signal modes: tx and rx (section 14.6) ───────────────────────────────── */
+
+#define STX_IN 2048            /* a tx stream's bytes the engine holds for the mode */
+#define STX_TAIL_S 10.0        /* max_s past the mode's own length, by default */
+#define SRX_REC 8192
+#define SRX_FLOOR_S 0.3        /* the floor learned before an rx starts (no squelch_dbfs given) */
+
+typedef struct sigtx {
+    const rdof_sig_mode_t *m;
+    void *tx;
+    rdof_sig_src_t src;
+    uint32_t freq_hz;
+    int power;
+    double seconds, started, max_s;
+    bool open;
+    long id;
+    uint8_t in[STX_IN];
+    size_t inn;
+    uint64_t taken;           /* stream bytes the mode took */
+    char why[200];
+} sigtx_t;
+
+/* A channel cut from the wideband history: mixed down, a Hamming-windowed sinc low-pass, decimated to about
+ * 48 kS/s (the trigger's, on its own). */
+typedef struct {
+    int d, ntaps;
+    float *taps, *dl;         /* dl: each sample twice, so a window is contiguous */
+    int di;
+    double step;
+    uint64_t sc, next_out;    /* the next input to take; the input that completes the next output */
+} chan_t;
+
+typedef struct sigrx {
+    const rdof_sig_mode_t *m;
+    void *rx;
+    chan_t ch;
+    float *y;                 /* a chunk's channel samples, [n][2] */
+    float *out[RDOF_SIG_STREAMS];
+    int16_t *pcm;
+    rdof_sig_stream_t st[RDOF_SIG_STREAMS];
+    int nst;
+    unsigned long seq;
+    double rate, bw, seconds, over_db, floor_db, squelch, last_tick;
+    bool learning;
+    int hist[TRIG_HIST];
+    long blocks, need_blocks;
+    int bsize, bn;
+    double bp;
+    uint64_t start_sc, end_sc;
+    long gaps, filled, samples;
+    char *rec;                /* a record or the summary, SRX_REC (emit's is bl->tmp) */
+} sigrx_t;
+
+static void chan_free(chan_t *h)
+{
+    free(h->taps), free(h->dl);
+    h->taps = h->dl = NULL;
+}
+
+static void chan_restart(chan_t *h, uint64_t first)
+{
+    const int g = (h->ntaps - 1) / 2;
+    memset(h->dl, 0, sizeof(float) * 4 * (size_t)h->ntaps);
+    h->di = 0;
+    h->sc = first >= (uint64_t)g ? first - (uint64_t)g : 0;
+    h->next_out = first + (uint64_t)g;
+}
+
+static bool chan_init(chan_t *h, double fs, double offset_hz, double bw)
+{
+    h->d = (int)lround(fs / 48000.0);
+    if (h->d < 1)
+        h->d = 1;
+    h->ntaps = 8 * h->d + 1;
+    h->taps = RDOF_BL_MALLOC(sizeof(float) * (size_t)h->ntaps);
+    h->dl = RDOF_BL_MALLOC(sizeof(float) * 4 * (size_t)h->ntaps);
+    if (!h->taps || !h->dl) {
+        chan_free(h);
+        return false;
+    }
+    const double fc = bw / 2 / fs, mid = (h->ntaps - 1) / 2.0;
+    double sum = 0;
+    for (int i = 0; i < h->ntaps; i++) {
+        const double x = i - mid;
+        const double v = (x == 0 ? 2 * fc : sin(2 * M_PI * fc * x) / (M_PI * x)) *
+                         (0.54 - 0.46 * cos(2 * M_PI * i / (h->ntaps - 1)));
+        h->taps[i] = (float)v;
+        sum += v;
+    }
+    for (int i = 0; i < h->ntaps; i++)
+        h->taps[i] = (float)(h->taps[i] / sum);
+    h->step = -2 * M_PI * offset_hz / fs;
+    return true;
+}
+
+/* got history samples from h->sc in: the outputs into y ([n][2]), how many; *first: the first one's center. */
+static int chan_run(chan_t *h, const int8_t *in, long got, float *y, uint64_t *first)
+{
+    const uint64_t g = (uint64_t)(h->ntaps - 1) / 2;
+    const double ph = fmod(h->step * (double)h->sc, 2 * M_PI); /* in float after (an ESP32's FPU has no double) */
+    float pr = (float)cos(ph), pq = (float)sin(ph);
+    const float rr = (float)cos(h->step), rq = (float)sin(h->step), k127 = 1.0f / 127;
+    int n = 0;
+    for (long i = 0; i < got; i++) {
+        const float xi = in[2 * i] * k127, xq = in[2 * i + 1] * k127;
+        float *a = h->dl + 2 * h->di, *b = a + 2 * h->ntaps;
+        a[0] = b[0] = xi * pr - xq * pq;
+        a[1] = b[1] = xi * pq + xq * pr;
+        const float npr = pr * rr - pq * rq;
+        pq = pr * rq + pq * rr, pr = npr;
+        if (++h->di == h->ntaps)
+            h->di = 0;
+        if (h->sc + (uint64_t)i != h->next_out)
+            continue;
+        if (!n)
+            *first = h->next_out - g;
+        h->next_out += (uint64_t)h->d;
+        const float *x = h->dl + 2 * h->di;
+        float yi = 0, yq = 0;
+        for (int k = 0; k < h->ntaps; k++)
+            yi += h->taps[k] * x[2 * k], yq += h->taps[k] * x[2 * k + 1];
+        y[2 * n] = yi, y[2 * n + 1] = yq, n++;
+    }
+    h->sc += (uint64_t)got;
+    return n;
+}
+
+static void sig_end(rdof_bl_t *bl, conn_t *c)
+{
+    sigtx_t *t = c->stx;
+    if (t) {
+        if (t->open && bl->p.sig_close)
+            bl->p.sig_close(bl->p.ctx); /* the source is never pulled again */
+        if (bl->tx_conn >= 0 && &bl->c[bl->tx_conn] == c)
+            bl->tx_conn = -1;
+        if (t->tx)
+            t->m->tx_free(t->tx);
+        free(t);
+        c->stx = NULL;
+    }
+    sigrx_t *r = c->srx;
+    if (r) {
+        if (r->rx)
+            r->m->rx_free(r->rx);
+        chan_free(&r->ch);
+        free(r->y), free(r->pcm), free(r->rec);
+        for (int k = 0; k < RDOF_SIG_STREAMS; k++)
+            free(r->out[k]);
+        free(r);
+        c->srx = NULL;
+    }
+}
+
+/* The mode's name from the request, found in the platform's list: NULL after a refusal. */
+static const rdof_sig_mode_t *sig_mode(rdof_bl_t *bl, conn_t *c, int root, bool tx)
+{
+    const char *name = jstrv(bl, root, "mode");
+    const rdof_sig_mode_t *m = name ? rdof_sig_find(bl->p.modes, name) : NULL;
+    if (m && (tx ? m->tx_new != NULL : m->rx_new != NULL))
+        return m;
+    char list[160];
+    if (!rdof_sig_names_json(bl->p.modes, tx, list, sizeof list))
+        strcpy(list, "[]");
+    if (!name)
+        fail(bl, c, "bad_request", "no mode (this bench %s %s)", tx ? "sends" : "receives", list);
+    else
+        fail(bl, c, "unsupported", "this bench doesn't %s %s (it does %s)", tx ? "send" : "receive", name, list);
+    return NULL;
+}
+
+static size_t stx_room(const conn_t *c)
+{
+    const sigtx_t *t = c->stx;
+    if (c->state == C_LINE || !t || !t->m->tx_in_want || !t->m->tx_in_want(t->tx))
+        return 1024; /* the request line, or bytes dropped (a close still counts) */
+    return STX_IN - t->inn;
+}
+
+/* What the engine holds goes to the mode, as it has room. */
+static void stx_feed(sigtx_t *t)
+{
+    if (!t->inn || !t->m->tx_in)
+        return;
+    size_t room = t->m->tx_in_room(t->tx);
+    if (room > t->inn)
+        room = t->inn;
+    const size_t n = room ? t->m->tx_in(t->tx, t->in, room) : 0;
+    memmove(t->in, t->in + n, t->inn - n);
+    t->inn -= n;
+    t->taken += n;
+}
+
+static void stx_input(rdof_bl_t *bl, conn_t *c, const uint8_t *b, size_t n)
+{
+    (void)bl;
+    sigtx_t *t = c->stx;
+    if (!t->m->tx_in_want || !t->m->tx_in_want(t->tx))
+        return;
+    while (n) {
+        size_t k = STX_IN - t->inn;
+        k = k < n ? k : n;
+        memcpy(t->in + t->inn, b, k);
+        t->inn += k, b += k, n -= k;
+        stx_feed(t);
+        if (t->inn == STX_IN)
+            break; /* more than the server was told it could send: dropped */
+    }
+}
+
+/* {"op":"tx","mode":M,"freq":MHz,"power":0-255, the mode's parameters}: the stream follows the line. */
+static void op_tx(rdof_bl_t *bl, conn_t *c, int root, double now)
+{
+    if (!req_session(bl, c, root, false))
+        return;
+    const rdof_sig_mode_t *m = sig_mode(bl, c, root, true);
+    if (!m)
+        return;
+    const char *no = !bl->p.sig_open ? "this bench transmits no signal modes"
+                   : bl->p.can_tx ? bl->p.can_tx(bl->p.ctx) : NULL;
+    if (no) {
+        fail(bl, c, "unsupported", "%s", no);
+        return;
+    }
+    const double mhz = jnum(bl, root, "freq", NAN);
+    const int k = isfinite(mhz) ? freq_index(bl, mhz) : -1;
+    if (k < 0 || !(bl->f[k].caps & RDOF_BL_CAP_TX)) {
+        fail(bl, c, "refused", "%.4f MHz isn't a transmit frequency of this bench", mhz);
+        return;
+    }
+    sigtx_t *t = calloc(1, sizeof *t);
+    if (!t) {
+        fail(bl, c, "busy", "no memory for the job");
+        return;
+    }
+    char why[200] = "";
+    const double fs = bl->p.sig_rate ? bl->p.sig_rate(bl->p.ctx) : 48000.0; /* the transmitter's */
+    t->tx = m->tx_new(&bl->doc, root, fs, &t->seconds, why, sizeof why);
+    if (!t->tx) {
+        free(t);
+        fail(bl, c, "bad_request", "%s", why[0] ? why : "the mode refused its parameters");
+        return;
+    }
+    t->m = m;
+    t->src = m->tx_src(t->tx);
+    t->freq_hz = (uint32_t)lround(mhz * 1e6);
+    t->power = (int)jnum(bl, root, "power", 0);
+    t->max_s = jnum(bl, root, "max_s", t->seconds + STX_TAIL_S);
+    t->id = ++bl->next_seq;
+    c->stx = t;
+    c->op = OP_TX;
+    c->nfreqs = 1;
+    c->freqs[0] = mhz;
+    const uint64_t want = m->tx_in_want ? m->tx_in_want(t->tx) : 0;
+    emit(bl, c, "{\"tx\":{\"mode\":\"%s\",\"freq\":%.6f,\"seconds\":%.3f,\"input_bytes\":%llu}}", m->name, mhz,
+         t->seconds, (unsigned long long)want);
+    wait_start(bl, c, W_MODEM, root, now);
+    if (c->expect_s <= 0)
+        c->expect_s = t->seconds + 3.0;
+}
+
+static void stx_granted(rdof_bl_t *bl, conn_t *c, int ci, double now)
+{
+    sigtx_t *t = c->stx;
+    bl->tx_conn = ci;
+    t->started = now;
+    stx_feed(t); /* the stream so far is in before the key-up: a prebuffer */
+    t->why[0] = 0;
+    if (!bl->p.sig_open(bl->p.ctx, t->freq_hz, t->power, t->seconds, &t->src, t->why, sizeof t->why)) {
+        fail(bl, c, "unavailable", "can't transmit: %s", t->why[0] ? t->why : "the transmitter is busy");
+        return;
+    }
+    t->open = true;
+    char q[220] = "null";
+    if (t->why[0])
+        jstr(t->why, q, sizeof q);
+    emit(bl, c, "{\"started\":%ld,\"t\":%.6f,\"note\":%s}", t->id, utc_now(bl, now), q);
+}
+
+static void tick_tx(rdof_bl_t *bl, conn_t *c, double now)
+{
+    sigtx_t *t = c->stx;
+    stx_feed(t);
+    if (!t->open || c->wait != W_NONE)
+        return;
+    char why[200] = "";
+    const int st = bl->p.sig_state(bl->p.ctx, why, sizeof why);
+    if (st < 0) {
+        fail(bl, c, "internal", "transmit failed: %s", why);
+        return;
+    }
+    const bool late = now - t->started > t->max_s;
+    if (st != 2 && !late)
+        return;
+    bl->p.sig_close(bl->p.ctx);
+    t->open = false;
+    bl->tx_conn = -1;
+    char rep[600] = "";
+    if (t->m->tx_report && !t->m->tx_report(t->tx, rep, sizeof rep))
+        rep[0] = 0;
+    emit(bl, c, "{\"done\":{\"mode\":\"%s\",\"freq\":%.6f,\"on_air_s\":%.3f,\"input_bytes\":%llu,\"cut\":%s%s}}",
+         t->m->name, t->freq_hz / 1e6, now - t->started, (unsigned long long)t->taken, late ? "true" : "false", rep);
+    c->state = C_DONE;
+}
+
+/* {"op":"rx","mode":M,"freq":MHz,"seconds":S,"bw":Hz,"streams":"audio,disc", the mode's parameters} */
+static void op_rx(rdof_bl_t *bl, conn_t *c, int root, double now)
+{
+    (void)now;
+    if (!req_session(bl, c, root, false))
+        return;
+    const rdof_sig_mode_t *m = sig_mode(bl, c, root, false);
+    if (!m)
+        return;
+    if (!bl->p.iq_read) {
+        fail(bl, c, "unsupported", "this bench keeps no I/Q");
+        return;
+    }
+    rdof_bl_window_t w;
+    get_window(bl, &w);
+    const double mhz = jnum(bl, root, "freq", NAN), secs = jnum(bl, root, "seconds", 10),
+                 bw = jnum(bl, root, "bw", 16000), sq = jnum(bl, root, "squelch_dbfs", NAN),
+                 over = jnum(bl, root, "squelch_over_db", 10);
+    if (!w.running || w.fs <= 0) {
+        fail(bl, c, "unavailable", "the receiver isn't running");
+        return;
+    }
+    if (!isfinite(mhz) || mhz * 1e6 < w.lo_hz || mhz * 1e6 > w.hi_hz) {
+        fail(bl, c, "refused", "%.4f MHz is outside the receiver's window (%.4f-%.4f MHz)", mhz, w.lo_hz / 1e6,
+             w.hi_hz / 1e6);
+        return;
+    }
+    if (!(secs > 0 && secs <= 3600) || !(bw >= 1000 && bw <= 40000) || !(over > 0 && over <= 60)) {
+        fail(bl, c, "bad_request", "seconds 0-3600, bw 1000-40000 Hz, squelch_over_db 0-60");
+        return;
+    }
+    sigrx_t *r = calloc(1, sizeof *r);
+    if (!r || !chan_init(&r->ch, w.fs, mhz * 1e6 - w.center_hz, bw)) {
+        free(r);
+        fail(bl, c, "unavailable", "no memory for a channel");
+        return;
+    }
+    r->m = m;
+    r->rate = w.fs / r->ch.d;
+    if (bw > 0.9 * r->rate) {
+        const double most = 0.9 * r->rate;
+        chan_free(&r->ch), free(r);
+        fail(bl, c, "bad_request", "bw is at most %.0f Hz here", most);
+        return;
+    }
+    char why[200] = "";
+    /* made now so a bad parameter is refused at once; without squelch_dbfs made again once the floor is known */
+    r->rx = m->rx_new(&bl->doc, root, r->rate, isfinite(sq) ? sq : -60, why, sizeof why);
+    const int maxn = RDOF_BL_IQ_CHUNK / r->ch.d + 2;
+    r->y = RDOF_BL_MALLOC(sizeof(float) * 2 * (size_t)maxn);
+    r->pcm = RDOF_BL_MALLOC(sizeof(int16_t) * (size_t)maxn);
+    r->rec = RDOF_BL_MALLOC(SRX_REC);
+    bool ok = r->rx && r->y && r->pcm && r->rec;
+    for (int k = 0; ok && k < RDOF_SIG_STREAMS; k++)
+        ok = (r->out[k] = RDOF_BL_MALLOC(sizeof(float) * (size_t)maxn)) != NULL;
+    if (!ok || !big_out(c, 0)) {
+        c->srx = r;
+        sig_end(bl, c);
+        if (why[0])
+            fail(bl, c, "bad_request", "%s", why);
+        else
+            fail(bl, c, "unavailable", "no memory for a receiver");
+        return;
+    }
+    r->nst = m->rx_streams(r->rx, r->st, RDOF_SIG_STREAMS);
+    r->bw = bw, r->seconds = secs, r->over_db = over;
+    r->bsize = (int)lround(r->rate / 1000);
+    if (r->bsize < 1)
+        r->bsize = 1;
+    r->learning = !isfinite(sq);
+    r->squelch = sq;
+    r->floor_db = NAN;
+    r->need_blocks = (long)(SRX_FLOOR_S * 1000);
+    c->srx = r;
+    c->op = OP_RX;
+    c->freq_hz = mhz * 1e6;
+    c->state = C_ACTIVE;
+    bl->n_iq++;
+    if (bl->p.iq_warm)
+        bl->p.iq_warm(bl->p.ctx);
+    uint64_t oldest = 0, next = 0;
+    int8_t probe[2];
+    bl->p.iq_read(bl->p.ctx, UINT64_MAX, probe, 0, &oldest, &next);
+    /* the floor from the history where it has some, then on from now */
+    uint64_t back = r->learning ? (uint64_t)(SRX_FLOOR_S * w.fs) + (uint64_t)r->ch.ntaps : 0;
+    if (back > next - oldest)
+        back = next - oldest;
+    chan_restart(&r->ch, next - back + (uint64_t)r->ch.ntaps / 2);
+    if (!r->learning)
+        r->start_sc = r->ch.next_out - (uint64_t)(r->ch.ntaps - 1) / 2;
+}
+
+/* The receiver starts: its header line (the floor learned, or squelch_dbfs given). False after a failure. */
+static bool srx_start(rdof_bl_t *bl, conn_t *c, uint64_t first, double now, const rdof_bl_window_t *w)
+{
+    sigrx_t *r = c->srx;
+    if (r->learning) { /* the floor: the median 1 ms block */
+        long acc = 0;
+        int m = 0;
+        while (m < TRIG_HIST - 1 && (acc += r->hist[m]) <= r->blocks / 2)
+            m++;
+        r->floor_db = -150 + m * 0.5 + 0.25;
+        r->squelch = r->floor_db + r->over_db;
+        r->learning = false;
+        /* the request again (the parser's document is the latest request's): the receiver with this squelch */
+        bl->doc = (rdof_jdoc_t){.nodes = bl->nodes, .max = NODES, .buf = bl->strbuf, .cap = RDOF_BL_LINE_MAX + 64};
+        const int root = rdof_jparse(&bl->doc, c->line, c->ln);
+        char why[200] = "";
+        r->m->rx_free(r->rx);
+        r->rx = root >= 0 ? r->m->rx_new(&bl->doc, root, r->rate, r->squelch, why, sizeof why) : NULL;
+        if (!r->rx) {
+            fail(bl, c, "internal", "the receiver didn't start again: %s", why);
+            return false;
+        }
+        r->nst = r->m->rx_streams(r->rx, r->st, RDOF_SIG_STREAMS);
+    }
+    r->start_sc = first;
+    r->end_sc = first + (uint64_t)(r->seconds * w->fs);
+    uint64_t oldest = 0, next = 0;
+    int8_t probe[2];
+    bl->p.iq_read(bl->p.ctx, UINT64_MAX, probe, 0, &oldest, &next);
+    char st[RDOF_SIG_STREAMS * 120] = "", fl[24] = "null";
+    size_t k = 0;
+    for (int i = 0; i < r->nst && k < sizeof st; i++)
+        k += (size_t)snprintf(st + k, sizeof st - k, "%s{\"name\":\"%s\",\"unit\":\"%s\",\"rate\":%.3f,\"full\":%.3f}",
+                              i ? "," : "", r->st[i].name, r->st[i].unit, r->st[i].rate, r->st[i].full);
+    if (isfinite(r->floor_db))
+        snprintf(fl, sizeof fl, "%.1f", r->floor_db);
+    emit(bl, c,
+         "{\"rx\":{\"mode\":\"%s\",\"freq\":%.6f,\"rate\":%.3f,\"bw\":%.0f,\"t0\":%.6f,\"sc0\":%llu,\"seconds\":%.3f,"
+         "\"floor_dbfs\":%s,\"squelch_dbfs\":%.1f,\"scale_db\":%.2f,\"streams\":[%s]}}",
+         r->m->name, c->freq_hz / 1e6, r->rate, r->bw, trig_utc(bl, first, now, next, w->fs),
+         (unsigned long long)first, r->seconds, fl, r->squelch, w->iq_scale_db, st);
+    return true;
+}
+
+static void srx_records(rdof_bl_t *bl, conn_t *c)
+{
+    sigrx_t *r = c->srx;
+    size_t n;
+    while (room(c) > SRX_REC + 16 && (n = r->m->rx_record(r->rx, r->rec, SRX_REC - 16)) > 0) {
+        r->rec[n] = 0;
+        emit(bl, c, "{\"rec\":%s}", r->rec);
+    }
+}
+
+static void tick_rx(rdof_bl_t *bl, conn_t *c, double now)
+{
+    sigrx_t *r = c->srx;
+    rdof_bl_window_t w;
+    get_window(bl, &w);
+    const uint64_t g = (uint64_t)(r->ch.ntaps - 1) / 2, d = (uint64_t)r->ch.d;
+    double dt = r->last_tick > 0 ? now - r->last_tick : 0.02;
+    r->last_tick = now;
+    dt = dt < 0.02 ? 0.02 : dt > 0.125 ? 0.125 : dt;
+    long budget = (long)(2 * dt * w.fs) + RDOF_BL_IQ_CHUNK; /* the lock is held: at most this much a tick */
+    srx_records(bl, c);
+    while (budget > 0) {
+        if (!r->learning && r->end_sc && r->ch.next_out - g >= r->end_sc) {
+            srx_records(bl, c);
+            if (room(c) < SRX_REC + 400)
+                return;
+            size_t n = r->m->rx_summary(r->rx, r->rec, SRX_REC - 400);
+            if (!n)
+                strcpy(r->rec, "null"), n = 4;
+            r->rec[n] = 0;
+            const long gaps = r->gaps + (r->filled + (long)d - 1) / (long)d;
+            emit(bl, c, "{\"done\":{\"mode\":\"%s\",\"freq\":%.6f,\"seconds\":%.3f,\"samples\":%ld,\"gap_samples\":%ld,"
+                        "\"summary\":%s}}",
+                 r->m->name, c->freq_hz / 1e6, r->samples / r->rate, r->samples, gaps, r->rec);
+            c->state = C_DONE;
+            return;
+        }
+        const size_t frame = (size_t)r->nst * ((size_t)(RDOF_BL_IQ_CHUNK / r->ch.d + 2) * 2 + 120) + 200;
+        if (room(c) < frame)
+            return; /* the client is behind: later */
+        uint64_t oldest = 0, next = 0;
+        const long got = bl->p.iq_read(bl->p.ctx, r->ch.sc, bl->iq, RDOF_BL_IQ_CHUNK, &oldest, &next);
+        if (got <= 0 && r->ch.sc < oldest) { /* overwritten before it went: on from the oldest, what's between lost */
+            const uint64_t want = oldest + g, first = r->ch.next_out - g;
+            const uint64_t k = want > first ? (want - first + d - 1) / d : 0;
+            if (!r->learning && r->end_sc) {
+                r->gaps += (long)k;
+                emit(bl, c, "{\"gap\":{\"sc\":%llu,\"samples\":%llu}}", (unsigned long long)first,
+                     (unsigned long long)k);
+            }
+            chan_restart(&r->ch, first + k * d);
+            continue;
+        }
+        if (got <= 0)
+            return; /* not written yet */
+        budget -= got;
+        const long fill = bl->p.iq_filled ? bl->p.iq_filled(bl->p.ctx, r->ch.sc, got) : 0;
+        uint64_t first = 0;
+        const int n = chan_run(&r->ch, bl->iq, got, r->y, &first);
+        if (!n)
+            continue;
+        if (r->learning) {
+            for (int i = 0; i < n && r->learning; i++) {
+                r->bp += r->y[2 * i] * r->y[2 * i] + r->y[2 * i + 1] * r->y[2 * i + 1];
+                if (++r->bn < r->bsize)
+                    continue;
+                const double db = 10 * log10(r->bp / r->bsize + 1e-30);
+                r->bn = 0, r->bp = 0;
+                const int b = (int)((db + 150) * 2);
+                r->hist[b < 0 ? 0 : b >= TRIG_HIST ? TRIG_HIST - 1 : b]++;
+                if (++r->blocks >= r->need_blocks && !srx_start(bl, c, first + (uint64_t)(i + 1) * d, now, &w))
+                    return;
+            }
+            continue; /* the receiver takes the samples after the floor's */
+        }
+        if (!r->end_sc && !srx_start(bl, c, first, now, &w))
+            return;
+        int keep = n; /* nothing past the end */
+        if (first + (uint64_t)(n - 1) * d >= r->end_sc)
+            keep = first >= r->end_sc ? 0 : (int)((r->end_sc - first + d - 1) / d);
+        if (fill > 0) {
+            r->filled += fill;
+            emit(bl, c, "{\"gap\":{\"sc\":%llu,\"filler\":%ld}}", (unsigned long long)first, fill);
+        }
+        if (!keep)
+            continue;
+        int nout[RDOF_SIG_STREAMS] = {0};
+        r->m->rx_feed(r->rx, r->y, keep, r->out, nout);
+        r->samples += keep;
+        for (int s = 0; s < r->nst; s++) {
+            if (nout[s] <= 0)
+                continue;
+            const float k = 32767.0f / (float)r->st[s].full;
+            for (int i = 0; i < nout[s]; i++) {
+                const float v = r->out[s][i] * k;
+                r->pcm[i] = (int16_t)(v > 32767.0f ? 32767 : v < -32768.0f ? -32768 : lrintf(v));
+            }
+            char hdr[160];
+            const int hn = snprintf(hdr, sizeof hdr, "{\"pcm\":{\"stream\":\"%s\",\"seq\":%lu,\"n\":%d},\"bytes\":%d}\n",
+                                    r->st[s].name, r->seq++, nout[s], 2 * nout[s]);
+            put_bytes(c, hdr, (size_t)hn);
+            put_bytes(c, r->pcm, (size_t)(2 * nout[s]));
+        }
+        srx_records(bl, c);
+    }
+}
+
 static void request(rdof_bl_t *bl, int ci, double now)
 {
     conn_t *c = &bl->c[ci];
@@ -1757,6 +2332,10 @@ static void request(rdof_bl_t *bl, int ci, double now)
         op_run(bl, c, ci, root, now);
     else if (!strcmp(op, "trigger"))
         op_trigger(bl, c, root, now);
+    else if (!strcmp(op, "tx"))
+        op_tx(bl, c, root, now);
+    else if (!strcmp(op, "rx"))
+        op_rx(bl, c, root, now);
     else if (!strcmp(op, "activity") || !strcmp(op, "burstlog") || !strcmp(op, "bridge"))
         fail(bl, c, "unsupported", "this bench has no %s yet", op);
     else
@@ -1847,6 +2426,8 @@ static void tick_waits(rdof_bl_t *bl, double now)
                 granted(bl, c, now, "modem");
                 if (c->op == OP_RUN)
                     run_granted(bl, c, i, now);
+                if (c->op == OP_TX)
+                    stx_granted(bl, c, i, now);
                 if (c->op == OP_HOLD) {
                     session_t *s = &bl->s[c->sess];
                     s->hold = (int)(++bl->next_seq);
@@ -2266,13 +2847,17 @@ void rdof_bl_tick(rdof_bl_t *bl, double now)
             tick_trigger(bl, c, now);
         else if (c->state == C_ACTIVE && c->op == OP_RUN && c->job && c->wait == W_NONE)
             tick_run(bl, c, i, now);
+        else if (c->state == C_ACTIVE && c->op == OP_TX && c->stx)
+            tick_tx(bl, c, now);
+        else if (c->state == C_ACTIVE && c->op == OP_RX && c->srx)
+            tick_rx(bl, c, now);
         else if (c->state == C_ACTIVE && c->op == OP_SESSION && c->ends > 0 && now >= c->ends && c->sess >= 0)
             session_end(bl, c->sess, "max_s");
         else if (c->state == C_LINE && now - c->opened > 30.0)
             fail(bl, c, "bad_request", "no request in 30 s");
-        if (c->state == C_DONE &&
-            (c->op == OP_BURSTS || c->op == OP_LISTEN || c->op == OP_CAPTURE || c->op == OP_TRIGGER)) {
-            if (c->op == OP_CAPTURE || c->op == OP_TRIGGER)
+        if (c->state == C_DONE && (c->op == OP_BURSTS || c->op == OP_LISTEN || c->op == OP_CAPTURE ||
+                                   c->op == OP_TRIGGER || c->op == OP_RX)) {
+            if (c->op == OP_CAPTURE || c->op == OP_TRIGGER || c->op == OP_RX)
                 bl->n_iq--;
             else
                 bl->n_bursts--;
@@ -2280,6 +2865,8 @@ void rdof_bl_tick(rdof_bl_t *bl, double now)
         }
         if (c->state == C_DONE && c->job)
             job_end(bl, c);
+        if (c->state == C_DONE && (c->stx || c->srx))
+            sig_end(bl, c);
     }
     unlock(bl);
 }
