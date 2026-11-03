@@ -186,8 +186,19 @@ static bool device(ctx_t *c, int d, const char *where, rdof_sdr_config_t *g)
     const rdof_jnode_t *n = get(c, rx, "center_hz");
     double v;
     g->center = n && !(n->type == RDOF_JSTR && !strcmp(n->str, "auto")) && num(n, &v) ? hz(v) : 0.0;
+    n = get(c, d, "driver");
+    const char *drv = n && n->type == RDOF_JSTR ? n->str : NULL;
+    if (drv && (!strcmp(drv, "soapy") || !strcmp(drv, "iio")))
+        drv = NULL; /* the host tool's: the front end's default here */
+    g->frontend = rdof_fe_type_parse(drv);
+    if (g->frontend < 0)
+        return fail(c, "%s.driver: rtlsdr, lr2021, sx1255 or sim", where);
     n = get(c, rx, "gain_db");
     g->has_gain = n && !(n->type == RDOF_JSTR && !strcmp(n->str, "auto")) && num(n, &g->gain);
+    if (!n && g->frontend == RDOF_FE_LR2021) { /* a fixed step unless "auto" asks for the chip's AGC */
+        g->has_gain = true;
+        g->gain = RDOF_LR2021_GAIN_DEFAULT_DB;
+    }
     g->ppm = num_or(c, rx, "ppm", 0.0);
     g->biastee = truthy(get(c, rx, "biastee"));
     n = get(c, rx, "iq_bits");
@@ -196,13 +207,6 @@ static bool device(ctx_t *c, int d, const char *where, rdof_sdr_config_t *g)
         return fail(c, "%s.rx.iq_bits: 8 or 16", where);
     if (n)
         g->iq_bits = (int)v;
-    n = get(c, d, "driver");
-    const char *drv = n && n->type == RDOF_JSTR ? n->str : NULL;
-    if (drv && (!strcmp(drv, "soapy") || !strcmp(drv, "iio")))
-        drv = NULL; /* the host tool's: the front end's default here */
-    g->frontend = rdof_fe_type_parse(drv);
-    if (g->frontend < 0)
-        return fail(c, "%s.driver: rtlsdr, lr2021, sx1255 or sim", where);
     n = get(c, rx, "agc");
     g->agc = truthy(n);
     static const char *const agc_keys[6] = {"min", "clip", "headroom_db", "hold_s", "relax_s", "settle_s"};
@@ -377,6 +381,9 @@ double rdof_sdr_config_rssi_offset(const rdof_sdr_config_t *g)
 {
     if (g->has_rssi_offset)
         return g->rssi_offset;
+    if (g->frontend == RDOF_FE_LR2021) /* the step's gain; under the chip's AGC the default step's, a guess */
+        return RDOF_LR2021_RSSI_DBM -
+               rdof_lr2021_gain_db[rdof_lr2021_gain_step(g->has_gain ? g->gain : RDOF_LR2021_GAIN_DEFAULT_DB) - 1];
     return -(g->has_gain ? g->gain : 30.0) - 25.0;
 }
 

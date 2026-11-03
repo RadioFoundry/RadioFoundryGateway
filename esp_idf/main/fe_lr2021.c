@@ -62,7 +62,6 @@ static const char *TAG = "lr2021";
 #define WIDE_MAX 576000
 #define BLOCK 512 /* samples read() converts and resamples at a time */
 
-static double gains[13];
 
 static rdof_fe_caps_t caps = {
     .kind = "LR2021",
@@ -407,13 +406,13 @@ static int set_ppm(void *ctx, int ppm)
     return r;
 }
 
-/* The gain as SetAgcGainManual's step, 1 to 13 (spec R2.25 has their dB); NAN: the chip's AGC. */
+/* The gain in dB: SetAgcGainManual's nearest step, 1 to 13 (spec R2.25), and that step's dB back; NAN: the chip's
+ * AGC. */
 static int set_gain(void *ctx, double db, double *got)
 {
-    int step = isnan(db) ? 0 : (int)lrint(db);
-    step = step < 1 ? 1 : step > 13 ? 13 : step;
+    const int step = rdof_lr2021_gain_step(db);
     st.gain = isnan(db) ? NAN : step;
-    *got = st.gain;
+    *got = isnan(db) ? NAN : rdof_lr2021_gain_db[step - 1];
     cfg_update();
     if (!st.dev || st.held)
         return 0; /* set when the session starts */
@@ -425,10 +424,8 @@ static int set_gain(void *ctx, double db, double *got)
 
 static int gain_steps(void *ctx, const double **db)
 {
-    for (int i = 0; i < 13; i++)
-        gains[i] = i + 1;
-    *db = gains;
-    return 13;
+    *db = rdof_lr2021_gain_db;
+    return RDOF_LR2021_GAIN_STEPS;
 }
 
 /* ── streaming ──────────────────────────────────────────────────────────── */

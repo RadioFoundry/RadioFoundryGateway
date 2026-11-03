@@ -1333,7 +1333,13 @@ library, its README says how they're kept in step); `fe_lr2021.c` is the front e
 documents no raw I/Q output. ROM 1.24 has one (an undocumented route into the RX FIFO), and its facts are written
 down in `docs/spec/lr2021-iq.md`; the code here is ours, written from that spec and the datasheet. A receive session
 (spec 2.2): check ROM 1.24 and no active patch, set the receiver up, route, map the 1 KB RX FIFO and check it, SetRx
-continuous, then the gain step (SetRx forces step 13; spec R2.25). It runs in one of two modes, by the settings'
+continuous, then the gain step (SetRx forces step 13; spec R2.25). `rx.gain_db` is in dB, the nearest of the
+steps' dB (`rdof_lr2021_gain_db`); unset, it's step 13 (53.5 dB), fixed. A fixed step keeps each TDMA burst's level
+at a known gain: the chip's AGC (`"auto"`) can change it between slots, so a strong slot would move a weak one's
+level. At 446 MHz on the W12 step 13 has the best SNR and about 75 dB from its noise to int16's full scale (spec
+R3.50, R3.51). A burst's RSSI is its dBFS − the step's dB + 5 (`RDOF_LR2021_RSSI_DBM`, against the chip's own
+RSSI, R3.52): dBm at the chip's input, after the W12's LNA and SAW, so off-band it reads well below the antenna's
+level. It runs in one of two modes, by the settings'
 `sample_rate`:
 
 - **Narrow, up to 120000:** the LoRa modem at 31.25 kHz bandwidth, int16 I/Q at 125 kS/s (source 2), resampled on
@@ -1605,7 +1611,7 @@ on a board yet). The output is the same either way (`sdr_selftest_tests` checks 
 
 An SDR device in the settings ("Settings" above; every key in [config-v3.md](spec/fw/config-v3.md) §4.1): `name`,
 `driver`, `rx {rate, center_hz ("auto" or MHz / Hz), gain_db (dB or "auto"), agc (true or {min, ...}), ppm,
-biastee}`, `rssi_offset`, `afc`, `status_seconds`. It hears every frequency in its window (or the ones pinned to
+biastee}`, `rssi_offset` (by driver; the LR2021's from its gain step, above), `afc`, `status_seconds`. It hears every frequency in its window (or the ones pinned to
 it); the top level's `callsign`, `location` and `slot_timing`, the `mqtt` network (app `sdr`) and the `hblink`
 network (a peer per channel with `identity: per_path`, else through the box's peer) apply. Board keys on the device:
 `usb {transfers, transfer_kb}` (8 x 8 KB by default), `dsp_cores` (1 or 2), `selftest`, `spike` (run at boot),

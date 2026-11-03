@@ -223,7 +223,9 @@ Tests: `test_sdr.c:test_demod` (162 bursts in nine cases, every field exact; chu
 **Init** (`rdof_sdr_rx_init`): `D = fs/48000`; `rdof_plan_center` if `center = 0`; the initial correction is
 `f·software_ppm·1e-6`. `stride = max_chunk/hop·oph + oph` (per-channel output capacity per chunk). Each channel
 gets a demod with `RDOF_DEMOD_SQUELCH_HZ`. `RSSI = round(power_dbfs + rssi_offset)`. The default `rssi_offset` is
-`−gain − 25`, with gain 30 when it is auto (`config.c:rdof_sdr_config_rssi_offset`).
+by driver (`config.c:rdof_sdr_config_rssi_offset`): the LR2021's is `RDOF_LR2021_RSSI_DBM` (5) less its step's
+gain in dB (the default step's when it is auto; lr2021-iq.md R3.52); the others' is `−gain − 25`, with gain 30 when
+it is auto.
 
 **Per chunk**: channelize, then for each channel demod (or skip, below), then `finish`. In `finish`, each tracker
 ticks at `t0 + out_index/48000`, then AFC runs in channel order.

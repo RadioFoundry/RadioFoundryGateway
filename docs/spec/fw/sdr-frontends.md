@@ -56,7 +56,7 @@ Related: [sdr.md](sdr.md), [sdr-rx.md](sdr-rx.md), [sdr-tx.md](sdr-tx.md), [../l
 | rates | 240000 to 3200000 | 48000 to 3200000 | 48000 to 240000 (after resampling) |
 | tuning | 24 to 1766 MHz | 0 to 6 GHz | 150 to 960 MHz |
 | usable / DC guard | 0.8 / 25 kHz | 0.8 / 25 kHz | 2·(native/8 − 7.6 kHz)/rate (±8 kHz at 125 kS/s) / 5 kHz |
-| gain | the tuner's table, from tenths of a dB | none | steps 1 to 13 (no dB scale) |
+| gain | the tuner's table, from tenths of a dB | none | steps 1 to 13, −8 to 53.5 dB (R2.25); `gain_db` takes the nearest; default 53.5 |
 | duplex / TX | RX only | FULL, TX IQ, CS16, `tx_rate` 0, −40 to 20 dBm step 1 | HALF, TX NONE; −9.5 to 22 dBm step 0.5; turnaround 107 µs |
 | `sample_ppm` | 0 (`fixed_sample_rate`) | `chip` | none |
 | sample clock points | per USB transfer (`on_data`) | per chunk, at its due time | none |
@@ -82,7 +82,7 @@ Related: [sdr.md](sdr.md), [sdr-rx.md](sdr-rx.md), [sdr-tx.md](sdr-tx.md), [../l
 ### 2.2 sim
 
 The self-test clip (`selftest/clip.cu8`, `CLIP_RATE` 288 kS/s at `CLIP_CENTER`; channels 13, 4, 6, 8 and 10 of the
-461 MHz plan) is looped, paced against `esp_timer`:
+438 MHz plan) is looped, paced against `esp_timer`:
 
 ```
 chunk_us = 1e6 · (want/2) / (rate · (1 + (sim_ppm − chip)·1e-6)) / (1 + board_ppm·1e-6)
@@ -117,7 +117,7 @@ session and starts a new one. A board's crystal error goes in `device.ppm` (the 
 
 The W12's GC1109 front end is driven by DIO masks (`CONFIG_RDOF_LR2021_DIO{9,10,11}_{PA,BYPASS}`): receive is CSD
 high, CTX low (its LNA: there is no receive bypass); transmit CTX high, with CPS high for the PA inside 860–930 MHz,
-low (the transmit bypass) outside. On the W12 a 902–928 MHz SAW follows the LNA, so 461 MHz arrives about 46 dB down.
+low (the transmit bypass) outside. On the W12 a 902–928 MHz SAW follows the LNA, so 439 MHz arrives about 46 dB down.
 
 ## 3. Rational resampler (`resample.c`, `rdof/sdr/resample.h`)
 

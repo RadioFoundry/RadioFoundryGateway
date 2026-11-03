@@ -53,6 +53,19 @@ void rdof_fe_convert(rdof_fe_format_t f, const void *raw, size_t n, rdof_cf_t *o
 /* The bytes that read back as zero signal (cu8: 0x80 bytes, near 127.5; the others 0), for filler. */
 uint8_t rdof_fe_fill_byte(rdof_fe_format_t f);
 
+/* The LR2021's gain steps (SetAgcGainManual 1 to 13) in dB, from the chip's own table (docs/spec/lr2021-iq.md
+ * R2.25). Its rx.gain_db is in dB: the nearest step. */
+#define RDOF_LR2021_GAIN_STEPS 13
+extern const double rdof_lr2021_gain_db[RDOF_LR2021_GAIN_STEPS];
+/* The step, 1 to 13, nearest db. */
+int rdof_lr2021_gain_step(double db);
+/* Its gain when rx.gain_db isn't set: a fixed step, so each burst's level is measured at a known gain ("auto", the
+ * chip's AGC, may change it between slots or inside a burst). Step 13: the best SNR at 446 MHz, with about 75 dB
+ * from its noise to int16's full scale (R3.50, R3.51). */
+#define RDOF_LR2021_GAIN_DEFAULT_DB 53.5
+/* A burst's RSSI in dBm is its dBFS - the step's gain + this, as the chip's own RSSI reads it (R3.52). */
+#define RDOF_LR2021_RSSI_DBM 5.0
+
 /* Transmit: none, half duplex (one chain, switched), or full duplex (separate chains, own frequency). */
 typedef enum { RDOF_FE_RX_ONLY = 0, RDOF_FE_HALF_DUPLEX, RDOF_FE_FULL_DUPLEX } rdof_fe_duplex_t;
 

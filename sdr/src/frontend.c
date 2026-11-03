@@ -30,6 +30,18 @@ int rdof_fe_sample_bytes(rdof_fe_format_t f) { return f == RDOF_FE_CS16 ? 4 : 2;
 
 uint8_t rdof_fe_fill_byte(rdof_fe_format_t f) { return f == RDOF_FE_CU8 ? 0x80 : 0; }
 
+const double rdof_lr2021_gain_db[RDOF_LR2021_GAIN_STEPS] = {-8, -2, 4, 9, 14, 18.25, 22.5, 28, 32.5, 38, 43.25,
+                                                            47.5, 53.5};
+
+int rdof_lr2021_gain_step(double db)
+{
+    int k = 0;
+    for (int i = 1; i < RDOF_LR2021_GAIN_STEPS; i++)
+        if (fabs(rdof_lr2021_gain_db[i] - db) < fabs(rdof_lr2021_gain_db[k] - db))
+            k = i;
+    return k + 1;
+}
+
 void rdof_fe_convert(rdof_fe_format_t f, const void *raw, size_t n, rdof_cf_t *out)
 {
     switch (f) {

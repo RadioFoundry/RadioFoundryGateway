@@ -44,7 +44,7 @@ typedef struct {
     /* device */
     double sample_rate;
     double center;   /* 0: auto */
-    bool has_gain;   /* false: the tuner's own AGC */
+    bool has_gain;   /* false: the tuner's own AGC (the LR2021 has a fixed step unless gain_db is "auto") */
     double gain;
     bool agc;        /* our clip-driven control (rdof/sdr/agc.h) */
     double agc_cfg[6]; /* min, clip, headroom_db, hold_s, relax_s, settle_s */
@@ -86,7 +86,9 @@ bool rdof_sdr_config_parse_device(const char *text, size_t len, const char *devi
 /* The same from a plan (rdof/siteplan.h). */
 struct rdof_plan;
 bool rdof_plan_sdr(const struct rdof_plan *p, const char *name, rdof_sdr_config_t *cfg, char *error, size_t cap);
-/* The RSSI offset in dB: the setting, else -gain - 25 (gain 30 when it's auto). */
+/* The RSSI offset in dB, added to a burst's dBFS: the setting, else by the driver. The LR2021: the calibration
+   less its gain step's dB (rdof/sdr/frontend.h; the default step's when it's auto). The others: -gain - 25 (gain 30
+   when it's auto). */
 double rdof_sdr_config_rssi_offset(const rdof_sdr_config_t *cfg);
 /* One line per group, for the web page and the golden tests. */
 size_t rdof_sdr_config_describe(const rdof_sdr_config_t *cfg, char *out, size_t cap);

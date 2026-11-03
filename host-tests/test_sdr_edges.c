@@ -1501,6 +1501,43 @@ static void test_config_edges(void)
     sdr_doc(buf, sizeof buf, ",\"iq_bits\":\"16\"", "", NULL);
     CHECK(parse(buf, &cfg, err, sizeof err) && cfg.iq_bits == 16, "iq_bits as a string, as numbers are elsewhere: %s",
           err);
+    /* the gain and the RSSI offset by driver: the RTL-SDR's -gain - 25 (gain 30 when auto); the LR2021's gain in dB,
+       the nearest step, a fixed step unless "auto", and its offset the calibration less the step's gain */
+    sdr_doc(buf, sizeof buf, "", "", NULL);
+    CHECK(parse(buf, &cfg, err, sizeof err) && !cfg.has_gain && rdof_sdr_config_rssi_offset(&cfg) == -55.0,
+          "rtlsdr, gain auto: %s", err);
+    sdr_doc(buf, sizeof buf, ",\"gain_db\":40", "", NULL);
+    CHECK(parse(buf, &cfg, err, sizeof err) && cfg.has_gain && rdof_sdr_config_rssi_offset(&cfg) == -65.0,
+          "rtlsdr, gain 40: %s", err);
+    static const struct {
+        const char *rx, *box;
+        bool has_gain;
+        double gain, offset;
+    } lr[] = {
+        {"", "", true, 53.5, RDOF_LR2021_RSSI_DBM - 53.5},             /* absent: the default step, 13 */
+        {",\"gain_db\":\"auto\"", "", false, 0, RDOF_LR2021_RSSI_DBM - 53.5}, /* the chip's AGC: the default's guess */
+        {",\"gain_db\":30", "", true, 30, RDOF_LR2021_RSSI_DBM - 28},  /* the nearest step, 8 */
+        {",\"gain_db\":13", "", true, 13, RDOF_LR2021_RSSI_DBM - 14},  /* dB, not a step number */
+        {",\"gain_db\":-20", "", true, -20, RDOF_LR2021_RSSI_DBM + 8}, /* below the table: step 1 */
+        {"", ",\"rssi_offset\":-70", true, 53.5, -70},                  /* the setting wins */
+        {",\"gain_db\":\"auto\"", ",\"rssi_offset\":-61.5", false, 0, -61.5},
+    };
+    for (size_t i = 0; i < sizeof lr / sizeof lr[0]; i++) {
+        char rx[64];
+        snprintf(buf, sizeof buf,
+                 "{\"version\":3,\"name\":\"b\",\"id\":1,\"defaults\":{\"cc\":1},\"frequencies\":[{\"freq\":438.0625}],"
+                 "\"devices\":[{\"name\":\"s\",\"kind\":\"sdr\",\"driver\":\"lr2021\",\"rx\":{\"rate\":192000%s}%s}]}",
+                 lr[i].rx, lr[i].box);
+        snprintf(rx, sizeof rx, "%s%s", lr[i].rx, lr[i].box);
+        bool ok = parse(buf, &cfg, err, sizeof err);
+        CHECK(ok && cfg.frontend == RDOF_FE_LR2021 && cfg.has_gain == lr[i].has_gain &&
+                  (!cfg.has_gain || cfg.gain == lr[i].gain) && rdof_sdr_config_rssi_offset(&cfg) == lr[i].offset,
+              "lr2021 %s: has_gain %d gain %g offset %g (%s)", rx, cfg.has_gain, cfg.gain,
+              rdof_sdr_config_rssi_offset(&cfg), err);
+    }
+    CHECK(rdof_lr2021_gain_step(-20) == 1 && rdof_lr2021_gain_step(0) == 2 && rdof_lr2021_gain_step(9) == 4 &&
+              rdof_lr2021_gain_step(50) == 12 && rdof_lr2021_gain_step(51) == 13 && rdof_lr2021_gain_step(99) == 13,
+          "the LR2021's nearest step");
     char tiny[6];
     CHECK(!parse("[1]", &cfg, tiny, sizeof tiny) && !strcmp(tiny, "the s"), "five characters of the error: %s", tiny);
     memset(tiny, 'x', sizeof tiny);

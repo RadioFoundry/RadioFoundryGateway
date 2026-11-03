@@ -80,11 +80,11 @@ An SDR device in the settings, read by `rdof_plan_sdr` ([config-v3.md](config-v3
 |---|---|---|
 | `rx.rate` | 1.536e6 (the board's default settings, `settings.c`, set 288000) | must be a multiple of 48000 |
 | `rx.center_hz` | auto | MHz if < 1e5, else Hz |
-| `rx.gain_db` | auto | dB |
+| `rx.gain_db` | auto; lr2021 53.5 (step 13) | dB; the LR2021 takes the nearest step |
 | `rx.agc` | off | `{min, clip, headroom_db, hold_s, relax_s, settle_s}`; needs `gain_db` |
 | `rx.ppm` | 0 | whole ppm on the chip; the start value for learning |
 | `driver` | rtlsdr | rtlsdr, lr2021, sim, sx1255 (soapy, iio: the host tool's) |
-| `rssi_offset` | `−gain − 25` (gain 30 if auto) | |
+| `rssi_offset` | lr2021: `5 − step dB`; others `−gain − 25` (gain 30 if auto) | |
 | `afc` | true | |
 | `status_seconds` | 30 | |
 | `usb {transfers, transfer_kb}` | 8, 8 | |

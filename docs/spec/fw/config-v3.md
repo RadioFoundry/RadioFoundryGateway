@@ -203,7 +203,7 @@ device to a frequency) is a network option (§7.1), not a role.
 | `idle_gate` | bool | true | skip demodulating a channel with nothing on it |
 | `learn_ppm` | bool | true | learn the tuner's error from what's heard ([sdr.md](sdr.md)) |
 | `afc` | bool | true | follow each call's frequency error |
-| `rssi_offset` | dB | −gain − 25 (gain 30 when auto) | added to the measured level for the reported RSSI |
+| `rssi_offset` | dB | by driver: `lr2021` 5 − the step's gain (−48.5 at the default step); the others −gain − 25 (gain 30 when auto) | added to the measured level for the reported RSSI |
 | `status_seconds` | number | 30 | the SDR's MQTT status period |
 
 `rx`:
@@ -212,7 +212,7 @@ device to a frequency) is a network option (§7.1), not a role.
 |---|---|---|---|
 | `rate` | S/s | 1536000 | a multiple of 48000; at most the driver's (`rtlsdr` 3.2 MS/s; the LR2021 576 kS/s, checked by its front end). An S3 takes 288000 or 240000 for an RTL-SDR |
 | `center_hz` | frequency or `"auto"` | auto | the window's center; auto puts it over every frequency the SDR hears. Each frequency must be inside the window (`rate` wide) |
-| `gain_db` | dB or `"auto"` | auto | |
+| `gain_db` | dB or `"auto"` | auto; `lr2021` 53.5 (step 13) | `lr2021`: the nearest of its 13 steps' dB (−8 to 53.5), fixed so every burst's level is measured at a known gain; `"auto"` runs the chip's AGC, which can change the gain between slots, so its RSSI is a guess |
 | `agc` | bool or `{min, clip, headroom_db, hold_s, relax_s, settle_s}` | off | the gain loop; needs a fixed `gain_db` (the most it may use). Defaults 0, 1e-4, 6, 10, 300, 0.3 |
 | `ppm` | number | 0 | the tuner's error, before learning |
 | `biastee` | bool | false | |
