@@ -62,6 +62,7 @@ typedef struct {
     bool radio;           /* via=radio:NAME, else the SDR modem */
     bool routed;          /* via=modem through the router's pool (version 3, a roamer owns the modem) */
     int path;             /* routed: the path at freq */
+    int level;            /* routed: the job's power, 0-255 (the path's at most) */
     bool line;            /* the line protocol's job (bench_line.c): no socket of its own, no lease */
     bool ob;              /* line, an outbound: the modem keyed by its own frames, no rdof_benchtx job */
     bool ob_unkeyed;      /* outbound: DMR_START 00 sent */
@@ -141,7 +142,7 @@ static bool via_router(void)
 static bool route_burst(void *ctx, const rdof_net_burst_t *b)
 {
 #if RDOF_FEATURE_TX
-    return site_app_burst(J.path, b, false);
+    return site_app_burst(J.path, b, false, J.level);
 #else
     return false;
 #endif
@@ -316,7 +317,7 @@ static esp_err_t tx_open(httpd_req_t *req)
     rdof_benchtx_t *job = J.job;
     J = (txjob_t){.on = true, .fd = httpd_req_to_sockfd(req), .opened_us = esp_timer_get_time(),
                   .lease_us = esp_timer_get_time(), .freq = isfinite(freq) ? (uint32_t)llround(freq) : 0,
-                  .radio = !strncmp(via, "radio:", 6), .job = job, .from_modem = sb};
+                  .radio = !strncmp(via, "radio:", 6), .job = job, .from_modem = sb, .level = policy.rf_level};
     snprintf(J.session, sizeof J.session, "%s", session);
     snprintf(J.via, sizeof J.via, "%s", via);
     bench_session_label(session, J.label, sizeof J.label);
@@ -477,7 +478,7 @@ bool bench_tx_line_open(uint32_t freq, int cc, int power, bool as_built, char *w
         const double dbm = c ? c->tx_power_min + (c->tx_power_max - c->tx_power_min) * level / 255.0 : 0;
         StreamBufferHandle_t sb = J.from_modem;
         rdof_benchtx_t *job = J.job;
-        J = (txjob_t){.on = true, .line = true, .fd = -1, .freq = freq, .job = job, .from_modem = sb};
+        J = (txjob_t){.on = true, .line = true, .fd = -1, .freq = freq, .job = job, .from_modem = sb, .level = level};
         snprintf(J.session, sizeof J.session, "line");
         snprintf(J.label, sizeof J.label, "line protocol");
         snprintf(J.via, sizeof J.via, "modem");
@@ -489,9 +490,7 @@ bool bench_tx_line_open(uint32_t freq, int cc, int power, bool as_built, char *w
         } else {
             const rdof_benchtx_io_t io = {job_to_modem, job_to_tool, job_keying, job_utc, NULL};
             rdof_benchtx_init(J.job, &io, freq, cc, level, policy.max_key_s, now_s());
-            if (J.routed)
-                snprintf(why, cap, "through the router: its transmitter sends at the frequency's power");
-            else if (power > level)
+            if (power > level)
                 snprintf(why, cap, "--power %d is over bench.tx's rf_level: %d (%.0f dBm)", power, level, dbm);
             ESP_LOGI(TAG, "tx: a line protocol job on %.5f MHz, cc %d, level %d", freq / 1e6, cc, level);
         }

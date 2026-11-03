@@ -190,8 +190,8 @@ The OLED's TX row shows the transmitter's path while it sends or holds.
   in the router's pool with those frequencies, and the router tunes it per stream (`rdof_txvr_on_tune`). The roamer
   reports nothing it hears (the receiver reports it), has no parrot of its own, and still hears its tuned
   channel to listen before talking (`rx_path.c`, `radio_task.c`).
-- **Apps** call `rdof_siteroute_app_burst(path, burst, take_hold)`: the pool's transceiver, tuned at the stream's first
-  burst, the burst on the path's slot. `rdof_siteroute_app_ready` says whether one would take a new stream now.
+- **Apps** call `rdof_siteroute_app_burst(path, burst, take_hold, power_max)`: the pool's transceiver, tuned at the
+  stream's first burst (the path's power, lowered to `power_max`; 255 keeps it), the burst on the path's slot. `rdof_siteroute_app_ready` says whether one would take a new stream now.
   - The parrot is one per box (`site_run.c`), made when a roamer with the parrot joins the pool. It is fed from the
     SDR receiver's configured channels (`sdr_task.c`, skipping our own transmission) and from a modem roamer's
     channel, keeps one transmission at a time (`rdof_parrot_heard_at`: the first frequency heard wins), waits for a
@@ -202,8 +202,9 @@ The OLED's TX row shows the transmitter's path while it sends or holds.
     and its reply back on air (a header and five blocks), and a confirmed one whose ACK went out the same way.
   - A bench job (`WS /tx via=modem`, or the line protocol's) goes through the pool when the roamer has the SDR modem
     (bench-api.md section 7): `rdof_benchroute` answers it as an MMDVM modem would, each call a stream
-    (`0x4245nnnn`) on the path at the job's frequency, without `take_hold`. It sends at the device's power, not
-    `bench.tx.rf_level`. Its BS family is refused there (the pool frames MS sync), before anything keys.
+    (`0x4245nnnn`) on the path at the job's frequency, without `take_hold`. It sends at the path's power lowered to
+    the job's level (`--power`, capped by `bench.tx.rf_level`): before 2026-11-03 the level was dropped and a
+    `--power 0` job went out at the path's 21 dBm. Its BS family is refused there (the pool frames MS sync), before anything keys.
   - A bench `outbound` job (a repeater's idle outbound, BS sync on both slots) doesn't go through the pool: it
     borrows the raw SDR modem from the roamer (`sdr_modem_bench_open` with `borrow`; the roamer's modem is parked
     and its writes go to it), keys it duplex in the modem's own TX half for the job's length, and gives it back

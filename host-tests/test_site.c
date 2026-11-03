@@ -481,10 +481,10 @@ static void test_siteroute(const char *dir)
         CHECK(!rdof_siteroute_app_ready(&sr, ap, 5.2), "held for an answer on another path: an app waits");
         const int n0 = cap.n;
         rdof_net_burst_t a = net_burst(0x555, 9990, 9800009, false, 1, false, false);
-        CHECK(!rdof_siteroute_app_burst(&sr, ap, &a, false, 5.2) && sr.app_no_txvr == 1, "not sent while held");
-        CHECK(rdof_siteroute_app_ready(&sr, ap, 9) && rdof_siteroute_app_burst(&sr, ap, &a, false, 9) && cap.n == n0 + 1 &&
+        CHECK(!rdof_siteroute_app_burst(&sr, ap, &a, false, 255, 5.2) && sr.app_no_txvr == 1, "not sent while held");
+        CHECK(rdof_siteroute_app_ready(&sr, ap, 9) && rdof_siteroute_app_burst(&sr, ap, &a, false, 255, 9) && cap.n == n0 + 1 &&
                   cap.freq == 438112500 && rdof_siteroute_tuned(&sr, a.stream_id), "free: tuned to it (%d %u)", cap.n, cap.freq);
-        CHECK(rdof_siteroute_app_burst(&sr, ap, &a, false, 9.06) && cap.n == n0 + 1 && !rdof_siteroute_app_ready(&sr, ap, 9.1),
+        CHECK(rdof_siteroute_app_burst(&sr, ap, &a, false, 255, 9.06) && cap.n == n0 + 1 && !rdof_siteroute_app_ready(&sr, ap, 9.1),
               "tuned once; busy for another");
         static const uint8_t none[4] = {0, 0, 0x77, 0x77};
         CHECK(rdof_siteroute_holds(&sr, a.stream_id) == (t.has_call || t.next.used) && !rdof_siteroute_holds(&sr, none),
@@ -492,9 +492,9 @@ static void test_siteroute(const char *dir)
         c = net_burst(0x666, 9800009, 204, true, 1, false, false);
         CHECK(rdof_siteroute_burst(&sr, 0, 0, &c, 9.1) == 0, "a network stream doesn't preempt an app's");
         a = net_burst(0x555, 9990, 9800009, false, 1, false, true);
-        rdof_siteroute_app_burst(&sr, ap, &a, false, 9.12);
+        rdof_siteroute_app_burst(&sr, ap, &a, false, 255, 9.12);
         CHECK(rdof_siteroute_burst(&sr, 0, 0, &c, 9.2) != 0, "but takes its hold");
-        CHECK(!rdof_siteroute_app_ready(&sr, -1, 11) && !rdof_siteroute_app_burst(&sr, 99, &a, false, 11), "no path");
+        CHECK(!rdof_siteroute_app_ready(&sr, -1, 11) && !rdof_siteroute_app_burst(&sr, 99, &a, false, 255, 11), "no path");
     }
     if (load(dir, "good-dcdm-per-path.json")) { /* a DCDM frequency: its repeater, on the path's slot */
         static rdof_repeater_t d;

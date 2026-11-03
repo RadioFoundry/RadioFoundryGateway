@@ -11,8 +11,9 @@
  * next burst starts a new one. A call's further terminators are dropped (the router's transceiver sends its own
  * count of headers and terminators a call, R11.4). A burst the router refuses (no transmitter free) is NAKed, so the job stops.
  *
- * The job's frequency, color code and power don't reach the air from here: the router tunes its transmitter to the
- * path's (the job's frequency must be one of the site's paths). Portable C, no allocation, no locking.
+ * The job's frequency and color code don't reach the air from here: the router tunes its transmitter to the path's
+ * (the job's frequency must be one of the site's paths). Its power does, as the most the stream sends at
+ * (rdof_siteroute_app_burst's power_max). Portable C, no allocation, no locking.
  */
 #ifndef RDOF_BENCHROUTE_H
 #define RDOF_BENCHROUTE_H

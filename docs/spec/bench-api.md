@@ -252,8 +252,8 @@ On the board (`bench_tx.c`, the job in `common/src/benchtx.c`, host-tested in `h
   has it. Under version 3, when the roamer has it (an SDR that transmits), the job goes through the router's
   transmitter pool instead, as the parrot's answers do ([transmitters.md](fw/transmitters.md) §12): an MMDVM modem in
   `common/src/benchroute.c` answers the job and hands each burst on as an app's stream on the site's path at the
-  job's frequency. The transmitter then sends at the device's power (`tx.power_dbm`), not `rf_level`, and with the
-  transceiver's own count of headers and terminators a call; a burst it can't take (the transmitter busy with another
+  job's frequency. The transmitter then sends at the path's power, lowered to the job's level (`--power`, capped by
+  `rf_level`), and with the transceiver's own count of headers and terminators a call; a burst it can't take (the transmitter busy with another
   stream) is NAKed, and the job stops. A line protocol job on this path ends once the transceiver has sent its
   stream (it listens first, so the call goes out about a second after the job hands it on). `info.tx.router` is true
   on this path. `via=radio:NAME` is a bench radio with `"proto": "mmdvm"`, through its link's guard (lowest power, TX

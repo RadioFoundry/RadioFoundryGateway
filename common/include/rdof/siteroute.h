@@ -91,8 +91,10 @@ int rdof_siteroute_path_at(const rdof_siteroute_t *sr, uint32_t hz, int slot);
 bool rdof_siteroute_app_ready(const rdof_siteroute_t *sr, int path, double now);
 /* A burst of an app's stream on path: the pool's transceiver, tuned at the stream's first burst (the path's
    frequency, cc and power), the burst on the path's slot. take_hold: may take a transceiver holding another path
-   (a confirmed-data answer). False: none free (app_no_txvr). */
-bool rdof_siteroute_app_burst(rdof_siteroute_t *sr, int path, const rdof_net_burst_t *b, bool take_hold, double now);
+   (a confirmed-data answer). power_max: the stream's power at most this (0-255, a bench job's level; 255 the path's
+   own). False: none free (app_no_txvr). */
+bool rdof_siteroute_app_burst(rdof_siteroute_t *sr, int path, const rdof_net_burst_t *b, bool take_hold, int power_max,
+                              double now);
 /* Whether a transceiver still holds a burst of the stream sid (rdof_txvr_holds): an app's stream not all on the air. */
 bool rdof_siteroute_holds(const rdof_siteroute_t *sr, const uint8_t sid[4]);
 

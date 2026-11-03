@@ -90,10 +90,10 @@ bool rdof_siteroute_tuned(const rdof_siteroute_t *sr, const uint8_t sid[4])
 }
 
 #if RDOF_FEATURE_TX
-/* Burst o of a stream on path k, through the pool: its transceiver, tuned at the stream's first burst. False: none
-   free. */
+/* Burst o of a stream on path k, through the pool: its transceiver, tuned at the stream's first burst, at power_max
+   at most. False: none free. */
 static bool send_txvr(rdof_siteroute_t *sr, int k, const rdof_net_burst_t *o, bool urgent, bool take_hold,
-                      bool path_preempt, bool local, double now)
+                      bool path_preempt, bool local, int power_max, double now)
 {
     const rdof_site_t *s = sr->router.site;
     const rdof_path_t *p = &s->path[k];
@@ -109,6 +109,8 @@ static bool send_txvr(rdof_siteroute_t *sr, int k, const rdof_net_burst_t *o, bo
         const rdof_freq_t *f = &s->freq[p->tx_freq];
         rdof_tune_t tu = {.freq = f->hz, .cc = f->cc, .power = f->power >= 0 ? f->power : 255,
                           .preempt = got.preempt || path_preempt, .local = local};
+        if (power_max >= 0 && power_max < tu.power)
+            tu.power = power_max;
         memcpy(tu.stream_id, o->stream_id, 4);
         sr->tuned[sr->tuned_next] = stream;
         sr->tuned_next = (sr->tuned_next + 1) % RDOF_SITEROUTE_TUNED;
@@ -164,7 +166,7 @@ uint64_t rdof_siteroute_burst(rdof_siteroute_t *sr, int net, uint32_t peer, cons
             continue;
         }
 #if RDOF_FEATURE_TX
-        if (!send_txvr(sr, k, &o, c.emergency, true, (preempt >> k & 1) != 0, false, now)) {
+        if (!send_txvr(sr, k, &o, c.emergency, true, (preempt >> k & 1) != 0, false, 255, now)) {
             sr->no_txvr++;
             rdof_router_drop(&sr->router, k, stream);
             continue;
@@ -209,14 +211,15 @@ bool rdof_siteroute_holds(const rdof_siteroute_t *sr, const uint8_t sid[4])
     return false;
 }
 
-bool rdof_siteroute_app_burst(rdof_siteroute_t *sr, int path, const rdof_net_burst_t *b, bool take_hold, double now)
+bool rdof_siteroute_app_burst(rdof_siteroute_t *sr, int path, const rdof_net_burst_t *b, bool take_hold, int power_max,
+                              double now)
 {
 #if RDOF_FEATURE_TX
     if (app_path(sr, path)) {
         const rdof_path_t *p = &sr->router.site->path[path];
         rdof_net_burst_t o = *b;
         o.slot = p->tx_slot ? p->tx_slot : b->slot;
-        if (send_txvr(sr, path, &o, false, take_hold, false, true, now))
+        if (send_txvr(sr, path, &o, false, take_hold, false, true, power_max, now))
             return true;
     }
 #endif

@@ -90,7 +90,7 @@ static void parrot_start(void *ctx, const uint8_t sid[4], int slot, uint32_t src
 static void parrot_send(void *ctx, const rdof_net_burst_t *b)
 {
     xSemaphoreTakeRecursive(lock, portMAX_DELAY);
-    rdof_siteroute_app_burst(SR, ppath, b, false, mono());
+    rdof_siteroute_app_burst(SR, ppath, b, false, 255, mono());
     xSemaphoreGiveRecursive(lock);
 }
 
@@ -173,12 +173,12 @@ int site_app_path(uint32_t hz, int slot)
     return k;
 }
 
-bool site_app_burst(int path, const rdof_net_burst_t *b, bool take_hold)
+bool site_app_burst(int path, const rdof_net_burst_t *b, bool take_hold, int power_max)
 {
     if (!SR)
         return false;
     xSemaphoreTakeRecursive(lock, portMAX_DELAY);
-    const bool sent = rdof_siteroute_app_burst(SR, path, b, take_hold, mono());
+    const bool sent = rdof_siteroute_app_burst(SR, path, b, take_hold, power_max, mono());
     xSemaphoreGiveRecursive(lock);
     return sent;
 }
