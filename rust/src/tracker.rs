@@ -29,7 +29,7 @@ const METRIC_SECONDS: f64 = 1.0;
 const PREAMBLE_REPEAT_SECONDS: f64 = 1.0;
 const REPEAT_TERMINATOR_SECONDS: f64 = 1.0;
 const JSON_MAX: usize = 640;
-const MAX_SINKS: usize = 4;
+const MAX_SINKS: usize = 5;
 
 const RDOF_DT_IDLE: c_int = 9;
 const RDOF_FAMILY_MS: u32 = 1;

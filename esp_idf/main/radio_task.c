@@ -48,6 +48,7 @@ __attribute__((unused)) static void on_tx(void *ctx, const char *action, const r
     r->st.on_air = !strcmp(action, "start");
     heard_tx(r->cfg->mode == RDOF_CFG_ROAMER ? "roamer" : "repeater", r->cfg->name, action, call, duration);
     roam_tx_event(r, action, call, duration);
+    mn_tx_event(action, call); /* the MQTT network's tx events, for its streams */
 }
 
 __attribute__((unused)) static void on_sent(void *ctx, const rdof_tx_call_info_t *call, const rdof_net_burst_t *b)

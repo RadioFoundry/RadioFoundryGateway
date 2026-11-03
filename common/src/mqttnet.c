@@ -15,6 +15,15 @@
 #include "rdof/router.h"
 #include "rdof/ambe.h"
 
+/* The work buffers below: on an ESP32 in PSRAM (when the build lets .bss go there), since internal RAM is the scarce
+ * one. */
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#define MN_BSS EXT_RAM_BSS_ATTR
+#else
+#define MN_BSS
+#endif
+
 /* ── the call message ─────────────────────────────────────────────────────── */
 
 static void put_le32(uint8_t *p, uint32_t v)
@@ -334,7 +343,10 @@ static void ev_head(rdof_json_t *j, char *buf, size_t cap, const char *ev, const
     rdof_json_str(j, "ev", ev);
     rdof_json_str(j, "at", ts);
     rdof_json_str(j, "node", node);
-    rdof_json_int(j, "path", path);
+    if (path >= 0)
+        rdof_json_int(j, "path", path);
+    else
+        rdof_json_raw(j, "path", "null"); /* no path: an app, a flood */
     rdof_json_int(j, "slot", slot);
     rdof_json_str(j, "source", source);
     rdof_json_int(j, "stream_id", stream);
@@ -894,7 +906,7 @@ static const char *sap_name(int sap)
 
 static void data_event(rdof_mn_up_t *u, rdof_mn_upslot_t *s, int slot, const uint8_t *data, size_t len)
 {
-    static char buf[1200];
+    static MN_BSS char buf[1200];
     char b64[700];
     rdof_json_t j;
     if (s->path < 0 || !u->activity)
@@ -1293,7 +1305,7 @@ int rdof_mn_data_bursts(int rate, int nheaders, const uint8_t *headers10, const 
     const int dpf = h[0] & 0x0F;
     const bool confirmed = dpf == RDOF_DPF_CONFIRMED, crc32 = confirmed || dpf == RDOF_DPF_UNCONFIRMED;
     const int body = per[rate] - (confirmed ? 2 : 0);
-    static uint8_t buf[RDOF_MN_DATA_MAX + 64]; /* one caller at a time (the downlink's thread) */
+    static MN_BSS uint8_t buf[RDOF_MN_DATA_MAX + 64]; /* one caller at a time (the downlink's thread) */
     size_t total = len + (crc32 ? 4 : 0);
     const int blocks = (int)((total + (size_t)body - 1) / (size_t)body);
     if (blocks + nheaders - 1 > 127 || blocks + nheaders > RDOF_MN_DATA_BURSTS)
@@ -1450,8 +1462,8 @@ static void down_csbk(rdof_mn_down_t *d, rdof_mn_dstream_t *s, const uint8_t *v,
 static void down_data(rdof_mn_down_t *d, rdof_mn_dstream_t *s, int rate, int nh, const uint8_t *headers,
                       const uint8_t *data, size_t len, bool dl)
 {
-    static uint8_t controls[RDOF_MN_DATA_BURSTS];
-    static uint8_t bursts[RDOF_MN_DATA_BURSTS][RDOF_BURST_BYTES];
+    static MN_BSS uint8_t controls[RDOF_MN_DATA_BURSTS];
+    static MN_BSS uint8_t bursts[RDOF_MN_DATA_BURSTS][RDOF_BURST_BYTES];
     const int n = rdof_mn_data_bursts(rate, nh, headers, data, len, bs_data_sync(), controls, bursts);
     if (!n) {
         d->bad++;

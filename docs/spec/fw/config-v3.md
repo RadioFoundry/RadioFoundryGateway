@@ -524,7 +524,9 @@ packets on `{root}/calls/{tg|pc}/{dst}/{box}` and takes the other boxes' from `{
 `{root}/tg/{tg}/{box}`, `{root}/pc/{id}/{box}` and `{root}/dl/{box}`, with the box's `info` and `activity`
 ([mqtt-net.md](mqtt-net.md)). `bundle` and `raw_tx` need `format: "v3"`, and `format` needs `calls`. The errors:
 `format: dmrd or v3`, `format: with calls true`, `bundle: 1 to 3`, `bundle: with format v3`, `raw_tx: with format
-v3`, `transport: mqtt/tcp or mqtt/tls (the others aren't built yet)`.
+v3`, `transport: mqtt/tcp or mqtt/tls (the others aren't built yet)`. The v3 calls run on a connection of their own
+(client ID `rdof-net-{name}`, the box's `name` as the node, so it must be letters, digits, `.`, `_` or `-`), in
+rdofradio and on the board; one network in a file takes `format: "v3"` (the first, if several do).
 
 ### 7.3 `brandmeister`
 

@@ -301,6 +301,10 @@ From `idf.py size`. Run it after a change that adds code or RAM, and update this
   65 KB while parsing), the parrot's recording (34 KB, only when on), the bench line protocol (about 410 KB at rest),
   the sample ring, the log ring, mDNS (its task, records and packet buffers; 420 bytes of it internal: the task's
   TCB and its state).
+- **The MQTT network** (`format: "v3"`), only when a network has it: its state (about 30 KB), the queues (16 KB of
+  messages in, 7 KB of frames), each receiver's uplink (11 KB each), its task's stack, esp-mqtt's buffers and the
+  message code's work buffers in PSRAM. esp-mqtt's task for the connection takes a 6 KB internal stack. On
+  2026-11-02 it added 24 KB of image and 208 bytes of DIRAM to `16mb` + `w12`.
 - IRAM shows 100% in `idf.py size`: that's the fixed 16 KB vector / cache-miss region filling as usual.
 
 ### Boards
@@ -440,6 +444,22 @@ data is ACKed. Rate limits, a flow cap, an idle timeout and a size cap bound it;
 ```
 
 Keys: [config-v3.md](spec/fw/config-v3.md) §6.3; how it works and what's left: [ipgw.md](spec/fw/ipgw.md).
+
+### The MQTT network
+
+An `mqtt` network with `"calls": true, "format": "v3"` carries calls as the MQTT network's messages
+([mqtt-net.md](spec/fw/mqtt-net.md)) in place of DMRD packets. The board opens a second connection for it
+(`mqttnet_task.c`, client ID `rdof-net-{name}`, the box's `name` as its node), with the network's broker, user, root
+and TLS.
+
+- **Up:** every receiver (the SDR's channels, each roamer's or repeater's radio) sends the calls the router gives this
+  network on `{root}/tg/{tg}/{node}` or `{root}/pc/{dst}/{node}`.
+- **Down:** the box subscribes to `{root}/dl/{node}` and the TGs its transmitting paths carry; the router's
+  transmitters send what comes in. Confirmed data heard here is ACKed on RF.
+- **Status:** `GET /api/status` has the counters under `mqtt_net`.
+- **Not done:** phase 1 only, and not yet run on a board (rdofradio runs the same code against a broker). `bundle`
+  above 1, confirmed data retries and NAKs, the voter, MQTT-SN and the other transports come later; so do the
+  private-call router and the apps (mqtt-net.md §14).
 
 ### Wi-Fi, the clock and MQTT
 
