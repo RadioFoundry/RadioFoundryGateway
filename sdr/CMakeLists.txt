@@ -44,8 +44,9 @@ if(ESP_PLATFORM)
 else()
     cmake_minimum_required(VERSION 3.16)
     project(rdof_sdr C)
-    # chzfx.c (the FPGA channelizer's model) on a host only: the tests and the Pluto's rdofradio use it
-    add_library(rdof_sdr STATIC ${RDOF_SDR_SRCS} src/chzfx.c)
+    # chzfx.c (the FPGA channelizer's model) and chzhw.c (its driver) on a host only: the tests and the Pluto's
+    # rdofradio use them
+    add_library(rdof_sdr STATIC ${RDOF_SDR_SRCS} src/chzfx.c src/chzhw.c)
     target_include_directories(rdof_sdr PUBLIC include)
     target_link_libraries(rdof_sdr PUBLIC rdof_common)
     # a host has the RAM for a duplex split: 6 MS/s (5 MHz) is 1250 phases, 30 MS/s (25 MHz) 6250 (225 KB of taps)
