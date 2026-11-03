@@ -44,6 +44,8 @@ typedef enum { RDOF_FLOW_RF_NET = 1, RDOF_FLOW_NET_RF = 2, RDOF_FLOW_BOTH = 3 } 
 typedef enum { RDOF_HEARS_WINDOW = 0, RDOF_HEARS_IDLE, RDOF_HEARS_SCAN, RDOF_HEARS_NONE } rdof_hears_t;
 typedef enum { RDOF_APP_REPEATER = 1, RDOF_APP_PARROT, RDOF_APP_IPGW } rdof_app_type_t;
 typedef enum { RDOF_NET_HBLINK = 1, RDOF_NET_MQTT } rdof_net_type_t;
+enum { RDOF_MQTT_FORMAT_DMRD = 0, RDOF_MQTT_FORMAT_V3 = 1 };
+enum { RDOF_MQTT_TCP = 0, RDOF_MQTT_TLS = 1 };
 
 /* A policy's keys, in this order (for src[] below). */
 enum { RDOF_PK_TG, RDOF_PK_PTT, RDOF_PK_PTT_HOLD, RDOF_PK_PC, RDOF_PK_APPS, RDOF_PK_NET, RDOF_PK_DIR, RDOF_PK_N };
@@ -97,6 +99,10 @@ typedef struct {
     bool roaming;    /* hblink: the master may move a device (DMRT) */
     bool report;     /* mqtt */
     bool calls;      /* mqtt: carries calls */
+    uint8_t format;  /* mqtt: RDOF_MQTT_FORMAT_* (calls as DMRD, or the MQTT network's messages) */
+    uint8_t bundle;  /* mqtt, format v3: voice items per message when sending (1-3; 1 is sent for now) */
+    bool raw_tx;     /* mqtt, format v3: transmit raw items as heard */
+    uint8_t transport; /* mqtt: RDOF_MQTT_TCP / RDOF_MQTT_TLS (tls true, or transport mqtt/tls) */
 } rdof_net3_t;
 
 typedef struct {

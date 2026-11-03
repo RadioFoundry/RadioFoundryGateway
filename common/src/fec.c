@@ -222,6 +222,13 @@ void rdof_rate1_payload(const uint8_t burst[RDOF_BURST_BYTES], uint8_t out24[24]
     dmrRate1Decode(burst, out24);
 }
 
+void rdof_rate1_encode(const uint8_t payload24[24], uint8_t info196[196])
+{
+    uint8_t burst[RDOF_BURST_BYTES] = {0};
+    dmrRate1Encode(payload24, burst);
+    rdof_info_bits(burst, info196);
+}
+
 #endif /* RDOF_FEATURE_DATA_BLOCKS */
 
 /* ── CRCs ──────────────────────────────────────────────────────────────────── */

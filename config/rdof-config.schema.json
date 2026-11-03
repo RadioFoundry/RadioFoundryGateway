@@ -544,7 +544,11 @@
         "root": {"type": "string"},
         "tls": {"type": "boolean"},
         "report": {"type": "boolean"},
-        "calls": {"type": "boolean"}
+        "calls": {"type": "boolean"},
+        "format": {"enum": ["dmrd", "v3"], "description": "With calls: dmrd is the DMRD calls (mqtt.md section 10), v3 the MQTT network's messages (mqtt-net.md)."},
+        "bundle": {"type": "integer", "minimum": 1, "maximum": 3, "description": "format v3: voice items per message when sending (1 is sent for now)."},
+        "raw_tx": {"type": "boolean", "description": "format v3: transmit raw items as heard."},
+        "transport": {"enum": ["mqtt/tcp", "mqtt/tls"], "description": "mqtt/tls is tls true; the other transports aren't built yet."}
       }
     },
     "net3": {
