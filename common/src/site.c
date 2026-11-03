@@ -135,7 +135,7 @@ static const char *const HBLINK_KEYS[] = {"name", "type", "host", "port", "trans
 static const char *const BM_KEYS[] = {"name", "type", "host", "port", "password", "peer_ids", "location",
                                       "description", "url", NULL};
 static const char *const MQTT_KEYS[] = {"name", "type", "host", "port", "username", "password", "root", "tls",
-                                        "report", "calls", NULL};
+                                        "report", "calls", "format", "bundle", "raw_tx", "transport", NULL};
 
 static bool in_list(const char *const *keys, const char *k)
 {
@@ -659,6 +659,36 @@ static bool parse_nets(ctx_t *c, rdof_site_t *s)
             if (i >= 0 && !is_type(c, i, RDOF_JBOOL))
                 return fail(c, "%s.calls: true or false", path);
             n->calls = i >= 0 && N(c, i)->b;
+            /* the MQTT network's keys (docs/spec/fw/mqtt-net.md section 10) */
+            i = get(c, e, "format");
+            const char *fmt = str_of(c, i);
+            if (i >= 0 && (!fmt || (strcmp(fmt, "dmrd") && strcmp(fmt, "v3"))))
+                return fail(c, "%s.format: dmrd or v3", path);
+            if (i >= 0 && !n->calls)
+                return fail(c, "%s.format: with calls true", path);
+            n->format = fmt && !strcmp(fmt, "v3") ? RDOF_MQTT_FORMAT_V3 : RDOF_MQTT_FORMAT_DMRD;
+            double v = 1;
+            i = get(c, e, "bundle");
+            if (i >= 0 && (!num_of(c, i, &v) || !N(c, i)->integer || v < 1 || v > 3))
+                return fail(c, "%s.bundle: 1 to 3", path);
+            if (i >= 0 && n->format != RDOF_MQTT_FORMAT_V3)
+                return fail(c, "%s.bundle: with format v3", path);
+            n->bundle = (uint8_t)v;
+            i = get(c, e, "raw_tx");
+            if (i >= 0 && !is_type(c, i, RDOF_JBOOL))
+                return fail(c, "%s.raw_tx: true or false", path);
+            if (i >= 0 && n->format != RDOF_MQTT_FORMAT_V3)
+                return fail(c, "%s.raw_tx: with format v3", path);
+            n->raw_tx = i >= 0 && N(c, i)->b;
+            i = get(c, e, "tls"); /* the radio's settings take any truthy value (rdof_plan_radio) */
+            const bool tls = is_type(c, i, RDOF_JBOOL) && N(c, i)->b;
+            i = get(c, e, "transport");
+            const char *tr = str_of(c, i);
+            if (i >= 0 && (!tr || (strcmp(tr, "mqtt/tcp") && strcmp(tr, "mqtt/tls"))))
+                return fail(c, "%s.transport: mqtt/tcp or mqtt/tls (the others aren't built yet)", path);
+            if (tr && !strcmp(tr, "mqtt/tcp") && tls)
+                return fail(c, "%s.transport: mqtt/tcp with tls true (mqtt/tls, or leave one out)", path);
+            n->transport = (tr && !strcmp(tr, "mqtt/tls")) || tls ? RDOF_MQTT_TLS : RDOF_MQTT_TCP;
         }
         s->nnet++;
     }
@@ -1591,6 +1621,12 @@ size_t rdof_site_resolved(const rdof_site_t *s, char *out, size_t cap)
         } else {
             w_bool(&w, "report", n->report);
             w_bool(&w, "calls", n->calls);
+            if (n->format == RDOF_MQTT_FORMAT_V3) {
+                w_str(&w, "format", "v3");
+                w_num(&w, "bundle", n->bundle);
+                w_bool(&w, "raw_tx", n->raw_tx);
+                w_str(&w, "transport", n->transport == RDOF_MQTT_TLS ? "mqtt/tls" : "mqtt/tcp");
+            }
         }
         close_(&w, '}');
     }

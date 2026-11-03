@@ -11,6 +11,7 @@ kind of data for the DMR core.
 | `sdr-vectors/` | `rdof_sdr_tests`, `rdof_sdr_tests_min`, `rdof_sdr_edge_tests` | `sdr_vectors.h` (tables, configs, expected bursts and tracker output) and `sdr-data/`: cu8 recordings in, the channelizer's cf32 and the FM discriminator's f32 out |
 | `mod-vectors/` | `rdof_mod_tests` | `mod_vectors.h` and `mod-data/`: the DMR modulator's expected output, and round trips through the receiver |
 | `chzfx/` | `rdof_chzfx_tests`, the FPGA channelizer's HLS testbench | The FPGA channelizer model's (`sdr/src/chzfx.c`) golden vectors: per case a `.cfg` (the registers), `_in.cs16` and `_out.cs16`; `qcos.txt`, its cosine table. Made by this project's model (`rdof_chzfx_tests --write`), not the reference |
+| `mqtt-net/` | `rdof_mqttnet_tests`; other programs that speak the MQTT network | `vectors.json`: call messages and the events beside them (below) |
 
 The recordings in `sdr-data/` are synthetic: DMR bursts built and modulated by the reference, with added noise.
 
@@ -60,5 +61,29 @@ steps (`v_agc_steps`, the same as `rtlsdr/src/r820.c` `gain_steps[]`), with the 
 the new steps (46.2, 40.1). The decisions keep their shape: the same steps down on clipping, steps up, ceiling
 changes and holds, at the same updates. The law is also checked against a plain model on random runs
 (`test_sdr_edges.c`, `test_agc_reference`).
+
+## The MQTT network
+
+`mqtt-net/vectors.json` is the MQTT network's call messages ([mqtt-net.md](../../docs/spec/fw/mqtt-net.md) §4), for
+this project and for any other program that builds or reads them (a router, an app, a bridge). It is plain JSON, made
+by `mqtt-net/gen_vectors.c` from `host-tests/mqttnet_scenes.h`, regression vectors from the C:
+
+- `vectors`: single messages. Each has `hex` (the bytes), `header` (the 14-byte header's fields) and `items` (each
+  item's `type`, `name`, `value` hex and its decoded fields). `normative: true` marks the hand-written vectors of
+  mqtt-net.md §13 (src 9801234); the rest use test IDs. Among them: three bundled voice items, a `raw` item, an
+  unknown item type (a reader skips it), an `origin` item.
+- `scenes`: calls heard on RF by node `box-a` on path 1, slot 1, run through the receiver's tracker and the uplink.
+  Each has `messages` (`topic` and `message`, in order) and `activity` (the `DMR/node/box-a/activity` events, their
+  clock starting at 2026-10-26T07:33:20Z). The scenes: a group call with talker alias and GPS, a late entry, a
+  privacy call, a radio check, an unconfirmed data call with its preambles, and two confirmed data calls (rate 3/4
+  in two parts, and rate 1 with the u16 item length).
+
+`rdof_mqttnet_tests` checks that the C builds every `hex` byte for byte, that its reader gives the same fields, and
+that the scenes come out the same. To regenerate, after a change meant to change the messages:
+
+```sh
+cmake --build build/host --target rdof_gen_mqttnet_vectors
+build/host/rdof_gen_mqttnet_vectors > host-tests/fixtures/mqtt-net/vectors.json
+```
 
 When behavior changes on purpose, change the fixture with it, in the same commit, and say why in the message.

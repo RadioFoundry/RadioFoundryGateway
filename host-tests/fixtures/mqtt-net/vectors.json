@@ -1,0 +1,366 @@
+{
+  "about": "RadioFoundry Gateway MQTT network call messages (docs/spec/fw/mqtt-net.md), made by host-tests/fixtures/mqtt-net/gen_vectors.c. hex is the whole message; header and items are it decoded. An item's value is what follows its type and length, in hex. LC src/dst, csbk count, data_pdu fields and quality rssi (dBm) are decoded too. Scenes: calls heard on RF by node box-a on path 1, slot 1, root DMR; activity holds the box's events in order.",
+  "root": "DMR",
+  "node": "box-a",
+  "vectors": [
+    {"name": "spec_group_start", "what": "section 13: call start, group call to TG 91, seq 0", "normative": true,
+     "message": {"hex": "0302010078563412128e955b0000020900000000005b958e120a020357",
+       "header": {"version": 3, "flags": 2, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 0, "stream": 305419896, "src": 9801234, "dst": 91, "items": 2},
+       "items": [
+         {"type": 2, "name": "lc_header", "value": "00000000005b958e12", "flco": 0, "fid": 0, "service_options": 0, "src": 9801234, "dst": 91},
+         {"type": 10, "name": "quality", "value": "0357", "bits": 3, "rssi": -87}]}},
+    {"name": "spec_voice_a", "what": "section 13: voice burst A of that call, AMBE+2 silence, seq 2", "normative": true,
+     "message": {"hex": "0302010278563412128e955b0000011c00b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020357",
+       "header": {"version": 3, "flags": 2, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 2, "stream": 305419896, "src": 9801234, "dst": 91, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "00b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 0},
+         {"type": 10, "name": "quality", "value": "0357", "bits": 3, "rssi": -87}]}},
+    {"name": "spec_private_start", "what": "section 13: private call to 9990, call start, seq 0", "normative": true,
+     "message": {"hex": "0300010078563412128e950627000209030000002706958e120a020357",
+       "header": {"version": 3, "flags": 0, "slot2": false, "group": false, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 0, "stream": 305419896, "src": 9801234, "dst": 9990, "items": 2},
+       "items": [
+         {"type": 2, "name": "lc_header", "value": "030000002706958e12", "flco": 3, "fid": 0, "service_options": 0, "src": 9801234, "dst": 9990},
+         {"type": 10, "name": "quality", "value": "0357", "bits": 3, "rssi": -87}]}},
+    {"name": "spec_private_dl", "what": "section 13: the same on dl to a box where 9990's path is 0", "normative": true,
+     "message": {"hex": "0300000078563412128e950627000209030000002706958e120a020357",
+       "header": {"version": 3, "flags": 0, "slot2": false, "group": false, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 0, "seq": 0, "stream": 305419896, "src": 9801234, "dst": 9990, "items": 2},
+       "items": [
+         {"type": 2, "name": "lc_header", "value": "030000002706958e12", "flco": 3, "fid": 0, "service_options": 0, "src": 9801234, "dst": 9990},
+         {"type": 10, "name": "quality", "value": "0357", "bits": 3, "rssi": -87}]}},
+    {"name": "bundled_voice", "what": "three voice items in one message (B, C, D), then quality: seq 3, next 7", "normative": false,
+     "message": {"hex": "0302010378563412716f985b0000011c01b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b011c02b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b011c03b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 2, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 3, "stream": 305419896, "src": 9990001, "dst": 91, "items": 4},
+       "items": [
+         {"type": 1, "name": "voice", "value": "01b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 1},
+         {"type": 1, "name": "voice", "value": "02b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 2},
+         {"type": 1, "name": "voice", "value": "03b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 3},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+    {"name": "raw", "what": "a raw item: data type 12 (reserved) and the 33 octets as heard", "normative": false,
+     "message": {"hex": "0302010978563412716f985b00007f220ca0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc00a020057",
+       "header": {"version": 3, "flags": 2, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 9, "stream": 305419896, "src": 9990001, "dst": 91, "items": 2},
+       "items": [
+         {"type": 127, "name": "raw", "value": "0ca0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0", "dt": 12},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+    {"name": "unknown_item", "what": "voice E, an item of unknown type 0x90 (skipped), quality: 3 items", "normative": false,
+     "message": {"hex": "0302010478563412716f985b0000011c04b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b90030102030a020057",
+       "header": {"version": 3, "flags": 2, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 4, "stream": 305419896, "src": 9990001, "dst": 91, "items": 3},
+       "items": [
+         {"type": 1, "name": "voice", "value": "04b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 4},
+         {"type": 144, "name": "unknown", "value": "010203"},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+    {"name": "origin", "what": "a bridged call's first message: origin (network 42, repeater 123456789, 1 hop), lc_header", "normative": false,
+     "message": {"hex": "0302010078563412716f985b00000b092a00000015cd5b0701020900000000005b986f71",
+       "header": {"version": 3, "flags": 2, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 0, "stream": 305419896, "src": 9990001, "dst": 91, "items": 2},
+       "items": [
+         {"type": 11, "name": "origin", "value": "2a00000015cd5b0701", "network": 42, "repeater": 123456789, "hops": 1},
+         {"type": 2, "name": "lc_header", "value": "00000000005b986f71", "flco": 0, "fid": 0, "service_options": 0, "src": 9990001, "dst": 91}]}}
+  ],
+  "scenes": [
+    {"name": "group_call", "what": "group call 9990001 to TG 91: lc_header, voice A-F (F with the voice LC as embedded_lc), a talker alias and a GPS LC in later superframes, one terminator for three on air",
+     "messages": [
+      {"topic": "DMR/tg/91/box-a", "message": {"hex": "030201003930e9a0716f985b0000020900000000005b986f710a020057",
+       "header": {"version": 3, "flags": 2, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 0, "stream": 2699636793, "src": 9990001, "dst": 91, "items": 2},
+       "items": [
+         {"type": 2, "name": "lc_header", "value": "00000000005b986f71", "flco": 0, "fid": 0, "service_options": 0, "src": 9990001, "dst": 91},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/tg/91/box-a", "message": {"hex": "030201023930e9a0716f985b0000011c00b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 2, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 2, "stream": 2699636793, "src": 9990001, "dst": 91, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "00b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 0},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/tg/91/box-a", "message": {"hex": "030201043930e9a0716f985b0000011c01b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 2, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 4, "stream": 2699636793, "src": 9990001, "dst": 91, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "01b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 1},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/tg/91/box-a", "message": {"hex": "030201063930e9a0716f985b0000011c02b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 2, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 6, "stream": 2699636793, "src": 9990001, "dst": 91, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "02b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 2},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/tg/91/box-a", "message": {"hex": "030201083930e9a0716f985b0000011c03b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 2, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 8, "stream": 2699636793, "src": 9990001, "dst": 91, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "03b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 3},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/tg/91/box-a", "message": {"hex": "0302010a3930e9a0716f985b0000011c04b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 2, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 10, "stream": 2699636793, "src": 9990001, "dst": 91, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "04b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 4},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/tg/91/box-a", "message": {"hex": "0302010c3930e9a0716f985b0000011c05b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b040900000000005b986f710a020057",
+       "header": {"version": 3, "flags": 2, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 12, "stream": 2699636793, "src": 9990001, "dst": 91, "items": 3},
+       "items": [
+         {"type": 1, "name": "voice", "value": "05b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 5},
+         {"type": 4, "name": "embedded_lc", "value": "00000000005b986f71", "flco": 0, "fid": 0, "service_options": 0, "src": 9990001, "dst": 91},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/tg/91/box-a", "message": {"hex": "0302010f3930e9a0716f985b0000011c00b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 2, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 15, "stream": 2699636793, "src": 9990001, "dst": 91, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "00b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 0},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/tg/91/box-a", "message": {"hex": "030201113930e9a0716f985b0000011c01b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 2, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 17, "stream": 2699636793, "src": 9990001, "dst": 91, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "01b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 1},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/tg/91/box-a", "message": {"hex": "030201133930e9a0716f985b0000011c02b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 2, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 19, "stream": 2699636793, "src": 9990001, "dst": 91, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "02b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 2},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/tg/91/box-a", "message": {"hex": "030201153930e9a0716f985b0000011c03b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 2, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 21, "stream": 2699636793, "src": 9990001, "dst": 91, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "03b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 3},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/tg/91/box-a", "message": {"hex": "030201173930e9a0716f985b0000011c04b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 2, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 23, "stream": 2699636793, "src": 9990001, "dst": 91, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "04b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 4},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/tg/91/box-a", "message": {"hex": "030201193930e9a0716f985b0000011c05b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b040904004c9c60868298980807014e3043414c4c0a020057",
+       "header": {"version": 3, "flags": 2, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 25, "stream": 2699636793, "src": 9990001, "dst": 91, "items": 4},
+       "items": [
+         {"type": 1, "name": "voice", "value": "05b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 5},
+         {"type": 4, "name": "embedded_lc", "value": "04004c9c6086829898", "flco": 4, "fid": 0},
+         {"type": 8, "name": "talker_alias", "value": "014e3043414c4c", "format": 1, "text": "N0CALL"},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/tg/91/box-a", "message": {"hex": "0302011d3930e9a0716f985b0000011c00b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 2, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 29, "stream": 2699636793, "src": 9990001, "dst": 91, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "00b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 0},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/tg/91/box-a", "message": {"hex": "0302011f3930e9a0716f985b0000011c01b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 2, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 31, "stream": 2699636793, "src": 9990001, "dst": 91, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "01b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 1},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/tg/91/box-a", "message": {"hex": "030201213930e9a0716f985b0000011c02b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 2, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 33, "stream": 2699636793, "src": 9990001, "dst": 91, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "02b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 2},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/tg/91/box-a", "message": {"hex": "030201233930e9a0716f985b0000011c03b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 2, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 35, "stream": 2699636793, "src": 9990001, "dst": 91, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "03b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 3},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/tg/91/box-a", "message": {"hex": "030201253930e9a0716f985b0000011c04b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 2, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 37, "stream": 2699636793, "src": 9990001, "dst": 91, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "04b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 4},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/tg/91/box-a", "message": {"hex": "030201273930e9a0716f985b0000011c05b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b04090800058e0bf231f40e09096c69ef1414223ed0020a020057",
+       "header": {"version": 3, "flags": 2, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 39, "stream": 2699636793, "src": 9990001, "dst": 91, "items": 4},
+       "items": [
+         {"type": 1, "name": "voice", "value": "05b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 5},
+         {"type": 4, "name": "embedded_lc", "value": "0800058e0bf231f40e", "flco": 8, "fid": 0},
+         {"type": 9, "name": "gps", "value": "6c69ef1414223ed002", "lat_e7": 351234412, "lon_e7": -801234412, "error": 2},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/tg/91/box-a", "message": {"hex": "0302012b3930e9a0716f985b0000011c00b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 2, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 43, "stream": 2699636793, "src": 9990001, "dst": 91, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "00b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 0},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/tg/91/box-a", "message": {"hex": "0302012d3930e9a0716f985b0000030900000000005b986f710a020057",
+       "header": {"version": 3, "flags": 2, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 45, "stream": 2699636793, "src": 9990001, "dst": 91, "items": 2},
+       "items": [
+         {"type": 3, "name": "terminator", "value": "00000000005b986f71", "flco": 0, "fid": 0, "service_options": 0, "src": 9990001, "dst": 91},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}}
+     ],
+     "activity": [
+      {"ev":"call_start","at":"2026-10-26T07:33:20.000Z","node":"box-a","path":1,"slot":1,"source":"rf","stream_id":2699636793,"src":9990001,"dst":91,"group":true,"emergency":false,"privacy":false,"call_key":"9990001-91-g-1793000000","rssi":-87,"tx_ok":true},
+      {"ev":"talker_alias","at":"2026-10-26T07:33:20.840Z","node":"box-a","path":1,"slot":1,"source":"rf","stream_id":2699636793,"src":9990001,"alias":"N0CALL"},
+      {"ev":"gps","at":"2026-10-26T07:33:21.200Z","node":"box-a","path":1,"slot":1,"source":"rf","stream_id":2699636793,"src":9990001,"lat":35.1234412,"lon":-80.1234412,"error_m":200},
+      {"ev":"call_end","at":"2026-10-26T07:33:21.320Z","node":"box-a","path":1,"slot":1,"source":"rf","stream_id":2699636793,"reason":"end","duration":1.32,"ber":0.0,"rssi":{"min":-87,"max":-87,"avg":-87},"bursts":19,"lost_bursts":0}
+     ]},
+    {"name": "late_entry", "what": "private call 9990001 to 9990002, emergency, heard from burst C on: the voice before the embedded LC is held (the last 6 bursts), then sent with the late flag, the LC first; the call is lost, so a terminator from the LC ends it",
+     "messages": [
+      {"topic": "DMR/pc/9990002/box-a", "message": {"hex": "032401003930e9a0716f98726f980409030080986f72986f71011c04b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 36, "slot2": false, "group": false, "emergency": true, "priority": false, "privacy": false, "late": true, "path": 1, "seq": 0, "stream": 2699636793, "src": 9990001, "dst": 9990002, "items": 3},
+       "items": [
+         {"type": 4, "name": "embedded_lc", "value": "030080986f72986f71", "flco": 3, "fid": 0, "service_options": 128, "src": 9990001, "dst": 9990002},
+         {"type": 1, "name": "voice", "value": "04b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 4},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/pc/9990002/box-a", "message": {"hex": "032401033930e9a0716f98726f98011c05b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 36, "slot2": false, "group": false, "emergency": true, "priority": false, "privacy": false, "late": true, "path": 1, "seq": 3, "stream": 2699636793, "src": 9990001, "dst": 9990002, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "05b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 5},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/pc/9990002/box-a", "message": {"hex": "032401053930e9a0716f98726f98011c00b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 36, "slot2": false, "group": false, "emergency": true, "priority": false, "privacy": false, "late": true, "path": 1, "seq": 5, "stream": 2699636793, "src": 9990001, "dst": 9990002, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "00b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 0},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/pc/9990002/box-a", "message": {"hex": "032401073930e9a0716f98726f98011c01b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 36, "slot2": false, "group": false, "emergency": true, "priority": false, "privacy": false, "late": true, "path": 1, "seq": 7, "stream": 2699636793, "src": 9990001, "dst": 9990002, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "01b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 1},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/pc/9990002/box-a", "message": {"hex": "032401093930e9a0716f98726f98011c02b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 36, "slot2": false, "group": false, "emergency": true, "priority": false, "privacy": false, "late": true, "path": 1, "seq": 9, "stream": 2699636793, "src": 9990001, "dst": 9990002, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "02b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 2},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/pc/9990002/box-a", "message": {"hex": "0324010b3930e9a0716f98726f98011c03b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 36, "slot2": false, "group": false, "emergency": true, "priority": false, "privacy": false, "late": true, "path": 1, "seq": 11, "stream": 2699636793, "src": 9990001, "dst": 9990002, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "03b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 3},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/pc/9990002/box-a", "message": {"hex": "0324010d3930e9a0716f98726f98011c04b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 36, "slot2": false, "group": false, "emergency": true, "priority": false, "privacy": false, "late": true, "path": 1, "seq": 13, "stream": 2699636793, "src": 9990001, "dst": 9990002, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "04b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 4},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/pc/9990002/box-a", "message": {"hex": "0324010f3930e9a0716f98726f98011c05b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0409030080986f72986f710a020057",
+       "header": {"version": 3, "flags": 36, "slot2": false, "group": false, "emergency": true, "priority": false, "privacy": false, "late": true, "path": 1, "seq": 15, "stream": 2699636793, "src": 9990001, "dst": 9990002, "items": 3},
+       "items": [
+         {"type": 1, "name": "voice", "value": "05b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 5},
+         {"type": 4, "name": "embedded_lc", "value": "030080986f72986f71", "flco": 3, "fid": 0, "service_options": 128, "src": 9990001, "dst": 9990002},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/pc/9990002/box-a", "message": {"hex": "032401123930e9a0716f98726f98011c00b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 36, "slot2": false, "group": false, "emergency": true, "priority": false, "privacy": false, "late": true, "path": 1, "seq": 18, "stream": 2699636793, "src": 9990001, "dst": 9990002, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "00b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 0},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/pc/9990002/box-a", "message": {"hex": "032401143930e9a0716f98726f98011c01b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 36, "slot2": false, "group": false, "emergency": true, "priority": false, "privacy": false, "late": true, "path": 1, "seq": 20, "stream": 2699636793, "src": 9990001, "dst": 9990002, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "01b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 1},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/pc/9990002/box-a", "message": {"hex": "032401163930e9a0716f98726f98011c02b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 36, "slot2": false, "group": false, "emergency": true, "priority": false, "privacy": false, "late": true, "path": 1, "seq": 22, "stream": 2699636793, "src": 9990001, "dst": 9990002, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "02b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 2},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/pc/9990002/box-a", "message": {"hex": "032401183930e9a0716f98726f98011c03b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 36, "slot2": false, "group": false, "emergency": true, "priority": false, "privacy": false, "late": true, "path": 1, "seq": 24, "stream": 2699636793, "src": 9990001, "dst": 9990002, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "03b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 3},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/pc/9990002/box-a", "message": {"hex": "0324011a3930e9a0716f98726f98011c04b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 36, "slot2": false, "group": false, "emergency": true, "priority": false, "privacy": false, "late": true, "path": 1, "seq": 26, "stream": 2699636793, "src": 9990001, "dst": 9990002, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "04b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 4},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/pc/9990002/box-a", "message": {"hex": "0324011c3930e9a0716f98726f98011c05b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0409030080986f72986f710a020057",
+       "header": {"version": 3, "flags": 36, "slot2": false, "group": false, "emergency": true, "priority": false, "privacy": false, "late": true, "path": 1, "seq": 28, "stream": 2699636793, "src": 9990001, "dst": 9990002, "items": 3},
+       "items": [
+         {"type": 1, "name": "voice", "value": "05b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 5},
+         {"type": 4, "name": "embedded_lc", "value": "030080986f72986f71", "flco": 3, "fid": 0, "service_options": 128, "src": 9990001, "dst": 9990002},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/pc/9990002/box-a", "message": {"hex": "0324011f3930e9a0716f98726f980309030080986f72986f71",
+       "header": {"version": 3, "flags": 36, "slot2": false, "group": false, "emergency": true, "priority": false, "privacy": false, "late": true, "path": 1, "seq": 31, "stream": 2699636793, "src": 9990001, "dst": 9990002, "items": 1},
+       "items": [
+         {"type": 3, "name": "terminator", "value": "030080986f72986f71", "flco": 3, "fid": 0, "service_options": 128, "src": 9990001, "dst": 9990002}]}}
+     ],
+     "activity": [
+      {"ev":"call_start","at":"2026-10-26T07:33:20.480Z","node":"box-a","path":1,"slot":1,"source":"rf","stream_id":2699636793,"src":9990001,"dst":9990002,"group":false,"emergency":true,"privacy":false,"late_entry":true,"call_key":"9990001-9990002-p-1793000000","rssi":-87,"tx_ok":true},
+      {"ev":"call_end","at":"2026-10-26T07:33:21.440Z","node":"box-a","path":1,"slot":1,"source":"rf","stream_id":2699636793,"reason":"lost","duration":0.96,"ber":0.0,"rssi":{"min":-87,"max":-87,"avg":-87},"bursts":14,"lost_bursts":0}
+     ]},
+    {"name": "pi_call", "what": "group call 9990003 to TG 9 with a PI header: pi_header item, the privacy flag on",
+     "messages": [
+      {"topic": "DMR/tg/9/box-a", "message": {"hex": "030201003930e9a0736f980900000209000040000009986f730a020057",
+       "header": {"version": 3, "flags": 2, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 0, "stream": 2699636793, "src": 9990003, "dst": 9, "items": 2},
+       "items": [
+         {"type": 2, "name": "lc_header", "value": "000040000009986f73", "flco": 0, "fid": 0, "service_options": 64, "src": 9990003, "dst": 9},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/tg/9/box-a", "message": {"hex": "031201023930e9a0736f98090000050a2100deadbeef000000090a020057",
+       "header": {"version": 3, "flags": 18, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": true, "late": false, "path": 1, "seq": 2, "stream": 2699636793, "src": 9990003, "dst": 9, "items": 2},
+       "items": [
+         {"type": 5, "name": "pi_header", "value": "2100deadbeef00000009"},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/tg/9/box-a", "message": {"hex": "031201043930e9a0736f98090000011c00b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 18, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": true, "late": false, "path": 1, "seq": 4, "stream": 2699636793, "src": 9990003, "dst": 9, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "00b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 0},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/tg/9/box-a", "message": {"hex": "031201063930e9a0736f98090000011c01b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 18, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": true, "late": false, "path": 1, "seq": 6, "stream": 2699636793, "src": 9990003, "dst": 9, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "01b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 1},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/tg/9/box-a", "message": {"hex": "031201083930e9a0736f98090000011c02b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 18, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": true, "late": false, "path": 1, "seq": 8, "stream": 2699636793, "src": 9990003, "dst": 9, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "02b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 2},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/tg/9/box-a", "message": {"hex": "0312010a3930e9a0736f98090000011c03b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 18, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": true, "late": false, "path": 1, "seq": 10, "stream": 2699636793, "src": 9990003, "dst": 9, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "03b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 3},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/tg/9/box-a", "message": {"hex": "0312010c3930e9a0736f98090000011c04b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
+       "header": {"version": 3, "flags": 18, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": true, "late": false, "path": 1, "seq": 12, "stream": 2699636793, "src": 9990003, "dst": 9, "items": 2},
+       "items": [
+         {"type": 1, "name": "voice", "value": "04b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 4},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/tg/9/box-a", "message": {"hex": "0312010e3930e9a0736f98090000011c05b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0409000040000009986f730a020057",
+       "header": {"version": 3, "flags": 18, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": true, "late": false, "path": 1, "seq": 14, "stream": 2699636793, "src": 9990003, "dst": 9, "items": 3},
+       "items": [
+         {"type": 1, "name": "voice", "value": "05b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b", "index": 5},
+         {"type": 4, "name": "embedded_lc", "value": "000040000009986f73", "flco": 0, "fid": 0, "service_options": 64, "src": 9990003, "dst": 9},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}},
+      {"topic": "DMR/tg/9/box-a", "message": {"hex": "031201113930e9a0736f980900000309000040000009986f730a020057",
+       "header": {"version": 3, "flags": 18, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": true, "late": false, "path": 1, "seq": 17, "stream": 2699636793, "src": 9990003, "dst": 9, "items": 2},
+       "items": [
+         {"type": 3, "name": "terminator", "value": "000040000009986f73", "flco": 0, "fid": 0, "service_options": 64, "src": 9990003, "dst": 9},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}}
+     ],
+     "activity": [
+      {"ev":"call_start","at":"2026-10-26T07:33:20.000Z","node":"box-a","path":1,"slot":1,"source":"rf","stream_id":2699636793,"src":9990003,"dst":9,"group":true,"emergency":false,"privacy":false,"call_key":"9990003-9-g-1793000000","rssi":-87,"tx_ok":true},
+      {"ev":"call_end","at":"2026-10-26T07:33:20.480Z","node":"box-a","path":1,"slot":1,"source":"rf","stream_id":2699636793,"reason":"end","duration":0.48,"ber":0.0,"rssi":{"min":-87,"max":-87,"avg":-87},"bursts":6,"lost_bursts":0}
+     ]},
+    {"name": "radio_check", "what": "a radio check 9990001 to 9990002 sent twice: one csbk item, count 1, at once",
+     "messages": [
+      {"topic": "DMR/pc/9990002/box-a", "message": {"hex": "030001003930e9a0716f98726f98060ba400cc80986f72986f71010a020057",
+       "header": {"version": 3, "flags": 0, "slot2": false, "group": false, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 0, "stream": 2699636793, "src": 9990001, "dst": 9990002, "items": 2},
+       "items": [
+         {"type": 6, "name": "csbk", "value": "a400cc80986f72986f7101", "opcode": 36, "count": 1},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}}
+     ],
+     "activity": [
+      {"ev":"csbk","at":"2026-10-26T07:33:20.000Z","node":"box-a","path":1,"slot":1,"source":"rf","stream_id":2699636793,"src":9990001,"dst":9990002,"group":false,"opcode":36,"desc":"Radio Check"}
+     ]},
+    {"name": "unconfirmed_data", "what": "4 CSBK preambles, then an unconfirmed rate 1/2 IP datagram 9990001 to 9990002 (SAP 4): one message, a csbk item with count 4, the data_pdu (no pad, no CRC-32) and quality",
+     "messages": [
+      {"topic": "DMR/pc/9990002/box-a", "message": {"hex": "030001003930e9a0716f98726f98060bbd008005986f72986f710407320000010247986f72986f7184084500002500010000401176340c9875310d9875320fa50fa5001103aa4152532068656c6c6f0a020057",
+       "header": {"version": 3, "flags": 0, "slot2": false, "group": false, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 0, "stream": 2699636793, "src": 9990001, "dst": 9990002, "items": 3},
+       "items": [
+         {"type": 6, "name": "csbk", "value": "bd008005986f72986f7104", "opcode": 61, "count": 4},
+         {"type": 7, "name": "data_pdu", "value": "0000010247986f72986f7184084500002500010000401176340c9875310d9875320fa50fa5001103aa4152532068656c6c6f", "part": 0, "more": false, "rate": 0, "headers": ["0247986f72986f718408"], "data": "4500002500010000401176340c9875310d9875320fa50fa5001103aa4152532068656c6c6f"},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}}
+     ],
+     "activity": [
+      {"ev":"csbk","at":"2026-10-26T07:33:20.000Z","node":"box-a","path":1,"slot":1,"source":"rf","stream_id":2699636793,"src":9990001,"dst":9990002,"group":false,"opcode":61,"desc":"Preamble"},
+      {"ev":"data","at":"2026-10-26T07:33:20.480Z","node":"box-a","path":1,"slot":1,"source":"rf","stream_id":2699636793,"src":9990001,"dst":9990002,"group":false,"sap":"ip","confirmed":false,"bytes":37,"payload":"RQAAJQABAABAEXY0DJh1MQ2YdTIPpQ+lABEDqkFSUyBoZWxsbw==","ip":{"src":"12.152.117.49","dst":"13.152.117.50","proto":17,"sport":4005,"dport":4005}}
+     ]},
+    {"name": "confirmed_parts", "what": "confirmed rate 3/4 data, 300 octets, 9990001 to 9990002, published with max_msg 200: the call in parts (bit 7 of part set on all but the last; the headers in part 0)",
+     "messages": [
+      {"topic": "DMR/pc/9990002/box-a", "message": {"hex": "030001003930e9a0716f98726f9807b28001014340986f72986f71933801080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d",
+       "header": {"version": 3, "flags": 0, "slot2": false, "group": false, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 0, "stream": 2699636793, "src": 9990001, "dst": 9990002, "items": 1},
+       "items": [
+         {"type": 7, "name": "data_pdu", "value": "8001014340986f72986f71933801080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d", "part": 0, "more": true, "rate": 1, "headers": ["4340986f72986f719338"], "data": "01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d"}]}},
+      {"topic": "DMR/pc/9990002/box-a", "message": {"hex": "030001013930e9a0716f98726f98078a010100848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e0a020057",
+       "header": {"version": 3, "flags": 0, "slot2": false, "group": false, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 1, "stream": 2699636793, "src": 9990001, "dst": 9990002, "items": 2},
+       "items": [
+         {"type": 7, "name": "data_pdu", "value": "010100848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e", "part": 1, "more": false, "rate": 1, "headers": [], "data": "848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e"},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}}
+     ],
+     "activity": [
+      {"ev":"data","at":"2026-10-26T07:33:21.140Z","node":"box-a","path":1,"slot":1,"source":"rf","stream_id":2699636793,"src":9990001,"dst":9990002,"group":false,"sap":"ip","confirmed":true,"bytes":300,"payload":"AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENKUVhfZm10e4KJkJeepayzusHIz9bd5Ovy+QAHDhUcIyoxOD9GTVRbYmlwd36FjJOaoaivtr3Ey9LZ4Ofu9fwDChEYHyYtNDtCSVBXXmVsc3qBiI+WnaSrsrnAx87V3OPq8fj/Bg0UGyIpMDc+RUxTWmFob3Z9hIuSmaCnrrW8w8rR2N/m7fT7AgkQFx4lLDM6QUhPVl1ka3J5gIeOlZyjqrG4v8bN1Nvi6fD3/gUMExohKC82PURLUllgZ251fIOKkZifpq20u8LJ0Nfe5ezz+gEIDxYdJCsyOUBHTlVcY2pxeH+GjZSboqmwt77FzNPa4ejv9v0ECxIZICcu"}
+     ]},
+    {"name": "confirmed_rate1", "what": "confirmed rate 1 data, 280 octets, 9990001 to 9990002: one data_pdu item over 255 octets (the u16 length)",
+     "messages": [
+      {"topic": "DMR/pc/9990002/box-a", "message": {"hex": "030001003930e9a0716f98726f9807ff25010002014342986f72986f718d3801080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba20a020057",
+       "header": {"version": 3, "flags": 0, "slot2": false, "group": false, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 0, "stream": 2699636793, "src": 9990001, "dst": 9990002, "items": 2},
+       "items": [
+         {"type": 7, "name": "data_pdu", "value": "0002014342986f72986f718d3801080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2", "part": 0, "more": false, "rate": 2, "headers": ["4342986f72986f718d38"], "data": "01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2"},
+         {"type": 10, "name": "quality", "value": "0057", "bits": 0, "rssi": -87}]}}
+     ],
+     "activity": [
+      {"ev":"data","at":"2026-10-26T07:33:20.780Z","node":"box-a","path":1,"slot":1,"source":"rf","stream_id":2699636793,"src":9990001,"dst":9990002,"group":false,"sap":"ip","confirmed":true,"bytes":280,"payload":"AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENKUVhfZm10e4KJkJeepayzusHIz9bd5Ovy+QAHDhUcIyoxOD9GTVRbYmlwd36FjJOaoaivtr3Ey9LZ4Ofu9fwDChEYHyYtNDtCSVBXXmVsc3qBiI+WnaSrsrnAx87V3OPq8fj/Bg0UGyIpMDc+RUxTWmFob3Z9hIuSmaCnrrW8w8rR2N/m7fT7AgkQFx4lLDM6QUhPVl1ka3J5gIeOlZyjqrG4v8bN1Nvi6fD3/gUMExohKC82PURLUllgZ251fIOKkZifpq20u8LJ0Nfe5ezz+gEIDxYdJCsyOUBHTlVcY2pxeH+GjZSbog=="}
+     ]}
+  ]
+}
