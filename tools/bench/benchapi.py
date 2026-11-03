@@ -656,15 +656,25 @@ class TxStream:
             self._acks.put({})
 
     def _ping(self) -> None:
-        last = time.monotonic()
+        import threading
+        last, renewing = time.monotonic(), None
         while not self._stop.wait(0.5) and not self._closed.is_set():
             try:
                 self._send({"type": "ping"})
-                if self._renew and time.monotonic() - last > 10:
-                    last = time.monotonic()
-                    self._renew()
             except Exception:
                 pass
+            # the renewal is an HTTP request (up to its 8 s timeout): on its own thread, so the pings never wait for
+            # it (a slow one held them past the job's 2 s dead-man)
+            if self._renew and time.monotonic() - last > 10 and not (renewing and renewing.is_alive()):
+                last = time.monotonic()
+                renewing = threading.Thread(target=self._renew_quietly, daemon=True)
+                renewing.start()
+
+    def _renew_quietly(self) -> None:
+        try:
+            self._renew()
+        except Exception:
+            pass
 
     def _send(self, d: Dict[str, Any]) -> None:
         from websockets.exceptions import ConnectionClosed
