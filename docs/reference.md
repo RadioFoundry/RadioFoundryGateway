@@ -98,7 +98,10 @@ the 30 ms grid; half duplex sent back a whole call that the bench decoded with 0
   (13.65 ms at 2.4 MS/s) later: the TX ring's floor grows by that much, and idle, rdofradio takes it out
   ("transmit: ... ms of delay taken out"; keyed, the labels follow it). A reader stall past the Pluto's buffers
   loses receive samples without an overflow: the stream falls behind the wall clock, and rdofradio calibrates
-  again at the next idle moment ("receive: ... ms of samples lost"). Only a half second with a read that waited for
+  again at the next idle moment ("receive: ... ms of samples lost"). The loop's transmit samples are paced by what
+  it reads, so it never makes up the lost part: the guard is told (`rdof_txguard_slipped`) and drops that many fewer.
+  Before that, after a second of losses (a bench `tx fm` rendering at 864 kS/s, 2026-11-03), every buffer went out as
+  zeros until a restart. Only a half second with a read that waited for
   the device counts: while the loop works through a backlog the device still holds, every read comes late but
   nothing is lost (that once said "samples lost" four times under a CPU hog, 2026-10-29). Before both, two such stalls during other
   heavy work on the Mac put every call on the other slot.

@@ -42,3 +42,9 @@ int rdof_txguard_drop(rdof_txguard_t *g, int n)
     g->skip -= k;
     return k;
 }
+
+void rdof_txguard_slipped(rdof_txguard_t *g, int64_t n)
+{
+    if (n > 0)
+        g->skip -= g->skip < n ? g->skip : n;
+}

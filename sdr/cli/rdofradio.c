@@ -3275,7 +3275,8 @@ int main(int argc, char **argv)
          * calibration no longer holds. Its floor over half a second against the last one's: a step is a loss. Half
          * duplex says so too (the bench's timing and a repeater job's slots move with it). A window the loop spent
          * behind (no read waited: the device's buffers held the samples) shows a lag that isn't a loss; it runs on
-         * until a read waits. */
+         * until a read waits. The transmit guard's zeros stood in for the lost part, which the loop never makes:
+         * rdof_txguard_slipped, or every block after goes out as zeros. */
         {
             const double lag = (now - t_start) * rate - (double)total;
             if (lag < R.lag_min)
@@ -3284,6 +3285,11 @@ int main(int argc, char **argv)
             if ((double)total / rate - R.lag_win >= 0.5 && R.lag_fresh) {
                 if (!isnan(R.lag_prev) && R.lag_min - R.lag_prev > rate / 500) {
                     WS.lost += llround(R.lag_min - R.lag_prev);
+                    if (W.guarded) { /* the transmit stream is that much behind for good: not samples to drop */
+                        pthread_mutex_lock(&W.mu);
+                        rdof_txguard_slipped(&W.guard, llround(R.lag_min - R.lag_prev));
+                        pthread_mutex_unlock(&W.mu);
+                    }
                     say("receive: %.1f ms of samples lost%s\n", 1e3 * (R.lag_min - R.lag_prev) / rate,
                         R.full ? "; calibrating again once idle" : "");
                     if (R.full)

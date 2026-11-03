@@ -2615,8 +2615,11 @@ static int ppm_step(rdof_ppm_t *p, double est, double t)
 }
 
 /* A device with a queue of nbuf blocks, fed by a loop that stalls once: where each real sample goes on the air,
- * against where it would without the stall. Returns the worst move (seconds); guarded or not. */
-static double txguard_sim(bool guarded, double stall_at, double stall_s, rdof_txguard_t *g)
+ * against where it would without the stall. Returns the worst move (seconds); guarded or not. lost_s of the stall
+ * the loop never makes up (the receiver lost those samples, and the loop's pace is what it reads); slip_at > 0: the
+ * loop says so then (rdof_txguard_slipped). *late: of the last half second's samples, the share that went out. */
+static double txguard_sim_lost(bool guarded, double stall_at, double stall_s, double lost_s, double slip_at,
+                               rdof_txguard_t *g, double *late)
 {
     const double rate = 864000, one = 12288 / rate, lead = 0.05;
     const int block = 12288, nbuf = 3;
@@ -2629,9 +2632,16 @@ static double txguard_sim(bool guarded, double stall_at, double stall_s, rdof_tx
     int64_t first = 0;  /* ring index of the first real sample in the block */
     int real = 0;       /* real samples in it */
     double worst = 0, ref = NAN;
-    /* samples the loop has put in by time t: the lead, then the rate, frozen through the stall, caught up after */
-    #define MADE(t) ((int64_t)((lead + ((t) < stall_at ? (t) : (t) < stall_at + stall_s ? stall_at : (t)) - 1e-9) * rate))
+    int64_t tail_real = 0;
+    bool slipped = false;
+    /* samples the loop has put in by time t: the lead, then the rate, frozen through the stall, caught up after (all
+     * but lost_s) */
+    #define MADE(t) ((int64_t)((lead + ((t) < stall_at ? (t) : (t) < stall_at + stall_s ? stall_at : (t) - lost_s) - 1e-9) * rate))
     while (t < 3.0) {
+        if (guarded && slip_at > 0 && !slipped && t >= slip_at) {
+            rdof_txguard_slipped(g, (int64_t)(lost_s * rate));
+            slipped = true;
+        }
         int64_t avail = MADE(t) - taken;
         if (guarded && g->skip > 0 && avail > 0) {
             taken += rdof_txguard_drop(g, (int)(avail < INT32_MAX ? avail : INT32_MAX));
@@ -2671,7 +2681,9 @@ static double txguard_sim(bool guarded, double stall_at, double stall_s, rdof_tx
         fin[nfin++] = dry_true;
         if (guarded)
             rdof_txguard_pushed(g, t0, t);
-        if (real) { /* its first real sample on the air, against its place in the stream */
+        if (t >= 2.5)
+            tail_real += real;
+        if (real && lost_s == 0) { /* its first real sample on the air, against its place in the stream */
             const double off = start - (double)first / rate;
             if (isnan(ref))
                 ref = off;
@@ -2682,7 +2694,14 @@ static double txguard_sim(bool guarded, double stall_at, double stall_s, rdof_tx
         cur = 0, real = 0;
     }
     #undef MADE
+    if (late)
+        *late = (double)tail_real / (0.5 * rate);
     return worst;
+}
+
+static double txguard_sim(bool guarded, double stall_at, double stall_s, rdof_txguard_t *g)
+{
+    return txguard_sim_lost(guarded, stall_at, stall_s, 0, 0, g, NULL);
 }
 
 static void test_txguard(void)
@@ -2712,6 +2731,22 @@ static void test_txguard(void)
           g.dry);
     CHECK(txguard_sim(true, 1.0, 0.02, &g) < 1e-4 && g.pads == 0, "a stall the queue covers needs no zeros");
     CHECK(txguard_sim(true, 1.0, 0.4, &g) < 1e-4 && g.dry == 0, "nor a long one");
+
+    /* A 0.4 s stall of which the receiver lost 0.3 s: the loop stays 0.3 s behind for good. Every sample it makes
+     * after is dropped for zeros (the device is never short of them) until it says the stream slipped, half a second
+     * after: then they go out, that much later. */
+    double late = 0;
+    txguard_sim_lost(true, 1.0, 0.4, 0.3, 0, &g, &late);
+    CHECK(late < 0.01 && g.skip > 0, "a loss not said: %.0f%% of the last half second went out, %lld to drop", 1e2 * late,
+          (long long)g.skip);
+    txguard_sim_lost(true, 1.0, 0.4, 0.3, 1.9, &g, &late);
+    CHECK(late > 0.95 && g.skip == 0, "a loss said: %.0f%% went out, %lld to drop", 1e2 * late, (long long)g.skip);
+    rdof_txguard_init(&g, 864000, 12288, 3);
+    rdof_txguard_padded(&g, 5000);
+    rdof_txguard_slipped(&g, 3000);
+    CHECK(g.skip == 2000, "a slip takes off as much: %lld", (long long)g.skip);
+    rdof_txguard_slipped(&g, 3000);
+    CHECK(g.skip == 0, "and no more than there is: %lld", (long long)g.skip);
 }
 
 static void test_ppm_edges(void)

@@ -10,8 +10,9 @@
  * PlutoSDR: 2 blocks of 14.2 ms queued and one being filled, under rdofradio's 50 ms), or no push waits and there's
  * no deadline. When the writer has had nothing to finish a block with by rdof_txguard_deadline, it fills the block
  * with zeros (rdof_txguard_padded), and as many of the samples that come late are dropped (rdof_txguard_drop): a gap
- * on the air, the timing kept. While the caller stays that far behind, every block goes out as zeros. Portable C,
- * no clock of its own (the caller's seconds, monotonic).
+ * on the air, the timing kept. While the caller stays that far behind, every block goes out as zeros: one that
+ * fell behind for good (its receiver lost samples) says so with rdof_txguard_slipped. Portable C, no clock of its
+ * own (the caller's seconds, monotonic).
  */
 #ifndef RDOF_SDR_TXGUARD_H
 #define RDOF_SDR_TXGUARD_H
@@ -44,6 +45,10 @@ double rdof_txguard_deadline(const rdof_txguard_t *g, double margin_s);
 void rdof_txguard_padded(rdof_txguard_t *g, int n);
 /* The writer: of the next n samples, how many to drop (they're taken off the skip). */
 int rdof_txguard_drop(rdof_txguard_t *g, int n);
+/* The caller: its stream fell n samples behind for good (the receiver that paces it lost them): up to n of the
+ * zeros sent stood for those, not for samples still to come, so as many fewer are dropped. Without it, a caller
+ * that far behind never catches up, and every block from then on goes out as zeros. */
+void rdof_txguard_slipped(rdof_txguard_t *g, int64_t n);
 
 #ifdef __cplusplus
 }
