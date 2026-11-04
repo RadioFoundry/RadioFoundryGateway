@@ -39,7 +39,8 @@ int rdof_chzhw_probe(rdof_chzhw_t *h, const rdof_chzhw_io_t *io, char *err, size
     h->max_decim = (int)(c0 >> 16 & 0xFF);
     h->max_cic = (int)(c0 >> 24);
     h->max_taps = (int)(c1 & 0xFFFF);
-    h->hist = (int)(c1 >> 16);
+    h->hist = (int)(c1 >> 16 & 0x7FFF);
+    h->raw = !(c1 & RDOF_CHZHW_CAPS1_NO_RAW);
     if (h->channels < 1 || h->max_decim < 1 || h->max_taps < 1 || h->hist < 2) {
         snprintf(err, cap, "the channelizer's CAPS make no sense: 0x%08x 0x%08x", (unsigned)c0, (unsigned)c1);
         return -1;
@@ -65,8 +66,10 @@ int rdof_chzhw_start(rdof_chzhw_t *h, const rdof_chzfx_cfg_t *cfg, int snap_peri
         snprintf(err, cap, "a CIC of %d: the block takes %d", R, h->max_cic);
         return -1;
     }
-    if (snap_period < 0 || snap_len < 0 || (snap_len && snap_len > snap_period) || (snap_len && R > 1)) {
-        snprintf(err, cap, "RAW frames: %d every %d%s", snap_len, snap_period, R > 1 ? ", with a CIC" : "");
+    if (snap_period < 0 || snap_len < 0 || (snap_len && snap_len > snap_period) || (snap_len && R > 1) ||
+        (snap_len && !h->raw)) {
+        snprintf(err, cap, "RAW frames: %d every %d%s", snap_len, snap_period,
+                 R > 1 ? ", with a CIC" : !h->raw ? ", from a block without them" : "");
         return -1;
     }
     h->ctrl = 0;

@@ -29,6 +29,7 @@ typedef struct {
     uint32_t reg[RDOF_CHZHW_SPAN / 4];
     int started;          /* AP_CTRL written: the read-only registers show */
     uint32_t caps0_top;   /* CAPS0 31..24: the largest CIC */
+    uint32_t caps1_top;   /* CAPS1 bit 31: no RAW frames */
     int id_delay;         /* reads of ID before it shows */
     uint32_t ctrl_log[16];
     int nctrl;
@@ -41,7 +42,7 @@ static uint32_t fake_rd(void *ctx, uint32_t off)
         if (!f->started || (off == RDOF_CHZHW_ID && f->id_delay-- > 0))
             return 0;
         return off == RDOF_CHZHW_ID ? RDOF_CHZHW_ID_RCH1 : off == RDOF_CHZHW_CAPS0 ? f->caps0_top << 24 | 60u << 16 | 8u << 8 | 16u
-                                                                                  : 1024u << 16 | 1024u;
+                                                                                  : f->caps1_top | 1024u << 16 | 1024u;
     }
     return f->reg[off / 4];
 }
@@ -134,6 +135,14 @@ static void test_registers(void)
     CHECK(rdof_chzhw_start(&h, &wide, 100, 1, err, sizeof err) == -1, "RAW frames with a CIC");
     rdof_chzhw_start(&h, &cfg, 0, 0, err, sizeof err);
     CHECK(f.reg[RDOF_CHZHW_CIC_R / 4] == 1 && f.reg[RDOF_CHZHW_CIC_SHIFT / 4] == 0, "no CIC: R 1");
+
+    /* a block without RAW frames (CAPS1 bit 31): the history unchanged, RAW frames refused, none started */
+    memset(&f, 0, sizeof f);
+    f.caps1_top = RDOF_CHZHW_CAPS1_NO_RAW;
+    CHECK(rdof_chzhw_probe(&h, &io, err, sizeof err) == 0 && h.hist == 1024 && !h.raw, "no RAW: history %d raw %d",
+          h.hist, h.raw);
+    CHECK(rdof_chzhw_start(&h, &cfg, 4800, 82, err, sizeof err) == -1 && strstr(err, "without"), "refused: %s", err);
+    CHECK(rdof_chzhw_start(&h, &cfg, 0, 0, err, sizeof err) == 0, "%s", err);
 }
 
 /* What the parser hands over, kept to compare. */

@@ -127,7 +127,10 @@ block, reads its frames from the RX DMA and prints the frames, gaps and each cha
 the AD9361 as it is. First run (2026-11-03, a 7010 Pluto clone, the block without a CIC, loaded by hand through the
 FPGA manager): 10 channels from 2.4 MS/s at 438.525 MHz, 48 kS/s each with no frame lost over 6 s; a 20 dB RX gain step
 moved every channel 19 to 20 dB; each channel's spectrum flat to 3 kHz, -3 dB near 5.5 kHz, -14 dB at 8 to 10 kHz,
--59 dB beyond 14 kHz.
+-59 dB beyond 14 kHz. With the CIC (2026-11-04, the same board): 15 channels across 438.0125 to 438.6 MHz from
+23.04 MS/s at 438.5 MHz (R 60, D 8, 129 taps), 48 kS/s each, no frame lost and no input overflow over 10 s; the
+ARM's CPU 95% idle. A block built without RAW frames (the 7010's, to fit) sets CAPS1 bit 31; `chzhw` then refuses
+them.
 
 `rdofradio --iio local: --fpga-chz [ADDR]` decodes from that block in place of the ARM's channelizer. It probes the
 block (at `0x7C480000` unless ADDR is given) and refuses to start without one. It plans the rate as usual, up to

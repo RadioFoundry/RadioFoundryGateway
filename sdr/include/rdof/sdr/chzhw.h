@@ -49,6 +49,7 @@ extern "C" {
 #define RDOF_CHZHW_STATUS_RUNNING 1u
 #define RDOF_CHZHW_STATUS_IN_OVF 2u      /* the input FIFO was full when a sample came */
 #define RDOF_CHZHW_STATUS_DMA_OVF 4u     /* the DMA had no buffer for a word */
+#define RDOF_CHZHW_CAPS1_NO_RAW 0x80000000u /* a build without RAW frames */
 
 typedef struct {
     uint32_t (*rd)(void *ctx, uint32_t off);
@@ -60,6 +61,7 @@ typedef struct {
     rdof_chzhw_io_t io;
     int channels, lanes, max_decim, max_taps, hist; /* CAPS0, CAPS1 */
     int max_cic;                                    /* CAPS0 31..24: the largest CIC R, 0 for none */
+    int raw;                                        /* RAW frames: CAPS1 bit 31 clear */
     uint32_t ctrl;                                  /* what CTRL holds */
     int nch;                                        /* channels started */
 } rdof_chzhw_t;
@@ -67,8 +69,8 @@ typedef struct {
 /* Start the block's control if it isn't running, ENABLE off, check ID and read CAPS. 0, or -1 with why in err. */
 int rdof_chzhw_probe(rdof_chzhw_t *h, const rdof_chzhw_io_t *io, char *err, size_t cap);
 /* Configure and ENABLE (which resets the block: frame 0 next). RAW frames: snap_len in a row every snap_period
- * output instants, 0 for none (none with a CIC). 0, or -1 with why in err (cfg past the block's or the model's
- * sizes). */
+ * output instants, 0 for none (none with a CIC, nor from a block without them). 0, or -1 with why in err (cfg past
+ * the block's or the model's sizes). */
 int rdof_chzhw_start(rdof_chzhw_t *h, const rdof_chzfx_cfg_t *cfg, int snap_period, int snap_len, char *err,
                      size_t cap);
 /* New steps for every started channel, taken after the next output instant (all at once: APPLY). */
