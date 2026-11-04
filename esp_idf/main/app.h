@@ -547,6 +547,9 @@ typedef struct {
 bool sdr_modem_bench_slots(sdr_modem_slots_t *s);
 void sdr_modem_bench_write(const uint8_t *data, size_t len);
 void sdr_modem_bench_close(void);
+/* The receiver streams again, at a new center or not (sdr_task.c): the modem's carrier tuned again (a roamer
+ * given back while a bench session had the receiver elsewhere kept the session's) */
+void sdr_modem_retuned(double center_hz);
 /* A routed bench job's power: the roamer's modem sends at most dbm (its own if lower) until NAN lifts it. A
  * frequency's power level never reaches an SDR (config-v3.md), so the router's tune can't carry it. */
 void sdr_modem_tx_cap(double dbm);

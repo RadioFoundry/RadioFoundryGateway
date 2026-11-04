@@ -960,7 +960,9 @@ static bool tx_service(void)
         tx.a_us = now;
     }
     const int64_t n48 = tx_now48(now);
-    if (!tx.pos || tx.pos < n48 - TX_STAGE / 2) { /* the first pull, or far behind: from now */
+    /* the first pull, far behind, or ahead past the stage (the stream restarted, rx_count from 0, at a retune: the
+     * source sat a whole stream ahead and nothing was staged again, every key-up cut at its max_s): from now */
+    if (!tx.pos || tx.pos < n48 - TX_STAGE / 2 || tx.pos > n48 + TX_STAGE) {
         tx.pos = n48;
         tx.key = -1;
     }

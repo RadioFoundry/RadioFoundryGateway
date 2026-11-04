@@ -1398,6 +1398,7 @@ static void dsp_task(void *arg)
         }
         g_sstat.receiving = true;
         fe_streaming = true;
+        sdr_modem_retuned(g_rx.center_hz); /* the front end takes a carrier near its new center only now */
         bool first = true;
         int64_t stream_samples = 0; /* UTC slot timing: the stream's sample count, stamped as it arrives */
         slot_timing_stream(g_scfg.sample_rate, g_rx.out_index);

@@ -204,6 +204,19 @@ static void unpark(void)
 #endif
 }
 
+void sdr_modem_retuned(double center_hz)
+{
+    if (!lock)
+        return;
+    TAKE();
+    center = center_hz;
+    rdof_sdrmodem_t *m = mdm;
+    double off;
+    if (m && m->tx_hz && !io_tx_tune(NULL, m->tx_hz, &off))
+        ESP_LOGW(TAG, "%.5f MHz can't be sent from the receiver's %.5f MHz", m->tx_hz / 1e6, center_hz / 1e6);
+    GIVE();
+}
+
 const char *sdr_modem_bench_borrow_why(bool borrow)
 {
     if (bench_reply)
