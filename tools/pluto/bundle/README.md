@@ -17,11 +17,11 @@ From a computer the Pluto is plugged into (it asks for the Pluto's root password
 
 Or copy the bundle to the Pluto and run `./install.sh --here ...` there.
 
-It goes in the Pluto's persistent flash (`/mnt/jffs2`, about 300 KB), starts at boot from `/mnt/jffs2/autorun.sh`, and
+It goes in the Pluto's persistent flash (`/mnt/jffs2`), starts at boot from `/mnt/jffs2/autorun.sh`, and
 starts again 5 s after it exits.
 
 The FPGA's bitstream for the board (`fpga/`, for `--fpga-chz` and `--fpga-duc`: every channel at once, 15 on a
-7010 clone in place of about 10) is 1 MB and doesn't fit there. `install.sh` writes it to `rdof/` on the SD card's
+7010 clone in place of about 10) doesn't fit there. `install.sh` writes it to `rdof/` on the SD card's
 boot partition, the one with `BOOT.bin`, and only when the one there differs; it never touches the boot files.
 `install.sh` then adds `--fpga-chz --fpga-duc` to `flags`, so rdofradio loads it at every boot (`/tmp/rdof-fpga`
 says which is in); a reboot brings the stock design back. With `--split-tx` or `--mmdvm` in `flags` (a USB radio

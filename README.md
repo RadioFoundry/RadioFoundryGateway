@@ -7,13 +7,15 @@ data gateway, in any combination, from whatever radios you have. Also runs on Li
 
 ## Highlights
 
-- 📡 **Hear up to 6 channels at once** on an ESP32-S3 (RTL-SDR or the W12's built-in LR2021), 10+ on a Raspberry Pi
+- 📡 **Hear up to 6 channels at once** on an ESP32-S3 (RTL-SDR or the W12's built-in LR2021), 10+ on a Raspberry Pi,
+  16 on a PlutoSDR clone with the FPGA channelizer
 - 🔁 **Repeater or roaming hotspot** from a hotspot-mode handheld, an MMDVM HAT, or the SDR itself
 - 🔗 **HBlink4 peer** per radio and per SDR channel, over UDP or SCTP
 - 📨 **MQTT** in MMDVMHost's call JSON, plus raw bursts for your own decoders
 - 🛰️ **Disciplined UTC clock:** GNSS PPS or NTP, falsetickers rejected, the crystal's ppm and temperature drift learned and corrected, DMR slots and SDR samples locked to UTC. Groundwork for voting and simulcast
 - 🌐 **DMR-IP gateway** built in: radios' ARS, text, location and any UDP app reach the internet, no PC
 - 🖥️ **Web page and JSON API**: live spectrum and waterfall, Last heard, settings, Wi-Fi, clock, OTA, crash dumps
+- 📏 **Bench API:** captures, triggers, transmit jobs and analog tests, each frequency report with how far to trust it
 - 🧪 **Tested byte for byte** against golden fixtures on the host, plus hardware-in-the-loop tests on boards
 
 ## How it fits together
@@ -59,7 +61,8 @@ Each board runs what its settings make ([config-v3.md](docs/spec/fw/config-v3.md
 | MMDVM_HS HAT | UART | ✅ | ✅ | half or full |
 | Any SoapySDR device (Linux / macOS): RTL-SDR and PlutoSDR tested; LimeSDR, HackRF, USRP B200 and others ([list](docs/reference.md)) | `rdofsdr` | ✅ multi-channel | — | — |
 | A SoapySDR device that transmits, or an AD9361 / AD9363 through libiio | `rdofradio` | ✅ | ✅ | half or full |
-| PlutoSDR family (7010 / 7020, stock firmware), on its own ARM | `rdofradio --iio local:` | ✅ | ✅ | half or full |
+| PlutoSDR family (7010 / 7020, stock firmware), on its own ARM | `rdofradio --iio local:` | ✅ multi-channel | ✅ | half or full |
+| PlutoSDR 7010 clone with the FPGA channelizer (bitstream in `tools/pluto/fpga/`) | `rdofradio --fpga-chz` | ✅ 16 channels | ✅ | half or full |
 
 Some combinations:
 
@@ -72,6 +75,7 @@ Some combinations:
 | ESP32-S3 + HAT + RTL-SDR | A repeater plus a wide-area monitor, one box |
 | Raspberry Pi + any SoapySDR | 10+ channels from one dongle |
 | PlutoSDR alone | A full duplex repeater with its web page, any split, on the stock firmware |
+| PlutoSDR 7010 clone + RadioFoundry radio on its USB | Up to 16 monitored channels, the radio transmitting for the repeater (split duplex) |
 
 A powered USB hub runs two USB radios at once. An optional SSD1306 OLED shows the board's state.
 
@@ -88,7 +92,7 @@ A powered USB hub runs two USB radios at once. An optional SSD1306 OLED shows th
 
 - Channelizer, demodulator and AGC tuned for the S3's SIMD and FFT
 - Up to 6 channels on the S3 (LR2021 at 384 kS/s), 5 with an RTL-SDR at 288 kS/s
-- Learns the tuner's ppm error from what it hears
+- Learns the tuner's ppm error from its sample clock against a time reference (from heard carriers only with none)
 - Built-in self-test with a recorded clip and expected output
 - The LR2021 can transmit too: the SDR becomes an emulated MMDVM modem
 
@@ -134,7 +138,7 @@ The board doesn't just set its clock, it disciplines it, chrony style:
 | `16mb` | ESP32-S3 N16R8 | 16 MB flash, 8 MB PSRAM |
 | `16mb` + `w12` | Meshnology W12 | LR2021, OLED, L76K GNSS header. Best at 902–928 MHz; at UHF its filter costs about 46 dB, so it hears only nearby transmitters |
 | Linux / macOS | PC, Raspberry Pi | `rdofsdr`, live from SoapySDR or from a recording; `rdofradio` |
-| PlutoSDR | its Zynq's ARM | `rdofradio --iio`, built by `tools/pluto/build.sh` ([reference](docs/reference.md)) |
+| PlutoSDR | its Zynq's ARM | `rdofradio --iio`, built by `tools/pluto/build.sh`; installed and run at boot by the bundle ([reference](docs/reference.md), "PlutoSDR") |
 
 ## Protocol additions
 
@@ -179,17 +183,19 @@ Hardware-in-the-loop tests against a running board: `RDOF_BOARD=<board ip> pytho
 
 ## Status
 
-Feature-complete and running on hardware: the SDR receiver on the SuperMini, N16R8 and W12; the W12 transmitting
-as a roamer and answering pings as the IP gateway. A few paths (a split repeater, a USB hub with two radios) are
-host-tested but not yet run on a board. See [docs/reference.md](docs/reference.md) for what's been measured and
-what's left.
+Running on hardware: the SDR receiver on the SuperMini, N16R8 and W12; the W12 transmitting as a roamer and
+answering pings as the IP gateway; on a PlutoSDR 7010 clone, the FPGA channelizer with 15 channels and the FPGA
+transmit interpolator, in loopback. Host-tested, not yet run with real radios: a split repeater, a USB hub with two
+radios, a radio on the Pluto's USB beside the FPGA channelizer. More than one transmitting radio per SDR is next.
+See [docs/reference.md](docs/reference.md) for what's been measured and what's left.
 
 ## Docs
 
-- [docs/reference.md](docs/reference.md): profiles, sizes, settings, front ends, CPU budgets
+- [docs/reference.md](docs/reference.md): building and testing, the firmware, the SDR, the host tools and the PlutoSDR
 - [docs/spec/](docs/spec/): how each part works, starting with [overview.md](docs/spec/fw/overview.md)
 - `components/*/README.md`: standalone ESP-IDF components (netclock, wifilist, tinysctp, lr2021, gnss)
 - [rust/README.md](rust/README.md): the Rust modules
+- [tools/pluto/bundle/README.md](tools/pluto/bundle/README.md): installing on a PlutoSDR
 
 ## Contributing
 
