@@ -115,9 +115,99 @@ static unsigned slots(const rdof_jdoc_t *d, int obj)
     return m;
 }
 
-/* bench_tx.py outbound: a repeater's downlink with no traffic (BS idle bursts with the CACH, both slots), keyed for
- * --seconds. */
-static bool parse_outbound(const rdof_jdoc_t *d, int obj, rdof_bj_job_t *j, char *error, size_t ecap)
+/* The outbound's voice calls (the `voice` list): each checked against the job's length and the other calls on its
+ * slot. Their AMBE frames go into ambe_buf one after the other. */
+static bool parse_ob_voice(const rdof_jdoc_t *d, int arr, rdof_bj_job_t *j, uint8_t *ambe_buf, size_t cap,
+                           char *error, size_t ecap)
+{
+    const rdof_jnode_t *a = rdof_jnode(d, arr);
+    if (a->type != RDOF_JARR || a->count < 1 || a->count > RDOF_BJ_OB_CALLS) {
+        snprintf(error, ecap, "outbound --voice: a list of 1-%d calls", RDOF_BJ_OB_CALLS);
+        return false;
+    }
+    size_t used = 0;
+    for (int i = 0; i < a->count; i++) {
+        const int o = rdof_jat(d, arr, i);
+        const rdof_jnode_t *e = rdof_jnode(d, o);
+        rdof_bj_ob_call_t *c = &j->ob_calls[i];
+        if (!e || e->type != RDOF_JOBJ) {
+            snprintf(error, ecap, "outbound --voice call %d: an object", i + 1);
+            return false;
+        }
+        c->slot = (int)num(d, o, "slot", 0);
+        c->src = (uint32_t)num(d, o, "src", 9990301);
+        c->dst = (uint32_t)num(d, o, "dst", 215);
+        c->group = !node(d, o, "group") || flag(d, o, "group");
+        c->pi = flag(d, o, "pi");
+        c->start_s = num(d, o, "start_s", 0);
+        c->superframes = (int)num(d, o, "superframes", 3);
+        c->headers = (int)num(d, o, "headers", -1);
+        c->late = (int)num(d, o, "late", -1);
+        c->terminators = (int)num(d, o, "terminators", -1);
+        if (c->headers == 0 && c->late < 0)
+            c->late = 0; /* no header: a late entry from voice burst A */
+        if (c->slot != 1 && c->slot != 2) {
+            snprintf(error, ecap, "outbound --voice call %d: slot 1 or 2", i + 1);
+            return false;
+        }
+        if (c->src < 1 || c->src > 0xFFFFFF || c->dst < 1 || c->dst > 0xFFFFFF || !(c->start_s >= 0) ||
+            c->superframes < 1 || c->superframes > 200 || c->headers < -1 || c->headers > 16 || c->late < -1 ||
+            c->late > 5 || c->terminators < -1 || c->terminators > 8) {
+            snprintf(error, ecap, "outbound --voice call %d: src and dst 1-16777215, start_s 0 or more, superframes "
+                                  "1-200, headers 0-16, late 0-5, terminators 0-8", i + 1);
+            return false;
+        }
+        if (c->late >= 0 && c->headers > 0) {
+            snprintf(error, ecap, "outbound --voice call %d: a late entry has no headers", i + 1);
+            return false;
+        }
+        const rdof_jnode_t *h = node(d, o, "ambe_hex");
+        if (h && h->type == RDOF_JSTR) {
+            const int n = unhex(h->str, ambe_buf + used, cap - used);
+            if (n < 0) {
+                snprintf(error, ecap, "outbound --voice call %d: ambe_hex not hex, or the job's AMBE over %zu bytes",
+                         i + 1, cap);
+                return false;
+            }
+            c->ambe = ambe_buf + used;
+            c->ambe_len = (size_t)n / 9 * 9;
+            used += c->ambe_len;
+            if (!c->ambe_len) {
+                snprintf(error, ecap, "outbound --voice call %d: ambe_hex has no 9-byte frame", i + 1);
+                return false;
+            }
+        }
+    }
+    j->ob_ncalls = a->count;
+    /* each call's slots on the air: [start, start + its bursts' 60 ms), inside the key-up and alone on its slot */
+    double from[RDOF_BJ_OB_CALLS], to[RDOF_BJ_OB_CALLS];
+    for (int i = 0; i < j->ob_ncalls; i++) {
+        from[i] = j->ob_calls[i].start_s;
+        const int nb = rdof_bj_ob_call_build(j, i, NULL, 0);
+        if (nb < 1) {
+            snprintf(error, ecap, "outbound --voice call %d: no memory to build it", i + 1);
+            return false;
+        }
+        to[i] = from[i] + nb * 0.060;
+        if (to[i] > j->seconds - 0.030) {
+            snprintf(error, ecap, "outbound --voice call %d runs to %.2f s, past --seconds %.1f", i + 1, to[i],
+                     j->seconds);
+            return false;
+        }
+        for (int k = 0; k < i; k++)
+            if (j->ob_calls[k].slot == j->ob_calls[i].slot && from[i] < to[k] + 0.060 && from[k] < to[i] + 0.060) {
+                snprintf(error, ecap, "outbound --voice calls %d and %d overlap on slot %d", k + 1, i + 1,
+                         j->ob_calls[i].slot);
+                return false;
+            }
+    }
+    return true;
+}
+
+/* bench_tx.py outbound: a repeater's downlink (BS bursts with the CACH, both slots), keyed for --seconds: idle
+ * bursts, and with --voice the calls it lists in their slots. */
+static bool parse_outbound(const rdof_jdoc_t *d, int obj, rdof_bj_job_t *j, uint8_t *ambe_buf, size_t cap,
+                           char *error, size_t ecap)
 {
     char s[16];
     j->cmd = RDOF_BJ_OUTBOUND;
@@ -133,7 +223,7 @@ static bool parse_outbound(const rdof_jdoc_t *d, int obj, rdof_bj_job_t *j, char
         return false;
     }
     if (num(d, obj, "voice_slot", 0) != 0) {
-        snprintf(error, ecap, "bench_tx outbound --voice-slot isn't done here yet (idle bursts only)");
+        snprintf(error, ecap, "bench_tx outbound --voice-slot isn't done here: give the calls as --voice");
         return false;
     }
     if (!(j->freq_mhz > 0) || j->cc < 0 || j->cc > 15 || !j->slots || !(j->seconds >= 0.5) ||
@@ -142,6 +232,10 @@ static bool parse_outbound(const rdof_jdoc_t *d, int obj, rdof_bj_job_t *j, char
                  RDOF_BJ_OUTBOUND_MAX_S);
         return false;
     }
+    const int v = rdof_jget(d, obj, "voice");
+    const rdof_jnode_t *vn = rdof_jnode(d, v);
+    if (vn && vn->type != RDOF_JNULL)
+        return parse_ob_voice(d, v, j, ambe_buf, cap, error, ecap);
     return true;
 }
 
@@ -208,7 +302,7 @@ bool rdof_bj_parse(const rdof_jdoc_t *d, int obj, rdof_bj_job_t *j, uint8_t *amb
     }
     text(d, obj, "cmd", s, sizeof s);
     if (!strcmp(s, "outbound"))
-        return parse_outbound(d, obj, j, error, ecap);
+        return parse_outbound(d, obj, j, ambe_buf, cap, error, ecap);
     j->cmd = !strcmp(s, "voice") ? RDOF_BJ_VOICE : !strcmp(s, "csbk") ? RDOF_BJ_CSBK : !strcmp(s, "data") ? RDOF_BJ_DATA
            : !strcmp(s, "listen") ? RDOF_BJ_LISTEN : 0;
     if (!j->cmd) {
@@ -445,6 +539,32 @@ static int build_voice(const rdof_bj_job_t *j, int call, rdof_bj_burst_t *out, i
     snprintf(note, ncap, "call from %u: %ld AMBE frames, CRC-32 %08X (the radio's RX content check)", (unsigned)src,
              sent_frames, (unsigned)crc_frames);
     snprintf(done, ncap, "call %d from %u done", call + 1, (unsigned)src);
+    return n;
+}
+
+int rdof_bj_ob_call_build(const rdof_bj_job_t *j, int i, rdof_bj_burst_t *out, int cap)
+{
+    const rdof_bj_ob_call_t *c = &j->ob_calls[i];
+    /* a voice job of its own, as built for one slot: BS sync, the outbound's color code (heap: about 2.5 KB) */
+    rdof_bj_job_t *v = calloc(1, sizeof *v);
+    if (!v)
+        return -1;
+    v->cmd = RDOF_BJ_VOICE;
+    v->family = RDOF_FAMILY_BS;
+    v->cc = v->burst_cc = j->cc;
+    v->src = v->src2 = c->src;
+    v->dst = c->dst;
+    v->priv = !c->group;
+    v->pi = c->pi;
+    v->superframes = c->superframes;
+    v->headers = c->late >= 0 ? -1 : c->headers < 0 ? RDOF_BJ_OB_HEADERS : c->headers;
+    v->late = c->late;
+    v->terminators = c->terminators;
+    v->ambe = c->ambe;
+    v->ambe_len = c->ambe_len;
+    char note[160], done[160];
+    const int n = build_voice(v, 0, out, cap, note, done, sizeof note);
+    free(v);
     return n;
 }
 

@@ -640,6 +640,21 @@ void bench_tx_ob_unkey(void)
     xSemaphoreGive(mu);
 }
 
+/* An outbound's voice: the burst to the duplex modem as its host's DMR_DATA1 / DMR_DATA2 (the control byte first),
+ * queued for that slot; a NAK (a full queue, wrong mode) stops the job at its next check */
+void bench_tx_ob_push(int slot, uint8_t control, const uint8_t burst[33])
+{
+    xSemaphoreTake(mu, portMAX_DELAY);
+    if (J.on && J.ob && !J.ob_unkeyed) {
+        uint8_t p[34], f[40];
+        p[0] = control;
+        memcpy(p + 1, burst, 33);
+        sdr_modem_bench_write(f, rdof_mmdvm_frame(slot == 1 ? RDOF_MMDVM_DMR_DATA1 : RDOF_MMDVM_DMR_DATA2, p, sizeof p,
+                                                  f, sizeof f));
+    }
+    xSemaphoreGive(mu);
+}
+
 void bench_tx_ob_close(void)
 {
     xSemaphoreTake(mu, portMAX_DELAY);
@@ -809,6 +824,7 @@ void bench_tx_sig_close(void) {}
 double bench_tx_sig_rate(void) { return 48000; }
 void bench_tx_ob_unkey(void) {}
 void bench_tx_ob_close(void) {}
+void bench_tx_ob_push(int slot, uint8_t control, const uint8_t burst[33]) {}
 const char *bench_tx_why_family(int family) { return NULL; }
 
 #endif

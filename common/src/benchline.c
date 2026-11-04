@@ -19,6 +19,8 @@
 #include "rdof/benchjob.h"
 #include "rdof/jsonp.h"
 #include "rdof/layer2.h"
+#include "rdof/mmdvm.h"
+#include "rdof/pdu.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -59,6 +61,13 @@ typedef struct {
     long ob_rep, ob_last, ob_skips, ob_n[3]; /* the next slot to report; the slot to unkey after; skips told */
     int64_t ob_pos;           /* the map, latched once on the air: TX sample ob_pos at UTC ob_t */
     double ob_t;
+    /* its voice calls (job.ob_calls): call i's bursts are b[ob_off[i]] to b[ob_off[i + 1]], one a slot of its own
+     * from slot ob_k0[i] on; ob_sent[i] of them pushed or dropped, ob_late[] 1 for one dropped (too late for its
+     * slot) */
+    int ob_off[RDOF_BJ_OB_CALLS + 1], ob_sent[RDOF_BJ_OB_CALLS], ob_lates[RDOF_BJ_OB_CALLS];
+    long ob_k0[RDOF_BJ_OB_CALLS];
+    uint8_t *ob_late;
+    long ob_voice[3], ob_vskips; /* voice bursts reported a slot; skips told about */
     long id;
     char note[200], done[200];
     char esc[7000];           /* an out line, as a JSON string */
@@ -1583,6 +1592,7 @@ static void job_end(rdof_bl_t *bl, conn_t *c)
         bl->n_bursts--;
     rdof_bj_listen_free(&J->lis);
     free(J->b);
+    free(J->ob_late);
     free(J);
     c->job = NULL;
 }
@@ -1632,6 +1642,39 @@ static void rpt_run(rdof_bl_t *bl, conn_t *c, job_t *J, int root, double now)
         c->expect_s = j->seconds + 3.0;
 }
 
+/* An outbound's voice calls, built before anything keys: false (the job freed, the request failed) when the bench
+ * can't send them or there's no memory. */
+static bool ob_build(rdof_bl_t *bl, conn_t *c, job_t *J)
+{
+    const rdof_bj_job_t *j = &J->job;
+    if (!bl->p.ob_push) {
+        free(J);
+        fail(bl, c, "unsupported", "bench_tx outbound --voice isn't done here: this bench sends idle bursts only");
+        return false;
+    }
+    int total = 0;
+    for (int i = 0; i < j->ob_ncalls; i++) {
+        J->ob_off[i] = total;
+        total += rdof_bj_ob_call_build(j, i, NULL, 0);
+    }
+    J->ob_off[j->ob_ncalls] = total;
+    J->b = calloc((size_t)total, sizeof *J->b);
+    J->ob_late = calloc((size_t)total, 1);
+    if (!J->b || !J->ob_late) {
+        free(J->b);
+        free(J->ob_late);
+        free(J);
+        fail(bl, c, "busy", "no memory for the outbound's voice (%d bursts)", total);
+        return false;
+    }
+    for (int i = 0; i < j->ob_ncalls; i++) {
+        rdof_bj_ob_call_build(j, i, J->b + J->ob_off[i], J->ob_off[i + 1] - J->ob_off[i]);
+        J->ob_k0[i] = -1;
+    }
+    J->nb = total;
+    return true;
+}
+
 /* A bench_tx outbound job: it waits for the modem, as a transmit job, its frequency claimed. */
 static void ob_run(rdof_bl_t *bl, conn_t *c, job_t *J, int root, double now)
 {
@@ -1651,6 +1694,8 @@ static void ob_run(rdof_bl_t *bl, conn_t *c, job_t *J, int root, double now)
         fail(bl, c, "refused", "%.4f MHz isn't a transmit frequency of this bench", mhz);
         return;
     }
+    if (j->ob_ncalls && !ob_build(bl, c, J))
+        return;
     c->job = J;
     c->op = OP_RUN;
     c->ch = bl->f[k].ch;
@@ -1908,6 +1953,90 @@ static void tick_rpt(rdof_bl_t *bl, conn_t *c, double now)
 static int64_t ob_sc(const job_t *J, long k) { return J->ob.base + (int64_t)llround(k * J->ob.slot) + J->ob.sync_off; }
 static double ob_utc(const job_t *J, int64_t sc) { return J->ob_t + (double)(sc - J->ob_pos) / J->ob.rate; }
 
+/* The record name of an outbound voice burst (its MMDVM control byte): kind and sync, as dmr-bursts names them. */
+static const char *ob_kind(uint8_t control, const char **sync)
+{
+    static const char *const V[] = {"VOICE_A", "VOICE_B", "VOICE_C", "VOICE_D", "VOICE_E", "VOICE_F"};
+    if (control == (RDOF_SYNC_DATA | RDOF_DT_VOICE_LC_HEADER)) {
+        *sync = "BS_DATA";
+        return "VLC_HDR";
+    }
+    if (control == (RDOF_SYNC_DATA | RDOF_DT_TERMINATOR_WITH_LC)) {
+        *sync = "BS_DATA";
+        return "TERM_LC";
+    }
+    if (control == RDOF_SYNC_AUDIO) {
+        *sync = "BS_VOICE";
+        return V[0];
+    }
+    *sync = "EMB";
+    return control >= 1 && control <= 5 ? V[control] : "VOICE";
+}
+
+/* Which call's burst is slot k's: the call (and *b its burst), -1 none. */
+static int ob_voice_at(const job_t *J, long k, int *b)
+{
+    const rdof_bj_job_t *j = &J->job;
+    for (int i = 0; i < j->ob_ncalls; i++) {
+        const long k0 = J->ob_k0[i], d = k - k0;
+        if (k0 < 0 || d < 0 || (d & 1) || d / 2 >= J->ob_sent[i])
+            continue;
+        *b = (int)(d / 2);
+        return i;
+    }
+    return -1;
+}
+
+/* Each call's bursts due in the next three slots, pushed so that each lands in its own slot. The modem puts a
+ * pushed burst in the first slot of its number it hasn't queued yet, after those ahead of it (the modem queues slot
+ * next next). So slot k's burst goes when next is k - 1, or earlier when the call's burst for k - 2 is still waiting
+ * ahead of it; one whose slot is already queued is dropped as late (its call stays on its slots). */
+static void ob_push_voice(rdof_bl_t *bl, conn_t *c)
+{
+    job_t *J = c->job;
+    const rdof_bj_job_t *j = &J->job;
+    const long next = J->ob.next;
+    for (int i = 0; i < j->ob_ncalls; i++) {
+        const int n = J->ob_off[i + 1] - J->ob_off[i];
+        while (J->ob_k0[i] >= 0 && J->ob_sent[i] < n) {
+            const long k = J->ob_k0[i] + 2L * J->ob_sent[i];
+            const int bi = J->ob_off[i] + J->ob_sent[i];
+            if (k <= next) {
+                J->ob_late[bi] = 1;
+                J->ob_lates[i]++;
+                J->ob_sent[i]++;
+                continue;
+            }
+            const bool behind = J->ob_sent[i] > 0 && !J->ob_late[bi - 1] && k - 2 >= next; /* k - 2's still waiting */
+            if (k > next + 3 || (k != next + 1 && !behind))
+                break;
+            bl->p.ob_push(bl->p.ctx, j->ob_calls[i].slot, J->b[bi].control, J->b[bi].burst);
+            J->ob_sent[i]++;
+        }
+    }
+}
+
+/* The calls' first slots, from the key-up's first slot: start_s rounded to a slot of the call's number, and no
+ * earlier than the first slot still to be queued. */
+static void ob_place_voice(rdof_bl_t *bl, conn_t *c, double now)
+{
+    job_t *J = c->job;
+    const rdof_bj_job_t *j = &J->job;
+    for (int i = 0; i < j->ob_ncalls; i++) {
+        const rdof_bj_ob_call_t *v = &j->ob_calls[i];
+        long k = J->ob.first + lround(v->start_s * 1000.0 / SLOT_MS);
+        if (k <= J->ob.next)
+            k = J->ob.next + 1;
+        if ((int)(k & 1) + 1 != v->slot)
+            k++;
+        J->ob_k0[i] = k;
+        const int n = J->ob_off[i + 1] - J->ob_off[i];
+        run_log(bl, c, now, "call %d on TS%d from %u to %s %u: %d bursts from slot n=%ld (%.3f s)%s", i + 1, v->slot,
+                (unsigned)v->src, v->group ? "TG" : "ID", (unsigned)v->dst, n, k - J->ob.first,
+                (k - J->ob.first) * SLOT_MS / 1000.0, v->late >= 0 ? ", late entry (no header)" : "");
+    }
+}
+
 /* The records of the slots queued since the last tick: one a burst (in the job's --slots), a skip where the slot
  * clock jumped. As many as the connection has room for; the rest next time. */
 static void ob_report(rdof_bl_t *bl, conn_t *c)
@@ -1931,14 +2060,45 @@ static void ob_report(rdof_bl_t *bl, conn_t *c)
         const int ts = (int)(k & 1) + 1;
         J->ob_n[ts]++;
         J->ob_rep++;
+        int b = -1;
+        const int vi = ob_voice_at(J, k, &b);
+        const bool late = vi >= 0 && J->ob_late[J->ob_off[vi] + b];
+        if (vi >= 0 && !late)
+            J->ob_voice[ts]++;
         if (!(j->slots & (1u << ts)))
             continue;
         const int64_t sc = ob_sc(J, k);
-        snprintf(line, sizeof line,
-                 "{\"t\": %.6f, \"sc\": %lld, \"n\": %ld, \"slot\": %d, \"sync\": \"BS_DATA\", \"kind\": \"IDLE\", "
-                 "\"cc\": %d}",
-                 ob_utc(J, sc), (long long)sc, k - J->ob.first, ts, j->cc);
+        if (vi >= 0 && !late) {
+            const rdof_bj_ob_call_t *v = &j->ob_calls[vi];
+            const char *sync;
+            const char *kind = ob_kind(J->b[J->ob_off[vi] + b].control, &sync);
+            snprintf(line, sizeof line,
+                     "{\"t\": %.6f, \"sc\": %lld, \"n\": %ld, \"slot\": %d, \"sync\": \"%s\", \"kind\": \"%s\", "
+                     "\"cc\": %d, \"call\": %d, \"src\": %u, \"dst\": %u, \"burst\": %d}",
+                     ob_utc(J, sc), (long long)sc, k - J->ob.first, ts, sync, kind, j->cc, vi + 1, (unsigned)v->src,
+                     (unsigned)v->dst, b);
+        } else {
+            snprintf(line, sizeof line,
+                     "{\"t\": %.6f, \"sc\": %lld, \"n\": %ld, \"slot\": %d, \"sync\": \"BS_DATA\", \"kind\": \"IDLE\", "
+                     "\"cc\": %d%s}",
+                     ob_utc(J, sc), (long long)sc, k - J->ob.first, ts, j->cc, late ? ", \"late\": true" : "");
+            if (late) /* the call's burst came too late for its slot: the idle went in its place */
+                snprintf(line + strlen(line) - 1, sizeof line - strlen(line) + 1, ", \"call\": %d, \"burst\": %d}",
+                         vi + 1, b);
+        }
         run_out(&rc, line);
+        if (vi >= 0 && b == J->ob_off[vi + 1] - J->ob_off[vi] - 1) { /* the call's last slot */
+            const rdof_bj_ob_call_t *v = &j->ob_calls[vi];
+            const int nb = J->ob_off[vi + 1] - J->ob_off[vi];
+            snprintf(line, sizeof line,
+                     "{\"t\": %.6f, \"call\": {\"index\": %d, \"slot\": %d, \"src\": %u, \"dst\": %u, "
+                     "\"group\": %s, \"first_n\": %ld, \"last_n\": %ld, \"bursts\": %d, \"late\": %d, "
+                     "\"late_entry\": %s}}",
+                     ob_utc(J, sc), vi + 1, v->slot, (unsigned)v->src, (unsigned)v->dst, v->group ? "true" : "false",
+                     J->ob_k0[vi] - J->ob.first, k - J->ob.first, nb - J->ob_lates[vi], J->ob_lates[vi],
+                     v->late >= 0 ? "true" : "false");
+            run_out(&rc, line);
+        }
     }
     if (J->ob.skips > J->ob_skips && J->ob_rep >= J->ob.last_to)
         J->ob_skips = J->ob.skips; /* a jump before the key-up's first slot: nothing went out there */
@@ -1995,7 +2155,15 @@ static void tick_ob(rdof_bl_t *bl, conn_t *c, double now)
                  J->ob.rate, J->ob.slot, 1e3 * J->ob.slot / J->ob.rate, J->ob.sync_off, (long long)sc0,
                  ob_utc(J, sc0), J->ob.ppm);
         run_out(&rc, line);
+        if (j->ob_ncalls)
+            ob_place_voice(bl, c, now);
         J->state = J_OB_RUN;
+    }
+    if (j->ob_ncalls && J->state != J_OB_SETUP) {
+        if (J->ob.skips > J->ob_vskips && (J->ob_vskips = J->ob.skips) > 0)
+            run_log(bl, c, now, "the slot clock jumped (n=%ld to %ld): a voice burst queued across it goes a slot "
+                                "of its number late", J->ob.last_from - J->ob.first, J->ob.last_to - J->ob.first);
+        ob_push_voice(bl, c);
     }
     if (J->state == J_OB_RUN && J->ob.next >= J->ob_last) {
         bl->p.ob_unkey(bl->p.ctx); /* the slot queued next is the last */
@@ -2012,11 +2180,21 @@ static void tick_ob(rdof_bl_t *bl, conn_t *c, double now)
     bl->tx_conn = -1;
     const long sent = J->ob_rep - J->ob.first;
     run_log(bl, c, now, "sent %ld slots (%ld TS1, %ld TS2), %ld skips", sent, J->ob_n[1], J->ob_n[2], J->ob.skips);
+    int lates = 0;
+    for (int i = 0; i < j->ob_ncalls; i++)
+        lates += J->ob_lates[i];
+    char voice[160] = "";
+    if (j->ob_ncalls) {
+        snprintf(voice, sizeof voice, ", \"voice\": {\"calls\": %d, \"ts1\": %ld, \"ts2\": %ld, \"late\": %d}",
+                 j->ob_ncalls, J->ob_voice[1], J->ob_voice[2], lates);
+        run_log(bl, c, now, "voice: %ld bursts on TS1, %ld on TS2, %d too late for their slot", J->ob_voice[1],
+                J->ob_voice[2], lates);
+    }
     snprintf(line, sizeof line,
              "{\"t\": %.6f, \"summary\": {\"slots\": %ld, \"ts1\": %ld, \"ts2\": %ld, \"skips\": %ld, "
-             "\"seconds\": %.3f, \"sc0\": %lld, \"t0\": %.6f, \"period_samples\": %.1f, \"rate\": %.1f}}",
+             "\"seconds\": %.3f, \"sc0\": %lld, \"t0\": %.6f, \"period_samples\": %.1f, \"rate\": %.1f%s}}",
              utc_now(bl, now), sent, J->ob_n[1], J->ob_n[2], J->ob.skips, sent * SLOT_MS / 1000.0,
-             (long long)ob_sc(J, J->ob.first), ob_utc(J, ob_sc(J, J->ob.first)), J->ob.slot, J->ob.rate);
+             (long long)ob_sc(J, J->ob.first), ob_utc(J, ob_sc(J, J->ob.first)), J->ob.slot, J->ob.rate, voice);
     run_out(&rc, line);
     run_exit(bl, c, 0, NULL);
 }

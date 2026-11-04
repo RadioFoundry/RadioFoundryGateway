@@ -32,6 +32,21 @@ extern "C" {
 enum { RDOF_BJ_VOICE = 1, RDOF_BJ_CSBK, RDOF_BJ_DATA, RDOF_BJ_LISTEN, RDOF_BJ_REPEATER, RDOF_BJ_OUTBOUND };
 
 #define RDOF_BJ_OUTBOUND_MAX_S 60 /* an outbound job's --seconds at most (bench.tx's max_key_s doesn't apply) */
+#define RDOF_BJ_OB_CALLS 8        /* voice calls an outbound job carries at most */
+#define RDOF_BJ_OB_HEADERS 3      /* an outbound call's voice LC headers when it doesn't say */
+
+/* A voice call in an outbound job's slots (bench-api.md 14.3, `voice`): BS bursts as a repeater sends them, from
+ * start_s after the key-up. late >= 0 is a late entry: no headers, the first superframe from voice burst late (A-F
+ * 0-5) on. */
+typedef struct {
+    int slot;                   /* 1, 2 */
+    uint32_t src, dst;
+    bool group, pi;
+    double start_s;
+    int superframes, headers, late, terminators;
+    const uint8_t *ambe;        /* its own ambe_hex (in the job's AMBE buffer), NULL silence */
+    size_t ambe_len;
+} rdof_bj_ob_call_t;
 
 typedef struct {
     int cmd;
@@ -65,6 +80,9 @@ typedef struct {
     /* bench_repeater (cmd RDOF_BJ_REPEATER; freq_mhz is tx_mhz) */
     double rx_mhz, tx_mhz, hang, call_hang, beacon, beacon_len, beacon_phase;
     unsigned slots;             /* bit 1: slot 1, bit 2: slot 2 (outbound: the slots it reports) */
+    /* bench_tx outbound's voice calls */
+    rdof_bj_ob_call_t ob_calls[RDOF_BJ_OB_CALLS];
+    int ob_ncalls;
 } rdof_bj_job_t;
 
 /* The job object of a run request (bench-api.md 14.3): false with error set when it can't be done here. ambe_buf
@@ -88,6 +106,9 @@ int rdof_bj_build(const rdof_bj_job_t *j, int k, rdof_bj_burst_t *out, int cap, 
                   char *error, size_t ecap);
 /* Bursts key-up k has at most (for the buffer). */
 int rdof_bj_max_bursts(const rdof_bj_job_t *j);
+/* An outbound job's voice call i, as the BS bursts it sends one a slot of its own (every 60 ms) into out (up to
+ * cap): how many it has (more than cap when they didn't all fit), -1 with no memory. */
+int rdof_bj_ob_call_build(const rdof_bj_job_t *j, int i, rdof_bj_burst_t *out, int cap);
 
 /* The listener: bursts heard on the job's frequency, as bench_tx.py listen's records and call summaries. */
 typedef struct {

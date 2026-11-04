@@ -503,6 +503,8 @@ bool bench_tx_ob_open(uint32_t freq, int cc, int power, double seconds, char *wh
 int bench_tx_ob_check(char *why, size_t cap); /* 0, or -1 with why: it stopped */
 void bench_tx_ob_unkey(void);
 void bench_tx_ob_close(void);
+/* an outbound's voice burst into the modem's queue for slot (1, 2), as DMR_DATA1 / DMR_DATA2 */
+void bench_tx_ob_push(int slot, uint8_t control, const uint8_t burst[33]);
 /* a signal mode's transmission (bench-api.md section 14.6): the SDR modem taken as for an outbound, src keyed on freq;
  * its state as rdof_bl_platform_t.sig_state's */
 int bench_tx_sig_open(uint32_t freq, int power, double seconds, const rdof_sig_src_t *src, char *why, size_t cap);
