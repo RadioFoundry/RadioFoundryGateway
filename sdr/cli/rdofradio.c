@@ -534,21 +534,38 @@ static struct {
     double t_rx;             /* seconds the last read spent in the receiver */
 } FX = {.addr = FX_ADDR};
 
-/* The block's R and D for step = R D (48 kS/s out): no CIC when the FIR alone decimates that much, else the CIC
- * with the largest D that divides it. The block's sizes (CAPS) and the model's. False if none fits. */
-static bool fx_plan(int step, int *R, int *D)
+/* Whether the block takes R and D for step = R D: its sizes (CAPS) and the model's. */
+static bool fx_fits(int step, int r, int d)
 {
     const rdof_chzhw_t *h = &FX.h;
-    for (int d = step < h->max_decim ? step : h->max_decim; d >= 1; d--) {
-        const int r = step / d, taps = RDOF_CHZ_OUT_FFT / 4 * d + 1; /* rdof_chzfx_design's */
-        if (step % d || d > RDOF_CHZFX_MAX_DECIM || taps > h->max_taps || taps + d > h->hist ||
-            taps > RDOF_CHZFX_MAX_TAPS || taps + d > RDOF_CHZFX_HIST)
-            continue;
-        if (r > 1 && (r > h->max_cic || r > RDOF_CHZFX_MAX_CIC || step > RDOF_CHZFX_MAX_STEP))
-            continue;
-        *R = r, *D = d;
+    const int taps = RDOF_CHZ_OUT_FFT / 4 * d + 1; /* rdof_chzfx_design's */
+    if (d > h->max_decim || d > RDOF_CHZFX_MAX_DECIM || taps > h->max_taps || taps + d > h->hist ||
+        taps > RDOF_CHZFX_MAX_TAPS || taps + d > RDOF_CHZFX_HIST)
+        return false;
+    return r == 1 || (r <= h->max_cic && r <= RDOF_CHZFX_MAX_CIC && step <= RDOF_CHZFX_MAX_STEP);
+}
+
+/* The block's R and D for step = R D (48 kS/s out): no CIC when the FIR alone decimates that much, else the CIC
+ * with the smallest D from FX_MIN_D that divides it, else the largest below. The FIR's taps grow with D (its
+ * response doesn't), and the block's time for them: R 9, D 46 (737 taps) overflowed the 7010's block's input at
+ * 19.872 MS/s, R 60, D 8 (129) didn't at 23.04. False if none fits. */
+#define FX_MIN_D 8
+static bool fx_plan(int step, int *R, int *D)
+{
+    if (fx_fits(step, 1, step)) {
+        *R = 1, *D = step;
         return true;
     }
+    for (int d = FX_MIN_D; d <= step; d++)
+        if (step % d == 0 && fx_fits(step, step / d, d)) {
+            *R = step / d, *D = d;
+            return true;
+        }
+    for (int d = FX_MIN_D - 1; d >= 1; d--)
+        if (step % d == 0 && fx_fits(step, step / d, d)) {
+            *R = step / d, *D = d;
+            return true;
+        }
     return false;
 }
 static double span_of(const rdof_sdr_channel_t *c, int n)

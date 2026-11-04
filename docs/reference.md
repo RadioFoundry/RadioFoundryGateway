@@ -135,8 +135,8 @@ them.
 `rdofradio --iio local: --fpga-chz [ADDR]` decodes from that block in place of the ARM's channelizer. It probes the
 block (at `0x7C480000` unless ADDR is given) and refuses to start without one. It plans the rate as usual, up to
 48 kS/s times the most the block decimates (24.576 MS/s with a CIC: R D at most 512), and starts the block with the
-receiver's channels: no CIC when the FIR alone decimates enough, else the CIC with the largest D that divides the
-step. The receiver takes the frames through `rdof_sdr_rx_channels_in` (int16 with 3 fraction bits over the 12-bit
+receiver's channels: no CIC when the FIR alone decimates enough, else the CIC with the smallest D from 8 that
+divides the step (the FIR's taps, 16 D + 1, are the block's time: R 9, D 46 overflowed its input at 19.872 MS/s). The receiver takes the frames through `rdof_sdr_rx_channels_in` (int16 with 3 fraction bits over the 12-bit
 ADC: `RDOF_CHZFX_OUT_SCALE`, 1/16384; a tone reads within 0.001 dB of the float path). The idle gate's noise comes
 from the channels themselves: a block's 25th percentile across all channels, the least of the last 16 chunks. The AFC
 writes the block's NCO steps once a turn. Lost frames become zeros (the status's lost count), STATUS overflow bits
