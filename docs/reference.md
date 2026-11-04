@@ -1740,7 +1740,7 @@ channels show `idle`, the share skipped. It saves CPU only.
 A crystal that's fast puts every signal low by f x ppm, and each channel's AFC follows its signal, so the AFC
 corrections say what the tuner's error is (`rdof/sdr/ppm.h`), plus each transmitter's own (a radio may be 1.5 ppm
 off). Every 5 s the board takes the channels with a burst in the last 30 s: when two or more agree within 1 ppm
-of their median, the median is the estimate; held within 0.5 ppm for 60 s, the RTL's correction moves by the
+of their median, the median is the estimate; held within 0.5 ppm for 60 s with 0.75 ppm or more left, the RTL's correction moves by the
 whole ppm and every channel's correction by the same amount the other way, so nothing jumps. What it learns
 goes into a temperature table in NVS (namespace `rdof_ppm`, a key per tuner, `c` and a hash of its serial (the dongle's `VID:PID serial`), so a board keeps a table for each
 tuner it has had; a new one starts from the setting): the board's die temperature in 2 C bins against the learned ppm, averaged with

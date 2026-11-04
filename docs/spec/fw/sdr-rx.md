@@ -277,6 +277,7 @@ crystal puts every signal low, so its AFC correction is negative. Per channel: `
 | channels needed | 2 | `RDOF_PPM_MIN_CHANNELS` |
 | steady band | 0.5 ppm | `RDOF_PPM_STEADY` |
 | apply after | 60 s steady | `RDOF_PPM_APPLY_S` |
+| move when left | 0.75 ppm | `RDOF_PPM_MOVE` |
 | first save | 900 s steady | `RDOF_PPM_FIRST_SAVE_S` |
 | save every / move | 21600 s / 0.5 ppm | `RDOF_PPM_SAVE_EVERY_S` / `_SAVE_MOVE` (used by `rdof_ppm_should_save` only, which the board doesn't call: it stores into the temperature table, `cal_learn`) |
 
@@ -285,14 +286,16 @@ crystal puts every signal low, so its AFC correction is negative. Per channel: `
 1. Take fresh channels. `m = median(v)`, keep those within 1.0 of m, `est = median(kept)`. NaN if fewer than 2.
 2. If est is NaN or `|est − residual| > 0.5`: reset `steady = 0`, `residual = est`. Otherwise
    `residual += 0.25·(est − residual)` and `steady += dt`.
-3. Return `step = lrint(residual)` once `steady ≥ 60` and `|residual| ≥ 1`, else 0.
+3. Return `step = lrint(residual)` once `steady ≥ 60` and `|residual| ≥ 0.75` (`RDOF_PPM_MOVE`: past a half, so a
+   crystal near one doesn't flap; the chip leaves at most 0.75), else 0.
 
 Here `residual` is the error left after `chip` (the whole ppm set on the front end), and `learned = chip + residual`.
 `rdof_ppm_applied(step)`: `chip += step`, `residual −= step`. `rdof_ppm_measured(ppm)` (from the sample clock):
 `est = ppm − chip`, the same steady and step rules, with no averaging.
 
 **Applying a step** (`ppm_tick`): `set_chip_ppm(chip + step)`, then every channel's correction
-`+= f_c · step · 1e-6` (`ppm_shift_channels`), so no signal moves. Which source drives it:
+moves by its base's change (`rebase`: the LO's and, where the front end leaves it, the sample clock's share), so no
+signal moves. Which source drives it:
 `xtal_trusted ? rdof_ppm_measured(xtal) : xtal_ever ? 0 : rdof_ppm_update(AFC)`. Once the sample clock has been trusted
 in a run, the AFC is never used again in that run.
 

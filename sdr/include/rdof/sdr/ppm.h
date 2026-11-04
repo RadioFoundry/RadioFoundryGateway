@@ -7,7 +7,8 @@
  * fixed by rtl_set_freq_correction with a positive ppm), plus the transmitter's own, negated (a radio may be
  * 1.5 ppm off; a repeater rarely is).
  * Where two or more channels with recent bursts agree, their median is the tuner's error; held steady long
- * enough, it is confident. The caller moves the RTL's correction by the whole ppm (rdof_ppm_applied) and keeps
+ * enough, it is confident. The caller moves the RTL's correction by the whole ppm (rdof_ppm_applied) once at least
+ * RDOF_PPM_MOVE is left and keeps
  * the learned value (rdof_ppm_learned) where the next boot finds it. rdof_ppm_should_save is one rule for when: first
  * after RDOF_PPM_FIRST_SAVE_S of confidence, then at most every RDOF_PPM_SAVE_EVERY_S, and only when it moved
  * RDOF_PPM_SAVE_MOVE. The board doesn't use it: it keeps a temperature table instead (sdr_task.c, cal_learn), and
@@ -26,7 +27,11 @@ extern "C" {
 #define RDOF_PPM_AGREE 1.0            /* channels within this of their median agree */
 #define RDOF_PPM_MIN_CHANNELS 2
 #define RDOF_PPM_STEADY 0.5           /* an estimate within this of the running one keeps the confidence */
-#define RDOF_PPM_APPLY_S 60.0         /* confident this long: move the RTL by the whole ppm */
+#define RDOF_PPM_APPLY_S 60.0         /* confident this long: move the RTL by the whole ppm... */
+/* ...once what's left is this much: past 0.5 so a crystal near a half doesn't flap between two settings (a move ends
+ * an LR2021's session), under 1 so the chip leaves at most this much (a capture's samples keep it; the channels and
+ * the transmitter take the rest) */
+#define RDOF_PPM_MOVE 0.75
 #define RDOF_PPM_FIRST_SAVE_S 900.0   /* 15 minutes */
 #define RDOF_PPM_SAVE_EVERY_S 21600.0 /* 6 hours */
 #define RDOF_PPM_SAVE_MOVE 0.5

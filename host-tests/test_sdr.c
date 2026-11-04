@@ -1166,6 +1166,18 @@ static void test_rate(void)
           "rate: ppm moved %d at %.0f s", moved, moved_at);
     CHECK(fabs(rdof_ppm_learned(&p) - 3.8) < 0.02, "rate: learned %.2f, want 3.8", rdof_ppm_learned(&p));
     CHECK(saved_at >= RDOF_PPM_FIRST_SAVE_S && saved_at <= RDOF_PPM_FIRST_SAVE_S + 5, "rate: saved at %.0f s", saved_at);
+
+    /* the chip moves once RDOF_PPM_MOVE is left, not only a whole ppm: -31.94 on a chip at -31 goes to -32; -31.7
+     * stays (a crystal near a half doesn't flap) */
+    const double left[] = {-0.94, -0.7, 0.8, 0.74};
+    const int want[] = {-1, 0, 1, 0};
+    for (int i = 0; i < 4; i++) {
+        rdof_ppm_init(&p, -31.0, NAN);
+        int step = 0;
+        for (double t = 0; t <= 2 * RDOF_PPM_APPLY_S && !step; t += 5)
+            step = rdof_ppm_measured(&p, -31.0 + left[i], t);
+        CHECK(step == want[i], "%.2f ppm left on the chip: moved %d, want %d", left[i], step, want[i]);
+    }
 }
 
 /* A dongle warming up as on the bench: its rate from -3 to -2 ppm, settling with a 4 minute time constant. The

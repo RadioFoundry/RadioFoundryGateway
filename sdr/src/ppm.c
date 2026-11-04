@@ -61,7 +61,7 @@ int rdof_ppm_update(rdof_ppm_t *p, const double *corr_hz, const double *freq_hz,
     }
     p->residual += 0.25 * (est - p->residual);
     p->steady_s += dt;
-    if (p->steady_s >= RDOF_PPM_APPLY_S && fabs(p->residual) >= 1.0)
+    if (p->steady_s >= RDOF_PPM_APPLY_S && fabs(p->residual) >= RDOF_PPM_MOVE)
         return (int)lrint(p->residual);
     return 0;
 }
@@ -80,7 +80,7 @@ int rdof_ppm_measured(rdof_ppm_t *p, double ppm, double t)
     }
     p->residual = est; /* already averaged over many minutes */
     p->steady_s += dt;
-    if (p->steady_s >= RDOF_PPM_APPLY_S && fabs(p->residual) >= 1.0)
+    if (p->steady_s >= RDOF_PPM_APPLY_S && fabs(p->residual) >= RDOF_PPM_MOVE)
         return (int)lrint(p->residual);
     return 0;
 }
