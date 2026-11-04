@@ -928,7 +928,7 @@ static void test_track(void)
               off_lines, transient, bad);
         CHECK(done && field(done, "settled_hz", v, sizeof v) && fabs(atof(v) - off) < 10 &&
                   field(done, "drift_hz", v, sizeof v) && fabs(atof(v)) < 10 &&
-                  strstr(done, "\"trusted_throughout\":true") && strstr(done, "\"ppm_moved\":0.000") &&
+                  strstr(done, "\"trusted_throughout\":true,\"gap_ms\":0,") && strstr(done, "\"ppm_moved\":0.000") &&
                   strstr(done, "\"freq_tol_hz\":21.9"),
               "%s: settled on %.0f Hz: %.900s", fsk ? "4fsk" : "fm", off, done ? done : "(no done)");
         if (fsk)

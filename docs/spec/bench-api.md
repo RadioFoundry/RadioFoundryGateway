@@ -796,7 +796,8 @@ The summary: `freq`, `mode`, `bw`, `interval_ms`, `t0`, `trigger_time`, `seconds
 `floor_db`, `snr_db`; `settled_hz` (the mean of the last 2 s), `start_hz` (0.3 to 1.3 s), `drift_hz` (the mean of
 the second before `drift_s` (6) less `start_hz`; `null` for a shorter keying), `mean_hz`, `std_hz`, `min_hz`,
 `max_hz` (the lines after the transient, weighted by `ms`), `ppm_moved` (the correction's range over the lines),
-`trusted_throughout`, and the correction's fields with `freq_tol_hz` at the end (section 14.7). `std_hz` is the
+`trusted_throughout`, `gap_ms` (samples the history overwrote before the engine got to them, or the front end's
+filler), and the correction's fields with `freq_tol_hz` at the end (section 14.7). `std_hz` is the
 radio's wander plus the measurement's noise.
 
 `rfgbench.py track --freq MHz [--mode 4fsk]` writes the lines (and `{"summary": ...}`) as JSON to `--out` or

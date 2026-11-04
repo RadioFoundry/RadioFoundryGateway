@@ -1251,8 +1251,9 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now, bool trac
     if (t) {
         t->d = d;
         t->ntaps = 8 * d + 1;
-        t->taps = RDOF_BL_MALLOC(sizeof(float) * (size_t)t->ntaps);
-        t->dl = RDOF_BL_MALLOC(sizeof(float) * 4 * (size_t)t->ntaps);
+        /* internal RAM (under 1 KB at a W12's rate): the filter reads them every output, PSRAM too slow for it */
+        t->taps = malloc(sizeof(float) * (size_t)t->ntaps);
+        t->dl = malloc(sizeof(float) * 4 * (size_t)t->ntaps);
         t->y = RDOF_BL_MALLOC(sizeof(float) * 2 * (size_t)(RDOF_BL_IQ_CHUNK / d + 2));
     }
     /* room for the whole capture where there's memory for it: a slow link (an ESP32's Wi-Fi) sends it late, not
@@ -1261,7 +1262,7 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now, bool trac
     const double whole = whole_s * rate * (fmt && !strcmp(fmt, "cs16") ? 4 : 8);
     if (t && track) { /* its lines, not I/Q: no big buffer */
         t->lcap = (int)(max_s * 1000 / ivl_ms) + 2;
-        t->bf = RDOF_BL_MALLOC(sizeof(float) * (size_t)(rate / 1000 + 2));
+        t->bf = malloc(sizeof(float) * (size_t)(rate / 1000 + 2));
         t->ih = RDOF_BL_MALLOC(sizeof(uint32_t) * TRACK_BINS);
         t->lines = RDOF_BL_MALLOC(sizeof *t->lines * (size_t)t->lcap);
     }
@@ -3403,6 +3404,23 @@ static bool trig_block(rdof_bl_t *bl, conn_t *c, double lin, const rdof_bl_windo
 
 #define TRACK_TRANSIENT_S 0.3 /* the key-up's settling, flagged and left out of the summary's figures */
 
+/* atan2f to about 1e-5 rad (0.1 Hz of an output's step at 48 kS/s), a few times faster than the library's on an
+ * ESP32 */
+static float fast_atan2f(float y, float x)
+{
+    const float ax = fabsf(x), ay = fabsf(y), mx = ax > ay ? ax : ay;
+    if (mx == 0)
+        return 0;
+    const float a = (ax > ay ? ay : ax) / mx, s = a * a;
+    /* Abramowitz and Stegun 4.4.49 */
+    float r = a * (0.9998660f + s * (-0.3302995f + s * (0.1801410f + s * (-0.0851330f + s * 0.0208351f))));
+    if (ay > ax)
+        r = 1.57079637f - r;
+    if (x < 0)
+        r = 3.14159274f - r;
+    return y < 0 ? -r : r;
+}
+
 /* A 4FSK interval's center: its four levels (k-means on the histogram, started from its 1st and 99th percentiles
  * and the thirds between), weighted alike, so more of one symbol than another doesn't move it; dev the outer pair's
  * half spacing. */
@@ -3539,10 +3557,11 @@ static void track_done(rdof_bl_t *bl, conn_t *c, const rdof_bl_window_t *w, doub
          "{\"done\":{\"freq\":%.1f,\"mode\":\"%s\",\"bw\":%.0f,\"interval_ms\":%.0f,\"t0\":%.6f,\"trigger_time\":%.6f,"
          "\"seconds\":%.3f,\"lines\":%d,\"level_db\":%.1f,\"floor_db\":%.1f,\"snr_db\":%.1f,\"settled_hz\":%s,"
          "\"start_hz\":%s,\"drift_hz\":%s,\"drift_s\":%.1f,\"mean_hz\":%s,\"std_hz\":%s,\"min_hz\":%s,\"max_hz\":%s,"
-         "\"ppm_moved\":%s,\"trusted_throughout\":%s,%s,\"source\":\"rfg\"}}",
+         "\"ppm_moved\":%s,\"trusted_throughout\":%s,\"gap_ms\":%.0f,%s,\"source\":\"rfg\"}}",
          c->freq_hz, t->fsk ? "4fsk" : "fm", t->bw, t->ivl_s * 1000, t0, tt, last, t->nlines, t->level_db, t->floor_db,
          t->level_db - t->floor_db, a, b, st, t->drift_s, m, sdv, l, h, dr,
-         t->nlines && t->all_trusted ? "true" : "false", pp);
+         t->nlines && t->all_trusted ? "true" : "false",
+         1000.0 * ((double)t->gaps + (double)t->filled / t->d) / t->rate, pp);
     c->state = C_DONE;
 }
 
@@ -3594,7 +3613,8 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
                 fail(bl, c, "no_signal", "no samples to learn the floor from in %.0f s", t->timeout);
             return;
         }
-        const size_t frame = t->track ? 4096 : (size_t)(RDOF_BL_IQ_CHUNK / t->d + 2) * 8 + 160;
+        /* a chunk ends at most an interval (a line), and the done line after */
+        const size_t frame = t->track ? 1024 : (size_t)(RDOF_BL_IQ_CHUNK / t->d + 2) * 8 + 160;
         if (t->fired && room(c) < frame)
             return; /* the client is behind: later */
         uint64_t oldest = 0, next = 0;
@@ -3651,7 +3671,7 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
             const uint64_t center = t->sc + (uint64_t)i - g;
             if (t->track && t->fired && center < t->end_sc) { /* the phase step from the previous output, in Hz */
                 if (t->have_prev)
-                    t->bf[t->bfn++] = atan2f(yq * t->pi - yi * t->pq, yi * t->pi + yq * t->pq) *
+                    t->bf[t->bfn++] = fast_atan2f(yq * t->pi - yi * t->pq, yi * t->pi + yq * t->pq) *
                                       (float)(t->rate / (2 * M_PI));
                 t->pi = yi, t->pq = yq, t->have_prev = true;
             } else if (t->fired && center < t->end_sc)

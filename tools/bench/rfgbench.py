@@ -530,9 +530,10 @@ def cmd_track(a) -> int:
                 return "-" if m.get(k) is None else f"{m[k]:+.1f}"
             print(f"{m['lines']} lines over {m['seconds']:.1f} s on {m['freq'] / 1e6:.5f} MHz ({m['mode']}, "
                   f"SNR {m['snr_db']:.0f} dB): settled {hz('settled_hz')} Hz, start {hz('start_hz')}, drift "
-                  f"{hz('drift_hz')} by {m['drift_s']:.0f} s, std {hz('std_hz')}, {tol(m.get('freq_tol_hz'))} for the "
+                  f"{hz('drift_hz')} by {m['drift_s']:.0f} s, std {m['std_hz'] if m.get('std_hz') is not None else '-'}, {tol(m.get('freq_tol_hz'))} for the "
                   f"gateway's crystal ({m.get('ppm_source')}, {'trusted' if m.get('trusted_throughout') else 'not trusted'}"
-                  f" throughout, moved {m.get('ppm_moved', 0):.3f} ppm)", file=human, flush=True)
+                  f" throughout, moved {m.get('ppm_moved', 0):.3f} ppm)"
+                  + (f"; {m['gap_ms']:.0f} ms of samples lost" if m.get("gap_ms") else ""), file=human, flush=True)
             return 0 if m["lines"] else EX_NO_SIGNAL
         return None
     try:
