@@ -133,7 +133,8 @@ ARM's CPU 95% idle. A block built without RAW frames (the 7010's, to fit) sets C
 them.
 
 `rdofradio --iio local: --fpga-chz [ADDR]` decodes from that block in place of the ARM's channelizer. It probes the
-block (at `0x7C480000` unless ADDR is given) and refuses to start without one. It plans the rate as usual, up to
+block (at `0x7C480000` unless ADDR is given); with `--iio local:` it loads the bitstream first (below), and with
+none for the board it runs on the ARM instead. It plans the rate as usual, up to
 48 kS/s times the most the block decimates (24.576 MS/s with a CIC: R D at most 512), and starts the block with the
 receiver's channels: no CIC when the FIR alone decimates enough, else the CIC with the smallest D from 8 that
 divides the step (the FIR's taps, 16 D + 1, are the block's time: R 9, D 46 overflowed its input at 19.872 MS/s). The receiver takes the frames through `rdof_sdr_rx_channels_in` (int16 with 3 fraction bits over the 12-bit
@@ -141,14 +142,17 @@ ADC: `RDOF_CHZFX_OUT_SCALE`, 1/16384; a tone reads within 0.001 dB of the float 
 from the channels themselves: a block's 25th percentile across all channels, the least of the last 16 chunks. The AFC
 writes the block's NCO steps once a turn. Lost frames become zeros (the status's lost count), STATUS overflow bits
 count as overflows, and the block is stopped on exit. There's no wideband I/Q: no spectrum, and the bench's captures
-are filler. The duplex calibration points channel 0 at the pulse while it runs. Not with `--split-tx` or `--mmdvm`.
+are filler. The duplex calibration points channel 0 at the pulse while it runs. It works with `--split-tx` and `--mmdvm` (the
+SDR receives only; not yet tested with a radio on the Pluto's USB).
 The host test `rdof_chzrx_tests` runs `e2e_288k.cu8` through the block's model into this entry and matches the float
 path burst for burst.
 
 `--fpga-duc [ADDR]` (with `--iio`, on a bitstream that has the TX interpolator, its registers at `0x7C4A0000`
 unless ADDR is given) runs the transmit stream at 192 kS/s, or 96 kS/s when the rate isn't a multiple of 192 kS/s,
 and the FPGA's CIC (`chzhw.h`, order 3, R 17 to 4095) brings it to the device's rate. The ARM then makes a narrow
-transmit stream while the receiver runs wide. It is opt-in: on a bitstream without the block nothing answers at
+transmit stream while the receiver runs wide. The rate is planned to a multiple of 96 kS/s it makes (9 channels
+over 650 kHz: 1.632 MS/s, R 17, in place of 816 kS/s); with none for the channels it turns off. With `--split-tx` or
+`--mmdvm` the SDR doesn't transmit, and it isn't used. It is opt-in: on a bitstream without the block nothing answers at
 ADDR, and a read there is a bus error. 48 kS/s is refused: its first images, 56 dB down, land beside the next
 channels of a 50 kHz grid. At 96 kS/s they are 76 dB down, at 192 kS/s 94 dB. The TX LO sits 62.5 kHz above the
 carrier at 192 kS/s and 18.75 kHz at 96 kS/s (`--tx-lo` unless given). Only TX1 is interpolated. First run

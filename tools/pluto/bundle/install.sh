@@ -6,8 +6,9 @@
 # so it starts at boot and again whenever it exits. Everything goes in the Pluto's persistent flash, /mnt/jffs2
 # (about 300 KB); the firmware runs /mnt/jffs2/autorun.sh at boot. The FPGA's bitstream for the board (fpga/, for
 # --fpga-chz and --fpga-duc) doesn't fit there: it goes in rdof/ on the SD card's boot partition (the one with
-# BOOT.bin, which is never touched), written only when it differs from the one there. No SD card, or no bitstream
-# for the board: rdofradio runs without it.
+# BOOT.bin, which is never touched), written only when it differs from the one there, and the flags get
+# --fpga-chz --fpga-duc, so rdofradio loads it at every boot. No SD card, or no bitstream for the board: rdofradio
+# runs without it.
 #
 # From a computer the Pluto is plugged into (asks for the Pluto's root password, "analog" as it comes):
 #   ./install.sh [--host root@192.168.2.1] --config my.json     first install, with your settings
@@ -102,6 +103,7 @@ if [ -n "$NEW" ]; then
 fi
 
 # The bitstream: rdof/ on the SD card's boot partition, written only if it differs (rdofradio_fpga.h looks there)
+FPGA=0
 fpga() {
     BF=$(/tmp/rdofradio.check --fpga-board 2> /dev/null) || { echo "fpga: no bitstream for this board: it runs without one"; return 0; }
     FILE=${BF#* }
@@ -114,9 +116,10 @@ fpga() {
         if [ ! -f $M/BOOT.bin ]; then umount $M; rmdir $M; continue; fi
         if [ -f $M/rdof/$FILE ] && cmp -s fpga/$FILE $M/rdof/$FILE; then
             echo "fpga: $FILE on $P is up to date"
+            FPGA=1
         elif mount -o remount,rw $M; then
             mkdir -p $M/rdof && cp fpga/$FILE $M/rdof/$FILE.new && sync && mv $M/rdof/$FILE.new $M/rdof/$FILE &&
-                cp fpga/LICENSE fpga/LICENSE_ADIBSD $M/rdof/ && sync && echo "fpga: $FILE written to rdof/ on $P" ||
+                cp fpga/LICENSE fpga/LICENSE_ADIBSD $M/rdof/ && sync && echo "fpga: $FILE written to rdof/ on $P" && FPGA=1 ||
                 echo "fpga: $FILE: writing rdof/ on $P failed" >&2
         else
             echo "fpga: $P won't mount read-write: $FILE not written" >&2
@@ -135,6 +138,11 @@ cp rdofradio.gz run.sh VERSION $D/
 chmod 755 $D/run.sh
 [ -n "$NEW" ] && cp "$NEW" $D/config.json
 [ -f $D/flags ] || cp flags.example $D/flags
+# the board's bitstream is on its SD card: rdofradio loads it at start
+if [ $FPGA = 1 ] && ! grep -q -- '--fpga-chz' $D/flags; then
+    printf '%s --fpga-chz --fpga-duc\n' "$(cat $D/flags)" > $D/flags.new && mv $D/flags.new $D/flags
+    echo "fpga: --fpga-chz --fpga-duc added to $D/flags"
+fi
 rm -f $D/disabled
 if ! { [ -f $A ] && grep -qF "$LINE" $A; }; then
     printf '# rdofradio: RadioFoundry Gateway (/mnt/jffs2/rdof/run.sh)\n%s\n' "$LINE" >> $A

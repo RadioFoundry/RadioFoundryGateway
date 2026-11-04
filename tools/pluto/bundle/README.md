@@ -23,8 +23,9 @@ starts again 5 s after it exits.
 The FPGA's bitstream for the board (`fpga/`, for `--fpga-chz` and `--fpga-duc`: every channel at once, 15 on a
 7010 clone in place of about 10) is 1 MB and doesn't fit there. `install.sh` writes it to `rdof/` on the SD card's
 boot partition, the one with `BOOT.bin`, and only when the one there differs; it never touches the boot files.
-To use it, add `--fpga-chz --fpga-duc` to `flags`: rdofradio then loads it from there at start (`/tmp/rdof-fpga`
-says which is in); a reboot brings the stock design back.
+`install.sh` then adds `--fpga-chz --fpga-duc` to `flags`, so rdofradio loads it at every boot (`/tmp/rdof-fpga`
+says which is in); a reboot brings the stock design back. With `--split-tx` or `--mmdvm` in `flags` (a USB radio
+transmits), the channelizer still runs and `--fpga-duc` is left unused.
 With no SD card, or no bitstream for the board, it runs without one: the ARM channelizes, and the monitored channels
 that don't fit its window are left out.
 

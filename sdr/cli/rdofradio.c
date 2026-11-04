@@ -43,12 +43,14 @@
  * they run (not in a duplex repeater). --fpga-chz [ADDR] (with --iio, on a PlutoSDR whose FPGA has the channelizer
  * block, its registers at ADDR, 0x7C480000 by default): the block channelizes and the receiver takes its 48 kS/s
  * channel frames from the receive DMA, its AFC steering the block's NCOs; the rate can then go to 24.576 MS/s
- * (R D up to 512). No spectrum and no wideband captures; not with --split-tx or --mmdvm. --fpga-duc [ADDR] (with
+ * (R D up to 512). No spectrum and no wideband captures; with --split-tx or --mmdvm too. --fpga-duc [ADDR] (with
  * --iio, an FPGA with the TX interpolator, its registers at ADDR, 0x7C4A0000 by default; only on a design that has
  * it: elsewhere nothing answers there): the transmit stream goes at 192 kS/s (96 kS/s if the rate isn't a multiple
  * of 192 kS/s; not 48, whose images land on a 50 kHz grid's next channels) and the interpolator brings it to the
  * rate, so a wide receiver doesn't make a wide transmit stream for the ARM. The TX LO then sits 62.5 kHz above the
- * carrier (18.75 at 96 kS/s; --tx-lo unless given), the most the stream reaches, in steps of 6.25 kHz.
+ * carrier (18.75 at 96 kS/s; --tx-lo unless given), the most the stream reaches, in steps of 6.25 kHz. The rate is
+ * planned to one it makes; with none for the channels, it's off. With --split-tx or --mmdvm the SDR doesn't
+ * transmit: not used.
  * With --iio local: on the board, either loads their bitstream first (rdofradio_fpga.h: --fpga-bit FILE, else
  * rfg-pluto-<board>.bit.bin where it's found: /mnt/jffs2/rdof/, rdof/ on an SD card or USB stick, /lib/firmware/);
  * with none for the board, both are off and the ARM channelizes, with the monitored channels that fit its window.
@@ -613,6 +615,17 @@ static double span_of(const rdof_sdr_channel_t *c, int n)
         lo = fmin(lo, c[i].freq_hz), hi = fmax(hi, c[i].freq_hz);
     return hi - lo;
 }
+/* --fpga-duc [ADDR]: the FPGA's TX interpolator (rdof/sdr/chzhw.h): the transmit stream at R.tx_rate, the
+ * interpolator making up the device's rate. Only when asked: on a design without it nothing answers at ADDR, and
+ * a read there is a bus error. */
+#define DX_ADDR 0x7C4A0000ul
+static struct {
+    bool on, probed, started;
+    unsigned long addr;
+    void *regs;
+    rdof_chzhw_duc_t d;
+} DX = {.addr = DX_ADDR};
+static long dx_r(double rate);
 static double plan_rate(const rdof_sdr_channel_t *c, int n, char *why, size_t cap)
 {
     double f[RDOF_SDR_MAX_CHANNELS], center;
@@ -629,6 +642,8 @@ static double plan_rate(const rdof_sdr_channel_t *c, int n, char *why, size_t ca
     for (double r = ceil(lo / 48000) * 48000; r <= hi; r += 48000) {
         if (rdof_plan_center(f, n, r, &center))
             continue;
+        if (DX.probed && !dx_r(r))
+            continue; /* --fpga-duc: a rate its interpolator makes from 192 or 96 kS/s */
         if (FX.on) { /* the block's decimation, not the ARM's FFT */
             if (fx_plan((int)(r / 48000), &fx_r, &fx_d))
                 return r;
@@ -2936,17 +2951,6 @@ static void fx_stop(void)
     FX.started = false;
 }
 
-/* --fpga-duc [ADDR]: the FPGA's TX interpolator (rdof/sdr/chzhw.h): the transmit stream at R.tx_rate, the
- * interpolator making up the device's rate. Only when asked: on a design without it nothing answers at ADDR, and
- * a read there is a bus error. */
-#define DX_ADDR 0x7C4A0000ul
-static struct {
-    bool on, started;
-    unsigned long addr;
-    void *regs;
-    rdof_chzhw_duc_t d;
-} DX = {.addr = DX_ADDR};
-
 /* off: the stock path to the DAC again (at exit, whatever the way) */
 static void dx_stop(void)
 {
@@ -2959,7 +2963,7 @@ static void dx_stop(void)
  * R.lo_off. Its CIC leaves the stream's images at multiples of that from the carrier, the first 94 dB down at
  * 192 kS/s and 76 dB at 96; at 48 kS/s, 56 dB, beside the next channels of a 50 kHz grid the board is receiving:
  * not taken. 0, or -1 with why in err. */
-static int dx_start(double rate, char *err, size_t cap)
+static int dx_probe(char *err, size_t cap)
 {
     if (!(DX.regs = map_regs(DX.addr, RDOF_CHZHW_DUC_SPAN, err, cap)))
         return -1;
@@ -2969,11 +2973,22 @@ static int dx_start(double rate, char *err, size_t cap)
         snprintf(err, cap, "no TX interpolator at 0x%08lx: %s", DX.addr, e);
         return -1;
     }
+    DX.probed = true;
+    return 0;
+}
+/* The interpolation for the device's rate (from 192 kS/s, else 96), or 0: none */
+static long dx_r(double rate)
+{
     const long fs = lround(rate), lo = rdof_chzhw_duc_min_r(&DX.d), hi = rdof_chzhw_duc_max_r(&DX.d);
-    long r = 0;
-    for (long in = 192000; in >= 96000 && !r; in /= 2)
+    for (long in = 192000; in >= 96000; in /= 2)
         if (fs % in == 0 && fs / in >= lo && fs / in <= hi)
-            r = fs / in;
+            return fs / in;
+    return 0;
+}
+static int dx_start(double rate, char *err, size_t cap)
+{
+    const long lo = rdof_chzhw_duc_min_r(&DX.d), hi = rdof_chzhw_duc_max_r(&DX.d), r = dx_r(rate);
+    char e[160];
     if (!r) {
         snprintf(err, cap, "the TX interpolator can't make %.0f S/s from 192 or 96 kS/s (R %ld to %ld): a rate that's "
                            "a multiple of 96 kS/s", rate, lo, hi);
@@ -3271,14 +3286,16 @@ static void split_service(void)
         deliver_heard();
 }
 
-/* a chunk of the receive stream through the receiver (--split-tx, --mmdvm: the SDR receives only) */
+/* a chunk of the receive stream through the receiver (--split-tx, --mmdvm: the SDR receives only); with
+   --fpga-chz the block's frames, which went through the receiver in the read (fx_take) */
 static void rx_turn(void)
 {
     static rdof_cf_t in[CHUNK];
     const double t_in = now_s();
-    const int n = dev->read(dev, in, SC.chunk, 100000);
-    const double t = now_s();
-    WS.wait += t - t_in;
+    FX.t_rx = 0;
+    const int n = FX.on ? fx_take(SC.chunk, 100000) : dev->read(dev, in, SC.chunk, 100000);
+    const double t = now_s() - FX.t_rx;
+    WS.wait += t - t_in, WS.rx += FX.t_rx;
     if (n == RDOF_DEV_TIMEOUT) {
         if (++SC.timeouts >= 50 && !stop) {
             say("read: nothing for 5 s, stopping\n");
@@ -3300,11 +3317,13 @@ static void rx_turn(void)
         WS.n += n;
         clock_read(t, t - t_in >= FRESH_S);
 #ifdef RDOF_HOST_WEB
-        web_spectrum(in, n);
+        if (!FX.on)
+            web_spectrum(in, n);
 #endif
-        bench_feed(in, n, t - t_in >= FRESH_S, false);
+        bench_feed(in, n, t - t_in >= FRESH_S, FX.on);
         const double t3 = now_s();
-        rx_chunk(in, n);
+        if (!FX.on)
+            rx_chunk(in, n);
         const double t4 = now_s();
         WS.spec += t3 - t, WS.rx += t4 - t3;
     }
@@ -4112,7 +4131,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "rdofradio transmits: pass --allow-tx\n");
         return 2;
     }
-    if ((FX.on || DX.on) && dev_local && !split_tx && !mmdvm) {
+    if ((FX.on || DX.on) && dev_local) {
         /* the bitstream in (rdofradio_fpga.h); none: the ARM's channelizer and a full-rate transmit stream, with
            the monitored channels that fit (fpga_fallback) */
         char msg[400];
@@ -4135,10 +4154,6 @@ int main(int argc, char **argv)
             fprintf(stderr, "--fpga-chz: the FPGA channelizer is a PlutoSDR's: with --iio\n");
             return 2;
         }
-        if (split_tx || mmdvm) {
-            fprintf(stderr, "--fpga-chz: not with --split-tx or --mmdvm\n");
-            return 2;
-        }
         if (fx_probe(why, sizeof why)) {
             fprintf(stderr, "--fpga-chz: %s\n", why);
             return 1;
@@ -4146,10 +4161,20 @@ int main(int argc, char **argv)
         fprintf(stderr, "--fpga-chz: the block at 0x%08lx: %d channels, D up to %d, %d taps, CIC R up to %d\n",
                 FX.addr, FX.h.channels, FX.h.max_decim, FX.h.max_taps, FX.h.max_cic);
     }
-    if (DX.on && (!iio || split_tx || mmdvm)) {
-        fprintf(stderr, "--fpga-duc: the FPGA's TX interpolator is a PlutoSDR's transmitter's: with --iio, not with "
-                        "--split-tx or --mmdvm\n");
+    if (DX.on && !iio) {
+        fprintf(stderr, "--fpga-duc: the FPGA's TX interpolator is a PlutoSDR's transmitter's: with --iio\n");
         return 2;
+    }
+    if (DX.on && (split_tx || mmdvm)) {
+        fprintf(stderr, "--fpga-duc: %s transmits, not the SDR: not used\n", split_tx ? "the --split-tx radio" : "the modem");
+        DX.on = false;
+    }
+    if (DX.on) {
+        char why[256];
+        if (dx_probe(why, sizeof why)) {
+            fprintf(stderr, "--fpga-duc: %s\n", why);
+            return 1;
+        }
     }
     R.split = split_tx != NULL;
     if (R.split && !R.full) {
@@ -4233,7 +4258,13 @@ int main(int argc, char **argv)
                 rcfg.nmon - nmon - unfit);
     {
         char why[200];
-        const double fit = plan_rate(CH, NCH, why, sizeof why);
+        double fit = plan_rate(CH, NCH, why, sizeof why);
+        if (!fit && DX.on) {
+            DX.on = DX.probed = false; /* the transmit stream at the device's rate */
+            if ((fit = plan_rate(CH, NCH, why, sizeof why)))
+                fprintf(stderr, "--fpga-duc: no rate it makes holds these channels: off, the transmit stream at "
+                                "%.0f S/s\n", fit);
+        }
         if (!fit)
             return hold(argc, argv, why);
         if (!rate)
