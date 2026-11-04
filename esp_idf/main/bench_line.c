@@ -180,6 +180,10 @@ static void bl_untune(void *ctx) { bench_retune_line_end(); }
 
 static void bl_ob_unkey(void *ctx) { bench_tx_ob_unkey(); }
 static void bl_ob_close(void *ctx) { bench_tx_ob_close(); }
+static void bl_ob_push(void *ctx, int slot, uint8_t control, const uint8_t burst[33])
+{
+    bench_tx_ob_push(slot, control, burst);
+}
 
 /* From the DSP cores: a copy only while a connection wants bursts (the engine queues it). */
 void bench_line_burst(int channel, const rdof_sdr_burst_t *b, double t)
@@ -211,7 +215,7 @@ void bench_line_start(void)
                                           .tx_unkey = bl_tx_unkey, .tx_idle = bl_tx_idle, .tx_close = bl_tx_close,
                                           .tx_why_family = bl_why_family, .ob_open = bl_ob_open,
                                           .ob_state = bl_ob_state, .ob_unkey = bl_ob_unkey, .ob_close = bl_ob_close,
-                                          .ob_can = bl_ob_can, .modes = rdof_sdr_modes, .sig_open = bl_sig_open,
+                                          .ob_can = bl_ob_can, .ob_push = bl_ob_push, .modes = rdof_sdr_modes, .sig_open = bl_sig_open,
                                           .sig_state = bl_sig_state, .sig_close = bl_sig_close,
                                           .sig_rate = bl_sig_rate, .tune = bl_tune, .tune_state = bl_tune_state,
                                           .untune = bl_untune};

@@ -200,6 +200,11 @@ typedef struct {
     /* Why an outbound can't run here (NULL: it can), in place of can_tx (NULL hook: can_tx's answer): it takes the
      * modem from whatever has it */
     const char *(*ob_can)(void *ctx);
+    /* An outbound's voice (optional; NULL: idle bursts only): a burst into slot `slot`'s (1, 2) queue, as an MMDVM
+     * host's DMR_DATA1 / DMR_DATA2 to a duplex modem with a prebuffer of one: it goes out in the first slot of its
+     * number the modem queues after the bursts before it, idle filling a slot with none. The engine pushes slot k's
+     * burst when ob_state's next is k - 1, or earlier behind the burst for k - 2, so it lands in k. */
+    void (*ob_push)(void *ctx, int slot, uint8_t control, const uint8_t burst[33]);
     /* Signal modes (rdof/sigmode.h): the platform's list (NULL-terminated; NULL: none). A mode with a receiver runs
      * on a channel cut from the wideband history (iq_read), one with a transmitter through sig_open. */
     const rdof_sig_mode_t *const *modes;

@@ -670,7 +670,8 @@ def bench_tx_parser() -> argparse.ArgumentParser:
     ob.add_argument("--seconds", type=float, default=10)
     ob.add_argument("--src", type=int)
     ob.add_argument("--slots", default="1,2")            # the slots reported (both are sent)
-    ob.add_argument("--voice-slot", type=int)            # refused by the gateway: idle bursts only for now
+    ob.add_argument("--voice", type=json.loads)          # voice calls in the slots: a JSON list (bench-api.md 14.3)
+    ob.add_argument("--voice-slot", type=int)            # refused by the gateway: give the calls as --voice
     ob.add_argument("--family", choices=("ms", "bs", "ts1", "ts2"))
     ls = sub.add_parser("listen", add_help=False)
     ls.add_argument("--seconds", type=float, default=20)

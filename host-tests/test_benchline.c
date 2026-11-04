@@ -264,12 +264,51 @@ static struct {
     double now, t_key;
     long first, stop, skip_at;
     int skip_n;
+    /* the voice: a duplex modem's queue a slot (prebuffer one), and what went out in each slot from the first */
+    struct {
+        uint8_t control, burst[33];
+    } q[2][8];
+    int qn[2], pushes, overflow;
+    long queued;            /* the next slot the fake modem takes from its queue */
+    bool has[2048];
+    uint8_t control[2048], burst[2048][33];
 } ob;
 #define OB_BASE 1000000
 static bool f_ob_open(void *ctx, const rdof_bl_ob_cfg_t *cfg, char *why, size_t cap)
 {
     ob.open = true, ob.closed = ob.unkeyed = false, ob.cfg = *cfg, ob.polls = 0, ob.stop = -1;
+    ob.qn[0] = ob.qn[1] = ob.pushes = ob.overflow = 0, ob.queued = -1;
+    memset(ob.has, 0, sizeof ob.has);
     return true;
+}
+static void f_ob_push(void *ctx, int slot, uint8_t control, const uint8_t burst[33])
+{
+    const int s = slot - 1;
+    ob.pushes++;
+    if (ob.qn[s] == 8) {
+        ob.overflow++;
+        return;
+    }
+    ob.q[s][ob.qn[s]].control = control;
+    memcpy(ob.q[s][ob.qn[s]].burst, burst, 33);
+    ob.qn[s]++;
+}
+/* The fake modem queues slots [queued, next): each takes the head of its slot's queue, else an idle */
+static void f_ob_take(long next)
+{
+    if (ob.queued < 0)
+        ob.queued = ob.first;
+    for (; ob.queued < next; ob.queued++) {
+        const int s = (int)(ob.queued & 1);
+        const long i = ob.queued - ob.first;
+        if (!ob.qn[s] || i < 0 || i >= 2048)
+            continue;
+        ob.has[i] = true;
+        ob.control[i] = ob.q[s][0].control;
+        memcpy(ob.burst[i], ob.q[s][0].burst, 33);
+        memmove(&ob.q[s][0], &ob.q[s][1], sizeof ob.q[s][0] * 7);
+        ob.qn[s]--;
+    }
 }
 static int f_ob_state(void *ctx, rdof_bl_ob_state_t *s, char *why, size_t cap)
 {
@@ -290,8 +329,10 @@ static int f_ob_state(void *ctx, rdof_bl_ob_state_t *s, char *why, size_t cap)
     }
     if (ob.stop >= 0 && s->next > ob.stop + 1) {
         s->next = ob.stop + 1;
+        f_ob_take(s->next);
         return 2;
     }
+    f_ob_take(s->next);
     return 1;
 }
 static void f_ob_unkey(void *ctx)
@@ -311,7 +352,7 @@ static const rdof_bl_platform_t PLAT = {.device = f_device, .window = f_window, 
                                         .tx_close = f_tx_close, .rpt_open = f_rpt_open, .rpt_state = f_rpt_state,
                                         .rpt_event = f_rpt_event, .rpt_wake = f_rpt_wake, .rpt_close = f_rpt_close,
                                         .tx_why_family = f_why_family, .ob_open = f_ob_open, .ob_state = f_ob_state,
-                                        .ob_unkey = f_ob_unkey, .ob_close = f_ob_close};
+                                        .ob_unkey = f_ob_unkey, .ob_close = f_ob_close, .ob_push = f_ob_push};
 
 /* ── helpers ── */
 
@@ -1258,6 +1299,172 @@ static void test_outbound(void)
     rdof_bl_free(bl);
 }
 
+
+/* ── bench_tx outbound with voice in its slots ── */
+
+/* The embedded LC of a call's voice bursts B-E from slot i on (i a VOICE_B): true with lc9. */
+static bool ob_emb_lc(long i, uint8_t lc9[9])
+{
+    uint8_t raw[128];
+    for (int f = 0; f < 4; f++) {
+        if (!ob.has[i + 2 * f])
+            return false;
+        const uint64_t mid = rdof_middle_field(ob.burst[i + 2 * f]);
+        for (int b = 0; b < 32; b++)
+            raw[32 * f + b] = (uint8_t)((mid >> (47 - 8 - b)) & 1);
+    }
+    return rdof_embedded_lc_decode(raw, lc9);
+}
+
+static int run_ob_long(rdof_bl_t *bl, const char *req, double *now, char *out, size_t cap)
+{
+    const int c = ask(bl, req, *now);
+    size_t n = 0;
+    for (int i = 0; i < 1000 && !rdof_bl_finished(bl, c); i++) {
+        *now += 0.01;
+        ob.now = *now;
+        rdof_bl_tick(bl, *now);
+        n = drain_all(bl, c, out, cap, n);
+    }
+    return c;
+}
+
+/* An outbound with a voice call in each slot, against the fake duplex modem's queues: what went out in each slot */
+static void test_outbound_voice(void)
+{
+    static char out[1 << 19];
+    double now = 5000;
+    memset(&ob, 0, sizeof ob);
+
+    /* refused before anything keys */
+    rdof_bl_platform_t idle_only = PLAT;
+    idle_only.ob_push = NULL;
+    rdof_bl_t *bl = rdof_bl_new(&idle_only);
+    int c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"outbound\",\"freq\":438.1125,"
+                    "\"seconds\":3,\"voice\":[{\"slot\":1}]}}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"unsupported\"") && strstr(out, "idle bursts only"), "no ob_push: %s", out);
+    rdof_bl_closed(bl, c, now);
+    rdof_bl_free(bl);
+    bl = rdof_bl_new(&PLAT);
+    static const struct {
+        const char *voice, *why;
+    } REFUSE[] = {
+        {"[{\"slot\":3}]", "slot 1 or 2"},
+        {"[]", "a list of 1-8 calls"},
+        {"{\"slot\":1}", "a list of 1-8 calls"},
+        {"[{\"slot\":1,\"superframes\":10}]", "past --seconds"},
+        {"[{\"slot\":2,\"late\":2,\"headers\":2}]", "a late entry has no headers"},
+        {"[{\"slot\":1},{\"slot\":2},{\"slot\":1,\"start_s\":0.5}]", "calls 1 and 3 overlap on slot 1"},
+        {"[{\"slot\":1,\"ambe_hex\":\"zz\"}]", "ambe_hex"},
+    };
+    for (size_t r = 0; r < sizeof REFUSE / sizeof REFUSE[0]; r++) {
+        char req[400];
+        snprintf(req, sizeof req, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"outbound\","
+                                  "\"freq\":438.1125,\"seconds\":3,\"voice\":%s}}", REFUSE[r].voice);
+        c = ask(bl, req, now);
+        drain(bl, c, out, sizeof out);
+        CHECK(strstr(out, "\"code\":\"unsupported\"") && strstr(out, REFUSE[r].why), "%s: %s", REFUSE[r].voice, out);
+        rdof_bl_closed(bl, c, now);
+    }
+    CHECK(!ob.open && !ob.pushes, "nothing keyed");
+
+    /* TS1 from 0.2 s (2 headers, 2 superframes, 2 terminators: 16 bursts, to 1.16 s); TS2 a late entry from 0.8 s,
+     * while TS1 talks, from voice burst C (2 superframes less 2, 1 terminator: 11 bursts, to 1.46 s): TS1 ends while
+     * TS2 goes on */
+    ob.first = 8;
+    c = run_ob_long(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"outbound\",\"freq\":438.1125,"
+                        "\"cc\":3,\"seconds\":2,\"voice\":["
+                        "{\"slot\":1,\"src\":9990301,\"dst\":91,\"start_s\":0.2,\"superframes\":2,\"headers\":2,"
+                        "\"terminators\":2},"
+                        "{\"slot\":2,\"src\":9990302,\"dst\":92,\"group\":false,\"start_s\":0.8,\"superframes\":2,"
+                        "\"late\":2,\"terminators\":1}]}}", &now, out, sizeof out);
+    CHECK(is_json_lines(out) && strstr(out, "\"exit\":0") && ob.closed && !ob.overflow, "the job: %.600s", out);
+    CHECK(ob.pushes == 27, "27 bursts pushed: %d", ob.pushes);
+    /* slot index i (from the first, TS1): TS1 even, TS2 odd */
+    const long k1 = 7, k2 = 27; /* round(0.2 / 0.03) = 7 -> 8 (TS1: even); round(0.8 / 0.03) = 27 (TS2: odd) */
+    int n1 = 0, n2 = 0, stray = 0, bad = 0;
+    for (long i = 0; i < 2048; i++) {
+        if (!ob.has[i])
+            continue;
+        int cc, dt, e;
+        const bool data = rdof_sync_errors(ob.burst[i], rdof_data_sync(RDOF_BS_VOICE)) == 0;
+        const bool voice = rdof_sync_errors(ob.burst[i], RDOF_BS_VOICE) == 0;
+        if (i % 2 == 0 && i >= k1 + 1 && i < k1 + 1 + 32) {
+            const long b = (i - k1 - 1) / 2;
+            n1++;
+            if (b < 2)
+                bad += !(data && rdof_decode_slot_type(ob.burst[i], &cc, &dt, &e) && cc == 3 &&
+                         dt == RDOF_DT_VOICE_LC_HEADER && ob.control[i] == (RDOF_SYNC_DATA | RDOF_DT_VOICE_LC_HEADER));
+            else if (b < 14)
+                bad += ((b - 2) % 6 == 0) != voice || ob.control[i] != ((b - 2) % 6 == 0 ? RDOF_SYNC_AUDIO : (b - 2) % 6);
+            else
+                bad += !(data && rdof_decode_slot_type(ob.burst[i], &cc, &dt, &e) && cc == 3 &&
+                         dt == RDOF_DT_TERMINATOR_WITH_LC);
+        } else if (i % 2 == 1 && i >= k2 && i < k2 + 22) {
+            const long b = (i - k2) / 2;
+            n2++;
+            if (b < 10) { /* C D E F, then A-F */
+                const int v = (int)((b + 2) % 6);
+                bad += (v == 0) != voice || ob.control[i] != (v == 0 ? RDOF_SYNC_AUDIO : v);
+                if (v != 0) {
+                    int pi, lcss;
+                    bad += !(rdof_decode_emb(ob.burst[i], &cc, &pi, &lcss, &e) && cc == 3);
+                }
+            } else {
+                bad += !(data && rdof_decode_slot_type(ob.burst[i], &cc, &dt, &e) && dt == RDOF_DT_TERMINATOR_WITH_LC);
+            }
+        } else {
+            stray++;
+        }
+    }
+    CHECK(n1 == 16 && n2 == 11 && !stray && !bad, "TS1 %d of 16 at slots %ld.., TS2 %d of 11 at %ld.., %d stray, %d bad",
+          n1, k1 + 1, n2, k2, stray, bad);
+    CHECK(!ob.has[k2 - 2] && ob.has[k2] && ob.has[k1 + 1 + 30] && ob.has[k2 + 20] && !ob.has[k2 + 22],
+          "TS2 starts mid TS1 call, TS1 ends first, idle after");
+    /* the embedded LC: each call's own */
+    uint8_t lc[9];
+    CHECK(ob_emb_lc(k1 + 1 + 2 * 3, lc) && lc[0] == RDOF_FLCO_GROUP && lc[5] == 91 &&
+              ((uint32_t)lc[6] << 16 | lc[7] << 8 | lc[8]) == 9990301, "TS1's LC: %02x .. %u", lc[0], lc[5]);
+    CHECK(ob_emb_lc(k2 + 2 * 5, lc) && lc[0] == RDOF_FLCO_PRIVATE && lc[5] == 92 &&
+              ((uint32_t)lc[6] << 16 | lc[7] << 8 | lc[8]) == 9990302, "TS2's LC (its second superframe's B): %02x %u",
+          lc[0], lc[5]);
+    /* the records: a voice burst's in its slot, each call's summary, the voice counts */
+    CHECK(count(out, "\\\"kind\\\": \\\"VLC_HDR\\\"") == 2 && count(out, "\\\"kind\\\": \\\"TERM_LC\\\"") == 3 &&
+              count(out, "\\\"kind\\\": \\\"VOICE_A\\\"") == 3 && count(out, "\\\"kind\\\": \\\"VOICE_C\\\"") == 4,
+          "the bursts' records: %.2000s", out);
+    char want[160];
+    snprintf(want, sizeof want, "\\\"n\\\": %ld, \\\"slot\\\": 2, \\\"sync\\\": \\\"EMB\\\", \\\"kind\\\": \\\"VOICE_C\\\", "
+                                "\\\"cc\\\": 3, \\\"call\\\": 2, \\\"src\\\": 9990302, \\\"dst\\\": 92, \\\"burst\\\": 0", k2);
+    CHECK(strstr(out, want), "TS2's first record: %s", want);
+    CHECK(strstr(out, "\\\"call\\\": {\\\"index\\\": 1, \\\"slot\\\": 1, \\\"src\\\": 9990301, \\\"dst\\\": 91, "
+                      "\\\"group\\\": true, \\\"first_n\\\": 8, \\\"last_n\\\": 38, \\\"bursts\\\": 16, \\\"late\\\": 0, "
+                      "\\\"late_entry\\\": false}") &&
+              strstr(out, "\\\"late_entry\\\": true"), "the calls' records: %.3000s", out);
+    CHECK(strstr(out, "\\\"voice\\\": {\\\"calls\\\": 2, \\\"ts1\\\": 16, \\\"ts2\\\": 11, \\\"late\\\": 0}"),
+          "the summary: %.300s", strstr(out, "summary") ? strstr(out, "summary") : out);
+    CHECK(strstr(out, "call 2 on TS2 from 9990302 to ID 92: 11 bursts from slot n=27 (0.810 s), late entry"),
+          "the log: %.2000s", out);
+    rdof_bl_closed(bl, c, now);
+
+    /* from 0 s: the first slot still to be queued, not one already gone */
+    ob.first = 9;
+    c = run_ob_long(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"outbound\",\"freq\":438.1125,"
+                        "\"seconds\":1,\"voice\":[{\"slot\":1,\"superframes\":1,\"headers\":0,\"terminators\":0}]}}",
+                    &now, out, sizeof out);
+    int first = -1, nv = 0;
+    for (long i = 0; i < 2048; i++)
+        if (ob.has[i]) {
+            nv++;
+            if (first < 0)
+                first = (int)i;
+        }
+    CHECK(strstr(out, "\"exit\":0") && nv == 6 && first == 3 && ob.control[first] == RDOF_SYNC_AUDIO,
+          "a late entry from 0 s: %d bursts from slot %d (TS1 = odd here)", nv, first);
+    rdof_bl_closed(bl, c, now);
+    rdof_bl_free(bl);
+}
+
 /* ── over TCP ── */
 
 /* ── bench_repeater jobs ── */
@@ -1835,6 +2042,7 @@ int main(int argc, char **argv)
     test_run();
     test_repeater();
     test_outbound();
+    test_outbound_voice();
     test_tune();
     test_tcp();
     printf("%d checks, %d failures\n", checks, failures);

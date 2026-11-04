@@ -550,6 +550,27 @@ by their long names with `_` for `-`:
   through the router: on a roamer it takes the raw SDR modem (the roamer pauses; it waits while the roamer is
   transmitting) and gives it back after. On the W12 a key-up this long is one streamed transmission in 1.35 s
   runs; their seams are in lr2021-iq.md R3.49.
+- An `outbound` with `voice` also carries voice calls in its slots, as a repeater's downlink does: a list of up to
+  8 calls, each `{"slot": 1|2, "src", "dst", "group" (true), "start_s" (0), "superframes" (3), "headers" (3),
+  "late" (-1), "terminators" (3), "pi", "ambe_hex"}`. A call is BS bursts on its slot, one every 60 ms: its voice
+  LC headers, then voice superframes (voice sync on A, the EMB with the job's `cc` and the call's embedded LC on
+  B-E), then its terminators with LC. `late` 0-5 is a late entry: no headers, and the first superframe starts at
+  voice burst A-F (`headers` 0 alone is `late` 0). `ambe_hex` is the call's own AMBE frames (9 bytes each), else
+  silence. A call starts `start_s` after the key-up, rounded to a slot of its number, and no earlier than the
+  first slot still to be queued. Each slot's calls can't overlap, and every call must end before `seconds`; the
+  slots of the other number keep their own calls and idle bursts, so one slot can be mid-call while the other's
+  call starts, or goes on after it ends. Refused before anything keys, with the option named: a bad field, an
+  overlap, a call past `seconds`, `late` with headers, and a bench whose platform can't push voice (`unsupported`;
+  rdofradio today).
+  The bursts go to the duplex modem as its host's `DMR_DATA1` / `DMR_DATA2`, in the slot queue of their number
+  (prebuffer one). Slot k's burst goes when the slot clock's next slot to queue is k - 1, or earlier behind the
+  call's burst for k - 2, so it lands in k; one whose slot is already queued (the engine was late) is dropped
+  and its slot is idle (`"late": true` in its record). A jump of the slot clock (`skip`) can put a burst queued
+  across it one slot of its number late; the log says so. Records: a voice slot's record names its burst (`sync`
+  `BS_DATA`, `BS_VOICE` or `EMB`; `kind` `VLC_HDR`, `VOICE_A`-`VOICE_F` or `TERM_LC`; `call` (1-based), `src`,
+  `dst`, `burst` (from 0)) in place of `IDLE`; a `call` record follows each call's last slot (`index`, `slot`,
+  `src`, `dst`, `group`, `first_n`, `last_n`, `bursts`, `late`, `late_entry`); `summary` adds `voice` (`calls`,
+  `ts1`, `ts2`: voice bursts sent; `late`). The log has a line a call (its slot, from, to, bursts, first slot).
 - `family` on `voice`, `csbk` and `data` (`ms`, `bs`, `ts1`, `ts2`), and a voice job's `headers`, `terminators`
   or `late`: such a job doesn't go through the router's transmitter pool, which frames a call itself (its own
   headers and terminators, MS sync). It takes the raw SDR modem as `outbound` does (a roamer's parked, given back
