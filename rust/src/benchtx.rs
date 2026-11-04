@@ -18,7 +18,7 @@ use crate::text::{c_bytes, c_out, Out};
 
 type Burst = [u8; RDOF_BURST_BYTES];
 
-const MAX_FREQS: usize = 8;
+const MAX_FREQS: usize = 32;
 const MAX_BANDS: usize = 8;
 const QUEUE: usize = 64;
 const BURST_S: f64 = 0.060;

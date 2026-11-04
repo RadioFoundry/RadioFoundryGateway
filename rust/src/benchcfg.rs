@@ -14,7 +14,7 @@ use crate::jsonp::{rdof_jat, rdof_jget, rdof_jnode, JNode, RDOF_JARR, RDOF_JNULL
 use crate::plan::{field, rdof_plan_close, rdof_plan_open, Plan, RdofPlan, DEV_RADIO, DEV_SDR, PORT_PATH};
 use crate::text::{c_bytes, print, Piece, Piece::I, Piece::S};
 
-const RDOF_BENCHTX_MAX_FREQS: usize = 8; // rdof/benchtx.h
+const RDOF_BENCHTX_MAX_FREQS: usize = 32; // rdof/benchtx.h
 const RDOF_BENCHTX_MAX_BANDS: usize = 8;
 const MAX_DEVICES: usize = 16; // RDOF_SITE_MAX_DEVICES
 

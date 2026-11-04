@@ -747,7 +747,9 @@ On 2026-11-03, with the signal modes (analog FM's generator and measuring receiv
 allocated only while an `rx` runs. With the line protocol's `tune` op, against the same tree without it: `16mb` +
 `w12` 2198 KB (0x225970), +5 KB, 8 bytes more DIRAM. On 2026-11-03, with analog AM (its receiver, and the W12's
 polar transmit path with a 16 KB PSRAM stage), against 5bd72c6: `16mb` + `w12` 2210 KB (0x228850), +11.4 KB, 184.5 KB
-DIRAM used (54.0%).
+DIRAM used (54.0%). On 2026-11-04, with the bench's TX frequencies at 32 (`RDOF_BENCHTX_MAX_FREQS`, was 8: 96 bytes
+more in `bench_tx.c`'s policy) and the day's frequency correction: `16mb` + `w12` 2222 KB, 184.7 KB DIRAM used
+(54.1%).
 
 The roamer role costs 132 KB of flash and the SDR 436 KB (338 KB of it the self-test clip), against about 945 KB for
 the board both share. The SDR only image is 64 KB smaller than with everything built `-O2`.

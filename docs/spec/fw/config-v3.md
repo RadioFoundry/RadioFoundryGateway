@@ -906,7 +906,7 @@ the top), the SDR-only firmware's stored settings and the broker (its checks are
 | frequencies a transceiver transmits on | 32 | `RDOF_CFG_CHANNELS` |
 | an SDR's receive channels (receiver and extras) | 16 | `RDOF_SDR_MAX_CHANNELS` |
 | bench devices | 4 | `RDOF_BENCH_MAX_RADIOS` |
-| bench TX frequencies | 8 | `RDOF_BENCHTX_MAX_FREQS` |
+| bench TX frequencies | 32 | `RDOF_BENCHTX_MAX_FREQS` |
 | bench TX bands | 8 | `RDOF_BENCHTX_MAX_BANDS` |
 | IP gateway routes; networks in `allow` or `deny`; flows | 8; 8 each; 16 | `RDOF_IPGW_MAX_*` |
 | the document | 2000 JSON nodes, 16 KB of strings | `RDOF_SITE_MAX_NODES`, `RDOF_SITE_STR_BUF` |

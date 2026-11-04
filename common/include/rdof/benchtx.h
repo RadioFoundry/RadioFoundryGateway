@@ -29,7 +29,7 @@
 extern "C" {
 #endif
 
-#define RDOF_BENCHTX_MAX_FREQS 8
+#define RDOF_BENCHTX_MAX_FREQS 32 /* as many as a transceiver transmits on (RDOF_CFG_CHANNELS) */
 #define RDOF_BENCHTX_MAX_BANDS 8
 #define RDOF_BENCHTX_QUEUE 64       /* bursts waiting: 3.8 s of a simplex call */
 #define RDOF_BENCHTX_BURST_S 0.060  /* simplex: one burst every 60 ms */

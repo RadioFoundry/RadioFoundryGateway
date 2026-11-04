@@ -3953,6 +3953,10 @@ int main(int argc, char **argv)
                     bench_band_hz[bench_nband][0] = lo, bench_band_hz[bench_nband++][1] = hi;
                 } else if (bench_ntx < RDOF_BENCHTX_MAX_FREQS) {
                     bench_tx_mhz[bench_ntx++] = mhz(t) / 1e6;
+                } else {
+                    fprintf(stderr, "--bench-tx: %d frequencies at most (a band LOW-HIGH takes any number)\n",
+                            RDOF_BENCHTX_MAX_FREQS);
+                    return 2;
                 }
                 const char *comma = strchr(t, ',');
                 t = comma ? comma + 1 : t + strlen(t);
@@ -4465,6 +4469,7 @@ int main(int argc, char **argv)
         const double now = now_s();
         WS.last_samples = now;
         WS.n += n;
+        const double t_poll = now;
         if (now - last_poll >= POLL_S) {
             last_poll = now;
             if (R.parrot)
@@ -4480,6 +4485,7 @@ int main(int argc, char **argv)
         const double t_mod = now_s();
         const bool keyed = rdof_sdrmodem_pull_iq(&R.m, txn - lead + offset, out, ntx);
         WS.mod += now_s() - t_mod;
+        const double d_poll = t_mod - t_poll, d_mod = now_s() - t_mod;
         /* Samples the receiver lost (a stall longer than the device's buffers: the stream falls behind the wall
          * clock) move what's heard against what's sent, and the transmitter's samples are paced by what's read: the
          * calibration no longer holds. Its floor over half a second against the last one's: a step is a loss. Half
@@ -4569,6 +4575,7 @@ int main(int argc, char **argv)
             out[i].re *= 0.7f, out[i].im *= 0.7f;
         const double t1 = now_s();
         tx_put(out, ntx);
+        const double d_write = now_s() - t1;
         t_write += now_s() - t1;
         WS.wait += now_s() - t1;
         txn += ntx;
@@ -4696,6 +4703,9 @@ int main(int argc, char **argv)
         t_proc += t4 - t2;
         WS.spec += t3 - t2, WS.rx += t4 - t3;
         ws_turn(t4);
+        if (verbose && t4 - t0 > 0.04) /* a turn this long eats into the transmit stream's 50 ms lead */
+            say("slow turn %.0f ms: read %.0f, receiver %.0f, poll %.0f, modem %.0f, write %.0f\n", 1e3 * (t4 - t0),
+                1e3 * dt_read, 1e3 * FX.t_rx, 1e3 * d_poll, 1e3 * d_mod, 1e3 * d_write);
         total += n;
     }
     if (R.full)
