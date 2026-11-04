@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 /*
  * rdofradio's device: one SDR that receives and transmits at one rate, each direction on its own LO, behind a few
- * calls. Two of them:
+ * calls (with a PlutoSDR's FPGA TX interpolator, the transmit stream at a fraction of it). Two of them:
  *   --soapy ARGS  any SoapySDR device (rdofradio_soapy.c)
  *   --iio URI     an AD9361 (the PlutoSDR family) through libiio straight (rdofradio_iio.c): only the libraries a
  *                 stock PlutoSDR already has, and with libad9361 its own FIR decimation below 2.083 MS/s (the
@@ -36,12 +36,15 @@ typedef struct {
     /* > 0: the receive DMA's 64-bit words as they come, about this many a second (the FPGA channelizer's frames,
      * libiio only): read_words in place of read */
     double words_rate;
+    /* > 1: the transmit stream at rate / tx_interp (the FPGA's TX interpolator makes up the rest, libiio only) */
+    int tx_interp;
 } rdofradio_dev_setup_t;
 
 typedef struct rdofradio_dev rdofradio_dev_t;
 struct rdofradio_dev {
     char name[48];  /* for the log and the page: "SoapySDR plutosdr", "libiio AD9361" */
     double rate;    /* what it runs at */
+    double tx_rate; /* the transmit stream's: rate, or rate / tx_interp */
     double tx_gain_min, tx_gain_max;
     char error[200]; /* the last failure */
     int (*set_rx_freq)(rdofradio_dev_t *d, double hz);

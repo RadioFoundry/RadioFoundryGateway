@@ -103,6 +103,39 @@ void rdof_chzhw_rx_init(rdof_chzhw_rx_t *r, int channels,
                         void (*on_raw)(void *ctx, uint32_t seq, const rdof_iq16_t *x, int n), void *ctx);
 void rdof_chzhw_rx_feed(rdof_chzhw_rx_t *r, const uint64_t *w, size_t n);
 
+/* The TX interpolator beside the block (a build with both): between the TX DMA and the DAC, a CIC that takes the
+ * DMA's samples at the DAC's rate over R, so the transmitter's stream is narrow while the receiver runs wide. Off,
+ * the stock path. Only TX1 is interpolated. Its gain, R^(order - 1), is undone by GAIN = 2^shift / R^(order - 1),
+ * the hold's multiplier, so a sample comes out at the level it went in. */
+#define RDOF_CHZHW_DUC_ID 0x00
+#define RDOF_CHZHW_DUC_CAPS 0x04   /* 7..0 the order, 15..8 INTERP's bits, 23..16 GAIN's bits, 31..24 the shift */
+#define RDOF_CHZHW_DUC_CTRL 0x08   /* bit 0 on; INTERP and GAIN are written while off */
+#define RDOF_CHZHW_DUC_INTERP 0x0C /* R */
+#define RDOF_CHZHW_DUC_GAIN 0x10
+#define RDOF_CHZHW_DUC_STATUS 0x14
+#define RDOF_CHZHW_DUC_SPAN 0x1000
+
+#define RDOF_CHZHW_DUC_ID_RTX1 0x52545831u /* "RTX1" */
+#define RDOF_CHZHW_DUC_STATUS_ON 1u
+#define RDOF_CHZHW_DUC_STATUS_UNDERFLOW 2u /* the DMA had no sample when one was read, since on */
+
+typedef struct {
+    rdof_chzhw_io_t io;
+    int order, r_bits, gain_bits, shift; /* CAPS */
+    int r;                               /* started at, 0 off */
+} rdof_chzhw_duc_t;
+
+/* Check ID, read CAPS, and leave it off. 0, or -1 with why in err. */
+int rdof_chzhw_duc_probe(rdof_chzhw_duc_t *d, const rdof_chzhw_io_t *io, char *err, size_t cap);
+/* The R it takes: from the smallest whose GAIN fits to the largest INTERP holds. */
+int rdof_chzhw_duc_min_r(const rdof_chzhw_duc_t *d);
+int rdof_chzhw_duc_max_r(const rdof_chzhw_duc_t *d);
+/* On at R (off first). 0, or -1 with why in err. */
+int rdof_chzhw_duc_start(rdof_chzhw_duc_t *d, int r, char *err, size_t cap);
+uint32_t rdof_chzhw_duc_status(const rdof_chzhw_duc_t *d);
+/* Off: the stock path. */
+void rdof_chzhw_duc_stop(rdof_chzhw_duc_t *d);
+
 #ifdef __cplusplus
 }
 #endif

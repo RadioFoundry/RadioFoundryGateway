@@ -233,10 +233,73 @@ static void test_frames(void)
     CHECK(same, "the samples and numbers as the model put them out");
 }
 
+/* The TX interpolator's registers: the CAPS the build has (order 3, 12-bit R, 24-bit GAIN, shift 32). */
+typedef struct {
+    uint32_t reg[RDOF_CHZHW_DUC_SPAN / 4];
+    uint32_t id, caps;
+    uint32_t log[16][2];
+    int nlog;
+} duc_fake_t;
+
+static uint32_t duc_rd(void *ctx, uint32_t off)
+{
+    duc_fake_t *f = ctx;
+    return off == RDOF_CHZHW_DUC_ID ? f->id : off == RDOF_CHZHW_DUC_CAPS ? f->caps : f->reg[off / 4];
+}
+
+static void duc_wr(void *ctx, uint32_t off, uint32_t v)
+{
+    duc_fake_t *f = ctx;
+    if (f->nlog < 16)
+        f->log[f->nlog][0] = off, f->log[f->nlog++][1] = v;
+    f->reg[off / 4] = v;
+}
+
+static void test_duc(void)
+{
+    static duc_fake_t f;
+    f.id = RDOF_CHZHW_DUC_ID_RTX1, f.caps = 32u << 24 | 24u << 16 | 12u << 8 | 3u;
+    f.reg[RDOF_CHZHW_DUC_CTRL / 4] = 1; /* left on by a run that died */
+    const rdof_chzhw_io_t io = {duc_rd, duc_wr, &f};
+    rdof_chzhw_duc_t d;
+    char err[160];
+    CHECK(rdof_chzhw_duc_probe(&d, &io, err, sizeof err) == 0, "probe: %s", err);
+    CHECK(d.order == 3 && d.r_bits == 12 && d.gain_bits == 24 && d.shift == 32, "CAPS %d %d %d %d", d.order, d.r_bits,
+          d.gain_bits, d.shift);
+    CHECK(f.reg[RDOF_CHZHW_DUC_CTRL / 4] == 0, "off after the probe");
+    /* GAIN 2^32 / R^2 under 2^24: R 16 is exactly 2^24, 17 the smallest */
+    CHECK(rdof_chzhw_duc_min_r(&d) == 17 && rdof_chzhw_duc_max_r(&d) == 4095, "R %d to %d", rdof_chzhw_duc_min_r(&d),
+          rdof_chzhw_duc_max_r(&d));
+    CHECK(rdof_chzhw_duc_start(&d, 16, err, sizeof err) == -1, "R 16 refused");
+    CHECK(rdof_chzhw_duc_start(&d, 4096, err, sizeof err) == -1, "R 4096 refused");
+    f.nlog = 0;
+    CHECK(rdof_chzhw_duc_start(&d, 240, err, sizeof err) == 0, "start: %s", err);
+    /* off, then INTERP and GAIN, then on: never changed while on */
+    CHECK(f.nlog == 4 && f.log[0][0] == RDOF_CHZHW_DUC_CTRL && f.log[0][1] == 0 && f.log[3][0] == RDOF_CHZHW_DUC_CTRL &&
+              f.log[3][1] == 1,
+          "the writes' order (%d writes)", f.nlog);
+    CHECK(f.reg[RDOF_CHZHW_DUC_INTERP / 4] == 240 && f.reg[RDOF_CHZHW_DUC_GAIN / 4] == 74565, "INTERP %u GAIN %u",
+          (unsigned)f.reg[RDOF_CHZHW_DUC_INTERP / 4], (unsigned)f.reg[RDOF_CHZHW_DUC_GAIN / 4]);
+    CHECK(d.r == 240, "started at %d", d.r);
+    rdof_chzhw_duc_stop(&d);
+    CHECK(f.reg[RDOF_CHZHW_DUC_CTRL / 4] == 0 && d.r == 0, "stopped");
+
+    /* a build without it: the stock design reads 0 there */
+    static duc_fake_t none;
+    const rdof_chzhw_io_t nio = {duc_rd, duc_wr, &none};
+    CHECK(rdof_chzhw_duc_probe(&d, &nio, err, sizeof err) == -1 && none.nlog == 0, "no interpolator: refused, nothing "
+                                                                                    "written");
+    static duc_fake_t bad;
+    bad.id = RDOF_CHZHW_DUC_ID_RTX1, bad.caps = 32u << 24 | 24u << 16 | 0u << 8 | 3u;
+    const rdof_chzhw_io_t bio = {duc_rd, duc_wr, &bad};
+    CHECK(rdof_chzhw_duc_probe(&d, &bio, err, sizeof err) == -1, "CAPS with no R refused");
+}
+
 int main(void)
 {
     test_registers();
     test_frames();
+    test_duc();
     printf("%d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
 }

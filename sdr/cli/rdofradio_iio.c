@@ -392,6 +392,14 @@ rdofradio_dev_t *rdofradio_iio_open(const char *uri, const rdofradio_dev_setup_t
         iio_channel_enable(s->tx_q);
     }
     s->len = s->rx_len = stream_len(su->stream, d->rate);
+    d->tx_rate = d->rate;
+    if (su->tx_interp > 1) {
+        /* the transmit stream at rate / tx_interp: its buffers as long in time (13.7 ms), so the queue stays under
+         * the 50 ms the stream runs ahead (start) */
+        d->tx_rate = d->rate / su->tx_interp;
+        const size_t n = (size_t)(d->tx_rate * 32768.0 / 2400000.0);
+        s->len = n < 256 ? 256 : (n + 255) / 256 * 256;
+    }
     if (su->words_rate > 0) {
         /* 10 ms of the channelizer's words a receive buffer */
         const size_t n = (size_t)(su->words_rate / 100);

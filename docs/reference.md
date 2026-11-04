@@ -143,7 +143,21 @@ writes the block's NCO steps once a turn. Lost frames become zeros (the status's
 count as overflows, and the block is stopped on exit. There's no wideband I/Q: no spectrum, and the bench's captures
 are filler. The duplex calibration points channel 0 at the pulse while it runs. Not with `--split-tx` or `--mmdvm`.
 The host test `rdof_chzrx_tests` runs `e2e_288k.cu8` through the block's model into this entry and matches the float
-path burst for burst. Not yet run on a board. On the Pluto, from `/tmp` (RAM):
+path burst for burst.
+
+`--fpga-duc [ADDR]` (with `--iio`, on a bitstream that has the TX interpolator, its registers at `0x7C4A0000`
+unless ADDR is given) runs the transmit stream at 192 kS/s, or 96 kS/s when the rate isn't a multiple of 192 kS/s,
+and the FPGA's CIC (`chzhw.h`, order 3, R 17 to 4095) brings it to the device's rate. The ARM then makes a narrow
+transmit stream while the receiver runs wide. It is opt-in: on a bitstream without the block nothing answers at
+ADDR, and a read there is a bus error. 48 kS/s is refused: its first images, 56 dB down, land beside the next
+channels of a 50 kHz grid. At 96 kS/s they are 76 dB down, at 192 kS/s 94 dB. The TX LO sits 62.5 kHz above the
+carrier at 192 kS/s and 18.75 kHz at 96 kS/s (`--tx-lo` unless given). Only TX1 is interpolated. First run
+(2026-11-04, the 7010 Pluto clone, the block and the interpolator in one bitstream: every slice, 74% of LUTs, 40 of
+80 DSP48, timing met by 1 ps): 15 channels from 19.872 MS/s, the transmit stream at 96 kS/s (R 207); 30.0 s of
+signal in 30.0 s with no channel frame lost. Without `--fpga-duc` the same run lost over 1,000 channel frames a
+second. Not yet heard on air.
+
+On the Pluto, from `/tmp` (RAM):
 
 ```sh
 gunzip -c rdof-pluto.tar.gz | tar -xf -

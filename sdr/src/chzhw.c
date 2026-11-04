@@ -201,4 +201,78 @@ void rdof_chzhw_rx_feed(rdof_chzhw_rx_t *r, const uint64_t *w, size_t n)
     }
 }
 
+/* ── the TX interpolator ── */
+
+/* GAIN for R: 2^shift / R^(order - 1), or 0 if it doesn't fit GAIN's bits */
+static uint64_t duc_gain(const rdof_chzhw_duc_t *d, int r)
+{
+    uint64_t p = 1;
+    for (int k = 1; k < d->order; k++)
+        p *= (uint64_t)r;
+    const uint64_t g = (UINT64_C(1) << d->shift) / p;
+    return g >= 1 && g < UINT64_C(1) << d->gain_bits ? g : 0;
+}
+
+int rdof_chzhw_duc_probe(rdof_chzhw_duc_t *d, const rdof_chzhw_io_t *io, char *err, size_t cap)
+{
+    memset(d, 0, sizeof *d);
+    d->io = *io;
+    const uint32_t id = d->io.rd(d->io.ctx, RDOF_CHZHW_DUC_ID);
+    if (id != RDOF_CHZHW_DUC_ID_RTX1) {
+        snprintf(err, cap, "the TX interpolator's ID is 0x%08x, not 0x%08x", (unsigned)id, RDOF_CHZHW_DUC_ID_RTX1);
+        return -1;
+    }
+    const uint32_t c = d->io.rd(d->io.ctx, RDOF_CHZHW_DUC_CAPS);
+    d->order = (int)(c & 0xFF);
+    d->r_bits = (int)(c >> 8 & 0xFF);
+    d->gain_bits = (int)(c >> 16 & 0xFF);
+    d->shift = (int)(c >> 24);
+    if (d->order < 1 || d->order > 4 || d->r_bits < 2 || d->r_bits > 16 || d->gain_bits < 1 || d->gain_bits > 31 ||
+        d->shift > 62 || rdof_chzhw_duc_min_r(d) > rdof_chzhw_duc_max_r(d)) {
+        snprintf(err, cap, "the TX interpolator's CAPS make no sense: 0x%08x", (unsigned)c);
+        return -1;
+    }
+    rdof_chzhw_duc_stop(d);
+    return 0;
+}
+
+int rdof_chzhw_duc_min_r(const rdof_chzhw_duc_t *d)
+{
+    int r = 2;
+    while (r <= rdof_chzhw_duc_max_r(d) && !duc_gain(d, r))
+        r++;
+    return r;
+}
+
+int rdof_chzhw_duc_max_r(const rdof_chzhw_duc_t *d)
+{
+    return (1 << d->r_bits) - 1;
+}
+
+int rdof_chzhw_duc_start(rdof_chzhw_duc_t *d, int r, char *err, size_t cap)
+{
+    if (r < rdof_chzhw_duc_min_r(d) || r > rdof_chzhw_duc_max_r(d)) {
+        snprintf(err, cap, "an interpolation of %d: the TX interpolator takes %d to %d", r, rdof_chzhw_duc_min_r(d),
+                 rdof_chzhw_duc_max_r(d));
+        return -1;
+    }
+    rdof_chzhw_duc_stop(d);
+    d->io.wr(d->io.ctx, RDOF_CHZHW_DUC_INTERP, (uint32_t)r);
+    d->io.wr(d->io.ctx, RDOF_CHZHW_DUC_GAIN, (uint32_t)duc_gain(d, r));
+    d->io.wr(d->io.ctx, RDOF_CHZHW_DUC_CTRL, 1);
+    d->r = r;
+    return 0;
+}
+
+uint32_t rdof_chzhw_duc_status(const rdof_chzhw_duc_t *d)
+{
+    return d->io.rd(d->io.ctx, RDOF_CHZHW_DUC_STATUS);
+}
+
+void rdof_chzhw_duc_stop(rdof_chzhw_duc_t *d)
+{
+    d->io.wr(d->io.ctx, RDOF_CHZHW_DUC_CTRL, 0);
+    d->r = 0;
+}
+
 #endif

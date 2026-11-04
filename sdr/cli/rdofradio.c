@@ -39,7 +39,12 @@
  * they run (not in a duplex repeater). --fpga-chz [ADDR] (with --iio, on a PlutoSDR whose FPGA has the channelizer
  * block, its registers at ADDR, 0x7C480000 by default): the block channelizes and the receiver takes its 48 kS/s
  * channel frames from the receive DMA, its AFC steering the block's NCOs; the rate can then go to 24.576 MS/s
- * (R D up to 512). No spectrum and no wideband captures; not with --split-tx or --mmdvm.
+ * (R D up to 512). No spectrum and no wideband captures; not with --split-tx or --mmdvm. --fpga-duc [ADDR] (with
+ * --iio, an FPGA with the TX interpolator, its registers at ADDR, 0x7C4A0000 by default; only on a design that has
+ * it: elsewhere nothing answers there): the transmit stream goes at 192 kS/s (96 kS/s if the rate isn't a multiple
+ * of 192 kS/s; not 48, whose images land on a 50 kHz grid's next channels) and the interpolator brings it to the
+ * rate, so a wide receiver doesn't make a wide transmit stream for the ARM. The TX LO then sits 62.5 kHz above the
+ * carrier (18.75 at 96 kS/s; --tx-lo unless given), the most the stream reaches, in steps of 6.25 kHz.
  *
  * --split-tx PORT: a split duplex repeater (docs/spec/repeater.md): a RadioFoundry radio on PORT (its hotspot, with
  * the split duplex extension) transmits, and the SDR, opened receive only, is the RX half. Any receiver does, an
@@ -150,6 +155,10 @@ typedef struct {
     bool keyed;            /* the repeater's, from on_key */
     bool verbose;
     double rate, center, tx_lo;
+    double tx_rate;        /* the transmit stream's: rate, or rate / txr with --fpga-duc */
+    int txr;               /* receive samples a transmit sample */
+    double lo_off;         /* the TX LO above the carrier when it moves (io_tune): 100 kHz, or with --fpga-duc
+                              the most the stream reaches (dx_start) */
     uint32_t rx_hz, tx_hz;
     int cc;
     rdof_sdrmodem_t m;
@@ -165,7 +174,8 @@ typedef struct {
     int64_t first_sent;
     bool waiting;          /* keyed, the first burst not heard back yet */
     /* the same from the receive level: our own key-up leaking into the receiver (a sample-exact edge) */
-    int64_t onset;         /* the key-up's first keyed sample, the modem's position; -1 none pending */
+    int64_t onset;         /* the key-up's first keyed sample, the modem's position times txr (the receiver's
+                              samples); -1 none pending */
     int cal;               /* duplex calibration: 1 the pulse is due, 2 it's out, 0 done or none */
     long long cal_at;      /* the pulse's stream position (cal 1) */
     bool recal;            /* calibrate again once idle: samples were lost, or the pulse wasn't heard */
@@ -338,7 +348,7 @@ static void writer_init(void)
 #endif
     W.guarded = dev->tx_block > 0 && dev->tx_nbuf > 0 && dev->tx_room;
     if (W.guarded) {
-        rdof_txguard_init(&W.guard, dev->rate, dev->tx_block, dev->tx_nbuf);
+        rdof_txguard_init(&W.guard, R.tx_rate, dev->tx_block, dev->tx_nbuf);
         dev->txguard = &W.guard;
     }
 }
@@ -443,6 +453,7 @@ static void usage(void)
             "                 [--parrot ID] [--stream ARGS] [--seconds S] [--bursts] [--quiet] [-v] [--web [ADDR:]PORT]\n"
             "                 [--last-exit FILE] [--ota FILE] [--fft builtin|pffft] [--bench [ADDR:]PORT] [--bench-tx MHZ,...]\n"
             "                 [--fpga-chz [ADDR]] (with --iio: the FPGA channelizer on a PlutoSDR, at 0x7C480000 by default)\n"
+            "                 [--fpga-duc [ADDR]] (with --iio: the FPGA's TX interpolator, at 0x7C4A0000 by default)\n"
             "       rdofradio DEVICE --allow-tx --config FILE [--clock-state FILE] [--set-os-clock] [the device's flags]\n"
             "       rdofradio DEVICE --allow-tx --split-tx PORT [--baud N] [--split-power-cap N] --rx MHZ --tx MHZ [--cc CC]\n"
             "                 [-r RATE] [--gain DB] [--center MHZ] [--parrot ID] [--seconds S] [-v] [--web [ADDR:]PORT]\n"
@@ -631,9 +642,9 @@ static int io_channel(void *ctx, uint32_t hz)
 }
 static bool io_tune(void *ctx, uint32_t hz, double *off)
 {
-    if (!R.full && fabs((double)hz - R.tx_lo) > R.rate * 0.4 - 12.5e3) {
-        /* past the modulator's reach: the TX LO moves, 100 kHz above (unkeyed: the gain is at its least) */
-        const double lo = (double)hz + 100e3;
+    if (!R.full && fabs((double)hz - R.tx_lo) > R.tx_rate * 0.4 - 12.5e3) {
+        /* past the modulator's reach: the TX LO moves, lo_off above (unkeyed: the gain is at its least) */
+        const double lo = (double)hz + R.lo_off;
         if (!dev->set_tx_freq || dev->set_tx_freq(dev, lo)) {
             fprintf(stderr, "transmit: can't move the TX LO to %.4f MHz: %s\n", lo / 1e6, dev->error);
             return false;
@@ -650,7 +661,7 @@ static bool io_tune(void *ctx, uint32_t hz, double *off)
         if (R.tx_img == R.tx_ch)
             R.tx_img = -1;
     }
-    return fabs(*off) < R.rate * 0.4;
+    return fabs(*off) < R.tx_rate * 0.4;
 }
 static bool mm_write(const uint8_t *d, size_t n);
 static void mm_turn(void);
@@ -1962,7 +1973,7 @@ static bool bench_ob_poll(double now)
         BO.keyed_at = now;
     if (keyed && !BO.mapped && now - BO.keyed_at > 1.5) { /* the edge not heard: as the modem has it */
         BO.mapped = true, BO.map_pos = 0;
-        BO.map_t = bl_sc_utc(NULL, (uint64_t)(m->tx_late48 > 0 ? m->tx_late48 : 0) * (uint64_t)m->tx_fs / 48000);
+        BO.map_t = bl_sc_utc(NULL, (uint64_t)((double)(m->tx_late48 > 0 ? m->tx_late48 : 0) * R.rate / 48000));
         say("bench: the outbound's key-up wasn't heard back: its times are the modem's\n");
     }
     BO.s = (rdof_bl_ob_state_t){.keyed = keyed, .first = m->key_k, .next = m->slot_k, .base = m->base,
@@ -2834,20 +2845,28 @@ static void rx_chunk(const rdof_cf_t *in, int n)
 static uint32_t fx_rd(void *ctx, uint32_t off) { return *(volatile uint32_t *)((uint8_t *)ctx + off); }
 static void fx_wr(void *ctx, uint32_t off, uint32_t v) { *(volatile uint32_t *)((uint8_t *)ctx + off) = v; }
 
-/* The block's registers through /dev/mem, its ID and CAPS. 0, or -1 with why in err. */
-static int fx_probe(char *err, size_t cap)
+/* span bytes of registers at addr through /dev/mem, or NULL with why in err */
+static void *map_regs(unsigned long addr, size_t span, char *err, size_t cap)
 {
     const int fd = open("/dev/mem", O_RDWR | O_SYNC);
     if (fd < 0) {
         snprintf(err, cap, "/dev/mem: %s", strerror(errno));
-        return -1;
+        return NULL;
     }
-    FX.regs = mmap(NULL, RDOF_CHZHW_SPAN, PROT_READ | PROT_WRITE, MAP_SHARED, fd, (off_t)FX.addr);
+    void *p = mmap(NULL, span, PROT_READ | PROT_WRITE, MAP_SHARED, fd, (off_t)addr);
     close(fd);
-    if (FX.regs == MAP_FAILED) {
-        snprintf(err, cap, "/dev/mem at 0x%08lx: %s", FX.addr, strerror(errno));
-        return -1;
+    if (p == MAP_FAILED) {
+        snprintf(err, cap, "/dev/mem at 0x%08lx: %s", addr, strerror(errno));
+        return NULL;
     }
+    return p;
+}
+
+/* The block's registers through /dev/mem, its ID and CAPS. 0, or -1 with why in err. */
+static int fx_probe(char *err, size_t cap)
+{
+    if (!(FX.regs = map_regs(FX.addr, RDOF_CHZHW_SPAN, err, cap)))
+        return -1;
     const rdof_chzhw_io_t io = {fx_rd, fx_wr, FX.regs};
     char e[160];
     if (rdof_chzhw_probe(&FX.h, &io, e, sizeof e)) {
@@ -2863,6 +2882,63 @@ static void fx_stop(void)
     if (FX.started)
         rdof_chzhw_stop(&FX.h);
     FX.started = false;
+}
+
+/* --fpga-duc [ADDR]: the FPGA's TX interpolator (rdof/sdr/chzhw.h): the transmit stream at R.tx_rate, the
+ * interpolator making up the device's rate. Only when asked: on a design without it nothing answers at ADDR, and
+ * a read there is a bus error. */
+#define DX_ADDR 0x7C4A0000ul
+static struct {
+    bool on, started;
+    unsigned long addr;
+    void *regs;
+    rdof_chzhw_duc_t d;
+} DX = {.addr = DX_ADDR};
+
+/* off: the stock path to the DAC again (at exit, whatever the way) */
+static void dx_stop(void)
+{
+    if (DX.started)
+        rdof_chzhw_duc_stop(&DX.d);
+    DX.started = false;
+}
+
+/* The interpolator on for the device's rate, the transmit stream at 192 kS/s, else 96 kS/s: R.txr, R.tx_rate,
+ * R.lo_off. Its CIC leaves the stream's images at multiples of that from the carrier, the first 94 dB down at
+ * 192 kS/s and 76 dB at 96; at 48 kS/s, 56 dB, beside the next channels of a 50 kHz grid the board is receiving:
+ * not taken. 0, or -1 with why in err. */
+static int dx_start(double rate, char *err, size_t cap)
+{
+    if (!(DX.regs = map_regs(DX.addr, RDOF_CHZHW_DUC_SPAN, err, cap)))
+        return -1;
+    const rdof_chzhw_io_t io = {fx_rd, fx_wr, DX.regs};
+    char e[160];
+    if (rdof_chzhw_duc_probe(&DX.d, &io, e, sizeof e)) {
+        snprintf(err, cap, "no TX interpolator at 0x%08lx: %s", DX.addr, e);
+        return -1;
+    }
+    const long fs = lround(rate), lo = rdof_chzhw_duc_min_r(&DX.d), hi = rdof_chzhw_duc_max_r(&DX.d);
+    long r = 0;
+    for (long in = 192000; in >= 96000 && !r; in /= 2)
+        if (fs % in == 0 && fs / in >= lo && fs / in <= hi)
+            r = fs / in;
+    if (!r) {
+        snprintf(err, cap, "the TX interpolator can't make %.0f S/s from 192 or 96 kS/s (R %ld to %ld): a rate that's "
+                           "a multiple of 96 kS/s", rate, lo, hi);
+        return -1;
+    }
+    if (rdof_chzhw_duc_start(&DX.d, (int)r, e, sizeof e)) {
+        snprintf(err, cap, "%s", e);
+        return -1;
+    }
+    DX.started = true;
+    atexit(dx_stop);
+    R.txr = (int)r;
+    R.tx_rate = rate / (double)r;
+    /* as far from the carrier as io_tune's reach (0.4 tx_rate less 12.5 kHz) allows, a kHz inside, in steps of a
+     * half channel: 62.5 kHz at 192 kS/s, 18.75 at 96 */
+    R.lo_off = floor((0.4 * R.tx_rate - 13.5e3) / 6250) * 6250;
+    return 0;
 }
 
 /* One output instant to FX.y (NULL: zeros), with its power for the loop's edge detection */
@@ -2921,14 +2997,14 @@ static int64_t fx_correction(void *ctx, int c, double hz)
     return (int64_t)(uint32_t)(rdof_chzhw_frames(&FX.h) - FX.seq0) - FX.skipped + FX_LATE;
 }
 
-/* The duplex calibration (full duplex: the RX LO on the TX LO, the pulse 100 kHz below it): channel 0 hears the
+/* The duplex calibration (full duplex: the RX LO on the TX LO, the pulse lo_off below it): channel 0 hears the
  * pulse while on, its own frequency again after */
 static void fx_cal(bool on)
 {
     if (!FX.on)
         return;
     FX.cal = on;
-    FX.inc[0] = rdof_chzfx_inc(on ? -100e3 : FX.off[0] + R.rx.chz.correction_hz[0], R.rate);
+    FX.inc[0] = rdof_chzfx_inc(on ? -R.lo_off : FX.off[0] + R.rx.chz.correction_hz[0], R.rate);
     rdof_chzhw_set_inc(&FX.h, FX.inc);
     FX.dirty = false;
 }
@@ -3692,6 +3768,12 @@ int main(int argc, char **argv)
                 FX.addr = strtoul(v, NULL, 16);
                 i++;
             }
+        } else if (!strcmp(a, "--fpga-duc")) {
+            DX.on = true;
+            if (v && !strncmp(v, "0x", 2)) {
+                DX.addr = strtoul(v, NULL, 16);
+                i++;
+            }
         } else if (!strcmp(a, "--split-tx")) {
             NEXT();
             split_tx = v;
@@ -3946,6 +4028,11 @@ int main(int argc, char **argv)
         fprintf(stderr, "--fpga-chz: the block at 0x%08lx: %d channels, D up to %d, %d taps, CIC R up to %d\n",
                 FX.addr, FX.h.channels, FX.h.max_decim, FX.h.max_taps, FX.h.max_cic);
     }
+    if (DX.on && (!iio || split_tx || mmdvm)) {
+        fprintf(stderr, "--fpga-duc: the FPGA's TX interpolator is a PlutoSDR's transmitter's: with --iio, not with "
+                        "--split-tx or --mmdvm\n");
+        return 2;
+    }
     R.split = split_tx != NULL;
     if (R.split && !R.full) {
         fprintf(stderr, "--split-tx runs a repeater: full duplex\n");
@@ -3957,8 +4044,10 @@ int main(int argc, char **argv)
     }
     if (!tx)
         tx = rx;
+    const bool tx_lo_given = tx_lo != 0;
     if (!tx_lo)
         tx_lo = tx + 100e3;
+    R.txr = 1, R.lo_off = 100e3;
     R.rate = rate;
     R.rx_hz = (uint32_t)llround(rx);
     R.tx_hz = (uint32_t)llround(tx);
@@ -4062,8 +4151,19 @@ int main(int argc, char **argv)
         fprintf(stderr, "--fpga-chz: %d channels, R %d, D %d, %d taps, 48 kS/s from %.0f S/s\n", FX.C, FX.R, FX.D,
                 FX.cfg.taps, rate);
     }
+    R.tx_rate = rate;
+    if (DX.on) { /* on before the transmit stream starts: its first sample is the interpolator's */
+        if (dx_start(rate, derr, sizeof derr)) {
+            fprintf(stderr, "--fpga-duc: %s\n", derr);
+            return 1;
+        }
+        if (!tx_lo_given)
+            tx_lo = tx + R.lo_off, R.tx_lo = tx_lo;
+        fprintf(stderr, "--fpga-duc: transmit at %.0f S/s, R %d to %.0f S/s, the TX LO %.0f kHz above\n", R.tx_rate,
+                R.txr, rate, (tx_lo - tx) / 1e3);
+    }
     const rdofradio_dev_setup_t su = {rate, R.rx.center_hz, tx_lo, gain, bw, stream_args, R.split || R.mmdvm,
-                                      FX.on ? 48000.0 * (double)rdof_chzfx_frame_words(FX.C) : 0};
+                                      FX.on ? 48000.0 * (double)rdof_chzfx_frame_words(FX.C) : 0, R.txr};
 #ifdef RDOF_IIO
     if (iio)
         dev = rdofradio_iio_open(iio, &su, derr, sizeof derr);
@@ -4096,7 +4196,8 @@ int main(int argc, char **argv)
     /* the modem, its client, and the repeater or the transceiver over them */
     const bool rx_only = R.split || R.mmdvm;
     const rdof_sdrmodem_io_t io = {io_reply, io_channel, rx_only ? NULL : io_tune, &R, R.split ? split_now48 : NULL};
-    if (rdof_sdrmodem_init(&R.m, &io, (uint32_t)rate, (uint32_t)rate, !rx_only)) {
+    R.tx_rate = dev->tx_rate;
+    if (rdof_sdrmodem_init(&R.m, &io, (uint32_t)rate, (uint32_t)llround(R.tx_rate), !rx_only)) {
         fprintf(stderr, "modem: %s\n", R.m.error);
         return 1;
     }
@@ -4174,8 +4275,11 @@ int main(int argc, char **argv)
     );
 
     static rdof_cf_t in[CHUNK], out[CHUNK];
-    const int lead = (int)(rate * 0.05); /* 50 ms of zeros ahead of the first read */
-    const int64_t offset = (int64_t)llround(offset_s * rate);
+    /* the transmit stream's positions are its own samples (txr receive samples each with --fpga-duc) */
+    const double txrate = R.tx_rate;
+    const int txr = R.txr;
+    const int lead = (int)(txrate * 0.05); /* 50 ms of zeros ahead of the first read */
+    const int64_t offset = (int64_t)llround(offset_s * txrate);
     if (dev->start(dev)) {
         fprintf(stderr, "start: %s\n", dev->error);
         shutdown_tx();
@@ -4305,9 +4409,10 @@ int main(int argc, char **argv)
             net_poll(now);
             mq_poll(now);
         }
-        /* as many transmit samples as were read, at the modem's position for them */
+        /* as many transmit samples as were read (one for every txr), at the modem's position for them */
+        const int ntx = (int)((total + n) / txr - total / txr);
         const double t_mod = now_s();
-        const bool keyed = rdof_sdrmodem_pull_iq(&R.m, txn - lead + offset, out, n);
+        const bool keyed = rdof_sdrmodem_pull_iq(&R.m, txn - lead + offset, out, ntx);
         WS.mod += now_s() - t_mod;
         /* Samples the receiver lost (a stall longer than the device's buffers: the stream falls behind the wall
          * clock) move what's heard against what's sent, and the transmitter's samples are paced by what's read: the
@@ -4326,7 +4431,7 @@ int main(int argc, char **argv)
                     WS.lost += llround(R.lag_min - R.lag_prev);
                     if (W.guarded) { /* the transmit stream is that much behind for good: not samples to drop */
                         pthread_mutex_lock(&W.mu);
-                        rdof_txguard_slipped(&W.guard, llround(R.lag_min - R.lag_prev));
+                        rdof_txguard_slipped(&W.guard, llround((R.lag_min - R.lag_prev) / txr));
                         pthread_mutex_unlock(&W.mu);
                     }
                     say("receive: %.1f ms of samples lost%s\n", 1e3 * (R.lag_min - R.lag_prev) / rate,
@@ -4345,7 +4450,7 @@ int main(int argc, char **argv)
                     pthread_mutex_unlock(&W.mu);
                     if (p != pads)
                         say("transmit: the loop fell behind; %.1f ms of zeros kept the stream's timing\n",
-                            1e3 * (double)(z - padded) / rate);
+                            1e3 * (double)(z - padded) / txrate);
                     if (d != dry)
                         say("transmit: the device ran dry %u times; what follows goes out later\n", d - dry);
                     pads = p, dry = d, padded = z;
@@ -4363,44 +4468,44 @@ int main(int argc, char **argv)
             }
         }
         if (R.cal == 1 && total >= R.cal_at && !keyed) {
-            const int len = (int)(rate * 0.02) < n ? (int)(rate * 0.02) : n;
-            for (int i = 0; i < len; i++) { /* 100 kHz below the TX LO, where the outbound goes */
-                const double ph = -2 * M_PI * 100e3 * (double)i / rate;
+            const int len = (int)(txrate * 0.02) < ntx ? (int)(txrate * 0.02) : ntx;
+            for (int i = 0; i < len; i++) { /* lo_off below the TX LO, where the outbound goes */
+                const double ph = -2 * M_PI * R.lo_off * (double)i / txrate;
                 out[i].re = (float)(0.7 * cos(ph)), out[i].im = (float)(0.7 * sin(ph));
             }
             hot = true;
-            keyed_until = (double)(txn + n) / rate + 0.3;
-            R.onset = txn - lead + offset;
+            keyed_until = (double)(txn + ntx) / txrate + 0.3;
+            R.onset = (txn - lead + offset) * txr;
             R.cal = 2;
         }
         if (keyed) {
-            keyed_until = (double)(txn + n) / rate + 0.3; /* past the device's buffers */
+            keyed_until = (double)(txn + ntx) / txrate + 0.3; /* past the device's buffers */
             if (!hot) {
                 tx_gain(txg);
                 hot = true;
                 /* where the receiver should report the key-up's first burst: its first keyed sample, then the ramp
                  * and the CACH (4 + 12 symbols), then the receiver's delay (48 at 48 kS/s; reference.md, "Timing") */
                 int i0 = 0;
-                while (i0 < n && out[i0].re == 0.0f && out[i0].im == 0.0f)
+                while (i0 < ntx && out[i0].re == 0.0f && out[i0].im == 0.0f)
                     i0++;
-                R.first_sent = (txn - lead + offset + i0) * 48000 / (int64_t)rate + 16 * 10 + 48;
+                R.first_sent = (int64_t)((double)(txn - lead + offset + i0) * 48000.0 / txrate) + 16 * 10 + 48;
                 R.waiting = R.mon >= 0;
-                R.onset = txn - lead + offset + i0;
+                R.onset = (txn - lead + offset + i0) * txr;
                 R.echo_ch = R.tx_ch, R.echo_img = R.tx_img;
-                R.echo_from = (int64_t)((double)(txn - lead + offset + i0) * 48000.0 / rate);
+                R.echo_from = (int64_t)((double)(txn - lead + offset + i0) * 48000.0 / txrate);
             }
-            R.echo_to = (int64_t)((double)(txn - lead + offset + n) * 48000.0 / rate);
-        } else if (hot && (double)txn / rate > keyed_until) {
+            R.echo_to = (int64_t)((double)(txn - lead + offset + ntx) * 48000.0 / txrate);
+        } else if (hot && (double)txn / txrate > keyed_until) {
             tx_gain(dev->tx_gain_min);
             hot = false;
         }
-        for (int i = 0; i < n; i++)
+        for (int i = 0; i < ntx; i++)
             out[i].re *= 0.7f, out[i].im *= 0.7f;
         const double t1 = now_s();
-        tx_put(out, n);
+        tx_put(out, ntx);
         t_write += now_s() - t1;
         WS.wait += now_s() - t1;
-        txn += n;
+        txn += ntx;
         /* The transmit path's delay drifts: a stall in the writer lets the device run dry, and all that follows goes out
          * that much later. With the device's buffers full, the ring holds that much more: its floor over half a second,
          * against the floor just after the calibration, is the drift. Unkeyed, the ring holds zeros only, and the
@@ -4416,15 +4521,15 @@ int main(int argc, char **argv)
                     R.cal48 = R.m.tx_late48;
                 } else if (R.ring_ref >= 0) {
                     int64_t drift = R.ring_min - R.ring_ref;
-                    if (!hot && drift > (int64_t)rate / 500) {
+                    if (!hot && drift > (int64_t)txrate / 500) {
                         const int64_t cut = drift < fill - CHUNK ? drift : fill - CHUNK;
                         if (cut > 0) {
                             W.head -= cut;
                             drift -= cut;
-                            say("transmit: %.1f ms of delay taken out (the writer had fallen behind)\n", 1e3 * (double)cut / rate);
+                            say("transmit: %.1f ms of delay taken out (the writer had fallen behind)\n", 1e3 * (double)cut / txrate);
                         }
                     }
-                    R.m.tx_late48 = R.cal48 + drift * 48000 / (int64_t)rate;
+                    R.m.tx_late48 = R.cal48 + drift * 48000 / (int64_t)txrate;
                 }
                 R.ring_min = INT64_MAX;
                 R.ring_win = (double)total / rate;
@@ -4458,7 +4563,7 @@ int main(int argc, char **argv)
                         /* an outbound's key-up: its modem samples on the receiver's timeline */
                         const double t = bl_sc_utc(NULL, (uint64_t)at);
                         pthread_mutex_lock(&BO.mu);
-                        BO.mapped = true, BO.map_pos = R.onset, BO.map_t = t;
+                        BO.mapped = true, BO.map_pos = R.onset / R.txr, BO.map_t = t;
                         pthread_mutex_unlock(&BO.mu);
                         say("bench: the outbound's key-up heard back %.2f ms after its place\n",
                             1e3 * (double)(at - R.onset) / rate);
