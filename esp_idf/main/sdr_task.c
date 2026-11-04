@@ -545,7 +545,8 @@ static bool rx_setup(void)
     live_taps = ntaps;
     n += ntaps;
     /* the ppm is set on the chip, as SoapySDR does for the RTL: no software correction */
-    rdof_sdr_rx_config_t rc = {g_scfg.sample_rate, center, rdof_sdr_config_rssi_offset(&g_scfg), 0.0, g_scfg.afc, CHUNK};
+    rdof_sdr_rx_config_t rc = {g_scfg.sample_rate, center, rdof_sdr_config_rssi_offset(&g_scfg), 0.0, g_scfg.afc, CHUNK,
+                               false};
     rdof_sink_t sink = sdr_mqtt_sink();
     rdof_demod_set_clock(esp_cpu_get_cycle_count);
     extern size_t g_dsp_internal_bytes, g_dsp_psram_bytes;
@@ -1499,7 +1500,7 @@ static size_t hot_dry_run(void)
         ch[i] = (rdof_sdr_channel_t){.id = g_scfg.ch[i].id, .freq_hz = g_scfg.ch[i].freq, .cc = g_scfg.ch[i].cc,
                                      .slot = g_scfg.ch[i].slot};
     const double center = g_scfg.center ? g_scfg.center : g_scfg.ch[0].freq;
-    rdof_sdr_rx_config_t rc = {g_scfg.sample_rate, center, 0.0, 0.0, g_scfg.afc, CHUNK};
+    rdof_sdr_rx_config_t rc = {g_scfg.sample_rate, center, 0.0, 0.0, g_scfg.afc, CHUNK, false};
     sdr_hot_count(true);
     if (!rdof_sdr_rx_init(rx, &rc, ch, g_scfg.nch, NULL, 0.0) && g_scfg.dsp_cores > 1)
         rdof_chz_reserve(&rx->chz, CHUNK);

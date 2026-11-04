@@ -115,7 +115,7 @@ static double load_run(int nch, int rate, const double *off, int split, const ui
         snprintf(ids[c], sizeof ids[c], "L%d", c);
         ch[c] = (rdof_sdr_channel_t){ids[c], center + off[c], 1, 1};
     }
-    const rdof_sdr_rx_config_t cfg = {rate, center, CLIP_RSSI_OFFSET, 0.0, true, CLIP_CHUNK};
+    const rdof_sdr_rx_config_t cfg = {rate, center, CLIP_RSSI_OFFSET, 0.0, true, CLIP_CHUNK, false};
     bool ok = mods && iq && one && next && rdof_sdr_rx_init(&rx, &cfg, ch, nch, NULL, 0) == 0;
     for (int c = 0; ok && c < nch; c++)
         ok = rdof_mod_init(&mods[c], rate, off[c], 4.0, 0.5f / nch, 4, 0) == 0;
@@ -339,7 +339,7 @@ void selftest_run(void)
         ch[i].cc = clip_channels[i].cc;
         ch[i].slot = clip_channels[i].slot;
     }
-    rdof_sdr_rx_config_t cfg = {CLIP_RATE, CLIP_CENTER, CLIP_RSSI_OFFSET, 0.0, true, CLIP_CHUNK};
+    rdof_sdr_rx_config_t cfg = {CLIP_RATE, CLIP_CENTER, CLIP_RSSI_OFFSET, 0.0, true, CLIP_CHUNK, false};
     rdof_sdr_bench_t b;
     double total = 0;
     if (rdof_sdr_bench(clip_start, (int)(len / 2), &cfg, ch, CLIP_CHANNELS, clock_s, 2, &b) == 0) {

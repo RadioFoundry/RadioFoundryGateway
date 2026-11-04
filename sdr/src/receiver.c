@@ -41,6 +41,7 @@ void rdof_sdr_rx_free(rdof_sdr_rx_t *rx)
     rdof_sdr_free(rx->gated);
     rdof_sdr_free(rx->fed);
     rdof_sdr_free(rx->nfed);
+    rdof_sdr_free(rx->ext_pw);
     memset(rx, 0, sizeof *rx);
     rx->blind_from = -1;
 }
@@ -69,6 +70,19 @@ static void stamp(const rdof_sdr_rx_t *rx, rdof_sdr_burst_t *b)
     b->b.utc = true;
     if (b->b.family == RDOF_FAMILY_MS)
         b->b.slot = ts;
+}
+
+/* external: the channelizer's fields the rest reads (the rates, corrections, levels), no channelizer */
+static int ext_init(rdof_sdr_rx_t *rx, int decimation)
+{
+    rdof_chz_t *z = &rx->chz;
+    z->fs = rx->cfg.sample_rate;
+    z->D = decimation;
+    z->out_rate = z->fs / z->D;
+    z->C = rx->C;
+    z->correction_hz = rdof_sdr_zalloc(sizeof(double) * (size_t)rx->C);
+    z->level = rdof_sdr_zalloc(sizeof(float) * (size_t)rx->C);
+    return z->correction_hz && z->level ? 0 : -1;
 }
 
 int rdof_sdr_rx_init(rdof_sdr_rx_t *rx, const rdof_sdr_rx_config_t *cfg, const rdof_sdr_channel_t *chans, int n,
@@ -100,8 +114,9 @@ int rdof_sdr_rx_init(rdof_sdr_rx_t *rx, const rdof_sdr_rx_config_t *cfg, const r
     }
     for (int c = 0; c < n; c++)
         offsets[c] = freqs[c] - rx->center_hz;
-    int err = rdof_chz_init(&rx->chz, cfg->sample_rate, offsets, n, (int)nearbyint(dec), RDOF_CHZ_OUT_FFT,
-                          RDOF_CHZ_CUTOFF_HZ);
+    int err = cfg->external ? ext_init(rx, (int)nearbyint(dec))
+                            : rdof_chz_init(&rx->chz, cfg->sample_rate, offsets, n, (int)nearbyint(dec),
+                                            RDOF_CHZ_OUT_FFT, RDOF_CHZ_CUTOFF_HZ);
     rdof_sdr_free(offsets);
     if (!err) /* a tuner that's ppm fast shifts every channel up by f * ppm * 1e-6 */
         for (int c = 0; c < n; c++)
@@ -109,7 +124,8 @@ int rdof_sdr_rx_init(rdof_sdr_rx_t *rx, const rdof_sdr_rx_config_t *cfg, const r
     rdof_sdr_free(freqs);
     if (err)
         return -1;
-    rx->stride = cfg->max_chunk / rx->chz.hop * rx->chz.out_per_hop + rx->chz.out_per_hop;
+    rx->stride = cfg->external ? cfg->max_chunk
+                               : cfg->max_chunk / rx->chz.hop * rx->chz.out_per_hop + rx->chz.out_per_hop;
     rx->y = rdof_sdr_alloc(sizeof(rdof_cf_t) * (size_t)rx->stride * n);
     rx->demods = rdof_sdr_zalloc(sizeof(rdof_demod_t) * (size_t)(n));
     rx->trackers = rdof_sdr_zalloc(sizeof(rdof_tracker_t) * (size_t)(n));
@@ -128,7 +144,9 @@ int rdof_sdr_rx_init(rdof_sdr_rx_t *rx, const rdof_sdr_rx_config_t *cfg, const r
     rx->gated = rdof_sdr_zalloc(sizeof(long) * (size_t)n);
     rx->fed = rdof_sdr_zalloc(sizeof(*rx->fed) * (size_t)n);
     rx->nfed = rdof_sdr_zalloc(sizeof(int) * (size_t)n);
-    if (!rx->y || !rx->demods || !rx->trackers || !rx->bursts || !rx->afc_pending || !rx->afc_chan ||
+    if (cfg->external)
+        rx->ext_pw = rdof_sdr_alloc(sizeof(float) * (size_t)n * (size_t)(rx->stride / RDOF_EXT_BLOCK + 1));
+    if ((cfg->external && !rx->ext_pw) || !rx->y || !rx->demods || !rx->trackers || !rx->bursts || !rx->afc_pending || !rx->afc_chan ||
         !rx->last_burst || !rx->rssi || !rx->was_hot || !rx->last_pos || !rx->gated || !rx->afc_at || !rx->hist_at ||
         !rx->hist_corr || !rx->hist_n || !rx->fed || !rx->nfed)
         return -1;
@@ -171,6 +189,56 @@ int rdof_sdr_rx_channelize(rdof_sdr_rx_t *rx, const rdof_cf_t *iq, int n)
     if (rx->got)
         rx->chunks++;
     return rx->got;
+}
+
+int rdof_sdr_rx_channels_in(rdof_sdr_rx_t *rx, const rdof_iq16_t *y, int n, float scale)
+{
+    if (!rx->cfg.external || n < 0)
+        n = 0;
+    if (n > rx->stride)
+        n = rx->stride;
+    const int C = rx->C;
+    int np = 0;
+    for (int c = 0; c < C; c++) {
+        rdof_cf_t *o = rx->y + (size_t)c * rx->stride;
+        for (int k = 0; k < n; k++) {
+            o[k].re = (float)y[(size_t)k * C + c].i * scale;
+            o[k].im = (float)y[(size_t)k * C + c].q * scale;
+        }
+        float top = 0.0f;
+        for (int b = 0; b < n; b += RDOF_EXT_BLOCK) { /* each block's power */
+            const int len = n - b < RDOF_EXT_BLOCK ? n - b : RDOF_EXT_BLOCK;
+            float pw = 0.0f;
+            for (int k = b; k < b + len; k++)
+                pw += o[k].re * o[k].re + o[k].im * o[k].im;
+            pw /= (float)len;
+            rx->ext_pw[np++] = pw;
+            top = pw > top ? pw : top;
+        }
+        rx->chz.level[c] = top; /* over the noise below */
+    }
+    /* the noise in a channel: this chunk's estimate, the least of the last few chunks' (a chunk of zeros, samples
+     * lost, gives none) */
+    const float est = np ? rdof_sdr_select_kth(rx->ext_pw, np, np / 4) / RDOF_EXT_Q25 : 0.0f;
+    if (est > 0.0f) {
+        rx->ext_floor[rx->ext_ifloor] = est;
+        rx->ext_ifloor = (rx->ext_ifloor + 1) % RDOF_EXT_FLOORS;
+        if (rx->ext_nfloor < RDOF_EXT_FLOORS)
+            rx->ext_nfloor++;
+    }
+    float noise = 0.0f;
+    for (int i = 0; i < rx->ext_nfloor; i++)
+        noise = i == 0 || rx->ext_floor[i] < noise ? rx->ext_floor[i] : noise;
+    for (int c = 0; c < C; c++) {
+        const float pw = n ? rx->chz.level[c] : 0.0f;
+        rx->chz.level[c] = pw <= 0.0f ? 0.0f : noise > 0.0f ? pw / noise : INFINITY;
+    }
+    rx->got = n;
+    rx->samples += n;
+    rx->out_index += n;
+    if (n)
+        rx->chunks++;
+    return n;
 }
 
 int rdof_sdr_rx_forward(rdof_sdr_rx_t *rx, const rdof_cf_t *iq, int n)
@@ -337,12 +405,20 @@ void rdof_sdr_rx_set_correction(rdof_sdr_rx_t *rx, int c, double hz)
     rx->chz.correction_hz[c] = hz;
     int64_t *at = rx->hist_at + (size_t)c * RDOF_AFC_HISTORY;
     double *corr = rx->hist_corr + (size_t)c * RDOF_AFC_HISTORY;
+    /* from the next chunk on, or where an outside channelizer says it takes effect (never before the last) */
+    int64_t from = rx->out_index;
+    if (rx->on_correction) {
+        const int64_t p = rx->on_correction(rx->correction_ctx, c, hz);
+        from = p > from ? p : from;
+    }
+    if (rx->hist_n[c] && from < at[rx->hist_n[c] - 1])
+        from = at[rx->hist_n[c] - 1];
     if (rx->hist_n[c] == RDOF_AFC_HISTORY) {
         memmove(at, at + 1, sizeof(int64_t) * (RDOF_AFC_HISTORY - 1));
         memmove(corr, corr + 1, sizeof(double) * (RDOF_AFC_HISTORY - 1));
         rx->hist_n[c]--;
     }
-    at[rx->hist_n[c]] = rx->out_index;
+    at[rx->hist_n[c]] = from;
     corr[rx->hist_n[c]++] = hz;
 }
 

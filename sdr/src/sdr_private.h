@@ -14,4 +14,7 @@ void *rdof_sdr_alloc_hot(size_t n); /* rdof_sdr_set_hot_allocator */
 void *rdof_sdr_zalloc(size_t n);
 void rdof_sdr_free(void *p);
 
+/* The k-th smallest of v[0..n-1] (reorders v): channelizer.c's. */
+float rdof_sdr_select_kth(float *v, int n, int k);
+
 #endif

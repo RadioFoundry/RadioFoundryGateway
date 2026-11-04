@@ -221,7 +221,7 @@ int main(int argc, char **argv)
     double gain = NAN, seconds = 0;
     char *settings[16];
     int n_settings = 0;
-    rdof_sdr_rx_config_t cfg = {1536000.0, 0.0, -55.0, 0.0, true, 1 << 17};
+    rdof_sdr_rx_config_t cfg = {1536000.0, 0.0, -55.0, 0.0, true, 1 << 17, false};
     double t0 = 1760000000.0, ghz = 3.2;
     int do_bench = 0, reps = 3, gate = 1;
     const char *fft = NULL;

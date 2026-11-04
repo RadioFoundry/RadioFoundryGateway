@@ -52,6 +52,9 @@ extern "C" {
 #define RDOF_CHZFX_MAX_CIC 64     /* R: 2^17 R^N fits the registers' 42 bits */
 #define RDOF_CHZFX_CIC_BITS 42
 #define RDOF_CHZFX_MAX_STEP 512   /* R D with a CIC: the inputs of an output instant, which the block buffers */
+/* An output step as a float, for a 12-bit ADC read at 1/2048 a step (rdofradio_iio.c): its 3 fraction bits and
+ * the filter's unity gain put the channel samples on the float channelizer's scale (rdof_sdr_rx_channels_in). */
+#define RDOF_CHZFX_OUT_SCALE (1.0f / (2048.0f * (float)(1 << RDOF_CHZFX_OUT_FRAC)))
 
 /* The quarter-wave table: qcos[i] = round(32767 cos(2 pi (i + 0.5) / 4096)). The half step keeps the quarter
  * symmetric: the full table at k = 1024 q + i is qcos[i], -qcos[1023 - i], -qcos[i], qcos[1023 - i] for quadrants

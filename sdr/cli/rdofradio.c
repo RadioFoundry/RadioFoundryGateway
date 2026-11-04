@@ -36,7 +36,10 @@
  * bench's line protocol (docs/spec/bench-api.md section 14) on PORT (7373 by convention), every interface unless
  * ADDR is given: the receiver's bursts and wideband captures for tools/bench/rfgbench.py, and its transmit jobs
  * (bench_tx's voice, csbk, data) on the --bench-tx frequencies, at --tx-gain, in the transceiver's place while
- * they run (not in a duplex repeater).
+ * they run (not in a duplex repeater). --fpga-chz [ADDR] (with --iio, on a PlutoSDR whose FPGA has the channelizer
+ * block, its registers at ADDR, 0x7C480000 by default): the block channelizes and the receiver takes its 48 kS/s
+ * channel frames from the receive DMA, its AFC steering the block's NCOs; the rate can then go to 24.576 MS/s
+ * (R D up to 512). No spectrum and no wideband captures; not with --split-tx or --mmdvm.
  *
  * --split-tx PORT: a split duplex repeater (docs/spec/repeater.md): a RadioFoundry radio on PORT (its hotspot, with
  * the split duplex extension) transmits, and the SDR, opened receive only, is the RX half. Any receiver does, an
@@ -86,6 +89,8 @@
 #include <time.h>
 #include <poll.h>
 #include <sys/resource.h>
+#include <fcntl.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -99,6 +104,7 @@
 #include "rdof/repeater.h"
 #include "rdof/siteroute.h"
 #include "rdof/split.h"
+#include "rdof/sdr/chzhw.h"
 #include "rdof/sdr/modes.h"
 #include "rdof/sdr/receiver.h"
 #include "rdof/sdr/sdrmodem.h"
@@ -436,6 +442,7 @@ static void usage(void)
             "                 [--tx-gain DB] [--tx-lo MHZ] [--gain DB] [--center MHZ] [--monitor] [--tx-offset S]\n"
             "                 [--parrot ID] [--stream ARGS] [--seconds S] [--bursts] [--quiet] [-v] [--web [ADDR:]PORT]\n"
             "                 [--last-exit FILE] [--ota FILE] [--fft builtin|pffft] [--bench [ADDR:]PORT] [--bench-tx MHZ,...]\n"
+            "                 [--fpga-chz [ADDR]] (with --iio: the FPGA channelizer on a PlutoSDR, at 0x7C480000 by default)\n"
             "       rdofradio DEVICE --allow-tx --config FILE [--clock-state FILE] [--set-os-clock] [the device's flags]\n"
             "       rdofradio DEVICE --allow-tx --split-tx PORT [--baud N] [--split-power-cap N] --rx MHZ --tx MHZ [--cc CC]\n"
             "                 [-r RATE] [--gain DB] [--center MHZ] [--parrot ID] [--seconds S] [-v] [--web [ADDR:]PORT]\n"
@@ -488,9 +495,62 @@ static int channel_of(double hz)
 /* The rate: -r, else the least that holds every receive channel in one window, from the device's usual rate up
  * to the most it streams here: on a PlutoSDR's own ARM (--iio local:) 2.4 MS/s, what its CPU is known to keep up
  * with; from a host over USB 2 or the network 3.84 MS/s (reference.md: about 3.5 to 4 MS/s each way); through
- * SoapySDR 3.2 MS/s, an RTL-SDR's (give others -r). */
+ * SoapySDR 3.2 MS/s, an RTL-SDR's (give others -r). With --fpga-chz, up to the most the block channelizes. */
 static bool dev_iio, dev_local;
 static double rate_flag;
+
+/* --fpga-chz [ADDR]: the FPGA channelizer on a PlutoSDR (rdof/sdr/chzhw.h) in place of the receiver's own. rdofradio
+ * starts it with the receiver's channels, reads its frames from the receive DMA (rdofradio_iio.c's words) and gives
+ * them to the receiver (rdof_sdr_rx_channels_in); the AFC's corrections go to its NCOs. A frame is an output
+ * instant, step = R D wideband samples: the loop counts in those, so the transmitter and the clocks keep their
+ * wideband timeline. There is no wideband I/Q: no spectrum, and the bench's captures are filler. (below, fx_*) */
+#define FX_ADDR 0x7C480000ul /* the block's registers in the Pluto design */
+#define FX_MAX 4096          /* channel samples a receiver call */
+#define FX_GAP 48000         /* most lost output instants made up with zeros at once (1 s) */
+#define FX_LATE 9            /* a new NCO step reaches the filter's middle this many output instants after FRAMES:
+                                the next instant, then 8 (half of 16 D + 1 taps) */
+
+static struct {
+    bool on;
+    unsigned long addr;
+    void *regs;
+    rdof_chzhw_t h;
+    rdof_chzhw_rx_t prx;
+    rdof_chzfx_cfg_t cfg;
+    bool started;
+    int R, D, step, C;
+    double off[RDOF_CHZFX_MAX_CH];
+    uint32_t inc[RDOF_CHZFX_MAX_CH];
+    bool dirty;              /* inc changed: to the block after the receiver's turn */
+    bool cal;                /* channel 0 on the duplex calibration's pulse */
+    bool have0;
+    uint32_t seq0, expect;   /* the first frame's number, the next one's */
+    rdof_iq16_t *y;          /* the last read's output instants (zeros for lost ones), C samples each */
+    float *pw;               /* each one's power: the strongest channel's (channel 0's while calibrating) */
+    int ny, cap, j, turn;    /* how many, room; the next the loop's turns take, this turn's first */
+    long long lost, made_up, skipped; /* instants lost; zeros in their place; neither (past FX_GAP or the room) */
+    uint32_t status;         /* STATUS at the last read */
+    long ovf;                /* overflow bits seen set (STATUS IN_OVF, DMA_OVF) */
+    double t_rx;             /* seconds the last read spent in the receiver */
+} FX = {.addr = FX_ADDR};
+
+/* The block's R and D for step = R D (48 kS/s out): no CIC when the FIR alone decimates that much, else the CIC
+ * with the largest D that divides it. The block's sizes (CAPS) and the model's. False if none fits. */
+static bool fx_plan(int step, int *R, int *D)
+{
+    const rdof_chzhw_t *h = &FX.h;
+    for (int d = step < h->max_decim ? step : h->max_decim; d >= 1; d--) {
+        const int r = step / d, taps = RDOF_CHZ_OUT_FFT / 4 * d + 1; /* rdof_chzfx_design's */
+        if (step % d || d > RDOF_CHZFX_MAX_DECIM || taps > h->max_taps || taps + d > h->hist ||
+            taps > RDOF_CHZFX_MAX_TAPS || taps + d > RDOF_CHZFX_HIST)
+            continue;
+        if (r > 1 && (r > h->max_cic || r > RDOF_CHZFX_MAX_CIC || step > RDOF_CHZFX_MAX_STEP))
+            continue;
+        *R = r, *D = d;
+        return true;
+    }
+    return false;
+}
 static double span_of(const rdof_sdr_channel_t *c, int n)
 {
     double lo = c[0].freq_hz, hi = c[0].freq_hz;
@@ -503,11 +563,22 @@ static double plan_rate(const rdof_sdr_channel_t *c, int n, char *why, size_t ca
     double f[RDOF_SDR_MAX_CHANNELS], center;
     for (int i = 0; i < n; i++)
         f[i] = c[i].freq_hz;
+    if (FX.on && n > FX.h.channels) {
+        snprintf(why, cap, "%d receive channels: the FPGA channelizer has %d", n, FX.h.channels);
+        return 0;
+    }
+    int fx_r, fx_d;
+    const int fx_most = FX.h.max_cic > 1 ? RDOF_CHZFX_MAX_STEP : FX.h.max_decim; /* R D at most */
     const double lo = rate_flag ? rate_flag : dev_iio ? 768000 : 2400000;
-    const double hi = rate_flag ? rate_flag : dev_local ? 2400000 : dev_iio ? 3840000 : 3200000;
+    const double hi = rate_flag ? rate_flag : FX.on ? 48000.0 * fx_most : dev_local ? 2400000 : dev_iio ? 3840000 : 3200000;
     for (double r = ceil(lo / 48000) * 48000; r <= hi; r += 48000) {
         if (rdof_plan_center(f, n, r, &center))
             continue;
+        if (FX.on) { /* the block's decimation, not the ARM's FFT */
+            if (fx_plan((int)(r / 48000), &fx_r, &fx_d))
+                return r;
+            continue;
+        }
         /* and one the channelizer takes: its FFT is 64 times the decimation, which the FFT may not do (pffft:
            factors 2, 3 and 5 only) */
         double off[RDOF_SDR_MAX_CHANNELS];
@@ -522,6 +593,11 @@ static double plan_rate(const rdof_sdr_channel_t *c, int n, char *why, size_t ca
     double flo = f[0], fhi = f[0];
     for (int i = 1; i < n; i++)
         flo = fmin(flo, f[i]), fhi = fmax(fhi, f[i]);
+    if (FX.on && rate_flag && !rdof_plan_center(f, n, rate_flag, &center)) {
+        snprintf(why, cap, "-r %.0f: the FPGA channelizer can't make 48 kS/s of it (D up to %d, a CIC's R up to %d, "
+                           "R D up to %d)", rate_flag, FX.h.max_decim, FX.h.max_cic, RDOF_CHZFX_MAX_STEP);
+        return 0;
+    }
     snprintf(why, cap, "receive channels %.4f to %.4f MHz: wider than %.2f MS/s holds (%s); fewer channels%s",
              flo / 1e6, fhi / 1e6, hi / 1e6, rate_flag ? "-r" : "this device's most here",
              rate_flag ? ", or a wider -r" : "");
@@ -2153,7 +2229,8 @@ static void bench_start(void)
 {
     if (bench_port < 0)
         return;
-    if (!rdof_bl_ring_init(&BL.ring, (long)(2.5 * R.rate))) {
+    /* --fpga-chz has no wideband I/Q to keep: a short ring of filler, which counts the samples */
+    if (!rdof_bl_ring_init(&BL.ring, FX.on ? 4L * CHUNK : (long)(2.5 * R.rate))) {
         fprintf(stderr, "bench: no memory for the history\n");
         return;
     }
@@ -2485,7 +2562,7 @@ static void web_publish(double rx, double tx, int cc)
     w.extra[0].value = R.m.tx_late48 * 1000 / 48;
     snprintf(w.extra[1].name, sizeof w.extra[1].name, "inbound off (%%)");
     w.extra[1].value = (int64_t)llround(R.m.inbound_off * 100);
-    w.spectrum = dev != NULL;
+    w.spectrum = dev != NULL && !FX.on; /* --fpga-chz: no wideband I/Q */
     if (dev)
         web_sdr(&w.sdrs[w.nsdr++]);
     if (R.split)
@@ -2729,6 +2806,216 @@ static void rx_chunk(const rdof_cf_t *in, int n)
     }
     rdof_sdr_rx_bursts(&R.rx, 0, R.rx.C);
     rdof_sdr_rx_finish(&R.rx);
+}
+
+/* ── --fpga-chz: the block's frames through the receiver (FX, above plan_rate) ─────────── */
+
+static uint32_t fx_rd(void *ctx, uint32_t off) { return *(volatile uint32_t *)((uint8_t *)ctx + off); }
+static void fx_wr(void *ctx, uint32_t off, uint32_t v) { *(volatile uint32_t *)((uint8_t *)ctx + off) = v; }
+
+/* The block's registers through /dev/mem, its ID and CAPS. 0, or -1 with why in err. */
+static int fx_probe(char *err, size_t cap)
+{
+    const int fd = open("/dev/mem", O_RDWR | O_SYNC);
+    if (fd < 0) {
+        snprintf(err, cap, "/dev/mem: %s", strerror(errno));
+        return -1;
+    }
+    FX.regs = mmap(NULL, RDOF_CHZHW_SPAN, PROT_READ | PROT_WRITE, MAP_SHARED, fd, (off_t)FX.addr);
+    close(fd);
+    if (FX.regs == MAP_FAILED) {
+        snprintf(err, cap, "/dev/mem at 0x%08lx: %s", FX.addr, strerror(errno));
+        return -1;
+    }
+    const rdof_chzhw_io_t io = {fx_rd, fx_wr, FX.regs};
+    char e[160];
+    if (rdof_chzhw_probe(&FX.h, &io, e, sizeof e)) {
+        snprintf(err, cap, "no FPGA channelizer at 0x%08lx: %s", FX.addr, e);
+        return -1;
+    }
+    return 0;
+}
+
+/* ENABLE off: the stock path to the DMA again (at exit, whatever the way) */
+static void fx_stop(void)
+{
+    if (FX.started)
+        rdof_chzhw_stop(&FX.h);
+    FX.started = false;
+}
+
+/* One output instant to FX.y (NULL: zeros), with its power for the loop's edge detection */
+static void fx_put(const rdof_iq16_t *x)
+{
+    if (FX.ny == FX.cap) {
+        FX.skipped++;
+        return;
+    }
+    rdof_iq16_t *o = FX.y + (size_t)FX.ny * FX.C;
+    float p = 0.0f;
+    if (x) {
+        memcpy(o, x, sizeof *o * (size_t)FX.C);
+        for (int c = 0; c < (FX.cal ? 1 : FX.C); c++) {
+            const float q = (float)x[c].i * x[c].i + (float)x[c].q * x[c].q;
+            p = q > p ? q : p;
+        }
+    } else {
+        memset(o, 0, sizeof *o * (size_t)FX.C);
+    }
+    FX.pw[FX.ny++] = p * RDOF_CHZFX_OUT_SCALE * RDOF_CHZFX_OUT_SCALE;
+}
+
+/* A channel frame from the parser: the instants lost before it made up with zeros (up to FX_GAP), so the receiver's
+ * sample count stays the block's (seq - seq0) */
+static void fx_on_ch(void *ctx, uint32_t seq, const rdof_iq16_t *x, int n)
+{
+    if (!FX.have0)
+        FX.have0 = true, FX.seq0 = FX.expect = seq;
+    const uint32_t gap = seq - FX.expect;
+    if (gap >= 0x80000000u)
+        return; /* behind the last: not this stream's */
+    FX.lost += gap;
+    for (uint32_t k = 0; k < gap; k++) {
+        if (k < FX_GAP) {
+            fx_put(NULL);
+            FX.made_up++;
+        } else {
+            FX.skipped++;
+        }
+    }
+    fx_put(x);
+    FX.expect = seq + 1;
+}
+
+/* The receiver's AFC moved channel c: its NCO's next step (to the block after the turn, all at once). The channel
+ * sample the step takes effect from: FRAMES now, as the receiver counts. */
+static int64_t fx_correction(void *ctx, int c, double hz)
+{
+    if (c < 0 || c >= FX.C)
+        return -1;
+    if (!(FX.cal && c == 0)) { /* channel 0 is on the pulse: its step comes back at the calibration's end */
+        FX.inc[c] = rdof_chzfx_inc(FX.off[c] + hz, R.rate);
+        FX.dirty = true;
+    }
+    return (int64_t)(uint32_t)(rdof_chzhw_frames(&FX.h) - FX.seq0) - FX.skipped + FX_LATE;
+}
+
+/* The duplex calibration (full duplex: the RX LO on the TX LO, the pulse 100 kHz below it): channel 0 hears the
+ * pulse while on, its own frequency again after */
+static void fx_cal(bool on)
+{
+    if (!FX.on)
+        return;
+    FX.cal = on;
+    FX.inc[0] = rdof_chzfx_inc(on ? -100e3 : FX.off[0] + R.rx.chz.correction_hz[0], R.rate);
+    rdof_chzhw_set_inc(&FX.h, FX.inc);
+    FX.dirty = false;
+}
+
+/* The block started with the receiver's channels and their corrections. 0, or -1 with why in err. */
+static int fx_start(char *err, size_t cap)
+{
+    FX.C = R.rx.C;
+    FX.step = (int)lround(R.rate / 48000);
+    if (!fx_plan(FX.step, &FX.R, &FX.D)) {
+        snprintf(err, cap, "the FPGA channelizer can't decimate %.0f S/s to 48 kS/s", R.rate);
+        return -1;
+    }
+    double off[RDOF_CHZFX_MAX_CH];
+    for (int c = 0; c < FX.C; c++) {
+        FX.off[c] = CH[c].freq_hz - R.rx.center_hz;
+        off[c] = FX.off[c] + R.rx.chz.correction_hz[c];
+    }
+    if (rdof_chzfx_design_cic(&FX.cfg, R.rate, FX.R, FX.D, off, FX.C, RDOF_CHZ_CUTOFF_HZ)) {
+        snprintf(err, cap, "no FPGA channelizer configuration for %d channels, R %d, D %d at %.0f S/s", FX.C, FX.R,
+                 FX.D, R.rate);
+        return -1;
+    }
+    memcpy(FX.inc, FX.cfg.inc, sizeof FX.inc);
+    FX.cap = FX_GAP + 8192; /* a second of lost instants and a read's (about 480) */
+    FX.y = malloc(sizeof *FX.y * (size_t)FX.cap * (size_t)FX.C);
+    FX.pw = malloc(sizeof *FX.pw * (size_t)FX.cap);
+    if (!FX.y || !FX.pw) {
+        snprintf(err, cap, "out of memory");
+        return -1;
+    }
+    rdof_chzhw_rx_init(&FX.prx, FX.C, fx_on_ch, NULL, NULL);
+    if (rdof_chzhw_start(&FX.h, &FX.cfg, 0, 0, err, cap))
+        return -1;
+    FX.started = true;
+    atexit(fx_stop);
+    R.rx.on_correction = fx_correction;
+    return 0;
+}
+
+/* The last read's instants through the receiver (the helper takes a share of the demods, as rx_chunk), then the
+ * AFC's new steps to the block */
+static void fx_rx(void)
+{
+    if (!HX.on && !HX.failed && R.rx.C > 1) {
+        HX.on = pthread_create(&HX.th, NULL, chz_helper, NULL) == 0;
+        HX.failed = !HX.on;
+    }
+    const int split = R.rx.C / 3 > 0 ? R.rx.C / 3 : 1;
+    for (int k = 0; k < FX.ny; k += FX_MAX) {
+        const int n = FX.ny - k < FX_MAX ? FX.ny - k : FX_MAX;
+        rdof_sdr_rx_channels_in(&R.rx, FX.y + (size_t)k * FX.C, n, RDOF_CHZFX_OUT_SCALE);
+        if (HX.on) {
+            hx_run(3, split, R.rx.C);
+            rdof_sdr_rx_feed(&R.rx, 0, split);
+            hx_join();
+        } else {
+            rdof_sdr_rx_feed(&R.rx, 0, R.rx.C);
+        }
+        rdof_sdr_rx_bursts(&R.rx, 0, R.rx.C);
+        rdof_sdr_rx_finish(&R.rx);
+    }
+    if (FX.dirty) {
+        rdof_chzhw_set_inc(&FX.h, FX.inc);
+        FX.dirty = false;
+    }
+}
+
+/* The loop's turn in place of a device read: up to chunk wideband samples' worth of output instants, a whole number
+ * of them; a DMA buffer is read (and goes through the receiver) when the last one's are all taken. Returns the
+ * wideband samples, or RDOF_DEV_* (TIMEOUT for a buffer with no frames). */
+static int fx_take(int chunk, long timeout_us)
+{
+    if (FX.j >= FX.ny) {
+        const uint64_t *w;
+        const int nw = dev->read_words(dev, &w, timeout_us);
+        if (nw < 0)
+            return nw;
+        FX.ny = FX.j = 0;
+        const long long lost = FX.lost;
+        rdof_chzhw_rx_feed(&FX.prx, w, (size_t)nw);
+        WS.lost += (FX.lost - lost) * FX.step;
+        const uint32_t st = rdof_chzhw_status(&FX.h), now = st & ~FX.status;
+        const long ovf = !!(now & RDOF_CHZHW_STATUS_IN_OVF) + !!(now & RDOF_CHZHW_STATUS_DMA_OVF);
+        FX.ovf += ovf;
+        WS.overflows += ovf;
+        FX.status = st;
+        const double t = now_s();
+        fx_rx();
+        FX.t_rx = now_s() - t;
+        if (!FX.ny)
+            return RDOF_DEV_TIMEOUT;
+    }
+    int k = chunk / FX.step;
+    k = k < 1 ? 1 : k > FX.ny - FX.j ? FX.ny - FX.j : k;
+    FX.turn = FX.j;
+    FX.j += k;
+    return k * FX.step;
+}
+
+/* With --fpga-chz, an edge in the channels' power comes the filter's delay late (16 D + 1 taps: 8 output
+ * instants; the CIC's few inputs left out): wideband samples */
+#define FX_EDGE (FX.on ? (int64_t)(FX_LATE - 1) * FX.step : 0)
+
+/* A turn's power at its wideband sample i: the sample's, or with --fpga-chz its output instant's */
+static inline double turn_p2(const rdof_cf_t *in, int i)
+{
+    return FX.on ? FX.pw[FX.turn + i / FX.step] : (double)in[i].re * in[i].re + (double)in[i].im * in[i].im;
 }
 
 /* The receive stream against the wall clock: lag = wall-clock samples - samples read. Its least over half a second
@@ -3378,6 +3665,12 @@ int main(int argc, char **argv)
         } else if (!strcmp(a, "--iio")) {
             NEXT();
             iio = v;
+        } else if (!strcmp(a, "--fpga-chz")) {
+            FX.on = true;
+            if (v && !strncmp(v, "0x", 2)) {
+                FX.addr = strtoul(v, NULL, 16);
+                i++;
+            }
         } else if (!strcmp(a, "--split-tx")) {
             NEXT();
             split_tx = v;
@@ -3615,6 +3908,23 @@ int main(int argc, char **argv)
         fprintf(stderr, "rdofradio transmits: pass --allow-tx\n");
         return 2;
     }
+    if (FX.on) {
+        char why[256];
+        if (!iio) {
+            fprintf(stderr, "--fpga-chz: the FPGA channelizer is a PlutoSDR's: with --iio\n");
+            return 2;
+        }
+        if (split_tx || mmdvm) {
+            fprintf(stderr, "--fpga-chz: not with --split-tx or --mmdvm\n");
+            return 2;
+        }
+        if (fx_probe(why, sizeof why)) {
+            fprintf(stderr, "--fpga-chz: %s\n", why);
+            return 1;
+        }
+        fprintf(stderr, "--fpga-chz: the block at 0x%08lx: %d channels, D up to %d, %d taps, CIC R up to %d\n",
+                FX.addr, FX.h.channels, FX.h.max_decim, FX.h.max_taps, FX.h.max_cic);
+    }
     R.split = split_tx != NULL;
     if (R.split && !R.full) {
         fprintf(stderr, "--split-tx runs a repeater: full duplex\n");
@@ -3693,7 +4003,8 @@ int main(int argc, char **argv)
         rate = fit;
         R.rate = rate;
     }
-    const rdof_sdr_rx_config_t rc = {rate, center, -55.0, 0.0, true, CHUNK};
+    /* --fpga-chz: the receiver takes the block's channel samples (rdof_sdr_rx_channels_in), FX_MAX a call */
+    const rdof_sdr_rx_config_t rc = {rate, center, -55.0, 0.0, true, FX.on ? FX_MAX : CHUNK, FX.on};
     rdof_sink_t sink = {.on_json = on_json, .on_call = on_call};
 #ifdef RDOF_MQTT
     if (rcfg.cfg.has_mqtt)
@@ -3721,8 +4032,17 @@ int main(int argc, char **argv)
 #endif
 
     /* the device: RX and TX at one rate, each on its own LO, the TX gain at its least */
-    const rdofradio_dev_setup_t su = {rate, R.rx.center_hz, tx_lo, gain, bw, stream_args, R.split || R.mmdvm};
     char derr[256] = "";
+    if (FX.on) { /* the block first, so the DMA's first buffer holds its frames */
+        if (fx_start(derr, sizeof derr)) {
+            fprintf(stderr, "--fpga-chz: %s\n", derr);
+            return 1;
+        }
+        fprintf(stderr, "--fpga-chz: %d channels, R %d, D %d, %d taps, 48 kS/s from %.0f S/s\n", FX.C, FX.R, FX.D,
+                FX.cfg.taps, rate);
+    }
+    const rdofradio_dev_setup_t su = {rate, R.rx.center_hz, tx_lo, gain, bw, stream_args, R.split || R.mmdvm,
+                                      FX.on ? 48000.0 * (double)rdof_chzfx_frame_words(FX.C) : 0};
 #ifdef RDOF_IIO
     if (iio)
         dev = rdofradio_iio_open(iio, &su, derr, sizeof derr);
@@ -3904,8 +4224,10 @@ int main(int argc, char **argv)
     if (R.full) {
         if (dev->set_rx_freq(dev, tx_lo))
             say("calibration: can't tune the receiver to the TX LO: %s\n", dev->error);
-        else
+        else {
             R.cal = 1, R.cal_at = (long long)(rate * 0.3);
+            fx_cal(true); /* --fpga-chz: channel 0 on the pulse */
+        }
         tx_gain(txg); /* now: the gain step's LO leakage is in the baseline before the pulse, not taken for it */
     }
     double last_status = 0, level_sum = 0;
@@ -3913,9 +4235,19 @@ int main(int argc, char **argv)
     double t_read = 0, t_write = 0, t_proc = 0; /* seconds spent in each, since the last status */
     while (!stop && (seconds <= 0 || total < (long long)(seconds * rate))) {
         const double t0 = now_s();
-        int n = dev->read(dev, in, chunk, 500000);
-        const double dt_read = now_s() - t0;
+        const long long fx_lost = FX.lost;
+        /* --fpga-chz: in stays zeros; the turn's power is the block's (turn_p2) */
+        FX.t_rx = 0;
+        int n = FX.on ? fx_take(chunk, 500000) : dev->read(dev, in, chunk, 500000);
+        if (FX.lost != fx_lost) { /* frames lost: zeros kept the timeline, but the calibration no longer holds */
+            say("receive: %lld channel frames lost; zeros in their place%s\n", FX.lost - fx_lost,
+                R.full ? "; calibrating again once idle" : "");
+            if (R.full)
+                R.recal = true, R.cal_tries = 0;
+        }
+        const double dt_read = now_s() - t0 - FX.t_rx; /* --fpga-chz: less the receiver's turn */
         t_read += dt_read;
+        t_proc += FX.t_rx, WS.rx += FX.t_rx;
         WS.wait += dt_read;
         if (n == RDOF_DEV_TIMEOUT) {
             if (++timeouts >= 10) { /* 5 s: the stream is dead (a Pluto after a USB read error) */
@@ -4004,6 +4336,7 @@ int main(int argc, char **argv)
                 if (dev->set_rx_freq(dev, tx_lo) == 0) {
                     R.recal = false;
                     R.cal = 1, R.cal_at = total + (long long)(rate * 0.3);
+                    fx_cal(true);
                     tx_gain(txg);
                 }
             }
@@ -4082,34 +4415,36 @@ int main(int argc, char **argv)
         const int64_t edge_from = R.onset - (R.cal == 2 ? (int64_t)rate / 10 : 0);
         if (R.onset >= 0 && total + n > edge_from) {
             for (int i = 0; i < n; i++) {
-                const double p2 = in[i].re * in[i].re + in[i].im * in[i].im;
-                if (total + i >= edge_from && p2 > 100 * R.base_power) {
+                const double p2 = turn_p2(in, i);
+                const int64_t at = total + i - FX_EDGE; /* --fpga-chz: less the filter's delay */
+                if (at >= edge_from && p2 > 100 * R.base_power) {
                     if (R.cal == 2) {
                         /* the modem's inbound slots follow it: a handheld keeps to what's on the air */
-                        R.m.tx_late48 = (total + i - R.onset) * 48000 / (int64_t)rate;
+                        R.m.tx_late48 = (at - R.onset) * 48000 / (int64_t)rate;
                         say("calibration: the transmit path is %.2f ms past its place\n",
-                                1e3 * (double)(total + i - R.onset) / rate);
+                                1e3 * (double)(at - R.onset) / rate);
                         dev->set_rx_freq(dev, R.rx.center_hz);
+                        fx_cal(false);
                         R.cal = 0, R.cal_tries = 0;
                         R.ring_ref = -1; /* the ring's floor taken again against this */
                     } else if (BR.active && BR.cal) {
                         /* a repeater job's first key-up, heard in the receiver's band: its inbound slots follow it */
-                        R.m.tx_late48 = (total + i - R.onset) * 48000 / (int64_t)rate;
+                        R.m.tx_late48 = (at - R.onset) * 48000 / (int64_t)rate;
                         BR.cal = false;
                         say("bench: the job's transmit path is %.2f ms past its place\n",
-                            1e3 * (double)(total + i - R.onset) / rate);
+                            1e3 * (double)(at - R.onset) / rate);
                     } else if (BO.active && !BO.mapped) {
                         /* an outbound's key-up: its modem samples on the receiver's timeline */
-                        const double t = bl_sc_utc(NULL, (uint64_t)(total + i));
+                        const double t = bl_sc_utc(NULL, (uint64_t)at);
                         pthread_mutex_lock(&BO.mu);
                         BO.mapped = true, BO.map_pos = R.onset, BO.map_t = t;
                         pthread_mutex_unlock(&BO.mu);
                         say("bench: the outbound's key-up heard back %.2f ms after its place\n",
-                            1e3 * (double)(total + i - R.onset) / rate);
+                            1e3 * (double)(at - R.onset) / rate);
                     } else {
                         /* at a split wider than the receiver's band, this is the first inbound burst, not the TX */
                         say("loop delay: the key-up reached the receiver %.2f ms after its place\n",
-                                1e3 * (double)(total + i - R.onset) / rate);
+                                1e3 * (double)(at - R.onset) / rate);
                     }
                     R.onset = -1;
                     break;
@@ -4119,6 +4454,7 @@ int main(int argc, char **argv)
                 R.onset = -1; /* no edge within a second: too little leaks in to see it */
                 if (R.cal == 2) {
                     dev->set_rx_freq(dev, R.rx.center_hz);
+                    fx_cal(false);
                     R.cal = 0;
                     if (++R.cal_tries < 5) {
                         say("calibration: the pulse wasn't heard; trying again\n");
@@ -4130,7 +4466,7 @@ int main(int argc, char **argv)
         } else if (!hot) {
             double p2 = 0;
             for (int i = 0; i < n; i += 16)
-                p2 += in[i].re * in[i].re + in[i].im * in[i].im;
+                p2 += turn_p2(in, i);
             R.base_power = p2 / ((n + 15) / 16) * 4; /* a little over the mean, for the edge's threshold */
         }
 #ifdef RDOF_HOST_WEB
@@ -4142,7 +4478,7 @@ int main(int argc, char **argv)
 #endif
         if (verbose) {
             for (int i = 0; i < n; i += 16)
-                level_sum += in[i].re * in[i].re + in[i].im * in[i].im;
+                level_sum += turn_p2(in, i);
             level_n += (n + 15) / 16;
             if (now - last_status >= 1.0) {
                 fprintf(stderr, "status %.1f s (wall %.1f; read %.2f, ring wait %.2f, process %.2f s; ring %.0f ms): RX gain %.0f dB, level %.1f dBFS, %s, modem sent %u idle %u heard %u\n",
@@ -4157,11 +4493,13 @@ int main(int argc, char **argv)
         }
         const double t2 = now_s();
 #ifdef RDOF_HOST_WEB
-        web_spectrum(in, n);
+        if (!FX.on)
+            web_spectrum(in, n);
 #endif
-        bench_feed(in, n, dt_read >= FRESH_S, false);
+        bench_feed(in, n, dt_read >= FRESH_S, FX.on); /* --fpga-chz: filler, the receiver had its turn in the read */
         const double t3 = now_s();
-        rx_chunk(in, n);
+        if (!FX.on)
+            rx_chunk(in, n);
         const double t4 = now_s();
         t_proc += t4 - t2;
         WS.spec += t3 - t2, WS.rx += t4 - t3;
@@ -4171,7 +4509,11 @@ int main(int argc, char **argv)
     if (R.full)
         rdof_repeater_stop(&R.r);
     shutdown_tx();
+    fx_stop();
     dev->close(dev);
+    if (FX.on)
+        fprintf(stderr, "--fpga-chz: %lld channel frames lost (%lld made up with zeros), %ld overflows (STATUS)\n",
+                FX.lost, FX.made_up, FX.ovf);
 
     fprintf(stderr, "%.1f s (%.1f s wall), %d overflows, %d TX write errors; modem: %u bursts sent, %u idle, %u heard, "
                     "%u muted, %u lost, %u refused\n",

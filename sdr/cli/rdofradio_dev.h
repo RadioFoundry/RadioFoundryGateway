@@ -17,6 +17,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "rdof/sdr/fft.h" /* rdof_cf_t */
 #include "rdof/sdr/txguard.h"
@@ -32,6 +33,9 @@ typedef struct {
     double bw;           /* analog bandwidth, Hz, both directions; 0: the device's own */
     const char *stream;  /* --stream: the backend's stream arguments, "" for its defaults */
     bool rx_only;        /* receive only (a radio transmits: --split-tx): no TX stream, the TX LO off */
+    /* > 0: the receive DMA's 64-bit words as they come, about this many a second (the FPGA channelizer's frames,
+     * libiio only): read_words in place of read */
+    double words_rate;
 } rdofradio_dev_setup_t;
 
 typedef struct rdofradio_dev rdofradio_dev_t;
@@ -48,6 +52,8 @@ struct rdofradio_dev {
     int (*start)(rdofradio_dev_t *d);        /* both streams */
     /* up to n samples: how many, or RDOF_DEV_* */
     int (*read)(rdofradio_dev_t *d, rdof_cf_t *x, int n, long timeout_us);
+    /* words_rate: the next DMA buffer's words, *w valid until the next call: how many, or RDOF_DEV_* */
+    int (*read_words)(rdofradio_dev_t *d, const uint64_t **w, long timeout_us);
     /* up to n samples: how many were taken, or RDOF_DEV_* */
     int (*write)(rdofradio_dev_t *d, const rdof_cf_t *x, int n, long timeout_us);
     void (*stop_tx)(rdofradio_dev_t *d);     /* the transmit stream down; the writer has stopped */

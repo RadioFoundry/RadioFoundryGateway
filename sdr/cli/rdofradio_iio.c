@@ -7,7 +7,9 @@
  *   ad9361-phy                 the chip: voltage0 in (RX gain, mode, bandwidth, rate), voltage0 out (TX
  *                              attenuation as a negative "hardwaregain"), altvoltage0 / 1 out (the RX / TX LO,
  *                              each with its "powerdown": SoapyPlutoSDR leaves both down when it closes)
- *   cf-ad9361-lpc              the receive DMA: voltage0 and voltage1 (I, Q), 12 bits, LSB aligned
+ *   cf-ad9361-lpc              the receive DMA: voltage0 and voltage1 (I, Q), 12 bits, LSB aligned; with the
+ *                              FPGA channelizer (words_rate), every scan element on, so a DMA sample is one 64-bit
+ *                              word of its frames (a 2r2t design: voltage0..3)
  *   cf-ad9361-dds-core-lpc     the transmit DMA: voltage0 and voltage1, 16 bits, the DAC takes the top 12
  *
  * The rate: with libad9361 (RDOF_AD9361), ad9361_set_bb_rate, which loads the chip's own FIR for the rates under
@@ -43,6 +45,7 @@ typedef struct {
     struct iio_channel *rx_ch, *tx_ch, *rx_lo, *tx_lo, *rx_i, *rx_q, *tx_i, *tx_q;
     struct iio_buffer *rxb, *txb;
     size_t len;          /* samples a DMA buffer */
+    size_t rx_len;       /* a receive buffer's: len, or words for the FPGA channelizer */
     const int16_t *rp;   /* the receive buffer's next sample, r_left of them */
     size_t r_left;
     int16_t *wp;         /* the transmit buffer's next free sample, w_left of them */
@@ -110,7 +113,7 @@ static int start(rdofradio_dev_t *d)
      * free one, so with 4 the queue was 42.7 ms): less than the 50 ms the stream runs ahead, so its pushes wait for
      * a block to play out, the guard's clock (rdof/sdr/txguard.h). */
     iio_device_set_kernel_buffers_count(s->rxd, 16);
-    s->rxb = iio_device_create_buffer(s->rxd, s->len, false);
+    s->rxb = iio_device_create_buffer(s->rxd, s->rx_len, false);
     if (!s->rxb) {
         fail(d, "receive buffer", errno);
         return -1;
@@ -160,6 +163,21 @@ static int rd(rdofradio_dev_t *d, rdof_cf_t *x, int n, long timeout_us)
     s->rp += 2 * k;
     s->r_left -= (size_t)k;
     return k;
+}
+
+/* the FPGA channelizer's frames: a DMA buffer's words as they are */
+static int rd_words(rdofradio_dev_t *d, const uint64_t **w, long timeout_us)
+{
+    iio_t *s = (iio_t *)d;
+    const ssize_t r = iio_buffer_refill(s->rxb);
+    if (r < 0) {
+        if (r == -ETIMEDOUT || r == -EAGAIN)
+            return RDOF_DEV_TIMEOUT;
+        fail(d, "read", (int)r);
+        return RDOF_DEV_ERROR;
+    }
+    *w = iio_buffer_start(s->rxb);
+    return (int)((size_t)((const char *)iio_buffer_end(s->rxb) - (const char *)*w) / sizeof(uint64_t));
 }
 
 static double mono_s(void)
@@ -349,14 +367,36 @@ rdofradio_dev_t *rdofradio_iio_open(const char *uri, const rdofradio_dev_setup_t
     if (iio_channel_attr_read_longlong(s->rx_ch, "sampling_frequency", &got) < 0)
         got = rate;
     d->rate = (double)got;
-    iio_channel_enable(s->rx_i);
-    iio_channel_enable(s->rx_q);
+    if (su->words_rate > 0) {
+        /* every scan element on: one DMA sample is then a whole 64-bit frame word */
+        for (unsigned i = 0; i < iio_device_get_channels_count(s->rxd); i++) {
+            struct iio_channel *c = iio_device_get_channel(s->rxd, i);
+            if (iio_channel_is_scan_element(c))
+                iio_channel_enable(c);
+        }
+        const ssize_t size = iio_device_get_sample_size(s->rxd);
+        if (size != (ssize_t)sizeof(uint64_t)) {
+            snprintf(err, cap, "iio: the receive DMA's samples are %zd bytes, not 8: not the FPGA channelizer's "
+                               "design (two receive channels)", size);
+            close_dev(d);
+            return NULL;
+        }
+        d->read_words = rd_words;
+    } else {
+        iio_channel_enable(s->rx_i);
+        iio_channel_enable(s->rx_q);
+    }
     s->rx_only = su->rx_only;
     if (!s->rx_only) {
         iio_channel_enable(s->tx_i);
         iio_channel_enable(s->tx_q);
     }
-    s->len = stream_len(su->stream, d->rate);
+    s->len = s->rx_len = stream_len(su->stream, d->rate);
+    if (su->words_rate > 0) {
+        /* 10 ms of the channelizer's words a receive buffer */
+        const size_t n = (size_t)(su->words_rate / 100);
+        s->rx_len = n < 512 ? 512 : (n + 63) / 64 * 64;
+    }
     if (!s->rx_only)
         d->tx_block = (int)s->len, d->tx_nbuf = TX_BUFFERS - 1, d->tx_room = tx_room; /* the one being filled */
     return d;

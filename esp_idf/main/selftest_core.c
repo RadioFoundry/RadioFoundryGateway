@@ -108,7 +108,7 @@ static bool check(const uint8_t *clip, size_t len, int split, int v, sdr_check_t
         ch[c].cc = clip_channels[c].cc;
         ch[c].slot = clip_channels[c].slot;
     }
-    rdof_sdr_rx_config_t cfg = {CLIP_RATE, CLIP_CENTER, CLIP_RSSI_OFFSET, 0.0, true, CLIP_CHUNK};
+    rdof_sdr_rx_config_t cfg = {CLIP_RATE, CLIP_CENTER, CLIP_RSSI_OFFSET, 0.0, true, CLIP_CHUNK, false};
     rdof_sink_t sink = {.on_json = on_json, .on_raw = on_raw, .ctx = out};
     if (rdof_sdr_rx_init(&rx, &cfg, ch, CLIP_CHANNELS, &sink, CLIP_T0)) {
         rdof_sdr_rx_free(&rx);

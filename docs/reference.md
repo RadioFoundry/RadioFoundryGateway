@@ -127,7 +127,20 @@ block, reads its frames from the RX DMA and prints the frames, gaps and each cha
 the AD9361 as it is. First run (2026-11-03, a 7010 Pluto clone, the block without a CIC, loaded by hand through the
 FPGA manager): 10 channels from 2.4 MS/s at 438.525 MHz, 48 kS/s each with no frame lost over 6 s; a 20 dB RX gain step
 moved every channel 19 to 20 dB; each channel's spectrum flat to 3 kHz, -3 dB near 5.5 kHz, -14 dB at 8 to 10 kHz,
--59 dB beyond 14 kHz. On the Pluto, from `/tmp` (RAM):
+-59 dB beyond 14 kHz.
+
+`rdofradio --iio local: --fpga-chz [ADDR]` decodes from that block in place of the ARM's channelizer. It probes the
+block (at `0x7C480000` unless ADDR is given) and refuses to start without one. It plans the rate as usual, up to
+48 kS/s times the most the block decimates (24.576 MS/s with a CIC: R D at most 512), and starts the block with the
+receiver's channels: no CIC when the FIR alone decimates enough, else the CIC with the largest D that divides the
+step. The receiver takes the frames through `rdof_sdr_rx_channels_in` (int16 with 3 fraction bits over the 12-bit
+ADC: `RDOF_CHZFX_OUT_SCALE`, 1/16384; a tone reads within 0.001 dB of the float path). The idle gate's noise comes
+from the channels themselves: a block's 25th percentile across all channels, the least of the last 16 chunks. The AFC
+writes the block's NCO steps once a turn. Lost frames become zeros (the status's lost count), STATUS overflow bits
+count as overflows, and the block is stopped on exit. There's no wideband I/Q: no spectrum, and the bench's captures
+are filler. The duplex calibration points channel 0 at the pulse while it runs. Not with `--split-tx` or `--mmdvm`.
+The host test `rdof_chzrx_tests` runs `e2e_288k.cu8` through the block's model into this entry and matches the float
+path burst for burst. Not yet run on a board. On the Pluto, from `/tmp` (RAM):
 
 ```sh
 gunzip -c rdof-pluto.tar.gz | tar -xf -

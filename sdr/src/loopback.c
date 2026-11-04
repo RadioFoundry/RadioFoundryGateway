@@ -21,9 +21,9 @@
 #include "rdof/sdr/receiver.h"
 
 #define FS 288000
-#define CENTER 461000000.0
-#define CH0 461037500u
-#define CH1 461087500u
+#define CENTER 438025000.0
+#define CH0 438062500u
+#define CH1 438112500u
 #define CHUNK 4608
 #define NB 3
 #define MAXHEARD 64
@@ -127,7 +127,7 @@ int rdof_sdrmodem_loopback(bool full, char *report, size_t cap)
     }
     l->rng = 12345;
     const rdof_sdrmodem_io_t io = {lb_reply, lb_channel, lb_tx_tune, l, NULL};
-    const rdof_sdr_rx_config_t rc = {FS, CENTER, 0, 0, true, CHUNK};
+    const rdof_sdr_rx_config_t rc = {FS, CENTER, 0, 0, true, CHUNK, false};
     const rdof_sdr_channel_t chans[2] = {{"A", CH0, 1, 1}, {"B", CH1, 1, 1}};
     if (rdof_sdrmodem_init(&l->modem, &io, FS, FS, full) || rdof_sdr_rx_init(&l->rx, &rc, chans, 2, NULL, 0) ||
         rdof_mod_init(&other, FS, (double)CH0 - CENTER, 4.0, 1.0f, 4, 0)) {
@@ -150,7 +150,7 @@ int rdof_sdrmodem_loopback(bool full, char *report, size_t cap)
         FAIL("duplex taken by a half-duplex front end; ");
     if (!rdof_modem_configure(&l->client, &mc, 1, full) || !rdof_modem_set_mode(&l->client, RDOF_MODE_DMR))
         FAIL("configure: %s; ", l->client.error);
-    if (rdof_modem_set_freq(&l->client, 462000000, 462000000, 100))
+    if (rdof_modem_set_freq(&l->client, 438975000, 438975000, 100))
         FAIL("a frequency the SDR doesn't hear taken; ");
     if (!rdof_modem_set_freq(&l->client, CH0, full ? CH1 : CH0, 100))
         FAIL("set_freq: %s; ", l->client.error);

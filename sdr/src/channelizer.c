@@ -187,8 +187,7 @@ static void gather(const rdof_cf_t *X, int N, int start, const rdof_cf_t *H, rdo
     }
 }
 
-/* The k-th smallest of v[0..n-1] (reorders v). */
-static float select_kth(float *v, int n, int k)
+float rdof_sdr_select_kth(float *v, int n, int k)
 {
     int lo = 0, hi = n - 1;
     while (lo < hi) {
@@ -232,7 +231,7 @@ static float noise_in(const rdof_chz_t *s, const rdof_cf_t *X)
         const float re = 0.5f * b.re - 0.25f * (a.re + c.re), im = 0.5f * b.im - 0.25f * (a.im + c.im);
         mag[n++] = re * re + im * im;
     }
-    return select_kth(mag, n, n / 4) * 3.4760595f / (0.375f * (float)N);
+    return rdof_sdr_select_kth(mag, n, n / 4) * 3.4760595f / (0.375f * (float)N);
 }
 
 /* One channel's share of one block (spectrum X, block offset boff): its bins, the filter, the inverse FFT, its

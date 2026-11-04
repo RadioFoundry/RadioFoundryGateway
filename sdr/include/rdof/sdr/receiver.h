@@ -3,7 +3,8 @@
 /*
  * The SDR receive loop for one tuner, all its channels in one process. Wideband IQ chunks in; per channel a demod
  * and a call tracker, whose JSON / raw / frame output goes to the sinks; AFC
- * fed back into the channelizer after each chunk.
+ * fed back into the channelizer after each chunk. Or, with an external channelizer (cfg.external: the FPGA's), its
+ * 48 kS/s channel samples in (rdof_sdr_rx_channels_in), the AFC through on_correction.
  */
 #ifndef RDOF_SDR_RECEIVER_H
 #define RDOF_SDR_RECEIVER_H
@@ -11,6 +12,7 @@
 #include <stdbool.h>
 
 #include "rdof/sdr/channelizer.h"
+#include "rdof/sdr/chzfx.h"
 #include "rdof/sdr/demod.h"
 #include "rdof/sdr/features.h"
 #include "rdof/tracker.h"
@@ -43,6 +45,14 @@ extern "C" {
 #define RDOF_GATE_HOLD 96000  /* 2 s */
 #define RDOF_GATE_EVERY 48000 /* 1 s */
 #define RDOF_GATE_PROBE 4800  /* 0.1 s */
+/* Channels from outside (config external): the gate's level is a block's power against the noise, as the
+ * channelizer's, over blocks of RDOF_EXT_BLOCK channel samples. The noise has no wideband spectrum to come from:
+ * it is the 25th percentile of every channel's block powers in a chunk, over RDOF_EXT_Q25 (that percentile's share
+ * of the mean on noise alone, measured through the FPGA channelizer's filter), the least of the last RDOF_EXT_FLOORS
+ * chunks' (a chunk with most channels busy reads high; the least keeps the floor). */
+#define RDOF_EXT_BLOCK 48
+#define RDOF_EXT_Q25 0.81f
+#define RDOF_EXT_FLOORS 16
 
 #if RDOF_FEATURE_SDR_RECEIVER
 
@@ -59,7 +69,10 @@ typedef struct {
     double rssi_offset_db;
     double software_ppm;
     bool afc;
-    int max_chunk;         /* most wideband samples per rdof_sdr_rx_process call */
+    int max_chunk;         /* most wideband samples per rdof_sdr_rx_process call; channel samples when external */
+    /* The channel samples come from outside (an FPGA channelizer: rdof_sdr_rx_channels_in): no channelizer here.
+     * sample_rate and center_hz are still the tuner's; the corrections (ppm, AFC) go to on_correction. */
+    bool external;
 } rdof_sdr_rx_config_t;
 
 typedef struct rdof_sdr_rx rdof_sdr_rx_t;
@@ -120,6 +133,14 @@ struct rdof_sdr_rx {
     int64_t utc_i0, utc_t0;
     double utc_rate;
     int utc_offset_us;
+    /* external (cfg.external): a channel's correction changed (rdof_sdr_rx_set_correction: the AFC); the
+     * channelizer's NCO for it is to take its offset plus hz. Returns the channel sample the new correction takes
+     * effect from (the AFC's history keeps it there), or -1 for the next chunk's first. NULL: nothing moves it. */
+    int64_t (*on_correction)(void *ctx, int c, double hz);
+    void *correction_ctx;
+    float *ext_pw;         /* scratch: a chunk's block powers, every channel */
+    float ext_floor[RDOF_EXT_FLOORS]; /* the last chunks' noise estimates */
+    int ext_nfloor, ext_ifloor;
 };
 
 /* Returns 0, or -1 (bad plan, out of memory; call rdof_sdr_rx_free anyway). Each tracker gets sink. */
@@ -159,6 +180,12 @@ void rdof_sdr_rx_channels(rdof_sdr_rx_t *rx, int c0, int c1, int worker);
 /* Or the forward FFTs shared as well: gather (each block's input, on one core), then rdof_chz_forward_blocks on
  * rx->chz over disjoint block ranges (rdof_chz_gather's), then rdof_sdr_rx_channels and finish. Same result. */
 int rdof_sdr_rx_gather(rdof_sdr_rx_t *rx, const rdof_cf_t *iq, int n);
+
+/* Or the channel samples from outside (cfg.external), in place of channelize: n output instants (n <= max_chunk)
+ * of C samples each, channel order (the FPGA channelizer's frames), scale the float a step of y is
+ * (RDOF_CHZFX_OUT_SCALE for a 12-bit ADC read at 1/2048: then levels, RSSI and squelch read as the channelizer's).
+ * Fills rx->y and the idle gate's levels; then feed, bursts and finish as usual. Returns n. */
+int rdof_sdr_rx_channels_in(rdof_sdr_rx_t *rx, const rdof_iq16_t *y, int n, float scale);
 
 #endif /* RDOF_FEATURE_SDR_RECEIVER */
 
