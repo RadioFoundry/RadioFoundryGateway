@@ -162,6 +162,21 @@ second. Loopback the same day, with `--bench` and the 15 frequencies in `--bench
 5 ms at the transmit stream's rate (512 samples at 96 kS/s), so the queue, the buffer being filled, a loop turn and
 the guard's margin stay inside the stream's 50 ms lead.
 
+**The bitstream** for both blocks is built in rfg-pluto (MIT and ADI BSD, no GPL) and kept in `tools/pluto/fpga/`
+as `rfg-pluto-<board>.bit.bin`, one per board (`rdof/sdr/plutofpga.h`: fishball7010, plutoplus, adalm-pluto). With
+`--iio local:`, `--fpga-chz` or `--fpga-duc` loads it before anything else (`sdr/cli/rdofradio_fpga.h`). The board
+comes from the Zynq's IDCODE, its DDR width, MIO 16's function, the memory size and the AD9361's LVDS mode. The file is
+`--fpga-bit FILE`, else the first found in `/mnt/jffs2/rdof/`, `rdof/` on any SD card or USB stick partition (mounted
+read-only for the look if it isn't mounted), then `/lib/firmware/`. Its IDCODE is checked against the chip's. The PL's
+drivers are unbound, the FPGA manager loads it, and they are bound again. `/tmp/rdof-fpga` notes what's in, so a
+restart loads nothing; a reboot brings the stock design back. With none for the board, both are off and the ARM
+channelizes: the monitored channels that don't fit its window are left out, in the settings' order (15 configured on
+the clone: 10 kept, 1.296 MS/s). `rdofradio --fpga-board` prints the board and the file's name. The bundle carries the
+bitstreams; `install.sh` writes the board's to `rdof/` on the SD card's boot partition (the one with `BOOT.bin`, which
+it never touches), and only when it differs. The flash has no room for it (1.0 MB). On the clone (2026-11-04): no file, 10 of 15
+channels at 1.296 MS/s; from `/lib/firmware`, loaded and bound again in about 2 s, 15 channels at 19.872 MS/s; started
+again, "loaded since boot".
+
 On the Pluto, from `/tmp` (RAM):
 
 ```sh

@@ -49,6 +49,17 @@ if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
 endif()
 add_test(NAME rdof_chzhw_tests COMMAND rdof_chzhw_tests)
 
+# A PlutoSDR board's bitstream (plutofpga.c): the board from its facts, the check of a bitstream
+add_executable(rdof_plutofpga_tests test_plutofpga.c)
+target_link_libraries(rdof_plutofpga_tests PRIVATE rdof_sdr m)
+set_target_properties(rdof_plutofpga_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_compile_options(rdof_plutofpga_tests PRIVATE -Wall -Wno-unused-parameter)
+if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+    target_compile_options(rdof_plutofpga_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(rdof_plutofpga_tests PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME rdof_plutofpga_tests COMMAND rdof_plutofpga_tests)
+
 # The receiver on the FPGA channelizer's channel samples (rdof_sdr_rx_channels_in): the model in the float
 # channelizer's place on the e2e recording, its frames through the driver's parser, the AFC back to its NCOs.
 add_executable(rdof_chzrx_tests test_chzrx.c)

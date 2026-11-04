@@ -95,6 +95,12 @@ B=rdof-pluto-bundle-$VERSION
 rm -rf "$OUT/$B" && mkdir -p "$OUT/$B"
 cp "$ROOT"/tools/pluto/bundle/{install.sh,run.sh,config.example.json,flags.example,README.md} "$OUT/$B/"
 cp -r "$ROOT"/LICENSE "$ROOT"/LICENSES "$ROOT"/PROVENANCE.md "$OUT/$B/"
+# the FPGA's bitstreams (tools/pluto/fpga/, built in rfg-pluto; MIT and ADI BSD): install.sh puts the board's on
+# its SD card
+if ls "$ROOT"/tools/pluto/fpga/*.bit.bin > /dev/null 2>&1; then
+    mkdir -p "$OUT/$B/fpga"
+    cp "$ROOT"/tools/pluto/fpga/* "$OUT/$B/fpga/"
+fi
 gzip -9 -c "$OUT/rdofradio" > "$OUT/$B/rdofradio.gz"
 echo "$VERSION" > "$OUT/$B/VERSION"
 chmod 755 "$OUT/$B/install.sh" "$OUT/$B/run.sh"

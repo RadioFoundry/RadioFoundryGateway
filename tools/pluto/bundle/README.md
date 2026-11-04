@@ -20,6 +20,14 @@ Or copy the bundle to the Pluto and run `./install.sh --here ...` there.
 It goes in the Pluto's persistent flash (`/mnt/jffs2`, about 300 KB), starts at boot from `/mnt/jffs2/autorun.sh`, and
 starts again 5 s after it exits.
 
+The FPGA's bitstream for the board (`fpga/`, for `--fpga-chz` and `--fpga-duc`: every channel at once, 15 on a
+7010 clone in place of about 10) is 1 MB and doesn't fit there. `install.sh` writes it to `rdof/` on the SD card's
+boot partition, the one with `BOOT.bin`, and only when the one there differs; it never touches the boot files.
+To use it, add `--fpga-chz --fpga-duc` to `flags`: rdofradio then loads it from there at start (`/tmp/rdof-fpga`
+says which is in); a reboot brings the stock design back.
+With no SD card, or no bitstream for the board, it runs without one: the ARM channelizes, and the monitored channels
+that don't fit its window are left out.
+
 ## On the Pluto
 
 | What | Where |
@@ -30,6 +38,7 @@ starts again 5 s after it exits.
 | The log (RAM: the last 1 MB, then `log.1`) | `/tmp/rdof/log` |
 | How it last ended on its own (a crash, an error): the page's crash card (Logs & maintenance) | `/tmp/rdof/last_exit` |
 | An update from the web page (Logs & maintenance, Firmware update): the bundle's `rdofradio.gz`, or `rdofradio` itself | `/tmp/rdof/rdofradio.ota` until `run.sh` takes it |
+| The FPGA's bitstream (when the board has one) | `rdof/` on the SD card's boot partition |
 | Keep it from starting | `touch /mnt/jffs2/rdof/disabled`, then reboot |
 | The web page | `http://192.168.2.1:8080/` |
 

@@ -4,7 +4,10 @@
 #
 # Install RadioFoundry Gateway's rdofradio on a PlutoSDR (or a 7010 / 7020 clone) running ADI's firmware v0.3x,
 # so it starts at boot and again whenever it exits. Everything goes in the Pluto's persistent flash, /mnt/jffs2
-# (about 300 KB); the firmware runs /mnt/jffs2/autorun.sh at boot.
+# (about 300 KB); the firmware runs /mnt/jffs2/autorun.sh at boot. The FPGA's bitstream for the board (fpga/, for
+# --fpga-chz and --fpga-duc) doesn't fit there: it goes in rdof/ on the SD card's boot partition (the one with
+# BOOT.bin, which is never touched), written only when it differs from the one there. No SD card, or no bitstream
+# for the board: rdofradio runs without it.
 #
 # From a computer the Pluto is plugged into (asks for the Pluto's root password, "analog" as it comes):
 #   ./install.sh [--host root@192.168.2.1] --config my.json     first install, with your settings
@@ -39,6 +42,7 @@ DIR=$(cd "$(dirname "$0")" && pwd)
 if [ $HERE = 0 ]; then
     # from a computer: the bundle (and the settings, if given) to the Pluto's /tmp, then this script there
     FILES="install.sh run.sh rdofradio.gz config.example.json flags.example VERSION"
+    [ -d "$DIR/fpga" ] && FILES="$FILES fpga"
     if [ -n "$CONFIG" ]; then
         cp "$CONFIG" "$DIR/config.user.json"
         FILES="$FILES config.user.json"
@@ -96,6 +100,33 @@ if [ -n "$NEW" ]; then
         exit 1
     fi
 fi
+
+# The bitstream: rdof/ on the SD card's boot partition, written only if it differs (rdofradio_fpga.h looks there)
+fpga() {
+    BF=$(/tmp/rdofradio.check --fpga-board 2> /dev/null) || { echo "fpga: no bitstream for this board: it runs without one"; return 0; }
+    FILE=${BF#* }
+    [ -f fpga/$FILE ] || { echo "fpga: no $FILE in this bundle: it runs without one, or with one already there"; return 0; }
+    M=/tmp/rdof-sd
+    for P in /dev/mmcblk[0-9]p[0-9]; do
+        [ -b $P ] || continue
+        grep -q "^$P " /proc/mounts && continue # mounted by someone else: not this one
+        mkdir -p $M && mount -t vfat -o ro $P $M 2> /dev/null || { rmdir $M; continue; }
+        if [ ! -f $M/BOOT.bin ]; then umount $M; rmdir $M; continue; fi
+        if [ -f $M/rdof/$FILE ] && cmp -s fpga/$FILE $M/rdof/$FILE; then
+            echo "fpga: $FILE on $P is up to date"
+        elif mount -o remount,rw $M; then
+            mkdir -p $M/rdof && cp fpga/$FILE $M/rdof/$FILE.new && sync && mv $M/rdof/$FILE.new $M/rdof/$FILE &&
+                cp fpga/LICENSE fpga/LICENSE_ADIBSD $M/rdof/ && sync && echo "fpga: $FILE written to rdof/ on $P" ||
+                echo "fpga: $FILE: writing rdof/ on $P failed" >&2
+        else
+            echo "fpga: $P won't mount read-write: $FILE not written" >&2
+        fi
+        umount $M; rmdir $M
+        return 0
+    done
+    echo "fpga: no SD card with a boot partition: $FILE not written; it runs without it"
+}
+fpga
 rm -f /tmp/rdofradio.check
 
 stop

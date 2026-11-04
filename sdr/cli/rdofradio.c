@@ -49,6 +49,10 @@
  * of 192 kS/s; not 48, whose images land on a 50 kHz grid's next channels) and the interpolator brings it to the
  * rate, so a wide receiver doesn't make a wide transmit stream for the ARM. The TX LO then sits 62.5 kHz above the
  * carrier (18.75 at 96 kS/s; --tx-lo unless given), the most the stream reaches, in steps of 6.25 kHz.
+ * With --iio local: on the board, either loads their bitstream first (rdofradio_fpga.h: --fpga-bit FILE, else
+ * rfg-pluto-<board>.bit.bin where it's found: /mnt/jffs2/rdof/, rdof/ on an SD card or USB stick, /lib/firmware/);
+ * with none for the board, both are off and the ARM channelizes, with the monitored channels that fit its window.
+ * --fpga-board prints the board and the bitstream's file name.
  *
  * --split-tx PORT: a split duplex repeater (docs/spec/repeater.md): a RadioFoundry radio on PORT (its hotspot, with
  * the split duplex extension) transmits, and the SDR, opened receive only, is the RX half. Any receiver does, an
@@ -114,6 +118,7 @@
 #include "rdof/siteroute.h"
 #include "rdof/split.h"
 #include "rdof/sdr/chzhw.h"
+#include "rdof/sdr/plutofpga.h"
 #include "rdof/sdr/modes.h"
 #include "rdof/sdr/ppm.h"
 #include "rdof/sdr/receiver.h"
@@ -122,6 +127,7 @@
 #include "rdof/txvr.h"
 #include "rdofradio_cfg.h"
 #include "rdofradio_dev.h"
+#include "rdofradio_fpga.h"
 #include "rdofradio_net.h"
 #include "rdofradio_serial.h"
 #ifdef RDOF_PFFFT
@@ -459,6 +465,8 @@ static void usage(void)
             "                 [--last-exit FILE] [--ota FILE] [--fft builtin|pffft] [--bench [ADDR:]PORT] [--bench-tx MHZ|LOW-HIGH,...]\n"
             "                 [--fpga-chz [ADDR]] (with --iio: the FPGA channelizer on a PlutoSDR, at 0x7C480000 by default)\n"
             "                 [--fpga-duc [ADDR]] (with --iio: the FPGA's TX interpolator, at 0x7C4A0000 by default)\n"
+            "                 [--fpga-bit FILE] (the bitstream with them; else looked for, rdofradio_fpga.h)\n"
+            "       rdofradio --fpga-board (a PlutoSDR's board and its bitstream's file name)\n"
             "       rdofradio DEVICE --allow-tx --config FILE [--clock-state FILE] [--set-os-clock] [the device's flags]\n"
             "       rdofradio DEVICE --allow-tx --split-tx PORT [--baud N] [--split-power-cap N] --rx MHZ --tx MHZ [--cc CC]\n"
             "                 [-r RATE] [--gain DB] [--center MHZ] [--parrot ID] [--seconds S] [-v] [--web [ADDR:]PORT]\n"
@@ -513,6 +521,7 @@ static int channel_of(double hz)
  * with; from a host over USB 2 or the network 3.84 MS/s (reference.md: about 3.5 to 4 MS/s each way); through
  * SoapySDR 3.2 MS/s, an RTL-SDR's (give others -r). With --fpga-chz, up to the most the block channelizes. */
 static bool dev_iio, dev_local;
+static bool fpga_fallback; /* --fpga-chz or --fpga-duc asked for, no bitstream for them: the ARM's path */
 static double rate_flag;
 /* --ppm: the device's crystal error (ppm, positive: fast), NAN: not given. rdofradio doesn't measure it, and a
  * PlutoSDR's own correction (xo_correction) reaches only 0.5 ppm: it is taken out in software, its LO and sample
@@ -3789,8 +3798,8 @@ int main(int argc, char **argv)
     int mm_flags = 0;
     int baud = 115200, power_cap = 0, tx_flags = 0;
     double bw = 0, rate = 0, rx = 0, tx = 0, tx_lo = 0, center = 0, gain = NAN, txg = 0, seconds = 0, offset_s = 0;
-    int cc = 1, rx_slot = 1, allow = 0, monitor = 0, verbose = 0;
-    const char *duplex = "full";
+    int cc = 1, rx_slot = 1, allow = 0, monitor = 0, verbose = 0, fpga_board = 0;
+    const char *duplex = "full", *fpga_bit = NULL;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
 #define NEXT()                                                                                                    \
@@ -3988,9 +3997,26 @@ int main(int argc, char **argv)
             NEXT();
             web_ota(v);
 #endif
+        } else if (!strcmp(a, "--fpga-bit")) {
+            NEXT();
+            fpga_bit = v;
+        } else if (!strcmp(a, "--fpga-board")) {
+            fpga_board = 1;
         } else {
             usage();
         }
+    }
+    if (fpga_board) { /* the board's name for its bitstream (tools/pluto/bundle/install.sh) */
+        char err[200];
+        const char *b = rdofradio_fpga_board(err, sizeof err);
+        if (!b) {
+            fprintf(stderr, "%s\n", err);
+            return 1;
+        }
+        char f[64];
+        rdof_plutofpga_file(b, f, sizeof f);
+        printf("%s %s\n", b, f);
+        return 0;
     }
     if (config_path) {
         /* the radio from the file; the command line keeps the device */
@@ -4086,6 +4112,23 @@ int main(int argc, char **argv)
         fprintf(stderr, "rdofradio transmits: pass --allow-tx\n");
         return 2;
     }
+    if ((FX.on || DX.on) && dev_local && !split_tx && !mmdvm) {
+        /* the bitstream in (rdofradio_fpga.h); none: the ARM's channelizer and a full-rate transmit stream, with
+           the monitored channels that fit (fpga_fallback) */
+        char msg[400];
+        const int r = rdofradio_fpga_load(fpga_bit, msg, sizeof msg);
+        if (r == RDOFRADIO_FPGA_ERROR) {
+            fprintf(stderr, "fpga: %s\n", msg);
+            return 1;
+        }
+        if (r == RDOFRADIO_FPGA_NONE) {
+            fprintf(stderr, "fpga: %s: running without it (--fpga-chz and --fpga-duc off)\n", msg);
+            FX.on = DX.on = false;
+            fpga_fallback = true;
+        } else {
+            fprintf(stderr, "fpga: %s\n", msg);
+        }
+    }
     if (FX.on) {
         char why[256];
         if (!iio) {
@@ -4169,15 +4212,25 @@ int main(int argc, char **argv)
     NCH = monitor && R.tx_hz != R.rx_hz ? 2 : 1;
     if (NCH == 2 || (monitor && R.tx_hz == R.rx_hz))
         R.mon = NCH - 1;
+    int unfit = 0;
     for (int i = 0; i < rcfg.nmon && NCH < RDOF_SDR_MAX_CHANNELS; i++) {
         const rdof_sdr_cfg_channel_t *m = &rcfg.mon[i];
+        CH[NCH] = (rdof_sdr_channel_t){m->id, m->freq, m->cc, m->slot};
+        char why[200];
+        if (fpga_fallback && NCH > 0 && !plan_rate(CH, NCH + 1, why, sizeof why)) {
+            unfit++; /* without the bitstream: the channels that fit, in the settings' order */
+            continue;
+        }
         MON[nmon].c = NCH;
         MON[nmon++].ch = m;
-        CH[NCH++] = (rdof_sdr_channel_t){m->id, m->freq, m->cc, m->slot};
+        NCH++;
     }
-    if (nmon < rcfg.nmon)
+    if (unfit)
+        fprintf(stderr, "receiver: without the FPGA's bitstream %d monitored channels don't fit the ARM's window: "
+                        "left out\n", unfit);
+    if (nmon + unfit < rcfg.nmon)
         fprintf(stderr, "receiver: %d channels at most: %d monitored channels left out\n", RDOF_SDR_MAX_CHANNELS,
-                rcfg.nmon - nmon);
+                rcfg.nmon - nmon - unfit);
     {
         char why[200];
         const double fit = plan_rate(CH, NCH, why, sizeof why);
@@ -4273,7 +4326,9 @@ int main(int argc, char **argv)
     /* the modem, its client, and the repeater or the transceiver over them */
     const bool rx_only = R.split || R.mmdvm;
     const rdof_sdrmodem_io_t io = {io_reply, io_channel, rx_only ? NULL : io_tune, &R, R.split ? split_now48 : NULL};
-    R.tx_rate = dev->tx_rate;
+    /* the nominal rate when the device's is within 2 S/s of it, as the receiver takes it (below 2.083 MS/s an
+       AD9361 reports 1295999 for 1296000, which the modulator can't phase) */
+    R.tx_rate = fabs(got - rate) <= 2.0 ? dev->tx_rate * rate / got : dev->tx_rate;
     if (rdof_sdrmodem_init(&R.m, &io, (uint32_t)rate, (uint32_t)llround(R.tx_rate), !rx_only)) {
         fprintf(stderr, "modem: %s\n", R.m.error);
         return 1;
