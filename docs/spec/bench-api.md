@@ -592,7 +592,7 @@ delay. On `--mmdvm` (the MMDVM modem transmits) there is no `outbound`. The freq
 
 `tools/bench/rfgbench.py --bench HOST[:PORT] SUBCOMMAND ...` (or `$RDOF_BENCH_LINE`): `info`, `status`, `session`,
 `claim`, `release`, `hold`, `run`, `capture`, `capture-trigger`, `dmr-bursts`, `listen`, with the daemon client's
-options, and `tx fm`, `rx fm` (section 14.6), `tune --session ID [--center MHz|auto] [--gain dB|auto] [--taps
+options, and `tx fm`, `rx fm`, `tx am`, `rx am` (section 14.6), `tune --session ID [--center MHz|auto] [--gain dB|auto] [--taps
 MHz...]` and `release --tune` of its own. Its stdout and stderr are the daemon client's (the
 `READY` and `wrote` lines, the `rfoundry-bench:` notes, the JSON lines), and so are its exit codes: 0, 1, 3 nothing
 heard, 69 the gateway can't be reached or can't do it, 75 busy or timed out, 77 refused. `run -- python bench_tx.py
@@ -600,9 +600,9 @@ ARGS` (any interpreter, any directory) sends the job; `--file` and `--out` files
 
 ### 14.6 Signal modes: tx and rx
 
-A signal mode is a modulation other than DMR, as one table (`rdof/sigmode.h`; the list in `rdof/sdr/modes.h`). Analog
-FM (`fm`) is the first. `info`'s `signal_modes` lists them: `{"tx": [names], "rx": [names]}`. The fields after the
-op's own are the mode's.
+A signal mode is a modulation other than DMR, as one table (`rdof/sigmode.h`; the list in `rdof/sdr/modes.h`): analog
+FM (`fm`) and analog AM (`am`). `info`'s `signal_modes` lists them: `{"tx": [names], "rx": [names]}`. The fields
+after the op's own are the mode's.
 
 | op | request | replies |
 |---|---|---|
@@ -659,3 +659,30 @@ summary). A record is `{"block": {"t", "carrier", "power_dbfs", "env_min", "env_
 `audio` (`rms_hz`, peaks, `rms_db`), `tone` (the strongest: `hz`, `dev_hz`, `sinad_db`, `thd_pct`), `peaks`, and
 `sub`: `{"kind": "ctcss", "hz", "nominal_hz", "dev_hz", "reverse_burst_t"}`, `{"kind": "dcs", "code", "aliases",
 "words", "dev_hz", "turnoff"}` or `{"kind": "none"}`.
+
+AM is double sideband with a full carrier (airband voice; ACARS's MSK is an `fsk` segment, `baud` 2400, `hz` [1200,
+2400]). The source renders complex baseband, so a front end that sends frequency must also take polar I/Q
+(`rdof_fe_caps_t.tx_polar`, the W12: lr2021-iq.md R3.22-R3.27), else `tx` is refused; an I/Q front end (a PlutoSDR)
+takes it as it takes DMR.
+
+AM `tx` fields: `depth` (0.3: the modulation at the program's level 1, so 1 kHz at 30%, the receiver sensitivity
+test's signal), `offset_hz` (0: the carrier from `freq`, -10000 to 10000, for an offset-carrier test), `lead_s` and
+`tail_s` (bare carrier before and after the program, 0.25), `repeat`, `seed`, `pcm` and `program`, FM's segments with
+`level` 0-1 of `depth`. The envelope is `(1 + depth a) / (1 + depth)`, `a` the program clamped to ±1 (never past
+100%): the peak at the transmitter's full power, the carrier `20 log10(1 + depth)` dB under it. With no program it
+sends the lead and tail alone, half a second of carrier. `done` adds `depth`, `carrier_db` (the carrier against the
+peak), `offset_hz`, `seconds`, `pcm_samples` and `underruns`.
+
+AM `rx` fields: `streams` (`"audio"`, `"env"` or both: the audio, about 16 kS/s, band-passed `audio_lo_hz` to
+`audio_hi_hz` (300 and 3000; 50 to 6000), in units of modulation, 1.0 being 100% and `audio_full` (1.0) int16's full
+scale; the raw envelope `|x|` at the channel's rate, full scale 1.0), `block_s` (0.1), `nominal_depth` (for
+`rms_db`), `spectrum_hz`. The modulation is the envelope over the carrier's level less 1, the level tracked over 0.2
+s once the first 30 ms of carrier have set it; the first 60 ms after a key-up aren't measured. A record is
+`{"block": {"t", "carrier", "power_dbfs", "carrier_dbfs", "cfo_hz", "depth_pos_pct", "depth_neg_pct",
+"audio_rms_pct", "fm_rms_hz"}}`. The summary: `carrier_s`, `power_dbfs` (mean, min, max), `noise_dbfs`,
+`carrier_dbfs` (the carrier unmodulated), `cfo_hz` (mean, min, max), `depth` (`pos_pct`, `neg_pct`, `rms_pct`: the
+5 kHz band's peaks each way and rms), `audio` (`rms_pct`, `pos_pct`, `neg_pct`, `rms_db`, `tone`: `{"hz",
+"depth_pct", "sinad_db", "thd_pct"}` or null, `peaks`: `[{"hz", "depth_pct"}]`), `fm` (`rms_hz`, `pos_hz`, `neg_hz`:
+the residual FM on the carrier, a transmitter's AM-to-PM) and `spectrum` when asked. Lead and tail carrier count in
+the averages (the rms and the tone's depth and SINAD): for a tone's figures send `lead_s` and `tail_s` 0, or read the
+blocks.

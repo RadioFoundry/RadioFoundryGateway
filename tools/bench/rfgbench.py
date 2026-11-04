@@ -20,11 +20,17 @@ the daemon's client only changes the command it runs.
     rfgbench.py ... capture-trigger --freq MHz --out FILE [--bw Hz] [--pre S] [--post S] [--timeout S] ...
     rfgbench.py ... tx fm --freq MHz [SEGMENT...] [--pcm FILE] [--ctcss HZ | --dcs 023N] [--dev HZ] [--sub-dev HZ] ...
     rfgbench.py ... rx fm --freq MHz --seconds S [--audio FILE.wav] [--disc FILE.wav] [--records FILE] [--bw HZ] ...
+    rfgbench.py ... tx am --freq MHz [SEGMENT...] [--pcm FILE] [--depth 0-1] [--offset HZ] ...
+    rfgbench.py ... rx am --freq MHz --seconds S [--audio FILE.wav] [--env FILE.wav] [--records FILE] [--bw HZ] ...
 
-A tx fm SEGMENT is KIND:ARG:ARG..., with key=value arguments and @LEVEL anywhere (level 0-1 of the deviation):
+A tx fm or tx am SEGMENT is KIND:ARG:ARG..., with key=value arguments and @LEVEL anywhere (level 0-1 of the
+deviation, or of the depth):
 tone:1000:2 (Hz, seconds; 1000+1500 for two tones), sweep:300-3000:5[:log], dtmf:123#[:0.1] (seconds a digit),
 silence:0.5, noise:1, afsk:TEXT or afsk:hex=C0FF (Bell 202, 1200 baud; baud=300:hz=1600+1800 for others), pcm (where
 the --pcm audio goes; without it the PCM is the program). --program JSON gives the segments as bench-api.md's list.
+AM's depth is the modulation at level 1 (0.3 by default: the receiver sensitivity test's 1 kHz at 30%); its peak is
+the transmitter's full power, the carrier 20 log10(1 + depth) dB under it. ACARS-like MSK is
+afsk:hex=...:baud=2400:hz=1200+2400.
 
 The gateway: --bench, else $RDOF_BENCH_LINE (HOST or HOST:PORT; port 7373 by default). Any number of clients may use
 one gateway at once: sessions, claims and the modem queue keep them apart, and the receive ops share the receiver.
@@ -499,17 +505,22 @@ def read_pcm(path: str, rate: Optional[float]) -> Tuple[bytes, float]:
     return raw[:len(raw) & ~1], float(rate or 8000)
 
 
-def cmd_tx_fm(a) -> int:
+def cmd_tx_sig(a) -> int:
+    """tx fm, tx am: a signal mode's program (bench-api.md section 14.6)."""
     try:
         prog = json.loads(a.program) if a.program else [segment(x) for x in a.segments]
     except (ValueError, TypeError) as e:
         print(f"{NOTE} {e}", file=sys.stderr)
         return 1
-    req: dict = {"op": "tx", "mode": "fm", "freq": a.freq, "session": a.session, "wait_max": a.wait_max,
-                 "label": a.label, "dev_hz": a.dev}
-    for k, v in (("power", a.power), ("ctcss", a.ctcss), ("dcs", a.dcs), ("sub_dev_hz", a.sub_dev),
-                 ("sub_end_s", a.sub_end), ("preemph_us", a.preemph_us), ("lead_s", a.lead), ("tail_s", a.tail),
-                 ("repeat", a.repeat), ("seed", a.seed)):
+    req: dict = {"op": "tx", "mode": a.mode_name, "freq": a.freq, "session": a.session, "wait_max": a.wait_max,
+                 "label": a.label}
+    fields = [("power", a.power), ("lead_s", a.lead), ("tail_s", a.tail), ("repeat", a.repeat), ("seed", a.seed)]
+    if a.mode_name == "fm":
+        fields += [("dev_hz", a.dev), ("ctcss", a.ctcss), ("dcs", a.dcs), ("sub_dev_hz", a.sub_dev),
+                   ("sub_end_s", a.sub_end), ("preemph_us", a.preemph_us)]
+    else:
+        fields += [("depth", a.depth), ("offset_hz", a.offset)]
+    for k, v in fields:
         if v is not None:
             req[k] = v
     if prog:
@@ -555,16 +566,23 @@ class _Wav:
         self.w.writeframes(b"\0\0" * n)
 
 
-def cmd_rx_fm(a) -> int:
-    streams = [x for x, f in (("audio", a.audio), ("disc", a.disc)) if f]
-    req: dict = {"op": "rx", "mode": "fm", "freq": a.freq, "seconds": a.seconds, "session": a.session,
+def cmd_rx_sig(a) -> int:
+    """rx fm, rx am: a signal mode's receiver, its streams to WAVs."""
+    raw = "disc" if a.mode_name == "fm" else "env"
+    files = {"audio": a.audio, raw: getattr(a, raw)}
+    streams = [x for x, f in files.items() if f]
+    req: dict = {"op": "rx", "mode": a.mode_name, "freq": a.freq, "seconds": a.seconds, "session": a.session,
                  "wait_max": a.wait_max, "label": a.label, "streams": ",".join(streams)}
-    for k, v in (("bw", a.bw), ("squelch_dbfs", a.squelch_dbfs), ("squelch_over_db", a.squelch_over),
-                 ("deemph_us", a.deemph_us), ("block_s", a.block_s), ("nominal_dev_hz", a.nominal_dev),
-                 ("spectrum_hz", a.spectrum_hz), ("audio_full_hz", a.audio_full_hz)):
+    fields = [("bw", a.bw), ("squelch_dbfs", a.squelch_dbfs), ("squelch_over_db", a.squelch_over),
+              ("block_s", a.block_s), ("spectrum_hz", a.spectrum_hz)]
+    if a.mode_name == "fm":
+        fields += [("deemph_us", a.deemph_us), ("nominal_dev_hz", a.nominal_dev), ("audio_full_hz", a.audio_full_hz)]
+    else:
+        fields += [("audio_lo_hz", a.audio_lo), ("audio_hi_hz", a.audio_hi), ("nominal_depth", a.nominal_depth),
+                   ("audio_full", a.audio_full)]
+    for k, v in fields:
         if v is not None:
             req[k] = v
-    files = {"audio": a.audio, "disc": a.disc}
     st: dict = {"wavs": {}, "rate": None}
     rec = open(a.records, "w") if a.records else None
 
@@ -848,45 +866,70 @@ def main(argv=None) -> int:
     s.add_argument("--until-end", action="store_true")
     s.add_argument("--max-s", type=float, default=30.0)
     s.add_argument("--json", action="store_true")
-    for op, fn in (("tx", cmd_tx_fm), ("rx", cmd_rx_fm)):
+    for op, fn in (("tx", cmd_tx_sig), ("rx", cmd_rx_sig)):
         s = sub.add_parser(op, help=f"{'send' if op == 'tx' else 'receive'} a signal mode")
         modes = s.add_subparsers(dest="mode_name", required=True)
-        s = modes.add_parser("fm", help="analog FM")
-        s.set_defaults(fn=fn)
-        s.add_argument("--session", default=None)
-        s.add_argument("--wait-max", type=float, default=None, help="give up after this many seconds (exit 75)")
-        s.add_argument("--label", default=None)
-        s.add_argument("--freq", type=float, required=True, help="MHz")
-        if op == "tx":
-            s.add_argument("segments", nargs="*", help="KIND:ARG... (see above)")
-            s.add_argument("--program", default=None, help="the segments as a JSON list")
-            s.add_argument("--pcm", default=None, help="audio to send: a WAV, or raw int16 LE mono")
-            s.add_argument("--pcm-rate", type=float, default=None, help="raw PCM's rate (8000), or a WAV's override")
-            s.add_argument("--dev", type=float, default=2500.0, help="the program's peak deviation, Hz")
-            s.add_argument("--ctcss", type=float, default=None, help="tone squelch, Hz")
-            s.add_argument("--dcs", default=None, help="digital squelch: octal code, N or I (023N, 023I)")
-            s.add_argument("--sub-dev", type=float, default=None, help="the CTCSS/DCS deviation, Hz (0.2 of --dev)")
-            s.add_argument("--sub-end", type=float, default=None, help="reverse burst / turn-off code, seconds")
-            s.add_argument("--preemph-us", type=float, default=None)
-            s.add_argument("--lead", type=float, default=None, help="carrier before the program, s (0.25)")
-            s.add_argument("--tail", type=float, default=None, help="carrier after it, s (0.25)")
-            s.add_argument("--repeat", type=int, default=None)
-            s.add_argument("--seed", type=int, default=None)
-            s.add_argument("--power", type=int, default=None, help="0-255, capped by the gateway's rf_level")
-        else:
-            s.add_argument("--seconds", type=float, required=True)
-            s.add_argument("--audio", default=None, help="write the filtered audio to this WAV")
-            s.add_argument("--disc", default=None, help="write the raw discriminator to this WAV")
-            s.add_argument("--records", default=None, help="write every line (records, gaps, done) to this file")
-            s.add_argument("--quiet", action="store_true", help="don't print the records")
-            s.add_argument("--bw", type=float, default=None, help="channel bandwidth, Hz (16000)")
-            s.add_argument("--squelch-dbfs", type=float, default=None, help="else learned from the noise floor")
-            s.add_argument("--squelch-over", type=float, default=None, help="dB over the learned floor (10)")
-            s.add_argument("--deemph-us", type=float, default=None)
-            s.add_argument("--block-s", type=float, default=None, help="seconds a record (0.1)")
-            s.add_argument("--nominal-dev", type=float, default=None, help="Hz, for the records' deviation ratio")
-            s.add_argument("--spectrum-hz", type=float, default=None)
-            s.add_argument("--audio-full-hz", type=float, default=None, help="deviation at full scale in the WAV")
+        for mode, about in (("fm", "analog FM"), ("am", "analog AM (DSB, full carrier: airband)")):
+            s = modes.add_parser(mode, help=about)
+            s.set_defaults(fn=fn)
+            s.add_argument("--session", default=None)
+            s.add_argument("--wait-max", type=float, default=None, help="give up after this many seconds (exit 75)")
+            s.add_argument("--label", default=None)
+            s.add_argument("--freq", type=float, required=True, help="MHz")
+            if op == "tx":
+                s.add_argument("segments", nargs="*", help="KIND:ARG... (see above)")
+                s.add_argument("--program", default=None, help="the segments as a JSON list")
+                s.add_argument("--pcm", default=None, help="audio to send: a WAV, or raw int16 LE mono")
+                s.add_argument("--pcm-rate", type=float, default=None,
+                               help="raw PCM's rate (8000), or a WAV's override")
+                if mode == "fm":
+                    s.add_argument("--dev", type=float, default=2500.0, help="the program's peak deviation, Hz")
+                    s.add_argument("--ctcss", type=float, default=None, help="tone squelch, Hz")
+                    s.add_argument("--dcs", default=None, help="digital squelch: octal code, N or I (023N, 023I)")
+                    s.add_argument("--sub-dev", type=float, default=None,
+                                   help="the CTCSS/DCS deviation, Hz (0.2 of --dev)")
+                    s.add_argument("--sub-end", type=float, default=None,
+                                   help="reverse burst / turn-off code, seconds")
+                    s.add_argument("--preemph-us", type=float, default=None)
+                else:
+                    s.add_argument("--depth", type=float, default=None,
+                                   help="the modulation at level 1, 0-1 (0.3)")
+                    s.add_argument("--offset", type=float, default=None,
+                                   help="the carrier from --freq, Hz (an offset-carrier test)")
+                s.add_argument("--lead", type=float, default=None, help="carrier before the program, s (0.25)")
+                s.add_argument("--tail", type=float, default=None, help="carrier after it, s (0.25)")
+                s.add_argument("--repeat", type=int, default=None)
+                s.add_argument("--seed", type=int, default=None)
+                s.add_argument("--power", type=int, default=None, help="0-255, capped by the gateway's rf_level")
+            else:
+                s.add_argument("--seconds", type=float, required=True)
+                s.add_argument("--audio", default=None, help="write the filtered audio to this WAV")
+                if mode == "fm":
+                    s.add_argument("--disc", default=None, help="write the raw discriminator to this WAV")
+                else:
+                    s.add_argument("--env", default=None, help="write the raw envelope to this WAV")
+                s.add_argument("--records", default=None,
+                               help="write every line (records, gaps, done) to this file")
+                s.add_argument("--quiet", action="store_true", help="don't print the records")
+                s.add_argument("--bw", type=float, default=None, help="channel bandwidth, Hz (16000)")
+                s.add_argument("--squelch-dbfs", type=float, default=None, help="else learned from the noise floor")
+                s.add_argument("--squelch-over", type=float, default=None, help="dB over the learned floor (10)")
+                s.add_argument("--block-s", type=float, default=None, help="seconds a record (0.1)")
+                s.add_argument("--spectrum-hz", type=float, default=None)
+                if mode == "fm":
+                    s.add_argument("--deemph-us", type=float, default=None)
+                    s.add_argument("--nominal-dev", type=float, default=None,
+                                   help="Hz, for the records' deviation ratio")
+                    s.add_argument("--audio-full-hz", type=float, default=None,
+                                   help="deviation at full scale in the WAV")
+                else:
+                    s.add_argument("--audio-lo", type=float, default=None, help="the audio band's low edge, Hz (300)")
+                    s.add_argument("--audio-hi", type=float, default=None,
+                                   help="the audio band's high edge, Hz (3000)")
+                    s.add_argument("--nominal-depth", type=float, default=None,
+                                   help="0-1, for the audio's level in dB")
+                    s.add_argument("--audio-full", type=float, default=None,
+                                   help="the modulation at full scale in the WAV (1.0: 100%%)")
     for name in ("activity", "burstlog", "bridge"):
         s = p(name, cmd_unsupported, False)
         s.add_argument("rest", nargs=argparse.REMAINDER)

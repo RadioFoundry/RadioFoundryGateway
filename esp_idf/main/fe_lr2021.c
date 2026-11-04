@@ -69,7 +69,7 @@ static rdof_fe_caps_t caps = {
     .format = RDOF_FE_CS16,
     .rate_min = 48000,
     .rate_max = WIDE_MAX, /* the narrow mode resampled to it, the wide mode made by the chip (pick) */
-    .freq_min = 150e6, /* the LF path, RFI_LF (datasheet 1.1) */
+    .freq_min = 100e6, /* the LF path, RFI_LF: the datasheet says 150 MHz; it receives from 100 (R2.38) */
     .freq_max = 960e6,
     .usable = 0.8, /* set from the rate in init (band_usable) */
     .dc_guard_hz = 5000, /* the raw samples' DC hasn't been measured: keep channels off the center */
@@ -77,13 +77,14 @@ static rdof_fe_caps_t caps = {
     .duplex = RDOF_FE_HALF_DUPLEX, /* one synthesizer: the receiver stops for each run (tx_service) */
     .tx_mode = RDOF_FE_TX_FREQ,
     .tx_rate = 48000,
-    .tx_freq_min = 150e6,
+    .tx_freq_min = 100e6, /* as receive; transmit under 150 MHz isn't measured */
     .tx_freq_max = 960e6,
     .tx_power_min = -9.5, /* the LF PA, 0.5 dB steps (7.4.3) */
     .tx_power_max = 21,   /* 22 dBm sends noise, not the signal, with the board's PA setup (spec R3.49) */
     .tx_power_step = 0.5,
     .turnaround_us = 107, /* RX to TX, typical (table 3-23); TX to RX 91 */
     .tx_dev_max_hz = 4064, /* int8 samples, 32 Hz a count at TX_FDEV (R3.10) */
+    .tx_polar = true,      /* an AM source as polar I/Q (tx_fill) */
 };
 
 /* The session (the component's): in PSRAM, as the reader's buffer was (internal RAM is the DSP's) */
@@ -577,9 +578,15 @@ static void report(void *arg)
 #define TX_LATE_US 3200
 #define TX_HOLD_US 300000 /* the anchor held this long after a run */
 
+/* A source that renders I/Q (an AM signal: iq_now) is staged as polar samples instead, I/Q int8 through the PA's
+ * measured AM curve (lr2021_polar_iq8, spec R3.22-R3.27), and its runs go out as IQ_POLAR: the magnitude drives the
+ * PA. The curve is the one table measured (920 MHz, +22 dBm, 48 kS/s). */
+enum { K_KEYED = 1, K_IQ = 2 }; /* stage.k */
+
 EXT_RAM_BSS_ATTR static struct {
     int8_t s[TX_STAGE];  /* frequency samples (lr2021_raw_freq_sample) */
-    uint8_t k[TX_STAGE]; /* keyed */
+    int8_t iq[2 * TX_STAGE]; /* or polar I/Q samples (K_IQ) */
+    uint8_t k[TX_STAGE]; /* K_* */
 } stage;
 
 static struct {
@@ -602,6 +609,7 @@ static struct {
     int64_t long_skipped;           /* samples skipped at the seams */
     int long_seam_us;
     double long_s;                  /* seconds sent in long key-ups */
+    unsigned polar;                 /* runs sent as polar I/Q */
 } tx = {.key = -1};
 
 static int64_t tx_now48(int64_t us) { return tx.a_pos + (us - tx.a_us) * TX_RATE / 1000000; }
@@ -616,8 +624,31 @@ static int64_t native_at(int64_t pos48) { return pos48 * (int64_t)st.native_num 
 static void tx_fill(int64_t upto, int blocks, bool wait)
 {
     EXT_RAM_BSS_ATTR static float hz[TX_BLOCK], env[TX_BLOCK];
+    EXT_RAM_BSS_ATTR static rdof_cf_t x[TX_BLOCK];
+    EXT_RAM_BSS_ATTR static int8_t q[2 * TX_BLOCK];
     const rdof_fe_tx_source_t *src = tx.src;
     while (src && tx.pos < upto && blocks-- > 0) {
+        if (src->iq_now && src->iq_now(src->ctx)) { /* polar I/Q */
+            const int got = src->try_pull_iq && !wait ? src->try_pull_iq(src->ctx, tx.pos, x, TX_BLOCK)
+                                                      : src->pull_iq(src->ctx, tx.pos, x, TX_BLOCK);
+            if (got < 0) {
+                tx_busy++;
+                return;
+            }
+            lr2021_polar_iq8((const float *)x, TX_BLOCK, 1.0f, 0, &lr2021_am_w12_920, q);
+            for (int i = 0; i < TX_BLOCK; i++) {
+                const int64_t p = tx.pos + i;
+                const size_t at = (size_t)(p & (TX_STAGE - 1));
+                const bool k = got > 0 && (x[i].re != 0 || x[i].im != 0);
+                stage.iq[2 * at] = k ? q[2 * i] : 0; /* zeros: the PA off (R3.22) */
+                stage.iq[2 * at + 1] = k ? q[2 * i + 1] : 0;
+                stage.k[at] = k ? K_KEYED | K_IQ : 0;
+                if (k && tx.key < 0)
+                    tx.key = p;
+            }
+            tx.pos += TX_BLOCK;
+            continue;
+        }
         const int got = src->try_pull_freq && !wait ? src->try_pull_freq(src->ctx, tx.pos, hz, env, TX_BLOCK)
                                            : src->pull_freq(src->ctx, tx.pos, hz, env, TX_BLOCK);
         if (got < 0) {
@@ -639,7 +670,7 @@ static void tx_fill(int64_t upto, int blocks, bool wait)
             const int64_t p = tx.pos + i;
             const bool k = keyed && env[i] > 0;
             stage.s[p & (TX_STAGE - 1)] = lr2021_raw_freq_sample(hz[i], TX_FDEV);
-            stage.k[p & (TX_STAGE - 1)] = k;
+            stage.k[p & (TX_STAGE - 1)] = k ? K_KEYED : 0;
             if (k && tx.key < 0)
                 tx.key = p;
         }
@@ -664,27 +695,42 @@ static void tx_zero_fill(int64_t n)
     }
 }
 
+/* k staged samples from at as FIFO bytes into buf: one a sample (frequency), two (polar I/Q). */
+static void stage_bytes(int64_t at, size_t k, bool iq, uint8_t *buf)
+{
+    for (size_t j = 0; j < k; j++) {
+        const size_t s = (size_t)((at + (int64_t)j) & (TX_STAGE - 1));
+        if (iq)
+            buf[2 * j] = (uint8_t)stage.iq[2 * s], buf[2 * j + 1] = (uint8_t)stage.iq[2 * s + 1];
+        else
+            buf[j] = (uint8_t)stage.s[s];
+    }
+}
+
 /* The staged samples from at to end, as FIFO bytes (lr2021_iq_transmit's pull). */
 struct stage_span {
     int64_t at, end;
+    bool iq;
 };
 
 static size_t stage_pull(void *ctx, uint8_t *buf, size_t max)
 {
     struct stage_span *p = ctx;
-    const size_t k = p->end - p->at < (int64_t)max ? (size_t)(p->end - p->at) : max;
-    for (size_t j = 0; j < k; j++)
-        buf[j] = (uint8_t)stage.s[(p->at + (int64_t)j) & (TX_STAGE - 1)];
+    const size_t sb = p->iq ? 2 : 1, room = max / sb;
+    const size_t k = p->end - p->at < (int64_t)room ? (size_t)(p->end - p->at) : room;
+    stage_bytes(p->at, k, p->iq, buf);
     p->at += (int64_t)k;
-    return k;
+    return k * sb;
 }
 
 /* One run: n staged samples from k0 on, keyed up at esp_timer t_key (lr2021_iq_transmit: the receiver paused and
  * back after), then the gap filled. The caller holds the lock, in a session. */
 static void tx_run(int64_t k0, int n, int64_t t_key)
 {
+    const bool polar = stage.k[k0 & (TX_STAGE - 1)] & K_IQ;
+    tx.polar += polar;
     const lr2021_iq_tx_t t = {
-        .mode = LR2021_TX_FREQ,
+        .mode = polar ? LR2021_TX_IQ_POLAR : LR2021_TX_FREQ,
         .center_hz = tx.hz,
         .ppm = st.ppm,
         .rate = TX_RATE,
@@ -693,7 +739,7 @@ static void tx_run(int64_t k0, int n, int64_t t_key)
         .samples = (uint64_t)n,
         .at_us = t_key,
     };
-    struct stage_span span = {k0, k0 + n};
+    struct stage_span span = {k0, k0 + n, polar};
     tx.sent_dbm = t.power_dbm;
     lr2021_tx_stream_stats_t s;
     if (lr2021_iq_tx_calibrates(&iq, &t))
@@ -731,12 +777,15 @@ static void tx_run(int64_t k0, int n, int64_t t_key)
  * freq once settled, the first few seams up to 230), so that much is skipped at each seam and the stream's later samples keep the anchor's time. The receiver
  * is off throughout: its stream is filled with zeros up to real time as it goes. */
 #define TX_LONG_RUN 64800 /* 1.35 s, 45 slots: the runs' 16-bit count (R3.43) */
+#define TX_LONG_RUN_IQ 32400 /* 0.675 s: an I/Q run's bytes are the 16-bit count (R3.43) */
 #define TX_SEAM_US 171    /* the seam's delay when none is learned yet (R3.49) */
 
 struct long_span {
     int64_t at;       /* the next sample to send */
     int64_t end;      /* past the last keyed sample found */
     int64_t sent;     /* samples sent */
+    int64_t run;      /* a run's samples: TX_LONG_RUN, or TX_LONG_RUN_IQ */
+    bool iq;
     double skip;      /* samples owed to the seams, not yet skipped */
     int seam_us;
     unsigned seams;
@@ -757,7 +806,7 @@ static size_t long_pull(void *ctx, uint8_t *buf, size_t max)
     const int64_t gap = native_at(tx_now48(esp_timer_get_time())) - rx_count;
     if (gap > 0 && gap < (int64_t)(st.native * 0.5))
         tx_zero_fill(gap);
-    if (p->sent && p->sent % TX_LONG_RUN == 0 && p->seams < p->sent / TX_LONG_RUN) { /* a seam: skip its delay */
+    if (p->sent && p->sent % p->run == 0 && p->seams < p->sent / p->run) { /* a seam: skip its delay */
         p->seams++;
         p->skip += p->seam_us * (TX_RATE / 1e6);
         const int64_t k = (int64_t)p->skip;
@@ -786,40 +835,45 @@ static size_t long_pull(void *ctx, uint8_t *buf, size_t max)
     if (p->at >= p->end)
         return 0;
     /* a run's last byte goes in on its own, so the seam falls where it's counted */
-    const int64_t to_seam = TX_LONG_RUN - p->sent % TX_LONG_RUN;
+    const int64_t to_seam = p->run - p->sent % p->run;
+    const size_t sb = p->iq ? 2 : 1;
     size_t k = (size_t)(p->end - p->at);
-    if (k > max)
-        k = max;
+    if (k > max / sb)
+        k = max / sb;
     if ((int64_t)k > to_seam)
         k = (size_t)to_seam;
-    for (size_t j = 0; j < k; j++)
-        buf[j] = (uint8_t)stage.s[(p->at + (int64_t)j) & (TX_STAGE - 1)];
+    stage_bytes(p->at, k, p->iq, buf);
     p->at += (int64_t)k;
     p->sent += (int64_t)k;
-    return k;
+    return k * sb;
 }
 
 /* The long transmission from k0, keyed up at esp_timer t_key. Returns where it stopped (the first sample not sent).
  * The caller holds the lock, in a session. */
 static int64_t tx_run_long(int64_t k0, int64_t k1, int64_t t_key)
 {
+    const bool polar = stage.k[k0 & (TX_STAGE - 1)] & K_IQ;
+    const lr2021_tx_mode_t mode = polar ? LR2021_TX_IQ_POLAR : LR2021_TX_FREQ;
+    const int64_t run = polar ? TX_LONG_RUN_IQ : TX_LONG_RUN;
+    tx.polar += polar;
     const lr2021_iq_tx_t t = {
-        .mode = LR2021_TX_FREQ,
+        .mode = mode,
         .center_hz = tx.hz,
         .ppm = st.ppm,
         .rate = TX_RATE,
         .fdev_hz = TX_FDEV,
         .power_dbm = tx.power,
-        .samples = TX_LONG_RUN,
+        .samples = (uint64_t)run,
         .streamed = true,
         .at_us = t_key,
     };
-    const bool same = iq.tx_learned_for == ((uint32_t)LR2021_TX_FREQ << 24 ^ TX_RATE);
+    const bool same = iq.tx_learned_for == ((uint32_t)mode << 24 ^ TX_RATE);
     const int learned = !same ? -1 : iq.tx_learned[1] >= 0 ? iq.tx_learned[1] : iq.tx_learned[0];
     /* static: this runs deep in the reader's stack (the modem's pull inside the stream's), the reader alone */
     EXT_RAM_BSS_ATTR static lr2021_tx_stream_stats_t s;
     EXT_RAM_BSS_ATTR static struct long_span span;
-    span = (struct long_span){.at = k0, .end = k1, .seam_us = learned > 0 ? learned : TX_SEAM_US, .st = &s};
+    span = (struct long_span){.at = k0, .end = k1, .run = run, .iq = polar,
+                              .seam_us = learned > 0 ? learned : TX_SEAM_US, .st = &s};
     tx.sent_dbm = t.power_dbm;
     if (lr2021_iq_tx_calibrates(&iq, &t))
         tx.calibrated++;
@@ -849,7 +903,7 @@ static int64_t tx_run_long(int64_t k0, int64_t k1, int64_t t_key)
                          (int)(s.key_us - t_key));
         for (int i = 0; i < span.runs_seen && i < 12 && n < (int)sizeof line - 8; i++)
             n += snprintf(line + n, sizeof line - n, " %d",
-                          (int)(span.done_us[i] - (i ? span.done_us[i - 1] : s.key_us) - TX_LONG_RUN * 1000000LL / TX_RATE));
+                          (int)(span.done_us[i] - (i ? span.done_us[i - 1] : s.key_us) - run * 1000000LL / TX_RATE));
         say("%s", line); /* the log from the timer's task, not the reader's stack */
     }
     tx.long_runs++;
@@ -868,11 +922,12 @@ static int64_t tx_run_long(int64_t k0, int64_t k1, int64_t t_key)
 static void tx_said(void)
 {
     if (tx.runs || tx.late || tx.early || tx.failed)
-        say("TX at %.5f MHz, %.1f dBm: %u runs, %u late, %u early (R3.17), %u failed%s%s, %u cut, %u underflows, "
-            "%u calibrated; key-up %+d to %+d us of its time; %lld samples filled",
-            tx.hz / 1e6, tx.sent_dbm, tx.runs, tx.late, tx.early, tx.failed, tx.failed ? ": " : "",
+        say("TX at %.5f MHz, %.1f dBm: %u runs (%u polar), %u late, %u early (R3.17), %u failed%s%s, %u cut, "
+            "%u underflows, %u calibrated; key-up %+d to %+d us of its time; %lld samples filled",
+            tx.hz / 1e6, tx.sent_dbm, tx.runs, tx.polar, tx.late, tx.early, tx.failed, tx.failed ? ": " : "",
             tx.failed ? esp_err_to_name(tx.last_err) : "", tx.cut, tx.underflows, tx.calibrated, tx.err_min,
             tx.err_max, (long long)tx.zeros);
+    tx.polar = 0;
     if (tx.long_runs)
         say("TX: %u long key-ups, %.2f s, %u seams, %lld samples skipped (%d us a seam); %u started late, %lld "
             "samples skipped for them; TX_DONE learned %d/%d/%d us", tx.long_runs, tx.long_s, tx.long_seams,

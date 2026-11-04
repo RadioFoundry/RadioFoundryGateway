@@ -97,7 +97,21 @@ static int try_pull_freq(void *ctx, int64_t pos, float *hz, float *env, int n)
     return r;
 }
 
-static const rdof_fe_tx_source_t source = {pull_iq, pull_freq, NULL, try_pull_freq};
+static int try_pull_iq(void *ctx, int64_t pos, rdof_cf_t *iq, int n)
+{
+    if (xSemaphoreTake(lock, 0) != pdTRUE)
+        return -1;
+    bool r = mdm && rdof_sdrmodem_pull_iq(mdm, pos, iq, n);
+    GIVE();
+    return r;
+}
+
+/* A bench signal that renders I/Q only (AM) is on: set with the signal under the lock, read without it (the
+ * LR2021's reader asks each turn). */
+static volatile bool sig_iq;
+static bool iq_now(void *ctx) { return sig_iq; }
+
+static const rdof_fe_tx_source_t source = {pull_iq, pull_freq, NULL, try_pull_freq, iq_now, try_pull_iq};
 
 static int io_channel(void *ctx, uint32_t hz) { return sdr_rx_channel(hz); }
 
@@ -257,7 +271,12 @@ bool sdr_modem_bench_slots(sdr_modem_slots_t *s)
 
 const char *sdr_modem_bench_signal(uint32_t hz, const rdof_sig_src_t *src, char *why, size_t cap)
 {
-    if (src && fe.caps->tx_mode == RDOF_FE_TX_FREQ && fe.caps->tx_dev_max_hz > 0 &&
+    const bool iq_only = src && src->iq && !src->freq;
+    if (src && fe.caps->tx_mode == RDOF_FE_TX_FREQ && iq_only && !fe.caps->tx_polar) {
+        snprintf(why, cap, "the %s sends frequency only: no amplitude (AM)", fe.caps->kind);
+        return why;
+    }
+    if (src && fe.caps->tx_mode == RDOF_FE_TX_FREQ && !iq_only && fe.caps->tx_dev_max_hz > 0 &&
         src->peak_hz > fe.caps->tx_dev_max_hz) {
         snprintf(why, cap, "the %s sends at most %.0f Hz of deviation (this source peaks at %.0f Hz)", fe.caps->kind,
                  fe.caps->tx_dev_max_hz, src->peak_hz);
@@ -267,6 +286,7 @@ const char *sdr_modem_bench_signal(uint32_t hz, const rdof_sig_src_t *src, char 
     const char *no = !mdm || !bench_reply ? "the bench doesn't hold the SDR modem" : NULL;
     if (!no && !rdof_sdrmodem_signal(mdm, hz, src, why, cap))
         no = why;
+    sig_iq = !no && mdm && rdof_sdrmodem_signal_iq(mdm);
     GIVE();
     if (no && no != why)
         snprintf(why, cap, "%s", no);

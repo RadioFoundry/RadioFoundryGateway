@@ -171,7 +171,9 @@ size_t lr2021_cmd(uint8_t *buf, uint16_t op);
 size_t lr2021_cmd_u8(uint8_t *buf, uint16_t op, uint8_t a);
 size_t lr2021_cmd_set_rf_frequency(uint8_t *buf, uint32_t hz);
 size_t lr2021_cmd_set_rx_path(uint8_t *buf, bool hf, uint8_t boost);
-/* Up to three frequencies (0 for none) on a path: 4 MHz steps, rounded down as the chip does for its own; bit 15 HF. */
+/* Up to three frequencies (0 for none) on a path: 4 MHz steps, rounded down as the chip does for its own; bit 15 HF.
+ * On the LF path at least step 26 (104 MHz): CalibFE fails under it (R2.38). */
+#define LR2021_CALIB_LF_MIN_STEP 26
 size_t lr2021_cmd_calib_fe(uint8_t *buf, const uint32_t *hz, int n, bool hf);
 uint16_t lr2021_calib_fe_word(uint32_t hz, bool hf);
 size_t lr2021_cmd_set_tcxo(uint8_t *buf, uint8_t tune, uint32_t start_32mhz_periods);

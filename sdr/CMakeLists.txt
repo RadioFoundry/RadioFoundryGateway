@@ -28,6 +28,8 @@ set(RDOF_SDR_SRCS
     src/fmgen.c
     src/fmrx.c
     src/mode_fm.c
+    src/amrx.c
+    src/mode_am.c
     src/modes.c
 )
 

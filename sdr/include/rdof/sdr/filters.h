@@ -60,6 +60,19 @@ void rdof_psd_in(rdof_psd_t *s, float x);
 /* Bin k's mean power (0 before a frame). */
 static inline double rdof_psd_bin(const rdof_psd_t *s, int k) { return s->frames ? s->acc[k] / (double)s->frames : 0; }
 
+/* What an analog receiver reads from its audio's spectrum (amplitudes in the stream's own unit: FM's Hz of
+ * deviation, AM's depth). */
+#define RDOF_PSD_PEAKS 6
+typedef struct {
+    bool tone;                   /* the band's strongest bin holds over half its power */
+    float hz, amp;               /* that tone: frequency (its lobe's centroid) and amplitude */
+    float sinad_db, thd_pct;     /* against the rest of the band; harmonics 2 to 5 */
+    int npeaks;
+    float peak_hz[RDOF_PSD_PEAKS], peak_amp[RDOF_PSD_PEAKS]; /* the strongest local maxima, 5 bins apart */
+} rdof_psd_tones_t;
+/* The spectrum of a stream at rate: the tone between lo and hi Hz, and the peaks from 30 Hz to top. */
+void rdof_psd_tones(const rdof_psd_t *s, double rate, double lo, double hi, double top, rdof_psd_tones_t *out);
+
 #ifdef __cplusplus
 }
 #endif

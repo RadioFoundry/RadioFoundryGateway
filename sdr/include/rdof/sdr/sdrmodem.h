@@ -260,6 +260,9 @@ bool rdof_sdrmodem_signal(rdof_sdrmodem_t *m, uint32_t hz, const rdof_sig_src_t 
 double rdof_sdrmodem_signal_rate(const rdof_sdrmodem_t *m);
 /* 0 none, 1 sending, 2 the source is done and a quarter second more has been pulled (what it keyed went out). */
 int rdof_sdrmodem_signal_state(const rdof_sdrmodem_t *m);
+/* A signal's transmission whose source renders I/Q only (no frequency): a front end that sends frequency pulls it
+ * as I/Q (rdof_fe_caps_t.tx_polar). */
+bool rdof_sdrmodem_signal_iq(const rdof_sdrmodem_t *m);
 /* Transmitting or about to (anything queued). */
 bool rdof_sdrmodem_transmitting(const rdof_sdrmodem_t *m);
 /* The receiver's 48 kS/s position p: inside a span this modem keyed (half duplex: what the receiver heard there

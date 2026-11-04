@@ -558,18 +558,6 @@ bool rdof_fmrx_block(rdof_fmrx_t *r, rdof_fmrx_block_t *b)
 
 static double bin_hz(const rdof_fmrx_t *r) { return r->ar / N; }
 
-/* The power of the tone about bin k (its Hann lobe, k - 3 to k + 3), and its frequency by the bins' centroid. */
-static double lobe(const rdof_fmrx_t *r, const double *s, int k, double *hz)
-{
-    double p = 0, m = 0;
-    for (int j = k - 3; j <= k + 3; j++)
-        if (j >= 0 && j <= N / 2)
-            p += s[j], m += s[j] * j;
-    if (hz)
-        *hz = p > 0 ? m / p * bin_hz(r) : k * bin_hz(r);
-    return p;
-}
-
 void rdof_fmrx_summary(rdof_fmrx_t *r, rdof_fmrx_summary_t *s)
 {
     fold(r);
@@ -599,56 +587,13 @@ void rdof_fmrx_summary(rdof_fmrx_t *r, rdof_fmrx_summary_t *s)
     s->reverse_burst_t = -1;
     s->dcs_code = -1;
     /* the spectrum: the audio band's strongest tone, its SINAD and THD; the peaks anywhere */
-    if (r->psd.frames) {
-        const double *sp = r->psd.acc, inv = 1.0 / (double)r->psd.frames; /* sums: the mean is inv times */
-        const double bh = bin_hz(r);
-        const int lo = (int)ceil(300 / bh), hi = (int)floor(3000 / bh);
-        int k0 = lo;
-        double tot = 0;
-        for (int k = lo; k <= hi && k <= N / 2; k++) {
-            tot += sp[k];
-            if (sp[k] > sp[k0])
-                k0 = k;
-        }
-        double f0;
-        const double p0 = lobe(r, sp, k0, &f0);
-        if (tot > 0 && p0 / tot > 0.5) {
-            s->tone = true;
-            s->tone_hz = (float)f0;
-            s->tone_dev_hz = (float)sqrt(2 * p0 * inv);
-            const double rest = tot - p0;
-            s->sinad_db = (float)(rest > 0 ? fmin(10 * log10(tot / rest), 90) : 90);
-            double h = 0;
-            for (int m = 2; m <= 5; m++) {
-                const int kh = (int)lround(m * f0 / bh);
-                if (kh + 3 <= N / 2)
-                    h += lobe(r, sp, kh, NULL);
-            }
-            s->thd_pct = (float)(100 * sqrt(h / p0));
-        }
-        const int top = (int)fmin(N / 2 - 1, floor(5000 / bh));
-        double maxp = 0;
-        for (int k = 1; k < top; k++)
-            maxp = sp[k] > maxp ? sp[k] : maxp;
-        for (int n = 0; n < RDOF_FMRX_PEAKS; n++) { /* the strongest local maxima, apart */
-            int best = -1;
-            for (int k = (int)ceil(30 / bh); k < top; k++) {
-                if (sp[k] < sp[k - 1] || sp[k] < sp[k + 1] || sp[k] < 0.001 * maxp)
-                    continue;
-                bool near = false;
-                for (int j = 0; j < s->npeaks; j++)
-                    near |= fabs(k * bh - s->peak_hz[j]) < 5 * bh;
-                if (!near && (best < 0 || sp[k] > sp[best]))
-                    best = k;
-            }
-            if (best < 0)
-                break;
-            double hz;
-            const double p = lobe(r, sp, best, &hz);
-            s->peak_hz[s->npeaks] = (float)hz;
-            s->peak_dev_hz[s->npeaks++] = (float)sqrt(2 * p * inv);
-        }
-    }
+    rdof_psd_tones_t tn;
+    rdof_psd_tones(&r->psd, r->ar, 300, 3000, 5000, &tn);
+    s->tone = tn.tone;
+    s->tone_hz = tn.hz, s->tone_dev_hz = tn.amp, s->sinad_db = tn.sinad_db, s->thd_pct = tn.thd_pct;
+    s->npeaks = tn.npeaks < RDOF_FMRX_PEAKS ? tn.npeaks : RDOF_FMRX_PEAKS;
+    for (int i = 0; i < s->npeaks; i++)
+        s->peak_hz[i] = tn.peak_hz[i], s->peak_dev_hz[i] = tn.peak_amp[i];
     /* the subaudio */
     if (r->dc_words) {
         s->sub = RDOF_FMG_SUB_DCS;

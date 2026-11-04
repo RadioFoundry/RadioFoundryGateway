@@ -17,6 +17,7 @@ extern "C" {
 extern const rdof_sig_mode_t *const rdof_sdr_modes[];
 
 extern const rdof_sig_mode_t rdof_mode_fm;   /* analog FM (mode_fm.c) */
+extern const rdof_sig_mode_t rdof_mode_am;   /* analog AM (mode_am.c) */
 
 #ifdef __cplusplus
 }

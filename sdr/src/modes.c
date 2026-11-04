@@ -8,7 +8,7 @@
 #include "rdof/sdr/features.h"
 
 #if RDOF_FEATURE_SDR
-const rdof_sig_mode_t *const rdof_sdr_modes[] = {&rdof_mode_fm, NULL};
+const rdof_sig_mode_t *const rdof_sdr_modes[] = {&rdof_mode_fm, &rdof_mode_am, NULL};
 #else
 const rdof_sig_mode_t *const rdof_sdr_modes[] = {NULL};
 #endif

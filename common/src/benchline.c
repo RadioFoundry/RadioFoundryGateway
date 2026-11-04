@@ -131,6 +131,7 @@ typedef struct {
     double fs;                /* bursts: the wideband rate, for a record's sc */
     /* tune: a trigger or rx outside the window waits for its own tune, then runs again (autotune) */
     bool autotune;
+    bool rerun; /* came while a retune restarted the receiver: runs again once it's done */
     /* run */
     job_t *job;
     trig_t *trig;
@@ -435,6 +436,7 @@ int rdof_bl_open(rdof_bl_t *bl, double now)
 }
 
 static void request(rdof_bl_t *bl, int ci, double now);
+static bool rerun_after_tune(rdof_bl_t *bl, conn_t *c);
 static void job_end(rdof_bl_t *bl, conn_t *c);
 static void stx_input(rdof_bl_t *bl, conn_t *c, const uint8_t *b, size_t n);
 static size_t stx_room(const conn_t *c);
@@ -506,7 +508,7 @@ void rdof_bl_closed(rdof_bl_t *bl, int ci, double now)
         tune_end(bl, now);
     if (bl->tune_wait == ci)
         bl->tune_wait = -1;
-    c->autotune = false;
+    c->autotune = c->rerun = false;
     if (c->op == OP_RX)
         bl->n_iq--;
     sig_end(bl, c);
@@ -1038,6 +1040,8 @@ static void op_capture(rdof_bl_t *bl, conn_t *c, int root, double now)
     get_window(bl, &w);
     const double mhz = jnum(bl, root, "freq", NAN), secs = jnum(bl, root, "seconds", 0);
     if (!w.running || w.fs <= 0) {
+        if (rerun_after_tune(bl, c))
+            return;
         fail(bl, c, "unavailable", "the receiver isn't running");
         return;
     }
@@ -1111,6 +1115,8 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now)
     get_window(bl, &w);
     const double mhz = jnum(bl, root, "freq", NAN);
     if (!w.running || w.fs <= 0) {
+        if (rerun_after_tune(bl, c))
+            return;
         fail(bl, c, "unavailable", "the receiver isn't running");
         return;
     }
@@ -1201,6 +1207,15 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now)
 /* ── tune: the receiver's window (section 14.2) ─────────────────────────── */
 
 static void bursts_done(rdof_bl_t *bl, conn_t *c, const char *reason, double now);
+
+/* The receiver is down while a tune or restore applies: c runs again once it has (tick_tune), not refused. */
+static bool rerun_after_tune(rdof_bl_t *bl, conn_t *c)
+{
+    if (!bl->retuning)
+        return false;
+    c->state = C_ACTIVE, c->op = OP_NONE, c->rerun = true;
+    return true;
+}
 
 /* Whether the receiver's tune is someone else's than c's (or being applied): then a request that needs another
  * window is busy, not refused. */
@@ -1295,7 +1310,7 @@ static void tuned_reply(rdof_bl_t *bl, conn_t *c)
 }
 
 /* A tune or untune being applied: done, failed, or still under way. */
-static void tick_tune(rdof_bl_t *bl, double now)
+static void tick_tune_1(rdof_bl_t *bl, double now)
 {
     if (!bl->retuning)
         return;
@@ -1303,6 +1318,12 @@ static void tick_tune(rdof_bl_t *bl, double now)
     const int st = bl->p.tune_state ? bl->p.tune_state(bl->p.ctx, why, sizeof why) : 1;
     if (st == 0 && now - bl->retune_since < RETUNE_MAX_S)
         return;
+    if (st == 1 && now - bl->retune_since < RETUNE_MAX_S) { /* applied: done once the receiver runs again */
+        rdof_bl_window_t w;
+        get_window(bl, &w);
+        if (!w.running)
+            return;
+    }
     const int was = bl->retuning;
     bl->retuning = 0;
     refresh_freqs(bl);
@@ -1342,6 +1363,18 @@ static void tick_tune(rdof_bl_t *bl, double now)
         request(bl, wi, now);
     } else
         tuned_reply(bl, wc);
+}
+
+static void tick_tune(rdof_bl_t *bl, double now)
+{
+    if (!bl->retuning)
+        return;
+    tick_tune_1(bl, now);
+    for (int i = 0; i < RDOF_BL_CONNS && !bl->retuning; i++)
+        if (bl->c[i].state == C_ACTIVE && bl->c[i].rerun) {
+            bl->c[i].rerun = false;
+            request(bl, i, now);
+        }
 }
 
 /* A tune's number or "auto" from a request: *v NAN when absent, autov for "auto"; false when it's neither. */
@@ -2429,6 +2462,8 @@ static void op_rx(rdof_bl_t *bl, conn_t *c, int root, double now)
                  bw = jnum(bl, root, "bw", 16000), sq = jnum(bl, root, "squelch_dbfs", NAN),
                  over = jnum(bl, root, "squelch_over_db", 10);
     if (!w.running || w.fs <= 0) {
+        if (rerun_after_tune(bl, c))
+            return;
         fail(bl, c, "unavailable", "the receiver isn't running");
         return;
     }

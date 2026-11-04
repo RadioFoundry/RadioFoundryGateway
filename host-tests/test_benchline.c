@@ -58,12 +58,16 @@ static struct {
     bool refuse;       /* the next tune is refused when it applies */
     const char *busy;  /* tune refuses at once with this code */
     int tunes, untunes;
+    int restart, down; /* window reads after a tune applies that say the receiver isn't running yet */
     char who[16];
 } ft = {.center = NAN, .gain = NAN};
 static void f_window(void *ctx, rdof_bl_window_t *w)
 {
     const double c = isnan(ft.center) ? 438.225e6 : ft.center;
-    *w = (rdof_bl_window_t){.running = true, .center_hz = c, .fs = 768000, .lo_hz = c - 0.3e6,
+    const bool running = ft.down <= 0;
+    if (!running)
+        ft.down--;
+    *w = (rdof_bl_window_t){.running = running, .center_hz = c, .fs = 768000, .lo_hz = c - 0.3e6,
                             .hi_hz = c + 0.3e6, .gain_db = isnan(ft.gain) ? 20 : ft.gain, .dc_guard_hz = 25e3};
 }
 static int f_freqs(void *ctx, rdof_bl_freq_t *out, int max)
@@ -120,6 +124,7 @@ static int f_tune_state(void *ctx, char *why, size_t cap)
     }
     if (ft.kind == 1) {
         const rdof_bl_tune_t *t = &ft.asked;
+        ft.down = ft.restart;
         ft.center = t->center_hz == 0 ? NAN : isnan(t->center_hz) ? ft.center : t->center_hz;
         ft.gain = t->gain_db == RDOF_BL_TUNE_AUTO ? NAN : isnan(t->gain_db) ? ft.gain : t->gain_db;
         if (t->ntaps >= 0) {
@@ -127,6 +132,7 @@ static int f_tune_state(void *ctx, char *why, size_t cap)
             memcpy(ft.taps, t->taps_hz, sizeof ft.taps);
         }
     } else if (ft.kind == 2) {
+        ft.down = ft.restart;
         ft.center = ft.gain = NAN, ft.ntaps = 0;
     }
     ft.kind = 0;
@@ -1781,6 +1787,7 @@ static void test_tune(void)
     CHECK(strstr(out, "\"code\":\"busy\"") && strstr(out, "another request"), "a stream uses the window: %s", out);
     rdof_bl_closed(bl, c, now);
     rdof_bl_closed(bl, busy, now);
+    ft.restart = 3; /* the receiver comes back a few polls after the tune applies (a board's stream restarting) */
     const int tr = ask(bl, req, now);
     drain(bl, tr, out, sizeof out);
     CHECK(strstr(out, "{\"note\":\"tuning the receiver to 145.1000 MHz for this request\"}") && ft.tunes == 6 &&
@@ -1788,6 +1795,8 @@ static void test_tune(void)
           "the trigger tunes: %s (center %.0f)", out, ft.asked.center_hz);
     tick_for(bl, tr, &now, 10, out, sizeof out);
     CHECK(strstr(out, "{\"armed\":{\"floor_db\":-60.0"), "then it's armed: %s", out);
+    CHECK(ft.down == 0, "the receiver came back first (%d)", ft.down);
+    ft.restart = 0;
     c = ask(bl, "{\"op\": \"info\"}", now);
     drain(bl, c, out, sizeof out);
     CHECK(strstr(out, "\"for\":\"request\",\"state\":\"tuned\"") && strstr(out, "\"center\":145.004000"),
@@ -1799,11 +1808,21 @@ static void test_tune(void)
     CHECK(strstr(out, "\"code\":\"busy\"") && strstr(out, "has the receiver tuned"), "even its own session's: %s",
           out);
     rdof_bl_closed(bl, c, now);
+    ft.restart = 3;
     rdof_bl_closed(bl, tr, now);
     CHECK(ft.untunes == 4, "the trigger's end untunes (%d)", ft.untunes);
-    for (int i = 0; i < 5; i++)
+    for (int i = 0; i < 2; i++)
         rdof_bl_tick(bl, now += 0.02);
-    CHECK(isnan(ft.center), "the settings again");
+    CHECK(isnan(ft.center) && ft.down > 0, "the settings again, the receiver restarting (%d)", ft.down);
+    /* a request while it restarts waits for it, then runs */
+    snprintf(req, sizeof req, "{\"op\": \"trigger\", \"session\": \"%s\", \"freq\": 438.1125, \"floor_db\": -60}", idb);
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(!out[0], "no answer yet: %s", out);
+    tick_for(bl, c, &now, 10, out, sizeof out);
+    CHECK(strstr(out, "{\"armed\":{\"floor_db\":-60.0") && ft.down == 0, "then it runs: %s (%d)", out, ft.down);
+    ft.restart = 0;
+    rdof_bl_closed(bl, c, now);
     rdof_bl_closed(bl, sb, now);
     rdof_bl_ring_free(&ring);
     rdof_bl_free(bl);

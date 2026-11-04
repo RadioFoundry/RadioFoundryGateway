@@ -54,7 +54,7 @@ int main(void)
     FRAME(lr2021_cmd(b_, LR2021_GET_VERSION), 0x01, 0x01);
     FRAME(lr2021_cmd_u8(b_, LR2021_SET_STANDBY, 0), 0x01, 0x28, 0x00);
     FRAME(lr2021_cmd_u8(b_, LR2021_CALIBRATE, LR2021_CAL_PLL | LR2021_CAL_AAF), 0x01, 0x22, 0x0C);
-    FRAME(lr2021_cmd_set_rf_frequency(b_, 461137500), 0x02, 0x00, 0x1B, 0x7C, 0x66, 0x5C);
+    FRAME(lr2021_cmd_set_rf_frequency(b_, 438162500), 0x02, 0x00, 0x1A, 0x1D, 0xD4, 0x44);
     FRAME(lr2021_cmd_set_rx_path(b_, false, 7), 0x02, 0x01, 0x00, 0x07);
     FRAME(lr2021_cmd_set_rx_path(b_, true, 4), 0x02, 0x01, 0x01, 0x04);
     FRAME(lr2021_cmd_set_tcxo(b_, 7, 0x8000), 0x01, 0x20, 0x07, 0x00, 0x00, 0x80, 0x00);
@@ -77,9 +77,12 @@ int main(void)
     // CalibFE: 4 MHz steps, bit 15 the HF path; the datasheet's example: 900 MHz is 0x00E1 on LF, 0x80E1 on HF
     CHECK(lr2021_calib_fe_word(900000000, false) == 0x00E1 && lr2021_calib_fe_word(900000000, true) == 0x80E1,
           "calib fe 900");
-    CHECK(lr2021_calib_fe_word(461137500, false) == 115, "calib fe 461 (rounded down as the chip does)");
-    const uint32_t f[2] = {461137500, 0};
-    FRAME(lr2021_cmd_calib_fe(b_, f, 2, false), 0x01, 0x23, 0x00, 0x73, 0x00, 0x00, 0x00, 0x00);
+    CHECK(lr2021_calib_fe_word(438162500, false) == 109, "calib fe 438 (rounded down as the chip does)");
+    CHECK(lr2021_calib_fe_word(100000000, false) == 26 && lr2021_calib_fe_word(105000000, false) == 26 &&
+              lr2021_calib_fe_word(108000000, false) == 27,
+          "calib fe under 104 MHz: at 104 (R2.38)");
+    const uint32_t f[2] = {438162500, 0};
+    FRAME(lr2021_cmd_calib_fe(b_, f, 2, false), 0x01, 0x23, 0x00, 0x6D, 0x00, 0x00, 0x00, 0x00);
 
     // power: half dB, -9.5 to +22 dBm on the LF PA; ramps from table 7-24
     CHECK(lr2021_tx_power_code(-30) == -19 && lr2021_tx_power_code(30) == 44 && lr2021_tx_power_code(10.3) == 20 &&
@@ -91,9 +94,9 @@ int main(void)
           "ramps");
 
     // a crystal 10 ppm fast: ask for less
-    CHECK(lr2021_freq_corrected(461137500, 10) == 461132889u && lr2021_freq_corrected(461137500, 0) == 461137500u &&
-              lr2021_freq_corrected(461137500, -2.5) == 461138653u,
-          "ppm: %u", lr2021_freq_corrected(461137500, 10));
+    CHECK(lr2021_freq_corrected(438162500, 10) == 438158118u && lr2021_freq_corrected(438162500, 0) == 438162500u &&
+              lr2021_freq_corrected(438162500, -2.5) == 438163595u,
+          "ppm: %u", lr2021_freq_corrected(438162500, 10));
 
     // documented setups: LoRa (tables 9-1, 9-3), FSK (tables 11-3, 11-5)
     FRAME(lr2021_cmd_lora_modulation(b_, 7, LR2021_LORA_BW_31, 1, 0), 0x02, 0x20, 0x72, 0x10);

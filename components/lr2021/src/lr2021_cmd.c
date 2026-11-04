@@ -89,6 +89,8 @@ size_t lr2021_cmd_set_rx_path(uint8_t *b, bool hf, uint8_t boost)
 uint16_t lr2021_calib_fe_word(uint32_t hz, bool hf)
 {
     uint32_t steps = hz / 4000000u;
+    if (!hf && steps < LR2021_CALIB_LF_MIN_STEP) /* lower fails (R2.38): the lowest that works */
+        steps = LR2021_CALIB_LF_MIN_STEP;
     return (uint16_t)((steps & 0x7FFF) | (hf ? 0x8000 : 0));
 }
 

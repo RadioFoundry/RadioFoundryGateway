@@ -100,4 +100,72 @@ void rdof_psd_in(rdof_psd_t *s, float x)
     s->frames++;
 }
 
+/* The power of the tone about bin k (its Hann lobe, k - 3 to k + 3), and its frequency by the bins' centroid. */
+static double lobe(const rdof_psd_t *s, double bh, int k, double *hz)
+{
+    double p = 0, m = 0;
+    for (int j = k - 3; j <= k + 3; j++)
+        if (j >= 0 && j <= s->n / 2)
+            p += s->acc[j], m += s->acc[j] * j;
+    if (hz)
+        *hz = p > 0 ? m / p * bh : k * bh;
+    return p;
+}
+
+void rdof_psd_tones(const rdof_psd_t *s, double rate, double lo_hz, double hi_hz, double top_hz, rdof_psd_tones_t *out)
+{
+    memset(out, 0, sizeof *out);
+    if (!s->frames)
+        return;
+    const int N = s->n;
+    const double *sp = s->acc, inv = 1.0 / (double)s->frames; /* sums: the mean is inv times */
+    const double bh = rate / N;
+    const int lo = (int)ceil(lo_hz / bh), hi = (int)floor(hi_hz / bh);
+    int k0 = lo;
+    double tot = 0;
+    for (int k = lo; k <= hi && k <= N / 2; k++) {
+        tot += sp[k];
+        if (sp[k] > sp[k0])
+            k0 = k;
+    }
+    double f0;
+    const double p0 = lobe(s, bh, k0, &f0);
+    if (tot > 0 && p0 / tot > 0.5) {
+        out->tone = true;
+        out->hz = (float)f0;
+        out->amp = (float)sqrt(2 * p0 * inv);
+        const double rest = tot - p0;
+        out->sinad_db = (float)(rest > 0 ? fmin(10 * log10(tot / rest), 90) : 90);
+        double h = 0;
+        for (int m = 2; m <= 5; m++) {
+            const int kh = (int)lround(m * f0 / bh);
+            if (kh + 3 <= N / 2)
+                h += lobe(s, bh, kh, NULL);
+        }
+        out->thd_pct = (float)(100 * sqrt(h / p0));
+    }
+    const int top = (int)fmin(N / 2 - 1, floor(top_hz / bh));
+    double maxp = 0;
+    for (int k = 1; k < top; k++)
+        maxp = sp[k] > maxp ? sp[k] : maxp;
+    for (int n = 0; n < RDOF_PSD_PEAKS; n++) { /* the strongest local maxima, apart */
+        int best = -1;
+        for (int k = (int)ceil(30 / bh); k < top; k++) {
+            if (sp[k] < sp[k - 1] || sp[k] < sp[k + 1] || sp[k] < 0.001 * maxp)
+                continue;
+            bool near = false;
+            for (int j = 0; j < out->npeaks; j++)
+                near |= fabs(k * bh - out->peak_hz[j]) < 5 * bh;
+            if (!near && (best < 0 || sp[k] > sp[best]))
+                best = k;
+        }
+        if (best < 0)
+            break;
+        double hz;
+        const double p = lobe(s, bh, best, &hz);
+        out->peak_hz[out->npeaks] = (float)hz;
+        out->peak_amp[out->npeaks++] = (float)sqrt(2 * p * inv);
+    }
+}
+
 #endif

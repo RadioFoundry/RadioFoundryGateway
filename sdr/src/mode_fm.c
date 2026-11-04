@@ -22,12 +22,7 @@
 
 /* ── transmit ── */
 
-typedef struct {
-    rdof_fmg_t g;
-    int16_t *ring;
-    uint64_t pushed;             /* PCM samples taken */
-    int carry;                   /* a PCM sample's low byte, waiting for its high one (-1 none) */
-} fm_tx_t;
+typedef rdof_prog_tx_t fm_tx_t;
 
 static double parse_dcs(const char *s, bool *inv)
 {
@@ -133,8 +128,6 @@ static const char *fm_cfg(const rdof_jdoc_t *d, int job, rdof_fmg_cfg_t *c, char
     c->preemph_us = (float)rdof_sig_num(d, job, "preemph_us", 0);
     c->lead_s = (float)rdof_sig_num(d, job, "lead_s", 0.25);
     c->tail_s = (float)rdof_sig_num(d, job, "tail_s", 0.25);
-    c->repeat = (uint16_t)rdof_sig_num(d, job, "repeat", 1);
-    c->seed = (uint32_t)rdof_sig_num(d, job, "seed", 0);
     char dcs[16];
     const double ctcss = rdof_sig_num(d, job, "ctcss", 0);
     const bool has_dcs = rdof_sig_text(d, job, "dcs", dcs, sizeof dcs) && dcs[0];
@@ -152,6 +145,14 @@ static const char *fm_cfg(const rdof_jdoc_t *d, int job, rdof_fmg_cfg_t *c, char
         c->sub_end_s = (float)rdof_sig_num(d, job, "sub_end_s", 0.18); /* the turn-off tone */
     }
     c->sub_dev_hz = (float)rdof_sig_num(d, job, "sub_dev_hz", c->sub ? 0.2 * c->dev_hz : 0);
+    const char *e = rdof_prog_parse(d, job, c, why, cap);
+    return e ? e : rdof_fmg_check(c);
+}
+
+const char *rdof_prog_parse(const rdof_jdoc_t *d, int job, rdof_fmg_cfg_t *c, char *why, size_t cap)
+{
+    c->repeat = (uint16_t)rdof_sig_num(d, job, "repeat", 1);
+    c->seed = (uint32_t)rdof_sig_num(d, job, "seed", 0);
     const int p = rdof_jget(d, job, "pcm");
     if (p >= 0) {
         c->pcm_rate = (float)rdof_sig_num(d, p, "rate", 8000);
@@ -191,7 +192,37 @@ static const char *fm_cfg(const rdof_jdoc_t *d, int job, rdof_fmg_cfg_t *c, char
             return "program: 32 segments at most";
         c->seg[c->nseg++] = (rdof_fmg_seg_t){.kind = RDOF_FMG_PCM, .level = 1};
     }
-    return rdof_fmg_check(c);
+    return NULL;
+}
+
+int rdof_prog_start(rdof_prog_tx_t *t, const rdof_fmg_cfg_t *c, double fs, char *error, size_t ecap)
+{
+    uint32_t cap = 0;
+    t->ring = NULL;
+    if (c->pcm_samples) { /* 2 s of PCM buffered, 16-128 K samples */
+        cap = 16384;
+        while (cap < 131072 && cap < 2 * c->pcm_rate)
+            cap <<= 1;
+        if (!(t->ring = rdof_sdr_alloc(sizeof(int16_t) * cap))) {
+            snprintf(error, ecap, "no memory for the PCM buffer");
+            return -1;
+        }
+    }
+    if (rdof_fmg_init(&t->g, c, fs, t->ring, cap) < 0) {
+        snprintf(error, ecap, "%s", rdof_fmg_check(c) ? rdof_fmg_check(c) : "the generator can't start");
+        rdof_sdr_free(t->ring);
+        t->ring = NULL;
+        return -1;
+    }
+    t->pushed = 0;
+    t->carry = -1;
+    return 0;
+}
+
+void rdof_prog_end(rdof_prog_tx_t *t)
+{
+    rdof_sdr_free(t->ring);
+    t->ring = NULL;
 }
 
 static void *fm_tx_new(const rdof_jdoc_t *d, int job, double fs, double *seconds, char *error, size_t ecap)
@@ -210,24 +241,12 @@ static void *fm_tx_new(const rdof_jdoc_t *d, int job, double fs, double *seconds
         rdof_sdr_free(t), rdof_sdr_free(c);
         return NULL;
     }
-    uint32_t cap = 0;
-    if (c->pcm_samples) { /* 2 s of PCM buffered, 16-128 K samples */
-        cap = 16384;
-        while (cap < 131072 && cap < 2 * c->pcm_rate)
-            cap <<= 1;
-        if (!(t->ring = rdof_sdr_alloc(sizeof(int16_t) * cap))) {
-            snprintf(error, ecap, "no memory for the PCM buffer");
-            rdof_sdr_free(t), rdof_sdr_free(c);
-            return NULL;
-        }
-    }
-    if (rdof_fmg_init(&t->g, c, fs, t->ring, cap) < 0) {
-        snprintf(error, ecap, "%s", rdof_fmg_check(c) ? rdof_fmg_check(c) : "the generator can't start");
-        rdof_sdr_free(t->ring), rdof_sdr_free(t), rdof_sdr_free(c);
+    const int ok = rdof_prog_start(t, c, fs, error, ecap);
+    rdof_sdr_free(c);
+    if (ok < 0) {
+        rdof_sdr_free(t);
         return NULL;
     }
-    rdof_sdr_free(c);
-    t->carry = -1;
     *seconds = rdof_fmg_seconds(&t->g.c);
     return t;
 }
@@ -237,7 +256,7 @@ static void fm_tx_free(void *tx)
     fm_tx_t *t = tx;
     if (!t)
         return;
-    rdof_sdr_free(t->ring);
+    rdof_prog_end(t);
     rdof_sdr_free(t);
 }
 
@@ -250,24 +269,24 @@ static rdof_sig_src_t fm_tx_src(void *tx)
     return (rdof_sig_src_t){.freq = fm_freq, .done = fm_done, .peak_hz = rdof_fmg_peak_hz(&t->g.c), .ctx = &t->g};
 }
 
-static uint64_t fm_in_want(void *tx)
+uint64_t rdof_prog_tx_in_want(void *tx)
 {
-    const fm_tx_t *t = tx;
+    const rdof_prog_tx_t *t = tx;
     return 2 * (t->g.c.pcm_samples - t->pushed) - (t->carry >= 0);
 }
 
-static size_t fm_in_room(void *tx)
+size_t rdof_prog_tx_in_room(void *tx)
 {
-    fm_tx_t *t = tx;
+    rdof_prog_tx_t *t = tx;
     if (!t->ring)
         return 0;
-    const uint64_t want = fm_in_want(tx), room = 2 * (uint64_t)rdof_fmg_pcm_space(&t->g) - (t->carry >= 0);
+    const uint64_t want = rdof_prog_tx_in_want(tx), room = 2 * (uint64_t)rdof_fmg_pcm_space(&t->g) - (t->carry >= 0);
     return (size_t)(room < want ? room : want);
 }
 
-static size_t fm_in(void *tx, const uint8_t *b, size_t n)
+size_t rdof_prog_tx_in(void *tx, const uint8_t *b, size_t n)
 {
-    fm_tx_t *t = tx;
+    rdof_prog_tx_t *t = tx;
     size_t used = 0;
     int16_t s[256];
     while (used < n && t->ring) {
@@ -290,10 +309,10 @@ static size_t fm_in(void *tx, const uint8_t *b, size_t n)
     return used;
 }
 
-static void fm_in_end(void *tx, bool gone)
+void rdof_prog_tx_in_end(void *tx, bool gone)
 {
     (void)gone; /* the rest plays as silence, counted in underruns */
-    rdof_fmg_pcm_end(&((fm_tx_t *)tx)->g);
+    rdof_fmg_pcm_end(&((rdof_prog_tx_t *)tx)->g);
 }
 
 static size_t fm_tx_report(void *tx, char *out, size_t cap)
@@ -425,10 +444,10 @@ const rdof_sig_mode_t rdof_mode_fm = {
     .tx_new = fm_tx_new,
     .tx_free = fm_tx_free,
     .tx_src = fm_tx_src,
-    .tx_in_room = fm_in_room,
-    .tx_in = fm_in,
-    .tx_in_end = fm_in_end,
-    .tx_in_want = fm_in_want,
+    .tx_in_room = rdof_prog_tx_in_room,
+    .tx_in = rdof_prog_tx_in,
+    .tx_in_end = rdof_prog_tx_in_end,
+    .tx_in_want = rdof_prog_tx_in_want,
     .tx_report = fm_tx_report,
     .rx_new = fm_rx_new,
     .rx_free = fm_rx_free,

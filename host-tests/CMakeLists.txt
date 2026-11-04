@@ -92,6 +92,18 @@ if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
 endif()
 add_test(NAME rdof_fm_tests COMMAND rdof_fm_tests)
 
+# Analog AM as a signal mode (sdr/src/mode_am.c, rdof/sdr/amrx.h): its transmitter through a channel into its
+# receiver.
+add_executable(rdof_am_tests test_am.c)
+target_link_libraries(rdof_am_tests PRIVATE rdof_sdr m)
+set_target_properties(rdof_am_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_compile_options(rdof_am_tests PRIVATE -Wall -Wno-unused-parameter)
+if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+    target_compile_options(rdof_am_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(rdof_am_tests PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME rdof_am_tests COMMAND rdof_am_tests)
+
 # The memory plan (rdof/memplan.h).
 add_executable(rdof_memplan_tests test_memplan.c)
 target_link_libraries(rdof_memplan_tests PRIVATE rdof_common)

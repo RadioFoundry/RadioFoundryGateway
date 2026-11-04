@@ -1373,6 +1373,8 @@ int rdof_sdrmodem_signal_state(const rdof_sdrmodem_t *m)
     return m->sig_done_at >= 0 && m->pos >= m->sig_done_at + m->tx_fs / 4 ? 2 : 1;
 }
 
+bool rdof_sdrmodem_signal_iq(const rdof_sdrmodem_t *m) { return m->sig_on && m->sig.iq && !m->sig.freq; }
+
 /* A fast stream divided down to about 48 kS/s (a PlutoSDR's 864 kS/s: 18), where a source renders for a fraction of
  * the time. */
 double rdof_sdrmodem_signal_rate(const rdof_sdrmodem_t *m)

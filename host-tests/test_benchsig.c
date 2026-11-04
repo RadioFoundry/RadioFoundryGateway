@@ -95,24 +95,33 @@ static float gauss(void)
     return (float)(u - 6);
 }
 
-/* n samples: the source's when it's keyed (amplitude 0.5), noise at -50 dBFS always */
+/* n samples: the source's when it's keyed (amplitude 0.5: frequency and envelope, or I/Q), noise at -50 dBFS always */
 static void air(int n, bool keyed)
 {
-    static float hz[4096], env[4096], iq[8192];
+    static float hz[4096], env[4096], iq[8192], x[8192];
     while (n > 0) {
         const int k = n < 4096 ? n : 4096;
         int got = 0;
         if (keyed && tx.open && tx.src.freq)
             got = tx.src.freq(tx.src.ctx, hz, env, k);
+        else if (keyed && tx.open && tx.src.iq)
+            got = tx.src.iq(tx.src.ctx, x, k);
         if (keyed && tx.open && got < k && tx.src.done && tx.src.done(tx.src.ctx))
             tx.done = true;
         const float sn = 0.00316f / sqrtf(2); /* -50 dBFS of complex noise */
         for (int i = 0; i < k; i++) {
-            const double f = (i < got ? hz[i] : 0) + (FREQ - CENTER);
+            const double f = (i < got && tx.src.freq ? hz[i] : 0) + (FREQ - CENTER);
             phase += 2 * M_PI * f / FS;
-            const float a = i < got ? 0.5f * env[i] : 0;
-            iq[2 * i] = a * (float)cos(phase) + sn * gauss();
-            iq[2 * i + 1] = a * (float)sin(phase) + sn * gauss();
+            const float c = (float)cos(phase), s = (float)sin(phase);
+            if (tx.src.freq || i >= got) {
+                const float a = i < got ? 0.5f * env[i] : 0;
+                iq[2 * i] = a * c + sn * gauss();
+                iq[2 * i + 1] = a * s + sn * gauss();
+            } else {
+                const float xr = 0.5f * x[2 * i], xi = 0.5f * x[2 * i + 1];
+                iq[2 * i] = xr * c - xi * s + sn * gauss();
+                iq[2 * i + 1] = xr * s + xi * c + sn * gauss();
+            }
         }
         long clipped = 0;
         rdof_bl_ring_put(&ring, iq, k, &clipped);
@@ -215,7 +224,7 @@ static void test_loop(void)
     /* info names the modes */
     int c = ask(bl, "{\"op\":\"info\"}");
     take(bl, c);
-    CHECK(strstr(text, "\"signal_modes\":{\"tx\":[\"fm\"],\"rx\":[\"fm\"]}"), "%.300s", text);
+    CHECK(strstr(text, "\"signal_modes\":{\"tx\":[\"fm\",\"am\"],\"rx\":[\"fm\",\"am\"]}"), "%.300s", text);
     rdof_bl_closed(bl, c, clock_s);
     ntext = 0;
 
@@ -262,6 +271,56 @@ static void test_loop(void)
     CHECK(lines("{\"tx\":", l, sizeof l) == 1 && fabs(num(l, "seconds") - 1.65) < 0.01, "%s", l);
     CHECK(lines("{\"started\":", l, sizeof l) == 1 && strstr(l, "power 3 as 21 dBm"), "%s", l);
     CHECK(lines("{\"done\":", l, sizeof l) == 1 && strstr(l, "\"ctcss\":100.0") && strstr(l, "\"cut\":false"), "%s",
+          l);
+    rdof_bl_closed(bl, tc, clock_s);
+    rdof_bl_free(bl);
+}
+
+/* AM both ways through the line protocol: the airband receiver test's 1 kHz at 30%, its audio and envelope. */
+static void test_am(void)
+{
+    rdof_bl_t *bl = rdof_bl_new(&PLAT);
+    char l[4096];
+    ntext = 0;
+    memset(&tx, 0, sizeof tx);
+    air(96000, false);
+    const int rx = ask(bl, "{\"op\":\"rx\",\"mode\":\"am\",\"freq\":438.075,\"seconds\":2.5,\"streams\":\"audio,env\","
+                           "\"audio_hi_hz\":2500,\"block_s\":0.25}");
+    const int tc = ask(bl, "{\"op\":\"tx\",\"mode\":\"am\",\"freq\":438.075,\"power\":3,\"depth\":0.3,\"lead_s\":0,"
+                           "\"tail_s\":0,\"program\":[{\"kind\":\"tone\",\"hz\":1000,\"s\":1.5}]}");
+    for (int i = 0; i < 4; i++) {
+        rdof_bl_tick(bl, clock_s);
+        air(1920, false);
+    }
+    CHECK(tx.open && tx.freq == 438075000 && tx.src.iq && !tx.src.freq, "sig_open, an I/Q source: %d %u", tx.open,
+          tx.freq);
+    for (int i = 0; i < 300 && !tx.done; i++) {
+        air(1920, true);
+        rdof_bl_tick(bl, clock_s);
+        take(bl, rx);
+    }
+    CHECK(tx.done, "the source never finished");
+    for (int i = 0; i < 400 && !strstr(text, "{\"done\""); i++) {
+        air(1920, false);
+        rdof_bl_tick(bl, clock_s);
+        take(bl, rx);
+    }
+    CHECK(lines("{\"rx\":", l, sizeof l) == 1, "no rx header");
+    CHECK(strstr(l, "{\"name\":\"audio\",\"unit\":\"depth\"") && strstr(l, "{\"name\":\"env\",\"unit\":\"FS\""), "%s",
+          l);
+    int peak = 0;
+    CHECK(pcm("audio", &peak) > 0 && peak > 32767 * 0.3 * 0.8 && peak < 32767 * 0.3 * 1.2, "audio peak %d", peak);
+    CHECK(pcm("env", &peak) > 2.4 * FS / 4 * 0.9, "the envelope at the channel's rate");
+    CHECK(lines("{\"done\":", l, sizeof l) == 1, "no done");
+    const char *t = strstr(l, "\"tone\":{");
+    CHECK(t && fabs(num(t, "hz") - 1000) < 1 && fabs(num(t, "depth_pct") - 30) < 1.5, "the tone: %.600s", l);
+    CHECK(fabs(num(l, "carrier_dbfs") - 20 * log10(0.5 / 1.3)) < 0.5, "the carrier %.600s", l);
+    rdof_bl_closed(bl, rx, clock_s);
+
+    ntext = 0;
+    rdof_bl_tick(bl, clock_s);
+    take(bl, tc);
+    CHECK(lines("{\"done\":", l, sizeof l) == 1 && strstr(l, "\"depth\":0.300") && strstr(l, "\"cut\":false"), "%s",
           l);
     rdof_bl_closed(bl, tc, clock_s);
     rdof_bl_free(bl);
@@ -381,6 +440,7 @@ int main(void)
     test_loop();
     test_pcm();
     test_refusals();
+    test_am();
     rdof_bl_ring_free(&ring);
     printf("benchsig: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

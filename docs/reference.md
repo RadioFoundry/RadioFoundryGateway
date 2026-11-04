@@ -728,7 +728,9 @@ without the SDR 1279 KB (0x13FB80), 20 KB less, 641 KB free in its slot, 134 KB 
 On 2026-11-03, with the signal modes (analog FM's generator and measuring receiver) and the line protocol's `tx` and
 `rx` ops: `16mb` + `w12` 2189 KB (0x2234E3), 180 KB DIRAM used (53.9%). The FM receiver and its channel filter are
 allocated only while an `rx` runs. With the line protocol's `tune` op, against the same tree without it: `16mb` +
-`w12` 2198 KB (0x225970), +5 KB, 8 bytes more DIRAM.
+`w12` 2198 KB (0x225970), +5 KB, 8 bytes more DIRAM. On 2026-11-03, with analog AM (its receiver, and the W12's
+polar transmit path with a 16 KB PSRAM stage), against 5bd72c6: `16mb` + `w12` 2210 KB (0x228850), +11.4 KB, 184.5 KB
+DIRAM used (54.0%).
 
 The roamer role costs 132 KB of flash and the SDR 436 KB (338 KB of it the self-test clip), against about 945 KB for
 the board both share. The SDR only image is 64 KB smaller than with everything built `-O2`.
@@ -1445,7 +1447,13 @@ matter here:
   by the S3 (`mod.c`) and sent as frequency samples (the raw TX path, spec 3).
 - **One synthesizer**: half duplex only (RX to TX 107 us, TX to RX 91 us). A duplex repeater on one LR2021 isn't
   possible.
-- LF path 150 to 960 MHz; LF PA -9.5 to +22 dBm in 0.5 dB steps.
+- LF path 150 to 960 MHz in the datasheet; it receives from 100 MHz (spec R2.38: CalibFE at 104 MHz under that;
+  SetRfFrequency refused at 98), so the front end's range starts at 100 MHz, transmit too (not measured under 150).
+  On the W12, 126-134 MHz has a broad noise rise of up to 28 dB, source unknown. LF PA -9.5 to +22 dBm in 0.5 dB
+  steps.
+- **AM.** The bench's `tx am` goes out as polar I/Q (`LR2021_TX_IQ_POLAR`): the envelope drives the PA through
+  `lr2021_polar_iq8` and the W12's AM table, which was measured at 920 MHz and +22 dBm, not at airband or low power.
+  The PA's floor rises at low power, so deep modulation flattens there. Runs are at most 32,400 samples (R3.43).
 
 **The W12's front end** (schematic W12-MB-V0.2). The antenna goes through a GC1109 front-end module and then a
 902–928 MHz SAW filter to the LR2021's LF input. The GC1109 has an LNA (17 dB, NF 2 dB in its 860–930 MHz band), a
@@ -2059,6 +2067,13 @@ CDC-ACM or a USB-serial bridge on the host port) behind the bench daemon's guard
 burst transmit (`WS /tx`) through the SDR's modem or an MMDVM bench radio, only on what `"bench": {"tx": {...}}`
 allows. No auth: it's for a private test network. Code in `bench_api.c`, `bench_radio.c` and `bench_tx.c`
 (`CONFIG_RDOF_BENCH`, `CONFIG_RDOF_BENCH_TX`); the spec's section 9 says what's in and what isn't yet.
+
+The line protocol on TCP 7373 (spec section 14) also sends and measures analog signals (`tx`/`rx` with a `mode`):
+FM, and AM for airband (`rfgbench.py tx am` / `rx am`: 1 kHz at 30% by default; the receiver gives depth, the
+tone's SINAD and THD, the carrier's level and offset, residual FM, and the audio and envelope as PCM). Receive is in
+software, so any front end does it (RTL-SDR, LR2021, Pluto); transmit needs I/Q (a Pluto) or polar I/Q (the W12).
+A request that tunes for itself waits until the receiver runs at the new center, and one that comes while a retune
+restarts the receiver runs once it has.
 
 ### Not yet done (S3 SDR)
 

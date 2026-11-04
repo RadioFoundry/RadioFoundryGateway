@@ -360,6 +360,7 @@ flowchart LR
 | `loopback.c` | TX → RX loopback |
 | `modes.c` | the signal modes (`rdof/sigmode.h` in `common`): each modulation besides DMR as one table, for the bench to send and analyze |
 | `mode_fm.c`, `fmgen.c`, `fmrx.c` | analog FM: test signal generator (tones, sweeps, DTMF, AFSK, noise, PCM; CTCSS, DCS) and a measuring receiver |
+| `mode_am.c`, `amrx.c` | analog AM (airband): FM's program as the envelope at a depth, and a measuring receiver (depth, a tone's SINAD and THD, residual FM) |
 | `status.c` | SDR status JSON |
 | `bench.c` | stage timing (`rdof_sdr_bench`) |
 

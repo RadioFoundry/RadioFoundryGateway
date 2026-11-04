@@ -99,6 +99,10 @@ typedef struct {
     double tx_power_min, tx_power_max, tx_power_step; /* dBm */
     double turnaround_us;       /* half duplex: RX to TX (or back) and settled */
     double tx_dev_max_hz;       /* RDOF_FE_TX_FREQ: the largest deviation it sends (0: no limit known) */
+    /* RDOF_FE_TX_FREQ: it also sends complex baseband with its amplitude, the carrier at 0 Hz (pull_iq at tx_rate),
+     * while the source is I/Q (iq_now): a signal mode that renders I/Q, such as AM. Without it such a source is
+     * refused. */
+    bool tx_polar;
 } rdof_fe_caps_t;
 
 /*
@@ -114,6 +118,10 @@ typedef struct {
     /* Optional: pull_freq that doesn't wait for the source's lock, for a reader that can't stall (the LR2021's,
      * whose RX FIFO holds 1.3 ms): 1 keyed, 0 not, -1 busy (nothing pulled; try again on the next turn). */
     int (*try_pull_freq)(void *ctx, int64_t pos, float *hz, float *env, int n);
+    /* Optional, for an RDOF_FE_TX_FREQ front end with tx_polar: whether the source is I/Q now (a signal mode's
+     * transmission that renders I/Q), so the front end pulls it with (try_)pull_iq in place of pull_freq. */
+    bool (*iq_now)(void *ctx);
+    int (*try_pull_iq)(void *ctx, int64_t pos, rdof_cf_t *iq, int n);
 } rdof_fe_tx_source_t;
 
 typedef struct {
