@@ -19,7 +19,7 @@
  * --set-os-clock steps the OS clock to it (root; for a box with nothing else setting the time, a PlutoSDR).
  *
  *   rdofradio DEVICE --allow-tx --rx MHZ [--tx MHZ] [--duplex full|half] [--cc CC] [-r RATE] [--bw MHZ]
- *             [--tx-gain DB] [--tx-lo MHZ] [--gain DB] [--center MHZ] [--monitor] [--tx-offset S] [--ppm PPM]
+ *             [--tx-gain DB] [--tx-lo MHZ] [--gain DB] [--center MHZ] [--monitor] [--tx-offset S] [--ppm PPM [--ppm-tol PPM]]
  *             [--parrot ID] [--stream ARGS] [--seconds S] [--bursts] [--quiet] [-v] [--web [ADDR:]PORT]
  *             [--last-exit FILE] [--ota FILE] [--fft builtin|pffft] [--bench [ADDR:]PORT] [--bench-tx MHZ|LOW-HIGH,...]
  *   rdofradio DEVICE --allow-tx --config FILE [--clock-state FILE] [--set-os-clock] [the device's flags as above]
@@ -30,8 +30,10 @@
  * DEVICE is --soapy ARGS (SoapySDR; -r defaults to 2.4 MS/s) or --iio URI (an AD9361 through libiio: "local:" on a
  * PlutoSDR, "ip:192.168.2.1" from a host; -r defaults to 768 kS/s, which the chip's own FIR makes with
  * libad9361). --ppm PPM: the device's crystal error (positive: fast, fractions too), measured elsewhere: rdofradio
- * doesn't measure it. Taken out in software, receive and transmit (xtal_ppm); without it, every frequency the bench
- * reads or sends is off by the crystal's error. --web serves the page on 127.0.0.1 unless ADDR is given (0.0.0.0: every interface). --fft: the
+ * doesn't measure it (its netclock disciplines the time, not the device's crystal). Taken out in software, receive
+ * and transmit (xtal_ppm); without it, every frequency the bench reads or sends is off by the crystal's error.
+ * --ppm-tol PPM: how far --ppm may be off (the measurement's own error), given to the bench's reports as their
+ * ppm_tol and freq_tol_hz; without it they say it isn't known. --web serves the page on 127.0.0.1 unless ADDR is given (0.0.0.0: every interface). --fft: the
  * channelizer's FFT, pffft when it's built in (RDOF_PFFFT). --last-exit FILE: where a supervisor records how the
  * last run ended (rdof_hostweb_last_exit; the Pluto bundle's run.sh): the page's crash card. --ota FILE: the page's
  * update (POST /api/ota) writes the new program there and stops, for the supervisor to start it. --bench serves the
@@ -452,7 +454,7 @@ static void usage(void)
 {
     fprintf(stderr,
             "usage: rdofradio DEVICE --allow-tx --rx MHZ [--tx MHZ] [--duplex full|half] [--cc CC] [-r RATE] [--bw MHZ]\n"
-            "                 [--tx-gain DB] [--tx-lo MHZ] [--gain DB] [--center MHZ] [--monitor] [--tx-offset S] [--ppm PPM]\n"
+            "                 [--tx-gain DB] [--tx-lo MHZ] [--gain DB] [--center MHZ] [--monitor] [--tx-offset S] [--ppm PPM [--ppm-tol PPM]]\n"
             "                 [--parrot ID] [--stream ARGS] [--seconds S] [--bursts] [--quiet] [-v] [--web [ADDR:]PORT]\n"
             "                 [--last-exit FILE] [--ota FILE] [--fft builtin|pffft] [--bench [ADDR:]PORT] [--bench-tx MHZ|LOW-HIGH,...]\n"
             "                 [--fpga-chz [ADDR]] (with --iio: the FPGA channelizer on a PlutoSDR, at 0x7C480000 by default)\n"
@@ -517,7 +519,7 @@ static double rate_flag;
  * clock alike. The receiver's channels start where a carrier truly on frequency shows, the bench's rx and trigger
  * tune there (the window's lo_ppm, fs_ppm) and its bursts' cfo is from the true frequency; the transmitter's
  * carrier is moved by as much (rdof_sdrmodem_carrier_ppm). */
-static double xtal_ppm = NAN;
+static double xtal_ppm = NAN, xtal_tol; /* xtal_tol: --ppm-tol, 0 not given */
 static double xtal(void) { return isfinite(xtal_ppm) ? xtal_ppm : 0.0; }
 /* Where channel c's carrier sits when truly on frequency, from its nominal offset (Hz) */
 static double xtal_base_hz(int c)
@@ -1595,6 +1597,7 @@ static void bl_window(void *ctx, rdof_bl_window_t *w)
     w->gain_db = dev ? dev->rx_gain(dev) : 0;
     w->ppm = w->lo_ppm = w->fs_ppm = xtal(); /* nothing in the device takes it out */
     w->ppm_source = isfinite(xtal_ppm) ? "setting" : NULL;
+    w->ppm_tol = isfinite(xtal_ppm) ? xtal_tol : 0;
     w->iq_scale_db = 20 * log10(BL.ring.scale > 0 ? BL.ring.scale : 1);
     if (R.full) { /* the TX LO stays: the modulator's reach around it (tx_tune) */
         w->tx_lo_hz = R.tx_lo - (R.rate * 0.4 - 12.5e3);
@@ -3902,6 +3905,14 @@ int main(int argc, char **argv)
                 fprintf(stderr, "--ppm: the crystal's error in ppm (positive: fast), -200 to 200\n");
                 return 2;
             }
+        } else if (!strcmp(a, "--ppm-tol")) {
+            NEXT();
+            char *end;
+            xtal_tol = strtod(v, &end);
+            if (*end || !(xtal_tol > 0) || xtal_tol > 50) {
+                fprintf(stderr, "--ppm-tol: how far --ppm may be off, ppm (over 0, at most 50)\n");
+                return 2;
+            }
         } else if (!strcmp(a, "--tx-gain")) {
             NEXT();
             txg = atof(v);
@@ -4269,7 +4280,8 @@ int main(int argc, char **argv)
     }
     rdof_sdrmodem_carrier_ppm(&R.m, xtal());
     if (isfinite(xtal_ppm))
-        fprintf(stderr, "crystal: %+.3f ppm (--ppm), taken out in software: %+.1f Hz at %.5f MHz\n", xtal_ppm,
+        fprintf(stderr, "crystal: %+.3f ppm (--ppm%s), taken out in software: %+.1f Hz at %.5f MHz\n", xtal_ppm,
+                xtal_tol > 0 ? ", --ppm-tol given" : "; no --ppm-tol: its tolerance is reported as not known",
                 -R.rx.center_hz * xtal_ppm * 1e-6, R.rx.center_hz / 1e6);
     if (R.split) {
         fprintf(stderr, "FFT: %s\n",

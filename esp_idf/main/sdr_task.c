@@ -818,6 +818,8 @@ static const char *assumed_src = "setting"; /* where ppm_assumed came from: "tab
 /* sdr_ppm_now's, as of the last chunk: floats, each read whole without a lock */
 static volatile float now_xtal = NAN, now_chip, now_rate;
 static const char *volatile now_src = "setting";
+static volatile float now_tol;            /* how far now_xtal may be off, ppm (0: not known; tol_tick) */
+static const char *volatile now_ref;      /* what it was timed against (netclock's source), NULL: none */
 static int cal_put_bin = INT32_MIN;
 static double cal_put_t;
 
@@ -1041,6 +1043,31 @@ static void cal_learn(double t)
              die_c, ppm.measured ? "sample clock" : "AFC", bin, e ? e->v : NAN, e ? e->n : 0, cal.count);
 }
 
+/* How far the crystal value in use may be off (ppm, 0: not known) and what it was timed against, for the bench's
+ * reports (sdr_ppm_now). The sample clock: its fit's error twice over (the board's own rate in it: a PPS's is tight,
+ * NTP's looser) and what the rate moved by lately (a crystal still warming); held while it times afresh, the stored
+ * rate's allowance. The AFC: what the channels agree within (the radios' own errors). Under rx_lock. */
+static void tol_tick(double t)
+{
+    const double learned = rdof_ppm_learned(&ppm);
+    double tol = 0;
+    const char *ref = NULL;
+    if (!ppm_on) {
+    } else if (!isnan(learned) && ppm.measured) {
+        const double moved = nc_settle_range(&rate_settle, t);
+        tol = xtal_trusted ? 2 * xtal_err + (isfinite(moved) ? moved : 0)
+                           : fmax(RATE_STORED_ERR_PPM, isfinite(xtal_err) ? 2 * xtal_err : 0);
+        ref = netclock_source_name(netclock_source());
+    } else if (!isnan(learned)) {
+        tol = RDOF_PPM_AGREE, ref = "radios";
+    } else if (!strcmp(assumed_src, "table")) {
+        tol = RATE_STORED_ERR_PPM; /* learned from the clock at this temperature, before */
+    } else if (!strcmp(assumed_src, "kept")) {
+        tol = 2 * RATE_STORED_ERR_PPM;
+    }
+    now_tol = (float)tol, now_ref = ref;
+}
+
 /* Every few seconds, under rx_lock: learn, move the RTL when confident, follow the temperature table until then,
  * and put a settled value into it (cal_learn). */
 static void ppm_tick(void)
@@ -1052,6 +1079,7 @@ static void ppm_tick(void)
     const double t = now / 1e6;
     if (!ppm_on) {
         rate_tick(t); /* still timed, for the page */
+        tol_tick(t);
         return;
     }
     double corr[RDOF_SDR_MAX_CHANNELS], age[RDOF_SDR_MAX_CHANNELS];
@@ -1102,6 +1130,7 @@ static void ppm_tick(void)
     }
     cal_follow();
     cal_learn(t); /* only once settled: learned while warming, it holds only for that moment */
+    tol_tick(t);
 }
 
 double sdr_ppm_learned(void) { return ppm_learned; }
@@ -1109,7 +1138,7 @@ double sdr_ppm_learned(void) { return ppm_learned; }
 void sdr_ppm_now(sdr_ppm_now_t *out)
 {
     const double e = now_xtal, chip = now_chip, rate = now_rate;
-    *out = (sdr_ppm_now_t){.xtal = e, .chip = chip, .source = now_src,
+    *out = (sdr_ppm_now_t){.xtal = e, .chip = chip, .source = now_src, .tol = now_tol, .ref = now_ref,
                            .lo_left = isnan(e) ? 0 : rdof_ppm_left(e, chip),
                            .fs_left = isnan(e) ? 0 : rdof_ppm_left(e, rate)};
 }

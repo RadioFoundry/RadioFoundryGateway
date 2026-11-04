@@ -204,7 +204,9 @@ def xtal_note(w: dict) -> str:
     how = {"clock": "its sample clock timed against GNSS or NTP", "afc": "the AFC on traffic (radios' own errors in it)",
            "table": "its temperature table", "kept": "the value kept from an earlier run",
            "setting": "the settings (device.ppm, rdofradio --ppm)"}.get(src, src)
-    return f"crystal {ppm:+.3f} ppm from {how}"
+    tol, ref = w.get("ppm_tol"), w.get("ppm_ref")
+    at = f" (+-{tol:.3f} ppm, {tol * w['center']:.0f} Hz at {w['center']:.3f} MHz)" if tol else " (its tolerance not known)"
+    return f"crystal {ppm:+.3f} ppm from {how}{f' against {ref}' if ref and src == 'clock' else ''}{at}"
 
 
 def check_reach(a, mhz: float, tx: bool) -> None:
@@ -408,6 +410,12 @@ def cmd_dmr_bursts(a) -> int:
             kinds = ", ".join(f"{v} {k}" for k, v in sorted(s.get("kinds", {}).items()))
             print(f"{s['bursts']} bursts on {s['freq'] / 1e6:.5f} MHz ({s['reason']})" + (f": {kinds}" if kinds else ""),
                   file=human, flush=True)
+            cfo = s.get("cfo_hz")
+            if cfo:
+                tol = cfo.get("tol")
+                print(f"cfo {cfo['mean']:+.1f} Hz mean ({cfo['min']:+.1f} to {cfo['max']:+.1f}), "
+                      + (f"+-{tol:.1f} Hz for the gateway's crystal" if tol is not None
+                         else "the gateway's crystal tolerance not known"), file=human, flush=True)
             return 0 if s["bursts"] else EX_NO_SIGNAL
         return None
     try:

@@ -53,6 +53,7 @@ static void bl_window(void *ctx, rdof_bl_window_t *w)
     sdr_ppm_now_t p; /* not sdr_ppm_status: rx_lock under the engine's lock deadlocks with a burst */
     sdr_ppm_now(&p);
     w->ppm = p.xtal, w->lo_ppm = p.lo_left, w->fs_ppm = p.fs_left, w->ppm_source = p.source;
+    w->ppm_tol = p.tol, w->ppm_ref = p.ref;
     w->iq_scale_db = bench_wide_scale_db();
     const rdof_fe_caps_t *caps = sdr_fe_caps();
     if (caps && caps->tx_reach_hz > 0) {

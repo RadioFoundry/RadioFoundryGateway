@@ -1760,6 +1760,8 @@ board's best value (learned, else the table, else the setting) also goes to the 
 W12's transmit carrier is set to it, fraction and all. The bench ops (bursts' `cfo_hz` from the true frequency,
 `rx`, `trigger`) use the same; a wideband capture keeps what's left and says so (docs/spec/bench-api.md, 14.7).
 rdofradio doesn't learn it: `--ppm` gives it, and corrects the receiver's channels and the modulator's carrier.
+Each report gives how far to trust it: `ppm_tol` (from the source: the clock fit's error and recent drift, the
+AFC's 1 ppm, the table's 0.5) and `freq_tol_hz` at its frequency; rdofradio's is `--ppm-tol`.
 
 The sample clock gives the same error without any traffic, and without the transmitters' errors in it. The
 RTL2832U's samples and the R820T's LO come from one 28.8 MHz crystal, so the rate the samples really arrive at

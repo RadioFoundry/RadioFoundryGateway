@@ -598,6 +598,8 @@ typedef struct {
     double lo_left;     /* what's left of it in the receive LO, and in the sample clock (rdof_ppm_left) */
     double fs_left;
     const char *source; /* where xtal came from: "clock" (the sample clock timed), "afc", "table", "kept", "setting" */
+    double tol;         /* how far xtal may be off, ppm; 0: not known */
+    const char *ref;    /* what it was timed against: netclock's source ("pps", "ntp", ...), "radios"; NULL: none */
 } sdr_ppm_now_t;
 void sdr_ppm_now(sdr_ppm_now_t *out);
 /* A burst's carrier from its channel's true frequency (Hz): the AFC correction its samples went through and the

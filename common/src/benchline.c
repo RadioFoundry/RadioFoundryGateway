@@ -192,6 +192,7 @@ struct rdof_bl {
     int8_t iq[RDOF_BL_IQ_CHUNK * 2];
     char tmp[8192];
     char bdec[1200], bline[2048]; /* a burst record (under the lock: off the server thread's stack) */
+    double burst_tol_ppm; /* the window's ppm_tol as tick_bursts last saw it (0: not known) */
 };
 
 static void lock(rdof_bl_t *bl) { pthread_mutex_lock(&bl->mu); }
@@ -639,11 +640,33 @@ static bool req_session(rdof_bl_t *bl, conn_t *c, int root, bool required)
 
 /* The window's crystal correction, as JSON members: the crystal's error, where it came from, and what's left of it in
  * the samples' LO and sample clock. */
-static void put_ppm(char *out, size_t cap, const rdof_bl_window_t *w)
+/* The tolerance at f Hz: how far a frequency or cfo reported there may be off for the crystal's (null: not known) */
+static void put_tol_hz(char *out, size_t cap, const rdof_bl_window_t *w, double f)
 {
-    snprintf(out, cap, "\"ppm\":%.3f,\"ppm_source\":\"%s\",\"lo_ppm\":%.3f,\"fs_ppm\":%.3f", w->ppm,
-             w->ppm_source ? w->ppm_source : "none", w->lo_ppm, w->fs_ppm);
+    if (w->ppm_tol > 0)
+        snprintf(out, cap, "%.1f", fabs(f) * w->ppm_tol * 1e-6);
+    else
+        snprintf(out, cap, "null");
 }
+
+/* The crystal correction's fields; with f (Hz, 0: none), freq_tol_hz there */
+static void put_ppm_at(char *out, size_t cap, const rdof_bl_window_t *w, double f)
+{
+    char tol[24] = "null", ref[24] = "null", at[48] = "";
+    if (w->ppm_tol > 0)
+        snprintf(tol, sizeof tol, "%.3f", w->ppm_tol);
+    if (w->ppm_ref)
+        snprintf(ref, sizeof ref, "\"%s\"", w->ppm_ref);
+    if (f > 0) {
+        char hz[24];
+        put_tol_hz(hz, sizeof hz, w, f);
+        snprintf(at, sizeof at, ",\"freq_tol_hz\":%s", hz);
+    }
+    snprintf(out, cap, "\"ppm\":%.3f,\"ppm_source\":\"%s\",\"ppm_tol\":%s,\"ppm_ref\":%s,\"lo_ppm\":%.3f,"
+             "\"fs_ppm\":%.3f%s", w->ppm, w->ppm_source ? w->ppm_source : "none", tol, ref, w->lo_ppm, w->fs_ppm, at);
+}
+
+static void put_ppm(char *out, size_t cap, const rdof_bl_window_t *w) { put_ppm_at(out, cap, w, 0); }
 
 /* The platform's window, with what it doesn't know yet (NAN) as 0: JSON has no NaN. */
 static void get_window(rdof_bl_t *bl, rdof_bl_window_t *w)
@@ -652,7 +675,7 @@ static void get_window(rdof_bl_t *bl, rdof_bl_window_t *w)
     if (bl->p.window)
         bl->p.window(bl->p.ctx, w);
     double *v[] = {&w->center_hz, &w->fs, &w->lo_hz, &w->hi_hz, &w->gain_db, &w->dc_guard_hz, &w->ppm, &w->lo_ppm,
-                   &w->fs_ppm, &w->iq_scale_db};
+                   &w->fs_ppm, &w->iq_scale_db, &w->ppm_tol};
     for (size_t i = 0; i < sizeof v / sizeof v[0]; i++)
         if (!isfinite(*v[i]))
             *v[i] = 0;
@@ -662,7 +685,7 @@ static void put_window(rdof_bl_t *bl, char *out, size_t cap)
 {
     rdof_bl_window_t w;
     get_window(bl, &w);
-    char pp[160];
+    char pp[256];
     put_ppm(pp, sizeof pp, &w);
     if (!w.running || w.fs <= 0)
         snprintf(out, cap, "{\"enabled\":false}");
@@ -685,7 +708,7 @@ static double expect_left(const rdof_bl_t *bl, double now)
 
 static void op_info(rdof_bl_t *bl, conn_t *c, double now)
 {
-    char win[320], dev[200], kind[32] = "gateway", name[48] = "", ver[32] = "", qn[64];
+    char win[480], dev[200], kind[32] = "gateway", name[48] = "", ver[32] = "", qn[64];
     if (bl->p.device)
         bl->p.device(bl->p.ctx, kind, sizeof kind, name, sizeof name, ver, sizeof ver);
     jstr(name, qn, sizeof qn);
@@ -1339,7 +1362,7 @@ static void window_changed(rdof_bl_t *bl, int except, double now, const char *wh
 /* The tune's reply: the window and the receiver channels it has now. */
 static void tuned_reply(rdof_bl_t *bl, conn_t *c)
 {
-    char win[320], list[1200];
+    char win[480], list[1200];
     put_window(bl, win, sizeof win);
     size_t k = 0;
     list[0] = 0;
@@ -2374,8 +2397,7 @@ typedef struct sigrx {
     int nst;
     unsigned long seq;
     double rate, bw, seconds, over_db, floor_db, squelch, last_tick;
-    double corr_hz, ppm;      /* the channel moved for the crystal (as trig_t's), and its error then */
-    const char *ppm_source;
+    double corr_hz;           /* the channel moved for the crystal (as trig_t's) */
     bool learning;
     int hist[TRIG_HIST];
     long blocks, need_blocks;
@@ -2656,8 +2678,12 @@ static void tick_tx(rdof_bl_t *bl, conn_t *c, double now)
     char rep[600] = "";
     if (t->m->tx_report && !t->m->tx_report(t->tx, rep, sizeof rep))
         rep[0] = 0;
-    emit(bl, c, "{\"done\":{\"mode\":\"%s\",\"freq\":%.6f,\"on_air_s\":%.3f,\"input_bytes\":%llu,\"cut\":%s%s}}",
-         t->m->name, t->freq_hz / 1e6, now - t->started, (unsigned long long)t->taken, late ? "true" : "false", rep);
+    rdof_bl_window_t w; /* the carrier is set for the crystal as best known: how far that may be off */
+    get_window(bl, &w);
+    char pp[256];
+    put_ppm_at(pp, sizeof pp, &w, t->freq_hz);
+    emit(bl, c, "{\"done\":{\"mode\":\"%s\",\"freq\":%.6f,\"on_air_s\":%.3f,\"input_bytes\":%llu,\"cut\":%s,%s%s}}",
+         t->m->name, t->freq_hz / 1e6, now - t->started, (unsigned long long)t->taken, late ? "true" : "false", pp, rep);
     c->state = C_DONE;
 }
 
@@ -2700,7 +2726,7 @@ static void op_rx(rdof_bl_t *bl, conn_t *c, int root, double now)
     }
     r->m = m;
     r->corr_hz = rdof_bl_seen_hz(&w, mhz * 1e6) - (mhz * 1e6 - w.center_hz);
-    r->ppm = w.ppm, r->ppm_source = w.ppm_source ? w.ppm_source : "none";
+
     r->rate = w.fs / r->ch.d;
     if (bw > 0.9 * r->rate) {
         const double most = 0.9 * r->rate;
@@ -2791,12 +2817,13 @@ static bool srx_start(rdof_bl_t *bl, conn_t *c, uint64_t first, double now, cons
                               i ? "," : "", r->st[i].name, r->st[i].unit, r->st[i].rate, r->st[i].full);
     if (isfinite(r->floor_db))
         snprintf(fl, sizeof fl, "%.1f", r->floor_db);
+    char pp[256];
+    put_ppm_at(pp, sizeof pp, w, c->freq_hz);
     emit(bl, c,
          "{\"rx\":{\"mode\":\"%s\",\"freq\":%.6f,\"rate\":%.3f,\"bw\":%.0f,\"t0\":%.6f,\"sc0\":%llu,\"seconds\":%.3f,"
-         "\"floor_dbfs\":%s,\"squelch_dbfs\":%.1f,\"scale_db\":%.2f,\"ppm\":%.3f,\"ppm_source\":\"%s\","
-         "\"corr_hz\":%.2f,\"streams\":[%s]}}",
+         "\"floor_dbfs\":%s,\"squelch_dbfs\":%.1f,\"scale_db\":%.2f,%s,\"corr_hz\":%.2f,\"streams\":[%s]}}",
          r->m->name, c->freq_hz / 1e6, r->rate, r->bw, trig_utc(bl, first, now, next, w->fs),
-         (unsigned long long)first, r->seconds, fl, r->squelch, w->iq_scale_db, r->ppm, r->ppm_source, r->corr_hz, st);
+         (unsigned long long)first, r->seconds, fl, r->squelch, w->iq_scale_db, pp, r->corr_hz, st);
     return true;
 }
 
@@ -3016,7 +3043,7 @@ static void tick_waits(rdof_bl_t *bl, double now)
                     if (claimed_by(bl, c->freqs[f]) != c->sess && s->nclaims < RDOF_BL_CLAIMS)
                         s->claims[s->nclaims++] = c->freqs[f];
                 granted(bl, c, now, "channel");
-                char list[256], win[320];
+                char list[256], win[480];
                 size_t k = 0;
                 for (int f = 0; f < c->nfreqs && k < sizeof list; f++)
                     k += (size_t)snprintf(list + k, sizeof list - k, "%s%.6f", f ? "," : "", c->freqs[f]);
@@ -3116,15 +3143,17 @@ static void burst_out(rdof_bl_t *bl, conn_t *c, const rdof_bl_burst_t *b, double
         snprintf(hex + 2 * i, 3, "%02x", b->raw[i]);
     const int si = sync_index(b->family, b->dt);
     const char *kind = kind_name(b->dt, b->n, kt);
-    char *dec = bl->bdec, *line = bl->bline;
+    char *dec = bl->bdec, *line = bl->bline, tol[24] = "null";
+    if (bl->burst_tol_ppm > 0)
+        snprintf(tol, sizeof tol, "%.1f", c->freq_hz * bl->burst_tol_ppm * 1e-6);
     rdof_bj_burst_decode(&c->emb, b, dec, sizeof bl->bdec);
     snprintf(line, sizeof bl->bline,
              "{\"burst\":{\"t\":%.6f,\"sc\":%s,\"t_rel_ms\":%.3f,\"dt_prev_ms\":%s,\"grid_n\":%ld,\"grid_err_ms\":%.3f,"
              "\"slot_ab\":\"%c\",\"sync\":\"%s\",\"sync_errors\":%d,\"slot\":%d,\"voice\":%s,\"kind\":\"%s\","
-             "\"dt\":%d,\"n\":%d,\"cc\":%d,\"cfo_hz\":%.1f,\"level_dbfs\":%.1f,\"dev_hz\":%.1f,\"freq\":%.1f%s,"
-             "\"raw_hex\":\"%s\"}}",
+             "\"dt\":%d,\"n\":%d,\"cc\":%d,\"cfo_hz\":%.1f,\"cfo_tol_hz\":%s,\"level_dbfs\":%.1f,\"dev_hz\":%.1f,"
+             "\"freq\":%.1f%s,\"raw_hex\":\"%s\"}}",
              t, sc, rel, prev, gn, gerr, gn % 2 == 0 ? 'A' : 'B', si >= 0 ? SYNC_NAMES[si] : "?",
-             b->sync_errors, b->slot, voice ? "true" : "false", kind, b->dt, b->n, b->cc, b->cfo_hz,
+             b->sync_errors, b->slot, voice ? "true" : "false", kind, b->dt, b->n, b->cc, b->cfo_hz, tol,
              b->level_dbfs, b->dev_hz, c->freq_hz, dec, hex);
     if (!emit(bl, c, "%s", line)) {
         c->dropped++;
@@ -3159,12 +3188,14 @@ static void bursts_done(rdof_bl_t *bl, conn_t *c, const char *reason, double now
     for (int i = 0; i < 9; i++)
         if (c->syncs[i] && m < sizeof syncs)
             m += (size_t)snprintf(syncs + m, sizeof syncs - m, "%s\"%s\":%d", m ? "," : "", SYNC_NAMES[i], c->syncs[i]);
-    char more[400] = "";
+    char more[400] = "", tol[24] = "null";
+    if (bl->burst_tol_ppm > 0)
+        snprintf(tol, sizeof tol, "%.1f", c->freq_hz * bl->burst_tol_ppm * 1e-6);
     if (c->sent)
         snprintf(more, sizeof more,
-                 ",\"first_t\":%.6f,\"span_ms\":%.3f,\"cfo_hz\":{\"mean\":%.1f,\"min\":%.1f,\"max\":%.1f},"
+                 ",\"first_t\":%.6f,\"span_ms\":%.3f,\"cfo_hz\":{\"mean\":%.1f,\"min\":%.1f,\"max\":%.1f,\"tol\":%s},"
                  "\"level_dbfs\":{\"mean\":%.1f,\"max\":%.1f}",
-                 c->first_t, 1e3 * (c->last_t - c->first_t), c->cfo_sum / c->sent, c->cfo_min, c->cfo_max,
+                 c->first_t, 1e3 * (c->last_t - c->first_t), c->cfo_sum / c->sent, c->cfo_min, c->cfo_max, tol,
                  c->lvl_sum / c->sent, c->lvl_max);
     emit(bl, c,
          "{\"done\":{\"bursts\":%ld,\"reason\":\"%s\",\"freq\":%.1f,\"kinds\":{%s},\"syncs\":{%s},"
@@ -3175,6 +3206,11 @@ static void bursts_done(rdof_bl_t *bl, conn_t *c, const char *reason, double now
 
 static void tick_bursts(rdof_bl_t *bl, double now)
 {
+    if (bl->qn) {
+        rdof_bl_window_t w;
+        get_window(bl, &w);
+        bl->burst_tol_ppm = w.ppm_tol;
+    }
     while (bl->qn) {
         const rdof_bl_burst_t *b = &bl->q[bl->qh];
         for (int i = 0; i < RDOF_BL_CONNS; i++) {
@@ -3210,8 +3246,8 @@ static void tick_capture(rdof_bl_t *bl, conn_t *c, double now)
         if (c->sc >= c->sc_end) {
             const double secs = (double)(c->sc_end - c->sc0) / (w.fs > 0 ? w.fs : 1);
             const double t0 = bl->p.sc_utc ? bl->p.sc_utc(bl->p.ctx, c->sc0) : now - secs;
-            char pp[160]; /* the samples are as the chip made them: what's left of the crystal's error is in them */
-            put_ppm(pp, sizeof pp, &w);
+            char pp[256]; /* the samples are as the chip made them: what's left of the crystal's error is in them */
+            put_ppm_at(pp, sizeof pp, &w, c->freq_hz);
             emit(bl, c,
                  "{\"done\":{\"freq\":%.1f,\"center\":%.1f,\"fs\":%.1f,\"fmt\":\"cs8\",\"gain\":%.1f,%s,"
                  "\"t0\":%.6f,\"sc0\":%llu,\"seconds\":%.3f,\"samples\":%lld,\"overflows\":%ld,\"gap_samples\":%ld,"
@@ -3335,15 +3371,15 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
             bl->p.iq_read(bl->p.ctx, UINT64_MAX, probe, 0, &oldest, &next);
             const long samples = (long)((t->end_sc - t->out_sc0 + d - 1) / d);
             const long gaps = t->gaps + (t->filled + (long)d - 1) / (long)d; /* filler, in the channel's samples */
+            char pp[256];
+            put_ppm_at(pp, sizeof pp, &w, c->freq_hz);
             emit(bl, c,
                  "{\"done\":{\"freq\":%.1f,\"center\":%.1f,\"fs\":%.3f,\"rate\":%.3f,\"wide_fs\":%.1f,"
-                 "\"fmt\":\"%s\",\"bw\":%.0f,\"gain\":%.1f,\"ppm\":%.3f,\"ppm_source\":\"%s\",\"corr_hz\":%.2f,"
-                 "\"fs_ppm\":%.3f,\"t0\":%.6f,\"trigger_time\":%.6f,"
+                 "\"fmt\":\"%s\",\"bw\":%.0f,\"gain\":%.1f,%s,\"corr_hz\":%.2f,\"t0\":%.6f,\"trigger_time\":%.6f,"
                  "\"signal_start_sample\":%llu,\"trigger_sc\":%llu,\"level_db\":%.1f,\"floor_db\":%.1f,"
                  "\"snr_db\":%.1f,\"threshold_db\":%.1f,\"seconds\":%.3f,\"samples\":%ld,\"pre_s\":%.3f,"
                  "\"gap_samples\":%ld,\"overflows\":%ld,\"clip_pct\":%.3f,\"scale_db\":%.2f,\"source\":\"rfg\"}}",
-                 c->freq_hz, w.center_hz, t->rate, t->rate, w.fs, t->cs16 ? "cs16" : "cf32", t->bw, c->gain, w.ppm,
-                 w.ppm_source ? w.ppm_source : "none", t->corr_hz, w.fs_ppm,
+                 c->freq_hz, w.center_hz, t->rate, t->rate, w.fs, t->cs16 ? "cs16" : "cf32", t->bw, c->gain, pp, t->corr_hz,
                  trig_utc(bl, t->out_sc0, now, next, w.fs), trig_utc(bl, t->trig_sc, now, next, w.fs),
                  (unsigned long long)((t->trig_sc - t->out_sc0) / d), (unsigned long long)t->trig_sc, t->level_db,
                  t->floor_db, t->level_db - t->floor_db, t->thr, samples / t->rate, samples,

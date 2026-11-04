@@ -71,7 +71,8 @@ static void f_window(void *ctx, rdof_bl_window_t *w)
     *w = (rdof_bl_window_t){.running = running, .center_hz = c, .fs = 768000, .lo_hz = c - 0.3e6,
                             .hi_hz = c + 0.3e6, .gain_db = isnan(ft.gain) ? 20 : ft.gain, .dc_guard_hz = 25e3,
                             .tx_lo_hz = c - 1e6, .tx_hi_hz = c + 1e6, .ppm = ft.lo_ppm, .lo_ppm = ft.lo_ppm,
-                            .fs_ppm = ft.fs_ppm, .ppm_source = ft.lo_ppm ? "clock" : NULL};
+                            .fs_ppm = ft.fs_ppm, .ppm_source = ft.lo_ppm ? "clock" : NULL,
+                            .ppm_tol = ft.lo_ppm ? 0.05 : 0, .ppm_ref = ft.lo_ppm ? "pps" : NULL};
 }
 static int f_freqs(void *ctx, rdof_bl_freq_t *out, int max)
 {
@@ -551,7 +552,8 @@ static void test_ops(void)
     CHECK(is_json_lines(out) && strstr(out, "{\"ready\":1800000000.000}") &&
               strstr(out, "\"kind\":\"VLC_HDR\"") && strstr(out, "\"kind\":\"VLC_HDR\",\"dt\":1") && strstr(out, "\"sync\":\"MS_DATA\",") && strstr(out, "\"sync\":\"MS_VOICE\",") &&
               strstr(out, "\"dt_prev_ms\":60.000,\"grid_n\":2,\"grid_err_ms\":0.000,\"slot_ab\":\"A\"") &&
-              strstr(out, "\"kind\":\"IDLE\"") && !strstr(out, "\"t_rel_ms\":180"),
+              strstr(out, "\"kind\":\"IDLE\"") && !strstr(out, "\"t_rel_ms\":180") &&
+              strstr(out, "\"cfo_hz\":10.0,\"cfo_tol_hz\":null,"),
           "burst records: %s", out);
     /* t and sc at the sync's center: 655 samples (48 kS/s) past the start, sc in the 768 kS/s window's count */
     CHECK(strstr(out, "\"t\":1800000000.013646,\"sc\":10480,") &&
@@ -791,7 +793,8 @@ static void test_xtal(void)
     ft.lo_ppm = ft.fs_ppm = 10; /* 4.4 kHz at 439 MHz: past the trigger's 2 kHz */
     int c = ask(bl, "{\"op\":\"info\"}", now);
     drain(bl, c, info, sizeof info);
-    CHECK(strstr(info, "\"ppm\":10.000,\"ppm_source\":\"clock\",\"lo_ppm\":10.000,\"fs_ppm\":10.000"),
+    CHECK(strstr(info, "\"ppm\":10.000,\"ppm_source\":\"clock\",\"ppm_tol\":0.050,\"ppm_ref\":\"pps\","
+                       "\"lo_ppm\":10.000,\"fs_ppm\":10.000,"),
           "info's window says the correction: %.600s", info);
     rdof_bl_closed(bl, c, now);
     put_tone(300, 0, 0);
@@ -807,9 +810,19 @@ static void test_xtal(void)
             done = all + i;
     char v[32];
     CHECK(done && field(done, "corr_hz", v, sizeof v) && fabs(atof(v) - (seen - (438.1125e6 - 438.225e6))) < 0.01 &&
-              strstr(done, "\"ppm_source\":\"clock\"") && field(done, "snr_db", v, sizeof v) && atof(v) > 20,
+              strstr(done, "\"ppm_source\":\"clock\"") && strstr(done, "\"freq_tol_hz\":21.9") &&
+              field(done, "snr_db", v, sizeof v) && atof(v) > 20,
           "fired on the carrier, tuned %.1f Hz for the crystal: %.500s", seen - (438.1125e6 - 438.225e6),
           done ? done : all);
+    rdof_bl_closed(bl, c, now);
+    /* a burst's cfo with the tolerance at its frequency, and the summary's */
+    c = ask(bl, "{\"op\": \"bursts\", \"freq\": 438.1125, \"seconds\": 10, \"max_bursts\": 1}", now);
+    rdof_bl_burst_t b = {.ch = 1, .t = 1.8e9, .cfo_hz = 151.0f, .level_dbfs = -40, .dt = 1, .family = 1, .cc = 1};
+    rdof_bl_burst(bl, &b);
+    rdof_bl_tick(bl, now);
+    drain(bl, c, all, sizeof all);
+    CHECK(strstr(all, "\"cfo_hz\":151.0,\"cfo_tol_hz\":21.9,") && strstr(all, "\"max\":151.0,\"tol\":21.9}"),
+          "the burst's tolerance, 0.05 ppm at 439 MHz: %.800s", all);
     rdof_bl_closed(bl, c, now);
     /* the same carrier with the correction unsaid: the channel at the nominal offset doesn't hear it */
     ft.lo_ppm = ft.fs_ppm = 0;
@@ -818,6 +831,10 @@ static void test_xtal(void)
     trig_run(bl, c, &now, 200, 0, 0, all, 0, sizeof all);
     trig_run(bl, c, &now, 600, seen, 0.3f, all, 0, sizeof all);
     CHECK(strstr(all, "\"code\":\"no_signal\""), "uncorrected, 4.6 kHz off: %.300s", all);
+    c = ask(bl, "{\"op\":\"info\"}", now);
+    drain(bl, c, info, sizeof info);
+    CHECK(strstr(info, "\"ppm_tol\":null,\"ppm_ref\":null"), "no tolerance known: null, %.600s", info);
+    rdof_bl_closed(bl, c, now);
     rdof_bl_closed(bl, c, now);
     rdof_bl_ring_free(&ring);
     rdof_bl_free(bl);

@@ -75,6 +75,10 @@ typedef struct {
      * (ppm, positive: fast). A carrier truly at f shows at rdof_bl_seen_hz; rx and trigger tune there. */
     double lo_ppm, fs_ppm;
     const char *ppm_source; /* where ppm came from ("clock", "afc", "table", "kept", "setting"); NULL: not known */
+    /* How far ppm may be off (ppm; 0: not known) and what it was timed against ("pps", "ntp", "radios"; NULL: none).
+     * The reports give it at their frequency as freq_tol_hz, so a client knows how far to trust a frequency or cfo. */
+    double ppm_tol;
+    const char *ppm_ref;
     double tx_lo_hz, tx_hi_hz; /* where the transmitter tunes now (one synthesizer, a fixed TX LO); 0, 0: anywhere it can */
     double iq_scale_db;  /* the captures' cs8 full scale under the ADC's (the ring's scale, in dB; 0: the same) */
 } rdof_bl_window_t;
