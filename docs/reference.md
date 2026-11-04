@@ -1379,8 +1379,10 @@ With `--iio local:`, `--fpga-chz` or `--fpga-duc` loads it before anything else 
 2. **The file:** `--fpga-bit FILE`, else the first found in `/mnt/jffs2/rdof/`, `rdof/` on any SD card or USB stick
    partition (mounted read-only for the look if it isn't mounted), `/lib/firmware/`.
 3. **The check:** its IDCODE against the chip's.
-4. **The load:** the PL's drivers unbound, the FPGA manager loads it, the drivers bound again. `/tmp/rdof-fpga` notes
-   what's in, so a restart loads nothing; a reboot brings the stock design back.
+4. **The load:** the PL's drivers unbound, the FPGA manager loads it, the drivers bound again, the AD9361's ADC and
+   DDS cores also when a probe before had failed. A driver that doesn't probe again (the ADC's RX tuning, in
+   `dmesg`) is an error and nothing is noted. `/tmp/rdof-fpga` notes what's in, so a restart loads nothing; a reboot
+   brings the stock design back.
 
 With none for the board both options are off and the ARM channelizes: the monitored channels that don't fit its
 window are left out, in the settings' order (15 configured on the clone: 10 kept, at 1.296 MS/s).

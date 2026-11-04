@@ -12,8 +12,9 @@
  *   read-only for the look and unmounted
  *   /lib/firmware/ (RAM: put there by hand)
  * The first found is checked against the board's Zynq and loaded: the drivers on the PL's cores unbound, the file
- * to /lib/firmware, its name to the FPGA manager, the drivers bound again. /tmp/rdof-fpga notes the one loaded (RAM,
- * like the PL: gone at the next boot), so a restart with the same file loads nothing.
+ * to /lib/firmware, its name to the FPGA manager, the drivers bound again (the AD9361's cores also when unbound: a
+ * failed probe before), each checked. /tmp/rdof-fpga notes the one loaded (RAM, like the PL: gone at the next boot),
+ * so a restart with the same file loads nothing.
  */
 #ifndef RDOFRADIO_FPGA_H
 #define RDOFRADIO_FPGA_H
@@ -23,7 +24,7 @@
 #define RDOFRADIO_FPGA_LOADED 1  /* loaded now */
 #define RDOFRADIO_FPGA_IN 0      /* already in (the note matches) */
 #define RDOFRADIO_FPGA_NONE (-2) /* not loaded: no board known, no file for it, or not Linux; the stock design stays */
-#define RDOFRADIO_FPGA_ERROR (-1) /* the load failed: the PL may hold nothing until a reboot */
+#define RDOFRADIO_FPGA_ERROR (-1) /* the load failed (the PL may hold nothing until a reboot), or a driver didn't probe again */
 
 /* The board's name (plutofpga.h), or NULL with why in err */
 const char *rdofradio_fpga_board(char *err, size_t cap);

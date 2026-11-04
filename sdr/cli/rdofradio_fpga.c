@@ -225,6 +225,26 @@ static int bound(bound_t *t)
     }
     if (d)
         closedir(d);
+    /* The AD9361's cores even when unbound: a probe that failed (its RX tuning, on a bitstream before this one) left
+     * the ADC without its driver, and a load that binds only what was bound never gives it back. */
+    static const struct { const char *suffix, *drv; } core[] = {
+        {".cf-ad9361-lpc", "cf_axi_adc"},
+        {".cf-ad9361-dds-core-lpc", "cf_axi_dds"},
+    };
+    d = opendir("/sys/bus/platform/devices");
+    while (d && (e = readdir(d)) && n < MAX_BOUND)
+        for (size_t c = 0; c < sizeof core / sizeof core[0]; c++) {
+            const size_t l = strlen(e->d_name), k = strlen(core[c].suffix);
+            char link[200];
+            snprintf(link, sizeof link, "/sys/bus/platform/devices/%s/driver", e->d_name);
+            if (l <= k || strcmp(e->d_name + l - k, core[c].suffix) || !access(link, F_OK))
+                continue;
+            snprintf(t[n].drv, sizeof t[n].drv, "/sys/bus/platform/drivers/%s", core[c].drv);
+            snprintf(t[n].dev, sizeof t[n].dev, "%s", e->d_name);
+            t[n++].order = (int)c;
+        }
+    if (d)
+        closedir(d);
     d = opendir("/sys/bus/spi/drivers/ad9361");
     while (d && (e = readdir(d)) && n < MAX_BOUND)
         if (!strncmp(e->d_name, "spi", 3)) {
@@ -240,6 +260,19 @@ static int bound(bound_t *t)
             t[j] = t[j - 1], t[j - 1] = s;
         }
     return n;
+}
+
+/* The first of them with no driver now (its probe failed), or NULL. */
+static const char *unbound(const bound_t *t, int n)
+{
+    for (int k = 0; k < n; k++) {
+        char link[300];
+        const char *bus = strstr(t[k].drv, "/drivers/");
+        snprintf(link, sizeof link, "%.*s/devices/%s/driver", bus ? (int)(bus - t[k].drv) : 0, t[k].drv, t[k].dev);
+        if (access(link, F_OK))
+            return t[k].dev;
+    }
+    return NULL;
 }
 
 static void drivers(const bound_t *t, int n, bool on)
@@ -332,6 +365,12 @@ int rdofradio_fpga_load(const char *path, char *msg, size_t cap)
     if (w || strcmp(state, "operating")) {
         snprintf(msg, cap, "%s (from %s): the FPGA manager: %s, state %s; the PL may hold nothing until a reboot",
                  file, where, w ? strerror(w) : "taken", state);
+        return RDOFRADIO_FPGA_ERROR;
+    }
+    const char *gone = unbound(t, nb);
+    if (gone) {
+        snprintf(msg, cap, "%s (from %s): loaded, but %s didn't probe again (dmesg says why; the AD9361's RX tuning?)",
+                 file, where, gone);
         return RDOFRADIO_FPGA_ERROR;
     }
     if ((f = fopen(NOTE, "w"))) {
