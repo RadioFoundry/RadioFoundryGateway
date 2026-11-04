@@ -74,6 +74,7 @@ typedef struct {
     unsigned order_next;
     int last_slot;         /* 0: none */
     int64_t last_pos;
+    int64_t last_given;    /* start of the last burst search gave from a sync (0: none) */
     float unit[4][24];     /* zero-mean unit-length sync templates */
     int8_t templ[4][24];   /* +-3 */
     /* scratch for one feed */

@@ -624,6 +624,11 @@ static void search(rdof_demod_t *d, int64_t end)
         if (fabsf(val[r]) < (float)RDOF_DEMOD_SYNC_THRESHOLD)
             continue;
         const int64_t sp = near[r];
+        /* the sync of the burst the last search gave, again a sample on: each search refines only within its own
+         * span, so a sync at the seam was taken at the last search's last sample and is seen here at our first.
+         * Half a burst on: the next burst's sync (a burst and a CACH on) may refine a sample early. */
+        if (d->last_given && sp - PRE < d->last_given + (PRE + POST + CACH) / 2)
+            continue;
         nsync++;
         /* Release flywheel bursts before this sync first, so a new superframe can't overtake
          * the previous one's B-F. */
@@ -637,8 +642,10 @@ static void search(rdof_demod_t *d, int64_t end)
             rdof_demod_prof.at_sync += (uint32_t)(prof_now() - ta);
         }
         if (got || is_held_start(d, sp)) {
-            if (got)
+            if (got) {
                 emit(d, &b);
+                d->last_given = sp - PRE;
+            }
             const int64_t skip = sp + POST + CACH; /* skip to after this burst */
             while (i < nc && d->pos[i] < skip)
                 i++;

@@ -1062,6 +1062,21 @@ static void test_demod_edges(void)
     CHECK(d.samples_in == 2000, "feed clamped: %lld", (long long)d.samples_in);
     rdof_demod_free(&d);
 
+    /* a sync where one feed's search ends and the next one's begins is found once, whatever the feed size: each
+     * search refines a sync only within its own span, so one could take it at its last sample and the next at its
+     * first, the same burst twice (a terminator heard twice, 21 us apart, on a W12) */
+    for (int chunk = 400; chunk <= 2400; chunk += 7) {
+        CHECK(rdof_demod_init(&d, 3, 1, RDOF_DEMOD_SQUELCH_HZ, chunk) == 0, "init");
+        run_demod(&d, bs, n_bs, chunk, 0, 0, &other);
+        int twice = 0;
+        for (int i = 1; i < other.n; i++)
+            for (int j = 0; j < i; j++)
+                if (llabs((long long)(other.b[i].position - other.b[j].position)) < 1000)
+                    twice++;
+        CHECK(other.n >= 30 && !twice, "feeding %d at a time: %d bursts, %d twice", chunk, other.n, twice);
+        rdof_demod_free(&d);
+    }
+
     /* a call is in progress between its first sync and its last burst, and the demod says so */
     CHECK(rdof_demod_init(&d, 3, 1, RDOF_DEMOD_SQUELCH_HZ, 2400) == 0, "init");
     CHECK(!rdof_demod_busy(&d), "a new demod isn't busy");
