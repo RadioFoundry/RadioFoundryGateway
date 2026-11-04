@@ -483,6 +483,24 @@ static uint64_t clk_n;
  * break in that count. */
 static void sink(void *ctx, const uint8_t *data, size_t n, unsigned flags, int64_t t_us)
 {
+    /* A FIFO loss (the chip's FIFO overflowed and was cleared) is a gap of unknown length: reckoned from the time
+     * since the last read (what the chip made then, less what came), noted ahead of these samples so read() fills
+     * it and the count keeps real time. Without it the stream slipped by the loss (about a FIFO's 1.5 ms each), and
+     * every later burst and capture came early. Within the reads' FIFO levels, a few hundred us. */
+    static int64_t last_us;
+    if (clk_break)
+        last_us = 0; /* a new session or after a run: the time since isn't a loss (a run's gap is filled already) */
+    if ((flags & LR2021_IQ_GAP) && last_us) {
+        const int64_t lost = llround((double)(t_us - last_us) * 1e-6 * st.native) - (int64_t)n;
+        if (lost > 0 && lost < (int64_t)(GAP_FILL_S * st.native)) {
+            rx_count += lost;
+            portENTER_CRITICAL(&st.lock);
+            st.stats.bytes_lost += (uint64_t)lost * (uint64_t)st.sbytes;
+            rtl_gaps_note(&gaps, ring_in, (uint32_t)lost * (uint32_t)st.sbytes);
+            portEXIT_CRITICAL(&st.lock);
+        }
+    }
+    last_us = t_us;
     put(data, n * (size_t)st.sbytes);
     if ((flags & LR2021_IQ_GAP) || clk_break) {
         clk_break = false;
