@@ -340,10 +340,14 @@ the fit restarts (`steps++`), and the last estimate is kept until the new fit is
 **Crystal estimate** (`rate_tick`):
 
 ```
-xtal     = fit.ppm − board_ppm + rate_corr          # board_ppm: netclock_rate (the board's crystal)
+xtal     = fit.ppm − board_avg + rate_corr          # board_avg: netclock_rate (the board's crystal), averaged
 xtal_err = sqrt(fit.se² + board_err²)               # board_err = skew if learned this run, else 0.5 (RATE_STORED_ERR_PPM)
 trusted  = settled && xtal_err ≤ 0.3 (RATE_TRUST_PPM) && fit.span ≥ 300 s (RATE_TRUST_SPAN_S)
 ```
+
+`board_avg` is netclock's rate averaged over `BOARD_AVG_S` (300 s, exponentially): netclock compensates its rate
+for the die's temperature, read in whole degrees, so a reading flickering by 1 C steps it by about 0.2 ppm, while
+the fit spans minutes. Taken straight, a flicker moved a W12's crystal 0.255 ppm for as long as it lasted.
 
 `rate_corr = fe.sample_ppm()`, the part of the correction the front end applies to its sample rate. It is 0 on the
 RTL (`fixed_sample_rate`) and `chip` on sim. Without `netclock_rate`, nothing is trusted. When `set_chip_ppm`

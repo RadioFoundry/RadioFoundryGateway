@@ -754,6 +754,22 @@ static void settle_tick(double t)
     }
 }
 
+/* The board's rate the fit is against: netclock's moves in steps of about 0.2 ppm as the die's reading (whole C)
+ * flickers (its temperature compensation), and the fit spans minutes, so its average over BOARD_AVG_S. Taken
+ * straight, a flicker moved a W12's crystal 0.255 ppm (113 Hz at 446 MHz) for as long as it lasted. */
+#define BOARD_AVG_S 300.0
+static double board_avg = NAN, board_avg_t;
+
+static double board_rate_avg(double t, double ppm)
+{
+    if (isnan(board_avg))
+        board_avg = ppm;
+    else if (t > board_avg_t)
+        board_avg += fmin(1.0, (t - board_avg_t) / BOARD_AVG_S) * (ppm - board_avg);
+    board_avg_t = t;
+    return board_avg;
+}
+
 /* The bins closed since the last look, into the fit; then the crystal's error. Under rx_lock. */
 static void rate_tick(double t)
 {
@@ -778,7 +794,7 @@ static void rate_tick(double t)
     }
     /* the samples' rate in true time (a local second is 1 + board ppm true ones), then the crystal's: what the
      * correction takes out of the sample rate, added back */
-    xtal = rate_fit.ppm - board_ppm + rate_corr;
+    xtal = rate_fit.ppm - board_rate_avg(t, board_ppm) + rate_corr;
     const double board_err = board_learned ? skew : RATE_STORED_ERR_PPM;
     xtal_err = sqrt(rate_fit.se_ppm * rate_fit.se_ppm + board_err * board_err);
     xtal_trusted = settled && xtal_err <= RATE_TRUST_PPM && rate_fit.span_s >= RATE_TRUST_SPAN_S;
