@@ -57,26 +57,63 @@ static bool monitors(const rdof_plan_t *p, rdofradio_cfg_t *o, char *err, size_t
     }
     for (int i = 0; ok && i < s->nch; i++) {
         const uint32_t f = (uint32_t)llround(s->ch[i].freq);
-        if (f != o->rx_hz && f != o->tx_hz)
+        bool ours = f == o->rx_hz || f == o->tx_hz;
+        for (int k = 1; k < o->nsplit; k++) /* another split's output: its radio sends it, the SDR hears its input */
+            ours |= f == o->split[k].tx_hz;
+        if (!ours)
             o->mon[o->nmon++] = s->ch[i];
     }
     free(s);
     return ok;
 }
 
+/* A unit that's a split repeater with the SDR as its RX half: into out, its TX half's port path from its device. */
+static bool split_on_sdr(const rdof_plan_t *p, const char *name, rdofradio_split_t *out, char *err, size_t cap)
+{
+    memset(out, 0, sizeof *out);
+    if (!rdof_plan_radio(p, name, &out->cfg, err, cap))
+        return false;
+    const rdof_config_t *c = &out->cfg;
+    if (c->mode != RDOF_CFG_REPEATER || strcmp(c->modem_port, "split") || strcmp(c->split[1].modem_port, "sdr"))
+        return false;
+    snprintf(out->name, sizeof out->name, "%s", c->name);
+    out->peer_id = c->peer_id, out->rx_hz = c->rx_freq, out->tx_hz = c->tx_freq, out->cc = c->cc;
+    const int k = rdof_plan_unit_find(p, name);
+    const rdof_unit_t *u = k >= 0 ? rdof_plan_unit(p, k) : NULL;
+    const rdof_plan_dev_t *d = u && u->tx >= 0 ? rdof_plan_dev(p, u->tx) : NULL;
+    if (d && d->port.kind == RDOF_PORT_PATH) {
+        snprintf(out->port, sizeof out->port, "%s", d->port.path);
+        out->baud = d->port.baud;
+    }
+    return true;
+}
+
 static bool from_plan(const rdof_plan_t *p, rdofradio_cfg_t *o, char *err, size_t cap)
 {
     rdof_roles_t roles;
-    if (!rdof_plan_check(p, &rdof_plan_host, err, cap) || !rdof_plan_roles(p, &roles, err, cap))
+    if (!rdof_plan_check(p, &rdof_plan_host, err, cap) || !rdof_plan_roles_on(p, &rdof_plan_host, &roles, err, cap))
         return false;
     if (!roles.has_radio) {
         snprintf(err, cap, "nothing transmits: rdofradio runs a repeater, or a transceiver on the SDR");
         return false;
     }
-    if (roles.nradios > 1) {
-        snprintf(err, cap, "%s: rdofradio runs one unit that transmits (%s here)", roles.radios[1], roles.radio);
-        return false;
+    /* split repeaters on the SDR: as many as there are; anything else, one unit */
+    for (int k = 0; k < roles.nradios; k++) {
+        char why[160] = "";
+        if (split_on_sdr(p, roles.radios[k], &o->split[o->nsplit], why, sizeof why)) {
+            o->nsplit++;
+        } else if (roles.nradios > 1) {
+            snprintf(err, cap, "%s: rdofradio runs one unit that transmits, or split repeaters on the SDR (%s here)%s%s",
+                     roles.radios[k ? k : 1], roles.radios[0], why[0] ? ": " : "", why);
+            return false;
+        }
     }
+    for (int k = 1; k < o->nsplit; k++)
+        if (!o->split[k].port[0]) {
+            snprintf(err, cap, "%s: its radio needs a port path (port: {\"path\": ...}): --split-tx is the first's",
+                     o->split[k].name);
+            return false;
+        }
     rdof_config_t *c = &o->cfg;
     if (!rdof_plan_radio(p, roles.radio, c, err, cap))
         return false;
@@ -165,9 +202,10 @@ size_t rdofradio_cfg_from_flags(char *out, size_t cap, const char *driver, bool 
     return n < 0 ? 0 : (size_t)n < cap ? (size_t)n : cap - 1;
 }
 
-void rdofradio_cfg_apply_repeater(const rdofradio_cfg_t *o, rdof_repeater_t *r)
+void rdofradio_cfg_apply_repeater(const rdofradio_cfg_t *o, rdof_repeater_t *r) { rdofradio_cfg_apply_unit(&o->cfg, r); }
+
+void rdofradio_cfg_apply_unit(const rdof_config_t *c, rdof_repeater_t *r)
 {
-    const rdof_config_t *c = &o->cfg;
     r->enabled[1] = c->slot1;
     r->enabled[2] = c->slot2;
     r->inactivity_s = c->hang_s; /* T_MSInactiv */

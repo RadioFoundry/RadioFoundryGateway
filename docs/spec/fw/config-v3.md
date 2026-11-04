@@ -933,8 +933,11 @@ The open (`rdof_plan_open`) refuses, with the place and the rule:
 | `rdof_plan_host` | a `uart` port ("this host has no UARTs of its own"); a split may have both halves on `path` ports (a path isn't the board's one USB port) |
 
 `rdof_plan_roles` refuses more than 2 units that transmit ("a board runs 2 units that transmit at most"), a second
-SDR ("a board runs one SDR"), and a file that makes no unit ("nothing to run"). rdofradio runs one unit that
-transmits and refuses a second ("rdofradio runs one unit that transmits").
+SDR ("a board runs one SDR"), and a file that makes no unit ("nothing to run"). `rdof_plan_roles_on` takes the
+platform's limit: `rdof_plan_host` allows 8 (`RDOF_ROLES_MAX`). rdofradio runs one unit that transmits, or up to 8
+split repeaters whose RX half is the SDR, each TX half a modem at a `path` port (the first may take `--split-tx`'s);
+anything else beside a second unit is refused ("rdofradio runs one unit that transmits, or split repeaters on the
+SDR").
 
 The firmware then checks against the build and the board (`settings.c`): an `ipgw` app without
 `CONFIG_RDOF_IPGW`; ports (`rdof_config_check_ports`: the SDR modem shared, a UART's number and pins, two USB devices

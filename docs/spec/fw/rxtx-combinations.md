@@ -27,7 +27,7 @@ Related: [config-v3.md](config-v3.md), [transmitters.md](transmitters.md), [sdr-
 | One carrier per SDR | every driver's carriers are 1 (`siteplan.c:sdr_caps`); `tx.carriers` above it is refused | missing feature (§5) |
 | RX and TX from two devices only through a split | `split.h`: `halves[2]` behind one `rdof_modem_t` | by design (keep) |
 | The bench: one TX job, `via=sdr\|modem\|radio:NAME` | `bench_tx.c`, `benchtx.c` | API |
-| Host tool: one SDR, one unit that transmits (on the SDR, a split, or an MMDVM modem with the SDR receiving) | `rdofradio_cfg.c`; `--split-tx`, `--mmdvm` | wiring (host) |
+| Host tool: one SDR, one unit that transmits (on the SDR, a split, or an MMDVM modem with the SDR receiving), or up to 8 split repeaters on the SDR, each with its own radio | `rdofradio_cfg.c`; `--split-tx`, `--mmdvm`; `sdrsplit.c` | wiring (host) |
 
 Already general, and kept:
 - `rdof_sdr_rx_t` is multi-channel (up to `RDOF_SDR_MAX_CHANNELS` 16, channels plus taps), with one
@@ -189,7 +189,7 @@ Done:
 2. **The checks:** the open's unit and caps checks, the platform checks and the board's (§3).
 3. **The transmitter pool:** an SDR is a transmitter tuned per stream; the parrot, the IP gateway and the bench send
    through it ([transmitters.md](transmitters.md)).
-4. **The host tool** runs a version 3 file (one unit that transmits); its flags build one in memory.
+4. **The host tool** runs a version 3 file (one unit that transmits, or up to 8 split repeaters on its SDR); its flags build one in memory.
 
 Left:
 5. `GET /api/config/schema` and `POST /api/config?check=1` ([config-v3.md](config-v3.md) §13.2).

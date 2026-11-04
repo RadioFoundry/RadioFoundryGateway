@@ -144,6 +144,7 @@ typedef struct {
     const char *name; /* "this board", "this host": for the messages */
     bool uart_ports, path_ports;
     bool host_drivers;
+    int max_radios;   /* units that transmit at most */
 } rdof_plan_platform_t;
 
 extern const rdof_plan_platform_t rdof_plan_board, rdof_plan_host;
@@ -151,7 +152,10 @@ extern const rdof_plan_platform_t rdof_plan_board, rdof_plan_host;
 /* The plan's devices on plat: false with err set. */
 bool rdof_plan_check(const rdof_plan_t *p, const rdof_plan_platform_t *plat, char *err, size_t cap);
 
-/* What a board runs: every unit, at most RDOF_MAX_RADIOS that transmit and one SDR. false with err set. */
+/* What a platform runs: every unit, at most its max_radios that transmit, and one SDR. false with err set.
+   rdof_plan_roles is the board's (RDOF_MAX_RADIOS). */
+bool rdof_plan_roles_on(const rdof_plan_t *p, const rdof_plan_platform_t *plat, rdof_roles_t *roles, char *err,
+                        size_t cap);
 bool rdof_plan_roles(const rdof_plan_t *p, rdof_roles_t *roles, char *err, size_t cap);
 
 #ifdef __cplusplus

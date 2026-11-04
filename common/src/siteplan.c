@@ -882,8 +882,9 @@ static bool check_caps(plan_t *p)
 
 /* ── the platform ──────────────────────────────────────────────────────────── */
 
-const rdof_plan_platform_t rdof_plan_board = {.name = "this board", .uart_ports = true};
-const rdof_plan_platform_t rdof_plan_host = {.name = "this host", .path_ports = true, .host_drivers = true};
+const rdof_plan_platform_t rdof_plan_board = {.name = "this board", .uart_ports = true, .max_radios = RDOF_MAX_RADIOS};
+const rdof_plan_platform_t rdof_plan_host = {.name = "this host", .path_ports = true, .host_drivers = true,
+                                             .max_radios = RDOF_ROLES_MAX};
 
 bool rdof_plan_check(const rdof_plan_t *p, const rdof_plan_platform_t *plat, char *err, size_t cap)
 {
@@ -1014,7 +1015,8 @@ const char *rdof_plan_sdr_name(const rdof_plan_t *p, int dev)
     return r >= 0 ? p->unit[r].name : p->site.dev[dev].name;
 }
 
-bool rdof_plan_roles(const rdof_plan_t *p, rdof_roles_t *roles, char *err, size_t cap)
+bool rdof_plan_roles_on(const rdof_plan_t *p, const rdof_plan_platform_t *plat, rdof_roles_t *roles, char *err,
+                        size_t cap)
 {
     char dummy[8];
     if (!err || !cap)
@@ -1027,9 +1029,14 @@ bool rdof_plan_roles(const rdof_plan_t *p, rdof_roles_t *roles, char *err, size_
     for (int k = 0; k < p->nunit; k++) {
         const rdof_unit_t *u = &p->unit[k];
         if (u->kind != RDOF_UNIT_RECEIVER) {
-            if (roles->nradios >= RDOF_MAX_RADIOS) {
-                snprintf(err, cap, "a board runs %d units that transmit at most: %s, %s and %s", RDOF_MAX_RADIOS,
-                         roles->radios[0], roles->radios[1], u->name);
+            const int max = plat->max_radios < RDOF_ROLES_MAX ? plat->max_radios : RDOF_ROLES_MAX;
+            if (roles->nradios >= max) {
+                if (max == 2)
+                    snprintf(err, cap, "a %s runs 2 units that transmit at most: %s, %s and %s", plat->name + 5,
+                             roles->radios[0], roles->radios[1], u->name);
+                else
+                    snprintf(err, cap, "a %s runs %d units that transmit at most: %s is one more", plat->name + 5,
+                             max, u->name);
                 return false;
             }
             snprintf(roles->radios[roles->nradios++], sizeof roles->radios[0], "%s", u->name);
@@ -1055,4 +1062,9 @@ bool rdof_plan_roles(const rdof_plan_t *p, rdof_roles_t *roles, char *err, size_
         return false;
     }
     return true;
+}
+
+bool rdof_plan_roles(const rdof_plan_t *p, rdof_roles_t *roles, char *err, size_t cap)
+{
+    return rdof_plan_roles_on(p, &rdof_plan_board, roles, err, cap);
 }

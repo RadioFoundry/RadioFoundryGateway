@@ -2,7 +2,9 @@
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 /*
  * rdofradio's settings (--config FILE): the firmware's settings document (version 3, docs/spec/fw/config-v3.md),
- * read by the firmware's parser (rdof/siteplan.h), and the part of it rdofradio applies. The radio is the first
+ * read by the firmware's parser (rdof/siteplan.h), and the part of it rdofradio applies. Split repeaters whose RX
+ * half is the SDR run as many as the file has (up to RDOF_ROLES_MAX), each with its own radio as the TX half, at its
+ * device's port path (or --split-tx's for the first). Otherwise the radio is the first
  * unit that transmits: a repeater (a repeater app on the SDR or on a modem) or a half duplex transceiver (the SDR
  * or a modem transmitting on simplex frequencies, on its idle frequency); a unit on a modem runs with --mmdvm. From
  * it: the name, peer id, rx / tx frequencies, cc, parrot, and a repeater's slots, hang_s, call_hang_s,
@@ -26,6 +28,16 @@
 #include "rdof/site.h"
 #include "rdof/txvr.h"
 #include "rdof/sdr/config.h"
+
+/* A split repeater on the SDR: the SDR hears in, a radio on port sends out. */
+typedef struct {
+    char name[24];
+    uint32_t peer_id, rx_hz, tx_hz;
+    int cc;
+    char port[64];      /* the TX half's device's port path; "" none (the first takes --split-tx's) */
+    long baud;
+    rdof_config_t cfg;  /* the unit as the firmware resolves it (its repeater's settings, split.power_cap ...) */
+} rdofradio_split_t;
 
 typedef struct {
     bool full;          /* a repeater (full duplex); false: a transceiver (half duplex) */
@@ -51,6 +63,9 @@ typedef struct {
     double mon_status_s;            /* the SDR's status period (status_seconds) */
     rdof_site_t site;
     rdof_config_t cfg;  /* all of it, as the firmware resolves it */
+    /* split repeaters with the SDR as the RX half: the first is the radio above */
+    int nsplit;
+    rdofradio_split_t split[RDOF_ROLES_MAX];
 } rdofradio_cfg_t;
 
 /* Read a settings document. False: err says why (the parser's reason, or what rdofradio can't run). */
@@ -60,8 +75,10 @@ bool rdofradio_cfg_parse(const char *text, size_t len, rdofradio_cfg_t *out, cha
    ID (0, every ID, has none: a parrot app answers one). */
 size_t rdofradio_cfg_from_flags(char *out, size_t cap, const char *driver, bool full, uint32_t rx_hz, uint32_t tx_hz,
                                 int cc, bool has_parrot, uint32_t parrot, uint32_t peer_id);
-/* A repeater's settings past rdof_repeater_init's (slots, hangs, jitter buffer, CW ID), as the firmware sets them. */
+/* A repeater's settings past rdof_repeater_init's (slots, hangs, jitter buffer, CW ID), as the firmware sets them:
+   the radio's, or a split's (rdofradio_cfg_apply_unit, from its own cfg). */
 void rdofradio_cfg_apply_repeater(const rdofradio_cfg_t *c, rdof_repeater_t *r);
+void rdofradio_cfg_apply_unit(const rdof_config_t *c, rdof_repeater_t *r);
 /* A transceiver's settings past rdof_txvr_init's, as the firmware's roamer (radio_task.c): the channels it may be
    tuned to (the roamer's channels and idle), listen and clear, the jitter buffer, CSBK preambles, the answer
    window, the idle channel and the return to it, CW ID. Not the scan: the SDR hears every channel at once. */

@@ -125,6 +125,7 @@
 #include "rdof/sdr/ppm.h"
 #include "rdof/sdr/receiver.h"
 #include "rdof/sdr/sdrmodem.h"
+#include "rdof/sdr/sdrsplit.h"
 #include "rdof/sdr/spectrum.h"
 #include "rdof/txvr.h"
 #include "rdofradio_cfg.h"
@@ -253,11 +254,13 @@ static void ws_turn(double now)
 
 /* --split-tx (below) */
 static rdof_split_t S;
+static rdof_sdrsplits_t XS; /* the settings' other split repeaters on the SDR (xsplit_t) */
+static int NX;
 
 /* The radio's port: a thread reads it and stamps each read with the time it came, so the split's TIME round trips
  * don't include the main loop's wait on the receive stream. */
 #define PORT_Q 64
-static struct {
+typedef struct {
     int fd;
     const char *path;
     pthread_t thread;
@@ -270,7 +273,8 @@ static struct {
     int head, tail;
     uint32_t dropped;
     volatile bool gone, quit;
-} P = {.fd = -1, .mu = PTHREAD_MUTEX_INITIALIZER};
+} port_t;
+static port_t P = {.fd = -1, .mu = PTHREAD_MUTEX_INITIALIZER};
 static int in_wait; /* inside the client's wait for a reply: what's heard waits for it to end */
 static void split_turn(void);
 static void split_flush(void);
@@ -2378,6 +2382,8 @@ static void on_burst(void *ctx, int c, const rdof_sdr_burst_t *b, double t)
 {
     if (!R.mmdvm)
         rdof_sdrmodem_heard(&R.m, c, b);
+    if (NX)
+        rdof_sdrsplits_heard(&XS, c, b);
     bench_burst(c, b);
     if (c == R.mon && R.waiting && R.first_sent) {
         const double d = (double)(b->position - R.first_sent) / 48000.0;
@@ -2794,30 +2800,46 @@ static void web_ota(const char *path)
 
 static void *port_reader(void *arg)
 {
-    while (!P.quit) {
-        struct pollfd pf = {P.fd, POLLIN, 0};
+    port_t *const p = arg ? arg : &P;
+    while (!p->quit) {
+        struct pollfd pf = {p->fd, POLLIN, 0};
         if (poll(&pf, 1, 100) <= 0)
             continue;
         uint8_t b[256];
-        const int n = rdofradio_serial_read(P.fd, b, sizeof b);
+        const int n = rdofradio_serial_read(p->fd, b, sizeof b);
         const double t = now_s();
         if (n < 0 || (pf.revents & (POLLHUP | POLLERR | POLLNVAL))) {
-            P.gone = true;
+            p->gone = true;
             break;
         }
         if (n == 0)
             continue;
-        pthread_mutex_lock(&P.mu);
-        if (P.head - P.tail < PORT_Q) {
-            const int i = P.head++ % PORT_Q;
-            P.q[i].t = t, P.q[i].n = n;
-            memcpy(P.q[i].b, b, (size_t)n);
+        pthread_mutex_lock(&p->mu);
+        if (p->head - p->tail < PORT_Q) {
+            const int i = p->head++ % PORT_Q;
+            p->q[i].t = t, p->q[i].n = n;
+            memcpy(p->q[i].b, b, (size_t)n);
         } else {
-            P.dropped += (uint32_t)n;
+            p->dropped += (uint32_t)n;
         }
-        pthread_mutex_unlock(&P.mu);
+        pthread_mutex_unlock(&p->mu);
     }
     return NULL;
+}
+
+/* What the reader has, oldest first: its bytes and the time they came; 0 none. */
+static int port_take(port_t *p, uint8_t b[256], double *t)
+{
+    pthread_mutex_lock(&p->mu);
+    if (p->tail == p->head) {
+        pthread_mutex_unlock(&p->mu);
+        return 0;
+    }
+    const int i = p->tail++ % PORT_Q, n = p->q[i].n;
+    *t = p->q[i].t;
+    memcpy(b, p->q[i].b, (size_t)n);
+    pthread_mutex_unlock(&p->mu);
+    return n;
 }
 
 /* The receiver on a second core: the loop runs its share of the forward FFTs and of the channels (channelizer and
@@ -3260,30 +3282,161 @@ static void split_flush(void)
     busy = false;
 }
 
+/* The other split repeaters on the SDR (the settings' second on): each its radio on a port, a repeater over the
+ * split, and an SDR modem of its own in XS, receive only, on its input's channel. The first is R, S and P. */
+typedef struct {
+    const rdofradio_split_t *u;
+    int i; /* in XS */
+    port_t p;
+    rdof_modem_t client;
+    rdof_radio_t radio;
+    rdof_repeater_t r;
+    bool keyed, up;
+    struct {
+        int slot, rssi; /* rssi INT_MIN: lost */
+        uint8_t control, burst[RDOF_BURST_BYTES];
+    } q[HEARD_Q];
+    int nq;
+} xsplit_t;
+static xsplit_t *X[RDOF_ROLES_MAX];
+
+static void xs_to_radio(void *ctx, int i, const uint8_t *d, size_t n)
+{
+    if (!X[i]->p.gone && !rdofradio_serial_write(X[i]->p.fd, d, n))
+        X[i]->p.gone = true;
+}
+static void xs_to_host(void *ctx, int i, const uint8_t *d, size_t n) { rdof_modem_feed(&X[i]->client, d, n); }
+static int xs_channel(void *ctx, uint32_t hz) { return channel_of(hz); }
+
+static void x_rx(void *ctx, int slot, uint8_t control, const uint8_t *burst, int rssi)
+{
+    xsplit_t *x = ctx;
+    if (in_wait || !x->up) {
+        if (x->nq < HEARD_Q) {
+            x->q[x->nq].slot = slot, x->q[x->nq].rssi = rssi, x->q[x->nq].control = control;
+            memcpy(x->q[x->nq++].burst, burst, RDOF_BURST_BYTES);
+        }
+        return;
+    }
+    if (rssi == INT_MIN)
+        rdof_repeater_lost(&x->r, slot);
+    else
+        rdof_repeater_heard(&x->r, slot, control, burst, rssi);
+}
+static void x_lost(void *ctx, int slot) { x_rx(ctx, slot, 0, (const uint8_t[RDOF_BURST_BYTES]){0}, INT_MIN); }
+static void x_deliver(xsplit_t *x)
+{
+    if (!x->up)
+        return;
+    for (int i = 0; i < x->nq; i++)
+        if (x->q[i].rssi == INT_MIN)
+            rdof_repeater_lost(&x->r, x->q[i].slot);
+        else
+            rdof_repeater_heard(&x->r, x->q[i].slot, x->q[i].control, x->q[i].burst, x->q[i].rssi);
+    x->nq = 0;
+}
+static void x_nak(void *ctx, uint8_t cmd, int err)
+{
+    xsplit_t *x = ctx;
+    fprintf(stderr, "%s: modem NAK 0x%02x err %d\n", x->u->name, cmd, err);
+    rdof_repeater_nak(&x->r, cmd, err);
+}
+static void x_tx(void *ctx, const char *action, const rdof_tx_call_info_t *c, double d)
+{
+    const xsplit_t *x = ctx;
+    say("%s: %s slot %d %u -> %s%u (%.2f s)\n", x->u->name, action, c->slot, c->src, c->group ? "TG " : "", c->dst, d);
+}
+static void x_key(void *ctx, bool keyed)
+{
+    xsplit_t *x = ctx;
+    x->keyed = keyed;
+    say("%s: %s\n", x->u->name, keyed ? "keyed" : "unkeyed");
+}
+static bool x_write(void *ctx, const uint8_t *d, size_t n)
+{
+    const xsplit_t *x = ctx;
+    rdof_sdrsplits_upstream(&XS, x->i, d, n, now_s());
+    return !rdof_sdrsplits_split(&XS, x->i)->failed[0];
+}
+static bool x_wait(void *ctx, int ms)
+{
+    xsplit_t *x = ctx;
+    const double end = now_s() + ms / 1000.0;
+    in_wait++;
+    while (!x->client.reply_ready && !stop && !x->p.gone && now_s() < end)
+        split_turn();
+    in_wait--;
+    return x->client.reply_ready;
+}
+
+/* A split's client, radio and repeater once its bring-up is done, and its place in the router. */
+static bool x_start(xsplit_t *x)
+{
+    const rdof_modem_port_t mp = {x_write, x_wait, NULL, p_clock, p_sleep, x};
+    rdof_modem_init(&x->client, &mp);
+    x->client.on_rx = x_rx;
+    x->client.on_lost = x_lost;
+    x->client.on_nak = x_nak;
+    x->client.cb_ctx = x;
+    if (!rdof_modem_start(&x->client, 1)) {
+        fprintf(stderr, "%s: modem: %s\n", x->u->name, x->client.error);
+        return false;
+    }
+    rdof_radio_init(&x->radio, &x->client, rdof_radio_detect(x->client.version));
+    rdof_repeater_init(&x->r, &x->radio, x->u->peer_id, x->u->rx_hz, x->u->tx_hz, x->u->cc);
+    rdofradio_cfg_apply_unit(&x->u->cfg, &x->r);
+    x->r.clock = p_clock;
+    x->r.on_tx = x_tx;
+    x->r.on_key = x_key;
+    x->r.ctx = x;
+    if (!rdof_repeater_start(&x->r)) {
+        fprintf(stderr, "%s: repeater start: %s\n", x->u->name, x->client.error);
+        return false;
+    }
+    x->up = true;
+    x_deliver(x);
+    if (sr_on) {
+        const rdof_site_t *s = &rcfg.site;
+        for (int a = 0; a < s->napp; a++)
+            if (s->app[a].type == RDOF_APP_REPEATER && s->freq[s->app[a].in].hz == x->u->rx_hz)
+                rdof_siteroute_add_repeater(&SR, a, &x->r);
+    }
+    const rdof_sdrmodem_t *m = rdof_sdrsplits_modem(&XS, x->i);
+    fprintf(stderr, "split repeater %s: TX %s on %s; RX %.4f MHz (SDR channel %d); TX %.4f MHz, cc %d\n", x->u->name,
+            rdof_sdrsplits_split(&XS, x->i)->halves[RDOF_SPLIT_TX].description, x->u->port, x->u->rx_hz / 1e6,
+            m ? m->channel : -1, x->u->tx_hz / 1e6, x->u->cc);
+    return true;
+}
+
 static void split_service(void)
 {
-    for (;;) {
-        pthread_mutex_lock(&P.mu);
-        if (P.tail == P.head) {
-            pthread_mutex_unlock(&P.mu);
-            break;
-        }
-        const int i = P.tail++ % PORT_Q;
-        uint8_t b[256];
-        const int n = P.q[i].n;
-        const double t = P.q[i].t;
-        memcpy(b, P.q[i].b, (size_t)n);
-        pthread_mutex_unlock(&P.mu);
+    uint8_t b[256];
+    double t;
+    int n;
+    while ((n = port_take(&P, b, &t)) > 0)
         rdof_split_from_half(&S, RDOF_SPLIT_TX, b, (size_t)n, t);
-    }
     rdof_split_tick(&S, now_s());
     split_flush();
     if (!stop && (P.gone || S.failed[0])) {
         say("split: %s\n", P.gone ? "the radio's port went away" : S.failed);
         stop = 1;
     }
-    if (!in_wait)
+    for (int k = 0; k < NX; k++) {
+        while ((n = port_take(&X[k]->p, b, &t)) > 0)
+            rdof_sdrsplits_from_radio(&XS, k, b, (size_t)n, t);
+        const rdof_split_t *xs = rdof_sdrsplits_split(&XS, k);
+        if (!stop && (X[k]->p.gone || xs->failed[0])) {
+            say("%s: split: %s\n", X[k]->u->name, X[k]->p.gone ? "the radio's port went away" : xs->failed);
+            stop = 1;
+        }
+    }
+    if (NX)
+        rdof_sdrsplits_tick(&XS, now_s());
+    if (!in_wait) {
         deliver_heard();
+        for (int k = 0; k < NX; k++)
+            x_deliver(X[k]);
+    }
 }
 
 /* a chunk of the receive stream through the receiver (--split-tx, --mmdvm: the SDR receives only); with
@@ -3351,6 +3504,31 @@ static int split_main(int argc, char **argv, const char *port, int baud, int pow
         fprintf(stderr, "the port reader: no thread\n");
         return 1;
     }
+    /* the other split repeaters: each radio's port and reader */
+    const rdof_sdrsplits_io_t xio = {xs_to_radio, xs_to_host, xs_channel, split_now48, NULL};
+    rdof_sdrsplits_init(&XS, &xio, (uint32_t)R.rate);
+    for (int k = 1; k < rcfg.nsplit; k++) {
+        const rdofradio_split_t *u = &rcfg.split[k];
+        xsplit_t *x = calloc(1, sizeof *x);
+        if (!x) {
+            fprintf(stderr, "%s: no memory\n", u->name);
+            return 1;
+        }
+        x->u = u, x->p.path = u->port, x->p.mu = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
+        x->p.fd = rdofradio_serial_open(u->port, u->baud ? (int)u->baud : baud, err, sizeof err);
+        if (x->p.fd < 0) {
+            fprintf(stderr, "%s: %s\n", u->name, err);
+            free(x);
+            return 1;
+        }
+        if (pthread_create(&x->p.thread, NULL, port_reader, &x->p)) {
+            fprintf(stderr, "%s: the port reader: no thread\n", u->name);
+            close(x->p.fd);
+            free(x);
+            return 1;
+        }
+        X[NX++] = x;
+    }
     SC.rate = R.rate;
     SC.floor = SC.last_win = SC.win_min = INFINITY;
     SC.chunk = (int)(R.rate / 100) < CHUNK ? (int)(R.rate / 100) : CHUNK;
@@ -3368,12 +3546,31 @@ static int split_main(int argc, char **argv, const char *port, int baud, int pow
     rdof_split_init(&S, now_s(), &sp);
     S.log = say_log;
     split_flush();
+    for (int k = 0; k < NX; k++) {
+        const rdof_config_t *c = &X[k]->u->cfg;
+        rdof_split_params_t xp = {c->split_power_cap, c->split_prebuffer, c->split_lease_s, c->split_cooldown_s,
+                                  c->split_max_key_s};
+        if ((X[k]->i = rdof_sdrsplits_add(&XS, &xp, now_s())) < 0) {
+            fprintf(stderr, "%s: %s\n", X[k]->u->name, XS.error);
+            goto out;
+        }
+        rdof_sdrsplits_split(&XS, k)->log = say_log;
+    }
     const double t_up = now_s();
-    while (!stop && !S.ready && !S.failed[0] && now_s() - t_up < 15)
+    while (!stop && !(S.ready && (!NX || rdof_sdrsplits_ready(&XS))) && !S.failed[0] && rdof_sdrsplits_failed(&XS) < 0 &&
+           now_s() - t_up < 15)
         split_turn();
     if (!S.ready) {
         fprintf(stderr, "split: %s\n", S.failed[0] ? S.failed : P.gone ? "the radio's port went away" : "no answer in 15 s");
         goto out;
+    }
+    for (int k = 0; k < NX; k++) {
+        const rdof_split_t *xs = rdof_sdrsplits_split(&XS, k);
+        if (!xs->ready) {
+            fprintf(stderr, "%s: split: %s\n", X[k]->u->name,
+                    xs->failed[0] ? xs->failed : X[k]->p.gone ? "the radio's port went away" : "no answer in 15 s");
+            goto out;
+        }
     }
 
     /* the client and the repeater over the split, as over any duplex modem */
@@ -3404,6 +3601,9 @@ static int split_main(int argc, char **argv, const char *port, int baud, int pow
     fprintf(stderr, "split repeater: TX %s on %s; RX %s, %.4f MHz (center %.4f), %.0f S/s; TX %.4f MHz, cc %d\n",
             S.halves[RDOF_SPLIT_TX].description, port, dev->name, R.rx_hz / 1e6, R.rx.center_hz / 1e6, dev->rate,
             R.tx_hz / 1e6, R.cc);
+    for (int k = 0; k < NX; k++)
+        if (!x_start(X[k]))
+            goto out;
 #ifdef RDOF_HOST_WEB
     if (web_port >= 0) {
         web_settings(argc, argv);
@@ -3426,6 +3626,9 @@ static int split_main(int argc, char **argv, const char *port, int baud, int pow
                 rdof_parrot_poll(R.parrot, now);
             if (!rdof_repeater_poll(&R.r))
                 fprintf(stderr, "poll: %s\n", R.client.error);
+            for (int k = 0; k < NX; k++)
+                if (X[k]->up && !rdof_repeater_poll(&X[k]->r))
+                    fprintf(stderr, "%s: poll: %s\n", X[k]->u->name, X[k]->client.error);
             net_poll(now);
             mq_poll(now);
             deliver_heard();
@@ -3445,13 +3648,29 @@ static int split_main(int argc, char **argv, const char *port, int baud, int pow
         }
     }
     rdof_repeater_stop(&R.r);
-    for (int i = 0; i < 10; i++) /* the repeater's last frames out to the radio */
+    for (int k = 0; k < NX; k++)
+        if (X[k]->up)
+            rdof_repeater_stop(&X[k]->r);
+    for (int i = 0; i < 10; i++) /* the repeaters' last frames out to the radios */
         split_service();
     rc = 0;
 out:
     P.quit = true;
     pthread_join(P.thread, NULL);
     close(P.fd);
+    for (int k = 0; k < NX; k++) {
+        const rdof_sdrmodem_t *m = rdof_sdrsplits_modem(&XS, k);
+        if (m)
+            fprintf(stderr, "%s: SDR modem %u heard (%u TS1, %u TS2, %u unlabeled), %u lost; port %u bytes dropped\n",
+                    X[k]->u->name, m->rx_bursts, m->labeled[0], m->labeled[1], m->unlabeled, m->lost, X[k]->p.dropped);
+        X[k]->p.quit = true;
+        pthread_join(X[k]->p.thread, NULL);
+        close(X[k]->p.fd);
+        free(X[k]);
+        X[k] = NULL;
+    }
+    NX = 0;
+    rdof_sdrsplits_free(&XS);
     dev->close(dev);
     fprintf(stderr, "%.1f s (%.1f s wall), %d overflows, %.1f ms of samples lost; SDR modem: %u heard (%u TS1, %u TS2, "
                     "%u unlabeled), %u lost; split: %u dropped, port %u bytes dropped\n",
@@ -4061,6 +4280,17 @@ int main(int argc, char **argv)
             return hold(argc, argv, why);
         }
         rx = rcfg.rx_hz, tx = rcfg.tx_hz, cc = rcfg.cc, rx_slot = rcfg.rx_slot;
+        /* split repeaters on the SDR: the first radio's port from the file unless --split-tx gives it */
+        if (rcfg.nsplit && !split_tx && !mmdvm && rcfg.split[0].port[0]) {
+            split_tx = rcfg.split[0].port;
+            if (rcfg.split[0].baud)
+                baud = (int)rcfg.split[0].baud;
+        }
+        if (rcfg.nsplit > 1 && !split_tx) {
+            fprintf(stderr, "%s: %d split repeaters: their radios transmit (give the first a port path or --split-tx)\n",
+                    config_path, rcfg.nsplit);
+            return 2;
+        }
         duplex = rcfg.full ? "full" : "half";
         if (rcfg.has_parrot) {
             static rdof_parrot_t parrot;

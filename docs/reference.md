@@ -523,7 +523,7 @@ and after the reboot `crash` says `StoreProhibited` at `0x00000000`. The HIL sui
 | Scan | in, `CONFIG_RDOF_SCAN` |
 | The repeater: duplex, network per slot, RF priority, echo drop, hang, CW ID, short LC; SFR; DCDM (two simplex calls at once on one frequency, on the SDR modem; no stock MMDVM or OpenGD77 firmware does DCDM) | in; queues bounded (192 bursts a slot, 6 streams) |
 | UTC slot timing | in (`slotgrid.c`); the gate on the board from netclock |
-| Split duplex | in (`split.c`; on the board `split_port.c`). The board's SDR modem as a half: host-tested only. `rdofradio --split-tx`: run against the simulated radio, not a real one |
+| Split duplex | in (`split.c`; on the board `split_port.c`). The board's SDR modem as a half: host-tested only. `rdofradio --split-tx`: run against a simulated radio, not a real one; several splits on one SDR (`--config`): host-tested only |
 | Network calls, `tx`, status every 10 s and on change, Receiver, restart with backoff | in |
 | Settings | version 3, checked in full. Not: `${VAR}` from the environment, ids unique across a box |
 | HBlink4: DMRC, DMRD, DMRT, DMRK over UDP; the HBlink sink | in. Not HomeBrew's RPTL / RPTK / RPTC login |
@@ -1214,8 +1214,18 @@ scale 1-255). The SDR's transmitter flags (`--tx-gain`, `--tx-lo`, `--tx-offset`
 - **The port** is read by a thread that stamps each read, so a TIME round trip doesn't include the main loop's wait.
 - **Waits:** while the repeater waits for the radio's reply, the receiver keeps reading.
 
-Run on the Pluto (2026-10-28) against the host tests' simulated radio on a pty: the split came up, the repeater ran
-60.0 s in 60.0 s with no samples lost, the TX half's round trip settled at 1.1 ms. Not yet run with a real radio.
+Run on the Pluto (2026-10-28) against a simulated radio on a pty: the split came up, the repeater ran 60.0 s in
+60.0 s with no samples lost, the TX half's round trip settled at 1.1 ms. Not yet run with a real radio.
+
+**Several split repeaters on one SDR** (`--config`): every repeater in the file whose RX half is the SDR and whose TX
+half is a modem runs, up to 8 (`RDOF_ROLES_MAX`), each with its own radio. The first is the radio at `--split-tx`,
+or its device's `port.path`; the others need a `port.path` (and `baud`). Each split has its own receive-only SDR
+modem (`rdof_sdrsplits_t`, `sdrsplit.c`) on its input's channel, and each repeater registers with the router. Every
+split's output frequency is left out of the monitored channels; its input is a channel of the receiver and goes up
+through that channel's sink. Bring-up runs every split at once, 15 s for all; one that fails stops the run.
+Host-tested (`sdrmodem_tests`: 8 simulated radios with different crystals on one receiver at 1.632 MS/s, each burst
+up on its own repeater and slot; `rdof_radiocfg_tests`: the file's units and ports). Not yet run with real radios.
+The web page and MQTT status show the first repeater only.
 
 #### An MMDVM modem on a serial port
 

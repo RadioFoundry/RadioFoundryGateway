@@ -27,7 +27,7 @@ use crate::status::rdof_format_repr;
 use crate::text::{c_out, fixed, print, Out, Piece, Piece::I, Piece::S};
 
 const CHANNELS: usize = 32; // RDOF_CFG_CHANNELS
-const MAX_RADIOS: usize = 2; // RDOF_MAX_RADIOS
+const ROLES_MAX: usize = 8; // RDOF_ROLES_MAX
 const RSSI_POINTS: usize = 16; // RDOF_RSSI_POINTS
 const SITE_MAX_FREQS: usize = 48; // RDOF_SITE_MAX_FREQS
 
@@ -179,7 +179,7 @@ pub struct RdofRoles {
     pub radio: [u8; 24],
     pub nradios: c_int,
     pub usb_hub: bool,
-    pub radios: [[u8; 24]; MAX_RADIOS],
+    pub radios: [[u8; 24]; ROLES_MAX],
     pub sdr: [u8; 32],
 }
 

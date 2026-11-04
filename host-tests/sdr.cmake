@@ -95,7 +95,7 @@ add_test(NAME rdof_mod_tests COMMAND rdof_mod_tests)
 # the two-core split, the clocks, the CPU bench, and the extra cases of the reference tables.
 # (built on the receive path alone: the SDR modem has its own tests)
 file(GLOB RDOF_SDR_CORE_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/../sdr/src/*.c)
-list(FILTER RDOF_SDR_CORE_SRCS EXCLUDE REGEX "/(sdrmodem|loopback)\\.c$")
+list(FILTER RDOF_SDR_CORE_SRCS EXCLUDE REGEX "/(sdrmodem|sdrsplit|loopback)\\.c$")
 add_library(rdof_sdr_core STATIC ${RDOF_SDR_CORE_SRCS})
 target_include_directories(rdof_sdr_core PUBLIC ../sdr/include)
 target_link_libraries(rdof_sdr_core PUBLIC rdof_common)

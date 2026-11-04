@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 /* rdofradio's settings (sdr/cli/rdofradio_cfg.h): the firmware's document read as rdofradio runs it, what it
  * refuses, and a round trip through what the command line's flags make. */
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -98,9 +99,50 @@ int main(void)
                  "\"freq\": 438.25}, {\"name\": \"out\", \"freq\": 438.0125}, {\"name\": \"A\", \"freq\": 438.1, "
                  "\"devices\": [\"M\"]}], \"apps\": [{\"name\": \"R\", \"type\": \"repeater\", \"in\": \"in\", "
                  "\"out\": \"out\"}]}") &&
-          !strcmp(err, "M: rdofradio runs one unit that transmits (R here)"));
-    if (strcmp(err, "M: rdofradio runs one unit that transmits (R here)"))
+          !strcmp(err, "M: rdofradio runs one unit that transmits, or split repeaters on the SDR (R here)"));
+    if (strcmp(err, "M: rdofradio runs one unit that transmits, or split repeaters on the SDR (R here)"))
         printf("  %s\n", err);
+    /* three split repeaters on the SDR, each with a radio at its port path: all three; the radio is the first */
+    {
+        char f[2048];
+        snprintf(f, sizeof f,
+                 "{\"version\": 3, \"name\": \"site\", \"id\": 3100000, \"defaults\": {\"cc\": 1}, \"devices\": ["
+                 "{\"name\": \"P\", \"kind\": \"sdr\", \"driver\": \"iio\", \"transmits\": false},"
+                 "{\"name\": \"T1\", \"kind\": \"modem\", \"port\": {\"path\": \"/dev/ttyACM0\"}, \"hears\": false, \"transmits\": [\"o1\"]},"
+                 "{\"name\": \"T2\", \"kind\": \"modem\", \"port\": {\"path\": \"/dev/ttyACM1\", \"baud\": 230400}, \"hears\": false, \"transmits\": [\"o2\"]},"
+                 "{\"name\": \"T3\", \"kind\": \"modem\", \"port\": {\"path\": \"/dev/ttyACM2\"}, \"hears\": false, \"transmits\": [\"o3\"]}],"
+                 "\"frequencies\": [{\"name\": \"i1\", \"freq\": 438.75}, {\"name\": \"o1\", \"freq\": 438.5},"
+                 "{\"name\": \"i2\", \"freq\": 438.175}, {\"name\": \"o2\", \"freq\": 438.55},"
+                 "{\"name\": \"i3\", \"freq\": 438.325, \"cc\": 3}, {\"name\": \"o3\", \"freq\": 438.6, \"cc\": 3},"
+                 "{\"name\": \"mon\", \"freq\": 438.625}],"
+                 "\"apps\": [{\"name\": \"R1\", \"type\": \"repeater\", \"in\": \"i1\", \"out\": \"o1\"},"
+                 "{\"name\": \"R2\", \"type\": \"repeater\", \"in\": \"i2\", \"out\": \"o2\", \"hang_s\": 7},"
+                 "{\"name\": \"R3\", \"type\": \"repeater\", \"in\": \"i3\", \"out\": \"o3\"}]}");
+        const bool ok = parse(f);
+        CHECK(ok && C.nsplit == 3 && C.full && !C.on_modem && C.rx_hz == 438750000 && C.tx_hz == 438500000 &&
+              !strcmp(C.split[0].port, "/dev/ttyACM0") && !strcmp(C.split[1].port, "/dev/ttyACM1") &&
+              C.split[1].baud == 230400 && C.split[1].cfg.hang_s == 7 && C.split[2].rx_hz == 438325000 &&
+              C.split[2].tx_hz == 438600000 && C.split[2].cc == 3 && !strcmp(C.split[2].name, "R3"));
+        if (!ok)
+            printf("  %s\n", err);
+        /* the monitored channels: the others' inputs and 438.625; no split's output */
+        bool i2 = false, i3 = false, outs = false, mon = false;
+        for (int i = 0; ok && i < C.nmon; i++) {
+            const uint32_t hz = (uint32_t)llround(C.mon[i].freq);
+            i2 |= hz == 438175000, i3 |= hz == 438325000, mon |= hz == 438625000;
+            outs |= hz == 438550000 || hz == 438600000 || hz == 438500000 || hz == 438750000;
+        }
+        CHECK(i2 && i3 && mon && !outs);
+        /* one without a port path: refused, naming it */
+        char g[2048];
+        snprintf(g, sizeof g, "%s", f);
+        char *q = strstr(g, "{\"path\": \"/dev/ttyACM2\"}");
+        if (q)
+            memcpy(q, "{\"usb\": \"auto\"}         ", 24);
+        CHECK(!parse(g) && strstr(err, "R3: its radio needs a port path"));
+        if (!strstr(err, "R3: its radio needs a port path"))
+            printf("  %s\n", err);
+    }
     /* a host: no UARTs of its own */
     CHECK(!parse("{\"version\": 3, \"name\": \"b\", \"id\": 1, \"defaults\": {\"cc\": 1}, \"devices\": [{\"name\": "
                  "\"R\", \"kind\": \"modem\", \"type\": \"mmdvm_hs\", \"port\": {\"uart\": 1, \"tx\": 17, \"rx\": 18}}], "

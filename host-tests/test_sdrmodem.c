@@ -15,6 +15,7 @@
 #include "rdof/layer2.h"
 #include "rdof/pdu.h"
 #include "rdof/sdr/sdrmodem.h"
+#include "rdof/sdr/sdrsplit.h"
 
 static int fails;
 
@@ -497,6 +498,173 @@ static void test_split_matrix(void)
         for (int rx = RADIO; rx <= SDR; rx++)
             test_pair(tx, rx);
     test_pair_refusals();
+}
+
+/* Eight split repeaters on one receiver (rdof/sdr/sdrsplit.h): each RX half an SDR modem on its own channel, each TX
+ * half a radio with its own clock. Every split comes up; inbound bursts on each channel, on that radio's slot grid,
+ * go up on their own repeater only, on their slot; the epochs sit on each radio's real slot starts. */
+#define NSPLIT RDOF_SDRSPLITS_MAX
+static struct {
+    double clock;
+    double rate, off; /* the receiver's 48 kS/s sample clock against the host's */
+    fake_radio_t f[NSPLIT];
+    uint8_t up[NSPLIT][4096];
+    size_t up_len[NSPLIT];
+} SP;
+
+static uint32_t sp_rx(int i) { return RXF + 25000u * (uint32_t)i; }
+static uint32_t sp_tx(int i) { return TXF + 25000u * (uint32_t)i; }
+static int64_t sp_pos(double t) { return (int64_t)llround(t * 48000.0 * (1 + SP.rate) + SP.off); }
+static void sp_to_radio(void *ctx, int i, const uint8_t *d, size_t n) { fake_write(&SP.f[i], d, n); }
+static void sp_to_host(void *ctx, int i, const uint8_t *d, size_t n)
+{
+    if (SP.up_len[i] + n <= sizeof SP.up[i]) {
+        memcpy(SP.up[i] + SP.up_len[i], d, n);
+        SP.up_len[i] += n;
+    }
+}
+static int sp_channel(void *ctx, uint32_t hz)
+{
+    for (int i = 0; i < NSPLIT; i++)
+        if (hz == sp_rx(i))
+            return i;
+    return -1;
+}
+static int64_t sp_now48(void *ctx) { return sp_pos(SP.clock); }
+
+static void sp_pump(rdof_sdrsplits_t *set)
+{
+    uint8_t buf[4096];
+    size_t n;
+    for (int i = 0; i < set->n; i++)
+        while ((n = fake_take(&SP.f[i], buf, sizeof buf)) > 0)
+            rdof_sdrsplits_from_radio(set, i, buf, n, SP.clock);
+}
+
+static void sp_run_to(rdof_sdrsplits_t *set, double until)
+{
+    while (SP.clock < until) {
+        SP.clock = fmin(until, SP.clock + 0.02);
+        rdof_sdrsplits_tick(set, SP.clock);
+        sp_pump(set);
+    }
+}
+
+static void sp_upstream(rdof_sdrsplits_t *set, int i, uint8_t cmd, const uint8_t *d, size_t n)
+{
+    uint8_t f[64];
+    const size_t len = rdof_mmdvm_frame(cmd, d, n, f, sizeof f);
+    rdof_sdrsplits_upstream(set, i, f, len, SP.clock);
+    sp_pump(set);
+}
+
+static frames_t sp_take_up(int i)
+{
+    frames_t f = {0};
+    rdof_mmdvm_reader_t r;
+    rdof_mmdvm_reader_init(&r);
+    rdof_mmdvm_reader_feed(&r, SP.up[i], SP.up_len[i], on_up, &f);
+    SP.up_len[i] = 0;
+    return f;
+}
+
+/* The start (host time) of the first inbound burst on slot at least ahead s from now on radio i's outbound grid. */
+static double sp_slot_time(int i, int slot, double ahead)
+{
+    const fake_radio_t *t = &SP.f[i];
+    double b;
+    const long k = fake_slot_boundary(t, fake_modem_f(t), &b);
+    if ((t->counter_base + (uint32_t)k) % 2)
+        b -= t->slot_period_us;
+    const double e = (b - t->clock_offset_us) / (1 + t->clock_rate) / 1e6;
+    const double slot_s = t->slot_period_us / 1e6 / (1 + t->clock_rate);
+    const double m = ceil((SP.clock + ahead - e) / (2 * slot_s));
+    return e + (2 * m + (slot == 2)) * slot_s + 0.00125;
+}
+
+static void test_sdrsplits(void)
+{
+    memset(&SP, 0, sizeof SP);
+    SP.clock = 1000.0;
+    SP.rate = 31e-6, SP.off = 4242424.0; /* a Pluto's crystal, unlearned */
+    for (int i = 0; i < NSPLIT; i++) {
+        fake_init(&SP.f[i], "odr_split");
+        SP.f[i].clock = &SP.clock;
+        SP.f[i].clock_offset_us = 1e6 * (i + 1) + 777.0 * i;
+        SP.f[i].clock_rate = (i - 3.5) * 6e-6;
+    }
+    static rdof_sdrsplits_t set;
+    const rdof_sdrsplits_io_t io = {sp_to_radio, sp_to_host, sp_channel, sp_now48, NULL};
+    rdof_sdrsplits_init(&set, &io, 1632000);
+    for (int i = 0; i < NSPLIT; i++)
+        CHECK(rdof_sdrsplits_add(&set, NULL, SP.clock) == i, "add %d: %s", i, set.error);
+    CHECK(rdof_sdrsplits_add(&set, NULL, SP.clock) == -1 && strstr(set.error, "at most"), "a ninth: %s", set.error);
+    sp_pump(&set);
+    sp_run_to(&set, SP.clock + 0.5);
+    CHECK(rdof_sdrsplits_ready(&set) && rdof_sdrsplits_failed(&set) < 0, "bring-up: ready %d, failed %d",
+          rdof_sdrsplits_ready(&set), rdof_sdrsplits_failed(&set));
+
+    /* each repeater's settings to its split: its own frequencies */
+    for (int i = 0; i < NSPLIT; i++) {
+        uint8_t cfg[20] = {0};
+        cfg[3] = RDOF_MODE_DMR;
+        cfg[6] = 1;
+        sp_upstream(&set, i, RDOF_MMDVM_SET_CONFIG, cfg, sizeof cfg);
+        const uint8_t mode = RDOF_MODE_DMR;
+        sp_upstream(&set, i, RDOF_MMDVM_SET_MODE, &mode, 1);
+        uint8_t fq[10] = {0};
+        for (int k = 0; k < 4; k++)
+            fq[1 + k] = (uint8_t)(sp_rx(i) >> (8 * k)), fq[5 + k] = (uint8_t)(sp_tx(i) >> (8 * k));
+        fq[9] = 100;
+        sp_upstream(&set, i, RDOF_MMDVM_SET_FREQ, fq, sizeof fq);
+    }
+    sp_run_to(&set, SP.clock + 0.5);
+    for (int i = 0; i < NSPLIT; i++) {
+        const frames_t f = sp_take_up(i);
+        CHECK(f.n == 3 && f.cmds[2] == (0x100 | RDOF_MMDVM_SET_FREQ) && rdof_sdrsplits_modem(&set, i)->channel == i &&
+                  SP.f[i].freq == sp_rx(i) && SP.f[i].tx_freq == sp_tx(i),
+              "split %d: %d replies, channel %d, the radio on %u / %u", i, f.n, rdof_sdrsplits_modem(&set, i)->channel,
+              (unsigned)SP.f[i].freq, (unsigned)SP.f[i].tx_freq);
+    }
+
+    /* 60 s of inbound bursts, a channel at a time in turn: each up on its own repeater only, on its slot */
+    int sent = 0, wrong = 0, stray = 0;
+    const double start = SP.clock;
+    for (int k = 0; SP.clock < start + 60; k++) {
+        const int i = k % NSPLIT, slot = (k / NSPLIT) % 2 ? 2 : 1;
+        const double t = sp_slot_time(i, slot, 0.05);
+        sp_run_to(&set, t);
+        rdof_sdr_burst_t b;
+        memset(&b, 0, sizeof b);
+        b.b.slot = 1;
+        b.b.dt = RDOF_DT_CSBK;
+        b.position = sp_pos(t);
+        rdof_sdrsplits_heard(&set, i, &b);
+        for (int j = 0; j < NSPLIT; j++) {
+            const frames_t f = sp_take_up(j);
+            int got = 0;
+            for (int m = 0; m < f.n; m++)
+                if (f.cmds[m] == RDOF_MMDVM_DMR_DATA1 || f.cmds[m] == RDOF_MMDVM_DMR_DATA2)
+                    got = f.cmds[m];
+            if (j != i)
+                stray += got != 0;
+            else
+                wrong += got != (slot == 1 ? RDOF_MMDVM_DMR_DATA1 : RDOF_MMDVM_DMR_DATA2);
+        }
+        sent++;
+    }
+    uint32_t labeled = 0, unlabeled = 0;
+    for (int i = 0; i < NSPLIT; i++) {
+        const rdof_sdrmodem_t *m = rdof_sdrsplits_modem(&set, i);
+        labeled += m->labeled[0] + m->labeled[1], unlabeled += m->unlabeled;
+        CHECK(!rdof_sdrsplits_split(&set, i)->failed[0] && !rdof_sdrsplits_split(&set, i)->dropped, "split %d: %s", i,
+              rdof_sdrsplits_split(&set, i)->failed);
+    }
+    CHECK(sent > 400 && !wrong && !stray && labeled == (uint32_t)sent && !unlabeled,
+          "%d bursts: %d on the wrong slot, %d on another repeater; %u labeled, %u not", sent, wrong, stray,
+          (unsigned)labeled, (unsigned)unlabeled);
+    printf("%d splits on one receiver: %d bursts, each up on its own repeater and slot\n", NSPLIT, sent);
+    rdof_sdrsplits_free(&set);
 }
 
 /* Without a split host: no epoch (DMR_DATA2, counted), the lease running out, the TX role refused. */
@@ -1804,6 +1972,7 @@ int main(void)
 #if RDOF_FEATURE_REPEATER
     test_cach();
     test_split_matrix();
+    test_sdrsplits();
     test_split_rx_solo();
     test_split_tx_solo();
     test_split_tx_utc();

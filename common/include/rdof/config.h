@@ -36,6 +36,8 @@ extern "C" {
 #ifndef RDOF_MAX_RADIOS
 #define RDOF_MAX_RADIOS 2
 #endif
+/* Units that transmit on a host at most (rdofradio: split repeaters on one SDR, each with its own radio). */
+#define RDOF_ROLES_MAX 8
 
 typedef struct {
     uint32_t freq;
@@ -168,9 +170,9 @@ typedef struct {
     char box[32];   /* the box's name ("radiofoundry" if none) */
     bool has_radio, has_sdr;
     char radio[24]; /* the first unit that transmits */
-    int nradios;    /* units that transmit: up to RDOF_MAX_RADIOS */
+    int nradios;    /* units that transmit: up to the platform's (a board RDOF_MAX_RADIOS, a host RDOF_ROLES_MAX) */
     bool usb_hub;   /* "usb_hub": true: the USB port has a hub, and every unit on it runs at once */
-    char radios[RDOF_MAX_RADIOS][24];
+    char radios[RDOF_ROLES_MAX][24];
     char sdr[32];   /* the SDR's name: its receiver's, else the device's */
 } rdof_roles_t;
 
