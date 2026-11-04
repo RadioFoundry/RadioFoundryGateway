@@ -1754,6 +1754,12 @@ own, a settled board follows the table as the room warms or cools (`cal_follow`)
 working: the AFC goes to -3 kHz, the estimate to 6.6 (the clip's transmitters' median adds 0.1), the RTL to 7 at
 60 s, the AFC back to the transmitters' own offsets.
 
+With a time reference (NTP, a GNSS PPS or its NMEA), the board learns its crystal from the sample clock only:
+a heard carrier's AFC says where that one transmission is (the channel follows it, to decode it), not where the board
+is, and on a bench it is the radio under test. Until the clock is trusted the table or the setting holds; an AFC
+value learned before a reference came is dropped then, and the table takes the sample clock's values only. The AFC
+learns the crystal only on a board with no reference at all.
+
 The chip moves by whole ppm; the channels take the rest, the sample clock's share included where the front end
 doesn't correct its rate (the LR2021: a channel 300 kHz from the center, 32 ppm off, is 9.6 Hz further). The
 board's best value (learned, else the table, else the setting) also goes to the front end (`set_xtal_ppm`): the

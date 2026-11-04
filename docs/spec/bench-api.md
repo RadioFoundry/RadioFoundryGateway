@@ -718,7 +718,7 @@ everything it reads and sends, to a fraction of a ppm, not to the chip's whole-p
 | field | meaning |
 |---|---|
 | `ppm` | the crystal's error the gateway uses (positive: fast) |
-| `ppm_source` | where it came from: `clock` (the sample clock timed against GNSS or NTP; the best), `afc` (the AFC on received traffic: the radios' own errors are in it), `table` (the board's temperature table), `kept` (saved by an earlier run), `setting` (`device.ppm`, rdofradio `--ppm`); absent or `none`: not known |
+| `ppm_source` | where it came from: `clock` (the sample clock timed against GNSS or NTP; the best), `afc` (the AFC on received traffic, only with no NTP or GNSS reference: the radios' own errors are in it), `table` (the board's temperature table), `kept` (saved by an earlier run), `setting` (`device.ppm`, rdofradio `--ppm`); absent or `none`: not known |
 | `lo_ppm` | what's left of it in the receiver's LO once the chip's correction (whole ppm on the LR2021 and the RTL) took its share |
 | `fs_ppm` | what's left in the sample clock: the LR2021 doesn't correct its sample rate (all of `ppm`); an RTL does, to 1/16.8 ppm |
 | `ppm_tol` | how far `ppm` may be off, ppm; `null`: not known |
@@ -733,7 +733,7 @@ tens of Hz) comes on top, and the transmitter's error is what's being measured. 
 |---|---|
 | `clock`, the fit trusted | twice the fit's standard error (the board's own clock rate's error in it: a PPS's is hundredths of a ppm, NTP's can be tenths) plus what the sample rate moved by over the last 10 minutes (a crystal still warming) |
 | `clock`, held while it times afresh | 0.5, or twice the new fit's error if more |
-| `afc` | 1.0: the channels agree within it; the radios' own errors are in it |
+| `afc` | 1.0: the channels agree within it; the radios' own errors are in it. Only on a board with no time reference: with NTP or GNSS the crystal is learned from the sample clock alone |
 | `table` | 0.5 |
 | `kept` | 1.0 |
 | `setting` | not known |

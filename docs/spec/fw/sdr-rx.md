@@ -296,8 +296,11 @@ Here `residual` is the error left after `chip` (the whole ppm set on the front e
 **Applying a step** (`ppm_tick`): `set_chip_ppm(chip + step)`, then every channel's correction
 moves by its base's change (`rebase`: the LO's and, where the front end leaves it, the sample clock's share), so no
 signal moves. Which source drives it:
-`xtal_trusted ? rdof_ppm_measured(xtal) : xtal_ever ? 0 : rdof_ppm_update(AFC)`. Once the sample clock has been trusted
-in a run, the AFC is never used again in that run.
+`xtal_trusted ? rdof_ppm_measured(xtal) : xtal_ever || time_referenced() ? 0 : rdof_ppm_update(AFC)`. With a time
+reference (netclock's source NTP, PPS or GNSS) the AFC never learns the crystal: a heard carrier's offset is that
+transmission's (on a bench, the radio under test); an AFC value from before the reference came is dropped, and
+`cal_learn` stores the sample clock's values only. Once the sample clock has been trusted in a run, the AFC is never
+used again in that run.
 
 **Start** (`ppm_start`, per front-end serial): `chip = lrint(kept)`, where kept is the temperature table's value at
 the die temperature (`nc_tcal_get`), else the tuner's "learned" record (the sample clock's coarse move), else the

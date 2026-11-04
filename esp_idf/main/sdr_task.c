@@ -1028,7 +1028,8 @@ static void cal_follow(void)
 static void cal_learn(double t)
 {
     const double v = rdof_ppm_learned(&ppm);
-    if (!settled || isnan(v) || isnan(die_c) || ppm.steady_s < RDOF_PPM_FIRST_SAVE_S)
+    /* the sample clock's only: an AFC value has the radios' errors in it, and would come back on a later run */
+    if (!settled || isnan(v) || !ppm.measured || isnan(die_c) || ppm.steady_s < RDOF_PPM_FIRST_SAVE_S)
         return;
     const int bin = nc_tcal_bin(die_c);
     if (bin == cal_put_bin && t - cal_put_t < CAL_AGAIN_S)
@@ -1040,7 +1041,17 @@ static void cal_learn(double t)
     rdof_ppm_saved(&ppm, t);
     const nc_tcal_entry_t *e = nc_tcal_find(&cal, die_c);
     ESP_LOGI(TAG, "ppm: learned %.2f at %.1f C (%s): the %d C bin is %.2f over %d, %d temperatures in the table", v,
-             die_c, ppm.measured ? "sample clock" : "AFC", bin, e ? e->v : NAN, e ? e->n : 0, cal.count);
+             die_c, "sample clock", bin, e ? e->v : NAN, e ? e->n : 0, cal.count);
+}
+
+/* Whether the board has a time reference to time its crystal against (NTP, a GNSS PPS or NMEA): then the crystal is
+ * learned from the sample clock only. A heard carrier says where that one transmission is (the channel's AFC follows
+ * it, to decode it), not where the board is: on a bench it is the radio under test, and its error would go into
+ * every later measurement. With no reference at all, the AFC is all there is. */
+static bool time_referenced(void)
+{
+    const netclock_source_t src = netclock_source();
+    return src == NETCLOCK_SRC_NTP || src == NETCLOCK_SRC_PPS || src == NETCLOCK_SRC_GNSS;
 }
 
 /* How far the crystal value in use may be off (ppm, 0: not known) and what it was timed against, for the bench's
@@ -1094,9 +1105,21 @@ static void ppm_tick(void)
     rate_tick(t);
     /* the sample clock, when it's good enough, else the AFC; once it has been, hold while it times afresh (after a
      * move) rather than go back to the AFC, which has the radios' own errors in it */
-    int step = xtal_trusted ? rdof_ppm_measured(&ppm, xtal, t)
-               : xtal_ever  ? 0
-                            : rdof_ppm_update(&ppm, corr, rx_freq, age, g_rx.C, t);
+    const bool referenced = time_referenced();
+    if (referenced && !ppm.measured && !isnan(rdof_ppm_learned(&ppm))) {
+        /* learned from the AFC before a reference came: drop it for the table or the setting until the clock is
+         * trusted */
+        const double was = rdof_ppm_learned(&ppm);
+        double before[RDOF_SDR_MAX_CHANNELS];
+        bases(was, before);
+        ppm.residual = NAN, ppm.steady_s = 0, ppm.channels = 0;
+        rebase(before, xtal_best());
+        ESP_LOGI(TAG, "ppm: a time reference: %.2f from the AFC dropped for %.2f (%s) until the sample clock is trusted",
+                 was, xtal_best(), assumed_src);
+    }
+    int step = xtal_trusted               ? rdof_ppm_measured(&ppm, xtal, t)
+               : xtal_ever || referenced ? 0
+                                         : rdof_ppm_update(&ppm, corr, rx_freq, age, g_rx.C, t);
     bool coarse = false;
     if (!xtal_trusted && rate_fit.valid && rate_fit.count >= RDOF_RATE_MIN_POINTS && xtal_err <= RATE_COARSE_ERR_PPM &&
         fabs(xtal - ppm.chip) >= RATE_COARSE_PPM) {
