@@ -1771,6 +1771,33 @@ static void test_signal(bool slow)
     rdof_sdrmodem_free(&m);
 }
 
+/* A crystal 2 ppm fast: the signal mode's carrier asked for f / (1 + 2 ppm), as DMR's (rdof_sdrmodem_carrier_ppm) */
+static void test_signal_ppm(void)
+{
+    static rdof_sdrmodem_t m;
+    const rdof_sdrmodem_io_t io = {no_reply, NULL, sg_tune, NULL, NULL};
+    CHECK(rdof_sdrmodem_init(&m, &io, SG_FS, SG_FS, false) == 0, "init");
+    rdof_sdrmodem_carrier_ppm(&m, 2.0);
+    sg_src_t s = {SG_FS, SG_N * 18, 0};
+    const rdof_sig_src_t src = {.freq = sg_freq, .done = sg_done, .peak_hz = 2500, .ctx = &s};
+    char why[96];
+    CHECK(rdof_sdrmodem_signal(&m, 438487500, &src, why, sizeof why), "signal: %s", why);
+    rdof_cf_t *x = calloc(SG_FS, sizeof *x);
+    long got = 0;
+    for (int64_t pos = 1000; got + 1000 <= SG_FS && rdof_sdrmodem_signal_state(&m) == 1; pos += 1000, got += 1000)
+        rdof_sdrmodem_pull_iq(&m, pos, x + got, 1000);
+    double sum = 0;
+    long n = 0;
+    for (long j = 1; j + 1 < (long)SG_N * 18 - 1; j++, n++) /* the tone's mean is 0 over whole cycles: the carrier */
+        sum += atan2(x[j + 1].im * x[j].re - x[j + 1].re * x[j].im, x[j + 1].re * x[j].re + x[j + 1].im * x[j].im) *
+               SG_FS / (2 * M_PI);
+    const double want = SG_OFF - 438487500.0 * 2e-6 / (1 + 2e-6);
+    CHECK(fabs(sum / n - want) < 1.0, "the carrier at %.2f Hz from the TX LO, not %.2f", sum / n, want);
+    rdof_sdrmodem_signal(&m, 0, NULL, why, sizeof why);
+    free(x);
+    rdof_sdrmodem_free(&m);
+}
+
 int main(void)
 {
     char report[1024];
@@ -1794,6 +1821,7 @@ int main(void)
     test_outbound_back();
 #endif
     test_signal(true);
+    test_signal_ppm();
     test_signal(false);
     for (int full = 0; full < 2; full++) {
         int f = rdof_sdrmodem_loopback(full, report, sizeof report);

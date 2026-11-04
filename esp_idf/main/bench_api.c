@@ -1024,7 +1024,7 @@ void bench_on_burst(void *ctx, int channel, const rdof_sdr_burst_t *b, double t)
     bench_line_burst(channel, b, t);
     if (!(n_burst_streams || (n_ambe_streams && voice)) || !burst_q)
         return;
-    burst_rec_t r = {.channel = channel, .position = b->position, .t = t, .cfo_hz = b->freq_offset_hz,
+    burst_rec_t r = {.channel = channel, .position = b->position, .t = t, .cfo_hz = sdr_burst_cfo_hz(channel, b),
                      .dev_hz = b->deviation_hz, .level_dbfs = (float)b->b.power_dbfs, .dt = (int8_t)b->b.dt,
                      .n = (int8_t)b->b.n, .slot = (int8_t)b->b.slot, .family = (int8_t)b->b.family,
                      .cc = (int8_t)b->b.cc, .sync_errors = (int8_t)b->b.sync_errors};

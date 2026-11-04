@@ -19,7 +19,7 @@
  * --set-os-clock steps the OS clock to it (root; for a box with nothing else setting the time, a PlutoSDR).
  *
  *   rdofradio DEVICE --allow-tx --rx MHZ [--tx MHZ] [--duplex full|half] [--cc CC] [-r RATE] [--bw MHZ]
- *             [--tx-gain DB] [--tx-lo MHZ] [--gain DB] [--center MHZ] [--monitor] [--tx-offset S]
+ *             [--tx-gain DB] [--tx-lo MHZ] [--gain DB] [--center MHZ] [--monitor] [--tx-offset S] [--ppm PPM]
  *             [--parrot ID] [--stream ARGS] [--seconds S] [--bursts] [--quiet] [-v] [--web [ADDR:]PORT]
  *             [--last-exit FILE] [--ota FILE] [--fft builtin|pffft] [--bench [ADDR:]PORT] [--bench-tx MHZ|LOW-HIGH,...]
  *   rdofradio DEVICE --allow-tx --config FILE [--clock-state FILE] [--set-os-clock] [the device's flags as above]
@@ -29,7 +29,9 @@
  *
  * DEVICE is --soapy ARGS (SoapySDR; -r defaults to 2.4 MS/s) or --iio URI (an AD9361 through libiio: "local:" on a
  * PlutoSDR, "ip:192.168.2.1" from a host; -r defaults to 768 kS/s, which the chip's own FIR makes with
- * libad9361). --web serves the page on 127.0.0.1 unless ADDR is given (0.0.0.0: every interface). --fft: the
+ * libad9361). --ppm PPM: the device's crystal error (positive: fast, fractions too), measured elsewhere: rdofradio
+ * doesn't measure it. Taken out in software, receive and transmit (xtal_ppm); without it, every frequency the bench
+ * reads or sends is off by the crystal's error. --web serves the page on 127.0.0.1 unless ADDR is given (0.0.0.0: every interface). --fft: the
  * channelizer's FFT, pffft when it's built in (RDOF_PFFFT). --last-exit FILE: where a supervisor records how the
  * last run ended (rdof_hostweb_last_exit; the Pluto bundle's run.sh): the page's crash card. --ota FILE: the page's
  * update (POST /api/ota) writes the new program there and stops, for the supervisor to start it. --bench serves the
@@ -111,6 +113,7 @@
 #include "rdof/split.h"
 #include "rdof/sdr/chzhw.h"
 #include "rdof/sdr/modes.h"
+#include "rdof/sdr/ppm.h"
 #include "rdof/sdr/receiver.h"
 #include "rdof/sdr/sdrmodem.h"
 #include "rdof/sdr/spectrum.h"
@@ -449,7 +452,7 @@ static void usage(void)
 {
     fprintf(stderr,
             "usage: rdofradio DEVICE --allow-tx --rx MHZ [--tx MHZ] [--duplex full|half] [--cc CC] [-r RATE] [--bw MHZ]\n"
-            "                 [--tx-gain DB] [--tx-lo MHZ] [--gain DB] [--center MHZ] [--monitor] [--tx-offset S]\n"
+            "                 [--tx-gain DB] [--tx-lo MHZ] [--gain DB] [--center MHZ] [--monitor] [--tx-offset S] [--ppm PPM]\n"
             "                 [--parrot ID] [--stream ARGS] [--seconds S] [--bursts] [--quiet] [-v] [--web [ADDR:]PORT]\n"
             "                 [--last-exit FILE] [--ota FILE] [--fft builtin|pffft] [--bench [ADDR:]PORT] [--bench-tx MHZ|LOW-HIGH,...]\n"
             "                 [--fpga-chz [ADDR]] (with --iio: the FPGA channelizer on a PlutoSDR, at 0x7C480000 by default)\n"
@@ -509,6 +512,19 @@ static int channel_of(double hz)
  * SoapySDR 3.2 MS/s, an RTL-SDR's (give others -r). With --fpga-chz, up to the most the block channelizes. */
 static bool dev_iio, dev_local;
 static double rate_flag;
+/* --ppm: the device's crystal error (ppm, positive: fast), NAN: not given. rdofradio doesn't measure it, and a
+ * PlutoSDR's own correction (xo_correction) reaches only 0.5 ppm: it is taken out in software, its LO and sample
+ * clock alike. The receiver's channels start where a carrier truly on frequency shows, the bench's rx and trigger
+ * tune there (the window's lo_ppm, fs_ppm) and its bursts' cfo is from the true frequency; the transmitter's
+ * carrier is moved by as much (rdof_sdrmodem_carrier_ppm). */
+static double xtal_ppm = NAN;
+static double xtal(void) { return isfinite(xtal_ppm) ? xtal_ppm : 0.0; }
+/* Where channel c's carrier sits when truly on frequency, from its nominal offset (Hz) */
+static double xtal_base_hz(int c)
+{
+    const double f = CH[c].freq_hz, c0 = R.rx.center_hz;
+    return rdof_ppm_seen_hz(f, c0, xtal(), xtal()) - (f - c0);
+}
 
 /* --fpga-chz [ADDR]: the FPGA channelizer on a PlutoSDR (rdof/sdr/chzhw.h) in place of the receiver's own. rdofradio
  * starts it with the receiver's channels, reads its frames from the receive DMA (rdofradio_iio.c's words) and gives
@@ -1577,6 +1593,8 @@ static void bl_window(void *ctx, rdof_bl_window_t *w)
     w->lo_hz = R.rx.center_hz - 0.4 * R.rate;
     w->hi_hz = R.rx.center_hz + 0.4 * R.rate;
     w->gain_db = dev ? dev->rx_gain(dev) : 0;
+    w->ppm = w->lo_ppm = w->fs_ppm = xtal(); /* nothing in the device takes it out */
+    w->ppm_source = isfinite(xtal_ppm) ? "setting" : NULL;
     w->iq_scale_db = 20 * log10(BL.ring.scale > 0 ? BL.ring.scale : 1);
     if (R.full) { /* the TX LO stays: the modulator's reach around it (tx_tune) */
         w->tx_lo_hz = R.tx_lo - (R.rate * 0.4 - 12.5e3);
@@ -1993,7 +2011,8 @@ static bool bench_ob_poll(double now)
     BO.s = (rdof_bl_ob_state_t){.keyed = keyed, .first = m->key_k, .next = m->slot_k, .base = m->base,
                                 .slot = (double)rdof_mod_slot_samples(&m->mod), .rate = m->tx_fs,
                                 .skips = (long)m->slot_skips, .last_from = m->skip_from, .last_to = m->skip_to,
-                                .on_air = keyed && BO.mapped, .map_pos = BO.map_pos, .map_t = BO.map_t};
+                                .on_air = keyed && BO.mapped, .map_pos = BO.map_pos, .map_t = BO.map_t,
+                                .ppm = xtal()};
     /* the CACH (12 symbols) and the burst's first 65.5 symbols, 10 samples a symbol at 48 kS/s */
     BO.s.sync_off = (int)llround(775.0 * m->tx_fs / 48000.0);
     BO.state = !m->keyed && m->key_k >= 0 ? 2 : keyed ? 1 : 0;
@@ -2227,9 +2246,13 @@ static void bench_feed(const rdof_cf_t *in, int n, bool fresh, bool filler)
     const double utc = wall_s();
     pthread_mutex_lock(&BL.mu);
     long clip = 0;
-    rdof_bl_ring_put(&BL.ring, (const float *)in, n, &clip);
-    if (filler)
-        rdof_bl_ring_mark_filler(&BL.ring, n);
+    if (FX.on) { /* no wideband I/Q: counted, not written (19.9 MS/s of zeros put took a third of the loop) */
+        rdof_bl_ring_skip(&BL.ring, n);
+    } else {
+        rdof_bl_ring_put(&BL.ring, (const float *)in, n, &clip);
+        if (filler)
+            rdof_bl_ring_mark_filler(&BL.ring, n);
+    }
     BL.clipped += clip, BL.seen += n;
     if (BL.seen > (long)(10 * R.rate))
         BL.clipped /= 2, BL.seen /= 2; /* the last ten seconds or so */
@@ -2264,7 +2287,9 @@ static void bench_burst(int c, const rdof_sdr_burst_t *b)
     o.ch = c;
     o.pos48 = b->position;
     o.t = bl_sc_utc(NULL, (uint64_t)((double)b->position * R.rate / 48000.0));
-    o.cfo_hz = (float)b->freq_offset_hz, o.dev_hz = (float)b->deviation_hz, o.level_dbfs = b->b.power_dbfs;
+    o.cfo_hz = (float)(rdof_sdr_rx_correction_at(&R.rx, c, b->position + RDOF_AFC_AT) + b->freq_offset_hz -
+                       xtal_base_hz(c));
+    o.dev_hz = (float)b->deviation_hz, o.level_dbfs = b->b.power_dbfs;
     o.dt = (uint8_t)b->b.dt, o.n = (int8_t)b->b.n, o.slot = (int8_t)b->b.slot, o.family = (int8_t)b->b.family;
     o.cc = (int8_t)b->b.cc, o.sync_errors = (int8_t)b->b.sync_errors;
     memcpy(o.raw, b->b.burst, sizeof o.raw);
@@ -3869,6 +3894,14 @@ int main(int argc, char **argv)
         } else if (!strcmp(a, "--bw")) {
             NEXT();
             bw = mhz(v);
+        } else if (!strcmp(a, "--ppm")) {
+            NEXT();
+            char *end;
+            xtal_ppm = strtod(v, &end);
+            if (*end || !isfinite(xtal_ppm) || fabs(xtal_ppm) > 200) {
+                fprintf(stderr, "--ppm: the crystal's error in ppm (positive: fast), -200 to 200\n");
+                return 2;
+            }
         } else if (!strcmp(a, "--tx-gain")) {
             NEXT();
             txg = atof(v);
@@ -4153,6 +4186,8 @@ int main(int argc, char **argv)
                                   "window%s", nmon ? " (the monitored channels with the radio's: a wider --rate, or fewer)" : "");
         return hold(argc, argv, why);
     }
+    for (int c = 0; c < NCH; c++) /* --ppm: each channel where its carrier shows */
+        rdof_sdr_rx_set_correction(&R.rx, c, xtal_base_hz(c));
     R.rx.on_burst = on_burst;
     R.rx.muted = muted;
     R.rx.relabel = relabel; /* the tracker's JSON (calls, BER, RSSI) with the inbound slot, not slot 1 */
@@ -4228,6 +4263,10 @@ int main(int argc, char **argv)
         fprintf(stderr, "modem: %s\n", R.m.error);
         return 1;
     }
+    rdof_sdrmodem_carrier_ppm(&R.m, xtal());
+    if (isfinite(xtal_ppm))
+        fprintf(stderr, "crystal: %+.3f ppm (--ppm), taken out in software: %+.1f Hz at %.5f MHz\n", xtal_ppm,
+                -R.rx.center_hz * xtal_ppm * 1e-6, R.rx.center_hz / 1e6);
     if (R.split) {
         fprintf(stderr, "FFT: %s\n",
 #ifdef RDOF_PFFFT

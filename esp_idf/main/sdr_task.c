@@ -51,6 +51,7 @@ static SemaphoreHandle_t rx_mutex;
 static TaskHandle_t dsp_task_handle;
 static rdof_fe_t fe;     /* the front end the settings name (sdr_start) */
 static int fe_ppm;     /* the whole ppm it's set to */
+static bool chan_based; /* the channels' corrections hold where their carriers sit (rebase); rx_setup's are 0 */
 static double fe_rate; /* the rate it really runs at (tune's) */
 static size_t fe_bytes; /* bytes a sample, in its format */
 static volatile bool fe_streaming; /* started and not stopped */
@@ -555,6 +556,7 @@ static bool rx_setup(void)
      * blocks' second buffers, taken now rather than on the first chunk */
     sdr_hot_arena_open();
     int bad = rdof_sdr_rx_init(&g_rx, &rc, ch, n, &sink, 0.0);
+    chan_based = false; /* ppm_start puts the crystal's share in */
     if (!bad && g_scfg.dsp_cores > 1)
         rdof_chz_reserve(&g_rx.chz, CHUNK);
     sdr_hot_arena_close();
@@ -812,6 +814,10 @@ static char ppm_serial[64];
 static int64_t ppm_last_us;
 static nc_tcal_t cal;
 static double ppm_assumed = NAN; /* what the chip and the channels' corrections assume, before any estimate */
+static const char *assumed_src = "setting"; /* where ppm_assumed came from: "table", "kept" or "setting" */
+/* sdr_ppm_now's, as of the last chunk: floats, each read whole without a lock */
+static volatile float now_xtal = NAN, now_chip, now_rate;
+static const char *volatile now_src = "setting";
 static int cal_put_bin = INT32_MIN;
 static double cal_put_t;
 
@@ -898,12 +904,38 @@ static void cal_store(const char *serial)
     nvs_close(h);
 }
 
-/* Each channel's correction moved by +f * step * 1e-6: moving the RTL's correction up by step ppm raises every
- * signal by that much. */
-static void ppm_shift_channels(double step)
+/* The crystal's error as best known: the learned value, else what the chip and the corrections assume. */
+static double xtal_best(void)
+{
+    const double v = rdof_ppm_learned(&ppm);
+    return !isnan(v) ? v : !isnan(ppm_assumed) ? ppm_assumed : fe_ppm;
+}
+
+/* What the front end's correction takes out of its sample rate now (the RTL's resampler; 0: the LR2021's isn't). */
+static double fs_corr(void) { return fe.ops && fe.ops->sample_ppm ? fe.ops->sample_ppm(fe.ctx) : 0.0; }
+
+/* Where channel c's carrier sits when it's truly on frequency, from the channel's nominal offset (Hz), for a
+ * crystal e ppm off: the chip corrects its LO by fe_ppm and its sample rate by fs_corr (rdof_ppm_seen_hz). */
+static double base_hz(int c, double e, int chip, double rate)
+{
+    const double f = rx_freq[c], c0 = g_rx.center_hz;
+    return rdof_ppm_seen_hz(f, c0, rdof_ppm_left(e, chip), rdof_ppm_left(e, rate)) - (f - c0);
+}
+
+static void bases(double e, double *out)
 {
     for (int c = 0; c < g_rx.C; c++)
-        rdof_sdr_rx_set_correction(&g_rx, c, g_rx.chz.correction_hz[c] + rx_freq[c] * step * 1e-6);
+        out[c] = base_hz(c, e, fe_ppm, fs_corr());
+}
+
+/* Each channel's correction moved by as much as its carrier moved: from where before had it (bases) to where it
+ * sits now for e. A chip step moves the LO's share (the center) and the sample rate's (the offset): an RTL's both, an
+ * LR2021's the LO's alone. */
+static void rebase(const double *before, double e)
+{
+    for (int c = 0; c < g_rx.C; c++)
+        rdof_sdr_rx_set_correction(&g_rx, c, g_rx.chz.correction_hz[c] + base_hz(c, e, fe_ppm, fs_corr()) - before[c]);
+    chan_based = true;
 }
 
 /* Start learning for this front end (the dongle, the simulated one, the chip): the chip at the whole ppm of what
@@ -917,17 +949,25 @@ static void ppm_start(const char *serial)
         const int chip_ppm = (int)ppm.chip;
         if (chip_ppm != fe_ppm && set_chip_ppm(chip_ppm))
             ESP_LOGW(TAG, "ppm: can't set the %s to %d: %s", chip(), chip_ppm, fe.ops->error(fe.ctx));
+        if (!chan_based) { /* a retune's new channels (rx_setup): their corrections hold nothing yet */
+            double zero[RDOF_SDR_MAX_CHANNELS] = {0};
+            rebase(zero, xtal_best());
+        }
         return;
     }
     int chip_ppm = (int)lrint(g_scfg.ppm);
     double kept = NAN;
+    assumed_src = "setting";
     const double die = netclock_die_c();
     nc_tcal_init(&cal);
     cal_put_bin = INT32_MIN;
     if (ppm_on) {
         cal_load(serial);
+        assumed_src = "table";
         if (!nc_tcal_get(&cal, die, &kept))
-            kept = ppm_load(serial);
+            kept = ppm_load(serial), assumed_src = "kept";
+        if (isnan(kept))
+            assumed_src = "setting";
         if (!isnan(kept))
             chip_ppm = (int)lrint(kept);
     }
@@ -938,9 +978,10 @@ static void ppm_start(const char *serial)
     snprintf(ppm_serial, sizeof ppm_serial, "%s", serial);
     rdof_ppm_init(&ppm, chip_ppm, kept);
     ppm_inited = true;
-    ppm_assumed = isnan(kept) ? chip_ppm : kept;
-    if (!isnan(kept))
-        ppm_shift_channels(-(kept - chip_ppm)); /* the fraction the chip can't take, into the corrections */
+    ppm_assumed = isnan(kept) ? (isfinite(g_scfg.ppm) ? g_scfg.ppm : chip_ppm) : kept;
+    /* the fraction the chip can't take, and the sample rate's share it doesn't, into the corrections */
+    double zero[RDOF_SDR_MAX_CHANNELS] = {0};
+    rebase(zero, ppm_assumed);
     ESP_LOGI(TAG, "ppm: %s; %s at %d ppm%s", serial, chip(), chip_ppm,
              !ppm_on ? ", learning off" : isnan(kept) ? ", nothing kept yet: learning" : "");
     if (cal.count)
@@ -963,15 +1004,17 @@ static void cal_follow(void)
     if (isnan(now) || fabs(want - now) < CAL_FOLLOW_PPM)
         return;
     const int to = (int)lrint(want), step = to - (int)ppm.chip;
+    double before[RDOF_SDR_MAX_CHANNELS];
+    bases(now, before);
     if (step) {
         if (set_chip_ppm(to)) {
             ESP_LOGW(TAG, "ppm: can't move the %s to %d: %s", chip(), to, fe.ops->error(fe.ctx));
             return;
         }
-        ppm_shift_channels(step);
         rdof_ppm_applied(&ppm, step);
     }
-    ppm_shift_channels(-(want - now)); /* the signals where the table expects them */
+    rebase(before, want); /* the signals where the table expects them, the chip's move included */
+    assumed_src = "table";
     if (!isnan(ppm.residual))
         ppm.residual = want - ppm.chip;
     ppm_assumed = want;
@@ -1012,8 +1055,12 @@ static void ppm_tick(void)
         return;
     }
     double corr[RDOF_SDR_MAX_CHANNELS], age[RDOF_SDR_MAX_CHANNELS];
+    const double e = xtal_best();
     for (int c = 0; c < g_rx.C; c++) {
-        corr[c] = g_rx.chz.correction_hz[c];
+        /* less the sample rate's share where the chip leaves it (an LR2021's): what rdof_ppm_update reads is the LO's */
+        const double lo_only = rdof_ppm_seen_hz(rx_freq[c], g_rx.center_hz, rdof_ppm_left(e, fe_ppm),
+                                                rdof_ppm_left(e, fe_ppm)) - (rx_freq[c] - g_rx.center_hz);
+        corr[c] = g_rx.chz.correction_hz[c] - (base_hz(c, e, fe_ppm, fs_corr()) - lo_only);
         age[c] = g_rx.last_pos[c] > 0 ? (double)(g_rx.out_index - g_rx.last_pos[c]) / RDOF_DEMOD_FS : -1.0;
     }
     rate_tick(t);
@@ -1032,10 +1079,13 @@ static void ppm_tick(void)
     }
     if (step) {
         const int to = (int)ppm.chip + step;
+        const double e = xtal_best();
+        double before[RDOF_SDR_MAX_CHANNELS];
+        bases(e, before);
         if (set_chip_ppm(to)) {
             ESP_LOGW(TAG, "ppm: can't move the %s to %d: %s", chip(), to, fe.ops->error(fe.ctx));
         } else {
-            ppm_shift_channels(step);
+            rebase(before, e); /* the carriers moved by the chip's step: the corrections with them */
             rdof_ppm_applied(&ppm, step);
             if (coarse) {
                 double expect;
@@ -1055,6 +1105,23 @@ static void ppm_tick(void)
 }
 
 double sdr_ppm_learned(void) { return ppm_learned; }
+
+void sdr_ppm_now(sdr_ppm_now_t *out)
+{
+    const double e = now_xtal, chip = now_chip, rate = now_rate;
+    *out = (sdr_ppm_now_t){.xtal = e, .chip = chip, .source = now_src,
+                           .lo_left = isnan(e) ? 0 : rdof_ppm_left(e, chip),
+                           .fs_left = isnan(e) ? 0 : rdof_ppm_left(e, rate)};
+}
+
+double sdr_burst_cfo_hz(int channel, const rdof_sdr_burst_t *b)
+{
+    if (channel < 0 || channel >= g_rx.C)
+        return b->freq_offset_hz;
+    const double e = now_xtal;
+    return rdof_sdr_rx_correction_at(&g_rx, channel, b->position + RDOF_AFC_AT) + b->freq_offset_hz -
+           (isnan(e) ? 0 : base_hz(channel, e, (int)now_chip, now_rate));
+}
 
 void sdr_ppm_status(sdr_ppm_status_t *out)
 {
@@ -1197,6 +1264,10 @@ static void chunk(const uint8_t *raw, int n, int split, bool *first, int filler)
     stage_us[SDR_STAGE_INPUT] += esp_timer_get_time() - t0;
     rx_lock();
     ppm_learned = (float)rdof_ppm_learned(&ppm);
+    now_xtal = (float)xtal_best(), now_chip = (float)fe_ppm, now_rate = (float)fs_corr();
+    now_src = !isnan(ppm_learned) ? (ppm.measured ? "clock" : "afc") : assumed_src;
+    if (fe.ops->set_xtal_ppm)
+        fe.ops->set_xtal_ppm(fe.ctx, now_xtal);
     /* Re-anchor stream time if it has drifted from the clock (dropped samples, NTP arriving): 1 s at
      * once. Once netclock is synced, also 100 ms, from the least lag over 2 s: netclock slews in what its first
      * reference says (a soft restart keeps the RTC's time, often a fraction of a second off), which never

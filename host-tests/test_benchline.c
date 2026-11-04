@@ -60,6 +60,7 @@ static struct {
     int tunes, untunes;
     int restart, down; /* window reads after a tune applies that say the receiver isn't running yet */
     char who[16];
+    double lo_ppm, fs_ppm; /* the crystal's error left in the samples (test_xtal) */
 } ft = {.center = NAN, .gain = NAN};
 static void f_window(void *ctx, rdof_bl_window_t *w)
 {
@@ -69,7 +70,8 @@ static void f_window(void *ctx, rdof_bl_window_t *w)
         ft.down--;
     *w = (rdof_bl_window_t){.running = running, .center_hz = c, .fs = 768000, .lo_hz = c - 0.3e6,
                             .hi_hz = c + 0.3e6, .gain_db = isnan(ft.gain) ? 20 : ft.gain, .dc_guard_hz = 25e3,
-                            .tx_lo_hz = c - 1e6, .tx_hi_hz = c + 1e6};
+                            .tx_lo_hz = c - 1e6, .tx_hi_hz = c + 1e6, .ppm = ft.lo_ppm, .lo_ppm = ft.lo_ppm,
+                            .fs_ppm = ft.fs_ppm, .ppm_source = ft.lo_ppm ? "clock" : NULL};
 }
 static int f_freqs(void *ctx, rdof_bl_freq_t *out, int max)
 {
@@ -777,6 +779,50 @@ static void test_trigger(void)
     rdof_bl_free(bl);
 }
 
+/* ── the crystal: a trigger tunes where a carrier truly on its frequency shows ── */
+
+static void test_xtal(void)
+{
+    rdof_bl_t *bl = rdof_bl_new(&PLAT);
+    double now = 3000;
+    static char all[1 << 20];
+    char info[4096];
+    rdof_bl_ring_init(&ring, 768000);
+    ft.lo_ppm = ft.fs_ppm = 10; /* 4.4 kHz at 439 MHz: past the trigger's 2 kHz */
+    int c = ask(bl, "{\"op\":\"info\"}", now);
+    drain(bl, c, info, sizeof info);
+    CHECK(strstr(info, "\"ppm\":10.000,\"ppm_source\":\"clock\",\"lo_ppm\":10.000,\"fs_ppm\":10.000"),
+          "info's window says the correction: %.600s", info);
+    rdof_bl_closed(bl, c, now);
+    put_tone(300, 0, 0);
+    c = ask(bl, "{\"op\":\"trigger\",\"freq\":438.1125,\"bw\":2000,\"pre_s\":0,\"post_s\":0.05,\"threshold_db\":10,"
+                "\"min_ms\":5,\"floor_s\":0.2,\"timeout_s\":2,\"fmt\":\"cf32\"}", now);
+    /* the carrier truly on 438.1125 MHz, where the crystal puts it: (f - center (1 + lo)) / (1 + fs) */
+    const double seen = (438.1125e6 - 438.225e6 * (1 + 10e-6)) / (1 + 10e-6);
+    size_t total = trig_run(bl, c, &now, 200, seen, 0.3f, all, 0, sizeof all);
+    total = trig_run(bl, c, &now, 100, 0, 0, all, total, sizeof all);
+    const char *done = NULL;
+    for (size_t i = 0; i + 7 < total && !done; i++)
+        if (!memcmp(all + i, "{\"done\"", 7))
+            done = all + i;
+    char v[32];
+    CHECK(done && field(done, "corr_hz", v, sizeof v) && fabs(atof(v) - (seen - (438.1125e6 - 438.225e6))) < 0.01 &&
+              strstr(done, "\"ppm_source\":\"clock\"") && field(done, "snr_db", v, sizeof v) && atof(v) > 20,
+          "fired on the carrier, tuned %.1f Hz for the crystal: %.500s", seen - (438.1125e6 - 438.225e6),
+          done ? done : all);
+    rdof_bl_closed(bl, c, now);
+    /* the same carrier with the correction unsaid: the channel at the nominal offset doesn't hear it */
+    ft.lo_ppm = ft.fs_ppm = 0;
+    c = ask(bl, "{\"op\":\"trigger\",\"freq\":438.1125,\"bw\":2000,\"pre_s\":0,\"post_s\":0.05,\"threshold_db\":10,"
+                "\"min_ms\":5,\"floor_s\":0.2,\"timeout_s\":0.5,\"fmt\":\"cf32\"}", now);
+    trig_run(bl, c, &now, 200, 0, 0, all, 0, sizeof all);
+    trig_run(bl, c, &now, 600, seen, 0.3f, all, 0, sizeof all);
+    CHECK(strstr(all, "\"code\":\"no_signal\""), "uncorrected, 4.6 kHz off: %.300s", all);
+    rdof_bl_closed(bl, c, now);
+    rdof_bl_ring_free(&ring);
+    rdof_bl_free(bl);
+}
+
 /* ── I/Q formats: a channel's weak signal in cs8 at the wideband's gain ── */
 
 static void test_iq_formats(void)
@@ -874,6 +920,25 @@ static void test_filler(void)
     CHECK(f.count == RDOF_BL_FILLS && rdof_bl_fills_count(&f, 0, 1000) == 0 &&
               rdof_bl_fills_count(&f, 1000, 10 * RDOF_BL_FILLS) == 5 * RDOF_BL_FILLS,
           "full: the oldest went (%ld before 1000)", rdof_bl_fills_count(&f, 0, 1000));
+
+    /* skip: counted as filler, nothing written, the zeros init gave it read back */
+    {
+        rdof_bl_ring_t r;
+        CHECK(rdof_bl_ring_init(&r, 1000), "a ring");
+        rdof_bl_ring_skip(&r, 600);
+        rdof_bl_ring_skip(&r, 700);
+        int8_t out[2 * 500];
+        memset(out, 1, sizeof out);
+        uint64_t oldest = 0, next = 0;
+        const long k = rdof_bl_ring_read(&r, 800, out, 500, &oldest, &next);
+        int nz = 0;
+        for (long i = 0; i < 2 * k; i++)
+            nz += out[i] != 0;
+        CHECK(r.w == 1300 && next == 1300 && k == 500 && !nz, "skip: 1300 counted, 500 zeros read: %llu, %ld, %d",
+              (unsigned long long)r.w, k, nz);
+        CHECK(rdof_bl_ring_filled(&r, 800, 500) == 500, "skip: filler: %ld", rdof_bl_ring_filled(&r, 800, 500));
+        rdof_bl_ring_free(&r);
+    }
 
     /* a capture over filler: gap_samples counts what's in it (not what's before), the frame says gap */
     rdof_bl_t *bl = rdof_bl_new(&PLAT);
@@ -2078,6 +2143,7 @@ int main(int argc, char **argv)
         return serve(atoi(argv[2]), atof(argv[3]));
     test_ops();
     test_trigger();
+    test_xtal();
     test_filler();
     test_iq_formats();
     test_decode();

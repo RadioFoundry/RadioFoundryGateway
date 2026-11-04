@@ -460,7 +460,7 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
 
 | op | request | replies |
 |---|---|---|
-| `info` | | `window` (`enabled`, `lo`, `hi`, `center` MHz, `fs`, `gain`, `dc_guard_khz`, `ppm`, `tx_lo`, `tx_hi` MHz: where the transmitter tunes now, each platform's own limit (a W12: 1 MHz either side of `center`, the LR2021's one synthesizer; rdofradio in full duplex: the modulator's reach around its TX LO); both 0: anywhere it can), `tune` (null, or `session`, `label`, `for` `"session"` or `"request"`, `state` `"tuning"` or `"tuned"`), `sdr` (`"shared"` when the receiver runs), `channels` (one per receiver channel and TX frequency: `freq`, `ch`, `in_window`, `listed`, `caps`, `claimed_by`, `keyed`), `tx_bands` (`[low, high]` MHz each: where else it may transmit, `bench.tx.bands_hz` or rdofradio's `--bench-tx LOW-HIGH`; a frequency in one is a transmit frequency as a listed one with `tx` is), `stations` (`modem`: the gateway's own SDR modem, `kind` `sdrmodem`, `tx`, `held_by`, `waiting`), `modem` (`held_by`, `waiting`, `next_job_eta`), `default_caps`, `device` (kind, name, version), `signal_modes` (section 14.6) |
+| `info` | | `window` (`enabled`, `lo`, `hi`, `center` MHz, `fs`, `gain`, `dc_guard_khz`, `ppm`, `ppm_source`, `lo_ppm`, `fs_ppm` (section 14.7), `tx_lo`, `tx_hi` MHz: where the transmitter tunes now, each platform's own limit (a W12: 1 MHz either side of `center`, the LR2021's one synthesizer; rdofradio in full duplex: the modulator's reach around its TX LO); both 0: anywhere it can), `tune` (null, or `session`, `label`, `for` `"session"` or `"request"`, `state` `"tuning"` or `"tuned"`), `sdr` (`"shared"` when the receiver runs), `channels` (one per receiver channel and TX frequency: `freq`, `ch`, `in_window`, `listed`, `caps`, `claimed_by`, `keyed`), `tx_bands` (`[low, high]` MHz each: where else it may transmit, `bench.tx.bands_hz` or rdofradio's `--bench-tx LOW-HIGH`; a frequency in one is a transmit frequency as a listed one with `tx` is), `stations` (`modem`: the gateway's own SDR modem, `kind` `sdrmodem`, `tx`, `held_by`, `waiting`), `modem` (`held_by`, `waiting`, `next_job_eta`), `default_caps`, `device` (kind, name, version), `signal_modes` (section 14.6) |
 | `status` | | `sdr`, `receiver` (`seconds`, `overflows`, `clip_pct`, `dsp_skipped`, `decode_dropped`, `captures`), `held`, `waiting`, `sessions`, `tx` (section 7's) |
 | `session` | `label`, `expect_s`, `max_s` | `{"session": ID, "label"}`, then nothing until the connection closes (the session ends with it) or the session's `max_s` runs out (`{"ended": "max_s"}`) |
 | `claim` | `session`, `freqs`, `caps`, `wait_max` | queued / granted, `{"claimed": [MHz], "window"}` |
@@ -496,7 +496,7 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
   to `pre_s` seconds from before the request (the I/Q history, section 9), at most half of what the history holds
   (the other half is room for the client to be behind; about 0.9 s on a board). The receiver isn't retuned: `gain` and
   `offset_khz` are noted in the metadata and otherwise ignored, and a frequency outside the window is `refused`.
-  `meta` is what `FILE.json` holds: `freq` and `center` (Hz), `fs`, `fmt` `"cs8"`, `gain`, `ppm`, `t0` (UTC of
+  `meta` is what `FILE.json` holds: `freq` and `center` (Hz), `fs`, `fmt` `"cs8"`, `gain`, `ppm`, `ppm_source`, `lo_ppm`, `fs_ppm` (what's left in the samples, section 14.7), `t0` (UTC of
   sample 0), `seconds`, `overflows`, `gap_samples`, `clip_pct`, `pre_s`, `scale_db`. `gap_samples` counts the
   samples the capture doesn't have: those the history overwrote before they went (sent as nothing: the client
   fills them from `sc`) and the board's filler where the front end lost samples (zeros, kept in the history with
@@ -514,12 +514,12 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
   after the rise. Samples are cf32 or cs16, full scale 1.0 = cs8's 127. Nothing in `timeout_s` (60) is
   `no_signal`. `meta` is the daemon's: `freq`, `center`, `fs` and `rate` (the channel's), `wide_fs`, `fmt`, `bw`,
   `t0`, `trigger_time`, `signal_start_sample`, `trigger_sc`, `level_db`, `floor_db`, `snr_db`, `threshold_db`,
-  `seconds`, `samples`, `pre_s`, `gap_samples` (output samples lost, and the wideband filler in what it sent, in
+  `seconds`, `samples`, `pre_s`, `ppm`, `ppm_source`, `corr_hz` (where the channel was mixed from, past the nominal offset, for the crystal; section 14.7), `fs_ppm`, `gap_samples` (output samples lost, and the wideband filler in what it sent, in
   output samples), `clip_pct`, `scale_db`. The engine filters on its own thread
   (up to twice the input since the last tick), about 20 multiplies a wideband sample for one trigger.
 - `bursts` and `listen` send the receiver channel's bursts at `freq` as `dmr-bursts` records (section 6.3's fields
-  with the daemon's names: `t`, `dt_prev_ms`, `grid_err_ms`, `slot_ab`, `sync`, `kind`, `cc`, `cfo_hz`,
-  `level_dbfs`, `dev_hz`, `pi`, `lcss`, `fec`, `lc`, `raw_hex`; no `sym_err` yet), the summary the daemon's (`bursts`, `kinds`,
+  with the daemon's names: `t`, `dt_prev_ms`, `grid_err_ms`, `slot_ab`, `sync`, `kind`, `cc`, `cfo_hz` (the burst's carrier
+  from its true frequency, the crystal taken out: section 14.7), `level_dbfs`, `dev_hz`, `pi`, `lcss`, `fec`, `lc`, `raw_hex`; no `sym_err` yet), the summary the daemon's (`bursts`, `kinds`,
   `first_t`, `last_t`, `seconds`, `cfo_hz`, `level_dbfs`, `ended`). `bursts` includes idle bursts (a repeater's hang
   is all idle); `listen` leaves them out. The bench's own transmission is in them: the receiver hears it as any
   other signal. BS-sync bursts (a repeater's outbound) carry the slot from their CACH; `t` and `sc` are at the
@@ -709,3 +709,38 @@ s once the first 30 ms of carrier have set it; the first 60 ms after a key-up ar
 the residual FM on the carrier, a transmitter's AM-to-PM) and `spectrum` when asked. Lead and tail carrier count in
 the averages (the rms and the tone's depth and SINAD): for a tone's figures send `lead_s` and `tail_s` 0, or read the
 blocks.
+
+### 14.7 Frequency correction
+
+The bench's measurements find radios whose frequency is off, so the gateway takes its own crystal's error out of
+everything it reads and sends, to a fraction of a ppm, not to the chip's whole-ppm step. `info`'s window says how:
+
+| field | meaning |
+|---|---|
+| `ppm` | the crystal's error the gateway uses (positive: fast) |
+| `ppm_source` | where it came from: `clock` (the sample clock timed against GNSS or NTP; the best), `afc` (the AFC on received traffic: the radios' own errors are in it), `table` (the board's temperature table), `kept` (saved by an earlier run), `setting` (`device.ppm`, rdofradio `--ppm`); absent or `none`: not known |
+| `lo_ppm` | what's left of it in the receiver's LO once the chip's correction (whole ppm on the LR2021 and the RTL) took its share |
+| `fs_ppm` | what's left in the sample clock: the LR2021 doesn't correct its sample rate (all of `ppm`); an RTL does, to 1/16.8 ppm |
+
+A carrier truly at f shows at `(f - center (1 + lo_ppm 1e-6)) / (1 + fs_ppm 1e-6)` Hz from the center in the
+samples (`rdof_ppm_seen_hz`). What each op does with it:
+
+- `bursts`, `listen`, the HTTP bursts stream: corrected. Each receiver channel is mixed from where a carrier on its
+  frequency shows, and `cfo_hz` is the burst's carrier from its true frequency (the AFC's correction less the
+  crystal's share), so a radio 150 Hz high says +150 at any crystal error.
+- `trigger` and `rx`: corrected the same way (`corr_hz`, `ppm` and `ppm_source` in their headers).
+- `capture`: not corrected. It sends the receiver's samples as they are; the header's `lo_ppm` and `fs_ppm` are
+  what's left in them, for the client to take out.
+- `tx`, `run`, `bench_repeater` on a W12: the LR2021's carrier is set for the fractional `ppm`. On rdofradio the
+  modulator's carrier (DMR and the signal modes) is offset by `f ppm / (1 + ppm)` in the samples.
+- rdofradio doesn't measure its crystal: give it `--ppm` (from a reference signal, or the PlutoSDR's measured XO).
+  Without it `ppm_source` is absent and nothing is corrected. The AD9361's own `xo_correction` reaches only about
+  0.5 ppm, so rdofradio corrects in its samples.
+- MMDVM mode (an MMDVM modem as the station): the modem's hardware sets its frequencies; the gateway corrects
+  nothing there. Set its offsets (`--rx-offset-hz`, `--tx-offset-hz`) from a measurement.
+- The board's receive LO keeps the whole-ppm step; the channels take the fraction (and the sample clock's share),
+  so a wideband `WS /iq` stream is off by `lo_ppm` and `fs_ppm` as a capture is.
+
+A source of `afc` means the correction came from radios, so a radio's error measured against it is relative to the
+others it heard; `clock` is absolute. `rfgbench.py info` shows the correction, and the client warns on stderr
+when the gateway's crystal error isn't known.

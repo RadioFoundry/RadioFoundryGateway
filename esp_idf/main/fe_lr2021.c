@@ -101,6 +101,10 @@ static struct {
     char id[32];
     double rate, center, native;
     int ppm;
+    /* the crystal's error as best known, the fraction too (set_xtal_ppm; NAN: not yet, ppm then): for the carrier
+     * and the chip's own DMR receiver, set in Hz. The receive session's LO keeps the whole ppm: moving it costs a
+     * new session (CalibFE, spec R2.5), and the channels take the fraction. */
+    volatile double xtal;
     double gain;          /* a step, or NAN for the AGC */
     /* The mode (pick): narrow, the LoRa modem at 125 kS/s and int16 I/Q (the first one proven, spec R2.8);
      * wide, the FSK modem, its rate converted by the chip to the settings' rate, int8 I/Q (spec R2.19 to R2.21), or
@@ -126,7 +130,7 @@ static struct {
     } blk;                /* read()'s, from start(): internal RAM once the DSP has its own, else PSRAM */
     portMUX_TYPE lock;
     rdof_fe_stats_t stats;
-} st = {.lock = portMUX_INITIALIZER_UNLOCKED};
+} st = {.lock = portMUX_INITIALIZER_UNLOCKED, .xtal = NAN};
 
 /* The memory plan's "sdr_fe" (mem.c): the driver's handle with its 1 KB SPI frames (DMA-capable, aligned to 4: see
  * lr2021.h), the reader's stack, the ring and read()'s blocks (PSRAM), and what the SPI bus takes of DMA memory for
@@ -396,6 +400,11 @@ static int tune(void *ctx, double rate, double center_hz, int ppm, double *got_r
     unlock();
     return r;
 }
+
+/* What the carrier is corrected by: the crystal's error as best known, else the receiver's whole ppm. */
+static double carrier_ppm(void) { return isfinite(st.xtal) ? st.xtal : st.ppm; }
+
+static void set_xtal_ppm(void *ctx, double ppm) { st.xtal = ppm; }
 
 static int set_ppm(void *ctx, int ppm)
 {
@@ -751,7 +760,7 @@ static void tx_run(int64_t k0, int n, int64_t t_key)
     const lr2021_iq_tx_t t = {
         .mode = polar ? LR2021_TX_IQ_POLAR : LR2021_TX_FREQ,
         .center_hz = tx.hz,
-        .ppm = st.ppm,
+        .ppm = carrier_ppm(),
         .rate = TX_RATE,
         .fdev_hz = TX_FDEV,
         .power_dbm = tx.power,
@@ -878,7 +887,7 @@ static int64_t tx_run_long(int64_t k0, int64_t k1, int64_t t_key)
     const lr2021_iq_tx_t t = {
         .mode = mode,
         .center_hz = tx.hz,
-        .ppm = st.ppm,
+        .ppm = carrier_ppm(),
         .rate = TX_RATE,
         .fdev_hz = TX_FDEV,
         .power_dbm = tx.power,
@@ -1316,6 +1325,7 @@ static const rdof_fe_ops_t ops = {
     .wait = wait,
     .tune = tune,
     .set_ppm = set_ppm,
+    .set_xtal_ppm = set_xtal_ppm,
     .set_gain = set_gain,
     .gain_steps = gain_steps,
     .start = start,
@@ -1741,7 +1751,7 @@ int fe_lr2021_dmr_rx(double hz, int family)
         return -1;
     uint8_t f[16];
     esp_err_t e;
-    const uint32_t chip_hz = lr2021_freq_corrected(hz, st.ppm), cal_hz = (uint32_t)lrint(hz);
+    const uint32_t chip_hz = lr2021_freq_corrected(hz, carrier_ppm()), cal_hz = (uint32_t)lrint(hz);
     int r = -1;
     lock();
     rf_switch(hz);

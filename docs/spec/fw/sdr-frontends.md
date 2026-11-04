@@ -42,6 +42,7 @@ Related: [sdr.md](sdr.md), [sdr-rx.md](sdr-rx.md), [sdr-tx.md](sdr-tx.md), [../l
 | `read(ctx, out, want, ms, *filled)` | bytes, with `*filled` bytes of gap filler among them |
 | `gone`, `stats`, `identity`, `error` | unplugged; counters; the serial (key for ppm learning); last error |
 | `sample_ppm` (optional) | the ppm the correction takes out of the sample rate; absent = no sample clock |
+| `set_xtal_ppm(ctx, ppm)` (optional) | the crystal's error as the board knows it now, fractional (the LR2021 sets its TX carrier and the DMR receiver's from it; the chip's LO correction stays whole) |
 | `post(ctx, x, n)` (optional) | runs on the float samples after conversion (sim: offset and loopback) |
 | `spike` (optional) | USB throughput test |
 | `tx_set(ctx, src, dBm)` (optional) | start or stop pulling transmit samples from `rdof_fe_tx_source_t {pull_iq, pull_freq, ctx}` |

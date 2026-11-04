@@ -186,11 +186,25 @@ def printer(d, data):
     print(json.dumps(d), flush=True)
 
 
+def tx_listed(d: dict, mhz: float) -> bool:
+    """mhz is a frequency info lists with a TX cap (a site frequency, or one of bench.tx's freqs_hz)."""
+    return any(abs(ch["freq"] - mhz) < 1e-4 and {"tx", "sdr_tx", "mmdvm_tx"} & set(ch["caps"]) for ch in d["channels"])
+
+
 def tx_allowed(d: dict, mhz: float) -> bool:
     """mhz is one info says the gateway may transmit on: a listed frequency with a TX cap, or in one of its bands."""
-    if any(abs(ch["freq"] - mhz) < 1e-4 and {"tx", "sdr_tx", "mmdvm_tx"} & set(ch["caps"]) for ch in d["channels"]):
-        return True
-    return any(lo - 1e-7 <= mhz <= hi + 1e-7 for lo, hi in d.get("tx_bands", []))
+    return tx_listed(d, mhz) or any(lo - 1e-7 <= mhz <= hi + 1e-7 for lo, hi in d.get("tx_bands", []))
+
+
+def xtal_note(w: dict) -> str:
+    """How the gateway's frequencies are corrected for its crystal, from info's window, as a phrase."""
+    src, ppm = w.get("ppm_source", "none"), w.get("ppm", 0)
+    if src in ("none", None) or (src == "setting" and not ppm):
+        return "its crystal's error isn't known or set: every frequency it reads or sends is off by it"
+    how = {"clock": "its sample clock timed against GNSS or NTP", "afc": "the AFC on traffic (radios' own errors in it)",
+           "table": "its temperature table", "kept": "the value kept from an earlier run",
+           "setting": "the settings (device.ppm, rdofradio --ppm)"}.get(src, src)
+    return f"crystal {ppm:+.3f} ppm from {how}"
 
 
 def check_reach(a, mhz: float, tx: bool) -> None:
@@ -204,6 +218,14 @@ def check_reach(a, mhz: float, tx: bool) -> None:
     w = d.get("window") or {}
     if mhz is None:
         return
+    if w.get("enabled") and "ppm_source" in w and (w["ppm_source"] in ("none", None) or
+                                                   (w["ppm_source"] == "setting" and not w.get("ppm"))):
+        print(f"{NOTE} warning: {xtal_note(w)}", file=sys.stderr, flush=True)
+    if tx and "channels" in d and tx_allowed(d, mhz) and not tx_listed(d, mhz):
+        print(f"{NOTE} note: {mhz:.4f} MHz is in a TX band but isn't one of the gateway's listed frequencies: a DMR "
+              f"job there borrows the modem and sends its bursts as built (on a roamer: no router framing, and the "
+              f"roamer pauses while it runs). If a result looks odd, compare it with a listed frequency",
+              file=sys.stderr, flush=True)
     if tx and "channels" in d and not tx_allowed(d, mhz):
         bands = ", ".join(f"{b[0]:.4f}-{b[1]:.4f}" for b in d.get("tx_bands", []))
         print(f"{NOTE} warning: {mhz:.4f} MHz isn't a transmit frequency of this gateway"
@@ -249,6 +271,9 @@ def cmd_info(a) -> int:
     else:
         print(f"shared RX window {w['lo']:.4f}-{w['hi']:.4f} MHz (center {w['center']:.5f}, {w['fs'] / 1e6:.3f} MS/s, "
               f"gain {w['gain']} dB): {d['sdr']}")
+        if "ppm_source" in w:
+            print(f"frequency: {xtal_note(w)}; left in the I/Q: LO {w.get('lo_ppm', 0):+.3f} ppm, sample clock "
+                  f"{w.get('fs_ppm', 0):+.3f} ppm (rx, trigger and the bursts' cfo take it out; a capture keeps it)")
     print(f"{'MHz':>10} {'ch':>3} {'window':6} {'caps':34} held by")
     for ch in d["channels"]:
         held = ch["claimed_by"]

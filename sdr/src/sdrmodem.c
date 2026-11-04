@@ -141,10 +141,18 @@ void rdof_sdrmodem_grid_map(rdof_sdrmodem_t *m, bool ok, int64_t i0, int64_t t0_
         m->grid_i0 = i0, m->grid_t0 = t0_ns, m->grid_rate = rate;
 }
 
+/* The modulator's offset for a carrier at hz, off Hz from the TX LO: the LO and the sample clock both run
+ * carrier_ppm fast, so what's sent comes out at (LO + offset) (1 + ppm); asked for hz / (1 + ppm). */
+static double carrier_off(const rdof_sdrmodem_t *m, double hz, double off)
+{
+    const double e = m->carrier_ppm * 1e-6;
+    return off - hz * e / (1.0 + e);
+}
+
 static void retune_carrier(rdof_sdrmodem_t *m)
 {
     if (m->mod_ok)
-        rdof_mod_set_offset(&m->mod, m->tune_off_hz - m->carrier_ppm * 1e-6 * (double)m->tx_hz);
+        rdof_mod_set_offset(&m->mod, carrier_off(m, (double)m->tx_hz, m->tune_off_hz));
 }
 
 void rdof_sdrmodem_carrier_ppm(rdof_sdrmodem_t *m, double ppm)
@@ -1337,7 +1345,7 @@ bool rdof_sdrmodem_signal(rdof_sdrmodem_t *m, uint32_t hz, const rdof_sig_src_t 
         if (m->sig_on && m->tuned && m->io.tx_tune) { /* back where DMR was */
             double off = 0;
             if (m->io.tx_tune(m->io.ctx, m->tx_hz, &off))
-                rdof_mod_set_offset(&m->mod, off);
+                rdof_mod_set_offset(&m->mod, carrier_off(m, (double)m->tx_hz, off));
         }
         m->sig_on = false;
         return true;
@@ -1356,7 +1364,7 @@ bool rdof_sdrmodem_signal(rdof_sdrmodem_t *m, uint32_t hz, const rdof_sig_src_t 
     }
     m->sig = *src;
     m->sig_on = true;
-    m->sig_off_hz = off;
+    m->sig_off_hz = carrier_off(m, (double)hz, off);
     m->sig_phase = 0;
     m->sig_done_at = -1;
     m->sig_d = src->rate > 0 && src->rate < m->tx_fs ? (int)lround(m->tx_fs / src->rate) : 1;

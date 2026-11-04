@@ -1747,6 +1747,13 @@ own, a settled board follows the table as the room warms or cools (`cal_follow`)
 working: the AFC goes to -3 kHz, the estimate to 6.6 (the clip's transmitters' median adds 0.1), the RTL to 7 at
 60 s, the AFC back to the transmitters' own offsets.
 
+The chip moves by whole ppm; the channels take the rest, the sample clock's share included where the front end
+doesn't correct its rate (the LR2021: a channel 300 kHz from the center, 32 ppm off, is 9.6 Hz further). The
+board's best value (learned, else the table, else the setting) also goes to the front end (`set_xtal_ppm`): the
+W12's transmit carrier is set to it, fraction and all. The bench ops (bursts' `cfo_hz` from the true frequency,
+`rx`, `trigger`) use the same; a wideband capture keeps what's left and says so (docs/spec/bench-api.md, 14.7).
+rdofradio doesn't learn it: `--ppm` gives it, and corrects the receiver's channels and the modulator's carrier.
+
 The sample clock gives the same error without any traffic, and without the transmitters' errors in it. The
 RTL2832U's samples and the R820T's LO come from one 28.8 MHz crystal, so the rate the samples really arrive at
 says how far off the crystal is (`rdof/sdr/rate.h`):

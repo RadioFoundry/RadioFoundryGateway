@@ -293,7 +293,8 @@ void rdof_sdrmodem_grid(rdof_sdrmodem_t *m, bool on, int offset_us);
 void rdof_sdrmodem_grid_map(rdof_sdrmodem_t *m, bool ok, int64_t i0, int64_t t0_ns, double rate);
 /* The gate: false stops transmitting (unkeyed, DMR data refused) until true again. */
 void rdof_sdrmodem_set_transmit(rdof_sdrmodem_t *m, bool transmit);
-/* The front end's crystal error the transmitter isn't corrected for: the carrier moves by -ppm of the TX frequency. */
+/* The front end's crystal error the transmitter isn't corrected for (ppm, positive: fast; its LO and its sample
+ * clock alike): the modulator asks for f / (1 + ppm), so DMR and a signal mode's carrier both come out on f. */
 void rdof_sdrmodem_carrier_ppm(rdof_sdrmodem_t *m, double ppm);
 /* A heard burst's UTC slot (inbound: TS1 in even n, aligned timing) from the map; false without one. */
 bool rdof_sdrmodem_utc_slot(const rdof_sdrmodem_t *m, int64_t pos48, int64_t *n, int *ts, int64_t *utc_ns);

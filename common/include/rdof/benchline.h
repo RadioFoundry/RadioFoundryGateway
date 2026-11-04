@@ -69,10 +69,21 @@ typedef struct {
 
 typedef struct {
     bool running;        /* the receiver runs */
-    double center_hz, fs, lo_hz, hi_hz, gain_db, dc_guard_hz, ppm;
+    double center_hz, fs, lo_hz, hi_hz, gain_db, dc_guard_hz;
+    double ppm;          /* the crystal's error as best known (ppm, positive: fast) */
+    /* What's left of it in the stream's samples, the chip's corrections taken out: in its LO and its sample clock
+     * (ppm, positive: fast). A carrier truly at f shows at rdof_bl_seen_hz; rx and trigger tune there. */
+    double lo_ppm, fs_ppm;
+    const char *ppm_source; /* where ppm came from ("clock", "afc", "table", "kept", "setting"); NULL: not known */
     double tx_lo_hz, tx_hi_hz; /* where the transmitter tunes now (one synthesizer, a fixed TX LO); 0, 0: anywhere it can */
     double iq_scale_db;  /* the captures' cs8 full scale under the ADC's (the ring's scale, in dB; 0: the same) */
 } rdof_bl_window_t;
+
+/* Where a carrier truly at f shows in the window's samples: Hz from the center as they count it. */
+static inline double rdof_bl_seen_hz(const rdof_bl_window_t *w, double f)
+{
+    return (f - w->center_hz * (1.0 + w->lo_ppm * 1e-6)) / (1.0 + w->fs_ppm * 1e-6);
+}
 
 #define RDOF_BL_VOICE_SYNC 0xF0 /* RDOF_DT_VOICE_SYNC */
 #define RDOF_BL_VOICE 0xF1      /* RDOF_DT_VOICE */
@@ -82,7 +93,9 @@ typedef struct {
     int ch;              /* receiver channel */
     double t;            /* UTC seconds at the burst's start */
     int64_t pos48;       /* the channel's 48 kS/s sample at its start */
-    float cfo_hz, dev_hz, level_dbfs;
+    float cfo_hz;        /* the carrier from the channel's true frequency (Hz): the platform's AFC, its demod's offset and
+                          * its crystal correction together */
+    float dev_hz, level_dbfs;
     uint8_t dt;          /* data type 0-11, RDOF_BL_VOICE_SYNC (A), RDOF_BL_VOICE (B-F), as rdof_burst_t */
     int8_t n, slot, family, cc, sync_errors;
     uint8_t raw[33];
@@ -318,6 +331,9 @@ void rdof_bl_ring_free(rdof_bl_ring_t *r);
 void rdof_bl_ring_put(rdof_bl_ring_t *r, const float *iq, long n, long *clipped);
 /* The last n samples put are filler (zeros where the receiver lost samples). */
 void rdof_bl_ring_mark_filler(rdof_bl_ring_t *r, long n);
+/* n samples of filler counted, nothing written: for a ring that is never put to (a receiver without wideband I/Q),
+ * whose samples stay the zeros init gave it. */
+void rdof_bl_ring_skip(rdof_bl_ring_t *r, long n);
 long rdof_bl_ring_read(const rdof_bl_ring_t *r, uint64_t sc, int8_t *out, long n, uint64_t *oldest, uint64_t *next);
 /* As iq_filled: how many of [sc, sc + n) are filler. */
 long rdof_bl_ring_filled(const rdof_bl_ring_t *r, uint64_t sc, long n);

@@ -591,6 +591,19 @@ void sdr_ppm_status(sdr_ppm_status_t *out);
 /* The learned ppm (NAN none) as of the DSP's last chunk, without rx_lock: for a caller holding a lock the DSP
  * takes while it holds rx_lock (the bench line protocol's, which a decoded burst takes). */
 double sdr_ppm_learned(void);
+/* The crystal correction as of the DSP's last chunk, without rx_lock (as sdr_ppm_learned). */
+typedef struct {
+    double xtal;        /* the crystal's error as best known (ppm, positive: fast), NAN: none */
+    double chip;        /* the whole ppm the chip corrects */
+    double lo_left;     /* what's left of it in the receive LO, and in the sample clock (rdof_ppm_left) */
+    double fs_left;
+    const char *source; /* where xtal came from: "clock" (the sample clock timed), "afc", "table", "kept", "setting" */
+} sdr_ppm_now_t;
+void sdr_ppm_now(sdr_ppm_now_t *out);
+/* A burst's carrier from its channel's true frequency (Hz): the AFC correction its samples went through and the
+ * demodulator's offset, less where an on-frequency carrier sits for the crystal as best known. From the DSP (a
+ * burst's callback). */
+double sdr_burst_cfo_hz(int channel, const rdof_sdr_burst_t *b);
 /* The display spectrum: rows newer than since (at most max, the newest ones), SPEC bins each, into out; the
  * newest row's number in seq; each row's last wideband sample in sc (NULL: not wanted). Asking keeps it running
  * for 10 s. */

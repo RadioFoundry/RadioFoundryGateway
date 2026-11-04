@@ -84,6 +84,7 @@ typedef struct {
     float *y;                 /* a chunk's outputs, [n][2] */
     int di;
     double step;              /* the mixer's radians a sample */
+    double corr_hz;           /* the crystal's share in it: where the carrier truly at freq shows, less its offset */
     uint64_t sc, next_out;    /* the next input to take; the input that completes the next output */
     double rate, bw, thr, min_ms, pre_s, post_s, max_s, floor_s, timeout, started, last_tick;
     bool cs16, until_end, fired;
@@ -636,13 +637,22 @@ static bool req_session(rdof_bl_t *bl, conn_t *c, int root, bool required)
     return true;
 }
 
+/* The window's crystal correction, as JSON members: the crystal's error, where it came from, and what's left of it in
+ * the samples' LO and sample clock. */
+static void put_ppm(char *out, size_t cap, const rdof_bl_window_t *w)
+{
+    snprintf(out, cap, "\"ppm\":%.3f,\"ppm_source\":\"%s\",\"lo_ppm\":%.3f,\"fs_ppm\":%.3f", w->ppm,
+             w->ppm_source ? w->ppm_source : "none", w->lo_ppm, w->fs_ppm);
+}
+
 /* The platform's window, with what it doesn't know yet (NAN) as 0: JSON has no NaN. */
 static void get_window(rdof_bl_t *bl, rdof_bl_window_t *w)
 {
     memset(w, 0, sizeof *w);
     if (bl->p.window)
         bl->p.window(bl->p.ctx, w);
-    double *v[] = {&w->center_hz, &w->fs, &w->lo_hz, &w->hi_hz, &w->gain_db, &w->dc_guard_hz, &w->ppm, &w->iq_scale_db};
+    double *v[] = {&w->center_hz, &w->fs, &w->lo_hz, &w->hi_hz, &w->gain_db, &w->dc_guard_hz, &w->ppm, &w->lo_ppm,
+                   &w->fs_ppm, &w->iq_scale_db};
     for (size_t i = 0; i < sizeof v / sizeof v[0]; i++)
         if (!isfinite(*v[i]))
             *v[i] = 0;
@@ -652,13 +662,15 @@ static void put_window(rdof_bl_t *bl, char *out, size_t cap)
 {
     rdof_bl_window_t w;
     get_window(bl, &w);
+    char pp[160];
+    put_ppm(pp, sizeof pp, &w);
     if (!w.running || w.fs <= 0)
         snprintf(out, cap, "{\"enabled\":false}");
     else
         snprintf(out, cap,
                  "{\"enabled\":true,\"lo\":%.6f,\"hi\":%.6f,\"center\":%.6f,\"fs\":%.1f,\"gain\":%.1f,"
-                 "\"dc_guard_khz\":%.1f,\"ppm\":%.3f,\"tx_lo\":%.6f,\"tx_hi\":%.6f}",
-                 w.lo_hz / 1e6, w.hi_hz / 1e6, w.center_hz / 1e6, w.fs, w.gain_db, w.dc_guard_hz / 1e3, w.ppm,
+                 "\"dc_guard_khz\":%.1f,%s,\"tx_lo\":%.6f,\"tx_hi\":%.6f}",
+                 w.lo_hz / 1e6, w.hi_hz / 1e6, w.center_hz / 1e6, w.fs, w.gain_db, w.dc_guard_hz / 1e3, pp,
                  w.tx_lo_hz / 1e6, w.tx_hi_hz / 1e6);
 }
 
@@ -1208,7 +1220,8 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now)
     }
     for (int i = 0; i < t->ntaps; i++)
         t->taps[i] = (float)(t->taps[i] / sum);
-    t->step = -2 * M_PI * (mhz * 1e6 - w.center_hz) / w.fs;
+    t->corr_hz = rdof_bl_seen_hz(&w, mhz * 1e6) - (mhz * 1e6 - w.center_hz);
+    t->step = -2 * M_PI * (mhz * 1e6 - w.center_hz + t->corr_hz) / w.fs; /* where the carrier truly at mhz shows */
     t->rate = rate, t->bw = bw, t->thr = thr, t->min_ms = min_ms, t->pre_s = pre, t->post_s = post;
     t->max_s = max_s, t->floor_s = floor_s, t->timeout = timeout, t->started = now;
     t->cs16 = fmt && !strcmp(fmt, "cs16");
@@ -2361,6 +2374,8 @@ typedef struct sigrx {
     int nst;
     unsigned long seq;
     double rate, bw, seconds, over_db, floor_db, squelch, last_tick;
+    double corr_hz, ppm;      /* the channel moved for the crystal (as trig_t's), and its error then */
+    const char *ppm_source;
     bool learning;
     int hist[TRIG_HIST];
     long blocks, need_blocks;
@@ -2678,12 +2693,14 @@ static void op_rx(rdof_bl_t *bl, conn_t *c, int root, double now)
         return;
     }
     sigrx_t *r = calloc(1, sizeof *r);
-    if (!r || !chan_init(&r->ch, w.fs, mhz * 1e6 - w.center_hz, bw)) {
+    if (!r || !chan_init(&r->ch, w.fs, rdof_bl_seen_hz(&w, mhz * 1e6), bw)) { /* where it truly shows */
         free(r);
         fail(bl, c, "unavailable", "no memory for a channel");
         return;
     }
     r->m = m;
+    r->corr_hz = rdof_bl_seen_hz(&w, mhz * 1e6) - (mhz * 1e6 - w.center_hz);
+    r->ppm = w.ppm, r->ppm_source = w.ppm_source ? w.ppm_source : "none";
     r->rate = w.fs / r->ch.d;
     if (bw > 0.9 * r->rate) {
         const double most = 0.9 * r->rate;
@@ -2776,9 +2793,10 @@ static bool srx_start(rdof_bl_t *bl, conn_t *c, uint64_t first, double now, cons
         snprintf(fl, sizeof fl, "%.1f", r->floor_db);
     emit(bl, c,
          "{\"rx\":{\"mode\":\"%s\",\"freq\":%.6f,\"rate\":%.3f,\"bw\":%.0f,\"t0\":%.6f,\"sc0\":%llu,\"seconds\":%.3f,"
-         "\"floor_dbfs\":%s,\"squelch_dbfs\":%.1f,\"scale_db\":%.2f,\"streams\":[%s]}}",
+         "\"floor_dbfs\":%s,\"squelch_dbfs\":%.1f,\"scale_db\":%.2f,\"ppm\":%.3f,\"ppm_source\":\"%s\","
+         "\"corr_hz\":%.2f,\"streams\":[%s]}}",
          r->m->name, c->freq_hz / 1e6, r->rate, r->bw, trig_utc(bl, first, now, next, w->fs),
-         (unsigned long long)first, r->seconds, fl, r->squelch, w->iq_scale_db, st);
+         (unsigned long long)first, r->seconds, fl, r->squelch, w->iq_scale_db, r->ppm, r->ppm_source, r->corr_hz, st);
     return true;
 }
 
@@ -3192,11 +3210,13 @@ static void tick_capture(rdof_bl_t *bl, conn_t *c, double now)
         if (c->sc >= c->sc_end) {
             const double secs = (double)(c->sc_end - c->sc0) / (w.fs > 0 ? w.fs : 1);
             const double t0 = bl->p.sc_utc ? bl->p.sc_utc(bl->p.ctx, c->sc0) : now - secs;
+            char pp[160]; /* the samples are as the chip made them: what's left of the crystal's error is in them */
+            put_ppm(pp, sizeof pp, &w);
             emit(bl, c,
-                 "{\"done\":{\"freq\":%.1f,\"center\":%.1f,\"fs\":%.1f,\"fmt\":\"cs8\",\"gain\":%.1f,\"ppm\":%.3f,"
+                 "{\"done\":{\"freq\":%.1f,\"center\":%.1f,\"fs\":%.1f,\"fmt\":\"cs8\",\"gain\":%.1f,%s,"
                  "\"t0\":%.6f,\"sc0\":%llu,\"seconds\":%.3f,\"samples\":%lld,\"overflows\":%ld,\"gap_samples\":%ld,"
                  "\"clip_pct\":%.3f,\"pre_s\":%.3f,\"scale_db\":%.2f,\"source\":\"rfg\"}}",
-                 c->freq_hz, w.center_hz, w.fs, c->gain, w.ppm, t0, (unsigned long long)c->sc0, secs,
+                 c->freq_hz, w.center_hz, w.fs, c->gain, pp, t0, (unsigned long long)c->sc0, secs,
                  (long long)(c->sc_end - c->sc0), c->gaps ? 1L : 0L, c->gaps,
                  c->sent_iq ? 100.0 * (double)c->clipped / (double)(2 * c->sent_iq) : 0.0, c->pre_s, w.iq_scale_db);
             c->state = C_DONE;
@@ -3317,11 +3337,13 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
             const long gaps = t->gaps + (t->filled + (long)d - 1) / (long)d; /* filler, in the channel's samples */
             emit(bl, c,
                  "{\"done\":{\"freq\":%.1f,\"center\":%.1f,\"fs\":%.3f,\"rate\":%.3f,\"wide_fs\":%.1f,"
-                 "\"fmt\":\"%s\",\"bw\":%.0f,\"gain\":%.1f,\"ppm\":%.3f,\"t0\":%.6f,\"trigger_time\":%.6f,"
+                 "\"fmt\":\"%s\",\"bw\":%.0f,\"gain\":%.1f,\"ppm\":%.3f,\"ppm_source\":\"%s\",\"corr_hz\":%.2f,"
+                 "\"fs_ppm\":%.3f,\"t0\":%.6f,\"trigger_time\":%.6f,"
                  "\"signal_start_sample\":%llu,\"trigger_sc\":%llu,\"level_db\":%.1f,\"floor_db\":%.1f,"
                  "\"snr_db\":%.1f,\"threshold_db\":%.1f,\"seconds\":%.3f,\"samples\":%ld,\"pre_s\":%.3f,"
                  "\"gap_samples\":%ld,\"overflows\":%ld,\"clip_pct\":%.3f,\"scale_db\":%.2f,\"source\":\"rfg\"}}",
                  c->freq_hz, w.center_hz, t->rate, t->rate, w.fs, t->cs16 ? "cs16" : "cf32", t->bw, c->gain, w.ppm,
+                 w.ppm_source ? w.ppm_source : "none", t->corr_hz, w.fs_ppm,
                  trig_utc(bl, t->out_sc0, now, next, w.fs), trig_utc(bl, t->trig_sc, now, next, w.fs),
                  (unsigned long long)((t->trig_sc - t->out_sc0) / d), (unsigned long long)t->trig_sc, t->level_db,
                  t->floor_db, t->level_db - t->floor_db, t->thr, samples / t->rate, samples,
@@ -3549,7 +3571,7 @@ long rdof_bl_fills_count(const rdof_bl_fills_t *f, uint64_t sc, long n)
 
 bool rdof_bl_ring_init(rdof_bl_ring_t *r, long n)
 {
-    r->buf = malloc((size_t)n * 2);
+    r->buf = calloc((size_t)n, 2); /* zeros: a ring only skipped reads as filler */
     r->n = r->buf ? n : 0;
     r->w = 0;
     r->scale = 1.0f;
@@ -3561,6 +3583,14 @@ void rdof_bl_ring_mark_filler(rdof_bl_ring_t *r, long n)
 {
     if (n > 0 && (uint64_t)n <= r->w)
         rdof_bl_fills_note(&r->fills, r->w - (uint64_t)n, n);
+}
+
+void rdof_bl_ring_skip(rdof_bl_ring_t *r, long n)
+{
+    if (!r->buf || n <= 0)
+        return;
+    __atomic_store_n(&r->w, r->w + (uint64_t)n, __ATOMIC_RELEASE);
+    rdof_bl_ring_mark_filler(r, n);
 }
 
 long rdof_bl_ring_filled(const rdof_bl_ring_t *r, uint64_t sc, long n) { return rdof_bl_fills_count(&r->fills, sc, n); }

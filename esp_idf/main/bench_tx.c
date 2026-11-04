@@ -511,9 +511,19 @@ bool bench_tx_line_open(uint32_t freq, int cc, int power, bool as_built, char *w
         } else {
             const rdof_benchtx_io_t io = {job_to_modem, job_to_tool, job_keying, job_utc, NULL};
             rdof_benchtx_init(J.job, &io, freq, cc, level, policy.max_key_s, now_s());
+            /* which way it goes, said in the job's log: a frequency the router has no talk path on is sent as built,
+             * so a result there can differ from one on a site frequency (the router frames its own calls) */
+            const char *path = routed                    ? "via the router (it frames the call)"
+                               : as_built                ? "the modem borrowed, the bursts as built"
+                               : via_router()            ? "the modem borrowed, the bursts as built: no talk path at "
+                                                           "this frequency (not one of the site's), the roamer paused"
+                                                         : "the modem, the bursts as built";
             if (power > level)
-                snprintf(why, cap, "--power %d is over bench.tx's rf_level: %d (%.0f dBm)", power, level, dbm);
-            ESP_LOGI(TAG, "tx: a line protocol job on %.5f MHz, cc %d, level %d", freq / 1e6, cc, level);
+                snprintf(why, cap, "%s; --power %d is over bench.tx's rf_level: %d (%.0f dBm)", path, power, level,
+                         dbm);
+            else
+                snprintf(why, cap, "%s", path);
+            ESP_LOGI(TAG, "tx: a line protocol job on %.5f MHz, cc %d, level %d, %s", freq / 1e6, cc, level, path);
         }
     }
     xSemaphoreGive(mu);

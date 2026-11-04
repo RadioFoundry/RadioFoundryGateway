@@ -43,6 +43,19 @@ typedef struct {
     double saved_t;     /* when, NAN: loaded at boot, not saved in this run */
 } rdof_ppm_t;
 
+/* What's left of a crystal error e (ppm, positive: fast) once a correction of c ppm has taken it out: a chip told
+ * its crystal runs c fast programs f / (1 + c) for f, which the crystal makes f (1 + e) / (1 + c). */
+static inline double rdof_ppm_left(double e, double c) { return ((1.0 + e * 1e-6) / (1.0 + c * 1e-6) - 1.0) * 1e6; }
+
+/* Where a signal truly at f shows in a stream tuned to center whose LO runs lo_ppm fast and whose sample clock
+ * fs_ppm fast (what the chip's corrections leave, rdof_ppm_left): Hz from center, as the stream's samples count
+ * them. A channel tuned there hears a carrier truly at f on frequency. The two differ where the chip corrects its
+ * LO but not its sample rate (the LR2021: a 300 kHz offset 32 ppm off is 9.6 Hz). */
+static inline double rdof_ppm_seen_hz(double f, double center, double lo_ppm, double fs_ppm)
+{
+    return (f - center * (1.0 + lo_ppm * 1e-6)) / (1.0 + fs_ppm * 1e-6);
+}
+
 /* chip: the whole ppm the RTL starts at; saved: the learned value kept from before (NAN: none). */
 void rdof_ppm_init(rdof_ppm_t *p, double chip, double saved);
 /* One look at the channels at time t (seconds): corr_hz[i] each one's AFC correction, freq_hz[i] its frequency,

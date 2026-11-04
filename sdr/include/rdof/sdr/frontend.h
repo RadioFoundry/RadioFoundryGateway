@@ -172,6 +172,10 @@ typedef struct rdof_fe_ops {
      * presence says the front end times its sample clock (sdr_rate_block), so the crystal's error is worked out from
      * the sample rate (rdof/sdr/rate.h); NULL: no sample clock. */
     double (*sample_ppm)(void *ctx);
+    /* Optional: the crystal's error as best known (ppm, the fraction too; the learned value, or what the chip's
+     * whole ppm and the channels assume), for what the device sets in Hz rather than through set_ppm (the LR2021's
+     * carrier, its own DMR receiver). From the DSP task, at every chunk. */
+    void (*set_xtal_ppm)(void *ctx, double ppm);
     /* Optional: run on each chunk after the conversion (sim: its simulated crystal error). */
     void (*post)(void *ctx, rdof_cf_t *iq, int n);
     /* Optional: a throughput test (the RTL's USB spike), run before tuning when the settings ask. */
