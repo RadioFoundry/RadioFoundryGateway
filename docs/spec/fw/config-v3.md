@@ -59,7 +59,7 @@ which frequency follows from each device's `hears` and `transmits`; a file only 
   a list entry by its name once it has one (`devices.w12`, `frequencies.438.0625`, `apps.R1`), else by index
   (`frequencies[3]`).
 - Frequencies: a number below 1e5 is MHz, else Hz (`438.1` and `438100000` are the same). The bench's `freqs_hz`
-  are whole Hz.
+  and `bands_hz` are whole Hz.
 - A string is taken as written: `${VAR}` isn't read from the environment.
 
 | Key | Type | Default | Meaning |
@@ -319,6 +319,7 @@ same as `jitter_buffer: 240`.
 | Key | Type | Default | Rule / meaning |
 |---|---|---|---|
 | `freqs_hz` | list of whole Hz, 30e6..3e9 | `[]` | where the bench may transmit, up to 8 (with the devices' own) |
+| `bands_hz` | list of `[low, high]`, whole Hz, 30e6..3e9, low below high | `[]` | where else it may: any frequency in one, up to 8 |
 | `max_key_s` | number, 0..60 | 10 | the longest key-up; 0: no bench TX |
 | `rf_level` | int, 0..255 | 0 | a bench radio's power level (0: the lowest). The SDR sends at its `tx.power_dbm` |
 | `arm_gpio` | GPIO −1..48 | −1 | a jumper to ground that must be in for TX; −1: none |
@@ -906,6 +907,7 @@ the top), the SDR-only firmware's stored settings and the broker (its checks are
 | an SDR's receive channels (receiver and extras) | 16 | `RDOF_SDR_MAX_CHANNELS` |
 | bench devices | 4 | `RDOF_BENCH_MAX_RADIOS` |
 | bench TX frequencies | 8 | `RDOF_BENCHTX_MAX_FREQS` |
+| bench TX bands | 8 | `RDOF_BENCHTX_MAX_BANDS` |
 | IP gateway routes; networks in `allow` or `deny`; flows | 8; 8 each; 16 | `RDOF_IPGW_MAX_*` |
 | the document | 2000 JSON nodes, 16 KB of strings | `RDOF_SITE_MAX_NODES`, `RDOF_SITE_STR_BUF` |
 

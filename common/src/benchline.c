@@ -282,6 +282,23 @@ static int freq_index(const rdof_bl_t *bl, double mhz)
     return -1;
 }
 
+/* The bench may transmit at mhz: a listed frequency with TX, or in one of its bands. */
+static bool tx_ok(const rdof_bl_t *bl, double mhz)
+{
+    if (!isfinite(mhz))
+        return false;
+    const int k = freq_index(bl, mhz);
+    if (k >= 0 && (bl->f[k].caps & RDOF_BL_CAP_TX))
+        return true;
+    double b[RDOF_BL_TX_BANDS][2];
+    const int n = bl->p.tx_bands ? bl->p.tx_bands(bl->p.ctx, b, RDOF_BL_TX_BANDS) : 0;
+    const double hz = round(mhz * 1e6);
+    for (int i = 0; i < n; i++)
+        if (hz >= b[i][0] && hz <= b[i][1])
+            return true;
+    return false;
+}
+
 static unsigned cap_bit(const char *s)
 {
     if (!strcmp(s, "rx"))
@@ -720,15 +737,22 @@ static void op_info(rdof_bl_t *bl, conn_t *c, double now)
         strcpy(stx, "[]");
     if (bl->p.iq_read && !rdof_sig_names_json(bl->p.modes, false, srx, sizeof srx))
         strcpy(srx, "[]");
+    char bands[RDOF_BL_TX_BANDS * 48] = "[";
+    double b[RDOF_BL_TX_BANDS][2];
+    const int nb = bl->p.tx_bands ? bl->p.tx_bands(bl->p.ctx, b, RDOF_BL_TX_BANDS) : 0;
+    for (int i = 0; i < nb; i++)
+        snprintf(bands + strlen(bands), sizeof bands - strlen(bands), "%s[%.6f,%.6f]", i ? "," : "", b[i][0] / 1e6,
+                 b[i][1] / 1e6);
+    strcat(bands, "]");
     if (k < sizeof line)
         k += (size_t)snprintf(line + k, sizeof line - k,
-                              "],\"stations\":[{\"name\":\"modem\",\"kind\":\"sdrmodem\",\"model\":\"the gateway's SDR "
+                              "],\"tx_bands\":%s,\"stations\":[{\"name\":\"modem\",\"kind\":\"sdrmodem\",\"model\":\"the gateway's SDR "
                               "modem\",\"port\":\"\",\"present\":%s,\"tx\":%s,\"why_not\":%s,\"modes\":[\"dmr\"],"
                               "\"bands\":[],\"held_by\":%s,\"waiting\":%s}],"
                               "\"modem\":{\"held_by\":%s,\"waiting\":%s,\"next_job_eta\":{\"eta_s\":%.1f,"
                               "\"worst_s\":%.1f}},\"signal_modes\":{\"tx\":%s,\"rx\":%s},\"default_caps\":[]}",
-                              notx ? "false" : "true", notx ? "false" : "true", why, held, wq, held, wq, eta, eta, stx,
-                              srx);
+                              bands, notx ? "false" : "true", notx ? "false" : "true", why, held, wq, held, wq, eta, eta,
+                              stx, srx);
     if (k >= sizeof line) {
         fail(bl, c, "internal", "info doesn't fit");
         return;
@@ -1620,13 +1644,13 @@ static void rpt_run(rdof_bl_t *bl, conn_t *c, job_t *J, int root, double now)
         return;
     }
     const double rx = j->rx_mhz, tx = j->tx_mhz;
-    const int kr = freq_index(bl, rx), kt = freq_index(bl, tx);
+    const int kr = freq_index(bl, rx);
     if (kr < 0 || bl->f[kr].ch < 0 || !(bl->f[kr].caps & RDOF_BL_CAP_DMR)) {
         free(J);
         fail(bl, c, "refused", "no receiver channel decodes DMR at %.4f MHz (the repeater's input) on this bench", rx);
         return;
     }
-    if (kt < 0 || !(bl->f[kt].caps & RDOF_BL_CAP_TX)) {
+    if (!tx_ok(bl, tx)) {
         free(J);
         fail(bl, c, "refused", "%.4f MHz isn't a transmit frequency of this bench", tx);
         return;
@@ -1690,7 +1714,7 @@ static void ob_run(rdof_bl_t *bl, conn_t *c, job_t *J, int root, double now)
     }
     const double mhz = j->freq_mhz;
     const int k = freq_index(bl, mhz);
-    if (k < 0 || !(bl->f[k].caps & RDOF_BL_CAP_TX)) {
+    if (!tx_ok(bl, mhz)) {
         free(J);
         fail(bl, c, "refused", "%.4f MHz isn't a transmit frequency of this bench", mhz);
         return;
@@ -1699,7 +1723,7 @@ static void ob_run(rdof_bl_t *bl, conn_t *c, job_t *J, int root, double now)
         return;
     c->job = J;
     c->op = OP_RUN;
-    c->ch = bl->f[k].ch;
+    c->ch = k >= 0 ? bl->f[k].ch : -1;
     J->max_s = jnum(bl, root, "max_s", 0);
     J->id = ++bl->next_seq;
     c->nfreqs = 1;
@@ -1781,7 +1805,7 @@ static void op_run(rdof_bl_t *bl, conn_t *c, int ci, int root, double now)
             fail(bl, c, "unsupported", "%s", no);
             return;
         }
-        if (k < 0 || !(bl->f[k].caps & RDOF_BL_CAP_TX)) {
+        if (!tx_ok(bl, mhz)) {
             free(J);
             fail(bl, c, "refused", "%.4f MHz isn't a transmit frequency of this bench", mhz);
             return;
@@ -2518,8 +2542,7 @@ static void op_tx(rdof_bl_t *bl, conn_t *c, int root, double now)
         return;
     }
     const double mhz = jnum(bl, root, "freq", NAN);
-    const int k = isfinite(mhz) ? freq_index(bl, mhz) : -1;
-    if (k < 0 || !(bl->f[k].caps & RDOF_BL_CAP_TX)) {
+    if (!tx_ok(bl, mhz)) {
         fail(bl, c, "refused", "%.4f MHz isn't a transmit frequency of this bench", mhz);
         return;
     }

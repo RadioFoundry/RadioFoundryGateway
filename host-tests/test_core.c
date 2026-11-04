@@ -1241,14 +1241,38 @@ static void t_benchcfg_edges(void)
         {"{\"arm_gpio\": -2}", "bench.tx.arm_gpio: a GPIO 0 to 48 (a jumper to ground), or none"},
         {"{\"arm_gpio\": 49}", "bench.tx.arm_gpio: a GPIO 0 to 48 (a jumper to ground), or none"},
         {"{\"arm_gpio\": 1e12}", "bench.tx.arm_gpio: a GPIO 0 to 48 (a jumper to ground), or none"},
+        {"{\"bands_hz\": 144000000}", "bench.tx.bands_hz: a list of [low, high] in Hz"},
+        {"{\"bands_hz\": [144000000, 148000000]}",
+         "bench.tx.bands_hz[0]: [low, high] in whole Hz, 30 MHz to 3 GHz, low below high"},
+        {"{\"bands_hz\": [[144000000]]}", "bench.tx.bands_hz[0]: [low, high] in whole Hz, 30 MHz to 3 GHz, low below high"},
+        {"{\"bands_hz\": [[144000000, 148000000, 150000000]]}",
+         "bench.tx.bands_hz[0]: [low, high] in whole Hz, 30 MHz to 3 GHz, low below high"},
+        {"{\"bands_hz\": [[144000000, 148000000], [148000000, 148000000]]}",
+         "bench.tx.bands_hz[1]: [low, high] in whole Hz, 30 MHz to 3 GHz, low below high"},
+        {"{\"bands_hz\": [[148000000, 144000000]]}",
+         "bench.tx.bands_hz[0]: [low, high] in whole Hz, 30 MHz to 3 GHz, low below high"},
+        {"{\"bands_hz\": [[29999999, 148000000]]}",
+         "bench.tx.bands_hz[0]: [low, high] in whole Hz, 30 MHz to 3 GHz, low below high"},
+        {"{\"bands_hz\": [[902000000, 3000000001]]}",
+         "bench.tx.bands_hz[0]: [low, high] in whole Hz, 30 MHz to 3 GHz, low below high"},
+        {"{\"bands_hz\": [[144.0, 148.0]]}", "bench.tx.bands_hz[0]: [low, high] in whole Hz, 30 MHz to 3 GHz, low below high"},
+        {"{\"bands_hz\": [[144000000.5, 148000000]]}",
+         "bench.tx.bands_hz[0]: [low, high] in whole Hz, 30 MHz to 3 GHz, low below high"},
+        {"{\"bands_hz\": [[\"144000000\", 148000000]]}",
+         "bench.tx.bands_hz[0]: [low, high] in whole Hz, 30 MHz to 3 GHz, low below high"},
+        {"{\"bands_hz\": [[3e7, 4e7], [3e7, 4e7], [3e7, 4e7], [3e7, 4e7], [3e7, 4e7], [3e7, 4e7], [3e7, 4e7], [3e7, 4e7], "
+         "[3e7, 4e7]]}",
+         "bench.tx.bands_hz: at most 8"},
         /* a good list, then a bad field: the frequencies don't stay */
         {"{\"freqs_hz\": [438162500], \"rf_level\": 999}", "bench.tx.rf_level: 0 to 255 (0: the lowest)"},
+        {"{\"bands_hz\": [[144000000, 148000000]], \"max_key_s\": 61}", "bench.tx.max_key_s: 0 to 60 seconds"},
     };
     for (size_t i = 0; i < sizeof badtx / sizeof badtx[0]; i++) {
         memset(&pol, 0x5A, sizeof pol);
         CHECK(bench_tx(badtx[i].tx, &pol, err, sizeof err) < 0 && !strcmp(err, badtx[i].error),
               "%s: want \"%s\", got \"%s\"", badtx[i].tx, badtx[i].error, err);
-        CHECK(pol.nfreqs == 0 && pol.max_key_s == 0 && pol.rf_level == 0 && pol.arm_gpio == -1, "%s: no TX", badtx[i].tx);
+        CHECK(pol.nfreqs == 0 && pol.nbands == 0 && pol.max_key_s == 0 && pol.rf_level == 0 && pol.arm_gpio == -1,
+              "%s: no TX", badtx[i].tx);
     }
     CHECK(bench_tx("{\"freqs_hz\": [30000000, 3000000000, 438162500, 438162500, 1, 2, 3, 4], \"max_key_s\": 60, "
                    "\"rf_level\": 255, \"arm_gpio\": 48}", &pol, err, sizeof err) < 0 &&
@@ -1259,6 +1283,14 @@ static void t_benchcfg_edges(void)
               pol.nfreqs == 8 && pol.freqs_hz[0] == 30000000 && pol.freqs_hz[1] == 3000000000u &&
               pol.freqs_hz[3] == 438125000 && pol.max_key_s == 60 && pol.rf_level == 255 && pol.arm_gpio == 48 && !err[0],
           "at the ends: %s", err);
+    CHECK(bench_tx("{\"bands_hz\": [[30000000, 30000001], [144000000, 148000000], [902000000, 3000000000]]}", &pol,
+                   err, sizeof err) == 0 &&
+              pol.nfreqs == 0 && pol.nbands == 3 && pol.bands_hz[0][0] == 30000000 && pol.bands_hz[0][1] == 30000001 &&
+              pol.bands_hz[1][0] == 144000000 && pol.bands_hz[2][1] == 3000000000u && pol.max_key_s == 10 && !err[0],
+          "bands: %s", err);
+    CHECK(bench_tx("{\"freqs_hz\": [438162500], \"bands_hz\": null}", &pol, err, sizeof err) == 0 && pol.nfreqs == 1 &&
+              pol.nbands == 0,
+          "bands null: none: %s", err);
     CHECK(bench_tx("{\"freqs_hz\": null, \"max_key_s\": null, \"rf_level\": null}", &pol, err, sizeof err) == 0 &&
               pol.nfreqs == 0 && pol.max_key_s == 10 && pol.rf_level == 0 && pol.arm_gpio == -1,
           "nulls are the defaults: %s", err);

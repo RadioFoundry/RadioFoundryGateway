@@ -49,9 +49,11 @@ int rdof_bench_radios_parse(const char *text, size_t len, rdof_bench_radio_t *ou
 /* bench.tx, what the bench may transmit (section 7), with each bench device's own "bench": {"freqs_hz": [...]}
  * after its own:
  *
- *   "tx": {"freqs_hz": [438162500], "max_key_s": 10, "rf_level": 0, "arm_gpio": 5}
+ *   "tx": {"freqs_hz": [438162500], "bands_hz": [[144000000, 148000000]], "max_key_s": 10, "rf_level": 0,
+ *          "arm_gpio": 5}
  *
- * No bench.tx (or no freqs_hz): no TX. max_key_s defaults to 10 (at most 60), rf_level to 0 (the lowest), arm_gpio
+ * bands_hz: up to 8 [low, high], any frequency from one to the other. No bench.tx (or no freqs_hz and no bands_hz):
+ * no TX. max_key_s defaults to 10 (at most 60), rf_level to 0 (the lowest), arm_gpio
  * to none. 0, or -1 with error set. */
 int rdof_bench_tx_parse(const char *text, size_t len, rdof_benchtx_policy_t *out, char *error, size_t cap);
 

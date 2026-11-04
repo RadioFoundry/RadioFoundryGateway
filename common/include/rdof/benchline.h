@@ -29,6 +29,7 @@ extern "C" {
 #define RDOF_BL_CONNS 8
 #define RDOF_BL_SESSIONS 8
 #define RDOF_BL_FREQS 24       /* frequencies the bench lists: receiver channels and TX */
+#define RDOF_BL_TX_BANDS 8     /* bands the bench may transmit in */
 #define RDOF_BL_CLAIMS 8       /* frequencies one session may claim */
 #define RDOF_BL_LINE 4096      /* a request line, at first */
 #define RDOF_BL_LINE_MAX 196608 /* a request line at most (a run's job carries its AMBE file) */
@@ -147,6 +148,9 @@ typedef struct {
     void (*window)(void *ctx, rdof_bl_window_t *w);
     /* The listed frequencies: how many it wrote. */
     int (*freqs)(void *ctx, rdof_bl_freq_t *out, int max);
+    /* Where the bench may also transmit (optional): bands, each low, high in Hz; how many it wrote. A frequency in
+     * one is a transmit frequency as a listed one with RDOF_BL_CAP_TX is. */
+    int (*tx_bands)(void *ctx, double (*out)[2], int max);
     /* The wideband history, cs8: samples [sc, sc + n) into out (2n bytes). Returns how many it copied from sc on (0:
      * none yet). *oldest: the oldest sample kept; *next: the next one the receiver will write. NULL: no captures. */
     long (*iq_read)(void *ctx, uint64_t sc, int8_t *out, long n, uint64_t *oldest, uint64_t *next);

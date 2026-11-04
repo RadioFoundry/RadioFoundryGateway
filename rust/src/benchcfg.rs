@@ -15,6 +15,7 @@ use crate::plan::{field, rdof_plan_close, rdof_plan_open, Plan, RdofPlan, DEV_RA
 use crate::text::{c_bytes, print, Piece, Piece::I, Piece::S};
 
 const RDOF_BENCHTX_MAX_FREQS: usize = 8; // rdof/benchtx.h
+const RDOF_BENCHTX_MAX_BANDS: usize = 8;
 const MAX_DEVICES: usize = 16; // RDOF_SITE_MAX_DEVICES
 
 const RDOF_BPORT_UART: c_int = 1;
@@ -296,7 +297,7 @@ pub unsafe extern "C" fn rdof_plan_bench_radios(
     n
 }
 
-/// bench.tx: tx's freqs_hz, then more (each not there already), and its other keys.
+/// bench.tx: tx's freqs_hz, then more (each not there already), its bands_hz and its other keys.
 fn policy(c: &Cx, tx: c_int, more: &[u32], out: &mut RdofBenchtxPolicy) -> c_int {
     let t = c.node(tx).filter(|t| t.type_ != RDOF_JNULL);
     if t.is_none() && more.is_empty() {
@@ -334,6 +335,36 @@ fn policy(c: &Cx, tx: c_int, more: &[u32], out: &mut RdofBenchtxPolicy) -> c_int
         }
         out.freqs_hz[out.nfreqs as usize] = m;
         out.nfreqs += 1;
+    }
+    let bl = if t.is_some() { c.get(tx, c"bands_hz") } else { -1 };
+    let b = c.node(bl).filter(|b| b.type_ != RDOF_JNULL);
+    if b.is_some_and(|b| b.type_ != RDOF_JARR) {
+        return c.fail(&[S(b"bench.tx.bands_hz: a list of [low, high] in Hz")]);
+    }
+    for i in 0..b.map_or(0, |b| b.count) {
+        if i as usize >= RDOF_BENCHTX_MAX_BANDS {
+            return c.fail(&[S(b"bench.tx.bands_hz: at most "), I(RDOF_BENCHTX_MAX_BANDS as i64)]);
+        }
+        let e = unsafe { rdof_jat(c.plan.doc, bl, i) };
+        let pair = c.node(e).is_some_and(|v| v.type_ == RDOF_JARR && v.count == 2);
+        let hz = |k| {
+            c.node(if pair { unsafe { rdof_jat(c.plan.doc, e, k) } } else { -1 })
+                .filter(|v| v.type_ == RDOF_JNUM && v.num == f64::from(v.num as u32))
+                .map(|v| v.num)
+        };
+        match (hz(0), hz(1)) {
+            (Some(lo), Some(hi)) if lo >= 30e6 && hi <= 3e9 && lo < hi => {
+                out.bands_hz[out.nbands as usize] = [lo as u32, hi as u32];
+                out.nbands += 1;
+            }
+            _ => {
+                return c.fail(&[
+                    S(b"bench.tx.bands_hz["),
+                    I(i.into()),
+                    S(b"]: [low, high] in whole Hz, 30 MHz to 3 GHz, low below high"),
+                ])
+            }
+        }
     }
     // null: the default, as null is for the others
     let k = if t.is_some() { c.at(tx, c"max_key_s") } else { None }.filter(|k| k.type_ != RDOF_JNULL);

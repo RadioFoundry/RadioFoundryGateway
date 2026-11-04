@@ -744,7 +744,7 @@ static void t_edges(void)
           "a negative lease count");
     p.max_key_s = 0;
     CHECK(!strcmp(rdof_benchtx_gates(&p, true, true, 438162500, lease, 1, true),
-                  "the settings allow no TX (bench.tx: freqs_hz and max_key_s)"),
+                  "the settings allow no TX (bench.tx: freqs_hz or bands_hz, and max_key_s)"),
           "no key time");
     p.max_key_s = 10;
     p.nfreqs = 0;
@@ -753,6 +753,26 @@ static void t_edges(void)
     p.freqs_hz[1] = 438112500;
     const uint32_t lease2[] = {1, 438112500};
     CHECK(!rdof_benchtx_gates(&p, true, true, 438112500, lease2, 2, true), "the second of each");
+    CHECK(!strcmp(rdof_benchtx_gates(&p, true, true, 438125000, lease2, 2, true),
+                  "that frequency isn't in the bench's TX list or bands (bench.tx.freqs_hz, bands_hz)"),
+          "not listed");
+    /* bands: from low to high, both ends in; a lease still names the frequency */
+    rdof_benchtx_policy_t bp = {.bands_hz = {{144000000, 148000000}, {902000000, 928000000}}, .nbands = 2,
+                               .max_key_s = 10, .arm_gpio = -1};
+    const uint32_t blease[] = {144000000, 144950000, 148000000, 919750000, 143999999, 148000001, 438162500};
+    for (int i = 0; i < 4; i++)
+        CHECK(!rdof_benchtx_gates(&bp, true, true, blease[i], blease, 7, true) && rdof_benchtx_allowed(&bp, blease[i]),
+              "in a band: %u", (unsigned)blease[i]);
+    for (int i = 4; i < 7; i++)
+        CHECK(!rdof_benchtx_allowed(&bp, blease[i]) &&
+                  !strcmp(rdof_benchtx_gates(&bp, true, true, blease[i], blease, 7, true),
+                          "that frequency isn't in the bench's TX list or bands (bench.tx.freqs_hz, bands_hz)"),
+              "out of the bands: %u", (unsigned)blease[i]);
+    CHECK(!strcmp(rdof_benchtx_gates(&bp, true, true, 144950000, blease, 1, true),
+                  "the session holds no TX lease on that frequency"),
+          "a band, no lease");
+    bp.freqs_hz[0] = 438162500, bp.nfreqs = 1;
+    CHECK(!rdof_benchtx_gates(&bp, true, true, 438162500, blease, 7, true), "a frequency and bands");
     p.arm_gpio = 0;
     CHECK(!strcmp(rdof_benchtx_gates(&p, true, true, 438112500, lease2, 2, false), "the TX arm jumper is out"), "GPIO 0");
 }

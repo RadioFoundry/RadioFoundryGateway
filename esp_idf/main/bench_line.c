@@ -84,6 +84,8 @@ static int bl_freqs(void *ctx, rdof_bl_freq_t *out, int max)
     return k;
 }
 
+static int bl_tx_bands(void *ctx, double (*out)[2], int max) { return bench_tx_bands(out, max); }
+
 static long bl_iq_read(void *ctx, uint64_t sc, int8_t *out, long n, uint64_t *oldest, uint64_t *next)
 {
     return bench_wide_read(sc, out, n, oldest, next);
@@ -213,6 +215,7 @@ void bench_line_start(void)
         return;
     }
     static const rdof_bl_platform_t pf = {.device = bl_device, .window = bl_window, .freqs = bl_freqs,
+                                          .tx_bands = bl_tx_bands,
                                           .iq_read = bl_iq_read, .iq_filled = bl_iq_filled,
                                           .iq_warm = bl_iq_warm, .utc = bl_utc,
                                           .sc_utc = bl_sc_utc, .rx_stats = bl_rx_stats, .can_tx = bl_can_tx,

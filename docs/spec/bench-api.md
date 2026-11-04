@@ -69,7 +69,7 @@ wideband sample (3.5 us at 288 kS/s). On the daemon, `sc` is the capture's sampl
  "channels": [{"id": "SDR06", "name": "Operations 3", "freq_hz": 438162500.0, "cc": 2, "slot": 1,
                "caps": ["rx", "dmr", "nfm", "iq"], "in_band": true}],
  "radios": [{"name": "radio1", "kind": "odr", "caps": ["tune", "ptt", "mmdvm"], "port": "usb"}],
- "tx": {"freqs_hz": [], "max_key_s": 0, "power": null},
+ "tx": {"freqs_hz": [], "bands_hz": [], "max_key_s": 0, "power": null},
  "caps": {"spectrum": true, "bursts": true, "calls": false, "iq": ["cs16", "cf32", "cs8"],
           "iq_wideband": true, "tune": true, "tx": false, "radio_control": false},
  "limits": {"streams": 3, "iq_wideband_max": 1, "preroll_s": 0.4}}
@@ -226,8 +226,8 @@ yet. Client: `Esp32Bench.calls()`.
 the socket closes with `refused`:
 
 1. The bench was built with TX (`CONFIG_RDOF_BENCH_TX` on the board) and its front end can transmit (`info.sdr.tx`).
-2. `freq_hz` is in the bench's TX list (`info.tx.freqs_hz`), which only the settings file or the daemon's config
-   changes, never this API.
+2. `freq_hz` is in the bench's TX list (`info.tx.freqs_hz`) or one of its bands (`info.tx.bands_hz`, low and high
+   Hz), which only the settings file or the daemon's config changes, never this API.
 3. The session holds a lease on it with `tx: true`. A lease has no `allow_rf` default: the client asks for it.
 4. Key time per transmission ≤ `info.tx.max_key_s`, power ≤ `info.tx.power` (the bench clamps; lowest by default).
 5. Optional: a hardware arm input (a GPIO jumper on the board) must be closed.
@@ -254,7 +254,8 @@ On the board (`bench_tx.c`, the job in `common/src/benchtx.c`, host-tested in `h
   has it. Under version 3, when the roamer has it (an SDR that transmits), the job goes through the router's
   transmitter pool instead, as the parrot's answers do ([transmitters.md](fw/transmitters.md) §12): an MMDVM modem in
   `common/src/benchroute.c` answers the job and hands each burst on as an app's stream on the site's path at the
-  job's frequency. The transmitter sends at the job's level (`--power`, capped by `rf_level`) at most: a modem's
+  job's frequency. A frequency with no talk path there (none of the site's `frequencies`) doesn't need one: the job
+  takes the raw SDR modem as `outbound` does (the roamer's parked, given back after), and its bursts go out as built. The transmitter sends at the job's level (`--power`, capped by `rf_level`) at most: a modem's
   tune at the path's power lowered to it, the SDR roamer at its `tx.power_dbm` capped at the level's dBm while the
   job runs. It sends the transceiver's own count of headers and terminators a call; a burst it can't take (the
   transmitter busy with another stream) is NAKed, and the job stops. A line protocol job on this path ends once the transceiver has sent its
@@ -266,7 +267,8 @@ On the board (`bench_tx.c`, the job in `common/src/benchtx.c`, host-tested in `h
   slot type's data type) or, for voice B-F, from `n`, its EMB (LCSS: first B, last E, single F; continuation C, or D
   after C) or its place after the last voice sync. So a late entry may start at B-F with no voice sync before it (one
   starting at D is taken as C unless `n` says so); a B-F after F with no A between is refused.
-- What may go out is `bench.tx` in the settings: `{"freqs_hz": [whole Hz, up to 8], "max_key_s": 10 (60 at most),
+- What may go out is `bench.tx` in the settings: `{"freqs_hz": [whole Hz, up to 8], "bands_hz": [[low, high] in
+  whole Hz, up to 8], "max_key_s": 10 (60 at most),
   "rf_level": 0 (SET_FREQ's RF level, 0-255), "arm_gpio": -1}`. Without it nothing transmits. `arm_gpio` is a
   jumper to ground, read with the pull-up on; pulling it stops a keying.
 - One job at a time: a second socket is refused at the handshake. A gate that's closed (or a bad query) is an
@@ -458,7 +460,7 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
 
 | op | request | replies |
 |---|---|---|
-| `info` | | `window` (`enabled`, `lo`, `hi`, `center` MHz, `fs`, `gain`, `dc_guard_khz`, `ppm`, `tx_lo`, `tx_hi` MHz: where the transmitter tunes now, each platform's own limit (a W12: 1 MHz either side of `center`, the LR2021's one synthesizer; rdofradio in full duplex: the modulator's reach around its TX LO); both 0: anywhere it can), `tune` (null, or `session`, `label`, `for` `"session"` or `"request"`, `state` `"tuning"` or `"tuned"`), `sdr` (`"shared"` when the receiver runs), `channels` (one per receiver channel and TX frequency: `freq`, `ch`, `in_window`, `listed`, `caps`, `claimed_by`, `keyed`), `stations` (`modem`: the gateway's own SDR modem, `kind` `sdrmodem`, `tx`, `held_by`, `waiting`), `modem` (`held_by`, `waiting`, `next_job_eta`), `default_caps`, `device` (kind, name, version), `signal_modes` (section 14.6) |
+| `info` | | `window` (`enabled`, `lo`, `hi`, `center` MHz, `fs`, `gain`, `dc_guard_khz`, `ppm`, `tx_lo`, `tx_hi` MHz: where the transmitter tunes now, each platform's own limit (a W12: 1 MHz either side of `center`, the LR2021's one synthesizer; rdofradio in full duplex: the modulator's reach around its TX LO); both 0: anywhere it can), `tune` (null, or `session`, `label`, `for` `"session"` or `"request"`, `state` `"tuning"` or `"tuned"`), `sdr` (`"shared"` when the receiver runs), `channels` (one per receiver channel and TX frequency: `freq`, `ch`, `in_window`, `listed`, `caps`, `claimed_by`, `keyed`), `tx_bands` (`[low, high]` MHz each: where else it may transmit, `bench.tx.bands_hz` or rdofradio's `--bench-tx LOW-HIGH`; a frequency in one is a transmit frequency as a listed one with `tx` is), `stations` (`modem`: the gateway's own SDR modem, `kind` `sdrmodem`, `tx`, `held_by`, `waiting`), `modem` (`held_by`, `waiting`, `next_job_eta`), `default_caps`, `device` (kind, name, version), `signal_modes` (section 14.6) |
 | `status` | | `sdr`, `receiver` (`seconds`, `overflows`, `clip_pct`, `dsp_skipped`, `decode_dropped`, `captures`), `held`, `waiting`, `sessions`, `tx` (section 7's) |
 | `session` | `label`, `expect_s`, `max_s` | `{"session": ID, "label"}`, then nothing until the connection closes (the session ends with it) or the session's `max_s` runs out (`{"ended": "max_s"}`) |
 | `claim` | `session`, `freqs`, `caps`, `wait_max` | queued / granted, `{"claimed": [MHz], "window"}` |
@@ -571,8 +573,8 @@ by their long names with `_` for `-`:
   `dst`, `burst` (from 0)) in place of `IDLE`; a `call` record follows each call's last slot (`index`, `slot`,
   `src`, `dst`, `group`, `first_n`, `last_n`, `bursts`, `late`, `late_entry`); `summary` adds `voice` (`calls`,
   `ts1`, `ts2`: voice bursts sent; `late`). The log has a line a call (its slot, from, to, bursts, first slot).
-- `family` on `voice`, `csbk` and `data` (`ms`, `bs`, `ts1`, `ts2`), and a voice job's `headers`, `terminators`
-  or `late`: such a job doesn't go through the router's transmitter pool, which frames a call itself (its own
+- `family` on `voice`, `csbk` and `data` (`ms`, `bs`, `ts1`, `ts2`), a voice job's `headers`, `terminators` or
+  `late`, and a job on a frequency with no talk path: such a job doesn't go through the router's transmitter pool, which frames a call itself (its own
   headers and terminators, MS sync). It takes the raw SDR modem as `outbound` does (a roamer's parked, given back
   after), so its bursts go out as built. `outbound` is BS only.
 - `bench_repeater` runs a duplex repeater with no network on the job's `rx` (a receiver channel that decodes DMR)

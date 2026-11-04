@@ -92,6 +92,11 @@ static int f_freqs(void *ctx, rdof_bl_freq_t *out, int max)
         out[n++] = (rdof_bl_freq_t){.freq_hz = 438.6e6, .ch = -1, .caps = RDOF_BL_CAP_TX};
     return n;
 }
+static int f_tx_bands(void *ctx, double (*out)[2], int max)
+{
+    out[0][0] = 144e6, out[0][1] = 148e6;
+    return 1;
+}
 static long f_iq_read(void *ctx, uint64_t sc, int8_t *out, long n, uint64_t *oldest, uint64_t *next)
 {
     return rdof_bl_ring_read(&ring, sc, out, n, oldest, next);
@@ -352,7 +357,7 @@ static void f_ob_unkey(void *ctx)
 }
 static void f_ob_close(void *ctx) { ob.open = false, ob.closed = true; }
 
-static const rdof_bl_platform_t PLAT = {.device = f_device, .window = f_window, .freqs = f_freqs,
+static const rdof_bl_platform_t PLAT = {.device = f_device, .window = f_window, .freqs = f_freqs, .tx_bands = f_tx_bands,
                                         .iq_read = f_iq_read, .iq_filled = f_iq_filled, .utc = f_utc,
                                         .sc_utc = f_sc_utc, .can_tx = f_can_tx, .tx_open = f_tx_open, .tx_space = f_tx_space,
                                         .tx_push = f_tx_push, .tx_unkey = f_tx_unkey, .tx_idle = f_tx_idle,
@@ -432,7 +437,8 @@ static void test_ops(void)
     int c = ask(bl, "{\"op\": \"info\"}", now);
     drain(bl, c, out, sizeof out);
     CHECK(is_json_lines(out) && strstr(out, "\"center\":438.225000") && strstr(out, "\"fs\":768000.0") &&
-              strstr(out, "\"tx_lo\":437.225000,\"tx_hi\":439.225000"),
+              strstr(out, "\"tx_lo\":437.225000,\"tx_hi\":439.225000") &&
+              strstr(out, "\"tx_bands\":[[144.000000,148.000000]]"),
           "info: %s", out);
     CHECK(strstr(out, "{\"freq\":438.112500,\"ch\":1,\"id\":\"CH2\",\"in_window\":true,\"listed\":true,"
                       "\"caps\":[\"rx\",\"dmr\",\"iq\",\"mmdvm_tx\",\"sdr_tx\"],\"claimed_by\":null}") &&
@@ -1138,6 +1144,22 @@ static void test_run(void)
     CHECK(tx.open && !tx.as_built, "keyed (%d), may be framed on the way (%d)", tx.open, tx.as_built);
     rdof_bl_closed(bl, c, now);
     CHECK(!tx.open, "closing gives the transmitter back");
+
+    /* a frequency in one of the bench's TX bands, listed nowhere, is a transmit frequency; one past the band isn't */
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"freq\":144.95,\"superframes\":5}}",
+            now);
+    for (int i = 0; i < 50; i++) {
+        now += 0.01;
+        rdof_bl_tick(bl, now);
+        tx_air(bl, now, -1);
+    }
+    CHECK(tx.open && tx.freq == 144950000, "keyed in a band (%d) at %u", tx.open, tx.freq);
+    rdof_bl_closed(bl, c, now);
+    CHECK(!tx.open, "the band's job gives the transmitter back");
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"freq\":148.0125}}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"refused\"") && strstr(out, "isn't a transmit frequency"), "past the band: %s", out);
+    rdof_bl_closed(bl, c, now);
     /* headers, terminators or late entry: the bursts as built */
     static const char *const BUILT[] = {"\"headers\":0", "\"terminators\":2", "\"late\":2"};
     for (int k = 0; k < 3; k++) {

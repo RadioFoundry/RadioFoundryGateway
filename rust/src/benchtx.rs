@@ -19,6 +19,7 @@ use crate::text::{c_bytes, c_out, Out};
 type Burst = [u8; RDOF_BURST_BYTES];
 
 const MAX_FREQS: usize = 8;
+const MAX_BANDS: usize = 8;
 const QUEUE: usize = 64;
 const BURST_S: f64 = 0.060;
 const LEAD: f64 = 3.0;
@@ -60,6 +61,8 @@ const NO_REASON: c_int = 0x100;
 pub struct RdofBenchtxPolicy {
     pub freqs_hz: [u32; MAX_FREQS],
     pub nfreqs: c_int,
+    pub bands_hz: [[u32; 2]; MAX_BANDS],
+    pub nbands: c_int,
     pub max_key_s: f64,
     pub rf_level: c_int,
     pub arm_gpio: c_int,
@@ -67,11 +70,33 @@ pub struct RdofBenchtxPolicy {
 
 impl RdofBenchtxPolicy {
     /// No TX.
-    pub const NONE: Self = RdofBenchtxPolicy { freqs_hz: [0; MAX_FREQS], nfreqs: 0, max_key_s: 0.0, rf_level: 0, arm_gpio: -1 };
+    pub const NONE: Self = RdofBenchtxPolicy {
+        freqs_hz: [0; MAX_FREQS],
+        nfreqs: 0,
+        bands_hz: [[0; 2]; MAX_BANDS],
+        nbands: 0,
+        max_key_s: 0.0,
+        rf_level: 0,
+        arm_gpio: -1,
+    };
 
     fn freqs(&self) -> &[u32] {
         &self.freqs_hz[..(self.nfreqs.max(0) as usize).min(MAX_FREQS)]
     }
+
+    fn bands(&self) -> &[[u32; 2]] {
+        &self.bands_hz[..(self.nbands.max(0) as usize).min(MAX_BANDS)]
+    }
+
+    fn allowed(&self, freq: u32) -> bool {
+        self.freqs().contains(&freq) || self.bands().iter().any(|b| (b[0]..=b[1]).contains(&freq))
+    }
+}
+
+/// freq is one bench.tx allows: in freqs_hz or in one of bands_hz.
+#[no_mangle]
+pub extern "C" fn rdof_benchtx_allowed(p: &RdofBenchtxPolicy, freq: u32) -> bool {
+    p.allowed(freq)
 }
 
 /// rdof_benchtx_io_t
@@ -145,10 +170,10 @@ pub unsafe extern "C" fn rdof_benchtx_gates(
         c"this firmware was built without bench TX (CONFIG_RDOF_BENCH_TX)"
     } else if !can_tx {
         c"this path can't transmit"
-    } else if p.max_key_s <= 0.0 || p.nfreqs == 0 {
-        c"the settings allow no TX (bench.tx: freqs_hz and max_key_s)"
-    } else if !p.freqs().contains(&freq) {
-        c"that frequency isn't in the bench's TX list (bench.tx.freqs_hz)"
+    } else if p.max_key_s <= 0.0 || (p.nfreqs == 0 && p.nbands == 0) {
+        c"the settings allow no TX (bench.tx: freqs_hz or bands_hz, and max_key_s)"
+    } else if !p.allowed(freq) {
+        c"that frequency isn't in the bench's TX list or bands (bench.tx.freqs_hz, bands_hz)"
     } else if !(nlease > 0 && !lease.is_null() && core::slice::from_raw_parts(lease, nlease as usize).contains(&freq)) {
         c"the session holds no TX lease on that frequency"
     } else if p.arm_gpio >= 0 && !armed {

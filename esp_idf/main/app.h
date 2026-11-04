@@ -490,6 +490,7 @@ bool bench_tx_enabled(void);
 /* The line protocol's transmit jobs (bench_line.c, through bench_tx.c's slot): the engine's tx hooks. */
 bool bench_tx_listed(uint32_t freq);
 int bench_tx_freqs(uint32_t *out, int max); /* bench.tx's frequencies */
+int bench_tx_bands(double (*out)[2], int max); /* bench.tx's bands: low, high (Hz) */
 const char *bench_tx_line_why(void);
 /* as_built: the job's bursts as it built them, on the raw SDR modem (a roamer's parked), never the router */
 bool bench_tx_line_open(uint32_t freq, int cc, int power, bool as_built, char *why, size_t cap);

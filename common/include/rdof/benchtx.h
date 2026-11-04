@@ -30,6 +30,7 @@ extern "C" {
 #endif
 
 #define RDOF_BENCHTX_MAX_FREQS 8
+#define RDOF_BENCHTX_MAX_BANDS 8
 #define RDOF_BENCHTX_QUEUE 64       /* bursts waiting: 3.8 s of a simplex call */
 #define RDOF_BENCHTX_BURST_S 0.060  /* simplex: one burst every 60 ms */
 #define RDOF_BENCHTX_LEAD 3         /* bursts handed to the modem ahead of their air time */
@@ -42,10 +43,15 @@ extern "C" {
 typedef struct {
     uint32_t freqs_hz[RDOF_BENCHTX_MAX_FREQS];
     int nfreqs;
+    uint32_t bands_hz[RDOF_BENCHTX_MAX_BANDS][2]; /* low, high: any frequency from one to the other */
+    int nbands;
     double max_key_s;  /* 0: no TX */
     int rf_level;      /* SET_FREQ's RF level, 0..255 (0: the lowest) */
     int arm_gpio;      /* -1: none; else a jumper to ground that must be in */
 } rdof_benchtx_policy_t;
+
+/* freq is one bench.tx allows: in freqs_hz or in one of bands_hz. */
+bool rdof_benchtx_allowed(const rdof_benchtx_policy_t *p, uint32_t freq);
 
 /* The section 7 gates for a transmission on freq: NULL when every one is open, else why. built: the firmware has
  * TX; can_tx: the path (front end, modem, radio) can; lease: the session lease's TX frequencies; armed: the arm

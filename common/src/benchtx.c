@@ -12,6 +12,17 @@
 
 enum { STEP_VERSION = 0, STEP_CONFIG, STEP_FREQ, STEP_MODE, STEP_DONE };
 
+bool rdof_benchtx_allowed(const rdof_benchtx_policy_t *p, uint32_t freq)
+{
+    for (int i = 0; i < p->nfreqs; i++)
+        if (p->freqs_hz[i] == freq)
+            return true;
+    for (int i = 0; i < p->nbands; i++)
+        if (freq >= p->bands_hz[i][0] && freq <= p->bands_hz[i][1])
+            return true;
+    return false;
+}
+
 const char *rdof_benchtx_gates(const rdof_benchtx_policy_t *p, bool built, bool can_tx, uint32_t freq,
                              const uint32_t *lease, int nlease, bool armed)
 {
@@ -19,13 +30,10 @@ const char *rdof_benchtx_gates(const rdof_benchtx_policy_t *p, bool built, bool 
         return "this firmware was built without bench TX (CONFIG_RDOF_BENCH_TX)";
     if (!can_tx)
         return "this path can't transmit";
-    if (p->max_key_s <= 0 || !p->nfreqs)
-        return "the settings allow no TX (bench.tx: freqs_hz and max_key_s)";
-    bool listed = false;
-    for (int i = 0; i < p->nfreqs; i++)
-        listed |= p->freqs_hz[i] == freq;
-    if (!listed)
-        return "that frequency isn't in the bench's TX list (bench.tx.freqs_hz)";
+    if (p->max_key_s <= 0 || (!p->nfreqs && !p->nbands))
+        return "the settings allow no TX (bench.tx: freqs_hz or bands_hz, and max_key_s)";
+    if (!rdof_benchtx_allowed(p, freq))
+        return "that frequency isn't in the bench's TX list or bands (bench.tx.freqs_hz, bands_hz)";
     bool leased = false;
     for (int i = 0; i < nlease; i++)
         leased |= lease[i] == freq;

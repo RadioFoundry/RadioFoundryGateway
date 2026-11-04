@@ -574,7 +574,8 @@ Build switches `CONFIG_RDOF_BENCH` (y), `CONFIG_RDOF_BENCH_TX` (y).
 | `baud` | 1200-6000000, default 115200 | |
 | `serial`, `usb_port` | parsed, not used: the first matching device opens | `bench_radio.c:usb_task` |
 | Bridges | FTDI `0403:*`; CP210x `10C4:EA60/EA70/EA71`; CH34x `1A86:7523/7522/5523`; VID `0BDA` refused | `benchcfg.c:rdof_bench_usb_bridge` |
-| `tx.freqs_hz` | up to 8, whole Hz, 30 MHz-3 GHz, with the devices' own; none: no TX | `benchcfg.c:rdof_plan_bench_tx` |
+| `tx.freqs_hz` | up to 8, whole Hz, 30 MHz-3 GHz, with the devices' own; none (and no bands): no TX | `benchcfg.c:rdof_plan_bench_tx` |
+| `tx.bands_hz` | up to 8 `[low, high]`, whole Hz, 30 MHz-3 GHz: any frequency in one | |
 | `tx.max_key_s` | 0-60, default 10 | |
 | `tx.rf_level` | 0-255, default 0 (lowest) | |
 | `tx.arm_gpio` | −1 (none) or 0-48: a jumper to ground that must be in | |
@@ -648,9 +649,10 @@ the view's `rx_hz` is within 100 Hz of the request. The HTTP handler polls for 5
 (`esp_idf/main/bench_tx.c`); the state machine is `common/src/benchtx.c`, ticked every 20 ms.
 
 Gates (`rdof_benchtx_gates`), first failure wins: built with TX; the path can transmit; `bench.tx` has frequencies
-and `max_key_s > 0`; the frequency is in `bench.tx.freqs_hz`; the session's lease has it; the arm jumper is in
-(`arm_gpio` reads 0). `via=modem` is the SDR modem (refused while a roamer owns it); `via=radio:NAME` an
-`mmdvm` bench radio through its guard, declared on the one frequency.
+or bands and `max_key_s > 0`; the frequency is in `bench.tx.freqs_hz` or one of its `bands_hz`; the session's lease
+has it; the arm jumper is in (`arm_gpio` reads 0). `via=modem` is the SDR modem (a roamer's: through the router on a
+talk path at the frequency, else borrowed, the roamer parked); `via=radio:NAME` an `mmdvm` bench radio through its
+guard, declared on the one frequency.
 
 | Constant | Value | Where |
 |---|---|---|

@@ -182,7 +182,7 @@ int rdof_plan_bench_radios(const rdof_plan_t *p, rdof_bench_radio_t *out, int ma
     return n;
 }
 
-/* bench.tx: tx's freqs_hz, then more (each not there already), and its other keys. */
+/* bench.tx: tx's freqs_hz, then more (each not there already), its bands_hz and its other keys. */
 static int policy(ctx_t *c, int tx, const uint32_t *more, int nmore, rdof_benchtx_policy_t *out)
 {
     const rdof_jnode_t *t = rdof_jnode(c->doc, tx);
@@ -215,6 +215,26 @@ static int policy(ctx_t *c, int tx, const uint32_t *more, int nmore, rdof_bencht
         if (out->nfreqs >= RDOF_BENCHTX_MAX_FREQS)
             return fail(c, "bench.tx.freqs_hz and the bench devices' freqs_hz: at most %d", RDOF_BENCHTX_MAX_FREQS);
         out->freqs_hz[out->nfreqs++] = more[i];
+    }
+    int bl = t ? rdof_jget(c->doc, tx, "bands_hz") : -1;
+    const rdof_jnode_t *b = rdof_jnode(c->doc, bl);
+    if (b && b->type == RDOF_JNULL)
+        b = NULL;
+    if (b && b->type != RDOF_JARR)
+        return fail(c, "bench.tx.bands_hz: a list of [low, high] in Hz");
+    for (int i = 0; b && i < b->count; i++) {
+        if (i >= RDOF_BENCHTX_MAX_BANDS)
+            return fail(c, "bench.tx.bands_hz: at most %d", RDOF_BENCHTX_MAX_BANDS);
+        const int e = rdof_jat(c->doc, bl, i);
+        const rdof_jnode_t *v = rdof_jnode(c->doc, e);
+        const bool pair = v && v->type == RDOF_JARR && v->count == 2;
+        const rdof_jnode_t *lo = pair ? rdof_jnode(c->doc, rdof_jat(c->doc, e, 0)) : NULL;
+        const rdof_jnode_t *hi = pair ? rdof_jnode(c->doc, rdof_jat(c->doc, e, 1)) : NULL;
+        if (!hi || lo->type != RDOF_JNUM || hi->type != RDOF_JNUM || lo->num < 30e6 || hi->num > 3e9 ||
+            lo->num != (double)(uint32_t)lo->num || hi->num != (double)(uint32_t)hi->num || lo->num >= hi->num)
+            return fail(c, "bench.tx.bands_hz[%d]: [low, high] in whole Hz, 30 MHz to 3 GHz, low below high", i);
+        out->bands_hz[out->nbands][0] = (uint32_t)lo->num;
+        out->bands_hz[out->nbands++][1] = (uint32_t)hi->num;
     }
     const rdof_jnode_t *k = t ? at(c, tx, "max_key_s") : NULL;
     if (k && k->type == RDOF_JNULL)

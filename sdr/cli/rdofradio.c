@@ -21,7 +21,7 @@
  *   rdofradio DEVICE --allow-tx --rx MHZ [--tx MHZ] [--duplex full|half] [--cc CC] [-r RATE] [--bw MHZ]
  *             [--tx-gain DB] [--tx-lo MHZ] [--gain DB] [--center MHZ] [--monitor] [--tx-offset S]
  *             [--parrot ID] [--stream ARGS] [--seconds S] [--bursts] [--quiet] [-v] [--web [ADDR:]PORT]
- *             [--last-exit FILE] [--ota FILE] [--fft builtin|pffft] [--bench [ADDR:]PORT] [--bench-tx MHZ,...]
+ *             [--last-exit FILE] [--ota FILE] [--fft builtin|pffft] [--bench [ADDR:]PORT] [--bench-tx MHZ|LOW-HIGH,...]
  *   rdofradio DEVICE --allow-tx --config FILE [--clock-state FILE] [--set-os-clock] [the device's flags as above]
  *   rdofradio DEVICE --allow-tx --split-tx PORT [--baud N] [--split-power-cap N] --rx MHZ --tx MHZ [--cc CC] [...]
  *   rdofradio [DEVICE] --allow-tx --mmdvm PORT [--baud N] [--rf-level N] [--rx-offset-hz HZ] [--tx-offset-hz HZ]
@@ -35,7 +35,7 @@
  * update (POST /api/ota) writes the new program there and stops, for the supervisor to start it. --bench serves the
  * bench's line protocol (docs/spec/bench-api.md section 14) on PORT (7373 by convention), every interface unless
  * ADDR is given: the receiver's bursts and wideband captures for tools/bench/rfgbench.py, and its transmit jobs
- * (bench_tx's voice, csbk, data) on the --bench-tx frequencies, at --tx-gain, in the transceiver's place while
+ * (bench_tx's voice, csbk, data) on the --bench-tx frequencies and bands (LOW-HIGH), at --tx-gain, in the transceiver's place while
  * they run (not in a duplex repeater). --fpga-chz [ADDR] (with --iio, on a PlutoSDR whose FPGA has the channelizer
  * block, its registers at ADDR, 0x7C480000 by default): the block channelizes and the receiver takes its 48 kS/s
  * channel frames from the receive DMA, its AFC steering the block's NCOs; the rate can then go to 24.576 MS/s
@@ -451,7 +451,7 @@ static void usage(void)
             "usage: rdofradio DEVICE --allow-tx --rx MHZ [--tx MHZ] [--duplex full|half] [--cc CC] [-r RATE] [--bw MHZ]\n"
             "                 [--tx-gain DB] [--tx-lo MHZ] [--gain DB] [--center MHZ] [--monitor] [--tx-offset S]\n"
             "                 [--parrot ID] [--stream ARGS] [--seconds S] [--bursts] [--quiet] [-v] [--web [ADDR:]PORT]\n"
-            "                 [--last-exit FILE] [--ota FILE] [--fft builtin|pffft] [--bench [ADDR:]PORT] [--bench-tx MHZ,...]\n"
+            "                 [--last-exit FILE] [--ota FILE] [--fft builtin|pffft] [--bench [ADDR:]PORT] [--bench-tx MHZ|LOW-HIGH,...]\n"
             "                 [--fpga-chz [ADDR]] (with --iio: the FPGA channelizer on a PlutoSDR, at 0x7C480000 by default)\n"
             "                 [--fpga-duc [ADDR]] (with --iio: the FPGA's TX interpolator, at 0x7C4A0000 by default)\n"
             "       rdofradio DEVICE --allow-tx --config FILE [--clock-state FILE] [--set-os-clock] [the device's flags]\n"
@@ -1621,9 +1621,12 @@ static void bl_rx_stats(void *ctx, double *seconds, long *overflows, double *cli
     *dropped = 0;
 }
 
-/* --bench-tx MHZ[,MHZ...]: where the bench's jobs may transmit (none: no transmit jobs). */
+/* --bench-tx MHZ[,LOW-HIGH...]: where the bench's jobs may transmit, frequencies and bands (none: no transmit
+ * jobs). */
 static double bench_tx_mhz[RDOF_BENCHTX_MAX_FREQS];
 static int bench_ntx;
+static double bench_band_hz[RDOF_BL_TX_BANDS][2];
+static int bench_nband;
 static double bench_txg; /* --tx-gain: what a job transmits at */
 
 static bool bench_tx_listed(double hz)
@@ -1631,7 +1634,18 @@ static bool bench_tx_listed(double hz)
     for (int i = 0; i < bench_ntx; i++)
         if (fabs(bench_tx_mhz[i] * 1e6 - hz) < 100.0)
             return true;
+    for (int i = 0; i < bench_nband; i++)
+        if (hz >= bench_band_hz[i][0] && hz <= bench_band_hz[i][1])
+            return true;
     return false;
+}
+
+static int bl_tx_bands(void *ctx, double (*out)[2], int max)
+{
+    int k = 0;
+    for (; k < bench_nband && k < max; k++)
+        out[k][0] = bench_band_hz[k][0], out[k][1] = bench_band_hz[k][1];
+    return k;
 }
 
 static int bl_freqs(void *ctx, rdof_bl_freq_t *out, int max)
@@ -1659,7 +1673,7 @@ static const char *bl_can_tx(void *ctx)
         return "a split repeater's radio transmits, not the SDR: no transmit jobs here";
     if (R.full)
         return "a duplex repeater keeps the transmitter: transmit jobs need --duplex half";
-    if (!bench_ntx)
+    if (!bench_ntx && !bench_nband)
         return "no transmit frequencies (--bench-tx)";
     return NULL;
 }
@@ -2270,6 +2284,7 @@ static void bench_start(void)
      * -53 dBFS is a few steps); a signal over -24 dBFS clips, and the capture's clip_pct says so */
     BL.ring.scale = 16;
     static const rdof_bl_platform_t pf = {.device = bl_device, .window = bl_window, .freqs = bl_freqs,
+                                          .tx_bands = bl_tx_bands,
                                           .iq_read = bl_iq_read, .iq_filled = bl_iq_filled, .utc = bl_utc,
                                           .sc_utc = bl_sc_utc,
                                           .rx_stats = bl_rx_stats, .can_tx = bl_can_tx, .tx_open = bl_tx_open,
@@ -3892,8 +3907,20 @@ int main(int argc, char **argv)
             bench_port = atoi(v);
         } else if (!strcmp(a, "--bench-tx")) {
             NEXT();
-            for (const char *t = v; *t && bench_ntx < RDOF_BENCHTX_MAX_FREQS;) {
-                bench_tx_mhz[bench_ntx++] = mhz(t) / 1e6;
+            for (const char *t = v; *t;) {
+                char *end;
+                strtod(t, &end);
+                if (*end == '-') { /* a band: LOW-HIGH */
+                    const double lo = mhz(t), hi = mhz(end + 1);
+                    if (!(lo < hi) || bench_nband >= RDOF_BL_TX_BANDS) {
+                        fprintf(stderr, "--bench-tx: a band is LOW-HIGH, low below high, %d at most\n",
+                                RDOF_BL_TX_BANDS);
+                        return 2;
+                    }
+                    bench_band_hz[bench_nband][0] = lo, bench_band_hz[bench_nband++][1] = hi;
+                } else if (bench_ntx < RDOF_BENCHTX_MAX_FREQS) {
+                    bench_tx_mhz[bench_ntx++] = mhz(t) / 1e6;
+                }
                 const char *comma = strchr(t, ',');
                 t = comma ? comma + 1 : t + strlen(t);
             }

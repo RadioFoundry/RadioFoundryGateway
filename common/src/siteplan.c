@@ -90,7 +90,7 @@ static const char *const NET_KEYS[] = {"ssid", "password", "priority", "hidden",
 static const char *const NTP_KEYS[] = {"servers", "poll_s", "clock", NULL};
 static const char *const LOAD_KEYS[] = {"channels", "rates", NULL};
 static const char *const BENCH_KEYS[] = {"devices", "tx", NULL};
-static const char *const BENCH_TX_KEYS[] = {"freqs_hz", "max_key_s", "rf_level", "arm_gpio", NULL};
+static const char *const BENCH_TX_KEYS[] = {"freqs_hz", "bands_hz", "max_key_s", "rf_level", "arm_gpio", NULL};
 
 /* The most carriers an SDR transmits at once. */
 #define MAX_CARRIERS 4

@@ -37,7 +37,7 @@ one gateway at once: sessions, claims and the modem queue keep them apart, and t
 
 A frequency past where the gateway can receive now (its window) or transmit (a W12's transmitter is tied to the
 receiver's center; a Pluto's isn't) gets a warning on stderr first, with the session and tune commands that move the
-receiver there.
+receiver there. So does a transmit frequency the gateway's settings don't allow (bench.tx's freqs_hz or bands_hz).
 
 Exit codes: 0; 1 an error; 3 nothing heard; 69 the gateway can't be reached or can't do it; 75 busy or timed out;
 77 refused.
@@ -186,15 +186,32 @@ def printer(d, data):
     print(json.dumps(d), flush=True)
 
 
+def tx_allowed(d: dict, mhz: float) -> bool:
+    """mhz is one info says the gateway may transmit on: a listed frequency with a TX cap, or in one of its bands."""
+    if any(abs(ch["freq"] - mhz) < 1e-4 and {"tx", "sdr_tx", "mmdvm_tx"} & set(ch["caps"]) for ch in d["channels"]):
+        return True
+    return any(lo - 1e-7 <= mhz <= hi + 1e-7 for lo, hi in d.get("tx_bands", []))
+
+
 def check_reach(a, mhz: float, tx: bool) -> None:
     """Warn on stderr when mhz is past where the gateway can transmit (tx) or receive now, with the commands that move
     the receiver there. Each platform reports its own: the window's lo-hi (its rate), and tx_lo-tx_hi where its
     transmitter is tied to the receiver (a W12: 1 MHz either side of the center; 0, 0: it tunes on its own)."""
     try:
-        w = request(a.where, {"op": "info"}).get("window") or {}
+        d = request(a.where, {"op": "info"})
     except OSError:
         return
-    if not w.get("enabled") or mhz is None:
+    w = d.get("window") or {}
+    if mhz is None:
+        return
+    if tx and "channels" in d and not tx_allowed(d, mhz):
+        bands = ", ".join(f"{b[0]:.4f}-{b[1]:.4f}" for b in d.get("tx_bands", []))
+        print(f"{NOTE} warning: {mhz:.4f} MHz isn't a transmit frequency of this gateway"
+              f"{f' (its bands: {bands})' if bands else ''}: it will refuse it. Its settings allow it: bench.tx's "
+              f"freqs_hz [..., {round(mhz * 1e6)}] or bands_hz [..., [LOW, HIGH]] (Hz), on rdofradio --bench-tx "
+              f"{mhz:.4f} or LOW-HIGH (MHz)", file=sys.stderr, flush=True)
+        return
+    if not w.get("enabled"):
         return
     lo, hi = (w.get("tx_lo", 0), w.get("tx_hi", 0)) if tx else (w["lo"], w["hi"])
     if (tx and not lo and not hi) or lo <= mhz <= hi:
@@ -238,6 +255,8 @@ def cmd_info(a) -> int:
         held = f"{held['label'] or held['session']} ({held['session']})" if held else "-"
         print(f"{ch['freq']:10.4f} {ch['ch'] if ch['ch'] is not None else '':>3} "
               f"{'yes' if ch['in_window'] else 'no':6} {','.join(ch['caps']):34} {held}")
+    if d.get("tx_bands"):
+        print("TX bands: " + ", ".join(f"{lo:.4f}-{hi:.4f} MHz" for lo, hi in d["tx_bands"]))
     m = d["modem"]
     st = next((s for s in d.get("stations", []) if s["name"] == "modem"), {})
     print(f"modem: {'held by ' + ', '.join(h['label'] or h['session'] for h in m['held_by']) if m['held_by'] else 'free'}"

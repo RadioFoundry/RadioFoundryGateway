@@ -615,6 +615,17 @@
           "additionalProperties": false,
           "properties": {
             "freqs_hz": {"$ref": "#/$defs/freqs_hz"},
+            "bands_hz": {
+              "type": "array",
+              "maxItems": 8,
+              "description": "[low, high] in Hz: any frequency from one to the other.",
+              "items": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": {"type": "integer", "minimum": 30000000, "maximum": 3000000000}
+              }
+            },
             "max_key_s": {"$ref": "#/$defs/max_key_s"},
             "rf_level": {"type": "integer", "minimum": 0, "maximum": 255},
             "arm_gpio": {"type": "integer", "minimum": -1, "maximum": 48}

@@ -148,6 +148,17 @@ static bool route_burst(void *ctx, const rdof_net_burst_t *b)
 #endif
 }
 
+/* A talk path at freq (the site's frequencies): a job there goes through the router; else the bench borrows the
+ * roamer's modem and sends the job's bursts as they are. */
+static bool has_path(uint32_t freq)
+{
+#if RDOF_FEATURE_TX
+    return site_app_path(freq, 2) >= 0 || site_app_path(freq, 1) >= 0;
+#else
+    return false;
+#endif
+}
+
 /* Open the routed path at freq: NULL, or why not. */
 static const char *route_open(uint32_t freq)
 {
@@ -342,10 +353,10 @@ static esp_err_t tx_open(httpd_req_t *req)
         why = "via is modem or radio:NAME (no SDR I/Q transmit on this board)";
         code = "unsupported";
     } else if ((why = rdof_benchtx_gates(&policy, true, true, J.freq, lease, nlease, armed())) != NULL) {
-    } else if (!J.radio && via_router()) {
+    } else if (!J.radio && via_router() && has_path(J.freq)) {
         why = route_open(J.freq);
         code = "unavailable";
-    } else if ((why = J.radio ? bench_radio_tx_why(via + 6) : sdr_modem_bench_why()) != NULL) {
+    } else if ((why = J.radio ? bench_radio_tx_why(via + 6) : sdr_modem_bench_borrow_why(via_router())) != NULL) {
         code = J.radio && strstr(why, "no such") ? "bad_request"
              : J.radio && strstr(why, "ODR") ? "unsupported"
              : strstr(why, "another") || strstr(why, "linked") || strstr(why, "roamer") ? "busy"
@@ -354,7 +365,7 @@ static esp_err_t tx_open(httpd_req_t *req)
         const rdof_fe_caps_t *c = sdr_fe_caps();
         const double dbm = c ? c->tx_power_min + (c->tx_power_max - c->tx_power_min) * policy.rf_level / 255.0 : 0;
         why = J.radio ? bench_radio_tx_open(via + 6, session, J.freq, modem_bytes, NULL)
-                      : sdr_modem_bench_open(modem_bytes, NULL, dbm, false);
+                      : sdr_modem_bench_open(modem_bytes, NULL, dbm, via_router());
         code = "unavailable";
     }
     if (why) {
@@ -438,7 +449,7 @@ size_t bench_tx_status_json(char *buf, size_t cap)
     return n < cap ? n : 0;
 }
 
-bool bench_tx_enabled(void) { return policy.nfreqs > 0 && policy.max_key_s > 0; }
+bool bench_tx_enabled(void) { return (policy.nfreqs > 0 || policy.nbands > 0) && policy.max_key_s > 0; }
 
 /* ── the line protocol's jobs (bench_line.c, bench-api.md 14.3) ─────────────
  * The engine's tx hooks, from its thread: the SDR modem in DMO under bench.tx's gates, in the slot WS /tx uses (one
@@ -452,12 +463,14 @@ int bench_tx_freqs(uint32_t *out, int max)
     return k;
 }
 
-bool bench_tx_listed(uint32_t freq)
+bool bench_tx_listed(uint32_t freq) { return rdof_benchtx_allowed(&policy, freq); }
+
+int bench_tx_bands(double (*out)[2], int max)
 {
-    for (int i = 0; i < policy.nfreqs; i++)
-        if (policy.freqs_hz[i] == freq)
-            return true;
-    return false;
+    int k = 0;
+    for (; k < policy.nbands && k < max; k++)
+        out[k][0] = policy.bands_hz[k][0], out[k][1] = policy.bands_hz[k][1];
+    return k;
 }
 
 const char *bench_tx_line_why(void)
@@ -491,8 +504,9 @@ bool bench_tx_line_open(uint32_t freq, int cc, int power, bool as_built, char *w
         snprintf(J.via, sizeof J.via, "modem");
         xStreamBufferReset(J.from_modem);
         /* as built: the router's transmitter would frame the call itself (its own headers and terminators) */
-        const bool routed = via_router() && !as_built;
-        if ((no = routed ? route_open(freq) : sdr_modem_bench_open(modem_bytes, NULL, dbm, as_built)) != NULL) {
+        const bool routed = via_router() && !as_built && has_path(freq);
+        const bool borrow = as_built || via_router();
+        if ((no = routed ? route_open(freq) : sdr_modem_bench_open(modem_bytes, NULL, dbm, borrow)) != NULL) {
             J.on = false;
         } else {
             const rdof_benchtx_io_t io = {job_to_modem, job_to_tool, job_keying, job_utc, NULL};
@@ -778,8 +792,9 @@ int bench_tx_register(void *server)
             gpio_config(&g);
         }
         if (bench_tx_enabled())
-            ESP_LOGW(TAG, "bench TX allowed on %d frequencies, %.1f s a keying, RF level %d%s", policy.nfreqs,
-                     policy.max_key_s, policy.rf_level, policy.arm_gpio >= 0 ? ", with the arm jumper" : "");
+            ESP_LOGW(TAG, "bench TX allowed on %d frequencies and %d bands, %.1f s a keying, RF level %d%s",
+                     policy.nfreqs, policy.nbands, policy.max_key_s, policy.rf_level,
+                     policy.arm_gpio >= 0 ? ", with the arm jumper" : "");
         if (J.job && J.from_modem)
             xTaskCreatePinnedToCoreWithCaps(tx_task, "bench_txj", 4096, NULL, 4, NULL, 0, MALLOC_CAP_SPIRAM);
     }
@@ -836,6 +851,9 @@ size_t bench_tx_info_json(char *buf, size_t cap)
     ADD("{\"freqs_hz\":[");
     for (int i = 0; i < policy.nfreqs; i++)
         ADD("%s%lu", i ? "," : "", (unsigned long)policy.freqs_hz[i]);
+    ADD("],\"bands_hz\":[");
+    for (int i = 0; i < policy.nbands; i++)
+        ADD("%s[%lu,%lu]", i ? "," : "", (unsigned long)policy.bands_hz[i][0], (unsigned long)policy.bands_hz[i][1]);
     ADD("],\"max_key_s\":%.1f,\"power\":%d,\"arm\":", policy.max_key_s, policy.rf_level);
     if (policy.arm_gpio >= 0)
         ADD("{\"gpio\":%d,\"armed\":%s}", policy.arm_gpio, gpio_get_level(policy.arm_gpio) == 0 ? "true" : "false");
