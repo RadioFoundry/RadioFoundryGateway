@@ -472,7 +472,7 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
 | `listen` | `freq`, `seconds` | `{"burst": record}` |
 | `capture` | `session`, `freq`, `seconds`, `pre_s`, `gain`, `mode`, `offset_khz` | `{"ready": t0, "shared": true, "center": MHz, "pre_s", "fs", "sc0"}` (sc0: the first sample's, so a client places every frame, gaps as zeros), `{"iq": {"seq", "n", "sc", "flags"}, "bytes": N}` + cs8 samples, `{"done": meta}` |
 | `trigger` | `session`, `freq`, `bw`, `pre_s`, `post_s`, `threshold_db`, `min_ms`, `timeout_s`, `fmt`, `until_end`, `max_s`, `floor_db`, `floor_s` | `{"armed": {"floor_db", "rate"}}`, `{"iq": ...}` + samples (`sc` the channel sample's index), `{"done": meta}`, or `no_signal` |
-| `track` | `session`, `freq`, `mode` (`fm`, `4fsk`), `bw`, `interval_ms`, `threshold_db`, `min_ms`, `timeout_s`, `max_s`, `post_s`, `drift_s`, `floor_db`, `floor_s` | `{"armed": {"floor_db", "rate"}}`, `{"track": line}` an interval, `{"done": summary}`, or `no_signal` (section 14.8) |
+| `track` | `session`, `freq`, `mode` (`fm`, `4fsk`), `bw`, `interval_ms`, `line_ms`, `threshold_db`, `min_ms`, `timeout_s`, `max_s`, `post_s`, `drift_s`, `floor_db`, `floor_s` | `{"armed": {"floor_db", "rate"}}`, `{"track": line}` an interval, `{"done": summary}`, or `no_signal` (section 14.8) |
 | `activity`, `burstlog`, `bridge` | | `unsupported` |
 
 - `tune` moves the receiver's window for the session, as `PUT /sdr` under an exclusive lease (section 5; the same
@@ -782,7 +782,10 @@ warming) can be told from the gateway's own. It cuts the channel and arms as `tr
 starts at the rise and ends `post_s` (0.5 s, longer than a DMR slot's gap) after the last 1 ms block over half the
 threshold, at most `max_s` (30) after the rise. It sends no I/Q: each `interval_ms` (100; 20-2000) of the keying is
 one line, from each output's instantaneous frequency (its phase step from the one before) in the blocks over half
-the threshold. An interval with less than a fifth of it on the air has no line.
+the threshold. A line needs `line_ms` on the air: by default a fifth of the interval for `fm` (an interval with
+less has no line) and 80 ms for `4fsk` (about 380 symbols), where an interval short of it pools into the next
+until it has it, for up to 1 s. One TDMA slot is on the air 27.5 ms in 60, so its 100 ms intervals hold 30-60 ms
+each, too few symbols to place four levels: pooled, a line spans about 200 ms.
 
 - `fm` (the default): the mean frequency. The modulation averages out over an interval; a voice's or a tone's
   doesn't always quite, so an interval of a few hundred ms is steadier.
@@ -791,8 +794,9 @@ the threshold. An interval with less than a fifth of it on the air has no line.
   it). The four are weighted alike, so a burst with more of one symbol isn't moved; `dev_hz` is half the outer
   pair's spacing (DMR: 1944 Hz).
 
-A line: `t` (the interval's start, s from the rise), `hz` (the carrier from `freq`, the gateway's crystal taken out),
-`dev_hz` (4fsk), `level_db`, `ms` (how much of the interval it used), `ppm`, `ppm_source`, `trusted` (the
+A line: `t` (its first interval's start, s from the rise), `span_ms` (the intervals it covers), `hz` (the carrier from `freq`, the gateway's crystal taken out),
+`dev_hz` and `symbols` (4fsk: the on-air time in symbols at 4800/s), `level_db`, `ms` (how much of its span was on
+the air), `ppm`, `ppm_source`, `trusted` (the
 correction is the sample clock's, trusted as measured), `tol_hz` (`ppm_tol` at `freq`), `die_c` (the die
 temperature the board's crystal follows; `null` where not known), `transient` (`t` under 0.3 s: the key-up's
 settling, left out of the summary's figures).

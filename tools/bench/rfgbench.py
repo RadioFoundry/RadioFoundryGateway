@@ -547,7 +547,8 @@ def cmd_track(a) -> int:
         return stream(a.where, {"op": "track", "session": a.session, "freq": a.freq, "mode": a.mode, "bw": a.bw,
                                 "interval_ms": a.interval_ms, "threshold_db": a.threshold, "min_ms": a.min_ms,
                                 "timeout_s": a.timeout, "max_s": a.max_s, "post_s": a.post, "drift_s": a.drift_s,
-                                "floor_s": a.floor_s, "floor_db": a.floor_db}, on)
+                                "floor_s": a.floor_s, "floor_db": a.floor_db,
+                                **({"line_ms": a.line_ms} if a.line_ms is not None else {})}, on)
     finally:
         if a.out:
             out.close()
@@ -1020,6 +1021,8 @@ def main(argv=None) -> int:
     s.add_argument("--mode", choices=("fm", "4fsk"), default="fm")
     s.add_argument("--bw", type=float, default=25000.0)
     s.add_argument("--interval-ms", type=float, default=100.0)
+    s.add_argument("--line-ms", type=float, help="on-air time a line needs (fm: a fifth of the interval; 4fsk: 80, "
+                   "a thinner interval pooling into the next)")
     s.add_argument("--timeout", type=float, default=None)
     s.add_argument("--threshold", type=float, default=10.0)
     s.add_argument("--min-ms", type=float, default=10.0)

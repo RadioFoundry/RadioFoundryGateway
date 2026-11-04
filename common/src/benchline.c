@@ -110,10 +110,12 @@ typedef struct {
     float pi, pq;             /* the previous output (its phase step to the next) */
     bool have_prev;
     long ivl;                 /* the interval being added to */
+    long ivl0;                /* the first interval pooled into it (-1: none yet) */
+    double line_s;            /* on-air time a line needs: an interval with less pools into the next (4fsk) */
     double isum, ip;          /* its frequencies' sum, its blocks' power */
     long in, iblocks;
     uint32_t *ih;             /* its histogram (TRACK_BINS of TRACK_BIN Hz) */
-    struct track_line { float t, hz, ppm; int n; } *lines;
+    struct track_line { float t, span, hz, ppm; int n; } *lines;
     int nlines, lcap;
     bool all_trusted, all_settled;
     /* the correction as it changed: from sample sc on, the window w (the history runs behind the board's state, so
@@ -1254,8 +1256,10 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now, bool trac
         return;
     }
     const double ivl_ms = jnum(bl, root, "interval_ms", 100), drift_s = jnum(bl, root, "drift_s", 6);
-    if (track && (!(ivl_ms >= 20 && ivl_ms <= 2000) || !(drift_s > 1 && drift_s <= max_s))) {
-        fail(bl, c, "bad_request", "interval_ms 20-2000, drift_s 1-max_s");
+    const double line_ms = jnum(bl, root, "line_ms", -1);
+    if (track && (!(ivl_ms >= 20 && ivl_ms <= 2000) || !(drift_s > 1 && drift_s <= max_s) ||
+                  !(line_ms == -1 || (line_ms >= 0 && line_ms <= 2000)))) {
+        fail(bl, c, "bad_request", "interval_ms 20-2000, drift_s 1-max_s, line_ms 0-2000");
         return;
     }
     trig_t *t = calloc(1, sizeof *t);
@@ -1305,7 +1309,9 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now, bool trac
     t->cs16 = fmt && !strcmp(fmt, "cs16");
     t->until_end = track || jbool(bl, root, "until_end");
     t->track = track, t->fsk = mode && !strcmp(mode, "4fsk");
-    t->ivl_s = ivl_ms / 1000, t->drift_s = drift_s, t->all_trusted = true, t->all_settled = true;
+    t->ivl_s = ivl_ms / 1000, t->drift_s = drift_s, t->all_trusted = true, t->all_settled = true, t->ivl0 = -1;
+    /* 4fsk: 80 ms on the air, about 380 symbols (three of a TDMA slot's 27.5 ms bursts); fm: a fifth of it */
+    t->line_s = (line_ms >= 0 ? line_ms : t->fsk ? 80 : 0.2 * ivl_ms) / 1000;
     if (track)
         t->snap[0] = (struct track_snap){0, 0, w}, t->nsnap = 1;
     t->bsize = (int)lround(rate / 1000);
@@ -3473,33 +3479,43 @@ static double track_fsk(const trig_t *t, long n, double *dev)
 }
 
 /* The interval being added to is over: its line, when a fifth of it or more was over half the threshold. */
-static void track_flush(rdof_bl_t *bl, conn_t *c)
+/* The interval ends: a line when it has line_s on the air. A 4fsk one short of it (a TDMA slot's bursts, samples
+ * lost) pools into the next, for up to TRACK_POOL_S, rather than fit four levels to a few dozen symbols; fm's is
+ * dropped. last: the keying's end. */
+#define TRACK_POOL_S 1.0
+static void track_flush(rdof_bl_t *bl, conn_t *c, bool last)
 {
     trig_t *t = c->trig;
-    const long need = (long)(0.2 * t->ivl_s * t->rate);
+    if (t->in > 0 && t->ivl0 < 0)
+        t->ivl0 = t->ivl;
+    const long need = (long)(t->line_s * t->rate);
+    const double span = t->ivl0 < 0 ? 0 : (double)(t->ivl - t->ivl0 + 1) * t->ivl_s;
+    if (t->fsk && t->in > 0 && t->in < need && !last && span < fmax(TRACK_POOL_S, t->ivl_s))
+        return; /* pooled */
     if (t->in >= need && t->in > 0 && t->nlines < t->lcap) {
         const rdof_bl_window_t w = t->snap[t->isnap].w; /* the interval's last block's */
         double f = t->isum / (double)t->in, dev = NAN;
         if (t->fsk)
             f = track_fsk(t, t->in, &dev);
-        const double hz = f * (1 + w.fs_ppm * 1e-6), at = (double)t->ivl * t->ivl_s;
-        char tol[24], die[24] = "null", dv[32] = "";
+        const double hz = f * (1 + w.fs_ppm * 1e-6), at = (double)t->ivl0 * t->ivl_s;
+        char tol[24], die[24] = "null", dv[64] = "";
         put_tol_hz(tol, sizeof tol, &w, c->freq_hz);
         if (w.die_known)
             snprintf(die, sizeof die, "%.1f", w.die_c);
         if (t->fsk)
-            snprintf(dv, sizeof dv, ",\"dev_hz\":%.1f", dev);
+            snprintf(dv, sizeof dv, ",\"dev_hz\":%.1f,\"symbols\":%.0f", dev, 4800.0 * t->in / t->rate);
         emit(bl, c,
-             "{\"track\":{\"t\":%.3f,\"hz\":%.1f%s,\"level_db\":%.1f,\"ms\":%.0f,\"ppm\":%.3f,\"ppm_source\":\"%s\","
-             "\"trusted\":%s,\"tol_hz\":%s,\"die_c\":%s,\"transient\":%s}}",
-             at, hz, dv, 10 * log10(t->ip / (double)(t->iblocks ? t->iblocks : 1) + 1e-30), 1000.0 * t->in / t->rate,
+             "{\"track\":{\"t\":%.3f,\"span_ms\":%.0f,\"hz\":%.1f%s,\"level_db\":%.1f,\"ms\":%.0f,\"ppm\":%.3f,"
+             "\"ppm_source\":\"%s\",\"trusted\":%s,\"tol_hz\":%s,\"die_c\":%s,\"transient\":%s}}",
+             at, 1000 * span, hz, dv, 10 * log10(t->ip / (double)(t->iblocks ? t->iblocks : 1) + 1e-30),
+             1000.0 * t->in / t->rate,
              w.ppm, w.ppm_source ? w.ppm_source : "none", w.ppm_trusted ? "true" : "false", tol, die,
              at < TRACK_TRANSIENT_S ? "true" : "false");
-        t->lines[t->nlines++] = (struct track_line){(float)at, (float)hz, (float)w.ppm, (int)t->in};
+        t->lines[t->nlines++] = (struct track_line){(float)at, (float)span, (float)hz, (float)w.ppm, (int)t->in};
         t->all_trusted = t->all_trusted && w.ppm_trusted;
         t->all_settled = t->all_settled && w.ppm_settled;
     }
-    t->isum = 0, t->ip = 0, t->in = 0, t->iblocks = 0;
+    t->isum = 0, t->ip = 0, t->in = 0, t->iblocks = 0, t->ivl0 = -1;
     memset(t->ih, 0, sizeof(uint32_t) * TRACK_BINS);
 }
 
@@ -3513,7 +3529,7 @@ static void track_block(rdof_bl_t *bl, conn_t *c, double lin, const rdof_bl_wind
         return;
     const long k = (long)((double)(t->block_sc - t->trig_sc) / w->fs / t->ivl_s);
     if (k != t->ivl) {
-        track_flush(bl, c);
+        track_flush(bl, c, false);
         t->ivl = k;
     }
     /* the mixer took out the correction as it was at the start: less where the carrier at freq showed when the
@@ -3557,11 +3573,11 @@ static void put_hz(char *out, size_t cap, double v)
 static void track_done(rdof_bl_t *bl, conn_t *c, const rdof_bl_window_t *w, double t0, double tt)
 {
     trig_t *t = c->trig;
-    track_flush(bl, c);
+    track_flush(bl, c, true);
     double last = 0, lo = INFINITY, hi = -INFINITY, plo = INFINITY, phi = -INFINITY, s = 0, s2 = 0, n = 0;
     for (int i = 0; i < t->nlines; i++) {
         const struct track_line *l = &t->lines[i];
-        last = l->t + t->ivl_s;
+        last = l->t + l->span;
         plo = fmin(plo, l->ppm), phi = fmax(phi, l->ppm);
         if (l->t < TRACK_TRANSIENT_S)
             continue;

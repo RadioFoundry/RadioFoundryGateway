@@ -943,6 +943,35 @@ static void test_track(void)
             CHECK(!strstr(all, "\"dev_hz\""), "fm: no deviation: %.300s", all);
         rdof_bl_closed(bl, c, now);
     }
+    /* 4fsk in one TDMA slot, 30 ms bursts 60 ms apart: an interval of 100 ms holds 30-60 ms, too few symbols for four
+     * levels; each line pools intervals until it has line_ms (80) on the air */
+    {
+        const double off = -300;
+        put_tone(300, 0, 0);
+        int c = ask(bl, "{\"op\":\"track\",\"freq\":438.1125,\"mode\":\"4fsk\",\"floor_s\":0.2,\"timeout_s\":5}", now);
+        size_t total = track_run(bl, c, &now, 100, 0, false, false, all, 0, sizeof all);
+        for (int b = 0; b < 40; b++) {
+            total = track_run(bl, c, &now, 30, seen + off, true, true, all, total, sizeof all);
+            total = track_run(bl, c, &now, 30, 0, false, false, all, total, sizeof all);
+        }
+        total = track_run(bl, c, &now, 800, 0, false, false, all, total, sizeof all);
+        int lines = 0, bad = 0, thin = 0;
+        const char *badp = all;
+        for (const char *p = all; (p = strstr(p, "{\"track\"")); p++) {
+            char v[32];
+            lines++;
+            if (field(p, "ms", v, sizeof v) && atof(v) < 80)
+                thin++, badp = p;
+            if (field(p, "t", v, sizeof v) && atof(v) >= 0.3 && field(p, "hz", v, sizeof v) && fabs(atof(v) - off) > 25)
+                bad++, badp = p;
+        }
+        const char *done = strstr(all, "{\"done\"");
+        char v[32];
+        CHECK(lines >= 8 && lines <= 13 && !bad && !thin && strstr(all, "\"span_ms\":200") &&
+                  strstr(all, "\"symbols\":") && done && field(done, "std_hz", v, sizeof v) && atof(v) < 10,
+              "4fsk in TDMA bursts: %d lines, %d thin, %d off by more than 25 Hz: %.300s", lines, thin, bad, badp);
+        rdof_bl_closed(bl, c, now);
+    }
     /* the chip moves 1 ppm while the engine is behind: no line is corrected with a window its samples weren't
      * written under. The 0.5 s backlog went in between two ticks, so it could be under either: left out (on a
      * board, ticks 10 ms apart, a change costs about that) */
