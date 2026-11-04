@@ -2475,6 +2475,15 @@ static void web_spectrum(const rdof_cf_t *in, int n)
                                   (int)lrint(1e3 * sp.per_row * chunk / R.rate));
 }
 
+/* The site's name for a frequency ("" none) */
+static const char *freq_name(double hz)
+{
+    for (int f = 0; f < rcfg.site.nfreq; f++)
+        if (fabs((double)rcfg.site.freq[f].hz - hz) <= 100)
+            return rcfg.site.freq[f].name;
+    return "";
+}
+
 /* The SDR's card: the device, its samples and faults, the loop's time, the transmitter, and every receiver channel */
 static void web_sdr(rdof_hostweb_sdr_t *d)
 {
@@ -2515,6 +2524,10 @@ static void web_sdr(rdof_hostweb_sdr_t *d)
     d->mqtt = rdofmq_up(MQ_SDR);
     d->mqtt_dropped = rdofmq_dropped(MQ_SDR);
 #endif
+    if (net_on) { /* the radio's own peer, with the monitored channels' */
+        d->hblink_peers++;
+        d->hblink_up += NET.peer.up;
+    }
     for (int i = 0; i < nmon; i++)
         if (MON[i].peer) {
             d->hblink_peers++;
@@ -2522,8 +2535,12 @@ static void web_sdr(rdof_hostweb_sdr_t *d)
         }
     for (int c = 0; c < R.rx.C && d->nchan < 16; c++) {
         const char *id = R.rx.trackers[c].channel, *name = "";
-        if (c == 0)
-            name = "receive";
+        if (c == 0) { /* the radio's RX: by its frequency's name, as the monitored channels are */
+            id = freq_name(R.rx.trackers[c].freq_hz);
+            name = id[0] ? id : "receive";
+            if (!id[0])
+                id = rcfg.name;
+        }
         else if (c == R.mon)
             name = "transmit (heard back)";
         for (int i = 0; i < nmon; i++)
@@ -2531,7 +2548,7 @@ static void web_sdr(rdof_hostweb_sdr_t *d)
                 name = MON[i].ch->name;
         const double f = R.rx.trackers[c].freq_hz;
         const int r = R.rx.rssi[c];
-        snprintf(d->chan[d->nchan].id, sizeof d->chan[0].id, "%s", c == 0 ? rcfg.name : id);
+        snprintf(d->chan[d->nchan].id, sizeof d->chan[0].id, "%s", id);
         snprintf(d->chan[d->nchan].name, sizeof d->chan[0].name, "%s", name);
         d->chan[d->nchan].freq = (uint32_t)llround(f);
         d->chan[d->nchan].in = fabs(f - R.rx.center_hz) < R.rate / 2;
@@ -2652,6 +2669,16 @@ static void web_publish(double rx, double tx, int cc)
 #endif
     w.hblink = net_on && NET.peer.up;
     w.hblink_tx = NET.peer.tx, w.hblink_rx = NET.peer.rx;
+    if (!R.mmdvm && R.rx.C > 0) { /* the radio's own channel first, by its frequency's name */
+        const char *id = freq_name(R.rx.trackers[0].freq_hz);
+        const int r = R.rx.rssi[0];
+        snprintf(w.chan[0].id, sizeof w.chan[0].id, "%s", id[0] ? id : rcfg.name);
+        w.chan[0].freq = (uint32_t)llround(R.rx.trackers[0].freq_hz);
+        w.chan[0].bursts = R.rx.bursts[0];
+        w.chan[0].rssi = r == INT32_MIN ? 0 : r;
+        w.chan[0].peer = net_on;
+        w.chan[w.nchan++].up = net_on && NET.peer.up;
+    }
     for (int i = 0; i < nmon && w.nchan < 16; i++) {
         const mon_t *m = &MON[i];
         const int r = R.rx.rssi[m->c];
