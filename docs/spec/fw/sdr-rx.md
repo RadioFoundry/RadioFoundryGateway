@@ -323,6 +323,10 @@ recently learned bin is evicted. `get`: linear interpolation, clamped to the nea
 - `cal_follow`: when settled, the clock not trusted, `steady < 60`, and the table differs from the current value by
   ≥ `CAL_FOLLOW_PPM` (0.25), move the channels to it, and the chip to `lrint(want)` only once `want` is
   `RDOF_PPM_MOVE` (0.75) or more from it, as `rdof_ppm_update` does.
+- Held (`sdr_ppm_hold`, asked by the bench line protocol each tick while a measurement or keying is open, good for
+  `HOLD_MS` 1 s each): `ppm_tick` only times (`rate_tick`, `tol_tick`); no learning, no chip move, no `cal_follow`
+  or `cal_learn`. What changed applies on the first tick after. A hold asked for longer than `HOLD_MAX_MS` (120 s)
+  lapses until the asking stops.
 
 ## 8. Sample clock (`sdr/src/rate.c`, `sdr_task.c` "the sample clock")
 

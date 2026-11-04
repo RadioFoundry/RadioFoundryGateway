@@ -845,6 +845,29 @@ static const char *volatile now_src = "setting";
 static volatile float now_tol;            /* how far now_xtal may be off, ppm (0: not known; tol_tick) */
 static volatile bool now_trusted;         /* now_xtal is the sample clock's, trusted (tol_tick) */
 static volatile float now_die = NAN;      /* die_c, for another task (a float: one word) */
+static volatile bool now_held, now_settled;
+
+/* A bench measurement or keying is open (sdr_ppm_hold): the correction holds where it is, no new estimate and no
+ * chip move, so a frequency read over seconds shows no step that isn't the signal's. What changed meanwhile applies
+ * when it ends. Bounded: a hold asked for longer than HOLD_MAX_MS lapses until the asking stops. Millisecond words
+ * (one write each, from the bench's task), compared by their signed difference. */
+#define HOLD_MS 1000
+#define HOLD_MAX_MS 120000
+static volatile uint32_t hold_until_ms, hold_since_ms;
+
+void sdr_ppm_hold(void)
+{
+    const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    if ((int32_t)(now - hold_until_ms) >= 0)
+        hold_since_ms = now;
+    hold_until_ms = now + HOLD_MS;
+}
+
+static bool ppm_held(void)
+{
+    const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    return (int32_t)(now - hold_until_ms) < 0 && now - hold_since_ms < HOLD_MAX_MS;
+}
 static const char *volatile now_ref;      /* what it was timed against (netclock's source), NULL: none */
 static int cal_put_bin = INT32_MIN;
 static double cal_put_t;
@@ -1106,6 +1129,7 @@ static void tol_tick(double t)
     now_tol = (float)tol, now_ref = ref;
     now_trusted = ppm_on && !isnan(learned) && ppm.measured && xtal_trusted;
     now_die = (float)die_c;
+    now_settled = settled;
 }
 
 /* Every few seconds, under rx_lock: learn, move the RTL when confident, follow the temperature table until then,
@@ -1117,8 +1141,9 @@ static void ppm_tick(void)
         return;
     ppm_last_us = now;
     const double t = now / 1e6;
-    if (!ppm_on) {
-        rate_tick(t); /* still timed, for the page */
+    now_held = ppm_on && ppm_held();
+    if (!ppm_on || now_held) {
+        rate_tick(t); /* still timed, for the page; held: the fit goes on, what it says waits */
         tol_tick(t);
         return;
     }
@@ -1192,6 +1217,7 @@ void sdr_ppm_now(sdr_ppm_now_t *out)
     const double e = now_xtal, chip = now_chip, rate = now_rate;
     *out = (sdr_ppm_now_t){.xtal = e, .chip = chip, .source = now_src, .tol = now_tol, .ref = now_ref,
                            .trusted = now_trusted, .die_c = now_die,
+                           .held = now_held, .settled = now_settled,
                            .lo_left = isnan(e) ? 0 : rdof_ppm_left(e, chip),
                            .fs_left = isnan(e) ? 0 : rdof_ppm_left(e, rate)};
 }

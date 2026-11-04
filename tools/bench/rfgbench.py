@@ -534,6 +534,13 @@ def cmd_track(a) -> int:
                   f"gateway's crystal ({m.get('ppm_source')}, {'trusted' if m.get('trusted_throughout') else 'not trusted'}"
                   f" throughout, moved {m.get('ppm_moved', 0):.3f} ppm)"
                   + (f"; {m['gap_ms']:.0f} ms of samples lost" if m.get("gap_ms") else ""), file=human, flush=True)
+            why = {"not_trusted": "the gateway's crystal correction wasn't the trusted sample clock: hz may be off by "
+                                  "more than its usual tolerance",
+                   "not_settled": "the gateway was still warming up: its crystal and its correction may be moving",
+                   "ppm_moved": "the gateway's correction changed during the keying (its hold lapsed): see ppm on each line",
+                   "gaps": "samples were lost: the lines may be missing parts of the keying"}
+            for w in m.get("warnings") or []:
+                print(f"rfoundry-bench: warning: {why.get(w, w)}", file=sys.stderr, flush=True)
             return 0 if m["lines"] else EX_NO_SIGNAL
         return None
     try:

@@ -602,8 +602,13 @@ typedef struct {
     const char *ref;    /* what it was timed against: netclock's source ("pps", "ntp", ...), "radios"; NULL: none */
     bool trusted;       /* xtal is the sample clock's, trusted as measured */
     double die_c;       /* the die temperature the crystal follows (C), NAN: not known */
+    bool held;          /* held for a bench measurement (sdr_ppm_hold) */
+    bool settled;       /* the die temperature has settled (warmed up) */
 } sdr_ppm_now_t;
 void sdr_ppm_now(sdr_ppm_now_t *out);
+/* Hold the crystal correction where it is for about a second more (a bench measurement or keying is open): no new
+ * estimate, no chip move. Lapses after two minutes of asking. From any task. */
+void sdr_ppm_hold(void);
 /* A burst's carrier from its channel's true frequency (Hz): the AFC correction its samples went through and the
  * demodulator's offset, less where an on-frequency carrier sits for the crystal as best known. From the DSP (a
  * burst's callback). */

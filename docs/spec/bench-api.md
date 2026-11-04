@@ -724,6 +724,15 @@ everything it reads and sends, to a fraction of a ppm, not to the chip's whole-p
 | `fs_ppm` | what's left in the sample clock: the LR2021 doesn't correct its sample rate (all of `ppm`); an RTL does, to 1/16.8 ppm |
 | `ppm_tol` | how far `ppm` may be off, ppm; `null`: not known |
 | `ppm_ref` | what it was timed against: netclock's source for `clock` (`pps`, `gnss`, `ntp`, `browser`), `radios` for `afc`; `null`: none |
+| `ppm_trusted` | `ppm` is the sample clock's, timed long enough to be used as measured |
+| `ppm_held` | held for a measurement: changes wait until it ends (below) |
+| `ppm_settled` | the board has warmed: the die temperature its crystal follows has settled. rdofradio: always false (not known) |
+
+While any `capture`, `trigger`, `track`, `rx`, `bursts`, `listen`, `tx` or `run` is open, a board holds its
+correction where it is: no new estimate (the clock fit, the table) and no chip move, so a frequency read over
+seconds shows no step that isn't the signal's. The clock fit goes on; what it says applies when the last one ends.
+A hold lapses after 2 minutes of asking (a stream left open doesn't keep the correction stale for good). rdofradio's
+correction is a setting and never moves.
 
 Each report that gives a frequency gives the tolerance at it, `ppm_tol` times the frequency: `freq_tol_hz` in the
 `rx`, `trigger` and `capture` headers and `tx`'s `done`, `cfo_tol_hz` on each burst and `cfo_hz.tol` in the bursts'
@@ -799,9 +808,12 @@ The summary: `freq`, `mode`, `bw`, `interval_ms`, `t0`, `trigger_time`, `seconds
 `floor_db`, `snr_db`; `settled_hz` (the mean of the last 2 s), `start_hz` (0.3 to 1.3 s), `drift_hz` (the mean of
 the second before `drift_s` (6) less `start_hz`; `null` for a shorter keying), `mean_hz`, `std_hz`, `min_hz`,
 `max_hz` (the lines after the transient, weighted by `ms`), `ppm_moved` (the correction's range over the lines),
-`trusted_throughout`, `gap_ms` (samples the history overwrote before the engine got to them, or the front end's
-filler), and the correction's fields with `freq_tol_hz` at the end (section 14.7). `std_hz` is the
-radio's wander plus the measurement's noise.
+`trusted_throughout`, `settled_throughout` (`ppm_settled` on every line), `gap_ms` (samples the history overwrote before the engine got to them, or the front end's
+filler), `warnings`, and the correction's fields with `freq_tol_hz` at the end (section 14.7). `std_hz` is the
+radio's wander plus the measurement's noise. `warnings` lists what makes the figures less than the gateway's best,
+empty when nothing does: `not_trusted` (a line's correction wasn't the trusted sample clock: the table, the AFC, a
+fit timing afresh), `not_settled` (the board was still warming, its crystal moving), `ppm_moved` (the correction
+changed mid-keying: a hold that lapsed), `gaps` (samples lost). The track runs either way.
 
 `rfgbench.py track --freq MHz [--mode 4fsk]` writes the lines (and `{"summary": ...}`) as JSON to `--out` or
-stdout, and the summary's figures to stderr.
+stdout, and the summary's figures to stderr, with a warning line for each of `warnings`.

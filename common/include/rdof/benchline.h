@@ -80,6 +80,8 @@ typedef struct {
     double ppm_tol;
     const char *ppm_ref;
     bool ppm_trusted;    /* ppm is the sample clock's, timed long enough to be used as measured */
+    bool ppm_held;       /* held for a measurement (ppm_hold): changes wait until it ends */
+    bool ppm_settled;    /* the board has warmed: the die temperature the crystal follows has settled */
     bool die_known;      /* die_c: the chip's die temperature (C), which the crystal follows */
     double die_c;
     double tx_lo_hz, tx_hi_hz; /* where the transmitter tunes now (one synthesizer, a fixed TX LO); 0, 0: anywhere it can */
@@ -179,6 +181,10 @@ typedef struct {
     long (*iq_filled)(void *ctx, uint64_t sc, long n);
     /* A capture is open: keep the history warm (optional). */
     void (*iq_warm)(void *ctx);
+    /* A measurement or a transmission is running (optional): called each tick while one is, so the platform holds
+     * its frequency correction where it is (no chip move, no new estimate in the window) until they all end, a
+     * frequency read over seconds showing no step that isn't the signal's. The platform bounds how long. */
+    void (*ppm_hold)(void *ctx);
     /* UTC now, and of a wideband sample (optional: then the server's clock). */
     double (*utc)(void *ctx);
     double (*sc_utc)(void *ctx, uint64_t sc);

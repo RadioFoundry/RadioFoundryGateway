@@ -115,7 +115,7 @@ typedef struct {
     uint32_t *ih;             /* its histogram (TRACK_BINS of TRACK_BIN Hz) */
     struct track_line { float t, hz, ppm; int n; } *lines;
     int nlines, lcap;
-    bool all_trusted;
+    bool all_trusted, all_settled;
     /* the correction as it changed: from sample sc on, the window w (the history runs behind the board's state, so
      * a block is corrected with the window it was written under, not the one at the time it is read). Written
      * between the tick before the change was seen (from) and sc, a block could be under either: left out. */
@@ -693,7 +693,9 @@ static void put_ppm_at(char *out, size_t cap, const rdof_bl_window_t *w, double 
         snprintf(at, sizeof at, ",\"freq_tol_hz\":%s", hz);
     }
     snprintf(out, cap, "\"ppm\":%.3f,\"ppm_source\":\"%s\",\"ppm_tol\":%s,\"ppm_ref\":%s,\"lo_ppm\":%.3f,"
-             "\"fs_ppm\":%.3f%s", w->ppm, w->ppm_source ? w->ppm_source : "none", tol, ref, w->lo_ppm, w->fs_ppm, at);
+             "\"fs_ppm\":%.3f%s,\"ppm_trusted\":%s,\"ppm_held\":%s,\"ppm_settled\":%s", w->ppm,
+             w->ppm_source ? w->ppm_source : "none", tol, ref, w->lo_ppm, w->fs_ppm, at, w->ppm_trusted ? "true" : "false",
+             w->ppm_held ? "true" : "false", w->ppm_settled ? "true" : "false");
 }
 
 static void put_ppm(char *out, size_t cap, const rdof_bl_window_t *w) { put_ppm_at(out, cap, w, 0); }
@@ -1303,7 +1305,7 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now, bool trac
     t->cs16 = fmt && !strcmp(fmt, "cs16");
     t->until_end = track || jbool(bl, root, "until_end");
     t->track = track, t->fsk = mode && !strcmp(mode, "4fsk");
-    t->ivl_s = ivl_ms / 1000, t->drift_s = drift_s, t->all_trusted = true;
+    t->ivl_s = ivl_ms / 1000, t->drift_s = drift_s, t->all_trusted = true, t->all_settled = true;
     if (track)
         t->snap[0] = (struct track_snap){0, 0, w}, t->nsnap = 1;
     t->bsize = (int)lround(rate / 1000);
@@ -3495,6 +3497,7 @@ static void track_flush(rdof_bl_t *bl, conn_t *c)
              at < TRACK_TRANSIENT_S ? "true" : "false");
         t->lines[t->nlines++] = (struct track_line){(float)at, (float)hz, (float)w.ppm, (int)t->in};
         t->all_trusted = t->all_trusted && w.ppm_trusted;
+        t->all_settled = t->all_settled && w.ppm_settled;
     }
     t->isum = 0, t->ip = 0, t->in = 0, t->iblocks = 0;
     memset(t->ih, 0, sizeof(uint32_t) * TRACK_BINS);
@@ -3573,15 +3576,26 @@ static void track_done(rdof_bl_t *bl, conn_t *c, const rdof_bl_window_t *w, doub
     put_hz(l, sizeof l, lo), put_hz(h, sizeof h, hi), put_hz(st, sizeof st, end - start);
     snprintf(dr, sizeof dr, "%.3f", t->nlines ? phi - plo : 0.0);
     put_ppm_at(pp, sizeof pp, w, c->freq_hz);
+    /* what makes the lines' frequency less than the receiver's best: said, not refused */
+    char wn[96] = "";
+    if (!t->nlines || !t->all_trusted)
+        strcat(wn, ",\"not_trusted\"");
+    if (!t->nlines || !t->all_settled)
+        strcat(wn, ",\"not_settled\"");
+    if (t->nlines && phi - plo > 0)
+        strcat(wn, ",\"ppm_moved\"");
+    if (t->gaps + t->filled > 0)
+        strcat(wn, ",\"gaps\"");
     emit(bl, c,
          "{\"done\":{\"freq\":%.1f,\"mode\":\"%s\",\"bw\":%.0f,\"interval_ms\":%.0f,\"t0\":%.6f,\"trigger_time\":%.6f,"
          "\"seconds\":%.3f,\"lines\":%d,\"level_db\":%.1f,\"floor_db\":%.1f,\"snr_db\":%.1f,\"settled_hz\":%s,"
          "\"start_hz\":%s,\"drift_hz\":%s,\"drift_s\":%.1f,\"mean_hz\":%s,\"std_hz\":%s,\"min_hz\":%s,\"max_hz\":%s,"
-         "\"ppm_moved\":%s,\"trusted_throughout\":%s,\"gap_ms\":%.0f,%s,\"source\":\"rfg\"}}",
+         "\"ppm_moved\":%s,\"trusted_throughout\":%s,\"settled_throughout\":%s,\"gap_ms\":%.0f,\"warnings\":[%s],%s,"
+         "\"source\":\"rfg\"}}",
          c->freq_hz, t->fsk ? "4fsk" : "fm", t->bw, t->ivl_s * 1000, t0, tt, last, t->nlines, t->level_db, t->floor_db,
          t->level_db - t->floor_db, a, b, st, t->drift_s, m, sdv, l, h, dr,
-         t->nlines && t->all_trusted ? "true" : "false",
-         1000.0 * ((double)t->gaps + (double)t->filled / t->d) / t->rate, pp);
+         t->nlines && t->all_trusted ? "true" : "false", t->nlines && t->all_settled ? "true" : "false",
+         1000.0 * ((double)t->gaps + (double)t->filled / t->d) / t->rate, wn[0] ? wn + 1 : "", pp);
     c->state = C_DONE;
 }
 
@@ -3595,7 +3609,8 @@ static void track_snap(rdof_bl_t *bl, trig_t *t, const rdof_bl_window_t *w)
     t->seen_next = next;
     const rdof_bl_window_t *l = &t->snap[t->nsnap - 1].w;
     if (w->ppm == l->ppm && w->lo_ppm == l->lo_ppm && w->fs_ppm == l->fs_ppm && w->center_hz == l->center_hz &&
-        w->ppm_tol == l->ppm_tol && w->ppm_trusted == l->ppm_trusted && w->ppm_source == l->ppm_source &&
+        w->ppm_tol == l->ppm_tol && w->ppm_trusted == l->ppm_trusted && w->ppm_settled == l->ppm_settled &&
+        w->ppm_source == l->ppm_source &&
         w->die_c == l->die_c)
         return;
     if (t->nsnap == TRACK_SNAPS) { /* the oldest goes; the interval's index with it */
@@ -3793,6 +3808,16 @@ void rdof_bl_tick(rdof_bl_t *bl, double now)
         if (c->state == C_DONE && (c->stx || c->srx))
             sig_end(bl, c);
     }
+    if (bl->p.ppm_hold)
+        for (int i = 0; i < RDOF_BL_CONNS; i++) {
+            const conn_t *c = &bl->c[i];
+            if (c->state == C_ACTIVE && (c->op == OP_CAPTURE || c->op == OP_TRIGGER || c->op == OP_RX ||
+                                         c->op == OP_BURSTS || c->op == OP_LISTEN || c->op == OP_TX ||
+                                         (c->op == OP_RUN && c->job))) {
+                bl->p.ppm_hold(bl->p.ctx);
+                break;
+            }
+        }
     unlock(bl);
 }
 

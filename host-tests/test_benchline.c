@@ -62,6 +62,8 @@ static struct {
     char who[16];
     double lo_ppm, fs_ppm; /* the crystal's error left in the samples (test_xtal) */
     bool trusted;          /* the window says so, with a die temperature (test_track) */
+    bool unsettled;        /* the die temperature hasn't settled yet (test_track) */
+    int holds;             /* ticks that asked for the correction to be held */
 } ft = {.center = NAN, .gain = NAN};
 static void f_window(void *ctx, rdof_bl_window_t *w)
 {
@@ -74,8 +76,10 @@ static void f_window(void *ctx, rdof_bl_window_t *w)
                             .tx_lo_hz = c - 1e6, .tx_hi_hz = c + 1e6, .ppm = ft.lo_ppm, .lo_ppm = ft.lo_ppm,
                             .fs_ppm = ft.fs_ppm, .ppm_source = ft.lo_ppm ? "clock" : NULL,
                             .ppm_tol = ft.lo_ppm ? 0.05 : 0, .ppm_ref = ft.lo_ppm ? "pps" : NULL,
-                            .ppm_trusted = ft.trusted, .die_known = ft.trusted, .die_c = 41.5};
+                            .ppm_trusted = ft.trusted, .die_known = ft.trusted, .die_c = 41.5,
+                            .ppm_settled = ft.trusted && !ft.unsettled, .ppm_held = ft.holds > 0};
 }
+static void f_ppm_hold(void *ctx) { ft.holds++; }
 static int f_freqs(void *ctx, rdof_bl_freq_t *out, int max)
 {
     static const double f[] = {438.0625e6, 438.1125e6, 438.1625e6, 438.2125e6};
@@ -364,7 +368,7 @@ static void f_ob_close(void *ctx) { ob.open = false, ob.closed = true; }
 
 static const rdof_bl_platform_t PLAT = {.device = f_device, .window = f_window, .freqs = f_freqs, .tx_bands = f_tx_bands,
                                         .iq_read = f_iq_read, .iq_filled = f_iq_filled, .utc = f_utc,
-                                        .sc_utc = f_sc_utc, .can_tx = f_can_tx, .tx_open = f_tx_open, .tx_space = f_tx_space,
+                                        .ppm_hold = f_ppm_hold, .sc_utc = f_sc_utc, .can_tx = f_can_tx, .tx_open = f_tx_open, .tx_space = f_tx_space,
                                         .tx_push = f_tx_push, .tx_unkey = f_tx_unkey, .tx_idle = f_tx_idle,
                                         .tx_close = f_tx_close, .rpt_open = f_rpt_open, .rpt_state = f_rpt_state,
                                         .rpt_event = f_rpt_event, .rpt_wake = f_rpt_wake, .rpt_close = f_rpt_close,
@@ -928,8 +932,10 @@ static void test_track(void)
               off_lines, transient, bad);
         CHECK(done && field(done, "settled_hz", v, sizeof v) && fabs(atof(v) - off) < 10 &&
                   field(done, "drift_hz", v, sizeof v) && fabs(atof(v)) < 10 &&
-                  strstr(done, "\"trusted_throughout\":true,\"gap_ms\":0,") && strstr(done, "\"ppm_moved\":0.000") &&
-                  strstr(done, "\"freq_tol_hz\":21.9"),
+                  strstr(done, "\"trusted_throughout\":true,\"settled_throughout\":true,\"gap_ms\":0,"
+                               "\"warnings\":[],") &&
+                  strstr(done, "\"ppm_moved\":0.000") && strstr(done, "\"freq_tol_hz\":21.9") &&
+                  strstr(done, "\"ppm_held\":true"),
               "%s: settled on %.0f Hz: %.900s", fsk ? "4fsk" : "fm", off, done ? done : "(no done)");
         if (fsk)
             CHECK(strstr(all, "\"dev_hz\":19"), "4fsk: the outer deviation near 1944 Hz: %.300s", all);
@@ -959,7 +965,23 @@ static void test_track(void)
     }
     CHECK(lines >= 14 && lines <= 17 && !bad && strstr(all, "\"ppm_moved\":1.000"),
           "the correction moved 461 Hz mid-track, %d lines, %d off: %.300s", lines, bad, badp);
+    CHECK(strstr(all, "\"warnings\":[\"ppm_moved\"]"), "a move said: %.300s", strstr(all, "{\"done\"") ?: all);
     rdof_bl_closed(bl, c, now);
+    /* warming and not yet on the trusted clock: measured, and said; the hold asked for each tick while open */
+    ft.lo_ppm = 10, ft.unsettled = true;
+    put_tone(300, 0, 0);
+    ft.holds = 0;
+    c = ask(bl, "{\"op\":\"track\",\"freq\":438.1125,\"floor_s\":0.2,\"timeout_s\":5}", now);
+    total = track_run(bl, c, &now, 100, 0, false, false, all, 0, sizeof all);
+    total = track_run(bl, c, &now, 1000, seen + off, false, true, all, total, sizeof all);
+    total = track_run(bl, c, &now, 800, 0, false, false, all, total, sizeof all);
+    const int held = ft.holds;
+    rdof_bl_closed(bl, c, now);
+    rdof_bl_tick(bl, now += 0.01);
+    CHECK(strstr(all, "\"settled_throughout\":false") && strstr(all, "\"warnings\":[\"not_settled\"]") &&
+              held > 100 && ft.holds == held,
+          "not settled said, %d holds then %d: %.300s", held, ft.holds, strstr(all, "{\"done\"") ?: all);
+    ft.unsettled = false;
     ft.lo_ppm = ft.fs_ppm = 0, ft.trusted = false;
     rdof_bl_ring_free(&ring);
     rdof_bl_free(bl);

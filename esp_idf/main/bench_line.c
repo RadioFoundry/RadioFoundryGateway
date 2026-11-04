@@ -55,6 +55,7 @@ static void bl_window(void *ctx, rdof_bl_window_t *w)
     w->ppm = p.xtal, w->lo_ppm = p.lo_left, w->fs_ppm = p.fs_left, w->ppm_source = p.source;
     w->ppm_tol = p.tol, w->ppm_ref = p.ref, w->ppm_trusted = p.trusted;
     w->die_known = isfinite(p.die_c), w->die_c = p.die_c;
+    w->ppm_held = p.held, w->ppm_settled = p.settled;
     w->iq_scale_db = bench_wide_scale_db();
     const rdof_fe_caps_t *caps = sdr_fe_caps();
     if (caps && caps->tx_reach_hz > 0) {
@@ -98,6 +99,7 @@ static long bl_iq_read(void *ctx, uint64_t sc, int8_t *out, long n, uint64_t *ol
 static long bl_iq_filled(void *ctx, uint64_t sc, long n) { return bench_wide_filled(sc, n); }
 
 static void bl_iq_warm(void *ctx) { bench_wide_warm(); }
+static void bl_ppm_hold(void *ctx) { sdr_ppm_hold(); }
 
 static double bl_utc(void *ctx)
 {
@@ -223,7 +225,7 @@ void bench_line_start(void)
     static const rdof_bl_platform_t pf = {.device = bl_device, .window = bl_window, .freqs = bl_freqs,
                                           .tx_bands = bl_tx_bands,
                                           .iq_read = bl_iq_read, .iq_filled = bl_iq_filled,
-                                          .iq_warm = bl_iq_warm, .utc = bl_utc,
+                                          .iq_warm = bl_iq_warm, .ppm_hold = bl_ppm_hold, .utc = bl_utc,
                                           .sc_utc = bl_sc_utc, .rx_stats = bl_rx_stats, .can_tx = bl_can_tx,
                                           .tx_open = bl_tx_open, .tx_space = bl_tx_space, .tx_push = bl_tx_push,
                                           .tx_unkey = bl_tx_unkey, .tx_idle = bl_tx_idle, .tx_close = bl_tx_close,
