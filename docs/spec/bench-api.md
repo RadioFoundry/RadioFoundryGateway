@@ -472,6 +472,7 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
 | `listen` | `freq`, `seconds` | `{"burst": record}` |
 | `capture` | `session`, `freq`, `seconds`, `pre_s`, `gain`, `mode`, `offset_khz` | `{"ready": t0, "shared": true, "center": MHz, "pre_s", "fs", "sc0"}` (sc0: the first sample's, so a client places every frame, gaps as zeros), `{"iq": {"seq", "n", "sc", "flags"}, "bytes": N}` + cs8 samples, `{"done": meta}` |
 | `trigger` | `session`, `freq`, `bw`, `pre_s`, `post_s`, `threshold_db`, `min_ms`, `timeout_s`, `fmt`, `until_end`, `max_s`, `floor_db`, `floor_s` | `{"armed": {"floor_db", "rate"}}`, `{"iq": ...}` + samples (`sc` the channel sample's index), `{"done": meta}`, or `no_signal` |
+| `track` | `session`, `freq`, `mode` (`fm`, `4fsk`), `bw`, `interval_ms`, `threshold_db`, `min_ms`, `timeout_s`, `max_s`, `post_s`, `drift_s`, `floor_db`, `floor_s` | `{"armed": {"floor_db", "rate"}}`, `{"track": line}` an interval, `{"done": summary}`, or `no_signal` (section 14.8) |
 | `activity`, `burstlog`, `bridge` | | `unsupported` |
 
 - `tune` moves the receiver's window for the session, as `PUT /sdr` under an exclusive lease (section 5; the same
@@ -748,6 +749,7 @@ samples (`rdof_ppm_seen_hz`). What each op does with it:
   frequency shows, and `cfo_hz` is the burst's carrier from its true frequency (the AFC's correction less the
   crystal's share), so a radio 150 Hz high says +150 at any crystal error.
 - `trigger` and `rx`: corrected the same way (`corr_hz`, `ppm` and `ppm_source` in their headers).
+- `track`: corrected, and if the correction changes during the keying, each line follows it (section 14.8).
 - `capture`: not corrected. It sends the receiver's samples as they are; the header's `lo_ppm` and `fs_ppm` are
   what's left in them, for the client to take out.
 - `tx`, `run`, `bench_repeater` on a W12: the LR2021's carrier is set for the fractional `ppm`. On rdofradio the
@@ -763,3 +765,39 @@ samples (`rdof_ppm_seen_hz`). What each op does with it:
 A source of `afc` means the correction came from radios, so a radio's error measured against it is relative to the
 others it heard; `clock` is absolute. `rfgbench.py info` shows the correction, and the client warns on stderr
 when the gateway's crystal error isn't known.
+
+### 14.8 Track: a keying's carrier over time
+
+`track` follows a transmitter's carrier through a keying, so a radio's drift (a key-up's settling, a crystal
+warming) can be told from the gateway's own. It cuts the channel and arms as `trigger` does (bw 25 kHz by default),
+starts at the rise and ends `post_s` (0.5 s, longer than a DMR slot's gap) after the last 1 ms block over half the
+threshold, at most `max_s` (30) after the rise. It sends no I/Q: each `interval_ms` (100; 20-2000) of the keying is
+one line, from each output's instantaneous frequency (its phase step from the one before) in the blocks over half
+the threshold. An interval with less than a fifth of it on the air has no line.
+
+- `fm` (the default): the mean frequency. The modulation averages out over an interval; a voice's or a tone's
+  doesn't always quite, so an interval of a few hundred ms is steadier.
+- `4fsk`: the center of the four levels, from a k-means on the interval's histogram (25 Hz bins, +-8 kHz) started from
+  its 1st and 99th percentiles, the later rounds using only the outputs near a level (a symbol's transition pulls
+  it). The four are weighted alike, so a burst with more of one symbol isn't moved; `dev_hz` is half the outer
+  pair's spacing (DMR: 1944 Hz).
+
+A line: `t` (the interval's start, s from the rise), `hz` (the carrier from `freq`, the gateway's crystal taken out),
+`dev_hz` (4fsk), `level_db`, `ms` (how much of the interval it used), `ppm`, `ppm_source`, `trusted` (the
+correction is the sample clock's, trusted as measured), `tol_hz` (`ppm_tol` at `freq`), `die_c` (the die
+temperature the board's crystal follows; `null` where not known), `transient` (`t` under 0.3 s: the key-up's
+settling, left out of the summary's figures).
+
+The channel is mixed with the correction as it was at the start; a line is corrected again for the correction then
+(`hz` is from where the carrier at `freq` shows now). A board that finishes timing its crystal during a keying, or
+moves the chip, shows it in `ppm` and the summary's `ppm_moved`, not as a step in `hz`.
+
+The summary: `freq`, `mode`, `bw`, `interval_ms`, `t0`, `trigger_time`, `seconds`, `lines`, `level_db`,
+`floor_db`, `snr_db`; `settled_hz` (the mean of the last 2 s), `start_hz` (0.3 to 1.3 s), `drift_hz` (the mean of
+the second before `drift_s` (6) less `start_hz`; `null` for a shorter keying), `mean_hz`, `std_hz`, `min_hz`,
+`max_hz` (the lines after the transient, weighted by `ms`), `ppm_moved` (the correction's range over the lines),
+`trusted_throughout`, and the correction's fields with `freq_tol_hz` at the end (section 14.7). `std_hz` is the
+radio's wander plus the measurement's noise.
+
+`rfgbench.py track --freq MHz [--mode 4fsk]` writes the lines (and `{"summary": ...}`) as JSON to `--out` or
+stdout, and the summary's figures to stderr.

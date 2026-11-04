@@ -18,6 +18,7 @@ the daemon's client only changes the command it runs.
     rfgbench.py ... dmr-bursts --freq MHz [--seconds S] [--bursts N] [--until-end] [--cc CC] [--out FILE]
     rfgbench.py ... listen --freq MHz [--seconds S]
     rfgbench.py ... capture-trigger --freq MHz --out FILE [--bw Hz] [--pre S] [--post S] [--timeout S] ...
+    rfgbench.py ... track --freq MHz [--mode fm|4fsk] [--interval-ms MS] [--timeout S] [--max-s S] [--out FILE]
     rfgbench.py ... tx fm --freq MHz [SEGMENT...] [--pcm FILE] [--ctcss HZ | --dcs 023N] [--dev HZ] [--sub-dev HZ] ...
     rfgbench.py ... rx fm --freq MHz --seconds S [--audio FILE.wav] [--disc FILE.wav] [--records FILE] [--bw HZ] ...
     rfgbench.py ... tx am --freq MHz [SEGMENT...] [--pcm FILE] [--depth 0-1] [--offset HZ] ...
@@ -504,6 +505,46 @@ def cmd_capture_trigger(a) -> int:
     return write_iq(a, req, 8 if a.fmt == "cf32" else 4)
 
 
+def cmd_track(a) -> int:
+    """A keying's carrier, followed from the rise to the drop: a JSON line an interval (to --out or stdout), the
+    summary after; the figures on stderr when the lines go to stdout."""
+    check_reach(a, a.freq, tx=False)
+    out = open(a.out, "w") if a.out else sys.stdout
+    human = sys.stdout if a.out else sys.stderr
+
+    def tol(v):
+        return f"+-{v:.1f} Hz" if v is not None else "tolerance not known"
+
+    def on(d, data):
+        if "armed" in d:
+            print(f"ARMED floor {d['armed'].get('floor_db')} dB", file=human, flush=True)
+        elif "track" in d:
+            out.write(json.dumps(d["track"]) + "\n")
+            out.flush()
+        elif "done" in d:
+            m = d["done"]
+            out.write(json.dumps({"summary": m}) + "\n")
+            out.flush()
+
+            def hz(k):
+                return "-" if m.get(k) is None else f"{m[k]:+.1f}"
+            print(f"{m['lines']} lines over {m['seconds']:.1f} s on {m['freq'] / 1e6:.5f} MHz ({m['mode']}, "
+                  f"SNR {m['snr_db']:.0f} dB): settled {hz('settled_hz')} Hz, start {hz('start_hz')}, drift "
+                  f"{hz('drift_hz')} by {m['drift_s']:.0f} s, std {hz('std_hz')}, {tol(m.get('freq_tol_hz'))} for the "
+                  f"gateway's crystal ({m.get('ppm_source')}, {'trusted' if m.get('trusted_throughout') else 'not trusted'}"
+                  f" throughout, moved {m.get('ppm_moved', 0):.3f} ppm)", file=human, flush=True)
+            return 0 if m["lines"] else EX_NO_SIGNAL
+        return None
+    try:
+        return stream(a.where, {"op": "track", "session": a.session, "freq": a.freq, "mode": a.mode, "bw": a.bw,
+                                "interval_ms": a.interval_ms, "threshold_db": a.threshold, "min_ms": a.min_ms,
+                                "timeout_s": a.timeout, "max_s": a.max_s, "post_s": a.post, "drift_s": a.drift_s,
+                                "floor_s": a.floor_s, "floor_db": a.floor_db}, on)
+    finally:
+        if a.out:
+            out.close()
+
+
 # ── signal modes: tx / rx (bench-api.md section 14.6) ──
 
 def _num(x: str) -> float:
@@ -966,6 +1007,20 @@ def main(argv=None) -> int:
     s.add_argument("--until-end", action="store_true")
     s.add_argument("--max-s", type=float, default=30.0)
     s.add_argument("--json", action="store_true")
+    s = p("track", cmd_track)
+    s.add_argument("--freq", type=float, required=True)
+    s.add_argument("--mode", choices=("fm", "4fsk"), default="fm")
+    s.add_argument("--bw", type=float, default=25000.0)
+    s.add_argument("--interval-ms", type=float, default=100.0)
+    s.add_argument("--timeout", type=float, default=None)
+    s.add_argument("--threshold", type=float, default=10.0)
+    s.add_argument("--min-ms", type=float, default=10.0)
+    s.add_argument("--max-s", type=float, default=30.0)
+    s.add_argument("--post", type=float, default=0.5, help="how long after the drop it ends (past a DMR slot's gap)")
+    s.add_argument("--drift-s", type=float, default=6.0, help="the summary's drift: to this second from the start")
+    s.add_argument("--floor-s", type=float, default=1.0)
+    s.add_argument("--floor-db", type=float, default=None)
+    s.add_argument("--out", default=None)
     for op, fn in (("tx", cmd_tx_sig), ("rx", cmd_rx_sig)):
         s = sub.add_parser(op, help=f"{'send' if op == 'tx' else 'receive'} a signal mode")
         modes = s.add_subparsers(dest="mode_name", required=True)

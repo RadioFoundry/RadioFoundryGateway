@@ -79,6 +79,9 @@ typedef struct {
      * The reports give it at their frequency as freq_tol_hz, so a client knows how far to trust a frequency or cfo. */
     double ppm_tol;
     const char *ppm_ref;
+    bool ppm_trusted;    /* ppm is the sample clock's, timed long enough to be used as measured */
+    bool die_known;      /* die_c: the chip's die temperature (C), which the crystal follows */
+    double die_c;
     double tx_lo_hz, tx_hi_hz; /* where the transmitter tunes now (one synthesizer, a fixed TX LO); 0, 0: anywhere it can */
     double iq_scale_db;  /* the captures' cs8 full scale under the ADC's (the ring's scale, in dB; 0: the same) */
 } rdof_bl_window_t;

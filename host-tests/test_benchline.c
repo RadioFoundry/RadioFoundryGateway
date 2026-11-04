@@ -61,6 +61,7 @@ static struct {
     int restart, down; /* window reads after a tune applies that say the receiver isn't running yet */
     char who[16];
     double lo_ppm, fs_ppm; /* the crystal's error left in the samples (test_xtal) */
+    bool trusted;          /* the window says so, with a die temperature (test_track) */
 } ft = {.center = NAN, .gain = NAN};
 static void f_window(void *ctx, rdof_bl_window_t *w)
 {
@@ -72,7 +73,8 @@ static void f_window(void *ctx, rdof_bl_window_t *w)
                             .hi_hz = c + 0.3e6, .gain_db = isnan(ft.gain) ? 20 : ft.gain, .dc_guard_hz = 25e3,
                             .tx_lo_hz = c - 1e6, .tx_hi_hz = c + 1e6, .ppm = ft.lo_ppm, .lo_ppm = ft.lo_ppm,
                             .fs_ppm = ft.fs_ppm, .ppm_source = ft.lo_ppm ? "clock" : NULL,
-                            .ppm_tol = ft.lo_ppm ? 0.05 : 0, .ppm_ref = ft.lo_ppm ? "pps" : NULL};
+                            .ppm_tol = ft.lo_ppm ? 0.05 : 0, .ppm_ref = ft.lo_ppm ? "pps" : NULL,
+                            .ppm_trusted = ft.trusted, .die_known = ft.trusted, .die_c = 41.5};
 }
 static int f_freqs(void *ctx, rdof_bl_freq_t *out, int max)
 {
@@ -836,6 +838,106 @@ static void test_xtal(void)
     CHECK(strstr(info, "\"ppm_tol\":null,\"ppm_ref\":null"), "no tolerance known: null, %.600s", info);
     rdof_bl_closed(bl, c, now);
     rdof_bl_closed(bl, c, now);
+    rdof_bl_ring_free(&ring);
+    rdof_bl_free(bl);
+}
+
+/* ── track: an FM carrier and a lopsided 4FSK one, followed ─────────────── */
+
+/* ms of a carrier off_hz from the window's center: FM, a 1 kHz tone at 3 kHz deviation; 4FSK (fsk), 4800 symbols a
+ * second, +3 (1944 Hz) seven times in ten, so its mean is far from its center */
+static void put_mod(double ms, double off_hz, bool fsk)
+{
+    static double ph;
+    static uint64_t n;
+    static int sym;
+    float iq[2 * 768];
+    for (int b = 0; b < (int)(ms + 0.5); b++) {
+        for (int i = 0; i < 768; i++, n++) {
+            double dev;
+            if (fsk) {
+                if (n % 160 == 0) {
+                    const int r = rand() % 10;
+                    sym = r < 7 ? 3 : r == 7 ? 1 : r == 8 ? -1 : -3;
+                }
+                dev = 648.0 * sym;
+            } else {
+                dev = 3000 * sin(2 * M_PI * 1000 * (double)n / 768000);
+            }
+            ph = fmod(ph + 2 * M_PI * (off_hz + dev) / 768000, 2 * M_PI);
+            iq[2 * i] = noise() + 0.3f * (float)cos(ph);
+            iq[2 * i + 1] = noise() + 0.3f * (float)sin(ph);
+        }
+        rdof_bl_ring_put(&ring, iq, 768, NULL);
+    }
+}
+
+static size_t track_run(rdof_bl_t *bl, int c, double *now, double ms, double off_hz, bool fsk, bool on, char *all,
+                        size_t total, size_t cap)
+{
+    for (double t = 0; t < ms; t += 10) {
+        if (on)
+            put_mod(10, off_hz, fsk);
+        else
+            put_tone(10, 0, 0);
+        *now += 0.01;
+        rdof_bl_tick(bl, *now);
+        total += drain(bl, c, all + total, cap - total);
+    }
+    all[total] = 0;
+    return total;
+}
+
+static void test_track(void)
+{
+    rdof_bl_t *bl = rdof_bl_new(&PLAT);
+    double now = 4000;
+    static char all[1 << 18];
+    rdof_bl_ring_init(&ring, 768000);
+    ft.lo_ppm = ft.fs_ppm = 10, ft.trusted = true;
+    const double seen = (438.1125e6 - 438.225e6 * (1 + 10e-6)) / (1 + 10e-6);
+    for (int fsk = 0; fsk < 2; fsk++) {
+        const double off = fsk ? -300 : 150; /* the carrier from 438.1125 MHz */
+        put_tone(300, 0, 0);
+        int c = ask(bl, fsk ? "{\"op\":\"track\",\"freq\":438.1125,\"mode\":\"4fsk\",\"floor_s\":0.2,\"drift_s\":1.5,"
+                              "\"timeout_s\":5}"
+                            : "{\"op\":\"track\",\"freq\":438.1125,\"floor_s\":0.2,\"drift_s\":1.5,\"timeout_s\":5}",
+                    now);
+        size_t total = track_run(bl, c, &now, 100, 0, false, false, all, 0, sizeof all);
+        total = track_run(bl, c, &now, 2000, seen + off * (1 + 10e-6) / (1 + 10e-6), fsk, true, all, total,
+                          sizeof all);
+        total = track_run(bl, c, &now, 800, 0, false, false, all, total, sizeof all);
+        char v[32];
+        int lines = 0, off_lines = 0, transient = 0;
+        char *p = all, *done = strstr(all, "{\"done\""), *bad = all;
+        while ((p = strstr(p, "{\"track\""))) {
+            lines++;
+            if (field(p, "hz", v, sizeof v) && fabs(atof(v) - off) > 25 &&
+                !(strstr(p, "\"transient\":true") && strstr(p, "\"transient\":true") < strchr(p, '\n')))
+                off_lines++, bad = p;
+            transient += strstr(p, "\"transient\":true") && strstr(p, "\"transient\":true") < strchr(p, '\n');
+            p++;
+        }
+        /* the first interval too, transient as it is: nothing but the carrier in it */
+        const char *first = strstr(all, "{\"track\"");
+        CHECK(first && field(first, "hz", v, sizeof v) && fabs(atof(v) - off) < 60, "%s: the first line: %.200s",
+              fsk ? "4fsk" : "fm", first ? first : all);
+        CHECK(lines >= 18 && lines <= 21 && !off_lines && transient == 3 &&
+                  strstr(all, "\"ppm_source\":\"clock\",\"trusted\":true,\"tol_hz\":21.9,\"die_c\":41.5"),
+              "%s: %d lines of 100 ms, %d off by more than 25 Hz, %d transient: %.700s", fsk ? "4fsk" : "fm", lines,
+              off_lines, transient, bad);
+        CHECK(done && field(done, "settled_hz", v, sizeof v) && fabs(atof(v) - off) < 10 &&
+                  field(done, "drift_hz", v, sizeof v) && fabs(atof(v)) < 10 &&
+                  strstr(done, "\"trusted_throughout\":true") && strstr(done, "\"ppm_moved\":0.000") &&
+                  strstr(done, "\"freq_tol_hz\":21.9"),
+              "%s: settled on %.0f Hz: %.900s", fsk ? "4fsk" : "fm", off, done ? done : "(no done)");
+        if (fsk)
+            CHECK(strstr(all, "\"dev_hz\":19"), "4fsk: the outer deviation near 1944 Hz: %.300s", all);
+        else
+            CHECK(!strstr(all, "\"dev_hz\""), "fm: no deviation: %.300s", all);
+        rdof_bl_closed(bl, c, now);
+    }
+    ft.lo_ppm = ft.fs_ppm = 0, ft.trusted = false;
     rdof_bl_ring_free(&ring);
     rdof_bl_free(bl);
 }
@@ -2161,6 +2263,7 @@ int main(int argc, char **argv)
     test_ops();
     test_trigger();
     test_xtal();
+    test_track();
     test_filler();
     test_iq_formats();
     test_decode();

@@ -101,7 +101,25 @@ typedef struct {
     uint64_t trig_sc, out_sc0, end_sc;
     long sent, gaps, clipped, inputs;
     long filled;              /* wideband filler in what it sent, [out_sc0, end_sc) */
+    /* track: the carrier followed instead of the I/Q sent. Each output's instantaneous frequency (a block's, kept
+     * while its level is known), the blocks over half the threshold into the interval's mean and histogram */
+    bool track, fsk;          /* tracking; 4FSK (the center of its four levels) rather than FM (the mean) */
+    double ivl_s, drift_s;    /* an interval; where the summary's drift ends */
+    float *bf;                /* a block's frequencies */
+    int bfn;
+    float pi, pq;             /* the previous output (its phase step to the next) */
+    bool have_prev;
+    long ivl;                 /* the interval being added to */
+    double isum, ip;          /* its frequencies' sum, its blocks' power */
+    long in, iblocks;
+    uint32_t *ih;             /* its histogram (TRACK_BINS of TRACK_BIN Hz) */
+    struct track_line { float t, hz, ppm; int n; } *lines;
+    int nlines, lcap;
+    bool all_trusted;
 } trig_t;
+
+#define TRACK_BIN 25.0  /* Hz */
+#define TRACK_BINS 640  /* +-8 kHz */
 
 typedef struct {
     int state, op;
@@ -408,6 +426,9 @@ static void trig_free(trig_t *t)
         free(t->taps);
         free(t->dl);
         free(t->y);
+        free(t->bf);
+        free(t->ih);
+        free(t->lines);
         free(t);
     }
 }
@@ -675,7 +696,7 @@ static void get_window(rdof_bl_t *bl, rdof_bl_window_t *w)
     if (bl->p.window)
         bl->p.window(bl->p.ctx, w);
     double *v[] = {&w->center_hz, &w->fs, &w->lo_hz, &w->hi_hz, &w->gain_db, &w->dc_guard_hz, &w->ppm, &w->lo_ppm,
-                   &w->fs_ppm, &w->iq_scale_db, &w->ppm_tol};
+                   &w->fs_ppm, &w->iq_scale_db, &w->ppm_tol, &w->die_c};
     for (size_t i = 0; i < sizeof v / sizeof v[0]; i++)
         if (!isfinite(*v[i]))
             *v[i] = 0;
@@ -1170,9 +1191,11 @@ static void trig_restart(trig_t *t, uint64_t first)
     t->sc = first >= (uint64_t)g ? first - (uint64_t)g : 0;
     t->next_out = first + (uint64_t)g;
     t->bn = 0, t->bp = 0, t->run = 0;
+    t->bfn = 0, t->have_prev = false;
 }
 
-static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now)
+/* trigger, or with track the carrier followed from the rise to the drop (section 14.8) */
+static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now, bool track)
 {
     if (!req_session(bl, c, root, false))
         return;
@@ -1193,7 +1216,11 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now)
         outside(bl, c, root, mhz, &w, now);
         return;
     }
-    const char *fmt = jstrv(bl, root, "fmt");
+    const char *fmt = track ? NULL : jstrv(bl, root, "fmt"), *mode = track ? jstrv(bl, root, "mode") : NULL;
+    if (mode && strcmp(mode, "fm") && strcmp(mode, "4fsk")) {
+        fail(bl, c, "bad_request", "mode is fm or 4fsk");
+        return;
+    }
     if (fmt && strcmp(fmt, "cf32") && strcmp(fmt, "cs16")) {
         fail(bl, c, "bad_request", "fmt is cf32 or cs16");
         return;
@@ -1202,9 +1229,10 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now)
     if (d < 1)
         d = 1;
     const double rate = w.fs / d;
-    const double bw = jnum(bl, root, "bw", 12500), thr = jnum(bl, root, "threshold_db", 10),
-                 min_ms = jnum(bl, root, "min_ms", 10), pre = jnum(bl, root, "pre_s", 1),
-                 post = jnum(bl, root, "post_s", 2), max_s = jnum(bl, root, "max_s", 30),
+    /* a track starts at the rise and ends half a second after the drop (past a DMR slot's gap) */
+    const double bw = jnum(bl, root, "bw", track ? 25000 : 12500), thr = jnum(bl, root, "threshold_db", 10),
+                 min_ms = jnum(bl, root, "min_ms", 10), pre = track ? 0 : jnum(bl, root, "pre_s", 1),
+                 post = jnum(bl, root, "post_s", track ? 0.5 : 2), max_s = jnum(bl, root, "max_s", 30),
                  floor_s = jnum(bl, root, "floor_s", 1), timeout = jnum(bl, root, "timeout_s", 60),
                  floor_db = jnum(bl, root, "floor_db", NAN);
     if (!(bw > 0 && bw <= 0.9 * rate) || !(thr > 0) || !(min_ms >= 0) || !(pre >= 0 && pre <= 2) ||
@@ -1212,6 +1240,11 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now)
         !(timeout > 0 && timeout <= 3600)) {
         fail(bl, c, "bad_request", "bw 0-%.0f Hz, threshold_db > 0, pre_s 0-2, post_s 0-120, max_s 0-120, "
              "floor_s 0-10, timeout_s 0-3600", 0.9 * rate);
+        return;
+    }
+    const double ivl_ms = jnum(bl, root, "interval_ms", 100), drift_s = jnum(bl, root, "drift_s", 6);
+    if (track && (!(ivl_ms >= 20 && ivl_ms <= 2000) || !(drift_s > 1 && drift_s <= max_s))) {
+        fail(bl, c, "bad_request", "interval_ms 20-2000, drift_s 1-max_s");
         return;
     }
     trig_t *t = calloc(1, sizeof *t);
@@ -1226,7 +1259,16 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now)
      * with gaps from a history that moved on */
     const double whole_s = pre + post + (jbool(bl, root, "until_end") ? 2 : 0) + 0.5;
     const double whole = whole_s * rate * (fmt && !strcmp(fmt, "cs16") ? 4 : 8);
-    if (!t || !t->taps || !t->dl || !t->y || !big_out(c, whole < RDOF_BL_OUT_TRIG ? (size_t)whole : RDOF_BL_OUT_TRIG)) {
+    if (t && track) { /* its lines, not I/Q: no big buffer */
+        t->lcap = (int)(max_s * 1000 / ivl_ms) + 2;
+        t->bf = RDOF_BL_MALLOC(sizeof(float) * (size_t)(rate / 1000 + 2));
+        t->ih = RDOF_BL_MALLOC(sizeof(uint32_t) * TRACK_BINS);
+        t->lines = RDOF_BL_MALLOC(sizeof *t->lines * (size_t)t->lcap);
+    }
+    if (t && t->ih)
+        memset(t->ih, 0, sizeof(uint32_t) * TRACK_BINS);
+    if (!t || !t->taps || !t->dl || !t->y || (track && (!t->bf || !t->ih || !t->lines)) ||
+        (!track && !big_out(c, whole < RDOF_BL_OUT_TRIG ? (size_t)whole : RDOF_BL_OUT_TRIG))) {
         trig_free(t);
         fail(bl, c, "unavailable", "no memory for a trigger");
         return;
@@ -1248,7 +1290,9 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now)
     t->rate = rate, t->bw = bw, t->thr = thr, t->min_ms = min_ms, t->pre_s = pre, t->post_s = post;
     t->max_s = max_s, t->floor_s = floor_s, t->timeout = timeout, t->started = now;
     t->cs16 = fmt && !strcmp(fmt, "cs16");
-    t->until_end = jbool(bl, root, "until_end");
+    t->until_end = track || jbool(bl, root, "until_end");
+    t->track = track, t->fsk = mode && !strcmp(mode, "4fsk");
+    t->ivl_s = ivl_ms / 1000, t->drift_s = drift_s, t->all_trusted = true;
     t->bsize = (int)lround(rate / 1000);
     if (t->bsize < 1)
         t->bsize = 1;
@@ -2970,7 +3014,9 @@ static void request(rdof_bl_t *bl, int ci, double now)
     else if (!strcmp(op, "run"))
         op_run(bl, c, ci, root, now);
     else if (!strcmp(op, "trigger"))
-        op_trigger(bl, c, root, now);
+        op_trigger(bl, c, root, now, false);
+    else if (!strcmp(op, "track"))
+        op_trigger(bl, c, root, now, true);
     else if (!strcmp(op, "tx"))
         op_tx(bl, c, root, now);
     else if (!strcmp(op, "rx"))
@@ -3353,6 +3399,153 @@ static bool trig_block(rdof_bl_t *bl, conn_t *c, double lin, const rdof_bl_windo
     return true;
 }
 
+/* ── track: the carrier from the rise to the drop (section 14.8) ───────────── */
+
+#define TRACK_TRANSIENT_S 0.3 /* the key-up's settling, flagged and left out of the summary's figures */
+
+/* A 4FSK interval's center: its four levels (k-means on the histogram, started from its 1st and 99th percentiles
+ * and the thirds between), weighted alike, so more of one symbol than another doesn't move it; dev the outer pair's
+ * half spacing. */
+static double track_fsk(const trig_t *t, long n, double *dev)
+{
+    const double x0 = -TRACK_BINS * TRACK_BIN / 2;
+    long acc = 0;
+    int b1 = 0, b99 = TRACK_BINS - 1;
+    while (b1 < TRACK_BINS - 1 && (acc += t->ih[b1]) < n / 100)
+        b1++;
+    for (acc = 0; b99 > 0 && (acc += t->ih[b99]) < n / 100;)
+        b99--;
+    const double lo = x0 + (b1 + 0.5) * TRACK_BIN, hi = x0 + (b99 + 0.5) * TRACK_BIN;
+    double m[4] = {lo, lo + (hi - lo) / 3, hi - (hi - lo) / 3, hi};
+    for (int it = 0; it < 16; it++) {
+        /* after a few rounds only what's near a level: an output between two (a symbol's transition) pulls it */
+        const double near = it < 4 ? INFINITY : (m[3] - m[0]) / 3 / 4;
+        double sw[4] = {0}, sx[4] = {0};
+        for (int b = 0; b < TRACK_BINS; b++) {
+            if (!t->ih[b])
+                continue;
+            const double x = x0 + (b + 0.5) * TRACK_BIN;
+            int k = 0;
+            for (int j = 1; j < 4; j++)
+                if (fabs(x - m[j]) < fabs(x - m[k]))
+                    k = j;
+            if (fabs(x - m[k]) < near)
+                sw[k] += t->ih[b], sx[k] += t->ih[b] * x;
+        }
+        for (int j = 0; j < 4; j++)
+            if (sw[j] > 0)
+                m[j] = sx[j] / sw[j];
+    }
+    *dev = (m[3] - m[0]) / 2;
+    return (m[0] + m[1] + m[2] + m[3]) / 4;
+}
+
+/* The interval being added to is over: its line, when a fifth of it or more was over half the threshold. */
+static void track_flush(rdof_bl_t *bl, conn_t *c)
+{
+    trig_t *t = c->trig;
+    const long need = (long)(0.2 * t->ivl_s * t->rate);
+    if (t->in >= need && t->in > 0 && t->nlines < t->lcap) {
+        rdof_bl_window_t w;
+        get_window(bl, &w);
+        /* the mixer took out the correction as it was at the start: where the carrier at freq shows now, less that */
+        const double corr = rdof_bl_seen_hz(&w, c->freq_hz) - (c->freq_hz - w.center_hz);
+        double f = t->isum / (double)t->in, dev = NAN;
+        if (t->fsk)
+            f = track_fsk(t, t->in, &dev);
+        const double hz = (f - (corr - t->corr_hz)) * (1 + w.fs_ppm * 1e-6), at = (double)t->ivl * t->ivl_s;
+        char tol[24], die[24] = "null", dv[32] = "";
+        put_tol_hz(tol, sizeof tol, &w, c->freq_hz);
+        if (w.die_known)
+            snprintf(die, sizeof die, "%.1f", w.die_c);
+        if (t->fsk)
+            snprintf(dv, sizeof dv, ",\"dev_hz\":%.1f", dev);
+        emit(bl, c,
+             "{\"track\":{\"t\":%.3f,\"hz\":%.1f%s,\"level_db\":%.1f,\"ms\":%.0f,\"ppm\":%.3f,\"ppm_source\":\"%s\","
+             "\"trusted\":%s,\"tol_hz\":%s,\"die_c\":%s,\"transient\":%s}}",
+             at, hz, dv, 10 * log10(t->ip / (double)(t->iblocks ? t->iblocks : 1) + 1e-30), 1000.0 * t->in / t->rate,
+             w.ppm, w.ppm_source ? w.ppm_source : "none", w.ppm_trusted ? "true" : "false", tol, die,
+             at < TRACK_TRANSIENT_S ? "true" : "false");
+        t->lines[t->nlines++] = (struct track_line){(float)at, (float)hz, (float)w.ppm, (int)t->in};
+        t->all_trusted = t->all_trusted && w.ppm_trusted;
+    }
+    t->isum = 0, t->ip = 0, t->in = 0, t->iblocks = 0;
+    memset(t->ih, 0, sizeof(uint32_t) * TRACK_BINS);
+}
+
+/* A block's frequencies are in: into its interval when it's over half the threshold (the carrier there). */
+static void track_block(rdof_bl_t *bl, conn_t *c, double lin, const rdof_bl_window_t *w)
+{
+    trig_t *t = c->trig;
+    const int n = t->bfn;
+    t->bfn = 0;
+    if (!t->fired || t->block_sc < t->trig_sc || 10 * log10(lin + 1e-30) < t->floor_db + t->thr / 2)
+        return;
+    const long k = (long)((double)(t->block_sc - t->trig_sc) / w->fs / t->ivl_s);
+    if (k != t->ivl) {
+        track_flush(bl, c);
+        t->ivl = k;
+    }
+    for (int i = 0; i < n; i++) {
+        const int b = (int)floor((t->bf[i] + TRACK_BINS * TRACK_BIN / 2) / TRACK_BIN);
+        if (b >= 0 && b < TRACK_BINS)
+            t->ih[b]++;
+        t->isum += t->bf[i];
+    }
+    t->in += n, t->ip += lin, t->iblocks++;
+}
+
+/* The lines' mean (weighted by their time on the air) over [a, b), the transient left out; NAN: none. */
+static double track_mean(const trig_t *t, double a, double b)
+{
+    double s = 0, n = 0;
+    for (int i = 0; i < t->nlines; i++)
+        if (t->lines[i].t >= a && t->lines[i].t < b && t->lines[i].t >= TRACK_TRANSIENT_S)
+            s += (double)t->lines[i].hz * t->lines[i].n, n += t->lines[i].n;
+    return n > 0 ? s / n : NAN;
+}
+
+static void put_hz(char *out, size_t cap, double v)
+{
+    if (isfinite(v))
+        snprintf(out, cap, "%.1f", v);
+    else
+        snprintf(out, cap, "null");
+}
+
+static void track_done(rdof_bl_t *bl, conn_t *c, const rdof_bl_window_t *w, double t0, double tt)
+{
+    trig_t *t = c->trig;
+    track_flush(bl, c);
+    double last = 0, lo = INFINITY, hi = -INFINITY, plo = INFINITY, phi = -INFINITY, s = 0, s2 = 0, n = 0;
+    for (int i = 0; i < t->nlines; i++) {
+        const struct track_line *l = &t->lines[i];
+        last = l->t + t->ivl_s;
+        plo = fmin(plo, l->ppm), phi = fmax(phi, l->ppm);
+        if (l->t < TRACK_TRANSIENT_S)
+            continue;
+        lo = fmin(lo, l->hz), hi = fmax(hi, l->hz);
+        s += (double)l->hz * l->n, s2 += (double)l->hz * l->hz * l->n, n += l->n;
+    }
+    const double mean = n > 0 ? s / n : NAN, sd = n > 0 ? sqrt(fmax(0, s2 / n - mean * mean)) : NAN;
+    const double settled = track_mean(t, last - 2, INFINITY), start = track_mean(t, 0, 1 + TRACK_TRANSIENT_S);
+    const double end = last >= t->drift_s ? track_mean(t, t->drift_s - 1, t->drift_s) : NAN;
+    char a[24], b[24], m[24], sdv[24], l[24], h[24], st[24], dr[24], pp[256];
+    put_hz(a, sizeof a, settled), put_hz(b, sizeof b, start), put_hz(m, sizeof m, mean), put_hz(sdv, sizeof sdv, sd);
+    put_hz(l, sizeof l, lo), put_hz(h, sizeof h, hi), put_hz(st, sizeof st, end - start);
+    snprintf(dr, sizeof dr, "%.3f", t->nlines ? phi - plo : 0.0);
+    put_ppm_at(pp, sizeof pp, w, c->freq_hz);
+    emit(bl, c,
+         "{\"done\":{\"freq\":%.1f,\"mode\":\"%s\",\"bw\":%.0f,\"interval_ms\":%.0f,\"t0\":%.6f,\"trigger_time\":%.6f,"
+         "\"seconds\":%.3f,\"lines\":%d,\"level_db\":%.1f,\"floor_db\":%.1f,\"snr_db\":%.1f,\"settled_hz\":%s,"
+         "\"start_hz\":%s,\"drift_hz\":%s,\"drift_s\":%.1f,\"mean_hz\":%s,\"std_hz\":%s,\"min_hz\":%s,\"max_hz\":%s,"
+         "\"ppm_moved\":%s,\"trusted_throughout\":%s,%s,\"source\":\"rfg\"}}",
+         c->freq_hz, t->fsk ? "4fsk" : "fm", t->bw, t->ivl_s * 1000, t0, tt, last, t->nlines, t->level_db, t->floor_db,
+         t->level_db - t->floor_db, a, b, st, t->drift_s, m, sdv, l, h, dr,
+         t->nlines && t->all_trusted ? "true" : "false", pp);
+    c->state = C_DONE;
+}
+
 static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
 {
     trig_t *t = c->trig;
@@ -3369,6 +3562,11 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
             uint64_t oldest = 0, next = 0;
             int8_t probe[2];
             bl->p.iq_read(bl->p.ctx, UINT64_MAX, probe, 0, &oldest, &next);
+            if (t->track) {
+                track_done(bl, c, &w, trig_utc(bl, t->out_sc0, now, next, w.fs),
+                           trig_utc(bl, t->trig_sc, now, next, w.fs));
+                return;
+            }
             const long samples = (long)((t->end_sc - t->out_sc0 + d - 1) / d);
             const long gaps = t->gaps + (t->filled + (long)d - 1) / (long)d; /* filler, in the channel's samples */
             char pp[256];
@@ -3396,7 +3594,7 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
                 fail(bl, c, "no_signal", "no samples to learn the floor from in %.0f s", t->timeout);
             return;
         }
-        const size_t frame = (size_t)(RDOF_BL_IQ_CHUNK / t->d + 2) * 8 + 160;
+        const size_t frame = t->track ? 4096 : (size_t)(RDOF_BL_IQ_CHUNK / t->d + 2) * 8 + 160;
         if (t->fired && room(c) < frame)
             return; /* the client is behind: later */
         uint64_t oldest = 0, next = 0;
@@ -3451,7 +3649,12 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
             for (int k = 0; k < t->ntaps; k++)
                 yi += t->taps[k] * x[2 * k], yq += t->taps[k] * x[2 * k + 1];
             const uint64_t center = t->sc + (uint64_t)i - g;
-            if (t->fired && center < t->end_sc)
+            if (t->track && t->fired && center < t->end_sc) { /* the phase step from the previous output, in Hz */
+                if (t->have_prev)
+                    t->bf[t->bfn++] = atan2f(yq * t->pi - yi * t->pq, yi * t->pi + yq * t->pq) *
+                                      (float)(t->rate / (2 * M_PI));
+                t->pi = yi, t->pq = yq, t->have_prev = true;
+            } else if (t->fired && center < t->end_sc)
                 t->y[2 * nout] = yi, t->y[2 * nout + 1] = yq, nout++;
             if (!t->bn++)
                 t->block_sc = center;
@@ -3459,6 +3662,8 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
             if (t->bn == t->bsize) {
                 const double lin = t->bp / t->bsize;
                 t->bn = 0, t->bp = 0;
+                if (t->track)
+                    track_block(bl, c, lin, &w);
                 if (trig_block(bl, c, lin, &w)) {
                     restarted = true;
                     break;

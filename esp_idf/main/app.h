@@ -600,6 +600,8 @@ typedef struct {
     const char *source; /* where xtal came from: "clock" (the sample clock timed), "afc", "table", "kept", "setting" */
     double tol;         /* how far xtal may be off, ppm; 0: not known */
     const char *ref;    /* what it was timed against: netclock's source ("pps", "ntp", ...), "radios"; NULL: none */
+    bool trusted;       /* xtal is the sample clock's, trusted as measured */
+    double die_c;       /* the die temperature the crystal follows (C), NAN: not known */
 } sdr_ppm_now_t;
 void sdr_ppm_now(sdr_ppm_now_t *out);
 /* A burst's carrier from its channel's true frequency (Hz): the AFC correction its samples went through and the

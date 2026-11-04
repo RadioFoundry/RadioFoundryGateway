@@ -819,6 +819,8 @@ static const char *assumed_src = "setting"; /* where ppm_assumed came from: "tab
 static volatile float now_xtal = NAN, now_chip, now_rate;
 static const char *volatile now_src = "setting";
 static volatile float now_tol;            /* how far now_xtal may be off, ppm (0: not known; tol_tick) */
+static volatile bool now_trusted;         /* now_xtal is the sample clock's, trusted (tol_tick) */
+static volatile float now_die = NAN;      /* die_c, for another task (a float: one word) */
 static const char *volatile now_ref;      /* what it was timed against (netclock's source), NULL: none */
 static int cal_put_bin = INT32_MIN;
 static double cal_put_t;
@@ -1077,6 +1079,8 @@ static void tol_tick(double t)
         tol = 2 * RATE_STORED_ERR_PPM;
     }
     now_tol = (float)tol, now_ref = ref;
+    now_trusted = ppm_on && !isnan(learned) && ppm.measured && xtal_trusted;
+    now_die = (float)die_c;
 }
 
 /* Every few seconds, under rx_lock: learn, move the RTL when confident, follow the temperature table until then,
@@ -1162,6 +1166,7 @@ void sdr_ppm_now(sdr_ppm_now_t *out)
 {
     const double e = now_xtal, chip = now_chip, rate = now_rate;
     *out = (sdr_ppm_now_t){.xtal = e, .chip = chip, .source = now_src, .tol = now_tol, .ref = now_ref,
+                           .trusted = now_trusted, .die_c = now_die,
                            .lo_left = isnan(e) ? 0 : rdof_ppm_left(e, chip),
                            .fs_left = isnan(e) ? 0 : rdof_ppm_left(e, rate)};
 }
