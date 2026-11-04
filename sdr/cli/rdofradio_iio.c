@@ -394,10 +394,12 @@ rdofradio_dev_t *rdofradio_iio_open(const char *uri, const rdofradio_dev_setup_t
     s->len = s->rx_len = stream_len(su->stream, d->rate);
     d->tx_rate = d->rate;
     if (su->tx_interp > 1) {
-        /* the transmit stream at rate / tx_interp: its buffers as long in time (13.7 ms), so the queue stays under
-         * the 50 ms the stream runs ahead (start) */
+        /* the transmit stream at rate / tx_interp, in buffers of about 5 ms: the queue (two), the one being filled,
+         * a loop turn (10 ms) and the guard's margin stay inside the 50 ms the stream runs ahead. 16 ms buffers
+         * (1536 at 96 kS/s) needed 64 ms, and once a stall made the guard pad, its dropping the late samples left
+         * every block after short too: zeros for a whole key-up. */
         d->tx_rate = d->rate / su->tx_interp;
-        const size_t n = (size_t)(d->tx_rate * 32768.0 / 2400000.0);
+        const size_t n = (size_t)(d->tx_rate * 0.005);
         s->len = n < 256 ? 256 : (n + 255) / 256 * 256;
     }
     if (su->words_rate > 0) {

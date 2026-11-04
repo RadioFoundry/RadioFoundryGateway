@@ -155,7 +155,12 @@ carrier at 192 kS/s and 18.75 kHz at 96 kS/s (`--tx-lo` unless given). Only TX1 
 (2026-11-04, the 7010 Pluto clone, the block and the interpolator in one bitstream: every slice, 74% of LUTs, 40 of
 80 DSP48, timing met by 1 ps): 15 channels from 19.872 MS/s, the transmit stream at 96 kS/s (R 207); 30.0 s of
 signal in 30.0 s with no channel frame lost. Without `--fpga-duc` the same run lost over 1,000 channel frames a
-second. Not yet heard on air.
+second. Loopback the same day, with `--bench` and the 15 frequencies in `--bench-tx` (TX gain 79): 8 CSBKs from
+`bench_tx` on each of the 15 in turn, while all 15 received, every one decoded by the Pluto's own receiver (120 of
+120, CC 2, no sync errors, -35 dBFS, 11 to 12 Hz off), the TX LO moving where a channel was past its reach; a
+10-superframe voice call, 71 of 71 bursts, nothing on the channels 50 kHz either side. The TX buffers are about
+5 ms at the transmit stream's rate (512 samples at 96 kS/s), so the queue, the buffer being filled, a loop turn and
+the guard's margin stay inside the stream's 50 ms lead.
 
 On the Pluto, from `/tmp` (RAM):
 

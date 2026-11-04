@@ -4613,7 +4613,9 @@ int main(int argc, char **argv)
         /* the calibration's pulse may come back before its place (--tx-offset too large): looked for from 100 ms before */
         const int64_t edge_from = R.onset - (R.cal == 2 ? (int64_t)rate / 10 : 0);
         if (R.onset >= 0 && total + n > edge_from) {
-            for (int i = 0; i < n; i++) {
+            /* --fpga-chz: one output instant at a time (its power is the same over its step; a division a wideband
+             * sample took a 7010's loop to a third of real time until the edge came) */
+            for (int i = 0; i < n; i += FX.on ? FX.step : 1) {
                 const double p2 = turn_p2(in, i);
                 const int64_t at = total + i - FX_EDGE; /* --fpga-chz: less the filter's delay */
                 if (at >= edge_from && p2 > 100 * R.base_power) {
@@ -4681,7 +4683,7 @@ int main(int argc, char **argv)
             level_n += (n + 15) / 16;
             if (now - last_status >= 1.0) {
                 fprintf(stderr, "status %.1f s (wall %.1f; read %.2f, ring wait %.2f, process %.2f s; ring %.0f ms): RX gain %.0f dB, level %.1f dBFS, %s, modem sent %u idle %u heard %u\n",
-                        total / rate, now - t_start, t_read, t_write, t_proc, 1e3 * (double)(W.head - W.tail) / rate, dev->rx_gain(dev),
+                        total / rate, now - t_start, t_read, t_write, t_proc, 1e3 * (double)(W.head - W.tail) / txrate, dev->rx_gain(dev),
                         10 * log10(level_sum / (level_n ? level_n : 1) + 1e-12), hot ? "TX on" : "TX off",
                         R.m.tx_bursts, R.m.idle_bursts, R.m.rx_bursts);
                 last_status = now;
@@ -4723,7 +4725,7 @@ int main(int argc, char **argv)
             R.m.muted, R.m.lost, R.m.refused);
     if (W.guarded && (W.guard.pads || W.guard.dry))
         fprintf(stderr, "transmit guard: %u blocks finished with zeros (%.1f ms), ran dry %u times\n", W.guard.pads,
-                1e3 * (double)W.guard.padded / rate, W.guard.dry);
+                1e3 * (double)W.guard.padded / txrate, W.guard.dry);
     if (R.rx.echoes)
         fprintf(stderr, "receiver: %ld of our own bursts heard back and dropped\n", R.rx.echoes);
     for (int c = 0; c < NCH; c++)
