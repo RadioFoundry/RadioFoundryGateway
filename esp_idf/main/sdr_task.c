@@ -706,11 +706,19 @@ void sdr_rate_break(void)
 }
 
 /* Time the stream from scratch: it (re)started, or its sample rate moved (the correction). fresh: a dongle not
- * timed before, or a rate that moved, so whether it has settled starts over too. Under rx_lock, or before the
- * stream starts. */
+ * timed before, or a rate that moved, so whether it has settled starts over too. The same front end restarted at
+ * the same rate and correction (a retune) is the same clock: a break in the fit, which goes on, trusted as it was
+ * (a request's tune for itself used to cost the board its trusted crystal for 10 minutes). Under rx_lock, or
+ * before the stream starts. */
 static void rate_restart(bool fresh)
 {
+    const double corr = fe.ops && fe.ops->sample_ppm ? fe.ops->sample_ppm(fe.ctx) : 0.0;
     portENTER_CRITICAL(&rate_lock);
+    if (!fresh && rate_on && rate_fit.valid && fe_rate > 0 && rate_bin.nominal == fe_rate && corr == rate_corr) {
+        rdof_rate_bin_break(&rate_bin);
+        portEXIT_CRITICAL(&rate_lock);
+        return;
+    }
     rdof_rate_bin_init(&rate_bin, fe_rate);
     rate_on = fe_rate > 0;
     rate_npend = 0;
@@ -720,7 +728,7 @@ static void rate_restart(bool fresh)
         nc_settle_init(&die_settle, SETTLE_EVERY_S, SETTLE_WINDOW_S, SETTLE_DIE_C);
     if (fresh || !rate_settle.every_s)
         nc_settle_init(&rate_settle, SETTLE_EVERY_S, SETTLE_WINDOW_S, SETTLE_RATE_PPM);
-    rate_corr = fe.ops && fe.ops->sample_ppm ? fe.ops->sample_ppm(fe.ctx) : 0.0;
+    rate_corr = corr;
     xtal_trusted = false; /* xtal keeps the last value until the new fit has its own */
 }
 
@@ -1007,7 +1015,8 @@ static void cal_follow(void)
     const double now = isnan(rdof_ppm_learned(&ppm)) ? ppm_assumed : rdof_ppm_learned(&ppm);
     if (isnan(now) || fabs(want - now) < CAL_FOLLOW_PPM)
         return;
-    const int to = (int)lrint(want), step = to - (int)ppm.chip;
+    /* the chip moves as rdof_ppm_update moves it: only once the fraction left reaches RDOF_PPM_MOVE */
+    const int to = fabs(want - ppm.chip) >= RDOF_PPM_MOVE ? (int)lrint(want) : (int)ppm.chip, step = to - (int)ppm.chip;
     double before[RDOF_SDR_MAX_CHANNELS];
     bases(now, before);
     if (step) {

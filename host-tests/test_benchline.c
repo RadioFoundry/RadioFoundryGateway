@@ -937,6 +937,29 @@ static void test_track(void)
             CHECK(!strstr(all, "\"dev_hz\""), "fm: no deviation: %.300s", all);
         rdof_bl_closed(bl, c, now);
     }
+    /* the chip moves 1 ppm while the engine is behind: no line is corrected with a window its samples weren't
+     * written under. The 0.5 s backlog went in between two ticks, so it could be under either: left out (on a
+     * board, ticks 10 ms apart, a change costs about that) */
+    put_tone(300, 0, 0);
+    int c = ask(bl, "{\"op\":\"track\",\"freq\":438.1125,\"floor_s\":0.2,\"timeout_s\":5}", now);
+    const double off = 150, seen_new = (438.1125e6 - 438.225e6 * (1 + 11e-6)) / (1 + 10e-6);
+    size_t total = track_run(bl, c, &now, 100, 0, false, false, all, 0, sizeof all);
+    total = track_run(bl, c, &now, 600, seen + off, false, true, all, total, sizeof all);
+    put_mod(500, seen + off, false); /* the backlog */
+    ft.lo_ppm = 11;
+    total = track_run(bl, c, &now, 1000, seen_new + off, false, true, all, total, sizeof all);
+    total = track_run(bl, c, &now, 800, 0, false, false, all, total, sizeof all);
+    int lines = 0, bad = 0;
+    const char *badp = all;
+    for (const char *p = all; (p = strstr(p, "{\"track\"")); p++) {
+        char v[32];
+        lines++;
+        if (field(p, "hz", v, sizeof v) && fabs(atof(v) - off) > 25)
+            bad++, badp = p;
+    }
+    CHECK(lines >= 14 && lines <= 17 && !bad && strstr(all, "\"ppm_moved\":1.000"),
+          "the correction moved 461 Hz mid-track, %d lines, %d off: %.300s", lines, bad, badp);
+    rdof_bl_closed(bl, c, now);
     ft.lo_ppm = ft.fs_ppm = 0, ft.trusted = false;
     rdof_bl_ring_free(&ring);
     rdof_bl_free(bl);

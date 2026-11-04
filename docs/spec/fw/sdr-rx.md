@@ -321,7 +321,8 @@ recently learned bin is evicted. `get`: linear interpolation, clamped to the nea
 - `cal_learn`: when settled, learned not NaN, and `steady ≥ 900 s`, put into the die's bin at most once per bin per
   `CAL_AGAIN_S` (7200 s), then save.
 - `cal_follow`: when settled, the clock not trusted, `steady < 60`, and the table differs from the current value by
-  ≥ `CAL_FOLLOW_PPM` (0.25), move the chip to `lrint(want)` and the channels to the rest.
+  ≥ `CAL_FOLLOW_PPM` (0.25), move the channels to it, and the chip to `lrint(want)` only once `want` is
+  `RDOF_PPM_MOVE` (0.75) or more from it, as `rdof_ppm_update` does.
 
 ## 8. Sample clock (`sdr/src/rate.c`, `sdr_task.c` "the sample clock")
 
@@ -346,7 +347,11 @@ trusted  = settled && xtal_err ≤ 0.3 (RATE_TRUST_PPM) && fit.span ≥ 300 s (R
 
 `rate_corr = fe.sample_ppm()`, the part of the correction the front end applies to its sample rate. It is 0 on the
 RTL (`fixed_sample_rate`) and `chip` on sim. Without `netclock_rate`, nothing is trusted. When `set_chip_ppm`
-changes `sample_ppm`, the fit restarts fresh. A front end without `sample_ppm` (LR2021) has no sample clock.
+changes `sample_ppm`, the fit restarts fresh. A front end without `sample_ppm` (the LR2021) has `rate_corr` 0.
+
+A stream restart of the same front end at the same rate and `rate_corr` (a retune, a request's tune for itself) is
+the same clock: `rate_restart` breaks the fit (`rdof_rate_bin_break`, a new segment) instead of starting it over,
+so the crystal stays trusted. Anything else (another dongle, another rate, a new `sample_ppm`) starts it over.
 
 **Warm-up / settled** (`settle_tick`, `nc_settle_t`, `NC_SETTLE_N` 16 samples):
 

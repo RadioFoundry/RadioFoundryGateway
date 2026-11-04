@@ -788,9 +788,12 @@ correction is the sample clock's, trusted as measured), `tol_hz` (`ppm_tol` at `
 temperature the board's crystal follows; `null` where not known), `transient` (`t` under 0.3 s: the key-up's
 settling, left out of the summary's figures).
 
-The channel is mixed with the correction as it was at the start; a line is corrected again for the correction then
-(`hz` is from where the carrier at `freq` shows now). A board that finishes timing its crystal during a keying, or
-moves the chip, shows it in `ppm` and the summary's `ppm_moved`, not as a step in `hz`.
+The channel is mixed with the correction as it was at the start; each 1 ms block is corrected again for the
+correction its samples were written under (the engine reads the history behind the board's state, by up to its 2 s
+on a busy W12). The engine notes the window at each tick; a block written between the tick before a change and
+the one that saw it could be under either and is left out (about 10 ms a change). A chip move (a real step in the
+samples, the window's `lo_ppm` with it) cancels out; a new estimate of the crystal (the clock fit, the table) moves
+`hz` by the estimate's change, and `ppm` and the summary's `ppm_moved` say so.
 
 The summary: `freq`, `mode`, `bw`, `interval_ms`, `t0`, `trigger_time`, `seconds`, `lines`, `level_db`,
 `floor_db`, `snr_db`; `settled_hz` (the mean of the last 2 s), `start_hz` (0.3 to 1.3 s), `drift_hz` (the mean of

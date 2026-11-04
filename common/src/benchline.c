@@ -116,7 +116,15 @@ typedef struct {
     struct track_line { float t, hz, ppm; int n; } *lines;
     int nlines, lcap;
     bool all_trusted;
+    /* the correction as it changed: from sample sc on, the window w (the history runs behind the board's state, so
+     * a block is corrected with the window it was written under, not the one at the time it is read). Written
+     * between the tick before the change was seen (from) and sc, a block could be under either: left out. */
+    struct track_snap { uint64_t from, sc; rdof_bl_window_t w; } *snap;
+    uint64_t seen_next;       /* the history's next sample at the last tick */
+    int nsnap, isnap;         /* snapshots (at most TRACK_SNAPS, the oldest dropped); the last block's */
 } trig_t;
+
+#define TRACK_SNAPS 32
 
 #define TRACK_BIN 25.0  /* Hz */
 #define TRACK_BINS 640  /* +-8 kHz */
@@ -429,6 +437,7 @@ static void trig_free(trig_t *t)
         free(t->bf);
         free(t->ih);
         free(t->lines);
+        free(t->snap);
         free(t);
     }
 }
@@ -1265,10 +1274,11 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now, bool trac
         t->bf = malloc(sizeof(float) * (size_t)(rate / 1000 + 2));
         t->ih = RDOF_BL_MALLOC(sizeof(uint32_t) * TRACK_BINS);
         t->lines = RDOF_BL_MALLOC(sizeof *t->lines * (size_t)t->lcap);
+        t->snap = RDOF_BL_MALLOC(sizeof *t->snap * TRACK_SNAPS);
     }
     if (t && t->ih)
         memset(t->ih, 0, sizeof(uint32_t) * TRACK_BINS);
-    if (!t || !t->taps || !t->dl || !t->y || (track && (!t->bf || !t->ih || !t->lines)) ||
+    if (!t || !t->taps || !t->dl || !t->y || (track && (!t->bf || !t->ih || !t->lines || !t->snap)) ||
         (!track && !big_out(c, whole < RDOF_BL_OUT_TRIG ? (size_t)whole : RDOF_BL_OUT_TRIG))) {
         trig_free(t);
         fail(bl, c, "unavailable", "no memory for a trigger");
@@ -1294,6 +1304,8 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now, bool trac
     t->until_end = track || jbool(bl, root, "until_end");
     t->track = track, t->fsk = mode && !strcmp(mode, "4fsk");
     t->ivl_s = ivl_ms / 1000, t->drift_s = drift_s, t->all_trusted = true;
+    if (track)
+        t->snap[0] = (struct track_snap){0, 0, w}, t->nsnap = 1;
     t->bsize = (int)lround(rate / 1000);
     if (t->bsize < 1)
         t->bsize = 1;
@@ -3464,14 +3476,11 @@ static void track_flush(rdof_bl_t *bl, conn_t *c)
     trig_t *t = c->trig;
     const long need = (long)(0.2 * t->ivl_s * t->rate);
     if (t->in >= need && t->in > 0 && t->nlines < t->lcap) {
-        rdof_bl_window_t w;
-        get_window(bl, &w);
-        /* the mixer took out the correction as it was at the start: where the carrier at freq shows now, less that */
-        const double corr = rdof_bl_seen_hz(&w, c->freq_hz) - (c->freq_hz - w.center_hz);
+        const rdof_bl_window_t w = t->snap[t->isnap].w; /* the interval's last block's */
         double f = t->isum / (double)t->in, dev = NAN;
         if (t->fsk)
             f = track_fsk(t, t->in, &dev);
-        const double hz = (f - (corr - t->corr_hz)) * (1 + w.fs_ppm * 1e-6), at = (double)t->ivl * t->ivl_s;
+        const double hz = f * (1 + w.fs_ppm * 1e-6), at = (double)t->ivl * t->ivl_s;
         char tol[24], die[24] = "null", dv[32] = "";
         put_tol_hz(tol, sizeof tol, &w, c->freq_hz);
         if (w.die_known)
@@ -3504,11 +3513,22 @@ static void track_block(rdof_bl_t *bl, conn_t *c, double lin, const rdof_bl_wind
         track_flush(bl, c);
         t->ivl = k;
     }
+    /* the mixer took out the correction as it was at the start: less where the carrier at freq showed when the
+     * block was written, the change in it since */
+    int j = t->nsnap - 1;
+    while (j > 0 && t->snap[j].sc > t->block_sc)
+        j--;
+    if (j + 1 < t->nsnap && t->block_sc + (uint64_t)(t->bsize * t->d) > t->snap[j + 1].from)
+        return; /* written about when the correction changed */
+    const rdof_bl_window_t *sw = &t->snap[j].w;
+    const float d = (float)(rdof_bl_seen_hz(sw, c->freq_hz) - (c->freq_hz - sw->center_hz) - t->corr_hz);
+    t->isnap = j;
     for (int i = 0; i < n; i++) {
-        const int b = (int)floor((t->bf[i] + TRACK_BINS * TRACK_BIN / 2) / TRACK_BIN);
+        const float f = t->bf[i] - d;
+        const int b = (int)floor((f + TRACK_BINS * TRACK_BIN / 2) / TRACK_BIN);
         if (b >= 0 && b < TRACK_BINS)
             t->ih[b]++;
-        t->isum += t->bf[i];
+        t->isum += f;
     }
     t->in += n, t->ip += lin, t->iblocks++;
 }
@@ -3565,11 +3585,34 @@ static void track_done(rdof_bl_t *bl, conn_t *c, const rdof_bl_window_t *w, doub
     c->state = C_DONE;
 }
 
+/* The correction changed since the last snapshot: a new one, from the history's next sample on. */
+static void track_snap(rdof_bl_t *bl, trig_t *t, const rdof_bl_window_t *w)
+{
+    uint64_t oldest = 0, next = 0;
+    int8_t probe[2];
+    bl->p.iq_read(bl->p.ctx, UINT64_MAX, probe, 0, &oldest, &next);
+    const uint64_t from = t->seen_next ? t->seen_next : next;
+    t->seen_next = next;
+    const rdof_bl_window_t *l = &t->snap[t->nsnap - 1].w;
+    if (w->ppm == l->ppm && w->lo_ppm == l->lo_ppm && w->fs_ppm == l->fs_ppm && w->center_hz == l->center_hz &&
+        w->ppm_tol == l->ppm_tol && w->ppm_trusted == l->ppm_trusted && w->ppm_source == l->ppm_source &&
+        w->die_c == l->die_c)
+        return;
+    if (t->nsnap == TRACK_SNAPS) { /* the oldest goes; the interval's index with it */
+        memmove(t->snap, t->snap + 1, sizeof *t->snap * (TRACK_SNAPS - 1));
+        t->nsnap--;
+        t->isnap = t->isnap > 0 ? t->isnap - 1 : 0;
+    }
+    t->snap[t->nsnap++] = (struct track_snap){from, next, *w};
+}
+
 static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
 {
     trig_t *t = c->trig;
     rdof_bl_window_t w;
     get_window(bl, &w);
+    if (t->track)
+        track_snap(bl, t, &w);
     const uint64_t g = (uint64_t)(t->ntaps - 1) / 2, d = (uint64_t)t->d;
     /* twice the input since the last tick, so it catches up, at most 0.25 s of it: the lock is held */
     double dt = t->last_tick > 0 ? now - t->last_tick : 0.02;
