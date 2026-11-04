@@ -35,6 +35,10 @@ afsk:hex=...:baud=2400:hz=1200+2400.
 The gateway: --bench, else $RDOF_BENCH_LINE (HOST or HOST:PORT; port 7373 by default). Any number of clients may use
 one gateway at once: sessions, claims and the modem queue keep them apart, and the receive ops share the receiver.
 
+A frequency past where the gateway can receive now (its window) or transmit (a W12's transmitter is tied to the
+receiver's center; a Pluto's isn't) gets a warning on stderr first, with the session and tune commands that move the
+receiver there.
+
 Exit codes: 0; 1 an error; 3 nothing heard; 69 the gateway can't be reached or can't do it; 75 busy or timed out;
 77 refused.
 """
@@ -182,6 +186,39 @@ def printer(d, data):
     print(json.dumps(d), flush=True)
 
 
+def check_reach(a, mhz: float, tx: bool) -> None:
+    """Warn on stderr when mhz is past where the gateway can transmit (tx) or receive now, with the commands that move
+    the receiver there. Each platform reports its own: the window's lo-hi (its rate), and tx_lo-tx_hi where its
+    transmitter is tied to the receiver (a W12: 1 MHz either side of the center; 0, 0: it tunes on its own)."""
+    try:
+        w = request(a.where, {"op": "info"}).get("window") or {}
+    except OSError:
+        return
+    if not w.get("enabled") or mhz is None:
+        return
+    lo, hi = (w.get("tx_lo", 0), w.get("tx_hi", 0)) if tx else (w["lo"], w["hi"])
+    if (tx and not lo and not hi) or lo <= mhz <= hi:
+        return
+    center, fs = w["center"], w["fs"]
+    if tx and abs((lo + hi) / 2 - center) > 1e-3:       # its TX LO is fixed (full duplex): no tune moves it
+        print(f"{NOTE} warning: {mhz:.4f} MHz is outside where this gateway transmits ({lo:.4f}-{hi:.4f} MHz, "
+              f"its TX LO fixed); the gateway will refuse it", file=sys.stderr, flush=True)
+        return
+    what = (f"the transmitter's reach ({lo:.4f}-{hi:.4f} MHz, tied to the receiver's {center:.4f} MHz center)" if tx
+            else f"the receiver's window ({lo:.4f}-{hi:.4f} MHz)")
+    then = ("the gateway will refuse it" if tx or not a.session
+            else "the gateway tunes there for this request only if nothing else is using the receiver")
+    print(f"{NOTE} warning: {mhz:.4f} MHz is outside {what}: {then}. Move the receiver there first:",
+          file=sys.stderr, flush=True)
+    prog = "rfgbench.py" + (f" --bench {a.bench}" if a.bench else "")
+    tune = f"{prog} tune --session {a.session or 'ID'} --center {mhz - fs / 8e6:.4f} --taps {mhz:.4f}"
+    if a.session:
+        print(f"  {tune}", file=sys.stderr, flush=True)
+    else:
+        print(f"  {prog} session --label LABEL      # prints {{\"session\": ID}}; keep it open\n  {tune}\n"
+              f"  then this command again with --session ID", file=sys.stderr, flush=True)
+
+
 # ── commands ──
 
 def cmd_info(a) -> int:
@@ -299,6 +336,7 @@ def cmd_dmr_bursts(a) -> int:
         print(f"{NOTE} --file: analyze a saved capture with the bench's own tools; the gateway decodes live only",
               file=sys.stderr)
         return EX_UNAVAILABLE
+    check_reach(a, a.freq, tx=False)
     out = open(a.out, "w") if a.out else sys.stdout
     human = sys.stdout if a.out else sys.stderr
     n = [0]
@@ -398,6 +436,7 @@ def write_iq(a, req: dict, fmt_bytes: int) -> int:
 
 
 def cmd_capture(a) -> int:
+    check_reach(a, a.freq, tx=False)
     req = {"op": "capture", "session": a.session, "freq": a.freq, "seconds": a.seconds, "pre_s": a.pre,
            "quiet": a.quiet, "mode": a.mode, "offset_khz": a.offset_khz, "wait_max": a.wait_max, "label": a.label}
     if a.gain is not None:
@@ -406,6 +445,7 @@ def cmd_capture(a) -> int:
 
 
 def cmd_capture_trigger(a) -> int:
+    check_reach(a, a.freq, tx=False)
     req = {"op": "trigger", "session": a.session, "freq": a.freq, "bw": a.bw, "pre_s": a.pre, "post_s": a.post,
            "threshold_db": a.threshold, "min_ms": a.min_ms, "timeout_s": a.timeout, "fmt": a.fmt,
            "until_end": a.until_end, "max_s": a.max_s, "floor_db": a.floor_db, "floor_s": a.floor_s}
@@ -525,6 +565,7 @@ def cmd_tx_sig(a) -> int:
             req[k] = v
     if prog:
         req["program"] = prog
+    check_reach(a, a.freq, tx=True)
     pcm = b""
     if a.pcm:
         try:
@@ -568,6 +609,7 @@ class _Wav:
 
 def cmd_rx_sig(a) -> int:
     """rx fm, rx am: a signal mode's receiver, its streams to WAVs."""
+    check_reach(a, a.freq, tx=False)
     raw = "disc" if a.mode_name == "fm" else "env"
     files = {"audio": a.audio, raw: getattr(a, raw)}
     streams = [x for x, f in files.items() if f]
@@ -752,6 +794,11 @@ def cmd_run(a) -> int:
     if job is None:
         print(f"{NOTE} {why}", file=sys.stderr)
         return EX_UNAVAILABLE
+    if job["tool"] == "bench_repeater":
+        check_reach(a, job.get("tx"), tx=True)
+        check_reach(a, job.get("rx"), tx=False)
+    elif job.get("cmd") in ("voice", "csbk", "data", "outbound"):
+        check_reach(a, job.get("freq"), tx=True)
     files = {}
 
     def on(d, data):

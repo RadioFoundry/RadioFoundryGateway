@@ -79,6 +79,7 @@ static rdof_fe_caps_t caps = {
     .tx_rate = 48000,
     .tx_freq_min = 100e6, /* as receive; transmit under 150 MHz isn't measured */
     .tx_freq_max = 960e6,
+    .tx_reach_hz = 1e6, /* tx_tune: where the front end is calibrated */
     .tx_power_min = -9.5, /* the LF PA, 0.5 dB steps (7.4.3) */
     .tx_power_max = 21,   /* 22 dBm sends noise, not the signal, with the board's PA setup (spec R3.49) */
     .tx_power_step = 0.5,
@@ -1063,11 +1064,11 @@ static int tx_set(void *ctx, const rdof_fe_tx_source_t *src, double power_dbm)
     return 0;
 }
 
-/* The carrier for the next runs. Within 1 MHz of the receiver's center: the front end is calibrated there (R3.16;
+/* The carrier for the next runs. Within tx_reach_hz (1 MHz) of the receiver's center: the front end is calibrated there (R3.16;
  * CalibFE elsewhere would cost the stream 11 ms and the RX FIFO, R2.5). */
 static int tx_tune(void *ctx, double hz)
 {
-    if (hz < caps.tx_freq_min || hz > caps.tx_freq_max || fabs(hz - st.center) > 1e6) {
+    if (hz < caps.tx_freq_min || hz > caps.tx_freq_max || fabs(hz - st.center) > caps.tx_reach_hz) {
         snprintf(st.error, sizeof st.error, "LR2021: can't transmit on %.5f MHz (receiving at %.5f)", hz / 1e6,
                  st.center / 1e6);
         return -1;

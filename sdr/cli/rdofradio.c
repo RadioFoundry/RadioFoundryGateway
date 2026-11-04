@@ -1567,6 +1567,10 @@ static void bl_window(void *ctx, rdof_bl_window_t *w)
     w->hi_hz = R.rx.center_hz + 0.4 * R.rate;
     w->gain_db = dev ? dev->rx_gain(dev) : 0;
     w->iq_scale_db = 20 * log10(BL.ring.scale > 0 ? BL.ring.scale : 1);
+    if (R.full) { /* the TX LO stays: the modulator's reach around it (tx_tune) */
+        w->tx_lo_hz = R.tx_lo - (R.rate * 0.4 - 12.5e3);
+        w->tx_hi_hz = R.tx_lo + (R.rate * 0.4 - 12.5e3);
+    }
 }
 
 static long bl_iq_read(void *ctx, uint64_t sc, int8_t *out, long n, uint64_t *oldest, uint64_t *next)

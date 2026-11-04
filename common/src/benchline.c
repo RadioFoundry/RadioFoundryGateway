@@ -640,8 +640,9 @@ static void put_window(rdof_bl_t *bl, char *out, size_t cap)
     else
         snprintf(out, cap,
                  "{\"enabled\":true,\"lo\":%.6f,\"hi\":%.6f,\"center\":%.6f,\"fs\":%.1f,\"gain\":%.1f,"
-                 "\"dc_guard_khz\":%.1f,\"ppm\":%.3f}",
-                 w.lo_hz / 1e6, w.hi_hz / 1e6, w.center_hz / 1e6, w.fs, w.gain_db, w.dc_guard_hz / 1e3, w.ppm);
+                 "\"dc_guard_khz\":%.1f,\"ppm\":%.3f,\"tx_lo\":%.6f,\"tx_hi\":%.6f}",
+                 w.lo_hz / 1e6, w.hi_hz / 1e6, w.center_hz / 1e6, w.fs, w.gain_db, w.dc_guard_hz / 1e3, w.ppm,
+                 w.tx_lo_hz / 1e6, w.tx_hi_hz / 1e6);
 }
 
 static double expect_left(const rdof_bl_t *bl, double now)

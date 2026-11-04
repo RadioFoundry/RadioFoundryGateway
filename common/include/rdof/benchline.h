@@ -69,6 +69,7 @@ typedef struct {
 typedef struct {
     bool running;        /* the receiver runs */
     double center_hz, fs, lo_hz, hi_hz, gain_db, dc_guard_hz, ppm;
+    double tx_lo_hz, tx_hi_hz; /* where the transmitter tunes now (one synthesizer, a fixed TX LO); 0, 0: anywhere it can */
     double iq_scale_db;  /* the captures' cs8 full scale under the ADC's (the ring's scale, in dB; 0: the same) */
 } rdof_bl_window_t;
 

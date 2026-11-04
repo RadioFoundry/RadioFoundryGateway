@@ -68,7 +68,8 @@ static void f_window(void *ctx, rdof_bl_window_t *w)
     if (!running)
         ft.down--;
     *w = (rdof_bl_window_t){.running = running, .center_hz = c, .fs = 768000, .lo_hz = c - 0.3e6,
-                            .hi_hz = c + 0.3e6, .gain_db = isnan(ft.gain) ? 20 : ft.gain, .dc_guard_hz = 25e3};
+                            .hi_hz = c + 0.3e6, .gain_db = isnan(ft.gain) ? 20 : ft.gain, .dc_guard_hz = 25e3,
+                            .tx_lo_hz = c - 1e6, .tx_hi_hz = c + 1e6};
 }
 static int f_freqs(void *ctx, rdof_bl_freq_t *out, int max)
 {
@@ -430,7 +431,8 @@ static void test_ops(void)
     /* info: the window, the channels with their caps, the modem */
     int c = ask(bl, "{\"op\": \"info\"}", now);
     drain(bl, c, out, sizeof out);
-    CHECK(is_json_lines(out) && strstr(out, "\"center\":438.225000") && strstr(out, "\"fs\":768000.0"),
+    CHECK(is_json_lines(out) && strstr(out, "\"center\":438.225000") && strstr(out, "\"fs\":768000.0") &&
+              strstr(out, "\"tx_lo\":437.225000,\"tx_hi\":439.225000"),
           "info: %s", out);
     CHECK(strstr(out, "{\"freq\":438.112500,\"ch\":1,\"id\":\"CH2\",\"in_window\":true,\"listed\":true,"
                       "\"caps\":[\"rx\",\"dmr\",\"iq\",\"mmdvm_tx\",\"sdr_tx\"],\"claimed_by\":null}") &&

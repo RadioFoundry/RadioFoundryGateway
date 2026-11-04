@@ -52,6 +52,11 @@ static void bl_window(void *ctx, rdof_bl_window_t *w)
     w->gain_db = isfinite(g_sstat.gain_db) ? g_sstat.gain_db : 0;
     w->ppm = sdr_ppm_learned(); /* not sdr_ppm_status: rx_lock under the engine's lock deadlocks with a burst */
     w->iq_scale_db = bench_wide_scale_db();
+    const rdof_fe_caps_t *caps = sdr_fe_caps();
+    if (caps && caps->tx_reach_hz > 0) {
+        w->tx_lo_hz = fmax(g_sstat.center_hz - caps->tx_reach_hz, caps->tx_freq_min);
+        w->tx_hi_hz = fmin(g_sstat.center_hz + caps->tx_reach_hz, caps->tx_freq_max);
+    }
 }
 
 static int bl_freqs(void *ctx, rdof_bl_freq_t *out, int max)
