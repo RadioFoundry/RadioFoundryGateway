@@ -179,7 +179,7 @@ Each item is `[type u8][length u8][value]`. A length of 255 means a u16 length (
 | Type | Item | Value | Item size | Comes from |
 |---|---|---|---|---|
 | 0x01 | `voice` | voice index u8 (A–F = 0–5), then 27 bytes: the three 72-bit AMBE+2 channel frames, as on air (vocoder FEC included). The 27 bytes are burst bits 0–107 then 156–263, packed MSB first: `rdof_ambe_frames` order ([dmr-core.md](dmr-core.md) §7) | 30 | a voice burst |
-| 0x02 | `lc_header` | the 9-byte full LC ([dmr-core.md](dmr-core.md) §6.1); RS(12,9) checked and removed | 11 | a voice LC header (sent once, however many times it was on air) |
+| 0x02 | `lc_header` | the 9-byte full LC ([dmr-core.md](dmr-core.md) §6.1); RS(12,9) checked and removed | 11 | a voice LC header (sent once, however many times it was on air; again every 240 ms while only headers come, §4.3) |
 | 0x03 | `terminator` | the 9-byte full LC | 11 | a terminator with LC (once); ends the stream |
 | 0x04 | `embedded_lc` | the 9-byte LC from the superframe just completed; checksum checked and removed. Any FLCO: voice LC, talker alias, GPS, vendor | 11 | bursts B–E, sent in burst F's message |
 | 0x05 | `pi_header` | 10 bytes; CRC checked and removed | 12 | a privacy indicator header |
@@ -201,6 +201,10 @@ Each item is `[type u8][length u8][value]`. A length of 255 means a u16 length (
   box may leave them out in phase 1 (the `embedded_lc` items carry the same LCs).
 - **Repeats are the transmitter's choice.** One `lc_header`, one `terminator`, one `csbk` with a count. The box that
   transmits sends as many repeats and preambles as its own config says.
+  The one exception: a run of headers longer than a stream's 0.5 s with nothing (§8.4; a modem or radio may send
+  them for half a second or more before the voice) would end the stream at the far end before its voice. While only
+  headers are heard, the `lc_header` item goes again when nothing has gone for 240 ms; a receiver takes it as the same
+  stream's and sends no second header for it.
 - **Voice can be bundled.** A sender may put up to `bundle` voice items in one message (1–3). Every receiver takes 1–3.
   Everything else goes at once and never waits: a header or terminator ends the bundle early.
 - **`raw`** is passed through so nothing is lost silently. A box transmits it as-is (with its own color code) or

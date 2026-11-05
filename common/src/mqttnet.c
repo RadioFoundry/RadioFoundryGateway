@@ -1152,8 +1152,19 @@ void rdof_mn_up_frame(rdof_mn_up_t *u, const rdof_frame_t *f, double now)
     }
     switch (f->dt) {
     case RDOF_DT_VOICE_LC_HEADER: {
-        if (!f->new_stream && s->active && s->voice)
-            return; /* a repeat of the header */
+        if (!f->new_stream && s->active && s->voice) { /* a repeat of the header */
+            if (!s->bursts && !f->synthetic && now - s->header_at >= RDOF_MN_UP_HEADER_AGAIN_S) {
+                uint8_t lc9[9];
+                bool ok;
+                lc9_of(f, lc9, &ok);
+                rdof_mn_writer_t w;
+                up_begin(u, s, &w);
+                rdof_mn_lc(&w, RDOF_MN_LC_HEADER, lc9);
+                up_end(u, s, &w);
+                s->header_at = now;
+            }
+            return;
+        }
         uint8_t lc9[9];
         bool ok;
         lc9_of(f, lc9, &ok);
@@ -1176,6 +1187,7 @@ void rdof_mn_up_frame(rdof_mn_up_t *u, const rdof_frame_t *f, double now)
             rdof_mn_lc(&w, RDOF_MN_LC_HEADER, lc9);
             rdof_mn_quality(&w, f->errors, f->rssi);
             up_end(u, s, &w);
+            s->header_at = now;
             s->nheld = 0;
         } else {
             /* late entry: the held voice, the LC that gave the addresses first */

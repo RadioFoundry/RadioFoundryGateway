@@ -462,6 +462,53 @@ static void test_downlink(void)
 }
 
 /* Lost messages: the burst numbers skip the bursts they held; a late message is dropped; a lone message ends. */
+/* A call whose headers last 0.6 s before the voice (a modem's run of them): the uplink sends the lc_header again, so
+   the far end's downlink keeps the stream (it ends one with nothing for 0.5 s) and sends one header, then the voice,
+   with no terminator before it. */
+static sc_run_t hl_run;
+static rdof_mn_down_t hl_down;
+static int hl_headers, hl_voice, hl_terms_before_voice;
+static void hl_publish(void *ctx, int kind, uint32_t dst, const uint8_t *msg, size_t len)
+{
+    rdof_mn_reader_t r;
+    rdof_mn_item_t it;
+    rdof_mn_reader(&r, msg, len);
+    while (rdof_mn_next(&r, &it))
+        hl_headers += it.type == RDOF_MN_LC_HEADER;
+    rdof_mn_down_message(&hl_down, "box-a", false, msg, len, hl_run.t);
+}
+static void hl_burst(void *ctx, const rdof_net_burst_t *b, int path, bool dl, uint8_t flags, const char *from)
+{
+    if (!(b->control & 0x40)) /* voice: no data sync */
+        hl_voice++;
+    else if (b->terminator && !hl_voice)
+        hl_terms_before_voice++;
+}
+static void test_long_headers(void)
+{
+    static sc_out_t o;
+    uint8_t lc[9];
+    sc_begin(&hl_run, &o, "long_headers", "");
+    hl_run.up.publish = hl_publish;
+    rdof_mn_down_init(&hl_down);
+    hl_down.burst = hl_burst;
+    rdof_group_lc(9990001, 91, true, 0, lc);
+    for (int i = 0; i < 10; i++) {
+        sc_lc(&hl_run, RDOF_DT_VOICE_LC_HEADER, lc);
+        rdof_mn_down_tick(&hl_down, hl_run.t);
+    }
+    for (int n = 0; n < 6; n++) {
+        sc_voice(&hl_run, n, lc, 0);
+        rdof_mn_down_tick(&hl_down, hl_run.t);
+    }
+    for (int i = 0; i < 3; i++)
+        sc_lc(&hl_run, RDOF_DT_TERMINATOR_WITH_LC, lc);
+    CHECK(hl_headers >= 3);           /* at 0, 0.24 and 0.48 s at least */
+    CHECK(hl_down.streams == 1);      /* one stream, not ended and started again */
+    CHECK(hl_terms_before_voice == 0);
+    CHECK(hl_voice == 6);
+}
+
 static void test_downlink_loss(void)
 {
     static down_cap_t cap;
@@ -763,6 +810,7 @@ int main(void)
     test_topics();
     test_downlink();
     test_downlink_loss();
+    test_long_headers();
 #if RDOF_FEATURE_DATA_BLOCKS
     test_data_bursts();
     test_results();
