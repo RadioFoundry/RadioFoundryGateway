@@ -3,8 +3,10 @@
 Covers: calls between boxes, apps and a private-call router over one MQTT broker, with no master: topics, the binary
 call message, node state and events, arbitration, private-call routing, transports, security, and what phase 1 builds.
 Status: phase 1 built, 2026-11-02 (§1.1): `common/src/mqttnet.c`, run by rdofradio and the board
-(`esp_idf/main/mqttnet_task.c`; built, not yet tested on hardware). Today's MQTT calls (`{root}/calls/...`, DMRD
-packets, [mqtt.md](mqtt.md) §10) stay the default; this replaces them later.
+(`esp_idf/main/mqttnet_task.c`). Run on the Pluto by rdofradio, 2026-11-05: a full duplex repeater's calls up to the
+network and back out from another node on both slots, speech, every voice burst in order; the board's task is built,
+not yet run on hardware. Today's MQTT calls (`{root}/calls/...`, DMRD packets, [mqtt.md](mqtt.md) §10) stay the
+default; this replaces them later.
 Related: [config-v3.md](config-v3.md) (talk paths, policies, networks), [dmr-core.md](dmr-core.md) (PDU layouts),
 [mqtt.md](mqtt.md) (today's topics), [ipgw.md](ipgw.md) (data reassembly, confirmed ACK).
 
