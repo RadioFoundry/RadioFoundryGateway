@@ -41,18 +41,18 @@
  * update (POST /api/ota) writes the new program there and stops, for the supervisor to start it. --bench serves the
  * bench's line protocol (docs/spec/bench-api.md section 14) on PORT (7373 by convention), every interface unless
  * ADDR is given: the receiver's bursts and wideband captures for tools/bench/rfgbench.py, and its transmit jobs
- * (bench_tx's voice, csbk, data) on the --bench-tx frequencies and bands (LOW-HIGH), at --tx-gain, in the transceiver's place while
- * they run (not in a duplex repeater). --fpga-chz [ADDR] (with --iio, on a PlutoSDR whose FPGA has the channelizer
- * block, its registers at ADDR, 0x7C480000 by default): the block channelizes and the receiver takes its 48 kS/s
- * channel frames from the receive DMA, its AFC steering the block's NCOs; the rate can then go to 24.576 MS/s
- * (R D up to 512). No spectrum and no wideband captures; with --split-tx or --mmdvm too. --fpga-duc [ADDR] (with
- * --iio, an FPGA with the TX interpolator, its registers at ADDR, 0x7C4A0000 by default; only on a design that has
- * it: elsewhere nothing answers there): the transmit stream goes at 192 kS/s (96 kS/s if the rate isn't a multiple
- * of 192 kS/s; not 48, whose images land on a 50 kHz grid's next channels) and the interpolator brings it to the
- * rate, so a wide receiver doesn't make a wide transmit stream for the ARM. The TX LO then sits 62.5 kHz above the
- * carrier (18.75 at 96 kS/s; --tx-lo unless given), the most the stream reaches, in steps of 6.25 kHz. The rate is
- * planned to one it makes; with none for the channels, it's off. With --split-tx or --mmdvm the SDR doesn't
- * transmit: not used.
+ * (bench_tx's voice, csbk, data) on the --bench-tx frequencies and bands (LOW-HIGH), at --tx-gain, in the transceiver's
+ * place while they run (not in a duplex repeater). --fpga-chz [ADDR] (with --iio, on a PlutoSDR whose FPGA has the
+ * channelizer block, its registers at ADDR, 0x7C480000 by default): the block channelizes and the receiver takes its
+ * 48 kS/s channel frames from the receive DMA, its AFC steering the block's NCOs; the rate can then go to 24.576 MS/s
+ * (R D up to 512). No wideband captures, and the spectrum is the channels' own (the span between them empty); with
+ * --split-tx or --mmdvm too. --fpga-duc [ADDR] (with --iio, an FPGA with the TX interpolator, its registers at ADDR,
+ * 0x7C4A0000 by default; only on a design that has it: elsewhere nothing answers there): the transmit stream goes at
+ * 192 kS/s (96 kS/s if the rate isn't a multiple of 192 kS/s; not 48, whose images land on a 50 kHz grid's next
+ * channels) and the interpolator brings it to the rate, so a wide receiver doesn't make a wide transmit stream for the
+ * ARM. The TX LO then sits 62.5 kHz above the carrier (18.75 at 96 kS/s; --tx-lo unless given), the most the stream
+ * reaches, in steps of 6.25 kHz. The rate is planned to one it makes; with none for the channels, it's off. With
+ * --split-tx or --mmdvm the SDR doesn't transmit: not used.
  * With --iio local: on the board, either loads their bitstream first (rdofradio_fpga.h: --fpga-bit FILE, else
  * rfg-pluto-<board>.bit.bin where it's found: /mnt/jffs2/rdof/, rdof/ on an SD card or USB stick, /lib/firmware/);
  * with none for the board, both are off and the ARM channelizes, with the channels that fit its window.
@@ -2641,6 +2641,59 @@ static void web_spectrum(const rdof_cf_t *in, int n)
                                   (int)lrint(1e3 * sp.per_row * chunk / R.rate));
 }
 
+/* --fpga-chz: no wideband I/Q, so the page's spectrum is the channels' own: each channel's 48 kS/s through an FFT of
+ * its own, laid into the row at its frequency over its share of a 12.5 kHz grid (6.25 kHz either side:
+ * rdof_spectrum_place), so a level reads as on the wideband spectrum. The span between the channels is empty (255,
+ * the floor). Rows about every 200 ms of instants. */
+#define CS_N 64 /* 750 Hz bins */
+static void web_spectrum_chs(const rdof_iq16_t *y, int ny, int C)
+{
+    static rdof_spectrum_t sp[RDOF_CHZFX_MAX_CH];
+    static int made; /* 1 made, -1 no memory */
+    static rdof_cf_t *buf;
+    static int cap, got;
+    static uint8_t rows[RDOF_CHZFX_MAX_CH][CS_N];
+    if (made < 0 || ny <= 0 || C <= 0 || R.cal || !rdof_hostweb_spectrum_wanted())
+        return;
+    if (!made) {
+        for (int c = 0; c < RDOF_CHZFX_MAX_CH && made >= 0; c++)
+            if (rdof_spectrum_init(&sp[c], CS_N, 1 << 30)) /* rows by the instants taken (below) */
+                made = -1;
+        if (made < 0) {
+            say("web: no memory for the spectrum\n");
+            return;
+        }
+        made = 1;
+    }
+    if (ny > cap) {
+        rdof_cf_t *b = realloc(buf, sizeof *b * (size_t)ny);
+        if (!b)
+            return;
+        buf = b, cap = ny;
+    }
+    const bool done = (got += ny) >= 9600;
+    for (int c = 0; c < C && c < RDOF_CHZFX_MAX_CH; c++) {
+        for (int i = 0; i < ny; i++) {
+            const rdof_iq16_t *v = &y[(size_t)i * C + c];
+            buf[i].re = v->i * RDOF_CHZFX_OUT_SCALE, buf[i].im = v->q * RDOF_CHZFX_OUT_SCALE;
+        }
+        sp[c].per_row = done ? sp[c].count + 1 : 1 << 30;
+        rdof_spectrum_feed(&sp[c], buf, ny, rows[c]);
+    }
+    if (!done)
+        return;
+    const int row_ms = (int)lrint(1e3 * got / 48000.0);
+    got = 0;
+    const uint8_t *rp[RDOF_CHZFX_MAX_CH];
+    double hz[RDOF_CHZFX_MAX_CH];
+    const int nc = C < RDOF_CHZFX_MAX_CH ? C : RDOF_CHZFX_MAX_CH;
+    for (int c = 0; c < nc; c++)
+        rp[c] = rows[c], hz[c] = CH[c].freq_hz;
+    uint8_t row[RDOF_HOSTWEB_SPECTRUM_BINS];
+    rdof_spectrum_place(row, RDOF_HOSTWEB_SPECTRUM_BINS, R.rx.center_hz, R.rate, rp, hz, nc, CS_N, 48000.0, 6250.0);
+    rdof_hostweb_spectrum_row(row, RDOF_HOSTWEB_SPECTRUM_BINS, R.rx.center_hz, R.rate, row_ms);
+}
+
 /* The SDR's card: the device, its samples and faults, the loop's time, the transmitter, and every receiver channel */
 static void web_sdr(rdof_hostweb_sdr_t *d)
 {
@@ -2834,7 +2887,7 @@ static void web_publish(double rx, double tx, int cc)
     w.extra[0].value = R.m.tx_late48 * 1000 / 48;
     snprintf(w.extra[1].name, sizeof w.extra[1].name, "inbound off (%%)");
     w.extra[1].value = (int64_t)llround(R.m.inbound_off * 100);
-    w.spectrum = dev != NULL && !FX.on; /* --fpga-chz: no wideband I/Q */
+    w.spectrum = dev != NULL; /* --fpga-chz: the channels' own (web_spectrum_chs) */
     if (dev)
         web_sdr(&w.sdrs[w.nsdr++]);
     if (R.split)
@@ -3330,6 +3383,9 @@ static void fx_rx(void)
         HX.failed = !HX.on;
     }
     const int split = R.rx.C / 3 > 0 ? R.rx.C / 3 : 1;
+#ifdef RDOF_HOST_WEB
+    web_spectrum_chs(FX.y, FX.ny, FX.C);
+#endif
     for (int k = 0; k < FX.ny; k += FX_MAX) {
         const int n = FX.ny - k < FX_MAX ? FX.ny - k : FX_MAX;
         rdof_sdr_rx_channels_in(&R.rx, FX.y + (size_t)k * FX.C, n, RDOF_CHZFX_OUT_SCALE);

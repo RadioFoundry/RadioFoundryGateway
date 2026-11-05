@@ -64,6 +64,36 @@ static void one_fft(rdof_spectrum_t *s, const rdof_cf_t *iq, int len)
     s->ffts++;
 }
 
+void rdof_spectrum_place(uint8_t *row, int n, double center_hz, double rate, const uint8_t *const *ch_rows,
+                         const double *ch_hz, int nch, int cn, double ch_rate, double half_hz)
+{
+    const double wb = rate / n, cb = ch_rate / cn;
+    for (int k = 0; k < n; k++) {
+        const double f = center_hz - rate / 2 + (k + 0.5) * wb;
+        row[k] = 255;
+        for (int c = 0; c < nch; c++) {
+            const double off = f - ch_hz[c];
+            if (fabs(off) > half_hz)
+                continue;
+            double p = 0;
+            int m = 0;
+            for (int j = 0; j < cn; j++) {
+                const double fj = (j - cn / 2) * cb;
+                if (fabs(fj - off) <= wb / 2 && fabs(fj) <= half_hz)
+                    p += pow(10.0, -ch_rows[c][j] / 20.0), m++;
+            }
+            if (!m) {
+                int j = (int)lround(off / cb) + cn / 2;
+                j = j < 0 ? 0 : j >= cn ? cn - 1 : j;
+                p = pow(10.0, -ch_rows[c][j] / 20.0), m = 1;
+            }
+            const double v = -20 * log10(p / m * wb / cb + 1e-30); /* -2 x 10 log10 */
+            row[k] = v <= 0 ? 0 : v >= 255 ? 255 : (uint8_t)lrint(v);
+            break;
+        }
+    }
+}
+
 bool rdof_spectrum_feed(rdof_spectrum_t *s, const rdof_cf_t *iq, int len, uint8_t *row)
 {
     const int n = s->n;
