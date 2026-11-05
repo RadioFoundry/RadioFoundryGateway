@@ -1607,7 +1607,8 @@ bool rdof_mn_down_message(rdof_mn_down_t *d, const char *node, bool dl, const ui
 #if RDOF_FEATURE_DATA_BLOCKS
         case RDOF_MN_DATA_PDU: {
             rdof_mn_pdu_t p;
-            rdof_mn_pdu(&it, &p);
+            if (!rdof_mn_pdu(&it, &p)) /* malformed: the item is skipped */
+                break;
             if (p.part == 0 && !p.more) {
                 down_data(d, s, p.rate, p.nheaders, p.headers, p.data, p.len, dl);
                 break;

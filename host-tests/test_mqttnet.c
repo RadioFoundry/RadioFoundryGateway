@@ -530,6 +530,19 @@ static void test_downlink_loss(void)
     /* a header and no items: one or more items (section 4) */
     const uint8_t bare[RDOF_MN_HEADER] = {3, 2, 1, 0, 0x78, 0x56, 0x34, 0x12, 0x32, 0x52, 0x2F, 0x5B, 0, 0};
     CHECK(!rdof_mn_down_message(&d, "app", false, bare, sizeof bare, 0.3) && d.bad == 2);
+#if RDOF_FEATURE_DATA_BLOCKS
+    /* a data PDU item too short to read, then one with no header: skipped, nothing sent */
+    uint8_t pdu[RDOF_MN_HEADER + 4 + 5];
+    memcpy(pdu, bare, RDOF_MN_HEADER);
+    const uint8_t items[] = {RDOF_MN_DATA_PDU, 2, 0x00, 0x00, RDOF_MN_DATA_PDU, 3, 0x00, 0x00, 0x00};
+    memcpy(pdu + RDOF_MN_HEADER, items, sizeof items);
+    rdof_mn_down_init(&d);
+    memset(&cap, 0, sizeof cap);
+    d.burst = on_down;
+    d.ctx = &cap;
+    rdof_mn_down_message(&d, "app", false, pdu, sizeof pdu, 0.4);
+    CHECK(cap.n == 0);
+#endif
 }
 
 #if RDOF_FEATURE_DATA_BLOCKS
