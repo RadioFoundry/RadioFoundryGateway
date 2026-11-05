@@ -243,12 +243,14 @@ void rdof_hostweb_spectrum_row(const uint8_t *row, int bins, double center_hz, d
 bool rdof_hostweb_spectrum_wanted_sdr(int sdr);
 void rdof_hostweb_spectrum_row_sdr(int sdr, const uint8_t *row, int bins, double center_hz, double rate, int row_ms);
 /* A row in pieces (an FPGA channelizer's channels, no wideband I/Q): piece k is n[k] bins of bin_hz each from f0[k]
- * (the low edge of its first bin), one after another in row, at most RDOF_HOSTWEB_SPECTRUM_PIECES of them; the page
- * shows them at their frequencies and cuts out the wide spans between them. center_hz and rate are the receiver's,
- * for which channels are in its span. */
+ * (the low edge of its first bin), one after another in row, at most RDOF_HOSTWEB_SPECTRUM_PIECES of them and
+ * RDOF_HOSTWEB_SPECTRUM_MAX bins in all; the page shows them at their frequencies and cuts out the wide spans
+ * between them. pass_hz: the channel filter's cutoff either side of a piece's center (0: none), past which the
+ * page dims the levels (attenuated). center_hz and rate are the receiver's, for which channels are in its span. */
 #define RDOF_HOSTWEB_SPECTRUM_PIECES 16
+#define RDOF_HOSTWEB_SPECTRUM_MAX 1024
 void rdof_hostweb_spectrum_pieces(int sdr, const uint8_t *row, const double *f0, const int *n, int npiece, double bin_hz,
-                                  double center_hz, double rate, int row_ms);
+                                  double pass_hz, double center_hz, double rate, int row_ms);
 /* A call going out ("start" or "end"; the on_tx hook's arguments), for the last heard list. */
 void rdof_hostweb_net_call(const char *role, const char *radio, const char *action, const rdof_tx_call_info_t *call,
                            double duration);

@@ -35,8 +35,9 @@ own server (esp_http_server). Both route the shared API to the same handlers in 
   channels (SDR K > 0: that SDR's channels) with `in` set for those in the span. The tool makes an SDR's rows
   (`rdof_hostweb_spectrum_row_sdr`) only while `rdof_hostweb_spectrum_wanted_sdr`: the page asked for that SDR in
   the last 10 s. With more than one SDR the page has a picker and shows one at a time. A row in pieces
-  (`rdof_hostweb_spectrum_pieces`: an FPGA channelizer's channels, each its own bins) adds `pieces`, `[{f0, n, bw}]`
-  in the row's order (`f0` the low edge of the first bin, Hz); `bins` is then the pieces' total.
+  (`rdof_hostweb_spectrum_pieces`: an FPGA channelizer's channels, each its own bins) adds `pieces`,
+  `[{f0, n, bw, pass}]` in the row's order (`f0` the low edge of the first bin, Hz; `pass` the channel filter's cutoff
+  either side of the piece's center, 0 none); `bins` is then the pieces' total, up to `RDOF_HOSTWEB_SPECTRUM_MAX`.
 - `GET /api/crash`: the supervisor's record of the last exit, as text (404: none); `DELETE /api/crash` erases it.
   Only with `rdof_hostweb_last_exit`.
 - `POST /api/ota`: a new program as the body, with `rdof_hostweb_ota` (a path, a size cap, the tool's check of the

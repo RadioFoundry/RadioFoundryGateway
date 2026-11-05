@@ -77,12 +77,14 @@ canvas{display:block;width:100%;background:#0b0b10;border-radius:6px}#spec{heigh
 <div class="card" id="chanbox" hidden><h2>Channels</h2><div class="wrap" id="chans"></div></div>
 <div class="card" id="specbox" hidden><h2>Spectrum <select id="specsdr" hidden onchange="specPick(+this.value)"></select>
 <span class="zoom"><button class="sec" title="Zoom out (-)" onclick="zoomAt(0.5, 0.5)">&minus;</button><button class="sec"
-title="Zoom in (+)" onclick="zoomAt(0.5, 2)">+</button><button class="sec" title="The whole span"
-onclick="setView(0, 1)">[ ]</button><button class="sec on" id="speccut" title="Cut out the spectrum no channel covers"
+title="Zoom in (+)" onclick="zoomAt(0.5, 2)">+</button><button class="sec" title="Zoom to fit: the whole span"
+onclick="specAll()"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6"
+style="vertical-align:-2px"><path d="M1 5V1h4M9 1h4v4M13 9v4H9M5 13H1V9"/></svg></button><button class="sec on" id="speccut" title="Cut out the spectrum no channel covers"
 onclick="specCut()">--//--</button></span></h2>
 <p class="mute">The tuner's span (or, where only channels are received, each channel's own), averaged over each row;
 the bands are the channels. dBFS at the configured gain. Scroll or pinch to zoom, drag to pan, double-click for the whole span; keys - + zoom, [ ] pan.
-Wide spans with nothing received are cut out (--//--, with the width hidden).
+Wide spans with nothing received are cut out (--//--, with the width hidden); each channel shows 12 kHz either side,
+dimmed past its filter's cutoff, and channels that close make one strip.
 <span id="specinfo"></span></p>
 <canvas id="spec"></canvas>
 <canvas id="wf"></canvas>
@@ -660,7 +662,7 @@ async function ota() {
 }
 // ── spectrum and waterfall ───────────────────────────────────────────────────
 const spec = {sdr: 0, seq: 0, last: null, lo: -110, hi: -30, chans: [], center: 0, rate: 0, busy: false, hover: null,
-  v0: 0, v1: 1, wf: document.createElement('canvas'),                 // v0..v1: the part of the axis in view
+  v0: -0.03, v1: 1.03, wf: document.createElement('canvas'),                 // v0..v1: the part of the axis in view
   pieces: [], cut: true, map: null, key: '', units: 0};               // the row's pieces; the axis, wide gaps cut
 spec.wf.width = 512; spec.wf.height = 220;
 const turbo = [[0,0,0],[20,20,90],[0,90,200],[0,190,200],[120,230,60],[250,220,0],[250,90,0],[255,255,255]];
@@ -679,8 +681,18 @@ function specRange(row) {
 // The row is in pieces: piece k is n bins of bw Hz from f0, at offset off in the row (a wideband row: one piece, the
 // span). The axis is in Hz: the pieces' spans at their width, and a gap between them that's wide (more than three
 // breaks' width) cut to a break, --//--; a narrower one is shown as it is. u (0..1) is the place on the axis.
+// Pieces that overlap (channels closer than a piece's width) each shown to the midpoint between their centers, so
+// channels 25 kHz apart make one strip; sorted by frequency
+function clipPieces(ps) {
+  ps.sort((a, b) => a.f0 - b.f0);
+  ps.forEach((p, k) => {
+    p.mid = p.f0 + p.n * p.bw / 2; p.lo = p.f0; p.hi = p.f0 + p.n * p.bw;
+    const q = ps[k - 1];
+    if (q && q.hi > p.lo) { const m = (q.mid + p.mid) / 2; q.hi = Math.min(q.hi, m); p.lo = Math.max(p.lo, m); }
+  });
+}
 function buildMap() {
-  const iv = spec.pieces.map(p => [p.f0, p.f0 + p.n * p.bw]).sort((a, b) => a[0] - b[0]), segs = [];
+  const iv = spec.pieces.map(p => [p.lo, p.hi]), segs = [];
   for (const [a, b] of iv) { const l = segs[segs.length - 1]; if (l && a <= l.f1) l.f1 = Math.max(l.f1, b); else segs.push({f0: a, f1: b, gap: false}); }
   const data = segs.reduce((t, sg) => t + sg.f1 - sg.f0, 0), brk = data * 0.04;
   for (let k = segs.length - 1; k > 0; k--) {
@@ -690,12 +702,12 @@ function buildMap() {
   }
   const key = segs.map(sg => sg.f0 + (sg.gap ? '~' : '-') + sg.f1).join();
   if (key == spec.key) return;
-  const all = spec.v0 == 0 && spec.v1 == 1, fa = spec.map ? uToF(spec.v0) : 0, fb = spec.map ? uToF(spec.v1) : 0;
+  const all = spec.whole !== false, fa = spec.map ? uToF(spec.v0) : 0, fb = spec.map ? uToF(spec.v1) : 0;
   let u = 0;
   for (const sg of segs) { sg.u0 = u; u += sg.gap ? brk : sg.f1 - sg.f0; sg.u1 = u; }
   for (const sg of segs) { sg.u0 /= u; sg.u1 /= u; }
   spec.map = segs; spec.key = key; spec.units = u;
-  if (all || !segs.length) setView(0, 1); else setView(fToU(fa), fToU(fb));  // the same frequencies stay in view
+  if (all || !segs.length) specAll(); else setView(fToU(fa), fToU(fb));  // the same frequencies stay in view
 }
 function segAt(f) { const m = spec.map; for (const sg of m) if (f < sg.f1) return sg; return m[m.length - 1]; }
 function fToU(f) {
@@ -758,25 +770,39 @@ function drawSpec() {
       free = a + g.measureText(ch.id).width + 8 * dpr;
     }
   }
-  if (spec.last) {
-    g.strokeStyle = '#ffd040'; g.lineWidth = 1.2 * dpr;
+  if (spec.last) {                                                    // pieces that touch are one line; past a
+    const pts = [];                                                   // channel filter's cutoff, dimmed (attenuated)
+    let end = null;
     for (const p of spec.pieces) {
-      if (xf(p.f0 + p.n * p.bw) < 0 || xf(p.f0) > w) continue;
-      g.beginPath();
+      if (end == null || p.lo > end + p.bw) pts.push(null);           // a bin's slack: 25 kHz apart is one line
       for (let i = 0; i < p.n; i++) {
-        const x = xf(p.f0 + (i + 0.5) * p.bw), yy = y(-spec.last[p.off + i] / 2);
-        i ? g.lineTo(x, yy) : g.moveTo(x, yy);
+        const f = p.f0 + (i + 0.5) * p.bw;
+        if (f < p.lo || f >= p.hi) continue;
+        pts.push({x: xf(f), y: y(-spec.last[p.off + i] / 2), in: !p.pass || Math.abs(f - p.mid) <= p.pass});
       }
-      g.stroke();
+      end = p.hi;
     }
+    const line = (style, keep) => {
+      g.strokeStyle = style; g.lineWidth = 1.2 * dpr; g.beginPath();
+      let on = false;
+      pts.forEach((q, k) => {
+        const nx = pts[k + 1];
+        if (!q || !keep(q, pts[k - 1], nx)) { on = false; return; }
+        on ? g.lineTo(q.x, q.y) : g.moveTo(q.x, q.y); on = true;
+      });
+      g.stroke();
+    };
+    line('rgba(255,208,64,.35)', () => true);
+    line('#ffd040', q => q.in);
   }
   for (const sg of segs)
     if (sg.gap && sg.u1 > spec.v0 && sg.u0 < spec.v1) breakMark(g, px(sg.u0), px(sg.u1), h, dpr, spanText(sg.f1 - sg.f0));
   if (spec.hover != null && spec.last && segs.length) {
     const f = uToF(spec.v0 + spec.hover * vw), sg = segAt(f), right = spec.hover > 0.7;
-    const p = spec.pieces.find(p => f >= p.f0 && f < p.f0 + p.n * p.bw);
+    const p = spec.pieces.find(p => f >= p.lo && f < p.hi);
     const t = sg.gap ? 'cut: ' + (sg.f0 / 1e6).toFixed(4) + ' - ' + (sg.f1 / 1e6).toFixed(4) + ' MHz, nothing received'
-      : (f / 1e6).toFixed(4) + ' MHz' + (p ? '  ' + (-spec.last[p.off + Math.floor((f - p.f0) / p.bw)] / 2).toFixed(1) + ' dBFS' : '');
+      : (f / 1e6).toFixed(4) + ' MHz' + (p ? '  ' + (-spec.last[p.off + Math.floor((f - p.f0) / p.bw)] / 2).toFixed(1) + ' dBFS' +
+        (p.pass && Math.abs(f - p.mid) > p.pass ? ' (past the channel filter)' : '') : '');
     g.strokeStyle = 'rgba(255,255,255,.6)'; g.lineWidth = 1; g.beginPath(); g.moveTo(spec.hover * w, 0); g.lineTo(spec.hover * w, h); g.stroke();
     g.fillStyle = '#fff'; g.textAlign = right ? 'right' : 'left';
     g.fillText(t, spec.hover * w + (right ? -6 : 6) * dpr, 20 * dpr);
@@ -791,21 +817,31 @@ function drawWf() {                                                   // the par
   g.imageSmoothingEnabled = false;
   g.clearRect(0, 0, w, h);
   for (const p of spec.pieces) {
-    const a = xf(p.f0), b = xf(p.f0 + p.n * p.bw);
+    const a = xf(p.lo), b = xf(p.hi);
     if (b < 0 || a > w) continue;
-    g.drawImage(src, p.off, 0, p.n, src.height, a, 0, b - a, h);
+    g.drawImage(src, p.off + (p.lo - p.f0) / p.bw, 0, (p.hi - p.lo) / p.bw, src.height, a, 0, b - a, h);
+    if (p.pass) {                                                     // past the filter's cutoff: dimmed
+      g.fillStyle = 'rgba(0,0,0,.45)';
+      const l = xf(Math.max(p.lo, p.mid - p.pass)), r = xf(Math.min(p.hi, p.mid + p.pass));
+      if (l > a) g.fillRect(a, 0, l - a, h);
+      if (b > r) g.fillRect(r, 0, b - r, h);
+    }
   }
   for (const sg of spec.map || [])
     if (sg.gap && sg.u1 > spec.v0 && sg.u0 < spec.v1) breakMark(g, px(sg.u0), px(sg.u1), h, dpr, '');
 }
 // ── zoom: wheel, pinch, drag, buttons, keys ──
-function setView(a, b) {
-  const bw = spec.pieces.length ? Math.min(...spec.pieces.map(p => p.bw)) : 1;
-  const w = Math.min(1, Math.max(spec.units ? 4 * bw / spec.units : 0.01, b - a));   // at most 4 bins across a = Math.max(0, Math.min(1 - w, a));
+const MARGIN = 0.03;                                                  // the whole view's border either side
+function setView(a, b, whole) {
+  spec.whole = !!whole;
+  const bw = spec.pieces.length ? Math.min(...spec.pieces.map(p => p.bw)) : 1, most = 1 + 2 * MARGIN;
+  const w = Math.min(most, Math.max(spec.units ? 4 * bw / spec.units : 0.01, b - a));   // at most 4 bins across
+  a = Math.max(-MARGIN, Math.min(1 + MARGIN - w, a));
   spec.v0 = a; spec.v1 = a + w;
   $('specinfo').dataset.zoom = w < 1 ? ' Zoom ' + (1 / w).toFixed(1) + 'x.' : '';
   drawSpec(); drawWf();
 }
+function specAll() { setView(-MARGIN, 1 + MARGIN, true); }
 function zoomAt(fx, k) {                                              // fx: where on the canvas (0..1) stays put
   const vw = spec.v1 - spec.v0, at = spec.v0 + fx * vw, w = Math.min(1, Math.max(spec.units ? 4 * Math.min(...spec.pieces.map(p => p.bw)) / spec.units : 0.01, vw / k));
   setView(at - fx * w, at - fx * w + w);
@@ -845,7 +881,7 @@ for (const id of ['spec', 'wf']) {
   });
   const up = e => { pts.delete(e.pointerId); pinch = null; if (pts.size == 2) startPinch(); };
   c.addEventListener('pointerup', up); c.addEventListener('pointercancel', up);
-  c.addEventListener('dblclick', () => setView(0, 1));
+  c.addEventListener('dblclick', specAll);
 }
 $('spec').addEventListener('pointerleave', () => { spec.hover = null; drawSpec(); });
 document.addEventListener('keydown', e => {
@@ -869,7 +905,7 @@ function wfRow(row) {
 function specPick(i) {
   spec.sdr = i; spec.seq = 0; spec.last = null; spec.chans = []; spec.map = null; spec.key = ''; spec.units = 0; spec.pieces = [];
   spec.wf.getContext('2d').clearRect(0, 0, spec.wf.width, spec.wf.height);
-  setView(0, 1);
+  specAll();
 }
 async function spectrum() {
   if (spec.busy || document.hidden || S.tab != 'radios' || $('specbox').hidden) return;
@@ -882,6 +918,7 @@ async function spectrum() {
     if (d.channels) spec.chans = d.channels;                         // a host tool: its radio's and monitored channels
     let off = 0;                                                      // the row's pieces: a wideband row is one
     const pieces = (d.pieces || [{f0: d.center - d.rate / 2, n: d.bins, bw: d.rate / d.bins}]).map(p => (p = {...p, off}, off += p.n, p));
+    clipPieces(pieces);
     if (JSON.stringify(pieces) != JSON.stringify(spec.pieces)) {
       spec.pieces = pieces; spec.last = null; spec.wf.getContext('2d').clearRect(0, 0, spec.wf.width, spec.wf.height);
     }

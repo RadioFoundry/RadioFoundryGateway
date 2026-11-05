@@ -46,12 +46,12 @@
 #define SPEC_MAX 16           /* rows an answer, at most */
 
 typedef struct {
-    uint8_t rows[SPEC_ROWS][RDOF_HOSTWEB_SPECTRUM_BINS];
+    uint8_t rows[SPEC_ROWS][RDOF_HOSTWEB_SPECTRUM_MAX];
     uint32_t seq;
     int bins, row_ms;
     double center, rate;
     int npiece; /* 0: one piece, the span */
-    double f0[RDOF_HOSTWEB_SPECTRUM_PIECES], bin_hz;
+    double f0[RDOF_HOSTWEB_SPECTRUM_PIECES], bin_hz, pass_hz;
     int n[RDOF_HOSTWEB_SPECTRUM_PIECES];
     atomic_llong want_ms; /* mono ms: the page asked until then */
 } spec_t;
@@ -803,13 +803,13 @@ void rdof_hostweb_spectrum_row_sdr(int sdr, const uint8_t *row, int bins, double
 }
 
 void rdof_hostweb_spectrum_pieces(int sdr, const uint8_t *row, const double *f0, const int *n, int npiece, double bin_hz,
-                                  double center_hz, double rate, int row_ms)
+                                  double pass_hz, double center_hz, double rate, int row_ms)
 {
     int bins = 0;
     for (int k = 0; k < npiece; k++)
         bins += n[k] > 0 ? n[k] : 0;
     if (sdr < 0 || sdr >= RDOF_HOSTWEB_SDRS || npiece <= 0 || npiece > RDOF_HOSTWEB_SPECTRUM_PIECES || bins <= 0 ||
-        bins > RDOF_HOSTWEB_SPECTRUM_BINS || bin_hz <= 0)
+        bins > RDOF_HOSTWEB_SPECTRUM_MAX || bin_hz <= 0)
         return;
     pthread_mutex_lock(&W.sp_mu);
     spec_t *p = &W.sp[sdr];
@@ -818,7 +818,8 @@ void rdof_hostweb_spectrum_pieces(int sdr, const uint8_t *row, const double *f0,
         same = f0[k] == p->f0[k] && n[k] == p->n[k];
     if (!same) /* a new layout: the old rows don't fit it */
         p->seq = 0;
-    p->bins = bins, p->row_ms = row_ms, p->center = center_hz, p->rate = rate, p->npiece = npiece, p->bin_hz = bin_hz;
+    p->bins = bins, p->row_ms = row_ms, p->center = center_hz, p->rate = rate, p->npiece = npiece, p->bin_hz = bin_hz,
+    p->pass_hz = pass_hz;
     for (int k = 0; k < npiece; k++)
         p->f0[k] = f0[k], p->n[k] = n[k] > 0 ? n[k] : 0;
     memcpy(p->rows[(p->seq + 1) % SPEC_ROWS], row, (size_t)bins);
@@ -856,7 +857,7 @@ static char *spectrum_json(const char *query, size_t *n)
     if (sdr < 0 || sdr >= RDOF_HOSTWEB_SDRS)
         sdr = 0;
     atomic_store(&W.sp[sdr].want_ms, (long long)(mono_s() * 1e3) + 10000);
-    static uint8_t rows[SPEC_MAX][RDOF_HOSTWEB_SPECTRUM_BINS]; /* the server's thread only */
+    static uint8_t rows[SPEC_MAX][RDOF_HOSTWEB_SPECTRUM_MAX]; /* the server's thread only */
     pthread_mutex_lock(&W.sp_mu);
     const spec_t *p = &W.sp[sdr];
     const uint32_t last = p->seq;
@@ -869,7 +870,7 @@ static char *spectrum_json(const char *query, size_t *n)
     for (uint32_t q = from + 1; q <= last; q++, k++)
         memcpy(rows[k], p->rows[q % SPEC_ROWS], (size_t)p->bins);
     const int bins = p->bins, row_ms = p->row_ms, npiece = p->npiece;
-    const double center = p->center, rate = p->rate, bin_hz = p->bin_hz;
+    const double center = p->center, rate = p->rate, bin_hz = p->bin_hz, pass_hz = p->pass_hz;
     double f0[RDOF_HOSTWEB_SPECTRUM_PIECES];
     int pn[RDOF_HOSTWEB_SPECTRUM_PIECES];
     memcpy(f0, p->f0, sizeof f0), memcpy(pn, p->n, sizeof pn);
@@ -892,8 +893,8 @@ static char *spectrum_json(const char *query, size_t *n)
     if (npiece) { /* a row in pieces: each one's low edge, bins and bin width */
         len += (size_t)snprintf(out + len, cap - len, "],\"pieces\":[");
         for (int i = 0; i < npiece; i++)
-            len += (size_t)snprintf(out + len, cap - len, "%s{\"f0\":%.0f,\"n\":%d,\"bw\":%.1f}", i ? "," : "", f0[i], pn[i],
-                                    bin_hz);
+            len += (size_t)snprintf(out + len, cap - len, "%s{\"f0\":%.0f,\"n\":%d,\"bw\":%.1f,\"pass\":%.0f}", i ? "," : "",
+                                    f0[i], pn[i], bin_hz, pass_hz);
     }
     len += (size_t)snprintf(out + len, cap - len, "],\"channels\":[");
     rdof_hostweb_status_t *st = malloc(sizeof *st);

@@ -2650,11 +2650,12 @@ static void web_spectrum(const rdof_cf_t *in, int n)
 }
 
 /* --fpga-chz: no wideband I/Q, so the page's spectrum is the channels' own: each channel's 48 kS/s through an FFT of
- * its own, and the row is the bins within 6.25 kHz of each (CS_KEEP of them at 750 Hz), a piece of the row at the
- * channel's frequency (rdof_hostweb_spectrum_pieces); the page cuts out the wide spans between them. Rows about
- * every 200 ms of instants. */
+ * its own, and the row is the bins within 12 kHz of each (CS_KEEP of them at 750 Hz: the channel, what's off its
+ * center and the channel filter's skirt past 7.5 kHz), a piece of the row at the channel's frequency
+ * (rdof_hostweb_spectrum_pieces); the page cuts out the wide spans between them. Rows about every 200 ms of
+ * instants. */
 #define CS_N 64 /* 750 Hz bins */
-#define CS_KEEP 17 /* -6000 .. +6000 Hz */
+#define CS_KEEP 33 /* -12000 .. +12000 Hz */
 static void web_spectrum_chs(const rdof_iq16_t *y, int ny, int C)
 {
     static rdof_spectrum_t sp[RDOF_CHZFX_MAX_CH];
@@ -2694,7 +2695,7 @@ static void web_spectrum_chs(const rdof_iq16_t *y, int ny, int C)
     const int row_ms = (int)lrint(1e3 * got / 48000.0);
     got = 0;
     enum { NP = RDOF_HOSTWEB_SPECTRUM_PIECES < RDOF_CHZFX_MAX_CH ? RDOF_HOSTWEB_SPECTRUM_PIECES : RDOF_CHZFX_MAX_CH };
-    _Static_assert(NP * CS_KEEP <= RDOF_HOSTWEB_SPECTRUM_BINS, "the pieces fit a row");
+    _Static_assert(NP * CS_KEEP <= RDOF_HOSTWEB_SPECTRUM_MAX, "the pieces fit a row");
     const int nc = C < NP ? C : NP, bw = 48000 / CS_N;
     uint8_t row[NP * CS_KEEP];
     double f0[NP];
@@ -2703,7 +2704,7 @@ static void web_spectrum_chs(const rdof_iq16_t *y, int ny, int C)
         memcpy(row + c * CS_KEEP, rows[c] + CS_N / 2 - CS_KEEP / 2, CS_KEEP);
         f0[c] = CH[c].freq_hz - (CS_KEEP / 2 + 0.5) * bw, pn[c] = CS_KEEP;
     }
-    rdof_hostweb_spectrum_pieces(0, row, f0, pn, nc, bw, R.rx.center_hz, R.rate, row_ms);
+    rdof_hostweb_spectrum_pieces(0, row, f0, pn, nc, bw, RDOF_CHZ_CUTOFF_HZ, R.rx.center_hz, R.rate, row_ms);
 }
 
 /* The SDR's card: the device, its samples and faults, the loop's time, the transmitter, and every receiver channel */
