@@ -10,10 +10,11 @@
  * it: the name, peer id, rx / tx frequencies, cc, parrot, and a repeater's slots, hang_s, call_hang_s,
  * short_lc_ts1_low, prebuffer and the jitter buffer, cwid and cwid_every_s; a modem's mmdvm settings (levels,
  * offsets, the RF level of each frequency); the hblink network (the master), callsign, location and power for its
- * HBlink4 peer, as the board's; the mqtt network, published as the board does (rdofradio_mqtt.h); the SDR's other
- * frequencies (receive-only channels, as the board's SDR resolves them); and the site, for the call router
- * (rdof/siteroute.h: what goes up and what comes down, through the radio's peer unless identity is per_path). mode
- * sfr and dcdm are refused. The devices stay on the command line (--soapy, -r, --gain, --tx-gain ..., --mmdvm PORT).
+ * HBlink4 peer, as the board's; the mqtt network, published as the board does (rdofradio_mqtt.h); the SDR's
+ * channels (as the board's SDR resolves them: the unit hears on the one at its frequency); and the site, for the call
+ * router (rdof/siteroute.h: what goes up and what comes down, through the radio's peer unless identity is per_path).
+ * mode sfr and dcdm are refused. The devices stay on the command line (--soapy, -r, --gain, --tx-gain ..., --mmdvm
+ * PORT).
  * No I/O here: rdofradio reads and writes the file.
  */
 #ifndef RDOFRADIO_CFG_H
@@ -55,12 +56,13 @@ typedef struct {
     char ntp_servers[256];
     unsigned ntp_poll_s; /* 0: netclock's default */
     bool has_hblink;    /* an hblink network: a peer of cfg.master_host */
-    /* the SDR's other channels (as the board's SDR resolves them), past the radio's own RX and TX; each with
-       hblink and a peer_id is an HBlink4 peer of its own (identity per_path) */
-    int nmon;
-    rdof_sdr_cfg_channel_t mon[RDOF_SDR_MAX_CHANNELS];
-    char mon_name[32], mon_app[16]; /* their MQTT names, as the board's SDR's (name, app "sdr") */
-    double mon_status_s;            /* the SDR's status period (status_seconds) */
+    /* the SDR's receive channels, as the board's SDR resolves them: its receiver's frequencies, then the units'
+       (the transceiver's, a repeater's input; not a repeater's output). Each with hblink and a peer_id is an
+       HBlink4 peer of its own (identity per_path); the others go up through the unit's peer, as its policy says */
+    int nchan;
+    rdof_sdr_cfg_channel_t chan[RDOF_SDR_MAX_CHANNELS];
+    char sdr_name[32], sdr_app[16]; /* their MQTT names, as the board's SDR's (name, app "sdr") */
+    double sdr_status_s;            /* the SDR's status period (status_seconds) */
     rdof_site_t site;
     rdof_config_t cfg;  /* all of it, as the firmware resolves it */
     /* split repeaters with the SDR as the RX half: the first is the radio above */
@@ -70,6 +72,8 @@ typedef struct {
 
 /* Read a settings document. False: err says why (the parser's reason, or what rdofradio can't run). */
 bool rdofradio_cfg_parse(const char *text, size_t len, rdofradio_cfg_t *out, char *err, size_t err_cap);
+/* The channel on hz (within 100 Hz); -1 none. */
+int rdofradio_cfg_channel_at(const rdofradio_cfg_t *c, uint32_t hz);
 /* The settings document (version 3) for what the command line set (shown read only on the page, a start for a
    file): a repeater app, or the SDR as a transceiver, on driver (soapy, iio: the flag's); a parrot app for a parrot
    ID (0, every ID, has none: a parrot app answers one). */

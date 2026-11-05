@@ -41,8 +41,10 @@ static bool clock_settings(const rdof_plan_t *p, rdofradio_cfg_t *o, char *err, 
     return true;
 }
 
-/* The SDR's channels as the board's SDR resolves them (rdof_plan_sdr), but the radio's own RX and TX. */
-static bool monitors(const rdof_plan_t *p, rdofradio_cfg_t *o, char *err, size_t cap)
+/* The SDR's channels as the board's SDR resolves them (rdof_plan_sdr): its receiver's frequencies, then the ones it
+   hears for the units on it (the transceiver's, a repeater's input). Not a repeater's own output (full duplex: the
+   SDR would hear what it sends). */
+static bool channels(const rdof_plan_t *p, rdofradio_cfg_t *o, char *err, size_t cap)
 {
     rdof_sdr_config_t *s = malloc(sizeof *s);
     if (!s) {
@@ -51,17 +53,17 @@ static bool monitors(const rdof_plan_t *p, rdofradio_cfg_t *o, char *err, size_t
     }
     const bool ok = rdof_plan_sdr(p, NULL, s, err, cap);
     if (ok) { /* the SDR's MQTT names, as the board's: {root}/{channel}/{app}, {root}/_sdr/{name}/status */
-        snprintf(o->mon_name, sizeof o->mon_name, "%s", s->name);
-        snprintf(o->mon_app, sizeof o->mon_app, "%s", s->mqtt_app);
-        o->mon_status_s = s->status_seconds;
+        snprintf(o->sdr_name, sizeof o->sdr_name, "%s", s->name);
+        snprintf(o->sdr_app, sizeof o->sdr_app, "%s", s->mqtt_app);
+        o->sdr_status_s = s->status_seconds;
     }
     for (int i = 0; ok && i < s->nch; i++) {
         const uint32_t f = (uint32_t)llround(s->ch[i].freq);
-        bool ours = f == o->rx_hz || f == o->tx_hz;
-        for (int k = 1; k < o->nsplit; k++) /* another split's output: its radio sends it, the SDR hears its input */
-            ours |= f == o->split[k].tx_hz;
-        if (!ours)
-            o->mon[o->nmon++] = s->ch[i];
+        bool out = o->full && f == o->tx_hz && f != o->rx_hz;
+        for (int k = 1; k < o->nsplit; k++) /* another split's output: its radio sends it */
+            out |= f == o->split[k].tx_hz;
+        if (!out)
+            o->chan[o->nchan++] = s->ch[i];
     }
     free(s);
     return ok;
@@ -145,7 +147,7 @@ static bool from_plan(const rdof_plan_t *p, rdofradio_cfg_t *o, char *err, size_
     o->has_hblink = rdof_plan_net_of(p, RDOF_NET_HBLINK) >= 0;
     if (!clock_settings(p, o, err, cap))
         return false;
-    if (roles.has_sdr && !monitors(p, o, err, cap))
+    if (roles.has_sdr && !channels(p, o, err, cap))
         return false;
     o->site = *rdof_plan_site(p);
     return true;
@@ -160,6 +162,14 @@ bool rdofradio_cfg_parse(const char *text, size_t len, rdofradio_cfg_t *o, char 
     const bool ok = from_plan(p, o, err, cap);
     rdof_plan_close(p);
     return ok;
+}
+
+int rdofradio_cfg_channel_at(const rdofradio_cfg_t *o, uint32_t hz)
+{
+    for (int i = 0; i < o->nchan; i++)
+        if (fabs(o->chan[i].freq - (double)hz) <= 100)
+            return i;
+    return -1;
 }
 
 /* MHz with the trailing zeros off, 438.25 */
@@ -313,11 +323,11 @@ size_t rdofradio_cfg_describe(const rdofradio_cfg_t *o, const char *source, cons
             strcmp(o->cfg.transport, "udp") ? " (UDP: SCTP isn't on this host yet)" : "");
     else
         PUT("HBlink4: off (no hblink network)\n");
-    for (int i = 0; i < o->nmon; i++) {
-        const rdof_sdr_cfg_channel_t *m = &o->mon[i];
+    for (int i = 0; i < o->nchan; i++) {
+        const rdof_sdr_cfg_channel_t *m = &o->chan[i];
         char f[24];
         fmhz(f, sizeof f, (uint32_t)llround(m->freq));
-        PUT("monitor %s: %s MHz", m->id, f);
+        PUT("channel %s: %s MHz", m->id, f);
         if (m->cc >= 0)
             PUT(", CC %d", m->cc);
         if (o->has_hblink && m->hblink && m->peer_id >= 0)

@@ -125,14 +125,14 @@ int main(void)
               C.split[2].tx_hz == 438600000 && C.split[2].cc == 3 && !strcmp(C.split[2].name, "R3"));
         if (!ok)
             printf("  %s\n", err);
-        /* the monitored channels: the others' inputs and 438.625; no split's output */
-        bool i2 = false, i3 = false, outs = false, mon = false;
-        for (int i = 0; ok && i < C.nmon; i++) {
-            const uint32_t hz = (uint32_t)llround(C.mon[i].freq);
-            i2 |= hz == 438175000, i3 |= hz == 438325000, mon |= hz == 438625000;
-            outs |= hz == 438550000 || hz == 438600000 || hz == 438500000 || hz == 438750000;
+        /* the channels: every split's input (the first's too) and 438.625; no split's output */
+        bool i1 = false, i2 = false, i3 = false, outs = false, mon = false;
+        for (int i = 0; ok && i < C.nchan; i++) {
+            const uint32_t hz = (uint32_t)llround(C.chan[i].freq);
+            i1 |= hz == 438750000, i2 |= hz == 438175000, i3 |= hz == 438325000, mon |= hz == 438625000;
+            outs |= hz == 438550000 || hz == 438600000 || hz == 438500000;
         }
-        CHECK(i2 && i3 && mon && !outs);
+        CHECK(i1 && i2 && i3 && mon && !outs && rdofradio_cfg_channel_at(&C, 438750000) >= 0);
         /* one without a port path: refused, naming it */
         char g[2048];
         snprintf(g, sizeof g, "%s", f);
@@ -216,8 +216,8 @@ int main(void)
     if (err[0])
         printf("  %s\n%s", err, text);
 
-    /* the SDR's other frequencies: receive-only channels, each its own peer with identity per_path; the
-       repeater's own isn't one */
+    /* the SDR's channels: the receive-only frequencies, each its own peer with identity per_path, then the
+       repeater's input (its unit's: no peer of its own, through the repeater's); its output isn't one */
     const char *mon = "{\"version\": 3, \"name\": \"pluto\", \"id\": 9800001, \"defaults\": {\"cc\": 1}, "
                       "\"devices\": [{\"name\": \"pluto\", \"kind\": \"sdr\", \"driver\": \"iio\"}], "
                       "\"frequencies\": [{\"name\": \"m1\", \"freq\": 438.075, \"tx\": false}, {\"name\": \"m2\", "
@@ -229,16 +229,18 @@ int main(void)
     CHECK(parse(mon) && C.full && C.rx_hz == 438250000);
     if (err[0])
         printf("  %s\n", err);
-    CHECK(C.nmon == 2 && C.mon[0].freq == 438.075e6 && C.mon[0].cc == 1 && C.mon[1].freq == 438.15e6 &&
-          C.mon[1].cc == 3);
-    CHECK(C.mon[0].hblink && C.mon[1].hblink && C.mon[0].peer_id == 9800101 && C.mon[1].peer_id == 9800102);
-    CHECK(!strcmp(C.mon_app, "sdr") && !strcmp(C.mon_name, "pluto-rx") && C.mon_status_s == 30);
-    if (strcmp(C.mon_name, "pluto-rx"))
-        printf("  SDR name %s app %s\n", C.mon_name, C.mon_app);
+    CHECK(C.nchan == 3 && C.chan[0].freq == 438.075e6 && C.chan[0].cc == 1 && C.chan[1].freq == 438.15e6 &&
+          C.chan[1].cc == 3 && C.chan[2].freq == 438.25e6 && !C.chan[2].hblink && C.chan[2].peer_id < 0);
+    CHECK(rdofradio_cfg_channel_at(&C, 438250000) == 2 && rdofradio_cfg_channel_at(&C, 438012500) < 0);
+    CHECK(C.chan[0].hblink && C.chan[1].hblink && C.chan[0].peer_id == 9800101 && C.chan[1].peer_id == 9800102);
+    CHECK(!strcmp(C.sdr_app, "sdr") && !strcmp(C.sdr_name, "pluto-rx") && C.sdr_status_s == 30);
+    if (strcmp(C.sdr_name, "pluto-rx"))
+        printf("  SDR name %s app %s\n", C.sdr_name, C.sdr_app);
     rdofradio_cfg_describe(&C, "file x.json", "", text, sizeof text);
-    CHECK(strstr(text, "monitor m1: 438.075 MHz, CC 1, peer 9800101\n") &&
-          strstr(text, "monitor m2: 438.15 MHz, CC 3, peer 9800102\n"));
-    if (!strstr(text, "monitor m2"))
+    CHECK(strstr(text, "channel m1: 438.075 MHz, CC 1, peer 9800101\n") &&
+          strstr(text, "channel m2: 438.15 MHz, CC 3, peer 9800102\n") &&
+          strstr(text, "channel R1-1: 438.25 MHz, CC 1\n"));
+    if (!strstr(text, "channel m2"))
         printf("%s\n", text);
 
     /* the commercial site (a transceiver on the SDR, every frequency monitored) and a repeater with forwarders */
@@ -250,8 +252,10 @@ int main(void)
     if (err[0])
         printf("  %s\n", err);
     CHECK(C.site.npath == 2 && !C.full && C.rx_hz == 438062500 && C.peer_id == 9800100);
-    CHECK(C.has_hblink && C.has_parrot && C.parrot == 9990 && C.nmon == 1 && C.mon[0].freq == 438087500);
-    CHECK(!C.mon[0].hblink); /* one identity: through the radio's peer */
+    /* every frequency a channel, the transceiver's idle one among them */
+    CHECK(C.has_hblink && C.has_parrot && C.parrot == 9990 && C.nchan == 2 && C.chan[0].freq == 438062500 &&
+          C.chan[1].freq == 438087500);
+    CHECK(!C.chan[0].hblink && !C.chan[1].hblink); /* one identity: through the radio's peer */
     CHECK(parse("{\"version\": 3, \"name\": \"tower\", \"id\": 9800300, \"defaults\": {\"cc\": 1}, "
                 "\"devices\": [{\"kind\": \"sdr\", \"driver\": \"iio\"}], "
                 "\"frequencies\": [{\"name\": \"in\", \"freq\": 438.75}, {\"name\": \"out\", \"freq\": 438.5}, "
@@ -260,7 +264,8 @@ int main(void)
                 "\"networks\": [{\"type\": \"hblink\", \"host\": \"h\"}]}"));
     if (err[0])
         printf("  %s\n", err);
-    CHECK(C.full && C.rx_hz == 438750000 && C.tx_hz == 438500000 && C.nmon == 1 && !C.has_parrot);
+    CHECK(C.full && C.rx_hz == 438750000 && C.tx_hz == 438500000 && C.nchan == 2 && C.chan[1].freq == 438750000 &&
+          !C.has_parrot);
 
     printf("radiocfg: %d checks, %d failed\n", checks, fails);
     return fails != 0;

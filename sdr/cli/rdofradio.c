@@ -2,17 +2,19 @@
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 /*
  * rdofradio: an SDR that receives and transmits, run as the gateway's sdr_transceiver on a host or on the SDR
- * itself (a PlutoSDR's own ARM, through libiio: rdofradio_dev.h). The
- * same parts as on a board (docs/reference.md, "Transmit: the SDR as a radio"): the receiver hears the RX
- * channel, the SDR modem (rdof/sdr/sdrmodem.h) takes what it hears and modulates what it's given, and the
- * repeater (full duplex) or the roaming transceiver (half duplex) drives the modem through an rdof_modem client,
- * as it would an MMDVM_HS. With an hblink section in the settings (--config) it's an HBlink4 peer as the board's
- * (rdofradio_net.h, common/src/hbpeer.c): what it hears goes up as DMRD, and the master's calls go out; without
+ * itself (a PlutoSDR's own ARM, through libiio: rdofradio_dev.h). The same parts as on a board (docs/reference.md,
+ * "Transmit: the SDR as a radio"): the receiver hears the settings' SDR channels, all alike (each its own HBlink4
+ * peer with identity per_path), the SDR modem (rdof/sdr/sdrmodem.h) takes what it hears on the channel at its
+ * frequency and modulates what it's given, and the repeater (full duplex) or the roaming transceiver (half duplex)
+ * drives the modem through an rdof_modem client, as it would an MMDVM_HS. With an hblink section in the settings
+ * (--config) it's an HBlink4 peer as the board's (rdofradio_net.h, common/src/hbpeer.c): what it hears goes up as
+ * DMRD, and the master's calls go out (to the unit's peer, or to any channel's: one transmitter); without
  * one there's no network, and the repeater repeats what it hears on its outbound (repeater.md 4), the transceiver
  * only listens. --parrot ID sends back what's heard once it ends (rdof/parrot.h), as a network call would come.
  *
  * With an mqtt section it publishes as the board does (rdofradio_mqtt.h): the radio's calls, bursts, what it
- * transmits and its status on the repeater's or roamer's topics, the monitored channels' on the SDR's.
+ * transmits and its status on the repeater's or roamer's topics (its calls: the channel it's on), every channel's
+ * on the SDR's.
  *
  * The clock (the settings' ntp): netclock, the board's NTP disciplined clock (components/netclock, its POSIX glue),
  * or the OS's (ntp.clock "os": chrony, ntpd). --clock-state FILE keeps netclock's learned rate across restarts;
@@ -53,7 +55,7 @@
  * transmit: not used.
  * With --iio local: on the board, either loads their bitstream first (rdofradio_fpga.h: --fpga-bit FILE, else
  * rfg-pluto-<board>.bit.bin where it's found: /mnt/jffs2/rdof/, rdof/ on an SD card or USB stick, /lib/firmware/);
- * with none for the board, both are off and the ARM channelizes, with the monitored channels that fit its window.
+ * with none for the board, both are off and the ARM channelizes, with the channels that fit its window.
  * --fpga-board prints the board and the bitstream's file name.
  *
  * --split-tx PORT: a split duplex repeater (docs/spec/repeater.md): a RadioFoundry radio on PORT (its hotspot, with
@@ -66,7 +68,7 @@
  * --mmdvm PORT: the unit is on an MMDVM modem on a serial port (an MMDVM_HS hat on a UART, a hotspot on USB), as
  * the board runs one on its UART: a duplex modem (an MMDVM_HS dual hat, an MMDVM board) as the repeater, any as
  * the half duplex transceiver. DEVICE is optional: an SDR, opened receive only (an RTL-SDR does), hears the
- * modem's RX frequency and the monitored channels, for the page, MQTT, HBlink4 and the bench's line protocol.
+ * modem's RX frequency and the settings' channels, for the page, MQTT, HBlink4 and the bench's line protocol.
  * What the modem hears goes through a call tracker of its own, as on the board. --rf-level caps every SET_FREQ's
  * RF level (MMDVM scale 0-255; 255, no cap); the bench's jobs transmit DMR on the modem, in simplex, at their
  * power under that cap. --rx-offset-hz, --tx-offset-hz, --rx-level and --tx-level are the modem's settings (with
@@ -692,7 +694,7 @@ static double plan_rate(const rdof_sdr_channel_t *c, int n, char *why, size_t ca
 static int io_channel(void *ctx, uint32_t hz)
 {
     if (R.full)
-        return hz == R.rx_hz ? 0 : -1;
+        return hz == R.rx_hz ? channel_of(hz) : -1;
     const int c = channel_of(hz);
     return c >= 0 ? c : RDOF_SDRMODEM_NOT_HEARD;
 }
@@ -928,13 +930,13 @@ static void sr_start(void)
     }
     sr_on = true;
 }
-/* The HBlink sinks' admit: a stream heard at the sink's frequency (ctx: a monitored channel, NULL the radio's RX)
-   goes up when its path's policy sends it to HBlink. */
-typedef struct mon mon_t;
-static uint32_t mon_hz(const mon_t *m);
+/* The HBlink sinks' admit: a stream heard at the sink's frequency (ctx: a receiver channel, NULL the modem's RX with
+   --mmdvm) goes up when its path's policy sends it to HBlink. */
+typedef struct chan chan_t;
+static uint32_t chan_hz(const chan_t *m);
 static int rf_net(void *ctx, int slot, uint32_t src, uint32_t dst, bool group)
 {
-    const uint32_t hz = ctx ? mon_hz(ctx) : R.rx_hz;
+    const uint32_t hz = ctx ? chan_hz(ctx) : R.rx_hz;
     const int net = rdof_siteroute_rf(&SR, hz, slot, src, dst, group, now_s());
     if (net < 0 && SR.why && R.verbose)
         say("router: %.5f MHz slot %d, %u -> %s%u: %s\n", hz / 1e6, slot, (unsigned)src, group ? "TG " : "",
@@ -977,14 +979,14 @@ static void parrot_send(void *ctx, const rdof_net_burst_t *b)
 }
 /* the transceiver's answer to a tune (DMRK), to HBlink4 when it's on */
 static void net_send(const uint8_t *d, size_t n);
-/* The streams a monitored channel's peer was sent (below): the transceiver plays them, and its DMRK for them goes
- * nowhere (the master sent no DMRT). */
-static uint8_t mon_sids[16][4];
-static int mon_sid_next;
-static bool mon_sid(const uint8_t *sid)
+/* The streams a channel's peer was sent (below): the transceiver plays them, and its DMRK for them goes nowhere (the
+ * master sent no DMRT). */
+static uint8_t chan_sids[16][4];
+static int chan_sid_next;
+static bool chan_sid(const uint8_t *sid)
 {
     for (int i = 0; i < 16; i++)
-        if (!memcmp(mon_sids[i], sid, 4))
+        if (!memcmp(chan_sids[i], sid, 4))
             return true;
     return false;
 }
@@ -992,8 +994,8 @@ static void txvr_send(void *ctx, const uint8_t *d, size_t n)
 {
     static const char *status[] = {"on air", "channel busy", "not allowed", "radio error", "transceiver busy"};
     const bool dmrk = n >= 13 && !memcmp(d, "DMRK", 4);
-    if (dmrk && (mon_sid(d + 8) || (sr_on && rdof_siteroute_tuned(&SR, d + 8)))) {
-        say("transceiver (a monitored channel's call): %s\n", d[12] < 5 ? status[d[12]] : "?");
+    if (dmrk && (chan_sid(d + 8) || (sr_on && rdof_siteroute_tuned(&SR, d + 8)))) {
+        say("transceiver (a channel's call): %s\n", d[12] < 5 ? status[d[12]] : "?");
         return;
     }
     net_send(d, n);
@@ -1003,20 +1005,12 @@ static void txvr_send(void *ctx, const uint8_t *d, size_t n)
 
 /* --mmdvm: what the modem hears, through a call tracker of its own (as the board's radio), channel "rx" */
 static rdof_tracker_t MT;
-/* a sink on the radio's RX: the modem's tracker with --mmdvm, else the receiver's channel 0 */
-static void rx_add_sink(const rdof_sink_t *sk)
-{
-    if (R.mmdvm)
-        rdof_tracker_add_sink(&MT, *sk);
-    else
-        rdof_sdr_rx_add_sink(&R.rx, 0, sk);
-}
 
 /* ── the network: an HBlink4 peer, as the board's ──────────────────────────────── */
 
 static rdofnet_peer_t NET;
 static bool net_on;
-static rdof_hb_sink_t NET_SINK; /* the RX channel's tracker -> DMRD */
+static rdof_hb_sink_t NET_SINK; /* --mmdvm: the modem's tracker -> DMRD (the SDR's channels have their own sinks) */
 
 static void net_send(const uint8_t *d, size_t n)
 {
@@ -1076,38 +1070,50 @@ static void net_start(void)
     rng_state = (uint32_t)time(NULL) ^ ((uint32_t)getpid() << 16) ^ (uint32_t)(now_s() * 1e6);
     if (!rng_state)
         rng_state = 1;
-    rdof_hb_sink_init(&NET_SINK, rcfg.peer_id);
-    NET_SINK.send = sink_send;
-    NET_SINK.rand32 = sink_rand;
-    if (!R.full)
-        NET_SINK.before_stream = sink_before;
-    NET_SINK.admit = rf_admit;
-    const rdof_sink_t sk = rdof_hb_sink_as_sink(&NET_SINK);
-    if (rcfg.cfg.receiver_hblink) /* what it hears goes up (the role's "hblink", default true) */
-        rx_add_sink(&sk);
+    if (R.mmdvm && rcfg.cfg.receiver_hblink) { /* what the modem hears goes up (the role's "hblink") */
+        rdof_hb_sink_init(&NET_SINK, rcfg.peer_id);
+        NET_SINK.send = sink_send;
+        NET_SINK.rand32 = sink_rand;
+        if (!R.full)
+            NET_SINK.before_stream = sink_before;
+        NET_SINK.admit = rf_admit;
+        rdof_tracker_add_sink(&MT, rdof_hb_sink_as_sink(&NET_SINK));
+    }
     net_on = true;
     net_config();
     fprintf(stderr, "hblink: %s, peer %u, to %s:%d\n", rcfg.name, (unsigned)rcfg.peer_id, rcfg.cfg.master_host,
             rcfg.cfg.master_port);
 }
 
-/* The monitored channels (monitor roles on the device): receive only, each its own peer, as the board's SDR's */
-struct mon {
+/* The receiver's channels from the settings (the SDR's, as the board's SDR resolves them), all alike: each its own
+ * peer (identity per_path), or what it hears goes up through the unit's peer as its path's policy says. The unit
+ * (the transceiver or the repeater) hears on the one at its frequency (io_channel); a net call to any channel's
+ * peer takes the one transmitter. */
+struct chan {
     int c; /* the receiver's channel */
     const rdof_sdr_cfg_channel_t *ch;
     bool peer;  /* its own peer (identity per_path) */
-    bool up;    /* its sink sends through the radio's peer (version 3, one identity) */
+    bool up;    /* its sink sends through the unit's peer (one identity) */
     rdofnet_peer_t net;
     rdof_hb_sink_t sink;
     uint8_t sid[4]; /* the last stream the master sent it */
 };
-static uint32_t mon_hz(const mon_t *m) { return (uint32_t)llround(m->ch->freq); }
-static mon_t MON[RDOF_SDR_MAX_CHANNELS];
-static int nmon;
+static uint32_t chan_hz(const chan_t *m) { return (uint32_t)llround(m->ch->freq); }
+static chan_t CHN[RDOF_SDR_MAX_CHANNELS];
+static int nchn;
 
-static void mon_send(void *ctx, const uint8_t *d, size_t n) { rdofnet_peer_send(&((mon_t *)ctx)->net, d, n); }
-/* Whether the transceiver may go to a monitored channel: one of its channels (the roamer's). */
-static bool mon_sends(const mon_t *m, int *cc)
+/* The settings' channel on receiver channel c; NULL for one of our own (--monitor's "out", --mmdvm's "modem-rx") */
+static const chan_t *chan_at(int c)
+{
+    for (int i = 0; i < nchn; i++)
+        if (CHN[i].c == c)
+            return &CHN[i];
+    return NULL;
+}
+
+static void chan_send(void *ctx, const uint8_t *d, size_t n) { rdofnet_peer_send(&((chan_t *)ctx)->net, d, n); }
+/* Whether the transceiver may go to a channel: one of its channels (the roamer's). */
+static bool chan_sends(const chan_t *m, int *cc)
 {
     if (R.full || !R.t.ready)
         return false;
@@ -1119,20 +1125,20 @@ static bool mon_sends(const mon_t *m, int *cc)
         }
     return false;
 }
-static void mon_packet(void *ctx, const uint8_t *d, size_t n)
+static void chan_packet(void *ctx, const uint8_t *d, size_t n)
 {
-    mon_t *m = ctx;
+    chan_t *m = ctx;
     rdof_net_burst_t b;
     int cc;
     if (sr_on && rdof_siteroute_dmrd(&SR, sr_hblink, m->net.peer.peer_id, d, n, now_s()))
         return; /* by the call policies (identity per_path: this peer's paths) */
     /* a simplex channel: what the master sends this channel's peer goes out on it, through the transceiver (one
        channel at a time: a call while it's busy elsewhere is refused, as a DMRT would be) */
-    if (rdof_hb_kind(d, n) == 'D' && mon_sends(m, &cc) && rdof_parse_dmrd(d, n, &b)) {
+    if (rdof_hb_kind(d, n) == 'D' && chan_sends(m, &cc) && rdof_parse_dmrd(d, n, &b)) {
         if (memcmp(m->sid, b.stream_id, 4)) {
             memcpy(m->sid, b.stream_id, 4);
-            memcpy(mon_sids[mon_sid_next], b.stream_id, 4);
-            mon_sid_next = (mon_sid_next + 1) % 16;
+            memcpy(chan_sids[chan_sid_next], b.stream_id, 4);
+            chan_sid_next = (chan_sid_next + 1) % 16;
             rdof_tune_t tu = {.freq = (uint32_t)llround(m->ch->freq), .cc = cc, .power = 255};
             memcpy(tu.stream_id, b.stream_id, 4);
             say("%s: a call from the network (%u to %u), to send on %.5f MHz\n", m->ch->id, (unsigned)b.src,
@@ -1147,15 +1153,15 @@ static void mon_packet(void *ctx, const uint8_t *d, size_t n)
         rdofnet_peer_send(&m->net, k, sizeof k);
 }
 
-static void mon_start(void)
+static void chan_start(void)
 {
     if (!rcfg.has_hblink)
         return;
     const rdof_location_t *loc = rcfg.cfg.has_location ? &rcfg.cfg.location : NULL;
-    for (int i = 0; i < nmon; i++) {
-        mon_t *m = &MON[i];
+    for (int i = 0; i < nchn; i++) {
+        chan_t *m = &CHN[i];
         if (!m->ch->hblink && net_on) {
-            /* one identity: what it hears goes up through the radio's peer, as its policy says */
+            /* one identity: what it hears goes up through the unit's peer, as its policy says */
             rdof_hb_sink_init(&m->sink, rcfg.peer_id);
             m->sink.send = sink_send;
             m->sink.rand32 = sink_rand;
@@ -1172,11 +1178,11 @@ static void mon_start(void)
             continue;
         rdofnet_peer_init(&m->net, rcfg.cfg.master_host, rcfg.cfg.master_port, (uint32_t)m->ch->peer_id,
                           RDOF_HB_KEEPALIVE_SECONDS, m->ch->id);
-        m->net.on_packet = mon_packet;
+        m->net.on_packet = chan_packet;
         m->net.say = net_say;
         m->net.ctx = m;
         rdof_hb_sink_init(&m->sink, (uint32_t)m->ch->peer_id);
-        m->sink.send = mon_send;
+        m->sink.send = chan_send;
         m->sink.rand32 = sink_rand;
         m->sink.admit = rf_admit;
         m->sink.ctx = m;
@@ -1193,22 +1199,46 @@ static void mon_start(void)
     }
 }
 
+/* The receiver channel the unit hears on now (the transceiver's channel, the repeater's RX); -1 none, or the modem
+ * hears (--mmdvm) */
+static int unit_channel(void) { return R.mmdvm ? -1 : channel_of(heard_hz()); }
+/* The receiver channel called id; -1 none */
+static int channel_named(const char *id)
+{
+    for (int c = 0; c < NCH; c++)
+        if (!strcmp(CH[c].id, id))
+            return c;
+    return -1;
+}
+/* What a tracker's output (channel id) is: the unit's (what it hears: --mmdvm's modem, or the channel it's on), a
+ * channel's from the settings (the SDR's), or both */
+static bool is_unit(const char *ch)
+{
+    const int c = channel_named(ch);
+    return R.mmdvm ? c < 0 && !strcmp(ch, "rx") : c >= 0 && c == unit_channel();
+}
+static bool is_sdr(const char *ch)
+{
+    const int c = channel_named(ch);
+    return c >= 0 && chan_at(c) != NULL;
+}
+
 static void net_poll(double now)
 {
     if (net_on)
         rdofnet_peer_poll(&NET, now);
-    for (int i = 0; i < nmon; i++)
-        if (MON[i].peer)
-            rdofnet_peer_poll(&MON[i].net, now);
+    for (int i = 0; i < nchn; i++)
+        if (CHN[i].peer)
+            rdofnet_peer_poll(&CHN[i].net, now);
 }
 
 static void net_close(void)
 {
     if (net_on)
         rdofnet_peer_close(&NET);
-    for (int i = 0; i < nmon; i++)
-        if (MON[i].peer)
-            rdofnet_peer_close(&MON[i].net);
+    for (int i = 0; i < nchn; i++)
+        if (CHN[i].peer)
+            rdofnet_peer_close(&CHN[i].net);
 }
 
 /* ── the clock: netclock, or the OS's ─────────────────────────────────────────── */
@@ -1264,10 +1294,10 @@ static void clock_start(void)
 static void clock_stop(void) {}
 #endif
 
-/* ── MQTT: the board's topics (esp_idf/main/roam_mqtt.c for the radio, sdr_mqtt.c for the monitored channels) ─ */
+/* ── MQTT: the board's topics (esp_idf/main/roam_mqtt.c for the radio, sdr_mqtt.c for the SDR's channels) ─ */
 
 #ifdef RDOF_MQTT
-static rdofmq_t *MQ, *MQ_SDR; /* the radio's connection; the monitored channels' (the board's SDR's own) */
+static rdofmq_t *MQ, *MQ_SDR; /* the radio's connection; the SDR's channels' (the board's SDR's own) */
 static char mq_status[96], mq_sdr_status[96];
 static char mq_alias[2][112], mq_sdr_alias[2 * RDOF_SDR_MAX_CHANNELS][112];
 static const char *mq_alias_p[2], *mq_sdr_alias_p[2 * RDOF_SDR_MAX_CHANNELS];
@@ -1295,9 +1325,8 @@ static void mq_topic(const char *kind, char *out, size_t cap)
 }
 static void mq_sdr_topic(const char *ch, const char *kind, char *out, size_t cap)
 {
-    snprintf(out, cap, "%s/%s/%s/%s", rcfg.cfg.mqtt_root, ch, rcfg.mon_app, kind);
+    snprintf(out, cap, "%s/%s/%s/%s", rcfg.cfg.mqtt_root, ch, rcfg.sdr_app, kind);
 }
-static bool is_monitored(const char *ch) { return strcmp(ch, "rx") && strcmp(ch, "out"); }
 
 static void mq_publish_status(void)
 {
@@ -1332,28 +1361,28 @@ static void mq_sdr_publish_receivers(void)
 {
     char buf[512], t[112];
     const rdof_location_t *loc = rcfg.cfg.has_location ? &rcfg.cfg.location : NULL;
-    for (int i = 0; i < nmon; i++) {
-        const rdof_sdr_cfg_channel_t *c = MON[i].ch;
-        rdof_sdr_receiver_json(c->name[0] ? c->name : c->id, c->freq, c->cc, rcfg.mon_name, c->tg, loc, buf, sizeof buf);
+    for (int i = 0; i < nchn; i++) {
+        const rdof_sdr_cfg_channel_t *c = CHN[i].ch;
+        rdof_sdr_receiver_json(c->name[0] ? c->name : c->id, c->freq, c->cc, rcfg.sdr_name, c->tg, loc, buf,
+                               sizeof buf);
         mq_sdr_topic(c->id, "json", t, sizeof t);
         rdofmq_publish(MQ_SDR, t, buf, -1, 1, true);
     }
 }
 
-/* the SDR's status: every receiver channel (the radio's RX among them, by the radio's name), the monitored
-   channels' peers */
+/* the SDR's status: every receiver channel, the channels' peers */
 static void mq_sdr_publish_status(void)
 {
     static char buf[3072];
-    const char *names[RDOF_SDR_MAX_CHANNELS] = {rcfg.name}, *ids[RDOF_SDR_MAX_CHANNELS];
+    const char *names[RDOF_SDR_MAX_CHANNELS] = {0}, *ids[RDOF_SDR_MAX_CHANNELS];
     bool up[RDOF_SDR_MAX_CHANNELS];
     int nh = 0;
-    for (int i = 0; i < nmon; i++) {
-        names[MON[i].c] = MON[i].ch->name[0] ? MON[i].ch->name : NULL;
-        if (MON[i].peer)
-            ids[nh] = MON[i].ch->id, up[nh++] = MON[i].net.peer.up;
+    for (int i = 0; i < nchn; i++) {
+        names[CHN[i].c] = CHN[i].ch->name[0] ? CHN[i].ch->name : NULL;
+        if (CHN[i].peer)
+            ids[nh] = CHN[i].ch->id, up[nh++] = CHN[i].net.peer.up;
     }
-    rdof_sdr_status_t st = {.name = rcfg.mon_name, .at = wall_s(), .cpu_load = NAN, .overflows = mq_overflows,
+    rdof_sdr_status_t st = {.name = rcfg.sdr_name, .at = wall_s(), .cpu_load = NAN, .overflows = mq_overflows,
                             .names = names, .n_hblink = nh, .hblink_ids = ids, .hblink_up = up};
     if (rdof_sdr_status_json(&R.rx, &st, buf, sizeof buf))
         rdofmq_publish(MQ_SDR, mq_sdr_status, buf, -1, 1, true);
@@ -1412,23 +1441,23 @@ static void mq_calls_poll(double now)
             mq_calls_in++;
     }
 }
-/* a sink on the radio's RX and on each monitored channel */
+/* a sink on each channel, and with --mmdvm on the modem's tracker */
 static void mq_calls_start(void)
 {
     if (!MQ || sr_mqtt < 0)
         return;
-    for (int i = 0; i <= nmon; i++) {
-        rdof_hb_sink_t *k = &mq_sinks[i];
+    for (int i = R.mmdvm ? -1 : 0; i < nchn; i++) {
+        rdof_hb_sink_t *k = &mq_sinks[i + 1];
         rdof_hb_sink_init(k, rcfg.site.id);
         k->send = mq_call_send;
         k->rand32 = sink_rand;
         k->admit = mq_call_admit;
-        k->ctx = i ? &MON[i - 1] : NULL;
+        k->ctx = i >= 0 ? &CHN[i] : NULL;
         const rdof_sink_t sk = rdof_hb_sink_as_sink(k);
-        if (i)
-            rdof_sdr_rx_add_sink(&R.rx, MON[i - 1].c, &sk);
+        if (i >= 0)
+            rdof_sdr_rx_add_sink(&R.rx, CHN[i].c, &sk);
         else
-            rx_add_sink(&sk);
+            rdof_tracker_add_sink(&MT, sk);
     }
     fprintf(stderr, "mqtt: calls on %s/calls/ as %s\n", rcfg.cfg.mqtt_root, rcfg.site.name);
 }
@@ -1455,15 +1484,15 @@ static void mq_start(void)
     MQ = rdofmq_start(&o);
     o.subscribe = NULL, o.on_message = NULL;
     mq_calls_start();
-    if (nmon && mq_report) {
-        snprintf(mq_sdr_status, sizeof mq_sdr_status, "%s/_sdr/%s/status", c->mqtt_root, rcfg.mon_name);
-        snprintf(sid, sizeof sid, "rdof-sdr-%s", rcfg.mon_name);
+    if (nchn && mq_report) {
+        snprintf(mq_sdr_status, sizeof mq_sdr_status, "%s/_sdr/%s/status", c->mqtt_root, rcfg.sdr_name);
+        snprintf(sid, sizeof sid, "rdof-sdr-%s", rcfg.sdr_name);
         for (int k = 0; k < 2; k++) /* aliases: every channel's raw, then every channel's json */
-            for (int i = 0; i < nmon; i++) {
-                mq_sdr_topic(MON[i].ch->id, k ? "json" : "raw", mq_sdr_alias[k * nmon + i], sizeof mq_sdr_alias[0]);
-                mq_sdr_alias_p[k * nmon + i] = mq_sdr_alias[k * nmon + i];
+            for (int i = 0; i < nchn; i++) {
+                mq_sdr_topic(CHN[i].ch->id, k ? "json" : "raw", mq_sdr_alias[k * nchn + i], sizeof mq_sdr_alias[0]);
+                mq_sdr_alias_p[k * nchn + i] = mq_sdr_alias[k * nchn + i];
             }
-        o.client_id = sid, o.will_topic = mq_sdr_status, o.alias_topics = mq_sdr_alias_p, o.n_alias = 2 * nmon;
+        o.client_id = sid, o.will_topic = mq_sdr_status, o.alias_topics = mq_sdr_alias_p, o.n_alias = 2 * nchn;
         MQ_SDR = rdofmq_start(&o);
     }
     fprintf(stderr, "mqtt: %s:%d, root %s, as %s%s%s%s\n", c->mqtt_host, c->mqtt_port, c->mqtt_root, id,
@@ -1497,7 +1526,7 @@ static void mq_poll(double now)
         }
         if (rdofmq_up(MQ_SDR) && now >= mq_sdr_next) {
             mq_sdr_publish_status();
-            mq_sdr_next = now + (rcfg.mon_status_s > 1 ? rcfg.mon_status_s : 30);
+            mq_sdr_next = now + (rcfg.sdr_status_s > 1 ? rcfg.sdr_status_s : 30);
         }
     }
 }
@@ -1542,16 +1571,20 @@ static void on_raw_burst(void *ctx, const char *ch, const rdof_rawburst_t *r)
 {
     uint8_t buf[RDOF_RAWBURST_MAX];
     char t[112];
-    if (!strcmp(ch, "out") || !mq_report)
+    if (!mq_report)
         return;
-    rdofmq_t *q = is_monitored(ch) ? MQ_SDR : MQ;
-    if (!q)
-        return;
-    if (q == MQ)
-        mq_topic("raw", t, sizeof t);
-    else
+    int n = -1;
+    if (is_sdr(ch) && MQ_SDR) {
+        n = (int)rdof_rawburst_encode(r, buf);
         mq_sdr_topic(ch, "raw", t, sizeof t);
-    rdofmq_publish(q, t, buf, (int)rdof_rawburst_encode(r, buf), 0, false);
+        rdofmq_publish(MQ_SDR, t, buf, n, 0, false);
+    }
+    if (is_unit(ch) && MQ) {
+        if (n < 0)
+            n = (int)rdof_rawburst_encode(r, buf);
+        mq_topic("raw", t, sizeof t);
+        rdofmq_publish(MQ, t, buf, n, 0, false);
+    }
 }
 #else
 static void mq_start(void)
@@ -1572,31 +1605,30 @@ static void on_json(void *ctx, const char *ch, const char *json)
 {
 #ifdef RDOF_MQTT
     char t[112];
-    if (!mq_report)
-        ;
-    else if (is_monitored(ch) && MQ_SDR) {
+    if (mq_report && is_sdr(ch) && MQ_SDR) {
         mq_sdr_topic(ch, "json", t, sizeof t);
         rdofmq_publish(MQ_SDR, t, json, -1, 1, false);
-    } else if (!strcmp(ch, "rx") && MQ) {
+    }
+    if (mq_report && is_unit(ch) && MQ) {
         mq_topic("json", t, sizeof t);
         rdofmq_publish(MQ, t, json, -1, 1, false);
     }
 #endif
 #ifdef RDOF_HOST_WEB
-    if (strcmp(ch, "rx") && strcmp(ch, "out")) /* a monitored channel: the SDR's, as on the board */
+    if (is_sdr(ch)) /* a channel: the SDR's, as on the board */
         rdof_hostweb_tracker_json("sdr", rcfg.box, ch, json);
-    else
+    if (is_unit(ch)) /* and what the unit hears, on its card */
         rdof_hostweb_tracker_json(R.full ? "repeater" : "roamer", rcfg.name, NULL, json);
 #endif
     if (!quiet)
         printf("%s json %s\n", ch, json);
 }
 
-/* the RX channel's calls: the transceiver's listen-before-talk, as the board's roamer (a reply to the call just heard
- * isn't held off by that call); with --mmdvm the modem's tracker does it (mm_on_call) */
+/* the calls on the channel the transceiver is on: its listen-before-talk, as the board's roamer (a reply to the call
+ * just heard isn't held off by that call); with --mmdvm the modem's tracker does it (mm_on_call) */
 static void on_call(void *ctx, const char *ch, const char *action, uint32_t src, uint32_t dst)
 {
-    if (!R.full && !R.mmdvm && !strcmp(ch, "rx"))
+    if (!R.full && !R.mmdvm && is_unit(ch))
         rdof_txvr_heard_call(&R.t, action, src, dst);
 }
 
@@ -2534,7 +2566,7 @@ static void on_burst(void *ctx, int c, const rdof_sdr_burst_t *b, double t)
 static bool muted(void *ctx, int64_t p) { return rdof_sdrmodem_muted_at(&R.m, p); }
 /* Our own transmission heard back (half duplex): on the channel it went out on, or its image, within its span on
  * the air (60 ms either side: a burst's length and the loop's delay); on any other channel, a burst we sent there
- * (the transmitter's spurs: on the Pluto, 100 kHz either side). Not passed on: a monitored channel's
+ * (the transmitter's spurs: on the Pluto, 100 kHz either side). Not passed on: a channel's
  * peer would send the network's call back to it. The bench's line protocol still gets it: it watches the air. */
 static bool echo_drop(void *ctx, int c, const rdof_sdr_burst_t *b)
 {
@@ -2553,11 +2585,11 @@ static bool echo_drop(void *ctx, int c, const rdof_sdr_burst_t *b)
     bench_burst(c, b);
     return true;
 }
-/* the inbound slot by timing: the radio's RX channel only (a monitored channel keeps its own CACH); a repeater job's
- * RX may be any receiver channel */
+/* the inbound slot by timing: the repeater's RX channel only (another channel keeps its own CACH), the job's with a
+ * bench repeater job */
 static int relabel(void *ctx, int c, const rdof_sdr_burst_t *b)
 {
-    const int rx = BR.active ? channel_of(BR.cfg.rx_hz) : 0;
+    const int rx = channel_of(BR.active ? BR.cfg.rx_hz : R.rx_hz);
     return c == rx && !R.mmdvm ? rdof_sdrmodem_inbound(&R.m, b) : 0;
 }
 
@@ -2609,20 +2641,11 @@ static void web_spectrum(const rdof_cf_t *in, int n)
                                   (int)lrint(1e3 * sp.per_row * chunk / R.rate));
 }
 
-/* The site's name for a frequency ("" none) */
-static const char *freq_name(double hz)
-{
-    for (int f = 0; f < rcfg.site.nfreq; f++)
-        if (fabs((double)rcfg.site.freq[f].hz - hz) <= 100)
-            return rcfg.site.freq[f].name;
-    return "";
-}
-
 /* The SDR's card: the device, its samples and faults, the loop's time, the transmitter, and every receiver channel */
 static void web_sdr(rdof_hostweb_sdr_t *d)
 {
     const double now = now_s();
-    snprintf(d->name, sizeof d->name, "%s", rcfg.mon_name[0] ? rcfg.mon_name : "sdr");
+    snprintf(d->name, sizeof d->name, "%s", rcfg.sdr_name[0] ? rcfg.sdr_name : "sdr");
     snprintf(d->device, sizeof d->device, "%s", dev->name);
     d->open = true;
     d->receiving = WS.last_samples > 0 && now - WS.last_samples < 1.0;
@@ -2658,28 +2681,20 @@ static void web_sdr(rdof_hostweb_sdr_t *d)
     d->mqtt = rdofmq_up(MQ_SDR);
     d->mqtt_dropped = rdofmq_dropped(MQ_SDR);
 #endif
-    if (net_on) { /* the radio's own peer, with the monitored channels' */
-        d->hblink_peers++;
-        d->hblink_up += NET.peer.up;
-    }
-    for (int i = 0; i < nmon; i++)
-        if (MON[i].peer) {
+    for (int i = 0; i < nchn; i++)
+        if (CHN[i].peer) {
             d->hblink_peers++;
-            d->hblink_up += MON[i].net.peer.up;
+            d->hblink_up += CHN[i].net.peer.up;
         }
     for (int c = 0; c < R.rx.C && d->nchan < 16; c++) {
         const char *id = R.rx.trackers[c].channel, *name = "";
-        if (c == 0) { /* the radio's RX: by its frequency's name, as the monitored channels are */
-            id = freq_name(R.rx.trackers[c].freq_hz);
-            name = id[0] ? id : "receive";
-            if (!id[0])
-                id = rcfg.name;
-        }
-        else if (c == R.mon)
-            name = "transmit (heard back)";
-        for (int i = 0; i < nmon; i++)
-            if (MON[i].c == c)
-                name = MON[i].ch->name;
+        const chan_t *m = chan_at(c);
+        if (m)
+            name = m->ch->name;
+        else /* ours: --monitor's TX heard back, --mmdvm's modem's RX */
+            name = !strcmp(id, "out")        ? "transmit (heard back)"
+                   : !strcmp(id, "modem-rx") ? "the modem's RX"
+                                             : "receive";
         const double f = R.rx.trackers[c].freq_hz;
         const int r = R.rx.rssi[c];
         snprintf(d->chan[d->nchan].id, sizeof d->chan[0].id, "%s", id);
@@ -2777,8 +2792,9 @@ static void web_publish(double rx, double tx, int cc)
     w.bursts_heard = R.m.rx_bursts, w.bursts_sent = R.m.tx_bursts, w.dropped = R.m.lost;
     if (R.mmdvm)
         w.bursts_heard = (uint64_t)mm_heard_n, w.bursts_sent = 0, w.dropped = 0;
-    const rdof_tracker_t *tr = R.mmdvm ? &MT : &R.rx.trackers[0];
-    for (int i = 0; i < 2; i++) {
+    const int uc = unit_channel(); /* what the unit hears: the channel it's on, or the modem */
+    const rdof_tracker_t *tr = R.mmdvm ? &MT : uc >= 0 ? &R.rx.trackers[uc] : NULL;
+    for (int i = 0; tr && i < 2; i++) {
         const rdof_call_t *c = &tr->slots[i].call;
         w.slot[i].active = c->active;
         w.slot[i].src = c->src, w.slot[i].dst = c->dst, w.slot[i].group = c->group;
@@ -2803,18 +2819,8 @@ static void web_publish(double rx, double tx, int cc)
 #endif
     w.hblink = net_on && NET.peer.up;
     w.hblink_tx = NET.peer.tx, w.hblink_rx = NET.peer.rx;
-    if (!R.mmdvm && R.rx.C > 0) { /* the radio's own channel first, by its frequency's name */
-        const char *id = freq_name(R.rx.trackers[0].freq_hz);
-        const int r = R.rx.rssi[0];
-        snprintf(w.chan[0].id, sizeof w.chan[0].id, "%s", id[0] ? id : rcfg.name);
-        w.chan[0].freq = (uint32_t)llround(R.rx.trackers[0].freq_hz);
-        w.chan[0].bursts = R.rx.bursts[0];
-        w.chan[0].rssi = r == INT32_MIN ? 0 : r;
-        w.chan[0].peer = net_on;
-        w.chan[w.nchan++].up = net_on && NET.peer.up;
-    }
-    for (int i = 0; i < nmon && w.nchan < 16; i++) {
-        const mon_t *m = &MON[i];
+    for (int i = 0; i < nchn && w.nchan < 16; i++) {
+        const chan_t *m = &CHN[i];
         const int r = R.rx.rssi[m->c];
         snprintf(w.chan[w.nchan].id, sizeof w.chan[w.nchan].id, "%s", m->ch->id);
         w.chan[w.nchan].freq = (uint32_t)llround(m->ch->freq);
@@ -2863,12 +2869,11 @@ static bool web_save(void *ctx, const char *text, size_t len, char *err, size_t 
         return false;
     }
     bool ok = rdofradio_cfg_parse(text, len, c, err, cap);
-    if (ok) { /* the receive channels in one window, as the start will ask: the radio's RX and the monitored */
+    if (ok && c->nchan) { /* the receive channels in one window, as the start will ask */
         rdof_sdr_channel_t ch[RDOF_SDR_MAX_CHANNELS];
         int n = 0;
-        ch[n++] = (rdof_sdr_channel_t){"rx", (double)c->rx_hz, c->cc, c->rx_slot};
-        for (int i = 0; i < c->nmon && n < RDOF_SDR_MAX_CHANNELS; i++)
-            ch[n++] = (rdof_sdr_channel_t){c->mon[i].id, c->mon[i].freq, c->mon[i].cc, c->mon[i].slot};
+        for (int i = 0; i < c->nchan && n < RDOF_SDR_MAX_CHANNELS; i++)
+            ch[n++] = (rdof_sdr_channel_t){c->chan[i].id, c->chan[i].freq, c->chan[i].cc, c->chan[i].slot};
         ok = plan_rate(ch, n, err, cap) > 0;
     }
     ok = ok && rdof_hostweb_save_file(config_path, text, len, err, cap);
@@ -4549,7 +4554,7 @@ int main(int argc, char **argv)
     }
     if ((FX.on || DX.on) && dev_local) {
         /* the bitstream in (rdofradio_fpga.h); none: the ARM's channelizer and a full-rate transmit stream, with
-           the monitored channels that fit (fpga_fallback) */
+           the channels that fit (fpga_fallback) */
         char msg[400];
         const int r = rdofradio_fpga_load(fpga_bit, msg, sizeof msg);
         if (r == RDOFRADIO_FPGA_ERROR) {
@@ -4627,13 +4632,11 @@ int main(int argc, char **argv)
     }
     setvbuf(stdout, NULL, _IOLBF, 0);
 
-    /* the receiver: the RX channel, with --monitor the TX channel (our own outbound, heard back), then the
-       monitor roles' channels on this device */
     if (R.mmdvm) {
         mm_tracker_init(); /* the modem's: the radio's RX for the network, MQTT and the page */
         if (!soapy && !iio) { /* no SDR: the modem alone */
-            if (rcfg.nmon)
-                fprintf(stderr, "receiver: no SDR (DEVICE): %d monitored channels left out\n", rcfg.nmon);
+            if (rcfg.nchan)
+                fprintf(stderr, "receiver: no SDR (DEVICE): its %d channels left out\n", rcfg.nchan);
             sr_start();
             net_start();
             mq_start();
@@ -4646,32 +4649,54 @@ int main(int argc, char **argv)
             return mmdvm_main(argc, argv, mmdvm, baud, seconds, mm_rx_off, mm_tx_off, mm_rx_level, mm_tx_level);
         }
     }
-    /* with --mmdvm the SDR hears the modem's RX frequency too, as a channel of its own (the modem's tracker is the
-       radio's "rx") */
-    CH[0] = (rdof_sdr_channel_t){R.mmdvm ? "modem-rx" : "rx", rx, cc, rx_slot};
-    CH[1] = (rdof_sdr_channel_t){"out", tx, cc, 1};
-    NCH = monitor && R.tx_hz != R.rx_hz ? 2 : 1;
-    if (NCH == 2 || (monitor && R.tx_hz == R.rx_hz))
-        R.mon = NCH - 1;
-    int unfit = 0;
-    for (int i = 0; i < rcfg.nmon && NCH < RDOF_SDR_MAX_CHANNELS; i++) {
-        const rdof_sdr_cfg_channel_t *m = &rcfg.mon[i];
-        CH[NCH] = (rdof_sdr_channel_t){m->id, m->freq, m->cc, m->slot};
-        char why[200];
-        if (fpga_fallback && NCH > 0 && !plan_rate(CH, NCH + 1, why, sizeof why)) {
-            unfit++; /* without the bitstream: the channels that fit, in the settings' order */
-            continue;
+    /* the receiver's channels: the settings' (the SDR's, as the board's SDR resolves them; the unit's among them), in
+       their order; then --monitor's TX (our own outbound, heard back) and --mmdvm's modem RX when no channel is on
+       them. Without the FPGA's bitstream, the ones that fit the ARM's window, the unit's kept. */
+    int unfit = 0, nlisted = 0;
+    {
+        rdof_sdr_channel_t own[2];
+        int nown = 0;
+        if (R.mmdvm && rdofradio_cfg_channel_at(&rcfg, R.rx_hz) < 0)
+            own[nown++] = (rdof_sdr_channel_t){"modem-rx", rx, cc, rx_slot};
+        if (monitor && rdofradio_cfg_channel_at(&rcfg, R.tx_hz) < 0 && R.tx_hz != R.rx_hz)
+            own[nown++] = (rdof_sdr_channel_t){"out", tx, cc, 1};
+        if (!rcfg.nchan && !R.mmdvm) /* the settings put nothing on the SDR (it can't be: a unit on it hears there) */
+            own[nown++] = (rdof_sdr_channel_t){"rx", rx, cc, rx_slot};
+        for (int i = 0; i < rcfg.nchan && NCH < RDOF_SDR_MAX_CHANNELS; i++) {
+            const rdof_sdr_cfg_channel_t *m = &rcfg.chan[i];
+            const uint32_t f = (uint32_t)llround(m->freq);
+            const bool unit = f == R.rx_hz || (!R.full && f == R.tx_hz);
+            nlisted++;
+            CH[NCH] = (rdof_sdr_channel_t){m->id, m->freq, m->cc, m->slot};
+            if (fpga_fallback && !unit) { /* what's kept, this one, the unit's still to come and our own */
+                rdof_sdr_channel_t t[RDOF_SDR_MAX_CHANNELS + 2];
+                int n = NCH + 1;
+                memcpy(t, CH, sizeof t[0] * (size_t)n);
+                for (int k = i + 1; k < rcfg.nchan && n < RDOF_SDR_MAX_CHANNELS; k++)
+                    if ((uint32_t)llround(rcfg.chan[k].freq) == R.rx_hz)
+                        t[n++] = (rdof_sdr_channel_t){rcfg.chan[k].id, rcfg.chan[k].freq, rcfg.chan[k].cc, 1};
+                for (int k = 0; k < nown; k++)
+                    t[n++] = own[k];
+                char why[200];
+                if (!plan_rate(t, n, why, sizeof why)) {
+                    unfit++;
+                    continue;
+                }
+            }
+            CHN[nchn].c = NCH;
+            CHN[nchn++].ch = m;
+            NCH++;
         }
-        MON[nmon].c = NCH;
-        MON[nmon++].ch = m;
-        NCH++;
+        for (int k = 0; k < nown && NCH < RDOF_SDR_MAX_CHANNELS; k++)
+            CH[NCH++] = own[k];
     }
+    R.mon = monitor ? channel_of(tx) : -1;
     if (unfit)
-        fprintf(stderr, "receiver: without the FPGA's bitstream %d monitored channels don't fit the ARM's window: "
-                        "left out\n", unfit);
-    if (nmon + unfit < rcfg.nmon)
-        fprintf(stderr, "receiver: %d channels at most: %d monitored channels left out\n", RDOF_SDR_MAX_CHANNELS,
-                rcfg.nmon - nmon - unfit);
+        fprintf(stderr, "receiver: without the FPGA's bitstream %d channels don't fit the ARM's window: left out\n",
+                unfit);
+    if (nlisted < rcfg.nchan)
+        fprintf(stderr, "receiver: %d channels at most: %d channels left out\n", RDOF_SDR_MAX_CHANNELS,
+                rcfg.nchan - nlisted);
     {
         char why[200];
         double fit = plan_rate(CH, NCH, why, sizeof why);
@@ -4698,7 +4723,7 @@ int main(int argc, char **argv)
     if (rdof_sdr_rx_init(&R.rx, &rc, CH, NCH, &sink, (double)time(NULL))) {
         char why[200];
         snprintf(why, sizeof why, "receiver: the rate isn't a multiple of 48 kS/s, or the channels don't fit one "
-                                  "window%s", nmon ? " (the monitored channels with the radio's: a wider --rate, or fewer)" : "");
+                                  "window%s", NCH > 1 ? " (a wider --rate, or fewer channels)" : "");
         return hold(argc, argv, why);
     }
     for (int c = 0; c < NCH; c++) /* --ppm: each channel where its carrier shows */
@@ -4711,7 +4736,7 @@ int main(int argc, char **argv)
     R.rx.burst_ctx = &R;
     sr_start();
     net_start();
-    mon_start();
+    chan_start();
     mq_start();
     clock_start();
 #ifdef RDOF_HOST_WEB

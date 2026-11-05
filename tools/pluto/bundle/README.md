@@ -26,7 +26,7 @@ boot partition, the one with `BOOT.bin`, and only when the one there differs; it
 `install.sh` then adds `--fpga-chz --fpga-duc` to `flags`, so rdofradio loads it at every boot (`/tmp/rdof-fpga`
 says which is in); a reboot brings the stock design back. With `--split-tx` or `--mmdvm` in `flags` (a USB radio
 transmits), the channelizer still runs and `--fpga-duc` is left unused.
-With no SD card, or no bitstream for the board, it runs without one: the ARM channelizes, and the monitored channels
+With no SD card, or no bitstream for the board, it runs without one: the ARM channelizes, and the channels
 that don't fit its window are left out.
 
 ## On the Pluto

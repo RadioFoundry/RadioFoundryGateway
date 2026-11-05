@@ -1189,12 +1189,15 @@ rdofradio --soapy driver=plutosdr -r 2400000 --allow-tx --config example.json --
 - **HBlink4:** with an `hblink` network it's a peer, the board's peer state (`common/src/hbpeer.c`) under a POSIX
   UDP socket (`sdr/cli/rdofradio_net.c`). UDP only: `transport` sctp falls back to UDP with a warning.
 - **MQTT:** an `mqtt` network with `calls` carries the calls.
-- **Monitored channels:** every other frequency the SDR hears is a receiver channel (`rdof_plan_sdr`), all in the
-  rate's window, up to 16. With `identity: per_path` each is a peer of its own. The radio's card on the page lists
-  them.
+- **Channels:** the receiver's channels are the SDR's as the board resolves them (`rdof_plan_sdr`): its receiver's
+  frequencies, then the ones it hears for the unit (a transceiver's, a repeater's input), all in the rate's window,
+  up to 16. They're all alike: with `identity: per_path` each is a peer of its own, else what it hears goes up through
+  the unit's peer as its path's policy says; each publishes on the SDR's MQTT topics and shows on the SDR's card. The
+  unit hears on the channel at its frequency (`io_channel`), and its own topics and card carry that channel's calls.
+  A duplex repeater's output isn't a channel. `--monitor` adds `out` (the TX heard back) when no channel is on it.
 - **Simplex on every channel** (a transceiver on the SDR): it sends on every frequency the SDR `transmits` on and
   hears on any receiver channel (`io_channel`). The TX LO moves when a call's channel is past the modulator's reach
-  (0.4 of the rate, less half a channel), unkeyed. DMRD to a monitored channel's peer goes out there through the same
+  (0.4 of the rate, less half a channel), unkeyed. DMRD to any channel's peer goes out there through the same
   transceiver, one channel at a time. Our own transmissions heard back are dropped within 60 ms of the key-up
   (`echoes`). `"tx": false` on a frequency keeps every device off it.
 - **The clock:** with `ntp` servers it's netclock (`components/netclock`, `netclock_posix`) and the page's clock card
@@ -1229,7 +1232,7 @@ Run on the Pluto (2026-10-28) against a simulated radio on a pty: the split came
 half is a modem runs, up to 8 (`RDOF_ROLES_MAX`), each with its own radio. The first is the radio at `--split-tx`,
 or its device's `port.path`; the others need a `port.path` (and `baud`). Each split has its own receive-only SDR
 modem (`rdof_sdrsplits_t`, `sdrsplit.c`) on its input's channel, and each repeater registers with the router. Every
-split's output frequency is left out of the monitored channels; its input is a channel of the receiver and goes up
+split's output frequency is left out of the channels; its input is a channel of the receiver and goes up
 through that channel's sink. Bring-up runs every split at once, 15 s for all; one that fails stops the run.
 Host-tested (`sdrmodem_tests`: 8 simulated radios with different crystals on one receiver at 1.632 MS/s, each burst
 up on its own repeater and slot; `rdof_radiocfg_tests`: the file's units and ports). Not yet run with real radios.
@@ -1247,7 +1250,7 @@ is read by a thread.
 - `--rx-offset-hz`, `--tx-offset-hz`, `--rx-level`, `--tx-level`: the modem's settings; with `--config`, the modem
   device's `mmdvm` keys, and each frequency's `power` is its RF level.
 - **An SDR beside it** (DEVICE, optional), opened receive only: it hears the modem's RX frequency as a channel of its
-  own (`modem-rx`) and the monitored channels, with the spectrum, and carries the bench's line protocol. Bench DMR
+  own (`modem-rx`, when no channel is on it) and the settings' channels, with the spectrum, and carries the bench's line protocol. Bench DMR
   jobs transmit on the modem in simplex. `--split-tx` and the SDR's transmitter flags are refused.
 
 #### The bench's line protocol
@@ -1399,8 +1402,8 @@ With `--iio local:`, `--fpga-chz` or `--fpga-duc` loads it before anything else 
    `dmesg`) is an error and nothing is noted. `/tmp/rdof-fpga` notes what's in, so a restart loads nothing; a reboot
    brings the stock design back.
 
-With none for the board both options are off and the ARM channelizes: the monitored channels that don't fit its
-window are left out, in the settings' order (15 configured on the clone: 10 kept, at 1.296 MS/s).
+With none for the board both options are off and the ARM channelizes: the channels that don't fit its
+window are left out, in the settings' order, the unit's kept (15 configured on the clone: 10 kept, at 1.296 MS/s).
 
 `install.sh` writes the board's bitstream to `rdof/` on the SD card's boot partition (the one with `BOOT.bin`, which
 it never touches), only when it differs; the flash has no room for it. It then adds `--fpga-chz --fpga-duc` to

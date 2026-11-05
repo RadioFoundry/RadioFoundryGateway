@@ -129,7 +129,7 @@ typedef struct {
     uint32_t parrot_id, parrot_src, parrot_dst;
     uint32_t parrot_replayed, parrot_ignored, parrot_cut;
     /* a free-form counters block shown as "tool" on the page: up to 8 name / value pairs */
-    /* the channels it also monitors (monitor roles), receive only; the page lists them on the radio's card */
+    /* the SDR's channels (the settings'), each with its peer's state; the page lists them on the radio's card */
     int nchan;
     struct {
         char id[24];
