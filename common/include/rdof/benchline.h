@@ -181,6 +181,14 @@ typedef struct {
     long (*iq_filled)(void *ctx, uint64_t sc, long n);
     /* A capture is open: keep the history warm (optional). */
     void (*iq_warm)(void *ctx);
+    /* A channel's own I/Q, for a trigger where there's no wideband history (optional; iq_read NULL): a channelizer's
+     * output (an FPGA's), one output instant every fs / 48000 wideband samples. ch_open: keep freq_hz's channel from
+     * now on, seconds of it at most: a handle, or -1 no channel there (or no room). ch_read: its instants from
+     * wideband sample sc on, up to n, into out (I, Q, in the history's units: a cs8 sample over 127) with each one's
+     * wideband sample in at; how many (0: none yet). *oldest: the first kept; *next: the next to come. */
+    int (*ch_open)(void *ctx, double freq_hz, double seconds);
+    long (*ch_read)(void *ctx, int h, uint64_t sc, float *out, uint64_t *at, long n, uint64_t *oldest, uint64_t *next);
+    void (*ch_close)(void *ctx, int h);
     /* A measurement or a transmission is running (optional): called each tick while one is, so the platform holds
      * its frequency correction where it is (no chip move, no new estimate in the window) until they all end, a
      * frequency read over seconds showing no step that isn't the signal's. The platform bounds how long. */

@@ -787,6 +787,124 @@ static void test_trigger(void)
     rdof_bl_free(bl);
 }
 
+/* ── a trigger on a channel's own I/Q (an FPGA channelizer's): no wideband history ── */
+
+/* The channel source: one instant every 16 wideband samples (768 kS/s to 48 kS/s), from when it's opened */
+static struct {
+    int opened, closed;
+    double hz;
+    uint64_t sc;     /* the wideband sample count */
+    long n;          /* instants kept */
+    float iq[2 * 48000 * 4];
+    uint64_t at[48000 * 4];
+} fch;
+static int f_ch_open(void *ctx, double hz, double seconds)
+{
+    if (fabs(hz - 438.1125e6) > 100)
+        return -1;
+    fch.opened++, fch.hz = hz, fch.n = 0;
+    return 3;
+}
+static long f_ch_read(void *ctx, int h, uint64_t sc, float *out, uint64_t *at, long n, uint64_t *oldest,
+                      uint64_t *next)
+{
+    *oldest = fch.n ? fch.at[0] : fch.sc, *next = fch.sc;
+    long i = 0, k = 0;
+    while (i < fch.n && fch.at[i] < sc)
+        i++;
+    for (; k < n && i < fch.n; k++, i++)
+        out[2 * k] = fch.iq[2 * i], out[2 * k + 1] = fch.iq[2 * i + 1], at[k] = fch.at[i];
+    return k;
+}
+static void f_ch_close(void *ctx, int h) { fch.closed++; }
+static void ch_put(double ms, float amp)
+{
+    for (int i = 0; i < (int)(ms * 48 + 0.5); i++, fch.sc += 16) {
+        if (fch.opened > fch.closed && fch.n < 48000 * 4) {
+            const double ph = 2 * M_PI * 1000 * (double)fch.sc / 768000;
+            fch.iq[2 * fch.n] = noise() * 0.1f + amp * (float)cos(ph);
+            fch.iq[2 * fch.n + 1] = noise() * 0.1f + amp * (float)sin(ph);
+            fch.at[fch.n++] = fch.sc;
+        }
+    }
+}
+static size_t ch_run(rdof_bl_t *bl, int c, double *now, double ms, float amp, char *all, size_t total, size_t cap)
+{
+    for (double t = 0; t < ms; t += 10) {
+        ch_put(10, amp);
+        *now += 0.01;
+        rdof_bl_tick(bl, *now);
+        total += drain(bl, c, all + total, cap - total);
+    }
+    rdof_bl_tick(bl, *now);
+    total += drain(bl, c, all + total, cap - total);
+    all[total] = 0;
+    return total;
+}
+
+static void test_trigger_chan(void)
+{
+    rdof_bl_platform_t pl = PLAT;
+    pl.iq_read = NULL, pl.iq_filled = NULL;
+    pl.ch_open = f_ch_open, pl.ch_read = f_ch_read, pl.ch_close = f_ch_close;
+    rdof_bl_t *bl = rdof_bl_new(&pl);
+    double now = 2500;
+    static char all[1 << 20];
+    int c = ask(bl, "{\"op\":\"trigger\",\"freq\":438.1125,\"bw\":12500,\"pre_s\":0.05,\"post_s\":0.1,"
+                    "\"threshold_db\":10,\"min_ms\":5,\"floor_s\":0.2,\"timeout_s\":5,\"fmt\":\"cf32\"}", now);
+    size_t total = ch_run(bl, c, &now, 300, 0, all, 0, sizeof all);
+    CHECK(fch.opened == 1 && strstr(all, "{\"armed\":{\"floor_db\":") && !strstr(all, "\"error\""),
+          "the channel opened, armed from its own floor: %.300s", all);
+    total = ch_run(bl, c, &now, 300, 0.3f, all, total, sizeof all);
+    total = ch_run(bl, c, &now, 150, 0, all, total, sizeof all);
+    long samples = 0, next_idx = 0;
+    bool order = true;
+    char *p = all, *done = NULL;
+    while (p < all + total) {
+        char *e = memchr(p, '\n', (size_t)(all + total - p));
+        if (!e)
+            break;
+        *e = 0;
+        char b[32], sc[32];
+        if (field(p, "bytes", b, sizeof b) && field(p, "sc", sc, sizeof sc)) {
+            const long nb = atol(b);
+            order &= atol(sc) == next_idx;
+            samples += nb / 8, next_idx = atol(sc) + nb / 8;
+            p = e + 1 + nb;
+        } else {
+            if (strstr(p, "\"done\""))
+                done = p;
+            p = e + 1;
+        }
+    }
+    char v[32];
+    CHECK(done && field(done, "samples", v, sizeof v) && atol(v) == samples && labs(samples - 7200) < 100 && order,
+          "pre_s, the signal, post_s from the channel, in order: %ld (%s)", samples, done ? done : "(none)");
+    CHECK(done && field(done, "signal_start_sample", v, sizeof v) && labs(atol(v) - 2400) < 60, "the rise 50 ms in: %s",
+          v);
+    CHECK(done && field(done, "snr_db", v, sizeof v) && atof(v) > 15, "the level: %s", done ? done : "(none)");
+    rdof_bl_tick(bl, now);
+    rdof_bl_closed(bl, c, now);
+    CHECK(fch.closed == 1, "the channel closed with the trigger: %d", fch.closed);
+    /* not a channel; and track needs the wideband history */
+    c = ask(bl, "{\"op\":\"trigger\",\"freq\":438.1625,\"floor_db\":-50}", now);
+    drain(bl, c, all, sizeof all);
+    CHECK(strstr(all, "\"code\":\"unsupported\"") && strstr(all, "isn't one of the receiver's channels"),
+          "not a channel: %s", all);
+    rdof_bl_closed(bl, c, now);
+    c = ask(bl, "{\"op\":\"track\",\"freq\":438.1125}", now);
+    drain(bl, c, all, sizeof all);
+    CHECK(strstr(all, "\"code\":\"unsupported\"") && strstr(all, "track needs the wideband history"), "track: %s",
+          all);
+    rdof_bl_closed(bl, c, now);
+    c = ask(bl, "{\"op\":\"capture\",\"freq\":438.1125,\"seconds\":1}", now);
+    drain(bl, c, all, sizeof all);
+    CHECK(strstr(all, "\"code\":\"unsupported\""), "capture: %s", all);
+    rdof_bl_closed(bl, c, now);
+    CHECK(fch.opened == 1 && fch.closed == 1, "no channel left open: %d %d", fch.opened, fch.closed);
+    rdof_bl_free(bl);
+}
+
 /* ── the crystal: a trigger tunes where a carrier truly on its frequency shows ── */
 
 static void test_xtal(void)
@@ -2336,6 +2454,7 @@ int main(int argc, char **argv)
         return serve(atoi(argv[2]), atof(argv[3]));
     test_ops();
     test_trigger();
+    test_trigger_chan();
     test_xtal();
     test_track();
     test_filler();

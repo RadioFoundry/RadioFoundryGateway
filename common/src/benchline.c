@@ -79,6 +79,9 @@ typedef struct {
 
 typedef struct {
     int d, ntaps;             /* decimation, filter length (odd) */
+    int chan;                 /* ch_open's handle: the channel's own I/Q in place of the history's, -1 not */
+    float *cin;               /* a read of it, [n][2], and each instant's wideband sample */
+    uint64_t *cat;
     float *taps;
     float *dl;                /* the delay line, [2 * ntaps][2]: each sample twice, so a window is contiguous */
     float *y;                 /* a chunk's outputs, [n][2] */
@@ -430,9 +433,28 @@ rdof_bl_t *rdof_bl_new(const rdof_bl_platform_t *p)
     return bl;
 }
 
+static void trig_free(trig_t *t);
+/* A trigger's end: its channel closed (ch_open's), then freed */
+static void trig_end(rdof_bl_t *bl, trig_t *t)
+{
+    if (t && t->chan >= 0)
+        bl->p.ch_close(bl->p.ctx, t->chan);
+    trig_free(t);
+}
+/* The trigger's source's oldest sample and next one: the history's, or its channel's */
+static void trig_span(rdof_bl_t *bl, const trig_t *t, uint64_t *oldest, uint64_t *next)
+{
+    int8_t probe[2];
+    if (t->chan >= 0)
+        bl->p.ch_read(bl->p.ctx, t->chan, UINT64_MAX, NULL, NULL, 0, oldest, next);
+    else
+        bl->p.iq_read(bl->p.ctx, UINT64_MAX, probe, 0, oldest, next);
+}
 static void trig_free(trig_t *t)
 {
     if (t) {
+        free(t->cin);
+        free(t->cat);
         free(t->taps);
         free(t->dl);
         free(t->y);
@@ -451,7 +473,7 @@ void rdof_bl_free(rdof_bl_t *bl)
     for (int i = 0; i < RDOF_BL_CONNS; i++) {
         free(bl->c[i].out);
         free(bl->c[i].line);
-        trig_free(bl->c[i].trig);
+        trig_end(bl, bl->c[i].trig);
     }
     free(bl->strbuf);
     pthread_mutex_destroy(&bl->mu);
@@ -572,7 +594,7 @@ void rdof_bl_closed(rdof_bl_t *bl, int ci, double now)
     if (c->op == OP_RX)
         bl->n_iq--;
     sig_end(bl, c);
-    trig_free(c->trig);
+    trig_end(bl, c->trig);
     c->trig = NULL;
     c->state = C_FREE;
     c->op = OP_NONE;
@@ -1212,8 +1234,12 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now, bool trac
 {
     if (!req_session(bl, c, root, false))
         return;
-    if (!bl->p.iq_read) {
-        fail(bl, c, "unsupported", "this bench keeps no I/Q");
+    /* no wideband history: a trigger on a channel's own I/Q (an FPGA channelizer's), not a track (its carrier is
+       where the channelizer's NCO, moved by the receiver's AFC, put it) */
+    const bool chan = !bl->p.iq_read && bl->p.ch_open;
+    if (!bl->p.iq_read && !(chan && !track)) {
+        fail(bl, c, "unsupported", chan ? "track needs the wideband history: this bench keeps its channels' I/Q only"
+                                        : "this bench keeps no I/Q");
         return;
     }
     rdof_bl_window_t w;
@@ -1265,7 +1291,12 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now, bool trac
     trig_t *t = calloc(1, sizeof *t);
     if (t) {
         t->d = d;
-        t->ntaps = 8 * d + 1;
+        t->chan = -1;
+        t->ntaps = chan ? 1 : 8 * d + 1; /* a channel's I/Q is filtered already */
+        if (chan) {
+            t->cin = RDOF_BL_MALLOC(sizeof(float) * 2 * (size_t)(RDOF_BL_IQ_CHUNK / d + 2));
+            t->cat = RDOF_BL_MALLOC(sizeof(uint64_t) * (size_t)(RDOF_BL_IQ_CHUNK / d + 2));
+        }
         /* internal RAM (under 1 KB at a W12's rate): the filter reads them every output, PSRAM too slow for it */
         t->taps = malloc(sizeof(float) * (size_t)t->ntaps);
         t->dl = malloc(sizeof(float) * 4 * (size_t)t->ntaps);
@@ -1285,9 +1316,17 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now, bool trac
     if (t && t->ih)
         memset(t->ih, 0, sizeof(uint32_t) * TRACK_BINS);
     if (!t || !t->taps || !t->dl || !t->y || (track && (!t->bf || !t->ih || !t->lines || !t->snap)) ||
+        (chan && (!t->cin || !t->cat)) ||
         (!track && !big_out(c, whole < RDOF_BL_OUT_TRIG ? (size_t)whole : RDOF_BL_OUT_TRIG))) {
         trig_free(t);
         fail(bl, c, "unavailable", "no memory for a trigger");
+        return;
+    }
+    /* the pre-roll and the floor's learning, kept from now (twice for a reader behind) */
+    if (chan && (t->chan = bl->p.ch_open(bl->p.ctx, mhz * 1e6, 2 * (pre + floor_s) + 1)) < 0) {
+        trig_free(t);
+        fail(bl, c, "unsupported", "%.4f MHz isn't one of the receiver's channels: this bench keeps their I/Q only",
+             mhz);
         return;
     }
     /* the low-pass: a Hamming-windowed sinc, cut off at bw / 2, unity gain */
@@ -1327,10 +1366,9 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now, bool trac
     bl->n_iq++;
     if (bl->p.iq_warm)
         bl->p.iq_warm(bl->p.ctx);
-    /* the floor from the history when there is some (a history kept only while warm has none yet) */
+    /* the floor from the history when there is some (a history kept only while warm, or a channel's, has none yet) */
     uint64_t oldest = 0, next = 0;
-    int8_t probe[2];
-    bl->p.iq_read(bl->p.ctx, UINT64_MAX, probe, 0, &oldest, &next);
+    trig_span(bl, t, &oldest, &next);
     uint64_t back = t->have_floor ? 0 : (uint64_t)(floor_s * w.fs) + (uint64_t)t->ntaps;
     if (back > next - oldest)
         back = next - oldest;
@@ -3411,8 +3449,7 @@ static bool trig_block(rdof_bl_t *bl, conn_t *c, double lin, const rdof_bl_windo
     t->trig_sc = t->run_sc;
     t->level_db = 10 * log10(t->run_p / t->run + 1e-30);
     uint64_t oldest = 0, next = 0;
-    int8_t probe[2];
-    bl->p.iq_read(bl->p.ctx, UINT64_MAX, probe, 0, &oldest, &next);
+    trig_span(bl, t, &oldest, &next);
     const uint64_t pre = (uint64_t)(t->pre_s * w->fs), lo = oldest + (uint64_t)t->ntaps;
     t->out_sc0 = t->trig_sc > lo + pre ? t->trig_sc - pre : lo < t->trig_sc ? lo : t->trig_sc;
     t->end_sc = t->trig_sc + (uint64_t)(t->post_s * w->fs);
@@ -3637,6 +3674,65 @@ static void track_snap(rdof_bl_t *bl, trig_t *t, const rdof_bl_window_t *w)
     t->snap[t->nsnap++] = (struct track_snap){from, next, *w};
 }
 
+/* A chunk's outputs to the client, from the capture's sample idx0 on */
+static void trig_send(conn_t *c, trig_t *t, int nout, long idx0)
+{
+    size_t nb = (size_t)nout * 8;
+    if (t->cs16) {
+        int16_t *o = (int16_t *)t->y;
+        for (int k = 0; k < 2 * nout; k++) {
+            const float v = t->y[k] * 32767.0f;
+            o[k] = (int16_t)(v > 32767.0f ? 32767 : v < -32768.0f ? -32768 : lrintf(v));
+        }
+        nb = (size_t)nout * 4;
+    }
+    char hdr[160];
+    const int hn = snprintf(hdr, sizeof hdr, "{\"iq\":{\"seq\":%lu,\"n\":%d,\"sc\":%ld,\"flags\":0},\"bytes\":%zu}\n",
+                            (unsigned long)c->iseq++, nout, idx0, nb);
+    put_bytes(c, hdr, (size_t)hn);
+    put_bytes(c, t->y, nb);
+    t->sent += nout;
+}
+
+/* A trigger on its channel's own I/Q (ch_open): each instant one of its outputs, at the instant's wideband sample.
+ * Returns how many wideband samples' worth it took, 0 none yet, -1 to go round again (restarted). */
+static long trig_chan_chunk(rdof_bl_t *bl, conn_t *c, trig_t *t, const rdof_bl_window_t *w)
+{
+    const uint64_t d = (uint64_t)t->d;
+    uint64_t oldest = 0, next = 0;
+    const long got = bl->p.ch_read(bl->p.ctx, t->chan, t->sc, t->cin, t->cat, RDOF_BL_IQ_CHUNK / t->d + 2, &oldest,
+                                   &next);
+    if (got <= 0 && t->sc < oldest) { /* overwritten before it went: on from the oldest, the outputs between lost */
+        if (t->fired && oldest > t->next_out)
+            t->gaps += (long)((oldest - t->next_out + d - 1) / d);
+        trig_restart(t, oldest);
+        return -1;
+    }
+    if (got <= 0)
+        return 0;
+    const long idx0 = t->fired ? (long)((t->cat[0] - t->out_sc0) / d) : 0;
+    int nout = 0;
+    for (long i = 0; i < got; i++) {
+        const uint64_t center = t->cat[i];
+        const float yi = t->cin[2 * i], yq = t->cin[2 * i + 1];
+        t->sc = center + 1, t->next_out = center + d;
+        if (t->fired && center < t->end_sc)
+            t->y[2 * nout] = yi, t->y[2 * nout + 1] = yq, nout++;
+        if (!t->bn++)
+            t->block_sc = center;
+        t->bp += yi * yi + yq * yq;
+        if (t->bn == t->bsize) {
+            const double lin = t->bp / t->bsize;
+            t->bn = 0, t->bp = 0;
+            if (trig_block(bl, c, lin, w))
+                return -1;
+        }
+    }
+    if (nout)
+        trig_send(c, t, nout, idx0);
+    return got * (long)d;
+}
+
 static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
 {
     trig_t *t = c->trig;
@@ -3653,8 +3749,7 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
     while (budget > 0) {
         if (t->fired && t->next_out - g >= t->end_sc) {
             uint64_t oldest = 0, next = 0;
-            int8_t probe[2];
-            bl->p.iq_read(bl->p.ctx, UINT64_MAX, probe, 0, &oldest, &next);
+            trig_span(bl, t, &oldest, &next);
             if (t->track) {
                 track_done(bl, c, &w, trig_utc(bl, t->out_sc0, now, next, w.fs),
                            trig_utc(bl, t->trig_sc, now, next, w.fs));
@@ -3691,6 +3786,14 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
         const size_t frame = t->track ? 1024 : (size_t)(RDOF_BL_IQ_CHUNK / t->d + 2) * 8 + 160;
         if (t->fired && room(c) < frame)
             return; /* the client is behind: later */
+        if (t->chan >= 0) {
+            const long took = trig_chan_chunk(bl, c, t, &w);
+            if (!took)
+                return; /* not written yet */
+            if (took > 0)
+                budget -= took;
+            continue;
+        }
         uint64_t oldest = 0, next = 0;
         const long got = bl->p.iq_read(bl->p.ctx, t->sc, bl->iq, RDOF_BL_IQ_CHUNK, &oldest, &next);
         if (got <= 0 && t->sc < oldest) { /* overwritten before it went: on from the oldest, the outputs between lost */
@@ -3767,23 +3870,8 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
         if (restarted)
             continue;
         t->sc += (uint64_t)got;
-        if (!nout)
-            continue;
-        size_t nb = (size_t)nout * 8;
-        if (t->cs16) {
-            int16_t *o = (int16_t *)t->y;
-            for (int k = 0; k < 2 * nout; k++) {
-                const float v = t->y[k] * 32767.0f;
-                o[k] = (int16_t)(v > 32767.0f ? 32767 : v < -32768.0f ? -32768 : lrintf(v));
-            }
-            nb = (size_t)nout * 4;
-        }
-        char hdr[160];
-        const int hn = snprintf(hdr, sizeof hdr, "{\"iq\":{\"seq\":%lu,\"n\":%d,\"sc\":%ld,\"flags\":0},\"bytes\":%zu}\n",
-                                (unsigned long)c->iseq++, nout, idx0, nb);
-        put_bytes(c, hdr, (size_t)hn);
-        put_bytes(c, t->y, nb);
-        t->sent += nout;
+        if (nout)
+            trig_send(c, t, nout, idx0);
     }
 }
 

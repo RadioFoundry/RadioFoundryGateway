@@ -167,6 +167,7 @@ typedef struct rdof_sdrmodem {
     long skip_from, skip_to;    /* the last jump: slots skip_from to skip_to - 1 never went out */
     uint32_t slc[4], slc_next[4]; /* duplex: the short LC's CACH payloads on air, and the next */
     int64_t sent48[8];          /* 48 kS/s positions the receiver would report for bursts sent (for the mute) */
+    uint8_t sent_b[8][RDOF_BURST_BYTES]; /* and the bursts */
     int nsent;
     /* receive */
     int64_t now48;              /* the latest position seen */
@@ -268,6 +269,12 @@ bool rdof_sdrmodem_transmitting(const rdof_sdrmodem_t *m);
 /* The receiver's 48 kS/s position p: inside a span this modem keyed (half duplex: what the receiver heard there
  * is its own signal or nothing, so AFC and ppm learning skip it). */
 bool rdof_sdrmodem_muted_at(const rdof_sdrmodem_t *m, int64_t p);
+/* A burst b heard at 48 kS/s position p, on any channel, against those this modem sent within within48 of there
+ * (the front end's delay past what's assumed: the Pluto's 53 ms): the bits it differs from the nearest by, -1 none
+ * sent there. Half duplex on a wideband receiver the transmitter's spurs land on other channels, where only the
+ * content tells: ours is within RDOF_SDRMODEM_SENT_BITS (two others differ by about 100 of the 264). */
+#define RDOF_SDRMODEM_SENT_BITS 24
+int rdof_sdrmodem_sent_bits(const rdof_sdrmodem_t *m, int64_t p, int64_t within48, const uint8_t *b);
 /* Split TX half: the AT bits on air now (bit 0 TS1, bit 1 TS2); otherwise rdof_sdrmodem_busy. */
 int rdof_sdrmodem_at(const rdof_sdrmodem_t *m);
 /* Split RX half: the slot (1, 2) a burst starting at 48 kS/s position pos48 is labeled with, 0 without a valid epoch

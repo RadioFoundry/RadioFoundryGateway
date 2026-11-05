@@ -116,6 +116,7 @@
 #include "rdof/layer2.h"
 #include "rdof/modem.h"
 #include "rdof/parrot.h"
+#include "rdof/pdu.h"
 #include "rdof/repeater.h"
 #include "rdof/siteroute.h"
 #include "rdof/split.h"
@@ -547,7 +548,8 @@ static double xtal_base_hz(int c)
  * starts it with the receiver's channels, reads its frames from the receive DMA (rdofradio_iio.c's words) and gives
  * them to the receiver (rdof_sdr_rx_channels_in); the AFC's corrections go to its NCOs. A frame is an output
  * instant, step = R D wideband samples: the loop counts in those, so the transmitter and the clocks keep their
- * wideband timeline. There is no wideband I/Q: no spectrum, and the bench's captures are filler. (below, fx_*) */
+ * wideband timeline. There is no wideband I/Q: no spectrum, and none of the bench's I/Q ops (capture, trigger, track,
+ * rx). (below, fx_*) */
 #define FX_ADDR 0x7C480000ul /* the block's registers in the Pluto design */
 #define FX_MAX 4096          /* channel samples a receiver call */
 #define FX_GAP 48000         /* most lost output instants made up with zeros at once (1 s) */
@@ -1649,6 +1651,104 @@ static long bl_iq_filled(void *ctx, uint64_t sc, long n)
     return k;
 }
 
+/* --fpga-chz: no wideband history, but a trigger's channel kept from when it opens (its pre-roll and its floor's
+ * learning): the block's output instants, each at its wideband sample, in the history's units (a cs8 sample over
+ * 127: the ring's scale on the receiver's) */
+#define BLC_MAX 4    /* channels kept at once */
+#define BLC_MAX_S 6  /* seconds of each at most */
+static struct blc {
+    int c;           /* the receiver's channel, -1 free */
+    long cap;
+    uint64_t n;      /* instants written */
+    float *iq;       /* [cap][2] */
+    uint64_t *at;
+} BLC[BLC_MAX] = {{-1}, {-1}, {-1}, {-1}};
+
+static int bl_ch_open(void *ctx, double hz, double seconds)
+{
+    int c = -1;
+    for (int k = 0; k < R.rx.C && c < 0; k++)
+        if (fabs(CH[k].freq_hz - hz) <= 100)
+            c = k;
+    if (c < 0 || !FX.on)
+        return -1;
+    seconds = seconds < 1 ? 1 : seconds > BLC_MAX_S ? BLC_MAX_S : seconds;
+    const long cap = (long)(seconds * R.rate / FX.step) + 1;
+    pthread_mutex_lock(&BL.mu);
+    int h = -1;
+    for (int k = 0; k < BLC_MAX && h < 0; k++)
+        if (BLC[k].c < 0)
+            h = k;
+    if (h >= 0) {
+        struct blc *b = &BLC[h];
+        b->iq = malloc(sizeof(float) * 2 * (size_t)cap);
+        b->at = malloc(sizeof(uint64_t) * (size_t)cap);
+        if (b->iq && b->at)
+            b->c = c, b->cap = cap, b->n = 0;
+        else
+            free(b->iq), free(b->at), b->iq = NULL, b->at = NULL, h = -1;
+    }
+    pthread_mutex_unlock(&BL.mu);
+    return h;
+}
+
+static long bl_ch_read(void *ctx, int h, uint64_t sc, float *out, uint64_t *at, long n, uint64_t *oldest,
+                       uint64_t *next)
+{
+    pthread_mutex_lock(&BL.mu);
+    const struct blc *b = &BLC[h];
+    const uint64_t first = b->n > (uint64_t)b->cap ? b->n - (uint64_t)b->cap : 0;
+    *next = BL.ring.w;
+    *oldest = first < b->n ? b->at[first % (uint64_t)b->cap] : BL.ring.w;
+    /* the first instant at or after sc: instants run in order */
+    uint64_t lo = first, hi = b->n;
+    while (lo < hi) {
+        const uint64_t mid = lo + (hi - lo) / 2;
+        if (b->at[mid % (uint64_t)b->cap] < sc)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    long k = 0;
+    for (; k < n && lo + (uint64_t)k < b->n; k++) {
+        const uint64_t i = (lo + (uint64_t)k) % (uint64_t)b->cap;
+        out[2 * k] = b->iq[2 * i], out[2 * k + 1] = b->iq[2 * i + 1];
+        at[k] = b->at[i];
+    }
+    pthread_mutex_unlock(&BL.mu);
+    return k;
+}
+
+static void bl_ch_close(void *ctx, int h)
+{
+    pthread_mutex_lock(&BL.mu);
+    struct blc *b = &BLC[h];
+    free(b->iq), free(b->at);
+    b->iq = NULL, b->at = NULL, b->c = -1;
+    pthread_mutex_unlock(&BL.mu);
+}
+
+/* This turn's output instants (k of them, from FX.turn) into the channels kept, before bench_feed counts them */
+static void bench_chan_feed(int k)
+{
+    if (!BL.bl)
+        return;
+    const float g = RDOF_CHZFX_OUT_SCALE * BL.ring.scale;
+    pthread_mutex_lock(&BL.mu);
+    for (int h = 0; h < BLC_MAX; h++) {
+        struct blc *b = &BLC[h];
+        if (b->c < 0)
+            continue;
+        for (int i = 0; i < k; i++, b->n++) {
+            const rdof_iq16_t y = FX.y[(size_t)(FX.turn + i) * FX.C + b->c];
+            const uint64_t j = b->n % (uint64_t)b->cap;
+            b->iq[2 * j] = y.i * g, b->iq[2 * j + 1] = y.q * g;
+            b->at[j] = BL.ring.w + (uint64_t)i * FX.step;
+        }
+    }
+    pthread_mutex_unlock(&BL.mu);
+}
+
 static double bl_utc(void *ctx) { return wall_s(); }
 
 static double bl_sc_utc(void *ctx, uint64_t sc)
@@ -2355,6 +2455,10 @@ static void bench_start(void)
     rdof_bl_platform_t p = pf;
     if (R.mmdvm) /* the modem transmits DMR only: no signal modes */
         p.sig_open = NULL, p.sig_state = NULL, p.sig_close = NULL;
+    if (FX.on) /* no wideband I/Q: capture, track and rx refuse ("keeps no I/Q") rather than wait on filler, a trigger
+                  takes its channel's own (bl_ch_*); the ring stays, for the sample count the bursts' times come from */
+        p.iq_read = NULL, p.iq_filled = NULL, p.iq_warm = NULL, p.ch_open = bl_ch_open, p.ch_read = bl_ch_read,
+        p.ch_close = bl_ch_close;
     BL.bl = rdof_bl_new(&p);
     char err[160];
     BL.net = BL.bl ? rdof_bnet_start(BL.bl, bench_addr, bench_port, now_s, 0, err, sizeof err) : NULL;
@@ -2408,14 +2512,23 @@ static void on_burst(void *ctx, int c, const rdof_sdr_burst_t *b, double t)
 
 static bool muted(void *ctx, int64_t p) { return rdof_sdrmodem_muted_at(&R.m, p); }
 /* Our own transmission heard back (half duplex): on the channel it went out on, or its image, within its span on
- * the air (60 ms either side: a burst's length and the loop's delay). Not passed on: a monitored channel's peer
- * would send the network's call back to it. The bench's line protocol still gets it: it watches the air. */
+ * the air (60 ms either side: a burst's length and the loop's delay); on any other channel, a burst we sent there
+ * (the transmitter's spurs: on the Pluto, 100 kHz either side). Not passed on: a monitored channel's
+ * peer would send the network's call back to it. The bench's line protocol still gets it: it watches the air. */
 static bool echo_drop(void *ctx, int c, const rdof_sdr_burst_t *b)
 {
-    if (R.full || (c != R.echo_ch && c != R.echo_img) || c < 0)
+    if (R.full || c < 0)
         return false;
     if (b->position <= R.echo_from - 2880 || b->position >= R.echo_to + 2880)
         return false;
+    if (c != R.echo_ch && c != R.echo_img) {
+        const int d = rdof_sdrmodem_sent_bits(&R.m, b->position, 5760, b->b.burst);
+        if (d < 0 || d > RDOF_SDRMODEM_SENT_BITS) {
+            if (b->b.dt != RDOF_DT_IDLE)
+                say("%s: heard while we sent, not ours (%d bits from the nearest sent)\n", R.rx.trackers[c].channel, d);
+            return false;
+        }
+    }
     bench_burst(c, b);
     return true;
 }
@@ -3500,6 +3613,8 @@ static void rx_turn(void)
         if (!FX.on)
             web_spectrum(in, n);
 #endif
+        if (FX.on)
+            bench_chan_feed(n / FX.step);
         bench_feed(in, n, t - t_in >= FRESH_S, FX.on);
         const double t3 = now_s();
         if (!FX.on)
@@ -5052,6 +5167,8 @@ int main(int argc, char **argv)
         if (!FX.on)
             web_spectrum(in, n);
 #endif
+        if (FX.on)
+            bench_chan_feed(n / FX.step);
         bench_feed(in, n, dt_read >= FRESH_S, FX.on); /* --fpga-chz: filler, the receiver had its turn in the read */
         const double t3 = now_s();
         if (!FX.on)

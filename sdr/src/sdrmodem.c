@@ -73,8 +73,9 @@ static int64_t heard_at(const rdof_sdrmodem_t *m, int64_t s)
     return s * 48000 / (int64_t)m->tx_fs + RX_DELAY_48K(m) + m->tx_late48;
 }
 
-static void remember(rdof_sdrmodem_t *m, int64_t start)
+static void remember(rdof_sdrmodem_t *m, int64_t start, const uint8_t *b)
 {
+    memcpy(m->sent_b[m->nsent % 8], b, RDOF_BURST_BYTES);
     m->sent48[m->nsent++ % 8] = heard_at(m, start);
 }
 
@@ -86,6 +87,21 @@ bool rdof_sdrmodem_muted_at(const rdof_sdrmodem_t *m, int64_t p)
         if (p > m->sent48[i] - MUTE_48K && p < m->sent48[i] + MUTE_48K)
             return true;
     return false;
+}
+
+int rdof_sdrmodem_sent_bits(const rdof_sdrmodem_t *m, int64_t p, int64_t within48, const uint8_t *b)
+{
+    int best = -1;
+    for (int i = 0; i < 8 && i < m->nsent; i++) {
+        if (p <= m->sent48[i] - within48 || p >= m->sent48[i] + within48)
+            continue;
+        int d = 0;
+        for (int k = 0; k < RDOF_BURST_BYTES; k++)
+            d += __builtin_popcount((unsigned)(m->sent_b[i][k] ^ b[k]));
+        if (best < 0 || d < best)
+            best = d;
+    }
+    return best;
 }
 
 int rdof_sdrmodem_init(rdof_sdrmodem_t *m, const rdof_sdrmodem_io_t *io, uint32_t rx_fs, uint32_t tx_fs, bool can_full)
@@ -1021,13 +1037,14 @@ static void queue_simplex(rdof_sdrmodem_t *m, int64_t pos, int n)
         int64_t start = m->next_start > pos + lead ? m->next_start : pos + lead;
         if (start > pos + n + two)
             break; /* not due yet */
-        if (rdof_mod_queue_burst(&m->mod, start, m->q[1][m->qh[1]].b, NULL, RDOF_MOD_RAMPS) != 0)
+        const uint8_t *b = m->q[1][m->qh[1]].b;
+        if (rdof_mod_queue_burst(&m->mod, start, b, NULL, RDOF_MOD_RAMPS) != 0)
             break; /* the modulator's queue is full */
         m->qh[1] = (m->qh[1] + 1) % RDOF_SDRMODEM_QUEUE;
         m->qn[1]--;
         m->next_start = start + two;
         m->tx_bursts++;
-        remember(m, start);
+        remember(m, start, b);
     }
 }
 
@@ -1060,7 +1077,8 @@ static void queue_dcdm(rdof_sdrmodem_t *m, int64_t pos, int n)
         }
         if (best < 0 || at > pos + n + slot)
             break; /* nothing queued, or not due yet */
-        if (rdof_mod_queue_burst(&m->mod, at, m->q[best][m->qh[best]].b, NULL, RDOF_MOD_RAMPS) != 0)
+        const uint8_t *b = m->q[best][m->qh[best]].b;
+        if (rdof_mod_queue_burst(&m->mod, at, b, NULL, RDOF_MOD_RAMPS) != 0)
             break; /* the modulator's queue is full */
         m->qh[best] = (m->qh[best] + 1) % RDOF_SDRMODEM_QUEUE;
         m->qn[best]--;
@@ -1069,7 +1087,7 @@ static void queue_dcdm(rdof_sdrmodem_t *m, int64_t pos, int n)
         if (at > m->dc_seen)
             m->dc_seen = at;
         m->tx_bursts++;
-        remember(m, at);
+        remember(m, at, b);
     }
 }
 

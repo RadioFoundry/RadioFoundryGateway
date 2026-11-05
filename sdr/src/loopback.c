@@ -197,6 +197,15 @@ int rdof_sdrmodem_loopback(bool full, char *report, size_t cap)
         if (find((const uint8_t(*)[RDOF_BURST_BYTES])l->host, l->nhost, theirs[k]) < 0)
             FAIL("the other station's burst %d didn't reach the host; ", k);
     }
+    /* half duplex: ours heard back are ours by their content too (as a spur on another channel is), the other
+       station's not */
+    for (int c = 0; !full && c < 2; c++)
+        for (int i = 0; i < l->nheard[c]; i++) {
+            const bool mine = find(ours, NB, l->heard[c][i]) >= 0;
+            const int d = rdof_sdrmodem_sent_bits(&l->modem, l->heard_pos[c][i], 720, l->heard[c][i]);
+            if ((d >= 0 && d <= RDOF_SDRMODEM_SENT_BITS) != mine)
+                FAIL("channel %d's burst %d %s like ours; ", c, i, mine ? "not" : "taken");
+        }
     if (l->modem.tx_bursts != NB)
         FAIL("%u bursts sent, want %d; ", (unsigned)l->modem.tx_bursts, NB);
     if (!full && (l->modem.muted != NB || l->nhost != NB))
