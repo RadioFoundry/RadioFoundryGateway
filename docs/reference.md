@@ -1191,8 +1191,8 @@ rdofradio --soapy driver=plutosdr -r 2400000 --allow-tx --config example.json --
 - **MQTT:** an `mqtt` network with `calls` carries the calls.
 - **Channels:** the receiver's channels are the SDR's as the board resolves them (`rdof_plan_sdr`): its receiver's
   frequencies, then the ones it hears for the unit (a transceiver's, a repeater's input), all in the rate's window,
-  up to 16. They're all alike: with `identity: per_path` each is a peer of its own, else what it hears goes up through
-  the unit's peer as its path's policy says; each publishes on the SDR's MQTT topics and shows on the SDR's card. The
+  up to 16. They're all alike: with `identity: per_path` each is a peer of its own (one with the unit's peer id is the
+  unit's peer, not a second login), else what it hears goes up through the unit's peer as its path's policy says; each publishes on the SDR's MQTT topics and shows on the SDR's card. The
   unit hears on the channel at its frequency (`io_channel`), and its own topics and card carry that channel's calls.
   A duplex repeater's output isn't a channel. `--monitor` adds `out` (the TX heard back) when no channel is on it.
 - **Simplex on every channel** (a transceiver on the SDR): it sends on every frequency the SDR `transmits` on and

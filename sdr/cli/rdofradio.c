@@ -1093,7 +1093,8 @@ struct chan {
     int c; /* the receiver's channel */
     const rdof_sdr_cfg_channel_t *ch;
     bool peer;  /* its own peer (identity per_path) */
-    bool up;    /* its sink sends through the unit's peer (one identity) */
+    bool up;    /* its sink sends through the unit's peer (one identity, or the unit's own peer id) */
+    bool unit;  /* its peer id is the unit's: the unit's peer is its peer */
     rdofnet_peer_t net;
     rdof_hb_sink_t sink;
     uint8_t sid[4]; /* the last stream the master sent it */
@@ -1110,6 +1111,10 @@ static const chan_t *chan_at(int c)
             return &CHN[i];
     return NULL;
 }
+
+/* Whether it shows a peer on the page and in the status, and whether that peer is up */
+static bool chan_has_peer(const chan_t *m) { return m->peer || m->unit; }
+static bool chan_peer_up(const chan_t *m) { return m->peer ? m->net.peer.up : m->unit && net_on && NET.peer.up; }
 
 static void chan_send(void *ctx, const uint8_t *d, size_t n) { rdofnet_peer_send(&((chan_t *)ctx)->net, d, n); }
 /* Whether the transceiver may go to a channel: one of its channels (the roamer's). */
@@ -1160,7 +1165,10 @@ static void chan_start(void)
     const rdof_location_t *loc = rcfg.cfg.has_location ? &rcfg.cfg.location : NULL;
     for (int i = 0; i < nchn; i++) {
         chan_t *m = &CHN[i];
-        if (!m->ch->hblink && net_on) {
+        /* the unit's peer id (per_path gives the unit its frequency's): a second login with it would take the
+           unit's away at the master, so it's the same peer */
+        m->unit = net_on && m->ch->hblink && m->ch->peer_id >= 0 && (uint32_t)m->ch->peer_id == rcfg.peer_id;
+        if (net_on && (!m->ch->hblink || m->unit)) {
             /* one identity: what it hears goes up through the unit's peer, as its policy says */
             rdof_hb_sink_init(&m->sink, rcfg.peer_id);
             m->sink.send = sink_send;
@@ -1379,8 +1387,8 @@ static void mq_sdr_publish_status(void)
     int nh = 0;
     for (int i = 0; i < nchn; i++) {
         names[CHN[i].c] = CHN[i].ch->name[0] ? CHN[i].ch->name : NULL;
-        if (CHN[i].peer)
-            ids[nh] = CHN[i].ch->id, up[nh++] = CHN[i].net.peer.up;
+        if (chan_has_peer(&CHN[i]))
+            ids[nh] = CHN[i].ch->id, up[nh++] = chan_peer_up(&CHN[i]);
     }
     rdof_sdr_status_t st = {.name = rcfg.sdr_name, .at = wall_s(), .cpu_load = NAN, .overflows = mq_overflows,
                             .names = names, .n_hblink = nh, .hblink_ids = ids, .hblink_up = up};
@@ -2735,9 +2743,9 @@ static void web_sdr(rdof_hostweb_sdr_t *d)
     d->mqtt_dropped = rdofmq_dropped(MQ_SDR);
 #endif
     for (int i = 0; i < nchn; i++)
-        if (CHN[i].peer) {
+        if (chan_has_peer(&CHN[i])) {
             d->hblink_peers++;
-            d->hblink_up += CHN[i].net.peer.up;
+            d->hblink_up += chan_peer_up(&CHN[i]);
         }
     for (int c = 0; c < R.rx.C && d->nchan < 16; c++) {
         const char *id = R.rx.trackers[c].channel, *name = "";
@@ -2879,8 +2887,8 @@ static void web_publish(double rx, double tx, int cc)
         w.chan[w.nchan].freq = (uint32_t)llround(m->ch->freq);
         w.chan[w.nchan].bursts = R.rx.bursts[m->c];
         w.chan[w.nchan].rssi = r == INT32_MIN ? 0 : r;
-        w.chan[w.nchan].peer = m->peer;
-        w.chan[w.nchan++].up = m->peer && m->net.peer.up;
+        w.chan[w.nchan].peer = chan_has_peer(m);
+        w.chan[w.nchan++].up = chan_peer_up(m);
     }
     w.nextra = R.split || R.mmdvm ? 0 : 2; /* the TX half's timing is the radio's own, and the modem's */
     snprintf(w.extra[0].name, sizeof w.extra[0].name, "tx late (us)");

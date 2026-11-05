@@ -48,9 +48,10 @@ void rdof_spectrum_set_ffts(rdof_spectrum_t *s, int k);
 bool rdof_spectrum_feed(rdof_spectrum_t *s, const rdof_cf_t *iq, int len, uint8_t *row);
 /* Channels' rows laid into a wide one (an FPGA channelizer's channels, no wideband I/Q): nch rows of cn bins over
  * ch_rate each (as rdof_spectrum_feed makes them), channel k's centered at ch_hz[k], into row's n bins over rate
- * centered at center_hz. A wide bin within half_hz of a channel's frequency takes that channel's power density over
- * the wide bin's width (the mean of its bins in it, else the nearest one's), so a level reads as on a wideband
- * row; a bin of no channel's is 255 (the floor). */
+ * centered at center_hz. A wide bin that meets a channel (half_hz either side) takes the power of the channel bins
+ * in it (by how much of each it covers), and the rest of its width at the channel's floor (its quietest quarter of
+ * bins), so a tone and a noise floor both read as on a wideband row, whether a wide bin is wider or narrower than a
+ * channel. A bin of no channel's is 255 (the floor). */
 void rdof_spectrum_place(uint8_t *row, int n, double center_hz, double rate, const uint8_t *const *ch_rows,
                          const double *ch_hz, int nch, int cn, double ch_rate, double half_hz);
 

@@ -956,10 +956,22 @@ static void test_spectrum(void)
         int in = 0;
         for (int k = 0; k < WN; k++)
             in += wide[k] != 255;
-        CHECK(in >= 8 && in <= 12, "about 12.5 kHz of each channel: %d wide bins in all", in);
+        CHECK(in >= 10 && in <= 14, "about 12.5 kHz of each channel: %d wide bins in all", in);
         /* a wide bin narrower than a channel bin (96 kS/s over 512: 187.5 Hz): the nearest channel bin's density */
         rdof_spectrum_place(wide, WN, hz[0], 96000.0, rows, hz, 1, CN, 48000.0, 6250.0);
         CHECK(abs(wide[WN / 2] - 132) <= 1, "a narrow wide bin: %d (want 132: -60 dB less 6.02)", wide[WN / 2]);
+        /* wide bins wider than a channel (19.872 MS/s over 512: 38.8 kHz), channels 50 kHz apart: each shows */
+        const double hz2[2] = {438112500, 438162500}, center2 = 438987500, rate2 = 19872000;
+        rdof_spectrum_place(wide, WN, center2, rate2, rows, hz2, 2, CN, 48000.0, 6250.0);
+        const double wb2 = rate2 / WN;
+        const int n1 = (int)((hz2[0] - (center2 - rate2 / 2)) / wb2), n2 = (int)((hz2[1] + 3000 - (center2 - rate2 / 2)) / wb2);
+        /* noise: -60 dB + 10 log10(38812.5 / 750) = -42.86 dBFS (86); the tone: -20 dBFS (40) over it */
+        CHECK(abs(wide[n1] - 86) <= 1, "noise, a wide bin wider than the channel: %d (want 86)", wide[n1]);
+        CHECK(abs(wide[n2] - 40) <= 1, "the tone, a wide bin wider than the channel: %d (want 40)", wide[n2]);
+        in = 0;
+        for (int k = 0; k < WN; k++)
+            in += wide[k] != 255;
+        CHECK(in >= 2 && in <= 4, "both channels shown, a bin or two each: %d wide bins in all", in);
     }
 }
 
