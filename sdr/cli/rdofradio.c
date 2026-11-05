@@ -2574,12 +2574,23 @@ static void on_burst(void *ctx, int c, const rdof_sdr_burst_t *b, double t)
 static bool muted(void *ctx, int64_t p) { return rdof_sdrmodem_muted_at(&R.m, p); }
 /* Our own transmission heard back (half duplex): on the channel it went out on, or its image, within its span on
  * the air (60 ms either side: a burst's length and the loop's delay); on any other channel, a burst we sent there
- * (the transmitter's spurs: on the Pluto, 100 kHz either side). Not passed on: a channel's
- * peer would send the network's call back to it. The bench's line protocol still gets it: it watches the air. */
+ * (the transmitter's spurs: on the Pluto, 100 kHz either side). A full duplex repeater's outbound is on the air
+ * all the time it's keyed, so there only a burst we sent counts, on any channel but its input: on the Pluto a
+ * repeater sending on 438.3625 was heard on 438.2625 as a call of its own. Not passed on: a channel's peer would
+ * send the network's call back to it. The bench's line protocol still gets it: it watches the air. */
 static bool echo_drop(void *ctx, int c, const rdof_sdr_burst_t *b)
 {
-    if (R.full || c < 0)
+    if (c < 0)
         return false;
+    if (R.full) {
+        if (c == channel_of(R.rx_hz))
+            return false;
+        const int d = rdof_sdrmodem_sent_bits(&R.m, b->position, 5760, b->b.burst);
+        if (d < 0 || d > RDOF_SDRMODEM_SENT_BITS)
+            return false;
+        bench_burst(c, b);
+        return true;
+    }
     if (b->position <= R.echo_from - 2880 || b->position >= R.echo_to + 2880)
         return false;
     if (c != R.echo_ch && c != R.echo_img) {

@@ -75,15 +75,15 @@ static int64_t heard_at(const rdof_sdrmodem_t *m, int64_t s)
 
 static void remember(rdof_sdrmodem_t *m, int64_t start, const uint8_t *b)
 {
-    memcpy(m->sent_b[m->nsent % 8], b, RDOF_BURST_BYTES);
-    m->sent48[m->nsent++ % 8] = heard_at(m, start);
+    memcpy(m->sent_b[m->nsent % RDOF_SDRMODEM_SENT], b, RDOF_BURST_BYTES);
+    m->sent48[m->nsent++ % RDOF_SDRMODEM_SENT] = heard_at(m, start);
 }
 
 bool rdof_sdrmodem_muted_at(const rdof_sdrmodem_t *m, int64_t p)
 {
     if (m->duplex)
         return false;
-    for (int i = 0; i < 8 && i < m->nsent; i++)
+    for (int i = 0; i < RDOF_SDRMODEM_SENT && i < m->nsent; i++)
         if (p > m->sent48[i] - MUTE_48K && p < m->sent48[i] + MUTE_48K)
             return true;
     return false;
@@ -92,7 +92,7 @@ bool rdof_sdrmodem_muted_at(const rdof_sdrmodem_t *m, int64_t p)
 int rdof_sdrmodem_sent_bits(const rdof_sdrmodem_t *m, int64_t p, int64_t within48, const uint8_t *b)
 {
     int best = -1;
-    for (int i = 0; i < 8 && i < m->nsent; i++) {
+    for (int i = 0; i < RDOF_SDRMODEM_SENT && i < m->nsent; i++) {
         if (p <= m->sent48[i] - within48 || p >= m->sent48[i] + within48)
             continue;
         int d = 0;
@@ -1265,6 +1265,7 @@ static void queue_duplex(rdof_sdrmodem_t *m, int64_t pos, int n)
             }
             m->ramp_up = false;
             m->cach_bursts++;
+            remember(m, at + cach, burst);
             if (found)
                 m->tx_bursts++;
             else
@@ -1298,6 +1299,7 @@ static void queue_duplex(rdof_sdrmodem_t *m, int64_t pos, int n)
             m->key_k = m->slot_k;
         m->ramp_up = false;
         m->cach_bursts++;
+        remember(m, at + cach, burst);
         if (!idle) {
             int cc, dt, e;
             m->last_term[s] = rdof_sync_errors(burst, rdof_data_sync(RDOF_BS_VOICE)) <= 4 &&

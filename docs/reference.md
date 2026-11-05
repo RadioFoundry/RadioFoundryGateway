@@ -830,7 +830,8 @@ transmitter ([transmitters.md](spec/fw/transmitters.md)).
 - **Tests:** `sdrmodem_tests`: the CACH, each split role, the split matrix (a radio or an SDR modem as each half,
   90 s of inbound bursts labeled right, the RX half's epoch within 100 µs of the TX half's slot starts), the
   loopbacks (`rdof_sdrmodem_loopback`: a real `rdof_modem` client, three CSBKs heard back bit-exact and muted,
-  another station's bursts in the gaps reaching the host), DCDM end to end.
+  another station's bursts in the gaps reaching the host; full duplex, the outbound heard back taken as ours by its
+  content, idle bursts too, the other station's not), DCDM end to end.
 - **Not done:** CW ID; TX power control on `sim`; an SDR split half on the board; the UTC slot in the board's MQTT
   raw bursts (the modem labels it, the burst doesn't carry it).
 
@@ -1195,6 +1196,9 @@ rdofradio --soapy driver=plutosdr -r 2400000 --allow-tx --config example.json --
   unit's peer, not a second login), else what it hears goes up through the unit's peer as its path's policy says; each publishes on the SDR's MQTT topics and shows on the SDR's card. The
   unit hears on the channel at its frequency (`io_channel`), and its own topics and card carry that channel's calls.
   A duplex repeater's output isn't a channel. `--monitor` adds `out` (the TX heard back) when no channel is on it.
+  The transmitter's spurs land on other channels (on the Pluto, 100 kHz either side): a burst heard there that is
+  one the modem sent (within 24 bits of it, `rdof_sdrmodem_sent_bits`) isn't passed on, half duplex or a duplex
+  repeater's outbound alike. Without it a Pluto repeater sending on 438.3625 had 438.2625 send each call up again.
 - **Simplex on every channel** (a transceiver on the SDR): it sends on every frequency the SDR `transmits` on and
   hears on any receiver channel (`io_channel`). The TX LO moves when a call's channel is past the modulator's reach
   (0.4 of the rate, less half a channel), unkeyed. DMRD to any channel's peer goes out there through the same

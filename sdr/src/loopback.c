@@ -37,7 +37,8 @@ typedef struct {
     int host_slot[MAXHEARD], nhost, lost;
     uint8_t heard[2][MAXHEARD][RDOF_BURST_BYTES];
     int64_t heard_pos[2][MAXHEARD];
-    int nheard[2], idle[2];
+    int heard_d[2][MAXHEARD]; /* when heard: rdof_sdrmodem_sent_bits against what the modem had sent */
+    int nheard[2], idle[2], idle_ours[2];
     uint32_t rng;
     double t;
 } lb_t;
@@ -75,10 +76,13 @@ static void lb_burst(void *ctx, int c, const rdof_sdr_burst_t *b, double t)
 {
     lb_t *l = ctx;
     rdof_sdrmodem_heard(&l->modem, c, b);
+    const int d = rdof_sdrmodem_sent_bits(&l->modem, b->position, 5760, b->b.burst);
     if (b->b.dt == RDOF_DT_IDLE) {
         l->idle[c]++;
+        l->idle_ours[c] += d >= 0 && d <= RDOF_SDRMODEM_SENT_BITS;
     } else if (l->nheard[c] < MAXHEARD) {
         memcpy(l->heard[c][l->nheard[c]], b->b.burst, RDOF_BURST_BYTES);
+        l->heard_d[c][l->nheard[c]] = d;
         l->heard_pos[c][l->nheard[c]++] = b->position;
     }
 }
@@ -206,6 +210,17 @@ int rdof_sdrmodem_loopback(bool full, char *report, size_t cap)
             if ((d >= 0 && d <= RDOF_SDRMODEM_SENT_BITS) != mine)
                 FAIL("channel %d's burst %d %s like ours; ", c, i, mine ? "not" : "taken");
         }
+    /* full duplex: the outbound heard back is ours by its content (what keeps a spur of it on another channel from
+       going up as a call), its idle bursts too; the other station's isn't */
+    for (int c = 0; full && c < 2; c++)
+        for (int i = 0; i < l->nheard[c]; i++) {
+            const bool mine = find(ours, NB, l->heard[c][i]) >= 0;
+            const int d = l->heard_d[c][i];
+            if ((d >= 0 && d <= RDOF_SDRMODEM_SENT_BITS) != mine)
+                FAIL("channel %d's burst %d %s like ours (%d bits); ", c, i, mine ? "not" : "taken", d);
+        }
+    if (full && l->idle_ours[1] != l->idle[1])
+        FAIL("duplex: %d of %d idle bursts heard back taken as ours; ", l->idle_ours[1], l->idle[1]);
     if (l->modem.tx_bursts != NB)
         FAIL("%u bursts sent, want %d; ", (unsigned)l->modem.tx_bursts, NB);
     if (!full && (l->modem.muted != NB || l->nhost != NB))
