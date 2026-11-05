@@ -3,9 +3,9 @@
 /*
  * mDNS and DNS-SD (espressif/mdns): the board answers as BOX.local and lists its services, the page
  * (_http._tcp) and, when it runs, the bench's line protocol (_rfgbench._tcp, TXT kind, ver and the Wi-Fi MAC), so
- * `rfgbench find` finds it whatever address DHCP gave it. BOX is the box's name as a host name (lowercase,
- * letters, digits and '-'); with no name of its own ("radiofoundry"), the MAC's last two bytes are added, as the
- * setup AP's name has them. A name another device has already gets a suffix from the responder.
+ * `rfgbench find` finds it whatever address DHCP gave it. Its host name, for DHCP too, is the box's name
+ * (lowercase, letters, digits and '-') and the base MAC's last two bytes: a box "w12" is w12-c3d4.local, so boards
+ * named alike still differ. A name another device has already gets a suffix from the responder.
  */
 #include <ctype.h>
 #include <stdio.h>
@@ -20,9 +20,11 @@
 static const char *TAG = "dnssd";
 static bool up;
 
-void dnssd_start(void)
+const char *dnssd_hostname(void)
 {
-    char host[33];
+    static char host[40];
+    if (host[0])
+        return host;
     size_t n = 0;
     for (const char *s = g_roles.box; *s && n < 24; s++) {
         const char c = (char)tolower((unsigned char)*s);
@@ -31,12 +33,22 @@ void dnssd_start(void)
         else if (n && host[n - 1] != '-')
             host[n++] = '-';
     }
+    while (n && host[n - 1] == '-')
+        n--;
     host[n] = 0;
-    if (!n || !strcmp(host, "radiofoundry")) {
-        uint8_t mac[6] = {0};
-        esp_read_mac(mac, ESP_MAC_WIFI_STA);
-        snprintf(host, sizeof host, "radiofoundry-%02x%02x", mac[4], mac[5]);
-    }
+    uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_BASE);
+    char tail[6];
+    snprintf(tail, sizeof tail, "%02x%02x", mac[4], mac[5]);
+    /* a name that ends in them already (a box named for its board) keeps its own */
+    if (!(n > 4 && !strcmp(host + n - 4, tail)))
+        snprintf(host + n, sizeof host - n, "%s%s", n ? "-" : "radiofoundry-", tail);
+    return host;
+}
+
+void dnssd_start(void)
+{
+    const char *host = dnssd_hostname();
     esp_err_t e = mdns_init();
     if (e != ESP_OK) {
         ESP_LOGW(TAG, "mDNS: %s", esp_err_to_name(e));

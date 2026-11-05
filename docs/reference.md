@@ -460,8 +460,9 @@ Keys: [config-v3.md](spec/fw/config-v3.md) §6.3; how it works and what's left: 
   built just as the connection drops can reach the next connection with an alias it doesn't know; the broker then
   disconnects and the next connection starts over. With the SDR's 17-byte topic a burst is 70 bytes on the wire, 57
   with its alias.
-- **mDNS and DNS-SD** (`dnssd.c`, espressif/mdns): the board answers as `BOX.local` (the box's name as a host
-  name; `radiofoundry-XXXX` with the MAC's last two bytes when it has none) and lists `_http._tcp` (the page) and,
+- **mDNS and DNS-SD** (`dnssd.c`, espressif/mdns): the board answers as `BOX-XXXX.local`: the box's name as a host name
+  and the base MAC's last two bytes (a box `w12`: `w12-c3d4.local`; `radiofoundry-XXXX` with no name), which is its
+  DHCP host name too and lists `_http._tcp` (the page) and,
   when the bench line runs, `_rfgbench._tcp` with TXT `kind`, `ver` and `mac`. `rfgbench.py find` lists the boards
   from it, whatever address DHCP gave them.
 - **`/api/status`**: `name`, `version` (`git describe --always --tags --dirty` at the last CMake configure;

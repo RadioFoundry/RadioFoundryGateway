@@ -91,7 +91,9 @@ void status_led_off(void);
 void logring_init(void);
 size_t logring_read(char *out, size_t cap);
 void wifi_start(void);
-/* mDNS / DNS-SD (dnssd.c): BOX.local and the page from dnssd_start (after wifi_start); the bench line's service. */
+/* mDNS / DNS-SD (dnssd.c): BOX-XXXX.local and the page from dnssd_start (after wifi_start); the bench line's service.
+   dnssd_hostname: that name, the box's and the base MAC's last two bytes, which DHCP gets too. */
+const char *dnssd_hostname(void);
 void dnssd_start(void);
 void dnssd_bench(const char *name, int port);
 void web_start(void);

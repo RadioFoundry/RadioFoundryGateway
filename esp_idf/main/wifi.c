@@ -39,7 +39,7 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 void wifi_start(void)
 {
     wifilist_config_t c = WIFILIST_CONFIG_DEFAULT();
-    c.hostname = g_roles.box;
+    c.hostname = dnssd_hostname(); /* the box's name and the MAC's last two bytes, as mDNS has it */
 #if CONFIG_RDOF_SOFTAP
     c.ap_ssid = "radiofoundry-%s";
     c.ap_password = "radiofoundry";
