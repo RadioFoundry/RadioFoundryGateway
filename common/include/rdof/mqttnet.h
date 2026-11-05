@@ -179,6 +179,7 @@ typedef struct {
     int ta_format, ta_len, ta_have;
     uint8_t ta[32];
     bool ta_done;
+    double header_at; /* when the lc_header item last went */
     /* voice heard before the late entry's addresses */
     rdof_frame_t held[RDOF_MN_UP_HOLD];
     int nheld;
@@ -252,6 +253,10 @@ void rdof_mn_up_tick(rdof_mn_up_t *u, double now);
 
 #define RDOF_MN_DOWN_STREAMS 6
 #define RDOF_MN_DOWN_IDLE_S 0.5 /* a stream with nothing this long ends */
+/* While only headers are heard (a radio or modem may send them for half a second or more before the voice), the
+   lc_header item goes again when nothing has gone for this long, so the far end's RDOF_MN_DOWN_IDLE_S doesn't end the
+   stream before its voice comes. */
+#define RDOF_MN_UP_HEADER_AGAIN_S 0.24
 
 typedef struct {
     bool used;
