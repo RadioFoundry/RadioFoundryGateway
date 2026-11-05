@@ -1349,9 +1349,9 @@ channelizer: every channel at once, 15 on the 7010 clone where the ARM manages 1
 - **The idle gate's noise** comes from the channels: the 25th percentile across all channels, the least of the last
   16 chunks.
 - **The AFC** writes the block's NCO steps once a turn.
-- **No wideband I/Q:** the page's spectrum is the channels' own: a 64-point FFT of each channel's 48 kS/s, laid into
-  the row at its frequency over 6.25 kHz either side (`rdof_spectrum_place`, rescaled to the row's bin width so levels
-  read as on the wideband spectrum); the span between the channels is empty, the floor. The bench keeps every channel's
+- **No wideband I/Q:** the page's spectrum is the channels' own: a 64-point FFT of each channel's 48 kS/s, its 17
+  bins within 6.25 kHz (750 Hz each) a piece of the row (`rdof_hostweb_spectrum_pieces`, `pieces` in
+  `/api/spectrum`); the page shows each at its frequency and cuts a wide gap between them to a `--//--` break. The bench keeps every channel's
   outputs for 2.5 s instead (about 130 bytes an output instant for 15 channels, 16 MB; the wideband ring at 19.872 MS/s
   is 99 MB), with each one's NCO offset: capture, trigger, track and rx on a receiver channel take its I/Q from there
   (bench-api.md 14). The block's int16 LSB is near the noise, so a quiet channel's floor reads about -67 dB. The duplex

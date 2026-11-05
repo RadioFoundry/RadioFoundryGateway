@@ -459,6 +459,26 @@ int main(int argc, char **argv)
     CHECK(strstr(b, "\"channels\":[{\"id\":\"M1\",\"freq\":438425000,\"in\":true}]}"));
     http(port, "GET /api/spectrum?since=0 HTTP/1.1\r\n\r\n", b, sizeof b); /* SDR 0's as they were */
     CHECK(strstr(b, "{\"sdr\":0,\"seq\":3,"));
+    /* a row in pieces (--fpga-chz): each channel's bins, the layout with the rows; a new layout starts over */
+    {
+        const double f0[2] = {438106125, 438156125};
+        const int pn[2] = {17, 17};
+        memset(row, 90, 34);
+        rdof_hostweb_spectrum_pieces(1, row, f0, pn, 2, 750, 438987500, 19872000, 201);
+        http(port, "GET /api/spectrum?sdr=1&since=0 HTTP/1.1\r\n\r\n", b, sizeof b);
+        CHECK(strstr(b, "{\"sdr\":1,\"seq\":1,\"bins\":34,\"row_ms\":201,\"rate\":19872000,\"center\":438987500,"));
+        CHECK(strstr(b, "\"],\"pieces\":[{\"f0\":438106125,\"n\":17,\"bw\":750.0},{\"f0\":438156125,\"n\":17,"
+                        "\"bw\":750.0}],\"channels\":["));
+        rdof_hostweb_spectrum_pieces(1, row, f0, pn, 2, 750, 438987500, 19872000, 201);
+        http(port, "GET /api/spectrum?sdr=1&since=1 HTTP/1.1\r\n\r\n", b, sizeof b);
+        CHECK(strstr(b, "\"seq\":2,") && strstr(b, "\"pieces\":["));
+        rdof_hostweb_spectrum_pieces(1, row, f0, pn, 1, 750, 438987500, 19872000, 201);
+        http(port, "GET /api/spectrum?sdr=1&since=0 HTTP/1.1\r\n\r\n", b, sizeof b);
+        CHECK(strstr(b, "\"seq\":1,\"bins\":17,") && strstr(b, "\"pieces\":[{\"f0\":438106125,\"n\":17,\"bw\":750.0}]"));
+        rdof_hostweb_spectrum_row_sdr(1, row, 256, 438.525e6, 2400000, 100); /* back to a whole row: no pieces */
+        http(port, "GET /api/spectrum?sdr=1&since=0 HTTP/1.1\r\n\r\n", b, sizeof b);
+        CHECK(strstr(b, "\"seq\":1,\"bins\":256,") && !strstr(b, "\"pieces\""));
+    }
 
     /* the last exit, as a supervisor recorded it: the status, the record, erasing it */
     char exit_path[600];

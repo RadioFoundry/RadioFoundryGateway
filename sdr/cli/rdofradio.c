@@ -2650,10 +2650,11 @@ static void web_spectrum(const rdof_cf_t *in, int n)
 }
 
 /* --fpga-chz: no wideband I/Q, so the page's spectrum is the channels' own: each channel's 48 kS/s through an FFT of
- * its own, laid into the row at its frequency over its share of a 12.5 kHz grid (6.25 kHz either side:
- * rdof_spectrum_place), so a level reads as on the wideband spectrum. The span between the channels is empty (255,
- * the floor). Rows about every 200 ms of instants. */
+ * its own, and the row is the bins within 6.25 kHz of each (CS_KEEP of them at 750 Hz), a piece of the row at the
+ * channel's frequency (rdof_hostweb_spectrum_pieces); the page cuts out the wide spans between them. Rows about
+ * every 200 ms of instants. */
 #define CS_N 64 /* 750 Hz bins */
+#define CS_KEEP 17 /* -6000 .. +6000 Hz */
 static void web_spectrum_chs(const rdof_iq16_t *y, int ny, int C)
 {
     static rdof_spectrum_t sp[RDOF_CHZFX_MAX_CH];
@@ -2692,14 +2693,17 @@ static void web_spectrum_chs(const rdof_iq16_t *y, int ny, int C)
         return;
     const int row_ms = (int)lrint(1e3 * got / 48000.0);
     got = 0;
-    const uint8_t *rp[RDOF_CHZFX_MAX_CH];
-    double hz[RDOF_CHZFX_MAX_CH];
-    const int nc = C < RDOF_CHZFX_MAX_CH ? C : RDOF_CHZFX_MAX_CH;
-    for (int c = 0; c < nc; c++)
-        rp[c] = rows[c], hz[c] = CH[c].freq_hz;
-    uint8_t row[RDOF_HOSTWEB_SPECTRUM_BINS];
-    rdof_spectrum_place(row, RDOF_HOSTWEB_SPECTRUM_BINS, R.rx.center_hz, R.rate, rp, hz, nc, CS_N, 48000.0, 6250.0);
-    rdof_hostweb_spectrum_row(row, RDOF_HOSTWEB_SPECTRUM_BINS, R.rx.center_hz, R.rate, row_ms);
+    enum { NP = RDOF_HOSTWEB_SPECTRUM_PIECES < RDOF_CHZFX_MAX_CH ? RDOF_HOSTWEB_SPECTRUM_PIECES : RDOF_CHZFX_MAX_CH };
+    _Static_assert(NP * CS_KEEP <= RDOF_HOSTWEB_SPECTRUM_BINS, "the pieces fit a row");
+    const int nc = C < NP ? C : NP, bw = 48000 / CS_N;
+    uint8_t row[NP * CS_KEEP];
+    double f0[NP];
+    int pn[NP];
+    for (int c = 0; c < nc; c++) {
+        memcpy(row + c * CS_KEEP, rows[c] + CS_N / 2 - CS_KEEP / 2, CS_KEEP);
+        f0[c] = CH[c].freq_hz - (CS_KEEP / 2 + 0.5) * bw, pn[c] = CS_KEEP;
+    }
+    rdof_hostweb_spectrum_pieces(0, row, f0, pn, nc, bw, R.rx.center_hz, R.rate, row_ms);
 }
 
 /* The SDR's card: the device, its samples and faults, the loop's time, the transmitter, and every receiver channel */

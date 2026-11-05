@@ -50,6 +50,9 @@ typedef struct {
     uint32_t seq;
     int bins, row_ms;
     double center, rate;
+    int npiece; /* 0: one piece, the span */
+    double f0[RDOF_HOSTWEB_SPECTRUM_PIECES], bin_hz;
+    int n[RDOF_HOSTWEB_SPECTRUM_PIECES];
     atomic_llong want_ms; /* mono ms: the page asked until then */
 } spec_t;
 
@@ -791,9 +794,33 @@ void rdof_hostweb_spectrum_row_sdr(int sdr, const uint8_t *row, int bins, double
         return;
     pthread_mutex_lock(&W.sp_mu);
     spec_t *p = &W.sp[sdr];
-    if (bins != p->bins) /* a new size: the old rows don't fit it */
+    if (bins != p->bins || p->npiece) /* a new size or layout: the old rows don't fit it */
         p->seq = 0;
-    p->bins = bins, p->row_ms = row_ms, p->center = center_hz, p->rate = rate;
+    p->bins = bins, p->row_ms = row_ms, p->center = center_hz, p->rate = rate, p->npiece = 0;
+    memcpy(p->rows[(p->seq + 1) % SPEC_ROWS], row, (size_t)bins);
+    p->seq++;
+    pthread_mutex_unlock(&W.sp_mu);
+}
+
+void rdof_hostweb_spectrum_pieces(int sdr, const uint8_t *row, const double *f0, const int *n, int npiece, double bin_hz,
+                                  double center_hz, double rate, int row_ms)
+{
+    int bins = 0;
+    for (int k = 0; k < npiece; k++)
+        bins += n[k] > 0 ? n[k] : 0;
+    if (sdr < 0 || sdr >= RDOF_HOSTWEB_SDRS || npiece <= 0 || npiece > RDOF_HOSTWEB_SPECTRUM_PIECES || bins <= 0 ||
+        bins > RDOF_HOSTWEB_SPECTRUM_BINS || bin_hz <= 0)
+        return;
+    pthread_mutex_lock(&W.sp_mu);
+    spec_t *p = &W.sp[sdr];
+    bool same = bins == p->bins && npiece == p->npiece && bin_hz == p->bin_hz;
+    for (int k = 0; same && k < npiece; k++)
+        same = f0[k] == p->f0[k] && n[k] == p->n[k];
+    if (!same) /* a new layout: the old rows don't fit it */
+        p->seq = 0;
+    p->bins = bins, p->row_ms = row_ms, p->center = center_hz, p->rate = rate, p->npiece = npiece, p->bin_hz = bin_hz;
+    for (int k = 0; k < npiece; k++)
+        p->f0[k] = f0[k], p->n[k] = n[k] > 0 ? n[k] : 0;
     memcpy(p->rows[(p->seq + 1) % SPEC_ROWS], row, (size_t)bins);
     p->seq++;
     pthread_mutex_unlock(&W.sp_mu);
@@ -820,7 +847,7 @@ static void spec_chan(char *out, size_t cap, size_t *len, const char *id, uint32
 }
 
 /* GET /api/spectrum?since=N[&sdr=K]: SDR K's rows newer than row N, as the board's (esp_idf/main/web.c), and the
- * channels */
+ * channels; a row in pieces (rdof_hostweb_spectrum_pieces) adds "pieces": [{f0, n, bw}], in the row's order */
 static char *spectrum_json(const char *query, size_t *n)
 {
     char v[16];
@@ -841,11 +868,14 @@ static char *spectrum_json(const char *query, size_t *n)
     int k = 0;
     for (uint32_t q = from + 1; q <= last; q++, k++)
         memcpy(rows[k], p->rows[q % SPEC_ROWS], (size_t)p->bins);
-    const int bins = p->bins, row_ms = p->row_ms;
-    const double center = p->center, rate = p->rate;
+    const int bins = p->bins, row_ms = p->row_ms, npiece = p->npiece;
+    const double center = p->center, rate = p->rate, bin_hz = p->bin_hz;
+    double f0[RDOF_HOSTWEB_SPECTRUM_PIECES];
+    int pn[RDOF_HOSTWEB_SPECTRUM_PIECES];
+    memcpy(f0, p->f0, sizeof f0), memcpy(pn, p->n, sizeof pn);
     pthread_mutex_unlock(&W.sp_mu);
 
-    const size_t cap = 1024 + 24 * 64 + (size_t)k * (4 * ((size_t)bins + 2) / 3 + 8);
+    const size_t cap = 1024 + 24 * 64 + 48 * RDOF_HOSTWEB_SPECTRUM_PIECES + (size_t)k * (4 * ((size_t)bins + 2) / 3 + 8);
     char *out = malloc(cap);
     if (!out)
         return NULL;
@@ -858,6 +888,12 @@ static char *spectrum_json(const char *query, size_t *n)
         rdof_base64(rows[i], (size_t)bins, out + len);
         len += strlen(out + len);
         out[len++] = '"';
+    }
+    if (npiece) { /* a row in pieces: each one's low edge, bins and bin width */
+        len += (size_t)snprintf(out + len, cap - len, "],\"pieces\":[");
+        for (int i = 0; i < npiece; i++)
+            len += (size_t)snprintf(out + len, cap - len, "%s{\"f0\":%.0f,\"n\":%d,\"bw\":%.1f}", i ? "," : "", f0[i], pn[i],
+                                    bin_hz);
     }
     len += (size_t)snprintf(out + len, cap - len, "],\"channels\":[");
     rdof_hostweb_status_t *st = malloc(sizeof *st);
