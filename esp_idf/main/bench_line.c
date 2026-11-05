@@ -122,7 +122,8 @@ static void bl_rx_stats(void *ctx, double *seconds, long *overflows, double *cli
 
 static const char *bl_can_tx(void *ctx) { return bench_tx_line_why(); }
 
-static bool bl_tx_open(void *ctx, uint32_t freq, int cc, int power, bool as_built, char *why, size_t cap)
+static bool bl_tx_open(void *ctx, uint32_t freq, int cc, rdof_bench_power_t power, bool as_built, char *why,
+                       size_t cap)
 {
     return bench_tx_line_open(freq, cc, power, as_built, why, cap);
 }
@@ -166,8 +167,8 @@ static int bl_ob_state(void *ctx, rdof_bl_ob_state_t *s, char *why, size_t cap)
     return s->keyed ? 1 : 0;
 }
 
-static int bl_sig_open(void *ctx, uint32_t freq, int power, double seconds, const rdof_sig_src_t *src, char *why,
-                       size_t cap)
+static int bl_sig_open(void *ctx, uint32_t freq, rdof_bench_power_t power, double seconds, const rdof_sig_src_t *src,
+                       char *why, size_t cap)
 {
     return bench_tx_sig_open(freq, power, seconds, src, why, cap);
 }

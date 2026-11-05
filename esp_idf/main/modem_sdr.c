@@ -28,6 +28,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "rdof/sdr/sdrmodem.h"
+#include "rdof/txpower.h"
 
 static rdof_sdrmodem_t *volatile mdm;
 static SemaphoreHandle_t lock;
@@ -42,6 +43,7 @@ static void (*bench_reply)(void *ctx, const uint8_t *frame, size_t len);
 static void *bench_ctx;
 static rdof_sdrmodem_t *parked; /* the roamer's modem while the bench borrows the front end */
 static double cap_dbm = NAN;    /* a routed bench job's power on the roamer's modem, at most (NAN: none) */
+static double level_dbm = NAN;  /* the roamer's last SET_FREQ RF level, in dBm (NAN: its device's power) */
 
 #define TAKE() xSemaphoreTake(lock, portMAX_DELAY)
 #define GIVE() xSemaphoreGive(lock)
@@ -162,10 +164,13 @@ static const char *modem_up(const rdof_sdrmodem_io_t *io, double power_dbm)
 }
 
 #if CONFIG_RDOF_ROAMER
-/* The roamer's power: its device's, under a routed bench job's cap. */
+/* The roamer's power at the antenna: its tune's (the frequency's power_dbm as SET_FREQ's level), at most its
+ * device's, under a routed bench job's cap. */
 static double roamer_dbm(void)
 {
-    const double d = owner ? owner->cfg->tx_power_dbm : 0;
+    double d = owner ? owner->cfg->tx_power_dbm : 0;
+    if (!isnan(level_dbm) && level_dbm < d)
+        d = level_dbm;
     return isnan(cap_dbm) || d <= cap_dbm ? d : cap_dbm;
 }
 #endif
@@ -258,7 +263,7 @@ const char *sdr_modem_bench_open(void (*reply)(void *ctx, const uint8_t *frame, 
         fe.ops->tx_set(fe.ctx, NULL, 0);
     bench_reply = reply;
     bench_ctx = ctx;
-    const rdof_sdrmodem_io_t io = {bench_io_reply, io_channel, io_tx_tune, NULL, NULL};
+    const rdof_sdrmodem_io_t io = {bench_io_reply, io_channel, io_tx_tune, NULL, NULL, NULL}; /* power: the job's */
     if ((why = modem_up(&io, power_dbm)) != NULL) {
         bench_reply = NULL;
         unpark();
@@ -345,6 +350,16 @@ void sdr_modem_bench_close(void)
 
 static void io_reply(void *ctx, const uint8_t *frame, size_t len) { modem_on_bytes(owner, frame, len); }
 
+/* SET_FREQ's RF level: a level of the device's map (rdof_txpower_sdr_map: 255 its tx.power_dbm). Called in the
+ * modem's write, the lock held. */
+static void io_tx_level(void *ctx, int level)
+{
+    const rdof_txmap_t m = rdof_txpower_sdr_map(owner->cfg->tx_power_dbm);
+    level_dbm = rdof_txpower_dbm(&m, level);
+    if (!parked && !bench_reply)
+        fe.ops->tx_set(fe.ctx, &source, roamer_dbm());
+}
+
 static bool sdr_write(void *ctx, const uint8_t *data, size_t len)
 {
     TAKE();
@@ -371,15 +386,15 @@ static void start_task(void *arg)
     } else if (r->cfg->sdr_duplex == RDOF_SDR_DUPLEX_FULL && c->duplex != RDOF_FE_FULL_DUPLEX) {
         fail(r, "duplex: full, but the SDR's front end is half duplex");
     } else {
-        const rdof_sdrmodem_io_t io = {io_reply, io_channel, io_tx_tune, NULL, NULL};
+        const rdof_sdrmodem_io_t io = {io_reply, io_channel, io_tx_tune, NULL, NULL, io_tx_level};
         if (r->cfg->slot_timing.utc) /* the repeater's own slot_timing over the SDR's */
             slot_timing_setup(&r->cfg->slot_timing);
-        if ((why = modem_up(&io, r->cfg->tx_power_dbm)) != NULL) {
+        if ((why = modem_up(&io, roamer_dbm())) != NULL) {
             fail(r, why);
         } else {
             r->sdr = (modem_transport_t){"sdr", sdr_write, r};
             modem_transport_up(r, &r->sdr);
-            ESP_LOGI(TAG, "%s: %s duplex on the %s, %.0f dBm", r->cfg->name,
+            ESP_LOGI(TAG, "%s: %s duplex on the %s, at most %.1f dBm at the antenna", r->cfg->name,
                      r->cfg->sdr_duplex == RDOF_SDR_DUPLEX_FULL ? "full" : "half", c->kind, r->cfg->tx_power_dbm);
         }
     }
@@ -393,6 +408,7 @@ void sdr_modem_start(roam_t *r)
         return;
     }
     owner = r;
+    level_dbm = NAN;
     if (!lock)
         lock = xSemaphoreCreateMutex();
     roam_task(r, start_task, "sdrmodem", 4096, 5);

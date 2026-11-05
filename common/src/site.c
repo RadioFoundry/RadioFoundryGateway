@@ -109,10 +109,10 @@ static const char *const TOP_KEYS[] = {"version", "name", "id", "callsign", "loc
 #define FREQ_RADIO_KEYS                                                                                                \
     "hang_s", "call_hang_s", "inbound_slot", "short_lc_ts1_low", "slot_timing", "duplex", "active_slots", "cwid",   \
         "cwid_every_s", "prebuffer", "jitter_buffer", "jitter_min_ms", "jitter_max_ms"
-static const char *const FREQ_KEYS[] = {"freq", "name", "cc", "mode", "ts", "tx", "power", "devices", "slots",
+static const char *const FREQ_KEYS[] = {"freq", "name", "cc", "mode", "ts", "tx", "power_dbm", "devices", "slots",
                                         "policy", POLICY_KEYS, FREQ_RADIO_KEYS, NULL};
 static const char *const RADIO_FREQ_KEYS[] = {FREQ_RADIO_KEYS, NULL};
-static const char *const DEFAULT_KEYS[] = {"cc", "mode", "ts", "tx", "power", "policy", POLICY_KEYS, NULL};
+static const char *const DEFAULT_KEYS[] = {"cc", "mode", "ts", "tx", "power_dbm", "policy", POLICY_KEYS, NULL};
 static const char *const POL_KEYS[] = {"name", POLICY_KEYS, NULL};
 static const char *const SLOT_KEYS[] = {"policy", POLICY_KEYS, NULL};
 /* The talker keys: how a device that transmits on several frequencies waits and answers. A device's other keys
@@ -499,6 +499,8 @@ static bool parse_freqs(ctx_t *c, rdof_site_t *s)
         if (!num_of(c, fv, &v) || !(f->hz = hz_of(v)) || f->hz < 1000000)
             return fail(c, "%s%s: a frequency (MHz, or Hz)", path, is_type(c, e, RDOF_JOBJ) ? ".freq" : "");
         int o = c->fnode[s->nfreq];
+        if (get(c, o, "power") >= 0)
+            return fail(c, "%s.power: power_dbm, in dBm at the antenna", path);
         if (!known(c, o, path, FREQ_KEYS))
             return false;
         const char *nm = str_of(c, get(c, o, "name"));
@@ -552,12 +554,12 @@ static bool parse_freqs(ctx_t *c, rdof_site_t *s)
                 return fail(c, "%s.ts: 1 or 2", path);
             f->ts = (uint8_t)v;
         }
-        i = PICK("power");
-        f->power = -1;
+        i = PICK("power_dbm");
+        f->power_dbm = NAN;
         if (i >= 0) {
-            if (!num_of(c, i, &v) || v != floor(v) || v < 0 || v > 255)
-                return fail(c, "%s.power: 0 to 255", path);
-            f->power = (int)v;
+            if (!num_of(c, i, &v) || v < -60 || v > 60)
+                return fail(c, "%s.power_dbm: -60 to 60 (dBm at the antenna)", path);
+            f->power_dbm = v;
         }
 #undef PICK
         f->app = -1;
@@ -1199,6 +1201,8 @@ static bool parse_site(ctx_t *c, rdof_site_t *s)
     c->defaults = get(c, c->root, "defaults");
     if (c->defaults >= 0 && !is_type(c, c->defaults, RDOF_JOBJ))
         return fail(c, "defaults: an object of frequency keys");
+    if (get(c, c->defaults, "power") >= 0)
+        return fail(c, "defaults.power: power_dbm, in dBm at the antenna");
     if (!known(c, c->defaults, "defaults", DEFAULT_KEYS))
         return false;
     return parse_freqs(c, s) && parse_nets(c, s) && parse_apps(c, s) && parse_policies(c, s) &&
@@ -1413,8 +1417,8 @@ size_t rdof_site_resolved(const rdof_site_t *s, char *out, size_t cap)
         w_str(&w, "mode", modes[fr->mode]);
         w_num(&w, "ts", fr->ts);
         w_bool(&w, "tx", fr->tx);
-        if (fr->power >= 0)
-            w_num(&w, "power", fr->power);
+        if (!isnan(fr->power_dbm))
+            w_num(&w, "power_dbm", fr->power_dbm);
         if (fr->app >= 0)
             w_str(&w, "app", s->app[fr->app].name);
         open_(&w, "heard_by", '[');

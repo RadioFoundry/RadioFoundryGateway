@@ -57,8 +57,9 @@
  * this role). A slot starts sending once SET_ROLE's prebuffer is queued (or
  * the first burst has waited that long); the AT bits are SET_AT's mask (idle
  * 2 s after the last one), ORed in mode 0 with the outbound slots carrying
- * something; a key-up longer than max_key unkeys for the cool-down. The power
- * cap is taken but not applied: the SDR's power is its tx_power_dbm.
+ * something; a key-up longer than max_key unkeys for the cool-down. SET_ROLE's
+ * power cap is taken but not applied: the SDR sends at its tx_power_dbm, less
+ * SET_FREQ's RF level (io.tx_level).
  *
  * Either role ends with SET_ROLE 0, a role change, or the lease (no 0xD6
  * request for lease_s), and drops what it had.
@@ -126,6 +127,9 @@ typedef struct {
     /* Optional: the front end's 48 kS/s sample position now (the split's TIME), extrapolated from the last samples
      * read or sent. NULL: the latest position the modem has seen. */
     int64_t (*now48)(void *ctx);
+    /* Optional: SET_FREQ's RF level (0..255) for the transmitter, after tx_tune. The host takes it as a level of
+     * its device's map (rdof_txpower_sdr_map: 255 its tx.power_dbm). */
+    void (*tx_level)(void *ctx, int level);
 } rdof_sdrmodem_io_t;
 
 typedef struct {
@@ -209,6 +213,7 @@ typedef struct rdof_sdrmodem {
     uint32_t grid_slips, grid_snaps, grid_labeled;
     bool stopped;               /* the gate says stop */
     double carrier_ppm, tune_off_hz;
+    int rf_level;               /* the last SET_FREQ's RF level (255 when it had none) */
     uint32_t counter_base;      /* slot k's counter is counter_base + k (GET_EPOCH, TX_SCHED) */
     /* split duplex TX half: ALIGN and TX_SCHED (rdof/splitops.h) */
     int stream_mode;

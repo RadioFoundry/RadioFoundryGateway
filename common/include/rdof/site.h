@@ -66,7 +66,7 @@ typedef struct {
     uint8_t mode;    /* rdof_fmode_t */
     uint8_t ts;      /* the slot a simplex transmission uses */
     bool tx;         /* something may transmit here */
-    int power;       /* -1: the device's */
+    double power_dbm; /* at the antenna; NAN: the device's */
     uint32_t devices; /* the devices that may serve it (bit per device); 0: any */
     int app;         /* the app that takes it (a repeater's in or out), -1 none */
 } rdof_freq_t;

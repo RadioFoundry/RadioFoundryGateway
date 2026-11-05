@@ -20,6 +20,7 @@
 #include <stdint.h>
 
 #include "rdof/sigmode.h"
+#include "rdof/txpower.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -113,7 +114,8 @@ typedef struct {
 /* A duplex repeater job's setup (bench_repeater). */
 typedef struct {
     uint32_t rx_hz, tx_hz;
-    int cc, power;
+    int cc;
+    rdof_bench_power_t power;
     double hang_s, call_hang_s; /* T_MSInactiv, T_CallHt */
     unsigned slots;             /* bit 1: slot 1, bit 2: slot 2 */
 } rdof_bl_rpt_cfg_t;
@@ -123,7 +125,8 @@ enum { RDOF_BL_RPT_HEARD = 1, RDOF_BL_RPT_LOST, RDOF_BL_RPT_KEY };
 /* An outbound job's setup (bench_tx outbound): a BS downlink keyed for seconds. */
 typedef struct {
     uint32_t freq_hz;
-    int cc, power;
+    int cc;
+    rdof_bench_power_t power;
     double seconds;
 } rdof_bl_ob_cfg_t;
 
@@ -216,14 +219,15 @@ typedef struct {
     const char *(*can_tx)(void *ctx);
     void *ctx;
     /* Transmit jobs (NULL: none), called from the engine's thread with its lock held. tx_open: take the transmitter
-     * for a job on freq_hz at the job's power (bench_tx --power, 0-255: the platform says in why, a note, how it
-     * applied it; why "" none) (setting it up may take a while); false with why when it can't. as_built: the bursts
+     * for a job on freq_hz at the job's power (bench_tx --power-dbm, or the older --power 0-255: the platform says in
+     * why, a note, how it applied it; why "" none) (setting it up may take a while); false with why when it can't. as_built: the bursts
      * go out as the job built them (its headers, terminators, late entry, a family other than MS), not through a path
      * that frames a call itself (a router's transmitter). tx_space: bursts it
      * takes now (0: not yet), -1 when it failed (why). tx_push: a burst (its MMDVM DMR_DATA control byte).
      * tx_unkey: the key-up ends after what was pushed. tx_idle: everything pushed went out and it's unkeyed.
      * tx_close: the job is over (or cancelled): give the transmitter back. */
-    bool (*tx_open)(void *ctx, uint32_t freq_hz, int cc, int power, bool as_built, char *why, size_t cap);
+    bool (*tx_open)(void *ctx, uint32_t freq_hz, int cc, rdof_bench_power_t power, bool as_built, char *why,
+                    size_t cap);
     int (*tx_space)(void *ctx, char *why, size_t cap);
     void (*tx_push)(void *ctx, uint8_t control, const uint8_t burst[33]);
     void (*tx_unkey)(void *ctx);
@@ -267,8 +271,8 @@ typedef struct {
      * until sig_close.
      * sig_state: 1 sending, 2 the source is done and what it sent went out, -1 failed (why). sig_close: unkey and give
      * the transmitter back; src is never called again after it returns. */
-    int (*sig_open)(void *ctx, uint32_t freq_hz, int power, double seconds, const rdof_sig_src_t *src, char *why,
-                    size_t cap);
+    int (*sig_open)(void *ctx, uint32_t freq_hz, rdof_bench_power_t power, double seconds, const rdof_sig_src_t *src,
+                    char *why, size_t cap);
     int (*sig_state)(void *ctx, char *why, size_t cap);
     void (*sig_close)(void *ctx);
     /* The rate the transmitter pulls a source at, samples a second (NULL: 48000). */

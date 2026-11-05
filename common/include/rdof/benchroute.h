@@ -13,7 +13,7 @@
  *
  * The job's frequency and color code don't reach the air from here: the router tunes its transmitter to the path's
  * (the job's frequency must be one of the site's paths). Its power does, as the most the stream sends at
- * (rdof_siteroute_app_burst's power_max). Portable C, no allocation, no locking.
+ * (rdof_siteroute_app_burst's cap_dbm, dBm at the antenna). Portable C, no allocation, no locking.
  */
 #ifndef RDOF_BENCHROUTE_H
 #define RDOF_BENCHROUTE_H

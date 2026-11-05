@@ -51,7 +51,7 @@ int rdof_sdrsplits_add(rdof_sdrsplits_t *set, const rdof_split_params_t *p, doub
         return -1;
     }
     u->set = set, u->i = set->n, u->now = now;
-    const rdof_sdrmodem_io_t mio = {m_reply, m_channel, NULL, u, set->io.now48 ? m_now48 : NULL};
+    const rdof_sdrmodem_io_t mio = {m_reply, m_channel, NULL, u, set->io.now48 ? m_now48 : NULL, NULL};
     /* receive only: the modulator is never used, so the least rate it takes */
     if (rdof_sdrmodem_init(&u->m, &mio, set->rx_fs, 48000, false)) {
         snprintf(set->error, sizeof set->error, "split %d: %s", set->n + 1, u->m.error);

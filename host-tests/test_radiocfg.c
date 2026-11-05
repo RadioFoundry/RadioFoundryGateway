@@ -67,9 +67,10 @@ int main(void)
     /* a transceiver on a modem: rdofradio --mmdvm runs it, with the modem's settings */
     CHECK(parse("{\"version\": 3, \"name\": \"b\", \"id\": 1, \"defaults\": {\"cc\": 1}, \"devices\": [{\"name\": "
                 "\"R\", \"kind\": \"modem\", \"type\": \"mmdvm_hs\", \"port\": {\"path\": \"/dev/ttyS0\"}, "
-                "\"mmdvm\": {\"rx_offset_hz\": -150, \"tx_offset_hz\": -175, \"tx_level\": 50, \"rx_level\": 100}}], "
-                "\"frequencies\": [{\"freq\": 438.0625, \"power\": 0}]}") &&
-          C.on_modem && !C.full && C.rx_hz == 438062500 && C.cfg.nchannels == 1 && C.cfg.channels[0].power == 0);
+                "\"mmdvm\": {\"rx_offset_hz\": -150, \"tx_offset_hz\": -175, \"tx_level\": 50, \"rx_level\": 100}, "
+                "\"tx\": {\"min_dbm\": 0, \"max_dbm\": 30}}], \"frequencies\": [{\"freq\": 438.0625, \"power_dbm\": -20}]}") &&
+          C.on_modem && !C.full && C.rx_hz == 438062500 && C.cfg.nchannels == 1 && C.cfg.channels[0].power == 0 &&
+          isnan(C.tx_power_dbm));
     {
         rdof_modem_t m;
         rdof_radio_t r;
@@ -152,8 +153,9 @@ int main(void)
     CHECK(!parse("{\"version\": 2, \"name\": \"b\", \"devices\": {}, \"roles\": {}}") && strstr(err, "version"));
 
     /* the mqtt network as the board publishes it; no hblink network: HBlink4 off */
-    CHECK(parse("{\"version\": 3, \"name\": \"b\", \"id\": 3, \"wifi\": {}, \"defaults\": {\"cc\": 1, \"power\": 20}, "
-                "\"devices\": [{\"kind\": \"sdr\", \"driver\": \"soapy\"}], \"frequencies\": [{\"name\": \"in\", "
+    CHECK(parse("{\"version\": 3, \"name\": \"b\", \"id\": 3, \"wifi\": {}, \"defaults\": {\"cc\": 1, \"power_dbm\": -2}, "
+                "\"devices\": [{\"kind\": \"sdr\", \"driver\": \"soapy\", \"tx\": {\"power_dbm\": 3}}], "
+                "\"frequencies\": [{\"name\": \"in\", "
                 "\"freq\": 438.25}, {\"name\": \"out\", \"freq\": 438.0125}], \"apps\": [{\"name\": \"R\", \"type\": "
                 "\"repeater\", \"in\": \"in\", \"out\": \"out\"}], \"networks\": [{\"type\": \"mqtt\", \"host\": "
                 "\"m\"}]}"));
@@ -161,6 +163,8 @@ int main(void)
         printf("  %s\n", err);
     CHECK(!C.has_hblink && C.cfg.has_mqtt && !strcmp(C.cfg.mqtt_host, "m") && C.cfg.mqtt_port == 1883 &&
           !strcmp(C.cfg.mqtt_root, "DMR") && !strcmp(C.cfg.mqtt_app, "repeater"));
+    /* the SDR's tx.power_dbm for --tx-power; -2 dBm on its map (3 dBm at 255, 0.2 dB a level): 230 */
+    CHECK(C.tx_power_dbm == 3 && C.cfg.power == 230);
     char text[1024];
     rdofradio_cfg_describe(&C, "file x.json", "--soapy driver=plutosdr", text, sizeof text);
     CHECK(strstr(text, "b runs: R") && strstr(text, "RX 438.25 MHz, TX 438.0125 MHz") &&

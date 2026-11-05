@@ -17,6 +17,7 @@
 #include "rdof/jsonp.h"
 #include "rdof/siteplan.h"
 #include "rdof/status.h"
+#include "rdof/txpower.h"
 
 typedef struct {
     const rdof_jdoc_t *doc;
@@ -24,6 +25,7 @@ typedef struct {
     size_t error_cap;
     int mm[2];       /* the modem's MMDVM settings: a split's TX half's, then its RX half's */
     const char *mmw; /* where they are: devices.NAME.mmdvm */
+    rdof_txmap_t map; /* the unit's transmitter's levels in dBm (rdof/txpower.h) */
 } ctx_t;
 
 /* s into out[cap], cut to cap - 1 bytes (as snprintf "%s" cuts it, without its truncation warning). */
@@ -608,7 +610,8 @@ static bool unit_split(ctx_t *c, const rdof_plan_t *p, const rdof_unit_t *u, con
     return true;
 }
 
-/* A plan channel: a frequency of the site as a roamer's channel (power 255 when it has none). */
+/* A plan channel: a frequency of the site as a roamer's channel, its power_dbm as the unit's transmitter's level
+   (255 when it has none). */
 static bool unit_channel(ctx_t *c, const rdof_plan_t *p, int f, bool with_power, const char *where,
                          rdof_cfg_channel_t *out)
 {
@@ -616,7 +619,7 @@ static bool unit_channel(ctx_t *c, const rdof_plan_t *p, int f, bool with_power,
     int cc = freq_cc(c, p, f);
     if (cc < 0 || cc > 15)
         return err(c, "%s: frequencies.%s has no color code", where, fr->name);
-    return channel_entry(c, fr->hz, cc, with_power && fr->power >= 0 ? fr->power : 255, fr->ts, out);
+    return channel_entry(c, fr->hz, cc, with_power ? rdof_txpower_level(&c->map, fr->power_dbm) : 255, fr->ts, out);
 }
 
 /* The frequencies the board's SDRs hear (its receivers' and the units' on them), sorted: a roamer leaves those to
@@ -751,8 +754,7 @@ static bool unit_repeater(ctx_t *c, const rdof_plan_t *p, const rdof_unit_t *u, 
     for (int f = 0; f < s->nfreq; f++)
         if (!s->freq[f].tx && s->freq[f].hz == cfg->tx_freq)
             return err(c, "%s: frequencies.%s has tx false: nothing transmits on it", where, s->freq[f].name);
-    int power = s->freq[out].power;
-    cfg->power = power < 0 ? 255 : power > 255 ? 255 : power;
+    cfg->power = rdof_txpower_level(&c->map, s->freq[out].power_dbm);
     if (!fget(c, r, "hang_s", 5.0, &cfg->hang_s, where) || !fget(c, r, "call_hang_s", 3.0, &cfg->call_hang_s, where) ||
         !fget(c, r, "cwid_every_s", 900, &cfg->cwid_every_s, where))
         return false;
@@ -914,6 +916,7 @@ bool rdof_plan_radio(const rdof_plan_t *p, const char *name, rdof_config_t *cfg,
         if (dv->has_tx_power)
             cfg->tx_power_dbm = dv->tx_power_dbm;
     }
+    cfg->tx_map = c->map = rdof_plan_dev(p, u->tx >= 0 ? u->tx : u->rx)->txmap;
     if (u->kind == RDOF_UNIT_TRANSCEIVER ? !unit_roamer(c, p, u, where, cfg) : !unit_repeater(c, p, u, where, cfg))
         return false;
     if (!unit_mqtt(c, p, cfg) || !oled(c, root, cfg))

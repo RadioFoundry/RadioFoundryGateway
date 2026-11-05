@@ -294,7 +294,7 @@ bool site_parrot_stream(const uint8_t sid[4]); /* a replay's stream (its transce
 /* An app's stream through the router's pool (rdof_siteroute_app_burst): on when a transceiver is in the pool. */
 bool site_pool_on(void);
 int site_app_path(uint32_t hz, int slot); /* the path heard at hz, slot; -1 none */
-bool site_app_burst(int path, const rdof_net_burst_t *b, bool take_hold, int power_max); /* power_max: 0-255, 255 the path's */
+bool site_app_burst(int path, const rdof_net_burst_t *b, bool take_hold, double cap_dbm); /* cap_dbm: at the antenna, INFINITY the path's */
 bool site_app_holds(const uint8_t sid[4]); /* a transceiver still holds a burst of the stream */
 void site_status_json(rdof_json_t *j); /* "router": the pool's transmitters, the box parrot; nothing without v3 */
 
@@ -498,14 +498,14 @@ int bench_tx_freqs(uint32_t *out, int max); /* bench.tx's frequencies */
 int bench_tx_bands(double (*out)[2], int max); /* bench.tx's bands: low, high (Hz) */
 const char *bench_tx_line_why(void);
 /* as_built: the job's bursts as it built them, on the raw SDR modem (a roamer's parked), never the router */
-bool bench_tx_line_open(uint32_t freq, int cc, int power, bool as_built, char *why, size_t cap);
+bool bench_tx_line_open(uint32_t freq, int cc, rdof_bench_power_t power, bool as_built, char *why, size_t cap);
 int bench_tx_line_space(char *why, size_t cap);
 void bench_tx_line_push(uint8_t control, const uint8_t burst[33]);
 bool bench_tx_line_idle(void);
 void bench_tx_line_close(void);
 /* bench_tx outbound: the SDR modem taken (a roamer's parked) and keyed as a repeater's downlink for seconds */
 const char *bench_tx_ob_why(void);
-bool bench_tx_ob_open(uint32_t freq, int cc, int power, double seconds, char *why, size_t cap);
+bool bench_tx_ob_open(uint32_t freq, int cc, rdof_bench_power_t power, double seconds, char *why, size_t cap);
 int bench_tx_ob_check(char *why, size_t cap); /* 0, or -1 with why: it stopped */
 void bench_tx_ob_unkey(void);
 void bench_tx_ob_close(void);
@@ -513,7 +513,8 @@ void bench_tx_ob_close(void);
 void bench_tx_ob_push(int slot, uint8_t control, const uint8_t burst[33]);
 /* a signal mode's transmission (bench-api.md section 14.6): the SDR modem taken as for an outbound, src keyed on freq;
  * its state as rdof_bl_platform_t.sig_state's */
-int bench_tx_sig_open(uint32_t freq, int power, double seconds, const rdof_sig_src_t *src, char *why, size_t cap);
+int bench_tx_sig_open(uint32_t freq, rdof_bench_power_t power, double seconds, const rdof_sig_src_t *src, char *why,
+                      size_t cap);
 int bench_tx_sig_state(char *why, size_t cap);
 void bench_tx_sig_close(void);
 double bench_tx_sig_rate(void);

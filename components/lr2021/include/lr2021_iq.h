@@ -143,13 +143,18 @@ void lr2021_iq_stop(lr2021_iq_t *iq);
 
 /* ── Transmit ── */
 
+/* The front end's transmit path: its PA inside the board's PA band (the default), or its bypass. Outside the band
+ * it's the bypass either way. */
+typedef enum { LR2021_TX_PA_BAND = 0, LR2021_TX_PA_OFF } lr2021_tx_pa_t;
+
 typedef struct {
     lr2021_tx_mode_t mode;  /* FREQ, PHASE_STEP, IQ_PHASE, IQ_POLAR or CW */
     double center_hz;       /* 0: the receive center */
     double ppm;             /* used when center_hz is given */
     uint32_t rate;          /* S/s (R3.10: 31 250 to 312 500 tried) */
     uint32_t fdev_hz;       /* FREQ: count x fdev / 64 Hz (R3.10) */
-    double power_dbm;
+    double power_dbm;       /* the chip's output (before the board's front end) */
+    lr2021_tx_pa_t pa;      /* the front end's PA or its bypass */
     uint64_t samples;       /* the transmission's length in samples, to size the runs (0: unknown, full runs) */
     int max_ms;             /* give up after this (0: the length plus 2 s, or 10 s; streamed: none) */
     bool streamed;          /* fed as it goes: the pull may answer LR2021_TX_PULL_WAIT, and the end isn't padded but

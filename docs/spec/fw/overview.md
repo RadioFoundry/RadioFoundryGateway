@@ -120,6 +120,9 @@ Portable-core gates (compile-time macros, defaults 1; `common/Kconfig`, `sdr/Kco
 | `RDOF_BENCH` | bool | y | depends on `RDOF_SDR` |
 | `RDOF_BENCH_TX` | bool | y | |
 | `RDOF_SDR_LR2021` | bool | n | |
+| `RDOF_LR2021_PA_ABOVE_DBM` | int | −1 | a request over this (dBm at the antenna) in the PA's band goes through the PA, else the bypass |
+| `RDOF_LR2021_PA_GAIN_DB` / `_BYPASS_GAIN_DB` | int | 12 / −22 | antenna less the chip's setting on each path (R3.44, 920 MHz) |
+| `RDOF_LR2021_PA_MAX_DBM` | int | 27 | the most at the antenna through the PA |
 | `RDOF_USB_HOST` | bool | y | n in `w12` (no USB host port) |
 | `RDOF_BENCH_LINE_PORT` | int | 7373 | the bench's line protocol TCP port; 0: off |
 | `RDOF_POWER_KEY_GPIO` | int | −1 | −1..21 (an RTC GPIO, pressed low); 0 in `w12` |

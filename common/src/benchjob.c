@@ -214,6 +214,7 @@ static bool parse_outbound(const rdof_jdoc_t *d, int obj, rdof_bj_job_t *j, uint
     j->freq_mhz = num(d, obj, "freq", 0);
     j->cc = (int)num(d, obj, "cc", 1);
     j->power = (int)num(d, obj, "power", 255);
+    j->power_dbm = num(d, obj, "power_dbm", NAN);
     j->seconds = num(d, obj, "seconds", 10);
     j->src = (uint32_t)num(d, obj, "src", 9990301);
     j->slots = slots(d, obj);
@@ -257,6 +258,7 @@ static bool parse_repeater(const rdof_jdoc_t *d, int obj, rdof_bj_job_t *j, char
     j->tx_mhz = j->freq_mhz = num(d, obj, "tx", 0);
     j->cc = (int)num(d, obj, "cc", 2);
     j->power = (int)num(d, obj, "power", 255);
+    j->power_dbm = num(d, obj, "power_dbm", NAN);
     j->seconds = num(d, obj, "seconds", 60);
     j->json = flag(d, obj, "json");
     j->hang = num(d, obj, "hang", 4.0);
@@ -312,6 +314,7 @@ bool rdof_bj_parse(const rdof_jdoc_t *d, int obj, rdof_bj_job_t *j, uint8_t *amb
     j->freq_mhz = num(d, obj, "freq", 438.5);
     j->cc = (int)num(d, obj, "cc", 2);
     j->power = (int)num(d, obj, "power", 255);
+    j->power_dbm = num(d, obj, "power_dbm", NAN);
     j->burst_cc = (int)num(d, obj, "burst_cc", j->cc);
     j->listen_after = num(d, obj, "listen_after", 0);
     text(d, obj, "ambe_out", j->ambe_out, sizeof j->ambe_out);

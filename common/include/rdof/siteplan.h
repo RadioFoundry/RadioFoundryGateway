@@ -26,6 +26,7 @@
 #include "rdof/config.h"
 #include "rdof/jsonp.h"
 #include "rdof/site.h"
+#include "rdof/txpower.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -71,8 +72,10 @@ typedef struct {
     unsigned needs;     /* a modem: RDOF_NEED_* */
     bool tx;            /* an SDR: it transmits ("tx", or a frequency it transmits on) */
     int tx_carriers;    /* an SDR: tx.carriers, 1 unless said */
-    double tx_power_dbm; /* an SDR: tx.power_dbm */
+    double tx_power_dbm; /* an SDR: tx.power_dbm, at the antenna */
     bool has_tx_power;
+    rdof_txmap_t txmap; /* its RF levels in dBm: a modem's or radio's tx.min_dbm / max_dbm (none if not given); an
+                           SDR's rdof_txpower_sdr_map of its power */
     rdof_dev_bench_t bench;
 } rdof_plan_dev_t;
 

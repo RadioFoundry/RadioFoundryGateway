@@ -21,8 +21,8 @@
  * --set-os-clock steps the OS clock to it (root; for a box with nothing else setting the time, a PlutoSDR).
  *
  *   rdofradio DEVICE --allow-tx --rx MHZ [--tx MHZ] [--duplex full|half] [--cc CC] [-r RATE] [--bw MHZ]
- *             [--tx-gain DB] [--tx-lo MHZ] [--gain DB] [--center MHZ] [--monitor] [--tx-offset S] [--ppm PPM [--ppm-tol PPM]]
- *             [--parrot ID] [--stream ARGS] [--seconds S] [--bursts] [--quiet] [-v] [--web [ADDR:]PORT]
+ *             [--tx-power DBM [--tx-max-dbm DBM] | --tx-gain DB] [--tx-lo MHZ] [--gain DB] [--center MHZ] [--monitor]
+ *             [--tx-offset S] [--ppm PPM [--ppm-tol PPM]] [--parrot ID] [--stream ARGS] [--seconds S] [--bursts] [--quiet] [-v] [--web [ADDR:]PORT]
  *             [--last-exit FILE] [--ota FILE] [--fft builtin|pffft] [--bench [ADDR:]PORT] [--bench-tx MHZ|LOW-HIGH,...]
  *   rdofradio DEVICE --allow-tx --config FILE [--clock-state FILE] [--set-os-clock] [the device's flags as above]
  *   rdofradio DEVICE --allow-tx --split-tx PORT [--baud N] [--split-power-cap N] --rx MHZ --tx MHZ [--cc CC] [...]
@@ -41,7 +41,7 @@
  * update (POST /api/ota) writes the new program there and stops, for the supervisor to start it. --bench serves the
  * bench's line protocol (docs/spec/bench-api.md section 14) on PORT (7373 by convention), every interface unless
  * ADDR is given: the receiver's bursts and wideband captures for tools/bench/rfgbench.py, and its transmit jobs
- * (bench_tx's voice, csbk, data) on the --bench-tx frequencies and bands (LOW-HIGH), at --tx-gain, in the transceiver's
+ * (bench_tx's voice, csbk, data) on the --bench-tx frequencies and bands (LOW-HIGH), at --tx-power, in the transceiver's
  * place while they run (not in a duplex repeater). --fpga-chz [ADDR] (with --iio, on a PlutoSDR whose FPGA has the
  * channelizer block, its registers at ADDR, 0x7C480000 by default): the block channelizes and the receiver takes its
  * 48 kS/s channel frames from the receive DMA, its AFC steering the block's NCOs; the rate can then go to 24.576 MS/s
@@ -89,8 +89,14 @@
  *
  * The transmitter's LO sits at --tx-lo (default 100 kHz above --tx) and the modulator puts the carrier at the
  * offset, so the LO leakage and the I/Q image are off the channel. Unkeyed, the TX gain is the device's least
- * (the most attenuation); it goes to --tx-gain while anything keyed is in the stream. Nothing transmits without
- * --allow-tx.
+ * (the most attenuation); it goes to the transmit power while anything keyed is in the stream. Nothing transmits
+ * without --allow-tx.
+ *
+ * Transmit power: --tx-power DBM at the antenna, from --tx-max-dbm, the device's output at its most gain (+7 dBm by
+ * default, a PlutoSDR's nominal: uncalibrated; set it for another device). With --config and neither flag, the SDR
+ * device's tx.power_dbm. --tx-gain DB sets the device's gain itself (its own scale: a PlutoSDR's 0..89, 89 the most).
+ * A SET_FREQ's RF level is a level of the device's map (rdof_txpower_sdr_map): 255 is the transmit power, each step
+ * 0.2 dB under it; the gain takes it at the next key-up.
  */
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
@@ -121,6 +127,7 @@
 #include "rdof/pdu.h"
 #include "rdof/repeater.h"
 #include "rdof/siteroute.h"
+#include "rdof/txpower.h"
 #include "rdof/split.h"
 #include "rdof/sdr/chzhw.h"
 #include "rdof/sdr/plutofpga.h"
@@ -470,7 +477,8 @@ static void usage(void)
 {
     fprintf(stderr,
             "usage: rdofradio DEVICE --allow-tx --rx MHZ [--tx MHZ] [--duplex full|half] [--cc CC] [-r RATE] [--bw MHZ]\n"
-            "                 [--tx-gain DB] [--tx-lo MHZ] [--gain DB] [--center MHZ] [--monitor] [--tx-offset S] [--ppm PPM [--ppm-tol PPM]]\n"
+            "                 [--tx-power DBM [--tx-max-dbm DBM] | --tx-gain DB] [--tx-lo MHZ] [--gain DB] [--center MHZ] [--monitor]\n"
+            "                 [--tx-offset S] [--ppm PPM [--ppm-tol PPM]]\n"
             "                 [--parrot ID] [--stream ARGS] [--seconds S] [--bursts] [--quiet] [-v] [--web [ADDR:]PORT]\n"
             "                 [--last-exit FILE] [--ota FILE] [--fft builtin|pffft] [--bench [ADDR:]PORT] [--bench-tx MHZ|LOW-HIGH,...]\n"
             "                 [--fpga-chz [ADDR]] (with --iio: the FPGA channelizer on a PlutoSDR, at 0x7C480000 by default)\n"
@@ -697,6 +705,24 @@ static int io_channel(void *ctx, uint32_t hz)
         return hz == R.rx_hz ? channel_of(hz) : -1;
     const int c = channel_of(hz);
     return c >= 0 ? c : RDOF_SDRMODEM_NOT_HEARD;
+}
+/* The transmit power: the gain keyed (--tx-power or --tx-gain), and what SET_FREQ's RF level takes off it. */
+static double txg_full;         /* the gain at level 255 */
+static double tx_max_dbm = NAN; /* --tx-max-dbm: the device's output at its most gain */
+static int tx_rf_level = 255;
+static double gain_dbm(double g) { return tx_max_dbm - (dev->tx_gain_max - g); }
+static double keyed_gain(void)
+{
+    const rdof_txmap_t m = rdof_txpower_sdr_map(0);
+    const double g = txg_full + rdof_txpower_dbm(&m, tx_rf_level); /* 0 at 255, -0.2 dB a level under it */
+    return g < dev->tx_gain_min ? dev->tx_gain_min : g;
+}
+static void io_tx_level(void *ctx, int level)
+{
+    if (level != tx_rf_level && R.verbose)
+        fprintf(stderr, "transmit: RF level %d, %.1f dBm at the antenna (nominal)\n", level,
+                gain_dbm(txg_full) - (255 - level) * RDOF_TXPOWER_SDR_SPAN_DB / 255.0);
+    tx_rf_level = level;
 }
 static bool io_tune(void *ctx, uint32_t hz, double *off)
 {
@@ -926,7 +952,7 @@ static void sr_start(void)
             if (s->app[a].type == RDOF_APP_REPEATER && s->freq[s->app[a].in].hz == R.rx_hz)
                 rdof_siteroute_add_repeater(&SR, a, &R.r);
     } else {
-        rdof_siteroute_add_txvr(&SR, &R.t, 0);
+        rdof_siteroute_add_txvr(&SR, &R.t, 0, &rcfg.cfg.tx_map);
     }
     sr_on = true;
 }
@@ -1821,7 +1847,31 @@ static double bench_tx_mhz[RDOF_BENCHTX_MAX_FREQS];
 static int bench_ntx;
 static double bench_band_hz[RDOF_BL_TX_BANDS][2];
 static int bench_nband;
-static double bench_txg; /* --tx-gain: what a job transmits at */
+/* A job's power: an SDR sends at the transmit power (--tx-power); a modem at the job's RF level under --rf-level, a
+ * dBm on its device's map (tx.min_dbm / tx.max_dbm, with --config) */
+static rdof_txmap_t bench_map;
+static int bench_level(rdof_bench_power_t p)
+{
+    const rdof_bench_limit_t lim = {false, 0, mm_rf_level};
+    return rdof_bench_power_level(&lim, p, &bench_map);
+}
+/* The note for a job's power; "" when it's what's sent. */
+static void bench_note(rdof_bench_power_t p, char *why, size_t cap)
+{
+    char asked[48];
+    if (!isnan(p.dbm))
+        snprintf(asked, sizeof asked, "power_dbm %.1f", p.dbm);
+    else
+        snprintf(asked, sizeof asked, "--power %d", p.level);
+    why[0] = 0;
+    if (R.mmdvm && !isnan(p.dbm) && !rdof_txmap_valid(&bench_map))
+        snprintf(why, cap, "%s on the MMDVM modem: RF level 0, the least (no tx.min_dbm / tx.max_dbm for it)", asked);
+    else if (R.mmdvm)
+        snprintf(why, cap, "%s on the MMDVM modem: RF level %d%s", asked, bench_level(p),
+                 bench_level(p) == mm_rf_level ? " (--rf-level)" : "");
+    else if (!isnan(p.dbm) || p.level != 255)
+        snprintf(why, cap, "%s isn't applied: the SDR transmits at %.1f dBm (--tx-power)", asked, gain_dbm(txg_full));
+}
 
 static bool bench_tx_listed(double hz)
 {
@@ -1906,7 +1956,8 @@ static struct {
     rdof_benchtx_t tx;
 } BT = {.mu = PTHREAD_MUTEX_INITIALIZER};
 
-static bool bl_tx_open(void *ctx, uint32_t freq, int cc, int power, bool as_built, char *why, size_t cap)
+static bool bl_tx_open(void *ctx, uint32_t freq, int cc, rdof_bench_power_t power, bool as_built, char *why,
+                       size_t cap)
 {
     pthread_mutex_lock(&BT.mu);
     const bool busy = BT.want || BT.active || BR.want || BR.active || BO.want || BO.active;
@@ -1918,12 +1969,10 @@ static bool bl_tx_open(void *ctx, uint32_t freq, int cc, int power, bool as_buil
     pthread_mutex_unlock(&BT.mu);
     if (busy)
         snprintf(why, cap, "the transmitter is still busy with the last job");
-    else if (R.mmdvm)
-        snprintf(why, cap, "--power %d on the MMDVM modem%s", power, power > mm_rf_level ? ", capped by --rf-level" : "");
     else
-        snprintf(why, cap, "--power %d isn't applied: the SDR transmits at --tx-gain %.0f", power, bench_txg);
+        bench_note(power, why, cap);
     if (!busy)
-        BT.power = power;
+        BT.power = bench_level(power);
     return !busy;
 }
 
@@ -2011,8 +2060,8 @@ static struct {
     double asked;
 } BS = {.mu = PTHREAD_MUTEX_INITIALIZER};
 
-static int bl_sig_open(void *ctx, uint32_t freq, int power, double seconds, const rdof_sig_src_t *src, char *why,
-                       size_t cap)
+static int bl_sig_open(void *ctx, uint32_t freq, rdof_bench_power_t power, double seconds, const rdof_sig_src_t *src,
+                       char *why, size_t cap)
 {
     pthread_mutex_lock(&BS.mu);
     pthread_mutex_lock(&BT.mu);
@@ -2026,7 +2075,7 @@ static int bl_sig_open(void *ctx, uint32_t freq, int power, double seconds, cons
     if (busy)
         snprintf(why, cap, "the transmitter is still busy with the last job");
     else
-        snprintf(why, cap, "power %d isn't applied: the SDR transmits at --tx-gain %.0f", power, bench_txg);
+        bench_note(power, why, cap);
     return busy ? 0 : 1;
 }
 
@@ -2093,8 +2142,8 @@ static bool bl_ob_open(void *ctx, const rdof_bl_ob_cfg_t *cfg, char *why, size_t
     pthread_mutex_unlock(&BS.mu);
     if (busy)
         snprintf(why, cap, "the transmitter is still busy with the last job");
-    else if (cfg->power != 255)
-        snprintf(why, cap, "--power %d isn't applied: the SDR transmits at --tx-gain %.0f", cfg->power, bench_txg);
+    else
+        bench_note(cfg->power, why, cap);
     return !busy;
 }
 
@@ -2240,7 +2289,7 @@ static bool bench_tx_poll(double now)
         }
         BT.want = 0, BT.active = true;
         const rdof_benchtx_io_t io = {bt_to_modem, bt_to_tool, bt_keying, NULL, NULL};
-        rdof_benchtx_init(&BT.tx, &io, BT.freq, BT.cc, R.mmdvm ? BT.power : 0, 120.0, now);
+        rdof_benchtx_init(&BT.tx, &io, BT.freq, BT.cc, R.mmdvm ? BT.power : 255, 120.0, now); /* SDR: --tx-power */
         say("bench: a job has the transmitter: %.4f MHz cc %d\n", BT.freq / 1e6, BT.cc);
     }
     if (!BT.active) {
@@ -2288,10 +2337,8 @@ static bool bl_rpt_open(void *ctx, const rdof_bl_rpt_cfg_t *cfg, char *why, size
     pthread_mutex_unlock(&BR.mu);
     if (busy)
         snprintf(why, cap, "the transmitter is still busy with the last job");
-    else if (R.mmdvm && cfg->power > mm_rf_level)
-        snprintf(why, cap, "--power %d capped by --rf-level %d", cfg->power, mm_rf_level);
-    else if (!R.mmdvm && cfg->power != 255)
-        snprintf(why, cap, "--power %d isn't applied: the SDR transmits at --tx-gain %.0f", cfg->power, bench_txg);
+    else
+        bench_note(cfg->power, why, cap);
     return !busy;
 }
 
@@ -2358,7 +2405,7 @@ static bool bench_rpt_poll(double now)
         BR.r.enabled[1] = cfg.slots & 2u, BR.r.enabled[2] = cfg.slots & 4u;
         BR.r.inactivity_s = cfg.hang_s;
         rdof_repeater_set_call_hang(&BR.r, cfg.call_hang_s);
-        BR.r.power = cfg.power; /* a modem's (an SDR modem ignores it); --rf-level caps it on the port */
+        BR.r.power = R.mmdvm ? bench_level(cfg.power) : 255; /* --rf-level caps it on the port too */
         BR.r.clock = p_clock;
         BR.r.on_key = br_on_key;
         BR.r.ctx = &R;
@@ -4307,6 +4354,8 @@ int main(int argc, char **argv)
     int mm_flags = 0;
     int baud = 115200, power_cap = 0, tx_flags = 0;
     double bw = 0, rate = 0, rx = 0, tx = 0, tx_lo = 0, center = 0, gain = NAN, txg = 0, seconds = 0, offset_s = 0;
+    double tx_dbm = NAN;
+    bool txg_given = false;
     int cc = 1, rx_slot = 1, allow = 0, monitor = 0, verbose = 0, fpga_board = 0;
     const char *duplex = "full", *fpga_bit = NULL;
     for (int i = 1; i < argc; i++) {
@@ -4434,6 +4483,25 @@ int main(int argc, char **argv)
         } else if (!strcmp(a, "--tx-gain")) {
             NEXT();
             txg = atof(v);
+            txg_given = true;
+            tx_flags++;
+        } else if (!strcmp(a, "--tx-power")) {
+            NEXT();
+            char *end;
+            tx_dbm = strtod(v, &end);
+            if (*end || !(tx_dbm >= -60 && tx_dbm <= 40)) {
+                fprintf(stderr, "--tx-power: dBm at the antenna, -60 to 40\n");
+                return 2;
+            }
+            tx_flags++;
+        } else if (!strcmp(a, "--tx-max-dbm")) {
+            NEXT();
+            char *end;
+            tx_max_dbm = strtod(v, &end);
+            if (*end || !(tx_max_dbm >= -30 && tx_max_dbm <= 40)) {
+                fprintf(stderr, "--tx-max-dbm: the device's output at its most gain, dBm (-30 to 40)\n");
+                return 2;
+            }
             tx_flags++;
         } else if (!strcmp(a, "--tx-offset")) {
             NEXT();
@@ -4589,8 +4657,8 @@ int main(int argc, char **argv)
         return hold(argc, argv, why);
     }
     if (R.mmdvm && (split_tx || tx_flags)) {
-        fprintf(stderr, "--mmdvm: the modem transmits; --split-tx, --tx-gain, --tx-lo, --tx-offset and --monitor "
-                        "are the SDR's\n");
+        fprintf(stderr, "--mmdvm: the modem transmits; --split-tx, --tx-power, --tx-max-dbm, --tx-gain, --tx-lo, "
+                        "--tx-offset and --monitor are the SDR's\n");
         return 2;
     }
     if (!R.mmdvm && mm_flags) {
@@ -4683,7 +4751,8 @@ int main(int argc, char **argv)
         return 2;
     }
     if (R.split && tx_flags) {
-        fprintf(stderr, "--split-tx: the radio transmits; --tx-gain, --tx-lo, --tx-offset and --monitor are the SDR's\n");
+        fprintf(stderr, "--split-tx: the radio transmits; --tx-power, --tx-max-dbm, --tx-gain, --tx-lo, --tx-offset "
+                        "and --monitor are the SDR's\n");
         return 2;
     }
     if (!tx)
@@ -4860,6 +4929,26 @@ int main(int argc, char **argv)
     }
     WS.agc = isnan(gain);
     WS.tx_gain = dev->tx_gain_min;
+    if (isnan(tx_max_dbm))
+        tx_max_dbm = 7.0; /* a PlutoSDR's nominal at full gain */
+    if (txg_given && !isnan(tx_dbm)) {
+        fprintf(stderr, "--tx-power or --tx-gain, not both\n");
+        dev->close(dev);
+        return 2;
+    }
+    if (!txg_given && isnan(tx_dbm) && config_path && !isnan(rcfg.tx_power_dbm))
+        tx_dbm = rcfg.tx_power_dbm;
+    if (!isnan(tx_dbm)) {
+        txg = dev->tx_gain_max - (tx_max_dbm - tx_dbm);
+        if (txg < dev->tx_gain_min || txg > dev->tx_gain_max) {
+            const double g = txg < dev->tx_gain_min ? dev->tx_gain_min : dev->tx_gain_max;
+            fprintf(stderr, "transmit power %.1f dBm: past the device's %.1f..%.1f dBm, %.1f dBm\n", tx_dbm,
+                    gain_dbm(dev->tx_gain_min), tx_max_dbm, gain_dbm(g));
+            txg = g;
+        }
+    }
+    txg_full = txg;
+    bench_map = rcfg.cfg.tx_map;
     if (!R.split && !R.mmdvm && (txg < dev->tx_gain_min || txg > dev->tx_gain_max)) {
         fprintf(stderr, "TX gain %.1f outside the device's %.1f..%.1f\n", txg, dev->tx_gain_min, dev->tx_gain_max);
         dev->close(dev);
@@ -4877,7 +4966,8 @@ int main(int argc, char **argv)
 
     /* the modem, its client, and the repeater or the transceiver over them */
     const bool rx_only = R.split || R.mmdvm;
-    const rdof_sdrmodem_io_t io = {io_reply, io_channel, rx_only ? NULL : io_tune, &R, R.split ? split_now48 : NULL};
+    const rdof_sdrmodem_io_t io = {io_reply, io_channel, rx_only ? NULL : io_tune, &R, R.split ? split_now48 : NULL,
+                                   rx_only ? NULL : io_tx_level};
     /* the nominal rate when the device's is within 2 S/s of it, as the receiver takes it (below 2.083 MS/s an
        AD9361 reports 1295999 for 1296000, which the modulator can't phase) */
     R.tx_rate = fabs(got - rate) <= 2.0 ? dev->tx_rate * rate / got : dev->tx_rate;
@@ -4950,10 +5040,12 @@ int main(int argc, char **argv)
         dev->close(dev);
         return 1;
     }
-    fprintf(stderr, "%s: %s, RX %.4f MHz (center %.4f), TX %.4f MHz (LO %.4f), cc %d, %.0f S/s, TX gain %.1f "
-                    "(%.1f..%.1f), RX gain %s, analog bandwidth %.2f MHz\n",
+    fprintf(stderr, "%s: %s, RX %.4f MHz (center %.4f), TX %.4f MHz (LO %.4f), cc %d, %.0f S/s, TX %.1f dBm at the "
+                    "antenna (nominal: %.1f at full gain), gain %.1f (%.1f..%.1f), RX gain %s, analog bandwidth "
+                    "%.2f MHz\n",
             R.full ? "repeater" : "transceiver", R.client.version, rx / 1e6, R.rx.center_hz / 1e6, tx / 1e6,
-            tx_lo / 1e6, cc, got, txg, dev->tx_gain_min, dev->tx_gain_max, isnan(gain) ? "auto" : "set",
+            tx_lo / 1e6, cc, got, gain_dbm(txg), tx_max_dbm, txg, dev->tx_gain_min, dev->tx_gain_max,
+            isnan(gain) ? "auto" : "set",
             dev->bandwidth(dev) / 1e6);
     fprintf(stderr, "device: %s; FFT: %s\n", dev->name,
 #ifdef RDOF_PFFFT
@@ -5008,7 +5100,6 @@ int main(int argc, char **argv)
     }
     double last_web = 0;
 #endif
-    bench_txg = txg;
     bench_start();
     /* The receive loop ahead of the rest: it paces the transmitter, and a busy moment elsewhere (three ssh logins at
      * once on a PlutoSDR) left it behind, half a second of the transmit guard's zeros on the air at a time. Real-time
@@ -5172,7 +5263,7 @@ int main(int argc, char **argv)
         if (keyed) {
             keyed_until = (double)(txn + ntx) / txrate + 0.3; /* past the device's buffers */
             if (!hot) {
-                tx_gain(txg);
+                tx_gain(keyed_gain());
                 hot = true;
                 /* where the receiver should report the key-up's first burst: its first keyed sample, then the ramp
                  * and the CACH (4 + 12 symbols), then the receiver's delay (48 at 48 kS/s; reference.md, "Timing") */

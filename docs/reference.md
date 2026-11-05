@@ -283,7 +283,7 @@ From `idf.py size`. Run it after a change that adds code or RAM, and update this
 
 | Build | Date | App image | Free in its slot | DIRAM used (of 334 KB) |
 |---|---|---|---|---|
-| `16mb` + `w12` | 2026-11-05 | 2274 KB | 1.8 MB of 4 MB | 181.1 KB (54.3%) |
+| `16mb` + `w12` | 2026-11-05 | 2282 KB | 1.8 MB of 4 MB | 181.2 KB (54.3%) |
 | `16mb` + `w12` + `rust` | 2026-10-27 | 2063 KB | 2.0 MB of 4 MB | |
 | `16mb` | 2026-10-28 | 1960 KB | 2.1 MB of 4 MB | 167 KB (49.9%) |
 | `4mb` (no SDR) | 2026-11-02 | 1279 KB | 641 KB of 1.875 MB | 134 KB (40.3%) |
@@ -777,6 +777,12 @@ transmit is CTX 1, with CPS 1 for the PA (inside `CONFIG_RDOF_LR2021_PA_LO_MHZ` 
 GPIO4 powers it. So the W12 receives well only in 902–928 MHz; elsewhere the SAW costs about 46 dB, and at 439 MHz
 only strong signals decode. Transmit at 439 MHz through the bypass gives about +3 dBm.
 
+A transmission's power is dBm at the antenna (config-v3.md §4.7). The front end picks the path per transmission: the
+PA in its band for more than `CONFIG_RDOF_LR2021_PA_ABOVE_DBM` (−1), else the bypass, the chip set to the request
+less the path's gain (`_PA_GAIN_DB` +12, `_BYPASS_GAIN_DB` −22: R3.44's, at 920 MHz) on its 0.5 dB steps, −9.5..21,
+and the PA held to `_PA_MAX_DBM` (+27). The TX log line gives the chip's setting and the path. The gains at 446 and
+439 MHz aren't measured: the +3 dBm above says the bypass loses less there.
+
 ### Transmit: the SDR as a radio
 
 The SDR modem (`sdr/src/sdrmodem.c`, `rdof/sdr/sdrmodem.h`) is an emulated MMDVM modem, protocol 1, describing
@@ -788,7 +794,8 @@ transmitter ([transmitters.md](spec/fw/transmitters.md)).
 
 - **Settings:** an SDR device that transmits ([config-v3.md](spec/fw/config-v3.md) §4.1): on simplex frequencies
   it's a transceiver unit; a repeater app on it is a duplex repeater (a full duplex front end); a DCDM frequency it
-  sends on is a DCDM gateway. `tx.power_dbm` (10 by default) is the power. Saving refuses a front end that can't
+  sends on is a DCDM gateway. `tx.power_dbm` (10 by default) is the power, dBm at the antenna: a frequency's
+  `power_dbm` is taken under it (the SET_FREQ RF level, 255 the device's power). Saving refuses a front end that can't
   transmit, `full` on a half duplex front end, a frequency the SDR doesn't hear, and a TX frequency outside the
   front end's range.
 - **The modem:** SET_FREQ picks the receiver channel for the RX frequency (NAK if none) and asks the front end where
@@ -1054,8 +1061,8 @@ private test network. Code: `bench_api.c`, `bench_radio.c`, `bench_tx.c`; the sp
 
 - the receiver channels' bursts, cs8 captures and level triggers from a 2 s wideband history (kept only while a
   capture or I/Q stream used it in the last ten minutes, so a first capture has no pre-roll);
-- `bench_tx` jobs through the SDR modem under `bench.tx`'s gates, in WS /tx's one job slot, `--power` capped at
-  `bench.tx.rf_level`. A roamer keeps its SDR modem, so a W12 running one refuses transmit jobs;
+- `bench_tx` jobs through the SDR modem under `bench.tx`'s gates, in WS /tx's one job slot, `--power-dbm` (or
+  `--power`) capped at `bench.tx.max_dbm` or `rf_level`. A roamer keeps its SDR modem, so a W12 running one refuses transmit jobs;
 - the `tune` op moves the receiver's window for a session (`PUT /sdr`'s retune) until it ends or releases it; a
   `trigger` or `rx` outside the window tunes for itself;
 - analog `tx` and `rx` with a `mode`: FM, and AM for airband (`rfgbench.py tx am` / `rx am`: 1 kHz at 30% by
@@ -1123,6 +1130,11 @@ rdofradio --soapy driver=plutosdr -r 2400000 --allow-tx --rx 438.25 --tx 438.75 
     --duplex full --cc 1 --gain 20 --tx-gain 65 --tx-offset 0.063
 ```
 
+Transmit power: `--tx-power DBM` at the antenna, from `--tx-max-dbm` (the device's output at its most gain, +7 dBm
+by default: a Pluto's nominal, not measured), so the gain is the most less the difference, held to the device's range
+with a warning. `--tx-gain DB` is the raw form, not with `--tx-power`. A frequency's `power_dbm` (SET_FREQ's RF level)
+takes 0.2 dB a level off it, from the next key-up. The start's log line gives the dBm and the gain.
+
 On a Pluto over USB (2026-10-27), RX and TX antennas on one bench: full duplex decoded the inbound throughout while
 transmitting, the outbound on the 30 ms grid; half duplex sent back a whole call with 0 FEC failures.
 
@@ -1165,9 +1177,10 @@ firmware's parser (`rdof_plan_open`, `rdof_plan_check` with `rdof_plan_host`), c
 It runs the file's one unit that transmits: a repeater, or a transceiver on the SDR (half duplex, on its idle
 frequency), or either on a modem with `--mmdvm PORT`. `mode` sfr or dcdm is refused. The unit's keys are the
 firmware's (`rdof_plan_radio`). The device stays on the command line (`--soapy` or `--iio`, `-r`, `--gain`,
-`--tx-gain`, `--tx-offset`, `--bw`, `--center`, `--allow-tx`, `--seconds`, `--web`, `-v`, `--bursts`, `--monitor`,
-`--tx-lo`, `--stream`, `--fft`, `--mmdvm`, `--baud`, `--rf-level`); `--rx`, `--tx`, `--cc`, `--duplex` and
-`--parrot` are refused beside it.
+`--tx-power`, `--tx-max-dbm`, `--tx-gain`, `--tx-offset`, `--bw`, `--center`, `--allow-tx`, `--seconds`, `--web`,
+`-v`, `--bursts`, `--monitor`, `--tx-lo`, `--stream`, `--fft`, `--mmdvm`, `--baud`, `--rf-level`); `--rx`, `--tx`,
+`--cc`, `--duplex` and `--parrot` are refused beside it. Without `--tx-power` or `--tx-gain`, the SDR device's
+`tx.power_dbm` is the power.
 
 ```sh
 cat > example.json <<'JSON'
@@ -1221,7 +1234,8 @@ rdofradio --soapy driver=plutosdr -r 2400000 --allow-tx --config example.json --
 description) on PORT is the TX half; the SDR, opened receive only, is the RX half (any receiver: an RTL-SDR, a Pluto
 with its transmitter off). `rdof_split_t` joins them, as `split_port.c` does on a board. PORT is the radio's USB
 serial device or a programming cable's UART (`--baud`, 115200). `--split-power-cap` caps the radio's RF level (MMDVM
-scale 1-255). The SDR's transmitter flags (`--tx-gain`, `--tx-lo`, `--tx-offset`, `--monitor`) are refused.
+scale 1-255). The SDR's transmitter flags (`--tx-power`, `--tx-max-dbm`, `--tx-gain`, `--tx-lo`, `--tx-offset`,
+`--monitor`) are refused.
 
 - **The SDR modem's clock** is the receive stream's sample count against the wall clock, at the freshest read; its
   least lag over half a second follows the device's crystal. A lag 2 ms over that floor for a second is dropped
@@ -1252,7 +1266,8 @@ is read by a thread.
 
 - `--rf-level N` caps every SET_FREQ's RF level (0-255; 255 = no cap), whatever sent it (`rdof_mmdvm_cap_rf_level`).
 - `--rx-offset-hz`, `--tx-offset-hz`, `--rx-level`, `--tx-level`: the modem's settings; with `--config`, the modem
-  device's `mmdvm` keys, and each frequency's `power` is its RF level.
+  device's `mmdvm` keys, and each frequency's `power_dbm` goes to an RF level on the device's `tx` map (255 without
+  one).
 - **An SDR beside it** (DEVICE, optional), opened receive only: it hears the modem's RX frequency as a channel of its
   own (`modem-rx`, when no channel is on it) and the settings' channels, with the spectrum, and carries the bench's line protocol. Bench DMR
   jobs transmit on the modem in simplex. `--split-tx` and the SDR's transmitter flags are refused.
@@ -1262,8 +1277,9 @@ is read by a thread.
 `--bench [ADDR:]PORT` serves [bench-api.md](spec/bench-api.md) §14 for `tools/bench/rfgbench.py`: the channels'
 bursts, wideband cs8 captures from a 2.5 s history, level-triggered channel captures, `bench_tx` jobs (`voice`,
 `csbk`, `data`, `listen`) and `bench_repeater` jobs. A transmit job needs `--bench-tx MHZ[,MHZ...]` (up to 32
-frequencies) or bands, and the half duplex transceiver: it takes the SDR modem for its length, at `--tx-gain`
-(bench_tx's `--power` is noted, not applied). The `tune` op is `unsupported`, and a `trigger` or `rx` outside the
+frequencies) or bands, and the half duplex transceiver: it takes the SDR modem for its length, at `--tx-power`
+(bench_tx's `--power-dbm` is noted, not applied). On `--mmdvm` a job's power goes to an RF level on the modem's `tx`
+map under `--rf-level`. The `tune` op is `unsupported`, and a `trigger` or `rx` outside the
 window is refused. With the FPGA channelizer there's no wideband I/Q: capture, trigger, track and rx take the
 receiver's channels (2.5 s of each kept). When the bench line and the page listen past loopback, rdofradio lists them
 over DNS-SD (`_rfgbench._tcp` with TXT `kind` and `ver`, `_http._tcp`) through the host's responder, by running

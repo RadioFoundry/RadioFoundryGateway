@@ -65,6 +65,7 @@ typedef struct {
     double sdr_status_s;            /* the SDR's status period (status_seconds) */
     rdof_site_t site;
     rdof_config_t cfg;  /* all of it, as the firmware resolves it */
+    double tx_power_dbm; /* the unit's SDR device's tx.power_dbm, at the antenna; NAN: not given */
     /* split repeaters with the SDR as the RX half: the first is the radio above */
     int nsplit;
     rdofradio_split_t split[RDOF_ROLES_MAX];

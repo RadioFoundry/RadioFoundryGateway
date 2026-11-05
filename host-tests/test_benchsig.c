@@ -58,19 +58,21 @@ static struct {
     bool open, closed, done;
     uint32_t freq;
     int power;
+    double power_dbm;
     rdof_sig_src_t src;
 } tx;
 static int busy_n; /* sig_open says not yet this many times first */
-static int f_sig_open(void *ctx, uint32_t hz, int power, double seconds, const rdof_sig_src_t *src, char *why,
-                      size_t cap)
+static int f_sig_open(void *ctx, uint32_t hz, rdof_bench_power_t power, double seconds, const rdof_sig_src_t *src,
+                      char *why, size_t cap)
 {
     if (busy_n > 0) {
         busy_n--;
         snprintf(why, cap, "the roamer is transmitting");
         return 0;
     }
-    tx.open = true, tx.closed = tx.done = false, tx.freq = hz, tx.power = power, tx.src = *src;
-    snprintf(why, cap, "power %d as 21 dBm", power);
+    tx.open = true, tx.closed = tx.done = false, tx.freq = hz, tx.power = power.level, tx.power_dbm = power.dbm;
+    tx.src = *src;
+    snprintf(why, cap, "power %d as 21 dBm", power.level);
     return 1;
 }
 static int f_sig_state(void *ctx, char *why, size_t cap) { return tx.done ? 2 : 1; }
@@ -296,14 +298,14 @@ static void test_am(void)
     air(96000, false);
     const int rx = ask(bl, "{\"op\":\"rx\",\"mode\":\"am\",\"freq\":438.075,\"seconds\":2.5,\"streams\":\"audio,env\","
                            "\"audio_hi_hz\":2500,\"block_s\":0.25}");
-    const int tc = ask(bl, "{\"op\":\"tx\",\"mode\":\"am\",\"freq\":438.075,\"power\":3,\"depth\":0.3,\"lead_s\":0,"
+    const int tc = ask(bl, "{\"op\":\"tx\",\"mode\":\"am\",\"freq\":438.075,\"power_dbm\":-12.5,\"depth\":0.3,\"lead_s\":0,"
                            "\"tail_s\":0,\"program\":[{\"kind\":\"tone\",\"hz\":1000,\"s\":1.5}]}");
     for (int i = 0; i < 4; i++) {
         rdof_bl_tick(bl, clock_s);
         air(1920, false);
     }
-    CHECK(tx.open && tx.freq == 438075000 && tx.src.iq && !tx.src.freq, "sig_open, an I/Q source: %d %u", tx.open,
-          tx.freq);
+    CHECK(tx.open && tx.freq == 438075000 && tx.src.iq && !tx.src.freq && tx.power_dbm == -12.5,
+          "sig_open, an I/Q source: %d %u, %.1f dBm", tx.open, tx.freq, tx.power_dbm);
     for (int i = 0; i < 300 && !tx.done; i++) {
         air(1920, true);
         rdof_bl_tick(bl, clock_s);

@@ -69,7 +69,7 @@ which frequency follows from each device's `hears` and `transmits`; a file only 
 | `id` | int, 1..16777215 | | the box's DMR ID: its HBlink peer ID, and the base for per-path peer IDs (§7.1); required with an `hblink` network (`rdof_plan_radio` refuses a unit that transmits without it there); without one, a unit's peer ID is 0 |
 | `callsign` | str | a unit's name, first 8 characters; the SDR: `SDR` | the callsign on every HBlink peer the box runs (with `per_path`, each peer's own name, §7.1) |
 | `pc_hold_s` | number, 1..86400 | 900 | how long a radio heard on a path takes the private calls to it (§9.3) |
-| `defaults` | object | `{}` | frequency keys (§5: `cc`, `mode`, `ts`, `tx`, `power`, `policy` and the policy keys) for every frequency that doesn't set them |
+| `defaults` | object | `{}` | frequency keys (§5: `cc`, `mode`, `ts`, `tx`, `power_dbm`, `policy` and the policy keys) for every frequency that doesn't set them |
 | `devices` | list | `[]` | §4 |
 | `frequencies` | list | `[]` | §5 |
 | `apps` | list | `[]` | §6 |
@@ -171,6 +171,8 @@ radio (a RadioFoundry radio on its debug link, for the bench). Every device take
 | `transmits` | list or `false` | every frequency with `tx` true that it can reach, except a repeater's input | the frequencies it may transmit on (names or frequencies); `false`: it never transmits |
 | the talker keys | | §4.5 | how a device that transmits on several frequencies waits and answers |
 
+Every power in the settings, the API, the logs and the page is dBm at the antenna connector.
+
 - A frequency's `devices` pins it: only those devices transmit there, and only they hear it.
 - An SDR has no `hears` object: it hears every frequency inside its receive window, and the rate and center are
   chosen to cover them. `"hears": false` turns its receiver off. `hears.scan` on an SDR is for later (§14).
@@ -223,7 +225,7 @@ device to a frequency) is a network option (§7.1), not a role.
 | Key | Type | Default | Rule / meaning |
 |---|---|---|---|
 | `carriers` | int, 1..4 | 1 | carriers it sends at once; at most the driver's (1 for every driver for now, §13.1) |
-| `power_dbm` | number, −60..30 | 10 | transmit power. A frequency's `power` doesn't reach an SDR |
+| `power_dbm` | number, −60..40 | 10 | transmit power, dBm at the antenna. A frequency's `power_dbm` is taken under it: the SDR's RF level 255 is this, each level 0.2 dB under it (§4.7) |
 | `center_hz` | frequency or `"auto"` | auto | taken, not read yet |
 | `bench` | object | | §4.6 |
 
@@ -235,6 +237,7 @@ device to a frequency) is a network option (§7.1), not a role.
 | `port` | object | | required (§4.3) |
 | `needs` | list of `duplex`, `split`, `dcdm`, `sfr` | | what its description must say. Taken; not checked at open yet |
 | `mmdvm` | object | | the MMDVM settings, below |
+| `tx` | `{min_dbm, max_dbm}` | none | the modem's power at RF level 0 and at 255, dBm at the antenna (§4.7) |
 | `bench` | object | | §4.6 |
 
 `mmdvm` (a split repeater takes its TX half's, else its RX half's):
@@ -321,7 +324,8 @@ same as `jitter_buffer: 240`.
 | `freqs_hz` | list of whole Hz, 30e6..3e9 | `[]` | where the bench may transmit, up to 8 (with the devices' own) |
 | `bands_hz` | list of `[low, high]`, whole Hz, 30e6..3e9, low below high | `[]` | where else it may: any frequency in one, up to 8 |
 | `max_key_s` | number, 0..60 | 10 | the longest key-up; 0: no bench TX |
-| `rf_level` | int, 0..255 | 0 | a bench radio's power level (0: the lowest). The SDR sends at its `tx.power_dbm` |
+| `max_dbm` | number, −60..60 | | the most a bench job sends at, dBm at the antenna. Not with `rf_level` |
+| `rf_level` | int, 0..255 | 0 | without `max_dbm`: the most as an RF level on the transmitter's range (0: its least) |
 | `arm_gpio` | GPIO −1..48 | −1 | a jumper to ground that must be in for TX; −1: none |
 
 A device's `bench` (on an SDR, `bench` or `tx.bench`):
@@ -330,6 +334,23 @@ A device's `bench` (on an SDR, `bench` or `tx.bench`):
 |---|---|---|---|
 | `freqs_hz` | list of whole Hz, 30e6..3e9 | `[]` | up to 8; added to `bench.tx.freqs_hz` |
 | `max_key_s` | number, 0..60 | `bench.tx`'s | taken, not used yet: the box's `bench.tx.max_key_s` applies |
+
+A bench radio's guard sends at its lowest power step whatever the job asks.
+
+### 4.7 Transmit power
+
+A frequency's `power_dbm` is the power at the antenna connector. A modem's `SET_FREQ` carries an RF level, 0..255;
+the transmitter's map turns dBm into it: `level = 255 (dBm − min) / (max − min)`, rounded and held to 0..255.
+
+- A modem or a radio: its `tx.min_dbm` and `tx.max_dbm`, measured at its antenna connector. Without them it sends at
+  level 255 (its own power setting), and `power_dbm` caps nothing there.
+- An SDR: its `tx.power_dbm` is level 255, and the map spans 51 dB under it (0.2 dB a level). A `power_dbm` over the
+  device's is held to it.
+- A W12 (the LR2021 with its GC1109 PA) picks the path per transmission: the PA (+12 dB) inside its band
+  (`CONFIG_RDOF_LR2021_PA_LO_MHZ`..`_HI_MHZ`) for a request over `CONFIG_RDOF_LR2021_PA_ABOVE_DBM` (−1), else
+  the bypass (−22 dB; `_PA_GAIN_DB`, `_BYPASS_GAIN_DB`). The chip goes to the request less the path's gain, −9.5..21 dBm in 0.5 dB steps, a step down when
+  between. So the W12 sends −31.5 to −1 dBm through the bypass and up to about +27 through the PA (it saturates
+  there). The gains are R3.44's at 920 MHz; 446 and 439 MHz aren't calibrated.
 
 ## 5. Frequencies
 
@@ -341,7 +362,7 @@ A device's `bench` (on an SDR, `bench` or `tx.bench`):
 | `mode` | `simplex` \| `sfr` \| `dcdm` | `simplex` | what the frequency carries when no app takes it (§6.1). `sfr` and `dcdm` make a unit (§12) |
 | `ts` | 1 \| 2 | 1 | a simplex call's slot: plain direct mode carries none on the air, so a call heard here goes to the master, last heard and MQTT as `ts`, and the answer comes back on it |
 | `tx` | bool | true | false: nothing ever transmits here; its paths are receive only |
-| `power` | int, 0..255 | | a modem's power level here (a repeater takes its `out`'s, else 255). An SDR sends at its `tx.power_dbm` |
+| `power_dbm` | number, −60..60 | the device's | transmit power here, dBm at the antenna (§4.7); a repeater takes its `out`'s. `power` (the older 0..255 level) is refused |
 | `devices` | list of device names | any | pin the devices that may serve it: only they transmit and hear it |
 | `slots` | object | | per-slot policy, for a frequency heard as two slots: a DCDM frequency, or one with `tx: false` (a monitored repeater output). Refused elsewhere |
 | `policy` | policy name | | §8 |
@@ -781,7 +802,7 @@ the parrot, the IP gateway, HBlink, MQTT and the bench. The address is a placeho
     {"type": "hblink", "host": "192.0.2.10", "port": 62031},
     {"type": "mqtt", "host": "192.0.2.10", "port": 1883, "root": "DMR"}
   ],
-  "bench": {"tx": {"freqs_hz": [438100000], "max_key_s": 10, "rf_level": 0}}
+  "bench": {"tx": {"freqs_hz": [438100000], "max_key_s": 10, "max_dbm": -20}}
 }
 ```
 

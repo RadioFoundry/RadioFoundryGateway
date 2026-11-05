@@ -6,6 +6,7 @@
  * has a UDP socket of its own on an ephemeral port; replies go out through a roamer (as a network call to its
  * transceiver) or a repeater (as network bursts on the slot the radio was heard on).
  */
+#include <math.h>
 #include <string.h>
 
 #include "app.h"
@@ -186,7 +187,7 @@ static bool send_dmr(void *ctx, const rdof_ipgw_dmr_t *p)
         for (int i = 0; i < p->nbursts; i++) {
             rdof_net_burst_t b;
             rdof_ipgw_net_burst(p, i, sid, p->slot, s_tx->seq++, &b);
-            if (!site_app_burst(path, &b, true, 255))
+            if (!site_app_burst(path, &b, true, INFINITY))
                 return false;
         }
         return true;

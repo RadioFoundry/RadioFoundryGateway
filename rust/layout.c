@@ -107,6 +107,7 @@ static const rdof_rust_layout_t c_layouts[] = {
     L(rdof_site_t),
     L(rdof_port_t),
     L(rdof_dev_bench_t),
+    L(rdof_txmap_t),
     L(rdof_plan_dev_t),
     L(rdof_unit_t),
     L(rdof_plan_extra_t),

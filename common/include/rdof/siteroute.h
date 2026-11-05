@@ -9,7 +9,7 @@
  *   A network stream to a repeater's path (or an SFR or DCDM frequency's) goes to that repeater, on the path's slot; an emergency that takes the
  *   slot from another network stream ends that one (rdof_repeater_preempt).
  *   A network stream to a simplex path tunes a transceiver that may transmit on its frequency (as a DMRT would:
- *   the frequency's cc and power), then sends its bursts on the frequency's slot. The pool (rdof/txpool.h) picks
+ *   the frequency's cc, and its power_dbm as the transceiver's RF level), then sends its bursts on the frequency's slot. The pool (rdof/txpool.h) picks
  *   it: a transceiver sends one stream at a time, then holds the path for its answer_s; a network stream may take
  *   a hold, and an emergency takes one from a stream that isn't (the tune's preempt; the router lets the other
  *   path go). A path no transceiver is free for is let go (rdof_router_drop).
@@ -27,6 +27,7 @@
 #include "rdof/router.h"
 #include "rdof/site.h"
 #include "rdof/txpool.h"
+#include "rdof/txpower.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -51,6 +52,7 @@ typedef struct {
     struct rdof_repeater *rpt[RDOF_SITE_MAX_APPS]; /* by app: a repeater app's */
     struct rdof_repeater *rpt_freq[RDOF_SITE_MAX_FREQS]; /* by frequency: an SFR or DCDM frequency's */
     struct rdof_txvr *tx[RDOF_SITEROUTE_TXVRS]; /* by the pool's index */
+    rdof_txmap_t txmap[RDOF_SITEROUTE_TXVRS];   /* each one's RF levels in dBm (none: it can't tell dBm) */
     rdof_txpool_t pool;                         /* which one sends what (rdof/txpool.h) */
     uint32_t tuned[RDOF_SITEROUTE_TUNED]; /* the streams tuned here, newest last */
     int tuned_next;
@@ -64,11 +66,12 @@ typedef struct {
 
 void rdof_siteroute_init(rdof_siteroute_t *sr, const rdof_site_t *site);
 /* Registered transmitters. A repeater for app (a repeater app); a transceiver for freqs (bit per frequency; 0: every
-   frequency it could, the device's transmits). False: no room, or not such an app. */
+   frequency it could, the device's transmits); map: its RF levels in dBm (NULL: none, rdof/txpower.h). False: no
+   room, or not such an app. */
 bool rdof_siteroute_add_repeater(rdof_siteroute_t *sr, int app, struct rdof_repeater *r);
 /* The repeater running an SFR or DCDM frequency (its paths' bursts go to it, on their slot). */
 bool rdof_siteroute_add_repeater_freq(rdof_siteroute_t *sr, int freq, struct rdof_repeater *r);
-bool rdof_siteroute_add_txvr(rdof_siteroute_t *sr, struct rdof_txvr *t, uint64_t freqs);
+bool rdof_siteroute_add_txvr(rdof_siteroute_t *sr, struct rdof_txvr *t, uint64_t freqs, const rdof_txmap_t *map);
 
 /* A stream heard at hz on slot, at its start: the network it goes to (rdof_router_rf), -1 none (why says why, or
    it went to an app). Each receiver's sinks (HBlink, MQTT) ask in turn: the same stream asked again within a second
@@ -90,11 +93,12 @@ int rdof_siteroute_path_at(const rdof_siteroute_t *sr, uint32_t hz, int slot);
 /* Whether a transmitter would take an app's new stream on path now (the parrot waits while not). */
 bool rdof_siteroute_app_ready(const rdof_siteroute_t *sr, int path, double now);
 /* A burst of an app's stream on path: the pool's transceiver, tuned at the stream's first burst (the path's
-   frequency, cc and power), the burst on the path's slot. take_hold: may take a transceiver holding another path
-   (a confirmed-data answer). power_max: the stream's power at most this (0-255, a bench job's level; 255 the path's
-   own). False: none free (app_no_txvr). */
-bool rdof_siteroute_app_burst(rdof_siteroute_t *sr, int path, const rdof_net_burst_t *b, bool take_hold, int power_max,
-                              double now);
+   frequency, cc and power_dbm), the burst on the path's slot. take_hold: may take a transceiver holding another
+   path (a confirmed-data answer). cap_dbm: the stream's power at most this, dBm at the antenna (a bench job's;
+   INFINITY: the frequency's own). A transceiver without a map (rdof/txpower.h) sends under a cap at its least.
+   False: none free (app_no_txvr). */
+bool rdof_siteroute_app_burst(rdof_siteroute_t *sr, int path, const rdof_net_burst_t *b, bool take_hold,
+                              double cap_dbm, double now);
 /* Whether a transceiver still holds a burst of the stream sid (rdof_txvr_holds): an app's stream not all on the air. */
 bool rdof_siteroute_holds(const rdof_siteroute_t *sr, const uint8_t sid[4]);
 

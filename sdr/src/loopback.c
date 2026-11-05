@@ -130,7 +130,7 @@ int rdof_sdrmodem_loopback(bool full, char *report, size_t cap)
         return 1;
     }
     l->rng = 12345;
-    const rdof_sdrmodem_io_t io = {lb_reply, lb_channel, lb_tx_tune, l, NULL};
+    const rdof_sdrmodem_io_t io = {lb_reply, lb_channel, lb_tx_tune, l, NULL, NULL};
     const rdof_sdr_rx_config_t rc = {FS, CENTER, 0, 0, true, CHUNK, false};
     const rdof_sdr_channel_t chans[2] = {{"A", CH0, 1, 1}, {"B", CH1, 1, 1}};
     if (rdof_sdrmodem_init(&l->modem, &io, FS, FS, full) || rdof_sdr_rx_init(&l->rx, &rc, chans, 2, NULL, 0) ||

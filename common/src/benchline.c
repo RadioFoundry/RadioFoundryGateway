@@ -2168,7 +2168,7 @@ static void tick_rpt(rdof_bl_t *bl, conn_t *c, double now)
     switch (J->state) {
     case J_OPEN: {
         const rdof_bl_rpt_cfg_t cfg = {(uint32_t)lround(j->rx_mhz * 1e6), (uint32_t)lround(j->tx_mhz * 1e6), j->cc,
-                                       j->power, j->hang, j->call_hang, j->slots};
+                                       {j->power_dbm, j->power}, j->hang, j->call_hang, j->slots};
         if (!bl->p.rpt_open(bl->p.ctx, &cfg, why, sizeof why)) {
             run_log(bl, c, now, "can't run the repeater: %s", why[0] ? why : "the transmitter is busy");
             run_exit(bl, c, 1, NULL);
@@ -2411,7 +2411,8 @@ static void tick_ob(rdof_bl_t *bl, conn_t *c, double now)
     run_ctx_t rc = {bl, c};
     char why[200] = "", line[512];
     if (J->state == J_OPEN) {
-        const rdof_bl_ob_cfg_t cfg = {(uint32_t)lround(j->freq_mhz * 1e6), j->cc, j->power, j->seconds};
+        const rdof_bl_ob_cfg_t cfg = {(uint32_t)lround(j->freq_mhz * 1e6), j->cc, {j->power_dbm, j->power},
+                                      j->seconds};
         if (!bl->p.ob_open(bl->p.ctx, &cfg, why, sizeof why)) {
             run_log(bl, c, now, "can't transmit: %s", why[0] ? why : "the transmitter is busy");
             run_exit(bl, c, 1, NULL);
@@ -2528,8 +2529,8 @@ static void tick_run(rdof_bl_t *bl, conn_t *c, int ci, double now)
             run_exit(bl, c, 1, NULL);
             return;
         }
-        if (!bl->p.tx_open(bl->p.ctx, (uint32_t)lround(j->freq_mhz * 1e6), j->cc, j->power, as_built(j), why,
-                           sizeof why)) {
+        const rdof_bench_power_t pw = {j->power_dbm, j->power};
+        if (!bl->p.tx_open(bl->p.ctx, (uint32_t)lround(j->freq_mhz * 1e6), j->cc, pw, as_built(j), why, sizeof why)) {
             run_log(bl, c, now, "can't transmit: %s", why[0] ? why : "the transmitter is busy");
             run_exit(bl, c, 1, NULL);
             return;
@@ -2604,7 +2605,7 @@ typedef struct sigtx {
     void *tx;
     rdof_sig_src_t src;
     uint32_t freq_hz;
-    int power;
+    rdof_bench_power_t power;
     double seconds, started, max_s;
     double retry_until;       /* sig_open said not yet: asked again each tick until then (0: not waiting) */
     bool open;
@@ -2862,7 +2863,7 @@ static void op_tx(rdof_bl_t *bl, conn_t *c, int root, double now)
     t->src = m->tx_src(t->tx);
     t->src.rate = fs;
     t->freq_hz = (uint32_t)lround(mhz * 1e6);
-    t->power = (int)jnum(bl, root, "power", 0);
+    t->power = (rdof_bench_power_t){jnum(bl, root, "power_dbm", NAN), (int)jnum(bl, root, "power", 0)};
     t->max_s = jnum(bl, root, "max_s", t->seconds + STX_TAIL_S);
     t->id = ++bl->next_seq;
     c->stx = t;

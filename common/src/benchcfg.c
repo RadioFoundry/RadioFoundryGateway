@@ -244,8 +244,17 @@ static int policy(ctx_t *c, int tx, const uint32_t *more, int nmore, rdof_bencht
     out->max_key_s = k ? k->num : 10;
     long v;
     if (!num(t ? at(c, tx, "rf_level") : NULL, false, 0, &v) || v < 0 || v > 255)
-        return fail(c, "bench.tx.rf_level: 0 to 255 (0: the lowest)");
+        return fail(c, "bench.tx.rf_level: 0 to 255 (0: the lowest); max_dbm says it in dBm");
     out->rf_level = (int)v;
+    const rdof_jnode_t *md = t ? at(c, tx, "max_dbm") : NULL;
+    if (md && md->type == RDOF_JNULL)
+        md = NULL;
+    if (md && (md->type != RDOF_JNUM || md->num < -60 || md->num > 60))
+        return fail(c, "bench.tx.max_dbm: -60 to 60 (dBm at the antenna)");
+    if (md && t && at(c, tx, "rf_level") && at(c, tx, "rf_level")->type != RDOF_JNULL)
+        return fail(c, "bench.tx: max_dbm or rf_level, not both");
+    out->has_max_dbm = md != NULL;
+    out->max_dbm = md ? md->num : 0;
     if (!num(t ? at(c, tx, "arm_gpio") : NULL, false, -1, &v) || v < -1 || v > 48)
         return fail(c, "bench.tx.arm_gpio: a GPIO 0 to 48 (a jumper to ground), or none");
     out->arm_gpio = (int)v;

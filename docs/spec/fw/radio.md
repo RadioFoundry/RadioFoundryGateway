@@ -118,7 +118,7 @@ others 0. The protocol comes from the GET_VERSION reply.
 | 0 | 0 |
 | 1-4 | RX Hz, LE |
 | 5-8 | TX Hz, LE |
-| 9 | RF level 0-255 (255: the radio's own setting) |
+| 9 | RF level 0-255 (255: the radio's own setting): a frequency's `power_dbm` on the device's `tx.min_dbm` / `max_dbm` map (config-v3.md §4.7), 255 without one |
 | 10-13 | POCSAG Hz = TX Hz (MMDVM_HS refuses an out-of-band one) |
 
 **SET_MODE**: 1 byte, `0` idle (`RDOF_MODE_IDLE`) or `2` DMR.
@@ -336,7 +336,7 @@ is the radio; the roamer or repeater talks MMDVM to an emulated modem, so `txvr.
 | SEND_CWID | ACKed, not sent | `sdrmodem.c:on_frame` |
 | DCDM (SET_CONFIG `0x80 \| 0x40`) | both slots in direct mode (§1.6): DMR_DATA1 taken, both slots' space, heard bursts labeled by their sync; slot timing from heard TS1 / TS2 bursts (stale after 1 s) unless it sent in the 60 ms before; its own bursts muted | `sdrmodem.c:queue_dcdm`, `dc_heard` |
 | Start | waits (200 ms polls) for the SDR to be receiving and no bench job; one owner per board | `modem_sdr.c:start_task`, `sdr_modem_start` |
-| Power | `tx_power_dbm` (default 10) | `common/src/config.c` |
+| Power | dBm at the antenna: `tx_power_dbm` (default 10) at most; SET_FREQ's RF level goes to the host (`io.tx_level`), 255 the device's power, 0.2 dB a level under it | `common/src/config.c`, `modem_sdr.c:io_tx_level` |
 
 Writes go straight into the modem under a mutex; replies come back through `modem_on_bytes`.
 
@@ -577,7 +577,8 @@ Build switches `CONFIG_RDOF_BENCH` (y), `CONFIG_RDOF_BENCH_TX` (y).
 | `tx.freqs_hz` | up to 8, whole Hz, 30 MHz-3 GHz, with the devices' own; none (and no bands): no TX | `benchcfg.c:rdof_plan_bench_tx` |
 | `tx.bands_hz` | up to 8 `[low, high]`, whole Hz, 30 MHz-3 GHz: any frequency in one | |
 | `tx.max_key_s` | 0-60, default 10 | |
-| `tx.rf_level` | 0-255, default 0 (lowest) | |
+| `tx.max_dbm` | −60 to 60: the most a job sends at, dBm at the antenna; not with `rf_level` | |
+| `tx.rf_level` | 0-255, default 0 (lowest): without `max_dbm`, the most as an RF level on the transmitter's range | |
 | `tx.arm_gpio` | −1 (none) or 0-48: a jumper to ground that must be in | |
 
 UART flow control is RTS/CTS only when both pins are set. USB radios retry the open every 1000 ms; line coding is the
@@ -664,7 +665,7 @@ guard, declared on the one frequency.
 | `RDOF_BENCHTX_TRIES` | 3 | |
 | `RDOF_BENCHTX_NODES` | 400 JSON nodes a frame | |
 
-Setup: GET_VERSION → SET_CONFIG (defaults, simplex, the job's cc) → SET_FREQ (RX = TX, `rf_level`) → SET_MODE
+Setup: GET_VERSION → SET_CONFIG (defaults, simplex, the job's cc) → SET_FREQ (RX = TX, the job's RF level: its power under `bench.tx`'s limit, `rdof_bench_power_level`; 0 when a dBm is involved and the modem has no map) → SET_MODE
 DMR, each retried 3 times on timeout; a NAK stops the job (`refused` for SET_FREQ, else `unavailable`). Then
 `{"type":"ready",…}`. Bursts are sent as DMR_DATA2 with a control byte from the burst (`rdof_benchtx_control`:
 voice sync → `0x20` and the voice count restarts; data sync → `0x40 | dt` from the slot type; no sync → item `n`

@@ -46,8 +46,11 @@ typedef struct {
     uint32_t bands_hz[RDOF_BENCHTX_MAX_BANDS][2]; /* low, high: any frequency from one to the other */
     int nbands;
     double max_key_s;  /* 0: no TX */
-    int rf_level;      /* SET_FREQ's RF level, 0..255 (0: the lowest) */
+    int rf_level;      /* without max_dbm: the most on the transmitter's range, 0..255 as SET_FREQ's RF level (0: the
+                          lowest) */
     int arm_gpio;      /* -1: none; else a jumper to ground that must be in */
+    bool has_max_dbm;  /* max_dbm given */
+    double max_dbm;    /* the most, dBm at the antenna (rdof_bench_power_dbm) */
 } rdof_benchtx_policy_t;
 
 /* freq is one bench.tx allows: in freqs_hz or in one of bands_hz. */

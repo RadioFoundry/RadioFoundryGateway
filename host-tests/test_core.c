@@ -29,6 +29,7 @@
 #include "rdof/slotgrid.h"
 #include "rdof/status.h"
 #include "rdof/tracker.h"
+#include "rdof/txpower.h"
 
 extern int checks, failures;
 
@@ -1236,9 +1237,12 @@ static void t_benchcfg_edges(void)
         {"{\"max_key_s\": -0.5}", "bench.tx.max_key_s: 0 to 60 seconds"},
         {"{\"max_key_s\": 60.001}", "bench.tx.max_key_s: 0 to 60 seconds"},
         {"{\"max_key_s\": \"5\"}", "bench.tx.max_key_s: 0 to 60 seconds"},
-        {"{\"rf_level\": -1}", "bench.tx.rf_level: 0 to 255 (0: the lowest)"},
-        {"{\"rf_level\": 256}", "bench.tx.rf_level: 0 to 255 (0: the lowest)"},
-        {"{\"rf_level\": \"x\"}", "bench.tx.rf_level: 0 to 255 (0: the lowest)"},
+        {"{\"rf_level\": -1}", "bench.tx.rf_level: 0 to 255 (0: the lowest); max_dbm says it in dBm"},
+        {"{\"rf_level\": 256}", "bench.tx.rf_level: 0 to 255 (0: the lowest); max_dbm says it in dBm"},
+        {"{\"rf_level\": \"x\"}", "bench.tx.rf_level: 0 to 255 (0: the lowest); max_dbm says it in dBm"},
+        {"{\"max_dbm\": 61}", "bench.tx.max_dbm: -60 to 60 (dBm at the antenna)"},
+        {"{\"max_dbm\": \"x\"}", "bench.tx.max_dbm: -60 to 60 (dBm at the antenna)"},
+        {"{\"max_dbm\": 0, \"rf_level\": 10}", "bench.tx: max_dbm or rf_level, not both"},
         {"{\"arm_gpio\": -2}", "bench.tx.arm_gpio: a GPIO 0 to 48 (a jumper to ground), or none"},
         {"{\"arm_gpio\": 49}", "bench.tx.arm_gpio: a GPIO 0 to 48 (a jumper to ground), or none"},
         {"{\"arm_gpio\": 1e12}", "bench.tx.arm_gpio: a GPIO 0 to 48 (a jumper to ground), or none"},
@@ -1265,7 +1269,7 @@ static void t_benchcfg_edges(void)
          "[3e7, 4e7]]}",
          "bench.tx.bands_hz: at most 8"},
         /* a good list, then a bad field: the frequencies don't stay */
-        {"{\"freqs_hz\": [438162500], \"rf_level\": 999}", "bench.tx.rf_level: 0 to 255 (0: the lowest)"},
+        {"{\"freqs_hz\": [438162500], \"rf_level\": 999}", "bench.tx.rf_level: 0 to 255 (0: the lowest); max_dbm says it in dBm"},
         {"{\"bands_hz\": [[144000000, 148000000]], \"max_key_s\": 61}", "bench.tx.max_key_s: 0 to 60 seconds"},
     };
     for (size_t i = 0; i < sizeof badtx / sizeof badtx[0]; i++) {
@@ -1292,6 +1296,12 @@ static void t_benchcfg_edges(void)
     CHECK(bench_tx("{\"freqs_hz\": [438162500], \"bands_hz\": null}", &pol, err, sizeof err) == 0 && pol.nfreqs == 1 &&
               pol.nbands == 0,
           "bands null: none: %s", err);
+    CHECK(bench_tx("{\"freqs_hz\": [438162500], \"max_dbm\": -12.5}", &pol, err, sizeof err) == 0 && pol.has_max_dbm &&
+              pol.max_dbm == -12.5 && pol.rf_level == 0 && !err[0],
+          "max_dbm: %s", err);
+    CHECK(bench_tx("{\"freqs_hz\": [438162500], \"rf_level\": 9}", &pol, err, sizeof err) == 0 && !pol.has_max_dbm &&
+              pol.rf_level == 9,
+          "rf_level alone: %s", err);
     CHECK(bench_tx("{\"freqs_hz\": null, \"max_key_s\": null, \"rf_level\": null}", &pol, err, sizeof err) == 0 &&
               pol.nfreqs == 0 && pol.max_key_s == 10 && pol.rf_level == 0 && pol.arm_gpio == -1,
           "nulls are the defaults: %s", err);
@@ -3395,6 +3405,79 @@ static bool cfg_try(int t, const char *top, const char *place, rdof_config_t *cf
     return rdof_config_parse(json, strlen(json), cfg, error, cap);
 }
 
+/* Transmit power in dBm (rdof/txpower.h): a map's levels, a PA or bypass path, a bench job's power under its limit. */
+static void t_txpower(void)
+{
+    /* a modem's map: 255 (dBm - min) / (max - min), rounded, held to 0..255; NAN or no map: 255 */
+    const rdof_txmap_t m = {-10, 41}, none = {0, 0}, back = {5, 5};
+    CHECK(rdof_txmap_valid(&m) && !rdof_txmap_valid(&none) && !rdof_txmap_valid(&back) && !rdof_txmap_valid(NULL),
+          "valid");
+    CHECK(rdof_txpower_level(&m, -10) == 0 && rdof_txpower_level(&m, 41) == 255 && rdof_txpower_level(&m, 15.5) == 128 &&
+              rdof_txpower_level(&m, 15.4) == 127 && rdof_txpower_level(&m, -60) == 0 &&
+              rdof_txpower_level(&m, 60) == 255 && rdof_txpower_level(&m, NAN) == 255 &&
+              rdof_txpower_level(&none, -60) == 255,
+          "levels: %d %d", rdof_txpower_level(&m, 15.5), rdof_txpower_level(&m, 15.4));
+    CHECK(rdof_txpower_dbm(&m, 0) == -10 && rdof_txpower_dbm(&m, 255) == 41 && rdof_txpower_dbm(&m, 300) == 41 &&
+              fabs(rdof_txpower_dbm(&m, 128) - 15.6) < 1e-9 && isnan(rdof_txpower_dbm(&none, 9)),
+          "dBm of a level: %f", rdof_txpower_dbm(&m, 128));
+    const rdof_txmap_t s = rdof_txpower_sdr_map(7);
+    CHECK(s.max_dbm == 7 && s.min_dbm == 7 - RDOF_TXPOWER_SDR_SPAN_DB && rdof_txpower_level(&s, 7) == 255 &&
+              rdof_txpower_level(&s, 6) == 250 && rdof_txpower_level(&s, 20) == 255,
+          "an SDR's: 6 dBm at %d", rdof_txpower_level(&s, 6));
+
+    /* the W12's front end (R3.44): the chip -9.5..21 in 0.5 dB steps, +12 dB through the PA, -22 through the bypass */
+    const rdof_txpower_fe_t fe = {-9.5, 21, 0.5, 12, -22, -1, 27};
+    static const struct {
+        double want;
+        bool pa_ok, pa;
+        double chip, out;
+    } path[] = {
+        {10, true, true, -2, 10},       /* over -1 in the PA's band: the PA */
+        {10, false, false, 21, -1},     /* out of its band: the bypass, at its most */
+        {-1, true, false, 21, -1},      /* at pa_above: the bypass */
+        {-0.5, true, true, -9.5, 2.5},  /* just over: the PA at the chip's least, over what was asked */
+        {-20, true, false, 2, -20},     /* the bypass */
+        {-40, true, false, -9.5, -31.5}, /* under the bypass's least */
+        {30, true, true, 15, 27},       /* held to the PA's ceiling */
+        {-20.3, true, false, 1.5, -20.5}, /* between steps: a step down */
+    };
+    for (size_t i = 0; i < sizeof path / sizeof path[0]; i++) {
+        const rdof_txpower_path_t r = rdof_txpower_path(&fe, path[i].want, path[i].pa_ok);
+        CHECK(r.pa == path[i].pa && r.chip_dbm == path[i].chip && r.out_dbm == path[i].out,
+              "%.1f dBm (PA %s): %s, chip %.1f, %.1f at the antenna", path[i].want, path[i].pa_ok ? "ok" : "no",
+              r.pa ? "PA" : "bypass", r.chip_dbm, r.out_dbm);
+    }
+    double lo, hi;
+    rdof_txpower_range(&fe, true, &lo, &hi);
+    CHECK(lo == -31.5 && hi == 27, "range with the PA: %.1f..%.1f", lo, hi);
+    rdof_txpower_range(&fe, false, &lo, &hi);
+    CHECK(lo == -31.5 && hi == -1, "range without: %.1f..%.1f", lo, hi);
+
+    /* a bench job on an SDR's range (-41..10): its power under bench.tx's limit */
+    const rdof_bench_limit_t by_level = {false, 0, 51}, by_dbm = {true, -20, 255}, by_0 = {true, 0, 255};
+    double asked;
+    CHECK(fabs(rdof_bench_power_dbm(&by_level, (rdof_bench_power_t){NAN, 255}, -41, 10, &asked) + 30.8) < 1e-9 &&
+              asked == 10,
+          "the old power 255 under rf_level 51: %.2f (asked %.1f)",
+          rdof_bench_power_dbm(&by_level, (rdof_bench_power_t){NAN, 255}, -41, 10, NULL), asked);
+    CHECK(rdof_bench_power_dbm(&by_dbm, (rdof_bench_power_t){-25, 0}, -41, 10, &asked) == -25 && asked == -25 &&
+              rdof_bench_power_dbm(&by_dbm, (rdof_bench_power_t){0, 0}, -41, 10, NULL) == -20 &&
+              rdof_bench_power_dbm(&by_dbm, (rdof_bench_power_t){-90, 0}, -41, 10, NULL) == -41 &&
+              rdof_bench_power_dbm(&by_dbm, (rdof_bench_power_t){NAN, 0}, -41, 10, NULL) == -41,
+          "power_dbm under max_dbm -20");
+    /* on a modem's map, rounded down (never over); without a map a dBm can't be told: the least */
+    CHECK(rdof_bench_power_level(&by_0, (rdof_bench_power_t){NAN, 255}, &m) == 50 &&
+              rdof_bench_power_level(&by_0, (rdof_bench_power_t){-5, 255}, &m) == 25 &&
+              rdof_bench_power_level(&by_dbm, (rdof_bench_power_t){NAN, 255}, &m) == 0 &&
+              rdof_bench_power_level(&by_level, (rdof_bench_power_t){NAN, 255}, &m) == 51 &&
+              rdof_bench_power_level(&by_level, (rdof_bench_power_t){NAN, 30}, NULL) == 30 &&
+              rdof_bench_power_level(&by_level, (rdof_bench_power_t){NAN, 200}, NULL) == 51 &&
+              rdof_bench_power_level(&by_level, (rdof_bench_power_t){0, 200}, NULL) == 0 &&
+              rdof_bench_power_level(&by_dbm, (rdof_bench_power_t){NAN, 200}, NULL) == 0,
+          "levels: %d %d", rdof_bench_power_level(&by_0, (rdof_bench_power_t){NAN, 255}, &m),
+          rdof_bench_power_level(&by_0, (rdof_bench_power_t){-5, 255}, &m));
+}
+
 /* mode dcdm: one frequency, both slots unless active_slots, a repeater's settings; on the SDR, half or full. */
 static void t_config_dcdm(void)
 {
@@ -3460,8 +3543,20 @@ static void t_config_errors(void)
          "frequencies[0].cc: 0 to 15"},
         {T_FREQ, ", \"defaults\": {}", "",
          "frequencies[0].cc: the color code (or defaults.cc); only a frequency with \"tx\": false may leave it out"},
-        {T_FREQ, "", ", \"power\": \"x\"",
-         "frequencies[0].power: 0 to 255"},
+        {T_FREQ, "", ", \"power\": 128",
+         "frequencies[0].power: power_dbm, in dBm at the antenna"},
+        {T_FREQ, ", \"defaults\": {\"cc\": 1, \"power\": 64}", "",
+         "defaults.power: power_dbm, in dBm at the antenna"},
+        {T_FREQ, "", ", \"power_dbm\": \"x\"",
+         "frequencies[0].power_dbm: -60 to 60 (dBm at the antenna)"},
+        {T_FREQ, "", ", \"power_dbm\": 61",
+         "frequencies[0].power_dbm: -60 to 60 (dBm at the antenna)"},
+        {T_ROAM, "", ", \"tx\": {\"min_dbm\": 0}",
+         "devices.R.tx: min_dbm and max_dbm, both"},
+        {T_ROAM, "", ", \"tx\": {\"min_dbm\": 30, \"max_dbm\": 30}",
+         "devices.R.tx: min_dbm under max_dbm, -60 to 60 (dBm at the antenna)"},
+        {T_ROAM, "", ", \"tx\": {\"min_dbm\": 0, \"max_dbm\": 61}",
+         "devices.R.tx: min_dbm under max_dbm, -60 to 60 (dBm at the antenna)"},
         {T_FREQ, "", ", \"freq\": \"high\"",
          "frequencies[0].freq: a frequency (MHz, or Hz)"},
         {T_FREQ, "", ", \"ts\": 3",
@@ -3585,7 +3680,7 @@ static void t_config_errors(void)
         {T_ROAM, ", \"oled\": {\"scl\": \"x\"}", "",
          "oled: scl isn't a whole number"},
         {T_SDRTX, "", ", \"tx\": {\"power_dbm\": \"x\"}",
-         "devices.T.tx.power_dbm: -60 to 30"},
+         "devices.T.tx.power_dbm: -60 to 40 (dBm at the antenna)"},
         {T_REP, "", ", \"in\": \"nope\"",
          "apps.R.in: \"nope\" isn't in frequencies"},
         {T_REP, "", ", \"out\": \"in\"",
@@ -3990,11 +4085,47 @@ static void t_config_edges(void)
     ok = cfg_try(T_ROAM, "", ", \"mmdvm\": {\"tuner\": \"modem\"}", &cfg, error, sizeof error);
     CHECK(ok && rdof_config_describe(&cfg, full, sizeof full) && strstr(full, ";tuner=modem:0:0;"),
           "describe, modem tuner: %s", full);
-    /* a frequency's power at its ends */
-    ok = cfg_try(T_FREQ, "", ", \"power\": 0", &cfg, error, sizeof error);
-    CHECK(ok && cfg.channels[0].power == 0, "power 0: %d %s", cfg.channels[0].power, error);
-    ok = cfg_try(T_FREQ, "", ", \"mode\": \"sfr\", \"power\": 255", &cfg, error, sizeof error);
-    CHECK(ok && cfg.power == 255, "power 255: %d %s", cfg.power, error);
+    /* a frequency's power_dbm: a modem without tx.min_dbm / max_dbm sends at its own power (255) */
+    ok = cfg_try(T_FREQ, "", ", \"power_dbm\": -10", &cfg, error, sizeof error);
+    CHECK(ok && cfg.channels[0].power == 255 && !rdof_txmap_valid(&cfg.tx_map), "no map: %d %s",
+          cfg.channels[0].power, error);
+    /* with one: 255 (dBm - min) / (max - min), rounded, held to 0..255 */
+    static const struct {
+        const char *dbm;
+        int level;
+    } lv[] = {{"15", 128}, {"0", 0}, {"-5", 0}, {"30", 255}, {"40", 255}, {"7.5", 64}};
+    for (size_t i = 0; i < sizeof lv / sizeof lv[0]; i++) {
+        char j[512];
+        snprintf(j, sizeof j,
+                 "{\"version\": 3, \"name\": \"b\", \"id\": 3, \"defaults\": {\"cc\": 1}, \"devices\": [{\"name\": \"M\","
+                 " \"kind\": \"modem\", \"type\": \"radio_hotspot\", \"port\": {\"usb\": \"auto\"},"
+                 " \"tx\": {\"min_dbm\": 0, \"max_dbm\": 30}}], \"frequencies\": [{\"freq\": 438.0625, \"power_dbm\": %s},"
+                 " 438.1125]}",
+                 lv[i].dbm);
+        ok = rdof_config_parse(j, strlen(j), &cfg, error, sizeof error);
+        CHECK(ok && cfg.channels[0].power == lv[i].level && cfg.channels[1].power == 255 &&
+                  cfg.tx_map.min_dbm == 0 && cfg.tx_map.max_dbm == 30,
+              "power_dbm %s: level %d (want %d), the other %d %s", lv[i].dbm, cfg.channels[0].power, lv[i].level,
+              cfg.channels[1].power, ok ? "" : error);
+    }
+    /* a repeater's power: its output's */
+    ok = cfg_try(T_REPDEV, "", ", \"tx\": {\"min_dbm\": -10, \"max_dbm\": 41}", &cfg, error, sizeof error);
+    CHECK(ok && cfg.power == 255, "repeater, no power_dbm: %d %s", cfg.power, error);
+    {
+        static const char j[] =
+            "{\"version\": 3, \"name\": \"b\", \"id\": 3, \"defaults\": {\"cc\": 1, \"power_dbm\": 20.6}, \"devices\": "
+            "[{\"name\": \"M\", \"kind\": \"modem\", \"type\": \"mmdvm_hs\", \"port\": {\"usb\": \"auto\"},"
+            " \"hears\": {\"idle\": \"in\"}, \"tx\": {\"min_dbm\": -10, \"max_dbm\": 41}}], \"frequencies\": "
+            "[{\"freq\": 438.0625, \"name\": \"in\"}, {\"freq\": 438.0375, \"name\": \"out\"}], \"apps\": "
+            "[{\"name\": \"R\", \"type\": \"repeater\", \"in\": \"in\", \"out\": \"out\"}]}";
+        ok = rdof_config_parse(j, sizeof j - 1, &cfg, error, sizeof error);
+        CHECK(ok && cfg.power == 153, "repeater, defaults.power_dbm 20.6 on -10..41: %d %s", cfg.power, error);
+    }
+    /* an SDR: its map ends at tx.power_dbm, so a frequency over it is held to it */
+    ok = cfg_try(T_SDRTX, "", ", \"tx\": {\"power_dbm\": 14}", &cfg, error, sizeof error);
+    CHECK(ok && cfg.tx_map.max_dbm == 14 && cfg.tx_map.min_dbm == 14 - RDOF_TXPOWER_SDR_SPAN_DB &&
+              cfg.tx_power_dbm == 14,
+          "SDR map: %.1f..%.1f %s", cfg.tx_map.min_dbm, cfg.tx_map.max_dbm, error);
     /* the OLED off; its own rotate180 over i2c's */
     ok = cfg_try(T_ROAM, ", \"oled\": false", "", &cfg, error, sizeof error);
     CHECK(ok && !cfg.has_oled, "oled false: %s", error);
@@ -4090,6 +4221,7 @@ void test_core(void)
     t_modem();
     t_radio();
     t_benchcfg();
+    t_txpower();
     t_oled();
     t_oled_sdr();
     t_hblink();

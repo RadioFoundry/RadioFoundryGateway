@@ -164,20 +164,25 @@ static struct {
     bool open, unkeyed, as_built;
     uint32_t freq;
     int cc, power;
+    double power_dbm;
     uint8_t q[4][34];
     int qn;
     double next;
     uint8_t aired[600][34];
     int naired, keyups;
 } tx;
-static bool f_tx_open(void *ctx, uint32_t f, int cc, int power, bool as_built, char *why, size_t cap)
+static bool f_tx_open(void *ctx, uint32_t f, int cc, rdof_bench_power_t power, bool as_built, char *why, size_t cap)
 {
     if (tx.open) {
         snprintf(why, cap, "already open");
         return false;
     }
-    tx.open = true, tx.freq = f, tx.cc = cc, tx.power = power, tx.qn = 0, tx.unkeyed = false, tx.as_built = as_built;
-    snprintf(why, cap, "power %d noted", power);
+    tx.open = true, tx.freq = f, tx.cc = cc, tx.power = power.level, tx.power_dbm = power.dbm, tx.qn = 0;
+    tx.unkeyed = false, tx.as_built = as_built;
+    if (isnan(power.dbm))
+        snprintf(why, cap, "power %d noted", power.level);
+    else
+        snprintf(why, cap, "power_dbm %.1f noted", power.dbm);
     return true;
 }
 static int f_tx_space(void *ctx, char *why, size_t cap)
@@ -1513,7 +1518,7 @@ static void test_run(void)
                            "\"calls\":2,\"talker_alias\":\"BENCH\"}}", now);
     /* a second voice job waits for the first */
     const int cw = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"csbk\",\"freq\":438.1125,"
-                           "\"count\":3}}", now);
+                           "\"count\":3,\"power_dbm\":-3.5}}", now);
     size_t no = 0, nl = 0, nw = 0;
     static char ow[65536];
     bool overlap = false;
@@ -1529,8 +1534,9 @@ static void test_run(void)
     CHECK(is_json_lines(out) && strstr(out, "\"started\"") && strstr(out, "\"exit\":0"), "the voice job: %.300s", out);
     CHECK(strstr(out, "voice on 438.1125 MHz cc 2") && strstr(out, "power 32 noted"), "its log: %.600s", out);
     CHECK(count(out, "call from ") == 2 && strstr(out, "call 2 from 9990302 done"), "two calls: %.900s", out);
-    CHECK(tx.cc == 2 && tx.freq == 438112500 && tx.power == 255, "the last job opened at %u cc %d power %d", tx.freq,
-          tx.cc, tx.power);
+    CHECK(tx.cc == 2 && tx.freq == 438112500 && tx.power == 255 && tx.power_dbm == -3.5,
+          "the last job opened at %u cc %d power %d, %.1f dBm", tx.freq, tx.cc, tx.power, tx.power_dbm);
+    CHECK(strstr(ow, "power_dbm -3.5 noted"), "the csbk job's power in dBm: %.600s", ow);
     CHECK(strstr(ow, "\"state\":\"queued\"") && strstr(ow, "\"exit\":0") && !overlap, "the csbk job waited: %s", ow);
     CHECK(strstr(ow, "csbk: 3 burst(s) sent"), "the csbk job's log: %s", ow);
     CHECK(!tx.open, "the transmitter is given back");
@@ -1683,8 +1689,9 @@ static void test_outbound(void)
     ob.first = 8;
     c = run_ob(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"outbound\",\"freq\":438.1125,"
                    "\"cc\":1,\"seconds\":1,\"power\":10}}", &now, out, sizeof out);
-    CHECK(ob.cfg.freq_hz == 438112500 && ob.cfg.cc == 1 && ob.cfg.power == 10 && ob.cfg.seconds == 1,
-          "its setup: %u cc %d power %d %.1f s", ob.cfg.freq_hz, ob.cfg.cc, ob.cfg.power, ob.cfg.seconds);
+    CHECK(ob.cfg.freq_hz == 438112500 && ob.cfg.cc == 1 && ob.cfg.power.level == 10 && isnan(ob.cfg.power.dbm) &&
+              ob.cfg.seconds == 1,
+          "its setup: %u cc %d power %d %.1f s", ob.cfg.freq_hz, ob.cfg.cc, ob.cfg.power.level, ob.cfg.seconds);
     CHECK(is_json_lines(out) && strstr(out, "\"started\"") && strstr(out, "\"exit\":0") && ob.closed && !ob.open &&
               ob.unkeyed, "the job: %.400s", out);
     CHECK(strstr(out, "outbound on 438.1125 MHz cc 1: BS idle bursts with the CACH on both slots, 33 slots"),

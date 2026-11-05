@@ -108,5 +108,7 @@ It checks:
   a roamer owns it); `via=radio:NAME` uses an MMDVM bench radio.
 - Policy comes from `bench.tx` in the settings. The lease is checked every 1 s. The arm GPIO is active low
   (armed when low). The job ticks every 20 ms.
-- Power: `dBm = tx_power_min + (tx_power_max − tx_power_min)·rf_level/255`.
+- Power: dBm at the antenna. A job asks `power_dbm` (or `power`, 0-255 on the front end's
+  `tx_power_min`..`tx_power_max`) and sends at the lower of it and `bench.tx.max_dbm` (or `rf_level` on that range):
+  `rdof_bench_power_dbm`.
 - Binary (raw I/Q) frames are not supported. A keying log of 8 entries is kept.

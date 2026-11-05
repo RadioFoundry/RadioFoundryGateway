@@ -141,7 +141,7 @@ The W12 with three frequencies:
   "defaults": {"cc": 1},
   "devices": [{"name": "w12", "kind": "sdr", "driver": "lr2021"}],
   "frequencies": [
-    {"freq": 438.075, "power": 22}, {"freq": 438.1, "power": 22}, {"freq": 438.125, "power": 22}
+    {"freq": 438.075, "power_dbm": 20}, {"freq": 438.1, "power_dbm": 20}, {"freq": 438.125, "power_dbm": 20}
   ],
   "apps": [{"type": "parrot", "pc": "9990"}, {"type": "ipgw", "pc": "9991", "nat": true}]
 }
@@ -202,17 +202,23 @@ The OLED's TX row shows the transmitter's path while it sends or holds.
     and its reply back on air (a header and five blocks), and a confirmed one whose ACK went out the same way.
   - A bench job (`WS /tx via=modem`, or the line protocol's) goes through the pool when the roamer has the SDR modem
     (bench-api.md section 7): `rdof_benchroute` answers it as an MMDVM modem would, each call a stream
-    (`0x4245nnnn`) on the path at the job's frequency, without `take_hold`. It sends at the job's level (`--power`,
-    capped by `bench.tx.rf_level`) at most: `power_max` lowers a modem's tune, and since a frequency's power never
-    reaches an SDR, the SDR roamer's `tx.power_dbm` is capped at the level's dBm while the job runs
-    (`sdr_modem_tx_cap`), streams other than the job's included. Before 2026-11-03 a W12's `--power 0` job went out
-    at its 21 dBm. Its BS family is refused there (the pool frames MS sync), before anything keys.
+    (`0x4245nnnn`) on the path at the job's frequency, without `take_hold`. It sends at the job's power
+    (`power_dbm`, or the older `power` 0..255 on the transmitter's range) under `bench.tx`'s `max_dbm` (or
+    `rf_level`) at most: `rdof_siteroute_app_burst`'s `cap_dbm` lowers the tune's RF level on the transmitter's map
+    (a modem without one sends at its least under a cap), and the SDR roamer is held to the job's dBm while it runs
+    (`sdr_modem_tx_cap`), streams other than the job's included. Its BS family is refused there (the pool frames MS
+    sync), before anything keys.
   - A bench `outbound` job (a repeater's idle outbound, BS sync on both slots) doesn't go through the pool: it
     borrows the raw SDR modem from the roamer (`sdr_modem_bench_open` with `borrow`; the roamer's modem is parked
     and its writes go to it), keys it duplex in the modem's own TX half for the job's length, and gives it back
     re-tuned to the roamer's frequency and power. It waits while the roamer is transmitting.
-- **Power:** the SDR modem transmits at the device's `tx.power_dbm` (default 10 dBm), copied to the roamer's
-  `tx_power_dbm`. The W12's front end sends at most 21 dBm: at 22 its PA setup sends noise (lr2021-iq.md R3.49). A frequency's `power` (the 0-255 level of a modem's `SET_FREQ`) doesn't reach it.
+- **Power:** in dBm at the antenna (config-v3.md §4.7). The roamer's SDR modem sends at the device's
+  `tx.power_dbm` (default 10 dBm, the roamer's `tx_power_dbm`) at most. A stream's tune carries its frequency's
+  `power_dbm` as an RF level on the device's map (255 the device's power, 0.2 dB a level under it); the SDR modem
+  hands `SET_FREQ`'s level to the host (`rdof_sdrmodem_io_t.tx_level`), which sends at the lower of the two. On a W12
+  the front end picks the PA or the bypass per transmission (`rdof_txpower_path`): the PA (+12 dB) in its band for
+  more than −1 dBm, else the bypass (−22 dB), the chip at the request less the path's gain, −9.5..21 dBm (at 22 its
+  PA setup sends noise, lr2021-iq.md R3.49). The log says the chip's setting and the path.
 - **The blind span** is the receiver's, not a path's: the LR2021 front end sets `blind_when_muted`, and while the SDR
   modem's transmission covers the stream every channel's tracker stops aging (`rdof_tracker_blind` moves its calls'
   last burst on by the span). `/api/status` `sdr.blinds` (a span per burst transmitted, as the SDR modem mutes each),

@@ -97,10 +97,10 @@ lr2021_err_t lr2021_iq_init(lr2021_iq_t *iq, lr2021_t *dev, const lr2021_board_t
 
 /* The RF switch for the frequency (the PA band or the bypass), and the RX path: HF above 1.2 GHz (untried for raw
  * I/Q; the findings are all on the LF path). */
-static void rf_setup(lr2021_iq_t *iq, double hz)
+static void rf_setup(lr2021_iq_t *iq, double hz, bool pa)
 {
     uint8_t dio[LR2021_BOARD_RFSW_MAX], modes[LR2021_BOARD_RFSW_MAX], f[12];
-    int n = lr2021_board_rfsw(iq->board, hz, dio, modes);
+    int n = lr2021_board_rfsw_path(iq->board, pa && lr2021_board_pa_band(iq->board, hz), dio, modes);
     for (int i = 0; i < n; i++) {
         cmd(iq, f, lr2021_cmd_set_dio_function(f, dio[i], LR2021_DIO_RF_SWITCH, 0));
         cmd(iq, f, lr2021_cmd_set_dio_rf_switch(f, dio[i], modes[i]));
@@ -110,10 +110,10 @@ static void rf_setup(lr2021_iq_t *iq, double hz)
 /* The board's RF switch table; hold: during a transmission, the TX pattern in standby and FS too, so an external
  * front end stays on between runs (the W12's GC1109, shut down between runs, came back 22-28 dB low for 5-13 ms:
  * R3.44) */
-static void rf_hold_tx(lr2021_iq_t *iq, double hz, bool hold)
+static void rf_hold_tx(lr2021_iq_t *iq, double hz, bool pa, bool hold)
 {
     uint8_t dio[LR2021_BOARD_RFSW_MAX], modes[LR2021_BOARD_RFSW_MAX], f[12];
-    int n = lr2021_board_rfsw(iq->board, hz, dio, modes);
+    int n = lr2021_board_rfsw_path(iq->board, pa && lr2021_board_pa_band(iq->board, hz), dio, modes);
     for (int i = 0; i < n; i++)
         cmd(iq, f, lr2021_cmd_set_dio_rf_switch(f, dio[i],
                                                 (uint8_t)(modes[i] | (hold && (modes[i] & LR2021_RFSW_TX_LF)
@@ -131,7 +131,7 @@ static lr2021_err_t modem_setup(lr2021_iq_t *iq, bool calib)
     const double hz = iq->cfg.center_hz;
     const uint32_t chip_hz = lr2021_freq_corrected(hz, iq->cfg.ppm), cal_hz = (uint32_t)lrint(hz);
     const bool lora = iq->plan.mode == LR2021_IQ_LORA;
-    rf_setup(iq, hz);
+    rf_setup(iq, hz, true);
     if ((e = cmd(iq, f, lr2021_cmd_u8(f, LR2021_SET_STANDBY, 0))) != LR2021_OK ||
         (e = cmd(iq, f, lr2021_cmd_u8(f, LR2021_SET_PACKET_TYPE, lora ? LR2021_PACKET_LORA : LR2021_PACKET_FSK))) !=
             LR2021_OK)
@@ -530,7 +530,8 @@ lr2021_err_t lr2021_iq_transmit(lr2021_iq_t *iq, const lr2021_iq_tx_t *tx, lr202
         snprintf(iq->error, sizeof iq->error, "transmit: a setup the chip can't take");
         return LR2021_ERR_INVALID_ARG;
     }
-    rf_setup(iq, hz);
+    const bool pa = tx->pa != LR2021_TX_PA_OFF; /* in the board's band only (rf_setup) */
+    rf_setup(iq, hz, pa);
     lr2021_err_t e = LR2021_OK;
     for (int i = 0; i < nf && e == LR2021_OK; i++)
         e = cmd(iq, frames[i], lens[i]);
@@ -574,9 +575,9 @@ lr2021_err_t lr2021_iq_transmit(lr2021_iq_t *iq, const lr2021_iq_tx_t *tx, lr202
             iq->tx_learned[0] = iq->tx_learned[1] = iq->tx_learned[2] = -1;
             iq->tx_learned_for = key;
         }
-        rf_hold_tx(iq, hz, true);
+        rf_hold_tx(iq, hz, pa, true);
         e = lr2021_tx_stream(iq->dev, &c, pad_pull, &pad, stats);
-        rf_hold_tx(iq, hz, false);
+        rf_hold_tx(iq, hz, pa, false);
         if (e != LR2021_OK)
             failed(iq, "transmit", e);
     }

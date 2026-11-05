@@ -114,6 +114,7 @@ int rdof_sdrmodem_init(rdof_sdrmodem_t *m, const rdof_sdrmodem_io_t *io, uint32_
     m->channel = -1;
     m->dc_last = INT64_MIN;
     m->key_k = -1;
+    m->rf_level = 255;
 #if RDOF_FEATURE_REPEATER
     const uint8_t null5[5] = {0};
     uint8_t sl9[9];
@@ -788,6 +789,9 @@ static void on_frame(void *ctx, uint8_t cmd, const uint8_t *p, size_t len)
         m->tx_hz = tx;
         m->tuned = true;
         m->tune_off_hz = off;
+        m->rf_level = len > 9 ? p[9] : 255;
+        if (m->role != ROLE_RX && m->io.tx_level)
+            m->io.tx_level(m->io.ctx, m->rf_level);
         m->dc_timed = false; /* another channel, its own timing */
         retune_carrier(m);
         if (m->role == ROLE_TX) { /* a retune restarts the slot clock (split-duplex.md 3.4): ALIGN again */

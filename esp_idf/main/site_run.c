@@ -12,6 +12,7 @@
  * parrot hears every frequency (the SDR receiver's channels, a modem roamer's channel) and plays back on the path a
  * call was heard on, through the pool. A roamer then has no parrot of its own; a repeater keeps its own.
  */
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -90,7 +91,7 @@ static void parrot_start(void *ctx, const uint8_t sid[4], int slot, uint32_t src
 static void parrot_send(void *ctx, const rdof_net_burst_t *b)
 {
     xSemaphoreTakeRecursive(lock, portMAX_DELAY);
-    rdof_siteroute_app_burst(SR, ppath, b, false, 255, mono());
+    rdof_siteroute_app_burst(SR, ppath, b, false, INFINITY, mono());
     xSemaphoreGiveRecursive(lock);
 }
 
@@ -173,12 +174,12 @@ int site_app_path(uint32_t hz, int slot)
     return k;
 }
 
-bool site_app_burst(int path, const rdof_net_burst_t *b, bool take_hold, int power_max)
+bool site_app_burst(int path, const rdof_net_burst_t *b, bool take_hold, double cap_dbm)
 {
     if (!SR)
         return false;
     xSemaphoreTakeRecursive(lock, portMAX_DELAY);
-    const bool sent = rdof_siteroute_app_burst(SR, path, b, take_hold, power_max, mono());
+    const bool sent = rdof_siteroute_app_burst(SR, path, b, take_hold, cap_dbm, mono());
     xSemaphoreGiveRecursive(lock);
     return sent;
 }
@@ -221,7 +222,7 @@ void site_add_role(roam_t *r)
                 freqs |= 1ull << f;
         }
         if (freqs)
-            rdof_siteroute_add_txvr(SR, r->txvr, freqs);
+            rdof_siteroute_add_txvr(SR, r->txvr, freqs, &r->cfg->tx_map);
     }
 #endif
     xSemaphoreGiveRecursive(lock);

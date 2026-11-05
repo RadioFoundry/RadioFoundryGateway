@@ -427,13 +427,43 @@ menu "RadioFoundry Gateway"
             default 860
             help
                 The W12's GC1109 front end is specified for 860 to 930 MHz. Tuned inside
-                this band it transmits through its PA; outside it, through its transmit
-                bypass. It receives through its LNA either way (it has no receive
-                bypass), and on the W12 a 902-928 MHz SAW filter follows the LNA, so
-                other bands reach the LR2021 about 46 dB down.
+                this band it may transmit through its PA (for a power over
+                RDOF_LR2021_PA_ABOVE_DBM); outside it, always through its transmit
+                bypass (the board has no filter after the PA). It receives through its
+                LNA either way (it has no receive bypass), and on the W12 a 902-928 MHz
+                SAW filter follows the LNA, so other bands reach the LR2021 about 46 dB
+                down.
         config RDOF_LR2021_PA_HI_MHZ
             int "The front end's PA band ends at (MHz)"
             default 930
+        config RDOF_LR2021_PA_ABOVE_DBM
+            int "The PA for a power over this (dBm at the antenna)"
+            range -40 40
+            default -1
+            help
+                A transmission inside the PA band at a power over this goes through the
+                PA; at this or less, through the bypass. The default is the most the
+                bypass gives (the chip's 21 dBm, less 22 dB).
+        config RDOF_LR2021_PA_GAIN_DB
+            int "The chip to the antenna through the PA (dB)"
+            range -10 40
+            default 12
+            help
+                The board's 17.8 dB pad, then the PA's 30 dB (lr2021-iq.md R3.44,
+                measured at 920 MHz).
+        config RDOF_LR2021_BYPASS_GAIN_DB
+            int "The chip to the antenna through the bypass (dB)"
+            range -60 0
+            default -22
+            help
+                About 34 dB under the PA path (R3.44, at 920 MHz). Not measured at 446
+                or 439 MHz, outside the part's band.
+        config RDOF_LR2021_PA_MAX_DBM
+            int "The PA's most at the antenna (dBm)"
+            range 0 40
+            default 27
+            help
+                The GC1109 saturates near here on the W12's 3.3 V supply (R3.44).
         comment "RF switch DIOs: high in the modes each mask names (1 standby, 2 RX LF, 4 TX LF; 0xFF: unused)"
         comment "The GC1109 (datasheet table 4): CSD 0 off; CSD 1 CTX 0 receive (LNA); CTX 1 CPS 0 transmit bypass; CTX 1 CPS 1 transmit (PA)"
         config RDOF_LR2021_DIO9_PA

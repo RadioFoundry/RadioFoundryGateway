@@ -912,7 +912,7 @@ def cmd_tx_sig(a) -> int:
         return 1
     req: dict = {"op": "tx", "mode": a.mode_name, "freq": a.freq, "session": a.session, "wait_max": a.wait_max,
                  "label": a.label}
-    fields = [("power", a.power), ("lead_s", a.lead), ("tail_s", a.tail), ("repeat", a.repeat), ("seed", a.seed)]
+    fields = [("power_dbm", a.power_dbm), ("power", a.power), ("lead_s", a.lead), ("tail_s", a.tail), ("repeat", a.repeat), ("seed", a.seed)]
     if a.mode_name == "fm":
         fields += [("dev_hz", a.dev), ("ctcss", a.ctcss), ("dcs", a.dcs), ("sub_dev_hz", a.sub_dev),
                    ("sub_end_s", a.sub_end), ("preemph_us", a.preemph_us)]
@@ -1040,7 +1040,8 @@ def bench_tx_parser() -> argparse.ArgumentParser:
     ap.add_argument("--port")
     ap.add_argument("--freq", type=float, default=438.5)
     ap.add_argument("--cc", type=int, default=2)
-    ap.add_argument("--power", type=int, default=255)
+    ap.add_argument("--power", type=int, default=255)        # the older form: 0-255 on the transmitter's range
+    ap.add_argument("--power-dbm", type=float)                # dBm at the antenna; the gateway takes it over --power
     ap.add_argument("--rx-offset", type=int)
     ap.add_argument("--tx-offset", type=int)
     ap.add_argument("-v", "--verbose", action="store_true")
@@ -1104,6 +1105,7 @@ def bench_repeater_parser() -> argparse.ArgumentParser:
     ap.add_argument("--tx", type=float, required=True)
     ap.add_argument("--cc", type=int, default=2)
     ap.add_argument("--power", type=int, default=255)
+    ap.add_argument("--power-dbm", type=float)
     ap.add_argument("--seconds", type=float, default=60)
     ap.add_argument("--slots", default="1,2")
     ap.add_argument("--hang", type=float, default=4.0)
@@ -1328,7 +1330,10 @@ def main(argv=None) -> int:
                 s.add_argument("--tail", type=float, default=None, help="carrier after it, s (0.25)")
                 s.add_argument("--repeat", type=int, default=None)
                 s.add_argument("--seed", type=int, default=None)
-                s.add_argument("--power", type=int, default=None, help="0-255, capped by the gateway's rf_level")
+                s.add_argument("--power-dbm", type=float, default=None,
+                               help="dBm at the antenna, capped by the gateway's bench.tx max_dbm")
+                s.add_argument("--power", type=int, default=None,
+                               help="the older form: 0-255 on the transmitter's range, capped the same")
             else:
                 s.add_argument("--seconds", type=float, required=True)
                 s.add_argument("--audio", default=None, help="write the filtered audio to this WAV")

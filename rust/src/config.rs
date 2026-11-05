@@ -19,7 +19,7 @@ use crate::jsonp::{rdof_jat, rdof_jget, rdof_jnode, JDoc, JNode, RDOF_JARR, RDOF
 use crate::mmdvm::{rdof_modem_config_default, RdofModemConfig};
 use crate::modem::{rdof_rssi_map_sort, RdofRssiMap};
 use crate::plan::{
-    field, first_id, rdof_plan_close, rdof_plan_open, Plan, RdofPlan, RdofPort, RdofUnit, APP_PARROT, DEV_SDR, HEARS_SCAN,
+    field, first_id, rdof_plan_close, rdof_txpower_level, rdof_plan_open, Plan, RdofPlan, RdofPort, RdofTxmap, RdofUnit, APP_PARROT, DEV_SDR, HEARS_SCAN,
     NET_HBLINK, NET_MQTT, PORT_PATH, PORT_UART, UNIT_DCDM, UNIT_RECEIVER, UNIT_REPEATER, UNIT_SFR, UNIT_TRANSCEIVER,
 };
 use crate::slotgrid::{rdof_slot_timing_describe, rdof_slot_timing_parse, RdofSlotTiming};
@@ -167,6 +167,7 @@ pub struct RdofConfig {
     pub split_lease_s: c_int,
     pub split_cooldown_s: c_int,
     pub split_max_key_s: f64,
+    pub tx_map: RdofTxmap,
 }
 
 
@@ -258,6 +259,7 @@ struct Cx<'a> {
     cap: usize,
     mm: [c_int; 2], // the modem's MMDVM settings: a split's TX half's, then its RX half's
     mmw: [u8; 64],  // where they are: devices.NAME.mmdvm
+    map: RdofTxmap, // the transmitter's RF levels in dBm
 }
 
 impl Cx<'_> {
@@ -834,7 +836,7 @@ impl Cx<'_> {
         if !(0..=15).contains(&cc) {
             return self.err(&[S(where_), S(b": frequencies."), S(field(&fr.name)), S(b" has no color code")]);
         }
-        let power = if with_power && fr.power >= 0 { fr.power } else { 255 };
+        let power = if with_power { unsafe { rdof_txpower_level(&self.map, fr.power_dbm) } } else { 255 };
         self.channel_entry(fr.hz, cc.into(), power.into(), fr.ts.into(), out)
     }
 
@@ -979,7 +981,7 @@ impl Cx<'_> {
                 S(b" has tx false: nothing transmits on it"),
             ]);
         }
-        cfg.power = if fo.power < 0 { 255 } else { fo.power.min(255) };
+        cfg.power = unsafe { rdof_txpower_level(&self.map, fo.power_dbm) };
         cfg.hang_s = self.fget(r, c"hang_s", 5.0, where_)?;
         cfg.call_hang_s = self.fget(r, c"call_hang_s", 3.0, where_)?;
         cfg.cwid_every_s = self.fget(r, c"cwid_every_s", 900.0, where_)?;
@@ -1168,6 +1170,8 @@ impl Cx<'_> {
                 cfg.tx_power_dbm = dv.tx_power_dbm;
             }
         }
+        self.map = p.dev(if u.tx >= 0 { u.tx } else { u.rx }).txmap;
+        cfg.tx_map = self.map;
         if u.kind == UNIT_TRANSCEIVER {
             self.unit_roamer(u, where_, cfg)?;
         } else {
@@ -1241,7 +1245,7 @@ pub unsafe extern "C" fn rdof_plan_radio(
         *b = 0;
     }
     ptr::write_bytes(cfg as *mut RdofConfig, 0, 1);
-    let mut c = Cx { plan: Plan::new(p), out, cap, mm: [-1, -1], mmw: [0; 64] };
+    let mut c = Cx { plan: Plan::new(p), out, cap, mm: [-1, -1], mmw: [0; 64], map: RdofTxmap { min_dbm: 0.0, max_dbm: 0.0 } };
     c.radio(name, cfg).is_some()
 }
 

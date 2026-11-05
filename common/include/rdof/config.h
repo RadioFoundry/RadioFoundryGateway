@@ -26,6 +26,7 @@
 #include "rdof/hblink.h"
 #include "rdof/mmdvm.h"
 #include "rdof/modem.h"
+#include "rdof/txpower.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -135,7 +136,7 @@ typedef struct {
     /* firmware only: the device's port */
     char modem_port[8]; /* usb / uart (a path is the host's: usb); sdr for a unit on the SDR; split */
     rdof_sdr_duplex_t sdr_duplex; /* a unit on the SDR */
-    double tx_power_dbm;        /* and its power (the SDR's tx.power_dbm, 10) */
+    double tx_power_dbm;        /* and its power at the antenna (the SDR's tx.power_dbm, 10) */
     int uart_tx, uart_rx;
     int uart_num;       /* 1 or 2 (port.uart) */
     long uart_speed;    /* port.baud, 115200 */
@@ -147,6 +148,7 @@ typedef struct {
     rdof_cfg_port_t split[2];
     int split_power_cap, split_prebuffer, split_lease_s, split_cooldown_s;
     double split_max_key_s;
+    rdof_txmap_t tx_map; /* the transmitter's RF levels in dBm (rdof/txpower.h): channels' and power are its levels */
 } rdof_config_t;
 
 /* The first unit that transmits in the settings (version 3); false with `error` set when they're refused ("apps.R1:

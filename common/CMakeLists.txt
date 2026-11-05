@@ -10,6 +10,7 @@ set(RDOF_COMMON_SRCS
     src/layer2.c
     src/pdu.c
     src/mmdvm.c
+    src/txpower.c
     src/hblink.c
     src/hbpeer.c
     src/json.c

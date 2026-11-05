@@ -3,6 +3,7 @@
 /* The router on a running box (rdof/siteroute.h). */
 #include "rdof/siteroute.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -37,7 +38,7 @@ bool rdof_siteroute_add_repeater_freq(rdof_siteroute_t *sr, int freq, struct rdo
     return true;
 }
 
-bool rdof_siteroute_add_txvr(rdof_siteroute_t *sr, struct rdof_txvr *t, uint64_t freqs)
+bool rdof_siteroute_add_txvr(rdof_siteroute_t *sr, struct rdof_txvr *t, uint64_t freqs, const rdof_txmap_t *map)
 {
 #if RDOF_FEATURE_TX
     const double answer_s = t ? t->answer_s : 0;
@@ -48,6 +49,7 @@ bool rdof_siteroute_add_txvr(rdof_siteroute_t *sr, struct rdof_txvr *t, uint64_t
     if (i < 0)
         return false;
     sr->tx[i] = t;
+    sr->txmap[i] = map ? *map : (rdof_txmap_t){0, 0};
     return true;
 }
 
@@ -90,10 +92,28 @@ bool rdof_siteroute_tuned(const rdof_siteroute_t *sr, const uint8_t sid[4])
 }
 
 #if RDOF_FEATURE_TX
-/* Burst o of a stream on path k, through the pool: its transceiver, tuned at the stream's first burst, at power_max
+/* The RF level for the frequency's power_dbm on transmitter i, at cap_dbm at most (INFINITY: none). A transmitter
+   without a map sends at its own power (255), or under a cap at its least (0): it can't tell dBm. */
+static int tune_level(const rdof_siteroute_t *sr, int i, double power_dbm, double cap_dbm)
+{
+    const rdof_txmap_t *m = &sr->txmap[i];
+    if (!rdof_txmap_valid(m))
+        return isnan(cap_dbm) || cap_dbm == INFINITY ? 255 : 0;
+    if (!isnan(cap_dbm) && (isnan(power_dbm) || cap_dbm < power_dbm))
+        power_dbm = cap_dbm;
+    if (power_dbm == INFINITY)
+        power_dbm = NAN;
+    if (!isnan(power_dbm) && power_dbm > m->max_dbm)
+        power_dbm = m->max_dbm;
+    /* a level never over what was asked: round toward the least */
+    const int l = rdof_txpower_level(m, power_dbm);
+    return l > 0 && rdof_txpower_dbm(m, l) > power_dbm + 1e-9 ? l - 1 : l;
+}
+
+/* Burst o of a stream on path k, through the pool: its transceiver, tuned at the stream's first burst, at cap_dbm
    at most. False: none free. */
 static bool send_txvr(rdof_siteroute_t *sr, int k, const rdof_net_burst_t *o, bool urgent, bool take_hold,
-                      bool path_preempt, bool local, int power_max, double now)
+                      bool path_preempt, bool local, double cap_dbm, double now)
 {
     const rdof_site_t *s = sr->router.site;
     const rdof_path_t *p = &s->path[k];
@@ -107,10 +127,8 @@ static bool send_txvr(rdof_siteroute_t *sr, int k, const rdof_net_burst_t *o, bo
         rdof_router_drop(&sr->router, got.ended_path, got.ended);
     if (got.fresh) {
         const rdof_freq_t *f = &s->freq[p->tx_freq];
-        rdof_tune_t tu = {.freq = f->hz, .cc = f->cc, .power = f->power >= 0 ? f->power : 255,
+        rdof_tune_t tu = {.freq = f->hz, .cc = f->cc, .power = tune_level(sr, got.i, f->power_dbm, cap_dbm),
                           .preempt = got.preempt || path_preempt, .local = local};
-        if (power_max >= 0 && power_max < tu.power)
-            tu.power = power_max;
         memcpy(tu.stream_id, o->stream_id, 4);
         sr->tuned[sr->tuned_next] = stream;
         sr->tuned_next = (sr->tuned_next + 1) % RDOF_SITEROUTE_TUNED;
@@ -166,7 +184,7 @@ uint64_t rdof_siteroute_burst(rdof_siteroute_t *sr, int net, uint32_t peer, cons
             continue;
         }
 #if RDOF_FEATURE_TX
-        if (!send_txvr(sr, k, &o, c.emergency, true, (preempt >> k & 1) != 0, false, 255, now)) {
+        if (!send_txvr(sr, k, &o, c.emergency, true, (preempt >> k & 1) != 0, false, INFINITY, now)) {
             sr->no_txvr++;
             rdof_router_drop(&sr->router, k, stream);
             continue;
@@ -211,15 +229,15 @@ bool rdof_siteroute_holds(const rdof_siteroute_t *sr, const uint8_t sid[4])
     return false;
 }
 
-bool rdof_siteroute_app_burst(rdof_siteroute_t *sr, int path, const rdof_net_burst_t *b, bool take_hold, int power_max,
-                              double now)
+bool rdof_siteroute_app_burst(rdof_siteroute_t *sr, int path, const rdof_net_burst_t *b, bool take_hold,
+                              double cap_dbm, double now)
 {
 #if RDOF_FEATURE_TX
     if (app_path(sr, path)) {
         const rdof_path_t *p = &sr->router.site->path[path];
         rdof_net_burst_t o = *b;
         o.slot = p->tx_slot ? p->tx_slot : b->slot;
-        if (send_txvr(sr, path, &o, false, take_hold, false, true, power_max, now))
+        if (send_txvr(sr, path, &o, false, take_hold, false, true, cap_dbm, now))
             return true;
     }
 #endif

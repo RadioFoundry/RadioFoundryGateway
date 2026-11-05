@@ -374,8 +374,18 @@ fn policy(c: &Cx, tx: c_int, more: &[u32], out: &mut RdofBenchtxPolicy) -> c_int
     out.max_key_s = k.map_or(10.0, |k| k.num);
     match num(if t.is_some() { c.at(tx, c"rf_level") } else { None }, false, 0) {
         Some(v @ 0..=255) => out.rf_level = v as c_int,
-        _ => return c.fail(&[S(b"bench.tx.rf_level: 0 to 255 (0: the lowest)")]),
+        _ => return c.fail(&[S(b"bench.tx.rf_level: 0 to 255 (0: the lowest); max_dbm says it in dBm")]),
     }
+    let md = if t.is_some() { c.at(tx, c"max_dbm") } else { None }.filter(|k| k.type_ != RDOF_JNULL);
+    if md.is_some_and(|k| k.type_ != RDOF_JNUM || k.num < -60.0 || k.num > 60.0) {
+        return c.fail(&[S(b"bench.tx.max_dbm: -60 to 60 (dBm at the antenna)")]);
+    }
+    let rl = if t.is_some() { c.at(tx, c"rf_level") } else { None }.filter(|k| k.type_ != RDOF_JNULL);
+    if md.is_some() && rl.is_some() {
+        return c.fail(&[S(b"bench.tx: max_dbm or rf_level, not both")]);
+    }
+    out.has_max_dbm = md.is_some();
+    out.max_dbm = md.map_or(0.0, |k| k.num);
     match num(if t.is_some() { c.at(tx, c"arm_gpio") } else { None }, false, -1) {
         Some(v @ -1..=48) => out.arm_gpio = v as c_int,
         _ => return c.fail(&[S(b"bench.tx.arm_gpio: a GPIO 0 to 48 (a jumper to ground), or none")]),

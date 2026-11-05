@@ -62,6 +62,10 @@ int lr2021_board_parse(const char *text, lr2021_board_buf_t *out, char *err, siz
 
 /* The front end's RF switch masks for a frequency (PA band or bypass) into dio / modes; returns how many. */
 int lr2021_board_rfsw(const lr2021_board_t *b, double hz, uint8_t *dio, uint8_t *modes);
+/* The same with the path given: pa, rfsw_pa; else rfsw_bypass. */
+int lr2021_board_rfsw_path(const lr2021_board_t *b, bool pa, uint8_t *dio, uint8_t *modes);
+/* Whether hz is in the board's PA band (none: false). */
+bool lr2021_board_pa_band(const lr2021_board_t *b, double hz);
 
 #ifdef __cplusplus
 }

@@ -4,6 +4,7 @@
  * refused as its name says; the spec's four sites resolve to the paths and policies it describes; each good one's
  * units and SDR parse. */
 #include <dirent.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -455,7 +456,7 @@ static void test_siteroute(const char *dir)
         t.send = dmrk_cap;
         t.ctx = &cap;
         rdof_siteroute_init(&sr, &S);
-        CHECK(rdof_siteroute_add_txvr(&sr, &t, 0), "a transceiver");
+        CHECK(rdof_siteroute_add_txvr(&sr, &t, 0, NULL), "a transceiver");
         rdof_net_burst_t b = net_burst(0x111, 9800009, 203, true, 2, false, false);
         uint64_t m = rdof_siteroute_burst(&sr, 0, 0, &b, 1);
         CHECK(m == 1ull << rdof_site_path(&S, "438.1125"), "TG 203: its frequency");
@@ -481,10 +482,10 @@ static void test_siteroute(const char *dir)
         CHECK(!rdof_siteroute_app_ready(&sr, ap, 5.2), "held for an answer on another path: an app waits");
         const int n0 = cap.n;
         rdof_net_burst_t a = net_burst(0x555, 9990, 9800009, false, 1, false, false);
-        CHECK(!rdof_siteroute_app_burst(&sr, ap, &a, false, 255, 5.2) && sr.app_no_txvr == 1, "not sent while held");
-        CHECK(rdof_siteroute_app_ready(&sr, ap, 9) && rdof_siteroute_app_burst(&sr, ap, &a, false, 255, 9) && cap.n == n0 + 1 &&
+        CHECK(!rdof_siteroute_app_burst(&sr, ap, &a, false, INFINITY, 5.2) && sr.app_no_txvr == 1, "not sent while held");
+        CHECK(rdof_siteroute_app_ready(&sr, ap, 9) && rdof_siteroute_app_burst(&sr, ap, &a, false, INFINITY, 9) && cap.n == n0 + 1 &&
                   cap.freq == 438112500 && rdof_siteroute_tuned(&sr, a.stream_id), "free: tuned to it (%d %u)", cap.n, cap.freq);
-        CHECK(rdof_siteroute_app_burst(&sr, ap, &a, false, 255, 9.06) && cap.n == n0 + 1 && !rdof_siteroute_app_ready(&sr, ap, 9.1),
+        CHECK(rdof_siteroute_app_burst(&sr, ap, &a, false, INFINITY, 9.06) && cap.n == n0 + 1 && !rdof_siteroute_app_ready(&sr, ap, 9.1),
               "tuned once; busy for another");
         static const uint8_t none[4] = {0, 0, 0x77, 0x77};
         CHECK(rdof_siteroute_holds(&sr, a.stream_id) == (t.has_call || t.next.used) && !rdof_siteroute_holds(&sr, none),
@@ -492,9 +493,9 @@ static void test_siteroute(const char *dir)
         c = net_burst(0x666, 9800009, 204, true, 1, false, false);
         CHECK(rdof_siteroute_burst(&sr, 0, 0, &c, 9.1) == 0, "a network stream doesn't preempt an app's");
         a = net_burst(0x555, 9990, 9800009, false, 1, false, true);
-        rdof_siteroute_app_burst(&sr, ap, &a, false, 255, 9.12);
+        rdof_siteroute_app_burst(&sr, ap, &a, false, INFINITY, 9.12);
         CHECK(rdof_siteroute_burst(&sr, 0, 0, &c, 9.2) != 0, "but takes its hold");
-        CHECK(!rdof_siteroute_app_ready(&sr, -1, 11) && !rdof_siteroute_app_burst(&sr, 99, &a, false, 255, 11), "no path");
+        CHECK(!rdof_siteroute_app_ready(&sr, -1, 11) && !rdof_siteroute_app_burst(&sr, 99, &a, false, INFINITY, 11), "no path");
     }
     if (load(dir, "good-dcdm-per-path.json")) { /* a DCDM frequency: its repeater, on the path's slot */
         static rdof_repeater_t d;
@@ -516,7 +517,7 @@ static void test_siteroute(const char *dir)
     static rdof_txvr_t t;
     rdof_txvr_init(&t, NULL, S.id);
     rdof_siteroute_init(&sr, &S);
-    rdof_siteroute_add_txvr(&sr, &t, 0);
+    rdof_siteroute_add_txvr(&sr, &t, 0, NULL);
     rdof_net_burst_t b = net_burst(0x77, 7, 3100, true, 1, false, false);
     CHECK(rdof_siteroute_burst(&sr, 0, 9800702, &b, 1) == 2, "per_path: the second frequency's peer");
     b = net_burst(0x77, 7, 3100, true, 1, false, true);
@@ -555,6 +556,55 @@ static void test_siteroute(const char *dir)
     CHECK(rdof_sdr_config_parse(pn, sizeof pn - 1, &sc, err, sizeof err) && sc.nch == 2 &&
               !strcmp(sc.ch[1].id, "02-SIM"),
           "per_path names: the receiver's channel: %s", err);
+
+    /* power: a frequency's power_dbm is an RF level on the transceiver's map; an app's burst at cap_dbm at most */
+    static const char pw[] = "{\"version\": 3, \"id\": 9800700, \"defaults\": {\"cc\": 1, \"tg\": 3100}, "
+                             "\"devices\": [{\"name\": \"M\", \"kind\": \"modem\", \"type\": \"radio_hotspot\", "
+                             "\"port\": {\"usb\": \"auto\"}, \"tx\": {\"min_dbm\": -10, \"max_dbm\": 41}}], "
+                             "\"frequencies\": [{\"freq\": 438.0625, \"power_dbm\": 0}, 438.0875], "
+                             "\"networks\": [{\"type\": \"hblink\", \"host\": \"h\"}]}";
+    CHECK(rdof_site_parse(pw, sizeof pw - 1, &S, err, sizeof err) && S.freq[0].power_dbm == 0 &&
+              isnan(S.freq[1].power_dbm),
+          "power_dbm: %s", err);
+    const rdof_txmap_t map = {-10, 41};
+    const int k0 = rdof_site_path(&S, "438.0625"), k1 = rdof_site_path(&S, "438.0875");
+    static const struct {
+        bool map;
+        int path;
+        double cap; /* NAN: a network stream */
+        int level;
+    } pl[] = {
+        {true, 0, NAN, 50},       /* 0 dBm: 255 * 10 / 51 */
+        {true, 1, INFINITY, 255}, /* none: the device's own */
+        {true, 0, -5, 25},        /* under the cap */
+        {true, 0, 3, 50},         /* the cap over it: its own */
+        {true, 1, -5, 25},        /* none, a cap: the cap */
+        {true, 0, -5.1, 24},      /* between levels: the one under */
+        {true, 0, -INFINITY, 0},  /* the least */
+        {true, 0, INFINITY, 50},  /* no cap */
+        {false, 0, NAN, 255},     /* no map: its own power */
+        {false, 0, INFINITY, 255},
+        {false, 0, -5, 0},        /* no map under a cap: the least, it can't tell dBm */
+    };
+    for (size_t i = 0; i < sizeof pl / sizeof pl[0]; i++) {
+        static rdof_txvr_t tp;
+        static rdof_modem_t md; /* a radio that's never asked anything: the call is only taken here */
+        static rdof_radio_t rd;
+        rd.modem = &md;
+        rdof_txvr_init(&tp, &rd, S.id);
+        tp.ready = true;
+        tp.nchannels = 2;
+        tp.channels[0] = (rdof_channel_t){438062500, 1, 255, 1};
+        tp.channels[1] = (rdof_channel_t){438087500, 1, 255, 1};
+        rdof_siteroute_init(&sr, &S);
+        rdof_siteroute_add_txvr(&sr, &tp, 0, pl[i].map ? &map : NULL);
+        rdof_net_burst_t a = net_burst(0x900 + (int)i, 9990, 3100, true, 1, false, false);
+        const int k = pl[i].path ? k1 : k0;
+        const bool sent = isnan(pl[i].cap) ? rdof_siteroute_burst(&sr, 0, 0, &a, 1) != 0
+                                           : rdof_siteroute_app_burst(&sr, k, &a, false, pl[i].cap, 1);
+        const int level = tp.has_call ? tp.call.tune.power : tp.next.used ? tp.next.tune.power : -1;
+        CHECK(sent && level == pl[i].level, "power %zu: sent %d at %d (want %d)", i, sent, level, pl[i].level);
+    }
 }
 
 /* Every fixture: good- taken, bad- refused; a good one's units and SDR parse. */

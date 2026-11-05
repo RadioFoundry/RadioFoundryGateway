@@ -62,7 +62,7 @@ typedef struct {
     bool radio;           /* via=radio:NAME, else the SDR modem */
     bool routed;          /* via=modem through the router's pool (version 3, a roamer owns the modem) */
     int path;             /* routed: the path at freq */
-    int level;            /* routed: the job's power, 0-255 (the path's at most) */
+    double cap_dbm;       /* routed: the job's power at the antenna (the path's at most) */
     bool line;            /* the line protocol's job (bench_line.c): no socket of its own, no lease */
     bool ob;              /* line, an outbound: the modem keyed by its own frames, no rdof_benchtx job */
     bool ob_unkeyed;      /* outbound: DMR_START 00 sent */
@@ -138,11 +138,53 @@ static bool via_router(void)
 #endif
 }
 
+/* bench.tx's limit on a job's power (max_dbm, else rf_level on the transmitter's range). */
+static rdof_bench_limit_t limit(void)
+{
+    return (rdof_bench_limit_t){policy.has_max_dbm, policy.max_dbm, policy.rf_level};
+}
+
+/* The most a job sends at, at the antenna, under bench.tx's limit, on the SDR's range. With no SDR: the least of
+ * the dBm given (the job's, the limit's); with none, INFINITY (no cap) when both levels are 255, else -INFINITY (a
+ * modem's lowest level: a level can't be told in dBm there). *asked: what the job asked for (NAN: not told). */
+static double job_dbm(rdof_bench_power_t want, double *asked)
+{
+    const rdof_bench_limit_t lim = limit();
+    const rdof_fe_caps_t *c = sdr_fe_caps();
+    *asked = NAN;
+    if (c)
+        return rdof_bench_power_dbm(&lim, want, c->tx_power_min, c->tx_power_max, asked);
+    *asked = want.dbm;
+    if (lim.has_max_dbm || !isnan(want.dbm)) {
+        const double l = lim.has_max_dbm ? lim.max_dbm : INFINITY, w = isnan(want.dbm) ? INFINITY : want.dbm;
+        return w < l ? w : l;
+    }
+    return want.level >= 255 && lim.rf_level >= 255 ? INFINITY : -INFINITY;
+}
+
+/* The job's SET_FREQ RF level (a bench radio's guard sends it as the lowest; the SDR modem takes its dBm from
+ * sdr_modem_bench_open). */
+static int job_level(rdof_bench_power_t want)
+{
+    const rdof_bench_limit_t lim = limit();
+    return rdof_bench_power_level(&lim, want, NULL);
+}
+
+/* The note for a job asking more than bench.tx allows. */
+static void over_note(char *why, size_t cap, const char *pre, double asked, double dbm)
+{
+    if (!isnan(asked) && isfinite(dbm) && asked > dbm + 0.05)
+        snprintf(why, cap, "%s%s%.1f dBm asked, over bench.tx's limit: %.1f dBm", pre, pre[0] ? "; " : "", asked,
+                 dbm);
+    else
+        snprintf(why, cap, "%s", pre);
+}
+
 /* A burst to the pool (under mu, then the site's lock); false: no transmitter free, the burst is NAKed. */
 static bool route_burst(void *ctx, const rdof_net_burst_t *b)
 {
 #if RDOF_FEATURE_TX
-    return site_app_burst(J.path, b, false, J.level);
+    return site_app_burst(J.path, b, false, J.cap_dbm);
 #else
     return false;
 #endif
@@ -170,9 +212,8 @@ static const char *route_open(uint32_t freq)
         return "no talk path at that frequency (the site's frequencies)";
     J.routed = true;
     rdof_benchroute_init(&route, modem_bytes, route_burst, NULL);
-    const rdof_fe_caps_t *c = sdr_fe_caps();
-    if (c) /* the SDR roamer's transmitter at the job's level (the router's tune doesn't reach an SDR's power) */
-        sdr_modem_tx_cap(c->tx_power_min + (c->tx_power_max - c->tx_power_min) * J.level / 255.0);
+    if (sdr_fe_caps() && isfinite(J.cap_dbm)) /* the SDR roamer's transmitter at the job's power at most */
+        sdr_modem_tx_cap(J.cap_dbm);
     return NULL;
 #else
     return "no router in this build";
@@ -335,7 +376,10 @@ static esp_err_t tx_open(httpd_req_t *req)
     rdof_benchtx_t *job = J.job;
     J = (txjob_t){.on = true, .fd = httpd_req_to_sockfd(req), .opened_us = esp_timer_get_time(),
                   .lease_us = esp_timer_get_time(), .freq = isfinite(freq) ? (uint32_t)llround(freq) : 0,
-                  .radio = !strncmp(via, "radio:", 6), .job = job, .from_modem = sb, .level = policy.rf_level};
+                  .radio = !strncmp(via, "radio:", 6), .job = job, .from_modem = sb};
+    const rdof_bench_power_t most = {NAN, 255};
+    double asked;
+    J.cap_dbm = job_dbm(most, &asked);
     snprintf(J.session, sizeof J.session, "%s", session);
     snprintf(J.via, sizeof J.via, "%s", via);
     bench_session_label(session, J.label, sizeof J.label);
@@ -362,10 +406,8 @@ static esp_err_t tx_open(httpd_req_t *req)
              : strstr(why, "another") || strstr(why, "linked") || strstr(why, "roamer") ? "busy"
              : J.radio ? "unavailable" : "refused";
     } else {
-        const rdof_fe_caps_t *c = sdr_fe_caps();
-        const double dbm = c ? c->tx_power_min + (c->tx_power_max - c->tx_power_min) * policy.rf_level / 255.0 : 0;
         why = J.radio ? bench_radio_tx_open(via + 6, session, J.freq, modem_bytes, NULL)
-                      : sdr_modem_bench_open(modem_bytes, NULL, dbm, via_router());
+                      : sdr_modem_bench_open(modem_bytes, NULL, J.cap_dbm, via_router());
         code = "unavailable";
     }
     if (why) {
@@ -374,8 +416,9 @@ static esp_err_t tx_open(httpd_req_t *req)
         ESP_LOGW(TAG, "tx: %s (%s): %s", session, via, why);
     } else {
         const rdof_benchtx_io_t io = {job_to_modem, job_to_tool, job_keying, job_utc, NULL};
-        rdof_benchtx_init(J.job, &io, J.freq, cc, policy.rf_level, policy.max_key_s, now_s());
-        ESP_LOGI(TAG, "tx: session %s (%s) on %.5f MHz via %s, cc %d", session, J.label, J.freq / 1e6, via, cc);
+        rdof_benchtx_init(J.job, &io, J.freq, cc, job_level(most), policy.max_key_s, now_s());
+        ESP_LOGI(TAG, "tx: session %s (%s) on %.5f MHz via %s, cc %d, at most %.1f dBm", session, J.label,
+                 J.freq / 1e6, via, cc, J.cap_dbm);
     }
     xSemaphoreGive(mu);
     return ESP_OK;
@@ -485,7 +528,7 @@ const char *bench_tx_line_why(void)
     return why && strstr(why, "another") ? NULL : why; /* busy is the job's to wait out, not a refusal */
 }
 
-bool bench_tx_line_open(uint32_t freq, int cc, int power, bool as_built, char *why, size_t cap)
+bool bench_tx_line_open(uint32_t freq, int cc, rdof_bench_power_t power, bool as_built, char *why, size_t cap)
 {
     why[0] = 0;
     xSemaphoreTake(mu, portMAX_DELAY);
@@ -493,12 +536,12 @@ bool bench_tx_line_open(uint32_t freq, int cc, int power, bool as_built, char *w
     if (J.on)
         no = "the transmitter is busy with another bench job";
     else if ((no = rdof_benchtx_gates(&policy, true, true, freq, &freq, 1, armed())) == NULL) {
-        const int level = power < policy.rf_level ? power : policy.rf_level;
-        const rdof_fe_caps_t *c = sdr_fe_caps();
-        const double dbm = c ? c->tx_power_min + (c->tx_power_max - c->tx_power_min) * level / 255.0 : 0;
+        double asked;
+        const double dbm = job_dbm(power, &asked);
+        const int level = job_level(power);
         StreamBufferHandle_t sb = J.from_modem;
         rdof_benchtx_t *job = J.job;
-        J = (txjob_t){.on = true, .line = true, .fd = -1, .freq = freq, .job = job, .from_modem = sb, .level = level};
+        J = (txjob_t){.on = true, .line = true, .fd = -1, .freq = freq, .job = job, .from_modem = sb, .cap_dbm = dbm};
         snprintf(J.session, sizeof J.session, "line");
         snprintf(J.label, sizeof J.label, "line protocol");
         snprintf(J.via, sizeof J.via, "modem");
@@ -518,12 +561,9 @@ bool bench_tx_line_open(uint32_t freq, int cc, int power, bool as_built, char *w
                                : via_router()            ? "the modem borrowed, the bursts as built: no talk path at "
                                                            "this frequency (not one of the site's), the roamer paused"
                                                          : "the modem, the bursts as built";
-            if (power > level)
-                snprintf(why, cap, "%s; --power %d is over bench.tx's rf_level: %d (%.0f dBm)", path, power, level,
-                         dbm);
-            else
-                snprintf(why, cap, "%s", path);
-            ESP_LOGI(TAG, "tx: a line protocol job on %.5f MHz, cc %d, level %d, %s", freq / 1e6, cc, level, path);
+            over_note(why, cap, path, asked, dbm);
+            ESP_LOGI(TAG, "tx: a line protocol job on %.5f MHz, cc %d, at most %.1f dBm, %s", freq / 1e6, cc, dbm,
+                     path);
         }
     }
     xSemaphoreGive(mu);
@@ -594,14 +634,14 @@ const char *bench_tx_ob_why(void)
     return why && (strstr(why, "another") || strstr(why, "roamer")) ? NULL : why; /* busy: the job's to wait out */
 }
 
-bool bench_tx_ob_open(uint32_t freq, int cc, int power, double seconds, char *why, size_t cap)
+bool bench_tx_ob_open(uint32_t freq, int cc, rdof_bench_power_t power, double seconds, char *why, size_t cap)
 {
     why[0] = 0;
     xSemaphoreTake(mu, portMAX_DELAY);
     const char *no = NULL;
-    const int level = power < policy.rf_level ? power : policy.rf_level;
-    const rdof_fe_caps_t *c = sdr_fe_caps();
-    const double dbm = c ? c->tx_power_min + (c->tx_power_max - c->tx_power_min) * level / 255.0 : 0;
+    double asked;
+    const double dbm = job_dbm(power, &asked);
+    const int level = job_level(power);
     if (!bench_tx_enabled())
         no = policy_err[0] ? policy_err : "no transmit frequencies (bench.tx in the settings)";
     else if (!J.job || !J.from_modem)
@@ -622,10 +662,8 @@ bool bench_tx_ob_open(uint32_t freq, int cc, int power, double seconds, char *wh
         uint8_t f[160];
         const size_t n = rdof_sdrmodem_outbound_frames(freq, cc, level, s + 15, s + 10, f, sizeof f);
         sdr_modem_bench_write(f, n);
-        if (power > level)
-            snprintf(why, cap, "--power %d is over bench.tx's rf_level: %d (%.0f dBm)", power, level, dbm);
-        ESP_LOGW(TAG, "TX: outbound on %.5f MHz, cc %d, %.1f s, level %d (%.0f dBm)", freq / 1e6, cc, seconds, level,
-                 dbm);
+        over_note(why, cap, "", asked, dbm);
+        ESP_LOGW(TAG, "TX: outbound on %.5f MHz, cc %d, %.1f s, %.1f dBm", freq / 1e6, cc, seconds, dbm);
     }
     xSemaphoreGive(mu);
     if (no)
@@ -691,14 +729,14 @@ void bench_tx_ob_close(void)
 }
 
 /* A signal mode's transmission: the outbound's way to the modem (a roamer's parked), then the source keyed. */
-int bench_tx_sig_open(uint32_t freq, int power, double seconds, const rdof_sig_src_t *src, char *why, size_t cap)
+int bench_tx_sig_open(uint32_t freq, rdof_bench_power_t power, double seconds, const rdof_sig_src_t *src, char *why,
+                      size_t cap)
 {
     why[0] = 0;
     xSemaphoreTake(mu, portMAX_DELAY);
     const char *no = NULL;
-    const int level = power < policy.rf_level ? power : policy.rf_level;
-    const rdof_fe_caps_t *c = sdr_fe_caps();
-    const double dbm = c ? c->tx_power_min + (c->tx_power_max - c->tx_power_min) * level / 255.0 : 0;
+    double asked;
+    const double dbm = job_dbm(power, &asked);
     char w[160] = "";
     if (!bench_tx_enabled())
         no = policy_err[0] ? policy_err : "no transmit frequencies (bench.tx in the settings)";
@@ -722,9 +760,8 @@ int bench_tx_sig_open(uint32_t freq, int power, double seconds, const rdof_sig_s
             snprintf(J.label, sizeof J.label, "signal");
             snprintf(J.via, sizeof J.via, "modem");
             xStreamBufferReset(J.from_modem);
-            if (power > level)
-                snprintf(why, cap, "power %d is over bench.tx's rf_level: %d (%.0f dBm)", power, level, dbm);
-            ESP_LOGW(TAG, "TX: a signal on %.5f MHz, %.1f s, level %d (%.0f dBm)", freq / 1e6, seconds, level, dbm);
+            over_note(why, cap, "", asked, dbm);
+            ESP_LOGW(TAG, "TX: a signal on %.5f MHz, %.1f s, %.1f dBm", freq / 1e6, seconds, dbm);
         }
     }
     xSemaphoreGive(mu);
@@ -802,8 +839,9 @@ int bench_tx_register(void *server)
             gpio_config(&g);
         }
         if (bench_tx_enabled())
-            ESP_LOGW(TAG, "bench TX allowed on %d frequencies and %d bands, %.1f s a keying, RF level %d%s",
-                     policy.nfreqs, policy.nbands, policy.max_key_s, policy.rf_level,
+            ESP_LOGW(TAG, "bench TX allowed on %d frequencies and %d bands, %.1f s a keying, %s %.1f%s",
+                     policy.nfreqs, policy.nbands, policy.max_key_s, policy.has_max_dbm ? "at most dBm" : "RF level",
+                     policy.has_max_dbm ? policy.max_dbm : policy.rf_level,
                      policy.arm_gpio >= 0 ? ", with the arm jumper" : "");
         if (J.job && J.from_modem)
             xTaskCreatePinnedToCoreWithCaps(tx_task, "bench_txj", 4096, NULL, 4, NULL, 0, MALLOC_CAP_SPIRAM);
@@ -822,7 +860,7 @@ bool bench_tx_enabled(void) { return false; }
 bool bench_tx_listed(uint32_t freq) { return false; }
 int bench_tx_freqs(uint32_t *out, int max) { return 0; }
 const char *bench_tx_line_why(void) { return "this build has no bench TX (CONFIG_RDOF_BENCH_TX)"; }
-bool bench_tx_line_open(uint32_t freq, int cc, int power, bool as_built, char *why, size_t cap)
+bool bench_tx_line_open(uint32_t freq, int cc, rdof_bench_power_t power, bool as_built, char *why, size_t cap)
 {
     snprintf(why, cap, "%s", bench_tx_line_why());
     return false;
@@ -832,14 +870,15 @@ void bench_tx_line_push(uint8_t control, const uint8_t burst[33]) {}
 bool bench_tx_line_idle(void) { return true; }
 void bench_tx_line_close(void) {}
 int bench_tx_register(void *server) { return 0; }
-bool bench_tx_ob_open(uint32_t freq, int cc, int power, double seconds, char *why, size_t cap)
+bool bench_tx_ob_open(uint32_t freq, int cc, rdof_bench_power_t power, double seconds, char *why, size_t cap)
 {
     snprintf(why, cap, "%s", bench_tx_line_why());
     return false;
 }
 const char *bench_tx_ob_why(void) { return bench_tx_line_why(); }
 int bench_tx_ob_check(char *why, size_t cap) { return -1; }
-int bench_tx_sig_open(uint32_t freq, int power, double seconds, const rdof_sig_src_t *src, char *why, size_t cap)
+int bench_tx_sig_open(uint32_t freq, rdof_bench_power_t power, double seconds, const rdof_sig_src_t *src, char *why,
+                      size_t cap)
 {
     snprintf(why, cap, "%s", bench_tx_line_why());
     return -1;
@@ -864,7 +903,12 @@ size_t bench_tx_info_json(char *buf, size_t cap)
     ADD("],\"bands_hz\":[");
     for (int i = 0; i < policy.nbands; i++)
         ADD("%s[%lu,%lu]", i ? "," : "", (unsigned long)policy.bands_hz[i][0], (unsigned long)policy.bands_hz[i][1]);
-    ADD("],\"max_key_s\":%.1f,\"power\":%d,\"arm\":", policy.max_key_s, policy.rf_level);
+    ADD("],\"max_key_s\":%.1f,\"power\":%d,\"max_dbm\":", policy.max_key_s, policy.has_max_dbm ? -1 : policy.rf_level);
+    if (policy.has_max_dbm)
+        ADD("%.1f", policy.max_dbm);
+    else
+        ADD("null");
+    ADD(",\"arm\":");
     if (policy.arm_gpio >= 0)
         ADD("{\"gpio\":%d,\"armed\":%s}", policy.arm_gpio, gpio_get_level(policy.arm_gpio) == 0 ? "true" : "false");
     else

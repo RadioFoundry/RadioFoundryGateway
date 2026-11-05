@@ -9,9 +9,12 @@
  * rate (the chip's is 125 or 250 kS/s, not a multiple of 48 kS/s).
  *
  * The W12's sub-GHz front end (a GC1109) has an LNA, a PA for about 860 to 930
- * MHz and a transmit bypass; the DIOs pick the PA inside that band, the bypass
- * outside it. A 902-928 MHz SAW filter follows its LNA (schematic W12-MB-V0.2),
- * so 439 MHz reaches the LR2021 about 46 dB down: strong signals only.
+ * MHz and a transmit bypass. Power is dBm at the antenna (rdof/txpower.h): a
+ * transmission goes through the PA only inside its band and for a power over
+ * RDOF_LR2021_PA_ABOVE_DBM, else through the bypass; the chip sends the power
+ * less the path's gain (R3.44). A 902-928 MHz SAW filter follows its LNA
+ * (schematic W12-MB-V0.2), so 439 MHz reaches the LR2021 about 46 dB down:
+ * strong signals only.
  *
  * First run on the W12 (2026-10-23): a bench MMDVM's DMR call on 438.1125 MHz decoded 131 of 131 bursts, BER
  * 0.5%. That board's crystal ran 28 ppm slow (device.ppm -28). The chip's filter passes the LoRa bandwidth only:
@@ -43,6 +46,7 @@
 #include "lr2021_tx.h"
 #include "mem.h"
 #include "rdof/sdr/resample.h"
+#include "rdof/txpower.h"
 #include "rtlsdr/gaps.h"
 #include "sdr_fe.h"
 
@@ -80,8 +84,9 @@ static rdof_fe_caps_t caps = {
     .tx_freq_min = 100e6, /* as receive; transmit under 150 MHz isn't measured */
     .tx_freq_max = 960e6,
     .tx_reach_hz = 1e6, /* tx_tune: where the front end is calibrated */
-    .tx_power_min = -9.5, /* the LF PA, 0.5 dB steps (7.4.3) */
-    .tx_power_max = 21,   /* 22 dBm sends noise, not the signal, with the board's PA setup (spec R3.49) */
+    /* at the antenna (tx_path): the chip's -9.5 dBm through the bypass, to the PA's most */
+    .tx_power_min = -9.5 + CONFIG_RDOF_LR2021_BYPASS_GAIN_DB,
+    .tx_power_max = CONFIG_RDOF_LR2021_PA_MAX_DBM,
     .tx_power_step = 0.5,
     .turnaround_us = 107, /* RX to TX, typical (table 3-23); TX to RX 91 */
     .tx_dev_max_hz = 4064, /* int8 samples, 32 Hz a count at TX_FDEV (R3.10) */
@@ -209,6 +214,18 @@ static bool pa_band(double hz)
 {
     return hz >= CONFIG_RDOF_LR2021_PA_LO_MHZ * 1e6 && hz <= CONFIG_RDOF_LR2021_PA_HI_MHZ * 1e6;
 }
+
+/* The chip and the GC1109's two paths to the antenna (R3.44, measured at 920 MHz; 446 and 439 MHz unmeasured). The
+ * chip sends -9.5 to 21 dBm in 0.5 dB steps (22 sends noise with the board's PA setup, R3.49). */
+static const rdof_txpower_fe_t tx_paths = {
+    .chip_min = -9.5,
+    .chip_max = 21,
+    .chip_step = 0.5,
+    .pa_gain = CONFIG_RDOF_LR2021_PA_GAIN_DB,
+    .bypass_gain = CONFIG_RDOF_LR2021_BYPASS_GAIN_DB,
+    .pa_above = CONFIG_RDOF_LR2021_PA_ABOVE_DBM,
+    .pa_max = CONFIG_RDOF_LR2021_PA_MAX_DBM,
+};
 
 /* The board as the component takes it (lr2021_board.h), from the Kconfig: DIO9 to DIO11 drive the W12's GC1109
  * (CTX, CPS, CSD), high in the modes each mask names. Receive is CSD high, CTX low; transmit CTX high, CPS high for
@@ -629,7 +646,9 @@ static struct {
     unsigned runs, late, early, failed, cut, underflows, calibrated;
     int err_min, err_max;      /* key-up's time against the run's, us */
     int64_t zeros;             /* samples filled in */
-    double sent_dbm;           /* the power the last run went out at */
+    double sent_dbm;           /* the power the last run went out at, at the antenna */
+    double sent_chip;          /* the chip's setting for it */
+    bool sent_pa;              /* through the PA, else the bypass */
     lr2021_err_t last_err;
     unsigned long_runs, long_seams; /* long key-ups (tx_run_long), their seams */
     unsigned caught_up;             /* long key-ups already due, started from a later sample */
@@ -753,22 +772,33 @@ static size_t stage_pull(void *ctx, uint8_t *buf, size_t max)
 
 /* One run: n staged samples from k0 on, keyed up at esp_timer t_key (lr2021_iq_transmit: the receiver paused and
  * back after), then the gap filled. The caller holds the lock, in a session. */
+/* The path and the chip's setting for the power asked (tx.power, at the antenna), at the carrier. */
+static rdof_txpower_path_t tx_path(void)
+{
+    const rdof_txpower_path_t p = rdof_txpower_path(&tx_paths, tx.power, pa_band(tx.hz));
+    tx.sent_dbm = p.out_dbm;
+    tx.sent_chip = p.chip_dbm;
+    tx.sent_pa = p.pa;
+    return p;
+}
+
 static void tx_run(int64_t k0, int n, int64_t t_key)
 {
     const bool polar = stage.k[k0 & (TX_STAGE - 1)] & K_IQ;
     tx.polar += polar;
+    const rdof_txpower_path_t path = tx_path();
     const lr2021_iq_tx_t t = {
         .mode = polar ? LR2021_TX_IQ_POLAR : LR2021_TX_FREQ,
         .center_hz = tx.hz,
         .ppm = carrier_ppm(),
         .rate = TX_RATE,
         .fdev_hz = TX_FDEV,
-        .power_dbm = tx.power,
+        .power_dbm = path.chip_dbm,
+        .pa = path.pa ? LR2021_TX_PA_BAND : LR2021_TX_PA_OFF,
         .samples = (uint64_t)n,
         .at_us = t_key,
     };
     struct stage_span span = {k0, k0 + n, polar};
-    tx.sent_dbm = t.power_dbm;
     lr2021_tx_stream_stats_t s;
     if (lr2021_iq_tx_calibrates(&iq, &t))
         tx.calibrated++;
@@ -884,13 +914,15 @@ static int64_t tx_run_long(int64_t k0, int64_t k1, int64_t t_key)
     const lr2021_tx_mode_t mode = polar ? LR2021_TX_IQ_POLAR : LR2021_TX_FREQ;
     const int64_t run = polar ? TX_LONG_RUN_IQ : TX_LONG_RUN;
     tx.polar += polar;
+    const rdof_txpower_path_t path = tx_path();
     const lr2021_iq_tx_t t = {
         .mode = mode,
         .center_hz = tx.hz,
         .ppm = carrier_ppm(),
         .rate = TX_RATE,
         .fdev_hz = TX_FDEV,
-        .power_dbm = tx.power,
+        .power_dbm = path.chip_dbm,
+        .pa = path.pa ? LR2021_TX_PA_BAND : LR2021_TX_PA_OFF,
         .samples = (uint64_t)run,
         .streamed = true,
         .at_us = t_key,
@@ -902,7 +934,6 @@ static int64_t tx_run_long(int64_t k0, int64_t k1, int64_t t_key)
     EXT_RAM_BSS_ATTR static struct long_span span;
     span = (struct long_span){.at = k0, .end = k1, .run = run, .iq = polar,
                               .seam_us = learned > 0 ? learned : TX_SEAM_US, .st = &s};
-    tx.sent_dbm = t.power_dbm;
     if (lr2021_iq_tx_calibrates(&iq, &t))
         tx.calibrated++;
     const lr2021_err_t e = lr2021_iq_transmit(&iq, &t, long_pull, &span, &s);
@@ -950,9 +981,10 @@ static int64_t tx_run_long(int64_t k0, int64_t k1, int64_t t_key)
 static void tx_said(void)
 {
     if (tx.runs || tx.late || tx.early || tx.failed)
-        say("TX at %.5f MHz, %.1f dBm: %u runs (%u polar), %u late, %u early (R3.17), %u failed%s%s, %u cut, "
-            "%u underflows, %u calibrated; key-up %+d to %+d us of its time; %lld samples filled",
-            tx.hz / 1e6, tx.sent_dbm, tx.runs, tx.polar, tx.late, tx.early, tx.failed, tx.failed ? ": " : "",
+        say("TX at %.5f MHz, %.1f dBm (the chip at %.1f, through the %s): %u runs (%u polar), %u late, %u early "
+            "(R3.17), %u failed%s%s, %u cut, %u underflows, %u calibrated; key-up %+d to %+d us of its time; %lld "
+            "samples filled",
+            tx.hz / 1e6, tx.sent_dbm, tx.sent_chip, tx.sent_pa ? "PA" : "bypass", tx.runs, tx.polar, tx.late, tx.early, tx.failed, tx.failed ? ": " : "",
             tx.failed ? esp_err_to_name(tx.last_err) : "", tx.cut, tx.underflows, tx.calibrated, tx.err_min,
             tx.err_max, (long long)tx.zeros);
     tx.polar = 0;
@@ -1068,7 +1100,7 @@ static bool tx_service(void)
 
 static int tx_set(void *ctx, const rdof_fe_tx_source_t *src, double power_dbm)
 {
-    tx.power = power_dbm > caps.tx_power_max ? caps.tx_power_max : power_dbm;
+    tx.power = power_dbm > caps.tx_power_max ? caps.tx_power_max : power_dbm; /* at the antenna (tx_path) */
     tx.src = src; /* the reader picks it up */
     return 0;
 }

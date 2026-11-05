@@ -155,9 +155,18 @@ int lr2021_board_parse(const char *text, lr2021_board_buf_t *out, char *err, siz
     return 0;
 }
 
+bool lr2021_board_pa_band(const lr2021_board_t *b, double hz)
+{
+    return b->pa_hi_hz > 0 && hz >= b->pa_lo_hz && hz <= b->pa_hi_hz;
+}
+
 int lr2021_board_rfsw(const lr2021_board_t *b, double hz, uint8_t *dio, uint8_t *modes)
 {
-    const bool pa = b->pa_hi_hz > 0 && hz >= b->pa_lo_hz && hz <= b->pa_hi_hz;
+    return lr2021_board_rfsw_path(b, lr2021_board_pa_band(b, hz), dio, modes);
+}
+
+int lr2021_board_rfsw_path(const lr2021_board_t *b, bool pa, uint8_t *dio, uint8_t *modes)
+{
     for (int i = 0; i < b->rfsw_n; i++) {
         dio[i] = b->rfsw_dio[i];
         modes[i] = pa ? b->rfsw_pa[i] : b->rfsw_bypass[i];

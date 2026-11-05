@@ -66,6 +66,8 @@ pub struct RdofBenchtxPolicy {
     pub max_key_s: f64,
     pub rf_level: c_int,
     pub arm_gpio: c_int,
+    pub has_max_dbm: bool,
+    pub max_dbm: f64,
 }
 
 impl RdofBenchtxPolicy {
@@ -78,6 +80,8 @@ impl RdofBenchtxPolicy {
         max_key_s: 0.0,
         rf_level: 0,
         arm_gpio: -1,
+        has_max_dbm: false,
+        max_dbm: 0.0,
     };
 
     fn freqs(&self) -> &[u32] {

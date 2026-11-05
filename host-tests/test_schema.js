@@ -94,6 +94,7 @@ const places = {
     "common/src/siteplan.c": {
         SDR_KEYS: props(D.sdr_keys).concat(own),
         MODEM_KEYS: props(D.modem_keys).concat(own),
+        MODEM_TX_KEYS: props(D.modem_tx),
         RADIO_KEYS: props(D.radio_keys).concat(own),
         SDR_RX_KEYS: props(sdr.rx),
         SDR_TX_KEYS: props(sdr.tx),

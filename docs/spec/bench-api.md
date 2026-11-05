@@ -69,7 +69,7 @@ wideband sample (3.5 us at 288 kS/s). On the daemon, `sc` is the capture's sampl
  "channels": [{"id": "SDR06", "name": "Operations 3", "freq_hz": 438162500.0, "cc": 2, "slot": 1,
                "caps": ["rx", "dmr", "nfm", "iq"], "in_band": true}],
  "radios": [{"name": "radio1", "kind": "odr", "caps": ["tune", "ptt", "mmdvm"], "port": "usb"}],
- "tx": {"freqs_hz": [], "bands_hz": [], "max_key_s": 0, "power": null},
+ "tx": {"freqs_hz": [], "bands_hz": [], "max_key_s": 0, "power": null, "max_dbm": null},
  "caps": {"spectrum": true, "bursts": true, "calls": false, "iq": ["cs16", "cf32", "cs8"],
           "iq_wideband": true, "tune": true, "tx": false, "radio_control": false},
  "limits": {"streams": 3, "iq_wideband_max": 1, "preroll_s": 0.4}}
@@ -229,7 +229,9 @@ the socket closes with `refused`:
 2. `freq_hz` is in the bench's TX list (`info.tx.freqs_hz`) or one of its bands (`info.tx.bands_hz`, low and high
    Hz), which only the settings file or the daemon's config changes, never this API.
 3. The session holds a lease on it with `tx: true`. A lease has no `allow_rf` default: the client asks for it.
-4. Key time per transmission ≤ `info.tx.max_key_s`, power ≤ `info.tx.power` (the bench clamps; lowest by default).
+4. Key time per transmission ≤ `info.tx.max_key_s`, power ≤ `info.tx.max_dbm` (dBm at the antenna), or without it
+   `info.tx.power` (an RF level on the transmitter's range, −1 when `max_dbm` is set). The bench clamps; lowest by
+   default.
 5. Optional: a hardware arm input (a GPIO jumper on the board) must be closed.
 
 Client frames:
@@ -255,9 +257,9 @@ On the board (`bench_tx.c`, the job in `common/src/benchtx.c`, host-tested in `h
   transmitter pool instead, as the parrot's answers do ([transmitters.md](fw/transmitters.md) §12): an MMDVM modem in
   `common/src/benchroute.c` answers the job and hands each burst on as an app's stream on the site's path at the
   job's frequency. A frequency with no talk path there (none of the site's `frequencies`) doesn't need one: the job
-  takes the raw SDR modem as `outbound` does (the roamer's parked, given back after), and its bursts go out as built. The transmitter sends at the job's level (`--power`, capped by `rf_level`) at most: a modem's
-  tune at the path's power lowered to it, the SDR roamer at its `tx.power_dbm` capped at the level's dBm while the
-  job runs. It sends the transceiver's own count of headers and terminators a call; a burst it can't take (the
+  takes the raw SDR modem as `outbound` does (the roamer's parked, given back after), and its bursts go out as built. The transmitter sends at the job's power (`--power-dbm`, or the older `--power` 0-255),
+  under `bench.tx`'s `max_dbm` (or `rf_level`) at most: a modem's tune lowered to it on the modem's `tx` map (its
+  least under a cap without one), the SDR roamer held to it while the job runs. It sends the transceiver's own count of headers and terminators a call; a burst it can't take (the
   transmitter busy with another stream) is NAKed, and the job stops. A line protocol job on this path ends once the transceiver has sent its
   stream (it listens first, so the call goes out about a second after the job hands it on). `info.tx.router` is true
   on this path. `via=radio:NAME` is a bench radio with `"proto": "mmdvm"`, through its link's guard (lowest power, TX
@@ -269,7 +271,8 @@ On the board (`bench_tx.c`, the job in `common/src/benchtx.c`, host-tested in `h
   starting at D is taken as C unless `n` says so); a B-F after F with no A between is refused.
 - What may go out is `bench.tx` in the settings: `{"freqs_hz": [whole Hz, up to 8], "bands_hz": [[low, high] in
   whole Hz, up to 8], "max_key_s": 10 (60 at most),
-  "rf_level": 0 (SET_FREQ's RF level, 0-255), "arm_gpio": -1}`. Without it nothing transmits. `arm_gpio` is a
+  "max_dbm": -20 (dBm at the antenna) or "rf_level": 0 (an RF level, 0-255, on the transmitter's range), "arm_gpio":
+  -1}`. Without it nothing transmits. `arm_gpio` is a
   jumper to ground, read with the pull-up on; pulling it stops a keying.
 - One job at a time: a second socket is refused at the handshake. A gate that's closed (or a bad query) is an
   `error` frame and `done` once the socket is up, with the codes of section 1.
@@ -545,7 +548,7 @@ DMR stack and transmitter and answers in the tool's output (its JSON lines on `o
 by their long names with `_` for `-`:
 
 ```json
-{"tool": "bench_tx", "freq": 438.1125, "cc": 2, "power": 32, "cmd": "voice", "listen_after": 0,
+{"tool": "bench_tx", "freq": 438.1125, "cc": 2, "power_dbm": -10, "cmd": "voice", "listen_after": 0,
  "src": 9990301, "dst": 9990199, "private": true, "superframes": 6, "family": "ms", ...}
 ```
 
@@ -594,8 +597,9 @@ by their long names with `_` for `-`:
   burst heard: `slot`, `control`, `rssi`, `dt`, and the CSBK opcode, LC or voice frame), `lost`, `key`, `beacon`,
   then `summary` per slot (wakeups, voice frames, data types). `rx_offset`, `tx_offset` and `port` are
   `unsupported`: the gateway's own receiver and transmitter.
-- An option the gateway can't honor is `unsupported` with the option named, before anything keys. `power` is
-  clamped to `bench.tx.rf_level` (rdofradio: see 14.4).
+- An option the gateway can't honor is `unsupported` with the option named, before anything keys. `power_dbm`
+  (dBm at the antenna; `power`, 0-255, the older form) is clamped to `bench.tx.max_dbm` or `rf_level`, and the
+  refusal or note says the dBm (rdofradio: see 14.4).
 - The tool's log lines (Python logging's `asctime message`, UTC) come as `err`, its records as `out`; the exit code
   is 0, 1 when the transmitter failed, or -9 with `killed` when the job ran past `max_s`. A TX job's `started`
   comes when it has the modem; `listen` starts at once.
@@ -619,7 +623,7 @@ the modem goes duplex, and the job's first key-up, heard back in the receiver's 
 repeater's TX half keyed with no traffic; after it the modem is unkeyed, its role dropped, and set up again for the
 transceiver. Its records' times are the modem's slot clock on the receiver's timeline plus the transmit path's
 delay. On `--mmdvm` (the MMDVM modem transmits) there is no `outbound`. The frequencies are `--bench-tx`'s; the job transmits at
-`--tx-gain`, and the log says `power` isn't applied. The ESP32 boards run no repeater jobs (`unsupported`).
+`--tx-power`, and the log says the job's power isn't applied. The ESP32 boards run no repeater jobs (`unsupported`).
 
 ### 14.5 The client
 
@@ -645,11 +649,11 @@ after the op's own are the mode's.
 
 | op | request | replies |
 |---|---|---|
-| `tx` | `session`, `mode`, `freq`, `power`, `max_s`, `wait_max`, the mode's fields; input bytes after the line | `{"tx": {"mode", "freq", "seconds", "input_bytes"}}`, queued / granted, `{"started": ID, "t"}`, `{"done": {"mode", "freq", "on_air_s", "input_bytes", "cut", ...}}` |
+| `tx` | `session`, `mode`, `freq`, `power_dbm` (or `power`), `max_s`, `wait_max`, the mode's fields; input bytes after the line | `{"tx": {"mode", "freq", "seconds", "input_bytes"}}`, queued / granted, `{"started": ID, "t"}`, `{"done": {"mode", "freq", "on_air_s", "input_bytes", "cut", ...}}` |
 | `rx` | `session`, `mode`, `freq`, `seconds`, `bw`, `squelch_dbfs`, `squelch_over_db`, the mode's fields | `{"rx": header}`, `{"rec": record}`, `{"pcm": {"stream", "seq", "n"}, "bytes": 2n}` + int16 LE, `{"gap": ...}`, `{"done": {"mode", "freq", "seconds", "samples", "gap_samples", "summary"}}` |
 
 - `tx` is a transmit job: it waits for the modem as `run` does (`expect_s` its length plus 3 s), on a frequency of
-  `bench.tx`, at `power` capped by its `rf_level`, for at most `max_key_s`. While the gateway's own roamer is
+  `bench.tx`, at `power_dbm` (or `power`) capped by its `max_dbm` or `rf_level`, for at most `max_key_s`. While the gateway's own roamer is
   transmitting it notes `waiting to transmit` and tries again each tick, for up to 10 s (then `busy`). The source renders on the transmitting
   thread, so nothing on the network can make it stutter, except PCM that comes too slowly (counted in `underruns`).
   `done` comes once the last sample has gone out, or at `max_s` (`cut` true). `seconds` is the length the mode

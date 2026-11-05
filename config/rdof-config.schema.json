@@ -15,7 +15,22 @@
     },
     "max_key_s": {"type": "number", "minimum": 0, "maximum": 60},
     "cc": {"type": "integer", "minimum": 0, "maximum": 15},
-    "power": {"type": "integer", "minimum": 0, "maximum": 255},
+    "power_dbm": {
+      "type": "number",
+      "minimum": -60,
+      "maximum": 60,
+      "description": "Transmit power, dBm at the antenna connector; left out: the device's own."
+    },
+    "modem_tx": {
+      "type": "object",
+      "description": "The device's power at RF level 0 and at 255, dBm at the antenna: a frequency's power_dbm becomes a level between, linear in dB. Without it the device sends at its own power (255).",
+      "additionalProperties": false,
+      "required": ["min_dbm", "max_dbm"],
+      "properties": {
+        "min_dbm": {"type": "number", "minimum": -60, "maximum": 60},
+        "max_dbm": {"type": "number", "minimum": -60, "maximum": 60}
+      }
+    },
     "slot": {"type": "integer", "minimum": 1, "maximum": 2},
     "gpio": {"type": "integer", "minimum": 0, "maximum": 48},
     "location": {
@@ -159,7 +174,12 @@
               "maximum": 4,
               "description": "Carriers at once; the front end says how many it runs."
             },
-            "power_dbm": {"type": "number", "minimum": -60, "maximum": 30},
+            "power_dbm": {
+              "type": "number",
+              "minimum": -60,
+              "maximum": 40,
+              "description": "dBm at the antenna connector: RF level 255; a frequency's power_dbm over it is held to it."
+            },
             "center_hz": {"$ref": "#/$defs/freq_auto"},
             "bench": {"$ref": "#/$defs/dev_bench"}
           }
@@ -225,6 +245,7 @@
             }
           }
         },
+        "tx": {"$ref": "#/$defs/modem_tx"},
         "bench": {"$ref": "#/$defs/dev_bench"}
       }
     },
@@ -234,6 +255,7 @@
       "properties": {
         "kind": {"const": "radio"},
         "port": {"$ref": "#/$defs/port"},
+        "tx": {"$ref": "#/$defs/modem_tx"},
         "bench": {"$ref": "#/$defs/dev_bench"}
       }
     },
@@ -323,7 +345,7 @@
         "mode": {"enum": ["simplex", "sfr", "dcdm"]},
         "ts": {"enum": [1, 2]},
         "tx": {"type": "boolean"},
-        "power": {"$ref": "#/$defs/power"},
+        "power_dbm": {"$ref": "#/$defs/power_dbm"},
         "policy": {"type": "string"}
       },
       "unevaluatedProperties": false
@@ -350,7 +372,7 @@
             "mode": {"enum": ["simplex", "sfr", "dcdm"]},
             "ts": {"enum": [1, 2]},
             "tx": {"type": "boolean"},
-            "power": {"$ref": "#/$defs/power"},
+            "power_dbm": {"$ref": "#/$defs/power_dbm"},
             "devices": {"type": "array", "items": {"type": "string"}},
             "slots": {"$ref": "#/$defs/slots3"},
             "policy": {"type": "string"},
@@ -627,7 +649,18 @@
               }
             },
             "max_key_s": {"$ref": "#/$defs/max_key_s"},
-            "rf_level": {"type": "integer", "minimum": 0, "maximum": 255},
+            "max_dbm": {
+              "type": "number",
+              "minimum": -60,
+              "maximum": 60,
+              "description": "The most a bench job sends at, dBm at the antenna (or rf_level, not both)."
+            },
+            "rf_level": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255,
+              "description": "The most a bench job sends at as an RF level on the transmitter's range (max_dbm says it in dBm)."
+            },
             "arm_gpio": {"type": "integer", "minimum": -1, "maximum": 48}
           }
         }

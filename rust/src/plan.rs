@@ -72,7 +72,7 @@ pub struct RdofFreq {
     pub mode: u8,
     pub ts: u8,
     pub tx: bool,
-    pub power: c_int,
+    pub power_dbm: f64,
     pub devices: u32,
     pub app: c_int,
 }
@@ -183,7 +183,16 @@ pub struct RdofPlanDev {
     pub tx_carriers: c_int,
     pub tx_power_dbm: f64,
     pub has_tx_power: bool,
+    pub txmap: RdofTxmap,
     pub bench: RdofDevBench,
+}
+
+/// rdof_txmap_t
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RdofTxmap {
+    pub min_dbm: f64,
+    pub max_dbm: f64,
 }
 
 /// rdof_unit_t
@@ -215,6 +224,7 @@ pub struct RdofPlan {
 }
 
 extern "C" {
+    pub fn rdof_txpower_level(m: *const RdofTxmap, dbm: f64) -> c_int;
     pub fn rdof_plan_open(text: *const c_char, len: usize, err: *mut c_char, cap: usize) -> *mut RdofPlan;
     pub fn rdof_plan_close(p: *mut RdofPlan);
     pub fn rdof_plan_site(p: *const RdofPlan) -> *const RdofSite;

@@ -63,8 +63,9 @@ static bool num_of(plan_t *p, int i, double *v)
 static const char *const SDR_KEYS[] = {DEV_COMMON, "driver", "match", "rx", "tx", "bench", "usb", "dsp_cores",
                                        "spike", "selftest", "sim", "idle_gate", "learn_ppm", "sim_ppm", "afc",
                                        "rssi_offset", "status_seconds", NULL};
-static const char *const MODEM_KEYS[] = {DEV_COMMON, "type", "port", "needs", "mmdvm", "bench", NULL};
-static const char *const RADIO_KEYS[] = {DEV_COMMON, "port", "bench", NULL};
+static const char *const MODEM_KEYS[] = {DEV_COMMON, "type", "port", "needs", "mmdvm", "tx", "bench", NULL};
+static const char *const RADIO_KEYS[] = {DEV_COMMON, "port", "tx", "bench", NULL};
+static const char *const MODEM_TX_KEYS[] = {"min_dbm", "max_dbm", NULL};
 static const char *const SDR_RX_KEYS[] = {"rate", "center_hz", "gain_db", "agc", "ppm", "biastee", "iq_bits", NULL};
 static const char *const SDR_TX_KEYS[] = {"carriers", "power_dbm", "center_hz", "bench", NULL};
 static const char *const MATCH_KEYS[] = {"serial", "usb_port", "uri", "args", "index", NULL};
@@ -90,7 +91,8 @@ static const char *const NET_KEYS[] = {"ssid", "password", "priority", "hidden",
 static const char *const NTP_KEYS[] = {"servers", "poll_s", "clock", NULL};
 static const char *const LOAD_KEYS[] = {"channels", "rates", NULL};
 static const char *const BENCH_KEYS[] = {"devices", "tx", NULL};
-static const char *const BENCH_TX_KEYS[] = {"freqs_hz", "bands_hz", "max_key_s", "rf_level", "arm_gpio", NULL};
+static const char *const BENCH_TX_KEYS[] = {"freqs_hz", "bands_hz", "max_key_s", "max_dbm", "rf_level", "arm_gpio",
+                                            NULL};
 
 /* The most carriers an SDR transmits at once. */
 #define MAX_CARRIERS 4
@@ -326,8 +328,8 @@ static bool sdr_device(plan_t *p, int d, int e, const char *path, rdof_plan_dev_
             return fail(p, "%s.tx.carriers: 1 to %d", path, MAX_CARRIERS);
         dev->tx_carriers = (int)n;
         i = get(p, tx, "power_dbm");
-        if (i >= 0 && (!num_of(p, i, &dev->tx_power_dbm) || dev->tx_power_dbm < -60 || dev->tx_power_dbm > 30))
-            return fail(p, "%s.tx.power_dbm: -60 to 30", path);
+        if (i >= 0 && (!num_of(p, i, &dev->tx_power_dbm) || dev->tx_power_dbm < -60 || dev->tx_power_dbm > 40))
+            return fail(p, "%s.tx.power_dbm: -60 to 40 (dBm at the antenna)", path);
         dev->has_tx_power = i >= 0;
         snprintf(q, sizeof q, "%s.tx.center_hz", path);
         if (!center(p, get(p, tx, "center_hz"), q))
@@ -336,6 +338,7 @@ static bool sdr_device(plan_t *p, int d, int e, const char *path, rdof_plan_dev_
         if (!dev_bench(p, get(p, tx, "bench"), q, &dev->bench))
             return false;
     }
+    dev->txmap = rdof_txpower_sdr_map(dev->has_tx_power ? dev->tx_power_dbm : 10);
     /* it transmits: it says so ("tx"), or a frequency has it */
     dev->tx = tx >= 0;
     for (int f = 0; f < p->site.nfreq; f++)
@@ -359,6 +362,21 @@ static bool modem_device(plan_t *p, int e, const char *path, rdof_plan_dev_t *de
     snprintf(q, sizeof q, "%s.bench", path);
     if (!dev_bench(p, get(p, e, "bench"), q, &dev->bench))
         return false;
+    /* tx: its power at RF level 0 and 255, dBm at the antenna */
+    int t = get(p, e, "tx");
+    if (t >= 0) {
+        if (!is_type(p, t, RDOF_JOBJ))
+            return fail(p, "%s.tx: an object", path);
+        snprintf(q, sizeof q, "%s.tx", path);
+        if (!known(p, t, q, MODEM_TX_KEYS))
+            return false;
+        const int lo = get(p, t, "min_dbm"), hi = get(p, t, "max_dbm");
+        if ((lo >= 0) != (hi >= 0))
+            return fail(p, "%s.tx: min_dbm and max_dbm, both", path);
+        if (lo >= 0 && (!num_of(p, lo, &dev->txmap.min_dbm) || !num_of(p, hi, &dev->txmap.max_dbm) ||
+                        dev->txmap.min_dbm < -60 || dev->txmap.max_dbm > 60 || !rdof_txmap_valid(&dev->txmap)))
+            return fail(p, "%s.tx: min_dbm under max_dbm, -60 to 60 (dBm at the antenna)", path);
+    }
     if (radio)
         return true;
     int i = get(p, e, "type");

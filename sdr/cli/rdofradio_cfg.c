@@ -145,6 +145,12 @@ static bool from_plan(const rdof_plan_t *p, rdofradio_cfg_t *o, char *err, size_
         o->rx_slot = c->idle.slot == 2 ? 2 : 1;
     }
     o->has_hblink = rdof_plan_net_of(p, RDOF_NET_HBLINK) >= 0;
+    o->tx_power_dbm = NAN;
+    const int uk = rdof_plan_unit_find(p, roles.radio);
+    const rdof_unit_t *u = uk >= 0 ? rdof_plan_unit(p, uk) : NULL;
+    const rdof_plan_dev_t *dv = u && c->sdr_duplex != RDOF_SDR_DUPLEX_NONE ? rdof_plan_dev(p, u->rx) : NULL;
+    if (dv && dv->has_tx_power)
+        o->tx_power_dbm = dv->tx_power_dbm;
     if (!clock_settings(p, o, err, cap))
         return false;
     if (roles.has_sdr && !channels(p, o, err, cap))
