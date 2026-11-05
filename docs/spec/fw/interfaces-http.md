@@ -297,7 +297,7 @@ each request keeps it going 10 s.
 A host tool (hostweb) may send a row in pieces instead (`pieces: [{f0, n, bw, pass}]`, each `n` bins of `bw` Hz from
 `f0`, in the row's order, dimmed past `pass` Hz from its center); the board never does. The page treats a row without `pieces` as one piece over `rate` at
 `center`. It zooms (wheel, pinch, drag, buttons, keys) and cuts a gap between pieces that's wider than three breaks
-to a `--//--` break.
+to an axis break.
 
 ## 7. `GET /api/rtl/regs`
 
