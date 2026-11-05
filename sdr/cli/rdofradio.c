@@ -548,8 +548,8 @@ static double xtal_base_hz(int c)
  * starts it with the receiver's channels, reads its frames from the receive DMA (rdofradio_iio.c's words) and gives
  * them to the receiver (rdof_sdr_rx_channels_in); the AFC's corrections go to its NCOs. A frame is an output
  * instant, step = R D wideband samples: the loop counts in those, so the transmitter and the clocks keep their
- * wideband timeline. There is no wideband I/Q: no spectrum, and none of the bench's I/Q ops (capture, trigger, track,
- * rx). (below, fx_*) */
+ * wideband timeline. There is no wideband I/Q: no spectrum, and the bench's I/Q ops (capture, trigger, track, rx)
+ * take the channels' own outputs (bl_ch_*), each instant with the NCO offset it was mixed from. (below, fx_*) */
 #define FX_ADDR 0x7C480000ul /* the block's registers in the Pluto design */
 #define FX_MAX 4096          /* channel samples a receiver call */
 #define FX_GAP 48000         /* most lost output instants made up with zeros at once (1 s) */
@@ -573,6 +573,13 @@ static struct {
     uint32_t seq0, expect;   /* the first frame's number, the next one's */
     rdof_iq16_t *y;          /* the last read's output instants (zeros for lost ones), C samples each */
     float *pw;               /* each one's power: the strongest channel's (channel 0's while calibrating) */
+    bool *fl;                /* each one's a lost one's zeros */
+    long long nall, base;    /* instants so far, as the receiver counts them; the last read's first one's */
+    struct fx_nco {          /* a channel's NCO offset (wideband Hz from the center) as the bench reads it: the one */
+        double hz;           /* now, and the next ones from the instant they take effect */
+        int n;
+        struct { long long from; double hz; } q[4];
+    } nco[RDOF_CHZFX_MAX_CH];
     int ny, cap, j, turn;    /* how many, room; the next the loop's turns take, this turn's first */
     long long lost, made_up, skipped; /* instants lost; zeros in their place; neither (past FX_GAP or the room) */
     uint32_t status;         /* STATUS at the last read */
@@ -1651,102 +1658,99 @@ static long bl_iq_filled(void *ctx, uint64_t sc, long n)
     return k;
 }
 
-/* --fpga-chz: no wideband history, but a trigger's channel kept from when it opens (its pre-roll and its floor's
- * learning): the block's output instants, each at its wideband sample, in the history's units (a cs8 sample over
- * 127: the ring's scale on the receiver's) */
-#define BLC_MAX 4    /* channels kept at once */
-#define BLC_MAX_S 6  /* seconds of each at most */
-static struct blc {
-    int c;           /* the receiver's channel, -1 free */
+/* --fpga-chz: no wideband history, but each channel's: the block's output instants for the last BLH_S, each at its
+ * wideband sample, with the NCO offset each channel was mixed from (as the wideband ring keeps 2.5 s for its
+ * pre-roll and a floor learned from before a request: 15 channels' are about 130 bytes an instant, 16 MB, where the
+ * wideband ring at 19.872 MS/s is 99 MB). A bench op reads one channel's (bl_ch_*: the handle is the channel). */
+#define BLH_S 2.5
+#define BLH_EDGE 6250 /* a channel's passband either side of its frequency (12.5 kHz channels): a frequency in it
+                         with 3 kHz of it left is in the channel */
+static struct {
     long cap;
-    uint64_t n;      /* instants written */
-    float *iq;       /* [cap][2] */
-    uint64_t *at;
-} BLC[BLC_MAX] = {{-1}, {-1}, {-1}, {-1}};
+    uint64_t n;       /* instants written */
+    uint64_t *sc;     /* [cap]: each one's wideband sample */
+    bool *fill;       /* [cap]: a lost one's zeros */
+    rdof_iq16_t *y;   /* [cap][C] */
+    float *nco;       /* [cap][C]: each channel's NCO offset (wideband Hz from the center) */
+} BLH;
 
-static int bl_ch_open(void *ctx, double hz, double seconds)
+static int bl_ch_open(void *ctx, double hz, double seconds, double *bw)
 {
     int c = -1;
-    for (int k = 0; k < R.rx.C && c < 0; k++)
-        if (fabs(CH[k].freq_hz - hz) <= 100)
+    for (int k = 0; k < R.rx.C; k++)
+        if (fabs(CH[k].freq_hz - hz) <= BLH_EDGE - 3000 && (c < 0 || fabs(CH[k].freq_hz - hz) < fabs(CH[c].freq_hz - hz)))
             c = k;
-    if (c < 0 || !FX.on)
+    if (c < 0 || !FX.on || !BLH.cap)
         return -1;
-    seconds = seconds < 1 ? 1 : seconds > BLC_MAX_S ? BLC_MAX_S : seconds;
-    const long cap = (long)(seconds * R.rate / FX.step) + 1;
-    pthread_mutex_lock(&BL.mu);
-    int h = -1;
-    for (int k = 0; k < BLC_MAX && h < 0; k++)
-        if (BLC[k].c < 0)
-            h = k;
-    if (h >= 0) {
-        struct blc *b = &BLC[h];
-        b->iq = malloc(sizeof(float) * 2 * (size_t)cap);
-        b->at = malloc(sizeof(uint64_t) * (size_t)cap);
-        if (b->iq && b->at)
-            b->c = c, b->cap = cap, b->n = 0;
-        else
-            free(b->iq), free(b->at), b->iq = NULL, b->at = NULL, h = -1;
-    }
-    pthread_mutex_unlock(&BL.mu);
-    return h;
+    *bw = 2 * (BLH_EDGE - fabs(CH[c].freq_hz - hz));
+    return c;
 }
 
-static long bl_ch_read(void *ctx, int h, uint64_t sc, float *out, uint64_t *at, long n, uint64_t *oldest,
-                       uint64_t *next)
+static long bl_ch_read(void *ctx, int c, uint64_t sc, rdof_bl_chs_t *out, long n, uint64_t *oldest, uint64_t *next)
 {
     pthread_mutex_lock(&BL.mu);
-    const struct blc *b = &BLC[h];
-    const uint64_t first = b->n > (uint64_t)b->cap ? b->n - (uint64_t)b->cap : 0;
+    const uint64_t cap = (uint64_t)BLH.cap, first = BLH.n > cap ? BLH.n - cap : 0;
     *next = BL.ring.w;
-    *oldest = first < b->n ? b->at[first % (uint64_t)b->cap] : BL.ring.w;
-    /* the first instant at or after sc: instants run in order */
-    uint64_t lo = first, hi = b->n;
+    *oldest = first < BLH.n ? BLH.sc[first % cap] : BL.ring.w;
+    uint64_t lo = first, hi = BLH.n; /* the first instant at or after sc: they run in order */
     while (lo < hi) {
         const uint64_t mid = lo + (hi - lo) / 2;
-        if (b->at[mid % (uint64_t)b->cap] < sc)
+        if (BLH.sc[mid % cap] < sc)
             lo = mid + 1;
         else
             hi = mid;
     }
+    const float g = RDOF_CHZFX_OUT_SCALE * BL.ring.scale; /* the history's units: a cs8 sample over 127 */
     long k = 0;
-    for (; k < n && lo + (uint64_t)k < b->n; k++) {
-        const uint64_t i = (lo + (uint64_t)k) % (uint64_t)b->cap;
-        out[2 * k] = b->iq[2 * i], out[2 * k + 1] = b->iq[2 * i + 1];
-        at[k] = b->at[i];
+    for (; k < n && lo + (uint64_t)k < BLH.n; k++) {
+        const uint64_t i = (lo + (uint64_t)k) % cap;
+        const rdof_iq16_t y = BLH.y[i * (uint64_t)FX.C + (uint64_t)c];
+        out[k] = (rdof_bl_chs_t){.sc = BLH.sc[i], .i = y.i * g, .q = y.q * g,
+                                 .nco_hz = BLH.nco[i * (uint64_t)FX.C + (uint64_t)c], .filler = BLH.fill[i]};
     }
     pthread_mutex_unlock(&BL.mu);
     return k;
 }
 
-static void bl_ch_close(void *ctx, int h)
-{
-    pthread_mutex_lock(&BL.mu);
-    struct blc *b = &BLC[h];
-    free(b->iq), free(b->at);
-    b->iq = NULL, b->at = NULL, b->c = -1;
-    pthread_mutex_unlock(&BL.mu);
-}
+static void bl_ch_close(void *ctx, int c) {}
 
-/* This turn's output instants (k of them, from FX.turn) into the channels kept, before bench_feed counts them */
+/* This turn's output instants (k of them, from FX.turn) into the channels' history, before bench_feed counts them:
+ * each with each channel's NCO offset then (a step from the instant it takes effect) */
 static void bench_chan_feed(int k)
 {
-    if (!BL.bl)
-        return;
-    const float g = RDOF_CHZFX_OUT_SCALE * BL.ring.scale;
-    pthread_mutex_lock(&BL.mu);
-    for (int h = 0; h < BLC_MAX; h++) {
-        struct blc *b = &BLC[h];
-        if (b->c < 0)
-            continue;
-        for (int i = 0; i < k; i++, b->n++) {
-            const rdof_iq16_t y = FX.y[(size_t)(FX.turn + i) * FX.C + b->c];
-            const uint64_t j = b->n % (uint64_t)b->cap;
-            b->iq[2 * j] = y.i * g, b->iq[2 * j + 1] = y.q * g;
-            b->at[j] = BL.ring.w + (uint64_t)i * FX.step;
-        }
+    if (BL.bl && !BLH.cap) { /* the history, once the bench runs */
+        const long cap = (long)(BLH_S * 48000);
+        BLH.sc = malloc(sizeof *BLH.sc * (size_t)cap);
+        BLH.fill = malloc(sizeof *BLH.fill * (size_t)cap);
+        BLH.y = malloc(sizeof *BLH.y * (size_t)cap * (size_t)FX.C);
+        BLH.nco = malloc(sizeof *BLH.nco * (size_t)cap * (size_t)FX.C);
+        if (BLH.sc && BLH.fill && BLH.y && BLH.nco)
+            BLH.cap = cap;
+        else
+            fprintf(stderr, "bench: no memory for the channels' history\n");
     }
-    pthread_mutex_unlock(&BL.mu);
+    if (BLH.cap)
+        pthread_mutex_lock(&BL.mu);
+    for (int i = 0; i < k; i++) {
+        const long long at = FX.base + FX.turn + i;
+        for (int c = 0; c < FX.C; c++) { /* the NCO steps as they take effect, kept or not */
+            struct fx_nco *q = &FX.nco[c];
+            while (q->n && q->q[0].from <= at) {
+                q->hz = q->q[0].hz;
+                memmove(q->q, q->q + 1, sizeof q->q[0] * (size_t)--q->n);
+            }
+        }
+        if (!BLH.cap)
+            continue;
+        const uint64_t j = BLH.n++ % (uint64_t)BLH.cap;
+        BLH.sc[j] = BL.ring.w + (uint64_t)i * FX.step;
+        BLH.fill[j] = FX.fl[FX.turn + i];
+        memcpy(BLH.y + j * (uint64_t)FX.C, FX.y + (size_t)(FX.turn + i) * FX.C, sizeof *BLH.y * (size_t)FX.C);
+        for (int c = 0; c < FX.C; c++)
+            BLH.nco[j * (uint64_t)FX.C + (uint64_t)c] = (float)FX.nco[c].hz;
+    }
+    if (BLH.cap)
+        pthread_mutex_unlock(&BL.mu);
 }
 
 static double bl_utc(void *ctx) { return wall_s(); }
@@ -2455,8 +2459,8 @@ static void bench_start(void)
     rdof_bl_platform_t p = pf;
     if (R.mmdvm) /* the modem transmits DMR only: no signal modes */
         p.sig_open = NULL, p.sig_state = NULL, p.sig_close = NULL;
-    if (FX.on) /* no wideband I/Q: capture, track and rx refuse ("keeps no I/Q") rather than wait on filler, a trigger
-                  takes its channel's own (bl_ch_*); the ring stays, for the sample count the bursts' times come from */
+    if (FX.on) /* no wideband I/Q: capture, trigger, track and rx take a channel's own outputs (bl_ch_*); the ring
+                  stays, filler, for the sample count the bursts' times come from */
         p.iq_read = NULL, p.iq_filled = NULL, p.iq_warm = NULL, p.ch_open = bl_ch_open, p.ch_read = bl_ch_read,
         p.ch_close = bl_ch_close;
     BL.bl = rdof_bl_new(&p);
@@ -3188,7 +3192,22 @@ static void fx_put(const rdof_iq16_t *x)
     } else {
         memset(o, 0, sizeof *o * (size_t)FX.C);
     }
+    FX.fl[FX.ny] = !x;
     FX.pw[FX.ny++] = p * RDOF_CHZFX_OUT_SCALE * RDOF_CHZFX_OUT_SCALE;
+    FX.nall++;
+}
+
+/* Channel c's NCO goes to offset hz from instant `from` on (the bench's channels' record of it; a full queue drops
+ * the oldest step, which only a reader of those instants would miss) */
+static void fx_nco(int c, double hz, long long from)
+{
+    struct fx_nco *n = &FX.nco[c];
+    if (n->n == 4) {
+        n->hz = n->q[0].hz;
+        memmove(n->q, n->q + 1, sizeof n->q[0] * 3);
+        n->n--;
+    }
+    n->q[n->n].from = from, n->q[n->n].hz = hz, n->n++;
 }
 
 /* A channel frame from the parser: the instants lost before it made up with zeros (up to FX_GAP), so the receiver's
@@ -3219,11 +3238,13 @@ static int64_t fx_correction(void *ctx, int c, double hz)
 {
     if (c < 0 || c >= FX.C)
         return -1;
+    const int64_t from = (int64_t)(uint32_t)(rdof_chzhw_frames(&FX.h) - FX.seq0) - FX.skipped + FX_LATE;
     if (!(FX.cal && c == 0)) { /* channel 0 is on the pulse: its step comes back at the calibration's end */
         FX.inc[c] = rdof_chzfx_inc(FX.off[c] + hz, R.rate);
         FX.dirty = true;
+        fx_nco(c, FX.off[c] + hz, from);
     }
-    return (int64_t)(uint32_t)(rdof_chzhw_frames(&FX.h) - FX.seq0) - FX.skipped + FX_LATE;
+    return from;
 }
 
 /* The duplex calibration (full duplex: the RX LO on the TX LO, the pulse lo_off below it): channel 0 hears the
@@ -3234,6 +3255,8 @@ static void fx_cal(bool on)
         return;
     FX.cal = on;
     FX.inc[0] = rdof_chzfx_inc(on ? -R.lo_off : FX.off[0] + R.rx.chz.correction_hz[0], R.rate);
+    fx_nco(0, on ? -R.lo_off : FX.off[0] + R.rx.chz.correction_hz[0],
+           (int64_t)(uint32_t)(rdof_chzhw_frames(&FX.h) - FX.seq0) - FX.skipped + FX_LATE);
     rdof_chzhw_set_inc(&FX.h, FX.inc);
     FX.dirty = false;
 }
@@ -3251,6 +3274,7 @@ static int fx_start(char *err, size_t cap)
     for (int c = 0; c < FX.C; c++) {
         FX.off[c] = CH[c].freq_hz - R.rx.center_hz;
         off[c] = FX.off[c] + R.rx.chz.correction_hz[c];
+        FX.nco[c].hz = off[c], FX.nco[c].n = 0;
     }
     if (rdof_chzfx_design_cic(&FX.cfg, R.rate, FX.R, FX.D, off, FX.C, RDOF_CHZ_CUTOFF_HZ)) {
         snprintf(err, cap, "no FPGA channelizer configuration for %d channels, R %d, D %d at %.0f S/s", FX.C, FX.R,
@@ -3261,7 +3285,8 @@ static int fx_start(char *err, size_t cap)
     FX.cap = FX_GAP + 8192; /* a second of lost instants and a read's (about 480) */
     FX.y = malloc(sizeof *FX.y * (size_t)FX.cap * (size_t)FX.C);
     FX.pw = malloc(sizeof *FX.pw * (size_t)FX.cap);
-    if (!FX.y || !FX.pw) {
+    FX.fl = malloc(sizeof *FX.fl * (size_t)FX.cap);
+    if (!FX.y || !FX.pw || !FX.fl) {
         snprintf(err, cap, "out of memory");
         return -1;
     }
@@ -3315,6 +3340,7 @@ static int fx_take(int chunk, long timeout_us)
         FX.ny = FX.j = 0;
         const long long lost = FX.lost;
         rdof_chzhw_rx_feed(&FX.prx, w, (size_t)nw);
+        FX.base = FX.nall - FX.ny;
         WS.lost += (FX.lost - lost) * FX.step;
         const uint32_t st = rdof_chzhw_status(&FX.h), now = st & ~FX.status;
         const long ovf = !!(now & RDOF_CHZHW_STATUS_IN_OVF) + !!(now & RDOF_CHZHW_STATUS_DMA_OVF);

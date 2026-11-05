@@ -518,10 +518,13 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
   `seconds`, `samples`, `pre_s`, `ppm`, `ppm_source`, `ppm_tol`, `ppm_ref`, `lo_ppm`, `fs_ppm`, `freq_tol_hz`, `corr_hz` (where the channel was mixed from, past the nominal offset, for the crystal; section 14.7), `gap_samples` (output samples lost, and the wideband filler in what it sent, in
   output samples), `clip_pct`, `scale_db`. The engine filters on its own thread
   (up to twice the input since the last tick), about 20 multiplies a wideband sample for one trigger.
-  With no wideband history but a channelizer's own outputs (rdofradio `--fpga-chz`), a trigger on one of the
-  receiver's channels takes that channel's I/Q as it comes from the block, kept from when the trigger opens (its
-  pre-roll and floor's learning, 6 s at most): no mixer, no filter, `bw` the block's, `corr_hz` 0. Another frequency
-  is `unsupported`, as are `track` (the AFC moves the block's NCO), `capture` and `rx`.
+  With no wideband history but a channelizer's own outputs (rdofradio `--fpga-chz`; `info`'s window says
+  `"iq": "channels"`, else `"wideband"`, or `"none"`), the receiver keeps each channel's outputs for 2.5 s instead,
+  each with the NCO offset it was mixed from. `trigger`, `track`, `capture` and `rx` on one of its channels (within
+  3.25 kHz of one) take that channel's I/Q from it, pre-roll and floor as from the wideband history: no filter, `bw`
+  the channel's, the AFC's NCO steps taken out (a carrier stays where it is through a step). A `capture` there is the
+  channel's: cs16 (or `cf32` with `fmt`) at about 48 kS/s, centered on `freq`, the ready line and meta with `fmt`,
+  `"channel": true`, `bw`, `wide_fs` and `wide_center`. Another frequency is `unsupported`.
 - `bursts` and `listen` send the receiver channel's bursts at `freq` as `dmr-bursts` records (section 6.3's fields
   with the daemon's names: `t`, `dt_prev_ms`, `grid_err_ms`, `slot_ab`, `sync`, `kind`, `cc`, `cfo_hz` (the burst's carrier
   from its true frequency, the crystal taken out: section 14.7), `cfo_tol_hz`, `level_dbfs`, `dev_hz`, `pi`, `lcss`, `fec`, `lc`, `raw_hex`; no `sym_err` yet), the summary the daemon's (`bursts`, `kinds`,

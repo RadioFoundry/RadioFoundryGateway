@@ -18,6 +18,7 @@
 
 #include "rdof/benchjob.h"
 #include "rdof/benchline.h"
+#include "fake_chs.h"
 #include "rdof/benchnet.h"
 #include "rdof/jsonp.h"
 #include "rdof/layer2.h"
@@ -787,121 +788,154 @@ static void test_trigger(void)
     rdof_bl_free(bl);
 }
 
-/* ── a trigger on a channel's own I/Q (an FPGA channelizer's): no wideband history ── */
+/* ── no wideband history: the channels' own outputs (an FPGA channelizer's, fake_chs.h) ── */
 
-/* The channel source: one instant every 16 wideband samples (768 kS/s to 48 kS/s), from when it's opened */
-static struct {
-    int opened, closed;
-    double hz;
-    uint64_t sc;     /* the wideband sample count */
-    long n;          /* instants kept */
-    float iq[2 * 48000 * 4];
-    uint64_t at[48000 * 4];
-} fch;
-static int f_ch_open(void *ctx, double hz, double seconds)
+/* The mean frequency (Hz) of cf32 outputs [a, b) of a trigger's or capture's frames in all */
+static double iq_hz(char *all, size_t total, long a, long b, long *n_out)
 {
-    if (fabs(hz - 438.1125e6) > 100)
-        return -1;
-    fch.opened++, fch.hz = hz, fch.n = 0;
-    return 3;
-}
-static long f_ch_read(void *ctx, int h, uint64_t sc, float *out, uint64_t *at, long n, uint64_t *oldest,
-                      uint64_t *next)
-{
-    *oldest = fch.n ? fch.at[0] : fch.sc, *next = fch.sc;
-    long i = 0, k = 0;
-    while (i < fch.n && fch.at[i] < sc)
-        i++;
-    for (; k < n && i < fch.n; k++, i++)
-        out[2 * k] = fch.iq[2 * i], out[2 * k + 1] = fch.iq[2 * i + 1], at[k] = fch.at[i];
-    return k;
-}
-static void f_ch_close(void *ctx, int h) { fch.closed++; }
-static void ch_put(double ms, float amp)
-{
-    for (int i = 0; i < (int)(ms * 48 + 0.5); i++, fch.sc += 16) {
-        if (fch.opened > fch.closed && fch.n < 48000 * 4) {
-            const double ph = 2 * M_PI * 1000 * (double)fch.sc / 768000;
-            fch.iq[2 * fch.n] = noise() * 0.1f + amp * (float)cos(ph);
-            fch.iq[2 * fch.n + 1] = noise() * 0.1f + amp * (float)sin(ph);
-            fch.at[fch.n++] = fch.sc;
-        }
-    }
-}
-static size_t ch_run(rdof_bl_t *bl, int c, double *now, double ms, float amp, char *all, size_t total, size_t cap)
-{
-    for (double t = 0; t < ms; t += 10) {
-        ch_put(10, amp);
-        *now += 0.01;
-        rdof_bl_tick(bl, *now);
-        total += drain(bl, c, all + total, cap - total);
-    }
-    rdof_bl_tick(bl, *now);
-    total += drain(bl, c, all + total, cap - total);
-    all[total] = 0;
-    return total;
-}
-
-static void test_trigger_chan(void)
-{
-    rdof_bl_platform_t pl = PLAT;
-    pl.iq_read = NULL, pl.iq_filled = NULL;
-    pl.ch_open = f_ch_open, pl.ch_read = f_ch_read, pl.ch_close = f_ch_close;
-    rdof_bl_t *bl = rdof_bl_new(&pl);
-    double now = 2500;
-    static char all[1 << 20];
-    int c = ask(bl, "{\"op\":\"trigger\",\"freq\":438.1125,\"bw\":12500,\"pre_s\":0.05,\"post_s\":0.1,"
-                    "\"threshold_db\":10,\"min_ms\":5,\"floor_s\":0.2,\"timeout_s\":5,\"fmt\":\"cf32\"}", now);
-    size_t total = ch_run(bl, c, &now, 300, 0, all, 0, sizeof all);
-    CHECK(fch.opened == 1 && strstr(all, "{\"armed\":{\"floor_db\":") && !strstr(all, "\"error\""),
-          "the channel opened, armed from its own floor: %.300s", all);
-    total = ch_run(bl, c, &now, 300, 0.3f, all, total, sizeof all);
-    total = ch_run(bl, c, &now, 150, 0, all, total, sizeof all);
-    long samples = 0, next_idx = 0;
-    bool order = true;
-    char *p = all, *done = NULL;
+    double sum = 0;
+    long n = 0;
+    float pi = 0, pq = 0;
+    bool have = false;
+    char *p = all;
     while (p < all + total) {
         char *e = memchr(p, '\n', (size_t)(all + total - p));
         if (!e)
             break;
-        *e = 0;
-        char b[32], sc[32];
-        if (field(p, "bytes", b, sizeof b) && field(p, "sc", sc, sizeof sc)) {
-            const long nb = atol(b);
-            order &= atol(sc) == next_idx;
-            samples += nb / 8, next_idx = atol(sc) + nb / 8;
-            p = e + 1 + nb;
-        } else {
-            if (strstr(p, "\"done\""))
-                done = p;
+        char bs[32], sc[32];
+        if (strncmp(p, "{\"iq\"", 5) || !field(p, "bytes", bs, sizeof bs) || !field(p, "sc", sc, sizeof sc)) {
             p = e + 1;
+            continue;
         }
+        const long nb = atol(bs), idx = atol(sc);
+        for (long i = 0; i < nb / 8; i++) {
+            float v[2];
+            memcpy(v, e + 1 + 8 * i, 8);
+            if (idx + i >= a && idx + i < b && have)
+                sum += atan2(v[1] * pi - v[0] * pq, v[0] * pi + v[1] * pq), n++;
+            pi = v[0], pq = v[1], have = true;
+        }
+        p = e + 1 + nb;
     }
+    if (n_out)
+        *n_out = n;
+    return n ? sum / n * 48000 / (2 * M_PI) : NAN;
+}
+
+static size_t track_run(rdof_bl_t *bl, int c, double *now, double ms, double off_hz, bool fsk, bool on, char *all,
+                        size_t total, size_t cap);
+
+static void test_chan(void)
+{
+    rdof_bl_platform_t pl = PLAT;
+    pl.iq_read = NULL, pl.iq_filled = NULL;
+    pl.ch_open = fchs_open, pl.ch_read = fchs_read, pl.ch_close = fchs_close;
+    rdof_bl_t *bl = rdof_bl_new(&pl);
+    double now = 2500;
+    static char all[1 << 21];
     char v[32];
-    CHECK(done && field(done, "samples", v, sizeof v) && atol(v) == samples && labs(samples - 7200) < 100 && order,
-          "pre_s, the signal, post_s from the channel, in order: %ld (%s)", samples, done ? done : "(none)");
+    rdof_bl_ring_init(&ring, 768000);
+    const double chans[] = {438.1125e6, 438.1625e6};
+    fchs_init(&ring, 768000, 438.225e6, chans, 2);
+    const double on = 438.1125e6 + 1000 - 438.225e6; /* the carrier, 1 kHz up */
+
+    int c = ask(bl, "{\"op\":\"info\"}", now);
+    drain(bl, c, all, sizeof all);
+    CHECK(strstr(all, "\"iq\":\"channels\""), "info says the channels' I/Q: %.300s", all);
+    rdof_bl_closed(bl, c, now);
+
+    /* trigger: the floor learned from the channel, the rise, the AFC moving the NCO 400 Hz mid-signal */
+    c = ask(bl, "{\"op\":\"trigger\",\"freq\":438.1125,\"pre_s\":0.05,\"post_s\":0.2,\"threshold_db\":10,"
+                "\"min_ms\":5,\"floor_s\":0.2,\"timeout_s\":5,\"fmt\":\"cf32\"}", now);
+    size_t total = trig_run(bl, c, &now, 300, 0, 0, all, 0, sizeof all);
+    CHECK(fchs.opened == 1 && strstr(all, "{\"armed\":{\"floor_db\":") && !strstr(all, "\"error\""),
+          "armed from the channel's own floor: %.300s", all);
+    fchs.step_hz[0] = 400, fchs.step_sc[0] = ring.w + 76800; /* 100 ms into the signal */
+    total = trig_run(bl, c, &now, 300, on, 0.3f, all, total, sizeof all);
+    total = trig_run(bl, c, &now, 100, 0, 0, all, total, sizeof all);
+    const char *done = memmem(all, total, "{\"done\"", 7);
+    long n1 = 0, n2 = 0;
+    const double f1 = iq_hz(all, total, 2600, 6900, &n1), f2 = iq_hz(all, total, 7500, 12000, &n2);
+    CHECK(done && field(done, "samples", v, sizeof v) && labs(atol(v) - 12000) < 60, "pre_s and post_s: %s",
+          done ? done : all);
     CHECK(done && field(done, "signal_start_sample", v, sizeof v) && labs(atol(v) - 2400) < 60, "the rise 50 ms in: %s",
           v);
-    CHECK(done && field(done, "snr_db", v, sizeof v) && atof(v) > 15, "the level: %s", done ? done : "(none)");
+    CHECK(done && field(done, "snr_db", v, sizeof v) && atof(v) > 20 && strstr(done, "\"gap_samples\":0,"),
+          "the level: %s", done ? done : "(none)");
+    CHECK(n1 > 4000 && n2 > 4000 && fabs(f1 - 1000) < 15 && fabs(f2 - 1000) < 15,
+          "1 kHz up before the NCO step and after it: %.1f, %.1f Hz", f1, f2);
     rdof_bl_tick(bl, now);
     rdof_bl_closed(bl, c, now);
-    CHECK(fch.closed == 1, "the channel closed with the trigger: %d", fch.closed);
-    /* not a channel; and track needs the wideband history */
-    c = ask(bl, "{\"op\":\"trigger\",\"freq\":438.1625,\"floor_db\":-50}", now);
+    CHECK(fchs.closed == 1, "the channel closed with the trigger: %d", fchs.closed);
+
+    /* capture: from now, cs16 and cf32 at 48 kS/s centered on freq, the filler counted */
+    fchs.step_sc[0] = UINT64_MAX;
+    c = ask(bl, "{\"op\":\"capture\",\"freq\":438.1125,\"seconds\":0.3,\"pre_s\":0,\"fmt\":\"cf32\"}", now);
+    total = drain(bl, c, all, sizeof all);
+    CHECK(strstr(all, "{\"ready\":") && strstr(all, "\"fs\":48000.000,\"fmt\":\"cf32\",\"sc0\":0,\"channel\":true"),
+          "ready: %s", all);
+    for (int k = 0; k < 40; k++) {
+        put_tone(10, on, 0.3f);
+        if (k == 20)
+            rdof_bl_ring_mark_filler(&ring, 1600); /* 100 instants lost */
+        now += 0.01;
+        rdof_bl_tick(bl, now);
+        total += drain(bl, c, all + total, sizeof all - total);
+    }
+    all[total] = 0;
+    done = memmem(all, total, "{\"done\"", 7);
+    const double fc = iq_hz(all, total, 100, 9000, &n1);
+    CHECK(done && field(done, "samples", v, sizeof v) && labs(atol(v) - 14400) < 20 && strstr(done, "\"channel\":true") &&
+              strstr(done, "\"center\":438112500.0") && field(done, "gap_samples", v, sizeof v) && labs(atol(v) - 100) < 3,
+          "0.3 s of the channel, 100 filler: %s", done ? done : all);
+    CHECK(fabs(fc - 1000) < 15, "the carrier 1 kHz up: %.1f Hz", fc);
+    rdof_bl_closed(bl, c, now);
+
+    /* a capture's pre-roll from the channel's history, as from the wideband ring */
+    c = ask(bl, "{\"op\":\"capture\",\"freq\":438.1125,\"seconds\":0.2,\"pre_s\":0.5}", now);
+    total = drain(bl, c, all, sizeof all);
+    CHECK(strstr(all, "\"pre_s\":0.500,\"fs\":48000.000,\"fmt\":\"cs16\""), "ready, 0.5 s back: %s", all);
+    for (int k = 0; k < 30; k++) {
+        put_tone(10, on, 0.3f);
+        now += 0.01;
+        rdof_bl_tick(bl, now);
+        total += drain(bl, c, all + total, sizeof all - total);
+    }
+    done = memmem(all, total, "{\"done\"", 7);
+    CHECK(done && field(done, "samples", v, sizeof v) && labs(atol(v) - 33600) < 20 && strstr(done, "\"pre_s\":0.500,") &&
+              strstr(done, "\"fmt\":\"cs16\""),
+          "0.7 s, 0.5 of it from before: %s", done ? done : all);
+    rdof_bl_closed(bl, c, now);
+
+    /* track: the carrier followed through the NCO's step, its floor from the channel's history (quiet first) */
+    for (int k = 0; k < 30; k++) {
+        put_tone(10, 0, 0);
+        now += 0.01;
+        rdof_bl_tick(bl, now);
+    }
+    c = ask(bl, "{\"op\":\"track\",\"freq\":438.1125,\"floor_s\":0.2,\"drift_s\":1.5,\"timeout_s\":5}", now);
+    total = track_run(bl, c, &now, 300, 0, false, false, all, 0, sizeof all);
+    fchs.step_hz[0] = -300, fchs.step_sc[0] = ring.w + 768000;
+    total = track_run(bl, c, &now, 2000, on - 850, false, true, all, total, sizeof all); /* 150 Hz up */
+    total = track_run(bl, c, &now, 800, 0, false, false, all, total, sizeof all);
+    done = memmem(all, total, "{\"done\"", 7);
+    int lines = 0, off_lines = 0;
+    for (char *p = all; (p = strstr(p, "{\"track\"")); p++, lines++)
+        if (field(p, "hz", v, sizeof v) && fabs(atof(v) - 150) > 25 &&
+            !(strstr(p, "\"transient\":true") && strstr(p, "\"transient\":true") < strchr(p, '\n')))
+            off_lines++;
+    CHECK(done && field(done, "settled_hz", v, sizeof v) && fabs(atof(v) - 150) < 10 && lines >= 18 && !off_lines,
+          "settled on 150 Hz through the step, %d lines, %d off: %.600s", lines, off_lines, done ? done : all);
+    rdof_bl_closed(bl, c, now);
+
+    /* refused: no channel there */
+    c = ask(bl, "{\"op\":\"capture\",\"freq\":438.275,\"seconds\":1}", now);
     drain(bl, c, all, sizeof all);
-    CHECK(strstr(all, "\"code\":\"unsupported\"") && strstr(all, "isn't one of the receiver's channels"),
+    CHECK(strstr(all, "\"code\":\"unsupported\"") && strstr(all, "isn't in one of the receiver's channels"),
           "not a channel: %s", all);
     rdof_bl_closed(bl, c, now);
-    c = ask(bl, "{\"op\":\"track\",\"freq\":438.1125}", now);
-    drain(bl, c, all, sizeof all);
-    CHECK(strstr(all, "\"code\":\"unsupported\"") && strstr(all, "track needs the wideband history"), "track: %s",
-          all);
-    rdof_bl_closed(bl, c, now);
-    c = ask(bl, "{\"op\":\"capture\",\"freq\":438.1125,\"seconds\":1}", now);
-    drain(bl, c, all, sizeof all);
-    CHECK(strstr(all, "\"code\":\"unsupported\""), "capture: %s", all);
-    rdof_bl_closed(bl, c, now);
-    CHECK(fch.opened == 1 && fch.closed == 1, "no channel left open: %d %d", fch.opened, fch.closed);
+    CHECK(fchs.opened == fchs.closed, "no channel left open: %d %d", fchs.opened, fchs.closed);
+    rdof_bl_ring_free(&ring);
     rdof_bl_free(bl);
 }
 
@@ -2454,7 +2488,7 @@ int main(int argc, char **argv)
         return serve(atoi(argv[2]), atof(argv[3]));
     test_ops();
     test_trigger();
-    test_trigger_chan();
+    test_chan();
     test_xtal();
     test_track();
     test_filler();

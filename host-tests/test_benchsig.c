@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "rdof/benchline.h"
+#include "fake_chs.h"
 #include "rdof/sdr/modes.h"
 
 static int checks, failures;
@@ -216,9 +217,18 @@ static long pcm(const char *stream, int *peak)
     return n;
 }
 
-static void test_loop(void)
+/* FM both ways: with chan, the receiver on the channel's own outputs (fake_chs.h: no wideband history), its NCO
+ * stepped 300 Hz mid-signal as the AFC would */
+static void test_loop(bool chan)
 {
-    rdof_bl_t *bl = rdof_bl_new(&PLAT);
+    rdof_bl_platform_t pl = PLAT;
+    if (chan) {
+        static const double f[] = {FREQ};
+        pl.iq_read = NULL, pl.ch_open = fchs_open, pl.ch_read = fchs_read, pl.ch_close = fchs_close;
+        fchs_init(&ring, FS, CENTER, f, 1);
+        fchs.step_hz[0] = 300, fchs.step_sc[0] = ring.w + (uint64_t)(FS * 1.5);
+    }
+    rdof_bl_t *bl = rdof_bl_new(&pl);
     char l[4096];
     ntext = 0;
     /* info names the modes */
@@ -437,7 +447,8 @@ int main(void)
         printf("no memory\n");
         return 1;
     }
-    test_loop();
+    test_loop(false);
+    test_loop(true);
     test_pcm();
     test_refusals();
     test_am();

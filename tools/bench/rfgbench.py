@@ -443,16 +443,21 @@ def write_iq(a, req: dict, fmt_bytes: int) -> int:
     out = os.path.abspath(os.path.expanduser(a.out))
     f = open(out, "wb")
     st = {"sc0": None, "pos": 0}
+    size = {"cs8": 2, "cs16": 4, "cf32": 8}
 
     def on(d, data):
+        nonlocal fmt_bytes
         if "ready" in d or "armed" in d:
             if d.get("sc0") is not None:
                 st["sc0"] = d["sc0"]
+            if d.get("fmt") in size:                      # a receiver without wideband I/Q sends its channel's
+                fmt_bytes = size[d["fmt"]]
             t0 = d.get("ready") or time.time()
             if "ready" in d:
                 print(f"READY {time.strftime('%H:%M:%S', time.localtime(t0))}.{int(t0 * 1000) % 1000:03d} t0={t0:.3f} "
                       f"({'shared' if d.get('shared') else 'exclusive'}, tuned {d.get('center', 0):.5f}, "
-                      f"pre-roll {d.get('pre_s', 0):.1f} s)", flush=True)
+                      f"pre-roll {d.get('pre_s', 0):.1f} s{', the channel ' + d['fmt'] if d.get('channel') else ''})",
+                      flush=True)
             else:
                 print(f"ARMED floor {d['armed'].get('floor_db')} dB", flush=True)
         elif "iq" in d and data is not None:
@@ -494,6 +499,8 @@ def cmd_capture(a) -> int:
            "quiet": a.quiet, "mode": a.mode, "offset_khz": a.offset_khz, "wait_max": a.wait_max, "label": a.label}
     if a.gain is not None:
         req["gain"] = a.gain
+    if a.fmt:
+        req["fmt"] = a.fmt
     return write_iq(a, req, 2)
 
 
@@ -987,6 +994,8 @@ def main(argv=None) -> int:
     s.add_argument("--quiet", action="store_true")
     s.add_argument("--mode", default="rx", choices=("rx", "dmr", "nfm", "wfm"))
     s.add_argument("--offset-khz", type=float, default=-200.0)
+    s.add_argument("--fmt", choices=("cs16", "cf32"), default=None,
+                   help="a receiver without wideband I/Q (the FPGA channelizer's): its channel's samples as these")
     s = p("listen", cmd_listen)
     s.add_argument("--freq", type=float, required=True)
     s.add_argument("--seconds", type=float, default=10.0)

@@ -164,6 +164,17 @@ typedef struct {
     int ntaps;                      /* -1: as they are */
 } rdof_bl_tune_t;
 
+/* A channel's output instant (rdof_bl_platform_t.ch_read): the wideband sample it stands for, its I/Q in the
+ * history's units (a cs8 sample over 127), the wideband offset from the window's center its channelizer mixed to
+ * 0 Hz (the receiver's AFC moves it), and whether it's filler (the channelizer's output lost, zeros kept the
+ * count). */
+typedef struct {
+    uint64_t sc;
+    float i, q;
+    float nco_hz;
+    bool filler;
+} rdof_bl_chs_t;
+
 typedef struct {
     /* What the bench is: kind ("rdofradio", "esp32s3-gateway"), name, version. */
     void (*device)(void *ctx, char *kind, size_t kcap, char *name, size_t ncap, char *version, size_t vcap);
@@ -181,13 +192,15 @@ typedef struct {
     long (*iq_filled)(void *ctx, uint64_t sc, long n);
     /* A capture is open: keep the history warm (optional). */
     void (*iq_warm)(void *ctx);
-    /* A channel's own I/Q, for a trigger where there's no wideband history (optional; iq_read NULL): a channelizer's
-     * output (an FPGA's), one output instant every fs / 48000 wideband samples. ch_open: keep freq_hz's channel from
-     * now on, seconds of it at most: a handle, or -1 no channel there (or no room). ch_read: its instants from
-     * wideband sample sc on, up to n, into out (I, Q, in the history's units: a cs8 sample over 127) with each one's
-     * wideband sample in at; how many (0: none yet). *oldest: the first kept; *next: the next to come. */
-    int (*ch_open)(void *ctx, double freq_hz, double seconds);
-    long (*ch_read)(void *ctx, int h, uint64_t sc, float *out, uint64_t *at, long n, uint64_t *oldest, uint64_t *next);
+    /* A channel's own outputs, where there's no wideband history (iq_read NULL; optional): a channelizer's (an
+     * FPGA's), one output instant every round(fs / 48000) wideband samples. The bench's I/Q ops (capture, trigger,
+     * track, rx) read them in place of the history. ch_open: the channel freq_hz is in, its recent outputs kept (as
+     * the wideband history is: an op's pre-roll and floor from before it), `seconds` of it needed: a handle, or -1
+     * (no channel there, or no room); *bw_hz its passband around freq_hz. ch_read:
+     * its instants from wideband sample sc on, up to n (0: none yet). *oldest: the first kept; *next: the next to
+     * come. */
+    int (*ch_open)(void *ctx, double freq_hz, double seconds, double *bw_hz);
+    long (*ch_read)(void *ctx, int h, uint64_t sc, rdof_bl_chs_t *out, long n, uint64_t *oldest, uint64_t *next);
     void (*ch_close)(void *ctx, int h);
     /* A measurement or a transmission is running (optional): called each tick while one is, so the platform holds
      * its frequency correction where it is (no chip move, no new estimate in the window) until they all end, a

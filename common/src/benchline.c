@@ -77,11 +77,26 @@ typedef struct {
  * trigger on it, then the pre-roll and what follows, cut again from the history */
 #define TRIG_HIST 300          /* the floor's histogram: 0.5 dB bins from -150 dB */
 
+/* A channel's own outputs in place of the history (the platform's ch_open; no wideband history): each instant
+ * mixed from where its channelizer put 0 Hz (the AFC moves it) to where the carrier truly at the frequency shows,
+ * so an op reads them as it would its own channel cut from the history */
+typedef struct {
+    int h;                    /* ch_open's handle, -1 none */
+    double off_hz;            /* where the carrier truly at freq shows: wideband offset from the center */
+    double fs, bw;            /* the wideband rate; the channel's passband */
+    double ph;                /* the mixer's phase at last_sc */
+    uint64_t last_sc;
+    bool started;
+    rdof_bl_chs_t *in;        /* a read, as it came */
+    float *y;                 /* and mixed, [n][2]; each one's wideband sample, whether it's filler */
+    uint64_t *at;
+    bool *fill;
+} chsrc_t;
+#define CHS_MAX (RDOF_BL_IQ_CHUNK / 8) /* instants a read: a chunk's at the least decimation */
+
 typedef struct {
     int d, ntaps;             /* decimation, filter length (odd) */
-    int chan;                 /* ch_open's handle: the channel's own I/Q in place of the history's, -1 not */
-    float *cin;               /* a read of it, [n][2], and each instant's wideband sample */
-    uint64_t *cat;
+    chsrc_t cs;               /* the channel's own outputs in place of the history (cs.h >= 0) */
     float *taps;
     float *dl;                /* the delay line, [2 * ntaps][2]: each sample twice, so a window is contiguous */
     float *y;                 /* a chunk's outputs, [n][2] */
@@ -91,6 +106,7 @@ typedef struct {
     uint64_t sc, next_out;    /* the next input to take; the input that completes the next output */
     double rate, bw, thr, min_ms, pre_s, post_s, max_s, floor_s, timeout, started, last_tick;
     bool cs16, until_end, fired;
+    bool capture;             /* a capture of the channel's own outputs: fired from the start, a capture's lines */
     int have_floor;           /* 0 learning, 1 learned, 2 given */
     double floor_db, level_db;
     int hist[TRIG_HIST];
@@ -433,28 +449,81 @@ rdof_bl_t *rdof_bl_new(const rdof_bl_platform_t *p)
     return bl;
 }
 
+/* ── a channel's own outputs (chsrc_t) ── */
+
+/* Opens the channel freq_hz is in, off_hz where its carrier truly shows: false when there's none (or no memory) */
+static bool chsrc_open(rdof_bl_t *bl, chsrc_t *s, double freq_hz, double off_hz, double fs, double seconds)
+{
+    *s = (chsrc_t){.h = -1, .off_hz = off_hz, .fs = fs};
+    s->in = RDOF_BL_MALLOC(sizeof *s->in * CHS_MAX);
+    s->y = RDOF_BL_MALLOC(sizeof(float) * 2 * CHS_MAX);
+    s->at = RDOF_BL_MALLOC(sizeof(uint64_t) * CHS_MAX);
+    s->fill = RDOF_BL_MALLOC(sizeof(bool) * CHS_MAX);
+    if (!s->in || !s->y || !s->at || !s->fill)
+        return false;
+    s->h = bl->p.ch_open(bl->p.ctx, freq_hz, seconds, &s->bw);
+    return s->h >= 0;
+}
+
+static void chsrc_close(rdof_bl_t *bl, chsrc_t *s)
+{
+    if (s->h >= 0)
+        bl->p.ch_close(bl->p.ctx, s->h);
+    free(s->in), free(s->y), free(s->at), free(s->fill);
+    s->in = NULL, s->y = NULL, s->at = NULL, s->fill = NULL, s->h = -1;
+}
+
+static void chsrc_span(rdof_bl_t *bl, const chsrc_t *s, uint64_t *oldest, uint64_t *next)
+{
+    rdof_bl_chs_t probe;
+    bl->p.ch_read(bl->p.ctx, s->h, UINT64_MAX, &probe, 0, oldest, next);
+}
+
+/* Its instants from wideband sample sc on, up to n (at most CHS_MAX), into s->y mixed to the true frequency, s->at
+ * and s->fill; *filler: how many are filler. How many (0 none yet). */
+static long chsrc_read(rdof_bl_t *bl, chsrc_t *s, uint64_t sc, long n, long *filler, uint64_t *oldest,
+                       uint64_t *next)
+{
+    float *y = s->y;
+    uint64_t *at = s->at;
+    const long got = bl->p.ch_read(bl->p.ctx, s->h, sc, s->in, n < CHS_MAX ? n : CHS_MAX, oldest, next);
+    *filler = 0;
+    for (long i = 0; i < got; i++) {
+        const rdof_bl_chs_t *x = &s->in[i];
+        /* the carrier at off_hz shows at off_hz - nco_hz: back to 0 Hz, the phase carried over the time between */
+        if (s->started)
+            s->ph = fmod(s->ph - 2 * M_PI * (s->off_hz - x->nco_hz) * (double)(x->sc - s->last_sc) / s->fs, 2 * M_PI);
+        s->started = true, s->last_sc = x->sc;
+        const float pr = (float)cos(s->ph), pq = (float)sin(s->ph);
+        y[2 * i] = x->i * pr - x->q * pq;
+        y[2 * i + 1] = x->i * pq + x->q * pr;
+        at[i] = x->sc;
+        s->fill[i] = x->filler;
+        *filler += x->filler;
+    }
+    return got;
+}
+
 static void trig_free(trig_t *t);
 /* A trigger's end: its channel closed (ch_open's), then freed */
 static void trig_end(rdof_bl_t *bl, trig_t *t)
 {
-    if (t && t->chan >= 0)
-        bl->p.ch_close(bl->p.ctx, t->chan);
+    if (t)
+        chsrc_close(bl, &t->cs);
     trig_free(t);
 }
 /* The trigger's source's oldest sample and next one: the history's, or its channel's */
 static void trig_span(rdof_bl_t *bl, const trig_t *t, uint64_t *oldest, uint64_t *next)
 {
     int8_t probe[2];
-    if (t->chan >= 0)
-        bl->p.ch_read(bl->p.ctx, t->chan, UINT64_MAX, NULL, NULL, 0, oldest, next);
+    if (t->cs.h >= 0)
+        chsrc_span(bl, &t->cs, oldest, next);
     else
         bl->p.iq_read(bl->p.ctx, UINT64_MAX, probe, 0, oldest, next);
 }
 static void trig_free(trig_t *t)
 {
     if (t) {
-        free(t->cin);
-        free(t->cat);
         free(t->taps);
         free(t->dl);
         free(t->y);
@@ -785,8 +854,9 @@ static void op_info(rdof_bl_t *bl, conn_t *c, double now)
         snprintf(tune, sizeof tune, "{\"session\":null,\"state\":\"%s\"}", bl->retuning == 2 ? "restoring" : "tuning");
     char line[RDOF_BL_OUT / 2];
     size_t k = (size_t)snprintf(line, sizeof line,
-                                "{\"window\":%s,\"tune\":%s,\"sdr\":\"%s\",\"device\":%s,\"channels\":[", win, tune,
-                                w.running ? "shared" : "stopped", dev);
+                                "{\"window\":%s,\"tune\":%s,\"sdr\":\"%s\",\"iq\":\"%s\",\"device\":%s,\"channels\":[",
+                                win, tune, w.running ? "shared" : "stopped",
+                                bl->p.iq_read ? "wideband" : bl->p.ch_open ? "channels" : "none", dev);
     for (int i = 0; i < bl->nf && k < sizeof line; i++) {
         const rdof_bl_freq_t *f = &bl->f[i];
         char caps[96], held[96] = "null", qid[40];
@@ -826,7 +896,7 @@ static void op_info(rdof_bl_t *bl, conn_t *c, double now)
     char stx[160] = "[]", srx[160] = "[]";
     if (bl->p.sig_open && !rdof_sig_names_json(bl->p.modes, true, stx, sizeof stx))
         strcpy(stx, "[]");
-    if (bl->p.iq_read && !rdof_sig_names_json(bl->p.modes, false, srx, sizeof srx))
+    if ((bl->p.iq_read || bl->p.ch_open) && !rdof_sig_names_json(bl->p.modes, false, srx, sizeof srx))
         strcpy(srx, "[]");
     char bands[RDOF_BL_TX_BANDS * 48] = "[";
     double b[RDOF_BL_TX_BANDS][2];
@@ -1153,11 +1223,22 @@ static bool big_out(conn_t *c, size_t want)
     return true;
 }
 
+/* A frequency no channel of the receiver's covers, where there's no wideband history */
+static void no_channel(rdof_bl_t *bl, conn_t *c, double mhz)
+{
+    fail(bl, c, "unsupported", "%.4f MHz isn't in one of the receiver's channels: this bench keeps their I/Q, not the "
+         "wideband window's", mhz);
+}
+
+static void op_capture_chan(rdof_bl_t *bl, conn_t *c, int root, double now, double mhz, double secs,
+                            const rdof_bl_window_t *w);
+
 static void op_capture(rdof_bl_t *bl, conn_t *c, int root, double now)
 {
     if (!req_session(bl, c, root, false))
         return;
-    if (!bl->p.iq_read) {
+    const bool chan = !bl->p.iq_read && bl->p.ch_open; /* no wideband history: its channel's own outputs */
+    if (!bl->p.iq_read && !chan) {
         fail(bl, c, "unsupported", "this bench keeps no I/Q");
         return;
     }
@@ -1180,6 +1261,10 @@ static void op_capture(rdof_bl_t *bl, conn_t *c, int root, double now)
     }
     if (!(secs > 0) || secs > 600) {
         fail(bl, c, "bad_request", "seconds is 0-600");
+        return;
+    }
+    if (chan) {
+        op_capture_chan(bl, c, root, now, mhz, secs, &w);
         return;
     }
     if (!big_out(c, 0)) {
@@ -1234,12 +1319,9 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now, bool trac
 {
     if (!req_session(bl, c, root, false))
         return;
-    /* no wideband history: a trigger on a channel's own I/Q (an FPGA channelizer's), not a track (its carrier is
-       where the channelizer's NCO, moved by the receiver's AFC, put it) */
-    const bool chan = !bl->p.iq_read && bl->p.ch_open;
-    if (!bl->p.iq_read && !(chan && !track)) {
-        fail(bl, c, "unsupported", chan ? "track needs the wideband history: this bench keeps its channels' I/Q only"
-                                        : "this bench keeps no I/Q");
+    const bool chan = !bl->p.iq_read && bl->p.ch_open; /* no wideband history: its channel's own outputs */
+    if (!bl->p.iq_read && !chan) {
+        fail(bl, c, "unsupported", "this bench keeps no I/Q");
         return;
     }
     rdof_bl_window_t w;
@@ -1291,12 +1373,8 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now, bool trac
     trig_t *t = calloc(1, sizeof *t);
     if (t) {
         t->d = d;
-        t->chan = -1;
-        t->ntaps = chan ? 1 : 8 * d + 1; /* a channel's I/Q is filtered already */
-        if (chan) {
-            t->cin = RDOF_BL_MALLOC(sizeof(float) * 2 * (size_t)(RDOF_BL_IQ_CHUNK / d + 2));
-            t->cat = RDOF_BL_MALLOC(sizeof(uint64_t) * (size_t)(RDOF_BL_IQ_CHUNK / d + 2));
-        }
+        t->cs.h = -1;
+        t->ntaps = chan ? 1 : 8 * d + 1; /* a channel's outputs are filtered already */
         /* internal RAM (under 1 KB at a W12's rate): the filter reads them every output, PSRAM too slow for it */
         t->taps = malloc(sizeof(float) * (size_t)t->ntaps);
         t->dl = malloc(sizeof(float) * 4 * (size_t)t->ntaps);
@@ -1316,17 +1394,16 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now, bool trac
     if (t && t->ih)
         memset(t->ih, 0, sizeof(uint32_t) * TRACK_BINS);
     if (!t || !t->taps || !t->dl || !t->y || (track && (!t->bf || !t->ih || !t->lines || !t->snap)) ||
-        (chan && (!t->cin || !t->cat)) ||
         (!track && !big_out(c, whole < RDOF_BL_OUT_TRIG ? (size_t)whole : RDOF_BL_OUT_TRIG))) {
         trig_free(t);
         fail(bl, c, "unavailable", "no memory for a trigger");
         return;
     }
-    /* the pre-roll and the floor's learning, kept from now (twice for a reader behind) */
-    if (chan && (t->chan = bl->p.ch_open(bl->p.ctx, mhz * 1e6, 2 * (pre + floor_s) + 1)) < 0) {
-        trig_free(t);
-        fail(bl, c, "unsupported", "%.4f MHz isn't one of the receiver's channels: this bench keeps their I/Q only",
-             mhz);
+    /* the pre-roll kept from now, and as much again for a reader behind */
+    t->corr_hz = rdof_bl_seen_hz(&w, mhz * 1e6) - (mhz * 1e6 - w.center_hz);
+    if (chan && !chsrc_open(bl, &t->cs, mhz * 1e6, rdof_bl_seen_hz(&w, mhz * 1e6), w.fs, 2 * pre + 2)) {
+        trig_end(bl, t);
+        no_channel(bl, c, mhz);
         return;
     }
     /* the low-pass: a Hamming-windowed sinc, cut off at bw / 2, unity gain */
@@ -1341,9 +1418,8 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now, bool trac
     }
     for (int i = 0; i < t->ntaps; i++)
         t->taps[i] = (float)(t->taps[i] / sum);
-    t->corr_hz = rdof_bl_seen_hz(&w, mhz * 1e6) - (mhz * 1e6 - w.center_hz);
     t->step = -2 * M_PI * (mhz * 1e6 - w.center_hz + t->corr_hz) / w.fs; /* where the carrier truly at mhz shows */
-    t->rate = rate, t->bw = bw, t->thr = thr, t->min_ms = min_ms, t->pre_s = pre, t->post_s = post;
+    t->rate = rate, t->bw = chan && t->cs.bw < bw ? t->cs.bw : bw, t->thr = thr, t->min_ms = min_ms, t->pre_s = pre, t->post_s = post;
     t->max_s = max_s, t->floor_s = floor_s, t->timeout = timeout, t->started = now;
     t->cs16 = fmt && !strcmp(fmt, "cs16");
     t->until_end = track || jbool(bl, root, "until_end");
@@ -1375,6 +1451,66 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now, bool trac
     trig_restart(t, next - back + (uint64_t)t->ntaps / 2);
     if (t->have_floor)
         emit(bl, c, "{\"armed\":{\"floor_db\":%.1f,\"rate\":%.1f}}", t->floor_db, t->rate);
+}
+
+/* A capture where there's no wideband history: the channel freq is in, as it comes from the channelizer (a trigger
+ * fired from the start, no floor): cs16 (or cf32 with "fmt") at about 48 kS/s, centered on freq, its pre-roll from
+ * the channel's history as a wideband capture's is from the ring */
+static void op_capture_chan(rdof_bl_t *bl, conn_t *c, int root, double now, double mhz, double secs,
+                            const rdof_bl_window_t *w)
+{
+    const char *fmt = jstrv(bl, root, "fmt");
+    if (fmt && strcmp(fmt, "cf32") && strcmp(fmt, "cs16")) {
+        fail(bl, c, "bad_request", "fmt is cf32 or cs16 (a channel's capture)");
+        return;
+    }
+    const int d = (int)lround(w->fs / 48000.0) > 0 ? (int)lround(w->fs / 48000.0) : 1;
+    const double rate = w->fs / d;
+    trig_t *t = calloc(1, sizeof *t);
+    if (t) {
+        t->d = d, t->ntaps = 1, t->cs.h = -1;
+        t->taps = malloc(sizeof(float));
+        t->dl = malloc(sizeof(float) * 4);
+        t->y = RDOF_BL_MALLOC(sizeof(float) * 2 * (size_t)(RDOF_BL_IQ_CHUNK / d + 2));
+        t->cs16 = !fmt || !strcmp(fmt, "cs16");
+    }
+    const double whole = (secs + 0.5) * rate * (!fmt || !strcmp(fmt, "cs16") ? 4 : 8);
+    if (!t || !t->taps || !t->dl || !t->y || !big_out(c, whole < RDOF_BL_OUT_TRIG ? (size_t)whole : RDOF_BL_OUT_TRIG)) {
+        trig_free(t);
+        fail(bl, c, "unavailable", "no memory for a capture");
+        return;
+    }
+    t->corr_hz = rdof_bl_seen_hz(w, mhz * 1e6) - (mhz * 1e6 - w->center_hz);
+    double pre = jnum(bl, root, "pre_s", 2.0);
+    if (pre < 0)
+        pre = 0;
+    if (!chsrc_open(bl, &t->cs, mhz * 1e6, rdof_bl_seen_hz(w, mhz * 1e6), w->fs, pre + 1)) {
+        trig_end(bl, t);
+        no_channel(bl, c, mhz);
+        return;
+    }
+    uint64_t oldest = 0, next = 0;
+    chsrc_span(bl, &t->cs, &oldest, &next);
+    uint64_t pre_n = (uint64_t)(pre * w->fs); /* at most half the history, as a wideband capture's */
+    if (pre_n > (next - oldest) / 2)
+        pre_n = (next - oldest) / 2;
+    t->rate = rate, t->bw = t->cs.bw, t->max_s = secs, t->post_s = secs, t->timeout = secs + 60, t->started = now;
+    t->pre_s = (double)pre_n / w->fs;
+    t->bsize = (int)lround(rate / 1000) > 0 ? (int)lround(rate / 1000) : 1;
+    t->have_floor = 2, t->floor_db = -INFINITY, t->thr = INFINITY;
+    t->capture = t->fired = true;
+    t->trig_sc = t->out_sc0 = next - pre_n;
+    t->end_sc = next + (uint64_t)(secs * w->fs);
+    trig_restart(t, t->out_sc0);
+    c->trig = t;
+    c->op = OP_TRIGGER;
+    c->freq_hz = mhz * 1e6;
+    c->gain = jnum(bl, root, "gain", w->gain_db);
+    c->state = C_ACTIVE;
+    bl->n_iq++;
+    const double t0 = bl->p.sc_utc ? bl->p.sc_utc(bl->p.ctx, t->out_sc0) : now - t->pre_s;
+    emit(bl, c, "{\"ready\":%.6f,\"shared\":true,\"center\":%.6f,\"pre_s\":%.3f,\"fs\":%.3f,\"fmt\":\"%s\",\"sc0\":0,"
+                "\"channel\":true}", t0, mhz, t->pre_s, rate, t->cs16 ? "cs16" : "cf32");
 }
 
 /* ── tune: the receiver's window (section 14.2) ─────────────────────────── */
@@ -2493,6 +2629,7 @@ typedef struct sigrx {
     const rdof_sig_mode_t *m;
     void *rx;
     chan_t ch;
+    chsrc_t cs;               /* the channel's own outputs in place of the history (cs.h >= 0) */
     float *y;                 /* a chunk's channel samples, [n][2] */
     float *out[RDOF_SIG_STREAMS];
     int16_t *pcm;
@@ -2553,6 +2690,27 @@ static bool chan_init(chan_t *h, double fs, double offset_hz, double bw)
     return true;
 }
 
+/* No filter: the channel comes filtered (chsrc_t), its outputs each round(fs / 48000) wideband samples */
+static bool chan_none(chan_t *h, double fs)
+{
+    h->d = (int)lround(fs / 48000.0);
+    if (h->d < 1)
+        h->d = 1;
+    h->ntaps = 1;
+    h->dl = RDOF_BL_MALLOC(sizeof(float) * 4);
+    return h->dl != NULL;
+}
+
+/* The receiver's source's oldest sample and next one: the history's, or its channel's */
+static void srx_span(rdof_bl_t *bl, const sigrx_t *r, uint64_t *oldest, uint64_t *next)
+{
+    int8_t probe[2];
+    if (r->cs.h >= 0)
+        chsrc_span(bl, &r->cs, oldest, next);
+    else
+        bl->p.iq_read(bl->p.ctx, UINT64_MAX, probe, 0, oldest, next);
+}
+
 /* got history samples from h->sc in: the outputs into y ([n][2]), how many; *first: the first one's center. */
 static int chan_run(chan_t *h, const int8_t *in, long got, float *y, uint64_t *first)
 {
@@ -2603,6 +2761,7 @@ static void sig_end(rdof_bl_t *bl, conn_t *c)
         if (r->rx)
             r->m->rx_free(r->rx);
         chan_free(&r->ch);
+        chsrc_close(bl, &r->cs);
         free(r->y), free(r->pcm), free(r->rec);
         for (int k = 0; k < RDOF_SIG_STREAMS; k++)
             free(r->out[k]);
@@ -2798,7 +2957,8 @@ static void op_rx(rdof_bl_t *bl, conn_t *c, int root, double now)
     const rdof_sig_mode_t *m = sig_mode(bl, c, root, false);
     if (!m)
         return;
-    if (!bl->p.iq_read) {
+    const bool chan = !bl->p.iq_read && bl->p.ch_open; /* no wideband history: its channel's own outputs */
+    if (!bl->p.iq_read && !chan) {
         fail(bl, c, "unsupported", "this bench keeps no I/Q");
         return;
     }
@@ -2822,9 +2982,16 @@ static void op_rx(rdof_bl_t *bl, conn_t *c, int root, double now)
         return;
     }
     sigrx_t *r = calloc(1, sizeof *r);
-    if (!r || !chan_init(&r->ch, w.fs, rdof_bl_seen_hz(&w, mhz * 1e6), bw)) { /* where it truly shows */
-        free(r);
+    if (r)
+        r->cs.h = -1;
+    if (!r || (chan ? !chan_none(&r->ch, w.fs) : !chan_init(&r->ch, w.fs, rdof_bl_seen_hz(&w, mhz * 1e6), bw))) {
+        free(r); /* the channel where its carrier truly shows */
         fail(bl, c, "unavailable", "no memory for a channel");
+        return;
+    }
+    if (chan && !chsrc_open(bl, &r->cs, mhz * 1e6, rdof_bl_seen_hz(&w, mhz * 1e6), w.fs, 2 * SRX_FLOOR_S + 2)) {
+        chan_free(&r->ch), chsrc_close(bl, &r->cs), free(r);
+        no_channel(bl, c, mhz);
         return;
     }
     r->m = m;
@@ -2857,7 +3024,7 @@ static void op_rx(rdof_bl_t *bl, conn_t *c, int root, double now)
         return;
     }
     r->nst = m->rx_streams(r->rx, r->st, RDOF_SIG_STREAMS);
-    r->bw = bw, r->seconds = secs, r->over_db = over;
+    r->bw = chan && r->cs.bw < bw ? r->cs.bw : bw, r->seconds = secs, r->over_db = over;
     r->bsize = (int)lround(r->rate / 1000);
     if (r->bsize < 1)
         r->bsize = 1;
@@ -2873,8 +3040,7 @@ static void op_rx(rdof_bl_t *bl, conn_t *c, int root, double now)
     if (bl->p.iq_warm)
         bl->p.iq_warm(bl->p.ctx);
     uint64_t oldest = 0, next = 0;
-    int8_t probe[2];
-    bl->p.iq_read(bl->p.ctx, UINT64_MAX, probe, 0, &oldest, &next);
+    srx_span(bl, r, &oldest, &next);
     /* the floor from the history where it has some, then on from now */
     uint64_t back = r->learning ? (uint64_t)(SRX_FLOOR_S * w.fs) + (uint64_t)r->ch.ntaps : 0;
     if (back > next - oldest)
@@ -2911,8 +3077,7 @@ static bool srx_start(rdof_bl_t *bl, conn_t *c, uint64_t first, double now, cons
     r->start_sc = first;
     r->end_sc = first + (uint64_t)(r->seconds * w->fs);
     uint64_t oldest = 0, next = 0;
-    int8_t probe[2];
-    bl->p.iq_read(bl->p.ctx, UINT64_MAX, probe, 0, &oldest, &next);
+    srx_span(bl, r, &oldest, &next);
     char st[RDOF_SIG_STREAMS * 120] = "", fl[24] = "null";
     size_t k = 0;
     for (int i = 0; i < r->nst && k < sizeof st; i++)
@@ -2970,8 +3135,28 @@ static void tick_rx(rdof_bl_t *bl, conn_t *c, double now)
         const size_t frame = (size_t)r->nst * ((size_t)(RDOF_BL_IQ_CHUNK / r->ch.d + 2) * 2 + 120) + 200;
         if (room(c) < frame)
             return; /* the client is behind: later */
-        uint64_t oldest = 0, next = 0;
-        const long got = bl->p.iq_read(bl->p.ctx, r->ch.sc, bl->iq, RDOF_BL_IQ_CHUNK, &oldest, &next);
+        uint64_t oldest = 0, next = 0, first = 0;
+        long got, fill = 0;
+        int n = 0;
+        if (r->cs.h >= 0) { /* the channel's own outputs: each one at its wideband sample */
+            got = chsrc_read(bl, &r->cs, r->ch.sc, RDOF_BL_IQ_CHUNK / r->ch.d + 1, &fill, &oldest, &next);
+            if (got > 0) {
+                const uint64_t *at = r->cs.at;
+                if (!r->learning && r->end_sc && at[0] > r->ch.next_out) { /* instants missing before these */
+                    const uint64_t k = (at[0] - r->ch.next_out) / d;
+                    r->gaps += (long)k;
+                    if (k)
+                        emit(bl, c, "{\"gap\":{\"sc\":%llu,\"samples\":%llu}}", (unsigned long long)r->ch.next_out,
+                             (unsigned long long)k);
+                }
+                memcpy(r->y, r->cs.y, sizeof(float) * 2 * (size_t)got);
+                first = at[0], n = (int)got, fill *= (long)d;
+                r->ch.sc = at[got - 1] + 1, r->ch.next_out = at[got - 1] + d;
+                got *= (long)d;
+            }
+        } else {
+            got = bl->p.iq_read(bl->p.ctx, r->ch.sc, bl->iq, RDOF_BL_IQ_CHUNK, &oldest, &next);
+        }
         if (got <= 0 && r->ch.sc < oldest) { /* overwritten before it went: on from the oldest, what's between lost */
             const uint64_t want = oldest + g, first = r->ch.next_out - g;
             const uint64_t k = want > first ? (want - first + d - 1) / d : 0;
@@ -2986,9 +3171,10 @@ static void tick_rx(rdof_bl_t *bl, conn_t *c, double now)
         if (got <= 0)
             return; /* not written yet */
         budget -= got;
-        const long fill = bl->p.iq_filled ? bl->p.iq_filled(bl->p.ctx, r->ch.sc, got) : 0;
-        uint64_t first = 0;
-        const int n = chan_run(&r->ch, bl->iq, got, r->y, &first);
+        if (r->cs.h < 0) {
+            fill = bl->p.iq_filled ? bl->p.iq_filled(bl->p.ctx, r->ch.sc, got) : 0;
+            n = chan_run(&r->ch, bl->iq, got, r->y, &first);
+        }
         if (!n)
             continue;
         if (r->learning) {
@@ -3656,8 +3842,7 @@ static void track_done(rdof_bl_t *bl, conn_t *c, const rdof_bl_window_t *w, doub
 static void track_snap(rdof_bl_t *bl, trig_t *t, const rdof_bl_window_t *w)
 {
     uint64_t oldest = 0, next = 0;
-    int8_t probe[2];
-    bl->p.iq_read(bl->p.ctx, UINT64_MAX, probe, 0, &oldest, &next);
+    trig_span(bl, t, &oldest, &next);
     const uint64_t from = t->seen_next ? t->seen_next : next;
     t->seen_next = next;
     const rdof_bl_window_t *l = &t->snap[t->nsnap - 1].w;
@@ -3694,14 +3879,40 @@ static void trig_send(conn_t *c, trig_t *t, int nout, long idx0)
     t->sent += nout;
 }
 
-/* A trigger on its channel's own I/Q (ch_open): each instant one of its outputs, at the instant's wideband sample.
- * Returns how many wideband samples' worth it took, 0 none yet, -1 to go round again (restarted). */
+/* One output, centered on wideband sample `center`: into what's sent (or the track's frequencies), its 1 ms block's
+ * power. True when the trigger fired on it (the channel restarts). */
+static bool trig_out(rdof_bl_t *bl, conn_t *c, trig_t *t, const rdof_bl_window_t *w, uint64_t center, float yi,
+                     float yq, int *nout)
+{
+    if (t->track && t->fired && center < t->end_sc) { /* the phase step from the previous output, in Hz */
+        if (t->have_prev)
+            t->bf[t->bfn++] = fast_atan2f(yq * t->pi - yi * t->pq, yi * t->pi + yq * t->pq) *
+                              (float)(t->rate / (2 * M_PI));
+        t->pi = yi, t->pq = yq, t->have_prev = true;
+    } else if (t->fired && center < t->end_sc) {
+        t->y[2 * *nout] = yi, t->y[2 * *nout + 1] = yq, (*nout)++;
+    }
+    if (!t->bn++)
+        t->block_sc = center;
+    t->bp += yi * yi + yq * yq;
+    if (t->bn < t->bsize)
+        return false;
+    const double lin = t->bp / t->bsize;
+    t->bn = 0, t->bp = 0;
+    if (t->track)
+        track_block(bl, c, lin, w);
+    return trig_block(bl, c, lin, w);
+}
+
+/* A chunk of the trigger's channel's own outputs (chsrc_t): each one at its wideband sample. Returns how many
+ * wideband samples' worth it took, 0 none yet, -1 to go round again (restarted). */
 static long trig_chan_chunk(rdof_bl_t *bl, conn_t *c, trig_t *t, const rdof_bl_window_t *w)
 {
     const uint64_t d = (uint64_t)t->d;
     uint64_t oldest = 0, next = 0;
-    const long got = bl->p.ch_read(bl->p.ctx, t->chan, t->sc, t->cin, t->cat, RDOF_BL_IQ_CHUNK / t->d + 2, &oldest,
-                                   &next);
+    long filler = 0;
+    const uint64_t *at = t->cs.at;
+    const long got = chsrc_read(bl, &t->cs, t->sc, RDOF_BL_IQ_CHUNK / t->d + 1, &filler, &oldest, &next);
     if (got <= 0 && t->sc < oldest) { /* overwritten before it went: on from the oldest, the outputs between lost */
         if (t->fired && oldest > t->next_out)
             t->gaps += (long)((oldest - t->next_out + d - 1) / d);
@@ -3710,23 +3921,16 @@ static long trig_chan_chunk(rdof_bl_t *bl, conn_t *c, trig_t *t, const rdof_bl_w
     }
     if (got <= 0)
         return 0;
-    const long idx0 = t->fired ? (long)((t->cat[0] - t->out_sc0) / d) : 0;
+    if (t->fired && at[0] > t->next_out) /* instants missing before these: lost */
+        t->gaps += (long)((at[0] - t->next_out) / d);
+    const long idx0 = t->fired ? (long)((at[0] - t->out_sc0) / d) : 0;
     int nout = 0;
     for (long i = 0; i < got; i++) {
-        const uint64_t center = t->cat[i];
-        const float yi = t->cin[2 * i], yq = t->cin[2 * i + 1];
-        t->sc = center + 1, t->next_out = center + d;
-        if (t->fired && center < t->end_sc)
-            t->y[2 * nout] = yi, t->y[2 * nout + 1] = yq, nout++;
-        if (!t->bn++)
-            t->block_sc = center;
-        t->bp += yi * yi + yq * yq;
-        if (t->bn == t->bsize) {
-            const double lin = t->bp / t->bsize;
-            t->bn = 0, t->bp = 0;
-            if (trig_block(bl, c, lin, w))
-                return -1;
-        }
+        t->sc = at[i] + 1, t->next_out = at[i] + d;
+        if (t->fired && t->cs.fill[i] && at[i] >= t->out_sc0 && at[i] < t->end_sc)
+            t->filled += (long)d;
+        if (trig_out(bl, c, t, w, at[i], t->cs.y[2 * i], t->cs.y[2 * i + 1], &nout))
+            return -1;
     }
     if (nout)
         trig_send(c, t, nout, idx0);
@@ -3759,6 +3963,18 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
             const long gaps = t->gaps + (t->filled + (long)d - 1) / (long)d; /* filler, in the channel's samples */
             char pp[256];
             put_ppm_at(pp, sizeof pp, &w, c->freq_hz);
+            if (t->capture) { /* a capture's, the channel's rate its fs and freq its center */
+                emit(bl, c,
+                     "{\"done\":{\"freq\":%.1f,\"center\":%.1f,\"fs\":%.3f,\"fmt\":\"%s\",\"gain\":%.1f,%s,"
+                     "\"corr_hz\":%.2f,\"t0\":%.6f,\"sc0\":0,\"seconds\":%.3f,\"samples\":%ld,\"overflows\":%ld,"
+                     "\"gap_samples\":%ld,\"clip_pct\":0.000,\"pre_s\":%.3f,\"scale_db\":%.2f,\"channel\":true,"
+                     "\"bw\":%.0f,\"wide_fs\":%.1f,\"wide_center\":%.1f,\"source\":\"rfg\"}}",
+                     c->freq_hz, c->freq_hz, t->rate, t->cs16 ? "cs16" : "cf32", c->gain, pp, t->corr_hz,
+                     trig_utc(bl, t->out_sc0, now, next, w.fs), samples / t->rate, samples, gaps ? 1L : 0L, gaps,
+                     t->pre_s, w.iq_scale_db, t->bw, w.fs, w.center_hz);
+                c->state = C_DONE;
+                return;
+            }
             emit(bl, c,
                  "{\"done\":{\"freq\":%.1f,\"center\":%.1f,\"fs\":%.3f,\"rate\":%.3f,\"wide_fs\":%.1f,"
                  "\"fmt\":\"%s\",\"bw\":%.0f,\"gain\":%.1f,%s,\"corr_hz\":%.2f,\"t0\":%.6f,\"trigger_time\":%.6f,"
@@ -3786,7 +4002,7 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
         const size_t frame = t->track ? 1024 : (size_t)(RDOF_BL_IQ_CHUNK / t->d + 2) * 8 + 160;
         if (t->fired && room(c) < frame)
             return; /* the client is behind: later */
-        if (t->chan >= 0) {
+        if (t->cs.h >= 0) {
             const long took = trig_chan_chunk(bl, c, t, &w);
             if (!took)
                 return; /* not written yet */
@@ -3845,26 +4061,9 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
             float yi = 0, yq = 0;
             for (int k = 0; k < t->ntaps; k++)
                 yi += t->taps[k] * x[2 * k], yq += t->taps[k] * x[2 * k + 1];
-            const uint64_t center = t->sc + (uint64_t)i - g;
-            if (t->track && t->fired && center < t->end_sc) { /* the phase step from the previous output, in Hz */
-                if (t->have_prev)
-                    t->bf[t->bfn++] = fast_atan2f(yq * t->pi - yi * t->pq, yi * t->pi + yq * t->pq) *
-                                      (float)(t->rate / (2 * M_PI));
-                t->pi = yi, t->pq = yq, t->have_prev = true;
-            } else if (t->fired && center < t->end_sc)
-                t->y[2 * nout] = yi, t->y[2 * nout + 1] = yq, nout++;
-            if (!t->bn++)
-                t->block_sc = center;
-            t->bp += yi * yi + yq * yq;
-            if (t->bn == t->bsize) {
-                const double lin = t->bp / t->bsize;
-                t->bn = 0, t->bp = 0;
-                if (t->track)
-                    track_block(bl, c, lin, &w);
-                if (trig_block(bl, c, lin, &w)) {
-                    restarted = true;
-                    break;
-                }
+            if (trig_out(bl, c, t, &w, t->sc + (uint64_t)i - g, yi, yq, &nout)) {
+                restarted = true;
+                break;
             }
         }
         if (restarted)
