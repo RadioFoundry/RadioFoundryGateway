@@ -132,6 +132,7 @@
 #include "rdofradio_cfg.h"
 #include "rdofradio_dev.h"
 #include "rdofradio_fpga.h"
+#include "rdofradio_dnssd.h"
 #include "rdofradio_net.h"
 #include "rdofradio_serial.h"
 #ifdef RDOF_PFFFT
@@ -2431,6 +2432,15 @@ static void bench_burst(int c, const rdof_sdr_burst_t *b)
     rdof_bl_burst(BL.bl, &o);
 }
 
+#ifdef RDOF_HOST_WEB
+/* The page and the bench line, listed over DNS-SD (rdofradio_dnssd.c) when they listen past loopback */
+static void advertise_web(int port)
+{
+    if (strncmp(web_addr, "127.", 4) && strcmp(web_addr, "localhost"))
+        rdofdnssd_publish(rcfg.box[0] ? rcfg.box : "rdofradio", "_http._tcp", port, (const char *const[]){"path=/", NULL});
+}
+#endif
+
 static void bench_start(void)
 {
     if (bench_port < 0)
@@ -2474,6 +2484,13 @@ static void bench_start(void)
         return;
     }
     fprintf(stderr, "bench: %s:%d\n", bench_addr, rdof_bnet_port(BL.net));
+    if (strncmp(bench_addr, "127.", 4) && strcmp(bench_addr, "localhost")) {
+        char kind[32], name[64], ver[48], k[48], v[64];
+        bl_device(NULL, kind, sizeof kind, name, sizeof name, ver, sizeof ver);
+        snprintf(k, sizeof k, "kind=%s", kind);
+        snprintf(v, sizeof v, "ver=%s", ver);
+        rdofdnssd_publish(name, "_rfgbench._tcp", rdof_bnet_port(BL.net), (const char *const[]){k, v, NULL});
+    }
 }
 
 static void bench_stop(void)
@@ -3779,7 +3796,7 @@ static int split_main(int argc, char **argv, const char *port, int baud, int pow
         if (wp < 0)
             fprintf(stderr, "web: %s\n", strerror(errno));
         else
-            fprintf(stderr, "web: http://%s:%d/\n", web_addr, wp);
+            fprintf(stderr, "web: http://%s:%d/\n", web_addr, wp), advertise_web(wp);
     }
     double last_web = 0;
 #endif
@@ -4061,7 +4078,7 @@ static int mmdvm_main(int argc, char **argv, const char *port, int baud, double 
         if (wp < 0)
             fprintf(stderr, "web: %s\n", strerror(errno));
         else
-            fprintf(stderr, "web: http://%s:%d/\n", web_addr, wp);
+            fprintf(stderr, "web: http://%s:%d/\n", web_addr, wp), advertise_web(wp);
     }
     double last_web = 0;
 #endif
@@ -4161,6 +4178,7 @@ static int hold(int argc, char **argv, const char *why)
         return 2;
     }
     fprintf(stderr, "web: http://%s:%d/ (not running: fix the settings there)\n", web_addr, port);
+    advertise_web(port);
     rdof_hostweb_logf("not running: %s", why);
     rdof_hostweb_version(RDOF_VERSION);
     signal(SIGINT, on_signal);
@@ -4881,7 +4899,7 @@ int main(int argc, char **argv)
         if (port < 0)
             fprintf(stderr, "web: %s\n", strerror(errno));
         else
-            fprintf(stderr, "web: http://%s:%d/\n", web_addr, port);
+            fprintf(stderr, "web: http://%s:%d/\n", web_addr, port), advertise_web(port);
     }
     double last_web = 0;
 #endif

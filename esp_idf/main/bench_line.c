@@ -258,6 +258,7 @@ void bench_line_start(void)
         return;
     }
     ESP_LOGI(TAG, "line protocol on TCP %d", rdof_bnet_port(net));
+    dnssd_bench(g_scfg.name[0] ? g_scfg.name : g_roles.box, rdof_bnet_port(net));
 }
 
 #else

@@ -91,6 +91,9 @@ void status_led_off(void);
 void logring_init(void);
 size_t logring_read(char *out, size_t cap);
 void wifi_start(void);
+/* mDNS / DNS-SD (dnssd.c): BOX.local and the page from dnssd_start (after wifi_start); the bench line's service. */
+void dnssd_start(void);
+void dnssd_bench(const char *name, int port);
 void web_start(void);
 /* The core dump in flash (crash.c): read and logged once at boot; the "crash" object in /api/status (nothing when
  * there's no dump); /api/coredump to download or erase it, and /api/crash with CONFIG_RDOF_CRASH_TEST. */

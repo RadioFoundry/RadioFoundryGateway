@@ -7,3 +7,13 @@ entries:
     if RDOF_SDR_DSP_IRAM = y:
         dsp_esp (noflash)
         fir_s3 (noflash)
+
+# mDNS (dnssd.c): its statics in PSRAM (two 1.4 KB packet buffers, the PCBs: 2 KB of internal RAM otherwise), but
+# mdns_service's, which hold its task's TCB (FreeRTOS wants a TCB in internal RAM). Its task's stack and its records
+# are in PSRAM already (sdkconfig.defaults).
+[mapping:rdof_mdns_extram]
+archive: libespressif__mdns.a
+entries:
+    if SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY = y:
+        * (extram_bss)
+        mdns_service (default)

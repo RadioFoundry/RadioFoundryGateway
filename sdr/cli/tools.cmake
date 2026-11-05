@@ -27,7 +27,7 @@ find_library(MOSQUITTO_LIBRARY NAMES mosquitto_static mosquitto) # the static on
 find_path(AD9361_INCLUDE_DIR ad9361.h)
 find_library(AD9361_LIBRARY ad9361)
 set(RDOF_RADIO_SRCS ${RDOF_CLI}/rdofradio.c ${RDOF_CLI}/rdofradio_cfg.c ${RDOF_CLI}/rdofradio_serial.c
-    ${RDOF_CLI}/rdofradio_net.c ${RDOF_CLI}/rdofradio_fpga.c)
+    ${RDOF_CLI}/rdofradio_net.c ${RDOF_CLI}/rdofradio_fpga.c ${RDOF_CLI}/rdofradio_dnssd.c)
 set(RDOF_RADIO_DEFS)
 set(RDOF_RADIO_INCS)
 set(RDOF_RADIO_LIBS)

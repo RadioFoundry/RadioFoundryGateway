@@ -446,6 +446,8 @@ shares its parts: the sessions, the burst feed, the I/Q history and the transmit
 ### 14.1 Framing
 
 - TCP, port 7373 by default: `bench.port` in the board's settings (0: off), `--bench [ADDR:]PORT` on rdofradio.
+- Found by DNS-SD: a gateway lists the line as `_rfgbench._tcp` (instance: its info's device name), TXT `kind`
+  (`esp32s3-gateway`, `rdofradio`), `ver` and, on a board, `mac` (the Wi-Fi station's).
 - One request a connection: a JSON object on one line. The replies are JSON objects, one a line. A reply line with
   `"bytes": N` is followed by N bytes of payload (I/Q samples) before the next line.
 - Closing the connection cancels the request: a capture stops, a transmission unkeys, a session ends.
@@ -621,7 +623,12 @@ delay. On `--mmdvm` (the MMDVM modem transmits) there is no `outbound`. The freq
 
 ### 14.5 The client
 
-`tools/bench/rfgbench.py --bench HOST[:PORT] SUBCOMMAND ...` (or `$RDOF_BENCH_LINE`): `info`, `status`, `session`,
+`tools/bench/rfgbench.py --bench HOST[:PORT] SUBCOMMAND ...` (or `$RDOF_BENCH_LINE`; a name that isn't a host is a
+gateway's DNS-SD name, any case or a unique prefix). `rfgbench.py find [--json] [--no-scan]` lists every gateway on
+the host's networks with its address, device, version, receive window, frequencies by capability, TX bands and the
+modem's state: the ones DNS-SD lists (a legacy unicast query out of each interface) and, for a gateway that doesn't
+list itself, each address of the host's networks (a /22 at most) that takes a connection on 7373, asked for `info`.
+A gateway on two networks (a Pluto on USB and Ethernet) is listed once. Then `info`, `status`, `session`,
 `claim`, `release`, `hold`, `run`, `capture`, `capture-trigger`, `dmr-bursts`, `listen`, with the daemon client's
 options, and `tx fm`, `rx fm`, `tx am`, `rx am` (section 14.6), `tune --session ID [--center MHz|auto] [--gain dB|auto] [--taps
 MHz...]` and `release --tune` of its own. Its stdout and stderr are the daemon client's (the

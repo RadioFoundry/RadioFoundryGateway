@@ -8,3 +8,5 @@ dependencies:
   espressif/usb_host_cp210x_vcp: "^2.2.0"
   espressif/usb_host_ch34x_vcp: "^2.2.1"
   espressif/esp-dsp: "^1.5.0"
+  # mDNS and DNS-SD: BOX.local, the page and the bench line for `rfgbench find` (dnssd.c)
+  espressif/mdns: "^1.8.0"

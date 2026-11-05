@@ -136,6 +136,7 @@ void app_main(void)
     /* every role's memory before the network carves the heap up (mem.c, docs/spec/fw/memory.md) */
     mem_plan_boot(either);
     wifi_start();
+    dnssd_start();
     web_start();
     oled_start(); /* it shows the roles as they start */
     power_start(); /* the power key and the battery */

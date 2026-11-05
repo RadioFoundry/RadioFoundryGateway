@@ -6,7 +6,8 @@ The bench's line protocol client (docs/spec/bench-api.md section 14): the bench 
 (a board, or rdofradio on an SDR) over TCP. Same subcommands, options, output and exit codes, so a tool written for
 the daemon's client only changes the command it runs.
 
-    rfgbench.py [--bench HOST[:PORT]] info [--json]
+    rfgbench.py find [--json] [--no-scan]                   every gateway on this host's networks: name, address, frequencies
+    rfgbench.py [--bench HOST[:PORT]|NAME] info [--json]
     rfgbench.py ... status [--json]
     rfgbench.py ... session --label L [--expect S] [--max S]     prints {"session": ID}; held until stdin closes
     rfgbench.py ... claim --session ID MHz... [--caps rx,dmr] [--wait-max S]
@@ -33,7 +34,9 @@ AM's depth is the modulation at level 1 (0.3 by default: the receiver sensitivit
 the transmitter's full power, the carrier 20 log10(1 + depth) dB under it. ACARS-like MSK is
 afsk:hex=...:baud=2400:hz=1200+2400.
 
-The gateway: --bench, else $RDOF_BENCH_LINE (HOST or HOST:PORT; port 7373 by default). Any number of clients may use
+The gateway: --bench, else $RDOF_BENCH_LINE (HOST or HOST:PORT; port 7373 by default; or a gateway's name, which
+DNS-SD finds wherever DHCP put it). find lists them: the ones DNS-SD lists (_rfgbench._tcp) and, for a board too old
+to list itself, any address on this host's networks (a /22 at most) that takes a connection on 7373. Any number of clients may use
 one gateway at once: sessions, claims and the modem queue keep them apart, and the receive ops share the receiver.
 
 A frequency past where the gateway can receive now (its window) or transmit (a W12's transmitter is tied to the
@@ -74,7 +77,16 @@ def address(given: Optional[str]) -> Tuple[str, int]:
     if not spec:
         raise Gone("no gateway: give --bench HOST[:PORT] or set RDOF_BENCH_LINE")
     host, _, port = spec.rpartition(":") if spec.count(":") == 1 else (spec, "", "")
-    return (host or spec), int(port) if port else PORT
+    host = host or spec
+    try:
+        socket.getaddrinfo(host, None, socket.AF_INET)
+    except OSError:                          # not a host name: a gateway's own name, from DNS-SD (rfgbench find)
+        hit = resolve_name(host)
+        if not hit:
+            raise Gone(f"no host or gateway named {host!r} (rfgbench find lists the gateways)")
+        host, _, found = hit.rpartition(":")
+        port = port or found
+    return host, int(port) if port else PORT
 
 
 class Conn:
@@ -262,6 +274,242 @@ def check_reach(a, mhz: float, tx: bool) -> None:
 
 
 # ── commands ──
+
+# ── find: the gateways on the networks this host is on ──
+SERVICE = "_rfgbench._tcp.local"
+
+
+def _local_ipv4() -> list:
+    """(address, prefix length) of each IPv4 interface but loopback, from ip or ifconfig."""
+    import ipaddress
+    import re
+    import subprocess
+    out = []
+    for cmd in (["ip", "-4", "-o", "addr", "show"], ["ifconfig"]):
+        try:
+            text = subprocess.run(cmd, capture_output=True, text=True, timeout=3).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        for m in re.finditer(r"inet (\d+\.\d+\.\d+\.\d+)(?:/(\d+)| netmask (0x[0-9a-f]+|[\d.]+))", text):
+            ip, plen, mask = m.groups()
+            if mask:
+                plen = bin(int(mask, 16)).count("1") if mask.startswith("0x") else \
+                    ipaddress.IPv4Network(f"0.0.0.0/{mask}").prefixlen
+            a = ipaddress.IPv4Address(ip)
+            if a.is_loopback or a.is_link_local or a in ipaddress.IPv4Network("100.64.0.0/10"):
+                continue                     # loopback, link-local and Tailscale's carry no multicast
+            out.append((ip, int(plen)))
+        if out:
+            break
+    return out
+
+
+def _dns_name(b: bytes, i: int) -> Tuple[str, int]:
+    labels, end, hops = [], None, 0
+    while hops < 64:
+        n = b[i]
+        if n & 0xC0 == 0xC0:
+            if end is None:
+                end = i + 2
+            i, hops = ((n & 0x3F) << 8) | b[i + 1], hops + 1
+            continue
+        i += 1
+        if n == 0:
+            break
+        labels.append(b[i:i + n].decode("utf-8", "replace"))
+        i += n
+    return ".".join(labels), (end if end is not None else i)
+
+
+def _dns_records(b: bytes) -> list:
+    """(name, type, rdata offset, rdata length) of every answer, authority and additional record."""
+    import struct
+    _, _, qd, an, ns, ar = struct.unpack(">6H", b[:12])
+    i = 12
+    for _ in range(qd):
+        _, i = _dns_name(b, i)
+        i += 4
+    out = []
+    for _ in range(an + ns + ar):
+        name, i = _dns_name(b, i)
+        t, _, _, rdlen = struct.unpack(">HHIH", b[i:i + 10])
+        i += 10
+        out.append((name, t, i, rdlen))
+        i += rdlen
+    return out
+
+
+def mdns_browse(seconds: float = 1.5) -> dict:
+    """The bench lines DNS-SD lists, by address: {(ip, port): {"name", "txt"}}. One query out of each interface
+    from a port of our own (a legacy unicast query: each responder answers us directly), sent three times."""
+    import struct
+    q = struct.pack(">6H", 0, 0, 1, 0, 0, 0) + b"".join(
+        bytes([len(x)]) + x.encode() for x in SERVICE.split(".")) + b"\0" + struct.pack(">HH", 12, 1)
+    socks = []
+    for ip, _ in _local_ipv4() or [("0.0.0.0", 0)]:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(ip))
+            s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 255)
+            s.bind((ip, 0))
+            socks.append(s)
+        except OSError:
+            pass
+    found = {}
+    end, resend = time.time() + seconds, 0.0
+    while socks and time.time() < end:
+        if time.time() >= resend:
+            for s in socks:
+                try:
+                    s.sendto(q, ("224.0.0.251", 5353))
+                except OSError:
+                    pass
+            resend = time.time() + seconds / 3
+        r, _, _ = select.select(socks, [], [], 0.1)
+        for s in r:
+            try:
+                b, (src, _) = s.recvfrom(9000)
+                recs = _dns_records(b)
+            except (OSError, IndexError, struct.error):
+                continue
+            inst = [_dns_name(b, o)[0] for n, t, o, _ in recs if t == 12 and n.lower() == SERVICE]
+            for name in inst:
+                port, txt = PORT, {}
+                for n, t, o, ln in recs:
+                    if n.lower() != name.lower():
+                        continue
+                    if t == 33:
+                        port = struct.unpack(">H", b[o + 4:o + 6])[0]
+                    elif t == 16:
+                        j = o
+                        while j < o + ln:
+                            k, v = b[j + 1:j + 1 + b[j]].decode("utf-8", "replace"), None
+                            j += 1 + b[j]
+                            k, _, v = k.partition("=")
+                            if k:
+                                txt[k] = v
+                found[(src, port)] = {"name": name[:-len(SERVICE) - 1] if name.lower().endswith(SERVICE) else name,
+                                      "txt": txt}
+    for s in socks:
+        s.close()
+    return found
+
+
+def port_scan(port: int = PORT, max_hosts: int = 1024) -> list:
+    """Every address on this host's networks (up to max_hosts a network) that takes a TCP connection on port."""
+    import concurrent.futures
+    import ipaddress
+    hosts = []
+    for ip, plen in _local_ipv4():
+        net = ipaddress.IPv4Network(f"{ip}/{max(plen, 22)}", strict=False)
+        hosts += [str(h) for h in list(net.hosts())[:max_hosts] if str(h) != ip]
+
+    def probe(h):
+        try:
+            socket.create_connection((h, port), timeout=0.4).close()
+            return h
+        except OSError:
+            return None
+    with concurrent.futures.ThreadPoolExecutor(128) as ex:
+        return [h for h in ex.map(probe, hosts) if h]
+
+
+def _caps_short(caps: list) -> str:
+    tx = [c[:-3] for c in caps if c.endswith("_tx")]
+    rest = [c for c in caps if not c.endswith("_tx")]
+    return " ".join(x for x in (",".join(rest), f"tx({'+'.join(tx)})" if tx else "") if x) or "-"
+
+
+def find_gateways(scan: bool = True, seconds: float = 1.5) -> list:
+    """Each gateway found, its info asked: [{"host", "port", "via", "name", "info" or "error"}], by name."""
+    import concurrent.futures
+    seen = {(ip, port): {"via": "mdns", "name": d["name"], "txt": d["txt"]}
+            for (ip, port), d in mdns_browse(seconds).items()}
+    if scan:
+        for h in port_scan():
+            seen.setdefault((h, PORT), {"via": "scan", "name": None, "txt": {}})
+
+    def ask(key):
+        (h, port), d = key
+        r = dict(d, host=h, port=port)
+        try:
+            c = Conn((h, port))
+            c.s.settimeout(5)
+            try:
+                c.send({"op": "info"})
+                r["info"] = next((x for x, _ in c.lines()), {"error": "no reply"})
+            finally:
+                c.close()
+        except (Gone, OSError, ValueError) as e:
+            r["info"] = {"error": str(e)}
+        return r
+    with concurrent.futures.ThreadPoolExecutor(16) as ex:
+        out = list(ex.map(ask, seen.items()))
+    # one gateway on two networks (the Pluto on USB and Ethernet): once, by its name and version
+    keep = {}
+    for r in out:
+        dev = r["info"].get("device", {}) if "error" not in r["info"] else {}
+        k = (dev.get("kind"), dev.get("name"), dev.get("version"), len(r["info"].get("channels", []))) if dev else \
+            (r["host"], r["port"])
+        keep.setdefault(k, r)
+    return sorted(keep.values(), key=lambda r: ((r["info"].get("device") or {}).get("name") or r["name"] or "",
+                                                r["host"]))
+
+
+def cmd_find(a) -> int:
+    found = find_gateways(scan=not a.no_scan, seconds=a.seconds)
+    if a.json:
+        print(json.dumps(found, indent=1))
+        return 0 if found else EX_NO_SIGNAL
+    if not found:
+        print("no gateways found" + ("" if a.no_scan else f" (DNS-SD, and port {PORT} on "
+                                     + ", ".join(f"{ip}/{max(p, 22)}" for ip, p in _local_ipv4()) + ")"))
+        return EX_NO_SIGNAL
+    for r in found:
+        d = r["info"]
+        where = f"{r['host']}:{r['port']}"
+        if "error" in d:
+            print(f"{r['name'] or '?':16} {where:21} not answering info: {d['error']}")
+            continue
+        dev, w = d.get("device", {}), d.get("window", {})
+        print(f"{dev.get('name', '?'):16} {where:21} {dev.get('kind', '?')} {dev.get('version', '?')}"
+              f"  (--bench {r['host']}{'' if r['port'] == PORT else ':%d' % r['port']}; {r['via']}"
+              f"{'; MAC ' + r['txt']['mac'] if r['txt'].get('mac') else ''})")
+        if w.get("enabled", True) and "lo" in w:
+            print(f"{'':18}RX {w['lo']:.4f}-{w['hi']:.4f} MHz, center {w['center']:.4f}, {w['fs'] / 1e6:.3f} MS/s, "
+                  f"I/Q {d.get('iq', 'wideband')}, sdr {d.get('sdr')}")
+        else:
+            print(f"{'':18}receiver not running")
+        groups = {}
+        for ch in d.get("channels", []):
+            key = _caps_short(ch["caps"]) + ("" if ch["in_window"] else " (outside the window)")
+            groups.setdefault(key, []).append(ch)
+        for key, chs in groups.items():
+            fr = " ".join(f"{c['freq']:.4f}" + ("*" if c.get("claimed_by") else "") for c in sorted(chs, key=lambda c: c["freq"]))
+            print(f"{'':18}{key}: {fr}")
+        if d.get("tx_bands"):
+            print(f"{'':18}TX bands: " + ", ".join(f"{lo:.4f}-{hi:.4f}" for lo, hi in d["tx_bands"]))
+        m = d.get("modem") or {}
+        busy = [h.get("label") or h.get("session") for h in m.get("held_by", [])]
+        claimed = sum(1 for ch in d.get("channels", []) if ch.get("claimed_by"))
+        print(f"{'':18}modem {'held by ' + ', '.join(busy) if busy else 'free'}"
+              f"{', %d waiting' % m['waiting'] if m.get('waiting') else ''}"
+              f"{'; %d claimed (*)' % claimed if claimed else ''}")
+    return 0
+
+
+def resolve_name(host: str) -> Optional[str]:
+    """A gateway's name (its info's device name or its DNS-SD instance, any case, or a unique prefix): its address
+    from DNS-SD; None when nothing found has it."""
+    found = mdns_browse(1.5)
+    hits = [(ip, port) for (ip, port), d in found.items() if d["name"].lower() == host.lower()]
+    if not hits:
+        hits = [(ip, port) for (ip, port), d in found.items() if d["name"].lower().startswith(host.lower())]
+    names = {found[k]["name"] for k in hits}
+    if len(names) > 1:
+        raise Gone(f"{host!r} names more than one gateway: {', '.join(sorted(names))}")
+    return f"{hits[0][0]}:{hits[0][1]}" if hits else None
+
 
 def cmd_info(a) -> int:
     d = request(a.where, {"op": "info"})
@@ -950,6 +1198,10 @@ def main(argv=None) -> int:
             s.add_argument("--wait-max", type=float, default=None, help="give up after this many seconds (exit 75)")
             s.add_argument("--label", default=None)
         return s
+    s = p("find", cmd_find, False)
+    s.add_argument("--json", action="store_true")
+    s.add_argument("--no-scan", action="store_true", help="DNS-SD only: no probe of the bench port on each address")
+    s.add_argument("--seconds", type=float, default=1.5, help="how long to listen for DNS-SD answers")
     s = p("info", cmd_info, False)
     s.add_argument("--json", action="store_true")
     s = p("status", cmd_status, False)
@@ -1114,7 +1366,7 @@ def main(argv=None) -> int:
     if a.cmd_name == "dmr-bursts" and a.freq is None and not a.file:
         ap.error("dmr-bursts needs --freq")
     try:
-        a.where = address(a.bench)
+        a.where = None if a.cmd_name == "find" else address(a.bench)
         return a.fn(a)
     except Gone as e:
         print(f"{NOTE} {e}", file=sys.stderr)

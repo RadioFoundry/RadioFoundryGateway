@@ -120,9 +120,9 @@ curl -X POST --data-binary @../build/16mb/radiofoundry_gateway.bin http://<board
 | `sdkconfig.defaults.hub` | `4mb` | USB hub support (`16mb` has it) |
 | `sdkconfig.defaults.dspfast` | `16mb` | experiment: the receive path's hot code in IRAM (`CONFIG_RDOF_SDR_DSP_IRAM`, about 33 KB of internal RAM) and the 64 KB data cache |
 
-The USB host CDC-ACM driver (`espressif/usb_host_cdc_acm`) and esp-dsp (`espressif/esp-dsp`) are fetched on the
-first build and pinned in `dependencies.lock`; both are fetched for every build, and a role that's off leaves its
-library unlinked. The image builds `-Os`; with `CONFIG_RDOF_SDR_FAST`, `sdr/`, esp-dsp and the DSP task's files
+The USB host CDC-ACM driver (`espressif/usb_host_cdc_acm`), esp-dsp (`espressif/esp-dsp`) and mDNS
+(`espressif/mdns`) are fetched on the first build and pinned in `dependencies.lock`; all are fetched for every build,
+and a role that's off leaves its library unlinked. The image builds `-Os`; with `CONFIG_RDOF_SDR_FAST`, `sdr/`, esp-dsp and the DSP task's files
 build `-O2`. `idf.py menuconfig` has the menus "RadioFoundry Gateway", "RadioFoundry Gateway common (common)" and
 "RadioFoundry Gateway SDR (sdr)".
 
@@ -283,7 +283,7 @@ From `idf.py size`. Run it after a change that adds code or RAM, and update this
 
 | Build | Date | App image | Free in its slot | DIRAM used (of 334 KB) |
 |---|---|---|---|---|
-| `16mb` + `w12` | 2026-11-04 | 2222 KB | 1.8 MB of 4 MB | 184.7 KB (54.1%) |
+| `16mb` + `w12` | 2026-11-05 | 2274 KB | 1.8 MB of 4 MB | 181.1 KB (54.3%) |
 | `16mb` + `w12` + `rust` | 2026-10-27 | 2063 KB | 2.0 MB of 4 MB | |
 | `16mb` | 2026-10-28 | 1960 KB | 2.1 MB of 4 MB | 167 KB (49.9%) |
 | `4mb` (no SDR) | 2026-11-02 | 1279 KB | 641 KB of 1.875 MB | 134 KB (40.3%) |
@@ -297,7 +297,8 @@ From `idf.py size`. Run it after a change that adds code or RAM, and update this
   core 0 with it, 36% without.
 - **PSRAM, not in the table:** the transceiver (about 20 KB), the repeater (about 55 KB), the settings parser (under
   65 KB while parsing), the parrot's recording (34 KB, only when on), the bench line protocol (about 410 KB at rest),
-  the sample ring, the log ring.
+  the sample ring, the log ring, mDNS (its task, records and packet buffers; 420 bytes of it internal: the task's
+  TCB and its state).
 - IRAM shows 100% in `idf.py size`: that's the fixed 16 KB vector / cache-miss region filling as usual.
 
 ### Boards
@@ -459,6 +460,10 @@ Keys: [config-v3.md](spec/fw/config-v3.md) §6.3; how it works and what's left: 
   built just as the connection drops can reach the next connection with an alias it doesn't know; the broker then
   disconnects and the next connection starts over. With the SDR's 17-byte topic a burst is 70 bytes on the wire, 57
   with its alias.
+- **mDNS and DNS-SD** (`dnssd.c`, espressif/mdns): the board answers as `BOX.local` (the box's name as a host
+  name; `radiofoundry-XXXX` with the MAC's last two bytes when it has none) and lists `_http._tcp` (the page) and,
+  when the bench line runs, `_rfgbench._tcp` with TXT `kind`, `ver` and `mac`. `rfgbench.py find` lists the boards
+  from it, whatever address DHCP gave them.
 - **`/api/status`**: `name`, `version` (`git describe --always --tags --dirty` at the last CMake configure;
   `idf.py reconfigure` refreshes `-dirty`), `idf`, Wi-Fi, clock, memory, the SDR's test results, then `roamer` and
   `sdr` for what runs. Every field: [device.md](spec/fw/device.md).
@@ -1249,7 +1254,11 @@ bursts, wideband cs8 captures from a 2.5 s history, level-triggered channel capt
 `csbk`, `data`, `listen`) and `bench_repeater` jobs. A transmit job needs `--bench-tx MHZ[,MHZ...]` (up to 32
 frequencies) or bands, and the half duplex transceiver: it takes the SDR modem for its length, at `--tx-gain`
 (bench_tx's `--power` is noted, not applied). The `tune` op is `unsupported`, and a `trigger` or `rx` outside the
-window is refused. With the FPGA channelizer there's no wideband I/Q: captures are filler.
+window is refused. With the FPGA channelizer there's no wideband I/Q: capture, trigger, track and rx take the
+receiver's channels (2.5 s of each kept). When the bench line and the page listen past loopback, rdofradio lists them
+over DNS-SD (`_rfgbench._tcp` with TXT `kind` and `ver`, `_http._tcp`) through the host's responder, by running
+`avahi-publish-service` (a PlutoSDR's firmware has avahi) or macOS's `dns-sd` for as long as it runs; with neither,
+nothing is listed (`rdofradio_dnssd.c`).
 
 ### Host web page
 
