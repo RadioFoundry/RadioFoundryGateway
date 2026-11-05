@@ -1589,7 +1589,7 @@ static void mn_data_done(void *ctx, const rdof_mn_data_t *d)
     for (int i = 0; i < ack.nbursts; i++) {
         rdof_net_burst_t b;
         rdof_ipgw_net_burst(&ack, i, sid, d->slot, (uint8_t)i, &b);
-        if (!rdof_siteroute_app_burst(&SR, d->path, &b, true, 255, now) &&
+        if (!rdof_siteroute_app_burst(&SR, d->path, &b, true, INFINITY, now) &&
             !rdof_siteroute_burst_on(&SR, sr_mqtt, 1ull << d->path, false, &b, now)) /* a repeater's path */
             return;
     }

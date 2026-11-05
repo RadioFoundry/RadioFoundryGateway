@@ -12,6 +12,7 @@
  *
  * Everything lives in PSRAM: the uplinks, the downlink, the queues and the task's stack (it never writes flash).
  */
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -165,7 +166,7 @@ static void data_done(void *ctx, const rdof_mn_data_t *d)
     for (int i = 0; i < ack.nbursts; i++) {
         rdof_net_burst_t b;
         rdof_ipgw_net_burst(&ack, i, sid, d->slot, (uint8_t)i, &b);
-        if (!site_app_burst(d->path, &b, true, 255) && !site_mn_burst(1ull << d->path, false, &b)) /* a repeater's path */
+        if (!site_app_burst(d->path, &b, true, INFINITY) && !site_mn_burst(1ull << d->path, false, &b)) /* a repeater's path */
             return;
     }
     M->acks++;
