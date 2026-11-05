@@ -445,12 +445,12 @@ def find_gateways(scan: bool = True, seconds: float = 1.5) -> list:
         return r
     with concurrent.futures.ThreadPoolExecutor(16) as ex:
         out = list(ex.map(ask, seen.items()))
-    # one gateway on two networks (the Pluto on USB and Ethernet): once, by its name and version
+    # one gateway DNS-SD lists on two networks (a Pluto on USB and Ethernet): once, by its MAC or its instance
+    # name, which DNS-SD keeps unique (a second "w12-rx" becomes "w12-rx-2"); two boards can share a device name
     keep = {}
     for r in out:
-        dev = r["info"].get("device", {}) if "error" not in r["info"] else {}
-        k = (dev.get("kind"), dev.get("name"), dev.get("version"), len(r["info"].get("channels", []))) if dev else \
-            (r["host"], r["port"])
+        k = ("mac", r["txt"]["mac"]) if r["txt"].get("mac") else ("dnssd", r["name"].lower()) \
+            if r["via"] == "mdns" else ("at", r["host"], r["port"])
         keep.setdefault(k, r)
     return sorted(keep.values(), key=lambda r: ((r["info"].get("device") or {}).get("name") or r["name"] or "",
                                                 r["host"]))
@@ -472,7 +472,8 @@ def cmd_find(a) -> int:
             print(f"{r['name'] or '?':16} {where:21} not answering info: {d['error']}")
             continue
         dev, w = d.get("device", {}), d.get("window", {})
-        print(f"{dev.get('name', '?'):16} {where:21} {dev.get('kind', '?')} {dev.get('version', '?')}"
+        label = dev.get('name', '?') + (f" ({r['name']})" if r["name"] and r["name"] != dev.get("name") else "")
+        print(f"{label:16} {where:21} {dev.get('kind', '?')} {dev.get('version', '?')}"
               f"  (--bench {r['host']}{'' if r['port'] == PORT else ':%d' % r['port']}; {r['via']}"
               f"{'; MAC ' + r['txt']['mac'] if r['txt'].get('mac') else ''})")
         if w.get("enabled", True) and "lo" in w:

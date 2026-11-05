@@ -628,7 +628,8 @@ gateway's DNS-SD name, any case or a unique prefix). `rfgbench.py find [--json] 
 the host's networks with its address, device, version, receive window, frequencies by capability, TX bands and the
 modem's state: the ones DNS-SD lists (a legacy unicast query out of each interface) and, for a gateway that doesn't
 list itself, each address of the host's networks (a /22 at most) that takes a connection on 7373, asked for `info`.
-A gateway on two networks (a Pluto on USB and Ethernet) is listed once. Then `info`, `status`, `session`,
+A gateway DNS-SD lists on two networks is listed once (by its MAC, else its instance name; boards may share a device
+name, and DNS-SD gives a second one's instance a suffix: `w12-rx-2`). Then `info`, `status`, `session`,
 `claim`, `release`, `hold`, `run`, `capture`, `capture-trigger`, `dmr-bursts`, `listen`, with the daemon client's
 options, and `tx fm`, `rx fm`, `tx am`, `rx am` (section 14.6), `tune --session ID [--center MHz|auto] [--gain dB|auto] [--taps
 MHz...]` and `release --tune` of its own. Its stdout and stderr are the daemon client's (the
