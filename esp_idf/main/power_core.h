@@ -35,8 +35,12 @@ int rdof_batt_mv(int adc_mv, int ratio_x1000);
 /* A Li-ion cell's charge, 0 to 100, from its voltage (a coarse table, for a cell at rest); -1 for no battery. */
 int rdof_batt_percent(int mv);
 
-/* The low-battery shutdown: true once n readings in a row are under cutoff_mv with a battery there. */
+/* The low-battery shutdown: true once n readings in a row (mv, smoothed) are under cutoff_mv, on a battery that has
+ * read at or over cutoff_mv since the boot and never under RDOF_BATT_PRESENT_MV (raw_mv, each reading as taken). A
+ * board with no battery (on its USB supply) reads the charger's output there, which wanders through 1.8 to 3 V:
+ * one reading under RDOF_BATT_PRESENT_MV and it's wall-powered until the next boot, never turned off for this. */
 typedef struct {
     int under;
+    bool absent, seen_ok;
 } rdof_batt_low_t;
-bool rdof_batt_low_step(rdof_batt_low_t *l, int mv, int cutoff_mv, int n);
+bool rdof_batt_low_step(rdof_batt_low_t *l, int raw_mv, int mv, int cutoff_mv, int n);

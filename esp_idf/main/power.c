@@ -6,8 +6,9 @@
  * the LR2021 to sleep, turns the board's switched supplies off (the front end's, the OLED's, the GNSS receiver's),
  * holds those pins through the sleep and sleeps until the key goes down again. Woken, the key must stay down
  * RDOF_POWER_KEY_ON_MS, or the board goes back to sleep (a bump in a bag). The battery's voltage is read through
- * its divider every 2 s; under RDOF_BATT_CUTOFF_MV for 30 s the board turns off the same way. The key's holds and
- * the battery's numbers are power_core.c's.
+ * its divider every 2 s; under RDOF_BATT_CUTOFF_MV for 30 s the board turns off the same way, but never a board
+ * that has read no battery since the boot (on its USB supply, the reading wanders under 2.5 V). The key's holds
+ * and the battery's numbers are power_core.c's.
  */
 #include <stdlib.h>
 #include <string.h>
@@ -151,6 +152,7 @@ static adc_oneshot_unit_handle_t adc;
 static adc_channel_t adc_ch;
 static adc_cali_handle_t cali;
 static rdof_batt_low_t low;
+static bool batt_low;
 
 static bool batt_init(void)
 {
@@ -196,7 +198,9 @@ static void batt_read(void)
     const int was = g_board.batt_mv;
     const int now = was < 0 ? mv : (was * 3 + mv) / 4; /* smoothed: a burst of load sags it for a moment */
     g_board.batt_mv = now;
-    g_board.batt_pct = rdof_batt_percent(now);
+    /* a cutoff of 0 is never under: the step only keeps whether there's a battery */
+    batt_low = rdof_batt_low_step(&low, mv, now, CONFIG_RDOF_BATT_CUTOFF_MV, BATT_LOW_READS);
+    g_board.batt_pct = low.absent ? -1 : rdof_batt_percent(now); /* wall-powered: "none", whatever it reads */
 }
 #endif
 
@@ -258,8 +262,7 @@ static void power_task(void *arg)
         if (batt && now_ms() >= next) {
             next = now_ms() + BATT_EVERY_MS;
             batt_read();
-            if (CONFIG_RDOF_BATT_CUTOFF_MV > 0 &&
-                rdof_batt_low_step(&low, g_board.batt_mv, CONFIG_RDOF_BATT_CUTOFF_MV, BATT_LOW_READS))
+            if (batt_low)
                 power_off("the battery is low");
         }
 #endif

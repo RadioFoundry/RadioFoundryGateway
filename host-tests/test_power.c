@@ -94,12 +94,36 @@ static void battery(void)
     for (int mv = 2500; mv <= 4300; mv += 10) /* never goes down as the voltage goes up */
         CHECK(rdof_batt_percent(mv) >= rdof_batt_percent(mv - 10));
     rdof_batt_low_t l = {0};
+    CHECK(!rdof_batt_low_step(&l, 3500, 3500, 3300, 15)); /* a battery over the cutoff first */
     for (int i = 0; i < 14; i++)
-        CHECK(!rdof_batt_low_step(&l, 3200, 3300, 15));
-    CHECK(rdof_batt_low_step(&l, 3200, 3300, 15));
-    CHECK(!rdof_batt_low_step(&l, 3400, 3300, 15)); /* back over the cutoff (charging): the count starts again */
+        CHECK(!rdof_batt_low_step(&l, 3200, 3200, 3300, 15));
+    CHECK(rdof_batt_low_step(&l, 3200, 3200, 3300, 15));
+    CHECK(!rdof_batt_low_step(&l, 3400, 3400, 3300, 15)); /* back over the cutoff (charging): the count starts again */
     for (int i = 0; i < 20; i++)
-        CHECK(!rdof_batt_low_step(&l, 0, 3300, 15)); /* no battery: never low */
+        CHECK(!rdof_batt_low_step(&l, 0, 0, 3300, 15)); /* no battery: never low */
+    CHECK(l.absent);
+    for (int i = 0; i < 40; i++) /* nor once one comes back: wall-powered until the next boot */
+        CHECK(!rdof_batt_low_step(&l, 3200, 3200, 3300, 15));
+    /* the W12 on USB with no battery, as read (smoothed 3:1): it wanders through the band under the cutoff */
+    static const int w12[] = {2901, 2629, 2453, 2290, 2134, 1980, 1906, 1933, 1941, 1806, 1807, 1840, 1829, 1819, 1810};
+    l = (rdof_batt_low_t){0};
+    for (int r = 0; r < 4; r++)
+        for (int i = 0; i < 15; i++)
+            CHECK(!rdof_batt_low_step(&l, w12[i], w12[i], 3300, 15));
+    /* a reading in the band from the boot on, never under 2.5 V nor over the cutoff: no battery seen working, kept on */
+    l = (rdof_batt_low_t){0};
+    for (int i = 0; i < 40; i++)
+        CHECK(!rdof_batt_low_step(&l, 2900, 2900, 3300, 15));
+    /* a raw reading under 2.5 V while the smoothed one is still over it: no battery all the same */
+    l = (rdof_batt_low_t){0};
+    CHECK(!rdof_batt_low_step(&l, 3600, 3600, 3300, 15));
+    CHECK(!rdof_batt_low_step(&l, 1900, 3175, 3300, 15));
+    for (int i = 0; i < 40; i++)
+        CHECK(!rdof_batt_low_step(&l, 3100, 3100, 3300, 15));
+    /* a cutoff of 0: never low */
+    l = (rdof_batt_low_t){0};
+    for (int i = 0; i < 40; i++)
+        CHECK(!rdof_batt_low_step(&l, 3000, 3000, 0, 15));
 }
 
 int main(void)

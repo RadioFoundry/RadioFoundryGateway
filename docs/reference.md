@@ -344,7 +344,9 @@ jumper (often `USB-OTG`) is bridged.
   Nothing cuts the 3.3 V while a battery is in, so "off" is deep sleep ([device.md](spec/fw/device.md) §6): held
   2 s, the board stops the radios, sleeps the LR2021, turns off the front end's, OLED's and GNSS's supplies and
   sleeps; held 1 s it wakes (a tap goes back to sleep). The battery is read every 2 s through the switched divider
-  (GPIO2 enables, GPIO1 reads, 390k over 100k): `/api/status` `power`. Under 3.3 V for 30 s the board turns off.
+  (GPIO2 enables, GPIO1 reads, 390k over 100k): `/api/status` `power`. Under 3.3 V for 30 s the board turns off, if the battery
+  has read 3.3 V or more since the boot; a board with no battery (it reads the charger's output, 1.8 to 3 V) never
+  does: one reading under 2.5 V and it's wall-powered, battery "none", until the next boot.
   `POST /api/power_off` does the same as the key.
 
 ### More than one radio

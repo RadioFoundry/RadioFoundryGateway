@@ -65,9 +65,13 @@ int rdof_batt_percent(int mv)
     return 0;
 }
 
-bool rdof_batt_low_step(rdof_batt_low_t *l, int mv, int cutoff_mv, int n)
+bool rdof_batt_low_step(rdof_batt_low_t *l, int raw_mv, int mv, int cutoff_mv, int n)
 {
-    if (mv < RDOF_BATT_PRESENT_MV || mv >= cutoff_mv)
+    if (raw_mv < RDOF_BATT_PRESENT_MV || mv < RDOF_BATT_PRESENT_MV)
+        l->absent = true;
+    if (mv >= cutoff_mv)
+        l->seen_ok = true;
+    if (l->absent || !l->seen_ok || mv >= cutoff_mv)
         l->under = 0;
     else if (l->under < n)
         l->under++;

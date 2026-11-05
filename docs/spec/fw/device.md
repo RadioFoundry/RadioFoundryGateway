@@ -277,8 +277,8 @@ names them all.
 | Off | held `CONFIG_RDOF_POWER_KEY_OFF_MS` (2000), and only after the key has been up since it turned the board on | `power.c:power_task` |
 | On | woken by the key, it must stay down `CONFIG_RDOF_POWER_KEY_ON_MS` (1000) from the boot, or the board goes back to sleep at once (`power_boot`, first in `app_main`) | `power.c:power_boot` |
 | Battery | ADC1 on `CONFIG_RDOF_BATT_ADC_GPIO`, 2.5 dB, curve-fitting calibration, 8 readings averaged every 2 s with the divider switched on (`CONFIG_RDOF_BATT_CTRL_GPIO` at `_LEVEL`) for them; times `CONFIG_RDOF_BATT_RATIO_X1000` / 1000 (the W12: 390k over 100k, 4900); smoothed 3:1 | `power.c:batt_read` |
-| Charge | a coarse table for a Li-ion cell at rest, 4.2 V 100% to 3.3 V 0%, interpolated; -1 under 2.5 V | `power_core.c:rdof_batt_percent` |
-| Low | under `CONFIG_RDOF_BATT_CUTOFF_MV` (3300) for 15 readings in a row (30 s): off | `power_core.c:rdof_batt_low_step` |
+| Charge | a coarse table for a Li-ion cell at rest, 4.2 V 100% to 3.3 V 0%, interpolated; -1 under 2.5 V, and from the first reading under 2.5 V on (no battery) until the next boot | `power_core.c:rdof_batt_percent` |
+| Low | under `CONFIG_RDOF_BATT_CUTOFF_MV` (3300) for 15 readings in a row (30 s): off. Only on a battery that has read at or over the cutoff since the boot and never under 2.5 V: with no battery, on its USB supply, the W12 reads the charger's output, which wanders from 1.8 to 3 V and used to put a wall-powered board to sleep; one reading under 2.5 V and it's wall-powered until the next boot | `power_core.c:rdof_batt_low_step` |
 | Web | `POST /api/power_off` with a key ([interfaces-http.md](interfaces-http.md)); the page's "Turn off" button | `web.c:post_power_off` |
 
 Turning off (`power.c:power_off`), from the key, the battery or the web:
