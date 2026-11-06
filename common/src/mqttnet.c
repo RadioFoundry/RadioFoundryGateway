@@ -751,7 +751,10 @@ static void call_start_event(rdof_mn_up_t *u, rdof_mn_upslot_t *s, int slot, int
     if (s->flags & RDOF_MN_F_LATE)
         rdof_json_bool(&j, "late_entry", true);
     rdof_json_str(&j, "call_key", key);
-    rdof_json_int(&j, "rssi", rssi);
+    if (rssi)
+        rdof_json_int(&j, "rssi", rssi);
+    else
+        rdof_json_raw(&j, "rssi", "null"); /* not measured: never 0 dBm */
     rdof_json_bool(&j, "tx_ok", s->path < 64 && (u->tx_ok >> s->path & 1));
     up_event(u, &j);
 }

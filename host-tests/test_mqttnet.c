@@ -279,6 +279,22 @@ static void test_scenes(void)
             }
     }
 #endif
+    /* RSSI not measured: call_start says null, not 0 (which a reader takes for 0 dBm), and call_end has no rssi */
+    {
+        static sc_run_t r;
+        static sc_out_t o;
+        uint8_t lc[9];
+        sc_rssi = 0;
+        sc_begin(&r, &o, "no_rssi", "");
+        rdof_group_lc(9990001, 91, true, 0, lc);
+        sc_lc(&r, RDOF_DT_VOICE_LC_HEADER, lc);
+        sc_superframe(&r, lc, 0);
+        sc_lc(&r, RDOF_DT_TERMINATOR_WITH_LC, lc);
+        sc_idle(&r, 1.0);
+        sc_rssi = -87.0;
+        CHECK(o.nev == 2 && strstr(o.ev[0], "\"call_start\"") && strstr(o.ev[0], "\"rssi\":null,"));
+        CHECK(o.nev == 2 && strstr(o.ev[1], "\"call_end\"") && !strstr(o.ev[1], "rssi"));
+    }
 }
 
 /* ── the reader on what it shouldn't take ── */
