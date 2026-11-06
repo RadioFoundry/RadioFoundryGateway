@@ -701,7 +701,9 @@ summary). A record is `{"block": {"t", "carrier", "power_dbfs", "env_min", "env_
 `noise_dbfs`, `envelope` (mean, `am_pct`), `cfo_hz` (mean, min, max), `deviation` (`pos_hz`, `neg_hz`, `rms_hz`),
 `audio` (`rms_hz`, peaks, `rms_db`), `tone` (the strongest: `hz`, `dev_hz`, `sinad_db`, `thd_pct`), `peaks`, and
 `sub`: `{"kind": "ctcss", "hz", "nominal_hz", "dev_hz", "reverse_burst_t"}`, `{"kind": "dcs", "code", "aliases",
-"words", "dev_hz", "turnoff"}` or `{"kind": "none"}`.
+"words", "dev_hz", "turnoff"}` or `{"kind": "none"}`. The CTCSS tone is the standard tone most quarter-second windows
+were nearest; `hz` and `dev_hz` are those windows' mean only, so a turn-off tone after it (55 Hz on some radios) or a
+window across the change doesn't pull them.
 
 AM is double sideband with a full carrier (airband voice; ACARS's MSK is an `fsk` segment, `baud` 2400, `hz` [1200,
 2400]). The source renders complex baseband, so a front end that sends frequency must also take polar I/Q

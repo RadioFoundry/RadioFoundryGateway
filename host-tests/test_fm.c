@@ -50,6 +50,7 @@ typedef struct {
     double cfo, snr_db, pre_s, post_s; /* the channel: offset, noise, quiet before and after */
     int16_t *pcm;
     uint32_t npcm;
+    double tail_hz, tail_s, tail_dev; /* after the transmission, a turn-off tone this long on the carrier */
 } chan_t;
 
 static uint32_t rng = 12345;
@@ -79,7 +80,7 @@ static void through(const rdof_fmg_cfg_t *c, const chan_t *ch, rdof_fmrx_opts_t 
     double asum = 0;
     long an = 0;
     const long pre = lround(ch->pre_s * FS), post = lround(ch->post_s * FS);
-    long t = 0, after = -1;
+    long t = 0, after = -1, tail = lround(ch->tail_s * FS), tail_i = 0;
     for (;;) {
         if (ch->pcm && fed < ch->npcm) {
             const uint32_t room = rdof_fmg_pcm_space(g), k = ch->npcm - fed < room ? ch->npcm - fed : room;
@@ -87,7 +88,15 @@ static void through(const rdof_fmg_cfg_t *c, const chan_t *ch, rdof_fmrx_opts_t 
             if (fed == ch->npcm)
                 rdof_fmg_pcm_end(g);
         }
-        if (t >= pre) {
+        if (t >= pre && rdof_fmg_done(g) && tail > 0) { /* the turn-off tone, in place of the subaudio */
+            for (int i = 0; i < 480; i++, tail_i++) {
+                const bool on = tail_i < tail;
+                dev[i] = on ? (float)(ch->tail_dev * sin(2 * M_PI * ch->tail_hz * tail_i / FS)) : 0;
+                env[i] = on ? 1 : 0;
+            }
+            if (tail_i >= tail)
+                tail = 0;
+        } else if (t >= pre) {
             rdof_fmg_render(g, dev, env, 480);
         } else {
             memset(dev, 0, sizeof dev), memset(env, 0, sizeof env);
@@ -102,7 +111,7 @@ static void through(const rdof_fmg_cfg_t *c, const chan_t *ch, rdof_fmrx_opts_t 
         for (int i = 0; i < na; i++)
             asum += (double)audio[i] * audio[i], an++;
         t += 480;
-        if (t >= pre && rdof_fmg_done(g) && (after = (after < 0 ? 0 : after) + 480) > post)
+        if (t >= pre && rdof_fmg_done(g) && !tail && (after = (after < 0 ? 0 : after) + 480) > post)
             break; /* the quiet after */
         if (t > (long)(400 * FS))
             break;
@@ -233,6 +242,21 @@ static void t_tone_ctcss(void)
     CHECK(s.power_dbfs > -7 && s.power_dbfs < -5, "power %.1f dBFS", s.power_dbfs);
     CHECK(s.noise_dbfs < s.power_dbfs - 30, "noise %.1f dBFS", s.noise_dbfs);
     CHECK(s.am_pct < 5, "AM %.2f%%", s.am_pct);
+}
+
+static void t_ctcss_tail(void)
+{
+    /* a turn-off tone after the CTCSS (55 Hz, some radios' second tone slot): the tone's frequency is the CTCSS
+     * windows', not pulled down by the tail's */
+    rdof_fmg_cfg_t c = base();
+    c.sub = RDOF_FMG_SUB_CTCSS, c.ctcss_hz = 100, c.sub_dev_hz = 340;
+    tone(&c, 1000, 3, 0.0001f);
+    rdof_fmrx_summary_t s;
+    chan_t ch = {.cfo = 300, .snr_db = 30, .pre_s = 0.3, .post_s = 0.5, .tail_hz = 55, .tail_s = 0.6, .tail_dev = 340};
+    through(&c, &ch, opts(), &s, NULL);
+    CHECK(s.sub == RDOF_FMG_SUB_CTCSS && s.ctcss_nominal_hz == 100.0f, "CTCSS %.1f", s.ctcss_nominal_hz);
+    NEAR(s.ctcss_hz, 100.0, 0.05, "CTCSS frequency with a 55 Hz tail");
+    NEAR(s.ctcss_dev_hz, 340, 30, "CTCSS deviation with a 55 Hz tail");
 }
 
 static void t_ctcss_tones(void)
@@ -458,6 +482,7 @@ int main(void)
     t_dcs_words();
     t_generator();
     t_tone_ctcss();
+    t_ctcss_tail();
     t_ctcss_tones();
     t_dcs();
     t_afsk_dtmf_sweep();

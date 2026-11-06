@@ -80,9 +80,10 @@ struct rdof_fmrx {
     float ring[RING];
     int rlen, rn, rw, rsince;
     long sub_n;                  /* subaudio samples, all */
-    /* CTCSS */
+    /* CTCSS: each window's frequency and level under the standard tone nearest it, so another tone (a turn-off
+     * tone after the CTCSS, a window across the change) doesn't pull the winner's */
     long ct_hits[64];
-    double ct_fsum, ct_devsum;
+    double ct_fsum[64], ct_devsum[64];
     long ct_n;
     double ct_w;                 /* the reverse burst's correlator's step, radians */
     float ct_pr, ct_pq, ct_rr, ct_rq; /* its phasor, and the turn a sample */
@@ -209,8 +210,8 @@ static void ctcss_window(rdof_fmrx_t *r)
         if (best < 0 || fabs(rdof_ctcss_tones[i] - f) < fabs(rdof_ctcss_tones[best] - f))
             best = i;
     r->ct_hits[best]++;
-    r->ct_fsum += f;
-    r->ct_devsum += sqrt(2 * tone) / rdof_bq_mag(r->lps, 3, f, r->sr);
+    r->ct_fsum[best] += f;
+    r->ct_devsum[best] += sqrt(2 * tone) / rdof_bq_mag(r->lps, 3, f, r->sr);
     r->ct_n++;
     if (!r->notching) { /* the filtered audio loses it from here on */
         rdof_bq_set(&r->notch, RDOF_BQ_NOTCH, f, 4.0, r->ar);
@@ -614,9 +615,9 @@ void rdof_fmrx_summary(rdof_fmrx_t *r, rdof_fmrx_summary_t *s)
         for (int i = 1; i < rdof_ctcss_ntones; i++)
             best = r->ct_hits[i] > r->ct_hits[best] ? i : best;
         s->sub = RDOF_FMG_SUB_CTCSS;
-        s->ctcss_hz = (float)(r->ct_fsum / r->ct_n);
+        s->ctcss_hz = (float)(r->ct_fsum[best] / r->ct_hits[best]);
         s->ctcss_nominal_hz = rdof_ctcss_tones[best];
-        s->ctcss_dev_hz = (float)(r->ct_devsum / r->ct_n);
+        s->ctcss_dev_hz = (float)(r->ct_devsum[best] / r->ct_hits[best]);
         s->reverse_burst_t = r->reverse_t;
     }
 }
