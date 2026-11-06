@@ -243,8 +243,12 @@ What the gateway takes from it:
   copies with bit errors as they were (no CRC check). The gateway checks CRC-9 per block and CRC-32: it should drop
   a bad copy rather than forward it (§6.8).
 - **Packets back to back.** BrandMeister answered neither TMS ACK the radio sent 0.5 s after its link ACK with one
-  preamble (one good, one with bit errors), and answered both retries, sent with 12-17 preambles. One sample of
-  each, so a guess: the short lead-in, or one stream for both. The next capture records the stream ids.
+  preamble (one good, one with bit errors), and answered both retries, sent with 12-17 preambles. Confirmed on
+  2026-11-06 at 23:48 UTC: the same radio sent the same text twice through the same hotspot, the same bytes and N(S),
+  both CRC good. The copy with 1 preamble CSBK got no answer; the copy with 16 got the link ACK 0.7 s later, then the
+  TMS ACK and the answer. Another radio's confirmed and unconfirmed packets, rate 1/2 and 3/4, intact, each with 1
+  or 2 preambles, got no answer either (ten sends). **BrandMeister answers data only after a long preamble: send
+  about 15 preamble CSBKs before a data header going up.** Its own packets down have one.
 - **The first try is often missed.** BrandMeister answered the second copy of the first message, not the first. The
   hotspot logged both. Not explained yet; compare with the gateway once it logs in.
 - **IDs.** The radio uses its 7-digit DMR ID; BrandMeister routes the answer to the hotspot (9-digit ID) where it was
