@@ -196,7 +196,7 @@ static void tune(const char *radiosim, uint32_t freq)
 
 static void test_tune(const char *radiosim)
 {
-    tune(radiosim, 461022500);
+    tune(radiosim, 438047500);
     radiolink_stop(&w.link);
 }
 
@@ -204,7 +204,7 @@ static void test_tune(const char *radiosim)
 static void test_call_down(const char *radiosim)
 {
     uint8_t lc[9], b[RDOF_BURST_BYTES];
-    tune(radiosim, 461022500);
+    tune(radiosim, 438047500);
     rdof_group_lc(9990003, 9, true, 0, lc);
     int air0 = w.air_n;
 
@@ -253,7 +253,7 @@ static void test_call_down(const char *radiosim)
 static void test_call_up(const char *radiosim)
 {
     uint8_t lc[9], lc12[12], ambe[27];
-    tune(radiosim, 461022500);
+    tune(radiosim, 438047500);
     rdof_group_lc(9990004, 91, true, 0, lc);
     rdof_voice_lc12(lc, RDOF_DT_VOICE_LC_HEADER, lc12);
 

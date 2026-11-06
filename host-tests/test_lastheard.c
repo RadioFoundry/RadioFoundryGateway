@@ -64,7 +64,7 @@ static bool fbool(int obj, const char *key)
 
 static const char *START = "{\"DMR\":{\"timestamp\":\"2025-10-09T08:53:20.000Z\",\"source\":\"rf\",\"action\":\"start\","
                            "\"slot\":1,\"src_id\":9990070,\"dst_id\":202,\"group\":\"yes\",\"src_info\":\"9990070\","
-                           "\"frequency\":\"461.46250\",\"colorCode\":2}}";
+                           "\"frequency\":\"438.48750\",\"colorCode\":2}}";
 static const char *END = "{\"DMR\":{\"timestamp\":\"2025-10-09T08:53:21.140Z\",\"action\":\"end\",\"slot\":1,"
                          "\"duration\":1.14,\"ber\":0.25,\"rssi\":{\"min\":-101,\"max\":-95,\"ave\":-98}}}";
 
@@ -77,14 +77,14 @@ static void test_rf(void)
     CHECK(strstr(out, "\"seq\":0,") && strstr(out, "\"max\":50"));
 
     CHECK(rdof_lh_tracker_json(&lh, "sdr", "sdr1", "ch1", START, 100.0, 1700000000000LL));
-    CHECK(lh.n == 1 && ring[0].active && ring[0].freq == 461462500 && ring[0].cc == 2 && ring[0].group);
+    CHECK(lh.n == 1 && ring[0].active && ring[0].freq == 438487500 && ring[0].cc == 2 && ring[0].group);
     calls = parse_calls(&lh, 0, 102.5, sizeof out, &n);
     CHECK(n == 1);
     int c = rdof_jat(&doc, calls, 0);
     CHECK(!strcmp(fstr(c, "dir"), "rf") && !strcmp(fstr(c, "kind"), "voice") && !strcmp(fstr(c, "role"), "sdr"));
     CHECK(!strcmp(fstr(c, "radio"), "sdr1") && !strcmp(fstr(c, "channel"), "ch1"));
     CHECK(fnum(c, "src") == 9990070 && fnum(c, "dst") == 202 && fbool(c, "group") && fnum(c, "slot") == 1);
-    CHECK(fnum(c, "freq") == 461462500 && fnum(c, "cc") == 2 && fnum(c, "start_ms") == 1700000000000.0);
+    CHECK(fnum(c, "freq") == 438487500 && fnum(c, "cc") == 2 && fnum(c, "start_ms") == 1700000000000.0);
     CHECK(fnum(c, "age_s") == 2.5 && fbool(c, "active") && fnum(c, "duration") == -99999);
 
     /* metrics while it runs; others' slot or radio don't touch it */
@@ -174,13 +174,13 @@ static void test_net(void)
 {
     rdof_lh_t lh;
     rdof_lh_init(&lh, ring, RDOF_LH_DEFAULT);
-    rdof_tx_call_info_t call = {.src = 9990003, .dst = 91, .group = true, .freq = 446006250, .cc = 1, .slot = 2,
+    rdof_tx_call_info_t call = {.src = 9990003, .dst = 91, .group = true, .freq = 438006250, .cc = 1, .slot = 2,
                                 .frames = -1};
     CHECK(rdof_lh_tx(&lh, "roamer", "r1", "start", &call, 0, 50, 1700000000000LL));
     CHECK(lh.n == 1 && ring[0].dir == RDOF_LH_NET && ring[0].active && ring[0].kind == RDOF_LH_VOICE);
     int n, calls = parse_calls(&lh, 0, 51, sizeof out, &n);
     int c = rdof_jat(&doc, calls, 0);
-    CHECK(!strcmp(fstr(c, "dir"), "net") && fnum(c, "freq") == 446006250 && fnum(c, "cc") == 1 && fnum(c, "slot") == 2);
+    CHECK(!strcmp(fstr(c, "dir"), "net") && fnum(c, "freq") == 438006250 && fnum(c, "cc") == 1 && fnum(c, "slot") == 2);
     CHECK(fbool(c, "active") && rdof_jget(&doc, c, "channel") < 0);
     CHECK(!rdof_lh_tx(&lh, "roamer", "r2", "end", &call, 3.5, 54, 0)); /* another radio's */
     CHECK(!rdof_lh_tx(&lh, "roamer", "r1", "other", &call, 3.5, 54, 0));

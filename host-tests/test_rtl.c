@@ -334,7 +334,7 @@ static void test_detection(void)
     CHECK(open_fake(&dev, f, false, false) == RTL_ENOTUNER && strstr(dev.error, "no R820T"), "none: %s", dev.error);
     CHECK(dev.tuner == RTL_TUNER_NONE && f->demod[1][0x01] == 0x10, "repeater closed after");
     const int *g;
-    CHECK(rtl_tuner_gains(&dev, &g) == 0 && rtl_set_center_freq(&dev, 461000000) == RTL_ENOTUNER, "no tuner calls");
+    CHECK(rtl_tuner_gains(&dev, &g) == 0 && rtl_set_center_freq(&dev, 438025000) == RTL_ENOTUNER, "no tuner calls");
     free(f);
 }
 
@@ -372,7 +372,7 @@ static void test_pll(void)
     rtl_dev_t dev;
     fake_t *f = fake_new(0x34);
     CHECK(open_fake(&dev, f, false, false) == 0, "%s", dev.error);
-    static const uint32_t freqs[] = {24000000, 27000000, 50000000, 100000000, 146520000, 433920000, 461162500,
+    static const uint32_t freqs[] = {24000000, 27000000, 50000000, 100000000, 146520000, 433920000, 438187500,
                                      885000000, 1000000000, 1296000000, 1766000000};
     for (int i = 0; i < (int)(sizeof freqs / sizeof freqs[0]); i++) {
         CHECK(rtl_set_center_freq(&dev, freqs[i]) == 0, "%u: %s", freqs[i], dev.error);
@@ -387,10 +387,10 @@ static void test_pll(void)
         CHECK(fabs(ddc - (lo - freqs[i])) < 7, "%u: DDC IF %.1f, tuner IF %.1f", freqs[i], ddc, lo - freqs[i]);
         CHECK(dev.freq == freqs[i], "freq");
     }
-    /* the RF filters by LO (T1.7): 461 MHz (LO 464.7 MHz) on the 310 MHz row, 60 MHz (LO 63.6 MHz) on the 60 */
-    CHECK(rtl_set_center_freq(&dev, 461000000) == 0 && (f->treg[0x1A] & 0xC3) == 0x41 && f->treg[0x1B] == 0x00 &&
+    /* the RF filters by LO (T1.7): 439 MHz (LO 438.5 MHz) on the 310 MHz row, 60 MHz (LO 63.6 MHz) on the 60 */
+    CHECK(rtl_set_center_freq(&dev, 438025000) == 0 && (f->treg[0x1A] & 0xC3) == 0x41 && f->treg[0x1B] == 0x00 &&
               !(f->treg[0x17] & 0x08),
-          "461 MHz row: %02x %02x %02x", f->treg[0x1A], f->treg[0x1B], f->treg[0x17]);
+          "439 MHz row: %02x %02x %02x", f->treg[0x1A], f->treg[0x1B], f->treg[0x17]);
     CHECK(rtl_set_center_freq(&dev, 60000000) == 0 && (f->treg[0x1A] & 0xC3) == 0x02 && f->treg[0x1B] == 0x7B &&
               (f->treg[0x17] & 0x08),
           "60 MHz row: %02x %02x %02x", f->treg[0x1A], f->treg[0x1B], f->treg[0x17]);
@@ -400,12 +400,12 @@ static void test_pll(void)
 
     /* the lock: missed 5 times (past the first 4 reads) locks after the VCO current goes to 3 */
     f->unlocked_reads = 5;
-    CHECK(rtl_set_center_freq(&dev, 461162500) == 0, "%s", dev.error);
+    CHECK(rtl_set_center_freq(&dev, 438187500) == 0, "%s", dev.error);
     CHECK((f->treg[0x12] & 0xE0) == 0x60, "VCO current %02x", f->treg[0x12]);
     f->unlocked_reads = 2;
-    CHECK(rtl_set_center_freq(&dev, 461162500) == 0 && (f->treg[0x12] & 0xE0) == 0x80, "locked on the 3rd read");
+    CHECK(rtl_set_center_freq(&dev, 438187500) == 0 && (f->treg[0x12] & 0xE0) == 0x80, "locked on the 3rd read");
     f->never_lock = 1;
-    CHECK(rtl_set_center_freq(&dev, 461162500) == RTL_ENOLOCK && strstr(dev.error, "didn't lock"), "%s", dev.error);
+    CHECK(rtl_set_center_freq(&dev, 438187500) == RTL_ENOLOCK && strstr(dev.error, "didn't lock"), "%s", dev.error);
     CHECK(f->demod[1][0x01] == 0x10, "repeater closed after a failure");
     free(f);
 
@@ -454,7 +454,7 @@ static void test_rates(void)
     for (int i = 0; i < 6; i++)
         CHECK(rtl_set_sample_rate(&dev, refused[i]) == RTL_ERANGE && dev.rate == 2400000, "%u", refused[i]);
     /* with a frequency set, a rate change re-tunes */
-    CHECK(rtl_set_center_freq(&dev, 461162500) == 0, "%s", dev.error);
+    CHECK(rtl_set_center_freq(&dev, 438187500) == 0, "%s", dev.error);
     int before = f->n_log;
     CHECK(rtl_set_sample_rate(&dev, 288000) == 0 && find_write(f, before, 0x34, 0x0610), "re-tuned");
     free(f);
@@ -469,7 +469,7 @@ static void test_ppm(void)
     rtl_dev_t dev;
     fake_t *f = fake_new(0x34);
     CHECK(open_fake(&dev, f, false, false) == 0, "%s", dev.error);
-    CHECK(rtl_set_center_freq(&dev, 461162500) == 0, "%s", dev.error);
+    CHECK(rtl_set_center_freq(&dev, 438187500) == 0, "%s", dev.error);
     /* the sample frequency register: -floor(10 * 2^24 / 1e6) = -167, 14 bits (D1.8) */
     CHECK(rtl_set_freq_correction(&dev, 10) == 0 && dev.ppm == 10, "%s", dev.error);
     CHECK(f->demod[1][0x3E] == 0x3F && f->demod[1][0x3F] == 0x59, "ppm regs %02x %02x", f->demod[1][0x3E],
@@ -479,8 +479,8 @@ static void test_ppm(void)
     int sel;
     double lo = fake_lo(f, xtal, &sel);
     double step = 2 * xtal / 65536 / (double)(2 << sel);
-    CHECK(fabs(lo - (461162500 + 3570000.0)) <= step / 2 + 1e-3, "LO %.1f", lo);
-    CHECK(fabs(fake_ddc_if(f, xtal) - (lo - 461162500)) < 7, "DDC IF %.1f", fake_ddc_if(f, xtal));
+    CHECK(fabs(lo - (438187500 + 3570000.0)) <= step / 2 + 1e-3, "LO %.1f", lo);
+    CHECK(fabs(fake_ddc_if(f, xtal) - (lo - 438187500)) < 7, "DDC IF %.1f", fake_ddc_if(f, xtal));
     /* fixed_sample_rate: the register stays 0 */
     dev.fixed_sample_rate = true;
     CHECK(rtl_set_freq_correction(&dev, -7) == 0 && f->demod[1][0x3E] == 0 && f->demod[1][0x3F] == 0, "fixed");
@@ -579,11 +579,11 @@ static void test_r828d_inputs(void)
     double lo = fake_lo(f, 28.8e6, NULL);
     CHECK(fabs(lo - (25e6 + 28.8e6 + 3.57e6)) < 500, "HF LO %.0f", lo);
     CHECK(fabs(fake_ddc_if(f, 28.8e6) - 3.57e6) < 500, "HF IF %.0f", fake_ddc_if(f, 28.8e6));
-    CHECK(rtl_set_center_freq(&dev, 461000000) == 0 && (f->treg[0x05] & 0x60) == 0 && (f->sys[0x01] & 0x20), "UHF");
-    /* the V4's RF table: 461 MHz on its 310 MHz row with OPEN_D 1 */
+    CHECK(rtl_set_center_freq(&dev, 438025000) == 0 && (f->treg[0x05] & 0x60) == 0 && (f->sys[0x01] & 0x20), "UHF");
+    /* the V4's RF table: 439 MHz on its 310 MHz row with OPEN_D 1 */
     CHECK((f->treg[0x17] & 0x08) && (f->treg[0x1A] & 0xC3) == 0x41, "V4 row");
     int before = f->n_log;
-    CHECK(rtl_set_center_freq(&dev, 462000000) == 0, "same input");
+    CHECK(rtl_set_center_freq(&dev, 438975000) == 0, "same input");
     int gpio = 0;
     for (int i = before; i < f->n_log; i++)
         gpio += f->log[i].value == 0x3001;
@@ -594,7 +594,7 @@ static void test_r828d_inputs(void)
     f = fake_new(0x74);
     CHECK(open_fake(&dev, f, false, false) == 0 && !dev.tun.blog_v4, "%s", dev.error);
     CHECK(rtl_set_center_freq(&dev, 146000000) == 0 && (f->treg[0x05] & 0x60) == 0x60, "cable 1");
-    CHECK(rtl_set_center_freq(&dev, 461000000) == 0 && (f->treg[0x05] & 0x60) == 0x00, "air");
+    CHECK(rtl_set_center_freq(&dev, 438025000) == 0 && (f->treg[0x05] & 0x60) == 0x00, "air");
     CHECK(f->sys[0x03] == 0 && f->sys[0x01] == 0, "no GPIO");
     CHECK(rtl_set_center_freq(&dev, 25000000) == 0 && fabs(fake_lo(f, 28.8e6, NULL) - 28.57e6) < 500, "no upconvert");
     free(f);
@@ -635,7 +635,7 @@ static void test_fir_packing(void)
 /* Every transfer of a call failing in turn: the call returns < 0 with dev->error set. */
 typedef int (*call_fn)(rtl_dev_t *dev);
 static int c_rate(rtl_dev_t *d) { return rtl_set_sample_rate(d, 288000); }
-static int c_freq(rtl_dev_t *d) { return rtl_set_center_freq(d, 461162500); }
+static int c_freq(rtl_dev_t *d) { return rtl_set_center_freq(d, 438187500); }
 static int c_ppm(rtl_dev_t *d) { return rtl_set_freq_correction(d, 12); }
 static int c_gain(rtl_dev_t *d) { return rtl_set_tuner_gain(d, 297); }
 static int c_agc(rtl_dev_t *d) { return rtl_set_tuner_gain_mode(d, false); }

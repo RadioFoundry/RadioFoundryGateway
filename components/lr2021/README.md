@@ -357,7 +357,7 @@ Ramp table (`src/lr2021_cmd.c:ramps`, DS table 7-24), code → µs:
 | `lr2021_cmd_fsk_variant(buf, v)` | 0x023B | 3 | 1: 4-FSK (IQ R3.20) |
 | `lr2021_cmd_retune(buf, hz)` | 0x0104 | 9 | WriteRegMem32 of `lr2021_pll_word(hz)` to 0xF40144 (IQ R3.30) |
 
-Example: `lr2021_cmd_set_rf_frequency(buf, 461137500)` → `02 00 1B 7C 66 5C`.
+Example: `lr2021_cmd_set_rf_frequency(buf, 438162500)` → `02 00 1A 1D D4 44`.
 
 ### Opcodes (`include/lr2021_cmd.h`, DS 5.6 tables 5-4 to 5-8)
 
@@ -416,9 +416,9 @@ Encodings (`test/test_lr2021.c`, 37 checks):
 |---|---|
 | Status word | Bit positions of `cmd`, `irq`, `reset`, `mode`; mode and error names (lowest bit wins, `""` for 0) |
 | Frames | Exact bytes of GetVersion, SetStandby, Calibrate, SetRfFrequency, SetRxPath (LF and HF), SetTcxoMode, SetDioFunction, SetDioRfSwitchConfig, SetDioIrqConfig, ClearFifoIrqFlags, ConfigFifoIrq, SetRx (continuous), SetTx (24-bit truncation), SetAgcGainManual (and its clamp to 13), SetTxParams, WriteRegMem32, ReadRegMem32 |
-| CalibFE | The datasheet's example (900 MHz → 0x00E1 LF, 0x80E1 HF); 461.1375 MHz rounds down to 115; unused slots 0 |
+| CalibFE | The datasheet's example (900 MHz → 0x00E1 LF, 0x80E1 HF); 438.1625 MHz rounds down to 109; unused slots 0 |
 | Power, ramp | Clamps at −19 / 44, floor rounding, code ↔ µs, past-the-end ramp |
-| Crystal correction | +10 ppm, 0, −2.5 ppm at 461.1375 MHz |
+| Crystal correction | +10 ppm, 0, −2.5 ppm at 438.1625 MHz |
 | LoRa, FSK | Modulation and packet frames |
 | Raw paths | Route and raw TX frames, RX rates per BW, frequency sample rounding and clamps |
 

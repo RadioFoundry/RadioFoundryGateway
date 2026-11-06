@@ -344,12 +344,12 @@ struct e2e_chan {
     float amplitude;
 };
 static const struct e2e_chan CHANS[4] = {
-    {"SDR04", 461087500.0, 2, 1, 255.0, 0.2f},
-    {"SDR06", 461137500.0, 2, 1, -298.0, 0.15f},
-    {"SDR08", 461187500.0, 2, 2, 87.0, 0.2f},
-    {"SDR10", 461237500.0, 1, 1, -90.0, 0.1f},
+    {"SDR04", 438112500.0, 2, 1, 255.0, 0.2f},
+    {"SDR06", 438162500.0, 2, 1, -298.0, 0.15f},
+    {"SDR08", 438212500.0, 2, 2, 87.0, 0.2f},
+    {"SDR10", 438262500.0, 1, 1, -90.0, 0.1f},
 };
-#define E2E_CENTER 461162500.0
+#define E2E_CENTER 438187500.0
 
 static void e2e_out(void *ctx, const char *ch, const char *kind, const char *text)
 {

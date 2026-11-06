@@ -65,7 +65,7 @@ fi
 # A roamer's DMRC, as the firmware builds it (rdof/hblink.h).
 DMRC=$(python3 -c "
 peer = $PEER_ID
-body = '%-8.8s%09u%09u%02u%02u%c%-40.40s%-40.40s' % ('SCTPTEST', 461062500, 461062500, 0, 1, '4',
+body = '%-8.8s%09u%09u%02u%02u%c%-40.40s%-40.40s' % ('SCTPTEST', 438087500, 438087500, 0, 1, '4',
        'RadioFoundry Gateway roaming', 'radiofoundry_gateway simplex')
 print((b'DMRC' + peer.to_bytes(4, 'big') + body.encode()).hex())")
 

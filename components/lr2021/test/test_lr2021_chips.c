@@ -37,7 +37,7 @@ static void boards(void)
     uint8_t dio[4], m[4];
     CHECK(lr2021_board_rfsw(w, 915e6, dio, m) == 3 && dio[0] == 9 && m[0] == 4 && m[1] == 4 && m[2] == 6,
           "W12 in its PA band: CTX, CPS on in TX; CSD in RX and TX");
-    CHECK(lr2021_board_rfsw(w, 461e6, dio, m) == 3 && m[0] == 4 && m[1] == 0 && m[2] == 6, "outside: the bypass");
+    CHECK(lr2021_board_rfsw(w, 439e6, dio, m) == 3 && m[0] == 4 && m[1] == 0 && m[2] == 6, "outside: the bypass");
     CHECK(lr2021_board_rfsw(&lr2021_board_generic, 915e6, dio, m) == 0, "generic: no switch");
 
     lr2021_board_buf_t b;

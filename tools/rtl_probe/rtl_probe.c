@@ -368,7 +368,7 @@ int main(int argc, char **argv)
         for (int i = 0; i < n; i++)
             printf(" %.1f", g[i] / 10.0);
         printf("\nfilter cal code %d\n", dev.tun.cal);
-        rc = setup(461.1, 288000, "20", 0);
+        rc = setup(438.5, 288000, "20", 0);
         uint8_t regs[32];
         int nr = -1;
         static const int tries[] = {32, 16, 8, 5}; /* as many as the RTL's I2C bridge reads at once */
@@ -377,7 +377,7 @@ int main(int argc, char **argv)
         if (!rc && nr < 0)
             fprintf(stderr, "tuner registers: %d %s\n", nr, dev.error);
         if (nr > 0) {
-            printf("461.1 MHz at 288000, tuner regs:");
+            printf("438.5 MHz at 288000, tuner regs:");
             for (int i = 0; i < nr; i++)
                 printf(" %02x", regs[i]);
             printf("\n");

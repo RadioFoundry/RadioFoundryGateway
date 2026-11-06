@@ -40,7 +40,7 @@ static lr2021_tx_setup_t base(lr2021_tx_mode_t mode)
 {
     lr2021_tx_setup_t s = {0};
     s.mode = mode;
-    s.freq_hz = 461350418; /* 461.3375 MHz with the W12's -28 ppm */
+    s.freq_hz = 438375418; /* 438.3625 MHz with the W12's -28 ppm */
     s.standby_first = true;
     s.power_code = lr2021_tx_power_code(16);
     s.ramp_code = 4;
@@ -65,7 +65,7 @@ static void setups(void)
     CHECK(n == 13, "FREQ frames %d", n);
     WANT(0, 0x01, 0x28, 0x00);
     WANT(1, 0x02, 0x07, 0x02);
-    WANT(2, 0x02, 0x00, 0x1B, 0x7F, 0xA6, 0x12);
+    WANT(2, 0x02, 0x00, 0x1A, 0x21, 0x13, 0xFA);
     WANT(3, 0x02, 0x02, 0x00, 0x42, 0x10);
     WANT(4, 0x02, 0x03, 0x20, 0x04);
     WANT(5, 0x02, 0x06, 0x01);
@@ -81,7 +81,7 @@ static void setups(void)
     s.calib_fe = true;
     n = lr2021_tx_frames(&s, f, len);
     CHECK(n == 14, "with CalibFE %d", n);
-    WANT(2, 0x01, 0x23, 0x00, 0x73, 0x00, 0x00, 0x00, 0x00);
+    WANT(2, 0x01, 0x23, 0x00, 0x6D, 0x00, 0x00, 0x00, 0x00);
 
     // polar I/Q: OOK, SetOokModulationParams, no FSK packet or sync word, selector 0
     s = base(LR2021_TX_IQ_POLAR);

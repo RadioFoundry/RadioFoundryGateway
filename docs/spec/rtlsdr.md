@@ -110,8 +110,8 @@ the DS's example: 4.57 MHz at 28.8 MHz gives -665554). The bytes: `1:19 = (v >> 
 
 Ours: the driver rounds to the nearest step (28.8 MHz / 2^22 = 6.87 Hz) instead of flooring, and gives the DDC the
 IF the tuner really produces: the PLL's real LO minus the RF center (T1.8), not the nominal 3.57 MHz. The PLL
-lands within half its step of the LO asked (about 110 Hz at 461 MHz), and that error would otherwise show as an
-offset on every channel and a bias in the learned ppm (0.25 ppm at 461 MHz). To measure: the sign (G.4).
+lands within half its step of the LO asked (about 110 Hz at 439 MHz), and that error would otherwise show as an
+offset on every channel and a bias in the learned ppm (0.25 ppm at 439 MHz). To measure: the sign (G.4).
 
 ### D1.7 The resampler
 
@@ -362,7 +362,7 @@ RD R16, R20..R22:
 - SEL_DIV = floor(log2(1.77 GHz / LO)), clamped to 0..6 (W), which keeps the VCO from 1.77 to 3.54 GHz. Nint
   above 63 is refused (W); so is Nint below 13 (RD's formula has no smaller value).
 - Ours: SDM_IN is the fraction rounded to the nearest 2^-16 (W truncates); a fraction that rounds to 1 carries
-  into Nint. The step is 2 × f_ref / 2^16 / 2^(SEL_DIV+1): 220 Hz at 461 MHz (SEL_DIV 1).
+  into Nint. The step is 2 × f_ref / 2^16 / 2^(SEL_DIV+1): 220 Hz at 439 MHz (SEL_DIV 1).
 - `R18[3]` (PW_SDM) = 1 when SDM_IN is 0, else 0 (W).
 - Sequence (W `_setPll`, `_getPllLock`): `R26[3:2] = 00` (PLL_AUTO_CLK 128 kHz); R16..R22 as one block write with
   REF_DIV2 0, SEL_DIV, `R18[7:5] = 100` (W: VCO current), PW_SDM, SI2C / NI2C and SDM_IN (W writes the first two as
@@ -475,10 +475,10 @@ host, 2026-10-24, with `tools/rtl_probe` over usbfs; bias tee on where an antenn
   useful one around a 3.57 MHz IF is about 2.7 to 5.8 MHz (HPF 2, FILT_BW 3, code 15), which the narrow row now
   uses. Slopes are shallow (under 10 dB a MHz past the edge).
 - **R1.4 Lock (G.5, G.9).** Every MHz from 24 to 1766 locked, and `R4[5:4]` read 2 each time.
-- **R1.5 Against librtlsdr on the same dongle** (SoapySDR / librtlsdr through the bench's own receiver, 461.52875
+- **R1.5 Against librtlsdr on the same dongle** (SoapySDR / librtlsdr through the bench's own receiver, 438.55375
   MHz, 1.536 MS/s, lowest gain, bias tee on): noise floor within 2 dB, the crystal harmonic the same level
   (+24.9 / +24.8 dB over the floor), the same flat band, and a DC spike 12 dB lower here (+17.9 / +29.8 dB). DMR
-  bursts from a bench radio at 461.1375 MHz (288 kS/s, center 461.1875) decoded 11 of 11 with no FEC failures,
+  bursts from a bench radio at 438.1625 MHz (288 kS/s, center 438.2125) decoded 11 of 11 with no FEC failures,
   though every burst reached the ADC's rails at the lowest gain.
   Our own receiver (`rdofsdr`) on the same capture: 11 bursts, 0 bit errors, one call.
 - **R1.6 The VGA below code 8.** The same carrier with the LNA and mixer at 0: -20.5 dBFS at VGA code 8, -42.6 at
@@ -497,11 +497,11 @@ The input terminated in 50 ohms, the gain at its top step, the noise floor is th
 3. Edges outside ±1.2 MHz need a lower IF for the sweep: move the DDC's IF (D1.6) by a known amount and the band
    with it.
 4. From the table of edges choose, for 225..300 kS/s, the narrowest FILT_BW / FILT_CODE / HPF whose passband still
-   covers IF ± 150 kHz with 1 dB to spare at 461 MHz and at the ends of the range. Put it in `bands[]`.
+   covers IF ± 150 kHz with 1 dB to spare at 439 MHz and at the ends of the range. Put it in `bands[]`.
 
 ### Measuring the gain steps (G.3)
 
-1. A CW carrier from a signal generator at a known level (-60 dBm), 461 MHz, 50 kHz off the center; 288 kS/s.
+1. A CW carrier from a signal generator at a known level (-60 dBm), 439 MHz, 50 kHz off the center; 288 kS/s.
 2. For each LNA code 0..15 with the mixer at 0, then each mixer code 0..15 with the LNA at 15 (the VGA at code
    8), read the carrier's level in the FFT (dBFS), backing the generator off wherever the samples clip.
 3. Each step's gain is the difference from the previous one. Repeat at 150 MHz and 900 MHz.

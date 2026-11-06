@@ -579,7 +579,7 @@ static void test_sched(void)
     CHECK(d.sub == 0xFF && d.result == RDOF_MMDVM_NAK && d.body[1] == 2, "DMR_DATA in mode 1: NAK 2");
 
     /* a retune: refused until it has snapped back onto the old grid by itself */
-    uint8_t freq[10] = {0, 0x80, 0x74, 0xD2, 0x1A, 0x80, 0x74, 0xD2, 0x1A, 255}; /* 450 MHz */
+    uint8_t freq[10] = {0, 0x80, 0x74, 0xD2, 0x1A, 0x80, 0x74, 0xD2, 0x1A, 255}; /* 428 MHz */
     direct_send(&d, RDOF_MMDVM_SET_FREQ, freq, 10);
     CHECK(direct_sched(&d, 1020, 1) == -12 && (direct_status(&d).flags & RDOF_OPS_SNAPPING), "a retune: snapping back");
     direct_run_to(&d, fake_modem_f(&d.r) + 100000);

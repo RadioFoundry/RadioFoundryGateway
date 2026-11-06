@@ -88,7 +88,7 @@ static int tune(void *ctx, double rate, double center_hz, int ppm, double *got_r
     g_sstat.rtl_open = true;
     if (rate != CLIP_RATE || fabs(center_hz - CLIP_CENTER) > 1)
         ESP_LOGW(TAG, "sim: the clip is %.0f S/s around %.5f MHz, the settings %.0f S/s around %.5f MHz: nothing "
-                 "will decode (use the clip's channels: 13, 4, 6, 8, 10 at 461 MHz)",
+                 "will decode (use the clip's channels: 13, 4, 6, 8, 10 at 438 MHz)",
                  CLIP_RATE, CLIP_CENTER / 1e6, rate, center_hz / 1e6);
     ESP_LOGI(TAG, "sim: %s, %d-sample chunks every %.1f ms", g_sstat.rtl_desc, CONFIG_RDOF_SDR_CHUNK,
              1e3 * CONFIG_RDOF_SDR_CHUNK / rate);

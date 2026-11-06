@@ -5,12 +5,12 @@
 
 /* clip.cu8: 0.6 s of simulated traffic on 5 channels, cu8 at 288 kS/s */
 #define CLIP_RATE 288000.0
-#define CLIP_CENTER 461122500.0
+#define CLIP_CENTER 438147500.0
 #define CLIP_T0 1760000000.0
 #define CLIP_CHUNK 4096
 #define CLIP_RSSI_OFFSET -55.0
 #define CLIP_EXPECT_MESSAGES 53
-#define CLIP_EXPECT_CRC 0x283d7439u
+#define CLIP_EXPECT_CRC 0x92322cdau
 #define CLIP_EXPECT_BURSTS 39
 #define CLIP_CHANNELS 5
 static const struct {
@@ -18,11 +18,11 @@ static const struct {
     double freq;
     int cc, slot;
 } clip_channels[CLIP_CHANNELS] = {
-    {"SDR13", 461037500.0, 2, 1},
-    {"SDR04", 461087500.0, 2, 1},
-    {"SDR06", 461137500.0, 2, 1},
-    {"SDR08", 461187500.0, 2, 1},
-    {"SDR10", 461237500.0, 2, 1}
+    {"SDR13", 438062500.0, 2, 1},
+    {"SDR04", 438112500.0, 2, 1},
+    {"SDR06", 438162500.0, 2, 1},
+    {"SDR08", 438212500.0, 2, 1},
+    {"SDR10", 438262500.0, 2, 1}
 };
 
 /* The clip with a fault put in (selftest_core.c: clip_impair), and what the reference makes of each */
@@ -50,7 +50,7 @@ static const struct {
     unsigned crc;
     long bursts;
 } clip_variants[CLIP_VARIANTS] = {
-    {"offset", 53, 0xce0cc52eu, 39},
-    {"noise", 53, 0x67ab9510u, 39},
-    {"hot", 53, 0x75002f1du, 39}
+    {"offset", 53, 0x74039dcdu, 39},
+    {"noise", 53, 0xc7b4cddcu, 39},
+    {"hot", 53, 0xcf0f77feu, 39}
 };

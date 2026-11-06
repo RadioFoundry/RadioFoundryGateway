@@ -364,9 +364,9 @@ static ed_t *ed_new(const char *kind)
     rdof_modem_init(&e.m, &port);
     rdof_modem_start(&e.m, 1);
     rdof_radio_init(&e.radio, &e.m, kind_of(kind));
-    e.radio.fixed_hz = 462550000;
+    e.radio.fixed_hz = 438750000;
     rdof_repeater_t *r = &e.r;
-    rdof_repeater_init(r, &e.radio, RPEER, 467550000, 462550000, 1);
+    rdof_repeater_init(r, &e.radio, RPEER, 438250000, 438750000, 1);
     r->on_tx = ed_on_tx;
     r->on_sent = ed_on_sent;
     r->on_key = ed_on_key;
@@ -1917,7 +1917,7 @@ static void ed_dcdm(void)
     ed_cfg_flags = 0;
     CHECK(ed_start(e), "start");
     CHECK((ed_cfg_flags & (RDOF_MMDVM_SIMPLEX | RDOF_MMDVM_DCDM)) == (RDOF_MMDVM_SIMPLEX | RDOF_MMDVM_DCDM) &&
-              e->f.simplex && e->f.freq == 462550000 && e->f.tx_freq == 462550000,
+              e->f.simplex && e->f.freq == 438750000 && e->f.tx_freq == 438750000,
           "tuned simplex with the DCDM flag on tx_freq: %02x", ed_cfg_flags);
 
     /* two network calls at once, one on each slot */
