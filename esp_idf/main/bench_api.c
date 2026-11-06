@@ -1638,10 +1638,16 @@ static inline int8_t wide8(float x, int *clip)
 }
 
 /* The 8-bit samples' gain over full scale (cs8, cu8: the history, the captures, WS /iq wideband or a channel's). The
- * LR2021's I/Q sits far under its full scale (noise about 3.6 of 32767 at 53.5 dB gain, a W12 2026-11-02), so 127
- * of full scale gave all zeros: it gets 128 (42.14 dB), its noise about 2 counts and full scale at its sample 256.
- * The RTL's own samples are 8-bit: 1. */
-static float wide_k(void) { return g_scfg.frontend == RDOF_FE_LR2021 ? 128.0f : 1.0f; }
+ * LR2021's int16 I/Q sits far under its full scale (noise about 3.6 of 32767 at 53.5 dB gain, a W12 2026-11-02), so
+ * 127 of full scale gave all zeros: it gets 128 (42.14 dB), its noise about 2 counts and full scale at its sample 256.
+ * Its int8 I/Q (caps CS8, the wide rates with iq_bits 8) is at its own scale, noise a count or two: 128 made every
+ * sample 0 or clipped, a floor at -8 dB that no signal rose 10 dB over (a W12 at 384 kS/s, 2026-11-05). That and
+ * the RTL's own 8-bit samples get 1. */
+static float wide_k(void)
+{
+    const rdof_fe_caps_t *caps = sdr_fe_caps();
+    return g_scfg.frontend == RDOF_FE_LR2021 && !(caps && caps->format == RDOF_FE_CS8) ? 128.0f : 1.0f;
+}
 
 double bench_wide_scale_db(void) { return 20.0 * log10(wide_k()); }
 
