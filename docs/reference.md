@@ -285,10 +285,10 @@ From `idf.py size`. Run it after a change that adds code or RAM, and update this
 
 | Build | Date | App image | Free in its slot | DIRAM used (of 334 KB) |
 |---|---|---|---|---|
-| `16mb` + `w12` | 2026-11-05 | 2282 KB | 1.8 MB of 4 MB | 181.2 KB (54.3%) |
+| `16mb` + `w12` | 2026-11-06 | 2381 KB | 1.7 MB of 4 MB | 181.4 KB (54.4%) |
 | `16mb` + `w12` + `rust` | 2026-10-27 | 2063 KB | 2.0 MB of 4 MB | |
 | `16mb` | 2026-10-28 | 1960 KB | 2.1 MB of 4 MB | 167 KB (49.9%) |
-| `4mb` (no SDR) | 2026-11-02 | 1279 KB | 641 KB of 1.875 MB | 134 KB (40.3%) |
+| `4mb` (no SDR) | 2026-11-06 | 1348 KB | 572 KB of 1.875 MB | |
 
 - **`4mb` is full with the SDR.** With everything it went over its slot on 2026-10-29; it builds without the SDR
   since 2026-11-01. If it runs out again, drop the repeater, the OLED or the full page before giving up a slot.
@@ -304,7 +304,8 @@ From `idf.py size`. Run it after a change that adds code or RAM, and update this
 - **The MQTT network** (`format: "v3"`), only when a network has it: its state (about 30 KB), the queues (16 KB of
   messages in, 7 KB of frames), each receiver's uplink (11 KB each), its task's stack, esp-mqtt's buffers and the
   message code's work buffers in PSRAM. esp-mqtt's task for the connection takes a 6 KB internal stack. On
-  2026-11-02 it added 24 KB of image and 208 bytes of DIRAM to `16mb` + `w12`.
+  2026-11-02 it added 24 KB of image and 208 bytes of DIRAM to `16mb` + `w12`. Call setup, registration records,
+  provisioning and node commands (mnctl.c) came with it on 2026-11-06.
 - IRAM shows 100% in `idf.py size`: that's the fixed 16 KB vector / cache-miss region filling as usual.
 
 ### Boards
