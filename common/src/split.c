@@ -554,6 +554,13 @@ static void done(rdof_split_t *s, int which, const rdof_split_req_t *r, bool ok,
         memcpy(h->info, data, h->info_len);
         if (which == RDOF_SPLIT_TX && data[4] == 0)
             logf_(s, "The TX half sends no CACH (INFO says 0): radios may not tell the slots apart");
+        if (which == RDOF_SPLIT_TX && s->stream_mode == RDOF_OPS_STREAM_SCHEDULED &&
+            (h->caps & (RDOF_OPS_SCHEDULE | RDOF_OPS_ALIGN)) != (RDOF_OPS_SCHEDULE | RDOF_OPS_ALIGN)) {
+            snprintf(msg, sizeof msg, "The TX half (%s) has no scheduled TX with ALIGN: its FIFO stream instead",
+                     h->description);
+            logf_(s, msg);
+            s->stream_mode = RDOF_OPS_STREAM_FIFO;
+        }
         uint8_t p[7];
         p[0] = which == RDOF_SPLIT_TX ? RDOF_SPLIT_ROLE_TX : RDOF_SPLIT_ROLE_RX;
         memcpy(p + 1, s->role_params, 5);
@@ -840,6 +847,13 @@ static void on_half_frame(void *ctx, uint8_t command, const uint8_t *p, size_t n
     if (command == RDOF_ODR_SPLIT) {
         if (n < 2)
             return;
+        if (p[0] == RDOF_OPS_SUB_TX_SCHED && c->which == RDOF_SPLIT_TX) { /* never in the request queue */
+            uint32_t counter;
+            int outcome;
+            if (rdof_ops_scheduled(p + 2, n - 2, &counter, &outcome) && outcome >= 0 && outcome < 5)
+                s->sched_outcomes[outcome]++;
+            return;
+        }
         reply(s, c->which, 0xD600 | p[0], p[1] == 0, p + 2, n - 2, c->now);
         return;
     }
@@ -1052,6 +1066,24 @@ static void align(rdof_split_t *s, double now)
     split_req(s, RDOF_SPLIT_TX, RDOF_OPS_SUB_ALIGN, body, len, RDOF_SPLIT_DONE_ALIGN, 0, now);
 }
 
+bool rdof_split_sched_ok(const rdof_split_t *s)
+{
+    return s->ready && !s->failed[0] && s->tx_role && s->stream_mode == RDOF_OPS_STREAM_SCHEDULED &&
+           (s->align_state == RDOF_ALIGN_LOCKED || s->align_state == RDOF_ALIGN_SLEWING);
+}
+
+bool rdof_split_sched(rdof_split_t *s, int64_t n, uint8_t control, const uint8_t burst[33])
+{
+    if (!rdof_split_sched_ok(s) || !s->transmit)
+        return false;
+    uint8_t p[1 + 39];
+    p[0] = RDOF_OPS_SUB_TX_SCHED;
+    const size_t len = rdof_ops_schedule(p + 1, n, (int)(n & 1) + 1, control, burst);
+    to_half(s, RDOF_SPLIT_TX, RDOF_ODR_SPLIT, p, 1 + len);
+    s->sched_sent++;
+    return true;
+}
+
 /* ── time ────────────────────────────────────────────────────────────────── */
 
 static void at(rdof_split_t *s, double now)
@@ -1134,6 +1166,7 @@ void rdof_split_init(rdof_split_t *s, double now, const rdof_split_params_t *p)
     s->role_params[2] = (uint8_t)clampi(p->prebuffer, 0, 12);
     s->role_params[3] = (uint8_t)clampi(rint(p->max_key_s / 10), 0, 60);
     s->role_params[4] = (uint8_t)clampi(p->cooldown_s, 0, 255);
+    s->stream_mode = p->stream_mode == RDOF_OPS_STREAM_SCHEDULED ? RDOF_OPS_STREAM_SCHEDULED : RDOF_OPS_STREAM_FIFO;
     rdof_mmdvm_reader_init(&s->up_reader);
     for (int i = 0; i < 2; i++) {
         rdof_mmdvm_reader_init(&s->halves[i].reader);

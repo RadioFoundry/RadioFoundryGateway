@@ -59,6 +59,18 @@ if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
 endif()
 add_test(NAME rdof_bm_tests COMMAND rdof_bm_tests)
 
+# A trunked site's radio layer (rdof/trunkrf.h).
+add_executable(rdof_trunkrf_tests test_trunkrf.c)
+target_include_directories(rdof_trunkrf_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(rdof_trunkrf_tests PRIVATE rdof_common)
+set_target_properties(rdof_trunkrf_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_compile_options(rdof_trunkrf_tests PRIVATE -Wall -Wno-unused-parameter)
+if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+    target_compile_options(rdof_trunkrf_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(rdof_trunkrf_tests PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME rdof_trunkrf_tests COMMAND rdof_trunkrf_tests)
+
 # The web API's shared part (rdof/webapi.h), with fake platforms.
 add_executable(rdof_webapi_tests test_webapi.c)
 target_link_libraries(rdof_webapi_tests PRIVATE rdof_common)

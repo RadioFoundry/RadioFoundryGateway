@@ -199,6 +199,8 @@ typedef struct {
 typedef struct {
     int power_cap, prebuffer, lease_s, cooldown_s;
     double max_key_s;
+    int stream_mode; /* the TX half's stream: RDOF_OPS_STREAM_FIFO (0, upstream's DMR_DATA) or RDOF_OPS_STREAM_SCHEDULED
+                      * (TX_SCHED, rdof_split_sched: FIFO when the TX half lacks it) */
 } rdof_split_params_t;
 
 typedef struct rdof_split {
@@ -245,6 +247,7 @@ typedef struct rdof_split {
     double snap_due;
     int snap_polls;
     int stream_mode;      /* the TX half's (RDOF_OPS_STREAM_FIFO: upstream's DMR_DATA) */
+    uint32_t sched_sent, sched_outcomes[5]; /* TX_SCHED: bursts sent, and the replies by outcome (RDOF_SCHED_*) */
     /* optional: the log */
     void (*log)(void *ctx, const char *msg);
     void *log_ctx;
@@ -266,6 +269,12 @@ void rdof_split_set_utc(rdof_split_t *s, bool utc, double utc_minus_host_us, dou
 const char *rdof_align_state_name(rdof_align_state_t a);
 /* The inbound slots busy now (bit 0 TS1, bit 1 TS2), as SET_AT says. */
 int rdof_split_busy_mask(const rdof_split_t *s, double now);
+/* The scheduled stream is up: ready, the TX half in its role in stream 1, and its slot counter on the UTC grid (an
+ * ALIGN taken: the counter base). Only then does rdof_split_sched send. */
+bool rdof_split_sched_ok(const rdof_split_t *s);
+/* A burst (its MMDVM control byte) for UTC slot n on the TX half (TX_SCHED, unanswered in the request queue: each
+ * reply is counted in sched_outcomes). False, nothing sent: not rdof_split_sched_ok, or the gate says stop. */
+bool rdof_split_sched(rdof_split_t *s, int64_t n, uint8_t control, const uint8_t burst[33]);
 
 #endif /* RDOF_FEATURE_REPEATER */
 

@@ -136,6 +136,18 @@ typedef struct {
     uint8_t b[RDOF_BURST_BYTES];
 } rdof_sdrmodem_burst_t;
 
+/* A slot source (duplex, role 0): what a trunked site's control carrier sends (docs/spec/fw/trunk.md 9.1). Asked for
+ * every outbound slot before the modem looks at its DMR_DATA queue, about one slot plus the transmit lead before air.
+ * k: the slot, TS1 even; on the UTC grid the grid slot n (rdof_sdrmodem_grid), else the modem's own count from the
+ * key-up. Fills burst and returns true, or false for the modem's own (queued or idle). *at (preset -1): the AT bit
+ * of the CACH before slot k (0, 1; -1 the modem's own, the inbound busy state). *slc28 (preset -1): a 28-bit short LC,
+ * on air from the next 4-slot CACH cycle (this slot when it starts one); -1 keeps the one on air. Asked again for the same k
+ * only when the modulator had no room: the modem keeps the first answer. */
+typedef struct {
+    bool (*slot)(void *ctx, int64_t k, uint8_t burst[RDOF_BURST_BYTES], int *at, int32_t *slc28);
+    void *ctx;
+} rdof_sdrmodem_source_t;
+
 typedef struct rdof_sdrmodem {
     rdof_sdrmodem_io_t io;
     bool can_full;              /* the front end has separate RX and TX chains */
@@ -232,6 +244,15 @@ typedef struct rdof_sdrmodem {
     int64_t sched_last48;       /* the last scheduled burst sent */
     uint32_t sched_sent, sched_late, sched_early_full, sched_replaced, sched_cooling;
     bool queue_keyed;           /* keyed by a queued burst, not DMR_START 01: unkeys 1 s after the last */
+    /* a slot source (rdof_sdrmodem_set_source) and a key-up held without traffic (rdof_sdrmodem_hold_key) */
+    rdof_sdrmodem_source_t src;
+    bool hold;
+    bool src_has, src_got;      /* the source's answer for src_k is kept */
+    int64_t src_k;
+    int src_at;
+    uint8_t src_burst[RDOF_BURST_BYTES];
+    int at_override;            /* the CACH being built: the source's AT, -1 none */
+    uint32_t src_bursts;
     /* counters */
     uint32_t tx_bursts, idle_bursts, rx_bursts, muted, lost, refused;
     char error[96];
@@ -302,6 +323,12 @@ void rdof_sdrmodem_cach(rdof_sdrmodem_t *m, long k, uint8_t out3[3]);
  * on both slots from the next slot on, until DMR_START 00. Returns the bytes written to out (0: cap too small). */
 size_t rdof_sdrmodem_outbound_frames(uint32_t hz, int cc, int rf_level, int lease_s, int max_key_s, uint8_t *out,
                                      size_t cap);
+/* Duplex: a slot source (NULL slot: none, the modem's own queue as before). */
+void rdof_sdrmodem_set_source(rdof_sdrmodem_t *m, const rdof_sdrmodem_source_t *src);
+/* Duplex: keyed with no host traffic and no DMR_START (a control channel: on with no end), until hold_key false.
+ * DMR_START 00 doesn't unkey it meanwhile; the gate (rdof_sdrmodem_set_transmit) does, and keys it again when it
+ * opens. False (nothing changed) when the modem isn't duplex. */
+bool rdof_sdrmodem_hold_key(rdof_sdrmodem_t *m, bool on);
 /* UTC slot timing: the mode (slot_timing utc) and the site's offset. */
 void rdof_sdrmodem_grid(rdof_sdrmodem_t *m, bool on, int offset_us);
 /* The map from 48 kS/s positions to UTC (ok false: none now, the slot clock runs on as it is): position i0 is UTC
