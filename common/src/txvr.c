@@ -201,11 +201,13 @@ static uint8_t silence(rdof_txcall_t *c, uint8_t out[RDOF_BURST_BYTES], bool gro
     return control;
 }
 
-/* Bursts in hand ahead of the next one: queued, and what the radio still holds. Called locked. */
+/* Bursts in hand ahead of the next one: queued, and what the radio still holds. Called locked. Before the call
+ * starts, its extra headers (a modem's Hs past the first) aren't lead: play() waits for the prebuffer past them, so
+ * counted here they made the stream look ahead and its silence was dropped until nothing could start it. */
 static double ahead(const rdof_txcall_t *c, double n)
 {
     double held = c->air_seen - n;
-    return c->count + (held > 0 ? held / RDOF_TXVR_BURST_S : 0.0);
+    return c->count - (c->started ? 0 : c->extra) + (held > 0 ? held / RDOF_TXVR_BURST_S : 0.0);
 }
 
 /* A voice burst's place in the call (section 6): from the first A (R6.5; a local app's from its first voice burst, a

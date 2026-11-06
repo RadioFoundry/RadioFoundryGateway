@@ -452,10 +452,12 @@ unsafe fn silence(c: &mut RdofTxcall, out: &mut Burst, grow: bool) -> u8 {
     control
 }
 
-/// Bursts in hand ahead of the next one: queued, and what the radio still holds. Called locked.
+/// Bursts in hand ahead of the next one: queued, and what the radio still holds. Called locked. Before the call
+/// starts, its extra headers (a modem's Hs past the first) aren't lead: play() waits for the prebuffer past them.
 fn ahead(c: &RdofTxcall, n: f64) -> f64 {
     let held = c.air_seen - n;
-    f64::from(c.count) + if held > 0.0 { held / BURST_S } else { 0.0 }
+    let extra = if c.started { 0 } else { c.extra };
+    f64::from(c.count - extra) + if held > 0.0 { held / BURST_S } else { 0.0 }
 }
 
 /// A voice burst's place in the call (section 6): from the first A (R6.5), a gap filled with silence (R6.2), a burst

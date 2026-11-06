@@ -179,6 +179,12 @@ Tests:
   master (UDP, the login of §3 with a known salt and password, `MSTPONG`, `MSTNAK` on demand, `DMRD` echo and
   scripted calls, confirmed-data ACKs and TMS ACKs as §7 recorded them). The C host tests drive it in process; the
   HIL tests point a board or rdofradio at it on the LAN. No automated or recurring test reaches BrandMeister.
+- **No RF, on one host:** `fakemodem` (sdr/cli) is a simplex MMDVM_HS hotspot on a pty, answering as the host
+  tests' fake radio. It plays a radio's calls and texts into `rdofradio --allow-tx --mmdvm <pty> --config ...`
+  (`--call 9990:private:3`, `--call 91:group:2`, `--text 262993:hi`) and logs every burst rdofradio has it send,
+  decoded (slot, kind, LC or header addresses, the embedded LC). With `fakebm` on 127.0.0.1 this checks the login,
+  calls up on slot 2, the parrot's echo and the TMS ACK and answer back on RF. A group call goes up only when the
+  path carries the TG (`tg` or `ptt`; none by default).
 - **Against real BrandMeister: one-off, by hand**, once per change that needs it, on the owner's registered IDs,
   with the results written here. For the first build, in order: rdofradio as one simplex hotspot (a spare 9-digit
   hotspot ID) with the bench's radios (parrot 9990, a TG, a private call, an SMS to 262993); then two simplex

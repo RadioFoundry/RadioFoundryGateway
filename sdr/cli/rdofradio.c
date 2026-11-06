@@ -1111,8 +1111,8 @@ static void net_start(void)
     }
     net_on = true;
     net_config();
-    fprintf(stderr, "hblink: %s, peer %u, to %s:%d\n", rcfg.name, (unsigned)rcfg.peer_id, rcfg.cfg.master_host,
-            rcfg.cfg.master_port);
+    fprintf(stderr, "%s: %s, peer %u, to %s:%d\n", rcfg.cfg.hb_login ? "brandmeister" : "hblink", rcfg.name,
+            (unsigned)rcfg.peer_id, rcfg.cfg.master_host, rcfg.cfg.master_port);
 }
 
 /* The receiver's channels from the settings (the SDR's, as the board's SDR resolves them), all alike: each its own

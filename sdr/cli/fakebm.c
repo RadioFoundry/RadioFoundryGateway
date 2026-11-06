@@ -177,10 +177,18 @@ static void dmrd_down(peer_t *p, const rdof_net_burst_t *b, uint32_t src, uint32
     p->dmrd_out++;
 }
 
+/* The replay's own addresses: a private call or data comes back from 9990 to the caller (the parrot swapped them). */
 static void parrot_send(void *ctx, const rdof_net_burst_t *b)
 {
     if (F.parrot_peer)
-        dmrd_down(F.parrot_peer, b, PARROT_ID, F.parrot.src, false, F.parrot.slot);
+        dmrd_down(F.parrot_peer, b, b->src, b->dst, b->group, b->slot);
+}
+
+static void parrot_start(void *ctx, const uint8_t sid[4], int slot, uint32_t src, uint32_t dst, bool group)
+{
+    if (F.parrot_peer)
+        say("parrot: back to peer %u: %u -> %u %s s%d, %d bursts", (unsigned)F.parrot_peer->id, (unsigned)src,
+            (unsigned)dst, group ? "TG" : "PC", slot, F.parrot.n);
 }
 
 static bool gw_send_dmr(void *ctx, const rdof_ipgw_dmr_t *pk)
@@ -474,6 +482,7 @@ int main(int argc, char **argv)
     }
     rdof_parrot_init(&F.parrot, PARROT_ID);
     F.parrot.send = parrot_send;
+    F.parrot.start = parrot_start;
     rdof_ipgw_config_t gc;
     rdof_ipgw_config_default(&gc);
     gc.on = true;
