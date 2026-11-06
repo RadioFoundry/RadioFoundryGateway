@@ -507,17 +507,67 @@ size_t rdof_mn_cfg_topic(char *out, size_t cap, const char *root, const char *ki
     return fit(snprintf(out, cap, "%s/cfg/%s/%lu", root, kind, (unsigned long)id), cap);
 }
 
-static void timer_set(rdof_mn_site_cfg_t *s, const char *name, double v)
+/* A named value into a list (timers, broadcast intervals): replaced if it's there, else added while there's room. */
+static void named_set(rdof_mn_timer_t *t, int *n, int max, const char *name, double v)
 {
-    for (int i = 0; i < s->ntimers; i++)
-        if (!strcmp(s->timers[i].name, name)) {
-            s->timers[i].value = v;
+    for (int i = 0; i < *n; i++)
+        if (!strcmp(t[i].name, name)) {
+            t[i].value = v;
             return;
         }
-    if (s->ntimers < RDOF_MN_CFG_TIMERS) {
-        snprintf(s->timers[s->ntimers].name, sizeof s->timers[0].name, "%s", name);
-        s->timers[s->ntimers++].value = v;
+    if (*n < max) {
+        snprintf(t[*n].name, sizeof t[0].name, "%s", name);
+        t[(*n)++].value = v;
     }
+}
+
+static void timer_set(rdof_mn_site_cfg_t *s, const char *name, double v)
+{
+    named_set(s->timers, &s->ntimers, RDOF_MN_CFG_TIMERS, name, v);
+}
+
+static void broadcast_set(rdof_mn_site_cfg_t *s, const char *name, double v)
+{
+    named_set(s->broadcast, &s->nbroadcast, RDOF_MN_CFG_BROADCASTS, name, v);
+}
+
+/* par: "a", "b" or "ab" (in system, or at the document's top level). False: something else. */
+static bool par_of(const rdof_jnode_t *m, rdof_mn_site_cfg_t *o)
+{
+    int i = 1;
+    while (i < 4 && !(m->type == RDOF_JSTR && !strcmp(m->str, PARS[i])))
+        i++;
+    if (i == 4)
+        return false;
+    o->par = i;
+    o->has |= RDOF_MN_HAS_PAR;
+    return true;
+}
+
+/* timers or broadcast: an object of names to numbers, 0 or more. False with err. */
+static bool named_from(const jp_t *p, const rdof_jnode_t *n, rdof_mn_site_cfg_t *o, bool timers, char *err,
+                       size_t cap)
+{
+    char e[96];
+    const char *key = timers ? "timers" : "broadcast";
+    if (n->type != RDOF_JOBJ) {
+        snprintf(e, sizeof e, "%s: an object", key);
+        seterr(err, cap, e);
+        return false;
+    }
+    for (int q = n->child; q >= 0; q = rdof_jnode(&p->doc, q)->next) {
+        const rdof_jnode_t *m = rdof_jnode(&p->doc, q);
+        if (m->type != RDOF_JNUM || !(m->num >= 0) || strlen(m->key) >= sizeof o->timers[0].name) {
+            snprintf(e, sizeof e, "%s.%.40s: a number, 0 or more", key, m->key);
+            seterr(err, cap, e);
+            return false;
+        }
+        if (timers)
+            timer_set(o, m->key, m->num);
+        else
+            broadcast_set(o, m->key, m->num);
+    }
+    return true;
 }
 
 static bool site_from(const jp_t *p, int root, rdof_mn_site_cfg_t *o, long *rev, char *note, size_t ncap, char *err,
@@ -576,15 +626,10 @@ static bool site_from(const jp_t *p, int root, rdof_mn_site_cfg_t *o, long *rev,
                     o->site = (int)v;
                     o->has |= RDOF_MN_HAS_SITE;
                 } else if (!strcmp(m->key, "par")) {
-                    int i = 1;
-                    while (i < 4 && !(m->type == RDOF_JSTR && !strcmp(m->str, PARS[i])))
-                        i++;
-                    if (i == 4) {
+                    if (!par_of(m, o)) {
                         seterr(err, cap, "system.par: a, b or ab");
                         return false;
                     }
-                    o->par = i;
-                    o->has |= RDOF_MN_HAS_PAR;
                 } else if (!strcmp(m->key, "area_bits")) {
                     if (!jint(m, 0, 10, &v)) {
                         seterr(err, cap, "system.area_bits: 0 to 10");
@@ -595,6 +640,21 @@ static bool site_from(const jp_t *p, int root, rdof_mn_site_cfg_t *o, long *rev,
                 } else
                     note_add(note, ncap, m->key);
             }
+        } else if (!strcmp(key, "par")) { /* cfg/node's, beside site and area_bits */
+            if (!par_of(n, o)) {
+                seterr(err, cap, "par: a, b or ab");
+                return false;
+            }
+        } else if (!strcmp(key, "name")) {
+            if (n->type != RDOF_JSTR) {
+                seterr(err, cap, "name: a string");
+                return false;
+            }
+            snprintf(o->name, sizeof o->name, "%s", n->str);
+            o->has |= RDOF_MN_HAS_NAME;
+        } else if (!strcmp(key, "broadcast")) {
+            if (!named_from(p, n, o, false, err, cap))
+                return false;
         } else if (!strcmp(key, "site")) {
             if (!jint(n, 0, 1023, &v)) {
                 seterr(err, cap, "site: 0 to 1023");
@@ -674,19 +734,8 @@ static bool site_from(const jp_t *p, int root, rdof_mn_site_cfg_t *o, long *rev,
             }
             o->has |= RDOF_MN_HAS_NEIGHBORS;
         } else if (!strcmp(key, "timers")) {
-            if (n->type != RDOF_JOBJ) {
-                seterr(err, cap, "timers: an object");
+            if (!named_from(p, n, o, true, err, cap))
                 return false;
-            }
-            for (int q = n->child; q >= 0; q = rdof_jnode(&p->doc, q)->next) {
-                const rdof_jnode_t *m = rdof_jnode(&p->doc, q);
-                if (m->type != RDOF_JNUM || !(m->num >= 0) || strlen(m->key) >= sizeof o->timers[0].name) {
-                    snprintf(e, sizeof e, "timers.%.40s: a number, 0 or more", m->key);
-                    seterr(err, cap, e);
-                    return false;
-                }
-                timer_set(o, m->key, m->num);
-            }
         } else
             note_add(note, ncap, key);
     }
@@ -985,9 +1034,13 @@ static void layer(rdof_mn_site_cfg_t *o, const rdof_mn_site_cfg_t *l)
         memcpy(o->neighbors, l->neighbors, sizeof o->neighbors);
         o->nneighbors = l->nneighbors;
     }
+    if (h & RDOF_MN_HAS_NAME)
+        memcpy(o->name, l->name, sizeof o->name);
     o->has |= h;
     for (int i = 0; i < l->ntimers; i++)
         timer_set(o, l->timers[i].name, l->timers[i].value);
+    for (int i = 0; i < l->nbroadcast; i++)
+        broadcast_set(o, l->broadcast[i].name, l->broadcast[i].value);
 }
 
 void rdof_mn_cfg_site(const rdof_mn_cfg_t *c, const rdof_mn_site_cfg_t *base, rdof_mn_site_cfg_t *out)
@@ -1014,6 +1067,14 @@ double rdof_mn_cfg_timer(const rdof_mn_site_cfg_t *s, const char *name, double d
     for (int i = 0; i < s->ntimers; i++)
         if (!strcmp(s->timers[i].name, name))
             return s->timers[i].value;
+    return dflt;
+}
+
+double rdof_mn_cfg_broadcast(const rdof_mn_site_cfg_t *s, const char *name, double dflt)
+{
+    for (int i = 0; i < s->nbroadcast; i++)
+        if (!strcmp(s->broadcast[i].name, name))
+            return s->broadcast[i].value;
     return dflt;
 }
 
@@ -1049,6 +1110,8 @@ static size_t site_json(const rdof_mn_site_cfg_t *s, long rev, char *out, size_t
     rdof_json_open(&j, NULL);
     rdof_json_int(&j, "rev", rev);
     const uint32_t h = s->has;
+    if (h & RDOF_MN_HAS_NAME)
+        rdof_json_str(&j, "name", s->name);
     if (h & (RDOF_MN_HAS_MODEL | RDOF_MN_HAS_NET | RDOF_MN_HAS_PAR)) {
         rdof_json_open(&j, "system");
         if (h & RDOF_MN_HAS_MODEL)
@@ -1093,6 +1156,12 @@ static size_t site_json(const rdof_mn_site_cfg_t *s, long rev, char *out, size_t
         rdof_json_open(&j, "timers");
         for (int i = 0; i < s->ntimers; i++)
             rdof_json_float3(&j, s->timers[i].name, s->timers[i].value);
+        rdof_json_close(&j);
+    }
+    if (s->nbroadcast) {
+        rdof_json_open(&j, "broadcast");
+        for (int i = 0; i < s->nbroadcast; i++)
+            rdof_json_float3(&j, s->broadcast[i].name, s->broadcast[i].value);
         rdof_json_close(&j);
     }
     rdof_json_close(&j);

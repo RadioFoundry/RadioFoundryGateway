@@ -1131,13 +1131,15 @@ static void test_cfg(void)
     CHECK(put(&c, "DMR/cfg/net",
               "{\"rev\":12,\"at\":\"2026-11-05T21:00:00Z\",\"system\":{\"model\":\"small\",\"net\":5},"
               "\"registration\":\"listed\",\"ms\":\"3100000-3199999\",\"refuse_unlisted\":\"denied\","
-              "\"private\":\"*\",\"wide_tg\":\"1-99999\",\"timers\":{\"hang_s\":3,\"tp_s\":20}}",
+              "\"private\":\"*\",\"wide_tg\":\"1-99999\",\"timers\":{\"hang_s\":3,\"tp_s\":20},\"name\":\"County\","
+              "\"broadcast\":{\"chan_freq_s\":20,\"adjacent_s\":5}}",
               note) == RDOF_MN_CFG_APPLIED);
     CHECK(note[0] == 0);
     CHECK(put(&c, "DMR/cfg/net", "{\"rev\":12,\"registration\":\"open\"}", note) == RDOF_MN_CFG_OLD);
     CHECK(put(&c, "DMR/cfg/net", "{\"rev\":11,\"registration\":\"open\"}", note) == RDOF_MN_CFG_OLD);
     CHECK(put(&c, "DMR/cfg/node/site-a",
-              "{\"rev\":3,\"site\":3,\"area_bits\":5,\"neighbors\":[4,7],\"static_tg\":\"91\",\"timers\":{\"hang_s\":5},"
+              "{\"rev\":3,\"site\":3,\"area_bits\":5,\"par\":\"b\",\"name\":\"Site A\",\"neighbors\":[4,7],"
+              "\"static_tg\":\"91\",\"timers\":{\"hang_s\":5},\"broadcast\":{\"adjacent_s\":4},"
               "\"frequencies\":[438.5],\"color\":\"red\"}",
               note) == RDOF_MN_CFG_APPLIED);
     CHECK(!strcmp(note, "ignored: frequencies, color") || !printf("  %s\n", note));
@@ -1162,8 +1164,16 @@ static void test_cfg(void)
     CHECK(rdof_mn_site_cfg_parse(settings, sizeof settings - 1, &base, &rev, note, sizeof note, err, sizeof err) &&
           rev == 0);
     rdof_mn_cfg_site(&c, &base, &eff);
-    CHECK(eff.model == RDOF_MN_MODEL_SMALL && eff.net == 5 && eff.site == 3 && eff.par == RDOF_MN_PAR_A &&
-          eff.area_bits == 5);
+    /* par, name and broadcast: the node's top-level par over the settings' system.par; broadcast by name */
+    CHECK(eff.model == RDOF_MN_MODEL_SMALL && eff.net == 5 && eff.site == 3 && eff.par == RDOF_MN_PAR_B &&
+          eff.area_bits == 5 && !strcmp(eff.name, "Site A"));
+    CHECK(rdof_mn_cfg_broadcast(&eff, "adjacent_s", 0) == 4 && rdof_mn_cfg_broadcast(&eff, "chan_freq_s", 0) == 20 &&
+          rdof_mn_cfg_broadcast(&eff, "local_time_s", 6) == 6);
+    CHECK(put(&c, "DMR/cfg/node/site-a", "{\"rev\":9,\"par\":\"c\"}", note) == RDOF_MN_CFG_BAD &&
+          strstr(note, "par: a, b or ab"));
+    CHECK(put(&c, "DMR/cfg/node/site-a", "{\"rev\":9,\"broadcast\":{\"adjacent_s\":-1}}", note) == RDOF_MN_CFG_BAD &&
+          strstr(note, "broadcast.adjacent_s"));
+    CHECK(put(&c, "DMR/cfg/node/site-a", "{\"rev\":9,\"name\":5}", note) == RDOF_MN_CFG_BAD);
     CHECK(eff.listed && !eff.refused && eff.foacsu && eff.require_registration && eff.enabled);
     CHECK(rdof_idset_has(&eff.ms, 3100123) && !rdof_idset_has(&eff.ms, 3200000));
     CHECK(rdof_idset_has(&eff.tg, 999999) && !rdof_idset_has(&eff.tg, 1000000)); /* the settings' */

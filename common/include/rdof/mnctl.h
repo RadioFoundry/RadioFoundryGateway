@@ -122,6 +122,7 @@ size_t rdof_mn_trunk_info_json(const rdof_mn_trunk_info_t *t, char *out, size_t 
 /* ── provisioning: cfg/net, cfg/node/{node}, cfg/tg/{tg}, cfg/ms/{id} ─────── */
 
 #define RDOF_MN_CFG_TIMERS 16
+#define RDOF_MN_CFG_BROADCASTS 4
 #define RDOF_MN_CFG_NEIGHBORS 32
 #define RDOF_MN_CFG_TG 64
 #define RDOF_MN_CFG_MS 512
@@ -145,6 +146,7 @@ enum {
     RDOF_MN_HAS_FOACSU = 1u << 13,
     RDOF_MN_HAS_ENABLED = 1u << 14,
     RDOF_MN_HAS_NEIGHBORS = 1u << 15,
+    RDOF_MN_HAS_NAME = 1u << 16,
 };
 
 enum { RDOF_MN_MODEL_TINY = 0, RDOF_MN_MODEL_SMALL, RDOF_MN_MODEL_LARGE, RDOF_MN_MODEL_HUGE };
@@ -158,6 +160,7 @@ typedef struct {
 /* What a trunked site runs with: the settings file's values, then cfg/net's, then cfg/node's, key by key. */
 typedef struct {
     uint32_t has;
+    char name[RDOF_MN_CFG_NAME]; /* a name for people (the manager, dashboards); the site doesn't act on it */
     int model, net, site, par, area_bits;
     bool listed;  /* registration "listed" (else "open") */
     bool refused; /* refuse_unlisted "refused" (else "denied") */
@@ -167,6 +170,10 @@ typedef struct {
     int nneighbors;
     rdof_mn_timer_t timers[RDOF_MN_CFG_TIMERS]; /* by name; a later layer's value replaces an earlier one's */
     int ntimers;
+    /* the control channel's broadcast intervals (trunk.md 3.2: adjacent_s, chan_freq_s, local_time_s; 0 off), by name
+       as the timers */
+    rdof_mn_timer_t broadcast[RDOF_MN_CFG_BROADCASTS];
+    int nbroadcast;
 } rdof_mn_site_cfg_t;
 
 typedef struct {
@@ -220,6 +227,8 @@ rdof_mn_cfg_result_t rdof_mn_cfg_message(rdof_mn_cfg_t *c, const char *root, con
 void rdof_mn_cfg_site(const rdof_mn_cfg_t *c, const rdof_mn_site_cfg_t *base, rdof_mn_site_cfg_t *out);
 /* A timer's value in a resolved site config, or dflt. */
 double rdof_mn_cfg_timer(const rdof_mn_site_cfg_t *s, const char *name, double dflt);
+/* A broadcast interval (adjacent_s, chan_freq_s, local_time_s) in a resolved site config, or dflt. */
+double rdof_mn_cfg_broadcast(const rdof_mn_site_cfg_t *s, const char *name, double dflt);
 const rdof_mn_tg_cfg_t *rdof_mn_cfg_tg(const rdof_mn_cfg_t *c, uint32_t tg);
 const rdof_mn_ms_cfg_t *rdof_mn_cfg_ms(const rdof_mn_cfg_t *c, uint32_t id);
 /* A site-level document (cfg/net or cfg/node) from its JSON: what rdof_mn_cfg_message does for those two, for the
