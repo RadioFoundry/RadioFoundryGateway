@@ -137,7 +137,12 @@ spec for both; this lists only the gateway's choices and limits. The full design
 ### 2.4 Test help on the gateway side
 
 - `rdofradio --sim-air N` runs the site against N simulated MSs (the gateway's own simulator, `rust/src/t3ms.rs`) over
-  the full burst path; two of them make a two-site network on one computer.
+  the full burst path; two of them make a two-site network on one computer. `--sim-script` times registrations and
+  calls, so a radio under test can share a network with simulated ones at another site.
+- On a device rdofradio runs one carrier for now: the TSCC on TS1 and one payload channel on TS2 of the same
+  frequency pair. A radio under test must take a grant to the TSCC's own carrier (LCN 1) and follow it there.
+- Inbound timing: the site gives an inbound burst the slot by its timing against the outbound (aligned timing,
+  1.25 ms after the slot's start); a radio that sends late or early by more than half a slot lands in the wrong one.
 - The simulator is a second implementation of the MS procedures the site needs: when the radio and the site
   disagree, compare the radio's behavior with it, and check both against the standard.
 - First on-air tests: the Pluto on the SDR bench (cabled), on a frequency the owner gives.

@@ -621,17 +621,25 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
 
 ### 9.4 rdofradio
 
-- `--config` with a `trunk` app: rdofradio opens the SDR full duplex for carrier A, the split radio's serial port for
-  carrier B (`port` on its device, as a split TX half), receiver channels for every carrier's `in`.
-- The trunk unit replaces the repeater/transceiver unit in the main loop: `trunk_poll(now)` every 20 ms drains
-  events, runs the payload channels, and feeds mqtt-net.
-- `--state-dir DIR`: the `cfg` cache.
-- `--sim-air N`: no SDR, no split radio: the trunk unit runs against the MS simulator (N radios, scripted by
-  `--sim-script FILE` or a default mix), through the full burst path (the simulator's PDUs are built into bursts and
-  parsed back), with real mqtt-net. Two rdofradios with `--sim-air` and different `site` numbers make a two-site
-  system on one computer.
-- Rust in the Linux build: `rust.cmake` gains `FEATURES`; the Linux tools build `rdof_rust` with only the `t3`
-  feature (so the C modules stay C), and the Pluto container installs rustup with `armv7-unknown-linux-gnueabihf`.
+- The core is `rdof/trunkunit.h` (`common/src/trunkunit.c`): the controller run ahead of the air into a ring of
+  slots, the radio layer, and mqtt-net, with no I/O of its own (publish, subscribe, log, cache and random numbers are
+  callbacks). `sdr/cli/rdofradio_trunk.c` gives it libmosquitto, the clock and the device; the host tests give it an
+  in-process broker (`host-tests/test_trunkunit.c`).
+- `--config` with a `trunk` app: rdofradio opens the SDR full duplex for carrier A. The trunk unit is the SDR
+  modem's slot source (`rdof_sdrmodem_set_source`) and the modem stays keyed (`rdof_sdrmodem_hold_key`); the repeater
+  still runs as the modem's client to set it up, its output shadowed by the source. What the SDR hears on carrier
+  A's `in` goes to the controller with the slot its timing gives (`rdof_sdrmodem_inbound_k`). Carrier B on a split TX
+  half is not wired yet: a file with two carriers is refused on a device (`--sim-air` runs it).
+- `--state-dir DIR`: the `cfg` cache (`cfg-cache.json`, one document a line, rewritten on each change).
+- `--sim-air N`: no SDR, no split radio: the trunk unit runs against the MS simulator (`rdof/trunksim.h`: N radios,
+  `--sim-id`, `--sim-tg`, `--sim-talk S`, timed actions from `--sim-script FILE`), through the full burst path (the
+  simulator's PDUs are built into bursts and parsed back), with real mqtt-net, slot k = wall clock ms / 30. Two
+  rdofradios with `--sim-air` and different `site` numbers make a two-site system on one computer.
+- Rust in the Linux build: `rust.cmake` has `FEATURES`; `sdr/cli/tools.cmake` builds `rdof_rust` with only the `t3`
+  feature (so the C modules stay C) when cargo is found and `RDOF_TRUNK` is on, for `RDOF_RUST_TARGET` when cross
+  building; the Pluto container installs rustup with `armv7-unknown-linux-gnueabihf`.
+- Not done: the `cfg/tg` documents are stored but not applied (per-talkgroup hang and priority); neighbors from the
+  other sites' `info` aren't built into the controller's adjacent-site broadcasts.
 
 ## 10. Network services
 
@@ -676,7 +684,7 @@ Used by: `cargo test` (scenarios), the C host tests (through the C API), rdofrad
 | Radio layer | Burst building (CSBK, MBC, CACH with C_SYS_Parms and AT), parsing back, the slot source in the SDR modem (timing, short LC, AT), payload channel regeneration and P_CLEAR, split output frames | C host tests |
 | Settings | the `trunk` app: good and bad files, schema | C host tests, `test_schema.js` |
 | Network | `setup` item vectors, Tier II auto-answer, records, `cfg` parsing and precedence, cache | C host tests (`rdof_mqttnet_tests`), Python tests in the network services |
-| System | Two `rdofradio --sim-air` sites + router + manager over mosquitto: registration, local and wide-area group calls, a private call across sites, a move from site to site, link loss and recovery | network services' `tests/test_e2e_t3.py` (skipped without mosquitto) |
+| System | Two `rdofradio --sim-air` sites + router + manager over mosquitto: registration, local and wide-area group calls, a private call across sites, a move from site to site, link loss and recovery | network services' `tests/test_e2e_t3_sim.py` (skipped without mosquitto or rdofradio); in-process: `rdof_trunkunit_tests` |
 | Bench | The Pluto sends a TSCC on the bench (cabled), our receiver decodes it (C_SYS_Parms counter, Aloha, broadcast timing, AT), the bench's decoder confirms the CSBK checks; then a registration and calls from a Tier III radio | owner's go-ahead, a licensed frequency, lowest power |
 
 ## 13. Work order

@@ -20,6 +20,7 @@ What runs is the settings' units ([config-v3.md](config-v3.md) §12); a role her
 | Split halves | a `repeater` app whose `in` one modem hears and whose `out` another sends | two radios (TX half, RX half; RadioFoundry split duplex) as one duplex modem (`split_port.c`, `rdof/split.h`) | 1 USB half, 1 SDR half max | [../repeater.md](../repeater.md), [../slot-timing.md](../slot-timing.md) |
 | SDR transmitter | an SDR that transmits (a transceiver unit, a repeater app on it, or a DCDM frequency) | the SDR front end as the radio, through `rdof/sdr/sdrmodem.h` (an emulated MMDVM modem); a transceiver is tuned per stream ([transmitters.md](transmitters.md)) | a front end that can TX | [sdr.md](sdr.md), [radio.md](radio.md) |
 | Hub | `usb_hub: true` (box key) | every USB role at once behind a hub; devices matched by `port.serial` / `port.usb_port` | build needs `CONFIG_USB_HOST_HUBS_SUPPORTED` (`.16mb`, `.hub`, `.w12`) | [config-v3.md](config-v3.md) §2 |
+| Trunked site | a `trunk` app ([config-v3.md](config-v3.md) §6) | the Tier III site controller (Rust, `rdof/t3.h`) with the radio layer and mqtt-net (`rdof/trunkunit.h`); host only for now: rdofradio, the SDR sending the TSCC's carrier, or `--sim-air` with simulated MSs. A board refuses it | rdofradio: 1 site, 1 carrier | [trunk.md](trunk.md) |
 | Bench | `bench` key (`bench.devices`, `bench.tx`) | `/api/bench/v1`: spectrum, bursts, I/Q, sessions, radios link, TX jobs | `CONFIG_RDOF_BENCH` | [../bench-api.md](../bench-api.md) |
 
 Rules:
