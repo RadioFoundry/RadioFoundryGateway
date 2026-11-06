@@ -43,10 +43,12 @@ Order: rdofradio first (it already carries MQTT calls, [mqtt.md](mqtt.md) §10),
 Decisions taken while building it:
 
 - **Connection.** Its own, client ID `rdof-net-{node}`, will `{root}/node/{node}/online` `"0"` (retained, QoS 1),
-  `"1"` and `info` on connect. MQTT 5 with No Local on every subscription; TCP_NODELAY where the stack allows it.
+  `"1"` and `info` on connect. MQTT 5 with No Local on every subscription; TCP_NODELAY (the board sets it on
+  esp-mqtt's socket once connected).
   The node is the box's `name`.
 - **Subscriptions.** `dl/{node}` and `tg/{tg}/+` for each TG a transmitting path carries (or `tg/+/+` when one
-  carries `*`), refreshed every 5 s: held `ptt` TGs come and go.
+  carries `*`), refreshed every 5 s: held `ptt` TGs come and go. A subscribe or unsubscribe the client refuses is
+  tried again a second later.
 - **`dl` path 0xFF.** The box picks: the router's last-heard table for a private call, the paths whose policy carries
   the TG for a group call. It does not pick by slot.
 - **`activity` `path`** is `null` when no path applies (an app, a flood). The box reads no other node's activity.
