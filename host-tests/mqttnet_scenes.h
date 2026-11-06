@@ -119,11 +119,13 @@ static void sc_begin(sc_run_t *r, sc_out_t *o, const char *name, const char *wha
     r->up.ctx = r;
 }
 
+static double sc_rssi = -87.0; /* the bursts' RSSI (0: not measured) */
+
 /* One burst heard, then 60 ms on. */
 static void sc_hear(sc_run_t *r, uint8_t control, const uint8_t burst[RDOF_BURST_BYTES])
 {
     rdof_burst_t b;
-    rdof_modem_burst(control, burst, -87.0, 1, 1, &b);
+    rdof_modem_burst(control, burst, sc_rssi, 1, 1, &b);
     rdof_tracker_feed(&r->tr, &b, r->t);
     rdof_mn_up_tick(&r->up, r->t);
     r->t += 0.06;

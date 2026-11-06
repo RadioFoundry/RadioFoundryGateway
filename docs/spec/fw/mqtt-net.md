@@ -209,7 +209,7 @@ Each item is `[type u8][length u8][value]`. A length of 255 means a u16 length (
 | 0x07 | `data_pdu` | part u8 (bits 0–6 the part number, bit 7 more parts follow); rate u8 (0 ½, 1 ¾, 2 rate 1); header count u8; the data headers, octets 0–9 each ([dmr-core.md](dmr-core.md) §6.3; CRC removed); the user data | 5 + 10 × headers + data | a whole data call (§4.4) |
 | 0x08 | `talker_alias` | format u8 (as the DMR alias header), then the alias in UTF-8 (converted by the box) | 3 + text | the alias, once complete; information only |
 | 0x09 | `gps` | lat i32, lon i32 (1e-7 degree), position error code u8 | 11 | an embedded GPS LC; information only |
-| 0x0A | `quality` | bits corrected u8 (sum over this message's bursts, saturating), RSSI u8 (−dBm, average) | 4 | added to RF-heard messages only |
+| 0x0A | `quality` | bits corrected u8 (sum over this message's bursts, saturating), RSSI u8 (−dBm, average; 0 not measured) | 4 | added to RF-heard messages only |
 | 0x0B | `origin` | source network ID u32, source repeater ID u32, hop count u8 | 11 | a stream that came in through a bridge to another network, in its first message; bridges pass it on with one more hop |
 | 0x0C | `setup` | op u8, reason u8, flags u8, service options u8, ref u32 (§9.4) | 10 | a private call's setup across the network; the only item of its message |
 | 0x7F | `raw` | data type u8, then the 33-byte burst as heard | 36 | a burst the box can't decode (reserved data types, single-burst reverse channel) |
@@ -386,6 +386,10 @@ merge duplicates by `call_key`.
 
 On a trunked site, `call_start` and `call_end` carry `chan` and `lcn`; `path` is the site's one path and `slot` the
 payload channel's slot.
+
+An RSSI the receiver didn't measure is `null` in `call_start` (never 0, which would read as 0 dBm), and `call_end`
+leaves its `rssi` out. A reader takes `null`, and 0 from an older sender, as unknown: an unknown RSSI never wins a
+best-RSSI comparison (§9.1).
 
 `call_key` = `"{src}-{dst}-{group?'g':'p'}-{t}"`, where `t` is the start time in UTC seconds rounded down to a
 multiple of 2. Two boxes hearing one call make the same key (or keys 2 s apart near a boundary: a reader checks both).
