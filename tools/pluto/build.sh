@@ -6,7 +6,9 @@
 # install on it. Built in Debian 9's container, whose glibc (2.24) is older than the firmware's (2.25), against
 # the firmware's own libiio and libad9361 (from ADI's sysroot for v0.38: their headers and libraries, nothing
 # else), and libmosquitto 2.1 (EPL-2.0 / EDL-1.0) built here and linked in statically, without TLS (the firmware has
-# no OpenSSL), with the cJSON its build needs (MIT). With pffft, the web page, MQTT, no SoapySDR.
+# no OpenSSL), with the cJSON its build needs (MIT). With pffft, the web page, MQTT, no SoapySDR; with the trunked
+# site (RDOF_TRUNK: its controller is rust's t3 feature, built for armv7-unknown-linux-gnueabihf by a rustup kept in
+# build/pluto/rust).
 #
 #   tools/pluto/build.sh          on an x86_64 host with Docker; output in build/pluto/
 #
@@ -48,9 +50,16 @@ VERSION=${RDOF_VERSION:-$(git -C "$ROOT" describe --always --dirty 2>/dev/null |
 docker run --rm -v "$ROOT":/src:ro -v "$OUT":/out -e RDOF_PLUTO_LIBS=/out/libs -e RDOF_VERSION="$VERSION" debian:stretch bash -euo pipefail -c '
 echo "deb http://archive.debian.org/debian stretch main" > /etc/apt/sources.list
 apt-get -qq -o Acquire::Check-Valid-Until=false update
-apt-get -qq install -y --no-install-recommends gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf libc6-dev-armhf-cross make >/dev/null
+apt-get -qq install -y --no-install-recommends gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf libc6-dev-armhf-cross make curl ca-certificates >/dev/null
 mkdir -p /opt/cmake && tar -xzf /out/dl/cmake.tar.gz -C /opt/cmake --strip-components=1
 export PATH=/opt/cmake/bin:$PATH
+# rust for the trunked site: rustup and the armv7 target, kept in /out/rust (no_std, no linker needed)
+export RUSTUP_HOME=/out/rust/rustup CARGO_HOME=/out/rust/cargo
+if [ ! -x $CARGO_HOME/bin/cargo ]; then
+    curl -fsSL https://sh.rustup.rs | sh -s -- -y -q --no-modify-path --profile minimal \
+        --target armv7-unknown-linux-gnueabihf >/dev/null
+fi
+export PATH=$CARGO_HOME/bin:$PATH
 if [ ! -f /out/libs/usr/lib/libmosquitto_static.a ]; then
     # cJSON (MIT), which the 2.1 build needs found, then the client library alone, static, without TLS
     T=/out/thirdparty && rm -rf $T && mkdir -p $T/cjson $T/mosquitto
@@ -79,7 +88,8 @@ if [ ! -f /out/libs/usr/lib/libmosquitto_static.a ]; then
     rm -rf $T
 fi
 cmake -S /src -B /out/build -DCMAKE_TOOLCHAIN_FILE=/src/tools/pluto/armhf.cmake -DCMAKE_BUILD_TYPE=Release \
-    -DRDOF_BUILD_TESTS=OFF -DRDOF_HOST_WEB=ON -DRDOF_PFFFT=ON -DRDOF_VERSION="$RDOF_VERSION"
+    -DRDOF_BUILD_TESTS=OFF -DRDOF_HOST_WEB=ON -DRDOF_PFFFT=ON -DRDOF_VERSION="$RDOF_VERSION" \
+    -DRDOF_RUST_TARGET=armv7-unknown-linux-gnueabihf
 cmake --build /out/build --target rdofradio rdofsdr rdofchz -j"$(nproc)"
 cd /out
 cp build/rdofradio build/rdofsdr build/rdofchz .

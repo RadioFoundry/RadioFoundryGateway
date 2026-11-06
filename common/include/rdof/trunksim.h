@@ -16,12 +16,16 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "rdof/features.h"
+
 #include "rdof/t3.h"
 #include "rdof/trunkunit.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#if RDOF_FEATURE_REPEATER
 
 #define RDOF_TRUNKSIM_MS 64
 
@@ -41,6 +45,8 @@ void rdof_trunksim_init(rdof_trunksim_t *s, rdof_trunkunit_t *u, int n, rdof_t3m
 void rdof_trunksim_slot(rdof_trunksim_t *s, int64_t k, int64_t now_ms);
 /* The MS with this ID, -1 none. */
 int rdof_trunksim_find(const rdof_trunksim_t *s, uint32_t id);
+
+#endif /* RDOF_FEATURE_REPEATER */
 
 #ifdef __cplusplus
 }

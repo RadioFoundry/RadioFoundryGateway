@@ -28,6 +28,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "rdof/features.h"
+
 #include "rdof/mnctl.h"
 #include "rdof/mqttnet.h"
 #include "rdof/t3.h"
@@ -36,6 +38,8 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#if RDOF_FEATURE_REPEATER
 
 #define RDOF_TRUNKUNIT_RING 16    /* slots of the controller's output held: the most a carrier asks ahead, plus one */
 #define RDOF_TRUNKUNIT_STREAMS 16 /* network streams in progress */
@@ -139,6 +143,8 @@ bool rdof_trunkunit_apply(rdof_trunkunit_t *u);
 size_t rdof_trunkunit_trunk_json(const rdof_trunkunit_t *u, char *out, size_t cap);
 /* The status document (node/{node}/status), as published. */
 size_t rdof_trunkunit_status_json(const rdof_trunkunit_t *u, char *out, size_t cap);
+
+#endif /* RDOF_FEATURE_REPEATER */
 
 #ifdef __cplusplus
 }

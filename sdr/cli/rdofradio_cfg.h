@@ -13,6 +13,7 @@
  * HBlink4 peer, as the board's; the mqtt network, published as the board does (rdofradio_mqtt.h); the SDR's
  * channels (as the board's SDR resolves them: the unit hears on the one at its frequency); and the site, for the call
  * router (rdof/siteroute.h: what goes up and what comes down, through the radio's peer unless identity is per_path).
+ * A trunked site (a trunk app) runs alone: trunk below, from its app and the mqtt network (rdofradio_trunk.h).
  * mode sfr and dcdm are refused. The devices stay on the command line (--soapy, -r, --gain, --tx-gain ..., --mmdvm
  * PORT).
  * No I/O here: rdofradio reads and writes the file.
@@ -27,6 +28,7 @@
 #include "rdof/config.h"
 #include "rdof/repeater.h"
 #include "rdof/site.h"
+#include "rdof/t3.h"
 #include "rdof/txvr.h"
 #include "rdof/sdr/config.h"
 
@@ -39,6 +41,25 @@ typedef struct {
     long baud;
     rdof_config_t cfg;  /* the unit as the firmware resolves it (its repeater's settings, split.power_cap ...) */
 } rdofradio_split_t;
+
+/* A trunked site (docs/spec/fw/trunk.md): its controller's settings, carriers and the mqtt network's connection. */
+typedef struct {
+    char name[24];      /* the unit's (the trunk app's) */
+    int path;           /* its path on the site, -1 none */
+    int net;            /* the mqtt network (site.net), -1 none: the site alone */
+    rdof_t3_cfg_t cfg;  /* the settings file's (rdof_trunk_cfg_plan) */
+    rdof_t3_policy_t pol;
+    int ncar;
+    struct {
+        uint32_t rx_hz, tx_hz;
+        bool tx_sdr;    /* the SDR sends it; else a radio (a split's TX half) on port */
+        char port[64];
+        long baud;
+    } car[RDOF_T3_CARRIERS];
+    char host[64], user[32], pass[64], root[32];
+    int port;
+    bool tls;
+} rdofradio_trunk_cfg_t;
 
 typedef struct {
     bool full;          /* a repeater (full duplex); false: a transceiver (half duplex) */
@@ -69,6 +90,8 @@ typedef struct {
     /* split repeaters with the SDR as the RX half: the first is the radio above */
     int nsplit;
     rdofradio_split_t split[RDOF_ROLES_MAX];
+    bool trunk;         /* a trunked site: t, and the site, box, clock; nothing else above */
+    rdofradio_trunk_cfg_t t;
 } rdofradio_cfg_t;
 
 /* Read a settings document. False: err says why (the parser's reason, or what rdofradio can't run). */
