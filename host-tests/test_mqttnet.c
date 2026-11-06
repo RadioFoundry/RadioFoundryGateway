@@ -758,6 +758,19 @@ static void test_info(void)
     CHECK(strstr(out, "\"claims\":[9990]") != NULL);
     if (!strstr(out, "\"claims\":[9990]"))
         printf("  %s\n", out);
+    /* a claim listed twice (the parrot's tg, the IP gateway's pc) goes once */
+    {
+        static rdof_site_t s3;
+        static char site3[sizeof SITE + 64];
+        static char out3[4096];
+        const char *at = strstr(SITE, "{\"type\":\"parrot\",\"tg\":9990}");
+        snprintf(site3, sizeof site3, "%.*s{\"type\":\"parrot\",\"tg\":9990},{\"type\":\"ipgw\",\"pc\":9990}%s",
+                 (int)(at - SITE), SITE, at + strlen("{\"type\":\"parrot\",\"tg\":9990}"));
+        const bool ok3 = rdof_site_parse(site3, strlen(site3), &s3, err, sizeof err);
+        CHECK(ok3 || !printf("  %s\n", err));
+        CHECK(ok3 && rdof_mn_info_json(&s3, rdof_site_net(&s3, "mqtt"), &in, out3, sizeof out3) > 0 &&
+              strstr(out3, "\"claims\":[9990]"));
+    }
     CHECK(strstr(out, "\"kind\":\"box\"") && strstr(out, "\"schema\":1"));
     CHECK(rdof_jnode(&jd, rdof_jget(&jd, root, "paths_rev"))->num == rdof_mn_paths_rev(&s, net));
     /* paths_rev: CRC-16/CCITT-FALSE; the router's node vectors (§6's example list gives 2754) */

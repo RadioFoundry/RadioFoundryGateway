@@ -1969,11 +1969,11 @@ size_t rdof_mn_info_json(const rdof_site_t *s, int net, const rdof_mn_info_t *in
             j.buf[j.len] = 0;
         }
     }
-    /* claims: the box's own apps' IDs (single IDs, and the ranges as they're written) */
+    /* claims: the box's own apps' IDs (single IDs, and the ranges as they're written); an ID listed twice (an app's
+       tg and pc, two apps) goes once */
     {
-        char claims[512];
-        size_t n = 0;
-        claims[n++] = '[';
+        uint32_t ids[64];
+        int nids = 0;
         for (int a = 0; a < s->napp; a++) {
             const rdof_app3_t *ap = &s->app[a];
             if (ap->type == RDOF_APP_REPEATER)
@@ -1984,15 +1984,23 @@ size_t rdof_mn_info_json(const rdof_site_t *s, int net, const rdof_mn_info_t *in
                 for (int k = 0; k < m && k < RDOF_IDSET_MAX; k++) {
                     if (rr[k].lo == 0 && rr[k].hi >= RDOF_ID_MAX)
                         continue; /* "*": not a claim */
-                    for (uint32_t id = rr[k].lo; id <= rr[k].hi && id - rr[k].lo < 16 && n + 12 < sizeof claims; id++)
-                        n += (size_t)snprintf(claims + n, sizeof claims - n, "%s%lu", n > 1 ? "," : "",
-                                              (unsigned long)id);
+                    for (uint32_t id = rr[k].lo; id <= rr[k].hi && id - rr[k].lo < 16; id++) {
+                        int q = 0;
+                        while (q < nids && ids[q] != id)
+                            q++;
+                        if (q == nids && nids < (int)(sizeof ids / sizeof ids[0]))
+                            ids[nids++] = id;
+                    }
                 }
             }
         }
+        char claims[64 * 9 + 2];
+        size_t n = 0;
+        claims[n++] = '[';
+        for (int q = 0; q < nids; q++)
+            n += (size_t)snprintf(claims + n, sizeof claims - n, "%s%lu", q ? "," : "", (unsigned long)ids[q]);
         claims[n++] = ']';
         claims[n] = 0;
-        /* a claim listed twice (an app's tg and pc) once */
         rdof_json_raw(&j, "claims", claims);
     }
     if (in->trunk && in->trunk[0])
