@@ -272,7 +272,9 @@ size_t rdof_mn_setup_msg(uint8_t *out, size_t cap, uint32_t stream, uint32_t src
 {
     if (cap < RDOF_MN_HEADER + 2 + RDOF_MN_SETUP_LEN)
         return 0;
-    const rdof_mn_hdr_t h = {.flags = 0, .path = path, .seq = 0, .stream = stream, .src = src, .dst = dst};
+    /* the header's emergency flag follows the service options' (bit 7), in a request and its answers alike */
+    const rdof_mn_hdr_t h = {.flags = s->options & 0x80 ? RDOF_MN_F_EMERGENCY : 0, .path = path, .seq = 0,
+                             .stream = stream, .src = src, .dst = dst};
     rdof_mn_writer_t w;
     rdof_mn_begin(&w, out, cap, &h);
     rdof_mn_setup(&w, s);
@@ -1968,7 +1970,7 @@ size_t rdof_mn_info_json(const rdof_site_t *s, int net, const rdof_mn_info_t *in
             if (in->trunk_paths >> k & 1)
                 rdof_json_bool(&q, "trunk", true);
             mhz(&q, "rx", rx->hz);
-            if (p->tx_freq >= 0 && p->tx_freq != p->freq)
+            if (p->tx_freq >= 0) /* a simplex path's too: absent only where the path has no transmitter */
                 mhz(&q, "tx", s->freq[p->tx_freq].hz);
             if (rx->cc >= 0)
                 rdof_json_int(&q, "cc", rx->cc);

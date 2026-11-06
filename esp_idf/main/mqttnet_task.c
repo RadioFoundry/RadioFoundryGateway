@@ -43,6 +43,7 @@
 #include "rdof/ipgw.h"
 #include "rdof/ipgwtx.h"
 #include "rdof/mmdvm.h"
+#include "rdof/mnctl.h"
 #include "rdof/mqttnet.h"
 #if CONFIG_RDOF_SDR
 #include "rdof/sdr/config.h"
@@ -79,7 +80,7 @@ typedef struct {
     const rdof_site_t *site;
     int net;
     char node[RDOF_MN_NODE_MAX + 1], root[16];
-    char online[TOPIC_MAX], info[TOPIC_MAX], act[TOPIC_MAX], dl[TOPIC_MAX];
+    char online[TOPIC_MAX], info[TOPIC_MAX], act[TOPIC_MAX], dl[TOPIC_MAX], status[TOPIC_MAX];
     esp_mqtt_client_handle_t client;
     volatile bool up, connected_edge; /* connected_edge: set by esp-mqtt's task, cleared by the task */
     bool tls, use_tls;
@@ -402,6 +403,15 @@ static void publish_info(void)
         pub(M->info, M->json, 0, 1, true);
 }
 
+/* status (mqtt-net.md §16), retained: the node, its firmware and the time since boot */
+static void publish_status(double now)
+{
+    const rdof_mn_status_t st = {.node = M->node, .firmware = esp_app_get_description()->version, .wall = now_unix(),
+                                 .uptime_s = now};
+    if (rdof_mn_status_json(&st, M->json, sizeof M->json))
+        pub(M->status, M->json, 0, 1, true);
+}
+
 static void handle_message(size_t n)
 {
     const size_t tl = M->msg[0];
@@ -443,7 +453,7 @@ static void handle_tx(const tx_in_t *t)
 
 static void mn_task(void *arg)
 {
-    double ticked = 0, subs_at = -10;
+    double ticked = 0, subs_at = -10, status_at = -10;
     for (;;) {
         frame_in_t fi;
         /* frames first: a call's bursts every 60 ms on each receiver */
@@ -473,7 +483,12 @@ static void mn_task(void *arg)
             M->nsubs = 0; /* a new session: subscribe again */
             pub(M->online, "1", 1, 1, true);
             publish_info();
+            publish_status(now);
+            status_at = now;
             subs_at = -10;
+        } else if (M->up && now - status_at >= 10) {
+            publish_status(now);
+            status_at = now;
         }
         if (M->up && now - subs_at >= 5) { /* held ptt TGs come and go; a failed change is tried again in 1 s */
             subs_at = now;
@@ -552,6 +567,7 @@ void mn_start(void)
     rdof_mn_node_topic(m->online, sizeof m->online, root, m->node, "online");
     rdof_mn_node_topic(m->info, sizeof m->info, root, m->node, "info");
     rdof_mn_node_topic(m->act, sizeof m->act, root, m->node, "activity");
+    rdof_mn_node_topic(m->status, sizeof m->status, root, m->node, "status");
     rdof_mn_topic(m->dl, sizeof m->dl, root, RDOF_MN_T_DL, 0, m->node);
     rdof_mn_down_init(&m->down);
     m->down.raw_tx = site->net[net].raw_tx;

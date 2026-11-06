@@ -808,6 +808,21 @@ static void test_info(void)
         CHECK(ok3 && rdof_mn_info_json(&s3, rdof_site_net(&s3, "mqtt"), &in, out3, sizeof out3) > 0 &&
               strstr(out3, "\"claims\":[9990]"));
     }
+    /* tx: on every path with a transmitter, a simplex one's equal to rx; absent on a listen-only one */
+    CHECK((strstr(out, "\"name\":\"mon\",\"rx\":438.2,\"cc\"") != NULL) || !printf("  %s\n", out));
+    {
+        static const char SIMPLEX[] =
+            "{\"version\":3,\"name\":\"w12\",\"id\":9990101,\"defaults\":{\"cc\":1,\"ts\":1},"
+            "\"devices\":[{\"kind\":\"sdr\",\"driver\":\"iio\",\"match\":{\"uri\":\"local:\"}}],"
+            "\"frequencies\":[{\"name\":\"s1\",\"freq\":438.5}],"
+            "\"networks\":[{\"type\":\"mqtt\",\"host\":\"localhost\",\"calls\":true,\"format\":\"v3\"}]}";
+        static rdof_site_t s4;
+        static char out4[2048];
+        const bool ok4 = rdof_site_parse(SIMPLEX, sizeof SIMPLEX - 1, &s4, err, sizeof err);
+        CHECK(ok4 || !printf("  %s\n", err));
+        CHECK(ok4 && rdof_mn_info_json(&s4, rdof_site_net(&s4, "mqtt"), &in, out4, sizeof out4) > 0 &&
+              (strstr(out4, "\"name\":\"s1\",\"rx\":438.5,\"tx\":438.5,") || !printf("  %s\n", out4)));
+    }
     CHECK(strstr(out, "\"kind\":\"box\"") && strstr(out, "\"schema\":1"));
     CHECK(rdof_jnode(&jd, rdof_jget(&jd, root, "paths_rev"))->num == rdof_mn_paths_rev(&s, net));
     /* paths_rev: CRC-16/CCITT-FALSE; the router's node vectors (§6's example list gives 2754) */
@@ -937,6 +952,17 @@ static void test_setup(void)
     rdof_mn_setup_t as;
     CHECK(rdof_mn_setup_parse(ans, a, &ah, &as) && as.op == RDOF_MN_SETUP_REJECT && as.reason == RDOF_MN_WHY_NOT_FOUND &&
           !(as.flags & RDOF_MN_SETUP_UNCONFIRMED) && ah.path == RDOF_MN_PATH_NONE && as.ref == 0x12345678);
+    /* an emergency request: the header's emergency flag in the request and in its answer */
+    {
+        const rdof_mn_setup_t er = {.op = RDOF_MN_SETUP_REQUEST, .options = 0x80};
+        uint8_t em[64], ea[64];
+        const size_t en = rdof_mn_setup_msg(em, sizeof em, 0x12345678, 3100123, 3100456, RDOF_MN_PATH_NONE, &er);
+        rdof_mn_hdr_t eh, eah;
+        rdof_mn_setup_t es, eas;
+        CHECK(rdof_mn_setup_parse(em, en, &eh, &es) && (eh.flags & RDOF_MN_F_EMERGENCY) && es.options == 0x80);
+        const size_t ean = rdof_mn_setup_answer(&eh, &es, 1, 0x0BADCAFE, ea, sizeof ea);
+        CHECK(rdof_mn_setup_parse(ea, ean, &eah, &eas) && (eah.flags & RDOF_MN_F_EMERGENCY) && eas.options == 0x80);
+    }
     /* only a request gets an answer */
     const rdof_mn_setup_t cancel = {.op = RDOF_MN_SETUP_CANCEL, .ref = 7};
     CHECK(rdof_mn_setup_answer(&h, &cancel, 1, 1, ans, sizeof ans) == 0);

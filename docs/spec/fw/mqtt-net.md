@@ -343,7 +343,7 @@ place a call comes in or goes out, so the slot is part of the path where the slo
 | `paths[].i` | the index in the header's path byte: the path's position in the resolved view, from 0; at most 63 |
 | `paths[].name` | the path's name in config v3 |
 | `paths[].app` | the app that offers the path (`repeater`), or absent for a frequency |
-| `paths[].rx`, `tx`, `cc`, `ts` | the frequencies (MHz), color code and slot; `ts` null for a path that hears both slots and doesn't transmit |
+| `paths[].rx`, `tx`, `cc`, `ts` | the frequencies (MHz), color code and slot; `tx` on every path with a transmitter (a simplex path's equals `rx`), absent on a listen-only one; `ts` null for a path that hears both slots and doesn't transmit |
 | `paths[].tx_ok` | the path can transmit; only these can deliver a private call or answer confirmed data |
 | `paths[].tg`, `ptt`, `pc` | the path's resolved policy, in config v3's ID-set syntax ([config-v3.md](config-v3.md) §3, §8); only paths whose `net` is this network are listed |
 | `claims` | IDs this node answers for (apps, and a box's own `parrot` / `ipgw` apps); §9.2 |
@@ -504,7 +504,8 @@ matter to the radio. A client library (Python first) does the header, items, LCs
 A trunked site checks that a called radio is there before it grants the caller a channel (Tier III's availability
 check). When the called radio isn't registered at the site, the check goes over the network as a setup message: a
 call message on `pc/{dst}/{node}` with no voice, its header individual (src the caller, dst the called radio) and one
-`setup` item. The router routes it like any private message.
+`setup` item. The router routes it like any private message. The header's emergency flag (bit 2) is the service
+options' emergency bit (bit 7), in the request and in every answer to it.
 
 | Offset | Field | Values |
 |---|---|---|
@@ -717,7 +718,8 @@ Any node, every 10 s and on change:
 ```
 
 `trunk` is a trunked site's only. `use`: `tscc`, `call`, `hang`, `idle`, `off` (out of service). `connected`: the
-backbone link (the site's Active_Connection). Code: `rdof_mn_status_json`.
+backbone link (the site's Active_Connection). Code: `rdof_mn_status_json`. rdofradio and the board publish it on each
+connect and every 10 s; `uptime_s` is the process's on rdofradio, the time since boot on a board.
 
 ## 17. Provisioning (`cfg/...`) and commands
 

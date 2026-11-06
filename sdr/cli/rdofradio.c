@@ -158,6 +158,7 @@
 #include "rdof/bits.h"
 #include "rdof/ipgw.h"
 #include "rdof/ipgwtx.h"
+#include "rdof/mnctl.h"
 #include "rdof/mqttnet.h"
 #include "rdof/netcalls.h"
 #include "rdof/rawburst.h"
@@ -1520,7 +1521,8 @@ static void mq_calls_start(void)
 
 static bool mn_on;                 /* the MQTT network carries the calls as format v3 */
 static rdofmq_t *MN;               /* its connection: will online 0, no local, TCP_NODELAY */
-static char mn_node[RDOF_MN_NODE_MAX + 1], mn_online[128], mn_info_t[128], mn_act[128], mn_dl[128];
+static char mn_node[RDOF_MN_NODE_MAX + 1], mn_online[128], mn_info_t[128], mn_act[128], mn_dl[128], mn_status_t[128];
+static double mn_started, mn_status_at = -1e9;
 static rdof_mn_up_t mn_up[1 + RDOF_SDR_MAX_CHANNELS]; /* the modem's RX with --mmdvm, then each receiver channel */
 static rdof_mn_down_t mn_down;
 static rdof_mn_results_t mn_results;
@@ -1694,6 +1696,17 @@ static void mn_publish_info(void)
         rdofmq_publish(MN, mn_info_t, buf, -1, 1, true);
 }
 
+/* status (mqtt-net.md §16), retained: the node, its firmware and uptime */
+static void mn_publish_status(double now)
+{
+    char buf[256];
+    const rdof_mn_status_t st = {.node = mn_node, .firmware = "rdofradio " RDOF_VERSION, .wall = wall_s(),
+                                 .uptime_s = now - mn_started};
+    if (rdof_mn_status_json(&st, buf, sizeof buf))
+        rdofmq_publish(MN, mn_status_t, buf, -1, 1, true);
+    mn_status_at = now;
+}
+
 static void mn_on_frame(void *ctx, const char *channel, const rdof_frame_t *f)
 {
     rdof_mn_up_frame(ctx, f, now_s());
@@ -1717,6 +1730,8 @@ static void mn_start(void)
     rdof_mn_node_topic(mn_online, sizeof mn_online, c->mqtt_root, mn_node, "online");
     rdof_mn_node_topic(mn_info_t, sizeof mn_info_t, c->mqtt_root, mn_node, "info");
     rdof_mn_node_topic(mn_act, sizeof mn_act, c->mqtt_root, mn_node, "activity");
+    rdof_mn_node_topic(mn_status_t, sizeof mn_status_t, c->mqtt_root, mn_node, "status");
+    mn_started = now_s();
     rdof_mn_topic(mn_dl, sizeof mn_dl, c->mqtt_root, RDOF_MN_T_DL, 0, mn_node);
     for (int i = R.mmdvm ? -1 : 0; i < nchn; i++) {
         rdof_mn_up_t *u = &mn_up[i + 1];
@@ -1790,7 +1805,9 @@ static void mn_poll(double now)
     if (rdofmq_connected(MN)) {
         rdofmq_publish(MN, mn_online, "1", -1, 1, true);
         mn_publish_info();
-    }
+        mn_publish_status(now);
+    } else if (now - mn_status_at >= 10 && rdofmq_up(MN))
+        mn_publish_status(now);
     if (now - mn_subs_at >= 5) {
         mn_subs_at = now;
         mn_subscribe(now);
