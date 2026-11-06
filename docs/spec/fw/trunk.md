@@ -268,8 +268,8 @@ paths").
 | `broadcast` | object | section 3.2 | `adjacent_s`, `chan_freq_s`, `local_time_s` (0 = off) |
 
 Checks (refusals name the key): exactly one `tscc` carrier; every carrier's `out` on a device that transmits and its
-`in` on a device that receives; the TSCC carrier's `out` on a full-duplex SDR (a split radio can't hold a control
-channel: its key limit is 600 s); `chan` unique; the `system` numbers inside the model's ranges; at most 4 carriers;
+`in` on a device that receives; the TSCC carrier's `out` on a full-duplex SDR, or on a split TX half whose key
+limit is off (`split.max_key_s: "none"`, a radio built for continuous duty); `chan` unique; the `system` numbers inside the model's ranges; at most 4 carriers;
 a frequency used by a `trunk` app can't be used by another app or a talk path.
 
 Paths: the app offers one talk path, named after the app, with `trunk: true` in `info`. The slots are internal: the
@@ -591,9 +591,11 @@ called about one slot plus the TX lead ahead of air: the controller decides a sl
 - the controller's payload PDUs (P_CLEAR) take precedence over voice;
 - idle bursts fill.
 
-Outbound sinks: carrier A's channels are read by the slot source (9.1); carrier B's are written to the split radio
-as an MMDVM duplex modem (`rdof_split_t`): DMR_START on the first open channel, DMR_DATA1/2 per slot in order,
-DMR_SHORTLC with P_SYS_Parms, DMR_START 0 when both channels close.
+Outbound sinks: carrier A's channels are read by the slot source (9.1); carrier B's go to the split radio's TX half
+(`rdof_split_t`) in the scheduled stream (SET_ROLE stream 1, TX_SCHED): each burst tagged with its slot counter,
+sent at least the half's guard (INFO 12, 55 ms on an HR_C7000) before air, so there is no FIFO prebuffer and the
+repeat delay is the same as carrier A's; DMR_SHORTLC with P_SYS_Parms. A half without the scheduled stream (INFO
+caps bit 0 clear) falls back to the FIFO (DMR_DATA1/2, `split.prebuffer`, default 3 = 180 ms).
 
 ### 9.3 Receive
 
