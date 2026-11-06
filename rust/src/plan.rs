@@ -100,6 +100,18 @@ pub struct RdofApp3 {
     pub path: [c_int; 2],
     pub tg: RdofIdset,
     pub pc: RdofIdset,
+    pub carrier: [RdofCarrier3; SITE_MAX_CARRIERS],
+    pub ncarrier: u8,
+}
+
+const SITE_MAX_CARRIERS: usize = 4; // RDOF_SITE_MAX_CARRIERS
+
+/// rdof_carrier3_t
+#[repr(C)]
+pub struct RdofCarrier3 {
+    pub in_: c_int,
+    pub out: c_int,
+    pub chan: u16,
 }
 
 /// rdof_net3_t
