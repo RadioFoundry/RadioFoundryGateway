@@ -364,6 +364,8 @@ Rules:
 - The caller's site waits up to `setup_s` (5 s) for an answer, sending C_WACKD to its MS meanwhile; no answer:
   C_NACKD(MSaway_Refused) and a `cancel` out.
 - `alerting` (FOACSU) keeps the wait going until `answered` or `tp_s`.
+- A `reject not_found` doesn't end the wait (with a flood, another node may still accept); the timer then ends the
+  call as `not_found`. Any other reject ends it at once ([mqtt-net.md](mqtt-net.md) §9.4).
 - **All nodes:** a Tier II box that gets a `request` on `dl/{node}` for an ID in its last-heard table on a path that
   can send answers `accept` with `unconfirmed` at once; without one it answers `reject not_found`. So a Tier III MS
   can call a radio on a Tier II repeater, and the voice goes as today.
