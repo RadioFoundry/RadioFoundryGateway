@@ -11,6 +11,8 @@
  * one a line ("#" comments):
  *     AT_S  ID  register [TG] | deregister | group TG [TALK_MS] | private ID2 [TALK_MS] | cancel
  * An ID not among the N is a simulated MS of its own, idle until the script makes it act.
+ * --sim-ext PATH adds external MSs (other programs) on a unix socket, in lockstep with the slots: rdofradio_simext.h.
+ * With it N may be 0.
  *
  * On a device: the SDR is carrier 1 (the TSCC's): rdof_sdrmodem's slot source, keyed with no end (hold_key), what it
  * hears on carrier 1's inbound given its slot by timing (rdof_sdrmodem_inbound_k). A second carrier is a split TX
@@ -38,6 +40,10 @@ typedef struct {
     uint32_t sim_tg;         /* --sim-tg */
     double sim_talk_s;       /* --sim-talk: a group call every this many seconds, 0 none */
     const char *sim_script;  /* --sim-script */
+    const char *sim_ext;     /* --sim-ext: the external MSs' socket, NULL none */
+    double sim_ext_loss;     /* --sim-ext-loss: an external burst lost, probability */
+    double sim_ext_err;      /* --sim-ext-err: an external burst corrupted, probability */
+    bool sim_fast;           /* --sim-fast: with --sim-ext, slots as fast as the clients answer */
     const char *state_dir;   /* --state-dir, NULL none */
     double seconds;          /* --seconds: stop after, 0 never */
     bool verbose;

@@ -139,6 +139,12 @@ spec for both; this lists only the gateway's choices and limits. The full design
 - `rdofradio --sim-air N` runs the site against N simulated MSs (the gateway's own simulator, `rust/src/t3ms.rs`) over
   the full burst path; two of them make a two-site network on one computer. `--sim-script` times registrations and
   calls, so a radio under test can share a network with simulated ones at another site.
+- `--sim-ext PATH` puts RadioFoundry's MS engine, built for the host, on that air as an external MS: a unix socket,
+  one JSON line each way per slot in lockstep. Out: every carrier's burst (33 bytes), its data type, CC and PDU, and
+  the CACH before it (AT, TC, LCSS, the short LC fragment), the AT after the slot. In: the MS's bursts (a PDU, voice
+  header / terminator / burst, or raw), each with its carrier, slot, target slot and timing error in µs. Each burst's
+  fate comes back (heard, collided, no-slot, timing, loss, corrupted, late, bad) and is logged. Several clients and
+  the simulated MSs share the air and collide. Format: `sdr/cli/rdofradio_simext.h`. Not yet: a scripted AT pattern.
 - On a device rdofradio runs two carriers: carrier A on the SDR (the TSCC on TS1, a payload channel on TS2) and
   carrier B on a split TX half (both slots payload), the SDR's receiver hearing both inbounds. The first call takes
   carrier A's TS2; a second at the same time goes to carrier B. Carrier B's half counts UTC slots (aligned from the

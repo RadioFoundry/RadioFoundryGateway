@@ -28,6 +28,28 @@ extern "C" {
 #if RDOF_FEATURE_REPEATER
 
 #define RDOF_TRUNKSIM_MS 64
+#define RDOF_TRUNKSIM_EXT 32 /* external bursts a slot */
+
+/* An external MS's burst for the inbound (the hook ext_in): channel ch (2 c + slot - 1) and the burst as heard. The
+ * sim sets fate. */
+typedef enum { RDOF_TRUNKSIM_HEARD, RDOF_TRUNKSIM_COLLIDED, RDOF_TRUNKSIM_DROPPED } rdof_trunksim_fate_t;
+typedef struct {
+    int ch;
+    rdof_burst_t b;
+    rdof_trunksim_fate_t fate;
+    void *tag; /* the hook's */
+} rdof_trunksim_in_t;
+
+/* What carrier c aired in a slot, for external MSs (the hook ext_out). */
+typedef struct {
+    bool aired;                      /* false: nothing (an outside carrier with no burst) */
+    uint8_t burst[RDOF_BURST_BYTES];
+    int dt, cc;                      /* from the slot type, -1 unreadable (voice) */
+    bool pdu_ok;                     /* pdu: a control block whose CRC passed */
+    uint8_t pdu[10];
+    uint8_t cach[3];                 /* the CACH before this slot: AT, TC, LCSS, a short LC fragment */
+    int at;                          /* its AT bit */
+} rdof_trunksim_out_t;
 
 typedef struct {
     rdof_trunkunit_t *u;
@@ -40,14 +62,26 @@ typedef struct {
     uint32_t outside;
     bool (*outbound)(void *ctx, int c, int64_t k, uint8_t burst[RDOF_BURST_BYTES]);
     void *outbound_ctx;
+    /* External MSs (rdofradio --sim-ext). ext_in gives slot k's bursts (up to max), asked after the internal MSs
+     * decided theirs: each joins its channel's collision count; a burst on a channel not on air in slot k (the wrong
+     * slot, no such carrier) is dropped. ext_out gets what each carrier aired in slot k, after the internal MSs heard
+     * it, the AT bit of the CACH after it (rdof_trunkunit_at), and ext_in's bursts with their fates. */
+    int (*ext_in)(void *ctx, int64_t k, rdof_trunksim_in_t *in, int max);
+    void (*ext_out)(void *ctx, int64_t k, const rdof_trunksim_out_t *out, int ncar, int at_next,
+                    const rdof_trunksim_in_t *in, int nin);
+    void *ext_ctx;
+    int32_t slc[RDOF_T3_CARRIERS]; /* the short LC on air on each carrier, -1 none yet */
     /* counters */
-    uint32_t out_pdus, out_bad, in_pdus, in_voice, collisions;
+    uint32_t out_pdus, out_bad, in_pdus, in_voice, collisions, ext_in_n, ext_drop;
 } rdof_trunksim_t;
 
 /* n MSs (up to RDOF_TRUNKSIM_MS), each initialized by the caller (rdof_t3ms_init) with id[i]. */
 void rdof_trunksim_init(rdof_trunksim_t *s, rdof_trunkunit_t *u, int n, rdof_t3ms_t *const *ms, const uint32_t *id);
 /* Slot k at wall clock now_ms: the site's controller, the outbound, the MSs' inbound. Call once per k, in order. */
 void rdof_trunksim_slot(rdof_trunksim_t *s, int64_t k, int64_t now_ms);
+/* An MS's burst for tx: a control block, a voice header or terminator with its LC, or voice burst n (A = 0 .. F = 5,
+   silence). b->cc and the slot from cc and tx->ch. False: nothing to air. */
+bool rdof_trunksim_ms_burst(const rdof_t3ms_tx_t *tx, int n, int cc, rdof_burst_t *b);
 /* The MS with this ID, -1 none. */
 int rdof_trunksim_find(const rdof_trunksim_t *s, uint32_t id);
 

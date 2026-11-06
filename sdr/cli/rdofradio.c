@@ -308,8 +308,9 @@ static const char *config_path;
 static struct {
     int sim_n;
     uint32_t sim_id, sim_tg;
-    double sim_talk_s;
-    const char *sim_script, *state_dir;
+    double sim_talk_s, sim_ext_loss, sim_ext_err;
+    const char *sim_script, *state_dir, *sim_ext;
+    bool sim_fast;
 } trunk_opts = {.sim_id = 1000001, .sim_tg = 9};
 static rdofradio_cfg_t rcfg;
 #ifdef RDOF_HOST_WEB
@@ -509,6 +510,7 @@ static void usage(void)
             "                 [--cc CC] | --config FILE [--parrot ID] [--seconds S] [-v] [--web ...] [--bench ...]\n"
             "       rdofradio DEVICE --allow-tx --config FILE (a trunked site) [--state-dir DIR] [the device's flags]\n"
             "       rdofradio --config FILE --sim-air N [--sim-id ID] [--sim-tg TG] [--sim-talk S] [--sim-script FILE]\n"
+            "                 [--sim-ext PATH [--sim-fast] [--sim-ext-loss P] [--sim-ext-err P]]\n"
             "                 [--state-dir DIR] [--seconds S] [-v] (a trunked site's air simulated, rdofradio_trunk.h)\n"
             "DEVICE: %s\n",
 #if defined(RDOF_SOAPY) && defined(RDOF_IIO)
@@ -4899,6 +4901,17 @@ int main(int argc, char **argv)
         } else if (!strcmp(a, "--sim-script")) {
             NEXT();
             trunk_opts.sim_script = v;
+        } else if (!strcmp(a, "--sim-ext")) {
+            NEXT();
+            trunk_opts.sim_ext = v;
+        } else if (!strcmp(a, "--sim-ext-loss")) {
+            NEXT();
+            trunk_opts.sim_ext_loss = atof(v);
+        } else if (!strcmp(a, "--sim-ext-err")) {
+            NEXT();
+            trunk_opts.sim_ext_err = atof(v);
+        } else if (!strcmp(a, "--sim-fast")) {
+            trunk_opts.sim_fast = true;
         } else if (!strcmp(a, "--state-dir")) {
             NEXT();
             trunk_opts.state_dir = v;
@@ -5071,7 +5084,7 @@ int main(int argc, char **argv)
         printf("%s %s\n", b, f);
         return 0;
     }
-    if ((trunk_opts.sim_n > 0 || trunk_opts.sim_script) && !config_path) {
+    if ((trunk_opts.sim_n > 0 || trunk_opts.sim_script || trunk_opts.sim_ext) && !config_path) {
         fprintf(stderr, "--sim-air: a trunked site's settings (--config FILE)\n");
         return 2;
     }
@@ -5100,10 +5113,19 @@ int main(int argc, char **argv)
         }
         if (rcfg.trunk) {
 #ifdef RDOF_TRUNK
-            const rdofradio_trunk_opts_t to = {trunk_opts.sim_n, trunk_opts.sim_id, trunk_opts.sim_tg,
-                                               trunk_opts.sim_talk_s, trunk_opts.sim_script, trunk_opts.state_dir,
-                                               seconds, verbose != 0};
-            if (to.sim_n > 0 || to.sim_script) {
+            const rdofradio_trunk_opts_t to = {.sim_n = trunk_opts.sim_n,
+                                               .sim_id = trunk_opts.sim_id,
+                                               .sim_tg = trunk_opts.sim_tg,
+                                               .sim_talk_s = trunk_opts.sim_talk_s,
+                                               .sim_script = trunk_opts.sim_script,
+                                               .sim_ext = trunk_opts.sim_ext,
+                                               .sim_ext_loss = trunk_opts.sim_ext_loss,
+                                               .sim_ext_err = trunk_opts.sim_ext_err,
+                                               .sim_fast = trunk_opts.sim_fast,
+                                               .state_dir = trunk_opts.state_dir,
+                                               .seconds = seconds,
+                                               .verbose = verbose != 0};
+            if (to.sim_n > 0 || to.sim_script || to.sim_ext) {
                 signal(SIGINT, on_signal);
                 signal(SIGTERM, on_signal);
                 return rdofradio_trunk_sim(&rcfg, &to, &stop);

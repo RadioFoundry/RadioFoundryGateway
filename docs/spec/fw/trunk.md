@@ -655,6 +655,16 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
   `--sim-id`, `--sim-tg`, `--sim-talk S`, timed actions from `--sim-script FILE`), through the full burst path (the
   simulator's PDUs are built into bursts and parsed back), with real mqtt-net, slot k = wall clock ms / 30. Two
   rdofradios with `--sim-air` and different `site` numbers make a two-site system on one computer.
+- `--sim-ext PATH`: external MSs (other programs, such as a radio's MS engine built for the host) on the simulated
+  air, through a unix socket, beside the N simulated ones (N may be 0). JSON lines in lockstep with the slots: after
+  slot k each client gets what every carrier aired (the burst, its data type and CC, the PDU when its CRC passed, the
+  CACH before it with AT, TC, LCSS and the short LC fragment) and the AT after it on the TSCC, plus what became of its
+  own bursts; it answers with its bursts for coming slots (a PDU, a voice header, terminator or burst, or 33 bytes as
+  given), each with a timing error in µs. The site waits up to 2 s for each answer, then drops the client. External
+  bursts join the collision count with the simulated MSs'; one on a channel not on air in its slot, or more than half a
+  slot off, is lost. `--sim-ext-loss P` and `--sim-ext-err P` lose or corrupt each one at random; `--sim-fast` runs
+  the slots as fast as the clients answer. Each inbound burst gets a log line. The format is in
+  `sdr/cli/rdofradio_simext.h`.
 - Rust in the Linux build: `rust.cmake` has `FEATURES`; `sdr/cli/tools.cmake` builds `rdof_rust` with only the `t3`
   feature (so the C modules stay C) when cargo is found and `RDOF_TRUNK` is on, for `RDOF_RUST_TARGET` when cross
   building; the Pluto container installs rustup with `armv7-unknown-linux-gnueabihf`.
@@ -702,7 +712,9 @@ In the network services' own repository (with the router, the Python library and
 collisions (two MSs in one inbound slot: neither is heard, and the site gets `rx_bad`); payload channels with their
 members; optional loss rate and delay. Scenarios script MS actions by time and check outcomes.
 
-Used by: `cargo test` (scenarios), the C host tests (through the C API), rdofradio `--sim-air`.
+Used by: `cargo test` (scenarios), the C host tests (through the C API), rdofradio `--sim-air`. External MSs join
+the same air through `--sim-ext` (section 9.4), so another MS implementation can be checked against the site
+and against `t3ms` on one air.
 
 ## 12. Tests
 

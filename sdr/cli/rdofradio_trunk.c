@@ -25,6 +25,7 @@
 #include "rdofradio_mqtt.h"
 #endif
 #include "rdofradio_serial.h"
+#include "rdofradio_simext.h"
 
 #ifndef RDOF_VERSION
 #define RDOF_VERSION "dev"
@@ -418,18 +419,36 @@ int rdofradio_trunk_sim(const rdofradio_cfg_t *c, const rdofradio_trunk_opts_t *
     }
     static rdof_trunksim_t sim;
     rdof_trunksim_init(&sim, T.u, n, ms, ids);
+    const bool ext = o->sim_ext != NULL;
+    if (ext && !rdofradio_simext_open(&sim, o->sim_ext, o->sim_ext_loss, o->sim_ext_err, T.rng, o->verbose, err,
+                                      sizeof err)) {
+        tsay("%s", err);
+        stop_common();
+        return 1;
+    }
     tsay("--sim-air: %d MSs (%u..%u%s), talkgroup %u", n, (unsigned)o->sim_id, (unsigned)(o->sim_id + o->sim_n - 1),
          n > o->sim_n ? " and the script's" : "", (unsigned)o->sim_tg);
 
     int64_t k = t0 / 30, next_talk = o->sim_talk_s > 0 ? t0 + (int64_t)(o->sim_talk_s * 1000) : -1;
-    int64_t last_poll = 0, last_status = t0;
+    int64_t last_poll = 0, last_status = t0, ahead_ms = 0;
     int ai = 0, talker = 0;
     uint32_t skipped = 0;
     rdof_trunkunit_run(T.u, k, t0);
-    while (!*stop && (o->seconds <= 0 || wall_ms() - t0 < (int64_t)(o->seconds * 1000))) {
-        const int64_t now = wall_ms();
+    while (!*stop && (o->seconds <= 0 || (ext ? k * 30 : wall_ms()) - t0 < (int64_t)(o->seconds * 1000))) {
+        /* with external MSs the slots go one at a time, each answered: their time is the slot's, never skipped.
+           --sim-fast while a client is there: unpaced, the slot clock running ahead of the wall clock (ahead_ms) */
+        const int64_t wall = wall_ms(), now = ext ? (k + 1) * 30 : wall;
+        if (ext && o->sim_fast && rdofradio_simext_clients() > 0) {
+            if (now - wall > ahead_ms)
+                ahead_ms = now - wall;
+        } else if (ext && now > wall + ahead_ms) {
+            struct timespec ts = {0, (long)(now - wall - ahead_ms > 20 ? 20 : now - wall - ahead_ms) * 1000000L};
+            nanosleep(&ts, NULL);
+            rdofradio_simext_wait(k); /* clients joining between slots */
+            continue;
+        }
         const int64_t k_now = now / 30;
-        if (k_now - k > 50) { /* stalled (a suspended process): the air jumps ahead */
+        if (!ext && k_now - k > 50) { /* stalled (a suspended process): the air jumps ahead */
             skipped += (uint32_t)(k_now - k);
             k = k_now - 1;
         }
@@ -453,6 +472,8 @@ int rdofradio_trunk_sim(const rdofradio_cfg_t *c, const rdofradio_trunk_opts_t *
             poll_locked(now);
         }
         pthread_mutex_unlock(&T.mu);
+        if (ext)
+            rdofradio_simext_wait(k);
         if (now - last_status >= 10000) {
             last_status = now;
             int reg = 0;
@@ -461,10 +482,14 @@ int rdofradio_trunk_sim(const rdofradio_cfg_t *c, const rdofradio_trunk_opts_t *
                 rdof_t3ms_status(ms[i], &st);
                 reg += st.registered;
             }
-            tsay("%d of %d MSs registered; out %u PDUs, in %u PDUs %u voice, %u collisions; net in %u, setups %u/%u%s",
+            char extra[96] = "";
+            if (ext)
+                snprintf(extra, sizeof extra, "; external: %d clients, %u bursts (%u on no slot)",
+                         rdofradio_simext_clients(), (unsigned)sim.ext_in_n, (unsigned)sim.ext_drop);
+            tsay("%d of %d MSs registered; out %u PDUs, in %u PDUs %u voice, %u collisions; net in %u, setups %u/%u%s%s",
                  reg, n, (unsigned)sim.out_pdus, (unsigned)sim.in_pdus, (unsigned)sim.in_voice,
                  (unsigned)sim.collisions, (unsigned)T.u->net_in, (unsigned)T.u->setups_out,
-                 (unsigned)T.u->setups_in, skipped ? "; slots skipped" : "");
+                 (unsigned)T.u->setups_in, extra, skipped ? "; slots skipped" : "");
             if (o->verbose)
                 for (int i = 0; i < n; i++) {
                     rdof_t3ms_status_t st;
@@ -474,12 +499,14 @@ int rdofradio_trunk_sim(const rdofradio_cfg_t *c, const rdofradio_trunk_opts_t *
                 }
         }
         /* to the next slot's start */
-        const int64_t wait = (k_now + 1) * 30 - wall_ms();
+        const int64_t wait = ext ? 0 : (k_now + 1) * 30 - wall_ms();
         if (wait > 0) {
             struct timespec ts = {0, (long)(wait > 20 ? 20 : wait) * 1000000L};
             nanosleep(&ts, NULL);
         }
     }
+    if (ext)
+        rdofradio_simext_close();
     stop_common();
     for (int i = 0; i < n; i++)
         free(ms[i]);

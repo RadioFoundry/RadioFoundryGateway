@@ -16,6 +16,8 @@ void rdof_trunksim_init(rdof_trunksim_t *s, rdof_trunkunit_t *u, int n, rdof_t3m
     memset(s, 0, sizeof *s);
     s->u = u;
     s->n = n < RDOF_TRUNKSIM_MS ? n : RDOF_TRUNKSIM_MS;
+    for (int c = 0; c < RDOF_T3_CARRIERS; c++)
+        s->slc[c] = -1;
     for (int i = 0; i < s->n; i++) {
         s->ms[i] = ms[i];
         s->id[i] = id[i];
@@ -30,8 +32,7 @@ int rdof_trunksim_find(const rdof_trunksim_t *s, uint32_t id)
     return -1;
 }
 
-/* What MS i sends, as its burst; false: nothing on air (a lost call's end). */
-static bool ms_burst(rdof_trunksim_t *s, int i, const rdof_t3ms_tx_t *tx, int cc, rdof_burst_t *b)
+bool rdof_trunksim_ms_burst(const rdof_t3ms_tx_t *tx, int n, int cc, rdof_burst_t *b)
 {
     memset(b, 0, sizeof *b);
     b->family = RDOF_FAMILY_MS;
@@ -51,21 +52,31 @@ static bool ms_burst(rdof_trunksim_t *s, int i, const rdof_t3ms_tx_t *tx, int cc
         rdof_group_lc(tx->src, tx->dst, tx->group != 0, 0, lc9);
         rdof_lc_burst(lc9, dt, cc, rdof_data_sync(RDOF_MS_VOICE), b->burst);
         b->dt = dt;
-        s->voice_n[i] = 0;
         return true;
     }
-    case RDOF_T3_VOICE_FRAME: {
-        const int n = s->voice_n[i];
-        s->voice_n[i] = (n + 1) % 6;
+    case RDOF_T3_VOICE_FRAME:
+        n = (n % 6 + 6) % 6;
         rdof_duplex_silence(n, cc, b->burst);
         b->dt = n ? RDOF_DT_VOICE : RDOF_DT_VOICE_SYNC;
         b->n = n;
         return true;
-    }
     default:
         return false;
     }
 }
+
+/* What MS i sends, as its burst, its voice counter kept. */
+static bool ms_burst(rdof_trunksim_t *s, int i, const rdof_t3ms_tx_t *tx, int cc, rdof_burst_t *b)
+{
+    const int n = s->voice_n[i];
+    if (tx->kind != 1 && tx->what == RDOF_T3_VOICE_FRAME)
+        s->voice_n[i] = (n + 1) % 6;
+    else if (tx->kind != 1)
+        s->voice_n[i] = 0;
+    return rdof_trunksim_ms_burst(tx, n, cc, b);
+}
+
+static bool is_voice(int dt) { return dt == RDOF_DT_VOICE || dt == RDOF_DT_VOICE_SYNC; }
 
 void rdof_trunksim_slot(rdof_trunksim_t *s, int64_t k, int64_t now_ms)
 {
@@ -76,23 +87,39 @@ void rdof_trunksim_slot(rdof_trunksim_t *s, int64_t k, int64_t now_ms)
     /* the outbound of slot k, read back as an MS would */
     int dt[RDOF_T3_CARRIERS];
     uint8_t pdu[RDOF_T3_CARRIERS][10];
+    rdof_trunksim_out_t out[RDOF_T3_CARRIERS];
     for (int c = 0; c < ncar; c++) {
-        uint8_t burst[RDOF_BURST_BYTES], control;
-        int at, rcc;
-        int32_t slc;
+        rdof_trunksim_out_t *o = &out[c];
+        uint8_t control;
+        int at = -1, rdt = -1, rcc = -1;
+        int32_t slc = -1;
+        memset(o, 0, sizeof *o);
+        o->dt = o->cc = -1;
         dt[c] = 0;
-        if (s->outside >> c & 1) {
-            if (!s->outbound || !s->outbound(s->outbound_ctx, c, k, burst))
-                continue;
-        } else {
-            rdof_trunkunit_slot(u, c, k, burst, &control, &at, &slc);
-        }
-        const rdof_trunk_pdu_t r = rdof_trunk_burst_pdu(burst, &dt[c], &rcc, pdu[c]);
-        if (r == RDOF_TRUNK_PDU_OK)
+        if (s->outside >> c & 1)
+            o->aired = s->outbound && s->outbound(s->outbound_ctx, c, k, o->burst);
+        else
+            o->aired = rdof_trunkunit_slot(u, c, k, o->burst, &control, &at, &slc);
+        /* the CACH before slot k: the short LC changes on a 4-slot cycle's first */
+        if (k % 4 == 0 && slc >= 0)
+            s->slc[c] = slc;
+        int at4[4] = {0, 0, 0, 0};
+        uint8_t c4[4][3];
+        o->at = at4[k & 3] = at > 0;
+        rdof_trunk_cach4(s->slc[c] >= 0 ? (uint32_t)s->slc[c] : 0, at4, k & ~(int64_t)3, c4);
+        memcpy(o->cach, c4[k & 3], 3);
+        if (!o->aired)
+            continue;
+        const rdof_trunk_pdu_t r = rdof_trunk_burst_pdu(o->burst, &rdt, &rcc, o->pdu);
+        o->dt = rdt;
+        o->cc = rcc;
+        if (r == RDOF_TRUNK_PDU_OK) {
             s->out_pdus++;
-        else {
+            o->pdu_ok = true;
+            dt[c] = rdt;
+            memcpy(pdu[c], o->pdu, 10);
+        } else {
             s->out_bad += r == RDOF_TRUNK_PDU_BAD;
-            dt[c] = 0;
         }
     }
 
@@ -101,30 +128,59 @@ void rdof_trunksim_slot(rdof_trunksim_t *s, int64_t k, int64_t now_ms)
     bool has[RDOF_TRUNKSIM_MS];
     for (int i = 0; i < s->n; i++)
         has[i] = rdof_t3ms_tx(s->ms[i], k, now_ms, &tx[i]);
+    rdof_trunksim_in_t ext[RDOF_TRUNKSIM_EXT];
+    const int next = s->ext_in ? s->ext_in(s->ext_ctx, k, ext, RDOF_TRUNKSIM_EXT) : 0;
+    for (int e = 0; e < next; e++) {
+        s->ext_in_n++;
+        ext[e].fate = RDOF_TRUNKSIM_HEARD;
+        if (ext[e].ch < 0 || (ext[e].ch & 1) != (int)(k & 1) || ext[e].ch / 2 >= ncar) {
+            ext[e].ch = -1;
+            ext[e].fate = RDOF_TRUNKSIM_DROPPED;
+            s->ext_drop++;
+        }
+    }
     for (int ch = (int)(k & 1); ch < 2 * ncar; ch += 2) {
         int first = -1, count = 0;
         for (int i = 0; i < s->n; i++)
             if (has[i] && tx[i].ch == ch && count++ == 0)
                 first = i;
-        if (first < 0)
+        for (int e = 0; e < next; e++)
+            count += ext[e].ch == ch;
+        if (count == 0)
             continue;
         rdof_burst_t b;
-        if (!ms_burst(s, first, &tx[first], cc, &b))
-            continue;
-        for (int i = first + 1; i < s->n; i++) /* the others' voice counters move on as if heard */
-            if (has[i] && tx[i].ch == ch) {
-                rdof_burst_t other;
-                ms_burst(s, i, &tx[i], cc, &other);
-            }
+        bool ok = false;
+        if (first >= 0) {
+            ok = ms_burst(s, first, &tx[first], cc, &b);
+            for (int i = first + 1; i < s->n; i++) /* the others' voice counters move on as if heard */
+                if (has[i] && tx[i].ch == ch) {
+                    rdof_burst_t other;
+                    ms_burst(s, i, &tx[i], cc, &other);
+                }
+        }
+        if (!ok) {
+            int efirst = -1;
+            for (int e = 0; e < next && efirst < 0; e++)
+                if (ext[e].ch == ch)
+                    efirst = e;
+            if (efirst < 0)
+                continue;
+            b = ext[efirst].b;
+            ok = true;
+        }
+        b.slot = (ch & 1) + 1;
         if (count > 1) { /* a collision: the strongest is unreadable too (the site counts it) */
             s->collisions++;
+            for (int e = 0; e < next; e++)
+                if (ext[e].ch == ch)
+                    ext[e].fate = RDOF_TRUNKSIM_COLLIDED;
             for (int j = 14; j < 20; j++)
                 b.burst[j] ^= 0x5A;
         }
-        if (tx[first].kind == 1)
-            s->in_pdus++;
-        else
+        if (is_voice(b.dt) || b.dt == RDOF_DT_VOICE_LC_HEADER || b.dt == RDOF_DT_TERMINATOR_WITH_LC)
             s->in_voice++;
+        else
+            s->in_pdus++;
         rdof_trunkunit_rx(u, ch / 2, k, &b, -60);
     }
 
@@ -138,6 +194,8 @@ void rdof_trunksim_slot(rdof_trunksim_t *s, int64_t k, int64_t now_ms)
             continue;
         rdof_t3ms_rx(s->ms[i], ch, k, (uint8_t)dt[ch / 2], pdu[ch / 2], ch == 0 && at > 0);
     }
+    if (s->ext_out)
+        s->ext_out(s->ext_ctx, k, out, ncar, at, ext, next);
 }
 
 #endif /* RDOF_FEATURE_REPEATER */

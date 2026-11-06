@@ -286,6 +286,60 @@ static int hang_ms(int talk_ms)
     return held;
 }
 
+
+/* ── an external MS, through the sim's hooks only (rdofradio --sim-ext) ── */
+
+static struct {
+    rdof_t3ms_t *ms;
+    int voice_n, dup, stray;
+    uint32_t cach_bad, cach_ok, heard, fates[3];
+} X;
+
+static int ext_in(void *ctx, int64_t k, rdof_trunksim_in_t *in, int max)
+{
+    (void)ctx;
+    int n = 0;
+    rdof_t3ms_tx_t tx;
+    if (X.stray && max > n) { /* a burst on the slot not on air */
+        rdof_t3ms_tx_t t = {.ch = (uint8_t)(1 - (k & 1)), .kind = 2, .what = RDOF_T3_VOICE_FRAME};
+        in[n].ch = t.ch;
+        rdof_trunksim_ms_burst(&t, 1, 1, &in[n].b);
+        n++;
+    }
+    if (!rdof_t3ms_tx(X.ms, k, T0 + k * 30, &tx))
+        return n;
+    int vn = X.voice_n;
+    if (tx.kind != 1)
+        X.voice_n = tx.what == RDOF_T3_VOICE_FRAME ? (vn + 1) % 6 : 0;
+    for (int d = 0; d <= (X.dup && tx.kind == 1) && n < max; d++) {
+        in[n].ch = tx.ch;
+        if (rdof_trunksim_ms_burst(&tx, vn, A.u->cfg.cc, &in[n].b))
+            n++;
+    }
+    return n;
+}
+
+static void ext_out(void *ctx, int64_t k, const rdof_trunksim_out_t *out, int ncar, int at_next,
+                    const rdof_trunksim_in_t *in, int nin)
+{
+    (void)ctx;
+    for (int e = 0; e < nin; e++)
+        X.fates[in[e].fate]++;
+    int at, slot, lcss;
+    uint32_t p17;
+    if (rdof_trunk_cach_read(out[0].cach, &at, &slot, &lcss, &p17) && at == out[0].at && slot == (int)(k & 1) + 1)
+        X.cach_ok++;
+    else
+        X.cach_bad++;
+    rdof_t3ms_status_t st;
+    rdof_t3ms_status(X.ms, &st);
+    if ((st.ch & 1) != (int)(k & 1) || st.ch / 2 >= ncar)
+        return;
+    const rdof_trunksim_out_t *o = &out[st.ch / 2];
+    X.heard += o->pdu_ok;
+    rdof_t3ms_rx(X.ms, st.ch, k, (uint8_t)(o->pdu_ok ? o->dt : 0), o->pdu, st.ch == 0 && at_next > 0);
+}
+
 int main(void)
 {
     site_open(&A, 0, "site-a", 3, 3100001, T0);
@@ -396,6 +450,50 @@ int main(void)
     broker_deliver();
     CHECK(rdof_t3_record(A.u->site, 3100001, &rec) && rec.sub_tg == TG, "A read its record back after a restart");
     CHECK(A.u->cfg.hang_ms == 5000, "and the retained provisioning (%u)", A.u->cfg.hang_ms);
+
+
+    /* an external MS on A, through the hooks: a forced collision first (its C_RAND twice), then it registers */
+    {
+        const uint32_t tg[1] = {TG};
+        const uint16_t chans[1] = {1};
+        X.ms = malloc(rdof_t3ms_size());
+        rdof_t3ms_init(X.ms, 3100009, tg, 1, chans, 1, 99);
+        rdof_t3ms_do(X.ms, RDOF_T3MS_DO_REGISTER, TG, 0, 0, T0 + K * 30);
+        A.sim.ext_in = ext_in;
+        A.sim.ext_out = ext_out;
+        X.dup = 1;
+        const uint32_t coll = A.sim.collisions;
+        run(1500);
+        rdof_t3ms_status_t xs;
+        rdof_t3ms_status(X.ms, &xs);
+        CHECK(A.sim.collisions > coll && !xs.registered && X.fates[RDOF_TRUNKSIM_COLLIDED] >= 2,
+              "the doubled request collided (%u, fates %u)", A.sim.collisions - coll, X.fates[RDOF_TRUNKSIM_COLLIDED]);
+        X.dup = 0;
+        run(8000);
+        rdof_t3ms_status(X.ms, &xs);
+        CHECK(xs.registered && rdof_t3_record(A.u->site, 3100009, &rec), "the external MS registered");
+        CHECK(X.cach_ok > 100 && X.cach_bad == 0, "its CACH: %u read, %u wrong", X.cach_ok, X.cach_bad);
+        /* a group call from it: A's own MS follows it */
+        rdof_t3ms_do(X.ms, RDOF_T3MS_DO_GROUP, TG, 1500, 0, T0 + K * 30);
+        int waited = 0;
+        while (ms_status(&A, 0).heard_src != 3100009 && waited < 4000)
+            run(30), waited += 30;
+        CHECK(ms_status(&A, 0).heard_src == 3100009, "A's MS heard the external MS's call (%u)", ms_status(&A, 0).heard_src);
+        run(8000);
+        rdof_t3ms_status(X.ms, &xs);
+        CHECK(xs.calls_done == 1 && xs.state == RDOF_T3MS_IDLE, "its call ended (%u, state %d)", xs.calls_done, xs.state);
+        /* a burst on the slot not on air is dropped */
+        const uint32_t drop = A.sim.ext_drop;
+        X.stray = 1;
+        run(300);
+        X.stray = 0;
+        CHECK(A.sim.ext_drop >= drop + 10 && X.fates[RDOF_TRUNKSIM_DROPPED] == A.sim.ext_drop - drop,
+              "stray bursts dropped (%u)", A.sim.ext_drop - drop);
+        CHECK(X.fates[RDOF_TRUNKSIM_HEARD] > 5, "its bursts heard (%u)", X.fates[RDOF_TRUNKSIM_HEARD]);
+        A.sim.ext_in = NULL;
+        A.sim.ext_out = NULL;
+        free(X.ms);
+    }
 
     site_close(&A);
     site_close(&Bs);

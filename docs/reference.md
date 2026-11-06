@@ -1168,7 +1168,9 @@ Built with `RDOF_TRUNK` (on by default; needs cargo: the controller is rust's `t
 device: N simulated MSs (IDs from `--sim-id`, default 1000001) register with `--sim-tg` (default 9) and run through
 the full burst path on a wall-clock slot clock; `--sim-talk S` makes one call the talkgroup every S seconds;
 `--sim-script FILE` adds timed actions (`AT_S ID register [TG] | deregister | group TG [TALK_MS] | private ID
-[TALK_MS] | cancel`). Two of them with different `site` numbers and the network services' router make a two-site
+[TALK_MS] | cancel`). `--sim-ext PATH` lets other programs be MSs on the same air over a unix socket, a JSON line
+each way per slot in lockstep (`--sim-fast` unpaced, `--sim-ext-loss P`, `--sim-ext-err P`; the format in
+`sdr/cli/rdofradio_simext.h`). Two of them with different `site` numbers and the network services' router make a two-site
 network on one computer (the network services' `tests/test_e2e_t3_sim.py`).
 
 ```sh
