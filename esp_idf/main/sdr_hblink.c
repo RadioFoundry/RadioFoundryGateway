@@ -157,7 +157,11 @@ static void peer_task(void *arg)
                 maxfd = peers[i].sock > maxfd ? peers[i].sock : maxfd;
             }
         struct timeval tv = {.tv_sec = 0, .tv_usec = 500000};
-        if (maxfd < 0 || select(maxfd + 1, &fds, NULL, NULL, &tv) <= 0)
+        if (maxfd < 0) { /* no socket (the master unresolved): wait as select would, never spin */
+            vTaskDelay(pdMS_TO_TICKS(500));
+            continue;
+        }
+        if (select(maxfd + 1, &fds, NULL, NULL, &tv) <= 0)
             continue;
         for (int i = 0; i < npeers; i++) {
             peer_t *p = &peers[i];
@@ -232,7 +236,12 @@ void sdr_hb_start(void)
                 box_peer = &peers[i];
             }
     g_sstat.hb_peers = npeers;
-    if (npeers) {
+    /* a task only for peers with their own socket: those through the roamer's or repeater's peer need none. A task
+       with none spun at priority 8 on core 0 and starved the web server (a BrandMeister login, identity single) */
+    bool own = false;
+    for (int i = 0; i < npeers; i++)
+        own |= !peers[i].via;
+    if (own) {
         ESP_LOGI(TAG, "%d peers for %s:%d", npeers, g_scfg.hb_host, g_scfg.hb_port);
         mem_task("sdr_net", "sdr_hblink", peer_task, 4096, NULL, 8, 0, NULL);
     }
