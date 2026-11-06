@@ -1938,6 +1938,10 @@ static struct {
     bool mapped;            /* the key-up's edge was heard back: modem sample map_pos was on the air at map_t */
     int64_t map_pos;
     double map_t, keyed_at; /* first seen keyed (0: not yet) */
+    struct {                /* voice bursts the bench's thread pushed, for the main loop to write (bench_ob_fast) */
+        uint8_t slot, control, burst[33];
+    } q[32];
+    unsigned qhead, qtail;
 } BO = {.mu = PTHREAD_MUTEX_INITIALIZER};
 
 /* A transmit job: the bench's thread asks (the engine's tx hooks), the main loop does it, since the SDR modem and
@@ -2136,6 +2140,7 @@ static bool bl_ob_open(void *ctx, const rdof_bl_ob_cfg_t *cfg, char *why, size_t
         BO.unkeyed = BO.failed = false, BO.why[0] = 0;
         BO.s = (rdof_bl_ob_state_t){.first = -1, .next = -1};
         BO.state = 0, BO.mapped = false, BO.keyed_at = 0;
+        BO.qhead = BO.qtail = 0;
     }
     pthread_mutex_unlock(&BO.mu);
     pthread_mutex_unlock(&BT.mu);
@@ -2158,6 +2163,19 @@ static int bl_ob_state(void *ctx, rdof_bl_ob_state_t *s, char *why, size_t cap)
     return st;
 }
 
+/* An outbound's voice burst (ob_push): queued for the main loop, which owns the modem; it writes it as the host's
+ * DMR_DATA1 / DMR_DATA2 on its next turn (bench_ob_fast), a few ms later. A full queue drops it (counted late). */
+static void bl_ob_push(void *ctx, int slot, uint8_t control, const uint8_t burst[33])
+{
+    pthread_mutex_lock(&BO.mu);
+    if (BO.qtail - BO.qhead < sizeof BO.q / sizeof BO.q[0] && !BO.unkeyed) {
+        __typeof__(BO.q[0]) *e = &BO.q[BO.qtail++ % (sizeof BO.q / sizeof BO.q[0])];
+        e->slot = (uint8_t)slot, e->control = control;
+        memcpy(e->burst, burst, 33);
+    }
+    pthread_mutex_unlock(&BO.mu);
+}
+
 static void bl_ob_unkey(void *ctx)
 {
     pthread_mutex_lock(&BO.mu);
@@ -2173,6 +2191,52 @@ static void bl_ob_close(void *ctx)
         BO.want = 0; /* never keyed */
     else if (BO.active)
         BO.want = 3;
+    pthread_mutex_unlock(&BO.mu);
+}
+
+/* The outbound's slot clock copied out for the bench's thread (BO.mu held). */
+static void ob_clock(double now)
+{
+    const rdof_sdrmodem_t *m = &R.m;
+    const bool keyed = m->keyed && m->key_k >= 0;
+    if (keyed && !BO.keyed_at)
+        BO.keyed_at = now;
+    if (keyed && !BO.mapped && now - BO.keyed_at > 1.5) { /* the edge not heard: as the modem has it */
+        BO.mapped = true, BO.map_pos = 0;
+        BO.map_t = bl_sc_utc(NULL, (uint64_t)((double)(m->tx_late48 > 0 ? m->tx_late48 : 0) * R.rate / 48000));
+        say("bench: the outbound's key-up wasn't heard back: its times are the modem's\n");
+    }
+    BO.s = (rdof_bl_ob_state_t){.keyed = keyed, .first = m->key_k, .next = m->slot_k, .base = m->base,
+                                .slot = (double)rdof_mod_slot_samples(&m->mod), .rate = m->tx_fs,
+                                .skips = (long)m->slot_skips, .last_from = m->skip_from, .last_to = m->skip_to,
+                                .on_air = keyed && BO.mapped, .map_pos = BO.map_pos, .map_t = BO.map_t,
+                                .ppm = xtal()};
+    /* the CACH (12 symbols) and the burst's first 65.5 symbols, 10 samples a symbol at 48 kS/s */
+    BO.s.sync_off = (int)llround(775.0 * m->tx_fs / 48000.0);
+    BO.state = !m->keyed && m->key_k >= 0 ? 2 : keyed ? 1 : 0;
+}
+
+/* Each main loop turn while an outbound has the modem: the voice bursts pushed since the last turn go to the modem
+ * and the slot clock is copied out, so the engine sees the slot being queued within a few ms (POLL_S is 20 ms, under
+ * a slot). */
+static void bench_ob_fast(void)
+{
+    pthread_mutex_lock(&BO.mu);
+    if (!BO.active) {
+        pthread_mutex_unlock(&BO.mu);
+        return;
+    }
+    while (BO.qhead != BO.qtail) {
+        const __typeof__(BO.q[0]) e = BO.q[BO.qhead++ % (sizeof BO.q / sizeof BO.q[0])];
+        if (BO.unkeyed)
+            continue;
+        uint8_t p[34], f[40];
+        p[0] = e.control;
+        memcpy(p + 1, e.burst, 33);
+        rdof_sdrmodem_write(&R.m, f, rdof_mmdvm_frame(e.slot == 1 ? RDOF_MMDVM_DMR_DATA1 : RDOF_MMDVM_DMR_DATA2, p,
+                                                      sizeof p, f, sizeof f));
+    }
+    ob_clock(now_s());
     pthread_mutex_unlock(&BO.mu);
 }
 
@@ -2224,23 +2288,7 @@ static bool bench_ob_poll(double now)
             say("bench: the transmitter is the transceiver's again\n");
         return true;
     }
-    const rdof_sdrmodem_t *m = &R.m;
-    const bool keyed = m->keyed && m->key_k >= 0;
-    if (keyed && !BO.keyed_at)
-        BO.keyed_at = now;
-    if (keyed && !BO.mapped && now - BO.keyed_at > 1.5) { /* the edge not heard: as the modem has it */
-        BO.mapped = true, BO.map_pos = 0;
-        BO.map_t = bl_sc_utc(NULL, (uint64_t)((double)(m->tx_late48 > 0 ? m->tx_late48 : 0) * R.rate / 48000));
-        say("bench: the outbound's key-up wasn't heard back: its times are the modem's\n");
-    }
-    BO.s = (rdof_bl_ob_state_t){.keyed = keyed, .first = m->key_k, .next = m->slot_k, .base = m->base,
-                                .slot = (double)rdof_mod_slot_samples(&m->mod), .rate = m->tx_fs,
-                                .skips = (long)m->slot_skips, .last_from = m->skip_from, .last_to = m->skip_to,
-                                .on_air = keyed && BO.mapped, .map_pos = BO.map_pos, .map_t = BO.map_t,
-                                .ppm = xtal()};
-    /* the CACH (12 symbols) and the burst's first 65.5 symbols, 10 samples a symbol at 48 kS/s */
-    BO.s.sync_off = (int)llround(775.0 * m->tx_fs / 48000.0);
-    BO.state = !m->keyed && m->key_k >= 0 ? 2 : keyed ? 1 : 0;
+    ob_clock(now);
     pthread_mutex_unlock(&BO.mu);
     return true;
 }
@@ -2552,7 +2600,8 @@ static void bench_start(void)
                                           .modes = rdof_sdr_modes, .sig_open = bl_sig_open,
                                           .sig_state = bl_sig_state, .sig_close = bl_sig_close,
                                           .sig_rate = bl_sig_rate, .ob_open = bl_ob_open, .ob_state = bl_ob_state,
-                                          .ob_unkey = bl_ob_unkey, .ob_close = bl_ob_close, .ob_can = bl_ob_can};
+                                          .ob_unkey = bl_ob_unkey, .ob_close = bl_ob_close, .ob_can = bl_ob_can,
+                                          .ob_push = bl_ob_push};
     rdof_bl_platform_t p = pf;
     if (R.mmdvm) /* the modem transmits DMR only: no signal modes */
         p.sig_open = NULL, p.sig_state = NULL, p.sig_close = NULL;
@@ -4221,6 +4270,7 @@ static int mmdvm_main(int argc, char **argv, const char *port, int baud, double 
     double last_poll = 0, last_status = now_s();
     while (!stop && (seconds <= 0 || now_s() - t0 < seconds)) {
         mm_turn();
+        bench_ob_fast();
         const double now = now_s();
         if (now - last_poll >= POLL_S) {
             last_poll = now;
@@ -5176,6 +5226,7 @@ int main(int argc, char **argv)
             }
             continue;
         }
+        bench_ob_fast();
         const double now = now_s();
         WS.last_samples = now;
         WS.n += n;
