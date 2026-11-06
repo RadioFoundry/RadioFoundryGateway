@@ -104,6 +104,11 @@ bool rdof_hb_peer_may_send(const rdof_hb_peer_t *p);
    "bad_password", "refused", "backoff". */
 const char *rdof_hb_peer_state_name(const rdof_hb_peer_t *p);
 
+/* A login's status as a JSON object into out: {"state" (rdof_hb_peer_state_name), "logins" (RPTLs sent), "refusals",
+   "refused_at" (the step of the last refusal: "login", "auth", "config", "up", or ""), "went_quiet" (times three pings
+   went unanswered), "backoff_s"}. "" without a login. Returns the length. */
+size_t rdof_hb_peer_login_status(const rdof_hb_peer_t *p, char *out, size_t cap);
+
 /* RPTC from a DMRC (rdof/hblink.h's layout): callsign, frequencies, color code, slots, the DMRC's version and software
    as RPTC's software and package IDs; power_dbm (0..99) as the TX power, which the spec gives in dBm (the DMRC's is an
    RF level); latitude and longitude as the spec writes them (+33.6198, -086.6089); location, description and url as

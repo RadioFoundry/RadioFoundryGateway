@@ -251,6 +251,8 @@ void radio_channel_now(roam_t *r, uint32_t *freq, int *cc);
 
 void roam_hb_start(roam_t *r);
 void roam_hb_send(roam_t *r, const uint8_t *data, size_t len);
+/* A BrandMeister login's status (rdof_hb_peer_login_status) into out; 0 without one. */
+size_t roam_hb_login_status(roam_t *r, char *out, size_t cap);
 void roam_hb_send_config(roam_t *r, bool force);
 #if CONFIG_RDOF_HBLINK_SCTP
 /* The SCTP association's status as JSON (0 when HBlink4 isn't over SCTP). */

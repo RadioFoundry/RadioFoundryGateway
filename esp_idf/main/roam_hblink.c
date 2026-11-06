@@ -81,6 +81,20 @@ void roam_hb_send(roam_t *r, const uint8_t *data, size_t len)
 
 static double now_s(void) { return esp_timer_get_time() / 1e6; }
 
+size_t roam_hb_login_status(roam_t *r, char *out, size_t cap)
+{
+    struct roam_hb *h = r->hb;
+    if (!h || !cap) {
+        if (cap)
+            out[0] = 0;
+        return 0;
+    }
+    xSemaphoreTake(h->lock, portMAX_DELAY);
+    const size_t n = rdof_hb_peer_login_status(&h->peer, out, cap);
+    xSemaphoreGive(h->lock);
+    return n;
+}
+
 /* The DMRC, and RPTC's power in *dbm (a login's) */
 static size_t config_packet(roam_t *r, uint8_t *out, double *dbm)
 {

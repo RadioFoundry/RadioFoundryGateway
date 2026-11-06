@@ -279,11 +279,21 @@ static void test_login(void)
     run(&p, 20.5, 25);
     CHECK(p.up && M.logins == 2);
 
+    /* status: a login's state as JSON; none without a login */
+    char st[192];
+    CHECK(rdof_hb_peer_login_status(&p, st, sizeof st) > 0 && strstr(st, "\"state\":\"up\"") &&
+          strstr(st, "\"refused_at\":\"\"") && st[0] == '{' && st[strlen(st) - 1] == '}');
+    rdof_hb_peer_t plain;
+    rdof_hb_peer_init(&plain, 1, 5.0);
+    CHECK(rdof_hb_peer_login_status(&plain, st, sizeof st) == 0 && !st[0]);
+
     /* MSTCL while up: refused, logs in again after 1 s */
     reset(&p, PASSWORD);
     run(&p, 0, 1);
     CHECK(rdof_hb_peer_received(&p, (const uint8_t *)"MSTCL\x12\x7b\x6f\xef", 9, 1.0) == RDOF_HBP_REFUSED);
     CHECK(!p.up && p.refused_at == RDOF_HBL_UP && !strcmp(rdof_hb_peer_state_name(&p), "backoff"));
+    rdof_hb_peer_login_status(&p, st, sizeof st);
+    CHECK(strstr(st, "\"state\":\"backoff\"") && strstr(st, "\"refused_at\":\"up\""));
     run(&p, 1.0, 3);
     CHECK(p.up && M.logins == 2);
 

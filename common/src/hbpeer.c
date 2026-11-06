@@ -246,6 +246,22 @@ const char *rdof_hb_peer_state_name(const rdof_hb_peer_t *p)
     }
 }
 
+size_t rdof_hb_peer_login_status(const rdof_hb_peer_t *p, char *out, size_t cap)
+{
+    static const char *step[] = {"login", "auth", "config", "up", "backoff"};
+    if (!cap)
+        return 0;
+    out[0] = 0;
+    if (!p->login)
+        return 0;
+    const char *at = p->refused && p->refused_at < 5 ? step[p->refused_at] : "";
+    int n = snprintf(out, cap,
+                     "{\"state\":\"%s\",\"logins\":%u,\"refusals\":%u,\"refused_at\":\"%s\",\"went_quiet\":%u,"
+                     "\"backoff_s\":%g}",
+                     rdof_hb_peer_state_name(p), p->logins, p->refused, at, p->pings_missed, p->backoff_s);
+    return n < 0 ? 0 : (size_t)n >= cap ? cap - 1 : (size_t)n;
+}
+
 static rdof_hbp_event_t login_received(rdof_hb_peer_t *p, const uint8_t *d, size_t n, double now)
 {
     switch (rdof_hb_kind(d, n)) {

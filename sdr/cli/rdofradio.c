@@ -3001,6 +3001,8 @@ static void web_publish(double rx, double tx, int cc)
 #endif
     w.hblink = net_on && NET.peer.up;
     w.hblink_tx = NET.peer.tx, w.hblink_rx = NET.peer.rx;
+    if (net_on)
+        rdof_hb_peer_login_status(&NET.peer, w.brandmeister, sizeof w.brandmeister);
     for (int i = 0; i < nchn && w.nchan < 16; i++) {
         const chan_t *m = &CHN[i];
         const int r = R.rx.rssi[m->c];
