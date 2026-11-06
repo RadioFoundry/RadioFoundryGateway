@@ -247,6 +247,8 @@ bool rdof_mn_pdu(const rdof_mn_item_t *it, rdof_mn_pdu_t *o)
 
 bool rdof_mn_setup(rdof_mn_writer_t *w, const rdof_mn_setup_t *s)
 {
+    if (s->op < RDOF_MN_SETUP_REQUEST || s->op > RDOF_MN_SETUP_ANSWERED)
+        return false;
     uint8_t v[RDOF_MN_SETUP_LEN] = {s->op, s->reason, s->flags, s->options};
     put_le32(v + 4, s->ref);
     return rdof_mn_item(w, RDOF_MN_SETUP, v, sizeof v);
@@ -254,7 +256,8 @@ bool rdof_mn_setup(rdof_mn_writer_t *w, const rdof_mn_setup_t *s)
 
 bool rdof_mn_setup_of(const rdof_mn_item_t *it, rdof_mn_setup_t *o)
 {
-    if (it->type != RDOF_MN_SETUP || it->len != RDOF_MN_SETUP_LEN)
+    if (it->type != RDOF_MN_SETUP || it->len != RDOF_MN_SETUP_LEN || it->value[0] < RDOF_MN_SETUP_REQUEST ||
+        it->value[0] > RDOF_MN_SETUP_ANSWERED)
         return false;
     o->op = it->value[0];
     o->reason = it->value[1];
@@ -284,6 +287,15 @@ bool rdof_mn_setup_parse(const uint8_t *msg, size_t len, rdof_mn_hdr_t *h, rdof_
     rdof_mn_item_t it;
     rdof_mn_reader(&r, msg, len);
     return rdof_mn_next(&r, &it) && rdof_mn_setup_of(&it, s);
+}
+
+/* The message's first item is a setup item (valid or not). */
+static bool setup_first(const uint8_t *msg, size_t len)
+{
+    rdof_mn_reader_t r;
+    rdof_mn_item_t it;
+    rdof_mn_reader(&r, msg, len);
+    return rdof_mn_next(&r, &it) && it.type == RDOF_MN_SETUP;
 }
 
 const char *rdof_mn_setup_op_name(int op)
@@ -1675,6 +1687,10 @@ bool rdof_mn_down_message(rdof_mn_down_t *d, const char *node, bool dl, const ui
         if (d->setup)
             d->setup(d->ctx, &h, &setup, dl, node);
         return true;
+    }
+    if (setup_first(msg, len)) { /* a setup item of the wrong length or op: dropped, never a stream */
+        d->bad++;
+        return false;
     }
     bool fresh;
     rdof_mn_dstream_t *s = find_stream(d, node, h.stream, &fresh);

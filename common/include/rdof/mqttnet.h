@@ -165,8 +165,9 @@ typedef struct {
     uint32_t ref;    /* the request's stream ID that this message answers; 0 in a request */
 } rdof_mn_setup_t;
 
+/* False: no room, or op not 1-6. */
 bool rdof_mn_setup(rdof_mn_writer_t *w, const rdof_mn_setup_t *s);
-/* A setup item's fields. False: not one, or the wrong length. */
+/* A setup item's fields. False: not one, the wrong length, or op not 1-6. */
 bool rdof_mn_setup_of(const rdof_mn_item_t *it, rdof_mn_setup_t *out);
 /* A whole setup message: the header (individual, src, dst, stream, path; seq 0) and one setup item. Returns the
    length, 0 when cap is too small. */
@@ -350,7 +351,8 @@ typedef struct rdof_mn_down {
 } rdof_mn_down_t;
 
 void rdof_mn_down_init(rdof_mn_down_t *d);
-/* A message from node (the topic's), on dl or not, at now. False: not a call message (dropped, counted). */
+/* A message from node (the topic's), on dl or not, at now. False: not a call message, or one whose first item is a
+   setup item that isn't valid (dropped, counted in bad). */
 bool rdof_mn_down_message(rdof_mn_down_t *d, const char *node, bool dl, const uint8_t *msg, size_t len, double now);
 /* Streams with nothing for RDOF_MN_DOWN_IDLE_S end (a terminator goes out after voice). */
 void rdof_mn_down_tick(rdof_mn_down_t *d, double now);
