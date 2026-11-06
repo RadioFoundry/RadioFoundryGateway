@@ -1609,9 +1609,13 @@ static void mn_burst(void *ctx, const rdof_net_burst_t *b, int path, bool dl, ui
     if (rdof_siteroute_burst_on(&SR, sr_mqtt, only, (flags & RDOF_MN_F_EMERGENCY) != 0, b, now_s()))
         mq_calls_in++;
 }
-static void mn_data(void *ctx, const rdof_mn_hdr_t *h, bool confirmed, const char *from)
+/* the path and slot are this box's: a dl message's path byte, else not known until the transmitter ends it (a tg
+   message's path byte and slot flag are the publisher's) */
+static void mn_data(void *ctx, const rdof_mn_hdr_t *h, bool confirmed, bool dl, const char *from)
 {
-    rdof_mn_results_add(&mn_results, h, confirmed, from, h->path, now_s());
+    const int k = dl && h->path < rcfg.site.npath ? h->path : -1;
+    const rdof_path_t *p = k >= 0 ? &rcfg.site.path[k] : NULL;
+    rdof_mn_results_add(&mn_results, h, confirmed, from, k, p ? (p->slot ? p->slot : p->tx_slot) : 0, now_s());
 }
 
 static void mn_message(void *ctx, const char *topic, const void *data, int len)
@@ -1786,7 +1790,7 @@ static void mn_tx(const char *action, const rdof_tx_call_info_t *c)
                          sizeof buf))
         rdofmq_publish(MN, mn_act, buf, -1, 1, false);
     rdof_mn_pending_t p;
-    const char *r = end ? rdof_mn_results_sent(&mn_results, stream, now_s(), &p) : NULL;
+    const char *r = end ? rdof_mn_results_sent(&mn_results, stream, path, c->slot, now_s(), &p) : NULL;
     if (r)
         mn_result(r, &p);
 }
