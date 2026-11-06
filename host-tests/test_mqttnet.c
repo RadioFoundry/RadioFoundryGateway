@@ -659,10 +659,11 @@ static void test_reused_slot(void)
 /* data_result: the downlink's data hook, then the transmitter's end, the radio's answer or none. */
 static rdof_mn_results_t results;
 static int data_calls;
-static void on_data(void *ctx, const rdof_mn_hdr_t *h, bool confirmed, const char *from)
+static void on_data(void *ctx, const rdof_mn_hdr_t *h, bool confirmed, bool dl, const char *from)
 {
     data_calls++;
-    rdof_mn_results_add(&results, h, confirmed, from, h->path, 0);
+    /* as the boxes do: a dl message's path is this box's (here slot 1), a tg message's is the publisher's */
+    rdof_mn_results_add(&results, h, confirmed, from, dl ? h->path : -1, dl ? 1 : 0, 0);
 }
 
 static void test_results(void)
@@ -678,30 +679,32 @@ static void test_results(void)
         static rdof_mn_down_t d;
         rdof_mn_down_init(&d);
         d.data = on_data;
-        for (int m = 0; m < o->nmsg; m++)
-            rdof_mn_down_message(&d, "box-b", true, o->msg[m].msg, o->msg[m].len, 0);
+        for (int m = 0; m < o->nmsg; m++) /* the unconfirmed call as a tg message, the confirmed one on dl */
+            rdof_mn_down_message(&d, "box-b", k == 1, o->msg[m].msg, o->msg[m].len, 0);
         rdof_mn_parse(o->msg[0].msg, o->msg[0].len, &hs[k]);
     }
     CHECK(data_calls == 2);
     rdof_mn_pending_t p;
-    /* unconfirmed: done when it's sent */
-    const char *r = rdof_mn_results_sent(&results, hs[0].stream, 1.0, &p);
-    CHECK(r && !strcmp(r, "unconfirmed") && p.dst == 9990002 && !strcmp(p.from, "box-b") && p.path == 1);
-    /* confirmed: the radio's ACK, from the called radio to the caller */
-    CHECK(!rdof_mn_results_sent(&results, hs[1].stream, 1.0, &p));
+    /* unconfirmed: done when it's sent, on the path and slot the transmitter used (not the publisher's path 1) */
+    CHECK(results.p[0].path == -1 && results.p[0].slot == 0 && hs[0].path == 1);
+    const char *r = rdof_mn_results_sent(&results, hs[0].stream, 2, 2, 1.0, &p);
+    CHECK(r && !strcmp(r, "unconfirmed") && p.dst == 9990002 && !strcmp(p.from, "box-b") && p.path == 2 &&
+          p.slot == 2);
+    /* confirmed: the radio's ACK, from the called radio to the caller; the dl path stays when the end has none */
+    CHECK(!rdof_mn_results_sent(&results, hs[1].stream, -1, 0, 1.0, &p));
     CHECK(!rdof_mn_results_response(&results, 9990001, 9990002, 0, 1, &p)); /* the other way round: not it */
     r = rdof_mn_results_response(&results, 9990002, 9990001, 0, 1, &p);
-    CHECK(r && !strcmp(r, "delivered") && p.confirmed);
+    CHECK(r && !strcmp(r, "delivered") && p.confirmed && p.path == 1 && p.slot == 1);
     /* no answer, and never on air */
-    rdof_mn_results_add(&results, &hs[1], true, "box-b", 1, 2.0);
-    CHECK(!rdof_mn_results_sent(&results, hs[1].stream, 2.5, &p));
+    rdof_mn_results_add(&results, &hs[1], true, "box-b", 1, 1, 2.0);
+    CHECK(!rdof_mn_results_sent(&results, hs[1].stream, 1, 1, 2.5, &p));
     CHECK(!rdof_mn_results_tick(&results, 3.4, &p));
     r = rdof_mn_results_tick(&results, 3.6, &p);
     CHECK(r && !strcmp(r, "no_response"));
-    rdof_mn_results_add(&results, &hs[1], true, "box-b", 1, 10.0);
+    rdof_mn_results_add(&results, &hs[1], true, "box-b", 1, 1, 10.0);
     r = rdof_mn_results_response(&results, 9990002, 9990001, 1, 0, &p);
     CHECK(r && !strcmp(r, "failed")); /* a NAK */
-    rdof_mn_results_add(&results, &hs[0], false, "box-b", 1, 20.0);
+    rdof_mn_results_add(&results, &hs[0], false, "box-b", 1, 1, 20.0);
     CHECK(!rdof_mn_results_tick(&results, 24.0, &p));
     r = rdof_mn_results_tick(&results, 25.5, &p);
     CHECK(r && !strcmp(r, "failed") && !rdof_mn_results_tick(&results, 26, &p));

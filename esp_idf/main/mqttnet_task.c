@@ -190,9 +190,13 @@ static void burst(void *ctx, const rdof_net_burst_t *b, int path, bool dl, uint8
     site_mn_burst(only, (flags & RDOF_MN_F_EMERGENCY) != 0, b);
 }
 
-static void data(void *ctx, const rdof_mn_hdr_t *h, bool confirmed, const char *from)
+/* The path and slot are this box's: a dl message's path byte, else not known until the transmitter ends it (a tg
+   message's path byte and slot flag are the publisher's). */
+static void data(void *ctx, const rdof_mn_hdr_t *h, bool confirmed, bool dl, const char *from)
 {
-    rdof_mn_results_add(&M->results, h, confirmed, from, h->path, mono());
+    const int k = dl && h->path < M->site->npath ? h->path : -1;
+    const rdof_path_t *p = k >= 0 ? &M->site->path[k] : NULL;
+    rdof_mn_results_add(&M->results, h, confirmed, from, k, p ? (p->slot ? p->slot : p->tx_slot) : 0, mono());
 }
 
 /* A call setup on our dl (mqtt-net.md section 9.4). This box is Tier II: it can't ask the radio, so it answers a
@@ -402,7 +406,7 @@ static void handle_tx(const tx_in_t *t)
                          from, buf, sizeof buf))
         pub(M->act, buf, 0, 1, false);
     rdof_mn_pending_t p;
-    const char *r = t->end ? rdof_mn_results_sent(&M->results, t->stream, mono(), &p) : NULL;
+    const char *r = t->end ? rdof_mn_results_sent(&M->results, t->stream, path, t->slot, mono(), &p) : NULL;
     if (r)
         result(r, &p);
 }

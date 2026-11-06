@@ -341,8 +341,9 @@ typedef struct rdof_mn_down {
     int max_preambles; /* the most CSBK preambles sent for a csbk item's count (default 8) */
     /* a burst to transmit: path the message's path byte (RDOF_MN_PATH_NONE: none), dl: from {root}/dl/{node} */
     void (*burst)(void *ctx, const rdof_net_burst_t *b, int path, bool dl, uint8_t flags, const char *from);
-    /* a data call's bursts went to burst (all of them, just now): for its data_result (rdof_mn_results_t); NULL none */
-    void (*data)(void *ctx, const rdof_mn_hdr_t *h, bool confirmed, const char *from);
+    /* a data call's bursts went to burst (all of them, just now): for its data_result (rdof_mn_results_t); NULL none.
+       dl: from {root}/dl/{node}, so h->path is this box's path (else it is the publisher's) */
+    void (*data)(void *ctx, const rdof_mn_hdr_t *h, bool confirmed, bool dl, const char *from);
     /* a setup message (section 9.4): never bursts; NULL: dropped (counted in setups too) */
     void (*setup)(void *ctx, const rdof_mn_hdr_t *h, const rdof_mn_setup_t *s, bool dl, const char *from);
     void *ctx;
@@ -377,12 +378,16 @@ typedef struct {
     rdof_mn_pending_t p[RDOF_MN_PENDING];
 } rdof_mn_results_t;
 
-/* A data call handed to the transmitters (the downlink's data hook). The oldest pending one makes room. */
+/* A data call handed to the transmitters (the downlink's data hook). path, slot: this box's path and slot it goes
+   out on, when known (a dl message's path byte), else -1 and 0: never the header's, which on a tg message are the
+   publisher's. The oldest pending one makes room. */
 void rdof_mn_results_add(rdof_mn_results_t *r, const rdof_mn_hdr_t *h, bool confirmed, const char *from, int path,
-                         double now);
+                         int slot, double now);
 /* Each returns a result ("unconfirmed", "delivered", "failed", "no_response") with the call in out, NULL none.
-   sent: the transmitter finished stream (its tx "end"); an unconfirmed call is done then. */
-const char *rdof_mn_results_sent(rdof_mn_results_t *r, uint32_t stream, double now, rdof_mn_pending_t *out);
+   sent: the transmitter finished stream (its tx "end") on path and slot (-1, 0: not known; the ones held stay); an
+   unconfirmed call is done then. */
+const char *rdof_mn_results_sent(rdof_mn_results_t *r, uint32_t stream, int path, int slot, double now,
+                                 rdof_mn_pending_t *out);
 /* response: a radio's data response heard (rdof_mn_up_t.response): from src, to dst; ACK (class 0, type 1)
    delivered, the others failed. */
 const char *rdof_mn_results_response(rdof_mn_results_t *r, uint32_t src, uint32_t dst, int klass, int type,

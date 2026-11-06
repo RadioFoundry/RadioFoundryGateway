@@ -542,7 +542,7 @@ size_t rdof_mn_data_result_event(const char *node, double wall, int path, int sl
 /* ── data_result ─────────────────────────────────────────────────────────── */
 
 void rdof_mn_results_add(rdof_mn_results_t *r, const rdof_mn_hdr_t *h, bool confirmed, const char *from, int path,
-                         double now)
+                         int slot, double now)
 {
     int k, use = 0;
     for (k = 0; k < RDOF_MN_PENDING; k++) {
@@ -561,7 +561,7 @@ void rdof_mn_results_add(rdof_mn_results_t *r, const rdof_mn_hdr_t *h, bool conf
     p->src = h->src;
     p->dst = h->dst;
     p->path = path;
-    p->slot = (h->flags & RDOF_MN_F_SLOT2) ? 2 : 1;
+    p->slot = slot;
     snprintf(p->from, sizeof p->from, "%s", from ? from : "");
     p->at = now;
 }
@@ -573,12 +573,17 @@ static const char *result_done(rdof_mn_pending_t *p, rdof_mn_pending_t *out, con
     return result;
 }
 
-const char *rdof_mn_results_sent(rdof_mn_results_t *r, uint32_t stream, double now, rdof_mn_pending_t *out)
+const char *rdof_mn_results_sent(rdof_mn_results_t *r, uint32_t stream, int path, int slot, double now,
+                                 rdof_mn_pending_t *out)
 {
     for (int k = 0; k < RDOF_MN_PENDING; k++) {
         rdof_mn_pending_t *p = &r->p[k];
         if (!p->used || p->sent || p->stream != stream)
             continue;
+        if (path >= 0)
+            p->path = path;
+        if (slot > 0)
+            p->slot = slot;
         if (!p->confirmed)
             return result_done(p, out, "unconfirmed");
         p->sent = true;
@@ -1642,7 +1647,7 @@ static void down_data(rdof_mn_down_t *d, rdof_mn_dstream_t *s, int rate, int nh,
         emit(d, s, controls[k], bursts[k], false, dl);
     s->ended = true;
     if (d->data)
-        d->data(d->ctx, &s->h, nh > 0 && (headers[0] & 0x0F) == RDOF_DPF_CONFIRMED, s->node);
+        d->data(d->ctx, &s->h, nh > 0 && (headers[0] & 0x0F) == RDOF_DPF_CONFIRMED, dl, s->node);
 }
 #endif
 
