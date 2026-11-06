@@ -9,6 +9,7 @@
 
 #include "mqttnet_scenes.h"
 #include "rdof/jsonp.h"
+#include "rdof/mnctl.h"
 #include "rdof/router.h"
 #include "rdof/site.h"
 
@@ -801,6 +802,369 @@ static void test_config(void)
     CHECK(strstr(res, "\"format\":\"v3\",\"bundle\":3,\"raw_tx\":true,\"transport\":\"mqtt/tls\"") != NULL);
 }
 
+/* ── call setup (section 9.4) ── */
+
+static int setup_calls;
+static rdof_mn_hdr_t setup_h;
+static rdof_mn_setup_t setup_s;
+static bool setup_dl;
+static char setup_from[40];
+
+static void on_setup(void *ctx, const rdof_mn_hdr_t *h, const rdof_mn_setup_t *s, bool dl, const char *from)
+{
+    setup_calls++;
+    setup_h = *h;
+    setup_s = *s;
+    setup_dl = dl;
+    snprintf(setup_from, sizeof setup_from, "%s", from);
+}
+
+static int bursts_seen;
+static void count_burst(void *ctx, const rdof_net_burst_t *b, int path, bool dl, uint8_t flags, const char *from)
+{
+    bursts_seen++;
+}
+
+static void test_setup(void)
+{
+    /* section 13's vectors: a request from 3100123 to 3100456, and a Tier II box's answer */
+    uint8_t msg[64], want[64];
+    const rdof_mn_setup_t req = {.op = RDOF_MN_SETUP_REQUEST};
+    size_t n = rdof_mn_setup_msg(msg, sizeof msg, 0x12345678, 3100123, 3100456, RDOF_MN_PATH_NONE, &req);
+    size_t w = unhex("03 00 FF 00 78 56 34 12 DB 4D 2F 28 4F 2F 0C 08 01 00 00 00 00 00 00 00", want, sizeof want);
+    CHECK(n == w && !memcmp(msg, want, w));
+    rdof_mn_hdr_t h;
+    rdof_mn_setup_t s;
+    CHECK(rdof_mn_setup_parse(msg, n, &h, &s) && h.src == 3100123 && h.dst == 3100456 && !(h.flags & RDOF_MN_F_GROUP) &&
+          s.op == RDOF_MN_SETUP_REQUEST && s.ref == 0);
+    CHECK(rdof_mn_count(msg, n) == 1);
+    /* heard on path 1: accept, unconfirmed, ref the request's stream, from the called radio to the caller */
+    uint8_t ans[64];
+    size_t a = rdof_mn_setup_answer(&h, &s, 1, 0x0BADCAFE, ans, sizeof ans);
+    w = unhex("03 00 01 00 FE CA AD 0B 28 4F 2F DB 4D 2F 0C 08 02 00 02 00 78 56 34 12", want, sizeof want);
+    CHECK(a == w && !memcmp(ans, want, w));
+    /* not heard: reject not_found, path 0xFF */
+    a = rdof_mn_setup_answer(&h, &s, -1, 0x0BADCAFE, ans, sizeof ans);
+    rdof_mn_hdr_t ah;
+    rdof_mn_setup_t as;
+    CHECK(rdof_mn_setup_parse(ans, a, &ah, &as) && as.op == RDOF_MN_SETUP_REJECT && as.reason == RDOF_MN_WHY_NOT_FOUND &&
+          !(as.flags & RDOF_MN_SETUP_UNCONFIRMED) && ah.path == RDOF_MN_PATH_NONE && as.ref == 0x12345678);
+    /* only a request gets an answer */
+    const rdof_mn_setup_t cancel = {.op = RDOF_MN_SETUP_CANCEL, .ref = 7};
+    CHECK(rdof_mn_setup_answer(&h, &cancel, 1, 1, ans, sizeof ans) == 0);
+    CHECK(rdof_mn_setup_answer(&h, &s, 1, 1, ans, 20) == 0); /* too small */
+    /* names */
+    CHECK(!strcmp(rdof_mn_setup_op_name(RDOF_MN_SETUP_ALERTING), "alerting") && !strcmp(rdof_mn_setup_op_name(9), "?"));
+    CHECK(!strcmp(rdof_mn_setup_why_name(RDOF_MN_WHY_CONGESTION), "congestion"));
+    /* a wrong length is not a setup item, and item_ok says so */
+    uint8_t bad[] = {0x03, 0, 0xFF, 0, 1, 0, 0, 0, 1, 0, 0, 2, 0, 0, 0x0C, 0x07, 1, 0, 0, 0, 0, 0, 0};
+    CHECK(!rdof_mn_setup_parse(bad, sizeof bad, &h, &s));
+    rdof_mn_item_t it = {.type = RDOF_MN_SETUP, .value = bad + 16, .len = 7};
+    CHECK(!rdof_mn_item_ok(&it));
+    /* the downlink hands setups to its hook and makes no bursts */
+    static rdof_mn_down_t d;
+    rdof_mn_down_init(&d);
+    d.burst = count_burst;
+    d.setup = on_setup;
+    bursts_seen = setup_calls = 0;
+    CHECK(rdof_mn_down_message(&d, "router", true, msg, n, 1.0));
+    CHECK(setup_calls == 1 && setup_dl && !strcmp(setup_from, "router") && setup_s.op == RDOF_MN_SETUP_REQUEST &&
+          setup_h.stream == 0x12345678 && d.setups == 1 && bursts_seen == 0);
+    rdof_mn_down_tick(&d, 5.0);
+    CHECK(bursts_seen == 0); /* no stream was opened, so nothing ends */
+    /* without a hook: dropped, counted */
+    d.setup = NULL;
+    CHECK(rdof_mn_down_message(&d, "box-b", false, ans, a, 6.0) && d.setups == 2 && bursts_seen == 0);
+    /* events */
+    char ev[512];
+    const rdof_mn_ev_t e = {.node = "site-a", .wall = 1793912651.25, .path = 2, .slot = 0, .source = "net",
+                            .stream = 0x12345678};
+    CHECK(rdof_mn_setup_event(&e, 3100123, 3100456, RDOF_MN_SETUP_REJECT, RDOF_MN_WHY_NOT_FOUND, "router", ev,
+                              sizeof ev) > 0);
+    CHECK(strstr(ev, "\"ev\":\"setup\"") && strstr(ev, "\"op\":\"reject\",\"reason\":\"not_found\",\"peer\":\"router\""));
+    CHECK(strstr(ev, "\"at\":\"2026-11-05T21:04:11.250Z\"") || !printf("  %s\n", ev));
+    const uint32_t tgs[] = {91, 3100};
+    rdof_mn_reg_event(&e, 3100123, "register", tgs, 2, ev, sizeof ev);
+    CHECK(strstr(ev, "\"ev\":\"reg\"") && strstr(ev, "\"action\":\"register\",\"tg\":[91,3100]"));
+    rdof_mn_grant_event(&e, 3100123, 91, true, 2, 1, true, ev, sizeof ev);
+    CHECK(strstr(ev, "\"src\":3100123,\"dst\":91,\"group\":true,\"chan\":2,\"lcn\":1,\"late\":true") != NULL);
+    rdof_mn_queue_event(&e, 3100123, 91, true, "drop", "timeout", ev, sizeof ev);
+    CHECK(strstr(ev, "\"action\":\"drop\",\"why\":\"timeout\"") && strstr(ev, "\"path\":2,\"slot\":0,\"source\":\"net\""));
+    const rdof_mn_ev_t e2 = {.node = "site-a", .wall = 0, .path = -1, .slot = 1};
+    rdof_mn_queue_event(&e2, 1, 2, false, "in", NULL, ev, sizeof ev);
+    CHECK(strstr(ev, "\"path\":null") && strstr(ev, "\"source\":\"rf\"") && !strstr(ev, "why"));
+}
+
+/* ── registration records, where, status, the trunk object ── */
+
+static void test_records(void)
+{
+    int64_t ms;
+    CHECK(rdof_mn_iso_parse("2026-11-05T21:04:11.250Z", &ms) && ms == 1793912651250LL);
+    CHECK(rdof_mn_iso_parse("1970-01-01T00:00:00Z", &ms) && ms == 0);
+    CHECK(rdof_mn_iso_parse("2000-03-01T00:00:00.5Z", &ms) && ms == 951868800500LL);
+    CHECK(!rdof_mn_iso_parse("2026-11-05 21:04:11Z", &ms) && !rdof_mn_iso_parse("2026-13-05T21:04:11Z", &ms) &&
+          !rdof_mn_iso_parse("2026-11-05T21:04:11", &ms) && !rdof_mn_iso_parse(NULL, &ms));
+
+    char t[128], node[40];
+    uint32_t id;
+    CHECK(rdof_mn_ms_topic(t, sizeof t, "DMR", "site-a", 3100123) && !strcmp(t, "DMR/node/site-a/ms/3100123"));
+    CHECK(rdof_mn_ms_topic_parse(t, "DMR", node, sizeof node, &id) && !strcmp(node, "site-a") && id == 3100123);
+    CHECK(!rdof_mn_ms_topic_parse("DMR/node/site-a/info", "DMR", node, sizeof node, &id));
+    CHECK(!rdof_mn_ms_topic_parse("DMR/node/site-a/ms/031", "DMR", node, sizeof node, &id));
+    CHECK(!rdof_mn_ms_topic_parse("XYZ/node/site-a/ms/31", "DMR", node, sizeof node, &id));
+    CHECK(rdof_mn_where_topic(t, sizeof t, "DMR", 42) && !strcmp(t, "DMR/where/42"));
+    CHECK(rdof_mn_where_topic_parse(t, "DMR", &id) && id == 42 && !rdof_mn_where_topic_parse("DMR/where/x", "DMR", &id));
+
+    /* section 15.3's example */
+    rdof_mn_record_t r = {.id = 3100123, .at_ms = 1793912651250LL, .exp_ms = 1793927051000LL, .tg = {91, 3100},
+                          .ntg = 2, .sub = 91, .area = 3};
+    char j[512];
+    const size_t n = rdof_mn_record_json(&r, j, sizeof j);
+    CHECK(n > 0 && !strcmp(j, "{\"id\":3100123,\"at\":\"2026-11-05T21:04:11.250Z\",\"exp\":\"2026-11-06T01:04:11.000Z\","
+                              "\"how\":\"register\",\"tg\":[91,3100],\"sub\":91,\"area\":3}") ||
+          !printf("  %s\n", j));
+    rdof_mn_record_t b;
+    char err[96];
+    CHECK(rdof_mn_record_parse(j, n, &b, err, sizeof err) && !memcmp(&b, &r, sizeof r));
+    static const char implicit[] = "{\"id\":7,\"at\":\"2026-11-05T21:04:11Z\",\"exp\":\"2026-11-05T22:04:11Z\",\"how\":\"call\"}";
+    CHECK(rdof_mn_record_parse(implicit, sizeof implicit - 1, &b, err, sizeof err) && b.implicit && b.ntg == 0 &&
+          b.area == -1 && b.sub == 0);
+    static const char noexp[] = "{\"id\":7,\"at\":\"2026-11-05T21:04:11Z\"}";
+    CHECK(!rdof_mn_record_parse(noexp, sizeof noexp - 1, &b, err, sizeof err) && strstr(err, "exp"));
+    CHECK(!rdof_mn_record_parse("[]", 2, &b, err, sizeof err));
+
+    static const char where[] =
+        "{\"node\":\"site-b\",\"path\":{\"i\":1,\"name\":\"site\"},\"at\":\"2026-11-05T21:04:11.250Z\",\"source\":\"reg\"}";
+    rdof_mn_where_t wh;
+    CHECK(rdof_mn_where_parse(where, sizeof where - 1, &wh, err, sizeof err) && !strcmp(wh.node, "site-b") &&
+          wh.path == 1 && wh.reg && wh.at_ms == 1793912651250LL);
+    static const char heard[] = "{\"node\":\"box\",\"at\":\"2026-11-05T21:04:11Z\",\"rssi\":-90}";
+    CHECK(rdof_mn_where_parse(heard, sizeof heard - 1, &wh, err, sizeof err) && !wh.reg && wh.path == -1);
+
+    /* status: a trunked site's part */
+    const rdof_mn_chan_status_t ch[] = {{.chan = 1, .lcn = 0, .use = "tscc"},
+                                        {.chan = 1, .lcn = 1, .use = "call", .src = 3100123, .dst = 91, .group = true,
+                                         .since_ms = 1793912651250LL},
+                                        {.chan = 2, .lcn = 0, .use = "idle"}};
+    const rdof_mn_trunk_status_t ts = {.connected = true, .regs = 41, .ch = ch, .nch = 3, .grants = 5};
+    const rdof_mn_status_t st = {.node = "site-a", .firmware = "0.9", .wall = 1793912651.25, .uptime_s = 12.7,
+                                 .trunk = &ts};
+    static char out[2048];
+    CHECK(rdof_mn_status_json(&st, out, sizeof out) > 0);
+    CHECK(strstr(out, "\"uptime_s\":12,\"trunk\":{\"connected\":true,\"regs\":41,\"queue\":0,\"channels\":["
+                      "{\"chan\":1,\"lcn\":0,\"use\":\"tscc\"},{\"chan\":1,\"lcn\":1,\"use\":\"call\",\"src\":3100123,"
+                      "\"dst\":91,\"group\":true,\"since\":\"2026-11-05T21:04:11.250Z\"},{\"chan\":2,\"lcn\":0,"
+                      "\"use\":\"idle\"}],\"counters\":{\"aloha\":0,\"rand\":0,\"collisions\":0,\"grants\":5,") ||
+          !printf("  %s\n", out));
+    static rdof_jnode_t nd[200];
+    static char sb[2048];
+    rdof_jdoc_t jd = {nd, 200, 0, sb, sizeof sb, 0, {0}};
+    CHECK(rdof_jparse(&jd, out, strlen(out)) >= 0);
+    const rdof_mn_status_t plain = {.node = "box"};
+    CHECK(rdof_mn_status_json(&plain, out, sizeof out) > 0 && !strstr(out, "trunk"));
+    CHECK(rdof_mn_status_json(&st, out, 100) == 0); /* too small */
+
+    /* the trunk object of info */
+    const rdof_mn_carrier_t a = {.chan = 1, .tx_hz = 438750000, .rx_hz = 438250000, .cc = 1};
+    const rdof_mn_carrier_t cs[] = {{.chan = 1, .tx_hz = 438750000, .rx_hz = 438250000, .cc = -1},
+                                    {.chan = 2, .tx_hz = 438600000, .rx_hz = 438500000, .cc = -1}};
+    const char *const svc[] = {"reg", "group", "private", "allcall"};
+    const rdof_mn_trunk_info_t ti = {.model = "small", .net = 5, .site = 3, .par = "ab", .area_bits = 5, .tscc = &a,
+                                     .ntscc = 1, .carriers = cs, .ncarriers = 2, .services = svc, .nservices = 4,
+                                     .reg = true};
+    char tj[1024];
+    CHECK(rdof_mn_trunk_info_json(&ti, tj, sizeof tj) > 0);
+    CHECK(!strcmp(tj, "{\"system\":{\"model\":\"small\",\"net\":5,\"site\":3,\"par\":\"ab\",\"area_bits\":5},"
+                      "\"tscc\":[{\"chan\":1,\"tx_hz\":438750000,\"rx_hz\":438250000,\"cc\":1}],"
+                      "\"carriers\":[{\"chan\":1,\"tx_hz\":438750000,\"rx_hz\":438250000},"
+                      "{\"chan\":2,\"tx_hz\":438600000,\"rx_hz\":438500000}],"
+                      "\"services\":[\"reg\",\"group\",\"private\",\"allcall\"],\"reg\":true}") ||
+          !printf("  %s\n", tj));
+    /* in info: the path marked, the object added */
+    static rdof_site_t s;
+    CHECK(rdof_site_parse(SITE, sizeof SITE - 1, &s, err, sizeof err));
+    const int net = rdof_site_net(&s, "mqtt");
+    const rdof_mn_info_t in = {.node = "box-a", .trunk_paths = 1ull << rdof_site_path(&s, "R1/1"), .trunk = tj};
+    static char info[4096];
+    CHECK(rdof_mn_info_json(&s, net, &in, info, sizeof info) > 0);
+    CHECK(strstr(info, "\"app\":\"repeater\",\"trunk\":true") && strstr(info, "],\"trunk\":{\"system\":"));
+    jd.n = 0;
+    static rdof_jnode_t nd2[512];
+    static char sb2[8192];
+    rdof_jdoc_t jd2 = {nd2, 512, 0, sb2, sizeof sb2, 0, {0}};
+    CHECK(rdof_jparse(&jd2, info, strlen(info)) >= 0);
+}
+
+/* ── provisioning ── */
+
+static int cache_lines;
+static char cache_text[16][1024];
+static void on_line(void *ctx, const char *text, size_t len)
+{
+    if (cache_lines < 16)
+        snprintf(cache_text[cache_lines], sizeof cache_text[0], "%.*s", (int)len, text);
+    cache_lines++;
+}
+
+static rdof_mn_cfg_result_t put(rdof_mn_cfg_t *c, const char *topic, const char *doc, char *note)
+{
+    return rdof_mn_cfg_message(c, "DMR", topic, doc, strlen(doc), note, 128);
+}
+
+static void test_cfg(void)
+{
+    static rdof_mn_cfg_t c, c2;
+    rdof_mn_cfg_init(&c, "site-a");
+    char note[128], t[80];
+    CHECK(rdof_mn_cfg_topic(t, sizeof t, "DMR", "net", NULL, 0) && !strcmp(t, "DMR/cfg/net"));
+    CHECK(rdof_mn_cfg_topic(t, sizeof t, "DMR", "node", "site-a", 0) && !strcmp(t, "DMR/cfg/node/site-a"));
+    CHECK(rdof_mn_cfg_topic(t, sizeof t, "DMR", "ms", NULL, 3100123) && !strcmp(t, "DMR/cfg/ms/3100123"));
+
+    /* section 17's net document */
+    CHECK(put(&c, "DMR/cfg/net",
+              "{\"rev\":12,\"at\":\"2026-11-05T21:00:00Z\",\"system\":{\"model\":\"small\",\"net\":5},"
+              "\"registration\":\"listed\",\"ms\":\"3100000-3199999\",\"refuse_unlisted\":\"denied\","
+              "\"private\":\"*\",\"wide_tg\":\"1-99999\",\"timers\":{\"hang_s\":3,\"tp_s\":20}}",
+              note) == RDOF_MN_CFG_APPLIED);
+    CHECK(note[0] == 0);
+    CHECK(put(&c, "DMR/cfg/net", "{\"rev\":12,\"registration\":\"open\"}", note) == RDOF_MN_CFG_OLD);
+    CHECK(put(&c, "DMR/cfg/net", "{\"rev\":11,\"registration\":\"open\"}", note) == RDOF_MN_CFG_OLD);
+    CHECK(put(&c, "DMR/cfg/node/site-a",
+              "{\"rev\":3,\"site\":3,\"area_bits\":5,\"neighbors\":[4,7],\"static_tg\":\"91\",\"timers\":{\"hang_s\":5},"
+              "\"frequencies\":[438.5],\"color\":\"red\"}",
+              note) == RDOF_MN_CFG_APPLIED);
+    CHECK(!strcmp(note, "ignored: frequencies, color") || !printf("  %s\n", note));
+    CHECK(put(&c, "DMR/cfg/node/site-b", "{\"rev\":9}", note) == RDOF_MN_CFG_NOT_CFG); /* another node's */
+    CHECK(put(&c, "DMR/node/site-a/info", "{}", note) == RDOF_MN_CFG_NOT_CFG);
+    CHECK(put(&c, "DMR/cfg/node/site-a", "{\"site\":4}", note) == RDOF_MN_CFG_BAD && strstr(note, "rev"));
+    CHECK(put(&c, "DMR/cfg/node/site-a", "{\"rev\":9,\"registration\":\"maybe\"}", note) == RDOF_MN_CFG_BAD &&
+          strstr(note, "registration: open or listed"));
+    CHECK(put(&c, "DMR/cfg/node/site-a", "{\"rev\":9,\"ms\":\"5-x\"}", note) == RDOF_MN_CFG_BAD && strstr(note, "ms:"));
+    CHECK(put(&c, "DMR/cfg/net", "{\"rev\":20,\"system\":{\"model\":\"huge\",\"net\":9}}", note) == RDOF_MN_CFG_BAD &&
+          strstr(note, "too large"));
+    CHECK(put(&c, "DMR/cfg/net", "not json", note) == RDOF_MN_CFG_BAD);
+    CHECK(c.net_rev == 12 && c.node_rev == 3); /* nothing bad applied */
+
+    /* the settings under them; then net; then node */
+    rdof_mn_site_cfg_t base, eff;
+    long rev;
+    char err[96];
+    static const char settings[] = "{\"system\":{\"model\":\"small\",\"net\":1,\"site\":1,\"par\":\"a\"},"
+                                   "\"registration\":\"open\",\"tg\":\"1-999999\",\"foacsu\":true,"
+                                   "\"timers\":{\"hang_s\":2,\"call_s\":120}}";
+    CHECK(rdof_mn_site_cfg_parse(settings, sizeof settings - 1, &base, &rev, note, sizeof note, err, sizeof err) &&
+          rev == 0);
+    rdof_mn_cfg_site(&c, &base, &eff);
+    CHECK(eff.model == RDOF_MN_MODEL_SMALL && eff.net == 5 && eff.site == 3 && eff.par == RDOF_MN_PAR_A &&
+          eff.area_bits == 5);
+    CHECK(eff.listed && !eff.refused && eff.foacsu && eff.require_registration && eff.enabled);
+    CHECK(rdof_idset_has(&eff.ms, 3100123) && !rdof_idset_has(&eff.ms, 3200000));
+    CHECK(rdof_idset_has(&eff.tg, 999999) && !rdof_idset_has(&eff.tg, 1000000)); /* the settings' */
+    CHECK(rdof_idset_has(&eff.wide_tg, 91) && !rdof_idset_has(&eff.wide_tg, 100000));
+    CHECK(rdof_idset_has(&eff.static_tg, 91) && eff.nneighbors == 2 && eff.neighbors[1] == 7);
+    CHECK(rdof_mn_cfg_timer(&eff, "hang_s", 0) == 5 && rdof_mn_cfg_timer(&eff, "tp_s", 0) == 20 &&
+          rdof_mn_cfg_timer(&eff, "call_s", 0) == 120 && rdof_mn_cfg_timer(&eff, "nope", -1) == -1);
+    /* no cfg, no settings: the defaults */
+    rdof_mn_cfg_site(NULL, NULL, &eff);
+    CHECK(!eff.listed && eff.enabled && rdof_idset_has(&eff.ms, 1) && rdof_idset_has(&eff.private_, 16777215) &&
+          rdof_idset_empty(&eff.wide_tg));
+
+    /* talkgroups and radios */
+    CHECK(put(&c, "DMR/cfg/tg/91", "{\"rev\":1,\"name\":\"County ops\",\"wide\":true,\"sites\":\"*\",\"ms\":\"*\","
+                                   "\"priority\":2,\"hang_s\":4}",
+              note) == RDOF_MN_CFG_APPLIED);
+    const rdof_mn_tg_cfg_t *tg = rdof_mn_cfg_tg(&c, 91);
+    CHECK(tg && !strcmp(tg->name, "County ops") && tg->has_wide && tg->wide && tg->priority == 2 && tg->hang_s == 4);
+    CHECK(put(&c, "DMR/cfg/tg/3100", "{\"rev\":1,\"sites\":[3,4],\"ms\":\"3100000-3100999\"}", note) ==
+          RDOF_MN_CFG_APPLIED);
+    tg = rdof_mn_cfg_tg(&c, 3100);
+    CHECK(tg && !tg->has_wide && rdof_idset_has(&tg->sites, 4) && !rdof_idset_has(&tg->sites, 5) &&
+          !rdof_idset_has(&tg->ms, 3101000));
+    CHECK(put(&c, "DMR/cfg/tg/3100", "{\"rev\":1,\"priority\":9}", note) == RDOF_MN_CFG_BAD);
+    CHECK(put(&c, "DMR/cfg/ms/3100123", "{\"rev\":4,\"name\":\"Unit 12\",\"enabled\":true,\"private\":false,"
+                                        "\"priority\":1,\"tg\":[91,3100]}",
+              note) == RDOF_MN_CFG_APPLIED);
+    const rdof_mn_ms_cfg_t *ms = rdof_mn_cfg_ms(&c, 3100123);
+    CHECK(ms && ms->enabled && !ms->private_ && ms->wide_private && ms->emergency && ms->priority == 1 && ms->ntg == 2 &&
+          ms->tg[1] == 3100);
+    CHECK(put(&c, "DMR/cfg/ms/3100124", "{\"rev\":1,\"enabled\":false}", note) == RDOF_MN_CFG_APPLIED);
+    CHECK(!rdof_mn_cfg_ms(&c, 3100124)->enabled);
+    CHECK(put(&c, "DMR/cfg/ms/0", "{\"rev\":1}", note) == RDOF_MN_CFG_NOT_CFG);
+    CHECK(put(&c, "DMR/cfg/ms/3100124", "{\"rev\":1,\"enabled\":true}", note) == RDOF_MN_CFG_OLD);
+    CHECK(put(&c, "DMR/cfg/ms/3100124", "{\"rev\":2,\"enabled\":true}", note) == RDOF_MN_CFG_APPLIED &&
+          rdof_mn_cfg_ms(&c, 3100124)->enabled);
+
+    /* the cache: written, then read into a fresh store, the same values */
+    cache_lines = 0;
+    rdof_mn_cfg_cache(&c, on_line, NULL);
+    CHECK(cache_lines == 6);
+    CHECK(!strncmp(cache_text[0], "cfg/net\t{\"rev\":12,", 18) && !strncmp(cache_text[1], "cfg/node/site-a\t", 16));
+    rdof_mn_cfg_init(&c2, "site-a");
+    for (int i = 0; i < cache_lines && i < 16; i++)
+        CHECK(rdof_mn_cfg_cache_line(&c2, cache_text[i], strlen(cache_text[i])) == RDOF_MN_CFG_APPLIED ||
+              !printf("  %s\n", cache_text[i]));
+    rdof_mn_site_cfg_t e1, e2;
+    rdof_mn_cfg_site(&c, &base, &e1);
+    rdof_mn_cfg_site(&c2, &base, &e2);
+    CHECK(!memcmp(&e1, &e2, sizeof e1));
+    CHECK(c2.ntg == 2 && c2.nms == 2 && !memcmp(rdof_mn_cfg_ms(&c2, 3100123), ms, sizeof *ms) &&
+          !memcmp(rdof_mn_cfg_tg(&c2, 91), rdof_mn_cfg_tg(&c, 91), sizeof(rdof_mn_tg_cfg_t)));
+    /* a cache line older than what the broker gave is ignored */
+    CHECK(rdof_mn_cfg_cache_line(&c2, cache_text[0], strlen(cache_text[0])) == RDOF_MN_CFG_OLD);
+    CHECK(rdof_mn_cfg_cache_line(&c2, "garbage", 7) == RDOF_MN_CFG_BAD);
+
+    /* deletion: an empty retained message */
+    CHECK(rdof_mn_cfg_message(&c, "DMR", "DMR/cfg/ms/3100124", "", 0, note, sizeof note) == RDOF_MN_CFG_DELETED &&
+          !rdof_mn_cfg_ms(&c, 3100124));
+    CHECK(rdof_mn_cfg_message(&c, "DMR", "DMR/cfg/ms/3100124", "", 0, note, sizeof note) == RDOF_MN_CFG_OLD);
+    CHECK(rdof_mn_cfg_message(&c, "DMR", "DMR/cfg/node/site-a", "", 0, note, sizeof note) == RDOF_MN_CFG_DELETED &&
+          c.node_rev == 0);
+    rdof_mn_cfg_site(&c, &base, &eff);
+    CHECK(eff.site == 1 && rdof_mn_cfg_timer(&eff, "hang_s", 0) == 3); /* back to the settings' site, net's timer */
+    /* after a deletion a lower rev is taken again */
+    CHECK(put(&c, "DMR/cfg/node/site-a", "{\"rev\":1,\"enabled\":false}", note) == RDOF_MN_CFG_APPLIED);
+    rdof_mn_cfg_site(&c, &base, &eff);
+    CHECK(!eff.enabled);
+    /* full */
+    for (int i = 0; i < RDOF_MN_CFG_TG + 2; i++) {
+        snprintf(t, sizeof t, "DMR/cfg/tg/%d", 10000 + i);
+        const rdof_mn_cfg_result_t r = put(&c, t, "{\"rev\":1}", note);
+        if (i >= RDOF_MN_CFG_TG - 2)
+            CHECK(r == RDOF_MN_CFG_FULL);
+    }
+}
+
+/* ── commands ── */
+
+static void test_cmd(void)
+{
+    rdof_mn_cmd_t c;
+    char err[96], out[256];
+    static const char dereg[] = "{\"id\":\"c-123\",\"cmd\":\"deregister\",\"ms\":3100123}";
+    CHECK(rdof_mn_cmd_parse(dereg, sizeof dereg - 1, &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_DEREGISTER &&
+          c.ms == 3100123 && !strcmp(c.id, "c-123"));
+    static const char clear[] = "{\"id\":\"c-2\",\"cmd\":\"clear\",\"chan\":2,\"lcn\":1}";
+    CHECK(rdof_mn_cmd_parse(clear, sizeof clear - 1, &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_CLEAR && c.chan == 2 &&
+          c.lcn == 1);
+    static const char clear_bad[] = "{\"id\":\"c-3\",\"cmd\":\"clear\",\"chan\":2,\"lcn\":2}";
+    CHECK(!rdof_mn_cmd_parse(clear_bad, sizeof clear_bad - 1, &c, err, sizeof err) && strstr(err, "lcn") &&
+          !strcmp(c.id, "c-3"));
+    static const char unknown[] = "{\"id\":\"c-4\",\"cmd\":\"reboot\"}";
+    CHECK(!rdof_mn_cmd_parse(unknown, sizeof unknown - 1, &c, err, sizeof err) && !strcmp(err, "unknown command") &&
+          !strcmp(c.id, "c-4") && !strcmp(c.name, "reboot"));
+    static const char noid[] = "{\"cmd\":\"status\"}";
+    CHECK(!rdof_mn_cmd_parse(noid, sizeof noid - 1, &c, err, sizeof err) && strstr(err, "id"));
+    static const char *const simple[] = {"withdraw", "restore", "resend_records", "status"};
+    for (int i = 0; i < 4; i++) {
+        snprintf(out, sizeof out, "{\"id\":\"x\",\"cmd\":\"%s\"}", simple[i]);
+        CHECK(rdof_mn_cmd_parse(out, strlen(out), &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_WITHDRAW + i);
+    }
+    CHECK(rdof_mn_cmd_result_json("c-123", true, NULL, out, sizeof out) && !strcmp(out, "{\"id\":\"c-123\",\"ok\":true}"));
+    CHECK(rdof_mn_cmd_result_json("c-4", false, "unknown command", out, sizeof out) &&
+          !strcmp(out, "{\"id\":\"c-4\",\"ok\":false,\"error\":\"unknown command\"}"));
+}
+
 int main(void)
 {
     test_spec();
@@ -817,6 +1181,10 @@ int main(void)
 #endif
     test_info();
     test_config();
+    test_setup();
+    test_records();
+    test_cfg();
+    test_cmd();
     printf("mqttnet: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

@@ -205,6 +205,7 @@ bool rdof_mn_item_ok(const rdof_mn_item_t *it)
     case RDOF_MN_QUALITY: return it->len == 2;
     case RDOF_MN_TALKER_ALIAS: return it->len >= 1;
     case RDOF_MN_RAW: return it->len == 1 + RDOF_BURST_BYTES;
+    case RDOF_MN_SETUP: return it->len == RDOF_MN_SETUP_LEN;
     case RDOF_MN_DATA_PDU: {
         rdof_mn_pdu_t p;
         return rdof_mn_pdu(it, &p);
@@ -240,6 +241,76 @@ bool rdof_mn_pdu(const rdof_mn_item_t *it, rdof_mn_pdu_t *o)
     o->data = v + 3 + 10 * o->nheaders;
     o->len = it->len - 3 - 10 * (size_t)o->nheaders;
     return true;
+}
+
+/* ── call setup ───────────────────────────────────────────────────────────── */
+
+bool rdof_mn_setup(rdof_mn_writer_t *w, const rdof_mn_setup_t *s)
+{
+    uint8_t v[RDOF_MN_SETUP_LEN] = {s->op, s->reason, s->flags, s->options};
+    put_le32(v + 4, s->ref);
+    return rdof_mn_item(w, RDOF_MN_SETUP, v, sizeof v);
+}
+
+bool rdof_mn_setup_of(const rdof_mn_item_t *it, rdof_mn_setup_t *o)
+{
+    if (it->type != RDOF_MN_SETUP || it->len != RDOF_MN_SETUP_LEN)
+        return false;
+    o->op = it->value[0];
+    o->reason = it->value[1];
+    o->flags = it->value[2];
+    o->options = it->value[3];
+    o->ref = le32(it->value + 4);
+    return true;
+}
+
+size_t rdof_mn_setup_msg(uint8_t *out, size_t cap, uint32_t stream, uint32_t src, uint32_t dst, uint8_t path,
+                         const rdof_mn_setup_t *s)
+{
+    if (cap < RDOF_MN_HEADER + 2 + RDOF_MN_SETUP_LEN)
+        return 0;
+    const rdof_mn_hdr_t h = {.flags = 0, .path = path, .seq = 0, .stream = stream, .src = src, .dst = dst};
+    rdof_mn_writer_t w;
+    rdof_mn_begin(&w, out, cap, &h);
+    rdof_mn_setup(&w, s);
+    return rdof_mn_end(&w);
+}
+
+bool rdof_mn_setup_parse(const uint8_t *msg, size_t len, rdof_mn_hdr_t *h, rdof_mn_setup_t *s)
+{
+    if (!rdof_mn_parse(msg, len, h))
+        return false;
+    rdof_mn_reader_t r;
+    rdof_mn_item_t it;
+    rdof_mn_reader(&r, msg, len);
+    return rdof_mn_next(&r, &it) && rdof_mn_setup_of(&it, s);
+}
+
+const char *rdof_mn_setup_op_name(int op)
+{
+    static const char *const n[] = {"?", "request", "accept", "reject", "alerting", "cancel", "answered"};
+    return op > 0 && op < 7 ? n[op] : "?";
+}
+
+const char *rdof_mn_setup_why_name(int reason)
+{
+    static const char *const n[] = {"ok",           "not_found",     "busy",       "no_answer",
+                                    "refused",      "not_supported", "congestion", "timeout"};
+    return reason >= 0 && reason < 8 ? n[reason] : "?";
+}
+
+size_t rdof_mn_setup_answer(const rdof_mn_hdr_t *h, const rdof_mn_setup_t *req, int heard_path, uint32_t stream,
+                            uint8_t *out, size_t cap)
+{
+    if (req->op != RDOF_MN_SETUP_REQUEST)
+        return 0;
+    const bool here = heard_path >= 0 && heard_path < RDOF_MN_PATH_NONE;
+    const rdof_mn_setup_t a = {.op = here ? RDOF_MN_SETUP_ACCEPT : RDOF_MN_SETUP_REJECT,
+                               .reason = here ? RDOF_MN_WHY_OK : RDOF_MN_WHY_NOT_FOUND,
+                               .flags = here ? RDOF_MN_SETUP_UNCONFIRMED : 0,
+                               .options = req->options,
+                               .ref = h->stream};
+    return rdof_mn_setup_msg(out, cap, stream, h->dst, h->src, here ? (uint8_t)heard_path : RDOF_MN_PATH_NONE, &a);
 }
 
 int rdof_mn_rate_of_dt(int dt)
@@ -368,6 +439,76 @@ size_t rdof_mn_tx_event(const char *node, double wall, int path, int slot, uint3
     rdof_json_int(&j, "dst", dst);
     if (from)
         rdof_json_str(&j, "from", from);
+    return ev_done(&j);
+}
+
+static void ev_common(rdof_json_t *j, char *buf, size_t cap, const char *ev, const rdof_mn_ev_t *e)
+{
+    ev_head(j, buf, cap, ev, e->node, e->wall, e->path, e->slot, e->source ? e->source : "rf", e->stream);
+}
+
+static void ids_array(rdof_json_t *j, const char *key, const uint32_t *ids, int n)
+{
+    char t[16 * 12 + 4];
+    size_t k = 0;
+    t[k++] = '[';
+    for (int i = 0; i < n && k + 12 < sizeof t; i++)
+        k += (size_t)snprintf(t + k, sizeof t - k, "%s%lu", i ? "," : "", (unsigned long)ids[i]);
+    t[k++] = ']';
+    t[k] = 0;
+    rdof_json_raw(j, key, t);
+}
+
+size_t rdof_mn_reg_event(const rdof_mn_ev_t *e, uint32_t src, const char *action, const uint32_t *tg, int ntg,
+                         char *out, size_t cap)
+{
+    rdof_json_t j;
+    ev_common(&j, out, cap, "reg", e);
+    rdof_json_int(&j, "src", src);
+    rdof_json_str(&j, "action", action);
+    ids_array(&j, "tg", tg, tg ? ntg : 0);
+    return ev_done(&j);
+}
+
+size_t rdof_mn_grant_event(const rdof_mn_ev_t *e, uint32_t src, uint32_t dst, bool group, int chan, int lcn, bool late,
+                           char *out, size_t cap)
+{
+    rdof_json_t j;
+    ev_common(&j, out, cap, "grant", e);
+    rdof_json_int(&j, "src", src);
+    rdof_json_int(&j, "dst", dst);
+    rdof_json_bool(&j, "group", group);
+    rdof_json_int(&j, "chan", chan);
+    rdof_json_int(&j, "lcn", lcn);
+    rdof_json_bool(&j, "late", late);
+    return ev_done(&j);
+}
+
+size_t rdof_mn_queue_event(const rdof_mn_ev_t *e, uint32_t src, uint32_t dst, bool group, const char *action,
+                           const char *why, char *out, size_t cap)
+{
+    rdof_json_t j;
+    ev_common(&j, out, cap, "queue", e);
+    rdof_json_int(&j, "src", src);
+    rdof_json_int(&j, "dst", dst);
+    rdof_json_bool(&j, "group", group);
+    rdof_json_str(&j, "action", action);
+    if (why)
+        rdof_json_str(&j, "why", why);
+    return ev_done(&j);
+}
+
+size_t rdof_mn_setup_event(const rdof_mn_ev_t *e, uint32_t src, uint32_t dst, int op, int reason, const char *peer,
+                           char *out, size_t cap)
+{
+    rdof_json_t j;
+    ev_common(&j, out, cap, "setup", e);
+    rdof_json_int(&j, "src", src);
+    rdof_json_int(&j, "dst", dst);
+    rdof_json_str(&j, "op", rdof_mn_setup_op_name(op));
+    rdof_json_str(&j, "reason", rdof_mn_setup_why_name(reason));
+    if (peer)
+        rdof_json_str(&j, "peer", peer);
     return ev_done(&j);
 }
 
@@ -1528,6 +1669,13 @@ bool rdof_mn_down_message(rdof_mn_down_t *d, const char *node, bool dl, const ui
         return false;
     }
     d->messages++;
+    rdof_mn_setup_t setup;
+    if (rdof_mn_setup_parse(msg, len, &h, &setup)) { /* a call setup (section 9.4): no voice, no stream */
+        d->setups++;
+        if (d->setup)
+            d->setup(d->ctx, &h, &setup, dl, node);
+        return true;
+    }
     bool fresh;
     rdof_mn_dstream_t *s = find_stream(d, node, h.stream, &fresh);
     int gap = 0;
@@ -1759,6 +1907,8 @@ size_t rdof_mn_info_json(const rdof_site_t *s, int net, const rdof_mn_info_t *in
             rdof_json_str(&q, "name", p->name);
             if (p->app >= 0)
                 rdof_json_str(&q, "app", "repeater");
+            if (in->trunk_paths >> k & 1)
+                rdof_json_bool(&q, "trunk", true);
             mhz(&q, "rx", rx->hz);
             if (p->tx_freq >= 0 && p->tx_freq != p->freq)
                 mhz(&q, "tx", s->freq[p->tx_freq].hz);
@@ -1829,6 +1979,8 @@ size_t rdof_mn_info_json(const rdof_site_t *s, int net, const rdof_mn_info_t *in
         /* a claim listed twice (an app's tg and pc) once */
         rdof_json_raw(&j, "claims", claims);
     }
+    if (in->trunk && in->trunk[0])
+        rdof_json_raw(&j, "trunk", in->trunk);
     rdof_json_close(&j);
     return rdof_json_done(&j) ? j.len : 0;
 }

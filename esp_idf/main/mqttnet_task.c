@@ -195,6 +195,27 @@ static void data(void *ctx, const rdof_mn_hdr_t *h, bool confirmed, const char *
     rdof_mn_results_add(&M->results, h, confirmed, from, h->path, mono());
 }
 
+/* A call setup on our dl (mqtt-net.md section 9.4). This box is Tier II: it can't ask the radio, so it answers a
+   request at once from its own last heard: accept (unconfirmed) when the called radio was heard on a path of this
+   network that can transmit, else reject not_found. The voice then comes as an ordinary private call. */
+static void on_setup(void *ctx, const rdof_mn_hdr_t *h, const rdof_mn_setup_t *s, bool dl, const char *from)
+{
+    if (!dl || s->op != RDOF_MN_SETUP_REQUEST)
+        return;
+    int k = site_heard_path(h->dst);
+    if (k >= 0) {
+        const rdof_site_t *st = M->site;
+        const rdof_path_t *p = k < st->npath ? &st->path[k] : NULL;
+        if (!p || p->pol.net != M->net || p->tx_freq < 0 || !(p->pol.dir & RDOF_FLOW_NET_RF) ||
+            !st->freq[p->tx_freq].tx)
+            k = -1;
+    }
+    uint8_t ans[RDOF_MN_HEADER + 2 + RDOF_MN_SETUP_LEN];
+    const size_t n = rdof_mn_setup_answer(h, s, k, esp_random(), ans, sizeof ans);
+    if (n)
+        publish(NULL, RDOF_MN_T_PC, h->src, ans, n);
+}
+
 /* ── in: the trackers' sinks, esp-mqtt's task, the transmitters ───────────── */
 
 static void on_frame(void *ctx, const char *channel, const rdof_frame_t *f)
@@ -484,6 +505,7 @@ void mn_start(void)
     m->down.raw_tx = site->net[net].raw_tx;
     m->down.burst = burst;
     m->down.data = data;
+    m->down.setup = on_setup;
     m->frames = xQueueCreateWithCaps(FRAMES, sizeof(frame_in_t), MALLOC_CAP_SPIRAM);
     m->txq = xQueueCreateWithCaps(TXQ, sizeof(tx_in_t), MALLOC_CAP_SPIRAM);
     m->in = xMessageBufferCreateWithCaps(IN_KB * 1024, MALLOC_CAP_SPIRAM);
