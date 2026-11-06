@@ -64,6 +64,7 @@ enum {
     RDOF_MN_GPS = 0x09,
     RDOF_MN_QUALITY = 0x0A,
     RDOF_MN_ORIGIN = 0x0B,
+    RDOF_MN_SETUP = 0x0C,
     RDOF_MN_RAW = 0x7F,
 };
 
@@ -131,6 +132,57 @@ typedef struct {
     size_t len;
 } rdof_mn_pdu_t;
 bool rdof_mn_pdu(const rdof_mn_item_t *it, rdof_mn_pdu_t *out);
+
+/* ── call setup (section 9.4): the setup item ─────────────────────────────── */
+
+/* setup ops */
+enum {
+    RDOF_MN_SETUP_REQUEST = 1,
+    RDOF_MN_SETUP_ACCEPT = 2,
+    RDOF_MN_SETUP_REJECT = 3,
+    RDOF_MN_SETUP_ALERTING = 4,
+    RDOF_MN_SETUP_CANCEL = 5,
+    RDOF_MN_SETUP_ANSWERED = 6,
+};
+/* setup reasons */
+enum {
+    RDOF_MN_WHY_OK = 0,
+    RDOF_MN_WHY_NOT_FOUND = 1,
+    RDOF_MN_WHY_BUSY = 2,
+    RDOF_MN_WHY_NO_ANSWER = 3,
+    RDOF_MN_WHY_REFUSED = 4,
+    RDOF_MN_WHY_NOT_SUPPORTED = 5,
+    RDOF_MN_WHY_CONGESTION = 6,
+    RDOF_MN_WHY_TIMEOUT = 7,
+};
+#define RDOF_MN_SETUP_FOACSU 0x01      /* flags: full off-air call setup (the called radio is alerted first) */
+#define RDOF_MN_SETUP_UNCONFIRMED 0x02 /* flags: the answerer couldn't ask the radio (a Tier II box) */
+#define RDOF_MN_SETUP_LEN 8
+
+typedef struct {
+    uint8_t op, reason, flags;
+    uint8_t options; /* the service options, as C_RAND's: bit 7 emergency, bit 6 privacy, bits 1-0 priority */
+    uint32_t ref;    /* the request's stream ID that this message answers; 0 in a request */
+} rdof_mn_setup_t;
+
+bool rdof_mn_setup(rdof_mn_writer_t *w, const rdof_mn_setup_t *s);
+/* A setup item's fields. False: not one, or the wrong length. */
+bool rdof_mn_setup_of(const rdof_mn_item_t *it, rdof_mn_setup_t *out);
+/* A whole setup message: the header (individual, src, dst, stream, path; seq 0) and one setup item. Returns the
+   length, 0 when cap is too small. */
+size_t rdof_mn_setup_msg(uint8_t *out, size_t cap, uint32_t stream, uint32_t src, uint32_t dst, uint8_t path,
+                         const rdof_mn_setup_t *s);
+/* A setup message's header and item (its first item is a setup item). False: not a setup message. */
+bool rdof_mn_setup_parse(const uint8_t *msg, size_t len, rdof_mn_hdr_t *h, rdof_mn_setup_t *s);
+/* The op and reason as the activity event names them ("request", "not_found"); "?" for others. */
+const char *rdof_mn_setup_op_name(int op);
+const char *rdof_mn_setup_why_name(int reason);
+/* A Tier II box's answer to a request on its dl (section 9.4): accept, unconfirmed, when the called radio was last
+   heard on a path of this box that can transmit (heard_path, -1: none), else reject not_found. The answer goes on
+   {root}/pc/{h->src}/{node}: src the called radio, dst the caller, ref the request's stream, path heard_path.
+   stream: the answer's own stream ID. Returns the length, 0 when no answer is due (not a request) or cap is short. */
+size_t rdof_mn_setup_answer(const rdof_mn_hdr_t *h, const rdof_mn_setup_t *req, int heard_path, uint32_t stream,
+                            uint8_t *out, size_t cap);
 
 /* A burst's data type to a data_pdu rate, and back (-1: not a data block type). */
 int rdof_mn_rate_of_dt(int dt);
@@ -290,9 +342,11 @@ typedef struct rdof_mn_down {
     void (*burst)(void *ctx, const rdof_net_burst_t *b, int path, bool dl, uint8_t flags, const char *from);
     /* a data call's bursts went to burst (all of them, just now): for its data_result (rdof_mn_results_t); NULL none */
     void (*data)(void *ctx, const rdof_mn_hdr_t *h, bool confirmed, const char *from);
+    /* a setup message (section 9.4): never bursts; NULL: dropped (counted in setups too) */
+    void (*setup)(void *ctx, const rdof_mn_hdr_t *h, const rdof_mn_setup_t *s, bool dl, const char *from);
     void *ctx;
     rdof_mn_dstream_t s[RDOF_MN_DOWN_STREAMS];
-    uint32_t messages, bad, gaps, late, parts_lost, raw_dropped, streams, replaced;
+    uint32_t messages, bad, gaps, late, parts_lost, raw_dropped, streams, replaced, setups;
 } rdof_mn_down_t;
 
 void rdof_mn_down_init(rdof_mn_down_t *d);
@@ -358,6 +412,8 @@ typedef struct {
     bool has_location;
     double lat, lon;
     const char *location_source; /* "config", "gnss" */
+    uint64_t trunk_paths; /* paths that are a trunked site's (a bit each): "trunk": true on them */
+    const char *trunk;    /* the trunk object's JSON (rdof_mn_trunk_info_json), NULL: none */
 } rdof_mn_info_t;
 size_t rdof_mn_info_json(const rdof_site_t *s, int net, const rdof_mn_info_t *i, char *out, size_t cap);
 /* paths_rev: CRC-16/CCITT-FALSE over, for each path on net in order, its index byte, its name and a zero byte;
@@ -380,6 +436,29 @@ int rdof_mn_sub_tgs(const rdof_site_t *s, int net, const struct rdof_router *r, 
 /* {"ev":"tx",...}: this box starts or stops transmitting a network stream (action "start" / "end"). */
 size_t rdof_mn_tx_event(const char *node, double wall, int path, int slot, uint32_t stream, const char *action,
                         uint32_t src, uint32_t dst, const char *from, char *out, size_t cap);
+/* The common fields of an event (section 7), for the events below. path -1: null. */
+typedef struct {
+    const char *node;
+    double wall;
+    int path, slot;
+    const char *source; /* "rf", "net"; NULL: "rf" */
+    uint32_t stream;
+} rdof_mn_ev_t;
+
+/* A trunked site's events (section 7, trunk.md): */
+/* {"ev":"reg",...}: action "register", "deregister", "expire", "deny", "refuse"; tg the radio's talkgroups */
+size_t rdof_mn_reg_event(const rdof_mn_ev_t *e, uint32_t src, const char *action, const uint32_t *tg, int ntg,
+                         char *out, size_t cap);
+/* {"ev":"grant",...}: a payload channel granted (chan the logical channel, lcn 0 or 1); late: a late entry grant */
+size_t rdof_mn_grant_event(const rdof_mn_ev_t *e, uint32_t src, uint32_t dst, bool group, int chan, int lcn, bool late,
+                           char *out, size_t cap);
+/* {"ev":"queue",...}: action "in", "out", "drop"; why NULL: none */
+size_t rdof_mn_queue_event(const rdof_mn_ev_t *e, uint32_t src, uint32_t dst, bool group, const char *action,
+                           const char *why, char *out, size_t cap);
+/* {"ev":"setup",...}: a call setup sent or received; peer the other node, NULL: none */
+size_t rdof_mn_setup_event(const rdof_mn_ev_t *e, uint32_t src, uint32_t dst, int op, int reason, const char *peer,
+                           char *out, size_t cap);
+
 /* {"ev":"data_result",...} */
 size_t rdof_mn_data_result_event(const char *node, double wall, int path, int slot, uint32_t stream, uint32_t src,
                                  uint32_t dst, const char *from, uint32_t from_stream, const char *result, int tries,

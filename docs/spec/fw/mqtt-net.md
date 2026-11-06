@@ -7,6 +7,9 @@ Status: phase 1 built, 2026-11-02 (§1.1): `common/src/mqttnet.c`, run by rdofra
 network and back out from another node on both slots, speech, every voice burst in order; the board's task is built,
 not yet run on hardware. Today's MQTT calls (`{root}/calls/...`, DMRD packets, [mqtt.md](mqtt.md) §10) stay the
 default; this replaces them later.
+Trunked sites (Tier III, [trunk.md](trunk.md)) use the same calls and topics, plus a call setup item (§9.4),
+registration records (§15), node status (§16) and provisioning from a manager (§17); a Tier II box needs only the
+setup answer (§9.4). The format stays 3: it is a draft until released.
 Related: [config-v3.md](config-v3.md) (talk paths, policies, networks), [dmr-core.md](dmr-core.md) (PDU layouts),
 [mqtt.md](mqtt.md) (today's topics), [ipgw.md](ipgw.md) (data reassembly, confirmed ACK).
 
@@ -20,7 +23,7 @@ Related: [config-v3.md](config-v3.md) (talk paths, policies, networks), [dmr-cor
 | Delivery of `dl` streams on the path byte (§9.3) | Retries of confirmed data on delivery (§4.4) |
 | Confirmed data answered on RF by the hearing box (§4.4) | The router, the Python library, the legacy adapter: separate programs |
 | `mqtt/tcp` and `mqtt/tls` with the existing `mqtt` keys | Roaming transceivers on this network: they stay on HBlink (§14) |
-| `format: "v3"` beside today's DMRD calls (§10) | `cmd` |
+| `format: "v3"` beside today's DMRD calls (§10) | |
 
 Order: rdofradio first (it already carries MQTT calls, [mqtt.md](mqtt.md) §10), then the board.
 
@@ -35,6 +38,7 @@ Order: rdofradio first (it already carries MQTT calls, [mqtt.md](mqtt.md) §10),
 | rdofradio: `format: "v3"`, `--file RX[,TX]` to run it with no radio | `sdr/cli/rdofradio.c` |
 | The board: one connection, every receiver's tracker, the router's transmitters, `/api/status` `mqtt_net` | `esp_idf/main/mqttnet_task.c` |
 | The vectors (§13) and seven RF scenes, for the router and the apps to test against | `host-tests/fixtures/mqtt-net/vectors.json` |
+| For Tier III (2026-11-06): the `setup` item and the Tier II answer (§9.4), registration records, `where`, `status`, the trunk object of `info`, the trunk events, provisioning with its cache, commands | `rdof/mqttnet.h`, `common/src/mnctl.c` (`rdof/mnctl.h`); the board answers setups (`mqttnet_task.c`); rdofradio not yet |
 
 Decisions taken while building it:
 
@@ -119,8 +123,10 @@ There is no master.
 | `online` | `1`, or `0` (the will) | 1 | yes | `1` right after connecting; `0` from the broker when the connection drops |
 | `info` | JSON (§6) | 1 | yes | at connect and on any config change |
 | `activity` | JSON events (§7) | 1 | no | each call start / end, CSBK, completed data, talker alias, GPS |
-| `status` | JSON | 1 | yes | phase 1: today's status ([mqtt.md](mqtt.md) §6) stays where it is; later here, with per-path fields (§14) |
-| `cmd` | JSON | 1 | no | later: cloud → node commands |
+| `status` | JSON (§16) | 1 | yes | every 10 s and on change; today's status ([mqtt.md](mqtt.md) §6) stays where it is too |
+| `cmd` | JSON (§17.3) | 1 | no | from the manager |
+| `cmd/res` | JSON (§17.3) | 1 | no | the node's answer to a `cmd` |
+| `ms/{id}` | JSON (§15); an empty payload deletes | 1 | yes | a trunked site: each radio it serves, on every change and at most once a minute for a refresh |
 
 `online` stays separate from `status` so the will can't overwrite a full status with an empty one.
 
@@ -130,17 +136,29 @@ There is no master.
 |---|---|---|---|---|
 | `DMR/router/{id}/online` | `1` / `0` (will) | 1 | yes | as a node's |
 | `DMR/router/{id}/status` | JSON: radios known, calls routed, floods, drops | 1 | yes | every 60 s |
-| `DMR/where/{src}` | JSON: `node`, `path` (`{i, name}`), `at`, `rssi` | 1 | yes | when a radio's location changes (optional; a lookup for apps) |
+| `DMR/where/{src}` | JSON: `node`, `path` (`{i, name}`), `at`, `rssi`, `source` (`reg`: a registration record, §15; `heard`: traffic) | 1 | yes | when a radio's location changes (a lookup for apps; a trunked site drops a record that a newer one elsewhere replaced) |
 
 ### 3.5 Subscriptions, by participant
 
 | Participant | Subscribes to | Publishes to |
 |---|---|---|
 | Box | `DMR/tg/{tg}/+` for each TG it carries (§8.3), `DMR/dl/{node}` | `DMR/tg/+/{node}`, `DMR/pc/+/{node}`, `DMR/node/{node}/#` |
-| Router | `DMR/pc/#`, `DMR/node/+/activity`, `DMR/node/+/info`, `DMR/node/+/online` | `DMR/dl/+`, `DMR/where/+`, `DMR/router/{id}/#` |
+| Trunked site | a box's, plus `DMR/cfg/net`, `DMR/cfg/node/{node}`, `DMR/cfg/tg/+`, `DMR/cfg/ms/+`, `DMR/node/{node}/ms/+` (its own records, read back at start), `DMR/node/{node}/cmd`, `DMR/where/+` | a box's |
+| Router | `DMR/pc/#`, `DMR/node/+/activity`, `DMR/node/+/info`, `DMR/node/+/online`, `DMR/node/+/ms/+`, `DMR/cfg/ms/+` | `DMR/dl/+`, `DMR/where/+`, `DMR/router/{id}/#` |
+| Manager | `DMR/node/+/#`, `DMR/where/#`, `DMR/router/+/#` | `DMR/cfg/#`, `DMR/node/+/cmd`, `DMR/manager/{id}/online` |
 | Listen-only app (transcriber) | `DMR/tg/{tg}/+` | `DMR/node/{app}/online`, `info` |
 | App with an ID (parrot, ARS) | `DMR/pc/{claimed}/+` | `DMR/pc/+/{app}` (and `DMR/tg/+/{app}` if allowed), `DMR/node/{app}/#` |
 | Dashboard, location map | `DMR/node/+/#`, `DMR/where/#` | nothing |
+
+### 3.6 Provisioning and the manager (§17)
+
+| Topic | Payload | QoS | Retain | Publisher |
+|---|---|---|---|---|
+| `DMR/cfg/net` | the network's document | 1 | yes | the manager |
+| `DMR/cfg/node/{node}` | one node's document | 1 | yes | the manager |
+| `DMR/cfg/tg/{tg}` | one talkgroup's | 1 | yes | the manager |
+| `DMR/cfg/ms/{id}` | one radio's | 1 | yes | the manager |
+| `DMR/manager/{id}/online` | `1` / `0` (will) | 1 | yes | the manager |
 
 ## 4. The call message
 
@@ -191,6 +209,7 @@ Each item is `[type u8][length u8][value]`. A length of 255 means a u16 length (
 | 0x09 | `gps` | lat i32, lon i32 (1e-7 degree), position error code u8 | 11 | an embedded GPS LC; information only |
 | 0x0A | `quality` | bits corrected u8 (sum over this message's bursts, saturating), RSSI u8 (−dBm, average) | 4 | added to RF-heard messages only |
 | 0x0B | `origin` | source network ID u32, source repeater ID u32, hop count u8 | 11 | a stream that came in through a bridge to another network, in its first message; bridges pass it on with one more hop |
+| 0x0C | `setup` | op u8, reason u8, flags u8, service options u8, ref u32 (§9.4) | 10 | a private call's setup across the network; the only item of its message |
 | 0x7F | `raw` | data type u8, then the 33-byte burst as heard | 36 | a burst the box can't decode (reserved data types, single-burst reverse channel) |
 
 ### 4.3 Rules
@@ -326,6 +345,19 @@ place a call comes in or goes out, so the slot is part of the path where the slo
 | `paths[].tx_ok` | the path can transmit; only these can deliver a private call or answer confirmed data |
 | `paths[].tg`, `ptt`, `pc` | the path's resolved policy, in config v3's ID-set syntax ([config-v3.md](config-v3.md) §3, §8); only paths whose `net` is this network are listed |
 | `claims` | IDs this node answers for (apps, and a box's own `parrot` / `ipgw` apps); §9.2 |
+| `paths[].trunk` | `true` on a trunked site's path ([trunk.md](trunk.md)): the network addresses the site, never a slot |
+| `trunk` | a trunked site only: its system code, control channel and carriers, as below |
+
+```json
+"trunk": {"system": {"model": "small", "net": 5, "site": 3, "par": "ab", "area_bits": 5},
+          "tscc": [{"chan": 1, "tx_hz": 438750000, "rx_hz": 438250000, "cc": 1}],
+          "carriers": [{"chan": 1, "tx_hz": 438750000, "rx_hz": 438250000},
+                       {"chan": 2, "tx_hz": 438600000, "rx_hz": 438500000}],
+          "services": ["reg", "group", "private", "allcall"], "reg": true}
+```
+
+A trunked site builds its neighbor list (Adjacent_Site broadcasts) from the `trunk` objects of the other online
+nodes with the same `model` and `net`, unless its `cfg/node` document lists `neighbors`.
 
 ## 7. `activity` events
 
@@ -345,6 +377,13 @@ merge duplicates by `call_key`.
 | `data_fail` | a data call that didn't | `src, dst, reason` |
 | `data_result` | this box finished delivering a data call on RF | `src, dst, from` (the publisher's `{node}`), `from_stream`, `result` (`delivered`, `failed`, `no_response`, `unconfirmed`), `tries` |
 | `tx` | this box starts / stops transmitting a network stream | `action`, `src, dst, from` |
+| `reg` | a trunked site: a radio registers, de-registers, expires, or is denied or refused | `src, action` (`register`, `deregister`, `expire`, `deny`, `refuse`), `tg` (array) |
+| `grant` | a trunked site grants a payload channel | `src, dst, group, chan` (logical channel), `lcn` (0 or 1), `late` (a late entry grant); `source` `rf` or `net` (who asked) |
+| `queue` | a trunked site queues a request, serves it, or drops it | `src, dst, group, action` (`in`, `out`, `drop`), `why` (on a drop) |
+| `setup` | a call setup sent or received (§9.4) | `src, dst, op, reason, peer` (the other node) |
+
+On a trunked site, `call_start` and `call_end` carry `chan` and `lcn`; `path` is the site's one path and `slot` the
+payload channel's slot.
 
 `call_key` = `"{src}-{dst}-{group?'g':'p'}-{t}"`, where `t` is the start time in UTC seconds rounded down to a
 multiple of 2. Two boxes hearing one call make the same key (or keys 2 s apart near a boundary: a reader checks both).
@@ -452,6 +491,45 @@ matter to the radio. A client library (Python first) does the header, items, LCs
   right away, as it does today, and still publishes it so the router learns the caller's location.
 - **A box's own apps** (`parrot`, `ipgw`) take calls to their IDs as today and are listed in `claims`.
 
+### 9.4 Call setup (the `setup` item)
+
+A trunked site checks that a called radio is there before it grants the caller a channel (Tier III's availability
+check). When the called radio isn't registered at the site, the check goes over the network as a setup message: a
+call message on `pc/{dst}/{node}` with no voice, its header individual (src the caller, dst the called radio) and one
+`setup` item. The router routes it like any private message.
+
+| Offset | Field | Values |
+|---|---|---|
+| 0 | op | 1 `request`, 2 `accept`, 3 `reject`, 4 `alerting`, 5 `cancel`, 6 `answered` |
+| 1 | reason | 0 ok, 1 `not_found`, 2 `busy`, 3 `no_answer`, 4 `refused` (by the radio or policy), 5 `not_supported`, 6 `congestion` (no channel), 7 `timeout` |
+| 2 | flags | bit 0 `foacsu` (the called radio is alerted first), bit 1 `unconfirmed` (the answerer couldn't ask the radio: a Tier II box); bits 2–7 zero |
+| 3 | service options | as the trunking random access's: bit 7 emergency, bit 6 privacy, bits 1–0 priority |
+| 4 | ref | u32 little endian: the stream ID of the `request` this message answers; 0 in a request |
+
+An answer goes back on `pc/{caller}/{node}`: src the called radio, dst the caller, its own stream ID, ref the
+request's. The path byte is the path the answerer will use (0xFF none).
+
+```
+site A: pc/3100456/A   request, stream S, src 3100123, dst 3100456
+router: dl/B           (3100456 registered at B, §15)
+site B: asks the radio, grants it a channel
+site B: pc/3100123/B   accept, ref S
+router: dl/A
+site A: grants the caller; the voice then goes as an ordinary private call both ways
+```
+
+- The caller's site waits up to 5 s for an answer, then gives up and sends `cancel`. `alerting` keeps it waiting for
+  `answered` (or the site's own timer).
+- **Every box with a transmitting path:** a `request` on its `dl` is answered at once: `accept` with `unconfirmed`
+  when the called radio was last heard on a path of this network that can transmit, else `reject not_found`. A Tier
+  III radio can call a radio on a Tier II repeater this way. A box never answers a setup it got on `tg` or `pc`.
+- **The router:** a `request` for a radio it can't place gets `reject not_found` from the router on
+  `dl/{publisher}`, unless its flood policy sends the request on; then the first `accept` wins and the caller's site
+  sends `cancel` to any later acceptor.
+- A setup message never becomes bursts: the downlink hands it to the box's handler (`rdof_mn_down_t.setup`).
+- A private call from a Tier II radio to a Tier III radio needs no setup: the trunked site does the check itself
+  when the voice arrives ([trunk.md](trunk.md) §3.6).
+
 ## 10. Config
 
 The `mqtt` network entry ([config-v3.md](config-v3.md) §7.2) gains:
@@ -476,12 +554,16 @@ The router's settings (`pc_hold_s`, the flood policy, the claims and priority al
 
 | Participant | Publish | Subscribe |
 |---|---|---|
-| Box `X` | `DMR/tg/+/X`, `DMR/pc/+/X`, `DMR/node/X/#` | `DMR/tg/#`, `DMR/dl/X`, `DMR/node/X/cmd` |
-| Router | `DMR/dl/#`, `DMR/where/#`, `DMR/router/{id}/#` | `DMR/pc/#`, `DMR/node/+/#` |
+| Box `X` | `DMR/tg/+/X`, `DMR/pc/+/X`, `DMR/node/X/#` | `DMR/tg/#`, `DMR/dl/X`, `DMR/node/X/cmd`, `DMR/node/X/ms/+`, `DMR/cfg/net`, `DMR/cfg/node/X`, `DMR/cfg/tg/+`, `DMR/cfg/ms/+`, `DMR/where/#` |
+| Router | `DMR/dl/#`, `DMR/where/#`, `DMR/router/{id}/#` | `DMR/pc/#`, `DMR/node/+/#`, `DMR/cfg/ms/+` |
+| Manager | `DMR/cfg/#`, `DMR/node/+/cmd`, `DMR/manager/{id}/#` | `DMR/node/+/#`, `DMR/where/#`, `DMR/router/+/#` |
 | App `P` | `DMR/node/P/#`, plus what it's allowed: `DMR/pc/+/P`, `DMR/tg/{list}/P` | as needed |
 | Read-only (dashboard) | none | `DMR/node/+/#`, `DMR/where/#` |
 
-- Only the router publishes on `dl`. No one but `X` publishes as `X`.
+- Only the router publishes on `dl` and `where`. Only the manager publishes `cfg` and `cmd`. No one but `X`
+  publishes as `X` (its `ms` records and `cmd/res` included).
+- A node trusts `cfg` because of the ACL. Signed documents (a manager key the node checks) are a later step: a
+  `sig` key is reserved and ignored.
 - An app's src and claims are checked by the router against a list (its config), so an app can't take over a radio's
   ID.
 - The priority bit is honored only from boxes (emergency) and from nodes in an allowlist (box and router config).
@@ -532,6 +614,20 @@ Private call to 9990 (0x2706), call start, seq 0:
 The same call's first message as the router forwards it on `dl` to a box where 9990's path is 0: identical but byte 2
 = `00`.
 
+A setup request (§9.4) from 3100123 (0x2F4DDB) to 3100456 (0x2F4F28), stream 0x12345678, no path:
+
+```
+03 00 FF 00 78 56 34 12 DB 4D 2F 28 4F 2F   header: v3, individual, path 0xFF, seq 0
+0C 08 01 00 00 00 00 00 00 00               setup: request, ok, no flags, no options, ref 0
+```
+
+A Tier II box's answer, the radio heard on its path 1, stream 0x0BADCAFE:
+
+```
+03 00 01 00 FE CA AD 0B 28 4F 2F DB 4D 2F   header: path 1, src 3100456, dst 3100123
+0C 08 02 00 02 00 78 56 34 12               setup: accept, ok, unconfirmed, ref 0x12345678
+```
+
 The fixture adds: three bundled voice items, a `raw` item, an unknown item type skipped and an `origin`; and scenes
 (every message and event of a call heard on RF): a group call (burst F with `embedded_lc`, the talker alias, the
 terminator), a late-entry stream, a `pi_header` call, a radio check (CSBK with count), an unconfirmed data call and
@@ -544,11 +640,117 @@ two confirmed ones, one in parts (with the u16 length).
 | Other transports | MQTT-SN (UDP, DTLS; a gateway next to the broker: EMQX's built-in or Paho's), then SCTP over `tinysctp`, QUIC on Linux boxes |
 | `bundle` 2–3 when sending | for cellular links |
 | Confirmed data retries | on delivery, with `tries` in `data_result` |
-| `status` on this network | today's status plus per path `on_air` and held `ptt` TGs, and `net` counters (messages, seq gaps, reorders, jitter underruns) |
+| More in `status` (§16) | per path `on_air` and held `ptt` TGs, and `net` counters (messages, seq gaps, reorders, jitter underruns) |
 | Roaming transceivers | HBlink4 tunes a roamer per stream (`DMRT` / `DMRK`). On this network a box tunes its own transmitters from the path byte ([transmitters.md](transmitters.md) §4), so no `tune` message is needed |
 | The voter | best copy of each burst from several boxes, republished as one stream |
 | An early "undeliverable" for confirmed data | answering NACK "undeliverable" for an unknown destination needs a lookup that fits in the radio's 180 ms |
-| `cmd` | which commands (reload config, add TG, reboot), and who may send them |
+| More `cmd`s (§17.3) | reload config, reboot; for Tier II boxes as for trunked sites |
+| Signed provisioning | a manager key the node checks against `cfg` documents' `sig` |
 | A legacy adapter | next to the broker: Homebrew / MMDVM, today's DMRC peers, OpenBridge and BrandMeister's SEA as nodes on this network; designed separately |
 | Cross-region | one broker, or bridged brokers per region with a router in each |
 | Encrypted calls | passed through as now |
+
+## 15. Registration records (`node/{node}/ms/{id}`)
+
+A trunked site publishes one retained record per radio it serves ([trunk.md](trunk.md) §3.4):
+
+```json
+{"id": 3100123, "at": "2026-11-05T21:04:11.250Z", "exp": "2026-11-06T01:04:11.000Z",
+ "how": "register", "tg": [91, 3100], "sub": 91, "area": 3}
+```
+
+| Field | Meaning |
+|---|---|
+| `id` | the radio |
+| `at`, `exp` | registered or last refreshed; expires (UTC) |
+| `how` | `register` (the radio registered), `call` (implicit: from a call request) |
+| `tg` | the talkgroups the site carries for it (the subscribed one first, then its recent calls, then provisioning), at most 8 |
+| `sub` | the talkgroup the radio subscribed to when it registered (absent: none) |
+| `area` | the registration area (absent: not given) |
+
+- Written on every change and at most once a minute for a refresh. Deleted (an empty retained message) on
+  de-registration, expiry, a refusal after a policy change, or when `where/{id}` names another node with a newer
+  time.
+- On a restart the site reads its own records back from the broker and serves those radios at once. A standby
+  controller does the same ([trunk.md](trunk.md) §6.2).
+- The router reads them as sightings with `source: "reg"` at the record's `at`, valid until `exp`. A newer sighting
+  anywhere (a record or heard traffic) wins; at the same time the record wins. It publishes `where/{id}` with
+  `source`.
+- The site subscribes to the talkgroups in its records, so a group call reaches exactly the sites with members.
+
+Code: `rdof_mn_record_json`, `rdof_mn_record_parse`, `rdof_mn_ms_topic` (`rdof/mnctl.h`).
+
+## 16. `status` (retained)
+
+Any node, every 10 s and on change:
+
+```json
+{"at": "2026-11-05T21:04:11.250Z", "node": "site-a", "firmware": "0.9.0", "uptime_s": 3600,
+ "trunk": {"connected": true, "regs": 41, "queue": 0,
+           "channels": [{"chan": 1, "lcn": 0, "use": "tscc"},
+                        {"chan": 1, "lcn": 1, "use": "call", "src": 3100123, "dst": 91, "group": true,
+                         "since": "2026-11-05T21:04:01.000Z"},
+                        {"chan": 2, "lcn": 0, "use": "idle"}, {"chan": 2, "lcn": 1, "use": "hang", "dst": 3100,
+                         "group": true}],
+           "counters": {"aloha": 0, "rand": 0, "collisions": 0, "grants": 0, "refused": 0, "queued": 0}}}
+```
+
+`trunk` is a trunked site's only. `use`: `tscc`, `call`, `hang`, `idle`, `off` (out of service). `connected`: the
+backbone link (the site's Active_Connection). Code: `rdof_mn_status_json`.
+
+## 17. Provisioning (`cfg/...`) and commands
+
+### 17.1 Documents
+
+The manager publishes them retained; each has `rev` (an integer the manager raises on every change) and `at`. A node
+applies a document only when its `rev` is newer than the one it holds (after a deletion, any rev), keeps it, and
+caches it (rdofradio: a file in its state directory; a board: NVS) so it starts with the last documents when the
+network is down. An empty retained message deletes a document. A key the node doesn't know, or one a document can't
+change (frequencies, devices, carriers), is ignored and reported (in the log, or in `cmd/res` for a command).
+
+`cfg/net`, the whole network:
+
+```json
+{"rev": 12, "at": "2026-11-05T21:00:00Z", "system": {"model": "small", "net": 5},
+ "registration": "listed", "ms": "3100000-3199999", "refuse_unlisted": "denied",
+ "private": "*", "wide_tg": "1-99999", "timers": {"hang_s": 3}}
+```
+
+`cfg/node/{node}`, one site: `rev`, `at`, `site`, `area_bits`, `neighbors` (site numbers), `tg`, `static_tg`,
+`timers`, `enabled` (false takes the site off the air: it withdraws its control channel). Both site-level documents
+take the same keys as the settings file's `trunk` app ([trunk.md](trunk.md) §4): `system` (`model`, `net`, `site`,
+`par`, `area_bits`), `registration` (`open`, `listed`), `ms`, `refuse_unlisted` (`denied`, `refused`), `private`,
+`tg`, `wide_tg`, `static_tg` (ID sets), `require_registration`, `foacsu`, `enabled`, `neighbors`, `timers` (names to
+numbers).
+
+`cfg/tg/{tg}`: `{"rev", "at", "name", "wide", "sites", "ms", "priority", "hang_s"}`. `sites` (site numbers) and `ms`
+(radios) limit where and by whom the talkgroup may be used, `*` when absent; `wide` carries it on the network;
+`priority` 0-3.
+
+`cfg/ms/{id}`: `{"rev", "at", "name", "enabled", "private", "wide_private", "priority", "emergency", "tg"}`. The
+booleans are true when absent. `enabled: false` denies the radio's registration at every site and removes a
+registration it has. `tg` (at most 8) are talkgroups the radio always gets.
+
+### 17.2 Precedence
+
+`cfg/ms` over `cfg/tg` over `cfg/node` over `cfg/net` over the settings file, key by key (a timer by its name).
+Without any of them a site runs on its settings file alone: a site must work standalone.
+
+### 17.3 Commands
+
+`node/{node}/cmd`, from the manager: `{"id": "c-123", "cmd": "...", ...}`. The node answers on `node/{node}/cmd/res`
+with `{"id": "c-123", "ok": true}` or `{"id": "c-123", "ok": false, "error": "..."}`.
+
+| `cmd` | Arguments | Does |
+|---|---|---|
+| `deregister` | `ms` | removes the radio's registration; it registers again on its next access |
+| `clear` | `chan` (1-4094), `lcn` (0, 1) | ends the call on that payload channel |
+| `withdraw`, `restore` | | takes the control channel off the air, and back |
+| `resend_records` | | publishes every registration record again |
+| `status` | | publishes `status` now |
+
+An unknown command or a missing argument is answered `ok: false`.
+
+Code: `rdof_mn_cfg_t` and `rdof_mn_cfg_message`, `rdof_mn_cfg_site`, the cache (`rdof_mn_cfg_cache`,
+`rdof_mn_cfg_cache_line`: one line per document, its topic under the root, a tab, the document), `rdof_mn_cmd_parse`,
+`rdof_mn_cmd_result_json` (`rdof/mnctl.h`).
