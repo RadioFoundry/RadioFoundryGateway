@@ -1160,6 +1160,9 @@ rdofradio --soapy driver=plutosdr -r 2400000 --allow-tx --rx 438.25 --tx 438.75 
 
 A trunked site ([trunk.md](spec/fw/trunk.md) 9.4, `sdr/cli/rdofradio_trunk.c`): `--config` with a `trunk` app runs
 the site, on the mqtt network as the box's node (the provisioning cached in `--state-dir DIR`'s `cfg-cache.json`).
+On a device the SDR sends carrier A (the TSCC's) full duplex; a second carrier is a split TX half on its radio's
+port, aligned to UTC from the host's clock and fed by the scheduled stream, the SDR's receiver its RX half (two
+carriers at most; trunk.md 9.4). Not yet run on a device.
 Built with `RDOF_TRUNK` (on by default; needs cargo: the controller is rust's `t3` feature, linked alone, for
 `RDOF_RUST_TARGET` when cross building); without it such a file is refused with the reason. `--sim-air N` needs no
 device: N simulated MSs (IDs from `--sim-id`, default 1000001) register with `--sim-tg` (default 9) and run through

@@ -139,8 +139,12 @@ spec for both; this lists only the gateway's choices and limits. The full design
 - `rdofradio --sim-air N` runs the site against N simulated MSs (the gateway's own simulator, `rust/src/t3ms.rs`) over
   the full burst path; two of them make a two-site network on one computer. `--sim-script` times registrations and
   calls, so a radio under test can share a network with simulated ones at another site.
-- On a device rdofradio runs one carrier for now: the TSCC on TS1 and one payload channel on TS2 of the same
-  frequency pair. A radio under test must take a grant to the TSCC's own carrier (LCN 1) and follow it there.
+- On a device rdofradio runs two carriers: carrier A on the SDR (the TSCC on TS1, a payload channel on TS2) and
+  carrier B on a split TX half (both slots payload), the SDR's receiver hearing both inbounds. The first call takes
+  carrier A's TS2; a second at the same time goes to carrier B. Carrier B's half counts UTC slots (aligned from the
+  host's clock); carrier A's slots follow the SDR's own clock, so the two carriers aren't slot-synchronized
+  (`site_sync` 0): a radio moving to carrier B must find its slot timing there (the payload warm-up).
+- Adjacent_Site broadcasts list the other trunked sites on the network (from their `info`), active while online.
 - Inbound timing: the site gives an inbound burst the slot by its timing against the outbound (aligned timing,
   1.25 ms after the slot's start); a radio that sends late or early by more than half a slot lands in the wrong one.
 - The simulator is a second implementation of the MS procedures the site needs: when the radio and the site

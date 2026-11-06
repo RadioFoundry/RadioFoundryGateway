@@ -628,8 +628,20 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
 - `--config` with a `trunk` app: rdofradio opens the SDR full duplex for carrier A. The trunk unit is the SDR
   modem's slot source (`rdof_sdrmodem_set_source`) and the modem stays keyed (`rdof_sdrmodem_hold_key`); the repeater
   still runs as the modem's client to set it up, its output shadowed by the source. What the SDR hears on carrier
-  A's `in` goes to the controller with the slot its timing gives (`rdof_sdrmodem_inbound_k`). Carrier B on a split TX
-  half is not wired yet: a file with two carriers is refused on a device (`--sim-air` runs it).
+  A's `in` goes to the controller with the slot its timing gives (`rdof_sdrmodem_inbound_k`).
+- The trunk's slot k is the UTC slot number, floor(UTC ms / 30). Carrier A's modem slots are moved onto it by an even
+  offset taken at the first slot the modem asks for (again if its slots restart), so the modem's TS1 is LCN 0. The
+  carriers aren't slot-synchronized (`site_sync` 0: the payload warm-up).
+- Carrier B, the first build's second carrier, is a split TX half on its radio's port (`rdof/sdr/trunksplit.h`,
+  `sdr/src/trunksplit.c`): one split of `rdof_sdrsplits` with the SDR's receiver as its RX half. Before the receiver
+  starts, rdofradio brings the half up and sends the carrier's settings (`SET_CONFIG`, `SET_MODE`, `SET_FREQ`; no
+  answer in 8 s, or a NAK, and the site doesn't start), then aligns the half's slot counter to UTC from the host's
+  clock (`rdof_split_set_utc`, again each minute) with the scheduled stream. The main loop's 20 ms poll pumps it
+  (`rdof_trunkunit_split_pump`: the controller 4 slots ahead, then `rdof_trunkrf_split_pump`): keyed while the
+  carrier has a call, `TX_SCHED` for each traffic or control burst on its UTC slot, the short LC when it changes. The
+  receiver gets a channel on carrier B's `in` when the settings have none; its bursts go to the split's RX half, which
+  labels each with its slot, and come up with the UTC slot of that parity nearest the burst's position. Three
+  carriers or more, or carrier B on the SDR, are refused.
 - `--state-dir DIR`: the `cfg` cache (`cfg-cache.json`, one document a line, rewritten on each change).
 - `--sim-air N`: no SDR, no split radio: the trunk unit runs against the MS simulator (`rdof/trunksim.h`: N radios,
   `--sim-id`, `--sim-tg`, `--sim-talk S`, timed actions from `--sim-script FILE`), through the full burst path (the
@@ -638,8 +650,18 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
 - Rust in the Linux build: `rust.cmake` has `FEATURES`; `sdr/cli/tools.cmake` builds `rdof_rust` with only the `t3`
   feature (so the C modules stay C) when cargo is found and `RDOF_TRUNK` is on, for `RDOF_RUST_TARGET` when cross
   building; the Pluto container installs rustup with `armv7-unknown-linux-gnueabihf`.
-- Not done: the `cfg/tg` documents are stored but not applied (per-talkgroup hang and priority); neighbors from the
-  other sites' `info` aren't built into the controller's adjacent-site broadcasts.
+- Provisioning: each `cfg/tg` document's `hang_s` (1-60 s; else the site's) and `priority` (0-3) go to the controller
+  (`rdof_t3_tg_policy`, 64 talkgroups): a group call's channel hangs for its talkgroup's time, and a group request's
+  priority is the most of its own, the MS's and the talkgroup's. A deleted document's entry goes.
+- Neighbors: the unit subscribes `node/+/info` and `node/+/online`. Another node whose `info` has a `trunk` object of
+  the same MODEL and NET is an adjacent site (its C_SYScode from its system, `rdof_t3_syscode`, and its TSCC channel),
+  active while its `online` is `1`; `cfg/node`'s `neighbors`, when given, keeps only the sites it lists.
+- Tests: `rdof_trunksplit_tests` (a two-carrier site, carrier B on a fake split TX half: bring-up, UTC alignment,
+  a call on carrier B as `TX_SCHED` on the UTC slots followed by a simulated MS from what the half airs, a heard burst
+  labeled by slot, unkeyed after the hang); `rdof_trunkunit_tests` (two sites over a broker, `cfg/tg` hang, the
+  neighbor list).
+- Not done: run on a device (carrier A on the Pluto, carrier B's half on air); the carriers' relative timing on air
+  (carrier A's slots follow the SDR modem's own clock, not UTC).
 
 ## 10. Network services
 
