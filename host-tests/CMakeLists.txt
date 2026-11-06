@@ -201,6 +201,18 @@ if(RDOF_CARGO)
         target_link_options(rdof_t3_tests PRIVATE -fsanitize=address,undefined)
     endif()
     add_test(NAME rdof_t3_tests COMMAND rdof_t3_tests)
+    # The site joined up (trunkunit.c, trunksim.c: they call the controller, so they're not in rdof_common): two sites,
+    # simulated MSs over the burst path, an in-process broker.
+    add_executable(rdof_trunkunit_tests test_trunkunit.c ../common/src/trunkunit.c ../common/src/trunksim.c)
+    target_include_directories(rdof_trunkunit_tests PRIVATE ../common/include)
+    target_link_libraries(rdof_trunkunit_tests PRIVATE rdof_rust_t3 rdof_common)
+    set_target_properties(rdof_trunkunit_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+    target_compile_options(rdof_trunkunit_tests PRIVATE -Wall -Wno-unused-parameter)
+    if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+        target_compile_options(rdof_trunkunit_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(rdof_trunkunit_tests PRIVATE -fsanitize=address,undefined)
+    endif()
+    add_test(NAME rdof_trunkunit_tests COMMAND rdof_trunkunit_tests)
     add_test(NAME rdof_t3_cargo_tests
         COMMAND ${RDOF_CARGO} test --no-default-features --features t3 --manifest-path ${RDOF_RUST_DIR}/Cargo.toml
                 --target-dir ${CMAKE_CURRENT_BINARY_DIR}/rdof_rust_t3-cargo-test)
