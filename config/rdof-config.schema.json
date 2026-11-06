@@ -505,14 +505,49 @@
         "nat": true
       }
     },
+    "carrier3": {
+      "description": "A trunked site's carrier: its frequencies, logical channel number, and whether it holds the TSCC.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["out", "in", "chan"],
+      "properties": {
+        "out": {"$ref": "#/$defs/fref"},
+        "in": {"$ref": "#/$defs/fref"},
+        "chan": {"type": "integer", "minimum": 1, "maximum": 4094},
+        "tscc": {"type": "boolean"}
+      }
+    },
+    "trunk3": {
+      "description": "A trunked site, DMR Tier III (docs/spec/fw/trunk.md section 4; the trunk unit checks the rest).",
+      "additionalProperties": false,
+      "required": ["carriers"],
+      "properties": {
+        "name": {"$ref": "#/$defs/name3"},
+        "type": {"const": "trunk"},
+        "carriers": {"type": "array", "minItems": 1, "maxItems": 4, "items": {"$ref": "#/$defs/carrier3"}},
+        "system": {"type": "object"},
+        "registration": {"enum": ["open", "listed"]},
+        "ms": {"$ref": "#/$defs/idset"},
+        "require_registration": {"type": "boolean"},
+        "refuse_unlisted": {"enum": ["denied", "refused"]},
+        "private": {"$ref": "#/$defs/idset"},
+        "tg": {"$ref": "#/$defs/idset"},
+        "wide_tg": {"$ref": "#/$defs/idset"},
+        "static_tg": {"$ref": "#/$defs/idset"},
+        "foacsu": {"type": "boolean"},
+        "timers": {"type": "object"},
+        "broadcast": {"type": "object"}
+      }
+    },
     "app3": {
       "type": "object",
       "required": ["type"],
-      "properties": {"type": {"enum": ["repeater", "parrot", "ipgw"]}},
+      "properties": {"type": {"enum": ["repeater", "parrot", "ipgw", "trunk"]}},
       "allOf": [
         {"if": {"properties": {"type": {"const": "repeater"}}}, "then": {"$ref": "#/$defs/repeater3"}},
         {"if": {"properties": {"type": {"const": "parrot"}}}, "then": {"$ref": "#/$defs/parrot3"}},
-        {"if": {"properties": {"type": {"const": "ipgw"}}}, "then": {"$ref": "#/$defs/ipgw3"}}
+        {"if": {"properties": {"type": {"const": "ipgw"}}}, "then": {"$ref": "#/$defs/ipgw3"}},
+        {"if": {"properties": {"type": {"const": "trunk"}}}, "then": {"$ref": "#/$defs/trunk3"}}
       ]
     },
     "hblink3": {

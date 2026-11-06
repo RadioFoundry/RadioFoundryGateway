@@ -1966,7 +1966,7 @@ size_t rdof_mn_info_json(const rdof_site_t *s, int net, const rdof_mn_info_t *in
             rdof_json_int(&q, "i", k);
             rdof_json_str(&q, "name", p->name);
             if (p->app >= 0)
-                rdof_json_str(&q, "app", "repeater");
+                rdof_json_str(&q, "app", s->app[p->app].type == RDOF_APP_TRUNK ? "trunk" : "repeater");
             if (in->trunk_paths >> k & 1)
                 rdof_json_bool(&q, "trunk", true);
             mhz(&q, "rx", rx->hz);
@@ -2020,7 +2020,7 @@ size_t rdof_mn_info_json(const rdof_site_t *s, int net, const rdof_mn_info_t *in
         int nids = 0;
         for (int a = 0; a < s->napp; a++) {
             const rdof_app3_t *ap = &s->app[a];
-            if (ap->type == RDOF_APP_REPEATER)
+            if (ap->type == RDOF_APP_REPEATER || ap->type == RDOF_APP_TRUNK)
                 continue;
             for (int g = 0; g < 2; g++) {
                 rdof_idrange_t rr[RDOF_IDSET_MAX];

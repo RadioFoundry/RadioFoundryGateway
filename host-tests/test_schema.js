@@ -88,6 +88,8 @@ const places = {
         REPEATER_KEYS: props(D.repeater3).concat(pk),
         PARROT_KEYS: props(D.parrot3),
         IPGW_KEYS: props(D.ipgw3),
+        TRUNK_KEYS: props(D.trunk3),
+        CARRIER_KEYS: props(D.carrier3),
         HBLINK_KEYS: props(D.hblink3),
         BM_KEYS: props(D.bm3),
         MQTT_KEYS: props(D.mqtt3),

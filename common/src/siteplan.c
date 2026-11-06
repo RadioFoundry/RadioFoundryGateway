@@ -543,6 +543,12 @@ static bool make_units(plan_t *p)
         done |= 1ull << ap->in | 1ull << ap->out;
         mine |= 1ull << ap->in | 1ull << ap->out;
     }
+    /* a trunked site's frequencies are its own: no transceiver or receiver takes them (the trunk unit runs them) */
+    for (int a = 0; a < s->napp; a++)
+        for (int k = 0; s->app[a].type == RDOF_APP_TRUNK && k < s->app[a].ncarrier; k++) {
+            done |= 1ull << s->app[a].carrier[k].in | 1ull << s->app[a].carrier[k].out;
+            mine |= 1ull << s->app[a].carrier[k].in | 1ull << s->app[a].carrier[k].out;
+        }
     /* SFR and DCDM frequencies: the first device that transmits there */
     for (int f = 0; f < s->nfreq; f++) {
         const rdof_freq_t *fr = &s->freq[f];
