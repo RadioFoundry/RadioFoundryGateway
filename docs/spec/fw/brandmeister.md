@@ -162,25 +162,22 @@ Two simplex frequencies and a repeater, each its own BrandMeister login:
 7. **Slots.** Done: a simplex login (slots `'4'`) sends its `DMRD` up on slot 2 (`rdof_hb_peer_up`), as a simplex
    hotspot does, and transmits what comes down on its own channel whatever the slot. A repeater maps slot to slot.
    Check on the first real login that BrandMeister sends down on slot 2.
-8. **Data.** BrandMeister answers confirmed data itself (§7). Today's gaps, from checking the capture against
-   the code (2026-11-06):
-   - A rate 3/4 block counts as bad when the trellis corrected any bit (`pdu.c:151`, `fec_ok = errors == 0`), so
-     the IP gateway drops messages whose CRC-9s and CRC-32 pass. For confirmed blocks, let CRC-9 decide.
-   - The tracker forwards a data header with a good CRC-16 and its blocks as heard (`tracker.c`), and a repeater
-     resends rate 3/4 blocks uncorrected (`duplex.c`): bit errors go up as they came. Check CRC-9 per block and
-     CRC-32 before sending a confirmed packet up; drop a bad one (the radio sends it again).
-   - Every CSBK, each preamble too, starts a stream (`tracker.c`, `hblink.c`): a Motorola packet with 20 preambles
-     goes up as 20 one-burst streams, then the data. Keep one stream from the first preamble through the header and
-     its blocks.
-   - A roamer that relays a data packet down holds the call until `RDOF_TXVR_STREAM_TIMEOUT_S` (1.5 s) after the
-     last burst (`txvr.c`: data has no terminator), deaf meanwhile, and the radio's ACK comes about 1 s after the
-     packet. End a relayed data call at its last announced block, as the SDR modem does ([ipgw.md](ipgw.md) §11),
-     and open the answer window there.
-   - The answer window's cap (5 s) is under the radio's link retry (about 6 s): raise it when the reply was asked
-     by confirmed data.
-   - The IP gateway's duplicate window, `RDOF_IPGW_DEDUP_S` 5 s, is also under the 6 s retry, so a retry is relayed
-     again. Make it about 30 s, keyed by source, N(S) and CRC-32.
-   - On a duplex repeater, key up on a radio's `BS_Dwn_Act` CSBK, which a Motorola radio sends before data.
+8. **Data.** BrandMeister answers confirmed data itself (§7). The gaps found against the capture (2026-11-06), and
+   where they stand:
+   - Done: a rate 3/4 block the trellis corrected counted as bad (`fec_ok` was `errors == 0`); CRC-9 and CRC-32
+     decide now.
+   - Done: a roamer relaying data down held the call `RDOF_TXVR_STREAM_TIMEOUT_S` (1.5 s) after the last burst, deaf
+     while the radio's ACK came about 1 s after the packet. The call ends at the last block its header announced
+     (`txvr.c`, `data_left`), as the SDR modem does ([ipgw.md](ipgw.md) §11).
+   - Done: the IP gateway's duplicate window was 5 s, under the radio's 6 s retry; it's 30 s, and a message that
+     didn't go up for a passing reason is forgotten so its retry tries again.
+   - Not needed: one stream from the first preamble through the data. A hotspot starts a new stream id at every CSBK
+     and every data header too, and BrandMeister takes that.
+   - Left as is: confirmed copies with bit errors go up as heard (`tracker.c`, `duplex.c`). A hotspot does the same;
+     BrandMeister answers a CRC-32 failure with a NACK and the radio sends again.
+   - Not needed for BrandMeister: the answer window's 5 s cap matters to a scanning roamer only, and a BrandMeister
+     path doesn't roam.
+   - Open: on a duplex repeater, key up on a radio's `BS_Dwn_Act` CSBK, which some radios send before data.
 9. **Static TGs (later).** With `api_key`, set the path's static TGs on BrandMeister from its `tg` policy, so one
    setting covers both directions.
 10. **Status.** Per login: state (`login`, `auth`, `config`, `up`, `backoff`), the last refusal and its step,

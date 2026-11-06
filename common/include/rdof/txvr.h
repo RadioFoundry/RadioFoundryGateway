@@ -110,6 +110,7 @@ typedef struct {
     int vpi;         /* the PI of the stream's last B-F burst: for one moved to another position */
     double air_seen; /* when what the radio holds has gone out, as the poll last wrote it (under the lock) */
     rdof_jb_stream_t jbs;
+    int data_left; /* a data packet's blocks still to come after its header; it ends at its last (no terminator) */
 } rdof_txcall_t;
 
 typedef struct rdof_txvr {

@@ -332,6 +332,21 @@ static void add(rdof_txvr_t *t, rdof_txcall_t *c, const rdof_net_burst_t *b, dou
     c->last_burst = now(t);
     if (b->terminator)
         c->ended = true;
+    /* Data has no terminator: the call ends at the last block its header announced, so the receiver is back for the
+       radio's answer at once (not RDOF_TXVR_STREAM_TIMEOUT_S on). A second header counts as a block. */
+    const int dt = b->control & 0x0F;
+    if ((b->control & RDOF_SYNC_DATA) && c->data_left > 0 &&
+        (dt == RDOF_DT_RATE_12 || dt == RDOF_DT_RATE_34 || dt == RDOF_DT_RATE_1 || dt == RDOF_DT_DATA_HEADER)) {
+        if (--c->data_left == 0)
+            c->ended = true;
+    } else if ((b->control & RDOF_SYNC_DATA) && dt == RDOF_DT_DATA_HEADER) {
+        rdof_data_header_t h;
+        rdof_decode_data_header(b->burst, &h);
+        if (h.crc_ok && h.dpf == RDOF_DPF_RESPONSE && h.blocks == 0)
+            c->ended = true; /* a response with nothing after it */
+        else if (h.crc_ok && h.blocks > 0)
+            c->data_left = h.blocks;
+    }
 }
 
 /* A call tuned with none in hand: refused, or the call. Called locked. */
