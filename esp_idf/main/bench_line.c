@@ -243,7 +243,9 @@ void bench_line_start(void)
     /* the server's thread: its stack in PSRAM, internal RAM being the scarce one */
     esp_pthread_cfg_t cfg = esp_pthread_get_default_config();
     cfg.thread_name = "bench_line";
-    cfg.prio = 3;
+    /* 7: over ipgw (6), under gnss, lwIP, Wi-Fi and the front end. At 3 a trigger at 384 kS/s didn't get enough of core
+     * 0 and its history moved on under it */
+    cfg.prio = 7;
     cfg.pin_to_core = 0;
     cfg.stack_alloc_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
     esp_pthread_set_cfg(&cfg);

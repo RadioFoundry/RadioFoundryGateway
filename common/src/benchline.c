@@ -112,7 +112,7 @@ typedef struct {
     int hist[TRIG_HIST];
     long floor_blocks;
     int bsize, bn;            /* outputs in a 1 ms block, so far */
-    double bp;
+    float bp;                 /* float: a double add each output is soft-float on an ESP32 */
     uint64_t block_sc;
     int run;                  /* blocks over the threshold in a row */
     uint64_t run_sc;
@@ -3860,6 +3860,27 @@ static void track_snap(rdof_bl_t *bl, trig_t *t, const rdof_bl_window_t *w)
     t->snap[t->nsnap++] = (struct track_snap){from, next, *w};
 }
 
+/* One output of the symmetric filter over x (oldest to newest, 2 h + 1 taps): each pair from the two ends shares a
+ * multiply, two sums each (one running sum waits on each add: resample.c). Apart, so its loop has the registers. */
+static __attribute__((noinline)) void trig_fir(const float *restrict taps, const float *restrict x, int h, float *yi,
+                                               float *yq)
+{
+    const float *v = x + 4 * h; /* the newest */
+    float i0 = taps[h] * x[2 * h], q0 = taps[h] * x[2 * h + 1], i1 = 0, q1 = 0;
+    int k = 0;
+    for (; k + 1 < h; k += 2) {
+        i0 += taps[k] * (x[2 * k] + v[-2 * k]);
+        q0 += taps[k] * (x[2 * k + 1] + v[1 - 2 * k]);
+        i1 += taps[k + 1] * (x[2 * k + 2] + v[-2 * k - 2]);
+        q1 += taps[k + 1] * (x[2 * k + 3] + v[-1 - 2 * k]);
+    }
+    if (k < h) {
+        i0 += taps[k] * (x[2 * k] + v[-2 * k]);
+        q0 += taps[k] * (x[2 * k + 1] + v[1 - 2 * k]);
+    }
+    *yi = i0 + i1, *yq = q0 + q1;
+}
+
 /* A chunk's outputs to the client, from the capture's sample idx0 on */
 static void trig_send(conn_t *c, trig_t *t, int nout, long idx0)
 {
@@ -3868,7 +3889,7 @@ static void trig_send(conn_t *c, trig_t *t, int nout, long idx0)
         int16_t *o = (int16_t *)t->y;
         for (int k = 0; k < 2 * nout; k++) {
             const float v = t->y[k] * 32767.0f;
-            o[k] = (int16_t)(v > 32767.0f ? 32767 : v < -32768.0f ? -32768 : lrintf(v));
+            o[k] = (int16_t)(v > 32767.0f ? 32767 : v < -32768.0f ? -32768 : rdof_bl_round(v)); /* not lrintf: R2.37 */
         }
         nb = (size_t)nout * 4;
     }
@@ -3898,7 +3919,7 @@ static bool trig_out(rdof_bl_t *bl, conn_t *c, trig_t *t, const rdof_bl_window_t
     t->bp += yi * yi + yq * yq;
     if (t->bn < t->bsize)
         return false;
-    const double lin = t->bp / t->bsize;
+    const double lin = (double)t->bp / t->bsize;
     t->bn = 0, t->bp = 0;
     if (t->track)
         track_block(bl, c, lin, w);
@@ -3946,10 +3967,11 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
     if (t->track)
         track_snap(bl, t, &w);
     const uint64_t g = (uint64_t)(t->ntaps - 1) / 2, d = (uint64_t)t->d;
-    /* twice the input since the last tick, so it catches up, at most 0.25 s of it: the lock is held */
+    /* twice the input since the last tick, so it catches up, at most 0.5 s of it: the lock is held. 0.25 s fell
+     * behind on a W12 at 384 kS/s, whose ticks come 0.3 to 0.7 s apart there */
     double dt = t->last_tick > 0 ? now - t->last_tick : 0.02;
     t->last_tick = now;
-    dt = dt < 0.02 ? 0.02 : dt > 0.125 ? 0.125 : dt;
+    dt = dt < 0.02 ? 0.02 : dt > 0.25 ? 0.25 : dt;
     long budget = (long)(2 * dt * w.fs) + RDOF_BL_IQ_CHUNK;
     while (budget > 0) {
         if (t->fired && t->next_out - g >= t->end_sc) {
@@ -4041,32 +4063,47 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
         const float k127 = 1.0f / 127;
         int nout = 0;
         bool restarted = false;
-        for (long i = 0; i < got; i++) {
-            const int8_t xi8 = bl->iq[2 * i], xq8 = bl->iq[2 * i + 1];
-            if (t->fired) {
-                t->inputs++;
-                t->clipped += (xi8 >= 127 || xi8 <= -127) + (xq8 >= 127 || xq8 <= -127);
+        /* the state in locals, kept in registers (through t, each store made the compiler reload them) */
+        const int nt = t->ntaps, h = (nt - 1) / 2;
+        const float *taps = t->taps;
+        float *dl = t->dl;
+        const int8_t *iq = bl->iq;
+        int di = t->di;
+        uint64_t next_out = t->next_out;
+        const uint64_t sc0 = t->sc;
+        if (t->fired) {
+            long clipped = 0;
+            for (long i = 0; i < 2 * got; i++)
+                clipped += iq[i] >= 127 || iq[i] <= -127;
+            t->inputs += got, t->clipped += clipped;
+        }
+        for (long i = 0; i < got;) {
+            /* the inputs up to the next output's, mixed into the delay line */
+            const long stop = next_out >= sc0 + (uint64_t)i && next_out < sc0 + (uint64_t)got
+                                  ? (long)(next_out - sc0) + 1 : got;
+            for (; i < stop; i++) {
+                const float xi = iq[2 * i] * k127, xq = iq[2 * i + 1] * k127;
+                float *a = dl + 2 * di, *b = a + 2 * nt;
+                a[0] = b[0] = xi * pr - xq * pq;
+                a[1] = b[1] = xi * pq + xq * pr;
+                const float npr = pr * rr - pq * rq;
+                pq = pr * rq + pq * rr, pr = npr;
+                if (++di == nt)
+                    di = 0;
             }
-            const float xi = xi8 * k127, xq = xq8 * k127;
-            float *a = t->dl + 2 * t->di, *b = a + 2 * t->ntaps;
-            a[0] = b[0] = xi * pr - xq * pq;
-            a[1] = b[1] = xi * pq + xq * pr;
-            const float npr = pr * rr - pq * rq;
-            pq = pr * rq + pq * rr, pr = npr;
-            if (++t->di == t->ntaps)
-                t->di = 0;
-            if (t->sc + (uint64_t)i != t->next_out)
+            if (sc0 + (uint64_t)(i - 1) != next_out)
                 continue;
-            t->next_out += d;
-            const float *x = t->dl + 2 * t->di; /* oldest to newest (the taps are symmetric) */
-            float yi = 0, yq = 0;
-            for (int k = 0; k < t->ntaps; k++)
-                yi += t->taps[k] * x[2 * k], yq += t->taps[k] * x[2 * k + 1];
-            if (trig_out(bl, c, t, &w, t->sc + (uint64_t)i - g, yi, yq, &nout)) {
+            next_out += d;
+            float yi, yq;
+            trig_fir(taps, dl + 2 * di, h, &yi, &yq); /* oldest to newest */
+            t->di = di, t->next_out = next_out;
+            if (trig_out(bl, c, t, &w, sc0 + (uint64_t)(i - 1) - g, yi, yq, &nout)) {
                 restarted = true;
                 break;
             }
         }
+        if (!restarted)
+            t->di = di, t->next_out = next_out;
         if (restarted)
             continue;
         t->sc += (uint64_t)got;
