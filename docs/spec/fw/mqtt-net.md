@@ -442,7 +442,9 @@ A separate program; the only participant with global state: where each radio was
 last-heard table" of [config-v3.md](config-v3.md) §14.
 
 **Where a radio is.** Each radio's entry is `{node, path, at, rssi}`. The router learns it from the header of each `pc`
-stream (the topic gives the node, the path byte the path) and from `activity` (§7). It looks the index up in the
+stream (the topic gives the node, the path byte the path) and from `activity` (§7). Of the setup messages (§9.4)
+only an `accept` is a sighting: its src, the called radio, is at the answering node. A `request`'s caller is placed by
+its site's registration record (§15), and a `reject`'s src isn't at the node that sent it. It looks the index up in the
 node's `info` (`paths`) for `tx_ok`. A sighting counts only if the path can transmit. Sightings within 300 ms of each
 other (several boxes hearing one key-up) are compared, and the best RSSI wins. An entry expires after `pc_hold_s`
 (default 900 s, as a box's own table); so does every entry on a node whose `paths_rev` changes or whose `online`
@@ -529,14 +531,22 @@ site A: grants the caller; the voice then goes as an ordinary private call both 
 
 - The caller's site waits up to 5 s for an answer, then gives up and sends `cancel`. `alerting` keeps it waiting for
   `answered` (or the site's own timer).
+- A `reject not_found` doesn't end the wait: with a flood several boxes answer, and those that haven't heard the
+  radio reject while one may still accept. The caller keeps waiting for an `accept` until its timer runs out; it then
+  ends the call as `not_found` if one came, else as `timeout`. Any other reject ends the wait at once. An answer whose
+  `ref` isn't a request the site is waiting on is dropped.
 - **Every box with a transmitting path:** a `request` on its `dl` is answered at once: `accept` with `unconfirmed`
   when the called radio was last heard on a path of this network that can transmit, else `reject not_found`. A Tier
   III radio can call a radio on a Tier II repeater this way. A box never answers a setup it got on `tg` or `pc`.
   Each setup it gets on `dl` goes in `activity` as a `setup` event, and so does its answer (`path` the answer's
   path, `peer` `router`). Code: `rdof_mn_setup_tier2`.
-- **The router:** a `request` for a radio it can't place gets `reject not_found` from the router on
-  `dl/{publisher}`, unless its flood policy sends the request on; then the first `accept` wins and the caller's site
-  sends `cancel` to any later acceptor.
+- **The router:** a `request` it would drop gets an answer at once (the early refusal), unless its flood policy sends
+  the request on; then the first `accept` wins and the caller's site sends `cancel` to any later acceptor. The answer
+  is a `reject` on `dl/{publisher}`: reason `not_found` for a radio it can't place, `refused` when the caller or the
+  called radio is disabled (`cfg/ms/{id}` `enabled: false`); src and dst swapped; the request's path byte (the
+  caller's path); its own stream ID; ref the request's. A request from an app the router doesn't accept (unlisted, or
+  sending as an ID it may not use) is dropped without an answer. The router's config `early_reject` (default true)
+  turns the early refusal off; the request is then just dropped and the caller's timer ends it.
 - A setup message never becomes bursts: the downlink hands it to the box's handler (`rdof_mn_down_t.setup`).
 - A private call from a Tier II radio to a Tier III radio needs no setup: the trunked site does the check itself
   when the voice arrives ([trunk.md](trunk.md) §3.6).
