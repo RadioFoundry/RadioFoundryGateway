@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "rdof/lastheard.h"
 #include "rdofradio_cfg.h"
 
 static int fails, checks;
@@ -260,6 +261,26 @@ int main(void)
     CHECK(C.has_hblink && C.has_parrot && C.parrot == 9990 && C.nchan == 2 && C.chan[0].freq == 438062500 &&
           C.chan[1].freq == 438087500);
     CHECK(!C.chan[0].hblink && !C.chan[1].hblink); /* one identity: through the radio's peer */
+    /* last heard: the transceiver's channel is an SDR channel too, so a call it hears is the SDR's entry only (the
+       Pluto showed one simplex call as two, sdr/SDR01 and roamer); --mmdvm's modem (no channel) is the unit's */
+    {
+        const int uc = rdofradio_cfg_channel_at(&C, C.rx_hz);
+        CHECK(uc >= 0 && !rdofradio_cfg_heard_unit(true, true) && rdofradio_cfg_heard_unit(false, true) &&
+              !rdofradio_cfg_heard_unit(true, false));
+        static rdof_lh_entry_t ring[8];
+        static rdof_lh_t lh;
+        rdof_lh_init(&lh, ring, 8);
+        const char *js[] = {"{\"DMR\":{\"action\":\"start\",\"slot\":1,\"src_id\":9800001,\"dst_id\":9990,"
+                            "\"group\":\"yes\",\"frequency\":\"438.0625\"}}",
+                            "{\"DMR\":{\"action\":\"end\",\"slot\":1,\"src_id\":9800001,\"dst_id\":9990,"
+                            "\"group\":\"yes\",\"duration\":7.38}}"};
+        for (int k = 0; k < 2; k++) { /* as rdofradio's on_json: is_sdr and is_unit both hold for the unit's channel */
+            rdof_lh_tracker_json(&lh, "sdr", "plant", "SDR01", js[k], k, 0);
+            if (rdofradio_cfg_heard_unit(true, uc >= 0))
+                rdof_lh_tracker_json(&lh, "roamer", "plant", NULL, js[k], k, 0);
+        }
+        CHECK(lh.n == 1 && !strcmp(ring[0].role, "sdr") && !ring[0].active && ring[0].src == 9800001);
+    }
     CHECK(parse("{\"version\": 3, \"name\": \"tower\", \"id\": 9800300, \"defaults\": {\"cc\": 1}, "
                 "\"devices\": [{\"kind\": \"sdr\", \"driver\": \"iio\"}], "
                 "\"frequencies\": [{\"name\": \"in\", \"freq\": 438.75}, {\"name\": \"out\", \"freq\": 438.5}, "

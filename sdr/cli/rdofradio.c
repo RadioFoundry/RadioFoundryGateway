@@ -1657,9 +1657,10 @@ static void on_json(void *ctx, const char *ch, const char *json)
     }
 #endif
 #ifdef RDOF_HOST_WEB
-    if (is_sdr(ch)) /* a channel: the SDR's, as on the board */
+    const bool sdr = is_sdr(ch);
+    if (sdr) /* a channel: the SDR's, as on the board */
         rdof_hostweb_tracker_json("sdr", rcfg.box, ch, json);
-    if (is_unit(ch)) /* and what the unit hears, on its card */
+    if (rdofradio_cfg_heard_unit(sdr, is_unit(ch))) /* the unit's own only off the SDR's channels: one entry a call */
         rdof_hostweb_tracker_json(R.full ? "repeater" : "roamer", rcfg.name, NULL, json);
 #endif
     if (!quiet)
