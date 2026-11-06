@@ -15,6 +15,8 @@
  *     not, CRC checked): a confirmed packet gets the link-level ACK; a TMS text (UDP 4007) gets the TMS ACK
  *     (`BF 00 <seq>`), then after --reply-s an answer text, as BrandMeister's service does (§7). Unlike
  *     BrandMeister, its own packets go down unconfirmed at rate 1/2 (the IP gateway's);
+ *   - a group call goes to every other login that keyed the same TG in the last 15 minutes (BrandMeister's dynamic
+ *     talkgroup and its default timer): a repeater's on the slot it keyed it on, a simplex hotspot's on slot 2;
  *   - every packet is logged one line each (stdout, and --log).
  * Each peer's DMRD down carry its own peer ID. Single threaded; POSIX sockets.
  */
@@ -45,6 +47,8 @@
 #define SMS_ID 262993u
 #define PARROT_ID 9990u
 #define TMS_PORT 4007
+#define DYN_TGS 4
+#define DYN_S 900.0 /* BrandMeister's default dynamic talkgroup timer: 15 minutes */
 
 enum { ST_FREE = 0, ST_SALTED, ST_AUTHED, ST_UP };
 
@@ -57,6 +61,12 @@ typedef struct {
     uint8_t rptc[RDOF_RPTC_LEN];
     unsigned dmrd_in, dmrd_out;
     uint32_t last_src; /* who was heard here last: the SMS answers go to the peer that heard the radio */
+    struct {
+        uint32_t tg;
+        int slot;
+        double at;
+    } dyn[DYN_TGS]; /* the TGs keyed here: dynamic subscriptions */
+    uint32_t relay_sid; /* the last stream relayed here, for its log line */
 } peer_t;
 
 static struct {
@@ -318,6 +328,8 @@ static const char *dt_name(int dt)
     return N[dt & 15];
 }
 
+static void relay_group(peer_t *from, const uint8_t *d, size_t n, const rdof_net_burst_t *b, double now);
+
 static void dmrd_up(peer_t *p, const uint8_t *d, size_t n, double now)
 {
     rdof_net_burst_t b;
@@ -337,9 +349,54 @@ static void dmrd_up(peer_t *p, const uint8_t *d, size_t n, double now)
         F.parrot_peer = p;
         rdof_parrot_heard(&F.parrot, b.slot, b.control, b.burst, now);
     }
+    if (b.group)
+        relay_group(p, d, n, &b, now);
     if (b.dst == SMS_ID && !b.group && ft == 2) {
         const rdof_ipgw_where_t w = {.source = (int)(p - F.peers), .slot = b.slot, .freq = 0, .cc = -1};
         rdof_ipgw_burst(&F.gw, &w, dt, b.burst, now);
+    }
+}
+
+/* A group call: this login subscribes to its TG on its slot, and it goes to every other login subscribed to it. */
+static void relay_group(peer_t *from, const uint8_t *d, size_t n, const rdof_net_burst_t *b, double now)
+{
+    int k = 0;
+    for (int i = 0; i < DYN_TGS; i++) {
+        if (from->dyn[i].tg == b->dst) {
+            k = i;
+            break;
+        }
+        if (from->dyn[i].at < from->dyn[k].at)
+            k = i;
+    }
+    from->dyn[k].tg = b->dst;
+    from->dyn[k].slot = b->slot;
+    from->dyn[k].at = now;
+    for (int i = 0; i < MAX_PEERS; i++) {
+        peer_t *p = &F.peers[i];
+        if (p == from || p->state != ST_UP)
+            continue;
+        int slot = 0;
+        for (int j = 0; j < DYN_TGS; j++)
+            if (p->dyn[j].tg == b->dst && now - p->dyn[j].at < DYN_S)
+                slot = p->dyn[j].slot;
+        if (!slot)
+            continue;
+        if (p->rptc[97] == '4')
+            slot = 2; /* a simplex hotspot: slot 2 */
+        uint8_t out[RDOF_DMRD_LEN + 2];
+        const size_t m = n < sizeof out ? n : sizeof out;
+        memcpy(out, d, m);
+        rdof_put_be32(out + 11, p->id);
+        out[15] = (uint8_t)((out[15] & 0x7F) | (slot == 2 ? 0x80 : 0));
+        send_to(p, out, m);
+        p->dmrd_out++;
+        const uint32_t sid = rdof_be32(d + 16);
+        if (sid != p->relay_sid) {
+            p->relay_sid = sid;
+            say("relay TG %u from peer %u s%d to peer %u s%d", (unsigned)b->dst, (unsigned)from->id, b->slot,
+                (unsigned)p->id, slot);
+        }
     }
 }
 

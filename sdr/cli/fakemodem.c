@@ -6,13 +6,14 @@
  * MMDVM_HS board), plays a radio's calls into rdofradio as bursts heard, and logs every burst rdofradio has it send.
  *
  *   fakemodem [--kind mmdvm_hs] [--cc 1] [--src ID] [--delay-s 8] [--gap-s 6] [--rssi N]
- *             [--call DST:private|group:SECONDS]... [--text DST:"TEXT"]... [--confirmed]
+ *             [--slot 1|2] [--call DST:private|group:SECONDS]... [--text DST:"TEXT"]... [--confirmed]
  *             [--log FILE] [--path-file FILE] [--exit-after-s S] [--trace]
  *
  * It prints the pty's path (and writes it to --path-file); run `rdofradio --allow-tx --mmdvm PATH ...` on it. Once
  * rdofradio has set the modem up (its first SET_MODE to DMR), it waits --delay-s, then plays each --call and --text
  * in the order given, --gap-s apart: DMR_DATA2 bursts every 60 ms, as a hotspot hands up what it heard on its one
- * slot. A call is a voice LC header, superframes A-F with the call's embedded LC (silence), and a terminator; a text
+ * slot. --slot sets the slot of the calls and texts after it (2 by default; slot 1 for a duplex modem, `--kind mmdvm`,
+ * as a repeater hears a radio on its first slot). A call is a voice LC header, superframes A-F with the call's embedded LC (silence), and a terminator; a text
  * is preamble CSBKs, an IPv4/UDP TMS message (port 4007) in a data header and rate 1/2 blocks. Both are built by the
  * bench's job builder (rdof/benchjob.h), as a radio sends them (MS sync).
  *
@@ -52,6 +53,7 @@ typedef struct {
     uint32_t dst;
     bool group;
     double seconds;
+    int slot; /* 1 or 2 */
     char msg[RDOF_BJ_TEXT];
 } part_t;
 
@@ -68,7 +70,7 @@ static struct {
     int nparts, next_part;
     /* playing: bursts, the next one's index and when */
     rdof_bj_burst_t *bursts;
-    int nbursts, at;
+    int nbursts, at, slot;
     double next_at, start_at, done_at;
     bool set_up;
     /* the transmitter's slot clock */
@@ -266,12 +268,13 @@ static bool build_part(const part_t *p)
         return false;
     }
     if (p->text)
-        say("PLAY text %u -> %u \"%s\" (%s, TMS sequence %d): %d bursts", (unsigned)M.src, (unsigned)p->dst, p->msg,
-            M.confirmed ? "confirmed" : "unconfirmed", j.tms_seq, M.nbursts);
+        say("PLAY text %u -> %u \"%s\" (%s, TMS sequence %d) on slot %d: %d bursts", (unsigned)M.src,
+            (unsigned)p->dst, p->msg, M.confirmed ? "confirmed" : "unconfirmed", j.tms_seq, p->slot, M.nbursts);
     else
-        say("PLAY call %u -> %u %s %.1f s: %d bursts", (unsigned)M.src, (unsigned)p->dst, p->group ? "TG" : "PC",
-            p->seconds, M.nbursts);
+        say("PLAY call %u -> %u %s %.1f s on slot %d: %d bursts", (unsigned)M.src, (unsigned)p->dst,
+            p->group ? "TG" : "PC", p->seconds, p->slot, M.nbursts);
     M.at = 0;
+    M.slot = p->slot;
     return true;
 }
 
@@ -295,10 +298,10 @@ static void play(double now)
     while (M.at < M.nbursts && now >= M.next_at) {
         const rdof_bj_burst_t *b = &M.bursts[M.at++];
         char line[256];
-        describe("RX", 2, b->control, b->burst, line, sizeof line);
+        describe("RX", M.slot, b->control, b->burst, line, sizeof line);
         if (b->control & RDOF_SYNC_DATA || M.at == 1 || (b->control & 0x0F) == 0)
             say("%s", line); /* voice: A bursts and the data, not every B-F */
-        fake_hear(&M.radio, b->control, b->burst, M.rssi, 2);
+        fake_hear(&M.radio, b->control, b->burst, M.rssi, M.slot);
         M.next_at += 0.060;
         if (M.at == M.nbursts) {
             say("PLAY done");
@@ -326,7 +329,7 @@ static void drain(double now)
 static void usage(void)
 {
     fprintf(stderr, "usage: fakemodem [--kind mmdvm_hs] [--cc 1] [--src ID] [--delay-s 8] [--gap-s 6] [--rssi N]\n"
-                    "                 [--call DST:private|group:SECONDS]... [--text DST:TEXT]... [--confirmed]\n"
+                    "                 [--slot 1|2] [--call DST:private|group:SECONDS]... [--text DST:TEXT]... [--confirmed]\n"
                     "                 [--log FILE] [--path-file FILE] [--exit-after-s S] [--trace]\n");
     exit(2);
 }
@@ -334,6 +337,7 @@ static void usage(void)
 int main(int argc, char **argv)
 {
     const char *kind = "mmdvm_hs", *path_file = NULL;
+    int slot = 2;
     M.cc = 1;
     M.src = 3100001;
     M.delay_s = 8;
@@ -353,6 +357,8 @@ int main(int argc, char **argv)
             M.gap_s = atof(v), i++;
         else if (!strcmp(a, "--rssi") && v)
             M.rssi = atoi(v), i++;
+        else if (!strcmp(a, "--slot") && v && (atoi(v) == 1 || atoi(v) == 2))
+            slot = atoi(v), i++;
         else if (!strcmp(a, "--trace"))
             M.trace = true;
         else if (!strcmp(a, "--confirmed"))
@@ -365,6 +371,7 @@ int main(int argc, char **argv)
             M.exit_after_s = atof(v), i++;
         else if ((!strcmp(a, "--call") || !strcmp(a, "--text")) && v && M.nparts < MAX_PARTS) {
             part_t *p = &M.parts[M.nparts];
+            p->slot = slot;
             char *e;
             p->dst = (uint32_t)strtoul(v, &e, 10);
             if (*e != ':' || !p->dst)

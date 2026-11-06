@@ -180,18 +180,28 @@ Tests:
 
 - **Host tests and HIL tests run against a simulated BrandMeister master**, never the real network: a small fake
   master (UDP, the login of §3 with a known salt and password, `MSTPONG`, `MSTNAK` on demand, `DMRD` echo and
-  scripted calls, confirmed-data ACKs and TMS ACKs as §7 recorded them). The C host tests drive it in process; the
+  scripted calls, confirmed-data ACKs and TMS ACKs as §7 recorded them). It relays a group call to every other login
+  that keyed the same TG in the last 15 minutes, as BrandMeister's dynamic talkgroups do: to a repeater on the slot it
+  keyed it on, to a simplex hotspot on slot 2. The C host tests drive it in process; the
   HIL tests point a board or rdofradio at it on the LAN. No automated or recurring test reaches BrandMeister.
 - **No RF, on one host:** `fakemodem` (sdr/cli) is a simplex MMDVM_HS hotspot on a pty, answering as the host
   tests' fake radio. It plays a radio's calls and texts into `rdofradio --allow-tx --mmdvm <pty> --config ...`
   (`--call 9990:private:3`, `--call 91:group:2`, `--text 262993:hi`) and logs every burst rdofradio has it send,
   decoded (slot, kind, LC or header addresses, the embedded LC). With `fakebm` on 127.0.0.1 this checks the login,
   calls up on slot 2, the parrot's echo and the TMS ACK and answer back on RF. A group call goes up only when the
-  path carries the TG (`tg` or `ptt`; none by default).
+  path carries the TG (`tg` or `ptt`; none by default; a repeater's slots don't take `defaults`, so each slot needs
+  its own). `fakemodem --kind mmdvm` is a duplex modem, and `--slot 1|2` sets the slot of the calls and texts after
+  it: a repeater on it checks both slots.
+- **Duplex, no RF (2026-11-06):** rdofradio as a repeater (438.75 in, 438.25 out) on `fakemodem --kind mmdvm`, and
+  a simplex hotspot beside it, both logged in to `fakebm`. The repeater's `RPTC`: RX 438750000, TX 438250000, slots
+  `3`, package MMDVM. A private call to 9990 on each slot went up on that slot and came back on it; a text to 262993
+  on slot 2 got its TMS ACK and answer back on slot 2. TG 91 keyed on slot 1 and TG 92 on slot 2 went up on their
+  slots and reached the hotspot; the hotspot's calls to them came down to the repeater on slot 1 and slot 2 and went
+  out on those slots.
 - **Against real BrandMeister: one-off, by hand**, once per change that needs it, on the owner's registered IDs,
   with the results written here. For the first build, in order: rdofradio as one simplex hotspot (a spare 9-digit
   hotspot ID) with the bench's radios (parrot 9990, a TG, a private call, an SMS to 262993); then two simplex
-  logins at once; then a W12; then a repeater.
+  logins at once; then a W12; then a repeater (a duplex login: slots `3`, its RX and TX).
 
 ## 7. Observed: a radio's text message through a BrandMeister hotspot (2026-11-06)
 
