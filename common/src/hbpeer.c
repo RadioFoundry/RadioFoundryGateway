@@ -255,10 +255,14 @@ size_t rdof_hb_peer_login_status(const rdof_hb_peer_t *p, char *out, size_t cap)
     if (!p->login)
         return 0;
     const char *at = p->refused && p->refused_at < 5 ? step[p->refused_at] : "";
+    char hex[2 * sizeof p->refusal + 1];
+    for (size_t i = 0; i < p->refusal_len; i++)
+        snprintf(hex + 2 * i, 3, "%02x", p->refusal[i]);
+    hex[2 * p->refusal_len] = 0;
     int n = snprintf(out, cap,
                      "{\"state\":\"%s\",\"logins\":%u,\"refusals\":%u,\"refused_at\":\"%s\",\"went_quiet\":%u,"
-                     "\"backoff_s\":%g}",
-                     rdof_hb_peer_state_name(p), p->logins, p->refused, at, p->pings_missed, p->backoff_s);
+                     "\"backoff_s\":%g,\"refusal\":\"%s\"}",
+                     rdof_hb_peer_state_name(p), p->logins, p->refused, at, p->pings_missed, p->backoff_s, hex);
     return n < 0 ? 0 : (size_t)n >= cap ? cap - 1 : (size_t)n;
 }
 
@@ -298,6 +302,8 @@ static rdof_hbp_event_t login_received(rdof_hb_peer_t *p, const uint8_t *d, size
             return RDOF_HBP_NONE; /* already given up */
         p->refused++;
         p->refused_at = p->state;
+        p->refusal_len = (uint8_t)(n < sizeof p->refusal ? n : sizeof p->refusal);
+        memcpy(p->refusal, d, p->refusal_len);
         p->bad_password = p->state == RDOF_HBL_AUTH;
         login_backoff(p, now, p->bad_password);
         return RDOF_HBP_REFUSED;
@@ -343,7 +349,8 @@ static void text_field(uint8_t *out, size_t len, const char *s)
         out[i] = i < k ? (uint8_t)s[i] : ' ';
 }
 
-/* The DMRC's coordinate at off, len (HBlink4's, "33.6198 "), as the spec writes it: a sign, zero padded, 4 decimals */
+/* The DMRC's coordinate at off, len (HBlink4's, "33.6198 "), as hotspots send it to BrandMeister: "%0*f" (6 decimals,
+   zero padded to len) cut to len characters: 0 is "0.000000" / "00.000000", 33.6198 "33.61980", -86.6089 "-86.60890" */
 static void coord_field(const uint8_t *d, size_t n, size_t off, size_t len, uint8_t *out)
 {
     char s[16] = {0}, w[24];
@@ -353,7 +360,7 @@ static void coord_field(const uint8_t *d, size_t n, size_t off, size_t len, uint
     const double lim = len == 8 ? 90.0 : 180.0;
     if (!(v >= -lim && v <= lim))
         v = 0.0;
-    snprintf(w, sizeof w, "%+0*.4f", (int)len, v);
+    snprintf(w, sizeof w, "%0*f", (int)len, v);
     memcpy(out, w, len);
 }
 
@@ -374,14 +381,14 @@ size_t rdof_rptc_from_dmrc(const uint8_t *d, size_t n, int power_dbm, const char
         coord_field(d, n, 127, 9, out + 46); /* longitude */
         dmrc_field(d, n, 136, 3, out + 55);  /* height, m */
     } else {
-        memcpy(out + 38, "+00.0000+000.0000000", 20);
+        memcpy(out + 38, "0.00000000.000000000", 20);
     }
     text_field(out + 58, 20, location);
     text_field(out + 78, 19, description);
     dmrc_field(d, n, 38, 1, out + 97);    /* slots */
     text_field(out + 98, 124, url);
     dmrc_field(d, n, 39, 40, out + 222);  /* software ID: the DMRC's version */
-    dmrc_field(d, n, 79, 40, out + 262);  /* package ID: the DMRC's software */
+    text_field(out + 262, 40, "MMDVM");   /* package ID: BrandMeister refuses the RPTC with any other we tried */
     return RDOF_RPTC_LEN;
 }
 

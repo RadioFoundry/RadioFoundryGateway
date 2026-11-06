@@ -56,6 +56,8 @@ typedef struct {
     uint8_t state;       /* rdof_hbl_state_t */
     uint8_t refused_at;  /* the step the last refusal came at (rdof_hbl_state_t) */
     bool bad_password;   /* the last refusal came at RPTK */
+    uint8_t refusal[16]; /* the last refusal as received (MSTNAK or MSTCL + ID, and anything after), first 16 bytes */
+    uint8_t refusal_len;
     bool pending;        /* this step's packet is due now */
     bool relogin;        /* the config changed: log in again at the next tick */
     uint8_t salt[4];
@@ -106,13 +108,14 @@ const char *rdof_hb_peer_state_name(const rdof_hb_peer_t *p);
 
 /* A login's status as a JSON object into out: {"state" (rdof_hb_peer_state_name), "logins" (RPTLs sent), "refusals",
    "refused_at" (the step of the last refusal: "login", "auth", "config", "up", or ""), "went_quiet" (times three pings
-   went unanswered), "backoff_s"}. "" without a login. Returns the length. */
+   went unanswered), "backoff_s", "refusal" (the last refusal's first 16 bytes in hex, "" before one)}. "" without a login. Returns the length. */
 size_t rdof_hb_peer_login_status(const rdof_hb_peer_t *p, char *out, size_t cap);
 
-/* RPTC from a DMRC (rdof/hblink.h's layout): callsign, frequencies, color code, slots, the DMRC's version and software
-   as RPTC's software and package IDs; power_dbm (0..99) as the TX power, which the spec gives in dBm (the DMRC's is an
-   RF level); latitude and longitude as the spec writes them (+33.6198, -086.6089); location, description and url as
-   given (NULL: empty). Returns RDOF_RPTC_LEN. */
+/* RPTC from a DMRC (rdof/hblink.h's layout): callsign, frequencies, color code, slots, the DMRC's version as RPTC's
+   software ID and "MMDVM" as its package ID (BrandMeister refuses others at the config step); power_dbm (0..99) as the
+   TX power, which the spec gives in dBm (the DMRC's is an RF level); latitude and longitude unsigned, 6 decimals cut to
+   the field (33.61980, -86.60890, 0.000000); location, description and url as given (NULL: empty). Returns
+   RDOF_RPTC_LEN. */
 size_t rdof_rptc_from_dmrc(const uint8_t *dmrc, size_t n, int power_dbm, const char *location, const char *description,
                            const char *url, uint8_t out[RDOF_RPTC_LEN]);
 /* A role's power for RPTC, dBm at the antenna: a repeater's power, a transceiver's channel's on freq_now (else its

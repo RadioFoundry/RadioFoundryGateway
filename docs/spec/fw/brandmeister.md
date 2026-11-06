@@ -66,20 +66,20 @@ All integers are big endian. IDs are 4-byte binary in this dialect.
 | 25 | 9 | TX frequency, Hz |
 | 34 | 2 | TX power, dBm at the antenna, `00`-`99` (the spec's unit; not the DMRC's RF level). From the transmitter's power map (rdof/txpower.h); `00` without a map |
 | 36 | 2 | color code, `01`-`15` |
-| 38 | 8 | latitude, North positive: a sign and 4 decimals (`+33.6198`) |
-| 46 | 9 | longitude, East positive (`-086.6089`) |
+| 38 | 8 | latitude, North positive, unsigned `%08f` cut to 8 (`33.61980`, `0.000000`), as BrandMeister's wiki example writes it; the 2015 spec shows a sign and 4 decimals (`+33.6198`) |
+| 46 | 9 | longitude, East positive, `%09f` cut to 9 (`-86.60890`, `00.000000`) |
 | 55 | 3 | antenna height, m |
 | 58 | 20 | location |
 | 78 | 19 | description (20 in the 2015 spec; the hotspot dialect gives its last byte to the slots) |
 | 97 | 1 | slots: `'1'`, `'2'`, `'3'` both, `'4'` simplex |
 | 98 | 124 | URL |
-| 222 | 40 | software ID, with its version |
-| 262 | 40 | package ID, with its version and platform |
+| 222 | 40 | software ID, with its version: ours (`RadioFoundry Gateway hotspot`) |
+| 262 | 40 | package ID: `MMDVM`. BrandMeister refused the RPTC (MSTNAK at this step) with `RFG` and with `radiofoundry_gateway simplex` here, everything else the same, and took it with `MMDVM` (2026-11-06) |
 
 The source is the 2015-07-26 "IPSC Protocol Specs for homebrew DMR repeater" (DL5DI, G4KLX, DG1HT), which
 BrandMeister's wiki hosts, plus the hotspot dialect it doesn't describe (`RPTACK` for `MSTACK`, `RPTPING` / `MSTPONG`,
-the slots byte). The free text fields are ASCII only: no URLs, HTML or advertising. The first login is verified against a capture of a working hotspot's login on the bench, byte for byte, before
-anything ships.
+the slots byte). The free text fields are ASCII only: no URLs, HTML or advertising. Checked against a working
+hotspot's login on the bench, byte for byte: our RPTC differs only in the ID, frequencies, slots and software ID.
 
 Login state machine (per login):
 
@@ -172,8 +172,8 @@ Steps 1-7 and 10-11 are done (commits from 2026-11-06); 8 has one open item, 9 i
 9. **Static TGs (later).** With `api_key`, set the path's static TGs on BrandMeister from its `tg` policy, so one
    setting covers both directions.
 10. **Status.** Done: `/api/status` `brandmeister` {`state`, `logins`, `refusals`, `refused_at`, `went_quiet`,
-    `backoff_s`} on the board and in rdofradio, and a BrandMeister row on the web page that warns while the login
-    isn't up.
+    `backoff_s`, `refusal`: the last MSTNAK or MSTCL as received, hex} on the board and in rdofradio, and a
+    BrandMeister row on the web page that warns while the login isn't up.
 11. **Docs.** Done: config-v3 §7.3, reference.md, the README.
 
 Tests:
@@ -243,7 +243,9 @@ What the gateway takes from it:
 ## 8. Open questions
 
 - Which slot a simplex hotspot's `DMRD` use, both ways.
-- Whether BrandMeister checks the `RPTC` software and package IDs.
+- Which other package IDs BrandMeister takes (`MMDVM` works; two of ours were refused), and what it checks in the
+  software ID: software `20261028` with package `MMDVM` was taken; `RadioFoundry Gateway hotspot` with `MMDVM`, power
+  21 and our own location and description was refused (2026-11-06), so one of those four is checked too.
 - Whether BrandMeister takes `DMRD` talker alias or GPS in its own packets (`DMRA`, `DMRG`) from a hotspot, or only
   in-band.
 - How long a dynamic TG holds on BrandMeister now, so `ptt_hold_s` can match it.

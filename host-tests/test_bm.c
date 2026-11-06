@@ -165,18 +165,18 @@ static void test_rptc(void)
     CHECK(!memcmp(r + 8, "N0CALL  ", 8));
     CHECK(!memcmp(r + 16, "438500000438500000", 18));
     CHECK(!memcmp(r + 34, "3701", 4)); /* dBm, not the DMRC's RF level (5) */
-    CHECK(!memcmp(r + 38, "+33.6198-086.6089012", 20));
+    CHECK(!memcmp(r + 38, "33.61980-86.60890012", 20));
     CHECK(!memcmp(r + 58, "Trussville, AL      ", 20));
     CHECK(!memcmp(r + 78, "RadioFoundry test  ", 19));
     CHECK(r[97] == '4');
     CHECK(!memcmp(r + 98, "https://example.org ", 20) && r[221] == ' ');
     CHECK(!memcmp(r + 222, "RadioFoundry Gateway roaming", 28) && r[261] == ' ');
-    CHECK(!memcmp(r + 262, "radiofoundry_gateway simplex", 28) && r[301] == ' ');
+    CHECK(!memcmp(r + 262, "MMDVM ", 6) && r[301] == ' ');
     /* no location in the DMRC: zeros */
     uint8_t d2[RDOF_DMRC_MAX];
     size_t n2 = rdof_dmrc_packet(310012399, "N0CALL", 438500000, 438500000, 1, '4', 5, "v", "s", NULL, NULL, NULL, d2);
     rdof_rptc_from_dmrc(d2, n2, 120, NULL, NULL, NULL, r);
-    CHECK(!memcmp(r + 34, "99", 2) && !memcmp(r + 38, "+00.0000+000.0000000", 20) && r[58] == ' ' && r[97] == '4');
+    CHECK(!memcmp(r + 34, "99", 2) && !memcmp(r + 38, "0.00000000.000000000", 20) && r[58] == ' ' && r[97] == '4');
     rdof_rptc_from_dmrc(d2, n2, -3, NULL, NULL, NULL, r);
     CHECK(!memcmp(r + 34, "00", 2));
     /* the peer's power: rounded, held to 0..99, NAN 0 */
@@ -294,7 +294,8 @@ static void test_login(void)
     CHECK(rdof_hb_peer_received(&p, (const uint8_t *)"MSTCL\x12\x7b\x6f\xef", 9, 1.0) == RDOF_HBP_REFUSED);
     CHECK(!p.up && p.refused_at == RDOF_HBL_UP && !strcmp(rdof_hb_peer_state_name(&p), "backoff"));
     rdof_hb_peer_login_status(&p, st, sizeof st);
-    CHECK(strstr(st, "\"state\":\"backoff\"") && strstr(st, "\"refused_at\":\"up\""));
+    CHECK(strstr(st, "\"state\":\"backoff\"") && strstr(st, "\"refused_at\":\"up\"") &&
+          strstr(st, "\"refusal\":\"4d5354434c127b6fef\""));
     run(&p, 1.0, 3);
     CHECK(p.up && M.logins == 2);
 

@@ -402,8 +402,11 @@ static void received(const struct sockaddr_in *a, const uint8_t *d, size_t n, do
         answer(a, "RPTACK", id, NULL, 0);
         say("RPTK %u: password good", (unsigned)id);
     } else if (n >= RDOF_RPTC_LEN && !memcmp(d, "RPTC", 4)) {
-        if (p->state < ST_AUTHED || F.nak_step == ST_AUTHED) {
-            say("RPTC %u: MSTNAK", (unsigned)id);
+        /* BrandMeister refuses an RPTC whose package ID isn't MMDVM (docs/spec/fw/brandmeister.md §3, RPTC) */
+        static const char mmdvm[] = "MMDVM                                   ";
+        const bool pkg_ok = !memcmp(d + 262, mmdvm, 40);
+        if (p->state < ST_AUTHED || F.nak_step == ST_AUTHED || !pkg_ok) {
+            say("RPTC %u: MSTNAK%s", (unsigned)id, pkg_ok ? "" : " (package ID not MMDVM)");
             answer(a, "MSTNAK", id, NULL, 0);
             p->state = ST_FREE;
             return;
