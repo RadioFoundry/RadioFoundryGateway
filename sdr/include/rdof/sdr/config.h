@@ -60,6 +60,8 @@ typedef struct {
     bool hb_enabled;
     char hb_host[64], hb_callsign[12];
     int hb_port;
+    bool hb_login; /* a brandmeister network: the peers log in */
+    char hb_password[64], hb_location[21], hb_description[20], hb_url[125];
     bool has_location;
     rdof_location_t location;
     bool has_rssi_offset;

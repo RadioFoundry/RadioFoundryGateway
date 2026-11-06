@@ -109,6 +109,7 @@ pub struct RdofNet3 {
     pub type_: u8,
     pub per_path: bool,
     pub roaming: bool,
+    pub login: bool,
     pub report: bool,
     pub calls: bool,
 }

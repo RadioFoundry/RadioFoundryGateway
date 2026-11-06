@@ -48,6 +48,17 @@ if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
 endif()
 add_test(NAME rdof_parrot_tests COMMAND rdof_parrot_tests)
 
+# The BrandMeister login (rdof/hbpeer.h with a login), against a fake master in process.
+add_executable(rdof_bm_tests test_bm.c)
+target_link_libraries(rdof_bm_tests PRIVATE rdof_common)
+set_target_properties(rdof_bm_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_compile_options(rdof_bm_tests PRIVATE -Wall -Wno-unused-parameter)
+if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+    target_compile_options(rdof_bm_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(rdof_bm_tests PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME rdof_bm_tests COMMAND rdof_bm_tests)
+
 # The web API's shared part (rdof/webapi.h), with fake platforms.
 add_executable(rdof_webapi_tests test_webapi.c)
 target_link_libraries(rdof_webapi_tests PRIVATE rdof_common)

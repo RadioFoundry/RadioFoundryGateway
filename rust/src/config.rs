@@ -73,6 +73,11 @@ pub struct RdofConfig {
     pub master_host: [u8; 64],
     pub master_port: c_int,
     pub transport: [u8; 8],
+    pub hb_login: bool,
+    pub hb_password: [u8; 64],
+    pub hb_location: [u8; 21],
+    pub hb_description: [u8; 20],
+    pub hb_url: [u8; 125],
     pub sctp_encap_port: c_int,
     pub sctp_heartbeat_ms: c_int,
     pub sctp_max_retransmit: c_int,
@@ -707,7 +712,7 @@ impl Cx<'_> {
         let pa = (path >= 0).then(|| &s.path[path as usize]);
         cfg.receiver_hblink = pa.is_some_and(|pa| hb >= 0 && pa.pol.net == hb);
         cfg.peer_id = pa.map_or(0, |pa| pa.peer_id);
-        if cfg.peer_id == 0 && hb >= 0 {
+        if cfg.peer_id == 0 && hb >= 0 && (cfg.receiver_hblink || !s.net[hb as usize].login) {
             // a peer ID only for an hblink network
             return self.err(&[S(where_), S(b": no HBlink peer ID (the top-level id)")]);
         }
@@ -1142,6 +1147,12 @@ impl Cx<'_> {
         self.sget(hb, c"host", b"localhost", &mut cfg.master_host);
         cfg.master_port = self.iget(hb, c"port", 62031, hbw)? as c_int;
         self.sget(hb, c"transport", b"udp", &mut cfg.transport);
+        // brandmeister: RPTL and the rest (rdof/hbpeer.h)
+        cfg.hb_login = hbk >= 0 && s.net[hbk as usize].login;
+        self.sget(hb, c"password", b"", &mut cfg.hb_password);
+        self.sget(hb, c"location", b"", &mut cfg.hb_location);
+        self.sget(hb, c"description", b"", &mut cfg.hb_description);
+        self.sget(hb, c"url", b"", &mut cfg.hb_url);
         self.sctp_settings(hb, hbw, cfg)?;
         self.location(self.get(root, c"location"), cfg)?;
         // the radio: the board's SDR (an sdr_transceiver), one modem, or a split's two

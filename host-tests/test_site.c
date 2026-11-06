@@ -181,6 +181,21 @@ static void test_scenarios(const char *dir)
         CHECK(p && p->peer_id == 9800599 && rdof_idset_single(&p->pol.tg) == 3120, "peer_ids, rx-only slots");
         CHECK(S.dev[1].transmits == 1, "pinned");
     }
+    if (load(dir, "good-bm-simplex.json")) { /* BrandMeister: the network's id, no top-level id */
+        p = path("hs");
+        CHECK(p && p->peer_id == 310012301 && S.net[0].login && S.net[0].type == RDOF_NET_HBLINK, "bm id %u",
+              p ? p->peer_id : 0);
+        static char out[16384];
+        rdof_site_resolved(&S, out, sizeof out);
+        CHECK(strstr(out, "\"type\":\"brandmeister\"") && strstr(out, "\"peer_id\":310012301"), "%.200s", out);
+        CHECK(!strstr(out, "example\""), "no password in the resolved view");
+    }
+    if (load(dir, "good-bm-per-path.json")) {
+        CHECK(path("s1") && path("s1")->peer_id == 310012301 && path("s2") && path("s2")->peer_id == 310012302,
+              "bm per_path");
+        CHECK(path("R1/1") && path("R1/1")->peer_id == 310012303 && path("R1/2") && path("R1/2")->peer_id == 310012303,
+              "bm repeater: one login, both slots");
+    }
     /* the resolved view */
     if (load(dir, "good-two-repeaters.json")) {
         static char out[16384];
@@ -633,12 +648,22 @@ static void test_fixtures(const char *dir)
             bool rok = rdof_box_roles(t, len, &roles, err, sizeof err);
             CHECK(rok, "%s: roles: %s", e->d_name, err);
             if (rok) {
-                for (int k = 0; k < roles.nradios; k++)
+                for (int k = 0; k < roles.nradios; k++) {
                     CHECK(rdof_config_parse_radio(t, len, roles.radios[k], &cfg, err, sizeof err),
                           "%s: radio %s: %s", e->d_name, roles.radios[k], err);
+                    if (strstr(e->d_name, "-bm-"))
+                        CHECK(cfg.hb_login && !strcmp(cfg.hb_password, "example") && cfg.peer_id >= 310012301 &&
+                                  !strcmp(cfg.master_host, "bm.example.net"),
+                              "%s: %s: login %d %u", e->d_name, roles.radios[k], cfg.hb_login, cfg.peer_id);
+                }
                 static rdof_sdr_config_t sc;
-                if (roles.has_sdr)
+                if (roles.has_sdr) {
                     CHECK(rdof_sdr_config_parse(t, len, &sc, err, sizeof err), "%s: sdr: %s", e->d_name, err);
+                    if (strstr(e->d_name, "-bm-"))
+                        CHECK(sc.hb_login && !strcmp(sc.hb_password, "example") &&
+                                  !strcmp(sc.hb_description, "RadioFoundry test"),
+                              "%s: sdr login", e->d_name);
+                }
             }
         }
         free(t);

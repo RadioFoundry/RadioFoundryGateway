@@ -132,6 +132,8 @@ static const char *const IPGW_KEYS[] = {"name", "type", "tg", "pc", "radio_net",
 static const char *const HBLINK_KEYS[] = {"name", "type", "host", "port", "transport", "sctp_encap_port",
                                           "sctp_heartbeat_ms", "sctp_max_retransmit", "sctp_ttl_ms", "identity",
                                           "peer_ids", "roaming", NULL};
+static const char *const BM_KEYS[] = {"name", "type", "host", "port", "password", "identity", "id", "peer_ids",
+                                      "location", "description", "url", NULL};
 static const char *const MQTT_KEYS[] = {"name", "type", "host", "port", "username", "password", "root", "tls",
                                         "report", "calls", NULL};
 
@@ -597,11 +599,13 @@ static bool parse_nets(ctx_t *c, rdof_site_t *s)
         const char *t = str_of(c, get(c, e, "type"));
         if (t && !strcmp(t, "hblink"))
             n->type = RDOF_NET_HBLINK, nh++;
+        else if (t && !strcmp(t, "brandmeister")) /* an HBlink peer with a login (brandmeister.md) */
+            n->type = RDOF_NET_HBLINK, n->login = true, nh++;
         else if (t && !strcmp(t, "mqtt"))
             n->type = RDOF_NET_MQTT, nm++;
         else
-            return fail(c, "%s.type: hblink or mqtt", path);
-        if (!known(c, e, path, n->type == RDOF_NET_HBLINK ? HBLINK_KEYS : MQTT_KEYS))
+            return fail(c, "%s.type: hblink, brandmeister or mqtt", path);
+        if (!known(c, e, path, n->login ? BM_KEYS : n->type == RDOF_NET_HBLINK ? HBLINK_KEYS : MQTT_KEYS))
             return false;
         const char *nmv = str_of(c, get(c, e, "name"));
         if (get(c, e, "name") >= 0 && (!nmv || !name_ok(nmv)))
@@ -611,7 +615,20 @@ static bool parse_nets(ctx_t *c, rdof_site_t *s)
             return fail(c, "%s.name: two networks called %s (two of one type need names)", path, n->name);
         if (!str_of(c, get(c, e, "host")) || !str_of(c, get(c, e, "host"))[0])
             return fail(c, "%s.host: the %s's host name or address", path,
-                        n->type == RDOF_NET_HBLINK ? "HBlink4 master" : "MQTT broker");
+                        n->login ? "BrandMeister master" : n->type == RDOF_NET_HBLINK ? "HBlink4 master" : "MQTT broker");
+        if (n->login) {
+            const char *pw = str_of(c, get(c, e, "password"));
+            if (!pw || !pw[0] || strlen(pw) > 63)
+                return fail(c, "%s.password: the hotspot security password (BrandMeister SelfCare), 1 to 63 characters",
+                            path);
+            static const char *const TEXT[] = {"location", "description", "url"};
+            static const int MAXLEN[] = {20, 19, 124};
+            for (int x = 0; x < 3; x++) {
+                int ti = get(c, e, TEXT[x]);
+                if (ti >= 0 && (!str_of(c, ti) || strlen(str_of(c, ti)) > (size_t)MAXLEN[x]))
+                    return fail(c, "%s.%s: text, %d characters at most", path, TEXT[x], MAXLEN[x]);
+            }
+        }
         int i;
         if (n->type == RDOF_NET_HBLINK) {
             i = get(c, e, "identity");
@@ -641,7 +658,7 @@ static bool parse_nets(ctx_t *c, rdof_site_t *s)
         s->nnet++;
     }
     if (nh > 1 || nm > 1)
-        return fail(c, "networks: one hblink and one mqtt network for now");
+        return fail(c, "networks: one hblink (or brandmeister) and one mqtt network for now");
     return true;
 }
 
@@ -1134,10 +1151,24 @@ static bool peer_ids(ctx_t *c, rdof_site_t *s)
     for (int k = 0; k < s->nnet; k++)
         if (s->net[k].type == RDOF_NET_HBLINK)
             hb = k;
-    if (hb >= 0 && !s->id)
+    const bool login = hb >= 0 && s->net[hb].login;
+    if (hb >= 0 && !s->id && !login)
         return fail(c, "id: the box's DMR ID (its HBlink peer ID), 1 to 16777215");
     uint32_t next = s->id;
     int ids = hb >= 0 ? get(c, c->nnode[hb], "peer_ids") : -1;
+    uint32_t login_id = 0; /* brandmeister, identity single: the network's id */
+    if (login) {
+        double v;
+        int i = get(c, c->nnode[hb], "id");
+        if (i >= 0 && (!num_of(c, i, &v) || v < 1 || v > 4294967295.0 || v != floor(v)))
+            return fail(c, "networks.%s.id: the login's ID (a hotspot: the DMR ID and two digits), 1 to 4294967295",
+                        s->net[hb].name);
+        if (i >= 0 && s->net[hb].per_path)
+            return fail(c, "networks.%s.id: with identity single (per_path: peer_ids)", s->net[hb].name);
+        if (i < 0 && !s->net[hb].per_path)
+            return fail(c, "networks.%s.id: the login's ID (a hotspot: the DMR ID and two digits)", s->net[hb].name);
+        login_id = i >= 0 ? (uint32_t)v : 0;
+    }
     for (int k = 0; k < count(c, ids); k++) {
         const char *key = N(c, at(c, ids, k))->key;
         int a = rdof_site_app(s, key), f = rdof_site_freq(s, key);
@@ -1150,7 +1181,7 @@ static bool peer_ids(ctx_t *c, rdof_site_t *s)
     }
     for (int k = 0; k < s->npath; k++) {
         rdof_path_t *p = &s->path[k];
-        p->peer_id = s->id;
+        p->peer_id = login && p->pol.net == hb && !s->net[hb].per_path ? login_id : s->id;
         if (hb < 0 || !s->net[hb].per_path || p->pol.net != hb)
             continue;
         /* the other slot of the same frequency or repeater already has one */
@@ -1165,7 +1196,14 @@ static bool peer_ids(ctx_t *c, rdof_site_t *s)
         }
         const char *key = p->app >= 0 ? s->app[p->app].name : s->freq[p->freq].name;
         double v;
+        if (login && !num_of(c, get(c, ids, key), &v))
+            return fail(c, "networks.%s.peer_ids.%s: each path on BrandMeister logs in with its own registered ID",
+                        s->net[hb].name, key);
         p->peer_id = num_of(c, get(c, ids, key), &v) ? (uint32_t)v : ++next;
+        for (int j = 0; login && j < k; j++)
+            if (s->path[j].pol.net == hb && s->path[j].peer_id == p->peer_id)
+                return fail(c, "networks.%s.peer_ids.%s: %lu is %s's too (one login per ID)", s->net[hb].name, key,
+                            (unsigned long)p->peer_id, s->path[j].name);
         snprintf(p->peer_name, sizeof p->peer_name, "%.8s", key); /* the master's callsign field: 8 characters */
     }
     return true;
@@ -1534,7 +1572,7 @@ size_t rdof_site_resolved(const rdof_site_t *s, char *out, size_t cap)
         const rdof_net3_t *n = &s->net[k];
         open_(&w, NULL, '{');
         w_str(&w, "name", n->name);
-        w_str(&w, "type", n->type == RDOF_NET_HBLINK ? "hblink" : "mqtt");
+        w_str(&w, "type", n->login ? "brandmeister" : n->type == RDOF_NET_HBLINK ? "hblink" : "mqtt");
         if (n->type == RDOF_NET_HBLINK) {
             w_str(&w, "identity", n->per_path ? "per_path" : "single");
             w_bool(&w, "roaming", n->roaming);

@@ -1,0 +1,298 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
+/* The BrandMeister login (rdof/hbpeer.h with rdof_hb_peer_set_login) against a fake master in process: SHA-256,
+ * RPTC from a DMRC, the login, pings and pongs, a wrong password, MSTNAK at each step, lost answers, MSTCL, the
+ * back-off, a config change, DMRD only while logged in. No network. */
+#include <stdio.h>
+#include <string.h>
+
+#include "rdof/bits.h"
+#include "rdof/hblink.h"
+#include "rdof/hbpeer.h"
+#include "rdof/sha256.h"
+
+static int checks, failures;
+
+#define CHECK(c)                                                                                                     \
+    do {                                                                                                             \
+        checks++;                                                                                                    \
+        if (!(c)) {                                                                                                  \
+            failures++;                                                                                              \
+            printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c);                                                      \
+        }                                                                                                            \
+    } while (0)
+
+static void hex(const char *h, uint8_t *out)
+{
+    for (size_t i = 0; h[2 * i]; i++) {
+        unsigned v;
+        sscanf(h + 2 * i, "%2x", &v);
+        out[i] = (uint8_t)v;
+    }
+}
+
+static void test_sha256(void)
+{
+    uint8_t got[32], want[32];
+    rdof_sha256("abc", 3, got);
+    hex("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", want);
+    CHECK(!memcmp(got, want, 32));
+    rdof_sha256("", 0, got);
+    hex("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", want);
+    CHECK(!memcmp(got, want, 32));
+    const char *m = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"; /* two blocks of padding */
+    rdof_sha256(m, strlen(m), got);
+    hex("248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1", want);
+    CHECK(!memcmp(got, want, 32));
+    rdof_sha256_t s; /* fed a byte at a time */
+    rdof_sha256_init(&s);
+    for (size_t i = 0; m[i]; i++)
+        rdof_sha256_update(&s, m + i, 1);
+    rdof_sha256_final(&s, got);
+    CHECK(!memcmp(got, want, 32));
+}
+
+/* ---- the fake master ---- */
+#define PASSWORD "passw0rd"
+static const uint8_t SALT[4] = {1, 2, 3, 4};
+static struct {
+    bool nak_at[4];  /* MSTNAK at RPTL, RPTK, RPTC, RPTPING */
+    bool deaf;       /* answers nothing */
+    bool no_pong;
+    int logins, pings, configs;
+    uint8_t rptc[RDOF_RPTC_LEN];
+    uint32_t id;
+} M;
+
+/* The master's answer to what the peer sent (its length, 0: none). */
+static size_t master(const uint8_t *d, size_t n, uint8_t *out)
+{
+    if (M.deaf)
+        return 0;
+    const uint32_t id = n >= 8 ? rdof_be32(d + (n >= 11 && !memcmp(d, "RPTPING", 7) ? 7 : 4)) : 0;
+    int step = -1;
+    if (n == 8 && !memcmp(d, "RPTL", 4))
+        step = 0, M.logins++, M.id = id;
+    else if (n == 40 && !memcmp(d, "RPTK", 4))
+        step = 1;
+    else if (n == RDOF_RPTC_LEN && !memcmp(d, "RPTC", 4))
+        step = 2, M.configs++, memcpy(M.rptc, d, n);
+    else if (n == 11 && !memcmp(d, "RPTPING", 7))
+        step = 3, M.pings++;
+    if (step < 0)
+        return 0;
+    if (M.nak_at[step]) {
+        memcpy(out, "MSTNAK", 6);
+        rdof_put_be32(out + 6, id);
+        return 10;
+    }
+    if (step == 1) { /* check the hash */
+        uint8_t want[32];
+        rdof_sha256_t h;
+        rdof_sha256_init(&h);
+        rdof_sha256_update(&h, SALT, 4);
+        rdof_sha256_update(&h, PASSWORD, strlen(PASSWORD));
+        rdof_sha256_final(&h, want);
+        if (memcmp(d + 8, want, 32)) {
+            memcpy(out, "MSTNAK", 6);
+            rdof_put_be32(out + 6, id);
+            return 10;
+        }
+    }
+    if (step == 3) {
+        if (M.no_pong)
+            return 0;
+        memcpy(out, "MSTPONG", 7);
+        rdof_put_be32(out + 7, id);
+        return 11;
+    }
+    memcpy(out, "RPTACK", 6);
+    if (step == 0)
+        memcpy(out + 6, SALT, 4);
+    else
+        rdof_put_be32(out + 6, id);
+    return 10;
+}
+
+static uint8_t DMRC[RDOF_DMRC_MAX];
+static size_t DMRC_N;
+static rdof_hbp_event_t last_ev[8];
+static int nev;
+
+/* Run the peer and the master from t0 to t1 in 50 ms steps, as a board's loop would. */
+static void run(rdof_hb_peer_t *p, double t0, double t1)
+{
+    for (double t = t0; t < t1; t += 0.05) {
+        rdof_hbp_event_t ev;
+        if (rdof_hb_peer_tick(p, t, &ev)) {
+            rdof_hb_peer_set_config(p, DMRC, DMRC_N, true, t);
+            uint8_t pkt[RDOF_HB_OUT_MAX], ans[64];
+            const size_t n = rdof_hb_peer_packet(p, pkt);
+            const size_t k = master(pkt, n, ans);
+            if (k) {
+                rdof_hbp_event_t e = rdof_hb_peer_received(p, ans, k, t + 0.01);
+                if (e != RDOF_HBP_NONE && nev < 8)
+                    last_ev[nev++] = e;
+            }
+        }
+        if (ev != RDOF_HBP_NONE && nev < 8)
+            last_ev[nev++] = ev;
+    }
+}
+
+static void reset(rdof_hb_peer_t *p, const char *password)
+{
+    memset(&M, 0, sizeof M);
+    nev = 0;
+    rdof_hb_peer_init(p, 310012399, 5.0);
+    rdof_hb_peer_set_login(p, password, "Trussville, AL", "RadioFoundry test", "https://example.org");
+    rdof_hb_peer_link_up(p);
+}
+
+static void test_rptc(void)
+{
+    const rdof_location_t loc = {33.6198, -86.6089, 12};
+    const uint32_t idle = 438500000;
+    const int idle_cc = 1;
+    DMRC_N = rdof_dmrc_packet(310012399, "N0CALL", 438500000, 438500000, 1, '4', 5, "RadioFoundry Gateway roaming",
+                              "radiofoundry_gateway simplex", &loc, &idle, &idle_cc, DMRC);
+    uint8_t r[RDOF_RPTC_LEN];
+    CHECK(rdof_rptc_from_dmrc(DMRC, DMRC_N, "Trussville, AL", "RadioFoundry test", "https://example.org", r) ==
+          RDOF_RPTC_LEN);
+    CHECK(!memcmp(r, "RPTC", 4) && rdof_be32(r + 4) == 310012399);
+    CHECK(!memcmp(r + 8, "N0CALL  ", 8));
+    CHECK(!memcmp(r + 16, "438500000438500000", 18));
+    CHECK(!memcmp(r + 34, "0501", 4));
+    CHECK(!memcmp(r + 38, "33.6198 -86.6089 012", 20));
+    CHECK(!memcmp(r + 58, "Trussville, AL      ", 20));
+    CHECK(!memcmp(r + 78, "RadioFoundry test  ", 19));
+    CHECK(r[97] == '4');
+    CHECK(!memcmp(r + 98, "https://example.org ", 20) && r[221] == ' ');
+    CHECK(!memcmp(r + 222, "RadioFoundry Gateway roaming", 28) && r[261] == ' ');
+    CHECK(!memcmp(r + 262, "radiofoundry_gateway simplex", 28) && r[301] == ' ');
+    /* no location in the DMRC: zeros */
+    uint8_t d2[RDOF_DMRC_MAX];
+    size_t n2 = rdof_dmrc_packet(310012399, "N0CALL", 438500000, 438500000, 1, '4', 5, "v", "s", NULL, NULL, NULL, d2);
+    rdof_rptc_from_dmrc(d2, n2, NULL, NULL, NULL, r);
+    CHECK(!memcmp(r + 38, "0.0000  0.0000   000", 20) && r[58] == ' ' && r[97] == '4');
+}
+
+static void test_login(void)
+{
+    rdof_hb_peer_t p;
+    uint8_t pkt[RDOF_HB_OUT_MAX];
+
+    /* the whole login, then pings */
+    reset(&p, PASSWORD);
+    CHECK(!rdof_hb_peer_may_send(&p) && !strcmp(rdof_hb_peer_state_name(&p), "login"));
+    run(&p, 0, 0.2);
+    CHECK(p.up && p.state == RDOF_HBL_UP && M.logins == 1 && M.configs == 1 && M.id == 310012399);
+    CHECK(nev == 1 && last_ev[0] == RDOF_HBP_REGISTERED && rdof_hb_peer_may_send(&p));
+    CHECK(!memcmp(M.rptc + 8, "N0CALL  ", 8) && rdof_be32(M.rptc + 4) == 310012399);
+    run(&p, 0.2, 30);
+    CHECK(p.up && M.pings == 5 && M.logins == 1); /* every 5 s from 0.06 */
+    CHECK(!strcmp(rdof_hb_peer_state_name(&p), "up"));
+    CHECK(rdof_hb_peer_close_packet(&p, pkt) == 9 && !memcmp(pkt, "RPTCL", 5) && rdof_be32(pkt + 5) == 310012399);
+
+    /* the hash as BrandMeister checks it: SHA-256(salt || password) */
+    reset(&p, PASSWORD);
+    run(&p, 0, 0.01);          /* RPTL sent and answered */
+    CHECK(p.state == RDOF_HBL_AUTH && p.pending);
+    {
+        rdof_hbp_event_t ev;
+        CHECK(rdof_hb_peer_tick(&p, 0.02, &ev));
+        CHECK(rdof_hb_peer_packet(&p, pkt) == 40 && !memcmp(pkt, "RPTK", 4));
+        uint8_t want[32];
+        hex("3bee14ffd8e5cfe58a54e3420b826556c4a585fb37474ed28db2f653f303213d", want);
+        CHECK(!memcmp(pkt + 8, want, 32));
+    }
+
+    /* a wrong password: refused at RPTK, 60 s before the next try */
+    reset(&p, "wrong");
+    run(&p, 0, 1);
+    CHECK(!p.up && p.state == RDOF_HBL_BACKOFF && p.bad_password && p.refused == 1 && p.refused_at == RDOF_HBL_AUTH);
+    CHECK(nev == 1 && last_ev[0] == RDOF_HBP_REFUSED && !strcmp(rdof_hb_peer_state_name(&p), "bad_password"));
+    run(&p, 1, 59);
+    CHECK(M.logins == 1);
+    run(&p, 59, 62);
+    CHECK(M.logins == 2);
+
+    /* MSTNAK at RPTL, then at RPTC: back off 1, 2, 4 s */
+    reset(&p, PASSWORD);
+    M.nak_at[0] = true;
+    run(&p, 0, 0.5);
+    CHECK(p.state == RDOF_HBL_BACKOFF && !p.bad_password && p.refused_at == RDOF_HBL_LOGIN);
+    CHECK(!strcmp(rdof_hb_peer_state_name(&p), "refused"));
+    run(&p, 0.5, 7.2); /* tries at 0, ~1, ~3, ~7 */
+    CHECK(M.logins == 4);
+    M.nak_at[0] = false;
+    M.nak_at[2] = true;
+    run(&p, 7.2, 30);
+    CHECK(!p.up && p.refused_at == RDOF_HBL_CONFIG && M.configs >= 1);
+    M.nak_at[2] = false;
+    run(&p, 30, 100);
+    CHECK(p.up && p.backoff_s == 1.0); /* back-off reset once up */
+
+    /* no answer at all: a try every back-off, 5 s for each */
+    reset(&p, PASSWORD);
+    M.deaf = true;
+    run(&p, 0, 5.2);
+    CHECK(M.logins == 0 && p.state == RDOF_HBL_BACKOFF && p.logins == 1);
+    run(&p, 5.2, 6.4);
+    CHECK(p.logins == 2 && p.state == RDOF_HBL_LOGIN);
+    M.deaf = false;
+
+    /* pongs stop: down after three pings unanswered, then the login again */
+    reset(&p, PASSWORD);
+    run(&p, 0, 1);
+    M.no_pong = true;
+    nev = 0;
+    run(&p, 1, 20.5);
+    CHECK(!p.up && nev == 1 && last_ev[0] == RDOF_HBP_QUIET && p.pings_missed == 1);
+    M.no_pong = false;
+    run(&p, 20.5, 25);
+    CHECK(p.up && M.logins == 2);
+
+    /* MSTCL while up: refused, logs in again after 1 s */
+    reset(&p, PASSWORD);
+    run(&p, 0, 1);
+    CHECK(rdof_hb_peer_received(&p, (const uint8_t *)"MSTCL\x12\x7b\x6f\xef", 9, 1.0) == RDOF_HBP_REFUSED);
+    CHECK(!p.up && p.refused_at == RDOF_HBL_UP && !strcmp(rdof_hb_peer_state_name(&p), "backoff"));
+    run(&p, 1.0, 3);
+    CHECK(p.up && M.logins == 2);
+
+    /* DMRD only while logged in; RPTSBKN ignored */
+    uint8_t dmrd[RDOF_DMRD_LEN] = {'D', 'M', 'R', 'D'};
+    CHECK(rdof_hb_peer_received(&p, dmrd, sizeof dmrd, 3) == RDOF_HBP_PACKET);
+    CHECK(rdof_hb_peer_received(&p, (const uint8_t *)"RPTSBKN\x12\x7b\x6f\xef", 11, 3) == RDOF_HBP_NONE);
+    rdof_hb_peer_link_down(&p);
+    CHECK(rdof_hb_peer_received(&p, dmrd, sizeof dmrd, 3) == RDOF_HBP_NONE && !rdof_hb_peer_may_send(&p));
+    rdof_hb_peer_link_up(&p);
+    run(&p, 3, 4);
+    CHECK(p.up && M.logins == 3);
+
+    /* a new config while up: log in again with it */
+    uint8_t old[RDOF_DMRC_MAX];
+    size_t oldn = DMRC_N;
+    memcpy(old, DMRC, DMRC_N);
+    DMRC_N = rdof_dmrc_packet(310012399, "N0CALL", 438600000, 438600000, 2, '4', 5, "v", "s", NULL, NULL, NULL, DMRC);
+    run(&p, 4, 9.5);
+    CHECK(p.up && M.logins == 4 && !memcmp(M.rptc + 16, "438600000", 9) && !memcmp(M.rptc + 36, "02", 2));
+    memcpy(DMRC, old, oldn);
+    DMRC_N = oldn;
+
+    /* without a login nothing changed: DMRC is the packet */
+    rdof_hb_peer_init(&p, 9800001, 10);
+    rdof_hb_peer_set_config(&p, DMRC, DMRC_N, true, 0);
+    CHECK(rdof_hb_peer_packet(&p, pkt) == DMRC_N && !memcmp(pkt, "DMRC", 4) && rdof_hb_peer_may_send(&p));
+    CHECK(rdof_hb_peer_close_packet(&p, pkt) == 0);
+}
+
+int main(void)
+{
+    test_sha256();
+    test_rptc();
+    test_login();
+    printf("%d checks, %d failures\n", checks, failures);
+    return failures ? 1 : 0;
+}

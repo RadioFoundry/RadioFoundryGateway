@@ -13,6 +13,7 @@ set(RDOF_COMMON_SRCS
     src/txpower.c
     src/hblink.c
     src/hbpeer.c
+    src/sha256.c
     src/json.c
     src/tracker.c
     src/modem.c

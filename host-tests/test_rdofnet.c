@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 /* rdofradio's HBlink4 peer (sdr/cli/rdofradio_net.h) against a fake master on 127.0.0.1: the DMRC at once and as
- * the keepalive, registered on DMRP, the master's other packets passed on, a refusal, and gone quiet. */
+ * the keepalive, registered on DMRP, the master's other packets passed on, a refusal, and gone quiet. Then a
+ * BrandMeister login over the socket: RPTL, RPTK with the salted hash, RPTC, RPTPING, no DMRD before it's in, RPTCL
+ * on close. */
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <poll.h>
@@ -10,6 +12,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "rdof/sha256.h"
 #include "rdofradio_net.h"
 
 static int fails, checks;
@@ -73,7 +76,7 @@ int main(void)
     const uint8_t dmrc[] = "DMRC\x00\x2f\x4d\x61 a config";
     rdofnet_peer_set_config(&p, dmrc, sizeof dmrc, 0); /* not open yet: kept for the poll */
     rdofnet_peer_poll(&p, 0);
-    uint8_t buf[256];
+    uint8_t buf[512];
     struct sockaddr_in from;
     ssize_t n = master_recv(m, buf, sizeof buf, &from);
     CHECK(n == (ssize_t)sizeof dmrc && !memcmp(buf, dmrc, sizeof dmrc)); /* the DMRC at once on open */
@@ -108,6 +111,53 @@ int main(void)
     CHECK(p.peer.tx >= 5 && p.errors == 0);
 
     rdofnet_peer_close(&p);
+
+    /* a login (the first peer's last keepalives read and dropped) */
+    {
+        struct pollfd pf = {m, POLLIN, 0};
+        while (poll(&pf, 1, 50) > 0)
+            recv(m, buf, sizeof buf, 0);
+    }
+    rdofnet_peer_t b;
+    rdofnet_peer_init(&b, "127.0.0.1", port, 310012399, 5.0, "bm");
+    b.say = say;
+    b.on_packet = on_packet;
+    rdofnet_peer_set_login(&b, "passw0rd", "Anytown", "test", NULL);
+    nsaid = 0;
+    rdofnet_peer_set_config(&b, dmrc, sizeof dmrc, 0); /* no DMRC sent: the login's source */
+    rdofnet_peer_poll(&b, 0);
+    n = master_recv(m, buf, sizeof buf, &from);
+    CHECK(n == 8 && !memcmp(buf, "RPTL", 4) && buf[4] == 0x12 && buf[7] == 0xEF); /* 310012399 = 0x127A6FEF */
+    const uint8_t d0[] = "DMRD before the login";
+    rdofnet_peer_send(&b, d0, sizeof d0);           /* held: not logged in */
+    sendto(m, "RPTACK\x0a\x0b\x0c\x0d", 10, 0, (struct sockaddr *)&from, sizeof from);
+    settle(&b, 0.1);
+    n = master_recv(m, buf, sizeof buf, &from);
+    {
+        uint8_t want[32], sp[12] = {0x0a, 0x0b, 0x0c, 0x0d, 'p', 'a', 's', 's', 'w', '0', 'r', 'd'};
+        rdof_sha256(sp, sizeof sp, want);
+        CHECK(n == 40 && !memcmp(buf, "RPTK", 4) && !memcmp(buf + 8, want, 32));
+    }
+    sendto(m, "RPTACK\x12\x7a\x6f\xef", 10, 0, (struct sockaddr *)&from, sizeof from);
+    settle(&b, 0.2);
+    n = master_recv(m, buf, sizeof buf, &from);
+    CHECK(n == 302 && !memcmp(buf, "RPTC", 4) && !memcmp(buf + 58, "Anytown ", 8) && !memcmp(buf + 78, "test ", 5));
+    CHECK(!b.peer.up);
+    sendto(m, "RPTACK\x12\x7a\x6f\xef", 10, 0, (struct sockaddr *)&from, sizeof from);
+    settle(&b, 0.3);
+    CHECK(b.peer.up && nsaid == 1 && strstr(said[0], "brandmeister") && strstr(said[0], "logged in"));
+    rdofnet_peer_send(&b, d0, sizeof d0);
+    n = master_recv(m, buf, sizeof buf, &from);
+    CHECK(n == (ssize_t)sizeof d0 && !memcmp(buf, "DMRD", 4)); /* the first DMRD the master sees is this one */
+    rdofnet_peer_poll(&b, 5.5);
+    n = master_recv(m, buf, sizeof buf, &from);
+    CHECK(n == 11 && !memcmp(buf, "RPTPING", 7));
+    sendto(m, "MSTPONG\x12\x7a\x6f\xef", 11, 0, (struct sockaddr *)&from, sizeof from);
+    settle(&b, 5.6);
+    CHECK(b.peer.up && b.peer.last_pong >= 5.5);
+    rdofnet_peer_close(&b);
+    n = master_recv(m, buf, sizeof buf, &from);
+    CHECK(n == 9 && !memcmp(buf, "RPTCL", 5));
     close(m);
     printf("rdofnet: %d checks, %d failed\n", checks, fails);
     return fails != 0;

@@ -18,6 +18,13 @@ if(TARGET rdof_pffft)
     target_link_libraries(rdofsdr PRIVATE rdof_pffft)
 endif()
 
+# fakebm: a simulated BrandMeister master for tests (never the real network).
+add_executable(fakebm ${RDOF_CLI}/fakebm.c)
+target_link_libraries(fakebm PRIVATE rdof_common)
+set_target_properties(fakebm PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_compile_options(fakebm PRIVATE -Wall -Wno-unused-parameter)
+target_compile_definitions(fakebm PRIVATE _DEFAULT_SOURCE)
+
 find_path(SOAPYSDR_INCLUDE_DIR SoapySDR/Device.h)
 find_library(SOAPYSDR_LIBRARY SoapySDR)
 find_path(IIO_INCLUDE_DIR iio.h)
@@ -118,6 +125,7 @@ endif()
 
 if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
     target_link_options(rdofsdr PRIVATE -fsanitize=address,undefined)
+    target_link_options(fakebm PRIVATE -fsanitize=address,undefined)
     if(TARGET rdofchz)
         target_link_options(rdofchz PRIVATE -fsanitize=address,undefined)
     endif()

@@ -47,7 +47,8 @@ static void peer_send(void *ctx, const uint8_t *data, size_t len)
 {
     peer_t *p = ctx;
     xSemaphoreTake(p->lock, portMAX_DELAY);
-    if (p->sock >= 0)
+    const bool hold = len >= 4 && !memcmp(data, "DMRD", 4) && !rdof_hb_peer_may_send(&p->peer); /* not logged in */
+    if (p->sock >= 0 && !hold)
         send(p->sock, data, len, 0);
     xSemaphoreGive(p->lock);
 }
@@ -135,13 +136,15 @@ static void peer_task(void *arg)
             if (p->via)
                 continue;
             if (p->sock >= 0 && rdof_hb_peer_tick(&p->peer, now, &ev)) {
+                static uint8_t out[RDOF_HB_OUT_MAX]; /* this task's */
                 uint8_t pkt[RDOF_DMRC_MAX];
                 const size_t n = dmrc(p, pkt);
                 rdof_hb_peer_set_config(&p->peer, pkt, n, true, now);
-                peer_send(p, pkt, n);
-                if (ev == RDOF_HBP_QUIET)
-                    ESP_LOGW(TAG, "peer %lu: no DMRP from master", (unsigned long)p->peer.peer_id);
+                peer_send(p, out, rdof_hb_peer_packet(&p->peer, out));
             }
+            if (ev == RDOF_HBP_QUIET)
+                ESP_LOGW(TAG, "peer %lu: no %s from master", (unsigned long)p->peer.peer_id,
+                         p->peer.login ? "MSTPONG" : "DMRP");
             up += p->peer.up;
         }
         g_sstat.hb_up = up;
@@ -171,11 +174,11 @@ static void peer_task(void *arg)
             }
             const rdof_hbp_event_t ev = rdof_hb_peer_received(&p->peer, buf, (size_t)n, esp_timer_get_time() / 1e6);
             if (ev == RDOF_HBP_REGISTERED)
-                ESP_LOGI(TAG, "peer %lu (%s) registered with %s:%d", (unsigned long)p->peer.peer_id,
-                         g_scfg.ch[p->channel].id, g_scfg.hb_host, g_scfg.hb_port);
+                ESP_LOGI(TAG, "peer %lu (%s) %s %s:%d", (unsigned long)p->peer.peer_id, g_scfg.ch[p->channel].id,
+                         p->peer.login ? "logged in to" : "registered with", g_scfg.hb_host, g_scfg.hb_port);
             else if (ev == RDOF_HBP_REFUSED)
-                ESP_LOGW(TAG, "peer %lu refused by the master: %.6s", (unsigned long)p->peer.peer_id,
-                         (const char *)buf);
+                ESP_LOGW(TAG, "peer %lu refused by the master: %.6s%s", (unsigned long)p->peer.peer_id,
+                         (const char *)buf, p->peer.bad_password ? " (the password)" : "");
             else if (ev == RDOF_HBP_PACKET)
                 site_dmrd(p->peer.peer_id, buf, (size_t)n); /* version 3: the call router's, else nothing sends */
         }
@@ -209,6 +212,9 @@ void sdr_hb_start(void)
         p->via = via;
         const uint32_t id = via ? site_id() : (uint32_t)ch->peer_id;
         rdof_hb_peer_init(&p->peer, id, RDOF_HB_KEEPALIVE_SECONDS);
+        if (g_scfg.hb_login)
+            rdof_hb_peer_set_login(&p->peer, g_scfg.hb_password, g_scfg.hb_location, g_scfg.hb_description,
+                                   g_scfg.hb_url);
         p->sock = -1;
         p->lock = xSemaphoreCreateMutex();
         rdof_hb_sink_init(&p->sink, id);

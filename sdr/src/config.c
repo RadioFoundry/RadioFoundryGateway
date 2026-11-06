@@ -296,6 +296,11 @@ bool rdof_plan_sdr(const rdof_plan_t *p, const char *name, rdof_sdr_config_t *g,
     g->hb_enabled = hk >= 0 && rcv >= 0;
     str_or(c, hb, "host", g->hb_host, sizeof g->hb_host, "localhost");
     g->hb_port = (int)num_or(c, hb, "port", 62031);
+    g->hb_login = hk >= 0 && s->net[hk].login; /* brandmeister */
+    str_or(c, hb, "password", g->hb_password, sizeof g->hb_password, "");
+    str_or(c, hb, "location", g->hb_location, sizeof g->hb_location, "");
+    str_or(c, hb, "description", g->hb_description, sizeof g->hb_description, "");
+    str_or(c, hb, "url", g->hb_url, sizeof g->hb_url, "");
     str_or(c, rcv >= 0 ? root : -1, "callsign", g->hb_callsign, sizeof g->hb_callsign, "SDR");
     if (!location(c, obj_of(c, root, "location"), g))
         return false;

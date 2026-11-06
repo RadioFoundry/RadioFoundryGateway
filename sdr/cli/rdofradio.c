@@ -1093,6 +1093,9 @@ static void net_start(void)
                       R.full ? RDOF_HB_KEEPALIVE_SECONDS : RDOF_HB_ROAMING_KEEPALIVE_SECONDS, rcfg.name);
     NET.on_packet = net_packet;
     NET.say = net_say;
+    if (rcfg.cfg.hb_login)
+        rdofnet_peer_set_login(&NET, rcfg.cfg.hb_password, rcfg.cfg.hb_location, rcfg.cfg.hb_description,
+                               rcfg.cfg.hb_url);
     rng_state = (uint32_t)time(NULL) ^ ((uint32_t)getpid() << 16) ^ (uint32_t)(now_s() * 1e6);
     if (!rng_state)
         rng_state = 1;
@@ -1215,6 +1218,9 @@ static void chan_start(void)
         m->net.on_packet = chan_packet;
         m->net.say = net_say;
         m->net.ctx = m;
+        if (rcfg.cfg.hb_login)
+            rdofnet_peer_set_login(&m->net, rcfg.cfg.hb_password, rcfg.cfg.hb_location, rcfg.cfg.hb_description,
+                                   rcfg.cfg.hb_url);
         rdof_hb_sink_init(&m->sink, (uint32_t)m->ch->peer_id);
         m->sink.send = chan_send;
         m->sink.rand32 = sink_rand;
@@ -1228,7 +1234,8 @@ static void chan_start(void)
                                                      m->ch->cc, loc, pkt),
                                 now_s());
         m->peer = true;
-        fprintf(stderr, "hblink: %s, peer %u, to %s:%d\n", m->ch->id, (unsigned)m->net.peer.peer_id,
+        fprintf(stderr, "%s: %s, peer %u, to %s:%d\n", rcfg.cfg.hb_login ? "brandmeister" : "hblink", m->ch->id,
+                (unsigned)m->net.peer.peer_id,
                 rcfg.cfg.master_host, rcfg.cfg.master_port);
     }
 }
