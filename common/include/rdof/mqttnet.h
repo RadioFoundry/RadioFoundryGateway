@@ -330,9 +330,9 @@ typedef struct {
     int next_part, rate, nheaders;
     uint8_t headers[RDOF_MN_DATA_HEADERS][10];
     size_t len;
-    uint8_t buf[RDOF_MN_DATA_MAX];
     uint8_t pending_csbk[11]; /* a csbk item that goes before the data call's blocks */
     bool has_pending_csbk;
+    uint8_t buf[RDOF_MN_DATA_MAX]; /* last: a reused slot clears everything before it */
 } rdof_mn_dstream_t;
 
 typedef struct rdof_mn_down {
