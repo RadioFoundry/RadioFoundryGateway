@@ -167,6 +167,7 @@ sockets, NVS, HTTP, MQTT) stays in each target.
 | `netcalls`, `status` | network calls, `tx`, status and Receiver messages |
 | `site`, `idset` | the settings parser (version 3), ID sets, the resolved view (C only) |
 | `siteplan` | one parse of the settings into what runs: units, devices, checks ([config-v3.md](spec/fw/config-v3.md) §12, §13.1) (C only) |
+| `trunkrf`, `trunkcfg` | a trunked site's radio layer (control blocks to bursts and back, the CACH, the carriers' slots) and its settings into the controller's (`rdof/t3.h`, built in Rust: [trunk.md](spec/fw/trunk.md)) |
 | `config`, `jsonp` | a unit's settings from the plan (`rdof_plan_radio`), what a board runs, the port checks; the JSON reader |
 | `router`, `siteroute` | the call router: which network an RF call goes to, which paths a network call goes out on (C only) |
 | `txpool` | the transmitter pool ([transmitters.md](spec/fw/transmitters.md)) (C only) |

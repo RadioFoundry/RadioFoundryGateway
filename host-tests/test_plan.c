@@ -11,6 +11,7 @@
 #include "rdof/ipgw.h"
 #include "rdof/sdr/config.h"
 #include "rdof/siteplan.h"
+#include "rdof/trunkcfg.h"
 
 static int checks, fails;
 #define CHECK(c, ...)                                                                                              \
@@ -127,6 +128,12 @@ static void good(const char *f, const char *t, size_t len)
     CHECK(na == nb, "%s: bench tx: text %d %s, plan %d %s", f, na, err, nb, e2);
     if (na == nb && !na)
         CHECK(!memcmp(&ta, &tb, sizeof ta), "%s: bench tx differs", f);
+    if (rdof_trunk_unit(p) >= 0) { /* a trunked site: a host runs it */
+        static rdof_t3_cfg_t tc;
+        static rdof_t3_policy_t tp;
+        CHECK(rdof_plan_roles_on(p, &rdof_plan_host, &rb, e2, sizeof e2), "%s: host roles: %s", f, e2);
+        CHECK(rdof_trunk_cfg_plan(p, -1, &tc, &tp, e2, sizeof e2), "%s: trunk: %s", f, e2);
+    }
     printf("  %s: %d units, %d extra\n", f, rdof_plan_nunits(p), rdof_plan_nextra(p));
     rdof_plan_close(p);
 }
@@ -136,6 +143,16 @@ static void bad(const char *f, const char *t, size_t len)
     char err[300] = "";
     rdof_plan_t *p = rdof_plan_open(t, len, err, sizeof err);
     bool refused = !p;
+    if (p && rdof_trunk_unit(p) >= 0) { /* a trunked site: refused for its own reason, not for the board's */
+        static rdof_roles_t r;
+        static rdof_t3_cfg_t tc;
+        static rdof_t3_policy_t tp;
+        refused = !rdof_plan_roles_on(p, &rdof_plan_host, &r, err, sizeof err) ||
+                  !rdof_trunk_cfg_plan(p, -1, &tc, &tp, err, sizeof err) ||
+                  !rdof_plan_sdr(p, NULL, &SB, err, sizeof err);
+        rdof_plan_close(p);
+        p = NULL;
+    }
     if (p) {
         static rdof_roles_t r;
         refused = !rdof_plan_roles(p, &r, err, sizeof err);

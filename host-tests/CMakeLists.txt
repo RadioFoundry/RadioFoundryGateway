@@ -193,9 +193,13 @@ if(RDOF_CARGO)
     rdof_rust_add(rdof_rust_t3 NO_DEFAULT_FEATURES FEATURES t3)
     add_executable(rdof_t3_tests test_t3.c)
     target_include_directories(rdof_t3_tests PRIVATE ../common/include)
-    target_link_libraries(rdof_t3_tests PRIVATE rdof_rust_t3)
+    target_link_libraries(rdof_t3_tests PRIVATE rdof_rust_t3 rdof_common)
     set_target_properties(rdof_t3_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
     target_compile_options(rdof_t3_tests PRIVATE -Wall -Wno-unused-parameter)
+    if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")  # rdof_common is built with them
+        target_compile_options(rdof_t3_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(rdof_t3_tests PRIVATE -fsanitize=address,undefined)
+    endif()
     add_test(NAME rdof_t3_tests COMMAND rdof_t3_tests)
     add_test(NAME rdof_t3_cargo_tests
         COMMAND ${RDOF_CARGO} test --no-default-features --features t3 --manifest-path ${RDOF_RUST_DIR}/Cargo.toml

@@ -32,6 +32,7 @@ pub const UNIT_SFR: u8 = 2;
 pub const UNIT_DCDM: u8 = 3;
 pub const UNIT_TRANSCEIVER: u8 = 4;
 pub const UNIT_RECEIVER: u8 = 5;
+pub const UNIT_TRUNK: u8 = 6;
 
 /// rdof_idrange_t
 #[repr(C)]

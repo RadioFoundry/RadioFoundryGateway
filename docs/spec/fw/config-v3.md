@@ -397,10 +397,10 @@ for SFR. The keys:
 | `repeater` | `in` and `out` frequencies | paths `<name>/1`, `<name>/2` | §6.2 |
 | `parrot` | | answers the IDs in its `tg` or `pc` | `name`, `type`, and `tg` or `pc` (ID sets) |
 | `ipgw` | | answers its ID | §6.3 |
+| `trunk` | 1-4 carriers, each an `out` and an `in` frequency | one path `<name>` (`trunk: true` in `info`) | §6.4 |
 
 Later, each as an app type, with no new section: `voting` (the best copy of each burst from several receivers),
-`simulcast` (one path, several transmitters), `trunk` (a control frequency and a pool; it assigns its own paths),
-`recorder`.
+`simulcast` (one path, several transmitters), `recorder`.
 
 An app that answers IDs (parrot, IP gateway) claims them: a call to a claimed ID on a path whose `apps` allows the app
 goes to the app and not to the network. Two apps may not claim the same ID.
@@ -472,6 +472,36 @@ It needs `routes` or `nat` ("nothing to do"). A route:
 | `payload` | `udp` \| `ip` | `udp` | the UDP payload, or the whole IP packet |
 
 A firmware build without `CONFIG_RDOF_IPGW` refuses an `ipgw` app.
+
+
+### 6.4 `trunk`
+
+A DMR Tier III trunked site ([trunk.md](trunk.md)): a control channel (TSCC) on one carrier's TS1, the other slots
+payload channels. One a box; it runs on a host (`rdofradio`), not on a board. The keys, defaults and ranges are
+trunk.md section 4 and 3.8; the manager's `cfg` documents override them (trunk.md 5.7).
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `carriers` | list, 1-4 | | each `{out, in, chan, tscc}`: frequency references, the logical channel number (1-4094, unique), `tscc` on exactly one |
+| `system` | object | small, net 1, site 1, `ab` | `model` (`tiny`, `small`, `large`, `huge`), `net`, `site` (within the model's bits), `par` (`a`, `b`, `ab`), `area_bits` (1 to the model's SITE bits, default all) |
+| `registration` | `open`, `listed` | `open` | `listed`: only `ms` may register (none without it) |
+| `ms`, `private`, `tg` | ID sets | `*` | who may register and be served; who may make individual calls; the talkgroups usable here |
+| `wide_tg`, `static_tg` | ID sets | none | talkgroups carried on the network; talkgroups always subscribed. 16 ranges at most each |
+| `require_registration` | bool | true | |
+| `refuse_unlisted` | `denied`, `refused` | `denied` | |
+| `foacsu` | bool | false | |
+| `timers` | object | trunk.md 3.8 | |
+| `broadcast` | object | 5, 10, 6 | `adjacent_s`, `chan_freq_s`, `local_time_s`: 0 (off) or 1-600 |
+
+Its frequencies are its own: no other app, gateway, transceiver or receiver uses them, and every carrier's color
+code is the same (the TSCC's). The unit, named after the app:
+
+- The TSCC carrier's `in` and `out` on one full-duplex SDR (its slot clock). A split's TX half can't carry the TSCC
+  yet (it can't time the short LC and the AT bit per slot).
+- Every carrier's `in` heard on that SDR: each is an extra channel of it, `<name>-<n>` in the carriers' order (the
+  TSCC's first).
+- Another carrier's `out` on an SDR (a carrier of its `tx.carriers`) or on a radio in hotspot mode with the split
+  duplex extension (a split's TX half, one carrier a radio).
 
 ## 7. Networks
 

@@ -217,8 +217,13 @@ status and UDT requests likewise.
 | `clear_repeats` | P_CLEAR repetition | 4 | 1-8 |
 | `warmup_cach` | payload warm-up | 4 | 2 or 4 |
 | `reg_hold_s` | registration record life | 14400 | 60-604800 |
-| `queue_max`, `queue_s` | queue size, longest wait | 16, 10 | 1-32, 1-60 |
+| `queue_max`, `queue_s` | queue size, longest wait | 16, 10 | 1-16, 1-60 |
 | `net_queue_s` | network call wait for a slot | 2 | 0-10 |
+| `setup_s` | wait for a network setup answer | 5 | 1-30 |
+| `start_grace_s` | a granted channel waits this long, past the hang, for the first voice | 2 | 0-10 |
+
+The parser is `common/src/trunkcfg.c` (`rdof/trunkcfg.h`); it takes the same keys from the manager's `cfg/net` and
+`cfg/node/{node}` (section 5.7).
 
 ## 4. Settings (config-v3 `trunk` app)
 
@@ -268,8 +273,9 @@ paths").
 | `broadcast` | object | section 3.2 | `adjacent_s`, `chan_freq_s`, `local_time_s` (0 = off) |
 
 Checks (refusals name the key): exactly one `tscc` carrier; every carrier's `out` on a device that transmits and its
-`in` on a device that receives; the TSCC carrier's `out` on a full-duplex SDR, or on a split TX half whose key
-limit is off (`split.max_key_s: "none"`, a radio built for continuous duty); `chan` unique; the `system` numbers inside the model's ranges; at most 4 carriers;
+`in` on a device that receives; the TSCC carrier's `in` and `out` on one full-duplex SDR (a split TX half
+can't carry the TSCC yet: radiofoundry-handoff.md 1.4); every carrier's `in` on that SDR; another carrier's `out` on
+an SDR or a split TX half (one carrier a radio); `chan` unique; the `system` numbers inside the model's ranges; at most 4 carriers;
 a frequency used by a `trunk` app can't be used by another app or a talk path.
 
 Paths: the app offers one talk path, named after the app, with `trunk: true` in `info`. The slots are internal: the

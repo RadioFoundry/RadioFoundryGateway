@@ -19,7 +19,9 @@
 #include "rdof/router.h"
 #include "rdof/sdr/config.h"
 #include "rdof/site.h"
+#include "rdof/siteplan.h"
 #include "rdof/siteroute.h"
+#include "rdof/trunkcfg.h"
 #include "rdof/txpool.h"
 #include "rdof/txvr.h"
 
@@ -623,6 +625,124 @@ static void test_siteroute(const char *dir)
     }
 }
 
+/* A trunked site's file: its plan, what a host runs, the trunk unit's settings and the SDR's. */
+static bool trunk_taken(const char *t, size_t len, char *err, size_t cap)
+{
+    rdof_plan_t *p = rdof_plan_open(t, len, err, cap);
+    if (!p)
+        return false;
+    static rdof_roles_t roles;
+    static rdof_t3_cfg_t cfg;
+    static rdof_t3_policy_t pol;
+    static rdof_sdr_config_t sc;
+    bool ok = rdof_plan_roles_on(p, &rdof_plan_host, &roles, err, cap) &&
+              rdof_trunk_cfg_plan(p, -1, &cfg, &pol, err, cap) && rdof_plan_sdr(p, NULL, &sc, err, cap);
+    rdof_plan_close(p);
+    return ok;
+}
+
+/* A JSON text's top object over cfg and pol (rdof_trunk_cfg_apply). */
+static bool apply_text(const char *text, const char *path, rdof_t3_cfg_t *cfg, rdof_t3_policy_t *pol, char *err,
+                       size_t cap)
+{
+    static rdof_jnode_t nodes[256];
+    static char buf[2048];
+    rdof_jdoc_t doc = {.nodes = nodes, .max = 256, .buf = buf, .cap = sizeof buf};
+    int root = rdof_jparse(&doc, text, strlen(text));
+    if (root < 0) {
+        snprintf(err, cap, "json: %s", doc.error);
+        return false;
+    }
+    return rdof_trunk_cfg_apply(&doc, root, path, cfg, pol, err, cap) && rdof_trunk_cfg_check(cfg, err, cap);
+}
+
+/* The trunk unit: its devices, its carriers, its settings (rdof/trunkcfg.h), and the manager's documents over them. */
+static void test_trunk(const char *dir)
+{
+    char p[512], err[200] = "";
+    size_t n;
+    snprintf(p, sizeof p, "%s/v3/good-trunk.json", dir);
+    char *t = slurp(p, &n);
+    rdof_plan_t *pl = t ? rdof_plan_open(t, n, err, sizeof err) : NULL;
+    CHECK(pl, "good-trunk: %s", err);
+    free(t);
+    if (!pl)
+        return;
+    const rdof_site_t *s = rdof_plan_site(pl);
+    int u = rdof_trunk_unit(pl);
+    CHECK(u >= 0 && !strcmp(rdof_plan_unit(pl, u)->name, "site"), "the trunk unit");
+    int rx = -1, tx = -1, d0 = -1, d1 = -1;
+    for (int d = 0; d < s->ndev; d++) {
+        if (!strcmp(s->dev[d].name, "pluto"))
+            d0 = d;
+        if (!strcmp(s->dev[d].name, "txb"))
+            d1 = d;
+    }
+    CHECK(rdof_plan_trunk_carrier(pl, u, 0, &rx, &tx) && rx == d0 && tx == d0, "the TSCC on the Pluto: %d %d", rx, tx);
+    CHECK(rdof_plan_trunk_carrier(pl, u, 1, &rx, &tx) && rx == d0 && tx == d1, "B heard on the Pluto, sent by txb");
+    CHECK(!rdof_plan_trunk_carrier(pl, u, 2, &rx, &tx), "two carriers");
+    CHECK(rdof_plan_unit_uses(pl, u, d1) && rdof_plan_sdr_used(pl, d0), "uses");
+    CHECK(rdof_plan_nextra(pl) == 2 && rdof_plan_extra(pl, 0)->hz == 438250000 &&
+              rdof_plan_extra(pl, 1)->hz == 438500000 && !strcmp(rdof_plan_extra(pl, 1)->id, "site-2"),
+          "the SDR hears both ins: %d", rdof_plan_nextra(pl));
+    static rdof_roles_t roles;
+    CHECK(!rdof_plan_roles(pl, &roles, err, sizeof err) && strstr(err, "runs on a host"), "not on a board: %s", err);
+    CHECK(rdof_plan_roles_on(pl, &rdof_plan_host, &roles, err, sizeof err) && roles.nradios == 1 && roles.has_sdr,
+          "a host: %s", err);
+    static rdof_config_t rc;
+    CHECK(!rdof_plan_radio(pl, "site", &rc, err, sizeof err) && strstr(err, "trunked site"), "no radio: %s", err);
+    static rdof_t3_cfg_t c;
+    static rdof_t3_policy_t pol;
+    CHECK(rdof_trunk_cfg_plan(pl, -1, &c, &pol, err, sizeof err), "cfg: %s", err);
+    CHECK(c.model == 1 && c.net == 5 && c.site == 3 && c.par == 3 && c.area_bits == 5 && c.cc == 1, "system");
+    CHECK(c.ncarriers == 2 && c.carriers[0].tscc && c.carriers[0].chan == 1 && c.carriers[0].tx_hz == 438750000 &&
+              c.carriers[0].rx_hz == 438250000 && !c.carriers[1].tscc && c.carriers[1].chan == 2 &&
+              c.carriers[1].tx_hz == 438600000 && c.carriers[1].enabled,
+          "carriers, the TSCC's first");
+    CHECK(c.hang_ms == 3000 && c.tp_ms == 20000 && c.reg_required && !c.foacsu && c.nrand_wait == 6, "timers");
+    CHECK(pol.open && pol.ms.all && pol.tg.all && pol.private_ms.all, "open");
+    CHECK(!pol.wide_tg.all && pol.wide_tg.n == 1 && pol.wide_tg.r[0].lo == 1 && pol.wide_tg.r[0].hi == 99999,
+          "wide_tg");
+    CHECK(!pol.static_tg.all && !pol.static_tg.n, "no static_tg");
+    rdof_plan_close(pl);
+
+    /* cfg/net over it, then cfg/node */
+    CHECK(apply_text("{\"rev\": 12, \"system\": {\"model\": \"large\", \"net\": 9}, \"registration\": \"listed\", "
+                     "\"ms\": \"3100000-3199999,!3100500\", \"refuse_unlisted\": \"refused\", \"timers\": "
+                     "{\"hang_s\": 4.5, \"grant_every_s\": 0.6}, \"broadcast\": {\"local_time_s\": 0}}",
+                     "cfg/net", &c, &pol, err, sizeof err),
+          "cfg/net: %s", err);
+    CHECK(c.model == 2 && c.net == 9 && c.area_bits == 8 && c.hang_ms == 4500 && c.grant_every_ms == 600 &&
+              !c.local_time_ms && c.adjacent_ms == 5000,
+          "cfg/net applied");
+    CHECK(!pol.open && pol.refuse_unlisted && pol.ms.n == 2 && pol.ms.r[0].hi == 3100499 &&
+              pol.ms.r[1].lo == 3100501,
+          "listed less one");
+    CHECK(apply_text("{\"rev\": 3, \"site\": 200, \"area_bits\": 6, \"static_tg\": [91, \"3100-3101\"], "
+                     "\"neighbors\": [4], \"enabled\": true}",
+                     "cfg/node", &c, &pol, err, sizeof err),
+          "cfg/node: %s", err);
+    CHECK(c.site == 200 && c.area_bits == 6 && pol.static_tg.n == 2, "cfg/node applied");
+    CHECK(!apply_text("{\"site\": 256}", "cfg/node", &c, &pol, err, sizeof err) && !strcmp(err, "cfg/node.site: 1 to 255"),
+          "site range: %s", err);
+    CHECK(!apply_text("{\"system\": {\"model\": \"medium\"}}", "cfg/net", &c, &pol, err, sizeof err) &&
+              strstr(err, "cfg/net.system.model"),
+          "%s", err);
+    CHECK(!apply_text("{\"timers\": {\"hang\": 3}}", "cfg/net", &c, &pol, err, sizeof err) &&
+              !strcmp(err, "cfg/net.timers.hang: not a key here"),
+          "%s", err);
+    CHECK(!apply_text("{\"timers\": {\"backoff_min\": 10, \"backoff_max\": 4}}", "x", &c, &pol, err, sizeof err),
+          "backoff order");
+    CHECK(!apply_text("{\"timers\": {\"warmup_cach\": 3}}", "x", &c, &pol, err, sizeof err), "warmup 3");
+    CHECK(!apply_text("{\"wide_tg\": \"1,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31,33\"}", "x", &c, &pol, err,
+                      sizeof err),
+          "too many ranges: %s", err);
+    rdof_trunk_cfg_default(&c, &pol);
+    CHECK(apply_text("{\"system\": {\"model\": \"tiny\", \"net\": 511, \"site\": 7}}", "x", &c, &pol, err, sizeof err) &&
+              c.area_bits == 3,
+          "tiny: %s", err);
+}
+
 /* Every fixture: good- taken, bad- refused; a good one's units and SDR parse. */
 static void test_fixtures(const char *dir)
 {
@@ -640,10 +760,13 @@ static void test_fixtures(const char *dir)
         char *t = slurp(p, &len);
         bool good = !strncmp(e->d_name, "good-", 5);
         bool ok = rdof_site_parse(t, len, &S, err, sizeof err);
+        const bool trunk = ok && rdof_site_app_of(&S, RDOF_APP_TRUNK) >= 0;
+        if (trunk)
+            ok = trunk_taken(t, len, err, sizeof err);
         CHECK(ok == good, "%s: %s", e->d_name, ok ? "taken" : err);
         if (!good)
             printf("  %s: %s\n", e->d_name, err);
-        if (good && ok) {
+        if (good && ok && !trunk) {
             static rdof_roles_t roles;
             static rdof_config_t cfg;
             bool rok = rdof_box_roles(t, len, &roles, err, sizeof err);
@@ -684,6 +807,7 @@ int main(int argc, char **argv)
     test_txpool();
     test_siteroute(dir);
     test_fixtures(dir);
+    test_trunk(dir);
     printf("%d checks, %d failed\n", checks, fails);
     return fails != 0;
 }

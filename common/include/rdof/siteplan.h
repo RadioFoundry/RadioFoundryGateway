@@ -85,13 +85,14 @@ typedef enum {
     RDOF_UNIT_DCDM,
     RDOF_UNIT_TRANSCEIVER,
     RDOF_UNIT_RECEIVER,
+    RDOF_UNIT_TRUNK,   /* a trunked site (a trunk app): rx hears the TSCC carrier's in, tx sends its out */
 } rdof_unit_kind_t;
 
 typedef struct {
     char name[RDOF_SITE_NAME + 4];
     uint8_t kind;      /* rdof_unit_kind_t */
     int rx, tx;        /* device indexes: one device has rx == tx; a receiver's tx is -1 */
-    int app;           /* a repeater: its app; else -1 */
+    int app;           /* a repeater, a trunked site: its app; else -1 */
     int freq;          /* an SFR or DCDM gateway: its frequency; a transceiver: its idle frequency; else -1 */
     uint64_t freqs;    /* a transceiver: the frequencies it transmits on; a receiver: the ones it hears (bit each) */
     bool duplex_full;  /* a DCDM gateway: "duplex": "full" */
@@ -135,6 +136,11 @@ const rdof_plan_extra_t *rdof_plan_extra(const rdof_plan_t *p, int k);
 /* bench.devices: how many, and each one's device index. */
 int rdof_plan_nbench(const rdof_plan_t *p);
 int rdof_plan_bench(const rdof_plan_t *p, int k);
+/* A trunk unit's carrier k (its app's order, the TSCC's first): the SDR that hears its in and the device that sends
+   its out (the TSCC's SDR, another SDR, or a radio as a split's TX half). false: no such carrier. */
+bool rdof_plan_trunk_carrier(const rdof_plan_t *p, int unit, int k, int *rx, int *tx);
+/* Whether unit k uses device d (a trunk unit: any carrier's). */
+bool rdof_plan_unit_uses(const rdof_plan_t *p, int k, int d);
 /* An SDR's receiver unit, -1 none; whether any unit uses the SDR. */
 int rdof_plan_receiver(const rdof_plan_t *p, int dev);
 bool rdof_plan_sdr_used(const rdof_plan_t *p, int dev);

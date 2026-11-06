@@ -56,6 +56,7 @@ set(RDOF_COMMON_SRCS
     src/webapi.c
     src/sigmode.c
     src/trunkrf.c
+    src/trunkcfg.c
     src/radiofoundry/dmrFec.c src/radiofoundry/dmrCach.c src/radiofoundry/dmr_lc.c src/radiofoundry/dmrTrellis.c src/radiofoundry/dmrDataCrc.c
 )
 # split.c's clock arithmetic matches the golden scenarios to the bit: no fused multiply-add.

@@ -843,7 +843,7 @@ static bool unit_mqtt(ctx_t *c, const rdof_plan_t *p, rdof_config_t *cfg)
 static void unit_where(const rdof_plan_t *p, const rdof_unit_t *u, char *out, size_t cap)
 {
     const rdof_site_t *s = rdof_plan_site(p);
-    if (u->kind == RDOF_UNIT_REPEATER)
+    if (u->kind == RDOF_UNIT_REPEATER || u->kind == RDOF_UNIT_TRUNK)
         snprintf(out, cap, "apps.%s", s->app[u->app].name);
     else if (u->kind == RDOF_UNIT_SFR || u->kind == RDOF_UNIT_DCDM)
         snprintf(out, cap, "frequencies.%s", s->freq[u->freq].name);
@@ -863,9 +863,12 @@ bool rdof_plan_radio(const rdof_plan_t *p, const char *name, rdof_config_t *cfg,
     const rdof_site_t *s = rdof_plan_site(p);
     int k = -1;
     for (int i = 0; i < rdof_plan_nunits(p) && k < 0; i++)
-        if (rdof_plan_unit(p, i)->kind != RDOF_UNIT_RECEIVER &&
+        if (rdof_plan_unit(p, i)->kind != RDOF_UNIT_RECEIVER && rdof_plan_unit(p, i)->kind != RDOF_UNIT_TRUNK &&
             (!name || !strncmp(rdof_plan_unit(p, i)->name, name, sizeof cfg->name - 1)))
             k = i;
+    if (k < 0 && name && rdof_plan_unit_find(p, name) >= 0 &&
+        rdof_plan_unit(p, rdof_plan_unit_find(p, name))->kind == RDOF_UNIT_TRUNK)
+        return err(c, "%s is a trunked site: rdofradio runs it (rdof/trunkcfg.h), not a radio unit", name);
     if (k < 0)
         return name ? err(c, "%s isn't a unit that transmits (a repeater, an SFR or DCDM frequency, or a device "
                              "transmitting on simplex frequencies)", name)
