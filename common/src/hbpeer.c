@@ -3,7 +3,9 @@
 /* An HBlink4 peer's state (hbpeer.h). */
 #include "rdof/hbpeer.h"
 
+#include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "rdof/repeater.h"
@@ -71,6 +73,18 @@ void rdof_hb_peer_link_down(rdof_hb_peer_t *p)
     if (p->login) {
         p->state = RDOF_HBL_LOGIN;
         p->pending = true;
+    }
+}
+
+void rdof_hb_peer_set_power(rdof_hb_peer_t *p, double dbm, double now)
+{
+    const int v = !(dbm >= 0) ? 0 : dbm >= 99 ? 99 : (int)lround(dbm);
+    if (v == p->power_dbm)
+        return;
+    p->power_dbm = v;
+    if (p->login && p->dmrc_len && (p->state == RDOF_HBL_CONFIG || p->state == RDOF_HBL_UP)) {
+        p->relogin = true;
+        p->next_ka = now;
     }
 }
 
@@ -179,7 +193,7 @@ size_t rdof_hb_peer_packet(const rdof_hb_peer_t *p, uint8_t out[RDOF_HB_OUT_MAX]
         return 40;
     }
     case RDOF_HBL_CONFIG: {
-        size_t n = rdof_rptc_from_dmrc(p->dmrc, p->dmrc_len, p->location, p->description, p->url, out);
+        size_t n = rdof_rptc_from_dmrc(p->dmrc, p->dmrc_len, p->power_dbm, p->location, p->description, p->url, out);
         put_be32(out + 4, p->peer_id);
         return n;
     }
@@ -304,22 +318,38 @@ static void text_field(uint8_t *out, size_t len, const char *s)
         out[i] = i < k ? (uint8_t)s[i] : ' ';
 }
 
-size_t rdof_rptc_from_dmrc(const uint8_t *d, size_t n, const char *location, const char *description,
+/* The DMRC's coordinate at off, len (HBlink4's, "33.6198 "), as the spec writes it: a sign, zero padded, 4 decimals */
+static void coord_field(const uint8_t *d, size_t n, size_t off, size_t len, uint8_t *out)
+{
+    char s[16] = {0}, w[24];
+    for (size_t i = 0; i < len && off + i < n; i++)
+        s[i] = (char)d[off + i];
+    double v = atof(s);
+    const double lim = len == 8 ? 90.0 : 180.0;
+    if (!(v >= -lim && v <= lim))
+        v = 0.0;
+    snprintf(w, sizeof w, "%+0*.4f", (int)len, v);
+    memcpy(out, w, len);
+}
+
+size_t rdof_rptc_from_dmrc(const uint8_t *d, size_t n, int power_dbm, const char *location, const char *description,
                            const char *url, uint8_t out[RDOF_RPTC_LEN])
 {
+    char pw[4];
     memcpy(out, "RPTC", 4);
     dmrc_field(d, n, 4, 4, out + 4);      /* ID */
     dmrc_field(d, n, 8, 8, out + 8);      /* callsign */
     dmrc_field(d, n, 16, 9, out + 16);    /* RX Hz */
     dmrc_field(d, n, 25, 9, out + 25);    /* TX Hz */
-    dmrc_field(d, n, 34, 2, out + 34);    /* power */
+    snprintf(pw, sizeof pw, "%02d", power_dbm < 0 ? 0 : power_dbm > 99 ? 99 : power_dbm);
+    memcpy(out + 34, pw, 2);              /* power, dBm */
     dmrc_field(d, n, 36, 2, out + 36);    /* color code */
     if (n >= 139) {
-        dmrc_field(d, n, 119, 8, out + 38); /* latitude */
-        dmrc_field(d, n, 127, 9, out + 46); /* longitude */
-        dmrc_field(d, n, 136, 3, out + 55); /* height */
+        coord_field(d, n, 119, 8, out + 38); /* latitude */
+        coord_field(d, n, 127, 9, out + 46); /* longitude */
+        dmrc_field(d, n, 136, 3, out + 55);  /* height, m */
     } else {
-        memcpy(out + 38, "0.0000  0.0000   000", 20);
+        memcpy(out + 38, "+00.0000+000.0000000", 20);
     }
     text_field(out + 58, 20, location);
     text_field(out + 78, 19, description);
@@ -328,6 +358,20 @@ size_t rdof_rptc_from_dmrc(const uint8_t *d, size_t n, const char *location, con
     dmrc_field(d, n, 39, 40, out + 222);  /* software ID: the DMRC's version */
     dmrc_field(d, n, 79, 40, out + 262);  /* package ID: the DMRC's software */
     return RDOF_RPTC_LEN;
+}
+
+double rdof_hb_role_power_dbm(const rdof_config_t *c, uint32_t freq_now)
+{
+    if (!rdof_txmap_valid(&c->tx_map))
+        return NAN;
+    int level = c->power;
+    if (c->mode != RDOF_CFG_REPEATER && c->nchannels > 0) {
+        level = c->channels[0].power;
+        for (int i = 0; i < c->nchannels; i++)
+            if (c->channels[i].freq == freq_now)
+                level = c->channels[i].power;
+    }
+    return rdof_txpower_dbm(&c->tx_map, level);
 }
 
 size_t rdof_hb_role_dmrc(const rdof_config_t *c, uint32_t freq_now, int cc_now, uint8_t out[RDOF_DMRC_MAX])

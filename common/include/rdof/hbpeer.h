@@ -63,6 +63,7 @@ typedef struct {
     unsigned logins, pings_missed;
     char password[64];
     char location[21], description[20], url[125];
+    int power_dbm; /* RPTC's TX power, dBm at the antenna, 0..99 (rdof_hb_peer_set_power) */
 } rdof_hb_peer_t;
 
 typedef enum {
@@ -77,6 +78,9 @@ void rdof_hb_peer_init(rdof_hb_peer_t *p, uint32_t peer_id, double keepalive_s);
 /* Log in (after init): RPTC's location, description and URL fields (cut to fit; NULL: empty). */
 void rdof_hb_peer_set_login(rdof_hb_peer_t *p, const char *password, const char *location, const char *description,
                             const char *url);
+/* RPTC's TX power: dBm at the antenna, rounded and held to 0..99 (NAN or under 0: 0). A change while logging in or
+   logged in starts the login again. */
+void rdof_hb_peer_set_power(rdof_hb_peer_t *p, double dbm, double now);
 /* The link (re)opened: the DMRC goes at the next tick. */
 void rdof_hb_peer_link_up(rdof_hb_peer_t *p);
 /* The link closed: down. */
@@ -97,11 +101,15 @@ bool rdof_hb_peer_may_send(const rdof_hb_peer_t *p);
    "bad_password", "refused", "backoff". */
 const char *rdof_hb_peer_state_name(const rdof_hb_peer_t *p);
 
-/* RPTC from a DMRC (rdof/hblink.h's layout): callsign, frequencies, power, color code, slots, location, the DMRC's
-   version and software as RPTC's software and package IDs; location, description and url as given (NULL: empty).
-   Returns RDOF_RPTC_LEN. */
-size_t rdof_rptc_from_dmrc(const uint8_t *dmrc, size_t n, const char *location, const char *description,
+/* RPTC from a DMRC (rdof/hblink.h's layout): callsign, frequencies, color code, slots, the DMRC's version and software
+   as RPTC's software and package IDs; power_dbm (0..99) as the TX power, which the spec gives in dBm (the DMRC's is an
+   RF level); latitude and longitude as the spec writes them (+33.6198, -086.6089); location, description and url as
+   given (NULL: empty). Returns RDOF_RPTC_LEN. */
+size_t rdof_rptc_from_dmrc(const uint8_t *dmrc, size_t n, int power_dbm, const char *location, const char *description,
                            const char *url, uint8_t out[RDOF_RPTC_LEN]);
+/* A role's power for RPTC, dBm at the antenna: a repeater's power, a transceiver's channel's on freq_now (else its
+   first), on the transmitter's map (rdof/txpower.h). NAN without a map. */
+double rdof_hb_role_power_dbm(const rdof_config_t *c, uint32_t freq_now);
 /* A packet from the master. */
 rdof_hbp_event_t rdof_hb_peer_received(rdof_hb_peer_t *p, const uint8_t *d, size_t n, double now);
 

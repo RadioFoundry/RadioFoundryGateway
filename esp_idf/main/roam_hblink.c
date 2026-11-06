@@ -79,12 +79,14 @@ void roam_hb_send(roam_t *r, const uint8_t *data, size_t len)
 
 static double now_s(void) { return esp_timer_get_time() / 1e6; }
 
-static size_t config_packet(roam_t *r, uint8_t *out)
+/* The DMRC, and RPTC's power in *dbm (a login's) */
+static size_t config_packet(roam_t *r, uint8_t *out, double *dbm)
 {
     uint32_t freq = 0;
     int cc = 0;
     if (r->cfg->mode != RDOF_CFG_REPEATER)
         radio_channel_now(r, &freq, &cc);
+    *dbm = rdof_hb_role_power_dbm(r->cfg, freq);
     return rdof_hb_role_dmrc(r->cfg, freq, cc, out);
 }
 
@@ -94,8 +96,10 @@ void roam_hb_send_config(roam_t *r, bool force)
     struct roam_hb *h = r->hb;
     if (!h)
         return;
-    size_t n = config_packet(r, pkt);
+    double dbm;
+    size_t n = config_packet(r, pkt, &dbm);
     xSemaphoreTake(h->lock, portMAX_DELAY);
+    rdof_hb_peer_set_power(&h->peer, dbm, now_s());
     const bool send_now = rdof_hb_peer_set_config(&h->peer, pkt, n, force, now_s());
     if (send_now && !USE_SCTP(r) && h->sock >= 0 && send(h->sock, pkt, n, 0) == (ssize_t)n)
         r->st.hblink_tx++;
@@ -164,8 +168,10 @@ static void keepalive(roam_t *r)
     if (due) {
         static uint8_t out[RDOF_HB_OUT_MAX]; /* this task's only (one peer task per role, and this runs in it) */
         uint8_t pkt[RDOF_DMRC_MAX];
-        const size_t n = config_packet(r, pkt);
+        double dbm;
+        const size_t n = config_packet(r, pkt, &dbm);
         xSemaphoreTake(h->lock, portMAX_DELAY);
+        rdof_hb_peer_set_power(&h->peer, dbm, now_s());
         rdof_hb_peer_set_config(&h->peer, pkt, n, true, now_s());
         const size_t k = rdof_hb_peer_packet(&h->peer, out);
         if (!USE_SCTP(r) && h->sock >= 0 && send(h->sock, out, k, 0) == (ssize_t)k)

@@ -44,7 +44,7 @@ All integers are big endian. IDs are 4-byte binary in this dialect.
 |---|---|---|
 | `RPTL` | us → master | `RPTL` + ID (8) |
 | `RPTACK` | master → us | `RPTACK` + 4-byte salt (to `RPTL`), else `RPTACK` + ID |
-| `RPTK` | us → master | `RPTK` + ID + SHA-256(salt ‖ password) (40) |
+| `RPTK` | us → master | `RPTK` + ID + SHA-256(salt ‖ password) (40). The salt is the 4 bytes as received. The 2015 spec's own example hashes the salt as 8 hex characters instead, which contradicts its text; BrandMeister and HBlink take the bytes |
 | `RPTC` | us → master | 302 bytes, below |
 | `RPTPING` | us → master | `RPTPING` + ID (11) |
 | `MSTPONG` | master → us | `MSTPONG` + ID (11) |
@@ -63,19 +63,21 @@ All integers are big endian. IDs are 4-byte binary in this dialect.
 | 8 | 8 | callsign |
 | 16 | 9 | RX frequency, Hz |
 | 25 | 9 | TX frequency, Hz |
-| 34 | 2 | TX power |
-| 36 | 2 | color code |
-| 38 | 8 | latitude |
-| 46 | 9 | longitude |
+| 34 | 2 | TX power, dBm at the antenna, `00`-`99` (the spec's unit; not the DMRC's RF level). From the transmitter's power map (rdof/txpower.h); `00` without a map |
+| 36 | 2 | color code, `01`-`15` |
+| 38 | 8 | latitude, North positive: a sign and 4 decimals (`+33.6198`) |
+| 46 | 9 | longitude, East positive (`-086.6089`) |
 | 55 | 3 | antenna height, m |
 | 58 | 20 | location |
-| 78 | 19 | description |
+| 78 | 19 | description (20 in the 2015 spec; the hotspot dialect gives its last byte to the slots) |
 | 97 | 1 | slots: `'1'`, `'2'`, `'3'` both, `'4'` simplex |
 | 98 | 124 | URL |
-| 222 | 40 | software ID |
-| 262 | 40 | package ID |
+| 222 | 40 | software ID, with its version |
+| 262 | 40 | package ID, with its version and platform |
 
-The first login is verified against a capture of a working hotspot's login on the bench, byte for byte, before
+The source is the 2015-07-26 "IPSC Protocol Specs for homebrew DMR repeater" (DL5DI, G4KLX, DG1HT), which
+BrandMeister's wiki hosts, plus the hotspot dialect it doesn't describe (`RPTACK` for `MSTACK`, `RPTPING` / `MSTPONG`,
+the slots byte). The free text fields are ASCII only: no URLs, HTML or advertising. The first login is verified against a capture of a working hotspot's login on the bench, byte for byte, before
 anything ships.
 
 Login state machine (per login):

@@ -3,6 +3,7 @@
 /* The BrandMeister login (rdof/hbpeer.h with rdof_hb_peer_set_login) against a fake master in process: SHA-256,
  * RPTC from a DMRC, the login, pings and pongs, a wrong password, MSTNAK at each step, lost answers, MSTCL, the
  * back-off, a config change, DMRD only while logged in. No network. */
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -157,13 +158,13 @@ static void test_rptc(void)
     DMRC_N = rdof_dmrc_packet(310012399, "N0CALL", 438500000, 438500000, 1, '4', 5, "RadioFoundry Gateway roaming",
                               "radiofoundry_gateway simplex", &loc, &idle, &idle_cc, DMRC);
     uint8_t r[RDOF_RPTC_LEN];
-    CHECK(rdof_rptc_from_dmrc(DMRC, DMRC_N, "Trussville, AL", "RadioFoundry test", "https://example.org", r) ==
+    CHECK(rdof_rptc_from_dmrc(DMRC, DMRC_N, 37, "Trussville, AL", "RadioFoundry test", "https://example.org", r) ==
           RDOF_RPTC_LEN);
     CHECK(!memcmp(r, "RPTC", 4) && rdof_be32(r + 4) == 310012399);
     CHECK(!memcmp(r + 8, "N0CALL  ", 8));
     CHECK(!memcmp(r + 16, "438500000438500000", 18));
-    CHECK(!memcmp(r + 34, "0501", 4));
-    CHECK(!memcmp(r + 38, "33.6198 -86.6089 012", 20));
+    CHECK(!memcmp(r + 34, "3701", 4)); /* dBm, not the DMRC's RF level (5) */
+    CHECK(!memcmp(r + 38, "+33.6198-086.6089012", 20));
     CHECK(!memcmp(r + 58, "Trussville, AL      ", 20));
     CHECK(!memcmp(r + 78, "RadioFoundry test  ", 19));
     CHECK(r[97] == '4');
@@ -173,8 +174,33 @@ static void test_rptc(void)
     /* no location in the DMRC: zeros */
     uint8_t d2[RDOF_DMRC_MAX];
     size_t n2 = rdof_dmrc_packet(310012399, "N0CALL", 438500000, 438500000, 1, '4', 5, "v", "s", NULL, NULL, NULL, d2);
-    rdof_rptc_from_dmrc(d2, n2, NULL, NULL, NULL, r);
-    CHECK(!memcmp(r + 38, "0.0000  0.0000   000", 20) && r[58] == ' ' && r[97] == '4');
+    rdof_rptc_from_dmrc(d2, n2, 120, NULL, NULL, NULL, r);
+    CHECK(!memcmp(r + 34, "99", 2) && !memcmp(r + 38, "+00.0000+000.0000000", 20) && r[58] == ' ' && r[97] == '4');
+    rdof_rptc_from_dmrc(d2, n2, -3, NULL, NULL, NULL, r);
+    CHECK(!memcmp(r + 34, "00", 2));
+    /* the peer's power: rounded, held to 0..99, NAN 0 */
+    rdof_hb_peer_t p;
+    rdof_hb_peer_init(&p, 1, 5.0);
+    rdof_hb_peer_set_power(&p, 36.6, 0.0);
+    CHECK(p.power_dbm == 37);
+    rdof_hb_peer_set_power(&p, NAN, 0.0);
+    CHECK(p.power_dbm == 0);
+    rdof_hb_peer_set_power(&p, 140.0, 0.0);
+    CHECK(p.power_dbm == 99);
+    /* a role's power on its map: a W12-like 0..255 over -9.5..22 dBm */
+    rdof_config_t c;
+    memset(&c, 0, sizeof c);
+    c.mode = RDOF_CFG_REPEATER;
+    c.power = 255;
+    CHECK(isnan(rdof_hb_role_power_dbm(&c, 0)));
+    c.tx_map = (rdof_txmap_t){-9.5, 22.0};
+    CHECK(fabs(rdof_hb_role_power_dbm(&c, 0) - 22.0) < 1e-9);
+    c.mode = RDOF_CFG_ROAMER;
+    c.nchannels = 2;
+    c.channels[0] = (rdof_cfg_channel_t){.freq = 446050000, .power = 0};
+    c.channels[1] = (rdof_cfg_channel_t){.freq = 446100000, .power = 255};
+    CHECK(fabs(rdof_hb_role_power_dbm(&c, 446100000) - 22.0) < 1e-9);
+    CHECK(fabs(rdof_hb_role_power_dbm(&c, 1) + 9.5) < 1e-9);
 }
 
 static void test_login(void)

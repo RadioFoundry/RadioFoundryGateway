@@ -1065,6 +1065,7 @@ static void net_config(void)
         if (tf)
             f = tf, cc = tcc;
     }
+    rdof_hb_peer_set_power(&NET.peer, rdof_hb_role_power_dbm(&rcfg.cfg, f), now_s());
     rdofnet_peer_set_config(&NET, pkt, rdof_hb_role_dmrc(&rcfg.cfg, f, cc, pkt), now_s());
 }
 static void txvr_retune(void *ctx, uint32_t freq, int cc)
