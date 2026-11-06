@@ -1159,6 +1159,12 @@ static bool peer_ids(ctx_t *c, rdof_site_t *s)
     const bool login = hb >= 0 && s->net[hb].login;
     if (hb >= 0 && !s->id && !login)
         return fail(c, "id: the box's DMR ID (its HBlink peer ID), 1 to 16777215");
+    if (login) {
+        const char *cs = str_of(c, get(c, c->root, "callsign"));
+        if (!cs || !cs[0] || strlen(cs) > 8)
+            return fail(c, "callsign: the owner's callsign, required with a brandmeister network (BrandMeister checks "
+                           "it against the logins' IDs), 8 characters at most");
+    }
     uint32_t next = s->id;
     int ids = hb >= 0 ? get(c, c->nnode[hb], "peer_ids") : -1;
     for (int k = 0; k < count(c, ids); k++) {
@@ -1196,7 +1202,9 @@ static bool peer_ids(ctx_t *c, rdof_site_t *s)
             if (s->path[j].pol.net == hb && s->path[j].peer_id == p->peer_id)
                 return fail(c, "networks.%s.peer_ids.%s: %lu is %s's too (one login per ID)", s->net[hb].name, key,
                             (unsigned long)p->peer_id, s->path[j].name);
-        snprintf(p->peer_name, sizeof p->peer_name, "%.8s", key); /* the master's callsign field: 8 characters */
+        if (!login) /* HBlink4: the master's callsign field names the path (8 characters); BrandMeister checks it is
+                       the owner's callsign, the top level's */
+            snprintf(p->peer_name, sizeof p->peer_name, "%.8s", key);
     }
     /* BrandMeister: a frequency or a repeater is a login, so a device that transmits there transmits nowhere else
        (no roaming transceiver: the master can't move it) */

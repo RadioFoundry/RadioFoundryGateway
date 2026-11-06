@@ -1,5 +1,6 @@
 {
   "version": 3,
+  "callsign": "N0CALL",
   "defaults": {"cc": 1},
   "devices": [
     {"name": "hs1", "kind": "modem", "port": {"usb": "auto", "serial": "HS1"}, "hears": {"idle": "s1"}},

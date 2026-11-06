@@ -108,7 +108,9 @@ A network of type `brandmeister` is an HBlink network whose peers log in, one lo
 repeater, always. Its keys are `host`, `port`, `password`, `peer_ids` (a registered ID for each path) and the `RPTC`
 texts `location`, `description` and `url`. No `id` or `identity`, no `roaming`, no SCTP. A device that transmits on
 one of its frequencies transmits there only: no roaming transceiver, since the master can't move a login. The box
-holds one `hblink` or one `brandmeister` network, not both. The top-level `id` isn't needed with it.
+holds one `hblink` or one `brandmeister` network, not both. The top-level `id` isn't needed with it; the top-level
+`callsign` is required and goes in every login's `RPTC` (BrandMeister checks it against the ID; an HBlink4 per_path
+peer puts its path's name there instead).
 
 A path on the network gives `RPTC` its frequencies (simplex: both the same, slots `'4'`; a repeater: its `in` and
 `out`, slots `'3'`), its color code, its transmitter's power in dBm, and the box's location.

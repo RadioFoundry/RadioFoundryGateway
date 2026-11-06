@@ -523,7 +523,8 @@ planned, not taken.
 
 A BrandMeister master ([brandmeister.md](brandmeister.md)). Each simplex frequency or repeater is its own login
 (`RPTL`, `RPTK`, `RPTC`), a hotspot or a repeater: one connection per frequency or pair, no shared identity.
-The top-level `id` isn't needed with it; BrandMeister IDs are their own 32-bit keys.
+The top-level `id` isn't needed with it; BrandMeister IDs are their own 32-bit keys. The top-level `callsign` is
+required: each login's `RPTC` carries it, and BrandMeister checks it against the login's ID.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|

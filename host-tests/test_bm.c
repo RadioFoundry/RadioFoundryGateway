@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "rdof/bits.h"
+#include "rdof/config.h"
 #include "rdof/hblink.h"
 #include "rdof/hbpeer.h"
 #include "rdof/sha256.h"
@@ -333,9 +334,36 @@ static void test_login(void)
     CHECK(rdof_hb_peer_close_packet(&p, pkt) == 0);
 }
 
+/* A simplex frequency's login: RPTC carries the owner's callsign (BrandMeister checks it against the ID), not the
+   frequency's name as an HBlink4 per_path peer does, and says hotspot. */
+static void test_callsign(void)
+{
+    static const char json[] =
+        "{\"version\": 3, \"callsign\": \"N0CALL\", \"defaults\": {\"cc\": 1},"
+        " \"devices\": [{\"name\": \"w12\", \"kind\": \"sdr\", \"driver\": \"lr2021\"}],"
+        " \"frequencies\": [{\"name\": \"438.500\", \"freq\": 438.5}],"
+        " \"networks\": [{\"type\": \"brandmeister\", \"host\": \"bm.example.net\", \"password\": \"example\","
+        " \"peer_ids\": {\"438.500\": 310012301}}]}";
+    static rdof_config_t cfg;
+    char error[256] = "";
+    bool ok = rdof_config_parse(json, strlen(json), &cfg, error, sizeof error);
+    if (!ok)
+        printf("config: %s\n", error);
+    CHECK(ok);
+    if (!ok)
+        return;
+    CHECK(cfg.hb_login && cfg.peer_id == 310012301 && !strcmp(cfg.callsign, "N0CALL"));
+    uint8_t d[RDOF_DMRC_MAX], r[RDOF_RPTC_LEN];
+    const size_t n = rdof_hb_role_dmrc(&cfg, 438500000, 1, d);
+    CHECK(rdof_rptc_from_dmrc(d, n, 0, "", "", "", r) == RDOF_RPTC_LEN);
+    CHECK(!memcmp(r + 8, "N0CALL  ", 8));
+    CHECK(!memcmp(r + 222, "RadioFoundry Gateway hotspot", 28));
+}
+
 int main(void)
 {
     test_sha256();
+    test_callsign();
     test_rptc();
     test_login();
     printf("%d checks, %d failures\n", checks, failures);

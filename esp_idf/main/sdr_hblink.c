@@ -108,7 +108,9 @@ int sdr_hb_status(const char **ids, bool *up, int max)
 static size_t dmrc(const peer_t *p, uint8_t *out)
 {
     const rdof_sdr_cfg_channel_t *ch = &g_scfg.ch[p->channel];
-    return rdof_hb_channel_dmrc(p->peer.peer_id, ch->id, (uint32_t)ch->freq, ch->cc,
+    /* BrandMeister: the owner's callsign, which it checks; HBlink4: the channel's name */
+    return rdof_hb_channel_dmrc(p->peer.peer_id, g_scfg.hb_login ? g_scfg.hb_callsign : ch->id, (uint32_t)ch->freq,
+                                ch->cc,
                                 g_scfg.has_location ? &g_scfg.location : NULL, out);
 }
 

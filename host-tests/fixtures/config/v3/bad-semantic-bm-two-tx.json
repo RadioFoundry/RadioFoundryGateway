@@ -1,6 +1,7 @@
 // a W12 transmitting on two simplex frequencies: on BrandMeister each is a login, so one device can't serve both
 {
   "version": 3,
+  "callsign": "N0CALL",
   "defaults": {"cc": 1},
   "devices": [{"name": "w12", "kind": "sdr", "driver": "lr2021"}],
   "frequencies": [{"name": "s1", "freq": 438.5}, {"name": "s2", "freq": 438.6}],

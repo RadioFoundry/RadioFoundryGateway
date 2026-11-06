@@ -1231,7 +1231,10 @@ static void chan_start(void)
         rdof_sdr_rx_add_sink(&R.rx, m->c, &sk);
         uint8_t pkt[RDOF_DMRC_MAX];
         rdofnet_peer_set_config(&m->net, pkt,
-                                rdof_hb_channel_dmrc(m->net.peer.peer_id, m->ch->id, (uint32_t)llround(m->ch->freq),
+                                rdof_hb_channel_dmrc(m->net.peer.peer_id,
+                                                     rcfg.cfg.hb_login && rcfg.cfg.callsign[0] ? rcfg.cfg.callsign
+                                                                                               : m->ch->id,
+                                                     (uint32_t)llround(m->ch->freq),
                                                      m->ch->cc, loc, pkt),
                                 now_s());
         m->peer = true;

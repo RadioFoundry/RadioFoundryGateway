@@ -189,6 +189,7 @@ static void test_scenarios(const char *dir)
         rdof_site_resolved(&S, out, sizeof out);
         CHECK(strstr(out, "\"type\":\"brandmeister\"") && strstr(out, "\"peer_id\":310012301"), "%.200s", out);
         CHECK(!strstr(out, "example\""), "no password in the resolved view");
+        CHECK(p && !p->peer_name[0], "a login's RPTC callsign is the owner's, not the path's name");
     }
     if (load(dir, "good-bm-per-path.json")) {
         CHECK(path("s1") && path("s1")->peer_id == 310012301 && path("s2") && path("s2")->peer_id == 310012302,
