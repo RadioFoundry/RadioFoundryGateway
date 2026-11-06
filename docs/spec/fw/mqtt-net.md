@@ -723,12 +723,15 @@ change (frequencies, devices, carriers), is ignored and reported (in the log, or
  "private": "*", "wide_tg": "1-99999", "timers": {"hang_s": 3}}
 ```
 
-`cfg/node/{node}`, one site: `rev`, `at`, `site`, `area_bits`, `neighbors` (site numbers), `tg`, `static_tg`,
-`timers`, `enabled` (false takes the site off the air: it withdraws its control channel). Both site-level documents
-take the same keys as the settings file's `trunk` app ([trunk.md](trunk.md) §4): `system` (`model`, `net`, `site`,
-`par`, `area_bits`), `registration` (`open`, `listed`), `ms`, `refuse_unlisted` (`denied`, `refused`), `private`,
-`tg`, `wide_tg`, `static_tg` (ID sets), `require_registration`, `foacsu`, `enabled`, `neighbors`, `timers` (names to
-numbers).
+`cfg/node/{node}`, one site: `rev`, `at`, `name`, `site`, `par`, `area_bits`, `neighbors` (site numbers), `tg`,
+`static_tg`, `timers`, `broadcast`, `enabled` (false takes the site off the air: it withdraws its control channel).
+`site`, `par` and `area_bits` go at the document's top level (as the manager writes them) or in `system`. Both
+site-level documents take the same keys as the settings file's `trunk` app ([trunk.md](trunk.md) §4): `system`
+(`model`, `net`, `site`, `par`, `area_bits`), `registration` (`open`, `listed`), `ms`, `refuse_unlisted` (`denied`,
+`refused`), `private`, `tg`, `wide_tg`, `static_tg` (ID sets), `require_registration`, `foacsu`, `enabled`,
+`neighbors`, `timers` (names to numbers), `broadcast` (the control channel's broadcast intervals, [trunk.md](trunk.md)
+§3.2: `adjacent_s`, `chan_freq_s`, `local_time_s`, seconds, 0 off). Both also take `name`: a name for people (the
+manager and dashboards show it); a site keeps it and doesn't act on it.
 
 `cfg/tg/{tg}`: `{"rev", "at", "name", "wide", "sites", "ms", "priority", "hang_s"}`. `sites` (site numbers) and `ms`
 (radios) limit where and by whom the talkgroup may be used, `*` when absent; `wide` carries it on the network;
