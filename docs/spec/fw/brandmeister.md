@@ -186,8 +186,16 @@ Two simplex frequencies and a repeater, each its own BrandMeister login:
 11. **Docs.** This file becomes the spec: config-v3 §7.3, reference.md (networks, sizes), the README's network
     list.
 
-Tests on air, in order: rdofradio as one simplex hotspot (a spare 9-digit ID) with the bench's radios (parrot
-9990, a TG, a private call, an SMS to 262993). Then two simplex logins at once; then a W12; then a repeater.
+Tests:
+
+- **Host tests and HIL tests run against a simulated BrandMeister master**, never the real network: a small fake
+  master (UDP, the login of §3 with a known salt and password, `MSTPONG`, `MSTNAK` on demand, `DMRD` echo and
+  scripted calls, confirmed-data ACKs and TMS ACKs as §7 recorded them). The C host tests drive it in process; the
+  HIL tests point a board or rdofradio at it on the LAN. No automated or recurring test reaches BrandMeister.
+- **Against real BrandMeister: one-off, by hand**, once per change that needs it, on the owner's registered IDs,
+  with the results written here. For the first build, in order: rdofradio as one simplex hotspot (a spare 9-digit
+  hotspot ID) with the bench's radios (parrot 9990, a TG, a private call, an SMS to 262993); then two simplex
+  logins at once; then a W12; then a repeater.
 
 ## 7. Observed: a Motorola SMS through a BrandMeister hotspot (2026-11-06)
 
