@@ -1038,7 +1038,8 @@ static void op_session(rdof_bl_t *bl, conn_t *c, int ci, int root, double now)
     c->state = C_ACTIVE;
 }
 
-/* The frequencies of a claim or run: into c->freqs; false (failed) when one isn't listed or lacks a cap. */
+/* The frequencies of a claim or run: into c->freqs; false (failed) when one is neither listed nor in a TX band, or
+ * lacks a cap. */
 static bool take_freqs(rdof_bl_t *bl, conn_t *c, int arr, unsigned need)
 {
     const rdof_jnode_t *a = rdof_jnode(&bl->doc, arr);
@@ -1053,12 +1054,14 @@ static bool take_freqs(rdof_bl_t *bl, conn_t *c, int arr, unsigned need)
             fail(bl, c, "bad_request", "a frequency isn't a number");
             return false;
         }
+        /* a listed frequency's caps, plus TX in one of the bench's bands (as tx_ok) */
         const int k = freq_index(bl, f->num);
-        if (k < 0) {
+        const unsigned caps = (k >= 0 ? bl->f[k].caps : 0) | (tx_ok(bl, f->num) ? RDOF_BL_CAP_TX : 0);
+        if (!caps) {
             fail(bl, c, "refused", "%.4f MHz isn't one of this bench's frequencies", f->num);
             return false;
         }
-        if ((bl->f[k].caps & need) != need) {
+        if ((caps & need) != need) {
             fail(bl, c, "refused", "%.4f MHz lacks a cap asked for", f->num);
             return false;
         }

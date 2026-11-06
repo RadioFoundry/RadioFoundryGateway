@@ -507,6 +507,20 @@ static void test_ops(void)
     drain(bl, c, out, sizeof out);
     CHECK(strstr(out, "\"code\":\"refused\""), "no TX cap there: %s", out);
     rdof_bl_closed(bl, c, now);
+    /* a frequency no channel lists but in a TX band (bench.tx.bands_hz): a transmit frequency, nothing more */
+    snprintf(req, sizeof req, "{\"op\": \"claim\", \"session\": \"%s\", \"freqs\": [146.535], \"caps\": [\"tx\"]}",
+             id1);
+    c = ask(bl, req, now);
+    rdof_bl_tick(bl, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"claimed\":[146.535000]"), "a TX band frequency: %s", out);
+    rdof_bl_closed(bl, c, now);
+    snprintf(req, sizeof req, "{\"op\": \"claim\", \"session\": \"%s\", \"freqs\": [146.52], \"caps\": [\"rx\"]}",
+             id1);
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"refused\""), "no receiver there, only the TX band: %s", out);
+    rdof_bl_closed(bl, c, now);
     /* the first session releases: the wait is granted */
     snprintf(req, sizeof req, "{\"op\": \"release\", \"session\": \"%s\", \"freqs\": [438.1125]}", id1);
     c = ask(bl, req, now + 1);
