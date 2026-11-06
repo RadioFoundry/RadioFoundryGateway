@@ -4,11 +4,13 @@
 #include "rdof/trunkcfg.h"
 
 #include <math.h>
+#include <stddef.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "rdof/idset.h"
+#include "rdof/mnctl.h"
 #include "rdof/siteplan.h"
 
 typedef struct {
@@ -42,10 +44,6 @@ static void model_bits(int model, int *nb, int *sb)
 
 static const char *const MODELS[] = {"tiny", "small", "large", "huge"};
 static const char *const SYSTEM_KEYS[] = {"model", "net", "site", "par", "area_bits", NULL};
-static const char *const TIMER_KEYS[] = {"nrand_wait", "backoff_min", "backoff_max", "tp_s", "tnp_s", "hang_s",
-                                         "call_s", "emergency_call_s", "ahoy_tries", "ahoy_every_s", "grant_every_s",
-                                         "clear_repeats", "warmup_cach", "reg_hold_s", "queue_max", "queue_s",
-                                         "net_queue_s", "setup_s", "start_grace_s", NULL};
 static const char *const BROADCAST_KEYS[] = {"adjacent_s", "chan_freq_s", "local_time_s", NULL};
 
 static bool known(ctx_t *c, int obj, const char *path, const char *const *keys)
@@ -113,6 +111,24 @@ static bool bool_of(ctx_t *c, int obj, const char *key, const char *path, uint8_
     return true;
 }
 
+/* A parsed ID set into the controller's ranges. */
+static bool to_t3(ctx_t *c, const char *path, const char *key, const rdof_idset_t *s, rdof_t3_idset_t *out)
+{
+    memset(out, 0, sizeof *out);
+    if (s->star && !s->nout) {
+        out->all = 1;
+        return true;
+    }
+    rdof_idrange_t r[RDOF_T3_IDSET_RANGES];
+    int n = rdof_idset_ranges(s, r, RDOF_T3_IDSET_RANGES);
+    if (n > RDOF_T3_IDSET_RANGES)
+        return fail(c, "%s.%s: %d ranges, the site holds %d", path, key, n, RDOF_T3_IDSET_RANGES);
+    for (int k = 0; k < n; k++)
+        out->r[k] = (rdof_t3_range_t){r[k].lo, r[k].hi};
+    out->n = (uint8_t)n;
+    return true;
+}
+
 /* An ID set (config-v3 section 3) into the controller's ranges. */
 static bool idset_of(ctx_t *c, int obj, const char *key, const char *path, rdof_t3_idset_t *out)
 {
@@ -147,19 +163,7 @@ static bool idset_of(ctx_t *c, int obj, const char *key, const char *path, rdof_
         return fail(c, "%s.%s: an ID set: 202, \"3100-3199\", \"*\", \"!350\", a list of those, or false", path, key);
     }
     rdof_idset_finish(&s);
-    memset(out, 0, sizeof *out);
-    if (s.star && !s.nout) {
-        out->all = 1;
-        return true;
-    }
-    rdof_idrange_t r[RDOF_T3_IDSET_RANGES];
-    int n = rdof_idset_ranges(&s, r, RDOF_T3_IDSET_RANGES);
-    if (n > RDOF_T3_IDSET_RANGES)
-        return fail(c, "%s.%s: %d ranges, the site holds %d", path, key, n, RDOF_T3_IDSET_RANGES);
-    for (int k = 0; k < n; k++)
-        out->r[k] = (rdof_t3_range_t){r[k].lo, r[k].hi};
-    out->n = (uint8_t)n;
-    return true;
+    return to_t3(c, path, key, &s, out);
 }
 
 void rdof_trunk_cfg_default(rdof_t3_cfg_t *cfg, rdof_t3_policy_t *pol)
@@ -255,38 +259,77 @@ static bool system_keys(ctx_t *c, int o, const char *path, bool top, rdof_t3_cfg
     return true;
 }
 
-static bool reg_hold(ctx_t *c, int t, const char *path, rdof_t3_cfg_t *cfg)
+/* The timers (trunk.md 3.8): each a cfg field in its unit (ms from seconds, a code, seconds), its range. */
+typedef enum { T_U8, T_MS, T_S } tkind_t;
+typedef struct {
+    const char *name;
+    size_t off;
+    tkind_t kind;
+    double lo, hi;
+    bool frac;
+} timer_t_;
+
+#define TM(n, f, k, lo, hi, fr) {n, offsetof(rdof_t3_cfg_t, f), k, lo, hi, fr}
+static const timer_t_ TIMERS[] = {
+    TM("nrand_wait", nrand_wait, T_U8, 0, 15, false),
+    TM("backoff_min", backoff_min, T_U8, 1, 15, false),
+    TM("backoff_max", backoff_max, T_U8, 1, 15, false),
+    TM("tp_s", tp_ms, T_MS, 4, 60, false),
+    TM("tnp_s", tnp_ms, T_MS, 2, 60, false),
+    TM("hang_s", hang_ms, T_MS, 1, 60, true),
+    TM("call_s", call_ms, T_MS, 1, 4094, false),
+    TM("emergency_call_s", emergency_call_ms, T_MS, 1, 510, false),
+    TM("ahoy_tries", ahoy_tries, T_U8, 1, 10, false),
+    TM("ahoy_every_s", ahoy_every_ms, T_MS, 0.3, 5, true),
+    TM("grant_every_s", grant_every_ms, T_MS, 0.3, 10, true),
+    TM("clear_repeats", clear_repeats, T_U8, 1, 8, false),
+    TM("warmup_cach", warmup_cach, T_U8, 2, 4, false),
+    TM("reg_hold_s", reg_hold_s, T_S, 60, 604800, false),
+    TM("queue_max", queue_max, T_U8, 1, 16, false),
+    TM("queue_s", queue_ms, T_MS, 1, 60, false),
+    TM("net_queue_s", net_queue_ms, T_MS, 0, 10, true),
+    TM("setup_s", setup_ms, T_MS, 1, 30, true),
+    TM("start_grace_s", start_grace_ms, T_MS, 0, 10, true),
+};
+#define NTIMERS (sizeof TIMERS / sizeof TIMERS[0])
+
+/* Timer name to value v (checked); false with err set ("path.name: range"). */
+static bool set_timer(ctx_t *c, const char *path, const char *name, double v, rdof_t3_cfg_t *cfg)
 {
-    double v = cfg->reg_hold_s;
-    if (!num_in(c, t, "reg_hold_s", path, 60, 604800, false, &v, NULL))
-        return false;
-    cfg->reg_hold_s = (uint32_t)v;
-    return true;
+    for (size_t k = 0; k < NTIMERS; k++) {
+        const timer_t_ *t = &TIMERS[k];
+        if (strcmp(t->name, name))
+            continue;
+        if (!(v >= t->lo && v <= t->hi) || (!t->frac && v != floor(v)) || (t->off == offsetof(rdof_t3_cfg_t, warmup_cach) && v == 3)) {
+            if (t->off == offsetof(rdof_t3_cfg_t, warmup_cach))
+                return fail(c, "%s.%s: 2 or 4", path, name);
+            return t->frac ? fail(c, "%s.%s: %g to %g", path, name, t->lo, t->hi)
+                           : fail(c, "%s.%s: %.0f to %.0f", path, name, t->lo, t->hi);
+        }
+        uint8_t *at = (uint8_t *)cfg + t->off;
+        if (t->kind == T_U8)
+            *at = (uint8_t)v;
+        else {
+            uint32_t u = t->kind == T_MS ? (uint32_t)llround(v * 1000.0) : (uint32_t)v;
+            memcpy(at, &u, sizeof u);
+        }
+        return true;
+    }
+    return fail(c, "%s.%s: not a key here", path, name);
 }
 
 static bool timer_keys(ctx_t *c, int t, const char *path, rdof_t3_cfg_t *cfg)
 {
     char p[96];
     snprintf(p, sizeof p, "%s.timers", path);
-    if (!known(c, t, p, TIMER_KEYS))
-        return false;
-    return u8_in(c, t, "nrand_wait", p, 0, 15, &cfg->nrand_wait) &&
-           u8_in(c, t, "backoff_min", p, 1, 15, &cfg->backoff_min) &&
-           u8_in(c, t, "backoff_max", p, 1, 15, &cfg->backoff_max) && ms_in(c, t, "tp_s", p, 4, 60, false, &cfg->tp_ms) &&
-           ms_in(c, t, "tnp_s", p, 2, 60, false, &cfg->tnp_ms) && ms_in(c, t, "hang_s", p, 1, 60, true, &cfg->hang_ms) &&
-           ms_in(c, t, "call_s", p, 1, 4094, false, &cfg->call_ms) &&
-           ms_in(c, t, "emergency_call_s", p, 1, 510, false, &cfg->emergency_call_ms) &&
-           u8_in(c, t, "ahoy_tries", p, 1, 10, &cfg->ahoy_tries) &&
-           ms_in(c, t, "ahoy_every_s", p, 0.3, 5, true, &cfg->ahoy_every_ms) &&
-           ms_in(c, t, "grant_every_s", p, 0.3, 10, true, &cfg->grant_every_ms) &&
-           u8_in(c, t, "clear_repeats", p, 1, 8, &cfg->clear_repeats) &&
-           u8_in(c, t, "warmup_cach", p, 2, 4, &cfg->warmup_cach) &&
-           (cfg->warmup_cach != 3 || fail(c, "%s.warmup_cach: 2 or 4", p)) &&
-           u8_in(c, t, "queue_max", p, 1, 16, &cfg->queue_max) &&
-           ms_in(c, t, "queue_s", p, 1, 60, false, &cfg->queue_ms) &&
-           ms_in(c, t, "net_queue_s", p, 0, 10, true, &cfg->net_queue_ms) &&
-           ms_in(c, t, "setup_s", p, 1, 30, true, &cfg->setup_ms) &&
-           ms_in(c, t, "start_grace_s", p, 0, 10, true, &cfg->start_grace_ms) && reg_hold(c, t, p, cfg);
+    if (!is_type(c, t, RDOF_JOBJ))
+        return fail(c, "%s: an object", p);
+    for (int i = N(c, t)->child; i >= 0; i = N(c, i)->next) {
+        double v = is_type(c, i, RDOF_JNUM) ? N(c, i)->num : NAN;
+        if (!set_timer(c, p, N(c, i)->key, v, cfg))
+            return false;
+    }
+    return true;
 }
 
 bool rdof_trunk_cfg_apply(const rdof_jdoc_t *doc, int obj, const char *path, rdof_t3_cfg_t *cfg,
@@ -431,4 +474,51 @@ bool rdof_trunk_cfg_plan(const struct rdof_plan *p, int unit, rdof_t3_cfg_t *cfg
         return false;
     }
     return true;
+}
+
+bool rdof_trunk_cfg_site(const rdof_mn_site_cfg_t *sc, rdof_t3_cfg_t *cfg, rdof_t3_policy_t *pol, char *err,
+                         size_t cap)
+{
+    char dummy[8];
+    ctx_t cx = {.err = err && cap ? err : dummy, .cap = err && cap ? cap : sizeof dummy}, *c = &cx;
+    c->err[0] = 0;
+    const uint32_t h = sc->has;
+    if (h & RDOF_MN_HAS_MODEL) {
+        if (sc->model < 0 || sc->model > 3)
+            return fail(c, "cfg.system.model: tiny, small, large or huge");
+        cfg->model = (uint8_t)sc->model;
+        int nb, sb;
+        model_bits(sc->model, &nb, &sb);
+        if (!(h & RDOF_MN_HAS_AREA_BITS))
+            cfg->area_bits = (uint8_t)sb;
+    }
+    if (h & RDOF_MN_HAS_NET)
+        cfg->net = (uint16_t)sc->net;
+    if (h & RDOF_MN_HAS_SITE)
+        cfg->site = (uint16_t)sc->site;
+    if (h & RDOF_MN_HAS_PAR)
+        cfg->par = (uint8_t)sc->par;
+    if (h & RDOF_MN_HAS_AREA_BITS)
+        cfg->area_bits = (uint8_t)sc->area_bits;
+    if (h & RDOF_MN_HAS_REGISTRATION) {
+        pol->open = !sc->listed;
+        if (sc->listed && !(h & RDOF_MN_HAS_MS) && pol->ms.all)
+            memset(&pol->ms, 0, sizeof pol->ms);
+    }
+    if (h & RDOF_MN_HAS_REFUSE)
+        pol->refuse_unlisted = sc->refused;
+    if (((h & RDOF_MN_HAS_MS) && !to_t3(c, "cfg", "ms", &sc->ms, &pol->ms)) ||
+        ((h & RDOF_MN_HAS_PRIVATE) && !to_t3(c, "cfg", "private", &sc->private_, &pol->private_ms)) ||
+        ((h & RDOF_MN_HAS_TG) && !to_t3(c, "cfg", "tg", &sc->tg, &pol->tg)) ||
+        ((h & RDOF_MN_HAS_WIDE_TG) && !to_t3(c, "cfg", "wide_tg", &sc->wide_tg, &pol->wide_tg)) ||
+        ((h & RDOF_MN_HAS_STATIC_TG) && !to_t3(c, "cfg", "static_tg", &sc->static_tg, &pol->static_tg)))
+        return false;
+    if (h & RDOF_MN_HAS_REQUIRE_REG)
+        cfg->reg_required = sc->require_registration;
+    if (h & RDOF_MN_HAS_FOACSU)
+        cfg->foacsu = sc->foacsu;
+    for (int i = 0; i < sc->ntimers; i++)
+        if (!set_timer(c, "cfg.timers", sc->timers[i].name, sc->timers[i].value, cfg))
+            return false;
+    return rdof_trunk_cfg_check(cfg, c->err, c->cap);
 }

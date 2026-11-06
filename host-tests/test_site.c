@@ -737,6 +737,23 @@ static void test_trunk(const char *dir)
     CHECK(!apply_text("{\"wide_tg\": \"1,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31,33\"}", "x", &c, &pol, err,
                       sizeof err),
           "too many ranges: %s", err);
+    /* the same through the provisioning's resolved form (rdof/mnctl.h) */
+    {
+        static rdof_mn_site_cfg_t sc;
+        long rev = 0;
+        char note[96];
+        const char *doc = "{\"rev\": 4, \"system\": {\"model\": \"small\", \"net\": 7}, \"site\": 9, "
+                          "\"registration\": \"listed\", \"timers\": {\"hang_s\": 2, \"queue_max\": 8}}";
+        CHECK(rdof_mn_site_cfg_parse(doc, strlen(doc), &sc, &rev, note, sizeof note, err, sizeof err), "%s", err);
+        rdof_trunk_cfg_default(&c, &pol);
+        CHECK(rdof_trunk_cfg_site(&sc, &c, &pol, err, sizeof err), "site cfg: %s", err);
+        CHECK(c.net == 7 && c.site == 9 && c.hang_ms == 2000 && c.queue_max == 8 && !pol.open && !pol.ms.all &&
+                  !pol.ms.n,
+              "site cfg applied");
+        sc.timers[0].value = 99;
+        CHECK(!rdof_trunk_cfg_site(&sc, &c, &pol, err, sizeof err) && !strcmp(err, "cfg.timers.hang_s: 1 to 60"),
+              "%s", err);
+    }
     rdof_trunk_cfg_default(&c, &pol);
     CHECK(apply_text("{\"system\": {\"model\": \"tiny\", \"net\": 511, \"site\": 7}}", "x", &c, &pol, err, sizeof err) &&
               c.area_bits == 3,

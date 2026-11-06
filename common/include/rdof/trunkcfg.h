@@ -14,6 +14,7 @@
 #include <stdint.h>
 
 #include "rdof/jsonp.h"
+#include "rdof/mnctl.h"
 #include "rdof/t3.h"
 
 #ifdef __cplusplus
@@ -40,6 +41,12 @@ bool rdof_trunk_cfg_check(const rdof_t3_cfg_t *cfg, char *err, size_t cap);
    site's color code. unit: the trunk unit's index (-1: the plan's one). false with err set: no trunk unit, or a key
    refused. */
 bool rdof_trunk_cfg_plan(const struct rdof_plan *p, int unit, rdof_t3_cfg_t *cfg, rdof_t3_policy_t *pol, char *err,
+                         size_t cap);
+
+/* The manager's provisioning, resolved (rdof/mnctl.h rdof_mn_cfg_site), over cfg and pol: the values it has; its
+   timers by name. Neighbors and enabled are the caller's. false with err set (cfg and pol may be half applied: keep a
+   copy). */
+bool rdof_trunk_cfg_site(const rdof_mn_site_cfg_t *sc, rdof_t3_cfg_t *cfg, rdof_t3_policy_t *pol, char *err,
                          size_t cap);
 
 /* The plan's trunk unit, -1 none. */
