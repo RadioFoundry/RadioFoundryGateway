@@ -383,6 +383,8 @@ void slot_timing_json(rdof_json_t *j);                          /* "slot_timing"
 void sdr_hb_start(void);
 /* The sink for channel c's HBlink4 peer, or false if it has none. */
 bool sdr_hb_sink(int c, rdof_sink_t *out);
+/* The receiver sends what it hears on hz up itself: a channel there has a peer (its own, or through the box's). */
+bool sdr_hb_sends(uint32_t hz);
 int sdr_hb_status(const char **ids, bool *up, int max);
 
 /* The DSP's allocators (sdr.c): the hot arena, a window the DSP task opens while it builds a receiver, and the

@@ -85,6 +85,16 @@ bool sdr_hb_sink(int c, rdof_sink_t *out)
     return true;
 }
 
+bool sdr_hb_sends(uint32_t hz)
+{
+    if (!g_scfg.hb_enabled)
+        return true; /* no HBlink or BrandMeister: as before */
+    for (int c = 0; c < g_scfg.nch; c++)
+        if ((uint32_t)g_scfg.ch[c].freq == hz && chan_peer[c] >= 0)
+            return true;
+    return false;
+}
+
 int sdr_hb_status(const char **ids, bool *up, int max)
 {
     int n = 0;
@@ -250,6 +260,7 @@ void sdr_hb_start(void)
 #else
 
 bool sdr_hb_sink(int c, rdof_sink_t *out) { return false; }
+bool sdr_hb_sends(uint32_t hz) { return false; }
 int sdr_hb_status(const char **ids, bool *up, int max) { return 0; }
 void sdr_hb_start(void) {}
 
