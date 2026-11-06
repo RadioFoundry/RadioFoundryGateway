@@ -26,6 +26,7 @@
 #include "rdof/netcalls.h"
 #include "rdof/parrot.h"
 #include "rdof/repeater.h"
+#include "rdof/tracker.h"
 #include "rdof/txvr.h"
 #endif
 #if CONFIG_RDOF_SDR
@@ -280,6 +281,23 @@ void site_add_role(roam_t *r);             /* its repeater or transceiver, once 
 roam_t *site_hb_owner(roam_t *r);          /* the role whose HBlink peer r uses (r itself unless one identity) */
 roam_t *site_hb_peer(void);                /* one identity: that role, NULL none (yet) */
 bool site_rf(uint32_t hz, int slot, uint32_t src, uint32_t dst, bool group); /* a stream heard: to HBlink? */
+int site_rf_net(uint32_t hz, int slot, uint32_t src, uint32_t dst, bool group); /* the network a stream goes to, -1 none */
+/* The MQTT network's side of the router (mqttnet_task.c): the site (fixed after site_load), the network's index (-1:
+ * none with calls and format v3), the talk path at hz / slot on it, its bursts to the transmitters (only: a path mask),
+ * the path a radio was last heard on, and the TGs to subscribe to (rdof_mn_sub_tgs). */
+const rdof_site_t *site_get(void);
+int site_mn_net(void);
+int site_mn_path_at(uint32_t hz, int slot);
+bool site_mn_burst(uint64_t only, bool emergency, const rdof_net_burst_t *b);
+int site_heard_path(uint32_t id);
+int site_mn_sub_tgs(uint32_t *tgs, int max, bool *all);
+/* The MQTT network (mqttnet_task.c, docs/spec/fw/mqtt-net.md): on when the settings' mqtt network has calls and
+ * format "v3". mn_start after the settings, before the roles; each receiver's tracker then takes mn_sink (false:
+ * off; source as ipgw_sink's); the transmitters' call events go to mn_tx_event. */
+void mn_start(void);
+bool mn_sink(int source, uint32_t freq, const double *freq_now, rdof_sink_t *out);
+void mn_tx_event(const char *action, const rdof_tx_call_info_t *call);
+void mn_status_json(rdof_json_t *j); /* "mqtt_net": {...}, nothing when off */
 bool site_reaches_parrot(uint32_t hz, int slot);
 bool site_dmrd(uint32_t peer, const uint8_t *d, size_t n); /* a DMRD from the master, by the call policies */
 bool site_tuned(const uint8_t sid[4]);     /* a stream the router tuned a transceiver for */

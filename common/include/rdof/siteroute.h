@@ -83,6 +83,11 @@ bool rdof_siteroute_reaches(const rdof_siteroute_t *sr, uint32_t hz, int slot, i
 /* A burst from network net, sent to peer (identity per_path: only that peer's paths take it; 0 any): to the
    transmitters the router picks. Returns the paths it went out on. */
 uint64_t rdof_siteroute_burst(rdof_siteroute_t *sr, int net, uint32_t peer, const rdof_net_burst_t *b, double now);
+/* The same with the paths given: only (bit per path; ~0 any the router picks) and emergency (the stream's call
+   says so; an LC header that says so counts too). The MQTT network's downlink (rdof/mqttnet.h) sends this way: a
+   dl message's path byte is the one path, a tg or pc message any. */
+uint64_t rdof_siteroute_burst_on(rdof_siteroute_t *sr, int net, uint64_t only, bool emergency,
+                                 const rdof_net_burst_t *b, double now);
 /* A DMRD packet from network net to peer (other packets: false, the caller's). */
 bool rdof_siteroute_dmrd(rdof_siteroute_t *sr, int net, uint32_t peer, const uint8_t *d, size_t n, double now);
 

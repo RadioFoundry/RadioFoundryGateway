@@ -33,7 +33,7 @@ extern "C" {
 #define RDOF_REPEAT_TERMINATOR_SECONDS 1.0
 
 #define RDOF_JSON_MAX 640
-#define RDOF_TRACKER_MAX_SINKS 4
+#define RDOF_TRACKER_MAX_SINKS 5 /* an SDR channel: MQTT, HBlink, the bench, the IP gateway, the MQTT network */
 
 /* One received burst (layer2.Burst; only the fields the tracker reads). */
 typedef struct {

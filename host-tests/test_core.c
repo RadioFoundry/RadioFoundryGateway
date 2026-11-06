@@ -2046,24 +2046,24 @@ static const char *trk_ber(int k, char out[16])
 static void t_tracker_edges(void)
 {
     uint8_t b[RDOF_BURST_BYTES], b2[RDOF_BURST_BYTES];
-    /* sinks: four, then no more; one without on_raw gets the fields only */
+    /* sinks: five, then no more; one without on_raw gets the fields only */
     rdof_tracker_t tr;
     rdof_tracker_init(&tr, "a channel name past twenty-four bytes", 0, 0);
     CHECK(!strcmp(tr.channel, "a channel name past twe"), "channel cut: %s", tr.channel);
     trk_t k;
     memset(&k, 0, sizeof k);
     const rdof_sink_t fields = {NULL, NULL, NULL, &k, NULL, trk_rawb};
-    for (int i = 0; i < 4; i++)
+    for (int i = 0; i < RDOF_TRACKER_MAX_SINKS; i++)
         CHECK(rdof_tracker_add_sink(&tr, fields), "sink %d", i);
-    CHECK(!rdof_tracker_add_sink(&tr, fields) && tr.nsinks == 4, "a fifth: no");
+    CHECK(!rdof_tracker_add_sink(&tr, fields) && tr.nsinks == RDOF_TRACKER_MAX_SINKS, "a sixth: no");
     tr.nsinks = -1;
     CHECK(!rdof_tracker_add_sink(&tr, fields), "nsinks below 0: no");
-    tr.nsinks = 4;
+    tr.nsinks = RDOF_TRACKER_MAX_SINKS;
     trk_lc(RDOF_DT_VOICE_LC_HEADER, 9992345, 9, 0, b);
     rdof_burst_t rb = {.dt = RDOF_DT_VOICE_LC_HEADER, .slot = 1, .cc = 1, .power_dbfs = NAN};
     memcpy(rb.burst, b, sizeof b);
     rdof_tracker_feed(&tr, &rb, 100.0);
-    CHECK(k.raws == 4 && k.n == 0, "fields to each, no JSON built");
+    CHECK(k.raws == RDOF_TRACKER_MAX_SINKS && k.n == 0, "fields to each, no JSON built");
     /* ignored: idle, slot 0 and 3 */
     trk_on(0, 0);
     trk_feed(RDOF_DT_IDLE, 0, 1, b, NAN, 100.0);

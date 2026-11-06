@@ -2,11 +2,12 @@
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 /*
  * rdofradio's device: one SDR that receives and transmits at one rate, each direction on its own LO, behind a few
- * calls (with a PlutoSDR's FPGA TX interpolator, the transmit stream at a fraction of it). Two of them:
+ * calls (with a PlutoSDR's FPGA TX interpolator, the transmit stream at a fraction of it). Three of them:
  *   --soapy ARGS  any SoapySDR device (rdofradio_soapy.c)
  *   --iio URI     an AD9361 (the PlutoSDR family) through libiio straight (rdofradio_iio.c): only the libraries a
  *                 stock PlutoSDR already has, and with libad9361 its own FIR decimation below 2.083 MS/s (the
  *                 FPGA's decimator, which SoapyPlutoSDR uses there, is broken on some boards)
+ *   --file RX[,TX] a recording played in real time, the transmitted samples written out (rdofradio_file.c): tests
  * Opened receive only (rx_only), any receiver does (an RTL-SDR through SoapySDR): write and stop_tx do nothing.
  * Samples are complex floats, full scale 1.0. TX gain is in dB above the device's least: the PlutoSDR's 0..89 is
  * its attenuation of 89..0 dB, on both. write is called from the transmit thread alone, the rest from the main
@@ -73,5 +74,7 @@ struct rdofradio_dev {
  * in err. */
 rdofradio_dev_t *rdofradio_soapy_open(const char *args, const rdofradio_dev_setup_t *s, char *err, size_t cap);
 rdofradio_dev_t *rdofradio_iio_open(const char *uri, const rdofradio_dev_setup_t *s, char *err, size_t cap);
+/* --file RX[,TX]: a recording in, the transmitted samples out (rdofradio_file.c), for tests without a radio */
+rdofradio_dev_t *rdofradio_file_open(const char *spec, const rdofradio_dev_setup_t *s, char *err, size_t cap);
 
 #endif

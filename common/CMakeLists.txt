@@ -47,6 +47,8 @@ set(RDOF_COMMON_SRCS
     src/ipgw.c
     src/ipgwcfg.c
     src/ipgwtx.c
+    src/mqttnet.c
+    src/mnctl.c
     src/lastheard.c
     src/parrot.c
     src/memplan.c

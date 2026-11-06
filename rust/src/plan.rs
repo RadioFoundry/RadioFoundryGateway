@@ -111,6 +111,10 @@ pub struct RdofNet3 {
     pub roaming: bool,
     pub report: bool,
     pub calls: bool,
+    pub format: u8,
+    pub bundle: u8,
+    pub raw_tx: bool,
+    pub transport: u8,
 }
 
 /// rdof_path_t

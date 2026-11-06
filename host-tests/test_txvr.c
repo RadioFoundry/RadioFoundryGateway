@@ -1276,6 +1276,32 @@ static void t_txvr_more(void)
         else
             CHECK(!t->has_call && ex_answered(e, 85, RDOF_DMRK_CHANNEL_BUSY, CH_A), "busy");
     }
+    /* ... and its carrier, still up right after its last burst, isn't busy either; anyone else's is */
+    for (int reply = 1; reply >= 0; reply--) {
+        e = ex_new(false);
+        t = &e->t;
+        rdof_txvr_start(t);
+        tu = ex_tune(87, CH_A);
+        rdof_txvr_on_tune(t, &tu);
+        rdof_txvr_poll(t); /* tuned */
+        e->rig.clock += 1;
+        rdof_txvr_heard_call(t, "start", DST, reply ? SRC : 999);
+        e->rig.modem.last_rx = e->rig.clock;
+        rdof_txvr_heard_call(t, "end", 0, 0);
+        b = ex_burst(87, RDOF_SYNC_AUDIO, false);
+        rdof_txvr_on_burst(t, &b);
+        e->rig.radio.carrier = true;
+        e->rig.clock += 0.03;
+        rdof_txvr_poll(t);
+        e->rig.radio.carrier = false;
+        e->rig.clock += 0.3;
+        t->call.listen_until = e->rig.clock;
+        rdof_txvr_poll(t);
+        if (reply)
+            CHECK(!strcmp(rdof_txvr_state_name(t), "on_air"), "%s", rdof_txvr_state_name(t));
+        else
+            CHECK(!t->has_call && ex_answered(e, 87, RDOF_DMRK_CHANNEL_BUSY, CH_A), "busy");
+    }
 
     /* keyed again after the quiet began: the tail counted from the new quiet */
     e = ex_call(false, 86);

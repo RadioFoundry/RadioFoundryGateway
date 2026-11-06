@@ -510,14 +510,23 @@ The MQTT broker ([mqtt.md](mqtt.md)).
 | `username`, `password` | str | `""` | |
 | `root` | str | `DMR` | the topic root; slashes at either end are dropped |
 | `tls` | bool | false | needs `CONFIG_RDOF_MQTT_TLS`; a build without it runs plain MQTT, with a warning |
+| `transport` | str | `mqtt/tcp` | `mqtt/tcp` or `mqtt/tls` ([mqtt-net.md](mqtt-net.md) §5); `mqtt/tls` is `tls: true`. `mqtt/tcp` with `tls: true` is refused. The other transports aren't built yet |
 | `report` | bool | true | status, the call JSON and the raw bursts, on today's topics ([mqtt.md](mqtt.md)) |
 | `calls` | bool | false | carry calls: bursts in and out on topics per path and talkgroup. With it, MQTT can be the only network (no HBlink) |
+| `format` | str | `dmrd` | with `calls`: `dmrd` (DMRD packets, [mqtt.md](mqtt.md) §10) or `v3` (the MQTT network's messages, [mqtt-net.md](mqtt-net.md)) |
+| `bundle` | int, 1..3 | 1 | `format: "v3"`: voice items per message when sending. Messages with 1 to 3 are taken; 1 is sent for now |
+| `raw_tx` | bool | false | `format: "v3"`: transmit `raw` items as heard ([mqtt-net.md](mqtt-net.md) §4.3); off, they are dropped |
 
 Both `report` and `calls` false: the network is off. A box with `mqtt` and `report` only, and no other network,
 reports but carries no calls. With `calls`, a path whose `net` is the MQTT network sends what it carries as DMRD
 packets on `{root}/calls/{tg|pc}/{dst}/{box}` and takes the other boxes' from `{root}/calls/#`
-([mqtt.md](mqtt.md) §10). A `format` key (the MQTT network's own format, [mqtt-net.md](mqtt-net.md) §10) is
-planned, not taken.
+([mqtt.md](mqtt.md) §10). With `format: "v3"` the calls go as the MQTT network's messages instead: on
+`{root}/tg/{tg}/{box}`, `{root}/pc/{id}/{box}` and `{root}/dl/{box}`, with the box's `info` and `activity`
+([mqtt-net.md](mqtt-net.md)). `bundle` and `raw_tx` need `format: "v3"`, and `format` needs `calls`. The errors:
+`format: dmrd or v3`, `format: with calls true`, `bundle: 1 to 3`, `bundle: with format v3`, `raw_tx: with format
+v3`, `transport: mqtt/tcp or mqtt/tls (the others aren't built yet)`. The v3 calls run on a connection of their own
+(client ID `rdof-net-{name}`, the box's `name` as the node, so it must be letters, digits, `.`, `_` or `-`), in
+rdofradio and on the board; one network in a file takes `format: "v3"` (the first, if several do).
 
 ## 8. Policies
 
@@ -1012,6 +1021,8 @@ and the page checking against the schema before a save.
 - Version 3 is the only format (2026-11-01): versions 1 and 2 were prototypes, dropped with no upgrade. A file is
   parsed straight into what runs (§12).
 - Apps claim IDs; `apps` on a path says which it may reach.
+- MQTT `format` (2026-11-02): `dmrd` stays the default; `v3` is the MQTT network ([mqtt-net.md](mqtt-net.md)).
+  `transport` takes `mqtt/tcp` and `mqtt/tls` for now; `tls: true` stays as the short form of `mqtt/tls`.
 
 ## 16. On the board
 

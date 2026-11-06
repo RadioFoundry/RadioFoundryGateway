@@ -1,0 +1,21 @@
+{
+  "version": 3,
+  "name": "net-box",
+  "id": 9990200,
+  "defaults": {"cc": 1},
+  "devices": [
+    {"kind": "sdr", "driver": "iio", "match": {"uri": "local:"}}
+  ],
+  "frequencies": [
+    {"name": "rpt in",  "freq": 438.75},
+    {"name": "rpt out", "freq": 438.5}
+  ],
+  "apps": [
+    {"name": "R1", "type": "repeater", "in": "rpt in", "out": "rpt out",
+     "slots": {"1": {"tg": "91,3100"}, "2": {"tg": "3101-3110", "ptt": "3200-3299"}}}
+  ],
+  "networks": [
+    {"type": "mqtt", "host": "broker.example.net", "root": "DMR", "calls": true, "format": "v3",
+     "transport": "mqtt/tls", "bundle": 1}
+  ]
+}

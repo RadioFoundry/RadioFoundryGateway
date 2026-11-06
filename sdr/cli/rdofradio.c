@@ -31,7 +31,8 @@
  *
  * DEVICE is --soapy ARGS (SoapySDR; -r defaults to 2.4 MS/s) or --iio URI (an AD9361 through libiio: "local:" on a
  * PlutoSDR, "ip:192.168.2.1" from a host; -r defaults to 768 kS/s, which the chip's own FIR makes with
- * libad9361). --ppm PPM: the device's crystal error (positive: fast, fractions too), measured elsewhere: rdofradio
+ * libad9361), or --file RX[,TX] for tests (a recording in, the transmitted samples out: rdofradio_file.c).
+ * --ppm PPM: the device's crystal error (positive: fast, fractions too), measured elsewhere: rdofradio
  * doesn't measure it (its netclock disciplines the time, not the device's crystal). Taken out in software, receive
  * and transmit (xtal_ppm); without it, every frequency the bench reads or sends is off by the crystal's error.
  * --ppm-tol PPM: how far --ppm may be off (the measurement's own error), given to the bench's reports as their
@@ -154,6 +155,11 @@
 #include "netclock_posix.h"
 #endif
 #ifdef RDOF_MQTT
+#include "rdof/bits.h"
+#include "rdof/ipgw.h"
+#include "rdof/ipgwtx.h"
+#include "rdof/mnctl.h"
+#include "rdof/mqttnet.h"
 #include "rdof/netcalls.h"
 #include "rdof/rawburst.h"
 #include "rdof/sdr/status.h"
@@ -493,11 +499,11 @@ static void usage(void)
             "                 [--cc CC] | --config FILE [--parrot ID] [--seconds S] [-v] [--web ...] [--bench ...]\n"
             "DEVICE: %s\n",
 #if defined(RDOF_SOAPY) && defined(RDOF_IIO)
-            "--soapy ARGS | --iio URI"
+            "--soapy ARGS | --iio URI | --file RX[,TX]"
 #elif defined(RDOF_SOAPY)
-            "--soapy ARGS"
+            "--soapy ARGS | --file RX[,TX]"
 #else
-            "--iio URI"
+            "--iio URI | --file RX[,TX]"
 #endif
             );
     exit(2);
@@ -856,6 +862,10 @@ static void on_rx(void *ctx, int slot, uint8_t control, const uint8_t *burst, in
     } else {
         rdof_txvr_heard(&R.t, slot, control, burst, rssi);
     }
+}
+static void txvr_heard_call(void *ctx, const char *channel, const char *action, uint32_t src, uint32_t dst)
+{
+    rdof_txvr_heard_call(&R.t, action, src, dst);
 }
 static void on_lost(void *ctx, int slot)
 {
@@ -1496,6 +1506,330 @@ static void mq_calls_start(void)
     fprintf(stderr, "mqtt: calls on %s/calls/ as %s\n", rcfg.cfg.mqtt_root, rcfg.site.name);
 }
 
+/* ── the MQTT network (format v3, rdof/mqttnet.h): its own connection, call messages up and down ───────────── */
+
+static bool mn_on;                 /* the MQTT network carries the calls as format v3 */
+static rdofmq_t *MN;               /* its connection: will online 0, no local, TCP_NODELAY */
+static char mn_node[RDOF_MN_NODE_MAX + 1], mn_online[128], mn_info_t[128], mn_act[128], mn_dl[128], mn_status_t[128];
+static double mn_started, mn_status_at = -1e9;
+static rdof_mn_up_t mn_up[1 + RDOF_SDR_MAX_CHANNELS]; /* the modem's RX with --mmdvm, then each receiver channel */
+static rdof_mn_down_t mn_down;
+static rdof_mn_results_t mn_results;
+static double mn_subs_at;
+static unsigned mn_in_dropped, mn_acks;
+#define MN_QUEUE 64
+typedef struct {
+    char topic[128];
+    uint16_t len;
+    uint8_t msg[RDOF_MN_MSG_MAX];
+} mn_in_t;
+static mn_in_t mn_in[MN_QUEUE];
+static int mn_in_head, mn_in_tail;
+
+static chan_t *mn_chan(const rdof_mn_up_t *u) /* NULL: the modem's RX (--mmdvm) */
+{
+    const int i = (int)(u - mn_up);
+    return i ? &CHN[i - 1] : NULL;
+}
+static uint32_t mn_hz(const rdof_mn_up_t *u)
+{
+    const chan_t *m = mn_chan(u);
+    return m ? chan_hz(m) : R.rx_hz;
+}
+static int mn_path_of(void *ctx, int slot)
+{
+    const int k = rdof_siteroute_path_at(&SR, mn_hz(ctx), slot);
+    return k >= 0 && rcfg.site.path[k].pol.net == sr_mqtt ? k : -1;
+}
+static bool mn_admit(void *ctx, int slot, uint32_t src, uint32_t dst, bool group)
+{
+    return rf_net(mn_chan(ctx), slot, src, dst, group) == sr_mqtt;
+}
+static void mn_publish(void *ctx, int kind, uint32_t dst, const uint8_t *msg, size_t len)
+{
+    char t[128];
+    if (rdof_mn_topic(t, sizeof t, rcfg.cfg.mqtt_root, kind, dst, mn_node) && rdofmq_publish(MN, t, msg, (int)len, 0, false))
+        mq_calls_out++;
+}
+static void mn_activity(void *ctx, const char *json) { rdofmq_publish(MN, mn_act, json, -1, 1, false); }
+static double mn_wall(void *ctx) { return wall_s(); }
+
+/* A data_result event for a data call this box delivered */
+static void mn_result(const char *result, const rdof_mn_pending_t *p)
+{
+    char buf[512];
+    if (rdof_mn_data_result_event(mn_node, wall_s(), p->path, p->slot, p->stream, p->src, p->dst, p->from, p->stream,
+                                  result, 1, buf, sizeof buf))
+        rdofmq_publish(MN, mn_act, buf, -1, 1, false);
+    say("mqtt-net: data %u -> %u from %s: %s\n", (unsigned)p->src, (unsigned)p->dst, p->from, result);
+}
+static void mn_response(void *ctx, int slot, uint32_t src, uint32_t dst, int klass, int type, int status)
+{
+    rdof_mn_pending_t p;
+    const char *r = rdof_mn_results_response(&mn_results, src, dst, klass, type, &p);
+    if (r)
+        mn_result(r, &p);
+}
+
+/* Confirmed data heard here and sent to the network: this box answers the radio on RF (mqtt-net.md §4.4), on the
+   path it was heard on, unless the called radio was last heard there too (the radios answer each other). */
+static void mn_data_done(void *ctx, const rdof_mn_data_t *d)
+{
+    if (!d->confirmed || d->group || !d->sent || d->path < 0)
+        return;
+    const double now = now_s();
+    if (rdof_router_heard(&SR.router, d->dst, now) == d->path)
+        return;
+    const rdof_path_t *p = &rcfg.site.path[d->path];
+    if (p->tx_freq < 0)
+        return;
+    static rdof_ipgw_dmr_t ack;
+    const int cc = rcfg.site.freq[p->tx_freq].cc >= 0 ? rcfg.site.freq[p->tx_freq].cc : rcfg.cc;
+    rdof_ipgw_build_ack(d->dst, d->src, d->sap, d->ns, cc, rdof_data_sync(R.full ? RDOF_BS_VOICE : RDOF_MS_VOICE), &ack);
+    uint8_t sid[4];
+    rdof_put_be32(sid, sink_rand(NULL));
+    for (int i = 0; i < ack.nbursts; i++) {
+        rdof_net_burst_t b;
+        rdof_ipgw_net_burst(&ack, i, sid, d->slot, (uint8_t)i, &b);
+        if (!rdof_siteroute_app_burst(&SR, d->path, &b, true, INFINITY, now) &&
+            !rdof_siteroute_burst_on(&SR, sr_mqtt, 1ull << d->path, false, &b, now)) /* a repeater's path */
+            return;
+    }
+    mn_acks++;
+    say("mqtt-net: answered %u's confirmed data to %u (N(S) %d)\n", (unsigned)d->src, (unsigned)d->dst, d->ns);
+}
+
+/* the downlink's bursts, to the router's transmitters: a dl message on the one path in its path byte */
+static void mn_burst(void *ctx, const rdof_net_burst_t *b, int path, bool dl, uint8_t flags, const char *from)
+{
+    uint64_t only = ~0ull;
+    if (dl && path != RDOF_MN_PATH_NONE) {
+        if (path >= rcfg.site.npath)
+            return;
+        only = 1ull << path;
+    }
+    if (rdof_siteroute_burst_on(&SR, sr_mqtt, only, (flags & RDOF_MN_F_EMERGENCY) != 0, b, now_s()))
+        mq_calls_in++;
+}
+/* the path and slot are this box's: a dl message's path byte, else not known until the transmitter ends it (a tg
+   message's path byte and slot flag are the publisher's) */
+static void mn_data(void *ctx, const rdof_mn_hdr_t *h, bool confirmed, bool dl, const char *from)
+{
+    const int k = dl && h->path < rcfg.site.npath ? h->path : -1;
+    const rdof_path_t *p = k >= 0 ? &rcfg.site.path[k] : NULL;
+    rdof_mn_results_add(&mn_results, h, confirmed, from, k, p ? (p->slot ? p->slot : p->tx_slot) : 0, now_s());
+}
+
+/* A call setup on the box's dl (mqtt-net.md §9.4): a Tier II box answers a request at once from its last heard
+   (rdof_mn_setup_tier2): accept, unconfirmed, when the called radio was heard on a path of this network that can
+   transmit, else reject not_found. The setup and the answer go in activity. */
+static void mn_setup(void *ctx, const rdof_mn_hdr_t *h, const rdof_mn_setup_t *s, bool dl, const char *from)
+{
+    static rdof_mn_tier2_t t;
+    const int heard = dl && s->op == RDOF_MN_SETUP_REQUEST ? rdof_router_heard(&SR.router, h->dst, now_s()) : -1;
+    rdof_mn_setup_tier2(&rcfg.site, sr_mqtt, mn_node, wall_s(), h, s, dl, from, heard, sink_rand(NULL), &t);
+    for (int i = 0; i < t.nev; i++)
+        rdofmq_publish(MN, mn_act, t.ev[i], -1, 1, false);
+    if (t.len)
+        mn_publish(NULL, RDOF_MN_T_PC, t.to, t.msg, t.len);
+    if (t.len)
+        say("mqtt-net: setup %u -> %u: %s\n", (unsigned)h->src, (unsigned)h->dst,
+            t.msg[RDOF_MN_HEADER + 2] == RDOF_MN_SETUP_ACCEPT ? "accept" : "reject not_found");
+}
+
+static void mn_message(void *ctx, const char *topic, const void *data, int len)
+{
+    if (len <= 0 || len > RDOF_MN_MSG_MAX || strlen(topic) >= sizeof mn_in[0].topic)
+        return;
+    pthread_mutex_lock(&mq_in_mu);
+    const int next = (mn_in_head + 1) % MN_QUEUE;
+    if (next == mn_in_tail)
+        mn_in_dropped++;
+    else {
+        mn_in_t *m = &mn_in[mn_in_head];
+        snprintf(m->topic, sizeof m->topic, "%s", topic);
+        memcpy(m->msg, data, (size_t)len);
+        m->len = (uint16_t)len;
+        mn_in_head = next;
+    }
+    pthread_mutex_unlock(&mq_in_mu);
+}
+
+/* the talkgroups this box carries (section 8.3) and its dl topic, as subscriptions */
+static void mn_subscribe(double now)
+{
+    static char f[RDOF_MN_SUBS + 1][128];
+    const char *fp[RDOF_MN_SUBS + 1];
+    uint32_t tgs[RDOF_MN_SUBS];
+    bool all = false;
+    const int n = rdof_mn_sub_tgs(&rcfg.site, sr_mqtt, &SR.router, now, tgs, RDOF_MN_SUBS - 1, &all);
+    int k = 0;
+    snprintf(f[k], sizeof f[k], "%s", mn_dl), fp[k] = f[k], k++;
+    if (all)
+        snprintf(f[k], sizeof f[k], "%s/tg/+/+", rcfg.cfg.mqtt_root), fp[k] = f[k], k++;
+    else
+        for (int i = 0; i < n; i++)
+            snprintf(f[k], sizeof f[k], "%s/tg/%u/+", rcfg.cfg.mqtt_root, (unsigned)tgs[i]), fp[k] = f[k], k++;
+    rdofmq_subscribe(MN, fp, k);
+}
+
+static void mn_publish_info(void)
+{
+    static char buf[4096];
+    const rdof_config_t *c = &rcfg.cfg;
+    const rdof_mn_info_t in = {.node = mn_node, .name = rcfg.site.name, .firmware = "rdofradio " RDOF_VERSION,
+                               .transport = c->mqtt_tls ? "mqtt/tls" : "mqtt/tcp", .dmr_id = rcfg.site.id,
+                               .bundle = 1, .has_location = c->has_location, .lat = c->location.latitude,
+                               .lon = c->location.longitude, .location_source = "config"};
+    if (rdof_mn_info_json(&rcfg.site, sr_mqtt, &in, buf, sizeof buf))
+        rdofmq_publish(MN, mn_info_t, buf, -1, 1, true);
+}
+
+/* status (mqtt-net.md §16), retained: the node, its firmware and uptime */
+static void mn_publish_status(double now)
+{
+    char buf[256];
+    const rdof_mn_status_t st = {.node = mn_node, .firmware = "rdofradio " RDOF_VERSION, .wall = wall_s(),
+                                 .uptime_s = now - mn_started};
+    if (rdof_mn_status_json(&st, buf, sizeof buf))
+        rdofmq_publish(MN, mn_status_t, buf, -1, 1, true);
+    mn_status_at = now;
+}
+
+static void mn_on_frame(void *ctx, const char *channel, const rdof_frame_t *f)
+{
+    rdof_mn_up_frame(ctx, f, now_s());
+}
+
+static void mn_start(void)
+{
+    static char id[64];
+    const rdof_config_t *c = &rcfg.cfg;
+    if (!rng_state) { /* stream ids (net_start seeds it when there's an HBlink link too) */
+        rng_state = (uint32_t)time(NULL) ^ ((uint32_t)getpid() << 16) ^ (uint32_t)(now_s() * 1e6);
+        if (!rng_state)
+            rng_state = 1;
+    }
+    snprintf(mn_node, sizeof mn_node, "%s", rcfg.site.name);
+    if (!rdof_mn_node_ok(rcfg.site.name)) {
+        fprintf(stderr, "mqtt-net: the box's name \"%s\" can't be a node (letters, digits, . _ -, at most 39): off\n",
+                rcfg.site.name);
+        return;
+    }
+    rdof_mn_node_topic(mn_online, sizeof mn_online, c->mqtt_root, mn_node, "online");
+    rdof_mn_node_topic(mn_info_t, sizeof mn_info_t, c->mqtt_root, mn_node, "info");
+    rdof_mn_node_topic(mn_act, sizeof mn_act, c->mqtt_root, mn_node, "activity");
+    rdof_mn_node_topic(mn_status_t, sizeof mn_status_t, c->mqtt_root, mn_node, "status");
+    mn_started = now_s();
+    rdof_mn_topic(mn_dl, sizeof mn_dl, c->mqtt_root, RDOF_MN_T_DL, 0, mn_node);
+    for (int i = R.mmdvm ? -1 : 0; i < nchn; i++) {
+        rdof_mn_up_t *u = &mn_up[i + 1];
+        rdof_mn_up_init(u, mn_node);
+        u->path_of = mn_path_of;
+        u->admit = mn_admit;
+        u->publish = mn_publish;
+        u->activity = mn_activity;
+        u->data_done = mn_data_done;
+        u->response = mn_response;
+        u->rand32 = sink_rand;
+        u->wall = mn_wall;
+        u->ctx = u;
+        for (int k = 0; k < rcfg.site.npath; k++)
+            if (rcfg.site.path[k].tx_freq >= 0 && k < 64)
+                u->tx_ok |= 1ull << k;
+        rdof_sink_t sk = {.on_frame = mn_on_frame, .ctx = u};
+        if (i >= 0)
+            rdof_sdr_rx_add_sink(&R.rx, CHN[i].c, &sk);
+        else
+            rdof_tracker_add_sink(&MT, sk);
+    }
+    rdof_mn_down_init(&mn_down);
+    mn_down.raw_tx = rcfg.site.net[sr_mqtt].raw_tx;
+    mn_down.burst = mn_burst;
+    mn_down.data = mn_data;
+    mn_down.setup = mn_setup;
+    snprintf(id, sizeof id, "rdof-net-%s", mn_node);
+    rdofmq_opts_t o = {.host = c->mqtt_host, .user = c->mqtt_user, .pass = c->mqtt_pass, .port = c->mqtt_port,
+                       .tls = c->mqtt_tls, .client_id = id, .will_topic = mn_online, .will_msg = "0",
+                       .queue_max = 1000, .say = net_say, .on_message = mn_message, .no_local = true,
+                       .nodelay = true};
+    MN = rdofmq_start(&o);
+    if (!MN)
+        return;
+    mn_on = true;
+    mn_subscribe(now_s());
+    fprintf(stderr, "mqtt-net: node %s on %s/{tg,pc,dl,node}/, as %s\n", mn_node, c->mqtt_root, id);
+}
+
+/* the main loop's: messages in, the downlink's and the uplinks' timers, the retained messages after each connect,
+   the subscriptions as held talkgroups come and go */
+static void mn_poll(double now)
+{
+    static mn_in_t m;
+    for (;;) {
+        pthread_mutex_lock(&mq_in_mu);
+        const bool any = mn_in_tail != mn_in_head;
+        if (any) {
+            m = mn_in[mn_in_tail];
+            mn_in_tail = (mn_in_tail + 1) % MN_QUEUE;
+        }
+        pthread_mutex_unlock(&mq_in_mu);
+        if (!any)
+            break;
+        uint32_t id;
+        char node[RDOF_MN_NODE_MAX + 1];
+        const int kind = rdof_mn_topic_parse(m.topic, rcfg.cfg.mqtt_root, &id, node, sizeof node);
+        if (kind == RDOF_MN_T_DL && !strcmp(node, mn_node)) /* from the router: the node is the box's own */
+            rdof_mn_down_message(&mn_down, "router", true, m.msg, m.len, now);
+        else if (kind == RDOF_MN_T_TG && strcmp(node, mn_node))
+            rdof_mn_down_message(&mn_down, node, false, m.msg, m.len, now);
+    }
+    rdof_mn_down_tick(&mn_down, now);
+    for (int i = R.mmdvm ? 0 : 1; i <= nchn; i++)
+        rdof_mn_up_tick(&mn_up[i], now);
+    rdof_mn_pending_t p;
+    const char *r;
+    while ((r = rdof_mn_results_tick(&mn_results, now, &p)))
+        mn_result(r, &p);
+    if (rdofmq_connected(MN)) {
+        rdofmq_publish(MN, mn_online, "1", -1, 1, true);
+        mn_publish_info();
+        mn_publish_status(now);
+    } else if (now - mn_status_at >= 10 && rdofmq_up(MN))
+        mn_publish_status(now);
+    if (now - mn_subs_at >= 5) {
+        mn_subs_at = now;
+        mn_subscribe(now);
+    }
+}
+
+/* the radio's transmissions of the network's streams: tx events, and a data call's end for its data_result */
+static void mn_tx(const char *action, const rdof_tx_call_info_t *c)
+{
+    if (!mn_on)
+        return;
+    const uint32_t stream = rdof_be32(c->stream_id);
+    const char *from = rdof_mn_down_from(&mn_down, stream);
+    if (!from)
+        return;
+    const bool end = !strcmp(action, "end") || !strcmp(action, "lost");
+    if (!end && strcmp(action, "start"))
+        return;
+    int path = -1;
+    const int f = rdof_site_freq_hz(&rcfg.site, c->freq);
+    for (int k = 0; k < rcfg.site.npath && f >= 0; k++)
+        if (rcfg.site.path[k].tx_freq == f && (!rcfg.site.path[k].tx_slot || rcfg.site.path[k].tx_slot == c->slot))
+            path = k;
+    char buf[512];
+    if (rdof_mn_tx_event(mn_node, wall_s(), path, c->slot, stream, end ? "end" : "start", c->src, c->dst, from, buf,
+                         sizeof buf))
+        rdofmq_publish(MN, mn_act, buf, -1, 1, false);
+    rdof_mn_pending_t p;
+    const char *r = end ? rdof_mn_results_sent(&mn_results, stream, path, c->slot, now_s(), &p) : NULL;
+    if (r)
+        mn_result(r, &p);
+}
+
 static void mq_start(void)
 {
     static char id[64], sid[64];
@@ -1511,13 +1845,17 @@ static void mq_start(void)
     rdofmq_opts_t o = {.host = c->mqtt_host, .user = c->mqtt_user, .pass = c->mqtt_pass, .port = c->mqtt_port,
                        .tls = c->mqtt_tls, .client_id = id, .will_topic = mq_status, .will_msg = RDOF_STATUS_OFFLINE,
                        .alias_topics = mq_alias_p, .n_alias = 2, .queue_max = 1000, .say = net_say};
-    if (sr_mqtt >= 0) { /* the radio's connection takes the calls */
+    const bool v3 = sr_mqtt >= 0 && rcfg.site.net[sr_mqtt].format == RDOF_MQTT_FORMAT_V3;
+    if (sr_mqtt >= 0 && !v3) { /* the radio's connection takes the calls (DMRD) */
         snprintf(mq_calls_sub, sizeof mq_calls_sub, "%s/calls/#", c->mqtt_root);
         o.subscribe = mq_calls_sub, o.on_message = mq_message;
     }
     MQ = rdofmq_start(&o);
     o.subscribe = NULL, o.on_message = NULL;
-    mq_calls_start();
+    if (v3)
+        mn_start();
+    else
+        mq_calls_start();
     if (nchn && mq_report) {
         snprintf(mq_sdr_status, sizeof mq_sdr_status, "%s/_sdr/%s/status", c->mqtt_root, rcfg.sdr_name);
         snprintf(sid, sizeof sid, "rdof-sdr-%s", rcfg.sdr_name);
@@ -1537,7 +1875,9 @@ static void mq_start(void)
    status_seconds) and when HBlink4 comes or goes */
 static void mq_poll(double now)
 {
-    if (sr_mqtt >= 0)
+    if (mn_on)
+        mn_poll(now);
+    else if (sr_mqtt >= 0)
         mq_calls_poll(now);
     if (!mq_report)
         return;
@@ -1569,13 +1909,16 @@ static void mq_stop(void)
 {
     rdofmq_stop(MQ);
     rdofmq_stop(MQ_SDR);
-    MQ = MQ_SDR = NULL;
+    rdofmq_stop(MN); /* online 0 */
+    MQ = MQ_SDR = MN = NULL;
+    mn_on = false;
 }
 
 /* what the radio transmits: .../tx, and the network's calls on .../json and .../raw as the board's */
 static void mq_tx_event(const char *action, const rdof_tx_call_info_t *c, double d)
 {
     char buf[512], t[112];
+    mn_tx(action, c);
     if (!MQ || !mq_report)
         return;
     const double now = wall_s();
@@ -4399,7 +4742,7 @@ static int hold(int argc, char **argv, const char *why)
 
 int main(int argc, char **argv)
 {
-    const char *soapy = NULL, *iio = NULL, *stream_args = "", *fft = NULL, *split_tx = NULL, *mmdvm = NULL;
+    const char *soapy = NULL, *iio = NULL, *file_dev = NULL, *stream_args = "", *fft = NULL, *split_tx = NULL, *mmdvm = NULL;
     double mm_rx_off = 0, mm_tx_off = 0, mm_rx_level = NAN, mm_tx_level = NAN;
     int mm_flags = 0;
     int baud = 115200, power_cap = 0, tx_flags = 0;
@@ -4434,6 +4777,9 @@ int main(int argc, char **argv)
                 DX.addr = strtoul(v, NULL, 16);
                 i++;
             }
+        } else if (!strcmp(a, "--file")) { /* recordings in and out, for tests (rdofradio_file.c) */
+            NEXT();
+            file_dev = v;
         } else if (!strcmp(a, "--split-tx")) {
             NEXT();
             split_tx = v;
@@ -4692,7 +5038,8 @@ int main(int argc, char **argv)
     }
     R.full = !strcmp(duplex, "full");
     R.mmdvm = mmdvm != NULL;
-    if ((soapy && iio) || (!soapy && !iio && !R.mmdvm) || !rx || (!R.full && strcmp(duplex, "half")))
+    const int ndev = (soapy != NULL) + (iio != NULL) + (file_dev != NULL);
+    if (ndev > 1 || (!ndev && !R.mmdvm) || !rx || (!R.full && strcmp(duplex, "half")))
         usage();
     if (config_path && !R.mmdvm && rcfg.on_modem && !rcfg.full) {
         char why[300];
@@ -4937,6 +5284,10 @@ int main(int argc, char **argv)
     net_start();
     chan_start();
     mq_start();
+    if (!R.full) { /* listen-before-talk's last call heard: a reply to it isn't held back by it (as the board's) */
+        const rdof_sink_t hk = {.on_call = txvr_heard_call};
+        rdof_sdr_rx_add_sink(&R.rx, 0, &hk);
+    }
     clock_start();
 #ifdef RDOF_HOST_WEB
     rdof_hostweb_version(RDOF_VERSION);
@@ -4973,6 +5324,8 @@ int main(int argc, char **argv)
     if (soapy)
         dev = rdofradio_soapy_open(soapy, &su, derr, sizeof derr);
 #endif
+    if (file_dev)
+        dev = rdofradio_file_open(file_dev, &su, derr, sizeof derr);
     if (!dev) {
         fprintf(stderr, "%s\n", derr);
         return 1;
