@@ -1876,7 +1876,9 @@ static void mq_start(void)
     }
     MQ = rdofmq_start(&o);
     o.subscribe = NULL, o.on_message = NULL;
-    if (v3)
+    if (v3 && rcfg.trunk) /* a trunked site's node on the network is the trunk unit's (rdofradio_trunk.c) alone */
+        fprintf(stderr, "mqtt-net: the trunked site's own connection carries the network\n");
+    else if (v3)
         mn_start();
     else
         mq_calls_start();
