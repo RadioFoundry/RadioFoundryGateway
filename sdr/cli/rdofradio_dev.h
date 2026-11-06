@@ -30,7 +30,7 @@ typedef struct {
     double rate;         /* S/s, both directions */
     double rx_hz, tx_hz; /* the LOs */
     double gain;         /* RX gain, dB; NAN: the device's AGC */
-    double bw;           /* analog bandwidth, Hz, both directions; 0: the device's own */
+    double bw;           /* analog bandwidth, Hz, both directions; 0: the device's own (iio: the rate) */
     const char *stream;  /* --stream: the backend's stream arguments, "" for its defaults */
     bool rx_only;        /* receive only (a radio transmits: --split-tx): no TX stream, the TX LO off */
     /* > 0: the receive DMA's 64-bit words as they come, about this many a second (the FPGA channelizer's frames,

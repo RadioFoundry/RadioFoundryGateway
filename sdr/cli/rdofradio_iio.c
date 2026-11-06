@@ -355,6 +355,11 @@ rdofradio_dev_t *rdofradio_iio_open(const char *uri, const rdofradio_dev_setup_t
         close_dev(d);
         return NULL;
     }
+    /* No --bw: the analog filters as wide as the rate. The AD9361 keeps the last bandwidth written, by anything, so a
+     * 4 MHz left by another program at 19.872 MS/s put the channels 8 MHz off center under the noise's last bit (their
+     * spectrum all zeros). The driver clamps to its range; a refusal only warns. */
+    if (!(su->bw > 0) && (put_ll(d, s->rx_ch, "rf_bandwidth", rate) || put_ll(d, s->tx_ch, "rf_bandwidth", rate)))
+        fprintf(stderr, "iio: the analog bandwidth stays as it was: %s\n", d->error);
     const char *mode = isnan(su->gain) ? "slow_attack" : "manual";
     r = (int)iio_channel_attr_write(s->rx_ch, "gain_control_mode", mode);
     if (r < 0 || (!isnan(su->gain) && (r = iio_channel_attr_write_double(s->rx_ch, "hardwaregain", su->gain)) < 0)) {
