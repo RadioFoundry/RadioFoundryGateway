@@ -368,7 +368,7 @@ typedef struct {
     uint8_t msg[200];
 } sc_hand_t;
 
-#define SC_HANDS 8
+#define SC_HANDS 10
 static sc_hand_t sc_hands[SC_HANDS];
 
 static const rdof_mn_hdr_t SC_SPEC_HDR = {.flags = RDOF_MN_F_GROUP, .path = 1, .seq = 0, .stream = 0x12345678u,
@@ -411,6 +411,17 @@ static int sc_make_hands(void)
     rdof_mn_lc(&w, RDOF_MN_LC_HEADER, lc);
     rdof_mn_quality(&w, 3, -87);
     HAND_END();
+    {
+        const rdof_mn_setup_t req = {.op = RDOF_MN_SETUP_REQUEST};
+        rdof_mn_hdr_t rh;
+        sc_hand_t *hd = HAND("spec_setup_request", "section 13: a setup request from 3100123 to 3100456, no path");
+        hd->len = rdof_mn_setup_msg(hd->msg, sizeof hd->msg, 0x12345678u, 3100123, 3100456, 0xFF, &req);
+        k++;
+        rdof_mn_parse(sc_hands[k - 1].msg, sc_hands[k - 1].len, &rh);
+        hd = HAND("spec_setup_accept", "section 13: a Tier II box's answer, the radio heard on its path 1");
+        hd->len = rdof_mn_setup_answer(&rh, &req, 1, 0x0BADCAFEu, hd->msg, sizeof hd->msg);
+        k++;
+    }
     /* the rest */
     h = SC_SPEC_HDR;
     h.src = 9990001;
@@ -490,6 +501,7 @@ static const char *sc_type_name(int t)
     case RDOF_MN_QUALITY: return "quality";
     case RDOF_MN_ORIGIN: return "origin";
     case RDOF_MN_RAW: return "raw";
+    case RDOF_MN_SETUP: return "setup";
     default: return "unknown";
     }
 }
@@ -570,6 +582,14 @@ static size_t sc_msg_json(const uint8_t *msg, size_t len, char *o, size_t cap)
         case RDOF_MN_RAW:
             P(", \"dt\": %d", it.value[0]);
             break;
+        case RDOF_MN_SETUP: {
+            rdof_mn_setup_t st;
+            if (rdof_mn_setup_of(&it, &st))
+                P(", \"op\": \"%s\", \"reason\": \"%s\", \"flags\": %d, \"options\": %d, \"ref\": %lu",
+                  rdof_mn_setup_op_name(st.op), rdof_mn_setup_why_name(st.reason), st.flags, st.options,
+                  (unsigned long)st.ref);
+            break;
+        }
         default: break;
         }
         P("}");

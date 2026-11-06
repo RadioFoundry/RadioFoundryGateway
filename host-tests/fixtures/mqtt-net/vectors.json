@@ -27,6 +27,16 @@
        "items": [
          {"type": 2, "name": "lc_header", "value": "030000002706958e12", "flco": 3, "fid": 0, "service_options": 0, "src": 9801234, "dst": 9990},
          {"type": 10, "name": "quality", "value": "0357", "bits": 3, "rssi": -87}]}},
+    {"name": "spec_setup_request", "what": "section 13: a setup request from 3100123 to 3100456, no path", "normative": true,
+     "message": {"hex": "0300ff0078563412db4d2f284f2f0c080100000000000000",
+       "header": {"version": 3, "flags": 0, "slot2": false, "group": false, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 255, "seq": 0, "stream": 305419896, "src": 3100123, "dst": 3100456, "items": 1},
+       "items": [
+         {"type": 12, "name": "setup", "value": "0100000000000000", "op": "request", "reason": "ok", "flags": 0, "options": 0, "ref": 0}]}},
+    {"name": "spec_setup_accept", "what": "section 13: a Tier II box's answer, the radio heard on its path 1", "normative": true,
+     "message": {"hex": "03000100fecaad0b284f2fdb4d2f0c080200020078563412",
+       "header": {"version": 3, "flags": 0, "slot2": false, "group": false, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 0, "stream": 195939070, "src": 3100456, "dst": 3100123, "items": 1},
+       "items": [
+         {"type": 12, "name": "setup", "value": "0200020078563412", "op": "accept", "reason": "ok", "flags": 2, "options": 0, "ref": 305419896}]}},
     {"name": "bundled_voice", "what": "three voice items in one message (B, C, D), then quality: seq 3, next 7", "normative": false,
      "message": {"hex": "0302010378563412716f985b0000011c01b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b011c02b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b011c03b9e881526173002a6bb9e881526173002a6bb9e881526173002a6b0a020057",
        "header": {"version": 3, "flags": 2, "slot2": false, "group": true, "emergency": false, "priority": false, "privacy": false, "late": false, "path": 1, "seq": 3, "stream": 305419896, "src": 9990001, "dst": 91, "items": 4},

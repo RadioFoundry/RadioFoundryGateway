@@ -40,20 +40,32 @@ static size_t unhex(const char *s, uint8_t *out, size_t cap)
     return n;
 }
 
+/* A hand-made vector by name. */
+static const sc_hand_t *hand(const char *name)
+{
+    for (int k = 0; k < SC_HANDS; k++)
+        if (sc_hands[k].name && !strcmp(sc_hands[k].name, name))
+            return &sc_hands[k];
+    CHECK(!"no such vector");
+    return &sc_hands[0];
+}
+
 /* ── section 13, as the spec writes it ── */
 
 static void test_spec(void)
 {
-    static const char *const want[4] = {
+    static const char *const want[6] = {
         "03 02 01 00 78 56 34 12 12 8E 95 5B 00 00 02 09 00 00 00 00 00 5B 95 8E 12 0A 02 03 57",
         "03 02 01 02 78 56 34 12 12 8E 95 5B 00 00 01 1C 00 B9 E8 81 52 61 73 00 2A 6B B9 E8 81 52 61 73 00 2A 6B B9 "
         "E8 81 52 61 73 00 2A 6B 0A 02 03 57",
         "03 00 01 00 78 56 34 12 12 8E 95 06 27 00 02 09 03 00 00 00 27 06 95 8E 12 0A 02 03 57",
         "03 00 00 00 78 56 34 12 12 8E 95 06 27 00 02 09 03 00 00 00 27 06 95 8E 12 0A 02 03 57",
+        "03 00 FF 00 78 56 34 12 DB 4D 2F 28 4F 2F 0C 08 01 00 00 00 00 00 00 00",
+        "03 00 01 00 FE CA AD 0B 28 4F 2F DB 4D 2F 0C 08 02 00 02 00 78 56 34 12",
     };
     const int nh = sc_make_hands();
-    CHECK(nh >= 4);
-    for (int k = 0; k < 4; k++) {
+    CHECK(nh >= 6);
+    for (int k = 0; k < 6; k++) {
         uint8_t b[64];
         const size_t n = unhex(want[k], b, sizeof b);
         CHECK(sc_hands[k].len == n && !memcmp(sc_hands[k].msg, b, n));
@@ -109,6 +121,12 @@ static void check_message(int m, const uint8_t *msg, size_t len, const char *nam
         CHECK(rdof_mn_item_ok(&it));
         if (it.type == RDOF_MN_QUALITY)
             CHECK(-(int)it.value[1] == jnum(o, "rssi"));
+        if (it.type == RDOF_MN_SETUP) {
+            rdof_mn_setup_t st;
+            CHECK(rdof_mn_setup_of(&it, &st));
+            CHECK(!strcmp(rdof_mn_setup_op_name(st.op), jstr(o, "op")) && st.ref == jnum(o, "ref"));
+            CHECK(!strcmp(rdof_mn_setup_why_name(st.reason), jstr(o, "reason")) && st.flags == jnum(o, "flags"));
+        }
         if (it.type == RDOF_MN_DATA_PDU) {
             rdof_mn_pdu_t p;
             CHECK(rdof_mn_pdu(&it, &p));
@@ -565,28 +583,28 @@ static void test_downlink_loss(void)
     memset(&cap, 0, sizeof cap);
     d.burst = on_down;
     d.ctx = &cap;
-    rdof_mn_down_message(&d, "app", false, sc_hands[5].msg, sc_hands[5].len, 0);
+    rdof_mn_down_message(&d, "app", false, hand("raw")->msg, hand("raw")->len, 0);
     CHECK(cap.n == 0 && d.raw_dropped == 1);
     rdof_mn_down_init(&d);
     d.raw_tx = true;
     d.burst = on_down;
     d.ctx = &cap;
-    rdof_mn_down_message(&d, "app", false, sc_hands[5].msg, sc_hands[5].len, 0);
+    rdof_mn_down_message(&d, "app", false, hand("raw")->msg, hand("raw")->len, 0);
     CHECK(cap.n == 1 && cap.burst[0][0] == 0xA0);
     /* bundled voice and an unknown item: taken */
     rdof_mn_down_init(&d);
     memset(&cap, 0, sizeof cap);
     d.burst = on_down;
     d.ctx = &cap;
-    rdof_mn_down_message(&d, "app", false, sc_hands[4].msg, sc_hands[4].len, 0);
+    rdof_mn_down_message(&d, "app", false, hand("bundled_voice")->msg, hand("bundled_voice")->len, 0);
     CHECK(cap.n == 4); /* a header from the addresses, then B C D */
-    rdof_mn_down_message(&d, "app", false, sc_hands[6].msg, sc_hands[6].len, 0.1);
+    rdof_mn_down_message(&d, "app", false, hand("unknown_item")->msg, hand("unknown_item")->len, 0.1);
     CHECK(cap.n == 4 && d.late == 1); /* seq 4 when 7 was next: late, dropped */
     rdof_mn_down_init(&d);
     memset(&cap, 0, sizeof cap);
     d.burst = on_down;
     d.ctx = &cap;
-    rdof_mn_down_message(&d, "app", false, sc_hands[6].msg, sc_hands[6].len, 0);
+    rdof_mn_down_message(&d, "app", false, hand("unknown_item")->msg, hand("unknown_item")->len, 0);
     CHECK(cap.n == 2 && cap.control[1] == 4); /* a header, then E; the unknown item skipped */
     /* garbage */
     const uint8_t bad[5] = {3, 0, 0, 0, 0};

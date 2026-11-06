@@ -70,7 +70,8 @@ by `mqtt-net/gen_vectors.c` from `host-tests/mqttnet_scenes.h`, regression vecto
 
 - `vectors`: single messages. Each has `hex` (the bytes), `header` (the 14-byte header's fields) and `items` (each
   item's `type`, `name`, `value` hex and its decoded fields). `normative: true` marks the hand-written vectors of
-  mqtt-net.md §13 (src 9801234); the rest use test IDs. Among them: three bundled voice items, a `raw` item, an
+  mqtt-net.md §13 (the calls from 9801234, and the setup request and its answer); the rest use test IDs. A `setup`
+  item also has `op`, `reason` (by name), `flags`, `options` and `ref`. Among them: three bundled voice items, a `raw` item, an
   unknown item type (a reader skips it), an `origin` item.
 - `scenes`: calls heard on RF by node `box-a` on path 1, slot 1, run through the receiver's tracker and the uplink.
   Each has `messages` (`topic` and `message`, in order) and `activity` (the `DMR/node/box-a/activity` events, their
