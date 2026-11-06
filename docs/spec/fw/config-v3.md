@@ -477,10 +477,10 @@ A firmware build without `CONFIG_RDOF_IPGW` refuses an `ipgw` app.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `type` | `hblink` \| `mqtt` | | required. Later: `brandmeister` ([brandmeister.md](brandmeister.md), planned), `openbridge`, others |
+| `type` | `hblink` \| `brandmeister` \| `mqtt` | | required. Later: `openbridge`, others |
 | `name` | str | the type | §2.1 |
 
-At most one of each. The first network in the list is the default: a path with no `net` uses it.
+At most one of each, and `hblink` or `brandmeister`, not both. The first network in the list is the default: a path with no `net` uses it.
 
 ### 7.1 `hblink`
 
@@ -518,6 +518,27 @@ reports but carries no calls. With `calls`, a path whose `net` is the MQTT netwo
 packets on `{root}/calls/{tg|pc}/{dst}/{box}` and takes the other boxes' from `{root}/calls/#`
 ([mqtt.md](mqtt.md) §10). A `format` key (the MQTT network's own format, [mqtt-net.md](mqtt-net.md) §10) is
 planned, not taken.
+
+### 7.3 `brandmeister`
+
+A BrandMeister master ([brandmeister.md](brandmeister.md)): an HBlink-style peer that logs in (`RPTL`, `RPTK`,
+`RPTC`) as a hotspot or repeater. The top-level `id` isn't needed with it; BrandMeister IDs are their own 32-bit keys.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `host` | str | | required: the master, `<country code>.master.brandmeister.network` |
+| `port` | int | 62031 | |
+| `password` | str, 1..63 | | required: the hotspot security password (SelfCare), or a repeater's device password |
+| `identity` | `single` \| `per_path` | `single` | as `hblink`: `per_path` makes each frequency or repeater its own login |
+| `id` | int, 1..4294967295 | | required with `single`: the login's ID (a hotspot: the DMR ID and two digits) |
+| `peer_ids` | object | | required with `per_path`: `{"<frequency or repeater>": id}` for each path on the network. IDs are registered, so none is derived, and no two paths share one |
+| `location` | str, ≤ 20 | `""` | `RPTC` location text |
+| `description` | str, ≤ 19 | `""` | `RPTC` description |
+| `url` | str, ≤ 124 | `""` | `RPTC` URL |
+
+`RPTC` takes the rest from the path: its frequencies, color code, slots (`'4'` simplex, `'3'` a repeater), the
+transmitter's power in dBm off the device's power map, and the top-level `location`'s coordinates and height. A
+simplex login sends its calls up on slot 2. `GET /api/config` shows the password, as it does MQTT's.
 
 ## 8. Policies
 

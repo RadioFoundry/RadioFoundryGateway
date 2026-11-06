@@ -1,9 +1,10 @@
-# BrandMeister network (plan)
+# BrandMeister network
 
 What: connect the gateway's talk paths to BrandMeister as a network type of its own, beside `hblink` and `mqtt`. A
 simplex frequency or a repeater (a duplex pair) logs in to a BrandMeister master as a hotspot or a repeater; one
 box can hold several logins at once, one per path, as `identity: per_path` does for HBlink4.
-Status (2026-11-06): not built. This file is the plan and the facts found so far.
+Status (2026-11-06): built and host tested against a simulated master (`fakebm`); not yet run against BrandMeister.
+The settings are config-v3 §7.3.
 Related: [hblink.md](hblink.md) (the DMRC peer this builds on), [config-v3.md](config-v3.md) §7, [ipgw.md](ipgw.md),
 [roamer.md](roamer.md), [../repeater.md](../repeater.md).
 
@@ -101,36 +102,27 @@ stateDiagram-v2
   ceiling at once, so a wrong password doesn't hammer the master.
 - `DMRD` is sent only while up. `DMRD` received while not up is ignored.
 
-## 4. Settings (config-v3 §7.3, proposed)
+## 4. Settings (config-v3 §7.3)
 
-A network of type `brandmeister`. Several may be listed, each a login or a set of logins; a path picks one with
-`net`, as today.
+A network of type `brandmeister` is an HBlink network whose peers log in. Its keys are `host`, `port`, `password`,
+`identity`, `id` (with `single`) or `peer_ids` (with `per_path`, one registered ID for each path), and the `RPTC`
+texts `location`, `description` and `url`. No `roaming`, no SCTP. The box holds one `hblink` or one `brandmeister`
+network, not both. The top-level `id` isn't needed with it.
 
-| Key | Type | Default | Meaning |
-|---|---|---|---|
-| `host` | str | | required: the master (`3102.master.brandmeister.network`) |
-| `port` | int | 62031 | |
-| `password` | str | | required: the hotspot security password (or a repeater's device password). Never shown by `GET /api/config`; a POST without it keeps the stored one |
-| `id` | int, 1..4294967295 | | the login's ID, when the network serves one path or the whole box (`identity: single`) |
-| `identity` | `single` \| `per_path` | `single` | as `hblink`: `per_path` makes each frequency or repeater its own login |
-| `ids` | object | | with `per_path`: `{"<frequency or repeater>": id}`. Required for each path on the network: BrandMeister IDs are registered, so they aren't derived |
-| `callsign` | str | the top-level `callsign` | `RPTC` callsign |
-| `description`, `url` | str | `""` | `RPTC` fields |
-| `api_key` | str | none | later (§6.9): set static TGs from the path's `tg` policy |
+A path on the network gives `RPTC` its frequencies (simplex: both the same, slots `'4'`; a repeater: its `in` and
+`out`, slots `'3'`), its color code, its transmitter's power in dBm, and the box's location.
 
-The top-level `id` stays the HBlink peer ID (24-bit); BrandMeister IDs are their own 32-bit keys. A path on a
-`brandmeister` network gives `RPTC` its frequencies (a simplex path: both the same, slots `'4'`; a repeater: its
-`in` and `out`, slots `'3'`, or `'1'` / `'2'` from `active_slots`), its color code and power, and the box's location.
-
-Two simplex frequencies and a repeater, each its own BrandMeister login:
+Two simplex frequencies and a repeater, each its own login:
 
 ```jsonc
 "networks": [
   {"type": "brandmeister", "name": "bm", "host": "3102.master.brandmeister.network",
    "password": "…", "identity": "per_path",
-   "ids": {"438.5": 310012301, "438.6": 310012302, "R1": 310012303}}
+   "peer_ids": {"438.5": 310012301, "438.6": 310012302, "R1": 310012303}}
 ]
 ```
+
+Later (§6.9): `api_key`, to set a path's static TGs from its `tg` policy.
 
 ## 5. What is already in place
 
@@ -143,22 +135,18 @@ Two simplex frequencies and a repeater, each its own BrandMeister login:
 
 ## 6. Work, in order
 
-1. **The login (portable).** `common/src/hbauth.c`, `rdof/hbauth.h`: the state machine of §3, driven like
-   `hbpeer.c` (feed received packets and a clock in, get packets to send and events out). It's the same shape
-   as `rdof_hb_peer_*`, plus the login states. Host tests against a fake master: salt and hash, wrong password,
-   `MSTNAK` at each step, lost pongs, `MSTCL`, reconnect with back-off.
-2. **SHA-256.** ESP-IDF has it (mbedTLS, Apache-2.0, part of the IDF). The host build needs one too: mbedTLS where
-   installed, or a small permissively licensed implementation in PROVENANCE.md and LICENSES/.
-3. **`RPTC`** (`rdof_rptc_packet`) from a path and its unit, tested against the bench capture (§3).
-4. **Settings.** `site.c`: `RDOF_NET_BM`, the keys of §4, 32-bit IDs, the password kept out of `GET /api/config`.
-   Lift "one network of each type" for `brandmeister`. Refuse a path on a `brandmeister` network with
-   `per_path` and no `ids` entry, two paths with one ID, and a transceiver that roams (BrandMeister can't tune
-   it). `config/rdof-config.schema.json`, `tools/config_check.py` fixtures, `test_site.c`, `test_plan.c`.
-5. **Peers on the board.** `roam_hblink.c` and `sdr_hblink.c` hold one socket per peer and speak `DMRC`. Give the
-   peer a kind (`dmrc` or `login`) and run `hbauth` for the second: `RPTC` in place of `DMRC`, `RPTPING` in place
-   of the keepalive `DMRC`, no `DMRT`. Each login is a UDP socket: lwIP's 28 sockets are shared with the web
-   server, MQTT, HBlink4 and the IP gateway (8), so cap logins at 4 on an ESP32 (`CONFIG_RDOF_BM_MAX_LOGINS`).
-6. **rdofradio.** `sdr/cli/rdofradio_net.c` the same, with up to 8 logins (one per split repeater).
+Steps 1-7 and 10-11 are done (commits from 2026-11-06); 8 has one open item, 9 is for later.
+
+1. **The login.** Done, in the shared peer state (`hbpeer.c`: `rdof_hb_peer_set_login`, `rdof_hb_peer_packet`), so
+   the roamer, the repeater, the SDR channel peers and rdofradio all get it. A refused step or silence for 5 s backs
+   off 1 s, doubling to 60 s; a refused password goes to 60 s at once; three lost pongs take the login down; a changed
+   `RPTC` logs in again. Host tests against an in-process master (`test_bm.c`).
+2. **SHA-256.** Done: our own, from FIPS 180-4 (`sha256.c`).
+3. **`RPTC`.** Done: `rdof_rptc_from_dmrc`, from the `DMRC` the callers already build, with the units of §3.
+4. **Settings.** Done (`site.c`, the schema, the Rust mirror, the fixtures). `GET /api/config` shows the password,
+   as it does MQTT's.
+5. **Peers on the board.** Done: `roam_hblink.c` and `sdr_hblink.c`.
+6. **rdofradio.** Done: `rdofradio_net.c`.
 7. **Slots.** Done: a simplex login (slots `'4'`) sends its `DMRD` up on slot 2 (`rdof_hb_peer_up`), as a simplex
    hotspot does, and transmits what comes down on its own channel whatever the slot. A repeater maps slot to slot.
    Check on the first real login that BrandMeister sends down on slot 2.
@@ -180,10 +168,10 @@ Two simplex frequencies and a repeater, each its own BrandMeister login:
    - Open: on a duplex repeater, key up on a radio's `BS_Dwn_Act` CSBK, which some radios send before data.
 9. **Static TGs (later).** With `api_key`, set the path's static TGs on BrandMeister from its `tg` policy, so one
    setting covers both directions.
-10. **Status.** Per login: state (`login`, `auth`, `config`, `up`, `backoff`), the last refusal and its step,
-    pings missed, in `/api/status`, MQTT status and the web page.
-11. **Docs.** This file becomes the spec: config-v3 §7.3, reference.md (networks, sizes), the README's network
-    list.
+10. **Status.** Done: `/api/status` `brandmeister` {`state`, `logins`, `refusals`, `refused_at`, `went_quiet`,
+    `backoff_s`} on the board and in rdofradio, and a BrandMeister row on the web page that warns while the login
+    isn't up.
+11. **Docs.** Done: config-v3 §7.3, reference.md, the README.
 
 Tests:
 
