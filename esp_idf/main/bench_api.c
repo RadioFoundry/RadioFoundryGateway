@@ -1776,12 +1776,11 @@ long bench_wide_read(uint64_t sc, int8_t *out, long n, uint64_t *oldest, uint64_
     long k = 0;
     if (n > 0 && sc >= old && sc < w) {
         k = (uint64_t)n > w - sc ? (long)(w - sc) : n;
-        uint32_t x = (uint32_t)(sc % hist_wide_n);
-        for (long i = 0; i < k; i++) {
-            out[2 * i] = hist_wide[2 * x], out[2 * i + 1] = hist_wide[2 * x + 1];
-            if (++x == hist_wide_n)
-                x = 0;
-        }
+        /* two copies at most, round the ring's end (a byte at a time was a tenth of a trigger's time on a W12) */
+        const uint32_t x = (uint32_t)(sc % hist_wide_n);
+        const long first = (long)(hist_wide_n - x) < k ? (long)(hist_wide_n - x) : k;
+        memcpy(out, hist_wide + 2 * (size_t)x, 2 * (size_t)first);
+        memcpy(out + 2 * first, hist_wide, 2 * (size_t)(k - first));
     }
     xSemaphoreGive(hist_mu);
     return k;

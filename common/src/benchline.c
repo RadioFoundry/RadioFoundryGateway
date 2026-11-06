@@ -249,17 +249,29 @@ static void unlock(rdof_bl_t *bl) { pthread_mutex_unlock(&bl->mu); }
 
 static size_t room(const conn_t *c) { return c->ocap - c->ol; }
 
+/* The output is a ring: ol bytes from oh, wrapping at ocap. Moving what's held to the front when the end was reached
+ * cost up to a megabyte's memmove for each chunk once a trigger's client fell behind: on a W12, core 0 time the line
+ * thread and the Wi-Fi needed. */
 static bool put_bytes(conn_t *c, const void *b, size_t n)
 {
     if (n > room(c))
         return false;
-    if (c->oh + c->ol + n > c->ocap) { /* to the front */
-        memmove(c->out, c->out + c->oh, c->ol);
-        c->oh = 0;
-    }
-    memcpy(c->out + c->oh + c->ol, b, n);
+    size_t at = c->oh + c->ol;
+    if (at >= c->ocap)
+        at -= c->ocap;
+    const size_t first = c->ocap - at < n ? c->ocap - at : n;
+    memcpy(c->out + at, b, first);
+    memcpy(c->out, (const uint8_t *)b + first, n - first);
     c->ol += n;
     return true;
+}
+
+/* The first n bytes held, in order */
+static void out_peek(const conn_t *c, uint8_t *dst, size_t n)
+{
+    const size_t first = c->ocap - c->oh < n ? c->ocap - c->oh : n;
+    memcpy(dst, c->out + c->oh, first);
+    memcpy(dst + first, c->out, n - first);
 }
 
 /* A line (the newline added); false when it didn't fit. */
@@ -682,8 +694,10 @@ size_t rdof_bl_output(rdof_bl_t *bl, int ci, uint8_t *buf, size_t cap)
     lock(bl);
     conn_t *c = &bl->c[ci];
     size_t n = c->ol < cap ? c->ol : cap;
-    memcpy(buf, c->out + c->oh, n);
+    out_peek(c, buf, n);
     c->oh += n, c->ol -= n;
+    if (c->oh >= c->ocap)
+        c->oh -= c->ocap;
     if (!c->ol)
         c->oh = 0;
     unlock(bl);
@@ -1216,11 +1230,13 @@ static bool big_out(conn_t *c, size_t want)
 {
     size_t n = want > RDOF_BL_OUT_IQ ? want : RDOF_BL_OUT_IQ;
     uint8_t *big = RDOF_BL_MALLOC(n);
-    if (!big && n > RDOF_BL_OUT_IQ)
-        big = RDOF_BL_MALLOC(n = RDOF_BL_OUT_IQ);
+    while (!big && n > RDOF_BL_OUT_IQ) { /* less, down to a capture's, where the memory is taken */
+        n = n / 2 > RDOF_BL_OUT_IQ ? n / 2 : RDOF_BL_OUT_IQ;
+        big = RDOF_BL_MALLOC(n);
+    }
     if (!big)
         return false;
-    memcpy(big, c->out + c->oh, c->ol);
+    out_peek(c, big, c->ol);
     free(c->out);
     c->out = big, c->ocap = n, c->oh = 0;
     return true;
@@ -1870,7 +1886,7 @@ static void run_file(void *ctx, const char *name, const uint8_t *b, size_t n)
             run_log(r->bl, c, 0, "%s: no memory for %zu bytes", name, n);
             return;
         }
-        memcpy(p, c->out + c->oh, c->ol);
+        out_peek(c, p, c->ol);
         free(c->out);
         c->out = p, c->ocap = need, c->oh = 0;
     }
@@ -4074,18 +4090,16 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
         int di = t->di;
         uint64_t next_out = t->next_out;
         const uint64_t sc0 = t->sc;
-        if (t->fired) {
-            long clipped = 0;
-            for (long i = 0; i < 2 * got; i++)
-                clipped += iq[i] >= 127 || iq[i] <= -127;
-            t->inputs += got, t->clipped += clipped;
-        }
+        long clipped = 0; /* counted in the mixer's loop, where the inputs are loaded anyway: a loop of its own was a
+                           * tenth of a trigger's time on a W12 */
         for (long i = 0; i < got;) {
             /* the inputs up to the next output's, mixed into the delay line */
             const long stop = next_out >= sc0 + (uint64_t)i && next_out < sc0 + (uint64_t)got
                                   ? (long)(next_out - sc0) + 1 : got;
             for (; i < stop; i++) {
-                const float xi = iq[2 * i] * k127, xq = iq[2 * i + 1] * k127;
+                const int8_t vi = iq[2 * i], vq = iq[2 * i + 1];
+                clipped += ((uint8_t)(vi + 126) >= 253) + ((uint8_t)(vq + 126) >= 253); /* +-127 or -128 */
+                const float xi = vi * k127, xq = vq * k127;
                 float *a = dl + 2 * di, *b = a + 2 * nt;
                 a[0] = b[0] = xi * pr - xq * pq;
                 a[1] = b[1] = xi * pq + xq * pr;
@@ -4109,6 +4123,8 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
             t->di = di, t->next_out = next_out;
         if (restarted)
             continue;
+        if (t->fired)
+            t->inputs += got, t->clipped += clipped;
         t->sc += (uint64_t)got;
         if (nout)
             trig_send(c, t, nout, idx0);

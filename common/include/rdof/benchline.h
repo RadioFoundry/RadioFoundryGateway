@@ -46,7 +46,10 @@ extern "C" {
 #define RDOF_BL_MALLOC(n) heap_caps_malloc_prefer((n), 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_8BIT)
 #define RDOF_BL_REALLOC(p, n) \
     heap_caps_realloc_prefer((p), (n), 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_8BIT)
-#define RDOF_BL_OUT_TRIG 1048576 /* a trigger's output at most (its whole capture where it fits): 5 s of cs16 */
+/* A trigger's output at most (its whole capture where it fits): 10.9 s of cs16 at 48 kS/s, which makes 192 KB/s. A
+ * W12 at 384 kS/s sent 40-150 KB/s over its Wi-Fi: at 1 MB a 15 s trigger lost its last seconds. 2 MB is the largest
+ * block a W12 has free in PSRAM; less is taken where it isn't. */
+#define RDOF_BL_OUT_TRIG 2097152
 #else
 #define RDOF_BL_OUT_TRIG 4194304
 #define RDOF_BL_MALLOC(n) malloc(n)

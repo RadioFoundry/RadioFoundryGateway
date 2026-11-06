@@ -1070,10 +1070,12 @@ private test network. Code: `bench_api.c`, `bench_radio.c`, `bench_tx.c`; the sp
   envelope as PCM). Receive is in software on any front end; transmit needs I/Q (a Pluto) or polar I/Q (the W12).
 
 PSRAM: about 410 KB at rest (the engine 71 KB, its parser's strings 197 KB, send buffers 144 KB), and while in use
-16 KB a connection, 115 KB a job, 256 KB a capture, a trigger its whole capture (1 MB at most). A wideband capture
-needs 2 bytes a sample (768 KB/s at 384 kS/s), more than one TCP stream from the W12 carries (lwIP's 5.76 KB send
-buffer): a 4 s capture got 14% of its samples, the rest reported as `gap_samples` (2026-10-29). A trigger's channel
-(cs16 at 48 kS/s) is buffered whole.
+16 KB a connection, 115 KB a job, 256 KB a capture, a trigger its whole capture (2 MB at most, less where the
+largest free block is smaller). A wideband capture needs 2 bytes a sample (768 KB/s at 384 kS/s), more than one TCP
+stream from the W12 carries (lwIP's 5.76 KB send buffer): a 4 s capture got 14% of its samples, the rest reported as
+`gap_samples` (2026-10-29). A trigger's channel (cs16 at 48 kS/s, 192 KB/s) is buffered up to 10.9 s ahead of the
+link. W12 #1 at 384 kS/s sent it at 40-150 KB/s (2026-11-06), so a trigger longer than about 12 s can still lose its
+end on a slow link (`gap_samples`); at 1 MB a 15 s trigger lost 1.5-3 s of each.
 
 ### Not yet done (S3 SDR)
 
