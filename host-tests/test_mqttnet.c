@@ -949,6 +949,38 @@ static void test_setup(void)
     /* without a hook: dropped, counted */
     d.setup = NULL;
     CHECK(rdof_mn_down_message(&d, "box-b", false, ans, a, 6.0) && d.setups == 2 && bursts_seen == 0);
+    /* the Tier II side, shared by the board and rdofradio: an event for the request and one for the answer */
+    {
+        static rdof_site_t st;
+        char err[200];
+        CHECK(rdof_site_parse(SITE, sizeof SITE - 1, &st, err, sizeof err) || !printf("  %s\n", err));
+        const int net = rdof_site_net(&st, "mqtt"), r1 = rdof_site_path(&st, "R1/2"), mon = rdof_site_path(&st, "mon");
+        CHECK(r1 >= 0 && mon >= 0 && rdof_mn_path_can_send(&st, net, r1) && !rdof_mn_path_can_send(&st, net, mon));
+        static rdof_mn_tier2_t t;
+        rdof_mn_hdr_t rh;
+        rdof_mn_setup_t rs;
+        rdof_mn_setup_parse(msg, n, &rh, &rs);
+        CHECK(rdof_mn_setup_tier2(&st, net, "box-a", 1793912651.25, &rh, &rs, true, "router", r1, 0x0BADCAFE, &t) == 2);
+        CHECK(t.len == 24 && t.to == 3100123 && t.msg[2] == r1 && t.msg[16] == RDOF_MN_SETUP_ACCEPT &&
+              t.msg[18] == RDOF_MN_SETUP_UNCONFIRMED);
+        CHECK(strstr(t.ev[0], "\"ev\":\"setup\"") && strstr(t.ev[0], "\"path\":null,\"slot\":0,\"source\":\"net\"") &&
+              strstr(t.ev[0], "\"stream_id\":305419896,\"src\":3100123,\"dst\":3100456,\"op\":\"request\",\"reason\":\"ok\","
+                              "\"peer\":\"router\""));
+        char want[160];
+        snprintf(want, sizeof want, "\"path\":%d,\"slot\":2,\"source\":\"net\",\"stream_id\":195939070,\"src\":3100456,"
+                 "\"dst\":3100123,\"op\":\"accept\",\"reason\":\"ok\"", r1);
+        CHECK(strstr(t.ev[1], want) || !printf("  %s\n", t.ev[1]));
+        /* heard on a path that can't transmit, or not heard: reject not_found */
+        CHECK(rdof_mn_setup_tier2(&st, net, "box-a", 0, &rh, &rs, true, "router", mon, 1, &t) == 2 &&
+              t.msg[2] == RDOF_MN_PATH_NONE && t.msg[16] == RDOF_MN_SETUP_REJECT && t.msg[17] == RDOF_MN_WHY_NOT_FOUND &&
+              strstr(t.ev[1], "\"op\":\"reject\",\"reason\":\"not_found\""));
+        CHECK(rdof_mn_setup_tier2(&st, net, "box-a", 0, &rh, &rs, true, "router", -1, 1, &t) == 2 &&
+              t.msg[16] == RDOF_MN_SETUP_REJECT);
+        /* on tg: nothing; a cancel on dl: its event, no answer */
+        CHECK(rdof_mn_setup_tier2(&st, net, "box-a", 0, &rh, &rs, false, "box-b", r1, 1, &t) == 0 && t.len == 0);
+        CHECK(rdof_mn_setup_tier2(&st, net, "box-a", 0, &rh, &cancel, true, "router", r1, 1, &t) == 1 && t.len == 0 &&
+              strstr(t.ev[0], "\"op\":\"cancel\""));
+    }
     /* events */
     char ev[512];
     const rdof_mn_ev_t e = {.node = "site-a", .wall = 1793912651.25, .path = 2, .slot = 0, .source = "net",

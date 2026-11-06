@@ -200,24 +200,18 @@ static void data(void *ctx, const rdof_mn_hdr_t *h, bool confirmed, bool dl, con
 }
 
 /* A call setup on our dl (mqtt-net.md section 9.4). This box is Tier II: it can't ask the radio, so it answers a
-   request at once from its own last heard: accept (unconfirmed) when the called radio was heard on a path of this
-   network that can transmit, else reject not_found. The voice then comes as an ordinary private call. */
+   request at once from its own last heard (rdof_mn_setup_tier2): accept (unconfirmed) when the called radio was heard
+   on a path of this network that can transmit, else reject not_found. The voice then comes as an ordinary private
+   call. The setup and the answer go in activity. */
 static void on_setup(void *ctx, const rdof_mn_hdr_t *h, const rdof_mn_setup_t *s, bool dl, const char *from)
 {
-    if (!dl || s->op != RDOF_MN_SETUP_REQUEST)
-        return;
-    int k = site_heard_path(h->dst);
-    if (k >= 0) {
-        const rdof_site_t *st = M->site;
-        const rdof_path_t *p = k < st->npath ? &st->path[k] : NULL;
-        if (!p || p->pol.net != M->net || p->tx_freq < 0 || !(p->pol.dir & RDOF_FLOW_NET_RF) ||
-            !st->freq[p->tx_freq].tx)
-            k = -1;
-    }
-    uint8_t ans[RDOF_MN_HEADER + 2 + RDOF_MN_SETUP_LEN];
-    const size_t n = rdof_mn_setup_answer(h, s, k, esp_random(), ans, sizeof ans);
-    if (n)
-        publish(NULL, RDOF_MN_T_PC, h->src, ans, n);
+    static EXT_RAM_BSS_ATTR rdof_mn_tier2_t t; /* the task's only */
+    rdof_mn_setup_tier2(M->site, M->net, M->node, now_unix(), h, s, dl, from,
+                        dl && s->op == RDOF_MN_SETUP_REQUEST ? site_heard_path(h->dst) : -1, esp_random(), &t);
+    for (int i = 0; i < t.nev; i++)
+        pub(M->act, t.ev[i], 0, 1, false);
+    if (t.len)
+        publish(NULL, RDOF_MN_T_PC, t.to, t.msg, t.len);
 }
 
 /* ── in: the trackers' sinks, esp-mqtt's task, the transmitters ───────────── */

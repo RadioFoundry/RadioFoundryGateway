@@ -539,6 +539,40 @@ size_t rdof_mn_data_result_event(const char *node, double wall, int path, int sl
     return ev_done(&j);
 }
 
+bool rdof_mn_path_can_send(const rdof_site_t *site, int net, int k)
+{
+    if (k < 0 || k >= site->npath)
+        return false;
+    const rdof_path_t *p = &site->path[k];
+    return p->pol.net == net && p->tx_freq >= 0 && (p->pol.dir & RDOF_FLOW_NET_RF) && site->freq[p->tx_freq].tx;
+}
+
+int rdof_mn_setup_tier2(const rdof_site_t *site, int net, const char *node, double wall, const rdof_mn_hdr_t *h,
+                        const rdof_mn_setup_t *s, bool dl, const char *from, int heard_path, uint32_t stream,
+                        rdof_mn_tier2_t *out)
+{
+    out->len = 0;
+    out->to = h->src;
+    out->nev = 0;
+    if (!dl)
+        return 0;
+    rdof_mn_ev_t e = {.node = node, .wall = wall, .path = -1, .slot = 0, .source = "net", .stream = h->stream};
+    if (rdof_mn_setup_event(&e, h->src, h->dst, s->op, s->reason, from, out->ev[out->nev], sizeof out->ev[0]))
+        out->nev++;
+    const int k = rdof_mn_path_can_send(site, net, heard_path) ? heard_path : -1;
+    out->len = rdof_mn_setup_answer(h, s, k, stream, out->msg, sizeof out->msg);
+    rdof_mn_hdr_t ah;
+    rdof_mn_setup_t as;
+    if (!out->len || !rdof_mn_setup_parse(out->msg, out->len, &ah, &as))
+        return out->nev;
+    e.path = k;
+    e.slot = k >= 0 ? (site->path[k].slot ? site->path[k].slot : site->path[k].tx_slot) : 0;
+    e.stream = stream;
+    if (rdof_mn_setup_event(&e, ah.src, ah.dst, as.op, as.reason, from, out->ev[out->nev], sizeof out->ev[0]))
+        out->nev++;
+    return out->nev;
+}
+
 /* ── data_result ─────────────────────────────────────────────────────────── */
 
 void rdof_mn_results_add(rdof_mn_results_t *r, const rdof_mn_hdr_t *h, bool confirmed, const char *from, int path,
