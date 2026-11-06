@@ -618,6 +618,44 @@ static void test_data_bursts(void)
     CHECK(rdof_mn_rate_of_dt(RDOF_DT_CSBK) == -1);
 }
 
+/* A downlink slot reused by a new stream starts clean: a csbk held for a data call that never came whole (its parts
+   stopped) doesn't go out before the next stream's data call. */
+static int reuse_csbks;
+static void reuse_burst(void *ctx, const rdof_net_burst_t *b, int path, bool dl, uint8_t flags, const char *from)
+{
+    reuse_csbks += b->control == (RDOF_SYNC_DATA | RDOF_DT_CSBK);
+}
+static void test_reused_slot(void)
+{
+    static rdof_mn_down_t d;
+    rdof_mn_down_init(&d);
+    d.burst = reuse_burst;
+    uint8_t msg[256], h12[12], data[20] = {0}, pre[11] = {0x80 | RDOF_CSBK_PREAMBLE, 0, 0x80, 3};
+    rdof_put_be24(pre + 4, 9990002);
+    rdof_put_be24(pre + 7, 9990001);
+    pre[10] = 4; /* four preambles */
+    rdof_ipgw_data_header(false, false, false, 4, 0, 9990002, 9990001, 0, 0, h12);
+    rdof_mn_hdr_t h = {.path = 1, .stream = 1, .src = 9990001, .dst = 9990002};
+    rdof_mn_writer_t w;
+    /* stream 1: the preambles and part 0 of a call in parts; part 1 never comes */
+    rdof_mn_begin(&w, msg, sizeof msg, &h);
+    rdof_mn_item(&w, RDOF_MN_CSBK, pre, sizeof pre);
+    rdof_mn_data_pdu(&w, 0, true, RDOF_MN_RATE_12, 1, h12, data, sizeof data);
+    size_t n = rdof_mn_end(&w);
+    CHECK(rdof_mn_down_message(&d, "box-b", false, msg, n, 0.0));
+    CHECK(d.s[0].used && d.s[0].has_pending_csbk && reuse_csbks == 0);
+    rdof_mn_down_tick(&d, 1.0); /* ends: the slot is free */
+    CHECK(!d.s[0].used && d.parts_lost == 1);
+    /* stream 2 takes the same slot: its data call alone, no csbk before it */
+    h.stream = 2;
+    rdof_mn_begin(&w, msg, sizeof msg, &h);
+    rdof_mn_data_pdu(&w, 0, false, RDOF_MN_RATE_12, 1, h12, data, sizeof data);
+    n = rdof_mn_end(&w);
+    CHECK(rdof_mn_down_message(&d, "box-b", false, msg, n, 2.0));
+    CHECK(d.s[0].used && d.s[0].stream == 2 && !d.s[0].has_pending_csbk);
+    CHECK(reuse_csbks == 0);
+}
+
 /* data_result: the downlink's data hook, then the transmitter's end, the radio's answer or none. */
 static rdof_mn_results_t results;
 static int data_calls;
@@ -1177,6 +1215,7 @@ int main(void)
     test_long_headers();
 #if RDOF_FEATURE_DATA_BLOCKS
     test_data_bursts();
+    test_reused_slot();
     test_results();
 #endif
     test_info();
