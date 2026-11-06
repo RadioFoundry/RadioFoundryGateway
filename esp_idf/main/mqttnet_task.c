@@ -31,6 +31,7 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "lwip/sockets.h"
 #include "mqtt_client.h"
 #if CONFIG_RDOF_MQTT_TLS
 #include "esp_crt_bundle.h"
@@ -80,15 +81,16 @@ typedef struct {
     char node[RDOF_MN_NODE_MAX + 1], root[16];
     char online[TOPIC_MAX], info[TOPIC_MAX], act[TOPIC_MAX], dl[TOPIC_MAX];
     esp_mqtt_client_handle_t client;
-    volatile bool up, connected_edge;
-    bool tls;
+    volatile bool up, connected_edge; /* connected_edge: set by esp-mqtt's task, cleared by the task */
+    bool tls, use_tls;
     QueueHandle_t frames, txq;
     SemaphoreHandle_t sink_lock; /* mn_sink's */
     MessageBufferHandle_t in;
     source_t src[MAX_SOURCES];
     rdof_mn_down_t down;
     rdof_mn_results_t results;
-    char subs[RDOF_MN_SUBS + 1][TOPIC_MAX]; /* the filters subscribed now */
+    /* the filters subscribed now, and ones whose unsubscribe failed (tried again); the task's only */
+    char subs[2 * (RDOF_MN_SUBS + 1)][TOPIC_MAX];
     int nsubs;
     uint8_t msg[RDOF_MN_MSG_MAX + TOPIC_MAX + 2];
     char json[4096];
@@ -218,17 +220,25 @@ static void on_setup(void *ctx, const rdof_mn_hdr_t *h, const rdof_mn_setup_t *s
 
 static void on_frame(void *ctx, const char *channel, const rdof_frame_t *f)
 {
-    frame_in_t in = {.source = (uint8_t)((source_t *)ctx - M->src), .f = *f};
-    if (xQueueSend(M->frames, &in, 0) != pdTRUE)
-        M->frames_dropped++;
+    mn_t *m = M;
+    if (!m) /* mn_start gave up after this sink was handed out */
+        return;
+    frame_in_t in = {.source = (uint8_t)((source_t *)ctx - m->src), .f = *f};
+    if (xQueueSend(m->frames, &in, 0) != pdTRUE)
+        m->frames_dropped++;
 }
 
 /* Called from each receiver's task as it sets up (the SDR's, each radio's), maybe at once and more than once. */
 bool mn_sink(int source, uint32_t freq, const double *freq_now, rdof_sink_t *out)
 {
-    if (!M)
+    mn_t *m = M;
+    if (!m)
         return false;
-    xSemaphoreTake(M->sink_lock, portMAX_DELAY);
+    xSemaphoreTake(m->sink_lock, portMAX_DELAY);
+    if (M != m) { /* mn_start gave up meanwhile */
+        xSemaphoreGive(m->sink_lock);
+        return false;
+    }
     source_t *s = NULL;
     for (int i = 0; i < MAX_SOURCES && !s; i++)
         if (M->src[i].used && M->src[i].id == source)
@@ -284,13 +294,26 @@ void mn_tx_event(const char *action, const rdof_tx_call_info_t *c)
     xQueueSend(M->txq, &t, 0);
 }
 
+/* TCP_NODELAY on the connection's socket (mqtt-net.md section 5), so a message never waits for the next one. esp-mqtt
+   has no setting for it; its transport gives the socket once connected. */
+static void nodelay(void)
+{
+    esp_transport_handle_t t =
+        esp_mqtt_client_get_transport(M->client, (char *)(M->use_tls ? MQTT_OVER_SSL_SCHEME : MQTT_OVER_TCP_SCHEME));
+    const int fd = t ? esp_transport_get_socket(t) : -1;
+    int one = 1;
+    if (fd < 0 || setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one))
+        ESP_LOGW(TAG, "no TCP_NODELAY on the connection (socket %d)", fd);
+}
+
 static void on_event(void *arg, esp_event_base_t base, int32_t id, void *ev)
 {
     esp_mqtt_event_handle_t e = ev;
     switch ((esp_mqtt_event_id_t)id) {
     case MQTT_EVENT_CONNECTED:
         ESP_LOGI(TAG, "connected to the broker as rdof-net-%s", M->node);
-        M->nsubs = 0; /* a new session: subscribe again */
+        nodelay();
+        /* a new session: the task subscribes again (it owns the list) */
         M->up = true;
         M->connected_edge = true;
         break;
@@ -322,40 +345,53 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *ev)
 
 /* ── the task ──────────────────────────────────────────────────────────────── */
 
-static void subscribe(void)
+/* The filters this box wants (its dl, its talkgroups); each change is made with the broker. A subscribe or
+   unsubscribe esp-mqtt refuses (not connected, outbox full) isn't recorded as done: it's tried again. False: one
+   failed. */
+static bool subscribe(void)
 {
     static EXT_RAM_BSS_ATTR char want[RDOF_MN_SUBS + 1][TOPIC_MAX];
+    static EXT_RAM_BSS_ATTR char now[2 * (RDOF_MN_SUBS + 1)][TOPIC_MAX];
     uint32_t tgs[RDOF_MN_SUBS];
-    bool all = false;
+    bool all = false, ok = true;
     const int n = site_mn_sub_tgs(tgs, RDOF_MN_SUBS - 1, &all);
-    int k = 0;
+    int k = 0, m = 0;
     snprintf(want[k++], TOPIC_MAX, "%s", M->dl);
     if (all)
         snprintf(want[k++], TOPIC_MAX, "%s/tg/+/+", M->root);
     else
         for (int i = 0; i < n; i++)
             snprintf(want[k++], TOPIC_MAX, "%s/tg/%lu/+", M->root, (unsigned long)tgs[i]);
-    for (int i = 0; i < M->nsubs; i++) { /* dropped ones */
+    for (int i = 0; i < M->nsubs; i++) { /* dropped ones; one that won't go stays listed, to try again */
         bool keep = false;
         for (int j = 0; j < k && !keep; j++)
             keep = !strcmp(M->subs[i], want[j]);
-        if (!keep)
-            esp_mqtt_client_unsubscribe(M->client, M->subs[i]);
+        if (!keep && esp_mqtt_client_unsubscribe(M->client, M->subs[i]) < 0) {
+            ok = false;
+            if (m < (int)(sizeof now / sizeof now[0]))
+                snprintf(now[m++], TOPIC_MAX, "%s", M->subs[i]);
+        }
     }
     for (int j = 0; j < k; j++) { /* new ones */
         bool had = false;
         for (int i = 0; i < M->nsubs && !had; i++)
             had = !strcmp(M->subs[i], want[j]);
-        if (had)
-            continue;
+        if (!had) {
 #if CONFIG_MQTT_PROTOCOL_5
-        const esp_mqtt5_subscribe_property_config_t sp = {.no_local_flag = true}; /* our own messages stay out */
-        esp_mqtt5_client_set_subscribe_property(M->client, &sp);
+            const esp_mqtt5_subscribe_property_config_t sp = {.no_local_flag = true}; /* our own messages stay out */
+            esp_mqtt5_client_set_subscribe_property(M->client, &sp);
 #endif
-        esp_mqtt_client_subscribe_single(M->client, want[j], 0);
+            if (esp_mqtt_client_subscribe_single(M->client, want[j], 0) < 0) {
+                ok = false;
+                continue;
+            }
+        }
+        if (m < (int)(sizeof now / sizeof now[0]))
+            snprintf(now[m++], TOPIC_MAX, "%s", want[j]);
     }
-    memcpy(M->subs, want, sizeof want);
-    M->nsubs = k;
+    memcpy(M->subs, now, sizeof now);
+    M->nsubs = m;
+    return ok;
 }
 
 static void publish_info(void)
@@ -434,13 +470,15 @@ static void mn_task(void *arg)
         }
         if (M->connected_edge) {
             M->connected_edge = false;
+            M->nsubs = 0; /* a new session: subscribe again */
             pub(M->online, "1", 1, 1, true);
             publish_info();
             subs_at = -10;
         }
-        if (M->up && now - subs_at >= 5) { /* held ptt TGs come and go */
+        if (M->up && now - subs_at >= 5) { /* held ptt TGs come and go; a failed change is tried again in 1 s */
             subs_at = now;
-            subscribe();
+            if (!subscribe())
+                subs_at = now - 4;
         }
         /* wake for the next frame, or every 20 ms for the broker's messages and the timers */
         xQueuePeek(M->frames, &fi, pdMS_TO_TICKS(20));
@@ -466,6 +504,22 @@ static bool conn(const char **host, int *port, const char **user, const char **p
         }
     }
     return false;
+}
+
+/* What mn_start made, when it gives up. */
+static void mn_free(mn_t *m)
+{
+    if (m->client)
+        esp_mqtt_client_destroy(m->client);
+    if (m->frames)
+        vQueueDeleteWithCaps(m->frames);
+    if (m->txq)
+        vQueueDeleteWithCaps(m->txq);
+    if (m->in)
+        vMessageBufferDeleteWithCaps(m->in);
+    if (m->sink_lock)
+        vSemaphoreDelete(m->sink_lock);
+    heap_caps_free(m);
 }
 
 void mn_start(void)
@@ -510,6 +564,7 @@ void mn_start(void)
     m->sink_lock = xSemaphoreCreateMutex();
     if (!m->frames || !m->txq || !m->in || !m->sink_lock) {
         ESP_LOGE(TAG, "no memory for the queues: off");
+        mn_free(m);
         return;
     }
     static EXT_RAM_BSS_ATTR char uri[112], id[64];
@@ -520,6 +575,7 @@ void mn_start(void)
     if (tls)
         ESP_LOGW(TAG, "mqtt/tls, but this build has no TLS (CONFIG_RDOF_MQTT_TLS): plain MQTT");
 #endif
+    m->use_tls = use_tls;
     snprintf(uri, sizeof uri, "%s://%s:%d", use_tls ? "mqtts" : "mqtt", host, port);
     snprintf(id, sizeof id, "rdof-net-%s", m->node);
     const esp_mqtt_client_config_t c = {
@@ -548,13 +604,22 @@ void mn_start(void)
     if (!m->client) {
         ESP_LOGE(TAG, "no MQTT client: off");
         M = NULL;
+        mn_free(m);
         return;
     }
     esp_mqtt_client_register_event(m->client, ESP_EVENT_ANY_ID, on_event, NULL);
     /* on core 0 with the network, off the DSP's core 1 */
     if (xTaskCreatePinnedToCoreWithCaps(mn_task, "mqtt_net", 8192, NULL, 5, NULL, 0, MALLOC_CAP_SPIRAM) != pdPASS) {
         ESP_LOGE(TAG, "the task didn't start: off");
+        /* the client never started, so no event uses it; a receiver that took a sink meanwhile keeps its memory */
+        xSemaphoreTake(m->sink_lock, portMAX_DELAY);
         M = NULL;
+        bool sinks = false;
+        for (int i = 0; i < MAX_SOURCES; i++)
+            sinks |= m->src[i].used;
+        xSemaphoreGive(m->sink_lock);
+        if (!sinks)
+            mn_free(m);
         return;
     }
     esp_mqtt_client_start(m->client);
