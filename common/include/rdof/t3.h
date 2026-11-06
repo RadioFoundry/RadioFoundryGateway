@@ -32,6 +32,7 @@ extern "C" {
 #define RDOF_T3_STREAMS 16       /* network group streams waiting for or holding a channel */
 #define RDOF_T3_NEIGHBORS 32
 #define RDOF_T3_MS_POLICIES 256  /* per-MS provisioning entries */
+#define RDOF_T3_TG_POLICIES 64   /* per-talkgroup provisioning entries */
 #define RDOF_T3_IDSET_RANGES 16
 
 /* data types (361-1 slot type) */
@@ -85,6 +86,12 @@ typedef struct {
     uint8_t pad[2];
     rdof_t3_idset_t ms, private_ms, tg, wide_tg, static_tg;
 } rdof_t3_policy_t;
+
+/* a talkgroup's provisioning (cfg/tg): its hang time (0: the site's hang_ms) and call priority (0-3) */
+typedef struct {
+    uint32_t tg, hang_ms;
+    uint8_t priority, pad[3];
+} rdof_t3_tg_policy_t;
 
 typedef struct {
     uint8_t enabled, private_ok, wide_private, emergency_ok;
@@ -245,11 +252,15 @@ void rdof_t3_net_private(rdof_t3_site_t *s, uint32_t stream, uint32_t src, uint3
 void rdof_t3_net_private_end(rdof_t3_site_t *s, uint32_t stream);
 void rdof_t3_net_link(rdof_t3_site_t *s, bool connected);
 void rdof_t3_neighbors(rdof_t3_site_t *s, const rdof_t3_neighbor_t *n, int count);
+/* C_SYScode from its parts (model 0-3, par 1-3); 0 when they don't fit the model */
+uint16_t rdof_t3_syscode(uint8_t model, uint16_t net, uint16_t site, uint8_t par);
 /* where/{ms}: here false and at_ms newer than this site's record removes it */
 void rdof_t3_where(rdof_t3_site_t *s, uint32_t ms, bool here, int64_t at_ms);
 
 /* provisioning and state */
 void rdof_t3_policy(rdof_t3_site_t *s, const rdof_t3_policy_t *p);
+/* p NULL removes the talkgroup's entry; false: the table is full (tg 0 isn't one) */
+bool rdof_t3_tg_policy(rdof_t3_site_t *s, uint32_t tg, const rdof_t3_tg_policy_t *p);
 /* p NULL removes the MS's entry */
 bool rdof_t3_ms_policy(rdof_t3_site_t *s, uint32_t ms, const rdof_t3_ms_policy_t *p);
 bool rdof_t3_load_record(rdof_t3_site_t *s, const rdof_t3_record_t *r);

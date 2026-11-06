@@ -4,11 +4,13 @@
 #include "rdof/trunkunit.h"
 
 #include <inttypes.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "rdof/bits.h"
+#include "rdof/jsonp.h"
 #include "rdof/mmdvm.h"
 #include "rdof/trunkcfg.h"
 
@@ -108,6 +110,8 @@ static void subscribe(rdof_trunkunit_t *u, bool force)
     snprintf(f[k++], sizeof f[0], "%s/node/%s/ms/+", u->root, u->node);
     snprintf(f[k++], sizeof f[0], "%s/node/%s/cmd", u->root, u->node);
     snprintf(f[k++], sizeof f[0], "%s/where/+", u->root);
+    snprintf(f[k++], sizeof f[0], "%s/node/+/info", u->root);
+    snprintf(f[k++], sizeof f[0], "%s/node/+/online", u->root);
     if (all)
         snprintf(f[k++], sizeof f[0], "%s/tg/+/+", u->root);
     else
@@ -535,6 +539,111 @@ static void ms_policies(rdof_trunkunit_t *u)
     u->nms = n;
 }
 
+static void tg_policies(rdof_trunkunit_t *u)
+{
+    uint32_t now[RDOF_T3_TG_POLICIES];
+    int n = 0;
+    for (int i = 0; i < u->mc.ntg && n < RDOF_T3_TG_POLICIES; i++) {
+        const rdof_mn_tg_cfg_t *t = &u->mc.tg[i];
+        const double h = t->hang_s * 1000.0;
+        rdof_t3_tg_policy_t p = {.hang_ms = h >= 1000.0 && h <= 60000.0 ? (uint32_t)lround(h) : 0,
+                                 .priority = (uint8_t)(t->priority < 0 ? 0 : t->priority > 3 ? 3 : t->priority)};
+        if (t->hang_s > 0 && !p.hang_ms)
+            logf_(u, "trunk: cfg/tg/%" PRIu32 ": hang_s %.1f outside 1-60: the site's", t->tg, t->hang_s);
+        if (rdof_t3_tg_policy(u->site, t->tg, &p))
+            now[n++] = t->tg;
+    }
+    for (int i = 0; i < u->ntgp; i++) { /* documents deleted */
+        bool still = false;
+        for (int j = 0; j < n && !still; j++)
+            still = now[j] == u->tg_ids[i];
+        if (!still)
+            rdof_t3_tg_policy(u->site, u->tg_ids[i], NULL);
+    }
+    memcpy(u->tg_ids, now, (size_t)n * sizeof now[0]);
+    u->ntgp = n;
+}
+
+/* The adjacent-site list: the other online-or-not trunked nodes of the same MODEL and NET (from their info), only
+   the sites cfg/node's neighbors lists when it gives them. */
+static void neighbors(rdof_trunkunit_t *u)
+{
+    rdof_mn_site_cfg_t sc;
+    rdof_mn_cfg_site(&u->mc, NULL, &sc);
+    rdof_t3_neighbor_t nb[RDOF_T3_NEIGHBORS];
+    int n = 0;
+    for (int i = 0; i < u->npeers && n < RDOF_T3_NEIGHBORS; i++) {
+        const rdof_trunkunit_peer_t *p = &u->peers[i];
+        if (!p->trunk || !p->syscode || p->site == u->cfg.site)
+            continue;
+        /* same MODEL and NET: their syscode is what ours would be with their SITE and PAR */
+        if (rdof_t3_syscode(u->cfg.model, u->cfg.net, p->site, (uint8_t)(p->syscode & 3)) != p->syscode)
+            continue;
+        if (sc.nneighbors > 0) {
+            bool listed = false;
+            for (int k = 0; k < sc.nneighbors && !listed; k++)
+                listed = sc.neighbors[k] == p->site;
+            if (!listed)
+                continue;
+        }
+        nb[n++] = (rdof_t3_neighbor_t){.syscode = p->syscode, .chan = p->chan, .active_known = 1, .active = p->online};
+    }
+    rdof_t3_neighbors(u->site, nb, n);
+    u->nneighbors = n;
+}
+
+static int peer_of(rdof_trunkunit_t *u, const char *node)
+{
+    for (int i = 0; i < u->npeers; i++)
+        if (!strcmp(u->peers[i].node, node))
+            return i;
+    if (u->npeers == RDOF_TRUNKUNIT_PEERS)
+        return -1;
+    const int i = u->npeers++;
+    memset(&u->peers[i], 0, sizeof u->peers[i]);
+    snprintf(u->peers[i].node, sizeof u->peers[i].node, "%s", node);
+    return i;
+}
+
+static const char *const MODEL_NAMES[] = {"tiny", "small", "large", "huge"};
+
+/* another node's info: its trunk object's system and TSCC channel (none: not a neighbor) */
+static void peer_info(rdof_trunkunit_t *u, const char *node, const char *text, size_t len)
+{
+    const int i = peer_of(u, node);
+    if (i < 0)
+        return;
+    static rdof_jnode_t nodes[256];
+    static char buf[2048];
+    rdof_jdoc_t d = {.nodes = nodes, .max = 256, .buf = buf, .cap = sizeof buf};
+    u->peers[i].trunk = false;
+    const int root = len ? rdof_jparse(&d, text, len) : -1;
+    const int t = root >= 0 ? rdof_jget(&d, root, "trunk") : -1;
+    const int sys = t >= 0 ? rdof_jget(&d, t, "system") : -1;
+    const int tscc = t >= 0 ? rdof_jat(&d, rdof_jget(&d, t, "tscc"), 0) : -1;
+    if (sys < 0 || tscc < 0)
+        return;
+    const rdof_jnode_t *model = rdof_jnode(&d, rdof_jget(&d, sys, "model")), *net = rdof_jnode(&d, rdof_jget(&d, sys, "net")),
+                       *site = rdof_jnode(&d, rdof_jget(&d, sys, "site")), *par = rdof_jnode(&d, rdof_jget(&d, sys, "par")),
+                       *chan = rdof_jnode(&d, rdof_jget(&d, tscc, "chan"));
+    if (!model || model->type != RDOF_JSTR || !net || net->type != RDOF_JNUM || !site || site->type != RDOF_JNUM ||
+        !chan || chan->type != RDOF_JNUM)
+        return;
+    int m = -1;
+    for (int k = 0; k < 4; k++)
+        if (!strcmp(model->str, MODEL_NAMES[k]))
+            m = k;
+    const char *ps = par && par->type == RDOF_JSTR ? par->str : "ab";
+    const int pv = !strcmp(ps, "a") ? 1 : !strcmp(ps, "b") ? 2 : 3;
+    if (m < 0 || net->num < 0 || net->num > 65535 || site->num < 1 || site->num > 65535 || chan->num < 1 ||
+        chan->num > 4094)
+        return;
+    u->peers[i].syscode = rdof_t3_syscode((uint8_t)m, (uint16_t)net->num, (uint16_t)site->num, (uint8_t)pv);
+    u->peers[i].site = (uint16_t)site->num;
+    u->peers[i].chan = (uint16_t)chan->num;
+    u->peers[i].trunk = u->peers[i].syscode != 0;
+}
+
 bool rdof_trunkunit_apply(rdof_trunkunit_t *u)
 {
     rdof_mn_site_cfg_t sc;
@@ -566,6 +675,8 @@ bool rdof_trunkunit_apply(rdof_trunkunit_t *u)
         logf_(u, "trunk: %s by provisioning", off ? "withdrawn" : "back on the air");
     }
     ms_policies(u);
+    tg_policies(u);
+    neighbors(u);
     u->cfg_applied++;
     drain(u);
     subscribe(u, false);
@@ -755,6 +866,26 @@ void rdof_trunkunit_message(rdof_trunkunit_t *u, const char *topic, const void *
     if (strncmp(topic, u->root, rl) || topic[rl] != '/')
         return;
     const char *leaf = topic + rl + 1;
+    if (!strncmp(leaf, "node/", 5)) { /* another node's info or online: the neighbor list */
+        const char *nd = leaf + 5, *sl = strchr(nd, '/');
+        if (sl && (size_t)(sl - nd) <= RDOF_MN_NODE_MAX && (!strcmp(sl, "/info") || !strcmp(sl, "/online"))) {
+            char who[RDOF_MN_NODE_MAX + 1];
+            memcpy(who, nd, (size_t)(sl - nd));
+            who[sl - nd] = 0;
+            if (strcmp(who, u->node)) {
+                if (!strcmp(sl, "/info")) {
+                    peer_info(u, who, text, len);
+                } else {
+                    const int i = peer_of(u, who);
+                    if (i >= 0)
+                        u->peers[i].online = len == 1 && text[0] == '1';
+                }
+                neighbors(u);
+                drain(u);
+            }
+            return;
+        }
+    }
     if (!strncmp(leaf, "cfg/", 4)) {
         const rdof_mn_cfg_result_t r = rdof_mn_cfg_message(&u->mc, u->root, topic, text, len, note, sizeof note);
         if (r == RDOF_MN_CFG_APPLIED || r == RDOF_MN_CFG_DELETED) {

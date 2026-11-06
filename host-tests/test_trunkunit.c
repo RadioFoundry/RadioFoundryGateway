@@ -272,6 +272,20 @@ static rdof_t3ms_status_t ms_status(site_t *s, int i)
     return st;
 }
 
+/* A group call on TG from A's first MS, talk_ms long: how long A's other MS stays on the payload channel. */
+static int hang_ms(int talk_ms)
+{
+    rdof_t3ms_do(A.ms[0], RDOF_T3MS_DO_GROUP, TG, talk_ms, 0, T0 + K * 30);
+    int waited = 0;
+    while (ms_status(&A, 1).state != RDOF_T3MS_PAYLOAD && waited < 3000)
+        run(30), waited += 30;
+    int held = 0;
+    while (ms_status(&A, 1).state == RDOF_T3MS_PAYLOAD && held < 20000)
+        run(30), held += 30;
+    run(1000);
+    return held;
+}
+
 int main(void)
 {
     site_open(&A, 0, "site-a", 3, 3100001, T0);
@@ -326,6 +340,47 @@ int main(void)
     broker_deliver();
     CHECK(A.u->cfg.hang_ms == 5000 && Bs.u->cfg.hang_ms == 5000, "hang from cfg/net: %u %u", A.u->cfg.hang_ms,
           Bs.u->cfg.hang_ms);
+
+    /* cfg/tg: talkgroup 9 hangs 8 s (the network's 5 s for the rest); a call's channel held about talk + 8 s */
+    const char *tgdoc = "{\"rev\":1,\"at\":\"2026-11-06T10:00:00Z\",\"name\":\"Ops\",\"hang_s\":8,\"priority\":2}";
+    broker_publish(2, "DMR/cfg/tg/9", tgdoc, strlen(tgdoc), true);
+    broker_deliver();
+    CHECK(A.u->ntgp == 1 && A.u->tg_ids[0] == TG && Bs.u->ntgp == 1, "cfg/tg applied: %d %d", A.u->ntgp, Bs.u->ntgp);
+    int held = hang_ms(1500);
+    CHECK(held > 9000 && held < 11000, "tg 9's channel held %d ms (1.5 s talk, 8 s hang)", held);
+    broker_publish(2, "DMR/cfg/tg/9", "", 0, true); /* deleted: the network's again */
+    broker_deliver();
+    CHECK(A.u->ntgp == 0, "cfg/tg deleted");
+    held = hang_ms(1500);
+    CHECK(held > 6000 && held < 8000, "then held %d ms (1.5 s talk, 5 s hang)", held);
+
+    /* neighbors: each site's info names the other as an adjacent site; online 0 makes it inactive; cfg/node's
+       neighbors list leaves out the ones it doesn't name */
+    char tj[1024], info[1200];
+    rdof_trunkunit_trunk_json(Bs.u, tj, sizeof tj);
+    snprintf(info, sizeof info, "{\"schema\":1,\"trunk\":%s}", tj);
+    broker_publish(1, "DMR/node/site-b/info", info, strlen(info), true);
+    broker_publish(1, "DMR/node/site-b/online", "1", 1, true);
+    rdof_trunkunit_trunk_json(A.u, tj, sizeof tj);
+    snprintf(info, sizeof info, "{\"schema\":1,\"trunk\":%s}", tj);
+    broker_publish(0, "DMR/node/site-a/info", info, strlen(info), true);
+    broker_deliver();
+    CHECK(A.u->nneighbors == 1 && Bs.u->nneighbors == 1, "neighbors: A %d, B %d", A.u->nneighbors, Bs.u->nneighbors);
+    const rdof_trunkunit_peer_t *pb = &A.u->peers[0];
+    CHECK(A.u->npeers >= 1 && !strcmp(pb->node, "site-b") && pb->site == 4 && pb->chan == 1 && pb->online &&
+              pb->syscode == rdof_t3_syscode(A.u->cfg.model, A.u->cfg.net, 4, A.u->cfg.par),
+          "A's neighbor: %s site %u chan %u syscode 0x%04x", pb->node, pb->site, pb->chan, pb->syscode);
+    broker_publish(1, "DMR/node/site-b/online", "0", 1, true);
+    broker_deliver();
+    CHECK(!A.u->peers[0].online && A.u->nneighbors == 1, "B offline: still listed, inactive");
+    const char *nodedoc = "{\"rev\":1,\"at\":\"2026-11-06T10:00:00Z\",\"neighbors\":[7]}";
+    broker_publish(2, "DMR/cfg/node/site-a", nodedoc, strlen(nodedoc), true);
+    broker_deliver();
+    CHECK(A.u->nneighbors == 0 && Bs.u->nneighbors == 1, "cfg/node's neighbors [7]: A %d, B %d", A.u->nneighbors,
+          Bs.u->nneighbors);
+    broker_publish(2, "DMR/cfg/node/site-a", "", 0, true);
+    broker_deliver();
+    CHECK(A.u->nneighbors == 1, "the list from info again (%d)", A.u->nneighbors);
 
     /* commands: status, and deregister (the record goes) */
     const char *cmd = "{\"id\":\"c-1\",\"cmd\":\"deregister\",\"ms\":3100002}";

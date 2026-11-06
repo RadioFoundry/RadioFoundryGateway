@@ -287,6 +287,48 @@ fn emergency_goes_first_in_the_queue() {
 }
 
 #[test]
+fn talkgroup_priority_in_the_queue() {
+    // cfg/tg's priority: tg 11 (priority 2) asked after tg 10 and still gets the channel first
+    let mut s = site_with(|_| {});
+    s.set_tg_policy(11, Some(&TgPolicy { tg: 11, hang_ms: 0, priority: 2, pad: [0; 3] }));
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG], &[1]), ms(1002, &[10], &[1]), ms(1003, &[11], &[1])], T0);
+    register_all(&mut air, &mut log);
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_GROUP, TG, 2000, 0, now);
+    air.ms[1].act(t3ms::DO_GROUP, 10, 1000, 0, now + 500);
+    air.ms[2].act(t3ms::DO_GROUP, 11, 1000, 0, now + 1000);
+    assert!(air.until(15_000, &mut log.f(), |a| a.ms[2].state() == t3ms::PAYLOAD));
+    let opens = log.of(EV_CH_OPEN);
+    assert_eq!(opens.iter().map(|e| e.dst).collect::<Vec<_>>(), [TG, 11]);
+}
+
+#[test]
+fn talkgroup_hang() {
+    // cfg/tg's hang: tg 9 hangs 6 s, not the site's 3 s; removed, the site's again
+    let mut s = site_with(|_| {});
+    s.set_tg_policy(TG, Some(&TgPolicy { tg: TG, hang_ms: 6000, priority: 0, pad: [0; 3] }));
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG], &[1]), ms(1002, &[TG], &[1])], T0);
+    register_all(&mut air, &mut log);
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_GROUP, TG, 1000, 0, now);
+    assert!(air.until(5000, &mut log.f(), all_payload));
+    let t_open = air.now();
+    assert!(air.until(15_000, &mut log.f(), all_idle));
+    let held = air.now() - t_open;
+    assert!((6500..8500).contains(&held), "held {held} ms");
+    air.site.set_tg_policy(TG, None);
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_GROUP, TG, 1000, 0, now);
+    assert!(air.until(5000, &mut log.f(), all_payload));
+    let t_open = air.now();
+    assert!(air.until(15_000, &mut log.f(), all_idle));
+    let held = air.now() - t_open;
+    assert!((3500..5500).contains(&held), "held {held} ms");
+}
+
+#[test]
 fn late_entry_grant_repeats() {
     let mut s = site_with(|_| {});
     let mut log = Log::default();

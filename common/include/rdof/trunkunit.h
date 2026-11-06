@@ -45,8 +45,16 @@ extern "C" {
 #define RDOF_TRUNKUNIT_STREAMS 16 /* network streams in progress */
 #define RDOF_TRUNKUNIT_HOLD 12    /* a network stream's bursts held until it has a channel (720 ms) */
 #define RDOF_TRUNKUNIT_TGS 20     /* talkgroups subscribed one by one; more: {root}/tg/+/+, filtered here */
-#define RDOF_TRUNKUNIT_FILTERS (8 + RDOF_TRUNKUNIT_TGS)
+#define RDOF_TRUNKUNIT_FILTERS (10 + RDOF_TRUNKUNIT_TGS)
+#define RDOF_TRUNKUNIT_PEERS 32   /* other trunked sites seen in info (the neighbor list) */
 #define RDOF_TRUNKUNIT_STATUS_S 10
+
+/* another node as its info and online show it */
+typedef struct {
+    char node[RDOF_MN_NODE_MAX + 1];
+    bool trunk, online;            /* trunk: its info has a trunk object with a valid system */
+    uint16_t syscode, chan, site;  /* its C_SYScode, TSCC channel, SITE */
+} rdof_trunkunit_peer_t;
 
 typedef struct {
     /* An MQTT publish (qos 0 or 1). */
@@ -94,6 +102,11 @@ typedef struct rdof_trunkunit {
     rdof_mn_cfg_t mc;               /* provisioning as received */
     uint32_t ms_ids[RDOF_T3_MS_POLICIES];
     int nms;
+    uint32_t tg_ids[RDOF_T3_TG_POLICIES]; /* cfg/tg documents applied */
+    int ntgp;
+    rdof_trunkunit_peer_t peers[RDOF_TRUNKUNIT_PEERS]; /* the other nodes' trunk info and presence */
+    int npeers;
+    int nneighbors;                 /* in the controller's adjacent-site list */
     rdof_mn_up_t up[RDOF_T3_CARRIERS];
     rdof_trunkunit_upctx_t upctx[RDOF_T3_CARRIERS];
     rdof_mn_down_t down;

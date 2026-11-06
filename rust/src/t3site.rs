@@ -20,6 +20,7 @@ pub const PENDING: usize = 32;
 pub const STREAMS: usize = 16;
 pub const NEIGHBORS: usize = 32;
 pub const MS_POLICIES: usize = 256;
+pub const TG_POLICIES: usize = 64;
 pub const IDSET_RANGES: usize = 16;
 const EVENTS: usize = 64;
 const RESP: usize = 32;
@@ -132,6 +133,16 @@ impl Policy {
     pub fn default_open() -> Policy {
         Policy { open: 1, ms: IdSet::all(), private_ms: IdSet::all(), tg: IdSet::all(), ..Default::default() }
     }
+}
+
+/// A talkgroup's provisioning (cfg/tg): its hang time (0: the site's) and call priority (0-3).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TgPolicy {
+    pub tg: u32,
+    pub hang_ms: u32,
+    pub priority: u8,
+    pub pad: [u8; 3],
 }
 
 #[repr(C)]
@@ -548,6 +559,7 @@ pub struct Site {
     reg_scan: usize,
     nregs: u32,
     mspol: [MsPol; MS_POLICIES],
+    tgpol: [TgPolicy; TG_POLICIES], // tg 0: unused
     neighbors: [Neighbor; NEIGHBORS],
     nneighbors: usize,
     subs_dirty: bool,
@@ -840,6 +852,19 @@ impl Site {
         self.pend.iter().filter(|p| p.used && p.state == P_QUEUED).count() + self.net.iter().filter(|n| n.used).count()
     }
 
+    fn tg_policy(pols: &[TgPolicy], tg: u32) -> Option<&TgPolicy> {
+        if tg == 0 {
+            return None;
+        }
+        pols.iter().find(|t| t.tg == tg)
+    }
+
+    /// A channel's hang time: its talkgroup's (cfg/tg) for a group call, else the site's.
+    fn hang_of(pols: &[TgPolicy], dflt: u32, kind: u8, dst: u32) -> i64 {
+        let t = if kind == KIND_GROUP { Self::tg_policy(pols, dst) } else { None };
+        t.filter(|t| t.hang_ms > 0).map_or(dflt, |t| t.hang_ms) as i64
+    }
+
     fn ms_policy(&self, ms: u32) -> MsPolicy {
         self.mspol.iter().find(|m| m.used && m.id == ms).map(|m| m.p).unwrap_or(MS_POLICY_DEFAULT)
     }
@@ -1033,7 +1058,7 @@ impl Site {
             talker: if talking_net { src } else { 0 },
             since_ms: now,
             call_end_ms: now + timer,
-            idle_until_ms: now + self.cfg.start_grace_ms as i64 + self.cfg.hang_ms as i64,
+            idle_until_ms: now + self.cfg.start_grace_ms as i64 + Self::hang_of(&self.tgpol, self.cfg.hang_ms, kind, dst),
             grant_next_ms: now + self.cfg.grant_every_ms as i64,
             last_voice_ms: now,
             ..Default::default()
@@ -1052,9 +1077,10 @@ impl Site {
     /// A grant of an open channel again, twice: a party asked again, or another member asked to talk.
     fn regrant(&mut self, ch: usize, src: u32) {
         let now = self.now;
+        let hang = Self::hang_of(&self.tgpol, self.cfg.hang_ms, self.chans[ch].kind, self.chans[ch].dst);
         let c = &mut self.chans[ch];
         if c.r#use == USE_HANG {
-            c.idle_until_ms = c.idle_until_ms.max(now + self.cfg.start_grace_ms as i64 + self.cfg.hang_ms as i64);
+            c.idle_until_ms = c.idle_until_ms.max(now + self.cfg.start_grace_ms as i64 + hang);
         }
         let source = if self.chans[ch].kind == KIND_PRIVATE { self.chans[ch].src } else { src };
         let g = self.grant_pdu(ch, false, source);
@@ -1144,10 +1170,11 @@ impl Site {
                 continue;
             }
             if c.talking && !c.talking_net && now - c.last_voice_ms > VOICE_LOST_MS {
+                let hang = Self::hang_of(&self.tgpol, self.cfg.hang_ms, c.kind, c.dst);
                 let c = &mut self.chans[ch];
                 c.talking = false;
                 c.r#use = USE_HANG;
-                c.idle_until_ms = now + self.cfg.hang_ms as i64;
+                c.idle_until_ms = now + hang;
             }
             let c = self.chans[ch];
             if !c.talking && now >= c.idle_until_ms {
@@ -1423,7 +1450,8 @@ impl Site {
             self.refuse(R_PERM_USER_REFUSED, ms, r.target);
             return None;
         }
-        Some(if emergency { 4 } else { (r.service_options & SO_PRIORITY).max(pol.priority.min(3)) })
+        let tgp = if group { Self::tg_policy(&self.tgpol, r.target).map_or(0, |t| t.priority) } else { 0 };
+        Some(if emergency { 4 } else { (r.service_options & SO_PRIORITY).max(pol.priority.min(3)).max(tgp.min(3)) })
     }
 
     fn call_request(&mut self, r: &Rand) {
@@ -1785,7 +1813,6 @@ impl Site {
 
     fn net_end(&mut self, stream: u32) {
         let now = self.now;
-        let hang = self.cfg.hang_ms as i64;
         for c in self.chans.iter_mut() {
             if c.stream == stream && Self::live(c) {
                 c.stream = 0;
@@ -1793,7 +1820,7 @@ impl Site {
                     c.talking = false;
                     c.talking_net = false;
                     c.r#use = USE_HANG;
-                    c.idle_until_ms = now + hang;
+                    c.idle_until_ms = now + Self::hang_of(&self.tgpol, self.cfg.hang_ms, c.kind, c.dst);
                 }
             }
         }
@@ -2000,7 +2027,6 @@ impl Site {
                 self.drop_stream(s, WHY_CONGESTION);
             }
         }
-        let hang = self.cfg.hang_ms as i64;
         let now = self.now;
         for c in self.chans.iter_mut() {
             if Self::live(c) && c.talking_net {
@@ -2008,7 +2034,7 @@ impl Site {
                 c.talking_net = false;
                 c.stream = 0;
                 c.r#use = USE_HANG;
-                c.idle_until_ms = now + hang;
+                c.idle_until_ms = now + Self::hang_of(&self.tgpol, self.cfg.hang_ms, c.kind, c.dst);
             }
         }
     }
@@ -2148,11 +2174,12 @@ impl Site {
                 }
             }
             VOICE_TERM | VOICE_LOST => {
+                let hang = Self::hang_of(&self.tgpol, self.cfg.hang_ms, self.chans[ch].kind, self.chans[ch].dst);
                 let c = &mut self.chans[ch];
                 if !c.talking_net {
                     c.talking = false;
                     c.r#use = USE_HANG;
-                    c.idle_until_ms = now + self.cfg.hang_ms as i64;
+                    c.idle_until_ms = now + hang;
                 }
             }
             _ => {}
@@ -2318,6 +2345,29 @@ impl Site {
         self.nneighbors = count;
         self.adjacent_idx = 0;
     }
+    /// A talkgroup's provisioning; None removes it. False: the table is full.
+    pub fn set_tg_policy(&mut self, tg: u32, p: Option<&TgPolicy>) -> bool {
+        if tg == 0 {
+            return false;
+        }
+        let i = self.tgpol.iter().position(|t| t.tg == tg);
+        match p {
+            None => {
+                if let Some(i) = i {
+                    self.tgpol[i] = TgPolicy::default();
+                }
+                true
+            }
+            Some(p) => match i.or_else(|| self.tgpol.iter().position(|t| t.tg == 0)) {
+                Some(i) => {
+                    self.tgpol[i] = TgPolicy { tg, ..*p };
+                    true
+                }
+                None => false,
+            },
+        }
+    }
+
     pub fn set_ms_policy(&mut self, ms: u32, p: Option<&MsPolicy>) -> bool {
         let i = self.mspol.iter().position(|m| m.used && m.id == ms);
         self.subs_dirty = true;
@@ -2424,7 +2474,7 @@ macro_rules! layouts {
     };
 }
 
-static LAYOUTS: [Layout; 17] = layouts![
+static LAYOUTS: [Layout; 18] = layouts![
     ("rdof_t3_carrier_t", Carrier),
     ("rdof_t3_cfg_t", Cfg),
     ("rdof_t3_range_t", Range),
@@ -2441,6 +2491,7 @@ static LAYOUTS: [Layout; 17] = layouts![
     ("rdof_t3_status_t", Status),
     ("rdof_t3ms_tx_t", crate::t3ms::MsTx),
     ("rdof_t3ms_status_t", crate::t3ms::MsStatus),
+    ("rdof_t3_tg_policy_t", TgPolicy),
 ];
 
 #[no_mangle]
@@ -2555,6 +2606,22 @@ pub unsafe extern "C" fn rdof_t3_where(s: *mut Site, ms: u32, here: bool, at_ms:
 #[no_mangle]
 pub unsafe extern "C" fn rdof_t3_policy(s: *mut Site, p: *const Policy) {
     (*s).policy_set(&*p);
+}
+
+/// C_SYScode from its parts (model 0-3, par 1-3), 0 when they don't fit the model.
+#[no_mangle]
+pub extern "C" fn rdof_t3_syscode(model: u8, net: u16, site: u16, par: u8) -> u16 {
+    let c = crate::t3pdu::SysCode { model, net, site, par };
+    if c.valid() {
+        c.encode()
+    } else {
+        0
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3_tg_policy(s: *mut Site, tg: u32, p: *const TgPolicy) -> bool {
+    (*s).set_tg_policy(tg, p.as_ref())
 }
 
 #[no_mangle]

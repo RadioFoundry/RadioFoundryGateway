@@ -32,7 +32,7 @@ static void test_layouts(void)
         LAYOUT(rdof_t3_record_t),    LAYOUT(rdof_t3_setup_t),     LAYOUT(rdof_t3_neighbor_t),
         LAYOUT(rdof_t3_event_t),     LAYOUT(rdof_t3_ch_out_t),    LAYOUT(rdof_t3_slot_out_t),
         LAYOUT(rdof_t3_ch_status_t), LAYOUT(rdof_t3_status_t),    LAYOUT(rdof_t3ms_tx_t),
-        LAYOUT(rdof_t3ms_status_t),
+        LAYOUT(rdof_t3ms_status_t),  LAYOUT(rdof_t3_tg_policy_t),
     };
     const size_t n = sizeof c / sizeof c[0];
     size_t i = 0;
