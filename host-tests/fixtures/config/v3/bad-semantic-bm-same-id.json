@@ -6,6 +6,5 @@
     {"name": "hs2", "kind": "modem", "port": {"usb": "auto", "serial": "HS2"}, "hears": {"idle": "s2"}}
   ],
   "frequencies": [{"name": "s1", "freq": 438.5}, {"name": "s2", "freq": 438.6}],
-  "networks": [{"type": "brandmeister", "host": "bm.example.net", "password": "example", "identity": "per_path",
-                "peer_ids": {"s1": 310012301, "s2": 310012301}}]
+  "networks": [{"type": "brandmeister", "host": "bm.example.net", "password": "example", "peer_ids": {"s1": 310012301, "s2": 310012301}}]
 }

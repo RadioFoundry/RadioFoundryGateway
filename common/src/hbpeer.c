@@ -415,6 +415,9 @@ size_t rdof_hb_role_dmrc(const rdof_config_t *c, uint32_t freq_now, int cc_now, 
     }
     const uint32_t idle = c->idle.freq;
     const int idle_cc = c->idle.cc;
+    if (c->hb_login) /* BrandMeister: a hotspot on its one frequency */
+        return rdof_dmrc_packet(c->peer_id, c->callsign, freq_now, freq_now, cc_now, '4', 0,
+                                "RadioFoundry Gateway hotspot", "radiofoundry_gateway simplex", loc, NULL, NULL, out);
     return rdof_dmrc_packet(c->peer_id, c->callsign, freq_now, freq_now, cc_now, '4', 0, "RadioFoundry Gateway roaming",
                             "radiofoundry_gateway simplex", loc, &idle, &idle_cc, out);
 }

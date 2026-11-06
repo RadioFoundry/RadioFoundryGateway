@@ -104,10 +104,11 @@ stateDiagram-v2
 
 ## 4. Settings (config-v3 §7.3)
 
-A network of type `brandmeister` is an HBlink network whose peers log in. Its keys are `host`, `port`, `password`,
-`identity`, `id` (with `single`) or `peer_ids` (with `per_path`, one registered ID for each path), and the `RPTC`
-texts `location`, `description` and `url`. No `roaming`, no SCTP. The box holds one `hblink` or one `brandmeister`
-network, not both. The top-level `id` isn't needed with it.
+A network of type `brandmeister` is an HBlink network whose peers log in, one login per simplex frequency or
+repeater, always. Its keys are `host`, `port`, `password`, `peer_ids` (a registered ID for each path) and the `RPTC`
+texts `location`, `description` and `url`. No `id` or `identity`, no `roaming`, no SCTP. A device that transmits on
+one of its frequencies transmits there only: no roaming transceiver, since the master can't move a login. The box
+holds one `hblink` or one `brandmeister` network, not both. The top-level `id` isn't needed with it.
 
 A path on the network gives `RPTC` its frequencies (simplex: both the same, slots `'4'`; a repeater: its `in` and
 `out`, slots `'3'`), its color code, its transmitter's power in dBm, and the box's location.
@@ -117,7 +118,7 @@ Two simplex frequencies and a repeater, each its own login:
 ```jsonc
 "networks": [
   {"type": "brandmeister", "name": "bm", "host": "3102.master.brandmeister.network",
-   "password": "…", "identity": "per_path",
+   "password": "…",
    "peer_ids": {"438.5": 310012301, "438.6": 310012302, "R1": 310012303}}
 ]
 ```

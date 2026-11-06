@@ -132,8 +132,8 @@ static const char *const IPGW_KEYS[] = {"name", "type", "tg", "pc", "radio_net",
 static const char *const HBLINK_KEYS[] = {"name", "type", "host", "port", "transport", "sctp_encap_port",
                                           "sctp_heartbeat_ms", "sctp_max_retransmit", "sctp_ttl_ms", "identity",
                                           "peer_ids", "roaming", NULL};
-static const char *const BM_KEYS[] = {"name", "type", "host", "port", "password", "identity", "id", "peer_ids",
-                                      "location", "description", "url", NULL};
+static const char *const BM_KEYS[] = {"name", "type", "host", "port", "password", "peer_ids", "location",
+                                      "description", "url", NULL};
 static const char *const MQTT_KEYS[] = {"name", "type", "host", "port", "username", "password", "root", "tls",
                                         "report", "calls", NULL};
 
@@ -630,7 +630,12 @@ static bool parse_nets(ctx_t *c, rdof_site_t *s)
             }
         }
         int i;
-        if (n->type == RDOF_NET_HBLINK) {
+        if (n->login) { /* one login per frequency or repeater, always: peer_ids */
+            n->per_path = true;
+            i = get(c, e, "peer_ids");
+            if (i < 0 || !is_type(c, i, RDOF_JOBJ))
+                return fail(c, "%s.peer_ids: {\"<frequency or repeater>\": id, ...}, a registered ID for each", path);
+        } else if (n->type == RDOF_NET_HBLINK) {
             i = get(c, e, "identity");
             const char *id = str_of(c, i);
             if (i >= 0 && (!id || (strcmp(id, "single") && strcmp(id, "per_path"))))
@@ -1156,19 +1161,6 @@ static bool peer_ids(ctx_t *c, rdof_site_t *s)
         return fail(c, "id: the box's DMR ID (its HBlink peer ID), 1 to 16777215");
     uint32_t next = s->id;
     int ids = hb >= 0 ? get(c, c->nnode[hb], "peer_ids") : -1;
-    uint32_t login_id = 0; /* brandmeister, identity single: the network's id */
-    if (login) {
-        double v;
-        int i = get(c, c->nnode[hb], "id");
-        if (i >= 0 && (!num_of(c, i, &v) || v < 1 || v > 4294967295.0 || v != floor(v)))
-            return fail(c, "networks.%s.id: the login's ID (a hotspot: the DMR ID and two digits), 1 to 4294967295",
-                        s->net[hb].name);
-        if (i >= 0 && s->net[hb].per_path)
-            return fail(c, "networks.%s.id: with identity single (per_path: peer_ids)", s->net[hb].name);
-        if (i < 0 && !s->net[hb].per_path)
-            return fail(c, "networks.%s.id: the login's ID (a hotspot: the DMR ID and two digits)", s->net[hb].name);
-        login_id = i >= 0 ? (uint32_t)v : 0;
-    }
     for (int k = 0; k < count(c, ids); k++) {
         const char *key = N(c, at(c, ids, k))->key;
         int a = rdof_site_app(s, key), f = rdof_site_freq(s, key);
@@ -1181,7 +1173,7 @@ static bool peer_ids(ctx_t *c, rdof_site_t *s)
     }
     for (int k = 0; k < s->npath; k++) {
         rdof_path_t *p = &s->path[k];
-        p->peer_id = login && p->pol.net == hb && !s->net[hb].per_path ? login_id : s->id;
+        p->peer_id = s->id;
         if (hb < 0 || !s->net[hb].per_path || p->pol.net != hb)
             continue;
         /* the other slot of the same frequency or repeater already has one */
@@ -1205,6 +1197,18 @@ static bool peer_ids(ctx_t *c, rdof_site_t *s)
                 return fail(c, "networks.%s.peer_ids.%s: %lu is %s's too (one login per ID)", s->net[hb].name, key,
                             (unsigned long)p->peer_id, s->path[j].name);
         snprintf(p->peer_name, sizeof p->peer_name, "%.8s", key); /* the master's callsign field: 8 characters */
+    }
+    /* BrandMeister: a frequency or a repeater is a login, so a device that transmits there transmits nowhere else
+       (no roaming transceiver: the master can't move it) */
+    for (int d = 0; login && d < s->ndev; d++) {
+        const uint64_t t = s->dev[d].can_tx ? s->dev[d].transmits : 0;
+        if (!t || !(t & (t - 1)))
+            continue;
+        for (int k = 0; k < s->npath; k++)
+            if (s->path[k].pol.net == hb && s->path[k].tx_freq >= 0 && (t >> s->path[k].tx_freq & 1))
+                return fail(c, "devices.%s.transmits: on BrandMeister each frequency or repeater is its own login, so "
+                               "a device transmits on one frequency (%s is on %s)",
+                            s->dev[d].name, s->path[k].name, s->net[hb].name);
     }
     return true;
 }
@@ -1573,7 +1577,7 @@ size_t rdof_site_resolved(const rdof_site_t *s, char *out, size_t cap)
         open_(&w, NULL, '{');
         w_str(&w, "name", n->name);
         w_str(&w, "type", n->login ? "brandmeister" : n->type == RDOF_NET_HBLINK ? "hblink" : "mqtt");
-        if (n->type == RDOF_NET_HBLINK) {
+        if (n->type == RDOF_NET_HBLINK && !n->login) {
             w_str(&w, "identity", n->per_path ? "per_path" : "single");
             w_bool(&w, "roaming", n->roaming);
         } else {

@@ -181,7 +181,7 @@ static void test_scenarios(const char *dir)
         CHECK(p && p->peer_id == 9800599 && rdof_idset_single(&p->pol.tg) == 3120, "peer_ids, rx-only slots");
         CHECK(S.dev[1].transmits == 1, "pinned");
     }
-    if (load(dir, "good-bm-simplex.json")) { /* BrandMeister: the network's id, no top-level id */
+    if (load(dir, "good-bm-simplex.json")) { /* BrandMeister: the login from peer_ids, no top-level id */
         p = path("hs");
         CHECK(p && p->peer_id == 310012301 && S.net[0].login && S.net[0].type == RDOF_NET_HBLINK, "bm id %u",
               p ? p->peer_id : 0);

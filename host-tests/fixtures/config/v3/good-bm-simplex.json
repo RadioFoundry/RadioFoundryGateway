@@ -9,7 +9,7 @@
   "frequencies": [{"name": "hs", "freq": 438.5, "ts": 2}],
   "apps": [{"type": "parrot", "tg": 9990}],
   "networks": [
-    {"type": "brandmeister", "host": "bm.example.net", "password": "example", "id": 310012301,
+    {"type": "brandmeister", "host": "bm.example.net", "password": "example", "peer_ids": {"hs": 310012301},
      "location": "Anytown", "description": "RadioFoundry test", "url": "https://example.org"}
   ]
 }

@@ -533,17 +533,15 @@
       }
     },
     "bm3": {
-      "description": "A BrandMeister network: each peer logs in as a hotspot or repeater (docs/spec/fw/brandmeister.md).",
+      "description": "A BrandMeister network: each frequency or repeater logs in as its own hotspot or repeater, with its ID in peer_ids (docs/spec/fw/brandmeister.md).",
       "additionalProperties": false,
-      "required": ["host", "password"],
+      "required": ["host", "password", "peer_ids"],
       "properties": {
         "name": {"$ref": "#/$defs/name3"},
         "type": {"const": "brandmeister"},
         "host": {"type": "string"},
         "port": {"type": "integer", "minimum": 1, "maximum": 65535},
         "password": {"type": "string", "minLength": 1, "maxLength": 63},
-        "identity": {"enum": ["single", "per_path"]},
-        "id": {"type": "integer", "minimum": 1, "maximum": 4294967295},
         "peer_ids": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 1, "maximum": 4294967295}},
         "location": {"type": "string", "maxLength": 20},
         "description": {"type": "string", "maxLength": 19},

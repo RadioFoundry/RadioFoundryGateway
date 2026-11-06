@@ -521,24 +521,24 @@ planned, not taken.
 
 ### 7.3 `brandmeister`
 
-A BrandMeister master ([brandmeister.md](brandmeister.md)): an HBlink-style peer that logs in (`RPTL`, `RPTK`,
-`RPTC`) as a hotspot or repeater. The top-level `id` isn't needed with it; BrandMeister IDs are their own 32-bit keys.
+A BrandMeister master ([brandmeister.md](brandmeister.md)). Each simplex frequency or repeater is its own login
+(`RPTL`, `RPTK`, `RPTC`), a hotspot or a repeater: one connection per frequency or pair, no shared identity.
+The top-level `id` isn't needed with it; BrandMeister IDs are their own 32-bit keys.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `host` | str | | required: the master, `<country code>.master.brandmeister.network` |
 | `port` | int | 62031 | |
 | `password` | str, 1..63 | | required: the hotspot security password (SelfCare), or a repeater's device password |
-| `identity` | `single` \| `per_path` | `single` | as `hblink`: `per_path` makes each frequency or repeater its own login |
-| `id` | int, 1..4294967295 | | required with `single`: the login's ID (a hotspot: the DMR ID and two digits) |
-| `peer_ids` | object | | required with `per_path`: `{"<frequency or repeater>": id}` for each path on the network. IDs are registered, so none is derived, and no two paths share one |
+| `peer_ids` | object | | required: `{"<frequency or repeater>": id}`, a registered ID for each path on the network (a hotspot: the DMR ID and two digits). No two paths share one, and none is derived |
 | `location` | str, ≤ 20 | `""` | `RPTC` location text |
 | `description` | str, ≤ 19 | `""` | `RPTC` description |
 | `url` | str, ≤ 124 | `""` | `RPTC` URL |
 
 `RPTC` takes the rest from the path: its frequencies, color code, slots (`'4'` simplex, `'3'` a repeater), the
 transmitter's power in dBm off the device's power map, and the top-level `location`'s coordinates and height. A
-simplex login sends its calls up on slot 2. `GET /api/config` shows the password, as it does MQTT's.
+simplex login sends its calls up on slot 2. A device that transmits on a frequency of the network transmits on that
+one only (no roaming transceiver). `GET /api/config` shows the password, as it does MQTT's.
 
 ## 8. Policies
 

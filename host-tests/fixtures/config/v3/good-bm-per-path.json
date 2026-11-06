@@ -17,8 +17,7 @@
   ],
   "apps": [{"name": "R1", "type": "repeater", "in": "r in", "out": "r out"}],
   "networks": [
-    {"type": "brandmeister", "host": "bm.example.net", "password": "example", "identity": "per_path",
-     "description": "RadioFoundry test",
+    {"type": "brandmeister", "host": "bm.example.net", "password": "example", "description": "RadioFoundry test",
      "peer_ids": {"s1": 310012301, "s2": 310012302, "R1": 310012303}}
   ]
 }
