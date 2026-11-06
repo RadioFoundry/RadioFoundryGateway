@@ -151,7 +151,7 @@ if(RDOF_RADIO_DEFS AND NOT WIN32)
                 rdof_rust_add(rdof_rust_t3 NO_DEFAULT_FEATURES FEATURES t3)
             endif()
         endif()
-        target_sources(rdofradio PRIVATE ${RDOF_CLI}/rdofradio_trunk.c ${RDOF_CLI}/../../common/src/trunkunit.c
+        target_sources(rdofradio PRIVATE ${RDOF_CLI}/rdofradio_trunk.c ${RDOF_CLI}/../../sdr/src/trunksplit.c ${RDOF_CLI}/../../common/src/trunkunit.c
                        ${RDOF_CLI}/../../common/src/trunksim.c)
         target_compile_definitions(rdofradio PRIVATE RDOF_TRUNK)
         target_link_libraries(rdofradio PRIVATE ${RDOF_T3_LIB})

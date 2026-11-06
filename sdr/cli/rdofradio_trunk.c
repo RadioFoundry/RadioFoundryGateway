@@ -4,6 +4,8 @@
 #include "rdofradio_trunk.h"
 
 #include <errno.h>
+#include <math.h>
+#include <poll.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -15,12 +17,14 @@
 #include "rdof/mnctl.h"
 #include "rdof/mqttnet.h"
 #include "rdof/sdr/sdrmodem.h"
+#include "rdof/sdr/trunksplit.h"
 #include "rdof/t3.h"
 #include "rdof/trunksim.h"
 #include "rdof/trunkunit.h"
 #ifdef RDOF_MQTT
 #include "rdofradio_mqtt.h"
 #endif
+#include "rdofradio_serial.h"
 
 #ifndef RDOF_VERSION
 #define RDOF_VERSION "dev"
@@ -485,31 +489,221 @@ int rdofradio_trunk_sim(const rdofradio_cfg_t *c, const rdofradio_trunk_opts_t *
 /* ── on a device ──────────────────────────────────────────────────────────── */
 
 static rdof_sdrmodem_t *M;
+static rdofradio_trunk_dev_t DEV;
+
+/* carrier 1: the modem's slots on the trunk's (UTC) slots */
+static struct {
+    bool placed;
+    int64_t d;      /* trunk k = modem k + d (even: the modem's TS1 is the trunk's LCN 0) */
+    int64_t last_k; /* the modem's last slot asked */
+    int chan;       /* the receiver's channel on carrier 1's inbound */
+} A = {.chan = -1};
+
+/* carrier 2: its split TX half */
+#define BQ 64
+static struct {
+    bool on, up;
+    int fd, chan;
+    pthread_t thread;
+    volatile bool quit, gone;
+    pthread_mutex_t mu;
+    struct {
+        uint8_t b[256];
+        int n;
+    } q[BQ];
+    int head, tail;
+    uint32_t dropped;
+    rdof_trunksplit_t ts;
+    double utc_minus_host_us; /* UTC - the monotonic clock, µs */
+    int64_t heard_k;          /* the UTC slot of the last burst heard on its inbound */
+    double next_utc;          /* when to measure UTC - host again */
+} BC = {.fd = -1, .chan = -1, .mu = PTHREAD_MUTEX_INITIALIZER};
+
+static double utc_minus_host_us(void)
+{
+    struct timespec w;
+    const double h0 = DEV.now();
+    clock_gettime(CLOCK_REALTIME, &w);
+    const double h1 = DEV.now();
+    return ((double)w.tv_sec * 1e6 + w.tv_nsec / 1e3) - 1e6 * (h0 + h1) / 2;
+}
+
+static int64_t utc_slot_now(void) { return (int64_t)floor((DEV.now() * 1e6 + BC.utc_minus_host_us) / 30000.0); }
 
 static bool source_slot(void *ctx, int64_t k, uint8_t burst[RDOF_BURST_BYTES], int *at, int32_t *slc28)
 {
     uint8_t control;
     pthread_mutex_lock(&T.mu);
     T.u->now_ms = wall_ms();
-    const bool ok = rdof_trunkunit_slot(T.u, 0, k, burst, &control, at, slc28);
+    if (!A.placed || k < A.last_k) { /* the first, or the modem started its slots again */
+        const int64_t want = wall_ms() / 30 + 2;
+        A.d = want - k;
+        A.d += A.d & 1;
+        A.placed = true;
+        if (T.o.verbose)
+            tsay("carrier 1: modem slot %lld is trunk slot %lld", (long long)k, (long long)(k + A.d));
+    }
+    A.last_k = k;
+    const bool ok = rdof_trunkunit_slot(T.u, 0, k + A.d, burst, &control, at, slc28);
     pthread_mutex_unlock(&T.mu);
     return ok;
 }
 
-bool rdofradio_trunk_start(const rdofradio_cfg_t *c, const rdofradio_trunk_opts_t *o, rdof_sdrmodem_t *m, char *err,
-                           size_t cap)
+static void *b_reader(void *arg)
 {
-    if (c->t.ncar > 1) {
-        snprintf(err, cap, "%s: %d carriers: rdofradio runs one (the SDR's) for now; a split's TX half for the others "
-                 "isn't wired", c->t.name, c->t.ncar);
+    while (!BC.quit) {
+        struct pollfd pf = {BC.fd, POLLIN, 0};
+        if (poll(&pf, 1, 100) <= 0)
+            continue;
+        uint8_t b[256];
+        const int n = rdofradio_serial_read(BC.fd, b, sizeof b);
+        if (n < 0 || (pf.revents & (POLLHUP | POLLERR | POLLNVAL))) {
+            BC.gone = true;
+            break;
+        }
+        if (n == 0)
+            continue;
+        pthread_mutex_lock(&BC.mu);
+        if (BC.head - BC.tail < BQ) {
+            const int i = BC.head++ % BQ;
+            BC.q[i].n = n;
+            memcpy(BC.q[i].b, b, (size_t)n);
+        } else {
+            BC.dropped += (uint32_t)n;
+        }
+        pthread_mutex_unlock(&BC.mu);
+    }
+    return NULL;
+}
+
+static void b_to_radio(void *ctx, const uint8_t *d, size_t n)
+{
+    if (!rdofradio_serial_write(BC.fd, d, n) && !BC.gone) {
+        BC.gone = true;
+        tsay("carrier 2: the port write failed");
+    }
+}
+static int b_channel(void *ctx, uint32_t hz) { return DEV.channel(hz); }
+static int64_t b_now48(void *ctx) { return DEV.now48(); }
+
+/* the split's bytes from the radio, its timers, what its RX half heard; T.mu held */
+static void b_take(void)
+{
+    int slot;
+    uint8_t control, burst[RDOF_BURST_BYTES];
+    while (rdof_trunksplit_take(&BC.ts, &slot, &control, burst, NULL)) {
+        /* the slot of that parity nearest the last burst heard there */
+        int64_t k = BC.heard_k;
+        if ((k & 1) != slot - 1)
+            k += 1;
+        rdof_burst_t b;
+        rdof_trunksplit_burst(&BC.ts, slot, control, burst, &b);
+        rdof_trunkunit_rx(T.u, 1, k, &b, 0);
+    }
+}
+
+static void b_service(double now)
+{
+    for (;;) {
+        uint8_t b[256];
+        int n = 0;
+        pthread_mutex_lock(&BC.mu);
+        if (BC.tail != BC.head) {
+            const int i = BC.tail++ % BQ;
+            n = BC.q[i].n;
+            memcpy(b, BC.q[i].b, (size_t)n);
+        }
+        pthread_mutex_unlock(&BC.mu);
+        if (!n)
+            break;
+        rdof_trunksplit_from_radio(&BC.ts, b, (size_t)n, now);
+    }
+    rdof_trunksplit_tick(&BC.ts, now);
+}
+
+static void b_stop(void)
+{
+    if (!BC.on)
+        return;
+    BC.quit = true;
+    pthread_join(BC.thread, NULL);
+    close(BC.fd);
+    rdof_trunksplit_free(&BC.ts);
+    BC.on = false;
+}
+
+/* carrier 2's split: its port, the bring-up and its settings (the receiver isn't running yet: no RX half) */
+static bool b_start(const rdofradio_trunk_cfg_t *t, char *err, size_t cap)
+{
+    const uint32_t rx = t->car[1].rx_hz, tx = t->car[1].tx_hz;
+    BC.chan = DEV.channel(rx);
+    if (BC.chan < 0) {
+        snprintf(err, cap, "carrier 2: the receiver has no channel on its inbound %.5f MHz", rx / 1e6);
         return false;
     }
-    if (!c->t.car[0].tx_sdr) {
-        snprintf(err, cap, "%s: the TSCC's carrier is sent by the SDR here", c->t.name);
+    BC.fd = rdofradio_serial_open(t->car[1].port, t->car[1].baud ? (int)t->car[1].baud : 115200, err, cap);
+    if (BC.fd < 0)
+        return false;
+    if (pthread_create(&BC.thread, NULL, b_reader, NULL)) {
+        close(BC.fd);
+        snprintf(err, cap, "carrier 2: the port reader: no thread");
         return false;
     }
-    if (!start_common(c, o, err, cap))
+    const rdof_trunksplit_io_t io = {b_to_radio, b_channel, b_now48, NULL};
+    BC.on = true;
+    if (!rdof_trunksplit_init(&BC.ts, &io, DEV.rx_fs, 1, rx, tx, t->cfg.cc, DEV.now())) {
+        snprintf(err, cap, "carrier 2: %s", BC.ts.error);
+        b_stop();
         return false;
+    }
+    const double until = DEV.now() + 8.0;
+    while (BC.ts.state != RDOF_TRUNKSPLIT_UP && BC.ts.state != RDOF_TRUNKSPLIT_FAILED && !BC.gone &&
+           DEV.now() < until) {
+        usleep(10000);
+        b_service(DEV.now());
+    }
+    if (BC.ts.state != RDOF_TRUNKSPLIT_UP) {
+        snprintf(err, cap, "carrier 2 (%s): %s", t->car[1].port,
+                 BC.gone ? "the port went away"
+                 : BC.ts.state == RDOF_TRUNKSPLIT_FAILED ? BC.ts.error
+                                                         : "no split TX half answered in 8 s");
+        b_stop();
+        return false;
+    }
+    BC.utc_minus_host_us = utc_minus_host_us();
+    rdof_trunksplit_utc(&BC.ts, BC.utc_minus_host_us, 1000, DEV.now());
+    BC.next_utc = DEV.now() + 60;
+    BC.up = true;
+    tsay("carrier 2: split TX half on %s (tx %.5f, rx %.5f MHz), aligning to UTC", t->car[1].port, tx / 1e6,
+         rx / 1e6);
+    return true;
+}
+
+bool rdofradio_trunk_start(const rdofradio_cfg_t *c, const rdofradio_trunk_opts_t *o, rdof_sdrmodem_t *m,
+                           const rdofradio_trunk_dev_t *dev, char *err, size_t cap)
+{
+    const rdofradio_trunk_cfg_t *t = &c->t;
+    if (t->ncar > 2) {
+        snprintf(err, cap, "%s: %d carriers: rdofradio runs two (the SDR's and one split TX half)", t->name, t->ncar);
+        return false;
+    }
+    if (!t->car[0].tx_sdr) {
+        snprintf(err, cap, "%s: the TSCC's carrier is sent by the SDR here", t->name);
+        return false;
+    }
+    if (t->ncar == 2 && (t->car[1].tx_sdr || !t->car[1].port[0])) {
+        snprintf(err, cap, "%s: carrier 2 is a split TX half here: a radio with a port path (port: {\"path\": ...})",
+                 t->name);
+        return false;
+    }
+    DEV = *dev;
+    A.chan = DEV.channel(t->car[0].rx_hz);
+    if (t->ncar == 2 && !b_start(t, err, cap))
+        return false;
+    if (!start_common(c, o, err, cap)) {
+        b_stop();
+        return false;
+    }
     M = m;
     const rdof_sdrmodem_source_t src = {source_slot, NULL};
     rdof_sdrmodem_set_source(m, &src);
@@ -522,13 +716,26 @@ bool rdofradio_trunk_start(const rdofradio_cfg_t *c, const rdofradio_trunk_opts_
 
 bool rdofradio_trunk_on(void) { return T.on; }
 
-void rdofradio_trunk_heard(int c, int64_t k, const rdof_burst_t *b)
+void rdofradio_trunk_heard(int c, const rdof_sdr_burst_t *b)
 {
-    if (!T.on || k < 0)
+    if (!T.on || c < 0)
         return;
-    pthread_mutex_lock(&T.mu);
-    rdof_trunkunit_rx(T.u, c, k, b, 0);
-    pthread_mutex_unlock(&T.mu);
+    if (c == A.chan) {
+        const int64_t k = M ? rdof_sdrmodem_inbound_k(M, b) : -1;
+        pthread_mutex_lock(&T.mu);
+        if (k >= 0 && A.placed)
+            rdof_trunkunit_rx(T.u, 0, k + A.d, &b->b, 0);
+        pthread_mutex_unlock(&T.mu);
+    }
+    if (BC.up && c == BC.chan) {
+        pthread_mutex_lock(&T.mu);
+        /* its UTC slot from its position: the burst starts on the slot's start */
+        const double t = DEV.now() - (double)(DEV.now48() - b->position) / 48000.0;
+        BC.heard_k = (int64_t)floor((t * 1e6 + BC.utc_minus_host_us) / 30000.0 + 0.25);
+        rdof_trunksplit_heard(&BC.ts, c, b);
+        b_take();
+        pthread_mutex_unlock(&T.mu);
+    }
 }
 
 void rdofradio_trunk_poll(void)
@@ -537,6 +744,22 @@ void rdofradio_trunk_poll(void)
         return;
     pthread_mutex_lock(&T.mu);
     poll_locked(wall_ms());
+    if (BC.up) {
+        const double now = DEV.now();
+        if (now >= BC.next_utc) { /* the host's clock follows NTP: the TX half follows it */
+            BC.utc_minus_host_us = utc_minus_host_us();
+            rdof_trunksplit_utc(&BC.ts, BC.utc_minus_host_us, 1000, now);
+            BC.next_utc = now + 60;
+        }
+        b_service(now);
+        b_take();
+        if (BC.ts.state == RDOF_TRUNKSPLIT_FAILED || BC.gone) {
+            tsay("carrier 2: %s; its payload channels go unsent", BC.gone ? "the port went away" : BC.ts.error);
+            BC.up = false;
+        } else {
+            rdof_trunkunit_split_pump(T.u, &BC.ts.o, rdof_trunksplit_split(&BC.ts), utc_slot_now(), now);
+        }
+    }
     pthread_mutex_unlock(&T.mu);
 }
 
@@ -548,5 +771,6 @@ void rdofradio_trunk_stop(void)
         rdof_sdrmodem_set_source(M, NULL);
         rdof_sdrmodem_hold_key(M, false);
     }
+    b_stop();
     stop_common();
 }

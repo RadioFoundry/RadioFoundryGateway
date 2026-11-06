@@ -3007,11 +3007,40 @@ static void bench_stop(void)
     rdof_bl_ring_free(&BL.ring);
 }
 
+/* The receive stream against the clock in the main run (as SC for a split's): lag = clock samples - samples read,
+ * its least over half a second the freshest read. main_now48: the position the receiver is at now. */
+static struct {
+    bool on;
+    double t0, floor, win_start, win_min;
+} MC;
+static void main_clock(double t, long long total)
+{
+    if (!MC.on)
+        MC.on = true, MC.t0 = MC.win_start = t, MC.floor = MC.win_min = INFINITY;
+    const double lag = (t - MC.t0) * R.rate - (double)total;
+    if (lag < MC.win_min)
+        MC.win_min = lag;
+    if (t - MC.win_start >= 0.5) {
+        MC.floor = MC.win_min;
+        MC.win_start = t, MC.win_min = INFINITY;
+    }
+}
+static int64_t main_now48(void)
+{
+    if (!MC.on)
+        return 0;
+    const double floor = isfinite(MC.floor) ? MC.floor : MC.win_min;
+    return (int64_t)(((now_s() - MC.t0) * R.rate - floor) * 48000.0 / R.rate);
+}
+#ifdef RDOF_TRUNK
+static int trunk_channel(uint32_t hz) { return channel_of(hz); }
+#endif
+
 static void on_burst(void *ctx, int c, const rdof_sdr_burst_t *b, double t)
 {
 #ifdef RDOF_TRUNK
-    if (rdofradio_trunk_on() && c >= 0 && c == channel_of(R.rx_hz)) /* the TSCC carrier's inbound */
-        rdofradio_trunk_heard(0, rdof_sdrmodem_inbound_k(&R.m, b), &b->b);
+    if (rdofradio_trunk_on()) /* carrier 1's inbound (the TSCC's), carrier 2's */
+        rdofradio_trunk_heard(c, b);
 #endif
     if (!R.mmdvm)
         rdof_sdrmodem_heard(&R.m, c, b);
@@ -5275,8 +5304,13 @@ int main(int argc, char **argv)
        them. Without the FPGA's bitstream, the ones that fit the ARM's window, the unit's kept. */
     int unfit = 0, nlisted = 0;
     {
-        rdof_sdr_channel_t own[2];
+        rdof_sdr_channel_t own[3];
         int nown = 0;
+#ifdef RDOF_TRUNK
+        /* a trunked site's carrier 2: its split's RX half hears its inbound here */
+        if (rcfg.trunk && rcfg.t.ncar > 1 && rdofradio_cfg_channel_at(&rcfg, rcfg.t.car[1].rx_hz) < 0)
+            own[nown++] = (rdof_sdr_channel_t){"carrier-2", rcfg.t.car[1].rx_hz, rcfg.t.cfg.cc, 1};
+#endif
         if (R.mmdvm && rdofradio_cfg_channel_at(&rcfg, R.rx_hz) < 0)
             own[nown++] = (rdof_sdr_channel_t){"modem-rx", rx, cc, rx_slot};
         if (monitor && rdofradio_cfg_channel_at(&rcfg, R.tx_hz) < 0 && R.tx_hz != R.rx_hz)
@@ -5498,7 +5532,8 @@ int main(int argc, char **argv)
             const rdofradio_trunk_opts_t to = {.state_dir = trunk_opts.state_dir, .seconds = seconds,
                                                .verbose = verbose != 0};
             char terr[200];
-            if (!rdofradio_trunk_start(&rcfg, &to, &R.m, terr, sizeof terr)) {
+            const rdofradio_trunk_dev_t td = {trunk_channel, main_now48, now_s, (uint32_t)R.rate};
+            if (!rdofradio_trunk_start(&rcfg, &to, &R.m, &td, terr, sizeof terr)) {
                 fprintf(stderr, "trunk: %s\n", terr);
                 return 1;
             }
@@ -5670,6 +5705,7 @@ int main(int argc, char **argv)
         const double now = now_s();
         WS.last_samples = now;
         WS.n += n;
+        main_clock(now, total + n);
         const double t_poll = now;
         if (now - last_poll >= POLL_S) {
             last_poll = now;

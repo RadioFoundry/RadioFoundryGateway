@@ -13,7 +13,11 @@
  * An ID not among the N is a simulated MS of its own, idle until the script makes it act.
  *
  * On a device: the SDR is carrier 1 (the TSCC's): rdof_sdrmodem's slot source, keyed with no end (hold_key), what it
- * hears on carrier 1's inbound given its slot by timing (rdof_sdrmodem_inbound_k). One carrier for now.
+ * hears on carrier 1's inbound given its slot by timing (rdof_sdrmodem_inbound_k). A second carrier is a split TX
+ * half on its radio's port (rdof/sdr/trunksplit.h): its slot counter aligned to UTC from the host's clock, the
+ * scheduled stream (TX_SCHED for each slot), the SDR's receiver its RX half on carrier 2's inbound. The trunk's slot
+ * k is the UTC slot number (floor(UTC ms / 30)); carrier 1's modem slots are moved onto it by an even offset taken
+ * at its first slot (the carriers aren't slot-synchronized: site_sync 0, the payload warm-up). Two carriers at most.
  *
  * --state-dir DIR keeps the provisioning (cfg-cache.json) across restarts.
  */
@@ -25,6 +29,7 @@
 #include <stdint.h>
 
 #include "rdof/layer2.h"
+#include "rdof/sdr/demod.h"
 #include "rdofradio_cfg.h"
 
 typedef struct {
@@ -42,12 +47,22 @@ typedef struct {
 int rdofradio_trunk_sim(const rdofradio_cfg_t *c, const rdofradio_trunk_opts_t *o, volatile sig_atomic_t *stop);
 
 struct rdof_sdrmodem;
-/* On a device: the site on modem m (keyed, its slot source), the network started. False with err set. */
+/* What the device side needs from rdofradio's receiver. */
+typedef struct {
+    int (*channel)(uint32_t hz); /* the receiver's channel on hz, -1 none */
+    int64_t (*now48)(void);      /* the receiver's 48 kS/s position now (the positions its bursts carry) */
+    double (*now)(void);         /* the host's monotonic clock, s */
+    uint32_t rx_fs;              /* the receiver's rate, S/s */
+} rdofradio_trunk_dev_t;
+/* On a device: the site on modem m (keyed, its slot source), carrier 2's split TX half brought up on its port (a
+ * two-carrier site), the network started. Before the receiver starts: the bring-up waits on the port. False with err
+ * set. */
 bool rdofradio_trunk_start(const rdofradio_cfg_t *c, const rdofradio_trunk_opts_t *o, struct rdof_sdrmodem *m,
-                           char *err, size_t cap);
+                           const rdofradio_trunk_dev_t *dev, char *err, size_t cap);
 bool rdofradio_trunk_on(void);
-/* A burst heard on carrier c's inbound under slot k (k < 0: not placed, dropped). */
-void rdofradio_trunk_heard(int c, int64_t k, const rdof_burst_t *b);
+/* A burst the receiver heard on its channel c: carrier 1's inbound (the modem places it), carrier 2's (the split's
+ * RX half), else nothing. */
+void rdofradio_trunk_heard(int c, const rdof_sdr_burst_t *b);
 /* The main loop's: messages in, timers, the link. */
 void rdofradio_trunk_poll(void);
 void rdofradio_trunk_stop(void);
