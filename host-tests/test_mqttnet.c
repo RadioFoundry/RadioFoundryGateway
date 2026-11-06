@@ -910,6 +910,26 @@ static void test_setup(void)
           setup_h.stream == 0x12345678 && d.setups == 1 && bursts_seen == 0);
     rdof_mn_down_tick(&d, 5.0);
     CHECK(bursts_seen == 0); /* no stream was opened, so nothing ends */
+    /* a setup item of the wrong length, or op 0 or 7: no setup, no stream (the fixture's setup_short, setup_op_0) */
+    {
+        uint8_t m7[64];
+        memcpy(m7, msg, n);
+        m7[15] = 7; /* length 7: the message one shorter */
+        const uint32_t bad0 = d.bad, streams0 = d.streams;
+        CHECK(!rdof_mn_down_message(&d, "router", true, m7, n - 1, 1.5));
+        memcpy(m7, msg, n);
+        for (int op = 0; op <= 7; op += 7) {
+            m7[16] = (uint8_t)op;
+            CHECK(!rdof_mn_setup_parse(m7, n, &h, &s));
+            CHECK(!rdof_mn_down_message(&d, "router", true, m7, n, 1.5));
+        }
+        CHECK(d.bad == bad0 + 3 && d.streams == streams0 && setup_calls == 1 && bursts_seen == 0);
+        rdof_mn_writer_t bw;
+        const rdof_mn_setup_t s0 = {.op = 0};
+        rdof_mn_begin(&bw, m7, sizeof m7, &h);
+        CHECK(!rdof_mn_setup(&bw, &s0));
+        rdof_mn_setup_parse(msg, n, &h, &s); /* back to the request */
+    }
     /* without a hook: dropped, counted */
     d.setup = NULL;
     CHECK(rdof_mn_down_message(&d, "box-b", false, ans, a, 6.0) && d.setups == 2 && bursts_seen == 0);

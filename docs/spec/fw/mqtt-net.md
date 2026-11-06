@@ -506,6 +506,9 @@ call message on `pc/{dst}/{node}` with no voice, its header individual (src the 
 | 3 | service options | as the trunking random access's: bit 7 emergency, bit 6 privacy, bits 1–0 priority |
 | 4 | ref | u32 little endian: the stream ID of the `request` this message answers; 0 in a request |
 
+A setup item whose length isn't 8, or whose op is 0 or above 6, makes the message invalid: a reader drops it whole,
+and a box never takes it for a stream. Other reasons are kept as they come (a reader names one it doesn't know `?`).
+
 An answer goes back on `pc/{caller}/{node}`: src the called radio, dst the caller, its own stream ID, ref the
 request's. The path byte is the path the answerer will use (0xFF none).
 
