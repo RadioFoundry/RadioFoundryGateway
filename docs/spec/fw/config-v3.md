@@ -477,7 +477,7 @@ A firmware build without `CONFIG_RDOF_IPGW` refuses an `ipgw` app.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `type` | `hblink` \| `mqtt` | | required. Later: `openbridge`, others |
+| `type` | `hblink` \| `mqtt` | | required. Later: `brandmeister` ([brandmeister.md](brandmeister.md), planned), `openbridge`, others |
 | `name` | str | the type | §2.1 |
 
 At most one of each. The first network in the list is the default: a path with no `net` uses it.
