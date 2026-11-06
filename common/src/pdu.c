@@ -147,8 +147,9 @@ bool rdof_decode_data_block(const uint8_t burst[RDOF_BURST_BYTES], int data_type
         b->fec_ok = rdof_bptc196_decode(burst, b->payload);
         b->len = 12;
     } else if (data_type == RDOF_DT_RATE_34) {
+        /* The trellis always finds a path; errors is the bits it corrected. CRC-9 and CRC-32 decide. */
         b->errors = rdof_trellis34_decode(burst, b->payload);
-        b->fec_ok = b->errors == 0;
+        b->fec_ok = true;
         b->len = 18;
     } else if (data_type == RDOF_DT_RATE_1) {
         rdof_rate1_payload(burst, b->payload);

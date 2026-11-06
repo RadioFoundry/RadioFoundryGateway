@@ -110,8 +110,8 @@ typedef struct {
     int data_type;
     uint8_t payload[24];
     int len; /* 12 (rate 1/2), 18 (rate 3/4) or 24 (rate 1) */
-    bool fec_ok;
-    int errors;
+    bool fec_ok; /* rate 1/2: BPTC decoded; rate 3/4 and rate 1: always (the CRCs decide) */
+    int errors;  /* rate 3/4: bits the trellis corrected */
 } rdof_data_block_t;
 
 #if RDOF_FEATURE_DATA_BLOCKS

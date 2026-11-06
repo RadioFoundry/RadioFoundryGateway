@@ -807,6 +807,43 @@ static void t_assembly(void)
     free(g);
 }
 
+/* A rate 3/4 block the trellis corrected still counts: the CRC-32 decides (BrandMeister's TMS came in rate 3/4). */
+static void t_rate34_corrected(void)
+{
+    fake_t f;
+    rdof_ipgw_t *g = gw(&f, 9990, "\"nat\": {\"deny\": []}, \"up_pps\": 0");
+    uint8_t d[2048];
+    static rdof_ipgw_dmr_t p;
+    uint64_t sync = rdof_data_sync(RDOF_MS_VOICE);
+    size_t n = datagram(RADIO_IP, 5000, IP(10, 0, 0, 1), 9000, "each block has a bit or two wrong", d);
+    int blocks = (int)((n + 4 + 17) / 18), pad = blocks * 18 - (int)n - 4;
+    uint8_t h[12], buf[200], info[196];
+    rdof_ipgw_data_header(false, false, false, 4, pad, 9990, RADIO, blocks, 0, h);
+    memcpy(buf, d, n);
+    memset(buf + n, 0, (size_t)pad);
+    uint32_t crc = rdof_crc32_dmr(buf, n + (size_t)pad);
+    for (int i = 0; i < 4; i++)
+        buf[n + (size_t)pad + (size_t)i] = (uint8_t)(crc >> (8 * i));
+    rdof_data_burst(h, RDOF_DT_DATA_HEADER, 2, sync, p.bursts[0]);
+    rdof_ipgw_burst(g, &W, RDOF_DT_DATA_HEADER, p.bursts[0], 1.0);
+    int corrected = 0;
+    for (int b = 0; b < blocks; b++) {
+        rdof_trellis34_encode(buf + 18 * b, info);
+        info[7 + 13 * b] ^= 1;
+        if (b & 1)
+            info[150] ^= 1;
+        rdof_info_burst(info, RDOF_DT_RATE_34, 2, sync, p.bursts[1]);
+        rdof_data_block_t blk;
+        rdof_decode_data_block(p.bursts[1], RDOF_DT_RATE_34, &blk);
+        corrected += blk.errors > 0 && blk.fec_ok && !memcmp(blk.payload, buf + 18 * b, 18);
+        rdof_ipgw_burst(g, &W, RDOF_DT_RATE_34, p.bursts[1], 1.0 + 0.06 * b);
+    }
+    CHECK(corrected == blocks, "corrected %d of %d", corrected, blocks);
+    CHECK(f.sent == 1 && g->n.rx_messages == 1 && g->n.rx_bad == 0, "sent %d bad %u", f.sent,
+          (unsigned)g->n.rx_bad);
+    free(g);
+}
+
 static void t_limits(void)
 {
     fake_t f;
@@ -1249,6 +1286,7 @@ void test_ipgw(void)
     t_nat();
     t_confirmed();
     t_assembly();
+    t_rate34_corrected();
     t_limits();
     t_ip_payload();
     t_radios();
