@@ -220,6 +220,21 @@ if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
 endif()
 add_test(NAME sdrmodem_tests COMMAND sdrmodem_tests)
 
+# A two-carrier trunked site, carrier B on a split TX half (trunksplit.c; with the controller, so only with cargo).
+if(TARGET rdof_rust_t3)
+    add_executable(rdof_trunksplit_tests test_trunksplit.c fake_radio.c ../sdr/src/trunksplit.c ../common/src/trunkunit.c
+                   ../common/src/trunksim.c)
+    target_include_directories(rdof_trunksplit_tests PRIVATE ../common/include)
+    target_link_libraries(rdof_trunksplit_tests PRIVATE rdof_sdr rdof_rust_t3 m)
+    set_target_properties(rdof_trunksplit_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+    target_compile_options(rdof_trunksplit_tests PRIVATE -Wall -Wno-unused-parameter)
+    if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+        target_compile_options(rdof_trunksplit_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(rdof_trunksplit_tests PRIVATE -fsanitize=address,undefined)
+    endif()
+    add_test(NAME rdof_trunksplit_tests COMMAND rdof_trunksplit_tests)
+endif()
+
 # The IP gateway on an sdr_transceiver (half and full duplex), end to end through the SDR modem and the receiver.
 add_executable(ipgw_sdr_tests test_ipgw_sdr.c)
 target_link_libraries(ipgw_sdr_tests PRIVATE rdof_sdr m)

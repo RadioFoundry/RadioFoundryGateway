@@ -124,6 +124,10 @@ void rdof_trunkunit_run(rdof_trunkunit_t *u, int64_t k_upto, int64_t now_ms);
 /* Carrier c's burst for slot k (rdof_trunkrf_slot), the controller run up to k first. */
 bool rdof_trunkunit_slot(rdof_trunkunit_t *u, int c, int64_t k, uint8_t burst[RDOF_BURST_BYTES], uint8_t *control,
                          int *at, int32_t *slc28);
+/* A payload carrier on a split TX half: the controller run to k_now + 4, then rdof_trunkrf_split_pump (k_now: the UTC
+   slot on air now). */
+void rdof_trunkunit_split_pump(rdof_trunkunit_t *u, rdof_trunkrf_split_t *o, struct rdof_split *s, int64_t k_now,
+                               double now);
 /* The AT bit of the TSCC carrier's CACH after slot k (before k + 1): 0, 1; -1 not held. */
 int rdof_trunkunit_at(const rdof_trunkunit_t *u, int64_t k);
 /* A burst heard on carrier c's inbound under slot k. */

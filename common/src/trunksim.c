@@ -80,8 +80,13 @@ void rdof_trunksim_slot(rdof_trunksim_t *s, int64_t k, int64_t now_ms)
         uint8_t burst[RDOF_BURST_BYTES], control;
         int at, rcc;
         int32_t slc;
-        rdof_trunkunit_slot(u, c, k, burst, &control, &at, &slc);
         dt[c] = 0;
+        if (s->outside >> c & 1) {
+            if (!s->outbound || !s->outbound(s->outbound_ctx, c, k, burst))
+                continue;
+        } else {
+            rdof_trunkunit_slot(u, c, k, burst, &control, &at, &slc);
+        }
         const rdof_trunk_pdu_t r = rdof_trunk_burst_pdu(burst, &dt[c], &rcc, pdu[c]);
         if (r == RDOF_TRUNK_PDU_OK)
             s->out_pdus++;

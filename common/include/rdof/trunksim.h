@@ -35,6 +35,11 @@ typedef struct {
     rdof_t3ms_t *ms[RDOF_TRUNKSIM_MS]; /* rdof_t3ms_size() bytes each, the caller's */
     uint32_t id[RDOF_TRUNKSIM_MS];
     int voice_n[RDOF_TRUNKSIM_MS];     /* each MS's next voice burst (A = 0 .. F = 5) */
+    /* Carriers whose outbound comes from elsewhere (bit c), as aired by a split TX half, say: outbound gives slot k's
+     * burst on carrier c (false: nothing aired). The sim doesn't ask the unit for them. */
+    uint32_t outside;
+    bool (*outbound)(void *ctx, int c, int64_t k, uint8_t burst[RDOF_BURST_BYTES]);
+    void *outbound_ctx;
     /* counters */
     uint32_t out_pdus, out_bad, in_pdus, in_voice, collisions;
 } rdof_trunksim_t;

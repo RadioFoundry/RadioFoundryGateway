@@ -710,6 +710,15 @@ bool rdof_trunkunit_slot(rdof_trunkunit_t *u, int c, int64_t k, uint8_t burst[RD
     return ok;
 }
 
+void rdof_trunkunit_split_pump(rdof_trunkunit_t *u, rdof_trunkrf_split_t *o, struct rdof_split *s, int64_t k_now,
+                               double now)
+{
+    if (u->k_next <= k_now + 4)
+        rdof_trunkunit_run(u, k_now + 4, u->now_ms);
+    rdof_trunkrf_split_pump(&u->rf, o, s, k_now, 0, now);
+    drain(u);
+}
+
 int rdof_trunkunit_at(const rdof_trunkunit_t *u, int64_t k)
 {
     const rdof_trunkunit_held_t *r = k >= 0 ? &u->ring[k % RDOF_TRUNKUNIT_RING] : NULL;
