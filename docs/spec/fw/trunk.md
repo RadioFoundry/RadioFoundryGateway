@@ -51,6 +51,14 @@ stun/revive/kill, gateways (PSTN, PABX, dispatcher), duplex calls, ambient liste
 running call, a standby controller, trunking on the W12 (the LR2021 can't stay keyed: slot-timing.md), two carriers
 out of one SDR, authentication (owner's go-ahead first), encryption beyond pass-through.
 
+Two carriers out of one SDR (tried on the Pluto, 2026-11-06, with fixed test signals, not the site): two DMR BS
+carriers 125 kHz apart, each idle bursts with the CACH on both slots, summed in software and sent on TX1 (2.4 MS/s,
+the LO between them, each at half amplitude), both decoded on the SDR bench with no bit errors beyond the single
+carrier's, 6 dB down each; intermodulation stayed under the bench receiver's floor, about 22 dB below the carriers,
+so the true level is unmeasured. The AD9363's second chain (TX2, same LO) took its own stream (DMA channels 2 and 3)
+in 2R2T mode, but its port isn't cabled to the bench, so it wasn't heard. Either way works for a later two-carrier
+site: one chain is simplest; two chains keep each carrier on its own amplifier.
+
 ## 2. Architecture
 
 ```
