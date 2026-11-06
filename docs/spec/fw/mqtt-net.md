@@ -38,7 +38,7 @@ Order: rdofradio first (it already carries MQTT calls, [mqtt.md](mqtt.md) §10),
 | rdofradio: `format: "v3"`, `--file RX[,TX]` to run it with no radio | `sdr/cli/rdofradio.c` |
 | The board: one connection, every receiver's tracker, the router's transmitters, `/api/status` `mqtt_net` | `esp_idf/main/mqttnet_task.c` |
 | The vectors (§13) and seven RF scenes, for the router and the apps to test against | `host-tests/fixtures/mqtt-net/vectors.json` |
-| For Tier III (2026-11-06): the `setup` item and the Tier II answer (§9.4), registration records, `where`, `status`, the trunk object of `info`, the trunk events, provisioning with its cache, commands | `rdof/mqttnet.h`, `common/src/mnctl.c` (`rdof/mnctl.h`); the board answers setups (`mqttnet_task.c`); rdofradio not yet |
+| For Tier III (2026-11-06): the `setup` item and the Tier II answer (§9.4), registration records, `where`, `status`, the trunk object of `info`, the trunk events, provisioning with its cache, commands | `rdof/mqttnet.h`, `common/src/mnctl.c` (`rdof/mnctl.h`); the Tier II answer and its `setup` events in `rdof_mn_setup_tier2`, run by the board (`mqttnet_task.c`) and rdofradio |
 
 Decisions taken while building it:
 
@@ -526,6 +526,8 @@ site A: grants the caller; the voice then goes as an ordinary private call both 
 - **Every box with a transmitting path:** a `request` on its `dl` is answered at once: `accept` with `unconfirmed`
   when the called radio was last heard on a path of this network that can transmit, else `reject not_found`. A Tier
   III radio can call a radio on a Tier II repeater this way. A box never answers a setup it got on `tg` or `pc`.
+  Each setup it gets on `dl` goes in `activity` as a `setup` event, and so does its answer (`path` the answer's
+  path, `peer` `router`). Code: `rdof_mn_setup_tier2`.
 - **The router:** a `request` for a radio it can't place gets `reject not_found` from the router on
   `dl/{publisher}`, unless its flood policy sends the request on; then the first `accept` wins and the caller's site
   sends `cancel` to any later acceptor.

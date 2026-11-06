@@ -466,6 +466,25 @@ size_t rdof_mn_queue_event(const rdof_mn_ev_t *e, uint32_t src, uint32_t dst, bo
 size_t rdof_mn_setup_event(const rdof_mn_ev_t *e, uint32_t src, uint32_t dst, int op, int reason, const char *peer,
                            char *out, size_t cap);
 
+/* A Tier II box's side of call setup (section 9.4), for the downlink's setup hook. A setup on dl gets a setup event
+   (the box received it); a request also gets its answer (rdof_mn_setup_answer) and an event for that. The answer is
+   accept, unconfirmed, when heard_path (where the box last heard the called radio, -1 none) is a path of site on net
+   that can send (rdof_mn_path_can_send), else reject not_found. Setups on tg are ignored. stream: the answer's own
+   stream ID. Returns the events written. */
+typedef struct {
+    size_t len;  /* the answer, for {root}/pc/{to}/{node}; 0: none */
+    uint32_t to; /* the caller */
+    uint8_t msg[RDOF_MN_HEADER + 2 + RDOF_MN_SETUP_LEN];
+    int nev;
+    char ev[2][320]; /* the activity events, in order: the setup received, then the answer sent */
+} rdof_mn_tier2_t;
+int rdof_mn_setup_tier2(const rdof_site_t *site, int net, const char *node, double wall, const rdof_mn_hdr_t *h,
+                        const rdof_mn_setup_t *s, bool dl, const char *from, int heard_path, uint32_t stream,
+                        rdof_mn_tier2_t *out);
+/* Path k of site is on network net and can deliver a call from it: a frequency that transmits, and a policy that lets
+   the network out to RF (info's tx_ok, section 6). */
+bool rdof_mn_path_can_send(const rdof_site_t *site, int net, int k);
+
 /* {"ev":"data_result",...} */
 size_t rdof_mn_data_result_event(const char *node, double wall, int path, int slot, uint32_t stream, uint32_t src,
                                  uint32_t dst, const char *from, uint32_t from_stream, const char *result, int tries,

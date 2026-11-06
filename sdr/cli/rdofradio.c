@@ -1629,6 +1629,23 @@ static void mn_data(void *ctx, const rdof_mn_hdr_t *h, bool confirmed, bool dl, 
     rdof_mn_results_add(&mn_results, h, confirmed, from, k, p ? (p->slot ? p->slot : p->tx_slot) : 0, now_s());
 }
 
+/* A call setup on the box's dl (mqtt-net.md §9.4): a Tier II box answers a request at once from its last heard
+   (rdof_mn_setup_tier2): accept, unconfirmed, when the called radio was heard on a path of this network that can
+   transmit, else reject not_found. The setup and the answer go in activity. */
+static void mn_setup(void *ctx, const rdof_mn_hdr_t *h, const rdof_mn_setup_t *s, bool dl, const char *from)
+{
+    static rdof_mn_tier2_t t;
+    const int heard = dl && s->op == RDOF_MN_SETUP_REQUEST ? rdof_router_heard(&SR.router, h->dst, now_s()) : -1;
+    rdof_mn_setup_tier2(&rcfg.site, sr_mqtt, mn_node, wall_s(), h, s, dl, from, heard, sink_rand(NULL), &t);
+    for (int i = 0; i < t.nev; i++)
+        rdofmq_publish(MN, mn_act, t.ev[i], -1, 1, false);
+    if (t.len)
+        mn_publish(NULL, RDOF_MN_T_PC, t.to, t.msg, t.len);
+    if (t.len)
+        say("mqtt-net: setup %u -> %u: %s\n", (unsigned)h->src, (unsigned)h->dst,
+            t.msg[RDOF_MN_HEADER + 2] == RDOF_MN_SETUP_ACCEPT ? "accept" : "reject not_found");
+}
+
 static void mn_message(void *ctx, const char *topic, const void *data, int len)
 {
     if (len <= 0 || len > RDOF_MN_MSG_MAX || strlen(topic) >= sizeof mn_in[0].topic)
@@ -1726,6 +1743,7 @@ static void mn_start(void)
     mn_down.raw_tx = rcfg.site.net[sr_mqtt].raw_tx;
     mn_down.burst = mn_burst;
     mn_down.data = mn_data;
+    mn_down.setup = mn_setup;
     snprintf(id, sizeof id, "rdof-net-%s", mn_node);
     rdofmq_opts_t o = {.host = c->mqtt_host, .user = c->mqtt_user, .pass = c->mqtt_pass, .port = c->mqtt_port,
                        .tls = c->mqtt_tls, .client_id = id, .will_topic = mn_online, .will_msg = "0",
