@@ -187,6 +187,19 @@ if(RDOF_CARGO)
     set_target_properties(rdof_tests_rust PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
     target_compile_options(rdof_tests_rust PRIVATE -Wall -Wno-unused-parameter)
     add_test(NAME rdof_tests_rust COMMAND rdof_tests_rust)
+
+    # The trunked site controller (rust's t3 feature alone, rdof/t3.h): its own tests (cargo test: the PDU codec and
+    # the scenarios), and the C API from C.
+    rdof_rust_add(rdof_rust_t3 NO_DEFAULT_FEATURES FEATURES t3)
+    add_executable(rdof_t3_tests test_t3.c)
+    target_include_directories(rdof_t3_tests PRIVATE ../common/include)
+    target_link_libraries(rdof_t3_tests PRIVATE rdof_rust_t3)
+    set_target_properties(rdof_t3_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+    target_compile_options(rdof_t3_tests PRIVATE -Wall -Wno-unused-parameter)
+    add_test(NAME rdof_t3_tests COMMAND rdof_t3_tests)
+    add_test(NAME rdof_t3_cargo_tests
+        COMMAND ${RDOF_CARGO} test --no-default-features --features t3 --manifest-path ${RDOF_RUST_DIR}/Cargo.toml
+                --target-dir ${CMAKE_CURRENT_BINARY_DIR}/rdof_rust_t3-cargo-test)
 endif()
 
 # The pages' scripts parse (a syntax error leaves a page section empty, and nothing else says so).

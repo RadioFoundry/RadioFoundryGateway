@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 # rust built by cargo as a static library, for the host tests and the ESP-IDF build.
-#   rdof_rust_add(<name> [TARGET <triple>] [TOOLCHAIN <rustup toolchain>] [BUILD_STD])
+#   rdof_rust_add(<name> [TARGET <triple>] [TOOLCHAIN <rustup toolchain>] [BUILD_STD]
+#                 [NO_DEFAULT_FEATURES] [FEATURES <feature>...])
 # makes <name> an imported static library (librdof_rust.a) that cargo rebuilds when a .rs file changes, without
-# Rust's compiler_builtins (strip_builtins.cmake).
+# Rust's compiler_builtins (strip_builtins.cmake). The default feature, legacy, is the modules that replace common's
+# C; t3 is the trunked site (NO_DEFAULT_FEATURES FEATURES t3 builds it alone).
 set(RDOF_RUST_DIR ${CMAKE_CURRENT_LIST_DIR})
 # common modules the crate replaces: common/src/<module>.c each.
 set(RDOF_RUST_MODULES ambe benchcfg benchtx bits config hblink jitter json jsonp layer2 mmdvm modem netcalls oled pdu rawburst repeater slotgrid status tracker txvr usbmatch)
@@ -11,7 +13,7 @@ set(RDOF_RUST_MODULES ambe benchcfg benchtx bits config hblink jitter json jsonp
 set(RDOF_RUST_C_SRCS ${RDOF_RUST_DIR}/layout.c)
 
 function(rdof_rust_add name)
-    cmake_parse_arguments(A "BUILD_STD" "TARGET;TOOLCHAIN" "" ${ARGN})
+    cmake_parse_arguments(A "BUILD_STD;NO_DEFAULT_FEATURES" "TARGET;TOOLCHAIN" "FEATURES" ${ARGN})
     find_program(RDOF_CARGO cargo HINTS $ENV{HOME}/.cargo/bin REQUIRED)
     set(dir ${CMAKE_CURRENT_BINARY_DIR}/${name}-cargo)
     set(cmd ${RDOF_CARGO})
@@ -24,6 +26,13 @@ function(rdof_rust_add name)
         set(lib ${dir}/${A_TARGET}/release/librdof_rust.a)
     else()
         set(lib ${dir}/release/librdof_rust.a)
+    endif()
+    if(A_NO_DEFAULT_FEATURES)
+        list(APPEND cmd --no-default-features)
+    endif()
+    if(A_FEATURES)
+        list(JOIN A_FEATURES "," features)
+        list(APPEND cmd --features ${features})
     endif()
     if(A_BUILD_STD)  # a target without a prebuilt core (Xtensa): build it from rust-src
         list(APPEND cmd -Zbuild-std=core)

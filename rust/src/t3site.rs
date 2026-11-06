@@ -1,0 +1,2700 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
+//! The trunked site controller (DMR Tier III, ETSI TS 102 361-4): registration, random access, group and individual
+//! calls, the queue, grants, the TSCC schedule and the timers (docs/spec/fw/trunk.md section 3). C API: rdof/t3.h.
+//!
+//! Sans-IO: no clock, no allocation, no I/O. The caller gives it the inbound PDUs, payload voice activity, network
+//! events and the time; per slot it returns the blocks to send, and events say what else to do. Every struct here
+//! is valid all zero, so the caller's memory is zeroed and filled in place (the site is about 100 KB).
+
+use core::ffi::{c_char, c_int, CStr};
+use core::fmt::Write;
+
+use crate::t3pdu::*;
+
+pub const CARRIERS: usize = 4;
+pub const CHANNELS: usize = CARRIERS * 2;
+pub const REGS: usize = 1024;
+pub const REG_TGS: usize = 8;
+pub const PENDING: usize = 32;
+pub const STREAMS: usize = 16;
+pub const NEIGHBORS: usize = 32;
+pub const MS_POLICIES: usize = 256;
+pub const IDSET_RANGES: usize = 16;
+const EVENTS: usize = 64;
+const RESP: usize = 32;
+const SUBS_MAX: usize = 512;
+
+// ── the C structs (rdof/t3.h) ──────────────────────────────────────────────────
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Carrier {
+    pub tx_hz: u32,
+    pub rx_hz: u32,
+    pub chan: u16,
+    pub tscc: u8,
+    pub enabled: u8,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Cfg {
+    pub model: u8,
+    pub par: u8,
+    pub area_bits: u8,
+    pub version: u8,
+    pub net: u16,
+    pub site: u16,
+    pub ncarriers: u8,
+    pub cc: u8,
+    pub site_sync: u8,
+    pub reg_required: u8,
+    pub carriers: [Carrier; CARRIERS],
+    pub foacsu: u8,
+    pub nrand_wait: u8,
+    pub backoff_min: u8,
+    pub backoff_max: u8,
+    pub clear_repeats: u8,
+    pub warmup_cach: u8,
+    pub ahoy_tries: u8,
+    pub queue_max: u8,
+    pub clock_ok: u8,
+    pub pad0: u8,
+    pub utc_offset_min: i16,
+    pub tp_ms: u32,
+    pub tnp_ms: u32,
+    pub hang_ms: u32,
+    pub call_ms: u32,
+    pub emergency_call_ms: u32,
+    pub ahoy_every_ms: u32,
+    pub grant_every_ms: u32,
+    pub queue_ms: u32,
+    pub net_queue_ms: u32,
+    pub setup_ms: u32,
+    pub start_grace_ms: u32,
+    pub reg_hold_s: u32,
+    pub adjacent_ms: u32,
+    pub chan_freq_ms: u32,
+    pub local_time_ms: u32,
+    pub gen_site_ms: u32,
+    pub stream_seed: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Range {
+    pub lo: u32,
+    pub hi: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct IdSet {
+    pub all: u8,
+    pub n: u8,
+    pub pad: [u8; 2],
+    pub r: [Range; IDSET_RANGES],
+}
+
+impl IdSet {
+    pub fn all() -> IdSet {
+        IdSet { all: 1, ..Default::default() }
+    }
+    pub fn contains(&self, id: u32) -> bool {
+        self.all != 0 || self.r[..(self.n as usize).min(IDSET_RANGES)].iter().any(|r| r.lo <= id && id <= r.hi)
+    }
+    pub fn of(ranges: &[(u32, u32)]) -> IdSet {
+        let mut s = IdSet::default();
+        for (i, &(lo, hi)) in ranges.iter().take(IDSET_RANGES).enumerate() {
+            s.r[i] = Range { lo, hi };
+            s.n = i as u8 + 1;
+        }
+        s
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Policy {
+    pub open: u8,
+    pub refuse_unlisted: u8,
+    pub pad: [u8; 2],
+    pub ms: IdSet,
+    pub private_ms: IdSet,
+    pub tg: IdSet,
+    pub wide_tg: IdSet,
+    pub static_tg: IdSet,
+}
+
+impl Policy {
+    /// Registration open to any MS, every talkgroup allowed, none wide or static.
+    pub fn default_open() -> Policy {
+        Policy { open: 1, ms: IdSet::all(), private_ms: IdSet::all(), tg: IdSet::all(), ..Default::default() }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MsPolicy {
+    pub enabled: u8,
+    pub private_ok: u8,
+    pub wide_private: u8,
+    pub emergency_ok: u8,
+    pub priority: u8,
+    pub ntg: u8,
+    pub pad: [u8; 2],
+    pub tg: [u32; REG_TGS],
+}
+
+impl MsPolicy {
+    pub fn tgs(&self) -> &[u32] {
+        &self.tg[..(self.ntg as usize).min(REG_TGS)]
+    }
+}
+
+/// An MS with no entry of its own.
+pub const MS_POLICY_DEFAULT: MsPolicy =
+    MsPolicy { enabled: 1, private_ok: 1, wide_private: 1, emergency_ok: 1, priority: 0, ntg: 0, pad: [0; 2], tg: [0; REG_TGS] };
+
+pub const HOW_REGISTER: u8 = 1;
+pub const HOW_CALL: u8 = 2;
+pub const HOW_LOADED: u8 = 3;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Record {
+    pub id: u32,
+    pub sub_tg: u32,
+    pub how: u8,
+    pub ntg: u8,
+    pub area: u8,
+    pub pad: u8,
+    pub tg: [u32; REG_TGS],
+    pub at_ms: i64,
+    pub exp_ms: i64,
+}
+
+impl Record {
+    pub fn tgs(&self) -> &[u32] {
+        &self.tg[..(self.ntg as usize).min(REG_TGS)]
+    }
+    /// Puts tg first, the others after it in order (most recent first; the oldest falls off a full list).
+    fn touch_tg(&mut self, tg: u32) -> bool {
+        let n = (self.ntg as usize).min(REG_TGS);
+        let i = self.tg[..n].iter().position(|&t| t == tg);
+        if i == Some(0) {
+            return false;
+        }
+        let end = match i {
+            Some(i) => i,
+            None => {
+                self.ntg = (n + 1).min(REG_TGS) as u8;
+                n.min(REG_TGS - 1)
+            }
+        };
+        for j in (0..end).rev() {
+            self.tg[j + 1] = self.tg[j];
+        }
+        self.tg[0] = tg;
+        true
+    }
+    fn remove_tg(&mut self, tg: u32) {
+        let n = (self.ntg as usize).min(REG_TGS);
+        if let Some(i) = self.tg[..n].iter().position(|&t| t == tg) {
+            for j in i..n - 1 {
+                self.tg[j] = self.tg[j + 1];
+            }
+            self.tg[n - 1] = 0;
+            self.ntg -= 1;
+        }
+    }
+}
+
+pub const SETUP_REQUEST: u8 = 1;
+pub const SETUP_ACCEPT: u8 = 2;
+pub const SETUP_REJECT: u8 = 3;
+pub const SETUP_ALERTING: u8 = 4;
+pub const SETUP_CANCEL: u8 = 5;
+pub const SETUP_ANSWERED: u8 = 6;
+pub const WHY_OK: u8 = 0;
+pub const WHY_NOT_FOUND: u8 = 1;
+pub const WHY_BUSY: u8 = 2;
+pub const WHY_NO_ANSWER: u8 = 3;
+pub const WHY_REFUSED: u8 = 4;
+pub const WHY_NOT_SUPPORTED: u8 = 5;
+pub const WHY_CONGESTION: u8 = 6;
+pub const WHY_TIMEOUT: u8 = 7;
+pub const SETUP_F_FOACSU: u8 = 0x01;
+pub const SETUP_F_UNCONFIRMED: u8 = 0x02;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Setup {
+    pub op: u8,
+    pub reason: u8,
+    pub flags: u8,
+    pub svc: u8,
+    pub src: u32,
+    pub dst: u32,
+    pub stream: u32,
+    pub r#ref: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Neighbor {
+    pub syscode: u16,
+    pub chan: u16,
+    pub active_known: u8,
+    pub active: u8,
+    pub prio_confirmed: u8,
+    pub prio_adjacent: u8,
+}
+
+pub const EV_CH_OPEN: u8 = 1;
+pub const EV_CH_CLOSE: u8 = 2;
+pub const EV_CH_STREAM: u8 = 3;
+pub const EV_NET_SETUP: u8 = 4;
+pub const EV_NET_SUBS: u8 = 5;
+pub const EV_RECORD: u8 = 6;
+pub const EV_ACTIVITY: u8 = 7;
+pub const EV_NET_DROP: u8 = 8;
+pub const EV_LOG: u8 = 9;
+
+pub const CLOSE_HANG: u8 = 1;
+pub const CLOSE_TIMER: u8 = 2;
+pub const CLOSE_DISCON: u8 = 3;
+pub const CLOSE_CMD: u8 = 4;
+pub const CLOSE_WITHDRAW: u8 = 5;
+
+pub const ACT_REG: u8 = 1;
+pub const ACT_GRANT: u8 = 2;
+pub const ACT_QUEUE: u8 = 3;
+pub const ACT_SETUP: u8 = 4;
+pub const ACT_REFUSE: u8 = 5;
+pub const REG_REGISTER: u8 = 1;
+pub const REG_DEREGISTER: u8 = 2;
+pub const REG_EXPIRE: u8 = 3;
+pub const REG_DENY: u8 = 4;
+pub const REG_REFUSE: u8 = 5;
+pub const QUEUE_IN: u8 = 1;
+pub const QUEUE_OUT: u8 = 2;
+pub const QUEUE_DROP: u8 = 3;
+
+pub const F_GROUP: u8 = 0x01;
+pub const F_EMERGENCY: u8 = 0x02;
+pub const F_NET: u8 = 0x04;
+pub const F_WIDE: u8 = 0x08;
+pub const F_ALLCALL: u8 = 0x10;
+pub const F_LATE: u8 = 0x20;
+pub const F_PRIVATE_NET: u8 = 0x40;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct Event {
+    pub r#type: u8,
+    pub ch: u8,
+    pub why: u8,
+    pub flags: u8,
+    pub op: u8,
+    pub reason: u8,
+    pub svc: u8,
+    pub kind: u8,
+    pub chan: u16,
+    pub lcn: u8,
+    pub pad: u8,
+    pub src: u32,
+    pub dst: u32,
+    pub stream: u32,
+    pub r#ref: u32,
+    pub text: [u8; 64],
+}
+
+impl Default for Event {
+    fn default() -> Event {
+        Event {
+            r#type: 0,
+            ch: 0,
+            why: 0,
+            flags: 0,
+            op: 0,
+            reason: 0,
+            svc: 0,
+            kind: 0,
+            chan: 0,
+            lcn: 0,
+            pad: 0,
+            src: 0,
+            dst: 0,
+            stream: 0,
+            r#ref: 0,
+            text: [0; 64],
+        }
+    }
+}
+
+impl Event {
+    pub fn text(&self) -> &str {
+        let n = self.text.iter().position(|&c| c == 0).unwrap_or(self.text.len());
+        core::str::from_utf8(&self.text[..n]).unwrap_or("")
+    }
+}
+
+pub const USE_OFF: u8 = 0;
+pub const USE_IDLE: u8 = 1;
+pub const USE_TSCC: u8 = 2;
+pub const USE_CALL: u8 = 3;
+pub const USE_HANG: u8 = 4;
+pub const USE_CLEAR: u8 = 5;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ChOut {
+    pub dt: u8,
+    pub pdu: [u8; 10],
+    pub r#use: u8,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SlotOut {
+    pub tscc_dt: u8,
+    pub tscc_pdu: [u8; 10],
+    pub at: u8,
+    pub has_slc: u8,
+    pub pad: [u8; 3],
+    pub slc_tscc: u32,
+    pub slc_payload: u32,
+    pub ch: [ChOut; CHANNELS],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ChStatus {
+    pub r#use: u8,
+    pub lcn: u8,
+    pub flags: u8,
+    pub pad: u8,
+    pub chan: u16,
+    pub pad2: u16,
+    pub src: u32,
+    pub dst: u32,
+    pub since_ms: i64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Status {
+    pub connected: u8,
+    pub withdrawn: u8,
+    pub nch: u8,
+    pub pad: u8,
+    pub regs: u32,
+    pub queue: u32,
+    pub aloha: u32,
+    pub rand: u32,
+    pub collisions: u32,
+    pub grants: u32,
+    pub refused: u32,
+    pub queued: u32,
+    pub ch: [ChStatus; CHANNELS],
+}
+
+pub const VOICE_HEADER: u8 = 1;
+pub const VOICE_FRAME: u8 = 2;
+pub const VOICE_TERM: u8 = 3;
+pub const VOICE_LOST: u8 = 4;
+
+// ── internal state ──────────────────────────────────────────────────────────────
+
+const KIND_NONE: u8 = 0;
+const KIND_GROUP: u8 = 1;
+const KIND_PRIVATE: u8 = 2;
+const KIND_ALLCALL: u8 = 3;
+
+/// An RF talker heard nothing for this long (no frame, no terminator): the item ended.
+const VOICE_LOST_MS: i64 = 1500;
+/// C_WACKD and C_QACKD repeats to a caller that waits (it gives up after its own TP or TNP otherwise).
+const WACK_EVERY_MS: i64 = 2000;
+const QACK_EVERY_MS: i64 = 4000;
+/// A record is written again (EV_RECORD) at most this often when only its time changes.
+const RECORD_REFRESH_MS: i64 = 60_000;
+const LOAD_BUCKET_MS: i64 = 200;
+const LOAD_BUCKETS: usize = 10;
+
+#[derive(Clone, Copy, Default)]
+struct Chan {
+    r#use: u8,
+    kind: u8,
+    flags: u8,
+    clear_left: u8,
+    close_why: u8,
+    talking: bool,
+    talking_net: bool,
+    src: u32,
+    dst: u32,
+    stream: u32,
+    talker: u32,
+    since_ms: i64,
+    call_end_ms: i64,
+    idle_until_ms: i64,
+    grant_next_ms: i64,
+    last_voice_ms: i64,
+}
+
+const P_AHOY: u8 = 1; // waiting for the called MS's answer to C_AHOY
+const P_ALERTING: u8 = 2; // FOACSU: the called party alerts; waiting for Call Answer
+const P_NET: u8 = 3; // waiting for the network's answer to our setup request
+const P_QUEUED: u8 = 4; // both parties ready (or a group call): waiting for a payload channel
+
+#[derive(Clone, Copy, Default)]
+struct Pend {
+    used: bool,
+    kind: u8,
+    state: u8,
+    svc: u8,
+    prio: u8,
+    ahoy_left: u8,
+    caller_local: bool,
+    called_local: bool,
+    answered: bool,
+    caller: u32,
+    called: u32,
+    stream: u32,     // the setup's stream: our request's (called remote) or the request we answer (caller remote)
+    net_stream: u32, // network voice waiting for this call's channel
+    since_ms: i64,
+    deadline_ms: i64,
+    next_ahoy_ms: i64,
+    next_ack_ms: i64,
+}
+
+#[derive(Clone, Copy, Default)]
+struct NetWait {
+    used: bool,
+    emergency: bool,
+    stream: u32,
+    src: u32,
+    tg: u32,
+    since_ms: i64,
+    deadline_ms: i64,
+}
+
+#[derive(Clone, Copy, Default)]
+struct Reg {
+    used: bool,
+    rec: Record,
+    written_ms: i64,
+}
+
+#[derive(Clone, Copy, Default)]
+struct MsPol {
+    used: bool,
+    id: u32,
+    p: MsPolicy,
+}
+
+#[derive(Clone, Copy, Default)]
+struct Resp {
+    dt: u8,
+    solicit: bool,
+    has_cont: bool,
+    pdu: [u8; 10],
+    cont: [u8; 10],
+}
+
+#[derive(Clone, Copy, Default)]
+struct Counters {
+    aloha: u32,
+    rand: u32,
+    collisions: u32,
+    grants: u32,
+    refused: u32,
+    queued: u32,
+    events_lost: u32,
+}
+
+pub struct Site {
+    cfg: Cfg,
+    policy: Policy,
+    syscode: u16,
+    tscc_carrier: usize,
+    now: i64,
+    k: i64,
+    connected: bool,
+    withdrawn: bool,
+    next_stream: u32,
+    // the TSCC
+    resp: [Resp; RESP],
+    resp_head: usize,
+    resp_len: usize,
+    cont_pending: bool,
+    cont: [u8; 10],
+    since_aloha: u32,
+    load: [u16; LOAD_BUCKETS],
+    load_bucket: i64,
+    next_adjacent_ms: i64,
+    adjacent_idx: usize,
+    next_chan_freq_ms: i64,
+    chan_freq_idx: usize,
+    next_local_time_ms: i64,
+    next_gen_site_ms: i64,
+    // calls
+    chans: [Chan; CHANNELS],
+    pend: [Pend; PENDING],
+    net: [NetWait; STREAMS],
+    // registrations and provisioning
+    regs: [Reg; REGS],
+    reg_scan: usize,
+    nregs: u32,
+    mspol: [MsPol; MS_POLICIES],
+    neighbors: [Neighbor; NEIGHBORS],
+    nneighbors: usize,
+    subs_dirty: bool,
+    subs_sum: u64,
+    // out
+    events: [Event; EVENTS],
+    ev_head: usize,
+    ev_len: usize,
+    counters: Counters,
+}
+
+/// Text into a fixed buffer, NUL terminated, cut when full (LOG events, errors).
+struct Buf<'a> {
+    b: &'a mut [u8],
+    n: usize,
+}
+
+impl Write for Buf<'_> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        for &c in s.as_bytes() {
+            if self.n + 1 < self.b.len() {
+                self.b[self.n] = c;
+                self.n += 1;
+            }
+        }
+        if self.n < self.b.len() {
+            self.b[self.n] = 0;
+        }
+        Ok(())
+    }
+}
+
+/// The defaults of trunk.md section 3.8: one composite carrier.
+pub fn cfg_default() -> Cfg {
+    let mut c = Cfg {
+        model: MODEL_SMALL,
+        par: 3,
+        area_bits: 5,
+        version: 4,
+        net: 1,
+        site: 1,
+        ncarriers: 1,
+        cc: 1,
+        site_sync: 0,
+        reg_required: 1,
+        foacsu: 0,
+        nrand_wait: 6,
+        backoff_min: 3,
+        backoff_max: 9,
+        clear_repeats: 4,
+        warmup_cach: 4,
+        ahoy_tries: 3,
+        queue_max: 16,
+        clock_ok: 0,
+        tp_ms: 20_000,
+        tnp_ms: 10_000,
+        hang_ms: 3000,
+        call_ms: 180_000,
+        emergency_call_ms: 300_000,
+        ahoy_every_ms: 1000,
+        grant_every_ms: 1200,
+        queue_ms: 10_000,
+        net_queue_ms: 2000,
+        setup_ms: 5000,
+        start_grace_ms: 2000,
+        reg_hold_s: 14_400,
+        adjacent_ms: 5000,
+        chan_freq_ms: 10_000,
+        local_time_ms: 6000,
+        gen_site_ms: 10_000,
+        stream_seed: 1,
+        ..Default::default()
+    };
+    c.carriers[0] = Carrier { tx_hz: 438_750_000, rx_hz: 438_250_000, chan: 1, tscc: 1, enabled: 1 };
+    c
+}
+
+/// The settings' checks; the first problem as text.
+fn check(c: &Cfg, err: &mut Buf) -> bool {
+    macro_rules! no {
+        ($($a:tt)*) => {{ let _ = write!(err, $($a)*); return false; }};
+    }
+    if c.model > 3 {
+        no!("system.model: 0 to 3");
+    }
+    let (nb, sb) = model_bits(c.model);
+    if c.net as u32 >= 1 << nb {
+        no!("system.net: 0 to {} for this model", (1u32 << nb) - 1);
+    }
+    if c.site == 0 || c.site as u32 >= 1 << sb {
+        no!("system.site: 1 to {} for this model", (1u32 << sb) - 1);
+    }
+    if !(1..=3).contains(&c.par) {
+        no!("system.par: a, b or ab");
+    }
+    if c.area_bits == 0 || c.area_bits as u32 > sb {
+        no!("system.area_bits: 1 to {}", sb);
+    }
+    if c.cc > 15 {
+        no!("cc: 0 to 15");
+    }
+    let n = c.ncarriers as usize;
+    if n == 0 || n > CARRIERS {
+        no!("carriers: 1 to {}", CARRIERS);
+    }
+    let mut tscc = 0;
+    for i in 0..n {
+        let a = &c.carriers[i];
+        if a.chan == 0 || a.chan > 4094 {
+            no!("carriers[{}].chan: 1 to 4094", i);
+        }
+        if (0..i).any(|j| c.carriers[j].chan == a.chan) {
+            no!("carriers[{}].chan: {} is used twice", i, a.chan);
+        }
+        if a.tscc != 0 {
+            tscc += 1;
+            if a.enabled == 0 {
+                no!("carriers[{}]: the TSCC carrier can't be disabled", i);
+            }
+        }
+    }
+    if tscc != 1 {
+        no!("carriers: exactly one with tscc (found {})", tscc);
+    }
+    if c.nrand_wait > 15 {
+        no!("timers.nrand_wait: 0 to 15");
+    }
+    if c.backoff_min == 0 || c.backoff_max > 15 || c.backoff_min > c.backoff_max {
+        no!("timers.backoff_min, backoff_max: 1 to 15, min not over max");
+    }
+    if !(4000..=60_000).contains(&c.tp_ms) {
+        no!("timers.tp_s: 4 to 60");
+    }
+    if !(2000..=60_000).contains(&c.tnp_ms) {
+        no!("timers.tnp_s: 2 to 60");
+    }
+    if !(1000..=60_000).contains(&c.hang_ms) {
+        no!("timers.hang_s: 1 to 60");
+    }
+    if !(1000..=4_094_000).contains(&c.call_ms) {
+        no!("timers.call_s: 1 to 4094");
+    }
+    if !(1000..=510_000).contains(&c.emergency_call_ms) {
+        no!("timers.emergency_call_s: 1 to 510");
+    }
+    if !(1..=10).contains(&c.ahoy_tries) || !(300..=5000).contains(&c.ahoy_every_ms) {
+        no!("timers.ahoy_tries 1 to 10, ahoy_every_s 0.3 to 5");
+    }
+    if !(300..=10_000).contains(&c.grant_every_ms) {
+        no!("timers.grant_every_s: 0.3 to 10");
+    }
+    if !(1..=8).contains(&c.clear_repeats) {
+        no!("timers.clear_repeats: 1 to 8");
+    }
+    if c.warmup_cach != 2 && c.warmup_cach != 4 {
+        no!("timers.warmup_cach: 2 or 4");
+    }
+    if !(1..=16).contains(&c.queue_max) || !(1000..=60_000).contains(&c.queue_ms) {
+        no!("timers.queue_max 1 to 16, queue_s 1 to 60");
+    }
+    if c.net_queue_ms > 10_000 || !(1000..=30_000).contains(&c.setup_ms) {
+        no!("timers.net_queue_s 0 to 10, setup_s 1 to 30");
+    }
+    if c.start_grace_ms > 10_000 {
+        no!("timers.start_grace_s: 0 to 10");
+    }
+    if !(60..=604_800).contains(&c.reg_hold_s) {
+        no!("timers.reg_hold_s: 60 to 604800");
+    }
+    true
+}
+
+fn better(key: &(bool, u8, i64), best: &Option<((bool, u8, i64), bool, usize)>) -> bool {
+    match best {
+        None => true,
+        Some((b, _, _)) => (key.0, key.1, -key.2) > (b.0, b.1, -b.2),
+    }
+}
+
+impl Site {
+    // ── setup ──
+
+    /// Fills a zeroed Site.
+    fn setup(&mut self, cfg: &Cfg) {
+        self.policy = Policy::default_open();
+        self.next_stream = cfg.stream_seed.max(1);
+        self.apply(cfg);
+        self.reset_channels();
+    }
+
+    fn apply(&mut self, cfg: &Cfg) {
+        self.cfg = *cfg;
+        self.syscode = SysCode { model: cfg.model, net: cfg.net, site: cfg.site, par: cfg.par }.encode();
+        self.tscc_carrier = (0..cfg.ncarriers as usize).find(|&i| cfg.carriers[i].tscc != 0).unwrap_or(0);
+    }
+
+    /// Sets each channel's use from the carriers, leaving calls in progress alone.
+    fn reset_channels(&mut self) {
+        for ch in 0..CHANNELS {
+            let carrier = ch / 2;
+            let exists = carrier < self.cfg.ncarriers as usize && self.cfg.carriers[carrier].enabled != 0;
+            let c = &mut self.chans[ch];
+            if ch == self.tscc_carrier * 2 {
+                *c = Chan { r#use: USE_TSCC, ..Default::default() };
+            } else if !exists {
+                if c.kind == KIND_NONE {
+                    *c = Chan::default();
+                }
+            } else if c.r#use == USE_OFF || c.r#use == USE_TSCC {
+                *c = Chan { r#use: USE_IDLE, ..Default::default() };
+            }
+        }
+    }
+
+    // ── helpers ──
+
+    fn ev(&mut self, e: Event) {
+        if self.ev_len == EVENTS {
+            self.counters.events_lost += 1;
+            return;
+        }
+        let i = (self.ev_head + self.ev_len) % EVENTS;
+        self.events[i] = e;
+        self.ev_len += 1;
+    }
+
+    fn log(&mut self, args: core::fmt::Arguments) {
+        let mut e = Event { r#type: EV_LOG, ..Default::default() };
+        let mut b = Buf { b: &mut e.text, n: 0 };
+        let _ = b.write_fmt(args);
+        self.ev(e);
+    }
+
+    fn chan_ev(&self, ch: usize, ty: u8) -> Event {
+        let c = &self.chans[ch];
+        Event {
+            r#type: ty,
+            ch: ch as u8,
+            flags: c.flags,
+            chan: self.cfg.carriers[ch / 2].chan,
+            lcn: (ch % 2) as u8,
+            src: c.src,
+            dst: c.dst,
+            stream: c.stream,
+            ..Default::default()
+        }
+    }
+
+    fn activity(&mut self, kind: u8, op: u8, src: u32, dst: u32, reason: u8) {
+        self.ev(Event { r#type: EV_ACTIVITY, kind, op, src, dst, reason, ..Default::default() });
+    }
+
+    fn drop_stream(&mut self, stream: u32, why: u8) {
+        self.ev(Event { r#type: EV_NET_DROP, stream, why, ..Default::default() });
+    }
+
+    fn new_stream(&mut self) -> u32 {
+        let s = self.next_stream;
+        self.next_stream = self.next_stream.wrapping_add(1).max(1);
+        s
+    }
+
+    fn reg_bit(&self) -> bool {
+        self.cfg.reg_required != 0
+    }
+
+    /// The Backoff code: the floor plus half the random accesses and collisions of the last 2 s.
+    fn backoff(&self) -> u8 {
+        let load: u32 = self.load.iter().map(|&n| n as u32).sum();
+        (self.cfg.backoff_min as u32 + load / 2).clamp(self.cfg.backoff_min as u32, self.cfg.backoff_max as u32) as u8
+    }
+
+    fn count_load(&mut self) {
+        let i = self.now.div_euclid(LOAD_BUCKET_MS).rem_euclid(LOAD_BUCKETS as i64) as usize;
+        self.load[i] = self.load[i].saturating_add(1);
+    }
+
+    fn roll_load(&mut self) {
+        let b = self.now.div_euclid(LOAD_BUCKET_MS);
+        if b != self.load_bucket {
+            let steps = (b - self.load_bucket).clamp(0, LOAD_BUCKETS as i64);
+            for s in 1..=steps {
+                self.load[(self.load_bucket + s).rem_euclid(LOAD_BUCKETS as i64) as usize] = 0;
+            }
+            self.load_bucket = b;
+        }
+    }
+
+    fn queue_len(&self) -> usize {
+        self.pend.iter().filter(|p| p.used && p.state == P_QUEUED).count() + self.net.iter().filter(|n| n.used).count()
+    }
+
+    fn ms_policy(&self, ms: u32) -> MsPolicy {
+        self.mspol.iter().find(|m| m.used && m.id == ms).map(|m| m.p).unwrap_or(MS_POLICY_DEFAULT)
+    }
+
+    fn reg_index(&self, ms: u32) -> Option<usize> {
+        self.regs.iter().position(|r| r.used && r.rec.id == ms)
+    }
+
+    fn live(c: &Chan) -> bool {
+        matches!(c.r#use, USE_CALL | USE_HANG)
+    }
+
+    // ── the TSCC ──
+
+    fn push(&mut self, dt: u8, pdu: [u8; 10], solicit: bool, cont: Option<[u8; 10]>) {
+        if self.resp_len == RESP {
+            self.log(format_args!("tscc queue full"));
+            return; // the MS repeats its request
+        }
+        let i = (self.resp_head + self.resp_len) % RESP;
+        self.resp[i] = Resp { dt, solicit, has_cont: cont.is_some(), pdu, cont: cont.unwrap_or([0; 10]) };
+        self.resp_len += 1;
+    }
+
+    /// C_ACKD, C_NACKD, C_QACKD or C_WACKD (by the reason) to target, about source.
+    fn ack(&mut self, reason: u8, target: u32, source: u32) {
+        let ri = match reason {
+            R_REG_ACCEPTED | R_REG_SUBSCRIPTION => 0, // no power save, no list pattern
+            _ => SysCode::decode(self.syscode).response_check(),
+        };
+        let a = Ack { op: OP_ACKD, response_info: ri, reason, target, source };
+        self.push(DT_CSBK, a.encode(), false, None);
+        if reason_type(reason) == 0 {
+            self.counters.refused += 1;
+        }
+    }
+
+    fn refuse(&mut self, reason: u8, target: u32, source: u32) {
+        self.ack(reason, target, source);
+        self.activity(ACT_REFUSE, 0, target, source, reason);
+    }
+
+    fn aloha(&mut self) -> [u8; 10] {
+        self.counters.aloha += 1;
+        let sf = if self.queue_len() >= self.cfg.queue_max as usize { 3 } else { 0 };
+        Aloha {
+            tsccas: false,
+            site_sync: self.cfg.site_sync != 0,
+            version: self.cfg.version,
+            offset: false,
+            active_connection: self.connected,
+            mask: 0,
+            service_function: sf,
+            nrand_wait: self.cfg.nrand_wait,
+            reg: self.reg_bit(),
+            backoff: self.backoff(),
+            syscode: self.syscode,
+            addr: ADRNULL,
+        }
+        .encode()
+    }
+
+    fn grant_pdu(&self, ch: usize, late: bool, source: u32) -> [u8; 10] {
+        let c = &self.chans[ch];
+        let op = match c.kind {
+            KIND_PRIVATE => OP_PV_GRANT,
+            KIND_ALLCALL => OP_BTV_GRANT,
+            _ => OP_TV_GRANT,
+        };
+        Grant {
+            op,
+            chan: self.cfg.carriers[ch / 2].chan,
+            lcn: (ch % 2) as u8,
+            late_entry: late && op != OP_PV_GRANT,
+            emergency: c.flags & F_EMERGENCY != 0,
+            offset: false,
+            target: c.dst,
+            source,
+        }
+        .encode()
+    }
+
+    /// A grant repeat that is due (Late_Entry, for MSs that missed the start): the oldest one.
+    fn due_grant(&mut self) -> Option<[u8; 10]> {
+        let now = self.now;
+        let ch = (0..CHANNELS)
+            .filter(|&i| Self::live(&self.chans[i]) && self.chans[i].kind != KIND_PRIVATE && now >= self.chans[i].grant_next_ms)
+            .min_by_key(|&i| self.chans[i].grant_next_ms)?;
+        self.chans[ch].grant_next_ms = now + self.cfg.grant_every_ms as i64;
+        let c = self.chans[ch];
+        Some(self.grant_pdu(ch, true, if c.talker != 0 { c.talker } else { c.src }))
+    }
+
+    /// A broadcast that is due: the block and its type, and an MBC's continuation.
+    fn due_bcast(&mut self) -> Option<([u8; 10], u8, Option<[u8; 10]>)> {
+        let now = self.now;
+        let (reg, bo, sc) = (self.reg_bit(), self.backoff(), self.syscode);
+        if self.cfg.adjacent_ms > 0 && self.nneighbors > 0 && now >= self.next_adjacent_ms {
+            let n = self.neighbors[self.adjacent_idx % self.nneighbors];
+            self.adjacent_idx = (self.adjacent_idx + 1) % self.nneighbors;
+            self.next_adjacent_ms = now + (self.cfg.adjacent_ms as i64 / self.nneighbors as i64).max(300);
+            let act = if n.active_known != 0 { Some(n.active != 0) } else { None };
+            let b = Bcast::adjacent_site(reg, bo, sc, n.syscode, act, n.prio_confirmed, n.prio_adjacent, n.chan);
+            return Some((b.encode(), DT_CSBK, None));
+        }
+        let nc = self.cfg.ncarriers as usize;
+        if self.cfg.chan_freq_ms > 0 && now >= self.next_chan_freq_ms {
+            let c = self.cfg.carriers[self.chan_freq_idx % nc];
+            self.chan_freq_idx = (self.chan_freq_idx + 1) % nc;
+            self.next_chan_freq_ms = now + (self.cfg.chan_freq_ms as i64 / nc as i64).max(300);
+            let h = Bcast::chan_freq(reg, bo, sc, c.chan);
+            // the MS's view: it transmits on the site's receive frequency
+            let ap = BcAp { chan: c.chan, tx_hz: c.rx_hz, rx_hz: c.tx_hz };
+            return Some((h.encode(), DT_MBC_HDR, Some(ap.encode())));
+        }
+        if self.cfg.local_time_ms > 0 && self.cfg.clock_ok != 0 && now >= self.next_local_time_ms {
+            self.next_local_time_ms = now + self.cfg.local_time_ms as i64;
+            let off = self.cfg.utc_offset_min as i64;
+            let t = civil_from_ms(now + off * 60_000);
+            let b = Bcast::local_time(reg, bo, sc, &t, Some(off as i32));
+            return Some((b.encode(), DT_CSBK, None));
+        }
+        if self.cfg.gen_site_ms > 0 && now >= self.next_gen_site_ms {
+            self.next_gen_site_ms = now + self.cfg.gen_site_ms as i64;
+            let b = Bcast::gen_site_params(reg, bo, sc, false, false);
+            return Some((b.encode(), DT_CSBK, None));
+        }
+        None
+    }
+
+    /// The TSCC's block for slot k: an MBC continuation, an Aloha every fourth block at least, the answers, grant
+    /// repeats, broadcasts, else an Aloha.
+    fn tscc_slot(&mut self, out: &mut SlotOut) {
+        let (dt, pdu, solicit) = if self.cont_pending {
+            self.cont_pending = false;
+            (DT_MBC_CONT, self.cont, false)
+        } else if self.since_aloha >= 3 {
+            (DT_CSBK, self.aloha(), false)
+        } else if self.resp_len > 0 {
+            let r = self.resp[self.resp_head];
+            self.resp_head = (self.resp_head + 1) % RESP;
+            self.resp_len -= 1;
+            if r.has_cont {
+                self.cont_pending = true;
+                self.cont = r.cont;
+            }
+            (r.dt, r.pdu, r.solicit)
+        } else if let Some(g) = self.due_grant() {
+            (DT_CSBK, g, false)
+        } else if let Some((b, dt, cont)) = self.due_bcast() {
+            if let Some(c) = cont {
+                self.cont_pending = true;
+                self.cont = c;
+            }
+            (dt, b, false)
+        } else {
+            (DT_CSBK, self.aloha(), false)
+        };
+        if dt == DT_CSBK && opcode(&pdu) == OP_ALOHA {
+            self.since_aloha = 0;
+        } else {
+            self.since_aloha += 1;
+        }
+        out.tscc_dt = dt;
+        out.tscc_pdu = pdu;
+        out.at = solicit as u8;
+    }
+
+    // ── payload channels ──
+
+    /// A free payload channel: an idle one, preferring a carrier already keyed (its other slot in use).
+    fn free_channel(&self) -> Option<usize> {
+        let keyed = |i: usize| matches!(self.chans[i ^ 1].r#use, USE_CALL | USE_HANG | USE_CLEAR | USE_TSCC);
+        (0..CHANNELS).filter(|&i| self.chans[i].r#use == USE_IDLE).min_by_key(|&i| (!keyed(i), i))
+    }
+
+    /// Opens a call on channel ch and queues its grant twice.
+    #[allow(clippy::too_many_arguments)]
+    fn open(&mut self, ch: usize, kind: u8, src: u32, dst: u32, flags: u8, stream: u32, talking_net: bool) {
+        let now = self.now;
+        let timer = if flags & F_EMERGENCY != 0 { self.cfg.emergency_call_ms } else { self.cfg.call_ms } as i64;
+        self.chans[ch] = Chan {
+            r#use: if talking_net { USE_CALL } else { USE_HANG },
+            kind,
+            flags,
+            talking: talking_net,
+            talking_net,
+            src,
+            dst,
+            stream,
+            talker: if talking_net { src } else { 0 },
+            since_ms: now,
+            call_end_ms: now + timer,
+            idle_until_ms: now + self.cfg.start_grace_ms as i64 + self.cfg.hang_ms as i64,
+            grant_next_ms: now + self.cfg.grant_every_ms as i64,
+            last_voice_ms: now,
+            ..Default::default()
+        };
+        let g = self.grant_pdu(ch, false, src);
+        self.push(DT_CSBK, g, false, None);
+        self.push(DT_CSBK, g, false, None);
+        self.counters.grants += 1;
+        let e = self.chan_ev(ch, EV_CH_OPEN);
+        self.ev(e);
+        let mut a = self.chan_ev(ch, EV_ACTIVITY);
+        a.kind = ACT_GRANT;
+        self.ev(a);
+    }
+
+    /// A grant of an open channel again, twice: a party asked again, or another member asked to talk.
+    fn regrant(&mut self, ch: usize, src: u32) {
+        let now = self.now;
+        let c = &mut self.chans[ch];
+        if c.r#use == USE_HANG {
+            c.idle_until_ms = c.idle_until_ms.max(now + self.cfg.start_grace_ms as i64 + self.cfg.hang_ms as i64);
+        }
+        let source = if self.chans[ch].kind == KIND_PRIVATE { self.chans[ch].src } else { src };
+        let g = self.grant_pdu(ch, false, source);
+        self.push(DT_CSBK, g, false, None);
+        self.push(DT_CSBK, g, false, None);
+        let mut a = self.chan_ev(ch, EV_ACTIVITY);
+        a.kind = ACT_GRANT;
+        a.src = src;
+        a.flags |= F_LATE;
+        self.ev(a);
+    }
+
+    /// Starts clearing a call: P_CLEAR in the channel's next slots, then the channel closes.
+    fn clear(&mut self, ch: usize, why: u8) {
+        let c = &mut self.chans[ch];
+        if !Self::live(c) {
+            return;
+        }
+        let (stream, net) = (c.stream, c.talking_net);
+        c.r#use = USE_CLEAR;
+        c.clear_left = self.cfg.clear_repeats;
+        c.close_why = why;
+        c.talking = false;
+        c.talking_net = false;
+        if net && stream != 0 {
+            self.drop_stream(stream, WHY_CONGESTION);
+        }
+    }
+
+    fn close(&mut self, ch: usize) {
+        let mut e = self.chan_ev(ch, EV_CH_CLOSE);
+        e.why = self.chans[ch].close_why;
+        self.ev(e);
+        let carrier = ch / 2;
+        let on = carrier < self.cfg.ncarriers as usize && self.cfg.carriers[carrier].enabled != 0;
+        self.chans[ch] = Chan { r#use: if on { USE_IDLE } else { USE_OFF }, ..Default::default() };
+        self.serve_queue();
+    }
+
+    /// The group call (or all-call) on tg, if one is open.
+    fn group_channel(&self, tg: u32) -> Option<usize> {
+        (0..CHANNELS).find(|&i| {
+            let c = &self.chans[i];
+            Self::live(c) && matches!(c.kind, KIND_GROUP | KIND_ALLCALL) && c.dst == tg
+        })
+    }
+
+    fn private_channel(&self, a: u32, b: u32) -> Option<usize> {
+        (0..CHANNELS).find(|&i| {
+            let c = &self.chans[i];
+            Self::live(c) && c.kind == KIND_PRIVATE && ((c.src == a && c.dst == b) || (c.src == b && c.dst == a))
+        })
+    }
+
+    /// Whether an MS is in an individual call, or a party of one being set up.
+    fn ms_busy(&self, ms: u32) -> bool {
+        self.chans.iter().any(|c| Self::live(c) && c.kind == KIND_PRIVATE && (c.src == ms || c.dst == ms))
+            || self.pend.iter().any(|p| p.used && p.kind == KIND_PRIVATE && (p.called == ms || p.caller == ms))
+    }
+
+    fn payload_slot(&mut self, out: &mut SlotOut) {
+        let lcn = (self.k & 1) as usize;
+        for ch in 0..CHANNELS {
+            out.ch[ch].r#use = self.chans[ch].r#use;
+            if ch % 2 != lcn || self.chans[ch].r#use != USE_CLEAR {
+                continue;
+            }
+            let c = Clear { chan: 0, group: false, target: ALLMSI, source: TSI };
+            out.ch[ch].dt = DT_CSBK;
+            out.ch[ch].pdu = c.encode();
+            self.chans[ch].clear_left = self.chans[ch].clear_left.saturating_sub(1);
+            if self.chans[ch].clear_left == 0 {
+                self.close(ch);
+            }
+        }
+    }
+
+    fn channel_timers(&mut self) {
+        let now = self.now;
+        for ch in 0..CHANNELS {
+            let c = self.chans[ch];
+            if !Self::live(&c) {
+                continue;
+            }
+            if now >= c.call_end_ms {
+                self.clear(ch, CLOSE_TIMER);
+                continue;
+            }
+            if c.talking && !c.talking_net && now - c.last_voice_ms > VOICE_LOST_MS {
+                let c = &mut self.chans[ch];
+                c.talking = false;
+                c.r#use = USE_HANG;
+                c.idle_until_ms = now + self.cfg.hang_ms as i64;
+            }
+            let c = self.chans[ch];
+            if !c.talking && now >= c.idle_until_ms {
+                self.clear(ch, CLOSE_HANG);
+            }
+        }
+    }
+
+    // ── the queue ──
+
+    /// Gives free channels to the waiting requests: emergency first, then priority, then age.
+    fn serve_queue(&mut self) {
+        loop {
+            let Some(ch) = self.free_channel() else { return };
+            let mut best: Option<((bool, u8, i64), bool, usize)> = None; // key, is_net, index
+            for (i, p) in self.pend.iter().enumerate() {
+                let key = (p.svc & SO_EMERGENCY != 0, p.prio, p.since_ms);
+                if p.used && p.state == P_QUEUED && better(&key, &best) {
+                    best = Some((key, false, i));
+                }
+            }
+            for (i, n) in self.net.iter().enumerate() {
+                let key = (n.emergency, 0, n.since_ms);
+                if n.used && better(&key, &best) {
+                    best = Some((key, true, i));
+                }
+            }
+            let Some((_, is_net, i)) = best else { return };
+            if is_net {
+                let n = self.net[i];
+                self.net[i].used = false;
+                self.activity(ACT_QUEUE, QUEUE_OUT, n.src, n.tg, 0);
+                self.net_group_go(n.stream, n.src, n.tg, n.emergency, Some(ch));
+            } else {
+                let p = self.pend[i];
+                self.pend[i].used = false;
+                self.activity(ACT_QUEUE, QUEUE_OUT, p.caller, p.called, 0);
+                if p.kind == KIND_PRIVATE {
+                    self.private_go(&p, ch);
+                } else {
+                    self.group_go(p.caller, p.called, p.svc, ch);
+                }
+            }
+        }
+    }
+
+    fn free_pend(&self) -> Option<usize> {
+        self.pend.iter().position(|p| !p.used)
+    }
+
+    /// Queues a request for a channel (C_QACKD to a local caller), or refuses it when the queue is full.
+    fn enqueue(&mut self, mut p: Pend) {
+        let full = self.queue_len() >= self.cfg.queue_max as usize;
+        match (full, self.free_pend()) {
+            (false, Some(i)) => {
+                p.used = true;
+                p.state = P_QUEUED;
+                p.deadline_ms = self.now + self.cfg.queue_ms as i64;
+                p.next_ack_ms = self.now + QACK_EVERY_MS;
+                if p.caller_local {
+                    self.ack(R_QUEUED, p.caller, p.called);
+                }
+                self.pend[i] = p;
+                self.counters.queued += 1;
+                self.activity(ACT_QUEUE, QUEUE_IN, p.caller, p.called, 0);
+            }
+            _ => {
+                self.fail(&p, R_SYSBUSY, WHY_CONGESTION);
+                self.activity(ACT_QUEUE, QUEUE_DROP, p.caller, p.called, R_SYSBUSY);
+            }
+        }
+    }
+
+    /// Ends a request that failed: C_NACKD to a local caller (and a cancel to the network if it was asked), a
+    /// reject to a network caller, a drop of the voice waiting for it.
+    fn fail(&mut self, p: &Pend, reason: u8, why: u8) {
+        if p.caller_local {
+            self.refuse(reason, p.caller, p.called);
+            if !p.called_local && p.state == P_NET {
+                self.setup_out(SETUP_CANCEL, WHY_OK, 0, p.svc, p.caller, p.called, p.stream);
+            }
+        } else {
+            if p.stream != 0 {
+                self.setup_out(SETUP_REJECT, why, 0, p.svc, p.caller, p.called, p.stream);
+            }
+            if p.net_stream != 0 {
+                self.drop_stream(p.net_stream, why);
+            }
+        }
+    }
+
+    /// A setup message to publish. A request carries its own stream; the others carry the request's as ref.
+    #[allow(clippy::too_many_arguments)]
+    fn setup_out(&mut self, op: u8, reason: u8, flags: u8, svc: u8, src: u32, dst: u32, request: u32) {
+        let (stream, r#ref) = if op == SETUP_REQUEST { (request, 0) } else { (self.new_stream(), request) };
+        self.ev(Event { r#type: EV_NET_SETUP, op, reason, flags, svc, src, dst, stream, r#ref, ..Default::default() });
+        self.activity(ACT_SETUP, op, src, dst, reason);
+    }
+
+    // ── registration ──
+
+    fn write_record(&mut self, i: usize) {
+        self.regs[i].written_ms = self.now;
+        let id = self.regs[i].rec.id;
+        self.ev(Event { r#type: EV_RECORD, src: id, ..Default::default() });
+    }
+
+    fn delete_record(&mut self, i: usize, op: u8) {
+        let id = self.regs[i].rec.id;
+        self.regs[i] = Reg::default();
+        self.nregs = self.nregs.saturating_sub(1);
+        self.subs_dirty = true;
+        self.ev(Event { r#type: EV_RECORD, why: 1, src: id, ..Default::default() });
+        self.activity(ACT_REG, op, id, 0, 0);
+    }
+
+    /// The record of ms, made when there is none; None when the table is full.
+    fn record_for(&mut self, ms: u32, how: u8) -> Option<usize> {
+        if let Some(i) = self.reg_index(ms) {
+            return Some(i);
+        }
+        let i = self.regs.iter().position(|r| !r.used)?;
+        let shift = model_bits(self.cfg.model).1.saturating_sub(self.cfg.area_bits as u32);
+        let area = (self.cfg.site >> shift) as u8;
+        let exp_ms = self.now + self.cfg.reg_hold_s as i64 * 1000;
+        self.regs[i] = Reg {
+            used: true,
+            rec: Record { id: ms, how, area, at_ms: self.now, exp_ms, ..Default::default() },
+            written_ms: i64::MIN / 2,
+        };
+        self.nregs += 1;
+        self.subs_dirty = true;
+        Some(i)
+    }
+
+    /// Any PDU from an MS keeps its record alive.
+    fn heard(&mut self, ms: u32) {
+        if let Some(i) = self.reg_index(ms) {
+            let hold = self.cfg.reg_hold_s as i64 * 1000;
+            let r = &mut self.regs[i];
+            r.rec.at_ms = self.now;
+            r.rec.exp_ms = self.now + hold;
+            if self.now - r.written_ms >= RECORD_REFRESH_MS {
+                self.write_record(i);
+            }
+        }
+    }
+
+    fn allowed(&self, ms: u32) -> bool {
+        self.ms_policy(ms).enabled != 0 && (self.policy.open != 0 || self.policy.ms.contains(ms))
+    }
+
+    fn registration(&mut self, r: &Rand) {
+        let ms = r.source;
+        if r.service_options & SO_REG == 0 {
+            // deregistration: the only answer is Reg_Accepted
+            self.ack(R_REG_ACCEPTED, ms, REGI);
+            if let Some(i) = self.reg_index(ms) {
+                self.delete_record(i, REG_DEREGISTER);
+            }
+            return;
+        }
+        let cnts = r.trgt_adr_cnts();
+        if cnts == 0 && r.target != self.syscode as u32 {
+            return; // a registration for another system: discard
+        }
+        if cnts == 3 {
+            self.refuse(R_NOT_SUPPORTED, ms, REGI);
+            return;
+        }
+        if !self.allowed(ms) {
+            let (reason, op) =
+                if self.policy.refuse_unlisted != 0 { (R_REG_REFUSED, REG_REFUSE) } else { (R_REG_DENIED, REG_DENY) };
+            self.ack(reason, ms, REGI);
+            self.activity(ACT_REG, op, ms, 0, reason);
+            if let Some(i) = self.reg_index(ms) {
+                self.delete_record(i, op);
+            }
+            return;
+        }
+        let Some(i) = self.record_for(ms, HOW_REGISTER) else {
+            self.ack(R_REG_REFUSED, ms, REGI);
+            self.activity(ACT_REG, REG_REFUSE, ms, 0, R_REG_REFUSED);
+            return;
+        };
+        let hold = self.cfg.reg_hold_s as i64 * 1000;
+        let rec = &mut self.regs[i].rec;
+        rec.how = HOW_REGISTER;
+        rec.at_ms = self.now;
+        rec.exp_ms = self.now + hold;
+        let mut reason = R_REG_ACCEPTED;
+        match cnts {
+            1 if r.target == ADRNULL => {
+                // ADRNULL removes the subscription
+                let old = rec.sub_tg;
+                rec.sub_tg = 0;
+                if old != 0 {
+                    rec.remove_tg(old);
+                }
+            }
+            1 => {
+                let tg = r.target;
+                if self.policy.tg.contains(tg) && !is_gateway(tg) && !is_allcall(tg) {
+                    let rec = &mut self.regs[i].rec;
+                    let old = rec.sub_tg;
+                    if old != 0 && old != tg {
+                        rec.remove_tg(old);
+                    }
+                    rec.sub_tg = tg;
+                    rec.touch_tg(tg);
+                } else {
+                    reason = R_REG_SUBSCRIPTION; // registered, the talkgroup refused
+                }
+            }
+            2 => reason = R_REG_SUBSCRIPTION, // a list comes in a UDT upload, not built: registered, no groups
+            _ => {}
+        }
+        self.subs_dirty = true;
+        self.ack(reason, ms, REGI);
+        self.write_record(i);
+        let sub = self.regs[i].rec.sub_tg;
+        self.activity(ACT_REG, REG_REGISTER, ms, sub, reason);
+    }
+
+    // ── service requests ──
+
+    fn service(&mut self, r: &Rand) {
+        match r.service_kind {
+            SK_IND_VOICE | SK_TG_VOICE => self.call_request(r),
+            SK_CALL_ANSWER => self.call_answer(r),
+            SK_CANCEL => self.cancel(r.source),
+            _ => self.refuse(R_NOT_SUPPORTED, r.source, r.target),
+        }
+    }
+
+    /// The checks every call request passes: Some(priority) when it may go on.
+    fn admit(&mut self, r: &Rand) -> Option<u8> {
+        let ms = r.source;
+        let group = r.service_kind == SK_TG_VOICE;
+        if is_gateway(r.target) || r.target == ADRNULL || (!group && (r.target == ms || is_allcall(r.target))) {
+            self.refuse(R_NOT_SUPPORTED, ms, r.target);
+            return None;
+        }
+        let pol = self.ms_policy(ms);
+        if !self.allowed(ms) {
+            self.refuse(R_PERM_USER_REFUSED, ms, r.target);
+            return None;
+        }
+        if self.reg_index(ms).is_none() {
+            if self.reg_bit() {
+                self.refuse(R_MS_NOT_REGISTERED, ms, r.target);
+                return None;
+            }
+            match self.record_for(ms, HOW_CALL) {
+                Some(i) => self.write_record(i),
+                None => {
+                    self.refuse(R_SYSBUSY, ms, r.target);
+                    return None;
+                }
+            }
+        }
+        let emergency = r.service_options & SO_EMERGENCY != 0;
+        if emergency && pol.emergency_ok == 0 {
+            self.refuse(R_PERM_USER_REFUSED, ms, r.target);
+            return None;
+        }
+        if group {
+            if !is_allcall(r.target) && !self.policy.tg.contains(r.target) {
+                self.refuse(R_GROUP_NOT_ALLOWED, ms, r.target);
+                return None;
+            }
+        } else if pol.private_ok == 0 || !self.policy.private_ms.contains(ms) {
+            self.refuse(R_PERM_USER_REFUSED, ms, r.target);
+            return None;
+        }
+        Some(if emergency { 4 } else { (r.service_options & SO_PRIORITY).max(pol.priority.min(3)) })
+    }
+
+    fn call_request(&mut self, r: &Rand) {
+        let (ms, dst) = (r.source, r.target);
+        let group = r.service_kind == SK_TG_VOICE;
+        // a repeat of a request in progress: answer it again
+        if let Some(i) = self.pend.iter().position(|p| p.used && p.caller_local && p.caller == ms && p.called == dst) {
+            match self.pend[i].state {
+                P_QUEUED => self.ack(R_QUEUED, ms, dst),
+                P_ALERTING => self.ack(R_MS_ALERTING, ms, dst),
+                _ => self.ack(R_WAIT, ms, dst),
+            }
+            return;
+        }
+        let Some(prio) = self.admit(r) else { return };
+        if group {
+            if !is_allcall(dst) {
+                if let Some(i) = self.reg_index(ms) {
+                    if self.regs[i].rec.touch_tg(dst) {
+                        self.subs_dirty = true;
+                        self.write_record(i);
+                    }
+                }
+            }
+            match self.group_channel(dst).or_else(|| self.free_channel()) {
+                Some(ch) => self.group_go(ms, dst, r.service_options, ch),
+                None => self.enqueue(Pend {
+                    kind: KIND_GROUP,
+                    svc: r.service_options,
+                    prio,
+                    caller_local: true,
+                    called_local: true,
+                    caller: ms,
+                    called: dst,
+                    since_ms: self.now,
+                    ..Default::default()
+                }),
+            }
+            return;
+        }
+        // individual
+        if let Some(ch) = self.private_channel(ms, dst) {
+            self.regrant(ch, ms);
+            return;
+        }
+        if self.ms_busy(dst) {
+            self.refuse(R_CALLED_PARTY_BUSY, ms, dst);
+            return;
+        }
+        let Some(i) = self.free_pend() else {
+            self.refuse(R_SYSBUSY, ms, dst);
+            return;
+        };
+        let mut p = Pend {
+            used: true,
+            kind: KIND_PRIVATE,
+            svc: r.service_options,
+            prio,
+            caller_local: true,
+            caller: ms,
+            called: dst,
+            since_ms: self.now,
+            next_ack_ms: self.now + WACK_EVERY_MS,
+            ..Default::default()
+        };
+        if self.reg_index(dst).is_some() {
+            p.called_local = true;
+            p.state = P_AHOY;
+            p.deadline_ms = self.now + self.cfg.tp_ms as i64;
+            p.ahoy_left = self.cfg.ahoy_tries;
+            p.next_ahoy_ms = self.now;
+            self.ack(R_WAIT, ms, dst);
+            self.pend[i] = p;
+            self.ahoy_tick(i);
+        } else if self.connected && self.ms_policy(ms).wide_private != 0 {
+            p.state = P_NET;
+            p.stream = self.new_stream();
+            p.deadline_ms = self.now + self.cfg.setup_ms as i64;
+            self.ack(R_WAIT, ms, dst);
+            let flags = if self.cfg.foacsu != 0 { SETUP_F_FOACSU } else { 0 };
+            self.pend[i] = p;
+            self.setup_out(SETUP_REQUEST, WHY_OK, flags, p.svc, ms, dst, p.stream);
+        } else {
+            self.refuse(R_NOREG_MSAWAY, ms, dst);
+        }
+    }
+
+    fn group_go(&mut self, src: u32, tg: u32, svc: u8, ch: usize) {
+        if let Some(c) = self.group_channel(tg) {
+            self.regrant(c, src);
+            return;
+        }
+        let mut flags = F_GROUP;
+        let kind = if is_allcall(tg) {
+            flags |= F_ALLCALL;
+            KIND_ALLCALL
+        } else {
+            KIND_GROUP
+        };
+        if svc & SO_EMERGENCY != 0 {
+            flags |= F_EMERGENCY;
+        }
+        if tg == ALLMSID || (kind == KIND_GROUP && self.policy.wide_tg.contains(tg)) {
+            flags |= F_WIDE;
+        }
+        self.open(ch, kind, src, tg, flags, 0, false);
+    }
+
+    /// An individual call both parties accepted, on channel ch.
+    fn private_go(&mut self, p: &Pend, ch: usize) {
+        let mut flags = 0;
+        if p.svc & SO_EMERGENCY != 0 {
+            flags |= F_EMERGENCY;
+        }
+        if !p.caller_local || !p.called_local {
+            flags |= F_PRIVATE_NET | F_WIDE;
+        }
+        if !p.caller_local {
+            flags |= F_NET;
+        }
+        let talking = !p.caller_local && p.net_stream != 0; // a network caller already talking
+        self.open(ch, KIND_PRIVATE, p.caller, p.called, flags, p.net_stream, talking);
+    }
+
+    /// Both parties ready: a channel now, or the queue.
+    fn private_ready(&mut self, i: usize) {
+        let p = self.pend[i];
+        self.pend[i].used = false;
+        match self.free_channel() {
+            Some(ch) => self.private_go(&p, ch),
+            None => self.enqueue(p),
+        }
+    }
+
+    fn ahoy_tick(&mut self, i: usize) {
+        let p = self.pend[i];
+        if p.ahoy_left == 0 {
+            self.pend[i].used = false;
+            self.fail(&p, R_MSAWAY, WHY_NO_ANSWER);
+            return;
+        }
+        let a = Ahoy {
+            service_options: p.svc,
+            service_kind_flag: self.cfg.foacsu != 0,
+            als: false,
+            group: false,
+            appended: 0,
+            service_kind: SK_IND_VOICE,
+            target: p.called,
+            source: p.caller,
+        };
+        self.push(DT_CSBK, a.encode(), true, None);
+        let q = &mut self.pend[i];
+        q.ahoy_left -= 1;
+        q.next_ahoy_ms = self.now + self.cfg.ahoy_every_ms as i64;
+    }
+
+    /// C_ACKU or C_NACKU from a called MS: its source is the AHOY's target.
+    fn ms_ack(&mut self, a: &Ack) {
+        self.heard(a.source);
+        let Some(i) =
+            self.pend.iter().position(|p| p.used && p.state == P_AHOY && p.called == a.source && p.caller == a.target)
+        else {
+            return;
+        };
+        let p = self.pend[i];
+        self.pend[i].answered = true;
+        match (reason_type(a.reason), a.reason) {
+            (1, R_MS_ALERTING) => {
+                let tp = self.cfg.tp_ms as i64;
+                let q = &mut self.pend[i];
+                q.state = P_ALERTING;
+                q.deadline_ms = self.now + tp;
+                if p.caller_local {
+                    self.ack(R_MS_ALERTING, p.caller, p.called); // mirrored
+                } else if p.stream != 0 {
+                    self.setup_out(SETUP_ALERTING, WHY_OK, SETUP_F_FOACSU, p.svc, p.caller, p.called, p.stream);
+                }
+            }
+            (1, R_CALLBACK) => {
+                self.pend[i].used = false;
+                if p.caller_local {
+                    self.ack(R_CALLBACK, p.caller, p.called);
+                } else {
+                    self.fail(&p, R_MSAWAY, WHY_REFUSED);
+                }
+            }
+            (1, _) => {
+                if !p.caller_local && p.stream != 0 {
+                    self.setup_out(SETUP_ACCEPT, WHY_OK, 0, p.svc, p.caller, p.called, p.stream);
+                }
+                self.private_ready(i);
+            }
+            _ => {
+                self.pend[i].used = false;
+                let why = if a.reason == R_EQUIP_BUSY { WHY_BUSY } else { WHY_REFUSED };
+                self.fail(&p, a.reason, why); // the called MS's reason, mirrored
+            }
+        }
+    }
+
+    /// Call Answer (FOACSU) from the called MS.
+    fn call_answer(&mut self, r: &Rand) {
+        let called = r.source;
+        let Some(i) =
+            self.pend.iter().position(|p| p.used && p.state == P_ALERTING && p.called == called && p.caller == r.target)
+        else {
+            self.refuse(R_NOT_SUPPORTED, called, r.target);
+            return;
+        };
+        let p = self.pend[i];
+        if r.accepted() {
+            if !p.caller_local && p.stream != 0 {
+                self.setup_out(SETUP_ANSWERED, WHY_OK, 0, p.svc, p.caller, p.called, p.stream);
+            }
+            self.private_ready(i);
+        } else {
+            self.pend[i].used = false;
+            self.ack(R_MESSAGE_ACCEPTED, called, p.caller);
+            self.fail(&p, R_RECIPIENT_REFUSED, WHY_REFUSED);
+        }
+    }
+
+    fn cancel(&mut self, ms: u32) {
+        if let Some(i) = self.pend.iter().position(|p| p.used && p.caller_local && p.caller == ms) {
+            let p = self.pend[i];
+            self.pend[i].used = false;
+            self.ack(R_MESSAGE_ACCEPTED, ms, p.called);
+            if p.called_local && p.answered {
+                // tell the called MS (it may be alerting)
+                let a = Ahoy { service_kind: SK_CANCEL, target: p.called, source: p.caller, ..Default::default() };
+                self.push(DT_CSBK, a.encode(), false, None);
+            }
+            if !p.called_local && matches!(p.state, P_NET | P_ALERTING) {
+                self.setup_out(SETUP_CANCEL, WHY_OK, 0, p.svc, p.caller, p.called, p.stream);
+            }
+            if p.state == P_QUEUED {
+                self.activity(ACT_QUEUE, QUEUE_DROP, p.caller, p.called, 0);
+            }
+            return;
+        }
+        if self.chans.iter().any(|c| Self::live(c) && c.src == ms) {
+            self.refuse(R_CALL_CANCEL_REFUSED, ms, ADRNULL);
+        } else {
+            self.ack(R_MESSAGE_ACCEPTED, ms, ADRNULL);
+        }
+    }
+
+    fn pending_timers(&mut self) {
+        let now = self.now;
+        for i in 0..PENDING {
+            let p = self.pend[i];
+            if !p.used {
+                continue;
+            }
+            if now >= p.deadline_ms {
+                self.pend[i].used = false;
+                if p.state == P_QUEUED {
+                    self.fail(&p, R_SYSBUSY, WHY_CONGESTION);
+                    self.activity(ACT_QUEUE, QUEUE_DROP, p.caller, p.called, R_SYSBUSY);
+                } else {
+                    self.fail(&p, R_MSAWAY, WHY_TIMEOUT); // no answer within TP or setup_s: abandon
+                }
+                continue;
+            }
+            if p.state == P_AHOY && p.called_local && now >= p.next_ahoy_ms {
+                self.ahoy_tick(i);
+                if !self.pend[i].used {
+                    continue;
+                }
+            }
+            if p.caller_local && now >= p.next_ack_ms {
+                let (reason, every) = match p.state {
+                    P_QUEUED => (R_QUEUED, QACK_EVERY_MS),
+                    P_ALERTING => (R_MS_ALERTING, WACK_EVERY_MS),
+                    _ => (R_WAIT, WACK_EVERY_MS),
+                };
+                self.ack(reason, p.caller, p.called);
+                self.pend[i].next_ack_ms = now + every;
+            }
+        }
+        for i in 0..STREAMS {
+            let n = self.net[i];
+            if n.used && now >= n.deadline_ms {
+                self.net[i].used = false;
+                self.drop_stream(n.stream, WHY_CONGESTION);
+                self.activity(ACT_QUEUE, QUEUE_DROP, n.src, n.tg, R_SYSBUSY);
+            }
+        }
+    }
+
+    fn reg_timers(&mut self) {
+        // a few records a slot: all 1024 in about 4 s
+        for _ in 0..8 {
+            let i = self.reg_scan;
+            self.reg_scan = (self.reg_scan + 1) % REGS;
+            if self.regs[i].used && self.now >= self.regs[i].rec.exp_ms {
+                self.delete_record(i, REG_EXPIRE);
+            }
+        }
+    }
+
+    // ── the network ──
+
+    /// Whether the site carries tg: an all-call, a static talkgroup, or one a registered MS needs.
+    fn wants_tg(&self, tg: u32) -> bool {
+        if is_allcall(tg) || self.policy.static_tg.contains(tg) {
+            return true;
+        }
+        self.regs.iter().any(|r| r.used && (r.rec.tgs().contains(&tg) || self.ms_policy(r.rec.id).tgs().contains(&tg)))
+    }
+
+    fn net_group_go(&mut self, stream: u32, src: u32, tg: u32, emergency: bool, ch: Option<usize>) {
+        let Some(ch) = ch.or_else(|| self.free_channel()) else {
+            match self.net.iter().position(|n| !n.used) {
+                Some(i) if self.cfg.net_queue_ms > 0 && self.queue_len() < self.cfg.queue_max as usize => {
+                    self.net[i] = NetWait {
+                        used: true,
+                        emergency,
+                        stream,
+                        src,
+                        tg,
+                        since_ms: self.now,
+                        deadline_ms: self.now + self.cfg.net_queue_ms as i64,
+                    };
+                    self.activity(ACT_QUEUE, QUEUE_IN, src, tg, 0);
+                }
+                _ => self.drop_stream(stream, WHY_CONGESTION),
+            }
+            return;
+        };
+        let mut flags = F_GROUP | F_NET | F_WIDE;
+        let kind = if is_allcall(tg) {
+            flags |= F_ALLCALL;
+            KIND_ALLCALL
+        } else {
+            KIND_GROUP
+        };
+        if emergency {
+            flags |= F_EMERGENCY;
+        }
+        self.open(ch, kind, src, tg, flags, stream, true);
+    }
+
+    /// A network stream now feeds open channel ch.
+    fn attach(&mut self, ch: usize, stream: u32, src: u32) {
+        let now = self.now;
+        let c = &mut self.chans[ch];
+        c.stream = stream;
+        c.talking = true;
+        c.talking_net = true;
+        c.talker = src;
+        c.r#use = USE_CALL;
+        c.last_voice_ms = now;
+        let mut e = self.chan_ev(ch, EV_CH_STREAM);
+        e.src = src;
+        self.ev(e);
+    }
+
+    fn net_end(&mut self, stream: u32) {
+        let now = self.now;
+        let hang = self.cfg.hang_ms as i64;
+        for c in self.chans.iter_mut() {
+            if c.stream == stream && Self::live(c) {
+                c.stream = 0;
+                if c.talking_net {
+                    c.talking = false;
+                    c.talking_net = false;
+                    c.r#use = USE_HANG;
+                    c.idle_until_ms = now + hang;
+                }
+            }
+        }
+        for n in self.net.iter_mut() {
+            if n.used && n.stream == stream {
+                n.used = false;
+            }
+        }
+        for p in self.pend.iter_mut() {
+            if p.used && p.net_stream == stream {
+                p.net_stream = 0;
+            }
+        }
+    }
+
+    fn net_group(&mut self, stream: u32, src: u32, tg: u32, flags: u8) {
+        if stream == 0
+            || self.withdrawn
+            || self.chans.iter().any(|c| c.stream == stream && Self::live(c))
+            || self.net.iter().any(|n| n.used && n.stream == stream)
+        {
+            return;
+        }
+        if let Some(ch) = self.group_channel(tg) {
+            let c = self.chans[ch];
+            if c.talking && !c.talking_net {
+                self.drop_stream(stream, WHY_BUSY); // RF has the floor
+            } else {
+                self.attach(ch, stream, src);
+            }
+        } else if self.wants_tg(tg) {
+            self.net_group_go(stream, src, tg, flags & F_EMERGENCY != 0, None);
+        } else {
+            self.drop_stream(stream, WHY_NOT_FOUND);
+        }
+    }
+
+    fn net_setup(&mut self, m: &Setup) {
+        match m.op {
+            SETUP_REQUEST => self.net_request(m),
+            SETUP_ACCEPT | SETUP_ANSWERED | SETUP_ALERTING | SETUP_REJECT => {
+                let Some(i) =
+                    self.pend.iter().position(|p| p.used && p.caller_local && !p.called_local && p.stream == m.r#ref)
+                else {
+                    if m.op == SETUP_ACCEPT || m.op == SETUP_ANSWERED {
+                        // a second acceptor, or one too late: release it
+                        self.setup_out(SETUP_CANCEL, WHY_OK, 0, m.svc, m.src, m.dst, m.r#ref);
+                    }
+                    return;
+                };
+                let p = self.pend[i];
+                match m.op {
+                    SETUP_ALERTING => {
+                        let tp = self.cfg.tp_ms as i64;
+                        let q = &mut self.pend[i];
+                        q.state = P_ALERTING;
+                        q.answered = true;
+                        q.deadline_ms = self.now + tp;
+                        self.ack(R_MS_ALERTING, p.caller, p.called);
+                    }
+                    SETUP_REJECT => {
+                        self.pend[i].used = false;
+                        let reason = match m.reason {
+                            WHY_NOT_FOUND => R_NOREG_MSAWAY,
+                            WHY_BUSY => R_CALLED_PARTY_BUSY,
+                            WHY_REFUSED => R_RECIPIENT_REFUSED,
+                            WHY_NOT_SUPPORTED => R_NOT_SUPPORTED,
+                            WHY_CONGESTION => R_SYSBUSY,
+                            _ => R_MSAWAY,
+                        };
+                        self.refuse(reason, p.caller, p.called);
+                    }
+                    _ => {
+                        self.pend[i].state = P_AHOY; // answered: a later failure needs no cancel
+                        self.private_ready(i);
+                    }
+                }
+            }
+            SETUP_CANCEL => {
+                if let Some(i) = self.pend.iter().position(|p| p.used && !p.caller_local && p.stream == m.r#ref) {
+                    let p = self.pend[i];
+                    self.pend[i].used = false;
+                    if p.answered {
+                        let a = Ahoy { service_kind: SK_CANCEL, target: p.called, source: p.caller, ..Default::default() };
+                        self.push(DT_CSBK, a.encode(), false, None);
+                    }
+                    return;
+                }
+                // the call was granted already: clear it
+                if let Some(ch) = self.private_channel(m.src, m.dst) {
+                    if self.chans[ch].flags & F_PRIVATE_NET != 0 {
+                        self.clear(ch, CLOSE_CMD);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// A network caller asks for an MS: if it's registered here and free, check it with C_AHOY.
+    fn net_request(&mut self, m: &Setup) {
+        if self.pend.iter().any(|p| p.used && !p.caller_local && p.stream == m.stream) {
+            return; // a repeat
+        }
+        if self.reg_index(m.dst).is_none() {
+            self.setup_out(SETUP_REJECT, WHY_NOT_FOUND, 0, m.svc, m.src, m.dst, m.stream);
+            return;
+        }
+        if self.ms_busy(m.dst) {
+            self.setup_out(SETUP_REJECT, WHY_BUSY, 0, m.svc, m.src, m.dst, m.stream);
+            return;
+        }
+        let Some(i) = self.free_pend() else {
+            self.setup_out(SETUP_REJECT, WHY_CONGESTION, 0, m.svc, m.src, m.dst, m.stream);
+            return;
+        };
+        self.pend[i] = Pend {
+            used: true,
+            kind: KIND_PRIVATE,
+            state: P_AHOY,
+            svc: m.svc,
+            prio: m.svc & SO_PRIORITY,
+            ahoy_left: self.cfg.ahoy_tries,
+            called_local: true,
+            caller: m.src,
+            called: m.dst,
+            stream: m.stream,
+            since_ms: self.now,
+            deadline_ms: self.now + self.cfg.tp_ms as i64,
+            next_ahoy_ms: self.now,
+            ..Default::default()
+        };
+        self.ahoy_tick(i);
+    }
+
+    fn net_private(&mut self, stream: u32, src: u32, dst: u32) {
+        if let Some(ch) = self.private_channel(src, dst) {
+            if self.chans[ch].stream != stream {
+                if self.chans[ch].talking && !self.chans[ch].talking_net {
+                    self.drop_stream(stream, WHY_BUSY);
+                    return;
+                }
+                self.attach(ch, stream, src);
+            }
+            return;
+        }
+        if let Some(i) = self.pend.iter().position(|p| p.used && p.caller == src && p.called == dst) {
+            self.pend[i].net_stream = stream; // carried on the channel once granted
+            return;
+        }
+        if self.reg_index(dst).is_none() {
+            self.drop_stream(stream, WHY_NOT_FOUND);
+            return;
+        }
+        if self.ms_busy(dst) {
+            self.drop_stream(stream, WHY_BUSY);
+            return;
+        }
+        // a caller that made no setup (Tier II): set one up here
+        let Some(i) = self.free_pend() else {
+            self.drop_stream(stream, WHY_CONGESTION);
+            return;
+        };
+        self.pend[i] = Pend {
+            used: true,
+            kind: KIND_PRIVATE,
+            state: P_AHOY,
+            ahoy_left: self.cfg.ahoy_tries,
+            called_local: true,
+            caller: src,
+            called: dst,
+            net_stream: stream,
+            since_ms: self.now,
+            deadline_ms: self.now + self.cfg.tp_ms as i64,
+            next_ahoy_ms: self.now,
+            ..Default::default()
+        };
+        self.ahoy_tick(i);
+    }
+
+    fn link(&mut self, connected: bool) {
+        if self.connected == connected {
+            return;
+        }
+        self.connected = connected;
+        self.log(format_args!("network {}", if connected { "up" } else { "down" }));
+        if connected {
+            return;
+        }
+        // what waits on the network fails; local calls go on
+        for i in 0..PENDING {
+            let p = self.pend[i];
+            if p.used && (!p.caller_local || !p.called_local) && p.state != P_QUEUED {
+                self.pend[i].used = false;
+                if p.caller_local {
+                    self.refuse(R_MSAWAY, p.caller, p.called);
+                }
+            }
+        }
+        for i in 0..STREAMS {
+            if self.net[i].used {
+                self.net[i].used = false;
+                let s = self.net[i].stream;
+                self.drop_stream(s, WHY_CONGESTION);
+            }
+        }
+        let hang = self.cfg.hang_ms as i64;
+        let now = self.now;
+        for c in self.chans.iter_mut() {
+            if Self::live(c) && c.talking_net {
+                c.talking = false;
+                c.talking_net = false;
+                c.stream = 0;
+                c.r#use = USE_HANG;
+                c.idle_until_ms = now + hang;
+            }
+        }
+    }
+
+    // ── subscriptions ──
+
+    fn subs_into(&self, out: &mut [u32]) -> usize {
+        let mut n = 0;
+        let mut add = |tg: u32, out: &mut [u32]| {
+            if tg != 0 && n < out.len() && !out[..n].contains(&tg) {
+                out[n] = tg;
+                n += 1;
+            }
+        };
+        for r in self.regs.iter().filter(|r| r.used) {
+            for &tg in r.rec.tgs() {
+                add(tg, out);
+            }
+            for &tg in self.ms_policy(r.rec.id).tgs() {
+                add(tg, out);
+            }
+        }
+        n
+    }
+
+    fn check_subs(&mut self) {
+        if !self.subs_dirty {
+            return;
+        }
+        self.subs_dirty = false;
+        let mut buf = [0u32; SUBS_MAX];
+        let n = self.subs_into(&mut buf);
+        buf[..n].sort_unstable();
+        // a hash is enough to tell a change
+        let mut sum: u64 = 0xcbf29ce484222325 ^ n as u64;
+        for &t in &buf[..n] {
+            sum = (sum ^ t as u64).wrapping_mul(0x100000001b3);
+        }
+        if sum != self.subs_sum {
+            self.subs_sum = sum;
+            self.ev(Event { r#type: EV_NET_SUBS, ..Default::default() });
+        }
+    }
+
+    // ── entry points ──
+
+    pub fn slot(&mut self, k: i64, now_ms: i64) -> SlotOut {
+        self.k = k;
+        self.now = now_ms;
+        self.roll_load();
+        self.pending_timers();
+        self.channel_timers();
+        self.reg_timers();
+        let mut out = SlotOut::default();
+        if !self.withdrawn {
+            if k & 1 == 0 {
+                self.tscc_slot(&mut out);
+            } else {
+                // the CACH before the TSCC carrier's next TS1 slot: TS2's inbound in use
+                out.at = (self.chans[self.tscc_carrier * 2 + 1].r#use == USE_CALL) as u8;
+            }
+            if k.rem_euclid(4) == 0 {
+                let counter = k.div_euclid(4).rem_euclid(512) as u16;
+                out.has_slc = 1;
+                out.slc_tscc = c_sys_parms(self.syscode, self.reg_bit(), counter);
+                out.slc_payload = p_sys_parms(self.syscode, false, counter);
+            }
+        }
+        self.payload_slot(&mut out);
+        self.check_subs();
+        out
+    }
+
+    pub fn rx_pdu(&mut self, ch: usize, dt: u8, pdu: &[u8; 10]) {
+        if self.withdrawn || ch >= CHANNELS {
+            return;
+        }
+        if ch == self.tscc_carrier * 2 {
+            if dt != DT_CSBK {
+                return; // UDT and MBC uploads: none is asked for
+            }
+            if let Some(r) = Rand::decode(pdu) {
+                self.counters.rand += 1;
+                self.count_load();
+                self.heard(r.source);
+                if r.service_kind == SK_REG {
+                    self.registration(&r);
+                } else {
+                    self.service(&r);
+                }
+            } else if let Some(a) = Ack::decode(pdu) {
+                if a.op == OP_ACKU {
+                    self.ms_ack(&a);
+                }
+            }
+        } else if let Some(m) = Maint::decode(pdu) {
+            let c = self.chans[ch];
+            if m.kind == MAINT_DISCON
+                && Self::live(&c)
+                && (m.source == c.src || (c.kind == KIND_PRIVATE && m.source == c.dst))
+            {
+                self.heard(m.source);
+                self.clear(ch, CLOSE_DISCON);
+            }
+        }
+        self.check_subs();
+    }
+
+    pub fn rx_bad(&mut self, ch: usize) {
+        if ch == self.tscc_carrier * 2 && !self.withdrawn {
+            self.counters.collisions += 1;
+            self.count_load();
+        }
+    }
+
+    pub fn rx_voice(&mut self, ch: usize, what: u8, src: u32) {
+        if ch >= CHANNELS || !Self::live(&self.chans[ch]) {
+            return;
+        }
+        let now = self.now;
+        match what {
+            VOICE_HEADER | VOICE_FRAME => {
+                let c = self.chans[ch];
+                if c.talking_net && c.stream != 0 {
+                    // RF beats the network
+                    self.drop_stream(c.stream, WHY_BUSY);
+                    self.chans[ch].stream = 0;
+                }
+                let c = &mut self.chans[ch];
+                c.talking = true;
+                c.talking_net = false;
+                c.r#use = USE_CALL;
+                c.last_voice_ms = now;
+                if src != 0 {
+                    c.talker = src;
+                    self.heard(src);
+                }
+            }
+            VOICE_TERM | VOICE_LOST => {
+                let c = &mut self.chans[ch];
+                if !c.talking_net {
+                    c.talking = false;
+                    c.r#use = USE_HANG;
+                    c.idle_until_ms = now + self.cfg.hang_ms as i64;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn status(&self) -> Status {
+        let mut st = Status {
+            connected: self.connected as u8,
+            withdrawn: self.withdrawn as u8,
+            nch: self.cfg.ncarriers * 2,
+            regs: self.nregs,
+            queue: self.queue_len() as u32,
+            aloha: self.counters.aloha,
+            rand: self.counters.rand,
+            collisions: self.counters.collisions,
+            grants: self.counters.grants,
+            refused: self.counters.refused,
+            queued: self.counters.queued,
+            ..Default::default()
+        };
+        for ch in 0..CHANNELS {
+            let c = &self.chans[ch];
+            st.ch[ch] = ChStatus {
+                r#use: c.r#use,
+                lcn: (ch % 2) as u8,
+                flags: c.flags,
+                chan: self.cfg.carriers[ch / 2].chan,
+                src: c.src,
+                dst: c.dst,
+                since_ms: c.since_ms,
+                ..Default::default()
+            };
+        }
+        st
+    }
+
+    pub fn next_event(&mut self) -> Option<Event> {
+        if self.ev_len == 0 {
+            return None;
+        }
+        let e = self.events[self.ev_head];
+        self.ev_head = (self.ev_head + 1) % EVENTS;
+        self.ev_len -= 1;
+        Some(e)
+    }
+
+    pub fn withdraw(&mut self, off: bool) {
+        if off && !self.withdrawn {
+            for ch in 0..CHANNELS {
+                self.clear(ch, CLOSE_WITHDRAW);
+            }
+            for i in 0..PENDING {
+                let p = self.pend[i];
+                if p.used {
+                    self.pend[i].used = false;
+                    self.fail(&p, R_SYSBUSY, WHY_CONGESTION);
+                }
+            }
+            self.resp_len = 0;
+            self.cont_pending = false;
+        }
+        self.withdrawn = off;
+    }
+
+    pub fn record(&self, ms: u32) -> Option<Record> {
+        self.reg_index(ms).map(|i| self.regs[i].rec)
+    }
+
+    pub fn load_record(&mut self, r: &Record) -> bool {
+        if r.id == 0 || r.exp_ms <= self.now {
+            return false;
+        }
+        let Some(i) = self.record_for(r.id, HOW_LOADED) else { return false };
+        let mut rec = *r;
+        rec.ntg = rec.ntg.min(REG_TGS as u8);
+        self.regs[i].rec = rec;
+        self.regs[i].written_ms = self.now;
+        self.subs_dirty = true;
+        self.check_subs();
+        true
+    }
+
+    pub fn command(&mut self, cmd: &str, a1: u32, a2: u32) -> bool {
+        match cmd {
+            "deregister" => match self.reg_index(a1) {
+                Some(i) => {
+                    self.delete_record(i, REG_DEREGISTER);
+                    self.check_subs();
+                    true
+                }
+                None => false,
+            },
+            "clear" => {
+                let ch = (0..self.cfg.ncarriers as usize)
+                    .find(|&c| self.cfg.carriers[c].chan as u32 == a1)
+                    .map(|c| c * 2 + (a2 as usize & 1));
+                match ch {
+                    Some(ch) if Self::live(&self.chans[ch]) => {
+                        self.clear(ch, CLOSE_CMD);
+                        true
+                    }
+                    _ => false,
+                }
+            }
+            "withdraw" => {
+                self.withdraw(true);
+                true
+            }
+            "restore" => {
+                self.withdraw(false);
+                true
+            }
+            "resend_records" => {
+                for i in 0..REGS {
+                    if self.regs[i].used {
+                        if self.ev_len == EVENTS {
+                            return false; // the caller drains the events and asks again
+                        }
+                        self.write_record(i);
+                    }
+                }
+                true
+            }
+            "status" => true,
+            _ => false,
+        }
+    }
+
+    // for the tests and the air (Rust callers)
+
+    pub fn policy_set(&mut self, p: &Policy) {
+        self.policy = *p;
+        self.subs_dirty = true;
+        self.check_subs();
+    }
+    pub fn net_group_in(&mut self, stream: u32, src: u32, tg: u32, flags: u8, now_ms: i64) {
+        self.now = self.now.max(now_ms);
+        self.net_group(stream, src, tg, flags);
+        self.check_subs();
+    }
+    pub fn net_end_in(&mut self, stream: u32) {
+        self.net_end(stream);
+    }
+    pub fn net_setup_in(&mut self, m: &Setup, now_ms: i64) {
+        self.now = self.now.max(now_ms);
+        if !self.withdrawn {
+            self.net_setup(m);
+        }
+    }
+    pub fn net_private_in(&mut self, stream: u32, src: u32, dst: u32, now_ms: i64) {
+        self.now = self.now.max(now_ms);
+        if !self.withdrawn && stream != 0 {
+            self.net_private(stream, src, dst);
+        }
+    }
+    pub fn set_link(&mut self, c: bool) {
+        self.link(c);
+    }
+    pub fn set_neighbors(&mut self, n: &[Neighbor]) {
+        let count = n.len().min(NEIGHBORS);
+        self.neighbors[..count].copy_from_slice(&n[..count]);
+        self.nneighbors = count;
+        self.adjacent_idx = 0;
+    }
+    pub fn set_ms_policy(&mut self, ms: u32, p: Option<&MsPolicy>) -> bool {
+        let i = self.mspol.iter().position(|m| m.used && m.id == ms);
+        self.subs_dirty = true;
+        let ok = match p {
+            None => {
+                if let Some(i) = i {
+                    self.mspol[i] = MsPol::default();
+                }
+                true
+            }
+            Some(p) => match i.or_else(|| self.mspol.iter().position(|m| !m.used)) {
+                Some(i) => {
+                    self.mspol[i] = MsPol { used: true, id: ms, p: *p };
+                    if p.enabled == 0 {
+                        if let Some(r) = self.reg_index(ms) {
+                            self.delete_record(r, REG_DENY);
+                        }
+                    }
+                    true
+                }
+                None => false,
+            },
+        };
+        self.check_subs();
+        ok
+    }
+    pub fn where_in(&mut self, ms: u32, here: bool, at_ms: i64) {
+        if here {
+            return;
+        }
+        if let Some(i) = self.reg_index(ms) {
+            if self.regs[i].rec.at_ms < at_ms {
+                self.delete_record(i, REG_EXPIRE);
+                self.check_subs();
+            }
+        }
+    }
+    pub fn reconfigure(&mut self, cfg: &Cfg, err: &mut [u8]) -> bool {
+        let mut b = Buf { b: err, n: 0 };
+        if !check(cfg, &mut b) {
+            return false;
+        }
+        let tscc = (0..cfg.ncarriers as usize).find(|&i| cfg.carriers[i].tscc != 0);
+        if tscc != Some(self.tscc_carrier) {
+            for ch in 0..CHANNELS {
+                self.clear(ch, CLOSE_CMD);
+            }
+        }
+        self.apply(cfg);
+        self.reset_channels();
+        true
+    }
+    pub fn subs(&self, out: &mut [u32]) -> usize {
+        self.subs_into(out)
+    }
+    pub fn tscc_ch(&self) -> usize {
+        self.tscc_carrier * 2
+    }
+    pub fn cfg(&self) -> &Cfg {
+        &self.cfg
+    }
+    pub fn syscode(&self) -> u16 {
+        self.syscode
+    }
+    pub fn events_lost(&self) -> u32 {
+        self.counters.events_lost
+    }
+}
+
+/// Zeroes the memory at s and fills it in place (a Site is valid all zero, and too big for a stack).
+///
+/// # Safety
+/// s points to rdof_t3_site_size() writable bytes, aligned for Site.
+pub unsafe fn init_in_place(s: *mut Site, cfg: &Cfg, err: &mut [u8]) -> bool {
+    let mut b = Buf { b: err, n: 0 };
+    if !check(cfg, &mut b) {
+        return false;
+    }
+    core::ptr::write_bytes(s, 0, 1);
+    (*s).setup(cfg);
+    true
+}
+
+// ── layouts (rdof_t3_layout) ───────────────────────────────────────────────────
+
+#[repr(C)]
+pub struct Layout {
+    name: *const c_char,
+    size: usize,
+    align: usize,
+}
+
+// SAFETY: the names are static strings, never written
+unsafe impl Sync for Layout {}
+
+macro_rules! layouts {
+    ($(($name:literal, $t:ty)),* $(,)?) => {
+        [$(Layout {
+            name: concat!($name, "\0").as_ptr().cast(),
+            size: core::mem::size_of::<$t>(),
+            align: core::mem::align_of::<$t>(),
+        },)*
+         Layout { name: core::ptr::null(), size: 0, align: 0 }]
+    };
+}
+
+static LAYOUTS: [Layout; 17] = layouts![
+    ("rdof_t3_carrier_t", Carrier),
+    ("rdof_t3_cfg_t", Cfg),
+    ("rdof_t3_range_t", Range),
+    ("rdof_t3_idset_t", IdSet),
+    ("rdof_t3_policy_t", Policy),
+    ("rdof_t3_ms_policy_t", MsPolicy),
+    ("rdof_t3_record_t", Record),
+    ("rdof_t3_setup_t", Setup),
+    ("rdof_t3_neighbor_t", Neighbor),
+    ("rdof_t3_event_t", Event),
+    ("rdof_t3_ch_out_t", ChOut),
+    ("rdof_t3_slot_out_t", SlotOut),
+    ("rdof_t3_ch_status_t", ChStatus),
+    ("rdof_t3_status_t", Status),
+    ("rdof_t3ms_tx_t", crate::t3ms::MsTx),
+    ("rdof_t3ms_status_t", crate::t3ms::MsStatus),
+];
+
+#[no_mangle]
+pub extern "C" fn rdof_t3_layout(i: usize) -> *const Layout {
+    LAYOUTS.get(i).map_or(core::ptr::null(), |l| l as *const Layout)
+}
+
+// ── C API (rdof/t3.h) ──────────────────────────────────────────────────────────
+
+unsafe fn err_buf<'a>(err: *mut c_char, cap: usize) -> &'a mut [u8] {
+    if err.is_null() || cap == 0 {
+        &mut []
+    } else {
+        *err = 0;
+        core::slice::from_raw_parts_mut(err.cast::<u8>(), cap)
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3_cfg_default(cfg: *mut Cfg) {
+    *cfg = cfg_default();
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3_policy_default(p: *mut Policy) {
+    *p = Policy::default_open();
+}
+
+#[no_mangle]
+pub extern "C" fn rdof_t3_site_size() -> usize {
+    core::mem::size_of::<Site>()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3_init(s: *mut Site, cfg: *const Cfg, err: *mut c_char, cap: usize) -> bool {
+    init_in_place(s, &*cfg, err_buf(err, cap))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3_reconfigure(s: *mut Site, cfg: *const Cfg, err: *mut c_char, cap: usize) -> bool {
+    (*s).reconfigure(&*cfg, err_buf(err, cap))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3_slot(s: *mut Site, k: i64, now_ms: i64, out: *mut SlotOut) {
+    *out = (*s).slot(k, now_ms);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3_rx_pdu(s: *mut Site, ch: c_int, _k: i64, dt: u8, pdu: *const [u8; 10], _rssi: c_int) {
+    if ch >= 0 {
+        (*s).rx_pdu(ch as usize, dt, &*pdu);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3_rx_bad(s: *mut Site, ch: c_int, _k: i64) {
+    if ch >= 0 {
+        (*s).rx_bad(ch as usize);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3_rx_voice(s: *mut Site, ch: c_int, _k: i64, what: u8, src: u32, _dst: u32, _group: bool) {
+    if ch >= 0 {
+        (*s).rx_voice(ch as usize, what, src);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3_net_group(s: *mut Site, stream: u32, src: u32, tg: u32, flags: u8, now_ms: i64) {
+    (*s).net_group_in(stream, src, tg, flags, now_ms);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3_net_group_end(s: *mut Site, stream: u32) {
+    (*s).net_end(stream);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3_net_setup(s: *mut Site, m: *const Setup, now_ms: i64) {
+    (*s).net_setup_in(&*m, now_ms);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3_net_private(s: *mut Site, stream: u32, src: u32, dst: u32, now_ms: i64) {
+    (*s).net_private_in(stream, src, dst, now_ms);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3_net_private_end(s: *mut Site, stream: u32) {
+    (*s).net_end(stream);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3_net_link(s: *mut Site, connected: bool) {
+    (*s).link(connected);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3_neighbors(s: *mut Site, n: *const Neighbor, count: c_int) {
+    let count = (count.max(0) as usize).min(NEIGHBORS);
+    let n = if count == 0 { &[][..] } else { core::slice::from_raw_parts(n, count) };
+    (*s).set_neighbors(n);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3_where(s: *mut Site, ms: u32, here: bool, at_ms: i64) {
+    (*s).where_in(ms, here, at_ms);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3_policy(s: *mut Site, p: *const Policy) {
+    (*s).policy_set(&*p);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3_ms_policy(s: *mut Site, ms: u32, p: *const MsPolicy) -> bool {
+    (*s).set_ms_policy(ms, p.as_ref())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3_load_record(s: *mut Site, r: *const Record) -> bool {
+    (*s).load_record(&*r)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3_record(s: *const Site, ms: u32, r: *mut Record) -> bool {
+    match (*s).record(ms) {
+        Some(rec) => {
+            *r = rec;
+            true
+        }
+        None => false,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3_subs(s: *const Site, tg: *mut u32, cap: usize) -> usize {
+    if tg.is_null() || cap == 0 {
+        let mut buf = [0u32; SUBS_MAX];
+        return (*s).subs_into(&mut buf);
+    }
+    (*s).subs_into(core::slice::from_raw_parts_mut(tg, cap))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3_withdraw(s: *mut Site, off: bool) {
+    (*s).withdraw(off);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3_command(s: *mut Site, cmd: *const c_char, a1: u32, a2: u32) -> bool {
+    match CStr::from_ptr(cmd).to_str() {
+        Ok(c) => (*s).command(c, a1, a2),
+        Err(_) => false,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3_event(s: *mut Site, ev: *mut Event) -> bool {
+    match (*s).next_event() {
+        Some(e) => {
+            *ev = e;
+            true
+        }
+        None => false,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3_status(s: *const Site, st: *mut Status) {
+    *st = (*s).status();
+}
+
+/// A Site on the heap, for the tests.
+#[cfg(test)]
+pub fn new_site(cfg: &Cfg) -> std::boxed::Box<Site> {
+    use std::alloc::{alloc_zeroed, Layout as L};
+    unsafe {
+        let p = alloc_zeroed(L::new::<Site>()) as *mut Site;
+        let mut err = [0u8; 128];
+        assert!(init_in_place(p, cfg, &mut err), "{}", std::string::String::from_utf8_lossy(&err));
+        std::boxed::Box::from_raw(p)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn err_of(c: &Cfg) -> std::string::String {
+        let mut tmp = [0u8; 128];
+        let mut b = Buf { b: &mut tmp, n: 0 };
+        assert!(!check(c, &mut b));
+        let n = b.n;
+        std::string::String::from_utf8_lossy(&tmp[..n]).into_owned()
+    }
+
+    #[test]
+    fn settings_checks() {
+        let mut c = cfg_default();
+        let mut tmp = [0u8; 128];
+        assert!(check(&c, &mut Buf { b: &mut tmp, n: 0 }));
+        c.site = 0;
+        assert!(err_of(&c).starts_with("system.site"));
+        c = cfg_default();
+        c.ncarriers = 2;
+        c.carriers[1] = Carrier { chan: 1, enabled: 1, ..Default::default() };
+        assert!(err_of(&c).contains("used twice"));
+        c.carriers[1].chan = 2;
+        c.carriers[1].tscc = 1;
+        assert!(err_of(&c).contains("exactly one"));
+        c = cfg_default();
+        c.hang_ms = 0;
+        assert!(err_of(&c).starts_with("timers.hang_s"));
+    }
+
+    #[test]
+    fn record_tgs() {
+        let mut r = Record::default();
+        assert!(r.touch_tg(1));
+        assert!(r.touch_tg(2));
+        assert!(!r.touch_tg(2));
+        assert!(r.touch_tg(1));
+        assert_eq!(r.tgs(), &[1, 2]);
+        for t in 3..20 {
+            r.touch_tg(t);
+        }
+        assert_eq!(r.tgs(), &[19, 18, 17, 16, 15, 14, 13, 12]);
+        r.remove_tg(15);
+        assert_eq!(r.tgs(), &[19, 18, 17, 16, 14, 13, 12]);
+    }
+
+    #[test]
+    fn idle_tscc() {
+        let mut s = new_site(&cfg_default());
+        let mut alohas = 0;
+        for k in 0..200i64 {
+            let o = s.slot(k, k * 30);
+            if k % 2 == 1 {
+                assert_eq!(o.tscc_dt, 0);
+                continue;
+            }
+            assert_ne!(o.tscc_dt, 0);
+            if o.tscc_dt == DT_CSBK && Aloha::decode(&o.tscc_pdu).is_some() {
+                alohas += 1;
+            }
+            if k % 4 == 0 {
+                let (slco, _, reg, csc) = sys_parms_decode(o.slc_tscc);
+                assert_eq!((slco, reg, csc), (SLCO_C_SYS_PARMS, true, (k / 4) as u16));
+            }
+        }
+        assert!(alohas >= 80, "{alohas}");
+        assert!(core::mem::size_of::<Site>() < 160 * 1024, "{}", core::mem::size_of::<Site>());
+    }
+}

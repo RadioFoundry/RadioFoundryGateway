@@ -504,8 +504,11 @@ sharing, Vote Now with priorities from the manager.
 
 ## 8. Site controller API (`rdof/t3.h`)
 
-The Rust exports a C API (the repo's convention: the header is the contract; structs mirrored `#[repr(C)]` and listed
-in `rust/src/layout.rs` and `rust/layout.c`).
+The Rust exports a C API (the repo's convention: the header is the contract; structs mirrored `#[repr(C)]`). The
+t3 structs aren't in `rust/src/layout.rs` (a legacy-only module): `rdof_t3_layout()` reports their sizes and
+alignments and `host-tests/test_t3.c` compares them with the header's. The exact API is `common/include/rdof/t3.h`;
+the sketch below is the design, which the header extends (`rdof_t3_net_private_end`, `rdof_t3_record`,
+`rdof_t3_subs`, the MS simulator's `rdof_t3ms_*`).
 
 ```c
 typedef struct rdof_t3_site rdof_t3_site_t;          /* opaque, caller allocates rdof_t3_site_size() bytes */
