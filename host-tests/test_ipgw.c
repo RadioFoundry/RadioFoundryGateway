@@ -547,7 +547,8 @@ static void t_nat(void)
     CHECK(f.sent == 1 && f.last_ip == IP(8, 8, 8, 8) && f.last_port == 53 && f.last_len == 5, "nat: sent");
     int flow = f.last_flow;
     /* the same flow again: no new socket */
-    radio_sends(g, RADIO, 9990, false, d, n, 6.5); /* past the dedup window: a new message */
+    n = datagram(RADIO_IP, 5000, IP(8, 8, 8, 8), 53, "querz", d); /* a new message */
+    radio_sends(g, RADIO, 9990, false, d, n, 6.5);
     CHECK(f.sent == 2 && f.opens == 1 && f.last_flow == flow, "same flow");
     rdof_ipgw_from_net(g, flow, IP(8, 8, 8, 8), 53, (const uint8_t *)"answer", 6, 7.0);
     rdof_data_header_t h;
@@ -676,22 +677,26 @@ static void t_confirmed(void)
     CHECK(f.dmr == 1 && g->n.rx_dup == 1, "too soon to answer again");
     hear(g, &W, &p, 1.8);
     CHECK(f.dmr == 2 && f.sent == 1 && g->n.acks == 2 && g->n.rx_dup == 2, "answered again");
+    /* a radio's retries come about 6 s apart: still the same message at 13 s and 25 s */
+    hear(g, &W, &p, 13.0);
+    hear(g, &W, &p, 25.0);
+    CHECK(f.dmr == 4 && f.sent == 1 && g->n.rx_dup == 4, "retries: dup %u", g->n.rx_dup);
     /* a block's CRC-9 wrong: nothing */
     n = datagram(RADIO_IP, 4005, IP(13, 0, 0, 1), 4005, "spoiled", d);
     confirmed(RADIO, 9990, 4, d, n, &p, true);
-    hear(g, &W, &p, 2.0);
-    CHECK(g->n.rx_bad == 1 && f.dmr == 2 && f.sent == 1, "bad CRC-9");
+    hear(g, &W, &p, 26.0);
+    CHECK(g->n.rx_bad == 1 && f.dmr == 4 && f.sent == 1, "bad CRC-9");
     /* ack off */
     g->cfg.ack = false;
     n = datagram(RADIO_IP, 4005, IP(13, 0, 0, 1), 4005, "no ack", d);
     confirmed(RADIO, 9990, 5, d, n, &p, false);
-    hear(g, &W, &p, 3.0);
-    CHECK(f.sent == 2 && f.dmr == 2, "ack off");
+    hear(g, &W, &p, 27.0);
+    CHECK(f.sent == 2 && f.dmr == 4, "ack off");
     /* not ours (no route): no answer */
     g->cfg.ack = true;
     confirmed(RADIO, 4444, 6, d, n, &p, false);
-    hear(g, &W, &p, 3.5);
-    CHECK(f.dmr == 2 && g->n.no_route == 1, "not ours: not answered");
+    hear(g, &W, &p, 27.5);
+    CHECK(f.dmr == 4 && g->n.no_route == 1, "not ours: not answered");
     free(g);
 }
 

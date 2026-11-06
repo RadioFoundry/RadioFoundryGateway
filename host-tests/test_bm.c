@@ -296,6 +296,15 @@ static void test_login(void)
     rdof_hb_peer_link_up(&p);
     run(&p, 3, 4);
     CHECK(p.up && M.logins == 3);
+    /* a simplex login ('4'): DMRD goes up on slot 2; anything else as it is */
+    uint8_t tmp[RDOF_HB_OUT_MAX];
+    dmrd[15] = 0x01; /* slot 1, a group call, voice B */
+    const uint8_t *up = rdof_hb_peer_up(&p, dmrd, sizeof dmrd, tmp);
+    CHECK(up == tmp && tmp[15] == 0x81 && !memcmp(tmp + 16, dmrd + 16, sizeof dmrd - 16) && dmrd[15] == 0x01);
+    CHECK(rdof_hb_peer_up(&p, (const uint8_t *)"RPTPING\x12\x7b\x6f\xef", 11, tmp) != tmp);
+    p.dmrc[38] = '3';
+    CHECK(rdof_hb_peer_up(&p, dmrd, sizeof dmrd, tmp) == dmrd);
+    p.dmrc[38] = '4';
 
     /* a new config while up: log in again with it */
     uint8_t old[RDOF_DMRC_MAX];

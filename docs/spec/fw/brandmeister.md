@@ -159,9 +159,9 @@ Two simplex frequencies and a repeater, each its own BrandMeister login:
    of the keepalive `DMRC`, no `DMRT`. Each login is a UDP socket: lwIP's 28 sockets are shared with the web
    server, MQTT, HBlink4 and the IP gateway (8), so cap logins at 4 on an ESP32 (`CONFIG_RDOF_BM_MAX_LOGINS`).
 6. **rdofradio.** `sdr/cli/rdofradio_net.c` the same, with up to 8 logins (one per split repeater).
-7. **Slots.** A simplex path transmits on its `ts` whatever slot BrandMeister uses, and sends what it hears up on
-   the slot BrandMeister expects for a simplex hotspot (check on the first login, §2). A repeater maps slot to
-   slot.
+7. **Slots.** Done: a simplex login (slots `'4'`) sends its `DMRD` up on slot 2 (`rdof_hb_peer_up`), as a simplex
+   hotspot does, and transmits what comes down on its own channel whatever the slot. A repeater maps slot to slot.
+   Check on the first real login that BrandMeister sends down on slot 2.
 8. **Data.** BrandMeister answers confirmed data itself (§7). Today's gaps, from checking the capture against
    the code (2026-11-06):
    - A rate 3/4 block counts as bad when the trellis corrected any bit (`pdu.c:151`, `fec_ok = errors == 0`), so
@@ -199,9 +199,9 @@ Tests:
   hotspot ID) with the bench's radios (parrot 9990, a TG, a private call, an SMS to 262993); then two simplex
   logins at once; then a W12; then a repeater.
 
-## 7. Observed: a Motorola SMS through a BrandMeister hotspot (2026-11-06)
+## 7. Observed: a radio's text message through a BrandMeister hotspot (2026-11-06)
 
-A MOTOTRBO portable sent a text to 262993 (BrandMeister's SMS / APRS service) through a duplex MMDVM hotspot on
+A commercial portable sent a text to 262993 (BrandMeister's SMS / APRS service) through a duplex MMDVM hotspot on
 BrandMeister. Capture between the hotspot and the master, decoded (rate 3/4 trellis, CRC-9, CRC-32):
 
 | 16:mm:ss UTC | From | What |
@@ -220,7 +220,7 @@ BrandMeister. Capture between the hotspot and the master, decoded (rate 3/4 trel
 What the gateway takes from it:
 
 - **Two levels of acknowledgment.** The link level (the ETSI response header, status = N(S)) and the TMS level (a
-  UDP 4007 datagram back from the destination: `BF`, address length 0, the sequence). A MOTOTRBO radio retries its
+  UDP 4007 datagram back from the destination: `BF`, address length 0, the sequence). The radio retries its
   link level about every 6 s (12-20 preamble CSBKs before each retry; one retry never reached the hotspot) and
   shows "sent" only once both have come. BrandMeister sends both for messages to its services. A gateway that is
   itself the destination (an `ipgw` route that ends in the box) must send both, or the radio retries and then

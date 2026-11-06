@@ -95,6 +95,9 @@ bool rdof_hb_peer_tick(rdof_hb_peer_t *p, double now, rdof_hbp_event_t *ev);
 size_t rdof_hb_peer_packet(const rdof_hb_peer_t *p, uint8_t out[RDOF_HB_OUT_MAX]);
 /* RPTCL (a login, on shutdown) into out; 0 without a login. */
 size_t rdof_hb_peer_close_packet(const rdof_hb_peer_t *p, uint8_t out[9]);
+/* What goes up for d (n bytes): d itself, or, from a simplex login (slots '4' in its config), a DMRD copied into tmp
+   with its slot set to 2, the slot a simplex hotspot's calls use both ways on BrandMeister. */
+const uint8_t *rdof_hb_peer_up(const rdof_hb_peer_t *p, const uint8_t *d, size_t n, uint8_t tmp[RDOF_HB_OUT_MAX]);
 /* Whether DMRD may go up now: always without a login, only logged in with one. */
 bool rdof_hb_peer_may_send(const rdof_hb_peer_t *p);
 /* The state's name for status: "up", "down" (no login) or the login's step: "login", "auth", "config",

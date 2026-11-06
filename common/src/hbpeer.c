@@ -217,6 +217,15 @@ size_t rdof_hb_peer_close_packet(const rdof_hb_peer_t *p, uint8_t out[9])
     return 9;
 }
 
+const uint8_t *rdof_hb_peer_up(const rdof_hb_peer_t *p, const uint8_t *d, size_t n, uint8_t tmp[RDOF_HB_OUT_MAX])
+{
+    if (!p->login || p->dmrc_len <= 38 || p->dmrc[38] != '4' || n < 16 || n > RDOF_HB_OUT_MAX || memcmp(d, "DMRD", 4))
+        return d;
+    memcpy(tmp, d, n);
+    tmp[15] |= 0x80;
+    return tmp;
+}
+
 bool rdof_hb_peer_may_send(const rdof_hb_peer_t *p) { return !p->login || p->state == RDOF_HBL_UP; }
 
 const char *rdof_hb_peer_state_name(const rdof_hb_peer_t *p)

@@ -39,7 +39,7 @@ extern "C" {
 #define RDOF_IPGW_MAX_FLOWS 16   /* the table; max_flows is at most this */
 #define RDOF_IPGW_MAX_ASM 4      /* messages being put together at once (a source and slot each) */
 #define RDOF_IPGW_DEDUP 16       /* messages remembered, to drop the same one heard twice */
-#define RDOF_IPGW_DEDUP_S 5.0
+#define RDOF_IPGW_DEDUP_S 30.0 /* over a radio's confirmed data retries (about 6 s apart, several) */
 #define RDOF_IPGW_ASM_TIMEOUT_S 2.0 /* a message whose next block doesn't come in this long is dropped */
 #define RDOF_IPGW_ACK_AGAIN_S 0.5   /* the same confirmed message again: answered again after this long */
 /* The longest datagram either way: 127 blocks (the header's 7-bit count) of 12 octets, less the CRC-32. */

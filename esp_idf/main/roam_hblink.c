@@ -70,8 +70,10 @@ void roam_hb_send(roam_t *r, const uint8_t *data, size_t len)
         return;
     }
     struct roam_hb *h = r->hb;
+    uint8_t tmp[RDOF_HB_OUT_MAX];
     xSemaphoreTake(h->lock, portMAX_DELAY);
     const bool hold = len >= 4 && !memcmp(data, "DMRD", 4) && !rdof_hb_peer_may_send(&h->peer); /* not logged in */
+    data = rdof_hb_peer_up(&h->peer, data, len, tmp);
     if (!hold && h->sock >= 0 && send(h->sock, data, len, 0) == (ssize_t)len)
         r->st.hblink_tx++;
     xSemaphoreGive(h->lock);

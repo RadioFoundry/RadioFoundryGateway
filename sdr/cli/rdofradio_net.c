@@ -71,6 +71,8 @@ void rdofnet_peer_send(rdofnet_peer_t *p, const uint8_t *d, size_t n)
         return;
     if (n >= 4 && !memcmp(d, "DMRD", 4) && !rdof_hb_peer_may_send(&p->peer))
         return; /* not logged in yet */
+    uint8_t tmp[RDOF_HB_OUT_MAX];
+    d = rdof_hb_peer_up(&p->peer, d, n, tmp);
     if (send(p->sock, d, n, 0) == (ssize_t)n)
         p->peer.tx++;
     else

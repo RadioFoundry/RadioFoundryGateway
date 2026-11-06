@@ -12,7 +12,7 @@
  * sends:
  *   - a private call to 9990 (voice or data) is recorded and played back to that peer (the gateway's own parrot);
  *   - packet data to 262993 (the SMS service) is taken as the IP gateway takes it (rate 1/2, 3/4 or 1, confirmed or
- *     not, CRC checked): a confirmed packet gets the link-level ACK; a MOTOTRBO text (UDP 4007) gets the TMS ACK
+ *     not, CRC checked): a confirmed packet gets the link-level ACK; a TMS text (UDP 4007) gets the TMS ACK
  *     (`BF 00 <seq>`), then after --reply-s an answer text, as BrandMeister's service does (§7). Unlike
  *     BrandMeister, its own packets go down unconfirmed at rate 1/2 (the IP gateway's);
  *   - every packet is logged one line each (stdout, and --log).
