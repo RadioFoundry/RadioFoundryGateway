@@ -908,6 +908,27 @@ static int64_t tx_at(const rdof_sdrmodem_t *m, int64_t p)
     return (p - RX_DELAY_48K(m) - m->tx_late48) * (int64_t)m->tx_fs / 48000;
 }
 
+int64_t rdof_sdrmodem_tx_frontier48(const rdof_sdrmodem_t *m)
+{
+    return heard_at(m, m->mod.pos + rdof_mod_samples(&m->mod, LEAD_SYMBOLS));
+}
+
+bool rdof_sdrmodem_place48(rdof_sdrmodem_t *m, int64_t at48, const uint8_t burst[RDOF_BURST_BYTES], int64_t *placed48)
+{
+    if (!m->mod_ok)
+        return false;
+    const int64_t s = tx_at(m, at48);
+    if (s < m->mod.pos + rdof_mod_samples(&m->mod, LEAD_SYMBOLS))
+        return false; /* too late: the modulator is past there */
+    if (rdof_mod_queue_burst(&m->mod, s, burst, NULL, RDOF_MOD_RAMPS) != 0)
+        return false; /* before what's queued, or the queue is full */
+    m->tx_bursts++;
+    remember(m, s, burst);
+    if (placed48)
+        *placed48 = heard_at(m, s);
+    return true;
+}
+
 /* DCDM: a TS1 (i 0) or TS2 (i 1) burst heard at p. The channel's slot timing, unless ours is in use: a burst of ours
  * queued or sent within 60 ms before it (the other station keeps to ours then, and moving would cost a slot). */
 static void dc_heard(rdof_sdrmodem_t *m, int i, int64_t p)

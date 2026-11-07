@@ -60,6 +60,10 @@ if(NOT CMAKE_SCRIPT_MODE_FILE)  # ESP-IDF reads this file as a script first, to 
     set_source_files_properties(src/split.c PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 endif()
 
+if(NOT ESP_PLATFORM)
+    list(APPEND RDOF_COMMON_SRCS src/mssim.c) # the bench's confirmed-data responder (rdofradio); not in firmware yet
+endif()
+
 if(ESP_PLATFORM)
     # CONFIG_RDOF_RUST: rust's modules (Espressif's Rust toolchain, `espup`) in place of their C files.
     if(CONFIG_RDOF_RUST)

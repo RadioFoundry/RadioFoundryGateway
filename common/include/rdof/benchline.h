@@ -288,6 +288,13 @@ typedef struct {
     const char *(*tune)(void *ctx, const rdof_bl_tune_t *t, const char *who, char *why, size_t cap);
     int (*tune_state)(void *ctx, char *why, size_t cap);
     void (*untune)(void *ctx);
+    /* The timed confirmed-data responder (the mssim op, rdof/mssim.h; NULL: none). action "arm": take the
+     * transmitter on freq_hz at cc and power for up to seconds and answer as req (the request line, its profile)
+     * says; "disarm": stop and give the transmitter back; "status": armed or not and the log after `since`. true with
+     * out a JSON object's members; false with out the reason and *code an error code ("busy", "refused",
+     * "bad_request", "unavailable"). */
+    bool (*mssim)(void *ctx, const char *action, const char *req, size_t len, uint32_t freq_hz, int cc,
+                  rdof_bench_power_t power, double seconds, uint32_t since, char *out, size_t cap, const char **code);
 } rdof_bl_platform_t;
 
 typedef struct rdof_bl rdof_bl_t;

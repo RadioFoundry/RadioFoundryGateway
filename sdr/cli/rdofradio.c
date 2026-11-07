@@ -123,6 +123,7 @@
 #include "rdof/hbpeer.h"
 #include "rdof/layer2.h"
 #include "rdof/modem.h"
+#include "rdof/mssim.h"
 #include "rdof/parrot.h"
 #include "rdof/pdu.h"
 #include "rdof/repeater.h"
@@ -2385,6 +2386,150 @@ static bool bench_tx_poll(double now)
     return true;
 }
 
+/* The confirmed-data responder (the bench's mssim op, rdof/mssim.h): the bench's thread arms it and reads its log;
+ * the main loop feeds it the bursts heard on the job's channel and places its answers on the receiver's timeline,
+ * over a transmit job of its own (BT: the modem in DMO on the frequency, the transceiver paused). */
+static struct {
+    pthread_mutex_t mu;
+    int want;     /* 1 arm once the job has the transmitter, 2 disarm */
+    bool on;
+    double until; /* disarmed then */
+    int ch;       /* the receive channel on the frequency */
+    uint32_t freq;
+    char why[160]; /* why the last arming ended */
+    rdof_mssim_profile_t prof;
+    rdof_mssim_t s;
+} MS = {.mu = PTHREAD_MUTEX_INITIALIZER, .ch = -1};
+
+#define MS_LEAD48 1440 /* answers go to the modulator this far ahead of where it is */
+
+static bool ms_send(void *ctx, int64_t at48, const uint8_t burst[33], int64_t *placed48)
+{
+    return rdof_sdrmodem_place48(&R.m, at48, burst, placed48);
+}
+
+static void ms_off(const char *why)
+{
+    MS.on = false;
+    MS.want = 0;
+    rdof_mssim_disarm(&MS.s);
+    snprintf(MS.why, sizeof MS.why, "%s", why);
+    bl_tx_close(NULL);
+    say("bench: the responder is off: %s\n", why);
+}
+
+/* the main loop, each turn before the transmitter's samples */
+static void ms_poll(double now)
+{
+    pthread_mutex_lock(&MS.mu);
+    if (MS.want == 1) {
+        pthread_mutex_lock(&BT.mu);
+        const bool ready = BT.ready, failed = BT.failed;
+        char why[120];
+        snprintf(why, sizeof why, "%s", BT.why);
+        pthread_mutex_unlock(&BT.mu);
+        if (failed) {
+            ms_off(why);
+        } else if (now > MS.until) {
+            ms_off("the transmitter wasn't ready in time");
+        } else if (ready) {
+            rdof_mssim_init(&MS.s, ms_send, NULL);
+            rdof_mssim_arm(&MS.s, &MS.prof);
+            MS.want = 0;
+            MS.on = true;
+            say("bench: the responder is armed on %.4f MHz\n", MS.freq / 1e6);
+        }
+    } else if (MS.on) {
+        if (MS.want == 2)
+            ms_off("disarmed");
+        else if (now > MS.until)
+            ms_off("its time is up");
+        else if (!MS.s.armed)
+            ms_off("it answered its count");
+        else
+            rdof_mssim_poll(&MS.s, rdof_sdrmodem_tx_frontier48(&R.m), MS_LEAD48);
+    } else if (MS.want == 2) {
+        MS.want = 0;
+    }
+    pthread_mutex_unlock(&MS.mu);
+}
+
+static void ms_heard(int c, const rdof_sdr_burst_t *b, bool echo)
+{
+    if (!MS.on || c != MS.ch) /* a racy peek: on changes on this thread only */
+        return;
+    pthread_mutex_lock(&MS.mu);
+    if (MS.on) {
+        if (!echo)
+            rdof_mssim_heard(&MS.s, &b->b, b->position);
+        else
+            rdof_mssim_echo(&MS.s, b->position);
+    }
+    pthread_mutex_unlock(&MS.mu);
+}
+
+static bool bl_mssim(void *ctx, const char *action, const char *req, size_t len, uint32_t freq_hz, int cc,
+                     rdof_bench_power_t power, double seconds, uint32_t since, char *out, size_t cap,
+                     const char **code)
+{
+    if (!strcmp(action, "arm")) {
+        rdof_mssim_profile_t p;
+        char err[120];
+        if (!rdof_mssim_parse(req, len, &p, err, sizeof err)) {
+            *code = "bad_request";
+            snprintf(out, cap, "%s", err);
+            return false;
+        }
+        if (R.mmdvm || R.full) {
+            *code = "unavailable";
+            snprintf(out, cap, "the responder needs the SDR's own modem, half duplex");
+            return false;
+        }
+        const int ch = channel_of(freq_hz);
+        if (ch < 0) {
+            *code = "refused";
+            snprintf(out, cap, "no receive channel on %.4f MHz", freq_hz / 1e6);
+            return false;
+        }
+        pthread_mutex_lock(&MS.mu);
+        const bool busy = MS.on || MS.want;
+        pthread_mutex_unlock(&MS.mu);
+        char why[160] = "";
+        if (busy || !bl_tx_open(ctx, freq_hz, cc, power, false, why, sizeof why)) {
+            *code = "busy";
+            snprintf(out, cap, "%s", busy ? "the responder is armed already" : why);
+            return false;
+        }
+        pthread_mutex_lock(&MS.mu);
+        MS.prof = p;
+        MS.ch = ch;
+        MS.freq = freq_hz;
+        MS.until = now_s() + (seconds > 0 && seconds < 1800 ? seconds : 1800);
+        MS.why[0] = 0;
+        MS.want = 1;
+        pthread_mutex_unlock(&MS.mu);
+        char q[200];
+        snprintf(q, sizeof q, "%s", why);
+        for (char *s = q; *s; s++)
+            if (*s == '"' || *s == '\\' || (unsigned char)*s < 0x20)
+                *s = '\'';
+        snprintf(out, cap, "\"armed\":true,\"freq\":%.6f,\"cc\":%d,\"note\":\"%s\"", freq_hz / 1e6, cc, q);
+        return true;
+    }
+    pthread_mutex_lock(&MS.mu);
+    if (!strcmp(action, "disarm") && (MS.on || MS.want == 1))
+        MS.want = 2;
+    const int n = snprintf(out, cap, "\"armed\":%s,\"arming\":%s,\"answered\":%d,\"ended\":\"%s\",\"log\":",
+                           MS.on ? "true" : "false", MS.want == 1 ? "true" : "false", MS.s.answered, MS.why);
+    uint32_t next = since;
+    if (n > 0 && (size_t)n < cap) {
+        size_t k = rdof_mssim_log_json(&MS.s, since, out + n, cap - (size_t)n - 24, &next);
+        snprintf(out + n + k, cap - (size_t)n - k, ",\"next\":%u", next);
+    }
+    pthread_mutex_unlock(&MS.mu);
+    return true;
+}
+
 static bool bl_rpt_open(void *ctx, const rdof_bl_rpt_cfg_t *cfg, char *why, size_t cap)
 {
     pthread_mutex_lock(&BR.mu);
@@ -2604,7 +2749,7 @@ static void bench_start(void)
                                           .tx_bands = bl_tx_bands,
                                           .iq_read = bl_iq_read, .iq_filled = bl_iq_filled, .utc = bl_utc,
                                           .sc_utc = bl_sc_utc,
-                                          .rx_stats = bl_rx_stats, .can_tx = bl_can_tx, .tx_open = bl_tx_open,
+                                          .rx_stats = bl_rx_stats, .can_tx = bl_can_tx, .tx_open = bl_tx_open, .mssim = bl_mssim,
                                           .tx_space = bl_tx_space, .tx_push = bl_tx_push, .tx_unkey = bl_tx_unkey,
                                           .tx_idle = bl_tx_idle, .tx_close = bl_tx_close, .rpt_open = bl_rpt_open,
                                           .rpt_state = bl_rpt_state, .rpt_event = bl_rpt_event,
@@ -2655,6 +2800,7 @@ static void on_burst(void *ctx, int c, const rdof_sdr_burst_t *b, double t)
 {
     if (!R.mmdvm)
         rdof_sdrmodem_heard(&R.m, c, b);
+    ms_heard(c, b, false);
     if (NX)
         rdof_sdrsplits_heard(&XS, c, b);
     bench_burst(c, b);
@@ -2686,7 +2832,7 @@ static bool muted(void *ctx, int64_t p) { return rdof_sdrmodem_muted_at(&R.m, p)
  * all the time it's keyed, so there only a burst we sent counts, on any channel but its input: on the Pluto a
  * repeater sending on 438.3625 was heard on 438.2625 as a call of its own. Not passed on: a channel's peer would
  * send the network's call back to it. The bench's line protocol still gets it: it watches the air. */
-static bool echo_drop(void *ctx, int c, const rdof_sdr_burst_t *b)
+static bool echo_drop_(int c, const rdof_sdr_burst_t *b)
 {
     if (c < 0)
         return false;
@@ -2711,6 +2857,13 @@ static bool echo_drop(void *ctx, int c, const rdof_sdr_burst_t *b)
     }
     bench_burst(c, b);
     return true;
+}
+static bool echo_drop(void *ctx, int c, const rdof_sdr_burst_t *b)
+{
+    const bool ours = echo_drop_(c, b);
+    if (ours)
+        ms_heard(c, b, true); /* the responder's answer on the air: where it was heard */
+    return ours;
 }
 /* the inbound slot by timing: the repeater's RX channel only (another channel keeps its own CACH), the job's with a
  * bench repeater job */
@@ -5258,6 +5411,7 @@ int main(int argc, char **argv)
         /* as many transmit samples as were read (one for every txr), at the modem's position for them */
         const int ntx = (int)((total + n) / txr - total / txr);
         const double t_mod = now_s();
+        ms_poll(now);
         const bool keyed = rdof_sdrmodem_pull_iq(&R.m, txn - lead + offset, out, ntx);
         WS.mod += now_s() - t_mod;
         const double d_poll = t_mod - t_poll, d_mod = now_s() - t_mod;

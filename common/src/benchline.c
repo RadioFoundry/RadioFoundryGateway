@@ -3243,6 +3243,39 @@ static void tick_rx(rdof_bl_t *bl, conn_t *c, double now)
     }
 }
 
+/* The confirmed-data responder: arm (a transmit frequency of the bench), disarm, status. */
+static void op_mssim(rdof_bl_t *bl, conn_t *c, int root, double now)
+{
+    if (!req_session(bl, c, root, false))
+        return;
+    if (!bl->p.mssim) {
+        fail(bl, c, "unsupported", "this bench has no responder");
+        return;
+    }
+    const char *action = jstrv(bl, root, "action");
+    if (!action)
+        action = "status";
+    const double mhz = jnum(bl, root, "freq", NAN);
+    if (!strcmp(action, "arm") && !tx_ok(bl, mhz)) {
+        fail(bl, c, "refused", "%.4f MHz isn't a transmit frequency of this bench", mhz);
+        return;
+    } else if (strcmp(action, "arm") && strcmp(action, "disarm") && strcmp(action, "status")) {
+        fail(bl, c, "bad_request", "action is arm, disarm or status");
+        return;
+    }
+    const rdof_bench_power_t power = {jnum(bl, root, "power_dbm", NAN), (int)jnum(bl, root, "power", 0)};
+    const double seconds = jnum(bl, root, "seconds", 300.0);
+    const uint32_t since = (uint32_t)jnum(bl, root, "since", 0);
+    char out[7900];
+    const char *code = "unavailable";
+    if (!bl->p.mssim(bl->p.ctx, action, c->line, c->ln, isfinite(mhz) ? (uint32_t)lround(mhz * 1e6) : 0,
+                     (int)jnum(bl, root, "cc", 1), power, seconds, since, out, sizeof out, &code)) {
+        fail(bl, c, code, "%s", out);
+        return;
+    }
+    emit(bl, c, "{\"mssim\":{%s}}", out);
+}
+
 static void request(rdof_bl_t *bl, int ci, double now)
 {
     conn_t *c = &bl->c[ci];
@@ -3288,6 +3321,8 @@ static void request(rdof_bl_t *bl, int ci, double now)
         op_rx(bl, c, root, now);
     else if (!strcmp(op, "tune"))
         op_tune(bl, c, root, now);
+    else if (!strcmp(op, "mssim"))
+        op_mssim(bl, c, root, now);
     else if (!strcmp(op, "activity") || !strcmp(op, "burstlog") || !strcmp(op, "bridge"))
         fail(bl, c, "unsupported", "this bench has no %s yet", op);
     else

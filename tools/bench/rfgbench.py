@@ -1021,6 +1021,42 @@ def cmd_rx_sig(a) -> int:
             rec.close()
 
 
+def cmd_mssim(a) -> int:
+    """The confirmed-data responder: arm it with a profile, disarm it, read its log, or watch the log until it's off."""
+    req = {"op": "mssim", "action": "status" if a.action == "watch" else a.action, "session": a.session}
+    if a.action == "arm":
+        if a.freq is None:
+            print(f"{NOTE} arm needs --freq", file=sys.stderr)
+            return 2
+        prof = a.profile or "{}"
+        if prof.startswith("@"):
+            with open(prof[1:]) as f:
+                prof = f.read()
+        req.update(json.loads(prof))
+        req.update({"op": "mssim", "action": "arm", "freq": a.freq, "cc": a.cc, "seconds": a.seconds})
+        if a.power is not None:
+            req["power"] = a.power
+    if a.action != "watch":
+        req["since"] = a.since
+        return stream(a.where, req, printer)
+    since, last = a.since, {}
+
+    def on(d, data):
+        nonlocal since
+        m = d.get("mssim", {})
+        for e in m.get("log", []):
+            print(json.dumps(e), flush=True)
+        since = m.get("next", since)
+        last.update(m)
+    while True:
+        rc = stream(a.where, dict(req, since=since), on)
+        if rc or not (last.get("armed") or last.get("arming")):
+            if not rc:
+                print(f"{NOTE} the responder is off: {last.get('ended') or 'not armed'}", file=sys.stderr)
+            return rc
+        time.sleep(a.interval)
+
+
 def cmd_unsupported(a) -> int:
     return stream(a.where, {"op": a.cmd_name}, printer)
 
@@ -1296,6 +1332,16 @@ def main(argv=None) -> int:
     s.add_argument("--floor-s", type=float, default=1.0)
     s.add_argument("--floor-db", type=float, default=None)
     s.add_argument("--out", default=None)
+    s = p("mssim", cmd_mssim)
+    s.add_argument("action", choices=("arm", "disarm", "status", "watch"))
+    s.add_argument("--freq", type=float, default=None, help="MHz (arm)")
+    s.add_argument("--cc", type=int, default=1)
+    s.add_argument("--power", type=int, default=None)
+    s.add_argument("--seconds", type=float, default=300.0, help="disarmed after this long (at most 1800)")
+    s.add_argument("--profile", default=None, help='JSON, or @FILE: {"answers":[{"answer":"ack|nack|sack|none|ack2",'
+                   '"slots":N,"resend":[..]}],"end":"block|terminator|learn","to":ID,"from":ID,"count":N}')
+    s.add_argument("--since", type=int, default=0, help="log entries after this seq")
+    s.add_argument("--interval", type=float, default=1.0, help="watch: seconds between reads")
     for op, fn in (("tx", cmd_tx_sig), ("rx", cmd_rx_sig)):
         s = sub.add_parser(op, help=f"{'send' if op == 'tx' else 'receive'} a signal mode")
         modes = s.add_subparsers(dest="mode_name", required=True)

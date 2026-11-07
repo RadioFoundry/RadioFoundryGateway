@@ -47,7 +47,7 @@ are committed (`host-tests/vectors.h`, `scenarios.h`, `fixtures/`) and the C mus
 | `sdr_selftest_tests` | the firmware's self-test check, on the host |
 | `rdof_hostweb_tests`, `rdof_webapi_tests`, `rdof_radiocfg_tests` | the host web server, the shared web API (byte for byte against the firmware's status), `rdofradio --config` |
 | `rdof_benchline_tests`, `benchsig`, `rdof_fm_tests`, `rdof_am_tests` | the bench line protocol, signal modes, the FM and AM generators and receivers |
-| the rest | `rdof_memplan_tests`, `rdof_parrot_tests`, `rdof_power_tests`, `rdof_lastheard_tests`, `rdof_rdofnet_tests`, `rdof_pffft_tests`, `ipgw_sdr_tests`, and the components' own (`test_netclock`, `test_netclock_posix`, `test_wifilist`, `lr2021`, `tinysctp_tests`) |
+| the rest | `rdof_memplan_tests`, `rdof_parrot_tests`, `rdof_mssim_tests`, `rdof_power_tests`, `rdof_lastheard_tests`, `rdof_rdofnet_tests`, `rdof_pffft_tests`, `ipgw_sdr_tests`, and the components' own (`test_netclock`, `test_netclock_posix`, `test_wifilist`, `lr2021`, `tinysctp_tests`) |
 
 Coverage: `sh host-tests/coverage.sh [build dir] [file regex]` (clang; default `build/cov`) prints lines and branches
 per file and writes an HTML report to `<build dir>/html`.
@@ -176,6 +176,7 @@ sockets, NVS, HTTP, MQTT) stays in each target.
 | `oled`, `oled_sdr` | the frame, font and panel commands; the roamer's and the SDR's screens |
 | `ipgw`, `ipgwcfg` | the IP gateway and its settings (C only) |
 | `parrot` | the parrot: a call recorded and sent back |
+| `mssim` | a timed confirmed-data responder for the bench (ACK, NACK, SACK, none, ACK twice, N slots after a packet; rdofradio's `mssim` bench op; host builds only) |
 | `json` | a compact JSON writer, byte for byte stable for the golden tests |
 | `webapi` | the web API shared by the firmware and the host tools: `/api/status`'s shared parts and `caps`, the settings, `/api/log`, `/api/lastheard`, `/api/restart` |
 | `jitter`, `lastheard`, `memplan` | the network jitter buffer; Last heard; the board's memory plan ([memory.md](spec/fw/memory.md)) |
