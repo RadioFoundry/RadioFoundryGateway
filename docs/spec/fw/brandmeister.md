@@ -273,6 +273,10 @@ What the gateway takes from it:
 - **Compressed headers work going up.** 2026-11-07 01:30: a radio's TMS text and TMS ACKs with the compressed
   UDP/IPv4 header (SAP 3; 5 octets: IPv4 ID, SAID/DAID `00`, port IDs `62 62`) were each link-ACKed, the response in
   SAP 3; BrandMeister's TMS ACK and answers came back in full UDP/IP (SAP 4) all the same.
+- **Data to a radio on the same login isn't relayed.** 2026-11-07 01:36-01:38: three confirmed texts from one radio
+  to another radio last heard on the same hotspot (one SAP 3, two SAP 4 tries): BrandMeister sent that hotspot one
+  preamble CSBK for each, about 4 s after the first try, and neither header nor blocks. Whether it relays
+  radio-to-radio data between two logins is not tested yet.
 - **The first try is often missed.** BrandMeister answered the second copy of the first message, not the first. The
   hotspot logged both. Not explained yet; compare with the gateway once it logs in.
 - **IDs.** The radio uses its 7-digit DMR ID; BrandMeister routes the answer to the hotspot (9-digit ID) where it was
