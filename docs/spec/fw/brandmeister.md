@@ -183,7 +183,8 @@ Tests:
   scripted calls, confirmed-data ACKs and TMS ACKs as §7 recorded them). It relays a group call to every other login
   that keyed the same TG in the last 15 minutes, as BrandMeister's dynamic talkgroups do: to a repeater on the slot it
   keyed it on, to a simplex hotspot on slot 2. As BrandMeister (§7), it ignores data whose header came after fewer
-  than 12 preamble CSBKs (`--min-preambles`), a radio's ACK excepted; `fakemodem` sends 16 before a text
+  than 12 preamble CSBKs (`--min-preambles`), a radio's ACK excepted, and a radio's link ACK counts as not received
+  when another transmission of the radio's starts within 1 s of it; `fakemodem` sends 16 before a text
   (`--preambles` to change it). The gateway passes a radio's preambles up as it hears them. The C host tests drive it in process; the
   HIL tests point a board or rdofradio at it on the LAN. No automated or recurring test reaches BrandMeister.
 - **No RF, on one host:** `fakemodem` (sdr/cli) is a simplex MMDVM_HS hotspot on a pty, answering as the host
@@ -251,6 +252,10 @@ What the gateway takes from it:
   TMS ACK and the answer. Another radio's confirmed and unconfirmed packets, rate 1/2 and 3/4, intact, each with 1
   or 2 preambles, got no answer either (ten sends). **BrandMeister answers data only after a long preamble: send
   about 15 preamble CSBKs before a data header going up.** Its own packets down have one.
+- **A link ACK with something right behind it is missed.** 2026-11-07, 00:26-00:27 UTC: a radio's link ACK to
+  BrandMeister's answer text, intact, followed 0.3 s later by the preambles of its TMS ACK, got the text sent again
+  3 s later; each time the link ACK had nothing behind it for a second, BrandMeister took it. A radio's TMS ACK sent
+  0.5 s after its link ACK wasn't answered either. Leave about 1.5 s after a link ACK before the next packet.
 - **The first try is often missed.** BrandMeister answered the second copy of the first message, not the first. The
   hotspot logged both. Not explained yet; compare with the gateway once it logs in.
 - **IDs.** The radio uses its 7-digit DMR ID; BrandMeister routes the answer to the hotspot (9-digit ID) where it was

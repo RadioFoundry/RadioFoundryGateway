@@ -16,7 +16,8 @@
  *     (`BF 00 <seq>`), then after --reply-s an answer text, as BrandMeister's service does (§7). Unlike
  *     BrandMeister, its own packets go down unconfirmed at rate 1/2 (the IP gateway's). As BrandMeister, it ignores
  *     a packet whose data header came after fewer than --min-preambles preamble CSBKs (12; 0: any), a radio's
- *     response header (its ACK) excepted (brandmeister.md §7);
+ *     response header (its ACK) excepted; that link ACK counts as not received when another transmission of the
+ *     radio's (a preamble CSBK or a data header) starts within 1 s of it (brandmeister.md §7);
  *   - a group call goes to every other login that keyed the same TG in the last 15 minutes (BrandMeister's dynamic
  *     talkgroup and its default timer): a repeater's on the slot it keyed it on, a simplex hotspot's on slot 2;
  *   - every packet is logged one line each (stdout, and --log).
@@ -72,6 +73,12 @@ typedef struct {
     uint32_t relay_sid; /* the last stream relayed here, for its log line */
     int preambles[3];   /* per slot: preamble CSBKs to the SMS service since its last data header */
     bool ignoring[3];   /* per slot: the packet under way came after too few: its blocks are dropped */
+    struct {
+        bool on;
+        double at;
+        uint32_t src;
+        uint8_t burst[33];
+    } ack[3]; /* per slot: a radio's response header held for a second, until nothing of its own follows it */
 } peer_t;
 
 static struct {
@@ -359,6 +366,12 @@ static void dmrd_up(peer_t *p, const uint8_t *d, size_t n, double now)
         relay_group(p, d, n, &b, now);
     if (b.dst == SMS_ID && !b.group && ft == 2) {
         const int s = b.slot == 1 ? 1 : 2;
+        if (p->ack[s].on && (dt == RDOF_DT_CSBK || dt == RDOF_DT_DATA_HEADER)) {
+            p->ack[s].on = false;
+            say("sms from %u: link ACK ignored, another transmission %.2f s behind it (BrandMeister counts it not "
+                "received)",
+                (unsigned)b.src, now - p->ack[s].at);
+        }
         if (dt == RDOF_DT_CSBK) {
             p->preambles[s]++;
         } else if (dt == RDOF_DT_DATA_HEADER) {
@@ -369,12 +382,36 @@ static void dmrd_up(peer_t *p, const uint8_t *d, size_t n, double now)
                 say("sms from %u: ignored, %d preamble CSBKs before its header (BrandMeister answers after %d)",
                     (unsigned)b.src, p->preambles[s], F.min_preambles);
             p->preambles[s] = 0;
+            if (response) {
+                p->ack[s].on = true;
+                p->ack[s].at = now;
+                p->ack[s].src = b.src;
+                memcpy(p->ack[s].burst, b.burst, sizeof p->ack[s].burst);
+                return;
+            }
         }
         if (p->ignoring[s])
             return;
         const rdof_ipgw_where_t w = {.source = (int)(p - F.peers), .slot = b.slot, .freq = 0, .cc = -1};
         rdof_ipgw_burst(&F.gw, &w, dt, b.burst, now);
     }
+}
+
+/* A radio's link ACK with nothing of its own starting within a second of it is taken (brandmeister.md §7). */
+static void acks_due(double now)
+{
+    for (int i = 0; i < MAX_PEERS; i++)
+        for (int s = 1; s <= 2; s++) {
+            peer_t *p = &F.peers[i];
+            if (!p->ack[s].on || now - p->ack[s].at < 1.0)
+                continue;
+            p->ack[s].on = false;
+            if (p->state != ST_UP)
+                continue;
+            say("sms from %u: link ACK taken", (unsigned)p->ack[s].src);
+            const rdof_ipgw_where_t w = {.source = i, .slot = s, .freq = 0, .cc = -1};
+            rdof_ipgw_burst(&F.gw, &w, RDOF_DT_DATA_HEADER, p->ack[s].burst, p->ack[s].at);
+        }
 }
 
 /* A group call: this login subscribes to its TG on its slot, and it goes to every other login subscribed to it. */
@@ -606,6 +643,7 @@ int main(int argc, char **argv)
         rdof_parrot_poll(&F.parrot, now);
         rdof_ipgw_tick(&F.gw, now);
         sms_answer_due(now);
+        acks_due(now);
         for (int i = 0; i < MAX_PEERS; i++)
             if (F.peers[i].state != ST_FREE && now - F.peers[i].last > 60) {
                 say("peer %u: nothing for 60 s: dropped", (unsigned)F.peers[i].id);
