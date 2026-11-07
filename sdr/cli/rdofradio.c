@@ -2746,6 +2746,8 @@ static void bench_burst(int c, const rdof_sdr_burst_t *b)
     o.dt = (uint8_t)b->b.dt, o.n = (int8_t)b->b.n, o.slot = (int8_t)b->b.slot, o.family = (int8_t)b->b.family;
     o.cc = (int8_t)b->b.cc, o.sync_errors = (int8_t)b->b.sync_errors;
     memcpy(o.raw, b->b.burst, sizeof o.raw);
+    o.has_cach = b->has_cach;
+    memcpy(o.cach, b->cach, sizeof o.cach);
     rdof_bl_burst(BL.bl, &o);
 }
 

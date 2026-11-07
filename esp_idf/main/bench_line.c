@@ -220,6 +220,8 @@ void bench_line_burst(int channel, const rdof_sdr_burst_t *b, double t)
                          .family = (int8_t)b->b.family, .cc = (int8_t)b->b.cc,
                          .sync_errors = (int8_t)b->b.sync_errors};
     memcpy(o.raw, b->b.burst, sizeof o.raw);
+    o.has_cach = b->has_cach;
+    memcpy(o.cach, b->cach, sizeof o.cach);
     rdof_bl_burst(bl, &o);
 }
 

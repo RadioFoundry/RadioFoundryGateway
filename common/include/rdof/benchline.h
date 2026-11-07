@@ -112,6 +112,8 @@ typedef struct {
     uint8_t dt;          /* data type 0-11, RDOF_BL_VOICE_SYNC (A), RDOF_BL_VOICE (B-F), as rdof_burst_t */
     int8_t n, slot, family, cc, sync_errors;
     uint8_t raw[33];
+    bool has_cach;       /* BS sync: cach is the CACH heard before it */
+    uint8_t cach[3];     /* 24 bits in air order, the first in bit 7 of cach[0] */
 } rdof_bl_burst_t;
 
 /* A duplex repeater job's setup (bench_repeater). */

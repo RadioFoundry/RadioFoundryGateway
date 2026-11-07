@@ -553,7 +553,15 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
 - `bursts` and `listen` send the receiver channel's bursts at `freq` as `dmr-bursts` records (section 6.3's fields
   with the daemon's names: `t`, `dt_prev_ms`, `grid_err_ms`, `slot_ab`, `sync`, `kind`, `cc`, `cfo_hz` (the burst's carrier
   from its true frequency, the crystal taken out: section 14.7), `cfo_tol_hz`, `level_dbfs`, `dev_hz`, `pi`, `lcss`, `fec`, `lc`, `raw_hex`; no `sym_err` yet), the summary the daemon's (`bursts`, `kinds`,
-  `first_t`, `last_t`, `seconds`, `cfo_hz`, `level_dbfs`, `ended`). `bursts` includes idle bursts (a repeater's hang
+  `first_t`, `last_t`, `seconds`, `cfo_hz`, `level_dbfs`, `ended`). Beyond the daemon's: `sync_errors` (the sync
+  field's bit errors against the pattern it matched; an EMB burst's: its EMB's), and `cach`, the 24 bits heard
+  before a BS-sync burst as 6 hex digits in air order (the first bit the top bit), with its TACT decoded through
+  Hamming(7,4): `cach_at`, `cach_tc`, `cach_lcss`, `cach_tact_errors` (0 or 1: the code always decodes, so 1 may be
+  a worse error read as one); `"cach": null` on other bursts. The CACH is sliced with the burst's own levels, so a
+  key-up's first CACH may be the ramp. The summary adds `lost` (`overflows`, `dsp_skipped`, `decode_dropped`,
+  `queue_drops`: what the whole receiver lost while the stream ran, counts, not this channel's alone) and
+  `complete` (true: nothing lost and no record dropped, so a burst missing was not heard on the air). `info`'s
+  `features` names both (`bursts_cach`, `bursts_lost`). `bursts` includes idle bursts (a repeater's hang
   is all idle); `listen` leaves them out. The bench's own transmission is in them: the receiver hears it as any
   other signal. BS-sync bursts (a repeater's outbound) carry the slot from their CACH; `t` and `sc` are at the
   sync's center, the same point as an outbound job's records. Several streams can run at once, one a channel.

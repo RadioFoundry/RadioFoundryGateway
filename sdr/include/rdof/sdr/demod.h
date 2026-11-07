@@ -42,6 +42,8 @@ typedef struct {
     int64_t position;      /* absolute sample index (48 kS/s) of the burst start */
     float freq_offset_hz;  /* center of the 4FSK levels; drives AFC */
     float deviation_hz;    /* outer (+-3) level */
+    bool has_cach;         /* BS sync: cach holds the 12 symbols before the burst */
+    uint8_t cach[3];       /* those 24 bits as sliced, in air order (first bit in bit 7 of cach[0]) */
 } rdof_sdr_burst_t;
 
 typedef struct {

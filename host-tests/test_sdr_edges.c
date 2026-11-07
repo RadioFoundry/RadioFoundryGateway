@@ -13,6 +13,8 @@
 #include <string.h>
 #include <time.h>
 
+#include "rdof/bits.h"
+#include "rdof/layer2.h"
 #include "rdof/mmdvm.h"
 #include "rdof/pdu.h"
 #include "rdof/rawburst.h"
@@ -294,13 +296,23 @@ static void test_alloc(void)
 #define UTC_OFFSET_US 1000
 
 struct utc_ctx {
-    long bursts, stamped, raw, raw_utc, wrong;
+    long bursts, stamped, raw, raw_utc, wrong, cach, cach_wrong;
 };
 
 static void utc_burst(void *ctx, int c, const rdof_sdr_burst_t *b, double t)
 {
     struct utc_ctx *u = ctx;
     u->bursts++;
+    /* a BS burst carries its CACH, the slot it names the burst's; no other burst has one */
+    if (b->b.family == RDOF_FAMILY_BS) {
+        uint8_t c24[24];
+        rdof_bytes_to_bits(b->cach, 3, c24);
+        u->cach++;
+        if (!b->has_cach || rdof_decode_cach_slot(c24) != b->b.slot)
+            u->cach_wrong++;
+    } else if (b->has_cach) {
+        u->cach_wrong++;
+    }
     const bool timed = b->b.family == RDOF_FAMILY_BS || b->b.family == RDOF_FAMILY_MS;
     if (b->b.utc != timed) {
         u->wrong++;
@@ -358,6 +370,7 @@ static void test_rx_utc(void)
             CHECK(u.bursts > 20 && u.stamped > 20 && !u.wrong, "mapped: %ld bursts, %ld stamped, %ld wrong", u.bursts,
                   u.stamped, u.wrong);
             CHECK(u.raw > 0 && u.raw_utc > 0, "mapped: %ld raw, %ld with the UTC slot", u.raw, u.raw_utc);
+            CHECK(u.cach > 10 && !u.cach_wrong, "%ld BS bursts with their CACH, %ld wrong", u.cach, u.cach_wrong);
         } else {
             CHECK(u.bursts > 20 && u.stamped == 0 && u.raw > 0 && u.raw_utc == 0, "unmapped: %ld bursts, %ld stamped, "
                   "%ld raw with the UTC slot", u.bursts, u.stamped, u.raw_utc);

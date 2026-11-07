@@ -177,6 +177,7 @@ typedef struct {
     double first_t, prev_t, last_t, last_mono;
     rdof_bj_emb_t emb;         /* dmr-bursts: the embedded LC so far */
     double cfo_sum, cfo_min, cfo_max, lvl_sum, lvl_max;
+    long lost0[4];            /* the receiver's overflows, dsp_skipped, decode_dropped and queue drops at the start */
     int kinds[18];
     int syncs[9];
     /* capture */
@@ -926,7 +927,8 @@ static void op_info(rdof_bl_t *bl, conn_t *c, double now)
                               "modem\",\"port\":\"\",\"present\":%s,\"tx\":%s,\"why_not\":%s,\"modes\":[\"dmr\"],"
                               "\"bands\":[],\"held_by\":%s,\"waiting\":%s}],"
                               "\"modem\":{\"held_by\":%s,\"waiting\":%s,\"next_job_eta\":{\"eta_s\":%.1f,"
-                              "\"worst_s\":%.1f}},\"signal_modes\":{\"tx\":%s,\"rx\":%s},\"default_caps\":[]}",
+                              "\"worst_s\":%.1f}},\"signal_modes\":{\"tx\":%s,\"rx\":%s},"
+                              "\"features\":{\"bursts_cach\":true,\"bursts_lost\":true},\"default_caps\":[]}",
                               bands, notx ? "false" : "true", notx ? "false" : "true", why, held, wq, held, wq, eta, eta,
                               stx, srx);
     if (k >= sizeof line) {
@@ -1193,6 +1195,16 @@ static void op_hold(rdof_bl_t *bl, conn_t *c, int root, double now)
     wait_start(bl, c, W_MODEM, root, now);
 }
 
+/* What the receiver has lost since it started: overflows, dsp_skipped, decode_dropped, and the burst queue's drops. */
+static void rx_lost(rdof_bl_t *bl, long out[4])
+{
+    double secs = 0, clip = 0;
+    long ovf = 0, skip = 0, drop = 0;
+    if (bl->p.rx_stats)
+        bl->p.rx_stats(bl->p.ctx, &secs, &ovf, &clip, &skip, &drop);
+    out[0] = ovf, out[1] = skip, out[2] = drop, out[3] = bl->qdrops;
+}
+
 static void op_bursts(rdof_bl_t *bl, conn_t *c, int root, double now, bool listen)
 {
     if (!req_session(bl, c, root, false))
@@ -1217,6 +1229,7 @@ static void op_bursts(rdof_bl_t *bl, conn_t *c, int root, double now, bool liste
     c->first_t = c->prev_t = c->last_t = NAN;
     memset(&c->emb, 0, sizeof c->emb);
     c->cfo_min = INFINITY, c->cfo_max = -INFINITY, c->lvl_max = -INFINITY;
+    rx_lost(bl, c->lost0);
     rdof_bl_window_t w;
     get_window(bl, &w);
     c->fs = w.fs;
@@ -3494,14 +3507,36 @@ static void burst_out(rdof_bl_t *bl, conn_t *c, const rdof_bl_burst_t *b, double
     if (bl->burst_tol_ppm > 0)
         snprintf(tol, sizeof tol, "%.1f", c->freq_hz * bl->burst_tol_ppm * 1e-6);
     rdof_bj_burst_decode(&c->emb, b, dec, sizeof bl->bdec);
+    /* sync_errors: the sync's own bit errors against the pattern it matched (an EMB burst's: its EMB's) */
+    int serr = b->sync_errors;
+    if (!voice || b->dt == RDOF_BL_VOICE_SYNC) {
+        if (b->family >= 0 && b->family < RDOF_FAMILY_COUNT) {
+            const uint64_t v = rdof_family_voice_sync((rdof_family_t)b->family);
+            serr = rdof_sync_errors(b->raw, voice ? v : rdof_data_sync(v));
+        }
+    }
+    /* a BS burst's CACH: the 24 bits as heard, and its TACT through Hamming(7,4) (which always decodes) */
+    char cach[120] = "\"cach\":null";
+    if (b->has_cach) {
+        const uint32_t w = (uint32_t)b->cach[0] << 16 | (uint32_t)b->cach[1] << 8 | b->cach[2];
+        static const uint8_t TACT_AT[7] = {0, 4, 8, 12, 14, 18, 22}; /* air order (B.3.5's interleave) */
+        uint32_t tact = 0;
+        for (int i = 0; i < 7; i++)
+            tact = tact << 1 | ((w >> (23 - TACT_AT[i])) & 1u);
+        int terr = 0;
+        const int v = rdof_hamming74_decode(tact, &terr);
+        snprintf(cach, sizeof cach,
+                 "\"cach\":\"%02x%02x%02x\",\"cach_at\":%d,\"cach_tc\":%d,\"cach_lcss\":%d,\"cach_tact_errors\":%d",
+                 b->cach[0], b->cach[1], b->cach[2], (v >> 3) & 1, (v >> 2) & 1, v & 3, terr);
+    }
     snprintf(line, sizeof bl->bline,
              "{\"burst\":{\"t\":%.6f,\"sc\":%s,\"t_rel_ms\":%.3f,\"dt_prev_ms\":%s,\"grid_n\":%ld,\"grid_err_ms\":%.3f,"
              "\"slot_ab\":\"%c\",\"sync\":\"%s\",\"sync_errors\":%d,\"slot\":%d,\"voice\":%s,\"kind\":\"%s\","
              "\"dt\":%d,\"n\":%d,\"cc\":%d,\"cfo_hz\":%.1f,\"cfo_tol_hz\":%s,\"level_dbfs\":%.1f,\"dev_hz\":%.1f,"
-             "\"freq\":%.1f%s,\"raw_hex\":\"%s\"}}",
+             "\"freq\":%.1f,%s%s,\"raw_hex\":\"%s\"}}",
              t, sc, rel, prev, gn, gerr, gn % 2 == 0 ? 'A' : 'B', si >= 0 ? SYNC_NAMES[si] : "?",
-             b->sync_errors, b->slot, voice ? "true" : "false", kind, b->dt, b->n, b->cc, b->cfo_hz, tol,
-             b->level_dbfs, b->dev_hz, c->freq_hz, dec, hex);
+             serr, b->slot, voice ? "true" : "false", kind, b->dt, b->n, b->cc, b->cfo_hz, tol,
+             b->level_dbfs, b->dev_hz, c->freq_hz, cach, dec, hex);
     if (!emit(bl, c, "%s", line)) {
         c->dropped++;
         return;
@@ -3544,10 +3579,20 @@ static void bursts_done(rdof_bl_t *bl, conn_t *c, const char *reason, double now
                  "\"level_dbfs\":{\"mean\":%.1f,\"max\":%.1f}",
                  c->first_t, 1e3 * (c->last_t - c->first_t), c->cfo_sum / c->sent, c->cfo_min, c->cfo_max, tol,
                  c->lvl_sum / c->sent, c->lvl_max);
+    /* what the receiver lost while the stream ran (the whole receiver's, not this channel's alone): a burst missing
+     * in a span with none lost wasn't on the air as the receiver could hear it */
+    long l1[4];
+    rx_lost(bl, l1);
+    long d[4];
+    for (int i = 0; i < 4; i++)
+        d[i] = l1[i] >= c->lost0[i] ? l1[i] - c->lost0[i] : l1[i];
+    const bool complete = !d[0] && !d[1] && !d[2] && !d[3] && !c->dropped;
     emit(bl, c,
          "{\"done\":{\"bursts\":%ld,\"reason\":\"%s\",\"freq\":%.1f,\"kinds\":{%s},\"syncs\":{%s},"
-         "\"seconds_watched\":%.2f,\"dropped\":%ld%s}}",
-         c->sent, reason, c->freq_hz, kinds, syncs, now - c->opened, c->dropped, more);
+         "\"seconds_watched\":%.2f,\"dropped\":%ld,\"lost\":{\"overflows\":%ld,\"dsp_skipped\":%ld,"
+         "\"decode_dropped\":%ld,\"queue_drops\":%ld},\"complete\":%s%s}}",
+         c->sent, reason, c->freq_hz, kinds, syncs, now - c->opened, c->dropped, d[0], d[1], d[2], d[3],
+         complete ? "true" : "false", more);
     c->state = C_DONE;
 }
 

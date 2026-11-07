@@ -17,6 +17,7 @@
 #include <sys/socket.h>
 
 #include "rdof/benchjob.h"
+#include "rdof/bits.h"
 #include "rdof/benchline.h"
 #include "fake_chs.h"
 #include "rdof/benchnet.h"
@@ -591,6 +592,45 @@ static void test_ops(void)
           "the summary: %s", out);
     rdof_bl_closed(bl, c, now);
     CHECK(!rdof_bl_wants_bursts(bl), "no bursts wanted once it's done");
+    /* a BS burst's CACH and TACT, the sync's own bit errors, what the receiver lost */
+    c = ask(bl, "{\"op\": \"bursts\", \"freq\": 438.1125, \"seconds\": 1}", now);
+    {
+        rdof_bl_burst_t b = {.ch = 1, .t = 1.8e9 + 1, .dt = 9, .slot = 2, .family = RDOF_FAMILY_BS, .cc = 1,
+                             .sync_errors = 5 /* the demod's: sync and slot type together */};
+        const uint8_t payload[12] = {0};
+        rdof_data_burst(payload, 9, 1, rdof_data_sync(rdof_family_voice_sync(RDOF_FAMILY_BS)), b.raw);
+        b.raw[14] ^= 0x10; /* one bit of the sync field (bits 108-155): bit 115 */
+        uint8_t c24[24];
+        rdof_encode_cach(2, 1, 3, c24);
+        c24[0] ^= 1; /* a TACT bit: Hamming(7,4) corrects it */
+        rdof_bits_to_bytes(c24, 24, b.cach);
+        b.has_cach = true;
+        rdof_bl_burst(bl, &b);
+        rdof_bl_burst_t m = {.ch = 1, .t = 1.8e9 + 1.06, .dt = 3, .slot = 1, .family = RDOF_FAMILY_MS, .cc = 1};
+        rdof_bl_burst(bl, &m);
+    }
+    rdof_bl_tick(bl, now);
+    rdof_bl_tick(bl, now + 1.5);
+    drain(bl, c, out, sizeof out);
+    char hx[8];
+    {
+        uint8_t c24[24], c3[3];
+        rdof_encode_cach(2, 1, 3, c24);
+        c24[0] ^= 1;
+        rdof_bits_to_bytes(c24, 24, c3);
+        snprintf(hx, sizeof hx, "%02x%02x%02x", c3[0], c3[1], c3[2]);
+    }
+    char want[160];
+    snprintf(want, sizeof want, "\"cach\":\"%s\",\"cach_at\":1,\"cach_tc\":1,\"cach_lcss\":3,\"cach_tact_errors\":1", hx);
+    CHECK(strstr(out, want) && strstr(out, "\"sync\":\"BS_DATA\",\"sync_errors\":1,"), "a BS burst's CACH: %s", out);
+    CHECK(strstr(out, "\"kind\":\"CSBK\"") && strstr(out, "\"cach\":null"), "no CACH on an MS burst: %s", out);
+    CHECK(strstr(out, "\"lost\":{\"overflows\":0,\"dsp_skipped\":0,\"decode_dropped\":0,\"queue_drops\":0},"
+                      "\"complete\":true"), "nothing lost: %s", out);
+    rdof_bl_closed(bl, c, now);
+    c = ask(bl, "{\"op\": \"info\"}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"features\":{\"bursts_cach\":true,\"bursts_lost\":true}"), "info names the features: %.300s", out);
+    rdof_bl_closed(bl, c, now);
     c = ask(bl, "{\"op\": \"bursts\", \"freq\": 438.6}", now);
     drain(bl, c, out, sizeof out);
     CHECK(strstr(out, "\"code\":\"refused\""), "no receiver channel there: %s", out);
