@@ -150,6 +150,16 @@ bool rdof_mssim_parse(const char *json, size_t len, rdof_mssim_profile_t *out, c
             return false;
         }
     }
+    if ((n = rdof_jnode(&doc, rdof_jget(&doc, root, "sync")))) {
+        bool ok = n->type == RDOF_JSTR && !strcmp(n->str, "auto");
+        for (int f = 0; f < RDOF_FAMILY_COUNT && !ok && n->type == RDOF_JSTR; f++)
+            if (!strcmp(n->str, rdof_family_name((rdof_family_t)f)))
+                out->sync = 1 + f, ok = true;
+        if (!ok) {
+            snprintf(err, errcap, "sync is auto, ms, bs, ts1 or ts2");
+            return false;
+        }
+    }
     if ((n = rdof_jnode(&doc, rdof_jget(&doc, root, "to"))) && n->type == RDOF_JNUM)
         out->to = (uint32_t)n->num;
     if ((n = rdof_jnode(&doc, rdof_jget(&doc, root, "from"))) && n->type == RDOF_JNUM)
@@ -188,16 +198,18 @@ void rdof_mssim_disarm(rdof_mssim_t *s)
     s->nq = s->nsent = 0;
 }
 
-/* The sync our answer carries: a radio answers in its own family; in TDMA direct mode it answers in the other
-   timeslot when it starts an odd number of slots later. */
-static uint64_t answer_sync(rdof_family_t heard, int slots)
+/* The sync family our answer carries, unless the profile forces one: a radio answers in its own family (MS to a
+   repeater's BS); in TDMA direct mode it answers in the other timeslot when it starts an odd number of slots later. */
+static rdof_family_t answer_sync(int forced, rdof_family_t heard, int slots)
 {
+    if (forced > 0)
+        return (rdof_family_t)(forced - 1);
     rdof_family_t f = heard;
     if (f == RDOF_FAMILY_BS)
         f = RDOF_FAMILY_MS;
     else if ((f == RDOF_FAMILY_TS1 || f == RDOF_FAMILY_TS2) && (slots & 1))
         f = f == RDOF_FAMILY_TS1 ? RDOF_FAMILY_TS2 : RDOF_FAMILY_TS1;
-    return rdof_data_sync(rdof_family_voice_sync(f));
+    return f;
 }
 
 static rdof_mssim_entry_t *cur(rdof_mssim_t *s) { return &s->log[s->cur]; }
@@ -220,7 +232,8 @@ static void schedule(rdof_mssim_t *s)
         return;
     const rdof_mssim_step_t *st = &s->prof.step[e->step];
     int64_t at = e->end48 + (int64_t)st->slots * RDOF_MSSIM_SLOT48;
-    uint64_t sync = answer_sync(s->family, st->slots);
+    e->sync = answer_sync(s->prof.sync, s->family, st->slots);
+    uint64_t sync = rdof_data_sync(rdof_family_voice_sync(e->sync));
     uint32_t me = e->dst, them = e->src;
     switch (e->kind) {
     case RDOF_MSSIM_ACK:
@@ -297,7 +310,8 @@ static void start_packet(rdof_mssim_t *s, const rdof_burst_t *b, const rdof_data
     bool term = wants_terminator(s, e->src);
     e->end_used = term ? RDOF_MSSIM_END_TERMINATOR : RDOF_MSSIM_END_BLOCK;
     e->end48 = pos48 + (int64_t)(h->blocks + (term ? 1 : 0)) * FRAME48;
-    s->family = b->family;
+    s->family = e->family = b->family;
+    e->sync = answer_sync(s->prof.sync, b->family, e->slots);
     s->cc = b->cc >= 0 ? b->cc : 0;
     s->last48 = pos48;
     s->active = true;
@@ -422,12 +436,13 @@ size_t rdof_mssim_log_json(const rdof_mssim_t *s, uint32_t since, char *out, siz
             continue;
         PUT("%s{\"seq\":%u,\"src\":%u,\"dst\":%u,\"sap\":%d,\"ns\":%d,\"fsn\":%d,\"blocks\":%d,\"heard\":%d,"
             "\"dbsn\":\"%016llx\",\"rate_dt\":%d,\"terminator\":%s,\"end\":\"%s\",\"end_heard\":%s,\"step\":%d,"
-            "\"answer\":\"%s\",\"slots\":%d,\"header48\":%lld,\"end48\":%lld,\"asked48\":%lld,\"placed48\":%lld,"
-            "\"air48\":%lld,\"sent\":%s,\"failed\":%s",
+            "\"family\":\"%s\",\"sync\":\"%s\",\"answer\":\"%s\",\"slots\":%d,\"header48\":%lld,\"end48\":%lld,"
+            "\"asked48\":%lld,\"placed48\":%lld,\"air48\":%lld,\"sent\":%s,\"failed\":%s",
             first ? "" : ",", e->seq, e->src, e->dst, e->sap, e->ns, e->fsn, e->blocks, e->heard,
             (unsigned long long)e->dbsn, e->rate_dt, e->terminator ? "true" : "false",
             e->end_used == RDOF_MSSIM_END_TERMINATOR ? "terminator" : "block", e->end_heard ? "true" : "false",
-            e->step, rdof_mssim_kind_name(e->kind), e->slots, (long long)e->header48, (long long)e->end48,
+            e->step, rdof_family_name(e->family), rdof_family_name(e->sync), rdof_mssim_kind_name(e->kind), e->slots,
+            (long long)e->header48, (long long)e->end48,
             (long long)e->asked48, (long long)e->placed48, (long long)e->air48, e->sent ? "true" : "false",
             e->failed ? "true" : "false");
         if (e->sent) /* start to start, and the gap after the end burst's 27.5 ms */

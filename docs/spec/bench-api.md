@@ -482,23 +482,24 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
 | `mssim` | `session`, `action` (`arm`, `disarm`, `status`), arm: `freq`, `cc`, `power`, `seconds` (300, at most 1800) and the profile's fields; `since` | `{"mssim": {"armed", "arming", "answered", "ended", "log": [entry], "next"}}` (arm: `{"mssim": {"armed": true, "freq", "cc", "note"}}`) |
 
 - `mssim` is a timed confirmed-data responder (rdofradio only; `rdof/mssim.h`): it plays a radio that answers
-  confirmed data packets N slots after they end, for testing the far end's retries and turnaround. `arm` takes
-  the transmitter as a transmit job does (a transmit frequency with a receiver channel on it, the transceiver
-  paused, half duplex only) and holds it until `disarm`, `seconds` or the profile's `count`. The profile:
-  `answers` (1-8 steps, packet k gets step k, the last one after, or k mod n with `"repeat": true`), each
-  `answer` (`ack`, `nack`, `sack`, `none`, `ack2`: an ACK and the same burst 60 ms later), `slots` (1-200: the
-  answer's first burst starts this many 30 ms slots after the end burst's start), `nack_type` (1), `sack_type` (0),
-  `resend` (SACK: the block numbers asked for again); one step may be given flat. `end`: `block` (the last
-  block), `terminator` (the terminator after it; where one was expected when none came) or `learn` (a terminator
-  when the sender's previous packet had one). `to`, `from`: answer packets between these IDs only. Answers are to
-  individual confirmed packets (DPF 3, A=1); the response header swaps the IDs and keeps the SAP and N(S); the
-  sync is MS, or in TDMA direct mode the other timeslot's when `slots` is odd. A log `entry` per packet: `seq`,
-  `src`, `dst`, `sap`, `ns`, `fsn`, `blocks`, `heard`, `dbsn` (hex: serial numbers with good CRC-9s), `rate_dt`,
-  `terminator`, `end`, `end_heard`, `step`, `answer`, `slots`, the positions `header48`, `end48`, `asked48`,
+  confirmed data packets N slots after they end, for testing the far end's retries and turnaround. `arm` takes the
+  transmitter as a transmit job does (a transmit frequency with a receiver channel on it, the transceiver paused,
+  half duplex only) and holds it until `disarm`, `seconds` or the profile's `count`. The profile: `answers` (1-8
+  steps, packet k gets step k, the last one after, or k mod n with `"repeat": true`), each `answer` (`ack`, `nack`,
+  `sack`, `none`, `ack2`: an ACK and the same burst 60 ms later), `slots` (1-200: the answer's first burst starts
+  this many 30 ms slots after the end burst's start), `nack_type` (1), `sack_type` (0), `resend` (SACK: the block
+  numbers asked for again); one step may be given flat. `end`: `block` (the last block), `terminator` (the
+  terminator after it; where one was expected when none came) or `learn` (a terminator when the sender's previous
+  packet had one). `to`, `from`: answer packets between these IDs only. Answers are to individual confirmed packets
+  (DPF 3, A=1); the response header swaps the IDs and keeps the SAP and N(S); the sync is MS, or in TDMA direct mode
+  the other timeslot's when `slots` is odd; `sync` (`ms`, `bs`, `ts1`, `ts2`; `auto` the default) forces one (no
+  CACH with `bs`). A log `entry` per packet: `seq`, `src`, `dst`, `sap`, `ns`, `fsn`, `blocks`, `heard`, `dbsn`
+  (hex: serial numbers with good CRC-9s), `rate_dt`, `terminator`, `end`, `end_heard`, `step`, `family` (the
+  packet's sync), `sync` (the answer's), `answer`, `slots`, the positions `header48`, `end48`, `asked48`,
   `placed48`, `air48` (48 kS/s receiver samples; -1 none), `sent`, `failed`, then `turnaround_us` (start to start)
-  and `gap_us` (from the end burst's 27.5 ms) when sent, and `air_turnaround_us`, `air_gap_us`, `air_late_us`
-  where the answer was heard back. `status` gives the entries after `since`, as many as fit; `next` is the
-  `since` for the next read. `rfgbench.py mssim arm|disarm|status|watch`.
+  and `gap_us` (from the end burst's 27.5 ms) when sent, and `air_turnaround_us`, `air_gap_us`, `air_late_us` where
+  the answer was heard back. `status` gives the entries after `since`, as many as fit; `next` is the `since` for the
+  next read. `rfgbench.py mssim arm|disarm|status|watch`.
 - `tune` moves the receiver's window for the session, as `PUT /sdr` under an exclusive lease (section 5; the same
   code on a board): fields left out stay as they are, `"auto"` is the settings', `taps` (up to 4 on a board) are
   receiver channels at any frequency in the window (ids `T1`...) that decode like configured ones, `[]` drops them.

@@ -251,6 +251,21 @@ static void test_family_and_filters(void)
     arm("{\"answer\":\"ack\",\"slots\":1}");
     packet(0, 1, 0, false, RDOF_FAMILY_BS, 1500);
     CHECK(T.n == 1 && rdof_detect_sync(T.b[0], 0, &f, &data, &errs) && f == RDOF_FAMILY_MS);
+    /* forced: MS to a TDMA direct mode TS1 sender at one slot, BS for a repeater's answer */
+    arm("{\"answer\":\"ack\",\"slots\":1,\"sync\":\"ms\"}");
+    packet(0, 1, 0, false, RDOF_FAMILY_TS1, 1500);
+    CHECK(T.n == 1 && rdof_detect_sync(T.b[0], 0, &f, &data, &errs) && f == RDOF_FAMILY_MS && data);
+    CHECK(S.log[0].family == RDOF_FAMILY_TS1 && S.log[0].sync == RDOF_FAMILY_MS);
+    {
+        char js[1024];
+        uint32_t next;
+        rdof_mssim_log_json(&S, 0, js, sizeof js, &next);
+        CHECK(strstr(js, "\"family\":\"ts1\",\"sync\":\"ms\"") != NULL);
+    }
+    arm("{\"answer\":\"sack\",\"slots\":2,\"sync\":\"bs\"}");
+    packet(0, 1, 0, false, RDOF_FAMILY_MS, 1500);
+    CHECK(T.n == 2 && rdof_detect_sync(T.b[0], 0, &f, &data, &errs) && f == RDOF_FAMILY_BS);
+    CHECK(rdof_detect_sync(T.b[1], 0, &f, &data, &errs) && f == RDOF_FAMILY_BS);
 
     arm("{\"answer\":\"ack\",\"to\":123}");
     packet(0, 1, 0, false, RDOF_FAMILY_MS, 1500);
@@ -295,6 +310,8 @@ static void test_profile_errors(void)
     CHECK(!rdof_mssim_parse("{\"answer\":\"maybe\"}", 18, &p, err, sizeof err));
     CHECK(!rdof_mssim_parse("{\"slots\":0}", 11, &p, err, sizeof err));
     CHECK(!rdof_mssim_parse("{\"end\":\"x\"}", 11, &p, err, sizeof err));
+    CHECK(!rdof_mssim_parse("{\"sync\":\"dmo\"}", 14, &p, err, sizeof err));
+    CHECK(rdof_mssim_parse("{\"sync\":\"auto\"}", 15, &p, err, sizeof err) && p.sync == 0);
     CHECK(!rdof_mssim_parse("[1]", 3, &p, err, sizeof err));
     CHECK(!rdof_mssim_parse("{\"resend\":[64]}", 15, &p, err, sizeof err));
     CHECK(rdof_mssim_parse("{}", 2, &p, err, sizeof err) && p.nsteps == 1 && p.step[0].kind == RDOF_MSSIM_ACK &&

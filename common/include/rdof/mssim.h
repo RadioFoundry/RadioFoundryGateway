@@ -49,6 +49,7 @@ typedef struct {
     int nsteps;
     bool repeat;
     rdof_mssim_end_t end;
+    int sync;      /* the answer's sync: 0 auto (answer_sync's rule), else 1 + an rdof_family_t (forced) */
     uint32_t to;   /* answer packets to this ID only (0: any individual packet) */
     uint32_t from; /* and from this ID only (0: any) */
     int count;     /* answer this many packets, then disarm (0: no limit) */
@@ -66,6 +67,7 @@ typedef struct {
     rdof_mssim_end_t end_used;         /* BLOCK or TERMINATOR */
     bool end_heard;                    /* end48 is a burst heard, not where one was expected */
     int64_t header48, end48;           /* the header's and the end burst's positions (end48 expected if unheard) */
+    rdof_family_t family, sync;        /* the packet's sync family, our answer's */
     int step;
     rdof_mssim_kind_t kind;
     int slots;
@@ -105,7 +107,8 @@ typedef struct {
 
 void rdof_mssim_init(rdof_mssim_t *s, rdof_mssim_send_fn send, void *ctx);
 /* Profile JSON: {"answers":[{"answer":"ack|nack|sack|none|ack2","slots":N,"nack_type":1,"sack_type":0,
-   "resend":[1,2]}, ...], "repeat":false, "end":"block|terminator|learn", "to":ID, "from":ID, "count":N}.
+   "resend":[1,2]}, ...], "repeat":false, "end":"block|terminator|learn", "sync":"auto|ms|bs|ts1|ts2", "to":ID,
+   "from":ID, "count":N}.
    One step may be given flat ({"answer":"sack","slots":2,...}). false (err says why) on a bad profile. */
 bool rdof_mssim_parse(const char *json, size_t len, rdof_mssim_profile_t *out, char *err, size_t errcap);
 void rdof_mssim_arm(rdof_mssim_t *s, const rdof_mssim_profile_t *p);
