@@ -260,6 +260,14 @@ What the gateway takes from it:
   behind it for 1.7 s, was taken; its TMS ACK after it, unconfirmed rate 1/2 with 16 preamble CSBKs and intact
   (`BF 00 91 40`, sequence 81), wasn't: 36 s later BrandMeister sent the text again with a new sequence (89). A radio
   whose TMS ACKs BrandMeister takes sends them confirmed, with 16 preambles, about 1.4 s after its link ACK.
+- **Selective retry.** 2026-11-07, 01:17 UTC: the last block (DBSN 8) of a 9-block rate 3/4 answer was lost on the
+  way to the hotspot. The radio's SACK (class 2, one rate 1/2 block: flag map `ff fe ff ff ff ff ff ff`, block n
+  = octet n/8, bit n%8 from the LSB, 0 = resend) got that block alone 0.6 s later: 1 preamble CSBK, the header with
+  F=0 and 1 block to follow but the whole message's pad (12), S, N(S) and FSN, then block DBSN 8 with its CRC-32.
+  After a NACK (class 1, type 1: CRC-32 failure) BrandMeister resent the whole packet.
+- **A TMS ACK to the second answer isn't link-ACKed.** BrandMeister's echo service sends its answer twice, 23-40 s
+  apart, each with its own sequence. A radio's confirmed TMS ACK to the first was link-ACKed every time (2 of 2);
+  one to the second never was (2 of 2, first tries and retries intact), and the second answer wasn't sent again.
 - **The first try is often missed.** BrandMeister answered the second copy of the first message, not the first. The
   hotspot logged both. Not explained yet; compare with the gateway once it logs in.
 - **IDs.** The radio uses its 7-digit DMR ID; BrandMeister routes the answer to the hotspot (9-digit ID) where it was
