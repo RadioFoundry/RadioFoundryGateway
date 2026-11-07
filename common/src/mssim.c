@@ -434,11 +434,11 @@ size_t rdof_mssim_log_json(const rdof_mssim_t *s, uint32_t since, char *out, siz
         const rdof_mssim_entry_t *e = &s->log[(s->logpos - s->nlog + k + RDOF_MSSIM_LOG) % RDOF_MSSIM_LOG];
         if (e->seq <= since)
             continue;
-        PUT("%s{\"seq\":%u,\"src\":%u,\"dst\":%u,\"sap\":%d,\"ns\":%d,\"fsn\":%d,\"blocks\":%d,\"heard\":%d,"
+        PUT("%s{\"seq\":%lu,\"src\":%lu,\"dst\":%lu,\"sap\":%d,\"ns\":%d,\"fsn\":%d,\"blocks\":%d,\"heard\":%d,"
             "\"dbsn\":\"%016llx\",\"rate_dt\":%d,\"terminator\":%s,\"end\":\"%s\",\"end_heard\":%s,\"step\":%d,"
             "\"family\":\"%s\",\"sync\":\"%s\",\"answer\":\"%s\",\"slots\":%d,\"header48\":%lld,\"end48\":%lld,"
             "\"asked48\":%lld,\"placed48\":%lld,\"air48\":%lld,\"sent\":%s,\"failed\":%s",
-            first ? "" : ",", e->seq, e->src, e->dst, e->sap, e->ns, e->fsn, e->blocks, e->heard,
+            first ? "" : ",", (unsigned long)e->seq, (unsigned long)e->src, (unsigned long)e->dst, e->sap, e->ns, e->fsn, e->blocks, e->heard,
             (unsigned long long)e->dbsn, e->rate_dt, e->terminator ? "true" : "false",
             e->end_used == RDOF_MSSIM_END_TERMINATOR ? "terminator" : "block", e->end_heard ? "true" : "false",
             e->step, rdof_family_name(e->family), rdof_family_name(e->sync), rdof_mssim_kind_name(e->kind), e->slots,

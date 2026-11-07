@@ -27,6 +27,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "rdof/features.h"
 #include "rdof/sdr/sdrmodem.h"
 #include "rdof/txpower.h"
 
@@ -48,13 +49,42 @@ static double level_dbm = NAN;  /* the roamer's last SET_FREQ RF level, in dBm (
 #define TAKE() xSemaphoreTake(lock, portMAX_DELAY)
 #define GIVE() xSemaphoreGive(lock)
 
+#if CONFIG_RDOF_BENCH_TX && RDOF_FEATURE_DATA_BLOCKS
+/* The bench's confirmed-data responder (rdof/mssim.h; bench_tx.c arms it) on the bench's modem, under the lock: fed
+ * the bursts heard on its channel, polled from the front end's pulls. The LR2021 doesn't hear itself: no echo. */
+#include "esp_attr.h"
+#include "rdof/mssim.h"
+#define MS_LEAD48 1440 /* answers go to the modulator this far ahead of it */
+EXT_RAM_BSS_ATTR static rdof_mssim_t ms;
+static int ms_ch = -1;
+static bool ms_send(void *ctx, int64_t at48, const uint8_t burst[33], int64_t *placed48)
+{
+    return mdm && rdof_sdrmodem_place48(mdm, at48, burst, placed48);
+}
+#define MS_POLL()                                                                                                     \
+    do {                                                                                                              \
+        if (ms.armed && mdm && bench_reply)                                                                           \
+            rdof_mssim_poll(&ms, rdof_sdrmodem_tx_frontier48(mdm), MS_LEAD48);                                        \
+    } while (0)
+#define MS_HEARD(c, b)                                                                                                \
+    do {                                                                                                              \
+        if (ms.armed && (c) == ms_ch && bench_reply)                                                                  \
+            rdof_mssim_heard(&ms, &(b)->b, (b)->position);                                                            \
+    } while (0)
+#else
+#define MS_POLL() ((void)0)
+#define MS_HEARD(c, b) ((void)0)
+#endif
+
 void sdr_tx_heard(void *ctx, int channel, const rdof_sdr_burst_t *b, double t)
 {
     if (!mdm)
         return;
     TAKE();
-    if (mdm)
+    if (mdm) {
         rdof_sdrmodem_heard(mdm, channel, b);
+        MS_HEARD(channel, b);
+    }
     GIVE();
 }
 
@@ -73,6 +103,7 @@ static bool pull_iq(void *ctx, int64_t pos, rdof_cf_t *iq, int n)
     TAKE();
     if (mdm)
         slot_timing_apply(mdm);
+    MS_POLL();
     bool r = mdm && rdof_sdrmodem_pull_iq(mdm, pos, iq, n);
     GIVE();
     return r;
@@ -83,6 +114,7 @@ static bool pull_freq(void *ctx, int64_t pos, float *hz, float *env, int n)
     TAKE();
     if (mdm)
         slot_timing_apply(mdm);
+    MS_POLL();
     bool r = mdm && rdof_sdrmodem_pull_freq(mdm, pos, hz, env, n);
     GIVE();
     return r;
@@ -94,6 +126,7 @@ static int try_pull_freq(void *ctx, int64_t pos, float *hz, float *env, int n)
         return -1; /* the radio task's turn (a reply into the roamer): the LR2021's reader doesn't wait for it */
     if (mdm)
         slot_timing_apply(mdm);
+    MS_POLL();
     bool r = mdm && rdof_sdrmodem_pull_freq(mdm, pos, hz, env, n);
     GIVE();
     return r;
@@ -103,6 +136,7 @@ static int try_pull_iq(void *ctx, int64_t pos, rdof_cf_t *iq, int n)
 {
     if (xSemaphoreTake(lock, 0) != pdTRUE)
         return -1;
+    MS_POLL();
     bool r = mdm && rdof_sdrmodem_pull_iq(mdm, pos, iq, n);
     GIVE();
     return r;
@@ -336,6 +370,9 @@ void sdr_modem_bench_close(void)
     rdof_sdrmodem_t *m = mdm;
     mdm = NULL;
     bench_reply = NULL;
+#if CONFIG_RDOF_BENCH_TX && RDOF_FEATURE_DATA_BLOCKS
+    rdof_mssim_disarm(&ms);
+#endif
     GIVE();
     if (m) {
         rdof_sdrmodem_free(m);
@@ -345,6 +382,41 @@ void sdr_modem_bench_close(void)
     unpark();
     ESP_LOGI(TAG, "the bench let the SDR modem go%s", back ? ": the roamer's back" : "");
 }
+
+#if CONFIG_RDOF_BENCH_TX && RDOF_FEATURE_DATA_BLOCKS
+/* Armed on the bench's modem once it's set up (its frequency and mode): false, not yet. */
+bool sdr_modem_bench_mssim_arm(const rdof_mssim_profile_t *p, int channel)
+{
+    TAKE();
+    const bool ok = mdm && bench_reply && mdm->mod_ok;
+    if (ok) {
+        rdof_mssim_init(&ms, ms_send, NULL);
+        ms_ch = channel;
+        rdof_mssim_arm(&ms, p);
+    }
+    GIVE();
+    return ok;
+}
+
+void sdr_modem_bench_mssim_disarm(void)
+{
+    if (!lock)
+        return;
+    TAKE();
+    rdof_mssim_disarm(&ms);
+    GIVE();
+}
+
+/* A copy for the status (the log's JSON written outside the lock) */
+void sdr_modem_bench_mssim_copy(rdof_mssim_t *out)
+{
+    if (lock)
+        TAKE();
+    *out = ms;
+    if (lock)
+        GIVE();
+}
+#endif
 
 #if CONFIG_RDOF_ROAMER
 

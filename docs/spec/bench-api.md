@@ -481,7 +481,7 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
 | `activity`, `burstlog`, `bridge` | | `unsupported` |
 | `mssim` | `session`, `action` (`arm`, `disarm`, `status`), arm: `freq`, `cc`, `power`, `seconds` (300, at most 1800) and the profile's fields; `since` | `{"mssim": {"armed", "arming", "answered", "ended", "log": [entry], "next"}}` (arm: `{"mssim": {"armed": true, "freq", "cc", "note"}}`) |
 
-- `mssim` is a timed confirmed-data responder (rdofradio only; `rdof/mssim.h`): it plays a radio that answers
+- `mssim` is a timed confirmed-data responder (rdofradio and a board with an SDR modem; `rdof/mssim.h`): it plays a radio that answers
   confirmed data packets N slots after they end, for testing the far end's retries and turnaround. `arm` takes the
   transmitter as a transmit job does (a transmit frequency with a receiver channel on it, the transceiver paused,
   half duplex only) and holds it until `disarm`, `seconds` or the profile's `count`. The profile: `answers` (1-8

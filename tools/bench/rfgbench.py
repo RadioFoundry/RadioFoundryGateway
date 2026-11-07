@@ -1336,10 +1336,11 @@ def main(argv=None) -> int:
     s.add_argument("action", choices=("arm", "disarm", "status", "watch"))
     s.add_argument("--freq", type=float, default=None, help="MHz (arm)")
     s.add_argument("--cc", type=int, default=1)
-    s.add_argument("--power", type=int, default=None)
+    s.add_argument("--power", type=int, default=255, help="0-255 on the transmitter's range (bench_tx.py's default)")
     s.add_argument("--seconds", type=float, default=300.0, help="disarmed after this long (at most 1800)")
     s.add_argument("--profile", default=None, help='JSON, or @FILE: {"answers":[{"answer":"ack|nack|sack|none|ack2",'
-                   '"slots":N,"resend":[..]}],"end":"block|terminator|learn","to":ID,"from":ID,"count":N}')
+                   '"slots":N,"resend":[..]}],"end":"block|terminator|learn","sync":"auto|ms|bs|ts1|ts2","to":ID,'
+                   '"from":ID,"count":N}')
     s.add_argument("--since", type=int, default=0, help="log entries after this seq")
     s.add_argument("--interval", type=float, default=1.0, help="watch: seconds between reads")
     for op, fn in (("tx", cmd_tx_sig), ("rx", cmd_rx_sig)):

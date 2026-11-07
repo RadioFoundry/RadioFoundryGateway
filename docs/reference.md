@@ -176,7 +176,7 @@ sockets, NVS, HTTP, MQTT) stays in each target.
 | `oled`, `oled_sdr` | the frame, font and panel commands; the roamer's and the SDR's screens |
 | `ipgw`, `ipgwcfg` | the IP gateway and its settings (C only) |
 | `parrot` | the parrot: a call recorded and sent back |
-| `mssim` | a timed confirmed-data responder for the bench (ACK, NACK, SACK, none, ACK twice, N slots after a packet; rdofradio's `mssim` bench op; host builds only) |
+| `mssim` | a timed confirmed-data responder for the bench (ACK, NACK, SACK, none, ACK twice, N slots after a packet; the `mssim` bench op of rdofradio and of a board with an SDR modem, there placed from the front end's pulls, with no echo calibration: the LR2021 doesn't hear itself) |
 | `json` | a compact JSON writer, byte for byte stable for the golden tests |
 | `webapi` | the web API shared by the firmware and the host tools: `/api/status`'s shared parts and `caps`, the settings, `/api/log`, `/api/lastheard`, `/api/restart` |
 | `jitter`, `lastheard`, `memplan` | the network jitter buffer; Last heard; the board's memory plan ([memory.md](spec/fw/memory.md)) |
@@ -286,7 +286,7 @@ From `idf.py size`. Run it after a change that adds code or RAM, and update this
 
 | Build | Date | App image | Free in its slot | DIRAM used (of 334 KB) |
 |---|---|---|---|---|
-| `16mb` + `w12` | 2026-11-05 | 2282 KB | 1.8 MB of 4 MB | 181.2 KB (54.3%) |
+| `16mb` + `w12` | 2026-11-07 | 2314 KB | 1.7 MB of 4 MB | 182.2 KB (54.6%) |
 | `16mb` + `w12` + `rust` | 2026-10-27 | 2063 KB | 2.0 MB of 4 MB | |
 | `16mb` | 2026-10-28 | 1960 KB | 2.1 MB of 4 MB | 167 KB (49.9%) |
 | `4mb` (no SDR) | 2026-11-02 | 1279 KB | 641 KB of 1.875 MB | 134 KB (40.3%) |

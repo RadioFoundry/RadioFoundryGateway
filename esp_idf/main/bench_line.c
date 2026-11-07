@@ -194,6 +194,14 @@ static const char *bl_tune(void *ctx, const rdof_bl_tune_t *t, const char *who, 
 static int bl_tune_state(void *ctx, char *why, size_t cap) { return bench_retune_line_state(why, cap); }
 static void bl_untune(void *ctx) { bench_retune_line_end(); }
 
+/* mssim: the confirmed-data responder on the SDR modem (bench_tx.c, modem_sdr.c) */
+static bool bl_mssim(void *ctx, const char *action, const char *req, size_t len, uint32_t freq_hz, int cc,
+                     rdof_bench_power_t power, double seconds, uint32_t since, char *out, size_t cap,
+                     const char **code)
+{
+    return bench_tx_mssim(action, req, len, freq_hz, cc, power, seconds, since, out, cap, code);
+}
+
 static void bl_ob_unkey(void *ctx) { bench_tx_ob_unkey(); }
 static void bl_ob_close(void *ctx) { bench_tx_ob_close(); }
 static void bl_ob_push(void *ctx, int slot, uint8_t control, const uint8_t burst[33])
@@ -235,7 +243,7 @@ void bench_line_start(void)
                                           .ob_can = bl_ob_can, .ob_push = bl_ob_push, .modes = rdof_sdr_modes, .sig_open = bl_sig_open,
                                           .sig_state = bl_sig_state, .sig_close = bl_sig_close,
                                           .sig_rate = bl_sig_rate, .tune = bl_tune, .tune_state = bl_tune_state,
-                                          .untune = bl_untune};
+                                          .untune = bl_untune, .mssim = bl_mssim};
     if (!(bl = rdof_bl_new(&pf))) {
         ESP_LOGE(TAG, "line protocol: no memory");
         return;

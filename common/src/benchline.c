@@ -235,6 +235,7 @@ struct rdof_bl {
     int tx_conn;              /* the run transmitting now, -1 none */
     rdof_jnode_t nodes[NODES];
     char *strbuf;
+    char ms_out[7900]; /* op_mssim's reply (off the server thread's stack) */
     rdof_jdoc_t doc;
     int8_t iq[RDOF_BL_IQ_CHUNK * 2];
     char tmp[8192];
@@ -3266,10 +3267,10 @@ static void op_mssim(rdof_bl_t *bl, conn_t *c, int root, double now)
     const rdof_bench_power_t power = {jnum(bl, root, "power_dbm", NAN), (int)jnum(bl, root, "power", 0)};
     const double seconds = jnum(bl, root, "seconds", 300.0);
     const uint32_t since = (uint32_t)jnum(bl, root, "since", 0);
-    char out[7900];
+    char *out = bl->ms_out;
     const char *code = "unavailable";
     if (!bl->p.mssim(bl->p.ctx, action, c->line, c->ln, isfinite(mhz) ? (uint32_t)lround(mhz * 1e6) : 0,
-                     (int)jnum(bl, root, "cc", 1), power, seconds, since, out, sizeof out, &code)) {
+                     (int)jnum(bl, root, "cc", 1), power, seconds, since, out, sizeof bl->ms_out, &code)) {
         fail(bl, c, code, "%s", out);
         return;
     }

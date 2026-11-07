@@ -16,6 +16,7 @@
 #include "rdof/benchguard.h"
 #include "rdof/config.h"
 #include "rdof/json.h"
+#include "rdof/mssim.h"
 #include "rdof/sigmode.h"
 #include "rdof/site.h"
 #include "sdkconfig.h"
@@ -568,6 +569,15 @@ void sdr_modem_tx_cap(double dbm);
  * (written to why). Its state: rdof_sdrmodem_signal_state's, -1 when the bench holds no modem. */
 const char *sdr_modem_bench_signal(uint32_t hz, const rdof_sig_src_t *src, char *why, size_t cap);
 int sdr_modem_bench_signal_state(void);
+/* The bench's confirmed-data responder on the bench's modem (rdof/mssim.h): armed once the modem's set up (false: not
+ * yet), heard on channel; disarmed when the bench lets the modem go. The copy is its state for a status. */
+bool sdr_modem_bench_mssim_arm(const rdof_mssim_profile_t *p, int channel);
+void sdr_modem_bench_mssim_disarm(void);
+void sdr_modem_bench_mssim_copy(rdof_mssim_t *out);
+/* bench_tx.c: the line protocol's mssim op (rdof/benchline.h's hook) */
+bool bench_tx_mssim(const char *action, const char *req, size_t len, uint32_t freq_hz, int cc,
+                    rdof_bench_power_t power, double seconds, uint32_t since, char *out, size_t cap,
+                    const char **code);
 bool sdr_tx_muted(void *ctx, int64_t position);
 /* The tuner's crystal error, as learned from its sample clock or the AFC (sdr_task.c). NAN where there's nothing. */
 typedef struct {
