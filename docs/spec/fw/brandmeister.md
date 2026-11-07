@@ -267,8 +267,12 @@ What the gateway takes from it:
   After a NACK (class 1, type 1: CRC-32 failure) BrandMeister resent the whole packet.
 - **The echo service answers twice.** BrandMeister's echo service sends its answer twice, 23-40 s apart, each with
   its own sequence. A radio's confirmed TMS ACK to the first was link-ACKed every time (3 of 3); one to the second
-  was link-ACKed once in three (2026-11-07 01:25, sequence 12 in the short form; not at 01:12 or 01:18, sequences 103
-  and 110, first tries and retries intact). Not explained; the second answer wasn't sent again either way.
+  was link-ACKed two times in four (2026-11-07 01:25 and 01:31, sequences 12 and 25 in the short form; not at 01:12
+  or 01:18, sequences 103 and 110, first tries and retries intact). Not explained; the second answer wasn't sent
+  again either way.
+- **Compressed headers work going up.** 2026-11-07 01:30: a radio's TMS text and TMS ACKs with the compressed
+  UDP/IPv4 header (SAP 3; 5 octets: IPv4 ID, SAID/DAID `00`, port IDs `62 62`) were each link-ACKed, the response in
+  SAP 3; BrandMeister's TMS ACK and answers came back in full UDP/IP (SAP 4) all the same.
 - **The first try is often missed.** BrandMeister answered the second copy of the first message, not the first. The
   hotspot logged both. Not explained yet; compare with the gateway once it logs in.
 - **IDs.** The radio uses its 7-digit DMR ID; BrandMeister routes the answer to the hotspot (9-digit ID) where it was
