@@ -256,6 +256,10 @@ What the gateway takes from it:
   BrandMeister's answer text, intact, followed 0.3 s later by the preambles of its TMS ACK, got the text sent again
   3 s later; each time the link ACK had nothing behind it for a second, BrandMeister took it. A radio's TMS ACK sent
   0.5 s after its link ACK wasn't answered either. Leave about 1.5 s after a link ACK before the next packet.
+- **A TMS ACK has to be confirmed.** 2026-11-07, 00:48 UTC: a radio's link ACK to the answer text, with nothing
+  behind it for 1.7 s, was taken; its TMS ACK after it, unconfirmed rate 1/2 with 16 preamble CSBKs and intact
+  (`BF 00 91 40`, sequence 81), wasn't: 36 s later BrandMeister sent the text again with a new sequence (89). A radio
+  whose TMS ACKs BrandMeister takes sends them confirmed, with 16 preambles, about 1.4 s after its link ACK.
 - **The first try is often missed.** BrandMeister answered the second copy of the first message, not the first. The
   hotspot logged both. Not explained yet; compare with the gateway once it logs in.
 - **IDs.** The radio uses its 7-digit DMR ID; BrandMeister routes the answer to the hotspot (9-digit ID) where it was
