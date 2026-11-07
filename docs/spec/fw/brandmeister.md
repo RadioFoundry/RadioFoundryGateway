@@ -182,7 +182,9 @@ Tests:
   master (UDP, the login of §3 with a known salt and password, `MSTPONG`, `MSTNAK` on demand, `DMRD` echo and
   scripted calls, confirmed-data ACKs and TMS ACKs as §7 recorded them). It relays a group call to every other login
   that keyed the same TG in the last 15 minutes, as BrandMeister's dynamic talkgroups do: to a repeater on the slot it
-  keyed it on, to a simplex hotspot on slot 2. The C host tests drive it in process; the
+  keyed it on, to a simplex hotspot on slot 2. As BrandMeister (§7), it ignores data whose header came after fewer
+  than 12 preamble CSBKs (`--min-preambles`), a radio's ACK excepted; `fakemodem` sends 16 before a text
+  (`--preambles` to change it). The gateway passes a radio's preambles up as it hears them. The C host tests drive it in process; the
   HIL tests point a board or rdofradio at it on the LAN. No automated or recurring test reaches BrandMeister.
 - **No RF, on one host:** `fakemodem` (sdr/cli) is a simplex MMDVM_HS hotspot on a pty, answering as the host
   tests' fake radio. It plays a radio's calls and texts into `rdofradio --allow-tx --mmdvm <pty> --config ...`

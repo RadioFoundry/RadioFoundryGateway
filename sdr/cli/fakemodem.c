@@ -7,15 +7,17 @@
  *
  *   fakemodem [--kind mmdvm_hs] [--cc 1] [--src ID] [--delay-s 8] [--gap-s 6] [--rssi N]
  *             [--slot 1|2] [--call DST:private|group:SECONDS]... [--text DST:"TEXT"]... [--confirmed]
+ *             [--preambles 16]
  *             [--log FILE] [--path-file FILE] [--exit-after-s S] [--trace]
  *
  * It prints the pty's path (and writes it to --path-file); run `rdofradio --allow-tx --mmdvm PATH ...` on it. Once
  * rdofradio has set the modem up (its first SET_MODE to DMR), it waits --delay-s, then plays each --call and --text
  * in the order given, --gap-s apart: DMR_DATA2 bursts every 60 ms, as a hotspot hands up what it heard on its one
  * slot. --slot sets the slot of the calls and texts after it (2 by default; slot 1 for a duplex modem, `--kind mmdvm`,
- * as a repeater hears a radio on its first slot). A call is a voice LC header, superframes A-F with the call's embedded LC (silence), and a terminator; a text
- * is preamble CSBKs, an IPv4/UDP TMS message (port 4007) in a data header and rate 1/2 blocks. Both are built by the
- * bench's job builder (rdof/benchjob.h), as a radio sends them (MS sync).
+ * as a repeater hears a radio on its first slot). A call is a voice LC header, superframes A-F with the call's
+ * embedded LC (silence), and a terminator; a text is --preambles preamble CSBKs (16, as a radio sends: BrandMeister
+ * answers data only after a long preamble; like --slot, it sets the texts after it), an IPv4/UDP TMS message (port 4007) in a data header and rate 1/2
+ * blocks. Both are built by the bench's job builder (rdof/benchjob.h), as a radio sends them (MS sync).
  *
  * The log (stdout, and --log) has a line for each burst rdofradio asks it to transmit (DMR_DATA1/2): "TX s<slot>"
  * with the burst's kind and, where it carries one, its LC or header's source and destination; the voice's embedded
@@ -54,6 +56,7 @@ typedef struct {
     bool group;
     double seconds;
     int slot; /* 1 or 2 */
+    int preambles; /* a text's preamble CSBKs */
     char msg[RDOF_BJ_TEXT];
 } part_t;
 
@@ -65,6 +68,7 @@ static struct {
     int cc, rssi;
     uint32_t src;
     bool confirmed;
+    int preambles; /* --preambles: CSBKs before a text's data header */
     double delay_s, gap_s, exit_after_s;
     part_t parts[MAX_PARTS];
     int nparts, next_part;
@@ -247,7 +251,7 @@ static bool build_part(const part_t *p)
         j.has_tms = true;
         snprintf(j.tms, sizeof j.tms, "%s", p->msg);
         j.tms_seq = 1 + M.texts++ % 31;
-        j.preambles = 2;
+        j.preambles = p->preambles;
         j.confirmed = M.confirmed;
     } else {
         j.cmd = RDOF_BJ_VOICE;
@@ -330,6 +334,7 @@ static void usage(void)
 {
     fprintf(stderr, "usage: fakemodem [--kind mmdvm_hs] [--cc 1] [--src ID] [--delay-s 8] [--gap-s 6] [--rssi N]\n"
                     "                 [--slot 1|2] [--call DST:private|group:SECONDS]... [--text DST:TEXT]... [--confirmed]\n"
+                    "                 [--preambles 16]\n"
                     "                 [--log FILE] [--path-file FILE] [--exit-after-s S] [--trace]\n");
     exit(2);
 }
@@ -342,6 +347,7 @@ int main(int argc, char **argv)
     M.src = 3100001;
     M.delay_s = 8;
     M.gap_s = 6;
+    M.preambles = 16; /* as a radio sends: BrandMeister answers data only after a long preamble */
     M.rssi = 0;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
@@ -359,6 +365,8 @@ int main(int argc, char **argv)
             M.rssi = atoi(v), i++;
         else if (!strcmp(a, "--slot") && v && (atoi(v) == 1 || atoi(v) == 2))
             slot = atoi(v), i++;
+        else if (!strcmp(a, "--preambles") && v && atoi(v) >= 0 && atoi(v) <= 64)
+            M.preambles = atoi(v), i++;
         else if (!strcmp(a, "--trace"))
             M.trace = true;
         else if (!strcmp(a, "--confirmed"))
@@ -372,6 +380,7 @@ int main(int argc, char **argv)
         else if ((!strcmp(a, "--call") || !strcmp(a, "--text")) && v && M.nparts < MAX_PARTS) {
             part_t *p = &M.parts[M.nparts];
             p->slot = slot;
+            p->preambles = M.preambles;
             char *e;
             p->dst = (uint32_t)strtoul(v, &e, 10);
             if (*e != ':' || !p->dst)

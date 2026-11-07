@@ -5,7 +5,7 @@
  * network: the gateway's HIL runs point a board or rdofradio here on the LAN.
  *
  *   fakebm [--port 62031] [--password P] [--ids ID,ID...] [--nak-step login|auth|config] [--no-pong]
- *          [--reply-s 3] [--reply TEXT] [--no-tms-ack] [--log FILE]
+ *          [--reply-s 3] [--reply TEXT] [--no-tms-ack] [--min-preambles 12] [--log FILE]
  *
  * It speaks the Homebrew login (RPTL, RPTACK + salt, RPTK checked against SHA-256(salt || password), RPTC,
  * RPTPING / MSTPONG, MSTNAK, RPTCL), any number of logins at once, each by its ID and address. What a logged-in peer
@@ -14,7 +14,9 @@
  *   - packet data to 262993 (the SMS service) is taken as the IP gateway takes it (rate 1/2, 3/4 or 1, confirmed or
  *     not, CRC checked): a confirmed packet gets the link-level ACK; a TMS text (UDP 4007) gets the TMS ACK
  *     (`BF 00 <seq>`), then after --reply-s an answer text, as BrandMeister's service does (§7). Unlike
- *     BrandMeister, its own packets go down unconfirmed at rate 1/2 (the IP gateway's);
+ *     BrandMeister, its own packets go down unconfirmed at rate 1/2 (the IP gateway's). As BrandMeister, it ignores
+ *     a packet whose data header came after fewer than --min-preambles preamble CSBKs (12; 0: any), a radio's
+ *     response header (its ACK) excepted (brandmeister.md §7);
  *   - a group call goes to every other login that keyed the same TG in the last 15 minutes (BrandMeister's dynamic
  *     talkgroup and its default timer): a repeater's on the slot it keyed it on, a simplex hotspot's on slot 2;
  *   - every packet is logged one line each (stdout, and --log).
@@ -34,6 +36,7 @@
 #include <unistd.h>
 
 #include "rdof/bits.h"
+#include "rdof/fec.h"
 #include "rdof/hblink.h"
 #include "rdof/hbpeer.h"
 #include "rdof/ipgw.h"
@@ -67,6 +70,8 @@ typedef struct {
         double at;
     } dyn[DYN_TGS]; /* the TGs keyed here: dynamic subscriptions */
     uint32_t relay_sid; /* the last stream relayed here, for its log line */
+    int preambles[3];   /* per slot: preamble CSBKs to the SMS service since its last data header */
+    bool ignoring[3];   /* per slot: the packet under way came after too few: its blocks are dropped */
 } peer_t;
 
 static struct {
@@ -76,6 +81,7 @@ static struct {
     int nids;
     int nak_step; /* -1 none, else ST_FREE (RPTL), ST_SALTED (RPTK), ST_AUTHED (RPTC) */
     int no_pong, no_tms_ack;
+    int min_preambles;
     double reply_s;
     const char *reply;
     FILE *log;
@@ -352,6 +358,20 @@ static void dmrd_up(peer_t *p, const uint8_t *d, size_t n, double now)
     if (b.group)
         relay_group(p, d, n, &b, now);
     if (b.dst == SMS_ID && !b.group && ft == 2) {
+        const int s = b.slot == 1 ? 1 : 2;
+        if (dt == RDOF_DT_CSBK) {
+            p->preambles[s]++;
+        } else if (dt == RDOF_DT_DATA_HEADER) {
+            uint8_t h[12];
+            const bool response = rdof_bptc196_decode(b.burst, h) && (h[0] & 0x0F) == 1;
+            p->ignoring[s] = !response && p->preambles[s] < F.min_preambles;
+            if (p->ignoring[s])
+                say("sms from %u: ignored, %d preamble CSBKs before its header (BrandMeister answers after %d)",
+                    (unsigned)b.src, p->preambles[s], F.min_preambles);
+            p->preambles[s] = 0;
+        }
+        if (p->ignoring[s])
+            return;
         const rdof_ipgw_where_t w = {.source = (int)(p - F.peers), .slot = b.slot, .freq = 0, .cc = -1};
         rdof_ipgw_burst(&F.gw, &w, dt, b.burst, now);
     }
@@ -493,7 +513,8 @@ static void received(const struct sockaddr_in *a, const uint8_t *d, size_t n, do
 static void usage(void)
 {
     fprintf(stderr, "usage: fakebm [--port 62031] [--password P] [--ids ID,...] [--nak-step login|auth|config]\n"
-                    "              [--no-pong] [--reply-s S] [--reply TEXT] [--no-tms-ack] [--log FILE]\n");
+                    "              [--no-pong] [--reply-s S] [--reply TEXT] [--no-tms-ack] [--min-preambles 12]\n"
+                    "              [--log FILE]\n");
     exit(2);
 }
 
@@ -502,6 +523,7 @@ int main(int argc, char **argv)
     int port = 62031;
     F.password = "passw0rd";
     F.nak_step = -1;
+    F.min_preambles = 12;
     F.reply_s = 3.0;
     F.reply = "fakebm got it";
     F.ans_flow = -1;
@@ -522,6 +544,8 @@ int main(int argc, char **argv)
             i++;
         } else if (!strcmp(a, "--no-pong"))
             F.no_pong = 1;
+        else if (!strcmp(a, "--min-preambles") && v)
+            F.min_preambles = atoi(v), i++;
         else if (!strcmp(a, "--no-tms-ack"))
             F.no_tms_ack = 1;
         else if (!strcmp(a, "--reply-s") && v)
