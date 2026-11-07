@@ -2397,6 +2397,9 @@ static struct {
     int ch;       /* the receive channel on the frequency */
     uint32_t freq;
     char why[160]; /* why the last arming ended */
+    int64_t late48; /* the modem's tx_late48 before arming, put back after */
+    int64_t cal48;  /* the calibration burst's place, -1 heard back (or none) */
+    double cal_at;
     rdof_mssim_profile_t prof;
     rdof_mssim_t s;
 } MS = {.mu = PTHREAD_MUTEX_INITIALIZER, .ch = -1};
@@ -2410,6 +2413,8 @@ static bool ms_send(void *ctx, int64_t at48, const uint8_t burst[33], int64_t *p
 
 static void ms_off(const char *why)
 {
+    if (MS.on)
+        R.m.tx_late48 = MS.late48;
     MS.on = false;
     MS.want = 0;
     rdof_mssim_disarm(&MS.s);
@@ -2437,7 +2442,15 @@ static void ms_poll(double now)
             rdof_mssim_arm(&MS.s, &MS.prof);
             MS.want = 0;
             MS.on = true;
-            say("bench: the responder is armed on %.4f MHz\n", MS.freq / 1e6);
+            /* the transmit path's delay: one idle burst, where it's heard back against where it was placed */
+            MS.late48 = R.m.tx_late48;
+            uint8_t idle[33], z[12] = {0};
+            rdof_data_burst(z, RDOF_DT_IDLE, BT.cc, rdof_data_sync(RDOF_MS_VOICE), idle);
+            int64_t at = rdof_sdrmodem_tx_frontier48(&R.m) + RDOF_MSSIM_SLOT48, placed = -1;
+            MS.cal48 = rdof_sdrmodem_place48(&R.m, at, idle, &placed) ? placed : -1;
+            MS.cal_at = now;
+            say("bench: the responder is armed on %.4f MHz%s\n", MS.freq / 1e6,
+                MS.cal48 >= 0 ? ", calibrating" : " (no calibration burst)");
         }
     } else if (MS.on) {
         if (MS.want == 2)
@@ -2460,10 +2473,22 @@ static void ms_heard(int c, const rdof_sdr_burst_t *b, bool echo)
         return;
     pthread_mutex_lock(&MS.mu);
     if (MS.on) {
-        if (!echo)
+        if (!echo) {
             rdof_mssim_heard(&MS.s, &b->b, b->position);
-        else
+        } else if (MS.cal48 >= 0 && b->b.dt == RDOF_DT_IDLE && llabs(b->position - MS.cal48) < 4 * 2880) {
+            R.m.tx_late48 += b->position - MS.cal48;
+            say("bench: the responder's transmit path is %.2f ms past its place (tx_late %.2f ms)\n",
+                (double)(b->position - MS.cal48) / 48.0, (double)R.m.tx_late48 / 48.0);
+            MS.cal48 = -1;
+        } else if (b->b.dt == RDOF_DT_DATA_HEADER) {
             rdof_mssim_echo(&MS.s, b->position);
+            /* an answer heard back: half its error goes into the delay (a stall in the writer moves it) */
+            for (int i = 0; i < MS.s.nlog; i++) {
+                const rdof_mssim_entry_t *e = &MS.s.log[i];
+                if (e->air48 == b->position && e->placed48 >= 0 && llabs(e->air48 - e->placed48) > 24)
+                    R.m.tx_late48 += (e->air48 - e->placed48) / 2;
+            }
+        }
     }
     pthread_mutex_unlock(&MS.mu);
 }
