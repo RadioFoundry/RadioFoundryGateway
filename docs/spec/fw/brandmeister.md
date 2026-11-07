@@ -265,9 +265,10 @@ What the gateway takes from it:
   = octet n/8, bit n%8 from the LSB, 0 = resend) got that block alone 0.6 s later: 1 preamble CSBK, the header with
   F=0 and 1 block to follow but the whole message's pad (12), S, N(S) and FSN, then block DBSN 8 with its CRC-32.
   After a NACK (class 1, type 1: CRC-32 failure) BrandMeister resent the whole packet.
-- **A TMS ACK to the second answer isn't link-ACKed.** BrandMeister's echo service sends its answer twice, 23-40 s
-  apart, each with its own sequence. A radio's confirmed TMS ACK to the first was link-ACKed every time (2 of 2);
-  one to the second never was (2 of 2, first tries and retries intact), and the second answer wasn't sent again.
+- **The echo service answers twice.** BrandMeister's echo service sends its answer twice, 23-40 s apart, each with
+  its own sequence. A radio's confirmed TMS ACK to the first was link-ACKed every time (3 of 3); one to the second
+  was link-ACKed once in three (2026-11-07 01:25, sequence 12 in the short form; not at 01:12 or 01:18, sequences 103
+  and 110, first tries and retries intact). Not explained; the second answer wasn't sent again either way.
 - **The first try is often missed.** BrandMeister answered the second copy of the first message, not the first. The
   hotspot logged both. Not explained yet; compare with the gateway once it logs in.
 - **IDs.** The radio uses its 7-digit DMR ID; BrandMeister routes the answer to the hotspot (9-digit ID) where it was
