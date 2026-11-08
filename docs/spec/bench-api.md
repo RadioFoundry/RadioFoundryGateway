@@ -644,8 +644,7 @@ by their long names with `_` for `-`:
   first slot still to be queued. Each slot's calls can't overlap, and every call must end before `seconds`; the
   slots of the other number keep their own calls and idle bursts, so one slot can be mid-call while the other's
   call starts, or goes on after it ends. Refused before anything keys, with the option named: a bad field, an
-  overlap, a call past `seconds`, `late` with headers, and a bench whose platform can't push voice (`unsupported`;
-  rdofradio today).
+  overlap, a call past `seconds`, `late` with headers, and a bench whose platform can't push voice (`unsupported`).
   The bursts go to the duplex modem as its host's `DMR_DATA1` / `DMR_DATA2`, in the slot queue of their number
   (prebuffer one). Slot k's burst goes when the slot clock's next slot to queue is k - 1, or earlier behind the
   call's burst for k - 2, so it lands in k; one whose slot is already queued (the engine was late) is dropped

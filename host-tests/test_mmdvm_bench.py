@@ -132,7 +132,15 @@ try:
     recs = [json.loads(x["out"]) for x in out if "out" in x and x["out"].startswith("{")]
     check(any("start" in x for x in recs) and any("summary" in x for x in recs), f"outbound's records: {recs[:2]}")
     modem = r.modem()
-    check("DMR_START" in modem or "START" in modem, "DMR_START in the modem's log: " + modem[-300:])
+    check("TRACE cmd 1D" in modem or "DMR_START" in modem, "DMR_START in the modem's log: " + modem[-300:])
+    # and with a voice call in its slots: the modem's bursts through DMR_DATA1 / DMR_DATA2
+    before = len(r.modem())
+    out = r.ask({"op": "run", "session": sid, "job": {"tool": "bench_tx", "cmd": "outbound", "freq": 438.6, "cc": 1, "seconds": 1.5,
+                                                      "voice": [{"slot": 1, "src": 1, "dst": 2, "start_s": 0.1, "superframes": 1,
+                                                                 "headers": 1, "terminators": 1}]}, "wait_max": 10}, 15)
+    check(any(x.get("exit") == 0 for x in out), f"outbound with voice: {out[-3:]}")
+    sent = r.modem()[before:]
+    check("cmd 18" in sent, "the voice went through DMR_DATA1: " + sent[-400:])
     # a repeater job through the same modem
     out = r.ask({"op": "run", "session": sid, "job": {"tool": "bench_repeater", "rx": 438.5, "tx": 438.6, "cc": 1, "seconds": 1.0},
                  "wait_max": 10}, 15)
