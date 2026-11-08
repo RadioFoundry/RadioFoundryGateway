@@ -528,6 +528,11 @@ const char *bench_tx_why_family(int family); /* a voice, csbk or data job's --fa
 /* The line protocol (bench_line.c, bench-api.md section 14): its server on CONFIG_RDOF_BENCH_LINE_PORT; a burst heard
  * (from bench_on_burst); the wideband history (bench_api.c's ring) for its captures. */
 void bench_line_start(void);
+#if CONFIG_RDOF_BENCH
+bool bench_line_measuring(void); /* a job is listening to the receiver: flash writes wait (they lose its samples) */
+#else
+#define bench_line_measuring() false
+#endif
 void bench_line_burst(int channel, const rdof_sdr_burst_t *b, double t);
 long bench_wide_read(uint64_t sc, int8_t *out, long n, uint64_t *oldest, uint64_t *next);
 long bench_wide_filled(uint64_t sc, long n); /* how many of the history's samples [sc, sc + n) are filler */

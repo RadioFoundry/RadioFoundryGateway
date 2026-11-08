@@ -107,6 +107,9 @@ static double bl_utc(void *ctx)
     return netclock_utc_ns(esp_timer_get_time(), &synced) / 1e9;
 }
 
+/* Another task's read of two counters: a stale answer only moves a flash write by a tick. */
+bool bench_line_measuring(void) { return bl && (rdof_bl_wants_iq(bl) || rdof_bl_wants_bursts(bl)); }
+
 static double bl_sc_utc(void *ctx, uint64_t sc) { return g_rx.t0 + (double)sc / g_scfg.sample_rate; }
 
 static void bl_rx_stats(void *ctx, double *seconds, long *overflows, double *clip_pct, long *dsp_skipped, long *dropped)
@@ -250,6 +253,7 @@ void bench_line_start(void)
         ESP_LOGE(TAG, "line protocol: no memory");
         return;
     }
+    netclock_set_store_hold(bench_line_measuring);
     /* the server's thread: its stack in PSRAM, internal RAM being the scarce one */
     esp_pthread_cfg_t cfg = esp_pthread_get_default_config();
     cfg.thread_name = "bench_line";

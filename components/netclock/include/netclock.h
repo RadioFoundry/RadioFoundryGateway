@@ -86,6 +86,10 @@ esp_err_t netclock_settings_from_json(const char *json, size_t len, char *err, s
 // at the other end of a USB network link). Return the name to use.
 void netclock_set_name_map(const char *(*map)(const char *name));
 
+// Optional: while hold() is true a learned rate's flash write waits (15 min at most). A flash write stops every task
+// that isn't in IRAM for tens of ms: a measurement running then loses its samples.
+void netclock_set_store_hold(bool (*hold)(void));
+
 #ifdef __cplusplus
 }
 #endif

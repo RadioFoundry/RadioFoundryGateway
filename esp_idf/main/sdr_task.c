@@ -1082,8 +1082,8 @@ static void cal_learn(double t)
     if (!settled || isnan(v) || !ppm.measured || isnan(die_c) || ppm.steady_s < RDOF_PPM_FIRST_SAVE_S)
         return;
     const int bin = nc_tcal_bin(die_c);
-    if (bin == cal_put_bin && t - cal_put_t < CAL_AGAIN_S)
-        return;
+    if ((bin == cal_put_bin && t - cal_put_t < CAL_AGAIN_S) || bench_line_measuring())
+        return; /* the flash write stops the front end's reader: it waits for a job that's listening */
     nc_tcal_put(&cal, die_c, v);
     cal_put_bin = bin;
     cal_put_t = t;

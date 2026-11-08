@@ -289,6 +289,9 @@ After `nc_clock_add`, store (`rate_ppb` = `fit_rate`, plus `tcal` if it changed)
 
 `(rate_learned ∧ rate_n ≥ 8 ∧ |fit_rate − stored| > 0.3e-6 ∧ (never stored ∨ t − last_store > 3600 s)) ∨ table_changed`
 
+The write waits while `netclock_set_store_hold`'s hook says so, 15 min at most: a flash write stops every task not in
+IRAM, and a measurement running then loses its samples.
+
 ### Temperature table (`src/netclock_tempcal.c`, `nc_clock_*` in `src/netclock_core.c`)
 
 Learning, on each new fit: over the log entries since the model's oldest history reference, not outliers, with a die
