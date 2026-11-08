@@ -546,7 +546,8 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
 - `trigger` cuts the channel at `freq` from the wideband history: mixed to 0 Hz, low-pass filtered to `bw` (a
   Hamming-windowed sinc, 8 taps a decimated sample), decimated to about 48 kS/s (`fs / round(fs / 48000)`, the
   metadata's `rate`). It learns the floor as the median 1 ms block over the first `floor_s` (1 s; from the history
-  when it is warm, else live), unless `floor_db` is given, and says `armed`. It fires when `min_ms` blocks in a row
+  when it is warm, else live; blocks of exact zeros left out, as a channelizer's output quantizes a quiet band to
+  zero, and -100 dB when every block is), unless `floor_db` is given, and says `armed`. It fires when `min_ms` blocks in a row
   are `threshold_db` over the floor, then sends from `pre_s` before the rise (as far as the history goes) to
   `post_s` after it; with `until_end`, to `post_s` after the last block over half the threshold, at most `max_s`
   after the rise. Samples are cf32 or cs16, full scale 1.0 = cs8's 127. Nothing in `timeout_s` (60) is
@@ -734,7 +735,7 @@ after the op's own are the mode's.
   `input_bytes` in the header is what the job expects; `done` gives what came.
 - `rx` cuts the channel from the wideband history as `trigger` does (`bw` 16000 by default, 1000 to 0.9 of the
   rate; about 48 kS/s) and feeds the mode's receiver. Without `squelch_dbfs` it first learns the floor (the median
-  1 ms block over 0.3 s of history) and sets the squelch `squelch_over_db` (10) over it. The header gives `rate`,
+  1 ms block over 0.3 s of history, exact zeros left out as a trigger's) and sets the squelch `squelch_over_db` (10) over it. The header gives `rate`,
   `bw`, `t0` and `sc0` (the first channel sample's UTC and wideband index), `seconds`, `floor_dbfs`,
   `squelch_dbfs`, `scale_db` and the streams asked for (`name`, `unit`, `rate`, `full`: the value at int16 full
   scale). A gap is `{"gap": {"sc", "samples"}}` (channel samples the history overwrote before they went: the

@@ -760,6 +760,42 @@ static size_t trig_run(rdof_bl_t *bl, int c, double *now, double ms, double off_
     return total;
 }
 
+/* A floor over a band the channelizer quantizes to exact zeros (the Pluto's, quiet at VHF): those blocks left out,
+ * not a -150 dB floor every carrier is over (nor one no rise ever passes) */
+static double armed_floor(double zero_ms, double noise_ms, int reps)
+{
+    rdof_bl_t *bl = rdof_bl_new(&PLAT);
+    double now = 2000;
+    static char all[1 << 18];
+    rdof_bl_ring_init(&ring, 768000);
+    static float z[2 * 768];
+    for (int r = 0; r < reps; r++) {
+        for (int k = 0; k < (int)zero_ms; k++)
+            rdof_bl_ring_put(&ring, z, 768, NULL);
+        put_tone(noise_ms, 0, 0);
+    }
+    int c = ask(bl, "{\"op\":\"trigger\",\"freq\":438.1125,\"bw\":12500,\"pre_s\":0.05,\"post_s\":0.1,"
+                    "\"threshold_db\":10,\"min_ms\":5,\"floor_s\":0.2,\"timeout_s\":5,\"fmt\":\"cf32\"}", now);
+    for (int i = 0; i < 4; i++)
+        rdof_bl_tick(bl, now += 0.01);
+    drain(bl, c, all, sizeof all);
+    char v[32] = "";
+    const char *a = strstr(all, "{\"armed\":");
+    const double f = a && field(a, "floor_db", v, sizeof v) ? atof(v) : NAN;
+    rdof_bl_closed(bl, c, now);
+    rdof_bl_free(bl);
+    rdof_bl_ring_free(&ring);
+    return f;
+}
+
+static void test_zero_floor(void)
+{
+    const double noise = armed_floor(0, 300, 1), zeros = armed_floor(300, 0, 1), mixed = armed_floor(15, 10, 12);
+    CHECK(isfinite(noise) && zeros == -100.0, "all zeros: under the last bit (%.1f), not -150", zeros);
+    CHECK(fabs(mixed - noise) < 4, "60 %% zero blocks: the noise's floor (%.1f), not theirs (noise alone %.1f)", mixed,
+          noise);
+}
+
 static void test_trigger(void)
 {
     rdof_bl_t *bl = rdof_bl_new(&PLAT);
@@ -2734,6 +2770,7 @@ int main(int argc, char **argv)
     test_outbound();
     test_outbound_voice();
     test_tune();
+    test_zero_floor();
     test_tcp();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

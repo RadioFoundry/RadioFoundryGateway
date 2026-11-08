@@ -113,7 +113,7 @@ typedef struct {
     double peak_db;           /* the loudest 1 ms block since it armed (a no_signal's report) */
     long behind;              /* restarts at the history's oldest before it fired (fell behind) */
     int hist[TRIG_HIST];
-    long floor_blocks;
+    long floor_blocks, floor_nz; /* the floor's blocks so far, those not exact zeros */
     int bsize, bn;            /* outputs in a 1 ms block, so far */
     float bp;                 /* float: a double add each output is soft-float on an ESP32 */
     uint64_t block_sc;
@@ -2747,7 +2747,7 @@ typedef struct sigrx {
     double corr_hz;           /* the channel moved for the crystal (as trig_t's) */
     bool learning;
     int hist[TRIG_HIST];
-    long blocks, need_blocks;
+    long blocks, need_blocks, nz; /* nz: the floor's blocks not exact zeros */
     int bsize, bn;
     double bp;
     uint64_t start_sc, end_sc;
@@ -3166,9 +3166,9 @@ static bool srx_start(rdof_bl_t *bl, conn_t *c, uint64_t first, double now, cons
     if (r->learning) { /* the floor: the median 1 ms block */
         long acc = 0;
         int m = 0;
-        while (m < TRIG_HIST - 1 && (acc += r->hist[m]) <= r->blocks / 2)
+        while (m < TRIG_HIST - 1 && (acc += r->hist[m]) <= r->nz / 2)
             m++;
-        r->floor_db = -150 + m * 0.5 + 0.25;
+        r->floor_db = r->nz ? -150 + m * 0.5 + 0.25 : -100;
         r->squelch = r->floor_db + r->over_db;
         r->learning = false;
         /* the request again (the parser's document is the latest request's): the receiver with this squelch */
@@ -3294,9 +3294,14 @@ static void tick_rx(rdof_bl_t *bl, conn_t *c, double now)
                 if (++r->bn < r->bsize)
                     continue;
                 const double db = 10 * log10(r->bp / r->bsize + 1e-30);
+                /* blocks of exact zeros left out, as a trigger's: the Pluto's channelizer quantizes a quiet band
+                   (146.535 MHz at --gain 0, 2026-11-08) to zero */
+                if (r->bp > 0) {
+                    const int b = (int)((db + 150) * 2);
+                    r->hist[b < 0 ? 0 : b >= TRIG_HIST ? TRIG_HIST - 1 : b]++;
+                    r->nz++;
+                }
                 r->bn = 0, r->bp = 0;
-                const int b = (int)((db + 150) * 2);
-                r->hist[b < 0 ? 0 : b >= TRIG_HIST ? TRIG_HIST - 1 : b]++;
                 if (++r->blocks >= r->need_blocks && !srx_start(bl, c, first + (uint64_t)(i + 1) * d, now, &w))
                     return;
             }
@@ -4038,15 +4043,19 @@ static bool trig_block(rdof_bl_t *bl, conn_t *c, double lin, const rdof_bl_windo
 {
     trig_t *t = c->trig;
     const double db = 10 * log10(lin + 1e-30);
-    if (!t->have_floor) { /* the floor: the median block */
-        int k = (int)((db + 150) * 2);
-        t->hist[k < 0 ? 0 : k >= TRIG_HIST ? TRIG_HIST - 1 : k]++;
+    if (!t->have_floor) { /* the floor: the median block, blocks of exact zeros left out (as an envelope's) */
+        if (lin > 0) {
+            int k = (int)((db + 150) * 2);
+            t->hist[k < 0 ? 0 : k >= TRIG_HIST ? TRIG_HIST - 1 : k]++;
+            t->floor_nz++;
+        }
         if (++t->floor_blocks >= t->floor_s * 1000) {
             long acc = 0;
             int m = 0;
-            while (m < TRIG_HIST - 1 && (acc += t->hist[m]) <= t->floor_blocks / 2)
+            while (m < TRIG_HIST - 1 && (acc += t->hist[m]) <= t->floor_nz / 2)
                 m++;
-            t->floor_db = -150 + m * 0.5 + 0.25;
+            /* all zeros: the floor under the channel's last bit */
+            t->floor_db = t->floor_nz ? -150 + m * 0.5 + 0.25 : -100;
             t->have_floor = 1;
             emit(bl, c, "{\"armed\":{\"floor_db\":%.1f,\"rate\":%.1f}}", t->floor_db, t->rate);
         }
