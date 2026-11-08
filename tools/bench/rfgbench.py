@@ -21,7 +21,7 @@ the daemon's client only changes the command it runs.
     rfgbench.py ... capture-trigger --freq MHz --out FILE [--bw Hz] [--pre S] [--post S] [--timeout S] ...
     rfgbench.py ... track --freq MHz [--mode fm|4fsk] [--interval-ms MS] [--timeout S] [--max-s S] [--out FILE]
     rfgbench.py ... tx fm --freq MHz [SEGMENT...] [--pcm FILE] [--ctcss HZ | --dcs 023N] [--dev HZ] [--sub-dev HZ] ...
-    rfgbench.py ... rx fm --freq MHz --seconds S [--audio FILE.wav] [--disc FILE.wav] [--records FILE] [--bw HZ] ...
+    rfgbench.py ... rx fm --freq MHz --seconds S [--audio FILE.wav] [--disc FILE.wav] [--records FILE] [--dtmf] [--aprs] ...
     rfgbench.py ... tx am --freq MHz [SEGMENT...] [--pcm FILE] [--depth 0-1] [--offset HZ] ...
     rfgbench.py ... rx am --freq MHz --seconds S [--audio FILE.wav] [--env FILE.wav] [--records FILE] [--bw HZ] ...
 
@@ -985,6 +985,7 @@ def cmd_rx_sig(a) -> int:
               ("block_s", a.block_s), ("spectrum_hz", a.spectrum_hz)]
     if a.mode_name == "fm":
         fields += [("deemph_us", a.deemph_us), ("nominal_dev_hz", a.nominal_dev), ("audio_full_hz", a.audio_full_hz)]
+        fields += [(k, True) for k in ("dtmf", "aprs") if getattr(a, k)]
     else:
         fields += [("audio_lo_hz", a.audio_lo), ("audio_hi_hz", a.audio_hi), ("nominal_depth", a.nominal_depth),
                    ("audio_full", a.audio_full)]
@@ -1412,6 +1413,9 @@ def main(argv=None) -> int:
                                    help="Hz, for the records' deviation ratio")
                     s.add_argument("--audio-full-hz", type=float, default=None,
                                    help="deviation at full scale in the WAV")
+                    s.add_argument("--dtmf", action="store_true", help="DTMF digits decoded on the board: records")
+                    s.add_argument("--aprs", action="store_true",
+                                   help="APRS (Bell 202 AX.25) frames decoded on the board: records")
                 else:
                     s.add_argument("--audio-lo", type=float, default=None, help="the audio band's low edge, Hz (300)")
                     s.add_argument("--audio-hi", type=float, default=None,
