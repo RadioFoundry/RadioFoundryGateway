@@ -825,6 +825,7 @@ static struct {
     int nwake;
     bool cal;              /* the first key-up's edge sets the slot timing */
     int64_t late48;        /* the modem's tx_late48 before the job */
+    int rx_ch;             /* the input's receiver channel: it decodes the job's color code meanwhile (-1: none) */
     rdof_repeater_t r;
 } BR = {.mu = PTHREAD_MUTEX_INITIALIZER};
 
@@ -2772,6 +2773,10 @@ static bool bench_rpt_poll(double now)
         BR.want = 0, BR.active = true;
         const rdof_bl_rpt_cfg_t cfg = BR.cfg;
         pthread_mutex_unlock(&BR.mu);
+        /* the input's channel decodes the job's color code, not the site's: it heard nothing of a job on another */
+        BR.rx_ch = channel_of(cfg.rx_hz);
+        if (BR.rx_ch >= 0)
+            rdof_sdr_rx_set_cc(&R.rx, BR.rx_ch, cfg.cc);
         rdof_repeater_init(&BR.r, &R.radio, rcfg.peer_id, cfg.rx_hz, cfg.tx_hz, cfg.cc);
         BR.r.enabled[1] = cfg.slots & 2u, BR.r.enabled[2] = cfg.slots & 4u;
         BR.r.inactivity_s = cfg.hang_s;
@@ -2803,6 +2808,8 @@ static bool bench_rpt_poll(double now)
         rdof_repeater_stop(&BR.r);
         R.m.tx_late48 = BR.late48;
         atomic_store(&late_rebase, 1);
+        if (BR.rx_ch >= 0)
+            rdof_sdr_rx_set_cc(&R.rx, BR.rx_ch, CH[BR.rx_ch].cc);
         pthread_mutex_lock(&BR.mu);
         BR.active = false, BR.nev = 0;
         pthread_mutex_unlock(&BR.mu);
@@ -3012,6 +3019,7 @@ static void chan_point(int c)
     else
         rdof_chz_set_offset(&R.rx.chz, c, off);
     rdof_sdr_rx_set_correction(&R.rx, c, xtal_base_hz(c));
+    rdof_sdr_rx_set_cc(&R.rx, c, CH[c].cc); /* a tap decodes any, a channel its own again */
 }
 
 static bool move_lo(double hz, char *why, size_t cap)
