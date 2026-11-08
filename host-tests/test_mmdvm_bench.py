@@ -210,5 +210,21 @@ try:
 finally:
     r.stop()
 
+# the modem's port going away ends the program with a failure, for its supervisor to start it again
+r = Rig("half", DUAL)
+try:
+    r.fake.terminate()
+    r.fake.wait(5)
+    try:
+        code = r.radio.wait(10)
+    except subprocess.TimeoutExpired:
+        code = None
+    check(code == 1, f"the exit status when the modem went away: {code}")
+    check("the port went away" in open(r.err.name).read(), "and says so")
+finally:
+    if r.radio.poll() is None:
+        r.radio.terminate()
+        r.radio.wait(5)
+
 print(f"{checks} checks, {failures} failures")
 sys.exit(1 if failures else 0)

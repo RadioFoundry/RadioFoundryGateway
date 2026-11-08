@@ -295,6 +295,9 @@ static void split_turn(void);
 static void split_flush(void);
 static int64_t split_now48(void *ctx);
 
+/* The device or the radio's port went away, or the SDR stopped giving samples: the program stops and exits with 1, so
+ * a supervisor (systemd's Restart=on-failure) starts it again. */
+static volatile sig_atomic_t lost_device;
 static void on_signal(int s) { stop = 1; }
 
 /* --config: the file, and the radio it (or the command line) sets */
@@ -4613,6 +4616,7 @@ static void split_service(void)
     split_flush();
     if (!stop && (P.gone || S.failed[0])) {
         say("split: %s\n", P.gone ? "the radio's port went away" : S.failed);
+        lost_device = 1;
         stop = 1;
     }
     for (int k = 0; k < NX; k++) {
@@ -4621,6 +4625,7 @@ static void split_service(void)
         const rdof_split_t *xs = rdof_sdrsplits_split(&XS, k);
         if (!stop && (X[k]->p.gone || xs->failed[0])) {
             say("%s: split: %s\n", X[k]->u->name, X[k]->p.gone ? "the radio's port went away" : xs->failed);
+            lost_device = 1;
             stop = 1;
         }
     }
@@ -4647,6 +4652,7 @@ static void rx_turn(void)
     if (n == RDOF_DEV_TIMEOUT) {
         if (++SC.timeouts >= 50 && !stop) {
             say("read: nothing for 5 s, stopping\n");
+            lost_device = 1;
             stop = 1;
         }
     } else if (n == RDOF_DEV_OVERFLOW) {
@@ -4656,6 +4662,7 @@ static void rx_turn(void)
         WS.errors++;
         if (++SC.errors > 10 && !stop) {
             say("%s\n", dev->error);
+            lost_device = 1;
             stop = 1;
         }
     } else if (n > 0) {
@@ -4850,7 +4857,7 @@ static int split_main(int argc, char **argv, const char *port, int baud, int pow
             rdof_repeater_stop(&X[k]->r);
     for (int i = 0; i < 10; i++) /* the repeaters' last frames out to the radios */
         split_service();
-    rc = 0;
+    rc = lost_device ? 1 : 0;
 out:
     P.quit = true;
     pthread_join(P.thread, NULL);
@@ -4934,6 +4941,7 @@ static void mm_service(void)
     }
     if (!stop && P.gone) {
         say("modem: the port went away\n");
+        lost_device = 1;
         stop = 1;
     }
     if (!in_wait)
@@ -5134,7 +5142,7 @@ static int mmdvm_main(int argc, char **argv, const char *port, int baud, double 
     rdof_modem_set_mode(&R.client, RDOF_MODE_IDLE); /* the modem idle: it doesn't key on its own */
     for (int i = 0; i < 10; i++) /* the last frames out to the modem */
         mm_service();
-    rc = 0;
+    rc = lost_device ? 1 : 0;
 out:
     P.quit = true;
     pthread_join(P.thread, NULL);
@@ -6373,5 +6381,5 @@ int main(int argc, char **argv)
         return 1;
     }
 #endif
-    return 0;
+    return lost_device ? 1 : 0;
 }

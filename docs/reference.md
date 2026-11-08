@@ -1315,6 +1315,11 @@ build/linux/rdofradio --soapy driver=rtlsdr -r 2.4e6 --gain 30 --ppm PPM --allow
   if it isn't the default. `--rf-level` caps the power of every job.
 - `--rx` and `--tx` are the modem's at rest; a job tunes the modem where it's asked. The SDR's window is `-r` wide, around
   a center that holds the channels (or `--center`), and a request outside it tunes the SDR for itself.
+- A lost device ends the program with exit status 1: the modem's port going away, 5 s with no samples from the SDR, or
+  repeated read errors. Run it under a supervisor (a systemd unit with `Restart=on-failure`): an RTL-SDR that dropped
+  off USB comes back with a new process. Sessions, claims and running requests end with it; a client sees `lost` or
+  an `unavailable` connection. A modem that stops answering but keeps its port fails its jobs (`no reply`) and isn't
+  restarted.
 
 ### Host web page
 
