@@ -295,6 +295,7 @@ rdofradio_dev_t *rdofradio_iio_open(const char *uri, const rdofradio_dev_setup_t
     d->stop_tx = stop_tx;
     d->close = close_dev;
     d->tx_gain_min = 0, d->tx_gain_max = TX_ATTEN_MAX;
+    d->iq_scale = 16; /* a 12-bit ADC at 1/2048 a step */
     snprintf(d->name, sizeof d->name, "libiio AD9361");
     s->ctx = uri && *uri ? iio_create_context_from_uri(uri) : iio_create_default_context();
     if (!s->ctx) {

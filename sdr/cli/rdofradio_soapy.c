@@ -15,6 +15,7 @@
 #include <SoapySDR/Device.h>
 #include <SoapySDR/Formats.h>
 
+#include "rdof/benchline.h"
 #include "rdofradio_dev.h"
 
 typedef struct {
@@ -171,6 +172,9 @@ rdofradio_dev_t *rdofradio_soapy_open(const char *args, const rdofradio_dev_setu
     }
     d->rate = SoapySDRDevice_getSampleRate(s->dev, SOAPY_SDR_RX, 0);
     d->tx_rate = d->rate;
+    double native_scale = 0;
+    free(SoapySDRDevice_getNativeStreamFormat(s->dev, SOAPY_SDR_RX, 0, &native_scale));
+    d->iq_scale = rdof_bl_ring_scale(native_scale);
     /* the streams' own arguments (--stream), for both. A PlutoSDR's own 65536-sample buffers made the loop delay
      * vary by a buffer (27 ms at 2.4 MS/s) from run to run; 16384 underran its transmitter without a word (bit
      * errors in every burst); 32768 holds the delay within a few ms and sends clean */

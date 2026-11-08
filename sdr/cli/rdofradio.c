@@ -2923,9 +2923,11 @@ static void bench_start(void)
         fprintf(stderr, "bench: no memory for the history\n");
         return;
     }
-    /* cs8 from a 12-bit ADC (an AD9361 at 1/2048 a step): its low 8 bits, where a bench signal is (a call at
-     * -53 dBFS is a few steps); a signal over -24 dBFS clips, and the capture's clip_pct says so */
-    BL.ring.scale = 16;
+    /* cs8 from a wider ADC (an AD9361's 12 bits at 1/2048 a step): its low 8 bits, where a bench signal is (a call at
+     * -53 dBFS is a few steps); a signal over -24 dBFS clips, and the capture's clip_pct says so. An 8-bit device
+     * (an RTL-SDR) keeps its own 8 bits: at the wider ADC's gain a signal over -24 dBFS, which an RTL-SDR's gain puts
+     * in reach on the bench, clipped every capture, trigger and rx */
+    BL.ring.scale = dev && dev->iq_scale > 0 ? dev->iq_scale : 16;
     static const rdof_bl_platform_t pf = {.device = bl_device, .window = bl_window, .freqs = bl_freqs,
                                           .tx_bands = bl_tx_bands,
                                           .iq_read = bl_iq_read, .iq_filled = bl_iq_filled, .utc = bl_utc,

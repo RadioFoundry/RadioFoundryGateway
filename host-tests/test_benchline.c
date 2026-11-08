@@ -2762,6 +2762,29 @@ static void test_tune(void)
     rdof_bl_free(bl);
 }
 
+static void test_ring_scale(void)
+{
+    CHECK(rdof_bl_ring_scale(128.0) == 1.0f && rdof_bl_ring_scale(127.0) == 1.0f, "an 8-bit ADC keeps its own bits");
+    CHECK(rdof_bl_ring_scale(2048.0) == 16.0f, "a 12-bit ADC's low bits");
+    CHECK(rdof_bl_ring_scale(32768.0) == 16.0f, "the most");
+    CHECK(rdof_bl_ring_scale(512.0) == 4.0f, "a 10-bit ADC");
+    CHECK(rdof_bl_ring_scale(0) == 1.0f && rdof_bl_ring_scale(1.0) == 1.0f, "not known: 1");
+    /* an RTL-SDR at scale 1: a full-scale sample doesn't clip at a twentieth of its range */
+    rdof_bl_ring_t ring;
+    rdof_bl_ring_init(&ring, 8192);
+    ring.scale = rdof_bl_ring_scale(128.0);
+    const float iq[8] = {0.05f, -0.05f, 0.5f, -0.5f, 1.0f, -1.0f, 0.0f, 0.0f};
+    long clipped = 0;
+    rdof_bl_ring_put(&ring, iq, 4, &clipped);
+    int8_t out[8];
+    uint64_t oldest, next;
+    CHECK(rdof_bl_ring_read(&ring, 0, out, 4, &oldest, &next) == 4, "read back");
+    CHECK(out[0] == 6 && out[1] == -6 && out[2] == 64 && out[3] == -64, "the 8-bit ADC's samples: %d %d %d %d", out[0],
+          out[1], out[2], out[3]);
+    CHECK(clipped == 1, "only the rail clips (%ld)", clipped);
+    rdof_bl_ring_free(&ring);
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 4 && !strcmp(argv[1], "serve"))
@@ -2782,6 +2805,7 @@ int main(int argc, char **argv)
     test_outbound_voice();
     test_tune();
     test_zero_floor();
+    test_ring_scale();
     test_tcp();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

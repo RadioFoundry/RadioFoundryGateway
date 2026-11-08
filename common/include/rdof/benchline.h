@@ -327,6 +327,14 @@ void rdof_bl_burst(rdof_bl_t *bl, const rdof_bl_burst_t *b);
 bool rdof_bl_wants_bursts(const rdof_bl_t *bl);
 /* Whether a capture is open (the receiver keeps the history then). */
 bool rdof_bl_wants_iq(const rdof_bl_t *bl);
+/* The history's cs8 gain (rdof_bl_ring_t.scale) for a front end whose native samples run to native_full_scale (127
+ * or 128: an RTL-SDR's 8 bits, 2048: a 12-bit ADC): the ADC's own 8 bits at 1, its low bits, where a bench signal
+ * is, for a wider ADC (16 at most: a 16-bit front end keeps the same 24 dB of headroom). 0 or less: not known, 1. */
+static inline float rdof_bl_ring_scale(double native_full_scale)
+{
+    const double g = native_full_scale > 0 ? native_full_scale / 128.0 : 1.0;
+    return g < 1.5 ? 1.0f : g > 16.0 ? 16.0f : (float)g;
+}
 
 /* I/Q stream formats (bench-api.md section 6.2's fmt byte). */
 enum { RDOF_BL_IQ_CS8 = 1, RDOF_BL_IQ_CU8 = 2, RDOF_BL_IQ_CS16 = 3, RDOF_BL_IQ_CF32 = 4 };

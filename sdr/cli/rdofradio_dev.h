@@ -46,6 +46,8 @@ struct rdofradio_dev {
     double rate;    /* what it runs at */
     double tx_rate; /* the transmit stream's: rate, or rate / tx_interp */
     double tx_gain_min, tx_gain_max;
+    float iq_scale;  /* the bench history's cs8 gain (rdof_bl_ring_scale): 1 for an 8-bit ADC (an RTL-SDR), 16 for an
+                        AD9361's 12 */
     char error[200]; /* the last failure */
     int (*set_rx_freq)(rdofradio_dev_t *d, double hz);
     int (*set_tx_freq)(rdofradio_dev_t *d, double hz); /* the TX LO (not opened rx_only) */
