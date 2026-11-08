@@ -110,13 +110,14 @@ static void window(rdof_dtmfdet_t *d)
 {
     const int w = d->win;
     const long start = d->next - w;
-    double sum = 0, sum2 = 0, tot = 0;
+    /* in float: an ESP32's FPU has no double, and a double sum here took more of a W12's core than the Goertzels */
+    float sum = 0, sum2 = 0, tot = 0;
     for (int i = 0; i < w; i++) {
         const float x = d->ring[(start + i) % w];
-        sum += x, sum2 += (double)x * x;
+        sum += x, sum2 += x * x;
         const float y = x * d->hann[i];
         d->seg[i] = y;
-        tot += (double)y * y;
+        tot += y * y;
     }
     float p[8];
     for (int k = 0; k < 8; k++) { /* Goertzel: |sum y[n] e^-jwn|^2 */
@@ -139,7 +140,7 @@ static void window(rdof_dtmfdet_t *d)
     for (int k = 0; k < 8; k++)
         if (k != r && k != col && p[k] > others)
             others = p[k];
-    const double total = tot * w / 3.0 + 1e-12; /* a Hann-windowed tone's Goertzel power is N / 3 of its energy */
+    const double total = (double)tot * w / 3.0 + 1e-12; /* a Hann-windowed tone's Goertzel power is N / 3 of its energy */
     const float lo = p[r], hi = p[col], m = lo < hi ? lo : hi;
     const bool ok = m > others * powf(10, OVER_DB / 10) && lo + hi >= PURITY * total;
     const double t = (start + w / 2.0) / d->fs;
@@ -152,7 +153,7 @@ static void window(rdof_dtmfdet_t *d)
         d->cur = key, d->t0 = t;
     d->t1 = t;
     if (d->nh < MAXH) {
-        const double mean = sum / w, var = sum2 / w - mean * mean;
+        const double mean = (double)sum / w, var = (double)sum2 / w - mean * mean;
         d->devs[d->nh] = (float)(sqrt(2.0) * sqrt(var > 0 ? var : 0));
         d->twists[d->nh] = 10 * log10f((hi + 1e-30f) / (lo + 1e-30f));
         d->nh++;
