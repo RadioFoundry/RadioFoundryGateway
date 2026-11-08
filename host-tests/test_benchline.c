@@ -2502,14 +2502,18 @@ static void test_tune(void)
     snprintf(req, sizeof req, "{\"op\": \"tune\", \"session\": \"%s\"}", idb);
     c = ask(bl, req, now);
     drain(bl, c, out, sizeof out);
-    CHECK(strstr(out, "\"code\":\"busy\""), "another tune while one is applied: %s", out);
-    rdof_bl_closed(bl, c, now);
+    CHECK(!out[0], "another tune while one is applied waits for it: %s", out);
+    const int t2 = c;
     tick_for(bl, t, &now, 10, out, sizeof out);
     CHECK(strstr(out, "{\"tuned\":{\"session\":\"") && strstr(out, "\"center\":144.900000") &&
               strstr(out, "\"gain\":30.0") &&
               strstr(out, "\"channels\":[{\"freq\":145.100000,\"ch\":0,\"id\":\"T1\"}]") && rdof_bl_finished(bl, t),
           "tuned: %s", out);
     rdof_bl_closed(bl, t, now);
+    char o2[300];
+    drain(bl, t2, o2, sizeof o2);
+    CHECK(strstr(o2, "\"code\":\"busy\"") && strstr(o2, ida), "then a's tune holds: %s", o2);
+    rdof_bl_closed(bl, t2, now);
     drain(bl, bursts, out, sizeof out);
     CHECK(strstr(out, "\"reason\":\"retuned\"") && rdof_bl_finished(bl, bursts), "the bursts stream ends: %s", out);
     rdof_bl_closed(bl, bursts, now);
@@ -2572,10 +2576,13 @@ static void test_tune(void)
     rdof_bl_closed(bl, c, now);
     c = ask(bl, "{\"op\": \"capture\", \"freq\": 438.1125, \"seconds\": 1}", now);
     drain(bl, c, out, sizeof out);
-    CHECK(strstr(out, "\"code\":\"busy\"") && strstr(out, "being retuned"), "while it goes back: %s", out);
-    rdof_bl_closed(bl, c, now);
+    CHECK(!strstr(out, "\"error\"") && !rdof_bl_finished(bl, c), "while it goes back it waits: %s", out);
     for (int i = 0; i < 5; i++)
         rdof_bl_tick(bl, now += 0.02);
+    drain(bl, c, out, sizeof out);
+    CHECK(!strstr(out, "\"error\""), "and runs when it's back: %s", out);
+    rdof_bl_closed(bl, c, now);
+    rdof_bl_tick(bl, now += 0.02);
     c = ask(bl, "{\"op\": \"info\"}", now);
     drain(bl, c, out, sizeof out);
     CHECK(strstr(out, "\"tune\":null") && strstr(out, "\"center\":438.225000") && strstr(out, "\"id\":\"CH2\""),

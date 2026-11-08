@@ -1651,7 +1651,7 @@ static void fail_tuned(rdof_bl_t *bl, conn_t *c, double mhz)
             fail(bl, c, "busy", "%.4f MHz is outside the receiver's window, which %s has tuned for itself", mhz,
                  bl->tune_ms_until > 0 ? "the armed responder" : "another request");
         else
-            fail(bl, c, "busy", "the receiver is being retuned (%.4f MHz): try again in a moment", mhz);
+            fail(bl, c, "busy", "the receiver is being retuned (%.4f MHz)", mhz);
         return;
     }
     const session_t *s = &bl->s[bl->tune_sess];
@@ -1825,9 +1825,11 @@ static void op_tune(rdof_bl_t *bl, conn_t *c, int root, double now)
         fail(bl, c, "unsupported", "this bench can't retune its receiver");
         return;
     }
+    if (rerun_after_tune(bl, c)) /* a retune under way: this one when it's done */
+        return;
     if (tuned_for_other(bl, c)) {
         if (bl->tune_sess < 0)
-            fail(bl, c, "busy", "the receiver is being retuned: try again in a moment");
+            fail(bl, c, "busy", "the receiver is tuned for another request");
         else
             fail(bl, c, "busy", "session %s (%s) has the receiver tuned", bl->s[bl->tune_sess].id,
                  bl->s[bl->tune_sess].label);
@@ -1880,6 +1882,8 @@ static void op_tune(rdof_bl_t *bl, conn_t *c, int root, double now)
 static void outside(rdof_bl_t *bl, conn_t *c, int root, double mhz, const rdof_bl_window_t *w, double now)
 {
     const int ci = (int)(c - bl->c);
+    if (isfinite(mhz) && rerun_after_tune(bl, c)) /* a retune under way: this asks again when it's done */
+        return;
     if (isfinite(mhz) && tuned_for_other(bl, c)) {
         fail_tuned(bl, c, mhz);
         return;
