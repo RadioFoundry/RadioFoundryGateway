@@ -1710,6 +1710,30 @@ static void bl_device(void *ctx, char *kind, size_t kcap, char *name, size_t nca
     snprintf(version, vcap, "%s", RDOF_VERSION);
 }
 
+/* The bench's tune (below, bl_tune) */
+static const char *const TAP_ID[RDOF_BL_TAPS] = {"T1", "T2", "T3", "T4"};
+static struct {
+    pthread_mutex_t mu;
+    int want;                  /* 1 a tune asked, 2 an untune asked */
+    rdof_bl_tune_t t;
+    int state;                 /* tune_state's: 1 applied, 0 under way, -1 refused */
+    char why[160];
+    /* the receiver's thread's (CH changes under mu, for bl_freqs) */
+    bool on, moved;
+    double center0;            /* the settings' center */
+    int ntap, tap[RDOF_BL_TAPS];
+    rdof_sdr_channel_t saved[RDOF_BL_TAPS];
+    uint64_t hist_from;
+} TU = {.mu = PTHREAD_MUTEX_INITIALIZER, .state = 1};
+
+static int tap_of(int c)
+{
+    for (int i = 0; i < TU.ntap; i++)
+        if (TU.tap[i] == c)
+            return i;
+    return -1;
+}
+
 static void bl_window(void *ctx, rdof_bl_window_t *w)
 {
     memset(w, 0, sizeof *w);
@@ -1729,7 +1753,12 @@ static void bl_window(void *ctx, rdof_bl_window_t *w)
 static long bl_iq_read(void *ctx, uint64_t sc, int8_t *out, long n, uint64_t *oldest, uint64_t *next)
 {
     pthread_mutex_lock(&BL.mu);
-    const long k = rdof_bl_ring_read(&BL.ring, sc, out, n, oldest, next);
+    const uint64_t from = TU.hist_from; /* the history from before the LO moved isn't this window's */
+    const long k = sc < from ? 0 : rdof_bl_ring_read(&BL.ring, sc, out, n, oldest, next);
+    if (sc < from && next)
+        *next = BL.ring.w;
+    if (oldest && *oldest < from)
+        *oldest = from;
     pthread_mutex_unlock(&BL.mu);
     return k;
 }
@@ -1776,6 +1805,10 @@ static long bl_ch_read(void *ctx, int c, uint64_t sc, rdof_bl_chs_t *out, long n
     const uint64_t cap = (uint64_t)BLH.cap, first = BLH.n > cap ? BLH.n - cap : 0;
     *next = BL.ring.w;
     *oldest = first < BLH.n ? BLH.sc[first % cap] : BL.ring.w;
+    if (*oldest < TU.hist_from) /* the history from before the LO moved isn't this window's */
+        *oldest = TU.hist_from;
+    if (sc < TU.hist_from)
+        sc = TU.hist_from;
     uint64_t lo = first, hi = BLH.n; /* the first instant at or after sc: they run in order */
     while (lo < hi) {
         const uint64_t mid = lo + (hi - lo) / 2;
@@ -1912,12 +1945,17 @@ static int bl_tx_bands(void *ctx, double (*out)[2], int max)
 static int bl_freqs(void *ctx, rdof_bl_freq_t *out, int max)
 {
     int k = 0;
-    for (int c = 0; c < NCH && k < max; c++, k++) {
+    pthread_mutex_lock(&TU.mu); /* a tune changes CH */
+    for (int c = 0; c < NCH && k < max; c++) {
+        if (TU.moved && tap_of(c) < 0)
+            continue; /* the LO moved for a job: only its taps hear where CH says */
         out[k] = (rdof_bl_freq_t){.freq_hz = CH[c].freq_hz, .ch = c,
                                   .caps = RDOF_BL_CAP_RX | RDOF_BL_CAP_DMR | RDOF_BL_CAP_IQ |
                                           (bench_tx_listed(CH[c].freq_hz) ? RDOF_BL_CAP_TX : 0)};
         snprintf(out[k].id, sizeof out[k].id, "%s", CH[c].id);
+        k++;
     }
+    pthread_mutex_unlock(&TU.mu);
     for (int i = 0; i < bench_ntx && k < max; i++) { /* a transmit frequency no channel hears */
         bool heard = false;
         for (int c = 0; c < NCH; c++)
@@ -2847,6 +2885,9 @@ static void advertise_web(int port)
 }
 #endif
 
+static const char *bl_tune(void *ctx, const rdof_bl_tune_t *t, const char *who, char *why, size_t cap);
+static int bl_tune_state(void *ctx, char *why, size_t cap);
+static void bl_untune(void *ctx);
 static void bench_start(void)
 {
     if (bench_port < 0)
@@ -2872,7 +2913,8 @@ static void bench_start(void)
                                           .sig_state = bl_sig_state, .sig_close = bl_sig_close,
                                           .sig_rate = bl_sig_rate, .ob_open = bl_ob_open, .ob_state = bl_ob_state,
                                           .ob_unkey = bl_ob_unkey, .ob_close = bl_ob_close, .ob_can = bl_ob_can,
-                                          .ob_push = bl_ob_push};
+                                          .ob_push = bl_ob_push, .tune = bl_tune, .tune_state = bl_tune_state,
+                                          .untune = bl_untune};
     rdof_bl_platform_t p = pf;
     if (R.mmdvm) /* the modem transmits DMR only: no signal modes */
         p.sig_open = NULL, p.sig_state = NULL, p.sig_close = NULL;
@@ -2939,6 +2981,247 @@ static void on_burst(void *ctx, int c, const rdof_sdr_burst_t *b, double t)
            b->freq_offset_hz, b->deviation_hz, hex);
 }
 
+/* The bench's tune (bl_tune, the tune op and a request's own): a bench job comes first, so channels are pointed at the
+ * job's frequencies (taps), and the RX LO moves only when they don't fit the window as it is (a Pluto's 19.872 MS/s
+ * window holds a whole plan). The bench thread asks; the receiver's thread applies it between chunks
+ * (bench_tune_poll), as it does the calibration's LO. A tap takes a channel the site isn't using for its repeater or
+ * transceiver (from the last one down) and gives it back after. While the LO is moved, the other channels hear
+ * somewhere else: their bursts are dropped (tune_drop), and the repeater and the transceiver hear nothing. A tap's
+ * bursts go to the bench, the modem and the responder, never to the network. The I/Q history from before the LO
+ * moved isn't read (TU.hist_from). */
+/* Channel c mixed from where CH says, against the center now, its correction its frequency's (--ppm) */
+static void chan_point(int c)
+{
+    const double off = CH[c].freq_hz - R.rx.center_hz;
+    if (FX.on)
+        FX.off[c] = off; /* fx_correction takes it to the block with the correction */
+    else
+        rdof_chz_set_offset(&R.rx.chz, c, off);
+    rdof_sdr_rx_set_correction(&R.rx, c, xtal_base_hz(c));
+}
+
+static bool move_lo(double hz, char *why, size_t cap)
+{
+    if (!dev || !dev->set_rx_freq || dev->set_rx_freq(dev, hz)) {
+        snprintf(why, cap, "the receiver's LO can't move to %.4f MHz%s%s", hz / 1e6, dev ? ": " : "",
+                 dev ? dev->error : "");
+        return false;
+    }
+    R.rx.center_hz = R.rx.cfg.center_hz = hz;
+    for (int c = 0; c < NCH; c++)
+        chan_point(c);
+    TU.hist_from = BL.ring.w;
+    return true;
+}
+
+/* The settings again: the taps' channels back, the LO back */
+static void tune_restore(void)
+{
+    int tap[RDOF_BL_TAPS];
+    pthread_mutex_lock(&TU.mu);
+    const int n = TU.ntap;
+    for (int i = 0; i < n; i++)
+        CH[tap[i] = TU.tap[i]] = TU.saved[i];
+    TU.ntap = 0;
+    pthread_mutex_unlock(&TU.mu);
+    char why[160];
+    if (TU.moved) {
+        if (!move_lo(TU.center0, why, sizeof why))
+            say("bench: %s\n", why);
+        else
+            say("bench: the receiver's LO is back at %.4f MHz\n", TU.center0 / 1e6);
+    } else {
+        for (int i = 0; i < n; i++)
+            chan_point(tap[i]);
+    }
+    TU.on = TU.moved = false;
+}
+
+static bool in_window(double center, double f)
+{
+    return fabs(f - center) <= 0.4 * R.rate && fabs(f - center) >= 25e3; /* clear of the DC */
+}
+
+static bool tune_apply(const rdof_bl_tune_t *t, char *why, size_t cap)
+{
+    double f[RDOF_BL_TAPS];
+    int nf = 0;
+    if (t->ntaps < 0) /* the taps as they are */
+        for (int i = 0; i < TU.ntap; i++)
+            f[nf++] = CH[TU.tap[i]].freq_hz;
+    else
+        for (int i = 0; i < t->ntaps && i < RDOF_BL_TAPS; i++)
+            f[nf++] = t->taps_hz[i];
+    if (TU.on)
+        tune_restore();
+    const double c0 = R.rx.center_hz;
+    TU.center0 = c0;
+    bool fit = true;
+    for (int i = 0; i < nf; i++)
+        fit &= in_window(c0, f[i]);
+    /* the LO stays while the taps fit; else where asked (when they fit there), else an eighth of the rate under the
+       first tap; "auto" with no taps: the settings */
+    double center = c0;
+    if (!fit || (!nf && t->center_hz > 0)) {
+        center = t->center_hz > 0 ? t->center_hz : nf ? f[0] - R.rate / 8 : c0;
+        for (int i = 0; i < nf; i++)
+            if (!in_window(center, f[i]))
+                center = f[0] - R.rate / 8;
+        for (int i = 0; i < nf; i++)
+            if (!in_window(center, f[i])) {
+                snprintf(why, cap, "taps %.4f and %.4f MHz don't fit one window (%.2f MS/s)", f[0] / 1e6,
+                         f[i] / 1e6, R.rate / 1e6);
+                return false;
+            }
+    }
+    /* the taps' channels: a channel already there, else one the site's repeater or transceiver isn't on */
+    int tap[RDOF_BL_TAPS], nt = 0;
+    const int keep[6] = {channel_of(R.rx_hz), channel_of(R.tx_hz), R.tx_ch, R.tx_img, R.echo_ch, R.echo_img};
+    for (int i = 0; i < nf; i++) {
+        const int at = center == c0 ? channel_of(f[i]) : -1;
+        if (at >= 0)
+            continue; /* heard as it is */
+        int c = NCH - 1;
+        for (; c >= 0; c--) {
+            bool used = false;
+            for (int k = 0; k < 6; k++)
+                used |= keep[k] == c;
+            for (int k = 0; k < nt; k++)
+                used |= tap[k] == c;
+            if (!used)
+                break;
+        }
+        if (c < 0) /* none to spare: the job comes first, so one of the site's own (it hears nothing meanwhile) */
+            for (c = NCH - 1; c >= 0; c--) {
+                bool used = false;
+                for (int k = 0; k < nt; k++)
+                    used |= tap[k] == c;
+                if (!used)
+                    break;
+            }
+        if (c < 0) {
+            snprintf(why, cap, "%d taps: the receiver has %d channels", nf, NCH);
+            return false;
+        }
+        tap[nt++] = c;
+    }
+    if (center != c0 && !move_lo(center, why, cap))
+        return false;
+    TU.moved = center != c0;
+    pthread_mutex_lock(&TU.mu);
+    int k = 0;
+    for (int i = 0; i < nf; i++) {
+        if (center == c0 && channel_of(f[i]) >= 0)
+            continue;
+        const int c = tap[k];
+        TU.saved[k] = CH[c];
+        TU.tap[k] = c;
+        CH[c].freq_hz = f[i];
+        CH[c].cc = -1;
+        CH[c].id = TAP_ID[k];
+        k++;
+    }
+    TU.ntap = k;
+    pthread_mutex_unlock(&TU.mu);
+    for (int i = 0; i < TU.ntap; i++)
+        chan_point(TU.tap[i]);
+    TU.on = true;
+    char line[300];
+    int ln = snprintf(line, sizeof line, "%d tap%s", TU.ntap, TU.ntap == 1 ? "" : "s");
+    for (int i = 0; i < TU.ntap && ln > 0 && (size_t)ln < sizeof line; i++)
+        ln += snprintf(line + ln, sizeof line - (size_t)ln, "%s %.4f MHz on channel %d", i ? "," : ":",
+                       CH[TU.tap[i]].freq_hz / 1e6, TU.tap[i]);
+    if (TU.moved)
+        say("bench: the receiver tuned for a job, its LO moved to %.4f MHz (the site's channels hear nothing "
+            "meanwhile): %s\n", center / 1e6, line);
+    else
+        say("bench: the receiver tuned for a job: %s\n", line);
+    return true;
+}
+
+/* the receiver's thread, between chunks */
+static void bench_tune_poll(void)
+{
+    if (!TU.want) /* a racy peek: want is set under mu */
+        return;
+    if (R.cal) /* the duplex calibration has the LO: after it */
+        return;
+    pthread_mutex_lock(&TU.mu);
+    const int want = TU.want;
+    const rdof_bl_tune_t t = TU.t;
+    TU.want = 0;
+    pthread_mutex_unlock(&TU.mu);
+    char why[160] = "";
+    bool ok = true;
+    if (want == 1)
+        ok = tune_apply(&t, why, sizeof why);
+    else if (TU.on)
+        tune_restore();
+    pthread_mutex_lock(&TU.mu);
+    if (!TU.want) {
+        TU.state = ok ? 1 : -1;
+        snprintf(TU.why, sizeof TU.why, "%s", why);
+    }
+    pthread_mutex_unlock(&TU.mu);
+}
+
+static const char *bl_tune(void *ctx, const rdof_bl_tune_t *t, const char *who, char *why, size_t cap)
+{
+    (void)ctx;
+    if (t->ntaps > RDOF_BL_TAPS || t->ntaps > NCH) {
+        snprintf(why, cap, "%d taps at most here", NCH < RDOF_BL_TAPS ? NCH : RDOF_BL_TAPS);
+        return "bad_request";
+    }
+    if (isfinite(t->gain_db) && t->gain_db != RDOF_BL_TUNE_AUTO) {
+        snprintf(why, cap, "rdofradio's tune keeps its gain (--gain)");
+        return "bad_request";
+    }
+    pthread_mutex_lock(&TU.mu);
+    TU.t = *t;
+    TU.want = 1;
+    TU.state = 0;
+    pthread_mutex_unlock(&TU.mu);
+    say("bench: a tune for %s\n", who);
+    return NULL;
+}
+
+static int bl_tune_state(void *ctx, char *why, size_t cap)
+{
+    (void)ctx;
+    pthread_mutex_lock(&TU.mu);
+    const int st = TU.want ? 0 : TU.state;
+    snprintf(why, cap, "%s", TU.why);
+    pthread_mutex_unlock(&TU.mu);
+    return st;
+}
+
+static void bl_untune(void *ctx)
+{
+    (void)ctx;
+    pthread_mutex_lock(&TU.mu);
+    TU.want = 2;
+    TU.state = 0;
+    pthread_mutex_unlock(&TU.mu);
+}
+
+/* While the LO is moved, the channels that aren't taps hear somewhere else: dropped. */
+static bool tune_drop(int c)
+{
+    return TU.on && TU.moved && c >= 0 && tap_of(c) < 0;
+}
+
+/* A tap's burst (not our own heard back) goes to the bench, the modem and the responder, never the network. */
+static bool tap_heard(int c, const rdof_sdr_burst_t *b)
+{
+    if (!TU.on || c < 0 || tap_of(c) < 0)
+        return false;
+    if (!R.mmdvm)
+        rdof_sdrmodem_heard(&R.m, c, b);
+    ms_heard(c, b, false);
+    bench_burst(c, b);
+    return true;
+}
+
 static bool muted(void *ctx, int64_t p) { return rdof_sdrmodem_muted_at(&R.m, p); }
 /* Our own transmission heard back (half duplex): on the channel it went out on, or its image, within its span on
  * the air (60 ms either side: a burst's length and the loop's delay); on any other channel, a burst we sent there
@@ -2974,10 +3257,12 @@ static bool echo_drop_(int c, const rdof_sdr_burst_t *b)
 }
 static bool echo_drop(void *ctx, int c, const rdof_sdr_burst_t *b)
 {
+    if (tune_drop(c))
+        return true;
     const bool ours = echo_drop_(c, b);
     if (ours)
         ms_heard(c, b, true); /* the responder's answer on the air: where it was heard */
-    return ours;
+    return ours || tap_heard(c, b);
 }
 /* the inbound slot by timing: the repeater's RX channel only (another channel keeps its own CACH), the job's with a
  * bench repeater job */
@@ -4089,6 +4374,7 @@ static void split_service(void)
 static void rx_turn(void)
 {
     static rdof_cf_t in[CHUNK];
+    bench_tune_poll();
     const double t_in = now_s();
     FX.t_rx = 0;
     const int n = FX.on ? fx_take(SC.chunk, 100000) : dev->read(dev, in, SC.chunk, 100000);
@@ -5470,6 +5756,7 @@ int main(int argc, char **argv)
     long level_n = 0;
     double t_read = 0, t_write = 0, t_proc = 0; /* seconds spent in each, since the last status */
     while (!stop && (seconds <= 0 || total < (long long)(seconds * rate))) {
+        bench_tune_poll();
         const double t0 = now_s();
         const long long fx_lost = FX.lost;
         /* --fpga-chz: in stays zeros; the turn's power is the block's (turn_p2) */

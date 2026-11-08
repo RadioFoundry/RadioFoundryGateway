@@ -509,7 +509,15 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
   session's `tune` is `busy`, and so is its request for a frequency outside the window (`bursts`, `listen`,
   `capture`, `trigger`, `rx`); one inside the window runs. On a board an HTTP exclusive lease makes `tune` `busy`
   and the reverse. A tune or its end ends the streams cut from the window (`bursts` and `listen` with `done.reason`
-  `"retuned"`, `capture`, `trigger` and `rx` with `busy`). rdofradio can't retune its receiver: `unsupported`.
+  `"retuned"`, `capture`, `trigger` and `rx` with `busy`).
+- rdofradio's tune points channels at the taps (each on a channel the site's repeater or transceiver isn't using, from
+  the last one down; one of theirs when none is spare) and moves the RX LO only when the taps don't fit the window
+  as it is (within 0.4 of the rate of the center, 25 kHz clear of the DC): a Pluto's 19.872 MS/s window holds a whole
+  plan, so a job inside it costs the site one channel. The LO goes where asked when the taps fit there, else an
+  eighth of the rate under the first tap. While it's moved, the other channels hear nothing (their bursts dropped)
+  and `freqs` lists only the taps. A tap's bursts go to the bench, the modem and the responder, never to the network.
+  The I/Q history (or, with the FPGA channelizer, the channels' history) starts again where the LO moved. It keeps
+  its gain: a tune with `gain` other than `"auto"` is `bad_request`. The settings come back with the untune.
 - `trigger`, `rx`, `capture` and `bursts` at a frequency outside the window (for `bursts`, any frequency no
   channel decodes DMR on), with or without a session, tune for themselves when nobody holds the window and no other
   request is using it: `{"note": "tuning the receiver to F MHz for this request"}`, the center an eighth of the rate

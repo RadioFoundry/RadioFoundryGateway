@@ -75,6 +75,9 @@ void rdof_chz_lowpass(int num_taps, double cutoff_hz, double fs, double *out);
 int rdof_chz_init(rdof_chz_t *s, double sample_rate, const double *offsets_hz, int channels, int decimation,
                 int out_fft, double cutoff_hz);
 void rdof_chz_free(rdof_chz_t *s);
+/* Channel c mixed from offsets_hz now (as init's), from the next block on: its bin and residual again, its NCO step
+ * worked out anew. The filter and the other channels stay. */
+void rdof_chz_set_offset(rdof_chz_t *s, int c, double offset_hz);
 /* Output samples per channel that n_in more input samples will produce. */
 int rdof_chz_out_len(const rdof_chz_t *s, int n_in);
 /* Feed n_in samples. Channel c's output goes to out + c * stride (stride >= rdof_chz_out_len).
