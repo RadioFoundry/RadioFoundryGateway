@@ -765,7 +765,7 @@ static void test_ops(void)
     int cs[RDOF_BL_CONNS];
     for (int k = 0; k < RDOF_BL_CONNS; k++)
         cs[k] = rdof_bl_open(bl, now);
-    CHECK(rdof_bl_open(bl, now) < 0, "a ninth connection is refused");
+    CHECK(rdof_bl_open(bl, now) < 0, "one connection too many is refused");
     for (int k = 0; k < RDOF_BL_CONNS; k++)
         rdof_bl_closed(bl, cs[k], now);
     rdof_bl_ring_free(&ring);

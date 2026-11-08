@@ -27,8 +27,13 @@ extern "C" {
 #endif
 
 #define RDOF_BL_PORT 7373
+#ifdef ESP_PLATFORM
 #define RDOF_BL_CONNS 8
 #define RDOF_BL_SESSIONS 8
+#else /* a Linux box: several test runs share it, each with a session, a capture, bursts and a job open */
+#define RDOF_BL_CONNS 32
+#define RDOF_BL_SESSIONS 16
+#endif
 #define RDOF_BL_FREQS 24       /* frequencies the bench lists: receiver channels and TX */
 #define RDOF_BL_TX_BANDS 8     /* bands the bench may transmit in */
 #define RDOF_BL_CLAIMS 8       /* frequencies one session may claim */

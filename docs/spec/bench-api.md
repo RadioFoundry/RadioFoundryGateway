@@ -453,7 +453,7 @@ shares its parts: the sessions, the burst feed, the I/Q history and the transmit
 - Errors are `{"error": "text", "code": "..."}`, the request's last line, with the codes of section 1 plus the
   daemon's `deadlock`. A wait is reported as the daemon's: `{"state": "queued", "kind", "eta_s", "worst_s",
   "ahead", "blockers"}`, then `{"state": "granted", "kind", "waited_s"}`. `{"note": "text"}` is for the user.
-- At most 8 connections at a time; one more is answered with `busy` and closed.
+- At most 8 connections at a time on a board, 32 on rdofradio; one more is answered with `busy` and closed.
 
 ### 14.2 Ops
 
