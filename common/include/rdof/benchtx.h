@@ -13,7 +13,9 @@
  *
  * Tool frames: {"type": "bursts", "items": [{"raw_hex", "slot", "n", "at_sc"}, ...]}, {"type": "unkey"},
  * {"type": "ping"}. Each one counts for the dead-man rule. Frames to the tool: ready (freq_hz, protocol; once
- * set up), ack, keyed, unkeyed, underrun, error (then done), done. Portable C, no allocation.
+ * set up), ack, keyed, unkeyed, underrun, error (then done), done, and what's measured about a keying: modem (the
+ * modem's TX on or off), modem_flag, tx_check. `unkeyed` and `done` are this file's model of the modem's queue:
+ * bursts handed over, not bursts sent. Portable C, no allocation.
  */
 #ifndef RDOF_BENCHTX_H
 #define RDOF_BENCHTX_H
@@ -38,6 +40,14 @@ extern "C" {
 #define RDOF_BENCHTX_REPLY_S 1.0
 #define RDOF_BENCHTX_TRIES 3
 #define RDOF_BENCHTX_NODES 400      /* JSON nodes in one tool frame (about 64 items) */
+#define RDOF_BENCHTX_POLL_S 0.1     /* GET_STATUS while a keying is out */
+#define RDOF_BENCHTX_TAIL_S 1.5     /* after a keying, at most this long for the modem to say it's done */
+#define RDOF_BENCHTX_LATE_S 0.5     /* the modem still transmitting this long past the modeled end: flagged */
+#define RDOF_BENCHTX_HEARD_S 0.4    /* a receiver's latency: what's not heard this long after the end never was */
+#define RDOF_BENCHTX_TRACK 600      /* bursts compared with what a receiver heard: 36 s of a keying */
+#define RDOF_BENCHTX_EVENTS 12      /* measurement frames waiting for a reader */
+#define RDOF_BENCHTX_EVENT_LEN 240
+#define RDOF_BENCHTX_SAME_BITS 24   /* a burst heard this close to one handed over is that burst (bit errors) */
 
 /* What the bench's settings allow (bench.tx); the API never changes it. */
 typedef struct {
@@ -79,6 +89,16 @@ typedef struct {
     uint8_t burst[33];
 } rdof_benchtx_item_t;
 
+/* What a keying handed over, against what a separate receiver heard (rdof_benchtx_track). The caller owns it. */
+typedef struct {
+    struct {
+        uint8_t burst[33];
+        bool heard;
+        double at, heard_at; /* its modeled air time; when the receiver reported it */
+    } s[RDOF_BENCHTX_TRACK];
+    unsigned n;
+} rdof_benchtx_track_t;
+
 typedef struct {
     rdof_benchtx_io_t io;
     uint32_t freq;
@@ -103,6 +123,17 @@ typedef struct {
     int data_nak;          /* the modem NAKed a burst: 0x200 | its reason, or 0x100 with none given */
     /* counters */
     long sent, keyings, underruns, frames;
+    /* what the modem says (GET_STATUS) and what was heard, against the model above */
+    double rx_now;         /* rdof_benchtx_modem's time, for its frames */
+    double next_poll, tx_on, tx_off, tail_model, tail_start, tail_until;
+    int polls, answers, tail_answers, st_space, idle_space, space_min, n_quiet, n_late;
+    bool st_seen, st_tx, was_on, tailing;
+    rdof_benchtx_track_t *track;
+    unsigned track_first;
+    const char *no_heard;  /* why nothing compares it: the tx_check's why */
+    char ev[RDOF_BENCHTX_EVENTS][RDOF_BENCHTX_EVENT_LEN];
+    int evh, evn;
+    long ev_lost;
     char error[96];
     rdof_mmdvm_reader_t reader;
     rdof_jnode_t nodes[RDOF_BENCHTX_NODES];
@@ -116,6 +147,15 @@ void rdof_benchtx_init(rdof_benchtx_t *t, const rdof_benchtx_io_t *io, uint32_t 
 void rdof_benchtx_tool(rdof_benchtx_t *t, const char *json, size_t n, double now);
 /* The tool is alive (a WebSocket ping). */
 void rdof_benchtx_alive(rdof_benchtx_t *t, double now);
+/* A separate receiver will report what it hears (rdof_benchtx_heard): compare each burst with it. NULL, with why,
+ * says why not: a keying's tx_check then gives its figures as estimates. */
+void rdof_benchtx_track(rdof_benchtx_t *t, rdof_benchtx_track_t *track, const char *why);
+/* A separate receiver decoded this burst on the job's frequency. */
+void rdof_benchtx_heard(rdof_benchtx_t *t, const uint8_t burst[33], double now);
+/* The next measurement frame (modem, modem_flag, tx_check), as the tool got it: its length, 0 with none. */
+size_t rdof_benchtx_next_event(rdof_benchtx_t *t, char *out, size_t cap);
+/* The last keying's measurements are finished: the modem said it's done, or the wait for it ran out. */
+bool rdof_benchtx_settled(const rdof_benchtx_t *t);
 /* Bytes from the modem. */
 void rdof_benchtx_modem(rdof_benchtx_t *t, const uint8_t *b, size_t n, double now);
 /* Every 20 ms or so. */

@@ -954,6 +954,26 @@ changed mid-keying: a hold that lapsed), `gaps` (samples lost). The track runs e
 `rfgbench.py track --freq MHz [--mode 4fsk]` writes the lines (and `{"summary": ...}`) as JSON to `--out` or
 stdout, and the summary's figures to stderr, with a warning line for each of `warnings`.
 
+### 14.8.1 What a transmit job measures
+
+A `bench_tx` job's `{"tx_event": frame}` lines say what really happened, one frame format on every front end (the
+`/tx` socket gets the same frames). `sent N bursts` in a job's log, `unkeyed`'s `seconds` and `done`'s `bursts` are the
+job's own model: bursts handed to the modem, not bursts on the air (`unkeyed` says `"estimated": true`).
+
+| Frame | Fields | Meaning |
+|---|---|---|
+| `modem` | `t`, `tx`, `space`, `model_left` | the modem's own TX bit changed (GET_STATUS, every 100 ms); its buffer space; the bursts the model says are still to go |
+| `modem_flag` | `flag`: `quiet` (`outstanding`), `late` (`late_s`), `held` (`space`, `idle_space`) | the modem stopped transmitting with bursts due; still transmitting 0.5 s past the model's end; stopped with its buffer not empty |
+| `tx_check` | `handed`, `timing`, `modem_tx_s`, `quiet`, `late`, `held`; with `timing` `heard`: `compared`, `heard`, `never`, `first_s`, `latest_s`; with `estimate`: `why` | a keying's account, once the modem has said it's done (1.5 s at most) |
+
+`timing` is `heard` when a separate receiver decodes the job's frequency: an MMDVM modem with an SDR channel there
+(a `tune` with a tap makes one). Each burst handed over is then matched against the bursts heard, up to 24 bit errors
+apart. `first_s` and `latest_s` are seconds from the burst's modeled air time to the receiver's report, so `first_s`
+is the path's own delay and a stall shows as a much larger `latest_s`; `never` counts bursts with no match.
+`timing` is `estimate` otherwise, with `why`. On a W12 or a Pluto the SDR is the transmitter, and its receiver isn't a
+separate witness: a W12 can't hear while it transmits and a Pluto's own leakage doesn't show what reached the air, so
+those figures stay estimates, and `modem`'s `tx` is the SDR modem's own state.
+
 ### 14.9 What each front end does
 
 `info` says what this bench can do: `stations[0].kind` is the transmitter, `signal_modes` the signal modes, `jobs`

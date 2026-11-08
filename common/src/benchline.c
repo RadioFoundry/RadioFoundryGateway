@@ -1927,6 +1927,14 @@ static void outside(rdof_bl_t *bl, conn_t *c, int root, double mhz, const rdof_b
 static double utc_now(const rdof_bl_t *bl, double now) { return bl->p.utc ? bl->p.utc(bl->p.ctx) : now; }
 
 /* A line of the tool's log (Python logging's "%(asctime)s %(message)s") on err. */
+/* What the job measured about its transmission, one frame a line. */
+static void tx_events(rdof_bl_t *bl, conn_t *c)
+{
+    char b[256];
+    while (bl->p.tx_event && bl->p.tx_event(bl->p.ctx, b, sizeof b))
+        emit(bl, c, "{\"tx_event\":%s}", b);
+}
+
 static void run_log(rdof_bl_t *bl, conn_t *c, double now, const char *fmt, ...)
 {
     char msg[300], line[340];
@@ -2700,6 +2708,7 @@ static void tick_run(rdof_bl_t *bl, conn_t *c, int ci, double now)
         break;
     }
     case J_SEND: {
+        tx_events(bl, c);
         int n = bl->p.tx_space(bl->p.ctx, why, sizeof why);
         if (n < 0) {
             run_log(bl, c, now, "transmit failed: %s", why);
@@ -2715,8 +2724,10 @@ static void tick_run(rdof_bl_t *bl, conn_t *c, int ci, double now)
         break;
     }
     case J_DRAIN:
+        tx_events(bl, c);
         if (!bl->p.tx_idle(bl->p.ctx))
             break;
+        tx_events(bl, c);
         if (bl->p.tx_space(bl->p.ctx, why, sizeof why) < 0) { /* refused at the end (a routed call's transceiver) */
             run_log(bl, c, now, "transmit failed: %s", why);
             run_exit(bl, c, 1, NULL);

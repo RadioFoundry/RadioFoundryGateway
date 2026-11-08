@@ -601,7 +601,7 @@ bool bench_tx_line_idle(void)
 {
     xSemaphoreTake(mu, portMAX_DELAY);
     bool idle = !J.on || !J.line || J.job->state == RDOF_TXS_DONE ||
-                (J.job->state == RDOF_TXS_READY && !J.job->keyed && !J.job->qn);
+                (J.job->state == RDOF_TXS_READY && !J.job->keyed && !J.job->qn && rdof_benchtx_settled(J.job));
 #if RDOF_FEATURE_TX
     if (idle && J.on && J.line && J.routed && route.count) { /* handed on: the transceiver still to send it */
         idle = !site_app_holds(route.sid);
@@ -612,6 +612,14 @@ bool bench_tx_line_idle(void)
 #endif
     xSemaphoreGive(mu);
     return idle;
+}
+
+size_t bench_tx_line_event(char *out, size_t cap)
+{
+    xSemaphoreTake(mu, portMAX_DELAY);
+    const size_t n = J.on && J.line ? rdof_benchtx_next_event(J.job, out, cap) : 0;
+    xSemaphoreGive(mu);
+    return n;
 }
 
 void bench_tx_line_close(void)
@@ -992,6 +1000,7 @@ bool bench_tx_line_open(uint32_t freq, int cc, rdof_bench_power_t power, bool as
 int bench_tx_line_space(char *why, size_t cap) { return -1; }
 void bench_tx_line_push(uint8_t control, const uint8_t burst[33]) {}
 bool bench_tx_line_idle(void) { return true; }
+size_t bench_tx_line_event(char *out, size_t cap) { return 0; }
 void bench_tx_line_close(void) {}
 int bench_tx_register(void *server) { return 0; }
 bool bench_tx_ob_open(uint32_t freq, int cc, rdof_bench_power_t power, double seconds, char *why, size_t cap)

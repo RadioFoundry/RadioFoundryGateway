@@ -2048,7 +2048,9 @@ static struct {
     rdof_benchtx_item_t in[RDOF_BENCHTX_QUEUE]; /* pushed, not yet in the job's queue */
     int nin, queued;
     rdof_benchtx_t tx;
-} BT = {.mu = PTHREAD_MUTEX_INITIALIZER};
+    int heard_ch;     /* the receive channel that hears the job, -1 none */
+} BT = {.mu = PTHREAD_MUTEX_INITIALIZER, .heard_ch = -1};
+static bool bt_ticking; /* the main loop holds BT.mu (a modem's reply can come back inside the tick) */
 
 static void last_job_closes(void);
 static bool bl_tx_open(void *ctx, uint32_t freq, int cc, rdof_bench_power_t power, bool as_built, char *why,
@@ -2095,6 +2097,14 @@ static void bl_tx_push(void *ctx, uint8_t control, const uint8_t burst[33])
 
 static void bl_tx_unkey(void *ctx) {} /* the job's modem unkeys once its queue has gone out */
 
+static size_t bl_tx_event(void *ctx, char *out, size_t cap)
+{
+    pthread_mutex_lock(&BT.mu);
+    const size_t n = BT.active ? rdof_benchtx_next_event(&BT.tx, out, cap) : 0;
+    pthread_mutex_unlock(&BT.mu);
+    return n;
+}
+
 static bool bl_tx_idle(void *ctx)
 {
     pthread_mutex_lock(&BT.mu);
@@ -2139,7 +2149,11 @@ static bool bench_modem_reply(const uint8_t *f, size_t n)
     }
     if (!BT.active)
         return false;
+    if (!bt_ticking)
+        pthread_mutex_lock(&BT.mu); /* its measurements are read by the bench's thread */
     rdof_benchtx_modem(&BT.tx, f, n, now_s());
+    if (!bt_ticking)
+        pthread_mutex_unlock(&BT.mu);
     return true;
 }
 
@@ -2631,7 +2645,14 @@ static bool bench_tx_poll(double now)
         }
         BT.want = 0, BT.active = true;
         const rdof_benchtx_io_t io = {bt_to_modem, bt_to_tool, bt_keying, NULL, NULL};
+        bt_ticking = true;
         rdof_benchtx_init(&BT.tx, &io, BT.freq, BT.cc, R.mmdvm ? BT.power : 255, 120.0, now); /* SDR: --tx-power */
+        bt_ticking = false;
+        BT.heard_ch = R.mmdvm ? channel_of(BT.freq) : -1;
+        static rdof_benchtx_track_t bt_track;
+        rdof_benchtx_track(&BT.tx, BT.heard_ch >= 0 ? &bt_track : NULL,
+                           R.mmdvm ? "no receive channel on the job's frequency: a tune with a tap there gives one"
+                                   : "the SDR's own transmitter: no separate receiver hears it");
         say("bench: a job has the transmitter: %.4f MHz cc %d\n", BT.freq / 1e6, BT.cc);
     }
     if (!BT.active) {
@@ -2652,10 +2673,12 @@ static bool bench_tx_poll(double now)
         BT.tx.q[(BT.tx.qh + BT.tx.qn++) % RDOF_BENCHTX_QUEUE] = BT.in[i];
     BT.nin = 0;
     rdof_benchtx_alive(&BT.tx, now); /* the job's connection is its dead-man */
+    bt_ticking = true;
     rdof_benchtx_tick(&BT.tx, now);
+    bt_ticking = false;
     BT.ready = BT.tx.state == RDOF_TXS_READY;
     BT.queued = BT.tx.qn;
-    BT.idle = !BT.tx.keyed && !BT.tx.qn;
+    BT.idle = !BT.tx.keyed && !BT.tx.qn && rdof_benchtx_settled(&BT.tx);
     if (BT.tx.state == RDOF_TXS_DONE && !BT.failed) {
         BT.failed = true;
         snprintf(BT.why, sizeof BT.why, "%s", BT.tx.error[0] ? BT.tx.error : "the modem stopped");
@@ -3145,7 +3168,7 @@ static void bench_start(void)
                                           .sc_utc = bl_sc_utc,
                                           .rx_stats = bl_rx_stats, .can_tx = bl_can_tx, .tx_open = bl_tx_open, .mssim = bl_mssim,
                                           .tx_space = bl_tx_space, .tx_push = bl_tx_push, .tx_unkey = bl_tx_unkey,
-                                          .tx_idle = bl_tx_idle, .tx_close = bl_tx_close, .rpt_open = bl_rpt_open,
+                                          .tx_idle = bl_tx_idle, .tx_close = bl_tx_close, .tx_event = bl_tx_event, .rpt_open = bl_rpt_open,
                                           .rpt_state = bl_rpt_state, .rpt_event = bl_rpt_event,
                                           .rpt_wake = bl_rpt_wake, .rpt_close = bl_rpt_close,
                                           .modes = rdof_sdr_modes, .sig_open = bl_sig_open,
@@ -3196,6 +3219,10 @@ static void bench_stop(void)
 
 static void on_burst(void *ctx, int c, const rdof_sdr_burst_t *b, double t)
 {
+    pthread_mutex_lock(&BT.mu);
+    if (BT.active && c == BT.heard_ch)
+        rdof_benchtx_heard(&BT.tx, b->b.burst, now_s());
+    pthread_mutex_unlock(&BT.mu);
     if (R.mmdvm)
         ob_heard(c, b);
     else

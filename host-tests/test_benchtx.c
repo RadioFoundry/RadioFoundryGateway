@@ -89,6 +89,10 @@ typedef struct {
     uint8_t pending[256];
     size_t npend;
     uint8_t cmds[256];  /* commands it got, in order */
+    bool status_on;     /* answer GET_STATUS, with: */
+    bool st_tx;
+    int st_space;
+    uint8_t data[128][33]; /* the bursts handed over */
     int ncmds;
     uint8_t controls[128]; /* each DMR_DATA2's control byte */
     int ndata;
@@ -126,6 +130,7 @@ static void to_modem(void *ctx, const uint8_t *f, size_t n)
     if (cmd == RDOF_MMDVM_DMR_DATA2) {
         if (b->ndata < 128) {
             b->handed[b->ndata] = clock_now;
+            memcpy(b->data[b->ndata], f + 4, 33);
             b->controls[b->ndata++] = f[3];
         }
         if (b->nak_data) {
@@ -147,7 +152,12 @@ static void to_modem(void *ctx, const uint8_t *f, size_t n)
         memcpy(b->freq_payload, f + 3, 14);
     if (b->silent || b->seen[cmd]++ < b->drop_first)
         return;
-    if (cmd == RDOF_MMDVM_GET_VERSION) {
+    if (cmd == RDOF_MMDVM_GET_STATUS && b->status_on) {
+        uint8_t p[10] = {0};
+        p[2] = b->st_tx ? 0x01 : 0;
+        p[5] = (uint8_t)b->st_space;
+        reply(b, cmd, p, sizeof p);
+    } else if (cmd == RDOF_MMDVM_GET_VERSION) {
         uint8_t p[] = {1, 'M', 'M', 'D', 'V', 'M', '_', 'H', 'S'};
         p[0] = b->version2 ? 2 : 1;
         reply(b, cmd, p, sizeof p);
@@ -299,6 +309,81 @@ static void t_call(void)
     CHECK(tb.nmodes == 1, "no SET_MODE idle after a call that ended: %d", tb.nmodes);
     rdof_benchtx_stop(&tb.t, NULL, "closed", clock_now);
     CHECK(rdof_benchtx_done(&tb.t) && tb.modes[tb.nmodes - 1] == RDOF_MODE_IDLE && said("\"type\":\"done\""), "closed");
+}
+
+/* What the modem says against the model, and what a receiver heard against what was handed over. */
+static void t_measured(void)
+{
+    static char f[8192];
+    static rdof_benchtx_track_t track;
+    start(10);
+    tb.status_on = true, tb.st_tx = false, tb.st_space = 10;
+    run(0.3, true);
+    CHECK(said("\"type\":\"modem\",\"t\"") && said("\"tx\":false,\"space\":10"), "the first status: %s", tb.frames);
+    call_frame(f, sizeof f, true, 12, true); /* 14 bursts, 0.84 s */
+    tool_says(f);
+    tb.st_tx = true, tb.st_space = 7;
+    run(0.2, true);
+    CHECK(said("\"tx\":true,\"space\":7"), "TX on: %s", tb.frames);
+    /* the HAT's buffer runs dry early: quiet with bursts still to go */
+    tb.st_tx = false;
+    run(0.2, true);
+    CHECK(said("\"flag\":\"quiet\""), "quiet flagged: %s", tb.frames);
+    tb.st_tx = true;
+    run(0.7, true);
+    CHECK(said("\"unkeyed\"") && said("\"estimated\":true"), "unkeyed labeled: %s", tb.frames);
+    /* still on air well past the model: late; then it stops with bursts in its buffer: held */
+    CHECK(!rdof_benchtx_settled(&tb.t), "waits for the modem");
+    run(0.7, true);
+    CHECK(said("\"flag\":\"late\""), "late flagged: %s", tb.frames);
+    tb.st_tx = false, tb.st_space = 4;
+    run(0.3, true);
+    CHECK(rdof_benchtx_settled(&tb.t), "settled once it stops");
+    CHECK(said("\"flag\":\"held\",\"space\":4,\"idle_space\":10"), "held: %s", tb.frames);
+    CHECK(said("\"type\":\"tx_check\"") && said("\"timing\":\"estimate\"") && said("\"handed\":14") && said("\"held\":true"),
+          "the check, no receiver: %s", tb.frames);
+    char ev[RDOF_BENCHTX_EVENT_LEN];
+    int nev = 0, nchk = 0;
+    while (rdof_benchtx_next_event(&tb.t, ev, sizeof ev)) {
+        nev++;
+        nchk += strstr(ev, "tx_check") != NULL;
+    }
+    CHECK(nev >= 5 && nchk == 1, "the reader gets the frames: %d, %d checks", nev, nchk);
+    rdof_benchtx_stop(&tb.t, NULL, "closed", clock_now);
+
+    /* a receiver beside it: each burst against when it was heard */
+    start(10);
+    rdof_benchtx_track(&tb.t, &track, NULL);
+    tb.status_on = true, tb.st_tx = false, tb.st_space = 10;
+    run(0.3, true);
+    call_frame(f, sizeof f, true, 12, true);
+    tool_says(f);
+    tb.st_tx = true;
+    run(1.0, true);
+    CHECK(tb.ndata == 14, "handed: %d", tb.ndata);
+    tb.st_tx = false;
+    for (int i = 0; i < 12; i++) { /* two never heard; one with a few bit errors; the last heard is late */
+        uint8_t b[33];
+        memcpy(b, tb.data[i], 33);
+        if (i == 3)
+            b[5] ^= 0x0F;
+        rdof_benchtx_heard(&tb.t, b, track.s[i].at + (i == 11 ? 2.2 : 0.1));
+    }
+    run(0.6, true);
+    CHECK(said("\"timing\":\"heard\"") && said("\"compared\":14") && said("\"heard\":12") && said("\"never\":2"),
+          "heard and never: %s", tb.frames);
+    CHECK(said("\"first_s\":0.100") && said("\"latest_s\":2.200"), "how late: %s", tb.frames);
+    rdof_benchtx_stop(&tb.t, NULL, "closed", clock_now);
+
+    /* a modem that doesn't answer GET_STATUS doesn't hold a job up */
+    start(10);
+    run(0.3, true);
+    call_frame(f, sizeof f, true, 12, true);
+    tool_says(f);
+    run(1.0, true);
+    run(0.5, true);
+    CHECK(rdof_benchtx_settled(&tb.t) && said("\"type\":\"tx_check\""), "no answer: settled: %s", tb.frames);
+    rdof_benchtx_stop(&tb.t, NULL, "closed", clock_now);
 }
 
 static void t_underrun(void)
@@ -469,7 +554,7 @@ static void t_edges(void)
           "ack: %s", frame("{\"type\":\"ack\""));
     run(1.5, true);
     CHECK(!strcmp(frame("{\"type\":\"unkeyed\""),
-                  "{\"type\":\"unkeyed\",\"why\":\"end\",\"t\":101.080000,\"seconds\":0.840,\"bursts\":14}"),
+                  "{\"type\":\"unkeyed\",\"why\":\"end\",\"t\":101.080000,\"seconds\":0.840,\"bursts\":14,\"estimated\":true}"),
           "unkeyed: %s", frame("{\"type\":\"unkeyed\""));
     rdof_benchtx_stop(&tb.t, NULL, "closed", clock_now);
     CHECK(!strcmp(frame("{\"type\":\"done\""), "{\"type\":\"done\",\"why\":\"closed\",\"bursts\":14,\"keyings\":1,\"underruns\":0}"),
@@ -914,6 +999,7 @@ void test_benchtx(void)
     t_gates();
     t_control();
     t_call();
+    t_measured();
     t_underrun();
     t_max_key();
     t_deadman();

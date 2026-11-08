@@ -74,6 +74,7 @@ static const rdof_rust_layout_t c_layouts[] = {
     L(rdof_benchtx_item_t),
     L(rdof_benchtx_policy_t),
     L(rdof_benchtx_t),
+    L(rdof_benchtx_track_t),
     L(rdof_modem_port_t),
     L(rdof_modem_t),
     L(rdof_rssi_map_t),

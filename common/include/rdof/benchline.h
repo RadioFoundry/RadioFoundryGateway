@@ -243,6 +243,8 @@ typedef struct {
     void (*tx_unkey)(void *ctx);
     bool (*tx_idle)(void *ctx);
     void (*tx_close)(void *ctx);
+    /* Optional: the job's next measurement frame (rdof_benchtx_next_event): its length, 0 with none. */
+    size_t (*tx_event)(void *ctx, char *out, size_t cap);
     /* Duplex repeater jobs (bench_repeater; NULL: none), as the transmit jobs: rpt_open takes the transmitter for a
      * repeater on cfg (setting it up may take a while); false with why when it can't. rpt_state: 1 it repeats, 0 not
      * yet, -1 it failed (why). rpt_event: the next thing it heard or did (false: none). rpt_wake: a burst into its

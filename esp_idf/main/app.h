@@ -508,6 +508,7 @@ bool bench_tx_line_open(uint32_t freq, int cc, rdof_bench_power_t power, bool as
 int bench_tx_line_space(char *why, size_t cap);
 void bench_tx_line_push(uint8_t control, const uint8_t burst[33]);
 bool bench_tx_line_idle(void);
+size_t bench_tx_line_event(char *out, size_t cap);
 void bench_tx_line_close(void);
 /* bench_tx outbound: the SDR modem taken (a roamer's parked) and keyed as a repeater's downlink for seconds */
 const char *bench_tx_ob_why(void);
