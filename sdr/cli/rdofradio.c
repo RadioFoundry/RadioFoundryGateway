@@ -99,6 +99,7 @@
  * 0.2 dB under it; the gain takes it at the next key-up.
  */
 #define _POSIX_C_SOURCE 200809L
+#include <stdatomic.h>
 #include <errno.h>
 #include <limits.h>
 #include <math.h>
@@ -2542,10 +2543,16 @@ static bool ms_send(void *ctx, int64_t at48, const uint8_t burst[33], int64_t *p
     return rdof_sdrmodem_place48(&R.m, at48, burst, placed48);
 }
 
+/* A job set the modem's transmit delay itself (its own key-up's edge, the responder's echo) or put the site's back:
+ * on a full duplex repeater the drift tracker (the main loop) takes its reference again from it, not over it (it
+ * had put the site's calibration plus 29 ms of drift back over a job's 52.7 ms, and the job's inbound slots came out
+ * one off, 2026-11-08) */
+static atomic_int late_rebase;
+
 static void ms_off(const char *why)
 {
     if (MS.on)
-        R.m.tx_late48 = MS.late48;
+        R.m.tx_late48 = MS.late48, atomic_store(&late_rebase, 1);
     MS.on = false;
     MS.want = 0;
     rdof_mssim_disarm(&MS.s);
@@ -2608,6 +2615,7 @@ static void ms_heard(int c, const rdof_sdr_burst_t *b, bool echo)
             rdof_mssim_heard(&MS.s, &b->b, b->position);
         } else if (MS.cal48 >= 0 && b->b.dt == RDOF_DT_IDLE && llabs(b->position - MS.cal48) < 4 * 2880) {
             R.m.tx_late48 += b->position - MS.cal48;
+            atomic_store(&late_rebase, 1);
             say("bench: the responder's transmit path is %.2f ms past its place (tx_late %.2f ms)\n",
                 (double)(b->position - MS.cal48) / 48.0, (double)R.m.tx_late48 / 48.0);
             MS.cal48 = -1;
@@ -2617,7 +2625,7 @@ static void ms_heard(int c, const rdof_sdr_burst_t *b, bool echo)
             for (int i = 0; i < MS.s.nlog; i++) {
                 const rdof_mssim_entry_t *e = &MS.s.log[i];
                 if (e->air48 == b->position && e->placed48 >= 0 && llabs(e->air48 - e->placed48) > 24)
-                    R.m.tx_late48 += (e->air48 - e->placed48) / 2;
+                    R.m.tx_late48 += (e->air48 - e->placed48) / 2, atomic_store(&late_rebase, 1);
             }
         }
     }
@@ -2794,6 +2802,7 @@ static bool bench_rpt_poll(double now)
         pthread_mutex_unlock(&BR.mu);
         rdof_repeater_stop(&BR.r);
         R.m.tx_late48 = BR.late48;
+        atomic_store(&late_rebase, 1);
         pthread_mutex_lock(&BR.mu);
         BR.active = false, BR.nev = 0;
         pthread_mutex_unlock(&BR.mu);
@@ -5925,6 +5934,8 @@ int main(int argc, char **argv)
             int64_t fill = W.head - W.tail;
             if (fill < R.ring_min)
                 R.ring_min = fill;
+            if (atomic_exchange(&late_rebase, 0))
+                R.ring_ref = -1; /* a job's own delay: the reference taken again against it */
             if ((double)total / rate - R.ring_win >= 0.5) {
                 if (R.cal == 0 && R.ring_ref < 0) {
                     R.ring_ref = R.ring_min;
@@ -5969,6 +5980,7 @@ int main(int argc, char **argv)
                         /* a repeater job's first key-up, heard in the receiver's band: its inbound slots follow it */
                         R.m.tx_late48 = (at - R.onset) * 48000 / (int64_t)rate;
                         BR.cal = false;
+                        atomic_store(&late_rebase, 1);
                         say("bench: the job's transmit path is %.2f ms past its place\n",
                             1e3 * (double)(at - R.onset) / rate);
                     } else if (BO.active && !BO.mapped) {
