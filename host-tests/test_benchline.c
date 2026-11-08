@@ -2655,6 +2655,17 @@ static void test_tune(void)
         rdof_bl_tick(bl, now += 0.02);
     CHECK(isnan(ft.center), "untuned at the job's end");
     ft.tunes = tunes0, ft.untunes = untunes0;
+    /* a duplex repeater job whose input no channel decodes: a tune there, as any job that hears */
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_repeater\",\"rx\":145.1,\"tx\":438.1125}}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "tuning the receiver to 145.1000 MHz"), "a repeater's input outside: a tune: %s", out);
+    for (int i = 0; i < 8; i++)
+        rdof_bl_tick(bl, now += 0.02);
+    rdof_bl_closed(bl, c, now);
+    for (int i = 0; i < 8; i++)
+        rdof_bl_tick(bl, now += 0.02);
+    CHECK(isnan(ft.center), "untuned at the repeater's end");
+    ft.tunes = tunes0, ft.untunes = untunes0;
     /* a responder armed where no channel hears: its tune outlasts the request, until its disarm */
     c = ask(bl, "{\"op\":\"mssim\",\"action\":\"arm\",\"freq\":146.52,\"seconds\":60}", now);
     for (int i = 0; i < 8; i++)

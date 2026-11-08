@@ -1979,6 +1979,7 @@ static void run_listen(rdof_bl_t *bl, conn_t *c, double now, double secs)
     J->state = J_LISTEN;
 }
 
+static bool reach_tune(rdof_bl_t *bl, conn_t *c, int root, double mhz, bool hears, bool tx, double now);
 /* A bench_repeater job: it waits for the modem, as a transmit job, with both frequencies claimed. */
 static void rpt_run(rdof_bl_t *bl, conn_t *c, job_t *J, int root, double now)
 {
@@ -1991,6 +1992,11 @@ static void rpt_run(rdof_bl_t *bl, conn_t *c, job_t *J, int root, double now)
         return;
     }
     const double rx = j->rx_mhz, tx = j->tx_mhz;
+    /* an input no channel decodes: the receiver tuned there for the job, as any job that hears (the Pluto) */
+    if (tx_ok(bl, tx) && reach_tune(bl, c, root, rx, true, false, now)) {
+        free(J);
+        return;
+    }
     const int kr = freq_index(bl, rx);
     if (kr < 0 || bl->f[kr].ch < 0 || !(bl->f[kr].caps & RDOF_BL_CAP_DMR)) {
         free(J);

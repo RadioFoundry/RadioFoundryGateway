@@ -854,13 +854,13 @@ static void on_rx(void *ctx, int slot, uint8_t control, const uint8_t *burst, in
         fprintf(stderr, "inbound: slot %d, %+.2f slots from its place\n", slot, R.m.inbound_off);
     if (R.parrot)
         rdof_parrot_heard(R.parrot, slot, control, burst, now_s());
-    if (R.full) {
-        rdof_repeater_heard(&R.r, slot, control, burst, rssi);
-    } else if (BR.active) {
+    if (BR.active) { /* a job's repeater has the modem, the site's repeater stopped for it (R.full) or not */
         rdof_bl_rpt_ev_t e = {.kind = RDOF_BL_RPT_HEARD, .slot = slot, .rssi = rssi, .control = control};
         memcpy(e.burst, burst, sizeof e.burst);
         br_event(&e);
         rdof_repeater_heard(&BR.r, slot, control, burst, rssi);
+    } else if (R.full) {
+        rdof_repeater_heard(&R.r, slot, control, burst, rssi);
     } else {
         rdof_txvr_heard(&R.t, slot, control, burst, rssi);
     }
@@ -874,11 +874,11 @@ static void on_lost(void *ctx, int slot)
     }
     if (R.parrot)
         rdof_parrot_lost(R.parrot, slot, now_s());
-    if (R.full) {
-        rdof_repeater_lost(&R.r, slot);
-    } else if (BR.active) {
+    if (BR.active) {
         br_event(&(rdof_bl_rpt_ev_t){.kind = RDOF_BL_RPT_LOST, .slot = slot});
         rdof_repeater_lost(&BR.r, slot);
+    } else if (R.full) {
+        rdof_repeater_lost(&R.r, slot);
     }
 }
 static void deliver_heard(void)
@@ -894,10 +894,10 @@ static void deliver_heard(void)
 static void on_nak(void *ctx, uint8_t cmd, int err)
 {
     fprintf(stderr, "modem NAK 0x%02x err %d\n", cmd, err);
-    if (R.full)
-        rdof_repeater_nak(&R.r, cmd, err);
-    else if (BR.active)
+    if (BR.active)
         rdof_repeater_nak(&BR.r, cmd, err);
+    else if (R.full)
+        rdof_repeater_nak(&R.r, cmd, err);
 }
 
 /* MQTT (below) */

@@ -657,8 +657,8 @@ by their long names with `_` for `-`:
 - `family` on `voice`, `csbk` and `data` (`ms`, `bs`, `ts1`, `ts2`), a voice job's `headers`, `terminators` and
   `late` go out as asked: every job takes the raw SDR modem (a roamer's parked, given back after). `outbound` is BS
   only.
-- `bench_repeater` runs a duplex repeater with no network on the job's `rx` (a receiver channel that decodes DMR)
-  and `tx` (a TX frequency) for `seconds`: `slots`, `hang` (T_MSInactiv), `call_hang`, and idle beacons every
+- `bench_repeater` runs a duplex repeater with no network on the job's `rx` (a receiver channel that decodes DMR;
+  where none does, the receiver tunes there for the job, as for any job that hears) and `tx` (a TX frequency) for `seconds`: `slots`, `hang` (T_MSInactiv), `call_hang`, and idle beacons every
   `beacon` seconds from `beacon_phase` on (a local BS_Dwn_Act into its receive path, the hang `beacon_len`; skipped
   while keyed). Its records are the tool's: `wakeup` (a BS_Dwn_Act heard: `src`, `slot`, `while_down`), `rx` (each
   burst heard: `slot`, `control`, `rssi`, `dt`, and the CSBK opcode, LC or voice frame), `lost`, `key`, `beacon`,
