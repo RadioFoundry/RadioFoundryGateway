@@ -210,6 +210,27 @@ try:
 finally:
     r.stop()
 
+# capture --quiet holds the modem while it runs, and lets go after
+r = Rig("half", DUAL)
+try:
+    rfg = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools", "bench", "rfgbench.py")
+    cap = subprocess.Popen([sys.executable, rfg, "--bench", f"127.0.0.1:{r.port}", "capture", "--freq", "438.5",
+                            "--seconds", "1.5", "--pre", "0", "--quiet", "--out", os.path.join(r.d, "q.cs8")],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    held = False
+    for _ in range(30):
+        held = any(h.get("kind") == "modem" for h in r.ask({"op": "status"})[0].get("held", []))
+        if held or cap.poll() is not None:
+            break
+        time.sleep(0.05)
+    check(held, "--quiet holds the modem")
+    check(cap.wait(20) == 0, "the quiet capture finished")
+    check(os.path.getsize(os.path.join(r.d, "q.cs8")) > 0, "with samples")
+    time.sleep(0.3)
+    check(not r.ask({"op": "status"})[0].get("held"), "and let the modem go")
+finally:
+    r.stop()
+
 # the modem's port going away ends the program with a failure, for its supervisor to start it again
 r = Rig("half", DUAL)
 try:

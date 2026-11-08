@@ -624,6 +624,10 @@ def cmd_dmr_bursts(a) -> int:
         print(f"{NOTE} --file: analyze a saved capture with the bench's own tools; the gateway decodes live only",
               file=sys.stderr)
         return EX_UNAVAILABLE
+    if a.soft:
+        print(f"{NOTE} --soft: the gateway's burst records carry no soft dibits; for those analyze a capture",
+              file=sys.stderr)
+        return EX_UNAVAILABLE
     check_reach(a, a.freq, tx=False)
     out = open(a.out, "w") if a.out else sys.stdout
     human = sys.stdout if a.out else sys.stderr
@@ -750,7 +754,22 @@ def cmd_capture(a) -> int:
         req["gain"] = a.gain
     if a.fmt:
         req["fmt"] = a.fmt
-    return write_iq(a, req, 2)
+    if not a.quiet:
+        return write_iq(a, req, 2)
+    # --quiet: nothing transmits from the bench during it. A session of its own holds the modem; other sessions'
+    # jobs wait until it's over
+    c = Conn(a.where)
+    try:
+        c.send({"op": "session", "label": a.label or "capture --quiet", "expect_s": a.seconds})
+        first = next(c.lines(), (None, None))[0]
+        if first is None or "error" in first:
+            print(json.dumps(first), file=sys.stderr)
+            return EX_UNAVAILABLE
+        rc = stream(a.where, {"op": "hold", "session": first["session"], "expect_s": a.seconds, "wait_max": a.wait_max},
+                    lambda d, data: None)
+        return rc if rc else write_iq(a, req, 2)
+    finally:
+        c.close()
 
 
 def cmd_capture_trigger(a) -> int:

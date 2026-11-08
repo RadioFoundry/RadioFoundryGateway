@@ -535,6 +535,8 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
   to `pre_s` seconds from before the request (the I/Q history, section 9), at most half of what the history holds
   (the other half is room for the client to be behind; about 0.9 s on a board). The receiver isn't retuned: `gain` and
   `offset_khz` are noted in the metadata and otherwise ignored, and a frequency outside the window is `refused`.
+  `rfgbench.py capture --quiet` holds the modem in a session of its own for the capture, so no other session's job
+  transmits during it (a `hold`, section 14.4).
   `meta` is what `FILE.json` holds: `freq` and `center` (Hz), `fs`, `fmt` `"cs8"`, `gain`, `ppm`, `ppm_source`, `ppm_tol`, `ppm_ref`, `lo_ppm`, `fs_ppm` (what's left in the samples), `freq_tol_hz` (section 14.7), `t0` (UTC of
   sample 0), `seconds`, `overflows`, `gap_samples`, `clip_pct`, `pre_s`, `scale_db`. `gap_samples` counts the
   samples the capture doesn't have: those the history overwrote before they went (sent as nothing: the client
