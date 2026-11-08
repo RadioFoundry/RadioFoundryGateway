@@ -1145,7 +1145,8 @@ static uint32_t chan_hz(const chan_t *m) { return (uint32_t)llround(m->ch->freq)
 static chan_t CHN[RDOF_SDR_MAX_CHANNELS];
 static int nchn;
 
-/* The settings' channel on receiver channel c; NULL for one of our own (--monitor's "out", --mmdvm's "modem-rx") */
+/* The settings' channel on receiver channel c; NULL for one of our own (--monitor's "out", --mmdvm's "modem-rx" and
+ * "modem-tx") */
 static const chan_t *chan_at(int c)
 {
     for (int i = 0; i < nchn; i++)
@@ -3693,6 +3694,7 @@ static void web_sdr(rdof_hostweb_sdr_t *d)
         else /* ours: --monitor's TX heard back, --mmdvm's modem's RX */
             name = !strcmp(id, "out")        ? "transmit (heard back)"
                    : !strcmp(id, "modem-rx") ? "the modem's RX"
+                   : !strcmp(id, "modem-tx") ? "the modem's TX"
                                              : "receive";
         const double f = R.rx.trackers[c].freq_hz;
         const int r = R.rx.rssi[c];
@@ -5721,6 +5723,16 @@ int main(int argc, char **argv)
         }
         for (int k = 0; k < nown && NCH < RDOF_SDR_MAX_CHANNELS; k++)
             CH[NCH++] = own[k];
+        /* --mmdvm's other side: the SDR hears both of a duplex modem's frequencies, when one window holds them. A
+           split wider than the SDR's rate still runs, the modem's RX kept; the TX side then takes a tune of its own. */
+        if (R.mmdvm && R.tx_hz != R.rx_hz && rdofradio_cfg_channel_at(&rcfg, R.tx_hz) < 0 && NCH < RDOF_SDR_MAX_CHANNELS) {
+            char why[200];
+            CH[NCH] = (rdof_sdr_channel_t){"modem-tx", tx, cc, 1};
+            if (plan_rate(CH, NCH + 1, why, sizeof why))
+                NCH++;
+            else
+                fprintf(stderr, "receiver: the modem's TX, %.4f MHz, has no channel: %s\n", tx / 1e6, why);
+        }
     }
     R.mon = monitor ? channel_of(tx) : -1;
     if (unfit)

@@ -16,7 +16,7 @@ RDOF, FAKE = sys.argv[1], sys.argv[2]
 
 
 class Rig:
-    def __init__(self, duplex, description=None):
+    def __init__(self, duplex, description=None, tx="438.6"):
         self.d = tempfile.mkdtemp(prefix="rdof-mmdvm-")
         self.path = os.path.join(self.d, "path")
         self.log = os.path.join(self.d, "modem.log")
@@ -31,7 +31,7 @@ class Rig:
         self.err = open(os.path.join(self.d, "rdofradio.err"), "w+")
         self.radio = subprocess.Popen(
             [RDOF, "--allow-tx", "--mmdvm", open(self.path).read().strip(), "--sim-sdr", "-r", "240000",
-             "--rx", "438.5", "--tx", "438.6", "--duplex", duplex, "--cc", "1", "--bench", "127.0.0.1:0",
+             "--rx", "438.5", "--tx", tx, "--duplex", duplex, "--cc", "1", "--bench", "127.0.0.1:0",
              "--bench-tx", "438.6,438.5", "--seconds", "80"],
             stderr=self.err, stdout=subprocess.DEVNULL)
         self.port = None
@@ -181,6 +181,32 @@ try:
     check("stops the repeater" in err, "the job stopped the repeater: " + err[-500:])
     check("the repeater's again" in err or "the transmitter is the repeater" in err, "and it came back: " + err[-500:])
     sock.close()
+finally:
+    r.stop()
+
+# both of a running duplex modem's frequencies are the SDR's channels, each with bursts and I/Q
+r = Rig("full", DUAL)
+try:
+    info = r.ask({"op": "info"})[0]
+    heard = {c["freq"]: c["id"] for c in info["channels"] if c["id"]} # the modem's RX is the bench's first channel
+    check(438.5 in heard and heard.get(438.6) == "modem-tx", f"both sides are channels: {info['channels']}")
+    for mhz in (438.5, 438.6):
+        out = r.ask({"op": "bursts", "freq": mhz, "seconds": 1}, 3)
+        check(out and not any("error" in x for x in out), f"bursts on {mhz}: {out[-2:]}")
+        with socket.create_connection(("127.0.0.1", r.port), timeout=8) as s: # a JSON header, then the samples
+            s.sendall(json.dumps({"op": "capture", "freq": mhz, "seconds": 0.05, "fmt": "cs16"}).encode() + b"\n")
+            head = json.loads(s.makefile("rb").readline())
+        check("error" not in head, f"capture on {mhz}: {head}")
+finally:
+    r.stop()
+
+# a split wider than the SDR's rate still runs, on the modem's RX
+r = Rig("full", DUAL, tx="444.6")
+try:
+    info = r.ask({"op": "info"})[0]
+    heard = {c["freq"]: c["id"] for c in info["channels"] if c["id"]}
+    check(438.5 in heard and "modem-tx" not in heard.values(), f"a wide split keeps the modem's RX: {heard}")
+    check("has no channel" in open(r.err.name).read(), "and says so")
 finally:
     r.stop()
 

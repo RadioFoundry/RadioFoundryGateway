@@ -974,4 +974,9 @@ What the third column can't do, and why:
   outbound needs the modem to send a CACH and hear another frequency while it transmits. A duplex board (two
   transceivers) runs them.
 
+A running duplex modem and the SDR are independent. Both of the modem's frequencies are channels on the SDR
+(`modem-rx`, `modem-tx`) when one window holds them, about 2 MHz apart on an RTL-SDR, so `bursts`, `capture` (cs8
+wideband or a channel's cs16), `trigger` and `rx` work on either side while the modem runs. A wider split can't be
+in one window: the SDR keeps the modem's RX, and a request for the TX side tunes the receiver for itself.
+
 The third column needs only the modem and an RTL-SDR on a Linux box; [the reference](../reference.md) has the setup.

@@ -1274,7 +1274,8 @@ is read by a thread.
   device's `mmdvm` keys, and each frequency's `power_dbm` goes to an RF level on the device's `tx` map (255 without
   one).
 - **An SDR beside it** (DEVICE, optional), opened receive only: it hears the modem's RX frequency as a channel of its
-  own (`modem-rx`, when no channel is on it) and the settings' channels, with the spectrum, and carries the bench's line protocol. Bench DMR
+  own (`modem-rx`, when no channel is on it), the modem's TX frequency as another (`modem-tx`, when it's different
+  and one window holds both: a split wider than the SDR's rate logs that and leaves it out) and the settings' channels, with the spectrum, and carries the bench's line protocol. Bench DMR
   jobs transmit on the modem in simplex; a duplex modem runs `outbound` and `bench_repeater` too. `--split-tx` and the
   SDR's transmitter flags are refused.
 - `--sim-sdr` in place of DEVICE: a receiver of noise, for tests with no RF (`host-tests/test_mmdvm_bench.py` runs the
