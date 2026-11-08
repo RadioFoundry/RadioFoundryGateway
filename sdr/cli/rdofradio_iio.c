@@ -88,6 +88,17 @@ static int set_tx_gain(rdofradio_dev_t *d, double db)
     return r < 0 ? -1 : 0;
 }
 
+static int set_rx_gain(rdofradio_dev_t *d, double db)
+{
+    iio_t *s = (iio_t *)d;
+    int r = (int)iio_channel_attr_write(s->rx_ch, "gain_control_mode", isnan(db) ? "slow_attack" : "manual");
+    if (r < 0 || (!isnan(db) && (r = iio_channel_attr_write_double(s->rx_ch, "hardwaregain", db)) < 0)) {
+        fail(d, "RX gain", r);
+        return -1;
+    }
+    return 0;
+}
+
 static double rx_gain(rdofradio_dev_t *d)
 {
     double g = NAN;
@@ -288,6 +299,7 @@ rdofradio_dev_t *rdofradio_iio_open(const char *uri, const rdofradio_dev_setup_t
     d->set_tx_freq = set_tx_freq;
     d->set_tx_gain = set_tx_gain;
     d->rx_gain = rx_gain;
+    d->set_rx_gain = set_rx_gain;
     d->bandwidth = bandwidth;
     d->start = start;
     d->read = rd;

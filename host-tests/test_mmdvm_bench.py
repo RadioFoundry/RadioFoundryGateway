@@ -53,9 +53,9 @@ class Rig:
         try:
             for line in f:
                 out.append(json.loads(line))
-                if "error" in out[-1] or req["op"] in ("info", "status", "claim", "mssim", "session") and "state" not in out[-1]:
+                if "error" in out[-1] or req["op"] in ("info", "status", "claim", "release", "mssim", "session") and "state" not in out[-1]:
                     break
-                if "exit" in out[-1]:
+                if "exit" in out[-1] or "tuned" in out[-1]:
                     break
         except socket.timeout:
             pass
@@ -113,6 +113,11 @@ try:
                                                       "src": 1, "dst": 2, "listen_after": 0}, "wait_max": 10}, 12)
     check(any(x.get("exit") == 0 for x in out), f"csbk: {out}")
     check("TX" in r.modem(), "the modem sent the csbk")
+    # a tune with a gain, on a device that sets it, and its release
+    out = r.ask({"op": "tune", "session": sid, "center": 438.1, "gain": 25.0, "taps": [438.2]}, 10)
+    check("tuned" in out[-1] and out[-1]["tuned"]["window"]["gain"] is not None, f"tune with a gain: {out}")
+    out = r.ask({"op": "release", "session": sid, "tune": True}, 10)
+    check("released" in out[-1], f"release of the tune: {out}")
     # the responder arms on the modem (438.5 is the modem-rx channel)
     out = r.ask({"op": "mssim", "session": sid, "action": "arm", "freq": 438.5, "cc": 1, "seconds": 3, "answer": "ack", "slots": 4})
     check("mssim" in out[-1] and out[-1]["mssim"]["armed"], f"mssim arm: {out}")

@@ -53,6 +53,7 @@ struct rdofradio_dev {
     int (*set_tx_freq)(rdofradio_dev_t *d, double hz); /* the TX LO (not opened rx_only) */
     int (*set_tx_gain)(rdofradio_dev_t *d, double db);
     double (*rx_gain)(rdofradio_dev_t *d);
+    int (*set_rx_gain)(rdofradio_dev_t *d, double db); /* dB; NAN: the device's AGC. NULL: it keeps its gain */
     double (*bandwidth)(rdofradio_dev_t *d); /* RX analog, Hz */
     int (*start)(rdofradio_dev_t *d);        /* both streams */
     /* up to n samples: how many, or RDOF_DEV_* */

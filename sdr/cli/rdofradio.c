@@ -1724,6 +1724,8 @@ static struct {
     /* the receiver's thread's (CH changes under mu, for bl_freqs) */
     bool on, moved;
     double center0;            /* the settings' center */
+    bool gained;               /* a tune set the RX gain: gain_db until its untune, the settings' after */
+    double gain_db;
     int ntap, tap[RDOF_BL_TAPS];
     rdof_sdr_channel_t saved[RDOF_BL_TAPS];
     uint64_t hist_from;
@@ -3252,6 +3254,8 @@ static bool move_lo(double hz, char *why, size_t cap)
     return true;
 }
 
+static double rx_gain_set = NAN; /* --gain: the settings' RX gain (NAN: the device's AGC) */
+
 /* The settings again: the taps' channels back, the LO back */
 static void tune_restore(void)
 {
@@ -3273,6 +3277,13 @@ static void tune_restore(void)
             chan_point(tap[i]);
     }
     TU.on = TU.moved = false;
+    if (TU.gained) {
+        if (dev->set_rx_gain(dev, rx_gain_set))
+            say("bench: the receiver's gain didn't go back: %s\n", dev->error);
+        else
+            say("bench: the receiver's gain is the settings' again\n");
+        TU.gained = false;
+    }
 }
 
 static bool in_window(double center, double f)
@@ -3290,6 +3301,10 @@ static bool tune_apply(const rdof_bl_tune_t *t, char *why, size_t cap)
     else
         for (int i = 0; i < t->ntaps && i < RDOF_BL_TAPS; i++)
             f[nf++] = t->taps_hz[i];
+    /* the gain this tune leaves: the one asked, the last tune's for "as it is", NAN for the settings' */
+    const double gain_now = TU.gained ? TU.gain_db : NAN;
+    const double want_gain = isfinite(t->gain_db) && t->gain_db != RDOF_BL_TUNE_AUTO ? t->gain_db
+                           : isnan(t->gain_db) ? gain_now : NAN;
     if (TU.on)
         tune_restore();
     const double c0 = R.rx.center_hz;
@@ -3346,6 +3361,13 @@ static bool tune_apply(const rdof_bl_tune_t *t, char *why, size_t cap)
     if (center != c0 && !move_lo(center, why, cap))
         return false;
     TU.moved = center != c0;
+    if (isfinite(want_gain)) {
+        if (dev->set_rx_gain(dev, want_gain)) {
+            snprintf(why, cap, "the receiver's gain: %s", dev->error);
+            return false;
+        }
+        TU.gained = true, TU.gain_db = want_gain;
+    }
     pthread_mutex_lock(&TU.mu);
     int k = 0;
     for (int i = 0; i < nf; i++) {
@@ -3410,9 +3432,9 @@ static const char *bl_tune(void *ctx, const rdof_bl_tune_t *t, const char *who, 
         snprintf(why, cap, "%d taps at most here", NCH < RDOF_BL_TAPS ? NCH : RDOF_BL_TAPS);
         return "bad_request";
     }
-    if (isfinite(t->gain_db) && t->gain_db != RDOF_BL_TUNE_AUTO) {
-        snprintf(why, cap, "rdofradio's tune keeps its gain (--gain)");
-        return "bad_request";
+    if (isfinite(t->gain_db) && t->gain_db != RDOF_BL_TUNE_AUTO && (!dev || !dev->set_rx_gain)) {
+        snprintf(why, cap, "this device's receive gain can't be set");
+        return "refused";
     }
     pthread_mutex_lock(&TU.mu);
     TU.t = *t;
@@ -5789,6 +5811,7 @@ int main(int argc, char **argv)
         return 1;
     }
     WS.agc = isnan(gain);
+    rx_gain_set = gain;
     WS.tx_gain = dev->tx_gain_min;
     if (isnan(tx_max_dbm))
         tx_max_dbm = 7.0; /* a PlutoSDR's nominal at full gain */
