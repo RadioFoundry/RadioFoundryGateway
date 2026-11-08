@@ -461,7 +461,7 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
 
 | op | request | replies |
 |---|---|---|
-| `info` | | `window` (`enabled`, `lo`, `hi`, `center` MHz, `fs`, `gain`, `dc_guard_khz`, `ppm`, `ppm_source`, `ppm_tol`, `ppm_ref`, `lo_ppm`, `fs_ppm` (section 14.7), `tx_lo`, `tx_hi` MHz: where the transmitter tunes now, each platform's own limit (a W12: 1 MHz either side of `center`, the LR2021's one synthesizer; rdofradio in full duplex: the modulator's reach around its TX LO); both 0: anywhere it can), `tune` (null, or `session`, `label`, `for` `"session"` or `"request"`, `state` `"tuning"` or `"tuned"`), `sdr` (`"shared"` when the receiver runs), `channels` (one per receiver channel and TX frequency: `freq`, `ch`, `in_window`, `listed`, `caps`, `claimed_by`, `keyed`), `tx_bands` (`[low, high]` MHz each: where else it may transmit, `bench.tx.bands_hz` or rdofradio's `--bench-tx LOW-HIGH`; a frequency in one is a transmit frequency as a listed one with `tx` is), `stations` (`modem`: the gateway's own SDR modem, `kind` `sdrmodem`, `tx`, `held_by`, `waiting`), `modem` (`held_by`, `waiting`, `next_job_eta`), `default_caps`, `device` (kind, name, version), `signal_modes` (section 14.6) |
+| `info` | | `window` (`enabled`, `lo`, `hi`, `center` MHz, `fs`, `gain`, `dc_guard_khz`, `ppm`, `ppm_source`, `ppm_tol`, `ppm_ref`, `lo_ppm`, `fs_ppm` (section 14.7), `tx_lo`, `tx_hi` MHz: where the transmitter tunes now, each platform's own limit (a W12: 1 MHz either side of `center`, the LR2021's one synthesizer; rdofradio in full duplex: the modulator's reach around its TX LO); both 0: anywhere it can), `tune` (null, or `session`, `label`, `for` `"session"` or `"request"`, `state` `"tuning"` or `"tuned"`), `sdr` (`"shared"` when the receiver runs), `channels` (one per receiver channel and TX frequency: `freq`, `ch`, `in_window`, `listed`, `caps`, `claimed_by`, `keyed`), `tx_bands` (`[low, high]` MHz each: where else it may transmit, `bench.tx.bands_hz` or rdofradio's `--bench-tx LOW-HIGH`; a frequency in one is a transmit frequency as a listed one with `tx` is), `stations` (`modem`: the gateway's own modem, `kind` `sdrmodem`, or `mmdvm` with the modem's description in `model` and `mmdvm_tx` in place of `sdr_tx` in the channels' caps; `tx`, `held_by`, `waiting`), `modem` (`held_by`, `waiting`, `next_job_eta`), `default_caps`, `device` (kind, name, version), `signal_modes` (section 14.6), `jobs` (`bench_tx`, `bench_repeater`, `outbound`, `mssim`, `signal_tx`: null when this bench can run it, else the reason it can't, section 14.9) |
 | `status` | | `sdr`, `receiver` (`seconds`, `overflows`, `clip_pct`, `dsp_skipped`, `decode_dropped`, `captures`), `held`, `waiting`, `sessions`, `tx` (section 7's) |
 | `session` | `label`, `expect_s`, `max_s` | `{"session": ID, "label"}`, then nothing until the connection closes (the session ends with it) or the session's `max_s` runs out (`{"ended": "max_s"}`) |
 | `claim` | `session`, `freqs`, `caps`, `wait_max` | queued / granted, `{"claimed": [MHz], "window"}` |
@@ -480,7 +480,7 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
 - `mssim` is a timed confirmed-data responder (rdofradio and a board with an SDR modem; `rdof/mssim.h`): it plays a radio that answers
   confirmed data packets N slots after they end, for testing the far end's retries and turnaround. `arm` takes the
   transmitter as a transmit job does (a transmit frequency with a receiver channel on it, the transceiver paused or a
-  duplex repeater stopped and its modem simplex; not an MMDVM modem) and holds it until `disarm`, `seconds` or the profile's `count`. The profile: `answers` (1-8
+  duplex repeater stopped and its modem simplex; on an MMDVM modem its timing is the serial port's and a key-up's, learned from what's heard back) and holds it until `disarm`, `seconds` or the profile's `count`. The profile: `answers` (1-8
   steps, packet k gets step k, the last one after, or k mod n with `"repeat": true`), each `answer` (`ack`, `nack`,
   `sack`, `none`, `ack2`: an ACK and the same burst 60 ms later), `slots` (1-200: the answer's first burst starts
   this many 30 ms slots after the end burst's start), `nack_type` (1), `sack_type` (0), `resend` (SACK: the block
@@ -509,15 +509,16 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
   session's `tune` is `busy`, and so is its request for a frequency outside the window (`bursts`, `listen`,
   `capture`, `trigger`, `rx`); one inside the window runs. On a board an HTTP exclusive lease makes `tune` `busy`
   and the reverse. A tune or its end ends the streams cut from the window (`bursts` and `listen` with `done.reason`
-  `"retuned"`, `capture`, `trigger` and `rx` with `busy`).
+  `"retuned"`, `capture`, `trigger` and `rx` with `busy`). A request that comes while a tune or its end is being
+  applied waits for it and then runs (or is `busy` if the tune it finds is another session's).
 - rdofradio's tune points channels at the taps (each on a channel the site's repeater or transceiver isn't using, from
   the last one down; one of theirs when none is spare) and moves the RX LO only when the taps don't fit the window
   as it is (within 0.4 of the rate of the center, 25 kHz clear of the DC): a Pluto's 19.872 MS/s window holds a whole
   plan, so a job inside it costs the site one channel. The LO goes where asked when the taps fit there, else an
   eighth of the rate under the first tap. While it's moved, the other channels hear nothing (their bursts dropped)
   and `freqs` lists only the taps. A tap's bursts go to the bench, the modem and the responder, never to the network.
-  The I/Q history (or, with the FPGA channelizer, the channels' history) starts again where the LO moved. It keeps
-  its gain: a tune with `gain` other than `"auto"` is `bad_request`. The settings come back with the untune.
+  The I/Q history (or, with the FPGA channelizer, the channels' history) starts again where the LO moved. A `gain`
+  sets the SDR's receive gain (`--gain` is the settings'). The settings come back with the untune.
 - `trigger`, `rx`, `capture` and `bursts` at a frequency outside the window (for `bursts`, any frequency no
   channel decodes DMR on), with or without a session, tune for themselves when nobody holds the window and no other
   request is using it: `{"note": "tuning the receiver to F MHz for this request"}`, the center an eighth of the rate
@@ -683,17 +684,19 @@ job's `expect_s` (else its length as the gateway works it out).
 
 On rdofradio, a TX job borrows the SDR modem from the roaming transceiver for its length: a bench job comes first,
 so the transceiver pauses at once (the network's calls wait; a call on the air is cut, what it queued dropped), the
-job drives the modem in DMO, and the modem is set up again for the transceiver after the job. Only on `--mmdvm` (a
+job drives the modem in DMO, and the modem is set up again for the transceiver after the job. Only on the transceiver of `--mmdvm` (a
 modem whose queue isn't the program's) does a call on the air end first, up to 10 s. A `bench_repeater` job does the same with a repeater in the transceiver's place:
 the modem goes duplex, and the job's first key-up, heard back in the receiver's band, sets the inbound slot timing
 (the transmit path's delay; the transceiver's own is restored after). An instance started as a duplex repeater
 (`--duplex full`, or a config's duplex repeater) gives the job its transmitter the same way: the repeater stops (its
 transmission cut), the modem goes simplex on the repeater's RX channel, the TX LO moves if the job's frequency needs
-it, and after the job the LO goes back and the repeater starts again. On `--mmdvm` it keeps its transmitter
-(`unsupported`). A `bench_tx` `outbound` takes the modem the same way, as a
+it, and after the job the LO goes back and the repeater starts again. On `--mmdvm` the repeater stops too and starts again after the job. A `bench_tx` `outbound` takes the modem the same way, as a
 repeater's TX half keyed with no traffic; after it the modem is unkeyed, its role dropped, and set up again for the
 transceiver. Its records' times are the modem's slot clock on the receiver's timeline plus the transmit path's
-delay. On `--mmdvm` (the MMDVM modem transmits) there is no `outbound`. The frequencies are `--bench-tx`'s; the job transmits at
+delay. On `--mmdvm` a duplex modem runs it, with `DMR_START` and `DMR_DATA1` / `DMR_DATA2`: the modem makes the CACH and its own
+idle downlink, and the records' slot times come from a burst of it the SDR hears (or from the time it keyed, until
+one is heard). A simplex hotspot has one transceiver and no CACH: an `outbound` or a `bench_repeater` there is
+`unsupported`, naming that. The frequencies are `--bench-tx`'s; the job transmits at
 `--tx-power`, and the log says the job's power isn't applied. The ESP32 boards run no repeater jobs (`unsupported`).
 
 ### 14.5 The client
@@ -943,3 +946,33 @@ changed mid-keying: a hold that lapsed), `gaps` (samples lost). The track runs e
 
 `rfgbench.py track --freq MHz [--mode 4fsk]` writes the lines (and `{"summary": ...}`) as JSON to `--out` or
 stdout, and the summary's figures to stderr, with a warning line for each of `warnings`.
+
+### 14.9 What each front end does
+
+`info` says what this bench can do: `stations[0].kind` is the transmitter, `signal_modes` the signal modes, `jobs`
+each job's reason when it can't run. A client skips on those; a refused job's error gives the same reason, with the code `unsupported`.
+
+| | W12 (LR2021) | PlutoSDR (AD9361) | MMDVM modem + RTL-SDR |
+|---|---|---|---|
+| `info`, `status`, sessions, `claim`, `hold` | yes | yes | yes |
+| `bursts`, `listen` (with the envelope option) | yes, on the LR2021 stream | yes | yes, on the SDR |
+| `capture`, `trigger`, `track`: cs8 wideband | yes, the LR2021's rate | yes | yes, cs8 is the RTL's own 8 bits |
+| `capture`, `trigger`: channel taps, cs16 | yes | yes | yes |
+| `rx`: FM, AM | yes | yes | yes, on the SDR |
+| `tune`: center, taps | yes | yes | yes |
+| `tune`: gain | yes | yes | yes |
+| `run` `bench_tx`: `voice`, `csbk`, `data` | yes | yes | yes, the modem in simplex |
+| `run` `bench_tx`: `outbound` | yes, the slot clock its own | yes, its own | duplex modem only: the modem's idle downlink and CACH; its slot times from a burst the SDR hears |
+| `run` `bench_repeater` | no (`unsupported`) | yes | duplex modem only: the modem's own receiver hears the input |
+| `mssim` (confirmed-data responder) | yes | yes | yes: timing the serial port's and a key-up's, learned from what's heard back |
+| `tx`: FM, AM (signal modes) | yes | yes | no: the MMDVM serial protocol carries DMR bursts only, and an RTL-SDR doesn't transmit |
+
+What the third column can't do, and why:
+
+- `tx` in FM or AM: `info.signal_modes.tx` is empty and `jobs.signal_tx` says why. The modem takes DMR bursts over its
+  serial port: there's no way to give it audio or I/Q. The SDR beside it only receives.
+- `outbound` and `bench_repeater` on a simplex hotspot (one transceiver): `jobs` names them. A repeater or an
+  outbound needs the modem to send a CACH and hear another frequency while it transmits. A duplex board (two
+  transceivers) runs them.
+
+The third column needs only the modem and an RTL-SDR on a Linux box; [the reference](../reference.md) has the setup.

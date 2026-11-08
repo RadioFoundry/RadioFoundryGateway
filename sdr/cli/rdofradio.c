@@ -29,6 +29,8 @@
  *   rdofradio [DEVICE] --allow-tx --mmdvm PORT [--baud N] [--rf-level N] [--rx-offset-hz HZ] [--tx-offset-hz HZ]
  *             [--rx-level PCT] [--tx-level PCT] --rx MHZ [--tx MHZ] [--duplex full|half] [--cc CC] | --config FILE [...]
  *
+ * --sim-sdr in place of DEVICE, receive only with --mmdvm or --split-tx: a receiver of noise, for tests with no RF.
+ *
  * DEVICE is --soapy ARGS (SoapySDR; -r defaults to 2.4 MS/s) or --iio URI (an AD9361 through libiio: "local:" on a
  * PlutoSDR, "ip:192.168.2.1" from a host; -r defaults to 768 kS/s, which the chip's own FIR makes with
  * libad9361). --ppm PPM: the device's crystal error (positive: fast, fractions too), measured elsewhere: rdofradio
@@ -493,7 +495,7 @@ static void usage(void)
             "       rdofradio [DEVICE] --allow-tx --mmdvm PORT [--baud N] [--rf-level N] [--rx-offset-hz HZ]\n"
             "                 [--tx-offset-hz HZ] [--rx-level PCT] [--tx-level PCT] --rx MHZ [--tx MHZ] [--duplex full|half]\n"
             "                 [--cc CC] | --config FILE [--parrot ID] [--seconds S] [-v] [--web ...] [--bench ...]\n"
-            "DEVICE: %s\n",
+            "DEVICE: %s (or, receive only, --sim-sdr: noise, for tests with no RF)\n",
 #if defined(RDOF_SOAPY) && defined(RDOF_IIO)
             "--soapy ARGS | --iio URI"
 #elif defined(RDOF_SOAPY)

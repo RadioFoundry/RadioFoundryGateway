@@ -1275,7 +1275,10 @@ is read by a thread.
   one).
 - **An SDR beside it** (DEVICE, optional), opened receive only: it hears the modem's RX frequency as a channel of its
   own (`modem-rx`, when no channel is on it) and the settings' channels, with the spectrum, and carries the bench's line protocol. Bench DMR
-  jobs transmit on the modem in simplex. `--split-tx` and the SDR's transmitter flags are refused.
+  jobs transmit on the modem in simplex; a duplex modem runs `outbound` and `bench_repeater` too. `--split-tx` and the
+  SDR's transmitter flags are refused.
+- `--sim-sdr` in place of DEVICE: a receiver of noise, for tests with no RF (`host-tests/test_mmdvm_bench.py` runs the
+  whole bench on `fakemodem`).
 
 #### The bench's line protocol
 
@@ -1284,12 +1287,33 @@ bursts, wideband cs8 captures from a 2.5 s history, level-triggered channel capt
 `csbk`, `data`, `listen`) and `bench_repeater` jobs. A transmit job needs `--bench-tx MHZ[,MHZ...]` (up to 32
 frequencies) or bands, and the half duplex transceiver: it takes the SDR modem for its length, at `--tx-power`
 (bench_tx's `--power-dbm` is noted, not applied). On `--mmdvm` a job's power goes to an RF level on the modem's `tx`
-map under `--rf-level`. The `tune` op is `unsupported`, and a `trigger` or `rx` outside the
-window is refused. With the FPGA channelizer there's no wideband I/Q: capture, trigger, track and rx take the
+map under `--rf-level`. `tune` and a `trigger` or `rx` outside the window move the receiver for the job (bench-api.md
+§14.2). With the FPGA channelizer there's no wideband I/Q: capture, trigger, track and rx take the
 receiver's channels (2.5 s of each kept). When the bench line and the page listen past loopback, rdofradio lists them
 over DNS-SD (`_rfgbench._tcp` with TXT `kind` and `ver`, `_http._tcp`) through the host's responder, by running
 `avahi-publish-service` (a PlutoSDR's firmware has avahi) or macOS's `dns-sd` for as long as it runs; with neither,
 nothing is listed (`rdofradio_dnssd.c`).
+
+A bench line with only an MMDVM modem and an RTL-SDR (bench-api.md §14.9 lists what it can do):
+
+```sh
+# on a Linux box with libsoapysdr-dev and soapysdr-module-rtlsdr
+cmake -S . -B build/linux && cmake --build build/linux --target rdofradio
+build/linux/rdofradio --soapy driver=rtlsdr -r 2.4e6 --gain 30 --ppm PPM --allow-tx \
+    --mmdvm /dev/ttyAMA0 --rx MHZ --tx MHZ --duplex half --cc CC \
+    --bench 0.0.0.0:7373 --bench-tx MHZ,LOW-HIGH
+```
+
+- `--bench-tx` is every frequency and band a job may key on; without it, no transmit job runs. `--allow-tx` is
+  required.
+- `--ppm` is the RTL-SDR's crystal error, measured elsewhere: rdofradio doesn't measure it, and the bench's reports
+  are off by it otherwise. `--ppm-tol` says how well it is known.
+- `--duplex half` is a transceiver at rest, any modem. `--duplex full` needs a duplex board and runs a repeater;
+  jobs stop it and bring it back.
+- The serial port is whatever the modem is on (`/dev/ttyAMA0`, `/dev/ttyS0`, `/dev/ttyUSB0`, `/dev/ttyACM0`), with `--baud`
+  if it isn't the default. `--rf-level` caps the power of every job.
+- `--rx` and `--tx` are the modem's at rest; a job tunes the modem where it's asked. The SDR's window is `-r` wide, around
+  a center that holds the channels (or `--center`), and a request outside it tunes the SDR for itself.
 
 ### Host web page
 
