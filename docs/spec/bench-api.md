@@ -496,6 +496,9 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
   and `gap_us` (from the end burst's 27.5 ms) when sent, and `air_turnaround_us`, `air_gap_us`, `air_late_us` where
   the answer was heard back. `status` gives the entries after `since`, as many as fit; `next` is the `since` for the
   next read. `rfgbench.py mssim arm|disarm|status|watch`.
+  An `arm` where no channel decodes DMR (or past the transmitter's reach) tunes the receiver there first, as `trigger`
+  does; that tune is held while the responder is armed (until `disarm` or its `seconds`, or its session's end), and
+  other requests outside it are `busy` meanwhile.
 - `tune` moves the receiver's window for the session, as `PUT /sdr` under an exclusive lease (section 5; the same
   code on a board): fields left out stay as they are, `"auto"` is the settings', `taps` (up to 4 on a board) are
   receiver channels at any frequency in the window (ids `T1`...) that decode like configured ones, `[]` drops them.

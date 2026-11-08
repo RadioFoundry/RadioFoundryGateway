@@ -238,6 +238,7 @@ struct rdof_bl {
      * tune was being applied */
     int tune_sess, tune_conn, tune_wait, retuning;
     bool tuned, untune_after;
+    double tune_ms_until;     /* an armed responder's (mssim) tune, held until then or its disarm; 0 none */
     double retune_since;
     /* the request parser */
     int tx_conn;              /* the run transmitting now, -1 none */
@@ -1599,13 +1600,19 @@ static bool tuned_for_other(const rdof_bl_t *bl, const conn_t *c)
         return true;
     if (bl->tune_conn >= 0)
         return bl->tune_conn != (int)(c - bl->c);
+    if (bl->tune_ms_until > 0)
+        return bl->tune_sess < 0 || bl->tune_sess != c->sess;
     return bl->tune_sess >= 0 && bl->tune_sess != c->sess;
 }
 
 static void fail_tuned(rdof_bl_t *bl, conn_t *c, double mhz)
 {
     if (bl->tune_sess < 0) {
-        fail(bl, c, "busy", "the receiver is being retuned (%.4f MHz): try again in a moment", mhz);
+        if (bl->tune_conn >= 0 || bl->tune_ms_until > 0)
+            fail(bl, c, "busy", "%.4f MHz is outside the receiver's window, which %s has tuned for itself", mhz,
+                 bl->tune_ms_until > 0 ? "the armed responder" : "another request");
+        else
+            fail(bl, c, "busy", "the receiver is being retuned (%.4f MHz): try again in a moment", mhz);
         return;
     }
     const session_t *s = &bl->s[bl->tune_sess];
@@ -1613,11 +1620,11 @@ static void fail_tuned(rdof_bl_t *bl, conn_t *c, double mhz)
          s->label, bl->tune_conn >= 0 ? " for a request" : " until it ends or releases it");
 }
 
-/* Ask the platform for t on c's behalf (c's session must be set): false when it failed c. */
+/* Ask the platform for t on c's behalf (for its session, or for the request alone): false when it failed c. */
 static bool tune_ask(rdof_bl_t *bl, conn_t *c, const rdof_bl_tune_t *t, double now)
 {
     char why[200] = "";
-    const char *code = bl->p.tune(bl->p.ctx, t, bl->s[c->sess].id, why, sizeof why);
+    const char *code = bl->p.tune(bl->p.ctx, t, c->sess >= 0 ? bl->s[c->sess].id : "request", why, sizeof why);
     if (code) {
         fail(bl, c, code, "%s", why[0] ? why : "the receiver can't be tuned so");
         return false;
@@ -1643,6 +1650,7 @@ static void untune_now(rdof_bl_t *bl, double now)
 static void tune_end(rdof_bl_t *bl, double now)
 {
     bl->tune_sess = bl->tune_conn = -1;
+    bl->tune_ms_until = 0;
     if (bl->retuning == 1)
         bl->untune_after = true;
     else if (bl->tuned && !bl->retuning)
@@ -3348,6 +3356,9 @@ static void op_mssim(rdof_bl_t *bl, conn_t *c, int root, double now)
     }
     const rdof_bench_power_t power = {jnum(bl, root, "power_dbm", NAN), (int)jnum(bl, root, "power", 0)};
     const double seconds = jnum(bl, root, "seconds", 300.0);
+    /* a responder where no channel decodes DMR (or past the transmitter's reach): a tune there, held while armed */
+    if (!strcmp(action, "arm") && reach_tune(bl, c, root, mhz, true, true, now))
+        return;
     const uint32_t since = (uint32_t)jnum(bl, root, "since", 0);
     char *out = bl->ms_out;
     const char *code = "unavailable";
@@ -3356,6 +3367,11 @@ static void op_mssim(rdof_bl_t *bl, conn_t *c, int root, double now)
         fail(bl, c, code, "%s", out);
         return;
     }
+    if (!strcmp(action, "arm") && bl->tune_conn == (int)(c - bl->c)) { /* its tune outlasts the request */
+        bl->tune_conn = -1;
+        bl->tune_ms_until = now + (seconds > 0 && seconds < 1800 ? seconds : 1800);
+    } else if (!strcmp(action, "disarm") && bl->tune_ms_until > 0)
+        tune_end(bl, now);
     emit(bl, c, "{\"mssim\":{%s}}", out);
 }
 
@@ -4578,6 +4594,8 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
 void rdof_bl_tick(rdof_bl_t *bl, double now)
 {
     lock(bl);
+    if (bl->tune_ms_until > 0 && now >= bl->tune_ms_until) /* the responder's time is up: the settings again */
+        tune_end(bl, now);
     tick_tune(bl, now);
     tick_waits(bl, now);
     tick_bursts(bl, now);

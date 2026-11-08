@@ -2385,10 +2385,17 @@ static void tick_for(rdof_bl_t *bl, int c, double *now, int n, char *out, size_t
 
 /* tune: the session's own window until it ends or releases it; others busy meanwhile; a trigger outside the window
  * tunes for itself */
+static bool f_mssim(void *ctx, const char *action, const char *req, size_t len, uint32_t freq_hz, int cc,
+                    rdof_bench_power_t power, double seconds, uint32_t since, char *out, size_t cap, const char **code)
+{
+    snprintf(out, cap, "\"%s\":true,\"freq\":%.6f", action, freq_hz / 1e6);
+    return true;
+}
+
 static void test_tune(void)
 {
     rdof_bl_platform_t pt = PLAT;
-    pt.tune = f_tune, pt.tune_state = f_tune_state, pt.untune = f_untune;
+    pt.tune = f_tune, pt.tune_state = f_tune_state, pt.untune = f_untune, pt.mssim = f_mssim;
     rdof_bl_t *bl = rdof_bl_new(&pt);
     rdof_bl_ring_init(&ring, 768000);
     char out[65536], req[512], ida[16] = "", idb[16] = "";
@@ -2611,6 +2618,35 @@ static void test_tune(void)
     for (int i = 0; i < 8; i++)
         rdof_bl_tick(bl, now += 0.02);
     CHECK(isnan(ft.center), "untuned at the job's end");
+    ft.tunes = tunes0, ft.untunes = untunes0;
+    /* a responder armed where no channel hears: its tune outlasts the request, until its disarm */
+    c = ask(bl, "{\"op\":\"mssim\",\"action\":\"arm\",\"freq\":146.52,\"seconds\":60}", now);
+    for (int i = 0; i < 8; i++)
+        rdof_bl_tick(bl, now += 0.02);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "tuning the receiver to 146.5200 MHz") && strstr(out, "{\"mssim\":{\"arm\":true"),
+          "mssim arm: a tune, then armed: %s", out);
+    rdof_bl_closed(bl, c, now);
+    for (int i = 0; i < 8; i++)
+        rdof_bl_tick(bl, now += 0.02);
+    CHECK(fabs(ft.center - (146.52e6 - 96000)) < 1, "still tuned after the request (%.0f)", ft.center);
+    c = ask(bl, "{\"op\": \"trigger\", \"freq\": 438.1125, \"floor_db\": -60}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"busy\"") && strstr(out, "armed responder"), "others wait for it: %s", out);
+    rdof_bl_closed(bl, c, now);
+    c = ask(bl, "{\"op\":\"mssim\",\"action\":\"disarm\"}", now);
+    drain(bl, c, out, sizeof out);
+    rdof_bl_closed(bl, c, now);
+    for (int i = 0; i < 8; i++)
+        rdof_bl_tick(bl, now += 0.02);
+    CHECK(isnan(ft.center), "the disarm untunes (%.0f)", ft.center);
+    c = ask(bl, "{\"op\":\"mssim\",\"action\":\"arm\",\"freq\":146.52,\"seconds\":1}", now);
+    for (int i = 0; i < 8; i++)
+        rdof_bl_tick(bl, now += 0.02);
+    rdof_bl_closed(bl, c, now);
+    for (int i = 0; i < 70; i++)
+        rdof_bl_tick(bl, now += 0.02);
+    CHECK(isnan(ft.center), "and so does its time running out (%.0f)", ft.center);
     ft.tunes = tunes0, ft.untunes = untunes0;
     snprintf(req, sizeof req, "{\"op\": \"trigger\", \"session\": \"%s\", \"freq\": 145.1, \"tune\": false}", idb);
     c = ask(bl, req, now);
