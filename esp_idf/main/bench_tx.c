@@ -128,16 +128,10 @@ static void job_to_modem(void *ctx, const uint8_t *b, size_t n)
 
 /* ── via=modem through the router ─────────────────────────────────────────── */
 
-/* Version 3 with a roamer on the SDR: the modem is the router's, so a job's bursts are an app's stream for the pool. */
-static bool via_router(void)
-{
-#if RDOF_FEATURE_TX
-    const char *why = sdr_modem_bench_why();
-    return site_pool_on() && why && strstr(why, "roamer");
-#else
-    return false;
-#endif
-}
+/* A job's bursts went to the router's transmitter pool when a roamer owned the SDR modem; the pool's transceiver
+ * could refuse the stream (a call heard elsewhere in the last second) and framed it itself. A bench job comes first
+ * now: the roamer's modem is parked for it (sdr_modem_bench_open), its bursts go out as built. Never routed. */
+static bool via_router(void) { return false; }
 
 /* bench.tx's limit on a job's power (max_dbm, else rf_level on the transmitter's range). */
 static rdof_bench_limit_t limit(void)

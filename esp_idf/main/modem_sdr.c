@@ -262,17 +262,17 @@ void sdr_modem_retuned(double center_hz)
     GIVE();
 }
 
+/* A bench job comes first: a roamer's modem is parked for it whether the job borrows or not, and a call it is
+ * sending is cut (sdr_modem_bench_open). Only another bench job on the modem, a roamer still starting, or a front end
+ * that can't, says no. */
 const char *sdr_modem_bench_borrow_why(bool borrow)
 {
+    (void)borrow;
     if (bench_reply)
         return "the SDR's modem is in use by another bench job";
 #if CONFIG_RDOF_ROAMER
-    if (owner && !borrow)
-        return "the SDR's modem belongs to a roamer (an sdr_transceiver)";
-    if (owner && !mdm)
+    if (owner && !mdm && !parked) /* only while it starts (the seconds after boot): its modem_up would take over */
         return "the roamer's SDR modem isn't up yet";
-    if (owner && rdof_sdrmodem_transmitting(mdm))
-        return "the roamer is transmitting";
 #endif
     return frontend_why();
 }
@@ -292,7 +292,10 @@ const char *sdr_modem_bench_open(void (*reply)(void *ctx, const uint8_t *frame, 
         lock = xSemaphoreCreateMutex();
     TAKE();
     const char *why = sdr_modem_bench_borrow_why(borrow);
-    if (!why && mdm) { /* the roamer's: parked, the front end the bench's */
+    if (!why && mdm) { /* the roamer's: parked, the front end the bench's; a call it was sending cut */
+        if (rdof_sdrmodem_transmitting(mdm))
+            ESP_LOGI(TAG, "a bench job cuts the roamer's transmission");
+        rdof_sdrmodem_preempt(mdm);
         parked = mdm;
         mdm = NULL;
     }
