@@ -2578,10 +2578,29 @@ static void test_tune(void)
     CHECK(isnan(ft.center) && ft.untunes == 3, "applied, then untuned (%d, %.0f)", ft.untunes, ft.center);
 
     /* a trigger outside the window, with a session: it tunes for itself, then the settings once it ends */
+    const int tunes0 = ft.tunes, untunes0 = ft.untunes;
     c = ask(bl, "{\"op\": \"trigger\", \"freq\": 145.1, \"floor_db\": -60}", now);
     drain(bl, c, out, sizeof out);
-    CHECK(strstr(out, "\"code\":\"refused\"") && strstr(out, "with a session"), "no session, no tune: %s", out);
+    CHECK(strstr(out, "tuning the receiver to 145.1000 MHz"), "no session: a tune all the same: %s", out);
+    for (int i = 0; i < 8; i++)
+        rdof_bl_tick(bl, now += 0.02);
     rdof_bl_closed(bl, c, now);
+    for (int i = 0; i < 8; i++)
+        rdof_bl_tick(bl, now += 0.02);
+    CHECK(ft.tunes == tunes0 + 1 && ft.untunes == untunes0 + 1 && isnan(ft.center), "applied, untuned at its end (%d %d)",
+          ft.tunes - tunes0, ft.untunes - untunes0);
+    ft.tunes = tunes0, ft.untunes = untunes0; /* the counts below as before */
+    /* bursts where no channel decodes DMR: a tune of its own too (on a board its tap decodes DMR) */
+    c = ask(bl, "{\"op\": \"bursts\", \"freq\": 145.1, \"seconds\": 5}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "tuning the receiver to 145.1000 MHz"), "bursts outside: a tune: %s", out);
+    for (int i = 0; i < 8; i++)
+        rdof_bl_tick(bl, now += 0.02);
+    rdof_bl_closed(bl, c, now);
+    for (int i = 0; i < 8; i++)
+        rdof_bl_tick(bl, now += 0.02);
+    CHECK(isnan(ft.center), "untuned at the bursts' end");
+    ft.tunes = tunes0, ft.untunes = untunes0;
     snprintf(req, sizeof req, "{\"op\": \"trigger\", \"session\": \"%s\", \"freq\": 145.1, \"tune\": false}", idb);
     c = ask(bl, req, now);
     drain(bl, c, out, sizeof out);

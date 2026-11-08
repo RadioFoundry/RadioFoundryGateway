@@ -1227,7 +1227,14 @@ static void op_bursts(rdof_bl_t *bl, conn_t *c, int root, double now, bool liste
     const double mhz = jnum(bl, root, "freq", NAN);
     const int k = isfinite(mhz) ? freq_index(bl, mhz) : -1;
     if (k < 0 || bl->f[k].ch < 0 || !(bl->f[k].caps & RDOF_BL_CAP_DMR)) {
-        if (isfinite(mhz) && tuned_for_other(bl, c))
+        /* no channel there: a tune of its own, as a trigger's (a tap there decodes DMR), when the bench can */
+        rdof_bl_window_t w;
+        get_window(bl, &w);
+        if (isfinite(mhz) && bl->p.tune && w.running && w.fs > 0)
+            outside(bl, c, root, mhz, &w, now);
+        else if (isfinite(mhz) && rerun_after_tune(bl, c))
+            return;
+        else if (isfinite(mhz) && tuned_for_other(bl, c))
             fail_tuned(bl, c, mhz);
         else
             fail(bl, c, "refused", "no receiver channel decodes DMR at %.4f MHz on this bench", mhz);
@@ -1304,11 +1311,7 @@ static void op_capture(rdof_bl_t *bl, conn_t *c, int root, double now)
         return;
     }
     if (!isfinite(mhz) || mhz * 1e6 < w.lo_hz || mhz * 1e6 > w.hi_hz) {
-        if (isfinite(mhz) && tuned_for_other(bl, c))
-            fail_tuned(bl, c, mhz);
-        else
-            fail(bl, c, "refused", "%.4f MHz is outside the receiver's window (%.4f-%.4f MHz)", mhz, w.lo_hz / 1e6,
-                 w.hi_hz / 1e6);
+        outside(bl, c, root, mhz, &w, now); /* a tune of its own there for the capture, as a trigger's */
         return;
     }
     if (!(secs > 0) || secs > 600) {
@@ -1823,8 +1826,9 @@ static void op_tune(rdof_bl_t *bl, conn_t *c, int root, double now)
     c->state = C_ACTIVE;
 }
 
-/* A trigger's or rx's frequency is outside the window: busy while the tune is someone else's; with a session and
- * nothing else using the window, a tune of its own there (the frequency an eighth of the rate above the center, clear
+/* A request's frequency is outside the window (a trigger, rx, capture, bursts): busy while the tune is someone
+ * else's; with nothing else using the window, a tune of its own there (with or without a session: the request's
+ * connection holds it) (the frequency an eighth of the rate above the center, clear
  * of the DC, with a tap on it, as benchapi's capture() does) for as long as the request lasts; else refused. */
 static void outside(rdof_bl_t *bl, conn_t *c, int root, double mhz, const rdof_bl_window_t *w, double now)
 {
@@ -1838,8 +1842,6 @@ static void outside(rdof_bl_t *bl, conn_t *c, int root, double mhz, const rdof_b
         why = "";
     else if (bl->tune_conn == ci)
         why = " (after its tune)";
-    else if (c->sess < 0)
-        why = " (a request with a session has it tuned there)";
     else if (bl->tune_sess >= 0)
         why = " (as the session tuned it)";
     for (int i = 0; !why && i < RDOF_BL_CONNS; i++) {

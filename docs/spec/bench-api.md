@@ -507,11 +507,12 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
   `capture`, `trigger`, `rx`); one inside the window runs. On a board an HTTP exclusive lease makes `tune` `busy`
   and the reverse. A tune or its end ends the streams cut from the window (`bursts` and `listen` with `done.reason`
   `"retuned"`, `capture`, `trigger` and `rx` with `busy`). rdofradio can't retune its receiver: `unsupported`.
-- `trigger` and `rx` at a frequency outside the window, with a session, tune for themselves when nobody holds the
-  window and no other request is using it: `{"note": "tuning the receiver to F MHz for this request"}`, the center an
-  eighth of the rate under the frequency (clear of the DC) with a tap on it, then the op as usual; the settings come
-  back when the request ends. `"tune": false` refuses instead; with no session, or while another request uses the
-  window, it is `refused` or `busy` as before.
+- `trigger`, `rx`, `capture` and `bursts` at a frequency outside the window (for `bursts`, any frequency no
+  channel decodes DMR on), with or without a session, tune for themselves when nobody holds the window and no other
+  request is using it: `{"note": "tuning the receiver to F MHz for this request"}`, the center an eighth of the rate
+  under the frequency (clear of the DC) with a tap on it (a board's tap decodes DMR), then the op as usual; the
+  settings come back when the request ends. `"tune": false` refuses instead; while another request uses the window,
+  or another session holds the tune, it is `busy`.
 - `claim` refuses a frequency the bench doesn't list (no receiver channel, not in `bench.tx`). Receiving needs no
   claim; the HIL tools claim anyway, and a claim keeps another session's job off the frequency.
 - `capture` sends the receiver's wideband samples, cs8 (int8 I, Q; full scale 127), at the front end's rate, with up
