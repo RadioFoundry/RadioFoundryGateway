@@ -1977,10 +1977,26 @@ static const char *bl_can_tx(void *ctx)
 {
     if (R.split)
         return "a split repeater's radio transmits, not the SDR: no transmit jobs here";
-    if (R.full && R.mmdvm) /* an SDR's repeater gives a job the transmitter (owner_yield); an MMDVM modem's can't */
-        return "an MMDVM modem's duplex repeater keeps the transmitter";
     if (!bench_ntx && !bench_nband)
         return "no transmit frequencies (--bench-tx)";
+    return NULL;
+}
+
+/* --mmdvm: an MMDVM modem on a serial port is what transmits. */
+static const char *bl_station(void *ctx, char *model, size_t cap)
+{
+    snprintf(model, cap, "%.*s", (int)(cap > 1 ? cap - 1 : 0), R.client.version);
+    return "mmdvm";
+}
+
+/* What an MMDVM modem physically can't do (the SDR beside it only receives). */
+static const char *bl_cannot(void *ctx, const char *what)
+{
+    if (!strcmp(what, "signal_tx"))
+        return "an MMDVM modem's serial protocol sends DMR bursts: no FM, AM or arbitrary I/Q, and the SDR beside it "
+               "only receives";
+    if ((!strcmp(what, "repeater") || !strcmp(what, "outbound")) && rdof_modem_simplex_only(R.client.version))
+        return "this modem has one transceiver (a simplex hotspot): a repeater or an outbound needs a duplex modem";
     return NULL;
 }
 
@@ -2000,6 +2016,9 @@ static struct {
     bool mapped;            /* the key-up's edge was heard back: modem sample map_pos was on the air at map_t */
     int64_t map_pos;
     double map_t, keyed_at; /* first seen keyed (0: not yet) */
+    int ch;                 /* --mmdvm: the receiver channel the outbound is heard on, -1 none */
+    int64_t key48;          /* --mmdvm: the receiver's 48 kS/s sample when the modem keyed */
+    int64_t slot0_48;       /* --mmdvm: where its slot 0 started (a heard burst's slot, else key48) */
     struct {                /* voice bursts the bench's thread pushed, for the main loop to write (bench_ob_fast) */
         uint8_t slot, control, burst[33];
     } q[32];
@@ -2130,8 +2149,11 @@ static struct {
 
 /* The engine lets a job go (its close hook) before the main loop has given the transmitter back: the next job's open
  * waits for that (3 s at most) instead of failing "still busy with the last job". */
+static bool ms_disarming(void);
 static bool job_closing(void)
 {
+    if (ms_disarming()) /* a responder's disarm reaches the main loop on its next turn */
+        return true;
     pthread_mutex_lock(&BS.mu);
     pthread_mutex_lock(&BT.mu);
     pthread_mutex_lock(&BO.mu);
@@ -2210,12 +2232,7 @@ static double bl_sig_rate(void *ctx) { return rdof_sdrmodem_signal_rate(&R.m); }
  * heard back (the AD9361 hears its own transmitter), ties the modem sample it was put at to the receiver's sample
  * and so to UTC (the bursts' times as the receiver reports them). Unheard within a second, modem sample p is taken to
  * be on the air at wideband sample p plus tx_late48. */
-static const char *bl_ob_can(void *ctx)
-{
-    if (R.mmdvm)
-        return "the MMDVM modem transmits here, and an outbound job keys the SDR's own: none on --mmdvm";
-    return bl_can_tx(ctx);
-}
+static const char *bl_ob_can(void *ctx) { return bl_can_tx(ctx); }
 
 static bool bl_ob_open(void *ctx, const rdof_bl_ob_cfg_t *cfg, char *why, size_t cap)
 {
@@ -2254,6 +2271,10 @@ static int bl_ob_state(void *ctx, rdof_bl_ob_state_t *s, char *why, size_t cap)
 
 /* An outbound's voice burst (ob_push): queued for the main loop, which owns the modem; it writes it as the host's
  * DMR_DATA1 / DMR_DATA2 on its next turn (bench_ob_fast), a few ms later. A full queue drops it (counted late). */
+/* --mmdvm: the outbound as a duplex modem runs it: the modem keeps its own slot clock, unseen from here, so its
+ * slot 0 and the slots' numbers (even: TS1) come from a burst the SDR hears, or failing that from when it keyed. */
+static int64_t mm_now48(void) { return (int64_t)((double)BL.ring.w * 48000.0 / R.rate); }
+
 static void bl_ob_push(void *ctx, int slot, uint8_t control, const uint8_t burst[33])
 {
     pthread_mutex_lock(&BO.mu);
@@ -2283,9 +2304,35 @@ static void bl_ob_close(void *ctx)
     pthread_mutex_unlock(&BO.mu);
 }
 
+static void ob_clock_mm(double now)
+{
+    if (!BO.mapped && BO.keyed_at && now - BO.keyed_at > 1.0) { /* never heard (no channel on it): when it keyed */
+        BO.mapped = true, BO.slot0_48 = BO.key48;
+        say("bench: the outbound wasn't heard: its slot times are from when the modem keyed\n");
+    }
+    const double rate = R.rate;
+    const int64_t z = (int64_t)((double)BO.slot0_48 * rate / 48000.0); /* wideband samples, as the bursts' sc */
+    const double slot = rate * 0.03;
+    long next = BO.s.next; /* the key-up over: the last slot queued stays the last */
+    if (!BO.unkeyed) {
+        next = (long)floor((double)(mm_now48() - BO.slot0_48) / 1440.0) + 1;
+        if (next < 0)
+            next = 0;
+    }
+    BO.s = (rdof_bl_ob_state_t){.keyed = !BO.unkeyed && BO.mapped, .first = 0, .next = next, .base = z,
+                                .slot = slot, .rate = rate, .sync_off = (int)llround(rate * 775.0 / 48000.0),
+                                .on_air = BO.mapped, .map_pos = z,
+                                .map_t = BO.mapped ? bl_sc_utc(NULL, (uint64_t)z) : 0.0, .ppm = xtal()};
+    BO.state = BO.unkeyed ? 2 : BO.mapped ? 1 : 0;
+}
+
 /* The outbound's slot clock copied out for the bench's thread (BO.mu held). */
 static void ob_clock(double now)
 {
+    if (R.mmdvm) {
+        ob_clock_mm(now);
+        return;
+    }
     const rdof_sdrmodem_t *m = &R.m;
     const bool keyed = m->keyed && m->key_k >= 0;
     if (keyed && !BO.keyed_at)
@@ -2312,8 +2359,18 @@ static void ob_clock(double now)
  * 1: the job may start; 0: not yet, the owner paused while the key-down ramps out; -1: not yet, the owner runs. */
 static int owner_yield(double now, double asked)
 {
-    if (R.mmdvm)
+    if (R.mmdvm) {
+        if (R.full) { /* a duplex repeater stops for the job and starts again after it (owner_resume) */
+            if (!RP.on) {
+                RP.on = true;
+                RP.lo = R.tx_lo;
+                rdof_repeater_stop(&R.r);
+                say("bench: a job stops the repeater on the modem\n");
+            }
+            return 1;
+        }
         return R.t.has_call && now - asked < 10.0 ? -1 : 1;
+    }
     if (!RP.on) {
         RP.on = true;
         RP.lo = R.tx_lo;
@@ -2377,16 +2434,96 @@ static void bench_ob_fast(void)
         uint8_t p[34], f[40];
         p[0] = e.control;
         memcpy(p + 1, e.burst, 33);
-        rdof_sdrmodem_write(&R.m, f, rdof_mmdvm_frame(e.slot == 1 ? RDOF_MMDVM_DMR_DATA1 : RDOF_MMDVM_DMR_DATA2, p,
-                                                      sizeof p, f, sizeof f));
+        const size_t fn = rdof_mmdvm_frame(e.slot == 1 ? RDOF_MMDVM_DMR_DATA1 : RDOF_MMDVM_DMR_DATA2, p, sizeof p, f,
+                                           sizeof f);
+        bt_to_modem(NULL, f, fn);
     }
     ob_clock(now_s());
+    pthread_mutex_unlock(&BO.mu);
+}
+
+/* --mmdvm: the outbound's turn on a duplex modem. It keys with DMR_START; its idle outbound and CACH are the modem's
+ * own, the voice bursts its host's DMR_DATA1 / DMR_DATA2 (bench_ob_fast). */
+static bool bench_ob_poll_mm(double now)
+{
+    pthread_mutex_lock(&BO.mu);
+    if (BO.want == 1 && !BO.active) {
+        const int y = owner_yield(now, BO.asked);
+        if (y <= 0) {
+            pthread_mutex_unlock(&BO.mu);
+            return y == 0;
+        }
+        BO.want = 0;
+        const rdof_bl_ob_cfg_t c = BO.cfg;
+        pthread_mutex_unlock(&BO.mu);
+        /* blocking, BO.active still false: the modem's replies go to its client. Its RX frequency is unused:
+           the job's own */
+        const bool ok = rdof_modem_start(&R.client, 1) &&
+                        rdof_radio_tune_duplex(&R.radio, c.freq_hz, c.freq_hz, c.cc, bench_level(c.power)) &&
+                        rdof_modem_dmr_start(&R.client, true);
+        pthread_mutex_lock(&BO.mu);
+        if (!ok) {
+            BO.failed = true;
+            snprintf(BO.why, sizeof BO.why, "the modem refused the duplex setup: %s", R.client.error);
+            pthread_mutex_unlock(&BO.mu);
+            owner_resume(true);
+            return true;
+        }
+        BO.active = true, BO.keyed_at = now, BO.mapped = false;
+        BO.key48 = BO.slot0_48 = mm_now48();
+        BO.ch = channel_of(c.freq_hz);
+        say("bench: an outbound has the modem: %.4f MHz cc %d, %.1f s\n", c.freq_hz / 1e6, c.cc, c.seconds);
+    }
+    if (!BO.active) {
+        pthread_mutex_unlock(&BO.mu);
+        return false;
+    }
+    if (BO.want == 2 && !BO.unkeyed) { /* the key-up ends after the slot being queued */
+        BO.unkeyed = true, BO.want = 0;
+        pthread_mutex_unlock(&BO.mu);
+        rdof_modem_dmr_start(&R.client, false);
+        pthread_mutex_lock(&BO.mu);
+    }
+    if (BO.want == 3) { /* over: DMR_START off, the modem back to its owner */
+        const bool unkeyed = BO.unkeyed;
+        pthread_mutex_unlock(&BO.mu);
+        if (!unkeyed)
+            rdof_modem_dmr_start(&R.client, false);
+        pthread_mutex_lock(&BO.mu);
+        BO.active = false, BO.want = 0;
+        pthread_mutex_unlock(&BO.mu);
+        owner_resume(true);
+        return true;
+    }
+    ob_clock_mm(now);
+    pthread_mutex_unlock(&BO.mu);
+    return true;
+}
+
+/* --mmdvm: a burst the SDR heard while an outbound keys: the first with its CACH places the modem's slots. */
+static void ob_heard(int c, const rdof_sdr_burst_t *b)
+{
+    pthread_mutex_lock(&BO.mu);
+    if (BO.active && !BO.mapped && c == BO.ch && b->has_cach && (b->b.slot == 1 || b->b.slot == 2)) {
+        const int64_t s = b->position - 120; /* the burst starts after its slot's 12-symbol CACH */
+        long k = (long)floor((double)(s - BO.key48) / 1440.0 + 0.5);
+        if (k < 0)
+            k = 0;
+        if ((k & 1) != b->b.slot - 1)
+            k++;
+        BO.slot0_48 = s - k * 1440;
+        BO.mapped = true;
+        say("bench: the outbound heard on the SDR: slot %d, slot 0 %.2f ms after the modem keyed\n", b->b.slot,
+            (double)(BO.slot0_48 - BO.key48) / 48.0);
+    }
     pthread_mutex_unlock(&BO.mu);
 }
 
 /* The main loop's turn for an outbound: true while one has the modem. */
 static bool bench_ob_poll(double now)
 {
+    if (R.mmdvm)
+        return bench_ob_poll_mm(now);
     pthread_mutex_lock(&BO.mu);
     if (BO.want == 1 && !BO.active) {
         const int y = owner_yield(now, BO.asked);
@@ -2417,7 +2554,6 @@ static bool bench_ob_poll(double now)
         pthread_mutex_lock(&BO.mu);
     }
     if (BO.want == 3) { /* over: the role dropped (SET_ROLE none), the modem back to the transceiver */
-        BO.want = 0;
         pthread_mutex_unlock(&BO.mu);
         static const uint8_t off = 0, none[2] = {1, 0}; /* 0xD6 SET_ROLE 0 */
         uint8_t f[8];
@@ -2425,7 +2561,7 @@ static bool bench_ob_poll(double now)
             rdof_sdrmodem_write(&R.m, f, rdof_mmdvm_frame(RDOF_MMDVM_DMR_START, &off, 1, f, sizeof f));
         rdof_sdrmodem_write(&R.m, f, rdof_mmdvm_frame(0xD6, none, sizeof none, f, sizeof f));
         pthread_mutex_lock(&BO.mu);
-        BO.active = false;
+        BO.active = false, BO.want = 0;
         pthread_mutex_unlock(&BO.mu);
         owner_resume(true);
         return true;
@@ -2493,12 +2629,12 @@ static bool bench_tx_poll(double now)
         pthread_mutex_unlock(&BT.mu);
         return false;
     }
-    if (BT.want == 2) { /* the job is over: the modem back to the transceiver */
-        BT.want = 0, BT.nin = 0;
+    if (BT.want == 2) { /* the job is over: the modem back to the transceiver (want stays 2 until it is: job_closing) */
+        BT.nin = 0;
         pthread_mutex_unlock(&BT.mu);
         rdof_benchtx_stop(&BT.tx, NULL, "closed", now);
         pthread_mutex_lock(&BT.mu);
-        BT.active = false;
+        BT.active = false, BT.want = 0;
         pthread_mutex_unlock(&BT.mu);
         owner_resume(true);
         return true;
@@ -2537,10 +2673,64 @@ static struct {
     rdof_mssim_t s;
 } MS = {.mu = PTHREAD_MUTEX_INITIALIZER, .ch = -1};
 
+static bool ms_disarming(void)
+{
+    pthread_mutex_lock(&MS.mu);
+    const bool d = MS.want == 2;
+    pthread_mutex_unlock(&MS.mu);
+    return d;
+}
+
 #define MS_LEAD48 1440 /* answers go to the modulator this far ahead of where it is */
+
+/* --mmdvm: an MMDVM modem can't place a burst at a sample: the answers go to it when they're due, this far ahead
+ * (the serial port, its queue and a key-up's delay; each answer heard back corrects it) */
+#define MM_LEAD48_0 9600  /* 200 ms */
+static int64_t mm_lead48 = MM_LEAD48_0;
+#define MM_SENT 16
+static struct {
+    uint8_t burst[33];
+    int64_t at48;
+} mm_sent[MM_SENT]; /* what went to the modem lately: a burst heard that matches is our own, heard back */
+static unsigned mm_nsent;
+
+static bool ms_send_mm(void *ctx, int64_t at48, const uint8_t burst[33], int64_t *placed48)
+{
+    int cc = 0, dt = 0, err = 0;
+    if (!rdof_decode_slot_type(burst, &cc, &dt, &err))
+        return false;
+    uint8_t p[34], f[40];
+    p[0] = RDOF_SYNC_DATA | (uint8_t)dt;
+    memcpy(p + 1, burst, 33);
+    if (!mm_write(f, rdof_mmdvm_frame(RDOF_MMDVM_DMR_DATA2, p, sizeof p, f, sizeof f)))
+        return false;
+    int64_t now = mm_now48() + mm_lead48;
+    *placed48 = at48 > now ? at48 : now;
+    memcpy(mm_sent[mm_nsent % MM_SENT].burst, burst, 33);
+    mm_sent[mm_nsent++ % MM_SENT].at48 = *placed48;
+    return true;
+}
+
+/* Our own answer on the SDR's channel: within 400 ms of where it was placed and within RDOF_SDRMODEM_SENT_BITS bits
+ * of what was sent. */
+static bool mm_is_echo(const rdof_sdr_burst_t *b)
+{
+    for (unsigned i = 0; i < mm_nsent && i < MM_SENT; i++) {
+        if (llabs(b->position - mm_sent[(mm_nsent - 1 - i) % MM_SENT].at48) > 19200)
+            continue;
+        int d = 0;
+        for (int k = 0; k < 33; k++)
+            d += __builtin_popcount(b->b.burst[k] ^ mm_sent[(mm_nsent - 1 - i) % MM_SENT].burst[k]);
+        if (d <= RDOF_SDRMODEM_SENT_BITS)
+            return true;
+    }
+    return false;
+}
 
 static bool ms_send(void *ctx, int64_t at48, const uint8_t burst[33], int64_t *placed48)
 {
+    if (R.mmdvm)
+        return ms_send_mm(ctx, at48, burst, placed48);
     return rdof_sdrmodem_place48(&R.m, at48, burst, placed48);
 }
 
@@ -2550,6 +2740,18 @@ static bool ms_send(void *ctx, int64_t at48, const uint8_t burst[33], int64_t *p
  * one off, 2026-11-08) */
 static atomic_int late_rebase;
 static int64_t path48 = -1; /* the transmit path's delay last measured from a key-up's edge (48 kS/s), -1: none yet */
+
+/* The transmit path's delay moved by d48: the SDR modem's tx_late48, or the MMDVM path's lead. */
+static void ms_late(int64_t d48)
+{
+    if (R.mmdvm) {
+        mm_lead48 += d48;
+        mm_lead48 = mm_lead48 < 240 ? 240 : mm_lead48 > 28800 ? 28800 : mm_lead48; /* 5 ms to 600 ms */
+    } else {
+        R.m.tx_late48 += d48;
+        atomic_store(&late_rebase, 1);
+    }
+}
 
 static void ms_off(const char *why)
 {
@@ -2586,8 +2788,9 @@ static void ms_poll(double now)
             MS.late48 = R.m.tx_late48;
             uint8_t idle[33], z[12] = {0};
             rdof_data_burst(z, RDOF_DT_IDLE, BT.cc, rdof_data_sync(RDOF_MS_VOICE), idle);
-            int64_t at = rdof_sdrmodem_tx_frontier48(&R.m) + RDOF_MSSIM_SLOT48, placed = -1;
-            MS.cal48 = rdof_sdrmodem_place48(&R.m, at, idle, &placed) ? placed : -1;
+            int64_t at = (R.mmdvm ? mm_now48() + mm_lead48 : rdof_sdrmodem_tx_frontier48(&R.m)) + RDOF_MSSIM_SLOT48;
+            int64_t placed = -1;
+            MS.cal48 = ms_send(NULL, at, idle, &placed) ? placed : -1;
             MS.cal_at = now;
             say("bench: the responder is armed on %.4f MHz%s\n", MS.freq / 1e6,
                 MS.cal48 >= 0 ? ", calibrating" : " (no calibration burst)");
@@ -2599,6 +2802,8 @@ static void ms_poll(double now)
             ms_off("its time is up");
         else if (!MS.s.armed)
             ms_off("it answered its count");
+        else if (R.mmdvm)
+            rdof_mssim_poll(&MS.s, mm_now48(), mm_lead48);
         else
             rdof_mssim_poll(&MS.s, rdof_sdrmodem_tx_frontier48(&R.m), MS_LEAD48);
     } else if (MS.want == 2) {
@@ -2612,14 +2817,14 @@ static void ms_heard(int c, const rdof_sdr_burst_t *b, bool echo)
     if (!MS.on || c != MS.ch) /* a racy peek: on changes on this thread only */
         return;
     pthread_mutex_lock(&MS.mu);
+    echo = echo || (R.mmdvm && mm_is_echo(b));
     if (MS.on) {
         if (!echo) {
             rdof_mssim_heard(&MS.s, &b->b, b->position);
         } else if (MS.cal48 >= 0 && b->b.dt == RDOF_DT_IDLE && llabs(b->position - MS.cal48) < 4 * 2880) {
-            R.m.tx_late48 += b->position - MS.cal48;
-            atomic_store(&late_rebase, 1);
+            ms_late(b->position - MS.cal48);
             say("bench: the responder's transmit path is %.2f ms past its place (tx_late %.2f ms)\n",
-                (double)(b->position - MS.cal48) / 48.0, (double)R.m.tx_late48 / 48.0);
+                (double)(b->position - MS.cal48) / 48.0, (double)(R.mmdvm ? mm_lead48 : R.m.tx_late48) / 48.0);
             MS.cal48 = -1;
         } else if (b->b.dt == RDOF_DT_DATA_HEADER) {
             rdof_mssim_echo(&MS.s, b->position);
@@ -2627,7 +2832,7 @@ static void ms_heard(int c, const rdof_sdr_burst_t *b, bool echo)
             for (int i = 0; i < MS.s.nlog; i++) {
                 const rdof_mssim_entry_t *e = &MS.s.log[i];
                 if (e->air48 == b->position && e->placed48 >= 0 && llabs(e->air48 - e->placed48) > 24)
-                    R.m.tx_late48 += (e->air48 - e->placed48) / 2, atomic_store(&late_rebase, 1);
+                    ms_late((e->air48 - e->placed48) / 2);
             }
         }
     }
@@ -2646,11 +2851,8 @@ static bool bl_mssim(void *ctx, const char *action, const char *req, size_t len,
             snprintf(out, cap, "%s", err);
             return false;
         }
-        if (R.mmdvm) { /* a duplex repeater's SDR modem yields to it as to any job (owner_yield): simplex then */
-            *code = "unavailable";
-            snprintf(out, cap, "the responder needs the SDR's own modem, not an MMDVM modem");
-            return false;
-        }
+        /* an MMDVM modem takes it too, over the transmit job's setup: its timing to the serial port's and the key-up's
+           delay (mm_lead48), measured from the calibration burst and each answer heard back; the log says where they went */
         const int ch = channel_of(freq_hz);
         if (ch < 0) {
             *code = "refused";
@@ -2808,7 +3010,7 @@ static bool bench_rpt_poll(double now)
         return false;
     }
     if (BR.want == 2) { /* the job is over: the modem back to the transceiver */
-        BR.want = 0, BR.nwake = 0;
+        BR.nwake = 0;
         pthread_mutex_unlock(&BR.mu);
         rdof_repeater_stop(&BR.r);
         R.m.tx_late48 = BR.late48;
@@ -2816,7 +3018,7 @@ static bool bench_rpt_poll(double now)
         if (BR.rx_ch >= 0)
             rdof_sdr_rx_set_cc(&R.rx, BR.rx_ch, CH[BR.rx_ch].cc);
         pthread_mutex_lock(&BR.mu);
-        BR.active = false, BR.nev = 0;
+        BR.active = false, BR.nev = 0, BR.want = 0;
         pthread_mutex_unlock(&BR.mu);
         owner_resume(true);
         return true;
@@ -2944,8 +3146,11 @@ static void bench_start(void)
                                           .ob_push = bl_ob_push, .tune = bl_tune, .tune_state = bl_tune_state,
                                           .untune = bl_untune};
     rdof_bl_platform_t p = pf;
-    if (R.mmdvm) /* the modem transmits DMR only: no signal modes */
+    if (R.mmdvm) { /* the modem transmits DMR only: no signal modes */
         p.sig_open = NULL, p.sig_state = NULL, p.sig_close = NULL;
+        p.station = bl_station, p.cannot = bl_cannot;
+        p.rpt_own_rx = true; /* the repeater job hears on the modem's own receiver */
+    }
     if (FX.on) /* no wideband I/Q: capture, trigger, track and rx take a channel's own outputs (bl_ch_*); the ring
                   stays, filler, for the sample count the bursts' times come from */
         p.iq_read = NULL, p.iq_filled = NULL, p.iq_warm = NULL, p.ch_open = bl_ch_open, p.ch_read = bl_ch_read,
@@ -2982,7 +3187,9 @@ static void bench_stop(void)
 
 static void on_burst(void *ctx, int c, const rdof_sdr_burst_t *b, double t)
 {
-    if (!R.mmdvm)
+    if (R.mmdvm)
+        ob_heard(c, b);
+    else
         rdof_sdrmodem_heard(&R.m, c, b);
     ms_heard(c, b, false);
     if (NX)
@@ -4870,6 +5077,7 @@ static int mmdvm_main(int argc, char **argv, const char *port, int baud, double 
         mm_turn();
         bench_ob_fast();
         const double now = now_s();
+        ms_poll(now);
         if (now - last_poll >= POLL_S) {
             last_poll = now;
             if (R.parrot)
@@ -4998,6 +5206,7 @@ static int hold(int argc, char **argv, const char *why)
 int main(int argc, char **argv)
 {
     const char *soapy = NULL, *iio = NULL, *stream_args = "", *fft = NULL, *split_tx = NULL, *mmdvm = NULL;
+    bool sim_sdr = false; /* --sim-sdr: rdofradio_sim.c's receiver, for no-RF tests */
     double mm_rx_off = 0, mm_tx_off = 0, mm_rx_level = NAN, mm_tx_level = NAN;
     int mm_flags = 0;
     int baud = 115200, power_cap = 0, tx_flags = 0;
@@ -5014,7 +5223,9 @@ int main(int argc, char **argv)
             usage();                                                                                              \
         i++;                                                                                                      \
     } while (0)
-        if (!strcmp(a, "--soapy")) {
+        if (!strcmp(a, "--sim-sdr")) {
+            sim_sdr = true;
+        } else if (!strcmp(a, "--soapy")) {
             NEXT();
             soapy = v;
         } else if (!strcmp(a, "--iio")) {
@@ -5290,7 +5501,7 @@ int main(int argc, char **argv)
     }
     R.full = !strcmp(duplex, "full");
     R.mmdvm = mmdvm != NULL;
-    if ((soapy && iio) || (!soapy && !iio && !R.mmdvm) || !rx || (!R.full && strcmp(duplex, "half")))
+    if ((soapy && iio) || (!soapy && !iio && !sim_sdr && !R.mmdvm) || !rx || (!R.full && strcmp(duplex, "half")))
         usage();
     if (config_path && !R.mmdvm && rcfg.on_modem && !rcfg.full) {
         char why[300];
@@ -5431,7 +5642,7 @@ int main(int argc, char **argv)
 
     if (R.mmdvm) {
         mm_tracker_init(); /* the modem's: the radio's RX for the network, MQTT and the page */
-        if (!soapy && !iio) { /* no SDR: the modem alone */
+        if (!soapy && !iio && !sim_sdr) { /* no SDR: the modem alone */
             if (rcfg.nchan)
                 fprintf(stderr, "receiver: no SDR (DEVICE): its %d channels left out\n", rcfg.nchan);
             sr_start();
@@ -5571,6 +5782,8 @@ int main(int argc, char **argv)
     if (soapy)
         dev = rdofradio_soapy_open(soapy, &su, derr, sizeof derr);
 #endif
+    if (sim_sdr)
+        dev = rdofradio_sim_open(&su, derr, sizeof derr);
     if (!dev) {
         fprintf(stderr, "%s\n", derr);
         return 1;

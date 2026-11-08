@@ -297,6 +297,16 @@ typedef struct {
      * "bad_request", "unavailable"). */
     bool (*mssim)(void *ctx, const char *action, const char *req, size_t len, uint32_t freq_hz, int cc,
                   rdof_bench_power_t power, double seconds, uint32_t since, char *out, size_t cap, const char **code);
+    /* What transmits, for info (optional; NULL: the gateway's own SDR modem, kind "sdrmodem"): its kind ("mmdvm": an
+     * MMDVM modem on a serial port, which the channels' caps then name alone), and into model what it is. */
+    const char *(*station)(void *ctx, char *model, size_t cap);
+    /* Why this hardware can't do a kind of job at all ("signal_tx": the tx op's signal modes; "repeater"; "outbound";
+     * "mssim"): the physical reason, refused with the job's name and given in info's jobs. NULL: it can (the other
+     * hooks still decide). Optional. */
+    const char *(*cannot)(void *ctx, const char *what);
+    /* A repeater job hears on its own receive path, the platform's (an MMDVM modem), not on a receiver channel: its
+     * input needs none, and no tune for one. */
+    bool rpt_own_rx;
 } rdof_bl_platform_t;
 
 typedef struct rdof_bl rdof_bl_t;

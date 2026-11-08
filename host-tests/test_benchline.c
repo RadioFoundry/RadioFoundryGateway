@@ -2762,6 +2762,94 @@ static void test_tune(void)
     rdof_bl_free(bl);
 }
 
+static const char *f_station(void *ctx, char *model, size_t cap)
+{
+    snprintf(model, cap, "MMDVM_HS_Hat");
+    return "mmdvm";
+}
+static const char *f_cannot_all(void *ctx, const char *what)
+{
+    if (!strcmp(what, "signal_tx"))
+        return "no audio path here";
+    return !strcmp(what, "repeater") ? "no second transceiver" : !strcmp(what, "outbound") ? "no CACH here" : "no timed answers";
+}
+
+/* A bench with a modem in place of the SDR's transmitter: the station and what it can't do, in info and each job's
+ * refusal */
+static void test_modem_station(void)
+{
+    static char out[1 << 16];
+    rdof_bl_platform_t pl = PLAT;
+    pl.station = f_station;
+    pl.cannot = f_cannot_all;
+    pl.mssim = f_mssim;
+    double now = 4000;
+    rdof_bl_t *bl = rdof_bl_new(&pl);
+    int c = ask(bl, "{\"op\": \"info\"}", now);
+    drain(bl, c, out, sizeof out);
+    rdof_bl_closed(bl, c, now);
+    CHECK(strstr(out, "\"kind\":\"mmdvm\",\"model\":\"MMDVM_HS_Hat\""), "the station: %s", out);
+    CHECK(strstr(out, "\"mmdvm_tx\"") && !strstr(out, "\"sdr_tx\""), "a modem's caps: %s", out);
+    CHECK(strstr(out, "\"bench_tx\":null") && strstr(out, "\"bench_repeater\":\"no second transceiver\"") &&
+              strstr(out, "\"outbound\":\"no CACH here\"") && strstr(out, "\"mssim\":\"no timed answers\"") &&
+              strstr(out, "\"signal_tx\":\"no audio path here\""),
+          "jobs: %s", out);
+    const int ss = ask(bl, "{\"op\": \"session\"}", now);
+    char id[32], req[160];
+    drain(bl, ss, out, sizeof out);
+    field(out, "session", id, sizeof id);
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_repeater\",\"rx\":438.0625,\"tx\":438.1125}}", now);
+    drain(bl, c, out, sizeof out);
+    rdof_bl_closed(bl, c, now);
+    CHECK(strstr(out, "\"code\":\"unsupported\"") && strstr(out, "no second transceiver"), "repeater: %s", out);
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"outbound\",\"freq\":438.1125,\"seconds\":1}}", now);
+    drain(bl, c, out, sizeof out);
+    rdof_bl_closed(bl, c, now);
+    CHECK(strstr(out, "\"code\":\"unsupported\"") && strstr(out, "no CACH here"), "outbound: %s", out);
+    snprintf(req, sizeof req, "{\"op\":\"mssim\",\"session\":\"%s\",\"action\":\"arm\",\"freq\":438.1125}", id);
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    rdof_bl_closed(bl, c, now);
+    CHECK(strstr(out, "\"code\":\"unsupported\"") && strstr(out, "no timed answers"), "mssim: %s", out);
+    rdof_bl_closed(bl, ss, now);
+    rdof_bl_free(bl);
+
+    /* no signal modes: the physical reason, for any mode name, and in info */
+    pl.cannot = f_cannot_all;
+    pl.sig_open = NULL;
+    bl = rdof_bl_new(&pl);
+    c = ask(bl, "{\"op\": \"info\"}", now);
+    drain(bl, c, out, sizeof out);
+    rdof_bl_closed(bl, c, now);
+    CHECK(strstr(out, "\"signal_tx\":\"no audio path here\"") && strstr(out, "\"tx\":[]"), "info's signal_tx: %s", out);
+    const int s2 = ask(bl, "{\"op\": \"session\"}", now);
+    drain(bl, s2, out, sizeof out);
+    field(out, "session", id, sizeof id);
+    snprintf(req, sizeof req, "{\"op\":\"tx\",\"session\":\"%s\",\"mode\":\"fm\",\"freq\":438.1125}", id);
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    rdof_bl_closed(bl, c, now);
+    CHECK(strstr(out, "\"code\":\"unsupported\"") && strstr(out, "no audio path here"), "tx: %s", out);
+    rdof_bl_closed(bl, s2, now);
+    rdof_bl_free(bl);
+
+    /* a repeater job on the modem's own receiver needs no channel on its input */
+    pl = PLAT;
+    pl.rpt_own_rx = true;
+    bl = rdof_bl_new(&pl);
+    memset(&rp, 0, sizeof rp);
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_repeater\",\"rx\":438.6,\"tx\":438.1125,\"seconds\":0.2,\"json\":true}}", now);
+    size_t n = 0;
+    for (int i = 0; i < 60 && !rdof_bl_finished(bl, c); i++) {
+        now += 0.02;
+        rdof_bl_tick(bl, now);
+        n = drain_all(bl, c, out, sizeof out, n);
+    }
+    CHECK(rp.closed && !strstr(out, "\"code\":\"refused\""), "the input needs no channel: %s", out);
+    rdof_bl_closed(bl, c, now);
+    rdof_bl_free(bl);
+}
+
 static void test_ring_scale(void)
 {
     CHECK(rdof_bl_ring_scale(128.0) == 1.0f && rdof_bl_ring_scale(127.0) == 1.0f, "an 8-bit ADC keeps its own bits");
@@ -2806,6 +2894,7 @@ int main(int argc, char **argv)
     test_tune();
     test_zero_floor();
     test_ring_scale();
+    test_modem_station();
     test_tcp();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

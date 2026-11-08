@@ -75,5 +75,7 @@ struct rdofradio_dev {
  * in err. */
 rdofradio_dev_t *rdofradio_soapy_open(const char *args, const rdofradio_dev_setup_t *s, char *err, size_t cap);
 rdofradio_dev_t *rdofradio_iio_open(const char *uri, const rdofradio_dev_setup_t *s, char *err, size_t cap);
+/* --sim-sdr: a receiver with nothing on the air (noise), for no-RF tests; receive only. */
+rdofradio_dev_t *rdofradio_sim_open(const rdofradio_dev_setup_t *s, char *err, size_t cap);
 
 #endif

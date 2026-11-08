@@ -385,8 +385,8 @@ static unsigned cap_bit(const char *s)
     return 0;
 }
 
-/* The caps as the daemon names them, into out. */
-static void caps_json(unsigned caps, char *out, size_t cap)
+/* The caps as the daemon names them, into out. sdr_tx: the SDR front end transmits there, not only a modem. */
+static void caps_json(unsigned caps, bool sdr_tx, char *out, size_t cap)
 {
     size_t k = (size_t)snprintf(out, cap, "[");
     static const char *const names[] = {"rx", "dmr", "iq", "mmdvm_tx"};
@@ -395,7 +395,7 @@ static void caps_json(unsigned caps, char *out, size_t cap)
         if (caps & (1u << i)) {
             k += (size_t)snprintf(out + k, cap - k, "%s\"%s\"", first ? "" : ",", names[i]);
             first = false;
-            if (i == 3 && k < cap)
+            if (i == 3 && sdr_tx && k < cap)
                 k += (size_t)snprintf(out + k, cap - k, ",\"sdr_tx\"");
         }
     if (k < cap)
@@ -863,6 +863,39 @@ static double expect_left(const rdof_bl_t *bl, double now)
     return left > 0 ? left : 0;
 }
 
+/* Why this hardware can't do a kind of job at all (NULL: it can). */
+static const char *cannot(const rdof_bl_t *bl, const char *what)
+{
+    return bl->p.cannot ? bl->p.cannot(bl->p.ctx, what) : NULL;
+}
+
+/* info's "jobs": each kind of job, null where the bench runs it, else why not, so a client can skip beforehand (the
+ * same reasons the requests are refused with). */
+static void jobs_json(rdof_bl_t *bl, const char *notx, char *out, size_t cap)
+{
+    const char *const can_tx = bl->p.can_tx ? bl->p.can_tx(bl->p.ctx) : NULL;
+    const char *const ob = !bl->p.ob_open ? "this bench runs no outbound jobs"
+                         : cannot(bl, "outbound") ? cannot(bl, "outbound")
+                         : bl->p.ob_can ? bl->p.ob_can(bl->p.ctx) : can_tx;
+    const char *const rpt = !bl->p.rpt_open ? "this bench runs no duplex repeater jobs"
+                          : cannot(bl, "repeater") ? cannot(bl, "repeater") : can_tx;
+    const char *const ms = !bl->p.mssim ? "this bench has no responder"
+                         : cannot(bl, "mssim") ? cannot(bl, "mssim") : can_tx;
+    const char *const sig = !bl->p.sig_open ? (cannot(bl, "signal_tx") ? cannot(bl, "signal_tx") : "this bench transmits no signal modes")
+                          : can_tx;
+    const char *const v[] = {notx, rpt, ob, ms, sig};
+    static const char *const names[] = {"bench_tx", "bench_repeater", "outbound", "mssim", "signal_tx"};
+    size_t k = (size_t)snprintf(out, cap, "{");
+    for (int i = 0; i < 5 && k < cap; i++) {
+        char q[280] = "null";
+        if (v[i])
+            jstr(v[i], q, sizeof q);
+        k += (size_t)snprintf(out + k, cap - k, "%s\"%s\":%s", i ? "," : "", names[i], q);
+    }
+    if (k < cap)
+        snprintf(out + k, cap - k, "}");
+}
+
 static void op_info(rdof_bl_t *bl, conn_t *c, double now)
 {
     char win[480], dev[200], kind[32] = "gateway", name[48] = "", ver[32] = "", qn[64];
@@ -873,6 +906,9 @@ static void op_info(rdof_bl_t *bl, conn_t *c, double now)
     put_window(bl, win, sizeof win);
     rdof_bl_window_t w;
     get_window(bl, &w);
+    char st_model[96] = "";
+    const char *st_kind = bl->p.station ? bl->p.station(bl->p.ctx, st_model, sizeof st_model) : NULL;
+    const bool st_mmdvm = st_kind && !strcmp(st_kind, "mmdvm");
     /* built piece by piece: the channel list can be long */
     /* the receiver's tune: null (the settings'), or whose it is */
     char tune[160] = "null";
@@ -892,7 +928,7 @@ static void op_info(rdof_bl_t *bl, conn_t *c, double now)
     for (int i = 0; i < bl->nf && k < sizeof line; i++) {
         const rdof_bl_freq_t *f = &bl->f[i];
         char caps[96], held[96] = "null", qid[40];
-        caps_json(f->caps, caps, sizeof caps);
+        caps_json(f->caps, !st_mmdvm, caps, sizeof caps);
         const int s = claimed_by(bl, f->freq_hz / 1e6);
         if (s >= 0) {
             char ql[64];
@@ -925,6 +961,9 @@ static void op_info(rdof_bl_t *bl, conn_t *c, double now)
     char why[160] = "null";
     if (notx)
         jstr(notx, why, sizeof why);
+    char qmodel[128], jobs[1024];
+    jstr(st_kind ? st_model : "the gateway's SDR modem", qmodel, sizeof qmodel);
+    jobs_json(bl, notx, jobs, sizeof jobs);
     char stx[160] = "[]", srx[160] = "[]";
     if (bl->p.sig_open && !rdof_sig_names_json(bl->p.modes, true, stx, sizeof stx))
         strcpy(stx, "[]");
@@ -939,14 +978,14 @@ static void op_info(rdof_bl_t *bl, conn_t *c, double now)
     strcat(bands, "]");
     if (k < sizeof line)
         k += (size_t)snprintf(line + k, sizeof line - k,
-                              "],\"tx_bands\":%s,\"stations\":[{\"name\":\"modem\",\"kind\":\"sdrmodem\",\"model\":\"the gateway's SDR "
-                              "modem\",\"port\":\"\",\"present\":%s,\"tx\":%s,\"why_not\":%s,\"modes\":[\"dmr\"],"
+                              "],\"tx_bands\":%s,\"stations\":[{\"name\":\"modem\",\"kind\":\"%s\",\"model\":%s,"
+                              "\"port\":\"\",\"present\":%s,\"tx\":%s,\"why_not\":%s,\"modes\":[\"dmr\"],"
                               "\"bands\":[],\"held_by\":%s,\"waiting\":%s}],"
                               "\"modem\":{\"held_by\":%s,\"waiting\":%s,\"next_job_eta\":{\"eta_s\":%.1f,"
-                              "\"worst_s\":%.1f}},\"signal_modes\":{\"tx\":%s,\"rx\":%s},"
+                              "\"worst_s\":%.1f}},\"signal_modes\":{\"tx\":%s,\"rx\":%s},\"jobs\":%s,"
                               "\"features\":{\"bursts_cach\":true,\"bursts_lost\":true,\"bursts_envelope\":true},\"default_caps\":[]}",
-                              bands, notx ? "false" : "true", notx ? "false" : "true", why, held, wq, held, wq, eta, eta,
-                              stx, srx);
+                              bands, st_kind ? st_kind : "sdrmodem", qmodel, notx ? "false" : "true",
+                              notx ? "false" : "true", why, held, wq, held, wq, eta, eta, stx, srx, jobs);
     if (k >= sizeof line) {
         fail(bl, c, "internal", "info doesn't fit");
         return;
@@ -1985,6 +2024,7 @@ static void rpt_run(rdof_bl_t *bl, conn_t *c, job_t *J, int root, double now)
 {
     const rdof_bj_job_t *j = &J->job;
     const char *no = !bl->p.rpt_open ? "this bench runs no duplex repeater jobs"
+                   : cannot(bl, "repeater") ? cannot(bl, "repeater")
                    : bl->p.can_tx ? bl->p.can_tx(bl->p.ctx) : NULL;
     if (no) {
         free(J);
@@ -1992,13 +2032,14 @@ static void rpt_run(rdof_bl_t *bl, conn_t *c, job_t *J, int root, double now)
         return;
     }
     const double rx = j->rx_mhz, tx = j->tx_mhz;
-    /* an input no channel decodes: the receiver tuned there for the job, as any job that hears (the Pluto) */
-    if (tx_ok(bl, tx) && reach_tune(bl, c, root, rx, true, false, now)) {
+    /* an input no channel decodes: the receiver tuned there for the job, as any job that hears (the Pluto). A
+       modem's own receiver hears the input (rpt_own_rx): no channel needed there. */
+    if (!bl->p.rpt_own_rx && tx_ok(bl, tx) && reach_tune(bl, c, root, rx, true, false, now)) {
         free(J);
         return;
     }
     const int kr = freq_index(bl, rx);
-    if (kr < 0 || bl->f[kr].ch < 0 || !(bl->f[kr].caps & RDOF_BL_CAP_DMR)) {
+    if (!bl->p.rpt_own_rx && (kr < 0 || bl->f[kr].ch < 0 || !(bl->f[kr].caps & RDOF_BL_CAP_DMR))) {
         free(J);
         fail(bl, c, "refused", "no receiver channel decodes DMR at %.4f MHz (the repeater's input) on this bench", rx);
         return;
@@ -2010,7 +2051,7 @@ static void rpt_run(rdof_bl_t *bl, conn_t *c, job_t *J, int root, double now)
     }
     c->job = J;
     c->op = OP_RUN;
-    c->ch = bl->f[kr].ch;
+    c->ch = kr >= 0 ? bl->f[kr].ch : -1;
     J->max_s = jnum(bl, root, "max_s", 0);
     J->id = ++bl->next_seq;
     c->nfreqs = 2;
@@ -2079,6 +2120,7 @@ static void ob_run(rdof_bl_t *bl, conn_t *c, job_t *J, int root, double now)
 {
     const rdof_bj_job_t *j = &J->job;
     const char *no = !bl->p.ob_open ? "this bench runs no outbound jobs"
+                   : cannot(bl, "outbound") ? cannot(bl, "outbound")
                    : bl->p.ob_can ? bl->p.ob_can(bl->p.ctx)
                    : bl->p.can_tx ? bl->p.can_tx(bl->p.ctx) : NULL;
     if (no) {
@@ -2944,11 +2986,14 @@ static void op_tx(rdof_bl_t *bl, conn_t *c, int root, double now)
 {
     if (!req_session(bl, c, root, false))
         return;
+    if (!bl->p.sig_open) {
+        fail(bl, c, "unsupported", "%s", cannot(bl, "signal_tx") ? cannot(bl, "signal_tx") : "this bench transmits no signal modes");
+        return;
+    }
     const rdof_sig_mode_t *m = sig_mode(bl, c, root, true);
     if (!m)
         return;
-    const char *no = !bl->p.sig_open ? "this bench transmits no signal modes"
-                   : bl->p.can_tx ? bl->p.can_tx(bl->p.ctx) : NULL;
+    const char *no = bl->p.can_tx ? bl->p.can_tx(bl->p.ctx) : NULL;
     if (no) {
         fail(bl, c, "unsupported", "%s", no);
         return;
@@ -3358,6 +3403,10 @@ static void op_mssim(rdof_bl_t *bl, conn_t *c, int root, double now)
     if (!action)
         action = "status";
     const double mhz = jnum(bl, root, "freq", NAN);
+    if (!strcmp(action, "arm") && cannot(bl, "mssim")) {
+        fail(bl, c, "unsupported", "%s", cannot(bl, "mssim"));
+        return;
+    }
     if (!strcmp(action, "arm") && !tx_ok(bl, mhz)) {
         fail(bl, c, "refused", "%.4f MHz isn't a transmit frequency of this bench", mhz);
         return;

@@ -253,3 +253,11 @@ if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
     target_compile_options(rdof_plan_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
     target_link_options(rdof_plan_tests PRIVATE -fsanitize=address,undefined)
 endif()
+
+# rdofradio --mmdvm --sim-sdr --bench against fakemodem: the MMDVM + SDR bench end to end, no RF.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(TARGET rdofradio AND TARGET fakemodem AND Python3_Interpreter_FOUND)
+    add_test(NAME mmdvm_bench_tests COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_mmdvm_bench.py
+             $<TARGET_FILE:rdofradio> $<TARGET_FILE:fakemodem>)
+    set_tests_properties(mmdvm_bench_tests PROPERTIES TIMEOUT 180)
+endif()

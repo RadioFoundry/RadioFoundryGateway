@@ -8,7 +8,7 @@
  *   fakemodem [--kind mmdvm_hs] [--cc 1] [--src ID] [--delay-s 8] [--gap-s 6] [--rssi N]
  *             [--slot 1|2] [--call DST:private|group:SECONDS]... [--text DST:"TEXT"]... [--confirmed]
  *             [--preambles 16]
- *             [--log FILE] [--path-file FILE] [--exit-after-s S] [--trace]
+ *             [--log FILE] [--path-file FILE] [--exit-after-s S] [--trace] [--description TEXT]
  *
  * It prints the pty's path (and writes it to --path-file); run `rdofradio --allow-tx --mmdvm PATH ...` on it. Once
  * rdofradio has set the modem up (its first SET_MODE to DMR), it waits --delay-s, then plays each --call and --text
@@ -335,7 +335,7 @@ static void usage(void)
     fprintf(stderr, "usage: fakemodem [--kind mmdvm_hs] [--cc 1] [--src ID] [--delay-s 8] [--gap-s 6] [--rssi N]\n"
                     "                 [--slot 1|2] [--call DST:private|group:SECONDS]... [--text DST:TEXT]... [--confirmed]\n"
                     "                 [--preambles 16]\n"
-                    "                 [--log FILE] [--path-file FILE] [--exit-after-s S] [--trace]\n");
+                    "                 [--log FILE] [--path-file FILE] [--exit-after-s S] [--trace] [--description TEXT]\n");
     exit(2);
 }
 
@@ -343,6 +343,7 @@ int main(int argc, char **argv)
 {
     const char *kind = "mmdvm_hs", *path_file = NULL;
     int slot = 2;
+    const char *description = NULL;
     M.cc = 1;
     M.src = 3100001;
     M.delay_s = 8;
@@ -353,6 +354,8 @@ int main(int argc, char **argv)
         const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
         if (!strcmp(a, "--kind") && v)
             kind = v, i++;
+        else if (!strcmp(a, "--description") && v)
+            description = v, i++;
         else if (!strcmp(a, "--cc") && v)
             M.cc = atoi(v), i++;
         else if (!strcmp(a, "--src") && v)
@@ -405,6 +408,8 @@ int main(int argc, char **argv)
             usage();
     }
     fake_init(&M.radio, kind);
+    if (description)
+        snprintf(M.radio.description, sizeof M.radio.description, "%s", description);
     if (!M.radio.protocol) {
         fprintf(stderr, "fakemodem: --kind %s: one of host-tests/fake_radio.c's (mmdvm_hs, mmdvm, odr, ...)\n", kind);
         return 2;
