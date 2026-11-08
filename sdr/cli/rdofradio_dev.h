@@ -38,6 +38,9 @@ typedef struct {
     double words_rate;
     /* > 1: the transmit stream at rate / tx_interp (the FPGA's TX interpolator makes up the rest, libiio only) */
     int tx_interp;
+    /* --setting KEY=VALUE, the driver's own (an RTL-SDR's biastee=true; SoapySDR only) */
+    const char *const *settings;
+    int n_settings;
 } rdofradio_dev_setup_t;
 
 typedef struct rdofradio_dev rdofradio_dev_t;

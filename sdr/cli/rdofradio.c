@@ -498,6 +498,7 @@ static void usage(void)
             "       rdofradio [DEVICE] --allow-tx --mmdvm PORT [--baud N] [--rf-level N] [--rx-offset-hz HZ]\n"
             "                 [--tx-offset-hz HZ] [--rx-level PCT] [--tx-level PCT] --rx MHZ [--tx MHZ] [--duplex full|half]\n"
             "                 [--cc CC] | --config FILE [--parrot ID] [--seconds S] [-v] [--web ...] [--bench ...]\n"
+            "--soapy takes --setting KEY=VALUE, repeated: the driver's own (an RTL-SDR's biastee=true)\n"
             "DEVICE: %s (or, receive only, --sim-sdr: noise, for tests with no RF)\n",
 #if defined(RDOF_SOAPY) && defined(RDOF_IIO)
             "--soapy ARGS | --iio URI"
@@ -5239,6 +5240,8 @@ static int hold(int argc, char **argv, const char *why)
 
 int main(int argc, char **argv)
 {
+    static const char *settings[16];
+    int n_settings = 0;
     const char *soapy = NULL, *iio = NULL, *stream_args = "", *fft = NULL, *split_tx = NULL, *mmdvm = NULL;
     bool sim_sdr = false; /* --sim-sdr: rdofradio_sim.c's receiver, for no-RF tests */
     double mm_rx_off = 0, mm_tx_off = 0, mm_rx_level = NAN, mm_tx_level = NAN;
@@ -5351,6 +5354,13 @@ int main(int argc, char **argv)
             parrot.start = parrot_start;
             parrot.send = parrot_send;
             R.parrot = &parrot;
+        } else if (!strcmp(a, "--setting")) {
+            NEXT();
+            if (n_settings >= 16 || !strchr(v, '=')) {
+                fprintf(stderr, "--setting KEY=VALUE (at most 16): %s\n", v);
+                return 2;
+            }
+            settings[n_settings++] = v;
         } else if (!strcmp(a, "--stream")) {
             NEXT();
             stream_args = v;
@@ -5535,6 +5545,10 @@ int main(int argc, char **argv)
     }
     R.full = !strcmp(duplex, "full");
     R.mmdvm = mmdvm != NULL;
+    if (n_settings && !soapy) {
+        fprintf(stderr, "--setting: a SoapySDR driver's (--soapy)\n");
+        return 2;
+    }
     if ((soapy && iio) || (!soapy && !iio && !sim_sdr && !R.mmdvm) || !rx || (!R.full && strcmp(duplex, "half")))
         usage();
     if (config_path && !R.mmdvm && rcfg.on_modem && !rcfg.full) {
@@ -5817,7 +5831,8 @@ int main(int argc, char **argv)
                 R.txr, rate, (tx_lo - tx) / 1e3);
     }
     const rdofradio_dev_setup_t su = {rate, R.rx.center_hz, tx_lo, gain, bw, stream_args, R.split || R.mmdvm,
-                                      FX.on ? 48000.0 * (double)rdof_chzfx_frame_words(FX.C) : 0, R.txr};
+                                      FX.on ? 48000.0 * (double)rdof_chzfx_frame_words(FX.C) : 0, R.txr, settings,
+                                      n_settings};
 #ifdef RDOF_IIO
     if (iio)
         dev = rdofradio_iio_open(iio, &su, derr, sizeof derr);

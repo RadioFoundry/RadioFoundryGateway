@@ -163,6 +163,18 @@ rdofradio_dev_t *rdofradio_soapy_open(const char *args, const rdofradio_dev_setu
     snprintf(d->name, sizeof d->name, "SoapySDR %s", driver ? driver : "");
     const bool pluto = driver && !strcasecmp(driver, "plutosdr");
     free(driver);
+    for (int i = 0; i < su->n_settings; i++) { /* a bias tee nobody turned on looks like a dead antenna: not ignored */
+        char key[64];
+        const char *eq = strchr(su->settings[i], '=');
+        snprintf(key, sizeof key, "%.*s", eq ? (int)(eq - su->settings[i]) : 0, su->settings[i]);
+        if (!eq || SoapySDRDevice_writeSetting(s->dev, key, eq + 1)) {
+            snprintf(err, cap, "soapy setting %s: %s", eq ? key : su->settings[i],
+                     eq ? SoapySDRDevice_lastError() : "not KEY=VALUE");
+            SoapySDRDevice_unmake(s->dev);
+            free(s);
+            return NULL;
+        }
+    }
     const bool tx = !su->rx_only;
     if (tx) {
         const SoapySDRRange tr = SoapySDRDevice_getGainRange(s->dev, SOAPY_SDR_TX, 0);
