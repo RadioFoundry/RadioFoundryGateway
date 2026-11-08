@@ -273,6 +273,9 @@ int rdof_sdrmodem_signal_state(const rdof_sdrmodem_t *m);
 bool rdof_sdrmodem_signal_iq(const rdof_sdrmodem_t *m);
 /* Transmitting or about to (anything queued). */
 bool rdof_sdrmodem_transmitting(const rdof_sdrmodem_t *m);
+/* A bench job comes first: what's queued on both slots dropped, a key-up ended (its ramp down). The modem's
+ * owner (a transceiver's call, a repeater's) loses the rest of its transmission. */
+void rdof_sdrmodem_preempt(rdof_sdrmodem_t *m);
 /* The receiver's 48 kS/s position p: inside a span this modem keyed (half duplex: what the receiver heard there
  * is its own signal or nothing, so AFC and ppm learning skip it). */
 bool rdof_sdrmodem_muted_at(const rdof_sdrmodem_t *m, int64_t p);

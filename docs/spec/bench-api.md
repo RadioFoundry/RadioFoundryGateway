@@ -672,12 +672,16 @@ straight on. A claimed frequency is the claiming session's: another session's `r
 wait with `timeout`; a session that would wait on itself is `deadlock`. The modem's queue estimates come from each
 job's `expect_s` (else its length as the gateway works it out).
 
-On rdofradio, a TX job borrows the SDR modem from the roaming transceiver for its length: it pauses (the network's
-calls wait; a call on the air ends first, up to 10 s), the job drives the modem in DMO, and the modem is set up again
-for the transceiver after the job. A `bench_repeater` job does the same with a repeater in the transceiver's place:
+On rdofradio, a TX job borrows the SDR modem from the roaming transceiver for its length: a bench job comes first,
+so the transceiver pauses at once (the network's calls wait; a call on the air is cut, what it queued dropped), the
+job drives the modem in DMO, and the modem is set up again for the transceiver after the job. Only on `--mmdvm` (a
+modem whose queue isn't the program's) does a call on the air end first, up to 10 s. A `bench_repeater` job does the same with a repeater in the transceiver's place:
 the modem goes duplex, and the job's first key-up, heard back in the receiver's band, sets the inbound slot timing
 (the transmit path's delay; the transceiver's own is restored after). An instance started as a duplex repeater
-(`--duplex full`) keeps its transmitter (`unsupported`). A `bench_tx` `outbound` takes the modem the same way, as a
+(`--duplex full`, or a config's duplex repeater) gives the job its transmitter the same way: the repeater stops (its
+transmission cut), the modem goes simplex on the repeater's RX channel, the TX LO moves if the job's frequency needs
+it, and after the job the LO goes back and the repeater starts again. On `--mmdvm` it keeps its transmitter
+(`unsupported`). A `bench_tx` `outbound` takes the modem the same way, as a
 repeater's TX half keyed with no traffic; after it the modem is unkeyed, its role dropped, and set up again for the
 transceiver. Its records' times are the modem's slot clock on the receiver's timeline plus the transmit path's
 delay. On `--mmdvm` (the MMDVM modem transmits) there is no `outbound`. The frequencies are `--bench-tx`'s; the job transmits at
@@ -711,8 +715,9 @@ after the op's own are the mode's.
 | `rx` | `session`, `mode`, `freq`, `seconds`, `bw`, `squelch_dbfs`, `squelch_over_db`, the mode's fields | `{"rx": header}`, `{"rec": record}`, `{"pcm": {"stream", "seq", "n"}, "bytes": 2n}` + int16 LE, `{"gap": ...}`, `{"done": {"mode", "freq", "seconds", "samples", "gap_samples", "summary"}}` |
 
 - `tx` is a transmit job: it waits for the modem as `run` does (`expect_s` its length plus 3 s), on a frequency of
-  `bench.tx`, at `power_dbm` (or `power`) capped by its `max_dbm` or `rf_level`, for at most `max_key_s`. While the gateway's own roamer is
-  transmitting it notes `waiting to transmit` and tries again each tick, for up to 10 s (then `busy`). The source renders on the transmitting
+  `bench.tx`, at `power_dbm` (or `power`) capped by its `max_dbm` or `rf_level`, for at most `max_key_s`. On a W12, while the gateway's own roamer is
+  transmitting it notes `waiting to transmit` and tries again each tick, for up to 10 s (then `busy`); rdofradio cuts
+  its transceiver's or repeater's transmission instead (above). The source renders on the transmitting
   thread, so nothing on the network can make it stutter, except PCM that comes too slowly (counted in `underruns`).
   `done` comes once the last sample has gone out, or at `max_s` (`cut` true). `seconds` is the length the mode
   works out (FM: lead, program, repeats, the subaudio's end, tail).

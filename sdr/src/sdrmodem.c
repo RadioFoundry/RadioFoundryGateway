@@ -178,6 +178,13 @@ void rdof_sdrmodem_carrier_ppm(rdof_sdrmodem_t *m, double ppm)
     retune_carrier(m);
 }
 
+void rdof_sdrmodem_preempt(rdof_sdrmodem_t *m)
+{
+    m->qn[0] = m->qn[1] = 0;
+    if (m->keyed)
+        m->unkey = true;
+}
+
 void rdof_sdrmodem_set_transmit(rdof_sdrmodem_t *m, bool transmit)
 {
     m->stopped = !transmit;

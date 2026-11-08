@@ -725,9 +725,16 @@ static void io_tx_level(void *ctx, int level)
                 gain_dbm(txg_full) - (255 - level) * RDOF_TXPOWER_SDR_SPAN_DB / 255.0);
     tx_rf_level = level;
 }
+/* A bench job has the transmitter (owner_yield): the modem's owner paused. tuned: the modem simplex (a repeater's);
+ * lo: the TX LO before the job, put back for the repeater after it. */
+static struct {
+    bool on, tuned;
+    double lo;
+} RP;
 static bool io_tune(void *ctx, uint32_t hz, double *off)
 {
-    if (!R.full && fabs((double)hz - R.tx_lo) > R.tx_rate * 0.4 - 12.5e3) {
+    /* a repeater's TX LO stays, but moves for a bench job (and back after it) */
+    if ((!R.full || RP.on) && fabs((double)hz - R.tx_lo) > R.tx_rate * 0.4 - 12.5e3) {
         /* past the modulator's reach: the TX LO moves, lo_off above (unkeyed: the gain is at its least) */
         const double lo = (double)hz + R.lo_off;
         if (!dev->set_tx_freq || dev->set_tx_freq(dev, lo)) {
@@ -1716,10 +1723,7 @@ static void bl_window(void *ctx, rdof_bl_window_t *w)
     w->ppm_source = isfinite(xtal_ppm) ? "setting" : NULL;
     w->ppm_tol = isfinite(xtal_ppm) ? xtal_tol : 0;
     w->iq_scale_db = 20 * log10(BL.ring.scale > 0 ? BL.ring.scale : 1);
-    if (R.full) { /* the TX LO stays: the modulator's reach around it (tx_tune) */
-        w->tx_lo_hz = R.tx_lo - (R.rate * 0.4 - 12.5e3);
-        w->tx_hi_hz = R.tx_lo + (R.rate * 0.4 - 12.5e3);
-    }
+    /* tx_lo_hz, tx_hi_hz 0: a job tunes anywhere, a repeater's TX LO moving for it (owner_yield) */
 }
 
 static long bl_iq_read(void *ctx, uint64_t sc, int8_t *out, long n, uint64_t *oldest, uint64_t *next)
@@ -1928,8 +1932,8 @@ static const char *bl_can_tx(void *ctx)
 {
     if (R.split)
         return "a split repeater's radio transmits, not the SDR: no transmit jobs here";
-    if (R.full)
-        return "a duplex repeater keeps the transmitter: transmit jobs need --duplex half";
+    if (R.full && R.mmdvm) /* an SDR's repeater gives a job the transmitter (owner_yield); an MMDVM modem's can't */
+        return "an MMDVM modem's duplex repeater keeps the transmitter";
     if (!bench_ntx && !bench_nband)
         return "no transmit frequencies (--bench-tx)";
     return NULL;
@@ -2229,6 +2233,61 @@ static void ob_clock(double now)
     BO.state = !m->keyed && m->key_k >= 0 ? 2 : keyed ? 1 : 0;
 }
 
+/* A bench job comes first: the modem's owner yields at once (the owner's rule: a bench command never waits on the
+ * site's own traffic). Its transmission, a transceiver's call or a repeater's, is cut and what it queued dropped; a
+ * full duplex repeater stops, the modem goes simplex on the repeater's RX channel, and the TX LO may move for the job
+ * (io_tune). Only an MMDVM modem's call is waited for (10 s at most): its queue isn't the program's to drop.
+ * 1: the job may start; 0: not yet, the owner paused while the key-down ramps out; -1: not yet, the owner runs. */
+static int owner_yield(double now, double asked)
+{
+    if (R.mmdvm)
+        return R.t.has_call && now - asked < 10.0 ? -1 : 1;
+    if (!RP.on) {
+        RP.on = true;
+        RP.lo = R.tx_lo;
+        RP.tuned = !R.full;
+        if (R.full)
+            rdof_repeater_stop(&R.r);
+        if (rdof_sdrmodem_transmitting(&R.m))
+            say("bench: a job cuts the %s's transmission\n", R.full ? "repeater" : "transceiver");
+        rdof_sdrmodem_preempt(&R.m);
+    }
+    if (rdof_sdrmodem_transmitting(&R.m) && now - asked < 2.0)
+        return 0;
+    if (!RP.tuned) {
+        RP.tuned = true;
+        if (!rdof_radio_tune(&R.radio, R.rx_hz, R.cc, 255))
+            say("bench: the repeater's modem didn't go simplex: %s\n", R.client.error);
+        say("bench: the repeater gives the transmitter to a job\n");
+    }
+    return 1;
+}
+
+/* The job is over: the transmitter back to its owner. A repeater's TX LO goes back and it starts again; a
+ * transceiver starts again (txvr: after a DMR job, which set the modem up its own way). */
+static void owner_resume(bool txvr)
+{
+    const bool was = RP.on;
+    RP.on = false;
+    if (R.full && was) {
+        if (R.tx_lo != RP.lo) {
+            if (!dev || !dev->set_tx_freq || dev->set_tx_freq(dev, RP.lo))
+                say("bench: can't move the TX LO back to %.4f MHz: %s\n", RP.lo / 1e6, dev ? dev->error : "");
+            else
+                R.tx_lo = RP.lo;
+        }
+        if (!rdof_modem_start(&R.client, 1) || !rdof_repeater_start(&R.r))
+            say("bench: the repeater didn't start again: %s\n", R.client.error);
+        else
+            say("bench: the transmitter is the repeater's again\n");
+        return;
+    }
+    if (txvr && (!rdof_modem_start(&R.client, 1) || !rdof_txvr_start(&R.t)))
+        say("bench: the transceiver didn't start again: %s\n", R.client.error);
+    else
+        say("bench: the transmitter is the transceiver's again\n");
+}
+
 /* Each main loop turn while an outbound has the modem: the voice bursts pushed since the last turn go to the modem
  * and the slot clock is copied out, so the engine sees the slot being queued within a few ms (POLL_S is 20 ms, under
  * a slot). */
@@ -2258,9 +2317,10 @@ static bool bench_ob_poll(double now)
 {
     pthread_mutex_lock(&BO.mu);
     if (BO.want == 1 && !BO.active) {
-        if ((R.t.has_call || rdof_sdrmodem_transmitting(&R.m)) && now - BO.asked < 10.0) { /* its call ends first */
+        const int y = owner_yield(now, BO.asked);
+        if (y <= 0) {
             pthread_mutex_unlock(&BO.mu);
-            return false;
+            return y == 0;
         }
         BO.want = 0, BO.active = true;
         const rdof_bl_ob_cfg_t c = BO.cfg;
@@ -2295,10 +2355,7 @@ static bool bench_ob_poll(double now)
         pthread_mutex_lock(&BO.mu);
         BO.active = false;
         pthread_mutex_unlock(&BO.mu);
-        if (!rdof_modem_start(&R.client, 1) || !rdof_txvr_start(&R.t))
-            say("bench: the transceiver didn't start again: %s\n", R.client.error);
-        else
-            say("bench: the transmitter is the transceiver's again\n");
+        owner_resume(true);
         return true;
     }
     ob_clock(now);
@@ -2311,9 +2368,10 @@ static bool bench_sig_poll(double now)
 {
     pthread_mutex_lock(&BS.mu);
     if (BS.want == 1 && !BS.active) {
-        if ((R.t.has_call || rdof_sdrmodem_transmitting(&R.m)) && now - BS.asked < 10.0) { /* its call ends first */
+        const int y = owner_yield(now, BS.asked);
+        if (y <= 0) {
             pthread_mutex_unlock(&BS.mu);
-            return false;
+            return y == 0;
         }
         BS.want = 0;
         if (rdof_sdrmodem_signal(&R.m, BS.freq, &BS.src, BS.why, sizeof BS.why)) {
@@ -2321,12 +2379,17 @@ static bool bench_sig_poll(double now)
             say("bench: a signal has the transmitter: %.4f MHz\n", BS.freq / 1e6);
         } else {
             BS.failed = true;
+            pthread_mutex_unlock(&BS.mu);
+            owner_resume(false);
+            return true;
         }
     }
     if (BS.active && BS.want == 2) {
         rdof_sdrmodem_signal(&R.m, 0, NULL, BS.why, sizeof BS.why);
         BS.want = 0, BS.active = false;
-        say("bench: the transmitter is the transceiver's again\n");
+        pthread_mutex_unlock(&BS.mu);
+        owner_resume(false);
+        return true;
     }
     if (BS.active)
         BS.state = rdof_sdrmodem_signal_state(&R.m);
@@ -2344,9 +2407,10 @@ static bool bench_tx_poll(double now)
         return true;
     pthread_mutex_lock(&BT.mu);
     if (BT.want == 1 && !BT.active) {
-        if (R.t.has_call && now - BT.asked < 10.0) { /* the transceiver's call ends first */
+        const int y = owner_yield(now, BT.asked);
+        if (y <= 0) {
             pthread_mutex_unlock(&BT.mu);
-            return false;
+            return y == 0;
         }
         BT.want = 0, BT.active = true;
         const rdof_benchtx_io_t io = {bt_to_modem, bt_to_tool, bt_keying, NULL, NULL};
@@ -2364,10 +2428,7 @@ static bool bench_tx_poll(double now)
         pthread_mutex_lock(&BT.mu);
         BT.active = false;
         pthread_mutex_unlock(&BT.mu);
-        if (!rdof_modem_start(&R.client, 1) || !rdof_txvr_start(&R.t))
-            say("bench: the transceiver didn't start again: %s\n", R.client.error);
-        else
-            say("bench: the transmitter is the transceiver's again\n");
+        owner_resume(true);
         return true;
     }
     for (int i = 0; i < BT.nin && BT.tx.qn < RDOF_BENCHTX_QUEUE; i++)
@@ -2624,9 +2685,10 @@ static bool bench_rpt_poll(double now)
         return false;
     pthread_mutex_lock(&BR.mu);
     if (BR.want == 1 && !BR.active) {
-        if (R.t.has_call && now - BR.asked < 10.0) { /* the transceiver's call ends first */
+        const int y = owner_yield(now, BR.asked);
+        if (y <= 0) {
             pthread_mutex_unlock(&BR.mu);
-            return false;
+            return y == 0;
         }
         BR.want = 0, BR.active = true;
         const rdof_bl_rpt_cfg_t cfg = BR.cfg;
@@ -2664,10 +2726,7 @@ static bool bench_rpt_poll(double now)
         pthread_mutex_lock(&BR.mu);
         BR.active = false, BR.nev = 0;
         pthread_mutex_unlock(&BR.mu);
-        if (!rdof_modem_start(&R.client, 1) || !rdof_txvr_start(&R.t))
-            say("bench: the transceiver didn't start again: %s\n", R.client.error);
-        else
-            say("bench: the transmitter is the transceiver's again\n");
+        owner_resume(true);
         return true;
     }
     const int nwake = BR.nwake;
