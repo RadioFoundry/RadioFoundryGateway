@@ -28,7 +28,7 @@ struct rdof_benv {
     float *p, *env, *env1;    /* [n_ring]: the power, its 0.1 ms and 1 ms centered means */
     uint8_t *clip;
     long n;                   /* outputs pushed since the reset */
-    double s5, s48;           /* the running sums */
+    float s5, s48;            /* the running sums: float (double is soft float on an ESP32), exact again often */
     uint64_t sc0, last_sc;    /* output 0's wideband sample; the last one's */
     bool have_last;
     /* the decisions */
@@ -317,8 +317,8 @@ void rdof_benv_push(rdof_benv_t *e, uint64_t sc, float p, int clipped)
     e->clip[R(e, n)] = (uint8_t)(clipped > 255 ? 255 : clipped);
     e->s5 += p - (n >= e->w ? P(e, n - e->w) : 0);
     e->s48 += p - (n >= e->w1 ? P(e, n - e->w1) : 0);
-    if ((n & 4095) == 4095) { /* the running sums exact again */
-        double a = 0, b = 0;
+    if ((n & 1023) == 1023) { /* the running sums exact again (float: a burst's residue under a quiet floor) */
+        float a = 0, b = 0;
         for (long i = n - e->w1 + 1; i <= n; i++)
             b += i >= 0 ? P(e, i) : 0;
         for (long i = n - e->w + 1; i <= n; i++)
@@ -329,9 +329,9 @@ void rdof_benv_push(rdof_benv_t *e, uint64_t sc, float p, int clipped)
     /* the centered means: the 0.1 ms one's at n - (w - 1 - w/2), the 1 ms one's at n - (w1 - 1 - w1/2) */
     const long i5 = n - (e->w - 1 - e->w / 2), i48 = n - (e->w1 - 1 - e->w1 / 2);
     if (i5 >= 0)
-        e->env[R(e, i5)] = (float)(e->s5 / e->w);
+        e->env[R(e, i5)] = e->s5 / (float)e->w;
     if (i48 >= 0) {
-        const float v = (float)(e->s48 / e->w1);
+        const float v = e->s48 / (float)e->w1;
         e->env1[R(e, i48)] = v;
         if (i48 >= e->w1 && i48 % e->w1 == 0) { /* the noise figure: a 1 ms block's */
             int k = (int)((db(v) + 150) * 2);

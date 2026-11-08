@@ -771,6 +771,19 @@ blocks' `t`), its peak deviation and its twist (the column tone over the row's, 
 `deemph_us`), each the median over the run. The summary adds `dtmf`: `{"digits": "159#", "runs": [...]}` (64 digits
 at most). About 1 M multiplies a second at the audio's rate.
 
+With `"aprs": true` FM `rx` decodes Bell 202 AFSK (1200 baud, mark 1200 Hz, space 2200 Hz) and AX.25 frames in the
+filtered audio, as the bench analyzer does: each tone mixed to 0 Hz and averaged over a bit, the decision mark less g
+times space for seven weights g (for twist), each with its bit clock, NRZI, HDLC flags and unstuffing, the X.25 FCS;
+a frame two weights decode counts once. Each frame with a good FCS is a record, `{"aprs": {"tnc2", "src", "dst",
+"digis", "control", "pid", "info", "fcs_ok", "t0", "t1", "txdelay_flags", "txdelay_ms", "decision_gain",
+"peak_dev_hz", "max_dev_hz", "rms_dev_hz", "mark_dev_hz", "space_dev_hz", "twist_db", "mark_hz", "space_hz"}}`:
+`t0`, `t1` its first and last bit (s, as the blocks' `t`), the flags back to back before it, the deviation over the
+flags and the frame (peak the 99.9th percentile of the audio), each tone's level (the median at the centers of bits
+inside a run of one tone) and frequency (its phase's drift along those runs), the twist mark over space (dB, on the
+carrier: with no `deemph_us`). The summary adds `aprs`: `{"frames", "fcs_bad"}` (`fcs_bad`: frames between flags,
+whole octets, whose FCS failed, counted by the weight-1 decoder only). About 300 KB of buffers (4 s of audio and
+each decoder's bits).
+
 AM is double sideband with a full carrier (airband voice; ACARS's MSK is an `fsk` segment, `baud` 2400, `hz` [1200,
 2400]). The source renders complex baseband, so a front end that sends frequency must also take polar I/Q
 (`rdof_fe_caps_t.tx_polar`, the W12: lr2021-iq.md R3.22-R3.27), else `tx` is refused; an I/Q front end (a PlutoSDR)

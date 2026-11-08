@@ -433,6 +433,146 @@ static void t_mode_dtmf(void)
     m->tx_free(tx);
 }
 
+/* APRS through the mode: an AX.25 frame (flags, bit stuffing, the FCS) sent as Bell 202 AFSK on the FM, the
+ * receiver's "aprs" decoding it with its tones measured */
+static uint16_t t_crc_x25(const uint8_t *p, int n)
+{
+    uint16_t c = 0xFFFF;
+    for (int i = 0; i < n; i++) {
+        c ^= p[i];
+        for (int k = 0; k < 8; k++)
+            c = c & 1 ? (uint16_t)((c >> 1) ^ 0x8408) : (uint16_t)(c >> 1);
+    }
+    return (uint16_t)(c ^ 0xFFFF);
+}
+
+static int ax25_addr(uint8_t *o, const char *call, int ssid, bool last)
+{
+    for (int i = 0; i < 6; i++)
+        o[i] = (uint8_t)((i < (int)strlen(call) ? call[i] : ' ') << 1);
+    o[6] = (uint8_t)(0x60 | ssid << 1 | (last ? 1 : 0));
+    return 7;
+}
+
+/* bits in time order: nflags flags, the frame stuffed, 3 flags */
+static int hdlc_bits(const uint8_t *f, int n, int nflags, uint8_t *bits)
+{
+    int k = 0;
+    for (int i = 0; i < nflags + 0; i++)
+        for (int j = 0; j < 8; j++)
+            bits[k++] = (0x7E >> j) & 1;
+    int ones = 0;
+    for (int i = 0; i < n; i++)
+        for (int j = 0; j < 8; j++) {
+            const int b = (f[i] >> j) & 1;
+            bits[k++] = (uint8_t)b;
+            ones = b ? ones + 1 : 0;
+            if (ones == 5)
+                bits[k++] = 0, ones = 0;
+        }
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 8; j++)
+            bits[k++] = (0x7E >> j) & 1;
+    return k;
+}
+
+static void t_mode_aprs(void)
+{
+    const rdof_sig_mode_t *m = rdof_sig_find(rdof_sdr_modes, "fm");
+    uint8_t f[200];
+    int n = 0;
+    n += ax25_addr(f + n, "APRS", 0, false);
+    n += ax25_addr(f + n, "N0CALL", 7, false);
+    n += ax25_addr(f + n, "WIDE1", 1, true);
+    f[n++] = 0x03, f[n++] = 0xF0;
+    const char *info = "!3330.00N/08645.00W>bench \"test\"";
+    memcpy(f + n, info, strlen(info));
+    n += (int)strlen(info);
+    const uint16_t fcs = t_crc_x25(f, n);
+    f[n++] = (uint8_t)fcs, f[n++] = (uint8_t)(fcs >> 8);
+    static uint8_t bits[4096];
+    const int nb = hdlc_bits(f, n, 30, bits);
+    static char hex[1200];
+    int hk = 0;
+    for (int i = 0; i < (nb + 7) / 8; i++) {
+        int v = 0;
+        for (int j = 0; j < 8 && i * 8 + j < nb; j++)
+            v |= bits[i * 8 + j] << j;
+        hk += snprintf(hex + hk, sizeof hex - (size_t)hk, "%02x", v);
+    }
+    static char job[2000];
+    /* both tones at 3 kHz deviation: no twist */
+    snprintf(job, sizeof job,
+             "{\"mode\":\"fm\",\"dev_hz\":3000,\"lead_s\":0.2,\"program\":[{\"kind\":\"fsk\",\"hex\":\"%s\",\"bits\":%d,"
+             "\"baud\":1200,\"hz\":[1200,2200],\"nrzi\":true,\"lsb\":true,\"level\":1},{\"kind\":\"silence\",\"s\":0.3}]}",
+             hex, nb);
+    static rdof_jnode_t nodes[256];
+    static char buf[4096];
+    rdof_jdoc_t d = {nodes, 256, 0, buf, sizeof buf, 0, ""};
+    int root = rdof_jparse(&d, job, strlen(job));
+    char err[160] = "";
+    double secs = 0;
+    void *tx = m->tx_new(&d, root, FS, &secs, err, sizeof err);
+    CHECK(tx != NULL, "tx_new: %s", err);
+    if (!tx)
+        return;
+    rdof_sig_src_t src = m->tx_src(tx);
+    const char *rq = "{\"mode\":\"fm\",\"aprs\":true}";
+    root = rdof_jparse(&d, rq, strlen(rq));
+    void *rx = m->rx_new(&d, root, FS, -40, err, sizeof err);
+    CHECK(rx != NULL, "rx_new: %s", err);
+    if (!rx) {
+        m->tx_free(tx);
+        return;
+    }
+    enum { B = 480 };
+    float hz[B], env[B], iq[2 * B];
+    float *outs[2] = {NULL, NULL};
+    int nout[2];
+    double ph = 0;
+    int frames = 0;
+    static char rec[8192], first[8192];
+    for (int blk = 0; blk < (int)(secs * FS / B) + 60; blk++) {
+        const int got = src.freq(src.ctx, hz, env, B);
+        for (int i = 0; i < B; i++) {
+            const float e = i < got ? env[i] : 0;
+            ph += 2 * M_PI * (i < got ? hz[i] : 0) / FS;
+            iq[2 * i] = (float)(e * cos(ph) + 0.01 * gauss()), iq[2 * i + 1] = (float)(e * sin(ph) + 0.01 * gauss());
+        }
+        m->rx_feed(rx, iq, B, outs, nout);
+        while (m->rx_record(rx, rec, sizeof rec))
+            if (!strncmp(rec, "{\"aprs\":", 8) && !frames++)
+                strcpy(first, rec);
+    }
+    CHECK(frames == 1, "frames %d", frames);
+    CHECK(strstr(first, "\"tnc2\":\"N0CALL-7>APRS,WIDE1-1:!3330.00N/08645.00W>bench \\\"test\\\"\"") &&
+              strstr(first, "\"src\":\"N0CALL-7\"") && strstr(first, "\"pid\":240") && strstr(first, "\"fcs_ok\":true"),
+          "the frame: %s", first);
+    const char *q;
+    q = strstr(first, "\"txdelay_flags\":");
+    CHECK(q && atoi(q + 16) >= 28 && atoi(q + 16) <= 30, "the flags before it: %s", first);
+    q = strstr(first, "\"mark_dev_hz\":");
+    const double md = q ? atof(q + 14) : 0;
+    q = strstr(first, "\"space_dev_hz\":");
+    const double sd = q ? atof(q + 15) : 0;
+    q = strstr(first, "\"twist_db\":");
+    const double tw = q ? atof(q + 11) : 99;
+    q = strstr(first, "\"mark_hz\":");
+    const double mh = q ? atof(q + 10) : 0;
+    q = strstr(first, "\"space_hz\":");
+    const double sh = q ? atof(q + 11) : 0;
+    printf("aprs: mark %.0f Hz at %.1f Hz, space %.0f Hz at %.1f Hz, twist %.2f dB\n", md, mh, sd, sh, tw);
+    CHECK(fabs(md - 3000) < 300 && fabs(sd - 3000) < 300 && fabs(tw) < 1.0, "tone levels %.0f / %.0f, twist %.2f", md,
+          sd, tw);
+    CHECK(fabs(mh - 1200) < 15 && fabs(sh - 2200) < 15, "tone frequencies %.1f / %.1f", mh, sh);
+    static char sum[8192];
+    const size_t sn = m->rx_summary(rx, sum, sizeof sum);
+    CHECK(sn && strstr(sum, "\"aprs\":{\"frames\":1,\"fcs_bad\":") && sum[sn - 1] == '}', "summary: %.200s",
+          strstr(sum, "\"aprs\"") ? strstr(sum, "\"aprs\"") : sum);
+    m->rx_free(rx);
+    m->tx_free(tx);
+}
+
 /* The mode through its table only, as the bench line drives it: a job's JSON in, its samples integrated to I/Q, the
  * receiver's streams, records and summary out. */
 static void t_mode(void)
@@ -552,6 +692,7 @@ int main(void)
     t_dcs();
     t_afsk_dtmf_sweep();
     t_mode_dtmf();
+    t_mode_aprs();
     t_pcm();
     t_mode();
     printf("fm: %d checks, %d failed\n", checks, fails);
