@@ -235,6 +235,16 @@ bool rdof_siteroute_holds(const rdof_siteroute_t *sr, const uint8_t sid[4])
     return false;
 }
 
+bool rdof_siteroute_refused(const rdof_siteroute_t *sr, const uint8_t sid[4])
+{
+#if RDOF_FEATURE_TX
+    for (int i = 0; i < RDOF_SITEROUTE_TXVRS; i++)
+        if (sr->tx[i] && rdof_txvr_refused(sr->tx[i], sid))
+            return true;
+#endif
+    return false;
+}
+
 bool rdof_siteroute_app_burst(rdof_siteroute_t *sr, int path, const rdof_net_burst_t *b, bool take_hold,
                               double cap_dbm, double now)
 {

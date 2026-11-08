@@ -609,8 +609,12 @@ bool bench_tx_line_idle(void)
     bool idle = !J.on || !J.line || J.job->state == RDOF_TXS_DONE ||
                 (J.job->state == RDOF_TXS_READY && !J.job->keyed && !J.job->qn);
 #if RDOF_FEATURE_TX
-    if (idle && J.on && J.line && J.routed && route.count) /* handed on: the transceiver still to send it */
+    if (idle && J.on && J.line && J.routed && route.count) { /* handed on: the transceiver still to send it */
         idle = !site_app_holds(route.sid);
+        if (idle && site_app_refused(route.sid)) /* taken, then refused (the channel busy at its listen, ...) */
+            rdof_benchtx_stop(J.job, "refused", "the transmitter refused the call (the channel busy, or receiving)",
+                              now_s());
+    }
 #endif
     xSemaphoreGive(mu);
     return idle;

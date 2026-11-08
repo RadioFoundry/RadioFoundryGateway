@@ -2594,6 +2594,11 @@ static void tick_run(rdof_bl_t *bl, conn_t *c, int ci, double now)
     case J_DRAIN:
         if (!bl->p.tx_idle(bl->p.ctx))
             break;
+        if (bl->p.tx_space(bl->p.ctx, why, sizeof why) < 0) { /* refused at the end (a routed call's transceiver) */
+            run_log(bl, c, now, "transmit failed: %s", why);
+            run_exit(bl, c, 1, NULL);
+            return;
+        }
         run_log(bl, c, now, "sent %d bursts", J->nb);
         if (J->done[0])
             run_log(bl, c, now, "%s", J->done);

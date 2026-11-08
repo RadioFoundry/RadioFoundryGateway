@@ -263,7 +263,9 @@ On the board (`bench_tx.c`, the job in `common/src/benchtx.c`, host-tested in `h
   transmitter busy with another stream, or the transceiver refusing the stream at its tune: receiving a call on
   another frequency in the last second, not ready, the frequency not allowed) is NAKed, and the job stops with an
   error, not exit 0 with nothing on the air. A line protocol job on this path ends once the transceiver has sent its
-  stream (it listens first, so the call goes out about a second after the job hands it on). `info.tx.router` is true
+  stream (it listens first, so the call goes out about a second after the job hands it on); a stream it took and then
+  dropped before it went out (the channel busy when it listened, its radio failing) fails the job too (`transmit
+  failed: the transmitter refused the call ...`, exit 1). `info.tx.router` is true
   on this path. `via=radio:NAME` is a bench radio with `"proto": "mmdvm"`, through its link's guard (lowest power, TX
   data only on the frequency), and not while it's linked. `via=sdr` (I/Q, `fm`) is `unsupported`. Both paths drive
   an MMDVM modem in simplex: `SET_CONFIG`, `SET_FREQ` (RX = TX), `SET_MODE` DMR, one `DMR_DATA2` a burst, paced at

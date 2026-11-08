@@ -503,6 +503,7 @@ static void test_siteroute(const char *dir)
            fails at once, not after its bursts went nowhere) and the pool is free again */
         CHECK(rdof_siteroute_app_ready(&sr, ap, 9) && !rdof_siteroute_app_burst(&sr, ap, &a, false, INFINITY, 9) &&
                   sr.app_no_txvr == 2 && cap.n == n0 + 1 && cap.freq == 438112500 && rdof_txvr_refused(&t, a.stream_id) &&
+                  rdof_siteroute_refused(&sr, a.stream_id) &&
                   rdof_siteroute_app_ready(&sr, ap, 9.01),
               "refused at its tune: not sent, the pool free (%d %u %u)", cap.n, cap.freq, sr.app_no_txvr);
         static rdof_modem_t md;
@@ -514,7 +515,8 @@ static void test_siteroute(const char *dir)
         t.channels[0] = (rdof_channel_t){438112500, S.freq[S.path[ap].tx_freq].cc, 255, 1};
         a = net_burst(0x556, 9990, 9800009, false, 1, false, false);
         CHECK(rdof_siteroute_app_burst(&sr, ap, &a, false, INFINITY, 9.02) && rdof_siteroute_tuned(&sr, a.stream_id) &&
-                  t.has_call && !rdof_txvr_refused(&t, a.stream_id), "ready: taken (%d)", t.has_call);
+                  t.has_call && !rdof_txvr_refused(&t, a.stream_id) && !rdof_siteroute_refused(&sr, a.stream_id),
+              "ready: taken (%d)", t.has_call);
         CHECK(rdof_siteroute_app_burst(&sr, ap, &a, false, INFINITY, 9.06) && cap.n == n0 + 1 && !rdof_siteroute_app_ready(&sr, ap, 9.1),
               "tuned once; busy for another");
         static const uint8_t none[4] = {0, 0, 0x77, 0x77};

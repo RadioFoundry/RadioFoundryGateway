@@ -171,6 +171,7 @@ static struct {
     double next;
     uint8_t aired[600][34];
     int naired, keyups;
+    bool refuse_at_end; /* all in, then refused (a routed call's transceiver that found the channel busy) */
 } tx;
 static bool f_tx_open(void *ctx, uint32_t f, int cc, rdof_bench_power_t power, bool as_built, char *why, size_t cap)
 {
@@ -189,7 +190,11 @@ static bool f_tx_open(void *ctx, uint32_t f, int cc, rdof_bench_power_t power, b
 static int f_tx_space(void *ctx, char *why, size_t cap)
 {
     pthread_mutex_lock(&txmu);
-    const int n = 4 - tx.qn;
+    int n = 4 - tx.qn;
+    if (tx.refuse_at_end && !tx.qn && tx.unkeyed) {
+        snprintf(why, cap, "the transmitter refused the call");
+        n = -1;
+    }
     pthread_mutex_unlock(&txmu);
     return n;
 }
@@ -1656,6 +1661,21 @@ static void test_run(void)
         no = drain_all(bl, c, out, sizeof out, no);
     }
     CHECK(strstr(out, "\"exit\":-9") && strstr(out, "max_s") && !tx.open, "max_s: %.400s", out);
+    rdof_bl_closed(bl, c, now);
+    /* all sent, then refused before it went out: the job fails, it doesn't exit 0 */
+    tx.refuse_at_end = true;
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"csbk\",\"freq\":438.1125,\"count\":2}}",
+            now);
+    no = 0;
+    for (int i = 0; i < 100; i++) {
+        now += 0.01;
+        rdof_bl_tick(bl, now);
+        tx_air(bl, now, -1);
+        no = drain_all(bl, c, out, sizeof out, no);
+    }
+    tx.refuse_at_end = false;
+    CHECK(strstr(out, "\"exit\":1") && strstr(out, "transmit failed: the transmitter refused the call") && !tx.open,
+          "refused at the end: %.400s", out);
     rdof_bl_closed(bl, c, now);
     rdof_bl_free(bl);
 }
