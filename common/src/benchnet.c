@@ -98,6 +98,8 @@ static void *serve(void *arg)
         const double now = n->now();
         if (r > 0 && FD_ISSET(n->lfd, &rd)) {
             const int fd = accept(n->lfd, NULL, NULL);
+            if (fd >= 0)
+                fcntl(fd, F_SETFD, FD_CLOEXEC);
             if (fd >= 0) {
                 const int c = rdof_bl_open(n->bl, now);
                 if (c < 0 || c >= RDOF_BL_CONNS || n->fd[c] >= 0) {
@@ -165,6 +167,9 @@ rdof_bnet_t *rdof_bnet_start(rdof_bl_t *bl, const char *addr, int port, double (
         snprintf(error, cap, "socket: %s", strerror(errno));
         goto fail;
     }
+    /* a child the program starts (the DNS-SD publisher) mustn't keep the port: across a restart (exec) it would
+     * hold it and the new program couldn't listen */
+    fcntl(n->lfd, F_SETFD, FD_CLOEXEC);
     const int one = 1;
     setsockopt(n->lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
     struct sockaddr_in sa = {0};
