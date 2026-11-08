@@ -2601,6 +2601,17 @@ static void test_tune(void)
         rdof_bl_tick(bl, now += 0.02);
     CHECK(isnan(ft.center), "untuned at the bursts' end");
     ft.tunes = tunes0, ft.untunes = untunes0;
+    /* a transmit job past the transmitter's reach around the center (a W12's 1 MHz): a tune of its own there */
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"freq\":146.52}}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "tuning the receiver to 146.5200 MHz"), "a job out of TX reach: a tune: %s", out);
+    for (int i = 0; i < 8; i++)
+        rdof_bl_tick(bl, now += 0.02);
+    rdof_bl_closed(bl, c, now);
+    for (int i = 0; i < 8; i++)
+        rdof_bl_tick(bl, now += 0.02);
+    CHECK(isnan(ft.center), "untuned at the job's end");
+    ft.tunes = tunes0, ft.untunes = untunes0;
     snprintf(req, sizeof req, "{\"op\": \"trigger\", \"session\": \"%s\", \"freq\": 145.1, \"tune\": false}", idb);
     c = ask(bl, req, now);
     drain(bl, c, out, sizeof out);

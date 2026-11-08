@@ -2040,6 +2040,27 @@ static bool ob_build(rdof_bl_t *bl, conn_t *c, job_t *J)
 }
 
 /* A bench_tx outbound job: it waits for the modem, as a transmit job, its frequency claimed. */
+/* A job's frequency the receiver can't serve as tuned: no channel decodes DMR there for a job that hears, or it is
+ * past the transmitter's reach around the center (a W12's 1 MHz) for one that transmits. A bench job comes first:
+ * a tune of its own there (outside), when the bench can. True: asked for, or refused (the request runs again once
+ * it applies); false: nothing needed, or no tune here (as before: the job finds out). */
+static bool reach_tune(rdof_bl_t *bl, conn_t *c, int root, double mhz, bool hears, bool tx, double now)
+{
+    if (!isfinite(mhz) || !bl->p.tune)
+        return false;
+    rdof_bl_window_t w;
+    get_window(bl, &w);
+    if (!w.running || w.fs <= 0)
+        return rerun_after_tune(bl, c);
+    const int k = freq_index(bl, mhz);
+    const bool no_rx = hears && (k < 0 || bl->f[k].ch < 0 || !(bl->f[k].caps & RDOF_BL_CAP_DMR));
+    const bool no_tx = tx && w.tx_hi_hz > w.tx_lo_hz && (mhz * 1e6 < w.tx_lo_hz || mhz * 1e6 > w.tx_hi_hz);
+    if (!no_rx && !no_tx)
+        return false;
+    outside(bl, c, root, mhz, &w, now);
+    return true;
+}
+
 static void ob_run(rdof_bl_t *bl, conn_t *c, job_t *J, int root, double now)
 {
     const rdof_bj_job_t *j = &J->job;
@@ -2052,12 +2073,16 @@ static void ob_run(rdof_bl_t *bl, conn_t *c, job_t *J, int root, double now)
         return;
     }
     const double mhz = j->freq_mhz;
-    const int k = freq_index(bl, mhz);
     if (!tx_ok(bl, mhz)) {
         free(J);
         fail(bl, c, "refused", "%.4f MHz isn't a transmit frequency of this bench", mhz);
         return;
     }
+    if (reach_tune(bl, c, root, mhz, false, true, now)) {
+        free(J);
+        return;
+    }
+    const int k = freq_index(bl, mhz);
     if (j->ob_ncalls && !ob_build(bl, c, J))
         return;
     c->job = J;
@@ -2131,6 +2156,10 @@ static void op_run(rdof_bl_t *bl, conn_t *c, int ci, int root, double now)
     const double mhz = j->freq_mhz;
     const bool tx = j->cmd != RDOF_BJ_LISTEN;
     const bool hears = !tx || j->listen_after > 0;
+    if ((!tx || tx_ok(bl, mhz)) && reach_tune(bl, c, root, mhz, hears, tx, now)) {
+        free(J);
+        return;
+    }
     const int k = freq_index(bl, j->freq_mhz);
     if (hears && (k < 0 || bl->f[k].ch < 0 || !(bl->f[k].caps & RDOF_BL_CAP_DMR))) {
         free(J);
@@ -2915,6 +2944,8 @@ static void op_tx(rdof_bl_t *bl, conn_t *c, int root, double now)
         fail(bl, c, "refused", "%.4f MHz isn't a transmit frequency of this bench", mhz);
         return;
     }
+    if (reach_tune(bl, c, root, mhz, false, true, now))
+        return;
     sigtx_t *t = calloc(1, sizeof *t);
     if (!t) {
         fail(bl, c, "busy", "no memory for the job");

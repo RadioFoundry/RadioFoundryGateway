@@ -513,6 +513,10 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
   under the frequency (clear of the DC) with a tap on it (a board's tap decodes DMR), then the op as usual; the
   settings come back when the request ends. `"tune": false` refuses instead; while another request uses the window,
   or another session holds the tune, it is `busy`.
+- So do transmit jobs (`run`'s bench_tx jobs, `outbound`, `tx`) on a frequency past the transmitter's reach around
+  the center (`tx_lo_hz`-`tx_hi_hz` in the window: a W12 transmits within 1 MHz of where it receives), and a `run`
+  job that hears (`listen`, `listen_after`) where no channel decodes DMR: the receiver tuned there for the job, back
+  after it. A frequency `bench.tx` doesn't list is still `refused`.
 - `claim` refuses a frequency the bench doesn't list (no receiver channel, not in `bench.tx`). Receiving needs no
   claim; the HIL tools claim anyway, and a claim keeps another session's job off the frequency.
 - `capture` sends the receiver's wideband samples, cs8 (int8 I, Q; full scale 127), at the front end's rate, with up
