@@ -2593,9 +2593,9 @@ static bool bl_mssim(void *ctx, const char *action, const char *req, size_t len,
             snprintf(out, cap, "%s", err);
             return false;
         }
-        if (R.mmdvm || R.full) {
+        if (R.mmdvm) { /* a duplex repeater's SDR modem yields to it as to any job (owner_yield): simplex then */
             *code = "unavailable";
-            snprintf(out, cap, "the responder needs the SDR's own modem, half duplex");
+            snprintf(out, cap, "the responder needs the SDR's own modem, not an MMDVM modem");
             return false;
         }
         const int ch = channel_of(freq_hz);

@@ -479,8 +479,8 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
 
 - `mssim` is a timed confirmed-data responder (rdofradio and a board with an SDR modem; `rdof/mssim.h`): it plays a radio that answers
   confirmed data packets N slots after they end, for testing the far end's retries and turnaround. `arm` takes the
-  transmitter as a transmit job does (a transmit frequency with a receiver channel on it, the transceiver paused,
-  half duplex only) and holds it until `disarm`, `seconds` or the profile's `count`. The profile: `answers` (1-8
+  transmitter as a transmit job does (a transmit frequency with a receiver channel on it, the transceiver paused or a
+  duplex repeater stopped and its modem simplex; not an MMDVM modem) and holds it until `disarm`, `seconds` or the profile's `count`. The profile: `answers` (1-8
   steps, packet k gets step k, the last one after, or k mod n with `"repeat": true`), each `answer` (`ack`, `nack`,
   `sack`, `none`, `ack2`: an ACK and the same burst 60 ms later), `slots` (1-200: the answer's first burst starts
   this many 30 ms slots after the end burst's start), `nack_type` (1), `sack_type` (0), `resend` (SACK: the block
