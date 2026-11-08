@@ -29,6 +29,7 @@ set(RDOF_SDR_SRCS
     src/fmgen.c
     src/fmrx.c
     src/dtmfdet.c
+    src/tonerun.c
     src/afskrx.c
     src/mode_fm.c
     src/amrx.c

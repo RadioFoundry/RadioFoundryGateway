@@ -785,6 +785,14 @@ blocks' `t`), its peak deviation and its twist (the column tone over the row's, 
 `deemph_us`), each the median over the run. The summary adds `dtmf`: `{"digits": "159#", "runs": [...]}` (64 digits
 at most). About 1 M multiplies a second at the audio's rate.
 
+With `"tones": true` FM `rx` times steady tones (tone bursts, roger beeps, CW) in the filtered audio, 300-3000 Hz: 20 ms
+Hann windows every 5 ms at 8-16 kS/s, a window holding a tone when one peak has half the band's energy. Windows of one
+pitch (within 40 Hz) are a piece, its edges where the peak's power crosses a quarter of the piece's median. Pieces of one
+pitch less than 50 ms apart are one run; a piece of another pitch ends it if it lasts 15 ms or more. A run of 40 ms or
+more is a record as it ends, `{"tone_run": {"hz", "t0", "t1", "s", "dev_hz"}}`: its pitch, its span in s from the stream's
+start (the blocks' `t`, as a digit's) and its peak deviation. The summary adds `tones`: `{"count": N, "runs": [...]}`
+(about 60 runs at most; `count` is all of them). Speech can make runs too. Float only.
+
 With `"aprs": true` FM `rx` decodes Bell 202 AFSK (1200 baud, mark 1200 Hz, space 2200 Hz) and AX.25 frames in the
 filtered audio, as the bench analyzer does: each tone mixed to 0 Hz and averaged over a bit, the decision mark less g
 times space for seven weights g (for twist), each with its bit clock, NRZI, HDLC flags and unstuffing, the X.25 FCS;

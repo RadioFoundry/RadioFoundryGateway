@@ -19,6 +19,7 @@
 #include "rdof/sdr/fmgen.h"
 #include "rdof/sdr/afskrx.h"
 #include "rdof/sdr/dtmfdet.h"
+#include "rdof/sdr/tonerun.h"
 #include "rdof/sdr/fmrx.h"
 #include "sdr_private.h"
 
@@ -338,6 +339,8 @@ static size_t fm_tx_report(void *tx, char *out, size_t cap)
 
 enum { S_AUDIO = 1, S_DISC = 2 };
 
+#define TRUNS 4000 /* a summary's tone runs: about 60 */
+
 typedef struct {
     rdof_fmrx_t *r;
     unsigned streams;            /* S_* asked for */
@@ -350,6 +353,10 @@ typedef struct {
     int ndigits;
     char runs[1400];             /* and each digit's record, for the summary */
     size_t nruns;
+    rdof_tonerun_t *tones;       /* "tones": timed steady tones in the filtered audio */
+    char *truns;                 /* each run's record, for the summary (TRUNS bytes) */
+    size_t ntruns;
+    long ntones;
     rdof_afskrx_t *aprs;         /* "aprs": AX.25 frames in the audio */
     long frames;
     struct aprs_text {           /* a frame's record's text (off the caller's stack) */
@@ -394,9 +401,20 @@ static void *fm_rx_new(const rdof_jdoc_t *d, int req, double fs, double squelch_
         snprintf(error, ecap, "no memory for a DTMF decoder");
         return NULL;
     }
+    if (rdof_sig_flag(d, req, "tones") && (!(x->tones = rdof_tonerun_new(x->ra, rdof_sdr_alloc, rdof_sdr_free)) ||
+                                           !(x->truns = rdof_sdr_alloc(TRUNS)))) {
+        rdof_tonerun_free(x->tones);
+        rdof_dtmfdet_free(x->dtmf);
+        rdof_fmrx_free(x->r);
+        rdof_sdr_free(x);
+        snprintf(error, ecap, "no memory for a tone detector");
+        return NULL;
+    }
     if (rdof_sig_flag(d, req, "aprs") && (!(x->aprs = rdof_afskrx_new(x->ra, rdof_sdr_alloc, rdof_sdr_free)) ||
                                           !(x->at = rdof_sdr_alloc(sizeof *x->at)))) {
         rdof_afskrx_free(x->aprs);
+        rdof_tonerun_free(x->tones);
+        rdof_sdr_free(x->truns);
         rdof_dtmfdet_free(x->dtmf);
         rdof_fmrx_free(x->r);
         rdof_sdr_free(x);
@@ -413,6 +431,8 @@ static void fm_rx_free(void *rx)
         return;
     rdof_fmrx_free(x->r);
     rdof_dtmfdet_free(x->dtmf);
+    rdof_tonerun_free(x->tones);
+    rdof_sdr_free(x->truns);
     rdof_afskrx_free(x->aprs);
     rdof_sdr_free(x->at);
     rdof_sdr_free(x->disc), rdof_sdr_free(x->audio);
@@ -444,6 +464,8 @@ static void fm_rx_feed(void *rx, const float *iq, int n, float *const *out, int 
     rdof_fmrx_feed(x->r, iq, n, disc, audio, &na);
     if (x->dtmf && audio)
         rdof_dtmfdet_feed(x->dtmf, audio, na);
+    if (x->tones && audio)
+        rdof_tonerun_feed(x->tones, audio, na);
     if (x->aprs && audio)
         rdof_afskrx_feed(x->aprs, audio, na);
     k = 0;
@@ -492,6 +514,45 @@ static size_t dtmf_record(fm_rx_t *x, char *out, size_t cap)
     memcpy(out + 8, one, m);
     out[8 + m] = '}';
     return 9 + m;
+}
+
+/* A tone run's JSON: its span in s from the stream's start, as a digit's */
+static size_t tone_json(const fm_rx_t *x, const rdof_tone_run_t *r, char *out, size_t cap)
+{
+    const int n = snprintf(out, cap, "{\"hz\":%.1f,\"t0\":%.3f,\"t1\":%.3f,\"s\":%.3f,\"dev_hz\":%.0f}", r->hz,
+                           r->t0 - x->delay_s, r->t1 - x->delay_s, r->t1 - r->t0, r->dev_hz);
+    return n > 0 && (size_t)n < cap ? (size_t)n : 0;
+}
+
+/* A run kept for the summary: its JSON's length into one (0: none) */
+static size_t tone_keep(fm_rx_t *x, const rdof_tone_run_t *r, char *one, size_t cap)
+{
+    x->ntones++;
+    const size_t m = tone_json(x, r, one, cap);
+    if (m && x->ntruns + m + 2 < TRUNS) {
+        if (x->ntruns)
+            x->truns[x->ntruns++] = ',';
+        memcpy(x->truns + x->ntruns, one, m);
+        x->ntruns += m;
+        x->truns[x->ntruns] = 0;
+    }
+    return m;
+}
+
+/* A tone run: a record of its own, and kept for the summary */
+static size_t tone_record(fm_rx_t *x, char *out, size_t cap)
+{
+    rdof_tone_run_t r;
+    if (!x->tones || cap < 200 || !rdof_tonerun_take(x->tones, &r))
+        return 0;
+    char one[160];
+    const size_t m = tone_keep(x, &r, one, sizeof one);
+    if (!m)
+        return 0;
+    memcpy(out, "{\"tone_run\":", 12);
+    memcpy(out + 12, one, m);
+    out[12 + m] = '}';
+    return 13 + m;
 }
 
 static void put_num(char *out, size_t cap, double v, int prec)
@@ -562,6 +623,9 @@ static size_t fm_rx_record(void *rx, char *out, size_t cap)
     size_t dn = dtmf_record(x, out, cap);
     if (dn)
         return dn;
+    dn = tone_record(x, out, cap);
+    if (dn)
+        return dn;
     dn = aprs_record(x, out, cap);
     if (dn)
         return dn;
@@ -585,6 +649,16 @@ static size_t fm_rx_summary(void *rx, char *out, size_t cap)
     if (x->aprs && n && out[n - 1] == '}') { /* frames are records only: the summary counts them */
         const int m = snprintf(out + n - 1, cap - (n - 1), ",\"aprs\":{\"frames\":%ld,\"fcs_bad\":%ld}}", x->frames,
                                rdof_afskrx_fcs_bad(x->aprs));
+        n = m > 0 && (size_t)m < cap - (n - 1) ? n - 1 + (size_t)m : 0;
+    }
+    if (x->tones && n && out[n - 1] == '}') { /* a run still going ends here; the summary has it */
+        rdof_tonerun_finish(x->tones);
+        rdof_tone_run_t r;
+        char one[160];
+        while (rdof_tonerun_take(x->tones, &r))
+            tone_keep(x, &r, one, sizeof one);
+        const int m = snprintf(out + n - 1, cap - (n - 1), ",\"tones\":{\"count\":%ld,\"runs\":[%s]}}", x->ntones,
+                               x->ntruns ? x->truns : "");
         n = m > 0 && (size_t)m < cap - (n - 1) ? n - 1 + (size_t)m : 0;
     }
     if (!x->dtmf || !n || out[n - 1] != '}')

@@ -9,6 +9,7 @@
 
 #include "rdof/sdr/fmgen.h"
 #include "rdof/sdr/fmrx.h"
+#include "rdof/sdr/tonerun.h"
 #include "rdof/sdr/modes.h"
 #include "rdof/jsonp.h"
 
@@ -433,6 +434,158 @@ static void t_mode_dtmf(void)
     m->tx_free(tx);
 }
 
+/* The tone detector on its own: audio in Hz of deviation at 16 kS/s, one segment list */
+typedef struct {
+    double hz, s, dev;
+} tseg_t;
+static int tone_runs(const tseg_t *seg, int nseg, double noise, double click_at, rdof_tone_run_t *out, int max)
+{
+    enum { TFS = 16000 };
+    rdof_tonerun_t *d = rdof_tonerun_new(TFS, NULL, NULL);
+    CHECK(d != NULL, "tonerun_new");
+    if (!d)
+        return 0;
+    double ph = 0, t = 0;
+    int n = 0;
+    for (int k = 0; k < nseg; k++) {
+        const int len = (int)lround(seg[k].s * TFS);
+        for (int i = 0; i < len; i++, t += 1.0 / TFS) {
+            ph += 2 * M_PI * seg[k].hz / TFS;
+            double v = seg[k].hz > 0 ? seg[k].dev * sin(ph) : 0;
+            if (noise > 0)
+                v += noise * gauss();
+            if (click_at > 0 && t >= click_at && t < click_at + 0.003)
+                v += 6000.0 * ((i & 1) ? 1 : -1);
+            const float f = (float)v;
+            rdof_tonerun_feed(d, &f, 1);
+        }
+        rdof_tone_run_t r;
+        while (n < max && rdof_tonerun_take(d, &r))
+            out[n++] = r;
+    }
+    rdof_tonerun_finish(d);
+    rdof_tone_run_t r;
+    while (n < max && rdof_tonerun_take(d, &r))
+        out[n++] = r;
+    rdof_tonerun_free(d);
+    return n;
+}
+
+static void t_tonerun(void)
+{
+    rdof_tone_run_t r[32];
+    /* a tone burst */
+    tseg_t a[] = {{0, 0.1, 0}, {1750, 0.3, 2500}, {0, 0.1, 0}};
+    int n = tone_runs(a, 3, 0, 0, r, 32);
+    CHECK(n == 1, "one burst: %d", n);
+    if (n == 1) {
+        NEAR(r[0].hz, 1750, 3, "the burst's pitch");
+        NEAR(r[0].t0, 0.1, 0.005, "the burst's start");
+        NEAR(r[0].t1, 0.4, 0.005, "the burst's end");
+        NEAR(r[0].dev_hz, 2500, 100, "the burst's deviation");
+    }
+    /* a roger beep: two pitches back to back, 100 ms each */
+    tseg_t b[] = {{0, 0.1, 0}, {1200, 0.1, 2000}, {900, 0.1, 2000}, {0, 0.1, 0}};
+    n = tone_runs(b, 4, 0, 0, r, 32);
+    CHECK(n == 2, "a roger beep's two tones: %d", n);
+    if (n == 2) {
+        NEAR(r[0].hz, 1200, 4, "the first tone");
+        NEAR(r[1].hz, 900, 4, "the second tone");
+        NEAR(r[0].t0, 0.1, 0.01, "its start");
+        NEAR(r[0].t1, 0.2, 0.01, "the first's end");
+        NEAR(r[1].t0, 0.2, 0.01, "the second's start");
+        NEAR(r[1].t1, 0.3, 0.01, "the second's end");
+    }
+    /* CW at 60 ms on, 60 off: a run each, the gaps not joined */
+    tseg_t c[9] = {{0, 0.1, 0}};
+    for (int i = 0; i < 4; i++)
+        c[1 + 2 * i] = (tseg_t){800, 0.06, 2000}, c[2 + 2 * i] = (tseg_t){0, 0.06, 0};
+    n = tone_runs(c, 9, 0, 0, r, 32);
+    CHECK(n == 4, "four CW elements: %d", n);
+    for (int i = 0; i < n && i < 4; i++) {
+        NEAR(r[i].hz, 800, 4, "a CW element's pitch");
+        NEAR(r[i].t0, 0.1 + 0.12 * i, 0.01, "a CW element's start");
+        NEAR(r[i].t1 - r[i].t0, 0.06, 0.01, "a CW element's length");
+    }
+    /* a weak signal with a click in the tone: one run */
+    tseg_t e[] = {{0, 0.1, 0}, {1000, 0.4, 2000}, {0, 0.1, 0}};
+    n = tone_runs(e, 3, 800, 0.3, r, 32);
+    CHECK(n == 1, "a click doesn't split a run: %d", n);
+    if (n == 1) {
+        NEAR(r[0].hz, 1000, 5, "the noisy tone's pitch");
+        NEAR(r[0].t0, 0.1, 0.012, "the noisy tone's start");
+        NEAR(r[0].t1, 0.5, 0.012, "the noisy tone's end");
+    }
+    /* noise alone, and silence: nothing */
+    tseg_t q[] = {{0, 1.0, 0}};
+    n = tone_runs(q, 1, 800, 0, r, 32);
+    CHECK(n == 0, "no runs in noise: %d", n);
+    n = tone_runs(q, 1, 0, 0, r, 32);
+    CHECK(n == 0, "no runs in silence: %d", n);
+    CHECK(rdof_tonerun_new(7000, NULL, NULL) == NULL, "a rate under 8 kS/s");
+}
+
+/* Timed tones through the mode: records and the summary's list */
+static void t_mode_tones(void)
+{
+    const rdof_sig_mode_t *m = rdof_sig_find(rdof_sdr_modes, "fm");
+    static rdof_jnode_t nodes[256];
+    static char buf[2048];
+    rdof_jdoc_t d = {nodes, 256, 0, buf, sizeof buf, 0, ""};
+    const char *job = "{\"mode\":\"fm\",\"dev_hz\":2500,\"lead_s\":0.2,\"program\":["
+                      "{\"kind\":\"tone\",\"hz\":1750,\"s\":0.3,\"level\":0.8},"
+                      "{\"kind\":\"silence\",\"s\":0.2},"
+                      "{\"kind\":\"tone\",\"hz\":1200,\"s\":0.1,\"level\":0.8},"
+                      "{\"kind\":\"tone\",\"hz\":900,\"s\":0.1,\"level\":0.8}]}";
+    int root = rdof_jparse(&d, job, strlen(job));
+    char err[160] = "";
+    double secs = 0;
+    void *tx = m->tx_new(&d, root, FS, &secs, err, sizeof err);
+    CHECK(tx != NULL, "tx_new: %s", err);
+    if (!tx)
+        return;
+    rdof_sig_src_t src = m->tx_src(tx);
+    const char *rq = "{\"mode\":\"fm\",\"tones\":true}";
+    root = rdof_jparse(&d, rq, strlen(rq));
+    void *rx = m->rx_new(&d, root, FS, -40, err, sizeof err);
+    CHECK(rx != NULL, "rx_new: %s", err);
+    if (!rx) {
+        m->tx_free(tx);
+        return;
+    }
+    enum { B = 480 };
+    float hz[B], env[B], iq[2 * B];
+    float *outs[2] = {NULL, NULL};
+    int nout[2], nrec = 0;
+    double ph = 0, hz0 = 0, t0 = 0;
+    for (int blk = 0; blk < 200; blk++) {
+        const int n = src.freq(src.ctx, hz, env, B);
+        for (int i = 0; i < B; i++) {
+            const float e = i < n ? env[i] : 0;
+            ph += 2 * M_PI * (i < n ? hz[i] : 0) / FS;
+            iq[2 * i] = (float)(e * cos(ph) + 0.003 * gauss()), iq[2 * i + 1] = (float)(e * sin(ph) + 0.003 * gauss());
+        }
+        m->rx_feed(rx, iq, B, outs, nout);
+        char rec[1024];
+        while (m->rx_record(rx, rec, sizeof rec)) {
+            const char *p = strstr(rec, "{\"tone_run\":{\"hz\":");
+            if (p) {
+                if (!nrec++)
+                    hz0 = atof(p + 18), t0 = atof(strstr(rec, "\"t0\":") + 5);
+            }
+        }
+    }
+    CHECK(nrec >= 2, "tone runs as records: %d", nrec);
+    NEAR(hz0, 1750, 5, "the first run's pitch through the receiver");
+    NEAR(t0, 0.2, 0.02, "the first run's start, after the lead");
+    static char sum[8192];
+    const size_t n = m->rx_summary(rx, sum, sizeof sum);
+    const char *t = n ? strstr(sum, "\"tones\":{\"count\":3,\"runs\":[{\"hz\":") : NULL;
+    CHECK(t && sum[n - 1] == '}', "the summary's runs: %.400s", n ? (strstr(sum, "\"tones\"") ? strstr(sum, "\"tones\"") : sum) : "");
+    m->rx_free(rx);
+    m->tx_free(tx);
+}
+
 /* APRS through the mode: an AX.25 frame (flags, bit stuffing, the FCS) sent as Bell 202 AFSK on the FM, the
  * receiver's "aprs" decoding it with its tones measured */
 static uint16_t t_crc_x25(const uint8_t *p, int n)
@@ -692,6 +845,8 @@ int main(void)
     t_dcs();
     t_afsk_dtmf_sweep();
     t_mode_dtmf();
+    t_tonerun();
+    t_mode_tones();
     t_mode_aprs();
     t_pcm();
     t_mode();
