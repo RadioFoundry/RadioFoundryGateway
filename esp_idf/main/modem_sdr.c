@@ -149,7 +149,13 @@ static bool iq_now(void *ctx) { return sig_iq; }
 
 static const rdof_fe_tx_source_t source = {pull_iq, pull_freq, NULL, try_pull_freq, iq_now, try_pull_iq};
 
-static int io_channel(void *ctx, uint32_t hz) { return sdr_rx_channel(hz); }
+/* A frequency no receive channel hears is still one the modem may transmit on (a bench job's, a bench.tx band's):
+ * it hears nothing there. A -1 would NAK the SET_FREQ ("isn't one of the SDR's channels"). */
+static int io_channel(void *ctx, uint32_t hz)
+{
+    const int c = sdr_rx_channel(hz);
+    return c >= 0 ? c : RDOF_SDRMODEM_NOT_HEARD;
+}
 
 static bool io_tx_tune(void *ctx, uint32_t hz, double *off)
 {

@@ -110,6 +110,8 @@ typedef struct {
     bool capture;             /* a capture of the channel's own outputs: fired from the start, a capture's lines */
     int have_floor;           /* 0 learning, 1 learned, 2 given */
     double floor_db, level_db;
+    double peak_db;           /* the loudest 1 ms block since it armed (a no_signal's report) */
+    long behind;              /* restarts at the history's oldest before it fired (fell behind) */
     int hist[TRIG_HIST];
     long floor_blocks;
     int bsize, bn;            /* outputs in a 1 ms block, so far */
@@ -1491,6 +1493,7 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now, bool trac
     t->bsize = (int)lround(rate / 1000);
     if (t->bsize < 1)
         t->bsize = 1;
+    t->peak_db = -200;
     if (isfinite(floor_db))
         t->floor_db = floor_db, t->have_floor = 2;
     c->trig = t;
@@ -3178,7 +3181,9 @@ static void tick_rx(rdof_bl_t *bl, conn_t *c, double now)
     const uint64_t g = (uint64_t)(r->ch.ntaps - 1) / 2, d = (uint64_t)r->ch.d;
     double dt = r->last_tick > 0 ? now - r->last_tick : 0.02;
     r->last_tick = now;
-    dt = dt < 0.02 ? 0.02 : dt > 0.125 ? 0.125 : dt;
+    /* at most 0.5 s of input a tick, as a trigger's: a W12's ticks come 0.3 to 0.7 s apart at 384 kS/s, and at
+     * 0.25 s an rx fell out of the 2 s history beside another job */
+    dt = dt < 0.02 ? 0.02 : dt > 0.25 ? 0.25 : dt;
     long budget = (long)(2 * dt * w.fs) + RDOF_BL_IQ_CHUNK; /* the lock is held: at most this much a tick */
     srx_records(bl, c);
     while (budget > 0) {
@@ -3999,6 +4004,8 @@ static bool trig_block(rdof_bl_t *bl, conn_t *c, double lin, const rdof_bl_windo
         return false;
     }
     const bool over = db >= t->floor_db + t->thr;
+    if (!t->fired && db > t->peak_db)
+        t->peak_db = db;
     if (t->fired) {
         if (t->until_end && t->block_sc >= t->trig_sc && db >= t->floor_db + t->thr / 2) {
             const uint64_t cap = t->trig_sc + (uint64_t)(t->max_s * w->fs);
@@ -4433,8 +4440,10 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
         }
         if (!t->fired && now - t->started > t->timeout) {
             if (t->have_floor)
-                fail(bl, c, "no_signal", "nothing rose %.0f dB over the floor (%.1f dB) in %.0f s", t->thr,
-                     t->floor_db, t->timeout);
+                fail(bl, c, "no_signal",
+                     "nothing rose %.0f dB over the floor (%.1f dB) in %.0f s: the loudest 1 ms %.1f dB; fell behind "
+                     "the history %ld times",
+                     t->thr, t->floor_db, t->timeout, t->peak_db, t->behind);
             else
                 fail(bl, c, "no_signal", "no samples to learn the floor from in %.0f s", t->timeout);
             return;
@@ -4455,6 +4464,7 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
         const long got = bl->p.iq_read(bl->p.ctx, t->sc, bl->iq, RDOF_BL_IQ_CHUNK, &oldest, &next);
         if (got <= 0 && t->sc < oldest) { /* overwritten before it went: on from the oldest, the outputs between lost */
             if (!t->fired) {
+                t->behind++;
                 trig_restart(t, oldest + g);
                 continue;
             }

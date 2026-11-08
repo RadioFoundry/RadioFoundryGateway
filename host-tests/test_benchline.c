@@ -842,6 +842,7 @@ static void test_trigger(void)
     c = ask(bl, "{\"op\":\"trigger\",\"freq\":438.1125,\"floor_db\":-50,\"timeout_s\":0.1}", now);
     trig_run(bl, c, &now, 200, 0, 0, all, 0, sizeof all);
     CHECK(strstr(all, "\"code\":\"no_signal\""), "no_signal: %s", all);
+    CHECK(strstr(all, "the loudest 1 ms") && strstr(all, "fell behind the history 0 times"), "why no signal: %s", all);
     rdof_bl_closed(bl, c, now);
     c = ask(bl, "{\"op\":\"trigger\",\"freq\":438.6}", now);
     drain(bl, c, all, sizeof all);

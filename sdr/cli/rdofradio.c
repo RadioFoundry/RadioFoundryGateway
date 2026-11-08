@@ -698,11 +698,17 @@ static double plan_rate(const rdof_sdr_channel_t *c, int n, char *why, size_t ca
              rate_flag ? ", or a wider -r" : "");
     return 0;
 }
+/* A bench job has the transmitter (owner_yield): the modem's owner paused. tuned: the modem simplex (a repeater's);
+ * lo: the TX LO before the job, put back for the repeater after it. */
+static struct {
+    bool on, tuned;
+    double lo;
+} RP;
 /* A repeater hears on its RX channel. A transceiver hears on any channel the receiver has, and may go where none
- * hears it to transmit (the modem then hears nothing there). */
+ * hears it to transmit (the modem then hears nothing there); so does a repeater's modem while a bench job has it. */
 static int io_channel(void *ctx, uint32_t hz)
 {
-    if (R.full)
+    if (R.full && !RP.on)
         return hz == R.rx_hz ? channel_of(hz) : -1;
     const int c = channel_of(hz);
     return c >= 0 ? c : RDOF_SDRMODEM_NOT_HEARD;
@@ -725,12 +731,6 @@ static void io_tx_level(void *ctx, int level)
                 gain_dbm(txg_full) - (255 - level) * RDOF_TXPOWER_SDR_SPAN_DB / 255.0);
     tx_rf_level = level;
 }
-/* A bench job has the transmitter (owner_yield): the modem's owner paused. tuned: the modem simplex (a repeater's);
- * lo: the TX LO before the job, put back for the repeater after it. */
-static struct {
-    bool on, tuned;
-    double lo;
-} RP;
 static bool io_tune(void *ctx, uint32_t hz, double *off)
 {
     /* a repeater's TX LO stays, but moves for a bench job (and back after it) */
@@ -1977,9 +1977,11 @@ static struct {
     rdof_benchtx_t tx;
 } BT = {.mu = PTHREAD_MUTEX_INITIALIZER};
 
+static void last_job_closes(void);
 static bool bl_tx_open(void *ctx, uint32_t freq, int cc, rdof_bench_power_t power, bool as_built, char *why,
                        size_t cap)
 {
+    last_job_closes();
     pthread_mutex_lock(&BT.mu);
     const bool busy = BT.want || BT.active || BR.want || BR.active || BO.want || BO.active;
     if (!busy) {
@@ -2081,9 +2083,33 @@ static struct {
     double asked;
 } BS = {.mu = PTHREAD_MUTEX_INITIALIZER};
 
+/* The engine lets a job go (its close hook) before the main loop has given the transmitter back: the next job's open
+ * waits for that (3 s at most) instead of failing "still busy with the last job". */
+static bool job_closing(void)
+{
+    pthread_mutex_lock(&BS.mu);
+    pthread_mutex_lock(&BT.mu);
+    pthread_mutex_lock(&BO.mu);
+    pthread_mutex_lock(&BR.mu);
+    const bool c = BS.want == 2 || BT.want == 2 || BO.want == 3 || BR.want == 2;
+    pthread_mutex_unlock(&BR.mu);
+    pthread_mutex_unlock(&BO.mu);
+    pthread_mutex_unlock(&BT.mu);
+    pthread_mutex_unlock(&BS.mu);
+    return c;
+}
+static void last_job_closes(void)
+{
+    for (int i = 0; i < 3000 && job_closing(); i++) {
+        const struct timespec ts = {0, 1000000};
+        nanosleep(&ts, NULL);
+    }
+}
+
 static int bl_sig_open(void *ctx, uint32_t freq, rdof_bench_power_t power, double seconds, const rdof_sig_src_t *src,
                        char *why, size_t cap)
 {
+    last_job_closes();
     pthread_mutex_lock(&BS.mu);
     pthread_mutex_lock(&BT.mu);
     const bool busy = BS.want || BS.active || BT.want || BT.active || BR.want || BR.active || BO.want || BO.active;
@@ -2148,6 +2174,7 @@ static const char *bl_ob_can(void *ctx)
 
 static bool bl_ob_open(void *ctx, const rdof_bl_ob_cfg_t *cfg, char *why, size_t cap)
 {
+    last_job_closes();
     pthread_mutex_lock(&BS.mu);
     pthread_mutex_lock(&BT.mu);
     pthread_mutex_lock(&BO.mu);
@@ -2618,6 +2645,7 @@ static bool bl_mssim(void *ctx, const char *action, const char *req, size_t len,
 
 static bool bl_rpt_open(void *ctx, const rdof_bl_rpt_cfg_t *cfg, char *why, size_t cap)
 {
+    last_job_closes();
     pthread_mutex_lock(&BR.mu);
     const bool busy = BR.want || BR.active || BT.want || BT.active || BO.want || BO.active;
     if (!busy) {

@@ -542,7 +542,8 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
   are `threshold_db` over the floor, then sends from `pre_s` before the rise (as far as the history goes) to
   `post_s` after it; with `until_end`, to `post_s` after the last block over half the threshold, at most `max_s`
   after the rise. Samples are cf32 or cs16, full scale 1.0 = cs8's 127. Nothing in `timeout_s` (60) is
-  `no_signal`. `meta` is the daemon's: `freq`, `center`, `fs` and `rate` (the channel's), `wide_fs`, `fmt`, `bw`,
+  `no_signal`; its message gives the floor, the loudest 1 ms block since it armed, and how many times it fell behind
+  the history (restarted at its oldest sample, the run so far lost). `meta` is the daemon's: `freq`, `center`, `fs` and `rate` (the channel's), `wide_fs`, `fmt`, `bw`,
   `t0`, `trigger_time`, `signal_start_sample`, `trigger_sc`, `level_db`, `floor_db`, `snr_db`, `threshold_db`,
   `seconds`, `samples`, `pre_s`, `ppm`, `ppm_source`, `ppm_tol`, `ppm_ref`, `lo_ppm`, `fs_ppm`, `freq_tol_hz`, `corr_hz` (where the channel was mixed from, past the nominal offset, for the crystal; section 14.7), `gap_samples` (output samples lost, and the wideband filler in what it sent, in
   output samples), `clip_pct`, `scale_db`. The engine filters on its own thread
