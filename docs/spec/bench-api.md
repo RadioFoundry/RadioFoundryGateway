@@ -681,6 +681,12 @@ straight on. A claimed frequency is the claiming session's: another session's `r
 wait with `timeout`; a session that would wait on itself is `deadlock`. The modem's queue estimates come from each
 job's `expect_s` (else its length as the gateway works it out).
 
+While a request of a session waits on another session (or a request with no session), the session's running
+`capture`, `bursts`, `listen` and `rx` grow by that time, and an armed `trigger` or `track` gets that much more
+`timeout_s`: a test that starts a capture and then transmits still captures its transmission when its job queued.
+A trigger that already fired keeps its length. `granted` carries `extended`, how many streams grew; waiting on the
+session's own job extends nothing.
+
 On rdofradio, a TX job borrows the SDR modem from the roaming transceiver for its length: a bench job comes first,
 so the transceiver pauses at once (the network's calls wait; a call on the air is cut, what it queued dropped), the
 job drives the modem in DMO, and the modem is set up again for the transceiver after the job. Only on the transceiver of `--mmdvm` (a

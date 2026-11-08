@@ -169,6 +169,8 @@ typedef struct {
     int wait;
     long seq;
     double wait_since, wait_max, expect_s;
+    double wait_last;         /* the session's running receive ops are extended up to here */
+    int wait_grew;            /* how many of them it extended */
     double freqs[RDOF_BL_CLAIMS];
     int nfreqs;
     bool queued_told;
@@ -1150,7 +1152,8 @@ static void wait_start(rdof_bl_t *bl, conn_t *c, int kind, int root, double now)
 {
     c->wait = kind;
     c->seq = ++bl->next_seq;
-    c->wait_since = now;
+    c->wait_since = c->wait_last = now;
+    c->wait_grew = 0;
     c->wait_max = jnum(bl, root, "wait_max", WAIT_MAX_S);
     if (c->wait_max <= 0)
         c->wait_max = WAIT_MAX_S;
@@ -3525,8 +3528,49 @@ static void tell_queued(rdof_bl_t *bl, conn_t *c, double now, const char *kind, 
 static void granted(rdof_bl_t *bl, conn_t *c, double now, const char *kind)
 {
     if (c->queued_told)
-        emit(bl, c, "{\"state\":\"granted\",\"kind\":\"%s\",\"waited_s\":%.1f}", kind, now - c->wait_since);
+        emit(bl, c, "{\"state\":\"granted\",\"kind\":\"%s\",\"waited_s\":%.1f,\"extended\":%d}", kind,
+             now - c->wait_since, c->wait_grew);
     c->wait = W_NONE;
+}
+
+/* A request of a session waits on someone else: the session's running captures, bursts and armed triggers grow by
+ * the wait. A test that starts a capture and then transmits still gets its transmission when its job queued behind
+ * another session. Waiting on the session's own job doesn't count: it knows how long that takes. */
+static void grow_session_rx(rdof_bl_t *bl, conn_t *c, double now)
+{
+    const double dt = now - c->wait_last;
+    c->wait_last = now;
+    if (c->sess < 0 || dt <= 0 || (bl->tx_conn >= 0 && bl->c[bl->tx_conn].sess == c->sess))
+        return;
+    rdof_bl_window_t w;
+    get_window(bl, &w);
+    const uint64_t n = w.fs > 0 ? (uint64_t)(dt * w.fs) : 0;
+    int k = 0;
+    for (int i = 0; i < RDOF_BL_CONNS; i++) {
+        conn_t *o = &bl->c[i];
+        if (o == c || o->state != C_ACTIVE || o->sess != c->sess || o->wait != W_NONE)
+            continue;
+        if (o->op == OP_CAPTURE) {
+            o->sc_end += n;
+            k++;
+        } else if ((o->op == OP_BURSTS || o->op == OP_LISTEN) && o->until > 0) {
+            o->until += dt;
+            k++;
+        } else if (o->op == OP_TRIGGER && o->trig) {
+            trig_t *t = o->trig;
+            if (!t->fired)
+                t->timeout += dt, k++;
+            else if (t->capture && t->end_sc != UINT64_MAX)
+                t->end_sc += n, k++;
+        } else if (o->op == OP_RX && o->srx) {
+            o->srx->seconds += dt;
+            if (o->srx->end_sc)
+                o->srx->end_sc += n;
+            k++;
+        }
+    }
+    if (k > c->wait_grew)
+        c->wait_grew = k;
 }
 
 static void tick_waits(rdof_bl_t *bl, double now)
@@ -3539,6 +3583,7 @@ static void tick_waits(rdof_bl_t *bl, double now)
             fail(bl, c, "refused", "the session ended");
             continue;
         }
+        grow_session_rx(bl, c, now);
         if (c->wait == W_FREQ) {
             int blocker = -1;
             for (int f = 0; f < c->nfreqs && blocker < 0; f++) {

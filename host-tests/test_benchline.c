@@ -698,6 +698,60 @@ static void test_ops(void)
     CHECK(strstr(out, "\"code\":\"refused\""), "outside the window: %s", out);
     rdof_bl_closed(bl, c, now);
 
+    /* a session's capture grows by the time a request of the same session waited on another session */
+    {
+        char ida[16] = "", idb[16] = "", rq[160];
+        const int sa = ask(bl, "{\"op\": \"session\", \"label\": \"cap\"}", now);
+        drain(bl, sa, out, sizeof out);
+        field(out, "session", ida, sizeof ida);
+        const int sb = ask(bl, "{\"op\": \"session\", \"label\": \"other\"}", now);
+        drain(bl, sb, out, sizeof out);
+        field(out, "session", idb, sizeof idb);
+        snprintf(rq, sizeof rq, "{\"op\": \"hold\", \"session\": \"%s\"}", idb);
+        const int hb = ask(bl, rq, now);
+        rdof_bl_tick(bl, now);
+        drain(bl, hb, out, sizeof out);
+        CHECK(strstr(out, "\"held\""), "the other session holds the modem: %s", out);
+        snprintf(rq, sizeof rq, "{\"op\": \"capture\", \"session\": \"%s\", \"freq\": 438.1125, \"seconds\": 0.02, "
+                                "\"pre_s\": 0}", ida);
+        const int cap = ask(bl, rq, now);
+        static char grown[300000];
+        size_t got = drain(bl, cap, grown, sizeof grown);
+        snprintf(rq, sizeof rq, "{\"op\": \"hold\", \"session\": \"%s\", \"wait_max\": 60}", ida);
+        const int ha = ask(bl, rq, now);
+        rdof_bl_tick(bl, now);
+        drain(bl, ha, out, sizeof out);
+        CHECK(strstr(out, "\"state\":\"queued\"") != NULL, "the same session's hold waits: %s", out);
+        for (int k = 0; k < 30; k++) /* 30000 samples: past the 15360 asked for */
+            rdof_bl_ring_put(&ring, iq, 1000, &clipped);
+        for (int k = 0; k < 10; k++) {
+            rdof_bl_tick(bl, now + 0.05);
+            got += drain(bl, cap, grown + got, sizeof grown - got);
+        }
+        CHECK(!rdof_bl_finished(bl, cap), "the capture goes on while the request waits");
+        rdof_bl_closed(bl, sb, now + 0.05); /* its hold goes with it */
+        rdof_bl_closed(bl, hb, now + 0.05);
+        rdof_bl_tick(bl, now + 0.05);
+        drain(bl, ha, out, sizeof out);
+        CHECK(strstr(out, "\"state\":\"granted\"") && strstr(out, "\"extended\":1"), "granted: %s", out);
+        for (int k = 0; k < 30; k++)
+            rdof_bl_ring_put(&ring, iq, 1000, &clipped);
+        for (int k = 0; k < 10; k++) {
+            rdof_bl_tick(bl, now + 0.1);
+            got += drain(bl, cap, grown + got, sizeof grown - got);
+        }
+        grown[got] = 0;
+        char *last = grown + got;
+        while (last > grown && last[-2] != '\n')
+            last--;
+        CHECK(rdof_bl_finished(bl, cap) && strstr(last, "\"done\"") && field(last, "samples", v, sizeof v) &&
+                  labs(atol(v) - 53760) < 16,
+              "15360 samples and the 38400 of the wait: %s", last);
+        rdof_bl_closed(bl, cap, now + 0.1);
+        rdof_bl_closed(bl, ha, now + 0.1);
+        rdof_bl_closed(bl, sa, now + 0.1);
+    }
+
     /* what isn't here yet, and nonsense */
     c = ask(bl, "{\"op\": \"bridge\"}", now);
     drain(bl, c, out, sizeof out);
