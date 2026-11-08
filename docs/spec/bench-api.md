@@ -574,7 +574,8 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
 - `bursts` with `"envelope": true` also measures the channel's carrier envelope, as the bench analyzer does on a
   capture, so a test needs no I/Q for a transmitter's keying. The channel is cut from the history as `trigger`'s is
   (`env_bw`, 12500), its floor the median 1 ms block over the `floor_s` (1) before the request unless `floor_db` is
-  given. The 0.1 ms power envelope (a centered mean) is keyed at `on_db` (10) over the floor and unkeyed under
+  given (blocks of exact zeros left out: a channelizer quantizes quiet to zero, and the floor would sit under any
+  residual carrier). The 0.1 ms power envelope (a centered mean) is keyed at `on_db` (10) over the floor and unkeyed under
   `off_db` (`on_db` - 3); an edge is interpolated between two outputs. A ramp runs from the envelope leaving the noise
   (`on_db` - 4 over the floor) to 3 dB under the plateau (the median 1-3 ms in from the edge), and back at the
   key-down; a step is the 1 ms envelope moving over `step_db` (3) in 1 ms, from 2 ms in to 2 ms before the key-down.
@@ -761,6 +762,14 @@ summary). A record is `{"block": {"t", "carrier", "power_dbfs", "env_min", "env_
 "words", "dev_hz", "turnoff"}` or `{"kind": "none"}`. The CTCSS tone is the standard tone most quarter-second windows
 were nearest; `hz` and `dev_hz` are those windows' mean only, so a turn-off tone after it (55 Hz on some radios) or a
 window across the change doesn't pull them.
+
+With `"dtmf": true` FM `rx` decodes DTMF digits in the filtered audio, as the bench analyzer does: 40 ms Hann
+windows every 5 ms, the eight Q.23 tones by Goertzel; a window holds a digit when its row and column tones stand 10
+dB over the other six and hold 60 % of its power, and a run of 30 ms or more is a digit. Each digit is a record as
+it ends, `{"dtmf": {"digit", "t0", "t1", "s", "dev_hz", "twist_db"}}`: its span in s from the stream's start (the
+blocks' `t`), its peak deviation and its twist (the column tone over the row's, dB, on the carrier: with no
+`deemph_us`), each the median over the run. The summary adds `dtmf`: `{"digits": "159#", "runs": [...]}` (64 digits
+at most). About 1 M multiplies a second at the audio's rate.
 
 AM is double sideband with a full carrier (airband voice; ACARS's MSK is an `fsk` segment, `baud` 2400, `hz` [1200,
 2400]). The source renders complex baseband, so a front end that sends frequency must also take polar I/Q

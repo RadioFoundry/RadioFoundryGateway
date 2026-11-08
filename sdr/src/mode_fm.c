@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include "rdof/sdr/fmgen.h"
+#include "rdof/sdr/dtmfdet.h"
 #include "rdof/sdr/fmrx.h"
 #include "sdr_private.h"
 
@@ -342,6 +343,12 @@ typedef struct {
     double fs, full_audio;
     float *disc, *audio;         /* this feed's, when a stream isn't asked for */
     int room;
+    rdof_dtmfdet_t *dtmf;        /* "dtmf": digits in the filtered audio */
+    double delay_s, ra;          /* the audio's lag behind the input; its rate */
+    char digits[65];             /* the summary's (at most 64) */
+    int ndigits;
+    char runs[1400];             /* and each digit's record, for the summary */
+    size_t nruns;
 } fm_rx_t;
 
 static void *fm_rx_new(const rdof_jdoc_t *d, int req, double fs, double squelch_dbfs, char *error, size_t ecap)
@@ -373,6 +380,14 @@ static void *fm_rx_new(const rdof_jdoc_t *d, int req, double fs, double squelch_
     x->streams = (strstr(s, "audio") ? S_AUDIO : 0) | (strstr(s, "disc") ? S_DISC : 0);
     x->full_audio = rdof_sig_num(d, req, "audio_full_hz", 5000);
     x->fs = fs;
+    x->ra = rdof_fmrx_audio_rate(x->r);
+    x->delay_s = rdof_fmrx_delay_s(x->r);
+    if (rdof_sig_flag(d, req, "dtmf") && !(x->dtmf = rdof_dtmfdet_new(x->ra, rdof_sdr_alloc, rdof_sdr_free))) {
+        rdof_fmrx_free(x->r);
+        rdof_sdr_free(x);
+        snprintf(error, ecap, "no memory for a DTMF decoder");
+        return NULL;
+    }
     return x;
 }
 
@@ -382,6 +397,7 @@ static void fm_rx_free(void *rx)
     if (!x)
         return;
     rdof_fmrx_free(x->r);
+    rdof_dtmfdet_free(x->dtmf);
     rdof_sdr_free(x->disc), rdof_sdr_free(x->audio);
     rdof_sdr_free(x);
 }
@@ -409,6 +425,8 @@ static void fm_rx_feed(void *rx, const float *iq, int n, float *const *out, int 
     float *audio = (x->streams & S_AUDIO) ? out[k++] : x->room ? x->audio : NULL;
     float *disc = (x->streams & S_DISC) ? out[k] : NULL;
     rdof_fmrx_feed(x->r, iq, n, disc, audio, &na);
+    if (x->dtmf && audio)
+        rdof_dtmfdet_feed(x->dtmf, audio, na);
     k = 0;
     if (x->streams & S_AUDIO)
         nout[k++] = na;
@@ -416,9 +434,53 @@ static void fm_rx_feed(void *rx, const float *iq, int n, float *const *out, int 
         nout[k] = n;
 }
 
+/* A digit's JSON: its span in s from the stream's start (the audio's lag taken out), as the blocks' t */
+static size_t dtmf_json(const fm_rx_t *x, const rdof_dtmf_run_t *r, char *out, size_t cap)
+{
+    const int n = snprintf(out, cap, "{\"digit\":\"%c\",\"t0\":%.3f,\"t1\":%.3f,\"s\":%.3f,\"dev_hz\":%.0f,"
+                           "\"twist_db\":%.1f}", r->digit, r->t0 - x->delay_s, r->t1 - x->delay_s, r->t1 - r->t0,
+                           r->dev_hz, r->twist_db);
+    return n > 0 && (size_t)n < cap ? (size_t)n : 0;
+}
+
+/* A digit kept for the summary: its JSON's length into one (0: none) */
+static size_t dtmf_keep(fm_rx_t *x, const rdof_dtmf_run_t *r, char *one, size_t cap)
+{
+    if (x->ndigits < 64)
+        x->digits[x->ndigits++] = r->digit, x->digits[x->ndigits] = 0;
+    const size_t m = dtmf_json(x, r, one, cap);
+    if (m && x->nruns + m + 2 < sizeof x->runs) {
+        if (x->nruns)
+            x->runs[x->nruns++] = ',';
+        memcpy(x->runs + x->nruns, one, m);
+        x->nruns += m;
+        x->runs[x->nruns] = 0;
+    }
+    return m;
+}
+
+/* A digit: a record of its own, and kept for the summary */
+static size_t dtmf_record(fm_rx_t *x, char *out, size_t cap)
+{
+    rdof_dtmf_run_t r;
+    if (!x->dtmf || cap < 200 || !rdof_dtmfdet_take(x->dtmf, &r))
+        return 0;
+    char one[160];
+    const size_t m = dtmf_keep(x, &r, one, sizeof one);
+    if (!m)
+        return 0;
+    memcpy(out, "{\"dtmf\":", 8);
+    memcpy(out + 8, one, m);
+    out[8 + m] = '}';
+    return 9 + m;
+}
+
 static size_t fm_rx_record(void *rx, char *out, size_t cap)
 {
     fm_rx_t *x = rx;
+    const size_t dn = dtmf_record(x, out, cap);
+    if (dn)
+        return dn;
     rdof_fmrx_block_t b;
     if (cap < 16 || !rdof_fmrx_block(x->r, &b))
         return 0;
@@ -435,7 +497,18 @@ static size_t fm_rx_summary(void *rx, char *out, size_t cap)
     fm_rx_t *x = rx;
     rdof_fmrx_summary_t s;
     rdof_fmrx_summary(x->r, &s);
-    return rdof_fmrx_summary_json(x->r, &s, out, cap);
+    size_t n = rdof_fmrx_summary_json(x->r, &s, out, cap);
+    if (!x->dtmf || !n || out[n - 1] != '}')
+        return n;
+    /* the digits: a run still going ends here, its record left out (the summary has it) */
+    rdof_dtmfdet_finish(x->dtmf);
+    rdof_dtmf_run_t r;
+    char one[160];
+    while (rdof_dtmfdet_take(x->dtmf, &r))
+        dtmf_keep(x, &r, one, sizeof one);
+    const int m = snprintf(out + n - 1, cap - (n - 1), ",\"dtmf\":{\"digits\":\"%s\",\"runs\":[%s]}}", x->digits,
+                           x->runs);
+    return m > 0 && (size_t)m < cap - (n - 1) ? n - 1 + (size_t)m : 0;
 }
 
 const rdof_sig_mode_t rdof_mode_fm = {

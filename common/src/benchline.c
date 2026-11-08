@@ -4303,16 +4303,21 @@ static bool trig_out(rdof_bl_t *bl, conn_t *c, trig_t *t, const rdof_bl_window_t
             return false;
         const double lin = (double)t->bp / t->bsize;
         t->bn = 0, t->bp = 0;
-        if (!t->have_floor) { /* the median block, as a trigger's */
-            const double db = 10 * log10(lin + 1e-30);
-            int k = (int)((db + 150) * 2);
-            t->hist[k < 0 ? 0 : k >= TRIG_HIST ? TRIG_HIST - 1 : k]++;
+        /* the median block, as a trigger's; blocks of exact zeros left out: a channelizer's output quantizes quiet to
+         * zero (the Pluto's), which would put the floor at -150 dB and every residual carrier over it */
+        if (!t->have_floor) {
+            if (lin > 0) {
+                int k = (int)((10 * log10(lin) + 150) * 2);
+                t->hist[k < 0 ? 0 : k >= TRIG_HIST ? TRIG_HIST - 1 : k]++;
+                t->run++; /* the nonzero blocks (run is a trigger's, unused here) */
+            }
             if (++t->floor_blocks >= t->floor_s * 1000) {
                 long acc = 0;
                 int m = 0;
-                while (m < TRIG_HIST - 1 && (acc += t->hist[m]) <= t->floor_blocks / 2)
+                while (m < TRIG_HIST - 1 && (acc += t->hist[m]) <= t->run / 2)
                     m++;
-                t->floor_db = -150 + m * 0.5 + 0.25;
+                /* all zeros: the floor under the channel's last bit (a 16-bit output's is about -84 dB) */
+                t->floor_db = t->run ? -150 + m * 0.5 + 0.25 : -100;
                 t->have_floor = 1;
                 rdof_benv_floor(t->env, t->floor_db);
             }

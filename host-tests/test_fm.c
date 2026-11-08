@@ -368,6 +368,71 @@ static void t_pcm(void)
     free(pcm);
 }
 
+/* DTMF through the mode: the generator's digits keyed, the receiver's "dtmf" decoding them as records and in the
+ * summary, with their spans */
+static void t_mode_dtmf(void)
+{
+    const rdof_sig_mode_t *m = rdof_sig_find(rdof_sdr_modes, "fm");
+    static rdof_jnode_t nodes[256];
+    static char buf[2048];
+    rdof_jdoc_t d = {nodes, 256, 0, buf, sizeof buf, 0, ""};
+    const char *job = "{\"mode\":\"fm\",\"dev_hz\":2500,\"ctcss\":100.0,\"sub_dev_hz\":500,\"lead_s\":0.2,"
+                      "\"program\":[{\"kind\":\"dtmf\",\"digits\":\"159#*0D\",\"s\":0.1,\"gap_s\":0.05,\"level\":0.6},"
+                      "{\"kind\":\"tone\",\"hz\":1000,\"s\":0.5,\"level\":0.5}]}";
+    int root = rdof_jparse(&d, job, strlen(job));
+    char err[160] = "";
+    double secs = 0;
+    void *tx = m->tx_new(&d, root, FS, &secs, err, sizeof err);
+    CHECK(tx != NULL, "tx_new: %s", err);
+    if (!tx)
+        return;
+    rdof_sig_src_t src = m->tx_src(tx);
+    const char *rq = "{\"mode\":\"fm\",\"dtmf\":true}";
+    root = rdof_jparse(&d, rq, strlen(rq));
+    void *rx = m->rx_new(&d, root, FS, -40, err, sizeof err);
+    CHECK(rx != NULL, "rx_new: %s", err);
+    if (!rx) {
+        m->tx_free(tx);
+        return;
+    }
+    enum { B = 480 };
+    float hz[B], env[B], iq[2 * B];
+    float *outs[2] = {NULL, NULL};
+    int nout[2];
+    double ph = 0;
+    char got[16] = "";
+    int ng = 0;
+    double first_t0 = -1;
+    for (int blk = 0; blk < 300; blk++) {
+        const int n = src.freq(src.ctx, hz, env, B);
+        for (int i = 0; i < B; i++) {
+            const float e = i < n ? env[i] : 0;
+            ph += 2 * M_PI * (i < n ? hz[i] : 0) / FS;
+            iq[2 * i] = (float)(e * cos(ph) + 0.003 * gauss()), iq[2 * i + 1] = (float)(e * sin(ph) + 0.003 * gauss());
+        }
+        m->rx_feed(rx, iq, B, outs, nout);
+        char rec[1024];
+        while (m->rx_record(rx, rec, sizeof rec)) {
+            const char *p = strstr(rec, "{\"dtmf\":{\"digit\":\"");
+            if (p && ng < 15) {
+                got[ng++] = p[18];
+                const char *q = strstr(rec, "\"t0\":"), *w = strstr(rec, "\"s\":");
+                if (first_t0 < 0 && q)
+                    first_t0 = atof(q + 5);
+                CHECK(w && fabs(atof(w + 4) - 0.1) < 0.02, "a digit's span: %s", rec);
+            }
+        }
+    }
+    CHECK(!strcmp(got, "159#*0D"), "digits as records: %s", got);
+    CHECK(fabs(first_t0 - 0.2) < 0.02, "the first digit at 0.2 s (after the lead): %.3f", first_t0);
+    static char sum[8192];
+    const size_t n = m->rx_summary(rx, sum, sizeof sum);
+    CHECK(n > 0 && strstr(sum, "\"dtmf\":{\"digits\":\"159#*0D\",\"runs\":[{\"digit\":\"1\"") && sum[n - 1] == '}',
+          "the summary's digits: %.400s", n ? strstr(sum, "\"dtmf\"") ? strstr(sum, "\"dtmf\"") : sum : "");
+    m->rx_free(rx);
+    m->tx_free(tx);
+}
+
 /* The mode through its table only, as the bench line drives it: a job's JSON in, its samples integrated to I/Q, the
  * receiver's streams, records and summary out. */
 static void t_mode(void)
@@ -486,6 +551,7 @@ int main(void)
     t_ctcss_tones();
     t_dcs();
     t_afsk_dtmf_sweep();
+    t_mode_dtmf();
     t_pcm();
     t_mode();
     printf("fm: %d checks, %d failed\n", checks, fails);
