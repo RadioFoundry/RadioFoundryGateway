@@ -634,7 +634,7 @@ static void test_ops(void)
     rdof_bl_closed(bl, c, now);
     c = ask(bl, "{\"op\": \"info\"}", now);
     drain(bl, c, out, sizeof out);
-    CHECK(strstr(out, "\"features\":{\"bursts_cach\":true,\"bursts_lost\":true}"), "info names the features: %.300s", out);
+    CHECK(strstr(out, "\"features\":{\"bursts_cach\":true,\"bursts_lost\":true,\"bursts_envelope\":true}"), "info names the features: %.300s", out);
     rdof_bl_closed(bl, c, now);
     c = ask(bl, "{\"op\": \"bursts\", \"freq\": 438.6}", now);
     drain(bl, c, out, sizeof out);
@@ -999,6 +999,91 @@ static void test_chan(void)
           "not a channel: %s", all);
     rdof_bl_closed(bl, c, now);
     CHECK(fchs.opened == fchs.closed, "no channel left open: %d %d", fchs.opened, fchs.closed);
+    rdof_bl_ring_free(&ring);
+    rdof_bl_free(bl);
+}
+
+/* ── a bursts stream's envelope: segments with their edges, tied to their bursts ── */
+
+static size_t env_run(rdof_bl_t *bl, int c, double *now, double ms, float amp, char *all, size_t total, size_t cap)
+{
+    for (double t = 0; t < ms - 0.5; t += 1) {
+        put_tone(1, -112500, amp);
+        if (((long)t + 1) % 10 == 0) {
+            *now += 0.01;
+            rdof_bl_tick(bl, *now);
+            total += drain(bl, c, all + total, cap - total);
+        }
+    }
+    all[total] = 0;
+    return total;
+}
+
+static void env_burst_at(rdof_bl_t *bl, uint64_t start_sc, double t)
+{
+    rdof_bl_burst_t b = {.ch = 1, .t = t, .pos48 = (int64_t)(start_sc / 16), .level_dbfs = -10, .dt = 1, .family = 1,
+                         .cc = 2};
+    rdof_bl_burst(bl, &b);
+}
+
+static void test_envelope(void)
+{
+    rdof_bl_t *bl = rdof_bl_new(&PLAT);
+    double now = 2500;
+    static char all[1 << 18];
+    rdof_bl_ring_init(&ring, 768000);
+    put_tone(300, 0, 0);
+    int c = ask(bl, "{\"op\":\"bursts\",\"freq\":438.1125,\"seconds\":2,\"envelope\":true,\"floor_s\":0.2}", now);
+    size_t total = drain(bl, c, all, sizeof all);
+    CHECK(strstr(all, "{\"ready\"") && rdof_bl_wants_iq(bl), "ready, the history kept warm: %s", all);
+    total = env_run(bl, c, &now, 100, 0, all, total, sizeof all);
+    const uint64_t s1 = ring.w;
+    total = env_run(bl, c, &now, 28, 0.3f, all, total, sizeof all);
+    env_burst_at(bl, s1, 1.8e9);
+    env_burst_at(bl, s1 + 768 * 10, 1.8e9 + 0.01); /* 10 ms after: an overlap */
+    total = env_run(bl, c, &now, 32, 0, all, total, sizeof all);
+    const uint64_t s2 = ring.w;
+    total = env_run(bl, c, &now, 28, 0.3f, all, total, sizeof all);
+    env_burst_at(bl, s2, 1.8e9 + 0.06);
+    total = env_run(bl, c, &now, 32, 0, all, total, sizeof all);
+    total = env_run(bl, c, &now, 40, 0.3f, all, total, sizeof all); /* carrier with no burst */
+    total = env_run(bl, c, &now, 300, 0, all, total, sizeof all);
+    rdof_bl_tick(bl, now + 2.5);
+    total += drain(bl, c, all + total, sizeof all - total);
+    all[total] = 0;
+    CHECK(is_json_lines(all), "not JSON lines: %.2000s", all);
+    int n = 0;
+    char v[64];
+    for (char *p = all; (p = strstr(p, "{\"segment\"")); p++, n++) {
+        char *e = strchr(p, '\n');
+        if (e)
+            *e = 0;
+        const double on = field(p, "on_ms", v, sizeof v) ? atof(v) : -1;
+        const double ru = field(p, "ramp_up_ms", v, sizeof v) ? atof(v) : -1;
+        const double rd = field(p, "ramp_down_ms", v, sizeof v) ? atof(v) : -1;
+        const int nb = field(p, "bursts", v, sizeof v) ? atoi(v) : -1;
+        const double lv = field(p, "level_dbfs", v, sizeof v) ? atof(v) : 0;
+        const double un = field(p, "unexplained_ms", v, sizeof v) ? atof(v) : -1;
+        if (n < 2) {
+            CHECK(fabs(on - 28) < 0.3 && ru > 0 && ru < 0.5 && rd > 0 && rd < 0.5 && nb == (n ? 1 : 2) &&
+                      fabs(lv + 10.5) < 1 && un >= 0 && un < 1 && strstr(p, "\"clip_pct\":0.000"),
+                  "segment %d: on %.3f ramps %.2f/%.2f bursts %d level %.1f unexplained %.1f: %s", n, on, ru, rd, nb,
+                  lv, un, p);
+        } else if (n == 2) {
+            CHECK(fabs(on - 40) < 0.3 && nb == 0 && fabs(un - 40) < 0.3, "no burst in it: %s", p);
+        }
+        if (e)
+            *e = '\n';
+    }
+    CHECK(n == 3, "%d segments: %.3000s", n, all);
+    char *done = strstr(all, "{\"done\"");
+    CHECK(done && strstr(done, "\"envelope\":{") && strstr(done, "\"segments\":3,") && strstr(done, "\"overlaps\":1,") &&
+              strstr(done, "\"power_steps\":0,") && field(done, "noise_dbfs", v, sizeof v) && atof(v) < -30 &&
+              strstr(done, "\"unexplained_carrier\":[[") && field(done, "unexplained_ms", v, sizeof v) &&
+              fabs(atof(v) - 40) < 0.5,
+          "the summary: %s", done ? done : all);
+    rdof_bl_closed(bl, c, now);
+    CHECK(!rdof_bl_wants_iq(bl) && !rdof_bl_wants_bursts(bl), "nothing wanted once closed");
     rdof_bl_ring_free(&ring);
     rdof_bl_free(bl);
 }
@@ -2569,6 +2654,7 @@ int main(int argc, char **argv)
         return serve(atoi(argv[2]), atof(argv[3]));
     test_ops();
     test_trigger();
+    test_envelope();
     test_chan();
     test_xtal();
     test_track();

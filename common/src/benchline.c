@@ -16,6 +16,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "rdof/benchenv.h"
 #include "rdof/benchjob.h"
 #include "rdof/jsonp.h"
 #include "rdof/layer2.h"
@@ -143,6 +144,9 @@ typedef struct {
     struct track_snap { uint64_t from, sc; rdof_bl_window_t w; } *snap;
     uint64_t seen_next;       /* the history's next sample at the last tick */
     int nsnap, isnap;         /* snapshots (at most TRACK_SNAPS, the oldest dropped); the last block's */
+    /* a bursts stream's envelope: each output's power into it, fired from the start, nothing sent */
+    rdof_benv_t *env;
+    long clip_now, clip_prev; /* the chunk's inputs at the rails so far; at the last output */
 } trig_t;
 
 #define TRACK_SNAPS 32
@@ -193,6 +197,7 @@ typedef struct {
     /* run */
     job_t *job;
     trig_t *trig;
+    struct envx *ex;          /* bursts with "envelope": its segments waiting for their bursts, the figures */
     struct sigtx *stx;        /* tx */
     struct sigrx *srx;        /* rx */
 } conn_t;
@@ -241,6 +246,8 @@ struct rdof_bl {
     int8_t iq[RDOF_BL_IQ_CHUNK * 2];
     char tmp[8192];
     char bdec[1200], bline[2048]; /* a burst record (under the lock: off the server thread's stack) */
+    /* an envelope's segment record, its lists, the summary's part (the same) */
+    char env_rec[2600], env_scs[600], env_ts[900], env_steps[400], env_sum[1400];
     double burst_tol_ppm; /* the window's ppm_tol as tick_bursts last saw it (0: not known) */
 };
 
@@ -519,6 +526,8 @@ static long chsrc_read(rdof_bl_t *bl, chsrc_t *s, uint64_t sc, long n, long *fil
 }
 
 static void trig_free(trig_t *t);
+struct envx;
+static bool env_open(rdof_bl_t *bl, conn_t *c, int root, const rdof_bl_window_t *w, double now);
 /* A trigger's end: its channel closed (ch_open's), then freed */
 static void trig_end(rdof_bl_t *bl, trig_t *t)
 {
@@ -545,6 +554,7 @@ static void trig_free(trig_t *t)
         free(t->ih);
         free(t->lines);
         free(t->snap);
+        rdof_benv_free(t->env);
         free(t);
     }
 }
@@ -557,6 +567,7 @@ void rdof_bl_free(rdof_bl_t *bl)
         free(bl->c[i].out);
         free(bl->c[i].line);
         trig_end(bl, bl->c[i].trig);
+        free(bl->c[i].ex);
     }
     free(bl->strbuf);
     pthread_mutex_destroy(&bl->mu);
@@ -665,7 +676,7 @@ void rdof_bl_closed(rdof_bl_t *bl, int ci, double now)
     }
     if (c->op == OP_BURSTS || c->op == OP_LISTEN)
         bl->n_bursts--;
-    if (c->op == OP_CAPTURE || c->op == OP_TRIGGER)
+    if (c->op == OP_CAPTURE || c->op == OP_TRIGGER || (c->op == OP_BURSTS && c->ex))
         bl->n_iq--;
     if (c->job)
         job_end(bl, c); /* a transmission unkeys */
@@ -679,6 +690,8 @@ void rdof_bl_closed(rdof_bl_t *bl, int ci, double now)
     sig_end(bl, c);
     trig_end(bl, c->trig);
     c->trig = NULL;
+    free(c->ex);
+    c->ex = NULL;
     c->state = C_FREE;
     c->op = OP_NONE;
     c->ol = c->oh = 0;
@@ -928,7 +941,7 @@ static void op_info(rdof_bl_t *bl, conn_t *c, double now)
                               "\"bands\":[],\"held_by\":%s,\"waiting\":%s}],"
                               "\"modem\":{\"held_by\":%s,\"waiting\":%s,\"next_job_eta\":{\"eta_s\":%.1f,"
                               "\"worst_s\":%.1f}},\"signal_modes\":{\"tx\":%s,\"rx\":%s},"
-                              "\"features\":{\"bursts_cach\":true,\"bursts_lost\":true},\"default_caps\":[]}",
+                              "\"features\":{\"bursts_cach\":true,\"bursts_lost\":true,\"bursts_envelope\":true},\"default_caps\":[]}",
                               bands, notx ? "false" : "true", notx ? "false" : "true", why, held, wq, held, wq, eta, eta,
                               stx, srx);
     if (k >= sizeof line) {
@@ -1233,6 +1246,10 @@ static void op_bursts(rdof_bl_t *bl, conn_t *c, int root, double now, bool liste
     rdof_bl_window_t w;
     get_window(bl, &w);
     c->fs = w.fs;
+    if (!listen && jbool(bl, root, "envelope") && !env_open(bl, c, root, &w, now)) {
+        c->op = OP_NONE;
+        return;
+    }
     c->state = C_ACTIVE;
     bl->n_bursts++;
     if (!listen)
@@ -1347,6 +1364,26 @@ static void trig_restart(trig_t *t, uint64_t first)
     t->bfn = 0, t->have_prev = false;
 }
 
+/* The low-pass: a Hamming-windowed sinc, cut off at bw / 2, unity gain (a channel's own outputs need none) */
+static void trig_lowpass(trig_t *t, double bw, double fs)
+{
+    if (t->ntaps < 2) {
+        t->taps[0] = 1;
+        return;
+    }
+    const double fc = bw / 2 / fs, mid = (t->ntaps - 1) / 2.0;
+    double sum = 0;
+    for (int i = 0; i < t->ntaps; i++) {
+        const double x = i - mid;
+        const double h = (x == 0 ? 2 * fc : sin(2 * M_PI * fc * x) / (M_PI * x)) *
+                         (0.54 - 0.46 * cos(2 * M_PI * i / (t->ntaps - 1)));
+        t->taps[i] = (float)h;
+        sum += h;
+    }
+    for (int i = 0; i < t->ntaps; i++)
+        t->taps[i] = (float)(t->taps[i] / sum);
+}
+
 /* trigger, or with track the carrier followed from the rise to the drop (section 14.8) */
 static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now, bool track)
 {
@@ -1439,18 +1476,7 @@ static void op_trigger(rdof_bl_t *bl, conn_t *c, int root, double now, bool trac
         no_channel(bl, c, mhz);
         return;
     }
-    /* the low-pass: a Hamming-windowed sinc, cut off at bw / 2, unity gain */
-    const double fc = bw / 2 / w.fs, mid = (t->ntaps - 1) / 2.0;
-    double sum = 0;
-    for (int i = 0; i < t->ntaps; i++) {
-        const double x = i - mid;
-        const double h = (x == 0 ? 2 * fc : sin(2 * M_PI * fc * x) / (M_PI * x)) *
-                         (0.54 - 0.46 * cos(2 * M_PI * i / (t->ntaps - 1)));
-        t->taps[i] = (float)h;
-        sum += h;
-    }
-    for (int i = 0; i < t->ntaps; i++)
-        t->taps[i] = (float)(t->taps[i] / sum);
+    trig_lowpass(t, bw, w.fs);
     t->step = -2 * M_PI * (mhz * 1e6 - w.center_hz + t->corr_hz) / w.fs; /* where the carrier truly at mhz shows */
     t->rate = rate, t->bw = chan && t->cs.bw < bw ? t->cs.bw : bw, t->thr = thr, t->min_ms = min_ms, t->pre_s = pre, t->post_s = post;
     t->max_s = max_s, t->floor_s = floor_s, t->timeout = timeout, t->started = now;
@@ -3484,6 +3510,259 @@ static int sync_index(int family, int dt)
 static const char *const SYNC_NAMES[9] = {"BS_VOICE", "BS_DATA", "MS_VOICE", "MS_DATA", "TS1_VOICE",
                                           "TS1_DATA", "TS2_VOICE", "TS2_DATA", "EMB"};
 
+
+/* ── a bursts stream's envelope (section 14.2's "envelope") ──────────────────── */
+
+#define ENV_PEND 16    /* segments waiting for their bursts */
+#define ENV_BURSTS 96  /* bursts kept to tie to them (about 3 s of a repeater's two slots) */
+#define ENV_LIST 16    /* overlaps and unexplained spans listed in the summary (all counted) */
+#define ENV_WAIT_S 0.5 /* a segment waits this long for a late burst, unless a burst past it came */
+
+struct envx {
+    struct { rdof_benv_seg_t s; double at; } pend[ENV_PEND];
+    int np;
+    struct { double sc, t; } b[ENV_BURSTS]; /* the bursts' sync centers, wideband samples */
+    int bh, bn;
+    double last_sc;                         /* the newest burst's, -1 none */
+    double fs, sc_start, t0, bw;            /* the stream's start: its wideband sample, UTC */
+    long segs, steps, overlaps, unexpl_n, dropped;
+    double ov_ms[ENV_LIST];
+    float unexpl[ENV_LIST][2];
+    double unexpl_total_ms;
+    double prev_sc;
+    bool have_prev;
+};
+
+static double env_ms(const struct envx *x, double sc) { return (sc - x->sc_start) / x->fs * 1000; }
+
+static void put_num(char *out, size_t cap, double v, int prec)
+{
+    if (isfinite(v))
+        snprintf(out, cap, "%.*f", prec, v);
+    else
+        snprintf(out, cap, "null");
+}
+
+static bool env_open(rdof_bl_t *bl, conn_t *c, int root, const rdof_bl_window_t *w, double now)
+{
+    const bool chan = !bl->p.iq_read && bl->p.ch_open;
+    if (!bl->p.iq_read && !chan) {
+        fail(bl, c, "unsupported", "envelope: this bench keeps no I/Q");
+        return false;
+    }
+    if (!w->running || w->fs <= 0) {
+        fail(bl, c, "unavailable", "the receiver isn't running");
+        return false;
+    }
+    int d = (int)lround(w->fs / 48000.0);
+    if (d < 1)
+        d = 1;
+    const double rate = w->fs / d;
+    const double bw = jnum(bl, root, "env_bw", 12500), floor_s = jnum(bl, root, "floor_s", 1),
+                 floor_db = jnum(bl, root, "floor_db", NAN), on_db = jnum(bl, root, "on_db", 10),
+                 off_db = jnum(bl, root, "off_db", on_db - 3), step_db = jnum(bl, root, "step_db", 3);
+    if (!(bw > 0 && bw <= 0.9 * rate) || !(floor_s > 0 && floor_s <= 10) || !(on_db > 0 && on_db <= 60) ||
+        !(off_db > 0 && off_db <= on_db) || !(step_db > 0 && step_db <= 40)) {
+        fail(bl, c, "bad_request", "env_bw 0-%.0f Hz, floor_s 0-10, on_db 0-60, off_db 0-on_db, step_db 0-40",
+             0.9 * rate);
+        return false;
+    }
+    const rdof_benv_opts_t o = {on_db, off_db, on_db - 4 > 1 ? on_db - 4 : 1, step_db};
+    trig_t *t = calloc(1, sizeof *t);
+    struct envx *x = calloc(1, sizeof *x);
+    if (t) {
+        t->d = d;
+        t->cs.h = -1;
+        t->ntaps = chan ? 1 : 8 * d + 1;
+        t->taps = malloc(sizeof(float) * (size_t)t->ntaps); /* internal RAM: read every output */
+        t->dl = malloc(sizeof(float) * 4 * (size_t)t->ntaps);
+        t->env = rdof_benv_new(rate, d, &o);
+    }
+    if (!t || !x || !t->taps || !t->dl || !t->env) {
+        trig_free(t);
+        free(x);
+        fail(bl, c, "unavailable", "no memory for an envelope");
+        return false;
+    }
+    const double hz = c->freq_hz;
+    t->corr_hz = rdof_bl_seen_hz(w, hz) - (hz - w->center_hz);
+    if (chan && !chsrc_open(bl, &t->cs, hz, rdof_bl_seen_hz(w, hz), w->fs, floor_s + 1)) {
+        trig_end(bl, t);
+        free(x);
+        no_channel(bl, c, hz / 1e6);
+        return false;
+    }
+    trig_lowpass(t, bw, w->fs);
+    t->step = -2 * M_PI * (hz - w->center_hz + t->corr_hz) / w->fs;
+    t->rate = rate, t->bw = chan && t->cs.bw < bw ? t->cs.bw : bw, t->floor_s = floor_s, t->started = now;
+    t->fired = true, t->out_sc0 = 0, t->end_sc = UINT64_MAX; /* runs until the stream ends */
+    t->bsize = (int)lround(rate / 1000);
+    if (t->bsize < 1)
+        t->bsize = 1;
+    if (isfinite(floor_db)) {
+        t->floor_db = floor_db, t->have_floor = 2;
+        rdof_benv_floor(t->env, floor_db);
+    }
+    uint64_t oldest = 0, next = 0;
+    trig_span(bl, t, &oldest, &next);
+    uint64_t back = t->have_floor ? 0 : (uint64_t)(floor_s * w->fs) + (uint64_t)t->ntaps;
+    if (back > next - oldest)
+        back = next - oldest;
+    trig_restart(t, next - back + (uint64_t)t->ntaps / 2);
+    x->fs = w->fs, x->sc_start = (double)next, x->bw = t->bw, x->last_sc = -1;
+    x->t0 = bl->p.sc_utc ? bl->p.sc_utc(bl->p.ctx, next) : (bl->p.utc ? bl->p.utc(bl->p.ctx) : now);
+    c->trig = t, c->ex = x;
+    c->gain = w->gain_db;
+    bl->n_iq++;
+    if (bl->p.iq_warm)
+        bl->p.iq_warm(bl->p.ctx);
+    return true;
+}
+
+/* A burst sent: kept to tie to its segment, and an overlap when it starts under a burst's length after the last */
+static void env_burst(struct envx *x, double sc, double t)
+{
+    if (x->have_prev && sc - x->prev_sc < 0.0275 * x->fs) {
+        if (x->overlaps < ENV_LIST)
+            x->ov_ms[x->overlaps] = env_ms(x, sc);
+        x->overlaps++;
+    }
+    x->prev_sc = sc, x->have_prev = true;
+    x->b[(x->bh + x->bn) % ENV_BURSTS].sc = sc;
+    x->b[(x->bh + x->bn) % ENV_BURSTS].t = t;
+    if (x->bn < ENV_BURSTS)
+        x->bn++;
+    else
+        x->bh = (x->bh + 1) % ENV_BURSTS;
+    if (sc > x->last_sc)
+        x->last_sc = sc;
+}
+
+static void env_seg_out(rdof_bl_t *bl, conn_t *c, const rdof_benv_seg_t *s)
+{
+    struct envx *x = c->ex;
+    const double half = 0.01375 * x->fs; /* a burst's 27.5 ms about its sync's center */
+    const double up = s->up_sc, down = s->down_sc;
+    char *o = bl->env_rec, *scs = bl->env_scs, *ts = bl->env_ts, *steps = bl->env_steps; /* under the lock */
+    const size_t cap = sizeof bl->env_rec;
+    scs[0] = ts[0] = steps[0] = 0;
+    size_t ks = 0, kt = 0;
+    int nb = 0;
+    double covered = 0, cov_end = up;
+    for (int i = 0; i < x->bn; i++) {
+        const double b = x->b[(x->bh + i) % ENV_BURSTS].sc, bt = x->b[(x->bh + i) % ENV_BURSTS].t;
+        if (b < up || (isfinite(down) && b > down))
+            continue;
+        if (ks < sizeof bl->env_scs - 24)
+            ks += (size_t)snprintf(scs + ks, sizeof bl->env_scs - ks, "%s%.0f", nb ? "," : "", b);
+        if (kt < sizeof bl->env_ts - 24)
+            kt += (size_t)snprintf(ts + kt, sizeof bl->env_ts - kt, "%s%.6f", nb ? "," : "", bt);
+        nb++;
+        if (isfinite(down)) { /* the bursts' spans inside it, in order */
+            double a = b - half > cov_end ? b - half : cov_end, e = b + half < down ? b + half : down;
+            if (e > a)
+                covered += e - a, cov_end = e;
+        }
+    }
+    char on[24], dn[24], tdn[24], ru[24], rd[24], ed[24], pk[24], mn[24], un[24];
+    const double on_ms = isfinite(down) ? (down - up) / x->fs * 1000 : NAN;
+    const double unexpl = isfinite(down) ? on_ms - covered / x->fs * 1000 : NAN;
+    put_num(on, sizeof on, on_ms, 3);
+    put_num(dn, sizeof dn, isfinite(down) ? env_ms(x, down) : NAN, 3);
+    put_num(tdn, sizeof tdn, isfinite(down) ? x->t0 + env_ms(x, down) / 1000 : NAN, 6);
+    put_num(ru, sizeof ru, s->ramp_up_ms, 2);
+    put_num(rd, sizeof rd, s->ramp_down_ms, 2);
+    put_num(ed, sizeof ed, isfinite(down) ? s->end_dbfs : NAN, 1);
+    put_num(pk, sizeof pk, s->peak_dbfs, 1);
+    put_num(mn, sizeof mn, s->min_dbfs, 1);
+    put_num(un, sizeof un, unexpl, 1);
+    size_t kp = 0;
+    for (int i = 0; i < s->steps && i < RDOF_BENV_STEPS && kp < sizeof bl->env_steps - 32; i++)
+        kp += (size_t)snprintf(steps + kp, sizeof bl->env_steps - kp, "%s[%.2f,%.1f]", i ? "," : "",
+                               env_ms(x, s->step[i].sc), s->step[i].db);
+    snprintf(o, cap,
+             "{\"segment\":{\"t\":%.6f,\"up_ms\":%.3f,\"down_ms\":%s,\"t_down\":%s,\"on_ms\":%s,\"ramp_up_ms\":%s,"
+             "\"ramp_down_ms\":%s,\"level_dbfs\":%.1f,\"end_dbfs\":%s,\"peak_dbfs\":%s,\"min_dbfs\":%s,"
+             "\"clip_pct\":%.3f,\"power_steps\":%d,\"steps\":[%s],\"bursts\":%d,\"burst_sc\":[%s],\"burst_t\":[%s],"
+             "\"unexplained_ms\":%s,\"up_sc\":%.0f,\"open_start\":%s,\"open_end\":%s,\"gap\":%s}}",
+             x->t0 + env_ms(x, up) / 1000, env_ms(x, up), dn, tdn, on, ru, rd, s->level_dbfs, ed, pk, mn,
+             s->inputs ? 100.0 * (double)s->clipped / (double)s->inputs : 0.0, s->steps, steps, nb, scs, ts, un, up,
+             s->open_start ? "true" : "false", s->open_end ? "true" : "false", s->gap ? "true" : "false");
+    if (!emit(bl, c, "%s", o))
+        x->dropped++;
+    x->segs++;
+    x->steps += s->steps;
+    if (isfinite(unexpl) && unexpl > 5) { /* the analyzer's: carrier over 5 ms with no decoded burst */
+        if (x->unexpl_n < ENV_LIST)
+            x->unexpl[x->unexpl_n][0] = (float)env_ms(x, up), x->unexpl[x->unexpl_n][1] = (float)unexpl;
+        x->unexpl_n++;
+        x->unexpl_total_ms += unexpl;
+    }
+}
+
+/* Segments out once their bursts are in: a burst past the segment came, ENV_WAIT_S went by, or the end (all) */
+static void env_tick(rdof_bl_t *bl, conn_t *c, double now, bool all)
+{
+    struct envx *x = c->ex;
+    if (!x || !c->trig)
+        return;
+    rdof_benv_seg_t s;
+    while (rdof_benv_take(c->trig->env, &s)) {
+        if (x->np == ENV_PEND) { /* behind: the oldest goes out as it is */
+            env_seg_out(bl, c, &x->pend[0].s);
+            memmove(&x->pend[0], &x->pend[1], sizeof x->pend[0] * (ENV_PEND - 1));
+            x->np--;
+        }
+        x->pend[x->np].s = s, x->pend[x->np].at = now;
+        x->np++;
+    }
+    int k = 0;
+    while (k < x->np) {
+        const rdof_benv_seg_t *p = &x->pend[k].s;
+        const double end = isfinite(p->down_sc) ? p->down_sc : p->up_sc;
+        if (!all && now - x->pend[k].at < ENV_WAIT_S && x->last_sc < end + 0.03 * x->fs)
+            break; /* in order */
+        env_seg_out(bl, c, p);
+        k++;
+    }
+    if (k) {
+        memmove(&x->pend[0], &x->pend[k], sizeof x->pend[0] * (size_t)(x->np - k));
+        x->np -= k;
+    }
+}
+
+/* The stream's end: the envelope taken to now and closed, its segments out; the summary's "envelope" */
+static void env_done(rdof_bl_t *bl, conn_t *c, double now, char *out, size_t cap)
+{
+    struct envx *x = c->ex;
+    trig_t *t = c->trig;
+    out[0] = 0;
+    if (!x || !t)
+        return;
+    rdof_benv_finish(t->env);
+    env_tick(bl, c, now, true);
+    const double noise = rdof_benv_noise_db(t->env);
+    char nz[24], fl[24], dbm[24], ov[200] = "", un[400] = "";
+    put_num(nz, sizeof nz, noise, 1);
+    put_num(fl, sizeof fl, t->have_floor ? t->floor_db : NAN, 1);
+    /* dBFS to dBm, rough: the floor taken as thermal noise in the channel with a 3 dB noise figure */
+    put_num(dbm, sizeof dbm, isfinite(noise) ? -174 + 10 * log10(x->bw) + 3 - noise : NAN, 1);
+    size_t k = 0;
+    for (long i = 0; i < x->overlaps && i < ENV_LIST && k < sizeof ov - 24; i++)
+        k += (size_t)snprintf(ov + k, sizeof ov - k, "%s%.2f", i ? "," : "", x->ov_ms[i]);
+    k = 0;
+    for (long i = 0; i < x->unexpl_n && i < ENV_LIST && k < sizeof un - 32; i++)
+        k += (size_t)snprintf(un + k, sizeof un - k, "%s[%.1f,%.1f]", i ? "," : "", x->unexpl[i][0], x->unexpl[i][1]);
+    snprintf(out, cap,
+             ",\"envelope\":{\"t0\":%.6f,\"bw\":%.0f,\"rate\":%.1f,\"gain\":%.1f,\"floor_db\":%s,\"noise_dbfs\":%s,"
+             "\"dbm_offset\":%s,\"dbm_source\":\"noise\",\"clip_pct\":%.3f,\"segments\":%ld,\"segments_dropped\":%ld,"
+             "\"power_steps\":%ld,\"overlaps\":%ld,\"overlap_ms\":[%s],\"unexplained_carrier\":[%s],"
+             "\"unexplained_ms\":%.1f,\"gap_samples\":%ld}",
+             x->t0, x->bw, t->rate, c->gain, fl, nz, dbm,
+             t->inputs ? 100.0 * (double)t->clipped / (double)(2 * t->inputs) : 0.0, x->segs, x->dropped, x->steps,
+             x->overlaps, ov, un, x->unexpl_total_ms, t->gaps);
+}
+
 static void burst_out(rdof_bl_t *bl, conn_t *c, const rdof_bl_burst_t *b, double now)
 {
     const bool voice = b->dt == RDOF_BL_VOICE_SYNC || b->dt == RDOF_BL_VOICE;
@@ -3549,6 +3828,8 @@ static void burst_out(rdof_bl_t *bl, conn_t *c, const rdof_bl_burst_t *b, double
     c->prev_t = c->last_t = t;
     c->last_mono = now;
     c->sent++;
+    if (c->ex && c->fs > 0)
+        env_burst(c->ex, (double)(b->pos48 + SYNC_CENTER_48) * c->fs / 48000.0, t);
     c->cfo_sum += b->cfo_hz, c->lvl_sum += b->level_dbfs;
     c->cfo_min = fmin(c->cfo_min, b->cfo_hz), c->cfo_max = fmax(c->cfo_max, b->cfo_hz);
     c->lvl_max = fmax(c->lvl_max, b->level_dbfs);
@@ -3592,12 +3873,14 @@ static void bursts_done(rdof_bl_t *bl, conn_t *c, const char *reason, double now
     for (int i = 0; i < 4; i++)
         d[i] = l1[i] >= c->lost0[i] ? l1[i] - c->lost0[i] : l1[i];
     const bool complete = !d[0] && !d[1] && !d[2] && !d[3] && !c->dropped;
+    char *env = bl->env_sum;
+    env_done(bl, c, now, env, sizeof bl->env_sum);
     emit(bl, c,
          "{\"done\":{\"bursts\":%ld,\"reason\":\"%s\",\"freq\":%.1f,\"kinds\":{%s},\"syncs\":{%s},"
          "\"seconds_watched\":%.2f,\"dropped\":%ld,\"lost\":{\"overflows\":%ld,\"dsp_skipped\":%ld,"
-         "\"decode_dropped\":%ld,\"queue_drops\":%ld},\"complete\":%s%s}}",
+         "\"decode_dropped\":%ld,\"queue_drops\":%ld},\"complete\":%s%s%s}}",
          c->sent, reason, c->freq_hz, kinds, syncs, now - c->opened, c->dropped, d[0], d[1], d[2], d[3],
-         complete ? "true" : "false", more);
+         complete ? "true" : "false", more, env);
     c->state = C_DONE;
 }
 
@@ -4011,6 +4294,31 @@ static void trig_send(conn_t *c, trig_t *t, int nout, long idx0)
 static bool trig_out(rdof_bl_t *bl, conn_t *c, trig_t *t, const rdof_bl_window_t *w, uint64_t center, float yi,
                      float yq, int *nout)
 {
+    if (t->env) { /* a bursts stream's envelope: the power in, the floor from its first 1 ms blocks */
+        const float p = yi * yi + yq * yq;
+        rdof_benv_push(t->env, center, p, (int)(t->clip_now - t->clip_prev));
+        t->clip_prev = t->clip_now;
+        t->bp += p;
+        if (++t->bn < t->bsize)
+            return false;
+        const double lin = (double)t->bp / t->bsize;
+        t->bn = 0, t->bp = 0;
+        if (!t->have_floor) { /* the median block, as a trigger's */
+            const double db = 10 * log10(lin + 1e-30);
+            int k = (int)((db + 150) * 2);
+            t->hist[k < 0 ? 0 : k >= TRIG_HIST ? TRIG_HIST - 1 : k]++;
+            if (++t->floor_blocks >= t->floor_s * 1000) {
+                long acc = 0;
+                int m = 0;
+                while (m < TRIG_HIST - 1 && (acc += t->hist[m]) <= t->floor_blocks / 2)
+                    m++;
+                t->floor_db = -150 + m * 0.5 + 0.25;
+                t->have_floor = 1;
+                rdof_benv_floor(t->env, t->floor_db);
+            }
+        }
+        return false;
+    }
     if (t->track && t->fired && center < t->end_sc) { /* the phase step from the previous output, in Hz */
         if (t->have_prev)
             t->bf[t->bfn++] = fast_atan2f(yq * t->pi - yi * t->pq, yi * t->pi + yq * t->pq) *
@@ -4127,7 +4435,7 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
             return;
         }
         /* a chunk ends at most an interval (a line), and the done line after */
-        const size_t frame = t->track ? 1024 : (size_t)(RDOF_BL_IQ_CHUNK / t->d + 2) * 8 + 160;
+        const size_t frame = t->track || t->env ? 1024 : (size_t)(RDOF_BL_IQ_CHUNK / t->d + 2) * 8 + 160;
         if (t->fired && room(c) < frame)
             return; /* the client is behind: later */
         if (t->cs.h >= 0) {
@@ -4178,6 +4486,7 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
         const uint64_t sc0 = t->sc;
         long clipped = 0; /* counted in the mixer's loop, where the inputs are loaded anyway: a loop of its own was a
                            * tenth of a trigger's time on a W12 */
+        t->clip_prev = 0;
         for (long i = 0; i < got;) {
             /* the inputs up to the next output's, mixed into the delay line */
             const long stop = next_out >= sc0 + (uint64_t)i && next_out < sc0 + (uint64_t)got
@@ -4200,6 +4509,7 @@ static void tick_trigger(rdof_bl_t *bl, conn_t *c, double now)
             float yi, yq;
             trig_fir(taps, dl + 2 * di, h, &yi, &yq); /* oldest to newest */
             t->di = di, t->next_out = next_out;
+            t->clip_now = clipped;
             if (trig_out(bl, c, t, &w, sc0 + (uint64_t)(i - 1) - g, yi, yq, &nout)) {
                 restarted = true;
                 break;
@@ -4229,6 +4539,10 @@ void rdof_bl_tick(rdof_bl_t *bl, double now)
             tick_capture(bl, c, now);
         else if (c->state == C_ACTIVE && c->op == OP_TRIGGER)
             tick_trigger(bl, c, now);
+        else if (c->state == C_ACTIVE && c->op == OP_BURSTS && c->ex) {
+            tick_trigger(bl, c, now);
+            env_tick(bl, c, now, false);
+        }
         else if (c->state == C_ACTIVE && c->op == OP_RUN && c->job && c->wait == W_NONE)
             tick_run(bl, c, i, now);
         else if (c->state == C_ACTIVE && c->op == OP_TX && c->stx)
@@ -4245,6 +4559,8 @@ void rdof_bl_tick(rdof_bl_t *bl, double now)
                 bl->n_iq--;
             else
                 bl->n_bursts--;
+            if (c->op == OP_BURSTS && c->ex)
+                bl->n_iq--;
             c->op = OP_NONE; /* counted out once */
         }
         if (c->state == C_DONE && c->job)

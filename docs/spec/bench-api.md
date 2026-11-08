@@ -571,6 +571,31 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
   sync's center, the same point as an outbound job's records. Several streams can run at once, one a channel.
   With `seconds`, the client ends the stream itself 5 s past it if the gateway hasn't, and writes the summary, so
   `--out` is always complete.
+- `bursts` with `"envelope": true` also measures the channel's carrier envelope, as the bench analyzer does on a
+  capture, so a test needs no I/Q for a transmitter's keying. The channel is cut from the history as `trigger`'s is
+  (`env_bw`, 12500), its floor the median 1 ms block over the `floor_s` (1) before the request unless `floor_db` is
+  given. The 0.1 ms power envelope (a centered mean) is keyed at `on_db` (10) over the floor and unkeyed under
+  `off_db` (`on_db` - 3); an edge is interpolated between two outputs. A ramp runs from the envelope leaving the noise
+  (`on_db` - 4 over the floor) to 3 dB under the plateau (the median 1-3 ms in from the edge), and back at the
+  key-down; a step is the 1 ms envelope moving over `step_db` (3) in 1 ms, from 2 ms in to 2 ms before the key-down.
+  Segments under 0.5 ms are left out. Each keyed segment is a record once its bursts are in (up to 0.5 s after its
+  key-down): `{"segment": {"t", "up_ms", "down_ms", "t_down", "on_ms", "ramp_up_ms", "ramp_down_ms", "level_dbfs",
+  "end_dbfs", "peak_dbfs", "min_dbfs", "clip_pct", "power_steps", "steps", "bursts", "burst_sc", "burst_t",
+  "unexplained_ms", "up_sc", "open_start", "open_end", "gap"}}`. `t` and `t_down` are UTC at the edges, `up_ms` and
+  `down_ms` from the stream's start (the summary's `envelope.t0`), `level_dbfs` and `end_dbfs` the plateaus after
+  the key-up and before the key-down, `peak_dbfs` and `min_dbfs` the 1 ms envelope's extremes 2 ms in from either
+  edge, `clip_pct` the I/Q components at the ADC's rails over it, `steps` `[ms, dB]` (at most 8; `power_steps`
+  counts all). `bursts`, `burst_sc` and `burst_t` are the stream's bursts whose sync center is inside it (the same
+  `sc` and `t` as their records); `unexplained_ms` the keyed time no burst's 27.5 ms covers: a PA left up, a carrier
+  where per-burst keying is expected. A segment keyed when the stream began, or cut by lost samples, is
+  `open_start` (no ramp up), `open_end` (no key-down, `null` figures) or `gap`. A ramp is `null` where the carrier
+  didn't come up from the noise or go back to it (a repeater's hang). The summary adds `envelope`: `t0`, `bw`,
+  `rate`, `gain`, `floor_db`, `noise_dbfs` (the 1 ms envelope's 10th percentile, the analyzer's noise), `dbm_offset`
+  (dBFS to dBm, rough: the floor taken as thermal noise in `bw` with a 3 dB noise figure; `dbm_source` "noise"),
+  `clip_pct`, `segments`, `segments_dropped`, `power_steps`, `overlaps` (bursts starting under 27.5 ms after the one
+  before) and `overlap_ms` (at most 16), `unexplained_carrier` (`[up_ms, unexplained_ms]` of each segment with over
+  5 ms, at most 16) and `unexplained_ms`, `gap_samples`. `info`'s `features` says `bursts_envelope`. The cut costs
+  what a `trigger`'s does (about 20 multiplies a wideband sample); `listen` takes no envelope.
 
 ### 14.3 Jobs
 

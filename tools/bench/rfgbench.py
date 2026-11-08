@@ -16,7 +16,7 @@ the daemon's client only changes the command it runs.
     rfgbench.py ... hold --session ID [--expect S] [--max S] [--wait-max S]
     rfgbench.py ... run [--session ID] [--modem] [--expect S] [--kind K] -- [python] bench_tx.py ARGS...
     rfgbench.py ... capture [--session ID] --freq MHz --seconds S --out FILE [--pre S] [--gain dB] [--offset-khz K]
-    rfgbench.py ... dmr-bursts --freq MHz [--seconds S] [--bursts N] [--until-end] [--cc CC] [--out FILE]
+    rfgbench.py ... dmr-bursts --freq MHz [--seconds S] [--bursts N] [--until-end] [--cc CC] [--envelope] [--out FILE]
     rfgbench.py ... listen --freq MHz [--seconds S]
     rfgbench.py ... capture-trigger --freq MHz --out FILE [--bw Hz] [--pre S] [--post S] [--timeout S] ...
     rfgbench.py ... track --freq MHz [--mode fm|4fsk] [--interval-ms MS] [--timeout S] [--max-s S] [--out FILE]
@@ -652,6 +652,9 @@ def cmd_dmr_bursts(a) -> int:
             n[0] += 1
             out.write(json.dumps(d["burst"]) + "\n")
             out.flush()
+        elif "segment" in d:                      # --envelope: a keyed segment, its edges tied to its bursts
+            out.write(json.dumps({"segment": d["segment"]}) + "\n")
+            out.flush()
         elif "done" in d:
             s = d["done"]
             hold["done"] = True
@@ -666,12 +669,17 @@ def cmd_dmr_bursts(a) -> int:
                 print(f"cfo {cfo['mean']:+.1f} Hz mean ({cfo['min']:+.1f} to {cfo['max']:+.1f}), "
                       + (f"+-{tol:.1f} Hz for the gateway's crystal" if tol is not None
                          else "the gateway's crystal tolerance not known"), file=human, flush=True)
+            env = s.get("envelope")
+            if env:
+                print(f"envelope: {env['segments']} keyed segments, noise {env['noise_dbfs']} dBFS, clipping "
+                      f"{env['clip_pct']:.3f} %, {env['power_steps']} power steps, {env['overlaps']} overlaps, "
+                      f"{env['unexplained_ms']:.1f} ms of carrier no burst explains", file=human, flush=True)
             return 0 if s["bursts"] else EX_NO_SIGNAL
         return None
     try:
         rc = stream(a.where, {"op": "bursts", "session": a.session, "freq": a.freq, "seconds": a.seconds,
                               "max_bursts": a.bursts, "until_end": a.until_end, "cc": a.cc, "soft": a.soft,
-                              "wait_max": a.wait_max}, on, hold)
+                              "wait_max": a.wait_max, **({"envelope": True} if a.envelope else {})}, on, hold)
         if not hold["done"] and rc == 0:          # the stream ended with no summary: one from here
             s = {"bursts": n[0], "freq": a.freq * 1e6, "reason": "the gateway stopped answering"
                  if timer else "the connection ended"}
@@ -1297,6 +1305,8 @@ def main(argv=None) -> int:
     s.add_argument("--until-end", action="store_true")
     s.add_argument("--cc", type=int, default=None)
     s.add_argument("--soft", action="store_true")
+    s.add_argument("--envelope", action="store_true",
+                   help="also the carrier's keyed segments: edges, ramps, steps, clipping, tied to the bursts")
     s.add_argument("--out", default=None)
     s.add_argument("--file", default=None)
     s.add_argument("--center-mhz", type=float, default=None)

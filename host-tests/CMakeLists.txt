@@ -81,6 +81,17 @@ if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
 endif()
 add_test(NAME benchsig COMMAND rdof_benchsig_tests)
 
+# The carrier envelope (rdof/benchenv.h): synthetic keyings with known edges, ramps and steps.
+add_executable(rdof_benchenv_tests test_benchenv.c)
+target_link_libraries(rdof_benchenv_tests PRIVATE rdof_common m)
+set_target_properties(rdof_benchenv_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_compile_options(rdof_benchenv_tests PRIVATE -Wall -Wno-unused-parameter)
+if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+    target_compile_options(rdof_benchenv_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(rdof_benchenv_tests PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME benchenv COMMAND rdof_benchenv_tests)
+
 add_executable(rdof_benchline_tests test_benchline.c)
 target_link_libraries(rdof_benchline_tests PRIVATE rdof_common)
 set_target_properties(rdof_benchline_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
