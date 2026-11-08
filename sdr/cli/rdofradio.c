@@ -1712,6 +1712,7 @@ static void bl_device(void *ctx, char *kind, size_t kcap, char *name, size_t nca
 
 /* The bench's tune (below, bl_tune) */
 static const char *const TAP_ID[RDOF_BL_TAPS] = {"T1", "T2", "T3", "T4"};
+#define TU_SETTLE_S 0.5 /* after the LO moves: what's received before is the AD9363 settling */
 static struct {
     pthread_mutex_t mu;
     int want;                  /* 1 a tune asked, 2 an untune asked */
@@ -1737,7 +1738,7 @@ static int tap_of(int c)
 static void bl_window(void *ctx, rdof_bl_window_t *w)
 {
     memset(w, 0, sizeof *w);
-    w->running = BL.ring.w > 0;
+    w->running = BL.ring.w > 0 && BL.ring.w >= TU.hist_from; /* the LO settles after a tune moves it */
     w->center_hz = R.rx.center_hz;
     w->fs = R.rate;
     w->lo_hz = R.rx.center_hz - 0.4 * R.rate;
@@ -3010,7 +3011,9 @@ static bool move_lo(double hz, char *why, size_t cap)
     R.rx.center_hz = R.rx.cfg.center_hz = hz;
     for (int c = 0; c < NCH; c++)
         chan_point(c);
-    TU.hist_from = BL.ring.w;
+    /* an AD9363 recalibrates after a long jump and streams zeros meanwhile (a 313 MHz one, 2026-11-08: an rx's floor
+       learned at -150 dBFS): the history starts, and the receiver runs for the bench, a while after */
+    TU.hist_from = BL.ring.w + (uint64_t)(TU_SETTLE_S * R.rate);
     return true;
 }
 
