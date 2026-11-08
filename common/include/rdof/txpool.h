@@ -77,6 +77,8 @@ rdof_txp_take_t rdof_txpool_peek(const rdof_txpool_t *p, const rdof_txp_req_t *r
 void rdof_txpool_burst(rdof_txpool_t *p, int i, double now);
 /* Transmitter i's stream ended (its terminator) at now: it holds the path for its answer_s. */
 void rdof_txpool_end(rdof_txpool_t *p, int i, double now);
+/* Transmitter i didn't take its stream after all (the device refused it): free at once, no hold. */
+void rdof_txpool_release(rdof_txpool_t *p, int i);
 /* Transmitter i's state at now (a stream gone idle is holding; a hold that's over is free). */
 rdof_txp_state_t rdof_txpool_state(rdof_txpool_t *p, int i, double now);
 /* Whether any transmitter reaches freq (a path's tx_ok, busy or not). */

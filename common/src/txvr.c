@@ -530,6 +530,14 @@ bool rdof_txvr_holds(rdof_txvr_t *t, const uint8_t sid[4])
     return held;
 }
 
+bool rdof_txvr_refused(rdof_txvr_t *t, const uint8_t sid[4])
+{
+    lock(t);
+    const bool r = was_refused(t, sid);
+    unlock(t);
+    return r;
+}
+
 const char *rdof_txvr_state_name(const rdof_txvr_t *t)
 {
     if (!t->has_call)

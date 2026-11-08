@@ -499,8 +499,22 @@ static void test_siteroute(const char *dir)
         const int n0 = cap.n;
         rdof_net_burst_t a = net_burst(0x555, 9990, 9800009, false, 1, false, false);
         CHECK(!rdof_siteroute_app_burst(&sr, ap, &a, false, INFINITY, 5.2) && sr.app_no_txvr == 1, "not sent while held");
-        CHECK(rdof_siteroute_app_ready(&sr, ap, 9) && rdof_siteroute_app_burst(&sr, ap, &a, false, INFINITY, 9) && cap.n == n0 + 1 &&
-                  cap.freq == 438112500 && rdof_siteroute_tuned(&sr, a.stream_id), "free: tuned to it (%d %u)", cap.n, cap.freq);
+        /* the transceiver isn't ready: it refuses the stream at its tune, so the app's burst isn't sent (a bench job
+           fails at once, not after its bursts went nowhere) and the pool is free again */
+        CHECK(rdof_siteroute_app_ready(&sr, ap, 9) && !rdof_siteroute_app_burst(&sr, ap, &a, false, INFINITY, 9) &&
+                  sr.app_no_txvr == 2 && cap.n == n0 + 1 && cap.freq == 438112500 && rdof_txvr_refused(&t, a.stream_id) &&
+                  rdof_siteroute_app_ready(&sr, ap, 9.01),
+              "refused at its tune: not sent, the pool free (%d %u %u)", cap.n, cap.freq, sr.app_no_txvr);
+        static rdof_modem_t md;
+        static rdof_radio_t rd;
+        rd.modem = &md;
+        t.radio = &rd;
+        t.ready = true;
+        t.nchannels = 1;
+        t.channels[0] = (rdof_channel_t){438112500, S.freq[S.path[ap].tx_freq].cc, 255, 1};
+        a = net_burst(0x556, 9990, 9800009, false, 1, false, false);
+        CHECK(rdof_siteroute_app_burst(&sr, ap, &a, false, INFINITY, 9.02) && rdof_siteroute_tuned(&sr, a.stream_id) &&
+                  t.has_call && !rdof_txvr_refused(&t, a.stream_id), "ready: taken (%d)", t.has_call);
         CHECK(rdof_siteroute_app_burst(&sr, ap, &a, false, INFINITY, 9.06) && cap.n == n0 + 1 && !rdof_siteroute_app_ready(&sr, ap, 9.1),
               "tuned once; busy for another");
         static const uint8_t none[4] = {0, 0, 0x77, 0x77};
@@ -508,7 +522,7 @@ static void test_siteroute(const char *dir)
               "holds its stream while the transceiver does (%d), not another", t.has_call);
         c = net_burst(0x666, 9800009, 204, true, 1, false, false);
         CHECK(rdof_siteroute_burst(&sr, 0, 0, &c, 9.1) == 0, "a network stream doesn't preempt an app's");
-        a = net_burst(0x555, 9990, 9800009, false, 1, false, true);
+        a = net_burst(0x556, 9990, 9800009, false, 1, false, true);
         rdof_siteroute_app_burst(&sr, ap, &a, false, INFINITY, 9.12);
         CHECK(rdof_siteroute_burst(&sr, 0, 0, &c, 9.2) != 0, "but takes its hold");
         CHECK(!rdof_siteroute_app_ready(&sr, -1, 11) && !rdof_siteroute_app_burst(&sr, 99, &a, false, INFINITY, 11), "no path");

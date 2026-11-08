@@ -260,7 +260,9 @@ On the board (`bench_tx.c`, the job in `common/src/benchtx.c`, host-tested in `h
   takes the raw SDR modem as `outbound` does (the roamer's parked, given back after), and its bursts go out as built. The transmitter sends at the job's power (`--power-dbm`, or the older `--power` 0-255),
   under `bench.tx`'s `max_dbm` (or `rf_level`) at most: a modem's tune lowered to it on the modem's `tx` map (its
   least under a cap without one), the SDR roamer held to it while the job runs. It sends the transceiver's own count of headers and terminators a call; a burst it can't take (the
-  transmitter busy with another stream) is NAKed, and the job stops. A line protocol job on this path ends once the transceiver has sent its
+  transmitter busy with another stream, or the transceiver refusing the stream at its tune: receiving a call on
+  another frequency in the last second, not ready, the frequency not allowed) is NAKed, and the job stops with an
+  error, not exit 0 with nothing on the air. A line protocol job on this path ends once the transceiver has sent its
   stream (it listens first, so the call goes out about a second after the job hands it on). `info.tx.router` is true
   on this path. `via=radio:NAME` is a bench radio with `"proto": "mmdvm"`, through its link's guard (lowest power, TX
   data only on the frequency), and not while it's linked. `via=sdr` (I/Q, `fm`) is `unsupported`. Both paths drive
