@@ -2549,6 +2549,7 @@ static bool ms_send(void *ctx, int64_t at48, const uint8_t burst[33], int64_t *p
  * had put the site's calibration plus 29 ms of drift back over a job's 52.7 ms, and the job's inbound slots came out
  * one off, 2026-11-08) */
 static atomic_int late_rebase;
+static int64_t path48 = -1; /* the transmit path's delay last measured from a key-up's edge (48 kS/s), -1: none yet */
 
 static void ms_off(const char *why)
 {
@@ -2788,6 +2789,10 @@ static bool bench_rpt_poll(double now)
         /* the inbound slots follow the transmit path's delay: the first key-up's edge in what's received sets it */
         BR.late48 = R.m.tx_late48;
         BR.cal = true;
+        /* until this job's own edge (missed when something else in the band raised the power before it): the path as
+           last measured, not the site's tracked value, which can be a slot out */
+        if (path48 >= 0)
+            R.m.tx_late48 = path48, atomic_store(&late_rebase, 1);
         const bool ok = rdof_modem_start(&R.client, 1) && rdof_repeater_start(&BR.r);
         pthread_mutex_lock(&BR.mu);
         BR.ready = ok, BR.failed = !ok;
@@ -5977,7 +5982,7 @@ int main(int argc, char **argv)
                 if (at >= edge_from && p2 > 100 * R.base_power) {
                     if (R.cal == 2) {
                         /* the modem's inbound slots follow it: a handheld keeps to what's on the air */
-                        R.m.tx_late48 = (at - R.onset) * 48000 / (int64_t)rate;
+                        R.m.tx_late48 = path48 = (at - R.onset) * 48000 / (int64_t)rate;
                         say("calibration: the transmit path is %.2f ms past its place\n",
                                 1e3 * (double)(at - R.onset) / rate);
                         dev->set_rx_freq(dev, R.rx.center_hz);
@@ -5986,7 +5991,7 @@ int main(int argc, char **argv)
                         R.ring_ref = -1; /* the ring's floor taken again against this */
                     } else if (BR.active && BR.cal) {
                         /* a repeater job's first key-up, heard in the receiver's band: its inbound slots follow it */
-                        R.m.tx_late48 = (at - R.onset) * 48000 / (int64_t)rate;
+                        R.m.tx_late48 = path48 = (at - R.onset) * 48000 / (int64_t)rate;
                         BR.cal = false;
                         atomic_store(&late_rebase, 1);
                         say("bench: the job's transmit path is %.2f ms past its place\n",
