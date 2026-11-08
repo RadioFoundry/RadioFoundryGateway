@@ -260,17 +260,9 @@ def check_reach(a, mhz: float, tx: bool) -> None:
         return
     what = (f"the transmitter's reach ({lo:.4f}-{hi:.4f} MHz, tied to the receiver's {center:.4f} MHz center)" if tx
             else f"the receiver's window ({lo:.4f}-{hi:.4f} MHz)")
-    then = ("the gateway will refuse it" if tx or not a.session
-            else "the gateway tunes there for this request only if nothing else is using the receiver")
-    print(f"{NOTE} warning: {mhz:.4f} MHz is outside {what}: {then}. Move the receiver there first:",
-          file=sys.stderr, flush=True)
-    prog = "rfgbench.py" + (f" --bench {a.bench}" if a.bench else "")
-    tune = f"{prog} tune --session {a.session or 'ID'} --center {mhz - fs / 8e6:.4f} --taps {mhz:.4f}"
-    if a.session:
-        print(f"  {tune}", file=sys.stderr, flush=True)
-    else:
-        print(f"  {prog} session --label LABEL      # prints {{\"session\": ID}}; keep it open\n  {tune}\n"
-              f"  then this command again with --session ID", file=sys.stderr, flush=True)
+    # the gateway tunes for the request itself (bench-api.md, tune); refused only while another request has the tune
+    print(f"{NOTE} note: {mhz:.4f} MHz is outside {what}: the gateway tunes there for this request, unless another "
+          f"request holds the receiver's tune", file=sys.stderr, flush=True)
 
 
 # ── commands ──

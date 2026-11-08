@@ -1948,8 +1948,12 @@ static int bl_freqs(void *ctx, rdof_bl_freq_t *out, int max)
     int k = 0;
     pthread_mutex_lock(&TU.mu); /* a tune changes CH */
     for (int c = 0; c < NCH && k < max; c++) {
-        if (TU.moved && tap_of(c) < 0)
-            continue; /* the LO moved for a job: only its taps hear where CH says */
+        if (TU.moved && tap_of(c) < 0) { /* the LO moved for a job: only its taps hear where CH says */
+            if (bench_tx_listed(CH[c].freq_hz)) /* still a transmit frequency (a repeater job's output) */
+                out[k] = (rdof_bl_freq_t){.freq_hz = CH[c].freq_hz, .ch = -1, .caps = RDOF_BL_CAP_TX},
+                snprintf(out[k].id, sizeof out[k].id, "%s", CH[c].id), k++;
+            continue;
+        }
         out[k] = (rdof_bl_freq_t){.freq_hz = CH[c].freq_hz, .ch = c,
                                   .caps = RDOF_BL_CAP_RX | RDOF_BL_CAP_DMR | RDOF_BL_CAP_IQ |
                                           (bench_tx_listed(CH[c].freq_hz) ? RDOF_BL_CAP_TX : 0)};
