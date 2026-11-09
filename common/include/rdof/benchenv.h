@@ -10,6 +10,10 @@
  * on_db over the floor and off under off_db, the edges interpolated between two outputs; a ramp from the envelope
  * leaving the noise (edge_db over the floor) to 3 dB under the plateau (the median 1-3 ms in from the edge), and
  * back at the key-down; a step where the 1 ms envelope moves over step_db in 1 ms, 2 ms in from either edge.
+ *
+ * A close carrier moves the thresholds with carrier_db set: the floor is then at least carrier_db + on_db under the
+ * strongest 1 ms level seen within a second, or coming within the look-ahead. A receiver at low gain shows quantization
+ * and the transmitter's skirts far above its own noise, which would otherwise key and widen every burst.
  */
 #ifndef RDOF_BENCHENV_H
 #define RDOF_BENCHENV_H
@@ -19,6 +23,7 @@
 
 typedef struct {
     double on_db, off_db, edge_db, step_db; /* 10, 7, 6, 3 */
+    double carrier_db;                      /* 0: the floor as given */
 } rdof_benv_opts_t;
 
 #define RDOF_BENV_STEPS 8 /* steps kept a segment (all counted) */
@@ -53,6 +58,8 @@ void rdof_benv_finish(rdof_benv_t *e);
 bool rdof_benv_take(rdof_benv_t *e, rdof_benv_seg_t *out);
 /* The 1 ms envelope's 10th percentile since the start (dB; NAN: none yet), the bench analyzer's noise figure. */
 double rdof_benv_noise_db(const rdof_benv_t *e);
+/* The highest floor it keyed against, with a close carrier's rule (dB; NAN: none yet). */
+double rdof_benv_floor_used(const rdof_benv_t *e);
 /* Wideband samples the envelope lags the newest output by (its centered means, and the look-ahead). */
 uint64_t rdof_benv_lag(const rdof_benv_t *e);
 

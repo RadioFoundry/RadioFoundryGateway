@@ -588,7 +588,9 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
   capture, so a test needs no I/Q for a transmitter's keying. The channel is cut from the history as `trigger`'s is
   (`env_bw`, 12500), its floor the median 1 ms block over the `floor_s` (1) before the request unless `floor_db` is
   given (blocks of exact zeros left out: a channelizer quantizes quiet to zero, and the floor would sit under any
-  residual carrier). The 0.1 ms power envelope (a centered mean) is keyed at `on_db` (10) over the floor and unkeyed under
+  residual carrier). A measured floor follows a close carrier: it is at least 40 dB (30 + `on_db`) under the strongest 1 ms
+  level seen in the last second or coming in the next 15 ms, so the carrier keys 30 dB under its own level and a receiver's
+  quantization at low gain doesn't. A `floor_db` the tool gives is used as given. The 0.1 ms power envelope (a centered mean) is keyed at `on_db` (10) over the floor and unkeyed under
   `off_db` (`on_db` - 3); an edge is interpolated between two outputs. A ramp runs from the envelope leaving the noise
   (`on_db` - 4 over the floor) to 3 dB under the plateau (the median 1-3 ms in from the edge), and back at the
   key-down; a step is the 1 ms envelope moving over `step_db` (3) in 1 ms, from 2 ms in to 2 ms before the key-down.
@@ -604,7 +606,7 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
   where per-burst keying is expected. A segment keyed when the stream began, or cut by lost samples, is
   `open_start` (no ramp up), `open_end` (no key-down, `null` figures) or `gap`. A ramp is `null` where the carrier
   didn't come up from the noise or go back to it (a repeater's hang). The summary adds `envelope`: `t0`, `bw`,
-  `rate`, `gain`, `floor_db`, `noise_dbfs` (the 1 ms envelope's 10th percentile, the analyzer's noise), `dbm_offset`
+  `rate`, `gain`, `floor_db`, `floor_used_db` (the highest floor it keyed against), `noise_dbfs` (the 1 ms envelope's 10th percentile, the analyzer's noise), `dbm_offset`
   (dBFS to dBm, rough: the floor taken as thermal noise in `bw` with a 3 dB noise figure; `dbm_source` "noise"),
   `clip_pct`, `segments`, `segments_dropped`, `power_steps`, `overlaps` (bursts starting under 27.5 ms after the one
   before) and `overlap_ms` (at most 16), `unexplained_carrier` (`[up_ms, unexplained_ms]` of each segment with over

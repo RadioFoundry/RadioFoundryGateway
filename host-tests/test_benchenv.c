@@ -142,6 +142,70 @@ int main(void)
               (s[1].down_sc - sc0) / D);
     }
     rdof_benv_free(e);
+    /* The running sums' rounding leaves a small negative mean after strong outputs: every figure stays a number */
+    e = rdof_benv_new(RATE, D, NULL);
+    rdof_benv_floor(e, -130);
+    uint32_t x = 12345;
+    uint64_t at = sc0;
+    int bad = 0, got = 0;
+    for (int b = 0; b < 400; b++) {
+        for (int i = 0; i < 40; i++) {
+            x = x * 1664525u + 1013904223u;
+            rdof_benv_push(e, at++ * D, 0.01f + (float)(x >> 8) * 5.9e-8f, 0);
+        }
+        for (int i = 0; i < 300; i++)
+            rdof_benv_push(e, at++ * D, 0, 0);
+        while (rdof_benv_take(e, &s[0])) {
+            got++;
+            bad += !isfinite(s[0].level_dbfs) || !isfinite(s[0].up_sc) || isnan(s[0].end_dbfs);
+        }
+    }
+    rdof_benv_finish(e);
+    CHECK(got > 0 && !bad, "residue: %d segments, %d with a figure that isn't a number", got, bad);
+    rdof_benv_free(e);
+
+    /* A -11 dB carrier over a -65 dB floor, with -50 dB skirts 8 ms long and -54 dB blips between the bursts */
+    for (int rule = 0; rule < 2; rule++) {
+        const rdof_benv_opts_t o = {10, 7, 6, 3, rule ? 30 : 0};
+        e = rdof_benv_new(RATE, D, &o);
+        rdof_benv_floor(e, -65);
+        at = 1000;
+        n = 0;
+        int segs = 0;
+        double on_ms = 0;
+        const float carrier = 0.0794f, skirt = 1e-5f, blip = 4e-6f, quiet = 3e-7f;
+        for (long i = 0; i < 90000; i++) { /* 1.9 s: bursts at 100 and 160 ms, then a weak signal at 1.5 s */
+            const long t = i % 2880;
+            float p = quiet;
+            if (i < 14400 && i >= 4800) {
+                p = t < 1344 ? carrier : t < 1728 ? skirt : t > 2496 ? skirt : quiet;
+                if (t >= 2100 && t < 2300)
+                    p = blip;
+            }
+            if (i >= 72000 && i < 75000)
+                p = skirt;
+            rdof_benv_push(e, at++ * D, p, 0);
+            while (rdof_benv_take(e, &s[0])) {
+                segs++;
+                const double ms = (s[0].down_sc - s[0].up_sc) / D / RATE * 1000;
+                if (i < 60000) /* the longest burst, not the weak signal */
+                    on_ms = ms > on_ms ? ms : on_ms;
+            }
+        }
+        rdof_benv_finish(e);
+        while (rdof_benv_take(e, &s[0]))
+            segs++;
+        if (rule) {
+            CHECK(segs == 5, "carrier rule: %d segments, want a blip before the first carrier is in sight, 3 bursts, the weak signal", segs);
+            CHECK(fabs(on_ms - 28) < 0.5, "carrier rule: a burst on %.2f ms", on_ms);
+            CHECK(fabs(rdof_benv_floor_used(e) - -51) < 1.5, "carrier rule: floor used %.1f", rdof_benv_floor_used(e));
+        } else {
+            CHECK(segs > 5 && on_ms > 40, "no rule: %d segments, on %.2f ms", segs, on_ms);
+            CHECK(fabs(rdof_benv_floor_used(e) - -65) < 0.1, "no rule: floor used %.1f", rdof_benv_floor_used(e));
+        }
+        rdof_benv_free(e);
+    }
+
     printf(fails ? "benchenv: %d FAILED\n" : "benchenv: all passed\n", fails);
     return fails ? 1 : 0;
 }

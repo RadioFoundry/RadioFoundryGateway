@@ -3741,7 +3741,8 @@ static bool env_open(rdof_bl_t *bl, conn_t *c, int root, const rdof_bl_window_t 
              0.9 * rate);
         return false;
     }
-    const rdof_benv_opts_t o = {on_db, off_db, on_db - 4 > 1 ? on_db - 4 : 1, step_db};
+    /* a floor the tool gives is used as given; a measured one follows a close carrier (bench-api.md) */
+    const rdof_benv_opts_t o = {on_db, off_db, on_db - 4 > 1 ? on_db - 4 : 1, step_db, isfinite(floor_db) ? 0 : 30};
     trig_t *t = calloc(1, sizeof *t);
     struct envx *x = calloc(1, sizeof *x);
     if (t) {
@@ -3838,7 +3839,7 @@ static void env_seg_out(rdof_bl_t *bl, conn_t *c, const rdof_benv_seg_t *s)
                 covered += e - a, cov_end = e;
         }
     }
-    char on[24], dn[24], tdn[24], ru[24], rd[24], ed[24], pk[24], mn[24], un[24];
+    char on[24], dn[24], tdn[24], ru[24], rd[24], lv[24], ed[24], pk[24], mn[24], un[24];
     const double on_ms = isfinite(down) ? (down - up) / x->fs * 1000 : NAN;
     const double unexpl = isfinite(down) ? on_ms - covered / x->fs * 1000 : NAN;
     put_num(on, sizeof on, on_ms, 3);
@@ -3846,6 +3847,7 @@ static void env_seg_out(rdof_bl_t *bl, conn_t *c, const rdof_benv_seg_t *s)
     put_num(tdn, sizeof tdn, isfinite(down) ? x->t0 + env_ms(x, down) / 1000 : NAN, 6);
     put_num(ru, sizeof ru, s->ramp_up_ms, 2);
     put_num(rd, sizeof rd, s->ramp_down_ms, 2);
+    put_num(lv, sizeof lv, s->level_dbfs, 1);
     put_num(ed, sizeof ed, isfinite(down) ? s->end_dbfs : NAN, 1);
     put_num(pk, sizeof pk, s->peak_dbfs, 1);
     put_num(mn, sizeof mn, s->min_dbfs, 1);
@@ -3856,10 +3858,10 @@ static void env_seg_out(rdof_bl_t *bl, conn_t *c, const rdof_benv_seg_t *s)
                                env_ms(x, s->step[i].sc), s->step[i].db);
     snprintf(o, cap,
              "{\"segment\":{\"t\":%.6f,\"up_ms\":%.3f,\"down_ms\":%s,\"t_down\":%s,\"on_ms\":%s,\"ramp_up_ms\":%s,"
-             "\"ramp_down_ms\":%s,\"level_dbfs\":%.1f,\"end_dbfs\":%s,\"peak_dbfs\":%s,\"min_dbfs\":%s,"
+             "\"ramp_down_ms\":%s,\"level_dbfs\":%s,\"end_dbfs\":%s,\"peak_dbfs\":%s,\"min_dbfs\":%s,"
              "\"clip_pct\":%.3f,\"power_steps\":%d,\"steps\":[%s],\"bursts\":%d,\"burst_sc\":[%s],\"burst_t\":[%s],"
              "\"unexplained_ms\":%s,\"up_sc\":%.0f,\"open_start\":%s,\"open_end\":%s,\"gap\":%s}}",
-             x->t0 + env_ms(x, up) / 1000, env_ms(x, up), dn, tdn, on, ru, rd, s->level_dbfs, ed, pk, mn,
+             x->t0 + env_ms(x, up) / 1000, env_ms(x, up), dn, tdn, on, ru, rd, lv, ed, pk, mn,
              s->inputs ? 100.0 * (double)s->clipped / (double)s->inputs : 0.0, s->steps, steps, nb, scs, ts, un, up,
              s->open_start ? "true" : "false", s->open_end ? "true" : "false", s->gap ? "true" : "false");
     if (!emit(bl, c, "%s", o))
@@ -3916,9 +3918,10 @@ static void env_done(rdof_bl_t *bl, conn_t *c, double now, char *out, size_t cap
     rdof_benv_finish(t->env);
     env_tick(bl, c, now, true);
     const double noise = rdof_benv_noise_db(t->env);
-    char nz[24], fl[24], dbm[24], ov[200] = "", un[400] = "";
+    char nz[24], fl[24], used[24], dbm[24], ov[200] = "", un[400] = "";
     put_num(nz, sizeof nz, noise, 1);
     put_num(fl, sizeof fl, t->have_floor ? t->floor_db : NAN, 1);
+    put_num(used, sizeof used, rdof_benv_floor_used(t->env), 1);
     /* dBFS to dBm, rough: the floor taken as thermal noise in the channel with a 3 dB noise figure */
     put_num(dbm, sizeof dbm, isfinite(noise) ? -174 + 10 * log10(x->bw) + 3 - noise : NAN, 1);
     size_t k = 0;
@@ -3928,11 +3931,11 @@ static void env_done(rdof_bl_t *bl, conn_t *c, double now, char *out, size_t cap
     for (long i = 0; i < x->unexpl_n && i < ENV_LIST && k < sizeof un - 32; i++)
         k += (size_t)snprintf(un + k, sizeof un - k, "%s[%.1f,%.1f]", i ? "," : "", x->unexpl[i][0], x->unexpl[i][1]);
     snprintf(out, cap,
-             ",\"envelope\":{\"t0\":%.6f,\"bw\":%.0f,\"rate\":%.1f,\"gain\":%.1f,\"floor_db\":%s,\"noise_dbfs\":%s,"
+             ",\"envelope\":{\"t0\":%.6f,\"bw\":%.0f,\"rate\":%.1f,\"gain\":%.1f,\"floor_db\":%s,\"floor_used_db\":%s,\"noise_dbfs\":%s,"
              "\"dbm_offset\":%s,\"dbm_source\":\"noise\",\"clip_pct\":%.3f,\"segments\":%ld,\"segments_dropped\":%ld,"
              "\"power_steps\":%ld,\"overlaps\":%ld,\"overlap_ms\":[%s],\"unexplained_carrier\":[%s],"
              "\"unexplained_ms\":%.1f,\"gap_samples\":%ld}",
-             x->t0, x->bw, t->rate, c->gain, fl, nz, dbm,
+             x->t0, x->bw, t->rate, c->gain, fl, used, nz, dbm,
              t->inputs ? 100.0 * (double)t->clipped / (double)(2 * t->inputs) : 0.0, x->segs, x->dropped, x->steps,
              x->overlaps, ov, un, x->unexpl_total_ms, t->gaps);
 }

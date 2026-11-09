@@ -35,6 +35,9 @@ struct rdof_benv {
     bool armed;
     double floor_db;
     float lo, on, off;        /* linear thresholds */
+    float floor_lin, k_lo, k_on, k_off, k_carrier, floor_max;
+    float carrier;            /* a close carrier's 1 ms level, 0: none */
+    long carrier_at, next_scan, hold; /* outputs */
     long m;                   /* the next output to decide, -1: from the first one that can be */
     long m_first;             /* the first decided since the reset or the arming (a carrier on there was on before) */
     bool keyed;
@@ -62,7 +65,8 @@ rdof_benv_t *rdof_benv_new(double rate, int d, const rdof_benv_opts_t *o)
     if (!e)
         return NULL;
     e->rate = rate, e->d = d;
-    e->o = o ? *o : (rdof_benv_opts_t){10, 7, 6, 3};
+    e->o = o ? *o : (rdof_benv_opts_t){10, 7, 6, 3, 0};
+    e->hold = lround(rate);
     e->w = (int)scale(rate, 5), e->w1 = (int)scale(rate, 48);
     e->pl0 = (int)scale(rate, 48), e->pl1 = (int)scale(rate, 144), e->ru_fwd = (int)scale(rate, 480);
     e->back = (int)scale(rate, 720), e->fwd = (int)scale(rate, 720);
@@ -102,7 +106,8 @@ static float P(const rdof_benv_t *e, long i) { return e->p[R(e, i)]; }
 static float E(const rdof_benv_t *e, long i) { return e->env[R(e, i)]; }
 static float E1(const rdof_benv_t *e, long i) { return e->env1[R(e, i)]; }
 
-static float db(float v) { return 10 * log10f(v + 1e-12f); }
+/* A running mean can round to just under zero after strong outputs */
+static float db(float v) { return 10 * log10f((v > 0 ? v : 0) + 1e-12f); }
 
 /* The newest output whose 1 ms mean is in (the 0.1 ms one is in before it) */
 static long newest_env(const rdof_benv_t *e) { return e->n - 1 - (e->w1 - 1 - e->w1 / 2); }
@@ -115,15 +120,38 @@ static long oldest_env(const rdof_benv_t *e)
 
 static double sc_at(const rdof_benv_t *e, double i) { return (double)e->sc0 + i * e->d; }
 
+static void set_base(rdof_benv_t *e)
+{
+    const float c = e->carrier * e->k_carrier, b = c > e->floor_lin ? c : e->floor_lin;
+    e->lo = b * e->k_lo, e->on = b * e->k_on, e->off = b * e->k_off;
+    if (b > e->floor_max)
+        e->floor_max = b;
+}
+
+/* A 1 ms level at output i: the carrier if it's the strongest, and still there if it's within 3 dB */
+static void carrier_seen(rdof_benv_t *e, float x, long i)
+{
+    if (x > e->carrier) {
+        e->carrier = x, e->carrier_at = i;
+        set_base(e);
+    } else if (x > e->carrier * 0.5f) {
+        e->carrier_at = i;
+    }
+}
+
 void rdof_benv_floor(rdof_benv_t *e, double floor_db)
 {
     if (!e || !isfinite(floor_db))
         return;
     e->floor_db = floor_db;
-    const double f = pow(10, floor_db / 10);
-    e->lo = (float)(f * pow(10, e->o.edge_db / 10));
-    e->on = (float)(f * pow(10, e->o.on_db / 10));
-    e->off = (float)(f * pow(10, e->o.off_db / 10));
+    e->floor_lin = (float)pow(10, floor_db / 10);
+    e->k_lo = (float)pow(10, e->o.edge_db / 10);
+    e->k_on = (float)pow(10, e->o.on_db / 10);
+    e->k_off = (float)pow(10, e->o.off_db / 10);
+    e->k_carrier = (float)pow(10, -(e->o.carrier_db + e->o.on_db) / 10);
+    e->carrier = 0;
+    e->floor_max = 0;
+    set_base(e);
     if (!e->armed)
         e->m = -1;
     e->armed = true;
@@ -237,6 +265,17 @@ static void decide(rdof_benv_t *e, long m, long hi)
 {
     const float v = E(e, m);
     if (!e->keyed) {
+        const bool rule = e->o.carrier_db > 0;
+        if (rule && e->carrier > 0 && m - e->carrier_at > e->hold) { /* gone: the floor again */
+            e->carrier = 0;
+            set_base(e);
+        }
+        if (rule && v > e->on && m >= e->next_scan) { /* the carrier this may be the skirt of */
+            const long top = m + e->fwd < hi ? m + e->fwd : hi, by = e->w1 / 8 > 0 ? e->w1 / 8 : 1;
+            e->next_scan = m + (e->w1 / 4 > 0 ? e->w1 / 4 : 1);
+            for (long i = m; i <= top; i += by)
+                carrier_seen(e, E1(e, i), i);
+        }
         if (v > e->on)
             key_up(e, m, hi);
         return;
@@ -255,6 +294,8 @@ static void decide(rdof_benv_t *e, long m, long hi)
             const float xd = db(x); /* once an output in a segment: affordable */
             s->peak_dbfs = xd > s->peak_dbfs ? xd : s->peak_dbfs;
             s->min_dbfs = xd < s->min_dbfs ? xd : s->min_dbfs;
+            if (e->o.carrier_db > 0)
+                carrier_seen(e, x, q);
         }
     }
     /* a step: the 1 ms envelope 1 ms apart differs by over step_db, from 2 ms in */
@@ -301,6 +342,11 @@ static void finish(rdof_benv_t *e, bool gap)
     if (e->keyed)
         key_down(e, -1, newest_env(e), gap);
     e->n = 0, e->s5 = e->s48 = 0, e->have_last = false, e->m = -1, e->keyed = false;
+    e->next_scan = 0; /* the outputs count from zero again */
+    if (e->carrier > 0) {
+        e->carrier = 0;
+        set_base(e);
+    }
 }
 
 void rdof_benv_push(rdof_benv_t *e, uint64_t sc, float p, int clipped)
@@ -366,6 +412,11 @@ double rdof_benv_noise_db(const rdof_benv_t *e)
     while (k < NHIST - 1 && (acc += e->nhist[k]) < e->nblocks / 10 + 1)
         k++;
     return -150 + k * 0.5 + 0.25;
+}
+
+double rdof_benv_floor_used(const rdof_benv_t *e)
+{
+    return e && e->floor_max > 0 ? 10 * log10(e->floor_max) : NAN;
 }
 
 uint64_t rdof_benv_lag(const rdof_benv_t *e)
