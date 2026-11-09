@@ -9,6 +9,7 @@
  * is triggered right after esp_timer is read; a pair is good to a few us, and the median of the last 15 is the tie.
  */
 #include <inttypes.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -60,6 +61,59 @@ static uint32_t settx_n;
 /* PPS: the interrupt's time against the capture's */
 static int pps_isr_min_ns = INT32_MAX, pps_isr_max_ns = INT32_MIN;
 static uint32_t pps_seen;
+
+/* the receive stream's marks: a mark against the one before (their step's error) and against the stream's time */
+static struct {
+    bool fresh, have;
+    double pos, us;
+    uint32_t n, failed;
+    int step_min_ns, step_max_ns;
+    double lag_min, lag_max, lag_last;
+    bool lag_any;
+} rx = {.step_min_ns = INT32_MAX, .step_max_ns = INT32_MIN};
+
+void edge_time_rx_mark(double pos48, double us, uint32_t failed)
+{
+    portENTER_CRITICAL(&mux);
+    if (rx.have && pos48 > rx.pos) {
+        const double ns = (us - rx.us - (pos48 - rx.pos) / 48000.0 * 1e6) * 1000;
+        if (ns > -1e6 && ns < 1e6) {
+            if (ns < rx.step_min_ns)
+                rx.step_min_ns = (int)ns;
+            if (ns > rx.step_max_ns)
+                rx.step_max_ns = (int)ns;
+        }
+    }
+    rx.have = rx.fresh = true;
+    rx.pos = pos48;
+    rx.us = us;
+    rx.n++;
+    rx.failed = failed;
+    portEXIT_CRITICAL(&mux);
+}
+
+bool edge_time_rx_take(double *pos48, double *us)
+{
+    portENTER_CRITICAL(&mux);
+    const bool got = rx.fresh;
+    rx.fresh = false;
+    *pos48 = rx.pos;
+    *us = rx.us;
+    portEXIT_CRITICAL(&mux);
+    return got;
+}
+
+void edge_time_rx_lag(double lag_s)
+{
+    portENTER_CRITICAL(&mux);
+    if (!rx.lag_any || lag_s < rx.lag_min)
+        rx.lag_min = lag_s;
+    if (!rx.lag_any || lag_s > rx.lag_max)
+        rx.lag_max = lag_s;
+    rx.lag_any = true;
+    rx.lag_last = lag_s;
+    portEXIT_CRITICAL(&mux);
+}
 
 static double to_us(uint32_t cap)
 {
@@ -279,6 +333,17 @@ void edge_time_json(rdof_json_t *j)
         rdof_json_int(j, "settx_n", settx_n);
         rdof_json_int(j, "settx_min_ns", settx_min_ns);
         rdof_json_int(j, "settx_max_ns", settx_max_ns);
+    }
+    rdof_json_int(j, "rx_marks", rx.n);
+    rdof_json_int(j, "rx_mark_failed", rx.failed);
+    if (rx.step_min_ns != INT32_MAX) {
+        rdof_json_int(j, "rx_step_min_ns", rx.step_min_ns);
+        rdof_json_int(j, "rx_step_max_ns", rx.step_max_ns);
+    }
+    if (rx.lag_any) {
+        rdof_json_int(j, "rx_lag_last_us", (int)lround(rx.lag_last * 1e6));
+        rdof_json_int(j, "rx_lag_min_us", (int)lround(rx.lag_min * 1e6));
+        rdof_json_int(j, "rx_lag_max_us", (int)lround(rx.lag_max * 1e6));
     }
     rdof_json_close(j);
 }

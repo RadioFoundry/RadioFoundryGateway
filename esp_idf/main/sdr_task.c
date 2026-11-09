@@ -1330,6 +1330,10 @@ int sdr_spectrum_rows(uint32_t since, uint8_t *out, int max, uint32_t *seq, sdr_
 
 /* filler: the chunk's first `filler` samples stand in for what the front end lost (their level says nothing about
  * the gain; the bench's history notes where they are) */
+static int64_t stream_base; /* out_index at the stream's first sample */
+static int64_t marks_until; /* esp_timer: the FIFO's time marks are steering the stream's time up to here */
+#define MARKS 5
+
 static void chunk(const uint8_t *raw, int n, int split, bool *first, int filler)
 {
     int64_t t0 = esp_timer_get_time();
@@ -1385,6 +1389,7 @@ static void chunk(const uint8_t *raw, int n, int split, bool *first, int filler)
      * so a window with some says nothing. */
     static double least;
     static int64_t least_from, least_window;
+    const bool was_first = *first;
     if (*first) {
         g_rx.t0 = now_unix() - n / g_scfg.sample_rate;
         *first = false;
@@ -1396,7 +1401,7 @@ static void chunk(const uint8_t *raw, int n, int split, bool *first, int filler)
         /* at this chunk's start, as the first anchor */
         const double lag = now_unix() - n / g_scfg.sample_rate - (g_rx.t0 + g_rx.out_index / RDOF_DEMOD_FS);
         double move = fabs(lag) > 1.0 ? lag : 0;
-        if (!move && netclock_synced()) {
+        if (!move && netclock_synced() && t0 >= marks_until) {
             if (!least_from || lag < least)
                 least = lag;
             if (!least_from)
@@ -1434,6 +1439,40 @@ static void chunk(const uint8_t *raw, int n, int split, bool *first, int filler)
             least_from = 0;
         }
     }
+#if CONFIG_RDOF_SDR_LR2021
+    /* The FIFO's level edge, timed by the capture, is when a known sample reached the host, with no latency in it
+     * (R3.57): the stream's time follows that, by the median of five marks, and a chunk's arrival isn't asked. */
+    double mark_pos, mark_us;
+    static double marks[MARKS];
+    static int marks_n;
+    static uint32_t steered;
+    if (was_first) {
+        marks_n = 0;
+        steered = 0;
+    }
+    if (edge_time_rx_take(&mark_pos, &mark_us) && netclock_synced()) {
+        const int64_t whole = (int64_t)mark_us;
+        const double at = netclock_utc_ns(whole, NULL) / 1e9 + (mark_us - (double)whole) * 1e-6;
+        const double lag = at - (g_rx.t0 + (double)(stream_base + (int64_t)mark_pos) / RDOF_DEMOD_FS);
+        if (steered >= 2)
+            edge_time_rx_lag(lag);
+        if (fabs(lag) < 1.0) {
+            int k = marks_n++;
+            while (k > 0 && marks[k - 1] > lag) {
+                marks[k] = marks[k - 1];
+                k--;
+            }
+            marks[k] = lag;
+        }
+        if (marks_n == MARKS) {
+            if (fabs(marks[MARKS / 2]) > 5e-6)
+                g_rx.t0 += marks[MARKS / 2];
+            marks_n = 0;
+            steered++;
+            marks_until = t0 + 1500000;
+        }
+    }
+#endif
     slot_timing_rx(&g_rx);
     if (filler > 0)
         bench_wide_filler((uint64_t)g_rx.samples, filler);
@@ -1591,6 +1630,7 @@ static void dsp_task(void *arg)
         bool first = true;
         int64_t stream_samples = 0; /* UTC slot timing: the stream's sample count, stamped as it arrives */
         slot_timing_stream(g_scfg.sample_rate, g_rx.out_index);
+        stream_base = (int64_t)g_rx.out_index;
         wall_from_us = esp_timer_get_time();
         busy_us = 0;
         int64_t last_data = esp_timer_get_time();

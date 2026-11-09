@@ -1122,6 +1122,39 @@ static int tx_tune(void *ctx, double hz)
     return 0;
 }
 
+/* The stream's time marks: ten a second, the FIFO level's edge, timed by the capture (lr2021_iq_t.mark_*). Only an
+ * edge that is the one rise since the arm counts: the pin also carries TX_DONE. */
+static int64_t mark_next;
+static uint32_t mark_seen, mark_edges;
+
+static void rx_mark_before(void)
+{
+    if (iq.mark_armed)
+        return;
+    double us;
+    edge_time_last(EDGE_FIFO, &us, &mark_edges);
+    const int64_t now = esp_timer_get_time();
+    if (now >= mark_next) {
+        iq.mark_want = true;
+        mark_next = now + 100000;
+    }
+}
+
+static void rx_mark_after(void)
+{
+    if (iq.mark_n == mark_seen)
+        return;
+    mark_seen = iq.mark_n;
+    double us;
+    uint32_t n;
+    if (!edge_time_last(EDGE_FIFO, &us, &n) || n != mark_edges + 1)
+        return;
+    /* rx_count stands after what's been delivered, carry_n bytes short of what's been read */
+    const double native = (double)rx_count -
+                          ((double)(iq.bytes_out - iq.carry_n) - (double)iq.mark_bytes) / st.plan.sample_bytes;
+    edge_time_rx_mark(native * TX_RATE * st.native_den / st.native_num, us, iq.mark_failed);
+}
+
 /* The reader: lr2021_iq_poll in a loop (the FIFO's samples, little-endian I then Q, 16 bits each, spec R2.7, or 8
  * in the wide mode, into the ring), the transmit turn between. The session waits for the RX FIFO IRQ or reads by
  * the level it reckons from the rate (spec R2.34), sleeping between reads. */
@@ -1157,7 +1190,9 @@ static void reader_task(void *arg)
             }
             continue;
         }
+        rx_mark_before();
         const int got = lr2021_iq_poll(&iq, sink, NULL, 2);
+        rx_mark_after();
         count_session();
         unlock();
         if (got < 0)

@@ -571,6 +571,10 @@ typedef enum { EDGE_FIFO, EDGE_NSS, EDGE_PPS, EDGE_N } edge_ch_t;
 void edge_time_start(void);
 bool edge_time_last(edge_ch_t ch, double *us, uint32_t *n); /* the last edge, in esp_timer us; n: the edges so far */
 void edge_time_json(rdof_json_t *j);
+/* A FIFO level's edge: stream position pos48 (at 48 kHz, from the stream's start) was at the chip at esp_timer us. */
+void edge_time_rx_mark(double pos48, double us, uint32_t failed);
+bool edge_time_rx_take(double *pos48, double *us); /* the newest mark not yet taken */
+void edge_time_rx_lag(double lag_s); /* the mark against the stream's time: the JSON's rx_lag_* */
 void sdr_modem_bench_write(const uint8_t *data, size_t len);
 void sdr_modem_bench_close(void);
 /* The receiver streams again, at a new center or not (sdr_task.c): the modem's carrier tuned again (a roamer

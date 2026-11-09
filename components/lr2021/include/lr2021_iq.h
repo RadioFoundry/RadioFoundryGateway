@@ -48,6 +48,7 @@ typedef enum { LR2021_IQ_CS16, LR2021_IQ_CS8 } lr2021_iq_format_t;
 #define LR2021_IQ_FSK16_MAX 260000.0
 #define LR2021_IQ_CONV8_MAX 576000.0
 #define LR2021_IQ_FIFO_BYTES 1024
+#define LR2021_IQ_MARK_LEVEL 512 /* FSK modes: the FIFO level that raises the IRQ pin */
 
 typedef struct {
     lr2021_iq_mode_t mode;
@@ -117,6 +118,12 @@ typedef struct {
     int64_t anchor_us;
     int32_t anchor_level;
     uint8_t reckon_n;
+    /* time marks (FSK modes, read by the level): mark_want asks for one; the IRQ pin is re-armed after a read, and rises
+     * when the level passes LR2021_IQ_MARK_LEVEL with no read in between. mark_bytes: the session's FIFO bytes in by
+     * that edge; mark_n counts the good ones, mark_failed the arms that saw no rise before the next read. */
+    bool mark_want, mark_armed;
+    uint32_t mark_n, mark_failed;
+    uint64_t bytes_out, mark_bytes;
     /* transmit: TX_DONE's delay past a run's length learned in the last burst (lr2021_tx_stream_cfg_t.learned),
      * for tx_learned_for's mode and rate */
     int tx_learned[3];
