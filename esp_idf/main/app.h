@@ -571,6 +571,7 @@ typedef enum { EDGE_FIFO, EDGE_NSS, EDGE_PPS, EDGE_N } edge_ch_t;
 void edge_time_start(void);
 bool edge_time_last(edge_ch_t ch, double *us, uint32_t *n); /* the last edge, in esp_timer us; n: the edges so far */
 void edge_time_json(rdof_json_t *j);
+void fe_lr2021_loss_json(rdof_json_t *j); /* sdr.fifo_losses: what the reader was doing around each FIFO loss */
 /* A FIFO level's edge: stream position pos48 (at 48 kHz, from the stream's start) was at the chip at esp_timer us. */
 void edge_time_rx_mark(double pos48, double us, uint32_t failed);
 bool edge_time_rx_take(double *pos48, double *us); /* the newest mark not yet taken */

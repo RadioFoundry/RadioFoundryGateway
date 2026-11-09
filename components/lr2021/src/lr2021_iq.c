@@ -443,8 +443,8 @@ int lr2021_iq_poll(lr2021_iq_t *iq, lr2021_iq_sink_t sink, void *ctx, int wait_m
         const double t = LR2021_IQ_FIFO_BYTES - RECKON_MARGIN - bpus * iq->cfg.slack_us;
         target = t < READ_MIN ? READ_MIN : t < READ_TARGET ? (size_t)t & ~3u : READ_TARGET;
     }
-    if (iq->mark_armed && target < LR2021_IQ_MARK_LEVEL + 64)
-        target = LR2021_IQ_MARK_LEVEL + 64; /* the next read comes after the edge */
+    if (iq->mark_armed && target < LR2021_IQ_MARK_LEVEL)
+        target = LR2021_IQ_MARK_LEVEL; /* the next read comes after the edge (and RECKON_MARGIN past the target) */
     if (backlog < target) {
         /* the time the FIFO takes to reach the target, at most wait_ms */
         double us = (target - backlog) / bpus;

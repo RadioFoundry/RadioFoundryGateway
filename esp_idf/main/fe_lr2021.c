@@ -169,13 +169,30 @@ static esp_err_t cmd(const uint8_t *f, size_t n) { return lr2021_write(st.dev, f
 /* wanting counts the tasks waiting for the lock: the reader, at a wide rate always busy and above them, gives
  * them a tick (the mutex alone would go straight back to it, and the web server stalled behind a hold) */
 static volatile int wanting;
-static void lock(void)
+/* who has the SPI now and, for the loss records below, who held it longest since the reader last looked */
+static const char *holder, *held_most_by;
+static int64_t holder_since;
+static int held_most_us;
+
+static void lock_by(const char *who)
 {
     __atomic_add_fetch(&wanting, 1, __ATOMIC_RELAXED);
     xSemaphoreTake(st.spi, portMAX_DELAY);
     __atomic_sub_fetch(&wanting, 1, __ATOMIC_RELAXED);
+    holder = who;
+    holder_since = esp_timer_get_time();
 }
-static void unlock(void) { xSemaphoreGive(st.spi); }
+#define lock() lock_by(__func__)
+
+static void unlock(void)
+{
+    const int us = (int)(esp_timer_get_time() - holder_since);
+    if (strcmp(holder, "reader_task") && us > held_most_us) {
+        held_most_us = us;
+        held_most_by = holder;
+    }
+    xSemaphoreGive(st.spi);
+}
 
 /* ── log lines, from esp_timer's task ───────────────────────────────────── */
 
@@ -550,9 +567,28 @@ static void count_error(void)
 /* The session's losses and errors since the last look into st.stats. The caller holds the lock. */
 static volatile unsigned losses; /* for report's line */
 static volatile unsigned tx_busy; /* TX look-ahead pulls put off, the source's lock taken (for report's line) */
+
+/* What the reader was doing around each FIFO loss (sdr.fifo_losses): the longest time between two polls since the
+ * last loss, split in its parts. A FIFO lasts about 1.3 ms, so one of these is what took that long. */
+typedef struct {
+    int64_t at_us;
+    int gap_us, yield_us, tx_us, lock_us, poll_us, held_us;
+    const char *held_by;
+} loss_why_t;
+#define LOSS_WHYS 8
+static loss_why_t loss_why[LOSS_WHYS], loss_worst;
+static unsigned loss_why_n;
+
 static void count_session(void)
 {
     const unsigned dl = iq.stats.losses - seen.losses, de = iq.stats.errors - seen.errors;
+    if (dl) {
+        loss_worst.at_us = esp_timer_get_time();
+        portENTER_CRITICAL(&st.lock);
+        loss_why[loss_why_n++ % LOSS_WHYS] = loss_worst;
+        portEXIT_CRITICAL(&st.lock);
+        loss_worst.gap_us = 0;
+    }
     if (dl || de) {
         portENTER_CRITICAL(&st.lock);
         st.stats.overflows += dl;
@@ -1160,21 +1196,27 @@ static void rx_mark_after(void)
  * the level it reckons from the rate (spec R2.34), sleeping between reads. */
 static void reader_task(void *arg)
 {
+    int64_t last_poll = 0;
     for (;;) {
+        const int64_t t_top = esp_timer_get_time();
         if (wanting) {
             dbg.yields++;
             vTaskDelay(1);
         }
         if (!st.streaming) {
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+            last_poll = 0;
             continue;
         }
         if (st.held) {
             vTaskDelay(pdMS_TO_TICKS(50));
+            last_poll = 0;
             continue;
         }
+        const int64_t t_tx = esp_timer_get_time();
         if (tx.src || tx.hold)
             tx_service();
+        const int64_t t_lock = esp_timer_get_time();
         lock();
         if (st.held || !st.streaming) {
             unlock();
@@ -1191,8 +1233,17 @@ static void reader_task(void *arg)
             continue;
         }
         rx_mark_before();
+        const int64_t t_poll = esp_timer_get_time();
         const int got = lr2021_iq_poll(&iq, sink, NULL, 2);
+        const int64_t t_end = esp_timer_get_time();
         rx_mark_after();
+        if (last_poll && t_end - last_poll > loss_worst.gap_us)
+            loss_worst = (loss_why_t){.gap_us = (int)(t_end - last_poll), .yield_us = (int)(t_tx - t_top),
+                                      .tx_us = (int)(t_lock - t_tx), .lock_us = (int)(t_poll - t_lock),
+                                      .poll_us = (int)(t_end - t_poll), .held_us = held_most_us, .held_by = held_most_by};
+        held_most_us = 0;
+        held_most_by = NULL;
+        last_poll = t_end;
         count_session();
         unlock();
         if (got < 0)
@@ -1421,6 +1472,36 @@ static const rdof_fe_ops_t ops = {
     .tx_tune = tx_tune,
     .tx_map = tx_map,
 };
+
+void fe_lr2021_loss_json(rdof_json_t *j)
+{
+    loss_why_t w[LOSS_WHYS];
+    portENTER_CRITICAL(&st.lock);
+    memcpy(w, loss_why, sizeof w);
+    const unsigned n = loss_why_n;
+    portEXIT_CRITICAL(&st.lock);
+    if (!n)
+        return;
+    rdof_json_int(j, "fifo_loss_n", n);
+    const int have = n < LOSS_WHYS ? (int)n : LOSS_WHYS;
+    rdof_json_open(j, "fifo_losses");
+    for (int i = 0; i < have; i++) {
+        char key[8];
+        snprintf(key, sizeof key, "%d", i);
+        const loss_why_t *x = &w[(n - 1 - (unsigned)i) % LOSS_WHYS]; /* the newest first */
+        rdof_json_open(j, key);
+        rdof_json_int(j, "ago_ms", (long long)((esp_timer_get_time() - x->at_us) / 1000));
+        rdof_json_int(j, "gap_us", x->gap_us);
+        rdof_json_int(j, "yield_us", x->yield_us);
+        rdof_json_int(j, "tx_us", x->tx_us);
+        rdof_json_int(j, "lock_us", x->lock_us);
+        rdof_json_int(j, "poll_us", x->poll_us);
+        rdof_json_int(j, "held_us", x->held_us);
+        rdof_json_str(j, "held_by", x->held_by ? x->held_by : "");
+        rdof_json_close(j);
+    }
+    rdof_json_close(j);
+}
 
 int fe_lr2021_read_mem(uint32_t addr, uint32_t *w, int n)
 {

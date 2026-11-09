@@ -119,6 +119,13 @@ static void bl_rx_stats(void *ctx, double *seconds, long *overflows, double *cli
     int changes;
     sdr_level(&has_level, clip_pct, &peak, &has_gain, &gain, &has_agc, &ceiling, &min_db, &changes);
     sdr_counters(dropped, overflows, &cpu);
+    /* the front end's samples lost (the LR2021's FIFO, a ring between it and the DSP) are overflows; they aren't
+     * chunks the decoder dropped */
+    rdof_fe_stats_t fe_stats;
+    if (sdr_fe_stats(&fe_stats)) {
+        *overflows += (long)fe_stats.overflows;
+        *dropped -= (long)fe_stats.overflows;
+    }
     *seconds = g_rx_ready ? bl_utc(NULL) - g_rx.t0 : 0;
     *dsp_skipped = 0;
 }

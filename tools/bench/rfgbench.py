@@ -659,6 +659,10 @@ def cmd_dmr_bursts(a) -> int:
             kinds = ", ".join(f"{v} {k}" for k, v in sorted(s.get("kinds", {}).items()))
             print(f"{s['bursts']} bursts on {s['freq'] / 1e6:.5f} MHz ({s['reason']})" + (f": {kinds}" if kinds else ""),
                   file=human, flush=True)
+            if s.get("complete") is False:            # a burst missing may not have been missing on the air
+                lost = ", ".join(f"{v} {k}" for k, v in s.get("lost", {}).items() if v)
+                print(f"WARNING: the receiver lost samples during this stream ({lost or str(s.get('dropped', 0)) + ' records dropped'}): "
+                      "this result is not complete", file=sys.stderr, flush=True)
             cfo = s.get("cfo_hz")
             if cfo:
                 tol = cfo.get("tol")
@@ -736,6 +740,9 @@ def write_iq(a, req: dict, fmt_bytes: int) -> int:
             if m.get("clip_pct", 0) > 1.0:
                 print(f"WARNING: {m['clip_pct']:.1f} % of I/Q samples at the ADC rails: the capture is saturated",
                       flush=True)
+            if m.get("overflows") or m.get("gap_samples"):
+                print(f"WARNING: samples lost during this capture ({m.get('gap_samples', 0)} filled with zeros): "
+                      "its timing and content have holes", file=sys.stderr, flush=True)
             return 0
         return None
     try:

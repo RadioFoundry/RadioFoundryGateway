@@ -48,7 +48,7 @@ typedef enum { LR2021_IQ_CS16, LR2021_IQ_CS8 } lr2021_iq_format_t;
 #define LR2021_IQ_FSK16_MAX 260000.0
 #define LR2021_IQ_CONV8_MAX 576000.0
 #define LR2021_IQ_FIFO_BYTES 1024
-#define LR2021_IQ_MARK_LEVEL 512 /* FSK modes: the FIFO level that raises the IRQ pin */
+#define LR2021_IQ_MARK_LEVEL 416 /* FSK modes: the FIFO level that raises the IRQ pin */
 
 typedef struct {
     lr2021_iq_mode_t mode;
