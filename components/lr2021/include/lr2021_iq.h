@@ -124,12 +124,6 @@ typedef struct {
     bool mark_want, mark_armed;
     uint32_t mark_n, mark_failed;
     uint64_t bytes_out, mark_bytes;
-    /* the last loss: found by the level (1) or the flags (2), the flags, and how long after the read before it */
-    int64_t read_end_us;
-    uint8_t lost_by, lost_flags;
-    int32_t lost_after_us;
-    int64_t rx_start_us;     /* when the receiver last started */
-    int32_t first_read_us;   /* its first read came this long after (0: none yet) */
     /* transmit: TX_DONE's delay past a run's length learned in the last burst (lr2021_tx_stream_cfg_t.learned),
      * for tx_learned_for's mode and rate */
     int tx_learned[3];
@@ -175,9 +169,6 @@ typedef struct {
     const volatile bool *stop; /* set: the transmission ends at once (NULL: none) */
     int64_t at_us;          /* key up then (lr2021_now_us; 0: when ready); ready too late, nothing is sent and
                              * stats.late is set (lr2021_tx_stream_cfg_t.at_us) */
-    /* Optional, called with the transmission over and before the receiver starts again: the place for slow work,
-     * since once it runs the RX FIFO lasts about 1 ms. */
-    void (*before_rx)(void *ctx);
 } lr2021_iq_tx_t;
 
 /* One transmission, half duplex: a receive session is paused (no reset or new calibration where it already

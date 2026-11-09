@@ -186,8 +186,7 @@ with its counters at zero.
 | `usb_bytes_per_s` | number/null | B/s | measured since the last call (null on the first) | always |
 | `usb_expected_per_s` | number | B/s | sample rate × bytes per sample of the front end's format (`rdof_fe_sample_bytes`; 2 for cu8 I/Q) | always |
 | `usb_errors`, `usb_short` | int | | transfer errors, short transfers | always |
-| `ring_overflows`, `bytes_lost`, `bytes_filled` | int | | sample ring overflows (on an LR2021 also the chip's FIFO losses; those count from boot, a stream restart doesn't reset them), bytes lost, filler bytes put in their place | always |
-| `fifo_loss_n`, `fifo_losses` | int, object | | LR2021 only: FIFO losses since boot, and the last 8 ("0" newest), each with what the reader was doing (`gap_us`, `tx_us`, `fill_us`, `poll_us`, `held_by`, `found_by`, ...) | always on an LR2021 |
+| `ring_overflows`, `bytes_lost`, `bytes_filled` | int | | sample ring overflows, bytes lost, filler bytes put in their place | always |
 | `stream_restarts` | int | | stream stalled and restarted | always |
 | `ppm` | object | | the frequency correction (below) | started |
 | `ring_peak` | int | bytes | ring high-water | always |

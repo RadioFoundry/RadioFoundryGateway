@@ -568,14 +568,11 @@ static void count_error(void)
 static volatile unsigned losses; /* for report's line */
 static volatile unsigned tx_busy; /* TX look-ahead pulls put off, the source's lock taken (for report's line) */
 
-/* What the reader was doing when a FIFO loss was found (sdr.fifo_losses): the turn that found it, split in its parts.
- * A FIFO lasts about 1.3 ms, so one of these is what took that long. */
+/* What the reader was doing around each FIFO loss (sdr.fifo_losses): the longest time between two polls since the
+ * last loss, split in its parts. A FIFO lasts about 1.3 ms, so one of these is what took that long. */
 typedef struct {
     int64_t at_us;
-    int gap_us, yield_us, tx_us, lock_us, poll_us, held_us, after_read_us;
-    int fill_us, span_us, span_blocks, to_key_us, since_run_ms; /* the transmit turn in that turn */
-    int first_read_us; /* the receiver's first read, after its last start */
-    uint8_t by, flags;
+    int gap_us, yield_us, tx_us, lock_us, poll_us, held_us;
     const char *held_by;
 } loss_why_t;
 #define LOSS_WHYS 8
@@ -587,10 +584,6 @@ static void count_session(void)
     const unsigned dl = iq.stats.losses - seen.losses, de = iq.stats.errors - seen.errors;
     if (dl) {
         loss_worst.at_us = esp_timer_get_time();
-        loss_worst.by = iq.lost_by;
-        loss_worst.flags = iq.lost_flags;
-        loss_worst.after_read_us = iq.lost_after_us;
-        loss_worst.first_read_us = iq.first_read_us;
         portENTER_CRITICAL(&st.lock);
         loss_why[loss_why_n++ % LOSS_WHYS] = loss_worst;
         portEXIT_CRITICAL(&st.lock);
@@ -658,7 +651,7 @@ static void report(void *arg)
 #define TX_FDEV 2048     /* 32 Hz a count (R3.10) */
 #define TX_STAGE 8192    /* staged samples (170 ms), a power of 2 */
 #define TX_LOOK 1920     /* pulled this far ahead of now (40 ms) */
-#define TX_BLOCK 48      /* samples a pull (1 ms): a key-up's first 2 ms pull took 0.85 ms of the reader (R3.58) */
+#define TX_BLOCK 96      /* samples a pull (2 ms, about 150 us of the reader) */
 #define TX_MAX_RUN 4096  /* the longest span sent as one run (85 ms): a longer one is cut there */
 #define TX_MERGE 192     /* keyed spans this close (4 ms) go out as one run */
 /* The switch to TX starts this long before a run's time: from a running session it takes about 2.8 ms to a filled
@@ -787,15 +780,6 @@ static void tx_zero_fill(int64_t n)
     }
 }
 
-/* The stream's zeros for the time the receiver was off, up to now. From the transmission's end, before the receiver
- * starts: a 2 s key-up's zeros took about 5 ms, and the RX FIFO was gone by the first read (R3.58). */
-static void tx_gap_fill(void *ctx)
-{
-    const int64_t gap = native_at(tx_now48(esp_timer_get_time())) - rx_count;
-    if (gap > 0 && gap < (int64_t)(st.native * 0.5))
-        tx_zero_fill(gap);
-}
-
 /* k staged samples from at as FIFO bytes into buf: one a sample (frequency), two (polar I/Q). */
 static void stage_bytes(int64_t at, size_t k, bool iq, uint8_t *buf)
 {
@@ -842,7 +826,6 @@ static void tx_run(int64_t k0, int n, int64_t t_key)
     tx.polar += polar;
     const rdof_txpower_path_t path = tx_path();
     const lr2021_iq_tx_t t = {
-        .before_rx = tx_gap_fill,
         .mode = polar ? LR2021_TX_IQ_POLAR : LR2021_TX_FREQ,
         .center_hz = tx.hz,
         .ppm = carrier_ppm(),
@@ -906,7 +889,6 @@ struct long_span {
     const lr2021_tx_stream_stats_t *st; /* the stream's counts, live */
     int runs_seen;
     int64_t done_us[16];                /* each run's TX_DONE as the stream saw it */
-    int64_t t_key;                      /* when the key-up was due */
 };
 
 static size_t long_pull(void *ctx, uint8_t *buf, size_t max)
@@ -964,21 +946,6 @@ static size_t long_pull(void *ctx, uint8_t *buf, size_t max)
 
 /* The long transmission from k0, keyed up at esp_timer t_key. Returns where it stopped (the first sample not sent).
  * The caller holds the lock, in a session. */
-/* A long key-up's end, before the receiver starts: the zeros and the log line (R3.58). */
-static void long_before_rx(void *ctx)
-{
-    const struct long_span *p = ctx;
-    const lr2021_tx_stream_stats_t *s = p->st;
-    EXT_RAM_BSS_ATTR static char line[160];
-    int n = snprintf(line, sizeof line, "TX long: key-up %+d us; TX_DONE past each run's length:",
-                     (int)(s->key_us - p->t_key));
-    for (int i = 0; i < p->runs_seen && i < 12 && n < (int)sizeof line - 8; i++)
-        n += snprintf(line + n, sizeof line - n, " %d",
-                      (int)(p->done_us[i] - (i ? p->done_us[i - 1] : s->key_us) - p->run * 1000000LL / TX_RATE));
-    say("%s", line); /* the log from the timer's task, not the reader's stack */
-    tx_gap_fill(NULL);
-}
-
 static int64_t tx_run_long(int64_t k0, int64_t k1, int64_t t_key)
 {
     const bool polar = stage.k[k0 & (TX_STAGE - 1)] & K_IQ;
@@ -987,7 +954,6 @@ static int64_t tx_run_long(int64_t k0, int64_t k1, int64_t t_key)
     tx.polar += polar;
     const rdof_txpower_path_t path = tx_path();
     const lr2021_iq_tx_t t = {
-        .before_rx = long_before_rx,
         .mode = mode,
         .center_hz = tx.hz,
         .ppm = carrier_ppm(),
@@ -1004,7 +970,7 @@ static int64_t tx_run_long(int64_t k0, int64_t k1, int64_t t_key)
     /* static: this runs deep in the reader's stack (the modem's pull inside the stream's), the reader alone */
     EXT_RAM_BSS_ATTR static lr2021_tx_stream_stats_t s;
     EXT_RAM_BSS_ATTR static struct long_span span;
-    span = (struct long_span){.at = k0, .end = k1, .run = run, .iq = polar, .t_key = t_key,
+    span = (struct long_span){.at = k0, .end = k1, .run = run, .iq = polar,
                               .seam_us = learned > 0 ? learned : TX_SEAM_US, .st = &s};
     if (lr2021_iq_tx_calibrates(&iq, &t))
         tx.calibrated++;
@@ -1027,6 +993,15 @@ static int64_t tx_run_long(int64_t k0, int64_t k1, int64_t t_key)
     if (e != ESP_OK && !s.late && !s.early) {
         tx.failed++;
         tx.last_err = e;
+    }
+    {
+        EXT_RAM_BSS_ATTR static char line[160];
+        int n = snprintf(line, sizeof line, "TX long: key-up %+d us; TX_DONE past each run's length:",
+                         (int)(s.key_us - t_key));
+        for (int i = 0; i < span.runs_seen && i < 12 && n < (int)sizeof line - 8; i++)
+            n += snprintf(line + n, sizeof line - n, " %d",
+                          (int)(span.done_us[i] - (i ? span.done_us[i - 1] : s.key_us) - run * 1000000LL / TX_RATE));
+        say("%s", line); /* the log from the timer's task, not the reader's stack */
     }
     tx.long_runs++;
     tx.long_seams += span.seams;
@@ -1067,12 +1042,9 @@ static void tx_said(void)
 
 /* The reader's transmit turn, between reads: stage what's due and send a run whose time has come. True if it sent
  * one (the receiver restarted). */
-static int turn_fill_us, turn_span_us, turn_blocks, turn_to_key_us;
-
 static bool tx_service(void)
 {
     const int64_t now = esp_timer_get_time();
-    turn_fill_us = turn_span_us = turn_blocks = turn_to_key_us = 0;
     if (!tx.src || tx.hz <= 0) {
         if (tx.hold)
             tx_said();
@@ -1096,9 +1068,8 @@ static bool tx_service(void)
     }
     /* a block a turn: after a run the source is a run's length behind, and pulling all of it at once held the reader
      * 2.8 ms, past the RX FIFO (1.3 ms at 384 kS/s): about 2.5 FIFO losses a burst. 5 ms blocks still lost about
-     * one a burst; for the 1 ms blocks now, R3.58 */
+     * one a burst; 2 ms blocks none */
     tx_fill(n48 + TX_LOOK, 1, false);
-    turn_fill_us = (int)(esp_timer_get_time() - now);
     if (tx.key < 0) {
         if (tx.hold && now - tx.last_us > TX_HOLD_US) {
             tx.hold = false;
@@ -1111,10 +1082,8 @@ static bool tx_service(void)
         tx.last_us = now;
     }
     const int64_t t_key = tx_at_us(tx.key);
-    turn_to_key_us = (int)(t_key - now);
     if (t_key - now > TX_PREP_US)
         return false;
-    const int64_t t_span = esp_timer_get_time();
     /* the span: keyed samples, through gaps under TX_MERGE, pulling on where it reaches the stage's end */
     const int64_t k0 = tx.key;
     int64_t k1 = k0;
@@ -1123,7 +1092,6 @@ static bool tx_service(void)
             k1++;
         if (k1 >= tx.pos) {
             tx_fill(tx.pos + TX_BLOCK, 1, true);
-            turn_blocks++;
             continue;
         }
         int64_t g = k1;
@@ -1133,12 +1101,10 @@ static bool tx_service(void)
             break; /* a real gap: the span ends at k1 */
         if (g >= tx.pos) {
             tx_fill(tx.pos + TX_BLOCK, 1, true);
-            turn_blocks++;
             continue;
         }
         k1 = g; /* keyed again soon: one run */
     }
-    turn_span_us = (int)(esp_timer_get_time() - t_span);
     const bool longer = k1 - k0 >= TX_MAX_RUN; /* still keyed: one long transmission (tx_run_long) */
     bool ran = false;
     int64_t t_go = t_key, k_go = k0;
@@ -1228,16 +1194,9 @@ static void rx_mark_after(void)
 /* The reader: lr2021_iq_poll in a loop (the FIFO's samples, little-endian I then Q, 16 bits each, spec R2.7, or 8
  * in the wide mode, into the ring), the transmit turn between. The session waits for the RX FIFO IRQ or reads by
  * the level it reckons from the rate (spec R2.34), sleeping between reads. */
-#define TX_TURN_GAP_US 350
-#define TX_TURN_IDLE_GAP_US 700 /* no key-up near */
-#define TX_TURN_NEAR_US 300
-#define TX_READ_SLACK_US 1000
-
 static void reader_task(void *arg)
 {
     int64_t last_poll = 0;
-    bool read_last = true;
-    int64_t tx_turn_at = 0;
     for (;;) {
         const int64_t t_top = esp_timer_get_time();
         if (wanting) {
@@ -1255,16 +1214,8 @@ static void reader_task(void *arg)
             continue;
         }
         const int64_t t_tx = esp_timer_get_time();
-        /* right after a read, when the FIFO has the most room, and with a read between two turns: a turn takes up to
-         * 0.85 ms, and turn after turn the FIFO (1.3 ms at 384 kS/s) overflowed (R3.58). A block is 1 ms of samples, so
-         * a turn every 350 us catches up after a run. */
-        bool ran = false;
-        if (!tx.src && tx.hold) {
-            ran = tx_service();
-        } else if (tx.src && read_last && t_tx >= tx_turn_at) {
-            ran = tx_service();
-            tx_turn_at = esp_timer_get_time() + (tx.hold ? TX_TURN_GAP_US : TX_TURN_IDLE_GAP_US);
-        }
+        if (tx.src || tx.hold)
+            tx_service();
         const int64_t t_lock = esp_timer_get_time();
         lock();
         if (st.held || !st.streaming) {
@@ -1281,26 +1232,18 @@ static void reader_task(void *arg)
             }
             continue;
         }
-        /* a short read before a transmit turn: what comes in during a read is what's left when the turn starts, and
-         * a key-up's first pull takes up to 0.85 ms (R3.58). 256 B reads cost CPU, so only then */
-        iq.cfg.slack_us = tx.hold || (tx.src && t_lock >= tx_turn_at - TX_TURN_NEAR_US) ? TX_READ_SLACK_US : READ_SLACK_US;
         rx_mark_before();
         const int64_t t_poll = esp_timer_get_time();
         const int got = lr2021_iq_poll(&iq, sink, NULL, 2);
         const int64_t t_end = esp_timer_get_time();
         rx_mark_after();
-        /* the worst turn since the last loss: the flags say a loss happened in the last 8 KB, not when. A run's turn
-         * doesn't count: the receiver was off */
-        if (last_poll && !ran && t_end - last_poll > loss_worst.gap_us)
+        if (last_poll && t_end - last_poll > loss_worst.gap_us)
             loss_worst = (loss_why_t){.gap_us = (int)(t_end - last_poll), .yield_us = (int)(t_tx - t_top),
                                       .tx_us = (int)(t_lock - t_tx), .lock_us = (int)(t_poll - t_lock),
-                                      .poll_us = (int)(t_end - t_poll), .held_us = held_most_us, .held_by = held_most_by,
-                                      .fill_us = turn_fill_us, .span_us = turn_span_us, .span_blocks = turn_blocks,
-                                      .to_key_us = turn_to_key_us, .since_run_ms = (int)((t_end - tx.last_us) / 1000)};
+                                      .poll_us = (int)(t_end - t_poll), .held_us = held_most_us, .held_by = held_most_by};
         held_most_us = 0;
         held_most_by = NULL;
         last_poll = t_end;
-        read_last = got > 0;
         count_session();
         unlock();
         if (got < 0)
@@ -1343,9 +1286,7 @@ static int start(void *ctx)
         ESP_LOGI(TAG, "read buffers: %u bytes in PSRAM", (unsigned)need);
     }
     xStreamBufferReset(st.ring);
-    const uint32_t overflows = st.stats.overflows; /* since boot: a retune mustn't hide what was lost before it */
     memset(&st.stats, 0, sizeof st.stats);
-    st.stats.overflows = overflows;
     rx_count = 0;
     ring_in = ring_out = 0;
     portENTER_CRITICAL(&st.lock);
@@ -1557,15 +1498,6 @@ void fe_lr2021_loss_json(rdof_json_t *j)
         rdof_json_int(j, "poll_us", x->poll_us);
         rdof_json_int(j, "held_us", x->held_us);
         rdof_json_str(j, "held_by", x->held_by ? x->held_by : "");
-        rdof_json_str(j, "found_by", x->by == 1 ? "level" : x->by == 2 ? "flags" : "");
-        rdof_json_int(j, "flags", x->flags);
-        rdof_json_int(j, "after_read_us", x->after_read_us);
-        rdof_json_int(j, "fill_us", x->fill_us);
-        rdof_json_int(j, "span_us", x->span_us);
-        rdof_json_int(j, "span_blocks", x->span_blocks);
-        rdof_json_int(j, "to_key_us", x->to_key_us);
-        rdof_json_int(j, "since_run_ms", x->since_run_ms);
-        rdof_json_int(j, "first_read_us", x->first_read_us);
         rdof_json_close(j);
     }
     rdof_json_close(j);
