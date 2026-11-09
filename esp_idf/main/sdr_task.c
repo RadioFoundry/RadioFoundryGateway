@@ -1377,15 +1377,20 @@ static void chunk(const uint8_t *raw, int n, int split, bool *first, int filler)
     if (fe.ops->set_xtal_ppm)
         fe.ops->set_xtal_ppm(fe.ctx, now_xtal);
     /* Re-anchor stream time if it has drifted from the clock (dropped samples, NTP arriving): 1 s at
-     * once. Once netclock is synced, also 100 ms, from the least lag over 2 s: netclock slews in what its first
-     * reference says (a soft restart keeps the RTC's time, often a fraction of a second off), which never
-     * reaches 1 s, and the crystal drifts. A chunk handled late (USB, a backlog) only adds lag, so the least is
-     * the truest. */
+     * once. Once netclock is synced, also anything past 50 us, from the least lag over 2 s (200 ms for the first
+     * window of a stream: one chunk's arrival, the first anchor, is off by milliseconds and a job can key up
+     * right after a retune): netclock slews in what its first reference says (a soft restart keeps the RTC's
+     * time, often a fraction of a second off), which never reaches 1 s, and the crystal drifts. A chunk handled
+     * late (USB, a backlog) only adds lag, so the least is the truest. Filler is timed from the clock, not read,
+     * so a window with some says nothing. */
     static double least;
-    static int64_t least_from;
+    static int64_t least_from, least_window;
     if (*first) {
         g_rx.t0 = now_unix() - n / g_scfg.sample_rate;
         *first = false;
+        least_from = 0;
+        least_window = 200000;
+    } else if (filler > 0) {
         least_from = 0;
     } else {
         /* at this chunk's start, as the first anchor */
@@ -1396,12 +1401,17 @@ static void chunk(const uint8_t *raw, int n, int split, bool *first, int filler)
                 least = lag;
             if (!least_from)
                 least_from = t0;
-            else if (t0 - least_from >= 2000000) {
-                move = fabs(least) > 0.1 ? least : 0;
+            else if (t0 - least_from >= least_window) {
+                move = fabs(least) > 50e-6 ? least : 0;
                 least_from = 0;
+                least_window = 2000000;
             }
         }
-        if (move) {
+        if (fabs(move) < 0.1) {
+            g_rx.t0 += move; /* steering, not news: no log line */
+            if (move)
+                least_from = 0;
+        } else {
             /* a front end that loses samples (the DSP behind, the sim dropping chunks) re-anchors every few
              * seconds: a line a minute at most, so the log ring keeps the rest */
             static int64_t logged_at;
