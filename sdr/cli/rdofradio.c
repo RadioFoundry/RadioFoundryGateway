@@ -1134,6 +1134,7 @@ static uint32_t chan_hz(const chan_t *m) { return (uint32_t)llround(m->ch->freq)
 static chan_t CHN[RDOF_SDR_MAX_CHANNELS];
 static int nchn;
 
+#if defined(RDOF_MQTT) || defined(RDOF_HOST_WEB)
 /* The settings' channel on receiver channel c; NULL for one of our own (--monitor's "out", --mmdvm's "modem-rx") */
 static const chan_t *chan_at(int c)
 {
@@ -1142,10 +1143,13 @@ static const chan_t *chan_at(int c)
             return &CHN[i];
     return NULL;
 }
+#endif
 
 /* Whether it shows a peer on the page and in the status, and whether that peer is up */
+#if defined(RDOF_MQTT) || defined(RDOF_HOST_WEB)
 static bool chan_has_peer(const chan_t *m) { return m->peer || m->unit; }
 static bool chan_peer_up(const chan_t *m) { return m->peer ? m->net.peer.up : m->unit && net_on && NET.peer.up; }
+#endif
 
 static void chan_send(void *ctx, const uint8_t *d, size_t n) { rdofnet_peer_send(&((chan_t *)ctx)->net, d, n); }
 /* Whether the transceiver may go to a channel: one of its channels (the roamer's). */
@@ -1256,11 +1260,13 @@ static bool is_unit(const char *ch)
     const int c = channel_named(ch);
     return R.mmdvm ? c < 0 && !strcmp(ch, "rx") : c >= 0 && c == unit_channel();
 }
+#if defined(RDOF_MQTT) || defined(RDOF_HOST_WEB)
 static bool is_sdr(const char *ch)
 {
     const int c = channel_named(ch);
     return c >= 0 && chan_at(c) != NULL;
 }
+#endif
 
 static void net_poll(double now)
 {
@@ -1335,17 +1341,7 @@ static void clock_stop(void) {}
 
 /* ── MQTT: the board's topics (esp_idf/main/roam_mqtt.c for the radio, sdr_mqtt.c for the SDR's channels) ─ */
 
-#ifdef RDOF_MQTT
-static rdofmq_t *MQ, *MQ_SDR; /* the radio's connection; the SDR's channels' (the board's SDR's own) */
-static char mq_status[96], mq_sdr_status[96];
-static char mq_alias[2][112], mq_sdr_alias[2 * RDOF_SDR_MAX_CHANNELS][112];
-static const char *mq_alias_p[2], *mq_sdr_alias_p[2 * RDOF_SDR_MAX_CHANNELS];
-static rdof_netcalls_t mq_calls;
-static double mq_next, mq_sdr_next; /* the next status (now_s) */
-static bool mq_hb_was;
-static void mq_status_soon(void) { mq_next = 0; }
-
-/* Unix time: netclock's when it runs, else the OS's */
+/* Unix time: netclock's when it runs, else the OS's. Not MQTT's alone: the bench's and the trackers' times too */
 static double wall_s(void)
 {
 #ifdef RDOF_NETCLOCK
@@ -1356,6 +1352,16 @@ static double wall_s(void)
     clock_gettime(CLOCK_REALTIME, &ts);
     return (double)ts.tv_sec + ts.tv_nsec * 1e-9;
 }
+
+#ifdef RDOF_MQTT
+static rdofmq_t *MQ, *MQ_SDR; /* the radio's connection; the SDR's channels' (the board's SDR's own) */
+static char mq_status[96], mq_sdr_status[96];
+static char mq_alias[2][112], mq_sdr_alias[2 * RDOF_SDR_MAX_CHANNELS][112];
+static const char *mq_alias_p[2], *mq_sdr_alias_p[2 * RDOF_SDR_MAX_CHANNELS];
+static rdof_netcalls_t mq_calls;
+static double mq_next, mq_sdr_next; /* the next status (now_s) */
+static bool mq_hb_was;
+static void mq_status_soon(void) { mq_next = 0; }
 
 /* {root}/{radio}/{app}/{kind}, app "repeater" or "roaming"; {root}/{channel}/{app}/{kind} for the SDR's, app "sdr" */
 static void mq_topic(const char *kind, char *out, size_t cap)

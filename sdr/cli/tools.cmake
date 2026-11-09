@@ -116,6 +116,17 @@ if(RDOF_RADIO_DEFS AND NOT WIN32)
     endif()
 endif()
 
+# rdofradio's refusals, checked before a device is opened (192.0.2.1 is never reached): --listen never transmits, and
+# without it a run needs --allow-tx
+if(TARGET rdofradio AND IIO_INCLUDE_DIR AND IIO_LIBRARY)
+    add_test(NAME rdofradio_listen_refuses_tx COMMAND rdofradio --iio ip:192.0.2.1 --listen --allow-tx --rx 446)
+    set_tests_properties(rdofradio_listen_refuses_tx PROPERTIES PASS_REGULAR_EXPRESSION "--listen receives only")
+    add_test(NAME rdofradio_listen_refuses_tx_flags COMMAND rdofradio --iio ip:192.0.2.1 --listen --rx 446 --tx-gain 10)
+    set_tests_properties(rdofradio_listen_refuses_tx_flags PROPERTIES PASS_REGULAR_EXPRESSION "--listen receives only")
+    add_test(NAME rdofradio_needs_allow_tx COMMAND rdofradio --iio ip:192.0.2.1 --rx 446)
+    set_tests_properties(rdofradio_needs_allow_tx PROPERTIES PASS_REGULAR_EXPRESSION "pass --allow-tx \\(or --listen")
+endif()
+
 if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
     target_link_options(rdofsdr PRIVATE -fsanitize=address,undefined)
     if(TARGET rdofchz)
