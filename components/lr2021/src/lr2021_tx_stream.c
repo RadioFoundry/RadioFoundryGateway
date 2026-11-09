@@ -10,6 +10,8 @@
 #include <string.h>
 
 #include "lr2021_port.h"
+
+__attribute__((weak)) void lr2021_mark_settx(int64_t at_us) { (void)at_us; }
 #include "lr2021.h"
 
 #define FIFO_BYTES 1020 /* the 1 KB TX FIFO's size register, 0x3FC (R2.22) */
@@ -97,6 +99,7 @@ lr2021_err_t lr2021_tx_stream(lr2021_t *d, const lr2021_tx_stream_cfg_t *c, lr20
         }
     }
     const int64_t sending = lr2021_now_us();
+    lr2021_mark_settx(c->at_us);
     if ((e = send_frame(d, c->start, c->start_len)) != LR2021_OK)
         goto out;
     st->key_us = lr2021_now_us();

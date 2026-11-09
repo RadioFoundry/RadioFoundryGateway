@@ -40,6 +40,8 @@ void netclock_start(void);
 int64_t netclock_now_ns(void);
 // UTC ns at esp_timer time t_us. *synced (optional): some reference has set the clock.
 int64_t netclock_utc_ns(int64_t t_us, bool *synced);
+// esp_timer at the last PPS edge (as its interrupt stamped it); 0: none yet, or no PPS input.
+int64_t netclock_pps_last_us(void);
 netclock_source_t netclock_source(void);
 bool netclock_synced(void);
 // The local clock's rate error being corrected (ppm, + = local runs slow:

@@ -566,6 +566,11 @@ typedef struct {
     int64_t map_pos, map_us; /* pull position map_pos (48 kS/s) goes out at esp_timer map_us */
 } sdr_modem_slots_t;
 bool sdr_modem_bench_slots(sdr_modem_slots_t *s);
+/* Pin edges timed in hardware (edge_time.c): the LR2021's IRQ pin, its NSS, the PPS. */
+typedef enum { EDGE_FIFO, EDGE_NSS, EDGE_PPS, EDGE_N } edge_ch_t;
+void edge_time_start(void);
+bool edge_time_last(edge_ch_t ch, double *us, uint32_t *n); /* the last edge, in esp_timer us; n: the edges so far */
+void edge_time_json(rdof_json_t *j);
 void sdr_modem_bench_write(const uint8_t *data, size_t len);
 void sdr_modem_bench_close(void);
 /* The receiver streams again, at a new center or not (sdr_task.c): the modem's carrier tuned again (a roamer

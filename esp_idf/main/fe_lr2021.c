@@ -359,6 +359,7 @@ static int init(void *ctx)
         st.dev = NULL;
         return failed("didn't open", e);
     }
+    edge_time_start();
     uint8_t maj = 0, min = 0;
     if ((e = lr2021_version(st.dev, &maj, &min)) != ESP_OK)
         return failed("GetVersion", e);

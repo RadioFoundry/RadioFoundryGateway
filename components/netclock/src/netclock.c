@@ -295,6 +295,8 @@ static void IRAM_ATTR pps_isr(void *arg)
     }
 }
 
+int64_t netclock_pps_last_us(void) { return s_pps_last_us; }
+
 static void pps_task(void *arg)
 {
     nc_pps_t pps;
