@@ -253,6 +253,7 @@ struct rdof_bl {
     char bdec[1200], bline[2048]; /* a burst record (under the lock: off the server thread's stack) */
     /* an envelope's segment record, its lists, the summary's part (the same) */
     char env_rec[2600], env_scs[600], env_ts[900], env_steps[400], env_sum[1400];
+    char info_line[RDOF_BL_OUT / 2]; /* info and status replies */
     double burst_tol_ppm; /* the window's ppm_tol as tick_bursts last saw it (0: not known) */
 };
 
@@ -922,12 +923,13 @@ static void op_info(rdof_bl_t *bl, conn_t *c, double now)
                  bl->retuning ? "tuning" : "tuned");
     } else if (bl->retuning)
         snprintf(tune, sizeof tune, "{\"session\":null,\"state\":\"%s\"}", bl->retuning == 2 ? "restoring" : "tuning");
-    char line[RDOF_BL_OUT / 2];
-    size_t k = (size_t)snprintf(line, sizeof line,
+    char *const line = bl->info_line; /* under the lock: 8 KB on the W12's 16 KB stack overflowed it */
+    const size_t line_cap = sizeof bl->info_line;
+    size_t k = (size_t)snprintf(line, line_cap,
                                 "{\"window\":%s,\"tune\":%s,\"sdr\":\"%s\",\"iq\":\"%s\",\"device\":%s,\"channels\":[",
                                 win, tune, w.running ? "shared" : "stopped",
                                 bl->p.iq_read ? "wideband" : bl->p.ch_open ? "channels" : "none", dev);
-    for (int i = 0; i < bl->nf && k < sizeof line; i++) {
+    for (int i = 0; i < bl->nf && k < line_cap; i++) {
         const rdof_bl_freq_t *f = &bl->f[i];
         char caps[96], held[96] = "null", qid[40];
         caps_json(f->caps, !st_mmdvm, caps, sizeof caps);
@@ -941,7 +943,7 @@ static void op_info(rdof_bl_t *bl, conn_t *c, double now)
         char ch[12] = "null";
         if (f->ch >= 0)
             snprintf(ch, sizeof ch, "%d", f->ch);
-        k += (size_t)snprintf(line + k, sizeof line - k,
+        k += (size_t)snprintf(line + k, line_cap - k,
                               "%s{\"freq\":%.6f,\"ch\":%s,\"id\":%s,\"in_window\":%s,\"listed\":true,\"caps\":%s,"
                               "\"claimed_by\":%s}",
                               i ? "," : "", f->freq_hz / 1e6, ch, qid, (f->caps & RDOF_BL_CAP_RX) ? "true" : "false",
@@ -978,8 +980,8 @@ static void op_info(rdof_bl_t *bl, conn_t *c, double now)
         snprintf(bands + strlen(bands), sizeof bands - strlen(bands), "%s[%.6f,%.6f]", i ? "," : "", b[i][0] / 1e6,
                  b[i][1] / 1e6);
     strcat(bands, "]");
-    if (k < sizeof line)
-        k += (size_t)snprintf(line + k, sizeof line - k,
+    if (k < line_cap)
+        k += (size_t)snprintf(line + k, line_cap - k,
                               "],\"tx_bands\":%s,\"stations\":[{\"name\":\"modem\",\"kind\":\"%s\",\"model\":%s,"
                               "\"port\":\"\",\"present\":%s,\"tx\":%s,\"why_not\":%s,\"modes\":[\"dmr\"],"
                               "\"bands\":[],\"held_by\":%s,\"waiting\":%s}],"
@@ -988,7 +990,7 @@ static void op_info(rdof_bl_t *bl, conn_t *c, double now)
                               "\"features\":{\"bursts_cach\":true,\"bursts_lost\":true,\"bursts_envelope\":true},\"default_caps\":[]}",
                               bands, st_kind ? st_kind : "sdrmodem", qmodel, notx ? "false" : "true",
                               notx ? "false" : "true", why, held, wq, held, wq, eta, eta, stx, srx, jobs);
-    if (k >= sizeof line) {
+    if (k >= line_cap) {
         fail(bl, c, "internal", "info doesn't fit");
         return;
     }
@@ -1012,8 +1014,9 @@ static void op_status(rdof_bl_t *bl, conn_t *c, double now)
             captures++;
     rdof_bl_window_t w;
     get_window(bl, &w);
-    char line[RDOF_BL_OUT / 2];
-    size_t k = (size_t)snprintf(line, sizeof line,
+    char *const line = bl->info_line; /* under the lock: 8 KB on the W12's 16 KB stack overflowed it */
+    const size_t line_cap = sizeof bl->info_line;
+    size_t k = (size_t)snprintf(line, line_cap,
                                 "{\"sdr\":\"%s\",\"receiver\":{\"seconds\":%.1f,\"overflows\":%ld,\"clip_pct\":%.2f,"
                                 "\"dsp_skipped\":%ld,\"decode_dropped\":%ld,\"captures\":%d,\"queue_drops\":%ld},"
                                 "\"held\":[",
@@ -1024,44 +1027,44 @@ static void op_status(rdof_bl_t *bl, conn_t *c, double now)
         const session_t *s = &bl->s[bl->holder];
         char ql[64];
         jstr(s->label, ql, sizeof ql);
-        k += (size_t)snprintf(line + k, sizeof line - k,
+        k += (size_t)snprintf(line + k, line_cap - k,
                               "{\"id\":%d,\"kind\":\"modem\",\"session\":\"%s\",\"label\":%s,\"since_s\":%.1f,"
                               "\"remaining_s\":%.1f}",
                               s->hold, s->id, ql, now - s->hold_since, expect_left(bl, now));
         first = false;
     }
-    for (int s = 0; s < RDOF_BL_SESSIONS && k < sizeof line; s++)
-        for (int f = 0; bl->s[s].used && f < bl->s[s].nclaims && k < sizeof line; f++) {
+    for (int s = 0; s < RDOF_BL_SESSIONS && k < line_cap; s++)
+        for (int f = 0; bl->s[s].used && f < bl->s[s].nclaims && k < line_cap; f++) {
             char ql[64];
             jstr(bl->s[s].label, ql, sizeof ql);
-            k += (size_t)snprintf(line + k, sizeof line - k,
+            k += (size_t)snprintf(line + k, line_cap - k,
                                   "%s{\"id\":0,\"kind\":\"claim\",\"session\":\"%s\",\"label\":%s,\"freq\":%.6f,"
                                   "\"since_s\":%.1f}",
                                   first ? "" : ",", bl->s[s].id, ql, bl->s[s].claims[f], now - bl->s[s].since);
             first = false;
         }
-    if (k < sizeof line)
-        k += (size_t)snprintf(line + k, sizeof line - k, "],\"waiting\":[");
+    if (k < line_cap)
+        k += (size_t)snprintf(line + k, line_cap - k, "],\"waiting\":[");
     first = true;
     int pos = 0;
-    for (int i = 0; i < RDOF_BL_CONNS && k < sizeof line; i++) {
+    for (int i = 0; i < RDOF_BL_CONNS && k < line_cap; i++) {
         const conn_t *w2 = &bl->c[i];
         if (w2->state != C_ACTIVE || w2->wait == W_NONE)
             continue;
         const session_t *s = w2->sess >= 0 ? &bl->s[w2->sess] : NULL;
         char ql[64];
         jstr(s ? s->label : "", ql, sizeof ql);
-        k += (size_t)snprintf(line + k, sizeof line - k,
+        k += (size_t)snprintf(line + k, line_cap - k,
                               "%s{\"id\":%ld,\"kind\":\"%s\",\"session\":\"%s\",\"label\":%s,\"position\":%d,"
                               "\"since_s\":%.1f}",
                               first ? "" : ",", w2->seq, w2->wait == W_MODEM ? "modem" : "claim", s ? s->id : "", ql,
                               ++pos, now - w2->wait_since);
         first = false;
     }
-    if (k < sizeof line)
-        k += (size_t)snprintf(line + k, sizeof line - k, "],\"sessions\":[");
+    if (k < line_cap)
+        k += (size_t)snprintf(line + k, line_cap - k, "],\"sessions\":[");
     first = true;
-    for (int s = 0; s < RDOF_BL_SESSIONS && k < sizeof line; s++) {
+    for (int s = 0; s < RDOF_BL_SESSIONS && k < line_cap; s++) {
         if (!bl->s[s].used)
             continue;
         char ql[64], claims[160] = "";
@@ -1069,14 +1072,14 @@ static void op_status(rdof_bl_t *bl, conn_t *c, double now)
         for (int f = 0; f < bl->s[s].nclaims && m < sizeof claims; f++)
             m += (size_t)snprintf(claims + m, sizeof claims - m, "%s\"%.4f\"", f ? "," : "", bl->s[s].claims[f]);
         jstr(bl->s[s].label, ql, sizeof ql);
-        k += (size_t)snprintf(line + k, sizeof line - k, "%s{\"session\":\"%s\",\"label\":%s,\"since_s\":%.1f,"
+        k += (size_t)snprintf(line + k, line_cap - k, "%s{\"session\":\"%s\",\"label\":%s,\"since_s\":%.1f,"
                                                          "\"claims\":[%s]}",
                               first ? "" : ",", bl->s[s].id, ql, now - bl->s[s].since, claims);
         first = false;
     }
-    if (k < sizeof line)
-        k += (size_t)snprintf(line + k, sizeof line - k, "]}");
-    if (k >= sizeof line) {
+    if (k < line_cap)
+        k += (size_t)snprintf(line + k, line_cap - k, "]}");
+    if (k >= line_cap) {
         fail(bl, c, "internal", "status doesn't fit");
         return;
     }
