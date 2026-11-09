@@ -55,7 +55,8 @@ maps to UTC:
 `t_us = t0_us + (sc - sc0) * 1e6 / rate * (1 - ppm * 1e-6)` (the board learns `ppm` from its disciplined clock; it is
 null until then: use 0). A channel tap's samples have their own index. Each I/Q frame carries the `sc` of its first
 sample, rounded to a wideband sample, so a tool can line up a channel tap, a burst record and a TX time to one
-wideband sample (3.5 us at 288 kS/s). On the daemon, `sc` is the capture's sample index and `run` is the capture.
+wideband sample (3.5 us at 288 kS/s). `t0_us` is the time when the stream started; a board may steer its stream time after
+that by microseconds (a W12 follows its hardware time marks, R3.57 of the LR2021 notes), and a burst's `t` follows. On the daemon, `sc` is the capture's sample index and `run` is the capture.
 
 ## 3. Discovery
 
