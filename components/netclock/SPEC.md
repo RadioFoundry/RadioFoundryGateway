@@ -153,7 +153,9 @@ Per server with a usable reply this poll (`got`, `t1 ≠ 0`, `last_rx ≥ t1`):
    one). Spike (mark `~`, not used) if `delay > min_delay + max(10000, 0.5 × min_delay)`.
 2. Offset vs the model (only once the model is valid): `off = u − model(tm)`, pushed into the 8-entry offset ring.
    `jitter` = sample standard deviation of the ring (0 with fewer than 2).
-3. Root distance `λ = max(500, delay/2 + root_delay/2 + root_disp + jitter)` µs.
+3. Root distance `λ = max(500, delay/2 + root_delay/2 + root_disp + jitter)` µs, plus 1 s at stratum 8 or above: such a
+   server is on its own clock (a lost reference, chrony's `local stratum 10`), reports a root distance near 0, and
+   would otherwise be chosen over every real server. It's used only when nothing else answers.
 4. Candidate offset = `(u − tm) − (u₀ − tm₀)` of the first usable server (a common base; local clock is shared).
 
 Then `nc_select` (below). Marks written back: `-` if unresolved or duplicate, `~` if a spike, else the select mark.
