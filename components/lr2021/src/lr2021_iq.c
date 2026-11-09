@@ -236,6 +236,8 @@ static lr2021_err_t session_start(lr2021_iq_t *iq, bool quick)
     iq->reckon_n = 0;
     iq->mark_armed = false;
     iq->bytes_out = 0;
+    iq->rx_start_us = lr2021_now_us();
+    iq->first_read_us = 0;
     iq->in_session = true;
     return LR2021_OK;
 }
@@ -350,6 +352,9 @@ static int drain(lr2021_iq_t *iq, size_t n, bool then_rearm, lr2021_iq_sink_t si
         iq->anchor_level -= (int32_t)n;
     }
     const int64_t t = lr2021_now_us();
+    iq->read_end_us = t;
+    if (!iq->first_read_us)
+        iq->first_read_us = (int32_t)(t - iq->rx_start_us);
     uint8_t rx = 0, tx = 0;
     bool checked = false;
     if ((iq->since_flags += (uint32_t)n) >= (use_irq(iq) ? 8192u : 1024u)) {
@@ -359,6 +364,9 @@ static int drain(lr2021_iq_t *iq, size_t n, bool then_rearm, lr2021_iq_sink_t si
     if (use_irq(iq) && then_rearm)
         rearm(iq);
     if (checked && (rx & LOSS)) {
+        iq->lost_by = 2;
+        iq->lost_flags = rx;
+        iq->lost_after_us = (int32_t)(lr2021_now_us() - t);
         lost(iq);
         return -1;
     }
@@ -418,6 +426,9 @@ int lr2021_iq_poll(lr2021_iq_t *iq, lr2021_iq_sink_t sink, void *ctx, int wait_m
             return 0;
         }
         if (level >= LR2021_IQ_FIFO_BYTES) { /* it filled: samples are gone (R2.13) */
+            iq->lost_by = 1;
+            iq->lost_flags = 0;
+            iq->lost_after_us = (int32_t)(lr2021_now_us() - iq->read_end_us);
             iq->reckon_n = 0;
             e = lost(iq);
             return e == LR2021_OK ? 0 : e;
@@ -606,6 +617,8 @@ lr2021_err_t lr2021_iq_transmit(lr2021_iq_t *iq, const lr2021_iq_tx_t *tx, lr202
     cmd(iq, f, lr2021_cmd_u8(f, LR2021_SET_STANDBY, 0));
     /* back to receiving: the same session's setup without its checks (R3.16); a gap in the stream */
     if (receiving) {
+        if (tx->before_rx)
+            tx->before_rx(ctx);
         iq->gap = true;
         iq->in_session = false;
         lr2021_err_t r = session_start(iq, !s.calib_fe); /* calibrated elsewhere: again at the center */
