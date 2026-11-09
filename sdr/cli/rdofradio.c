@@ -2483,6 +2483,7 @@ static bool bench_ob_poll_mm(double now)
            the job's own */
         const bool ok = rdof_modem_start(&R.client, 1) &&
                         rdof_radio_tune_duplex(&R.radio, c.freq_hz, c.freq_hz, c.cc, bench_level(c.power)) &&
+                        rdof_modem_set_mode(&R.client, RDOF_MODE_DMR) && /* the firmware takes DMR_START only in DMR mode */
                         rdof_modem_dmr_start(&R.client, true);
         pthread_mutex_lock(&BO.mu);
         if (!ok) {
@@ -3013,6 +3014,7 @@ static bool bench_rpt_poll(double now)
         if (BR.rx_ch >= 0)
             rdof_sdr_rx_set_cc(&R.rx, BR.rx_ch, cfg.cc);
         rdof_repeater_init(&BR.r, &R.radio, rcfg.peer_id, cfg.rx_hz, cfg.tx_hz, cfg.cc);
+        BR.r.keep_up = R.mmdvm; /* a modem drops its carrier when keyed with nothing queued */
         BR.r.enabled[1] = cfg.slots & 2u, BR.r.enabled[2] = cfg.slots & 4u;
         BR.r.inactivity_s = cfg.hang_s;
         rdof_repeater_set_call_hang(&BR.r, cfg.call_hang_s);
@@ -4609,6 +4611,7 @@ static bool x_start(xsplit_t *x)
     }
     rdof_radio_init(&x->radio, &x->client, rdof_radio_detect(x->client.version));
     rdof_repeater_init(&x->r, &x->radio, x->u->peer_id, x->u->rx_hz, x->u->tx_hz, x->u->cc);
+    x->r.keep_up = true; /* a modem drops its carrier when keyed with nothing queued */
     rdofradio_cfg_apply_unit(&x->u->cfg, &x->r);
     x->r.clock = p_clock;
     x->r.on_tx = x_tx;
@@ -4818,6 +4821,7 @@ static int split_main(int argc, char **argv, const char *port, int baud, int pow
     }
     rdof_radio_init(&R.radio, &R.client, rdof_radio_detect(R.client.version));
     rdof_repeater_init(&R.r, &R.radio, rcfg.peer_id, R.rx_hz, R.tx_hz, R.cc);
+    R.r.keep_up = R.mmdvm; /* a modem drops its carrier when keyed with nothing queued */
     if (config_path)
         rdofradio_cfg_apply_repeater(&rcfg, &R.r);
     R.r.clock = p_clock;
@@ -5081,6 +5085,7 @@ static int mmdvm_main(int argc, char **argv, const char *port, int baud, double 
     bool ok;
     if (R.full) {
         rdof_repeater_init(&R.r, &R.radio, rcfg.peer_id, R.rx_hz, R.tx_hz, R.cc);
+        R.r.keep_up = R.mmdvm; /* a modem drops its carrier when keyed with nothing queued */
         if (config_path) {
             rdofradio_cfg_apply_repeater(&rcfg, &R.r);
             R.r.power = rcfg.cfg.power;
@@ -5954,6 +5959,7 @@ int main(int argc, char **argv)
     bool ok;
     if (R.full) {
         rdof_repeater_init(&R.r, &R.radio, rcfg.peer_id, R.rx_hz, R.tx_hz, cc);
+        R.r.keep_up = R.mmdvm; /* a modem drops its carrier when keyed with nothing queued */
         if (config_path)
             rdofradio_cfg_apply_repeater(&rcfg, &R.r); /* slots, hangs, jitter buffer, CW ID, as the firmware */
         R.r.clock = p_clock;
