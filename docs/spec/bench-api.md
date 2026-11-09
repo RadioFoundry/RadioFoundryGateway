@@ -977,6 +977,38 @@ is the path's own delay and a stall shows as a much larger `latest_s`; `never` c
 separate witness: a W12 can't hear while it transmits and a Pluto's own leakage doesn't show what reached the air, so
 those figures stay estimates, and `modem`'s `tx` is the SDR modem's own state.
 
+### 14.8.2 A transmitter's PA ramps, from a capture
+
+`tools/bench/burstramp.py FILE... [--bursts] [--json OUT]` measures each burst's power ramp in a `capture` or `capture-trigger`
+file (with its `.json`). It needs numpy and runs where the file is; a board doesn't do this. A streamed `envelope` (14.2) gives a
+keying's edges and plateau with no I/Q; this tool ties them to the payload and catches what a rise time misses, like a burst
+that starts 8 dB over its settled level.
+
+Every figure is against the burst's own settled level (0 dB) and payload. t = 0 is the leading edge of the first symbol, and for
+the falling edge the trailing edge of the last. Negative is before. Symbols come from the sync; voice B-F, with no sync, from the
+30 ms grid of the nearest burst that has one. Rising and falling figures are given only where the burst opens or closes a
+key-up, and only for levels at least 6 dB over the floor; otherwise `null`.
+
+| Field | |
+|---|---|
+| `t_s`, `t`, `kind`, `sync`, `corr`, `anchored`, `first` | the payload's start (from the capture's start, UTC); `VOICE_A`, `VOICE_B_F` or the data type; the sync, or `GRID`; `first`: no burst in the 90 ms before |
+| `settled_db`, `ripple_db` | the median level from 4 ms in to 4 ms before the end; the 0.1 ms envelope's spread there |
+| `rise_ms["-40"…"-1"]`, `rise_30_3_ms` | the last upward crossing of each level before the 0.1 ms envelope holds there for 1 ms (a sag counts, a dip later doesn't), searched 14 ms before to 10 ms after t = 0 |
+| `overshoot_db`, `overshoot_t_ms` | the 0.1 ms envelope's peak in the 4 ms from the -3 dB point, and when |
+| `settle_1db_ms`, `settle_0p5db_ms` | when the envelope comes within the band and stays for 2 ms; `null` where `ripple_db` is over 0.4 or 0.2, as the band is then no bigger than the signal's own ripple |
+| `sym1_db`, `err5_*_db`, `err12_*_db` | the level at the first symbol's center (half a symbol's mean, no lower than the floor); the mean and absolute mean error over the first 5 (1 ms) and 12 symbols |
+| `fall_ms["-3","-10","-30"]`, `fall_3_30_ms` | the first downward crossings after t = 0 of the falling edge |
+| `pre_db`, `empty_slot_db` | dB over the quiet floor in 0.5 ms bins: the 5 ms before t = 0, and 5 ms around the middle of the slot before (`null` if a burst is there) |
+| `f_first1ms_hz`, `f_next2ms_hz`, `*_unreliable` | the mean residual frequency from the sync's, over the first 5 symbols with carrier (over -30 dB) and the next 10; unreliable when a symbol there is more than 20 dB down |
+
+`--json` writes a line a burst and a last `{"summary": ...}`: the rate, `edge_res_us`, floor, SNR, the capture's own `clip_pct`,
+`overflows` and `gap_samples`, and in `by_kind`, per kind, each figure's `median`, `min`, `max` and `n` (`first:KIND` for a
+transmission's first burst, which has no burst before it).
+
+`edge_res_us` is what the capture can claim on an edge: the larger of a sample and 0.7 / (one-sided bandwidth), about 112 us for
+a 12.5 kHz channel at 48 kS/s. A rise under that is a limit, not a measurement. A wideband capture (over 150 kS/s) is cut to
+120 kHz here, so it can claim about 12 us, if it doesn't clip: clipping makes the overshoot read low, and the text output warns.
+
 ### 14.9 What each front end does
 
 `info` says what this bench can do: `stations[0].kind` is the transmitter, `signal_modes` the signal modes, `jobs`

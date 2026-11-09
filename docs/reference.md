@@ -1059,6 +1059,8 @@ bench (`"bench": {"devices": [...]}`: a UART, USB CDC-ACM or a USB-serial bridge
 through the SDR's modem or an MMDVM bench radio, only on what `"bench": {"tx": {...}}` allows. No auth: it's for a
 private test network. Code: `bench_api.c`, `bench_radio.c`, `bench_tx.c`; the spec's section 9 says what's in.
 
+`tools/bench/burstramp.py` measures a transmitter's PA ramps burst by burst from a capture (spec §14.8.2).
+
 **The line protocol** on TCP `CONFIG_RDOF_BENCH_LINE_PORT` (7373; spec §14, `bench_line.c`), for
 `tools/bench/rfgbench.py`:
 
