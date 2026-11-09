@@ -162,8 +162,12 @@ static int bl_ob_state(void *ctx, rdof_bl_ob_state_t *s, char *why, size_t cap)
     const double ppm = p.fs_left; /* the TX samples' clock: the chip corrects its carrier, not its rate */
     *s = (rdof_bl_ob_state_t){.keyed = m.keyed && m.key_k >= 0, .first = m.key_k, .next = m.slot_k, .base = m.base,
                               .slot = m.slot, .rate = m.tx_fs, .skips = (long)m.skips, .last_from = m.skip_from,
-                              .last_to = m.skip_to, .on_air = m.keyed && m.key_k >= 0 && g_rx_ready, .map_pos = 0,
+                              .last_to = m.skip_to, .on_air = m.keyed && m.key_k >= 0 && g_rx_ready && !m.map_wait, .map_pos = 0,
                               .map_t = g_rx.t0, .ppm = isfinite(ppm) ? ppm : 0};
+    if (m.map_ok) { /* what really schedules the key-up, not the receive stream's start */
+        s->map_pos = m.map_pos * (int64_t)m.tx_fs / 48000;
+        s->map_t = netclock_utc_ns(m.map_us, NULL) / 1e9;
+    }
     /* the CACH (12 symbols) and the burst's first 65.5 symbols, at 10 samples a symbol at 48 kS/s */
     s->sync_off = (int)llround(775.0 * m.tx_fs / 48000.0);
     if (!m.keyed && m.key_k >= 0)

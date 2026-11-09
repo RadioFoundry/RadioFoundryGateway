@@ -1017,8 +1017,10 @@ static bool tx_service(void)
         return false;
     }
     if (!tx.hold) {
+        portENTER_CRITICAL(&st.lock);
         tx.a_pos = rx48();
         tx.a_us = now;
+        portEXIT_CRITICAL(&st.lock);
     }
     const int64_t n48 = tx_now48(now);
     /* the first pull, far behind, or ahead past the stage (the stream restarted, rx_count from 0, at a retune: the
@@ -1353,6 +1355,16 @@ static const char *error(void *ctx) { return st.error; }
 /* The crystal correction moves the PLL, not the rate converter: the sample rate keeps the crystal's whole error. */
 static double sample_ppm(void *ctx) { return 0.0; }
 
+static bool tx_map(void *ctx, int64_t *pos48, int64_t *us)
+{
+    portENTER_CRITICAL(&st.lock);
+    const bool held = tx.hold;
+    *pos48 = tx.a_pos;
+    *us = tx.a_us;
+    portEXIT_CRITICAL(&st.lock);
+    return held;
+}
+
 static const rdof_fe_ops_t ops = {
     .init = init,
     .wait = wait,
@@ -1371,6 +1383,7 @@ static const rdof_fe_ops_t ops = {
     .sample_ppm = sample_ppm,
     .tx_set = tx_set,
     .tx_tune = tx_tune,
+    .tx_map = tx_map,
 };
 
 int fe_lr2021_read_mem(uint32_t addr, uint32_t *w, int n)

@@ -562,6 +562,8 @@ typedef struct {
     long skip_from, skip_to;
     double slot;
     uint32_t tx_fs;
+    bool map_ok, map_wait; /* the front end's TX schedule: known; it has one and it isn't fixed yet */
+    int64_t map_pos, map_us; /* pull position map_pos (48 kS/s) goes out at esp_timer map_us */
 } sdr_modem_slots_t;
 bool sdr_modem_bench_slots(sdr_modem_slots_t *s);
 void sdr_modem_bench_write(const uint8_t *data, size_t len);

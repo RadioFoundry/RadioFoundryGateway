@@ -189,6 +189,9 @@ typedef struct rdof_fe_ops {
     /* Optional (RDOF_FE_TX_FREQ / _4FSK: a chip that tunes its own transmitter): transmit on hz from the next key-up
      * on. 0, or < 0 if it can't reach hz. */
     int (*tx_tune)(void *ctx, double hz);
+    /* Optional (a transmitter timed from the host's clock): what schedules this transmission: pull position pos48 (48 kS/s)
+     * goes out at the host's monotonic time us. False until a transmission is on and the two are fixed. */
+    bool (*tx_map)(void *ctx, int64_t *pos48, int64_t *us);
 } rdof_fe_ops_t;
 
 typedef struct {

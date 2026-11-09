@@ -327,6 +327,10 @@ bool sdr_modem_bench_slots(sdr_modem_slots_t *s)
                                  .key_k = m->key_k, .skips = m->slot_skips, .skip_from = m->skip_from,
                                  .skip_to = m->skip_to, .slot = (double)rdof_mod_slot_samples(&m->mod),
                                  .tx_fs = m->tx_fs};
+    if (m && fe.ops->tx_map) {
+        s->map_ok = fe.ops->tx_map(fe.ctx, &s->map_pos, &s->map_us);
+        s->map_wait = !s->map_ok;
+    }
     GIVE();
     return m != NULL;
 }
