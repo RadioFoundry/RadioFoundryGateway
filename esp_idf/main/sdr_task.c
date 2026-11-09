@@ -1332,7 +1332,7 @@ int sdr_spectrum_rows(uint32_t since, uint8_t *out, int max, uint32_t *seq, sdr_
  * the gain; the bench's history notes where they are) */
 static int64_t stream_base; /* out_index at the stream's first sample */
 static int64_t marks_until; /* esp_timer: the FIFO's time marks are steering the stream's time up to here */
-#define MARKS 5
+#define MARKS 3
 
 static void chunk(const uint8_t *raw, int n, int split, bool *first, int filler)
 {
@@ -1441,33 +1441,36 @@ static void chunk(const uint8_t *raw, int n, int split, bool *first, int filler)
     }
 #if CONFIG_RDOF_SDR_LR2021
     /* The FIFO's level edge, timed by the capture, is when a known sample reached the host, with no latency in it
-     * (R3.57): the stream's time follows that, by the median of five marks, and a chunk's arrival isn't asked. */
+     * (R3.57): the stream's time follows that, at every mark by the median of the last three (the chip's clock is
+     * tens of ppm from nominal, so the stream drifts a few us between marks), and a chunk's arrival isn't asked. */
     double mark_pos, mark_us;
     static double marks[MARKS];
-    static int marks_n;
+    static int marks_n, marks_at;
     static uint32_t steered;
     if (was_first) {
-        marks_n = 0;
+        marks_n = marks_at = 0;
         steered = 0;
     }
     if (edge_time_rx_take(&mark_pos, &mark_us) && netclock_synced()) {
         const int64_t whole = (int64_t)mark_us;
         const double at = netclock_utc_ns(whole, NULL) / 1e9 + (mark_us - (double)whole) * 1e-6;
         const double lag = at - (g_rx.t0 + (double)(stream_base + (int64_t)mark_pos) / RDOF_DEMOD_FS);
-        if (steered >= 2)
+        if (steered >= 20)
             edge_time_rx_lag(lag);
         if (fabs(lag) < 1.0) {
-            int k = marks_n++;
-            while (k > 0 && marks[k - 1] > lag) {
-                marks[k] = marks[k - 1];
-                k--;
-            }
-            marks[k] = lag;
+            marks[marks_at] = lag;
+            marks_at = (marks_at + 1) % MARKS;
+            if (marks_n < MARKS)
+                marks_n++;
         }
         if (marks_n == MARKS) {
-            if (fabs(marks[MARKS / 2]) > 5e-6)
-                g_rx.t0 += marks[MARKS / 2];
-            marks_n = 0;
+            const double lo = fmin(marks[0], fmin(marks[1], marks[2])), hi = fmax(marks[0], fmax(marks[1], marks[2]));
+            const double med = marks[0] + marks[1] + marks[2] - lo - hi;
+            if (fabs(med) > 2e-6) {
+                g_rx.t0 += med;
+                for (int i = 0; i < MARKS; i++)
+                    marks[i] -= med;
+            }
             steered++;
             marks_until = t0 + 1500000;
         }
