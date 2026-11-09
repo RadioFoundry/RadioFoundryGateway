@@ -89,6 +89,7 @@ static rdof_fe_caps_t caps = {
     .tx_power_max = CONFIG_RDOF_LR2021_PA_MAX_DBM,
     .tx_power_step = 0.5,
     .turnaround_us = 107, /* RX to TX, typical (table 3-23); TX to RX 91 */
+    .tx_late_us = 680,    /* measured on air at 384 kS/s (R3.54) */
     .tx_dev_max_hz = 4064, /* int8 samples, 32 Hz a count at TX_FDEV (R3.10) */
     .tx_polar = true,      /* an AM source as polar I/Q (tx_fill) */
 };

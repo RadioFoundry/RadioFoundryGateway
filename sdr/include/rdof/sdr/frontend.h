@@ -99,6 +99,9 @@ typedef struct {
     double tx_reach_hz;         /* a carrier within this of the receiver's center (one synthesizer); 0: anywhere */
     double tx_power_min, tx_power_max, tx_power_step; /* dBm */
     double turnaround_us;       /* half duplex: RX to TX (or back) and settled */
+    /* A front end that can't hear itself to measure it: how far past a receive position a burst placed there reaches the
+     * air (the receive chain's latency, which the position doesn't include, and the transmit path's). 0: not known. */
+    double tx_late_us;
     double tx_dev_max_hz;       /* RDOF_FE_TX_FREQ: the largest deviation it sends (0: no limit known) */
     /* RDOF_FE_TX_FREQ: it also sends complex baseband with its amplitude, the carrier at 0 Hz (pull_iq at tx_rate),
      * while the source is I/Q (iq_now): a signal mode that renders I/Q, such as AM. Without it such a source is

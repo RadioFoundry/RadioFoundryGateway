@@ -196,6 +196,7 @@ static const char *modem_up(const rdof_sdrmodem_io_t *io, double power_dbm)
         free(m);
         return why;
     }
+    m->tx_late48 = llround(c->tx_late_us * 48 / 1000);
     TAKE();
     mdm = m;
     GIVE();

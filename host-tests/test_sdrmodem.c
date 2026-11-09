@@ -1486,6 +1486,8 @@ static void ma_packet(uint8_t (*b)[RDOF_BURST_BYTES])
     }
 }
 
+static int64_t ma_late; /* the modem's tx_late48: this simulation's transmit path is on time, so an answer lands that early */
+
 static void ma_run(const char *profile, int64_t *end48)
 {
     static dcm_t x;
@@ -1495,6 +1497,7 @@ static void ma_run(const char *profile, int64_t *end48)
     static rdof_cf_t iq[DC_CHUNK], o[DC_CHUNK];
     dcm_init(&x);
     CHECK(rdof_radio_tune(&x.radio, DC_CH, DC_CC, 100) && !x.m.dcdm, "simplex");
+    x.m.tx_late48 = ma_late;
     memset(&MA, 0, sizeof MA);
     MA.m = &x.m;
     rdof_mssim_profile_t p;
@@ -1544,6 +1547,11 @@ static void test_mssim_air(void)
     if (MA.n == 5)
         CHECK(llabs(MA.pos[3] - (end + 2880)) <= 2 && MA.pos[4] - MA.pos[3] == 2880, "SACK two slots after: %lld",
               (long long)(MA.pos[3] - end));
+    ma_late = 33; /* a front end's known path delay: the answer leaves that much sooner */
+    ma_run("{\"answer\":\"ack\",\"slots\":1}", &end);
+    ma_late = 0;
+    CHECK(MA.n == 4 && llabs(MA.pos[3] - (end + 1440 - 33)) <= 2, "ACK 33 samples sooner: %d bursts, %lld", MA.n,
+          (long long)(MA.pos[3] - end));
 }
 
 static void test_dcdm_modem(void)
