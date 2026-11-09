@@ -231,6 +231,7 @@ pub struct RdofRepeater {
     pub cwid_every_s: f64,
     pub sfr: bool,
     pub dcdm: bool,
+    pub keep_up: bool,
     pub inbound: c_int,
     pub outbound: c_int,
 
@@ -729,6 +730,43 @@ unsafe fn status(r: R, st: &mut RdofMmdvmStatus) -> bool {
     true
 }
 
+extern "C" {
+    fn rdof_duplex_idle(cc: c_int, out: *mut u8); // duplex.c
+}
+
+const KEEP_UP: c_int = 3; // RDOF_RPT_KEEP_UP
+const DT_IDLE: u8 = 9;
+
+/// Keyed with nothing to send: a few idle bursts stay queued on both slots. Left empty, a modem drops its carrier and
+/// falls back to idle mode after about a second, and then refuses the DMR_START that should unkey it.
+unsafe fn keep_up(r: R, now: f64) -> bool {
+    if now - (*r).last_status < STATUS_EVERY_S {
+        return true;
+    }
+    let mut st = zero_status();
+    if !status(r, &mut st) {
+        return true; // missed: tried again next turn
+    }
+    (*r).last_status = now;
+    (*r).slots[1].space = st.space1;
+    (*r).slots[2].space = st.space;
+    let mut idle = [0u8; RDOF_BURST_BYTES];
+    rdof_duplex_idle((*r).cc, idle.as_mut_ptr());
+    for n in 1..=2 {
+        let s = addr_of_mut!((*r).slots[n]);
+        if (*s).space > (*s).max_space {
+            (*s).max_space = (*s).space;
+        }
+        while (*s).space > 1 && (*s).max_space - (*s).space < KEEP_UP {
+            if !rdof_modem_write_dmr(modem(r), RDOF_SYNC_DATA | DT_IDLE, idle.as_ptr(), (*s).n) {
+                return false;
+            }
+            (*s).space -= 1;
+        }
+    }
+    true
+}
+
 unsafe fn inbound_busy(r: *const RdofRepeater, now: f64) -> bool {
     (*r).inbound_flag || now - (*r).inbound_last < SFR_QUIET_S
 }
@@ -775,7 +813,8 @@ unsafe fn key(r: R) -> bool {
     if (*r).keyed {
         return true;
     }
-    if !keys_itself(r) && !rdof_modem_dmr_start(modem(r), true) {
+    // The modem takes DMR_START only while its state is DMR, and that lapses between key-ups: set it again right before.
+    if !keys_itself(r) && !(rdof_modem_set_mode(modem(r), MODE_DMR) && rdof_modem_dmr_start(modem(r), true)) {
         return false;
     }
     (*r).keyed = true;
@@ -1603,6 +1642,9 @@ unsafe fn transmit(r: R, now: f64) -> bool {
             && (*r).slots[2].net < 0
         {
             return unkey(r, now); // R3.4
+        }
+        if (*r).keyed && (*r).keep_up && !keys_itself(r) {
+            return keep_up(r, now);
         }
         if now - (*r).last_status >= IDLE_STATUS_EVERY_S {
             let mut st = zero_status();
