@@ -94,7 +94,8 @@ add_test(NAME benchenv COMMAND rdof_benchenv_tests)
 
 # A burst's PA ramp (rdof/benchramp.h): synthetic bursts with known overshoot, sag and late key-ups.
 add_executable(rdof_benchramp_tests test_benchramp.c)
-target_link_libraries(rdof_benchramp_tests PRIVATE rdof_common m)
+target_link_libraries(rdof_benchramp_tests PRIVATE rdof_common rdof_sdr m)
+target_include_directories(rdof_benchramp_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 set_target_properties(rdof_benchramp_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 target_compile_options(rdof_benchramp_tests PRIVATE -Wall -Wno-unused-parameter)
 if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")

@@ -229,7 +229,7 @@ void bench_line_burst(int channel, const rdof_sdr_burst_t *b, double t)
 {
     if (!bl || !rdof_bl_wants_bursts(bl))
         return;
-    rdof_bl_burst_t o = {.ch = channel, .t = t, .pos48 = b->position, .cfo_hz = (float)sdr_burst_cfo_hz(channel, b),
+    rdof_bl_burst_t o = {.ch = channel, .t = t, .pos48 = b->position, .lag48 = RDOF_DEMOD_LAG, .cfo_hz = (float)sdr_burst_cfo_hz(channel, b),
                          .dev_hz = (float)b->deviation_hz, .level_dbfs = (float)b->b.power_dbfs,
                          .dt = (uint8_t)b->b.dt, .n = (int8_t)b->b.n, .slot = (int8_t)b->b.slot,
                          .family = (int8_t)b->b.family, .cc = (int8_t)b->b.cc,

@@ -3141,6 +3141,7 @@ static void bench_burst(int c, const rdof_sdr_burst_t *b)
     rdof_bl_burst_t o = {0};
     o.ch = c;
     o.pos48 = b->position;
+    o.lag48 = RDOF_DEMOD_LAG;
     o.t = bl_sc_utc(NULL, (uint64_t)((double)b->position * R.rate / 48000.0));
     o.cfo_hz = (float)(rdof_sdr_rx_correction_at(&R.rx, c, b->position + RDOF_AFC_AT) + b->freq_offset_hz -
                        xtal_base_hz(c));
@@ -4693,7 +4694,7 @@ static int bl_raw_demod(void *ctx, bool reset, int cc, const float *iq, int n, r
         for (int j = 0; j < nb && got < cap; j++, got++) {
             rdof_bl_burst_t *o = &out[got];
             memset(o, 0, sizeof *o);
-            o->pos48 = b[j].position;
+            o->pos48 = b[j].position, o->lag48 = RDOF_DEMOD_LAG;
             o->cfo_hz = b[j].freq_offset_hz, o->dev_hz = b[j].deviation_hz, o->level_dbfs = b[j].b.power_dbfs;
             o->dt = (uint8_t)b[j].b.dt, o->n = (int8_t)b[j].b.n, o->slot = (int8_t)b[j].b.slot;
             o->family = (int8_t)b[j].b.family, o->cc = (int8_t)b[j].b.cc, o->sync_errors = (int8_t)b[j].b.sync_errors;

@@ -10,6 +10,9 @@
 #include <string.h>
 
 #include "rdof/benchramp.h"
+#include "rdof/sdr/demod.h"
+#include "rdof/sdr/mod.h"
+#include "fixtures/mod-vectors/mod_vectors.h"
 
 static int fails;
 #define CHECK(cond, ...)                                                                                     \
@@ -202,6 +205,67 @@ static void test_wait_and_lost(void)
     rdof_bramp_free(r);
 }
 
+/* The modulator's bursts through the demodulator: the burst's position, less RDOF_DEMOD_LAG, is its first symbol's
+ * center, and from there the fit has nothing to move (without it, it starts 0.83 ms late, past its +-0.42 ms reach, and
+ * settled on a lobe off by ~0.4 ms or more, by the burst's content). */
+static void test_demod_seed(void)
+{
+    const struct v_mod *v = &v_mods[0];
+    CHECK(v->fs == 48000, "tdma48 at 48 kS/s");
+    rdof_mod_t m;
+    CHECK(rdof_mod_init(&m, v->fs, 0, v->ramp, (float)v->amplitude, v->nseg, 0) == 0, "mod init");
+    for (int i = 0; i < v->nseg; i++) {
+        const struct v_mod_seg *g = &v_mod_segs[v->first_seg + i];
+        CHECK(rdof_mod_queue(&m, g->start, g->sym, g->first, g->count, (unsigned)g->flags) == 0, "queue %d", i);
+    }
+    rdof_cf_t *x = malloc(sizeof(rdof_cf_t) * (size_t)v->n);
+    rdof_mod_iq(&m, x, v->n);
+    rdof_mod_free(&m);
+    rdof_bramp_t *r = rdof_bramp_new(RATE, 1);
+    rdof_demod_t d;
+    CHECK(rdof_demod_init(&d, 2, 1, RDOF_DEMOD_SQUELCH_HZ, 2400) == 0, "demod init");
+    struct { double sync; uint8_t raw[33]; } pend[16];
+    int np = 0, k = 0, measured = 0;
+    double worst = 0;
+    for (int i = 0; i < v->n; i += 2400) {
+        const int n = v->n - i < 2400 ? v->n - i : 2400;
+        for (int j = 0; j < n; j++)
+            rdof_bramp_push(r, (uint64_t)(i + j), x[i + j].re + (float)(1e-3 * nrand()), x[i + j].im + (float)(1e-3 * nrand()), 0);
+        int nb;
+        const rdof_sdr_burst_t *bs = rdof_demod_feed(&d, x + i, n, &nb);
+        for (int j = 0; j < nb; j++, k++) {
+            if (k >= v->nseg || np >= 16)
+                continue;
+            const long long start = v_mod_segs[v->first_seg + k].start; /* its first symbol's peak */
+            CHECK(bs[j].position - RDOF_DEMOD_LAG == start, "burst %d at %lld, first symbol at %lld", k,
+                  (long long)bs[j].position, start);
+            pend[np].sync = (double)(bs[j].position - RDOF_DEMOD_LAG) + 65.5 * SPS;
+            memcpy(pend[np++].raw, bs[j].b.burst, 33);
+        }
+        const bool last = i + n >= v->n;
+        for (int q = 0; q < np;) {
+            rdof_bramp_res_t o;
+            const int rc = rdof_bramp_measure(r, pend[q].sync, pend[q].raw, -60.0, last, &o);
+            if (rc == RDOF_BRAMP_WAIT) {
+                q++;
+                continue;
+            }
+            if (rc == RDOF_BRAMP_OK) {
+                measured++;
+                worst = fmax(worst, fabs(o.align_ms));
+                NEAR(o.p0_ms, -(65.5 + 0.5) * SPS / 48.0 + o.align_ms, 0.001);
+            }
+            pend[q] = pend[--np];
+        }
+    }
+    CHECK(measured >= v->nseg - 1, "%d of %d bursts measured", measured, v->nseg);
+    printf("demod seed: %d bursts, the fit moved them at most %.3f ms\n", measured, worst);
+    CHECK(worst < 0.03, "the fit moved a burst %.3f ms", worst);
+    rdof_demod_free(&d);
+    rdof_bramp_free(r);
+    free(x);
+}
+
 int main(void)
 {
     test_overshoot();
@@ -209,6 +273,7 @@ int main(void)
     test_late();
     test_no_edges();
     test_wait_and_lost();
+    test_demod_seed();
     printf("%s\n", fails ? "benchramp: FAILED" : "benchramp: ok");
     return fails ? 1 : 0;
 }

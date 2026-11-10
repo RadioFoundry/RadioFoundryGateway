@@ -118,6 +118,8 @@ typedef struct {
     int ch;              /* receiver channel */
     double t;            /* UTC seconds at the burst's start */
     int64_t pos48;       /* the channel's 48 kS/s sample at its start */
+    int lag48;           /* how far pos48 (and t) run past the first symbol's center in the channel's samples: the
+                          * demodulator's filter (RDOF_DEMOD_LAG). The envelope and the ramp take it off. */
     float cfo_hz;        /* the carrier from the channel's true frequency (Hz): the platform's AFC, its demod's offset and
                           * its crystal correction together */
     float dev_hz, level_dbfs;

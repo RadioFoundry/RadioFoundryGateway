@@ -4248,7 +4248,7 @@ static void burst_out(rdof_bl_t *bl, conn_t *c, const rdof_bl_burst_t *b, double
     c->last_mono = now;
     c->sent++;
     if (c->ex && c->fs > 0) {
-        const double bsc = (double)(b->pos48 + SYNC_CENTER_48) * c->fs / 48000.0;
+        const double bsc = (double)(b->pos48 - b->lag48 + SYNC_CENTER_48) * c->fs / 48000.0;
         env_burst(c->ex, bsc, t);
         if (c->ex->ramp)
             ramp_burst(c->ex->ramp, bsc, t, b->slot, kind, b->raw, c->fs);
