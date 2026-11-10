@@ -6250,6 +6250,7 @@ int main(int argc, char **argv)
     double last_status = 0, level_sum = 0;
     long level_n = 0;
     double t_read = 0, t_write = 0, t_proc = 0; /* seconds spent in each, since the last status */
+    double raw_lag = 0;                    /* the samples the clock says its silence fell behind */
     long long raw_quiet = 0, raw_seen = 0; /* channel frames a raw capture took, so far; fx_raw_made at the last turn */
     while (!stop && (seconds <= 0 || total < (long long)(seconds * rate))) {
         bench_tune_poll();
@@ -6261,9 +6262,10 @@ int main(int argc, char **argv)
         const long long raw_k = fx_raw_made - raw_seen; /* a raw capture's: one line at its end */
         raw_seen = fx_raw_made, raw_quiet += raw_k;
         if (raw_quiet && !atomic_load(&RAW.fill)) {
-            say("receive: %lld channel frames (%.2f s) not heard for a raw capture%s\n", raw_quiet,
-                (double)raw_quiet * FX.step / rate, R.full ? "; calibrating again once idle" : "");
-            raw_quiet = 0;
+            say("receive: %.2f s not heard for a raw capture (%lld channel frames, %.1f ms of them late)%s\n",
+                ((double)raw_quiet * FX.step + raw_lag) / rate, raw_quiet, 1e3 * raw_lag / rate,
+                R.full ? "; calibrating again once idle" : "");
+            raw_quiet = 0, raw_lag = 0;
             if (R.full)
                 R.recal = true, R.cal_tries = 0;
         }
@@ -6341,8 +6343,11 @@ int main(int argc, char **argv)
                         rdof_txguard_slipped(&W.guard, llround((R.lag_min - R.lag_prev) / txr));
                         pthread_mutex_unlock(&W.mu);
                     }
-                    say("receive: %.1f ms of samples lost%s\n", 1e3 * (R.lag_min - R.lag_prev) / rate,
-                        R.full ? "; calibrating again once idle" : "");
+                    if (raw_quiet || atomic_load(&RAW.fill)) /* the silence fell behind the clock: the capture's */
+                        raw_lag += R.lag_min - R.lag_prev;
+                    else
+                        say("receive: %.1f ms of samples lost%s\n", 1e3 * (R.lag_min - R.lag_prev) / rate,
+                            R.full ? "; calibrating again once idle" : "");
                     if (R.full)
                         R.recal = true, R.cal_tries = 0;
                 }
