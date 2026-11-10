@@ -4298,6 +4298,9 @@ static void fx_on_ch(void *ctx, uint32_t seq, const rdof_iq16_t *x, int n)
         fx_resync = false;
         FX.expect = seq;
         FX.seq0 = seq - (uint32_t)(FX.nall + FX.skipped); /* as if it had never stopped */
+        /* STATUS's flags from the restart itself (the FIFO full while off, the DMA without a buffer until it had one) are
+         * no overflow: the first frame is the baseline. A frame lost after it still shows, as a gap in the numbers. */
+        FX.status = rdof_chzhw_status(&FX.h);
     }
     const uint32_t gap = seq - FX.expect;
     if (gap >= 0x80000000u)
@@ -4418,7 +4421,8 @@ static void fx_rx(void)
  * wideband samples, or RDOF_DEV_* (TIMEOUT for a buffer with no frames). */
 static int fx_take(int chunk, long timeout_us)
 {
-    if (FX.j >= FX.ny && atomic_load(&RAW.fill)) { /* no stream: silence, at the pace it would have come */
+    /* a raw capture waits for a calibration under way: it has the receiver on the TX LO */
+    if (FX.j >= FX.ny && atomic_load(&RAW.fill) && R.cal == 0) { /* no stream: silence, at the pace it would have come */
         const double rate = R.rate / FX.step;
         double t = now_s();
         if (!atomic_exchange(&RAW.ack, true))
@@ -4493,8 +4497,6 @@ static void *raw_thread(void *arg)
         exit(1); /* run.sh starts it again */
     }
     fx_resync = true;
-    /* The DMA had no buffer for a moment: that flag stays set until the next stop. Lost frames show in their numbers. */
-    FX.status = rdof_chzhw_status(&FX.h);
     atomic_store(&RAW.fill, false);
     long clip = 0;
     if (!rc)
@@ -6247,6 +6249,7 @@ int main(int argc, char **argv)
     double last_status = 0, level_sum = 0;
     long level_n = 0;
     double t_read = 0, t_write = 0, t_proc = 0; /* seconds spent in each, since the last status */
+    long long raw_quiet = 0; /* channel frames a raw capture took, so far */
     while (!stop && (seconds <= 0 || total < (long long)(seconds * rate))) {
         bench_tune_poll();
         const double t0 = now_s();
@@ -6254,7 +6257,15 @@ int main(int argc, char **argv)
         /* --fpga-chz: in stays zeros; the turn's power is the block's (turn_p2) */
         FX.t_rx = 0;
         int n = FX.on ? fx_take(chunk, 500000) : dev->read(dev, in, chunk, 500000);
-        if (FX.lost != fx_lost) { /* frames lost: zeros kept the timeline, but the calibration no longer holds */
+        if (FX.lost != fx_lost && (raw_quiet || atomic_load(&RAW.fill))) { /* a raw capture's: one line at its end */
+            raw_quiet += FX.lost - fx_lost;
+        } else if (raw_quiet) {
+            say("receive: %lld channel frames (%.2f s) not heard for a raw capture%s\n", raw_quiet,
+                (double)raw_quiet * FX.step / rate, R.full ? "; calibrating again once idle" : "");
+            raw_quiet = 0;
+            if (R.full)
+                R.recal = true, R.cal_tries = 0;
+        } else if (FX.lost != fx_lost) { /* frames lost: zeros kept the timeline, but the calibration no longer holds */
             say("receive: %lld channel frames lost; zeros in their place%s\n", FX.lost - fx_lost,
                 R.full ? "; calibrating again once idle" : "");
             if (R.full)
@@ -6352,7 +6363,7 @@ int main(int argc, char **argv)
             }
         }
         if (R.full) {
-            if (R.recal && R.cal == 0 && !hot && !keyed && !R.m.in_call[0] && !R.m.in_call[1]) {
+            if (R.recal && R.cal == 0 && !hot && !keyed && !R.m.in_call[0] && !R.m.in_call[1] && !atomic_load(&RAW.fill)) {
                 if (dev->set_rx_freq(dev, tx_lo) == 0) {
                     R.recal = false;
                     R.cal = 1, R.cal_at = total + (long long)(rate * 0.3);
