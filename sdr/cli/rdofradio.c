@@ -4517,8 +4517,7 @@ static void *raw_thread(void *arg)
     atomic_store(&RAW.fill, true);
     while (!atomic_load(&RAW.ack))
         nanosleep(&(struct timespec){0, 1000000}, NULL);
-    dev->rx_pause(dev);
-    rdof_chzhw_stop(&FX.h); /* the stock path: the ADC's samples to the DMA */
+    /* the TX held before the receiver stops: its timeline is taken while the stream still runs */
     if (off_rate) { /* the TX at that rate too: nothing goes out meanwhile */
         pthread_mutex_lock(&W.mu);
         W.hold = true;
@@ -4529,6 +4528,8 @@ static void *raw_thread(void *arg)
             tl_dry = W.guard.dry_at, tl_pushed = W.pushed, tl_skip = W.guard.skip;
         pthread_mutex_unlock(&W.mu);
     }
+    dev->rx_pause(dev);
+    rdof_chzhw_stop(&FX.h); /* the stock path: the ADC's samples to the DMA */
     double fs = R.rate;
     int rc = 0;
     if ((off_rate || retune) && dev->raw_tune(dev, off_rate ? RAW.fs : 0, retune ? RAW.center : 0, &fs, err, sizeof err))
@@ -4577,42 +4578,41 @@ static void *raw_thread(void *arg)
             W.guard.padded = was.padded, W.guard.pads = was.pads, W.guard.dry = was.dry;
         }
         /* The stream goes on where it would have without the hold: sample s on the air at tl_dry + (s - tl_pushed -
-         * tl_skip) / rate (the hold dropped what came at the pace it came; the zeros the guard still owed for count as
-         * sent). The new queue first over full with zeros, so its pushes wait and the guard has its end from them;
-         * then zeros up to that time, or the samples past it dropped. A fixed lead in their place put the stream
-         * 52-58 ms after its place, as the DMA happened to start: the calibration moved with each capture. The
-         * writer's held, so this thread writes. */
+         * tl_skip) / rate (the zeros the guard still owed for count as sent). The new queue first just over full
+         * with zeros, so its pushes wait and the guard has its end from them; then the ring's next sample is the one
+         * due there: the samples before it dropped, or, when that one went by in the hold (the stream's lead is in
+         * the ring, which the hold emptied), the ring back to it, zeros in its place. A fixed lead in its place put
+         * the stream 52-58 ms after its place as the DMA happened to start (the calibration moved with each
+         * capture); zeros pushed past a full queue only wait. The writer's held, so this thread writes. */
         if (dev->tx_block > 0 && dev->tx_nbuf > 0) {
             static const rdof_cf_t zeros[CHUNK];
-            const double txrate = R.tx_rate;
-            long left = (long)dev->tx_block * (dev->tx_nbuf + 2), zs = left;
-            double d = NAN;
-            for (int pass = 0; pass < 4; pass++) {
-                pthread_mutex_unlock(&W.mu);
-                while (left > 0) {
-                    const int k = dev->write(dev, zeros, left < CHUNK ? (int)left : CHUNK, 100000);
-                    if (k <= 0) {
-                        left = 0;
-                        break;
-                    }
-                    left -= k;
-                }
-                pthread_mutex_lock(&W.mu);
-                if (!W.guarded || isnan(tl_dry) || isnan(W.guard.dry_at))
+            pthread_mutex_unlock(&W.mu);
+            for (long left = (long)dev->tx_block * (dev->tx_nbuf + 1) + 1; left > 0;) {
+                const int k = dev->write(dev, zeros, left < CHUNK ? (int)left : CHUNK, 100000);
+                if (k <= 0)
                     break;
-                d = W.guard.dry_at - (tl_dry + (double)(W.tail - tl_pushed - tl_skip) / txrate); /* > 0: late */
-                if (d > -0.0002 || d < -0.25)
-                    break;
-                left = lround(-d * txrate), zs += left;
+                left -= k;
             }
-            if (!isnan(d) && d > 0 && d < 0.25)
-                W.guard.skip += llround(d * txrate);
-            if (isnan(d) || fabs(d) >= 0.25)
-                say("transmit: after the raw capture its timeline wasn't known (%.1f ms); it goes on from its queue\n",
-                    1e3 * d);
-            else
-                say("transmit: back on its timeline after the raw capture (%.1f ms of zeros, %.2f ms dropped)\n",
-                    1e3 * (double)zs / txrate, d > 0 ? 1e3 * d : 0.0);
+            pthread_mutex_lock(&W.mu);
+            const double txrate = R.tx_rate;
+            if (W.guarded && !isnan(tl_dry) && !isnan(W.guard.dry_at)) {
+                const int64_t due = tl_pushed + tl_skip + llround((W.guard.dry_at - tl_dry) * txrate);
+                const int64_t d = due - W.tail; /* > 0: samples to drop; < 0: zeros to go back over */
+                if (d >= 0 && d < (int64_t)(0.25 * txrate)) {
+                    W.guard.skip += d;
+                    say("transmit: back on its timeline after the raw capture (%.2f ms dropped)\n", 1e3 * (double)d / txrate);
+                } else if (d < 0 && -d < (int64_t)(0.25 * txrate) && W.head - due < RING) {
+                    for (int64_t q = due; q < W.tail; q++)
+                        W.buf[q % RING] = (rdof_cf_t){0, 0};
+                    W.tail = due;
+                    say("transmit: back on its timeline after the raw capture (%.2f ms of zeros)\n", -1e3 * (double)d / txrate);
+                } else {
+                    say("transmit: after the raw capture its timeline is %.1f ms off; it goes on from its queue\n",
+                        1e3 * (double)d / txrate);
+                }
+            } else {
+                say("transmit: after the raw capture its timeline wasn't known; it goes on from its queue\n");
+            }
         }
         W.hold = false;
         pthread_cond_broadcast(&W.cv);
