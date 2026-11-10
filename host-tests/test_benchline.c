@@ -634,7 +634,7 @@ static void test_ops(void)
     rdof_bl_closed(bl, c, now);
     c = ask(bl, "{\"op\": \"info\"}", now);
     drain(bl, c, out, sizeof out);
-    CHECK(strstr(out, "\"features\":{\"bursts_cach\":true,\"bursts_lost\":true,\"bursts_envelope\":true,\"bursts_ramp\":true}"), "info names the features: %.300s", out);
+    CHECK(strstr(out, "\"features\":{\"bursts_cach\":true,\"bursts_lost\":true,\"bursts_envelope\":true,\"bursts_ramp\":true,\"capture_raw\":false}"), "info names the features: %.300s", out);
     rdof_bl_closed(bl, c, now);
     c = ask(bl, "{\"op\": \"bursts\", \"freq\": 438.6}", now);
     drain(bl, c, out, sizeof out);
@@ -1249,6 +1249,89 @@ static void test_ramp(void)
     CHECK(n == 3, "%d ramp records: %.3000s", n, all);
     char *done = strstr(all, "{\"done\"");
     CHECK(done && strstr(done, "\"ramp\":{\"measured\":3,\"lost\":0,\"dropped\":0,"), "the summary: %s", done ? done : all);
+    rdof_bl_closed(bl, c, now);
+    rdof_bl_ring_free(&ring);
+    rdof_bl_free(bl);
+}
+
+/* ── a raw capture: the ADC's own samples, made in the background, one at a time ── */
+
+static struct { int starts, polls, closes, ready_after, fail; } raw_f;
+
+static int f_raw_start(void *ctx, double seconds, char *err, size_t cap)
+{
+    if (raw_f.fail) {
+        snprintf(err, cap, "no room");
+        return -1;
+    }
+    raw_f.starts++, raw_f.polls = 0;
+    return 0;
+}
+
+static int f_raw_state(void *ctx, rdof_bl_raw_t *o, char *err, size_t cap)
+{
+    if (++raw_f.polls < raw_f.ready_after)
+        return 0;
+    *o = (rdof_bl_raw_t){.n = 50000, .clipped = 1000, .fs = 19872000, .t0 = 1.8e9, .full_scale = 2048, .bits = 12};
+    return 1;
+}
+
+static void f_raw_read(void *ctx, long at, int16_t *out, long n)
+{
+    for (long i = 0; i < n; i++)
+        out[2 * i] = (int16_t)((at + i) % 2048), out[2 * i + 1] = (int16_t)-((at + i) % 2048);
+}
+
+static void f_raw_close(void *ctx) { raw_f.closes++; }
+
+static void test_raw_capture(void)
+{
+    rdof_bl_platform_t p = PLAT;
+    p.raw_start = f_raw_start, p.raw_state = f_raw_state, p.raw_read = f_raw_read, p.raw_close = f_raw_close;
+    rdof_bl_t *bl = rdof_bl_new(&p);
+    double now = 2700;
+    static char all[1 << 20];
+    rdof_bl_ring_init(&ring, 768000);
+    put_tone(10, 0, 0);
+    memset(&raw_f, 0, sizeof raw_f);
+    raw_f.ready_after = 3;
+    int c = ask(bl, "{\"op\":\"capture\",\"freq\":438.1125,\"seconds\":0.0025,\"raw\":true}", now);
+    size_t total = 0;
+    for (int i = 0; i < 400; i++) {
+        rdof_bl_tick(bl, now += 0.01);
+        total += drain(bl, c, all + total, sizeof all - total - 1);
+        all[total] = 0;
+    }
+    CHECK(raw_f.starts == 1, "started once: %d", raw_f.starts);
+    CHECK(strstr(all, "\"raw\":true") && strstr(all, "\"fmt\":\"cs16\""), "the ready names it: %.300s", all);
+    long n = 0, frames = 0, bad = 0;
+    char *after = all; /* the samples hold zero bytes: text is looked for between them */
+    for (char *h = all; (h = strstr(h, "{\"iq\":{")) && h < all + total;) {
+        long fn = atol(strstr(h, "\"n\":") + 4), sc = atol(strstr(h, "\"sc\":") + 5), by = atol(strstr(h, "\"bytes\":") + 8);
+        char *d = strchr(h, '\n') + 1;
+        int16_t a[2];
+        memcpy(a, d, sizeof a);
+        if (sc != n || by != 4 * fn || a[0] != (int16_t)(n % 2048) || a[1] != -a[0])
+            bad++;
+        n += fn, frames++;
+        after = h = d + by;
+    }
+    CHECK(n == 50000 && !bad && frames > 1, "%ld samples in %ld frames, %ld wrong", n, frames, bad);
+    char *done = strstr(after, "{\"done\"");
+    char v[64];
+    CHECK(done && strstr(done, "\"fmt\":\"cs16\"") && strstr(done, "\"bits\":12") && strstr(done, "\"full_scale\":2048") &&
+              field(done, "clip_pct", v, sizeof v) && fabs(atof(v) - 1.0) < 0.001 && field(done, "scale_db", v, sizeof v) &&
+              fabs(atof(v) + 24.08) < 0.01 && field(done, "samples", v, sizeof v) && atol(v) == 50000,
+          "the summary: %s", done ? done : "none");
+    CHECK(raw_f.closes == 1, "closed once: %d", raw_f.closes);
+    rdof_bl_closed(bl, c, now);
+    CHECK(raw_f.closes == 1, "and not again: %d", raw_f.closes);
+    raw_f.fail = 1;
+    c = ask(bl, "{\"op\":\"capture\",\"freq\":438.1125,\"seconds\":0.1,\"raw\":true}", now);
+    rdof_bl_tick(bl, now += 0.01);
+    total = drain(bl, c, all, sizeof all - 1);
+    all[total] = 0;
+    CHECK(strstr(all, "no room") && strstr(all, "\"error\""), "the reason comes back: %.300s", all);
     rdof_bl_closed(bl, c, now);
     rdof_bl_ring_free(&ring);
     rdof_bl_free(bl);
@@ -3017,6 +3100,7 @@ int main(int argc, char **argv)
     test_trigger();
     test_envelope();
     test_ramp();
+    test_raw_capture();
     test_chan();
     test_xtal();
     test_track();

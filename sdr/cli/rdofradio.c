@@ -3150,6 +3150,11 @@ static void advertise_web(int port)
 static const char *bl_tune(void *ctx, const rdof_bl_tune_t *t, const char *who, char *why, size_t cap);
 static int bl_tune_state(void *ctx, char *why, size_t cap);
 static void bl_untune(void *ctx);
+static int bl_raw_start(void *ctx, double seconds, char *err, size_t cap);
+static int bl_raw_state(void *ctx, rdof_bl_raw_t *o, char *err, size_t cap);
+static void bl_raw_read(void *ctx, long at, int16_t *out, long n);
+static void bl_raw_close(void *ctx);
+
 static void bench_start(void)
 {
     if (bench_port < 0)
@@ -3188,7 +3193,8 @@ static void bench_start(void)
     if (FX.on) /* no wideband I/Q: capture, trigger, track and rx take a channel's own outputs (bl_ch_*); the ring
                   stays, filler, for the sample count the bursts' times come from */
         p.iq_read = NULL, p.iq_filled = NULL, p.iq_warm = NULL, p.ch_open = bl_ch_open, p.ch_read = bl_ch_read,
-        p.ch_close = bl_ch_close;
+        p.ch_close = bl_ch_close, p.raw_start = bl_raw_start, p.raw_state = bl_raw_state, p.raw_read = bl_raw_read,
+        p.raw_close = bl_raw_close;
     BL.bl = rdof_bl_new(&p);
     char err[160];
     BL.net = BL.bl ? rdof_bnet_start(BL.bl, bench_addr, bench_port, now_s, 0, err, sizeof err) : NULL;
@@ -4268,12 +4274,31 @@ static void fx_nco(int c, double hz, long long from)
     n->q[n->n].from = from, n->q[n->n].hz = hz, n->n++;
 }
 
+/* A raw capture (bench "capture" with "raw"): a thread stops the block and the stream, takes the ADC's samples in one DMA
+ * block and starts them again, while the loop keeps turning on silence for that long, so the transmitter, the clocks and
+ * every count keep real time. The silence is filler (and counted lost): those bursts really weren't heard. */
+static struct {
+    _Atomic int state;  /* 0 idle, 1 being made, 2 ready, -1 failed */
+    atomic_bool fill, ack, closing;
+    long n, clipped;
+    int16_t *buf;
+    double t0, t_fill;
+    long long made;
+    char err[160];
+} RAW;
+static bool fx_resync; /* the block started again: its next frame carries on from the count so far */
+
 /* A channel frame from the parser: the instants lost before it made up with zeros (up to FX_GAP), so the receiver's
  * sample count stays the block's (seq - seq0) */
 static void fx_on_ch(void *ctx, uint32_t seq, const rdof_iq16_t *x, int n)
 {
     if (!FX.have0)
         FX.have0 = true, FX.seq0 = FX.expect = seq;
+    if (fx_resync) {
+        fx_resync = false;
+        FX.expect = seq;
+        FX.seq0 = seq - (uint32_t)(FX.nall + FX.skipped); /* as if it had never stopped */
+    }
     const uint32_t gap = seq - FX.expect;
     if (gap >= 0x80000000u)
         return; /* behind the last: not this stream's */
@@ -4382,7 +4407,7 @@ static void fx_rx(void)
         rdof_sdr_rx_bursts(&R.rx, 0, R.rx.C);
         rdof_sdr_rx_finish(&R.rx);
     }
-    if (FX.dirty) {
+    if (FX.dirty && !atomic_load(&RAW.fill)) { /* the raw capture's thread has the block */
         rdof_chzhw_set_inc(&FX.h, FX.inc);
         FX.dirty = false;
     }
@@ -4393,7 +4418,26 @@ static void fx_rx(void)
  * wideband samples, or RDOF_DEV_* (TIMEOUT for a buffer with no frames). */
 static int fx_take(int chunk, long timeout_us)
 {
-    if (FX.j >= FX.ny) {
+    if (FX.j >= FX.ny && atomic_load(&RAW.fill)) { /* no stream: silence, at the pace it would have come */
+        const double rate = R.rate / FX.step;
+        double t = now_s();
+        if (!atomic_exchange(&RAW.ack, true))
+            RAW.t_fill = t, RAW.made = 0;
+        long long k = (long long)((t - RAW.t_fill) * rate) - RAW.made;
+        if (k < (long long)(0.005 * rate)) {
+            nanosleep(&(struct timespec){0, 5000000}, NULL);
+            k = (long long)((now_s() - RAW.t_fill) * rate) - RAW.made;
+        }
+        k = k < 1 ? 1 : k > FX.cap ? FX.cap : k;
+        RAW.made += k;
+        FX.ny = FX.j = 0;
+        for (long long i = 0; i < k; i++)
+            fx_put(NULL);
+        FX.made_up += k, FX.lost += k;
+        WS.lost += k * FX.step;
+        FX.base = FX.nall - FX.ny;
+        fx_rx();
+    } else if (FX.j >= FX.ny) {
         const uint64_t *w;
         const int nw = dev->read_words(dev, &w, timeout_us);
         if (nw < 0)
@@ -4419,6 +4463,117 @@ static int fx_take(int chunk, long timeout_us)
     FX.turn = FX.j;
     FX.j += k;
     return k * FX.step;
+}
+
+static void *raw_thread(void *arg)
+{
+    (void)arg;
+    char err[160] = "";
+    int16_t *const buf = RAW.buf;
+    const long n = RAW.n;
+    atomic_store(&RAW.ack, false);
+    atomic_store(&RAW.fill, true);
+    while (!atomic_load(&RAW.ack))
+        nanosleep(&(struct timespec){0, 1000000}, NULL);
+    dev->rx_pause(dev);
+    rdof_chzhw_stop(&FX.h); /* the stock path: the ADC's samples to the DMA */
+    const int16_t *data = NULL;
+    int rc = dev->raw_fill(dev, n, &data, err, sizeof err);
+    const double t_end = bl_utc(NULL); /* the DMA block's last sample just came */
+    if (!rc) {
+        memcpy(buf, data, (size_t)n * 4);
+        RAW.t0 = t_end - (double)n / R.rate;
+    }
+    dev->raw_free(dev);
+    char e2[160];
+    memcpy(FX.cfg.inc, FX.inc, sizeof FX.inc);
+    rdof_chzhw_rx_init(&FX.prx, FX.C, fx_on_ch, NULL, NULL);
+    if (rdof_chzhw_start(&FX.h, &FX.cfg, 0, 0, e2, sizeof e2) || dev->rx_resume(dev)) {
+        say("raw capture: the receive stream didn't come back: %s\n", dev->error);
+        exit(1); /* run.sh starts it again */
+    }
+    fx_resync = true;
+    /* The DMA had no buffer for a moment: that flag stays set until the next stop. Lost frames show in their numbers. */
+    FX.status = rdof_chzhw_status(&FX.h);
+    atomic_store(&RAW.fill, false);
+    long clip = 0;
+    if (!rc)
+        for (long i = 0; i < 2 * n; i++)
+            clip += buf[i] >= 2047 || buf[i] <= -2048;
+    RAW.clipped = clip;
+    snprintf(RAW.err, sizeof RAW.err, "%s", err);
+    if (atomic_load(&RAW.closing)) { /* its client went: nothing to keep */
+        free(buf);
+        RAW.buf = NULL;
+        atomic_store(&RAW.state, 0);
+        return NULL;
+    }
+    atomic_store(&RAW.state, rc ? -1 : 2);
+    return NULL;
+}
+
+static int bl_raw_start(void *ctx, double seconds, char *err, size_t cap)
+{
+    (void)ctx;
+    if (atomic_load(&RAW.state))
+        return 1;
+    if (!dev || !dev->raw_fill) {
+        snprintf(err, cap, "this device can't hand over its ADC's samples");
+        return -1;
+    }
+    const long n = lround(seconds * R.rate);
+    int16_t *buf = malloc((size_t)n * 4);
+    if (!buf) {
+        snprintf(err, cap, "no memory for %.0f MB of samples", (double)n * 4 / 1e6);
+        return -1;
+    }
+    RAW.buf = buf, RAW.n = n, RAW.err[0] = 0;
+    atomic_store(&RAW.closing, false);
+    atomic_store(&RAW.state, 1);
+    pthread_t th;
+    if (pthread_create(&th, NULL, raw_thread, NULL)) {
+        free(buf);
+        RAW.buf = NULL;
+        atomic_store(&RAW.state, 0);
+        snprintf(err, cap, "no thread for it");
+        return -1;
+    }
+    pthread_detach(th);
+    return 0;
+}
+
+static int bl_raw_state(void *ctx, rdof_bl_raw_t *o, char *err, size_t cap)
+{
+    (void)ctx;
+    const int st = atomic_load(&RAW.state);
+    if (st < 0) {
+        snprintf(err, cap, "%s", RAW.err);
+        return -1;
+    }
+    if (st != 2)
+        return 0;
+    *o = (rdof_bl_raw_t){.n = RAW.n, .clipped = RAW.clipped, .fs = R.rate, .t0 = RAW.t0, .full_scale = 2048, .bits = 12};
+    return 1;
+}
+
+static void bl_raw_read(void *ctx, long at, int16_t *out, long n)
+{
+    (void)ctx;
+    memcpy(out, RAW.buf + 2 * at, (size_t)n * 4);
+}
+
+static void bl_raw_close(void *ctx)
+{
+    (void)ctx;
+    int st = atomic_load(&RAW.state);
+    if (st == 1) { /* still being made: the thread frees it */
+        atomic_store(&RAW.closing, true);
+        return;
+    }
+    free(RAW.buf);
+    RAW.buf = NULL;
+    if (st)
+        atomic_store(&RAW.state, 0);
 }
 
 /* With --fpga-chz, an edge in the channels' power comes the filter's delay late (16 D + 1 taps: 8 output

@@ -792,6 +792,8 @@ def cmd_capture(a) -> int:
         req["gain"] = a.gain
     if a.fmt:
         req["fmt"] = a.fmt
+    if a.raw:
+        req["raw"] = True
     if not a.quiet:
         return write_iq(a, req, 2)
     # --quiet: nothing transmits from the bench during it. A session of its own holds the modem; other sessions'
@@ -1335,6 +1337,8 @@ def main(argv=None) -> int:
     s.add_argument("--mode", default=None)
     s.add_argument("cmd", nargs=argparse.REMAINDER)
     s = p("capture", cmd_capture)
+    s.add_argument("--raw", action="store_true",
+                   help="the ADC's own samples, cs16 (12 bits; on a Pluto with its FPGA channelizer the receiver stops listening meanwhile)")
     s.add_argument("--freq", type=float, required=True)
     s.add_argument("--seconds", type=float, required=True)
     s.add_argument("--out", required=True)

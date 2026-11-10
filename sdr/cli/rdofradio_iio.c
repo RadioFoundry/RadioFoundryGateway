@@ -191,6 +191,66 @@ static int rd_words(rdofradio_dev_t *d, const uint64_t **w, long timeout_us)
     return (int)((size_t)((const char *)iio_buffer_end(s->rxb) - (const char *)*w) / sizeof(uint64_t));
 }
 
+#define RAW_GUARD 8192 /* samples left off the front of a raw capture: what the FIFOs held from before */
+
+static void rx_pause(rdofradio_dev_t *d)
+{
+    iio_t *s = (iio_t *)d;
+    if (s->rxb)
+        iio_buffer_destroy(s->rxb);
+    s->rxb = NULL;
+}
+
+/* One DMA block as long as the capture, so its samples are in a row: no read can come late. With only the first two
+ * channels on, a sample is 4 bytes (cpack sits ahead of the block's mux, so this is the stock path as on a stock board). */
+static int raw_fill(rdofradio_dev_t *d, long n, const int16_t **data, char *err, size_t cap)
+{
+    iio_t *s = (iio_t *)d;
+    for (unsigned i = 0; i < iio_device_get_channels_count(s->rxd); i++) {
+        struct iio_channel *c = iio_device_get_channel(s->rxd, i);
+        if (iio_channel_is_scan_element(c))
+            iio_channel_disable(c);
+    }
+    iio_channel_enable(s->rx_i);
+    iio_channel_enable(s->rx_q);
+    iio_device_set_kernel_buffers_count(s->rxd, 1);
+    s->rxb = iio_device_create_buffer(s->rxd, (size_t)n + RAW_GUARD, false);
+    if (!s->rxb) {
+        char e[100];
+        iio_strerror(errno, e, sizeof e);
+        snprintf(err, cap, "a DMA buffer of %.0f MB: %s", (double)(n + RAW_GUARD) * 4 / 1e6, e);
+        return -1;
+    }
+    iio_context_set_timeout(s->ctx, (unsigned)((double)n / d->rate * 1000) + 5000);
+    const ssize_t r = iio_buffer_refill(s->rxb);
+    iio_context_set_timeout(s->ctx, 5000);
+    if (r < 0 || (size_t)r < ((size_t)n + RAW_GUARD) * 4) {
+        snprintf(err, cap, "the DMA gave %zd bytes of %.0f", r, (double)(n + RAW_GUARD) * 4);
+        return -1;
+    }
+    *data = (const int16_t *)iio_buffer_start(s->rxb) + 2 * RAW_GUARD;
+    return 0;
+}
+
+static void raw_free(rdofradio_dev_t *d) { rx_pause(d); }
+
+static int rx_resume(rdofradio_dev_t *d)
+{
+    iio_t *s = (iio_t *)d;
+    for (unsigned i = 0; i < iio_device_get_channels_count(s->rxd); i++) {
+        struct iio_channel *c = iio_device_get_channel(s->rxd, i);
+        if (iio_channel_is_scan_element(c))
+            iio_channel_enable(c);
+    }
+    iio_device_set_kernel_buffers_count(s->rxd, 16);
+    s->rxb = iio_device_create_buffer(s->rxd, s->rx_len, false);
+    if (!s->rxb) {
+        fail(d, "receive buffer", errno);
+        return -1;
+    }
+    return 0;
+}
+
 static double mono_s(void)
 {
     struct timespec ts;
@@ -400,6 +460,7 @@ rdofradio_dev_t *rdofradio_iio_open(const char *uri, const rdofradio_dev_setup_t
             return NULL;
         }
         d->read_words = rd_words;
+        d->rx_pause = rx_pause, d->raw_fill = raw_fill, d->raw_free = raw_free, d->rx_resume = rx_resume;
     } else {
         iio_channel_enable(s->rx_i);
         iio_channel_enable(s->rx_q);

@@ -37,7 +37,7 @@
 #define RETUNE_MAX_S 15.0      /* a tune or untune that hasn't applied by then failed */
 
 enum { C_FREE = 0, C_LINE, C_ACTIVE, C_DONE };
-enum { OP_NONE = 0, OP_SESSION, OP_CLAIM, OP_HOLD, OP_RUN, OP_BURSTS, OP_LISTEN, OP_CAPTURE, OP_TRIGGER, OP_TX, OP_RX,
+enum { OP_NONE = 0, OP_RAW, OP_SESSION, OP_CLAIM, OP_HOLD, OP_RUN, OP_BURSTS, OP_LISTEN, OP_CAPTURE, OP_TRIGGER, OP_TX, OP_RX,
        OP_TUNE };
 enum { W_NONE = 0, W_MODEM, W_FREQ };
 /* a run's job */
@@ -199,6 +199,9 @@ typedef struct {
     double fs;                /* bursts: the wideband rate, for a record's sc */
     /* tune: a trigger or rx outside the window waits for its own tune, then runs again (autotune) */
     bool autotune;
+    int raw_phase;  /* a raw capture: 0 waiting its turn, 1 being made, 2 going out */
+    double raw_secs, raw_since;
+    rdof_bl_raw_t raw;
     bool rerun; /* came while a retune restarted the receiver: runs again once it's done */
     /* run */
     job_t *job;
@@ -250,7 +253,8 @@ struct rdof_bl {
     char *strbuf;
     char ms_out[7900]; /* op_mssim's reply (off the server thread's stack) */
     rdof_jdoc_t doc;
-    int8_t iq[RDOF_BL_IQ_CHUNK * 2];
+    int8_t iq[RDOF_BL_IQ_CHUNK * 2] __attribute__((aligned(4)));
+    int raw_conn;              /* a raw capture's connection + 1, 0 none */
     char tmp[8192];
     char bdec[1200], bline[2048]; /* a burst record (under the lock: off the server thread's stack) */
     /* an envelope's segment record, its lists, the summary's part (the same) */
@@ -537,6 +541,7 @@ static void trig_free(trig_t *t);
 struct envx;
 static bool env_open(rdof_bl_t *bl, conn_t *c, int root, const rdof_bl_window_t *w, double now);
 static void envx_free(struct envx *x);
+static void raw_release(rdof_bl_t *bl, int ci);
 /* A trigger's end: its channel closed (ch_open's), then freed */
 static void trig_end(rdof_bl_t *bl, trig_t *t)
 {
@@ -697,6 +702,7 @@ void rdof_bl_closed(rdof_bl_t *bl, int ci, double now)
     c->autotune = c->rerun = false;
     if (c->op == OP_RX)
         bl->n_iq--;
+    raw_release(bl, ci);
     sig_end(bl, c);
     trig_end(bl, c->trig);
     c->trig = NULL;
@@ -991,9 +997,9 @@ static void op_info(rdof_bl_t *bl, conn_t *c, double now)
                               "\"bands\":[],\"held_by\":%s,\"waiting\":%s}],"
                               "\"modem\":{\"held_by\":%s,\"waiting\":%s,\"next_job_eta\":{\"eta_s\":%.1f,"
                               "\"worst_s\":%.1f}},\"signal_modes\":{\"tx\":%s,\"rx\":%s},\"jobs\":%s,"
-                              "\"features\":{\"bursts_cach\":true,\"bursts_lost\":true,\"bursts_envelope\":true,\"bursts_ramp\":true},\"default_caps\":[]}",
+                              "\"features\":{\"bursts_cach\":true,\"bursts_lost\":true,\"bursts_envelope\":true,\"bursts_ramp\":true,\"capture_raw\":%s},\"default_caps\":[]}",
                               bands, st_kind ? st_kind : "sdrmodem", qmodel, notx ? "false" : "true",
-                              notx ? "false" : "true", why, held, wq, held, wq, eta, eta, stx, srx, jobs);
+                              notx ? "false" : "true", why, held, wq, held, wq, eta, eta, stx, srx, jobs, bl->p.raw_start ? "true" : "false");
     if (k >= line_cap) {
         fail(bl, c, "internal", "info doesn't fit");
         return;
@@ -1342,12 +1348,36 @@ static void no_channel(rdof_bl_t *bl, conn_t *c, double mhz)
 static void op_capture_chan(rdof_bl_t *bl, conn_t *c, int root, double now, double mhz, double secs,
                             const rdof_bl_window_t *w);
 
+/* A capture of the ADC's own samples (section 14.2's "raw"): the receiver makes them in the background, they go out from
+ * its memory. One at a time; another waits its turn. */
+static void op_capture_raw(rdof_bl_t *bl, conn_t *c, int root, double now, double mhz, double secs,
+                           const rdof_bl_window_t *w)
+{
+    if (!bl->p.raw_start) {
+        fail(bl, c, "unsupported", "this receiver can't hand over its ADC's samples");
+        return;
+    }
+    if (!big_out(c, 0)) {
+        fail(bl, c, "unavailable", "no memory for a capture");
+        return;
+    }
+    c->op = OP_RAW;
+    c->raw_phase = 0;
+    c->raw_secs = secs;
+    c->freq_hz = mhz * 1e6;
+    c->gain = jnum(bl, root, "gain", w->gain_db);
+    c->raw_since = now;
+    c->state = C_ACTIVE;
+    emit(bl, c, "{\"ready\":%.6f,\"shared\":false,\"center\":%.6f,\"pre_s\":0,\"fs\":%.3f,\"fmt\":\"cs16\",\"sc0\":0,\"raw\":true}",
+         bl->p.utc ? bl->p.utc(bl->p.ctx) : now, w->center_hz / 1e6, w->fs);
+}
+
 static void op_capture(rdof_bl_t *bl, conn_t *c, int root, double now)
 {
     if (!req_session(bl, c, root, false))
         return;
     const bool chan = !bl->p.iq_read && bl->p.ch_open; /* no wideband history: its channel's own outputs */
-    if (!bl->p.iq_read && !chan) {
+    if (!bl->p.iq_read && !chan && !(jbool(bl, root, "raw") && bl->p.raw_start)) {
         fail(bl, c, "unsupported", "this bench keeps no I/Q");
         return;
     }
@@ -1366,6 +1396,10 @@ static void op_capture(rdof_bl_t *bl, conn_t *c, int root, double now)
     }
     if (!(secs > 0) || secs > 600) {
         fail(bl, c, "bad_request", "seconds is 0-600");
+        return;
+    }
+    if (jbool(bl, root, "raw")) {
+        op_capture_raw(bl, c, root, now, mhz, secs, &w);
         return;
     }
     if (chan) {
@@ -4267,6 +4301,82 @@ static void tick_bursts(rdof_bl_t *bl, double now)
     }
 }
 
+/* A raw capture's connection is finished with it: the next may start */
+static void raw_release(rdof_bl_t *bl, int ci)
+{
+    if (bl->raw_conn != ci + 1)
+        return;
+    bl->raw_conn = 0;
+    if (bl->p.raw_close)
+        bl->p.raw_close(bl->p.ctx);
+}
+
+#define RAW_LATE_S 30 /* past its seconds with nothing from the receiver: it has failed */
+#define RAW_SAMPLES (RDOF_BL_IQ_CHUNK / 2) /* samples a frame: int16 I, Q in iq's 2 * RDOF_BL_IQ_CHUNK bytes */
+
+static void tick_raw(rdof_bl_t *bl, conn_t *c, double now)
+{
+    const int ci = (int)(c - bl->c);
+    char err[160] = "";
+    if (c->raw_phase == 0) { /* waiting its turn */
+        if (bl->raw_conn)
+            return;
+        const int r = bl->p.raw_start(bl->p.ctx, c->raw_secs, err, sizeof err);
+        if (r > 0)
+            return;
+        if (r < 0) {
+            fail(bl, c, "unavailable", "%s", err[0] ? err : "the raw capture couldn't start");
+            c->state = C_DONE;
+            return;
+        }
+        bl->raw_conn = ci + 1;
+        c->raw_phase = 1, c->raw_since = now;
+    }
+    if (c->raw_phase == 1) { /* the receiver is at it */
+        const int r = bl->p.raw_state(bl->p.ctx, &c->raw, err, sizeof err);
+        if (r < 0 || (r == 0 && now - c->raw_since > c->raw_secs + RAW_LATE_S)) {
+            fail(bl, c, "unavailable", "%s", err[0] ? err : "the raw capture never finished");
+            c->state = C_DONE;
+            raw_release(bl, ci);
+            return;
+        }
+        if (r == 0)
+            return;
+        c->raw_phase = 2, c->sc = 0, c->sc_end = (uint64_t)c->raw.n;
+    }
+    for (;;) { /* out from its memory, as the client takes them */
+        if (c->sc >= c->sc_end) {
+            rdof_bl_window_t w;
+            get_window(bl, &w);
+            char pp[256];
+            put_ppm_at(pp, sizeof pp, &w, c->freq_hz);
+            const double fs = c->raw.fs;
+            emit(bl, c,
+                 "{\"done\":{\"freq\":%.1f,\"center\":%.1f,\"fs\":%.1f,\"fmt\":\"cs16\",\"gain\":%.1f,%s,"
+                 "\"t0\":%.6f,\"sc0\":0,\"seconds\":%.6f,\"samples\":%ld,\"overflows\":0,\"gap_samples\":0,"
+                 "\"clip_pct\":%.3f,\"pre_s\":0,\"scale_db\":%.2f,\"raw\":true,\"bits\":%d,\"full_scale\":%.0f,\"source\":\"rfg\"}}",
+                 c->freq_hz, w.center_hz, fs, c->gain, pp, c->raw.t0, (double)c->raw.n / fs, c->raw.n,
+                 c->raw.n ? 100.0 * (double)c->raw.clipped / (double)(2 * c->raw.n) : 0.0,
+                 20 * log10(c->raw.full_scale / 32768.0), c->raw.bits, c->raw.full_scale);
+            c->state = C_DONE;
+            raw_release(bl, ci);
+            return;
+        }
+        long want = (long)(c->sc_end - c->sc);
+        if (want > RAW_SAMPLES)
+            want = RAW_SAMPLES;
+        if (room(c) < (size_t)(4 * want + 160))
+            return; /* the client is behind: later */
+        bl->p.raw_read(bl->p.ctx, (long)c->sc, (int16_t *)(void *)bl->iq, want);
+        char hdr[160];
+        const int hn = snprintf(hdr, sizeof hdr, "{\"iq\":{\"seq\":%lu,\"n\":%ld,\"sc\":%llu,\"flags\":0},\"bytes\":%ld}\n",
+                                (unsigned long)c->iseq++, want, (unsigned long long)c->sc, 4 * want);
+        put_bytes(c, hdr, (size_t)hn);
+        put_bytes(c, bl->iq, (size_t)(4 * want));
+        c->sc += (uint64_t)want;
+    }
+}
+
 static void tick_capture(rdof_bl_t *bl, conn_t *c, double now)
 {
     rdof_bl_window_t w;
@@ -4904,6 +5014,8 @@ void rdof_bl_tick(rdof_bl_t *bl, double now)
         conn_t *c = &bl->c[i];
         if (c->state == C_ACTIVE && c->op == OP_CAPTURE)
             tick_capture(bl, c, now);
+        else if (c->state == C_ACTIVE && c->op == OP_RAW)
+            tick_raw(bl, c, now);
         else if (c->state == C_ACTIVE && c->op == OP_TRIGGER)
             tick_trigger(bl, c, now);
         else if (c->state == C_ACTIVE && c->op == OP_BURSTS && c->ex) {
