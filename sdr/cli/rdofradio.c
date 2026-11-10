@@ -367,6 +367,7 @@ static struct {
     bool running;
     bool guarded;          /* the device takes blocks: the guard keeps the stream's timing through a stall */
     bool hold;             /* a raw capture has the chip off its rate: what comes is dropped, nothing padded */
+    bool writing;          /* in the device's write, the lock let go: the chip's rate waits for it */
     rdof_txguard_t guard;  /* the writer's thread alone (the device's write reports to it) */
 } W = {.mu = PTHREAD_MUTEX_INITIALIZER, .cv = PTHREAD_COND_INITIALIZER};
 
@@ -407,6 +408,7 @@ static void writer_pad(void)
 {
     static const rdof_cf_t zeros[CHUNK];
     int room = dev->tx_room(dev), sent = 0;
+    W.writing = true;
     pthread_mutex_unlock(&W.mu);
     while (room > 0) {
         const int k = dev->write(dev, zeros, room < CHUNK ? room : CHUNK, 100000);
@@ -415,6 +417,8 @@ static void writer_pad(void)
         room -= k, sent += k;
     }
     pthread_mutex_lock(&W.mu);
+    W.writing = false;
+    pthread_cond_broadcast(&W.cv);
     if (room > 0)
         W.errors++;
     rdof_txguard_padded(&W.guard, sent);
@@ -453,9 +457,12 @@ static void *writer(void *arg)
             pthread_cond_broadcast(&W.cv);
             continue;
         }
+        W.writing = true;
         pthread_mutex_unlock(&W.mu);
         int k = dev->write(dev, W.buf + at, n, 100000);
         pthread_mutex_lock(&W.mu);
+        W.writing = false;
+        pthread_cond_broadcast(&W.cv);
         if (k <= 0) {
             W.errors++;
             k = n; /* dropped: the stream slips by n, and the loop's measure of the delay shows it */
@@ -4237,7 +4244,9 @@ static int dx_start(double rate, char *err, size_t cap)
         return -1;
     }
     DX.started = true;
-    atexit(dx_stop);
+    static bool at_exit;
+    if (!at_exit) /* once: a raw capture off the rate starts it again */
+        at_exit = !atexit(dx_stop);
     R.txr = (int)r;
     R.tx_rate = rate / (double)r;
     /* as far from the carrier as io_tune's reach (0.4 tx_rate less 12.5 kHz) allows, a kHz inside, in steps of a
@@ -4498,6 +4507,8 @@ static void *raw_thread(void *arg)
         pthread_mutex_lock(&W.mu);
         W.hold = true;
         pthread_cond_broadcast(&W.cv);
+        while (W.writing && W.running) /* a push under way finishes on the buffer it began on */
+            pthread_cond_wait(&W.cv, &W.mu);
         pthread_mutex_unlock(&W.mu);
     }
     double fs = R.rate;
@@ -4514,6 +4525,21 @@ static void *raw_thread(void *arg)
     if ((off_rate || retune) && dev->raw_untune(dev)) {
         say("raw capture: the chip's rate and tuning didn't come back: %s\n", dev->error);
         exit(1); /* run.sh starts it again */
+    }
+    if (off_rate) { /* the rate changes reset the DAC core's source and stalled its DMA: the interpolator and the
+                     * transmit buffer anew, as at start (the writer's held: nothing writes meanwhile) */
+        char e1[160] = "";
+        if (DX.started) {
+            dx_stop();
+            if (dx_start(R.rate, e1, sizeof e1)) {
+                say("raw capture: the TX interpolator didn't start again: %s\n", e1);
+                exit(1);
+            }
+        }
+        if (dev->tx_restart && dev->tx_restart(dev)) {
+            say("raw capture: the transmit buffer didn't come back: %s\n", dev->error);
+            exit(1);
+        }
     }
     char e2[160];
     memcpy(FX.cfg.inc, FX.inc, sizeof FX.inc);

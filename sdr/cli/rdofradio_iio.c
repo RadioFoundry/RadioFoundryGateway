@@ -219,7 +219,9 @@ static int raw_fill(rdofradio_dev_t *d, long n, double rate, int16_t *out, long 
     }
     iio_channel_enable(s->rx_i);
     iio_channel_enable(s->rx_q);
-    const long all = n + RAW_GUARD, blocks = (all + RAW_BLOCK - 1) / RAW_BLOCK, len = ((all + blocks - 1) / blocks + 1023) & ~1023L; /* whole DMA bursts */
+    /* two blocks at least: a refill hands the block before back to the DMA, so it never runs dry before the last
+     * block's read and the flag means a gap; with one, nothing's queued once it's full and the flag goes up at once */
+    const long all = n + RAW_GUARD, blocks = (all + RAW_BLOCK - 1) / RAW_BLOCK < 2 ? 2 : (all + RAW_BLOCK - 1) / RAW_BLOCK, len = ((all + blocks - 1) / blocks + 1023) & ~1023L; /* whole DMA bursts */
     iio_device_set_kernel_buffers_count(s->rxd, (unsigned)blocks);
     s->rxb = iio_device_create_buffer(s->rxd, (size_t)len, false);
     if (!s->rxb) {
@@ -297,6 +299,23 @@ static int raw_tune(rdofradio_dev_t *d, double rate, double lo_hz, double *got, 
     }
     long long g = 0;
     *got = iio_channel_attr_read_longlong(s->rx_ch, "sampling_frequency", &g) < 0 ? rate : (double)g;
+    return 0;
+}
+
+static int tx_restart(rdofradio_dev_t *d)
+{
+    iio_t *s = (iio_t *)d;
+    if (!s->txb)
+        return 0;
+    iio_buffer_destroy(s->txb);
+    iio_device_set_kernel_buffers_count(s->txd, TX_BUFFERS);
+    s->txb = iio_device_create_buffer(s->txd, s->len, false);
+    if (!s->txb) {
+        fail(d, "transmit buffer", errno);
+        return -1;
+    }
+    s->wp = iio_buffer_start(s->txb);
+    s->w_left = s->len;
     return 0;
 }
 
@@ -542,7 +561,7 @@ rdofradio_dev_t *rdofradio_iio_open(const char *uri, const rdofradio_dev_setup_t
         }
         d->read_words = rd_words;
         d->rx_pause = rx_pause, d->raw_fill = raw_fill, d->rx_resume = rx_resume, d->raw_tune = raw_tune,
-        d->raw_untune = raw_untune;
+        d->raw_untune = raw_untune, d->tx_restart = tx_restart;
     } else {
         iio_channel_enable(s->rx_i);
         iio_channel_enable(s->rx_q);

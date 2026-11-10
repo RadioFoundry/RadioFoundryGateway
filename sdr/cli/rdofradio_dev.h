@@ -73,6 +73,8 @@ struct rdofradio_dev {
      * raw_untune puts back what raw_tune found. The TX shares the rate. 0, or -1 with why in err. */
     int (*raw_tune)(rdofradio_dev_t *d, double rate, double lo_hz, double *got, char *err, size_t cap);
     int (*raw_untune)(rdofradio_dev_t *d);
+    /* The transmit buffer anew, empty (after a rate change); 0 or -1 */
+    int (*tx_restart)(rdofradio_dev_t *d);
     int (*rx_resume)(rdofradio_dev_t *d);
     /* up to n samples: how many were taken, or RDOF_DEV_* */
     int (*write)(rdofradio_dev_t *d, const rdof_cf_t *x, int n, long timeout_us);
