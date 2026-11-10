@@ -17,6 +17,7 @@
 #include <time.h>
 
 #include "rdof/benchenv.h"
+#include "rdof/benchramp.h"
 #include "rdof/benchjob.h"
 #include "rdof/jsonp.h"
 #include "rdof/layer2.h"
@@ -148,6 +149,7 @@ typedef struct {
     int nsnap, isnap;         /* snapshots (at most TRACK_SNAPS, the oldest dropped); the last block's */
     /* a bursts stream's envelope: each output's power into it, fired from the start, nothing sent */
     rdof_benv_t *env;
+    rdof_bramp_t *ramp;       /* and with "ramp": each output kept for the bursts' PA ramps */
     long clip_now, clip_prev; /* the chunk's inputs at the rails so far; at the last output */
 } trig_t;
 
@@ -534,6 +536,7 @@ static long chsrc_read(rdof_bl_t *bl, chsrc_t *s, uint64_t sc, long n, long *fil
 static void trig_free(trig_t *t);
 struct envx;
 static bool env_open(rdof_bl_t *bl, conn_t *c, int root, const rdof_bl_window_t *w, double now);
+static void envx_free(struct envx *x);
 /* A trigger's end: its channel closed (ch_open's), then freed */
 static void trig_end(rdof_bl_t *bl, trig_t *t)
 {
@@ -561,6 +564,7 @@ static void trig_free(trig_t *t)
         free(t->lines);
         free(t->snap);
         rdof_benv_free(t->env);
+        rdof_bramp_free(t->ramp);
         free(t);
     }
 }
@@ -696,7 +700,7 @@ void rdof_bl_closed(rdof_bl_t *bl, int ci, double now)
     sig_end(bl, c);
     trig_end(bl, c->trig);
     c->trig = NULL;
-    free(c->ex);
+    envx_free(c->ex);
     c->ex = NULL;
     c->state = C_FREE;
     c->op = OP_NONE;
@@ -987,7 +991,7 @@ static void op_info(rdof_bl_t *bl, conn_t *c, double now)
                               "\"bands\":[],\"held_by\":%s,\"waiting\":%s}],"
                               "\"modem\":{\"held_by\":%s,\"waiting\":%s,\"next_job_eta\":{\"eta_s\":%.1f,"
                               "\"worst_s\":%.1f}},\"signal_modes\":{\"tx\":%s,\"rx\":%s},\"jobs\":%s,"
-                              "\"features\":{\"bursts_cach\":true,\"bursts_lost\":true,\"bursts_envelope\":true},\"default_caps\":[]}",
+                              "\"features\":{\"bursts_cach\":true,\"bursts_lost\":true,\"bursts_envelope\":true,\"bursts_ramp\":true},\"default_caps\":[]}",
                               bands, st_kind ? st_kind : "sdrmodem", qmodel, notx ? "false" : "true",
                               notx ? "false" : "true", why, held, wq, held, wq, eta, eta, stx, srx, jobs);
     if (k >= line_cap) {
@@ -1301,7 +1305,7 @@ static void op_bursts(rdof_bl_t *bl, conn_t *c, int root, double now, bool liste
     rdof_bl_window_t w;
     get_window(bl, &w);
     c->fs = w.fs;
-    if (!listen && jbool(bl, root, "envelope") && !env_open(bl, c, root, &w, now)) {
+    if (!listen && (jbool(bl, root, "envelope") || jbool(bl, root, "ramp")) && !env_open(bl, c, root, &w, now)) {
         c->op = OP_NONE;
         return;
     }
@@ -3693,6 +3697,8 @@ static const char *const SYNC_NAMES[9] = {"BS_VOICE", "BS_DATA", "MS_VOICE", "MS
 #define ENV_PEND 16    /* segments waiting for their bursts */
 #define ENV_BURSTS 96  /* bursts kept to tie to them (about 3 s of a repeater's two slots) */
 #define ENV_LIST 16    /* overlaps and unexplained spans listed in the summary (all counted) */
+#define RAMP_PEND 24
+#define RAMP_FIRST_S 0.09 /* a burst this long after the last starts a transmission */
 #define ENV_WAIT_S 0.5 /* a segment waits this long for a late burst, unless a burst past it came */
 
 struct envx {
@@ -3708,7 +3714,30 @@ struct envx {
     double unexpl_total_ms;
     double prev_sc;
     bool have_prev;
+    struct rampx *ramp;                     /* "ramp": the bursts waiting for what follows them */
 };
+
+/* A burst waiting to be measured: its record comes once what follows it is in (the envelope lags the bursts). */
+struct rampx {
+    struct {
+        double sc, t;
+        int slot;
+        bool first;
+        char kind[16];
+        uint8_t raw[33];
+    } p[RAMP_PEND];
+    int n;
+    double prev_sc;
+    bool have_prev, chan;
+    long measured, lost, dropped;
+};
+
+static void envx_free(struct envx *x)
+{
+    if (x)
+        free(x->ramp);
+    free(x);
+}
 
 static double env_ms(const struct envx *x, double sc) { return (sc - x->sc_start) / x->fs * 1000; }
 
@@ -3744,6 +3773,7 @@ static bool env_open(rdof_bl_t *bl, conn_t *c, int root, const rdof_bl_window_t 
              0.9 * rate);
         return false;
     }
+    const bool want_ramp = jbool(bl, root, "ramp");
     /* a floor the tool gives is used as given; a measured one follows a close carrier (bench-api.md) */
     const rdof_benv_opts_t o = {on_db, off_db, on_db - 4 > 1 ? on_db - 4 : 1, step_db, isfinite(floor_db) ? 0 : 30};
     trig_t *t = calloc(1, sizeof *t);
@@ -3755,8 +3785,10 @@ static bool env_open(rdof_bl_t *bl, conn_t *c, int root, const rdof_bl_window_t 
         t->taps = malloc(sizeof(float) * (size_t)t->ntaps); /* internal RAM: read every output */
         t->dl = malloc(sizeof(float) * 4 * (size_t)t->ntaps);
         t->env = rdof_benv_new(rate, d, &o);
+        if (want_ramp)
+            t->ramp = rdof_bramp_new(rate, d);
     }
-    if (!t || !x || !t->taps || !t->dl || !t->env) {
+    if (!t || !x || !t->taps || !t->dl || !t->env || (want_ramp && !t->ramp)) {
         trig_free(t);
         free(x);
         fail(bl, c, "unavailable", "no memory for an envelope");
@@ -3780,6 +3812,17 @@ static bool env_open(rdof_bl_t *bl, conn_t *c, int root, const rdof_bl_window_t 
     if (isfinite(floor_db)) {
         t->floor_db = floor_db, t->have_floor = 2;
         rdof_benv_floor(t->env, floor_db);
+    }
+    if (want_ramp) {
+        x->ramp = RDOF_BL_MALLOC(sizeof *x->ramp);
+        if (!x->ramp) {
+            trig_end(bl, t);
+            free(x);
+            fail(bl, c, "unavailable", "no memory for an envelope");
+            return false;
+        }
+        memset(x->ramp, 0, sizeof *x->ramp);
+        x->ramp->chan = chan;
     }
     uint64_t oldest = 0, next = 0;
     trig_span(bl, t, &oldest, &next);
@@ -3879,6 +3922,124 @@ static void env_seg_out(rdof_bl_t *bl, conn_t *c, const rdof_benv_seg_t *s)
     }
 }
 
+static size_t ramp_add(char *o, size_t cap, size_t k, const char *name, double v, int prec)
+{
+    char n[24];
+    put_num(n, sizeof n, v, prec);
+    return k + (size_t)snprintf(o + k, cap - k, ",\"%s\":%s", name, n);
+}
+
+static size_t ramp_list(char *o, size_t cap, size_t k, const char *name, const float *v, int count)
+{
+    k += (size_t)snprintf(o + k, cap - k, ",\"%s\":[", name);
+    for (int i = 0; i < count; i++) {
+        char n[24];
+        put_num(n, sizeof n, v[i], 1);
+        k += (size_t)snprintf(o + k, cap - k, "%s%s", i ? "," : "", n);
+    }
+    return k + (size_t)snprintf(o + k, cap - k, "]");
+}
+
+static void ramp_out(rdof_bl_t *bl, conn_t *c, int i, const rdof_bramp_res_t *r)
+{
+    static const char *const RISE[RDOF_BRAMP_RISES] = {"-40", "-30", "-20", "-10", "-6", "-3", "-1"};
+    static const char *const FALL[RDOF_BRAMP_FALLS] = {"-3", "-10", "-30"};
+    struct rampx *x = c->ex->ramp;
+    char *o = bl->env_rec; /* under the lock */
+    const size_t cap = sizeof bl->env_rec;
+    size_t k = (size_t)snprintf(o, cap, "{\"ramp\":{\"t\":%.6f,\"sc\":%lld,\"slot\":%d,\"kind\":\"%s\",\"first\":%s",
+                                x->p[i].t, (long long)llround(x->p[i].sc), x->p[i].slot, x->p[i].kind,
+                                x->p[i].first ? "true" : "false");
+    k = ramp_add(o, cap, k, "align_ms", r->align_ms, 3);
+    k = ramp_add(o, cap, k, "settled_db", r->settled_db, 2);
+    k = ramp_add(o, cap, k, "ripple_db", r->ripple_db, 2);
+    k += (size_t)snprintf(o + k, cap - k, ",\"rise_ms\":{");
+    for (int j = 0; j < RDOF_BRAMP_RISES; j++) {
+        char n[24];
+        put_num(n, sizeof n, r->rise_ms[j], 3);
+        k += (size_t)snprintf(o + k, cap - k, "%s\"%s\":%s", j ? "," : "", RISE[j], n);
+    }
+    k += (size_t)snprintf(o + k, cap - k, "}");
+    k = ramp_add(o, cap, k, "rise_30_3_ms", r->rise_30_3_ms, 3);
+    k = ramp_add(o, cap, k, "overshoot_db", r->overshoot_db, 2);
+    k = ramp_add(o, cap, k, "overshoot_t_ms", r->overshoot_t_ms, 2);
+    k = ramp_add(o, cap, k, "settle_1db_ms", r->settle_1db_ms, 2);
+    k = ramp_add(o, cap, k, "settle_0p5db_ms", r->settle_0p5db_ms, 2);
+    k = ramp_add(o, cap, k, "sym1_db", r->sym1_db, 2);
+    k = ramp_add(o, cap, k, "err5_mean_db", r->err5_mean_db, 2);
+    k = ramp_add(o, cap, k, "err5_abs_db", r->err5_abs_db, 2);
+    k = ramp_add(o, cap, k, "err12_mean_db", r->err12_mean_db, 2);
+    k = ramp_add(o, cap, k, "err12_abs_db", r->err12_abs_db, 2);
+    k += (size_t)snprintf(o + k, cap - k, ",\"fall_ms\":{");
+    for (int j = 0; j < RDOF_BRAMP_FALLS; j++) {
+        char n[24];
+        put_num(n, sizeof n, r->fall_ms[j], 3);
+        k += (size_t)snprintf(o + k, cap - k, "%s\"%s\":%s", j ? "," : "", FALL[j], n);
+    }
+    k += (size_t)snprintf(o + k, cap - k, "}");
+    k = ramp_add(o, cap, k, "fall_3_30_ms", r->fall_3_30_ms, 3);
+    k = ramp_list(o, cap, k, "pre_db", r->pre_db, RDOF_BRAMP_BINS);
+    k = ramp_list(o, cap, k, "empty_slot_db", r->empty_db, RDOF_BRAMP_BINS);
+    k = ramp_add(o, cap, k, "f_first1ms_hz", r->f_first1ms_hz, 0);
+    k += (size_t)snprintf(o + k, cap - k, ",\"f_first1ms_unreliable\":%s", r->f_first1ms_unreliable ? "true" : "false");
+    k = ramp_add(o, cap, k, "f_next2ms_hz", r->f_next2ms_hz, 0);
+    k += (size_t)snprintf(o + k, cap - k, ",\"f_next2ms_unreliable\":%s", r->f_next2ms_unreliable ? "true" : "false");
+    k = ramp_add(o, cap, k, "dev3_hz", r->dev3_hz, 0);
+    if (x->chan) /* a channel from the FPGA: nothing counts the ADC's rails */
+        k += (size_t)snprintf(o + k, cap - k, ",\"clipped\":null");
+    else
+        k += (size_t)snprintf(o + k, cap - k, ",\"clipped\":%ld", r->clipped);
+    snprintf(o + k, cap - k, "}}");
+    if (!emit(bl, c, "%s", o))
+        c->ex->dropped++;
+}
+
+/* A burst sent: waits for what follows it */
+static void ramp_burst(struct rampx *x, double sc, double t, int slot, const char *kind, const uint8_t raw[33],
+                       double fs)
+{
+    if (x->n == RAMP_PEND) { /* behind: the oldest isn't measured */
+        memmove(&x->p[0], &x->p[1], sizeof x->p[0] * (RAMP_PEND - 1));
+        x->n--;
+        x->dropped++;
+    }
+    const int k = x->n++;
+    x->p[k].sc = sc, x->p[k].t = t, x->p[k].slot = slot;
+    x->p[k].first = !x->have_prev || sc - x->prev_sc > RAMP_FIRST_S * fs;
+    snprintf(x->p[k].kind, sizeof x->p[k].kind, "%s", kind);
+    memcpy(x->p[k].raw, raw, 33);
+    x->prev_sc = sc, x->have_prev = true;
+}
+
+/* The bursts whose samples are all in; all: the stream has ended */
+static void ramp_tick(rdof_bl_t *bl, conn_t *c, bool all)
+{
+    struct rampx *x = c->ex->ramp;
+    trig_t *t = c->trig;
+    if (!x || !t->ramp)
+        return;
+    double quiet = rdof_benv_noise_db(t->env);
+    if (!isfinite(quiet) && t->have_floor)
+        quiet = t->floor_db;
+    int k = 0;
+    for (; k < x->n; k++) {
+        rdof_bramp_res_t r;
+        const int rc = rdof_bramp_measure(t->ramp, x->p[k].sc, x->p[k].raw, quiet, all, &r);
+        if (rc == RDOF_BRAMP_WAIT)
+            break; /* in order */
+        if (rc == RDOF_BRAMP_OK) {
+            ramp_out(bl, c, k, &r);
+            x->measured++;
+        } else {
+            x->lost++;
+        }
+    }
+    if (k) {
+        memmove(&x->p[0], &x->p[k], sizeof x->p[0] * (size_t)(x->n - k));
+        x->n -= k;
+    }
+}
+
 /* Segments out once their bursts are in: a burst past the segment came, ENV_WAIT_S went by, or the end (all) */
 static void env_tick(rdof_bl_t *bl, conn_t *c, double now, bool all)
 {
@@ -3908,6 +4069,7 @@ static void env_tick(rdof_bl_t *bl, conn_t *c, double now, bool all)
         memmove(&x->pend[0], &x->pend[k], sizeof x->pend[0] * (size_t)(x->np - k));
         x->np -= k;
     }
+    ramp_tick(bl, c, all);
 }
 
 /* The stream's end: the envelope taken to now and closed, its segments out; the summary's "envelope" */
@@ -3921,7 +4083,10 @@ static void env_done(rdof_bl_t *bl, conn_t *c, double now, char *out, size_t cap
     rdof_benv_finish(t->env);
     env_tick(bl, c, now, true);
     const double noise = rdof_benv_noise_db(t->env);
-    char nz[24], fl[24], used[24], dbm[24], ov[200] = "", un[400] = "";
+    char nz[24], fl[24], used[24], dbm[24], ov[200] = "", un[400] = "", rp[120] = "";
+    if (x->ramp) /* an edge in t->bw can't be placed finer than this */
+        snprintf(rp, sizeof rp, ",\"ramp\":{\"measured\":%ld,\"lost\":%ld,\"dropped\":%ld,\"edge_res_us\":%.0f}", x->ramp->measured,
+                 x->ramp->lost, x->ramp->dropped, fmax(1e6 / t->rate, 1e6 * 0.7 / (x->bw / 2)));
     put_num(nz, sizeof nz, noise, 1);
     put_num(fl, sizeof fl, t->have_floor ? t->floor_db : NAN, 1);
     put_num(used, sizeof used, rdof_benv_floor_used(t->env), 1);
@@ -3937,10 +4102,10 @@ static void env_done(rdof_bl_t *bl, conn_t *c, double now, char *out, size_t cap
              ",\"envelope\":{\"t0\":%.6f,\"bw\":%.0f,\"rate\":%.1f,\"gain\":%.1f,\"floor_db\":%s,\"floor_used_db\":%s,\"noise_dbfs\":%s,"
              "\"dbm_offset\":%s,\"dbm_source\":\"noise\",\"clip_pct\":%.3f,\"segments\":%ld,\"segments_dropped\":%ld,"
              "\"power_steps\":%ld,\"overlaps\":%ld,\"overlap_ms\":[%s],\"unexplained_carrier\":[%s],"
-             "\"unexplained_ms\":%.1f,\"gap_samples\":%ld}",
+             "\"unexplained_ms\":%.1f,\"gap_samples\":%ld%s}",
              x->t0, x->bw, t->rate, c->gain, fl, used, nz, dbm,
              t->inputs ? 100.0 * (double)t->clipped / (double)(2 * t->inputs) : 0.0, x->segs, x->dropped, x->steps,
-             x->overlaps, ov, un, x->unexpl_total_ms, t->gaps);
+             x->overlaps, ov, un, x->unexpl_total_ms, t->gaps, rp);
 }
 
 static void burst_out(rdof_bl_t *bl, conn_t *c, const rdof_bl_burst_t *b, double now)
@@ -4008,8 +4173,12 @@ static void burst_out(rdof_bl_t *bl, conn_t *c, const rdof_bl_burst_t *b, double
     c->prev_t = c->last_t = t;
     c->last_mono = now;
     c->sent++;
-    if (c->ex && c->fs > 0)
-        env_burst(c->ex, (double)(b->pos48 + SYNC_CENTER_48) * c->fs / 48000.0, t);
+    if (c->ex && c->fs > 0) {
+        const double bsc = (double)(b->pos48 + SYNC_CENTER_48) * c->fs / 48000.0;
+        env_burst(c->ex, bsc, t);
+        if (c->ex->ramp)
+            ramp_burst(c->ex->ramp, bsc, t, b->slot, kind, b->raw, c->fs);
+    }
     c->cfo_sum += b->cfo_hz, c->lvl_sum += b->level_dbfs;
     c->cfo_min = fmin(c->cfo_min, b->cfo_hz), c->cfo_max = fmax(c->cfo_max, b->cfo_hz);
     c->lvl_max = fmax(c->lvl_max, b->level_dbfs);
@@ -4224,7 +4393,7 @@ static bool trig_block(rdof_bl_t *bl, conn_t *c, double lin, const rdof_bl_windo
 
 /* atan2f to about 1e-5 rad (0.1 Hz of an output's step at 48 kS/s), a few times faster than the library's on an
  * ESP32 */
-static float fast_atan2f(float y, float x)
+float rdof_bl_atan2f(float y, float x)
 {
     const float ax = fabsf(x), ay = fabsf(y), mx = ax > ay ? ax : ay;
     if (mx == 0)
@@ -4483,6 +4652,8 @@ static bool trig_out(rdof_bl_t *bl, conn_t *c, trig_t *t, const rdof_bl_window_t
     if (t->env) { /* a bursts stream's envelope: the power in, the floor from its first 1 ms blocks */
         const float p = yi * yi + yq * yq;
         rdof_benv_push(t->env, center, p, (int)(t->clip_now - t->clip_prev));
+        if (t->ramp)
+            rdof_bramp_push(t->ramp, center, yi, yq, (int)(t->clip_now - t->clip_prev));
         t->clip_prev = t->clip_now;
         t->bp += p;
         if (++t->bn < t->bsize)
@@ -4512,7 +4683,7 @@ static bool trig_out(rdof_bl_t *bl, conn_t *c, trig_t *t, const rdof_bl_window_t
     }
     if (t->track && t->fired && center < t->end_sc) { /* the phase step from the previous output, in Hz */
         if (t->have_prev)
-            t->bf[t->bfn++] = fast_atan2f(yq * t->pi - yi * t->pq, yi * t->pi + yq * t->pq) *
+            t->bf[t->bfn++] = rdof_bl_atan2f(yq * t->pi - yi * t->pq, yi * t->pi + yq * t->pq) *
                               (float)(t->rate / (2 * M_PI));
         t->pi = yi, t->pq = yq, t->have_prev = true;
     } else if (t->fired && center < t->end_sc) {

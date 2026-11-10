@@ -45,6 +45,7 @@ set(RDOF_COMMON_SRCS
     src/benchjob.c
     src/benchline.c
     src/benchenv.c
+    src/benchramp.c
     src/benchnet.c
     src/ipgw.c
     src/ipgwcfg.c
@@ -75,7 +76,7 @@ if(ESP_PLATFORM)
     idf_component_register(SRCS ${RDOF_COMMON_SRCS} INCLUDE_DIRS include)
     # The bench engine filters a W12's 384 kS/s history for a trigger: at -Os it fell behind the history (a third of
     # an 11 s capture lost), at -O2 with the loop's other fixes it keeps up
-    set_source_files_properties(src/benchline.c src/benchenv.c PROPERTIES COMPILE_OPTIONS -O2)
+    set_source_files_properties(src/benchline.c src/benchenv.c src/benchramp.c PROPERTIES COMPILE_OPTIONS -O2)
     if(CONFIG_RDOF_RUST)
         idf_build_get_property(idf_target IDF_TARGET)
         rdof_rust_add(rdof_rust TARGET xtensa-${idf_target}-none-elf TOOLCHAIN esp BUILD_STD)

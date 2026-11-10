@@ -619,6 +619,29 @@ def cmd_listen(a) -> int:
     return stream(a.where, {"op": "listen", "freq": a.freq, "seconds": a.seconds, "session": a.session}, on)
 
 
+def ramp_table(ramps: list, totals: dict) -> str:
+    """Median of each --ramp figure, per burst kind, a transmission's first burst apart."""
+    import statistics
+    def get(r, key):
+        return r[key[0]].get(key[1]) if isinstance(key, tuple) else r.get(key)
+    cols = [("settled", "settled_db"), ("-30", ("rise_ms", "-30")), ("-3", ("rise_ms", "-3")), ("-1", ("rise_ms", "-1")),
+            ("over", "overshoot_db"), ("set1dB", "settle_1db_ms"), ("sym1", "sym1_db"), ("err5", "err5_mean_db"),
+            ("fall-3", ("fall_ms", "-3")), ("f1ms", "f_first1ms_hz")]
+    groups = {}
+    for r in ramps:
+        groups.setdefault((not r["first"], r["kind"]), []).append(r)
+    lines = [f"ramp: {len(ramps)} bursts (median; ms from the first symbol's leading edge, dB against settled), "
+             f"{totals.get('lost', 0)} lost, edges to about {totals.get('edge_res_us', '?')} us",
+             f"{'kind':>14} {'n':>4}" + "".join(f"{c[0]:>9}" for c in cols)]
+    for (later, kind), rs in sorted(groups.items()):
+        row = f"{(kind if later else 'first ' + kind):>14} {len(rs):>4}"
+        for _, key in cols:
+            v = [get(r, key) for r in rs if get(r, key) is not None]
+            row += f"{statistics.median(v):>9.2f}" if v else f"{'-':>9}"
+        lines.append(row)
+    return "\n".join(lines)
+
+
 def cmd_dmr_bursts(a) -> int:
     if a.file:
         print(f"{NOTE} --file: analyze a saved capture with the bench's own tools; the gateway decodes live only",
@@ -632,6 +655,7 @@ def cmd_dmr_bursts(a) -> int:
     out = open(a.out, "w") if a.out else sys.stdout
     human = sys.stdout if a.out else sys.stderr
     n = [0]
+    ramps: list = []
     hold = {"done": False}
     timer = []
 
@@ -650,6 +674,10 @@ def cmd_dmr_bursts(a) -> int:
             out.flush()
         elif "segment" in d:                      # --envelope: a keyed segment, its edges tied to its bursts
             out.write(json.dumps({"segment": d["segment"]}) + "\n")
+            out.flush()
+        elif "ramp" in d:                         # --ramp: a burst's PA ramp, measured on the gateway
+            ramps.append(d["ramp"])
+            out.write(json.dumps({"ramp": d["ramp"]}) + "\n")
             out.flush()
         elif "done" in d:
             s = d["done"]
@@ -674,12 +702,15 @@ def cmd_dmr_bursts(a) -> int:
                 print(f"envelope: {env['segments']} keyed segments, noise {env['noise_dbfs']} dBFS, clipping "
                       f"{env['clip_pct']:.3f} %, {env['power_steps']} power steps, {env['overlaps']} overlaps, "
                       f"{env['unexplained_ms']:.1f} ms of carrier no burst explains", file=human, flush=True)
+            if ramps:
+                print(ramp_table(ramps, (env or {}).get("ramp", {})), file=human, flush=True)
             return 0 if s["bursts"] else EX_NO_SIGNAL
         return None
     try:
         rc = stream(a.where, {"op": "bursts", "session": a.session, "freq": a.freq, "seconds": a.seconds,
                               "max_bursts": a.bursts, "until_end": a.until_end, "cc": a.cc, "soft": a.soft,
-                              "wait_max": a.wait_max, **({"envelope": True} if a.envelope else {})}, on, hold)
+                              "wait_max": a.wait_max, **({"envelope": True} if a.envelope else {}),
+                              **({"ramp": True} if a.ramp else {})}, on, hold)
         if not hold["done"] and rc == 0:          # the stream ended with no summary: one from here
             s = {"bursts": n[0], "freq": a.freq * 1e6, "reason": "the gateway stopped answering"
                  if timer else "the connection ended"}
@@ -1326,6 +1357,8 @@ def main(argv=None) -> int:
     s.add_argument("--soft", action="store_true")
     s.add_argument("--envelope", action="store_true",
                    help="also the carrier's keyed segments: edges, ramps, steps, clipping, tied to the bursts")
+    s.add_argument("--ramp", action="store_true",
+                   help="also each burst's PA ramp, measured on the gateway (implies the envelope)")
     s.add_argument("--out", default=None)
     s.add_argument("--file", default=None)
     s.add_argument("--center-mhz", type=float, default=None)

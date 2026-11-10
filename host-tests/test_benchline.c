@@ -634,7 +634,7 @@ static void test_ops(void)
     rdof_bl_closed(bl, c, now);
     c = ask(bl, "{\"op\": \"info\"}", now);
     drain(bl, c, out, sizeof out);
-    CHECK(strstr(out, "\"features\":{\"bursts_cach\":true,\"bursts_lost\":true,\"bursts_envelope\":true}"), "info names the features: %.300s", out);
+    CHECK(strstr(out, "\"features\":{\"bursts_cach\":true,\"bursts_lost\":true,\"bursts_envelope\":true,\"bursts_ramp\":true}"), "info names the features: %.300s", out);
     rdof_bl_closed(bl, c, now);
     c = ask(bl, "{\"op\": \"bursts\", \"freq\": 438.6}", now);
     drain(bl, c, out, sizeof out);
@@ -1175,6 +1175,81 @@ static void test_envelope(void)
           "the summary: %s", done ? done : all);
     rdof_bl_closed(bl, c, now);
     CHECK(!rdof_bl_wants_iq(bl) && !rdof_bl_wants_bursts(bl), "nothing wanted once closed");
+    rdof_bl_ring_free(&ring);
+    rdof_bl_free(bl);
+}
+
+/* ── a bursts stream's PA ramps: each burst measured on the channel, from its symbols ── */
+
+static void put_fsk_burst(const uint8_t raw[33], double off_hz, float amp, double over_db)
+{
+    static double ph;
+    float iq[2 * 768];
+    const int total = 132 * 160;
+    for (int n = 0; n < total;) {
+        const int len = total - n < 768 ? total - n : 768;
+        for (int i = 0; i < len; i++, n++) {
+            const int k = n / 160, dib = (raw[k / 4] >> (6 - 2 * (k % 4))) & 3;
+            const double f = off_hz + (dib == 1 ? 3 : dib == 0 ? 1 : dib == 2 ? -1 : -3) * 648.0;
+            const float a = amp * (float)pow(10, over_db * exp(-(n / 768.0) / 0.8) / 20);
+            ph += 2 * M_PI * f / 768000;
+            iq[2 * i] = noise() + a * (float)cos(ph);
+            iq[2 * i + 1] = noise() + a * (float)sin(ph);
+        }
+        rdof_bl_ring_put(&ring, iq, (size_t)len, NULL);
+    }
+}
+
+static void test_ramp(void)
+{
+    rdof_bl_t *bl = rdof_bl_new(&PLAT);
+    double now = 2600;
+    static char all[1 << 18];
+    rdof_bl_ring_init(&ring, 768000);
+    put_tone(300, 0, 0);
+    int c = ask(bl, "{\"op\":\"bursts\",\"freq\":438.1125,\"seconds\":2,\"ramp\":true,\"floor_s\":0.2,\"env_bw\":20000}", now);
+    size_t total = drain(bl, c, all, sizeof all);
+    CHECK(strstr(all, "{\"ready\""), "ready: %s", all);
+    total = env_run(bl, c, &now, 100, 0, all, total, sizeof all);
+    uint8_t raw[33];
+    for (int i = 0; i < 33; i++)
+        raw[i] = (uint8_t)(i * 37 + 11);
+    for (int b = 0; b < 3; b++) {
+        const uint64_t s = ring.w;
+        put_fsk_burst(raw, -112500, 0.3f, 6);
+        rdof_bl_burst_t x = {.ch = 1, .t = 1.8e9 + b * 0.06, .pos48 = (int64_t)(s / 16) + 5, .level_dbfs = -10, .dt = 1,
+                             .family = 1, .cc = 2, .slot = 1};
+        memcpy(x.raw, raw, 33);
+        rdof_bl_burst(bl, &x);
+        total = env_run(bl, c, &now, 32.5, 0, all, total, sizeof all);
+    }
+    total = env_run(bl, c, &now, 100, 0, all, total, sizeof all);
+    rdof_bl_tick(bl, now + 2.5);
+    total += drain(bl, c, all + total, sizeof all - total);
+    all[total] = 0;
+    CHECK(is_json_lines(all), "not JSON lines: %.2000s", all);
+    int n = 0;
+    char v[64];
+    for (char *p = all; (p = strstr(p, "{\"ramp\"")); p++, n++) {
+        char *e = strchr(p, '\n');
+        if (e)
+            *e = 0;
+        const double settled = field(p, "settled_db", v, sizeof v) ? atof(v) : 99;
+        const double over = field(p, "overshoot_db", v, sizeof v) ? atof(v) : 99;
+        const double r3 = field(p, "-3", v, sizeof v) ? atof(v) : 99;
+        const double align = field(p, "align_ms", v, sizeof v) ? atof(v) : 99;
+        const double dev = field(p, "dev3_hz", v, sizeof v) ? atof(v) : 0;
+        CHECK(fabs(settled + 10.5) < 1 && over > 3.5 && over < 7 && fabs(r3) < 0.25 && fabs(align) < 0.1 &&
+                  fabs(dev - 1944) < 200 && strstr(p, "\"slot\":1") && strstr(p, "\"pre_db\":["),
+              "burst %d: settled %.2f overshoot %.2f -3 dB at %.3f align %.3f dev %.0f: %s", n, settled, over, r3, align, dev, p);
+        CHECK(strstr(p, n ? "\"first\":false" : "\"first\":true"), "the first of the run: %s", p);
+        if (e)
+            *e = '\n';
+    }
+    CHECK(n == 3, "%d ramp records: %.3000s", n, all);
+    char *done = strstr(all, "{\"done\"");
+    CHECK(done && strstr(done, "\"ramp\":{\"measured\":3,\"lost\":0,\"dropped\":0,"), "the summary: %s", done ? done : all);
+    rdof_bl_closed(bl, c, now);
     rdof_bl_ring_free(&ring);
     rdof_bl_free(bl);
 }
@@ -2941,6 +3016,7 @@ int main(int argc, char **argv)
     test_ops();
     test_trigger();
     test_envelope();
+    test_ramp();
     test_chan();
     test_xtal();
     test_track();

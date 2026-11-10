@@ -286,7 +286,7 @@ From `idf.py size`. Run it after a change that adds code or RAM, and update this
 
 | Build | Date | App image | Free in its slot | DIRAM used (of 334 KB) |
 |---|---|---|---|---|
-| `16mb` + `w12` | 2026-11-09 | 2362 KB | 1.7 MB of 4 MB | 187.6 KB (54.9%) |
+| `16mb` + `w12` | 2026-11-09 | 2374 KB | 1.7 MB of 4 MB | 187.6 KB (54.9%) |
 | `16mb` + `w12` + `rust` | 2026-10-27 | 2063 KB | 2.0 MB of 4 MB | |
 | `16mb` | 2026-10-28 | 1960 KB | 2.1 MB of 4 MB | 167 KB (49.9%) |
 | `4mb` (no SDR) | 2026-11-02 | 1279 KB | 641 KB of 1.875 MB | 134 KB (40.3%) |
@@ -1059,7 +1059,7 @@ bench (`"bench": {"devices": [...]}`: a UART, USB CDC-ACM or a USB-serial bridge
 through the SDR's modem or an MMDVM bench radio, only on what `"bench": {"tx": {...}}` allows. No auth: it's for a
 private test network. Code: `bench_api.c`, `bench_radio.c`, `bench_tx.c`; the spec's section 9 says what's in.
 
-`tools/bench/burstramp.py` measures a transmitter's PA ramps burst by burst from a capture (spec §14.8.2).
+`tools/bench/burstramp.py` measures a transmitter's PA ramps burst by burst from a capture (spec §14.8.2). A `bursts` stream with `"ramp": true` measures them on the board (`rfgbench.py dmr-bursts --ramp`, spec §14.2).
 
 **The line protocol** on TCP `CONFIG_RDOF_BENCH_LINE_PORT` (7373; spec §14, `bench_line.c`), for
 `tools/bench/rfgbench.py`:

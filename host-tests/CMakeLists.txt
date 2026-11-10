@@ -92,6 +92,17 @@ if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
 endif()
 add_test(NAME benchenv COMMAND rdof_benchenv_tests)
 
+# A burst's PA ramp (rdof/benchramp.h): synthetic bursts with known overshoot, sag and late key-ups.
+add_executable(rdof_benchramp_tests test_benchramp.c)
+target_link_libraries(rdof_benchramp_tests PRIVATE rdof_common m)
+set_target_properties(rdof_benchramp_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_compile_options(rdof_benchramp_tests PRIVATE -Wall -Wno-unused-parameter)
+if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+    target_compile_options(rdof_benchramp_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(rdof_benchramp_tests PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME benchramp COMMAND rdof_benchramp_tests)
+
 add_executable(rdof_benchline_tests test_benchline.c)
 target_link_libraries(rdof_benchline_tests PRIVATE rdof_common)
 set_target_properties(rdof_benchline_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)

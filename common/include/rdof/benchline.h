@@ -372,6 +372,8 @@ static inline int rdof_bl_round(float x)
     return (int)(t.i - 0x4B400000);
 }
 /* fmt's full scale under the ADC's, in dB (20 log10 k for 8-bit, 0 else): a level less it is dBFS. */
+/* atan2f to about 1e-5 rad, a few times faster than the library's on an ESP32 */
+float rdof_bl_atan2f(float y, float x);
 double rdof_bl_iq_scale_db(int fmt, float k);
 
 /* Where a history holds filler, for iq_filled: the last RDOF_BL_FILLS runs of it, by sample. A run that follows the

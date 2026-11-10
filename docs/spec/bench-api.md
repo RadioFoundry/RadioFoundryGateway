@@ -613,6 +613,18 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
   before) and `overlap_ms` (at most 16), `unexplained_carrier` (`[up_ms, unexplained_ms]` of each segment with over
   5 ms, at most 16) and `unexplained_ms`, `gap_samples`. `info`'s `features` says `bursts_envelope`. The cut costs
   what a `trigger`'s does (about 20 multiplies a wideband sample); `listen` takes no envelope.
+- `bursts` with `"ramp": true` (it implies `envelope`) also measures each burst's PA ramp on the gateway, with no I/Q streamed.
+  The figures are those of 14.8.2, against the burst's own settled level and payload; the burst's decoded symbols place it, so
+  voice B-F are placed as well as a burst with a sync. Each is a record once what follows the burst is in (about 24 ms after its
+  sync): `{"ramp": {"t", "sc", "slot", "kind", "first", "align_ms", "settled_db", "ripple_db", "rise_ms", "rise_30_3_ms",
+  "overshoot_db", "overshoot_t_ms", "settle_1db_ms", "settle_0p5db_ms", "sym1_db", "err5_mean_db", "err5_abs_db", "err12_mean_db",
+  "err12_abs_db", "fall_ms", "fall_3_30_ms", "pre_db", "empty_slot_db", "f_first1ms_hz", "f_first1ms_unreliable", "f_next2ms_hz",
+  "f_next2ms_unreliable", "dev3_hz", "clipped"}}`. `sc` and `t` are the burst's sync center, as in its burst record. `align_ms` is
+  how far the symbols moved it from there. `first`: over 90 ms after the burst before. `clipped` counts inputs at the rails over
+  the payload, `null` on a channel from the FPGA, where nothing counts them. The summary's `envelope` gets `"ramp": {"measured",
+  "lost", "dropped", "edge_res_us"}`; `lost` bursts' samples had gone, `dropped` ones went unmeasured because too many were
+  waiting. `edge_res_us` is what the channel's bandwidth allows: set `env_bw` wider to see a faster edge. `info`'s `features` says
+  `bursts_ramp`. It keeps the channel's last 0.68 s of outputs (256 KB, PSRAM on a board).
 
 ### 14.3 Jobs
 
@@ -980,9 +992,10 @@ those figures stay estimates, and `modem`'s `tx` is the SDR modem's own state.
 ### 14.8.2 A transmitter's PA ramps, from a capture
 
 `tools/bench/burstramp.py FILE... [--bursts] [--json OUT]` measures each burst's power ramp in a `capture` or `capture-trigger`
-file (with its `.json`). It needs numpy and runs where the file is; a board doesn't do this. A streamed `envelope` (14.2) gives a
-keying's edges and plateau with no I/Q; this tool ties them to the payload and catches what a rise time misses, like a burst
-that starts 8 dB over its settled level.
+file (with its `.json`). It needs numpy and runs where the file is. A `bursts` stream with `"ramp": true` (14.2) measures the same
+figures on the gateway, burst by burst, with no I/Q streamed: edges agree with this tool to about 0.01 ms and levels to a few
+hundredths of a dB on the same capture, `dev3_hz` (a least-squares fit there) to a few percent. A rise time alone misses a burst
+that starts 8 dB over its settled level; these figures catch it.
 
 Every figure is against the burst's own settled level (0 dB) and payload. t = 0 is the leading edge of the first symbol, and for
 the falling edge the trailing edge of the last. Negative is before. Symbols come from the sync; voice B-F, with no sync, from the
