@@ -618,8 +618,8 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
   behind it. `rate` (520834-61440000 S/s, `--rate`) gives it a rate of its own: the chip changes for it and back after (the
   receiver is deaf through it anyway), and nothing transmits meanwhile, since the transmitter shares the rate. After it the
   transmitter goes on where its stream would have been without the pause (a transmission under way has a gap the capture's
-  length), the receiver makes up what its silence came short of, and both calibrate again; the transmit path still moves
-  0.4-3 ms per capture, which the calibration takes up. `gain` (dB) is the RX gain for the capture, the receiver's own
+  length), the receiver makes up what its silence came short of or leaves out what it ran over, and both calibrate again;
+  any move the calibration still finds, it takes up. `gain` (dB) is the RX gain for the capture, the receiver's own
   again after (`--gain`; without it, the receiver's). The front end
   is tuned 10 % of the rate above `freq` when `freq` isn't within 35 % of the rate of where it is, so any frequency the chip
   tunes works; `ready`'s and `meta`'s `center` say where. `info`'s `features` says `capture_raw`; a receiver without it answers `unsupported` (today a PlutoSDR running

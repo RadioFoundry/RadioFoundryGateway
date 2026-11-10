@@ -459,6 +459,7 @@ static void *writer(void *arg)
             n = CHUNK;
         if (W.guarded && W.guard.skip > 0) { /* what the guard's zeros stood in for */
             W.tail += rdof_txguard_drop(&W.guard, n);
+            W.pushed = W.tail; /* the zeros sent stood for them: the stream's position (pushed + skip) stays */
             pthread_cond_broadcast(&W.cv);
             continue;
         }
@@ -4324,6 +4325,9 @@ static struct {
 static bool fx_resync; /* the block started again: its next frame carries on from the count so far */
 static long long fx_raw_made; /* channel frames of silence made while a raw capture had the receiver */
 static long long fx_owe;      /* and the frames its silence came short of (the loop's lag said so after): made up */
+static long long fx_drop;     /* or went over (it ran on after the stream was back, whose first frames then
+                               * counted from its end): that many of the stream's frames left out */
+static long long fx_fixed;    /* wideband samples the two put in (less those left out), out of the loop's lag */
 
 /* A channel frame from the parser: the instants lost before it made up with zeros (up to FX_GAP), so the receiver's
  * sample count stays the block's (seq - seq0) */
@@ -4353,7 +4357,10 @@ static void fx_on_ch(void *ctx, uint32_t seq, const rdof_iq16_t *x, int n)
             FX.skipped++;
         }
     }
-    fx_put(x);
+    if (fx_drop > 0) /* past the receiver as the instants past FX_GAP are: fx_correction's count keeps them */
+        fx_drop--, FX.skipped++, fx_fixed -= FX.step;
+    else
+        fx_put(x);
     FX.expect = seq + 1;
 }
 
@@ -4488,6 +4495,7 @@ static int fx_take(int chunk, long timeout_us)
         for (long long i = 0; i < k; i++)
             fx_put(NULL);
         FX.made_up += k;
+        fx_fixed += k * FX.step;
         FX.base = FX.nall - FX.ny;
         fx_rx();
     } else if (FX.j >= FX.ny) {
@@ -4541,8 +4549,10 @@ static void *raw_thread(void *arg)
         pthread_cond_broadcast(&W.cv);
         while (W.writing && W.running) /* a push under way finishes on the buffer it began on */
             pthread_cond_wait(&W.cv, &W.mu);
-        if (W.guarded) /* where the stream stands on the air: its queue's end, and the sample that ends it */
-            tl_dry = W.guard.dry_at, tl_pushed = W.pushed, tl_skip = W.guard.skip;
+        /* where the stream stands on the air: its queue's end, and the sample that ends it (the block being filled
+         * wasn't pushed, and tx_restart drops it: its samples aren't on the timeline) */
+        if (W.guarded)
+            tl_dry = W.guard.dry_at, tl_pushed = W.pushed - (dev->tx_block - dev->tx_room(dev)), tl_skip = W.guard.skip;
         pthread_mutex_unlock(&W.mu);
     }
     dev->rx_pause(dev);
@@ -4626,12 +4636,14 @@ static void *raw_thread(void *arg)
                 const int64_t d = due - W.tail; /* > 0: samples to drop; < 0: zeros to go back over */
                 if (d >= 0 && d < (int64_t)(0.25 * txrate)) {
                     W.guard.skip += d;
-                    say("transmit: back on its timeline after the raw capture (%.2f ms dropped)\n", 1e3 * (double)d / txrate);
+                    say("transmit: back on its timeline after the raw capture (%.2f ms dropped, %.1f ms queued)\n",
+                        1e3 * (double)d / txrate, 1e3 * (double)(W.head - due) / txrate);
                 } else if (d < 0 && -d < (int64_t)(0.25 * txrate) && W.head - due < RING) {
                     for (int64_t q = due; q < W.tail; q++)
                         W.buf[q % RING] = (rdof_cf_t){0, 0};
                     W.tail = due;
-                    say("transmit: back on its timeline after the raw capture (%.2f ms of zeros)\n", -1e3 * (double)d / txrate);
+                    say("transmit: back on its timeline after the raw capture (%.2f ms of zeros, %.1f ms queued)\n",
+                        -1e3 * (double)d / txrate, 1e3 * (double)(W.head - due) / txrate);
                 } else {
                     say("transmit: after the raw capture its timeline is %.1f ms off; it goes on from its queue\n",
                         1e3 * (double)d / txrate);
@@ -6543,6 +6555,7 @@ int main(int argc, char **argv)
                 R.full ? "; calibrating again once idle" : "");
             raw_quiet = 0, raw_lag = 0;
             raw_end = (double)total / rate;
+            R.ring_ref = -1; /* the hold emptied the ring and the restore filled it to the stream's timeline: taken again */
             if (R.full)
                 R.recal = true, R.cal_tries = 0;
         }
@@ -6608,20 +6621,30 @@ int main(int argc, char **argv)
          * until a read waits. The transmit guard's zeros stood in for the lost part, which the loop never makes:
          * rdof_txguard_slipped, or every block after goes out as zeros. */
         {
-            const double lag = (now - t_start) * rate - (double)total;
+            /* less the frames fx_owe and fx_drop put in or left out: the floor moves for a loss, not for its fix */
+            const double lag = (now - t_start) * rate - (double)(total - fx_fixed);
             if (lag < R.lag_min)
                 R.lag_min = lag;
             R.lag_fresh |= dt_read >= FRESH_S;
             if ((double)total / rate - R.lag_win >= 0.5 && R.lag_fresh) {
-                if (!isnan(R.lag_prev) && R.lag_min - R.lag_prev > rate / 500) {
+                const bool by_raw = FX.on && (raw_quiet || atomic_load(&RAW.fill) ||
+                                              (double)total / rate - raw_end < 1.5);
+                if (by_raw && !isnan(R.lag_prev) && R.lag_min - R.lag_prev < -(rate / 500)) {
+                    /* A raw capture's silence ran on past the stream's return (rx_resume to the transmitter's restart),
+                     * and the stream's first frames counted on from its end: the count ahead of the clock, what's heard
+                     * later than it was by as much. Frames left out bring it back. */
+                    fx_drop += llround((R.lag_prev - R.lag_min) / FX.step);
+                    say("receive: a raw capture's silence ran %.1f ms over; left out\n",
+                        1e3 * (R.lag_prev - R.lag_min) / rate);
+                    if (R.full)
+                        R.recal = true, R.cal_tries = 0;
+                } else if (!isnan(R.lag_prev) && R.lag_min - R.lag_prev > rate / 500) {
                     WS.lost += llround(R.lag_min - R.lag_prev);
                     /* A raw capture's: its silence missed a few ms at its ends (2.2-2.4 ms off the rate). Made up
                      * as more silence (fx_owe), the stream's count is back on the clock, and with the transmitter
                      * back on its own timeline what's heard against what's sent is as it was: the calibration
                      * holds. Else the guard's zeros stood for the loss: the stream is that much behind for good,
                      * not samples to drop. */
-                    const bool by_raw = FX.on && (raw_quiet || atomic_load(&RAW.fill) ||
-                                                  (double)total / rate - raw_end < 1.5);
                     if (by_raw)
                         fx_owe += llround((R.lag_min - R.lag_prev) / FX.step);
                     else if (W.guarded) {
@@ -6719,7 +6742,10 @@ int main(int argc, char **argv)
                 R.ring_min = fill;
             if (atomic_exchange(&late_rebase, 0))
                 R.ring_ref = -1; /* a job's own delay: the reference taken again against it */
-            if ((double)total / rate - R.ring_win >= 0.5) {
+            if (atomic_load(&RAW.fill)) { /* the TX held, its ring emptied: no drift of the path's */
+                R.ring_min = INT64_MAX;
+                R.ring_win = (double)total / rate;
+            } else if ((double)total / rate - R.ring_win >= 0.5) {
                 if (R.cal == 0 && R.ring_ref < 0) {
                     R.ring_ref = R.ring_min;
                     R.cal48 = R.m.tx_late48;
