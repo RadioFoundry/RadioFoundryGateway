@@ -26,6 +26,31 @@
 
 #define SEND_CHUNK 16384
 
+/* A client gone without a word (its host off the network, a tunnel torn down) leaves the connection open here, and
+ * its session with it: one waits for nothing but the close, so it was held until the program restarted. Probes on an
+ * idle connection find it gone in about a minute: the read fails, and the session ends as on a close. */
+#define KEEP_IDLE_S 30
+#define KEEP_INTVL_S 10
+#define KEEP_CNT 3
+
+static void keepalive(int fd)
+{
+    const int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof one);
+#if defined(TCP_KEEPIDLE)
+    const int idle = KEEP_IDLE_S;
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof idle);
+#elif defined(TCP_KEEPALIVE) /* macOS */
+    const int idle = KEEP_IDLE_S;
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, &idle, sizeof idle);
+#endif
+#if defined(TCP_KEEPINTVL) && defined(TCP_KEEPCNT)
+    const int intvl = KEEP_INTVL_S, cnt = KEEP_CNT;
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof intvl);
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof cnt);
+#endif
+}
+
 struct rdof_bnet {
     rdof_bl_t *bl;
     double (*now)(void);
@@ -111,6 +136,7 @@ static void *serve(void *arg)
                 } else {
                     const int one = 1;
                     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+                    keepalive(fd);
                     nonblock(fd);
                     n->fd[c] = fd;
                 }
