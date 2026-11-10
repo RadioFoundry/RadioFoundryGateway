@@ -4551,6 +4551,10 @@ static void *raw_thread(void *arg)
     fx_resync = true;
     if (off_rate) {
         pthread_mutex_lock(&W.mu);
+        /* the guard anew, as at start: nothing was pushed through the hold, so its queue's time ran out seconds ago
+         * and it took every block after for one that came late (zeros sent, the samples dropped, for good) */
+        if (W.guarded)
+            rdof_txguard_init(&W.guard, R.tx_rate, dev->tx_block, dev->tx_nbuf);
         W.hold = false;
         pthread_cond_broadcast(&W.cv);
         pthread_mutex_unlock(&W.mu);
