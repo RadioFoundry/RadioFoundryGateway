@@ -616,8 +616,11 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
 - `capture` with `"raw": true` sends the ADC's own samples, cs16 (int16 I, Q; 12 bits, LSB aligned, full scale 2048), at the front
   end's rate, nothing filtered: `rfgbench.py capture --raw`. `seconds` long, from when it starts: no pre-roll, and no history
   behind it. `info`'s `features` says `capture_raw`; a receiver without it answers `unsupported` (today a PlutoSDR running
-  `--fpga-chz` has it). It takes one DMA block as long as the capture, so its samples are in a row, and copies them to memory
-  before the first goes out: its length is what the board's memory holds (`unavailable` otherwise, saying why). One at a time; a
+  `--fpga-chz` has it). Its DMA blocks (up to 32 MB each) are all queued before the first sample, so the DMA fills them back to
+  back and its samples are in a row; if the ADC core's DMA overflow flag says otherwise, it fails (`unavailable`) rather than
+  hand over a gap. They're copied to memory before the first goes out, so its length is what the DMA memory holds: about 2.5
+  s at 19.872 MS/s on a PlutoSDR with 256 MB of CMA (`unavailable` otherwise, saying why). The receiver is deaf for about
+  0.8 s more than the capture (the blocks are set up and copied), and the log says how long in one line. One at a time; a
   second waits its turn. **While it's made the receiver hears nothing**: the channelizer is off, and each bursts stream gets
   filler and counts the samples lost (`complete: false`). The loop goes on turning on that silence, so the transmitter and every
   count keep real time: a transmission keeps going, and a capture can catch its own board's. No reboot, and the bitstream stays.
