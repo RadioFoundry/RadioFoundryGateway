@@ -571,8 +571,8 @@ static void test_ops(void)
     c = ask(bl, "{\"op\": \"bursts\", \"freq\": 438.1125, \"seconds\": 10, \"until_end\": true}", now);
     CHECK(rdof_bl_wants_bursts(bl), "bursts are wanted");
     for (int i = 0; i < 4; i++) {
-        rdof_bl_burst_t b = {.ch = i < 3 ? 1 : 2, .t = 1.8e9 + 0.06 * i, .pos48 = 2880 * i, .cfo_hz = 10.0f * i,
-                             .level_dbfs = -40,
+        rdof_bl_burst_t b = {.ch = i < 3 ? 1 : 2, .t = 1.8e9 + 0.06 * i, .pos48 = 2880 * i + 40, .lag48 = 40,
+                             .cfo_hz = 10.0f * i, .level_dbfs = -40,
                              .dt = i == 0 ? 1 : RDOF_BL_VOICE_SYNC, .n = 0, .slot = 1, .family = 1, .cc = 2};
         b.raw[0] = (uint8_t)i;
         rdof_bl_burst(bl, &b);
@@ -587,9 +587,10 @@ static void test_ops(void)
               strstr(out, "\"kind\":\"IDLE\"") && !strstr(out, "\"t_rel_ms\":180") &&
               strstr(out, "\"cfo_hz\":10.0,\"cfo_tol_hz\":null,"),
           "burst records: %s", out);
-    /* t and sc at the sync's center: 655 samples (48 kS/s) past the start, sc in the 768 kS/s window's count */
-    CHECK(strstr(out, "\"t\":1800000000.013646,\"sc\":10480,") &&
-              strstr(out, "\"t\":1800000000.073646,\"sc\":56560,"), "sync centers: %s", out);
+    /* t and sc at the sync's center: 655 samples (48 kS/s) past the first symbol, the demodulator's lag (40) taken
+     * off its position and time; sc in the 768 kS/s window's count */
+    CHECK(strstr(out, "\"t\":1800000000.012813,\"sc\":10480,") &&
+              strstr(out, "\"t\":1800000000.072813,\"sc\":56560,"), "sync centers: %s", out);
     rdof_bl_tick(bl, now + 0.5);
     drain(bl, c, out, sizeof out);
     CHECK(strstr(out, "\"done\":{\"bursts\":4,\"reason\":\"ended\"") &&

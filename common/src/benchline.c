@@ -4187,11 +4187,13 @@ static void burst_out(rdof_bl_t *bl, conn_t *c, const rdof_bl_burst_t *b, double
     const bool voice = b->dt == RDOF_BL_VOICE_SYNC || b->dt == RDOF_BL_VOICE;
     if (c->cc >= 0 && voice && b->cc >= 0 && b->cc != c->cc)
         return;
-    /* t and sc at the sync's center (bench-api.md 6.3): 65.5 symbols past the burst's start */
-    const double t = b->t + SYNC_CENTER_48 / 48000.0;
+    /* t and sc at the sync's center (bench-api.md 6.3): 65.5 symbols past the first symbol's center, which is the
+     * demodulator's lag before its position */
+    const double t = b->t + (SYNC_CENTER_48 - b->lag48) / 48000.0;
     char sc[32] = "null";
     if (c->fs > 0)
-        snprintf(sc, sizeof sc, "%lld", (long long)llround((double)(b->pos48 + SYNC_CENTER_48) * c->fs / 48000.0));
+        snprintf(sc, sizeof sc, "%lld",
+                 (long long)llround((double)(b->pos48 - b->lag48 + SYNC_CENTER_48) * c->fs / 48000.0));
     if (isnan(c->first_t))
         c->first_t = t;
     const double rel = 1e3 * (t - c->first_t);
