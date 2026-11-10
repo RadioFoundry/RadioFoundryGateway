@@ -6385,6 +6385,7 @@ int main(int argc, char **argv)
     long level_n = 0;
     double t_read = 0, t_write = 0, t_proc = 0; /* seconds spent in each, since the last status */
     double raw_lag = 0;                    /* the samples the clock says its silence fell behind */
+    double raw_end = -INFINITY;            /* the stream's seconds when a raw capture's silence ended */
     long long raw_quiet = 0, raw_seen = 0; /* channel frames a raw capture took, so far; fx_raw_made at the last turn */
     while (!stop && (seconds <= 0 || total < (long long)(seconds * rate))) {
         bench_tune_poll();
@@ -6396,10 +6397,12 @@ int main(int argc, char **argv)
         const long long raw_k = fx_raw_made - raw_seen; /* a raw capture's: one line at its end */
         raw_seen = fx_raw_made, raw_quiet += raw_k;
         if (raw_quiet && !atomic_load(&RAW.fill)) {
-            say("receive: %.2f s not heard for a raw capture (%lld channel frames, %.1f ms of them late)%s\n",
+            say("receive: %.2f s not heard for a raw capture (%lld channel frames, %.1f ms of them late, which the "
+                "transmitter drops)%s\n",
                 ((double)raw_quiet * FX.step + raw_lag) / rate, raw_quiet, 1e3 * raw_lag / rate,
                 R.full ? "; calibrating again once idle" : "");
             raw_quiet = 0, raw_lag = 0;
+            raw_end = (double)total / rate;
             if (R.full)
                 R.recal = true, R.cal_tries = 0;
         }
@@ -6472,13 +6475,25 @@ int main(int argc, char **argv)
             if ((double)total / rate - R.lag_win >= 0.5 && R.lag_fresh) {
                 if (!isnan(R.lag_prev) && R.lag_min - R.lag_prev > rate / 500) {
                     WS.lost += llround(R.lag_min - R.lag_prev);
-                    if (W.guarded) { /* the transmit stream is that much behind for good: not samples to drop */
+                    /* A raw capture's: its silence missed a few ms at either end (2.2-2.4 ms off the rate). The
+                     * transmitter, held through it, starts again with its own lead, so its samples, paced by what's
+                     * read, would go out that much late, every capture more (the calibration took up 2.3 ms a
+                     * time): they're dropped instead, and the stream goes out where it would have. Else the guard's
+                     * zeros stood for the loss: the stream is that much behind for good, not samples to drop. */
+                    const bool by_raw = raw_quiet || atomic_load(&RAW.fill) || (double)total / rate - raw_end < 1.5;
+                    if (W.guarded) {
                         pthread_mutex_lock(&W.mu);
-                        rdof_txguard_slipped(&W.guard, llround((R.lag_min - R.lag_prev) / txr));
+                        if (by_raw)
+                            rdof_txguard_advance(&W.guard, llround((R.lag_min - R.lag_prev) / txr));
+                        else
+                            rdof_txguard_slipped(&W.guard, llround((R.lag_min - R.lag_prev) / txr));
                         pthread_mutex_unlock(&W.mu);
                     }
-                    if (raw_quiet || atomic_load(&RAW.fill)) /* the silence fell behind the clock: the capture's */
+                    if (by_raw && (raw_quiet || atomic_load(&RAW.fill))) /* said at the capture's end */
                         raw_lag += R.lag_min - R.lag_prev;
+                    else if (by_raw)
+                        say("receive: a raw capture's silence fell %.1f ms behind; the transmitter drops as much\n",
+                            1e3 * (R.lag_min - R.lag_prev) / rate);
                     else
                         say("receive: %.1f ms of samples lost%s\n", 1e3 * (R.lag_min - R.lag_prev) / rate,
                             R.full ? "; calibrating again once idle" : "");

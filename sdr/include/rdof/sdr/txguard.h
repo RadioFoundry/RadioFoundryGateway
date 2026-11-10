@@ -49,6 +49,9 @@ int rdof_txguard_drop(rdof_txguard_t *g, int n);
  * zeros sent stood for those, not for samples still to come, so as many fewer are dropped. Without it, a caller
  * that far behind never catches up, and every block from then on goes out as zeros. */
 void rdof_txguard_slipped(rdof_txguard_t *g, int64_t n);
+/* The caller: its stream fell n samples behind the air while the device wasn't sending (a pause, its queue started
+ * again after): the next n samples are dropped, and what follows goes out where it would have without the fall. */
+void rdof_txguard_advance(rdof_txguard_t *g, int64_t n);
 
 #ifdef __cplusplus
 }

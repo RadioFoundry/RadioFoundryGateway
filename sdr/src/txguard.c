@@ -48,3 +48,9 @@ void rdof_txguard_slipped(rdof_txguard_t *g, int64_t n)
     if (n > 0)
         g->skip -= g->skip < n ? g->skip : n;
 }
+
+void rdof_txguard_advance(rdof_txguard_t *g, int64_t n)
+{
+    if (n > 0)
+        g->skip += n;
+}
