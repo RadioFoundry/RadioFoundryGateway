@@ -506,6 +506,7 @@ static void marks(void)
     }
     CHECK(iq.mark_failed > 0, "marks: no rise, no mark");
     lr2021_iq_stop(&iq);
+    lr2021_close(d);
 }
 
 static void transmit(void)
