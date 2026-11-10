@@ -32,9 +32,9 @@ static double urand(void)
 }
 
 /* The carrier's amplitude at output i: 0 off; segments [start, start + len) outputs, ramped over 1 ms each end */
-typedef struct { long start, len; double amp, amp2; long step_at; } key_t;
+typedef struct { long start, len; double amp, amp2; long step_at; } keying_t;
 
-static double amp_at(const key_t *k, int nk, long i)
+static double amp_at(const keying_t *k, int nk, long i)
 {
     const long r = 48;
     for (int j = 0; j < nk; j++) {
@@ -65,7 +65,7 @@ int main(void)
     const double amp = 0.1; /* -20 dB */
     /* a 28 ms burst at 100 ms, another at 160 ms; 200 ms of carrier at 300 ms stepping 6 dB down 100 ms in; a
      * carrier from 700 ms on to the end */
-    const key_t k[] = {
+    const keying_t k[] = {
         {4800, 1344, amp, 0, 0},
         {7680, 1344, amp, 0, 0},
         {14400, 9600, amp, amp / 2, 4800},
@@ -121,7 +121,7 @@ int main(void)
     /* keyed from the start, a gap in the middle of a carrier, clipping counted */
     e = rdof_benv_new(RATE, D, NULL);
     rdof_benv_floor(e, -60);
-    const key_t k2[] = {{0, 6000, 0.5, 0, 0}};
+    const keying_t k2[] = {{0, 6000, 0.5, 0, 0}};
     for (long i = 0; i < 3000; i++)
         push(e, sc0 + (uint64_t)i * D, amp_at(k2, 1, i));
     for (long i = 3500; i < 9000; i++) /* 500 outputs lost */
