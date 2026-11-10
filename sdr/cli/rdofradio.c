@@ -4555,6 +4555,20 @@ static void *raw_thread(void *arg)
          * and it took every block after for one that came late (zeros sent, the samples dropped, for good) */
         if (W.guarded)
             rdof_txguard_init(&W.guard, R.tx_rate, dev->tx_block, dev->tx_nbuf);
+        /* the new queue full of zeros, as the stream's lead fills it at start: the hold dropped that lead, and with
+         * the queue empty it ran dry every so often (2-3 ms of zeros each time). Its last push waits: the guard has
+         * its time from it. The writer's held, so this thread writes. */
+        if (dev->tx_block > 0 && dev->tx_nbuf > 0) {
+            static const rdof_cf_t zeros[CHUNK];
+            pthread_mutex_unlock(&W.mu);
+            for (long left = (long)dev->tx_block * (dev->tx_nbuf + 1); left > 0;) {
+                const int k = dev->write(dev, zeros, left < CHUNK ? (int)left : CHUNK, 100000);
+                if (k <= 0)
+                    break;
+                left -= k;
+            }
+            pthread_mutex_lock(&W.mu);
+        }
         W.hold = false;
         pthread_cond_broadcast(&W.cv);
         pthread_mutex_unlock(&W.mu);
