@@ -26,6 +26,8 @@
  *             [--last-exit FILE] [--ota FILE] [--fft builtin|pffft] [--bench [ADDR:]PORT] [--bench-tx MHZ|LOW-HIGH,...]
  *   rdofradio DEVICE --allow-tx --config FILE [--clock-state FILE] [--set-os-clock] [the device's flags as above]
  *   rdofradio DEVICE --allow-tx --split-tx PORT [--baud N] [--split-power-cap N] --rx MHZ --tx MHZ [--cc CC] [...]
+ *   rdofradio DEVICE --listen --rx MHZ [--tx MHZ] [--cc CC] [-r RATE] [--gain DB] [--center MHZ] [--fpga-chz [ADDR]]
+ *             [--seconds S] [--bursts] [--bench [ADDR:]PORT] [--web [ADDR:]PORT]
  *   rdofradio [DEVICE] --allow-tx --mmdvm PORT [--baud N] [--rf-level N] [--rx-offset-hz HZ] [--tx-offset-hz HZ]
  *             [--rx-level PCT] [--tx-level PCT] --rx MHZ [--tx MHZ] [--duplex full|half] [--cc CC] | --config FILE [...]
  *
@@ -232,6 +234,7 @@ static int mm_rf_level = 255; /* --rf-level: the cap on every SET_FREQ's RF leve
 static long long mm_heard_n, mm_capped; /* --mmdvm: bursts the modem heard, SET_FREQs capped */
 static volatile sig_atomic_t stop;
 static int quiet, show_bursts;
+static bool listen_only; /* --listen: the SDR receives only, nothing transmits (the bench's bursts, no unit) */
 #ifdef RDOF_HOST_WEB
 static int web_port = -1;        /* --web [ADDR:]PORT: the firmware's page (0: any free port) */
 static char web_addr[64] = "127.0.0.1";
@@ -512,6 +515,8 @@ static void usage(void)
             "       rdofradio DEVICE --allow-tx --config FILE [--clock-state FILE] [--set-os-clock] [the device's flags]\n"
             "       rdofradio DEVICE --allow-tx --split-tx PORT [--baud N] [--split-power-cap N] --rx MHZ --tx MHZ [--cc CC]\n"
             "                 [-r RATE] [--gain DB] [--center MHZ] [--parrot ID] [--seconds S] [-v] [--web [ADDR:]PORT]\n"
+            "       rdofradio DEVICE --listen --rx MHZ [--tx MHZ] [--cc CC] [-r RATE] [--gain DB] [--center MHZ]\n"
+            "                 [--fpga-chz [ADDR]] [--seconds S] [--bursts] [--bench [ADDR:]PORT] [--web [ADDR:]PORT]\n"
             "       rdofradio [DEVICE] --allow-tx --mmdvm PORT [--baud N] [--rf-level N] [--rx-offset-hz HZ]\n"
             "                 [--tx-offset-hz HZ] [--rx-level PCT] [--tx-level PCT] --rx MHZ [--tx MHZ] [--duplex full|half]\n"
             "                 [--cc CC] | --config FILE [--parrot ID] [--seconds S] [-v] [--web ...] [--bench ...]\n"
@@ -1166,6 +1171,7 @@ static uint32_t chan_hz(const chan_t *m) { return (uint32_t)llround(m->ch->freq)
 static chan_t CHN[RDOF_SDR_MAX_CHANNELS];
 static int nchn;
 
+#if defined(RDOF_MQTT) || defined(RDOF_HOST_WEB)
 /* The settings' channel on receiver channel c; NULL for one of our own (--monitor's "out", --mmdvm's "modem-rx" and
  * "modem-tx") */
 static const chan_t *chan_at(int c)
@@ -1175,10 +1181,13 @@ static const chan_t *chan_at(int c)
             return &CHN[i];
     return NULL;
 }
+#endif
 
 /* Whether it shows a peer on the page and in the status, and whether that peer is up */
+#if defined(RDOF_MQTT) || defined(RDOF_HOST_WEB)
 static bool chan_has_peer(const chan_t *m) { return m->peer || m->unit; }
 static bool chan_peer_up(const chan_t *m) { return m->peer ? m->net.peer.up : m->unit && net_on && NET.peer.up; }
+#endif
 
 static void chan_send(void *ctx, const uint8_t *d, size_t n) { rdofnet_peer_send(&((chan_t *)ctx)->net, d, n); }
 /* Whether the transceiver may go to a channel: one of its channels (the roamer's). */
@@ -1296,11 +1305,13 @@ static bool is_unit(const char *ch)
     const int c = channel_named(ch);
     return R.mmdvm ? c < 0 && !strcmp(ch, "rx") : c >= 0 && c == unit_channel();
 }
+#if defined(RDOF_MQTT) || defined(RDOF_HOST_WEB)
 static bool is_sdr(const char *ch)
 {
     const int c = channel_named(ch);
     return c >= 0 && chan_at(c) != NULL;
 }
+#endif
 
 static void net_poll(double now)
 {
@@ -1375,17 +1386,7 @@ static void clock_stop(void) {}
 
 /* ── MQTT: the board's topics (esp_idf/main/roam_mqtt.c for the radio, sdr_mqtt.c for the SDR's channels) ─ */
 
-#ifdef RDOF_MQTT
-static rdofmq_t *MQ, *MQ_SDR; /* the radio's connection; the SDR's channels' (the board's SDR's own) */
-static char mq_status[96], mq_sdr_status[96];
-static char mq_alias[2][112], mq_sdr_alias[2 * RDOF_SDR_MAX_CHANNELS][112];
-static const char *mq_alias_p[2], *mq_sdr_alias_p[2 * RDOF_SDR_MAX_CHANNELS];
-static rdof_netcalls_t mq_calls;
-static double mq_next, mq_sdr_next; /* the next status (now_s) */
-static bool mq_hb_was;
-static void mq_status_soon(void) { mq_next = 0; }
-
-/* Unix time: netclock's when it runs, else the OS's */
+/* Unix time: netclock's when it runs, else the OS's. Not MQTT's alone: the bench's and the trackers' times too */
 static double wall_s(void)
 {
 #ifdef RDOF_NETCLOCK
@@ -1396,6 +1397,16 @@ static double wall_s(void)
     clock_gettime(CLOCK_REALTIME, &ts);
     return (double)ts.tv_sec + ts.tv_nsec * 1e-9;
 }
+
+#ifdef RDOF_MQTT
+static rdofmq_t *MQ, *MQ_SDR; /* the radio's connection; the SDR's channels' (the board's SDR's own) */
+static char mq_status[96], mq_sdr_status[96];
+static char mq_alias[2][112], mq_sdr_alias[2 * RDOF_SDR_MAX_CHANNELS][112];
+static const char *mq_alias_p[2], *mq_sdr_alias_p[2 * RDOF_SDR_MAX_CHANNELS];
+static rdof_netcalls_t mq_calls;
+static double mq_next, mq_sdr_next; /* the next status (now_s) */
+static bool mq_hb_was;
+static void mq_status_soon(void) { mq_next = 0; }
 
 /* {root}/{radio}/{app}/{kind}, app "repeater" or "roaming"; {root}/{channel}/{app}/{kind} for the SDR's, app "sdr" */
 static void mq_topic(const char *kind, char *out, size_t cap)
@@ -1708,7 +1719,7 @@ static void on_json(void *ctx, const char *ch, const char *json)
  * just heard isn't held off by that call); with --mmdvm the modem's tracker does it (mm_on_call) */
 static void on_call(void *ctx, const char *ch, const char *action, uint32_t src, uint32_t dst)
 {
-    if (!R.full && !R.mmdvm && is_unit(ch))
+    if (!R.full && !R.mmdvm && !listen_only && is_unit(ch))
         rdof_txvr_heard_call(&R.t, action, src, dst);
 }
 
@@ -2001,6 +2012,8 @@ static int bl_freqs(void *ctx, rdof_bl_freq_t *out, int max)
 
 static const char *bl_can_tx(void *ctx)
 {
+    if (listen_only)
+        return "--listen: the SDR receives only";
     if (R.split)
         return "a split repeater's radio transmits, not the SDR: no transmit jobs here";
     if (!bench_ntx && !bench_nband)
@@ -3252,7 +3265,7 @@ static void on_burst(void *ctx, int c, const rdof_sdr_burst_t *b, double t)
     pthread_mutex_unlock(&BT.mu);
     if (R.mmdvm)
         ob_heard(c, b);
-    else
+    else if (!listen_only)
         rdof_sdrmodem_heard(&R.m, c, b);
     ms_heard(c, b, false);
     if (NX)
@@ -3590,7 +3603,7 @@ static bool echo_drop(void *ctx, int c, const rdof_sdr_burst_t *b)
 static int relabel(void *ctx, int c, const rdof_sdr_burst_t *b)
 {
     const int rx = channel_of(BR.active ? BR.cfg.rx_hz : R.rx_hz);
-    return c == rx && !R.mmdvm ? rdof_sdrmodem_inbound(&R.m, b) : 0;
+    return c == rx && !R.mmdvm && !listen_only ? rdof_sdrmodem_inbound(&R.m, b) : 0;
 }
 
 static void tx_gain(double db)
@@ -5566,6 +5579,64 @@ out:
     return rc;
 }
 
+/* The whole run with --listen, once the device is open receive only: the receiver and the bench's line, no unit,
+ * nothing that transmits. */
+static int listen_main(int argc, char **argv, double seconds)
+{
+    const double t0 = now_s();
+    SC.rate = R.rate;
+    SC.floor = SC.last_win = SC.win_min = INFINITY;
+    SC.chunk = (int)(R.rate / 100) < CHUNK ? (int)(R.rate / 100) : CHUNK;
+    if (dev->start(dev)) {
+        fprintf(stderr, "start: %s\n", dev->error);
+        dev->close(dev);
+        return 1;
+    }
+    SC.t0 = SC.win_start = now_s();
+    fprintf(stderr, "listen: %s, RX %.4f MHz, TX %.4f MHz heard, cc %d; nothing transmits\n", dev->name,
+            R.rx_hz / 1e6, R.tx_hz / 1e6, R.cc);
+#ifdef RDOF_HOST_WEB
+    if (web_port >= 0) {
+        web_settings(argc, argv);
+        const int wp = rdof_hostweb_start(web_addr, web_port, rcfg.box);
+        if (wp < 0)
+            fprintf(stderr, "web: %s\n", strerror(errno));
+        else
+            fprintf(stderr, "web: http://%s:%d/\n", web_addr, wp), advertise_web(wp);
+    }
+    double last_web = 0;
+#else
+    (void)argc, (void)argv;
+#endif
+    bench_start();
+    while (!stop && (seconds <= 0 || now_s() - t0 < seconds)) {
+        rx_turn();
+        ws_turn(now_s());
+#ifdef RDOF_HOST_WEB
+        const double now = now_s();
+        if (now - last_web >= 0.25) {
+            last_web = now;
+            web_publish(R.rx_hz, R.tx_hz, R.cc);
+        }
+#endif
+    }
+    dev->close(dev);
+    fprintf(stderr, "%.1f s; SDR: %d overflows, %.1f ms of samples lost\n", now_s() - t0, SC.overflows,
+            1e3 * (double)SC.filled / R.rate);
+    for (int c = 0; c < NCH; c++)
+        fprintf(stderr, "%s %.4f MHz: %ld bursts\n", CH[c].id, CH[c].freq_hz / 1e6, R.rx.bursts[c]);
+    bench_stop();
+    mq_stop();
+    net_close();
+    clock_stop();
+    rdof_sdr_rx_free(&R.rx);
+#ifdef RDOF_HOST_WEB
+    rdof_hostweb_stop();
+#endif
+    rdof_sdrmodem_free(&R.m);
+    return 0;
+}
+
 /* Settings that can't run (refused, or channels no window holds): with --config and --web, the page stays up
  * with the reason, so the file can be fixed there; a save, or the file changing on disk, starts again. Without
  * them, exits 2 (a supervisor that restarts it gets the same reason each time). */
@@ -5799,6 +5870,8 @@ int main(int argc, char **argv)
             seconds = atof(v);
         } else if (!strcmp(a, "--allow-tx")) {
             allow = 1;
+        } else if (!strcmp(a, "--listen")) {
+            listen_only = true;
         } else if (!strcmp(a, "--monitor")) {
             monitor = 1;
             tx_flags++;
@@ -5987,8 +6060,14 @@ int main(int argc, char **argv)
         return 2;
     }
 #endif
-    if (!allow) {
-        fprintf(stderr, "rdofradio transmits: pass --allow-tx\n");
+    if (listen_only && (allow || split_tx || mmdvm || tx_flags || config_path || R.parrot || bench_ntx || bench_nband ||
+                        DX.on)) {
+        fprintf(stderr, "--listen receives only: no --allow-tx, --split-tx, --mmdvm, --config, --parrot, --bench-tx, "
+                        "--fpga-duc or transmit settings\n");
+        return 2;
+    }
+    if (!allow && !listen_only) {
+        fprintf(stderr, "rdofradio transmits: pass --allow-tx (or --listen to receive only)\n");
         return 2;
     }
     if ((FX.on || DX.on) && dev_local) {
@@ -6098,7 +6177,7 @@ int main(int argc, char **argv)
         int nown = 0;
         if (R.mmdvm && rdofradio_cfg_channel_at(&rcfg, R.rx_hz) < 0)
             own[nown++] = (rdof_sdr_channel_t){"modem-rx", rx, cc, rx_slot};
-        if (monitor && rdofradio_cfg_channel_at(&rcfg, R.tx_hz) < 0 && R.tx_hz != R.rx_hz)
+        if ((monitor || listen_only) && rdofradio_cfg_channel_at(&rcfg, R.tx_hz) < 0 && R.tx_hz != R.rx_hz)
             own[nown++] = (rdof_sdr_channel_t){"out", tx, cc, 1};
         if (!rcfg.nchan && !R.mmdvm) /* the settings put nothing on the SDR (it can't be: a unit on it hears there) */
             own[nown++] = (rdof_sdr_channel_t){"rx", rx, cc, rx_slot};
@@ -6214,7 +6293,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "--fpga-duc: transmit at %.0f S/s, R %d to %.0f S/s, the TX LO %.0f kHz above\n", R.tx_rate,
                 R.txr, rate, (tx_lo - tx) / 1e3);
     }
-    const rdofradio_dev_setup_t su = {rate, R.rx.center_hz, tx_lo, gain, bw, stream_args, R.split || R.mmdvm,
+    const rdofradio_dev_setup_t su = {rate, R.rx.center_hz, tx_lo, gain, bw, stream_args, R.split || R.mmdvm || listen_only,
                                       FX.on ? 48000.0 * (double)rdof_chzfx_frame_words(FX.C) : 0, R.txr, settings,
                                       n_settings};
 #ifdef RDOF_IIO
@@ -6254,7 +6333,7 @@ int main(int argc, char **argv)
     }
     txg_full = txg;
     bench_map = rcfg.cfg.tx_map;
-    if (!R.split && !R.mmdvm && (txg < dev->tx_gain_min || txg > dev->tx_gain_max)) {
+    if (!R.split && !R.mmdvm && !listen_only && (txg < dev->tx_gain_min || txg > dev->tx_gain_max)) {
         fprintf(stderr, "TX gain %.1f outside the device's %.1f..%.1f\n", txg, dev->tx_gain_min, dev->tx_gain_max);
         dev->close(dev);
         return 1;
@@ -6270,7 +6349,7 @@ int main(int argc, char **argv)
     signal(SIGTERM, on_signal);
 
     /* the modem, its client, and the repeater or the transceiver over them */
-    const bool rx_only = R.split || R.mmdvm;
+    const bool rx_only = R.split || R.mmdvm || listen_only;
     const rdof_sdrmodem_io_t io = {io_reply, io_channel, rx_only ? NULL : io_tune, &R, R.split ? split_now48 : NULL,
                                    rx_only ? NULL : io_tx_level};
     /* the nominal rate when the device's is within 2 S/s of it, as the receiver takes it (below 2.083 MS/s an
@@ -6297,6 +6376,8 @@ int main(int argc, char **argv)
     }
     if (R.mmdvm)
         return mmdvm_main(argc, argv, mmdvm, baud, seconds, mm_rx_off, mm_tx_off, mm_rx_level, mm_tx_level);
+    if (listen_only)
+        return listen_main(argc, argv, seconds);
     const rdof_modem_port_t port = {p_write, p_wait, NULL, p_clock, p_sleep, &R};
     rdof_modem_init(&R.client, &port);
     R.client.on_rx = on_rx;

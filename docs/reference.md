@@ -1283,6 +1283,19 @@ is read by a thread.
 - `--sim-sdr` in place of DEVICE: a receiver of noise, for tests with no RF (`host-tests/test_mmdvm_bench.py` runs the
   whole bench on `fakemodem`).
 
+#### Receive only
+
+`rdofradio DEVICE --listen --rx MHZ [--tx MHZ]`: no unit and nothing that transmits, for an SDR with no TX antenna. The
+device is opened receive only (no TX stream, the TX LO powered down), `--allow-tx` isn't needed, and the receiver
+hears `--rx` and `--tx` as channels (`rx`, `out`). It serves the receiver's bursts, the spectrum (`--web`) and the
+bench's line protocol (`--bench`): the bench sees no transmitter (`info`'s station has `tx` false, "--listen: the SDR
+receives only"), so a transmit job is refused. `--allow-tx`, `--split-tx`, `--mmdvm`, `--config`, `--parrot`,
+`--bench-tx`, `--fpga-duc` and the transmitter's flags are refused with it.
+
+Run on a Pluto (2026-11-09) with `--fpga-chz` on a duplex hotspot's pair (448.7 / 443.7 MHz, then 448.7 / 446.075):
+the bench's `bursts` op timed a radio's inbound bursts against the hotspot's outbound over about half an hour, the TX LO
+powered down throughout.
+
 #### The bench's line protocol
 
 `--bench [ADDR:]PORT` serves [bench-api.md](spec/bench-api.md) §14 for `tools/bench/rfgbench.py`: the channels'
