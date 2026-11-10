@@ -616,7 +616,9 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
 - `capture` with `"raw": true` sends the ADC's own samples, cs16 (int16 I, Q; 12 bits, LSB aligned, full scale 2048), at the front
   end's rate, nothing filtered: `rfgbench.py capture --raw`. `seconds` long, from when it starts: no pre-roll, and no history
   behind it. `rate` (520834-61440000 S/s, `--rate`) gives it a rate of its own: the chip changes for it and back after (the
-  receiver is deaf through it anyway), and nothing transmits meanwhile, since the transmitter shares the rate. The front end
+  receiver is deaf through it anyway), and nothing transmits meanwhile, since the transmitter shares the rate. After it the
+  transmitter starts again with its 50 ms lead (a transmission under way has a gap the capture's length) and calibrates again;
+  each such capture has moved the transmit path about 2.3 ms later so far, which the calibration takes up. The front end
   is tuned 10 % of the rate above `freq` when `freq` isn't within 35 % of the rate of where it is, so any frequency the chip
   tunes works; `ready`'s and `meta`'s `center` say where. `info`'s `features` says `capture_raw`; a receiver without it answers `unsupported` (today a PlutoSDR running
   `--fpga-chz` has it). Its DMA blocks (up to 32 MB each) are all queued before the first sample, so the DMA fills them back to
