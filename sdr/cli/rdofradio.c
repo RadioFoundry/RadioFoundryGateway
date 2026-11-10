@@ -3168,7 +3168,7 @@ static void advertise_web(int port)
 static const char *bl_tune(void *ctx, const rdof_bl_tune_t *t, const char *who, char *why, size_t cap);
 static int bl_tune_state(void *ctx, char *why, size_t cap);
 static void bl_untune(void *ctx);
-static int bl_raw_start(void *ctx, double seconds, double fs, double center, char *err, size_t cap);
+static int bl_raw_start(void *ctx, double seconds, double fs, double center, double gain, char *err, size_t cap);
 static int bl_raw_state(void *ctx, rdof_bl_raw_t *o, char *err, size_t cap);
 static void bl_raw_read(void *ctx, long at, int16_t *out, long n);
 static void bl_raw_close(void *ctx);
@@ -4304,6 +4304,7 @@ static struct {
     long n, clipped;
     int16_t *buf;
     double t0, t_fill, fs, center; /* its rate; where it's tuned, NAN: where the receiver is */
+    double gain;                   /* its RX gain, the receiver's again after; NAN: the receiver's */
     long long made;
     char err[160];
 } RAW;
@@ -4504,6 +4505,9 @@ static int fx_take(int chunk, long timeout_us)
     return k * FX.step;
 }
 
+/* the receiver's gain after a raw capture with its own: a tune's, else the settings' */
+static double raw_gain_back(void) { return TU.gained ? TU.gain_db : rx_gain_set; }
+
 static void *raw_thread(void *arg)
 {
     (void)arg;
@@ -4535,9 +4539,18 @@ static void *raw_thread(void *arg)
     if ((off_rate || retune) && dev->raw_tune(dev, off_rate ? RAW.fs : 0, retune ? RAW.center : 0, &fs, err, sizeof err))
         rc = -1;
     RAW.fs = fs;
+    const bool gained = !rc && isfinite(RAW.gain);
+    if (gained && dev->set_rx_gain(dev, RAW.gain)) {
+        snprintf(err, sizeof err, "the gain %.1f dB: %s", RAW.gain, dev->error);
+        rc = -1;
+    }
     long after = 0;
     if (!rc)
         rc = dev->raw_fill(dev, n, fs, buf, &after, err, sizeof err);
+    if (gained && dev->set_rx_gain(dev, raw_gain_back())) {
+        say("raw capture: the receiver's gain didn't come back: %s\n", dev->error);
+        exit(1); /* run.sh starts it again */
+    }
     const double t_end = bl_utc(NULL); /* the last DMA block's last sample just came */
     if (!rc)
         RAW.t0 = t_end - (double)(n + after) / fs;
@@ -4635,7 +4648,7 @@ static void *raw_thread(void *arg)
     return NULL;
 }
 
-static int bl_raw_start(void *ctx, double seconds, double fs, double center, char *err, size_t cap)
+static int bl_raw_start(void *ctx, double seconds, double fs, double center, double gain, char *err, size_t cap)
 {
     (void)ctx;
     if (atomic_load(&RAW.state))
@@ -4648,7 +4661,11 @@ static int bl_raw_start(void *ctx, double seconds, double fs, double center, cha
         snprintf(err, cap, "this device's rate can't change for a capture");
         return -1;
     }
-    RAW.fs = fs > 0 ? fs : R.rate, RAW.center = center;
+    if (isfinite(gain) && !dev->set_rx_gain) {
+        snprintf(err, cap, "this device's gain can't change for a capture");
+        return -1;
+    }
+    RAW.fs = fs > 0 ? fs : R.rate, RAW.center = center, RAW.gain = gain;
     const long n = lround(seconds * RAW.fs);
     int16_t *buf = malloc((size_t)n * 4);
     if (!buf) {

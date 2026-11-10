@@ -1261,8 +1261,11 @@ static struct { int starts, polls, closes, ready_after, fail, tone; long n; } ra
 
 static double raw_f_fs, raw_f_center;
 
-static int f_raw_start(void *ctx, double seconds, double fs, double center, char *err, size_t cap)
+static double raw_f_gain;
+
+static int f_raw_start(void *ctx, double seconds, double fs, double center, double gain, char *err, size_t cap)
 {
+    raw_f_gain = gain;
     if (raw_f.fail) {
         snprintf(err, cap, "no room");
         return -1;
@@ -1350,13 +1353,14 @@ static void test_raw_bursts(void)
     p.raw_demod = f_raw_demod;
     bl = rdof_bl_new(&p);
     raw_f.tone = 1, raw_f.n = 2 * 2400000, raw_f.ready_after = 3;
-    c = ask(bl, "{\"op\":\"bursts\",\"freq\":445.0,\"seconds\":2,\"raw\":true,\"ramp\":true,\"rate\":2.41e6}", now);
+    c = ask(bl, "{\"op\":\"bursts\",\"freq\":445.0,\"seconds\":2,\"raw\":true,\"ramp\":true,\"rate\":2.41e6,\"gain\":40}", now);
     total = 0;
     for (int i = 0; i < 200 && !strstr(all, "{\"done\""); i++) {
         rdof_bl_tick(bl, now += 0.01);
         total += drain(bl, c, all + total, sizeof all - total - 1);
         all[total] = 0;
     }
+    CHECK(raw_f_gain == 40, "its gain to the receiver: %.1f", raw_f_gain);
     CHECK(raw_f.starts == 1 && raw_f_fs == 2400000 && fabs(raw_f_center - 445.24e6) < 1,
           "a capture at 2.4 MS/s (a multiple of 48 kS/s) tuned above: %d %.0f %.0f", raw_f.starts, raw_f_fs, raw_f_center);
     CHECK(strstr(all, "\"ready\"") && strstr(all, "\"raw\":true,\"fs\":2400000.0,\"center\":445.240000"), "ready: %.300s", all);
@@ -1402,6 +1406,7 @@ static void test_raw_capture(void)
         all[total] = 0;
     }
     CHECK(raw_f.starts == 1, "started once: %d", raw_f.starts);
+    CHECK(isnan(raw_f_gain), "no gain asked: the receiver's (%.1f)", raw_f_gain);
     CHECK(strstr(all, "\"raw\":true") && strstr(all, "\"fmt\":\"cs16\""), "the ready names it: %.300s", all);
     long n = 0, frames = 0, bad = 0;
     char *after = all; /* the samples hold zero bytes: text is looked for between them */

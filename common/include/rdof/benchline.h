@@ -327,8 +327,9 @@ typedef struct {
      * listening to hand them over does it for this long. raw_start begins one in the background: 0 begun, 1 another is
      * running (try again), -1 it can't (why in err). raw_state: 0 still running, 1 ready (*info), -1 failed (why in err).
      * raw_read: its samples [at, at + n) into out. raw_close: done with them.
-     * fs_hz: its rate (0: the receiver's); center_hz: where it's tuned (NAN: where the receiver is). */
-    int (*raw_start)(void *ctx, double seconds, double fs_hz, double center_hz, char *err, size_t cap);
+     * fs_hz: its rate (0: the receiver's); center_hz: where it's tuned (NAN: where the receiver is); gain_db: the RX
+ * gain for it, the receiver's own again after (NAN: as it is). */
+    int (*raw_start)(void *ctx, double seconds, double fs_hz, double center_hz, double gain_db, char *err, size_t cap);
     int (*raw_state)(void *ctx, rdof_bl_raw_t *info, char *err, size_t cap);
     void (*raw_read)(void *ctx, long at, int16_t *out, long n);
     void (*raw_close)(void *ctx);

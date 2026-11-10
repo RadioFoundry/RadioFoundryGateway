@@ -202,6 +202,7 @@ typedef struct {
     bool raw_b;     /* a bursts stream on a raw capture: the capture, then its bursts, envelope and ramps from it */
     int raw_phase;  /* a raw capture: 0 waiting its turn, 1 being made, 2 going out */
     double raw_secs, raw_since, raw_fs, raw_center; /* raw_fs 0: the receiver's rate; raw_center NAN: where it is */
+    double raw_gain;                                /* NAN: the receiver's gain */
     rdof_bl_raw_t raw;
     bool rerun; /* came while a retune restarted the receiver: runs again once it's done */
     /* run */
@@ -1385,7 +1386,8 @@ static void op_capture_raw(rdof_bl_t *bl, conn_t *c, int root, double now, doubl
     c->raw_secs = secs;
     c->raw_fs = fs > 0 ? fs : 0, c->raw_center = center;
     c->freq_hz = mhz * 1e6;
-    c->gain = jnum(bl, root, "gain", w->gain_db);
+    c->raw_gain = jnum(bl, root, "gain", NAN); /* the receiver's deaf meanwhile anyway: its gain for the capture */
+    c->gain = isfinite(c->raw_gain) ? c->raw_gain : w->gain_db;
     c->raw_since = now;
     c->state = C_ACTIVE;
     emit(bl, c, "{\"ready\":%.6f,\"shared\":false,\"center\":%.6f,\"pre_s\":0,\"fs\":%.3f,\"fmt\":\"cs16\",\"sc0\":0,\"raw\":true}",
@@ -4363,7 +4365,8 @@ static int raw_progress(rdof_bl_t *bl, conn_t *c, double now)
     if (c->raw_phase == 0) { /* waiting its turn */
         if (bl->raw_conn)
             return 0;
-        const int r = bl->p.raw_start(bl->p.ctx, c->raw_secs, c->raw_fs, c->raw_center, err, sizeof err);
+        const int r = bl->p.raw_start(bl->p.ctx, c->raw_secs, c->raw_fs, c->raw_center, c->raw_gain, err,
+                                         sizeof err);
         if (r > 0)
             return 0;
         if (r < 0) {
@@ -4475,6 +4478,9 @@ static void op_bursts_raw(rdof_bl_t *bl, conn_t *c, int root, double now)
     }
     c->raw_b = true, c->raw_phase = 0;
     c->raw_secs = secs, c->raw_fs = fs, c->raw_center = center;
+    c->raw_gain = jnum(bl, root, "gain", NAN);
+    if (isfinite(c->raw_gain))
+        c->gain = c->raw_gain;
     c->state = C_ACTIVE;
     bl->n_bursts++;
     emit(bl, c, "{\"ready\":%.3f,\"raw\":true,\"fs\":%.1f,\"center\":%.6f,\"seconds\":%.3f}",
