@@ -217,7 +217,7 @@ static int raw_fill(rdofradio_dev_t *d, long n, int16_t *out, long *after, char 
     }
     iio_channel_enable(s->rx_i);
     iio_channel_enable(s->rx_q);
-    const long all = n + RAW_GUARD, blocks = (all + RAW_BLOCK - 1) / RAW_BLOCK, len = (all + blocks - 1) / blocks;
+    const long all = n + RAW_GUARD, blocks = (all + RAW_BLOCK - 1) / RAW_BLOCK, len = ((all + blocks - 1) / blocks + 1023) & ~1023L; /* whole DMA bursts */
     iio_device_set_kernel_buffers_count(s->rxd, (unsigned)blocks);
     s->rxb = iio_device_create_buffer(s->rxd, (size_t)len, false);
     if (!s->rxb) {
