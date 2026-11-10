@@ -168,6 +168,7 @@
 #define RDOF_VERSION "dev"
 #endif
 
+#define TX_LEAD_S 0.05     /* zeros the transmit stream starts with, ahead of the first read */
 #define CHUNK 24000        /* receive samples a turn: 10 ms at 2.4 MS/s */
 #define POLL_S 0.02        /* the repeater's poll */
 #define FRESH_S 0.0003     /* a read that waited this long found the device's buffers empty: its samples are now */
@@ -4555,13 +4556,13 @@ static void *raw_thread(void *arg)
          * and it took every block after for one that came late (zeros sent, the samples dropped, for good) */
         if (W.guarded)
             rdof_txguard_init(&W.guard, R.tx_rate, dev->tx_block, dev->tx_nbuf);
-        /* the new queue full of zeros, as the stream's lead fills it at start: the hold dropped that lead, and with
-         * the queue empty it ran dry every so often (2-3 ms of zeros each time). Its last push waits: the guard has
-         * its time from it. The writer's held, so this thread writes. */
+        /* the stream's lead again, as zeros, as at start: the hold dropped it, and with the queue short of it the queue
+         * ran dry every so often (2-3 ms of zeros each time with it empty, 0.7 ms with it only full). Over the queue,
+         * so the pushes wait: the guard has its time from them. The writer's held, so this thread writes. */
         if (dev->tx_block > 0 && dev->tx_nbuf > 0) {
             static const rdof_cf_t zeros[CHUNK];
             pthread_mutex_unlock(&W.mu);
-            for (long left = (long)dev->tx_block * (dev->tx_nbuf + 1); left > 0;) {
+            for (long left = lround(R.tx_rate * TX_LEAD_S); left > 0;) {
                 const int k = dev->write(dev, zeros, left < CHUNK ? (int)left : CHUNK, 100000);
                 if (k <= 0)
                     break;
@@ -6303,7 +6304,7 @@ int main(int argc, char **argv)
     /* the transmit stream's positions are its own samples (txr receive samples each with --fpga-duc) */
     const double txrate = R.tx_rate;
     const int txr = R.txr;
-    const int lead = (int)(txrate * 0.05); /* 50 ms of zeros ahead of the first read */
+    const int lead = (int)(txrate * TX_LEAD_S);
     const int64_t offset = (int64_t)llround(offset_s * txrate);
     if (dev->start(dev)) {
         fprintf(stderr, "start: %s\n", dev->error);
