@@ -4287,13 +4287,16 @@ static struct {
     char err[160];
 } RAW;
 static bool fx_resync; /* the block started again: its next frame carries on from the count so far */
+static long long fx_raw_made; /* channel frames of silence made while a raw capture had the receiver */
 
 /* A channel frame from the parser: the instants lost before it made up with zeros (up to FX_GAP), so the receiver's
  * sample count stays the block's (seq - seq0) */
 static void fx_on_ch(void *ctx, uint32_t seq, const rdof_iq16_t *x, int n)
 {
-    if (!FX.have0)
+    if (!FX.have0) { /* STATUS's flags from the start (the DMA without a buffer until it had one): the baseline, as below */
         FX.have0 = true, FX.seq0 = FX.expect = seq;
+        FX.status = rdof_chzhw_status(&FX.h);
+    }
     if (fx_resync) {
         fx_resync = false;
         FX.expect = seq;
@@ -4438,6 +4441,7 @@ static int fx_take(int chunk, long timeout_us)
         for (long long i = 0; i < k; i++)
             fx_put(NULL);
         FX.made_up += k, FX.lost += k;
+        fx_raw_made += k;
         WS.lost += k * FX.step;
         FX.base = FX.nall - FX.ny;
         fx_rx();
@@ -6249,7 +6253,7 @@ int main(int argc, char **argv)
     double last_status = 0, level_sum = 0;
     long level_n = 0;
     double t_read = 0, t_write = 0, t_proc = 0; /* seconds spent in each, since the last status */
-    long long raw_quiet = 0; /* channel frames a raw capture took, so far */
+    long long raw_quiet = 0, raw_seen = 0; /* channel frames a raw capture took, so far; fx_raw_made at the last turn */
     while (!stop && (seconds <= 0 || total < (long long)(seconds * rate))) {
         bench_tune_poll();
         const double t0 = now_s();
@@ -6257,16 +6261,17 @@ int main(int argc, char **argv)
         /* --fpga-chz: in stays zeros; the turn's power is the block's (turn_p2) */
         FX.t_rx = 0;
         int n = FX.on ? fx_take(chunk, 500000) : dev->read(dev, in, chunk, 500000);
-        if (FX.lost != fx_lost && (raw_quiet || atomic_load(&RAW.fill))) { /* a raw capture's: one line at its end */
-            raw_quiet += FX.lost - fx_lost;
-        } else if (raw_quiet) {
+        const long long raw_k = fx_raw_made - raw_seen; /* a raw capture's: one line at its end */
+        raw_seen = fx_raw_made, raw_quiet += raw_k;
+        if (raw_quiet && !atomic_load(&RAW.fill)) {
             say("receive: %lld channel frames (%.2f s) not heard for a raw capture%s\n", raw_quiet,
                 (double)raw_quiet * FX.step / rate, R.full ? "; calibrating again once idle" : "");
             raw_quiet = 0;
             if (R.full)
                 R.recal = true, R.cal_tries = 0;
-        } else if (FX.lost != fx_lost) { /* frames lost: zeros kept the timeline, but the calibration no longer holds */
-            say("receive: %lld channel frames lost; zeros in their place%s\n", FX.lost - fx_lost,
+        }
+        if (FX.lost - fx_lost > raw_k) { /* frames lost: zeros kept the timeline, but the calibration no longer holds */
+            say("receive: %lld channel frames lost; zeros in their place%s\n", FX.lost - fx_lost - raw_k,
                 R.full ? "; calibrating again once idle" : "");
             if (R.full)
                 R.recal = true, R.cal_tries = 0;
