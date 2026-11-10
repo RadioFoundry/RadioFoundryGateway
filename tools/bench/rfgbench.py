@@ -651,7 +651,8 @@ def cmd_dmr_bursts(a) -> int:
         print(f"{NOTE} --soft: the gateway's burst records carry no soft dibits; for those analyze a capture",
               file=sys.stderr)
         return EX_UNAVAILABLE
-    check_reach(a, a.freq, tx=False)
+    if not a.raw:                                 # a raw stream tunes the front end itself
+        check_reach(a, a.freq, tx=False)
     out = open(a.out, "w") if a.out else sys.stdout
     human = sys.stdout if a.out else sys.stderr
     n = [0]
@@ -664,10 +665,19 @@ def cmd_dmr_bursts(a) -> int:
             t0 = d["ready"] or time.time()
             print(f"READY {time.strftime('%H:%M:%S', time.localtime(t0))}.{int(t0 * 1000) % 1000:03d} t0={t0:.3f}",
                   file=sys.stderr, flush=True)
-            if a.seconds and not a.until_end:     # the gateway ends it at --seconds; this is in case it doesn't
+            if a.raw:
+                print(f"raw: {a.seconds:g} s at {d.get('fs', 0) / 1e6:g} MS/s, front end at {d.get('center', 0):.6f} MHz "
+                      "(the receiver deaf meanwhile); then decoded on the gateway", file=sys.stderr, flush=True)
+            elif a.seconds and not a.until_end:   # the gateway ends it at --seconds; this is in case it doesn't
                 timer.append(threading.Timer(a.seconds + 5.0, lambda: hold["conn"].end()))
                 timer[0].daemon = True
                 timer[0].start()
+        elif "captured" in d:                     # --raw: the samples are in; the bursts follow
+            cap = d["captured"]
+            print(f"captured {cap['samples']} samples at {cap['fs'] / 1e6:g} MS/s ({cap['bits']} bits, "
+                  f"{cap['clip_pct']:.3f} % at the ADC's rails)", file=sys.stderr, flush=True)
+            out.write(json.dumps({"captured": cap}) + "\n")
+            out.flush()
         elif "burst" in d:
             n[0] += 1
             out.write(json.dumps(d["burst"]) + "\n")
@@ -710,7 +720,8 @@ def cmd_dmr_bursts(a) -> int:
         rc = stream(a.where, {"op": "bursts", "session": a.session, "freq": a.freq, "seconds": a.seconds,
                               "max_bursts": a.bursts, "until_end": a.until_end, "cc": a.cc, "soft": a.soft,
                               "wait_max": a.wait_max, **({"envelope": True} if a.envelope else {}),
-                              **({"ramp": True} if a.ramp else {})}, on, hold)
+                              **({"ramp": True} if a.ramp else {}),
+                              **({"raw": True, **({"rate": a.rate} if a.rate else {})} if a.raw else {})}, on, hold)
         if not hold["done"] and rc == 0:          # the stream ended with no summary: one from here
             s = {"bursts": n[0], "freq": a.freq * 1e6, "reason": "the gateway stopped answering"
                  if timer else "the connection ended"}
@@ -1367,6 +1378,12 @@ def main(argv=None) -> int:
                    help="also the carrier's keyed segments: edges, ramps, steps, clipping, tied to the bursts")
     s.add_argument("--ramp", action="store_true",
                    help="also each burst's PA ramp, measured on the gateway (implies the envelope)")
+    s.add_argument("--raw", action="store_true",
+                   help="from a raw capture of the ADC's own samples (12 bits on a Pluto), decoded and measured on the gateway, "
+                        "only the results sent; the receiver is deaf for --seconds and the processing after (envelope implied)")
+    s.add_argument("--rate", type=float, default=0,
+                   help="with --raw: its rate, a multiple of 48000 in 528000-61440000 S/s (default 2400000); off the "
+                        "receiver's rate nothing transmits meanwhile")
     s.add_argument("--out", default=None)
     s.add_argument("--file", default=None)
     s.add_argument("--center-mhz", type=float, default=None)

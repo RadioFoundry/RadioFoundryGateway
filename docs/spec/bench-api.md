@@ -615,7 +615,10 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
   what a `trigger`'s does (about 20 multiplies a wideband sample); `listen` takes no envelope.
 - `capture` with `"raw": true` sends the ADC's own samples, cs16 (int16 I, Q; 12 bits, LSB aligned, full scale 2048), at the front
   end's rate, nothing filtered: `rfgbench.py capture --raw`. `seconds` long, from when it starts: no pre-roll, and no history
-  behind it. `info`'s `features` says `capture_raw`; a receiver without it answers `unsupported` (today a PlutoSDR running
+  behind it. `rate` (520834-61440000 S/s, `--rate`) gives it a rate of its own: the chip changes for it and back after (the
+  receiver is deaf through it anyway), and nothing transmits meanwhile, since the transmitter shares the rate. The front end
+  is tuned 10 % of the rate above `freq` when `freq` isn't within 35 % of the rate of where it is, so any frequency the chip
+  tunes works; `ready`'s and `meta`'s `center` say where. `info`'s `features` says `capture_raw`; a receiver without it answers `unsupported` (today a PlutoSDR running
   `--fpga-chz` has it). Its DMA blocks (up to 32 MB each) are all queued before the first sample, so the DMA fills them back to
   back and its samples are in a row; if the ADC core's DMA overflow flag says otherwise, it fails (`unavailable`) rather than
   hand over a gap. They're copied to memory before the first goes out, so its length is what the DMA memory holds: about 2.5
@@ -638,6 +641,18 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
   "lost", "dropped", "edge_res_us"}`; `lost` bursts' samples had gone, `dropped` ones went unmeasured because too many were
   waiting. `edge_res_us` is what the channel's bandwidth allows: set `env_bw` wider to see a faster edge. `info`'s `features` says
   `bursts_ramp`. It keeps the channel's last 0.68 s of outputs (256 KB, PSRAM on a board).
+- `bursts` with `"raw": true` does the same from a raw capture of its own (as `capture`'s, above) instead of the receiver's
+  channel: `rfgbench.py dmr-bursts --raw [--ramp] [--rate R]`. Anywhere the front end tunes, at `rate` (a multiple of 48000 in
+  528000-61440000 S/s, default 2400000), `seconds` long (default 5). Once the samples are in, the gateway mixes the channel to
+  0 Hz, filters it to `env_bw` and takes it to 48 kS/s (as the envelope's cut), runs its own DMR decoder on that, and sends the
+  bursts, the envelope's segments and, with `ramp`, the ramps, as a live stream's: only the results go, no I/Q. `ready` adds
+  `raw`, `fs` and `center` (MHz); `{"captured": {"t0", "samples", "fs", "center", "clip_pct", "bits"}}` comes when the samples
+  are in (`clip_pct`: the ADC's own rails, I and Q), then the records, then `done` (`reason` `"time"`; `complete` is about the
+  decoding alone: the receiver's own losses during the capture aren't its). The burst's `sc` counts the capture's samples from
+  0, `t` from its `t0`; the floor is learned over the capture's first `floor_s` (give `floor_db` when it starts keyed).
+  `cfo_hz` is from the channel's center, the crystal taken out as the receiver's. The receiver is deaf for the capture, as a
+  raw `capture` makes it; the processing after runs beside it (a quarter million samples a tick). `info`'s `features` says
+  `bursts_raw`.
 
 ### 14.3 Jobs
 

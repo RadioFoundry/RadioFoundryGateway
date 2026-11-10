@@ -1059,7 +1059,7 @@ bench (`"bench": {"devices": [...]}`: a UART, USB CDC-ACM or a USB-serial bridge
 through the SDR's modem or an MMDVM bench radio, only on what `"bench": {"tx": {...}}` allows. No auth: it's for a
 private test network. Code: `bench_api.c`, `bench_radio.c`, `bench_tx.c`; the spec's section 9 says what's in.
 
-`tools/bench/burstramp.py` measures a transmitter's PA ramps burst by burst from a capture (spec §14.8.2). A `bursts` stream with `"ramp": true` measures them on the board (`rfgbench.py dmr-bursts --ramp`, spec §14.2). `rfgbench.py capture --raw` takes a PlutoSDR's ADC samples, 12 bits, over the bench port (spec §14.2).
+`tools/bench/burstramp.py` measures a transmitter's PA ramps burst by burst from a capture (spec §14.8.2). A `bursts` stream with `"ramp": true` measures them on the board (`rfgbench.py dmr-bursts --ramp`, spec §14.2). `rfgbench.py capture --raw [--rate R]` takes a PlutoSDR's ADC samples, 12 bits, over the bench port, at a rate of its own if asked; `rfgbench.py dmr-bursts --raw --ramp [--rate R]` decodes and measures a raw capture on the board and sends only the results (spec §14.2).
 
 **The line protocol** on TCP `CONFIG_RDOF_BENCH_LINE_PORT` (7373; spec §14, `bench_line.c`), for
 `tools/bench/rfgbench.py`:

@@ -330,6 +330,11 @@ typedef struct {
     int (*raw_state)(void *ctx, rdof_bl_raw_t *info, char *err, size_t cap);
     void (*raw_read)(void *ctx, long at, int16_t *out, long n);
     void (*raw_close)(void *ctx);
+    /* A raw bursts stream's decoder (bench-api.md 14.2, "raw"): n outputs at 48 kS/s (I/Q pairs, full scale 1), in order,
+     * from a stream begun with reset; cc the color code to take (-1 any). n 0: the stream's end, what's left. The bursts
+     * found go in out (at most cap; their count back, -1 no memory): pos48 from the stream's first output, cfo_hz from
+     * the channel's center, level_dbfs; the engine sets t and ch. */
+    int (*raw_demod)(void *ctx, bool reset, int cc, const float *iq, int n, rdof_bl_burst_t *out, int cap);
 } rdof_bl_platform_t;
 
 typedef struct rdof_bl rdof_bl_t;

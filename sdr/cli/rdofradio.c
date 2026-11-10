@@ -3161,6 +3161,7 @@ static int bl_raw_start(void *ctx, double seconds, double fs, double center, cha
 static int bl_raw_state(void *ctx, rdof_bl_raw_t *o, char *err, size_t cap);
 static void bl_raw_read(void *ctx, long at, int16_t *out, long n);
 static void bl_raw_close(void *ctx);
+static int bl_raw_demod(void *ctx, bool reset, int cc, const float *iq, int n, rdof_bl_burst_t *out, int cap);
 
 static void bench_start(void)
 {
@@ -3201,7 +3202,7 @@ static void bench_start(void)
                   stays, filler, for the sample count the bursts' times come from */
         p.iq_read = NULL, p.iq_filled = NULL, p.iq_warm = NULL, p.ch_open = bl_ch_open, p.ch_read = bl_ch_read,
         p.ch_close = bl_ch_close, p.raw_start = bl_raw_start, p.raw_state = bl_raw_state, p.raw_read = bl_raw_read,
-        p.raw_close = bl_raw_close;
+        p.raw_close = bl_raw_close, p.raw_demod = bl_raw_demod;
     BL.bl = rdof_bl_new(&p);
     char err[160];
     BL.net = BL.bl ? rdof_bnet_start(BL.bl, bench_addr, bench_port, now_s, 0, err, sizeof err) : NULL;
@@ -4613,6 +4614,57 @@ static void bl_raw_close(void *ctx)
     RAW.buf = NULL;
     if (st)
         atomic_store(&RAW.state, 0);
+}
+
+/* A raw bursts stream's decoder: the receiver's own demod on the engine's 48 kS/s outputs, its bursts as the
+ * receiver's (bench_burst), the carrier from the channel's center as the demod saw it (the engine's mixer corrected
+ * the crystal already) */
+static struct {
+    rdof_demod_t d;
+    bool on;
+} RAWD;
+
+static int bl_raw_demod(void *ctx, bool reset, int cc, const float *iq, int n, rdof_bl_burst_t *out, int cap)
+{
+    (void)ctx;
+    enum { FEED = 4800 };
+    static const rdof_cf_t zeros[FEED];
+    if (reset || !RAWD.on) {
+        if (RAWD.on)
+            rdof_demod_free(&RAWD.d);
+        RAWD.on = false;
+        if (rdof_demod_init(&RAWD.d, cc, 1, RDOF_DEMOD_SQUELCH_HZ, FEED)) {
+            rdof_demod_free(&RAWD.d);
+            return -1;
+        }
+        RAWD.on = true;
+    }
+    const bool flush = n == 0;
+    int left = flush ? 3 * FEED : n, got = 0; /* the end: 0.3 s of nothing after, for the bursts it still holds */
+    while (left > 0) {
+        const int k = left < FEED ? left : FEED;
+        int nb = 0;
+        const rdof_sdr_burst_t *b = rdof_demod_feed(&RAWD.d, flush ? zeros : (const rdof_cf_t *)(const void *)iq, k, &nb);
+        for (int j = 0; j < nb && got < cap; j++, got++) {
+            rdof_bl_burst_t *o = &out[got];
+            memset(o, 0, sizeof *o);
+            o->pos48 = b[j].position;
+            o->cfo_hz = b[j].freq_offset_hz, o->dev_hz = b[j].deviation_hz, o->level_dbfs = b[j].b.power_dbfs;
+            o->dt = (uint8_t)b[j].b.dt, o->n = (int8_t)b[j].b.n, o->slot = (int8_t)b[j].b.slot;
+            o->family = (int8_t)b[j].b.family, o->cc = (int8_t)b[j].b.cc, o->sync_errors = (int8_t)b[j].b.sync_errors;
+            memcpy(o->raw, b[j].b.burst, sizeof o->raw);
+            o->has_cach = b[j].has_cach;
+            memcpy(o->cach, b[j].cach, sizeof o->cach);
+        }
+        if (!flush)
+            iq += 2 * k;
+        left -= k;
+    }
+    if (flush) {
+        rdof_demod_free(&RAWD.d);
+        RAWD.on = false;
+    }
+    return got;
 }
 
 /* With --fpga-chz, an edge in the channels' power comes the filter's delay late (16 D + 1 taps: 8 output

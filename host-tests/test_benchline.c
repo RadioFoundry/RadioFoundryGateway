@@ -634,7 +634,7 @@ static void test_ops(void)
     rdof_bl_closed(bl, c, now);
     c = ask(bl, "{\"op\": \"info\"}", now);
     drain(bl, c, out, sizeof out);
-    CHECK(strstr(out, "\"features\":{\"bursts_cach\":true,\"bursts_lost\":true,\"bursts_envelope\":true,\"bursts_ramp\":true,\"capture_raw\":false}"), "info names the features: %.300s", out);
+    CHECK(strstr(out, "\"features\":{\"bursts_cach\":true,\"bursts_lost\":true,\"bursts_envelope\":true,\"bursts_ramp\":true,\"capture_raw\":false,\"bursts_raw\":false}"), "info names the features: %.300s", out);
     rdof_bl_closed(bl, c, now);
     c = ask(bl, "{\"op\": \"bursts\", \"freq\": 438.6}", now);
     drain(bl, c, out, sizeof out);
@@ -1256,7 +1256,7 @@ static void test_ramp(void)
 
 /* ── a raw capture: the ADC's own samples, made in the background, one at a time ── */
 
-static struct { int starts, polls, closes, ready_after, fail; } raw_f;
+static struct { int starts, polls, closes, ready_after, fail, tone; long n; } raw_f;
 
 static double raw_f_fs, raw_f_center;
 
@@ -1275,18 +1275,112 @@ static int f_raw_state(void *ctx, rdof_bl_raw_t *o, char *err, size_t cap)
 {
     if (++raw_f.polls < raw_f.ready_after)
         return 0;
-    *o = (rdof_bl_raw_t){.n = 50000, .clipped = 1000, .fs = 19872000, .t0 = 1.8e9, .full_scale = 2048, .bits = 12,
+    *o = (rdof_bl_raw_t){.n = raw_f.n ? raw_f.n : 50000, .clipped = 1000, .fs = raw_f_fs > 0 ? raw_f_fs : 19872000, .t0 = 1.8e9, .full_scale = 2048, .bits = 12,
                           .center_hz = isfinite(raw_f_center) ? raw_f_center : 438e6};
     return 1;
 }
 
+/* tone: a carrier at 445.0 MHz (the capture tuned to 445.24) keyed 1 s in, 1000 counts; a count of noise before */
 static void f_raw_read(void *ctx, long at, int16_t *out, long n)
 {
+    if (raw_f.tone) {
+        for (long i = 0; i < n; i++) {
+            const long j = at + i;
+            const double ph = 2 * M_PI * -240e3 * (double)j / raw_f_fs;
+            const bool on = j >= (long)raw_f_fs;
+            out[2 * i] = (int16_t)(on ? lround(1000 * cos(ph)) : (j & 1) * 2 - 1);
+            out[2 * i + 1] = (int16_t)(on ? lround(1000 * sin(ph)) : (j & 2) - 1);
+        }
+        return;
+    }
     for (long i = 0; i < n; i++)
         out[2 * i] = (int16_t)((at + i) % 2048), out[2 * i + 1] = (int16_t)-((at + i) % 2048);
 }
 
 static void f_raw_close(void *ctx) { raw_f.closes++; }
+
+/* the raw bursts stream's decoder: what it was fed, and one burst 100 ms after the key-up */
+static struct { int resets, flushes; long fed, on_n; double on_sum, off_max; bool sent; } dm;
+
+static int f_raw_demod(void *ctx, bool reset, int cc, const float *iq, int n, rdof_bl_burst_t *out, int cap)
+{
+    if (reset)
+        dm.resets++, dm.fed = 0;
+    if (!n) {
+        dm.flushes++;
+        return 0;
+    }
+    for (int i = 0; i < n; i++) {
+        const long k = dm.fed + i;
+        const double m = hypot(iq[2 * i], iq[2 * i + 1]);
+        if (k > 48000 + 100)
+            dm.on_sum += m, dm.on_n++;
+        else if (k < 48000 - 100 && k > 100 && m > dm.off_max)
+            dm.off_max = m;
+    }
+    dm.fed += n;
+    if (!dm.sent && dm.fed > 48000 + 4800 + 3000 && cap > 0) {
+        dm.sent = true;
+        out[0] = (rdof_bl_burst_t){.pos48 = 48000 + 4800, .dt = 1, .n = 0, .slot = 1, .family = 0, .cc = 1,
+                                   .cfo_hz = 12.5f, .level_dbfs = -6.3f};
+        return 1;
+    }
+    return 0;
+}
+
+static void test_raw_bursts(void)
+{
+    rdof_bl_platform_t p = PLAT;
+    p.raw_start = f_raw_start, p.raw_state = f_raw_state, p.raw_read = f_raw_read, p.raw_close = f_raw_close;
+    rdof_bl_t *bl = rdof_bl_new(&p);
+    double now = 2900;
+    static char all[1 << 20];
+    rdof_bl_ring_init(&ring, 768000);
+    put_tone(10, 0, 0);
+    memset(&raw_f, 0, sizeof raw_f);
+    memset(&dm, 0, sizeof dm);
+    int c = ask(bl, "{\"op\":\"bursts\",\"freq\":445.0,\"seconds\":2,\"raw\":true,\"ramp\":true}", now);
+    rdof_bl_tick(bl, now += 0.01);
+    size_t total = drain(bl, c, all, sizeof all - 1);
+    all[total] = 0;
+    CHECK(strstr(all, "unsupported"), "no decoder, no raw bursts: %.200s", all);
+    rdof_bl_closed(bl, c, now);
+    rdof_bl_free(bl);
+    p.raw_demod = f_raw_demod;
+    bl = rdof_bl_new(&p);
+    raw_f.tone = 1, raw_f.n = 2 * 2400000, raw_f.ready_after = 3;
+    c = ask(bl, "{\"op\":\"bursts\",\"freq\":445.0,\"seconds\":2,\"raw\":true,\"ramp\":true,\"rate\":2.41e6}", now);
+    total = 0;
+    for (int i = 0; i < 200 && !strstr(all, "{\"done\""); i++) {
+        rdof_bl_tick(bl, now += 0.01);
+        total += drain(bl, c, all + total, sizeof all - total - 1);
+        all[total] = 0;
+    }
+    CHECK(raw_f.starts == 1 && raw_f_fs == 2400000 && fabs(raw_f_center - 445.24e6) < 1,
+          "a capture at 2.4 MS/s (a multiple of 48 kS/s) tuned above: %d %.0f %.0f", raw_f.starts, raw_f_fs, raw_f_center);
+    CHECK(strstr(all, "\"ready\"") && strstr(all, "\"raw\":true,\"fs\":2400000.0,\"center\":445.240000"), "ready: %.300s", all);
+    CHECK(strstr(all, "{\"captured\":{\"t0\":1800000000.000000,\"samples\":4800000,\"fs\":2400000.0"), "captured: %.400s", all);
+    CHECK(dm.resets == 1 && dm.flushes == 1 && dm.fed == 96000 - 4, "the decoder fed 2 s at 48 kS/s (less the 4 outputs the filter needs past the end), once: %d %d %ld",
+          dm.resets, dm.flushes, dm.fed);
+    const double on = dm.on_n ? dm.on_sum / (double)dm.on_n : 0;
+    CHECK(fabs(on - 1000.0 / 2048) < 0.01 && dm.off_max < 0.01, "the carrier mixed to the channel: %.4f, quiet %.4f", on,
+          dm.off_max);
+    const char *b = strstr(all, "{\"burst\":");
+    char v[64];
+    /* the sync's center: 65.5 symbols (655 outputs at 48 kS/s, 50 inputs each) past the burst's start */
+    CHECK(b && field(b, "sc", v, sizeof v) && atol(v) == (48000 + 4800 + 655) * 50L, "the burst's sc: %.300s", b ? b : all);
+    CHECK(b && field(b, "t", v, sizeof v) && fabs(atof(v) - (1.8e9 + (48000 + 4800 + 655) / 48000.0)) < 1e-5, "its t: %s", v);
+    CHECK(strstr(all, "{\"segment\"") || strstr(all, "\"seg\""), "the envelope's segments: %.600s", all);
+    const char *done = strstr(all, "{\"done\"");
+    CHECK(done && strstr(done, "\"bursts\":1,\"reason\":\"time\"") && strstr(done, "\"complete\":true") &&
+              strstr(done, "\"ramp\":{\"measured\":") && strstr(done, "\"rate\":48000.0"),
+          "done: %s", done ? done : all);
+    CHECK(raw_f.closes == 1, "the capture's memory back at once: %d", raw_f.closes);
+    rdof_bl_closed(bl, c, now);
+    CHECK(raw_f.closes == 1, "and not again: %d", raw_f.closes);
+    rdof_bl_ring_free(&ring);
+    rdof_bl_free(bl);
+}
 
 static void test_raw_capture(void)
 {
@@ -3123,6 +3217,7 @@ int main(int argc, char **argv)
     test_envelope();
     test_ramp();
     test_raw_capture();
+    test_raw_bursts();
     test_chan();
     test_xtal();
     test_track();

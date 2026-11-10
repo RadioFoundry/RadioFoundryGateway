@@ -199,6 +199,7 @@ typedef struct {
     double fs;                /* bursts: the wideband rate, for a record's sc */
     /* tune: a trigger or rx outside the window waits for its own tune, then runs again (autotune) */
     bool autotune;
+    bool raw_b;     /* a bursts stream on a raw capture: the capture, then its bursts, envelope and ramps from it */
     int raw_phase;  /* a raw capture: 0 waiting its turn, 1 being made, 2 going out */
     double raw_secs, raw_since, raw_fs, raw_center; /* raw_fs 0: the receiver's rate; raw_center NAN: where it is */
     rdof_bl_raw_t raw;
@@ -539,7 +540,8 @@ static long chsrc_read(rdof_bl_t *bl, chsrc_t *s, uint64_t sc, long n, long *fil
 
 static void trig_free(trig_t *t);
 struct envx;
-static bool env_open(rdof_bl_t *bl, conn_t *c, int root, const rdof_bl_window_t *w, double now);
+static bool env_open(rdof_bl_t *bl, conn_t *c, int root, const rdof_bl_window_t *w, double now, bool raw);
+static void op_bursts_raw(rdof_bl_t *bl, conn_t *c, int root, double now);
 static void envx_free(struct envx *x);
 static void raw_release(rdof_bl_t *bl, int ci);
 /* A trigger's end: its channel closed (ch_open's), then freed */
@@ -700,6 +702,7 @@ void rdof_bl_closed(rdof_bl_t *bl, int ci, double now)
     if (bl->tune_wait == ci)
         bl->tune_wait = -1;
     c->autotune = c->rerun = false;
+    c->raw_b = false;
     if (c->op == OP_RX)
         bl->n_iq--;
     raw_release(bl, ci);
@@ -997,9 +1000,10 @@ static void op_info(rdof_bl_t *bl, conn_t *c, double now)
                               "\"bands\":[],\"held_by\":%s,\"waiting\":%s}],"
                               "\"modem\":{\"held_by\":%s,\"waiting\":%s,\"next_job_eta\":{\"eta_s\":%.1f,"
                               "\"worst_s\":%.1f}},\"signal_modes\":{\"tx\":%s,\"rx\":%s},\"jobs\":%s,"
-                              "\"features\":{\"bursts_cach\":true,\"bursts_lost\":true,\"bursts_envelope\":true,\"bursts_ramp\":true,\"capture_raw\":%s},\"default_caps\":[]}",
+                              "\"features\":{\"bursts_cach\":true,\"bursts_lost\":true,\"bursts_envelope\":true,\"bursts_ramp\":true,\"capture_raw\":%s,\"bursts_raw\":%s},\"default_caps\":[]}",
                               bands, st_kind ? st_kind : "sdrmodem", qmodel, notx ? "false" : "true",
-                              notx ? "false" : "true", why, held, wq, held, wq, eta, eta, stx, srx, jobs, bl->p.raw_start ? "true" : "false");
+                              notx ? "false" : "true", why, held, wq, held, wq, eta, eta, stx, srx, jobs, bl->p.raw_start ? "true" : "false",
+                              bl->p.raw_start && bl->p.raw_demod ? "true" : "false");
     if (k >= line_cap) {
         fail(bl, c, "internal", "info doesn't fit");
         return;
@@ -1280,6 +1284,10 @@ static void op_bursts(rdof_bl_t *bl, conn_t *c, int root, double now, bool liste
 {
     if (!req_session(bl, c, root, false))
         return;
+    if (!listen && jbool(bl, root, "raw")) {
+        op_bursts_raw(bl, c, root, now);
+        return;
+    }
     const double mhz = jnum(bl, root, "freq", NAN);
     const int k = isfinite(mhz) ? freq_index(bl, mhz) : -1;
     if (k < 0 || bl->f[k].ch < 0 || !(bl->f[k].caps & RDOF_BL_CAP_DMR)) {
@@ -1311,7 +1319,7 @@ static void op_bursts(rdof_bl_t *bl, conn_t *c, int root, double now, bool liste
     rdof_bl_window_t w;
     get_window(bl, &w);
     c->fs = w.fs;
-    if (!listen && (jbool(bl, root, "envelope") || jbool(bl, root, "ramp")) && !env_open(bl, c, root, &w, now)) {
+    if (!listen && (jbool(bl, root, "envelope") || jbool(bl, root, "ramp")) && !env_open(bl, c, root, &w, now, false)) {
         c->op = OP_NONE;
         return;
     }
@@ -3744,6 +3752,7 @@ static const char *const SYNC_NAMES[9] = {"BS_VOICE", "BS_DATA", "MS_VOICE", "MS
 
 /* ── a bursts stream's envelope (section 14.2's "envelope") ──────────────────── */
 
+#define RAW_SAMPLES (RDOF_BL_IQ_CHUNK / 2) /* samples a frame: int16 I, Q in iq's 2 * RDOF_BL_IQ_CHUNK bytes */
 #define ENV_PEND 16    /* segments waiting for their bursts */
 #define ENV_BURSTS 96  /* bursts kept to tie to them (about 3 s of a repeater's two slots) */
 #define ENV_LIST 16    /* overlaps and unexplained spans listed in the summary (all counted) */
@@ -3765,6 +3774,8 @@ struct envx {
     double prev_sc;
     bool have_prev;
     struct rampx *ramp;                     /* "ramp": the bursts waiting for what follows them */
+    float *ry;                              /* a raw stream's: a chunk's 48 kS/s outputs, for its decoder */
+    rdof_bl_burst_t rb[16];                 /* and the bursts it found in them */
 };
 
 /* A burst waiting to be measured: its record comes once what follows it is in (the envelope lags the bursts). */
@@ -3785,7 +3796,7 @@ struct rampx {
 static void envx_free(struct envx *x)
 {
     if (x)
-        free(x->ramp);
+        free(x->ramp), free(x->ry);
     free(x);
 }
 
@@ -3799,10 +3810,11 @@ static void put_num(char *out, size_t cap, double v, int prec)
         snprintf(out, cap, "null");
 }
 
-static bool env_open(rdof_bl_t *bl, conn_t *c, int root, const rdof_bl_window_t *w, double now)
+/* raw: on a raw capture's samples (w its rate and tuning), from its first on, once they're in */
+static bool env_open(rdof_bl_t *bl, conn_t *c, int root, const rdof_bl_window_t *w, double now, bool raw)
 {
-    const bool chan = !bl->p.iq_read && bl->p.ch_open;
-    if (!bl->p.iq_read && !chan) {
+    const bool chan = !raw && !bl->p.iq_read && bl->p.ch_open;
+    if (!raw && !bl->p.iq_read && !chan) {
         fail(bl, c, "unsupported", "envelope: this bench keeps no I/Q");
         return false;
     }
@@ -3838,7 +3850,11 @@ static bool env_open(rdof_bl_t *bl, conn_t *c, int root, const rdof_bl_window_t 
         if (want_ramp)
             t->ramp = rdof_bramp_new(rate, d);
     }
-    if (!t || !x || !t->taps || !t->dl || !t->env || (want_ramp && !t->ramp)) {
+    if (raw)
+        x->ry = malloc(sizeof(float) * 2 * (size_t)(RAW_SAMPLES / d + 2));
+    if (!t || !x || !t->taps || !t->dl || !t->env || (want_ramp && !t->ramp) || (raw && !x->ry)) {
+        if (x)
+            free(x->ry);
         trig_free(t);
         free(x);
         fail(bl, c, "unavailable", "no memory for an envelope");
@@ -3873,6 +3889,14 @@ static bool env_open(rdof_bl_t *bl, conn_t *c, int root, const rdof_bl_window_t 
         }
         memset(x->ramp, 0, sizeof *x->ramp);
         x->ramp->chan = chan;
+    }
+    if (raw) { /* its first output centered on its first sample (zeros before it); the floor from its first floor_s */
+        trig_restart(t, 0);
+        x->fs = w->fs, x->sc_start = 0, x->bw = t->bw, x->last_sc = -1, x->t0 = NAN;
+        c->trig = t, c->ex = x;
+        c->gain = w->gain_db;
+        bl->n_iq++;
+        return true;
     }
     uint64_t oldest = 0, next = 0;
     trig_span(bl, t, &oldest, &next);
@@ -4328,22 +4352,22 @@ static void raw_release(rdof_bl_t *bl, int ci)
 }
 
 #define RAW_LATE_S 30 /* past its seconds with nothing from the receiver: it has failed */
-#define RAW_SAMPLES (RDOF_BL_IQ_CHUNK / 2) /* samples a frame: int16 I, Q in iq's 2 * RDOF_BL_IQ_CHUNK bytes */
 
-static void tick_raw(rdof_bl_t *bl, conn_t *c, double now)
+/* A raw capture under way: started when its turn comes, polled until it's in. 1 in (raw_phase 2), 0 not yet, -1 failed */
+static int raw_progress(rdof_bl_t *bl, conn_t *c, double now)
 {
     const int ci = (int)(c - bl->c);
     char err[160] = "";
     if (c->raw_phase == 0) { /* waiting its turn */
         if (bl->raw_conn)
-            return;
+            return 0;
         const int r = bl->p.raw_start(bl->p.ctx, c->raw_secs, c->raw_fs, c->raw_center, err, sizeof err);
         if (r > 0)
-            return;
+            return 0;
         if (r < 0) {
             fail(bl, c, "unavailable", "%s", err[0] ? err : "the raw capture couldn't start");
             c->state = C_DONE;
-            return;
+            return -1;
         }
         bl->raw_conn = ci + 1;
         c->raw_phase = 1, c->raw_since = now;
@@ -4354,11 +4378,22 @@ static void tick_raw(rdof_bl_t *bl, conn_t *c, double now)
             fail(bl, c, "unavailable", "%s", err[0] ? err : "the raw capture never finished");
             c->state = C_DONE;
             raw_release(bl, ci);
-            return;
+            return -1;
         }
         if (r == 0)
+            return 0;
+        c->raw_phase = 2;
+    }
+    return 1;
+}
+
+static void tick_raw(rdof_bl_t *bl, conn_t *c, double now)
+{
+    const int ci = (int)(c - bl->c);
+    if (c->raw_phase < 2) {
+        if (raw_progress(bl, c, now) < 1)
             return;
-        c->raw_phase = 2, c->sc = 0, c->sc_end = (uint64_t)c->raw.n;
+        c->sc = 0, c->sc_end = (uint64_t)c->raw.n;
     }
     for (;;) { /* out from its memory, as the client takes them */
         if (c->sc >= c->sc_end) {
@@ -4390,6 +4425,152 @@ static void tick_raw(rdof_bl_t *bl, conn_t *c, double now)
         put_bytes(c, hdr, (size_t)hn);
         put_bytes(c, bl->iq, (size_t)(4 * want));
         c->sc += (uint64_t)want;
+    }
+}
+
+/* A bursts stream on a raw capture of its own (bench-api.md 14.2, "raw"): the chip at a rate and tuning of its own for
+ * it, the receiver deaf meanwhile; then its samples through the envelope's mixer and filter to 48 kS/s, those to the
+ * platform's decoder, its bursts out as a live stream's and measured against the same outputs. Only the results go. */
+static void op_bursts_raw(rdof_bl_t *bl, conn_t *c, int root, double now)
+{
+    if (!bl->p.raw_start || !bl->p.raw_demod) {
+        fail(bl, c, "unsupported", "raw: this bench can't take the ADC's own samples");
+        return;
+    }
+    rdof_bl_window_t w;
+    get_window(bl, &w);
+    const double mhz = jnum(bl, root, "freq", NAN), secs = jnum(bl, root, "seconds", 5),
+                 asked = jnum(bl, root, "rate", 2.4e6);
+    if (!w.running || w.fs <= 0) {
+        fail(bl, c, "unavailable", "the receiver isn't running");
+        return;
+    }
+    /* the rate a whole multiple of 48 kS/s (the decoder's), within the AD9363's 0.52-61.44 MS/s */
+    const long m = lround(asked / 48000);
+    if (!isfinite(mhz) || !(secs > 0 && secs <= 600) || m < 11 || m > 1280) {
+        fail(bl, c, "bad_request", "freq, seconds 0-600, rate 528000-61440000 S/s");
+        return;
+    }
+    const double fs = 48000.0 * (double)m, hz = mhz * 1e6;
+    double center = NAN; /* as a raw capture's: 10 % of the rate above the frequency, unless it's well inside */
+    if (!(fabs(hz - w.center_hz) < 0.35 * fs))
+        center = hz + 0.1 * fs;
+    c->op = OP_BURSTS;
+    c->ch = -1; /* the receiver's bursts aren't its */
+    c->freq_hz = hz;
+    c->until = 0, c->until_end = false;
+    c->max = (long)jnum(bl, root, "max_bursts", 0);
+    c->cc = (int)jnum(bl, root, "cc", -1);
+    c->first_t = c->prev_t = c->last_t = NAN;
+    memset(&c->emb, 0, sizeof c->emb);
+    c->cfo_min = INFINITY, c->cfo_max = -INFINITY, c->lvl_max = -INFINITY;
+    rdof_bl_window_t rw = w;
+    rw.fs = fs, rw.center_hz = isfinite(center) ? center : w.center_hz;
+    c->fs = fs;
+    if (!env_open(bl, c, root, &rw, now, true)) {
+        c->op = OP_NONE;
+        return;
+    }
+    c->raw_b = true, c->raw_phase = 0;
+    c->raw_secs = secs, c->raw_fs = fs, c->raw_center = center;
+    c->state = C_ACTIVE;
+    bl->n_bursts++;
+    emit(bl, c, "{\"ready\":%.3f,\"raw\":true,\"fs\":%.1f,\"center\":%.6f,\"seconds\":%.3f}",
+         bl->p.utc ? bl->p.utc(bl->p.ctx) : now, fs, rw.center_hz / 1e6, secs);
+}
+
+static void trig_fir(const float *restrict taps, const float *restrict x, int h, float *yi, float *yq);
+static bool trig_out(rdof_bl_t *bl, conn_t *c, trig_t *t, const rdof_bl_window_t *w, uint64_t center, float yi,
+                     float yq, int *nout);
+
+static void tick_bursts_raw(rdof_bl_t *bl, conn_t *c, double now)
+{
+    const int ci = (int)(c - bl->c);
+    trig_t *t = c->trig;
+    struct envx *x = c->ex;
+    if (c->raw_phase < 2) {
+        if (raw_progress(bl, c, now) < 1)
+            return;
+        /* the chip's own rate and tuning, as it took them */
+        rdof_bl_window_t w;
+        get_window(bl, &w);
+        const double fs = c->raw.fs;
+        t->corr_hz = rdof_bl_seen_hz(&w, c->freq_hz) - (c->freq_hz - w.center_hz);
+        t->step = -2 * M_PI * (c->freq_hz - c->raw.center_hz + t->corr_hz) / fs;
+        x->t0 = c->raw.t0;
+        c->sc = 0, c->sc_end = (uint64_t)c->raw.n;
+        emit(bl, c, "{\"captured\":{\"t0\":%.6f,\"samples\":%ld,\"fs\":%.1f,\"center\":%.1f,\"clip_pct\":%.3f,\"bits\":%d}}",
+             c->raw.t0, c->raw.n, fs, c->raw.center_hz, c->raw.n ? 100.0 * (double)c->raw.clipped / (double)(2 * c->raw.n) : 0.0,
+             c->raw.bits);
+    }
+    const int d = t->d, nt = t->ntaps, h = (nt - 1) / 2;
+    const float k = 1.0f / (float)(c->raw.full_scale > 0 ? c->raw.full_scale : 2048);
+    const int top = (int)(c->raw.full_scale > 0 ? c->raw.full_scale : 2048);
+    rdof_bl_window_t w;
+    get_window(bl, &w);
+    long budget = 1L << 18; /* inputs a tick: the board's other work goes on between */
+    while (budget > 0 && c->sc < c->sc_end) {
+        if (room(c) < 4096)
+            return; /* the client is behind: later */
+        long got = (long)(c->sc_end - c->sc);
+        if (got > RAW_SAMPLES)
+            got = RAW_SAMPLES;
+        const int16_t *iq = (const int16_t *)(const void *)bl->iq;
+        bl->p.raw_read(bl->p.ctx, (long)c->sc, (int16_t *)(void *)bl->iq, got);
+        budget -= got;
+        const double ph = fmod(t->step * (double)c->sc, 2 * M_PI);
+        float pr = (float)cos(ph), pq = (float)sin(ph);
+        const float rr = (float)cos(t->step), rq = (float)sin(t->step);
+        int di = t->di, nout = 0, ny = 0;
+        uint64_t next_out = t->next_out;
+        const uint64_t sc0 = c->sc;
+        long clipped = 0;
+        t->clip_prev = 0;
+        for (long i = 0; i < got; i++) {
+            const int vi = iq[2 * i], vq = iq[2 * i + 1];
+            clipped += ((unsigned)(vi + top - 1) >= (unsigned)(2 * top - 2)) + ((unsigned)(vq + top - 1) >= (unsigned)(2 * top - 2));
+            const float xi = (float)vi * k, xq = (float)vq * k;
+            float *a = t->dl + 2 * di, *b = a + 2 * nt;
+            a[0] = b[0] = xi * pr - xq * pq;
+            a[1] = b[1] = xi * pq + xq * pr;
+            const float npr = pr * rr - pq * rq;
+            pq = pr * rq + pq * rr, pr = npr;
+            if (++di == nt)
+                di = 0;
+            if (sc0 + (uint64_t)i != next_out)
+                continue;
+            next_out += (uint64_t)d;
+            float yi, yq;
+            trig_fir(t->taps, t->dl + 2 * di, h, &yi, &yq);
+            t->clip_now = clipped;
+            trig_out(bl, c, t, &w, sc0 + (uint64_t)i - (uint64_t)h, yi, yq, &nout);
+            x->ry[2 * ny] = yi, x->ry[2 * ny + 1] = yq, ny++;
+        }
+        t->di = di, t->next_out = next_out;
+        t->inputs += got, t->clipped += clipped;
+        c->sc += (uint64_t)got;
+        const bool first = sc0 == 0, last = c->sc >= c->sc_end;
+        for (int pass = 0; pass < 1 + last; pass++) { /* the chunk's outputs; at the end, what the decoder has left */
+            const int nb = bl->p.raw_demod(bl->p.ctx, first && !pass, c->cc, pass ? NULL : x->ry, pass ? 0 : ny, x->rb,
+                                           (int)(sizeof x->rb / sizeof x->rb[0]));
+            if (nb < 0) {
+                fail(bl, c, "unavailable", "no memory for the decoder");
+                c->state = C_DONE;
+                raw_release(bl, ci);
+                return;
+            }
+            for (int j = 0; j < nb; j++) {
+                x->rb[j].ch = -1;
+                x->rb[j].t = c->raw.t0 + (double)x->rb[j].pos48 / 48000.0;
+                burst_out(bl, c, &x->rb[j], now);
+            }
+        }
+        env_tick(bl, c, now, false);
+    }
+    if (c->sc >= c->sc_end && c->state == C_ACTIVE) {
+        rx_lost(bl, c->lost0); /* the receiver's losses aren't the capture's: it had them all */
+        bursts_done(bl, c, "time", now);
+        raw_release(bl, ci);
     }
 }
 
@@ -5035,7 +5216,10 @@ void rdof_bl_tick(rdof_bl_t *bl, double now)
         else if (c->state == C_ACTIVE && c->op == OP_TRIGGER)
             tick_trigger(bl, c, now);
         else if (c->state == C_ACTIVE && c->op == OP_BURSTS && c->ex) {
-            tick_trigger(bl, c, now);
+            if (c->raw_b)
+                tick_bursts_raw(bl, c, now);
+            else
+                tick_trigger(bl, c, now);
             env_tick(bl, c, now, false);
         }
         else if (c->state == C_ACTIVE && c->op == OP_RUN && c->job && c->wait == W_NONE)
