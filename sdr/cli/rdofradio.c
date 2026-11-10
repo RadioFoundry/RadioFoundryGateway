@@ -366,6 +366,7 @@ static struct {
     pthread_t thread;
     bool running;
     bool guarded;          /* the device takes blocks: the guard keeps the stream's timing through a stall */
+    bool hold;             /* a raw capture has the chip off its rate: what comes is dropped, nothing padded */
     rdof_txguard_t guard;  /* the writer's thread alone (the device's write reports to it) */
 } W = {.mu = PTHREAD_MUTEX_INITIALIZER, .cv = PTHREAD_COND_INITIALIZER};
 
@@ -423,7 +424,13 @@ static void *writer(void *arg)
 {
     pthread_mutex_lock(&W.mu);
     for (;;) {
-        while (W.head == W.tail && !W.quit) {
+        if (W.hold && !W.quit) { /* dropped as if sent: the stream's count keeps real time */
+            W.tail = W.head;
+            pthread_cond_broadcast(&W.cv);
+            pthread_cond_wait(&W.cv, &W.mu);
+            continue;
+        }
+        while (W.head == W.tail && !W.quit && !W.hold) {
             const double due = W.guarded ? rdof_txguard_deadline(&W.guard, GUARD_MARGIN_S) : NAN;
             if (isnan(due)) {
                 pthread_cond_wait(&W.cv, &W.mu);
@@ -3150,7 +3157,7 @@ static void advertise_web(int port)
 static const char *bl_tune(void *ctx, const rdof_bl_tune_t *t, const char *who, char *why, size_t cap);
 static int bl_tune_state(void *ctx, char *why, size_t cap);
 static void bl_untune(void *ctx);
-static int bl_raw_start(void *ctx, double seconds, char *err, size_t cap);
+static int bl_raw_start(void *ctx, double seconds, double fs, double center, char *err, size_t cap);
 static int bl_raw_state(void *ctx, rdof_bl_raw_t *o, char *err, size_t cap);
 static void bl_raw_read(void *ctx, long at, int16_t *out, long n);
 static void bl_raw_close(void *ctx);
@@ -4282,7 +4289,7 @@ static struct {
     atomic_bool fill, ack, closing;
     long n, clipped;
     int16_t *buf;
-    double t0, t_fill;
+    double t0, t_fill, fs, center; /* its rate; where it's tuned, NAN: where the receiver is */
     long long made;
     char err[160];
 } RAW;
@@ -4479,17 +4486,34 @@ static void *raw_thread(void *arg)
     char err[160] = "";
     int16_t *const buf = RAW.buf;
     const long n = RAW.n;
+    const bool off_rate = RAW.fs != R.rate, retune = isfinite(RAW.center);
     atomic_store(&RAW.ack, false);
     atomic_store(&RAW.fill, true);
     while (!atomic_load(&RAW.ack))
         nanosleep(&(struct timespec){0, 1000000}, NULL);
     dev->rx_pause(dev);
     rdof_chzhw_stop(&FX.h); /* the stock path: the ADC's samples to the DMA */
+    if (off_rate) { /* the TX at that rate too: nothing goes out meanwhile */
+        pthread_mutex_lock(&W.mu);
+        W.hold = true;
+        pthread_cond_broadcast(&W.cv);
+        pthread_mutex_unlock(&W.mu);
+    }
+    double fs = R.rate;
+    int rc = 0;
+    if ((off_rate || retune) && dev->raw_tune(dev, off_rate ? RAW.fs : 0, retune ? RAW.center : 0, &fs, err, sizeof err))
+        rc = -1;
+    RAW.fs = fs;
     long after = 0;
-    int rc = dev->raw_fill(dev, n, buf, &after, err, sizeof err);
+    if (!rc)
+        rc = dev->raw_fill(dev, n, fs, buf, &after, err, sizeof err);
     const double t_end = bl_utc(NULL); /* the last DMA block's last sample just came */
     if (!rc)
-        RAW.t0 = t_end - (double)(n + after) / R.rate;
+        RAW.t0 = t_end - (double)(n + after) / fs;
+    if ((off_rate || retune) && dev->raw_untune(dev)) {
+        say("raw capture: the chip's rate and tuning didn't come back: %s\n", dev->error);
+        exit(1); /* run.sh starts it again */
+    }
     char e2[160];
     memcpy(FX.cfg.inc, FX.inc, sizeof FX.inc);
     rdof_chzhw_rx_init(&FX.prx, FX.C, fx_on_ch, NULL, NULL);
@@ -4498,6 +4522,12 @@ static void *raw_thread(void *arg)
         exit(1); /* run.sh starts it again */
     }
     fx_resync = true;
+    if (off_rate) {
+        pthread_mutex_lock(&W.mu);
+        W.hold = false;
+        pthread_cond_broadcast(&W.cv);
+        pthread_mutex_unlock(&W.mu);
+    }
     atomic_store(&RAW.fill, false);
     long clip = 0;
     if (!rc)
@@ -4515,7 +4545,7 @@ static void *raw_thread(void *arg)
     return NULL;
 }
 
-static int bl_raw_start(void *ctx, double seconds, char *err, size_t cap)
+static int bl_raw_start(void *ctx, double seconds, double fs, double center, char *err, size_t cap)
 {
     (void)ctx;
     if (atomic_load(&RAW.state))
@@ -4524,7 +4554,12 @@ static int bl_raw_start(void *ctx, double seconds, char *err, size_t cap)
         snprintf(err, cap, "this device can't hand over its ADC's samples");
         return -1;
     }
-    const long n = lround(seconds * R.rate);
+    if (fs > 0 && fs != R.rate && !dev->raw_tune) {
+        snprintf(err, cap, "this device's rate can't change for a capture");
+        return -1;
+    }
+    RAW.fs = fs > 0 ? fs : R.rate, RAW.center = center;
+    const long n = lround(seconds * RAW.fs);
     int16_t *buf = malloc((size_t)n * 4);
     if (!buf) {
         snprintf(err, cap, "no memory for %.0f MB of samples", (double)n * 4 / 1e6);
@@ -4555,7 +4590,8 @@ static int bl_raw_state(void *ctx, rdof_bl_raw_t *o, char *err, size_t cap)
     }
     if (st != 2)
         return 0;
-    *o = (rdof_bl_raw_t){.n = RAW.n, .clipped = RAW.clipped, .fs = R.rate, .t0 = RAW.t0, .full_scale = 2048, .bits = 12};
+    *o = (rdof_bl_raw_t){.n = RAW.n, .clipped = RAW.clipped, .fs = RAW.fs, .t0 = RAW.t0, .full_scale = 2048, .bits = 12,
+                         .center_hz = isfinite(RAW.center) ? RAW.center : R.rx.center_hz};
     return 1;
 }
 

@@ -72,7 +72,7 @@ enum {
 /* A raw capture, ready: n samples at fs, the first at UTC t0; those at the rails; the ADC's full scale, in counts */
 typedef struct {
     long n, clipped;
-    double fs, t0, full_scale;
+    double fs, t0, full_scale, center_hz;
     int bits;
 } rdof_bl_raw_t;
 
@@ -324,8 +324,9 @@ typedef struct {
     /* A raw capture (optional): the ADC's own samples, int16 I, Q, for a capture with "raw": a receiver that has to stop
      * listening to hand them over does it for this long. raw_start begins one in the background: 0 begun, 1 another is
      * running (try again), -1 it can't (why in err). raw_state: 0 still running, 1 ready (*info), -1 failed (why in err).
-     * raw_read: its samples [at, at + n) into out. raw_close: done with them. */
-    int (*raw_start)(void *ctx, double seconds, char *err, size_t cap);
+     * raw_read: its samples [at, at + n) into out. raw_close: done with them.
+     * fs_hz: its rate (0: the receiver's); center_hz: where it's tuned (NAN: where the receiver is). */
+    int (*raw_start)(void *ctx, double seconds, double fs_hz, double center_hz, char *err, size_t cap);
     int (*raw_state)(void *ctx, rdof_bl_raw_t *info, char *err, size_t cap);
     void (*raw_read)(void *ctx, long at, int16_t *out, long n);
     void (*raw_close)(void *ctx);

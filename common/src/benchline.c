@@ -200,7 +200,7 @@ typedef struct {
     /* tune: a trigger or rx outside the window waits for its own tune, then runs again (autotune) */
     bool autotune;
     int raw_phase;  /* a raw capture: 0 waiting its turn, 1 being made, 2 going out */
-    double raw_secs, raw_since;
+    double raw_secs, raw_since, raw_fs, raw_center; /* raw_fs 0: the receiver's rate; raw_center NAN: where it is */
     rdof_bl_raw_t raw;
     bool rerun; /* came while a retune restarted the receiver: runs again once it's done */
     /* run */
@@ -1361,15 +1361,28 @@ static void op_capture_raw(rdof_bl_t *bl, conn_t *c, int root, double now, doubl
         fail(bl, c, "unavailable", "no memory for a capture");
         return;
     }
+    /* a rate of its own (the receiver deaf meanwhile anyway): the AD9363's 0.52-61.44 MS/s. The front end is tuned near
+     * the frequency asked, 10 % of the rate above it (off the LO's DC), unless it's well inside the band already */
+    const double fs = jnum(bl, root, "rate", 0), hz = mhz * 1e6;
+    if (fs != 0 && !(fs >= 520834 && fs <= 61.44e6)) {
+        fail(bl, c, "bad_request", "rate: 520834 to 61440000 S/s");
+        return;
+    }
+    const double rate = fs > 0 ? fs : w->fs;
+    double center = NAN;
+    if (!(fabs(hz - w->center_hz) < 0.35 * rate))
+        center = hz + 0.1 * rate;
     c->op = OP_RAW;
     c->raw_phase = 0;
     c->raw_secs = secs;
+    c->raw_fs = fs > 0 ? fs : 0, c->raw_center = center;
     c->freq_hz = mhz * 1e6;
     c->gain = jnum(bl, root, "gain", w->gain_db);
     c->raw_since = now;
     c->state = C_ACTIVE;
     emit(bl, c, "{\"ready\":%.6f,\"shared\":false,\"center\":%.6f,\"pre_s\":0,\"fs\":%.3f,\"fmt\":\"cs16\",\"sc0\":0,\"raw\":true}",
-         bl->p.utc ? bl->p.utc(bl->p.ctx) : now, w->center_hz / 1e6, w->fs);
+         bl->p.utc ? bl->p.utc(bl->p.ctx) : now, (isfinite(center) ? center : w->center_hz) / 1e6,
+         fs > 0 ? fs : w->fs);
 }
 
 static void op_capture(rdof_bl_t *bl, conn_t *c, int root, double now)
@@ -1390,16 +1403,19 @@ static void op_capture(rdof_bl_t *bl, conn_t *c, int root, double now)
         fail(bl, c, "unavailable", "the receiver isn't running");
         return;
     }
+    if (jbool(bl, root, "raw")) { /* tunes the front end itself, wherever it's asked */
+        if (!isfinite(mhz) || !(secs > 0) || secs > 600)
+            fail(bl, c, "bad_request", "freq, and seconds 0-600");
+        else
+            op_capture_raw(bl, c, root, now, mhz, secs, &w);
+        return;
+    }
     if (!isfinite(mhz) || mhz * 1e6 < w.lo_hz || mhz * 1e6 > w.hi_hz) {
         outside(bl, c, root, mhz, &w, now); /* a tune of its own there for the capture, as a trigger's */
         return;
     }
     if (!(secs > 0) || secs > 600) {
         fail(bl, c, "bad_request", "seconds is 0-600");
-        return;
-    }
-    if (jbool(bl, root, "raw")) {
-        op_capture_raw(bl, c, root, now, mhz, secs, &w);
         return;
     }
     if (chan) {
@@ -4321,7 +4337,7 @@ static void tick_raw(rdof_bl_t *bl, conn_t *c, double now)
     if (c->raw_phase == 0) { /* waiting its turn */
         if (bl->raw_conn)
             return;
-        const int r = bl->p.raw_start(bl->p.ctx, c->raw_secs, err, sizeof err);
+        const int r = bl->p.raw_start(bl->p.ctx, c->raw_secs, c->raw_fs, c->raw_center, err, sizeof err);
         if (r > 0)
             return;
         if (r < 0) {
@@ -4355,7 +4371,7 @@ static void tick_raw(rdof_bl_t *bl, conn_t *c, double now)
                  "{\"done\":{\"freq\":%.1f,\"center\":%.1f,\"fs\":%.1f,\"fmt\":\"cs16\",\"gain\":%.1f,%s,"
                  "\"t0\":%.6f,\"sc0\":0,\"seconds\":%.6f,\"samples\":%ld,\"overflows\":0,\"gap_samples\":0,"
                  "\"clip_pct\":%.3f,\"pre_s\":0,\"scale_db\":%.2f,\"raw\":true,\"bits\":%d,\"full_scale\":%.0f,\"source\":\"rfg\"}}",
-                 c->freq_hz, w.center_hz, fs, c->gain, pp, c->raw.t0, (double)c->raw.n / fs, c->raw.n,
+                 c->freq_hz, c->raw.center_hz, fs, c->gain, pp, c->raw.t0, (double)c->raw.n / fs, c->raw.n,
                  c->raw.n ? 100.0 * (double)c->raw.clipped / (double)(2 * c->raw.n) : 0.0,
                  20 * log10(c->raw.full_scale / 32768.0), c->raw.bits, c->raw.full_scale);
             c->state = C_DONE;

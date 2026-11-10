@@ -51,6 +51,8 @@ typedef struct {
     int16_t *wp;         /* the transmit buffer's next free sample, w_left of them */
     size_t w_left;
     bool rx_only;
+    bool tuned;                                 /* a raw capture's rate or LO in place of these */
+    long long was_rate, was_rx_bw, was_tx_bw, was_lo;
 } iio_t;
 
 static void fail(rdofradio_dev_t *d, const char *what, int err)
@@ -207,7 +209,7 @@ static void rx_pause(rdofradio_dev_t *d)
 /* DMA blocks all queued before the first sample, so the DMA fills them one after the other with nothing between: its
  * samples are in a row (the ADC core's overflow flag says if not). With only the first two channels on, a sample is 4
  * bytes (cpack sits ahead of the block's mux, so this is the stock path as on a stock board). */
-static int raw_fill(rdofradio_dev_t *d, long n, int16_t *out, long *after, char *err, size_t cap)
+static int raw_fill(rdofradio_dev_t *d, long n, double rate, int16_t *out, long *after, char *err, size_t cap)
 {
     iio_t *s = (iio_t *)d;
     for (unsigned i = 0; i < iio_device_get_channels_count(s->rxd); i++) {
@@ -227,7 +229,7 @@ static int raw_fill(rdofradio_dev_t *d, long n, int16_t *out, long *after, char 
         return -1;
     }
     const bool status = iio_device_reg_write(s->rxd, ADC_DMA_STATUS, 4) == 0; /* clear it */
-    iio_context_set_timeout(s->ctx, (unsigned)((double)len / d->rate * 1000) + 5000);
+    iio_context_set_timeout(s->ctx, (unsigned)((double)len / rate * 1000) + 5000);
     long got = 0, skip = RAW_GUARD; /* the first samples: what the FIFOs held from before */
     int rc = 0;
     for (long b = 0; b < blocks && got < n; b++) {
@@ -252,6 +254,65 @@ static int raw_fill(rdofradio_dev_t *d, long n, int16_t *out, long *after, char 
     }
     rx_pause(d);
     return rc;
+}
+
+static void fpga_rate(struct iio_device *dev, bool output, long long rate);
+
+static int set_rate(rdofradio_dev_t *d, long long rate)
+{
+    iio_t *s = (iio_t *)d;
+#ifdef RDOF_AD9361
+    const int r = ad9361_set_bb_rate(s->phy, (unsigned long)rate);
+    if (r < 0)
+        fail(d, "rate", r);
+#else
+    const int r = put_ll(d, s->rx_ch, "sampling_frequency", rate);
+#endif
+    fpga_rate(s->rxd, false, rate);
+    fpga_rate(s->txd, true, rate);
+    return r < 0 ? -1 : 0;
+}
+
+static int raw_tune(rdofradio_dev_t *d, double rate, double lo_hz, double *got, char *err, size_t cap)
+{
+    iio_t *s = (iio_t *)d;
+    if (!s->tuned) {
+        if (iio_channel_attr_read_longlong(s->rx_ch, "sampling_frequency", &s->was_rate) < 0 ||
+            iio_channel_attr_read_longlong(s->rx_ch, "rf_bandwidth", &s->was_rx_bw) < 0 ||
+            iio_channel_attr_read_longlong(s->tx_ch, "rf_bandwidth", &s->was_tx_bw) < 0 ||
+            iio_channel_attr_read_longlong(s->rx_lo, "frequency", &s->was_lo) < 0) {
+            snprintf(err, cap, "the chip's settings couldn't be read");
+            return -1;
+        }
+        s->tuned = true;
+    }
+    if (rate > 0 && llround(rate) != s->was_rate &&
+        (set_rate(d, llround(rate)) || put_ll(d, s->rx_ch, "rf_bandwidth", llround(rate)))) {
+        snprintf(err, cap, "rate %.0f: %s", rate, d->error);
+        return -1;
+    }
+    if (lo_hz > 0 && put_ll(d, s->rx_lo, "frequency", llround(lo_hz))) {
+        snprintf(err, cap, "RX LO %.0f: %s", lo_hz, d->error);
+        return -1;
+    }
+    long long g = 0;
+    *got = iio_channel_attr_read_longlong(s->rx_ch, "sampling_frequency", &g) < 0 ? rate : (double)g;
+    return 0;
+}
+
+static int raw_untune(rdofradio_dev_t *d)
+{
+    iio_t *s = (iio_t *)d;
+    if (!s->tuned)
+        return 0;
+    s->tuned = false;
+    long long now = 0;
+    int r = 0;
+    if (iio_channel_attr_read_longlong(s->rx_ch, "sampling_frequency", &now) < 0 || now != s->was_rate)
+        r |= set_rate(d, s->was_rate);
+    r |= put_ll(d, s->rx_ch, "rf_bandwidth", s->was_rx_bw) | put_ll(d, s->tx_ch, "rf_bandwidth", s->was_tx_bw) |
+         put_ll(d, s->rx_lo, "frequency", s->was_lo);
+    return r ? -1 : 0;
 }
 
 static int rx_resume(rdofradio_dev_t *d)
@@ -480,7 +541,8 @@ rdofradio_dev_t *rdofradio_iio_open(const char *uri, const rdofradio_dev_setup_t
             return NULL;
         }
         d->read_words = rd_words;
-        d->rx_pause = rx_pause, d->raw_fill = raw_fill, d->rx_resume = rx_resume;
+        d->rx_pause = rx_pause, d->raw_fill = raw_fill, d->rx_resume = rx_resume, d->raw_tune = raw_tune,
+        d->raw_untune = raw_untune;
     } else {
         iio_channel_enable(s->rx_i);
         iio_channel_enable(s->rx_q);

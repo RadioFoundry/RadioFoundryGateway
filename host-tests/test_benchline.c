@@ -1258,13 +1258,16 @@ static void test_ramp(void)
 
 static struct { int starts, polls, closes, ready_after, fail; } raw_f;
 
-static int f_raw_start(void *ctx, double seconds, char *err, size_t cap)
+static double raw_f_fs, raw_f_center;
+
+static int f_raw_start(void *ctx, double seconds, double fs, double center, char *err, size_t cap)
 {
     if (raw_f.fail) {
         snprintf(err, cap, "no room");
         return -1;
     }
     raw_f.starts++, raw_f.polls = 0;
+    raw_f_fs = fs, raw_f_center = center;
     return 0;
 }
 
@@ -1272,7 +1275,8 @@ static int f_raw_state(void *ctx, rdof_bl_raw_t *o, char *err, size_t cap)
 {
     if (++raw_f.polls < raw_f.ready_after)
         return 0;
-    *o = (rdof_bl_raw_t){.n = 50000, .clipped = 1000, .fs = 19872000, .t0 = 1.8e9, .full_scale = 2048, .bits = 12};
+    *o = (rdof_bl_raw_t){.n = 50000, .clipped = 1000, .fs = 19872000, .t0 = 1.8e9, .full_scale = 2048, .bits = 12,
+                          .center_hz = isfinite(raw_f_center) ? raw_f_center : 438e6};
     return 1;
 }
 
@@ -1326,6 +1330,24 @@ static void test_raw_capture(void)
     CHECK(raw_f.closes == 1, "closed once: %d", raw_f.closes);
     rdof_bl_closed(bl, c, now);
     CHECK(raw_f.closes == 1, "and not again: %d", raw_f.closes);
+    CHECK(raw_f_fs == 0 && isnan(raw_f_center), "the receiver's rate and tuning: %.0f %.0f", raw_f_fs, raw_f_center);
+    /* a rate of its own: tuned near the frequency, 10 % of the rate above it, when that's off the receiver's window */
+    c = ask(bl, "{\"op\":\"capture\",\"freq\":445.0,\"seconds\":0.001,\"raw\":true,\"rate\":2400000}", now);
+    total = 0;
+    for (int i = 0; i < 400; i++) {
+        rdof_bl_tick(bl, now += 0.01);
+        total += drain(bl, c, all + total, sizeof all - total - 1);
+        all[total] = 0;
+    }
+    CHECK(raw_f_fs == 2400000 && fabs(raw_f_center - 445.24e6) < 1, "rate %.0f, center %.0f", raw_f_fs, raw_f_center);
+    CHECK(strstr(all, "\"center\":445.240000") && strstr(all, "\"fs\":2400000.000"), "the ready says so: %.300s", all);
+    rdof_bl_closed(bl, c, now);
+    c = ask(bl, "{\"op\":\"capture\",\"freq\":445.0,\"seconds\":0.001,\"raw\":true,\"rate\":100000}", now);
+    rdof_bl_tick(bl, now += 0.01);
+    total = drain(bl, c, all, sizeof all - 1);
+    all[total] = 0;
+    CHECK(strstr(all, "bad_request"), "a rate the chip can't: %.200s", all);
+    rdof_bl_closed(bl, c, now);
     raw_f.fail = 1;
     c = ask(bl, "{\"op\":\"capture\",\"freq\":438.1125,\"seconds\":0.1,\"raw\":true}", now);
     rdof_bl_tick(bl, now += 0.01);

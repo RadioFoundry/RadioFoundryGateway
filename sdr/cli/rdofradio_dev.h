@@ -68,7 +68,11 @@ struct rdofradio_dev {
      * into out, *after the samples that came after them before it returned; 0, or -1 with why in err. rx_resume starts
      * the stream again. */
     void (*rx_pause)(rdofradio_dev_t *d);
-    int (*raw_fill)(rdofradio_dev_t *d, long n, int16_t *out, long *after, char *err, size_t cap);
+    int (*raw_fill)(rdofradio_dev_t *d, long n, double rate, int16_t *out, long *after, char *err, size_t cap);
+    /* For a raw capture: the chip at rate (0: as it is) with the RX LO at lo_hz (0: as it is), what it took in *got;
+     * raw_untune puts back what raw_tune found. The TX shares the rate. 0, or -1 with why in err. */
+    int (*raw_tune)(rdofradio_dev_t *d, double rate, double lo_hz, double *got, char *err, size_t cap);
+    int (*raw_untune)(rdofradio_dev_t *d);
     int (*rx_resume)(rdofradio_dev_t *d);
     /* up to n samples: how many were taken, or RDOF_DEV_* */
     int (*write)(rdofradio_dev_t *d, const rdof_cf_t *x, int n, long timeout_us);
