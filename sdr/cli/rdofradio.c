@@ -4555,8 +4555,11 @@ static void *raw_thread(void *arg)
         pthread_mutex_lock(&W.mu);
         /* the guard anew, as at start: nothing was pushed through the hold, so its queue's time ran out seconds ago
          * and it took every block after for one that came late (zeros sent, the samples dropped, for good) */
-        if (W.guarded)
+        if (W.guarded) { /* its counts go on: the loop's log takes differences of them */
+            const rdof_txguard_t was = W.guard;
             rdof_txguard_init(&W.guard, R.tx_rate, dev->tx_block, dev->tx_nbuf);
+            W.guard.padded = was.padded, W.guard.pads = was.pads, W.guard.dry = was.dry;
+        }
         /* the stream's lead again, as zeros, as at start: the hold dropped it, and with the queue short of it the queue
          * ran dry every so often (2-3 ms of zeros each time with it empty, 0.7 ms with it only full). Over the queue,
          * so the pushes wait: the guard has its time from them. The writer's held, so this thread writes. */
