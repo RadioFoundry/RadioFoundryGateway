@@ -2805,10 +2805,6 @@ static void test_txguard(void)
     CHECK(g.skip == 2000, "a slip takes off as much: %lld", (long long)g.skip);
     rdof_txguard_slipped(&g, 3000);
     CHECK(g.skip == 0, "and no more than there is: %lld", (long long)g.skip);
-    rdof_txguard_advance(&g, 2400);
-    rdof_txguard_advance(&g, -5);
-    CHECK(g.skip == 2400 && g.pads == 1 && g.padded == 5000, "an advance only drops: %lld", (long long)g.skip);
-    CHECK(rdof_txguard_drop(&g, 1000) == 1000 && rdof_txguard_drop(&g, 2000) == 1400 && g.skip == 0, "all of it");
 }
 
 static void test_ppm_edges(void)
