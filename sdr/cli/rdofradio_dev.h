@@ -64,11 +64,11 @@ struct rdofradio_dev {
     /* words_rate: the next DMA buffer's words, *w valid until the next call: how many, or RDOF_DEV_* */
     int (*read_words)(rdofradio_dev_t *d, const uint64_t **w, long timeout_us);
     /* The ADC's own samples, once, in place of the receive stream (libiio with read_words; NULL elsewhere), from the
-     * thread that has told the loop to stop reading: rx_pause ends the stream. raw_fill: n samples in a row, int16 I, Q
-     * at *data, valid until raw_free; 0, or -1 with why in err. rx_resume starts the stream again. */
+     * thread that has told the loop to stop reading: rx_pause ends the stream. raw_fill: n samples in a row, int16 I, Q,
+     * into out, *after the samples that came after them before it returned; 0, or -1 with why in err. rx_resume starts
+     * the stream again. */
     void (*rx_pause)(rdofradio_dev_t *d);
-    int (*raw_fill)(rdofradio_dev_t *d, long n, const int16_t **data, char *err, size_t cap);
-    void (*raw_free)(rdofradio_dev_t *d);
+    int (*raw_fill)(rdofradio_dev_t *d, long n, int16_t *out, long *after, char *err, size_t cap);
     int (*rx_resume)(rdofradio_dev_t *d);
     /* up to n samples: how many were taken, or RDOF_DEV_* */
     int (*write)(rdofradio_dev_t *d, const rdof_cf_t *x, int n, long timeout_us);

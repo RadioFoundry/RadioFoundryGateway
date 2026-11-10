@@ -4485,14 +4485,11 @@ static void *raw_thread(void *arg)
         nanosleep(&(struct timespec){0, 1000000}, NULL);
     dev->rx_pause(dev);
     rdof_chzhw_stop(&FX.h); /* the stock path: the ADC's samples to the DMA */
-    const int16_t *data = NULL;
-    int rc = dev->raw_fill(dev, n, &data, err, sizeof err);
-    const double t_end = bl_utc(NULL); /* the DMA block's last sample just came */
-    if (!rc) {
-        memcpy(buf, data, (size_t)n * 4);
-        RAW.t0 = t_end - (double)n / R.rate;
-    }
-    dev->raw_free(dev);
+    long after = 0;
+    int rc = dev->raw_fill(dev, n, buf, &after, err, sizeof err);
+    const double t_end = bl_utc(NULL); /* the last DMA block's last sample just came */
+    if (!rc)
+        RAW.t0 = t_end - (double)(n + after) / R.rate;
     char e2[160];
     memcpy(FX.cfg.inc, FX.inc, sizeof FX.inc);
     rdof_chzhw_rx_init(&FX.prx, FX.C, fx_on_ch, NULL, NULL);
