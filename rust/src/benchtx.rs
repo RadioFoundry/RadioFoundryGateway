@@ -193,10 +193,12 @@ pub struct RdofBenchtx {
     pub space_min: c_int,
     pub n_quiet: c_int,
     pub n_late: c_int,
+    pub held_space: c_int,
     pub st_seen: bool,
     pub st_tx: bool,
     pub was_on: bool,
     pub tailing: bool,
+    pub tail_held: bool,
     pub track: *mut RdofBenchtxTrack,
     pub track_first: c_uint,
     pub no_heard: *const c_char,
@@ -381,10 +383,10 @@ fn flag_head(o: &mut Out, at: f64, flag: &[u8]) {
 
 fn tx_check(t: &mut RdofBenchtx, now: f64) {
     t.tailing = false;
-    let held = t.st_seen && !t.st_tx && t.idle_space >= 0 && t.st_space < t.idle_space;
+    let held = t.tail_held || (t.st_seen && !t.st_tx && t.idle_space >= 0 && t.st_space < t.idle_space);
     let at = utc(t, now);
     if held {
-        let (sp, idle) = (t.st_space, t.idle_space);
+        let (sp, idle) = (if t.tail_held { t.held_space } else { t.st_space }, t.idle_space);
         record(t, |o| {
             flag_head(o, at, b"held");
             o.bytes(b",\"space\":");
@@ -527,7 +529,15 @@ fn watch(t: &mut RdofBenchtx, now: f64) {
         return;
     }
     let mute = t.polls >= 4 && t.answers == 0;
-    let idle = t.st_seen && !t.st_tx && t.answers > t.tail_answers;
+    // TX off with bursts still in its buffer: the modem holds them until more comes on its port (the polls are
+    // that), and SET_MODE idle would drop them. Done once its buffer is empty, or at tail_until.
+    let fresh = t.st_seen && t.answers > t.tail_answers;
+    let holding = fresh && !t.st_tx && t.idle_space >= 0 && t.st_space < t.idle_space;
+    if holding && !t.tail_held {
+        t.tail_held = true;
+        t.held_space = t.st_space;
+    }
+    let idle = fresh && !t.st_tx && !holding;
     let waited = t.track.is_null() || now >= t.tail_start + HEARD_S;
     if mute || now >= t.tail_until || (idle && waited) {
         tx_check(t, now);
@@ -658,6 +668,7 @@ fn unkey(t: &mut RdofBenchtx, why: &CStr, now: f64) {
     t.tail_start = now;
     t.tail_until = now + TAIL_S;
     t.tail_answers = t.answers;
+    t.tail_held = false;
     t.next_poll = now;
 }
 

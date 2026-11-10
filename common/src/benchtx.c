@@ -161,10 +161,10 @@ static int model_left(const rdof_benchtx_t *t, double now)
 static void tx_check(rdof_benchtx_t *t, double now)
 {
     t->tailing = false;
-    const bool held = t->st_seen && !t->st_tx && t->idle_space >= 0 && t->st_space < t->idle_space;
+    const bool held = t->tail_held || (t->st_seen && !t->st_tx && t->idle_space >= 0 && t->st_space < t->idle_space);
     if (held)
         record(t, "{\"type\":\"modem_flag\",\"t\":%.6f,\"flag\":\"held\",\"space\":%d,\"idle_space\":%d}", utc(t, now),
-               t->st_space, t->idle_space);
+               t->tail_held ? t->held_space : t->st_space, t->idle_space);
     char tx[32] = "null";
     if (t->was_on && !t->st_tx && t->tx_off >= t->tx_on)
         snprintf(tx, sizeof tx, "%.3f", t->tx_off - t->tx_on);
@@ -238,7 +238,13 @@ static void watch(rdof_benchtx_t *t, double now)
     if (!t->tailing)
         return;
     const bool mute = t->polls >= 4 && !t->answers; /* a modem that doesn't answer it */
-    const bool idle = t->st_seen && !t->st_tx && t->answers > t->tail_answers;
+    /* TX off with bursts still in its buffer: an MMDVM HAT holds a call's last bursts until more comes on its port (the
+     * polls are that), and SET_MODE idle would drop them. Done once its buffer is empty, or at tail_until. */
+    const bool fresh = t->st_seen && t->answers > t->tail_answers;
+    const bool holding = fresh && !t->st_tx && t->idle_space >= 0 && t->st_space < t->idle_space;
+    if (holding && !t->tail_held)
+        t->tail_held = true, t->held_space = t->st_space;
+    const bool idle = fresh && !t->st_tx && !holding;
     const bool waited = !t->track || now >= t->tail_start + RDOF_BENCHTX_HEARD_S;
     if (mute || now >= t->tail_until || (idle && waited))
         tx_check(t, now);
@@ -332,6 +338,7 @@ static void unkey(rdof_benchtx_t *t, const char *why, double now)
     t->tail_start = now;
     t->tail_until = now + RDOF_BENCHTX_TAIL_S;
     t->tail_answers = t->answers; /* an answer from after this */
+    t->tail_held = false;
     t->next_poll = now; /* straight away: is it done? */
 }
 

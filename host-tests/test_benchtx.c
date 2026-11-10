@@ -338,7 +338,10 @@ static void t_measured(void)
     CHECK(said("\"flag\":\"late\""), "late flagged: %s", tb.frames);
     tb.st_tx = false, tb.st_space = 4;
     run(0.3, true);
-    CHECK(rdof_benchtx_settled(&tb.t), "settled once it stops");
+    CHECK(!rdof_benchtx_settled(&tb.t), "TX off with bursts in its buffer: still out (they go on the next traffic)");
+    tb.st_space = 10;
+    run(0.3, true);
+    CHECK(rdof_benchtx_settled(&tb.t), "settled once its buffer is empty");
     CHECK(said("\"flag\":\"held\",\"space\":4,\"idle_space\":10"), "held: %s", tb.frames);
     CHECK(said("\"type\":\"tx_check\"") && said("\"timing\":\"estimate\"") && said("\"handed\":14") && said("\"held\":true"),
           "the check, no receiver: %s", tb.frames);

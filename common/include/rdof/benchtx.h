@@ -127,7 +127,9 @@ typedef struct {
     double rx_now;         /* rdof_benchtx_modem's time, for its frames */
     double next_poll, tx_on, tx_off, tail_model, tail_start, tail_until;
     int polls, answers, tail_answers, st_space, idle_space, space_min, n_quiet, n_late;
+    int held_space;        /* the buffer's space when tail_held came */
     bool st_seen, st_tx, was_on, tailing;
+    bool tail_held;        /* after a keying the modem said TX off with bursts still in its buffer */
     rdof_benchtx_track_t *track;
     unsigned track_first;
     const char *no_heard;  /* why nothing compares it: the tx_check's why */
