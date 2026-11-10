@@ -118,6 +118,9 @@ bool rdof_sfr_slots(const char *description, int *inbound, int *outbound);
 void rdof_sfr_framing(const char *description, char *out, size_t cap);
 /* The word DCDM in the description: the modem takes RDOF_MMDVM_DCDM (dual capacity direct mode). */
 bool rdof_dcdm_capable(const char *description);
+/* An MMDVM modem whose description names a board with one transceiver chip: simplex only, no duplex (a repeater, an
+ * outbound). False for a dual board, an MMDVM board, or a description it doesn't know: those get to try. */
+bool rdof_modem_simplex_only(const char *description);
 /* AT1846S RSSI register -> dBm, as the OpenGD77 firmware's own meter converts it. */
 int rdof_radio_hotspot_dbm(int raw, uint32_t freq_hz);
 

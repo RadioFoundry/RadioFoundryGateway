@@ -1,0 +1,15 @@
+// one simplex frequency on a W12, logged in to BrandMeister as one hotspot (no HBlink peer ID needed)
+{
+  "version": 3,
+  "callsign": "N0CALL",
+  "defaults": {"cc": 1, "tg": "*"},
+  "devices": [
+    {"name": "w12", "kind": "sdr", "driver": "lr2021"}
+  ],
+  "frequencies": [{"name": "hs", "freq": 438.5, "ts": 2}],
+  "apps": [{"type": "parrot", "tg": 9990}],
+  "networks": [
+    {"type": "brandmeister", "host": "bm.example.net", "password": "example", "peer_ids": {"hs": 310012301},
+     "location": "Anytown", "description": "RadioFoundry test", "url": "https://example.org"}
+  ]
+}

@@ -18,6 +18,22 @@ if(TARGET rdof_pffft)
     target_link_libraries(rdofsdr PRIVATE rdof_pffft)
 endif()
 
+# fakebm: a simulated BrandMeister master for tests (never the real network).
+add_executable(fakebm ${RDOF_CLI}/fakebm.c)
+target_link_libraries(fakebm PRIVATE rdof_common)
+set_target_properties(fakebm PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_compile_options(fakebm PRIVATE -Wall -Wno-unused-parameter)
+target_compile_definitions(fakebm PRIVATE _DEFAULT_SOURCE)
+
+# fakemodem: a simulated MMDVM hotspot on a pty, for rdofradio --mmdvm (the host tests' fake radio answers for it).
+if(UNIX)
+    add_executable(fakemodem ${RDOF_CLI}/fakemodem.c ${RDOF_CLI}/../../host-tests/fake_radio.c)
+    target_include_directories(fakemodem PRIVATE ${RDOF_CLI}/../../host-tests)
+    target_link_libraries(fakemodem PRIVATE rdof_common)
+    set_target_properties(fakemodem PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+    target_compile_options(fakemodem PRIVATE -Wall -Wno-unused-parameter)
+endif()
+
 find_path(SOAPYSDR_INCLUDE_DIR SoapySDR/Device.h)
 find_library(SOAPYSDR_LIBRARY SoapySDR)
 find_path(IIO_INCLUDE_DIR iio.h)
@@ -27,7 +43,8 @@ find_library(MOSQUITTO_LIBRARY NAMES mosquitto_static mosquitto) # the static on
 find_path(AD9361_INCLUDE_DIR ad9361.h)
 find_library(AD9361_LIBRARY ad9361)
 set(RDOF_RADIO_SRCS ${RDOF_CLI}/rdofradio.c ${RDOF_CLI}/rdofradio_cfg.c ${RDOF_CLI}/rdofradio_serial.c
-    ${RDOF_CLI}/rdofradio_net.c ${RDOF_CLI}/rdofradio_fpga.c ${RDOF_CLI}/rdofradio_dnssd.c)
+    ${RDOF_CLI}/rdofradio_net.c ${RDOF_CLI}/rdofradio_fpga.c ${RDOF_CLI}/rdofradio_dnssd.c
+    ${RDOF_CLI}/rdofradio_sim.c)
 set(RDOF_RADIO_DEFS)
 set(RDOF_RADIO_INCS)
 set(RDOF_RADIO_LIBS)
@@ -129,6 +146,10 @@ endif()
 
 if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
     target_link_options(rdofsdr PRIVATE -fsanitize=address,undefined)
+    target_link_options(fakebm PRIVATE -fsanitize=address,undefined)
+    if(TARGET fakemodem)
+        target_link_options(fakemodem PRIVATE -fsanitize=address,undefined)
+    endif()
     if(TARGET rdofchz)
         target_link_options(rdofchz PRIVATE -fsanitize=address,undefined)
     endif()

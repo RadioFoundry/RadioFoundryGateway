@@ -67,6 +67,10 @@ typedef struct {
     char master_host[64];
     int master_port;
     char transport[8];  /* udp, or sctp (over UDP encapsulation, RFC 6951) */
+    /* a brandmeister network: the peer logs in (rdof/hbpeer.h rdof_hb_peer_set_login) with these */
+    bool hb_login;
+    char hb_password[64];
+    char hb_location[21], hb_description[20], hb_url[125];
     /* hblink.sctp_*, as MMDVMHost's SCTP* settings */
     int sctp_encap_port;     /* HBlink4's sctp_encap_port */
     int sctp_heartbeat_ms;   /* SCTPHeartbeat; 0: none */

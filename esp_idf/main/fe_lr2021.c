@@ -89,6 +89,7 @@ static rdof_fe_caps_t caps = {
     .tx_power_max = CONFIG_RDOF_LR2021_PA_MAX_DBM,
     .tx_power_step = 0.5,
     .turnaround_us = 107, /* RX to TX, typical (table 3-23); TX to RX 91 */
+    .tx_late_us = 680,    /* measured on air at 384 kS/s (R3.54) */
     .tx_dev_max_hz = 4064, /* int8 samples, 32 Hz a count at TX_FDEV (R3.10) */
     .tx_polar = true,      /* an AM source as polar I/Q (tx_fill) */
 };
@@ -168,13 +169,30 @@ static esp_err_t cmd(const uint8_t *f, size_t n) { return lr2021_write(st.dev, f
 /* wanting counts the tasks waiting for the lock: the reader, at a wide rate always busy and above them, gives
  * them a tick (the mutex alone would go straight back to it, and the web server stalled behind a hold) */
 static volatile int wanting;
-static void lock(void)
+/* who has the SPI now and, for the loss records below, who held it longest since the reader last looked */
+static const char *holder, *held_most_by;
+static int64_t holder_since;
+static int held_most_us;
+
+static void lock_by(const char *who)
 {
     __atomic_add_fetch(&wanting, 1, __ATOMIC_RELAXED);
     xSemaphoreTake(st.spi, portMAX_DELAY);
     __atomic_sub_fetch(&wanting, 1, __ATOMIC_RELAXED);
+    holder = who;
+    holder_since = esp_timer_get_time();
 }
-static void unlock(void) { xSemaphoreGive(st.spi); }
+#define lock() lock_by(__func__)
+
+static void unlock(void)
+{
+    const int us = (int)(esp_timer_get_time() - holder_since);
+    if (strcmp(holder, "reader_task") && us > held_most_us) {
+        held_most_us = us;
+        held_most_by = holder;
+    }
+    xSemaphoreGive(st.spi);
+}
 
 /* ── log lines, from esp_timer's task ───────────────────────────────────── */
 
@@ -358,6 +376,7 @@ static int init(void *ctx)
         st.dev = NULL;
         return failed("didn't open", e);
     }
+    edge_time_start();
     uint8_t maj = 0, min = 0;
     if ((e = lr2021_version(st.dev, &maj, &min)) != ESP_OK)
         return failed("GetVersion", e);
@@ -548,9 +567,28 @@ static void count_error(void)
 /* The session's losses and errors since the last look into st.stats. The caller holds the lock. */
 static volatile unsigned losses; /* for report's line */
 static volatile unsigned tx_busy; /* TX look-ahead pulls put off, the source's lock taken (for report's line) */
+
+/* What the reader was doing around each FIFO loss (sdr.fifo_losses): the longest time between two polls since the
+ * last loss, split in its parts. A FIFO lasts about 1.3 ms, so one of these is what took that long. */
+typedef struct {
+    int64_t at_us;
+    int gap_us, yield_us, tx_us, lock_us, poll_us, held_us;
+    const char *held_by;
+} loss_why_t;
+#define LOSS_WHYS 8
+static loss_why_t loss_why[LOSS_WHYS], loss_worst;
+static unsigned loss_why_n;
+
 static void count_session(void)
 {
     const unsigned dl = iq.stats.losses - seen.losses, de = iq.stats.errors - seen.errors;
+    if (dl) {
+        loss_worst.at_us = esp_timer_get_time();
+        portENTER_CRITICAL(&st.lock);
+        loss_why[loss_why_n++ % LOSS_WHYS] = loss_worst;
+        portEXIT_CRITICAL(&st.lock);
+        loss_worst.gap_us = 0;
+    }
     if (dl || de) {
         portENTER_CRITICAL(&st.lock);
         st.stats.overflows += dl;
@@ -1016,8 +1054,10 @@ static bool tx_service(void)
         return false;
     }
     if (!tx.hold) {
+        portENTER_CRITICAL(&st.lock);
         tx.a_pos = rx48();
         tx.a_us = now;
+        portEXIT_CRITICAL(&st.lock);
     }
     const int64_t n48 = tx_now48(now);
     /* the first pull, far behind, or ahead past the stage (the stream restarted, rx_count from 0, at a retune: the
@@ -1118,26 +1158,65 @@ static int tx_tune(void *ctx, double hz)
     return 0;
 }
 
+/* The stream's time marks: ten a second, the FIFO level's edge, timed by the capture (lr2021_iq_t.mark_*). Only an
+ * edge that is the one rise since the arm counts: the pin also carries TX_DONE. */
+static int64_t mark_next;
+static uint32_t mark_seen, mark_edges;
+
+static void rx_mark_before(void)
+{
+    if (iq.mark_armed)
+        return;
+    double us;
+    edge_time_last(EDGE_FIFO, &us, &mark_edges);
+    const int64_t now = esp_timer_get_time();
+    if (now >= mark_next) {
+        iq.mark_want = true;
+        mark_next = now + 100000;
+    }
+}
+
+static void rx_mark_after(void)
+{
+    if (iq.mark_n == mark_seen)
+        return;
+    mark_seen = iq.mark_n;
+    double us;
+    uint32_t n;
+    if (!edge_time_last(EDGE_FIFO, &us, &n) || n != mark_edges + 1)
+        return;
+    /* rx_count stands after what's been delivered, carry_n bytes short of what's been read */
+    const double native = (double)rx_count -
+                          ((double)(iq.bytes_out - iq.carry_n) - (double)iq.mark_bytes) / st.plan.sample_bytes;
+    edge_time_rx_mark(native * TX_RATE * st.native_den / st.native_num, us, iq.mark_failed);
+}
+
 /* The reader: lr2021_iq_poll in a loop (the FIFO's samples, little-endian I then Q, 16 bits each, spec R2.7, or 8
  * in the wide mode, into the ring), the transmit turn between. The session waits for the RX FIFO IRQ or reads by
  * the level it reckons from the rate (spec R2.34), sleeping between reads. */
 static void reader_task(void *arg)
 {
+    int64_t last_poll = 0;
     for (;;) {
+        const int64_t t_top = esp_timer_get_time();
         if (wanting) {
             dbg.yields++;
             vTaskDelay(1);
         }
         if (!st.streaming) {
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+            last_poll = 0;
             continue;
         }
         if (st.held) {
             vTaskDelay(pdMS_TO_TICKS(50));
+            last_poll = 0;
             continue;
         }
+        const int64_t t_tx = esp_timer_get_time();
         if (tx.src || tx.hold)
             tx_service();
+        const int64_t t_lock = esp_timer_get_time();
         lock();
         if (st.held || !st.streaming) {
             unlock();
@@ -1153,7 +1232,18 @@ static void reader_task(void *arg)
             }
             continue;
         }
+        rx_mark_before();
+        const int64_t t_poll = esp_timer_get_time();
         const int got = lr2021_iq_poll(&iq, sink, NULL, 2);
+        const int64_t t_end = esp_timer_get_time();
+        rx_mark_after();
+        if (last_poll && t_end - last_poll > loss_worst.gap_us)
+            loss_worst = (loss_why_t){.gap_us = (int)(t_end - last_poll), .yield_us = (int)(t_tx - t_top),
+                                      .tx_us = (int)(t_lock - t_tx), .lock_us = (int)(t_poll - t_lock),
+                                      .poll_us = (int)(t_end - t_poll), .held_us = held_most_us, .held_by = held_most_by};
+        held_most_us = 0;
+        held_most_by = NULL;
+        last_poll = t_end;
         count_session();
         unlock();
         if (got < 0)
@@ -1352,6 +1442,16 @@ static const char *error(void *ctx) { return st.error; }
 /* The crystal correction moves the PLL, not the rate converter: the sample rate keeps the crystal's whole error. */
 static double sample_ppm(void *ctx) { return 0.0; }
 
+static bool tx_map(void *ctx, int64_t *pos48, int64_t *us)
+{
+    portENTER_CRITICAL(&st.lock);
+    const bool held = tx.hold;
+    *pos48 = tx.a_pos;
+    *us = tx.a_us;
+    portEXIT_CRITICAL(&st.lock);
+    return held;
+}
+
 static const rdof_fe_ops_t ops = {
     .init = init,
     .wait = wait,
@@ -1370,7 +1470,38 @@ static const rdof_fe_ops_t ops = {
     .sample_ppm = sample_ppm,
     .tx_set = tx_set,
     .tx_tune = tx_tune,
+    .tx_map = tx_map,
 };
+
+void fe_lr2021_loss_json(rdof_json_t *j)
+{
+    loss_why_t w[LOSS_WHYS];
+    portENTER_CRITICAL(&st.lock);
+    memcpy(w, loss_why, sizeof w);
+    const unsigned n = loss_why_n;
+    portEXIT_CRITICAL(&st.lock);
+    if (!n)
+        return;
+    rdof_json_int(j, "fifo_loss_n", n);
+    const int have = n < LOSS_WHYS ? (int)n : LOSS_WHYS;
+    rdof_json_open(j, "fifo_losses");
+    for (int i = 0; i < have; i++) {
+        char key[8];
+        snprintf(key, sizeof key, "%d", i);
+        const loss_why_t *x = &w[(n - 1 - (unsigned)i) % LOSS_WHYS]; /* the newest first */
+        rdof_json_open(j, key);
+        rdof_json_int(j, "ago_ms", (long long)((esp_timer_get_time() - x->at_us) / 1000));
+        rdof_json_int(j, "gap_us", x->gap_us);
+        rdof_json_int(j, "yield_us", x->yield_us);
+        rdof_json_int(j, "tx_us", x->tx_us);
+        rdof_json_int(j, "lock_us", x->lock_us);
+        rdof_json_int(j, "poll_us", x->poll_us);
+        rdof_json_int(j, "held_us", x->held_us);
+        rdof_json_str(j, "held_by", x->held_by ? x->held_by : "");
+        rdof_json_close(j);
+    }
+    rdof_json_close(j);
+}
 
 int fe_lr2021_read_mem(uint32_t addr, uint32_t *w, int n)
 {

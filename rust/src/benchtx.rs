@@ -3,15 +3,15 @@
 //! The bench API's transmit job (rdof/benchtx.h): one WS /tx socket's job as a state machine. A port of
 //! common/src/benchtx.c. The tool's frames are untrusted text; the modem's bytes come through the MMDVM reader.
 
-use core::ffi::{c_char, c_int, c_long, c_void, CStr};
+use core::ffi::{c_char, c_int, c_long, c_uint, c_void, CStr};
 
 use crate::bits::slice;
 use crate::ffi::{RDOF_BURST_BYTES, RDOF_DT_TERMINATOR_WITH_LC};
 use crate::jsonp::{rdof_jat, rdof_jget, rdof_jnode, rdof_jparse, JDoc, JNode, RDOF_JARR, RDOF_JNUM, RDOF_JSTR};
 use crate::layer2::{rdof_decode_emb, rdof_decode_slot_type, rdof_detect_sync};
 use crate::mmdvm::{
-    rdof_mmdvm_config_v1, rdof_mmdvm_config_v2, rdof_mmdvm_frame, rdof_mmdvm_parse_version, rdof_mmdvm_reader_feed,
-    rdof_mmdvm_reader_init, rdof_mmdvm_set_freq_payload, rdof_modem_config_default, RdofMmdvmReader, RdofModemConfig,
+    rdof_mmdvm_config_v1, rdof_mmdvm_config_v2, rdof_mmdvm_frame, rdof_mmdvm_parse_status, rdof_mmdvm_parse_version, rdof_mmdvm_reader_feed,
+    rdof_mmdvm_reader_init, rdof_mmdvm_set_freq_payload, rdof_modem_config_default, RdofMmdvmReader, RdofMmdvmStatus, RdofModemConfig,
     RDOF_SYNC_DATA,
 };
 use crate::text::{c_bytes, c_out, Out};
@@ -27,6 +27,15 @@ const DEADMAN_S: f64 = 2.0;
 const REPLY_S: f64 = 1.0;
 const TRIES: c_int = 3;
 const NODES: usize = 400;
+const POLL_S: f64 = 0.1;
+const TAIL_S: f64 = 1.5;
+const LATE_S: f64 = 0.5;
+const HEARD_S: f64 = 0.4;
+const TRACK: usize = 600;
+const EVENTS: usize = 12;
+const EVENT_LEN: usize = 240;
+const SAME_BITS: u32 = 24;
+const GET_STATUS: u8 = 0x01;
 
 const GET_VERSION: u8 = 0x00;
 const SET_CONFIG: u8 = 0x02;
@@ -123,6 +132,21 @@ pub struct RdofBenchtxItem {
 
 /// rdof_benchtx_t
 #[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RdofBenchtxSent {
+    pub burst: Burst,
+    pub heard: bool,
+    pub at: f64,
+    pub heard_at: f64,
+}
+
+#[repr(C)]
+pub struct RdofBenchtxTrack {
+    pub s: [RdofBenchtxSent; TRACK],
+    pub n: c_uint,
+}
+
+#[repr(C)]
 pub struct RdofBenchtx {
     pub io: RdofBenchtxIo,
     pub freq: u32,
@@ -154,6 +178,34 @@ pub struct RdofBenchtx {
     pub keyings: c_long,
     pub underruns: c_long,
     pub frames: c_long,
+    pub rx_now: f64,
+    pub next_poll: f64,
+    pub tx_on: f64,
+    pub tx_off: f64,
+    pub tail_model: f64,
+    pub tail_start: f64,
+    pub tail_until: f64,
+    pub polls: c_int,
+    pub answers: c_int,
+    pub tail_answers: c_int,
+    pub st_space: c_int,
+    pub idle_space: c_int,
+    pub space_min: c_int,
+    pub n_quiet: c_int,
+    pub n_late: c_int,
+    pub held_space: c_int,
+    pub st_seen: bool,
+    pub st_tx: bool,
+    pub was_on: bool,
+    pub tailing: bool,
+    pub tail_held: bool,
+    pub track: *mut RdofBenchtxTrack,
+    pub track_first: c_uint,
+    pub no_heard: *const c_char,
+    pub ev: [[u8; EVENT_LEN]; EVENTS],
+    pub evh: c_int,
+    pub evn: c_int,
+    pub ev_lost: c_long,
     pub error: [c_char; 96],
     pub reader: RdofMmdvmReader,
     pub nodes: [JNode; NODES],
@@ -290,6 +342,257 @@ fn request(t: &mut RdofBenchtx, now: f64) {
     modem(t, t.want, &p[..n]);
 }
 
+// ── what's measured ──
+
+/// A measurement frame: to the tool, and kept for a reader without one (the bench line).
+fn record(t: &mut RdofBenchtx, f: impl FnOnce(&mut Out)) {
+    let mut b = [0u8; EVENT_LEN];
+    let mut o = Out::new(&mut b);
+    f(&mut o);
+    let n = o.n.min(EVENT_LEN - 1);
+    if n == 0 {
+        return;
+    }
+    if let Some(to_tool) = t.io.to_tool {
+        unsafe { to_tool(t.io.ctx, b.as_ptr().cast(), n) };
+    }
+    if t.evn as usize == EVENTS {
+        t.ev_lost += 1;
+        return;
+    }
+    let at = (t.evh + t.evn) as usize % EVENTS;
+    t.ev[at] = b;
+    t.evn += 1;
+}
+
+fn model_left(t: &RdofBenchtx, now: f64) -> c_int {
+    if t.air_free > now {
+        ((t.air_free - now) / BURST_S + 0.5) as c_int
+    } else {
+        0
+    }
+}
+
+fn flag_head(o: &mut Out, at: f64, flag: &[u8]) {
+    o.bytes(b"{\"type\":\"modem_flag\",\"t\":");
+    o.fixed(at, 6);
+    o.bytes(b",\"flag\":\"");
+    o.bytes(flag);
+    o.bytes(b"\"");
+}
+
+fn tx_check(t: &mut RdofBenchtx, now: f64) {
+    t.tailing = false;
+    let held = t.tail_held || (t.st_seen && !t.st_tx && t.idle_space >= 0 && t.st_space < t.idle_space);
+    let at = utc(t, now);
+    if held {
+        let (sp, idle) = (if t.tail_held { t.held_space } else { t.st_space }, t.idle_space);
+        record(t, |o| {
+            flag_head(o, at, b"held");
+            o.bytes(b",\"space\":");
+            o.int(sp.into(), 0);
+            o.bytes(b",\"idle_space\":");
+            o.int(idle.into(), 0);
+            o.bytes(b"}");
+        });
+    }
+    let on = if t.was_on && !t.st_tx && t.tx_off >= t.tx_on { Some(t.tx_off - t.tx_on) } else { None };
+    let (handed, quiet, late) = (t.key_bursts, t.n_quiet, t.n_late);
+    let tail = move |o: &mut Out| {
+        o.bytes(b",\"modem_tx_s\":");
+        match on {
+            Some(s) => o.fixed(s, 3),
+            None => o.bytes(b"null"),
+        }
+        o.bytes(b",\"quiet\":");
+        o.int(quiet.into(), 0);
+        o.bytes(b",\"late\":");
+        o.int(late.into(), 0);
+        o.bytes(b",\"held\":");
+        o.bytes(if held { b"true" } else { b"false" });
+        o.bytes(b"}");
+    };
+    if t.track.is_null() {
+        let why: &[u8] =
+            if t.no_heard.is_null() { b"no receiver compares it" } else { unsafe { CStr::from_ptr(t.no_heard) }.to_bytes() };
+        record(t, |o| {
+            o.bytes(b"{\"type\":\"tx_check\",\"t\":");
+            o.fixed(at, 6);
+            o.bytes(b",\"handed\":");
+            o.int(handed.into(), 0);
+            o.bytes(b",\"timing\":\"estimate\",\"why\":\"");
+            o.bytes(why);
+            o.bytes(b"\"");
+            tail(o);
+        });
+        return;
+    }
+    let tr = unsafe { &*t.track };
+    let end = tr.n as usize;
+    let oldest = end.saturating_sub(TRACK);
+    let (mut n, mut heard, mut first, mut latest) = (0i64, 0i64, 0f64, 0f64);
+    for i in (t.track_first as usize).max(oldest)..end {
+        n += 1;
+        let e = &tr.s[i % TRACK];
+        if !e.heard {
+            continue;
+        }
+        let l = e.heard_at - e.at;
+        if heard == 0 {
+            first = l;
+        }
+        heard += 1;
+        if l > latest {
+            latest = l;
+        }
+    }
+    record(t, |o| {
+        o.bytes(b"{\"type\":\"tx_check\",\"t\":");
+        o.fixed(at, 6);
+        o.bytes(b",\"handed\":");
+        o.int(handed.into(), 0);
+        o.bytes(b",\"timing\":\"heard\",\"compared\":");
+        o.int(n, 0);
+        o.bytes(b",\"heard\":");
+        o.int(heard, 0);
+        o.bytes(b",\"never\":");
+        o.int(n - heard, 0);
+        o.bytes(b",\"first_s\":");
+        o.fixed(first, 3);
+        o.bytes(b",\"latest_s\":");
+        o.fixed(latest, 3);
+        tail(o);
+    });
+}
+
+fn on_status(t: &mut RdofBenchtx, st: &RdofMmdvmStatus, now: f64) {
+    let tx = st.transmitting != 0;
+    t.answers += 1;
+    t.st_space = st.space;
+    if !t.keyed && !t.tailing && !tx && st.space > t.idle_space {
+        t.idle_space = st.space;
+    }
+    if t.keyed && st.space < t.space_min {
+        t.space_min = st.space;
+    }
+    if !t.st_seen || tx != t.st_tx {
+        let (at, sp, left) = (utc(t, now), st.space, model_left(t, now));
+        record(t, |o| {
+            o.bytes(b"{\"type\":\"modem\",\"t\":");
+            o.fixed(at, 6);
+            o.bytes(b",\"tx\":");
+            o.bytes(if tx { b"true" } else { b"false" });
+            o.bytes(b",\"space\":");
+            o.int(sp.into(), 0);
+            o.bytes(b",\"model_left\":");
+            o.int(left.into(), 0);
+            o.bytes(b"}");
+        });
+        if tx && !t.was_on {
+            t.was_on = true;
+            t.tx_on = now;
+        }
+        if !tx && t.st_seen && t.st_tx {
+            t.tx_off = now;
+            if t.keyed && t.air_free - now > 1.5 * BURST_S {
+                t.n_quiet += 1;
+                record(t, |o| {
+                    flag_head(o, at, b"quiet");
+                    o.bytes(b",\"outstanding\":");
+                    o.int(left.into(), 0);
+                    o.bytes(b"}");
+                });
+            }
+        }
+    }
+    t.st_seen = true;
+    t.st_tx = tx;
+    if tx && t.tailing && t.n_late == 0 && now > t.tail_model + LATE_S {
+        t.n_late += 1;
+        let (at, late) = (utc(t, now), now - t.tail_model);
+        record(t, |o| {
+            flag_head(o, at, b"late");
+            o.bytes(b",\"late_s\":");
+            o.fixed(late, 3);
+            o.bytes(b"}");
+        });
+    }
+}
+
+fn watch(t: &mut RdofBenchtx, now: f64) {
+    if (t.keyed || t.tailing || t.polls == 0) && now >= t.next_poll {
+        t.next_poll = now + POLL_S;
+        t.polls += 1;
+        modem(t, GET_STATUS, &[]);
+    }
+    if !t.tailing {
+        return;
+    }
+    let mute = t.polls >= 4 && t.answers == 0;
+    // TX off with bursts still in its buffer: the modem holds them until more comes on its port (the polls are
+    // that), and SET_MODE idle would drop them. Done once its buffer is empty, or at tail_until.
+    let fresh = t.st_seen && t.answers > t.tail_answers;
+    let holding = fresh && !t.st_tx && t.idle_space >= 0 && t.st_space < t.idle_space;
+    if holding && !t.tail_held {
+        t.tail_held = true;
+        t.held_space = t.st_space;
+    }
+    let idle = fresh && !t.st_tx && !holding;
+    let waited = t.track.is_null() || now >= t.tail_start + HEARD_S;
+    if mute || now >= t.tail_until || (idle && waited) {
+        tx_check(t, now);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_benchtx_track(t: &mut RdofBenchtx, track: *mut RdofBenchtxTrack, why: *const c_char) {
+    t.track = track;
+    t.no_heard = why;
+    if !track.is_null() {
+        (*track).n = 0;
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_benchtx_heard(t: &mut RdofBenchtx, burst: &Burst, now: f64) {
+    if t.track.is_null() {
+        return;
+    }
+    let tr = &mut *t.track;
+    let end = tr.n as usize;
+    for i in (t.track_first as usize).max(end.saturating_sub(TRACK))..end {
+        let e = &mut tr.s[i % TRACK];
+        if e.heard {
+            continue;
+        }
+        let d: u32 = burst.iter().zip(e.burst.iter()).map(|(a, b)| (a ^ b).count_ones()).sum();
+        if d <= SAME_BITS {
+            e.heard = true;
+            e.heard_at = now;
+            return;
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_benchtx_next_event(t: &mut RdofBenchtx, out: *mut c_char, cap: usize) -> usize {
+    if t.evn == 0 || cap == 0 {
+        return 0;
+    }
+    let e = &t.ev[t.evh as usize];
+    let len = e.iter().position(|&c| c == 0).unwrap_or(EVENT_LEN - 1).min(cap - 1);
+    core::ptr::copy_nonoverlapping(e.as_ptr(), out.cast(), len);
+    *out.add(len) = 0;
+    t.evh = (t.evh + 1) % EVENTS as c_int;
+    t.evn -= 1;
+    len
+}
+
+#[no_mangle]
+pub extern "C" fn rdof_benchtx_settled(t: &RdofBenchtx) -> bool {
+    !t.tailing
+}
+
 fn finish(t: &mut RdofBenchtx, code: Option<&[u8]>, why: &[u8]) {
     if t.state == DONE {
         return;
@@ -356,10 +659,17 @@ fn unkey(t: &mut RdofBenchtx, why: &CStr, now: f64) {
         o.fixed(secs, 3);
         o.bytes(b",\"bursts\":");
         o.int(bursts.into(), 0);
-        o.bytes(b"}");
+        o.bytes(b",\"estimated\":true}");
     });
     t.keyed = false;
     t.unkey_asked = false;
+    t.tailing = true;
+    t.tail_model = end;
+    t.tail_start = now;
+    t.tail_until = now + TAIL_S;
+    t.tail_answers = t.answers;
+    t.tail_held = false;
+    t.next_poll = now;
 }
 
 #[no_mangle]
@@ -384,6 +694,7 @@ pub unsafe extern "C" fn rdof_benchtx_init(
     t.voice_n = -1;
     t.want = NO_REPLY;
     t.last_tool = now;
+    t.idle_space = -1;
     rdof_mmdvm_reader_init(&mut t.reader);
     t.step = STEP_VERSION;
     request(t, now);
@@ -567,6 +878,14 @@ unsafe extern "C" fn on_frame(ctx: *mut c_void, cmd: u8, p: *const u8, len: usiz
     let t = ctx.cast::<RdofBenchtx>();
     let p = slice(p, len);
     let want = (*t).want;
+    if cmd == GET_STATUS {
+        let mut st = core::mem::zeroed::<RdofMmdvmStatus>();
+        if (*t).state != SETUP && rdof_mmdvm_parse_status((*t).protocol, p.as_ptr(), p.len(), &mut st) {
+            let now = (*t).rx_now;
+            on_status(&mut *t, &st, now);
+        }
+        return;
+    }
     match (cmd, p.first()) {
         (GET_VERSION, _) if want == GET_VERSION => {
             (*t).protocol = rdof_mmdvm_parse_version(p.as_ptr(), p.len(), core::ptr::null_mut(), 0);
@@ -586,6 +905,7 @@ unsafe extern "C" fn on_frame(ctx: *mut c_void, cmd: u8, p: *const u8, len: usiz
 
 #[no_mangle]
 pub unsafe extern "C" fn rdof_benchtx_modem(t: &mut RdofBenchtx, b: *const u8, n: usize, now: f64) {
+    t.rx_now = now;
     let ctx: *mut RdofBenchtx = t;
     rdof_mmdvm_reader_feed(&mut *core::ptr::addr_of_mut!((*ctx).reader), b, n, Some(on_frame), ctx.cast());
     let t = &mut *ctx;
@@ -678,13 +998,22 @@ pub extern "C" fn rdof_benchtx_tick(t: &mut RdofBenchtx, now: f64) {
     if t.keyed && t.air_free - t.key_start > t.max_key_s + 1e-9 {
         return unkey(t, c"max_key", now);
     }
+    watch(t, now);
     while t.qn != 0 && t.air_free - now < LEAD * BURST_S {
         if t.keyed && t.air_free + BURST_S - t.key_start > t.max_key_s + 1e-9 {
             return unkey(t, c"max_key", now);
         }
         let it = t.q[t.qh as usize % QUEUE];
         if !t.keyed {
+            if t.tailing {
+                tx_check(t, now);
+            }
             t.keyed = true;
+            t.was_on = false;
+            t.n_quiet = 0;
+            t.n_late = 0;
+            t.space_min = 255;
+            t.track_first = if t.track.is_null() { 0 } else { unsafe { (*t.track).n } };
             t.key_start = now;
             t.air_free = now;
             t.key_bursts = 0;
@@ -702,6 +1031,14 @@ pub extern "C" fn rdof_benchtx_tick(t: &mut RdofBenchtx, now: f64) {
         p[0] = it.control;
         p[1..].copy_from_slice(&it.burst);
         modem(t, DMR_DATA2, &p);
+        if !t.track.is_null() {
+            let tr = unsafe { &mut *t.track };
+            let e = &mut tr.s[tr.n as usize % TRACK];
+            tr.n += 1;
+            e.burst = it.burst;
+            e.heard = false;
+            e.at = if t.air_free > now { t.air_free } else { now };
+        }
         t.last_voice = it.control == SYNC_AUDIO || it.control & 0xF0 == 0;
         if it.control & 0xF0 == RDOF_SYNC_DATA && c_int::from(it.control & 0x0F) == RDOF_DT_TERMINATOR_WITH_LC {
             t.last_voice = false;
@@ -735,6 +1072,9 @@ fn stop(t: &mut RdofBenchtx, code: Option<&[u8]>, why: &[u8], now: f64) {
     }
     let keyed = t.keyed;
     unkey(t, c"stopped", now);
+    if t.tailing {
+        tx_check(t, now);
+    }
     if !keyed {
         // nothing on the air, but leave the modem idle
         modem(t, SET_MODE, &[MODE_IDLE]);

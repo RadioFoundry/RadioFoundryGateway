@@ -400,6 +400,8 @@ double rdof_sdr_rx_correction_at(const rdof_sdr_rx_t *rx, int c, int64_t pos)
     return corr[0];
 }
 
+void rdof_sdr_rx_set_cc(rdof_sdr_rx_t *rx, int c, int cc) { rx->demods[c].cc = cc; }
+
 void rdof_sdr_rx_set_correction(rdof_sdr_rx_t *rx, int c, double hz)
 {
     rx->chz.correction_hz[c] = hz;

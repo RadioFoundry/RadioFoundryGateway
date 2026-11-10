@@ -13,6 +13,7 @@ set(RDOF_COMMON_SRCS
     src/txpower.c
     src/hblink.c
     src/hbpeer.c
+    src/sha256.c
     src/json.c
     src/tracker.c
     src/modem.c
@@ -43,6 +44,8 @@ set(RDOF_COMMON_SRCS
     src/benchroute.c
     src/benchjob.c
     src/benchline.c
+    src/benchenv.c
+    src/benchramp.c
     src/benchnet.c
     src/ipgw.c
     src/ipgwcfg.c
@@ -59,6 +62,8 @@ if(NOT CMAKE_SCRIPT_MODE_FILE)  # ESP-IDF reads this file as a script first, to 
     set_source_files_properties(src/split.c PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 endif()
 
+list(APPEND RDOF_COMMON_SRCS src/mssim.c) # the bench's confirmed-data responder (its users check RDOF_FEATURE_DATA_BLOCKS)
+
 if(ESP_PLATFORM)
     # CONFIG_RDOF_RUST: rust's modules (Espressif's Rust toolchain, `espup`) in place of their C files.
     if(CONFIG_RDOF_RUST)
@@ -71,7 +76,7 @@ if(ESP_PLATFORM)
     idf_component_register(SRCS ${RDOF_COMMON_SRCS} INCLUDE_DIRS include)
     # The bench engine filters a W12's 384 kS/s history for a trigger: at -Os it fell behind the history (a third of
     # an 11 s capture lost), at -O2 with the loop's other fixes it keeps up
-    set_source_files_properties(src/benchline.c PROPERTIES COMPILE_OPTIONS -O2)
+    set_source_files_properties(src/benchline.c src/benchenv.c src/benchramp.c PROPERTIES COMPILE_OPTIONS -O2)
     if(CONFIG_RDOF_RUST)
         idf_build_get_property(idf_target IDF_TARGET)
         rdof_rust_add(rdof_rust TARGET xtensa-${idf_target}-none-elf TOOLCHAIN esp BUILD_STD)

@@ -17,6 +17,7 @@
 #include <sys/socket.h>
 
 #include "rdof/benchjob.h"
+#include "rdof/bits.h"
 #include "rdof/benchline.h"
 #include "fake_chs.h"
 #include "rdof/benchnet.h"
@@ -170,6 +171,7 @@ static struct {
     double next;
     uint8_t aired[600][34];
     int naired, keyups;
+    bool refuse_at_end; /* all in, then refused (a routed call's transceiver that found the channel busy) */
 } tx;
 static bool f_tx_open(void *ctx, uint32_t f, int cc, rdof_bench_power_t power, bool as_built, char *why, size_t cap)
 {
@@ -188,7 +190,11 @@ static bool f_tx_open(void *ctx, uint32_t f, int cc, rdof_bench_power_t power, b
 static int f_tx_space(void *ctx, char *why, size_t cap)
 {
     pthread_mutex_lock(&txmu);
-    const int n = 4 - tx.qn;
+    int n = 4 - tx.qn;
+    if (tx.refuse_at_end && !tx.qn && tx.unkeyed) {
+        snprintf(why, cap, "the transmitter refused the call");
+        n = -1;
+    }
     pthread_mutex_unlock(&txmu);
     return n;
 }
@@ -565,8 +571,8 @@ static void test_ops(void)
     c = ask(bl, "{\"op\": \"bursts\", \"freq\": 438.1125, \"seconds\": 10, \"until_end\": true}", now);
     CHECK(rdof_bl_wants_bursts(bl), "bursts are wanted");
     for (int i = 0; i < 4; i++) {
-        rdof_bl_burst_t b = {.ch = i < 3 ? 1 : 2, .t = 1.8e9 + 0.06 * i, .pos48 = 2880 * i, .cfo_hz = 10.0f * i,
-                             .level_dbfs = -40,
+        rdof_bl_burst_t b = {.ch = i < 3 ? 1 : 2, .t = 1.8e9 + 0.06 * i, .pos48 = 2880 * i + 40, .lag48 = 40,
+                             .cfo_hz = 10.0f * i, .level_dbfs = -40,
                              .dt = i == 0 ? 1 : RDOF_BL_VOICE_SYNC, .n = 0, .slot = 1, .family = 1, .cc = 2};
         b.raw[0] = (uint8_t)i;
         rdof_bl_burst(bl, &b);
@@ -581,9 +587,10 @@ static void test_ops(void)
               strstr(out, "\"kind\":\"IDLE\"") && !strstr(out, "\"t_rel_ms\":180") &&
               strstr(out, "\"cfo_hz\":10.0,\"cfo_tol_hz\":null,"),
           "burst records: %s", out);
-    /* t and sc at the sync's center: 655 samples (48 kS/s) past the start, sc in the 768 kS/s window's count */
-    CHECK(strstr(out, "\"t\":1800000000.013646,\"sc\":10480,") &&
-              strstr(out, "\"t\":1800000000.073646,\"sc\":56560,"), "sync centers: %s", out);
+    /* t and sc at the sync's center: 655 samples (48 kS/s) past the first symbol, the demodulator's lag (40) taken
+     * off its position and time; sc in the 768 kS/s window's count */
+    CHECK(strstr(out, "\"t\":1800000000.012813,\"sc\":10480,") &&
+              strstr(out, "\"t\":1800000000.072813,\"sc\":56560,"), "sync centers: %s", out);
     rdof_bl_tick(bl, now + 0.5);
     drain(bl, c, out, sizeof out);
     CHECK(strstr(out, "\"done\":{\"bursts\":4,\"reason\":\"ended\"") &&
@@ -591,6 +598,45 @@ static void test_ops(void)
           "the summary: %s", out);
     rdof_bl_closed(bl, c, now);
     CHECK(!rdof_bl_wants_bursts(bl), "no bursts wanted once it's done");
+    /* a BS burst's CACH and TACT, the sync's own bit errors, what the receiver lost */
+    c = ask(bl, "{\"op\": \"bursts\", \"freq\": 438.1125, \"seconds\": 1}", now);
+    {
+        rdof_bl_burst_t b = {.ch = 1, .t = 1.8e9 + 1, .dt = 9, .slot = 2, .family = RDOF_FAMILY_BS, .cc = 1,
+                             .sync_errors = 5 /* the demod's: sync and slot type together */};
+        const uint8_t payload[12] = {0};
+        rdof_data_burst(payload, 9, 1, rdof_data_sync(rdof_family_voice_sync(RDOF_FAMILY_BS)), b.raw);
+        b.raw[14] ^= 0x10; /* one bit of the sync field (bits 108-155): bit 115 */
+        uint8_t c24[24];
+        rdof_encode_cach(2, 1, 3, c24);
+        c24[0] ^= 1; /* a TACT bit: Hamming(7,4) corrects it */
+        rdof_bits_to_bytes(c24, 24, b.cach);
+        b.has_cach = true;
+        rdof_bl_burst(bl, &b);
+        rdof_bl_burst_t m = {.ch = 1, .t = 1.8e9 + 1.06, .dt = 3, .slot = 1, .family = RDOF_FAMILY_MS, .cc = 1};
+        rdof_bl_burst(bl, &m);
+    }
+    rdof_bl_tick(bl, now);
+    rdof_bl_tick(bl, now + 1.5);
+    drain(bl, c, out, sizeof out);
+    char hx[8];
+    {
+        uint8_t c24[24], c3[3];
+        rdof_encode_cach(2, 1, 3, c24);
+        c24[0] ^= 1;
+        rdof_bits_to_bytes(c24, 24, c3);
+        snprintf(hx, sizeof hx, "%02x%02x%02x", c3[0], c3[1], c3[2]);
+    }
+    char want[160];
+    snprintf(want, sizeof want, "\"cach\":\"%s\",\"cach_at\":1,\"cach_tc\":1,\"cach_lcss\":3,\"cach_tact_errors\":1", hx);
+    CHECK(strstr(out, want) && strstr(out, "\"sync\":\"BS_DATA\",\"sync_errors\":1,"), "a BS burst's CACH: %s", out);
+    CHECK(strstr(out, "\"kind\":\"CSBK\"") && strstr(out, "\"cach\":null"), "no CACH on an MS burst: %s", out);
+    CHECK(strstr(out, "\"lost\":{\"overflows\":0,\"dsp_skipped\":0,\"decode_dropped\":0,\"queue_drops\":0},"
+                      "\"complete\":true"), "nothing lost: %s", out);
+    rdof_bl_closed(bl, c, now);
+    c = ask(bl, "{\"op\": \"info\"}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"features\":{\"bursts_cach\":true,\"bursts_lost\":true,\"bursts_envelope\":true,\"bursts_ramp\":true,\"capture_raw\":false,\"bursts_raw\":false}"), "info names the features: %.300s", out);
+    rdof_bl_closed(bl, c, now);
     c = ask(bl, "{\"op\": \"bursts\", \"freq\": 438.6}", now);
     drain(bl, c, out, sizeof out);
     CHECK(strstr(out, "\"code\":\"refused\""), "no receiver channel there: %s", out);
@@ -653,6 +699,60 @@ static void test_ops(void)
     CHECK(strstr(out, "\"code\":\"refused\""), "outside the window: %s", out);
     rdof_bl_closed(bl, c, now);
 
+    /* a session's capture grows by the time a request of the same session waited on another session */
+    {
+        char ida[16] = "", idb[16] = "", rq[160];
+        const int sa = ask(bl, "{\"op\": \"session\", \"label\": \"cap\"}", now);
+        drain(bl, sa, out, sizeof out);
+        field(out, "session", ida, sizeof ida);
+        const int sb = ask(bl, "{\"op\": \"session\", \"label\": \"other\"}", now);
+        drain(bl, sb, out, sizeof out);
+        field(out, "session", idb, sizeof idb);
+        snprintf(rq, sizeof rq, "{\"op\": \"hold\", \"session\": \"%s\"}", idb);
+        const int hb = ask(bl, rq, now);
+        rdof_bl_tick(bl, now);
+        drain(bl, hb, out, sizeof out);
+        CHECK(strstr(out, "\"held\""), "the other session holds the modem: %s", out);
+        snprintf(rq, sizeof rq, "{\"op\": \"capture\", \"session\": \"%s\", \"freq\": 438.1125, \"seconds\": 0.02, "
+                                "\"pre_s\": 0}", ida);
+        const int cap = ask(bl, rq, now);
+        static char grown[300000];
+        size_t got = drain(bl, cap, grown, sizeof grown);
+        snprintf(rq, sizeof rq, "{\"op\": \"hold\", \"session\": \"%s\", \"wait_max\": 60}", ida);
+        const int ha = ask(bl, rq, now);
+        rdof_bl_tick(bl, now);
+        drain(bl, ha, out, sizeof out);
+        CHECK(strstr(out, "\"state\":\"queued\"") != NULL, "the same session's hold waits: %s", out);
+        for (int k = 0; k < 30; k++) /* 30000 samples: past the 15360 asked for */
+            rdof_bl_ring_put(&ring, iq, 1000, &clipped);
+        for (int k = 0; k < 10; k++) {
+            rdof_bl_tick(bl, now + 0.05);
+            got += drain(bl, cap, grown + got, sizeof grown - got);
+        }
+        CHECK(!rdof_bl_finished(bl, cap), "the capture goes on while the request waits");
+        rdof_bl_closed(bl, sb, now + 0.05); /* its hold goes with it */
+        rdof_bl_closed(bl, hb, now + 0.05);
+        rdof_bl_tick(bl, now + 0.05);
+        drain(bl, ha, out, sizeof out);
+        CHECK(strstr(out, "\"state\":\"granted\"") && strstr(out, "\"extended\":1"), "granted: %s", out);
+        for (int k = 0; k < 30; k++)
+            rdof_bl_ring_put(&ring, iq, 1000, &clipped);
+        for (int k = 0; k < 10; k++) {
+            rdof_bl_tick(bl, now + 0.1);
+            got += drain(bl, cap, grown + got, sizeof grown - got);
+        }
+        grown[got] = 0;
+        char *last = grown + got;
+        while (last > grown && last[-2] != '\n')
+            last--;
+        CHECK(rdof_bl_finished(bl, cap) && strstr(last, "\"done\"") && field(last, "samples", v, sizeof v) &&
+                  labs(atol(v) - 53760) < 16,
+              "15360 samples and the 38400 of the wait: %s", last);
+        rdof_bl_closed(bl, cap, now + 0.1);
+        rdof_bl_closed(bl, ha, now + 0.1);
+        rdof_bl_closed(bl, sa, now + 0.1);
+    }
+
     /* what isn't here yet, and nonsense */
     c = ask(bl, "{\"op\": \"bridge\"}", now);
     drain(bl, c, out, sizeof out);
@@ -666,7 +766,7 @@ static void test_ops(void)
     int cs[RDOF_BL_CONNS];
     for (int k = 0; k < RDOF_BL_CONNS; k++)
         cs[k] = rdof_bl_open(bl, now);
-    CHECK(rdof_bl_open(bl, now) < 0, "a ninth connection is refused");
+    CHECK(rdof_bl_open(bl, now) < 0, "one connection too many is refused");
     for (int k = 0; k < RDOF_BL_CONNS; k++)
         rdof_bl_closed(bl, cs[k], now);
     rdof_bl_ring_free(&ring);
@@ -713,6 +813,42 @@ static size_t trig_run(rdof_bl_t *bl, int c, double *now, double ms, double off_
     total += drain(bl, c, all + total, cap - total);
     all[total] = 0;
     return total;
+}
+
+/* A floor over a band the channelizer quantizes to exact zeros (the Pluto's, quiet at VHF): those blocks left out,
+ * not a -150 dB floor every carrier is over (nor one no rise ever passes) */
+static double armed_floor(double zero_ms, double noise_ms, int reps)
+{
+    rdof_bl_t *bl = rdof_bl_new(&PLAT);
+    double now = 2000;
+    static char all[1 << 18];
+    rdof_bl_ring_init(&ring, 768000);
+    static float z[2 * 768];
+    for (int r = 0; r < reps; r++) {
+        for (int k = 0; k < (int)zero_ms; k++)
+            rdof_bl_ring_put(&ring, z, 768, NULL);
+        put_tone(noise_ms, 0, 0);
+    }
+    int c = ask(bl, "{\"op\":\"trigger\",\"freq\":438.1125,\"bw\":12500,\"pre_s\":0.05,\"post_s\":0.1,"
+                    "\"threshold_db\":10,\"min_ms\":5,\"floor_s\":0.2,\"timeout_s\":5,\"fmt\":\"cf32\"}", now);
+    for (int i = 0; i < 4; i++)
+        rdof_bl_tick(bl, now += 0.01);
+    drain(bl, c, all, sizeof all);
+    char v[32] = "";
+    const char *a = strstr(all, "{\"armed\":");
+    const double f = a && field(a, "floor_db", v, sizeof v) ? atof(v) : NAN;
+    rdof_bl_closed(bl, c, now);
+    rdof_bl_free(bl);
+    rdof_bl_ring_free(&ring);
+    return f;
+}
+
+static void test_zero_floor(void)
+{
+    const double noise = armed_floor(0, 300, 1), zeros = armed_floor(300, 0, 1), mixed = armed_floor(15, 10, 12);
+    CHECK(isfinite(noise) && zeros == -100.0, "all zeros: under the last bit (%.1f), not -150", zeros);
+    CHECK(fabs(mixed - noise) < 4, "60 %% zero blocks: the noise's floor (%.1f), not theirs (noise alone %.1f)", mixed,
+          noise);
 }
 
 static void test_trigger(void)
@@ -797,6 +933,7 @@ static void test_trigger(void)
     c = ask(bl, "{\"op\":\"trigger\",\"freq\":438.1125,\"floor_db\":-50,\"timeout_s\":0.1}", now);
     trig_run(bl, c, &now, 200, 0, 0, all, 0, sizeof all);
     CHECK(strstr(all, "\"code\":\"no_signal\""), "no_signal: %s", all);
+    CHECK(strstr(all, "the loudest 1 ms") && strstr(all, "fell behind the history 0 times"), "why no signal: %s", all);
     rdof_bl_closed(bl, c, now);
     c = ask(bl, "{\"op\":\"trigger\",\"freq\":438.6}", now);
     drain(bl, c, all, sizeof all);
@@ -954,6 +1091,370 @@ static void test_chan(void)
           "not a channel: %s", all);
     rdof_bl_closed(bl, c, now);
     CHECK(fchs.opened == fchs.closed, "no channel left open: %d %d", fchs.opened, fchs.closed);
+    rdof_bl_ring_free(&ring);
+    rdof_bl_free(bl);
+}
+
+/* ── a bursts stream's envelope: segments with their edges, tied to their bursts ── */
+
+static size_t env_run(rdof_bl_t *bl, int c, double *now, double ms, float amp, char *all, size_t total, size_t cap)
+{
+    for (double t = 0; t < ms - 0.5; t += 1) {
+        put_tone(1, -112500, amp);
+        if (((long)t + 1) % 10 == 0) {
+            *now += 0.01;
+            rdof_bl_tick(bl, *now);
+            total += drain(bl, c, all + total, cap - total);
+        }
+    }
+    all[total] = 0;
+    return total;
+}
+
+static void env_burst_at(rdof_bl_t *bl, uint64_t start_sc, double t)
+{
+    rdof_bl_burst_t b = {.ch = 1, .t = t, .pos48 = (int64_t)(start_sc / 16), .level_dbfs = -10, .dt = 1, .family = 1,
+                         .cc = 2};
+    rdof_bl_burst(bl, &b);
+}
+
+static void test_envelope(void)
+{
+    rdof_bl_t *bl = rdof_bl_new(&PLAT);
+    double now = 2500;
+    static char all[1 << 18];
+    rdof_bl_ring_init(&ring, 768000);
+    put_tone(300, 0, 0);
+    int c = ask(bl, "{\"op\":\"bursts\",\"freq\":438.1125,\"seconds\":2,\"envelope\":true,\"floor_s\":0.2}", now);
+    size_t total = drain(bl, c, all, sizeof all);
+    CHECK(strstr(all, "{\"ready\"") && rdof_bl_wants_iq(bl), "ready, the history kept warm: %s", all);
+    total = env_run(bl, c, &now, 100, 0, all, total, sizeof all);
+    const uint64_t s1 = ring.w;
+    total = env_run(bl, c, &now, 28, 0.3f, all, total, sizeof all);
+    env_burst_at(bl, s1, 1.8e9);
+    env_burst_at(bl, s1 + 768 * 10, 1.8e9 + 0.01); /* 10 ms after: an overlap */
+    total = env_run(bl, c, &now, 32, 0, all, total, sizeof all);
+    const uint64_t s2 = ring.w;
+    total = env_run(bl, c, &now, 28, 0.3f, all, total, sizeof all);
+    env_burst_at(bl, s2, 1.8e9 + 0.06);
+    total = env_run(bl, c, &now, 32, 0, all, total, sizeof all);
+    total = env_run(bl, c, &now, 40, 0.3f, all, total, sizeof all); /* carrier with no burst */
+    total = env_run(bl, c, &now, 300, 0, all, total, sizeof all);
+    rdof_bl_tick(bl, now + 2.5);
+    total += drain(bl, c, all + total, sizeof all - total);
+    all[total] = 0;
+    CHECK(is_json_lines(all), "not JSON lines: %.2000s", all);
+    int n = 0;
+    char v[64];
+    for (char *p = all; (p = strstr(p, "{\"segment\"")); p++, n++) {
+        char *e = strchr(p, '\n');
+        if (e)
+            *e = 0;
+        const double on = field(p, "on_ms", v, sizeof v) ? atof(v) : -1;
+        const double ru = field(p, "ramp_up_ms", v, sizeof v) ? atof(v) : -1;
+        const double rd = field(p, "ramp_down_ms", v, sizeof v) ? atof(v) : -1;
+        const int nb = field(p, "bursts", v, sizeof v) ? atoi(v) : -1;
+        const double lv = field(p, "level_dbfs", v, sizeof v) ? atof(v) : 0;
+        const double un = field(p, "unexplained_ms", v, sizeof v) ? atof(v) : -1;
+        if (n < 2) {
+            CHECK(fabs(on - 28) < 0.3 && ru > 0 && ru < 0.5 && rd > 0 && rd < 0.5 && nb == (n ? 1 : 2) &&
+                      fabs(lv + 10.5) < 1 && un >= 0 && un < 1 && strstr(p, "\"clip_pct\":0.000"),
+                  "segment %d: on %.3f ramps %.2f/%.2f bursts %d level %.1f unexplained %.1f: %s", n, on, ru, rd, nb,
+                  lv, un, p);
+        } else if (n == 2) {
+            CHECK(fabs(on - 40) < 0.3 && nb == 0 && fabs(un - 40) < 0.3, "no burst in it: %s", p);
+        }
+        if (e)
+            *e = '\n';
+    }
+    CHECK(n == 3, "%d segments: %.3000s", n, all);
+    char *done = strstr(all, "{\"done\"");
+    CHECK(done && strstr(done, "\"envelope\":{") && strstr(done, "\"segments\":3,") && strstr(done, "\"overlaps\":1,") &&
+              strstr(done, "\"power_steps\":0,") && field(done, "noise_dbfs", v, sizeof v) && atof(v) < -30 &&
+              strstr(done, "\"unexplained_carrier\":[[") && field(done, "unexplained_ms", v, sizeof v) &&
+              fabs(atof(v) - 40) < 0.5,
+          "the summary: %s", done ? done : all);
+    rdof_bl_closed(bl, c, now);
+    CHECK(!rdof_bl_wants_iq(bl) && !rdof_bl_wants_bursts(bl), "nothing wanted once closed");
+    rdof_bl_ring_free(&ring);
+    rdof_bl_free(bl);
+}
+
+/* ── a bursts stream's PA ramps: each burst measured on the channel, from its symbols ── */
+
+static void put_fsk_burst(const uint8_t raw[33], double off_hz, float amp, double over_db)
+{
+    static double ph;
+    float iq[2 * 768];
+    const int total = 132 * 160;
+    for (int n = 0; n < total;) {
+        const int len = total - n < 768 ? total - n : 768;
+        for (int i = 0; i < len; i++, n++) {
+            const int k = n / 160, dib = (raw[k / 4] >> (6 - 2 * (k % 4))) & 3;
+            const double f = off_hz + (dib == 1 ? 3 : dib == 0 ? 1 : dib == 2 ? -1 : -3) * 648.0;
+            const float a = amp * (float)pow(10, over_db * exp(-(n / 768.0) / 0.8) / 20);
+            ph += 2 * M_PI * f / 768000;
+            iq[2 * i] = noise() + a * (float)cos(ph);
+            iq[2 * i + 1] = noise() + a * (float)sin(ph);
+        }
+        rdof_bl_ring_put(&ring, iq, (size_t)len, NULL);
+    }
+}
+
+static void test_ramp(void)
+{
+    rdof_bl_t *bl = rdof_bl_new(&PLAT);
+    double now = 2600;
+    static char all[1 << 18];
+    rdof_bl_ring_init(&ring, 768000);
+    put_tone(300, 0, 0);
+    int c = ask(bl, "{\"op\":\"bursts\",\"freq\":438.1125,\"seconds\":2,\"ramp\":true,\"floor_s\":0.2,\"env_bw\":20000}", now);
+    size_t total = drain(bl, c, all, sizeof all);
+    CHECK(strstr(all, "{\"ready\""), "ready: %s", all);
+    total = env_run(bl, c, &now, 100, 0, all, total, sizeof all);
+    uint8_t raw[33];
+    for (int i = 0; i < 33; i++)
+        raw[i] = (uint8_t)(i * 37 + 11);
+    for (int b = 0; b < 3; b++) {
+        const uint64_t s = ring.w;
+        put_fsk_burst(raw, -112500, 0.3f, 6);
+        rdof_bl_burst_t x = {.ch = 1, .t = 1.8e9 + b * 0.06, .pos48 = (int64_t)(s / 16) + 5, .level_dbfs = -10, .dt = 1,
+                             .family = 1, .cc = 2, .slot = 1};
+        memcpy(x.raw, raw, 33);
+        rdof_bl_burst(bl, &x);
+        total = env_run(bl, c, &now, 32.5, 0, all, total, sizeof all);
+    }
+    total = env_run(bl, c, &now, 100, 0, all, total, sizeof all);
+    rdof_bl_tick(bl, now + 2.5);
+    total += drain(bl, c, all + total, sizeof all - total);
+    all[total] = 0;
+    CHECK(is_json_lines(all), "not JSON lines: %.2000s", all);
+    int n = 0;
+    char v[64];
+    for (char *p = all; (p = strstr(p, "{\"ramp\"")); p++, n++) {
+        char *e = strchr(p, '\n');
+        if (e)
+            *e = 0;
+        const double settled = field(p, "settled_db", v, sizeof v) ? atof(v) : 99;
+        const double over = field(p, "overshoot_db", v, sizeof v) ? atof(v) : 99;
+        const double r3 = field(p, "-3", v, sizeof v) ? atof(v) : 99;
+        const double align = field(p, "align_ms", v, sizeof v) ? atof(v) : 99;
+        const double dev = field(p, "dev3_hz", v, sizeof v) ? atof(v) : 0;
+        CHECK(fabs(settled + 10.5) < 1 && over > 3.5 && over < 7 && fabs(r3) < 0.25 && fabs(align) < 0.1 &&
+                  fabs(dev - 1944) < 200 && strstr(p, "\"slot\":1") && strstr(p, "\"pre_db\":["),
+              "burst %d: settled %.2f overshoot %.2f -3 dB at %.3f align %.3f dev %.0f: %s", n, settled, over, r3, align, dev, p);
+        CHECK(strstr(p, n ? "\"first\":false" : "\"first\":true"), "the first of the run: %s", p);
+        if (e)
+            *e = '\n';
+    }
+    CHECK(n == 3, "%d ramp records: %.3000s", n, all);
+    char *done = strstr(all, "{\"done\"");
+    CHECK(done && strstr(done, "\"ramp\":{\"measured\":3,\"lost\":0,\"dropped\":0,"), "the summary: %s", done ? done : all);
+    rdof_bl_closed(bl, c, now);
+    rdof_bl_ring_free(&ring);
+    rdof_bl_free(bl);
+}
+
+/* ── a raw capture: the ADC's own samples, made in the background, one at a time ── */
+
+static struct { int starts, polls, closes, ready_after, fail, tone; long n; } raw_f;
+
+static double raw_f_fs, raw_f_center;
+
+static double raw_f_gain;
+
+static int f_raw_start(void *ctx, double seconds, double fs, double center, double gain, char *err, size_t cap)
+{
+    raw_f_gain = gain;
+    if (raw_f.fail) {
+        snprintf(err, cap, "no room");
+        return -1;
+    }
+    raw_f.starts++, raw_f.polls = 0;
+    raw_f_fs = fs, raw_f_center = center;
+    return 0;
+}
+
+static int f_raw_state(void *ctx, rdof_bl_raw_t *o, char *err, size_t cap)
+{
+    if (++raw_f.polls < raw_f.ready_after)
+        return 0;
+    *o = (rdof_bl_raw_t){.n = raw_f.n ? raw_f.n : 50000, .clipped = 1000, .fs = raw_f_fs > 0 ? raw_f_fs : 19872000, .t0 = 1.8e9, .full_scale = 2048, .bits = 12,
+                          .center_hz = isfinite(raw_f_center) ? raw_f_center : 438e6};
+    return 1;
+}
+
+/* tone: a carrier at 445.0 MHz (the capture tuned to 445.24) keyed 1 s in, 1000 counts; a count of noise before */
+static void f_raw_read(void *ctx, long at, int16_t *out, long n)
+{
+    if (raw_f.tone) {
+        for (long i = 0; i < n; i++) {
+            const long j = at + i;
+            const double ph = 2 * M_PI * -240e3 * (double)j / raw_f_fs;
+            const bool on = j >= (long)raw_f_fs;
+            out[2 * i] = (int16_t)(on ? lround(1000 * cos(ph)) : (j & 1) * 2 - 1);
+            out[2 * i + 1] = (int16_t)(on ? lround(1000 * sin(ph)) : (j & 2) - 1);
+        }
+        return;
+    }
+    for (long i = 0; i < n; i++)
+        out[2 * i] = (int16_t)((at + i) % 2048), out[2 * i + 1] = (int16_t)-((at + i) % 2048);
+}
+
+static void f_raw_close(void *ctx) { raw_f.closes++; }
+
+/* the raw bursts stream's decoder: what it was fed, and one burst 100 ms after the key-up */
+static struct { int resets, flushes; long fed, on_n; double on_sum, off_max; bool sent; } dm;
+
+static int f_raw_demod(void *ctx, bool reset, int cc, const float *iq, int n, rdof_bl_burst_t *out, int cap)
+{
+    if (reset)
+        dm.resets++, dm.fed = 0;
+    if (!n) {
+        dm.flushes++;
+        return 0;
+    }
+    for (int i = 0; i < n; i++) {
+        const long k = dm.fed + i;
+        const double m = hypot(iq[2 * i], iq[2 * i + 1]);
+        if (k > 48000 + 100)
+            dm.on_sum += m, dm.on_n++;
+        else if (k < 48000 - 100 && k > 100 && m > dm.off_max)
+            dm.off_max = m;
+    }
+    dm.fed += n;
+    if (!dm.sent && dm.fed > 48000 + 4800 + 3000 && cap > 0) {
+        dm.sent = true;
+        out[0] = (rdof_bl_burst_t){.pos48 = 48000 + 4800, .dt = 1, .n = 0, .slot = 1, .family = 0, .cc = 1,
+                                   .cfo_hz = 12.5f, .level_dbfs = -6.3f};
+        return 1;
+    }
+    return 0;
+}
+
+static void test_raw_bursts(void)
+{
+    rdof_bl_platform_t p = PLAT;
+    p.raw_start = f_raw_start, p.raw_state = f_raw_state, p.raw_read = f_raw_read, p.raw_close = f_raw_close;
+    rdof_bl_t *bl = rdof_bl_new(&p);
+    double now = 2900;
+    static char all[1 << 20];
+    rdof_bl_ring_init(&ring, 768000);
+    put_tone(10, 0, 0);
+    memset(&raw_f, 0, sizeof raw_f);
+    memset(&dm, 0, sizeof dm);
+    int c = ask(bl, "{\"op\":\"bursts\",\"freq\":445.0,\"seconds\":2,\"raw\":true,\"ramp\":true}", now);
+    rdof_bl_tick(bl, now += 0.01);
+    size_t total = drain(bl, c, all, sizeof all - 1);
+    all[total] = 0;
+    CHECK(strstr(all, "unsupported"), "no decoder, no raw bursts: %.200s", all);
+    rdof_bl_closed(bl, c, now);
+    rdof_bl_free(bl);
+    p.raw_demod = f_raw_demod;
+    bl = rdof_bl_new(&p);
+    raw_f.tone = 1, raw_f.n = 2 * 2400000, raw_f.ready_after = 3;
+    c = ask(bl, "{\"op\":\"bursts\",\"freq\":445.0,\"seconds\":2,\"raw\":true,\"ramp\":true,\"rate\":2.41e6,\"gain\":40}", now);
+    total = 0;
+    for (int i = 0; i < 200 && !strstr(all, "{\"done\""); i++) {
+        rdof_bl_tick(bl, now += 0.01);
+        total += drain(bl, c, all + total, sizeof all - total - 1);
+        all[total] = 0;
+    }
+    CHECK(raw_f_gain == 40, "its gain to the receiver: %.1f", raw_f_gain);
+    CHECK(raw_f.starts == 1 && raw_f_fs == 2400000 && fabs(raw_f_center - 445.24e6) < 1,
+          "a capture at 2.4 MS/s (a multiple of 48 kS/s) tuned above: %d %.0f %.0f", raw_f.starts, raw_f_fs, raw_f_center);
+    CHECK(strstr(all, "\"ready\"") && strstr(all, "\"raw\":true,\"fs\":2400000.0,\"center\":445.240000"), "ready: %.300s", all);
+    CHECK(strstr(all, "{\"captured\":{\"t0\":1800000000.000000,\"samples\":4800000,\"fs\":2400000.0"), "captured: %.400s", all);
+    CHECK(dm.resets == 1 && dm.flushes == 1 && dm.fed == 96000 - 4, "the decoder fed 2 s at 48 kS/s (less the 4 outputs the filter needs past the end), once: %d %d %ld",
+          dm.resets, dm.flushes, dm.fed);
+    const double on = dm.on_n ? dm.on_sum / (double)dm.on_n : 0;
+    CHECK(fabs(on - 1000.0 / 2048) < 0.01 && dm.off_max < 0.01, "the carrier mixed to the channel: %.4f, quiet %.4f", on,
+          dm.off_max);
+    const char *b = strstr(all, "{\"burst\":");
+    char v[64];
+    /* the sync's center: 65.5 symbols (655 outputs at 48 kS/s, 50 inputs each) past the burst's start */
+    CHECK(b && field(b, "sc", v, sizeof v) && atol(v) == (48000 + 4800 + 655) * 50L, "the burst's sc: %.300s", b ? b : all);
+    CHECK(b && field(b, "t", v, sizeof v) && fabs(atof(v) - (1.8e9 + (48000 + 4800 + 655) / 48000.0)) < 1e-5, "its t: %s", v);
+    CHECK(strstr(all, "{\"segment\"") || strstr(all, "\"seg\""), "the envelope's segments: %.600s", all);
+    const char *done = strstr(all, "{\"done\"");
+    CHECK(done && strstr(done, "\"bursts\":1,\"reason\":\"time\"") && strstr(done, "\"complete\":true") &&
+              strstr(done, "\"ramp\":{\"measured\":") && strstr(done, "\"rate\":48000.0"),
+          "done: %s", done ? done : all);
+    CHECK(raw_f.closes == 1, "the capture's memory back at once: %d", raw_f.closes);
+    rdof_bl_closed(bl, c, now);
+    CHECK(raw_f.closes == 1, "and not again: %d", raw_f.closes);
+    rdof_bl_ring_free(&ring);
+    rdof_bl_free(bl);
+}
+
+static void test_raw_capture(void)
+{
+    rdof_bl_platform_t p = PLAT;
+    p.raw_start = f_raw_start, p.raw_state = f_raw_state, p.raw_read = f_raw_read, p.raw_close = f_raw_close;
+    rdof_bl_t *bl = rdof_bl_new(&p);
+    double now = 2700;
+    static char all[1 << 20];
+    rdof_bl_ring_init(&ring, 768000);
+    put_tone(10, 0, 0);
+    memset(&raw_f, 0, sizeof raw_f);
+    raw_f.ready_after = 3;
+    int c = ask(bl, "{\"op\":\"capture\",\"freq\":438.1125,\"seconds\":0.0025,\"raw\":true}", now);
+    size_t total = 0;
+    for (int i = 0; i < 400; i++) {
+        rdof_bl_tick(bl, now += 0.01);
+        total += drain(bl, c, all + total, sizeof all - total - 1);
+        all[total] = 0;
+    }
+    CHECK(raw_f.starts == 1, "started once: %d", raw_f.starts);
+    CHECK(isnan(raw_f_gain), "no gain asked: the receiver's (%.1f)", raw_f_gain);
+    CHECK(strstr(all, "\"raw\":true") && strstr(all, "\"fmt\":\"cs16\""), "the ready names it: %.300s", all);
+    long n = 0, frames = 0, bad = 0;
+    char *after = all; /* the samples hold zero bytes: text is looked for between them */
+    for (char *h = all; (h = strstr(h, "{\"iq\":{")) && h < all + total;) {
+        long fn = atol(strstr(h, "\"n\":") + 4), sc = atol(strstr(h, "\"sc\":") + 5), by = atol(strstr(h, "\"bytes\":") + 8);
+        char *d = strchr(h, '\n') + 1;
+        int16_t a[2];
+        memcpy(a, d, sizeof a);
+        if (sc != n || by != 4 * fn || a[0] != (int16_t)(n % 2048) || a[1] != -a[0])
+            bad++;
+        n += fn, frames++;
+        after = h = d + by;
+    }
+    CHECK(n == 50000 && !bad && frames > 1, "%ld samples in %ld frames, %ld wrong", n, frames, bad);
+    char *done = strstr(after, "{\"done\"");
+    char v[64];
+    CHECK(done && strstr(done, "\"fmt\":\"cs16\"") && strstr(done, "\"bits\":12") && strstr(done, "\"full_scale\":2048") &&
+              field(done, "clip_pct", v, sizeof v) && fabs(atof(v) - 1.0) < 0.001 && field(done, "scale_db", v, sizeof v) &&
+              fabs(atof(v) + 24.08) < 0.01 && field(done, "samples", v, sizeof v) && atol(v) == 50000,
+          "the summary: %s", done ? done : "none");
+    CHECK(raw_f.closes == 1, "closed once: %d", raw_f.closes);
+    rdof_bl_closed(bl, c, now);
+    CHECK(raw_f.closes == 1, "and not again: %d", raw_f.closes);
+    CHECK(raw_f_fs == 0 && isnan(raw_f_center), "the receiver's rate and tuning: %.0f %.0f", raw_f_fs, raw_f_center);
+    /* a rate of its own: tuned near the frequency, 10 % of the rate above it, when that's off the receiver's window */
+    c = ask(bl, "{\"op\":\"capture\",\"freq\":445.0,\"seconds\":0.001,\"raw\":true,\"rate\":2400000}", now);
+    total = 0;
+    for (int i = 0; i < 400; i++) {
+        rdof_bl_tick(bl, now += 0.01);
+        total += drain(bl, c, all + total, sizeof all - total - 1);
+        all[total] = 0;
+    }
+    CHECK(raw_f_fs == 2400000 && fabs(raw_f_center - 445.24e6) < 1, "rate %.0f, center %.0f", raw_f_fs, raw_f_center);
+    CHECK(strstr(all, "\"center\":445.240000") && strstr(all, "\"fs\":2400000.000"), "the ready says so: %.300s", all);
+    rdof_bl_closed(bl, c, now);
+    c = ask(bl, "{\"op\":\"capture\",\"freq\":445.0,\"seconds\":0.001,\"raw\":true,\"rate\":100000}", now);
+    rdof_bl_tick(bl, now += 0.01);
+    total = drain(bl, c, all, sizeof all - 1);
+    all[total] = 0;
+    CHECK(strstr(all, "bad_request"), "a rate the chip can't: %.200s", all);
+    rdof_bl_closed(bl, c, now);
+    raw_f.fail = 1;
+    c = ask(bl, "{\"op\":\"capture\",\"freq\":438.1125,\"seconds\":0.1,\"raw\":true}", now);
+    rdof_bl_tick(bl, now += 0.01);
+    total = drain(bl, c, all, sizeof all - 1);
+    all[total] = 0;
+    CHECK(strstr(all, "no room") && strstr(all, "\"error\""), "the reason comes back: %.300s", all);
+    rdof_bl_closed(bl, c, now);
     rdof_bl_ring_free(&ring);
     rdof_bl_free(bl);
 }
@@ -1617,6 +2118,21 @@ static void test_run(void)
     }
     CHECK(strstr(out, "\"exit\":-9") && strstr(out, "max_s") && !tx.open, "max_s: %.400s", out);
     rdof_bl_closed(bl, c, now);
+    /* all sent, then refused before it went out: the job fails, it doesn't exit 0 */
+    tx.refuse_at_end = true;
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"csbk\",\"freq\":438.1125,\"count\":2}}",
+            now);
+    no = 0;
+    for (int i = 0; i < 100; i++) {
+        now += 0.01;
+        rdof_bl_tick(bl, now);
+        tx_air(bl, now, -1);
+        no = drain_all(bl, c, out, sizeof out, no);
+    }
+    tx.refuse_at_end = false;
+    CHECK(strstr(out, "\"exit\":1") && strstr(out, "transmit failed: the transmitter refused the call") && !tx.open,
+          "refused at the end: %.400s", out);
+    rdof_bl_closed(bl, c, now);
     rdof_bl_free(bl);
 }
 
@@ -2239,10 +2755,17 @@ static void tick_for(rdof_bl_t *bl, int c, double *now, int n, char *out, size_t
 
 /* tune: the session's own window until it ends or releases it; others busy meanwhile; a trigger outside the window
  * tunes for itself */
+static bool f_mssim(void *ctx, const char *action, const char *req, size_t len, uint32_t freq_hz, int cc,
+                    rdof_bench_power_t power, double seconds, uint32_t since, char *out, size_t cap, const char **code)
+{
+    snprintf(out, cap, "\"%s\":true,\"freq\":%.6f", action, freq_hz / 1e6);
+    return true;
+}
+
 static void test_tune(void)
 {
     rdof_bl_platform_t pt = PLAT;
-    pt.tune = f_tune, pt.tune_state = f_tune_state, pt.untune = f_untune;
+    pt.tune = f_tune, pt.tune_state = f_tune_state, pt.untune = f_untune, pt.mssim = f_mssim;
     rdof_bl_t *bl = rdof_bl_new(&pt);
     rdof_bl_ring_init(&ring, 768000);
     char out[65536], req[512], ida[16] = "", idb[16] = "";
@@ -2313,14 +2836,18 @@ static void test_tune(void)
     snprintf(req, sizeof req, "{\"op\": \"tune\", \"session\": \"%s\"}", idb);
     c = ask(bl, req, now);
     drain(bl, c, out, sizeof out);
-    CHECK(strstr(out, "\"code\":\"busy\""), "another tune while one is applied: %s", out);
-    rdof_bl_closed(bl, c, now);
+    CHECK(!out[0], "another tune while one is applied waits for it: %s", out);
+    const int t2 = c;
     tick_for(bl, t, &now, 10, out, sizeof out);
     CHECK(strstr(out, "{\"tuned\":{\"session\":\"") && strstr(out, "\"center\":144.900000") &&
               strstr(out, "\"gain\":30.0") &&
               strstr(out, "\"channels\":[{\"freq\":145.100000,\"ch\":0,\"id\":\"T1\"}]") && rdof_bl_finished(bl, t),
           "tuned: %s", out);
     rdof_bl_closed(bl, t, now);
+    char o2[300];
+    drain(bl, t2, o2, sizeof o2);
+    CHECK(strstr(o2, "\"code\":\"busy\"") && strstr(o2, ida), "then a's tune holds: %s", o2);
+    rdof_bl_closed(bl, t2, now);
     drain(bl, bursts, out, sizeof out);
     CHECK(strstr(out, "\"reason\":\"retuned\"") && rdof_bl_finished(bl, bursts), "the bursts stream ends: %s", out);
     rdof_bl_closed(bl, bursts, now);
@@ -2383,10 +2910,13 @@ static void test_tune(void)
     rdof_bl_closed(bl, c, now);
     c = ask(bl, "{\"op\": \"capture\", \"freq\": 438.1125, \"seconds\": 1}", now);
     drain(bl, c, out, sizeof out);
-    CHECK(strstr(out, "\"code\":\"busy\"") && strstr(out, "being retuned"), "while it goes back: %s", out);
-    rdof_bl_closed(bl, c, now);
+    CHECK(!strstr(out, "\"error\"") && !rdof_bl_finished(bl, c), "while it goes back it waits: %s", out);
     for (int i = 0; i < 5; i++)
         rdof_bl_tick(bl, now += 0.02);
+    drain(bl, c, out, sizeof out);
+    CHECK(!strstr(out, "\"error\""), "and runs when it's back: %s", out);
+    rdof_bl_closed(bl, c, now);
+    rdof_bl_tick(bl, now += 0.02);
     c = ask(bl, "{\"op\": \"info\"}", now);
     drain(bl, c, out, sizeof out);
     CHECK(strstr(out, "\"tune\":null") && strstr(out, "\"center\":438.225000") && strstr(out, "\"id\":\"CH2\""),
@@ -2432,10 +2962,80 @@ static void test_tune(void)
     CHECK(isnan(ft.center) && ft.untunes == 3, "applied, then untuned (%d, %.0f)", ft.untunes, ft.center);
 
     /* a trigger outside the window, with a session: it tunes for itself, then the settings once it ends */
+    const int tunes0 = ft.tunes, untunes0 = ft.untunes;
     c = ask(bl, "{\"op\": \"trigger\", \"freq\": 145.1, \"floor_db\": -60}", now);
     drain(bl, c, out, sizeof out);
-    CHECK(strstr(out, "\"code\":\"refused\"") && strstr(out, "with a session"), "no session, no tune: %s", out);
+    CHECK(strstr(out, "tuning the receiver to 145.1000 MHz"), "no session: a tune all the same: %s", out);
+    for (int i = 0; i < 8; i++)
+        rdof_bl_tick(bl, now += 0.02);
     rdof_bl_closed(bl, c, now);
+    for (int i = 0; i < 8; i++)
+        rdof_bl_tick(bl, now += 0.02);
+    CHECK(ft.tunes == tunes0 + 1 && ft.untunes == untunes0 + 1 && isnan(ft.center), "applied, untuned at its end (%d %d)",
+          ft.tunes - tunes0, ft.untunes - untunes0);
+    ft.tunes = tunes0, ft.untunes = untunes0; /* the counts below as before */
+    /* bursts where no channel decodes DMR: a tune of its own too (on a board its tap decodes DMR) */
+    c = ask(bl, "{\"op\": \"bursts\", \"freq\": 145.1, \"seconds\": 5}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "tuning the receiver to 145.1000 MHz"), "bursts outside: a tune: %s", out);
+    for (int i = 0; i < 8; i++)
+        rdof_bl_tick(bl, now += 0.02);
+    rdof_bl_closed(bl, c, now);
+    for (int i = 0; i < 8; i++)
+        rdof_bl_tick(bl, now += 0.02);
+    CHECK(isnan(ft.center), "untuned at the bursts' end");
+    ft.tunes = tunes0, ft.untunes = untunes0;
+    /* a transmit job past the transmitter's reach around the center (a W12's 1 MHz): a tune of its own there */
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"freq\":146.52}}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "tuning the receiver to 146.5200 MHz"), "a job out of TX reach: a tune: %s", out);
+    for (int i = 0; i < 8; i++)
+        rdof_bl_tick(bl, now += 0.02);
+    rdof_bl_closed(bl, c, now);
+    for (int i = 0; i < 8; i++)
+        rdof_bl_tick(bl, now += 0.02);
+    CHECK(isnan(ft.center), "untuned at the job's end");
+    ft.tunes = tunes0, ft.untunes = untunes0;
+    /* a duplex repeater job whose input no channel decodes: a tune there, as any job that hears */
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_repeater\",\"rx\":145.1,\"tx\":438.1125}}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "tuning the receiver to 145.1000 MHz"), "a repeater's input outside: a tune: %s", out);
+    for (int i = 0; i < 8; i++)
+        rdof_bl_tick(bl, now += 0.02);
+    rdof_bl_closed(bl, c, now);
+    for (int i = 0; i < 8; i++)
+        rdof_bl_tick(bl, now += 0.02);
+    CHECK(isnan(ft.center), "untuned at the repeater's end");
+    ft.tunes = tunes0, ft.untunes = untunes0;
+    /* a responder armed where no channel hears: its tune outlasts the request, until its disarm */
+    c = ask(bl, "{\"op\":\"mssim\",\"action\":\"arm\",\"freq\":146.52,\"seconds\":60}", now);
+    for (int i = 0; i < 8; i++)
+        rdof_bl_tick(bl, now += 0.02);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "tuning the receiver to 146.5200 MHz") && strstr(out, "{\"mssim\":{\"arm\":true"),
+          "mssim arm: a tune, then armed: %s", out);
+    rdof_bl_closed(bl, c, now);
+    for (int i = 0; i < 8; i++)
+        rdof_bl_tick(bl, now += 0.02);
+    CHECK(fabs(ft.center - (146.52e6 - 96000)) < 1, "still tuned after the request (%.0f)", ft.center);
+    c = ask(bl, "{\"op\": \"trigger\", \"freq\": 438.1125, \"floor_db\": -60}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"busy\"") && strstr(out, "armed responder"), "others wait for it: %s", out);
+    rdof_bl_closed(bl, c, now);
+    c = ask(bl, "{\"op\":\"mssim\",\"action\":\"disarm\"}", now);
+    drain(bl, c, out, sizeof out);
+    rdof_bl_closed(bl, c, now);
+    for (int i = 0; i < 8; i++)
+        rdof_bl_tick(bl, now += 0.02);
+    CHECK(isnan(ft.center), "the disarm untunes (%.0f)", ft.center);
+    c = ask(bl, "{\"op\":\"mssim\",\"action\":\"arm\",\"freq\":146.52,\"seconds\":1}", now);
+    for (int i = 0; i < 8; i++)
+        rdof_bl_tick(bl, now += 0.02);
+    rdof_bl_closed(bl, c, now);
+    for (int i = 0; i < 70; i++)
+        rdof_bl_tick(bl, now += 0.02);
+    CHECK(isnan(ft.center), "and so does its time running out (%.0f)", ft.center);
+    ft.tunes = tunes0, ft.untunes = untunes0;
     snprintf(req, sizeof req, "{\"op\": \"trigger\", \"session\": \"%s\", \"freq\": 145.1, \"tune\": false}", idb);
     c = ask(bl, req, now);
     drain(bl, c, out, sizeof out);
@@ -2503,12 +3103,127 @@ static void test_tune(void)
     rdof_bl_free(bl);
 }
 
+static const char *f_station(void *ctx, char *model, size_t cap)
+{
+    snprintf(model, cap, "MMDVM_HS_Hat");
+    return "mmdvm";
+}
+static const char *f_cannot_all(void *ctx, const char *what)
+{
+    if (!strcmp(what, "signal_tx"))
+        return "no audio path here";
+    return !strcmp(what, "repeater") ? "no second transceiver" : !strcmp(what, "outbound") ? "no CACH here" : "no timed answers";
+}
+
+/* A bench with a modem in place of the SDR's transmitter: the station and what it can't do, in info and each job's
+ * refusal */
+static void test_modem_station(void)
+{
+    static char out[1 << 16];
+    rdof_bl_platform_t pl = PLAT;
+    pl.station = f_station;
+    pl.cannot = f_cannot_all;
+    pl.mssim = f_mssim;
+    double now = 4000;
+    rdof_bl_t *bl = rdof_bl_new(&pl);
+    int c = ask(bl, "{\"op\": \"info\"}", now);
+    drain(bl, c, out, sizeof out);
+    rdof_bl_closed(bl, c, now);
+    CHECK(strstr(out, "\"kind\":\"mmdvm\",\"model\":\"MMDVM_HS_Hat\""), "the station: %s", out);
+    CHECK(strstr(out, "\"mmdvm_tx\"") && !strstr(out, "\"sdr_tx\""), "a modem's caps: %s", out);
+    CHECK(strstr(out, "\"bench_tx\":null") && strstr(out, "\"bench_repeater\":\"no second transceiver\"") &&
+              strstr(out, "\"outbound\":\"no CACH here\"") && strstr(out, "\"mssim\":\"no timed answers\"") &&
+              strstr(out, "\"signal_tx\":\"no audio path here\""),
+          "jobs: %s", out);
+    const int ss = ask(bl, "{\"op\": \"session\"}", now);
+    char id[32], req[160];
+    drain(bl, ss, out, sizeof out);
+    field(out, "session", id, sizeof id);
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_repeater\",\"rx\":438.0625,\"tx\":438.1125}}", now);
+    drain(bl, c, out, sizeof out);
+    rdof_bl_closed(bl, c, now);
+    CHECK(strstr(out, "\"code\":\"unsupported\"") && strstr(out, "no second transceiver"), "repeater: %s", out);
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"outbound\",\"freq\":438.1125,\"seconds\":1}}", now);
+    drain(bl, c, out, sizeof out);
+    rdof_bl_closed(bl, c, now);
+    CHECK(strstr(out, "\"code\":\"unsupported\"") && strstr(out, "no CACH here"), "outbound: %s", out);
+    snprintf(req, sizeof req, "{\"op\":\"mssim\",\"session\":\"%s\",\"action\":\"arm\",\"freq\":438.1125}", id);
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    rdof_bl_closed(bl, c, now);
+    CHECK(strstr(out, "\"code\":\"unsupported\"") && strstr(out, "no timed answers"), "mssim: %s", out);
+    rdof_bl_closed(bl, ss, now);
+    rdof_bl_free(bl);
+
+    /* no signal modes: the physical reason, for any mode name, and in info */
+    pl.cannot = f_cannot_all;
+    pl.sig_open = NULL;
+    bl = rdof_bl_new(&pl);
+    c = ask(bl, "{\"op\": \"info\"}", now);
+    drain(bl, c, out, sizeof out);
+    rdof_bl_closed(bl, c, now);
+    CHECK(strstr(out, "\"signal_tx\":\"no audio path here\"") && strstr(out, "\"tx\":[]"), "info's signal_tx: %s", out);
+    const int s2 = ask(bl, "{\"op\": \"session\"}", now);
+    drain(bl, s2, out, sizeof out);
+    field(out, "session", id, sizeof id);
+    snprintf(req, sizeof req, "{\"op\":\"tx\",\"session\":\"%s\",\"mode\":\"fm\",\"freq\":438.1125}", id);
+    c = ask(bl, req, now);
+    drain(bl, c, out, sizeof out);
+    rdof_bl_closed(bl, c, now);
+    CHECK(strstr(out, "\"code\":\"unsupported\"") && strstr(out, "no audio path here"), "tx: %s", out);
+    rdof_bl_closed(bl, s2, now);
+    rdof_bl_free(bl);
+
+    /* a repeater job on the modem's own receiver needs no channel on its input */
+    pl = PLAT;
+    pl.rpt_own_rx = true;
+    bl = rdof_bl_new(&pl);
+    memset(&rp, 0, sizeof rp);
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_repeater\",\"rx\":438.6,\"tx\":438.1125,\"seconds\":0.2,\"json\":true}}", now);
+    size_t n = 0;
+    for (int i = 0; i < 60 && !rdof_bl_finished(bl, c); i++) {
+        now += 0.02;
+        rdof_bl_tick(bl, now);
+        n = drain_all(bl, c, out, sizeof out, n);
+    }
+    CHECK(rp.closed && !strstr(out, "\"code\":\"refused\""), "the input needs no channel: %s", out);
+    rdof_bl_closed(bl, c, now);
+    rdof_bl_free(bl);
+}
+
+static void test_ring_scale(void)
+{
+    CHECK(rdof_bl_ring_scale(128.0) == 1.0f && rdof_bl_ring_scale(127.0) == 1.0f, "an 8-bit ADC keeps its own bits");
+    CHECK(rdof_bl_ring_scale(2048.0) == 16.0f, "a 12-bit ADC's low bits");
+    CHECK(rdof_bl_ring_scale(32768.0) == 16.0f, "the most");
+    CHECK(rdof_bl_ring_scale(512.0) == 4.0f, "a 10-bit ADC");
+    CHECK(rdof_bl_ring_scale(0) == 1.0f && rdof_bl_ring_scale(1.0) == 1.0f, "not known: 1");
+    /* an RTL-SDR at scale 1: a full-scale sample doesn't clip at a twentieth of its range */
+    rdof_bl_ring_t ring;
+    rdof_bl_ring_init(&ring, 8192);
+    ring.scale = rdof_bl_ring_scale(128.0);
+    const float iq[8] = {0.05f, -0.05f, 0.5f, -0.5f, 1.0f, -1.0f, 0.0f, 0.0f};
+    long clipped = 0;
+    rdof_bl_ring_put(&ring, iq, 4, &clipped);
+    int8_t out[8];
+    uint64_t oldest, next;
+    CHECK(rdof_bl_ring_read(&ring, 0, out, 4, &oldest, &next) == 4, "read back");
+    CHECK(out[0] == 6 && out[1] == -6 && out[2] == 64 && out[3] == -64, "the 8-bit ADC's samples: %d %d %d %d", out[0],
+          out[1], out[2], out[3]);
+    CHECK(clipped == 1, "only the rail clips (%ld)", clipped);
+    rdof_bl_ring_free(&ring);
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 4 && !strcmp(argv[1], "serve"))
         return serve(atoi(argv[2]), atof(argv[3]));
     test_ops();
     test_trigger();
+    test_envelope();
+    test_ramp();
+    test_raw_capture();
+    test_raw_bursts();
     test_chan();
     test_xtal();
     test_track();
@@ -2521,6 +3236,9 @@ int main(int argc, char **argv)
     test_outbound();
     test_outbound_voice();
     test_tune();
+    test_zero_floor();
+    test_ring_scale();
+    test_modem_station();
     test_tcp();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

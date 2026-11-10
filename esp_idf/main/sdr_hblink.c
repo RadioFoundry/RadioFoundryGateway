@@ -47,7 +47,8 @@ static void peer_send(void *ctx, const uint8_t *data, size_t len)
 {
     peer_t *p = ctx;
     xSemaphoreTake(p->lock, portMAX_DELAY);
-    if (p->sock >= 0)
+    const bool hold = len >= 4 && !memcmp(data, "DMRD", 4) && !rdof_hb_peer_may_send(&p->peer); /* not logged in */
+    if (p->sock >= 0 && !hold)
         send(p->sock, data, len, 0);
     xSemaphoreGive(p->lock);
 }
@@ -84,6 +85,16 @@ bool sdr_hb_sink(int c, rdof_sink_t *out)
     return true;
 }
 
+bool sdr_hb_sends(uint32_t hz)
+{
+    if (!g_scfg.hb_enabled)
+        return true; /* no HBlink or BrandMeister: as before */
+    for (int c = 0; c < g_scfg.nch; c++)
+        if ((uint32_t)g_scfg.ch[c].freq == hz && chan_peer[c] >= 0)
+            return true;
+    return false;
+}
+
 int sdr_hb_status(const char **ids, bool *up, int max)
 {
     int n = 0;
@@ -97,7 +108,9 @@ int sdr_hb_status(const char **ids, bool *up, int max)
 static size_t dmrc(const peer_t *p, uint8_t *out)
 {
     const rdof_sdr_cfg_channel_t *ch = &g_scfg.ch[p->channel];
-    return rdof_hb_channel_dmrc(p->peer.peer_id, ch->id, (uint32_t)ch->freq, ch->cc,
+    /* BrandMeister: the owner's callsign, which it checks; HBlink4: the channel's name */
+    return rdof_hb_channel_dmrc(p->peer.peer_id, g_scfg.hb_login ? g_scfg.hb_callsign : ch->id, (uint32_t)ch->freq,
+                                ch->cc,
                                 g_scfg.has_location ? &g_scfg.location : NULL, out);
 }
 
@@ -135,13 +148,15 @@ static void peer_task(void *arg)
             if (p->via)
                 continue;
             if (p->sock >= 0 && rdof_hb_peer_tick(&p->peer, now, &ev)) {
+                static uint8_t out[RDOF_HB_OUT_MAX]; /* this task's */
                 uint8_t pkt[RDOF_DMRC_MAX];
                 const size_t n = dmrc(p, pkt);
                 rdof_hb_peer_set_config(&p->peer, pkt, n, true, now);
-                peer_send(p, pkt, n);
-                if (ev == RDOF_HBP_QUIET)
-                    ESP_LOGW(TAG, "peer %lu: no DMRP from master", (unsigned long)p->peer.peer_id);
+                peer_send(p, out, rdof_hb_peer_packet(&p->peer, out));
             }
+            if (ev == RDOF_HBP_QUIET)
+                ESP_LOGW(TAG, "peer %lu: no %s from master", (unsigned long)p->peer.peer_id,
+                         p->peer.login ? "MSTPONG" : "DMRP");
             up += p->peer.up;
         }
         g_sstat.hb_up = up;
@@ -154,7 +169,11 @@ static void peer_task(void *arg)
                 maxfd = peers[i].sock > maxfd ? peers[i].sock : maxfd;
             }
         struct timeval tv = {.tv_sec = 0, .tv_usec = 500000};
-        if (maxfd < 0 || select(maxfd + 1, &fds, NULL, NULL, &tv) <= 0)
+        if (maxfd < 0) { /* no socket (the master unresolved): wait as select would, never spin */
+            vTaskDelay(pdMS_TO_TICKS(500));
+            continue;
+        }
+        if (select(maxfd + 1, &fds, NULL, NULL, &tv) <= 0)
             continue;
         for (int i = 0; i < npeers; i++) {
             peer_t *p = &peers[i];
@@ -171,11 +190,11 @@ static void peer_task(void *arg)
             }
             const rdof_hbp_event_t ev = rdof_hb_peer_received(&p->peer, buf, (size_t)n, esp_timer_get_time() / 1e6);
             if (ev == RDOF_HBP_REGISTERED)
-                ESP_LOGI(TAG, "peer %lu (%s) registered with %s:%d", (unsigned long)p->peer.peer_id,
-                         g_scfg.ch[p->channel].id, g_scfg.hb_host, g_scfg.hb_port);
+                ESP_LOGI(TAG, "peer %lu (%s) %s %s:%d", (unsigned long)p->peer.peer_id, g_scfg.ch[p->channel].id,
+                         p->peer.login ? "logged in to" : "registered with", g_scfg.hb_host, g_scfg.hb_port);
             else if (ev == RDOF_HBP_REFUSED)
-                ESP_LOGW(TAG, "peer %lu refused by the master: %.6s", (unsigned long)p->peer.peer_id,
-                         (const char *)buf);
+                ESP_LOGW(TAG, "peer %lu refused by the master: %.6s%s", (unsigned long)p->peer.peer_id,
+                         (const char *)buf, p->peer.bad_password ? " (the password)" : "");
             else if (ev == RDOF_HBP_PACKET)
                 site_dmrd(p->peer.peer_id, buf, (size_t)n); /* version 3: the call router's, else nothing sends */
         }
@@ -209,6 +228,9 @@ void sdr_hb_start(void)
         p->via = via;
         const uint32_t id = via ? site_id() : (uint32_t)ch->peer_id;
         rdof_hb_peer_init(&p->peer, id, RDOF_HB_KEEPALIVE_SECONDS);
+        if (g_scfg.hb_login)
+            rdof_hb_peer_set_login(&p->peer, g_scfg.hb_password, g_scfg.hb_location, g_scfg.hb_description,
+                                   g_scfg.hb_url);
         p->sock = -1;
         p->lock = xSemaphoreCreateMutex();
         rdof_hb_sink_init(&p->sink, id);
@@ -226,7 +248,12 @@ void sdr_hb_start(void)
                 box_peer = &peers[i];
             }
     g_sstat.hb_peers = npeers;
-    if (npeers) {
+    /* a task only for peers with their own socket: those through the roamer's or repeater's peer need none. A task
+       with none spun at priority 8 on core 0 and starved the web server (a BrandMeister login, identity single) */
+    bool own = false;
+    for (int i = 0; i < npeers; i++)
+        own |= !peers[i].via;
+    if (own) {
         ESP_LOGI(TAG, "%d peers for %s:%d", npeers, g_scfg.hb_host, g_scfg.hb_port);
         mem_task("sdr_net", "sdr_hblink", peer_task, 4096, NULL, 8, 0, NULL);
     }
@@ -235,6 +262,7 @@ void sdr_hb_start(void)
 #else
 
 bool sdr_hb_sink(int c, rdof_sink_t *out) { return false; }
+bool sdr_hb_sends(uint32_t hz) { return false; }
 int sdr_hb_status(const char **ids, bool *up, int max) { return 0; }
 void sdr_hb_start(void) {}
 

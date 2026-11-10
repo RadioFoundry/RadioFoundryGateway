@@ -27,6 +27,8 @@ typedef struct {
 
 static inline void expect(expect_t *e, const char *kind, const char *text)
 {
+    if (getenv("RDOF_SCENARIO_DUMP")) /* every output, to review a scenario that changed */
+        printf("OUT %s\t%s\t%s\n", e->name, kind, text);
     checks++;
     if (e->next >= e->nouts) {
         failures++;

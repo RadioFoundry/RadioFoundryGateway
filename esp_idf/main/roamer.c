@@ -227,6 +227,9 @@ static void one_json(rdof_json_t *j, roam_t *r, const char *key)
     rdof_json_bool(j, "hblink", s->hblink_up);
     rdof_json_int(j, "hblink_tx", s->hblink_tx);
     rdof_json_int(j, "hblink_rx", s->hblink_rx);
+    static char bm[192];
+    if (roam_hb_login_status(r, bm, sizeof bm))
+        rdof_json_raw(j, "brandmeister", bm);
 #if CONFIG_RDOF_HBLINK_SCTP
     static char sctp[STATUS_SCTP];
     if (roam_hb_sctp_status(r, sctp, sizeof sctp))

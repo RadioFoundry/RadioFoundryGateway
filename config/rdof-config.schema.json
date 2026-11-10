@@ -532,6 +532,22 @@
         "roaming": {"type": "boolean"}
       }
     },
+    "bm3": {
+      "description": "A BrandMeister network: each frequency or repeater logs in as its own hotspot or repeater, with its ID in peer_ids (docs/spec/fw/brandmeister.md).",
+      "additionalProperties": false,
+      "required": ["host", "password", "peer_ids"],
+      "properties": {
+        "name": {"$ref": "#/$defs/name3"},
+        "type": {"const": "brandmeister"},
+        "host": {"type": "string"},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "password": {"type": "string", "minLength": 1, "maxLength": 63},
+        "peer_ids": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 1, "maximum": 4294967295}},
+        "location": {"type": "string", "maxLength": 20},
+        "description": {"type": "string", "maxLength": 19},
+        "url": {"type": "string", "maxLength": 124}
+      }
+    },
     "mqtt3": {
       "additionalProperties": false,
       "properties": {
@@ -550,9 +566,10 @@
     "net3": {
       "type": "object",
       "required": ["type"],
-      "properties": {"type": {"enum": ["hblink", "mqtt"]}},
+      "properties": {"type": {"enum": ["hblink", "brandmeister", "mqtt"]}},
       "allOf": [
         {"if": {"properties": {"type": {"const": "hblink"}}}, "then": {"$ref": "#/$defs/hblink3"}},
+        {"if": {"properties": {"type": {"const": "brandmeister"}}}, "then": {"$ref": "#/$defs/bm3"}},
         {"if": {"properties": {"type": {"const": "mqtt"}}}, "then": {"$ref": "#/$defs/mqtt3"}}
       ]
     },

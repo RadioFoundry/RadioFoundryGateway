@@ -1,0 +1,23 @@
+// a simplex frequency, a receive-only one on an SDR and a repeater, each its own BrandMeister login
+{
+  "version": 3,
+  "callsign": "N0CALL",
+  "defaults": {"cc": 1, "tg": "*"},
+  "devices": [
+    {"name": "hs1", "kind": "modem", "port": {"usb": "auto", "serial": "HS1"}, "hears": {"idle": "s1"}, "transmits": ["s1"]},
+    {"name": "w12", "kind": "sdr", "driver": "lr2021", "transmits": false},
+    {"name": "rx", "kind": "modem", "port": {"usb": "auto", "serial": "RRX"}, "hears": {"idle": "r in"}, "transmits": false},
+    {"name": "tx", "kind": "modem", "port": {"uart": 1, "tx": 17, "rx": 18}, "hears": false, "transmits": ["r out"]}
+  ],
+  "frequencies": [
+    {"name": "s1", "freq": 438.5},
+    {"name": "s2", "freq": 438.6, "tx": false},
+    {"name": "r in", "freq": 438.75},
+    {"name": "r out", "freq": 438.25}
+  ],
+  "apps": [{"name": "R1", "type": "repeater", "in": "r in", "out": "r out"}],
+  "networks": [
+    {"type": "brandmeister", "host": "bm.example.net", "password": "example", "description": "RadioFoundry test",
+     "peer_ids": {"s1": 310012301, "s2": 310012302, "R1": 310012303}}
+  ]
+}

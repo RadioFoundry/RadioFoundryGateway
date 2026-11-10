@@ -840,6 +840,33 @@ static void t_txvr_local(void)
     CHECK(v == 12 && shrunk == 0, "a local app's: all 12 voice bursts on the air (%d, %d shrunk)", v, shrunk);
 }
 
+/* A modem that takes 8 headers a call (an MMDVM board's), and a network call of silence on time (a parrot's replay
+ * of a radio keyed with nothing said): the 7 extra headers wait in the prebuffer but aren't the stream's lead, so
+ * the voice isn't dropped as if far ahead. It was all dropped, and the radio keyed only at the terminator, headers
+ * then terminators. Now it keys at the prebuffer; once the headers are on the air they are lead, and some silence
+ * is given back for them (8 of 18 voice bursts go out), as for any stream ahead. */
+static void t_txvr_silent_headers(void)
+{
+    tx_t *h = tx_new(true, 0);
+    h->radio.headers = 8;
+    stream_t *s = &g_stream;
+    make_call(s, 12, 3, 2, ceil(h->rig.clock) + 1.0);
+    for (int k = 1; k < s->n - 1; k++)
+        s->b[k].control = rdof_silence_burst((k - 1) % 6, CC, false, NULL, s->b[k].burst);
+    tx_run(h, s, 12, s->at[s->n - 1] + 4.0);
+    int voice = 0, headers = 0;
+    double first = -1;
+    for (int i = 0; i < h->air.n; i++) {
+        voice += is_voice(h->air.a[i].control);
+        headers += h->air.a[i].control == C_HEADER;
+        if (first < 0)
+            first = h->air.a[i].start;
+    }
+    CHECK(headers == 8 && voice >= 6, "8 headers, a superframe of voice on air at least: %d headers, %d of 18 voice", headers, voice);
+    CHECK(first >= 0 && first < s->at[s->n - 1], "keyed before the terminator came: %.3f, %.3f", first,
+          s->at[s->n - 1]);
+}
+
 /* A late entry: no header, the first 8 bursts of a 6-superframe call left out (it starts at C of the second), the
  * rest on time. A network stream starts at the next A (R6.5); a local app's (a bench late-entry test) as it was
  * given. Every voice burst goes out at the position it carries, and the terminator after it. */
@@ -1124,6 +1151,7 @@ void test_jitter(void)
     t_json();
     t_txvr_steady();
     t_txvr_local();
+    t_txvr_silent_headers();
     t_txvr_late();
     t_txvr_back_to_back();
     t_txvr_jitter();

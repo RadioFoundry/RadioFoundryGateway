@@ -201,11 +201,13 @@ static uint8_t silence(rdof_txcall_t *c, uint8_t out[RDOF_BURST_BYTES], bool gro
     return control;
 }
 
-/* Bursts in hand ahead of the next one: queued, and what the radio still holds. Called locked. */
+/* Bursts in hand ahead of the next one: queued, and what the radio still holds. Called locked. Before the call
+ * starts, its extra headers (a modem's Hs past the first) aren't lead: play() waits for the prebuffer past them, so
+ * counted here they made the stream look ahead and its silence was dropped until nothing could start it. */
 static double ahead(const rdof_txcall_t *c, double n)
 {
     double held = c->air_seen - n;
-    return c->count + (held > 0 ? held / RDOF_TXVR_BURST_S : 0.0);
+    return c->count - (c->started ? 0 : c->extra) + (held > 0 ? held / RDOF_TXVR_BURST_S : 0.0);
 }
 
 /* A voice burst's place in the call (section 6): from the first A (R6.5; a local app's from its first voice burst, a
@@ -332,6 +334,21 @@ static void add(rdof_txvr_t *t, rdof_txcall_t *c, const rdof_net_burst_t *b, dou
     c->last_burst = now(t);
     if (b->terminator)
         c->ended = true;
+    /* Data has no terminator: the call ends at the last block its header announced, so the receiver is back for the
+       radio's answer at once (not RDOF_TXVR_STREAM_TIMEOUT_S on). A second header counts as a block. */
+    const int dt = b->control & 0x0F;
+    if ((b->control & RDOF_SYNC_DATA) && c->data_left > 0 &&
+        (dt == RDOF_DT_RATE_12 || dt == RDOF_DT_RATE_34 || dt == RDOF_DT_RATE_1 || dt == RDOF_DT_DATA_HEADER)) {
+        if (--c->data_left == 0)
+            c->ended = true;
+    } else if ((b->control & RDOF_SYNC_DATA) && dt == RDOF_DT_DATA_HEADER) {
+        rdof_data_header_t h;
+        rdof_decode_data_header(b->burst, &h);
+        if (h.crc_ok && h.dpf == RDOF_DPF_RESPONSE && h.blocks == 0)
+            c->ended = true; /* a response with nothing after it */
+        else if (h.crc_ok && h.blocks > 0)
+            c->data_left = h.blocks;
+    }
 }
 
 /* A call tuned with none in hand: refused, or the call. Called locked. */
@@ -511,6 +528,14 @@ bool rdof_txvr_holds(rdof_txvr_t *t, const uint8_t sid[4])
         held = t->orphans[i].used && !memcmp(t->orphans[i].stream_id, sid, 4);
     unlock(t);
     return held;
+}
+
+bool rdof_txvr_refused(rdof_txvr_t *t, const uint8_t sid[4])
+{
+    lock(t);
+    const bool r = was_refused(t, sid);
+    unlock(t);
+    return r;
 }
 
 const char *rdof_txvr_state_name(const rdof_txvr_t *t)

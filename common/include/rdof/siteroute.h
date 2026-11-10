@@ -96,11 +96,14 @@ bool rdof_siteroute_app_ready(const rdof_siteroute_t *sr, int path, double now);
    frequency, cc and power_dbm), the burst on the path's slot. take_hold: may take a transceiver holding another
    path (a confirmed-data answer). cap_dbm: the stream's power at most this, dBm at the antenna (a bench job's;
    INFINITY: the frequency's own). A transceiver without a map (rdof/txpower.h) sends under a cap at its least.
-   False: none free (app_no_txvr). */
+   False: none free, or the transceiver refused the stream at its tune (app_no_txvr). */
 bool rdof_siteroute_app_burst(rdof_siteroute_t *sr, int path, const rdof_net_burst_t *b, bool take_hold,
                               double cap_dbm, double now);
 /* Whether a transceiver still holds a burst of the stream sid (rdof_txvr_holds): an app's stream not all on the air. */
 bool rdof_siteroute_holds(const rdof_siteroute_t *sr, const uint8_t sid[4]);
+/* Whether a transceiver refused the stream sid (rdof_txvr_refused): at its tune, or later (the channel busy when it
+   listened before keying, its radio failing), so an app's stream that was taken may still not have gone out. */
+bool rdof_siteroute_refused(const rdof_siteroute_t *sr, const uint8_t sid[4]);
 
 /* MQTT calls (docs/spec/fw/mqtt.md): a DMRD packet goes out on {root}/calls/{tg|pc}/{dst}/{box}; a box takes
    {root}/calls/# but its own. The topic for a DMRD (0: not one, or no room). */

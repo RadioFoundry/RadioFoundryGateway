@@ -253,3 +253,17 @@ if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
     target_compile_options(rdof_plan_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
     target_link_options(rdof_plan_tests PRIVATE -fsanitize=address,undefined)
 endif()
+
+# rdofradio's SoapySDR device against a fake SoapySDR: --setting reaches the driver.
+add_executable(rdof_soapy_tests test_soapy.c ../sdr/cli/rdofradio_soapy.c)
+target_include_directories(rdof_soapy_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/shim ../sdr/cli ../sdr/include ../common/include)
+target_link_libraries(rdof_soapy_tests PRIVATE m)
+add_test(NAME rdof_soapy_tests COMMAND rdof_soapy_tests)
+
+# rdofradio --mmdvm --sim-sdr --bench against fakemodem: the MMDVM + SDR bench end to end, no RF.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(TARGET rdofradio AND TARGET fakemodem AND Python3_Interpreter_FOUND)
+    add_test(NAME mmdvm_bench_tests COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_mmdvm_bench.py
+             $<TARGET_FILE:rdofradio> $<TARGET_FILE:fakemodem>)
+    set_tests_properties(mmdvm_bench_tests PROPERTIES TIMEOUT 180)
+endif()

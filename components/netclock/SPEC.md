@@ -153,7 +153,9 @@ Per server with a usable reply this poll (`got`, `t1 ≠ 0`, `last_rx ≥ t1`):
    one). Spike (mark `~`, not used) if `delay > min_delay + max(10000, 0.5 × min_delay)`.
 2. Offset vs the model (only once the model is valid): `off = u − model(tm)`, pushed into the 8-entry offset ring.
    `jitter` = sample standard deviation of the ring (0 with fewer than 2).
-3. Root distance `λ = max(500, delay/2 + root_delay/2 + root_disp + jitter)` µs.
+3. Root distance `λ = max(500, delay/2 + root_delay/2 + root_disp + jitter)` µs, plus 1 s at stratum 8 or above: such a
+   server is on its own clock (a lost reference, chrony's `local stratum 10`), reports a root distance near 0, and
+   would otherwise be chosen over every real server. It's used only when nothing else answers.
 4. Candidate offset = `(u − tm) − (u₀ − tm₀)` of the first usable server (a common base; local clock is shared).
 
 Then `nc_select` (below). Marks written back: `-` if unresolved or duplicate, `~` if a spike, else the select mark.
@@ -288,6 +290,9 @@ Status: `pps_by_gnss` (edges numbered by labels), `gnss_times`, `gnss_refs`, `gn
 After `nc_clock_add`, store (`rate_ppb` = `fit_rate`, plus `tcal` if it changed) when
 
 `(rate_learned ∧ rate_n ≥ 8 ∧ |fit_rate − stored| > 0.3e-6 ∧ (never stored ∨ t − last_store > 3600 s)) ∨ table_changed`
+
+The write waits while `netclock_set_store_hold`'s hook says so, 15 min at most: a flash write stops every task not in
+IRAM, and a measurement running then loses its samples.
 
 ### Temperature table (`src/netclock_tempcal.c`, `nc_clock_*` in `src/netclock_core.c`)
 

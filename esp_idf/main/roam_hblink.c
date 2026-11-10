@@ -70,20 +70,39 @@ void roam_hb_send(roam_t *r, const uint8_t *data, size_t len)
         return;
     }
     struct roam_hb *h = r->hb;
+    uint8_t tmp[RDOF_HB_OUT_MAX];
     xSemaphoreTake(h->lock, portMAX_DELAY);
-    if (h->sock >= 0 && send(h->sock, data, len, 0) == (ssize_t)len)
+    const bool hold = len >= 4 && !memcmp(data, "DMRD", 4) && !rdof_hb_peer_may_send(&h->peer); /* not logged in */
+    data = rdof_hb_peer_up(&h->peer, data, len, tmp);
+    if (!hold && h->sock >= 0 && send(h->sock, data, len, 0) == (ssize_t)len)
         r->st.hblink_tx++;
     xSemaphoreGive(h->lock);
 }
 
 static double now_s(void) { return esp_timer_get_time() / 1e6; }
 
-static size_t config_packet(roam_t *r, uint8_t *out)
+size_t roam_hb_login_status(roam_t *r, char *out, size_t cap)
+{
+    struct roam_hb *h = r->hb;
+    if (!h || !cap) {
+        if (cap)
+            out[0] = 0;
+        return 0;
+    }
+    xSemaphoreTake(h->lock, portMAX_DELAY);
+    const size_t n = rdof_hb_peer_login_status(&h->peer, out, cap);
+    xSemaphoreGive(h->lock);
+    return n;
+}
+
+/* The DMRC, and RPTC's power in *dbm (a login's) */
+static size_t config_packet(roam_t *r, uint8_t *out, double *dbm)
 {
     uint32_t freq = 0;
     int cc = 0;
     if (r->cfg->mode != RDOF_CFG_REPEATER)
         radio_channel_now(r, &freq, &cc);
+    *dbm = rdof_hb_role_power_dbm(r->cfg, freq);
     return rdof_hb_role_dmrc(r->cfg, freq, cc, out);
 }
 
@@ -93,8 +112,10 @@ void roam_hb_send_config(roam_t *r, bool force)
     struct roam_hb *h = r->hb;
     if (!h)
         return;
-    size_t n = config_packet(r, pkt);
+    double dbm;
+    size_t n = config_packet(r, pkt, &dbm);
     xSemaphoreTake(h->lock, portMAX_DELAY);
+    rdof_hb_peer_set_power(&h->peer, dbm, now_s());
     const bool send_now = rdof_hb_peer_set_config(&h->peer, pkt, n, force, now_s());
     if (send_now && !USE_SCTP(r) && h->sock >= 0 && send(h->sock, pkt, n, 0) == (ssize_t)n)
         r->st.hblink_tx++;
@@ -124,13 +145,17 @@ static void received(roam_t *r, const uint8_t *buf, size_t n)
     const rdof_hbp_event_t ev = rdof_hb_peer_received(&h->peer, buf, n, now_s());
     xSemaphoreGive(h->lock);
     if (ev == RDOF_HBP_REGISTERED) {
-        ESP_LOGI(TAG, "peer %lu (%s) registered with %s:%d", (unsigned long)r->cfg->peer_id, r->cfg->name,
-                 r->cfg->master_host, r->cfg->master_port);
+        ESP_LOGI(TAG, "peer %lu (%s) %s %s:%d", (unsigned long)r->cfg->peer_id, r->cfg->name,
+                 h->peer.login ? "logged in to" : "registered with", r->cfg->master_host, r->cfg->master_port);
         r->st.hblink_up = true;
         roam_publish_status(r);
     } else if (ev == RDOF_HBP_REFUSED) {
-        ESP_LOGW(TAG, "peer %lu refused by the master: %.6s", (unsigned long)r->cfg->peer_id, (const char *)buf);
+        ESP_LOGW(TAG, "peer %lu refused by the master: %.6s%s", (unsigned long)r->cfg->peer_id, (const char *)buf,
+                 h->peer.bad_password ? " (the password)" : "");
+        const bool was = r->st.hblink_up;
         r->st.hblink_up = false;
+        if (was)
+            roam_publish_status(r);
     } else if (ev == RDOF_HBP_PACKET) {
         if (site_dmrd(r->cfg->peer_id, buf, n))
             return; /* version 3: to the paths the call policies pick, any role's */
@@ -148,7 +173,7 @@ static void received(roam_t *r, const uint8_t *buf, size_t n)
     }
 }
 
-/* DMRC as the keepalive; the master gone quiet after three. */
+/* DMRC as the keepalive (with a login: its steps, then RPTPING); the master gone quiet after three. */
 static void keepalive(roam_t *r)
 {
     struct roam_hb *h = r->hb;
@@ -156,11 +181,24 @@ static void keepalive(roam_t *r)
     xSemaphoreTake(h->lock, portMAX_DELAY);
     const bool due = rdof_hb_peer_tick(&h->peer, now_s(), &ev);
     xSemaphoreGive(h->lock);
-    if (!due)
-        return;
-    roam_hb_send_config(r, true);
+    if (due) {
+        static uint8_t out[RDOF_HB_OUT_MAX]; /* this task's only (one peer task per role, and this runs in it) */
+        uint8_t pkt[RDOF_DMRC_MAX];
+        double dbm;
+        const size_t n = config_packet(r, pkt, &dbm);
+        xSemaphoreTake(h->lock, portMAX_DELAY);
+        rdof_hb_peer_set_power(&h->peer, dbm, now_s());
+        rdof_hb_peer_set_config(&h->peer, pkt, n, true, now_s());
+        const size_t k = rdof_hb_peer_packet(&h->peer, out);
+        if (!USE_SCTP(r) && h->sock >= 0 && send(h->sock, out, k, 0) == (ssize_t)k)
+            r->st.hblink_tx++;
+        xSemaphoreGive(h->lock);
+        if (USE_SCTP(r))
+            sctp_send(r, out, k);
+    }
     if (ev == RDOF_HBP_QUIET) {
-        ESP_LOGW(TAG, "peer %lu: no DMRP from the master", (unsigned long)r->cfg->peer_id);
+        ESP_LOGW(TAG, "peer %lu: no %s from the master", (unsigned long)r->cfg->peer_id,
+                 h->peer.login ? "MSTPONG" : "DMRP");
         r->st.hblink_up = false;
         roam_publish_status(r);
     }
@@ -307,9 +345,15 @@ void roam_hb_start(roam_t *r)
     h->lock = xSemaphoreCreateMutex();
     rdof_hb_peer_init(&h->peer, r->cfg->peer_id,
                       r->cfg->mode == RDOF_CFG_REPEATER ? RDOF_HB_KEEPALIVE_SECONDS : RDOF_HB_ROAMING_KEEPALIVE_SECONDS);
+    if (r->cfg->hb_login) {
+        rdof_hb_peer_set_login(&h->peer, r->cfg->hb_password, r->cfg->hb_location, r->cfg->hb_description,
+                               r->cfg->hb_url);
+        ESP_LOGI(TAG, "%s: BrandMeister login %lu at %s:%d", r->cfg->name, (unsigned long)r->cfg->peer_id,
+                 r->cfg->master_host, r->cfg->master_port);
+    }
     r->hb = h;
 #if CONFIG_RDOF_HBLINK_SCTP
-    h->use_sctp = !strcmp(r->cfg->transport, "sctp");
+    h->use_sctp = !strcmp(r->cfg->transport, "sctp") && !r->cfg->hb_login; /* BrandMeister: UDP only */
     if (h->use_sctp)
         ESP_LOGI(TAG, "HBlink4 over SCTP: %s:%d in UDP %d", r->cfg->master_host, r->cfg->master_port,
                  r->cfg->sctp_encap_port);

@@ -11,7 +11,7 @@ use core::ffi::{c_char, c_int, c_void, CStr};
 use core::ptr::{addr_of, addr_of_mut, null, read_volatile, write_volatile};
 
 use crate::bits::rdof_get_field;
-use crate::ffi::{self, RDOF_BURST_BYTES, RDOF_DT_CSBK, RDOF_DT_DATA_HEADER, RDOF_DT_RATE_12, RDOF_DT_TERMINATOR_WITH_LC, RDOF_DT_VOICE_LC_HEADER};
+use crate::ffi::{self, RDOF_BURST_BYTES, RDOF_DT_CSBK, RDOF_DT_DATA_HEADER, RDOF_DT_RATE_1, RDOF_DT_RATE_12, RDOF_DT_RATE_34, RDOF_DT_TERMINATOR_WITH_LC, RDOF_DT_VOICE_LC_HEADER};
 use crate::hblink::{rdof_dmrk_packet, RdofNetBurst, RdofTune, RDOF_DMRK_LEN};
 use crate::jitter::{
     rdof_jb_arrival, rdof_jb_begin, rdof_jb_drop, rdof_jb_end, rdof_jb_fill, rdof_jb_init, rdof_jb_key, rdof_jb_prebuffer,
@@ -24,7 +24,7 @@ use crate::modem::{
     RdofRadio,
 };
 use crate::netcalls::RdofTxCallInfo;
-use crate::pdu::{rdof_decode_csbk, rdof_decode_data_header, RdofCsbk, RdofDataHeader};
+use crate::pdu::{rdof_decode_csbk, rdof_decode_data_header, RdofCsbk, RdofDataHeader, RDOF_DPF_RESPONSE};
 
 type Burst = [u8; RDOF_BURST_BYTES];
 
@@ -151,6 +151,7 @@ pub struct RdofTxcall {
     pub vpi: c_int,
     pub air_seen: f64,
     pub jbs: RdofJbStream,
+    pub data_left: c_int, // a data packet's blocks still to come after its header; it ends at its last (no terminator)
 }
 
 #[repr(C)]
@@ -451,10 +452,12 @@ unsafe fn silence(c: &mut RdofTxcall, out: &mut Burst, grow: bool) -> u8 {
     control
 }
 
-/// Bursts in hand ahead of the next one: queued, and what the radio still holds. Called locked.
+/// Bursts in hand ahead of the next one: queued, and what the radio still holds. Called locked. Before the call
+/// starts, its extra headers (a modem's Hs past the first) aren't lead: play() waits for the prebuffer past them.
 fn ahead(c: &RdofTxcall, n: f64) -> f64 {
     let held = c.air_seen - n;
-    f64::from(c.count) + if held > 0.0 { held / BURST_S } else { 0.0 }
+    let extra = if c.started { 0 } else { c.extra };
+    f64::from(c.count - extra) + if held > 0.0 { held / BURST_S } else { 0.0 }
 }
 
 /// A voice burst's place in the call (section 6): from the first A (R6.5), a gap filled with silence (R6.2), a burst
@@ -588,6 +591,27 @@ unsafe fn add(t: *mut RdofTxvr, b: &RdofNetBurst, at: f64) {
     c.last_burst = now(t);
     if b.terminator {
         c.ended = true;
+    }
+    // Data has no terminator: the call ends at the last block its header announced, so the receiver is back for the
+    // radio's answer at once (not RDOF_TXVR_STREAM_TIMEOUT_S on). A second header counts as a block.
+    let dt = c_int::from(b.control & 0x0F);
+    let data = b.control & RDOF_SYNC_DATA != 0;
+    if data
+        && c.data_left > 0
+        && (dt == RDOF_DT_RATE_12 || dt == RDOF_DT_RATE_34 || dt == RDOF_DT_RATE_1 || dt == RDOF_DT_DATA_HEADER)
+    {
+        c.data_left -= 1;
+        if c.data_left == 0 {
+            c.ended = true;
+        }
+    } else if data && dt == RDOF_DT_DATA_HEADER {
+        let mut h: RdofDataHeader = core::mem::zeroed();
+        rdof_decode_data_header(&b.burst, &mut h);
+        if h.crc_ok && h.dpf == RDOF_DPF_RESPONSE && h.blocks == 0 {
+            c.ended = true; // a response with nothing after it
+        } else if h.crc_ok && h.blocks > 0 {
+            c.data_left = h.blocks;
+        }
     }
 }
 
@@ -776,6 +800,26 @@ pub unsafe extern "C" fn rdof_txvr_listening(t: *const RdofTxvr) -> bool {
 #[no_mangle]
 pub unsafe extern "C" fn rdof_txvr_scanning(t: *const RdofTxvr) -> bool {
     (*t).has_scan && !(*t).has_call && !(*t).stopped
+}
+
+/// Whether it still holds a burst of the stream sid: its call (until it ends), the call waiting or an orphan.
+#[no_mangle]
+pub unsafe extern "C" fn rdof_txvr_holds(t: *mut RdofTxvr, sid: &[u8; 4]) -> bool {
+    lock(t);
+    let held = ((*t).has_call && (*t).call.tune.stream_id == *sid)
+        || ((*t).next.used && (*t).next.tune.stream_id == *sid)
+        || (*t).orphans.iter().any(|o| o.used && o.stream_id == *sid);
+    unlock(t);
+    held
+}
+
+/// Whether it refused the stream sid (its tune answered other than on air; the last REFUSED streams).
+#[no_mangle]
+pub unsafe extern "C" fn rdof_txvr_refused(t: *mut RdofTxvr, sid: &[u8; 4]) -> bool {
+    lock(t);
+    let r = was_refused(t, sid);
+    unlock(t);
+    r
 }
 
 #[no_mangle]

@@ -505,7 +505,13 @@ static void deliver(rdof_ipgw_t *g, const rdof_ipgw_where_t *w, uint32_t src, ui
     g->dedup[k].at = now > 0 ? now : 1e-9;
     g->dedup[k].acked = 0;
     g->n.rx_messages++;
+    const uint32_t passing = g->n.unresolved + g->n.up_rate + g->n.flows_full + g->n.send_failed;
     bool ours = relay_up(g, w, src, dst, group, sap, data, len, now);
+    if (g->n.unresolved + g->n.up_rate + g->n.flows_full + g->n.send_failed != passing) {
+        g->dedup[k].at = 0; /* not sent for a passing reason: the radio's retry tries again */
+        if (ours)
+            return; /* and unanswered, so it does retry */
+    }
     if (ours && want_ack) {
         g->dedup[k].acked = now > 0 ? now : 1e-9;
         rdof_ipgw_build_ack(dst, src, sap, ack->ns, w->cc, g->sync48, &g->out);

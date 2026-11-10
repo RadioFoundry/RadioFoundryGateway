@@ -16,8 +16,8 @@
  * in 0.5. CONV8 fills the FIFO in 0.77 ms at 576 k: half of it. FSK16 at 250 k fills it in 1 ms: at 512 bytes a
  * reader had too little time to start and lost samples about 25 times a second, so a quarter. */
 #define IRQ_LEVEL_LORA 768
-#define IRQ_LEVEL_CONV8 512
-#define IRQ_LEVEL_FSK16 256
+#define IRQ_LEVEL_CONV8 LR2021_IQ_MARK_LEVEL
+#define IRQ_LEVEL_FSK16 LR2021_IQ_MARK_LEVEL
 /* By the level: wait for about 640 bytes and read them in one frame. Each read costs about 90 us besides its bytes
  * (a level query, BUSY, the DMA's set-up): reading whatever had come in, 300-400 bytes at a time, kept the SPI busy
  * 93% of the time at 576 k (R2.29, R2.34) and the reader on the CPU half of it. Between real level queries (every
@@ -234,6 +234,8 @@ static lr2021_err_t session_start(lr2021_iq_t *iq, bool quick)
     iq->since_flags = 0;
     iq->by_level = true; /* what's in the FIFO first, then the IRQ */
     iq->reckon_n = 0;
+    iq->mark_armed = false;
+    iq->bytes_out = 0;
     iq->in_session = true;
     return LR2021_OK;
 }
@@ -294,6 +296,7 @@ static lr2021_err_t lost(lr2021_iq_t *iq)
     iq->stats.losses++;
     iq->gap = true;
     iq->reckon_n = 0;
+    iq->mark_armed = false;
     if (iq->plan.mode != LR2021_IQ_LORA) {
         uint8_t f[6];
         cmd(iq, f, lr2021_cmd(f, LR2021_CLEAR_RX_FIFO));
@@ -325,6 +328,15 @@ static int drain(lr2021_iq_t *iq, size_t n, bool then_rearm, lr2021_iq_sink_t si
     if (n >= 4 && !(n & 3))
         n -= 2;
     const size_t c = iq->carry_n;
+    if (iq->mark_armed) { /* the pin up by now: the level passed the mark with nothing read since it was armed */
+        iq->mark_armed = false;
+        if (lr2021_irq_pin(iq->dev) == 1) {
+            iq->mark_bytes = iq->bytes_out + LR2021_IQ_MARK_LEVEL;
+            iq->mark_n++;
+        } else {
+            iq->mark_failed++;
+        }
+    }
     iq->stats.reads++;
     lr2021_err_t e = lr2021_read_fifo(iq->dev, iq->buf + c, n);
     if (e != LR2021_OK) {
@@ -332,6 +344,7 @@ static int drain(lr2021_iq_t *iq, size_t n, bool then_rearm, lr2021_iq_sink_t si
         iq->reckon_n = 0;
         return -1;
     }
+    iq->bytes_out += n;
     if (iq->reckon_n) {
         iq->reckon_n++;
         iq->anchor_level -= (int32_t)n;
@@ -430,6 +443,8 @@ int lr2021_iq_poll(lr2021_iq_t *iq, lr2021_iq_sink_t sink, void *ctx, int wait_m
         const double t = LR2021_IQ_FIFO_BYTES - RECKON_MARGIN - bpus * iq->cfg.slack_us;
         target = t < READ_MIN ? READ_MIN : t < READ_TARGET ? (size_t)t & ~3u : READ_TARGET;
     }
+    if (iq->mark_armed && target < LR2021_IQ_MARK_LEVEL)
+        target = LR2021_IQ_MARK_LEVEL; /* the next read comes after the edge (and RECKON_MARGIN past the target) */
     if (backlog < target) {
         /* the time the FIFO takes to reach the target, at most wait_ms */
         double us = (target - backlog) / bpus;
@@ -442,6 +457,13 @@ int lr2021_iq_poll(lr2021_iq_t *iq, lr2021_iq_sink_t sink, void *ctx, int wait_m
     if (backlog > LR2021_IQ_FIFO_BYTES)
         backlog = LR2021_IQ_FIFO_BYTES;
     int got = drain(iq, backlog, false, sink, ctx);
+    if (got >= 0 && iq->mark_want && use_irq(iq) && iq->plan.mode != LR2021_IQ_LORA && iq->reckon_n &&
+        iq->anchor_level + (double)(lr2021_now_us() - iq->anchor_us) * bpus + 128 < LR2021_IQ_MARK_LEVEL) {
+        /* the level well under the mark: its next rise past it is an edge the capture times */
+        rearm(iq);
+        iq->mark_armed = true;
+        iq->mark_want = false;
+    }
     return got < 0 ? 0 : got;
 }
 

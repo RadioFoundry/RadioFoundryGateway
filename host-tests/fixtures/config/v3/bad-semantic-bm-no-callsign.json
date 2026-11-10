@@ -1,0 +1,8 @@
+// BrandMeister checks RPTC's callsign against the login's ID: the top-level callsign is required
+{
+  "version": 3,
+  "defaults": {"cc": 1},
+  "devices": [{"name": "w12", "kind": "sdr", "driver": "lr2021"}],
+  "frequencies": [{"name": "hs", "freq": 438.5}],
+  "networks": [{"type": "brandmeister", "host": "bm.example.net", "password": "example", "peer_ids": {"hs": 310012301}}]
+}

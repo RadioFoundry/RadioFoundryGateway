@@ -1,0 +1,11 @@
+{
+  "version": 3,
+  "callsign": "N0CALL",
+  "defaults": {"cc": 1},
+  "devices": [
+    {"name": "hs1", "kind": "modem", "port": {"usb": "auto", "serial": "HS1"}, "hears": {"idle": "s1"}},
+    {"name": "hs2", "kind": "modem", "port": {"usb": "auto", "serial": "HS2"}, "hears": {"idle": "s2"}}
+  ],
+  "frequencies": [{"name": "s1", "freq": 438.5}, {"name": "s2", "freq": 438.6}],
+  "networks": [{"type": "brandmeister", "host": "bm.example.net", "password": "example", "peer_ids": {"s1": 310012301}}]
+}

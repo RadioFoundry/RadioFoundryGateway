@@ -19,7 +19,7 @@ const RDOF_FLCO_TA_BLOCK3: c_int = 0x07;
 const RDOF_FLCO_GPS_INFO: c_int = 0x08;
 
 const RDOF_DPF_UDT: c_int = 0;
-const RDOF_DPF_RESPONSE: c_int = 1;
+pub const RDOF_DPF_RESPONSE: c_int = 1;
 const RDOF_DPF_UNCONFIRMED: c_int = 2;
 const RDOF_DPF_CONFIRMED: c_int = 3;
 const RDOF_DPF_SHORT_DATA_DEFINED: c_int = 13;
@@ -288,7 +288,7 @@ pub extern "C" fn rdof_decode_data_block(burst: &Burst, data_type: c_int, b: &mu
         }
         RDOF_DT_RATE_34 => {
             b.errors = unsafe { ffi::rdof_trellis34_decode(burst.as_ptr(), b.payload.as_mut_ptr()) };
-            b.fec_ok = b.errors == 0;
+            b.fec_ok = true; // errors is the bits corrected; CRC-9 and CRC-32 decide
             b.len = 18;
         }
         RDOF_DT_RATE_1 => {

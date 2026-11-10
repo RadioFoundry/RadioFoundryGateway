@@ -499,7 +499,7 @@ static bool unit_peer(ctx_t *c, const rdof_plan_t *p, int path, const char *wher
     int hb = rdof_plan_net_of(p, RDOF_NET_HBLINK);
     cfg->receiver_hblink = path >= 0 && hb >= 0 && s->path[path].pol.net == hb;
     cfg->peer_id = path >= 0 ? s->path[path].peer_id : 0;
-    if (!cfg->peer_id && hb >= 0) /* a peer ID only for an hblink network */
+    if (!cfg->peer_id && hb >= 0 && (cfg->receiver_hblink || !s->net[hb].login)) /* only for an hblink network */
         return err(c, "%s: no HBlink peer ID (the top-level id)", where);
     if (path >= 0 && s->path[path].peer_name[0]) {
         copy_str(cfg->callsign, sizeof cfg->callsign, s->path[path].peer_name);
@@ -892,6 +892,11 @@ bool rdof_plan_radio(const rdof_plan_t *p, const char *name, rdof_config_t *cfg,
         return false;
     cfg->master_port = (int)port;
     sget(c, hb, "transport", "udp", cfg->transport, sizeof cfg->transport);
+    cfg->hb_login = hbk >= 0 && s->net[hbk].login; /* brandmeister: RPTL and the rest (rdof/hbpeer.h) */
+    sget(c, hb, "password", "", cfg->hb_password, sizeof cfg->hb_password);
+    sget(c, hb, "location", "", cfg->hb_location, sizeof cfg->hb_location);
+    sget(c, hb, "description", "", cfg->hb_description, sizeof cfg->hb_description);
+    sget(c, hb, "url", "", cfg->hb_url, sizeof cfg->hb_url);
     if (!sctp_settings(c, hb, hbw, cfg) || !location(c, get(c, root, "location"), cfg))
         return false;
     /* the radio: the board's SDR (an sdr_transceiver), one modem, or a split's two */

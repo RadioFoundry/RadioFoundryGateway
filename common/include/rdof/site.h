@@ -7,7 +7,7 @@
  *   "devices":     [{"kind": "sdr" | "modem" | "radio", "hears", "transmits", ...}]
  *   "frequencies": [438.0625, {"freq", "name", "cc", "mode", "ts", "tx", "slots", policy keys}, ...]
  *   "apps":        [{"type": "repeater" | "parrot" | "ipgw", ...}]
- *   "networks":    [{"type": "hblink" | "mqtt", ...}]
+ *   "networks":    [{"type": "hblink" | "brandmeister" | "mqtt", ...}]
  *   "policies":    [{"name", "tg", "ptt", "ptt_hold_s", "pc", "apps", "net", "dir"}]
  *
  * rdof_site_parse reads it into rdof_site_t: every reference resolved, every talk path with its policy filled in
@@ -95,6 +95,7 @@ typedef struct {
     uint8_t type;    /* rdof_net_type_t */
     bool per_path;   /* hblink identity per_path: each path (a repeater: both its slots) its own peer */
     bool roaming;    /* hblink: the master may move a device (DMRT) */
+    bool login;      /* type brandmeister: an hblink network whose peers log in (RPTL, docs/spec/fw/brandmeister.md) */
     bool report;     /* mqtt */
     bool calls;      /* mqtt: carries calls */
 } rdof_net3_t;

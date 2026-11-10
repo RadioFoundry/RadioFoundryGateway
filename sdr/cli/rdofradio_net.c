@@ -59,10 +59,20 @@ static int open_udp(const char *host, int port)
     return s;
 }
 
+void rdofnet_peer_set_login(rdofnet_peer_t *p, const char *password, const char *location, const char *description,
+                            const char *url)
+{
+    rdof_hb_peer_set_login(&p->peer, password, location, description, url);
+}
+
 void rdofnet_peer_send(rdofnet_peer_t *p, const uint8_t *d, size_t n)
 {
     if (p->sock < 0)
         return;
+    if (n >= 4 && !memcmp(d, "DMRD", 4) && !rdof_hb_peer_may_send(&p->peer))
+        return; /* not logged in yet */
+    uint8_t tmp[RDOF_HB_OUT_MAX];
+    d = rdof_hb_peer_up(&p->peer, d, n, tmp);
     if (send(p->sock, d, n, 0) == (ssize_t)n)
         p->peer.tx++;
     else
@@ -88,10 +98,14 @@ void rdofnet_peer_poll(rdofnet_peer_t *p, double now)
         rdof_hb_peer_link_up(&p->peer);
     }
     rdof_hbp_event_t ev;
-    if (rdof_hb_peer_tick(&p->peer, now, &ev) && p->peer.dmrc_len)
-        rdofnet_peer_send(p, p->peer.dmrc, p->peer.dmrc_len);
+    const char *net = p->peer.login ? "brandmeister" : "hblink";
+    if (rdof_hb_peer_tick(&p->peer, now, &ev) && p->peer.dmrc_len) {
+        uint8_t out[RDOF_HB_OUT_MAX];
+        rdofnet_peer_send(p, out, rdof_hb_peer_packet(&p->peer, out));
+    }
     if (ev == RDOF_HBP_QUIET)
-        sayf(p, "hblink: %s (peer %u): no DMRP from %s:%d", p->label, id, p->host, p->port);
+        sayf(p, "%s: %s (peer %u): no %s from %s:%d", net, p->label, id, p->peer.login ? "MSTPONG" : "DMRP", p->host,
+             p->port);
     uint8_t buf[1500];
     for (;;) {
         const ssize_t n = recv(p->sock, buf, sizeof buf, 0);
@@ -103,11 +117,15 @@ void rdofnet_peer_poll(rdofnet_peer_t *p, double now)
         const unsigned refused = p->peer.refused;
         switch (rdof_hb_peer_received(&p->peer, buf, (size_t)n, now)) {
         case RDOF_HBP_REGISTERED:
-            sayf(p, "hblink: %s (peer %u) registered with %s:%d", p->label, id, p->host, p->port);
+            sayf(p, "%s: %s (peer %u) %s %s:%d", net, p->label, id, p->peer.login ? "logged in to" : "registered with",
+                 p->host, p->port);
             break;
         case RDOF_HBP_REFUSED:
-            if (!refused) /* it refuses every keepalive: say it once */
-                sayf(p, "hblink: %s (peer %u) refused by the master: %.6s", p->label, id, (const char *)buf);
+            if (p->peer.login) /* the login backs off: each refusal is worth a line */
+                sayf(p, "%s: %s (peer %u) refused by the master: %.6s%s, next try in %.0f s", net, p->label, id,
+                     (const char *)buf, p->peer.bad_password ? " (the password)" : "", p->peer.next_ka - now);
+            else if (!refused) /* it refuses every keepalive: say it once */
+                sayf(p, "%s: %s (peer %u) refused by the master: %.6s", net, p->label, id, (const char *)buf);
             break;
         case RDOF_HBP_PACKET:
             if (p->on_packet)
@@ -121,6 +139,10 @@ void rdofnet_peer_poll(rdofnet_peer_t *p, double now)
 
 void rdofnet_peer_close(rdofnet_peer_t *p)
 {
+    uint8_t cl[9];
+    const size_t n = rdof_hb_peer_close_packet(&p->peer, cl);
+    if (p->sock >= 0 && n && p->peer.state == RDOF_HBL_UP)
+        rdofnet_peer_send(p, cl, n); /* RPTCL: the master drops the login now, not after its timeout */
     if (p->sock >= 0)
         close(p->sock);
     p->sock = -1;

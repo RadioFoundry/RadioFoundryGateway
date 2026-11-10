@@ -110,6 +110,7 @@ typedef struct {
     int vpi;         /* the PI of the stream's last B-F burst: for one moved to another position */
     double air_seen; /* when what the radio holds has gone out, as the poll last wrote it (under the lock) */
     rdof_jb_stream_t jbs;
+    int data_left; /* a data packet's blocks still to come after its header; it ends at its last (no terminator) */
 } rdof_txcall_t;
 
 typedef struct rdof_txvr {
@@ -215,6 +216,8 @@ bool rdof_txvr_scanning(const rdof_txvr_t *t);
 const char *rdof_txvr_state_name(const rdof_txvr_t *t);
 /* Whether it still holds a burst of the stream sid: its call (until it ends), the call waiting or an orphan. */
 bool rdof_txvr_holds(rdof_txvr_t *t, const uint8_t sid[4]);
+/* Whether it refused the stream sid (its tune answered other than on air; the last RDOF_TXVR_REFUSED streams). */
+bool rdof_txvr_refused(rdof_txvr_t *t, const uint8_t sid[4]);
 /* The call's details, as the network calls report them (rdof/netcalls.h). */
 void rdof_txvr_call_info(const rdof_txvr_t *t, const rdof_txcall_t *call, rdof_tx_call_info_t *info);
 

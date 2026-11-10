@@ -181,6 +181,22 @@ static void test_scenarios(const char *dir)
         CHECK(p && p->peer_id == 9800599 && rdof_idset_single(&p->pol.tg) == 3120, "peer_ids, rx-only slots");
         CHECK(S.dev[1].transmits == 1, "pinned");
     }
+    if (load(dir, "good-bm-simplex.json")) { /* BrandMeister: the login from peer_ids, no top-level id */
+        p = path("hs");
+        CHECK(p && p->peer_id == 310012301 && S.net[0].login && S.net[0].type == RDOF_NET_HBLINK, "bm id %u",
+              p ? p->peer_id : 0);
+        static char out[16384];
+        rdof_site_resolved(&S, out, sizeof out);
+        CHECK(strstr(out, "\"type\":\"brandmeister\"") && strstr(out, "\"peer_id\":310012301"), "%.200s", out);
+        CHECK(!strstr(out, "example\""), "no password in the resolved view");
+        CHECK(p && !p->peer_name[0], "a login's RPTC callsign is the owner's, not the path's name");
+    }
+    if (load(dir, "good-bm-per-path.json")) {
+        CHECK(path("s1") && path("s1")->peer_id == 310012301 && path("s2") && path("s2")->peer_id == 310012302,
+              "bm per_path");
+        CHECK(path("R1/1") && path("R1/1")->peer_id == 310012303 && path("R1/2") && path("R1/2")->peer_id == 310012303,
+              "bm repeater: one login, both slots");
+    }
     /* the resolved view */
     if (load(dir, "good-two-repeaters.json")) {
         static char out[16384];
@@ -483,8 +499,24 @@ static void test_siteroute(const char *dir)
         const int n0 = cap.n;
         rdof_net_burst_t a = net_burst(0x555, 9990, 9800009, false, 1, false, false);
         CHECK(!rdof_siteroute_app_burst(&sr, ap, &a, false, INFINITY, 5.2) && sr.app_no_txvr == 1, "not sent while held");
-        CHECK(rdof_siteroute_app_ready(&sr, ap, 9) && rdof_siteroute_app_burst(&sr, ap, &a, false, INFINITY, 9) && cap.n == n0 + 1 &&
-                  cap.freq == 438112500 && rdof_siteroute_tuned(&sr, a.stream_id), "free: tuned to it (%d %u)", cap.n, cap.freq);
+        /* the transceiver isn't ready: it refuses the stream at its tune, so the app's burst isn't sent (a bench job
+           fails at once, not after its bursts went nowhere) and the pool is free again */
+        CHECK(rdof_siteroute_app_ready(&sr, ap, 9) && !rdof_siteroute_app_burst(&sr, ap, &a, false, INFINITY, 9) &&
+                  sr.app_no_txvr == 2 && cap.n == n0 + 1 && cap.freq == 438112500 && rdof_txvr_refused(&t, a.stream_id) &&
+                  rdof_siteroute_refused(&sr, a.stream_id) &&
+                  rdof_siteroute_app_ready(&sr, ap, 9.01),
+              "refused at its tune: not sent, the pool free (%d %u %u)", cap.n, cap.freq, sr.app_no_txvr);
+        static rdof_modem_t md;
+        static rdof_radio_t rd;
+        rd.modem = &md;
+        t.radio = &rd;
+        t.ready = true;
+        t.nchannels = 1;
+        t.channels[0] = (rdof_channel_t){438112500, S.freq[S.path[ap].tx_freq].cc, 255, 1};
+        a = net_burst(0x556, 9990, 9800009, false, 1, false, false);
+        CHECK(rdof_siteroute_app_burst(&sr, ap, &a, false, INFINITY, 9.02) && rdof_siteroute_tuned(&sr, a.stream_id) &&
+                  t.has_call && !rdof_txvr_refused(&t, a.stream_id) && !rdof_siteroute_refused(&sr, a.stream_id),
+              "ready: taken (%d)", t.has_call);
         CHECK(rdof_siteroute_app_burst(&sr, ap, &a, false, INFINITY, 9.06) && cap.n == n0 + 1 && !rdof_siteroute_app_ready(&sr, ap, 9.1),
               "tuned once; busy for another");
         static const uint8_t none[4] = {0, 0, 0x77, 0x77};
@@ -492,7 +524,7 @@ static void test_siteroute(const char *dir)
               "holds its stream while the transceiver does (%d), not another", t.has_call);
         c = net_burst(0x666, 9800009, 204, true, 1, false, false);
         CHECK(rdof_siteroute_burst(&sr, 0, 0, &c, 9.1) == 0, "a network stream doesn't preempt an app's");
-        a = net_burst(0x555, 9990, 9800009, false, 1, false, true);
+        a = net_burst(0x556, 9990, 9800009, false, 1, false, true);
         rdof_siteroute_app_burst(&sr, ap, &a, false, INFINITY, 9.12);
         CHECK(rdof_siteroute_burst(&sr, 0, 0, &c, 9.2) != 0, "but takes its hold");
         CHECK(!rdof_siteroute_app_ready(&sr, -1, 11) && !rdof_siteroute_app_burst(&sr, 99, &a, false, INFINITY, 11), "no path");
@@ -633,12 +665,22 @@ static void test_fixtures(const char *dir)
             bool rok = rdof_box_roles(t, len, &roles, err, sizeof err);
             CHECK(rok, "%s: roles: %s", e->d_name, err);
             if (rok) {
-                for (int k = 0; k < roles.nradios; k++)
+                for (int k = 0; k < roles.nradios; k++) {
                     CHECK(rdof_config_parse_radio(t, len, roles.radios[k], &cfg, err, sizeof err),
                           "%s: radio %s: %s", e->d_name, roles.radios[k], err);
+                    if (strstr(e->d_name, "-bm-"))
+                        CHECK(cfg.hb_login && !strcmp(cfg.hb_password, "example") && cfg.peer_id >= 310012301 &&
+                                  !strcmp(cfg.master_host, "bm.example.net"),
+                              "%s: %s: login %d %u", e->d_name, roles.radios[k], cfg.hb_login, cfg.peer_id);
+                }
                 static rdof_sdr_config_t sc;
-                if (roles.has_sdr)
+                if (roles.has_sdr) {
                     CHECK(rdof_sdr_config_parse(t, len, &sc, err, sizeof err), "%s: sdr: %s", e->d_name, err);
+                    if (strstr(e->d_name, "-bm-"))
+                        CHECK(sc.hb_login && !strcmp(sc.hb_password, "example") &&
+                                  !strcmp(sc.hb_description, "RadioFoundry test"),
+                              "%s: sdr login", e->d_name);
+                }
             }
         }
         free(t);

@@ -16,6 +16,7 @@
 #include "rdof/benchguard.h"
 #include "rdof/config.h"
 #include "rdof/json.h"
+#include "rdof/mssim.h"
 #include "rdof/sigmode.h"
 #include "rdof/site.h"
 #include "sdkconfig.h"
@@ -251,6 +252,8 @@ void radio_channel_now(roam_t *r, uint32_t *freq, int *cc);
 
 void roam_hb_start(roam_t *r);
 void roam_hb_send(roam_t *r, const uint8_t *data, size_t len);
+/* A BrandMeister login's status (rdof_hb_peer_login_status) into out; 0 without one. */
+size_t roam_hb_login_status(roam_t *r, char *out, size_t cap);
 void roam_hb_send_config(roam_t *r, bool force);
 #if CONFIG_RDOF_HBLINK_SCTP
 /* The SCTP association's status as JSON (0 when HBlink4 isn't over SCTP). */
@@ -296,6 +299,7 @@ bool site_pool_on(void);
 int site_app_path(uint32_t hz, int slot); /* the path heard at hz, slot; -1 none */
 bool site_app_burst(int path, const rdof_net_burst_t *b, bool take_hold, double cap_dbm); /* cap_dbm: at the antenna, INFINITY the path's */
 bool site_app_holds(const uint8_t sid[4]); /* a transceiver still holds a burst of the stream */
+bool site_app_refused(const uint8_t sid[4]); /* a transceiver refused the stream (at its tune or later) */
 void site_status_json(rdof_json_t *j); /* "router": the pool's transmitters, the box parrot; nothing without v3 */
 
 #endif
@@ -381,6 +385,8 @@ void slot_timing_json(rdof_json_t *j);                          /* "slot_timing"
 void sdr_hb_start(void);
 /* The sink for channel c's HBlink4 peer, or false if it has none. */
 bool sdr_hb_sink(int c, rdof_sink_t *out);
+/* The receiver sends what it hears on hz up itself: a channel there has a peer (its own, or through the box's). */
+bool sdr_hb_sends(uint32_t hz);
 int sdr_hb_status(const char **ids, bool *up, int max);
 
 /* The DSP's allocators (sdr.c): the hot arena, a window the DSP task opens while it builds a receiver, and the
@@ -502,6 +508,7 @@ bool bench_tx_line_open(uint32_t freq, int cc, rdof_bench_power_t power, bool as
 int bench_tx_line_space(char *why, size_t cap);
 void bench_tx_line_push(uint8_t control, const uint8_t burst[33]);
 bool bench_tx_line_idle(void);
+size_t bench_tx_line_event(char *out, size_t cap);
 void bench_tx_line_close(void);
 /* bench_tx outbound: the SDR modem taken (a roamer's parked) and keyed as a repeater's downlink for seconds */
 const char *bench_tx_ob_why(void);
@@ -522,6 +529,11 @@ const char *bench_tx_why_family(int family); /* a voice, csbk or data job's --fa
 /* The line protocol (bench_line.c, bench-api.md section 14): its server on CONFIG_RDOF_BENCH_LINE_PORT; a burst heard
  * (from bench_on_burst); the wideband history (bench_api.c's ring) for its captures. */
 void bench_line_start(void);
+#if CONFIG_RDOF_BENCH
+bool bench_line_measuring(void); /* a job is listening to the receiver: flash writes wait (they lose its samples) */
+#else
+#define bench_line_measuring() false
+#endif
 void bench_line_burst(int channel, const rdof_sdr_burst_t *b, double t);
 long bench_wide_read(uint64_t sc, int8_t *out, long n, uint64_t *oldest, uint64_t *next);
 long bench_wide_filled(uint64_t sc, long n); /* how many of the history's samples [sc, sc + n) are filler */
@@ -550,8 +562,20 @@ typedef struct {
     long skip_from, skip_to;
     double slot;
     uint32_t tx_fs;
+    bool map_ok, map_wait; /* the front end's TX schedule: known; it has one and it isn't fixed yet */
+    int64_t map_pos, map_us; /* pull position map_pos (48 kS/s) goes out at esp_timer map_us */
 } sdr_modem_slots_t;
 bool sdr_modem_bench_slots(sdr_modem_slots_t *s);
+/* Pin edges timed in hardware (edge_time.c): the LR2021's IRQ pin, its NSS, the PPS. */
+typedef enum { EDGE_FIFO, EDGE_NSS, EDGE_PPS, EDGE_N } edge_ch_t;
+void edge_time_start(void);
+bool edge_time_last(edge_ch_t ch, double *us, uint32_t *n); /* the last edge, in esp_timer us; n: the edges so far */
+void edge_time_json(rdof_json_t *j);
+void fe_lr2021_loss_json(rdof_json_t *j); /* sdr.fifo_losses: what the reader was doing around each FIFO loss */
+/* A FIFO level's edge: stream position pos48 (at 48 kHz, from the stream's start) was at the chip at esp_timer us. */
+void edge_time_rx_mark(double pos48, double us, uint32_t failed);
+bool edge_time_rx_take(double *pos48, double *us); /* the newest mark not yet taken */
+void edge_time_rx_lag(double lag_s); /* the mark against the stream's time: the JSON's rx_lag_* */
 void sdr_modem_bench_write(const uint8_t *data, size_t len);
 void sdr_modem_bench_close(void);
 /* The receiver streams again, at a new center or not (sdr_task.c): the modem's carrier tuned again (a roamer
@@ -564,6 +588,15 @@ void sdr_modem_tx_cap(double dbm);
  * (written to why). Its state: rdof_sdrmodem_signal_state's, -1 when the bench holds no modem. */
 const char *sdr_modem_bench_signal(uint32_t hz, const rdof_sig_src_t *src, char *why, size_t cap);
 int sdr_modem_bench_signal_state(void);
+/* The bench's confirmed-data responder on the bench's modem (rdof/mssim.h): armed once the modem's set up (false: not
+ * yet), heard on channel; disarmed when the bench lets the modem go. The copy is its state for a status. */
+bool sdr_modem_bench_mssim_arm(const rdof_mssim_profile_t *p, int channel);
+void sdr_modem_bench_mssim_disarm(void);
+void sdr_modem_bench_mssim_copy(rdof_mssim_t *out);
+/* bench_tx.c: the line protocol's mssim op (rdof/benchline.h's hook) */
+bool bench_tx_mssim(const char *action, const char *req, size_t len, uint32_t freq_hz, int cc,
+                    rdof_bench_power_t power, double seconds, uint32_t since, char *out, size_t cap,
+                    const char **code);
 bool sdr_tx_muted(void *ctx, int64_t position);
 /* The tuner's crystal error, as learned from its sample clock or the AFC (sdr_task.c). NAN where there's nothing. */
 typedef struct {

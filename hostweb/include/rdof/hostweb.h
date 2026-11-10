@@ -117,6 +117,7 @@ typedef struct {
     bool has_mqtt;
     bool hblink, mqtt; /* the links' state (the page warns when down) */
     unsigned hblink_tx, hblink_rx; /* HBlink4 packets, as the board counts them */
+    char brandmeister[192];        /* a BrandMeister login's status (rdof_hb_peer_login_status), or "" */
     uint32_t rx_hz, tx_hz;
     int cc;
     double cpu_load; /* 0..1 of the tool's real-time loop, or -1 */

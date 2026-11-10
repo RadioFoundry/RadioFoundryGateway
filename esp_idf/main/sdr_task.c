@@ -1082,8 +1082,8 @@ static void cal_learn(double t)
     if (!settled || isnan(v) || !ppm.measured || isnan(die_c) || ppm.steady_s < RDOF_PPM_FIRST_SAVE_S)
         return;
     const int bin = nc_tcal_bin(die_c);
-    if (bin == cal_put_bin && t - cal_put_t < CAL_AGAIN_S)
-        return;
+    if ((bin == cal_put_bin && t - cal_put_t < CAL_AGAIN_S) || bench_line_measuring())
+        return; /* the flash write stops the front end's reader: it waits for a job that's listening */
     nc_tcal_put(&cal, die_c, v);
     cal_put_bin = bin;
     cal_put_t = t;
@@ -1330,6 +1330,10 @@ int sdr_spectrum_rows(uint32_t since, uint8_t *out, int max, uint32_t *seq, sdr_
 
 /* filler: the chunk's first `filler` samples stand in for what the front end lost (their level says nothing about
  * the gain; the bench's history notes where they are) */
+static int64_t stream_base; /* out_index at the stream's first sample */
+static int64_t marks_until; /* esp_timer: the FIFO's time marks are steering the stream's time up to here */
+#define MARKS 3
+
 static void chunk(const uint8_t *raw, int n, int split, bool *first, int filler)
 {
     int64_t t0 = esp_timer_get_time();
@@ -1377,31 +1381,42 @@ static void chunk(const uint8_t *raw, int n, int split, bool *first, int filler)
     if (fe.ops->set_xtal_ppm)
         fe.ops->set_xtal_ppm(fe.ctx, now_xtal);
     /* Re-anchor stream time if it has drifted from the clock (dropped samples, NTP arriving): 1 s at
-     * once. Once netclock is synced, also 100 ms, from the least lag over 2 s: netclock slews in what its first
-     * reference says (a soft restart keeps the RTC's time, often a fraction of a second off), which never
-     * reaches 1 s, and the crystal drifts. A chunk handled late (USB, a backlog) only adds lag, so the least is
-     * the truest. */
+     * once. Once netclock is synced, also anything past 50 us, from the least lag over 2 s (200 ms for the first
+     * window of a stream: one chunk's arrival, the first anchor, is off by milliseconds and a job can key up
+     * right after a retune): netclock slews in what its first reference says (a soft restart keeps the RTC's
+     * time, often a fraction of a second off), which never reaches 1 s, and the crystal drifts. A chunk handled
+     * late (USB, a backlog) only adds lag, so the least is the truest. Filler is timed from the clock, not read,
+     * so a window with some says nothing. */
     static double least;
-    static int64_t least_from;
+    static int64_t least_from, least_window;
+    const bool was_first = *first;
     if (*first) {
         g_rx.t0 = now_unix() - n / g_scfg.sample_rate;
         *first = false;
+        least_from = 0;
+        least_window = 200000;
+    } else if (filler > 0) {
         least_from = 0;
     } else {
         /* at this chunk's start, as the first anchor */
         const double lag = now_unix() - n / g_scfg.sample_rate - (g_rx.t0 + g_rx.out_index / RDOF_DEMOD_FS);
         double move = fabs(lag) > 1.0 ? lag : 0;
-        if (!move && netclock_synced()) {
+        if (!move && netclock_synced() && t0 >= marks_until) {
             if (!least_from || lag < least)
                 least = lag;
             if (!least_from)
                 least_from = t0;
-            else if (t0 - least_from >= 2000000) {
-                move = fabs(least) > 0.1 ? least : 0;
+            else if (t0 - least_from >= least_window) {
+                move = fabs(least) > 50e-6 ? least : 0;
                 least_from = 0;
+                least_window = 2000000;
             }
         }
-        if (move) {
+        if (fabs(move) < 0.1) {
+            g_rx.t0 += move; /* steering, not news: no log line */
+            if (move)
+                least_from = 0;
+        } else {
             /* a front end that loses samples (the DSP behind, the sim dropping chunks) re-anchors every few
              * seconds: a line a minute at most, so the log ring keeps the rest */
             static int64_t logged_at;
@@ -1424,6 +1439,43 @@ static void chunk(const uint8_t *raw, int n, int split, bool *first, int filler)
             least_from = 0;
         }
     }
+#if CONFIG_RDOF_SDR_LR2021
+    /* The FIFO's level edge, timed by the capture, is when a known sample reached the host, with no latency in it
+     * (R3.57): the stream's time follows that, at every mark by the median of the last three (the chip's clock is
+     * tens of ppm from nominal, so the stream drifts a few us between marks), and a chunk's arrival isn't asked. */
+    double mark_pos, mark_us;
+    static double marks[MARKS];
+    static int marks_n, marks_at;
+    static uint32_t steered;
+    if (was_first) {
+        marks_n = marks_at = 0;
+        steered = 0;
+    }
+    if (edge_time_rx_take(&mark_pos, &mark_us) && netclock_synced()) {
+        const int64_t whole = (int64_t)mark_us;
+        const double at = netclock_utc_ns(whole, NULL) / 1e9 + (mark_us - (double)whole) * 1e-6;
+        const double lag = at - (g_rx.t0 + (double)(stream_base + (int64_t)mark_pos) / RDOF_DEMOD_FS);
+        if (steered >= 20)
+            edge_time_rx_lag(lag);
+        if (fabs(lag) < 1.0) {
+            marks[marks_at] = lag;
+            marks_at = (marks_at + 1) % MARKS;
+            if (marks_n < MARKS)
+                marks_n++;
+        }
+        if (marks_n == MARKS) {
+            const double lo = fmin(marks[0], fmin(marks[1], marks[2])), hi = fmax(marks[0], fmax(marks[1], marks[2]));
+            const double med = marks[0] + marks[1] + marks[2] - lo - hi;
+            if (fabs(med) > 2e-6) {
+                g_rx.t0 += med;
+                for (int i = 0; i < MARKS; i++)
+                    marks[i] -= med;
+            }
+            steered++;
+            marks_until = t0 + 1500000;
+        }
+    }
+#endif
     slot_timing_rx(&g_rx);
     if (filler > 0)
         bench_wide_filler((uint64_t)g_rx.samples, filler);
@@ -1581,6 +1633,7 @@ static void dsp_task(void *arg)
         bool first = true;
         int64_t stream_samples = 0; /* UTC slot timing: the stream's sample count, stamped as it arrives */
         slot_timing_stream(g_scfg.sample_rate, g_rx.out_index);
+        stream_base = (int64_t)g_rx.out_index;
         wall_from_us = esp_timer_get_time();
         busy_us = 0;
         int64_t last_data = esp_timer_get_time();

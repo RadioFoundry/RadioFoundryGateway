@@ -1063,10 +1063,25 @@ static void status_edges(void)
     CHECK(netclock_status_json(&st, small, n + 1) == n && netclock_status_json(&st, small, n) == 0, "exact fit, one byte short");
 }
 
+// A LAN server on its own clock (stratum 10, root distance near 0, 200 ms off) must lose to a real one 30 ms away.
+static void high_stratum(void)
+{
+    CHECK(nc_root_distance_us(6000, 1) == 6000, "stratum 1: the distance as measured");
+    CHECK(nc_root_distance_us(100, 7) == 500, "stratum 7: the floor only");
+    CHECK(nc_root_distance_us(6000, 10) > 1000000, "stratum 10: past any real server");
+    nc_cand_t c[2] = {{true, 200000, nc_root_distance_us(6600, 10)}, {true, 3000, nc_root_distance_us(30000, 1)}};
+    char mark[2];
+    double off = 0;
+    CHECK(nc_select(c, 2, mark, &off) == 1, "the real server is the best");
+    CHECK(fabs(off - 3000) < 500, "and the time is close to its own (%g)", off);
+    CHECK(nc_select(c, 1, mark, &off) == 0 && off == 200000, "alone, it's still used");
+}
+
 int main(void)
 {
     model_steps();
     selection();
+    high_stratum();
     ntp();
     core();
     pps_edges();

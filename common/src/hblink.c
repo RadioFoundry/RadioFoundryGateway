@@ -135,6 +135,10 @@ char rdof_hb_kind(const uint8_t *d, size_t len)
         return 'T';
     if (!memcmp(d, "DMRD", 4))
         return 'D';
+    if (len >= 6 && !memcmp(d, "RPTACK", 6))
+        return 'A';
+    if (len >= 7 && !memcmp(d, "MSTPONG", 7))
+        return 'G';
     return 0;
 }
 

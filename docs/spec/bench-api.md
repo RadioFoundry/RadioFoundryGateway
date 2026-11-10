@@ -55,7 +55,8 @@ maps to UTC:
 `t_us = t0_us + (sc - sc0) * 1e6 / rate * (1 - ppm * 1e-6)` (the board learns `ppm` from its disciplined clock; it is
 null until then: use 0). A channel tap's samples have their own index. Each I/Q frame carries the `sc` of its first
 sample, rounded to a wideband sample, so a tool can line up a channel tap, a burst record and a TX time to one
-wideband sample (3.5 us at 288 kS/s). On the daemon, `sc` is the capture's sample index and `run` is the capture.
+wideband sample (3.5 us at 288 kS/s). `t0_us` is the time when the stream started; a board may steer its stream time after
+that by microseconds (a W12 follows its hardware time marks, R3.57 of the LR2021 notes), and a burst's `t` follows. On the daemon, `sc` is the capture's sample index and `run` is the capture.
 
 ## 3. Discovery
 
@@ -252,17 +253,13 @@ start, length and peak power, in `/status` and in the bench's log.
 
 On the board (`bench_tx.c`, the job in `common/src/benchtx.c`, host-tested in `host-tests/test_benchtx.c`):
 
-- `via=modem` is the board's SDR modem (sdrmodem), when its front end can transmit (not an RTL-SDR) and no roamer
-  has it. Under version 3, when the roamer has it (an SDR that transmits), the job goes through the router's
-  transmitter pool instead, as the parrot's answers do ([transmitters.md](fw/transmitters.md) §12): an MMDVM modem in
-  `common/src/benchroute.c` answers the job and hands each burst on as an app's stream on the site's path at the
-  job's frequency. A frequency with no talk path there (none of the site's `frequencies`) doesn't need one: the job
-  takes the raw SDR modem as `outbound` does (the roamer's parked, given back after), and its bursts go out as built. The transmitter sends at the job's power (`--power-dbm`, or the older `--power` 0-255),
-  under `bench.tx`'s `max_dbm` (or `rf_level`) at most: a modem's tune lowered to it on the modem's `tx` map (its
-  least under a cap without one), the SDR roamer held to it while the job runs. It sends the transceiver's own count of headers and terminators a call; a burst it can't take (the
-  transmitter busy with another stream) is NAKed, and the job stops. A line protocol job on this path ends once the transceiver has sent its
-  stream (it listens first, so the call goes out about a second after the job hands it on). `info.tx.router` is true
-  on this path. `via=radio:NAME` is a bench radio with `"proto": "mmdvm"`, through its link's guard (lowest power, TX
+- `via=modem` is the board's SDR modem (sdrmodem), when its front end can transmit (not an RTL-SDR). A bench job
+  comes first: when a roamer has the modem, the job takes it as `outbound` does (the roamer's modem parked, a call it
+  was sending cut, given back after), and its bursts go out as built. (It used to go through the router's
+  transmitter pool, whose transceiver could refuse the stream and framed the call itself; it doesn't now, and
+  `info.tx.router` is false.) The transmitter sends at the job's power (`--power-dbm`, or the older `--power`
+  0-255), under `bench.tx`'s `max_dbm` (or `rf_level`) at most: a modem's tune lowered to it on the modem's `tx` map
+  (its least under a cap without one). `via=radio:NAME` is a bench radio with `"proto": "mmdvm"`, through its link's guard (lowest power, TX
   data only on the frequency), and not while it's linked. `via=sdr` (I/Q, `fm`) is `unsupported`. Both paths drive
   an MMDVM modem in simplex: `SET_CONFIG`, `SET_FREQ` (RX = TX), `SET_MODE` DMR, one `DMR_DATA2` a burst, paced at
   60 ms a burst, three ahead of air time. A burst's control byte comes from its sync (voice sync, data sync with its
@@ -457,7 +454,7 @@ shares its parts: the sessions, the burst feed, the I/Q history and the transmit
 - Errors are `{"error": "text", "code": "..."}`, the request's last line, with the codes of section 1 plus the
   daemon's `deadlock`. A wait is reported as the daemon's: `{"state": "queued", "kind", "eta_s", "worst_s",
   "ahead", "blockers"}`, then `{"state": "granted", "kind", "waited_s"}`. `{"note": "text"}` is for the user.
-- At most 8 connections at a time; one more is answered with `busy` and closed.
+- At most 8 connections at a time on a board, 32 on rdofradio; one more is answered with `busy` and closed.
 
 ### 14.2 Ops
 
@@ -465,7 +462,7 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
 
 | op | request | replies |
 |---|---|---|
-| `info` | | `window` (`enabled`, `lo`, `hi`, `center` MHz, `fs`, `gain`, `dc_guard_khz`, `ppm`, `ppm_source`, `ppm_tol`, `ppm_ref`, `lo_ppm`, `fs_ppm` (section 14.7), `tx_lo`, `tx_hi` MHz: where the transmitter tunes now, each platform's own limit (a W12: 1 MHz either side of `center`, the LR2021's one synthesizer; rdofradio in full duplex: the modulator's reach around its TX LO); both 0: anywhere it can), `tune` (null, or `session`, `label`, `for` `"session"` or `"request"`, `state` `"tuning"` or `"tuned"`), `sdr` (`"shared"` when the receiver runs), `channels` (one per receiver channel and TX frequency: `freq`, `ch`, `in_window`, `listed`, `caps`, `claimed_by`, `keyed`), `tx_bands` (`[low, high]` MHz each: where else it may transmit, `bench.tx.bands_hz` or rdofradio's `--bench-tx LOW-HIGH`; a frequency in one is a transmit frequency as a listed one with `tx` is), `stations` (`modem`: the gateway's own SDR modem, `kind` `sdrmodem`, `tx`, `held_by`, `waiting`), `modem` (`held_by`, `waiting`, `next_job_eta`), `default_caps`, `device` (kind, name, version), `signal_modes` (section 14.6) |
+| `info` | | `window` (`enabled`, `lo`, `hi`, `center` MHz, `fs`, `gain`, `dc_guard_khz`, `ppm`, `ppm_source`, `ppm_tol`, `ppm_ref`, `lo_ppm`, `fs_ppm` (section 14.7), `tx_lo`, `tx_hi` MHz: where the transmitter tunes now, each platform's own limit (a W12: 1 MHz either side of `center`, the LR2021's one synthesizer; rdofradio in full duplex: the modulator's reach around its TX LO); both 0: anywhere it can), `tune` (null, or `session`, `label`, `for` `"session"` or `"request"`, `state` `"tuning"` or `"tuned"`), `sdr` (`"shared"` when the receiver runs), `channels` (one per receiver channel and TX frequency: `freq`, `ch`, `in_window`, `listed`, `caps`, `claimed_by`, `keyed`), `tx_bands` (`[low, high]` MHz each: where else it may transmit, `bench.tx.bands_hz` or rdofradio's `--bench-tx LOW-HIGH`; a frequency in one is a transmit frequency as a listed one with `tx` is), `stations` (`modem`: the gateway's own modem, `kind` `sdrmodem`, or `mmdvm` with the modem's description in `model` and `mmdvm_tx` in place of `sdr_tx` in the channels' caps; `tx`, `held_by`, `waiting`), `modem` (`held_by`, `waiting`, `next_job_eta`), `default_caps`, `device` (kind, name, version), `signal_modes` (section 14.6), `jobs` (`bench_tx`, `bench_repeater`, `outbound`, `mssim`, `signal_tx`: null when this bench can run it, else the reason it can't, section 14.9) |
 | `status` | | `sdr`, `receiver` (`seconds`, `overflows`, `clip_pct`, `dsp_skipped`, `decode_dropped`, `captures`), `held`, `waiting`, `sessions`, `tx` (section 7's) |
 | `session` | `label`, `expect_s`, `max_s` | `{"session": ID, "label"}`, then nothing until the connection closes (the session ends with it) or the session's `max_s` runs out (`{"ended": "max_s"}`) |
 | `claim` | `session`, `freqs`, `caps`, `wait_max` | queued / granted, `{"claimed": [MHz], "window"}` |
@@ -479,7 +476,30 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
 | `trigger` | `session`, `freq`, `bw`, `pre_s`, `post_s`, `threshold_db`, `min_ms`, `timeout_s`, `fmt`, `until_end`, `max_s`, `floor_db`, `floor_s` | `{"armed": {"floor_db", "rate"}}`, `{"iq": ...}` + samples (`sc` the channel sample's index), `{"done": meta}`, or `no_signal` |
 | `track` | `session`, `freq`, `mode` (`fm`, `4fsk`), `bw`, `interval_ms`, `line_ms`, `threshold_db`, `min_ms`, `timeout_s`, `max_s`, `post_s`, `drift_s`, `floor_db`, `floor_s` | `{"armed": {"floor_db", "rate"}}`, `{"track": line}` an interval, `{"done": summary}`, or `no_signal` (section 14.8) |
 | `activity`, `burstlog`, `bridge` | | `unsupported` |
+| `mssim` | `session`, `action` (`arm`, `disarm`, `status`), arm: `freq`, `cc`, `power`, `seconds` (300, at most 1800) and the profile's fields; `since` | `{"mssim": {"armed", "arming", "answered", "ended", "log": [entry], "next"}}` (arm: `{"mssim": {"armed": true, "freq", "cc", "note"}}`) |
 
+- `mssim` is a timed confirmed-data responder (rdofradio and a board with an SDR modem; `rdof/mssim.h`): it plays a radio that answers
+  confirmed data packets N slots after they end, for testing the far end's retries and turnaround. `arm` takes the
+  transmitter as a transmit job does (a transmit frequency with a receiver channel on it, the transceiver paused or a
+  duplex repeater stopped and its modem simplex; on an MMDVM modem its timing is the serial port's and a key-up's, learned from what's heard back) and holds it until `disarm`, `seconds` or the profile's `count`. The profile: `answers` (1-8
+  steps, packet k gets step k, the last one after, or k mod n with `"repeat": true`), each `answer` (`ack`, `nack`,
+  `sack`, `none`, `ack2`: an ACK and the same burst 60 ms later), `slots` (1-200: the answer's first burst starts
+  this many 30 ms slots after the end burst's start), `nack_type` (1), `sack_type` (0), `resend` (SACK: the block
+  numbers asked for again); one step may be given flat. `end`: `block` (the last block), `terminator` (the
+  terminator after it; where one was expected when none came) or `learn` (a terminator when the sender's previous
+  packet had one). `to`, `from`: answer packets between these IDs only. Answers are to individual confirmed packets
+  (DPF 3, A=1); the response header swaps the IDs and keeps the SAP and N(S); the sync is MS, or in TDMA direct mode
+  the other timeslot's when `slots` is odd; `sync` (`ms`, `bs`, `ts1`, `ts2`; `auto` the default) forces one (no
+  CACH with `bs`). A log `entry` per packet: `seq`, `src`, `dst`, `sap`, `ns`, `fsn`, `blocks`, `heard`, `dbsn`
+  (hex: serial numbers with good CRC-9s), `rate_dt`, `terminator`, `end`, `end_heard`, `step`, `family` (the
+  packet's sync), `sync` (the answer's), `answer`, `slots`, the positions `header48`, `end48`, `asked48`,
+  `placed48`, `air48` (48 kS/s receiver samples; -1 none), `sent`, `failed`, then `turnaround_us` (start to start)
+  and `gap_us` (from the end burst's 27.5 ms) when sent, and `air_turnaround_us`, `air_gap_us`, `air_late_us` where
+  the answer was heard back. `status` gives the entries after `since`, as many as fit; `next` is the `since` for the
+  next read. `rfgbench.py mssim arm|disarm|status|watch`.
+  An `arm` where no channel decodes DMR (or past the transmitter's reach) tunes the receiver there first, as `trigger`
+  does; that tune is held while the responder is armed (until `disarm` or its `seconds`, or its session's end), and
+  other requests outside it are `busy` meanwhile.
 - `tune` moves the receiver's window for the session, as `PUT /sdr` under an exclusive lease (section 5; the same
   code on a board): fields left out stay as they are, `"auto"` is the settings', `taps` (up to 4 on a board) are
   receiver channels at any frequency in the window (ids `T1`...) that decode like configured ones, `[]` drops them.
@@ -490,18 +510,34 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
   session's `tune` is `busy`, and so is its request for a frequency outside the window (`bursts`, `listen`,
   `capture`, `trigger`, `rx`); one inside the window runs. On a board an HTTP exclusive lease makes `tune` `busy`
   and the reverse. A tune or its end ends the streams cut from the window (`bursts` and `listen` with `done.reason`
-  `"retuned"`, `capture`, `trigger` and `rx` with `busy`). rdofradio can't retune its receiver: `unsupported`.
-- `trigger` and `rx` at a frequency outside the window, with a session, tune for themselves when nobody holds the
-  window and no other request is using it: `{"note": "tuning the receiver to F MHz for this request"}`, the center an
-  eighth of the rate under the frequency (clear of the DC) with a tap on it, then the op as usual; the settings come
-  back when the request ends. `"tune": false` refuses instead; with no session, or while another request uses the
-  window, it is `refused` or `busy` as before.
+  `"retuned"`, `capture`, `trigger` and `rx` with `busy`). A request that comes while a tune or its end is being
+  applied waits for it and then runs (or is `busy` if the tune it finds is another session's).
+- rdofradio's tune points channels at the taps (each on a channel the site's repeater or transceiver isn't using, from
+  the last one down; one of theirs when none is spare) and moves the RX LO only when the taps don't fit the window
+  as it is (within 0.4 of the rate of the center, 25 kHz clear of the DC): a Pluto's 19.872 MS/s window holds a whole
+  plan, so a job inside it costs the site one channel. The LO goes where asked when the taps fit there, else an
+  eighth of the rate under the first tap. While it's moved, the other channels hear nothing (their bursts dropped)
+  and `freqs` lists only the taps. A tap's bursts go to the bench, the modem and the responder, never to the network.
+  The I/Q history (or, with the FPGA channelizer, the channels' history) starts again where the LO moved. A `gain`
+  sets the SDR's receive gain (`--gain` is the settings'). The settings come back with the untune.
+- `trigger`, `rx`, `capture` and `bursts` at a frequency outside the window (for `bursts`, any frequency no
+  channel decodes DMR on), with or without a session, tune for themselves when nobody holds the window and no other
+  request is using it: `{"note": "tuning the receiver to F MHz for this request"}`, the center an eighth of the rate
+  under the frequency (clear of the DC) with a tap on it (a board's tap decodes DMR), then the op as usual; the
+  settings come back when the request ends. `"tune": false` refuses instead; while another request uses the window,
+  or another session holds the tune, it is `busy`.
+- So do transmit jobs (`run`'s bench_tx jobs, `outbound`, `tx`) on a frequency past the transmitter's reach around
+  the center (`tx_lo_hz`-`tx_hi_hz` in the window: a W12 transmits within 1 MHz of where it receives), and a `run`
+  job that hears (`listen`, `listen_after`) where no channel decodes DMR: the receiver tuned there for the job, back
+  after it. A frequency `bench.tx` doesn't list is still `refused`.
 - `claim` refuses a frequency the bench doesn't list (no receiver channel, not in `bench.tx`). Receiving needs no
   claim; the HIL tools claim anyway, and a claim keeps another session's job off the frequency.
 - `capture` sends the receiver's wideband samples, cs8 (int8 I, Q; full scale 127), at the front end's rate, with up
   to `pre_s` seconds from before the request (the I/Q history, section 9), at most half of what the history holds
   (the other half is room for the client to be behind; about 0.9 s on a board). The receiver isn't retuned: `gain` and
   `offset_khz` are noted in the metadata and otherwise ignored, and a frequency outside the window is `refused`.
+  `rfgbench.py capture --quiet` holds the modem in a session of its own for the capture, so no other session's job
+  transmits during it (a `hold`, section 14.4).
   `meta` is what `FILE.json` holds: `freq` and `center` (Hz), `fs`, `fmt` `"cs8"`, `gain`, `ppm`, `ppm_source`, `ppm_tol`, `ppm_ref`, `lo_ppm`, `fs_ppm` (what's left in the samples), `freq_tol_hz` (section 14.7), `t0` (UTC of
   sample 0), `seconds`, `overflows`, `gap_samples`, `clip_pct`, `pre_s`, `scale_db`. `gap_samples` counts the
   samples the capture doesn't have: those the history overwrote before they went (sent as nothing: the client
@@ -514,11 +550,13 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
 - `trigger` cuts the channel at `freq` from the wideband history: mixed to 0 Hz, low-pass filtered to `bw` (a
   Hamming-windowed sinc, 8 taps a decimated sample), decimated to about 48 kS/s (`fs / round(fs / 48000)`, the
   metadata's `rate`). It learns the floor as the median 1 ms block over the first `floor_s` (1 s; from the history
-  when it is warm, else live), unless `floor_db` is given, and says `armed`. It fires when `min_ms` blocks in a row
+  when it is warm, else live; blocks of exact zeros left out, as a channelizer's output quantizes a quiet band to
+  zero, and -100 dB when every block is), unless `floor_db` is given, and says `armed`. It fires when `min_ms` blocks in a row
   are `threshold_db` over the floor, then sends from `pre_s` before the rise (as far as the history goes) to
   `post_s` after it; with `until_end`, to `post_s` after the last block over half the threshold, at most `max_s`
   after the rise. Samples are cf32 or cs16, full scale 1.0 = cs8's 127. Nothing in `timeout_s` (60) is
-  `no_signal`. `meta` is the daemon's: `freq`, `center`, `fs` and `rate` (the channel's), `wide_fs`, `fmt`, `bw`,
+  `no_signal`; its message gives the floor, the loudest 1 ms block since it armed, and how many times it fell behind
+  the history (restarted at its oldest sample, the run so far lost). `meta` is the daemon's: `freq`, `center`, `fs` and `rate` (the channel's), `wide_fs`, `fmt`, `bw`,
   `t0`, `trigger_time`, `signal_start_sample`, `trigger_sc`, `level_db`, `floor_db`, `snr_db`, `threshold_db`,
   `seconds`, `samples`, `pre_s`, `ppm`, `ppm_source`, `ppm_tol`, `ppm_ref`, `lo_ppm`, `fs_ppm`, `freq_tol_hz`, `corr_hz` (where the channel was mixed from, past the nominal offset, for the crystal; section 14.7), `gap_samples` (output samples lost, and the wideband filler in what it sent, in
   output samples), `clip_pct`, `scale_db`. The engine filters on its own thread
@@ -533,12 +571,92 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
 - `bursts` and `listen` send the receiver channel's bursts at `freq` as `dmr-bursts` records (section 6.3's fields
   with the daemon's names: `t`, `dt_prev_ms`, `grid_err_ms`, `slot_ab`, `sync`, `kind`, `cc`, `cfo_hz` (the burst's carrier
   from its true frequency, the crystal taken out: section 14.7), `cfo_tol_hz`, `level_dbfs`, `dev_hz`, `pi`, `lcss`, `fec`, `lc`, `raw_hex`; no `sym_err` yet), the summary the daemon's (`bursts`, `kinds`,
-  `first_t`, `last_t`, `seconds`, `cfo_hz`, `level_dbfs`, `ended`). `bursts` includes idle bursts (a repeater's hang
+  `first_t`, `last_t`, `seconds`, `cfo_hz`, `level_dbfs`, `ended`). Beyond the daemon's: `sync_errors` (the sync
+  field's bit errors against the pattern it matched; an EMB burst's: its EMB's), and `cach`, the 24 bits heard
+  before a BS-sync burst as 6 hex digits in air order (the first bit the top bit), with its TACT decoded through
+  Hamming(7,4): `cach_at`, `cach_tc`, `cach_lcss`, `cach_tact_errors` (0 or 1: the code always decodes, so 1 may be
+  a worse error read as one); `"cach": null` on other bursts. The CACH is sliced with the burst's own levels, so a
+  key-up's first CACH may be the ramp. The summary adds `lost` (`overflows`, `dsp_skipped`, `decode_dropped`,
+  `queue_drops`: what the whole receiver lost while the stream ran, counts, not this channel's alone) and
+  `complete` (true: nothing lost and no record dropped, so a burst missing was not heard on the air). `info`'s
+  `features` names both (`bursts_cach`, `bursts_lost`). `bursts` includes idle bursts (a repeater's hang
   is all idle); `listen` leaves them out. The bench's own transmission is in them: the receiver hears it as any
   other signal. BS-sync bursts (a repeater's outbound) carry the slot from their CACH; `t` and `sc` are at the
   sync's center, the same point as an outbound job's records. Several streams can run at once, one a channel.
   With `seconds`, the client ends the stream itself 5 s past it if the gateway hasn't, and writes the summary, so
   `--out` is always complete.
+- `bursts` with `"envelope": true` also measures the channel's carrier envelope, as the bench analyzer does on a
+  capture, so a test needs no I/Q for a transmitter's keying. The channel is cut from the history as `trigger`'s is
+  (`env_bw`, 12500), its floor the median 1 ms block over the `floor_s` (1) before the request unless `floor_db` is
+  given (blocks of exact zeros left out: a channelizer quantizes quiet to zero, and the floor would sit under any
+  residual carrier). A measured floor follows a close carrier: it is at least 40 dB (30 + `on_db`) under the strongest 1 ms
+  level seen in the last second or coming in the next 15 ms, so the carrier keys 30 dB under its own level and a receiver's
+  quantization at low gain doesn't. A `floor_db` the tool gives is used as given. The 0.1 ms power envelope (a centered mean) is keyed at `on_db` (10) over the floor and unkeyed under
+  `off_db` (`on_db` - 3); an edge is interpolated between two outputs. A ramp runs from the envelope leaving the noise
+  (`on_db` - 4 over the floor) to 3 dB under the plateau (the median 1-3 ms in from the edge), and back at the
+  key-down; a step is the 1 ms envelope moving over `step_db` (3) in 1 ms, from 2 ms in to 2 ms before the key-down.
+  Segments under 0.5 ms are left out. Each keyed segment is a record once its bursts are in (up to 0.5 s after its
+  key-down): `{"segment": {"t", "up_ms", "down_ms", "t_down", "on_ms", "ramp_up_ms", "ramp_down_ms", "level_dbfs",
+  "end_dbfs", "peak_dbfs", "min_dbfs", "clip_pct", "power_steps", "steps", "bursts", "burst_sc", "burst_t",
+  "unexplained_ms", "up_sc", "open_start", "open_end", "gap"}}`. `t` and `t_down` are UTC at the edges, `up_ms` and
+  `down_ms` from the stream's start (the summary's `envelope.t0`), `level_dbfs` and `end_dbfs` the plateaus after
+  the key-up and before the key-down, `peak_dbfs` and `min_dbfs` the 1 ms envelope's extremes 2 ms in from either
+  edge, `clip_pct` the I/Q components at the ADC's rails over it, `steps` `[ms, dB]` (at most 8; `power_steps`
+  counts all). `bursts`, `burst_sc` and `burst_t` are the stream's bursts whose sync center is inside it (the same
+  `sc` and `t` as their records); `unexplained_ms` the keyed time no burst's 27.5 ms covers: a PA left up, a carrier
+  where per-burst keying is expected. A segment keyed when the stream began, or cut by lost samples, is
+  `open_start` (no ramp up), `open_end` (no key-down, `null` figures) or `gap`. A ramp is `null` where the carrier
+  didn't come up from the noise or go back to it (a repeater's hang). The summary adds `envelope`: `t0`, `bw`,
+  `rate`, `gain`, `floor_db`, `floor_used_db` (the highest floor it keyed against), `noise_dbfs` (the 1 ms envelope's 10th percentile, the analyzer's noise), `dbm_offset`
+  (dBFS to dBm, rough: the floor taken as thermal noise in `bw` with a 3 dB noise figure; `dbm_source` "noise"),
+  `clip_pct`, `segments`, `segments_dropped`, `power_steps`, `overlaps` (bursts starting under 27.5 ms after the one
+  before) and `overlap_ms` (at most 16), `unexplained_carrier` (`[up_ms, unexplained_ms]` of each segment with over
+  5 ms, at most 16) and `unexplained_ms`, `gap_samples`. `info`'s `features` says `bursts_envelope`. The cut costs
+  what a `trigger`'s does (about 20 multiplies a wideband sample); `listen` takes no envelope.
+- `capture` with `"raw": true` sends the ADC's own samples, cs16 (int16 I, Q; 12 bits, LSB aligned, full scale 2048), at the front
+  end's rate, nothing filtered: `rfgbench.py capture --raw`. `seconds` long, from when it starts: no pre-roll, and no history
+  behind it. `rate` (520834-61440000 S/s, `--rate`) gives it a rate of its own: the chip changes for it and back after (the
+  receiver is deaf through it anyway), and nothing transmits meanwhile, since the transmitter shares the rate. After it the
+  transmitter goes on where its stream would have been without the pause (a transmission under way has a gap the capture's
+  length), the receiver makes up what its silence came short of, and both calibrate again; the transmit path still moves
+  0.4-3 ms per capture, which the calibration takes up. `gain` (dB) is the RX gain for the capture, the receiver's own
+  again after (`--gain`; without it, the receiver's). The front end
+  is tuned 10 % of the rate above `freq` when `freq` isn't within 35 % of the rate of where it is, so any frequency the chip
+  tunes works; `ready`'s and `meta`'s `center` say where. `info`'s `features` says `capture_raw`; a receiver without it answers `unsupported` (today a PlutoSDR running
+  `--fpga-chz` has it). Its DMA blocks (up to 32 MB each) are all queued before the first sample, so the DMA fills them back to
+  back and its samples are in a row; if the ADC core's DMA overflow flag says otherwise, it fails (`unavailable`) rather than
+  hand over a gap. They're copied to memory before the first goes out, so its length is what the DMA memory holds: about 2.5
+  s at 19.872 MS/s on a PlutoSDR with 256 MB of CMA (`unavailable` otherwise, saying why). The receiver is deaf for about
+  0.8 s more than the capture (the blocks are set up and copied), and the log says how long in one line. One at a time; a
+  second waits its turn. **While it's made the receiver hears nothing**: the channelizer is off, and each bursts stream gets
+  filler and counts the samples lost (`complete: false`). The loop goes on turning on that silence, so the transmitter and every
+  count keep real time: a transmission keeps going, and a capture can catch its own board's. No reboot, and the bitstream stays.
+  `meta` is as `capture`'s, with `fmt` `"cs16"`, `raw` `true`, `bits` 12, `full_scale` 2048, `clip_pct` (the rails, I and Q),
+  `scale_db` -24.08 (a level from cs16 scaled by 32768, less this, is the ADC's dBFS). `t0` comes from when the DMA block ended.
+- `bursts` with `"ramp": true` (it implies `envelope`) also measures each burst's PA ramp on the gateway, with no I/Q streamed.
+  The figures are those of 14.8.2, against the burst's own settled level and payload; the burst's decoded symbols place it, so
+  voice B-F are placed as well as a burst with a sync. Each is a record once what follows the burst is in (about 24 ms after its
+  sync): `{"ramp": {"t", "sc", "slot", "kind", "first", "align_ms", "settled_db", "ripple_db", "rise_ms", "rise_30_3_ms",
+  "overshoot_db", "overshoot_t_ms", "settle_1db_ms", "settle_0p5db_ms", "sym1_db", "err5_mean_db", "err5_abs_db", "err12_mean_db",
+  "err12_abs_db", "fall_ms", "fall_3_30_ms", "pre_db", "empty_slot_db", "f_first1ms_hz", "f_first1ms_unreliable", "f_next2ms_hz",
+  "f_next2ms_unreliable", "dev3_hz", "clipped"}}`. `sc` and `t` are the burst's sync center, as in its burst record. `align_ms` is
+  how far the symbols moved it from there. `first`: over 90 ms after the burst before. `clipped` counts inputs at the rails over
+  the payload, `null` on a channel from the FPGA, where nothing counts them. The summary's `envelope` gets `"ramp": {"measured",
+  "lost", "dropped", "edge_res_us"}`; `lost` bursts' samples had gone, `dropped` ones went unmeasured because too many were
+  waiting. `edge_res_us` is what the channel's bandwidth allows: set `env_bw` wider to see a faster edge. `info`'s `features` says
+  `bursts_ramp`. It keeps the channel's last 0.68 s of outputs (256 KB, PSRAM on a board).
+- `bursts` with `"raw": true` does the same from a raw capture of its own (as `capture`'s, above) instead of the receiver's
+  channel: `rfgbench.py dmr-bursts --raw [--ramp] [--rate R]`. Anywhere the front end tunes, at `rate` (a multiple of 48000 in
+  528000-61440000 S/s, default 2400000), `seconds` long (default 5). Once the samples are in, the gateway mixes the channel to
+  0 Hz, filters it to `env_bw` and takes it to 48 kS/s (as the envelope's cut), runs its own DMR decoder on that, and sends the
+  bursts, the envelope's segments and, with `ramp`, the ramps, as a live stream's: only the results go, no I/Q. `ready` adds
+  `raw`, `fs` and `center` (MHz); `{"captured": {"t0", "samples", "fs", "center", "clip_pct", "bits"}}` comes when the samples
+  are in (`clip_pct`: the ADC's own rails, I and Q), then the records, then `done` (`reason` `"time"`; `complete` is about the
+  decoding alone: the receiver's own losses during the capture aren't its). The burst's `sc` counts the capture's samples from
+  0, `t` from its `t0`; the floor is learned over the capture's first `floor_s` (give `floor_db` when it starts keyed).
+  `cfo_hz` is from the channel's center, the crystal taken out as the receiver's. The receiver is deaf for the capture, as a
+  raw `capture` makes it; the processing after runs beside it (a quarter million samples a tick). `info`'s `features` says
+  `bursts_raw`.
 
 ### 14.3 Jobs
 
@@ -562,8 +680,8 @@ by their long names with `_` for `-`:
   `start` (`freq`, `cc`, `slots`, `first_slot`, `rate`, `period_samples`, `period_ms`, `sync_off`, `sc0`, `t0`,
   `ppm`), then one per burst with `slot`, `sc` and `t` at the sync's center (the TX sample clock: the slot's start
   plus `sync_off`, 775 at 48 kS/s), then `summary` (`slots`, `ts1`, `ts2`, `skips`, `seconds`). It doesn't go
-  through the router: on a roamer it takes the raw SDR modem (the roamer pauses; it waits while the roamer is
-  transmitting) and gives it back after. On the W12 a key-up this long is one streamed transmission in 1.35 s
+  through the router: on a roamer it takes the raw SDR modem (the roamer pauses, a call it was sending cut) and gives
+  it back after. On the W12 a key-up this long is one streamed transmission in 1.35 s
   runs; their seams are in lr2021-iq.md R3.49.
 - An `outbound` with `voice` also carries voice calls in its slots, as a repeater's downlink does: a list of up to
   8 calls, each `{"slot": 1|2, "src", "dst", "group" (true), "start_s" (0), "superframes" (3), "headers" (3),
@@ -575,8 +693,7 @@ by their long names with `_` for `-`:
   first slot still to be queued. Each slot's calls can't overlap, and every call must end before `seconds`; the
   slots of the other number keep their own calls and idle bursts, so one slot can be mid-call while the other's
   call starts, or goes on after it ends. Refused before anything keys, with the option named: a bad field, an
-  overlap, a call past `seconds`, `late` with headers, and a bench whose platform can't push voice (`unsupported`;
-  rdofradio today).
+  overlap, a call past `seconds`, `late` with headers, and a bench whose platform can't push voice (`unsupported`).
   The bursts go to the duplex modem as its host's `DMR_DATA1` / `DMR_DATA2`, in the slot queue of their number
   (prebuffer one). Slot k's burst goes when the slot clock's next slot to queue is k - 1, or earlier behind the
   call's burst for k - 2, so it lands in k; one whose slot is already queued (the engine was late) is dropped
@@ -586,12 +703,11 @@ by their long names with `_` for `-`:
   `dst`, `burst` (from 0)) in place of `IDLE`; a `call` record follows each call's last slot (`index`, `slot`,
   `src`, `dst`, `group`, `first_n`, `last_n`, `bursts`, `late`, `late_entry`); `summary` adds `voice` (`calls`,
   `ts1`, `ts2`: voice bursts sent; `late`). The log has a line a call (its slot, from, to, bursts, first slot).
-- `family` on `voice`, `csbk` and `data` (`ms`, `bs`, `ts1`, `ts2`), a voice job's `headers`, `terminators` or
-  `late`, and a job on a frequency with no talk path: such a job doesn't go through the router's transmitter pool, which frames a call itself (its own
-  headers and terminators, MS sync). It takes the raw SDR modem as `outbound` does (a roamer's parked, given back
-  after), so its bursts go out as built. `outbound` is BS only.
-- `bench_repeater` runs a duplex repeater with no network on the job's `rx` (a receiver channel that decodes DMR)
-  and `tx` (a TX frequency) for `seconds`: `slots`, `hang` (T_MSInactiv), `call_hang`, and idle beacons every
+- `family` on `voice`, `csbk` and `data` (`ms`, `bs`, `ts1`, `ts2`), a voice job's `headers`, `terminators` and
+  `late` go out as asked: every job takes the raw SDR modem (a roamer's parked, given back after). `outbound` is BS
+  only.
+- `bench_repeater` runs a duplex repeater with no network on the job's `rx` (a receiver channel that decodes DMR;
+  where none does, the receiver tunes there for the job, as for any job that hears; on rdofradio that channel decodes the job's `cc` while it runs) and `tx` (a TX frequency) for `seconds`: `slots`, `hang` (T_MSInactiv), `call_hang`, and idle beacons every
   `beacon` seconds from `beacon_phase` on (a local BS_Dwn_Act into its receive path, the hang `beacon_len`; skipped
   while keyed). Its records are the tool's: `wakeup` (a BS_Dwn_Act heard: `src`, `slot`, `while_down`), `rx` (each
   burst heard: `slot`, `control`, `rssi`, `dt`, and the CSBK opcode, LC or voice frame), `lost`, `key`, `beacon`,
@@ -614,15 +730,27 @@ straight on. A claimed frequency is the claiming session's: another session's `r
 wait with `timeout`; a session that would wait on itself is `deadlock`. The modem's queue estimates come from each
 job's `expect_s` (else its length as the gateway works it out).
 
-On rdofradio, a TX job borrows the SDR modem from the roaming transceiver for its length: it pauses (the network's
-calls wait; a call on the air ends first, up to 10 s), the job drives the modem in DMO, and the modem is set up again
-for the transceiver after the job. A `bench_repeater` job does the same with a repeater in the transceiver's place:
+While a request of a session waits on another session (or a request with no session), the session's running
+`capture`, `bursts`, `listen` and `rx` grow by that time, and an armed `trigger` or `track` gets that much more
+`timeout_s`: a test that starts a capture and then transmits still captures its transmission when its job queued.
+A trigger that already fired keeps its length. `granted` carries `extended`, how many streams grew; waiting on the
+session's own job extends nothing.
+
+On rdofradio, a TX job borrows the SDR modem from the roaming transceiver for its length: a bench job comes first,
+so the transceiver pauses at once (the network's calls wait; a call on the air is cut, what it queued dropped), the
+job drives the modem in DMO, and the modem is set up again for the transceiver after the job. Only on the transceiver of `--mmdvm` (a
+modem whose queue isn't the program's) does a call on the air end first, up to 10 s. A `bench_repeater` job does the same with a repeater in the transceiver's place:
 the modem goes duplex, and the job's first key-up, heard back in the receiver's band, sets the inbound slot timing
 (the transmit path's delay; the transceiver's own is restored after). An instance started as a duplex repeater
-(`--duplex full`) keeps its transmitter (`unsupported`). A `bench_tx` `outbound` takes the modem the same way, as a
+(`--duplex full`, or a config's duplex repeater) gives the job its transmitter the same way: the repeater stops (its
+transmission cut), the modem goes simplex on the repeater's RX channel, the TX LO moves if the job's frequency needs
+it, and after the job the LO goes back and the repeater starts again. On `--mmdvm` the repeater stops too and starts again after the job. A `bench_tx` `outbound` takes the modem the same way, as a
 repeater's TX half keyed with no traffic; after it the modem is unkeyed, its role dropped, and set up again for the
 transceiver. Its records' times are the modem's slot clock on the receiver's timeline plus the transmit path's
-delay. On `--mmdvm` (the MMDVM modem transmits) there is no `outbound`. The frequencies are `--bench-tx`'s; the job transmits at
+delay. On `--mmdvm` a duplex modem runs it, with `DMR_START` and `DMR_DATA1` / `DMR_DATA2`: the modem makes the CACH and its own
+idle downlink, and the records' slot times come from a burst of it the SDR hears (or from the time it keyed, until
+one is heard). A simplex hotspot has one transceiver and no CACH: an `outbound` or a `bench_repeater` there is
+`unsupported`, naming that. The frequencies are `--bench-tx`'s; the job transmits at
 `--tx-power`, and the log says the job's power isn't applied. The ESP32 boards run no repeater jobs (`unsupported`).
 
 ### 14.5 The client
@@ -653,8 +781,9 @@ after the op's own are the mode's.
 | `rx` | `session`, `mode`, `freq`, `seconds`, `bw`, `squelch_dbfs`, `squelch_over_db`, the mode's fields | `{"rx": header}`, `{"rec": record}`, `{"pcm": {"stream", "seq", "n"}, "bytes": 2n}` + int16 LE, `{"gap": ...}`, `{"done": {"mode", "freq", "seconds", "samples", "gap_samples", "summary"}}` |
 
 - `tx` is a transmit job: it waits for the modem as `run` does (`expect_s` its length plus 3 s), on a frequency of
-  `bench.tx`, at `power_dbm` (or `power`) capped by its `max_dbm` or `rf_level`, for at most `max_key_s`. While the gateway's own roamer is
-  transmitting it notes `waiting to transmit` and tries again each tick, for up to 10 s (then `busy`). The source renders on the transmitting
+  `bench.tx`, at `power_dbm` (or `power`) capped by its `max_dbm` or `rf_level`, for at most `max_key_s`. On a W12, while the gateway's own roamer is
+  transmitting it notes `waiting to transmit` and tries again each tick, for up to 10 s (then `busy`); rdofradio cuts
+  its transceiver's or repeater's transmission instead (above). The source renders on the transmitting
   thread, so nothing on the network can make it stutter, except PCM that comes too slowly (counted in `underruns`).
   `done` comes once the last sample has gone out, or at `max_s` (`cut` true). `seconds` is the length the mode
   works out (FM: lead, program, repeats, the subaudio's end, tail).
@@ -663,7 +792,7 @@ after the op's own are the mode's.
   `input_bytes` in the header is what the job expects; `done` gives what came.
 - `rx` cuts the channel from the wideband history as `trigger` does (`bw` 16000 by default, 1000 to 0.9 of the
   rate; about 48 kS/s) and feeds the mode's receiver. Without `squelch_dbfs` it first learns the floor (the median
-  1 ms block over 0.3 s of history) and sets the squelch `squelch_over_db` (10) over it. The header gives `rate`,
+  1 ms block over 0.3 s of history, exact zeros left out as a trigger's) and sets the squelch `squelch_over_db` (10) over it. The header gives `rate`,
   `bw`, `t0` and `sc0` (the first channel sample's UTC and wideband index), `seconds`, `floor_dbfs`,
   `squelch_dbfs`, `scale_db` and the streams asked for (`name`, `unit`, `rate`, `full`: the value at int16 full
   scale). A gap is `{"gap": {"sc", "samples"}}` (channel samples the history overwrote before they went: the
@@ -704,6 +833,35 @@ summary). A record is `{"block": {"t", "carrier", "power_dbfs", "env_min", "env_
 "words", "dev_hz", "turnoff"}` or `{"kind": "none"}`. The CTCSS tone is the standard tone most quarter-second windows
 were nearest; `hz` and `dev_hz` are those windows' mean only, so a turn-off tone after it (55 Hz on some radios) or a
 window across the change doesn't pull them.
+
+With `"dtmf": true` FM `rx` decodes DTMF digits in the filtered audio, as the bench analyzer does: 40 ms Hann
+windows every 5 ms, the eight Q.23 tones by Goertzel; a window holds a digit when its row and column tones stand 10
+dB over the other six and hold 60 % of its power, and a run of 30 ms or more is a digit. Each digit is a record as
+it ends, `{"dtmf": {"digit", "t0", "t1", "s", "dev_hz", "twist_db"}}`: its span in s from the stream's start (the
+blocks' `t`), its peak deviation and its twist (the column tone over the row's, dB, on the carrier: with no
+`deemph_us`), each the median over the run. The summary adds `dtmf`: `{"digits": "159#", "runs": [...]}` (64 digits
+at most). About 1 M multiplies a second at the audio's rate.
+
+With `"tones": true` FM `rx` times steady tones (tone bursts, roger beeps, CW) in the filtered audio, 300-3000 Hz: 20 ms
+Hann windows every 5 ms at 8-16 kS/s, a window holding a tone when one peak has half the band's energy. Windows of one
+pitch (within 40 Hz) are a piece, its edges where the peak's power crosses a quarter of the piece's median. Pieces of one
+pitch less than 50 ms apart are one run; a piece of another pitch ends it if it lasts 15 ms or more. A run of 40 ms or
+more is a record as it ends, `{"tone_run": {"hz", "t0", "t1", "s", "dev_hz"}}`: its pitch, its span in s from the stream's
+start (the blocks' `t`, as a digit's) and its peak deviation. The summary adds `tones`: `{"count": N, "runs": [...]}`
+(about 60 runs at most; `count` is all of them). Speech can make runs too. Float only.
+
+With `"aprs": true` FM `rx` decodes Bell 202 AFSK (1200 baud, mark 1200 Hz, space 2200 Hz) and AX.25 frames in the
+filtered audio, as the bench analyzer does: each tone mixed to 0 Hz and averaged over a bit, the decision mark less g
+times space for seven weights g (for twist), each with its bit clock, NRZI, HDLC flags and unstuffing, the X.25 FCS;
+a frame two weights decode counts once. Each frame with a good FCS is a record, `{"aprs": {"tnc2", "src", "dst",
+"digis", "control", "pid", "info", "fcs_ok", "t0", "t1", "txdelay_flags", "txdelay_ms", "decision_gain",
+"peak_dev_hz", "max_dev_hz", "rms_dev_hz", "mark_dev_hz", "space_dev_hz", "twist_db", "mark_hz", "space_hz"}}`:
+`t0`, `t1` its first and last bit (s, as the blocks' `t`), the flags back to back before it, the deviation over the
+flags and the frame (peak the 99.9th percentile of the audio), each tone's level (the median at the centers of bits
+inside a run of one tone) and frequency (its phase's drift along those runs), the twist mark over space (dB, on the
+carrier: with no `deemph_us`). The summary adds `aprs`: `{"frames", "fcs_bad"}` (`fcs_bad`: frames between flags,
+whole octets, whose FCS failed, counted by the weight-1 decoder only). About 300 KB of buffers (4 s of audio and
+each decoder's bits).
 
 AM is double sideband with a full carrier (airband voice; ACARS's MSK is an `fsk` segment, `baud` 2400, `hz` [1200,
 2400]). The source renders complex baseband, so a front end that sends frequency must also take polar I/Q
@@ -842,3 +1000,91 @@ changed mid-keying: a hold that lapsed), `gaps` (samples lost). The track runs e
 
 `rfgbench.py track --freq MHz [--mode 4fsk]` writes the lines (and `{"summary": ...}`) as JSON to `--out` or
 stdout, and the summary's figures to stderr, with a warning line for each of `warnings`.
+
+### 14.8.1 What a transmit job measures
+
+A `bench_tx` job's `{"tx_event": frame}` lines say what really happened, one frame format on every front end (the
+`/tx` socket gets the same frames). `sent N bursts` in a job's log, `unkeyed`'s `seconds` and `done`'s `bursts` are the
+job's own model: bursts handed to the modem, not bursts on the air (`unkeyed` says `"estimated": true`).
+
+| Frame | Fields | Meaning |
+|---|---|---|
+| `modem` | `t`, `tx`, `space`, `model_left` | the modem's own TX bit changed (GET_STATUS, every 100 ms); its buffer space; the bursts the model says are still to go |
+| `modem_flag` | `flag`: `quiet` (`outstanding`), `late` (`late_s`), `held` (`space`, `idle_space`) | the modem stopped transmitting with bursts due; still transmitting 0.5 s past the model's end; stopped with its buffer not empty |
+| `tx_check` | `handed`, `timing`, `modem_tx_s`, `quiet`, `late`, `held`; with `timing` `heard`: `compared`, `heard`, `never`, `first_s`, `latest_s`; with `estimate`: `why` | a keying's account, once the modem has said it's done (1.5 s at most) |
+
+`timing` is `heard` when a separate receiver decodes the job's frequency: an MMDVM modem with an SDR channel there
+(a `tune` with a tap makes one). Each burst handed over is then matched against the bursts heard, up to 24 bit errors
+apart. `first_s` and `latest_s` are seconds from the burst's modeled air time to the receiver's report, so `first_s`
+is the path's own delay and a stall shows as a much larger `latest_s`; `never` counts bursts with no match.
+`timing` is `estimate` otherwise, with `why`. On a W12 or a Pluto the SDR is the transmitter, and its receiver isn't a
+separate witness: a W12 can't hear while it transmits and a Pluto's own leakage doesn't show what reached the air, so
+those figures stay estimates, and `modem`'s `tx` is the SDR modem's own state.
+
+### 14.8.2 A transmitter's PA ramps, from a capture
+
+`tools/bench/burstramp.py FILE... [--bursts] [--json OUT]` measures each burst's power ramp in a `capture` or `capture-trigger`
+file (with its `.json`). It needs numpy and runs where the file is. A `bursts` stream with `"ramp": true` (14.2) measures the same
+figures on the gateway, burst by burst, with no I/Q streamed: edges agree with this tool to about 0.01 ms and levels to a few
+hundredths of a dB on the same capture, `dev3_hz` (a least-squares fit there) to a few percent. A rise time alone misses a burst
+that starts 8 dB over its settled level; these figures catch it.
+
+Every figure is against the burst's own settled level (0 dB) and payload. t = 0 is the leading edge of the first symbol, and for
+the falling edge the trailing edge of the last. Negative is before. Symbols come from the sync; voice B-F, with no sync, from the
+30 ms grid of the nearest burst that has one. Rising and falling figures are given only where the burst opens or closes a
+key-up, and only for levels at least 6 dB over the floor; otherwise `null`.
+
+| Field | |
+|---|---|
+| `t_s`, `t`, `kind`, `sync`, `corr`, `anchored`, `first` | the payload's start (from the capture's start, UTC); `VOICE_A`, `VOICE_B_F` or the data type; the sync, or `GRID`; `first`: no burst in the 90 ms before |
+| `settled_db`, `ripple_db` | the median level from 4 ms in to 4 ms before the end; the 0.1 ms envelope's spread there |
+| `rise_ms["-40"…"-1"]`, `rise_30_3_ms` | the last upward crossing of each level before the 0.1 ms envelope holds there for 1 ms (a sag counts, a dip later doesn't), searched 14 ms before to 10 ms after t = 0 |
+| `overshoot_db`, `overshoot_t_ms` | the 0.1 ms envelope's peak in the 4 ms from the -3 dB point, and when |
+| `settle_1db_ms`, `settle_0p5db_ms` | when the envelope comes within the band and stays for 2 ms; `null` where `ripple_db` is over 0.4 or 0.2, as the band is then no bigger than the signal's own ripple |
+| `sym1_db`, `err5_*_db`, `err12_*_db` | the level at the first symbol's center (half a symbol's mean, no lower than the floor); the mean and absolute mean error over the first 5 (1 ms) and 12 symbols |
+| `fall_ms["-3","-10","-30"]`, `fall_3_30_ms` | the first downward crossings after t = 0 of the falling edge |
+| `pre_db`, `empty_slot_db` | dB over the quiet floor in 0.5 ms bins: the 5 ms before t = 0, and 5 ms around the middle of the slot before (`null` if a burst is there) |
+| `f_first1ms_hz`, `f_next2ms_hz`, `*_unreliable` | the mean residual frequency from the sync's, over the first 5 symbols with carrier (over -30 dB) and the next 10; unreliable when a symbol there is more than 20 dB down |
+
+`--json` writes a line a burst and a last `{"summary": ...}`: the rate, `edge_res_us`, floor, SNR, the capture's own `clip_pct`,
+`overflows` and `gap_samples`, and in `by_kind`, per kind, each figure's `median`, `min`, `max` and `n` (`first:KIND` for a
+transmission's first burst, which has no burst before it).
+
+`edge_res_us` is what the capture can claim on an edge: the larger of a sample and 0.7 / (one-sided bandwidth), about 112 us for
+a 12.5 kHz channel at 48 kS/s. A rise under that is a limit, not a measurement. A wideband capture (over 150 kS/s) is cut to
+120 kHz here, so it can claim about 12 us, if it doesn't clip: clipping makes the overshoot read low, and the text output warns.
+
+### 14.9 What each front end does
+
+`info` says what this bench can do: `stations[0].kind` is the transmitter, `signal_modes` the signal modes, `jobs`
+each job's reason when it can't run. A client skips on those; a refused job's error gives the same reason, with the code `unsupported`.
+
+| | W12 (LR2021) | PlutoSDR (AD9361) | MMDVM modem + RTL-SDR |
+|---|---|---|---|
+| `info`, `status`, sessions, `claim`, `hold` | yes | yes | yes |
+| `bursts`, `listen` (with the envelope option) | yes, on the LR2021 stream | yes | yes, on the SDR |
+| `capture`, `trigger`, `track`: cs8 wideband | yes, the LR2021's rate | yes | yes, cs8 is the RTL's own 8 bits |
+| `capture`, `trigger`: channel taps, cs16 | yes | yes | yes |
+| `rx`: FM, AM | yes | yes | yes, on the SDR |
+| `tune`: center, taps | yes | yes | yes |
+| `tune`: gain | yes | yes | yes |
+| `run` `bench_tx`: `voice`, `csbk`, `data` | yes | yes | yes, the modem in simplex |
+| `run` `bench_tx`: `outbound` | yes, the slot clock its own | yes, its own | duplex modem only: the modem's idle downlink and CACH; its slot times from a burst the SDR hears |
+| `run` `bench_repeater` | no (`unsupported`) | yes | duplex modem only: the modem's own receiver hears the input |
+| `mssim` (confirmed-data responder) | yes | yes | yes: timing the serial port's and a key-up's, learned from what's heard back |
+| `tx`: FM, AM (signal modes) | yes | yes | no: the MMDVM serial protocol carries DMR bursts only, and an RTL-SDR doesn't transmit |
+
+What the third column can't do, and why:
+
+- `tx` in FM or AM: `info.signal_modes.tx` is empty and `jobs.signal_tx` says why. The modem takes DMR bursts over its
+  serial port: there's no way to give it audio or I/Q. The SDR beside it only receives.
+- `outbound` and `bench_repeater` on a simplex hotspot (one transceiver): `jobs` names them. A repeater or an
+  outbound needs the modem to send a CACH and hear another frequency while it transmits. A duplex board (two
+  transceivers) runs them.
+
+A running duplex modem and the SDR are independent. Both of the modem's frequencies are channels on the SDR
+(`modem-rx`, `modem-tx`) when one window holds them, about 2 MHz apart on an RTL-SDR, so `bursts`, `capture` (cs8
+wideband or a channel's cs16), `trigger` and `rx` work on either side while the modem runs. A wider split can't be
+in one window: the SDR keeps the modem's RX, and a request for the TX side tunes the receiver for itself.
+
+The third column needs only the modem and an RTL-SDR on a Linux box; [the reference](../reference.md) has the setup.

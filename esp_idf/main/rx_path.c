@@ -108,10 +108,19 @@ static uint32_t heard_hz(roam_t *r)
     return f > 0 ? (uint32_t)f : r->cfg->mode == RDOF_CFG_REPEATER ? r->cfg->rx_freq : r->cfg->idle.freq;
 }
 
-/* version 3: a stream goes up when its path's policy sends it to HBlink */
+/* version 3: a stream goes up when its path's policy sends it to HBlink. An SDR's roamer leaves it to the receiver,
+   unless the receiver has no peer there: one login per frequency (BrandMeister, per_path) is the roamer's own */
 static bool hb_admit(void *ctx, int slot, uint32_t src, uint32_t dst, bool group)
 {
-    return !quiet(ctx) && site_rf(heard_hz(ctx), slot, src, dst, group);
+    const uint32_t hz = heard_hz(ctx);
+#if CONFIG_RDOF_SDR
+    if (quiet(ctx) && sdr_hb_sends(hz))
+        return false;
+#else
+    if (quiet(ctx))
+        return false;
+#endif
+    return site_rf(hz, slot, src, dst, group);
 }
 
 static void hb_before(void *ctx)

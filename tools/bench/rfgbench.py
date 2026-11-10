@@ -16,12 +16,12 @@ the daemon's client only changes the command it runs.
     rfgbench.py ... hold --session ID [--expect S] [--max S] [--wait-max S]
     rfgbench.py ... run [--session ID] [--modem] [--expect S] [--kind K] -- [python] bench_tx.py ARGS...
     rfgbench.py ... capture [--session ID] --freq MHz --seconds S --out FILE [--pre S] [--gain dB] [--offset-khz K]
-    rfgbench.py ... dmr-bursts --freq MHz [--seconds S] [--bursts N] [--until-end] [--cc CC] [--out FILE]
+    rfgbench.py ... dmr-bursts --freq MHz [--seconds S] [--bursts N] [--until-end] [--cc CC] [--envelope] [--out FILE]
     rfgbench.py ... listen --freq MHz [--seconds S]
     rfgbench.py ... capture-trigger --freq MHz --out FILE [--bw Hz] [--pre S] [--post S] [--timeout S] ...
     rfgbench.py ... track --freq MHz [--mode fm|4fsk] [--interval-ms MS] [--timeout S] [--max-s S] [--out FILE]
     rfgbench.py ... tx fm --freq MHz [SEGMENT...] [--pcm FILE] [--ctcss HZ | --dcs 023N] [--dev HZ] [--sub-dev HZ] ...
-    rfgbench.py ... rx fm --freq MHz --seconds S [--audio FILE.wav] [--disc FILE.wav] [--records FILE] [--bw HZ] ...
+    rfgbench.py ... rx fm --freq MHz --seconds S [--audio FILE.wav] [--disc FILE.wav] [--records FILE] [--dtmf] [--tones] [--aprs] ...
     rfgbench.py ... tx am --freq MHz [SEGMENT...] [--pcm FILE] [--depth 0-1] [--offset HZ] ...
     rfgbench.py ... rx am --freq MHz --seconds S [--audio FILE.wav] [--env FILE.wav] [--records FILE] [--bw HZ] ...
 
@@ -260,17 +260,9 @@ def check_reach(a, mhz: float, tx: bool) -> None:
         return
     what = (f"the transmitter's reach ({lo:.4f}-{hi:.4f} MHz, tied to the receiver's {center:.4f} MHz center)" if tx
             else f"the receiver's window ({lo:.4f}-{hi:.4f} MHz)")
-    then = ("the gateway will refuse it" if tx or not a.session
-            else "the gateway tunes there for this request only if nothing else is using the receiver")
-    print(f"{NOTE} warning: {mhz:.4f} MHz is outside {what}: {then}. Move the receiver there first:",
-          file=sys.stderr, flush=True)
-    prog = "rfgbench.py" + (f" --bench {a.bench}" if a.bench else "")
-    tune = f"{prog} tune --session {a.session or 'ID'} --center {mhz - fs / 8e6:.4f} --taps {mhz:.4f}"
-    if a.session:
-        print(f"  {tune}", file=sys.stderr, flush=True)
-    else:
-        print(f"  {prog} session --label LABEL      # prints {{\"session\": ID}}; keep it open\n  {tune}\n"
-              f"  then this command again with --session ID", file=sys.stderr, flush=True)
+    # the gateway tunes for the request itself (bench-api.md, tune); refused only while another request has the tune
+    print(f"{NOTE} note: {mhz:.4f} MHz is outside {what}: the gateway tunes there for this request, unless another "
+          f"request holds the receiver's tune", file=sys.stderr, flush=True)
 
 
 # ── commands ──
@@ -627,15 +619,44 @@ def cmd_listen(a) -> int:
     return stream(a.where, {"op": "listen", "freq": a.freq, "seconds": a.seconds, "session": a.session}, on)
 
 
+def ramp_table(ramps: list, totals: dict) -> str:
+    """Median of each --ramp figure, per burst kind, a transmission's first burst apart."""
+    import statistics
+    def get(r, key):
+        return r[key[0]].get(key[1]) if isinstance(key, tuple) else r.get(key)
+    cols = [("settled", "settled_db"), ("-30", ("rise_ms", "-30")), ("-3", ("rise_ms", "-3")), ("-1", ("rise_ms", "-1")),
+            ("over", "overshoot_db"), ("set1dB", "settle_1db_ms"), ("sym1", "sym1_db"), ("err5", "err5_mean_db"),
+            ("fall-3", ("fall_ms", "-3")), ("f1ms", "f_first1ms_hz")]
+    groups = {}
+    for r in ramps:
+        groups.setdefault((not r["first"], r["kind"]), []).append(r)
+    lines = [f"ramp: {len(ramps)} bursts (median; ms from the first symbol's leading edge, dB against settled), "
+             f"{totals.get('lost', 0)} lost, edges to about {totals.get('edge_res_us', '?')} us",
+             f"{'kind':>14} {'n':>4}" + "".join(f"{c[0]:>9}" for c in cols)]
+    for (later, kind), rs in sorted(groups.items()):
+        row = f"{(kind if later else 'first ' + kind):>14} {len(rs):>4}"
+        for _, key in cols:
+            v = [get(r, key) for r in rs if get(r, key) is not None]
+            row += f"{statistics.median(v):>9.2f}" if v else f"{'-':>9}"
+        lines.append(row)
+    return "\n".join(lines)
+
+
 def cmd_dmr_bursts(a) -> int:
     if a.file:
         print(f"{NOTE} --file: analyze a saved capture with the bench's own tools; the gateway decodes live only",
               file=sys.stderr)
         return EX_UNAVAILABLE
-    check_reach(a, a.freq, tx=False)
+    if a.soft:
+        print(f"{NOTE} --soft: the gateway's burst records carry no soft dibits; for those analyze a capture",
+              file=sys.stderr)
+        return EX_UNAVAILABLE
+    if not a.raw:                                 # a raw stream tunes the front end itself
+        check_reach(a, a.freq, tx=False)
     out = open(a.out, "w") if a.out else sys.stdout
     human = sys.stdout if a.out else sys.stderr
     n = [0]
+    ramps: list = []
     hold = {"done": False}
     timer = []
 
@@ -644,13 +665,29 @@ def cmd_dmr_bursts(a) -> int:
             t0 = d["ready"] or time.time()
             print(f"READY {time.strftime('%H:%M:%S', time.localtime(t0))}.{int(t0 * 1000) % 1000:03d} t0={t0:.3f}",
                   file=sys.stderr, flush=True)
-            if a.seconds and not a.until_end:     # the gateway ends it at --seconds; this is in case it doesn't
+            if a.raw:
+                print(f"raw: {a.seconds:g} s at {d.get('fs', 0) / 1e6:g} MS/s, front end at {d.get('center', 0):.6f} MHz "
+                      "(the receiver deaf meanwhile); then decoded on the gateway", file=sys.stderr, flush=True)
+            elif a.seconds and not a.until_end:   # the gateway ends it at --seconds; this is in case it doesn't
                 timer.append(threading.Timer(a.seconds + 5.0, lambda: hold["conn"].end()))
                 timer[0].daemon = True
                 timer[0].start()
+        elif "captured" in d:                     # --raw: the samples are in; the bursts follow
+            cap = d["captured"]
+            print(f"captured {cap['samples']} samples at {cap['fs'] / 1e6:g} MS/s ({cap['bits']} bits, "
+                  f"{cap['clip_pct']:.3f} % at the ADC's rails)", file=sys.stderr, flush=True)
+            out.write(json.dumps({"captured": cap}) + "\n")
+            out.flush()
         elif "burst" in d:
             n[0] += 1
             out.write(json.dumps(d["burst"]) + "\n")
+            out.flush()
+        elif "segment" in d:                      # --envelope: a keyed segment, its edges tied to its bursts
+            out.write(json.dumps({"segment": d["segment"]}) + "\n")
+            out.flush()
+        elif "ramp" in d:                         # --ramp: a burst's PA ramp, measured on the gateway
+            ramps.append(d["ramp"])
+            out.write(json.dumps({"ramp": d["ramp"]}) + "\n")
             out.flush()
         elif "done" in d:
             s = d["done"]
@@ -660,18 +697,31 @@ def cmd_dmr_bursts(a) -> int:
             kinds = ", ".join(f"{v} {k}" for k, v in sorted(s.get("kinds", {}).items()))
             print(f"{s['bursts']} bursts on {s['freq'] / 1e6:.5f} MHz ({s['reason']})" + (f": {kinds}" if kinds else ""),
                   file=human, flush=True)
+            if s.get("complete") is False:            # a burst missing may not have been missing on the air
+                lost = ", ".join(f"{v} {k}" for k, v in s.get("lost", {}).items() if v)
+                print(f"WARNING: the receiver lost samples during this stream ({lost or str(s.get('dropped', 0)) + ' records dropped'}): "
+                      "this result is not complete", file=sys.stderr, flush=True)
             cfo = s.get("cfo_hz")
             if cfo:
                 tol = cfo.get("tol")
                 print(f"cfo {cfo['mean']:+.1f} Hz mean ({cfo['min']:+.1f} to {cfo['max']:+.1f}), "
                       + (f"+-{tol:.1f} Hz for the gateway's crystal" if tol is not None
                          else "the gateway's crystal tolerance not known"), file=human, flush=True)
+            env = s.get("envelope")
+            if env:
+                print(f"envelope: {env['segments']} keyed segments, noise {env['noise_dbfs']} dBFS, clipping "
+                      f"{env['clip_pct']:.3f} %, {env['power_steps']} power steps, {env['overlaps']} overlaps, "
+                      f"{env['unexplained_ms']:.1f} ms of carrier no burst explains", file=human, flush=True)
+            if ramps:
+                print(ramp_table(ramps, (env or {}).get("ramp", {})), file=human, flush=True)
             return 0 if s["bursts"] else EX_NO_SIGNAL
         return None
     try:
         rc = stream(a.where, {"op": "bursts", "session": a.session, "freq": a.freq, "seconds": a.seconds,
                               "max_bursts": a.bursts, "until_end": a.until_end, "cc": a.cc, "soft": a.soft,
-                              "wait_max": a.wait_max}, on, hold)
+                              "wait_max": a.wait_max, **({"envelope": True} if a.envelope else {}),
+                              **({"ramp": True} if a.ramp else {}),
+                              **({"raw": True, **({"rate": a.rate} if a.rate else {})} if a.raw else {})}, on, hold)
         if not hold["done"] and rc == 0:          # the stream ended with no summary: one from here
             s = {"bursts": n[0], "freq": a.freq * 1e6, "reason": "the gateway stopped answering"
                  if timer else "the connection ended"}
@@ -732,6 +782,9 @@ def write_iq(a, req: dict, fmt_bytes: int) -> int:
             if m.get("clip_pct", 0) > 1.0:
                 print(f"WARNING: {m['clip_pct']:.1f} % of I/Q samples at the ADC rails: the capture is saturated",
                       flush=True)
+            if m.get("overflows") or m.get("gap_samples"):
+                print(f"WARNING: samples lost during this capture ({m.get('gap_samples', 0)} filled with zeros): "
+                      "its timing and content have holes", file=sys.stderr, flush=True)
             return 0
         return None
     try:
@@ -750,7 +803,26 @@ def cmd_capture(a) -> int:
         req["gain"] = a.gain
     if a.fmt:
         req["fmt"] = a.fmt
-    return write_iq(a, req, 2)
+    if a.raw:
+        req["raw"] = True
+        if a.rate:
+            req["rate"] = a.rate
+    if not a.quiet:
+        return write_iq(a, req, 2)
+    # --quiet: nothing transmits from the bench during it. A session of its own holds the modem; other sessions'
+    # jobs wait until it's over
+    c = Conn(a.where)
+    try:
+        c.send({"op": "session", "label": a.label or "capture --quiet", "expect_s": a.seconds})
+        first = next(c.lines(), (None, None))[0]
+        if first is None or "error" in first:
+            print(json.dumps(first), file=sys.stderr)
+            return EX_UNAVAILABLE
+        rc = stream(a.where, {"op": "hold", "session": first["session"], "expect_s": a.seconds, "wait_max": a.wait_max},
+                    lambda d, data: None)
+        return rc if rc else write_iq(a, req, 2)
+    finally:
+        c.close()
 
 
 def cmd_capture_trigger(a) -> int:
@@ -977,6 +1049,7 @@ def cmd_rx_sig(a) -> int:
               ("block_s", a.block_s), ("spectrum_hz", a.spectrum_hz)]
     if a.mode_name == "fm":
         fields += [("deemph_us", a.deemph_us), ("nominal_dev_hz", a.nominal_dev), ("audio_full_hz", a.audio_full_hz)]
+        fields += [(k, True) for k in ("dtmf", "tones", "aprs") if getattr(a, k)]
     else:
         fields += [("audio_lo_hz", a.audio_lo), ("audio_hi_hz", a.audio_hi), ("nominal_depth", a.nominal_depth),
                    ("audio_full", a.audio_full)]
@@ -1019,6 +1092,42 @@ def cmd_rx_sig(a) -> int:
             w.w.close()
         if rec:
             rec.close()
+
+
+def cmd_mssim(a) -> int:
+    """The confirmed-data responder: arm it with a profile, disarm it, read its log, or watch the log until it's off."""
+    req = {"op": "mssim", "action": "status" if a.action == "watch" else a.action, "session": a.session}
+    if a.action == "arm":
+        if a.freq is None:
+            print(f"{NOTE} arm needs --freq", file=sys.stderr)
+            return 2
+        prof = a.profile or "{}"
+        if prof.startswith("@"):
+            with open(prof[1:]) as f:
+                prof = f.read()
+        req.update(json.loads(prof))
+        req.update({"op": "mssim", "action": "arm", "freq": a.freq, "cc": a.cc, "seconds": a.seconds})
+        if a.power is not None:
+            req["power"] = a.power
+    if a.action != "watch":
+        req["since"] = a.since
+        return stream(a.where, req, printer)
+    since, last = a.since, {}
+
+    def on(d, data):
+        nonlocal since
+        m = d.get("mssim", {})
+        for e in m.get("log", []):
+            print(json.dumps(e), flush=True)
+        since = m.get("next", since)
+        last.update(m)
+    while True:
+        rc = stream(a.where, dict(req, since=since), on)
+        if rc or not (last.get("armed") or last.get("arming")):
+            if not rc:
+                print(f"{NOTE} the responder is off: {last.get('ended') or 'not armed'}", file=sys.stderr)
+            return rc
+        time.sleep(a.interval)
 
 
 def cmd_unsupported(a) -> int:
@@ -1241,6 +1350,10 @@ def main(argv=None) -> int:
     s.add_argument("--mode", default=None)
     s.add_argument("cmd", nargs=argparse.REMAINDER)
     s = p("capture", cmd_capture)
+    s.add_argument("--raw", action="store_true",
+                   help="the ADC's own samples, cs16 (12 bits; on a Pluto with its FPGA channelizer the receiver stops listening meanwhile)")
+    s.add_argument("--rate", type=float, default=0,
+                   help="with --raw: the ADC's rate for it, 520834-61440000 S/s (default the receiver's); off it, nothing transmits meanwhile")
     s.add_argument("--freq", type=float, required=True)
     s.add_argument("--seconds", type=float, required=True)
     s.add_argument("--out", required=True)
@@ -1261,6 +1374,16 @@ def main(argv=None) -> int:
     s.add_argument("--until-end", action="store_true")
     s.add_argument("--cc", type=int, default=None)
     s.add_argument("--soft", action="store_true")
+    s.add_argument("--envelope", action="store_true",
+                   help="also the carrier's keyed segments: edges, ramps, steps, clipping, tied to the bursts")
+    s.add_argument("--ramp", action="store_true",
+                   help="also each burst's PA ramp, measured on the gateway (implies the envelope)")
+    s.add_argument("--raw", action="store_true",
+                   help="from a raw capture of the ADC's own samples (12 bits on a Pluto), decoded and measured on the gateway, "
+                        "only the results sent; the receiver is deaf for --seconds and the processing after (envelope implied)")
+    s.add_argument("--rate", type=float, default=0,
+                   help="with --raw: its rate, a multiple of 48000 in 528000-61440000 S/s (default 2400000); off the "
+                        "receiver's rate nothing transmits meanwhile")
     s.add_argument("--out", default=None)
     s.add_argument("--file", default=None)
     s.add_argument("--center-mhz", type=float, default=None)
@@ -1296,6 +1419,17 @@ def main(argv=None) -> int:
     s.add_argument("--floor-s", type=float, default=1.0)
     s.add_argument("--floor-db", type=float, default=None)
     s.add_argument("--out", default=None)
+    s = p("mssim", cmd_mssim)
+    s.add_argument("action", choices=("arm", "disarm", "status", "watch"))
+    s.add_argument("--freq", type=float, default=None, help="MHz (arm)")
+    s.add_argument("--cc", type=int, default=1)
+    s.add_argument("--power", type=int, default=255, help="0-255 on the transmitter's range (bench_tx.py's default)")
+    s.add_argument("--seconds", type=float, default=300.0, help="disarmed after this long (at most 1800)")
+    s.add_argument("--profile", default=None, help='JSON, or @FILE: {"answers":[{"answer":"ack|nack|sack|none|ack2",'
+                   '"slots":N,"resend":[..]}],"end":"block|terminator|learn","sync":"auto|ms|bs|ts1|ts2","to":ID,'
+                   '"from":ID,"count":N}')
+    s.add_argument("--since", type=int, default=0, help="log entries after this seq")
+    s.add_argument("--interval", type=float, default=1.0, help="watch: seconds between reads")
     for op, fn in (("tx", cmd_tx_sig), ("rx", cmd_rx_sig)):
         s = sub.add_parser(op, help=f"{'send' if op == 'tx' else 'receive'} a signal mode")
         modes = s.add_subparsers(dest="mode_name", required=True)
@@ -1355,6 +1489,11 @@ def main(argv=None) -> int:
                                    help="Hz, for the records' deviation ratio")
                     s.add_argument("--audio-full-hz", type=float, default=None,
                                    help="deviation at full scale in the WAV")
+                    s.add_argument("--dtmf", action="store_true", help="DTMF digits decoded on the board: records")
+                    s.add_argument("--tones", action="store_true",
+                                   help="timed steady tones (300-3000 Hz) measured on the board: records")
+                    s.add_argument("--aprs", action="store_true",
+                                   help="APRS (Bell 202 AX.25) frames decoded on the board: records")
                 else:
                     s.add_argument("--audio-lo", type=float, default=None, help="the audio band's low edge, Hz (300)")
                     s.add_argument("--audio-hi", type=float, default=None,

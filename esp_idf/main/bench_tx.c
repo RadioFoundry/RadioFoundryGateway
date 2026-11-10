@@ -39,6 +39,7 @@
 #include "rdof/benchcfg.h"
 #include "rdof/benchroute.h"
 #include "rdof/benchtx.h"
+#include "rdof/features.h"
 #include "rdof/layer2.h"
 #include "rdof/mmdvm.h"
 #include "rdof/sdr/sdrmodem.h"
@@ -127,16 +128,10 @@ static void job_to_modem(void *ctx, const uint8_t *b, size_t n)
 
 /* ── via=modem through the router ─────────────────────────────────────────── */
 
-/* Version 3 with a roamer on the SDR: the modem is the router's, so a job's bursts are an app's stream for the pool. */
-static bool via_router(void)
-{
-#if RDOF_FEATURE_TX
-    const char *why = sdr_modem_bench_why();
-    return site_pool_on() && why && strstr(why, "roamer");
-#else
-    return false;
-#endif
-}
+/* A job's bursts went to the router's transmitter pool when a roamer owned the SDR modem; the pool's transceiver
+ * could refuse the stream (a call heard elsewhere in the last second) and framed it itself. A bench job comes first
+ * now: the roamer's modem is parked for it (sdr_modem_bench_open), its bursts go out as built. Never routed. */
+static bool via_router(void) { return false; }
 
 /* bench.tx's limit on a job's power (max_dbm, else rf_level on the transmitter's range). */
 static rdof_bench_limit_t limit(void)
@@ -264,6 +259,8 @@ static void job_end(void)
 
 /* ── the task ─────────────────────────────────────────────────────────────── */
 
+static void ms_tick(double now);
+
 static void tx_task(void *arg)
 {
     EXT_RAM_BSS_ATTR static uint8_t buf[512];
@@ -271,6 +268,7 @@ static void tx_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(TICK_MS));
         xSemaphoreTake(mu, portMAX_DELAY);
         if (!J.on) {
+            ms_tick(now_s()); /* the responder's job gone */
             xSemaphoreGive(mu);
             continue;
         }
@@ -305,6 +303,7 @@ static void tx_task(void *arg)
                 rdof_benchtx_stop(J.job, "refused", "the TX arm jumper came out", now);
             rdof_benchtx_alive(J.job, now);
             rdof_benchtx_tick(J.job, now);
+            ms_tick(now);
             xSemaphoreGive(mu);
             continue;
         }
@@ -602,13 +601,25 @@ bool bench_tx_line_idle(void)
 {
     xSemaphoreTake(mu, portMAX_DELAY);
     bool idle = !J.on || !J.line || J.job->state == RDOF_TXS_DONE ||
-                (J.job->state == RDOF_TXS_READY && !J.job->keyed && !J.job->qn);
+                (J.job->state == RDOF_TXS_READY && !J.job->keyed && !J.job->qn && rdof_benchtx_settled(J.job));
 #if RDOF_FEATURE_TX
-    if (idle && J.on && J.line && J.routed && route.count) /* handed on: the transceiver still to send it */
+    if (idle && J.on && J.line && J.routed && route.count) { /* handed on: the transceiver still to send it */
         idle = !site_app_holds(route.sid);
+        if (idle && site_app_refused(route.sid)) /* taken, then refused (the channel busy at its listen, ...) */
+            rdof_benchtx_stop(J.job, "refused", "the transmitter refused the call (the channel busy, or receiving)",
+                              now_s());
+    }
 #endif
     xSemaphoreGive(mu);
     return idle;
+}
+
+size_t bench_tx_line_event(char *out, size_t cap)
+{
+    xSemaphoreTake(mu, portMAX_DELAY);
+    const size_t n = J.on && J.line ? rdof_benchtx_next_event(J.job, out, cap) : 0;
+    xSemaphoreGive(mu);
+    return n;
 }
 
 void bench_tx_line_close(void)
@@ -618,6 +629,127 @@ void bench_tx_line_close(void)
         job_end();
     xSemaphoreGive(mu);
 }
+
+/* ── the line protocol's mssim (bench-api.md 14.2) ─────────────────────────
+ * The confirmed-data responder: a line job takes the modem (a roamer's parked), the responder is armed on it once the
+ * modem is set up (modem_sdr.c places its answers from the front end's pulls), and this task ends it: disarm, its
+ * time, its count, or the job's modem stopping. No echo calibration: the LR2021 doesn't hear itself. */
+
+#if RDOF_FEATURE_DATA_BLOCKS
+EXT_RAM_BSS_ATTR static struct {
+    int want; /* 1 arm once the job's modem is ready, 2 disarm */
+    bool on;
+    double until;
+    int ch;
+    uint32_t freq;
+    char why[128]; /* why the last arming ended */
+    rdof_mssim_profile_t prof;
+} MS; /* under mu */
+EXT_RAM_BSS_ATTR static rdof_mssim_t ms_view;
+
+static void ms_end(const char *why)
+{
+    sdr_modem_bench_mssim_disarm();
+    MS.on = false;
+    MS.want = 0;
+    snprintf(MS.why, sizeof MS.why, "%s", why);
+    if (J.on && J.line && !J.ob)
+        job_end();
+    ESP_LOGW(TAG, "mssim: off: %s", why);
+}
+
+/* the task, under mu */
+static void ms_tick(double now)
+{
+    if (!MS.want && !MS.on)
+        return;
+    const bool gone = !J.on || !J.line || J.ob || J.job->state == RDOF_TXS_DONE;
+    if (MS.want == 2) {
+        ms_end("disarmed");
+    } else if (gone) {
+        ms_end(J.on && J.job->error[0] ? J.job->error : "the transmit job ended");
+    } else if (now > MS.until) {
+        ms_end(MS.on ? "its time is up" : "the transmitter wasn't ready in time");
+    } else if (MS.want == 1) {
+        if (J.job->state == RDOF_TXS_READY && sdr_modem_bench_mssim_arm(&MS.prof, MS.ch)) {
+            MS.want = 0;
+            MS.on = true;
+            ESP_LOGW(TAG, "mssim: armed on %.5f MHz (channel %d)", MS.freq / 1e6, MS.ch);
+        }
+    } else {
+        sdr_modem_bench_mssim_copy(&ms_view);
+        if (!ms_view.armed)
+            ms_end("it answered its count");
+    }
+}
+
+bool bench_tx_mssim(const char *action, const char *req, size_t len, uint32_t freq_hz, int cc,
+                    rdof_bench_power_t power, double seconds, uint32_t since, char *out, size_t cap,
+                    const char **code)
+{
+    if (!strcmp(action, "arm")) {
+        rdof_mssim_profile_t p;
+        char err[120];
+        if (!rdof_mssim_parse(req, len, &p, err, sizeof err)) {
+            *code = "bad_request";
+            snprintf(out, cap, "%s", err);
+            return false;
+        }
+        const int ch = sdr_rx_channel(freq_hz);
+        if (ch < 0) {
+            *code = "refused";
+            snprintf(out, cap, "no receive channel on %.4f MHz", freq_hz / 1e6);
+            return false;
+        }
+        xSemaphoreTake(mu, portMAX_DELAY);
+        const bool busy = MS.on || MS.want;
+        xSemaphoreGive(mu);
+        char why[160] = "";
+        if (busy || !bench_tx_line_open(freq_hz, cc, power, true, why, sizeof why)) {
+            *code = "busy";
+            snprintf(out, cap, "%s", busy ? "the responder is armed already" : why);
+            return false;
+        }
+        xSemaphoreTake(mu, portMAX_DELAY);
+        snprintf(J.label, sizeof J.label, "mssim");
+        MS.prof = p;
+        MS.ch = ch;
+        MS.freq = freq_hz;
+        MS.until = now_s() + (seconds > 0 && seconds < 1800 ? seconds : 1800);
+        MS.why[0] = 0;
+        MS.want = 1;
+        xSemaphoreGive(mu);
+        for (char *s = why; *s; s++)
+            if (*s == '"' || *s == '\\' || (unsigned char)*s < 0x20)
+                *s = '\'';
+        snprintf(out, cap, "\"armed\":true,\"freq\":%.6f,\"cc\":%d,\"note\":\"%s\"", freq_hz / 1e6, cc, why);
+        return true;
+    }
+    xSemaphoreTake(mu, portMAX_DELAY);
+    if (!strcmp(action, "disarm") && (MS.on || MS.want == 1))
+        MS.want = 2;
+    sdr_modem_bench_mssim_copy(&ms_view);
+    const int n = snprintf(out, cap, "\"armed\":%s,\"arming\":%s,\"answered\":%d,\"ended\":\"%s\",\"log\":",
+                           MS.on ? "true" : "false", MS.want == 1 ? "true" : "false", ms_view.answered, MS.why);
+    xSemaphoreGive(mu);
+    uint32_t next = since;
+    if (n > 0 && (size_t)n + 24 < cap) {
+        size_t k = rdof_mssim_log_json(&ms_view, since, out + n, cap - (size_t)n - 24, &next);
+        snprintf(out + n + k, cap - (size_t)n - k, ",\"next\":%lu", (unsigned long)next);
+    }
+    return true;
+}
+#else
+static void ms_tick(double now) {}
+bool bench_tx_mssim(const char *action, const char *req, size_t len, uint32_t freq_hz, int cc,
+                    rdof_bench_power_t power, double seconds, uint32_t since, char *out, size_t cap,
+                    const char **code)
+{
+    *code = "unsupported";
+    snprintf(out, cap, "this build has no data blocks (RDOF_FEATURE_DATA_BLOCKS)");
+    return false;
+}
+#endif
 
 /* ── the line protocol's outbound (bench_tx outbound, bench-api.md 14.3) ───
  * The SDR modem as the TX half of a repeater, keyed for the job by its own frames (rdof_sdrmodem_outbound_frames):
@@ -868,6 +1000,7 @@ bool bench_tx_line_open(uint32_t freq, int cc, rdof_bench_power_t power, bool as
 int bench_tx_line_space(char *why, size_t cap) { return -1; }
 void bench_tx_line_push(uint8_t control, const uint8_t burst[33]) {}
 bool bench_tx_line_idle(void) { return true; }
+size_t bench_tx_line_event(char *out, size_t cap) { return 0; }
 void bench_tx_line_close(void) {}
 int bench_tx_register(void *server) { return 0; }
 bool bench_tx_ob_open(uint32_t freq, int cc, rdof_bench_power_t power, double seconds, char *why, size_t cap)
@@ -890,6 +1023,14 @@ void bench_tx_ob_unkey(void) {}
 void bench_tx_ob_close(void) {}
 void bench_tx_ob_push(int slot, uint8_t control, const uint8_t burst[33]) {}
 const char *bench_tx_why_family(int family) { return NULL; }
+bool bench_tx_mssim(const char *action, const char *req, size_t len, uint32_t freq_hz, int cc,
+                    rdof_bench_power_t power, double seconds, uint32_t since, char *out, size_t cap,
+                    const char **code)
+{
+    *code = "unsupported";
+    snprintf(out, cap, "%s", bench_tx_line_why());
+    return false;
+}
 
 #endif
 

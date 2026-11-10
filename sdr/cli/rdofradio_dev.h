@@ -38,6 +38,9 @@ typedef struct {
     double words_rate;
     /* > 1: the transmit stream at rate / tx_interp (the FPGA's TX interpolator makes up the rest, libiio only) */
     int tx_interp;
+    /* --setting KEY=VALUE, the driver's own (an RTL-SDR's biastee=true; SoapySDR only) */
+    const char *const *settings;
+    int n_settings;
 } rdofradio_dev_setup_t;
 
 typedef struct rdofradio_dev rdofradio_dev_t;
@@ -46,17 +49,33 @@ struct rdofradio_dev {
     double rate;    /* what it runs at */
     double tx_rate; /* the transmit stream's: rate, or rate / tx_interp */
     double tx_gain_min, tx_gain_max;
+    float iq_scale;  /* the bench history's cs8 gain (rdof_bl_ring_scale): 1 for an 8-bit ADC (an RTL-SDR), 16 for an
+                        AD9361's 12 */
     char error[200]; /* the last failure */
     int (*set_rx_freq)(rdofradio_dev_t *d, double hz);
     int (*set_tx_freq)(rdofradio_dev_t *d, double hz); /* the TX LO (not opened rx_only) */
     int (*set_tx_gain)(rdofradio_dev_t *d, double db);
     double (*rx_gain)(rdofradio_dev_t *d);
+    int (*set_rx_gain)(rdofradio_dev_t *d, double db); /* dB; NAN: the device's AGC. NULL: it keeps its gain */
     double (*bandwidth)(rdofradio_dev_t *d); /* RX analog, Hz */
     int (*start)(rdofradio_dev_t *d);        /* both streams */
     /* up to n samples: how many, or RDOF_DEV_* */
     int (*read)(rdofradio_dev_t *d, rdof_cf_t *x, int n, long timeout_us);
     /* words_rate: the next DMA buffer's words, *w valid until the next call: how many, or RDOF_DEV_* */
     int (*read_words)(rdofradio_dev_t *d, const uint64_t **w, long timeout_us);
+    /* The ADC's own samples, once, in place of the receive stream (libiio with read_words; NULL elsewhere), from the
+     * thread that has told the loop to stop reading: rx_pause ends the stream. raw_fill: n samples in a row, int16 I, Q,
+     * into out, *after the samples that came after them before it returned; 0, or -1 with why in err. rx_resume starts
+     * the stream again. */
+    void (*rx_pause)(rdofradio_dev_t *d);
+    int (*raw_fill)(rdofradio_dev_t *d, long n, double rate, int16_t *out, long *after, char *err, size_t cap);
+    /* For a raw capture: the chip at rate (0: as it is) with the RX LO at lo_hz (0: as it is), what it took in *got;
+     * raw_untune puts back what raw_tune found. The TX shares the rate. 0, or -1 with why in err. */
+    int (*raw_tune)(rdofradio_dev_t *d, double rate, double lo_hz, double *got, char *err, size_t cap);
+    int (*raw_untune)(rdofradio_dev_t *d);
+    /* The transmit buffer anew, empty (after a rate change); 0 or -1 */
+    int (*tx_restart)(rdofradio_dev_t *d);
+    int (*rx_resume)(rdofradio_dev_t *d);
     /* up to n samples: how many were taken, or RDOF_DEV_* */
     int (*write)(rdofradio_dev_t *d, const rdof_cf_t *x, int n, long timeout_us);
     void (*stop_tx)(rdofradio_dev_t *d);     /* the transmit stream down; the writer has stopped */
@@ -73,5 +92,7 @@ struct rdofradio_dev {
  * in err. */
 rdofradio_dev_t *rdofradio_soapy_open(const char *args, const rdofradio_dev_setup_t *s, char *err, size_t cap);
 rdofradio_dev_t *rdofradio_iio_open(const char *uri, const rdofradio_dev_setup_t *s, char *err, size_t cap);
+/* --sim-sdr: a receiver with nothing on the air (noise), for no-RF tests; receive only. */
+rdofradio_dev_t *rdofradio_sim_open(const rdofradio_dev_setup_t *s, char *err, size_t cap);
 
 #endif

@@ -194,7 +194,8 @@ function problems(s) {
     if (s.usb_either && !i && !r.started) return;
     if (r.radio_error) bad(n + r.radio_error);
     else if (!r.radio_ready) bad(n + 'radio not ready');
-    if (has(s, 'links') && !r.hblink) warn(n + 'HBlink4 down');
+    if (r.brandmeister && r.brandmeister.state != 'up') warn(n + 'BrandMeister ' + r.brandmeister.state.replace('_', ' '));
+    else if (has(s, 'links') && !r.hblink) warn(n + 'HBlink4 down');
     const cd = (r.channels || []).filter(c => c.hblink === false).length;
     if (has(s, 'links') && cd) warn(n + cd + ' monitored channel' + (cd > 1 ? 's\' HBlink4 peers' : '\'s HBlink4 peer') + ' down');
     if (has(s, 'links') && 'mqtt' in r && !r.mqtt) warn(n + 'MQTT down');
@@ -333,10 +334,13 @@ const chan = r => mhz(r.frequency) + ' CC' + r.colorCode + (r.state ? ', ' + esc
   (r.listening ? ', listening' : '') + (r.scanning ? ', scanning' : '') + (r.keyed ? ', ' + sp('ok', 'keyed') : '');
 const radioRow = r => ['Radio', yes(r.radio_ready) + ' ' + esc(r.modem || (r.modem_open ? 'port open, no answer' : 'not connected (' + r.port + ')')) +
   (r.radio_error ? '<br>' + sp('bad', esc(r.radio_error)) : '')];
-const hbRow = r => ['HBlink4', up(r.hblink) + ' <span class="mute">(' + num(r.hblink_tx) + ' sent, ' + num(r.hblink_rx) + ' received)</span>' + (r.sctp ?
+const bmText = b => esc(b.state.replace('_', ' ')) + ' <span class="mute">(' + num(b.logins) + ' logins, ' + cnt(b.refusals) + ' refused' +
+  (b.refused_at ? ' last at ' + esc(b.refused_at) : '') + ', quiet ' + cnt(b.went_quiet) + (b.state == 'up' ? '' : ', retry in up to ' + b.backoff_s + ' s') + ')</span>';
+const hbRow = r => r.brandmeister ? ['BrandMeister', bmText(r.brandmeister) + '<br>' + num(r.hblink_tx) + ' sent, ' + num(r.hblink_rx) + ' received'] :
+  ['HBlink4', up(r.hblink) + ' <span class="mute">(' + num(r.hblink_tx) + ' sent, ' + num(r.hblink_rx) + ' received)</span>' + (r.sctp ?
   '<br>SCTP ' + esc(r.sctp.state) + ', RTT ' + r.sctp.srtt_ms + ' ms, ' + cnt(r.sctp.retransmits + r.sctp.fast_retransmits) + ' resent, ' +
   cnt(r.sctp.abandoned) + ' given up, ' + cnt(r.sctp.failures) + ' lost' : '')];
-const R_KNOWN = 'name mode started port split modem_open radio_ready radio_error modem protocol radio requests no_reply refused bursts_heard state listening scanning status_misses queue_dropped keyed busy1 busy2 dropped jitter frequency colorCode hblink hblink_tx hblink_rx mqtt heard sending channels'.split(' ');
+const R_KNOWN = 'name mode started port split modem_open radio_ready radio_error modem protocol radio requests no_reply refused bursts_heard state listening scanning status_misses queue_dropped keyed busy1 busy2 dropped jitter frequency colorCode hblink hblink_tx hblink_rx brandmeister mqtt heard sending channels'.split(' ');
 function roamerFull(r, either) {
   const w = either && waiting(r, 'the radio'), j = r.jitter, sl = r.split;
   return card(rname(r) + ' ' + rstate(r, either), kv(w || [

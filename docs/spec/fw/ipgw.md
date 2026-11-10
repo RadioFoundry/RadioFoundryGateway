@@ -61,7 +61,7 @@ Nothing matched and NAT off: dropped (`no_route`).
   last block starts the next assembly; preambles and the terminator are ignored (none are needed). A block of one
   packet lost: the next header ends it (`rx_incomplete`) and the rest go up.
 - The color code for replies comes from the receiver's channel, or the header's slot type when it doesn't know.
-- **Duplicates:** a hash of (source id, destination id, the whole user data) is kept `RDOF_IPGW_DEDUP_S` 5 s
+- **Duplicates:** a hash of (source id, destination id, the whole user data) is kept `RDOF_IPGW_DEDUP_S` 30 s (a radio retries confirmed data about every 6 s, several times). A message that didn't go up for a passing reason (`unresolved`, `up_rate`, `flows_full`, `send_failed`) is forgotten and not answered, so the radio's retry tries again
   (`RDOF_IPGW_DEDUP` 16 of them). The user data is the whole datagram (SAP 4) or the compressed header and payload
   (SAP 3), so the IPv4 identification is in it: the same packet heard again (two receivers heard it, the radio sent
   it again) is counted `rx_dup` and not relayed, while an app sending the same payload twice (a new identification
@@ -200,6 +200,7 @@ the message's N(S); to the sender, from the id it sent to), when `ack` is on (de
 talkgroup, and a route or NAT took it (not when it's someone else's: no route, not UDP to NAT, or denied). The
 same message again after `RDOF_IPGW_ACK_AGAIN_S` 0.5 s is answered again (the radio didn't hear the first) but
 not relayed. No NACKs or selective ACKs: a message that fails is not answered and the radio sends it again.
+A radio's TMS text message wants a second, TMS-level ACK from its destination as well ([brandmeister.md](brandmeister.md) §7); the gateway sends only this one.
 RadioFoundry radios never chain confirmed packets. The ACK goes out through the same transmitter as replies (§11),
 as soon as the channel lets it. Tested on air 2026-11-01: a DM-32UV on RadioFoundry sent a confirmed UDP datagram to
 a W12 (version 3, the ACK through the router's pool), and counted the ACK on its first try.

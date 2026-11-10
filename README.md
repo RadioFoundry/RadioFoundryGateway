@@ -10,7 +10,7 @@ data gateway, in any combination, from whatever radios you have. Also runs on Li
 - 📡 **Hear up to 6 channels at once** on an ESP32-S3 (RTL-SDR or the W12's built-in LR2021), 10+ on a Raspberry Pi,
   16 on a PlutoSDR clone with the FPGA channelizer
 - 🔁 **Repeater or roaming hotspot** from a hotspot-mode handheld, an MMDVM HAT, or the SDR itself
-- 🔗 **HBlink4 peer** per radio and per SDR channel, over UDP or SCTP
+- 🔗 **HBlink4 peer** per radio and per SDR channel, over UDP or SCTP, or a **BrandMeister** hotspot or repeater login
 - 📨 **MQTT** in MMDVMHost's call JSON, plus raw bursts for your own decoders
 - 🛰️ **Disciplined UTC clock:** GNSS PPS or NTP, falsetickers rejected, the crystal's ppm and temperature drift learned and corrected, DMR slots and SDR samples locked to UTC. Groundwork for voting and simulcast
 - 🌐 **DMR-IP gateway** built in: radios' ARS, text, location and any UDP app reach the internet, no PC
@@ -99,6 +99,7 @@ A powered USB hub runs two USB radios at once. An optional SSD1306 OLED shows th
 **Network**
 
 - HBlink4: a peer per radio and per SDR channel; DMRT / DMRK call routing; SCTP over UDP for the roamer
+- BrandMeister: the homebrew login as a simplex hotspot or a repeater, a login per path
 - MQTT 5 (with 3.1.1 fallback) and topic aliases: a burst is 57 bytes on the wire; TLS optional
 - Retained status and Receiver messages per radio, last will on disconnect
 

@@ -357,6 +357,10 @@ void sdr_status_json(rdof_json_t *j)
         rdof_json_close(j);
     }
     slot_timing_json(j);
+#if CONFIG_RDOF_SDR_LR2021
+    edge_time_json(j);
+    fe_lr2021_loss_json(j);
+#endif
     rdof_json_int(j, "ring_peak", (long long)u.ring_peak);
     rdof_json_bool(j, "mqtt", s->mqtt_up);
     rdof_json_int(j, "mqtt_dropped", sdr_mqtt_dropped());

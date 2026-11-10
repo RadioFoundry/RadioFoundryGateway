@@ -1376,6 +1376,32 @@ static void t_txvr_more(void)
     rdof_txvr_call_info(t, &t->call, &info);
     CHECK(info.frames == -1, "%d", info.frames);
 
+    /* data ends at its last announced block (no terminator), not RDOF_TXVR_STREAM_TIMEOUT_S on; a lone response
+       header ends at once; a bad header CRC leaves the timeout */
+    e = ex_call(false, 91);
+    t = &e->t;
+    b = ex_data_header(91, RDOF_DPF_CONFIRMED, false, 3, RDOF_MASK_DATA_HEADER);
+    rdof_txvr_on_burst(t, &b);
+    for (int i = 0; i < 3; i++) {
+        CHECK(!t->call.ended, "block %d", i);
+        b = ex_burst(91, RDOF_SYNC_DATA | RDOF_DT_RATE_34, false);
+        rdof_txvr_on_burst(t, &b);
+    }
+    CHECK(t->call.ended && t->call.data_left == 0, "ended at the last block: %d", t->call.data_left);
+    e = ex_call(false, 92);
+    t = &e->t;
+    b = ex_data_header(92, RDOF_DPF_RESPONSE, false, 0, RDOF_MASK_DATA_HEADER);
+    rdof_txvr_on_burst(t, &b);
+    CHECK(t->call.ended, "a response");
+    e = ex_call(false, 93);
+    t = &e->t;
+    b = ex_data_header(93, RDOF_DPF_UNCONFIRMED, false, 2, 0);
+    rdof_txvr_on_burst(t, &b);
+    b = ex_burst(93, RDOF_SYNC_DATA | RDOF_DT_RATE_12, false);
+    rdof_txvr_on_burst(t, &b);
+    rdof_txvr_on_burst(t, &b);
+    CHECK(!t->call.ended, "a bad header: the timeout ends it");
+
     /* the call goes out as the slot it came in on: a TS1 call is slot 1, a TS2 call slot 2 */
     CHECK(info.slot == 2, "%d", info.slot);
     e = ex_call(false, 90);

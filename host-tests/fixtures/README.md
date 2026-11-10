@@ -23,7 +23,7 @@ edge cases stay as they are (RadioID gives users 7 digits and repeaters 6), and 
 2026-10-24 the earlier test IDs (310xxxx and others) moved here, everything else kept: the reference rerun with the
 new IDs, its changed rows merged into these files, so they are still the reference's. The exceptions are
 regression vectors from the C: the data call and the e2e case (below, rebuilt by `gen_data_call.c` around the
-reference's new bursts) and the extra modem writes in `scenarios.h` `r_second_data_header` and its `_split`.
+reference's new bursts), the extra modem writes in `scenarios.h` `r_second_data_header` and its `_split`, and the SET_MODE DMR the repeater sends before every DMR_START (the repeater scenarios, and `test_repeater.c`'s `mode2`).
 
 ## The data call
 

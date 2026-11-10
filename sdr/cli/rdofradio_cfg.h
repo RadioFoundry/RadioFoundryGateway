@@ -75,6 +75,10 @@ typedef struct {
 bool rdofradio_cfg_parse(const char *text, size_t len, rdofradio_cfg_t *out, char *err, size_t err_cap);
 /* The channel on hz (within 100 Hz); -1 none. */
 int rdofradio_cfg_channel_at(const rdofradio_cfg_t *c, uint32_t hz);
+/* Last heard for a tracker's line, from a channel that is an SDR channel (sdr), the unit's (unit), or both: the SDR's
+   entry, and the unit's only when no SDR channel reports it (--mmdvm's modem), as the board's SDR roamer keeps quiet
+   (rx_path.c). One call on air is one entry. */
+static inline bool rdofradio_cfg_heard_unit(bool sdr, bool unit) { return unit && !sdr; }
 /* The settings document (version 3) for what the command line set (shown read only on the page, a start for a
    file): a repeater app, or the SDR as a transceiver, on driver (soapy, iio: the flag's); a parrot app for a parrot
    ID (0, every ID, has none: a parrot app answers one). */
