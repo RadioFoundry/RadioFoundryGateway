@@ -131,6 +131,17 @@ static SemaphoreHandle_t lock;        /* sessions and streams */
 EXT_RAM_BSS_ATTR static session_t sessions[MAX_SESSIONS];
 static stream_t streams[MAX_STREAMS];
 
+/* A client is taking samples or bursts over a stream: flash writes wait, as for a line job (a write stops the front
+   end's reader for about 35 ms, 27 KB of a W12's wideband samples). Another task's read: a stale answer only moves a
+   write by a tick. */
+bool bench_api_measuring(void)
+{
+    for (int i = 0; i < MAX_STREAMS; i++)
+        if (streams[i].kind == ST_IQ || streams[i].kind == ST_BURSTS)
+            return true;
+    return false;
+}
+
 /* I/Q history for pre-roll (hist_write, below) */
 #define HIST_S 2.0
 #define PREROLL_S 1.0

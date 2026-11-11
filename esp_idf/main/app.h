@@ -548,7 +548,9 @@ const char *bench_tx_why_family(int family); /* a voice, csbk or data job's --fa
  * (from bench_on_burst); the wideband history (bench_api.c's ring) for its captures. */
 void bench_line_start(void);
 #if CONFIG_RDOF_BENCH
-bool bench_line_measuring(void); /* a job is listening to the receiver: flash writes wait (they lose its samples) */
+/* a line job or a v1 stream is listening to the receiver: flash writes wait (they lose its samples) */
+bool bench_line_measuring(void);
+bool bench_api_measuring(void); /* the v1 streams' part of it (bench_api.c) */
 #else
 #define bench_line_measuring() false
 #endif

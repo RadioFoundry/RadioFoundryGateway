@@ -108,7 +108,10 @@ static double bl_utc(void *ctx)
 }
 
 /* Another task's read of two counters: a stale answer only moves a flash write by a tick. */
-bool bench_line_measuring(void) { return bl && (rdof_bl_wants_iq(bl) || rdof_bl_wants_bursts(bl)); }
+bool bench_line_measuring(void)
+{
+    return (bl && (rdof_bl_wants_iq(bl) || rdof_bl_wants_bursts(bl))) || bench_api_measuring();
+}
 
 static double bl_sc_utc(void *ctx, uint64_t sc) { return g_rx.t0 + (double)sc / g_scfg.sample_rate; }
 

@@ -1198,7 +1198,9 @@ static void ppm_tick(void)
             rdof_ppm_applied(&ppm, step);
             if (coarse) {
                 double expect;
-                if (!nc_tcal_get(&cal, die_c, &expect)) /* nothing better kept for this temperature */
+                /* nothing better kept for this temperature; not while a job listens (the flash write stops the
+                   front end's reader): the table's bin is saved once it settles */
+                if (!nc_tcal_get(&cal, die_c, &expect) && !bench_line_measuring())
                     ppm_store(ppm_serial, xtal);
                 ESP_LOGI(TAG, "ppm: %s moved to %d ppm", chip(), to);
             } else if (ppm.measured)
