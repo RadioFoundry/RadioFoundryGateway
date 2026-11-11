@@ -1923,6 +1923,24 @@ static rdof_bl_burst_t heard(const rdof_bj_burst_t *q)
     return b;
 }
 
+/* A data job's --udp-payload goes out byte for byte: the packet's index is stamped on filler (--octets) only. It
+   was stamped on a given payload too, so a request starting 05 07 reached the radio as 00 00. */
+static void test_udp_payload_kept(void)
+{
+    static rdof_bj_burst_t a[64], b[64], f0[64], f1[64];
+    int na = 0, nb = 0, n0 = 0, n1 = 0;
+#define UDPJ "{\"tool\":\"bench_tx\",\"cmd\":\"data\",\"freq\":438.1125,\"cc\":2,\"src\":9990301,\"dst\":9990199," \
+             "\"private\":true,\"udp_port\":4001,"
+    decode_job(UDPJ "\"udp_payload\":\"050722040098968151\"}", a, &na);
+    decode_job(UDPJ "\"udp_payload\":\"000022040098968151\"}", b, &nb);
+    CHECK(na == nb && na > 0 && memcmp(a, b, (size_t)na * sizeof a[0]) != 0,
+          "a payload's first two octets are the caller's (%d and %d bursts)", na, nb);
+    decode_job(UDPJ "\"octets\":9}", f0, &n0);
+    decode_job(UDPJ "\"octets\":9}", f1, &n1);
+    CHECK(n0 == n1 && n0 > 0 && !memcmp(f0, f1, (size_t)n0 * sizeof f0[0]), "filler builds alike");
+#undef UDPJ
+}
+
 static void test_decode(void)
 {
     rdof_bj_burst_t q[64];
@@ -3230,6 +3248,7 @@ int main(int argc, char **argv)
     test_filler();
     test_iq_formats();
     test_decode();
+    test_udp_payload_kept();
     test_late();
     test_run();
     test_repeater();
