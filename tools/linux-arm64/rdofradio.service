@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: MIT
+# rdofradio on a Linux box with an MMDVM modem and an RTL-SDR: the bench line (7373) and the web page (8080).
+# Put rdofradio in ~/rfg/bin, run.sh, config.json and flags (rdofradio's options, e.g.
+# "--soapy driver=rtlsdr -r 1536000 --allow-tx --mmdvm /dev/ttyS0 --bench 0.0.0.0:7373 --web 0.0.0.0:8080") in
+# ~/rfg, set User and the paths below, then:
+#   sudo cp rdofradio.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now rdofradio
+# Anything else that holds the modem's port or the RTL-SDR has to be stopped first.
+[Unit]
+Description=rdofradio (MMDVM modem + RTL-SDR)
+After=network-online.target mosquitto.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=radio
+Group=radio
+SupplementaryGroups=dialout plugdev
+ExecStart=/home/radio/rfg/run.sh
+Restart=always
+RestartSec=5
+# the receive loop and the modem thread ask for SCHED_FIFO and nice -10 when they can; the SD sees no logs
+LimitRTPRIO=10
+LimitNICE=-10
+KillMode=control-group
+TimeoutStopSec=15
+# stay small: the box has 824 MB shared with the broker
+MemoryMax=450M
+
+[Install]
+WantedBy=multi-user.target

@@ -144,7 +144,7 @@ build `-O2`. `idf.py menuconfig` has the menus "RadioFoundry Gateway", "RadioFou
 | `host-tests/` | the host build of `common/`, `sdr/`, `rtlsdr/` and the components' portable parts, the tests, the golden fixtures, the fake radios (`fake_radio.c`) |
 | `systest/` | the system tests: `radiosim`, `radiolink.c`, `test_radiosim.c` |
 | `hil-tests/` | hardware-in-the-loop tests (pytest) |
-| `tools/` | `bench/` (bench API clients: `benchapi.py`, `rfgbench.py`), `pluto/` (the PlutoSDR build, bundle and bitstream), `config_check.py`, `hblink4_sctp_check.sh`, `rtl_fir_design.py` |
+| `tools/` | `bench/` (bench API clients: `benchapi.py`, `rfgbench.py`), `pluto/` (the PlutoSDR build, bundle and bitstream), `linux-arm64/` (rdofradio cross-built for a Debian 13 arm64 box with the Rust modules, its run script and systemd unit), `config_check.py`, `hblink4_sctp_check.sh`, `rtl_fir_design.py` |
 | `config/` | the settings' JSON schema (`rdof-config.schema.json`) |
 | `docs/spec/` | the specs |
 | `LICENSES/`, `PROVENANCE.md` | third-party license texts, and where each piece of copied or ported code came from |
