@@ -1182,7 +1182,7 @@ transmitting, the outbound on the 30 ms grid; half duplex sent back a whole call
 
 - **A thread for the transmit stream.** A Pluto's read and write both block on USB; one thread doing both fell
   behind, and libiio drops receive samples not read in time without an overflow.
-- **`--stream`** (default `bufflen=32768` on a Pluto): with 65536 the loop delay changed by up to 27 ms from one start
+- **`--stream`** (default `bufflen=32768` on a Pluto, `bufflen=16384` on an RTL-SDR: its own 85 ms buffers read as dropped samples): with 65536 the loop delay changed by up to 27 ms from one start
   to the next; with 16384 the transmit stream underran silently. With 32768 it stays at 61-65 ms: `--tx-offset 0.063`.
   `--monitor` measures it by hearing the outbound back.
 - **Calibration.** Which slot a handheld's burst is in comes from where it falls against our outbound, so the

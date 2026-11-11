@@ -162,6 +162,7 @@ rdofradio_dev_t *rdofradio_soapy_open(const char *args, const rdofradio_dev_setu
     char *driver = SoapySDRDevice_getDriverKey(s->dev);
     snprintf(d->name, sizeof d->name, "SoapySDR %s", driver ? driver : "");
     const bool pluto = driver && !strcasecmp(driver, "plutosdr");
+    const bool rtl = driver && !strcasecmp(driver, "rtlsdr");
     free(driver);
     for (int i = 0; i < su->n_settings; i++) { /* a bias tee nobody turned on looks like a dead antenna: not ignored */
         char key[64];
@@ -201,8 +202,12 @@ rdofradio_dev_t *rdofradio_soapy_open(const char *args, const rdofradio_dev_setu
     d->iq_scale = rdof_bl_ring_scale(native_scale);
     /* the streams' own arguments (--stream), for both. A PlutoSDR's own 65536-sample buffers made the loop delay
      * vary by a buffer (27 ms at 2.4 MS/s) from run to run; 16384 underran its transmitter without a word (bit
-     * errors in every burst); 32768 holds the delay within a few ms and sends clean */
-    const char *stream = su->stream && *su->stream ? su->stream : pluto ? "bufflen=32768" : "";
+     * errors in every burst); 32768 holds the delay within a few ms and sends clean. An RTL-SDR's own 262144-byte
+     * buffers are 85 ms of samples at 1.536 MS/s, handed over a few ms early or late: the receive loop's check of
+     * the stream against the clock (rdofradio.c clock_read) took the late ones for dropped samples and put zeros
+     * into a whole stream, every second or two (the bench Cubie, 2026-11-11: rtl_test lost nothing). 16384 bytes
+     * are 5 ms: no false loss */
+    const char *stream = su->stream && *su->stream ? su->stream : pluto ? "bufflen=32768" : rtl ? "bufflen=16384" : "";
     SoapySDRKwargs sa = SoapySDRKwargs_fromString(stream);
     s->rx = SoapySDRDevice_setupStream(s->dev, SOAPY_SDR_RX, SOAPY_SDR_CF32, NULL, 0, &sa);
     if (tx)
