@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 //! The structs this crate shares with C, by C name, with their size and alignment. rust/layout.c checks them
-//! against the C headers' (rdof_tests_rust, and the firmware at boot): a mirror that drifts from its header would
+//! against the C headers' (rdof_tests, and the firmware at boot): a mirror that drifts from its header would
 //! corrupt memory without a word. A module that mirrors a struct adds it here and to layout.c's table.
 
 use core::ffi::c_char;

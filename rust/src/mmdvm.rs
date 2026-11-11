@@ -359,6 +359,20 @@ pub unsafe extern "C" fn rdof_radio_detect(d: *const c_char) -> RdofRadioKind {
     }
 }
 
+/// One transceiver chip, so simplex only: a radio's hotspot, and an MMDVM_HS that doesn't say it has two
+/// (MMDVM_HS_Dual_Hat, D2RG's MMDVM_HS). An MMDVM board runs duplex; an unknown one may: the modem's answer decides.
+#[no_mangle]
+pub unsafe extern "C" fn rdof_modem_simplex_only(d: *const c_char) -> bool {
+    match rdof_radio_detect(d) {
+        RdofRadioKind::Hotspot => true,
+        RdofRadioKind::MmdvmHs => {
+            let d = c_bytes(d);
+            !contains_upper(d, b"DUAL") && !contains_upper(d, b"D2RG")
+        }
+        _ => false,
+    }
+}
+
 const KIND_NAMES: [(RdofRadioKind, &core::ffi::CStr); 4] = [
     (RdofRadioKind::Hotspot, c"radio_hotspot"),
     (RdofRadioKind::MmdvmHs, c"mmdvm_hs"),

@@ -36,10 +36,19 @@ jobs:
             defaults: sdkconfig.defaults;sdkconfig.defaults.16mb;sdkconfig.defaults.w12
     steps:
       - uses: actions/checkout@v4
+      - name: Rust for Xtensa (the w12 profile builds rust/)
+        shell: bash
+        run: |
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          . $HOME/.cargo/env
+          curl -sSfL https://github.com/esp-rs/espup/releases/latest/download/espup-x86_64-unknown-linux-gnu -o /usr/local/bin/espup
+          chmod +x /usr/local/bin/espup
+          espup install --targets esp32s3 --std
       - name: Build ${{ matrix.profile }}
         shell: bash
         run: |
           . $IDF_PATH/export.sh
+          . $HOME/.cargo/env
           cd esp_idf
           idf.py -B ../build/${{ matrix.profile }} -D SDKCONFIG=../build/${{ matrix.profile }}/sdkconfig \
             -D SDKCONFIG_DEFAULTS="${{ matrix.defaults }}" build

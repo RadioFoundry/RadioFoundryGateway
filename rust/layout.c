@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
-/* rust's struct mirrors against the C headers (src/layout.rs): built with the Rust, into rdof_tests_rust and the
+/* rust's struct mirrors against the C headers (src/layout.rs): built with the Rust, into rdof_tests and the
  * firmware (CONFIG_RDOF_RUST), which check rdof_rust_layout_mismatch() is NULL. */
 #include <stdalign.h>
 #include <stdbool.h>

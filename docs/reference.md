@@ -38,7 +38,7 @@ are committed (`host-tests/vectors.h`, `scenarios.h`, `fixtures/`) and the C mus
 | Test | What |
 |---|---|
 | `rdof_tests`, `rdof_tests_min` | `common/` with every feature on, and with every `RDOF_FEATURE_*` off: FEC, layer 2, PDUs, AMBE, MMDVM, HBlink4 and the OLED frame against golden vectors; the tracker, the roaming transceiver and the repeater (duplex, SFR, DCDM) against golden scenarios; split duplex; the jitter buffer; settings; two radios a board |
-| `rdof_tests_rust` | `rdof_tests` with `rust/`'s modules in place of their C (needs cargo) |
+| `rdof_tests_c` | the core tests on the C that `rust/`'s modules replace: with cargo installed, every other test runs the Rust |
 | `rdof_site_tests`, `rdof_plan_tests`, `rdof_schema_tests` | settings version 3: the parser, router and pool; the plan and its units; the JSON schema (Node) over the fixtures in `fixtures/config/v3/` |
 | `rdof_sdr_tests`, `rdof_sdr_tests_min`, `rdof_sdr_edge_tests` | the SDR receive path against golden vectors; the corners they don't reach ("SDR core" below) |
 | `rdof_mod_tests`, `sdrmodem_tests`, `rdof_loopback_edge_tests` | the modulator, the SDR modem, its loopbacks |
@@ -286,8 +286,8 @@ From `idf.py size`. Run it after a change that adds code or RAM, and update this
 
 | Build | Date | App image | Free in its slot | DIRAM used (of 334 KB) |
 |---|---|---|---|---|
-| `16mb` + `w12` | 2026-11-10 | 2411 KB | 1.6 MB of 4 MB | |
-| `16mb` + `w12` + `rust` | 2026-10-27 | 2063 KB | 2.0 MB of 4 MB | |
+| `16mb` + `w12` (the Rust modules) | 2026-11-10 | 2477 KB | 1.6 MB of 4 MB | |
+| `16mb` + `w12`, `CONFIG_RDOF_RUST=n` | 2026-11-10 | 2411 KB | 1.6 MB of 4 MB | |
 | `16mb` | 2026-11-10 | 2301 KB | 1.7 MB of 4 MB | |
 | `4mb` (no SDR) | 2026-11-10 | 1358 KB | 562 KB of 1.875 MB | |
 
