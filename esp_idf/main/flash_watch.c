@@ -120,12 +120,37 @@ int stall_watch_take(void)
     return us;
 }
 
+/* What's written: every program and erase the flash driver is asked for, wrapped too. A sector lasts about
+ * 100,000 erases; NVS erases one of its pages once its 126 entries are used, so writes / 126 is about its erases. */
+#include "esp_flash.h"
+esp_err_t __real_esp_flash_write(esp_flash_t *chip, const void *buf, uint32_t addr, uint32_t len);
+esp_err_t __real_esp_flash_erase_region(esp_flash_t *chip, uint32_t start, uint32_t len);
+static DRAM_ATTR uint32_t fw_writes, fw_write_bytes, fw_erases, fw_erase_kb;
+
+esp_err_t __wrap_esp_flash_write(esp_flash_t *chip, const void *buf, uint32_t addr, uint32_t len)
+{
+    fw_writes++;
+    fw_write_bytes += len;
+    return __real_esp_flash_write(chip, buf, addr, len);
+}
+
+esp_err_t __wrap_esp_flash_erase_region(esp_flash_t *chip, uint32_t start, uint32_t len)
+{
+    fw_erases++;
+    fw_erase_kb += len / 1024;
+    return __real_esp_flash_erase_region(chip, start, len);
+}
+
 void flash_watch_json(rdof_json_t *j)
 {
     rdof_json_open(j, "flash");
     rdof_json_int(j, "ops", fw.ops);
     rdof_json_int(j, "long_ops", fw.long_ops);
     rdof_json_int(j, "worst_us", fw.worst_us);
+    rdof_json_int(j, "writes", fw_writes); /* since boot */
+    rdof_json_int(j, "write_bytes", fw_write_bytes);
+    rdof_json_int(j, "erases", fw_erases);
+    rdof_json_int(j, "erase_kb", fw_erase_kb);
     if (fw.long_ops) {
         /* the name of a task that has since ended isn't read: only one still listed */
         const char *name = "";

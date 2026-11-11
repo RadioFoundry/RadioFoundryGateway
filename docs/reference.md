@@ -523,6 +523,11 @@ round trip, build with `CONFIG_RDOF_CRASH_TEST=y`: `POST /api/crash` stores to a
 and after the reboot `crash` says `StoreProhibited` at `0x00000000`. The HIL suite does that with
 `RDOF_BOARD_MUTATE=1`.
 
+Flash wear: `/api/status` `flash` counts every program and erase since boot. At rest and while streaming a W12
+writes nothing (W12 #3, 2026-11-11: 0 writes over HIL and the stress run); a settings save with nothing changed
+writes nothing; erasing the core dump partition is one 128 KB erase. The stress test fails on a write during a
+stream.
+
 A task that hangs is a crash too: the task watchdog panics when a core's canary task or the receiver's tasks go
 30 s unfed (`watch.c`), so the board saves a dump and restarts, with `reset` `task watchdog`. `POST
 /api/crash?how=hang` on the same build tests it.

@@ -36,7 +36,8 @@ idf_component_register(
 # flash_watch.c counts the flash operations (each stops every task): the two calls around one, wrapped.
 target_link_libraries(${COMPONENT_LIB} INTERFACE
     "-Wl,--wrap=spi_flash_disable_interrupts_caches_and_other_cpu"
-    "-Wl,--wrap=spi_flash_enable_interrupts_caches_and_other_cpu")
+    "-Wl,--wrap=spi_flash_enable_interrupts_caches_and_other_cpu"
+    "-Wl,--wrap=esp_flash_write" "-Wl,--wrap=esp_flash_erase_region")
 
 if(CONFIG_RDOF_SDR AND CONFIG_RDOF_SDR_FAST)
     set_source_files_properties(${sdr_dsp} PROPERTIES COMPILE_OPTIONS -O2)

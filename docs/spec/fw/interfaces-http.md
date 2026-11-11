@@ -94,6 +94,8 @@ platform's own fields at that point (`web.c:fw_status`), then `settings_source` 
 | `psram_free` | int | bytes | PSRAM free | always |
 | `cpu` | array of number | fraction | each core's busy share (1 less its idle task's), core 0 first, over at least the last 2 s | built with the FreeRTOS run-time stats (`CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS`, on in `sdkconfig.defaults`); omitted on the first ask |
 | `memory` | object | | the memory plan (§3.5) | always |
+| `flash` | object | | the flash chip's use since boot (`flash_watch.c`): `ops` (times both cores stopped for a flash operation), `long_ops` (those over 1 ms: programs and erases), `worst_us`; `writes`, `write_bytes`, `erases`, `erase_kb` (programs and erases asked of the driver: the wear; a setting saved unchanged writes nothing); after a long one `last_us`, `last_ago_ms`, `last_by` (its task) | always |
+| `stalls` | object | | a core's tick stopped for over 5 ms (interrupts off that long): `core<c>_<k>` each `n`, `us`, `ago_ms`, `pc`, `a0`, and what each core ran; `{}` when none | always |
 | `settings_ok` | bool | | the stored settings parsed and resolved; false: the board runs `DEFAULT_JSON` | always |
 | `settings_error` | string | | why not (empty if ok) | always |
 | `wifi` | bool | | station has an IP | always |
