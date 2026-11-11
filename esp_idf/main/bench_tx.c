@@ -438,11 +438,14 @@ static esp_err_t ws_tx(httpd_req_t *req)
         return ESP_FAIL;
     buf[f.len] = 0;
     const int fd = httpd_req_to_sockfd(req);
-    if (f.type == HTTPD_WS_TYPE_PING) { /* control frames come here (handle_ws_control_frames): answer, count it */
+    xSemaphoreTake(mu, portMAX_DELAY);
+    /* control frames come here (handle_ws_control_frames): answer a ping and count it. Under the lock, as every
+     * send on this socket is: the job's events go out from other tasks, and a pong between a frame's header and its
+     * text breaks the stream for the client */
+    if (f.type == HTTPD_WS_TYPE_PING) {
         httpd_ws_frame_t pong = {.final = true, .type = HTTPD_WS_TYPE_PONG, .payload = f.payload, .len = f.len};
         httpd_ws_send_frame(req, &pong);
     }
-    xSemaphoreTake(mu, portMAX_DELAY);
     if (J.on && J.fd == fd && !J.code) {
         if (f.type == HTTPD_WS_TYPE_TEXT)
             rdof_benchtx_tool(J.job, buf, f.len, now_s());
@@ -453,12 +456,13 @@ static esp_err_t ws_tx(httpd_req_t *req)
         else if (f.type == HTTPD_WS_TYPE_CLOSE)
             rdof_benchtx_stop(J.job, NULL, "closed", now_s());
     }
-    xSemaphoreGive(mu);
     if (f.type == HTTPD_WS_TYPE_CLOSE) {
         httpd_ws_frame_t c = {.final = true, .type = HTTPD_WS_TYPE_CLOSE};
         httpd_ws_send_frame(req, &c);
+        xSemaphoreGive(mu);
         return ESP_FAIL; /* closes the session */
     }
+    xSemaphoreGive(mu);
     return ESP_OK;
 }
 

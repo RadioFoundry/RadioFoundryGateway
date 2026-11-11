@@ -85,7 +85,8 @@ typedef struct {
     long long want;     /* samples to send, 0: until closed */
     long long samples;  /* sent */
     int64_t sent_us;    /* when a frame last went */
-    uint32_t gaps;
+    uint32_t gaps;      /* frames sent with the gap flag */
+    uint64_t next_sc;   /* where the next frame starts if nothing is lost between (0: no frame sent yet) */
     long long filled;   /* of those, filler (zeros where the front end lost samples) */
     uint32_t pre_n;     /* pre-roll samples asked for */
     bool trigger;       /* waits for its channel's level (spec 6.2); fired: the pre-roll marker has come */
@@ -1107,6 +1108,36 @@ static int channel_by(const char *id, double freq)
     return -1;
 }
 
+/* A frame from a stream's client, in the web server's task: a ping is answered and a close is answered, under the
+ * streams' lock; anything else is read and dropped. The streams ask for control frames (handle_ws_control_frames)
+ * because the server's own answer to a ping went out from its task while a stream's task was sending a frame on
+ * the same socket: the pong landed inside the frame and the client dropped the stream. A client that pings every
+ * 20 s (Python's websockets) lost about one wideband stream in eight that way (W12 #3, 2026-11-11). */
+static esp_err_t ws_client_frame(httpd_req_t *req)
+{
+    uint8_t tmp[128];
+    httpd_ws_frame_t f = {0};
+    if (httpd_ws_recv_frame(req, &f, 0) != ESP_OK)
+        return ESP_FAIL;
+    if (f.len > 125 && (f.type == HTTPD_WS_TYPE_PING || f.type == HTTPD_WS_TYPE_PONG || f.type == HTTPD_WS_TYPE_CLOSE))
+        return ESP_FAIL; /* a control frame carries 125 bytes at most */
+    if (f.len > sizeof tmp)
+        return ESP_FAIL;
+    if (f.len) {
+        f.payload = tmp;
+        if (httpd_ws_recv_frame(req, &f, f.len) != ESP_OK)
+            return ESP_FAIL;
+    }
+    if (f.type != HTTPD_WS_TYPE_PING && f.type != HTTPD_WS_TYPE_CLOSE)
+        return ESP_OK;
+    httpd_ws_frame_t r = {.final = true, .type = f.type == HTTPD_WS_TYPE_PING ? HTTPD_WS_TYPE_PONG : HTTPD_WS_TYPE_CLOSE,
+                          .payload = f.len ? tmp : NULL, .len = f.len};
+    take();
+    const esp_err_t e = httpd_ws_send_frame(req, &r);
+    give();
+    return f.type == HTTPD_WS_TYPE_CLOSE ? ESP_FAIL : e; /* a close ends the session */
+}
+
 static int ws_send_text(int fd, const char *s, size_t n)
 {
     httpd_ws_frame_t f = {.final = true, .type = HTTPD_WS_TYPE_TEXT, .payload = (uint8_t *)s, .len = n};
@@ -1335,17 +1366,7 @@ static esp_err_t ws_spectrum(httpd_req_t *req)
         give();
         return ESP_OK;
     }
-    httpd_ws_frame_t f = {0};
-    if (httpd_ws_recv_frame(req, &f, 0) != ESP_OK)
-        return ESP_FAIL;
-    if (f.len) {
-        uint8_t tmp[64];
-        f.payload = tmp;
-        if (f.len > sizeof tmp)
-            return ESP_FAIL;
-        httpd_ws_recv_frame(req, &f, f.len);
-    }
-    return ESP_OK;
+    return ws_client_frame(req);
 }
 
 /* ── calls (spec section 6.4) ─────────────────────────────────────────────── */
@@ -1505,17 +1526,7 @@ static esp_err_t ws_calls(httpd_req_t *req)
         give();
         return ESP_OK;
     }
-    httpd_ws_frame_t f = {0};
-    if (httpd_ws_recv_frame(req, &f, 0) != ESP_OK)
-        return ESP_FAIL;
-    if (f.len) {
-        uint8_t tmp[64];
-        f.payload = tmp;
-        if (f.len > sizeof tmp)
-            return ESP_FAIL;
-        httpd_ws_recv_frame(req, &f, f.len);
-    }
-    return ESP_OK;
+    return ws_client_frame(req);
 }
 
 /* WS /bursts?channel=ID|freq_hz=F&seconds=S&max_bursts=N&idle=1 */
@@ -1553,18 +1564,7 @@ static esp_err_t ws_bursts(httpd_req_t *req)
         give();
         return ESP_OK;
     }
-    /* a frame from the client: read and drop it (a ping or a note); the server answers pings and closes itself */
-    httpd_ws_frame_t f = {0};
-    if (httpd_ws_recv_frame(req, &f, 0) != ESP_OK)
-        return ESP_FAIL;
-    if (f.len) {
-        uint8_t tmp[64];
-        f.payload = tmp;
-        if (f.len > sizeof tmp)
-            return ESP_FAIL;
-        httpd_ws_recv_frame(req, &f, f.len);
-    }
-    return ESP_OK;
+    return ws_client_frame(req);
 }
 
 /* ── the I/Q stream (spec section 6.2) ────────────────────────────────────── */
@@ -1635,19 +1635,6 @@ static inline int16_t sat16(float x)
     return (int16_t)(q > 32767 ? 32767 : q < -32767 ? -32767 : q);
 }
 
-/* The wideband history's cs8: rounded as a stream's cs8 is (rdof_bl_iq_convert), so a wide cs8 or cu8 stream's
- * frames are the history's bytes (iq_frames). Exact for |x| under 2^22: the LR2021's samples times 16256 are, at
- * any AGC step. clip counts values past full scale (rounded past it: a value within half a count over isn't). */
-static inline int8_t wide8(float x, int *clip)
-{
-    const int q = rdof_bl_round(x);
-    if (q > 127 || q < -127) {
-        (*clip)++;
-        return q > 0 ? 127 : -127;
-    }
-    return (int8_t)q;
-}
-
 /* The 8-bit samples' gain over full scale (cs8, cu8: the history, the captures, WS /iq wideband or a channel's). The
  * LR2021's int16 I/Q sits far under its full scale (noise about 3.6 of 32767 at 53.5 dB gain, a W12 2026-11-02), so
  * 127 of full scale gave all zeros: it gets 128 (42.14 dB), its noise about 2 counts and full scale at its sample 256.
@@ -1695,6 +1682,24 @@ long bench_wide_filled(uint64_t sc, long n)
 
 static int hist_chunk_clip;  /* this chunk's clipped values in the wideband history (the DSP's) */
 static bool hist_chunk_ok;   /* this chunk is in the wideband history: a wide cs8 / cu8 stream's frame is a reference */
+
+/* The wideband history's cs8: rounded as a stream's cs8 is (rdof_bl_iq_convert), so a wide cs8 or cu8 stream's
+ * frames are the history's bytes (iq_frames). Exact for |x| under 2^22: the LR2021's samples times 16256 are, at
+ * any AGC step. clip counts values past full scale (rounded past it: a value within half a count over isn't). */
+/* n samples to the history's cs8; returns the clipped count. Every wideband sample goes through here while the
+ * history is warm, so it's built for speed, with the clamp as integer min and max (no branch). */
+__attribute__((optimize("O2"))) static int wide8_run(const rdof_cf_t *iq, int n, float g, int8_t *out)
+{
+    int clip = 0;
+    for (int j = 0; j < n; j++) {
+        int re = rdof_bl_round(iq[j].re * g), im = rdof_bl_round(iq[j].im * g);
+        const int cr = re > 127 ? 127 : re < -127 ? -127 : re, ci = im > 127 ? 127 : im < -127 ? -127 : im;
+        clip += (cr != re) + (ci != im);
+        out[2 * j] = (int8_t)cr;
+        out[2 * j + 1] = (int8_t)ci;
+    }
+    return clip;
+}
 
 /* From the DSP, each chunk: this chunk into the rings (a new run sizes them again). */
 static void hist_write(const rdof_sdr_rx_t *rx, const rdof_cf_t *iq, int n)
@@ -1748,15 +1753,11 @@ static void hist_write(const rdof_sdr_rx_t *rx, const rdof_cf_t *iq, int n)
     }
     hist_ch_w += (uint64_t)(rx->got > 0 ? rx->got : 0);
     if (hist_wide_n) {
-        uint32_t w = (uint32_t)(hist_wide_w % hist_wide_n);
+        const uint32_t w = (uint32_t)(hist_wide_w % hist_wide_n);
         const float g = 127.0f * wide_k();
-        int clip = 0;
-        for (int j = 0; j < n; j++) {
-            hist_wide[2 * w] = wide8(iq[j].re * g, &clip);
-            hist_wide[2 * w + 1] = wide8(iq[j].im * g, &clip);
-            if (++w == hist_wide_n)
-                w = 0;
-        }
+        /* to the ring's end, then from its start: no wrap test in the loop */
+        const int a = (uint32_t)n < hist_wide_n - w ? n : (int)(hist_wide_n - w);
+        const int clip = wide8_run(iq, a, g, hist_wide + 2 * (size_t)w) + wide8_run(iq + a, n - a, g, hist_wide);
         hist_wide_w += (uint64_t)n;
         hist_chunk_clip = clip;
         hist_chunk_ok = true;
@@ -2086,10 +2087,8 @@ static size_t wide_frame(stream_t *st, uint8_t *buf, size_t cap)
         ok = true;
     }
     xSemaphoreGive(hist_mu);
-    if (!ok) {
-        st->gaps++;
-        return 0;
-    }
+    if (!ok)
+        return 0; /* the next frame that goes says gap (bench_iq) */
     memcpy(h + IQ_HDR + (size_t)m * 2, &fill, 4);
     return 1 + IQ_HDR + (size_t)m * 2 + 4;
 }
@@ -2140,6 +2139,16 @@ static void bench_iq(void *arg)
             len -= 4; /* the DSP's filler count, after the samples: the frame's first `fill` are filler */
             memcpy(&fill, buf + len, 4);
             uint16_t flags = (uint16_t)(h[6] | h[7] << 8);
+            uint64_t sc = 0;
+            for (int k = 0; k < 8; k++)
+                sc |= (uint64_t)h[16 + k] << (8 * k);
+            /* samples lost before this frame, wherever they went (a frame the ring had no room for, a wideband
+             * frame the history had moved past): it doesn't start where the last one ended. A W12 sends about 40%
+             * of a wideband stream's frames, and those after a dropped one went out unflagged */
+            if (st->next_sc && sc != st->next_sc && !(flags & IQ_FLAG_GAP)) {
+                flags |= IQ_FLAG_GAP;
+                put_u16(h + 6, flags);
+            }
             if (flags & IQ_FLAG_GAP)
                 st->gaps++;
             if (st->want && st->samples + m >= st->want) { /* the last frame: cut to what was asked for */
@@ -2155,6 +2164,7 @@ static void bench_iq(void *arg)
                 drop_stream(st);
             else {
                 st->samples += m;
+                st->next_sc = sc + m;
                 st->sent_us = now;
                 st->filled += fill;
                 if (st->want && st->samples >= st->want)
@@ -2168,19 +2178,8 @@ static void bench_iq(void *arg)
 /* WS /iq?freq_hz=F|channel=ID&fmt=cs16|cf32|cs8&seconds=S, or rate=wide (fmt cs8 / cu8 / cs16) */
 static esp_err_t ws_iq(httpd_req_t *req)
 {
-    if (req->method != HTTP_GET) { /* client frames: read and drop */
-        httpd_ws_frame_t f = {0};
-        if (httpd_ws_recv_frame(req, &f, 0) != ESP_OK)
-            return ESP_FAIL;
-        if (f.len) {
-            uint8_t tmp[64];
-            if (f.len > sizeof tmp)
-                return ESP_FAIL;
-            f.payload = tmp;
-            httpd_ws_recv_frame(req, &f, f.len);
-        }
-        return ESP_OK;
-    }
+    if (req->method != HTTP_GET)
+        return ws_client_frame(req);
     char id[24] = "", v[12] = "";
     query(req, "channel", id, sizeof id);
     double freq = query_num(req, "freq_hz", NAN), seconds = query_num(req, "seconds", 0);
@@ -2372,15 +2371,17 @@ int bench_api_register(void *server)
         {.uri = BASE "/sdr", .method = HTTP_GET, .handler = get_sdr},
         {.uri = BASE "/sdr", .method = HTTP_PUT, .handler = put_sdr},
         {.uri = BASE "/spectrum", .method = HTTP_GET, .handler = get_spectrum},
-        {.uri = BASE "/spectrum/ws", .method = HTTP_GET, .handler = ws_spectrum, .is_websocket = true},
-        {.uri = BASE "/calls", .method = HTTP_GET, .handler = ws_calls, .is_websocket = true},
+        {.uri = BASE "/spectrum/ws", .method = HTTP_GET, .handler = ws_spectrum, .is_websocket = true,
+         .handle_ws_control_frames = true},
+        {.uri = BASE "/calls", .method = HTTP_GET, .handler = ws_calls, .is_websocket = true,
+         .handle_ws_control_frames = true},
         {.uri = BASE "/session*", .method = HTTP_POST, .handler = post_session},
         {.uri = BASE "/session/*", .method = HTTP_GET, .handler = get_session},
         {.uri = BASE "/session/*", .method = HTTP_DELETE, .handler = delete_session},
         {.uri = BASE "/bursts", .method = HTTP_GET, .handler = ws_bursts, .is_websocket = true,
-         .handle_ws_control_frames = false},
+         .handle_ws_control_frames = true},
         {.uri = BASE "/iq", .method = HTTP_GET, .handler = ws_iq, .is_websocket = true,
-         .handle_ws_control_frames = false},
+         .handle_ws_control_frames = true},
         {.uri = BASE "/radios", .method = HTTP_GET, .handler = get_radios},
         {.uri = BASE "/radios/*", .method = HTTP_GET, .handler = get_radios},
     };
