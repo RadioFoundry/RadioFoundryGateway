@@ -71,6 +71,7 @@ canvas{display:block;width:100%;background:#0b0b10;border-radius:6px}#spec{heigh
 </section>
 
 <section data-tab="radios">
+<div id="apps"></div>
 <div id="radios"></div>
 <div id="sdrs"></div>
 <div id="modems"></div>
@@ -327,7 +328,8 @@ function crashText(c) {
 }
 
 // ── a roamer or repeater ──────────────────────────────────────────────────
-const rname = r => (r.mode === 'roamer' ? 'Roamer ' : r.mode === 'sfr repeater' ? 'SFR repeater ' : 'Repeater ') + esc(r.name);
+// with an Apps card for the repeater itself, this card is its radio
+const rname = r => (r.mode === 'roamer' ? 'Roamer ' : S.s && S.s.apps && S.s.apps.some(a => a.name == r.name) ? 'Radio of ' : r.mode === 'sfr repeater' ? 'SFR repeater ' : 'Repeater ') + esc(r.name);
 const rstate = (r, either) => either && !r.started ? pill('warn', 'waiting') : r.radio_error || !r.radio_ready ? pill('bad', 'not ready') :
   r.keyed || r.sending ? pill('ok', 'on air') : r.heard ? pill('ok', 'hearing') : pill('ok', 'ready');
 const chan = r => mhz(r.frequency) + ' CC' + r.colorCode + (r.state ? ', ' + esc(r.state) : '') +
@@ -351,7 +353,7 @@ function roamerFull(r, either) {
     ['Modem requests', num(r.requests) + ' (' + cnt(r.no_reply) + ' without a reply, ' + cnt(r.refused) + ' refused)'],
     ['Bursts heard', num(r.bursts_heard)],
     r.status_misses != null && ['Transceiver', cnt(r.status_misses) + ' status polls missed, ' + cnt(r.queue_dropped) + ' network bursts dropped'],
-    r.keyed != null && ['Repeater', 'slot 1 ' + (r.busy1 ? sp('ok', 'busy') : 'idle') + ', slot 2 ' + (r.busy2 ? sp('ok', 'busy') : 'idle') + ', ' + cnt(r.dropped) + ' bursts dropped'],
+    r.keyed != null && !S.s.apps && ['Repeater', 'slot 1 ' + (r.busy1 ? sp('ok', 'busy') : 'idle') + ', slot 2 ' + (r.busy2 ? sp('ok', 'busy') : 'idle') + ', ' + cnt(r.dropped) + ' bursts dropped'],
     j && ['Jitter buffer', esc(j.mode) + ', target ' + j.target_ms + ' ms, jitter ' + j.jitter_ms + ' ms, late ' + j.late_ms + ' ms' +
       (j.min_ms != null ? ' (' + j.min_ms + ' to ' + j.max_ms + ' ms)' : '') + '<br>' + num(j.streams) + ' streams, ' + cnt(j.underruns) +
       ' underruns, ' + num(j.grown) + ' grown, ' + num(j.shrunk) + ' shrunk'],
@@ -364,6 +366,34 @@ function roamerFull(r, either) {
 }
 const roamerBrief = (r, either) => card(rname(r) + ' ' + rstate(r, either), kv((either && waiting(r, 'the radio')) ||
   [radioRow(r), ['Channel', chan(r)], ['Heard', esc(r.heard || '-')], ['Sending', esc(r.sending || '-')], has(S.s, 'links') && ('mqtt' in r ? ['HBlink4 / MQTT', up(r.hblink) + ' / ' + up(r.mqtt)] : ['HBlink4', up(r.hblink)])]));
+
+// ── the apps: every repeater, parrot and IP gateway the settings have, each with what it's doing ──
+const APP_KIND = {repeater: 'Repeater', parrot: 'Parrot', ipgw: 'IP gateway', trunk: 'Trunked site'};
+const A_KNOWN = 'name type in out cc net slots id group keyed heard bursts_heard bursts_sent dropped state replayed ignored cut src dst'.split(' ');
+const callText = h => h.src + ' to ' + (h.group ? 'TG ' : '') + h.dst;
+function appSlot(a, sl) {
+  const h = (a.heard || []).find(x => x.slot == sl.slot);
+  return ['Slot ' + sl.slot, (h ? sp('ok', 'hearing') + ' ' + callText(h) : sl.sending ? sp('ok', 'sending') + ' a call from the network' : 'idle') +
+    ' <span class="mute">(' + esc(sl.path) + (sl.peer != null ? ', peer ' + sl.peer : '') + ')</span>'];
+}
+function appState(a) {
+  if (a.type == 'repeater') return a.keyed ? pill('ok', 'on air') : (a.heard || []).length ? pill('ok', 'hearing') : 'keyed' in a ? pill('ok', 'ready') : '';
+  return a.state ? pill(a.state == 'idle' ? 'ok' : 'warn', esc(a.state)) : '';
+}
+function appRows(a) {
+  if (a.type == 'repeater') return [
+    ['Frequencies', 'in ' + mhz(a.in) + ', out ' + mhz(a.out) + (a.cc != null ? ', CC' + a.cc : '')],
+    ['Network', a.net ? esc(a.net) : sp('mute', 'none: local only')],
+    ...(a.slots || []).map(sl => appSlot(a, sl)),
+    a.bursts_heard != null && ['Bursts', num(a.bursts_heard) + ' heard' + (a.bursts_sent != null ? ', ' + num(a.bursts_sent) + ' sent, ' + cnt(a.dropped) + ' dropped' : '')],
+  ];
+  return [
+    a.id != null && ['Answers', (a.group ? 'TG ' : 'ID ') + a.id],
+    a.state && a.src && ['Call', callText({src: a.src, dst: a.dst, group: a.group})],
+    a.replayed != null && ['Calls', num(a.replayed) + ' replayed, ' + cnt(a.ignored) + ' ignored, ' + cnt(a.cut) + ' cut short'],
+  ];
+}
+const appCard = a => card(esc(APP_KIND[a.type] || a.type) + ' ' + esc(a.name) + ' ' + appState(a), kv(appRows(a)) + more(a, A_KNOWN, 'a:' + a.name));
 
 // ── the SDR ───────────────────────────────────────────────────────────────
 // What warming up is waiting on: each reading not yet 10 min long, or moving more than it may
@@ -485,6 +515,7 @@ function render() {
       modems(s).map(modemBrief).join('');
     $('ov_more').innerHTML = extras(s).map(([k, v]) => card(esc(k.replace(/_/g, ' ')), v && typeof v == 'object' ? fields(flat(v)) : fv(k, v))).join('');
   } else if (t == 'radios') {
+    $('apps').innerHTML = (s.apps || []).map(appCard).join('');
     $('radios').innerHTML = rs.map((r, i) => roamerFull(r, s.usb_either && !i)).join('');
     $('sdrs').innerHTML = ds.map(d => sdrFull(d, s.usb_either)).join('');
     $('modems').innerHTML = modems(s).map(modemFull).join('');

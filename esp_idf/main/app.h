@@ -294,6 +294,8 @@ int site_mn_path_at(uint32_t hz, int slot);
 bool site_mn_burst(uint64_t only, bool emergency, const rdof_net_burst_t *b);
 int site_heard_path(uint32_t id);
 int site_mn_sub_tgs(uint32_t *tgs, int max, bool *all);
+/* /api/status's "apps": the settings' apps, each with what it's doing (rdof_router_apps_json). 0: none. */
+size_t site_apps_json(char *out, size_t cap);
 /* The MQTT network (mqttnet_task.c, docs/spec/fw/mqtt-net.md): on when the settings' mqtt network has calls and
  * format "v3". mn_start after the settings, before the roles; each receiver's tracker then takes mn_sink (false:
  * off; source as ipgw_sink's); the transmitters' call events go to mn_tx_event. */

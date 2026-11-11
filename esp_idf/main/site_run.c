@@ -318,6 +318,39 @@ int site_heard_path(uint32_t id)
     return k;
 }
 
+/* the parrot's state and counts, in its app's object; under plock (site_apps_json) */
+static void apps_extra(void *ctx, int a, rdof_json_t *j)
+{
+    static const char *pstate[] = {"idle", "recording", "waiting", "replaying"};
+    if (S->app[a].type != RDOF_APP_PARROT || !P)
+        return;
+    rdof_json_str(j, "state", pstate[P->state & 3]);
+    rdof_json_int(j, "replayed", P->replayed);
+    rdof_json_int(j, "ignored", P->ignored);
+    rdof_json_int(j, "cut", P->cut);
+    if (P->state & 3) {
+        rdof_json_int(j, "src", P->src);
+        rdof_json_int(j, "dst", P->dst);
+    }
+}
+
+size_t site_apps_json(char *out, size_t cap)
+{
+    if (!SR || !S->napp) {
+        if (cap)
+            out[0] = 0;
+        return 0;
+    }
+    if (P)
+        xSemaphoreTake(plock, portMAX_DELAY); /* the parrot's, before lock (the order above) */
+    xSemaphoreTakeRecursive(lock, portMAX_DELAY);
+    const size_t n = rdof_router_apps_json(&SR->router, mono(), apps_extra, NULL, out, cap);
+    xSemaphoreGiveRecursive(lock);
+    if (P)
+        xSemaphoreGive(plock);
+    return n;
+}
+
 int site_mn_sub_tgs(uint32_t *tgs, int max, bool *all)
 {
     *all = false;

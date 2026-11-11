@@ -4203,6 +4203,51 @@ static void web_mmdvm(rdof_hostweb_modem_t *m)
     }
 }
 
+/* What runs of app a, for the page's Apps card: the unit's repeater with what it hears on each slot and its
+ * counts, the parrot with its state. A split repeater on a radio of its own has its radio's card. */
+static void web_app_extra(void *ctx, int a, rdof_json_t *j)
+{
+    static const char *pstate[] = {"idle", "recording", "waiting", "replaying"};
+    const rdof_app3_t *ap = &rcfg.site.app[a];
+    if (ap->type == RDOF_APP_PARROT && R.parrot) {
+        rdof_json_str(j, "state", pstate[R.parrot->state & 3]);
+        rdof_json_int(j, "replayed", R.parrot->replayed);
+        rdof_json_int(j, "ignored", R.parrot->ignored);
+        rdof_json_int(j, "cut", R.parrot->cut);
+        if (R.parrot->state & 3) {
+            rdof_json_int(j, "src", R.parrot->src);
+            rdof_json_int(j, "dst", R.parrot->dst);
+        }
+    }
+    if (ap->type != RDOF_APP_REPEATER || strcmp(ap->name, rcfg.name))
+        return;
+    const bool keyed = R.split || R.mmdvm ? R.keyed : R.m.keyed;
+    rdof_json_bool(j, "keyed", keyed);
+    rdof_json_int(j, "bursts_heard", R.mmdvm ? (long long)mm_heard_n : (long long)R.m.rx_bursts);
+    if (!R.mmdvm) {
+        rdof_json_int(j, "bursts_sent", (long long)R.m.tx_bursts);
+        rdof_json_int(j, "dropped", (long long)R.m.lost);
+    }
+    const int uc = unit_channel();
+    const rdof_tracker_t *tr = R.mmdvm ? &MT : uc >= 0 ? &R.rx.trackers[uc] : NULL;
+    char heard[160];
+    size_t n = 0;
+    heard[n++] = '[';
+    for (int i = 0; tr && i < 2; i++) {
+        const rdof_call_t *c = &tr->slots[i].call;
+        if (!c->active)
+            continue;
+        const int w = snprintf(heard + n, sizeof heard - n, "%s{\"slot\":%d,\"src\":%lu,\"dst\":%lu,\"group\":%s}",
+                               n > 1 ? "," : "", i + 1, (unsigned long)c->src, (unsigned long)c->dst,
+                               c->group ? "true" : "false");
+        if (w > 0 && (size_t)w < sizeof heard - n - 2)
+            n += (size_t)w;
+    }
+    heard[n++] = ']';
+    heard[n] = 0;
+    rdof_json_raw(j, "heard", heard);
+}
+
 static void web_publish(double rx, double tx, int cc)
 {
     static const char *pstate[] = {"idle", "recording", "waiting", "replaying"};
@@ -4275,6 +4320,8 @@ static void web_publish(double rx, double tx, int cc)
     w.extra[0].value = R.m.tx_late48 * 1000 / 48;
     snprintf(w.extra[1].name, sizeof w.extra[1].name, "inbound off (%%)");
     w.extra[1].value = (int64_t)llround(R.m.inbound_off * 100);
+    if (SR.router.site && rcfg.site.napp)
+        rdof_router_apps_json(&SR.router, now_s(), web_app_extra, NULL, w.apps, sizeof w.apps);
     w.spectrum = dev != NULL; /* --fpga-chz: the channels' own (web_spectrum_chs) */
     if (dev)
         web_sdr(&w.sdrs[w.nsdr++]);

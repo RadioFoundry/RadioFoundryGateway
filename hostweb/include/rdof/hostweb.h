@@ -145,6 +145,8 @@ typedef struct {
         char name[24];
         int64_t value;
     } extra[8];
+    /* the apps it runs, as a JSON array (rdof_router_apps_json); "": none to show */
+    char apps[2048];
     bool spectrum; /* the tool makes the page's spectrum (rdof_hostweb_spectrum_row) */
     uint32_t mqtt_dropped; /* the radio's MQTT posts dropped (has_mqtt) */
     /* the SDRs it runs and the radios or modems it drives on a port (below) */

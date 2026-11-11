@@ -847,6 +847,20 @@ static void test_info(void)
     rdof_router_rf(&r, rdof_site_path(&s, "R1/1"), &key, 10.0);
     const int k2 = rdof_mn_sub_tgs(&s, net, &r, 10.5, tgs, RDOF_MN_SUBS, &all);
     CHECK(!all && k2 == 4 && tgs[2] == 3150); /* after its path's tg set */
+    /* the apps, for a status page: the repeater with its frequencies and slots, the parrot with its talkgroup, and
+       what the program adds */
+    {
+        char apps[1024];
+        const size_t al = rdof_router_apps_json(&r, 10.5, NULL, NULL, apps, sizeof apps);
+        CHECK(al == strlen(apps) && apps[0] == '[' && apps[al - 1] == ']');
+        CHECK(strstr(apps, "\"type\":\"repeater\"") && strstr(apps, "\"slots\":[{\"slot\":1,\"path\":\"R1/1\""));
+        CHECK(strstr(apps, "\"sending\":false") && !strstr(apps, "\"sending\":true"));
+        CHECK(strstr(apps, "\"type\":\"parrot\",\"id\":9990,\"group\":true}"));
+        if (!strstr(apps, "\"type\":\"parrot\",\"id\":9990,\"group\":true}"))
+            printf("  %s\n", apps);
+        char small[8];
+        CHECK(rdof_router_apps_json(&r, 10.5, NULL, NULL, small, sizeof small) == 2 && !strcmp(small, "[]"));
+    }
     /* the apps' IDs, to subscribe: the parrot's talkgroup on tg, nothing on pc; with an IP gateway on pc 9991
        beside it, that one on pc */
     {

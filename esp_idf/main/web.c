@@ -195,6 +195,11 @@ static void fw_status(void *ctx, rdof_json_t *j, rdof_webapi_at_t at)
             rdof_json_raw(j, "gnss", g);
     }
 #endif
+    {
+        EXT_RAM_BSS_ATTR static char apps[2048]; /* one status at a time, as gnss above */
+        if (site_apps_json(apps, sizeof apps))
+            rdof_json_raw(j, "apps", apps);
+    }
         rdof_json_bool(j, "usb_either", g_board.usb_either);
 #if CONFIG_RDOF_ROAMER
         rdof_json_bool(j, "build_roamer", true);

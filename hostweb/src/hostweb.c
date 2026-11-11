@@ -733,6 +733,9 @@ static void host_status(void *ctx, rdof_json_t *j, rdof_webapi_at_t at)
         rdof_json_int(j, "cut", s.parrot_cut);
         rdof_json_close(j);
     }
+    s.apps[sizeof s.apps - 1] = 0;
+    if (s.apps[0] == '[')
+        rdof_json_raw(j, "apps", s.apps);
     sdrs_json(j, &s);
     modems_json(j, &s);
 }
