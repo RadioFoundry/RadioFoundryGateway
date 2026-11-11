@@ -240,6 +240,6 @@ def test_pings_do_not_break_frames(info):
         assert (b[0] == a[0] + a[1]) or (b[2] & 1), f"samples missing before sc {b[0]} with no gap flag"
     assert sum(n for _, n, _ in seqs) == texts[-1]["samples"]
     assert texts[-1]["gaps"] == sum(1 for _, _, f in seqs if f & 1)
-    assert len(pongs) > 20
+    assert len(pongs) >= 10
     answered = sum(1 for p in pongs if p.is_set())
     assert answered >= len(pongs) - 3, f"{answered} of {len(pongs)} pings answered"

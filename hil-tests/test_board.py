@@ -170,7 +170,7 @@ def test_resolved_matches_status(status):
     code, hdrs, body = request("GET", "/api/resolved")
     assert code == 200
     assert hdrs["Content-Type"].startswith("text/plain")
-    assert len(body) <= 5120
+    assert len(body) <= 16384  # interfaces-http.md: the board's cap
     text = body.decode()
     assert f"{status['name']} runs:" in text
     if "sdr" in status:
