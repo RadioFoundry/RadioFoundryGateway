@@ -190,7 +190,7 @@ def test_log_is_text():
     code, hdrs, body = request("GET", "/api/log")
     assert code == 200
     assert hdrs["Content-Type"].startswith("text/plain")
-    assert len(body) <= 64 * 1024
+    assert len(body) <= 256 * 1024  # CONFIG_RDOF_LOG_RING_KB on the W12
 
 
 def test_spectrum(status):
