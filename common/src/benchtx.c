@@ -10,7 +10,10 @@
 #include "rdof/layer2.h"
 #include "rdof/pdu.h"
 
-enum { STEP_VERSION = 0, STEP_CONFIG, STEP_FREQ, STEP_MODE, STEP_DONE };
+/* The frequency before the config: an MMDVM_HS hotspot takes a new frequency only when a SET_CONFIG follows it (as
+   rdof_radio_tune sends them). The other way round it stayed on the frequency it had, and a job keyed there (the
+   bench Cubie's Dual Hat, 2026-11-11: a job on 461.0875 went out on the transceiver's 461.4625). */
+enum { STEP_VERSION = 0, STEP_FREQ, STEP_CONFIG, STEP_MODE, STEP_DONE };
 
 bool rdof_benchtx_allowed(const rdof_benchtx_policy_t *p, uint32_t freq)
 {
@@ -498,7 +501,7 @@ void rdof_benchtx_modem(rdof_benchtx_t *t, const uint8_t *b, size_t n, double no
 
 static void setup_tick(rdof_benchtx_t *t, double now)
 {
-    static const char *const names[] = {"GET_VERSION", "SET_CONFIG", "SET_FREQ", "SET_MODE"};
+    static const char *const names[] = {"GET_VERSION", "SET_FREQ", "SET_CONFIG", "SET_MODE"};
     if (t->replied && !t->nak) {
         t->want = 0xFF;
         if (++t->step == STEP_DONE) {

@@ -55,11 +55,12 @@ const READY: c_int = 1;
 const DONE: c_int = 2;
 
 const STEP_VERSION: c_int = 0;
-const STEP_CONFIG: c_int = 1;
-const STEP_FREQ: c_int = 2;
+// the frequency before the config: an MMDVM_HS takes a new frequency only when a SET_CONFIG follows it
+const STEP_FREQ: c_int = 1;
+const STEP_CONFIG: c_int = 2;
 const STEP_MODE: c_int = 3;
 const STEP_DONE: c_int = 4;
-const STEP_NAMES: [&[u8]; 4] = [b"GET_VERSION", b"SET_CONFIG", b"SET_FREQ", b"SET_MODE"];
+const STEP_NAMES: [&[u8]; 4] = [b"GET_VERSION", b"SET_FREQ", b"SET_CONFIG", b"SET_MODE"];
 
 /// data_nak: a burst was NAKed (with its reason in the low byte when the modem gave one)
 const NAKED: c_int = 0x200;

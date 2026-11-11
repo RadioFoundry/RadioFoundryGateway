@@ -283,9 +283,9 @@ static void t_call(void)
 {
     start(10);
     run(0.2, true);
-    CHECK(tb.ncmds >= 4 && tb.cmds[0] == RDOF_MMDVM_GET_VERSION && tb.cmds[1] == RDOF_MMDVM_SET_CONFIG &&
-              tb.cmds[2] == RDOF_MMDVM_SET_FREQ && tb.cmds[3] == RDOF_MMDVM_SET_MODE,
-          "setup order");
+    CHECK(tb.ncmds >= 4 && tb.cmds[0] == RDOF_MMDVM_GET_VERSION && tb.cmds[1] == RDOF_MMDVM_SET_FREQ &&
+              tb.cmds[2] == RDOF_MMDVM_SET_CONFIG && tb.cmds[3] == RDOF_MMDVM_SET_MODE,
+          "setup order: the frequency, then the config (an MMDVM_HS applies the frequency at the config)");
     CHECK(said("\"type\":\"ready\""), "ready: %s", tb.frames);
     CHECK(!strcmp(rdof_benchtx_state(&tb.t), "armed"), "armed: %s", rdof_benchtx_state(&tb.t));
     static char f[8192];
@@ -790,7 +790,7 @@ static void t_edges(void)
     CHECK(!strcmp(tb.t.error, "that's 0.84 s of key time; the limit is 0.5 s"), "%s", tb.t.error);
     /* a refused SET_CONFIG: unavailable */
     start(10);
-    tb.t.step = 1;
+    tb.t.step = 2; /* STEP_CONFIG */
     tb.t.want = RDOF_MMDVM_SET_CONFIG;
     const uint8_t nak[2] = {RDOF_MMDVM_SET_CONFIG, 1};
     reply(&tb, RDOF_MMDVM_NAK, nak, 2);
