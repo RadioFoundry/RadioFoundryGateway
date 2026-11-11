@@ -26,6 +26,8 @@ struct rdofmq {
     bool sent[MAX_ALIASES];     /* the alias has gone out with its topic on this connection */
     int unacked;                /* QoS 1 messages in libmosquitto's queue */
     uint32_t dropped;
+    char subs[RDOFMQ_SUBS][160]; /* rdofmq_subscribe's */
+    int nsubs;
 };
 
 static void say(rdofmq_t *q, const char *fmt, ...)
@@ -38,6 +40,8 @@ static void say(rdofmq_t *q, const char *fmt, ...)
     if (q->o.say)
         q->o.say(line);
 }
+
+static int sub_opts(const rdofmq_t *q) { return q->v5 && q->o.no_local ? MQTT_SUB_OPT_NO_LOCAL : 0; }
 
 static void on_connect(struct mosquitto *m, void *ctx, int rc, int flags, const mosquitto_property *props)
 {
@@ -56,8 +60,13 @@ static void on_connect(struct mosquitto *m, void *ctx, int rc, int flags, const 
         pthread_mutex_unlock(&q->mu);
         say(q, "mqtt: %s connected to %s:%d (MQTT %s%s)", q->o.client_id, q->o.host, q->o.port, q->v5 ? "5" : "3.1.1",
             q->n_alias ? ", topic aliases" : "");
-        if (q->o.subscribe && mosquitto_subscribe_v5(m, NULL, q->o.subscribe, 0, 0, NULL) != MOSQ_ERR_SUCCESS)
+        if (q->o.subscribe && mosquitto_subscribe_v5(m, NULL, q->o.subscribe, 0, sub_opts(q), NULL) != MOSQ_ERR_SUCCESS)
             say(q, "mqtt: %s couldn't take %s", q->o.client_id, q->o.subscribe);
+        pthread_mutex_lock(&q->mu);
+        for (int i = 0; i < q->nsubs; i++)
+            if (mosquitto_subscribe_v5(m, NULL, q->subs[i], 0, sub_opts(q), NULL) != MOSQ_ERR_SUCCESS)
+                say(q, "mqtt: %s couldn't take %s", q->o.client_id, q->subs[i]);
+        pthread_mutex_unlock(&q->mu);
         return;
     }
     /* 3.1.1's "unacceptable protocol version" (1), or 5's "unsupported protocol version" (0x84): the same on 3.1.1,
@@ -124,6 +133,8 @@ rdofmq_t *rdofmq_start(const rdofmq_opts_t *o)
     }
     struct mosquitto *m = q->mosq;
     mosquitto_int_option(m, MOSQ_OPT_PROTOCOL_VERSION, MQTT_PROTOCOL_V5);
+    if (o->nodelay)
+        mosquitto_int_option(m, MOSQ_OPT_TCP_NODELAY, 1);
     if (o->user && o->user[0])
         mosquitto_username_pw_set(m, o->user, o->pass && o->pass[0] ? o->pass : NULL);
     if (o->will_topic)
@@ -181,6 +192,34 @@ bool rdofmq_publish(rdofmq_t *q, const char *topic, const void *data, int len, i
     pthread_mutex_unlock(&q->mu);
     mosquitto_property_free_all(&p);
     return rc == MOSQ_ERR_SUCCESS;
+}
+
+void rdofmq_subscribe(rdofmq_t *q, const char *const *filters, int n)
+{
+    if (!q)
+        return;
+    if (n > RDOFMQ_SUBS)
+        n = RDOFMQ_SUBS;
+    pthread_mutex_lock(&q->mu);
+    const bool up = q->up;
+    for (int i = 0; i < q->nsubs; i++) { /* dropped */
+        int k = 0;
+        while (k < n && strcmp(q->subs[i], filters[k]))
+            k++;
+        if (k == n && up)
+            mosquitto_unsubscribe_v5(q->mosq, NULL, q->subs[i], NULL);
+    }
+    for (int k = 0; k < n; k++) { /* new */
+        int i = 0;
+        while (i < q->nsubs && strcmp(q->subs[i], filters[k]))
+            i++;
+        if (i == q->nsubs && up && mosquitto_subscribe_v5(q->mosq, NULL, filters[k], 0, sub_opts(q), NULL))
+            say(q, "mqtt: %s couldn't take %s", q->o.client_id, filters[k]);
+    }
+    for (int k = 0; k < n; k++)
+        snprintf(q->subs[k], sizeof q->subs[k], "%s", filters[k]);
+    q->nsubs = n;
+    pthread_mutex_unlock(&q->mu);
 }
 
 bool rdofmq_up(rdofmq_t *q)

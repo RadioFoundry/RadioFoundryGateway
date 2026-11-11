@@ -26,7 +26,7 @@ jobs:
 
   firmware:
     runs-on: ubuntu-24.04
-    container: espressif/idf:v5.5
+    container: espressif/idf:v5.5.4
     strategy:
       fail-fast: false
       matrix:

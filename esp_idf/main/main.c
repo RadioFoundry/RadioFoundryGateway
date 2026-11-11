@@ -143,6 +143,9 @@ void app_main(void)
 #if CONFIG_RDOF_IPGW
     ipgw_start(); /* before the roles: their receivers hand it data bursts */
 #endif
+#if CONFIG_RDOF_ROAMER
+    mn_start(); /* the MQTT network, format v3: before the roles too, for the same reason */
+#endif
 #if CONFIG_RDOF_ROAMER && CONFIG_RDOF_SDR
     if (g_roles.has_radio && g_roles.has_sdr && roamer_uses_usb() && g_scfg.frontend == RDOF_FE_RTLSDR &&
         !g_roles.usb_hub) {

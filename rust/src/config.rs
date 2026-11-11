@@ -1098,7 +1098,7 @@ impl Cx<'_> {
         }
         put(&mut cfg.mqtt_root, &t[lead..rl]);
         put(&mut cfg.mqtt_app, if cfg.mode == ROAMER { b"roaming" } else { b"repeater" });
-        cfg.mqtt_tls = self.bget(m, c"tls", false);
+        cfg.mqtt_tls = self.bget(m, c"tls", false) || n.transport == 1; // RDOF_MQTT_TLS: transport mqtt/tls
         Some(())
     }
 

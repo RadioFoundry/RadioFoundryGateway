@@ -286,5 +286,6 @@ Every box on a root hears every other box's calls; the router's policies decide 
 carry the same TG both transmit it. There's no master: a TG's calls from two boxes at once both arrive, and each path
 keeps the one that came first (config-v3.md §9.2).
 
-The MQTT network ([mqtt-net.md](mqtt-net.md), planned) replaces these calls: decoded items in place of DMRD packets,
-node state, and a private-call router. A network picks it with `"format": "v3"`.
+The MQTT network ([mqtt-net.md](mqtt-net.md)) replaces these calls: decoded items in place of DMRD packets, node
+state, and a private-call router. A network picks it with `"format": "v3"`; rdofradio and the board run it on their
+own connection (`rdof-net-{name}`, mqtt-net.md §1.1). The DMRD calls stay the default.

@@ -50,7 +50,7 @@ typedef struct {
 /* Ranks of a network call on a path. */
 enum { RDOF_RANK_STAR = 1, RDOF_RANK_LISTED = 2, RDOF_RANK_EMERGENCY = 3 };
 
-typedef struct {
+typedef struct rdof_router {
     const rdof_site_t *site;
     struct {
         uint32_t tg;

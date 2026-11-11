@@ -59,6 +59,8 @@ int rdof_trellis34_decode(const uint8_t burst[RDOF_BURST_BYTES], uint8_t out18[1
 void rdof_trellis34_encode(const uint8_t payload18[18], uint8_t info196[196]);
 
 void rdof_rate1_payload(const uint8_t burst[RDOF_BURST_BYTES], uint8_t out24[24]);
+/* A rate 1 block's 24 octets as the 196 info bits (rdof_info_burst puts them in a burst). */
+void rdof_rate1_encode(const uint8_t payload24[24], uint8_t info196[196]);
 
 #endif /* RDOF_FEATURE_DATA_BLOCKS */
 

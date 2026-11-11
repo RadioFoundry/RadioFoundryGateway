@@ -835,7 +835,7 @@ static bool unit_mqtt(ctx_t *c, const rdof_plan_t *p, rdof_config_t *cfg)
     memmove(cfg->mqtt_root, cfg->mqtt_root + lead, rl - lead);
     cfg->mqtt_root[rl - lead] = 0;
     snprintf(cfg->mqtt_app, sizeof cfg->mqtt_app, "%s", cfg->mode == RDOF_CFG_ROAMER ? "roaming" : "repeater");
-    cfg->mqtt_tls = bget(c, m, "tls", false);
+    cfg->mqtt_tls = bget(c, m, "tls", false) || n->transport == RDOF_MQTT_TLS;
     return true;
 }
 

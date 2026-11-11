@@ -215,6 +215,9 @@ static void fw_status(void *ctx, rdof_json_t *j, rdof_webapi_at_t at)
         ipgw_status_json(j);
 #endif
         site_status_json(j);
+#if CONFIG_RDOF_ROAMER
+        mn_status_json(j);
+#endif
         break;
     }
 }

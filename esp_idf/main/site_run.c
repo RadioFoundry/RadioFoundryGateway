@@ -24,6 +24,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "rdof/bits.h"
+#include "rdof/mqttnet.h"
 #include "rdof/parrot.h"
 #include "rdof/siteroute.h"
 
@@ -32,7 +33,7 @@ static const char *TAG = "site";
 static rdof_site_t *S;
 static rdof_siteroute_t *SR;
 static SemaphoreHandle_t lock;
-static int hblink = -1, parrot = -1;
+static int hblink = -1, parrot = -1, mqttnet = -1;
 static roam_t *owner;
 #if RDOF_FEATURE_TX
 static rdof_parrot_t *P;
@@ -63,6 +64,10 @@ void site_load(const rdof_site_t *site)
     for (int k = 0; k < s->nnet; k++)
         if (s->net[k].type == RDOF_NET_HBLINK && hblink < 0)
             hblink = k;
+    for (int k = 0; k < s->nnet; k++)
+        if (s->net[k].type == RDOF_NET_MQTT && s->net[k].calls && s->net[k].format == RDOF_MQTT_FORMAT_V3 &&
+            mqttnet < 0)
+            mqttnet = k;
     parrot = rdof_site_app_of(s, RDOF_APP_PARROT);
     lock = xSemaphoreCreateRecursiveMutex(); /* the transceiver answers a tune made here through site_tuned */
     S = s;
@@ -256,17 +261,72 @@ roam_t *site_hb_owner(roam_t *r)
 
 roam_t *site_hb_peer(void) { return site_shared_identity() ? owner : NULL; }
 
-bool site_rf(uint32_t hz, int slot, uint32_t src, uint32_t dst, bool group)
+int site_rf_net(uint32_t hz, int slot, uint32_t src, uint32_t dst, bool group)
 {
     if (!SR)
-        return true;
+        return -1;
     xSemaphoreTakeRecursive(lock, portMAX_DELAY);
     const int net = rdof_siteroute_rf(SR, hz, slot, src, dst, group, mono());
     const char *why = SR->why;
     xSemaphoreGiveRecursive(lock);
     if (net < 0 && why)
         ESP_LOGD(TAG, "%.5f MHz slot %d, %lu > %lu: %s", hz / 1e6, slot, (unsigned long)src, (unsigned long)dst, why);
+    return net;
+}
+
+bool site_rf(uint32_t hz, int slot, uint32_t src, uint32_t dst, bool group)
+{
+    if (!SR)
+        return true;
+    const int net = site_rf_net(hz, slot, src, dst, group);
     return net >= 0 && net == hblink;
+}
+
+/* ── the MQTT network (mqttnet_task.c): the router's side, under its lock ── */
+
+const rdof_site_t *site_get(void) { return S; }
+
+int site_mn_net(void) { return SR ? mqttnet : -1; }
+
+int site_mn_path_at(uint32_t hz, int slot)
+{
+    if (!SR || mqttnet < 0)
+        return -1;
+    xSemaphoreTakeRecursive(lock, portMAX_DELAY);
+    const int k = rdof_siteroute_path_at(SR, hz, slot);
+    xSemaphoreGiveRecursive(lock);
+    return k >= 0 && S->path[k].pol.net == mqttnet ? k : -1;
+}
+
+bool site_mn_burst(uint64_t only, bool emergency, const rdof_net_burst_t *b)
+{
+    if (!SR || mqttnet < 0)
+        return false;
+    xSemaphoreTakeRecursive(lock, portMAX_DELAY);
+    const uint64_t went = rdof_siteroute_burst_on(SR, mqttnet, only, emergency, b, mono());
+    xSemaphoreGiveRecursive(lock);
+    return went != 0;
+}
+
+int site_heard_path(uint32_t id)
+{
+    if (!SR)
+        return -1;
+    xSemaphoreTakeRecursive(lock, portMAX_DELAY);
+    const int k = rdof_router_heard(&SR->router, id, mono());
+    xSemaphoreGiveRecursive(lock);
+    return k;
+}
+
+int site_mn_sub_tgs(uint32_t *tgs, int max, bool *all)
+{
+    *all = false;
+    if (!SR || mqttnet < 0)
+        return 0;
+    xSemaphoreTakeRecursive(lock, portMAX_DELAY);
+    const int n = rdof_mn_sub_tgs(S, mqttnet, &SR->router, mono(), tgs, max, all);
+    xSemaphoreGiveRecursive(lock);
+    return n;
 }
 
 bool site_reaches_parrot(uint32_t hz, int slot)
