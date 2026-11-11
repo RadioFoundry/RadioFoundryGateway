@@ -42,7 +42,7 @@ Order: rdofradio first (it already carries MQTT calls, [mqtt.md](mqtt.md) §10),
 
 Decisions taken while building it:
 
-- **Connection.** Its own, client ID `rdof-net-{node}`, will `{root}/node/{node}/online` `"0"` (retained, QoS 1),
+- **Connection.** Its own, client ID `rdof-net-{node}` (`rdof-net-{root}-{node}` under a root other than `DMR`), will `{root}/node/{node}/online` `"0"` (retained, QoS 1),
   `"1"` and `info` on connect. MQTT 5 with No Local on every subscription; TCP_NODELAY (the board sets it on
   esp-mqtt's socket once connected).
   The node is the box's `name`.

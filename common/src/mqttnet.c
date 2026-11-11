@@ -2043,6 +2043,20 @@ static bool sub_add(uint32_t *tgs, int *n, int max, uint32_t tg)
     return true;
 }
 
+size_t rdof_mn_client_id(char *out, size_t cap, const char *root, const char *node)
+{
+    if (!cap)
+        return 0;
+    if (!root || !root[0] || !strcmp(root, "DMR"))
+        snprintf(out, cap, "rdof-net-%s", node);
+    else
+        snprintf(out, cap, "rdof-net-%s-%s", root, node);
+    for (char *q = out; *q; q++)
+        if (*q == '/')
+            *q = '-';
+    return strlen(out);
+}
+
 int rdof_mn_claim_ids(const rdof_site_t *s, int which, uint32_t *ids, int max)
 {
     int nids = 0;

@@ -1822,7 +1822,7 @@ static void mn_start(void)
     mn_down.burst = mn_burst;
     mn_down.data = mn_data;
     mn_down.setup = mn_setup;
-    snprintf(id, sizeof id, "rdof-net-%s", mn_node);
+    rdof_mn_client_id(id, sizeof id, c->mqtt_root, mn_node);
     rdofmq_opts_t o = {.host = c->mqtt_host, .user = c->mqtt_user, .pass = c->mqtt_pass, .port = c->mqtt_port,
                        .tls = c->mqtt_tls, .client_id = id, .will_topic = mn_online, .will_msg = "0",
                        .queue_max = 1000, .say = net_say, .on_message = mn_message, .no_local = true,

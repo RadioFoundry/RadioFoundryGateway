@@ -18,7 +18,7 @@ board-lr2021-bm-simplex.json|w12:transceiver,w12-rx:receiver|ok|ok
 board-lr2021-rx-radio-tx-split-repeater.json|R1:repeater|ok|devices.m0.port: this host has no UARTs of its own (give the serial device's path)
 board-lr2021-rx-only-remote-receiver-mqttnet.json|w12-rx:receiver|ok|nothing transmits: rdofradio runs a repeater, or a transceiver on the SDR
 board-lr2021-simplex-mqttnet-only.json|w12:transceiver,w12-rx:receiver|ok|ok
-board-lr2021-simplex-x3-parrot-ipgw.json|w12:transceiver,w12-rx:receiver|ok|ok
+board-lr2021-simplex-x3-parrot-ipgw.json|w12:transceiver,w12-rx:receiver|ok|apps.ipgw: the IP gateway isn't on rdofradio (a board's app)
 board-lr2021-tx-radio-rx-split-repeater.json|refused: apps.R1: devices.w12 (lr2021) is half duplex: one chain, switched; a duplex repeater needs RX while it transmits||
 board-mmdvm-duplex-rpt-rtl-monitor.json|R1:repeater,rtl-rx:receiver|ok|devices.m0.port: this host has no UARTs of its own (give the serial device's path)
 board-mmdvm-hs-simplex-rtl-monitor.json|m0:transceiver,rtl-rx:receiver|ok|devices.m0.port: this host has no UARTs of its own (give the serial device's path)
@@ -56,7 +56,7 @@ host-pluto-repeater-simplex-txvr-2-carriers.json|refused: devices.pluto: carrier
 host-pluto-rx-1-radio-tx-split-repeaters.json|R0:repeater|devices.pluto.driver: iio is the host tool's, not this board's|ok
 host-pluto-rx-2-radio-tx-split-repeaters.json|R0:repeater,R1:repeater|devices.pluto.driver: iio is the host tool's, not this board's|ok
 host-pluto-rx-4-radio-tx-split-repeaters.json|R0:repeater,R1:repeater,R2:repeater,R3:repeater|devices.pluto.driver: iio is the host tool's, not this board's|ok
-host-pluto-simplex-x3-parrot-ipgw.json|pluto:transceiver,pluto-rx:receiver|devices.pluto.driver: iio is the host tool's, not this board's|ok
+host-pluto-simplex-x3-parrot-ipgw.json|pluto:transceiver,pluto-rx:receiver|devices.pluto.driver: iio is the host tool's, not this board's|apps.ipgw: the IP gateway isn't on rdofradio (a board's app)
 host-rtl-monitor-only-no-tx.json|rtl0-rx:receiver|ok|nothing transmits: rdofradio runs a repeater, or a transceiver on the SDR
 host-rtl-rx-radio-tx-split-repeater.json|R1:repeater|devices.m0.port: a serial path is for a host; this board has uart and usb ports|ok
 host-sctp.json|R1:repeater|devices.pluto.driver: iio is the host tool's, not this board's|ok

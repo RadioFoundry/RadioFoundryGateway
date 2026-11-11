@@ -200,6 +200,10 @@ bool rdof_mn_node_ok(const char *node);
 size_t rdof_mn_topic(char *out, size_t cap, const char *root, int kind, uint32_t id, const char *node);
 /* {root}/node/{node}/{leaf} */
 size_t rdof_mn_node_topic(char *out, size_t cap, const char *root, const char *node, const char *leaf);
+/* The MQTT client ID of a node's connection: rdof-net-{node} under the default root "DMR", else
+   rdof-net-{root}-{node} (the root's '/' as '-'), so two boxes of one name on two roots of a broker don't put each
+   other off it. Returns the length (cut at cap). */
+size_t rdof_mn_client_id(char *out, size_t cap, const char *root, const char *node);
 /* A call topic's kind, id and node (copied, cut at cap). RDOF_MN_T_NONE: not one of the three, or not under root. */
 int rdof_mn_topic_parse(const char *topic, const char *root, uint32_t *id, char *node, size_t cap);
 

@@ -861,6 +861,15 @@ static void test_info(void)
         char small[8];
         CHECK(rdof_router_apps_json(&r, 10.5, NULL, NULL, small, sizeof small) == 2 && !strcmp(small, "[]"));
     }
+    /* the connection's client ID: the node's under the default root, the root's too under another */
+    {
+        char id[64];
+        CHECK(rdof_mn_client_id(id, sizeof id, "DMR", "pluto") == 14 && !strcmp(id, "rdof-net-pluto"));
+        rdof_mn_client_id(id, sizeof id, "club/test", "pluto");
+        CHECK(!strcmp(id, "rdof-net-club-test-pluto"));
+        rdof_mn_client_id(id, 12, "DMR", "pluto");
+        CHECK(!strcmp(id, "rdof-net-pl"));
+    }
     /* the apps' IDs, to subscribe: the parrot's talkgroup on tg, nothing on pc; with an IP gateway on pc 9991
        beside it, that one on pc */
     {

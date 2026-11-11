@@ -126,6 +126,15 @@ static bool from_plan(const rdof_plan_t *p, rdofradio_cfg_t *o, char *err, size_
         snprintf(err, cap, "%s: mode %s isn't on rdofradio (duplex only)", c->name, c->sfr ? "sfr" : "dcdm");
         return false;
     }
+    {
+        /* rdofradio runs no IP gateway: the router would still take its ID's calls, and they'd go nowhere */
+        const rdof_site_t *st = rdof_plan_site(p);
+        const int ig = rdof_site_app_of(st, RDOF_APP_IPGW);
+        if (ig >= 0) {
+            snprintf(err, cap, "apps.%s: the IP gateway isn't on rdofradio (a board's app)", st->app[ig].name);
+            return false;
+        }
+    }
     snprintf(o->box, sizeof o->box, "%s", roles.box);
     snprintf(o->name, sizeof o->name, "%s", c->name);
     o->peer_id = c->peer_id;

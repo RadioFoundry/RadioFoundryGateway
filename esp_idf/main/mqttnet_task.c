@@ -312,7 +312,7 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *ev)
     esp_mqtt_event_handle_t e = ev;
     switch ((esp_mqtt_event_id_t)id) {
     case MQTT_EVENT_CONNECTED:
-        ESP_LOGI(TAG, "connected to the broker as rdof-net-%s", M->node);
+        ESP_LOGI(TAG, "connected to the broker, node %s", M->node);
         nodelay();
         /* a new session: the task subscribes again (it owns the list) */
         M->up = true;
@@ -616,7 +616,7 @@ void mn_start(void)
 #endif
     m->use_tls = use_tls;
     snprintf(uri, sizeof uri, "%s://%s:%d", use_tls ? "mqtts" : "mqtt", host, port);
-    snprintf(id, sizeof id, "rdof-net-%s", m->node);
+    rdof_mn_client_id(id, sizeof id, root, m->node);
     const esp_mqtt_client_config_t c = {
         .broker.address.uri = uri,
 #if CONFIG_RDOF_MQTT_TLS

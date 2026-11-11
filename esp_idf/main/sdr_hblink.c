@@ -144,7 +144,7 @@ static void peer_task(void *arg)
         int up = 0;
         for (int i = 0; i < npeers; i++) {
             peer_t *p = &peers[i];
-            rdof_hbp_event_t ev;
+            rdof_hbp_event_t ev = RDOF_HBP_NONE; /* the tick doesn't run while the socket is down */
             if (p->via)
                 continue;
             if (p->sock >= 0 && rdof_hb_peer_tick(&p->peer, now, &ev)) {
