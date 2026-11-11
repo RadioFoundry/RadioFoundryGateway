@@ -475,6 +475,40 @@ static size_t pull(void *ctx, uint8_t *buf, size_t max)
     return n;
 }
 
+/* Time marks: the IRQ pin re-armed under the level, up by the next read; the bytes in by its edge known exactly. */
+static void marks(void)
+{
+    lr2021_iq_t iq;
+    lr2021_t *d = chip(true);
+    lr2021_iq_init(&iq, d, &lr2021_board_w12, false);
+    lr2021_iq_cfg_t cfg = {.rate = 384000, .mode = LR2021_IQ_CONV8, .center_hz = 915e6, .gain = 13, .slack_us = 700};
+    CHECK(lr2021_iq_start(&iq, &cfg) == LR2021_OK, "marks: start (%s)", iq.error);
+    S.sb = iq.plan.sample_bytes;
+    M.bytes_per_us = iq.plan.rate * iq.plan.sample_bytes / 1e6;
+    CHECK(M.irq_high_at == LR2021_IQ_MARK_LEVEL, "marks: the IRQ at %d", M.irq_high_at);
+    run(&iq, 20);
+    bool exact = true;
+    for (int64_t end = F.now_us + 200000; F.now_us < end;) {
+        iq.mark_want = !iq.mark_armed;
+        const uint64_t before = iq.bytes_out;
+        const uint32_t n = iq.mark_n;
+        CHECK(lr2021_iq_poll(&iq, sink, NULL, 5) >= 0, "marks: poll (%s)", iq.error);
+        if (iq.mark_n != n && iq.mark_bytes != before + LR2021_IQ_MARK_LEVEL)
+            exact = false;
+    }
+    CHECK(iq.mark_n >= 20 && iq.mark_failed == 0, "marks: %u good, %u failed", (unsigned)iq.mark_n, (unsigned)iq.mark_failed);
+    CHECK(exact, "marks: the bytes in by the edge are the bytes read plus the level");
+    CHECK(iq.stats.losses == 0, "marks: nothing lost");
+    M.irq_high_at = 0; /* the pin never rises */
+    for (int64_t end = F.now_us + 20000; F.now_us < end;) {
+        iq.mark_want = !iq.mark_armed;
+        CHECK(lr2021_iq_poll(&iq, sink, NULL, 5) >= 0, "marks: poll (%s)", iq.error);
+    }
+    CHECK(iq.mark_failed > 0, "marks: no rise, no mark");
+    lr2021_iq_stop(&iq);
+    lr2021_close(d);
+}
+
 static void transmit(void)
 {
     lr2021_iq_t iq;
@@ -724,6 +758,7 @@ int main(void)
     stream(LR2021_IQ_FSK16, 250000, true, 0, "FSK16 250 k, IRQ");
     stream(LR2021_IQ_CONV8, 384000, true, 0, "CONV8 384 k, IRQ");
     stream(LR2021_IQ_CONV8, 384000, true, 700, "CONV8 384 k, IRQ, 700 us slack");
+    marks();
     transmit();
     transmit_pin();
     transmit_streamed();

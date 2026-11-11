@@ -133,6 +133,12 @@ static bool send_txvr(rdof_siteroute_t *sr, int k, const rdof_net_burst_t *o, bo
         sr->tuned[sr->tuned_next] = stream;
         sr->tuned_next = (sr->tuned_next + 1) % RDOF_SITEROUTE_TUNED;
         rdof_txvr_on_tune(sr->tx[got.i], &tu);
+        if (local && rdof_txvr_refused(sr->tx[got.i], o->stream_id)) {
+            /* an app's stream (a bench job's) the transceiver refused (busy receiving elsewhere, not ready, not
+               allowed): not sent, so the app hears it now and not as a job that went nowhere */
+            rdof_txpool_release(&sr->pool, got.i);
+            return false;
+        }
     }
     rdof_txvr_on_burst(sr->tx[got.i], o);
     if (o->terminator)
@@ -234,6 +240,16 @@ bool rdof_siteroute_holds(const rdof_siteroute_t *sr, const uint8_t sid[4])
 #if RDOF_FEATURE_TX
     for (int i = 0; i < RDOF_SITEROUTE_TXVRS; i++)
         if (sr->tx[i] && rdof_txvr_holds(sr->tx[i], sid))
+            return true;
+#endif
+    return false;
+}
+
+bool rdof_siteroute_refused(const rdof_siteroute_t *sr, const uint8_t sid[4])
+{
+#if RDOF_FEATURE_TX
+    for (int i = 0; i < RDOF_SITEROUTE_TXVRS; i++)
+        if (sr->tx[i] && rdof_txvr_refused(sr->tx[i], sid))
             return true;
 #endif
     return false;

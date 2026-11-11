@@ -592,7 +592,7 @@ static void ed_rf_voice(void)
     b_lc(lc9, RDOF_DT_VOICE_LC_HEADER, b);
     heard(e, 1, C_HEADER, b);
     CHECK(poll_at(e, 0) && r->slots[1].rf.active && r->slots[1].rf.src == 9992345, "the call");
-    LOG_IS(e, "key1 K1 st d1:41 d1:41 d1:41 lc");
+    LOG_IS(e, "mode2 key1 K1 st d1:41 d1:41 d1:41 lc");
     CHECK(e->heard == 2, "heard %d", e->heard);
     heard(e, 1, C_HEADER, b);    /* its header again */
     heard(e, 1, C_HEADER, zero); /* a header that doesn't decode, in the call */
@@ -666,7 +666,7 @@ static void ed_late_entry(void)
         heard(e, 2, c, b);
     }
     CHECK(poll_at(e, 0) && s->rf.active && s->rf.src == 9992345 && s->rf.dst == 9 && s->rf.group, "late entry");
-    LOG_IS(e, "key1 K1 st d2:41 d2:41 d2:41 lc");
+    LOG_IS(e, "mode2 key1 K1 st d2:41 d2:41 d2:41 lc");
     /* E's own burst waits for A */
     CHECK(s->rf.voice.wait_a && !s->count, "waits for A");
 }
@@ -690,7 +690,7 @@ static void ed_rf_data(void)
     b_data_header(5, 6, 3, true, b);
     heard(e, 1, C_DATA_HEADER, b);
     CHECK(poll_at(e, 0) && s->rf.active && s->rf.kind == RDOF_KIND_DATA && s->rf.blocks == 3, "a data call");
-    LOG_IS(e, "key1 K1 st d1:46 lc");
+    LOG_IS(e, "mode2 key1 K1 st d1:46 lc");
     CHECK(r->slots[1].activity.kind == RDOF_ACT_DATA && r->slots[1].activity.dst == 6, "data activity");
     uint8_t c = b_voice(0, NULL, CC, b);
     heard(e, 1, c, b); /* voice in a data call: only late entry */
@@ -787,7 +787,7 @@ static void ed_wakeup(void)
     b_csbk(0x38, 5, 6, true, b);
     heard(e, 1, RDOF_CONTROL_IDLE | C_CSBK, b);
     CHECK(poll_at(e, 0) && r->keyed && r->tx_until == e->clock + 5.0, "woken: %g", r->tx_until - e->clock);
-    LOG_IS(e, "key1 K1");
+    LOG_IS(e, "mode2 key1 K1");
     /* T_MSInactiv the longer of it and the call hang (R3.6) */
     r->inactivity_s = 1.0;
     heard(e, 1, RDOF_CONTROL_IDLE | C_CSBK, b);
@@ -799,7 +799,28 @@ static void ed_wakeup(void)
     e->fail_cmd = RDOF_MMDVM_DMR_START;
     heard(e, 1, RDOF_CONTROL_IDLE | C_CSBK, b);
     CHECK(!poll_at(e, 0) && !r->ready, "a fault");
-    LOG_IS(e, "x1d");
+    LOG_IS(e, "mode2 x1d");
+}
+
+/* Keyed with nothing to send (a beacon): idle bursts stay queued on both slots, so the modem keeps its carrier and
+ * accepts the DMR_START that unkeys. */
+static void ed_keep_up(void)
+{
+    ed_t *e = ed_new("mmdvm_hs");
+    rdof_repeater_t *r = &e->r;
+    r->keep_up = true;
+    CHECK(ed_start(e), "start");
+    uint8_t b[RDOF_BURST_BYTES];
+    b_csbk(0x38, 5, 6, true, b);
+    heard(e, 1, RDOF_CONTROL_IDLE | C_CSBK, b);
+    CHECK(poll_at(e, 0) && r->keyed, "woken");
+    LOG_IS(e, "mode2 key1 K1 st d1:49 d1:49 d1:49 d2:49 d2:49 d2:49");
+    CHECK(poll_at(e, 0.1) && r->keyed, "keyed");
+    LOG_IS(e, "st");
+    CHECK(poll_at(e, 0.1) && r->keyed, "still keyed");
+    LOG_IS(e, "st");
+    CHECK(poll_at(e, 6), "unkeys");
+    LOG_IS(e, "key0 K0");
 }
 
 /* Network streams: ignored slots, headers that don't decode, PI headers, data calls, other streams, echoes. */
@@ -840,7 +861,7 @@ static void ed_network(void)
     CHECK(idx >= 0 && !r->calls[idx].npending && r->slots[1].count == 5, "received 6 of 6, started: header x3, PI, A: %d",
           r->slots[1].count);
     CHECK(r->slots[1].ndone == 1 && r->slots[1].done[0][3] == 0x05, "the other stream refused");
-    LOG_IS(e, "key1 K1 st lc");
+    LOG_IS(e, "mode2 key1 K1 st lc");
     CHECK(poll_at(e, 0.5) && r->slots[1].net == idx, "after the key lead");
     LOG_IS(e, "st d1:41 tx:start:31>32 sent:41 d1:41 d1:41 d1:40 sent:40 d1:20 sent:20");
     CHECK(poll_at(e, 2.0) && r->slots[1].net < 0, "timed out");
@@ -1093,7 +1114,7 @@ static void ed_yield(void)
         CHECK(ed_start(e), "start");
         net_voice_call(e, 0x7002, 1, 1, 2, 1, false);
         CHECK(poll_at(e, 0) && r->slots[1].net >= 0, "streaming");
-        LOG_IS(e, "key1 K1 st lc");
+        LOG_IS(e, "mode2 key1 K1 st lc");
         e->fail_cmd = RDOF_MMDVM_DMR_ABORT;
         uint8_t lc9[9];
         rdof_group_lc(5, 6, true, 0, lc9);
@@ -1146,7 +1167,7 @@ static void ed_transmit(void)
     b_lc(lc9, RDOF_DT_VOICE_LC_HEADER, b);
     heard(e, 1, C_HEADER, b);
     CHECK(poll_at(e, 0) && r->slots[1].count == 3, "held back: %d", r->slots[1].count);
-    LOG_IS(e, "key1 K1 st lc");
+    LOG_IS(e, "mode2 key1 K1 st lc");
     e->f.held1 = 0;
     CHECK(poll_at(e, 0.06) && !r->slots[1].count, "room");
     LOG_IS(e, "st d1:41 d1:41 d1:41");
@@ -1202,7 +1223,7 @@ static void ed_transmit(void)
     b_lc(lc9, RDOF_DT_TERMINATOR_WITH_LC, b);
     heard(e, 1, C_TERM, b);
     CHECK(poll_at(e, 0) && r->slots[1].has_hang, "hang");
-    LOG_IS(e, "key1 K1 st d1:41 d1:41 d1:41 d1:42 lc");
+    LOG_IS(e, "mode2 key1 K1 st d1:41 d1:41 d1:41 d1:42 lc");
     /* from the terminator the modem holds last: 4 bursts out, less one */
     CHECK(fabs(r->slots[1].hang_until - (e->clock + 0.18 + 0.3)) < 1e-9, "until %g", r->slots[1].hang_until - e->clock);
     CHECK(poll_at(e, 0.2), "hang");
@@ -1250,7 +1271,7 @@ static void ed_transmit(void)
     heard(e, 1, RDOF_CONTROL_IDLE | C_CSBK, b);
     CHECK(poll_at(e, 0) && r->keyed, "keyed");
     CHECK(!poll_at(e, 6) && !r->ready, "unkey refused");
-    LOG_IS(e, "key1 K1 st x1d");
+    LOG_IS(e, "mode2 key1 K1 st x1d");
 
     /* a data call's end with another call on the slot keeps the activity */
     e = ed_new("mmdvm_hs");
@@ -1296,7 +1317,7 @@ static void ed_fault(void)
     e->fail_cmd = RDOF_MMDVM_DMR_START;
     net_voice_call(e, 0x9002, 1, 1, 2, 1, false);
     CHECK(!poll_at(e, 0) && r->slots[1].net < 0 && r->slots[1].ndone == 1, "the key refused");
-    LOG_IS(e, "x1d");
+    LOG_IS(e, "mode2 x1d");
 }
 
 /* The CW ID after unkey: waiting for the transmitter, and each step refused. */
@@ -1405,7 +1426,7 @@ static void ed_no_hooks(void)
     CHECK(r->calls[0].finished && !r->calls[0].on_air, "ended");
     CHECK(poll_at(e, 6) && r->keyed && !r->slots[1].has_hang, "the hang over");
     CHECK(poll_at(e, 0) && !r->keyed, "unkeyed");
-    LOG_IS(e, "key1 st lc st d1:41 d1:41 d1:41 d1:20 d1:01 d1:02 d1:03 d1:04 d1:05 d1:42 st lc key0");
+    LOG_IS(e, "mode2 key1 st lc st d1:41 d1:41 d1:41 d1:20 d1:01 d1:02 d1:03 d1:04 d1:05 d1:42 st lc key0");
 }
 
 /* SFR: unkeyed without DMR_START; the network's bursts still queued when the inbound is heard. */
@@ -1507,7 +1528,7 @@ static void ed_rf_odd(void)
     b_data_header(5, 6, 2, false, b);
     heard(e, 1, C_DATA_HEADER, b);
     CHECK(poll_at(e, 0) && s->rf.active && s->rf.blocks == 2, "the data call: %d", s->rf.blocks);
-    LOG_IS(e, "key1 K1 st d1:46 lc");
+    LOG_IS(e, "mode2 key1 K1 st d1:46 lc");
     b_header(5, 7, RDOF_DT_VOICE_LC_HEADER, b);
     heard(e, 1, C_HEADER, b);
     CHECK(poll_at(e, 0) && s->rf.active && s->rf.kind == RDOF_KIND_VOICE && s->rf.dst == 7, "voice");
@@ -1560,8 +1581,8 @@ static void ed_fill_full(void)
         }
         e->f.held1 = k ? 43 : 44; /* room for the queue and one more */
         CHECK(poll_at(e, 0) && !r->slots[1].count && r->slots[1].space == 1, "space %d", r->slots[1].space);
-        static const char *const want[] = {"key1 K1 st d1:41 d1:41 d1:41 lc", "key1 K1 st d1:41 d1:41 d1:41 d1:20 lc",
-                                           "key1 K1 st d1:41 d1:41 d1:41 d1:42 lc"};
+        static const char *const want[] = {"mode2 key1 K1 st d1:41 d1:41 d1:41 lc", "mode2 key1 K1 st d1:41 d1:41 d1:41 d1:20 lc",
+                                           "mode2 key1 K1 st d1:41 d1:41 d1:41 d1:42 lc"};
         LOG_IS(e, want[k]);
         CHECK(poll_at(e, 0.2) && r->slots[1].space == 1, "still full");
         LOG_IS(e, "st"); /* no filler with room for one */
@@ -1600,7 +1621,7 @@ static void ed_data_end(void)
     heard(e, 1, C_DATA_HEADER, b);
     CHECK(poll_at(e, 0) && r->slots[1].activity.kind == RDOF_ACT_DATA, "data");
     CHECK(poll_at(e, 1.5) && !r->slots[1].rf.active && r->slots[1].activity.kind == RDOF_ACT_NONE, "timed out");
-    LOG_IS(e, "key1 K1 st d1:46 lc st lc");
+    LOG_IS(e, "mode2 key1 K1 st d1:46 lc st lc");
 
     e = ed_new("mmdvm_hs");
     r = &e->r;
@@ -2073,6 +2094,7 @@ void test_repeater_edges(void)
     ed_rf_data();
     ed_rf_csbk();
     ed_wakeup();
+    ed_keep_up();
 }
 
 void test_repeater(void)

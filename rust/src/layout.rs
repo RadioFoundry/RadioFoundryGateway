@@ -8,7 +8,7 @@ use core::ffi::c_char;
 use core::mem::{align_of, size_of};
 
 use crate::benchcfg::RdofBenchRadio;
-use crate::benchtx::{RdofBenchtx, RdofBenchtxIo, RdofBenchtxItem, RdofBenchtxPolicy};
+use crate::benchtx::{RdofBenchtx, RdofBenchtxIo, RdofBenchtxItem, RdofBenchtxPolicy, RdofBenchtxTrack};
 use crate::config::{RdofCfgChannel, RdofCfgPort, RdofConfig, RdofRoles};
 use crate::hblink::{RdofHbSink, RdofLocation, RdofNetBurst, RdofTune};
 use crate::jitter::{RdofJb, RdofJbKey, RdofJbStream};
@@ -83,6 +83,7 @@ static LAYOUTS: &[Layout] = &layouts![
     ("rdof_benchtx_item_t", RdofBenchtxItem),
     ("rdof_benchtx_policy_t", RdofBenchtxPolicy),
     ("rdof_benchtx_t", RdofBenchtx),
+    ("rdof_benchtx_track_t", RdofBenchtxTrack),
     ("rdof_modem_port_t", RdofModemPort),
     ("rdof_modem_t", RdofModem),
     ("rdof_rssi_map_t", RdofRssiMap),

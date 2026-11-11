@@ -12,10 +12,13 @@ jobs:
   host-tests:
     strategy:
       matrix:
-        os: [ubuntu-24.04, macos-14]
+        os: [ubuntu-24.04, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: Device libraries (rdofradio is built only with one)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libiio-dev libad9361-dev
       - name: Build
         run: cmake -S host-tests -B build/host && cmake --build build/host -j4
       - name: Test
@@ -23,7 +26,7 @@ jobs:
 
   firmware:
     runs-on: ubuntu-24.04
-    container: espressif/idf:v5.5
+    container: espressif/idf:v5.5.4
     strategy:
       fail-fast: false
       matrix:

@@ -361,10 +361,49 @@ static void test_callsign(void)
     CHECK(!memcmp(r + 222, "RadioFoundry Gateway hotspot", 28));
 }
 
+/* A repeater's login: RPTC with its in and out, slots '3', says repeater; what it hears goes up on its own slot. */
+static void test_repeater(void)
+{
+    static const char json[] =
+        "{\"version\": 3, \"callsign\": \"N0CALL\", \"defaults\": {\"cc\": 1},"
+        " \"devices\": [{\"name\": \"rpt\", \"kind\": \"modem\", \"type\": \"mmdvm\", \"port\": {\"path\": \"/dev/null\"},"
+        " \"hears\": {\"idle\": \"r in\"}, \"transmits\": [\"r out\"]}],"
+        " \"frequencies\": [{\"name\": \"r in\", \"freq\": 438.75}, {\"name\": \"r out\", \"freq\": 438.25}],"
+        " \"apps\": [{\"name\": \"R1\", \"type\": \"repeater\", \"in\": \"r in\", \"out\": \"r out\"}],"
+        " \"networks\": [{\"type\": \"brandmeister\", \"host\": \"bm.example.net\", \"password\": \"example\","
+        " \"peer_ids\": {\"R1\": 310012303}}]}";
+    static rdof_config_t cfg;
+    char error[256] = "";
+    bool ok = rdof_config_parse(json, strlen(json), &cfg, error, sizeof error);
+    if (!ok)
+        printf("config: %s\n", error);
+    CHECK(ok);
+    if (!ok)
+        return;
+    CHECK(cfg.hb_login && cfg.mode == RDOF_CFG_REPEATER && cfg.peer_id == 310012303);
+    uint8_t d[RDOF_DMRC_MAX], r[RDOF_RPTC_LEN];
+    const size_t n = rdof_hb_role_dmrc(&cfg, 0, 1, d);
+    CHECK(rdof_rptc_from_dmrc(d, n, 0, "", "", "", r) == RDOF_RPTC_LEN);
+    CHECK(rdof_be32(r + 4) == 310012303 && !memcmp(r + 8, "N0CALL  ", 8));
+    CHECK(!memcmp(r + 16, "438750000438250000", 18)); /* RX: what it hears; TX: what it sends */
+    CHECK(!memcmp(r + 36, "01", 2) && r[97] == '3');
+    CHECK(!memcmp(r + 222, "RadioFoundry Gateway repeater ", 30) && !memcmp(r + 262, "MMDVM ", 6));
+    /* slot 1 goes up on slot 1, slot 2 on slot 2 */
+    rdof_hb_peer_t p;
+    rdof_hb_peer_init(&p, cfg.peer_id, 10);
+    rdof_hb_peer_set_config(&p, d, n, true, 0);
+    uint8_t dmrd[RDOF_DMRD_LEN] = {'D', 'M', 'R', 'D'}, tmp[RDOF_HB_OUT_MAX];
+    dmrd[15] = 0x01;
+    CHECK(rdof_hb_peer_up(&p, dmrd, sizeof dmrd, tmp) == dmrd);
+    dmrd[15] = 0x81;
+    CHECK(rdof_hb_peer_up(&p, dmrd, sizeof dmrd, tmp) == dmrd);
+}
+
 int main(void)
 {
     test_sha256();
     test_callsign();
+    test_repeater();
     test_rptc();
     test_login();
     printf("%d checks, %d failures\n", checks, failures);

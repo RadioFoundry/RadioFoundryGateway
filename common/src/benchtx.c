@@ -130,6 +130,170 @@ static void request(rdof_benchtx_t *t, double now)
     modem(t, t->want, p, n);
 }
 
+/* ── what's measured ──────────────────────────────────────────────────────── */
+
+/* A measurement frame: to the tool, and kept for a reader without one (the bench line). */
+static void record(rdof_benchtx_t *t, const char *fmt, ...)
+{
+    char b[RDOF_BENCHTX_EVENT_LEN];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(b, sizeof b, fmt, ap);
+    va_end(ap);
+    if (n <= 0)
+        return;
+    if (t->io.to_tool)
+        t->io.to_tool(t->io.ctx, b, (size_t)n < sizeof b ? (size_t)n : sizeof b - 1);
+    if (t->evn == RDOF_BENCHTX_EVENTS) {
+        t->ev_lost++;
+        return;
+    }
+    memcpy(t->ev[(t->evh + t->evn++) % RDOF_BENCHTX_EVENTS], b, sizeof b);
+}
+
+/* The bursts the model says the modem still has to send. */
+static int model_left(const rdof_benchtx_t *t, double now)
+{
+    return t->air_free > now ? (int)((t->air_free - now) / RDOF_BENCHTX_BURST_S + 0.5) : 0;
+}
+
+/* A keying's account: what the modem said and, with a receiver, what was on the air. */
+static void tx_check(rdof_benchtx_t *t, double now)
+{
+    t->tailing = false;
+    const bool held = t->tail_held || (t->st_seen && !t->st_tx && t->idle_space >= 0 && t->st_space < t->idle_space);
+    if (held)
+        record(t, "{\"type\":\"modem_flag\",\"t\":%.6f,\"flag\":\"held\",\"space\":%d,\"idle_space\":%d}", utc(t, now),
+               t->tail_held ? t->held_space : t->st_space, t->idle_space);
+    char tx[32] = "null";
+    if (t->was_on && !t->st_tx && t->tx_off >= t->tx_on)
+        snprintf(tx, sizeof tx, "%.3f", t->tx_off - t->tx_on);
+    int n = 0, heard = 0;
+    double first = 0, latest = 0;
+    if (t->track) {
+        const unsigned end = t->track->n, oldest = end > RDOF_BENCHTX_TRACK ? end - RDOF_BENCHTX_TRACK : 0;
+        for (unsigned i = t->track_first > oldest ? t->track_first : oldest; i < end; i++, n++) {
+            const double late = t->track->s[i % RDOF_BENCHTX_TRACK].heard_at - t->track->s[i % RDOF_BENCHTX_TRACK].at;
+            if (!t->track->s[i % RDOF_BENCHTX_TRACK].heard)
+                continue;
+            if (!heard++)
+                first = late;
+            if (late > latest)
+                latest = late;
+        }
+        record(t, "{\"type\":\"tx_check\",\"t\":%.6f,\"handed\":%d,\"timing\":\"heard\",\"compared\":%d,\"heard\":%d,"
+                  "\"never\":%d,\"first_s\":%.3f,\"latest_s\":%.3f,\"modem_tx_s\":%s,\"quiet\":%d,\"late\":%d,\"held\":%s}",
+               utc(t, now), t->key_bursts, n, heard, n - heard, first, latest, tx, t->n_quiet, t->n_late,
+               held ? "true" : "false");
+    } else {
+        record(t, "{\"type\":\"tx_check\",\"t\":%.6f,\"handed\":%d,\"timing\":\"estimate\",\"why\":\"%s\",\"modem_tx_s\":%s,"
+                  "\"quiet\":%d,\"late\":%d,\"held\":%s}",
+               utc(t, now), t->key_bursts, t->no_heard ? t->no_heard : "no receiver compares it", tx, t->n_quiet, t->n_late,
+               held ? "true" : "false");
+    }
+}
+
+/* The modem's GET_STATUS. */
+static void on_status(rdof_benchtx_t *t, const rdof_mmdvm_status_t *st, double now)
+{
+    const bool tx = st->transmitting != 0;
+    t->answers++;
+    t->st_space = st->space;
+    if (!t->keyed && !t->tailing && !tx && st->space > t->idle_space)
+        t->idle_space = st->space; /* an empty buffer: what "held" is measured against */
+    if (t->keyed && st->space < t->space_min)
+        t->space_min = st->space;
+    if (!t->st_seen || tx != t->st_tx) {
+        record(t, "{\"type\":\"modem\",\"t\":%.6f,\"tx\":%s,\"space\":%d,\"model_left\":%d}", utc(t, now),
+               tx ? "true" : "false", st->space, model_left(t, now));
+        if (tx && !t->was_on) {
+            t->was_on = true;
+            t->tx_on = now;
+        }
+        if (!tx && t->st_seen && t->st_tx) {
+            t->tx_off = now;
+            if (t->keyed && t->air_free - now > 1.5 * RDOF_BENCHTX_BURST_S) {
+                t->n_quiet++;
+                record(t, "{\"type\":\"modem_flag\",\"t\":%.6f,\"flag\":\"quiet\",\"outstanding\":%d}", utc(t, now),
+                       model_left(t, now));
+            }
+        }
+    }
+    t->st_seen = true;
+    t->st_tx = tx;
+    if (tx && t->tailing && !t->n_late && now > t->tail_model + RDOF_BENCHTX_LATE_S) {
+        t->n_late++;
+        record(t, "{\"type\":\"modem_flag\",\"t\":%.6f,\"flag\":\"late\",\"late_s\":%.3f}", utc(t, now), now - t->tail_model);
+    }
+}
+
+/* GET_STATUS while there's something to see, and the end of a keying's watch. */
+static void watch(rdof_benchtx_t *t, double now)
+{
+    if ((t->keyed || t->tailing || !t->polls) && now >= t->next_poll) {
+        t->next_poll = now + RDOF_BENCHTX_POLL_S;
+        t->polls++;
+        modem(t, RDOF_MMDVM_GET_STATUS, NULL, 0);
+    }
+    if (!t->tailing)
+        return;
+    const bool mute = t->polls >= 4 && !t->answers; /* a modem that doesn't answer it */
+    /* TX off with bursts still in its buffer: an MMDVM HAT holds a call's last bursts until more comes on its port (the
+     * polls are that), and SET_MODE idle would drop them. Done once its buffer is empty, or at tail_until. */
+    const bool fresh = t->st_seen && t->answers > t->tail_answers;
+    const bool holding = fresh && !t->st_tx && t->idle_space >= 0 && t->st_space < t->idle_space;
+    if (holding && !t->tail_held)
+        t->tail_held = true, t->held_space = t->st_space;
+    const bool idle = fresh && !t->st_tx && !holding;
+    const bool waited = !t->track || now >= t->tail_start + RDOF_BENCHTX_HEARD_S;
+    if (mute || now >= t->tail_until || (idle && waited))
+        tx_check(t, now);
+}
+
+void rdof_benchtx_track(rdof_benchtx_t *t, rdof_benchtx_track_t *track, const char *why)
+{
+    t->track = track;
+    t->no_heard = why;
+    if (track)
+        track->n = 0;
+}
+
+void rdof_benchtx_heard(rdof_benchtx_t *t, const uint8_t burst[33], double now)
+{
+    if (!t->track)
+        return;
+    const unsigned end = t->track->n, oldest = end > RDOF_BENCHTX_TRACK ? end - RDOF_BENCHTX_TRACK : 0;
+    for (unsigned i = t->track_first > oldest ? t->track_first : oldest; i < end; i++) {
+        if (t->track->s[i % RDOF_BENCHTX_TRACK].heard)
+            continue;
+        int d = 0;
+        for (int k = 0; k < 33 && d <= RDOF_BENCHTX_SAME_BITS; k++)
+            for (uint8_t x = burst[k] ^ t->track->s[i % RDOF_BENCHTX_TRACK].burst[k]; x; x &= (uint8_t)(x - 1))
+                d++;
+        if (d <= RDOF_BENCHTX_SAME_BITS) {
+            t->track->s[i % RDOF_BENCHTX_TRACK].heard = true;
+            t->track->s[i % RDOF_BENCHTX_TRACK].heard_at = now;
+            return;
+        }
+    }
+}
+
+size_t rdof_benchtx_next_event(rdof_benchtx_t *t, char *out, size_t cap)
+{
+    if (!t->evn || !cap)
+        return 0;
+    size_t n = strnlen(t->ev[t->evh], RDOF_BENCHTX_EVENT_LEN - 1);
+    if (n >= cap)
+        n = cap - 1;
+    memcpy(out, t->ev[t->evh], n);
+    out[n] = 0;
+    t->evh = (t->evh + 1) % RDOF_BENCHTX_EVENTS;
+    t->evn--;
+    return n;
+}
+
+bool rdof_benchtx_settled(const rdof_benchtx_t *t) { return !t->tailing; }
+
 static void finish(rdof_benchtx_t *t, const char *code, const char *why)
 {
     if (t->state == RDOF_TXS_DONE)
@@ -165,10 +329,17 @@ static void unkey(rdof_benchtx_t *t, const char *why, double now)
     double secs = end - t->key_start;
     if (t->io.keying)
         t->io.keying(t->io.ctx, utc(t, now) - (now - t->key_start), secs, t->key_bursts, why);
-    tool(t, "{\"type\":\"unkeyed\",\"why\":\"%s\",\"t\":%.6f,\"seconds\":%.3f,\"bursts\":%d}", why, utc(t, now),
-         secs, t->key_bursts);
+    tool(t, "{\"type\":\"unkeyed\",\"why\":\"%s\",\"t\":%.6f,\"seconds\":%.3f,\"bursts\":%d,\"estimated\":true}", why,
+         utc(t, now), secs, t->key_bursts);
     t->keyed = false;
     t->unkey_asked = false;
+    t->tailing = true;
+    t->tail_model = end;
+    t->tail_start = now;
+    t->tail_until = now + RDOF_BENCHTX_TAIL_S;
+    t->tail_answers = t->answers; /* an answer from after this */
+    t->tail_held = false;
+    t->next_poll = now; /* straight away: is it done? */
 }
 
 void rdof_benchtx_init(rdof_benchtx_t *t, const rdof_benchtx_io_t *io, uint32_t freq, int cc, int rf_level,
@@ -185,6 +356,7 @@ void rdof_benchtx_init(rdof_benchtx_t *t, const rdof_benchtx_io_t *io, uint32_t 
     t->voice_n = -1;
     t->want = 0xFF;
     t->last_tool = now;
+    t->idle_space = -1;
     rdof_mmdvm_reader_init(&t->reader);
     t->step = STEP_VERSION;
     request(t, now);
@@ -290,7 +462,11 @@ void rdof_benchtx_tool(rdof_benchtx_t *t, const char *json, size_t n, double now
 static void on_frame(void *ctx, uint8_t cmd, const uint8_t *p, size_t len)
 {
     rdof_benchtx_t *t = ctx;
-    if (cmd == RDOF_MMDVM_GET_VERSION && t->want == RDOF_MMDVM_GET_VERSION) {
+    if (cmd == RDOF_MMDVM_GET_STATUS) {
+        rdof_mmdvm_status_t st;
+        if (t->state != RDOF_TXS_SETUP && rdof_mmdvm_parse_status(t->protocol, p, len, &st))
+            on_status(t, &st, t->rx_now);
+    } else if (cmd == RDOF_MMDVM_GET_VERSION && t->want == RDOF_MMDVM_GET_VERSION) {
         t->protocol = rdof_mmdvm_parse_version(p, len, NULL, 0);
         t->replied = true;
     } else if (cmd == RDOF_MMDVM_ACK && len >= 1 && p[0] == t->want) {
@@ -306,6 +482,7 @@ static void on_frame(void *ctx, uint8_t cmd, const uint8_t *p, size_t len)
 
 void rdof_benchtx_modem(rdof_benchtx_t *t, const uint8_t *b, size_t n, double now)
 {
+    t->rx_now = now;
     rdof_mmdvm_reader_feed(&t->reader, b, n, on_frame, t);
     if (t->data_nak && t->state != RDOF_TXS_DONE) {
         char why[96];
@@ -372,6 +549,7 @@ void rdof_benchtx_tick(rdof_benchtx_t *t, double now)
         unkey(t, "max_key", now);
         return;
     }
+    watch(t, now);
     while (t->qn && t->air_free - now < RDOF_BENCHTX_LEAD * RDOF_BENCHTX_BURST_S) {
         if (t->keyed && t->air_free + RDOF_BENCHTX_BURST_S - t->key_start > t->max_key_s + 1e-9) {
             unkey(t, "max_key", now);
@@ -379,7 +557,13 @@ void rdof_benchtx_tick(rdof_benchtx_t *t, double now)
         }
         const rdof_benchtx_item_t *it = &t->q[t->qh];
         if (!t->keyed) {
+            if (t->tailing)
+                tx_check(t, now); /* the next keying is starting: what the last one came to */
             t->keyed = true;
+            t->was_on = false;
+            t->n_quiet = t->n_late = 0;
+            t->space_min = 255;
+            t->track_first = t->track ? t->track->n : 0;
             t->key_start = now;
             t->air_free = now;
             t->key_bursts = 0;
@@ -390,6 +574,12 @@ void rdof_benchtx_tick(rdof_benchtx_t *t, double now)
         p[0] = it->control;
         memcpy(p + 1, it->burst, 33);
         modem(t, RDOF_MMDVM_DMR_DATA2, p, sizeof p);
+        if (t->track) {
+            const unsigned i = t->track->n++ % RDOF_BENCHTX_TRACK;
+            memcpy(t->track->s[i].burst, it->burst, 33);
+            t->track->s[i].heard = false;
+            t->track->s[i].at = t->air_free > now ? t->air_free : now;
+        }
         t->last_voice = it->control == RDOF_SYNC_AUDIO || (it->control & 0xF0) == 0;
         if ((it->control & 0xF0) == RDOF_SYNC_DATA && (it->control & 0x0F) == RDOF_DT_TERMINATOR_WITH_LC)
             t->last_voice = false;
@@ -415,6 +605,8 @@ void rdof_benchtx_stop(rdof_benchtx_t *t, const char *code, const char *why, dou
         return;
     const bool keyed = t->keyed;
     unkey(t, "stopped", now);
+    if (t->tailing)
+        tx_check(t, now);
     if (!keyed) { /* nothing on the air, but leave the modem idle */
         const uint8_t idle = RDOF_MODE_IDLE;
         modem(t, RDOF_MMDVM_SET_MODE, &idle, 1);

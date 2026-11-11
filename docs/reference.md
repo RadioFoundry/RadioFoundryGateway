@@ -47,7 +47,7 @@ are committed (`host-tests/vectors.h`, `scenarios.h`, `fixtures/`) and the C mus
 | `sdr_selftest_tests` | the firmware's self-test check, on the host |
 | `rdof_hostweb_tests`, `rdof_webapi_tests`, `rdof_radiocfg_tests` | the host web server, the shared web API (byte for byte against the firmware's status), `rdofradio --config` |
 | `rdof_benchline_tests`, `benchsig`, `rdof_fm_tests`, `rdof_am_tests` | the bench line protocol, signal modes, the FM and AM generators and receivers |
-| the rest | `rdof_memplan_tests`, `rdof_parrot_tests`, `rdof_power_tests`, `rdof_lastheard_tests`, `rdof_rdofnet_tests`, `rdof_pffft_tests`, `ipgw_sdr_tests`, and the components' own (`test_netclock`, `test_netclock_posix`, `test_wifilist`, `lr2021`, `tinysctp_tests`) |
+| the rest | `rdof_memplan_tests`, `rdof_parrot_tests`, `rdof_mssim_tests`, `rdof_power_tests`, `rdof_lastheard_tests`, `rdof_rdofnet_tests`, `rdof_pffft_tests`, `ipgw_sdr_tests`, and the components' own (`test_netclock`, `test_netclock_posix`, `test_wifilist`, `lr2021`, `tinysctp_tests`) |
 
 Coverage: `sh host-tests/coverage.sh [build dir] [file regex]` (clang; default `build/cov`) prints lines and branches
 per file and writes an HTML report to `<build dir>/html`.
@@ -176,6 +176,7 @@ sockets, NVS, HTTP, MQTT) stays in each target.
 | `oled`, `oled_sdr` | the frame, font and panel commands; the roamer's and the SDR's screens |
 | `ipgw`, `ipgwcfg` | the IP gateway and its settings (C only) |
 | `parrot` | the parrot: a call recorded and sent back |
+| `mssim` | a timed confirmed-data responder for the bench (ACK, NACK, SACK, none, ACK twice, N slots after a packet; the `mssim` bench op of rdofradio and of a board with an SDR modem, there placed from the front end's pulls, with no echo calibration: the LR2021 doesn't hear itself) |
 | `json` | a compact JSON writer, byte for byte stable for the golden tests |
 | `webapi` | the web API shared by the firmware and the host tools: `/api/status`'s shared parts and `caps`, the settings, `/api/log`, `/api/lastheard`, `/api/restart` |
 | `jitter`, `lastheard`, `memplan` | the network jitter buffer; Last heard; the board's memory plan ([memory.md](spec/fw/memory.md)) |
@@ -285,10 +286,10 @@ From `idf.py size`. Run it after a change that adds code or RAM, and update this
 
 | Build | Date | App image | Free in its slot | DIRAM used (of 334 KB) |
 |---|---|---|---|---|
-| `16mb` + `w12` | 2026-11-06 | 2381 KB | 1.7 MB of 4 MB | 181.4 KB (54.4%) |
+| `16mb` + `w12` | 2026-11-10 | 2411 KB | 1.6 MB of 4 MB | |
 | `16mb` + `w12` + `rust` | 2026-10-27 | 2063 KB | 2.0 MB of 4 MB | |
-| `16mb` | 2026-10-28 | 1960 KB | 2.1 MB of 4 MB | 167 KB (49.9%) |
-| `4mb` (no SDR) | 2026-11-06 | 1348 KB | 572 KB of 1.875 MB | |
+| `16mb` | 2026-11-10 | 2301 KB | 1.7 MB of 4 MB | |
+| `4mb` (no SDR) | 2026-11-10 | 1358 KB | 562 KB of 1.875 MB | |
 
 - **`4mb` is full with the SDR.** With everything it went over its slot on 2026-10-29; it builds without the SDR
   since 2026-11-01. If it runs out again, drop the repeater, the OLED or the full page before giving up a slot.
@@ -1079,6 +1080,8 @@ bench (`"bench": {"devices": [...]}`: a UART, USB CDC-ACM or a USB-serial bridge
 through the SDR's modem or an MMDVM bench radio, only on what `"bench": {"tx": {...}}` allows. No auth: it's for a
 private test network. Code: `bench_api.c`, `bench_radio.c`, `bench_tx.c`; the spec's section 9 says what's in.
 
+`tools/bench/burstramp.py` measures a transmitter's PA ramps burst by burst from a capture (spec §14.8.2). A `bursts` stream with `"ramp": true` measures them on the board (`rfgbench.py dmr-bursts --ramp`, spec §14.2). `rfgbench.py capture --raw [--rate R]` takes a PlutoSDR's ADC samples, 12 bits, over the bench port, at a rate of its own if asked; `rfgbench.py dmr-bursts --raw --ramp [--rate R]` decodes and measures a raw capture on the board and sends only the results (spec §14.2).
+
 **The line protocol** on TCP `CONFIG_RDOF_BENCH_LINE_PORT` (7373; spec §14, `bench_line.c`), for
 `tools/bench/rfgbench.py`:
 
@@ -1296,8 +1299,25 @@ is read by a thread.
   device's `mmdvm` keys, and each frequency's `power_dbm` goes to an RF level on the device's `tx` map (255 without
   one).
 - **An SDR beside it** (DEVICE, optional), opened receive only: it hears the modem's RX frequency as a channel of its
-  own (`modem-rx`, when no channel is on it) and the settings' channels, with the spectrum, and carries the bench's line protocol. Bench DMR
-  jobs transmit on the modem in simplex. `--split-tx` and the SDR's transmitter flags are refused.
+  own (`modem-rx`, when no channel is on it), the modem's TX frequency as another (`modem-tx`, when it's different
+  and one window holds both: a split wider than the SDR's rate logs that and leaves it out) and the settings' channels, with the spectrum, and carries the bench's line protocol. Bench DMR
+  jobs transmit on the modem in simplex; a duplex modem runs `outbound` and `bench_repeater` too. `--split-tx` and the
+  SDR's transmitter flags are refused.
+- `--sim-sdr` in place of DEVICE: a receiver of noise, for tests with no RF (`host-tests/test_mmdvm_bench.py` runs the
+  whole bench on `fakemodem`).
+
+#### Receive only
+
+`rdofradio DEVICE --listen --rx MHZ [--tx MHZ]`: no unit and nothing that transmits, for an SDR with no TX antenna. The
+device is opened receive only (no TX stream, the TX LO powered down), `--allow-tx` isn't needed, and the receiver
+hears `--rx` and `--tx` as channels (`rx`, `out`). It serves the receiver's bursts, the spectrum (`--web`) and the
+bench's line protocol (`--bench`): the bench sees no transmitter (`info`'s station has `tx` false, "--listen: the SDR
+receives only"), so a transmit job is refused. `--allow-tx`, `--split-tx`, `--mmdvm`, `--config`, `--parrot`,
+`--bench-tx`, `--fpga-duc` and the transmitter's flags are refused with it.
+
+Run on a Pluto (2026-11-09) with `--fpga-chz` on a duplex hotspot's pair (448.7 / 443.7 MHz, then 448.7 / 446.075):
+the bench's `bursts` op timed a radio's inbound bursts against the hotspot's outbound over about half an hour, the TX LO
+powered down throughout.
 
 #### The bench's line protocol
 
@@ -1306,12 +1326,40 @@ bursts, wideband cs8 captures from a 2.5 s history, level-triggered channel capt
 `csbk`, `data`, `listen`) and `bench_repeater` jobs. A transmit job needs `--bench-tx MHZ[,MHZ...]` (up to 32
 frequencies) or bands, and the half duplex transceiver: it takes the SDR modem for its length, at `--tx-power`
 (bench_tx's `--power-dbm` is noted, not applied). On `--mmdvm` a job's power goes to an RF level on the modem's `tx`
-map under `--rf-level`. The `tune` op is `unsupported`, and a `trigger` or `rx` outside the
-window is refused. With the FPGA channelizer there's no wideband I/Q: capture, trigger, track and rx take the
+map under `--rf-level`. `tune` and a `trigger` or `rx` outside the window move the receiver for the job (bench-api.md
+§14.2). With the FPGA channelizer there's no wideband I/Q: capture, trigger, track and rx take the
 receiver's channels (2.5 s of each kept). When the bench line and the page listen past loopback, rdofradio lists them
 over DNS-SD (`_rfgbench._tcp` with TXT `kind` and `ver`, `_http._tcp`) through the host's responder, by running
 `avahi-publish-service` (a PlutoSDR's firmware has avahi) or macOS's `dns-sd` for as long as it runs; with neither,
 nothing is listed (`rdofradio_dnssd.c`).
+
+A bench line with only an MMDVM modem and an RTL-SDR (bench-api.md §14.9 lists what it can do):
+
+```sh
+# on a Linux box with libsoapysdr-dev and soapysdr-module-rtlsdr
+cmake -S . -B build/linux && cmake --build build/linux --target rdofradio
+build/linux/rdofradio --soapy driver=rtlsdr -r 2.4e6 --gain 30 --ppm PPM --allow-tx \
+    --mmdvm /dev/ttyAMA0 --rx MHZ --tx MHZ --duplex half --cc CC \
+    --bench 0.0.0.0:7373 --bench-tx MHZ,LOW-HIGH
+```
+
+- `--setting KEY=VALUE` (repeated) is the SoapySDR driver's own, written when the device opens: an RTL-SDR's bias tee
+  for an active antenna is `--setting biastee=true`. A setting the driver refuses stops the start.
+- `--bench-tx` is every frequency and band a job may key on; without it, no transmit job runs. `--allow-tx` is
+  required.
+- `--ppm` is the RTL-SDR's crystal error, measured elsewhere: rdofradio doesn't measure it, and the bench's reports
+  are off by it otherwise. `--ppm-tol` says how well it is known.
+- `--duplex half` is a transceiver at rest, any modem. `--duplex full` needs a duplex board and runs a repeater;
+  jobs stop it and bring it back.
+- The serial port is whatever the modem is on (`/dev/ttyAMA0`, `/dev/ttyS0`, `/dev/ttyUSB0`, `/dev/ttyACM0`), with `--baud`
+  if it isn't the default. `--rf-level` caps the power of every job.
+- `--rx` and `--tx` are the modem's at rest; a job tunes the modem where it's asked. The SDR's window is `-r` wide, around
+  a center that holds the channels (or `--center`), and a request outside it tunes the SDR for itself.
+- A lost device ends the program with exit status 1: the modem's port going away, 5 s with no samples from the SDR, or
+  repeated read errors. Run it under a supervisor (a systemd unit with `Restart=on-failure`): an RTL-SDR that dropped
+  off USB comes back with a new process. Sessions, claims and running requests end with it; a client sees `lost` or
+  an `unavailable` connection. A modem that stops answering but keeps its port fails its jobs (`no reply`) and isn't
+  restarted.
 
 ### Host web page
 

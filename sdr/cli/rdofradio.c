@@ -26,8 +26,12 @@
  *             [--last-exit FILE] [--ota FILE] [--fft builtin|pffft] [--bench [ADDR:]PORT] [--bench-tx MHZ|LOW-HIGH,...]
  *   rdofradio DEVICE --allow-tx --config FILE [--clock-state FILE] [--set-os-clock] [the device's flags as above]
  *   rdofradio DEVICE --allow-tx --split-tx PORT [--baud N] [--split-power-cap N] --rx MHZ --tx MHZ [--cc CC] [...]
+ *   rdofradio DEVICE --listen --rx MHZ [--tx MHZ] [--cc CC] [-r RATE] [--gain DB] [--center MHZ] [--fpga-chz [ADDR]]
+ *             [--seconds S] [--bursts] [--bench [ADDR:]PORT] [--web [ADDR:]PORT]
  *   rdofradio [DEVICE] --allow-tx --mmdvm PORT [--baud N] [--rf-level N] [--rx-offset-hz HZ] [--tx-offset-hz HZ]
  *             [--rx-level PCT] [--tx-level PCT] --rx MHZ [--tx MHZ] [--duplex full|half] [--cc CC] | --config FILE [...]
+ *
+ * --sim-sdr in place of DEVICE, receive only with --mmdvm or --split-tx: a receiver of noise, for tests with no RF.
  *
  * DEVICE is --soapy ARGS (SoapySDR; -r defaults to 2.4 MS/s) or --iio URI (an AD9361 through libiio: "local:" on a
  * PlutoSDR, "ip:192.168.2.1" from a host; -r defaults to 768 kS/s, which the chip's own FIR makes with
@@ -100,6 +104,7 @@
  * 0.2 dB under it; the gain takes it at the next key-up.
  */
 #define _POSIX_C_SOURCE 200809L
+#include <stdatomic.h>
 #include <errno.h>
 #include <limits.h>
 #include <math.h>
@@ -124,6 +129,7 @@
 #include "rdof/hbpeer.h"
 #include "rdof/layer2.h"
 #include "rdof/modem.h"
+#include "rdof/mssim.h"
 #include "rdof/parrot.h"
 #include "rdof/pdu.h"
 #include "rdof/repeater.h"
@@ -170,6 +176,7 @@
 #define RDOF_VERSION "dev"
 #endif
 
+#define TX_LEAD_S 0.05     /* zeros the transmit stream starts with, ahead of the first read */
 #define CHUNK 24000        /* receive samples a turn: 10 ms at 2.4 MS/s */
 #define POLL_S 0.02        /* the repeater's poll */
 #define FRESH_S 0.0003     /* a read that waited this long found the device's buffers empty: its samples are now */
@@ -233,6 +240,7 @@ static int mm_rf_level = 255; /* --rf-level: the cap on every SET_FREQ's RF leve
 static long long mm_heard_n, mm_capped; /* --mmdvm: bursts the modem heard, SET_FREQs capped */
 static volatile sig_atomic_t stop;
 static int quiet, show_bursts;
+static bool listen_only; /* --listen: the SDR receives only, nothing transmits (the bench's bursts, no unit) */
 #ifdef RDOF_HOST_WEB
 static int web_port = -1;        /* --web [ADDR:]PORT: the firmware's page (0: any free port) */
 static char web_addr[64] = "127.0.0.1";
@@ -297,6 +305,9 @@ static void split_turn(void);
 static void split_flush(void);
 static int64_t split_now48(void *ctx);
 
+/* The device or the radio's port went away, or the SDR stopped giving samples: the program stops and exits with 1, so
+ * a supervisor (systemd's Restart=on-failure) starts it again. */
+static volatile sig_atomic_t lost_device;
 static void on_signal(int s) { stop = 1; }
 
 /* --config: the file, and the radio it (or the command line) sets */
@@ -358,6 +369,7 @@ static void say_log(void *ctx, const char *msg) { say("%s\n", msg); }
 static struct {
     rdof_cf_t buf[RING];
     int64_t head, tail;    /* samples put in, samples written to the device */
+    int64_t pushed;        /* tail at the end of the last write: what a hold drops isn't in it */
     bool quit;
     int errors;
     pthread_mutex_t mu;
@@ -365,6 +377,8 @@ static struct {
     pthread_t thread;
     bool running;
     bool guarded;          /* the device takes blocks: the guard keeps the stream's timing through a stall */
+    bool hold;             /* a raw capture has the chip off its rate: what comes is dropped, nothing padded */
+    bool writing;          /* in the device's write, the lock let go: the chip's rate waits for it */
     rdof_txguard_t guard;  /* the writer's thread alone (the device's write reports to it) */
 } W = {.mu = PTHREAD_MUTEX_INITIALIZER, .cv = PTHREAD_COND_INITIALIZER};
 
@@ -405,6 +419,7 @@ static void writer_pad(void)
 {
     static const rdof_cf_t zeros[CHUNK];
     int room = dev->tx_room(dev), sent = 0;
+    W.writing = true;
     pthread_mutex_unlock(&W.mu);
     while (room > 0) {
         const int k = dev->write(dev, zeros, room < CHUNK ? room : CHUNK, 100000);
@@ -413,6 +428,8 @@ static void writer_pad(void)
         room -= k, sent += k;
     }
     pthread_mutex_lock(&W.mu);
+    W.writing = false;
+    pthread_cond_broadcast(&W.cv);
     if (room > 0)
         W.errors++;
     rdof_txguard_padded(&W.guard, sent);
@@ -422,7 +439,13 @@ static void *writer(void *arg)
 {
     pthread_mutex_lock(&W.mu);
     for (;;) {
-        while (W.head == W.tail && !W.quit) {
+        if (W.hold && !W.quit) { /* dropped as if sent: the stream's count keeps real time */
+            W.tail = W.head;
+            pthread_cond_broadcast(&W.cv);
+            pthread_cond_wait(&W.cv, &W.mu);
+            continue;
+        }
+        while (W.head == W.tail && !W.quit && !W.hold) {
             const double due = W.guarded ? rdof_txguard_deadline(&W.guard, GUARD_MARGIN_S) : NAN;
             if (isnan(due)) {
                 pthread_cond_wait(&W.cv, &W.mu);
@@ -442,17 +465,22 @@ static void *writer(void *arg)
             n = CHUNK;
         if (W.guarded && W.guard.skip > 0) { /* what the guard's zeros stood in for */
             W.tail += rdof_txguard_drop(&W.guard, n);
+            W.pushed = W.tail; /* the zeros sent stood for them: the stream's position (pushed + skip) stays */
             pthread_cond_broadcast(&W.cv);
             continue;
         }
+        W.writing = true;
         pthread_mutex_unlock(&W.mu);
         int k = dev->write(dev, W.buf + at, n, 100000);
         pthread_mutex_lock(&W.mu);
+        W.writing = false;
+        pthread_cond_broadcast(&W.cv);
         if (k <= 0) {
             W.errors++;
             k = n; /* dropped: the stream slips by n, and the loop's measure of the delay shows it */
         }
         W.tail += k;
+        W.pushed = W.tail;
         pthread_cond_broadcast(&W.cv);
     }
     pthread_mutex_unlock(&W.mu);
@@ -494,10 +522,13 @@ static void usage(void)
             "       rdofradio DEVICE --allow-tx --config FILE [--clock-state FILE] [--set-os-clock] [the device's flags]\n"
             "       rdofradio DEVICE --allow-tx --split-tx PORT [--baud N] [--split-power-cap N] --rx MHZ --tx MHZ [--cc CC]\n"
             "                 [-r RATE] [--gain DB] [--center MHZ] [--parrot ID] [--seconds S] [-v] [--web [ADDR:]PORT]\n"
+            "       rdofradio DEVICE --listen --rx MHZ [--tx MHZ] [--cc CC] [-r RATE] [--gain DB] [--center MHZ]\n"
+            "                 [--fpga-chz [ADDR]] [--seconds S] [--bursts] [--bench [ADDR:]PORT] [--web [ADDR:]PORT]\n"
             "       rdofradio [DEVICE] --allow-tx --mmdvm PORT [--baud N] [--rf-level N] [--rx-offset-hz HZ]\n"
             "                 [--tx-offset-hz HZ] [--rx-level PCT] [--tx-level PCT] --rx MHZ [--tx MHZ] [--duplex full|half]\n"
             "                 [--cc CC] | --config FILE [--parrot ID] [--seconds S] [-v] [--web ...] [--bench ...]\n"
-            "DEVICE: %s\n",
+            "--soapy takes --setting KEY=VALUE, repeated: the driver's own (an RTL-SDR's biastee=true)\n"
+            "DEVICE: %s (or, receive only, --sim-sdr: noise, for tests with no RF)\n",
 #if defined(RDOF_SOAPY) && defined(RDOF_IIO)
             "--soapy ARGS | --iio URI | --file RX[,TX]"
 #elif defined(RDOF_SOAPY)
@@ -703,11 +734,17 @@ static double plan_rate(const rdof_sdr_channel_t *c, int n, char *why, size_t ca
              rate_flag ? ", or a wider -r" : "");
     return 0;
 }
+/* A bench job has the transmitter (owner_yield): the modem's owner paused. tuned: the modem simplex (a repeater's);
+ * lo: the TX LO before the job, put back for the repeater after it. */
+static struct {
+    bool on, tuned;
+    double lo;
+} RP;
 /* A repeater hears on its RX channel. A transceiver hears on any channel the receiver has, and may go where none
- * hears it to transmit (the modem then hears nothing there). */
+ * hears it to transmit (the modem then hears nothing there); so does a repeater's modem while a bench job has it. */
 static int io_channel(void *ctx, uint32_t hz)
 {
-    if (R.full)
+    if (R.full && !RP.on)
         return hz == R.rx_hz ? channel_of(hz) : -1;
     const int c = channel_of(hz);
     return c >= 0 ? c : RDOF_SDRMODEM_NOT_HEARD;
@@ -732,7 +769,8 @@ static void io_tx_level(void *ctx, int level)
 }
 static bool io_tune(void *ctx, uint32_t hz, double *off)
 {
-    if (!R.full && fabs((double)hz - R.tx_lo) > R.tx_rate * 0.4 - 12.5e3) {
+    /* a repeater's TX LO stays, but moves for a bench job (and back after it) */
+    if ((!R.full || RP.on) && fabs((double)hz - R.tx_lo) > R.tx_rate * 0.4 - 12.5e3) {
         /* past the modulator's reach: the TX LO moves, lo_off above (unkeyed: the gain is at its least) */
         const double lo = (double)hz + R.lo_off;
         if (!dev->set_tx_freq || dev->set_tx_freq(dev, lo)) {
@@ -822,6 +860,7 @@ static struct {
     int nwake;
     bool cal;              /* the first key-up's edge sets the slot timing */
     int64_t late48;        /* the modem's tx_late48 before the job */
+    int rx_ch;             /* the input's receiver channel: it decodes the job's color code meanwhile (-1: none) */
     rdof_repeater_t r;
 } BR = {.mu = PTHREAD_MUTEX_INITIALIZER};
 
@@ -852,13 +891,13 @@ static void on_rx(void *ctx, int slot, uint8_t control, const uint8_t *burst, in
         fprintf(stderr, "inbound: slot %d, %+.2f slots from its place\n", slot, R.m.inbound_off);
     if (R.parrot)
         rdof_parrot_heard(R.parrot, slot, control, burst, now_s());
-    if (R.full) {
-        rdof_repeater_heard(&R.r, slot, control, burst, rssi);
-    } else if (BR.active) {
+    if (BR.active) { /* a job's repeater has the modem, the site's repeater stopped for it (R.full) or not */
         rdof_bl_rpt_ev_t e = {.kind = RDOF_BL_RPT_HEARD, .slot = slot, .rssi = rssi, .control = control};
         memcpy(e.burst, burst, sizeof e.burst);
         br_event(&e);
         rdof_repeater_heard(&BR.r, slot, control, burst, rssi);
+    } else if (R.full) {
+        rdof_repeater_heard(&R.r, slot, control, burst, rssi);
     } else {
         rdof_txvr_heard(&R.t, slot, control, burst, rssi);
     }
@@ -876,11 +915,11 @@ static void on_lost(void *ctx, int slot)
     }
     if (R.parrot)
         rdof_parrot_lost(R.parrot, slot, now_s());
-    if (R.full) {
-        rdof_repeater_lost(&R.r, slot);
-    } else if (BR.active) {
+    if (BR.active) {
         br_event(&(rdof_bl_rpt_ev_t){.kind = RDOF_BL_RPT_LOST, .slot = slot});
         rdof_repeater_lost(&BR.r, slot);
+    } else if (R.full) {
+        rdof_repeater_lost(&R.r, slot);
     }
 }
 static void deliver_heard(void)
@@ -896,10 +935,10 @@ static void deliver_heard(void)
 static void on_nak(void *ctx, uint8_t cmd, int err)
 {
     fprintf(stderr, "modem NAK 0x%02x err %d\n", cmd, err);
-    if (R.full)
-        rdof_repeater_nak(&R.r, cmd, err);
-    else if (BR.active)
+    if (BR.active)
         rdof_repeater_nak(&BR.r, cmd, err);
+    else if (R.full)
+        rdof_repeater_nak(&R.r, cmd, err);
 }
 
 /* MQTT (below) */
@@ -1143,7 +1182,9 @@ static uint32_t chan_hz(const chan_t *m) { return (uint32_t)llround(m->ch->freq)
 static chan_t CHN[RDOF_SDR_MAX_CHANNELS];
 static int nchn;
 
-/* The settings' channel on receiver channel c; NULL for one of our own (--monitor's "out", --mmdvm's "modem-rx") */
+#if defined(RDOF_MQTT) || defined(RDOF_HOST_WEB)
+/* The settings' channel on receiver channel c; NULL for one of our own (--monitor's "out", --mmdvm's "modem-rx" and
+ * "modem-tx") */
 static const chan_t *chan_at(int c)
 {
     for (int i = 0; i < nchn; i++)
@@ -1151,10 +1192,13 @@ static const chan_t *chan_at(int c)
             return &CHN[i];
     return NULL;
 }
+#endif
 
 /* Whether it shows a peer on the page and in the status, and whether that peer is up */
+#if defined(RDOF_MQTT) || defined(RDOF_HOST_WEB)
 static bool chan_has_peer(const chan_t *m) { return m->peer || m->unit; }
 static bool chan_peer_up(const chan_t *m) { return m->peer ? m->net.peer.up : m->unit && net_on && NET.peer.up; }
+#endif
 
 static void chan_send(void *ctx, const uint8_t *d, size_t n) { rdofnet_peer_send(&((chan_t *)ctx)->net, d, n); }
 /* Whether the transceiver may go to a channel: one of its channels (the roamer's). */
@@ -1272,11 +1316,13 @@ static bool is_unit(const char *ch)
     const int c = channel_named(ch);
     return R.mmdvm ? c < 0 && !strcmp(ch, "rx") : c >= 0 && c == unit_channel();
 }
+#if defined(RDOF_MQTT) || defined(RDOF_HOST_WEB)
 static bool is_sdr(const char *ch)
 {
     const int c = channel_named(ch);
     return c >= 0 && chan_at(c) != NULL;
 }
+#endif
 
 static void net_poll(double now)
 {
@@ -1351,17 +1397,7 @@ static void clock_stop(void) {}
 
 /* ── MQTT: the board's topics (esp_idf/main/roam_mqtt.c for the radio, sdr_mqtt.c for the SDR's channels) ─ */
 
-#ifdef RDOF_MQTT
-static rdofmq_t *MQ, *MQ_SDR; /* the radio's connection; the SDR's channels' (the board's SDR's own) */
-static char mq_status[96], mq_sdr_status[96];
-static char mq_alias[2][112], mq_sdr_alias[2 * RDOF_SDR_MAX_CHANNELS][112];
-static const char *mq_alias_p[2], *mq_sdr_alias_p[2 * RDOF_SDR_MAX_CHANNELS];
-static rdof_netcalls_t mq_calls;
-static double mq_next, mq_sdr_next; /* the next status (now_s) */
-static bool mq_hb_was;
-static void mq_status_soon(void) { mq_next = 0; }
-
-/* Unix time: netclock's when it runs, else the OS's */
+/* Unix time: netclock's when it runs, else the OS's. Not MQTT's alone: the bench's and the trackers' times too */
 static double wall_s(void)
 {
 #ifdef RDOF_NETCLOCK
@@ -1372,6 +1408,16 @@ static double wall_s(void)
     clock_gettime(CLOCK_REALTIME, &ts);
     return (double)ts.tv_sec + ts.tv_nsec * 1e-9;
 }
+
+#ifdef RDOF_MQTT
+static rdofmq_t *MQ, *MQ_SDR; /* the radio's connection; the SDR's channels' (the board's SDR's own) */
+static char mq_status[96], mq_sdr_status[96];
+static char mq_alias[2][112], mq_sdr_alias[2 * RDOF_SDR_MAX_CHANNELS][112];
+static const char *mq_alias_p[2], *mq_sdr_alias_p[2 * RDOF_SDR_MAX_CHANNELS];
+static rdof_netcalls_t mq_calls;
+static double mq_next, mq_sdr_next; /* the next status (now_s) */
+static bool mq_hb_was;
+static void mq_status_soon(void) { mq_next = 0; }
 
 /* {root}/{radio}/{app}/{kind}, app "repeater" or "roaming"; {root}/{channel}/{app}/{kind} for the SDR's, app "sdr" */
 static void mq_topic(const char *kind, char *out, size_t cap)
@@ -2017,7 +2063,7 @@ static void on_json(void *ctx, const char *ch, const char *json)
  * just heard isn't held off by that call); with --mmdvm the modem's tracker does it (mm_on_call) */
 static void on_call(void *ctx, const char *ch, const char *action, uint32_t src, uint32_t dst)
 {
-    if (!R.full && !R.mmdvm && is_unit(ch))
+    if (!R.full && !R.mmdvm && !listen_only && is_unit(ch))
         rdof_txvr_heard_call(&R.t, action, src, dst);
 }
 
@@ -2045,10 +2091,37 @@ static void bl_device(void *ctx, char *kind, size_t kcap, char *name, size_t nca
     snprintf(version, vcap, "%s", RDOF_VERSION);
 }
 
+/* The bench's tune (below, bl_tune) */
+static const char *const TAP_ID[RDOF_BL_TAPS] = {"T1", "T2", "T3", "T4"};
+#define TU_SETTLE_S 0.5 /* after the LO moves: what's received before is the AD9363 settling */
+static struct {
+    pthread_mutex_t mu;
+    int want;                  /* 1 a tune asked, 2 an untune asked */
+    rdof_bl_tune_t t;
+    int state;                 /* tune_state's: 1 applied, 0 under way, -1 refused */
+    char why[160];
+    /* the receiver's thread's (CH changes under mu, for bl_freqs) */
+    bool on, moved;
+    double center0;            /* the settings' center */
+    bool gained;               /* a tune set the RX gain: gain_db until its untune, the settings' after */
+    double gain_db;
+    int ntap, tap[RDOF_BL_TAPS];
+    rdof_sdr_channel_t saved[RDOF_BL_TAPS];
+    uint64_t hist_from;
+} TU = {.mu = PTHREAD_MUTEX_INITIALIZER, .state = 1};
+
+static int tap_of(int c)
+{
+    for (int i = 0; i < TU.ntap; i++)
+        if (TU.tap[i] == c)
+            return i;
+    return -1;
+}
+
 static void bl_window(void *ctx, rdof_bl_window_t *w)
 {
     memset(w, 0, sizeof *w);
-    w->running = BL.ring.w > 0;
+    w->running = BL.ring.w > 0 && BL.ring.w >= TU.hist_from; /* the LO settles after a tune moves it */
     w->center_hz = R.rx.center_hz;
     w->fs = R.rate;
     w->lo_hz = R.rx.center_hz - 0.4 * R.rate;
@@ -2058,16 +2131,18 @@ static void bl_window(void *ctx, rdof_bl_window_t *w)
     w->ppm_source = isfinite(xtal_ppm) ? "setting" : NULL;
     w->ppm_tol = isfinite(xtal_ppm) ? xtal_tol : 0;
     w->iq_scale_db = 20 * log10(BL.ring.scale > 0 ? BL.ring.scale : 1);
-    if (R.full) { /* the TX LO stays: the modulator's reach around it (tx_tune) */
-        w->tx_lo_hz = R.tx_lo - (R.rate * 0.4 - 12.5e3);
-        w->tx_hi_hz = R.tx_lo + (R.rate * 0.4 - 12.5e3);
-    }
+    /* tx_lo_hz, tx_hi_hz 0: a job tunes anywhere, a repeater's TX LO moving for it (owner_yield) */
 }
 
 static long bl_iq_read(void *ctx, uint64_t sc, int8_t *out, long n, uint64_t *oldest, uint64_t *next)
 {
     pthread_mutex_lock(&BL.mu);
-    const long k = rdof_bl_ring_read(&BL.ring, sc, out, n, oldest, next);
+    const uint64_t from = TU.hist_from; /* the history from before the LO moved isn't this window's */
+    const long k = sc < from ? 0 : rdof_bl_ring_read(&BL.ring, sc, out, n, oldest, next);
+    if (sc < from && next)
+        *next = BL.ring.w;
+    if (oldest && *oldest < from)
+        *oldest = from;
     pthread_mutex_unlock(&BL.mu);
     return k;
 }
@@ -2114,6 +2189,10 @@ static long bl_ch_read(void *ctx, int c, uint64_t sc, rdof_bl_chs_t *out, long n
     const uint64_t cap = (uint64_t)BLH.cap, first = BLH.n > cap ? BLH.n - cap : 0;
     *next = BL.ring.w;
     *oldest = first < BLH.n ? BLH.sc[first % cap] : BL.ring.w;
+    if (*oldest < TU.hist_from) /* the history from before the LO moved isn't this window's */
+        *oldest = TU.hist_from;
+    if (sc < TU.hist_from)
+        sc = TU.hist_from;
     uint64_t lo = first, hi = BLH.n; /* the first instant at or after sc: they run in order */
     while (lo < hi) {
         const uint64_t mid = lo + (hi - lo) / 2;
@@ -2250,12 +2329,21 @@ static int bl_tx_bands(void *ctx, double (*out)[2], int max)
 static int bl_freqs(void *ctx, rdof_bl_freq_t *out, int max)
 {
     int k = 0;
-    for (int c = 0; c < NCH && k < max; c++, k++) {
+    pthread_mutex_lock(&TU.mu); /* a tune changes CH */
+    for (int c = 0; c < NCH && k < max; c++) {
+        if (TU.moved && tap_of(c) < 0) { /* the LO moved for a job: only its taps hear where CH says */
+            if (bench_tx_listed(CH[c].freq_hz)) /* still a transmit frequency (a repeater job's output) */
+                out[k] = (rdof_bl_freq_t){.freq_hz = CH[c].freq_hz, .ch = -1, .caps = RDOF_BL_CAP_TX},
+                snprintf(out[k].id, sizeof out[k].id, "%s", CH[c].id), k++;
+            continue;
+        }
         out[k] = (rdof_bl_freq_t){.freq_hz = CH[c].freq_hz, .ch = c,
                                   .caps = RDOF_BL_CAP_RX | RDOF_BL_CAP_DMR | RDOF_BL_CAP_IQ |
                                           (bench_tx_listed(CH[c].freq_hz) ? RDOF_BL_CAP_TX : 0)};
         snprintf(out[k].id, sizeof out[k].id, "%s", CH[c].id);
+        k++;
     }
+    pthread_mutex_unlock(&TU.mu);
     for (int i = 0; i < bench_ntx && k < max; i++) { /* a transmit frequency no channel hears */
         bool heard = false;
         for (int c = 0; c < NCH; c++)
@@ -2268,12 +2356,30 @@ static int bl_freqs(void *ctx, rdof_bl_freq_t *out, int max)
 
 static const char *bl_can_tx(void *ctx)
 {
+    if (listen_only)
+        return "--listen: the SDR receives only";
     if (R.split)
         return "a split repeater's radio transmits, not the SDR: no transmit jobs here";
-    if (R.full)
-        return "a duplex repeater keeps the transmitter: transmit jobs need --duplex half";
     if (!bench_ntx && !bench_nband)
         return "no transmit frequencies (--bench-tx)";
+    return NULL;
+}
+
+/* --mmdvm: an MMDVM modem on a serial port is what transmits. */
+static const char *bl_station(void *ctx, char *model, size_t cap)
+{
+    snprintf(model, cap, "%.*s", (int)(cap > 1 ? cap - 1 : 0), R.client.version);
+    return "mmdvm";
+}
+
+/* What an MMDVM modem physically can't do (the SDR beside it only receives). */
+static const char *bl_cannot(void *ctx, const char *what)
+{
+    if (!strcmp(what, "signal_tx"))
+        return "an MMDVM modem's serial protocol sends DMR bursts: no FM, AM or arbitrary I/Q, and the SDR beside it "
+               "only receives";
+    if ((!strcmp(what, "repeater") || !strcmp(what, "outbound")) && rdof_modem_simplex_only(R.client.version))
+        return "this modem has one transceiver (a simplex hotspot): a repeater or an outbound needs a duplex modem";
     return NULL;
 }
 
@@ -2293,6 +2399,9 @@ static struct {
     bool mapped;            /* the key-up's edge was heard back: modem sample map_pos was on the air at map_t */
     int64_t map_pos;
     double map_t, keyed_at; /* first seen keyed (0: not yet) */
+    int ch;                 /* --mmdvm: the receiver channel the outbound is heard on, -1 none */
+    int64_t key48;          /* --mmdvm: the receiver's 48 kS/s sample when the modem keyed */
+    int64_t slot0_48;       /* --mmdvm: where its slot 0 started (a heard burst's slot, else key48) */
     struct {                /* voice bursts the bench's thread pushed, for the main loop to write (bench_ob_fast) */
         uint8_t slot, control, burst[33];
     } q[32];
@@ -2313,11 +2422,15 @@ static struct {
     rdof_benchtx_item_t in[RDOF_BENCHTX_QUEUE]; /* pushed, not yet in the job's queue */
     int nin, queued;
     rdof_benchtx_t tx;
-} BT = {.mu = PTHREAD_MUTEX_INITIALIZER};
+    int heard_ch;     /* the receive channel that hears the job, -1 none */
+} BT = {.mu = PTHREAD_MUTEX_INITIALIZER, .heard_ch = -1};
+static bool bt_ticking; /* the main loop holds BT.mu (a modem's reply can come back inside the tick) */
 
+static void last_job_closes(void);
 static bool bl_tx_open(void *ctx, uint32_t freq, int cc, rdof_bench_power_t power, bool as_built, char *why,
                        size_t cap)
 {
+    last_job_closes();
     pthread_mutex_lock(&BT.mu);
     const bool busy = BT.want || BT.active || BR.want || BR.active || BO.want || BO.active;
     if (!busy) {
@@ -2357,6 +2470,14 @@ static void bl_tx_push(void *ctx, uint8_t control, const uint8_t burst[33])
 }
 
 static void bl_tx_unkey(void *ctx) {} /* the job's modem unkeys once its queue has gone out */
+
+static size_t bl_tx_event(void *ctx, char *out, size_t cap)
+{
+    pthread_mutex_lock(&BT.mu);
+    const size_t n = BT.active ? rdof_benchtx_next_event(&BT.tx, out, cap) : 0;
+    pthread_mutex_unlock(&BT.mu);
+    return n;
+}
 
 static bool bl_tx_idle(void *ctx)
 {
@@ -2402,7 +2523,11 @@ static bool bench_modem_reply(const uint8_t *f, size_t n)
     }
     if (!BT.active)
         return false;
+    if (!bt_ticking)
+        pthread_mutex_lock(&BT.mu); /* its measurements are read by the bench's thread */
     rdof_benchtx_modem(&BT.tx, f, n, now_s());
+    if (!bt_ticking)
+        pthread_mutex_unlock(&BT.mu);
     return true;
 }
 
@@ -2419,9 +2544,36 @@ static struct {
     double asked;
 } BS = {.mu = PTHREAD_MUTEX_INITIALIZER};
 
+/* The engine lets a job go (its close hook) before the main loop has given the transmitter back: the next job's open
+ * waits for that (3 s at most) instead of failing "still busy with the last job". */
+static bool ms_disarming(void);
+static bool job_closing(void)
+{
+    if (ms_disarming()) /* a responder's disarm reaches the main loop on its next turn */
+        return true;
+    pthread_mutex_lock(&BS.mu);
+    pthread_mutex_lock(&BT.mu);
+    pthread_mutex_lock(&BO.mu);
+    pthread_mutex_lock(&BR.mu);
+    const bool c = BS.want == 2 || BT.want == 2 || BO.want == 3 || BR.want == 2;
+    pthread_mutex_unlock(&BR.mu);
+    pthread_mutex_unlock(&BO.mu);
+    pthread_mutex_unlock(&BT.mu);
+    pthread_mutex_unlock(&BS.mu);
+    return c;
+}
+static void last_job_closes(void)
+{
+    for (int i = 0; i < 3000 && job_closing(); i++) {
+        const struct timespec ts = {0, 1000000};
+        nanosleep(&ts, NULL);
+    }
+}
+
 static int bl_sig_open(void *ctx, uint32_t freq, rdof_bench_power_t power, double seconds, const rdof_sig_src_t *src,
                        char *why, size_t cap)
 {
+    last_job_closes();
     pthread_mutex_lock(&BS.mu);
     pthread_mutex_lock(&BT.mu);
     const bool busy = BS.want || BS.active || BT.want || BT.active || BR.want || BR.active || BO.want || BO.active;
@@ -2477,15 +2629,11 @@ static double bl_sig_rate(void *ctx) { return rdof_sdrmodem_signal_rate(&R.m); }
  * heard back (the AD9361 hears its own transmitter), ties the modem sample it was put at to the receiver's sample
  * and so to UTC (the bursts' times as the receiver reports them). Unheard within a second, modem sample p is taken to
  * be on the air at wideband sample p plus tx_late48. */
-static const char *bl_ob_can(void *ctx)
-{
-    if (R.mmdvm)
-        return "the MMDVM modem transmits here, and an outbound job keys the SDR's own: none on --mmdvm";
-    return bl_can_tx(ctx);
-}
+static const char *bl_ob_can(void *ctx) { return bl_can_tx(ctx); }
 
 static bool bl_ob_open(void *ctx, const rdof_bl_ob_cfg_t *cfg, char *why, size_t cap)
 {
+    last_job_closes();
     pthread_mutex_lock(&BS.mu);
     pthread_mutex_lock(&BT.mu);
     pthread_mutex_lock(&BO.mu);
@@ -2520,6 +2668,10 @@ static int bl_ob_state(void *ctx, rdof_bl_ob_state_t *s, char *why, size_t cap)
 
 /* An outbound's voice burst (ob_push): queued for the main loop, which owns the modem; it writes it as the host's
  * DMR_DATA1 / DMR_DATA2 on its next turn (bench_ob_fast), a few ms later. A full queue drops it (counted late). */
+/* --mmdvm: the outbound as a duplex modem runs it: the modem keeps its own slot clock, unseen from here, so its
+ * slot 0 and the slots' numbers (even: TS1) come from a burst the SDR hears, or failing that from when it keyed. */
+static int64_t mm_now48(void) { return (int64_t)((double)BL.ring.w * 48000.0 / R.rate); }
+
 static void bl_ob_push(void *ctx, int slot, uint8_t control, const uint8_t burst[33])
 {
     pthread_mutex_lock(&BO.mu);
@@ -2549,9 +2701,35 @@ static void bl_ob_close(void *ctx)
     pthread_mutex_unlock(&BO.mu);
 }
 
+static void ob_clock_mm(double now)
+{
+    if (!BO.mapped && BO.keyed_at && now - BO.keyed_at > 1.0) { /* never heard (no channel on it): when it keyed */
+        BO.mapped = true, BO.slot0_48 = BO.key48;
+        say("bench: the outbound wasn't heard: its slot times are from when the modem keyed\n");
+    }
+    const double rate = R.rate;
+    const int64_t z = (int64_t)((double)BO.slot0_48 * rate / 48000.0); /* wideband samples, as the bursts' sc */
+    const double slot = rate * 0.03;
+    long next = BO.s.next; /* the key-up over: the last slot queued stays the last */
+    if (!BO.unkeyed) {
+        next = (long)floor((double)(mm_now48() - BO.slot0_48) / 1440.0) + 1;
+        if (next < 0)
+            next = 0;
+    }
+    BO.s = (rdof_bl_ob_state_t){.keyed = !BO.unkeyed && BO.mapped, .first = 0, .next = next, .base = z,
+                                .slot = slot, .rate = rate, .sync_off = (int)llround(rate * 775.0 / 48000.0),
+                                .on_air = BO.mapped, .map_pos = z,
+                                .map_t = BO.mapped ? bl_sc_utc(NULL, (uint64_t)z) : 0.0, .ppm = xtal()};
+    BO.state = BO.unkeyed ? 2 : BO.mapped ? 1 : 0;
+}
+
 /* The outbound's slot clock copied out for the bench's thread (BO.mu held). */
 static void ob_clock(double now)
 {
+    if (R.mmdvm) {
+        ob_clock_mm(now);
+        return;
+    }
     const rdof_sdrmodem_t *m = &R.m;
     const bool keyed = m->keyed && m->key_k >= 0;
     if (keyed && !BO.keyed_at)
@@ -2571,6 +2749,71 @@ static void ob_clock(double now)
     BO.state = !m->keyed && m->key_k >= 0 ? 2 : keyed ? 1 : 0;
 }
 
+/* A bench job comes first: the modem's owner yields at once (the owner's rule: a bench command never waits on the
+ * site's own traffic). Its transmission, a transceiver's call or a repeater's, is cut and what it queued dropped; a
+ * full duplex repeater stops, the modem goes simplex on the repeater's RX channel, and the TX LO may move for the job
+ * (io_tune). Only an MMDVM modem's call is waited for (10 s at most): its queue isn't the program's to drop.
+ * 1: the job may start; 0: not yet, the owner paused while the key-down ramps out; -1: not yet, the owner runs. */
+static int owner_yield(double now, double asked)
+{
+    if (R.mmdvm) {
+        if (R.full) { /* a duplex repeater stops for the job and starts again after it (owner_resume) */
+            if (!RP.on) {
+                RP.on = true;
+                RP.lo = R.tx_lo;
+                rdof_repeater_stop(&R.r);
+                say("bench: a job stops the repeater on the modem\n");
+            }
+            return 1;
+        }
+        return R.t.has_call && now - asked < 10.0 ? -1 : 1;
+    }
+    if (!RP.on) {
+        RP.on = true;
+        RP.lo = R.tx_lo;
+        RP.tuned = !R.full;
+        if (R.full)
+            rdof_repeater_stop(&R.r);
+        if (rdof_sdrmodem_transmitting(&R.m))
+            say("bench: a job cuts the %s's transmission\n", R.full ? "repeater" : "transceiver");
+        rdof_sdrmodem_preempt(&R.m);
+    }
+    if (rdof_sdrmodem_transmitting(&R.m) && now - asked < 2.0)
+        return 0;
+    if (!RP.tuned) {
+        RP.tuned = true;
+        if (!rdof_radio_tune(&R.radio, R.rx_hz, R.cc, 255))
+            say("bench: the repeater's modem didn't go simplex: %s\n", R.client.error);
+        say("bench: the repeater gives the transmitter to a job\n");
+    }
+    return 1;
+}
+
+/* The job is over: the transmitter back to its owner. A repeater's TX LO goes back and it starts again; a
+ * transceiver starts again (txvr: after a DMR job, which set the modem up its own way). */
+static void owner_resume(bool txvr)
+{
+    const bool was = RP.on;
+    RP.on = false;
+    if (R.full && was) {
+        if (R.tx_lo != RP.lo) {
+            if (!dev || !dev->set_tx_freq || dev->set_tx_freq(dev, RP.lo))
+                say("bench: can't move the TX LO back to %.4f MHz: %s\n", RP.lo / 1e6, dev ? dev->error : "");
+            else
+                R.tx_lo = RP.lo;
+        }
+        if (!rdof_modem_start(&R.client, 1) || !rdof_repeater_start(&R.r))
+            say("bench: the repeater didn't start again: %s\n", R.client.error);
+        else
+            say("bench: the transmitter is the repeater's again\n");
+        return;
+    }
+    if (txvr && (!rdof_modem_start(&R.client, 1) || !rdof_txvr_start(&R.t)))
+        say("bench: the transceiver didn't start again: %s\n", R.client.error);
+    else
+        say("bench: the transmitter is the transceiver's again\n");
+}
+
 /* Each main loop turn while an outbound has the modem: the voice bursts pushed since the last turn go to the modem
  * and the slot clock is copied out, so the engine sees the slot being queued within a few ms (POLL_S is 20 ms, under
  * a slot). */
@@ -2588,21 +2831,103 @@ static void bench_ob_fast(void)
         uint8_t p[34], f[40];
         p[0] = e.control;
         memcpy(p + 1, e.burst, 33);
-        rdof_sdrmodem_write(&R.m, f, rdof_mmdvm_frame(e.slot == 1 ? RDOF_MMDVM_DMR_DATA1 : RDOF_MMDVM_DMR_DATA2, p,
-                                                      sizeof p, f, sizeof f));
+        const size_t fn = rdof_mmdvm_frame(e.slot == 1 ? RDOF_MMDVM_DMR_DATA1 : RDOF_MMDVM_DMR_DATA2, p, sizeof p, f,
+                                           sizeof f);
+        bt_to_modem(NULL, f, fn);
     }
     ob_clock(now_s());
+    pthread_mutex_unlock(&BO.mu);
+}
+
+/* --mmdvm: the outbound's turn on a duplex modem. It keys with DMR_START; its idle outbound and CACH are the modem's
+ * own, the voice bursts its host's DMR_DATA1 / DMR_DATA2 (bench_ob_fast). */
+static bool bench_ob_poll_mm(double now)
+{
+    pthread_mutex_lock(&BO.mu);
+    if (BO.want == 1 && !BO.active) {
+        const int y = owner_yield(now, BO.asked);
+        if (y <= 0) {
+            pthread_mutex_unlock(&BO.mu);
+            return y == 0;
+        }
+        BO.want = 0;
+        const rdof_bl_ob_cfg_t c = BO.cfg;
+        pthread_mutex_unlock(&BO.mu);
+        /* blocking, BO.active still false: the modem's replies go to its client. Its RX frequency is unused:
+           the job's own */
+        const bool ok = rdof_modem_start(&R.client, 1) &&
+                        rdof_radio_tune_duplex(&R.radio, c.freq_hz, c.freq_hz, c.cc, bench_level(c.power)) &&
+                        rdof_modem_set_mode(&R.client, RDOF_MODE_DMR) && /* the firmware takes DMR_START only in DMR mode */
+                        rdof_modem_dmr_start(&R.client, true);
+        pthread_mutex_lock(&BO.mu);
+        if (!ok) {
+            BO.failed = true;
+            snprintf(BO.why, sizeof BO.why, "the modem refused the duplex setup: %s", R.client.error);
+            pthread_mutex_unlock(&BO.mu);
+            owner_resume(true);
+            return true;
+        }
+        BO.active = true, BO.keyed_at = now, BO.mapped = false;
+        BO.key48 = BO.slot0_48 = mm_now48();
+        BO.ch = channel_of(c.freq_hz);
+        say("bench: an outbound has the modem: %.4f MHz cc %d, %.1f s\n", c.freq_hz / 1e6, c.cc, c.seconds);
+    }
+    if (!BO.active) {
+        pthread_mutex_unlock(&BO.mu);
+        return false;
+    }
+    if (BO.want == 2 && !BO.unkeyed) { /* the key-up ends after the slot being queued */
+        BO.unkeyed = true, BO.want = 0;
+        pthread_mutex_unlock(&BO.mu);
+        rdof_modem_dmr_start(&R.client, false);
+        pthread_mutex_lock(&BO.mu);
+    }
+    if (BO.want == 3) { /* over: DMR_START off, the modem back to its owner */
+        const bool unkeyed = BO.unkeyed;
+        pthread_mutex_unlock(&BO.mu);
+        if (!unkeyed)
+            rdof_modem_dmr_start(&R.client, false);
+        pthread_mutex_lock(&BO.mu);
+        BO.active = false, BO.want = 0;
+        pthread_mutex_unlock(&BO.mu);
+        owner_resume(true);
+        return true;
+    }
+    ob_clock_mm(now);
+    pthread_mutex_unlock(&BO.mu);
+    return true;
+}
+
+/* --mmdvm: a burst the SDR heard while an outbound keys: the first with its CACH places the modem's slots. */
+static void ob_heard(int c, const rdof_sdr_burst_t *b)
+{
+    pthread_mutex_lock(&BO.mu);
+    if (BO.active && !BO.mapped && c == BO.ch && b->has_cach && (b->b.slot == 1 || b->b.slot == 2)) {
+        const int64_t s = b->position - 120; /* the burst starts after its slot's 12-symbol CACH */
+        long k = (long)floor((double)(s - BO.key48) / 1440.0 + 0.5);
+        if (k < 0)
+            k = 0;
+        if ((k & 1) != b->b.slot - 1)
+            k++;
+        BO.slot0_48 = s - k * 1440;
+        BO.mapped = true;
+        say("bench: the outbound heard on the SDR: slot %d, slot 0 %.2f ms after the modem keyed\n", b->b.slot,
+            (double)(BO.slot0_48 - BO.key48) / 48.0);
+    }
     pthread_mutex_unlock(&BO.mu);
 }
 
 /* The main loop's turn for an outbound: true while one has the modem. */
 static bool bench_ob_poll(double now)
 {
+    if (R.mmdvm)
+        return bench_ob_poll_mm(now);
     pthread_mutex_lock(&BO.mu);
     if (BO.want == 1 && !BO.active) {
-        if ((R.t.has_call || rdof_sdrmodem_transmitting(&R.m)) && now - BO.asked < 10.0) { /* its call ends first */
+        const int y = owner_yield(now, BO.asked);
+        if (y <= 0) {
             pthread_mutex_unlock(&BO.mu);
-            return false;
+            return y == 0;
         }
         BO.want = 0, BO.active = true;
         const rdof_bl_ob_cfg_t c = BO.cfg;
@@ -2627,7 +2952,6 @@ static bool bench_ob_poll(double now)
         pthread_mutex_lock(&BO.mu);
     }
     if (BO.want == 3) { /* over: the role dropped (SET_ROLE none), the modem back to the transceiver */
-        BO.want = 0;
         pthread_mutex_unlock(&BO.mu);
         static const uint8_t off = 0, none[2] = {1, 0}; /* 0xD6 SET_ROLE 0 */
         uint8_t f[8];
@@ -2635,12 +2959,9 @@ static bool bench_ob_poll(double now)
             rdof_sdrmodem_write(&R.m, f, rdof_mmdvm_frame(RDOF_MMDVM_DMR_START, &off, 1, f, sizeof f));
         rdof_sdrmodem_write(&R.m, f, rdof_mmdvm_frame(0xD6, none, sizeof none, f, sizeof f));
         pthread_mutex_lock(&BO.mu);
-        BO.active = false;
+        BO.active = false, BO.want = 0;
         pthread_mutex_unlock(&BO.mu);
-        if (!rdof_modem_start(&R.client, 1) || !rdof_txvr_start(&R.t))
-            say("bench: the transceiver didn't start again: %s\n", R.client.error);
-        else
-            say("bench: the transmitter is the transceiver's again\n");
+        owner_resume(true);
         return true;
     }
     ob_clock(now);
@@ -2653,9 +2974,10 @@ static bool bench_sig_poll(double now)
 {
     pthread_mutex_lock(&BS.mu);
     if (BS.want == 1 && !BS.active) {
-        if ((R.t.has_call || rdof_sdrmodem_transmitting(&R.m)) && now - BS.asked < 10.0) { /* its call ends first */
+        const int y = owner_yield(now, BS.asked);
+        if (y <= 0) {
             pthread_mutex_unlock(&BS.mu);
-            return false;
+            return y == 0;
         }
         BS.want = 0;
         if (rdof_sdrmodem_signal(&R.m, BS.freq, &BS.src, BS.why, sizeof BS.why)) {
@@ -2663,12 +2985,17 @@ static bool bench_sig_poll(double now)
             say("bench: a signal has the transmitter: %.4f MHz\n", BS.freq / 1e6);
         } else {
             BS.failed = true;
+            pthread_mutex_unlock(&BS.mu);
+            owner_resume(false);
+            return true;
         }
     }
     if (BS.active && BS.want == 2) {
         rdof_sdrmodem_signal(&R.m, 0, NULL, BS.why, sizeof BS.why);
         BS.want = 0, BS.active = false;
-        say("bench: the transmitter is the transceiver's again\n");
+        pthread_mutex_unlock(&BS.mu);
+        owner_resume(false);
+        return true;
     }
     if (BS.active)
         BS.state = rdof_sdrmodem_signal_state(&R.m);
@@ -2686,40 +3013,47 @@ static bool bench_tx_poll(double now)
         return true;
     pthread_mutex_lock(&BT.mu);
     if (BT.want == 1 && !BT.active) {
-        if (R.t.has_call && now - BT.asked < 10.0) { /* the transceiver's call ends first */
+        const int y = owner_yield(now, BT.asked);
+        if (y <= 0) {
             pthread_mutex_unlock(&BT.mu);
-            return false;
+            return y == 0;
         }
         BT.want = 0, BT.active = true;
         const rdof_benchtx_io_t io = {bt_to_modem, bt_to_tool, bt_keying, NULL, NULL};
+        bt_ticking = true;
         rdof_benchtx_init(&BT.tx, &io, BT.freq, BT.cc, R.mmdvm ? BT.power : 255, 120.0, now); /* SDR: --tx-power */
+        bt_ticking = false;
+        BT.heard_ch = R.mmdvm ? channel_of(BT.freq) : -1;
+        static rdof_benchtx_track_t bt_track;
+        rdof_benchtx_track(&BT.tx, BT.heard_ch >= 0 ? &bt_track : NULL,
+                           R.mmdvm ? "no receive channel on the job's frequency: a tune with a tap there gives one"
+                                   : "the SDR's own transmitter: no separate receiver hears it");
         say("bench: a job has the transmitter: %.4f MHz cc %d\n", BT.freq / 1e6, BT.cc);
     }
     if (!BT.active) {
         pthread_mutex_unlock(&BT.mu);
         return false;
     }
-    if (BT.want == 2) { /* the job is over: the modem back to the transceiver */
-        BT.want = 0, BT.nin = 0;
+    if (BT.want == 2) { /* the job is over: the modem back to the transceiver (want stays 2 until it is: job_closing) */
+        BT.nin = 0;
         pthread_mutex_unlock(&BT.mu);
         rdof_benchtx_stop(&BT.tx, NULL, "closed", now);
         pthread_mutex_lock(&BT.mu);
-        BT.active = false;
+        BT.active = false, BT.want = 0;
         pthread_mutex_unlock(&BT.mu);
-        if (!rdof_modem_start(&R.client, 1) || !rdof_txvr_start(&R.t))
-            say("bench: the transceiver didn't start again: %s\n", R.client.error);
-        else
-            say("bench: the transmitter is the transceiver's again\n");
+        owner_resume(true);
         return true;
     }
     for (int i = 0; i < BT.nin && BT.tx.qn < RDOF_BENCHTX_QUEUE; i++)
         BT.tx.q[(BT.tx.qh + BT.tx.qn++) % RDOF_BENCHTX_QUEUE] = BT.in[i];
     BT.nin = 0;
     rdof_benchtx_alive(&BT.tx, now); /* the job's connection is its dead-man */
+    bt_ticking = true;
     rdof_benchtx_tick(&BT.tx, now);
+    bt_ticking = false;
     BT.ready = BT.tx.state == RDOF_TXS_READY;
     BT.queued = BT.tx.qn;
-    BT.idle = !BT.tx.keyed && !BT.tx.qn;
+    BT.idle = !BT.tx.keyed && !BT.tx.qn && rdof_benchtx_settled(&BT.tx);
     if (BT.tx.state == RDOF_TXS_DONE && !BT.failed) {
         BT.failed = true;
         snprintf(BT.why, sizeof BT.why, "%s", BT.tx.error[0] ? BT.tx.error : "the modem stopped");
@@ -2728,8 +3062,252 @@ static bool bench_tx_poll(double now)
     return true;
 }
 
+/* The confirmed-data responder (the bench's mssim op, rdof/mssim.h): the bench's thread arms it and reads its log;
+ * the main loop feeds it the bursts heard on the job's channel and places its answers on the receiver's timeline,
+ * over a transmit job of its own (BT: the modem in DMO on the frequency, the transceiver paused). */
+static struct {
+    pthread_mutex_t mu;
+    int want;     /* 1 arm once the job has the transmitter, 2 disarm */
+    bool on;
+    double until; /* disarmed then */
+    int ch;       /* the receive channel on the frequency */
+    uint32_t freq;
+    char why[160]; /* why the last arming ended */
+    int64_t late48; /* the modem's tx_late48 before arming, put back after */
+    int64_t cal48;  /* the calibration burst's place, -1 heard back (or none) */
+    double cal_at;
+    rdof_mssim_profile_t prof;
+    rdof_mssim_t s;
+} MS = {.mu = PTHREAD_MUTEX_INITIALIZER, .ch = -1};
+
+static bool ms_disarming(void)
+{
+    pthread_mutex_lock(&MS.mu);
+    const bool d = MS.want == 2;
+    pthread_mutex_unlock(&MS.mu);
+    return d;
+}
+
+#define MS_LEAD48 1440 /* answers go to the modulator this far ahead of where it is */
+
+/* --mmdvm: an MMDVM modem can't place a burst at a sample: the answers go to it when they're due, this far ahead
+ * (the serial port, its queue and a key-up's delay; each answer heard back corrects it) */
+#define MM_LEAD48_0 9600  /* 200 ms */
+static int64_t mm_lead48 = MM_LEAD48_0;
+#define MM_SENT 16
+static struct {
+    uint8_t burst[33];
+    int64_t at48;
+} mm_sent[MM_SENT]; /* what went to the modem lately: a burst heard that matches is our own, heard back */
+static unsigned mm_nsent;
+
+static bool ms_send_mm(void *ctx, int64_t at48, const uint8_t burst[33], int64_t *placed48)
+{
+    int cc = 0, dt = 0, err = 0;
+    if (!rdof_decode_slot_type(burst, &cc, &dt, &err))
+        return false;
+    uint8_t p[34], f[40];
+    p[0] = RDOF_SYNC_DATA | (uint8_t)dt;
+    memcpy(p + 1, burst, 33);
+    if (!mm_write(f, rdof_mmdvm_frame(RDOF_MMDVM_DMR_DATA2, p, sizeof p, f, sizeof f)))
+        return false;
+    int64_t now = mm_now48() + mm_lead48;
+    *placed48 = at48 > now ? at48 : now;
+    memcpy(mm_sent[mm_nsent % MM_SENT].burst, burst, 33);
+    mm_sent[mm_nsent++ % MM_SENT].at48 = *placed48;
+    return true;
+}
+
+/* Our own answer on the SDR's channel: within 400 ms of where it was placed and within RDOF_SDRMODEM_SENT_BITS bits
+ * of what was sent. */
+static bool mm_is_echo(const rdof_sdr_burst_t *b)
+{
+    for (unsigned i = 0; i < mm_nsent && i < MM_SENT; i++) {
+        if (llabs(b->position - mm_sent[(mm_nsent - 1 - i) % MM_SENT].at48) > 19200)
+            continue;
+        int d = 0;
+        for (int k = 0; k < 33; k++)
+            d += __builtin_popcount(b->b.burst[k] ^ mm_sent[(mm_nsent - 1 - i) % MM_SENT].burst[k]);
+        if (d <= RDOF_SDRMODEM_SENT_BITS)
+            return true;
+    }
+    return false;
+}
+
+static bool ms_send(void *ctx, int64_t at48, const uint8_t burst[33], int64_t *placed48)
+{
+    if (R.mmdvm)
+        return ms_send_mm(ctx, at48, burst, placed48);
+    return rdof_sdrmodem_place48(&R.m, at48, burst, placed48);
+}
+
+/* A job set the modem's transmit delay itself (its own key-up's edge, the responder's echo) or put the site's back:
+ * on a full duplex repeater the drift tracker (the main loop) takes its reference again from it, not over it (it
+ * had put the site's calibration plus 29 ms of drift back over a job's 52.7 ms, and the job's inbound slots came out
+ * one off, 2026-11-08) */
+static atomic_int late_rebase;
+static int64_t path48 = -1; /* the transmit path's delay last measured from a key-up's edge (48 kS/s), -1: none yet */
+
+/* The transmit path's delay moved by d48: the SDR modem's tx_late48, or the MMDVM path's lead. */
+static void ms_late(int64_t d48)
+{
+    if (R.mmdvm) {
+        mm_lead48 += d48;
+        mm_lead48 = mm_lead48 < 240 ? 240 : mm_lead48 > 28800 ? 28800 : mm_lead48; /* 5 ms to 600 ms */
+    } else {
+        R.m.tx_late48 += d48;
+        atomic_store(&late_rebase, 1);
+    }
+}
+
+static void ms_off(const char *why)
+{
+    if (MS.on)
+        R.m.tx_late48 = MS.late48, atomic_store(&late_rebase, 1);
+    MS.on = false;
+    MS.want = 0;
+    rdof_mssim_disarm(&MS.s);
+    snprintf(MS.why, sizeof MS.why, "%s", why);
+    bl_tx_close(NULL);
+    say("bench: the responder is off: %s\n", why);
+}
+
+/* the main loop, each turn before the transmitter's samples */
+static void ms_poll(double now)
+{
+    pthread_mutex_lock(&MS.mu);
+    if (MS.want == 1) {
+        pthread_mutex_lock(&BT.mu);
+        const bool ready = BT.ready, failed = BT.failed;
+        char why[120];
+        snprintf(why, sizeof why, "%s", BT.why);
+        pthread_mutex_unlock(&BT.mu);
+        if (failed) {
+            ms_off(why);
+        } else if (now > MS.until) {
+            ms_off("the transmitter wasn't ready in time");
+        } else if (ready) {
+            rdof_mssim_init(&MS.s, ms_send, NULL);
+            rdof_mssim_arm(&MS.s, &MS.prof);
+            MS.want = 0;
+            MS.on = true;
+            /* the transmit path's delay: one idle burst, where it's heard back against where it was placed */
+            MS.late48 = R.m.tx_late48;
+            uint8_t idle[33], z[12] = {0};
+            rdof_data_burst(z, RDOF_DT_IDLE, BT.cc, rdof_data_sync(RDOF_MS_VOICE), idle);
+            int64_t at = (R.mmdvm ? mm_now48() + mm_lead48 : rdof_sdrmodem_tx_frontier48(&R.m)) + RDOF_MSSIM_SLOT48;
+            int64_t placed = -1;
+            MS.cal48 = ms_send(NULL, at, idle, &placed) ? placed : -1;
+            MS.cal_at = now;
+            say("bench: the responder is armed on %.4f MHz%s\n", MS.freq / 1e6,
+                MS.cal48 >= 0 ? ", calibrating" : " (no calibration burst)");
+        }
+    } else if (MS.on) {
+        if (MS.want == 2)
+            ms_off("disarmed");
+        else if (now > MS.until)
+            ms_off("its time is up");
+        else if (!MS.s.armed)
+            ms_off("it answered its count");
+        else if (R.mmdvm)
+            rdof_mssim_poll(&MS.s, mm_now48(), mm_lead48);
+        else
+            rdof_mssim_poll(&MS.s, rdof_sdrmodem_tx_frontier48(&R.m), MS_LEAD48);
+    } else if (MS.want == 2) {
+        MS.want = 0;
+    }
+    pthread_mutex_unlock(&MS.mu);
+}
+
+static void ms_heard(int c, const rdof_sdr_burst_t *b, bool echo)
+{
+    if (!MS.on || c != MS.ch) /* a racy peek: on changes on this thread only */
+        return;
+    pthread_mutex_lock(&MS.mu);
+    echo = echo || (R.mmdvm && mm_is_echo(b));
+    if (MS.on) {
+        if (!echo) {
+            rdof_mssim_heard(&MS.s, &b->b, b->position);
+        } else if (MS.cal48 >= 0 && b->b.dt == RDOF_DT_IDLE && llabs(b->position - MS.cal48) < 4 * 2880) {
+            ms_late(b->position - MS.cal48);
+            say("bench: the responder's transmit path is %.2f ms past its place (tx_late %.2f ms)\n",
+                (double)(b->position - MS.cal48) / 48.0, (double)(R.mmdvm ? mm_lead48 : R.m.tx_late48) / 48.0);
+            MS.cal48 = -1;
+        } else if (b->b.dt == RDOF_DT_DATA_HEADER) {
+            rdof_mssim_echo(&MS.s, b->position);
+            /* an answer heard back: half its error goes into the delay (a stall in the writer moves it) */
+            for (int i = 0; i < MS.s.nlog; i++) {
+                const rdof_mssim_entry_t *e = &MS.s.log[i];
+                if (e->air48 == b->position && e->placed48 >= 0 && llabs(e->air48 - e->placed48) > 24)
+                    ms_late((e->air48 - e->placed48) / 2);
+            }
+        }
+    }
+    pthread_mutex_unlock(&MS.mu);
+}
+
+static bool bl_mssim(void *ctx, const char *action, const char *req, size_t len, uint32_t freq_hz, int cc,
+                     rdof_bench_power_t power, double seconds, uint32_t since, char *out, size_t cap,
+                     const char **code)
+{
+    if (!strcmp(action, "arm")) {
+        rdof_mssim_profile_t p;
+        char err[120];
+        if (!rdof_mssim_parse(req, len, &p, err, sizeof err)) {
+            *code = "bad_request";
+            snprintf(out, cap, "%s", err);
+            return false;
+        }
+        /* an MMDVM modem takes it too, over the transmit job's setup: its timing to the serial port's and the key-up's
+           delay (mm_lead48), measured from the calibration burst and each answer heard back; the log says where they went */
+        const int ch = channel_of(freq_hz);
+        if (ch < 0) {
+            *code = "refused";
+            snprintf(out, cap, "no receive channel on %.4f MHz", freq_hz / 1e6);
+            return false;
+        }
+        pthread_mutex_lock(&MS.mu);
+        const bool busy = MS.on || MS.want;
+        pthread_mutex_unlock(&MS.mu);
+        char why[160] = "";
+        if (busy || !bl_tx_open(ctx, freq_hz, cc, power, false, why, sizeof why)) {
+            *code = "busy";
+            snprintf(out, cap, "%s", busy ? "the responder is armed already" : why);
+            return false;
+        }
+        pthread_mutex_lock(&MS.mu);
+        MS.prof = p;
+        MS.ch = ch;
+        MS.freq = freq_hz;
+        MS.until = now_s() + (seconds > 0 && seconds < 1800 ? seconds : 1800);
+        MS.why[0] = 0;
+        MS.want = 1;
+        pthread_mutex_unlock(&MS.mu);
+        char q[200];
+        snprintf(q, sizeof q, "%s", why);
+        for (char *s = q; *s; s++)
+            if (*s == '"' || *s == '\\' || (unsigned char)*s < 0x20)
+                *s = '\'';
+        snprintf(out, cap, "\"armed\":true,\"freq\":%.6f,\"cc\":%d,\"note\":\"%s\"", freq_hz / 1e6, cc, q);
+        return true;
+    }
+    pthread_mutex_lock(&MS.mu);
+    if (!strcmp(action, "disarm") && (MS.on || MS.want == 1))
+        MS.want = 2;
+    const int n = snprintf(out, cap, "\"armed\":%s,\"arming\":%s,\"answered\":%d,\"ended\":\"%s\",\"log\":",
+                           MS.on ? "true" : "false", MS.want == 1 ? "true" : "false", MS.s.answered, MS.why);
+    uint32_t next = since;
+    if (n > 0 && (size_t)n < cap) {
+        size_t k = rdof_mssim_log_json(&MS.s, since, out + n, cap - (size_t)n - 24, &next);
+        snprintf(out + n + k, cap - (size_t)n - k, ",\"next\":%u", next);
+    }
+    pthread_mutex_unlock(&MS.mu);
+    return true;
+}
+
 static bool bl_rpt_open(void *ctx, const rdof_bl_rpt_cfg_t *cfg, char *why, size_t cap)
 {
+    last_job_closes();
     pthread_mutex_lock(&BR.mu);
     const bool busy = BR.want || BR.active || BT.want || BT.active || BO.want || BO.active;
     if (!busy) {
@@ -2797,14 +3375,20 @@ static bool bench_rpt_poll(double now)
         return false;
     pthread_mutex_lock(&BR.mu);
     if (BR.want == 1 && !BR.active) {
-        if (R.t.has_call && now - BR.asked < 10.0) { /* the transceiver's call ends first */
+        const int y = owner_yield(now, BR.asked);
+        if (y <= 0) {
             pthread_mutex_unlock(&BR.mu);
-            return false;
+            return y == 0;
         }
         BR.want = 0, BR.active = true;
         const rdof_bl_rpt_cfg_t cfg = BR.cfg;
         pthread_mutex_unlock(&BR.mu);
+        /* the input's channel decodes the job's color code, not the site's: it heard nothing of a job on another */
+        BR.rx_ch = channel_of(cfg.rx_hz);
+        if (BR.rx_ch >= 0)
+            rdof_sdr_rx_set_cc(&R.rx, BR.rx_ch, cfg.cc);
         rdof_repeater_init(&BR.r, &R.radio, rcfg.peer_id, cfg.rx_hz, cfg.tx_hz, cfg.cc);
+        BR.r.keep_up = R.mmdvm; /* a modem drops its carrier when keyed with nothing queued */
         BR.r.enabled[1] = cfg.slots & 2u, BR.r.enabled[2] = cfg.slots & 4u;
         BR.r.inactivity_s = cfg.hang_s;
         rdof_repeater_set_call_hang(&BR.r, cfg.call_hang_s);
@@ -2815,6 +3399,10 @@ static bool bench_rpt_poll(double now)
         /* the inbound slots follow the transmit path's delay: the first key-up's edge in what's received sets it */
         BR.late48 = R.m.tx_late48;
         BR.cal = true;
+        /* until this job's own edge (missed when something else in the band raised the power before it): the path as
+           last measured, not the site's tracked value, which can be a slot out */
+        if (path48 >= 0)
+            R.m.tx_late48 = path48, atomic_store(&late_rebase, 1);
         const bool ok = rdof_modem_start(&R.client, 1) && rdof_repeater_start(&BR.r);
         pthread_mutex_lock(&BR.mu);
         BR.ready = ok, BR.failed = !ok;
@@ -2830,17 +3418,17 @@ static bool bench_rpt_poll(double now)
         return false;
     }
     if (BR.want == 2) { /* the job is over: the modem back to the transceiver */
-        BR.want = 0, BR.nwake = 0;
+        BR.nwake = 0;
         pthread_mutex_unlock(&BR.mu);
         rdof_repeater_stop(&BR.r);
         R.m.tx_late48 = BR.late48;
+        atomic_store(&late_rebase, 1);
+        if (BR.rx_ch >= 0)
+            rdof_sdr_rx_set_cc(&R.rx, BR.rx_ch, CH[BR.rx_ch].cc);
         pthread_mutex_lock(&BR.mu);
-        BR.active = false, BR.nev = 0;
+        BR.active = false, BR.nev = 0, BR.want = 0;
         pthread_mutex_unlock(&BR.mu);
-        if (!rdof_modem_start(&R.client, 1) || !rdof_txvr_start(&R.t))
-            say("bench: the transceiver didn't start again: %s\n", R.client.error);
-        else
-            say("bench: the transmitter is the transceiver's again\n");
+        owner_resume(true);
         return true;
     }
     const int nwake = BR.nwake;
@@ -2912,6 +3500,7 @@ static void bench_burst(int c, const rdof_sdr_burst_t *b)
     rdof_bl_burst_t o = {0};
     o.ch = c;
     o.pos48 = b->position;
+    o.lag48 = RDOF_DEMOD_LAG;
     o.t = bl_sc_utc(NULL, (uint64_t)((double)b->position * R.rate / 48000.0));
     o.cfo_hz = (float)(rdof_sdr_rx_correction_at(&R.rx, c, b->position + RDOF_AFC_AT) + b->freq_offset_hz -
                        xtal_base_hz(c));
@@ -2919,6 +3508,8 @@ static void bench_burst(int c, const rdof_sdr_burst_t *b)
     o.dt = (uint8_t)b->b.dt, o.n = (int8_t)b->b.n, o.slot = (int8_t)b->b.slot, o.family = (int8_t)b->b.family;
     o.cc = (int8_t)b->b.cc, o.sync_errors = (int8_t)b->b.sync_errors;
     memcpy(o.raw, b->b.burst, sizeof o.raw);
+    o.has_cach = b->has_cach;
+    memcpy(o.cach, b->cach, sizeof o.cach);
     rdof_bl_burst(BL.bl, &o);
 }
 
@@ -2931,6 +3522,15 @@ static void advertise_web(int port)
 }
 #endif
 
+static const char *bl_tune(void *ctx, const rdof_bl_tune_t *t, const char *who, char *why, size_t cap);
+static int bl_tune_state(void *ctx, char *why, size_t cap);
+static void bl_untune(void *ctx);
+static int bl_raw_start(void *ctx, double seconds, double fs, double center, double gain, char *err, size_t cap);
+static int bl_raw_state(void *ctx, rdof_bl_raw_t *o, char *err, size_t cap);
+static void bl_raw_read(void *ctx, long at, int16_t *out, long n);
+static void bl_raw_close(void *ctx);
+static int bl_raw_demod(void *ctx, bool reset, int cc, const float *iq, int n, rdof_bl_burst_t *out, int cap);
+
 static void bench_start(void)
 {
     if (bench_port < 0)
@@ -2940,30 +3540,37 @@ static void bench_start(void)
         fprintf(stderr, "bench: no memory for the history\n");
         return;
     }
-    /* cs8 from a 12-bit ADC (an AD9361 at 1/2048 a step): its low 8 bits, where a bench signal is (a call at
-     * -53 dBFS is a few steps); a signal over -24 dBFS clips, and the capture's clip_pct says so */
-    BL.ring.scale = 16;
+    /* cs8 from a wider ADC (an AD9361's 12 bits at 1/2048 a step): its low 8 bits, where a bench signal is (a call at
+     * -53 dBFS is a few steps); a signal over -24 dBFS clips, and the capture's clip_pct says so. An 8-bit device
+     * (an RTL-SDR) keeps its own 8 bits: at the wider ADC's gain a signal over -24 dBFS, which an RTL-SDR's gain puts
+     * in reach on the bench, clipped every capture, trigger and rx */
+    BL.ring.scale = dev && dev->iq_scale > 0 ? dev->iq_scale : 16;
     static const rdof_bl_platform_t pf = {.device = bl_device, .window = bl_window, .freqs = bl_freqs,
                                           .tx_bands = bl_tx_bands,
                                           .iq_read = bl_iq_read, .iq_filled = bl_iq_filled, .utc = bl_utc,
                                           .sc_utc = bl_sc_utc,
-                                          .rx_stats = bl_rx_stats, .can_tx = bl_can_tx, .tx_open = bl_tx_open,
+                                          .rx_stats = bl_rx_stats, .can_tx = bl_can_tx, .tx_open = bl_tx_open, .mssim = bl_mssim,
                                           .tx_space = bl_tx_space, .tx_push = bl_tx_push, .tx_unkey = bl_tx_unkey,
-                                          .tx_idle = bl_tx_idle, .tx_close = bl_tx_close, .rpt_open = bl_rpt_open,
+                                          .tx_idle = bl_tx_idle, .tx_close = bl_tx_close, .tx_event = bl_tx_event, .rpt_open = bl_rpt_open,
                                           .rpt_state = bl_rpt_state, .rpt_event = bl_rpt_event,
                                           .rpt_wake = bl_rpt_wake, .rpt_close = bl_rpt_close,
                                           .modes = rdof_sdr_modes, .sig_open = bl_sig_open,
                                           .sig_state = bl_sig_state, .sig_close = bl_sig_close,
                                           .sig_rate = bl_sig_rate, .ob_open = bl_ob_open, .ob_state = bl_ob_state,
                                           .ob_unkey = bl_ob_unkey, .ob_close = bl_ob_close, .ob_can = bl_ob_can,
-                                          .ob_push = bl_ob_push};
+                                          .ob_push = bl_ob_push, .tune = bl_tune, .tune_state = bl_tune_state,
+                                          .untune = bl_untune};
     rdof_bl_platform_t p = pf;
-    if (R.mmdvm) /* the modem transmits DMR only: no signal modes */
+    if (R.mmdvm) { /* the modem transmits DMR only: no signal modes */
         p.sig_open = NULL, p.sig_state = NULL, p.sig_close = NULL;
+        p.station = bl_station, p.cannot = bl_cannot;
+        p.rpt_own_rx = true; /* the repeater job hears on the modem's own receiver */
+    }
     if (FX.on) /* no wideband I/Q: capture, trigger, track and rx take a channel's own outputs (bl_ch_*); the ring
                   stays, filler, for the sample count the bursts' times come from */
         p.iq_read = NULL, p.iq_filled = NULL, p.iq_warm = NULL, p.ch_open = bl_ch_open, p.ch_read = bl_ch_read,
-        p.ch_close = bl_ch_close;
+        p.ch_close = bl_ch_close, p.raw_start = bl_raw_start, p.raw_state = bl_raw_state, p.raw_read = bl_raw_read,
+        p.raw_close = bl_raw_close, p.raw_demod = bl_raw_demod;
     BL.bl = rdof_bl_new(&p);
     char err[160];
     BL.net = BL.bl ? rdof_bnet_start(BL.bl, bench_addr, bench_port, now_s, 0, err, sizeof err) : NULL;
@@ -2996,8 +3603,15 @@ static void bench_stop(void)
 
 static void on_burst(void *ctx, int c, const rdof_sdr_burst_t *b, double t)
 {
-    if (!R.mmdvm)
+    pthread_mutex_lock(&BT.mu);
+    if (BT.active && c == BT.heard_ch)
+        rdof_benchtx_heard(&BT.tx, b->b.burst, now_s());
+    pthread_mutex_unlock(&BT.mu);
+    if (R.mmdvm)
+        ob_heard(c, b);
+    else if (!listen_only)
         rdof_sdrmodem_heard(&R.m, c, b);
+    ms_heard(c, b, false);
     if (NX)
         rdof_sdrsplits_heard(&XS, c, b);
     bench_burst(c, b);
@@ -3022,6 +3636,270 @@ static void on_burst(void *ctx, int c, const rdof_sdr_burst_t *b, double t)
            b->freq_offset_hz, b->deviation_hz, hex);
 }
 
+/* The bench's tune (bl_tune, the tune op and a request's own): a bench job comes first, so channels are pointed at the
+ * job's frequencies (taps), and the RX LO moves only when they don't fit the window as it is (a Pluto's 19.872 MS/s
+ * window holds a whole plan). The bench thread asks; the receiver's thread applies it between chunks
+ * (bench_tune_poll), as it does the calibration's LO. A tap takes a channel the site isn't using for its repeater or
+ * transceiver (from the last one down) and gives it back after. While the LO is moved, the other channels hear
+ * somewhere else: their bursts are dropped (tune_drop), and the repeater and the transceiver hear nothing. A tap's
+ * bursts go to the bench, the modem and the responder, never to the network. The I/Q history from before the LO
+ * moved isn't read (TU.hist_from). */
+/* Channel c mixed from where CH says, against the center now, its correction its frequency's (--ppm) */
+static void chan_point(int c)
+{
+    const double off = CH[c].freq_hz - R.rx.center_hz;
+    if (FX.on)
+        FX.off[c] = off; /* fx_correction takes it to the block with the correction */
+    else
+        rdof_chz_set_offset(&R.rx.chz, c, off);
+    rdof_sdr_rx_set_correction(&R.rx, c, xtal_base_hz(c));
+    rdof_sdr_rx_set_cc(&R.rx, c, CH[c].cc); /* a tap decodes any, a channel its own again */
+}
+
+static bool move_lo(double hz, char *why, size_t cap)
+{
+    if (!dev || !dev->set_rx_freq || dev->set_rx_freq(dev, hz)) {
+        snprintf(why, cap, "the receiver's LO can't move to %.4f MHz%s%s", hz / 1e6, dev ? ": " : "",
+                 dev ? dev->error : "");
+        return false;
+    }
+    R.rx.center_hz = R.rx.cfg.center_hz = hz;
+    for (int c = 0; c < NCH; c++)
+        chan_point(c);
+    /* an AD9363 recalibrates after a long jump and streams zeros meanwhile (a 313 MHz one, 2026-11-08: an rx's floor
+       learned at -150 dBFS): the history starts, and the receiver runs for the bench, a while after */
+    TU.hist_from = BL.ring.w + (uint64_t)(TU_SETTLE_S * R.rate);
+    return true;
+}
+
+static double rx_gain_set = NAN; /* --gain: the settings' RX gain (NAN: the device's AGC) */
+
+/* The settings again: the taps' channels back, the LO back */
+static void tune_restore(void)
+{
+    int tap[RDOF_BL_TAPS];
+    pthread_mutex_lock(&TU.mu);
+    const int n = TU.ntap;
+    for (int i = 0; i < n; i++)
+        CH[tap[i] = TU.tap[i]] = TU.saved[i];
+    TU.ntap = 0;
+    pthread_mutex_unlock(&TU.mu);
+    char why[160];
+    if (TU.moved) {
+        if (!move_lo(TU.center0, why, sizeof why))
+            say("bench: %s\n", why);
+        else
+            say("bench: the receiver's LO is back at %.4f MHz\n", TU.center0 / 1e6);
+    } else {
+        for (int i = 0; i < n; i++)
+            chan_point(tap[i]);
+    }
+    TU.on = TU.moved = false;
+    if (TU.gained) {
+        if (dev->set_rx_gain(dev, rx_gain_set))
+            say("bench: the receiver's gain didn't go back: %s\n", dev->error);
+        else
+            say("bench: the receiver's gain is the settings' again\n");
+        TU.gained = false;
+    }
+}
+
+static bool in_window(double center, double f)
+{
+    return fabs(f - center) <= 0.4 * R.rate && fabs(f - center) >= 25e3; /* clear of the DC */
+}
+
+static bool tune_apply(const rdof_bl_tune_t *t, char *why, size_t cap)
+{
+    double f[RDOF_BL_TAPS];
+    int nf = 0;
+    if (t->ntaps < 0) /* the taps as they are */
+        for (int i = 0; i < TU.ntap; i++)
+            f[nf++] = CH[TU.tap[i]].freq_hz;
+    else
+        for (int i = 0; i < t->ntaps && i < RDOF_BL_TAPS; i++)
+            f[nf++] = t->taps_hz[i];
+    /* the gain this tune leaves: the one asked, the last tune's for "as it is", NAN for the settings' */
+    const double gain_now = TU.gained ? TU.gain_db : NAN;
+    const double want_gain = isfinite(t->gain_db) && t->gain_db != RDOF_BL_TUNE_AUTO ? t->gain_db
+                           : isnan(t->gain_db) ? gain_now : NAN;
+    if (TU.on)
+        tune_restore();
+    const double c0 = R.rx.center_hz;
+    TU.center0 = c0;
+    bool fit = true;
+    for (int i = 0; i < nf; i++)
+        fit &= in_window(c0, f[i]);
+    /* the LO stays while the taps fit; else where asked (when they fit there), else an eighth of the rate under the
+       first tap; "auto" with no taps: the settings */
+    double center = c0;
+    if (!fit || (!nf && t->center_hz > 0)) {
+        center = t->center_hz > 0 ? t->center_hz : nf ? f[0] - R.rate / 8 : c0;
+        for (int i = 0; i < nf; i++)
+            if (!in_window(center, f[i]))
+                center = f[0] - R.rate / 8;
+        for (int i = 0; i < nf; i++)
+            if (!in_window(center, f[i])) {
+                snprintf(why, cap, "taps %.4f and %.4f MHz don't fit one window (%.2f MS/s)", f[0] / 1e6,
+                         f[i] / 1e6, R.rate / 1e6);
+                return false;
+            }
+    }
+    /* the taps' channels: a channel already there, else one the site's repeater or transceiver isn't on */
+    int tap[RDOF_BL_TAPS], nt = 0;
+    const int keep[6] = {channel_of(R.rx_hz), channel_of(R.tx_hz), R.tx_ch, R.tx_img, R.echo_ch, R.echo_img};
+    for (int i = 0; i < nf; i++) {
+        const int at = center == c0 ? channel_of(f[i]) : -1;
+        if (at >= 0)
+            continue; /* heard as it is */
+        int c = NCH - 1;
+        for (; c >= 0; c--) {
+            bool used = false;
+            for (int k = 0; k < 6; k++)
+                used |= keep[k] == c;
+            for (int k = 0; k < nt; k++)
+                used |= tap[k] == c;
+            if (!used)
+                break;
+        }
+        if (c < 0) /* none to spare: the job comes first, so one of the site's own (it hears nothing meanwhile) */
+            for (c = NCH - 1; c >= 0; c--) {
+                bool used = false;
+                for (int k = 0; k < nt; k++)
+                    used |= tap[k] == c;
+                if (!used)
+                    break;
+            }
+        if (c < 0) {
+            snprintf(why, cap, "%d taps: the receiver has %d channels", nf, NCH);
+            return false;
+        }
+        tap[nt++] = c;
+    }
+    if (center != c0 && !move_lo(center, why, cap))
+        return false;
+    TU.moved = center != c0;
+    if (isfinite(want_gain)) {
+        if (dev->set_rx_gain(dev, want_gain)) {
+            snprintf(why, cap, "the receiver's gain: %s", dev->error);
+            return false;
+        }
+        TU.gained = true, TU.gain_db = want_gain;
+    }
+    pthread_mutex_lock(&TU.mu);
+    int k = 0;
+    for (int i = 0; i < nf; i++) {
+        if (center == c0 && channel_of(f[i]) >= 0)
+            continue;
+        const int c = tap[k];
+        TU.saved[k] = CH[c];
+        TU.tap[k] = c;
+        CH[c].freq_hz = f[i];
+        CH[c].cc = -1;
+        CH[c].id = TAP_ID[k];
+        k++;
+    }
+    TU.ntap = k;
+    pthread_mutex_unlock(&TU.mu);
+    for (int i = 0; i < TU.ntap; i++)
+        chan_point(TU.tap[i]);
+    TU.on = true;
+    char line[300];
+    int ln = snprintf(line, sizeof line, "%d tap%s", TU.ntap, TU.ntap == 1 ? "" : "s");
+    for (int i = 0; i < TU.ntap && ln > 0 && (size_t)ln < sizeof line; i++)
+        ln += snprintf(line + ln, sizeof line - (size_t)ln, "%s %.4f MHz on channel %d", i ? "," : ":",
+                       CH[TU.tap[i]].freq_hz / 1e6, TU.tap[i]);
+    if (TU.moved)
+        say("bench: the receiver tuned for a job, its LO moved to %.4f MHz (the site's channels hear nothing "
+            "meanwhile): %s\n", center / 1e6, line);
+    else
+        say("bench: the receiver tuned for a job: %s\n", line);
+    return true;
+}
+
+/* the receiver's thread, between chunks */
+static void bench_tune_poll(void)
+{
+    if (!TU.want) /* a racy peek: want is set under mu */
+        return;
+    if (R.cal) /* the duplex calibration has the LO: after it */
+        return;
+    pthread_mutex_lock(&TU.mu);
+    const int want = TU.want;
+    const rdof_bl_tune_t t = TU.t;
+    TU.want = 0;
+    pthread_mutex_unlock(&TU.mu);
+    char why[160] = "";
+    bool ok = true;
+    if (want == 1)
+        ok = tune_apply(&t, why, sizeof why);
+    else if (TU.on)
+        tune_restore();
+    pthread_mutex_lock(&TU.mu);
+    if (!TU.want) {
+        TU.state = ok ? 1 : -1;
+        snprintf(TU.why, sizeof TU.why, "%s", why);
+    }
+    pthread_mutex_unlock(&TU.mu);
+}
+
+static const char *bl_tune(void *ctx, const rdof_bl_tune_t *t, const char *who, char *why, size_t cap)
+{
+    (void)ctx;
+    if (t->ntaps > RDOF_BL_TAPS || t->ntaps > NCH) {
+        snprintf(why, cap, "%d taps at most here", NCH < RDOF_BL_TAPS ? NCH : RDOF_BL_TAPS);
+        return "bad_request";
+    }
+    if (isfinite(t->gain_db) && t->gain_db != RDOF_BL_TUNE_AUTO && (!dev || !dev->set_rx_gain)) {
+        snprintf(why, cap, "this device's receive gain can't be set");
+        return "refused";
+    }
+    pthread_mutex_lock(&TU.mu);
+    TU.t = *t;
+    TU.want = 1;
+    TU.state = 0;
+    pthread_mutex_unlock(&TU.mu);
+    say("bench: a tune for %s\n", who);
+    return NULL;
+}
+
+static int bl_tune_state(void *ctx, char *why, size_t cap)
+{
+    (void)ctx;
+    pthread_mutex_lock(&TU.mu);
+    const int st = TU.want ? 0 : TU.state;
+    snprintf(why, cap, "%s", TU.why);
+    pthread_mutex_unlock(&TU.mu);
+    return st;
+}
+
+static void bl_untune(void *ctx)
+{
+    (void)ctx;
+    pthread_mutex_lock(&TU.mu);
+    TU.want = 2;
+    TU.state = 0;
+    pthread_mutex_unlock(&TU.mu);
+}
+
+/* While the LO is moved, the channels that aren't taps hear somewhere else: dropped. */
+static bool tune_drop(int c)
+{
+    return TU.on && TU.moved && c >= 0 && tap_of(c) < 0;
+}
+
+/* A tap's burst (not our own heard back) goes to the bench, the modem and the responder, never the network. */
+static bool tap_heard(int c, const rdof_sdr_burst_t *b)
+{
+    if (!TU.on || c < 0 || tap_of(c) < 0)
+        return false;
+    if (!R.mmdvm)
+        rdof_sdrmodem_heard(&R.m, c, b);
+    ms_heard(c, b, false);
+    bench_burst(c, b);
+    return true;
+}
+
 static bool muted(void *ctx, int64_t p) { return rdof_sdrmodem_muted_at(&R.m, p); }
 /* Our own transmission heard back (half duplex): on the channel it went out on, or its image, within its span on
  * the air (60 ms either side: a burst's length and the loop's delay); on any other channel, a burst we sent there
@@ -3029,7 +3907,7 @@ static bool muted(void *ctx, int64_t p) { return rdof_sdrmodem_muted_at(&R.m, p)
  * all the time it's keyed, so there only a burst we sent counts, on any channel but its input: on the Pluto a
  * repeater sending on 438.3625 was heard on 438.2625 as a call of its own. Not passed on: a channel's peer would
  * send the network's call back to it. The bench's line protocol still gets it: it watches the air. */
-static bool echo_drop(void *ctx, int c, const rdof_sdr_burst_t *b)
+static bool echo_drop_(int c, const rdof_sdr_burst_t *b)
 {
     if (c < 0)
         return false;
@@ -3055,12 +3933,21 @@ static bool echo_drop(void *ctx, int c, const rdof_sdr_burst_t *b)
     bench_burst(c, b);
     return true;
 }
+static bool echo_drop(void *ctx, int c, const rdof_sdr_burst_t *b)
+{
+    if (tune_drop(c))
+        return true;
+    const bool ours = echo_drop_(c, b);
+    if (ours)
+        ms_heard(c, b, true); /* the responder's answer on the air: where it was heard */
+    return ours || tap_heard(c, b);
+}
 /* the inbound slot by timing: the repeater's RX channel only (another channel keeps its own CACH), the job's with a
  * bench repeater job */
 static int relabel(void *ctx, int c, const rdof_sdr_burst_t *b)
 {
     const int rx = channel_of(BR.active ? BR.cfg.rx_hz : R.rx_hz);
-    return c == rx && !R.mmdvm ? rdof_sdrmodem_inbound(&R.m, b) : 0;
+    return c == rx && !R.mmdvm && !listen_only ? rdof_sdrmodem_inbound(&R.m, b) : 0;
 }
 
 static void tx_gain(double db)
@@ -3222,6 +4109,7 @@ static void web_sdr(rdof_hostweb_sdr_t *d)
         else /* ours: --monitor's TX heard back, --mmdvm's modem's RX */
             name = !strcmp(id, "out")        ? "transmit (heard back)"
                    : !strcmp(id, "modem-rx") ? "the modem's RX"
+                   : !strcmp(id, "modem-tx") ? "the modem's TX"
                                              : "receive";
         const double f = R.rx.trackers[c].freq_hz;
         const int r = R.rx.rssi[c];
@@ -3717,7 +4605,9 @@ static int dx_start(double rate, char *err, size_t cap)
         return -1;
     }
     DX.started = true;
-    atexit(dx_stop);
+    static bool at_exit;
+    if (!at_exit) /* once: a raw capture off the rate starts it again */
+        at_exit = !atexit(dx_stop);
     R.txr = (int)r;
     R.tx_rate = rate / (double)r;
     /* as far from the carrier as io_tune's reach (0.4 tx_rate less 12.5 kHz) allows, a kHz inside, in steps of a
@@ -3762,12 +4652,42 @@ static void fx_nco(int c, double hz, long long from)
     n->q[n->n].from = from, n->q[n->n].hz = hz, n->n++;
 }
 
+/* A raw capture (bench "capture" with "raw"): a thread stops the block and the stream, takes the ADC's samples in one DMA
+ * block and starts them again, while the loop keeps turning on silence for that long, so the transmitter, the clocks and
+ * every count keep real time. The silence is filler (and counted lost): those bursts really weren't heard. */
+static struct {
+    _Atomic int state;  /* 0 idle, 1 being made, 2 ready, -1 failed */
+    atomic_bool fill, ack, closing;
+    long n, clipped;
+    int16_t *buf;
+    double t0, t_fill, fs, center; /* its rate; where it's tuned, NAN: where the receiver is */
+    double gain;                   /* its RX gain, the receiver's again after; NAN: the receiver's */
+    long long made;
+    char err[160];
+} RAW;
+static bool fx_resync; /* the block started again: its next frame carries on from the count so far */
+static long long fx_raw_made; /* channel frames of silence made while a raw capture had the receiver */
+static long long fx_owe;      /* and the frames its silence came short of (the loop's lag said so after): made up */
+static long long fx_drop;     /* or went over (it ran on after the stream was back, whose first frames then
+                               * counted from its end): that many of the stream's frames left out */
+static long long fx_fixed;    /* wideband samples the two put in (less those left out), out of the loop's lag */
+
 /* A channel frame from the parser: the instants lost before it made up with zeros (up to FX_GAP), so the receiver's
  * sample count stays the block's (seq - seq0) */
 static void fx_on_ch(void *ctx, uint32_t seq, const rdof_iq16_t *x, int n)
 {
-    if (!FX.have0)
+    if (!FX.have0) { /* STATUS's flags from the start (the DMA without a buffer until it had one): the baseline, as below */
         FX.have0 = true, FX.seq0 = FX.expect = seq;
+        FX.status = rdof_chzhw_status(&FX.h);
+    }
+    if (fx_resync) {
+        fx_resync = false;
+        FX.expect = seq;
+        FX.seq0 = seq - (uint32_t)(FX.nall + FX.skipped); /* as if it had never stopped */
+        /* STATUS's flags from the restart itself (the FIFO full while off, the DMA without a buffer until it had one) are
+         * no overflow: the first frame is the baseline. A frame lost after it still shows, as a gap in the numbers. */
+        FX.status = rdof_chzhw_status(&FX.h);
+    }
     const uint32_t gap = seq - FX.expect;
     if (gap >= 0x80000000u)
         return; /* behind the last: not this stream's */
@@ -3780,7 +4700,10 @@ static void fx_on_ch(void *ctx, uint32_t seq, const rdof_iq16_t *x, int n)
             FX.skipped++;
         }
     }
-    fx_put(x);
+    if (fx_drop > 0) /* past the receiver as the instants past FX_GAP are: fx_correction's count keeps them */
+        fx_drop--, FX.skipped++, fx_fixed -= FX.step;
+    else
+        fx_put(x);
     FX.expect = seq + 1;
 }
 
@@ -3876,7 +4799,7 @@ static void fx_rx(void)
         rdof_sdr_rx_bursts(&R.rx, 0, R.rx.C);
         rdof_sdr_rx_finish(&R.rx);
     }
-    if (FX.dirty) {
+    if (FX.dirty && !atomic_load(&RAW.fill)) { /* the raw capture's thread has the block */
         rdof_chzhw_set_inc(&FX.h, FX.inc);
         FX.dirty = false;
     }
@@ -3887,7 +4810,38 @@ static void fx_rx(void)
  * wideband samples, or RDOF_DEV_* (TIMEOUT for a buffer with no frames). */
 static int fx_take(int chunk, long timeout_us)
 {
-    if (FX.j >= FX.ny) {
+    /* a raw capture waits for a calibration under way: it has the receiver on the TX LO */
+    if (FX.j >= FX.ny && atomic_load(&RAW.fill) && R.cal == 0) { /* no stream: silence, at the pace it would have come */
+        const double rate = R.rate / FX.step;
+        double t = now_s();
+        if (!atomic_exchange(&RAW.ack, true))
+            RAW.t_fill = t, RAW.made = 0;
+        long long k = (long long)((t - RAW.t_fill) * rate) - RAW.made;
+        if (k < (long long)(0.005 * rate)) {
+            nanosleep(&(struct timespec){0, 5000000}, NULL);
+            k = (long long)((now_s() - RAW.t_fill) * rate) - RAW.made;
+        }
+        k = k < 1 ? 1 : k > FX.cap ? FX.cap : k;
+        RAW.made += k;
+        FX.ny = FX.j = 0;
+        for (long long i = 0; i < k; i++)
+            fx_put(NULL);
+        FX.made_up += k, FX.lost += k;
+        fx_raw_made += k;
+        WS.lost += k * FX.step;
+        FX.base = FX.nall - FX.ny;
+        fx_rx();
+    } else if (FX.j >= FX.ny && fx_owe > 0) { /* a raw capture's silence, short: the rest, at once */
+        long long k = fx_owe > FX.cap ? FX.cap : fx_owe;
+        fx_owe -= k;
+        FX.ny = FX.j = 0;
+        for (long long i = 0; i < k; i++)
+            fx_put(NULL);
+        FX.made_up += k;
+        fx_fixed += k * FX.step;
+        FX.base = FX.nall - FX.ny;
+        fx_rx();
+    } else if (FX.j >= FX.ny) {
         const uint64_t *w;
         const int nw = dev->read_words(dev, &w, timeout_us);
         if (nw < 0)
@@ -3913,6 +4867,278 @@ static int fx_take(int chunk, long timeout_us)
     FX.turn = FX.j;
     FX.j += k;
     return k * FX.step;
+}
+
+/* the receiver's gain after a raw capture with its own: a tune's, else the settings' */
+static double raw_gain_back(void) { return TU.gained ? TU.gain_db : rx_gain_set; }
+
+static void *raw_thread(void *arg)
+{
+    (void)arg;
+    char err[160] = "";
+    int16_t *const buf = RAW.buf;
+    const long n = RAW.n;
+    const bool off_rate = RAW.fs != R.rate, retune = isfinite(RAW.center);
+    double tl_dry = NAN;
+    int64_t tl_pushed = 0, tl_skip = 0;
+    atomic_store(&RAW.ack, false);
+    atomic_store(&RAW.fill, true);
+    while (!atomic_load(&RAW.ack))
+        nanosleep(&(struct timespec){0, 1000000}, NULL);
+    /* the TX held before the receiver stops: its timeline is taken while the stream still runs */
+    if (off_rate) { /* the TX at that rate too: nothing goes out meanwhile */
+        pthread_mutex_lock(&W.mu);
+        W.hold = true;
+        pthread_cond_broadcast(&W.cv);
+        while (W.writing && W.running) /* a push under way finishes on the buffer it began on */
+            pthread_cond_wait(&W.cv, &W.mu);
+        /* where the stream stands on the air: its queue's end, and the sample that ends it (the block being filled
+         * wasn't pushed, and tx_restart drops it: its samples aren't on the timeline) */
+        if (W.guarded)
+            tl_dry = W.guard.dry_at, tl_pushed = W.pushed - (dev->tx_block - dev->tx_room(dev)), tl_skip = W.guard.skip;
+        pthread_mutex_unlock(&W.mu);
+    }
+    dev->rx_pause(dev);
+    rdof_chzhw_stop(&FX.h); /* the stock path: the ADC's samples to the DMA */
+    double fs = R.rate;
+    int rc = 0;
+    if ((off_rate || retune) && dev->raw_tune(dev, off_rate ? RAW.fs : 0, retune ? RAW.center : 0, &fs, err, sizeof err))
+        rc = -1;
+    RAW.fs = fs;
+    const bool gained = !rc && isfinite(RAW.gain);
+    if (gained && dev->set_rx_gain(dev, RAW.gain)) {
+        snprintf(err, sizeof err, "the gain %.1f dB: %s", RAW.gain, dev->error);
+        rc = -1;
+    }
+    long after = 0;
+    if (!rc)
+        rc = dev->raw_fill(dev, n, fs, buf, &after, err, sizeof err);
+    if (gained && dev->set_rx_gain(dev, raw_gain_back())) {
+        say("raw capture: the receiver's gain didn't come back: %s\n", dev->error);
+        exit(1); /* run.sh starts it again */
+    }
+    const double t_end = bl_utc(NULL); /* the last DMA block's last sample just came */
+    if (!rc)
+        RAW.t0 = t_end - (double)(n + after) / fs;
+    if ((off_rate || retune) && dev->raw_untune(dev)) {
+        say("raw capture: the chip's rate and tuning didn't come back: %s\n", dev->error);
+        exit(1); /* run.sh starts it again */
+    }
+    if (off_rate) { /* the rate changes reset the DAC core's source and stalled its DMA: the interpolator and the
+                     * transmit buffer anew, as at start (the writer's held: nothing writes meanwhile) */
+        char e1[160] = "";
+        if (DX.started) {
+            dx_stop();
+            if (dx_start(R.rate, e1, sizeof e1)) {
+                say("raw capture: the TX interpolator didn't start again: %s\n", e1);
+                exit(1);
+            }
+        }
+        if (dev->tx_restart && dev->tx_restart(dev)) {
+            say("raw capture: the transmit buffer didn't come back: %s\n", dev->error);
+            exit(1);
+        }
+    }
+    char e2[160];
+    memcpy(FX.cfg.inc, FX.inc, sizeof FX.inc);
+    rdof_chzhw_rx_init(&FX.prx, FX.C, fx_on_ch, NULL, NULL);
+    if (rdof_chzhw_start(&FX.h, &FX.cfg, 0, 0, e2, sizeof e2) || dev->rx_resume(dev)) {
+        say("raw capture: the receive stream didn't come back: %s\n", dev->error);
+        exit(1); /* run.sh starts it again */
+    }
+    fx_resync = true;
+    if (off_rate) {
+        pthread_mutex_lock(&W.mu);
+        /* the guard anew, as at start: nothing was pushed through the hold, so its queue's time ran out seconds ago
+         * and it took every block after for one that came late (zeros sent, the samples dropped, for good) */
+        if (W.guarded) { /* its counts go on: the loop's log takes differences of them */
+            const rdof_txguard_t was = W.guard;
+            rdof_txguard_init(&W.guard, R.tx_rate, dev->tx_block, dev->tx_nbuf);
+            W.guard.padded = was.padded, W.guard.pads = was.pads, W.guard.dry = was.dry;
+        }
+        /* The stream goes on where it would have without the hold: sample s on the air at tl_dry + (s - tl_pushed -
+         * tl_skip) / rate (the zeros the guard still owed for count as sent). The new queue first just over full
+         * with zeros, so its pushes wait and the guard has its end from them; then the ring's next sample is the one
+         * due there: the samples before it dropped, or, when that one went by in the hold (the stream's lead is in
+         * the ring, which the hold emptied), the ring back to it, zeros in its place. A fixed lead in its place put
+         * the stream 52-58 ms after its place as the DMA happened to start (the calibration moved with each
+         * capture); zeros pushed past a full queue only wait. The writer's held, so this thread writes. */
+        if (dev->tx_block > 0 && dev->tx_nbuf > 0) {
+            static const rdof_cf_t zeros[CHUNK];
+            pthread_mutex_unlock(&W.mu);
+            for (long left = (long)dev->tx_block * (dev->tx_nbuf + 1) + 1; left > 0;) {
+                const int k = dev->write(dev, zeros, left < CHUNK ? (int)left : CHUNK, 100000);
+                if (k <= 0)
+                    break;
+                left -= k;
+            }
+            pthread_mutex_lock(&W.mu);
+            const double txrate = R.tx_rate;
+            if (W.guarded && !isnan(tl_dry) && !isnan(W.guard.dry_at)) {
+                const int64_t due = tl_pushed + tl_skip + llround((W.guard.dry_at - tl_dry) * txrate);
+                const int64_t d = due - W.tail; /* > 0: samples to drop; < 0: zeros to go back over */
+                if (d >= 0 && d < (int64_t)(0.25 * txrate)) {
+                    W.guard.skip += d;
+                    say("transmit: back on its timeline after the raw capture (%.2f ms dropped, %.1f ms queued)\n",
+                        1e3 * (double)d / txrate, 1e3 * (double)(W.head - due) / txrate);
+                } else if (d < 0 && -d < (int64_t)(0.25 * txrate) && W.head - due < RING) {
+                    for (int64_t q = due; q < W.tail; q++)
+                        W.buf[q % RING] = (rdof_cf_t){0, 0};
+                    W.tail = due;
+                    say("transmit: back on its timeline after the raw capture (%.2f ms of zeros, %.1f ms queued)\n",
+                        -1e3 * (double)d / txrate, 1e3 * (double)(W.head - due) / txrate);
+                } else {
+                    say("transmit: after the raw capture its timeline is %.1f ms off; it goes on from its queue\n",
+                        1e3 * (double)d / txrate);
+                }
+            } else {
+                say("transmit: after the raw capture its timeline wasn't known; it goes on from its queue\n");
+            }
+        }
+        W.hold = false;
+        pthread_cond_broadcast(&W.cv);
+        pthread_mutex_unlock(&W.mu);
+    }
+    atomic_store(&RAW.fill, false);
+    long clip = 0;
+    if (!rc)
+        for (long i = 0; i < 2 * n; i++)
+            clip += buf[i] >= 2047 || buf[i] <= -2048;
+    RAW.clipped = clip;
+    snprintf(RAW.err, sizeof RAW.err, "%s", err);
+    if (atomic_load(&RAW.closing)) { /* its client went: nothing to keep */
+        free(buf);
+        RAW.buf = NULL;
+        atomic_store(&RAW.state, 0);
+        return NULL;
+    }
+    atomic_store(&RAW.state, rc ? -1 : 2);
+    return NULL;
+}
+
+static int bl_raw_start(void *ctx, double seconds, double fs, double center, double gain, char *err, size_t cap)
+{
+    (void)ctx;
+    if (atomic_load(&RAW.state))
+        return 1;
+    if (!dev || !dev->raw_fill) {
+        snprintf(err, cap, "this device can't hand over its ADC's samples");
+        return -1;
+    }
+    if (fs > 0 && fs != R.rate && !dev->raw_tune) {
+        snprintf(err, cap, "this device's rate can't change for a capture");
+        return -1;
+    }
+    if (isfinite(gain) && !dev->set_rx_gain) {
+        snprintf(err, cap, "this device's gain can't change for a capture");
+        return -1;
+    }
+    RAW.fs = fs > 0 ? fs : R.rate, RAW.center = center, RAW.gain = gain;
+    const long n = lround(seconds * RAW.fs);
+    int16_t *buf = malloc((size_t)n * 4);
+    if (!buf) {
+        snprintf(err, cap, "no memory for %.0f MB of samples", (double)n * 4 / 1e6);
+        return -1;
+    }
+    RAW.buf = buf, RAW.n = n, RAW.err[0] = 0;
+    atomic_store(&RAW.closing, false);
+    atomic_store(&RAW.state, 1);
+    pthread_t th;
+    if (pthread_create(&th, NULL, raw_thread, NULL)) {
+        free(buf);
+        RAW.buf = NULL;
+        atomic_store(&RAW.state, 0);
+        snprintf(err, cap, "no thread for it");
+        return -1;
+    }
+    pthread_detach(th);
+    return 0;
+}
+
+static int bl_raw_state(void *ctx, rdof_bl_raw_t *o, char *err, size_t cap)
+{
+    (void)ctx;
+    const int st = atomic_load(&RAW.state);
+    if (st < 0) {
+        snprintf(err, cap, "%s", RAW.err);
+        return -1;
+    }
+    if (st != 2)
+        return 0;
+    *o = (rdof_bl_raw_t){.n = RAW.n, .clipped = RAW.clipped, .fs = RAW.fs, .t0 = RAW.t0, .full_scale = 2048, .bits = 12,
+                         .center_hz = isfinite(RAW.center) ? RAW.center : R.rx.center_hz};
+    return 1;
+}
+
+static void bl_raw_read(void *ctx, long at, int16_t *out, long n)
+{
+    (void)ctx;
+    memcpy(out, RAW.buf + 2 * at, (size_t)n * 4);
+}
+
+static void bl_raw_close(void *ctx)
+{
+    (void)ctx;
+    int st = atomic_load(&RAW.state);
+    if (st == 1) { /* still being made: the thread frees it */
+        atomic_store(&RAW.closing, true);
+        return;
+    }
+    free(RAW.buf);
+    RAW.buf = NULL;
+    if (st)
+        atomic_store(&RAW.state, 0);
+}
+
+/* A raw bursts stream's decoder: the receiver's own demod on the engine's 48 kS/s outputs, its bursts as the
+ * receiver's (bench_burst), the carrier from the channel's center as the demod saw it (the engine's mixer corrected
+ * the crystal already) */
+static struct {
+    rdof_demod_t d;
+    bool on;
+} RAWD;
+
+static int bl_raw_demod(void *ctx, bool reset, int cc, const float *iq, int n, rdof_bl_burst_t *out, int cap)
+{
+    (void)ctx;
+    enum { FEED = 4800 };
+    static const rdof_cf_t zeros[FEED];
+    if (reset || !RAWD.on) {
+        if (RAWD.on)
+            rdof_demod_free(&RAWD.d);
+        RAWD.on = false;
+        if (rdof_demod_init(&RAWD.d, cc, 1, RDOF_DEMOD_SQUELCH_HZ, FEED)) {
+            rdof_demod_free(&RAWD.d);
+            return -1;
+        }
+        RAWD.on = true;
+    }
+    const bool flush = n == 0;
+    int left = flush ? 3 * FEED : n, got = 0; /* the end: 0.3 s of nothing after, for the bursts it still holds */
+    while (left > 0) {
+        const int k = left < FEED ? left : FEED;
+        int nb = 0;
+        const rdof_sdr_burst_t *b = rdof_demod_feed(&RAWD.d, flush ? zeros : (const rdof_cf_t *)(const void *)iq, k, &nb);
+        for (int j = 0; j < nb && got < cap; j++, got++) {
+            rdof_bl_burst_t *o = &out[got];
+            memset(o, 0, sizeof *o);
+            o->pos48 = b[j].position, o->lag48 = RDOF_DEMOD_LAG;
+            o->cfo_hz = b[j].freq_offset_hz, o->dev_hz = b[j].deviation_hz, o->level_dbfs = b[j].b.power_dbfs;
+            o->dt = (uint8_t)b[j].b.dt, o->n = (int8_t)b[j].b.n, o->slot = (int8_t)b[j].b.slot;
+            o->family = (int8_t)b[j].b.family, o->cc = (int8_t)b[j].b.cc, o->sync_errors = (int8_t)b[j].b.sync_errors;
+            memcpy(o->raw, b[j].b.burst, sizeof o->raw);
+            o->has_cach = b[j].has_cach;
+            memcpy(o->cach, b[j].cach, sizeof o->cach);
+        }
+        if (!flush)
+            iq += 2 * k;
+        left -= k;
+    }
+    if (flush) {
+        rdof_demod_free(&RAWD.d);
+        RAWD.on = false;
+    }
+    return got;
 }
 
 /* With --fpga-chz, an edge in the channels' power comes the filter's delay late (16 D + 1 taps: 8 output
@@ -4105,6 +5331,7 @@ static bool x_start(xsplit_t *x)
     }
     rdof_radio_init(&x->radio, &x->client, rdof_radio_detect(x->client.version));
     rdof_repeater_init(&x->r, &x->radio, x->u->peer_id, x->u->rx_hz, x->u->tx_hz, x->u->cc);
+    x->r.keep_up = true; /* a modem drops its carrier when keyed with nothing queued */
     rdofradio_cfg_apply_unit(&x->u->cfg, &x->r);
     x->r.clock = p_clock;
     x->r.on_tx = x_tx;
@@ -4140,6 +5367,7 @@ static void split_service(void)
     split_flush();
     if (!stop && (P.gone || S.failed[0])) {
         say("split: %s\n", P.gone ? "the radio's port went away" : S.failed);
+        lost_device = 1;
         stop = 1;
     }
     for (int k = 0; k < NX; k++) {
@@ -4148,6 +5376,7 @@ static void split_service(void)
         const rdof_split_t *xs = rdof_sdrsplits_split(&XS, k);
         if (!stop && (X[k]->p.gone || xs->failed[0])) {
             say("%s: split: %s\n", X[k]->u->name, X[k]->p.gone ? "the radio's port went away" : xs->failed);
+            lost_device = 1;
             stop = 1;
         }
     }
@@ -4165,6 +5394,7 @@ static void split_service(void)
 static void rx_turn(void)
 {
     static rdof_cf_t in[CHUNK];
+    bench_tune_poll();
     const double t_in = now_s();
     FX.t_rx = 0;
     const int n = FX.on ? fx_take(SC.chunk, 100000) : dev->read(dev, in, SC.chunk, 100000);
@@ -4173,6 +5403,7 @@ static void rx_turn(void)
     if (n == RDOF_DEV_TIMEOUT) {
         if (++SC.timeouts >= 50 && !stop) {
             say("read: nothing for 5 s, stopping\n");
+            lost_device = 1;
             stop = 1;
         }
     } else if (n == RDOF_DEV_OVERFLOW) {
@@ -4182,6 +5413,7 @@ static void rx_turn(void)
         WS.errors++;
         if (++SC.errors > 10 && !stop) {
             say("%s\n", dev->error);
+            lost_device = 1;
             stop = 1;
         }
     } else if (n > 0) {
@@ -4309,6 +5541,7 @@ static int split_main(int argc, char **argv, const char *port, int baud, int pow
     }
     rdof_radio_init(&R.radio, &R.client, rdof_radio_detect(R.client.version));
     rdof_repeater_init(&R.r, &R.radio, rcfg.peer_id, R.rx_hz, R.tx_hz, R.cc);
+    R.r.keep_up = R.mmdvm; /* a modem drops its carrier when keyed with nothing queued */
     if (config_path)
         rdofradio_cfg_apply_repeater(&rcfg, &R.r);
     R.r.clock = p_clock;
@@ -4376,7 +5609,7 @@ static int split_main(int argc, char **argv, const char *port, int baud, int pow
             rdof_repeater_stop(&X[k]->r);
     for (int i = 0; i < 10; i++) /* the repeaters' last frames out to the radios */
         split_service();
-    rc = 0;
+    rc = lost_device ? 1 : 0;
 out:
     P.quit = true;
     pthread_join(P.thread, NULL);
@@ -4460,6 +5693,7 @@ static void mm_service(void)
     }
     if (!stop && P.gone) {
         say("modem: the port went away\n");
+        lost_device = 1;
         stop = 1;
     }
     if (!in_wait)
@@ -4571,6 +5805,7 @@ static int mmdvm_main(int argc, char **argv, const char *port, int baud, double 
     bool ok;
     if (R.full) {
         rdof_repeater_init(&R.r, &R.radio, rcfg.peer_id, R.rx_hz, R.tx_hz, R.cc);
+        R.r.keep_up = R.mmdvm; /* a modem drops its carrier when keyed with nothing queued */
         if (config_path) {
             rdofradio_cfg_apply_repeater(&rcfg, &R.r);
             R.r.power = rcfg.cfg.power;
@@ -4629,6 +5864,7 @@ static int mmdvm_main(int argc, char **argv, const char *port, int baud, double 
         mm_turn();
         bench_ob_fast();
         const double now = now_s();
+        ms_poll(now);
         if (now - last_poll >= POLL_S) {
             last_poll = now;
             if (R.parrot)
@@ -4659,7 +5895,7 @@ static int mmdvm_main(int argc, char **argv, const char *port, int baud, double 
     rdof_modem_set_mode(&R.client, RDOF_MODE_IDLE); /* the modem idle: it doesn't key on its own */
     for (int i = 0; i < 10; i++) /* the last frames out to the modem */
         mm_service();
-    rc = 0;
+    rc = lost_device ? 1 : 0;
 out:
     P.quit = true;
     pthread_join(P.thread, NULL);
@@ -4696,6 +5932,64 @@ out:
     }
 #endif
     return rc;
+}
+
+/* The whole run with --listen, once the device is open receive only: the receiver and the bench's line, no unit,
+ * nothing that transmits. */
+static int listen_main(int argc, char **argv, double seconds)
+{
+    const double t0 = now_s();
+    SC.rate = R.rate;
+    SC.floor = SC.last_win = SC.win_min = INFINITY;
+    SC.chunk = (int)(R.rate / 100) < CHUNK ? (int)(R.rate / 100) : CHUNK;
+    if (dev->start(dev)) {
+        fprintf(stderr, "start: %s\n", dev->error);
+        dev->close(dev);
+        return 1;
+    }
+    SC.t0 = SC.win_start = now_s();
+    fprintf(stderr, "listen: %s, RX %.4f MHz, TX %.4f MHz heard, cc %d; nothing transmits\n", dev->name,
+            R.rx_hz / 1e6, R.tx_hz / 1e6, R.cc);
+#ifdef RDOF_HOST_WEB
+    if (web_port >= 0) {
+        web_settings(argc, argv);
+        const int wp = rdof_hostweb_start(web_addr, web_port, rcfg.box);
+        if (wp < 0)
+            fprintf(stderr, "web: %s\n", strerror(errno));
+        else
+            fprintf(stderr, "web: http://%s:%d/\n", web_addr, wp), advertise_web(wp);
+    }
+    double last_web = 0;
+#else
+    (void)argc, (void)argv;
+#endif
+    bench_start();
+    while (!stop && (seconds <= 0 || now_s() - t0 < seconds)) {
+        rx_turn();
+        ws_turn(now_s());
+#ifdef RDOF_HOST_WEB
+        const double now = now_s();
+        if (now - last_web >= 0.25) {
+            last_web = now;
+            web_publish(R.rx_hz, R.tx_hz, R.cc);
+        }
+#endif
+    }
+    dev->close(dev);
+    fprintf(stderr, "%.1f s; SDR: %d overflows, %.1f ms of samples lost\n", now_s() - t0, SC.overflows,
+            1e3 * (double)SC.filled / R.rate);
+    for (int c = 0; c < NCH; c++)
+        fprintf(stderr, "%s %.4f MHz: %ld bursts\n", CH[c].id, CH[c].freq_hz / 1e6, R.rx.bursts[c]);
+    bench_stop();
+    mq_stop();
+    net_close();
+    clock_stop();
+    rdof_sdr_rx_free(&R.rx);
+#ifdef RDOF_HOST_WEB
+    rdof_hostweb_stop();
+#endif
+    rdof_sdrmodem_free(&R.m);
+    return 0;
 }
 
 /* Settings that can't run (refused, or channels no window holds): with --config and --web, the page stays up
@@ -4756,7 +6050,10 @@ static int hold(int argc, char **argv, const char *why)
 
 int main(int argc, char **argv)
 {
+    static const char *settings[16];
+    int n_settings = 0;
     const char *soapy = NULL, *iio = NULL, *file_dev = NULL, *stream_args = "", *fft = NULL, *split_tx = NULL, *mmdvm = NULL;
+    bool sim_sdr = false; /* --sim-sdr: rdofradio_sim.c's receiver, for no-RF tests */
     double mm_rx_off = 0, mm_tx_off = 0, mm_rx_level = NAN, mm_tx_level = NAN;
     int mm_flags = 0;
     int baud = 115200, power_cap = 0, tx_flags = 0;
@@ -4773,7 +6070,9 @@ int main(int argc, char **argv)
             usage();                                                                                              \
         i++;                                                                                                      \
     } while (0)
-        if (!strcmp(a, "--soapy")) {
+        if (!strcmp(a, "--sim-sdr")) {
+            sim_sdr = true;
+        } else if (!strcmp(a, "--soapy")) {
             NEXT();
             soapy = v;
         } else if (!strcmp(a, "--iio")) {
@@ -4868,6 +6167,13 @@ int main(int argc, char **argv)
             parrot.start = parrot_start;
             parrot.send = parrot_send;
             R.parrot = &parrot;
+        } else if (!strcmp(a, "--setting")) {
+            NEXT();
+            if (n_settings >= 16 || !strchr(v, '=')) {
+                fprintf(stderr, "--setting KEY=VALUE (at most 16): %s\n", v);
+                return 2;
+            }
+            settings[n_settings++] = v;
         } else if (!strcmp(a, "--stream")) {
             NEXT();
             stream_args = v;
@@ -4922,6 +6228,8 @@ int main(int argc, char **argv)
             seconds = atof(v);
         } else if (!strcmp(a, "--allow-tx")) {
             allow = 1;
+        } else if (!strcmp(a, "--listen")) {
+            listen_only = true;
         } else if (!strcmp(a, "--monitor")) {
             monitor = 1;
             tx_flags++;
@@ -5052,7 +6360,11 @@ int main(int argc, char **argv)
     }
     R.full = !strcmp(duplex, "full");
     R.mmdvm = mmdvm != NULL;
-    const int ndev = (soapy != NULL) + (iio != NULL) + (file_dev != NULL);
+    if (n_settings && !soapy) {
+        fprintf(stderr, "--setting: a SoapySDR driver's (--soapy)\n");
+        return 2;
+    }
+    const int ndev = (soapy != NULL) + (iio != NULL) + (file_dev != NULL) + (sim_sdr ? 1 : 0);
     if (ndev > 1 || (!ndev && !R.mmdvm) || !rx || (!R.full && strcmp(duplex, "half")))
         usage();
     if (config_path && !R.mmdvm && rcfg.on_modem && !rcfg.full) {
@@ -5107,8 +6419,14 @@ int main(int argc, char **argv)
         return 2;
     }
 #endif
-    if (!allow) {
-        fprintf(stderr, "rdofradio transmits: pass --allow-tx\n");
+    if (listen_only && (allow || split_tx || mmdvm || tx_flags || config_path || R.parrot || bench_ntx || bench_nband ||
+                        DX.on)) {
+        fprintf(stderr, "--listen receives only: no --allow-tx, --split-tx, --mmdvm, --config, --parrot, --bench-tx, "
+                        "--fpga-duc or transmit settings\n");
+        return 2;
+    }
+    if (!allow && !listen_only) {
+        fprintf(stderr, "rdofradio transmits: pass --allow-tx (or --listen to receive only)\n");
         return 2;
     }
     if ((FX.on || DX.on) && dev_local) {
@@ -5194,7 +6512,7 @@ int main(int argc, char **argv)
 
     if (R.mmdvm) {
         mm_tracker_init(); /* the modem's: the radio's RX for the network, MQTT and the page */
-        if (!soapy && !iio) { /* no SDR: the modem alone */
+        if (!ndev) { /* no SDR: the modem alone */
             if (rcfg.nchan)
                 fprintf(stderr, "receiver: no SDR (DEVICE): its %d channels left out\n", rcfg.nchan);
             sr_start();
@@ -5218,7 +6536,7 @@ int main(int argc, char **argv)
         int nown = 0;
         if (R.mmdvm && rdofradio_cfg_channel_at(&rcfg, R.rx_hz) < 0)
             own[nown++] = (rdof_sdr_channel_t){"modem-rx", rx, cc, rx_slot};
-        if (monitor && rdofradio_cfg_channel_at(&rcfg, R.tx_hz) < 0 && R.tx_hz != R.rx_hz)
+        if ((monitor || listen_only) && rdofradio_cfg_channel_at(&rcfg, R.tx_hz) < 0 && R.tx_hz != R.rx_hz)
             own[nown++] = (rdof_sdr_channel_t){"out", tx, cc, 1};
         if (!rcfg.nchan && !R.mmdvm) /* the settings put nothing on the SDR (it can't be: a unit on it hears there) */
             own[nown++] = (rdof_sdr_channel_t){"rx", rx, cc, rx_slot};
@@ -5249,6 +6567,16 @@ int main(int argc, char **argv)
         }
         for (int k = 0; k < nown && NCH < RDOF_SDR_MAX_CHANNELS; k++)
             CH[NCH++] = own[k];
+        /* --mmdvm's other side: the SDR hears both of a duplex modem's frequencies, when one window holds them. A
+           split wider than the SDR's rate still runs, the modem's RX kept; the TX side then takes a tune of its own. */
+        if (R.mmdvm && R.tx_hz != R.rx_hz && rdofradio_cfg_channel_at(&rcfg, R.tx_hz) < 0 && NCH < RDOF_SDR_MAX_CHANNELS) {
+            char why[200];
+            CH[NCH] = (rdof_sdr_channel_t){"modem-tx", tx, cc, 1};
+            if (plan_rate(CH, NCH + 1, why, sizeof why))
+                NCH++;
+            else
+                fprintf(stderr, "receiver: the modem's TX, %.4f MHz, has no channel: %s\n", tx / 1e6, why);
+        }
     }
     R.mon = monitor ? channel_of(tx) : -1;
     if (unfit)
@@ -5328,8 +6656,9 @@ int main(int argc, char **argv)
         fprintf(stderr, "--fpga-duc: transmit at %.0f S/s, R %d to %.0f S/s, the TX LO %.0f kHz above\n", R.tx_rate,
                 R.txr, rate, (tx_lo - tx) / 1e3);
     }
-    const rdofradio_dev_setup_t su = {rate, R.rx.center_hz, tx_lo, gain, bw, stream_args, R.split || R.mmdvm,
-                                      FX.on ? 48000.0 * (double)rdof_chzfx_frame_words(FX.C) : 0, R.txr};
+    const rdofradio_dev_setup_t su = {rate, R.rx.center_hz, tx_lo, gain, bw, stream_args, R.split || R.mmdvm || listen_only,
+                                      FX.on ? 48000.0 * (double)rdof_chzfx_frame_words(FX.C) : 0, R.txr, settings,
+                                      n_settings};
 #ifdef RDOF_IIO
     if (iio)
         dev = rdofradio_iio_open(iio, &su, derr, sizeof derr);
@@ -5340,11 +6669,14 @@ int main(int argc, char **argv)
 #endif
     if (file_dev)
         dev = rdofradio_file_open(file_dev, &su, derr, sizeof derr);
+    if (sim_sdr)
+        dev = rdofradio_sim_open(&su, derr, sizeof derr);
     if (!dev) {
         fprintf(stderr, "%s\n", derr);
         return 1;
     }
     WS.agc = isnan(gain);
+    rx_gain_set = gain;
     WS.tx_gain = dev->tx_gain_min;
     if (isnan(tx_max_dbm))
         tx_max_dbm = 7.0; /* a PlutoSDR's nominal at full gain */
@@ -5366,7 +6698,7 @@ int main(int argc, char **argv)
     }
     txg_full = txg;
     bench_map = rcfg.cfg.tx_map;
-    if (!R.split && !R.mmdvm && (txg < dev->tx_gain_min || txg > dev->tx_gain_max)) {
+    if (!R.split && !R.mmdvm && !listen_only && (txg < dev->tx_gain_min || txg > dev->tx_gain_max)) {
         fprintf(stderr, "TX gain %.1f outside the device's %.1f..%.1f\n", txg, dev->tx_gain_min, dev->tx_gain_max);
         dev->close(dev);
         return 1;
@@ -5382,7 +6714,7 @@ int main(int argc, char **argv)
     signal(SIGTERM, on_signal);
 
     /* the modem, its client, and the repeater or the transceiver over them */
-    const bool rx_only = R.split || R.mmdvm;
+    const bool rx_only = R.split || R.mmdvm || listen_only;
     const rdof_sdrmodem_io_t io = {io_reply, io_channel, rx_only ? NULL : io_tune, &R, R.split ? split_now48 : NULL,
                                    rx_only ? NULL : io_tx_level};
     /* the nominal rate when the device's is within 2 S/s of it, as the receiver takes it (below 2.083 MS/s an
@@ -5409,6 +6741,8 @@ int main(int argc, char **argv)
     }
     if (R.mmdvm)
         return mmdvm_main(argc, argv, mmdvm, baud, seconds, mm_rx_off, mm_tx_off, mm_rx_level, mm_tx_level);
+    if (listen_only)
+        return listen_main(argc, argv, seconds);
     const rdof_modem_port_t port = {p_write, p_wait, NULL, p_clock, p_sleep, &R};
     rdof_modem_init(&R.client, &port);
     R.client.on_rx = on_rx;
@@ -5423,6 +6757,7 @@ int main(int argc, char **argv)
     bool ok;
     if (R.full) {
         rdof_repeater_init(&R.r, &R.radio, rcfg.peer_id, R.rx_hz, R.tx_hz, cc);
+        R.r.keep_up = R.mmdvm; /* a modem drops its carrier when keyed with nothing queued */
         if (config_path)
             rdofradio_cfg_apply_repeater(&rcfg, &R.r); /* slots, hangs, jitter buffer, CW ID, as the firmware */
         R.r.clock = p_clock;
@@ -5476,7 +6811,7 @@ int main(int argc, char **argv)
     /* the transmit stream's positions are its own samples (txr receive samples each with --fpga-duc) */
     const double txrate = R.tx_rate;
     const int txr = R.txr;
-    const int lead = (int)(txrate * 0.05); /* 50 ms of zeros ahead of the first read */
+    const int lead = (int)(txrate * TX_LEAD_S);
     const int64_t offset = (int64_t)llround(offset_s * txrate);
     if (dev->start(dev)) {
         fprintf(stderr, "start: %s\n", dev->error);
@@ -5555,14 +6890,30 @@ int main(int argc, char **argv)
     double last_status = 0, level_sum = 0;
     long level_n = 0;
     double t_read = 0, t_write = 0, t_proc = 0; /* seconds spent in each, since the last status */
+    double raw_lag = 0;                    /* the samples the clock says its silence fell behind */
+    double raw_end = -INFINITY;            /* the stream's seconds when a raw capture's silence ended */
+    long long raw_quiet = 0, raw_seen = 0; /* channel frames a raw capture took, so far; fx_raw_made at the last turn */
     while (!stop && (seconds <= 0 || total < (long long)(seconds * rate))) {
+        bench_tune_poll();
         const double t0 = now_s();
         const long long fx_lost = FX.lost;
         /* --fpga-chz: in stays zeros; the turn's power is the block's (turn_p2) */
         FX.t_rx = 0;
         int n = FX.on ? fx_take(chunk, 500000) : dev->read(dev, in, chunk, 500000);
-        if (FX.lost != fx_lost) { /* frames lost: zeros kept the timeline, but the calibration no longer holds */
-            say("receive: %lld channel frames lost; zeros in their place%s\n", FX.lost - fx_lost,
+        const long long raw_k = fx_raw_made - raw_seen; /* a raw capture's: one line at its end */
+        raw_seen = fx_raw_made, raw_quiet += raw_k;
+        if (raw_quiet && !atomic_load(&RAW.fill)) {
+            say("receive: %.2f s not heard for a raw capture (%lld channel frames, %.1f ms of them late, made up)%s\n",
+                ((double)raw_quiet * FX.step + raw_lag) / rate, raw_quiet, 1e3 * raw_lag / rate,
+                R.full ? "; calibrating again once idle" : "");
+            raw_quiet = 0, raw_lag = 0;
+            raw_end = (double)total / rate;
+            R.ring_ref = -1; /* the hold emptied the ring and the restore filled it to the stream's timeline: taken again */
+            if (R.full)
+                R.recal = true, R.cal_tries = 0;
+        }
+        if (FX.lost - fx_lost > raw_k) { /* frames lost: zeros kept the timeline, but the calibration no longer holds */
+            say("receive: %lld channel frames lost; zeros in their place%s\n", FX.lost - fx_lost - raw_k,
                 R.full ? "; calibrating again once idle" : "");
             if (R.full)
                 R.recal = true, R.cal_tries = 0;
@@ -5611,6 +6962,7 @@ int main(int argc, char **argv)
         /* as many transmit samples as were read (one for every txr), at the modem's position for them */
         const int ntx = (int)((total + n) / txr - total / txr);
         const double t_mod = now_s();
+        ms_poll(now);
         const bool keyed = rdof_sdrmodem_pull_iq(&R.m, txn - lead + offset, out, ntx);
         WS.mod += now_s() - t_mod;
         const double d_poll = t_mod - t_poll, d_mod = now_s() - t_mod;
@@ -5622,20 +6974,45 @@ int main(int argc, char **argv)
          * until a read waits. The transmit guard's zeros stood in for the lost part, which the loop never makes:
          * rdof_txguard_slipped, or every block after goes out as zeros. */
         {
-            const double lag = (now - t_start) * rate - (double)total;
+            /* less the frames fx_owe and fx_drop put in or left out: the floor moves for a loss, not for its fix */
+            const double lag = (now - t_start) * rate - (double)(total - fx_fixed);
             if (lag < R.lag_min)
                 R.lag_min = lag;
             R.lag_fresh |= dt_read >= FRESH_S;
             if ((double)total / rate - R.lag_win >= 0.5 && R.lag_fresh) {
-                if (!isnan(R.lag_prev) && R.lag_min - R.lag_prev > rate / 500) {
+                const bool by_raw = FX.on && (raw_quiet || atomic_load(&RAW.fill) ||
+                                              (double)total / rate - raw_end < 1.5);
+                if (by_raw && !isnan(R.lag_prev) && R.lag_min - R.lag_prev < -(rate / 500)) {
+                    /* A raw capture's silence ran on past the stream's return (rx_resume to the transmitter's restart),
+                     * and the stream's first frames counted on from its end: the count ahead of the clock, what's heard
+                     * later than it was by as much. Frames left out bring it back. */
+                    fx_drop += llround((R.lag_prev - R.lag_min) / FX.step);
+                    say("receive: a raw capture's silence ran %.1f ms over; left out\n",
+                        1e3 * (R.lag_prev - R.lag_min) / rate);
+                    if (R.full)
+                        R.recal = true, R.cal_tries = 0;
+                } else if (!isnan(R.lag_prev) && R.lag_min - R.lag_prev > rate / 500) {
                     WS.lost += llround(R.lag_min - R.lag_prev);
-                    if (W.guarded) { /* the transmit stream is that much behind for good: not samples to drop */
+                    /* A raw capture's: its silence missed a few ms at its ends (2.2-2.4 ms off the rate). Made up
+                     * as more silence (fx_owe), the stream's count is back on the clock, and with the transmitter
+                     * back on its own timeline what's heard against what's sent is as it was: the calibration
+                     * holds. Else the guard's zeros stood for the loss: the stream is that much behind for good,
+                     * not samples to drop. */
+                    if (by_raw)
+                        fx_owe += llround((R.lag_min - R.lag_prev) / FX.step);
+                    else if (W.guarded) {
                         pthread_mutex_lock(&W.mu);
                         rdof_txguard_slipped(&W.guard, llround((R.lag_min - R.lag_prev) / txr));
                         pthread_mutex_unlock(&W.mu);
                     }
-                    say("receive: %.1f ms of samples lost%s\n", 1e3 * (R.lag_min - R.lag_prev) / rate,
-                        R.full ? "; calibrating again once idle" : "");
+                    if (by_raw && (raw_quiet || atomic_load(&RAW.fill))) /* said at the capture's end */
+                        raw_lag += R.lag_min - R.lag_prev;
+                    else if (by_raw)
+                        say("receive: a raw capture's silence came %.1f ms short; made up\n",
+                            1e3 * (R.lag_min - R.lag_prev) / rate);
+                    else
+                        say("receive: %.1f ms of samples lost%s\n", 1e3 * (R.lag_min - R.lag_prev) / rate,
+                            R.full ? "; calibrating again once idle" : "");
                     if (R.full)
                         R.recal = true, R.cal_tries = 0;
                 }
@@ -5658,7 +7035,7 @@ int main(int argc, char **argv)
             }
         }
         if (R.full) {
-            if (R.recal && R.cal == 0 && !hot && !keyed && !R.m.in_call[0] && !R.m.in_call[1]) {
+            if (R.recal && R.cal == 0 && !hot && !keyed && !R.m.in_call[0] && !R.m.in_call[1] && !atomic_load(&RAW.fill)) {
                 if (dev->set_rx_freq(dev, tx_lo) == 0) {
                     R.recal = false;
                     R.cal = 1, R.cal_at = total + (long long)(rate * 0.3);
@@ -5716,7 +7093,12 @@ int main(int argc, char **argv)
             int64_t fill = W.head - W.tail;
             if (fill < R.ring_min)
                 R.ring_min = fill;
-            if ((double)total / rate - R.ring_win >= 0.5) {
+            if (atomic_exchange(&late_rebase, 0))
+                R.ring_ref = -1; /* a job's own delay: the reference taken again against it */
+            if (atomic_load(&RAW.fill)) { /* the TX held, its ring emptied: no drift of the path's */
+                R.ring_min = INT64_MAX;
+                R.ring_win = (double)total / rate;
+            } else if ((double)total / rate - R.ring_win >= 0.5) {
                 if (R.cal == 0 && R.ring_ref < 0) {
                     R.ring_ref = R.ring_min;
                     R.cal48 = R.m.tx_late48;
@@ -5749,7 +7131,7 @@ int main(int argc, char **argv)
                 if (at >= edge_from && p2 > 100 * R.base_power) {
                     if (R.cal == 2) {
                         /* the modem's inbound slots follow it: a handheld keeps to what's on the air */
-                        R.m.tx_late48 = (at - R.onset) * 48000 / (int64_t)rate;
+                        R.m.tx_late48 = path48 = (at - R.onset) * 48000 / (int64_t)rate;
                         say("calibration: the transmit path is %.2f ms past its place\n",
                                 1e3 * (double)(at - R.onset) / rate);
                         dev->set_rx_freq(dev, R.rx.center_hz);
@@ -5758,8 +7140,9 @@ int main(int argc, char **argv)
                         R.ring_ref = -1; /* the ring's floor taken again against this */
                     } else if (BR.active && BR.cal) {
                         /* a repeater job's first key-up, heard in the receiver's band: its inbound slots follow it */
-                        R.m.tx_late48 = (at - R.onset) * 48000 / (int64_t)rate;
+                        R.m.tx_late48 = path48 = (at - R.onset) * 48000 / (int64_t)rate;
                         BR.cal = false;
+                        atomic_store(&late_rebase, 1);
                         say("bench: the job's transmit path is %.2f ms past its place\n",
                             1e3 * (double)(at - R.onset) / rate);
                     } else if (BO.active && !BO.mapped) {
@@ -5887,5 +7270,5 @@ int main(int argc, char **argv)
         return 1;
     }
 #endif
-    return 0;
+    return lost_device ? 1 : 0;
 }

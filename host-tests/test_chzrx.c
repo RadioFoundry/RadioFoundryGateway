@@ -146,6 +146,10 @@ static void test_noise(void)
     rdof_sdr_rx_config_t rc = {fs, 439e6, -55, 0, false, 8192, true};
     static rdof_sdr_rx_t rx;
     CHECK(rdof_sdr_rx_init(&rx, &rc, ch, 4, NULL, 0) == 0, "external init");
+    rdof_sdr_rx_set_cc(&rx, 2, 1); /* a bench job's color code on its input's channel */
+    CHECK(rx.demods[2].cc == 1 && rx.demods[1].cc == -1, "one channel's color code changes: %d, %d", rx.demods[2].cc,
+          rx.demods[1].cc);
+    rdof_sdr_rx_set_cc(&rx, 2, -1);
     rdof_chz_t z;
     CHECK(rdof_chz_init(&z, fs, off, 4, D, RDOF_CHZ_OUT_FFT, RDOF_CHZ_CUTOFF_HZ) == 0, "chz init");
     rdof_cf_t *yz = malloc(sizeof *yz * (size_t)(chunk / D + 64) * 4);

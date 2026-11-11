@@ -27,8 +27,13 @@ extern "C" {
 #endif
 
 #define RDOF_BL_PORT 7373
+#ifdef ESP_PLATFORM
 #define RDOF_BL_CONNS 8
 #define RDOF_BL_SESSIONS 8
+#else /* a Linux box: several test runs share it, each with a session, a capture, bursts and a job open */
+#define RDOF_BL_CONNS 32
+#define RDOF_BL_SESSIONS 16
+#endif
 #define RDOF_BL_FREQS 24       /* frequencies the bench lists: receiver channels and TX */
 #define RDOF_BL_TX_BANDS 8     /* bands the bench may transmit in */
 #define RDOF_BL_CLAIMS 8       /* frequencies one session may claim */
@@ -64,6 +69,13 @@ enum {
 };
 
 /* A frequency the bench lists. Receiver channels come first, in the receiver's order (ch is their index). */
+/* A raw capture, ready: n samples at fs, the first at UTC t0; those at the rails; the ADC's full scale, in counts */
+typedef struct {
+    long n, clipped;
+    double fs, t0, full_scale, center_hz;
+    int bits;
+} rdof_bl_raw_t;
+
 typedef struct {
     double freq_hz;
     int ch;              /* the receiver channel, -1: none (a TX-only frequency) */
@@ -106,12 +118,16 @@ typedef struct {
     int ch;              /* receiver channel */
     double t;            /* UTC seconds at the burst's start */
     int64_t pos48;       /* the channel's 48 kS/s sample at its start */
+    int lag48;           /* how far pos48 (and t) run past the first symbol's center in the channel's samples: the
+                          * demodulator's filter (RDOF_DEMOD_LAG). The envelope and the ramp take it off. */
     float cfo_hz;        /* the carrier from the channel's true frequency (Hz): the platform's AFC, its demod's offset and
                           * its crystal correction together */
     float dev_hz, level_dbfs;
     uint8_t dt;          /* data type 0-11, RDOF_BL_VOICE_SYNC (A), RDOF_BL_VOICE (B-F), as rdof_burst_t */
     int8_t n, slot, family, cc, sync_errors;
     uint8_t raw[33];
+    bool has_cach;       /* BS sync: cach is the CACH heard before it */
+    uint8_t cach[3];     /* 24 bits in air order, the first in bit 7 of cach[0] */
 } rdof_bl_burst_t;
 
 /* A duplex repeater job's setup (bench_repeater). */
@@ -236,6 +252,8 @@ typedef struct {
     void (*tx_unkey)(void *ctx);
     bool (*tx_idle)(void *ctx);
     void (*tx_close)(void *ctx);
+    /* Optional: the job's next measurement frame (rdof_benchtx_next_event): its length, 0 with none. */
+    size_t (*tx_event)(void *ctx, char *out, size_t cap);
     /* Duplex repeater jobs (bench_repeater; NULL: none), as the transmit jobs: rpt_open takes the transmitter for a
      * repeater on cfg (setting it up may take a while); false with why when it can't. rpt_state: 1 it repeats, 0 not
      * yet, -1 it failed (why). rpt_event: the next thing it heard or did (false: none). rpt_wake: a burst into its
@@ -288,6 +306,38 @@ typedef struct {
     const char *(*tune)(void *ctx, const rdof_bl_tune_t *t, const char *who, char *why, size_t cap);
     int (*tune_state)(void *ctx, char *why, size_t cap);
     void (*untune)(void *ctx);
+    /* The timed confirmed-data responder (the mssim op, rdof/mssim.h; NULL: none). action "arm": take the
+     * transmitter on freq_hz at cc and power for up to seconds and answer as req (the request line, its profile)
+     * says; "disarm": stop and give the transmitter back; "status": armed or not and the log after `since`. true with
+     * out a JSON object's members; false with out the reason and *code an error code ("busy", "refused",
+     * "bad_request", "unavailable"). */
+    bool (*mssim)(void *ctx, const char *action, const char *req, size_t len, uint32_t freq_hz, int cc,
+                  rdof_bench_power_t power, double seconds, uint32_t since, char *out, size_t cap, const char **code);
+    /* What transmits, for info (optional; NULL: the gateway's own SDR modem, kind "sdrmodem"): its kind ("mmdvm": an
+     * MMDVM modem on a serial port, which the channels' caps then name alone), and into model what it is. */
+    const char *(*station)(void *ctx, char *model, size_t cap);
+    /* Why this hardware can't do a kind of job at all ("signal_tx": the tx op's signal modes; "repeater"; "outbound";
+     * "mssim"): the physical reason, refused with the job's name and given in info's jobs. NULL: it can (the other
+     * hooks still decide). Optional. */
+    const char *(*cannot)(void *ctx, const char *what);
+    /* A repeater job hears on its own receive path, the platform's (an MMDVM modem), not on a receiver channel: its
+     * input needs none, and no tune for one. */
+    bool rpt_own_rx;
+    /* A raw capture (optional): the ADC's own samples, int16 I, Q, for a capture with "raw": a receiver that has to stop
+     * listening to hand them over does it for this long. raw_start begins one in the background: 0 begun, 1 another is
+     * running (try again), -1 it can't (why in err). raw_state: 0 still running, 1 ready (*info), -1 failed (why in err).
+     * raw_read: its samples [at, at + n) into out. raw_close: done with them.
+     * fs_hz: its rate (0: the receiver's); center_hz: where it's tuned (NAN: where the receiver is); gain_db: the RX
+ * gain for it, the receiver's own again after (NAN: as it is). */
+    int (*raw_start)(void *ctx, double seconds, double fs_hz, double center_hz, double gain_db, char *err, size_t cap);
+    int (*raw_state)(void *ctx, rdof_bl_raw_t *info, char *err, size_t cap);
+    void (*raw_read)(void *ctx, long at, int16_t *out, long n);
+    void (*raw_close)(void *ctx);
+    /* A raw bursts stream's decoder (bench-api.md 14.2, "raw"): n outputs at 48 kS/s (I/Q pairs, full scale 1), in order,
+     * from a stream begun with reset; cc the color code to take (-1 any). n 0: the stream's end, what's left. The bursts
+     * found go in out (at most cap; their count back, -1 no memory): pos48 from the stream's first output, cfo_hz from
+     * the channel's center, level_dbfs; the engine sets t and ch. */
+    int (*raw_demod)(void *ctx, bool reset, int cc, const float *iq, int n, rdof_bl_burst_t *out, int cap);
 } rdof_bl_platform_t;
 
 typedef struct rdof_bl rdof_bl_t;
@@ -318,6 +368,14 @@ void rdof_bl_burst(rdof_bl_t *bl, const rdof_bl_burst_t *b);
 bool rdof_bl_wants_bursts(const rdof_bl_t *bl);
 /* Whether a capture is open (the receiver keeps the history then). */
 bool rdof_bl_wants_iq(const rdof_bl_t *bl);
+/* The history's cs8 gain (rdof_bl_ring_t.scale) for a front end whose native samples run to native_full_scale (127
+ * or 128: an RTL-SDR's 8 bits, 2048: a 12-bit ADC): the ADC's own 8 bits at 1, its low bits, where a bench signal
+ * is, for a wider ADC (16 at most: a 16-bit front end keeps the same 24 dB of headroom). 0 or less: not known, 1. */
+static inline float rdof_bl_ring_scale(double native_full_scale)
+{
+    const double g = native_full_scale > 0 ? native_full_scale / 128.0 : 1.0;
+    return g < 1.5 ? 1.0f : g > 16.0 ? 16.0f : (float)g;
+}
 
 /* I/Q stream formats (bench-api.md section 6.2's fmt byte). */
 enum { RDOF_BL_IQ_CS8 = 1, RDOF_BL_IQ_CU8 = 2, RDOF_BL_IQ_CS16 = 3, RDOF_BL_IQ_CF32 = 4 };
@@ -338,6 +396,8 @@ static inline int rdof_bl_round(float x)
     return (int)(t.i - 0x4B400000);
 }
 /* fmt's full scale under the ADC's, in dB (20 log10 k for 8-bit, 0 else): a level less it is dBFS. */
+/* atan2f to about 1e-5 rad, a few times faster than the library's on an ESP32 */
+float rdof_bl_atan2f(float y, float x);
 double rdof_bl_iq_scale_db(int fmt, float k);
 
 /* Where a history holds filler, for iq_filled: the last RDOF_BL_FILLS runs of it, by sample. A run that follows the

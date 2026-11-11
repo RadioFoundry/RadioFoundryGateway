@@ -20,7 +20,7 @@ if(CONFIG_RDOF_SDR)
         list(APPEND srcs bench_api.c bench_radio.c bench_tx.c bench_line.c)
     endif()
     if(CONFIG_RDOF_SDR_LR2021)
-        list(APPEND srcs fe_lr2021.c)
+        list(APPEND srcs fe_lr2021.c edge_time.c)
         list(APPEND sdr_dsp fe_lr2021.c) # its read() converts and resamples every sample
     endif()
 endif()
@@ -30,7 +30,7 @@ idf_component_register(
     INCLUDE_DIRS .
     LDFRAGMENTS linker.lf
     REQUIRES common pthread sdr rtlsdr lr2021 netclock wifilist gnss tinysctp json nvs_flash esp_wifi esp_netif esp_event esp_http_server
-             esp_timer esp_adc esp_driver_uart esp_driver_i2c esp_driver_gpio esp_driver_rmt usb mqtt app_update esp_app_format mbedtls lwip esp_hw_support
+             esp_timer esp_adc esp_driver_uart esp_driver_i2c esp_driver_gpio esp_driver_rmt esp_driver_mcpwm usb mqtt app_update esp_app_format mbedtls lwip esp_hw_support
              espcoredump spi_flash)
 
 if(CONFIG_RDOF_SDR AND CONFIG_RDOF_SDR_FAST)

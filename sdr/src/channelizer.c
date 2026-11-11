@@ -74,6 +74,25 @@ void rdof_chz_free(rdof_chz_t *s)
     memset(s, 0, sizeof *s);
 }
 
+/* Channel c's bin (nearest, half to even) and what's left of offset_hz past it */
+static void set_bin(rdof_chz_t *s, int c, double offset_hz)
+{
+    const double bin_hz = s->fs / s->N;
+    const double kk = nearbyint(offset_hz / bin_hz);
+    s->residual_hz[c] = offset_hz - kk * bin_hz;
+    const int ki = (int)kk;
+    s->k[c] = ((ki % s->N) + s->N) % s->N;
+}
+
+void rdof_chz_set_offset(rdof_chz_t *s, int c, double offset_hz)
+{
+    if (c < 0 || c >= s->C || !s->k)
+        return;
+    set_bin(s, c, offset_hz);
+    s->step_cps[c] = NAN;
+    s->corr_used[c] = NAN;
+}
+
 int rdof_chz_init(rdof_chz_t *s, double sample_rate, const double *offsets_hz, int channels, int decimation,
                 int out_fft, double cutoff_hz)
 {
@@ -142,13 +161,8 @@ int rdof_chz_init(rdof_chz_t *s, double sample_rate, const double *offsets_hz, i
     }
     rdof_sdr_free(h);
 
-    const double bin_hz = s->fs / N;
-    for (int c = 0; c < C; c++) {
-        double kk = nearbyint(offsets_hz[c] / bin_hz);    /* round half to even */
-        s->residual_hz[c] = offsets_hz[c] - kk * bin_hz;
-        int ki = (int)kk;
-        s->k[c] = ((ki % N) + N) % N;
-    }
+    for (int c = 0; c < C; c++)
+        set_bin(s, c, offsets_hz[c]);
     for (int m = 0; m < N; m++) {
         double ph = -2.0 * RDOF_PI * (double)m / (double)N;
         s->twiddle[m].re = (float)cos(ph);

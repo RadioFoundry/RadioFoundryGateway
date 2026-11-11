@@ -81,6 +81,29 @@ if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
 endif()
 add_test(NAME benchsig COMMAND rdof_benchsig_tests)
 
+# The carrier envelope (rdof/benchenv.h): synthetic keyings with known edges, ramps and steps.
+add_executable(rdof_benchenv_tests test_benchenv.c)
+target_link_libraries(rdof_benchenv_tests PRIVATE rdof_common m)
+set_target_properties(rdof_benchenv_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_compile_options(rdof_benchenv_tests PRIVATE -Wall -Wno-unused-parameter)
+if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+    target_compile_options(rdof_benchenv_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(rdof_benchenv_tests PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME benchenv COMMAND rdof_benchenv_tests)
+
+# A burst's PA ramp (rdof/benchramp.h): synthetic bursts with known overshoot, sag and late key-ups.
+add_executable(rdof_benchramp_tests test_benchramp.c)
+target_link_libraries(rdof_benchramp_tests PRIVATE rdof_common rdof_sdr m)
+target_include_directories(rdof_benchramp_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+set_target_properties(rdof_benchramp_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_compile_options(rdof_benchramp_tests PRIVATE -Wall -Wno-unused-parameter)
+if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+    target_compile_options(rdof_benchramp_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(rdof_benchramp_tests PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME benchramp COMMAND rdof_benchramp_tests)
+
 add_executable(rdof_benchline_tests test_benchline.c)
 target_link_libraries(rdof_benchline_tests PRIVATE rdof_common)
 set_target_properties(rdof_benchline_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
@@ -142,6 +165,7 @@ add_subdirectory(../components/tinysctp/test tinysctp)
 
 # The same tests with every RDOF_FEATURE_* off: what's gated must build without it.
 file(GLOB RDOF_COMMON_MIN_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/../common/src/*.c ${CMAKE_CURRENT_SOURCE_DIR}/../common/src/radiofoundry/*.c)
+list(REMOVE_ITEM RDOF_COMMON_MIN_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/../common/src/mssim.c) # a bench tool on data blocks
 add_library(rdof_common_min STATIC ${RDOF_COMMON_MIN_SRCS})
 target_include_directories(rdof_common_min PUBLIC ../common/include)
 target_compile_definitions(rdof_common_min PUBLIC RDOF_FEATURE_TX=0 RDOF_FEATURE_DATA_BLOCKS=0 RDOF_FEATURE_TRACKER=0 RDOF_FEATURE_REPEATER=0)
@@ -257,3 +281,14 @@ foreach(t rdof_mqttnet_tests rdof_gen_mqttnet_vectors)
     endif()
 endforeach()
 add_test(NAME rdof_mqttnet_tests COMMAND rdof_mqttnet_tests)
+
+# The timed confirmed-data responder (rdof/mssim.h).
+add_executable(rdof_mssim_tests test_mssim.c)
+target_link_libraries(rdof_mssim_tests PRIVATE rdof_common)
+set_target_properties(rdof_mssim_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_compile_options(rdof_mssim_tests PRIVATE -Wall -Wno-unused-parameter)
+if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+    target_compile_options(rdof_mssim_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(rdof_mssim_tests PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME rdof_mssim_tests COMMAND rdof_mssim_tests)

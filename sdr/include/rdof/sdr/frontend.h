@@ -99,6 +99,9 @@ typedef struct {
     double tx_reach_hz;         /* a carrier within this of the receiver's center (one synthesizer); 0: anywhere */
     double tx_power_min, tx_power_max, tx_power_step; /* dBm */
     double turnaround_us;       /* half duplex: RX to TX (or back) and settled */
+    /* A front end that can't hear itself to measure it: how far past a receive position a burst placed there reaches the
+     * air (the receive chain's latency, which the position doesn't include, and the transmit path's). 0: not known. */
+    double tx_late_us;
     double tx_dev_max_hz;       /* RDOF_FE_TX_FREQ: the largest deviation it sends (0: no limit known) */
     /* RDOF_FE_TX_FREQ: it also sends complex baseband with its amplitude, the carrier at 0 Hz (pull_iq at tx_rate),
      * while the source is I/Q (iq_now): a signal mode that renders I/Q, such as AM. Without it such a source is
@@ -186,6 +189,9 @@ typedef struct rdof_fe_ops {
     /* Optional (RDOF_FE_TX_FREQ / _4FSK: a chip that tunes its own transmitter): transmit on hz from the next key-up
      * on. 0, or < 0 if it can't reach hz. */
     int (*tx_tune)(void *ctx, double hz);
+    /* Optional (a transmitter timed from the host's clock): what schedules this transmission: pull position pos48 (48 kS/s)
+     * goes out at the host's monotonic time us. False until a transmission is on and the two are fixed. */
+    bool (*tx_map)(void *ctx, int64_t *pos48, int64_t *us);
 } rdof_fe_ops_t;
 
 typedef struct {

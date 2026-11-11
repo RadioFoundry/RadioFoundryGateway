@@ -44,7 +44,7 @@ find_path(AD9361_INCLUDE_DIR ad9361.h)
 find_library(AD9361_LIBRARY ad9361)
 set(RDOF_RADIO_SRCS ${RDOF_CLI}/rdofradio.c ${RDOF_CLI}/rdofradio_cfg.c ${RDOF_CLI}/rdofradio_serial.c
     ${RDOF_CLI}/rdofradio_net.c ${RDOF_CLI}/rdofradio_fpga.c ${RDOF_CLI}/rdofradio_dnssd.c
-    ${RDOF_CLI}/rdofradio_file.c)
+    ${RDOF_CLI}/rdofradio_file.c ${RDOF_CLI}/rdofradio_sim.c)
 set(RDOF_RADIO_DEFS)
 set(RDOF_RADIO_INCS)
 set(RDOF_RADIO_LIBS)
@@ -131,6 +131,17 @@ if(RDOF_RADIO_DEFS AND NOT WIN32)
         target_link_libraries(rdofradio PRIVATE rdof_hostweb)
         target_compile_definitions(rdofradio PRIVATE RDOF_HOST_WEB)
     endif()
+endif()
+
+# rdofradio's refusals, checked before a device is opened (192.0.2.1 is never reached): --listen never transmits, and
+# without it a run needs --allow-tx
+if(TARGET rdofradio AND IIO_INCLUDE_DIR AND IIO_LIBRARY)
+    add_test(NAME rdofradio_listen_refuses_tx COMMAND rdofradio --iio ip:192.0.2.1 --listen --allow-tx --rx 446)
+    set_tests_properties(rdofradio_listen_refuses_tx PROPERTIES PASS_REGULAR_EXPRESSION "--listen receives only")
+    add_test(NAME rdofradio_listen_refuses_tx_flags COMMAND rdofradio --iio ip:192.0.2.1 --listen --rx 446 --tx-gain 10)
+    set_tests_properties(rdofradio_listen_refuses_tx_flags PROPERTIES PASS_REGULAR_EXPRESSION "--listen receives only")
+    add_test(NAME rdofradio_needs_allow_tx COMMAND rdofradio --iio ip:192.0.2.1 --rx 446)
+    set_tests_properties(rdofradio_needs_allow_tx PROPERTIES PASS_REGULAR_EXPRESSION "pass --allow-tx \\(or --listen")
 endif()
 
 if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")

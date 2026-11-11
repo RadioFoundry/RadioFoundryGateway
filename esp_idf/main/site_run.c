@@ -199,6 +199,16 @@ bool site_app_holds(const uint8_t sid[4])
     return held;
 }
 
+bool site_app_refused(const uint8_t sid[4])
+{
+    if (!SR)
+        return false;
+    xSemaphoreTakeRecursive(lock, portMAX_DELAY);
+    const bool refused = rdof_siteroute_refused(SR, sid);
+    xSemaphoreGiveRecursive(lock);
+    return refused;
+}
+
 bool site_parrot_stream(const uint8_t sid[4])
 {
     return P && (rdof_be32(sid) & 0xFFFF0000u) == RDOF_PARROT_STREAM;
