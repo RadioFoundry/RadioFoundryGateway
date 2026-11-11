@@ -873,8 +873,7 @@ static bool ppm_held(void)
     return (int32_t)(now - hold_until_ms) < 0 && now - hold_since_ms < HOLD_MAX_MS;
 }
 static const char *volatile now_ref;      /* what it was timed against (netclock's source), NULL: none */
-static int cal_put_bin = INT32_MIN;
-static double cal_put_t;
+EXT_RAM_BSS_ATTR static nc_tcal_seen_t cal_seen; /* which bins went into the table this run, and when */
 
 /* Each tuner's records under its own keys, so a board that has had several (dongles swapped, or more than one
  * connected) keeps a value for each: the prefix and a hash of the serial ("l1a2b3c4d", NVS keys are at most 15
@@ -1015,7 +1014,7 @@ static void ppm_start(const char *serial)
     assumed_src = "setting";
     const double die = netclock_die_c();
     nc_tcal_init(&cal);
-    cal_put_bin = INT32_MIN;
+    nc_tcal_seen_init(&cal_seen);
     if (ppm_on) {
         cal_load(serial);
         assumed_src = "table";
@@ -1078,7 +1077,8 @@ static void cal_follow(void)
 }
 
 /* Settled and confident: the learned value into the table at the die's temperature, once a bin each run (again
- * after CAL_AGAIN_S), and saved. Under rx_lock. */
+ * after CAL_AGAIN_S), and saved. Each bin has its own time: a die on the edge of two bins goes back and forth, and
+ * with only the last bin remembered every change was a store (W12 #3, 2026-11-11: one every 5 s). Under rx_lock. */
 static void cal_learn(double t)
 {
     const double v = rdof_ppm_learned(&ppm);
@@ -1086,11 +1086,10 @@ static void cal_learn(double t)
     if (!settled || isnan(v) || !ppm.measured || isnan(die_c) || ppm.steady_s < RDOF_PPM_FIRST_SAVE_S)
         return;
     const int bin = nc_tcal_bin(die_c);
-    if ((bin == cal_put_bin && t - cal_put_t < CAL_AGAIN_S) || bench_line_measuring())
+    if (!nc_tcal_seen_due(&cal_seen, die_c, t, CAL_AGAIN_S) || bench_line_measuring())
         return; /* the flash write stops the front end's reader: it waits for a job that's listening */
     nc_tcal_put(&cal, die_c, v);
-    cal_put_bin = bin;
-    cal_put_t = t;
+    nc_tcal_seen_mark(&cal_seen, die_c, t);
     cal_store(ppm_serial);
     rdof_ppm_saved(&ppm, t);
     const nc_tcal_entry_t *e = nc_tcal_find(&cal, die_c);

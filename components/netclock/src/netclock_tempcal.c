@@ -162,3 +162,40 @@ bool nc_tcal_get(const nc_tcal_t *c, double temp_c, double *v)
     *v = a->v + f * (b->v - a->v);
     return true;
 }
+
+void nc_tcal_seen_init(nc_tcal_seen_t *s)
+{
+    memset(s, 0, sizeof(*s));
+}
+
+static int seen_slot(double temp_c)
+{
+    return (nc_tcal_bin(temp_c) / NC_TCAL_BIN_C + 64) & 127;
+}
+
+bool nc_tcal_seen_due(const nc_tcal_seen_t *s, double temp_c, double t_s, double again_s)
+{
+    if (isnan(temp_c)) {
+        return false;
+    }
+    uint16_t at = s->at[seen_slot(temp_c)];
+    if (!at) {
+        return true;
+    }
+    double then_s = ((double)s->base_min + (at - 1)) * 60.0;
+    return t_s - then_s >= again_s;
+}
+
+void nc_tcal_seen_mark(nc_tcal_seen_t *s, double temp_c, double t_s)
+{
+    if (isnan(temp_c) || t_s < 0) {
+        return;
+    }
+    uint32_t now_min = (uint32_t)(t_s / 60.0);
+    if (now_min < s->base_min || now_min - s->base_min > 60000) {
+        // the 16 bits are running out (41 days): start over, and every bin is due once more
+        memset(s->at, 0, sizeof(s->at));
+        s->base_min = now_min;
+    }
+    s->at[seen_slot(temp_c)] = (uint16_t)(now_min - s->base_min + 1);
+}

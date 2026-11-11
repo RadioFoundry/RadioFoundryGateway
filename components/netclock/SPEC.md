@@ -42,7 +42,7 @@ HTTP and the status JSON are in [README.md](README.md).
 | `include/netclock_core.h:NC_TCAL_SKEW` | 0.3e-6 | fit skew ≤ this to enter the table |
 | `include/netclock_core.h:NC_TCAL_DIE_C` | 2.0 C | die spread over the fit's references ≤ this |
 | `include/netclock_core.h:NC_TCAL_MIN_REFS` | 4 | fit references with a die reading, at least |
-| `include/netclock_core.h:NC_TCAL_AGAIN_S` | 7200 s | same bin again in one run at most this often |
+| `include/netclock_core.h:NC_TCAL_AGAIN_S` | 7200 s | same bin again in one run at most this often (each bin has its own time, `nc_tcal_seen_t`) |
 | `include/netclock_tempcal.h:NC_TCAL_N` | 24 | table bins |
 | `include/netclock_tempcal.h:NC_TCAL_BIN_C` | 2 C | bin width |
 | `include/netclock_tempcal.h:NC_TCAL_WEIGHT` | 4 | a bin averages about this many learnings |

@@ -528,6 +528,27 @@ static void tcal(void)
         nc_tcal_put(&c, t, 0.1 * t);
     }
     CHECK(c.count == NC_TCAL_N && nc_tcal_valid(&c), "tcal: full, %d", c.count);
+    // Each bin is due again on its own time: a die on the edge of two bins (52.9, 53.9, 52.9, ...) learns each
+    // once, not at every change.
+    nc_tcal_seen_t seen;
+    nc_tcal_seen_init(&seen);
+    int learned = 0;
+    for (int i = 0; i < 1000; i++) {
+        double temp = i % 2 ? 53.9 : 52.9, t_s = 100.0 + 5.0 * i; // 83 minutes
+        if (nc_tcal_seen_due(&seen, temp, t_s, 7200)) {
+            nc_tcal_seen_mark(&seen, temp, t_s);
+            learned++;
+        }
+    }
+    CHECK(learned == 2, "tcal: two bins learned once each while the die goes between them, %d", learned);
+    CHECK(!nc_tcal_seen_due(&seen, 52.9, 100.0 + 7100, 7200) && nc_tcal_seen_due(&seen, 52.9, 100.0 + 7260, 7200),
+          "tcal: a bin is due again after its time");
+    CHECK(nc_tcal_seen_due(&seen, 20.0, 200.0, 7200) && nc_tcal_seen_due(&seen, -40.0, 200.0, 7200) &&
+              !nc_tcal_seen_due(&seen, NAN, 200.0, 7200), "tcal: a bin not learned yet is due; no temperature isn't");
+    // 41 days on, the minutes start over: nothing is lost but one more learning a bin.
+    nc_tcal_seen_mark(&seen, 30.0, 70000.0 * 60);
+    CHECK(!nc_tcal_seen_due(&seen, 30.0, 70000.0 * 60 + 600, 7200) && nc_tcal_seen_due(&seen, 30.0, 70130.0 * 60, 7200),
+          "tcal: the marks hold past 16 bits of minutes");
     nc_tcal_put(&c, 80, 1.0);
     CHECK(c.count == NC_TCAL_N && !nc_tcal_find(&c, 52) && nc_tcal_find(&c, 80) && nc_tcal_find(&c, 30) &&
               nc_tcal_valid(&c),

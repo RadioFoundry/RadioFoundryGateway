@@ -74,6 +74,20 @@ bool nc_tcal_get(const nc_tcal_t *c, double temp_c, double *v);
 // temp_c's bin, NULL: none yet.
 const nc_tcal_entry_t *nc_tcal_find(const nc_tcal_t *c, double temp_c);
 
+// When each bin was last learned this run, so that a bin is learned (and the table stored) only every so often
+// however the temperature moves between bins. Remembering the last bin alone isn't enough: a die that sits on
+// the edge of two bins goes back and forth between them, and each change looked like a new bin (a W12 stored
+// its table 1340 times in 3 hours, each store stopping its receiver for up to 50 ms, 2026-11-11).
+typedef struct {
+    uint32_t base_min;  // the marks count minutes from here
+    uint16_t at[128];   // a bin's last learning, minutes from base_min, plus 1; 0: not this run
+} nc_tcal_seen_t;
+
+void nc_tcal_seen_init(nc_tcal_seen_t *s);
+// temp_c's bin hasn't been learned this run, or not for again_s. t_s: seconds on any clock that only goes forward.
+bool nc_tcal_seen_due(const nc_tcal_seen_t *s, double temp_c, double t_s, double again_s);
+void nc_tcal_seen_mark(nc_tcal_seen_t *s, double temp_c, double t_s);
+
 #ifdef __cplusplus
 }
 #endif
