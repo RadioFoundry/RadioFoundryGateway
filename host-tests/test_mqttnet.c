@@ -847,6 +847,23 @@ static void test_info(void)
     rdof_router_rf(&r, rdof_site_path(&s, "R1/1"), &key, 10.0);
     const int k2 = rdof_mn_sub_tgs(&s, net, &r, 10.5, tgs, RDOF_MN_SUBS, &all);
     CHECK(!all && k2 == 4 && tgs[2] == 3150); /* after its path's tg set */
+    /* the apps' IDs, to subscribe: the parrot's talkgroup on tg, nothing on pc; with an IP gateway on pc 9991
+       beside it, that one on pc */
+    {
+        uint32_t ids[RDOF_MN_CLAIM_SUBS];
+        CHECK(rdof_mn_claim_ids(&s, 1, ids, RDOF_MN_CLAIM_SUBS) == 1 && ids[0] == 9990);
+        CHECK(rdof_mn_claim_ids(&s, 0, ids, RDOF_MN_CLAIM_SUBS) == 0);
+        static rdof_site_t s4;
+        static char site4[sizeof SITE + 96];
+        const char *at = strstr(SITE, "{\"type\":\"parrot\",\"tg\":9990}");
+        snprintf(site4, sizeof site4, "%.*s{\"type\":\"parrot\",\"tg\":9990},"
+                 "{\"type\":\"ipgw\",\"pc\":9991}%s",
+                 (int)(at - SITE), SITE, at + strlen("{\"type\":\"parrot\",\"tg\":9990}"));
+        CHECK(rdof_site_parse(site4, strlen(site4), &s4, err, sizeof err) || !printf("  %s\n", err));
+        CHECK(rdof_mn_claim_ids(&s4, 0, ids, RDOF_MN_CLAIM_SUBS) == 1 && ids[0] == 9991);
+        CHECK(rdof_mn_claim_ids(&s4, 2, ids, RDOF_MN_CLAIM_SUBS) == 2 && ids[0] == 9990 && ids[1] == 9991);
+        CHECK(rdof_mn_claim_ids(&s4, 2, ids, 1) == 1);
+    }
     /* a star: everything */
     static rdof_site_t s2;
     static char site2[sizeof SITE + 16];

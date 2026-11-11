@@ -1715,8 +1715,8 @@ static void mn_message(void *ctx, const char *topic, const void *data, int len)
 /* the talkgroups this box carries (section 8.3) and its dl topic, as subscriptions */
 static void mn_subscribe(double now)
 {
-    static char f[RDOF_MN_SUBS + 1][128];
-    const char *fp[RDOF_MN_SUBS + 1];
+    static char f[RDOF_MN_SUBS + 1 + 2 * RDOF_MN_CLAIM_SUBS][128];
+    const char *fp[RDOF_MN_SUBS + 1 + 2 * RDOF_MN_CLAIM_SUBS];
     uint32_t tgs[RDOF_MN_SUBS];
     bool all = false;
     const int n = rdof_mn_sub_tgs(&rcfg.site, sr_mqtt, &SR.router, now, tgs, RDOF_MN_SUBS - 1, &all);
@@ -1727,6 +1727,20 @@ static void mn_subscribe(double now)
     else
         for (int i = 0; i < n; i++)
             snprintf(f[k], sizeof f[k], "%s/tg/%u/+", rcfg.cfg.mqtt_root, (unsigned)tgs[i]), fp[k] = f[k], k++;
+    /* the IDs the box's own apps answer for (mqtt-net.md 9.2): their individual calls come on pc, not through the
+       router; a talkgroup an app takes, unless the paths' subscriptions have it */
+    uint32_t ids[RDOF_MN_CLAIM_SUBS];
+    int nc = rdof_mn_claim_ids(&rcfg.site, 0, ids, RDOF_MN_CLAIM_SUBS);
+    for (int i = 0; i < nc; i++)
+        snprintf(f[k], sizeof f[k], "%s/pc/%u/+", rcfg.cfg.mqtt_root, (unsigned)ids[i]), fp[k] = f[k], k++;
+    nc = all ? 0 : rdof_mn_claim_ids(&rcfg.site, 1, ids, RDOF_MN_CLAIM_SUBS);
+    for (int i = 0; i < nc; i++) {
+        bool had = false;
+        for (int q = 0; q < n && !had; q++)
+            had = tgs[q] == ids[i];
+        if (!had)
+            snprintf(f[k], sizeof f[k], "%s/tg/%u/+", rcfg.cfg.mqtt_root, (unsigned)ids[i]), fp[k] = f[k], k++;
+    }
     rdofmq_subscribe(MN, fp, k);
 }
 
@@ -1840,6 +1854,15 @@ static void mn_poll(double now)
             rdof_mn_down_message(&mn_down, "router", true, m.msg, m.len, now);
         else if (kind == RDOF_MN_T_TG && strcmp(node, mn_node))
             rdof_mn_down_message(&mn_down, node, false, m.msg, m.len, now);
+        else if (kind == RDOF_MN_T_PC && strcmp(node, mn_node)) { /* to an ID one of the box's apps answers for */
+            uint32_t ids[RDOF_MN_CLAIM_SUBS];
+            const int nc = rdof_mn_claim_ids(&rcfg.site, 0, ids, RDOF_MN_CLAIM_SUBS);
+            for (int i = 0; i < nc; i++)
+                if (ids[i] == id) {
+                    rdof_mn_down_message(&mn_down, node, false, m.msg, m.len, now);
+                    break;
+                }
+        }
     }
     rdof_mn_down_tick(&mn_down, now);
     for (int i = R.mmdvm ? 0 : 1; i <= nchn; i++)

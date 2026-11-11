@@ -2013,31 +2013,10 @@ size_t rdof_mn_info_json(const rdof_site_t *s, int net, const rdof_mn_info_t *in
             j.buf[j.len] = 0;
         }
     }
-    /* claims: the box's own apps' IDs (single IDs, and the ranges as they're written); an ID listed twice (an app's
-       tg and pc, two apps) goes once */
+    /* claims: the box's own apps' IDs (rdof_mn_claim_ids) */
     {
         uint32_t ids[64];
-        int nids = 0;
-        for (int a = 0; a < s->napp; a++) {
-            const rdof_app3_t *ap = &s->app[a];
-            if (ap->type == RDOF_APP_REPEATER)
-                continue;
-            for (int g = 0; g < 2; g++) {
-                rdof_idrange_t rr[RDOF_IDSET_MAX];
-                const int m = rdof_idset_ranges(g ? &ap->tg : &ap->pc, rr, RDOF_IDSET_MAX);
-                for (int k = 0; k < m && k < RDOF_IDSET_MAX; k++) {
-                    if (rr[k].lo == 0 && rr[k].hi >= RDOF_ID_MAX)
-                        continue; /* "*": not a claim */
-                    for (uint32_t id = rr[k].lo; id <= rr[k].hi && id - rr[k].lo < 16; id++) {
-                        int q = 0;
-                        while (q < nids && ids[q] != id)
-                            q++;
-                        if (q == nids && nids < (int)(sizeof ids / sizeof ids[0]))
-                            ids[nids++] = id;
-                    }
-                }
-            }
-        }
+        const int nids = rdof_mn_claim_ids(s, 2, ids, (int)(sizeof ids / sizeof ids[0]));
         char claims[64 * 9 + 2];
         size_t n = 0;
         claims[n++] = '[';
@@ -2062,6 +2041,34 @@ static bool sub_add(uint32_t *tgs, int *n, int max, uint32_t tg)
         return false;
     tgs[(*n)++] = tg;
     return true;
+}
+
+int rdof_mn_claim_ids(const rdof_site_t *s, int which, uint32_t *ids, int max)
+{
+    int nids = 0;
+    for (int a = 0; a < s->napp; a++) {
+        const rdof_app3_t *ap = &s->app[a];
+        if (ap->type == RDOF_APP_REPEATER)
+            continue;
+        for (int g = 0; g < 2; g++) {
+            if (which != 2 && which != g)
+                continue;
+            rdof_idrange_t rr[RDOF_IDSET_MAX];
+            const int m = rdof_idset_ranges(g ? &ap->tg : &ap->pc, rr, RDOF_IDSET_MAX);
+            for (int k = 0; k < m && k < RDOF_IDSET_MAX; k++) {
+                if (rr[k].lo == 0 && rr[k].hi >= RDOF_ID_MAX)
+                    continue; /* "*": not a claim */
+                for (uint32_t id = rr[k].lo; id <= rr[k].hi && id - rr[k].lo < 16; id++) {
+                    int q = 0;
+                    while (q < nids && ids[q] != id)
+                        q++;
+                    if (q == nids && nids < max)
+                        ids[nids++] = id;
+                }
+            }
+        }
+    }
+    return nids;
 }
 
 int rdof_mn_sub_tgs(const rdof_site_t *s, int net, const struct rdof_router *r, double now, uint32_t *tgs, int max,

@@ -91,7 +91,7 @@ typedef struct {
     rdof_mn_down_t down;
     rdof_mn_results_t results;
     /* the filters subscribed now, and ones whose unsubscribe failed (tried again); the task's only */
-    char subs[2 * (RDOF_MN_SUBS + 1)][TOPIC_MAX];
+    char subs[2 * (RDOF_MN_SUBS + 1 + 2 * RDOF_MN_CLAIM_SUBS)][TOPIC_MAX];
     int nsubs;
     uint8_t msg[RDOF_MN_MSG_MAX + TOPIC_MAX + 2];
     char json[4096];
@@ -351,8 +351,8 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *ev)
    failed. */
 static bool subscribe(void)
 {
-    static EXT_RAM_BSS_ATTR char want[RDOF_MN_SUBS + 1][TOPIC_MAX];
-    static EXT_RAM_BSS_ATTR char now[2 * (RDOF_MN_SUBS + 1)][TOPIC_MAX];
+    static EXT_RAM_BSS_ATTR char want[RDOF_MN_SUBS + 1 + 2 * RDOF_MN_CLAIM_SUBS][TOPIC_MAX];
+    static EXT_RAM_BSS_ATTR char now[2 * (RDOF_MN_SUBS + 1 + 2 * RDOF_MN_CLAIM_SUBS)][TOPIC_MAX];
     uint32_t tgs[RDOF_MN_SUBS];
     bool all = false, ok = true;
     const int n = site_mn_sub_tgs(tgs, RDOF_MN_SUBS - 1, &all);
@@ -363,6 +363,20 @@ static bool subscribe(void)
     else
         for (int i = 0; i < n; i++)
             snprintf(want[k++], TOPIC_MAX, "%s/tg/%lu/+", M->root, (unsigned long)tgs[i]);
+    /* the IDs the box's own apps answer for (mqtt-net.md 9.2): their individual calls come on pc, not through the
+       router; a talkgroup an app takes, unless the paths' subscriptions have it */
+    uint32_t ids[RDOF_MN_CLAIM_SUBS];
+    int nc = rdof_mn_claim_ids(M->site, 0, ids, RDOF_MN_CLAIM_SUBS);
+    for (int i = 0; i < nc; i++)
+        snprintf(want[k++], TOPIC_MAX, "%s/pc/%lu/+", M->root, (unsigned long)ids[i]);
+    nc = all ? 0 : rdof_mn_claim_ids(M->site, 1, ids, RDOF_MN_CLAIM_SUBS);
+    for (int i = 0; i < nc; i++) {
+        bool had = false;
+        for (int q = 0; q < n && !had; q++)
+            had = tgs[q] == ids[i];
+        if (!had)
+            snprintf(want[k++], TOPIC_MAX, "%s/tg/%lu/+", M->root, (unsigned long)ids[i]);
+    }
     for (int i = 0; i < M->nsubs; i++) { /* dropped ones; one that won't go stays listed, to try again */
         bool keep = false;
         for (int j = 0; j < k && !keep; j++)
@@ -429,6 +443,15 @@ static void handle_message(size_t n)
         rdof_mn_down_message(&M->down, "router", true, msg, len, mono());
     else if (kind == RDOF_MN_T_TG && strcmp(node, M->node))
         rdof_mn_down_message(&M->down, node, false, msg, len, mono());
+    else if (kind == RDOF_MN_T_PC && strcmp(node, M->node)) { /* to an ID one of the box's apps answers for */
+        uint32_t ids[RDOF_MN_CLAIM_SUBS];
+        const int nc = rdof_mn_claim_ids(M->site, 0, ids, RDOF_MN_CLAIM_SUBS);
+        for (int i = 0; i < nc; i++)
+            if (ids[i] == id) {
+                rdof_mn_down_message(&M->down, node, false, msg, len, mono());
+                break;
+            }
+    }
 }
 
 static void handle_tx(const tx_in_t *t)

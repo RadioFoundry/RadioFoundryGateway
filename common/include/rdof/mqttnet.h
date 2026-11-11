@@ -432,6 +432,13 @@ uint16_t rdof_mn_crc16(const uint8_t *data, size_t len);
 #define RDOF_MN_SUBS 24      /* topic filters a box takes at once */
 #define RDOF_MN_SUBS_EXPAND 16 /* a tg set with more than this after expanding: {root}/tg/+/+ */
 
+#define RDOF_MN_CLAIM_SUBS 8 /* claimed IDs a box subscribes to besides ({root}/pc/{id}/+, {root}/tg/{id}/+) */
+
+/* The IDs the box's own apps answer for (section 9.2; info's claims): single IDs and the first 16 of a range as
+   written, each once, "*" left out. which: 0 the apps' pc sets (individual calls: the box subscribes
+   {root}/pc/{id}/+ for each), 1 their tg sets ({root}/tg/{id}/+), 2 both. Returns how many (at most max). */
+int rdof_mn_claim_ids(const rdof_site_t *s, int which, uint32_t *ids, int max);
+
 /* The talkgroups a box subscribes to for its paths on net (section 8.3), held ptt TGs among them (held: a callback,
    NULL none). all: subscribe {root}/tg/+/+ and filter locally. Returns the TGs written to tgs (at most max). */
 struct rdof_router;
