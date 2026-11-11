@@ -376,7 +376,11 @@ def test_bursts_stream(bench, info, status):
     if not active:
         pytest.skip("no channel has had a burst")
     got = list(bench.bursts(channel=active[0]["id"], seconds=4, max_bursts=5))
-    assert got, f"no bursts on {active[0]['id']} in 4 s"
+    if not got:  # the channel had a burst once (someone's test call): whether it has one now is the air's business
+        now = [c for c in get_json("/api/status").get("sdr", {}).get("channels", []) if c["id"] == active[0]["id"]]
+        if now and now[0]["bursts"] == active[0]["bursts"]:
+            pytest.skip(f"nothing on {active[0]['id']} in these 4 s")
+    assert got, f"the board counted bursts on {active[0]['id']} and the stream gave none"
 
 
 def test_iq_stream(info):
