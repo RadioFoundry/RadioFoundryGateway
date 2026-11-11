@@ -5183,7 +5183,11 @@ static void clock_read(double t, bool fresh)
         SC.total += lost;
         for (; lost > 0; lost -= CHUNK) {
             bench_feed(zeros, lost < CHUNK ? (int)lost : CHUNK, false, true);
-            rx_chunk(zeros, lost < CHUNK ? (int)lost : CHUNK);
+            /* not with --fpga-chz: that receiver takes the block's channel outputs (fx_take), never wideband
+             * samples, and has no channelizer of its own to put these through (the process died here on a
+             * PlutoSDR, right after the line above) */
+            if (!FX.on)
+                rx_chunk(zeros, lost < CHUNK ? (int)lost : CHUNK);
         }
     }
     SC.last_win = w;
