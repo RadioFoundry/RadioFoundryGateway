@@ -502,6 +502,39 @@ def test_crash_round_trip():
 
 
 @mutate
+def test_hang_is_caught():
+    """POST /api/crash?how=hang (CONFIG_RDOF_CRASH_TEST builds only): a task that never yields starves core 0's
+    canary, and the task watchdog saves a dump naming it and restarts the board, 30 s on (watch.c)."""
+    before = get_json("/api/status")
+    if before.get("crash") and before["crash"].get("task") not in ("crash_test", "hang_test"):
+        pytest.skip("the board holds a real crash: download it and erase it first")
+    code, _, body = request("POST", "/api/crash?how=hang")
+    if code == 404:
+        pytest.skip("not a CONFIG_RDOF_CRASH_TEST build")
+    assert code == 200 and body.startswith(b"hanging"), body
+    time.sleep(25)  # it answers until the watchdog's 30 s are up
+    deadline = time.monotonic() + 90
+    after = None
+    while time.monotonic() < deadline:
+        try:
+            after = get_json("/api/status")
+            if after["uptime_s"] < before["uptime_s"]:
+                break
+        except (OSError, AssertionError):
+            pass
+        time.sleep(2)
+    assert after and after["uptime_s"] < before["uptime_s"], "the board didn't restart"
+    assert after["reset"] == "task watchdog"
+    crash = after["crash"]
+    assert crash["this_image"] is True
+    # crash.task is whatever ran on the core when the watchdog fired (the hung task, or one above it): the canary
+    # that went unfed is what says core 0 was held
+    assert "watch0" in crash["details"], crash
+    code, _, body = request("DELETE", "/api/coredump")
+    assert (code, body) == (200, b"erased")
+
+
+@mutate
 def test_coredump_erase_when_empty():
     """DELETE /api/coredump with nothing stored. Skipped while a dump is there: erasing a real one loses it."""
     if "crash" in get_json("/api/status"):

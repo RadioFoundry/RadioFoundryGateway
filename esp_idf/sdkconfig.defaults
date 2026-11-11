@@ -52,6 +52,10 @@ CONFIG_MDNS_MEMORY_ALLOC_SPIRAM=y
 # The task watchdog doesn't watch the idle tasks. A wideband stream keeps core 0 busy for seconds (the LR2021's
 # reader, the stream's task, Wi-Fi), and when its idle task went 5 s unfed the watchdog's interrupt printed its
 # report and both backtraces to the UART with interrupts off: 26 to 53 ms, 20 to 40 KB of samples each time
-# (lr2021-iq.md R3.59). It only printed (no panic). The interrupt watchdog still catches a core that stops.
+# (lr2021-iq.md R3.59). It only printed (no panic).
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
+# What it watches instead (watch.c): a canary task on each core and the tasks that carry the receiver. One unfed
+# for 30 s is a hang: a panic, so a core dump and a restart (a long key-up holds the LR2021's reader 10 s).
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30

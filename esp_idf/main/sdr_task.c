@@ -1604,13 +1604,17 @@ static void dsp_task(void *arg)
         vTaskDelete(NULL);
     }
     const int split = g_scfg.dsp_cores > 1 ? SDR_SPLIT_AUTO : 0;
+    hang_watch_me();
     for (;;) {
+        hang_watch_feed();
         if (paused) {
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
-        while (rt_state == 1 || rt_restore)
+        while (rt_state == 1 || rt_restore) {
             apply_retune();
+            hang_watch_feed();
+        }
         if (!fe.ops->wait(fe.ctx, 1000))
             continue;
         if (g_scfg.spike && fe.ops->spike) {
@@ -1648,6 +1652,7 @@ static void dsp_task(void *arg)
         while (!fe.ops->gone(fe.ctx) && rt_state != 1 && !rt_restore && !paused) {
             int64_t asked = esp_timer_get_time();
             size_t filled = 0;
+            hang_watch_feed();
             size_t got = fe.ops->read(fe.ctx, raw, want, 500, &filled);
             int64_t now = esp_timer_get_time();
             if (now - asked > 1000)

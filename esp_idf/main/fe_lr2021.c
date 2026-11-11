@@ -1210,14 +1210,16 @@ static void rx_mark_after(void)
 static void reader_task(void *arg)
 {
     int64_t last_poll = 0;
+    hang_watch_me();
     for (;;) {
+        hang_watch_feed();
         const int64_t t_top = esp_timer_get_time();
         if (wanting) {
             dbg.yields++;
             vTaskDelay(1);
         }
         if (!st.streaming) {
-            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(2000)); /* not for ever: the watchdog is fed at the top */
             last_poll = 0;
             continue;
         }

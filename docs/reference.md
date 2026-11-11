@@ -523,6 +523,10 @@ round trip, build with `CONFIG_RDOF_CRASH_TEST=y`: `POST /api/crash` stores to a
 and after the reboot `crash` says `StoreProhibited` at `0x00000000`. The HIL suite does that with
 `RDOF_BOARD_MUTATE=1`.
 
+A task that hangs is a crash too: the task watchdog panics when a core's canary task or the receiver's tasks go
+30 s unfed (`watch.c`), so the board saves a dump and restarts, with `reset` `task watchdog`. `POST
+/api/crash?how=hang` on the same build tests it.
+
 ### Bring-up: a roamer or repeater
 
 1. Power up with the serial console: PSRAM found, `USB host up`, `waiting for the radio (1FC9:0094)`.

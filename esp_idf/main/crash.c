@@ -203,8 +203,25 @@ static void crash_task(void *arg)
     vTaskDelete(NULL);
 }
 
+/* ?how=hang: a task that never yields, above core 0's canary (watch.c): the task watchdog's panic, 30 s on. */
+static void hang_task(void *arg)
+{
+    vTaskDelay(pdMS_TO_TICKS(500));
+    ESP_LOGW(TAG, "hanging on purpose (POST /api/crash?how=hang)");
+    for (volatile uint32_t n = 0;; n++) {
+    }
+}
+
 static esp_err_t post_crash(httpd_req_t *req)
 {
+    char q[32] = "", how[8] = "";
+    if (httpd_req_get_url_query_str(req, q, sizeof q) == ESP_OK)
+        httpd_query_key_value(q, "how", how, sizeof how);
+    if (!strcmp(how, "hang")) {
+        httpd_resp_sendstr(req, "hanging: the watchdog saves a core dump and restarts the board");
+        xTaskCreatePinnedToCore(hang_task, "hang_test", 4096, NULL, 7, NULL, 0);
+        return ESP_OK;
+    }
     httpd_resp_sendstr(req, "crashing: the board saves a core dump and restarts");
     xTaskCreate(crash_task, "crash_test", 2048, NULL, 5, NULL);
     return ESP_OK;
