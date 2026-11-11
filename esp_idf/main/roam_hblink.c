@@ -22,6 +22,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "esp_system.h"
 #include "lwip/sockets.h"
 #include "rdof/hbpeer.h"
 #if CONFIG_RDOF_HBLINK_SCTP
@@ -332,6 +333,23 @@ static void peer_task(void *arg)
     }
 }
 
+/* A restart: each logged-in radio's peer says RPTCL (sdr_hblink.c close_logins has why). */
+static struct roam_hb *s_logins[RDOF_MAX_RADIOS];
+static int s_nlogins;
+
+static void close_logins(void)
+{
+    bool sent = false;
+    for (int i = 0; i < s_nlogins; i++) {
+        uint8_t cl[9];
+        const size_t n = rdof_hb_peer_close_packet(&s_logins[i]->peer, cl);
+        if (n && s_logins[i]->sock >= 0 && s_logins[i]->peer.state == RDOF_HBL_UP)
+            sent |= send(s_logins[i]->sock, cl, n, 0) > 0;
+    }
+    if (sent)
+        vTaskDelay(pdMS_TO_TICKS(100)); /* let Wi-Fi send them before it stops */
+}
+
 void roam_hb_start(roam_t *r)
 {
     roam_t *o = site_hb_owner(r);
@@ -352,8 +370,12 @@ void roam_hb_start(roam_t *r)
     if (r->cfg->hb_login) {
         rdof_hb_peer_set_login(&h->peer, r->cfg->hb_password, r->cfg->hb_location, r->cfg->hb_description,
                                r->cfg->hb_url);
-        ESP_LOGI(TAG, "%s: BrandMeister login %lu at %s:%d", r->cfg->name, (unsigned long)r->cfg->peer_id,
+        ESP_LOGI(TAG, "%s: login %lu at %s:%d", r->cfg->name, (unsigned long)r->cfg->peer_id,
                  r->cfg->master_host, r->cfg->master_port);
+        if (!s_nlogins)
+            esp_register_shutdown_handler(close_logins);
+        if (s_nlogins < RDOF_MAX_RADIOS)
+            s_logins[s_nlogins++] = h;
     }
     r->hb = h;
 #if CONFIG_RDOF_HBLINK_SCTP

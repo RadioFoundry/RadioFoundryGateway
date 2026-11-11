@@ -23,6 +23,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "esp_system.h"
 #include "lwip/sockets.h"
 #include "rdof/hblink.h"
 #include "rdof/hbpeer.h"
@@ -201,6 +202,21 @@ static void peer_task(void *arg)
     }
 }
 
+/* A restart (esp_restart: the page, an update, new settings): each logged-in peer says RPTCL, so the master drops
+   the login now and takes the next one at once. Best effort, no lock: the board is going down. */
+static void close_logins(void)
+{
+    bool sent = false;
+    for (int i = 0; i < npeers; i++) {
+        uint8_t cl[9];
+        const size_t n = rdof_hb_peer_close_packet(&peers[i].peer, cl);
+        if (n && !peers[i].via && peers[i].sock >= 0 && peers[i].peer.state == RDOF_HBL_UP)
+            sent |= send(peers[i].sock, cl, n, 0) > 0;
+    }
+    if (sent)
+        vTaskDelay(pdMS_TO_TICKS(100)); /* let Wi-Fi send them before it stops */
+}
+
 void sdr_hb_start(void)
 {
     for (int c = 0; c < RDOF_SDR_MAX_CHANNELS; c++)
@@ -255,6 +271,8 @@ void sdr_hb_start(void)
         own |= !peers[i].via;
     if (own) {
         ESP_LOGI(TAG, "%d peers for %s:%d", npeers, g_scfg.hb_host, g_scfg.hb_port);
+        if (g_scfg.hb_login)
+            esp_register_shutdown_handler(close_logins);
         mem_task("sdr_net", "sdr_hblink", peer_task, 4096, NULL, 8, 0, NULL);
     }
 }
