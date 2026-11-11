@@ -172,6 +172,7 @@ static void fw_status(void *ctx, rdof_json_t *j, rdof_webapi_at_t at)
     switch (at) {
     case RDOF_WEBAPI_AT_BOARD:
         rdof_json_bool(j, "safe_mode", g_board.safe_mode);
+        flash_watch_json(j);
         power_status_json(j); /* the power key and the battery, when the board has them (power.c) */
         crash_status_json(j); /* the core dump in flash, if any (crash.c) */
         break;

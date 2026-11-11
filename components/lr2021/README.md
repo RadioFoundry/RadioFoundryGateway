@@ -177,6 +177,7 @@ writes them as ESP-IDF's.
 | `const char *lr2021_last_error(const lr2021_t *)` | Last failure text: `"BUSY stayed high"`, `"SPI transfer failed"`, `"command failed (chip in <mode>)"`, `"command not understood (chip in <mode>)"` | – |
 | `uint32_t lr2021_failures(const lr2021_t *)` | Count of BUSY timeouts, SPI failures and FAIL/PERR statuses since open | – |
 | `uint32_t lr2021_hal_esp_bounces(const lr2021_hal_t *)` | Transfers whose answer wasn't a multiple of 4 bytes, so ESP-IDF allocated a DMA bounce buffer (see DMA alignment) | – |
+| `uint32_t lr2021_hal_esp_worst_us(lr2021_hal_t *)` | The longest SPI transfer since the last call, in microseconds | – |
 | `esp_err_t lr2021_set_clock(lr2021_t *, int hz, int input_delay_ns)` | The SPI clock, up to 80 MHz (past 16 MHz out of spec: experiments); the ESP-IDF HAL takes the device off the bus and adds it back | `ESP_ERR_INVALID_ARG`, `ESP_ERR_NOT_SUPPORTED` (a HAL without it) |
 | `bool lr2021_wait_irq(lr2021_t *, int timeout_ms)`, `bool lr2021_has_irq(const lr2021_t *)`, `int lr2021_irq_pin(lr2021_t *)` | The IRQ pin: wait for it high, whether there is one, its level now (a GPIO read, no SPI) | – |
 

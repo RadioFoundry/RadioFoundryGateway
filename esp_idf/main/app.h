@@ -546,6 +546,9 @@ double bench_tx_sig_rate(void);
 const char *bench_tx_why_family(int family); /* a voice, csbk or data job's --family: NULL, or why it can't go */
 /* The line protocol (bench_line.c, bench-api.md section 14): its server on CONFIG_RDOF_BENCH_LINE_PORT; a burst heard
  * (from bench_on_burst); the wideband history (bench_api.c's ring) for its captures. */
+void stall_watch_start(void); /* core 0's tick notes its running task (flash_watch.c) */
+int stall_watch_take(void); /* core 0's longest tick gap since the last call, us */
+void flash_watch_json(rdof_json_t *j); /* /api/status "flash": the flash operations (flash_watch.c) */
 void bench_line_start(void);
 #if CONFIG_RDOF_BENCH
 /* a line job or a v1 stream is listening to the receiver: flash writes wait (they lose its samples) */

@@ -527,7 +527,18 @@ static uint64_t clk_n;
  * count and when the read ended time the chip's crystal (sdr_rate_block): its rate converter's output is exact to
  * the crystal its PLL runs from (spec R2.21), so the sample rate's error is the LO's. A loss or a new session is a
  * break in that count. */
+static int sink_worst_us;
+static void sink_samples(const uint8_t *data, size_t n, unsigned flags, int64_t t_us);
 static void sink(void *ctx, const uint8_t *data, size_t n, unsigned flags, int64_t t_us)
+{
+    const int64_t t0 = esp_timer_get_time();
+    sink_samples(data, n, flags, t_us);
+    const int us = (int)(esp_timer_get_time() - t0);
+    if (us > sink_worst_us)
+        sink_worst_us = us;
+}
+
+static void sink_samples(const uint8_t *data, size_t n, unsigned flags, int64_t t_us)
 {
     /* A FIFO loss (the chip's FIFO overflowed and was cleared) is a gap of unknown length: reckoned from the time
      * since the last read (what the chip made then, less what came), noted ahead of these samples so read() fills
@@ -573,6 +584,8 @@ static volatile unsigned tx_busy; /* TX look-ahead pulls put off, the source's l
 typedef struct {
     int64_t at_us;
     int gap_us, yield_us, tx_us, lock_us, poll_us, held_us;
+    int spi_us, sink_us; /* inside the poll: its longest SPI transfer, and its longest hand-over of samples */
+    int tick_gap_us;     /* a gap over 5 ms: the longest time between two of core 0's ticks in it (interrupts off) */
     const char *held_by;
 } loss_why_t;
 #define LOSS_WHYS 8
@@ -1237,10 +1250,15 @@ static void reader_task(void *arg)
         const int got = lr2021_iq_poll(&iq, sink, NULL, 2);
         const int64_t t_end = esp_timer_get_time();
         rx_mark_after();
+        const int spi_us = (int)lr2021_hal_esp_worst_us(&st.hal), sink_us = sink_worst_us;
+        sink_worst_us = 0;
         if (last_poll && t_end - last_poll > loss_worst.gap_us)
             loss_worst = (loss_why_t){.gap_us = (int)(t_end - last_poll), .yield_us = (int)(t_tx - t_top),
                                       .tx_us = (int)(t_lock - t_tx), .lock_us = (int)(t_poll - t_lock),
-                                      .poll_us = (int)(t_end - t_poll), .held_us = held_most_us, .held_by = held_most_by};
+                                      .poll_us = (int)(t_end - t_poll), .held_us = held_most_us, .held_by = held_most_by,
+                                      .spi_us = spi_us, .sink_us = sink_us};
+        if (last_poll && t_end - last_poll > 5000 && loss_worst.gap_us == (int)(t_end - last_poll))
+            loss_worst.tick_gap_us = stall_watch_take();
         held_most_us = 0;
         held_most_by = NULL;
         last_poll = t_end;
@@ -1308,6 +1326,7 @@ static int start(void *ctx)
         /* Above Wi-Fi (23): under it, Wi-Fi and MQTT traffic kept it off the CPU past the FIFO's 2 ms, about one
          * loss every 5 s idle and several a second on a call. It sleeps between reads (lr2021_sleep_us), so Wi-Fi
          * still gets core 0 most of the time. On core 1 (above the DSP) it lost far more. */
+        stall_watch_start();
         mem_task("sdr_fe", "lr2021", reader_task, 4096, NULL, 24, 0, &st.reader);
     }
     xTaskNotifyGive(st.reader);
@@ -1496,6 +1515,9 @@ void fe_lr2021_loss_json(rdof_json_t *j)
         rdof_json_int(j, "tx_us", x->tx_us);
         rdof_json_int(j, "lock_us", x->lock_us);
         rdof_json_int(j, "poll_us", x->poll_us);
+        rdof_json_int(j, "spi_us", x->spi_us);
+        rdof_json_int(j, "sink_us", x->sink_us);
+        rdof_json_int(j, "tick_gap_us", x->tick_gap_us);
         rdof_json_int(j, "held_us", x->held_us);
         rdof_json_str(j, "held_by", x->held_by ? x->held_by : "");
         rdof_json_close(j);
