@@ -2147,7 +2147,9 @@ static void bench_iq(void *arg)
             /* samples lost before this frame, wherever they went (a frame the ring had no room for, a wideband
              * frame the history had moved past): it doesn't start where the last one ended. A W12 sends about 40%
              * of a wideband stream's frames, and those after a dropped one went out unflagged */
-            if (st->next_sc && sc != st->next_sc && !(flags & IQ_FLAG_GAP)) {
+            /* (a channel's sc counts wideband samples, each rounded: one either way is no gap) */
+            const uint64_t off = sc > st->next_sc ? sc - st->next_sc : st->next_sc - sc;
+            if (st->next_sc && off > (st->wide ? 0u : 1u) && !(flags & IQ_FLAG_GAP)) {
                 flags |= IQ_FLAG_GAP;
                 put_u16(h + 6, flags);
             }
@@ -2166,7 +2168,9 @@ static void bench_iq(void *arg)
                 drop_stream(st);
             else {
                 st->samples += m;
-                st->next_sc = sc + m;
+                /* where the next frame starts, in sc's units: wideband samples (a channel's frames said gap, every one,
+                 * with its own samples added here) */
+                st->next_sc = sc + (st->wide ? m : (uint64_t)llround((double)m * g_scfg.sample_rate / RDOF_DEMOD_FS));
                 /* after the send, not before it: a send that waited over 2 s for Wi-Fi left this 2 s old, and
                  * the rule above ended the stream at the next frame with most of it unsent (lr2021-iq.md R3.59) */
                 st->sent_us = esp_timer_get_time();

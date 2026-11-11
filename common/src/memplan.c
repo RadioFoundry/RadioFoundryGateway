@@ -477,6 +477,12 @@ void rdof_memplan_json(const rdof_memplan_t *p, const rdof_mem_avail_t *now, rdo
     rdof_json_int(j, "largest", now->psram_largest);
     rdof_json_int(j, "planned", planned_ps);
     rdof_json_close(j);
+    rdof_json_open(j, "alloc_fails");
+    rdof_json_int(j, "n", now->alloc_fails);
+    rdof_json_int(j, "size", now->alloc_fail_size);
+    rdof_json_int(j, "caps", now->alloc_fail_caps);
+    rdof_json_str(j, "task", now->alloc_fail_task ? now->alloc_fail_task : "");
+    rdof_json_close(j);
     rdof_json_open(j, "roles");
     for (int r = 0; r < p->nroles; r++) {
         rdof_json_open(j, p->role[r].name);

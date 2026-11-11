@@ -244,6 +244,7 @@ The boot memory plan and the heap now ([memory.md](memory.md)). Sizes in bytes.
 | `spare` | int | internal free at plan time less the plan and the margin (negative: short) |
 | `internal` | object | `free`, `largest` (now); `at_plan` (free when planned); `planned` (allocated by the plan); `budget` (declared, allocated by others later); `outside_plan` (`at_plan` − `planned` − `free`: taken since by the budgets' owners, Wi-Fi, lwIP and what isn't planned; compare with `budget` + `margin`) |
 | `dma` | object | `free`, `largest`: internal DMA-capable now |
+| `alloc_fails` | object | allocations the heap has refused since boot, whoever asked (Wi-Fi, lwIP, a role): `n`; the last one's `size` (bytes), `caps` (ESP-IDF's `MALLOC_CAP_` bits) and `task` |
 | `psram` | object | `free`, `largest` now; `planned` |
 | `roles` | object | keyed by role (`sdr`, `sdr_fe`, `sdr_net`, `radio1`, `radio2`, `ipgw`, `usb`, `board`): `state` (`planned`, `refused`, `released`), `why` (refused or released: why), `internal`, `dma`, `psram` (bytes planned in each), `budget`, `claims` |
 | `roles.*.claims` | object | keyed by claim name: `bytes` (each × count), `in` (`internal`, `dma`, `psram`, `nowhere`), `how` (`alloc`, `hold`, `budget`), `align` (only when over 4), `taken` (alloc: the role took it) or `handed` (hold: blocks handed to their driver) |

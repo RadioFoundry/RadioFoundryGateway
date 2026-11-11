@@ -62,8 +62,26 @@ static void largest(void *arg)
     a->psram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
 }
 
+/* Allocations the heap refused (heap_caps' own hook: in the asking task, so it only counts). */
+static volatile uint32_t fail_n, fail_size, fail_caps;
+static char fail_task[configMAX_TASK_NAME_LEN];
+
+static void alloc_failed(size_t size, uint32_t caps, const char *fn)
+{
+    (void)fn;
+    fail_n++;
+    fail_size = (uint32_t)size;
+    fail_caps = caps;
+    if (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING && !xPortInIsrContext())
+        strlcpy(fail_task, pcTaskGetName(NULL), sizeof fail_task);
+}
+
 static void avail(rdof_mem_avail_t *a)
 {
+    a->alloc_fails = fail_n;
+    a->alloc_fail_size = fail_size;
+    a->alloc_fail_caps = fail_caps;
+    a->alloc_fail_task = fail_task;
     a->internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     a->dma_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
     a->psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
@@ -181,6 +199,7 @@ static void allocate(void)
 
 void mem_plan_boot(bool usb_either)
 {
+    heap_caps_register_failed_alloc_callback(alloc_failed);
     lock = xSemaphoreCreateMutex();
     rdof_memplan_init(&P, CONFIG_RDOF_MEM_MARGIN_KB * 1024, STRICT);
     declaring = true;

@@ -401,6 +401,16 @@ def test_iq_stream(info):
             n += h["n"]
     assert n == done["samples"]
     assert abs(n - 0.5 * start["rate"]) < 0.2 * start["rate"]
+    # the gap flag (1) only where samples are missing: a frame that starts where the last one ended has none unless
+    # the front end's filler is in it. `sc` counts wideband samples (clock.rate), a frame's n the stream's own. Every
+    # frame after the first said gap once (the board added a channel's n to sc as it was)
+    hs = [iq_header(m) for m in msgs if isinstance(m, bytes)]
+    ratio = start["clock"]["rate"] / start["rate"]
+    flagged = sum(1 for h in hs if h["flags"] & 1)
+    assert done.get("gaps", flagged) == flagged, (done, flagged)
+    if not done.get("filled"):
+        wrong = [b["sc"] for a, b in zip(hs, hs[1:]) if abs(b["sc"] - (a["sc"] + a["n"] * ratio)) <= 1 and b["flags"] & 1]
+        assert not wrong, f"{len(wrong)} of {len(hs)} frames say gap with no samples missing before them"
 
 
 def iq_zero_runs(msgs, min_n):
