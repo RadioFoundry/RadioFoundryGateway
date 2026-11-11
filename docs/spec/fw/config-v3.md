@@ -503,7 +503,7 @@ The HBlink4 master ([hblink.md](hblink.md)). With it, the top-level `id` is requ
 | `sctp_ttl_ms` | int, 0..60000 | 0 | |
 | `identity` | `single` \| `per_path` | `single` | `single`: the box is one peer (`id`), and its policies decide what goes where. `per_path`: each frequency or repeater is its own peer (`id` + 1, + 2, ... in list order, or `peer_ids`), and the master decides where a call goes: a stream sent to a peer goes only to that peer's paths |
 | `peer_ids` | object | | `{"<frequency or repeater>": id}`, with `per_path` only; a repeater's two slots share its peer. Each such peer gives the master its frequency's or repeater's name (the first 8 characters) as its callsign |
-| `roaming` | bool | false | let the master move a device that `transmits` on several frequencies (DMRT / DMRK) |
+| `roaming` | bool | false | let the master move a device that `transmits` on several frequencies (DMRT / DMRK). Checked (a `brandmeister` or `homebrew` network refuses it) but not acted on yet: a transceiver on HBlink4 announces itself as roaming and takes DMRT whatever this says |
 
 Which units are HBlink peers: with `single`, the box's one peer carries every path. With `per_path` or a
 BrandMeister network, a unit is a peer only when its own path is on that network: a repeater on MQTT, or a path with
