@@ -191,6 +191,13 @@ static void test_scenarios(const char *dir)
         CHECK(!strstr(out, "example\""), "no password in the resolved view");
         CHECK(p && !p->peer_name[0], "a login's RPTC callsign is the owner's, not the path's name");
     }
+    if (load(dir, "good-homebrew-simplex.json")) { /* the same login to any Homebrew master, written back as it was */
+        p = path("hs");
+        CHECK(p && p->peer_id == 310012301 && S.net[0].login && S.net[0].homebrew, "homebrew login");
+        static char out[16384];
+        rdof_site_resolved(&S, out, sizeof out);
+        CHECK(strstr(out, "\"type\":\"homebrew\""), "%.200s", out);
+    }
     if (load(dir, "good-bm-per-path.json")) {
         CHECK(path("s1") && path("s1")->peer_id == 310012301 && path("s2") && path("s2")->peer_id == 310012302,
               "bm per_path");

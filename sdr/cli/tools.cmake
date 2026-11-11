@@ -144,6 +144,15 @@ if(TARGET rdofradio AND IIO_INCLUDE_DIR AND IIO_LIBRARY)
     set_tests_properties(rdofradio_needs_allow_tx PROPERTIES PASS_REGULAR_EXPRESSION "pass --allow-tx \\(or --listen")
 endif()
 
+if(TARGET rdofradio AND TARGET fakemodem AND UNIX)
+    # no RF: fakemodem, rdofradio and fakebm on this host, a login of each type, a call up and its echo on air
+    foreach(net brandmeister homebrew)
+        add_test(NAME rdofradio_e2e_${net} COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_login.sh
+                 $<TARGET_FILE_DIR:rdofradio> ${net} $<IF:$<STREQUAL:${net},homebrew>,62078,62077>)
+        set_tests_properties(rdofradio_e2e_${net} PROPERTIES TIMEOUT 60)
+    endforeach()
+endif()
+
 if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
     target_link_options(rdofsdr PRIVATE -fsanitize=address,undefined)
     target_link_options(fakebm PRIVATE -fsanitize=address,undefined)

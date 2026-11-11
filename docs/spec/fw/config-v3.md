@@ -483,10 +483,10 @@ A firmware build without `CONFIG_RDOF_IPGW` refuses an `ipgw` app, and so does r
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `type` | `hblink` \| `brandmeister` \| `mqtt` | | required. Later: `openbridge`, others |
+| `type` | `hblink` \| `brandmeister` \| `homebrew` \| `mqtt` | | required. Later: `openbridge`, others |
 | `name` | str | the type | §2.1 |
 
-At most one of each, and `hblink` or `brandmeister`, not both. The first network in the list is the default: a path with no `net` uses it.
+At most one of each, and one of `hblink`, `brandmeister` and `homebrew`. The first network in the list is the default: a path with no `net` uses it.
 
 ### 7.1 `hblink`
 
@@ -560,6 +560,18 @@ required: each login's `RPTC` carries it, and BrandMeister checks it against the
 transmitter's power in dBm off the device's power map, and the top-level `location`'s coordinates and height. A
 simplex login sends its calls up on slot 2. A device that transmits on a frequency of the network transmits on that
 one only (no roaming transceiver). `GET /api/config` shows the password, as it does MQTT's.
+
+### 7.4 `homebrew`
+
+Any other master that speaks the Homebrew repeater protocol: a stock HBlink (one without this project's `DMRC`
+peer), TGIF, a FreeDMR or DMR+ style server. The keys, the login and the rules are §7.3's: a login per frequency
+or repeater with its ID in `peer_ids`, the top-level `callsign` in each `RPTC`. `password` is the one the master
+has for that login (TGIF: the hotspot security key of its self care page), `host` the master's. Use `hblink` only
+for an HBlink4 that knows `DMRC` (§7.1).
+
+Status (2026-11-11): the settings and the login are the ones tested against the simulated master; not yet run
+against a stock HBlink or TGIF. `RPTO` (an options string, which some masters take static talkgroups from) isn't
+sent.
 
 ## 8. Policies
 

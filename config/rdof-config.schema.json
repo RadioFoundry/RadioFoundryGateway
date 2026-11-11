@@ -533,12 +533,12 @@
       }
     },
     "bm3": {
-      "description": "A BrandMeister network: each frequency or repeater logs in as its own hotspot or repeater, with its ID in peer_ids (docs/spec/fw/brandmeister.md).",
+      "description": "A BrandMeister network, or with type homebrew any other master that speaks the Homebrew repeater protocol (a stock HBlink, TGIF): each frequency or repeater logs in as its own hotspot or repeater, with its ID in peer_ids (docs/spec/fw/brandmeister.md).",
       "additionalProperties": false,
       "required": ["host", "password", "peer_ids"],
       "properties": {
         "name": {"$ref": "#/$defs/name3"},
-        "type": {"const": "brandmeister"},
+        "type": {"enum": ["brandmeister", "homebrew"]},
         "host": {"type": "string"},
         "port": {"type": "integer", "minimum": 1, "maximum": 65535},
         "password": {"type": "string", "minLength": 1, "maxLength": 63},
@@ -570,10 +570,10 @@
     "net3": {
       "type": "object",
       "required": ["type"],
-      "properties": {"type": {"enum": ["hblink", "brandmeister", "mqtt"]}},
+      "properties": {"type": {"enum": ["hblink", "brandmeister", "homebrew", "mqtt"]}},
       "allOf": [
         {"if": {"properties": {"type": {"const": "hblink"}}}, "then": {"$ref": "#/$defs/hblink3"}},
-        {"if": {"properties": {"type": {"const": "brandmeister"}}}, "then": {"$ref": "#/$defs/bm3"}},
+        {"if": {"properties": {"type": {"enum": ["brandmeister", "homebrew"]}}}, "then": {"$ref": "#/$defs/bm3"}},
         {"if": {"properties": {"type": {"const": "mqtt"}}}, "then": {"$ref": "#/$defs/mqtt3"}}
       ]
     },

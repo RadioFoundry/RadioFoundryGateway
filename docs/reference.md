@@ -11,7 +11,8 @@ Outputs:
 - **HBlink4**: a peer per radio, or per SDR channel; DMRC, DMRD both ways, DMRT / DMRK call routing; UDP, or SCTP
   over UDP for the roamer ([hblink.md](spec/fw/hblink.md)).
 - **BrandMeister**: the same peer with the homebrew login (RPTL, RPTK, RPTC, RPTPING), as a simplex hotspot or a
-  repeater, one login per path ([brandmeister.md](spec/fw/brandmeister.md)).
+  repeater, one login per path ([brandmeister.md](spec/fw/brandmeister.md)). The same login to any other Homebrew
+  master (a stock HBlink, TGIF) is network type `homebrew` (config-v3.md §7.4).
 - **HTTP**: the web page, a JSON API and the bench API ([interfaces-http.md](spec/fw/interfaces-http.md),
   [bench-api.md](spec/bench-api.md)).
 
@@ -39,6 +40,7 @@ are committed (`host-tests/vectors.h`, `scenarios.h`, `fixtures/`) and the C mus
 |---|---|
 | `rdof_tests`, `rdof_tests_min` | `common/` with every feature on, and with every `RDOF_FEATURE_*` off: FEC, layer 2, PDUs, AMBE, MMDVM, HBlink4 and the OLED frame against golden vectors; the tracker, the roaming transceiver and the repeater (duplex, SFR, DCDM) against golden scenarios; split duplex; the jitter buffer; settings; two radios a board |
 | `rdof_tests_c` | the core tests on the C that `rust/`'s modules replace: with cargo installed, every other test runs the Rust |
+| `rdofradio_e2e_brandmeister`, `rdofradio_e2e_homebrew` | no RF, three processes (`host-tests/e2e_login.sh`): rdofradio on `fakemodem` logs in to `fakebm`, a radio's private call goes up, the parrot's echo goes out on air, RPTCL at exit |
 | `rdof_site_tests`, `rdof_plan_tests`, `rdof_schema_tests` | settings version 3: the parser, router and pool; the plan and its units; the JSON schema (Node) over the fixtures in `fixtures/config/v3/` |
 | `rdof_sdr_tests`, `rdof_sdr_tests_min`, `rdof_sdr_edge_tests` | the SDR receive path against golden vectors; the corners they don't reach ("SDR core" below) |
 | `rdof_mod_tests`, `sdrmodem_tests`, `rdof_loopback_edge_tests` | the modulator, the SDR modem, its loopbacks |

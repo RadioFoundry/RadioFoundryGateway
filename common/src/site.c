@@ -601,10 +601,12 @@ static bool parse_nets(ctx_t *c, rdof_site_t *s)
             n->type = RDOF_NET_HBLINK, nh++;
         else if (t && !strcmp(t, "brandmeister")) /* an HBlink peer with a login (brandmeister.md) */
             n->type = RDOF_NET_HBLINK, n->login = true, nh++;
+        else if (t && !strcmp(t, "homebrew")) /* the same login to any other Homebrew master (a stock HBlink, TGIF) */
+            n->type = RDOF_NET_HBLINK, n->login = n->homebrew = true, nh++;
         else if (t && !strcmp(t, "mqtt"))
             n->type = RDOF_NET_MQTT, nm++;
         else
-            return fail(c, "%s.type: hblink, brandmeister or mqtt", path);
+            return fail(c, "%s.type: hblink, brandmeister, homebrew or mqtt", path);
         if (!known(c, e, path, n->login ? BM_KEYS : n->type == RDOF_NET_HBLINK ? HBLINK_KEYS : MQTT_KEYS))
             return false;
         const char *nmv = str_of(c, get(c, e, "name"));
@@ -615,12 +617,13 @@ static bool parse_nets(ctx_t *c, rdof_site_t *s)
             return fail(c, "%s.name: two networks called %s (two of one type need names)", path, n->name);
         if (!str_of(c, get(c, e, "host")) || !str_of(c, get(c, e, "host"))[0])
             return fail(c, "%s.host: the %s's host name or address", path,
-                        n->login ? "BrandMeister master" : n->type == RDOF_NET_HBLINK ? "HBlink4 master" : "MQTT broker");
+                        n->homebrew ? "Homebrew master" : n->login ? "BrandMeister master" : n->type == RDOF_NET_HBLINK ? "HBlink4 master" : "MQTT broker");
         if (n->login) {
             const char *pw = str_of(c, get(c, e, "password"));
             if (!pw || !pw[0] || strlen(pw) > 63)
-                return fail(c, "%s.password: the hotspot security password (BrandMeister SelfCare), 1 to 63 characters",
-                            path);
+                return fail(c, "%s.password: the %s, 1 to 63 characters", path,
+                            n->homebrew ? "master's password for this login"
+                                        : "hotspot security password (BrandMeister SelfCare)");
             static const char *const TEXT[] = {"location", "description", "url"};
             static const int MAXLEN[] = {20, 19, 124};
             for (int x = 0; x < 3; x++) {
@@ -693,7 +696,7 @@ static bool parse_nets(ctx_t *c, rdof_site_t *s)
         s->nnet++;
     }
     if (nh > 1 || nm > 1)
-        return fail(c, "networks: one hblink (or brandmeister) and one mqtt network for now");
+        return fail(c, "networks: one hblink (or brandmeister or homebrew) and one mqtt network for now");
     return true;
 }
 
@@ -1212,8 +1215,11 @@ static bool peer_ids(ctx_t *c, rdof_site_t *s)
     if (login) {
         const char *cs = str_of(c, get(c, c->root, "callsign"));
         if (!cs || !cs[0] || strlen(cs) > 8)
-            return fail(c, "callsign: the owner's callsign, required with a brandmeister network (BrandMeister checks "
-                           "it against the logins' IDs), 8 characters at most");
+            return fail(c, s->net[hb].homebrew
+                               ? "callsign: the callsign the logins give the master, required with a homebrew network, "
+                                 "8 characters at most"
+                               : "callsign: the owner's callsign, required with a brandmeister network (BrandMeister "
+                                 "checks it against the logins' IDs), 8 characters at most");
     }
     uint32_t next = s->id;
     int ids = hb >= 0 ? get(c, c->nnode[hb], "peer_ids") : -1;
@@ -1245,8 +1251,9 @@ static bool peer_ids(ctx_t *c, rdof_site_t *s)
         const char *key = p->app >= 0 ? s->app[p->app].name : s->freq[p->freq].name;
         double v;
         if (login && !num_of(c, get(c, ids, key), &v))
-            return fail(c, "networks.%s.peer_ids.%s: each path on BrandMeister logs in with its own registered ID",
-                        s->net[hb].name, key);
+            return fail(c, "networks.%s.peer_ids.%s: each path on %s logs in with its own %sID", s->net[hb].name, key,
+                        s->net[hb].homebrew ? "a Homebrew master" : "BrandMeister",
+                        s->net[hb].homebrew ? "" : "registered ");
         p->peer_id = num_of(c, get(c, ids, key), &v) ? (uint32_t)v : ++next;
         for (int j = 0; login && j < k; j++)
             if (s->path[j].pol.net == hb && s->path[j].peer_id == p->peer_id)
@@ -1264,9 +1271,10 @@ static bool peer_ids(ctx_t *c, rdof_site_t *s)
             continue;
         for (int k = 0; k < s->npath; k++)
             if (s->path[k].pol.net == hb && s->path[k].tx_freq >= 0 && (t >> s->path[k].tx_freq & 1))
-                return fail(c, "devices.%s.transmits: on BrandMeister each frequency or repeater is its own login, so "
+                return fail(c, "devices.%s.transmits: on %s each frequency or repeater is its own login, so "
                                "a device transmits on one frequency (%s is on %s)",
-                            s->dev[d].name, s->path[k].name, s->net[hb].name);
+                            s->dev[d].name, s->net[hb].homebrew ? "a Homebrew master" : "BrandMeister",
+                            s->path[k].name, s->net[hb].name);
     }
     return true;
 }
@@ -1634,7 +1642,7 @@ size_t rdof_site_resolved(const rdof_site_t *s, char *out, size_t cap)
         const rdof_net3_t *n = &s->net[k];
         open_(&w, NULL, '{');
         w_str(&w, "name", n->name);
-        w_str(&w, "type", n->login ? "brandmeister" : n->type == RDOF_NET_HBLINK ? "hblink" : "mqtt");
+        w_str(&w, "type", n->homebrew ? "homebrew" : n->login ? "brandmeister" : n->type == RDOF_NET_HBLINK ? "hblink" : "mqtt");
         if (n->type == RDOF_NET_HBLINK && !n->login) {
             w_str(&w, "identity", n->per_path ? "per_path" : "single");
             w_bool(&w, "roaming", n->roaming);

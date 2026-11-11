@@ -97,7 +97,10 @@ typedef struct {
     uint8_t type;    /* rdof_net_type_t */
     bool per_path;   /* hblink identity per_path: each path (a repeater: both its slots) its own peer */
     bool roaming;    /* hblink: the master may move a device (DMRT) */
-    bool login;      /* type brandmeister: an hblink network whose peers log in (RPTL, docs/spec/fw/brandmeister.md) */
+    bool login;      /* type brandmeister or homebrew: an hblink network whose peers log in (RPTL,
+                        docs/spec/fw/brandmeister.md) */
+    bool homebrew;   /* a login written as type homebrew: any master that speaks the Homebrew repeater protocol
+                        (a stock HBlink, TGIF, ...); the same login, named for what it is */
     bool report;     /* mqtt */
     bool calls;      /* mqtt: carries calls */
     uint8_t format;  /* mqtt: RDOF_MQTT_FORMAT_* (calls as DMRD, or the MQTT network's messages) */
