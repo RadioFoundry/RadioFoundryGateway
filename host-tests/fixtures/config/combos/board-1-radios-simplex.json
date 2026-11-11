@@ -1,0 +1,33 @@
+// 1 radios simplex (board ports)
+{
+ "version": 3,
+ "id": 9800100,
+ "callsign": "N0CALL",
+ "defaults": {
+  "cc": 1
+ },
+ "devices": [
+  {
+   "name": "m0",
+   "kind": "modem",
+   "type": "radio_hotspot",
+   "port": {
+    "uart": 1,
+    "tx": 17,
+    "rx": 18
+   },
+   "transmits": [
+    438.5
+   ]
+  }
+ ],
+ "frequencies": [
+  438.5
+ ],
+ "networks": [
+  {
+   "type": "hblink",
+   "host": "hb.example.net"
+  }
+ ]
+}

@@ -1,0 +1,38 @@
+// pluto simplex x3 + parrot + ipgw (host ports)
+{
+ "version": 3,
+ "id": 9800100,
+ "callsign": "N0CALL",
+ "defaults": {
+  "cc": 1
+ },
+ "devices": [
+  {
+   "name": "pluto",
+   "kind": "sdr",
+   "driver": "iio"
+  }
+ ],
+ "frequencies": [
+  438.5,
+  438.5125,
+  438.525
+ ],
+ "apps": [
+  {
+   "type": "parrot",
+   "tg": 9990
+  },
+  {
+   "type": "ipgw",
+   "tg": 9991,
+   "nat": true
+  }
+ ],
+ "networks": [
+  {
+   "type": "hblink",
+   "host": "hb.example.net"
+  }
+ ]
+}

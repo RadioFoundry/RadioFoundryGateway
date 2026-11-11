@@ -1,0 +1,46 @@
+// hblink+mqtt v3 both (host ports)
+{
+ "version": 3,
+ "id": 9800100,
+ "callsign": "N0CALL",
+ "defaults": {
+  "cc": 1
+ },
+ "devices": [
+  {
+   "name": "pluto",
+   "kind": "sdr",
+   "driver": "iio"
+  }
+ ],
+ "networks": [
+  {
+   "type": "hblink",
+   "host": "hb.example.net"
+  },
+  {
+   "type": "mqtt",
+   "host": "b.example.net",
+   "calls": true,
+   "format": "v3"
+  }
+ ],
+ "frequencies": [
+  {
+   "name": "in",
+   "freq": 438.75
+  },
+  {
+   "name": "out",
+   "freq": 438.25
+  }
+ ],
+ "apps": [
+  {
+   "name": "R1",
+   "type": "repeater",
+   "in": "in",
+   "out": "out"
+  }
+ ]
+}

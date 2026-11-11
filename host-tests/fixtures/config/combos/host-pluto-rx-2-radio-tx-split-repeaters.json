@@ -1,0 +1,79 @@
+// pluto rx + 2 radio-tx split repeaters (host ports)
+{
+ "version": 3,
+ "id": 9800100,
+ "callsign": "N0CALL",
+ "defaults": {
+  "cc": 1
+ },
+ "devices": [
+  {
+   "name": "pluto",
+   "kind": "sdr",
+   "driver": "iio",
+   "transmits": false
+  },
+  {
+   "name": "m0",
+   "kind": "modem",
+   "type": "radio_hotspot",
+   "port": {
+    "path": "/dev/ttyACM0"
+   },
+   "hears": false,
+   "transmits": [
+    "out0"
+   ]
+  },
+  {
+   "name": "m1",
+   "kind": "modem",
+   "type": "radio_hotspot",
+   "port": {
+    "path": "/dev/ttyACM1"
+   },
+   "hears": false,
+   "transmits": [
+    "out1"
+   ]
+  }
+ ],
+ "frequencies": [
+  {
+   "name": "in0",
+   "freq": 438.75
+  },
+  {
+   "name": "out0",
+   "freq": 438.25
+  },
+  {
+   "name": "in1",
+   "freq": 438.775
+  },
+  {
+   "name": "out1",
+   "freq": 438.275
+  }
+ ],
+ "apps": [
+  {
+   "name": "R0",
+   "type": "repeater",
+   "in": "in0",
+   "out": "out0"
+  },
+  {
+   "name": "R1",
+   "type": "repeater",
+   "in": "in1",
+   "out": "out1"
+  }
+ ],
+ "networks": [
+  {
+   "type": "hblink",
+   "host": "hb.example.net"
+  }
+ ]
+}

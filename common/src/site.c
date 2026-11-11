@@ -859,6 +859,7 @@ static bool on_bench(ctx_t *c, const char *name)
 static bool parse_devices(ctx_t *c, rdof_site_t *s)
 {
     uint32_t bench = 0; /* bench.devices with neither hears nor transmits: the bench's alone, unless pinned */
+    uint32_t dflt = 0;  /* modems with no "hears": on the first frequency they transmit on */
     int dl = get(c, c->root, "devices");
     if (dl >= 0 && !is_type(c, dl, RDOF_JARR))
         return fail(c, "devices: a list");
@@ -947,6 +948,7 @@ static bool parse_devices(ctx_t *c, rdof_site_t *s)
                 }
             } else {
                 d->hears = RDOF_HEARS_IDLE; /* on what it transmits on first, below */
+                dflt |= 1u << s->ndev;
             }
         }
         snprintf(p, sizeof p, "%s.transmits", path);
@@ -1011,6 +1013,24 @@ static bool parse_devices(ctx_t *c, rdof_site_t *s)
         for (int dv = 0; s->freq[f].devices && dv < s->ndev; dv++)
             if (!(s->freq[f].devices >> dv & 1))
                 s->dev[dv].transmits &= ~(1ull << f);
+    /* a modem with no "hears" whose first frequency is a repeater's output hears that repeater's input: one duplex
+       modem is the whole repeater. Not a radio_hotspot (half duplex: a split's TX half), and a modem of type auto
+       only when no other device hears the input (then it's a split's TX half too) */
+    for (int dv = 0; dv < s->ndev; dv++) {
+        rdof_device3_t *d = &s->dev[dv];
+        const int out = d->idle;
+        if (!(dflt >> dv & 1) || out < 0 || s->freq[out].app < 0 || s->app[s->freq[out].app].out != out ||
+            !strcmp(d->driver, "radio_hotspot"))
+            continue;
+        const int in = s->app[s->freq[out].app].in;
+        if (s->freq[in].devices && !(s->freq[in].devices >> dv & 1))
+            continue;
+        bool other = false;
+        for (int x = 0; x < s->ndev && !other; x++)
+            other = x != dv && rdof_site_dev_hears(s, x, in);
+        if (!other || strcmp(d->driver, "auto"))
+            d->idle = in;
+    }
     /* a bench modem: only what pins it (and a unit that takes it is refused, rdof/siteplan.h) */
     for (int dv = 0; dv < s->ndev; dv++) {
         if (!(bench >> dv & 1))

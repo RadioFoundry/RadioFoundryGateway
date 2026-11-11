@@ -31,10 +31,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - profile: 16mb
-            defaults: sdkconfig.defaults;sdkconfig.defaults.16mb
-          - profile: 4mb
-            defaults: sdkconfig.defaults;sdkconfig.defaults.4mb
+          # the W12 is the board in use; the 16mb and 4mb profiles aren't built here for now
           - profile: w12
             defaults: sdkconfig.defaults;sdkconfig.defaults.16mb;sdkconfig.defaults.w12
     steps:

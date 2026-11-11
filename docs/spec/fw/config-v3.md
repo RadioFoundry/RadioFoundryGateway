@@ -167,7 +167,7 @@ radio (a RadioFoundry radio on its debug link, for the bench). Every device take
 |---|---|---|---|
 | `kind` | `sdr` \| `modem` \| `radio` | | required |
 | `name` | str | §2.1 | |
-| `hears` | object or `false` | an SDR: every frequency in its window. A modem: the first frequency it transmits on, as its idle frequency | where a one-frequency device listens (§4.4); `false`: it never receives |
+| `hears` | object or `false` | an SDR: every frequency in its window. A modem: the first frequency it transmits on, as its idle frequency; when that is a repeater's `out`, the repeater's `in` (below) | where a one-frequency device listens (§4.4); `false`: it never receives |
 | `transmits` | list or `false` | every frequency with `tx` true that it can reach, except a repeater's input | the frequencies it may transmit on (names or frequencies); `false`: it never transmits |
 | the talker keys | | §4.5 | how a device that transmits on several frequencies waits and answers |
 
@@ -177,6 +177,9 @@ Every power in the settings, the API, the logs and the page is dBm at the antenn
 - An SDR has no `hears` object: it hears every frequency inside its receive window, and the rate and center are
   chosen to cover them. `"hears": false` turns its receiver off. `hears.scan` on an SDR is for later (§14).
 - A modem that doesn't transmit needs `hears` (its frequency).
+- A modem with no `hears` that sends a repeater's `out` hears its `in`: one duplex modem is the whole repeater,
+  with nothing more to say. A `radio_hotspot` doesn't (it is half duplex: a split's transmit half), and a modem of
+  type `auto` only when no other device hears `in` (else it is a split's transmit half too).
 - A radio takes neither `hears` nor `transmits`: it is a bench device only.
 - An SDR transmits when its driver can (`lr2021`, `sx1255`, `soapy`, `iio`, `sim`) or it has `tx`. `transmits` on an
   SDR that can't (`rtlsdr`) is refused.
@@ -439,6 +442,9 @@ and the one that sends `out` ([../repeater.md](../repeater.md)).
 | `prebuffer`, `jitter_buffer`, `jitter_min_ms`, `jitter_max_ms` | | §4.5 | the network jitter buffer |
 | `split` | `{power_cap, prebuffer, lease_s, cooldown_s, max_key_s}` | | the split's own settings ([../repeater.md](../repeater.md)): the first four 0..255, `max_key_s` 0..600 |
 
+The repeater runs on the device that sends `out` when that device hears `in` too and can be the whole repeater
+(an SDR, or a modem that isn't a `radio_hotspot`), whatever else hears `in`: an SDR beside a duplex modem only
+monitors. Else it is split, with the first device that hears `in`.
 On one modem the repeater needs a duplex modem: a `radio_hotspot` is refused. A split's halves are hotspot-mode
 modems (`type` `auto` or `radio_hotspot`); its transmit half can't be an SDR. On the SDR it needs a full-duplex
 front end.
@@ -985,7 +991,7 @@ The open (`rdof_plan_open`) refuses, with the place and the rule:
 | `rdof_plan_host` | a `uart` port ("this host has no UARTs of its own"); a split may have both halves on `path` ports (a path isn't the board's one USB port) |
 
 `rdof_plan_roles` refuses more than 2 units that transmit ("a board runs 2 units that transmit at most"), a second
-SDR ("a board runs one SDR"), and a file that makes no unit ("nothing to run"). `rdof_plan_roles_on` takes the
+SDR ("a board runs one SDR"; rdofradio: "a host runs one SDR"), and a file that makes no unit ("nothing to run"). `rdof_plan_roles_on` takes the
 platform's limit: `rdof_plan_host` allows 8 (`RDOF_ROLES_MAX`). rdofradio runs one unit that transmits, or up to 8
 split repeaters whose RX half is the SDR, each TX half a modem at a `path` port (the first may take `--split-tx`'s);
 anything else beside a second unit is refused ("rdofradio runs one unit that transmits, or split repeaters on the

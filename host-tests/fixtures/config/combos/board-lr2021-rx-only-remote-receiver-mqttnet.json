@@ -1,0 +1,38 @@
+// lr2021 rx-only remote receiver mqttnet (board ports)
+{
+ "version": 3,
+ "id": 9800100,
+ "callsign": "N0CALL",
+ "defaults": {
+  "cc": 1
+ },
+ "devices": [
+  {
+   "name": "w12",
+   "kind": "sdr",
+   "driver": "lr2021",
+   "rx": {
+    "rate": 240000
+   },
+   "tx": {
+    "power_dbm": 10
+   },
+   "transmits": false
+  }
+ ],
+ "frequencies": [
+  {
+   "freq": 438.1,
+   "tx": false,
+   "tg": "*"
+  }
+ ],
+ "networks": [
+  {
+   "type": "mqtt",
+   "host": "b.example.net",
+   "calls": true,
+   "format": "v3"
+  }
+ ]
+}

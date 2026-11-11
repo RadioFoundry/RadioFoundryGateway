@@ -513,8 +513,8 @@ static bool make_units(plan_t *p)
 {
     const rdof_site_t *s = &p->site;
     uint64_t done = 0, mine = 0;
-    /* repeaters: the device that transmits on out; on in, that device when it's an SDR that hears it, else the
-       first that hears it */
+    /* repeaters: the device that transmits on out; on in, that device when it hears it and can be the whole
+       repeater (an SDR, or a modem that isn't a radio_hotspot), else the first that hears it */
     for (int a = 0; a < s->napp; a++) {
         const rdof_app3_t *ap = &s->app[a];
         if (ap->type != RDOF_APP_REPEATER)
@@ -523,7 +523,8 @@ static bool make_units(plan_t *p)
         for (int d = 0; d < s->ndev && tx < 0; d++)
             if (rdof_site_dev_sends(s, d, ap->out))
                 tx = d;
-        if (tx >= 0 && rdof_site_dev_hears(s, tx, ap->in) && s->dev[tx].kind == RDOF_DEV_SDR)
+        if (tx >= 0 && rdof_site_dev_hears(s, tx, ap->in) &&
+            (s->dev[tx].kind == RDOF_DEV_SDR || strcmp(s->dev[tx].driver, "radio_hotspot")))
             rx = tx;
         for (int d = 0; d < s->ndev && rx < 0; d++)
             if (rdof_site_dev_hears(s, d, ap->in))
@@ -1064,8 +1065,8 @@ bool rdof_plan_roles_on(const rdof_plan_t *p, const rdof_plan_platform_t *plat, 
             if (d < 0 || p->site.dev[d].kind != RDOF_DEV_SDR || d == sdr)
                 continue;
             if (sdr >= 0) {
-                snprintf(err, cap, "devices.%s and devices.%s: a board runs one SDR", p->site.dev[sdr].name,
-                         p->site.dev[d].name);
+                snprintf(err, cap, "devices.%s and devices.%s: a %s runs one SDR", p->site.dev[sdr].name,
+                         p->site.dev[d].name, plat->name + 5);
                 return false;
             }
             sdr = d;

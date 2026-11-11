@@ -1,0 +1,63 @@
+board-1-mmdvm-duplex-repeater-hb.json|R1:repeater|ok|devices.m0.port: this host has no UARTs of its own (give the serial device's path)
+board-1-mmdvm-duplex-repeater-mqttnet.json|R1:repeater|ok|devices.m0.port: this host has no UARTs of its own (give the serial device's path)
+board-1-mmdvm-hs-simplex-hb.json|m0:transceiver|ok|devices.m0.port: this host has no UARTs of its own (give the serial device's path)
+board-1-mmdvm-hs-simplex-mqttnet.json|m0:transceiver|ok|devices.m0.port: this host has no UARTs of its own (give the serial device's path)
+board-1-radios-simplex.json|m0:transceiver|ok|devices.m0.port: this host has no UARTs of its own (give the serial device's path)
+board-1-radios-simplex-rtl.json|m0:transceiver,rtl-rx:receiver|ok|devices.m0.port: this host has no UARTs of its own (give the serial device's path)
+board-2-radios-simplex.json|m0:transceiver,m1:transceiver|ok|devices.m0.port: this host has no UARTs of its own (give the serial device's path)
+board-2-radios-simplex-rtl.json|m0:transceiver,m1:transceiver,rtl-rx:receiver|ok|devices.m0.port: this host has no UARTs of its own (give the serial device's path)
+board-2-radios-split-repeater.json|R1:repeater|ok|devices.m0.port: this host has no UARTs of its own (give the serial device's path)
+board-3-radios-simplex.json|m0:transceiver,m1:transceiver,m2:transceiver|a board runs 2 units that transmit at most: m0, m1 and m2|devices.m0.port: this host has no UARTs of its own (give the serial device's path)
+board-3-radios-simplex-rtl.json|m0:transceiver,m1:transceiver,m2:transceiver,rtl-rx:receiver|a board runs 2 units that transmit at most: m0, m1 and m2|devices.m0.port: this host has no UARTs of its own (give the serial device's path)
+board-4-radios-2-split-repeaters-rtl.json|R1:repeater,R2:repeater,rtl-rx:receiver|ok|devices.m0.port: this host has no UARTs of its own (give the serial device's path)
+board-4-radios-simplex.json|m0:transceiver,m1:transceiver,m2:transceiver,m3:transceiver|a board runs 2 units that transmit at most: m0, m1 and m2|devices.m0.port: this host has no UARTs of its own (give the serial device's path)
+board-4-radios-simplex-rtl.json|m0:transceiver,m1:transceiver,m2:transceiver,m3:transceiver,rtl-rx:receiver|a board runs 2 units that transmit at most: m0, m1 and m2|devices.m0.port: this host has no UARTs of its own (give the serial device's path)
+board-lr2021-1-radios-simplex.json|m0:transceiver,w12-rx:receiver|ok|devices.m0.port: this host has no UARTs of its own (give the serial device's path)
+board-lr2021-2-radios-simplex.json|m0:transceiver,m1:transceiver,w12-rx:receiver|ok|devices.m0.port: this host has no UARTs of its own (give the serial device's path)
+board-lr2021-bm-simplex.json|w12:transceiver,w12-rx:receiver|ok|ok
+board-lr2021-rx-radio-tx-split-repeater.json|R1:repeater|ok|devices.m0.port: this host has no UARTs of its own (give the serial device's path)
+board-lr2021-rx-only-remote-receiver-mqttnet.json|w12-rx:receiver|ok|nothing transmits: rdofradio runs a repeater, or a transceiver on the SDR
+board-lr2021-simplex-mqttnet-only.json|w12:transceiver,w12-rx:receiver|ok|ok
+board-lr2021-simplex-x3-parrot-ipgw.json|w12:transceiver,w12-rx:receiver|ok|ok
+board-lr2021-tx-radio-rx-split-repeater.json|refused: apps.R1: devices.w12 (lr2021) is half duplex: one chain, switched; a duplex repeater needs RX while it transmits||
+board-mmdvm-duplex-rpt-rtl-monitor.json|R1:repeater,rtl-rx:receiver|ok|devices.m0.port: this host has no UARTs of its own (give the serial device's path)
+board-mmdvm-hs-simplex-rtl-monitor.json|m0:transceiver,rtl-rx:receiver|ok|devices.m0.port: this host has no UARTs of its own (give the serial device's path)
+board-rtl-rx-radio-tx-split-repeater.json|R1:repeater|ok|devices.m0.port: this host has no UARTs of its own (give the serial device's path)
+board-sfr-on-a-radio.json|438.6:sfr|ok|devices.m0.port: this host has no UARTs of its own (give the serial device's path)
+host-1-mmdvm-duplex-repeater-hb.json|R1:repeater|devices.m0.port: a serial path is for a host; this board has uart and usb ports|ok
+host-1-mmdvm-duplex-repeater-mqttnet.json|R1:repeater|devices.m0.port: a serial path is for a host; this board has uart and usb ports|ok
+host-1-mmdvm-hs-simplex-hb.json|m0:transceiver|devices.m0.port: a serial path is for a host; this board has uart and usb ports|ok
+host-1-mmdvm-hs-simplex-mqttnet.json|m0:transceiver|devices.m0.port: a serial path is for a host; this board has uart and usb ports|ok
+host-1-radios-simplex.json|m0:transceiver|devices.m0.port: a serial path is for a host; this board has uart and usb ports|ok
+host-1-radios-simplex-rtl.json|m0:transceiver,rtl-rx:receiver|devices.m0.port: a serial path is for a host; this board has uart and usb ports|ok
+host-2-radios-simplex.json|m0:transceiver,m1:transceiver|devices.m0.port: a serial path is for a host; this board has uart and usb ports|m1: rdofradio runs one unit that transmits, or split repeaters on the SDR (m0 here)
+host-2-radios-simplex-rtl.json|m0:transceiver,m1:transceiver,rtl-rx:receiver|devices.m0.port: a serial path is for a host; this board has uart and usb ports|m1: rdofradio runs one unit that transmits, or split repeaters on the SDR (m0 here)
+host-2-radios-split-repeater.json|R1:repeater|devices.m0.port: a serial path is for a host; this board has uart and usb ports|ok
+host-2-rtl-monitors.json|rtl0-rx:receiver,rtl1-rx:receiver|devices.rtl0 and devices.rtl1: a board runs one SDR|devices.rtl0 and devices.rtl1: a host runs one SDR
+host-3-radios-simplex.json|m0:transceiver,m1:transceiver,m2:transceiver|devices.m0.port: a serial path is for a host; this board has uart and usb ports|m1: rdofradio runs one unit that transmits, or split repeaters on the SDR (m0 here)
+host-3-radios-simplex-rtl.json|m0:transceiver,m1:transceiver,m2:transceiver,rtl-rx:receiver|devices.m0.port: a serial path is for a host; this board has uart and usb ports|m1: rdofradio runs one unit that transmits, or split repeaters on the SDR (m0 here)
+host-3-rtl-monitors.json|rtl0-rx:receiver,rtl1-rx:receiver,rtl2-rx:receiver|devices.rtl0 and devices.rtl1: a board runs one SDR|devices.rtl0 and devices.rtl1: a host runs one SDR
+host-4-radios-2-split-repeaters-rtl.json|R1:repeater,R2:repeater,rtl-rx:receiver|devices.m0.port: a serial path is for a host; this board has uart and usb ports|R2: rdofradio runs one unit that transmits, or split repeaters on the SDR (R1 here)
+host-4-radios-simplex.json|m0:transceiver,m1:transceiver,m2:transceiver,m3:transceiver|devices.m0.port: a serial path is for a host; this board has uart and usb ports|m1: rdofradio runs one unit that transmits, or split repeaters on the SDR (m0 here)
+host-4-radios-simplex-rtl.json|m0:transceiver,m1:transceiver,m2:transceiver,m3:transceiver,rtl-rx:receiver|devices.m0.port: a serial path is for a host; this board has uart and usb ports|m1: rdofradio runs one unit that transmits, or split repeaters on the SDR (m0 here)
+host-hblink-mqtt-v3-both.json|R1:repeater|devices.pluto.driver: iio is the host tool's, not this board's|ok
+host-mmdvm-duplex-rpt-rtl-monitor.json|R1:repeater,rtl-rx:receiver|devices.m0.port: a serial path is for a host; this board has uart and usb ports|ok
+host-mmdvm-hs-simplex-rtl-monitor.json|m0:transceiver,rtl-rx:receiver|devices.m0.port: a serial path is for a host; this board has uart and usb ports|ok
+host-pluto-rtl.json|R1:repeater,rtl0-rx:receiver|devices.pluto.driver: iio is the host tool's, not this board's|devices.pluto and devices.rtl0: a host runs one SDR
+host-pluto-2-repeaters.json|refused: devices.pluto: carrier 2 of 1 (R1 transmits on it already)||
+host-pluto-dcdm-full.json|438.6:dcdm,pluto-rx:receiver|devices.pluto.driver: iio is the host tool's, not this board's|438.6: mode dcdm isn't on rdofradio (duplex only)
+host-pluto-duplex-repeater-bm.json|R1:repeater|devices.pluto.driver: iio is the host tool's, not this board's|ok
+host-pluto-duplex-repeater-hb.json|R1:repeater|devices.pluto.driver: iio is the host tool's, not this board's|ok
+host-pluto-duplex-repeater-mqttnet.json|R1:repeater|devices.pluto.driver: iio is the host tool's, not this board's|ok
+host-pluto-repeater-1-radios-simplex.json|R1:repeater,m0:transceiver,pluto-rx:receiver|devices.pluto.driver: iio is the host tool's, not this board's|m0: rdofradio runs one unit that transmits, or split repeaters on the SDR (R1 here)
+host-pluto-repeater-2-radios-simplex.json|R1:repeater,m0:transceiver,m1:transceiver,pluto-rx:receiver|devices.pluto.driver: iio is the host tool's, not this board's|m0: rdofradio runs one unit that transmits, or split repeaters on the SDR (R1 here)
+host-pluto-repeater-4-radios-simplex.json|R1:repeater,m0:transceiver,m1:transceiver,m2:transceiver,m3:transceiver,pluto-rx:receiver|devices.pluto.driver: iio is the host tool's, not this board's|m0: rdofradio runs one unit that transmits, or split repeaters on the SDR (R1 here)
+host-pluto-repeater-simplex-txvr-2-carriers.json|refused: devices.pluto: carrier 2 of 1 (R1 transmits on it already)||
+host-pluto-rx-1-radio-tx-split-repeaters.json|R0:repeater|devices.pluto.driver: iio is the host tool's, not this board's|ok
+host-pluto-rx-2-radio-tx-split-repeaters.json|R0:repeater,R1:repeater|devices.pluto.driver: iio is the host tool's, not this board's|ok
+host-pluto-rx-4-radio-tx-split-repeaters.json|R0:repeater,R1:repeater,R2:repeater,R3:repeater|devices.pluto.driver: iio is the host tool's, not this board's|ok
+host-pluto-simplex-x3-parrot-ipgw.json|pluto:transceiver,pluto-rx:receiver|devices.pluto.driver: iio is the host tool's, not this board's|ok
+host-rtl-monitor-only-no-tx.json|rtl0-rx:receiver|ok|nothing transmits: rdofradio runs a repeater, or a transceiver on the SDR
+host-rtl-rx-radio-tx-split-repeater.json|R1:repeater|devices.m0.port: a serial path is for a host; this board has uart and usb ports|ok
+host-sctp.json|R1:repeater|devices.pluto.driver: iio is the host tool's, not this board's|ok
+host-sfr-on-a-radio.json|438.6:sfr|devices.m0.port: a serial path is for a host; this board has uart and usb ports|438.6: mode sfr isn't on rdofradio (duplex only)

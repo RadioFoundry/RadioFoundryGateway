@@ -29,6 +29,32 @@ Related: [config-v3.md](config-v3.md), [transmitters.md](transmitters.md), [sdr-
 | The bench: one TX job, `via=sdr\|modem\|radio:NAME` | `bench_tx.c`, `benchtx.c` | API |
 | Host tool: one SDR, one unit that transmits (on the SDR, a split, or an MMDVM modem with the SDR receiving), or up to 8 split repeaters on the SDR, each with its own radio | `rdofradio_cfg.c`; `--split-tx`, `--mmdvm`; `sdrsplit.c` | wiring (host) |
 
+### 1.1 What runs today
+
+`host-tests/fixtures/config/combos/` holds one settings file per mix of hardware, and `expect.txt` beside them what
+the open, a board and rdofradio each answer (`rdof_combos_tests`). A limit that is lifted changes its line there.
+
+| Hardware | Board (W12) | rdofradio (a host, a Pluto) |
+|---|---|---|
+| one modem, simplex (a hotspot, an MMDVM_HS, a radio) | yes | yes (`--mmdvm`) |
+| one duplex modem, a repeater | yes | yes |
+| a modem and an RTL-SDR that monitors | yes | yes |
+| the LR2021: simplex frequencies, the parrot, the IP gateway, receive only | yes | |
+| a full-duplex SDR (a Pluto): a repeater, simplex, monitors | | yes |
+| 2 radios, each a transceiver | yes | no: one unit that transmits |
+| 3 or 4 radios, each a transceiver | no: 2 units that transmit | no |
+| 2 radios as one split repeater | yes | yes |
+| an SDR hearing, 1 to 8 radios sending (split repeaters) | at the open; `split_port.c` refuses the SDR half | yes |
+| the LR2021 and 1 or 2 radios as transceivers | yes | |
+| a Pluto repeater and radios as transceivers | | no: one unit that transmits |
+| 2 or 3 SDRs | no: one SDR | no: one SDR |
+| an SDR with two carriers (a repeater and a transceiver, two repeaters) | no (§5) | no (§5) |
+| an SDR that only receives (no unit transmits) | yes | `--listen`; refused from `--config` |
+| SFR or DCDM on a radio | yes | no: "duplex only" |
+
+Each network (`hblink`, `mqtt` with `format: v3`, `brandmeister`) is taken with each row; the files cover the three
+on the single-device rows.
+
 Already general, and kept:
 - `rdof_sdr_rx_t` is multi-channel (up to `RDOF_SDR_MAX_CHANNELS` 16, channels plus taps), with one
   `on_burst(ctx, channel, ...)`.
