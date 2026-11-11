@@ -231,7 +231,8 @@ def test_unknown_path_is_404():
 def test_clock(status):
     c = get_json("/api/clock")
     has(c, {"source": str, "synced": bool, "poll_s": int, "utc_ms": int, "sources": list, "log": list})
-    assert c["source"] == status["clock"]
+    # a fresh status: the source changes in a board's first minute (none, ntp, gnss), and `status` is the session's
+    assert c["source"] in (get_json("/api/status")["clock"], get_json("/api/status")["clock"])
     if c["synced"]:
         assert abs(c["utc_ms"] / 1000 - time.time()) < 5, "board's UTC is off by more than 5 s"
 
