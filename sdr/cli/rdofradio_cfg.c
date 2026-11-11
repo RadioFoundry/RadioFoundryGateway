@@ -145,6 +145,14 @@ static bool from_plan(const rdof_plan_t *p, rdofradio_cfg_t *o, char *err, size_
         o->rx_slot = c->idle.slot == 2 ? 2 : 1;
     }
     o->has_hblink = rdof_plan_net_of(p, RDOF_NET_HBLINK) >= 0;
+    {
+        /* the unit's own peer: with one identity the box's peer carries every path; with a peer a path (identity
+           per_path, a BrandMeister login) only when the unit's own path is on that network, or a unit on MQTT or on
+           no network would log in beside them with the box's ID */
+        const rdof_site_t *st = rdof_plan_site(p);
+        const int hb = rdof_plan_net_of(p, RDOF_NET_HBLINK);
+        o->unit_hblink = hb >= 0 && (c->receiver_hblink || !(st->net[hb].per_path || st->net[hb].login));
+    }
     o->tx_power_dbm = NAN;
     const int uk = rdof_plan_unit_find(p, roles.radio);
     const rdof_unit_t *u = uk >= 0 ? rdof_plan_unit(p, uk) : NULL;

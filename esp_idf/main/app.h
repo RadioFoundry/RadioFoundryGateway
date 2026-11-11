@@ -279,6 +279,8 @@ double now_mono(void);
 void site_load(const rdof_site_t *site);
 bool site_on(void);
 bool site_shared_identity(void);           /* one HBlink identity: every path is the box's peer */
+/* Whether a unit runs an HBlink peer: on_net, its own path is on the HBlink network (site_run.c). */
+bool site_hb_wanted(bool on_net);
 uint32_t site_id(void);
 void site_add_role(roam_t *r);             /* its repeater or transceiver, once radio_start made it */
 roam_t *site_hb_owner(roam_t *r);          /* the role whose HBlink peer r uses (r itself unless one identity) */

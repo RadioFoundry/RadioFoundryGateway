@@ -1135,8 +1135,11 @@ static void sink_before(void *ctx) { net_config(); } /* HBlink4 credits a stream
 
 static void net_start(void)
 {
-    if (!rcfg.has_hblink)
+    if (!rcfg.unit_hblink) {
+        if (rcfg.has_hblink)
+            say("hblink: %s is not on the HBlink network: no peer for it\n", rcfg.name);
         return;
+    }
     if (strcmp(rcfg.cfg.transport, "udp"))
         fprintf(stderr, "hblink: transport %s isn't on this host: UDP\n", rcfg.cfg.transport);
     rdofnet_peer_init(&NET, rcfg.cfg.master_host, rcfg.cfg.master_port, rcfg.peer_id,
@@ -4301,6 +4304,7 @@ static void web_publish(double rx, double tx, int cc)
     w.mqtt = rdofmq_up(MQ);
     w.mqtt_dropped = rdofmq_dropped(MQ);
 #endif
+    w.has_hblink = net_on;
     w.hblink = net_on && NET.peer.up;
     w.hblink_tx = NET.peer.tx, w.hblink_rx = NET.peer.rx;
     if (net_on)

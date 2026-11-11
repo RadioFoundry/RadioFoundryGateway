@@ -56,6 +56,7 @@ typedef struct {
     char ntp_servers[256];
     unsigned ntp_poll_s; /* 0: netclock's default */
     bool has_hblink;    /* an hblink network: a peer of cfg.master_host */
+    bool unit_hblink;   /* the unit itself is a peer there (its path is on it, or the box has one identity) */
     /* the SDR's receive channels, as the board's SDR resolves them: its receiver's frequencies, then the units'
        (the transceiver's, a repeater's input; not a repeater's output). Each with hblink and a peer_id is an
        HBlink4 peer of its own (identity per_path); the others go up through the unit's peer, as its policy says */

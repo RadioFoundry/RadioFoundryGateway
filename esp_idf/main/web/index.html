@@ -161,6 +161,7 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':
 const sp = (c, t) => '<span class="' + c + '">' + t + '</span>';
 const yes = v => v ? sp('ok', 'yes') : sp('bad', 'no');
 const up = v => v ? sp('ok', 'up') : sp('bad', 'down');
+const hbUp = r => 'hblink' in r ? up(r.hblink) : sp('mute', 'none');             // a unit with no HBlink peer
 const num = v => v == null ? '-' : Number(v).toLocaleString('en-US');
 const cnt = v => v ? sp('warn', num(v)) : '0';                       // a count of trouble: orange when not 0
 const kb = b => b == null ? '-' : b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.round(b / 1024) + ' KB';
@@ -196,7 +197,7 @@ function problems(s) {
     if (r.radio_error) bad(n + r.radio_error);
     else if (!r.radio_ready) bad(n + 'radio not ready');
     if (r.brandmeister && r.brandmeister.state != 'up') warn(n + 'BrandMeister ' + r.brandmeister.state.replace('_', ' '));
-    else if (has(s, 'links') && !r.hblink) warn(n + 'HBlink4 down');
+    else if (has(s, 'links') && r.hblink === false) warn(n + 'HBlink4 down');
     const cd = (r.channels || []).filter(c => c.hblink === false).length;
     if (has(s, 'links') && cd) warn(n + cd + ' monitored channel' + (cd > 1 ? 's\' HBlink4 peers' : '\'s HBlink4 peer') + ' down');
     if (has(s, 'links') && 'mqtt' in r && !r.mqtt) warn(n + 'MQTT down');
@@ -339,6 +340,7 @@ const radioRow = r => ['Radio', yes(r.radio_ready) + ' ' + esc(r.modem || (r.mod
 const bmText = b => esc(b.state.replace('_', ' ')) + ' <span class="mute">(' + num(b.logins) + ' logins, ' + cnt(b.refusals) + ' refused' +
   (b.refused_at ? ' last at ' + esc(b.refused_at) : '') + ', quiet ' + cnt(b.went_quiet) + (b.state == 'up' ? '' : ', retry in up to ' + b.backoff_s + ' s') + ')</span>';
 const hbRow = r => r.brandmeister ? ['BrandMeister', bmText(r.brandmeister) + '<br>' + num(r.hblink_tx) + ' sent, ' + num(r.hblink_rx) + ' received'] :
+  !('hblink' in r) ? ['HBlink4', sp('mute', 'no peer: not on an HBlink network')] :
   ['HBlink4', up(r.hblink) + ' <span class="mute">(' + num(r.hblink_tx) + ' sent, ' + num(r.hblink_rx) + ' received)</span>' + (r.sctp ?
   '<br>SCTP ' + esc(r.sctp.state) + ', RTT ' + r.sctp.srtt_ms + ' ms, ' + cnt(r.sctp.retransmits + r.sctp.fast_retransmits) + ' resent, ' +
   cnt(r.sctp.abandoned) + ' given up, ' + cnt(r.sctp.failures) + ' lost' : '')];
@@ -365,7 +367,7 @@ function roamerFull(r, either) {
   ]) + more(r, R_KNOWN, 'r:' + r.name));
 }
 const roamerBrief = (r, either) => card(rname(r) + ' ' + rstate(r, either), kv((either && waiting(r, 'the radio')) ||
-  [radioRow(r), ['Channel', chan(r)], ['Heard', esc(r.heard || '-')], ['Sending', esc(r.sending || '-')], has(S.s, 'links') && ('mqtt' in r ? ['HBlink4 / MQTT', up(r.hblink) + ' / ' + up(r.mqtt)] : ['HBlink4', up(r.hblink)])]));
+  [radioRow(r), ['Channel', chan(r)], ['Heard', esc(r.heard || '-')], ['Sending', esc(r.sending || '-')], has(S.s, 'links') && ('mqtt' in r ? ['HBlink4 / MQTT', hbUp(r) + ' / ' + up(r.mqtt)] : ['HBlink4', hbUp(r)])]));
 
 // ── the apps: every repeater, parrot and IP gateway the settings have, each with what it's doing ──
 const APP_KIND = {repeater: 'Repeater', parrot: 'Parrot', ipgw: 'IP gateway', trunk: 'Trunked site'};
@@ -535,7 +537,7 @@ function render() {
     $('noradio').hidden = !!(rs.length || ds.length || modems(s).length);
   } else if (t == 'network') {
     $('links').innerHTML = has(s, 'wifi') || has(s, 'links') ? card('Links', kv([has(s, 'wifi') && ['Wi-Fi', wifiText(s)], clockRow(s),
-      ...(has(s, 'links') ? rs.map(r => [esc(r.name), 'HBlink4 ' + up(r.hblink) + ', MQTT ' + up(r.mqtt) + (r.sctp ? ', SCTP ' + esc(r.sctp.state) + ' (RTT ' + r.sctp.srtt_ms + ' ms)' : '')]) : []),
+      ...(has(s, 'links') ? rs.map(r => [esc(r.name), 'HBlink4 ' + hbUp(r) + ', MQTT ' + up(r.mqtt) + (r.sctp ? ', SCTP ' + esc(r.sctp.state) + ' (RTT ' + r.sctp.srtt_ms + ' ms)' : '')]) : []),
       ...(has(s, 'links') ? ds.filter(d => 'mqtt' in d || d.hblink_peers > 0).map(d => [esc(d.name), ('mqtt' in d ? 'MQTT ' + up(d.mqtt) : '') +
         ('mqtt' in d && d.hblink_peers > 0 ? ', ' : '') + (d.hblink_peers > 0 ? 'HBlink4 ' + d.hblink_up + ' of ' + d.hblink_peers + ' peers' : '')]) : [])])) : '';
     if (has(s, 'os_clock')) $('osclock').innerHTML = osClockCard(s);

@@ -505,6 +505,11 @@ The HBlink4 master ([hblink.md](hblink.md)). With it, the top-level `id` is requ
 | `peer_ids` | object | | `{"<frequency or repeater>": id}`, with `per_path` only; a repeater's two slots share its peer. Each such peer gives the master its frequency's or repeater's name (the first 8 characters) as its callsign |
 | `roaming` | bool | false | let the master move a device that `transmits` on several frequencies (DMRT / DMRK) |
 
+Which units are HBlink peers: with `single`, the box's one peer carries every path. With `per_path` or a
+BrandMeister network, a unit is a peer only when its own path is on that network: a repeater on MQTT, or a path with
+`net: false`, opens no peer and sends the master nothing (it used to log in beside the others with the box's `id`).
+A box with no HBlink network runs no peer at all. The status then has no `hblink` for that unit.
+
 ### 7.2 `mqtt`
 
 The MQTT broker ([mqtt.md](mqtt.md)).

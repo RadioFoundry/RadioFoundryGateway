@@ -116,6 +116,7 @@ typedef struct {
     bool links;        /* the tool has a network (HBlink4): the page shows hblink, and mqtt when has_mqtt */
     bool has_mqtt;
     bool hblink, mqtt; /* the links' state (the page warns when down) */
+    bool has_hblink;   /* the radio is an HBlink4 peer: hblink, hblink_tx and hblink_rx are written */
     unsigned hblink_tx, hblink_rx; /* HBlink4 packets, as the board counts them */
     char brandmeister[192];        /* a BrandMeister login's status (rdof_hb_peer_login_status), or "" */
     uint32_t rx_hz, tx_hz;

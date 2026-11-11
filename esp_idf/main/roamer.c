@@ -224,9 +224,11 @@ static void one_json(rdof_json_t *j, roam_t *r, const char *key)
 #endif
     rdof_json_int(j, "frequency", freq);
     rdof_json_int(j, "colorCode", cc);
-    rdof_json_bool(j, "hblink", s->hblink_up);
-    rdof_json_int(j, "hblink_tx", s->hblink_tx);
-    rdof_json_int(j, "hblink_rx", s->hblink_rx);
+    if (r->hb || r->hb_via) { /* left out when the unit has no HBlink peer (its path is local or on MQTT) */
+        rdof_json_bool(j, "hblink", s->hblink_up);
+        rdof_json_int(j, "hblink_tx", s->hblink_tx);
+        rdof_json_int(j, "hblink_rx", s->hblink_rx);
+    }
     static char bm[192];
     if (roam_hb_login_status(r, bm, sizeof bm))
         rdof_json_raw(j, "brandmeister", bm);

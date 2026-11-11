@@ -80,6 +80,19 @@ bool site_on(void) { return SR != NULL; }
 
 bool site_shared_identity(void) { return SR && hblink >= 0 && !S->net[hblink].per_path; }
 
+/* With a site: whether a unit whose own path is on the HBlink network or not (on_net) is to run an HBlink peer. No
+   HBlink network: none. One identity: the box's peer carries every path. A peer a path (identity per_path, a
+   BrandMeister login): only the unit whose path is on that network, or a unit not on it would log in beside them
+   with the box's ID. */
+bool site_hb_wanted(bool on_net)
+{
+    if (!SR)
+        return true; /* no site: the role's own settings */
+    if (hblink < 0)
+        return false;
+    return on_net || !(S->net[hblink].per_path || S->net[hblink].login);
+}
+
 uint32_t site_id(void) { return S ? S->id : 0; }
 
 #if RDOF_FEATURE_TX

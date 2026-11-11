@@ -44,6 +44,30 @@ int main(void)
     CHECK(C.has_parrot && C.parrot == 9990 && !strcmp(C.name, "example") && !strcmp(C.box, "example"));
     CHECK(C.cfg.slot1 && C.cfg.slot2);
 
+    /* the unit's own HBlink peer: none when its path is on MQTT and the HBlink network has a peer a path (the
+       monitored frequencies keep theirs); the box's one peer carries it with identity single; its own when its
+       path is on the HBlink network */
+    {
+        const char *fmt = "{\"version\": 3, \"name\": \"b\", \"id\": 9990116, \"defaults\": {\"cc\": 2},"
+                          "\"devices\": [{\"name\": \"p\", \"kind\": \"sdr\", \"driver\": \"iio\", \"transmits\": [\"out\"]}],"
+                          "\"frequencies\": [{\"name\": \"mon\", \"freq\": 438.5, \"tg\": [201, \"*\"]},"
+                          "{\"name\": \"in\", \"freq\": 438.25}, {\"name\": \"out\", \"freq\": 438.75}],"
+                          "\"apps\": [{\"name\": \"R\", \"type\": \"repeater\", \"in\": \"in\", \"out\": \"out\","
+                          "\"tg\": [211, \"*\"], \"net\": \"%s\"}],"
+                          "\"networks\": [{\"name\": \"hb\", \"type\": \"hblink\", \"host\": \"h\", \"identity\": \"%s\"%s},"
+                          "{\"name\": \"mq\", \"type\": \"mqtt\", \"host\": \"m\", \"calls\": true, \"format\": \"v3\"}]}";
+        char doc[1400];
+        snprintf(doc, sizeof doc, fmt, "mq", "per_path", ", \"peer_ids\": {\"mon\": 9990101}");
+        CHECK(parse(doc) || !printf("  %s\n", err));
+        CHECK(C.has_hblink && !C.unit_hblink);
+        snprintf(doc, sizeof doc, fmt, "mq", "single", "");
+        CHECK(parse(doc) || !printf("  %s\n", err));
+        CHECK(C.has_hblink && C.unit_hblink);
+        snprintf(doc, sizeof doc, fmt, "hb", "per_path", ", \"peer_ids\": {\"mon\": 9990101, \"R\": 9990111}");
+        CHECK(parse(doc) || !printf("  %s\n", err));
+        CHECK(C.has_hblink && C.unit_hblink && C.peer_id == 9990111);
+    }
+
     /* the repeater's own settings, applied as the firmware does */
     static rdof_repeater_t r;
     rdof_repeater_init(&r, NULL, C.peer_id, C.rx_hz, C.tx_hz, C.cc);

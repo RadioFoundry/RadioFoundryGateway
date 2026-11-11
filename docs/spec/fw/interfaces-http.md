@@ -154,7 +154,7 @@ with its counters at zero.
 | `jitter` | object | | the jitter buffer for network voice: `mode` (`auto` or `fixed`), `target_ms` (the prebuffer now, or the last call's; fixed: the setting), `jitter_ms` (RFC 3550 interarrival jitter), `late_ms` (the arrival window's second worst lateness), `min_ms` and `max_ms` (auto only), and counts since boot `streams`, `underruns`, `grown`, `shrunk`; [roamer.md](roamer.md), "Jitter buffer" | roamer (TX build) and repeater |
 | `frequency` | int | Hz | where it is now (repeater: RX frequency) | always |
 | `colorCode` | int | | its color code now | always |
-| `hblink` | bool | | HBlink4 link up (a DMRP within 3 keepalives) | always |
+| `hblink` | bool | | HBlink4 link up (a DMRP within 3 keepalives) | when the unit is an HBlink peer (config-v3.md §7.1); with `hblink_tx` and `hblink_rx` left out otherwise |
 | `hblink_tx`, `hblink_rx` | int | packets | to and from HBlink4 | always |
 | `sctp` | object | | tinysctp association: `state, srtt_ms, rto_ms, cwnd, flight, peer_rwnd, queued, outstanding, errors, prsctp, streams[2], pkts_in, pkts_out, msgs_sent, msgs_received, retransmits, fast_retransmits, t3_expiries, abandoned, dropped_unsent, fwd_tsn_sent, fwd_tsn_received, dups, bad_checksum, hb_sent, hb_acked, established, restarts, failures, aborts, send_rejected` | `CONFIG_RDOF_HBLINK_SCTP` and transport `sctp` |
 | `mqtt` | bool | | its MQTT connection is up | always |

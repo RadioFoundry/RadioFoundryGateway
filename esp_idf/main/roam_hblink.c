@@ -340,6 +340,10 @@ void roam_hb_start(roam_t *r)
         ESP_LOGI(TAG, "%s: HBlink4 through %s's peer", r->cfg->name, o->cfg->name);
         return;
     }
+    if (!site_hb_wanted(r->cfg->receiver_hblink)) { /* its path is local, or on MQTT: no login, nothing sent */
+        ESP_LOGI(TAG, "%s: not on an HBlink network: no peer", r->cfg->name);
+        return;
+    }
     struct roam_hb *h = calloc(1, sizeof *h);
     h->sock = -1;
     h->lock = xSemaphoreCreateMutex();

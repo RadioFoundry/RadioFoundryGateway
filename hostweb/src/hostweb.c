@@ -672,9 +672,11 @@ static void host_status(void *ctx, rdof_json_t *j, rdof_webapi_at_t at)
     rdof_json_str(j, "sending", s.sending);
     rdof_json_int(j, "bursts_heard", (long long)s.bursts_heard);
     rdof_json_int(j, "bursts_sent", (long long)s.bursts_sent);
-    rdof_json_bool(j, "hblink", s.hblink);
-    rdof_json_int(j, "hblink_tx", s.hblink_tx);
-    rdof_json_int(j, "hblink_rx", s.hblink_rx);
+    if (s.has_hblink) {
+        rdof_json_bool(j, "hblink", s.hblink);
+        rdof_json_int(j, "hblink_tx", s.hblink_tx);
+        rdof_json_int(j, "hblink_rx", s.hblink_rx);
+    }
     if (s.brandmeister[0])
         rdof_json_raw(j, "brandmeister", s.brandmeister);
     if (s.has_mqtt)
