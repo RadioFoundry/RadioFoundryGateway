@@ -84,7 +84,7 @@ typedef struct {
     double rate;
     long long want;     /* samples to send, 0: until closed */
     long long samples;  /* sent */
-    int64_t sent_us;    /* when a frame last went */
+    int64_t sent_us;    /* when a frame last came for it from the DSP, or finished going out */
     uint32_t gaps;      /* frames sent with the gap flag */
     uint64_t next_sc;   /* where the next frame starts if nothing is lost between (0: no frame sent yet) */
     long long filled;   /* of those, filler (zeros where the front end lost samples) */
@@ -2124,8 +2124,10 @@ static void bench_iq(void *arg)
                      (now - (st->sent_us ? st->sent_us : st->opened_us) >= 2000000 || now >= st->until_us + 20000000))
                 finish(st, "seconds");
         }
-        if (len == IQ_REF_LEN && buf[0] < MAX_STREAMS && streams[buf[0]].kind == ST_IQ && streams[buf[0]].started)
+        if (len == IQ_REF_LEN && buf[0] < MAX_STREAMS && streams[buf[0]].kind == ST_IQ && streams[buf[0]].started) {
+            streams[buf[0]].sent_us = now; /* samples are coming, whether or not the history still has these */
             len = wide_frame(&streams[buf[0]], buf, cap);
+        }
         if (len == sizeof(hist_marker_t) && !memcmp(buf + 1, "HIST", 4)) {
             hist_marker_t mk;
             memcpy(&mk, buf, sizeof mk);
@@ -2165,7 +2167,9 @@ static void bench_iq(void *arg)
             else {
                 st->samples += m;
                 st->next_sc = sc + m;
-                st->sent_us = now;
+                /* after the send, not before it: a send that waited over 2 s for Wi-Fi left this 2 s old, and
+                 * the rule above ended the stream at the next frame with most of it unsent (lr2021-iq.md R3.59) */
+                st->sent_us = esp_timer_get_time();
                 st->filled += fill;
                 if (st->want && st->samples >= st->want)
                     finish(st, "seconds");
