@@ -213,6 +213,7 @@ Each item is `[type u8][length u8][value]`. A length of 255 means a u16 length (
 | 0x0A | `quality` | bits corrected u8 (sum over this message's bursts, saturating), RSSI u8 (−dBm, average; 0 not measured) | 4 | added to RF-heard messages only |
 | 0x0B | `origin` | source network ID u32, source repeater ID u32, hop count u8 | 11 | a stream that came in through a bridge to another network, in its first message; bridges pass it on with one more hop |
 | 0x0C | `setup` | op u8, reason u8, flags u8, service options u8, ref u32 (§9.4) | 10 | a private call's setup across the network; the only item of its message |
+| 0x0D | `sdata` | op u8, what u8, reason u8, value u8, flags u8, pad nibble u8, why u8, 0 u8, ref u32, then 0-46 data octets ([tier3.md](tier3.md) 5.9) | 14 + data | Tier III short data (UDT, status, poll) or its result; the only item of its message; boxes without Tier III drop it |
 | 0x7F | `raw` | data type u8, then the 33-byte burst as heard | 36 | a burst the box can't decode (reserved data types, single-burst reverse channel) |
 
 ### 4.3 Rules

@@ -493,6 +493,21 @@ int main(void)
     run(10000);
     CHECK(ms_status(&A, 1).calls_done == 1, "the individual call done (failed %u)", ms_status(&A, 1).calls_failed);
 
+    /* short data across the network (tier3.md 5.9): A's MS sends UDT short data and a status to B's, each over the
+       air on both sites (upload, download as rate 1/2 bursts) and mqtt-net's sdata; the caller gets B's MS's
+       C_ACKU mirrored */
+    static const uint8_t text[] = "Short data from site A to site B";
+    CHECK(rdof_t3ms_sdm(A.ms[1], 3100101, 0, 4, text, sizeof text - 1, T0 + K * 30), "short data queued");
+    run(6000);
+    rdof_t3ms_status_t sd = ms_status(&A, 1);
+    CHECK(sd.calls_done == 2 && sd.last_reason == 0x44, "short data delivered (done %u, failed %u, reason 0x%02x)",
+          sd.calls_done, sd.calls_failed, sd.last_reason);
+    rdof_t3ms_do(A.ms[1], RDOF_T3MS_DO_STATUS, 3100101, 42, 0, T0 + K * 30);
+    run(5000);
+    sd = ms_status(&A, 1);
+    CHECK(sd.calls_done == 3 && sd.last_reason == 0x44, "status delivered (done %u, failed %u, reason 0x%02x)",
+          sd.calls_done, sd.calls_failed, sd.last_reason);
+
     /* provisioning: cfg/net's hang time reaches both sites */
     const char *net = "{\"rev\":2,\"at\":\"2026-11-06T10:00:00Z\",\"timers\":{\"hang_s\":5}}";
     broker_publish(2, "DMR/cfg/net", net, strlen(net), true);

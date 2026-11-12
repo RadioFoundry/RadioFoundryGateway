@@ -79,7 +79,7 @@ const fn tm(name: &'static [u8], at: At, lo: f64, hi: f64, frac: bool) -> Timer 
     Timer { name, at, lo, hi, frac }
 }
 
-static TIMERS: [Timer; 19] = [
+static TIMERS: [Timer; 22] = [
     tm(b"nrand_wait", At::U8(|c| &mut c.nrand_wait), 0.0, 15.0, false),
     tm(b"backoff_min", At::U8(|c| &mut c.backoff_min), 1.0, 15.0, false),
     tm(b"backoff_max", At::U8(|c| &mut c.backoff_max), 1.0, 15.0, false),
@@ -99,6 +99,9 @@ static TIMERS: [Timer; 19] = [
     tm(b"net_queue_s", At::Ms(|c| &mut c.net_queue_ms), 0.0, 10.0, true),
     tm(b"setup_s", At::Ms(|c| &mut c.setup_ms), 1.0, 30.0, true),
     tm(b"start_grace_s", At::Ms(|c| &mut c.start_grace_ms), 0.0, 10.0, true),
+    tm(b"sd_tries", At::U8(|c| &mut c.sd_tries), 1.0, 10.0, false),
+    tm(b"sd_repeats", At::U8(|c| &mut c.sd_repeats), 1.0, 10.0, false),
+    tm(b"sd_store_s", At::Ms(|c| &mut c.sd_store_ms), 0.0, 600.0, false),
 ];
 
 // ── text ──────────────────────────────────────────────────────────────────────

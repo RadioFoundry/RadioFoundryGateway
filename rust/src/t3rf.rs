@@ -35,6 +35,7 @@ type Burst = [u8; BURST_BYTES];
 
 const MASK_MBC_HEADER: u16 = 0xAAAA; // RDOF_MASK_MBC_HEADER
 const DT_IDLE: c_int = 9;
+const DT_RATE12: c_int = 7; // rate 1/2 data: a UDT's appended blocks on the TSCC
 const FAMILY_BS: u32 = 0;
 const SYNC_AUDIO: u8 = 0x20;
 const LCSS_FIRST: u8 = 1;
@@ -194,6 +195,34 @@ pub extern "C" fn rdof_t3rf_pdu_burst(dt: c_int, pdu: &[u8; 10], cc: c_int, fami
     b12[10..].copy_from_slice(&crc.to_be_bytes());
     rdof_data_burst(&b12, dt, cc & 0x0F, rdof_family_voice_sync(family) ^ RDOF_DATA_XOR, out);
     true
+}
+
+/// A block's burst: a control block (as rdof_t3rf_pdu_burst, octets 10 and 11 ignored) or a rate 1/2 data block
+/// (12 octets as given: an appended block's CRC is over the whole message).
+#[no_mangle]
+pub extern "C" fn rdof_t3rf_block_burst(dt: c_int, blk: &[u8; 12], cc: c_int, family: u32, out: &mut Burst) -> bool {
+    if dt == DT_RATE12 {
+        rdof_data_burst(blk, dt, cc & 0x0F, rdof_family_voice_sync(family) ^ RDOF_DATA_XOR, out);
+        return true;
+    }
+    let mut pdu = [0u8; 10];
+    pdu.copy_from_slice(&blk[..10]);
+    rdof_t3rf_pdu_burst(dt, &pdu, cc, family, out)
+}
+
+/// A burst read back as rdof_t3rf_burst_pdu, and a rate 1/2 data block too (PDU_OK when its BPTC decodes; no CRC
+/// of its own). blk: the 12 octets (a control block's last two, its CRC).
+#[no_mangle]
+pub extern "C" fn rdof_t3rf_burst_block(burst: &Burst, dt: &mut c_int, cc: &mut c_int, blk: &mut [u8; 12]) -> c_int {
+    let mut pdu = [0u8; 10];
+    let r = rdof_t3rf_burst_pdu(burst, dt, cc, &mut pdu);
+    if r == NOT_PDU && *dt == DT_RATE12 {
+        return if unsafe { rdof_bptc196_decode(burst.as_ptr(), blk.as_mut_ptr()) } { PDU_OK } else { PDU_BAD };
+    }
+    if r == PDU_OK {
+        let _ = unsafe { rdof_bptc196_decode(burst.as_ptr(), blk.as_mut_ptr()) };
+    }
+    r
 }
 
 #[no_mangle]
@@ -518,8 +547,8 @@ pub unsafe extern "C" fn rdof_t3rf_rx(t: *mut T3rf, c: c_int, k: i64, b: *const 
     let b = &*b;
     let ch = 2 * c + (k & 1) as c_int;
     if t.tscc && ch == 0 {
-        let (mut dt, mut cc, mut pdu) = (0, 0, [0u8; 10]);
-        match rdof_t3rf_burst_pdu(&b.burst, &mut dt, &mut cc, &mut pdu) {
+        let (mut dt, mut cc, mut pdu) = (0, 0, [0u8; 12]);
+        match rdof_t3rf_burst_block(&b.burst, &mut dt, &mut cc, &mut pdu) {
             PDU_OK => {
                 if cc != t.cc {
                     t.rx_ignored += 1; // another site's, or a stray: not ours
@@ -715,12 +744,12 @@ pub unsafe extern "C" fn rdof_t3rf_slot(
     }
     if t.tscc && c == 0 && k & 1 == 0 {
         let mut dt = -1;
-        let mut pdu = [0u8; 10];
+        let mut pdu = [0u8; 12]; // 12 octets for a rate 1/2 block
         let got = match t.io.tscc {
             Some(tscc) => tscc(t.io.ctx, k, &mut dt, pdu.as_mut_ptr()),
             None => false,
         };
-        if got && rdof_t3rf_pdu_burst(dt, &pdu, t.cc, FAMILY_BS, burst) {
+        if got && rdof_t3rf_block_burst(dt, &pdu, t.cc, FAMILY_BS, burst) {
             ctl = RDOF_SYNC_DATA | dt as u8;
             t.tscc_sent += 1;
         } else {

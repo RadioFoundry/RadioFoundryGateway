@@ -7,6 +7,7 @@
 
 use crate::t3ms::{Ms, MsTx, TX_PDU, TX_VOICE};
 use crate::t3site::{Event, Site, SlotOut, CHANNELS};
+use crate::t3udt::DT_RATE12;
 
 pub const SLOT_MS: i64 = 30;
 
@@ -53,6 +54,11 @@ impl<'a, const N: usize> Air<'a, N> {
             if pdus > 1 && ch == self.site.tscc_ch() {
                 self.collisions += 1;
                 self.site.rx_bad(ch);
+            } else if t.kind == TX_PDU && t.dt == DT_RATE12 {
+                let mut b = [0u8; 12];
+                b[..10].copy_from_slice(&t.pdu);
+                b[10..].copy_from_slice(&t.ext);
+                self.site.rx_block(ch, t.dt, &b);
             } else if t.kind == TX_PDU {
                 self.site.rx_pdu(ch, t.dt, &t.pdu);
             } else if t.kind == TX_VOICE {
@@ -69,7 +75,10 @@ impl<'a, const N: usize> Air<'a, N> {
         for m in self.ms.iter_mut() {
             let ch = m.ch();
             if ch == tscc && k & 1 == 0 {
-                m.rx(ch, k, out.tscc_dt, &out.tscc_pdu, out.at != 0);
+                let mut b = [0u8; 12];
+                b[..10].copy_from_slice(&out.tscc_pdu);
+                b[10..].copy_from_slice(&out.tscc_ext);
+                m.rx_block(ch, k, out.tscc_dt, &b, out.at != 0);
             } else if ch < CHANNELS && ch as i64 & 1 == k & 1 {
                 m.rx(ch, k, out.ch[ch].dt, &out.ch[ch].pdu, false);
             }

@@ -11,6 +11,15 @@ use core::ffi::{c_char, c_int, CStr};
 use core::fmt::Write;
 
 use crate::t3pdu::*;
+use crate::t3udt::{DT_DATA_HDR, DT_RATE12, SK_IND_UDT, SK_STATUS, SK_TG_UDT};
+
+// short data on the TSCC (UDT short data, status, polling): tier3.md 3.9
+#[path = "t3sdata.rs"]
+mod sdata;
+pub use sdata::{
+    rdof_t3_net_sd, rdof_t3_sd_of_event, rdof_t3_sd_send, SdMsg, SD_F_EMERGENCY, SD_F_GROUP, SD_POLL, SD_RESULT,
+    SD_SEND, SD_STATUS, SD_UDT,
+};
 
 pub const CARRIERS: usize = 4;
 pub const CHANNELS: usize = CARRIERS * 2;
@@ -80,6 +89,10 @@ pub struct Cfg {
     pub local_time_ms: u32,
     pub gen_site_ms: u32,
     pub stream_seed: u32,
+    pub sd_tries: u8,
+    pub sd_repeats: u8,
+    pub pad1: [u8; 2],
+    pub sd_store_ms: u32,
 }
 
 #[repr(C)]
@@ -272,6 +285,8 @@ pub const EV_RECORD: u8 = 6;
 pub const EV_ACTIVITY: u8 = 7;
 pub const EV_NET_DROP: u8 = 8;
 pub const EV_LOG: u8 = 9;
+pub const EV_SD: u8 = 20; // short data for the site, or the result of one it sent (SdMsg::of_event)
+pub const EV_NET_SD: u8 = 21; // short data or a result to publish (mqtt-net sdata)
 
 pub const CLOSE_HANG: u8 = 1;
 pub const CLOSE_TIMER: u8 = 2;
@@ -374,7 +389,8 @@ pub struct SlotOut {
     pub tscc_pdu: [u8; 10],
     pub at: u8,
     pub has_slc: u8,
-    pub pad: [u8; 3],
+    pub tscc_ext: [u8; 2],
+    pub pad: u8,
     pub slc_tscc: u32,
     pub slc_payload: u32,
     pub ch: [ChOut; CHANNELS],
@@ -569,6 +585,7 @@ pub struct Site {
     ev_head: usize,
     ev_len: usize,
     counters: Counters,
+    sd: sdata::SdState,
 }
 
 /// Text into a fixed buffer, NUL terminated, cut when full (LOG events, errors).
@@ -631,6 +648,9 @@ pub fn cfg_default() -> Cfg {
         local_time_ms: 6000,
         gen_site_ms: 10_000,
         stream_seed: 1,
+        sd_tries: 3,
+        sd_repeats: 2,
+        sd_store_ms: 30_000,
         ..Default::default()
     };
     c.carriers[0] = Carrier { tx_hz: 438_750_000, rx_hz: 438_250_000, chan: 1, tscc: 1, enabled: 1 };
@@ -725,6 +745,9 @@ fn check(c: &Cfg, err: &mut Buf) -> bool {
     }
     if c.start_grace_ms > 10_000 {
         no!("timers.start_grace_s: 0 to 10");
+    }
+    if c.sd_tries > 10 || c.sd_repeats > 10 || c.sd_store_ms > 600_000 {
+        no!("timers.sd_tries 1 to 10, sd_repeats 1 to 10, sd_store_s 0 to 600");
     }
     if !(60..=604_800).contains(&c.reg_hold_s) {
         no!("timers.reg_hold_s: 60 to 604800");
@@ -1001,6 +1024,8 @@ impl Site {
         let (dt, pdu, solicit) = if self.cont_pending {
             self.cont_pending = false;
             (DT_MBC_CONT, self.cont, false)
+        } else if let Some(b) = self.sd_cont() {
+            b // a UDT's next block, or a slot kept for an upload
         } else if self.since_aloha >= 3 {
             (DT_CSBK, self.aloha(), false)
         } else if self.resp_len > 0 {
@@ -1012,6 +1037,8 @@ impl Site {
                 self.cont = r.cont;
             }
             (r.dt, r.pdu, r.solicit)
+        } else if let Some(b) = self.sd_start() {
+            b
         } else if let Some(g) = self.due_grant() {
             (DT_CSBK, g, false)
         } else if let Some((b, dt, cont)) = self.due_bcast() {
@@ -1030,6 +1057,7 @@ impl Site {
         }
         out.tscc_dt = dt;
         out.tscc_pdu = pdu;
+        out.tscc_ext = self.sd_ext();
         out.at = solicit as u8;
     }
 
@@ -1406,6 +1434,7 @@ impl Site {
             SK_IND_VOICE | SK_TG_VOICE => self.call_request(r),
             SK_CALL_ANSWER => self.call_answer(r),
             SK_CANCEL => self.cancel(r.source),
+            SK_IND_UDT | SK_TG_UDT | SK_STATUS => self.sd_rand(r),
             _ => self.refuse(R_NOT_SUPPORTED, r.source, r.target),
         }
     }
@@ -1612,6 +1641,9 @@ impl Site {
     /// C_ACKU or C_NACKU from a called MS: its source is the AHOY's target.
     fn ms_ack(&mut self, a: &Ack) {
         self.heard(a.source);
+        if self.sd_ack(a) {
+            return;
+        }
         let Some(i) =
             self.pend.iter().position(|p| p.used && p.state == P_AHOY && p.called == a.source && p.caller == a.target)
         else {
@@ -1676,6 +1708,9 @@ impl Site {
     }
 
     fn cancel(&mut self, ms: u32) {
+        if self.sd_cancel(ms) {
+            return;
+        }
         if let Some(i) = self.pend.iter().position(|p| p.used && p.caller_local && p.caller == ms) {
             let p = self.pend[i];
             self.pend[i].used = false;
@@ -2086,6 +2121,7 @@ impl Site {
         self.now = now_ms;
         self.roll_load();
         self.pending_timers();
+        self.sd_timers();
         self.channel_timers();
         self.reg_timers();
         let mut out = SlotOut::default();
@@ -2113,8 +2149,11 @@ impl Site {
             return;
         }
         if ch == self.tscc_carrier * 2 {
+            if dt == DT_DATA_HDR {
+                self.sd_rx_head(pdu);
+            }
             if dt != DT_CSBK {
-                return; // UDT and MBC uploads: none is asked for
+                return; // MBC uploads: none is asked for
             }
             if let Some(r) = Rand::decode(pdu) {
                 self.counters.rand += 1;
@@ -2141,6 +2180,13 @@ impl Site {
             }
         }
         self.check_subs();
+    }
+
+    /// A rate 1/2 data block (12 octets) on the TSCC: a UDT's appended block.
+    pub fn rx_block(&mut self, ch: usize, dt: u8, b: &[u8; 12]) {
+        if !self.withdrawn && ch == self.tscc_carrier * 2 && dt == DT_RATE12 {
+            self.sd_rx_block(b);
+        }
     }
 
     pub fn rx_bad(&mut self, ch: usize) {
@@ -2474,7 +2520,7 @@ macro_rules! layouts {
     };
 }
 
-static LAYOUTS: [Layout; 18] = layouts![
+static LAYOUTS: [Layout; 19] = layouts![
     ("rdof_t3_carrier_t", Carrier),
     ("rdof_t3_cfg_t", Cfg),
     ("rdof_t3_range_t", Range),
@@ -2492,6 +2538,7 @@ static LAYOUTS: [Layout; 18] = layouts![
     ("rdof_t3ms_tx_t", crate::t3ms::MsTx),
     ("rdof_t3ms_status_t", crate::t3ms::MsStatus),
     ("rdof_t3_tg_policy_t", TgPolicy),
+    ("rdof_t3_sd_t", SdMsg),
 ];
 
 #[no_mangle]
@@ -2542,7 +2589,9 @@ pub unsafe extern "C" fn rdof_t3_slot(s: *mut Site, k: i64, now_ms: i64, out: *m
 
 #[no_mangle]
 pub unsafe extern "C" fn rdof_t3_rx_pdu(s: *mut Site, ch: c_int, _k: i64, dt: u8, pdu: *const [u8; 10], _rssi: c_int) {
-    if ch >= 0 {
+    if ch >= 0 && dt == DT_RATE12 {
+        (*s).rx_block(ch as usize, dt, &*pdu.cast::<[u8; 12]>()); // a rate 1/2 block: 12 octets
+    } else if ch >= 0 {
         (*s).rx_pdu(ch as usize, dt, &*pdu);
     }
 }

@@ -9,6 +9,7 @@ use core::ffi::c_int;
 
 use crate::t3pdu::*;
 use crate::t3site::{CARRIERS, VOICE_FRAME, VOICE_HEADER, VOICE_TERM};
+use crate::t3udt::*;
 
 pub const ANSWER_ACCEPT: u8 = 0;
 pub const ANSWER_BUSY: u8 = 1;
@@ -22,7 +23,10 @@ pub const DO_GROUP: u8 = 3;
 pub const DO_PRIVATE: u8 = 4;
 pub const DO_CANCEL: u8 = 5;
 const DO_ANSWER: u8 = 6; // FOACSU Call Answer, queued by the MS itself
+pub const DO_SDM: u8 = 7; // UDT short data (send_sdm): arg the MS or talkgroup
+pub const DO_STATUS: u8 = 8; // a status (talk_ms: the value; 127 polls): arg the MS or talkgroup
 pub const F_EMERGENCY: u8 = 0x01;
+pub const F_GROUP: u8 = 0x02; // DO_SDM, DO_STATUS: arg is a talkgroup
 
 pub const IDLE: u8 = 0;
 pub const ACCESS: u8 = 1;
@@ -50,6 +54,8 @@ pub struct MsTx {
     pub pad: u8,
     pub src: u32,
     pub dst: u32,
+    pub ext: [u8; 2], // dt 7 (rate 1/2 data): the block's octets 10 and 11
+    pub pad2: [u8; 2],
 }
 
 #[repr(C)]
@@ -127,6 +133,24 @@ pub struct Ms {
     calls_failed: u32,
     ahoys: u32,
     clears: u32,
+    // short data
+    sd_out: Blocks,
+    sd_fmt: u8,
+    up: [(u8, [u8; 12]); 1 + MAX_BLOCKS],
+    up_len: usize,
+    up_pos: usize,
+    in_head: UdtHead,
+    in_on: bool,
+    in_got: u8,
+    in_blocks: Blocks,
+    inbox: Blocks,
+    inbox_head: UdtHead,
+    inbox_n: u32,
+    status_reply: u8,
+    last_status: u8,
+    last_status_src: u32,
+    statuses: u32,
+    poll_result: u8,
 }
 
 impl Ms {
@@ -187,6 +211,34 @@ impl Ms {
         self.nact += 1;
     }
 
+    /// Queues UDT short data (up to 46 octets) to dst, a talkgroup with F_GROUP; false when it doesn't fit.
+    pub fn send_sdm(&mut self, dst: u32, flags: u8, format: u8, data: &[u8], at_ms: i64) -> bool {
+        let Some(b) = Blocks::of(data, 0) else { return false };
+        self.sd_out = b;
+        self.sd_fmt = format;
+        self.act(DO_SDM, dst, 0, flags, at_ms)
+    }
+
+    /// The status it answers a poll with.
+    pub fn set_status(&mut self, status: u8) {
+        self.status_reply = status;
+    }
+
+    /// The last UDT short data it took: the header and the data (the count of them in MsStatus-free form).
+    pub fn inbox(&self) -> Option<(UdtHead, [u8; MAX_DATA], u32)> {
+        if self.inbox_n == 0 {
+            return None;
+        }
+        let mut d = [0u8; MAX_DATA];
+        self.inbox.data(&mut d);
+        Some((self.inbox_head, d, self.inbox_n))
+    }
+
+    /// The last status it was sent (source, value, count), and the status a poll of its own got back.
+    pub fn statuses(&self) -> (u32, u8, u32, u8) {
+        (self.last_status_src, self.last_status, self.statuses, self.poll_result)
+    }
+
     fn take_due(&mut self, pred: impl Fn(&Action) -> bool) -> Option<Action> {
         let now = self.now;
         let i = (0..self.nact).find(|&i| self.actions[i].at_ms <= now && pred(&self.actions[i]))?;
@@ -239,6 +291,26 @@ impl Ms {
                 ..Default::default()
             },
             DO_ANSWER => Rand { service_kind: SK_CALL_ANSWER, target: a.arg, source: self.id, ..Default::default() },
+            // 6.6.4.2 table 6.55: Appended_UDT_Short_Data the blocks less one
+            DO_SDM => Rand {
+                dep: self.sd_out.n.max(1) - 1,
+                service_kind: if a.flags & F_GROUP != 0 { SK_TG_UDT } else { SK_IND_UDT },
+                target: a.arg,
+                source: self.id,
+                ..Default::default()
+            },
+            // 6.6.6.1.2 table 6.57: G/I, then the status's five MSBs; its two LSBs in the dependent bits
+            DO_STATUS => {
+                let st = (a.talk_ms & 0x7F) as u8;
+                Rand {
+                    service_options: ((a.flags & F_GROUP != 0) as u8) << 6 | st >> 2,
+                    dep: st & 3,
+                    service_kind: SK_STATUS,
+                    target: a.arg,
+                    source: self.id,
+                    ..Default::default()
+                }
+            }
             _ => Rand { service_kind: SK_CANCEL, target: a.arg, source: self.id, ..Default::default() },
         };
         r.encode()
@@ -258,7 +330,7 @@ impl Ms {
     }
 
     fn done(&mut self, ok: bool) {
-        if self.has_cur && matches!(self.cur.what, DO_GROUP | DO_PRIVATE) {
+        if self.has_cur && matches!(self.cur.what, DO_GROUP | DO_PRIVATE | DO_SDM | DO_STATUS) {
             if ok {
                 self.calls_done += 1;
             } else {
@@ -279,6 +351,16 @@ impl Ms {
 
     /// Outbound slot k on channel ch (a block when dt isn't 0); at: the CACH's AT bit for the next slot.
     pub fn rx(&mut self, ch: usize, k: i64, dt: u8, pdu: &[u8; 10], at: bool) {
+        let mut b = [0u8; 12];
+        b[..10].copy_from_slice(pdu);
+        self.rx_block(ch, k, dt, &b, at);
+    }
+
+    /// rx with a whole block (12 octets: a rate 1/2 block's; a PDU's first 10).
+    pub fn rx_block(&mut self, ch: usize, k: i64, dt: u8, blk: &[u8; 12], at: bool) {
+        let mut p = [0u8; 10];
+        p.copy_from_slice(&blk[..10]);
+        let pdu = &p;
         if ch != self.ch {
             return;
         }
@@ -317,6 +399,10 @@ impl Ms {
             self.have_aloha = false;
             return;
         }
+        if dt == DT_DATA_HDR || dt == DT_RATE12 {
+            self.on_udt(dt, blk);
+            return;
+        }
         if dt != DT_CSBK {
             return;
         }
@@ -325,7 +411,7 @@ impl Ms {
                 self.on_ack(&a);
             }
         } else if let Some(a) = Ahoy::decode(pdu) {
-            if a.target == self.id {
+            if a.target == self.id || (a.group && a.service_kind == SK_STATUS && self.my_tg(a.target)) {
                 self.on_ahoy(&a);
             }
         } else if let Some(g) = Grant::decode(pdu) {
@@ -333,10 +419,67 @@ impl Ms {
         }
     }
 
+    /// A UDT header or appended block on the TSCC (6.6.4.7): data for it or its talkgroup is taken, and an
+    /// individual one with A set answered.
+    fn on_udt(&mut self, dt: u8, blk: &[u8; 12]) {
+        if dt == DT_DATA_HDR {
+            let mut p = [0u8; 10];
+            p.copy_from_slice(&blk[..10]);
+            self.in_on = false;
+            if let Some(h) = UdtHead::decode(&p) {
+                if h.op == OP_UDTHD && (h.target == self.id || (h.group && self.my_tg(h.target))) {
+                    self.in_on = true;
+                    self.in_head = h;
+                    self.in_got = 0;
+                    self.in_blocks = Blocks { n: h.blocks, ..Default::default() };
+                }
+            }
+            return;
+        }
+        if !self.in_on || self.in_got >= self.in_blocks.n {
+            return;
+        }
+        self.in_blocks.b[self.in_got as usize] = *blk;
+        self.in_got += 1;
+        if self.in_got < self.in_blocks.n {
+            return;
+        }
+        self.in_on = false;
+        if !self.in_blocks.crc_ok() {
+            return; // no answer: the TSCC sends it again
+        }
+        let h = self.in_head;
+        if !h.group && h.response {
+            let reason = match self.answer {
+                ANSWER_SILENT => return,
+                ANSWER_BUSY => R_EQUIP_BUSY,
+                ANSWER_REFUSE => R_RECIPIENT_REFUSED,
+                _ => R_MS_ACCEPTED,
+            };
+            let a = Ack { op: OP_ACKU, response_info: 0, reason, target: h.source, source: self.id };
+            self.reply = Some(a.encode());
+            if reason != R_MS_ACCEPTED {
+                return;
+            }
+        }
+        if self.inbox_n > 0 && self.inbox_head == h && self.inbox == self.in_blocks {
+            return; // a repeat of the same message
+        }
+        self.inbox = self.in_blocks;
+        self.inbox_head = h;
+        self.inbox_n += 1;
+    }
+
     fn on_ack(&mut self, a: &Ack) {
         self.last_reason = a.reason;
         if !self.has_cur {
             return; // e.g. the called party told of its own refusal
+        }
+        if matches!(self.cur.what, DO_SDM | DO_STATUS) && a.source != self.cur.arg {
+            return; // not about this request (a repeat of an earlier one's final acknowledgement)
+        }
+        if a.reason == R_POLL_MS && self.cur.what == DO_STATUS {
+            self.poll_result = a.response_info;
         }
         match reason_type(a.reason) {
             2 | 3 => {
@@ -379,9 +522,61 @@ impl Ms {
             }
             return;
         }
+        if a.source == SDMI && matches!(a.service_kind, SK_IND_UDT | SK_TG_UDT) {
+            // 6.6.4.4 c): send the UDT (6.5.1.3 table 6.35)
+            if !(self.has_cur && self.cur.what == DO_SDM && matches!(self.state, ACCESS | WAITING)) {
+                let r = Ack {
+                    op: OP_ACKU,
+                    reason: R_MS_NOT_SUPPORTED,
+                    target: SDMI,
+                    source: self.id,
+                    ..Default::default()
+                };
+                self.reply = Some(r.encode());
+                return;
+            }
+            let h = UdtHead {
+                op: OP_UDTHU,
+                group: self.cur.flags & F_GROUP != 0,
+                format: self.sd_fmt,
+                target: self.cur.arg,
+                source: self.id,
+                blocks: self.sd_out.n,
+                ..Default::default()
+            };
+            let mut hb = [0u8; 12];
+            hb[..10].copy_from_slice(&h.encode());
+            self.up[0] = (DT_DATA_HDR, hb);
+            for j in 0..self.sd_out.n as usize {
+                self.up[1 + j] = (DT_RATE12, self.sd_out.b[j]);
+            }
+            self.up_len = 1 + self.sd_out.n as usize;
+            self.up_pos = 0;
+            self.state = WAITING;
+            self.wait_until = self.now + WAIT_MS;
+            return;
+        }
         self.ahoys += 1;
         let ack = |reason, s: &Ms| Ack { op: OP_ACKU, response_info: 0, reason, target: a.source, source: s.id }.encode();
-        self.reply = match self.answer {
+        if a.service_kind == SK_STATUS {
+            // 6.6.6.1.2.1.5, 6.6.6.2.2.1.5: Service_Options_Mirror the five MSBs, Appended_Blocks the two LSBs
+            let st = (a.service_options & 0x1F) << 2 | a.appended;
+            if st == STATUS_POLL {
+                let info = self.status_reply;
+                let r = Ack { op: OP_ACKU, response_info: info, reason: R_POLL_MS, target: a.source, source: self.id };
+                self.reply = Some(r.encode());
+                return;
+            }
+            self.last_status = st;
+            self.last_status_src = a.source;
+            self.statuses += 1;
+            if a.group {
+                return; // a talkgroup's: no answer (6.6.6.1.2.2.5)
+            }
+        }
+        let status = a.service_kind == SK_STATUS;
+        let answer = if status && self.answer == ANSWER_FOACSU { ANSWER_ACCEPT } else { self.answer };
+        self.reply = match answer {
             ANSWER_ACCEPT => Some(ack(R_MS_ACCEPTED, self)),
             ANSWER_BUSY => Some(ack(R_EQUIP_BUSY, self)),
             ANSWER_REFUSE => Some(ack(R_RECIPIENT_REFUSED, self)),
@@ -457,6 +652,14 @@ impl Ms {
             return None;
         }
         let pdu_tx = |pdu: [u8; 10], s: &Ms| MsTx { ch: s.ch as u8, kind: TX_PDU, dt: DT_CSBK, pdu, ..Default::default() };
+        if self.up_pos < self.up_len {
+            // the UDT upload: header and blocks in consecutive inbound slots (6.5.0)
+            let (dt, b) = self.up[self.up_pos];
+            self.up_pos += 1;
+            let mut pdu = [0u8; 10];
+            pdu.copy_from_slice(&b[..10]);
+            return Some(MsTx { ch: self.ch as u8, kind: TX_PDU, dt, pdu, ext: [b[10], b[11]], ..Default::default() });
+        }
         if let Some(r) = self.reply.take() {
             return Some(pdu_tx(r, self)); // in the slot the AT bit kept for it
         }
@@ -582,15 +785,32 @@ pub unsafe extern "C" fn rdof_t3ms_answer(ms: *mut Ms, answer: u8, answer_ms: u3
 
 #[no_mangle]
 pub unsafe extern "C" fn rdof_t3ms_do(ms: *mut Ms, what: u8, arg: u32, talk_ms: u32, flags: u8, at_ms: i64) -> bool {
-    matches!(what, DO_REGISTER..=DO_CANCEL) && (*ms).act(what, arg, talk_ms, flags, at_ms)
+    matches!(what, DO_REGISTER..=DO_CANCEL | DO_STATUS) && (*ms).act(what, arg, talk_ms, flags, at_ms)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3ms_sdm(
+    ms: *mut Ms,
+    dst: u32,
+    flags: u8,
+    format: u8,
+    data: *const u8,
+    len: usize,
+    at_ms: i64,
+) -> bool {
+    let d = if data.is_null() || len == 0 { &[][..] } else { core::slice::from_raw_parts(data, len) };
+    (*ms).send_sdm(dst, flags, format, d, at_ms)
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rdof_t3ms_rx(ms: *mut Ms, ch: c_int, k: i64, dt: u8, pdu: *const [u8; 10], at: bool) {
     if ch >= 0 {
-        let zero = [0u8; 10];
-        let pdu = if pdu.is_null() { &zero } else { &*pdu };
-        (*ms).rx(ch as usize, k, dt, pdu, at);
+        let mut b = [0u8; 12];
+        if !pdu.is_null() {
+            let n = if dt == DT_RATE12 { 12 } else { 10 }; // a rate 1/2 block: 12 octets
+            core::ptr::copy_nonoverlapping(pdu.cast::<u8>(), b.as_mut_ptr(), n);
+        }
+        (*ms).rx_block(ch as usize, k, dt, &b, at);
     }
 }
 

@@ -55,6 +55,9 @@ const MN_PATH_NONE: u8 = 0xFF;
 const MN_HEADER: usize = 14;
 const MN_SETUP_LEN: usize = 8;
 const MN_F_EMERGENCY: u8 = 0x04;
+const MN_F_GROUP: u8 = 0x02;
+const MN_SDATA: c_int = 0x0D; // the sdata item (tier3.md 5.9)
+const MN_SDATA_HEAD: usize = 12; // its fixed part; the data follows
 const MN_REC_TG: usize = 8;
 const MN_HAS_ENABLED: u32 = 1 << 14;
 const MN_CFG_TIMERS: usize = 16;
@@ -851,6 +854,135 @@ unsafe fn setup_out(u: *mut Unit, e: &Event) {
     }
 }
 
+// ── short data across the network (the sdata item, tier3.md 5.9) ───────────────
+
+/// rdof_mn_writer_t
+#[repr(C)]
+struct MnWriter {
+    buf: *mut u8,
+    cap: usize,
+    len: usize,
+    items: c_int,
+    overflow: bool,
+}
+
+/// rdof_mn_reader_t
+#[repr(C)]
+struct MnReader {
+    msg: *const u8,
+    len: usize,
+    at: usize,
+    count: c_int,
+    bad: bool,
+}
+
+/// rdof_mn_item_t
+#[repr(C)]
+struct MnItem {
+    r#type: c_int,
+    value: *const u8,
+    len: usize,
+}
+
+extern "C" {
+    fn rdof_mn_begin(w: *mut MnWriter, buf: *mut u8, cap: usize, h: *const MnHdr);
+    fn rdof_mn_item(w: *mut MnWriter, ty: c_int, value: *const c_void, len: usize) -> bool;
+    fn rdof_mn_end(w: *mut MnWriter) -> usize;
+    fn rdof_mn_parse(msg: *const u8, len: usize, h: *mut MnHdr) -> bool;
+    fn rdof_mn_reader(r: *mut MnReader, msg: *const u8, len: usize);
+    fn rdof_mn_next(r: *mut MnReader, it: *mut MnItem) -> bool;
+}
+
+/// A short data message or result for another site: on pc/{dst}/{node} (a result: pc/{caller}/{node}, src and dst
+/// swapped as a setup answer's), or tg/{tg}/{node} for a talkgroup.
+unsafe fn sdata_out(u: *mut Unit, e: &Event) {
+    let m = t3::SdMsg::of_event(e);
+    let group = m.flags & t3::SD_F_GROUP != 0;
+    let result = m.op == t3::SD_RESULT;
+    let mut v = [0u8; MN_SDATA_HEAD + 46];
+    v[..8].copy_from_slice(&[m.op, m.what, m.reason, m.value, m.flags, m.pad_nibble, m.why, 0]);
+    v[8..12].copy_from_slice(&m.r#ref.to_le_bytes());
+    let d = m.data();
+    v[MN_SDATA_HEAD..MN_SDATA_HEAD + d.len()].copy_from_slice(d);
+    let (src, dst) = if result { (m.dst, m.src) } else { (m.src, m.dst) };
+    let flags = if group { MN_F_GROUP } else { 0 } | if m.flags & t3::SD_F_EMERGENCY != 0 { MN_F_EMERGENCY } else { 0 };
+    let path = if (*u).path >= 0 { (*u).path as u8 } else { MN_PATH_NONE };
+    let h = MnHdr { flags, path, seq: 0, stream: m.stream, src, dst };
+    let mut buf = [0u8; MN_HEADER + 2 + MN_SDATA_HEAD + 46];
+    let mut w: MnWriter = core::mem::zeroed();
+    rdof_mn_begin(&mut w, buf.as_mut_ptr(), buf.len(), &h);
+    rdof_mn_item(&mut w, MN_SDATA, v.as_ptr().cast(), MN_SDATA_HEAD + d.len());
+    let n = rdof_mn_end(&mut w);
+    let mut t = [0u8; 128];
+    let kind = if group { MN_T_TG } else { MN_T_PC };
+    if n != 0 && rdof_mn_topic(cpm(&mut t), t.len(), root(u), kind, dst, node(u)) != 0 {
+        publish(u, cp(&t), buf.as_ptr().cast(), n, 1, false);
+    }
+}
+
+/// A message whose first item is sdata: true when it was one (handled, or malformed and dropped).
+unsafe fn sdata_in(u: *mut Unit, msg: *const u8, len: usize) -> bool {
+    let mut h: MnHdr = core::mem::zeroed();
+    let mut r: MnReader = core::mem::zeroed();
+    let mut it: MnItem = core::mem::zeroed();
+    if msg.is_null() || !rdof_mn_parse(msg, len, &mut h) {
+        return false;
+    }
+    rdof_mn_reader(&mut r, msg, len);
+    if !rdof_mn_next(&mut r, &mut it) || it.r#type != MN_SDATA {
+        return false;
+    }
+    if it.len < MN_SDATA_HEAD || it.len > MN_SDATA_HEAD + 46 {
+        return true;
+    }
+    let v = core::slice::from_raw_parts(it.value, it.len);
+    let mut m = t3::SdMsg {
+        op: v[0],
+        what: v[1],
+        reason: v[2],
+        value: v[3],
+        flags: v[4],
+        pad_nibble: v[5],
+        why: v[6],
+        len: (it.len - MN_SDATA_HEAD) as u8,
+        r#ref: u32::from_le_bytes([v[8], v[9], v[10], v[11]]),
+        stream: h.stream,
+        ..Default::default()
+    };
+    let result = m.op == t3::SD_RESULT;
+    (m.src, m.dst) = if result { (h.dst, h.src) } else { (h.src, h.dst) };
+    m.data[..usize::from(m.len)].copy_from_slice(&v[MN_SDATA_HEAD..]);
+    t3::rdof_t3_net_sd((*u).site, &m, (*u).now_ms);
+    drain(u);
+    true
+}
+
+/// Short data for the site itself, or the result of one it sent: logged.
+unsafe fn sdata_here(u: *mut Unit, e: &Event) {
+    let m = t3::SdMsg::of_event(e);
+    log(u, |o| {
+        if m.op == t3::SD_RESULT {
+            o.bytes(b"tier3: short data to ");
+            o.int(i64::from(m.dst), 0);
+            o.bytes(b": reason 0x");
+            hex(o, u32::from(m.reason), 2);
+            return;
+        }
+        o.bytes(if m.what == t3::SD_STATUS { b"tier3: status from " } else { b"tier3: short data from " });
+        o.int(i64::from(m.src), 0);
+        o.bytes(b": ");
+        if m.what == t3::SD_STATUS {
+            o.int(i64::from(m.value), 0);
+        } else {
+            o.bytes(b"format ");
+            o.int(i64::from(m.value), 0);
+            o.bytes(b", ");
+            o.int(i64::from(m.len), 0);
+            o.bytes(b" octets");
+        }
+    });
+}
+
 unsafe fn activity_out(u: *mut Unit, e: &Event) {
     const REG: [&CStr; 6] = [c"?", c"register", c"deregister", c"expire", c"deny", c"refuse"];
     const QUEUE: [&CStr; 4] = [c"?", c"in", c"out", c"drop"];
@@ -984,6 +1116,8 @@ unsafe fn drain(u: *mut Unit) {
             }
             t3::EV_CH_STREAM => stream_map(u, e.stream, c_int::from(e.ch)),
             t3::EV_NET_SETUP => setup_out(u, &e),
+            t3::EV_NET_SD => sdata_out(u, &e),
+            t3::EV_SD => sdata_here(u, &e),
             t3::EV_NET_SUBS => subs = true,
             t3::EV_RECORD => record_out(u, e.src, e.why == 1),
             t3::EV_ACTIVITY => activity_out(u, &e),
@@ -1024,6 +1158,9 @@ unsafe extern "C" fn io_tscc(ctx: *mut c_void, k: i64, dt: *mut c_int, pdu: *mut
     }
     *dt = c_int::from((*o).tscc_dt);
     ptr::copy_nonoverlapping((*o).tscc_pdu.as_ptr(), pdu, 10);
+    if (*o).tscc_dt == crate::t3udt::DT_RATE12 {
+        ptr::copy_nonoverlapping((*o).tscc_ext.as_ptr(), pdu.add(10), 2); // a UDT block: 12 octets
+    }
     true
 }
 
@@ -1715,13 +1852,13 @@ pub unsafe extern "C" fn rdof_t3unit_message(u: *mut Unit, topic: *const c_char,
     let kind = rdof_mn_topic_parse(topic, root(u), &mut id, cpm(&mut nd), nd.len());
     let me = cstr(&(*u).node);
     if kind == MN_T_DL {
-        if cstr(&nd) == me {
+        if cstr(&nd) == me && !sdata_in(u, data.cast(), len) {
             rdof_mn_down_message((*u).down, c"router".as_ptr(), true, data.cast(), len, wall_s(u));
         }
         return;
     }
     if kind == MN_T_TG {
-        if cstr(&nd) != me {
+        if cstr(&nd) != me && !sdata_in(u, data.cast(), len) {
             rdof_mn_down_message((*u).down, cp(&nd), false, data.cast(), len, wall_s(u));
         }
         return;

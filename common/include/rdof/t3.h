@@ -68,6 +68,10 @@ typedef struct {
     uint32_t reg_hold_s;
     uint32_t adjacent_ms, chan_freq_ms, local_time_ms, gen_site_ms; /* 0: not broadcast */
     uint32_t stream_seed; /* first stream ID for setups the site starts */
+    /* short data (tier3.md 3.9): downloads to an MS (each waits ahoy_every_ms for C_ACKU), sends to a talkgroup,
+     * and how long a message waits for a busy MS */
+    uint8_t sd_tries, sd_repeats, pad1[2];
+    uint32_t sd_store_ms;
 } rdof_t3_cfg_t;
 
 typedef struct {
@@ -150,6 +154,8 @@ typedef struct {
 #define RDOF_T3_EV_ACTIVITY 7    /* kind (RDOF_T3_ACT_*), op (action), src, dst, ch, chan, lcn, flags, reason */
 #define RDOF_T3_EV_NET_DROP 8    /* the network stream won't be carried: stream, why */
 #define RDOF_T3_EV_LOG 9         /* text */
+#define RDOF_T3_EV_SD 20         /* short data for the site, or the result of one it sent (rdof_t3_sd_of_event) */
+#define RDOF_T3_EV_NET_SD 21     /* short data or a result to publish (mqtt-net sdata, tier3.md 5.9) */
 
 #define RDOF_T3_CLOSE_HANG 1     /* hang time expired */
 #define RDOF_T3_CLOSE_TIMER 2    /* call timer */
@@ -199,7 +205,8 @@ typedef struct {
     uint8_t tscc_pdu[10];
     uint8_t at;      /* the AT bit for the CACH before slot k + 1 on the TSCC carrier */
     uint8_t has_slc; /* k % 4 == 0: a new short LC for the next 4 CACH */
-    uint8_t pad[3];
+    uint8_t tscc_ext[2]; /* tscc_dt RDOF_DT_RATE_12 (a UDT's appended block): its octets 10 and 11 */
+    uint8_t pad;
     uint32_t slc_tscc;    /* C_SYS_Parms for the TSCC carrier */
     uint32_t slc_payload; /* P_SYS_Parms for the other carriers */
     rdof_t3_ch_out_t ch[RDOF_T3_CHANNELS]; /* only the channels with k's LCN */
@@ -238,8 +245,9 @@ bool rdof_t3_reconfigure(rdof_t3_site_t *s, const rdof_t3_cfg_t *cfg, char *err,
 /* slot k (see above), with the wall clock in ms; called once per k in order, about a slot before air */
 void rdof_t3_slot(rdof_t3_site_t *s, int64_t k, int64_t now_ms, rdof_t3_slot_out_t *out);
 
-/* inbound: a block with a good CRC, or (TSCC only) a burst with a good sync and a bad CRC: a collision */
-void rdof_t3_rx_pdu(rdof_t3_site_t *s, int ch, int64_t k, uint8_t dt, const uint8_t pdu[10], int rssi);
+/* inbound: a block with a good CRC, or (TSCC only) a burst with a good sync and a bad CRC: a collision. pdu is 10
+ * octets, 12 when dt is RDOF_DT_RATE_12 (a UDT's appended block, BPTC decoded: its CRC is the whole message's) */
+void rdof_t3_rx_pdu(rdof_t3_site_t *s, int ch, int64_t k, uint8_t dt, const uint8_t *pdu, int rssi);
 void rdof_t3_rx_bad(rdof_t3_site_t *s, int ch, int64_t k);
 /* payload voice: what RDOF_T3_VOICE_*, with the LC's addresses */
 void rdof_t3_rx_voice(rdof_t3_site_t *s, int ch, int64_t k, uint8_t what, uint32_t src, uint32_t dst, bool group);
@@ -271,6 +279,38 @@ void rdof_t3_withdraw(rdof_t3_site_t *s, bool off);
 /* "deregister" (arg1 MS), "clear" (arg1 chan, arg2 LCN), "withdraw", "restore", "resend_records", "status" */
 bool rdof_t3_command(rdof_t3_site_t *s, const char *cmd, uint32_t arg1, uint32_t arg2);
 
+/* short data (tier3.md 3.9): UDT short data, a status, or a status poll */
+#define RDOF_T3_SD_UDT 1
+#define RDOF_T3_SD_STATUS 2
+#define RDOF_T3_SD_POLL 3
+#define RDOF_T3_SD_SEND 1   /* op: a message */
+#define RDOF_T3_SD_RESULT 2 /* op: its outcome */
+#define RDOF_T3_SD_F_GROUP 0x01
+#define RDOF_T3_SD_F_EMERGENCY 0x02
+
+typedef struct {
+    uint8_t op, what;
+    uint8_t reason;     /* a result: the air reason (C_ACKD's: 0x44 MS_Accepted, 0x60 Message_Accepted, ...) */
+    uint8_t value;      /* UDT_Format, the status (0-127), or a poll's result: the polled status */
+    uint8_t flags;      /* RDOF_T3_SD_F_* */
+    uint8_t pad_nibble; /* UDT: the header's Pad Nibble */
+    uint8_t len;        /* UDT: data octets, 0-46 */
+    uint8_t why;        /* a result: RDOF_T3_WHY_* */
+    uint32_t src, dst;  /* src 0 from the site: TSI */
+    uint32_t stream;    /* on the network: this message's stream ID */
+    uint32_t ref;       /* the caller's tag (rdof_t3_sd_send), echoed in its result; a network result: the send's stream */
+    uint8_t data[48];
+} rdof_t3_sd_t;
+
+/* A message from the site to an MS or a talkgroup; its outcome comes as an RDOF_T3_EV_SD result with its ref. False:
+ * no room (8 in progress), a bad address, or bad data. */
+bool rdof_t3_sd_send(rdof_t3_site_t *s, const rdof_t3_sd_t *m, int64_t now_ms);
+/* A message or a result from the network (mqtt-net sdata) */
+void rdof_t3_net_sd(rdof_t3_site_t *s, const rdof_t3_sd_t *m, int64_t now_ms);
+/* An RDOF_T3_EV_SD / EV_NET_SD event's message: op, kind what, reason, svc value, why, flags (RDOF_T3_F_GROUP,
+ * F_EMERGENCY), lcn the pad nibble, chan the data length, text the data, src, dst, stream, ref. */
+void rdof_t3_sd_of_event(const rdof_t3_event_t *e, rdof_t3_sd_t *m);
+
 /* outputs: drain after each call */
 bool rdof_t3_event(rdof_t3_site_t *s, rdof_t3_event_t *ev);
 void rdof_t3_status(const rdof_t3_site_t *s, rdof_t3_status_t *st);
@@ -288,7 +328,9 @@ void rdof_t3_status(const rdof_t3_site_t *s, rdof_t3_status_t *st);
 #define RDOF_T3MS_DO_GROUP 3       /* arg: talkgroup; talk_ms; flags RDOF_T3MS_F_* */
 #define RDOF_T3MS_DO_PRIVATE 4     /* arg: called MS; talk_ms */
 #define RDOF_T3MS_DO_CANCEL 5
+#define RDOF_T3MS_DO_STATUS 8      /* arg: MS or talkgroup (flags RDOF_T3MS_F_GROUP); talk_ms: the status, 127 polls */
 #define RDOF_T3MS_F_EMERGENCY 0x01
+#define RDOF_T3MS_F_GROUP 0x02
 
 #define RDOF_T3MS_IDLE 0     /* on the TSCC, nothing to do */
 #define RDOF_T3MS_ACCESS 1   /* random access in progress */
@@ -304,6 +346,8 @@ typedef struct {
     uint8_t pdu[10];
     uint8_t group, pad;
     uint32_t src, dst;
+    uint8_t ext[2];  /* dt RDOF_DT_RATE_12: the block's octets 10 and 11 */
+    uint8_t pad2[2];
 } rdof_t3ms_tx_t;
 
 typedef struct {
@@ -321,9 +365,12 @@ void rdof_t3ms_init(rdof_t3ms_t *ms, uint32_t id, const uint32_t *tg, int ntg, c
 void rdof_t3ms_answer(rdof_t3ms_t *ms, uint8_t answer, uint32_t answer_ms);
 /* queue an action (up to 8 queued) at or after at_ms */
 bool rdof_t3ms_do(rdof_t3ms_t *ms, uint8_t what, uint32_t arg, uint32_t talk_ms, uint8_t flags, int64_t at_ms);
+/* UDT short data (up to 46 octets, UDT_Format format) to dst, a talkgroup with RDOF_T3MS_F_GROUP */
+bool rdof_t3ms_sdm(rdof_t3ms_t *ms, uint32_t dst, uint8_t flags, uint8_t format, const uint8_t *data, size_t len,
+                   int64_t at_ms);
 /* outbound slot k on channel ch: a block (dt 0: voice or idle, nothing to read); at is the CACH's AT bit for the
- * next slot (TSCC carrier) */
-void rdof_t3ms_rx(rdof_t3ms_t *ms, int ch, int64_t k, uint8_t dt, const uint8_t pdu[10], bool at);
+ * next slot (TSCC carrier). pdu: 10 octets, 12 when dt is RDOF_DT_RATE_12 */
+void rdof_t3ms_rx(rdof_t3ms_t *ms, int ch, int64_t k, uint8_t dt, const uint8_t *pdu, bool at);
 /* inbound slot k: true when the MS transmits, filling *tx */
 bool rdof_t3ms_tx(rdof_t3ms_t *ms, int64_t k, int64_t now_ms, rdof_t3ms_tx_t *tx);
 void rdof_t3ms_status(const rdof_t3ms_t *ms, rdof_t3ms_status_t *st);

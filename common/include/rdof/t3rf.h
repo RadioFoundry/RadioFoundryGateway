@@ -59,6 +59,11 @@ typedef enum {
 /* A burst read back: its data type and color code from the slot type (*dt, *cc: -1 when unreadable), and the PDU. The
  * sync is checked against the data syncs of every family (BS, MS, TS1, TS2) with up to 4 bits wrong. */
 rdof_trunk_pdu_t rdof_t3rf_burst_pdu(const uint8_t burst[RDOF_BURST_BYTES], int *dt, int *cc, uint8_t pdu[10]);
+/* A block's burst: a control block (as rdof_t3rf_pdu_burst; octets 10 and 11 ignored) or a rate 1/2 data block
+ * (RDOF_DT_RATE_12: the 12 octets as given, no CRC of its own: a UDT's last block holds the message's). */
+bool rdof_t3rf_block_burst(int dt, const uint8_t blk[12], int cc, rdof_family_t family, uint8_t out[RDOF_BURST_BYTES]);
+/* rdof_t3rf_burst_pdu, and a rate 1/2 data block too (OK when its BPTC decodes); blk: the 12 octets. */
+rdof_trunk_pdu_t rdof_t3rf_burst_block(const uint8_t burst[RDOF_BURST_BYTES], int *dt, int *cc, uint8_t blk[12]);
 
 /* The 4 CACH of slots k .. k + 3 (k % 4 == 0) carrying short LC slc28 (SLCO in bits 27-24), TC from each slot's
  * parity, AT at[0..3]: 24 bits each, first on air in the top bit of byte 0. */
@@ -120,13 +125,15 @@ typedef struct {
 /* ── the site ─────────────────────────────────────────────────────────────── */
 
 typedef struct {
-    /* The TSCC's outbound block for slot k (even): its data type and 10 octets; false sends an idle burst. */
-    bool (*tscc)(void *ctx, int64_t k, int *dt, uint8_t pdu[10]);
+    /* The TSCC's outbound block for slot k (even): its data type and 10 octets (12 for RDOF_DT_RATE_12, a UDT's
+     * appended block); false sends an idle burst. */
+    bool (*tscc)(void *ctx, int64_t k, int *dt, uint8_t pdu[12]);
     /* Carrier c's CACH before slot k: *at (preset -1: the transmitter's own) and, at k % 4 == 0, *slc28 (preset -1:
      * keep) the short LC from k on: C_SYS_Parms on the TSCC's carrier, P_SYS_Parms or Act_Updt on the others. */
     void (*cach)(void *ctx, int carrier, int64_t k, int *at, int32_t *slc28);
-    /* A control block heard with a good CRC on channel ch (the TSCC inbound, or a payload channel's: P_MAINT). */
-    void (*pdu)(void *ctx, int ch, int64_t k, int dt, const uint8_t pdu[10], int rssi);
+    /* A control block heard with a good CRC on channel ch (the TSCC inbound, or a payload channel's: P_MAINT); on
+     * the TSCC also a rate 1/2 block (RDOF_DT_RATE_12, 12 octets: a UDT upload's appended block). */
+    void (*pdu)(void *ctx, int ch, int64_t k, int dt, const uint8_t *pdu, int rssi);
     /* A control block that failed its CRC on the TSCC inbound (counts a collision). */
     void (*bad)(void *ctx, int ch, int64_t k);
     /* Voice on payload channel ch's inbound: what (RDOF_T3RF_HEADER ...), with the addresses. */
