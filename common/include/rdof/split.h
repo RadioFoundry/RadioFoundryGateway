@@ -269,6 +269,9 @@ void rdof_split_set_utc(rdof_split_t *s, bool utc, double utc_minus_host_us, dou
 const char *rdof_align_state_name(rdof_align_state_t a);
 /* The inbound slots busy now (bit 0 TS1, bit 1 TS2), as SET_AT says. */
 int rdof_split_busy_mask(const rdof_split_t *s, double now);
+/* Bring-up done (ready), and why it failed ("" none): for code that can't see the struct (the Rust). */
+bool rdof_split_ready(const rdof_split_t *s);
+const char *rdof_split_failed(const rdof_split_t *s);
 /* The scheduled stream is up: ready, the TX half in its role in stream 1, and its slot counter on the UTC grid (an
  * ALIGN taken: the counter base). Only then does rdof_split_sched send. */
 bool rdof_split_sched_ok(const rdof_split_t *s);

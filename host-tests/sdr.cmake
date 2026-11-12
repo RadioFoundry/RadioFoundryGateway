@@ -220,14 +220,13 @@ if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
 endif()
 add_test(NAME sdrmodem_tests COMMAND sdrmodem_tests)
 
-# A two-carrier trunked site, carrier B on a split TX half (t3split.c; with the controller, so only with cargo).
+# A two-carrier trunked site, carrier B on a split TX half (rdof/sdr/t3split.h; Rust, so only with cargo).
 if(NOT COMMAND rdof_t3_lib)
     include(../rust/rust.cmake)
 endif()
 rdof_t3_lib(RDOF_T3_LIB rdof_common)
 if(NOT RDOF_T3_LIB STREQUAL "NOTFOUND")
-    add_executable(rdof_t3split_tests test_t3split.c fake_radio.c ../sdr/src/t3split.c ../common/src/t3unit.c
-                   ../common/src/t3sim.c)
+    add_executable(rdof_t3split_tests test_t3split.c fake_radio.c ../common/src/t3unit.c ../common/src/t3sim.c)
     target_include_directories(rdof_t3split_tests PRIVATE ../common/include)
     target_link_libraries(rdof_t3split_tests PRIVATE rdof_sdr ${RDOF_T3_LIB} m)
     set_target_properties(rdof_t3split_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
