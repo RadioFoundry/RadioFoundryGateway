@@ -24,6 +24,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "rdof/benchtx.h"
 #include "rdof/ipgw.h"
 #include "rdof/config.h"
 #include "rdof/repeater.h"
@@ -74,6 +75,9 @@ typedef struct {
     /* the IP gateway app (apps: type ipgw), when the document has one */
     bool has_ipgw;
     rdof_ipgw_config_t ipgw;
+    /* bench.tx: where and how the bench's jobs may transmit, added to --bench-tx (the line itself is --bench) */
+    bool has_bench_tx;
+    rdof_benchtx_policy_t bench_tx;
 } rdofradio_cfg_t;
 
 /* Read a settings document. False: err says why (the parser's reason, or what rdofradio can't run). */

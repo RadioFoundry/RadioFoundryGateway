@@ -340,6 +340,11 @@ A device's `bench` (on an SDR, `bench` or `tx.bench`):
 
 A bench radio's guard sends at its lowest power step whatever the job asks.
 
+On rdofradio, `--bench [ADDR:]PORT` turns the bench on (there's no port key) and `bench.tx` adds to `--bench-tx`: its
+frequencies and bands are where the jobs may transmit, `max_key_s` caps every key-up (a signal or an outbound
+asking for longer is refused up front, a call is cut there), and on an MMDVM modem `rf_level`, or `max_dbm` through the modem's power map (§4.7), caps the
+level under `--power`. On an SDR, `max_dbm` refuses a job while `--tx-power` or `--tx-gain` puts it higher. `devices` and `arm_gpio` are a board's and are refused.
+
 ### 4.7 Transmit power
 
 A frequency's `power_dbm` is the power at the antenna connector. A modem's `SET_FREQ` carries an RF level, 0..255;

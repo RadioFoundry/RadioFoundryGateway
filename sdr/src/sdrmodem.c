@@ -886,7 +886,22 @@ static void on_frame(void *ctx, uint8_t cmd, const uint8_t *p, size_t len)
 
 void rdof_sdrmodem_write(rdof_sdrmodem_t *m, const uint8_t *data, size_t len)
 {
+    if (m->in_write) { /* from a reply's handler, inside on_frame: after this write */
+        const size_t room = sizeof m->pending - m->npending, take = len < room ? len : room;
+        memcpy(m->pending + m->npending, data, take);
+        m->npending += take;
+        m->pending_lost += (uint32_t)(len - take);
+        return;
+    }
+    m->in_write = true;
     rdof_mmdvm_reader_feed(&m->reader, data, len, on_frame, m);
+    while (m->npending) { /* from pending itself: what its frames' handlers write goes after them */
+        const size_t k = m->npending;
+        rdof_mmdvm_reader_feed(&m->reader, m->pending, k, on_frame, m);
+        m->npending -= k;
+        memmove(m->pending, m->pending + k, m->npending);
+    }
+    m->in_write = false;
 }
 
 static void check_lost(rdof_sdrmodem_t *m)

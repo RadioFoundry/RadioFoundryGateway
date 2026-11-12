@@ -143,6 +143,12 @@ typedef struct rdof_sdrmodem {
     rdof_mod_t mod;
     bool mod_ok;
     rdof_mmdvm_reader_t reader;
+    /* what the host writes while a reply of ours is being handled (a job that unkeys on a NAK), taken once the write
+       being parsed is done: parsed inside it, a job that wrote on each NAK recursed until the stack ran out */
+    bool in_write;
+    size_t npending;
+    uint32_t pending_lost;      /* bytes that didn't fit (never in practice: a reply's handler writes a frame or two) */
+    uint8_t pending[RDOF_MMDVM_MAX_FRAME];
     /* what the host set */
     bool duplex;
     int mode, cc, channel;      /* channel -1: none tuned (or, as the TX half, none heard) */

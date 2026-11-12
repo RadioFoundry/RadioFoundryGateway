@@ -2003,6 +2003,74 @@ static int sg_freq(void *ctx, float *hz, float *env, int n)
 
 static bool sg_done(void *ctx) { return ((sg_src_t *)ctx)->sent >= ((sg_src_t *)ctx)->n; }
 
+/* A host that writes from inside a reply's handler (rdofradio's bench job unkeys on a NAK and sends SET_MODE): what it
+ * writes is taken after what's being parsed, never inside it. Written there, it was parsed inside the frame that
+ * was being answered, and a job that sent a frame on each NAK recursed until the stack ran out. */
+typedef struct {
+    rdof_sdrmodem_t m;
+    int depth, max_depth, naks, retries, n;
+    uint8_t cmds[16];
+} reentry_t;
+
+static void reentry_frame(void *ctx, uint8_t cmd, const uint8_t *d, size_t n)
+{
+    reentry_t *r = ctx;
+    if (r->n < 16)
+        r->cmds[r->n++] = cmd == RDOF_MMDVM_NAK && n ? d[0] : cmd;
+}
+
+static void reentry_reply(void *ctx, const uint8_t *f, size_t n)
+{
+    reentry_t *r = ctx;
+    if (++r->depth > r->max_depth)
+        r->max_depth = r->depth;
+    rdof_mmdvm_reader_t rd;
+    rdof_mmdvm_reader_init(&rd);
+    rdof_mmdvm_reader_feed(&rd, f, n, reentry_frame, r);
+    if (n > 2 && f[2] == RDOF_MMDVM_NAK) {
+        r->naks++;
+        uint8_t b[16];
+        size_t k;
+        if (r->retries > 0) { /* each NAK earns another bad frame */
+            r->retries--;
+            k = rdof_mmdvm_frame(RDOF_MMDVM_SET_CONFIG, (const uint8_t[]){0}, 1, b, sizeof b);
+        } else {
+            k = rdof_mmdvm_frame(RDOF_MMDVM_GET_STATUS, NULL, 0, b, sizeof b);
+        }
+        rdof_sdrmodem_write(&r->m, b, k);
+    }
+    r->depth--;
+}
+
+static void test_write_from_reply(void)
+{
+    static reentry_t r;
+    memset(&r, 0, sizeof r);
+    const rdof_sdrmodem_io_t io = {reentry_reply, io_channel, io_tx_tune, &r, NULL};
+    CHECK(rdof_sdrmodem_init(&r.m, &io, 48000, 48000, false) == 0, "init: %s", r.m.error);
+    /* one write: a short SET_CONFIG (NAK), then GET_VERSION; the NAK's handler writes GET_STATUS */
+    uint8_t b[32];
+    size_t k = rdof_mmdvm_frame(RDOF_MMDVM_SET_CONFIG, (const uint8_t[]){0}, 1, b, sizeof b);
+    k += rdof_mmdvm_frame(RDOF_MMDVM_GET_VERSION, NULL, 0, b + k, sizeof b - k);
+    rdof_sdrmodem_write(&r.m, b, k);
+    CHECK(r.n == 3 && r.cmds[0] == RDOF_MMDVM_SET_CONFIG && r.cmds[1] == RDOF_MMDVM_GET_VERSION &&
+              r.cmds[2] == RDOF_MMDVM_GET_STATUS,
+          "the replies in order: NAK, the version, then the handler's status: %d replies, %02x %02x %02x", r.n,
+          r.cmds[0], r.cmds[1], r.cmds[2]);
+    CHECK(r.max_depth == 1, "a reply's handler re-entered %d deep", r.max_depth);
+    /* a NAK that earns a bad frame, 100000 times over: no deeper, all answered */
+    r.n = r.naks = r.max_depth = 0;
+    r.retries = 100000;
+    k = rdof_mmdvm_frame(RDOF_MMDVM_SET_CONFIG, (const uint8_t[]){0}, 1, b, sizeof b);
+    rdof_sdrmodem_write(&r.m, b, k);
+    CHECK(r.naks == 100001 && r.retries == 0 && r.max_depth == 1 && r.m.npending == 0 && !r.m.in_write &&
+              r.m.pending_lost == 0,
+          "a NAK loop: %d NAKs, %d left, %d deep, %zu pending, %u lost", r.naks, r.retries, r.max_depth, r.m.npending,
+          (unsigned)r.m.pending_lost);
+    rdof_sdrmodem_free(&r.m);
+    printf("sdrmodem: a write from a reply's handler waits for the frame it answers\n");
+}
+
 static void test_signal(bool slow)
 {
     static rdof_sdrmodem_t m;
@@ -2109,6 +2177,7 @@ int main(void)
     test_outbound();
     test_outbound_back();
 #endif
+    test_write_from_reply();
     test_signal(true);
     test_signal_ppm();
     test_signal(false);

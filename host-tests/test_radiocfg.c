@@ -224,6 +224,42 @@ int main(void)
     char tiny[16];
     CHECK(rdofradio_cfg_describe(&C, "x", "", tiny, sizeof tiny) == 15);
 
+    /* bench.tx: rdofradio's jobs, beside --bench-tx; no bench devices, no arm jumper */
+    snprintf(doc, sizeof doc, "{\"version\": 3, \"name\": \"b\", \"id\": 3, %s}", R1);
+    CHECK(parse(doc) && !C.has_bench_tx);
+    snprintf(doc, sizeof doc, "{\"version\": 3, \"name\": \"b\", \"id\": 3, \"bench\": {}, %s}", R1);
+    CHECK(parse(doc) && !C.has_bench_tx);
+    snprintf(doc, sizeof doc, "{\"version\": 3, \"name\": \"b\", \"id\": 3, \"bench\": {\"tx\": "
+             "{\"bands_hz\": [[144000000, 148000000], [420000000, 450000000]], \"freqs_hz\": [446100000]}}, %s}", R1);
+    CHECK(parse(doc) && C.has_bench_tx && C.bench_tx.nbands == 2 && C.bench_tx.bands_hz[1][0] == 420000000 &&
+          C.bench_tx.nfreqs == 1 && C.bench_tx.freqs_hz[0] == 446100000 && C.bench_tx.max_key_s == 10 &&
+          C.bench_tx.rf_level == 0 && !C.bench_tx.has_max_dbm && C.bench_tx.arm_gpio == -1);
+    rdofradio_cfg_describe(&C, "x", "", text, sizeof text);
+    CHECK(strstr(text, "bench TX (bench.tx): 1 frequencies, 2 bands, RF level 0 at most, key-ups to 10.0 s\n"));
+    snprintf(doc, sizeof doc, "{\"version\": 3, \"name\": \"b\", \"id\": 3, \"bench\": {\"tx\": "
+             "{\"max_key_s\": 30, \"max_dbm\": 10}}, %s}", R1); /* frequencies only from --bench-tx */
+    CHECK(parse(doc) && C.has_bench_tx && !C.bench_tx.nbands && !C.bench_tx.nfreqs && C.bench_tx.max_key_s == 30 &&
+          C.bench_tx.has_max_dbm && C.bench_tx.max_dbm == 10);
+    rdofradio_cfg_describe(&C, "x", "", text, sizeof text);
+    CHECK(strstr(text, "bench TX (bench.tx): no frequencies here (--bench-tx), at most 10.0 dBm, key-ups to 30.0 s\n"));
+    snprintf(doc, sizeof doc, "{\"version\": 3, \"name\": \"b\", \"id\": 3, \"bench\": {\"tx\": "
+             "{\"bands_hz\": [[144000000, 148000000]], \"arm_gpio\": 5}}, %s}", R1);
+    CHECK(!parse(doc) && strstr(err, "bench.tx.arm_gpio"));
+    snprintf(doc, sizeof doc, "{\"version\": 3, \"name\": \"b\", \"id\": 3, \"bench\": {\"tx\": "
+             "{\"bands_hz\": [[148000000, 144000000]]}}, %s}", R1);
+    CHECK(!parse(doc) && strstr(err, "bands_hz"));
+    snprintf(doc, sizeof doc, "{\"version\": 3, \"name\": \"b\", \"id\": 3, \"bench\": {\"tx\": "
+             "{\"max_dbm\": 10, \"rf_level\": 3}}, %s}", R1);
+    CHECK(!parse(doc) && strstr(err, "max_dbm or rf_level"));
+    snprintf(doc, sizeof doc, "{\"version\": 3, \"name\": \"b\", \"id\": 3, \"defaults\": {\"cc\": 1}, \"bench\": {\"devices\": "
+             "[\"m\"]}, \"devices\": [{\"kind\": \"sdr\", \"driver\": \"soapy\"}, {\"name\": \"m\", "
+             "\"kind\": \"modem\", \"type\": \"mmdvm_hs\", \"port\": {\"usb\": \"cdc-acm\", \"vid\": \"1209\", \"pid\": \"0001\"}}], "
+             "\"frequencies\": [{\"name\": \"in\", \"freq\": 438.25}, {\"name\": \"out\", \"freq\": 438.75}], "
+             "\"apps\": [{\"name\": \"R1\", \"type\": \"repeater\", \"in\": \"in\", \"out\": \"out\"}]}");
+    CHECK(!parse(doc) && strstr(err, "bench.devices: a board's"));
+    if (!strstr(err, "bench.devices: a board's"))
+        printf("  bench devices: %s\n", err);
+
     /* the command line's flags as a document, and back: the same radio */
     size_t n = rdofradio_cfg_from_flags(text, sizeof text, "soapy", true, 438250000, 438012500, 1, true, 9990, 9990601);
     CHECK(n > 0 && n == strlen(text));

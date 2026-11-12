@@ -157,6 +157,11 @@ if(TARGET rdofradio AND TARGET fakemodem AND UNIX)
         add_test(NAME rdofradio_e2e_ipgw COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_ipgw.sh
                  $<TARGET_FILE_DIR:rdofradio> 47011 ${RDOF_CLI}/../../config/examples)
         set_tests_properties(rdofradio_e2e_ipgw PROPERTIES TIMEOUT 90)
+        # no RF, no network: each of config/examples as written, on simulated hardware, its clock, bench and network
+        add_test(NAME rdofradio_e2e_examples COMMAND ${RDOF_PYTHON3} ${RDOF_CLI}/../../host-tests/test_examples.py
+                 $<TARGET_FILE:rdofradio> $<TARGET_FILE:fakemodem> $<TARGET_FILE:fakebm>
+                 ${RDOF_CLI}/../../config/examples)
+        set_tests_properties(rdofradio_e2e_examples PROPERTIES TIMEOUT 300)
     endif()
     # no RF: two boxes, each on a fakemodem, joined by the MQTT network (format v3) through a broker on this host
     find_program(MOSQUITTO_BROKER mosquitto HINTS /usr/sbin /usr/local/sbin /opt/homebrew/sbin)

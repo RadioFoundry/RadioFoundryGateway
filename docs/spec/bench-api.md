@@ -445,7 +445,7 @@ shares its parts: the sessions, the burst feed, the I/Q history and the transmit
 
 ### 14.1 Framing
 
-- TCP, port 7373 by default: `bench.port` in the board's settings (0: off), `--bench [ADDR:]PORT` on rdofradio.
+- TCP, port 7373 by default: `CONFIG_RDOF_BENCH_LINE_PORT` on the board (0: off), `--bench [ADDR:]PORT` on rdofradio.
 - Found by DNS-SD: a gateway lists the line as `_rfgbench._tcp` (instance: its info's device name), TXT `kind`
   (`esp32s3-gateway`, `rdofradio`), `ver` and, on a board, `mac` (the Wi-Fi station's).
 - One request a connection: a JSON object on one line. The replies are JSON objects, one a line. A reply line with
@@ -1059,22 +1059,22 @@ a 12.5 kHz channel at 48 kS/s. A rise under that is a limit, not a measurement. 
 `info` says what this bench can do: `stations[0].kind` is the transmitter, `signal_modes` the signal modes, `jobs`
 each job's reason when it can't run. A client skips on those; a refused job's error gives the same reason, with the code `unsupported`.
 
-| | W12 (LR2021) | PlutoSDR (AD9361) | MMDVM modem + RTL-SDR |
-|---|---|---|---|
-| `info`, `status`, sessions, `claim`, `hold` | yes | yes | yes |
-| `bursts`, `listen` (with the envelope option) | yes, on the LR2021 stream | yes | yes, on the SDR |
-| `capture`, `trigger`, `track`: cs8 wideband | yes, the LR2021's rate | yes | yes, cs8 is the RTL's own 8 bits |
-| `capture`, `trigger`: channel taps, cs16 | yes | yes | yes |
-| `rx`: FM, AM | yes | yes | yes, on the SDR |
-| `tune`: center, taps | yes | yes | yes |
-| `tune`: gain | yes | yes | yes |
-| `run` `bench_tx`: `voice`, `csbk`, `data` | yes | yes | yes, the modem in simplex |
-| `run` `bench_tx`: `outbound` | yes, the slot clock its own | yes, its own | duplex modem only: the modem's idle downlink and CACH; its slot times from a burst the SDR hears |
-| `run` `bench_repeater` | no (`unsupported`) | yes | duplex modem only: the modem's own receiver hears the input |
-| `mssim` (confirmed-data responder) | yes | yes | yes: timing the serial port's and a key-up's, learned from what's heard back |
-| `tx`: FM, AM (signal modes) | yes | yes | no: the MMDVM serial protocol carries DMR bursts only, and an RTL-SDR doesn't transmit |
+| | W12 (LR2021) | PlutoSDR (AD9361) | MMDVM modem + RTL-SDR | MMDVM modem alone |
+|---|---|---|---|---|
+| `info`, `status`, sessions, `claim`, `hold` | yes | yes | yes | yes |
+| `bursts`, `listen` (with the envelope option) | yes, on the LR2021 stream | yes | yes, on the SDR | no: no receiver |
+| `capture`, `trigger`, `track`: cs8 wideband | yes, the LR2021's rate | yes | yes, cs8 is the RTL's own 8 bits | no |
+| `capture`, `trigger`: channel taps, cs16 | yes | yes | yes | no |
+| `rx`: FM, AM | yes | yes | yes, on the SDR | no |
+| `tune`: center, taps | yes | yes | yes | no |
+| `tune`: gain | yes | yes | yes | no |
+| `run` `bench_tx`: `voice`, `csbk`, `data` | yes | yes | yes, the modem in simplex | yes, on the modem's own band (a hotspot board: 70 cm) |
+| `run` `bench_tx`: `outbound` | yes, the slot clock its own | yes, its own | duplex modem only: the modem's idle downlink and CACH; its slot times from a burst the SDR hears | no: the slot clock is counted in an SDR's samples |
+| `run` `bench_repeater` | no (`unsupported`) | yes | duplex modem only: the modem's own receiver hears the input | duplex modem only, as beside an SDR |
+| `mssim` (confirmed-data responder) | yes | yes | yes: timing the serial port's and a key-up's, learned from what's heard back | no: it hears through an SDR's channel |
+| `tx`: FM, AM (signal modes) | yes | yes | no: the MMDVM serial protocol carries DMR bursts only, and an RTL-SDR doesn't transmit | no |
 
-What the third column can't do, and why:
+What the last two columns can't do, and why:
 
 - `tx` in FM or AM: `info.signal_modes.tx` is empty and `jobs.signal_tx` says why. The modem takes DMR bursts over its
   serial port: there's no way to give it audio or I/Q. The SDR beside it only receives.
@@ -1088,3 +1088,5 @@ wideband or a channel's cs16), `trigger` and `rx` work on either side while the 
 in one window: the SDR keeps the modem's RX, and a request for the TX side tunes the receiver for itself.
 
 The third column needs only the modem and an RTL-SDR on a Linux box; [the reference](../reference.md) has the setup.
+The last needs only the modem: its jobs transmit, and nothing on the box hears them (another receiver does). A hotspot board tunes its own band only: a job outside
+it ends with the modem refusing `SET_FREQ`, whatever `tx_bands` allows.

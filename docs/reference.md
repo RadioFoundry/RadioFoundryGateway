@@ -1359,7 +1359,10 @@ build/linux/rdofradio --soapy driver=rtlsdr -r 2.4e6 --gain 30 --ppm PPM --allow
 - `--setting KEY=VALUE` (repeated) is the SoapySDR driver's own, written when the device opens: an RTL-SDR's bias tee
   for an active antenna is `--setting biastee=true`. A setting the driver refuses stops the start.
 - `--bench-tx` is every frequency and band a job may key on; without it, no transmit job runs. `--allow-tx` is
-  required.
+  required. With `--config`, the settings' `bench.tx` adds its frequencies and bands, caps each key-up at its
+  `max_key_s` (10 s unless set; 120 s without `bench.tx`) and the power at its `rf_level` or `max_dbm` (config-v3.md
+  §4.6); the files in `config/examples/` take every US amateur band from 6 m to 13 cm.
+- With no SDR (`--mmdvm` and `--config` alone), the bench runs transmit jobs on the modem and receives nothing.
 - `--ppm` is the RTL-SDR's crystal error, measured elsewhere: rdofradio doesn't measure it, and the bench's reports
   are off by it otherwise. `--ppm-tol` says how well it is known.
 - `--duplex half` is a transceiver at rest, any modem. `--duplex full` needs a duplex board and runs a repeater;

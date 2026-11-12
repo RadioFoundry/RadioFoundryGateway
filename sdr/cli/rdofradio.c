@@ -47,10 +47,11 @@
  * bench's line protocol (docs/spec/bench-api.md section 14) on PORT (7373 by convention), every interface unless
  * ADDR is given: the receiver's bursts and wideband captures for tools/bench/rfgbench.py, and its transmit jobs
  * (bench_tx's voice, csbk, data) on the --bench-tx frequencies and bands (LOW-HIGH), at --tx-power, in the transceiver's
- * place while they run (not in a duplex repeater). --fpga-chz [ADDR] (with --iio, on a PlutoSDR whose FPGA has the
- * channelizer block, its registers at ADDR, 0x7C480000 by default): the block channelizes and the receiver takes its
- * 48 kS/s channel frames from the receive DMA, its AFC steering the block's NCOs; the rate can then go to 24.576 MS/s
- * (R D up to 512). No wideband captures, and the spectrum is the channels' own (the span between them empty); with
+ * place while they run (not in a duplex repeater). With --config, the settings' bench.tx adds frequencies and bands
+ * and caps the key-ups and the power; on an MMDVM modem with no SDR the bench only transmits. --fpga-chz [ADDR]
+ * (with --iio, on a PlutoSDR whose FPGA has the channelizer block, its registers at ADDR, 0x7C480000 by default):
+ * the block channelizes and the receiver takes its 48 kS/s channel frames from the receive DMA, its AFC steering
+ * the block's NCOs; the rate can then go to 24.576 MS/s (R D up to 512). No wideband captures, and the spectrum is the channels' own (the span between them empty); with
  * --split-tx or --mmdvm too. --fpga-duc [ADDR] (with --iio, an FPGA with the TX interpolator, its registers at ADDR,
  * 0x7C4A0000 by default; only on a design that has it: elsewhere nothing answers there): the transmit stream goes at
  * 192 kS/s (96 kS/s if the rate isn't a multiple of 192 kS/s; not 48, whose images land on a 50 kHz grid's next
@@ -2290,7 +2291,7 @@ static double bl_utc(void *ctx) { return wall_s(); }
 static double bl_sc_utc(void *ctx, uint64_t sc)
 {
     pthread_mutex_lock(&BL.mu);
-    const double t = BL.ref_utc + ((double)sc - (double)BL.ref_sc) / R.rate;
+    const double t = R.rate > 0 ? BL.ref_utc + ((double)sc - (double)BL.ref_sc) / R.rate : wall_s();
     pthread_mutex_unlock(&BL.mu);
     return t;
 }
@@ -2298,7 +2299,7 @@ static double bl_sc_utc(void *ctx, uint64_t sc)
 static void bl_rx_stats(void *ctx, double *seconds, long *overflows, double *clip_pct, long *dsp_skipped, long *dropped)
 {
     pthread_mutex_lock(&BL.mu);
-    *seconds = (double)BL.ring.w / R.rate;
+    *seconds = R.rate > 0 ? (double)BL.ring.w / R.rate : 0;
     *clip_pct = BL.seen ? 100.0 * (double)BL.clipped / (double)BL.seen : 0;
     pthread_mutex_unlock(&BL.mu);
     *overflows = (long)WS.overflows;
@@ -2315,10 +2316,42 @@ static int bench_nband;
 /* A job's power: an SDR sends at the transmit power (--tx-power); a modem at the job's RF level under --rf-level, a
  * dBm on its device's map (tx.min_dbm / tx.max_dbm, with --config) */
 static rdof_txmap_t bench_map;
+/* The settings' bench.tx (with --config): its max_key_s for a job's key-up (none: 120 s), its rf_level (under
+ * --rf-level) or max_dbm for a modem's jobs; an SDR's jobs send at --tx-power, refused when that's above max_dbm. */
+static bool bench_has_cfg;
+static double bench_max_key_s = 120.0;
+static rdof_bench_limit_t bench_cfg_lim;
+static rdof_bench_limit_t bench_limit(void)
+{
+    rdof_bench_limit_t lim = {false, 0, mm_rf_level};
+    if (bench_has_cfg) {
+        lim = bench_cfg_lim;
+        if (lim.rf_level > mm_rf_level)
+            lim.rf_level = mm_rf_level;
+    }
+    return lim;
+}
 static int bench_level(rdof_bench_power_t p)
 {
-    const rdof_bench_limit_t lim = {false, 0, mm_rf_level};
-    return rdof_bench_power_level(&lim, p, &bench_map);
+    const rdof_bench_limit_t lim = bench_limit();
+    const int k = rdof_bench_power_level(&lim, p, &bench_map);
+    return k > mm_rf_level ? mm_rf_level : k;
+}
+/* The settings' gates a job meets before it takes the transmitter: false with why. */
+static bool bench_gates(double seconds, char *why, size_t cap)
+{
+    if (!bench_has_cfg)
+        return true;
+    if (seconds > bench_max_key_s + 1e-9) {
+        snprintf(why, cap, "%.1f s is longer than bench.tx's max_key_s %.1f s", seconds, bench_max_key_s);
+        return false;
+    }
+    if (!R.mmdvm && bench_cfg_lim.has_max_dbm && gain_dbm(txg_full) > bench_cfg_lim.max_dbm + 0.05) {
+        snprintf(why, cap, "the SDR transmits at %.1f dBm (--tx-power), above bench.tx's max_dbm %.1f",
+                 gain_dbm(txg_full), bench_cfg_lim.max_dbm);
+        return false;
+    }
+    return true;
 }
 /* The note for a job's power; "" when it's what's sent. */
 static void bench_note(rdof_bench_power_t p, char *why, size_t cap)
@@ -2333,7 +2366,10 @@ static void bench_note(rdof_bench_power_t p, char *why, size_t cap)
         snprintf(why, cap, "%s on the MMDVM modem: RF level 0, the least (no tx.min_dbm / tx.max_dbm for it)", asked);
     else if (R.mmdvm)
         snprintf(why, cap, "%s on the MMDVM modem: RF level %d%s", asked, bench_level(p),
-                 bench_level(p) == mm_rf_level ? " (--rf-level)" : "");
+                 bench_level(p) == mm_rf_level                                              ? " (--rf-level)"
+                 : bench_has_cfg && bench_level(p) == bench_limit().rf_level && !bench_cfg_lim.has_max_dbm
+                     ? " (bench.tx.rf_level)"
+                     : "");
     else if (!isnan(p.dbm) || p.level != 255)
         snprintf(why, cap, "%s isn't applied: the SDR transmits at %.1f dBm (--tx-power)", asked, gain_dbm(txg_full));
 }
@@ -2392,7 +2428,9 @@ static const char *bl_can_tx(void *ctx)
     if (R.split)
         return "a split repeater's radio transmits, not the SDR: no transmit jobs here";
     if (!bench_ntx && !bench_nband)
-        return "no transmit frequencies (--bench-tx)";
+        return "no transmit frequencies (--bench-tx, or bench.tx in the settings)";
+    if (bench_has_cfg && bench_max_key_s <= 0)
+        return "bench.tx.max_key_s is 0: no bench TX";
     return NULL;
 }
 
@@ -2409,6 +2447,10 @@ static const char *bl_cannot(void *ctx, const char *what)
     if (!strcmp(what, "signal_tx"))
         return "an MMDVM modem's serial protocol sends DMR bursts: no FM, AM or arbitrary I/Q, and the SDR beside it "
                "only receives";
+    if (!dev && !strcmp(what, "mssim"))
+        return "an MMDVM modem with no SDR: the responder hears through an SDR's channel";
+    if (!dev && !strcmp(what, "outbound"))
+        return "an MMDVM modem with no SDR: an outbound's slot clock is counted in an SDR's samples";
     if ((!strcmp(what, "repeater") || !strcmp(what, "outbound")) && rdof_modem_simplex_only(R.client.version))
         return "this modem has one transceiver (a simplex hotspot): a repeater or an outbound needs a duplex modem";
     return NULL;
@@ -2461,6 +2503,8 @@ static void last_job_closes(void);
 static bool bl_tx_open(void *ctx, uint32_t freq, int cc, rdof_bench_power_t power, bool as_built, char *why,
                        size_t cap)
 {
+    if (!bench_gates(0, why, cap)) /* its key time: the job's own clock, at bench_max_key_s */
+        return false;
     last_job_closes();
     pthread_mutex_lock(&BT.mu);
     const bool busy = BT.want || BT.active || BR.want || BR.active || BO.want || BO.active;
@@ -2604,6 +2648,8 @@ static void last_job_closes(void)
 static int bl_sig_open(void *ctx, uint32_t freq, rdof_bench_power_t power, double seconds, const rdof_sig_src_t *src,
                        char *why, size_t cap)
 {
+    if (!bench_gates(seconds, why, cap))
+        return -1;
     last_job_closes();
     pthread_mutex_lock(&BS.mu);
     pthread_mutex_lock(&BT.mu);
@@ -2664,6 +2710,8 @@ static const char *bl_ob_can(void *ctx) { return bl_can_tx(ctx); }
 
 static bool bl_ob_open(void *ctx, const rdof_bl_ob_cfg_t *cfg, char *why, size_t cap)
 {
+    if (!bench_gates(cfg->seconds, why, cap))
+        return false;
     last_job_closes();
     pthread_mutex_lock(&BS.mu);
     pthread_mutex_lock(&BT.mu);
@@ -3052,13 +3100,14 @@ static bool bench_tx_poll(double now)
         BT.want = 0, BT.active = true;
         const rdof_benchtx_io_t io = {bt_to_modem, bt_to_tool, bt_keying, NULL, NULL};
         bt_ticking = true;
-        rdof_benchtx_init(&BT.tx, &io, BT.freq, BT.cc, R.mmdvm ? BT.power : 255, 120.0, now); /* SDR: --tx-power */
+        rdof_benchtx_init(&BT.tx, &io, BT.freq, BT.cc, R.mmdvm ? BT.power : 255, bench_max_key_s, now); /* SDR: --tx-power */
         bt_ticking = false;
         BT.heard_ch = R.mmdvm ? channel_of(BT.freq) : -1;
         static rdof_benchtx_track_t bt_track;
         rdof_benchtx_track(&BT.tx, BT.heard_ch >= 0 ? &bt_track : NULL,
-                           R.mmdvm ? "no receive channel on the job's frequency: a tune with a tap there gives one"
-                                   : "the SDR's own transmitter: no separate receiver hears it");
+                           !dev       ? "an MMDVM modem with no SDR: nothing hears the job"
+                           : R.mmdvm ? "no receive channel on the job's frequency: a tune with a tap there gives one"
+                                     : "the SDR's own transmitter: no separate receiver hears it");
         say("bench: a job has the transmitter: %.4f MHz cc %d\n", BT.freq / 1e6, BT.cc);
     }
     if (!BT.active) {
@@ -3338,6 +3387,8 @@ static bool bl_mssim(void *ctx, const char *action, const char *req, size_t len,
 
 static bool bl_rpt_open(void *ctx, const rdof_bl_rpt_cfg_t *cfg, char *why, size_t cap)
 {
+    if (!bench_gates(0, why, cap)) /* a repeater keys for what it hears, not for the job's seconds */
+        return false;
     last_job_closes();
     pthread_mutex_lock(&BR.mu);
     const bool busy = BR.want || BR.active || BT.want || BT.active || BO.want || BO.active;
@@ -3566,8 +3617,9 @@ static void bench_start(void)
 {
     if (bench_port < 0)
         return;
-    /* --fpga-chz has no wideband I/Q to keep: a short ring of filler, which counts the samples */
-    if (!rdof_bl_ring_init(&BL.ring, FX.on ? 4L * CHUNK : (long)(2.5 * R.rate))) {
+    /* --fpga-chz has no wideband I/Q to keep: a short ring of filler, which counts the samples. An MMDVM modem with
+     * no SDR keeps none: its jobs transmit, nothing receives for the bench */
+    if (dev && !rdof_bl_ring_init(&BL.ring, FX.on ? 4L * CHUNK : (long)(2.5 * R.rate))) {
         fprintf(stderr, "bench: no memory for the history\n");
         return;
     }
@@ -3597,6 +3649,8 @@ static void bench_start(void)
         p.station = bl_station, p.cannot = bl_cannot;
         p.rpt_own_rx = true; /* the repeater job hears on the modem's own receiver */
     }
+    if (!dev) /* the modem alone: no window, no I/Q, no tune; the receive ops say "the receiver isn't running" */
+        p.iq_read = NULL, p.iq_filled = NULL, p.tune = NULL, p.tune_state = NULL, p.untune = NULL;
     if (FX.on) /* no wideband I/Q: capture, trigger, track and rx take a channel's own outputs (bl_ch_*); the ring
                   stays, filler, for the sample count the bursts' times come from */
         p.iq_read = NULL, p.iq_filled = NULL, p.iq_warm = NULL, p.ch_open = bl_ch_open, p.ch_read = bl_ch_read,
@@ -6056,10 +6110,7 @@ static int mmdvm_main(int argc, char **argv, const char *port, int baud, double 
     }
     double last_web = 0;
 #endif
-    if (dev)
-        bench_start();
-    else if (bench_port >= 0)
-        fprintf(stderr, "bench: its line protocol needs an SDR (DEVICE): off\n");
+    bench_start(); /* with no SDR: the modem's transmit jobs, no receiver */
     double last_poll = 0, last_status = now_s();
     while (!stop && (seconds <= 0 || now_s() - t0 < seconds)) {
         mm_turn();
@@ -6539,6 +6590,35 @@ int main(int argc, char **argv)
             return hold(argc, argv, why);
         }
         rx = rcfg.rx_hz, tx = rcfg.tx_hz, cc = rcfg.cc, rx_slot = rcfg.rx_slot;
+        if (rcfg.has_bench_tx) { /* bench.tx: its frequencies and bands beside --bench-tx's, its key time and power */
+            const rdof_benchtx_policy_t *bp = &rcfg.bench_tx;
+            char why[300] = "";
+            for (int i = 0; i < bp->nfreqs && !why[0]; i++) {
+                bool have = false;
+                for (int k = 0; k < bench_ntx; k++)
+                    have |= fabs(bench_tx_mhz[k] * 1e6 - bp->freqs_hz[i]) < 100.0;
+                if (have)
+                    continue;
+                if (bench_ntx >= RDOF_BENCHTX_MAX_FREQS)
+                    snprintf(why, sizeof why, "%s: bench.tx.freqs_hz and --bench-tx: %d frequencies at most",
+                             config_path, RDOF_BENCHTX_MAX_FREQS);
+                else
+                    bench_tx_mhz[bench_ntx++] = bp->freqs_hz[i] / 1e6;
+            }
+            for (int i = 0; i < bp->nbands && !why[0]; i++) {
+                if (bench_nband >= RDOF_BL_TX_BANDS)
+                    snprintf(why, sizeof why, "%s: bench.tx.bands_hz and --bench-tx: %d bands at most", config_path,
+                             RDOF_BL_TX_BANDS);
+                else
+                    bench_band_hz[bench_nband][0] = bp->bands_hz[i][0],
+                    bench_band_hz[bench_nband++][1] = bp->bands_hz[i][1];
+            }
+            if (why[0])
+                return hold(argc, argv, why);
+            bench_has_cfg = true;
+            bench_max_key_s = bp->max_key_s;
+            bench_cfg_lim = (rdof_bench_limit_t){bp->has_max_dbm, bp->max_dbm, bp->rf_level};
+        }
         /* split repeaters on the SDR: the first radio's port from the file unless --split-tx gives it */
         if (rcfg.nsplit && !split_tx && !mmdvm && rcfg.split[0].port[0]) {
             split_tx = rcfg.split[0].port;

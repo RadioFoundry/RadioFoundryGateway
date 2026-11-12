@@ -67,3 +67,4 @@ examples/standalone-mmdvm-rtl-simplex.json|hat:transceiver,rtl-rx:receiver|devic
 examples/standalone-mmdvm-rtl-duplex.json|R1:repeater,rtl-rx:receiver|devices.modem.port: a serial path is for a host; this board has uart and usb ports|ok
 examples/standalone-pluto-simplex.json|pluto:transceiver,pluto-rx:receiver|devices.pluto.driver: iio is the host tool's, not this board's|ok
 examples/standalone-pluto-duplex.json|R1:repeater|devices.pluto.driver: iio is the host tool's, not this board's|ok
+examples/brandmeister-mmdvm-duplex.json|R1:repeater|devices.modem.port: a serial path is for a host; this board has uart and usb ports|ok

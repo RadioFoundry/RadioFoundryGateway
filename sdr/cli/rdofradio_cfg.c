@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "rdof/benchcfg.h"
 #include "rdof/jitter.h"
 #include "rdof/jsonp.h"
 #include "rdof/siteplan.h"
@@ -39,6 +40,29 @@ static bool clock_settings(const rdof_plan_t *p, rdofradio_cfg_t *o, char *err, 
         return false;
     }
     o->own_clock = mode ? !strcmp(mode, "netclock") : o->ntp_servers[0] != 0;
+    return true;
+}
+
+/* bench: rdofradio's bench is the line protocol (--bench) on its own transmitter; bench.tx says where its jobs may
+   transmit (with --bench-tx), how long they may key and how strong. No bench devices: nothing on a box's UART or USB
+   is lent to the bench. No arm jumper: rdofradio has no GPIO, and a gate it can't see would be a gate left open. */
+static bool bench_settings(const rdof_plan_t *p, rdofradio_cfg_t *o, char *err, size_t cap)
+{
+    const rdof_jdoc_t *d = rdof_plan_doc(p);
+    const int b = rdof_jget(d, rdof_plan_root(p), "bench");
+    if (b < 0 || rdof_jnode(d, b)->type == RDOF_JNULL)
+        return true;
+    if (rdof_plan_nbench(p) > 0) {
+        snprintf(err, cap, "bench.devices: a board's; rdofradio's bench is its own transmitter (--bench)");
+        return false;
+    }
+    if (rdof_plan_bench_tx(p, &o->bench_tx, err, cap) < 0)
+        return false;
+    if (o->bench_tx.arm_gpio >= 0) {
+        snprintf(err, cap, "bench.tx.arm_gpio: a board's jumper; rdofradio has no GPIO to read it");
+        return false;
+    }
+    o->has_bench_tx = rdof_jget(d, b, "tx") >= 0;
     return true;
 }
 
@@ -167,7 +191,7 @@ static bool from_plan(const rdof_plan_t *p, rdofradio_cfg_t *o, char *err, size_
     const rdof_plan_dev_t *dv = u && c->sdr_duplex != RDOF_SDR_DUPLEX_NONE ? rdof_plan_dev(p, u->rx) : NULL;
     if (dv && dv->has_tx_power)
         o->tx_power_dbm = dv->tx_power_dbm;
-    if (!clock_settings(p, o, err, cap))
+    if (!clock_settings(p, o, err, cap) || !bench_settings(p, o, err, cap))
         return false;
     if (roles.has_sdr && !channels(p, o, err, cap))
         return false;
@@ -364,6 +388,17 @@ size_t rdofradio_cfg_describe(const rdofradio_cfg_t *o, const char *source, cons
         PUT("clock: netclock, from %s\n", o->ntp_servers[0] ? o->ntp_servers : "the browser only (no servers)");
     else
         PUT("clock: the OS's\n");
+    if (o->has_bench_tx) {
+        const rdof_benchtx_policy_t *b = &o->bench_tx;
+        if (!b->nfreqs && !b->nbands)
+            PUT("bench TX (bench.tx): no frequencies here (--bench-tx)");
+        else
+            PUT("bench TX (bench.tx): %d frequencies, %d bands", b->nfreqs, b->nbands);
+        if (b->has_max_dbm)
+            PUT(", at most %.1f dBm, key-ups to %.1f s\n", b->max_dbm, b->max_key_s);
+        else
+            PUT(", RF level %d at most, key-ups to %.1f s\n", b->rf_level, b->max_key_s);
+    }
     if (device && *device)
         PUT("\ndevice (command line): %s\n", device);
 #undef PUT
