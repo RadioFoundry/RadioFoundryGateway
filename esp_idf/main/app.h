@@ -140,6 +140,9 @@ struct esp_mqtt_client *net_mqtt_start(net_mqtt_t *m);
 /* The board's own id for what must differ between two boards given the same settings (an MQTT client ID): the last
  * three bytes of its base MAC, six hex digits. */
 const char *net_hwid(void);
+/* True for a host that is only ever an example: the documentation address blocks (192.0.2.x, 198.51.100.x,
+ * 203.0.113.x; the default settings' networks are there) and the example names. Nothing connects to one. */
+bool net_sample_host(const char *host);
 bool net_mqtt_post(net_mqtt_t *m, const char *topic, const void *data, int len, int qos, bool retain); /* len < 0: a string */
 /* A UDP socket connected to host:port, or -1. */
 int net_udp_connect(const char *host, int port);

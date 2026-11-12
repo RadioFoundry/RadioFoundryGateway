@@ -1110,6 +1110,7 @@ An NVS partition with no free pages or a new version is erased at boot (`main.c`
 `auto`) on "Ch 1" 438.5 MHz (pinned with `devices`), its idle frequency; in a build with the SDR, an RTL-SDR `s3-sdr` (`rx.rate` 288000,
 `gain_db` 30) hearing Area 4 438.0625 (TG 213), Service Bravo 438.1125 (TG 204), Operations 3 438.1625 (TG 206),
 Service Desk 438.2125 (TG 208) and Area 1 438.2625 (TG 210); HBlink at 192.0.2.115:62031, MQTT at
-192.0.2.115:1883 (user `radios`).
+192.0.2.115:1883 (user `radios`). Both are a sample address: the board says so (`settings_warning`,
+the page's warning) and doesn't open its MQTT connections until a real broker is set.
 
 GET `/api/config` is the stored text with `wifi` (no passwords) and `ntp` added back (`rdof_jsonc_add`).

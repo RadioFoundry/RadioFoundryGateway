@@ -609,6 +609,10 @@ void mn_start(void)
         ESP_LOGW(TAG, "format v3, but no broker in the settings: off");
         return;
     }
+    if (net_sample_host(host)) {
+        ESP_LOGW(TAG, "the broker %s is a sample address, not a broker: off until it's set", host);
+        return;
+    }
     if (!rdof_mn_node_ok(site->name)) {
         ESP_LOGE(TAG, "the box's name \"%s\" can't be a node (letters, digits, . _ -, at most 39): off", site->name);
         return;

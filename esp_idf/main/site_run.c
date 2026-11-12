@@ -95,7 +95,35 @@ void site_load(const rdof_site_t *site)
 
 bool site_on(void) { return SR != NULL; }
 
-const char *site_warning(void) { return warning; }
+/* A sample address left in the settings (the defaults have them): said once, where MQTT down alone gave no reason. */
+static const char *sample_host(void)
+{
+#if CONFIG_RDOF_SDR
+    if (g_roles.has_sdr && g_scfg.has_mqtt && net_sample_host(g_scfg.mqtt_host))
+        return g_scfg.mqtt_host;
+#endif
+    for (int i = 0; i < g_roles.nradios; i++) {
+        const rdof_config_t *c = g_rcfg[i];
+        if (c && c->has_mqtt && net_sample_host(c->mqtt_host))
+            return c->mqtt_host;
+        if (c && hblink >= 0 && net_sample_host(c->master_host))
+            return c->master_host;
+    }
+    return NULL;
+}
+
+const char *site_warning(void)
+{
+    static bool looked;
+    if (!warning[0] && !looked && SR) {
+        looked = true;
+        const char *h = sample_host();
+        if (h)
+            snprintf(warning, sizeof warning, "a network's host is %s, a sample address: nothing connects until "
+                                              "the real one is set", h);
+    }
+    return warning;
+}
 
 bool site_shared_identity(void) { return SR && hblink >= 0 && !S->net[hblink].per_path; }
 

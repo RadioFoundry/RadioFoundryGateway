@@ -99,7 +99,7 @@ platform's own fields at that point (`web.c:fw_status`), then `settings_source` 
 | `apps` | array | | the settings' apps in their order, each with what it's doing (`rdof_router_apps_json`): `name`, `type` (`repeater`, `parrot`, `ipgw`); a repeater's `in`, `out` (Hz), `cc`, `net` (its network's name), `slots` (each `slot`, `path`, `peer` when the path has its own HBlink peer, `sending`: a network call goes out there now), and from rdofradio `keyed`, `heard` (each `slot`, `src`, `dst`, `group`), `bursts_heard`, `bursts_sent`, `dropped`; a parrot's or IP gateway's `id`, `group`, and a parrot's `state`, `replayed`, `ignored`, `cut` (`src`, `dst` during a call). The page's Radios tab shows a card for each | when the settings have apps |
 | `settings_ok` | bool | | the stored settings parsed and resolved; false: the board runs `DEFAULT_JSON` | always |
 | `settings_error` | string | | why not (empty if ok) | always |
-| `settings_warning` | string | | a setting that passed the check and that this build doesn't carry (an mqtt network's calls in the `dmrd` format on a board; format `v3` on a receiver-only image); absent when there is none | board |
+| `settings_warning` | string | | a setting that passed the check and that this build doesn't carry (an mqtt network's calls in the `dmrd` format on a board; format `v3` on a receiver-only image), or a network whose host is a sample address (192.0.2.x, 198.51.100.x, 203.0.113.x, an `example` name: the default settings' networks), which the board doesn't connect its MQTT to; absent when there is none | board |
 | `wifi` | bool | | station has an IP | always |
 | `ap_mode` | bool | | setup access point up | always |
 | `ip` | string | | station IP, `""` if none | always |

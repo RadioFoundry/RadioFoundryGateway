@@ -298,6 +298,11 @@ struct esp_mqtt_client *net_mqtt_start(net_mqtt_t *m)
     static char uri[2][112];
     if (n_client >= 2)
         return NULL;
+    if (net_sample_host(m->host)) { /* the default settings' broker: it would time out every few seconds for good */
+        ESP_LOGW(TAG, "%s: the broker %s is a sample address, not a broker: MQTT off until it's set", m->client_id,
+                 m->host);
+        return NULL;
+    }
     bool tls = false;
 #if CONFIG_RDOF_MQTT_TLS
     tls = m->tls;
@@ -381,4 +386,22 @@ const char *net_hwid(void)
         snprintf(id, sizeof id, "%02x%02x%02x", mac[3], mac[4], mac[5]);
     }
     return id;
+}
+
+bool net_sample_host(const char *host)
+{
+    static const char *const blocks[] = {"192.0.2.", "198.51.100.", "203.0.113."};
+    static const char *const names[] = {"example.com", "example.net", "example.org", ".example", ".invalid"};
+    if (!host || !host[0])
+        return false;
+    for (size_t i = 0; i < sizeof blocks / sizeof blocks[0]; i++)
+        if (!strncmp(host, blocks[i], strlen(blocks[i])))
+            return true;
+    const size_t n = strlen(host);
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
+        const size_t k = strlen(names[i]);
+        if (n >= k && !strcasecmp(host + n - k, names[i]) && (n == k || names[i][0] == '.' || host[n - k - 1] == '.'))
+            return true;
+    }
+    return false;
 }
