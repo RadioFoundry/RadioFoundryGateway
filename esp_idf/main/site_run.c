@@ -34,6 +34,7 @@ static rdof_site_t *S;
 static rdof_siteroute_t *SR;
 static SemaphoreHandle_t lock;
 static int hblink = -1, parrot = -1, mqttnet = -1;
+static char warning[160]; /* a setting this build doesn't carry (site_load), for the log and the page */
 static roam_t *owner;
 #if RDOF_FEATURE_TX
 static rdof_parrot_t *P;
@@ -68,6 +69,22 @@ void site_load(const rdof_site_t *site)
         if (s->net[k].type == RDOF_NET_MQTT && s->net[k].calls && s->net[k].format == RDOF_MQTT_FORMAT_V3 &&
             mqttnet < 0)
             mqttnet = k;
+    /* settings that pass the check and that this build doesn't carry: said here and on the page, where they used
+     * to drop every call with nothing logged */
+    for (int k = 0; k < s->nnet; k++) {
+        if (s->net[k].type != RDOF_NET_MQTT || !s->net[k].calls)
+            continue;
+        if (s->net[k].format != RDOF_MQTT_FORMAT_V3)
+            snprintf(warning, sizeof warning, "the mqtt network's calls in the dmrd format aren't carried by a board "
+                                              "(rdofradio's are): set format v3");
+#if !CONFIG_RDOF_ROAMER
+        else
+            snprintf(warning, sizeof warning, "the mqtt network's calls (format v3) need an image with the "
+                                              "transceiver built in: this one is the receiver only");
+#endif
+    }
+    if (warning[0])
+        ESP_LOGE(TAG, "settings: %s. No call goes to or from that network", warning);
     parrot = rdof_site_app_of(s, RDOF_APP_PARROT);
     lock = xSemaphoreCreateRecursiveMutex(); /* the transceiver answers a tune made here through site_tuned */
     S = s;
@@ -77,6 +94,8 @@ void site_load(const rdof_site_t *site)
 }
 
 bool site_on(void) { return SR != NULL; }
+
+const char *site_warning(void) { return warning; }
 
 bool site_shared_identity(void) { return SR && hblink >= 0 && !S->net[hblink].per_path; }
 

@@ -278,6 +278,7 @@ double now_mono(void);
    (site_rf true, site_dmrd false). */
 void site_load(const rdof_site_t *site);
 bool site_on(void);
+const char *site_warning(void); /* "" or a setting that's accepted and not carried by this build */
 bool site_shared_identity(void);           /* one HBlink identity: every path is the box's peer */
 /* Whether a unit runs an HBlink peer: on_net, its own path is on the HBlink network (site_run.c). */
 bool site_hb_wanted(bool on_net);

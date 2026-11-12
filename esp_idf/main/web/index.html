@@ -185,6 +185,7 @@ const waiting = (s, what) => s.started ? null : [['Waiting', 'for ' + what + ' t
 function problems(s) {
   const p = [], bad = t => p.push(['bad', t]), warn = t => p.push(['warn', t]);
   if (has(s, 'settings') && !s.settings_ok) bad('Settings: ' + s.settings_error + ' (running the defaults)');
+  if (s.settings_warning) bad('Settings: ' + s.settings_warning);
   if (has(s, 'wifi') && !s.wifi) (s.ap_mode ? warn : bad)('Wi-Fi not connected' + (s.ap_mode ? ' (setup access point on)' : ''));
   if (has(s, 'netclock') && s.clock == 'none') warn('Clock not set');
   if (has(s, 'os_clock') && s.clock_os && !(s.clock_os.known && s.clock_os.synced)) warn('System clock not synchronized');
@@ -231,7 +232,7 @@ function problems(s) {
 }
 
 // ── anything in /api/status this page doesn't know: shown as it comes ─────
-const KNOWN = 'name version idf uptime_s reset crash heap_free psram_free cpu memory settings_ok settings_error wifi ap_mode ip clock usb_either build_roamer build_sdr selftest spike roamer roamers sdr sdrs modems cpu_process last_exit caps clock_os settings_source rss rss_peak mem_total mem_avail power'.split(' ');
+const KNOWN = 'name version idf uptime_s reset crash heap_free psram_free cpu memory settings_ok settings_error settings_warning wifi ap_mode ip clock usb_either build_roamer build_sdr selftest spike roamer roamers sdr sdrs modems cpu_process last_exit caps clock_os settings_source rss rss_peak mem_total mem_avail power'.split(' ');
 const extras = s => Object.entries(s).filter(([k]) => !KNOWN.includes(k));
 const flat = (o, pre = '') => Object.entries(o).flatMap(([k, v]) => v && typeof v == 'object' ?
   (Array.isArray(v) && v.every(x => typeof x != 'object') ? [[pre + k, v.join(', ')]] : flat(v, pre + k + '.')) : [[pre + k, v]]);
