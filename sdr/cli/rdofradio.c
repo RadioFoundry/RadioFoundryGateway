@@ -320,7 +320,7 @@ static void on_signal(int s) { stop = 1; }
 static const char *config_path;
 /* a trunked site's (rdofradio_t3.h): --sim-air and the rest */
 static struct {
-    int sim_n;
+    int sim_n, air_ms;
     uint32_t sim_id, sim_tg;
     double sim_talk_s, sim_ext_loss, sim_ext_err;
     const char *sim_script, *state_dir, *sim_ext;
@@ -542,6 +542,8 @@ static void usage(void)
             "                 [--tx-offset-hz HZ] [--rx-level PCT] [--tx-level PCT] --rx MHZ [--tx MHZ] [--duplex full|half]\n"
             "                 [--cc CC] | --config FILE [--parrot ID] [--seconds S] [-v] [--web ...] [--bench ...]\n"
             "       rdofradio DEVICE --allow-tx --config FILE (a trunked site) [--state-dir DIR] [the device's flags]\n"
+            "                 [--air-ms N [--sim-id ID] [--sim-tg TG] [--sim-talk S]] [--sim-script FILE] (simulated MSs\n"
+            "                 beside the radios on the air)\n"
             "       rdofradio --config FILE --sim-air N [--sim-id ID] [--sim-tg TG] [--sim-talk S] [--sim-script FILE]\n"
             "                 [--sim-ext PATH [--sim-fast] [--sim-ext-loss P] [--sim-ext-err P]]\n"
             "                 [--state-dir DIR] [--seconds S] [-v] (a trunked site's air simulated, rdofradio_t3.h)\n"
@@ -6447,6 +6449,9 @@ int main(int argc, char **argv)
         } else if (!strcmp(a, "--sim-air")) {
             NEXT();
             t3_opts.sim_n = atoi(v);
+        } else if (!strcmp(a, "--air-ms")) {
+            NEXT();
+            t3_opts.air_ms = atoi(v);
         } else if (!strcmp(a, "--sim-id")) {
             NEXT();
             t3_opts.sim_id = (uint32_t)strtoul(v, NULL, 10);
@@ -6681,6 +6686,7 @@ int main(int argc, char **argv)
         if (rcfg.tier3) {
 #ifdef RDOF_TIER3
             const rdofradio_t3_opts_t to = {.sim_n = t3_opts.sim_n,
+                                               .air_ms = t3_opts.air_ms,
                                                .sim_id = t3_opts.sim_id,
                                                .sim_tg = t3_opts.sim_tg,
                                                .sim_talk_s = t3_opts.sim_talk_s,
@@ -6692,7 +6698,7 @@ int main(int argc, char **argv)
                                                .state_dir = t3_opts.state_dir,
                                                .seconds = seconds,
                                                .verbose = verbose != 0};
-            if (to.sim_n > 0 || to.sim_script || to.sim_ext) {
+            if (to.sim_n > 0 || (to.sim_script && to.air_ms <= 0) || to.sim_ext) {
                 signal(SIGINT, on_signal);
                 signal(SIGTERM, on_signal);
                 return rdofradio_t3_sim(&rcfg, &to, &stop);
@@ -7178,8 +7184,10 @@ int main(int argc, char **argv)
 #ifdef RDOF_TIER3
         /* a trunked site: the repeater keeps the modem set up; the site's slot source sends every slot */
         if (ok && rcfg.tier3) {
-            const rdofradio_t3_opts_t to = {.state_dir = t3_opts.state_dir, .seconds = seconds,
-                                               .verbose = verbose != 0};
+            const rdofradio_t3_opts_t to = {.air_ms = t3_opts.air_ms, .sim_id = t3_opts.sim_id,
+                                               .sim_tg = t3_opts.sim_tg, .sim_talk_s = t3_opts.sim_talk_s,
+                                               .sim_script = t3_opts.sim_script, .state_dir = t3_opts.state_dir,
+                                               .seconds = seconds, .verbose = verbose != 0};
             char terr[200];
             const rdofradio_t3_dev_t td = {trunk_channel, main_now48, now_s, (uint32_t)R.rate};
             /* the site's slots on the host's clock (UTC when it's synced): carrier 1's from the SDR's sample clock as

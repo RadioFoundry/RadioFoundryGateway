@@ -187,6 +187,12 @@ if(TARGET rdofradio AND TARGET fakemodem AND UNIX)
                  ${RDOF_CLI}/../../config/examples)
         set_tests_properties(rdofradio_e2e_examples PROPERTIES TIMEOUT 300)
     endif()
+    if(RDOF_TIER3 AND NOT RDOF_T3_LIB STREQUAL "NOTFOUND")
+        # no RF: a Tier III site on a file device with simulated MSs beside the air (--air-ms)
+        add_test(NAME rdofradio_e2e_t3_airms COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_t3_airms.sh
+                 $<TARGET_FILE_DIR:rdofradio>)
+        set_tests_properties(rdofradio_e2e_t3_airms PROPERTIES TIMEOUT 60)
+    endif()
     # no RF: two boxes, each on a fakemodem, joined by the MQTT network (format v3) through a broker on this host
     find_program(MOSQUITTO_BROKER mosquitto HINTS /usr/sbin /usr/local/sbin /opt/homebrew/sbin)
     if(MOSQUITTO_BROKER AND MOSQUITTO_INCLUDE_DIR AND MOSQUITTO_LIBRARY)

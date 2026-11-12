@@ -36,6 +36,7 @@
 
 typedef struct {
     int sim_n;               /* --sim-air: the MSs (0: on a device) */
+    int air_ms;              /* --air-ms: on a device, simulated MSs on carrier 1 beside the real radios */
     uint32_t sim_id;         /* the first one's ID (--sim-id; the rest follow) */
     uint32_t sim_tg;         /* --sim-tg */
     double sim_talk_s;       /* --sim-talk: a group call every this many seconds, 0 none */

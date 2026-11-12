@@ -695,6 +695,13 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
   through the full burst path (the simulator's PDUs are built into bursts and parsed back), with real mqtt-net, slot
   k = wall clock ms / 30. Two rdofradios with `--sim-air` and different `site` numbers make a two-site system on one
   computer.
+- `--air-ms N` (on a device): N simulated MSs (`--sim-id` on, `--sim-tg`, `--sim-talk S`, `--sim-script FILE` as
+  `--sim-air`) beside the real radios on carrier 1. Each slot they hear the outbound burst the site sends, decoded as a
+  radio would, and what they send goes to the site as if heard on carrier 1's inbound (one a slot; no RF). A real radio
+  then has partners on a one-radio bench: it follows their group calls, takes their individual calls (availability
+  check included) and calls them. With mqtt-net they also take commands on `ROOT/node/NODE/air-ms`, a script line
+  without its time (`1000001 private 3105738 5000`, `1000001 group 1 3000`, `1000002 register 1`). Their state changes
+  go to the log (`air MS ID: ...`). Test: `rdofradio_e2e_t3_airms`.
 - `--sim-ext PATH`: external MSs (other programs, such as a radio's MS engine built for the host) on the simulated
   air, through a unix socket, beside the N simulated ones (N may be 0). JSON lines in lockstep with the slots: after
   slot k each client gets what every carrier aired (the burst, its data type and CC, the PDU when its CRC passed, the

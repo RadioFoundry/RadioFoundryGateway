@@ -87,11 +87,20 @@ static void io_publish(void *ctx, const char *topic, const void *data, size_t le
 #endif
 }
 
+static char air_topic[160]; /* the air MSs' commands (--air-ms), "" none */
+
 static void io_subscribe(void *ctx, const char *const *f, int n)
 {
 #ifdef RDOF_MQTT
-    if (T.mq)
-        rdofmq_subscribe(T.mq, f, n);
+    if (!T.mq)
+        return;
+    const char *all[RDOFMQ_SUBS];
+    int m = 0;
+    for (int i = 0; i < n && m < RDOFMQ_SUBS - 1; i++)
+        all[m++] = f[i];
+    if (air_topic[0])
+        all[m++] = air_topic;
+    rdofmq_subscribe(T.mq, all, m);
 #endif
 }
 
@@ -261,6 +270,8 @@ static bool start_common(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o,
 }
 
 /* messages in, the link's changes, timers; T.mu held */
+static bool air_command(const char *topic, const void *data, size_t len);
+
 static void poll_locked(int64_t now_ms)
 {
     rdof_t3unit_set_now(T.u, now_ms);
@@ -277,7 +288,8 @@ static void poll_locked(int64_t now_ms)
         pthread_mutex_unlock(&inq_mu);
         if (!any)
             break;
-        rdof_t3unit_message(T.u, topic, data, len);
+        if (!air_command(topic, data, len))
+            rdof_t3unit_message(T.u, topic, data, len);
         free(topic);
         free(data);
     }
@@ -323,6 +335,38 @@ static int act_cmp(const void *a, const void *b)
     return x < y ? -1 : x > y;
 }
 
+/* "ID register [TG] | deregister | group TG [TALK_MS] | private ID [TALK_MS] | cancel" (a # starts a comment): 1 an
+ * action in *x (at_ms 0), 0 a blank line, -1 a bad one. */
+static int act_parse(const char *text, act_t *x)
+{
+    char line[256];
+    snprintf(line, sizeof line, "%s", text);
+    char *h = strchr(line, '#');
+    if (h)
+        *h = 0;
+    unsigned long id, a1 = 0, a2 = 0;
+    char what[24];
+    const int got = sscanf(line, "%lu %23s %lu %lu", &id, what, &a1, &a2);
+    if (got <= 0)
+        return 0;
+    *x = (act_t){.id = (uint32_t)id};
+    if (got < 2 || !id)
+        return -1;
+    if (!strcmp(what, "register"))
+        x->what = RDOF_T3MS_DO_REGISTER, x->arg = (uint32_t)a1;
+    else if (!strcmp(what, "deregister"))
+        x->what = RDOF_T3MS_DO_DEREGISTER;
+    else if (!strcmp(what, "group") && got >= 3)
+        x->what = RDOF_T3MS_DO_GROUP, x->arg = (uint32_t)a1, x->talk_ms = got >= 4 ? (uint32_t)a2 : 2000;
+    else if (!strcmp(what, "private") && got >= 3)
+        x->what = RDOF_T3MS_DO_PRIVATE, x->arg = (uint32_t)a1, x->talk_ms = got >= 4 ? (uint32_t)a2 : 2000;
+    else if (!strcmp(what, "cancel"))
+        x->what = RDOF_T3MS_DO_CANCEL;
+    else
+        return -1;
+    return 1;
+}
+
 /* The script's lines into acts (times from t0). Returns how many, -1 a bad line (said). */
 static int script_read(const char *path, int64_t t0, act_t *acts, int max)
 {
@@ -335,30 +379,23 @@ static int script_read(const char *path, int64_t t0, act_t *acts, int max)
     int n = 0, ln = 0;
     while (fgets(line, sizeof line, f)) {
         ln++;
-        char *h = strchr(line, '#');
-        if (h)
-            *h = 0;
         double at;
-        unsigned long id, a1 = 0, a2 = 0;
-        char what[24];
-        const int got = sscanf(line, "%lf %lu %23s %lu %lu", &at, &id, what, &a1, &a2);
-        if (got <= 0)
+        int used = 0;
+        act_t x;
+        if (sscanf(line, " %lf%n", &at, &used) < 1) {
+            char *h = strchr(line, '#');
+            if (h)
+                *h = 0;
+            if (strspn(line, " \t\r\n") == strlen(line))
+                continue;
+            goto bad;
+        }
+        const int r = act_parse(line + used, &x);
+        if (r == 0)
             continue;
-        act_t x = {.at_ms = t0 + (int64_t)(at * 1000), .id = (uint32_t)id};
-        if (got < 3 || at < 0 || !id)
+        if (r < 0 || at < 0)
             goto bad;
-        if (!strcmp(what, "register"))
-            x.what = RDOF_T3MS_DO_REGISTER, x.arg = (uint32_t)a1;
-        else if (!strcmp(what, "deregister"))
-            x.what = RDOF_T3MS_DO_DEREGISTER;
-        else if (!strcmp(what, "group") && got >= 4)
-            x.what = RDOF_T3MS_DO_GROUP, x.arg = (uint32_t)a1, x.talk_ms = got >= 5 ? (uint32_t)a2 : 2000;
-        else if (!strcmp(what, "private") && got >= 4)
-            x.what = RDOF_T3MS_DO_PRIVATE, x.arg = (uint32_t)a1, x.talk_ms = got >= 5 ? (uint32_t)a2 : 2000;
-        else if (!strcmp(what, "cancel"))
-            x.what = RDOF_T3MS_DO_CANCEL;
-        else
-            goto bad;
+        x.at_ms = t0 + (int64_t)(at * 1000);
         if (n == max) {
             tsay("%s: more than %d actions", path, max);
             fclose(f);
@@ -516,6 +553,174 @@ int rdofradio_t3_sim(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o, vol
 
 /* ── on a device ──────────────────────────────────────────────────────────── */
 
+/* --air-ms: simulated MSs (t3ms) on the device's site. Each slot they hear what carrier 1 sends (its outbound,
+ * decoded as a radio would) and what they send goes to the site as if heard on carrier 1's inbound, beside the real
+ * radios on the air: a radio can register next to them, call them, hear their calls on the payload channel. Driven by
+ * --sim-script and --sim-talk as --sim-air, and by MQTT: ROOT/node/NODE/air-ms, a script line without its time ("ID
+ * private 3105738 5000"). Carrier 1 only. */
+static struct {
+    int n;
+    rdof_t3ms_t *ms[RDOF_T3SIM_MS];
+    uint32_t id[RDOF_T3SIM_MS];
+    int voice_n[RDOF_T3SIM_MS];
+    rdof_t3ms_status_t last[RDOF_T3SIM_MS];
+    act_t acts[ACTS];
+    int nacts, ai, talker;
+    int64_t next_talk;
+    uint32_t in, out, bad;
+} AM;
+
+static int air_find(uint32_t id)
+{
+    for (int i = 0; i < AM.n; i++)
+        if (AM.id[i] == id)
+            return i;
+    return -1;
+}
+
+static bool air_start(const rdofradio_t3_opts_t *o, char *err, size_t cap)
+{
+    if (o->air_ms <= 0 && !o->sim_script)
+        return true;
+    const int64_t t0 = wall_ms();
+    if (o->sim_script && (AM.nacts = script_read(o->sim_script, t0, AM.acts, ACTS)) < 0) {
+        snprintf(err, cap, "%s: a bad script", o->sim_script);
+        return false;
+    }
+    int n = o->air_ms < RDOF_T3SIM_MS ? o->air_ms : RDOF_T3SIM_MS;
+    for (int i = 0; i < n; i++)
+        AM.id[i] = o->sim_id + (uint32_t)i;
+    for (int a = 0; a < AM.nacts && n < RDOF_T3SIM_MS; a++) {
+        bool known = false;
+        for (int i = 0; i < n && !known; i++)
+            known = AM.id[i] == AM.acts[a].id;
+        if (!known)
+            AM.id[n++] = AM.acts[a].id;
+    }
+    const rdof_t3_cfg_t *cfg = rdof_t3unit_cfg(T.u);
+    uint16_t chans[RDOF_T3_CARRIERS];
+    for (int k = 0; k < cfg->ncarriers; k++)
+        chans[k] = cfg->carriers[k].chan;
+    const uint32_t tg[1] = {o->sim_tg};
+    for (int i = 0; i < n; i++) {
+        AM.ms[i] = malloc(rdof_t3ms_size());
+        if (!AM.ms[i]) {
+            snprintf(err, cap, "no memory");
+            return false;
+        }
+        rdof_t3ms_init(AM.ms[i], AM.id[i], tg, 1, chans, 1, T.rng ^ (AM.id[i] * 2654435761u));
+        if (i < o->air_ms)
+            rdof_t3ms_do(AM.ms[i], RDOF_T3MS_DO_REGISTER, o->sim_tg, 0, 0, t0 + 3000 + 700 * i);
+        rdof_t3ms_status(AM.ms[i], &AM.last[i]);
+    }
+    AM.next_talk = o->sim_talk_s > 0 ? t0 + (int64_t)(o->sim_talk_s * 1000) : -1;
+    AM.n = n;
+#ifdef RDOF_MQTT
+    if (T.net)
+        rdof_mn_node_topic(air_topic, sizeof air_topic, T.c->t.root, T.node, "air-ms");
+#endif
+    tsay("air MSs: %d (%u..%u), talkgroup %u, on carrier 1%s%s", n, (unsigned)AM.id[0], (unsigned)AM.id[n - 1],
+         (unsigned)o->sim_tg, air_topic[0] ? "; commands on " : "", air_topic);
+    return true;
+}
+
+static void air_do(const act_t *a, int64_t now)
+{
+    const int i = air_find(a->id);
+    if (i < 0) {
+        tsay("air MSs: no %u here", (unsigned)a->id);
+        return;
+    }
+    if (!rdof_t3ms_do(AM.ms[i], a->what, a->arg, a->talk_ms, 0, now))
+        tsay("air MS %u: its queue is full", (unsigned)a->id);
+}
+
+/* T.mu held */
+static bool air_command(const char *topic, const void *data, size_t len)
+{
+    if (!air_topic[0] || strcmp(topic, air_topic))
+        return false;
+    char line[200];
+    snprintf(line, sizeof line, "%.*s", (int)(len < sizeof line ? len : sizeof line - 1), (const char *)data);
+    act_t a;
+    const int r = act_parse(line, &a);
+    if (r > 0)
+        air_do(&a, wall_ms());
+    else if (r < 0)
+        tsay("air MSs: \"%s\": ID register [TG] | deregister | group TG [TALK_MS] | private ID [TALK_MS] | cancel",
+             line);
+    return true;
+}
+
+static const char *const air_state[] = {"idle", "access", "waiting", "payload"};
+
+/* trunk slot k of carrier 1: its outbound burst (aired: one was sent). T.mu held. */
+static void air_slot(int64_t k, const uint8_t burst[RDOF_BURST_BYTES], bool aired)
+{
+    if (!AM.n)
+        return;
+    const int64_t now = wall_ms();
+    for (; AM.ai < AM.nacts && AM.acts[AM.ai].at_ms <= now; AM.ai++)
+        air_do(&AM.acts[AM.ai], now);
+    if (AM.next_talk >= 0 && now >= AM.next_talk && T.o.air_ms > 0) {
+        rdof_t3ms_do(AM.ms[AM.talker], RDOF_T3MS_DO_GROUP, T.o.sim_tg, 2000, 0, now);
+        AM.talker = (AM.talker + 1) % T.o.air_ms;
+        AM.next_talk = now + (int64_t)(T.o.sim_talk_s * 1000);
+    }
+    const int cc = rdof_t3unit_cfg(T.u)->cc;
+    /* the inbound of slot k: one burst heard, the first MS's (the others collide with it, unheard) */
+    bool sent = false;
+    for (int i = 0; i < AM.n; i++) {
+        rdof_t3ms_tx_t tx;
+        if (!rdof_t3ms_tx(AM.ms[i], k, now, &tx))
+            continue;
+        rdof_burst_t b;
+        const int n = AM.voice_n[i];
+        AM.voice_n[i] = tx.kind != 1 && tx.what == RDOF_T3_VOICE_FRAME ? (n + 1) % 6 : 0;
+        if (tx.ch > 1 || sent || !rdof_t3sim_ms_burst(&tx, n, cc, &b))
+            continue;
+        b.slot = (tx.ch & 1) + 1;
+        rdof_t3unit_rx(T.u, 0, k, &b, -60);
+        sent = true;
+        AM.in++;
+    }
+    /* the outbound of slot k, as a radio decodes it */
+    uint8_t pdu[10] = {0};
+    int dt = -1, rcc = -1;
+    uint8_t mdt = 0;
+    if (aired) {
+        const rdof_trunk_pdu_t r = rdof_t3rf_burst_pdu(burst, &dt, &rcc, pdu);
+        if (r == RDOF_T3RF_PDU_OK)
+            mdt = (uint8_t)dt, AM.out++;
+        else if (r == RDOF_T3RF_PDU_BAD)
+            AM.bad++;
+    }
+    const bool at = rdof_t3unit_at(T.u, k) > 0;
+    for (int i = 0; i < AM.n; i++) {
+        rdof_t3ms_status_t st;
+        rdof_t3ms_status(AM.ms[i], &st);
+        if ((st.ch & 1) == (k & 1) && st.ch < 2)
+            rdof_t3ms_rx(AM.ms[i], st.ch, k, mdt, pdu, st.ch == 0 && at);
+        rdof_t3ms_status(AM.ms[i], &st);
+        rdof_t3ms_status_t *l = &AM.last[i];
+        if (st.state != l->state || st.registered != l->registered || st.calls_done != l->calls_done ||
+            st.calls_failed != l->calls_failed)
+            tsay("air MS %u: %s%s on ch %d; calls %u done, %u failed (reason 0x%02x); heard %u -> %u", (unsigned)AM.id[i],
+                 st.state < 4 ? air_state[st.state] : "?", st.registered ? ", registered" : "", st.ch,
+                 (unsigned)st.calls_done, (unsigned)st.calls_failed, st.last_reason, (unsigned)st.heard_src,
+                 (unsigned)st.heard_dst);
+        *l = st;
+    }
+}
+
+static void air_stop(void)
+{
+    for (int i = 0; i < AM.n; i++)
+        free(AM.ms[i]);
+    AM.n = 0;
+    air_topic[0] = 0;
+}
+
 static rdof_sdrmodem_t *M;
 static rdofradio_t3_dev_t DEV;
 
@@ -586,6 +791,7 @@ static bool source_slot(void *ctx, int64_t k, uint8_t burst[RDOF_BURST_BYTES], i
     A.on_grid = on_grid;
     A.last_k = k;
     const bool ok = rdof_t3unit_slot(T.u, 0, k + A.d, burst, &control, at, slc28);
+    air_slot(k + A.d, burst, ok);
     pthread_mutex_unlock(&T.mu);
     return ok;
 }
@@ -745,6 +951,11 @@ bool rdofradio_t3_start(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o, 
         b_stop();
         return false;
     }
+    if (!air_start(o, err, cap)) {
+        b_stop();
+        stop_common();
+        return false;
+    }
     M = m;
     const rdof_sdrmodem_source_t src = {source_slot, NULL};
     rdof_sdrmodem_set_source(m, &src);
@@ -842,4 +1053,5 @@ void rdofradio_t3_stop(void)
     }
     b_stop();
     stop_common();
+    air_stop();
 }
