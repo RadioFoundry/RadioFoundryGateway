@@ -74,6 +74,19 @@ pub mod t3site;
 #[cfg(all(test, feature = "t3"))]
 mod t3tests;
 
+// The Tier III site around the controller (the tier3 feature; docs/spec/fw/tier3.md 9). Their C headers are the
+// contract: rdof/t3rf.h, rdof/t3cfg.h, rdof/t3unit.h, rdof/t3sim.h, rdof/sdr/t3split.h.
+#[cfg(feature = "tier3")]
+pub mod t3cfg;
+#[cfg(feature = "tier3")]
+pub mod t3rf;
+#[cfg(feature = "tier3")]
+pub mod t3sim;
+#[cfg(feature = "tier3")]
+pub mod t3split;
+#[cfg(feature = "tier3")]
+pub mod t3unit;
+
 #[cfg(not(any(feature = "legacy", test)))]
 mod ffi {
     extern "C" {

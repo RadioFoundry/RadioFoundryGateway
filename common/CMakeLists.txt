@@ -138,12 +138,13 @@ else()
     endif()
     add_library(rdof_common STATIC ${RDOF_COMMON_SRCS})
     if(RDOF_COMMON_RUST)
-        # RDOF_TIER3: the trunked site's controller (rust's t3 feature) goes in the same library; a second Rust
-        # static library in one program would bring a second core and panic handler.
-        option(RDOF_TIER3 "The trunked site's controller (rust's t3 feature) in the Rust library" ON)
+        # RDOF_TIER3: the Tier III site (rust's tier3 feature: the controller and everything around it, Rust only)
+        # goes in the same library; a second Rust static library in one program would bring a second core and panic
+        # handler. With the C modules (RDOF_RUST off) there is no Tier III site.
+        option(RDOF_TIER3 "The Tier III site (rust's tier3 feature) in the Rust library" ON)
         set(rdof_rust_features)
         if(RDOF_TIER3)
-            set(rdof_rust_features FEATURES t3)
+            set(rdof_rust_features FEATURES tier3)
         endif()
         if(RDOF_RUST_TARGET)
             rdof_rust_add(rdof_rust TARGET ${RDOF_RUST_TARGET} ${rdof_rust_features})

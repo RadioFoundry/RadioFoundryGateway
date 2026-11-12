@@ -5,7 +5,7 @@
 #                 [NO_DEFAULT_FEATURES] [FEATURES <feature>...])
 # makes <name> an imported static library (librdof_rust.a) that cargo rebuilds when a .rs file changes, without
 # Rust's compiler_builtins (strip_builtins.cmake). The default feature, legacy, is the modules that replace common's
-# C; t3 is the trunked site (NO_DEFAULT_FEATURES FEATURES t3 builds it alone).
+# C; tier3 is the Tier III site (FEATURES tier3), t3 its controller alone (cargo test).
 set(RDOF_RUST_DIR ${CMAKE_CURRENT_LIST_DIR})
 # common modules the crate replaces: common/src/<module>.c each.
 set(RDOF_RUST_MODULES ambe benchcfg benchtx bits config hblink jitter json jsonp lastheard layer2 mmdvm modem netcalls oled parrot pdu rawburst repeater slotgrid status tracker txvr usbmatch)
@@ -104,30 +104,14 @@ function(rdof_rust_add name)
     add_dependencies(${name} ${name}_cargo)
 endfunction()
 
-# rdof_t3_lib(<var> <common target>): what a program that runs the trunked site's controller (rdof/t3.h) links
-# beside <common target>: nothing when that library's Rust has the t3 feature already (RDOF_RUST_T3), else rust's t3
-# feature built alone (for RDOF_RUST_TARGET when set), else NOTFOUND (no cargo).
+# rdof_t3_lib(<var> <common target>): what a program that runs the Tier III site (rdof/t3.h, rdof/t3*.h) links
+# beside <common target>: nothing when that library's Rust has the tier3 feature (RDOF_RUST_T3: RDOF_TIER3, the
+# default), else NOTFOUND (the C modules: no Tier III site).
 function(rdof_t3_lib var common)
     get_target_property(defs ${common} INTERFACE_COMPILE_DEFINITIONS)
     if(defs MATCHES "RDOF_RUST_T3=1")
         set(${var} "" PARENT_SCOPE)
-        return()
-    endif()
-    find_program(RDOF_CARGO cargo HINTS $ENV{HOME}/.cargo/bin)
-    if(NOT RDOF_CARGO)
-        set(${var} NOTFOUND PARENT_SCOPE)
-        return()
-    endif()
-    if(RDOF_RUST_TARGET)
-        string(REPLACE "-" "_" name rdof_rust_t3_${RDOF_RUST_TARGET})
-        if(NOT TARGET ${name})
-            rdof_rust_add(${name} TARGET ${RDOF_RUST_TARGET} NO_DEFAULT_FEATURES FEATURES t3)
-        endif()
     else()
-        set(name rdof_rust_t3)
-        if(NOT TARGET ${name})
-            rdof_rust_add(${name} NO_DEFAULT_FEATURES FEATURES t3)
-        endif()
+        set(${var} NOTFOUND PARENT_SCOPE)
     endif()
-    set(${var} ${name} PARENT_SCOPE)
 endfunction()
