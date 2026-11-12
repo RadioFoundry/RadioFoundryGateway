@@ -495,7 +495,7 @@ static EXT_RAM_BSS_ATTR esp_mqtt_client_config_t client_cfg;
 
 static void mn_task(void *arg)
 {
-    double ticked = 0, subs_at = -10, status_at = -10;
+    double ticked = 0, subs_at = -10, status_at = -10, restart_at = -1;
     for (;;) {
         frame_in_t fi;
         if (M->fall_back) { /* from here, not from esp-mqtt's own task, which a stop waits for */
@@ -504,7 +504,16 @@ static void mn_task(void *arg)
             esp_mqtt_client_stop(M->client);
             client_cfg.session.protocol_ver = MQTT_PROTOCOL_V_3_1_1;
             esp_mqtt_set_config(M->client, &client_cfg);
-            esp_mqtt_client_start(M->client);
+            restart_at = mono();
+        }
+        /* the start can fail: esp-mqtt's task takes 6 KB of internal RAM, and the reporting connections fall back
+         * (and take theirs) at the same moment. Tried again each second until it runs: a W12 was left with no
+         * MQTT network after "Error create mqtt task" */
+        if (restart_at >= 0 && mono() >= restart_at) {
+            if (esp_mqtt_client_start(M->client) == ESP_OK)
+                restart_at = -1;
+            else
+                restart_at = mono() + 1;
         }
         /* frames first: a call's bursts every 60 ms on each receiver */
         while (xQueueReceive(M->frames, &fi, 0) == pdTRUE)

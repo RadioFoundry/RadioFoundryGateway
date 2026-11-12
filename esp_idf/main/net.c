@@ -175,7 +175,10 @@ static void fall_back(post_queue_t *q)
             esp_mqtt_client_stop(q->client);
             client_cfg[i].session.protocol_ver = MQTT_PROTOCOL_V_3_1_1;
             esp_mqtt_set_config(q->client, &client_cfg[i]);
-            esp_mqtt_client_start(q->client);
+            /* esp-mqtt's task takes 6 KB of internal RAM, and the board's other connections fall back at the same
+             * moment: tried until it starts, so a start that fails doesn't leave the connection off for good */
+            for (int k = 0; k < 30 && esp_mqtt_client_start(q->client) != ESP_OK; k++)
+                vTaskDelay(pdMS_TO_TICKS(1000));
         }
 }
 #endif
