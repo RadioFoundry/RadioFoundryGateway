@@ -1066,6 +1066,10 @@ static void align(rdof_split_t *s, double now)
     split_req(s, RDOF_SPLIT_TX, RDOF_OPS_SUB_ALIGN, body, len, RDOF_SPLIT_DONE_ALIGN, 0, now);
 }
 
+bool rdof_split_ready(const rdof_split_t *s) { return s->ready; }
+
+const char *rdof_split_failed(const rdof_split_t *s) { return s->failed; }
+
 bool rdof_split_sched_ok(const rdof_split_t *s)
 {
     return s->ready && !s->failed[0] && s->tx_role && s->stream_mode == RDOF_OPS_STREAM_SCHEDULED &&

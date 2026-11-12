@@ -81,7 +81,7 @@ site: one chain is simplest; two chains keep each carrier on its own amplifier.
 | Part | Language, where | Does |
 |---|---|---|
 | Site controller | Rust, `rust/src/t3*.rs` (the `t3` feature of `rdof_rust`), C API `rdof/t3.h` | Every Tier III decision. No I/O, no allocation, no clock of its own: the caller feeds it PDUs, voice activity, network events and time; it returns what to send per slot and events to act on. Runs in rdofradio now; built `no_std` so a board can run it later |
-| Radio layer | C, `common/src/t3rf.c` (portable) + `sdr/cli/rdofradio_t3.c` | Burst building and parsing (BPTC, CRC masks, slot type, sync, CACH, short LC), the per-slot hook into the SDR modem, the payload channels (local repeat, network voice in, idle, the controller's payload PDUs), the split radio for carrier B, the receive path from the SDR's channels |
+| Radio layer | Rust, `rust/src/t3rf.rs` (portable) and `t3split.rs` (carrier B's split), + `sdr/cli/rdofradio_t3.c` | Burst building and parsing (BPTC, CRC masks, slot type, sync, CACH, short LC), the per-slot hook into the SDR modem, the payload channels (local repeat, network voice in, idle, the controller's payload PDUs), the split radio for carrier B, the receive path from the SDR's channels |
 | Network side of the site | C, `common/src/mqttnet.c` and rdofradio | mqtt-net as today, plus the setup item, registration records, the trunk part of `info` and `status`, provisioning topics and their cache |
 | MS simulator | Rust, `rust/src/t3ms.rs`, `t3air.rs` | Simulated radios that follow 361-4 (hunt omitted, access, registration, calls, answers), and a slot-exact air model with collisions. Used by the Rust tests, the C tests, and rdofradio's `--sim-air` |
 | Router | Python, network services | As today, plus location from registration records and an early refusal for an unknown called party |
@@ -90,7 +90,7 @@ site: one chain is simplest; two chains keep each carrier on its own amplifier.
 
 Why Rust for the controller: the owner's choice for new logic in RFG; the controller is pure state machines over
 fixed tables, which `no_std` Rust does well, and the same crate holds the MS simulator so the PDU codec exists once.
-The radio layer stays C because the FEC, the SDR modem and the split code it drives are C.
+The radio layer is Rust too; the FEC, the voice regeneration and the split code it drives stay C, and it calls them.
 
 The controller works on PDU bodies (the 10 info bytes of a CSBK, MBC or UDT block, before the CRC) and short LC
 values (28 bits, before the CRC-8). The radio layer adds and checks CRCs, BPTC, slot types, syncs and the CACH. So
@@ -602,7 +602,7 @@ called about one slot plus the TX lead ahead of air: the controller decides a sl
 
 ### 9.2 Payload channels
 
-`rdof_t3rf_ch_t` (portable C): per payload channel (carrier, LCN):
+`rdof_t3rf_ch_t` (portable; Rust, `rust/src/t3rf.rs`): per payload channel (carrier, LCN):
 
 - inbound bursts (from the receiver, MS sync) on an open channel: regenerated (`rdof_duplex_data`, `rdof_voice_regen_*`)
   and queued for the outbound slot one frame later; voice activity to `rdof_t3_rx_voice`; CSBKs (P_MAINT) to
@@ -643,7 +643,7 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
   offset taken at the first slot the modem asks for (again if its slots restart), so the modem's TS1 is LCN 0. The
   carriers aren't slot-synchronized (`site_sync` 0: the payload warm-up).
 - Carrier B, the first build's second carrier, is a split TX half on its radio's port (`rdof/sdr/t3split.h`,
-  `sdr/src/t3split.c`): one split of `rdof_sdrsplits` with the SDR's receiver as its RX half. Before the receiver
+  `rust/src/t3split.rs`): one split of `rdof_sdrsplits` with the SDR's receiver as its RX half. Before the receiver
   starts, rdofradio brings the half up and sends the carrier's settings (`SET_CONFIG`, `SET_MODE`, `SET_FREQ`; no
   answer in 8 s, or a NAK, and the site doesn't start), then aligns the half's slot counter to UTC from the host's
   clock (`rdof_split_set_utc`, again each minute) with the scheduled stream. The main loop's 20 ms poll pumps it

@@ -7,6 +7,7 @@
  * numbers), and an MS on carrier B follows it from what the half airs; a burst the receiver hears on carrier B's
  * inbound comes back up labeled with its slot; the carrier unkeys after the call. */
 #include <math.h>
+#include <stdalign.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,6 +32,28 @@ static int fails;
             fails++;                                                                                               \
         }                                                                                                          \
     } while (0)
+
+#define LAYOUT(t) {#t, sizeof(t), alignof(t)}
+
+/* The Rust's mirrors (rust/src/t3split.rs) have the C's size and alignment. */
+static void test_layouts(void)
+{
+    static const rdof_t3rf_layout_t c[] = {
+        LAYOUT(rdof_t3split_io_t), LAYOUT(rdof_t3split_ops_t),  LAYOUT(rdof_sdrsplits_io_t),
+        LAYOUT(rdof_sdrsplits_t),  LAYOUT(rdof_split_params_t), LAYOUT(rdof_t3split_t),
+    };
+    const size_t n = sizeof c / sizeof c[0];
+    size_t i = 0;
+    for (const rdof_t3rf_layout_t *r; (r = rdof_t3split_layout(i)) && r->name; i++) {
+        CHECK(i < n, "rust lists %s, C doesn't", r->name);
+        if (i >= n)
+            break;
+        CHECK(strcmp(r->name, c[i].name) == 0, "%zu: rust %s, C %s", i, r->name, c[i].name);
+        CHECK(r->size == c[i].size && r->align == c[i].align, "%s: rust %zu/%zu, C %zu/%zu", c[i].name, r->size,
+              r->align, c[i].size, c[i].align);
+    }
+    CHECK(i == n, "rust lists %zu structs, C %zu", i, n);
+}
 
 #define T0 1793912651000LL /* UTC ms at host time 1000 s */
 #define UTC_MINUS_HOST_US ((double)T0 * 1000.0 - 1000e6)
@@ -146,6 +169,7 @@ static double slot_time(int slot, double ahead)
 
 int main(void)
 {
+    test_layouts();
     memset(&S, 0, sizeof S);
     S.clock = 1000.0;
     fake_init(&S.f, "odr_split");
@@ -249,6 +273,14 @@ int main(void)
         rdof_t3split_burst(&S.ts, slot, control, burst, &rb);
     CHECK(got && slot == 2 && rb.dt == RDOF_DT_CSBK && rb.slot == 2 && rb.family == RDOF_FAMILY_MS,
           "heard on carrier B: got %d slot %d control 0x%02x", got, slot, control);
+
+    /* a heard voice burst's control byte back to the burst: sync, or its number */
+    rdof_burst_t vb;
+    rdof_t3split_burst(&S.ts, 1, RDOF_SYNC_AUDIO, burst, &vb);
+    CHECK(vb.dt == RDOF_DT_VOICE_SYNC && vb.n == 0 && vb.slot == 1 && vb.cc == cfg.cc && vb.family == RDOF_FAMILY_MS,
+          "voice sync: dt 0x%02x n %d", vb.dt, vb.n);
+    rdof_t3split_burst(&S.ts, 2, 3, burst, &vb);
+    CHECK(vb.dt == RDOF_DT_VOICE && vb.n == 3 && vb.slot == 2, "voice burst D: dt 0x%02x n %d", vb.dt, vb.n);
 
     /* after the calls and the hang: carrier B unkeyed */
     run(12.0);

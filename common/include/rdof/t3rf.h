@@ -15,7 +15,7 @@
  * MBC header, MBC continuation (the last block of an MBC: 10 octets and a CRC, as the header), or a data header (a UDT
  * header). This adds the CRC-16 with the data type's mask, BPTC(196,96), the slot type and the sync, and the reverse.
  *
- * No I/O, no allocation, no clock: the platform gives the slot k and serializes the calls. Plain C11.
+ * No I/O, no allocation, no clock: the platform gives the slot k and serializes the calls. In Rust (rust/src/t3rf.rs).
  */
 #ifndef RDOF_T3RF_H
 #define RDOF_T3RF_H
@@ -200,6 +200,16 @@ void rdof_t3rf_split_init(rdof_t3rf_split_t *o, int carrier);
  * after it). ahead: 4 for the scheduled stream (past the half's guard), 1 for the FIFO; 0: by the mode. */
 void rdof_t3rf_split_pump(rdof_t3rf_t *t, rdof_t3rf_split_t *o, struct rdof_split *s, int64_t k_now, int ahead,
                            double now);
+
+/* ── layouts ──────────────────────────────────────────────────────────────── */
+
+/* The Rust's (rust/src/t3rf.rs) size and alignment of each struct above it mirrors, i from 0 until one with a NULL
+ * name: rdof_t3rf_tests compares them with the C's. */
+typedef struct {
+    const char *name;
+    size_t size, align;
+} rdof_t3rf_layout_t;
+const rdof_t3rf_layout_t *rdof_t3rf_layout(size_t i);
 
 #endif /* RDOF_FEATURE_REPEATER */
 

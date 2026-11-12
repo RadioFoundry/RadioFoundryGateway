@@ -3,6 +3,7 @@
 /* A trunked site's radio layer (rdof/t3rf.h): control blocks to bursts and back, the CACH with a short LC and the
  * controller's AT, payload channels (warm-up, repeat, the controller's PDU, the network's prebuffer, RF over the
  * network, a lost call), the TSCC's inbound, and a payload carrier on a split TX half (TX_SCHED, and the FIFO). */
+#include <stdalign.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -25,6 +26,28 @@ static int fails;
     } while (0)
 
 #define CC 1
+
+#define LAYOUT(t) {#t, sizeof(t), alignof(t)}
+
+/* The Rust's mirrors of the header's structs have the C's size and alignment. */
+static void test_layouts(void)
+{
+    static const rdof_t3rf_layout_t c[] = {
+        LAYOUT(rdof_t3rf_burst_t), LAYOUT(rdof_t3rf_ch_t),    LAYOUT(rdof_t3rf_io_t),
+        LAYOUT(rdof_t3rf_t),       LAYOUT(rdof_t3rf_split_t),
+    };
+    const size_t n = sizeof c / sizeof c[0];
+    size_t i = 0;
+    for (const rdof_t3rf_layout_t *r; (r = rdof_t3rf_layout(i)) && r->name; i++) {
+        CHECK(i < n, "rust lists %s, C doesn't", r->name);
+        if (i >= n)
+            break;
+        CHECK(strcmp(r->name, c[i].name) == 0, "%zu: rust %s, C %s", i, r->name, c[i].name);
+        CHECK(r->size == c[i].size && r->align == c[i].align, "%s: rust %zu/%zu, C %zu/%zu", c[i].name, r->size,
+              r->align, c[i].size, c[i].align);
+    }
+    CHECK(i == n, "rust lists %zu structs, C %zu", i, n);
+}
 
 /* A C_ALOHA-like CSBK body: LB, CSBKO 25, FID 0, then arbitrary fields. The radio layer reads none of them. */
 static const uint8_t ALOHA[10] = {0x80 | 25, 0x00, 0x00, 0x2C, 0x00, 0x00, 0xFF, 0xFF, 0xFE, 0x00};
@@ -440,6 +463,7 @@ static void test_split(bool scheduled)
 
 int main(void)
 {
+    test_layouts();
     test_blocks();
     test_cach();
     test_payload();
