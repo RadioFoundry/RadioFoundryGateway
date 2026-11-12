@@ -177,7 +177,7 @@ target_link_libraries(rdof_tests_min PRIVATE rdof_common_min m)
 target_compile_options(rdof_tests_min PRIVATE -Wall -Wno-unused-parameter -Wno-unused-function)
 add_test(NAME rdof_tests_min COMMAND rdof_tests_min)
 
-# rdof_common is the Rust build when cargo is installed (common/CMakeLists.txt), so every test above ran the Rust.
+# rdof_common is the Rust build by default (common/CMakeLists.txt), so every test above ran the Rust.
 # The same core tests on the C those modules replace, while the C is kept.
 get_target_property(RDOF_COMMON_IS_RUST rdof_common INTERFACE_COMPILE_DEFINITIONS)
 if(RDOF_COMMON_IS_RUST MATCHES "RDOF_RUST=1")

@@ -3,9 +3,9 @@
 The gateway's C ported to Rust a module at a time. Each module exports its C header's functions under the same names and
 signatures, so the C that calls it doesn't change, and links in place of its `.c` file.
 
-The Rust is what runs: the W12 firmware (`sdkconfig.defaults.w12` sets `CONFIG_RDOF_RUST`), and the host tools and
-every host test when cargo is installed (`common/CMakeLists.txt`; `-DRDOF_RUST=OFF` keeps the C, and a cross build
-needs `RDOF_RUST_TARGET`). The C files it replaces are kept for now, for a build without a Rust toolchain and the
+The Rust is what runs, by default: the firmware (`CONFIG_RDOF_RUST`, default `y`; `n` keeps the C), and the host
+tools and every host test (`common/CMakeLists.txt`: it needs cargo and stops without it; `-DRDOF_RUST=OFF` keeps the
+C, and a cross build needs `RDOF_RUST_TARGET`). The C files it replaces are kept for now, for a build without a Rust toolchain and the
 feature-off builds (the Rust needs every `RDOF_FEATURE_*` on); `rdof_tests_c` runs the core tests on them. A change
 to one of these modules goes in the Rust, and in the C while it's kept. `RDOF_RUST_MODULES` in `rust.cmake` lists
 them; a new module goes there and in `src/lib.rs`.
@@ -63,7 +63,7 @@ block codes); the C and Rust libraries link as a cycle.
 Rust's math instead of newlib's (the DSP included), depending on link order. Rust's math in place of newlib's
 could be faster; if so, that's its own change, measured on a board (`kbench`, HIL), not a link-order accident.
 
-- **Host:** `rdof_common` is built with this crate in place of the C it replaces when cargo is installed (stable
+- **Host:** `rdof_common` is built with this crate in place of the C it replaces (cargo: stable
   Rust; `rustup` minimal profile), so the tools and every test run it. `rdof_tests_c` is the core tests on the C.
 - **ESP32-S3:** Espressif's Rust fork, for Xtensa, through `espup`: `espup install --targets esp32s3 --std`
   (`--std` skips its GCC: ESP-IDF's links). Cargo builds `core` for `xtensa-esp32s3-none-elf` from source

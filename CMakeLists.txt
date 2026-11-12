@@ -13,7 +13,7 @@ endif()
 option(RDOF_BUILD_TESTS "Build the host tests (host-tests/) with the libraries" ON)
 
 if(RDOF_BUILD_TESTS)
-    # host-tests builds the libraries itself (common, sdr, rtlsdr, the Rust when cargo is there), each in its
+    # host-tests builds the libraries itself (common, sdr, rtlsdr, the Rust), each in its
     # sanitized and feature-off variants, and rdofsdr.
     enable_testing()
     add_subdirectory(host-tests)

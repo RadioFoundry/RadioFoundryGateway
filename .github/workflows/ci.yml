@@ -36,7 +36,7 @@ jobs:
             defaults: sdkconfig.defaults;sdkconfig.defaults.16mb;sdkconfig.defaults.w12
     steps:
       - uses: actions/checkout@v4
-      - name: Rust for Xtensa (the w12 profile builds rust/)
+      - name: Rust for Xtensa (the firmware builds rust/)
         shell: bash
         run: |
           curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal

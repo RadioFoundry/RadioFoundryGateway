@@ -129,7 +129,7 @@ The board doesn't just set its clock, it disciplines it, chrony style:
 
 - Wi-Fi with up to 8 networks and priorities
 - OTA updates, core dumps with backtraces, log ring, task list
-- Optional Rust build of the core modules (`CONFIG_RDOF_RUST`)
+- The core modules in Rust by default (`CONFIG_RDOF_RUST=n` / `-DRDOF_RUST=OFF` keeps their C)
 
 ## Hardware
 
@@ -150,7 +150,7 @@ A few additions to the standard protocols, which we aim to upstream:
 
 ## Quick start
 
-Host tests (CMake and a C compiler; cargo for the Rust tests):
+Host tests (CMake, a C compiler and cargo):
 
 ```sh
 cmake -S host-tests -B build/host && cmake --build build/host && ctest --test-dir build/host
@@ -165,7 +165,7 @@ idf.py -B ../build/w12 -D SDKCONFIG=../build/w12/sdkconfig -p <port> flash   # f
 curl -X POST --data-binary @../build/w12/radiofoundry_gateway.bin http://<board>/api/ota   # after that
 ```
 
-Overlays: `.roamer` / `.sdr` (one role only), `.rust`, `.hub`, `.dspfast`.
+Overlays: `.roamer` / `.sdr` (one role only), `.hub`, `.dspfast`.
 
 <details>
 <summary>Linux / macOS build and system tests</summary>

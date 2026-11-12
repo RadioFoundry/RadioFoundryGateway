@@ -67,7 +67,7 @@ endif()
 list(APPEND RDOF_COMMON_SRCS src/mssim.c) # the bench's confirmed-data responder (its users check RDOF_FEATURE_DATA_BLOCKS)
 
 if(ESP_PLATFORM)
-    # CONFIG_RDOF_RUST: rust's modules (Espressif's Rust toolchain, `espup`) in place of their C files.
+    # CONFIG_RDOF_RUST (the default): rust's modules (Espressif's Rust toolchain, `espup`) in place of their C files.
     if(CONFIG_RDOF_RUST)
         include(${CMAKE_CURRENT_LIST_DIR}/../rust/rust.cmake)
         foreach(m ${RDOF_RUST_MODULES})
@@ -97,14 +97,20 @@ if(ESP_PLATFORM)
 else()
     cmake_minimum_required(VERSION 3.16)
     project(rdof_common C)
-    # The modules ported to Rust (rust/) in place of their C files, when cargo is installed: what the tools and the
-    # tests run. -DRDOF_RUST=OFF keeps the C. A cross build needs the Rust target's name (RDOF_RUST_TARGET, as
-    # armv7-unknown-linux-gnueabihf); without it, the C.
+    # The modules ported to Rust (rust/) in place of their C files: the default, what the tools and the tests run.
+    # It needs cargo, and a cross build the Rust target's name (RDOF_RUST_TARGET, as armv7-unknown-linux-gnueabihf).
+    # -DRDOF_RUST=OFF keeps the C.
     option(RDOF_RUST "The modules ported to Rust in place of their C" ON)
     set(RDOF_RUST_TARGET "" CACHE STRING "The Rust target of a cross build")
     find_program(RDOF_CARGO cargo HINTS $ENV{HOME}/.cargo/bin)
     set(RDOF_COMMON_RUST OFF)
-    if(RDOF_RUST AND RDOF_CARGO AND (NOT CMAKE_CROSSCOMPILING OR RDOF_RUST_TARGET))
+    if(RDOF_RUST AND NOT RDOF_CARGO)
+        message(FATAL_ERROR "rdof_common: no cargo. Install Rust (https://rustup.rs), or pass -DRDOF_RUST=OFF for the C modules")
+    endif()
+    if(RDOF_RUST AND CMAKE_CROSSCOMPILING AND NOT RDOF_RUST_TARGET)
+        message(FATAL_ERROR "rdof_common: a cross build needs -DRDOF_RUST_TARGET=<Rust target>, or -DRDOF_RUST=OFF for the C modules")
+    endif()
+    if(RDOF_RUST)
         set(RDOF_COMMON_RUST ON)
         include(${CMAKE_CURRENT_LIST_DIR}/../rust/rust.cmake)
         foreach(m ${RDOF_RUST_MODULES})
@@ -112,7 +118,7 @@ else()
         endforeach()
         list(APPEND RDOF_COMMON_SRCS ${RDOF_RUST_C_SRCS})
     else()
-        message(STATUS "rdof_common: the C modules (no cargo, RDOF_RUST off, or a cross build without RDOF_RUST_TARGET)")
+        message(STATUS "rdof_common: the C modules (RDOF_RUST off)")
     endif()
     add_library(rdof_common STATIC ${RDOF_COMMON_SRCS})
     if(RDOF_COMMON_RUST)

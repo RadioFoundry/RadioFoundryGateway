@@ -28,7 +28,7 @@ Rules:
 
 ## 3. Profiles and overlays
 
-Built as `sdkconfig.defaults` + one profile + optional overlays (`SDKCONFIG_DEFAULTS`, commands in [reference.md](../../reference.md)). The Rust build adds `sdkconfig.defaults.rust` (`CONFIG_RDOF_RUST=y`).
+Built as `sdkconfig.defaults` + one profile + optional overlays (`SDKCONFIG_DEFAULTS`, commands in [reference.md](../../reference.md)). The modules ported to Rust are linked in place of their C by default (`CONFIG_RDOF_RUST`; `n` keeps the C).
 
 | File | Adds |
 |---|---|
@@ -40,7 +40,6 @@ Built as `sdkconfig.defaults` + one profile + optional overlays (`SDKCONFIG_DEFA
 | `.hub` | `USB_HOST_HUBS_SUPPORTED=y`, multi-level n |
 | `.w12` (on 16mb) | LED GPIO46; GNSS enable GPIO48 level 0; netclock PPS GPIO41; GNSS NMEA on UART1 RX 39 / TX 38; `RDOF_SDR_LR2021=y` |
 | `.dspfast` (on 16mb) | `RDOF_SDR_DSP_IRAM=y`, 64 KB D-cache |
-| `.rust` | `RDOF_RUST=y`: the modules ported to Rust linked in place of their C ([rust/README.md](../../../rust/README.md)) |
 
 Partitions:
 

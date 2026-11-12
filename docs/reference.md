@@ -32,7 +32,7 @@ tested only: a split repeater on a board, a USB hub with two radios, `rdofradio 
 cmake -S host-tests -B build/host && cmake --build build/host && ctest --test-dir build/host
 ```
 
-CMake and a C compiler; cargo for the Rust build of the tests; Node for the settings schema and the page's scripts.
+CMake, a C compiler and cargo (`-DRDOF_RUST=OFF` builds without it, on the C modules); Node for the settings schema and the page's scripts.
 Offline, a few seconds, under AddressSanitizer and UBSan (`-DRDOF_SANITIZE=OFF` turns them off). The golden fixtures
 are committed (`host-tests/vectors.h`, `scenarios.h`, `fixtures/`) and the C must reproduce them byte for byte.
 
@@ -120,7 +120,6 @@ curl -X POST --data-binary @../build/16mb/radiofoundry_gateway.bin http://<board
 |---|---|---|
 | `sdkconfig.defaults.w12` | `16mb` | the Meshnology W12: the LR2021 front end and its pins, GNSS, the OLED, the power key, the RGB LED on GPIO46 |
 | `sdkconfig.defaults.roamer` / `.sdr` | any | one role only |
-| `sdkconfig.defaults.rust` | any | the Rust modules in place of their C (`CONFIG_RDOF_RUST`, [rust/README.md](../rust/README.md)) |
 | `sdkconfig.defaults.hub` | `4mb` | USB hub support (`16mb` has it) |
 | `sdkconfig.defaults.dspfast` | `16mb` | experiment: the receive path's hot code in IRAM (`CONFIG_RDOF_SDR_DSP_IRAM`, about 33 KB of internal RAM) and the 64 KB data cache |
 
@@ -139,7 +138,7 @@ build `-O2`. `idf.py menuconfig` has the menus "RadioFoundry Gateway", "RadioFou
 | `rtlsdr/` | the RTL2832U + R820T / R828D driver: portable register logic, and `esp/rtl_usb.c`, the ESP-IDF USB host glue |
 | `hostweb/` | the firmware's web page served from a host tool ([hostweb/README.md](../hostweb/README.md)) |
 | `components/` | ESP-IDF components with nothing of the gateway in them: `netclock` (a disciplined UTC clock), `wifilist` (a prioritized Wi-Fi list with a setup access point), `tinysctp` (SCTP over UDP), `lr2021` (the Semtech LR2021), `gnss` (NMEA). Each has its own README and keeps its logic in plain C the host tests build |
-| `rust/` | `rdof_rust`: modules of `common/` in Rust, linked in place of their C with `CONFIG_RDOF_RUST` ([rust/README.md](../rust/README.md)) |
+| `rust/` | `rdof_rust`: modules of `common/` in Rust, linked in place of their C (`CONFIG_RDOF_RUST`, on by default; [rust/README.md](../rust/README.md)) |
 | `esp_idf/` | the ESP-IDF project (`radiofoundry_gateway`) |
 | `host-tests/` | the host build of `common/`, `sdr/`, `rtlsdr/` and the components' portable parts, the tests, the golden fixtures, the fake radios (`fake_radio.c`) |
 | `systest/` | the system tests: `radiosim`, `radiolink.c`, `test_radiosim.c` |

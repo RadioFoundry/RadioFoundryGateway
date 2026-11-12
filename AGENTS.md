@@ -58,10 +58,10 @@ idf.py -B ../build/4mb -D SDKCONFIG=../build/4mb/sdkconfig -D SDKCONFIG_DEFAULTS
 The W12 (`w12`) is the board in use: build and test that one. `16mb` and `4mb` aren't built by default or in CI for
 now, and may not build.
 
-The modules in `rust/` run in place of their C (the `w12` profile, and the host build when cargo is installed): change
+The modules in `rust/` run in place of their C (every firmware profile and the host build, by default; they need a Rust toolchain): change
 the Rust, and its C twin while it's kept ([rust/README.md](rust/README.md)).
 
-Overlays: `.roamer` / `.sdr` (one role), `.rust` (the Rust modules, for a profile that doesn't set them), `.hub`, `.dspfast`. Run
+Overlays: `.roamer` / `.sdr` (one role), `.hub`, `.dspfast`. Run
 `idf.py size` after a change that adds code or RAM and keep docs/reference.md "Size" current.
 
 Memory: internal RAM is the tight resource (about 10 KB free on the W12 while streaming). Buffers go in PSRAM
