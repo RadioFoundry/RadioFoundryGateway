@@ -83,6 +83,8 @@ typedef struct {
     char online[TOPIC_MAX], info[TOPIC_MAX], act[TOPIC_MAX], dl[TOPIC_MAX], status[TOPIC_MAX];
     esp_mqtt_client_handle_t client;
     volatile bool up, connected_edge; /* connected_edge: set by esp-mqtt's task, cleared by the task */
+    volatile bool v5;        /* this connection is MQTT 5 (else 3.1.1: the broker didn't take 5) */
+    volatile bool fall_back; /* refused MQTT 5: the task reconnects on 3.1.1 */
     bool tls, use_tls;
     QueueHandle_t frames, txq;
     SemaphoreHandle_t sink_lock; /* mn_sink's */
@@ -312,7 +314,8 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *ev)
     esp_mqtt_event_handle_t e = ev;
     switch ((esp_mqtt_event_id_t)id) {
     case MQTT_EVENT_CONNECTED:
-        ESP_LOGI(TAG, "connected to the broker, node %s", M->node);
+        M->v5 = e->protocol_ver == MQTT_PROTOCOL_V_5;
+        ESP_LOGI(TAG, "connected to the broker, node %s (MQTT %s)", M->node, M->v5 ? "5" : "3.1.1");
         nodelay();
         /* a new session: the task subscribes again (it owns the list) */
         M->up = true;
@@ -322,6 +325,17 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *ev)
         if (M->up)
             ESP_LOGW(TAG, "disconnected from the broker");
         M->up = false;
+        break;
+    case MQTT_EVENT_ERROR:
+        if (e->error_handle && e->error_handle->error_type == MQTT_ERROR_TYPE_CONNECTION_REFUSED) {
+            const int code = e->error_handle->connect_return_code;
+            /* 3.1.1's "unacceptable protocol version" (1) or 5's "unsupported protocol version" (0x84): an older
+             * broker. The node drops its own messages by their topic, so No Local isn't needed (mqtt-net.md 4) */
+            if (e->protocol_ver == MQTT_PROTOCOL_V_5 && (code == 1 || code == 0x84))
+                M->fall_back = true;
+            else
+                ESP_LOGW(TAG, "refused by the broker (check the username / password)");
+        }
         break;
     case MQTT_EVENT_DATA: {
         /* whole messages only (the buffer takes the largest call message); [topic length][topic][message] */
@@ -393,8 +407,10 @@ static bool subscribe(void)
             had = !strcmp(M->subs[i], want[j]);
         if (!had) {
 #if CONFIG_MQTT_PROTOCOL_5
-            const esp_mqtt5_subscribe_property_config_t sp = {.no_local_flag = true}; /* our own messages stay out */
-            esp_mqtt5_client_set_subscribe_property(M->client, &sp);
+            if (M->v5) {
+                const esp_mqtt5_subscribe_property_config_t sp = {.no_local_flag = true}; /* our own stay out */
+                esp_mqtt5_client_set_subscribe_property(M->client, &sp);
+            }
 #endif
             if (esp_mqtt_client_subscribe_single(M->client, want[j], 0) < 0) {
                 ok = false;
@@ -474,11 +490,22 @@ static void handle_tx(const tx_in_t *t)
         result(r, &p);
 }
 
+/* The connection's settings, kept: the fall back to 3.1.1 sets them again. */
+static EXT_RAM_BSS_ATTR esp_mqtt_client_config_t client_cfg;
+
 static void mn_task(void *arg)
 {
     double ticked = 0, subs_at = -10, status_at = -10;
     for (;;) {
         frame_in_t fi;
+        if (M->fall_back) { /* from here, not from esp-mqtt's own task, which a stop waits for */
+            M->fall_back = false;
+            ESP_LOGW(TAG, "the broker doesn't take MQTT 5: using 3.1.1");
+            esp_mqtt_client_stop(M->client);
+            client_cfg.session.protocol_ver = MQTT_PROTOCOL_V_3_1_1;
+            esp_mqtt_set_config(M->client, &client_cfg);
+            esp_mqtt_client_start(M->client);
+        }
         /* frames first: a call's bursts every 60 ms on each receiver */
         while (xQueueReceive(M->frames, &fi, 0) == pdTRUE)
             if (fi.source < MAX_SOURCES && M->src[fi.source].used)
@@ -617,7 +644,7 @@ void mn_start(void)
     m->use_tls = use_tls;
     snprintf(uri, sizeof uri, "%s://%s:%d", use_tls ? "mqtts" : "mqtt", host, port);
     rdof_mn_client_id(id, sizeof id, root, m->node);
-    const esp_mqtt_client_config_t c = {
+    client_cfg = (esp_mqtt_client_config_t){
         .broker.address.uri = uri,
 #if CONFIG_RDOF_MQTT_TLS
         .broker.verification.crt_bundle_attach = use_tls ? esp_crt_bundle_attach : NULL,
@@ -639,7 +666,7 @@ void mn_start(void)
         .outbox.limit = 16 * 1024,
     };
     M = m; /* before the client: its events use M */
-    m->client = esp_mqtt_client_init(&c);
+    m->client = esp_mqtt_client_init(&client_cfg);
     if (!m->client) {
         ESP_LOGE(TAG, "no MQTT client: off");
         M = NULL;
