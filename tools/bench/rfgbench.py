@@ -1163,10 +1163,13 @@ def bench_tx_parser() -> argparse.ArgumentParser:
         p.add_argument("--dst", type=int, default=dst)
         p.add_argument("--family", choices=("ms", "bs", "ts1", "ts2"), default="ms")
         p.add_argument("--burst-cc", type=int)
+        p.add_argument("--offset-hz", type=float)           # the carrier this far from --freq (bench-api.md 14.3)
     v = sub.add_parser("voice", add_help=False)
     common(v, 215)
     v.add_argument("--private", action="store_true")
-    v.add_argument("--superframes", type=int, default=3)
+    v.add_argument("--superframes", type=int)               # 3, or a sweep's steps x --superframes-per-step
+    v.add_argument("--offset-sweep")                        # FROM:TO:STEP in Hz: one call through the offsets
+    v.add_argument("--superframes-per-step", type=int)
     v.add_argument("--headers", type=int)
     v.add_argument("--terminators", type=int)
     v.add_argument("--late", type=int)
@@ -1237,8 +1240,13 @@ def job_of(argv) -> Tuple[Optional[dict], str]:
                       + shlex.join(argv))
     tool = os.path.basename(argv[i])[:-3]
     p = bench_tx_parser() if tool == "bench_tx" else bench_repeater_parser()
+    args = list(argv[i + 1:])
+    for k in range(len(args) - 1):                       # a sweep from a negative offset reads as an option
+        if args[k] == "--offset-sweep":
+            args[k:k + 2] = ["--offset-sweep=" + args[k + 1], ""]
+    args = [x for x in args if x != ""]
     try:
-        ns, extra = p.parse_known_args(argv[i + 1:])
+        ns, extra = p.parse_known_args(args)
     except SystemExit:
         return None, f"{tool}: can't read its options: {shlex.join(argv[i + 1:])}"
     if extra:

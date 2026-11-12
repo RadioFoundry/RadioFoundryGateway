@@ -174,6 +174,7 @@ int rdof_mod_queue(rdof_mod_t *m, int64_t start, const int8_t *sym, int first, i
     s->first = (int16_t)first;
     s->count = (int16_t)count;
     s->flags = (uint8_t)flags;
+    s->off_hz = m->next_off_hz;
     m->qn++;
     return 0;
 }
@@ -192,9 +193,12 @@ int rdof_mod_queue_burst(rdof_mod_t *m, int64_t start, const uint8_t burst[33], 
 
 static inline int64_t floor_div(int64_t a, int64_t b) { return a >= 0 ? a / b : -((-a + b - 1) / b); }
 
-/* The next n (<= BLOCK) samples' shaped symbol value and envelope; advances the position. */
-static void render(rdof_mod_t *m, float *s, float *env, int n)
+/* The next n (<= BLOCK) samples' shaped symbol value and envelope; advances the position. Returns the block's carrier
+ * offset: the last segment's that touches it (bursts with their own offsets are far enough apart that no block touches
+ * two of them; a per-sample array would cost the reader's stack). */
+static float render(rdof_mod_t *m, float *s, float *env, int n)
 {
+    float off = 0.0f;
     const int64_t p0 = m->pos;
     memset(s, 0, sizeof(float) * (size_t)n);
     memset(env, 0, sizeof(float) * (size_t)n);
@@ -206,6 +210,7 @@ static void render(rdof_mod_t *m, float *s, float *env, int n)
         const int b = (int)((g->hi < p0 + n ? g->hi : p0 + n) - p0);
         if (a >= b)
             continue;
+        off = g->off_hz;
         const int64_t num = (p0 + a - g->start) * Q;
         int64_t k0 = floor_div(num, P);
         int ph = (int)(num - k0 * P);
@@ -250,6 +255,7 @@ static void render(rdof_mod_t *m, float *s, float *env, int n)
         m->qhead = (m->qhead + 1) % m->qcap;
         m->qn--;
     }
+    return off;
 }
 
 /* Whether no queued burst reaches into the next n samples: they're the bare carrier, unkeyed. */
@@ -277,6 +283,7 @@ static void skip_quiet(rdof_mod_t *m, int n)
 void rdof_mod_iq(rdof_mod_t *m, rdof_cf_t *out, int n)
 {
     float s[BLOCK], env[BLOCK];
+    m->pulled_off_hz = 0.0f;
     if (quiet_for(m, n)) { /* idle, most of the time: zeros without rendering them (a PlutoSDR's tenth of a core) */
         memset(out, 0, sizeof *out * (size_t)n);
         skip_quiet(m, n);
@@ -284,9 +291,12 @@ void rdof_mod_iq(rdof_mod_t *m, rdof_cf_t *out, int n)
     }
     for (int done = 0; done < n;) {
         const int k = n - done < BLOCK ? n - done : BLOCK;
-        render(m, s, env, k);
+        const float boff = render(m, s, env, k);
+        if (boff != 0.0f)
+            m->pulled_off_hz = boff;
         uint32_t ph = m->phase;
-        const uint32_t base = m->base_inc;
+        const double binc = boff * 4294967296.0 / m->fs;
+        const uint32_t base = m->base_inc + (uint32_t)(int64_t)(binc + (binc >= 0 ? 0.5 : -0.5));
         const float dev = m->dev_inc, amp = m->amplitude;
         rdof_cf_t *o = out + done;
         for (int i = 0; i < k; i++) {
@@ -308,6 +318,7 @@ void rdof_mod_freq(rdof_mod_t *m, float *hz, float *env_out, int n)
 {
     float s[BLOCK], env[BLOCK];
     const float off = (float)m->offset_hz, dev = (float)RDOF_MOD_DEVIATION_HZ;
+    m->pulled_off_hz = 0.0f;
     if (quiet_for(m, n)) { /* idle (a transmitter waiting most of the time): what render would give, without it */
         for (int i = 0; i < n; i++)
             hz[i] = off;
@@ -318,11 +329,16 @@ void rdof_mod_freq(rdof_mod_t *m, float *hz, float *env_out, int n)
     }
     for (int done = 0; done < n;) {
         const int k = n - done < BLOCK ? n - done : BLOCK;
-        render(m, s, env, k);
+        const float boff = render(m, s, env, k);
+        if (boff != 0.0f)
+            m->pulled_off_hz = boff;
         uint32_t ph = m->phase;
+        const double binc = boff * 4294967296.0 / m->fs;
+        const uint32_t base = m->base_inc + (uint32_t)(int64_t)(binc + (binc >= 0 ? 0.5 : -0.5));
+        const float o = off + boff;
         for (int i = 0; i < k; i++) {
-            ph += m->base_inc + (uint32_t)round_i(s[i] * m->dev_inc);
-            hz[done + i] = s[i] * dev + off;
+            ph += base + (uint32_t)round_i(s[i] * m->dev_inc);
+            hz[done + i] = s[i] * dev + o;
         }
         m->phase = ph;
         if (env_out)

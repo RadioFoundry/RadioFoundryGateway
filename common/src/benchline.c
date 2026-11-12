@@ -48,6 +48,8 @@ typedef struct {
     uint8_t ambe[RDOF_BL_LINE_MAX / 2];
     rdof_bj_burst_t *b;       /* the key-up's bursts */
     int nb, bi, maxb, part, nparts;
+    int step;                 /* the carrier offset's step set for the key-up (-1: none yet) */
+    double key_t;             /* UTC the key-up's first burst was handed over (a step's modeled time) */
     int state;
     double until, started, max_s;
     bool tx_open, listening;
@@ -2241,7 +2243,7 @@ static bool as_built(const rdof_bj_job_t *j)
 {
     if (j->cmd != RDOF_BJ_VOICE && j->cmd != RDOF_BJ_CSBK && j->cmd != RDOF_BJ_DATA)
         return false;
-    return j->family != RDOF_FAMILY_MS ||
+    return j->family != RDOF_FAMILY_MS || rdof_bj_offsets(j) || /* the carrier moved: the raw modem's */
            (j->cmd == RDOF_BJ_VOICE && (j->headers >= 0 || j->terminators >= 0 || j->late >= 0));
 }
 
@@ -2316,6 +2318,11 @@ static void op_run(rdof_bl_t *bl, conn_t *c, int ci, int root, double now)
             fail(bl, c, "refused", "%.4f MHz isn't a transmit frequency of this bench", mhz);
             return;
         }
+        if (rdof_bj_offsets(j) && !bl->p.tx_offset) {
+            free(J);
+            fail(bl, c, "unsupported", "--offset-hz, --offset-sweep: this bench can't move its carrier");
+            return;
+        }
         J->maxb = rdof_bj_max_bursts(j);
         J->b = J->maxb > 0 ? malloc(sizeof *J->b * (size_t)J->maxb) : NULL;
         if (!J->b) {
@@ -2376,7 +2383,46 @@ static bool run_build(rdof_bl_t *bl, conn_t *c, double now)
     if (J->note[0])
         run_log(bl, c, now, "%s", J->note);
     J->bi = 0;
+    J->step = -1;
     J->state = J_SEND;
+    return true;
+}
+
+/* Before burst J->bi goes: the carrier offset of its step (bench-api.md 14.3), a sweep's step record when it starts
+ * one. false: the platform refused it (the job is over). */
+static bool run_step(rdof_bl_t *bl, conn_t *c, double now)
+{
+    job_t *J = c->job;
+    const rdof_bj_job_t *j = &J->job;
+    if (J->bi == 0)
+        J->key_t = utc_now(bl, now);
+    if (!rdof_bj_offsets(j))
+        return true;
+    const int k = rdof_bj_step_of(j, J->bi);
+    if (k == J->step)
+        return true;
+    const double hz = rdof_bj_step_hz(j, k);
+    const char *no = bl->p.tx_offset(bl->p.ctx, hz);
+    if (no) {
+        run_log(bl, c, now, "can't move the carrier: %s", no);
+        run_exit(bl, c, 1, NULL);
+        return false;
+    }
+    J->step = k;
+    if (j->steps <= 0) {
+        run_log(bl, c, now, "the carrier %+.0f Hz from %.4f MHz", hz, j->freq_mhz);
+        return true;
+    }
+    int last = J->bi;
+    while (last + 1 < J->nb && rdof_bj_step_of(j, last + 1) == k)
+        last++;
+    char line[200];
+    snprintf(line, sizeof line,
+             "{\"type\":\"step\",\"step\":%d,\"steps\":%d,\"offset_hz\":%.1f,\"t\":%.3f,\"superframes\":[%d,%d],"
+             "\"bursts\":[%d,%d]}",
+             k, j->steps, hz, J->key_t + J->bi * 0.06, k * j->sf_per_step, (k + 1) * j->sf_per_step - 1, J->bi, last);
+    run_ctx_t r = {bl, c};
+    run_out(&r, line);
     return true;
 }
 
@@ -2782,8 +2828,11 @@ static void tick_run(rdof_bl_t *bl, conn_t *c, int ci, double now)
             run_exit(bl, c, 1, NULL);
             return;
         }
-        for (; n > 0 && J->bi < J->nb; n--, J->bi++)
+        for (; n > 0 && J->bi < J->nb; n--, J->bi++) {
+            if (!run_step(bl, c, now))
+                return;
             bl->p.tx_push(bl->p.ctx, J->b[J->bi].control, J->b[J->bi].burst);
+        }
         if (J->bi == J->nb) {
             bl->p.tx_unkey(bl->p.ctx);
             J->state = J_DRAIN;

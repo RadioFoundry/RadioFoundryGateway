@@ -144,6 +144,7 @@ static bool bl_tx_open(void *ctx, uint32_t freq, int cc, rdof_bench_power_t powe
 static int bl_tx_space(void *ctx, char *why, size_t cap) { return bench_tx_line_space(why, cap); }
 static void bl_tx_push(void *ctx, uint8_t control, const uint8_t burst[33]) { bench_tx_line_push(control, burst); }
 static void bl_tx_unkey(void *ctx) {} /* the job's modem unkeys once its queue has gone out */
+static const char *bl_tx_offset(void *ctx, double hz) { return bench_tx_line_offset(hz); }
 static bool bl_tx_idle(void *ctx) { return bench_tx_line_idle(); }
 static size_t bl_tx_event(void *ctx, char *out, size_t cap) { return bench_tx_line_event(out, cap); }
 static void bl_tx_close(void *ctx) { bench_tx_line_close(); }
@@ -258,6 +259,7 @@ void bench_line_start(void)
                                           .sc_utc = bl_sc_utc, .rx_stats = bl_rx_stats, .can_tx = bl_can_tx,
                                           .tx_open = bl_tx_open, .tx_space = bl_tx_space, .tx_push = bl_tx_push,
                                           .tx_unkey = bl_tx_unkey, .tx_idle = bl_tx_idle, .tx_close = bl_tx_close, .tx_event = bl_tx_event,
+                                          .tx_offset = bl_tx_offset,
                                           .tx_why_family = bl_why_family, .ob_open = bl_ob_open,
                                           .ob_state = bl_ob_state, .ob_unkey = bl_ob_unkey, .ob_close = bl_ob_close,
                                           .ob_can = bl_ob_can, .ob_push = bl_ob_push, .modes = rdof_sdr_modes, .sig_open = bl_sig_open,

@@ -267,6 +267,68 @@ static void test_skip(void)
     rdof_mod_free(&b);
 }
 
+/* A segment queued with next_off_hz: its samples hz higher (rdof_mod_freq) and turning that much faster
+ * (rdof_mod_iq), pulled_off_hz says so; a segment after it without one is back on the channel. */
+static void test_carrier_offset(void)
+{
+    enum { N = 16384, AT = 1000, AT2 = 9000 };
+    int8_t sym[132];
+    for (int i = 0; i < 132; i++)
+        sym[i] = (int8_t)((i * 7) % 4 * 2 - 3);
+    rdof_mod_t a, b;
+    static float ha[N], hb[N], ea[N], eb[N];
+    static rdof_cf_t qa[N], qb[N];
+    for (int iq = 0; iq < 2; iq++) {
+        rdof_mod_init(&a, 48000, 500.0, 4.0, 1.0f, 4, 0);
+        rdof_mod_init(&b, 48000, 500.0, 4.0, 1.0f, 4, 0);
+        rdof_mod_queue(&a, AT, sym, 0, 132, RDOF_MOD_RAMPS);
+        rdof_mod_queue(&a, AT2, sym, 0, 132, RDOF_MOD_RAMPS);
+        b.next_off_hz = -1500.0f;
+        rdof_mod_queue(&b, AT, sym, 0, 132, RDOF_MOD_RAMPS);
+        b.next_off_hz = 0.0f;
+        rdof_mod_queue(&b, AT2, sym, 0, 132, RDOF_MOD_RAMPS);
+        float pulled = 0;
+        for (int done = 0; done < N; done += 256) {
+            if (iq) {
+                rdof_mod_iq(&a, qa + done, 256);
+                rdof_mod_iq(&b, qb + done, 256);
+            } else {
+                rdof_mod_freq(&a, ha + done, ea + done, 256);
+                rdof_mod_freq(&b, hb + done, eb + done, 256);
+            }
+            if (done < AT2 - 2000 && b.pulled_off_hz != 0)
+                pulled = b.pulled_off_hz;
+            if (done >= AT2 - 1000)
+                CHECK(b.pulled_off_hz == 0, "pulled_off_hz %g after the second segment's start", b.pulled_off_hz);
+        }
+        CHECK(pulled == -1500.0f, "pulled_off_hz %g in the first segment", pulled);
+        int bad = 0, keyed = 0;
+        const double w = -2 * M_PI * 1500.0 / 48000;
+        for (int i = AT; i < AT + 1400; i++) {
+            if (iq ? hypotf(qa[i].re, qa[i].im) < 0.5f || hypotf(qa[i - 1].re, qa[i - 1].im) < 0.5f : ea[i] <= 0)
+                continue;
+            keyed++;
+            if (iq) {
+                /* b against a: a phase turning -1500 Hz a sample, at a's magnitude */
+                const double r = atan2(qb[i].im, qb[i].re) - atan2(qa[i].im, qa[i].re);
+                const double r1 = atan2(qb[i - 1].im, qb[i - 1].re) - atan2(qa[i - 1].im, qa[i - 1].re);
+                const double d = remainder(r - r1 - w, 2 * M_PI);
+                bad += fabs(d) > 1e-3 || fabsf(hypotf(qb[i].re, qb[i].im) - hypotf(qa[i].re, qa[i].im)) > 1e-4f;
+            } else {
+                bad += fabsf(hb[i] - ha[i] + 1500.0f) > 0.01f || eb[i] != ea[i];
+            }
+        }
+        CHECK(!bad && keyed > 1000, "%s: %d samples not 1500 Hz lower (%d keyed)", iq ? "iq" : "freq", bad, keyed);
+        bad = 0;
+        for (int i = AT2; i < AT2 + 1400; i++)
+            bad += iq ? fabsf(hypotf(qb[i].re, qb[i].im) - hypotf(qa[i].re, qa[i].im)) > 1e-4f
+                      : fabsf(hb[i] - ha[i]) > 0.01f;
+        CHECK(!bad, "%s: the second segment off its channel in %d samples", iq ? "iq" : "freq", bad);
+        rdof_mod_free(&a);
+        rdof_mod_free(&b);
+    }
+}
+
 /* A repeater's continuous downlink at 288 kS/s: time per second of I/Q (rough, on the host). */
 static void bench(void)
 {
@@ -304,6 +366,7 @@ int main(void)
         }
     test_just_in_time();
     test_skip();
+    test_carrier_offset();
     bench();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

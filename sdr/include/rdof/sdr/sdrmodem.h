@@ -134,7 +134,10 @@ typedef struct {
 
 typedef struct {
     uint8_t b[RDOF_BURST_BYTES];
+    float off_hz;               /* its carrier offset (rdof_sdrmodem_offset_from) */
 } rdof_sdrmodem_burst_t;
+
+#define RDOF_SDRMODEM_OFFSETS 8 /* offset changes waiting for their burst */
 
 typedef struct rdof_sdrmodem {
     rdof_sdrmodem_io_t io;
@@ -157,6 +160,13 @@ typedef struct rdof_sdrmodem {
     /* transmit */
     rdof_sdrmodem_burst_t q[2][RDOF_SDRMODEM_QUEUE];
     int qh[2], qn[2];
+    uint32_t data_in;           /* DMR_DATA bursts taken since it started */
+    float off_now;              /* the carrier offset the next one taken gets */
+    struct {
+        uint32_t from;
+        float hz;
+    } off_q[RDOF_SDRMODEM_OFFSETS];
+    int off_n;
     int64_t pos;                /* the next sample the front end pulls */
     int64_t next_start;         /* simplex: the earliest start of the next burst */
     bool dcdm;                  /* dual capacity direct mode (SET_CONFIG simplex with RDOF_MMDVM_DCDM) */
@@ -265,6 +275,13 @@ void rdof_sdrmodem_heard(rdof_sdrmodem_t *m, int channel, const rdof_sdr_burst_t
  * offset tx_tune gave, or the frequency (Hz) and envelope. Returns whether any of them is keyed. */
 bool rdof_sdrmodem_pull_iq(rdof_sdrmodem_t *m, int64_t pos, rdof_cf_t *iq, int n);
 bool rdof_sdrmodem_pull_freq(rdof_sdrmodem_t *m, int64_t pos, float *hz, float *env, int n);
+/* The carrier offset (Hz) of the keyed samples the last pull gave, included in them (0: none): a front end that tunes
+ * its carrier per key-up may move the carrier by it and take it out of the samples. */
+float rdof_sdrmodem_pulled_off(const rdof_sdrmodem_t *m);
+/* A carrier offset for the host's DMR bursts (DMR_DATA1/2): from the from-th one taken (0: the first since the modem
+ * started) on, each goes out hz from the channel, until the next change (the bench's sweep, bench-api.md 14.3). Changes
+ * come in order, at most RDOF_SDRMODEM_OFFSETS waiting; false when that many already wait. */
+bool rdof_sdrmodem_offset_from(rdof_sdrmodem_t *m, uint32_t from, double hz);
 /* A signal mode's transmission (rdof/sigmode.h) in place of DMR, for the bench: the transmitter tuned to hz (tx_tune),
  * then the pulls render src from the next one on. Refused (false, why) while DMR is keyed or queued, in duplex or a
  * split role, or where tx_tune can't reach hz. src NULL ends it (at once) and tunes back to SET_FREQ's frequency. */
