@@ -1,9 +1,15 @@
 # rust
 
 The gateway's C ported to Rust a module at a time. Each module exports its C header's functions under the same names and
-signatures, so the C that calls it doesn't change, and links in place of its `.c` file. The C stays until the
-Rust has run on the boards; until then `CONFIG_RDOF_RUST` ("RadioFoundry Gateway common (common)" menu, off by default; `sdkconfig.defaults.rust` sets it) picks one for
-all of them, and needs every `RDOF_FEATURE_*` on (the Rust is that build). `RDOF_RUST_MODULES` in `rust.cmake` lists them; a new module goes there and in `src/lib.rs`.
+signatures, so the C that calls it doesn't change, and links in place of its `.c` file.
+
+The Rust is what runs, by default: the firmware (`CONFIG_RDOF_RUST`, default `y`) and the host tools and every host
+test (`common/CMakeLists.txt`; a cross build needs `RDOF_RUST_TARGET`). A build that lacks cargo, the toolchain or the
+target stops, lists what is missing and names the switch for the C: the `sdkconfig.defaults.c` overlay for the
+firmware, `-DRDOF_RUST=OFF` for the host. The C files it replaces are kept for now, for a build without a Rust toolchain and the
+feature-off builds (the Rust needs every `RDOF_FEATURE_*` on); `rdof_tests_c` runs the core tests on them. A change
+to one of these modules goes in the Rust, and in the C while it's kept. `RDOF_RUST_MODULES` in `rust.cmake` lists
+them; a new module goes there and in `src/lib.rs`.
 
 | Module | Replaces |
 |---|---|
@@ -16,11 +22,13 @@ all of them, and needs every `RDOF_FEATURE_*` on (the Rust is that build). `RDOF
 | `jitter.rs` | `common/src/jitter.c` (`ceil` and `rint` through the C library) |
 | `json.rs` | `common/src/json.c` (floats through the C library's `snprintf`) |
 | `jsonp.rs` | `common/src/jsonp.c` (numbers through the C library's `strtod`) |
+| `lastheard.rs` | `common/src/lastheard.c` (a frequency's text through the C library's `sscanf` and `llround`) |
 | `layer2.rs` | `common/src/layer2.c` |
 | `mmdvm.rs` | `common/src/mmdvm.c` |
 | `modem.rs` | `common/src/modem.c` (`rint` and `%.5f` through the C library) |
 | `netcalls.rs` | `common/src/netcalls.c` |
 | `oled.rs` | `common/src/oled.c` |
+| `parrot.rs` | `common/src/parrot.c` (through the raw pointer: the hooks may look at it; the voice regeneration, the CRC-32 and the data reply's bursts stay C: `duplex.c`, `fec.c`, `ipgw.c`) |
 | `tracker.rs` | `common/src/tracker.c` (`modf`, `rint` and the FEC through C; also the timestamps) |
 | `txvr.rs` | `common/src/txvr.c` (the struct shared by three tasks through the raw pointer, `tuning` volatile) |
 | `usbmatch.rs` | `common/src/usbmatch.c` |
@@ -39,7 +47,7 @@ Code copied from RadioFoundry (`common/src/radiofoundry`) stays C for now; the R
 
 A module that takes or fills a C struct mirrors it `#[repr(C)]`, field for field. `src/layout.rs` lists each
 mirror by its C name with its size and alignment, and `layout.c` (built with the Rust) compares them with the C
-headers': `rdof_tests_rust` stops before its tests on a mismatch, and the firmware at boot (on Xtensa, where the
+headers': `rdof_tests` stops before its tests on a mismatch, and the firmware at boot (on Xtensa, where the
 sizes differ from the host's). A new mirror goes in both lists. Text the C made with `snprintf` is written in
 Rust, except `%f`, which goes through C's `snprintf` (`core::fmt`'s float code would cost several KB).
 
@@ -56,8 +64,8 @@ block codes); the C and Rust libraries link as a cycle.
 Rust's math instead of newlib's (the DSP included), depending on link order. Rust's math in place of newlib's
 could be faster; if so, that's its own change, measured on a board (`kbench`, HIL), not a link-order accident.
 
-- **Host tests:** `rdof_tests_rust` is `rdof_tests` with this crate in place of the C it replaces, built when
-  cargo is installed (stable Rust; `rustup` minimal profile).
+- **Host:** `rdof_common` is built with this crate in place of the C it replaces (cargo: stable
+  Rust; `rustup` minimal profile), so the tools and every test run it. `rdof_tests_c` is the core tests on the C.
 - **ESP32-S3:** Espressif's Rust fork, for Xtensa, through `espup`: `espup install --targets esp32s3 --std`
   (`--std` skips its GCC: ESP-IDF's links). Cargo builds `core` for `xtensa-esp32s3-none-elf` from source
   (`-Zbuild-std=core`). RISC-V chips (P4) would use stable Rust and a prebuilt `core`.

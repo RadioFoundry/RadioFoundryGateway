@@ -151,6 +151,8 @@ void rdof_sdr_rx_free(rdof_sdr_rx_t *rx);
 double rdof_sdr_rx_correction_at(const rdof_sdr_rx_t *rx, int c, int64_t pos);
 /* Set channel c's correction from the next chunk on, and keep it in the history. */
 void rdof_sdr_rx_set_correction(rdof_sdr_rx_t *rx, int c, double hz);
+/* The color code channel c decodes from now on (-1: any). */
+void rdof_sdr_rx_set_cc(rdof_sdr_rx_t *rx, int c, int cc);
 /* Another sink for one channel's tracker (an HBlink4 peer per channel). False if it has no room. */
 bool rdof_sdr_rx_add_sink(rdof_sdr_rx_t *rx, int channel, const rdof_sink_t *sink);
 /* Slot timing utc: while ok, each BS / MS burst gets its UTC start and grid slot n,

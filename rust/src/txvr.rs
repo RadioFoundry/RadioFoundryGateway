@@ -802,6 +802,26 @@ pub unsafe extern "C" fn rdof_txvr_scanning(t: *const RdofTxvr) -> bool {
     (*t).has_scan && !(*t).has_call && !(*t).stopped
 }
 
+/// Whether it still holds a burst of the stream sid: its call (until it ends), the call waiting or an orphan.
+#[no_mangle]
+pub unsafe extern "C" fn rdof_txvr_holds(t: *mut RdofTxvr, sid: &[u8; 4]) -> bool {
+    lock(t);
+    let held = ((*t).has_call && (*t).call.tune.stream_id == *sid)
+        || ((*t).next.used && (*t).next.tune.stream_id == *sid)
+        || (*t).orphans.iter().any(|o| o.used && o.stream_id == *sid);
+    unlock(t);
+    held
+}
+
+/// Whether it refused the stream sid (its tune answered other than on air; the last REFUSED streams).
+#[no_mangle]
+pub unsafe extern "C" fn rdof_txvr_refused(t: *mut RdofTxvr, sid: &[u8; 4]) -> bool {
+    lock(t);
+    let r = was_refused(t, sid);
+    unlock(t);
+    r
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn rdof_txvr_state_name(t: *const RdofTxvr) -> *const c_char {
     if !(*t).has_call {

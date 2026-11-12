@@ -1,0 +1,37 @@
+// A duplex MMDVM modem as a repeater on BrandMeister: one login, with the repeater's ID (a hotspot's: your DMR ID and
+// two digits) and the hotspot security password set in BrandMeister's SelfCare. Every talkgroup goes both ways on
+// both slots ("tg": "*"): BrandMeister decides what comes down, by the static talkgroups set in SelfCare and the
+// ones a radio keys (dynamic). A private call to 9990 is BrandMeister's echo.
+{
+  "version": 3,
+  "name": "repeater",
+  "callsign": "N0CALL",
+  "defaults": {"cc": 1},
+  "devices": [
+    {"name": "modem", "kind": "modem", "type": "mmdvm", "port": {"path": "/dev/ttyAMA0"}}
+  ],
+  "frequencies": [
+    {"name": "in", "freq": 438.25},
+    {"name": "out", "freq": 438.75}
+  ],
+  "apps": [
+    {"name": "R1", "type": "repeater", "in": "in", "out": "out", "tg": "*"}
+  ],
+  "networks": [
+    {"type": "brandmeister", "host": "3102.master.brandmeister.network", "password": "your-hotspot-password",
+     "peer_ids": {"R1": 980010001}}
+  ],
+  // the clock: public servers that don't smear a leap second (no pool)
+  "ntp": {"servers": "time-a-g.nist.gov time-a-b.nist.gov tick.usno.navy.mil tock.usno.navy.mil time.apple.com time.cloudflare.com"},
+  // the bench (rdofradio --bench 7373): its jobs may transmit anywhere in the US amateur bands from 6 m to 13 cm,
+  // keyed 10 s at most, at the transmitter's least power (add "rf_level" 0..255, or "max_dbm", for more)
+  "bench": {
+    "tx": {
+      "bands_hz": [
+        [50000000, 54000000], [144000000, 148000000], [222000000, 225000000], [420000000, 450000000],
+        [902000000, 928000000], [1240000000, 1300000000], [2300000000, 2310000000], [2390000000, 2450000000]
+      ],
+      "max_key_s": 10
+    }
+  }
+}

@@ -47,8 +47,7 @@ typedef struct {
     double base_die_c;          // NAN: unknown (no compensation)
     double comp;                // what the table adds to base_rate now (s/s)
     float die_c;                // the last reading
-    int tcal_bin;               // the bin last learned this run, and when
-    int64_t tcal_us;
+    nc_tcal_seen_t tcal_seen;   // which bins were learned this run, and when
     bool tcal_changed;          // learned since it was stored
 } nc_clock_t;
 

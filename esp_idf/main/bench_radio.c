@@ -324,15 +324,27 @@ static esp_err_t ws_link(httpd_req_t *req)
     httpd_ws_frame_t f = {0};
     if (httpd_ws_recv_frame(req, &f, 0) != ESP_OK)
         return ESP_FAIL;
-    if (!f.len)
-        return ESP_OK;
     if (f.len > 2048)
         return ESP_FAIL;
     EXT_RAM_BSS_ATTR static uint8_t buf[2048]; /* the web server's one task */
     f.payload = buf;
-    if (httpd_ws_recv_frame(req, &f, f.len) != ESP_OK)
+    if (f.len && httpd_ws_recv_frame(req, &f, f.len) != ESP_OK)
         return ESP_FAIL;
-    if (f.type != HTTPD_WS_TYPE_BINARY)
+    /* control frames come here (handle_ws_control_frames): a ping and a close are answered under the radio's lock,
+     * as the link's own frames are sent. The server's own pong went out from its task while the link's task was
+     * sending the radio's bytes on the same socket, and landed inside a frame */
+    if (f.type == HTTPD_WS_TYPE_PING || f.type == HTTPD_WS_TYPE_CLOSE) {
+        if (f.len > 125)
+            return ESP_FAIL;
+        const bool closing = f.type == HTTPD_WS_TYPE_CLOSE;
+        httpd_ws_frame_t a = {.final = true, .type = closing ? HTTPD_WS_TYPE_CLOSE : HTTPD_WS_TYPE_PONG,
+                              .payload = f.len ? buf : NULL, .len = f.len};
+        xSemaphoreTake(r->mu, portMAX_DELAY);
+        const esp_err_t e = httpd_ws_send_frame(req, &a);
+        xSemaphoreGive(r->mu);
+        return closing ? ESP_FAIL : e; /* a close ends the session */
+    }
+    if (f.type != HTTPD_WS_TYPE_BINARY || !f.len)
         return ESP_OK; /* text from the tool: nothing yet */
     xSemaphoreTake(r->mu, portMAX_DELAY);
     if (r->fd == httpd_req_to_sockfd(req))
@@ -619,7 +631,7 @@ int bench_radio_register(void *server)
     for (int i = 0; i < n; i++)
         xTaskCreatePinnedToCoreWithCaps(link_task, "bench_link", 3072, &radios[i], 4, NULL, 0, MALLOC_CAP_SPIRAM);
     const httpd_uri_t link = {.uri = "/api/bench/v1/radios/*/link", .method = HTTP_GET, .handler = ws_link,
-                              .is_websocket = true};
+                              .is_websocket = true, .handle_ws_control_frames = true};
     return httpd_register_uri_handler(server, &link) == ESP_OK;
 }
 

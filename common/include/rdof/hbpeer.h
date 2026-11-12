@@ -7,10 +7,20 @@
  * No login (HBlink4): the DMRC config packet every keepalive_s is the keepalive, the master answers DMRP (MSTN /
  * MSTC refuse), and three keepalives without an answer mark it down. Times are seconds on any steady clock.
  *
- * With a login (rdof_hb_peer_set_login, BrandMeister: docs/spec/fw/brandmeister.md): RPTL, RPTACK + salt, RPTK
- * (SHA-256 of salt and password), RPTACK, RPTC (made from the DMRC the caller keeps setting), RPTACK; then RPTPING
- * every keepalive_s, MSTPONG back, down after three unanswered. A refusal or a step with no answer in 5 s backs off
- * 1 s, doubling to 60 s (a refused password: 60 s at once). DMRD from the master count only while logged in.
+ * With a login (rdof_hb_peer_set_login, the Homebrew repeater protocol: docs/spec/fw/brandmeister.md): RPTL, an
+ * acknowledgment with the salt, RPTK (SHA-256 of salt and password), an acknowledgment, RPTC (made from the DMRC the
+ * caller keeps setting), an acknowledgment; then a ping every keepalive_s, its answer back, down after three
+ * unanswered. A refusal or a step with no answer in 5 s backs off 1 s, doubling to 60 s (a refused password: 60 s at
+ * once). DMRD from the master count only while logged in.
+ *
+ * Two dialects of it (rdof_hb_peer_set_dl5di):
+ *   - the 2015 specification's (DL5DI, G4KLX, DG1HT; a brandmeister network, BrandMeister's port 62030): IDs in
+ *     the login packets as 8 hex characters, MSTACK, MSTPING / RPTPONG, the salt hashed as the text received and
+ *     the hash sent as 64 hex characters, a 306-byte RPTC (callsign before ID, no slots), 53-byte DMRD with the
+ *     slot in bit 0 of the flags;
+ *   - the one stock HBlink3 / HBlink4 and most masters speak (a homebrew network, port 62031): binary IDs, RPTACK,
+ *     RPTPING / MSTPONG, a 302-byte RPTC, 55-byte DMRD with the slot in bit 7.
+ * Inside the gateway DMRD are always the second kind: rdof_hb_peer_up and rdof_hb_peer_down convert.
  *
  * The callers' loop is the same either way: when rdof_hb_peer_tick says so, set the config (the DMRC) and send what
  * rdof_hb_peer_packet gives.
@@ -30,7 +40,10 @@ extern "C" {
 #endif
 
 #define RDOF_RPTC_LEN 302
-#define RDOF_HB_OUT_MAX RDOF_RPTC_LEN /* the largest packet rdof_hb_peer_packet makes */
+#define RDOF_RPTC_DL5DI_LEN 306
+#define RDOF_DMRD_DL5DI_LEN 53
+#define RDOF_HB_OUT_MAX RDOF_RPTC_DL5DI_LEN /* the largest packet rdof_hb_peer_packet makes */
+#define RDOF_HB_CLOSE_MAX 13               /* RPTCL + 8 hex characters */
 #define RDOF_HB_LOGIN_TIMEOUT_S 5.0
 #define RDOF_HB_BACKOFF_MAX_S 60.0
 
@@ -53,6 +66,7 @@ typedef struct {
     unsigned tx, rx, refused;
     /* the login (rdof_hb_peer_set_login); all zero without one */
     bool login;
+    bool dl5di;          /* the 2015 specification's dialect (rdof_hb_peer_set_dl5di) */
     uint8_t state;       /* rdof_hbl_state_t */
     uint8_t refused_at;  /* the step the last refusal came at (rdof_hbl_state_t) */
     bool bad_password;   /* the last refusal came at RPTK */
@@ -60,7 +74,13 @@ typedef struct {
     uint8_t refusal_len;
     bool pending;        /* this step's packet is due now */
     bool relogin;        /* the config changed: log in again at the next tick */
-    uint8_t salt[4];
+    uint8_t salt[8]; /* 4 bytes, or 8 hex characters (dl5di) */
+    uint8_t salt_len;
+    /* dl5di: the stream IDs made for the master's DMRD, which may all carry 0 (BrandMeister's parrot does) */
+    uint32_t down_stream[2], down_src[2], down_dst[2];
+    double down_last[2];
+    bool down_ended[2];
+    uint32_t down_count;
     double backoff_s;
     unsigned logins, pings_missed;
     char password[64];
@@ -80,6 +100,9 @@ void rdof_hb_peer_init(rdof_hb_peer_t *p, uint32_t peer_id, double keepalive_s);
 /* Log in (after init): RPTC's location, description and URL fields (cut to fit; NULL: empty). */
 void rdof_hb_peer_set_login(rdof_hb_peer_t *p, const char *password, const char *location, const char *description,
                             const char *url);
+/* The login speaks the 2015 specification's dialect (true) or the one HBlink speaks (false, the default). Before the
+   link opens. */
+void rdof_hb_peer_set_dl5di(rdof_hb_peer_t *p, bool on);
 /* RPTC's TX power: dBm at the antenna, rounded and held to 0..99 (NAN or under 0: 0). A change while logging in or
    logged in starts the login again. */
 void rdof_hb_peer_set_power(rdof_hb_peer_t *p, double dbm, double now);
@@ -96,10 +119,19 @@ bool rdof_hb_peer_tick(rdof_hb_peer_t *p, double now, rdof_hbp_event_t *ev);
 /* The packet due (after tick returned true): the DMRC, or the login's step or ping. Returns its length. */
 size_t rdof_hb_peer_packet(const rdof_hb_peer_t *p, uint8_t out[RDOF_HB_OUT_MAX]);
 /* RPTCL (a login, on shutdown) into out; 0 without a login. */
-size_t rdof_hb_peer_close_packet(const rdof_hb_peer_t *p, uint8_t out[9]);
-/* What goes up for d (n bytes): d itself, or, from a simplex login (slots '4' in its config), a DMRD copied into tmp
-   with its slot set to 2, the slot a simplex hotspot's calls use both ways on BrandMeister. */
-const uint8_t *rdof_hb_peer_up(const rdof_hb_peer_t *p, const uint8_t *d, size_t n, uint8_t tmp[RDOF_HB_OUT_MAX]);
+size_t rdof_hb_peer_close_packet(const rdof_hb_peer_t *p, uint8_t out[RDOF_HB_CLOSE_MAX]);
+/* What goes up for d (*n bytes): d itself, or a DMRD copied into tmp (and *n set): from a simplex login (slots '4'
+   in its config) with its slot set to 2, the slot a simplex hotspot's calls use both ways on BrandMeister; from a
+   dl5di login in that dialect's 53 bytes. */
+const uint8_t *rdof_hb_peer_up(const rdof_hb_peer_t *p, const uint8_t *d, size_t *n, uint8_t tmp[RDOF_HB_OUT_MAX]);
+/* What the gateway takes for a packet from the master (after rdof_hb_peer_received said RDOF_HBP_PACKET): d itself,
+   or, from a dl5di login, its DMRD as 55 bytes in tmp (*n set; BER and RSSI 0) with a stream ID of our own when the
+   master's is 0: a new one at a voice header, after a terminator, a new source or destination, or 2 s of quiet. */
+const uint8_t *rdof_hb_peer_down(rdof_hb_peer_t *p, const uint8_t *d, size_t *n, double now,
+                                 uint8_t tmp[RDOF_DMRD_LEN]);
+/* A DMRD's flags byte between the dialects. */
+uint8_t rdof_dmrd_flags_to_dl5di(uint8_t f);
+uint8_t rdof_dmrd_flags_from_dl5di(uint8_t f);
 /* Whether DMRD may go up now: always without a login, only logged in with one. */
 bool rdof_hb_peer_may_send(const rdof_hb_peer_t *p);
 /* The state's name for status: "up", "down" (no login) or the login's step: "login", "auth", "config",
@@ -112,12 +144,18 @@ const char *rdof_hb_peer_state_name(const rdof_hb_peer_t *p);
 size_t rdof_hb_peer_login_status(const rdof_hb_peer_t *p, char *out, size_t cap);
 
 /* RPTC from a DMRC (rdof/hblink.h's layout): callsign, frequencies, color code, slots, the DMRC's version as RPTC's
-   software ID and "MMDVM" as its package ID (BrandMeister refuses others at the config step); power_dbm (0..99) as the
+   software ID and "MMDVM" as its package ID (BrandMeister's port 62031 refuses others at the config step); power_dbm (0..99) as the
    TX power, which the spec gives in dBm (the DMRC's is an RF level); latitude and longitude unsigned, 6 decimals cut to
    the field (33.61980, -86.60890, 0.000000); location, description and url as given (NULL: empty). Returns
    RDOF_RPTC_LEN. */
 size_t rdof_rptc_from_dmrc(const uint8_t *dmrc, size_t n, int power_dbm, const char *location, const char *description,
                            const char *url, uint8_t out[RDOF_RPTC_LEN]);
+/* The 2015 specification's RPTC from a DMRC: RPTC, callsign (8), the ID (8 hex characters, upper case), RX and TX Hz
+   (9 each), power dBm (2), color code (2), latitude (8, "+33.6198") and longitude (9, "-086.6089") signed with 4
+   decimals, height (3), location (20), description (20), url (124), software ID (the DMRC's version, 40) and package
+   ID (the DMRC's software, 40): no slots field. Returns RDOF_RPTC_DL5DI_LEN. */
+size_t rdof_rptc_dl5di_from_dmrc(const uint8_t *dmrc, size_t n, uint32_t peer_id, int power_dbm, const char *location,
+                                 const char *description, const char *url, uint8_t out[RDOF_RPTC_DL5DI_LEN]);
 /* A role's power for RPTC, dBm at the antenna: a repeater's power, a transceiver's channel's on freq_now (else its
    first), on the transmitter's map (rdof/txpower.h). NAN without a map. */
 double rdof_hb_role_power_dbm(const rdof_config_t *c, uint32_t freq_now);

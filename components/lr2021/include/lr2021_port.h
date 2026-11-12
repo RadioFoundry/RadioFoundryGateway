@@ -42,6 +42,9 @@ void lr2021_sleep_ms(int ms);
 /* Wait about us microseconds, giving the CPU up where the platform can for that long (POSIX: a sleep; ESP-IDF:
  * ticks when us is at least one, at most us, else a one-shot timer, or a spin under 30 us). */
 void lr2021_sleep_us(uint32_t us);
+/* Optional (weak: nothing by default): just before a SetTx's frame goes, asked for at_us (0: not timed). A port that
+ * times its NSS edge in hardware uses it to pick that edge. */
+void lr2021_mark_settx(int64_t at_us);
 
 /* The length of lr2021_sleep_tick, in ms. */
 #ifndef LR2021_TICK_MS

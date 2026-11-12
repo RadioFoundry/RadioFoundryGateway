@@ -51,6 +51,9 @@ typedef struct {
     uint32_t internal_free, internal_largest;
     uint32_t dma_free, dma_largest;
     uint32_t psram_free, psram_largest;
+    /* allocations the heap has refused since boot (whatever asked: Wi-Fi, lwIP, a role), and the last one */
+    uint32_t alloc_fails, alloc_fail_size, alloc_fail_caps;
+    const char *alloc_fail_task;
 } rdof_mem_avail_t;
 
 typedef struct {

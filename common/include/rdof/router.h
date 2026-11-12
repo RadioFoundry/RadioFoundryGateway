@@ -93,6 +93,18 @@ int rdof_router_carries(const rdof_router_t *r, int path, uint32_t tg, double no
 /* Where radio id was last heard (within the site's pc_hold_s): a path, or -1. */
 int rdof_router_heard(const rdof_router_t *r, uint32_t id, double now);
 
+/* The site's apps as a JSON array for a status page, one object each in the settings' order:
+     {"name", "type": "repeater", "in": Hz, "out": Hz, "cc", "net": the network's name or "",
+      "slots": [{"slot", "path", "peer": the HBlink peer ID when it has its own, "sending": a network stream goes
+      out there now}, ...], ...}
+     {"name", "type": "parrot" | "ipgw", "id": the ID it answers (when one), "group": it's a talkgroup, ...}
+   extra (NULL: none) adds what the program knows of app a to its object (a repeater's keyed and heard, a parrot's
+   state and counts). Returns the length (out NUL terminated; "[]" if it doesn't fit). */
+#include "rdof/json.h"
+typedef void (*rdof_apps_extra_fn)(void *ctx, int a, rdof_json_t *j);
+size_t rdof_router_apps_json(const rdof_router_t *r, double now, rdof_apps_extra_fn extra, void *ctx, char *out,
+                             size_t cap);
+
 #ifdef __cplusplus
 }
 #endif

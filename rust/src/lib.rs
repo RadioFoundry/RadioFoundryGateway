@@ -27,6 +27,8 @@ pub mod json;
 #[cfg(feature = "legacy")]
 pub mod jsonp;
 #[cfg(feature = "legacy")]
+pub mod lastheard;
+#[cfg(feature = "legacy")]
 pub mod layer2;
 #[cfg(feature = "legacy")]
 mod layout;
@@ -38,6 +40,8 @@ pub mod modem;
 pub mod netcalls;
 #[cfg(feature = "legacy")]
 pub mod oled;
+#[cfg(feature = "legacy")]
+pub mod parrot;
 #[cfg(feature = "legacy")]
 pub mod pdu;
 #[cfg(feature = "legacy")]

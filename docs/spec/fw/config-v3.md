@@ -167,7 +167,7 @@ radio (a RadioFoundry radio on its debug link, for the bench). Every device take
 |---|---|---|---|
 | `kind` | `sdr` \| `modem` \| `radio` | | required |
 | `name` | str | §2.1 | |
-| `hears` | object or `false` | an SDR: every frequency in its window. A modem: the first frequency it transmits on, as its idle frequency | where a one-frequency device listens (§4.4); `false`: it never receives |
+| `hears` | object or `false` | an SDR: every frequency in its window. A modem: the first frequency it transmits on, as its idle frequency; when that is a repeater's `out`, the repeater's `in` (below) | where a one-frequency device listens (§4.4); `false`: it never receives |
 | `transmits` | list or `false` | every frequency with `tx` true that it can reach, except a repeater's input | the frequencies it may transmit on (names or frequencies); `false`: it never transmits |
 | the talker keys | | §4.5 | how a device that transmits on several frequencies waits and answers |
 
@@ -177,6 +177,9 @@ Every power in the settings, the API, the logs and the page is dBm at the antenn
 - An SDR has no `hears` object: it hears every frequency inside its receive window, and the rate and center are
   chosen to cover them. `"hears": false` turns its receiver off. `hears.scan` on an SDR is for later (§14).
 - A modem that doesn't transmit needs `hears` (its frequency).
+- A modem with no `hears` that sends a repeater's `out` hears its `in`: one duplex modem is the whole repeater,
+  with nothing more to say. A `radio_hotspot` doesn't (it is half duplex: a split's transmit half), and a modem of
+  type `auto` only when no other device hears `in` (else it is a split's transmit half too).
 - A radio takes neither `hears` nor `transmits`: it is a bench device only.
 - An SDR transmits when its driver can (`lr2021`, `sx1255`, `soapy`, `iio`, `sim`) or it has `tx`. `transmits` on an
   SDR that can't (`rtlsdr`) is refused.
@@ -337,6 +340,11 @@ A device's `bench` (on an SDR, `bench` or `tx.bench`):
 
 A bench radio's guard sends at its lowest power step whatever the job asks.
 
+On rdofradio, `--bench [ADDR:]PORT` turns the bench on (there's no port key) and `bench.tx` adds to `--bench-tx`: its
+frequencies and bands are where the jobs may transmit, `max_key_s` caps every key-up (a signal or an outbound
+asking for longer is refused up front, a call is cut there), and on an MMDVM modem `rf_level`, or `max_dbm` through the modem's power map (§4.7), caps the
+level under `--power`. On an SDR, `max_dbm` refuses a job while `--tx-power` or `--tx-gain` puts it higher. `devices` and `arm_gpio` are a board's and are refused.
+
 ### 4.7 Transmit power
 
 A frequency's `power_dbm` is the power at the antenna connector. A modem's `SET_FREQ` carries an RF level, 0..255;
@@ -439,6 +447,9 @@ and the one that sends `out` ([../repeater.md](../repeater.md)).
 | `prebuffer`, `jitter_buffer`, `jitter_min_ms`, `jitter_max_ms` | | §4.5 | the network jitter buffer |
 | `split` | `{power_cap, prebuffer, lease_s, cooldown_s, max_key_s}` | | the split's own settings ([../repeater.md](../repeater.md)): the first four 0..255, `max_key_s` 0..600 |
 
+The repeater runs on the device that sends `out` when that device hears `in` too and can be the whole repeater
+(an SDR, or a modem that isn't a `radio_hotspot`), whatever else hears `in`: an SDR beside a duplex modem only
+monitors. Else it is split, with the first device that hears `in`.
 On one modem the repeater needs a duplex modem: a `radio_hotspot` is refused. A split's halves are hotspot-mode
 modems (`type` `auto` or `radio_hotspot`); its transmit half can't be an SDR. On the SDR it needs a full-duplex
 front end.
@@ -471,7 +482,7 @@ It needs `routes` or `nat` ("nothing to do"). A route:
 | `to` | `"host:port"` or `"host"` | | required: where they go (`host` keeps each datagram's port) |
 | `payload` | `udp` \| `ip` | `udp` | the UDP payload, or the whole IP packet |
 
-A firmware build without `CONFIG_RDOF_IPGW` refuses an `ipgw` app.
+A firmware build without `CONFIG_RDOF_IPGW` refuses an `ipgw` app. rdofradio runs it too ([ipgw.md](ipgw.md) §13.1).
 
 
 ### 6.4 `trunk`
@@ -507,10 +518,10 @@ code is the same (the TSCC's). The unit, named after the app:
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `type` | `hblink` \| `brandmeister` \| `mqtt` | | required. Later: `openbridge`, others |
+| `type` | `hblink` \| `brandmeister` \| `homebrew` \| `mqtt` | | required. Later: `openbridge`, others |
 | `name` | str | the type | §2.1 |
 
-At most one of each, and `hblink` or `brandmeister`, not both. The first network in the list is the default: a path with no `net` uses it.
+At most one of each, and one of `hblink`, `brandmeister` and `homebrew`. The first network in the list is the default: a path with no `net` uses it.
 
 ### 7.1 `hblink`
 
@@ -527,7 +538,12 @@ The HBlink4 master ([hblink.md](hblink.md)). With it, the top-level `id` is requ
 | `sctp_ttl_ms` | int, 0..60000 | 0 | |
 | `identity` | `single` \| `per_path` | `single` | `single`: the box is one peer (`id`), and its policies decide what goes where. `per_path`: each frequency or repeater is its own peer (`id` + 1, + 2, ... in list order, or `peer_ids`), and the master decides where a call goes: a stream sent to a peer goes only to that peer's paths |
 | `peer_ids` | object | | `{"<frequency or repeater>": id}`, with `per_path` only; a repeater's two slots share its peer. Each such peer gives the master its frequency's or repeater's name (the first 8 characters) as its callsign |
-| `roaming` | bool | false | let the master move a device that `transmits` on several frequencies (DMRT / DMRK) |
+| `roaming` | bool | false | let the master move a device that `transmits` on several frequencies (DMRT / DMRK). Checked (a `brandmeister` or `homebrew` network refuses it) but not acted on yet: a transceiver on HBlink4 announces itself as roaming and takes DMRT whatever this says |
+
+Which units are HBlink peers: with `single`, the box's one peer carries every path. With `per_path` or a
+BrandMeister network, a unit is a peer only when its own path is on that network: a repeater on MQTT, or a path with
+`net: false`, opens no peer and sends the master nothing (it used to log in beside the others with the box's `id`).
+A box with no HBlink network runs no peer at all. The status then has no `hblink` for that unit.
 
 ### 7.2 `mqtt`
 
@@ -554,8 +570,10 @@ packets on `{root}/calls/{tg|pc}/{dst}/{box}` and takes the other boxes' from `{
 `{root}/tg/{tg}/{box}`, `{root}/pc/{id}/{box}` and `{root}/dl/{box}`, with the box's `info` and `activity`
 ([mqtt-net.md](mqtt-net.md)). `bundle` and `raw_tx` need `format: "v3"`, and `format` needs `calls`. The errors:
 `format: dmrd or v3`, `format: with calls true`, `bundle: 1 to 3`, `bundle: with format v3`, `raw_tx: with format
-v3`, `transport: mqtt/tcp or mqtt/tls (the others aren't built yet)`. The v3 calls run on a connection of their own
-(client ID `rdof-net-{name}`, the box's `name` as the node, so it must be letters, digits, `.`, `_` or `-`), in
+v3`, `transport: mqtt/tcp or mqtt/tls (the others aren't built yet)`. A board carries the `v3` format only (rdofradio both), and only an image with the
+transceiver built in: with `dmrd`, or on a receiver-only image, it says so in its log and in `/api/status`
+`settings_warning`, and carries none. The v3 calls run on a connection of their own
+(client ID `rdof-net-{name}-{hw}`, the box's `name` as the node, so it must be letters, digits, `.`, `_` or `-`), in
 rdofradio and on the board; one network in a file takes `format: "v3"` (the first, if several do).
 
 ### 7.3 `brandmeister`
@@ -568,7 +586,7 @@ required: each login's `RPTC` carries it, and BrandMeister checks it against the
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `host` | str | | required: the master, `<country code>.master.brandmeister.network` |
-| `port` | int | 62031 | |
+| `port` | int | 62030 | the 2015 dialect's port ([brandmeister.md](brandmeister.md) §3) |
 | `password` | str, 1..63 | | required: the hotspot security password (SelfCare), or a repeater's device password |
 | `peer_ids` | object | | required: `{"<frequency or repeater>": id}`, a registered ID for each path on the network (a hotspot: the DMR ID and two digits). No two paths share one, and none is derived |
 | `location` | str, ≤ 20 | `""` | `RPTC` location text |
@@ -579,6 +597,21 @@ required: each login's `RPTC` carries it, and BrandMeister checks it against the
 transmitter's power in dBm off the device's power map, and the top-level `location`'s coordinates and height. A
 simplex login sends its calls up on slot 2. A device that transmits on a frequency of the network transmits on that
 one only (no roaming transceiver). `GET /api/config` shows the password, as it does MQTT's.
+
+### 7.4 `homebrew`
+
+Any other master that speaks the Homebrew repeater protocol: a stock HBlink (one without this project's `DMRC`
+peer), TGIF, a FreeDMR or DMR+ style server. The keys, the login and the rules are §7.3's: a login per frequency
+or repeater with its ID in `peer_ids`, the top-level `callsign` in each `RPTC`. `password` is the one the master
+has for that login (TGIF: the hotspot security key of its self care page), `host` the master's. Use `hblink` only
+for an HBlink4 that knows `DMRC` (§7.1).
+
+It speaks HBlink's dialect of the protocol (binary IDs, `RPTACK`, 55-byte `DMRD`; [brandmeister.md](brandmeister.md)
+§3), on `port` 62031 by default; `brandmeister` speaks the 2015 specification's.
+
+Status (2026-11-11): the settings and the login are the ones tested against the simulated master; not yet run
+against a stock HBlink or TGIF. `RPTO` (an options string, which some masters take static talkgroups from) isn't
+sent.
 
 ## 8. Policies
 
@@ -1015,7 +1048,7 @@ The open (`rdof_plan_open`) refuses, with the place and the rule:
 | `rdof_plan_host` | a `uart` port ("this host has no UARTs of its own"); a split may have both halves on `path` ports (a path isn't the board's one USB port) |
 
 `rdof_plan_roles` refuses more than 2 units that transmit ("a board runs 2 units that transmit at most"), a second
-SDR ("a board runs one SDR"), and a file that makes no unit ("nothing to run"). `rdof_plan_roles_on` takes the
+SDR ("a board runs one SDR"; rdofradio: "a host runs one SDR"), and a file that makes no unit ("nothing to run"). `rdof_plan_roles_on` takes the
 platform's limit: `rdof_plan_host` allows 8 (`RDOF_ROLES_MAX`). rdofradio runs one unit that transmits, or up to 8
 split repeaters whose RX half is the SDR, each TX half a modem at a `path` port (the first may take `--split-tx`'s);
 anything else beside a second unit is refused ("rdofradio runs one unit that transmits, or split repeaters on the
@@ -1112,6 +1145,7 @@ An NVS partition with no free pages or a new version is erased at boot (`main.c`
 `auto`) on "Ch 1" 438.5 MHz (pinned with `devices`), its idle frequency; in a build with the SDR, an RTL-SDR `s3-sdr` (`rx.rate` 288000,
 `gain_db` 30) hearing Area 4 438.0625 (TG 213), Service Bravo 438.1125 (TG 204), Operations 3 438.1625 (TG 206),
 Service Desk 438.2125 (TG 208) and Area 1 438.2625 (TG 210); HBlink at 192.0.2.115:62031, MQTT at
-192.0.2.115:1883 (user `radios`).
+192.0.2.115:1883 (user `radios`). Both are a sample address: the board says so (`settings_warning`,
+the page's warning) and doesn't open its MQTT connections until a real broker is set.
 
 GET `/api/config` is the stored text with `wifi` (no passwords) and `ntp` added back (`rdof_jsonc_add`).

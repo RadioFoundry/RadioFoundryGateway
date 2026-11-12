@@ -31,6 +31,8 @@ lr2021_err_t lr2021_hal_esp_open(const lr2021_esp_cfg_t *cfg, lr2021_hal_t *hal)
 /* Transfers whose answer wasn't 4-aligned or a multiple of 4 long, so ESP-IDF's SPI driver allocated an internal DMA
  * buffer for it (the IRQ word, a register read). hal is one lr2021_hal_esp_open filled. */
 uint32_t lr2021_hal_esp_bounces(const lr2021_hal_t *hal);
+/* The longest transfer since the last call, in microseconds: what a reader that lost samples was waiting on. */
+uint32_t lr2021_hal_esp_worst_us(lr2021_hal_t *hal);
 
 #ifdef __cplusplus
 }

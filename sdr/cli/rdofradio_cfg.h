@@ -25,6 +25,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "rdof/benchtx.h"
+#include "rdof/ipgw.h"
 #include "rdof/config.h"
 #include "rdof/repeater.h"
 #include "rdof/site.h"
@@ -77,6 +79,7 @@ typedef struct {
     char ntp_servers[256];
     unsigned ntp_poll_s; /* 0: netclock's default */
     bool has_hblink;    /* an hblink network: a peer of cfg.master_host */
+    bool unit_hblink;   /* the unit itself is a peer there (its path is on it, or the box has one identity) */
     /* the SDR's receive channels, as the board's SDR resolves them: its receiver's frequencies, then the units'
        (the transceiver's, a repeater's input; not a repeater's output). Each with hblink and a peer_id is an
        HBlink4 peer of its own (identity per_path); the others go up through the unit's peer, as its policy says */
@@ -92,6 +95,12 @@ typedef struct {
     rdofradio_split_t split[RDOF_ROLES_MAX];
     bool trunk;         /* a trunked site: t, and the site, box, clock; nothing else above */
     rdofradio_trunk_cfg_t t;
+    /* the IP gateway app (apps: type ipgw), when the document has one */
+    bool has_ipgw;
+    rdof_ipgw_config_t ipgw;
+    /* bench.tx: where and how the bench's jobs may transmit, added to --bench-tx (the line itself is --bench) */
+    bool has_bench_tx;
+    rdof_benchtx_policy_t bench_tx;
 } rdofradio_cfg_t;
 
 /* Read a settings document. False: err says why (the parser's reason, or what rdofradio can't run). */

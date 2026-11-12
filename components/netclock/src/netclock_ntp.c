@@ -93,6 +93,11 @@ void nc_ntp_request(uint8_t p[48], uint64_t cookie, uint32_t poll_s)
     }
 }
 
+double nc_root_distance_us(double us, int stratum)
+{
+    return fmax(LAMBDA_MIN_US, us) + (stratum >= NC_NTP_HIGH_STRATUM ? NC_NTP_HIGH_STRATUM_US : 0);
+}
+
 nc_reply_t nc_src_reply(nc_src_t *s, const uint8_t *p, int len, int64_t t4, bool iburst)
 {
     if (len < 48 || (p[0] & 7) != 4 || be64(p + 24) != s->cookie || !s->t1 || s->got) {
@@ -190,7 +195,8 @@ int nc_combine(nc_src_t *src, int n, nc_offset_fn offset, void *ctx, int64_t *t_
             v += (s->h_off[j] - m) * (s->h_off[j] - m);
         }
         s->jitter_us = s->hn > 1 ? sqrt(v / (s->hn - 1)) : 0;
-        s->lambda_us = fmax(LAMBDA_MIN_US, s->delay_us / 2 + s->root_delay_us / 2 + s->root_disp_us + s->jitter_us);
+        s->lambda_us = nc_root_distance_us(s->delay_us / 2 + s->root_delay_us / 2 + s->root_disp_us + s->jitter_us,
+                                           s->stratum);
         // Raw offsets (UTC - local) relative to the first server: the local
         // clock is common, so they compare directly (samples ms apart).
         int64_t raw = s->u - s->tm;

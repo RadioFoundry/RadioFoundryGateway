@@ -169,8 +169,8 @@ void roam_mqtt_start(roam_t *r)
         return;
     }
     snprintf(q->status_topic, sizeof q->status_topic, "%s/_sdr/%s/status", c->mqtt_root, c->name);
-    snprintf(q->client_id, sizeof q->client_id, "rdof-%s-%s", c->mode == RDOF_CFG_ROAMER ? "roaming" : "repeater",
-             c->name);
+    snprintf(q->client_id, sizeof q->client_id, "rdof-%s-%s-%s", c->mode == RDOF_CFG_ROAMER ? "roaming" : "repeater",
+             c->name, net_hwid());
     topic(r, "raw", q->alias_buf[0], sizeof q->alias_buf[0]);
     topic(r, "json", q->alias_buf[1], sizeof q->alias_buf[1]);
     q->alias_topics[0] = q->alias_buf[0];

@@ -1194,6 +1194,8 @@ static void test_pair_utc(int rx_kind)
 
 #include "rdof/bits.h"
 #include "rdof/hblink.h"
+#include "rdof/fec.h"
+#include "rdof/mssim.h"
 #include "rdof/repeater.h"
 #include "rdof/sdr/receiver.h"
 
@@ -1434,6 +1436,123 @@ static void dcm_init(dcm_t *x)
     x->client.cb_ctx = x;
     CHECK(rdof_modem_start(&x->client, 1), "version");
     rdof_radio_init(&x->radio, &x->client, rdof_radio_detect(x->client.version));
+}
+
+/* The confirmed-data responder (rdof/mssim.h) on the modem's own clock: a station's confirmed packet (header, two
+ * blocks), the answer placed one slot after the last block (rdof_sdrmodem_place48) and heard there, back to the
+ * sample, in the other phase of the channel; then a SACK two slots after, its block 60 ms behind it. */
+static struct {
+    rdof_sdrmodem_t *m;
+    rdof_mssim_t s;
+    int n;
+    int64_t pos[8];
+    int dt[8], cls[8];
+} MA;
+
+static void ma_burst(void *ctx, int c, const rdof_sdr_burst_t *b, double t)
+{
+    rdof_sdrmodem_heard(MA.m, c, b);
+    rdof_mssim_heard(&MA.s, &b->b, b->position);
+    if (b->b.dt == RDOF_DT_IDLE || MA.n >= 8)
+        return;
+    rdof_data_header_t h;
+    rdof_decode_data_header(b->b.burst, &h);
+    MA.cls[MA.n] = b->b.dt == RDOF_DT_DATA_HEADER && h.dpf == RDOF_DPF_RESPONSE ? h.response_class : -1;
+    MA.dt[MA.n] = b->b.dt;
+    MA.pos[MA.n++] = b->position;
+}
+
+static bool ma_send(void *ctx, int64_t at48, const uint8_t burst[33], int64_t *placed)
+{
+    return rdof_sdrmodem_place48(MA.m, at48, burst, placed);
+}
+
+static void ma_packet(uint8_t (*b)[RDOF_BURST_BYTES])
+{
+    const uint64_t sync = rdof_data_sync(RDOF_MS_VOICE);
+    uint8_t d[12] = {0x40 | RDOF_DPF_CONFIRMED, 4 << 4};
+    rdof_put_be24(d + 2, 3101276);
+    rdof_put_be24(d + 5, 3105738);
+    d[8] = 0x80 | 2;
+    d[9] = 3 << 4;
+    const uint16_t crc = rdof_crc16_ccitt(d, 10) ^ RDOF_MASK_DATA_HEADER;
+    d[10] = (uint8_t)(crc >> 8), d[11] = (uint8_t)crc;
+    rdof_data_burst(d, RDOF_DT_DATA_HEADER, DC_CC, sync, b[0]);
+    for (int k = 0; k < 2; k++) {
+        uint8_t e[12];
+        for (int i = 0; i < 12; i++)
+            e[i] = (uint8_t)(0x11 * (i + k));
+        e[0] = (uint8_t)(k << 1);
+        rdof_data_burst(e, RDOF_DT_RATE_12, DC_CC, sync, b[1 + k]);
+    }
+}
+
+static int64_t ma_late; /* the modem's tx_late48: this simulation's transmit path is on time, so an answer lands that early */
+
+static void ma_run(const char *profile, int64_t *end48)
+{
+    static dcm_t x;
+    static rdof_sdr_rx_t rx;
+    static rdof_mod_t st;
+    static uint8_t b[3][RDOF_BURST_BYTES];
+    static rdof_cf_t iq[DC_CHUNK], o[DC_CHUNK];
+    dcm_init(&x);
+    CHECK(rdof_radio_tune(&x.radio, DC_CH, DC_CC, 100) && !x.m.dcdm, "simplex");
+    x.m.tx_late48 = ma_late;
+    memset(&MA, 0, sizeof MA);
+    MA.m = &x.m;
+    rdof_mssim_profile_t p;
+    char err[96];
+    CHECK(rdof_mssim_parse(profile, strlen(profile), &p, err, sizeof err), "profile: %s", err);
+    rdof_mssim_init(&MA.s, ma_send, NULL);
+    rdof_mssim_arm(&MA.s, &p);
+    const rdof_sdr_rx_config_t rc = {DC_FS, DC_CENTER, 0, 0, true, DC_CHUNK};
+    const rdof_sdr_channel_t ch = {"A", DC_CH, DC_CC, 1};
+    CHECK(rdof_sdr_rx_init(&rx, &rc, &ch, 1, NULL, 0) == 0, "receiver");
+    rx.on_burst = ma_burst;
+    ma_packet(b);
+    dc_station(&st, DC_FS / 5, b, 3);
+    dc_rng = 778;
+    for (int c = 0; c < (int)(1.0 * DC_FS / DC_CHUNK); c++) {
+        rdof_mssim_poll(&MA.s, rdof_sdrmodem_tx_frontier48(&x.m), 1440);
+        rdof_sdrmodem_pull_iq(&x.m, rx.samples, iq, DC_CHUNK);
+        rdof_mod_iq(&st, o, DC_CHUNK);
+        for (int i = 0; i < DC_CHUNK; i++) {
+            iq[i].re = 0.5f * iq[i].re + 0.4f * o[i].re + 0.02f * dc_noise();
+            iq[i].im = 0.5f * iq[i].im + 0.4f * o[i].im + 0.02f * dc_noise();
+        }
+        rdof_sdr_rx_process(&rx, iq, DC_CHUNK);
+    }
+    *end48 = MA.n >= 3 ? MA.pos[2] : -1;
+    rdof_mod_free(&st);
+    rdof_sdr_rx_free(&rx);
+    rdof_sdrmodem_free(&x.m);
+}
+
+static void test_mssim_air(void)
+{
+    int64_t end;
+    ma_run("{\"answer\":\"ack\",\"slots\":1}", &end);
+    CHECK(MA.n == 4 && MA.cls[3] == 0, "the packet and an ACK heard: %d bursts", MA.n);
+    if (MA.n == 4) {
+        CHECK(MA.pos[1] - MA.pos[0] == 2880 && MA.pos[2] - MA.pos[1] == 2880, "the station's bursts 60 ms apart");
+        CHECK(llabs(MA.pos[3] - (end + 1440)) <= 2, "ACK one slot after the last block: %lld",
+              (long long)(MA.pos[3] - end));
+        CHECK(MA.s.log[0].sent && llabs(MA.s.log[0].placed48 - MA.pos[3]) <= 2, "heard where placed: %lld",
+              (long long)(MA.s.log[0].placed48 - MA.pos[3]));
+        printf("responder on air: ACK heard %lld samples after the last block, %lld from its place\n",
+               (long long)(MA.pos[3] - end), (long long)(MA.pos[3] - MA.s.log[0].placed48));
+    }
+    ma_run("{\"answer\":\"sack\",\"slots\":2,\"resend\":[1]}", &end);
+    CHECK(MA.n == 5 && MA.cls[3] == 2 && MA.dt[4] == RDOF_DT_RATE_12, "the packet and a SACK heard: %d bursts", MA.n);
+    if (MA.n == 5)
+        CHECK(llabs(MA.pos[3] - (end + 2880)) <= 2 && MA.pos[4] - MA.pos[3] == 2880, "SACK two slots after: %lld",
+              (long long)(MA.pos[3] - end));
+    ma_late = 33; /* a front end's known path delay: the answer leaves that much sooner */
+    ma_run("{\"answer\":\"ack\",\"slots\":1}", &end);
+    ma_late = 0;
+    CHECK(MA.n == 4 && llabs(MA.pos[3] - (end + 1440 - 33)) <= 2, "ACK 33 samples sooner: %d bursts, %lld", MA.n,
+          (long long)(MA.pos[3] - end));
 }
 
 static void test_dcdm_modem(void)
@@ -1985,6 +2104,74 @@ static int sg_freq(void *ctx, float *hz, float *env, int n)
 
 static bool sg_done(void *ctx) { return ((sg_src_t *)ctx)->sent >= ((sg_src_t *)ctx)->n; }
 
+/* A host that writes from inside a reply's handler (rdofradio's bench job unkeys on a NAK and sends SET_MODE): what it
+ * writes is taken after what's being parsed, never inside it. Written there, it was parsed inside the frame that
+ * was being answered, and a job that sent a frame on each NAK recursed until the stack ran out. */
+typedef struct {
+    rdof_sdrmodem_t m;
+    int depth, max_depth, naks, retries, n;
+    uint8_t cmds[16];
+} reentry_t;
+
+static void reentry_frame(void *ctx, uint8_t cmd, const uint8_t *d, size_t n)
+{
+    reentry_t *r = ctx;
+    if (r->n < 16)
+        r->cmds[r->n++] = cmd == RDOF_MMDVM_NAK && n ? d[0] : cmd;
+}
+
+static void reentry_reply(void *ctx, const uint8_t *f, size_t n)
+{
+    reentry_t *r = ctx;
+    if (++r->depth > r->max_depth)
+        r->max_depth = r->depth;
+    rdof_mmdvm_reader_t rd;
+    rdof_mmdvm_reader_init(&rd);
+    rdof_mmdvm_reader_feed(&rd, f, n, reentry_frame, r);
+    if (n > 2 && f[2] == RDOF_MMDVM_NAK) {
+        r->naks++;
+        uint8_t b[16];
+        size_t k;
+        if (r->retries > 0) { /* each NAK earns another bad frame */
+            r->retries--;
+            k = rdof_mmdvm_frame(RDOF_MMDVM_SET_CONFIG, (const uint8_t[]){0}, 1, b, sizeof b);
+        } else {
+            k = rdof_mmdvm_frame(RDOF_MMDVM_GET_STATUS, NULL, 0, b, sizeof b);
+        }
+        rdof_sdrmodem_write(&r->m, b, k);
+    }
+    r->depth--;
+}
+
+static void test_write_from_reply(void)
+{
+    static reentry_t r;
+    memset(&r, 0, sizeof r);
+    const rdof_sdrmodem_io_t io = {reentry_reply, io_channel, io_tx_tune, &r, NULL};
+    CHECK(rdof_sdrmodem_init(&r.m, &io, 48000, 48000, false) == 0, "init: %s", r.m.error);
+    /* one write: a short SET_CONFIG (NAK), then GET_VERSION; the NAK's handler writes GET_STATUS */
+    uint8_t b[32];
+    size_t k = rdof_mmdvm_frame(RDOF_MMDVM_SET_CONFIG, (const uint8_t[]){0}, 1, b, sizeof b);
+    k += rdof_mmdvm_frame(RDOF_MMDVM_GET_VERSION, NULL, 0, b + k, sizeof b - k);
+    rdof_sdrmodem_write(&r.m, b, k);
+    CHECK(r.n == 3 && r.cmds[0] == RDOF_MMDVM_SET_CONFIG && r.cmds[1] == RDOF_MMDVM_GET_VERSION &&
+              r.cmds[2] == RDOF_MMDVM_GET_STATUS,
+          "the replies in order: NAK, the version, then the handler's status: %d replies, %02x %02x %02x", r.n,
+          r.cmds[0], r.cmds[1], r.cmds[2]);
+    CHECK(r.max_depth == 1, "a reply's handler re-entered %d deep", r.max_depth);
+    /* a NAK that earns a bad frame, 100000 times over: no deeper, all answered */
+    r.n = r.naks = r.max_depth = 0;
+    r.retries = 100000;
+    k = rdof_mmdvm_frame(RDOF_MMDVM_SET_CONFIG, (const uint8_t[]){0}, 1, b, sizeof b);
+    rdof_sdrmodem_write(&r.m, b, k);
+    CHECK(r.naks == 100001 && r.retries == 0 && r.max_depth == 1 && r.m.npending == 0 && !r.m.in_write &&
+              r.m.pending_lost == 0,
+          "a NAK loop: %d NAKs, %d left, %d deep, %zu pending, %u lost", r.naks, r.retries, r.max_depth, r.m.npending,
+          (unsigned)r.m.pending_lost);
+    rdof_sdrmodem_free(&r.m);
+    printf("sdrmodem: a write from a reply's handler waits for the frame it answers\n");
+}
+
 static void test_signal(bool slow)
 {
     static rdof_sdrmodem_t m;
@@ -2086,11 +2273,13 @@ int main(void)
     test_dcdm_receive();
     test_ms_two_radios();
     test_dcdm_modem();
+    test_mssim_air();
     test_dcdm_e2e();
     test_outbound();
     test_outbound_back();
     test_slot_source();
 #endif
+    test_write_from_reply();
     test_signal(true);
     test_signal_ppm();
     test_signal(false);

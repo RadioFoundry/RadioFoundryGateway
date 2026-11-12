@@ -221,11 +221,15 @@ endif()
 add_test(NAME sdrmodem_tests COMMAND sdrmodem_tests)
 
 # A two-carrier trunked site, carrier B on a split TX half (trunksplit.c; with the controller, so only with cargo).
-if(TARGET rdof_rust_t3)
+if(NOT COMMAND rdof_t3_lib)
+    include(../rust/rust.cmake)
+endif()
+rdof_t3_lib(RDOF_T3_LIB rdof_common)
+if(NOT RDOF_T3_LIB STREQUAL "NOTFOUND")
     add_executable(rdof_trunksplit_tests test_trunksplit.c fake_radio.c ../sdr/src/trunksplit.c ../common/src/trunkunit.c
                    ../common/src/trunksim.c)
     target_include_directories(rdof_trunksplit_tests PRIVATE ../common/include)
-    target_link_libraries(rdof_trunksplit_tests PRIVATE rdof_sdr rdof_rust_t3 m)
+    target_link_libraries(rdof_trunksplit_tests PRIVATE rdof_sdr ${RDOF_T3_LIB} m)
     set_target_properties(rdof_trunksplit_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
     target_compile_options(rdof_trunksplit_tests PRIVATE -Wall -Wno-unused-parameter)
     if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
@@ -267,4 +271,18 @@ add_test(NAME rdof_plan_tests COMMAND rdof_plan_tests ${RDOF_PLAN_FIXTURES})
 if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
     target_compile_options(rdof_plan_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
     target_link_options(rdof_plan_tests PRIVATE -fsanitize=address,undefined)
+endif()
+
+# rdofradio's SoapySDR device against a fake SoapySDR: --setting reaches the driver.
+add_executable(rdof_soapy_tests test_soapy.c ../sdr/cli/rdofradio_soapy.c)
+target_include_directories(rdof_soapy_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/shim ../sdr/cli ../sdr/include ../common/include)
+target_link_libraries(rdof_soapy_tests PRIVATE m)
+add_test(NAME rdof_soapy_tests COMMAND rdof_soapy_tests)
+
+# rdofradio --mmdvm --sim-sdr --bench against fakemodem: the MMDVM + SDR bench end to end, no RF.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(TARGET rdofradio AND TARGET fakemodem AND Python3_Interpreter_FOUND)
+    add_test(NAME mmdvm_bench_tests COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_mmdvm_bench.py
+             $<TARGET_FILE:rdofradio> $<TARGET_FILE:fakemodem>)
+    set_tests_properties(mmdvm_bench_tests PROPERTIES TIMEOUT 180)
 endif()

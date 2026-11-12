@@ -155,6 +155,12 @@ typedef struct rdof_sdrmodem {
     rdof_mod_t mod;
     bool mod_ok;
     rdof_mmdvm_reader_t reader;
+    /* what the host writes while a reply of ours is being handled (a job that unkeys on a NAK), taken once the write
+       being parsed is done: parsed inside it, a job that wrote on each NAK recursed until the stack ran out */
+    bool in_write;
+    size_t npending;
+    uint32_t pending_lost;      /* bytes that didn't fit (never in practice: a reply's handler writes a frame or two) */
+    uint8_t pending[RDOF_MMDVM_MAX_FRAME];
     /* what the host set */
     bool duplex;
     int mode, cc, channel;      /* channel -1: none tuned (or, as the TX half, none heard) */
@@ -294,6 +300,9 @@ int rdof_sdrmodem_signal_state(const rdof_sdrmodem_t *m);
 bool rdof_sdrmodem_signal_iq(const rdof_sdrmodem_t *m);
 /* Transmitting or about to (anything queued). */
 bool rdof_sdrmodem_transmitting(const rdof_sdrmodem_t *m);
+/* A bench job comes first: what's queued on both slots dropped, a key-up ended (its ramp down). The modem's
+ * owner (a transceiver's call, a repeater's) loses the rest of its transmission. */
+void rdof_sdrmodem_preempt(rdof_sdrmodem_t *m);
 /* The receiver's 48 kS/s position p: inside a span this modem keyed (half duplex: what the receiver heard there
  * is its own signal or nothing, so AFC and ppm learning skip it). */
 bool rdof_sdrmodem_muted_at(const rdof_sdrmodem_t *m, int64_t p);
@@ -305,6 +314,11 @@ bool rdof_sdrmodem_muted_at(const rdof_sdrmodem_t *m, int64_t p);
  * about 1 s, past the transmit buffers and the receiver's delay. */
 #define RDOF_SDRMODEM_SENT_BITS 24
 int rdof_sdrmodem_sent_bits(const rdof_sdrmodem_t *m, int64_t p, int64_t within48, const uint8_t *b);
+/* Direct placement on the receiver's timeline (a test responder answering N slots after what it heard): the 48 kS/s
+ * position the next burst could be heard at, at the earliest; and a burst queued to be heard at at48, outside the
+ * MMDVM queues (*placed48 where it will be, after rounding). false: too late, or before something already queued. */
+int64_t rdof_sdrmodem_tx_frontier48(const rdof_sdrmodem_t *m);
+bool rdof_sdrmodem_place48(rdof_sdrmodem_t *m, int64_t at48, const uint8_t burst[RDOF_BURST_BYTES], int64_t *placed48);
 /* Split TX half: the AT bits on air now (bit 0 TS1, bit 1 TS2); otherwise rdof_sdrmodem_busy. */
 int rdof_sdrmodem_at(const rdof_sdrmodem_t *m);
 /* Split RX half: the slot (1, 2) a burst starting at 48 kS/s position pos48 is labeled with, 0 without a valid epoch

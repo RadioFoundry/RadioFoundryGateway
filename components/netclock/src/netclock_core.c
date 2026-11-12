@@ -18,7 +18,7 @@ void nc_clock_init(nc_clock_t *c, double stored_rate, bool have_stored)
     c->base_rate = c->m.rate;
     c->base_die_c = NAN;
     c->die_c = NAN;
-    c->tcal_bin = INT32_MIN;
+    nc_tcal_seen_init(&c->tcal_seen);
 }
 
 void nc_clock_set_tcal(nc_clock_t *c, const nc_tcal_t *t, float die_c)
@@ -88,13 +88,11 @@ static void fit_learn(nc_clock_t *c, int64_t t_us)
     if (isnan(c->base_die_c) || m->rate_n < NC_RATE_SAVE_MIN_N || m->rate_skew > NC_TCAL_SKEW) {
         return;
     }
-    int bin = nc_tcal_bin(mean);
-    if (bin == c->tcal_bin && t_us - c->tcal_us < NC_TCAL_AGAIN_S * 1000000LL) {
+    if (!nc_tcal_seen_due(&c->tcal_seen, mean, t_us / 1e6, NC_TCAL_AGAIN_S)) {
         return;
     }
     nc_tcal_put(&c->tcal, mean, m->fit_rate * 1e6);
-    c->tcal_bin = bin;
-    c->tcal_us = t_us;
+    nc_tcal_seen_mark(&c->tcal_seen, mean, t_us / 1e6);
     c->tcal_changed = true;
 }
 

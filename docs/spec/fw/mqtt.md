@@ -11,7 +11,8 @@ own client id, will and status topic.
 
 | Item | SDR | Roamer | Repeater | Source |
 |---|---|---|---|---|
-| Client id | `rdof-sdr-{name}` | `rdof-roaming-{name}` | `rdof-repeater-{name}` | `sdr_mqtt.c:sdr_mqtt_start`, `roam_mqtt.c:roam_mqtt_start` |
+| Client id (`{hw}`: the machine's own id, below) | `rdof-sdr-{name}-{hw}` | `rdof-roaming-{name}-{hw}` | `rdof-repeater-{name}-{hw}` | `sdr_mqtt.c:sdr_mqtt_start`, `roam_mqtt.c:roam_mqtt_start` |
+| `{hw}` | six hex digits: the last three bytes of the board's base MAC; on a host the last three of its first network interface's hardware address (by name, not the loopback), else the last six digits of `/etc/machine-id`, else a hash of the host's name. Two boxes given the same settings stay two clients (two W12s with a device both named `w12` put each other off the broker every few seconds, 2026-11-11); their topics are still the same, so give each its own names | same | same | `net.c:net_hwid`, `rdofradio_mqtt.c:rdofmq_hwid` |
 | `{name}` | `sdr.name` (the box's SDR name) | the radio's name | the radio's name | |
 | `{app}` | `mqtt.app`, default `sdr`; a box forces `sdr` | always `roaming` | always `repeater` | `sdr/src/config.c:mqtt`, `common/src/config.c` (`cfg->mqtt_app`) |
 | `{root}` | `mqtt.root`, default `DMR`, `/` stripped from both ends | same | same | `sdr/src/config.c:mqtt`, `common/src/config.c` |
@@ -288,4 +289,4 @@ keeps the one that came first (config-v3.md §9.2).
 
 The MQTT network ([mqtt-net.md](mqtt-net.md)) replaces these calls: decoded items in place of DMRD packets, node
 state, and a private-call router. A network picks it with `"format": "v3"`; rdofradio and the board run it on their
-own connection (`rdof-net-{name}`, mqtt-net.md §1.1). The DMRD calls stay the default.
+own connection (`rdof-net-{name}-{hw}`, mqtt-net.md §1.1). The DMRD calls stay the default.

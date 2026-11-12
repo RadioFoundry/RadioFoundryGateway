@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
-//! The C this crate calls: common's FEC (rdof/fec.h) and repeater bursts (rdof/duplex.h), RadioFoundry's block
-//! codes (common/src/radiofoundry), and the C library's snprintf, strtod, strtol, ceil, floor, rint and
-//! modf.
+//! The C this crate calls: common's FEC (rdof/fec.h), repeater bursts (rdof/duplex.h) and the IP gateway's DMR
+//! packets (rdof/ipgw.h), RadioFoundry's block codes (common/src/radiofoundry), and the C library's snprintf, sscanf,
+//! strtod, strtol, ceil, floor, rint, llround and modf.
 
 use core::ffi::{c_char, c_int};
 
+use crate::parrot::RdofIpgwDmr;
 use crate::repeater::{RdofActivity, RdofVoiceRegen};
 
 pub const RDOF_BURST_BYTES: usize = 33;
@@ -35,6 +36,7 @@ pub const RDOF_DT_VOICE: c_int = 0xF1;
 extern "C" {
     pub fn abort() -> !;
     pub fn snprintf(buf: *mut c_char, n: usize, format: *const c_char, ...) -> c_int;
+    pub fn sscanf(s: *const c_char, format: *const c_char, ...) -> c_int;
 
     // the C library's number parsing, as the C modules use it
     pub fn strtod(s: *const c_char, end: *mut *mut c_char) -> f64;
@@ -44,6 +46,7 @@ extern "C" {
     pub fn ceil(x: f64) -> f64;
     pub fn floor(x: f64) -> f64;
     pub fn rint(x: f64) -> f64;
+    pub fn llround(x: f64) -> core::ffi::c_longlong;
     pub fn modf(x: f64, ip: *mut f64) -> f64;
 
     // rdof/fec.h
@@ -60,6 +63,7 @@ extern "C" {
     pub fn rdof_embedded_signalling(burst: *const u8, out32: *mut u8);
     pub fn rdof_ambe_frames(burst: *const u8, out: *mut u8);
     pub fn rdof_embedded_lc_decode(raw128: *const u8, lc9: *mut u8) -> bool;
+    pub fn rdof_check_crc32(packet_with_crc: *const u8, len: usize) -> bool;
 
     // rdof/duplex.h
     pub fn rdof_duplex_lc_burst(lc9: *const u8, dt: c_int, cc: c_int, out: *mut u8);
@@ -68,6 +72,18 @@ extern "C" {
     pub fn rdof_voice_regen_init(v: *mut RdofVoiceRegen, lc9: *const u8, cc: c_int);
     pub fn rdof_voice_regen_burst(v: *mut RdofVoiceRegen, control: u8, input: *const u8, out: *mut u8);
     pub fn rdof_activity_lc(slot1: *const RdofActivity, slot2: *const RdofActivity, ts1_low: bool, out9: *mut u8);
+
+    // rdof/ipgw.h
+    pub fn rdof_ipgw_build_dmr(
+        src: u32,
+        dst: u32,
+        sap: c_int,
+        data: *const u8,
+        len: usize,
+        cc: c_int,
+        sync48: u64,
+        out: *mut RdofIpgwDmr,
+    ) -> bool;
 
     // rdof/mmdvm.h
 

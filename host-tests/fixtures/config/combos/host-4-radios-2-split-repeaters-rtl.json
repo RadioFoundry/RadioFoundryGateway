@@ -1,0 +1,109 @@
+// 4 radios 2 split repeaters + rtl (host ports)
+{
+ "version": 3,
+ "id": 9800100,
+ "callsign": "N0CALL",
+ "defaults": {
+  "cc": 1
+ },
+ "devices": [
+  {
+   "name": "m0",
+   "kind": "modem",
+   "type": "radio_hotspot",
+   "port": {
+    "path": "/dev/ttyACM0"
+   },
+   "hears": {
+    "idle": "in1"
+   },
+   "transmits": false
+  },
+  {
+   "name": "m1",
+   "kind": "modem",
+   "type": "radio_hotspot",
+   "port": {
+    "path": "/dev/ttyACM1"
+   },
+   "hears": false,
+   "transmits": [
+    "out1"
+   ]
+  },
+  {
+   "name": "m2",
+   "kind": "modem",
+   "type": "radio_hotspot",
+   "port": {
+    "path": "/dev/ttyACM2"
+   },
+   "hears": {
+    "idle": "in2"
+   },
+   "transmits": false
+  },
+  {
+   "name": "m3",
+   "kind": "modem",
+   "type": "radio_hotspot",
+   "port": {
+    "path": "/dev/ttyACM3"
+   },
+   "hears": false,
+   "transmits": [
+    "out2"
+   ]
+  },
+  {
+   "name": "rtl",
+   "kind": "sdr",
+   "driver": "rtlsdr",
+   "rx": {
+    "rate": 288000
+   }
+  }
+ ],
+ "frequencies": [
+  {
+   "name": "in1",
+   "freq": 438.55
+  },
+  {
+   "name": "out1",
+   "freq": 438.5
+  },
+  {
+   "name": "in2",
+   "freq": 438.575
+  },
+  {
+   "name": "out2",
+   "freq": 438.525
+  },
+  {
+   "freq": 438.6,
+   "tx": false
+  }
+ ],
+ "apps": [
+  {
+   "name": "R1",
+   "type": "repeater",
+   "in": "in1",
+   "out": "out1"
+  },
+  {
+   "name": "R2",
+   "type": "repeater",
+   "in": "in2",
+   "out": "out2"
+  }
+ ],
+ "networks": [
+  {
+   "type": "hblink",
+   "host": "hb.example.net"
+  }
+ ]
+}

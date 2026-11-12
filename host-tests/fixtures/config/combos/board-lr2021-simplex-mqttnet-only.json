@@ -1,0 +1,33 @@
+// lr2021 simplex mqttnet only (board ports)
+{
+ "version": 3,
+ "id": 9800100,
+ "callsign": "N0CALL",
+ "defaults": {
+  "cc": 1
+ },
+ "devices": [
+  {
+   "name": "w12",
+   "kind": "sdr",
+   "driver": "lr2021",
+   "rx": {
+    "rate": 240000
+   },
+   "tx": {
+    "power_dbm": 10
+   }
+  }
+ ],
+ "frequencies": [
+  438.1
+ ],
+ "networks": [
+  {
+   "type": "mqtt",
+   "host": "b.example.net",
+   "calls": true,
+   "format": "v3"
+  }
+ ]
+}

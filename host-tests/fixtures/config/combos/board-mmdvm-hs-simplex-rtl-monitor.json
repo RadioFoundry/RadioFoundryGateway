@@ -1,0 +1,49 @@
+// mmdvm_hs simplex + rtl monitor (board ports)
+{
+ "version": 3,
+ "id": 9800100,
+ "callsign": "N0CALL",
+ "defaults": {
+  "cc": 1
+ },
+ "devices": [
+  {
+   "name": "m0",
+   "kind": "modem",
+   "type": "mmdvm_hs",
+   "port": {
+    "uart": 1,
+    "tx": 17,
+    "rx": 18
+   },
+   "transmits": [
+    438.5
+   ]
+  },
+  {
+   "name": "rtl",
+   "kind": "sdr",
+   "driver": "rtlsdr",
+   "rx": {
+    "rate": 288000
+   }
+  }
+ ],
+ "frequencies": [
+  438.5,
+  {
+   "freq": 438.5125,
+   "tx": false
+  },
+  {
+   "freq": 438.525,
+   "tx": false
+  }
+ ],
+ "networks": [
+  {
+   "type": "hblink",
+   "host": "hb.example.net"
+  }
+ ]
+}

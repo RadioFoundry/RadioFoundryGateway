@@ -1,0 +1,32 @@
+// 1 mmdvm_hs simplex on mqttnet (board ports)
+{
+ "version": 3,
+ "id": 9800100,
+ "callsign": "N0CALL",
+ "defaults": {
+  "cc": 1
+ },
+ "devices": [
+  {
+   "name": "m0",
+   "kind": "modem",
+   "type": "mmdvm_hs",
+   "port": {
+    "uart": 1,
+    "tx": 17,
+    "rx": 18
+   }
+  }
+ ],
+ "frequencies": [
+  438.5
+ ],
+ "networks": [
+  {
+   "type": "mqtt",
+   "host": "b.example.net",
+   "calls": true,
+   "format": "v3"
+  }
+ ]
+}

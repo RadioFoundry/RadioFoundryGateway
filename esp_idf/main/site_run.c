@@ -34,6 +34,7 @@ static rdof_site_t *S;
 static rdof_siteroute_t *SR;
 static SemaphoreHandle_t lock;
 static int hblink = -1, parrot = -1, mqttnet = -1;
+static char warning[160]; /* a setting this build doesn't carry (site_load), for the log and the page */
 static roam_t *owner;
 #if RDOF_FEATURE_TX
 static rdof_parrot_t *P;
@@ -68,6 +69,22 @@ void site_load(const rdof_site_t *site)
         if (s->net[k].type == RDOF_NET_MQTT && s->net[k].calls && s->net[k].format == RDOF_MQTT_FORMAT_V3 &&
             mqttnet < 0)
             mqttnet = k;
+    /* settings that pass the check and that this build doesn't carry: said here and on the page, where they used
+     * to drop every call with nothing logged */
+    for (int k = 0; k < s->nnet; k++) {
+        if (s->net[k].type != RDOF_NET_MQTT || !s->net[k].calls)
+            continue;
+        if (s->net[k].format != RDOF_MQTT_FORMAT_V3)
+            snprintf(warning, sizeof warning, "the mqtt network's calls in the dmrd format aren't carried by a board "
+                                              "(rdofradio's are): set format v3");
+#if !CONFIG_RDOF_ROAMER
+        else
+            snprintf(warning, sizeof warning, "the mqtt network's calls (format v3) need an image with the "
+                                              "transceiver built in: this one is the receiver only");
+#endif
+    }
+    if (warning[0])
+        ESP_LOGE(TAG, "settings: %s. No call goes to or from that network", warning);
     parrot = rdof_site_app_of(s, RDOF_APP_PARROT);
     lock = xSemaphoreCreateRecursiveMutex(); /* the transceiver answers a tune made here through site_tuned */
     S = s;
@@ -78,7 +95,50 @@ void site_load(const rdof_site_t *site)
 
 bool site_on(void) { return SR != NULL; }
 
+/* A sample address left in the settings (the defaults have them): said once, where MQTT down alone gave no reason. */
+static const char *sample_host(void)
+{
+#if CONFIG_RDOF_SDR
+    if (g_roles.has_sdr && g_scfg.has_mqtt && net_sample_host(g_scfg.mqtt_host))
+        return g_scfg.mqtt_host;
+#endif
+    for (int i = 0; i < g_roles.nradios; i++) {
+        const rdof_config_t *c = g_rcfg[i];
+        if (c && c->has_mqtt && net_sample_host(c->mqtt_host))
+            return c->mqtt_host;
+        if (c && hblink >= 0 && net_sample_host(c->master_host))
+            return c->master_host;
+    }
+    return NULL;
+}
+
+const char *site_warning(void)
+{
+    static bool looked;
+    if (!warning[0] && !looked && SR) {
+        looked = true;
+        const char *h = sample_host();
+        if (h)
+            snprintf(warning, sizeof warning, "a network's host is %s, a sample address: nothing connects until "
+                                              "the real one is set", h);
+    }
+    return warning;
+}
+
 bool site_shared_identity(void) { return SR && hblink >= 0 && !S->net[hblink].per_path; }
+
+/* With a site: whether a unit whose own path is on the HBlink network or not (on_net) is to run an HBlink peer. No
+   HBlink network: none. One identity: the box's peer carries every path. A peer a path (identity per_path, a
+   BrandMeister login): only the unit whose path is on that network, or a unit not on it would log in beside them
+   with the box's ID. */
+bool site_hb_wanted(bool on_net)
+{
+    if (!SR)
+        return true; /* no site: the role's own settings */
+    if (hblink < 0)
+        return false;
+    return on_net || !(S->net[hblink].per_path || S->net[hblink].login);
+}
 
 uint32_t site_id(void) { return S ? S->id : 0; }
 
@@ -199,6 +259,16 @@ bool site_app_holds(const uint8_t sid[4])
     return held;
 }
 
+bool site_app_refused(const uint8_t sid[4])
+{
+    if (!SR)
+        return false;
+    xSemaphoreTakeRecursive(lock, portMAX_DELAY);
+    const bool refused = rdof_siteroute_refused(SR, sid);
+    xSemaphoreGiveRecursive(lock);
+    return refused;
+}
+
 bool site_parrot_stream(const uint8_t sid[4])
 {
     return P && (rdof_be32(sid) & 0xFFFF0000u) == RDOF_PARROT_STREAM;
@@ -306,6 +376,39 @@ int site_heard_path(uint32_t id)
     const int k = rdof_router_heard(&SR->router, id, mono());
     xSemaphoreGiveRecursive(lock);
     return k;
+}
+
+/* the parrot's state and counts, in its app's object; under plock (site_apps_json) */
+static void apps_extra(void *ctx, int a, rdof_json_t *j)
+{
+    static const char *pstate[] = {"idle", "recording", "waiting", "replaying"};
+    if (S->app[a].type != RDOF_APP_PARROT || !P)
+        return;
+    rdof_json_str(j, "state", pstate[P->state & 3]);
+    rdof_json_int(j, "replayed", P->replayed);
+    rdof_json_int(j, "ignored", P->ignored);
+    rdof_json_int(j, "cut", P->cut);
+    if (P->state & 3) {
+        rdof_json_int(j, "src", P->src);
+        rdof_json_int(j, "dst", P->dst);
+    }
+}
+
+size_t site_apps_json(char *out, size_t cap)
+{
+    if (!SR || !S->napp) {
+        if (cap)
+            out[0] = 0;
+        return 0;
+    }
+    if (P)
+        xSemaphoreTake(plock, portMAX_DELAY); /* the parrot's, before lock (the order above) */
+    xSemaphoreTakeRecursive(lock, portMAX_DELAY);
+    const size_t n = rdof_router_apps_json(&SR->router, mono(), apps_extra, NULL, out, cap);
+    xSemaphoreGiveRecursive(lock);
+    if (P)
+        xSemaphoreGive(plock);
+    return n;
 }
 
 int site_mn_sub_tgs(uint32_t *tgs, int max, bool *all)

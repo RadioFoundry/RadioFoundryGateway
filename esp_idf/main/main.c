@@ -138,6 +138,7 @@ void app_main(void)
     wifi_start();
     dnssd_start();
     web_start();
+    hang_watch_start(); /* once the web server is up: a board that restarts for its watchdog can still be reached */
     oled_start(); /* it shows the roles as they start */
     power_start(); /* the power key and the battery */
 #if CONFIG_RDOF_IPGW

@@ -1,0 +1,55 @@
+// rtl rx + radio tx split repeater (host ports)
+{
+ "version": 3,
+ "id": 9800100,
+ "callsign": "N0CALL",
+ "defaults": {
+  "cc": 1
+ },
+ "devices": [
+  {
+   "name": "rtl",
+   "kind": "sdr",
+   "driver": "rtlsdr",
+   "rx": {
+    "rate": 288000
+   }
+  },
+  {
+   "name": "m0",
+   "kind": "modem",
+   "type": "radio_hotspot",
+   "port": {
+    "path": "/dev/ttyACM0"
+   },
+   "hears": false,
+   "transmits": [
+    "out"
+   ]
+  }
+ ],
+ "frequencies": [
+  {
+   "name": "in",
+   "freq": 438.55
+  },
+  {
+   "name": "out",
+   "freq": 438.5
+  }
+ ],
+ "apps": [
+  {
+   "name": "R1",
+   "type": "repeater",
+   "in": "in",
+   "out": "out"
+  }
+ ],
+ "networks": [
+  {
+   "type": "hblink",
+   "host": "hb.example.net"
+  }
+ ]
+}

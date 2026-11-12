@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "rdof/bits.h"
+#include "rdof/duplex.h"
 #include "rdof/layer2.h"
 #include "rdof/pdu.h"
 
@@ -490,7 +491,10 @@ static bool key(rdof_repeater_t *r)
 {
     if (r->keyed)
         return true;
-    if (!keys_itself(r) && !rdof_modem_dmr_start(modem(r), true))
+    /* The modem takes DMR_START only while its state is DMR, and that lapses between key-ups (a NAK, error 4): set
+       the mode again right before every key-up, as a host does. Not on unkey: on some modems SET_MODE keys. */
+    if (!keys_itself(r) &&
+        !(rdof_modem_set_mode(modem(r), RDOF_MODE_DMR) && rdof_modem_dmr_start(modem(r), true)))
         return false;
     r->keyed = true;
     if (r->on_key)
@@ -1224,6 +1228,34 @@ static void ended(rdof_repeater_t *r, rdof_rpt_slot_t *s, const rdof_rpt_out_t *
     }
 }
 
+/* Keyed with nothing to send (a beacon, the wait for the hang to end): a few idle bursts stay queued on both slots.
+ * Left empty, a modem drops its carrier and falls back to idle mode after about a second, and then refuses the
+ * DMR_START that should unkey it. Only RDOF_RPT_KEEP_UP are kept, so unkeying stays prompt; the hang isn't extended. */
+static bool keep_up(rdof_repeater_t *r, double now)
+{
+    if (now - r->last_status < RDOF_RPT_STATUS_EVERY_S)
+        return true;
+    rdof_mmdvm_status_t st;
+    if (!status(r, &st))
+        return true; /* missed: tried again next turn; the modem's NAK on the unkey says if it gave up */
+    r->last_status = now;
+    r->slots[1].space = st.space1;
+    r->slots[2].space = st.space;
+    uint8_t idle[RDOF_BURST_BYTES];
+    rdof_duplex_idle(r->cc, idle);
+    for (int n = 1; n <= 2; n++) {
+        rdof_rpt_slot_t *s = &r->slots[n];
+        if (s->space > s->max_space)
+            s->max_space = s->space;
+        while (s->space > 1 && s->max_space - s->space < RDOF_RPT_KEEP_UP) {
+            if (!rdof_modem_write_dmr(modem(r), RDOF_SYNC_DATA | RDOF_DT_IDLE, idle, s->n))
+                return false;
+            s->space--;
+        }
+    }
+    return true;
+}
+
 static bool transmit(rdof_repeater_t *r, double now)
 {
     bool active[3] = {false, false, false}, any = false, traffic = false;
@@ -1237,6 +1269,8 @@ static bool transmit(rdof_repeater_t *r, double now)
         if (r->keyed && now >= r->tx_until && !r->slots[1].rf.active && !r->slots[2].rf.active &&
             r->slots[1].net < 0 && r->slots[2].net < 0)
             return unkey(r, now); /* R3.4 */
+        if (r->keyed && r->keep_up && !keys_itself(r))
+            return keep_up(r, now);
         if (now - r->last_status >= RDOF_RPT_IDLE_STATUS_EVERY_S) {
             rdof_mmdvm_status_t st;
             if (!status(r, &st))

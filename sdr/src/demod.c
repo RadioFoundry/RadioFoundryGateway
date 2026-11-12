@@ -284,6 +284,17 @@ static void make_burst(rdof_sdr_burst_t *o, const uint8_t burst[RDOF_BURST_BYTES
     o->deviation_hz = outer;
 }
 
+/* A BS burst's CACH: the 12 symbols before it, sliced with the burst's levels (while they're still in the buffer). */
+static void add_cach(const rdof_demod_t *d, rdof_sdr_burst_t *o)
+{
+    if (o->b.family != RDOF_FAMILY_BS || o->position - CACH < d->base)
+        return;
+    uint8_t bits[2 * CACH_SYMBOLS];
+    slice_bits(d, o->position - CACH, CACH_SYMBOLS, o->freq_offset_hz, o->deviation_hz, bits);
+    rdof_bits_to_bytes(bits, 2 * CACH_SYMBOLS, o->cach);
+    o->has_cach = true;
+}
+
 static rdof_demod_track_t *track(rdof_demod_t *d, int slot) { return &d->tracks[slot == 2 ? 1 : 0]; }
 
 static void set_track(rdof_demod_t *d, int slot, const rdof_demod_track_t *t)
@@ -368,6 +379,7 @@ static bool voice_at(rdof_demod_t *d, int64_t start, rdof_demod_track_t *tr, int
     tr->power = power_over(d, start + best_d + PRE, 24 * SPS);
     make_burst(out, best_burst, RDOF_DT_VOICE, tr->n + 1, slot, tr->family, best_cc, start + best_d, best_errs, power,
                tr->center, tr->outer);
+    add_cach(d, out);
     return true;
 }
 
@@ -495,6 +507,7 @@ static bool at_sync(rdof_demod_t *d, int64_t sync_pos, int fam, float score, rdo
         t.power = mid;
         make_burst(&t.pending, burst, RDOF_DT_VOICE_SYNC, 0, slot, (rdof_family_t)fam, d->cc, start, errs, power, center,
                    outer);
+        add_cach(d, &t.pending);
         set_track(d, slot, &t);
         d->last_slot = slot;
         d->last_pos = start;
@@ -506,6 +519,7 @@ static bool at_sync(rdof_demod_t *d, int64_t sync_pos, int fam, float score, rdo
     if (dt != RDOF_DT_IDLE && !weaker)
         track(d, slot)->active = false; /* a data burst on a slot ends any voice flywheel there */
     make_burst(out, burst, dt, 0, slot, (rdof_family_t)fam, cc, start, errs + st_errs, power, center, outer);
+    add_cach(d, out);
     d->last_slot = slot;
     d->last_pos = start;
     return true;

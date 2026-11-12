@@ -33,6 +33,8 @@ void rdofnet_peer_init(rdofnet_peer_t *p, const char *host, int port, uint32_t p
 /* Log in (a brandmeister network, after init): rdof_hb_peer_set_login. */
 void rdofnet_peer_set_login(rdofnet_peer_t *p, const char *password, const char *location, const char *description,
                             const char *url);
+/* The login's dialect: rdof_hb_peer_set_dl5di. */
+void rdofnet_peer_set_dl5di(rdofnet_peer_t *p, bool on);
 /* The DMRC to keep alive with (with a login: the RPTC's source); sent at once when it changes. */
 void rdofnet_peer_set_config(rdofnet_peer_t *p, const uint8_t *dmrc, size_t n, double now);
 void rdofnet_peer_send(rdofnet_peer_t *p, const uint8_t *d, size_t n);

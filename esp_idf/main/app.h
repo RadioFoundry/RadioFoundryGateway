@@ -16,6 +16,7 @@
 #include "rdof/benchguard.h"
 #include "rdof/config.h"
 #include "rdof/json.h"
+#include "rdof/mssim.h"
 #include "rdof/sigmode.h"
 #include "rdof/site.h"
 #include "sdkconfig.h"
@@ -62,8 +63,9 @@ bool settings_take_flag(const char *key);
 
 /* ── the board ────────────────────────────────────────────────────────────── */
 
-/* Internal RAM an esp-mqtt client takes: its task's stack (6 KB), its in and out buffers (1 KB each), its state. */
-#define MQTT_CLIENT_INTERNAL (6144 + 2 * 1024 + 1536)
+/* Internal RAM an esp-mqtt client takes: its in and out buffers (1 KB each), its state and its task's control
+ * block, and its task's stack (6 KB) on a board without PSRAM (with it, the stack is there: task_ext.c). */
+#define MQTT_CLIENT_INTERNAL ((size_t)(heap_caps_get_total_size(MALLOC_CAP_SPIRAM) ? 0 : 6144) + 2 * 1024 + 1536)
 /* The memory plan's claims of the roamer (roamer.c; true if a radio is on USB) and the IP gateway (ipgw_task.c). */
 bool roamer_mem_claims(void);
 void ipgw_mem_claims(void);
@@ -135,6 +137,12 @@ struct esp_mqtt_client *net_mqtt_start(net_mqtt_t *m);
  * timeout), so a publish from the DSP or the radio's loop would stall there while the broker is unreachable.
  * The message goes on a queue a task of its own hands to esp-mqtt. QoS 0 while not connected is dropped, as
  * paho does; so is anything when the queue is full. Returns whether it was queued. */
+/* The board's own id for what must differ between two boards given the same settings (an MQTT client ID): the last
+ * three bytes of its base MAC, six hex digits. */
+const char *net_hwid(void);
+/* True for a host that is only ever an example: the documentation address blocks (192.0.2.x, 198.51.100.x,
+ * 203.0.113.x; the default settings' networks are there) and the example names. Nothing connects to one. */
+bool net_sample_host(const char *host);
 bool net_mqtt_post(net_mqtt_t *m, const char *topic, const void *data, int len, int qos, bool retain); /* len < 0: a string */
 /* A UDP socket connected to host:port, or -1. */
 int net_udp_connect(const char *host, int port);
@@ -277,7 +285,10 @@ double now_mono(void);
    (site_rf true, site_dmrd false). */
 void site_load(const rdof_site_t *site);
 bool site_on(void);
+const char *site_warning(void); /* "" or a setting that's accepted and not carried by this build */
 bool site_shared_identity(void);           /* one HBlink identity: every path is the box's peer */
+/* Whether a unit runs an HBlink peer: on_net, its own path is on the HBlink network (site_run.c). */
+bool site_hb_wanted(bool on_net);
 uint32_t site_id(void);
 void site_add_role(roam_t *r);             /* its repeater or transceiver, once radio_start made it */
 roam_t *site_hb_owner(roam_t *r);          /* the role whose HBlink peer r uses (r itself unless one identity) */
@@ -293,6 +304,8 @@ int site_mn_path_at(uint32_t hz, int slot);
 bool site_mn_burst(uint64_t only, bool emergency, const rdof_net_burst_t *b);
 int site_heard_path(uint32_t id);
 int site_mn_sub_tgs(uint32_t *tgs, int max, bool *all);
+/* /api/status's "apps": the settings' apps, each with what it's doing (rdof_router_apps_json). 0: none. */
+size_t site_apps_json(char *out, size_t cap);
 /* The MQTT network (mqttnet_task.c, docs/spec/fw/mqtt-net.md): on when the settings' mqtt network has calls and
  * format "v3". mn_start after the settings, before the roles; each receiver's tracker then takes mn_sink (false:
  * off; source as ipgw_sink's); the transmitters' call events go to mn_tx_event. */
@@ -316,6 +329,7 @@ bool site_pool_on(void);
 int site_app_path(uint32_t hz, int slot); /* the path heard at hz, slot; -1 none */
 bool site_app_burst(int path, const rdof_net_burst_t *b, bool take_hold, double cap_dbm); /* cap_dbm: at the antenna, INFINITY the path's */
 bool site_app_holds(const uint8_t sid[4]); /* a transceiver still holds a burst of the stream */
+bool site_app_refused(const uint8_t sid[4]); /* a transceiver refused the stream (at its tune or later) */
 void site_status_json(rdof_json_t *j); /* "router": the pool's transmitters, the box parrot; nothing without v3 */
 
 #endif
@@ -524,6 +538,7 @@ bool bench_tx_line_open(uint32_t freq, int cc, rdof_bench_power_t power, bool as
 int bench_tx_line_space(char *why, size_t cap);
 void bench_tx_line_push(uint8_t control, const uint8_t burst[33]);
 bool bench_tx_line_idle(void);
+size_t bench_tx_line_event(char *out, size_t cap);
 void bench_tx_line_close(void);
 /* bench_tx outbound: the SDR modem taken (a roamer's parked) and keyed as a repeater's downlink for seconds */
 const char *bench_tx_ob_why(void);
@@ -543,7 +558,21 @@ double bench_tx_sig_rate(void);
 const char *bench_tx_why_family(int family); /* a voice, csbk or data job's --family: NULL, or why it can't go */
 /* The line protocol (bench_line.c, bench-api.md section 14): its server on CONFIG_RDOF_BENCH_LINE_PORT; a burst heard
  * (from bench_on_burst); the wideband history (bench_api.c's ring) for its captures. */
+/* The watchdog on hung tasks (watch.c): a canary a core, and the tasks that feed it as they loop. */
+void hang_watch_start(void);
+void hang_watch_me(void);   /* the calling task is watched from now: it feeds within the watchdog's time or the board restarts */
+void hang_watch_feed(void);
+void stall_watch_start(void); /* core 0's tick notes its running task (flash_watch.c) */
+int stall_watch_take(void); /* core 0's longest tick gap since the last call, us */
+void flash_watch_json(rdof_json_t *j); /* /api/status "flash": the flash operations (flash_watch.c) */
 void bench_line_start(void);
+#if CONFIG_RDOF_BENCH
+/* a line job or a v1 stream is listening to the receiver: flash writes wait (they lose its samples) */
+bool bench_line_measuring(void);
+bool bench_api_measuring(void); /* the v1 streams' part of it (bench_api.c) */
+#else
+#define bench_line_measuring() false
+#endif
 void bench_line_burst(int channel, const rdof_sdr_burst_t *b, double t);
 long bench_wide_read(uint64_t sc, int8_t *out, long n, uint64_t *oldest, uint64_t *next);
 long bench_wide_filled(uint64_t sc, long n); /* how many of the history's samples [sc, sc + n) are filler */
@@ -572,8 +601,20 @@ typedef struct {
     long skip_from, skip_to;
     double slot;
     uint32_t tx_fs;
+    bool map_ok, map_wait; /* the front end's TX schedule: known; it has one and it isn't fixed yet */
+    int64_t map_pos, map_us; /* pull position map_pos (48 kS/s) goes out at esp_timer map_us */
 } sdr_modem_slots_t;
 bool sdr_modem_bench_slots(sdr_modem_slots_t *s);
+/* Pin edges timed in hardware (edge_time.c): the LR2021's IRQ pin, its NSS, the PPS. */
+typedef enum { EDGE_FIFO, EDGE_NSS, EDGE_PPS, EDGE_N } edge_ch_t;
+void edge_time_start(void);
+bool edge_time_last(edge_ch_t ch, double *us, uint32_t *n); /* the last edge, in esp_timer us; n: the edges so far */
+void edge_time_json(rdof_json_t *j);
+void fe_lr2021_loss_json(rdof_json_t *j); /* sdr.fifo_losses: what the reader was doing around each FIFO loss */
+/* A FIFO level's edge: stream position pos48 (at 48 kHz, from the stream's start) was at the chip at esp_timer us. */
+void edge_time_rx_mark(double pos48, double us, uint32_t failed);
+bool edge_time_rx_take(double *pos48, double *us); /* the newest mark not yet taken */
+void edge_time_rx_lag(double lag_s); /* the mark against the stream's time: the JSON's rx_lag_* */
 void sdr_modem_bench_write(const uint8_t *data, size_t len);
 void sdr_modem_bench_close(void);
 /* The receiver streams again, at a new center or not (sdr_task.c): the modem's carrier tuned again (a roamer
@@ -586,6 +627,15 @@ void sdr_modem_tx_cap(double dbm);
  * (written to why). Its state: rdof_sdrmodem_signal_state's, -1 when the bench holds no modem. */
 const char *sdr_modem_bench_signal(uint32_t hz, const rdof_sig_src_t *src, char *why, size_t cap);
 int sdr_modem_bench_signal_state(void);
+/* The bench's confirmed-data responder on the bench's modem (rdof/mssim.h): armed once the modem's set up (false: not
+ * yet), heard on channel; disarmed when the bench lets the modem go. The copy is its state for a status. */
+bool sdr_modem_bench_mssim_arm(const rdof_mssim_profile_t *p, int channel);
+void sdr_modem_bench_mssim_disarm(void);
+void sdr_modem_bench_mssim_copy(rdof_mssim_t *out);
+/* bench_tx.c: the line protocol's mssim op (rdof/benchline.h's hook) */
+bool bench_tx_mssim(const char *action, const char *req, size_t len, uint32_t freq_hz, int cc,
+                    rdof_bench_power_t power, double seconds, uint32_t since, char *out, size_t cap,
+                    const char **code);
 bool sdr_tx_muted(void *ctx, int64_t position);
 /* The tuner's crystal error, as learned from its sample clock or the AFC (sdr_task.c). NAN where there's nothing. */
 typedef struct {

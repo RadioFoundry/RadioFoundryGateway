@@ -40,6 +40,8 @@ void netclock_start(void);
 int64_t netclock_now_ns(void);
 // UTC ns at esp_timer time t_us. *synced (optional): some reference has set the clock.
 int64_t netclock_utc_ns(int64_t t_us, bool *synced);
+// esp_timer at the last PPS edge (as its interrupt stamped it); 0: none yet, or no PPS input.
+int64_t netclock_pps_last_us(void);
 netclock_source_t netclock_source(void);
 bool netclock_synced(void);
 // The local clock's rate error being corrected (ppm, + = local runs slow:
@@ -85,6 +87,10 @@ esp_err_t netclock_settings_from_json(const char *json, size_t len, char *err, s
 // Optional: map a configured server name before DNS (e.g. "usb" to the host
 // at the other end of a USB network link). Return the name to use.
 void netclock_set_name_map(const char *(*map)(const char *name));
+
+// Optional: while hold() is true a learned rate's flash write waits (15 min at most). A flash write stops every task
+// that isn't in IRAM for tens of ms: a measurement running then loses its samples.
+void netclock_set_store_hold(bool (*hold)(void));
 
 #ifdef __cplusplus
 }

@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "driver/gpio.h"
+#include "esp_timer.h"
 #include "driver/spi_master.h"
 #include "esp_attr.h"
 #include "esp_heap_caps.h"
@@ -25,6 +26,7 @@ typedef struct {
     bool own_bus;
     SemaphoreHandle_t irq_sem; /* given by the IRQ pin's rising edge */
     uint32_t bounces;          /* transfers whose rx the SPI driver had to bounce */
+    uint32_t worst_us;         /* the longest transfer since lr2021_hal_esp_worst_us last asked */
 } esp_hal_t;
 
 static IRAM_ATTR lr2021_err_t xfer(void *ctx, const uint8_t *tx, uint8_t *rx, size_t len, size_t rx_len)
@@ -43,7 +45,11 @@ static IRAM_ATTR lr2021_err_t xfer(void *ctx, const uint8_t *tx, uint8_t *rx, si
     spi_transaction_t t = {.length = len * 8, .rxlength = rx_len * 8, .tx_buffer = tx, .rx_buffer = rx_len ? rx : NULL};
     /* Short frames poll (an interrupt's latency is longer than the frame); long ones block on the transfer's
      * interrupt while the SPI's DMA fills rx. */
+    const int64_t t0 = esp_timer_get_time();
     esp_err_t e = len >= DMA_MIN ? spi_device_transmit(h->spi, &t) : spi_device_polling_transmit(h->spi, &t);
+    const uint32_t us = (uint32_t)(esp_timer_get_time() - t0);
+    if (us > h->worst_us)
+        h->worst_us = us;
     return e;
 }
 
@@ -172,3 +178,11 @@ lr2021_err_t lr2021_hal_esp_open(const lr2021_esp_cfg_t *cfg, lr2021_hal_t *hal)
 }
 
 uint32_t lr2021_hal_esp_bounces(const lr2021_hal_t *hal) { return ((const esp_hal_t *)hal->ctx)->bounces; }
+
+uint32_t lr2021_hal_esp_worst_us(lr2021_hal_t *hal)
+{
+    esp_hal_t *h = hal->ctx;
+    const uint32_t us = h->worst_us;
+    h->worst_us = 0;
+    return us;
+}

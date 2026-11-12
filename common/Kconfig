@@ -30,10 +30,10 @@ menu "RadioFoundry Gateway common (common)"
     config RDOF_RUST
         bool "rust's modules in place of their C files"
         depends on RDOF_FEATURE_TX && RDOF_FEATURE_DATA_BLOCKS && RDOF_FEATURE_TRACKER && RDOF_FEATURE_REPEATER
-        default n
+        default y
         help
-            common ported to Rust a module at a time (rust/README.md lists them).
-            The Rust is the build with every feature on, so it needs them all.
+            common ported to Rust a module at a time (rust/README.md lists them): the default.
+            The Rust is the build with every feature on, so it needs them all; n keeps the C.
             Needs Espressif's Rust toolchain (espup install --targets esp32s3 --std).
 
 endmenu

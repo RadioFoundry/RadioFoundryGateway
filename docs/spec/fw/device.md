@@ -228,17 +228,18 @@ Read: `GET /api/log` (`webapi.c`, through `web.c:fw_log`) returns `text/plain`, 
 
 ## 5. Watchdogs, faults and resets
 
-The firmware sets no watchdog of its own; ESP-IDF's (values from the built `sdkconfig`, IDF defaults, not set in `sdkconfig.defaults*`):
+ESP-IDF's watchdogs, the task watchdog fed by the firmware's own tasks (`watch.c`); values from `sdkconfig.defaults`
+and the IDF's defaults:
 
 | Item | Value |
 |---|---|
-| Task watchdog | on, 5 s, watches both idle tasks (CPU0, CPU1); `CONFIG_ESP_TASK_WDT_PANIC` off: a timeout prints the offending tasks, it does not reset |
+| Task watchdog | on, 30 s, a timeout is a panic (`CONFIG_ESP_TASK_WDT_PANIC`): a core dump, then a restart, `reset` `task watchdog`, and `crash.task` the task that was running. It watches a canary task on each core (`watch0`, priority 6 on core 0: above the web server, the streams' senders and MQTT, which may be busy for as long as a client asks, and below the tasks that must sleep; `watch1`, priority 13 on core 1: above the DSP) and the tasks that carry the receiver, which feed it as they loop (the LR2021's reader, the DSP). The idle tasks aren't watched: a wideband stream keeps core 0's from running for seconds, and the report that printed cost 26 to 53 ms with interrupts off (lr2021-iq.md R3.59) |
 | Interrupt watchdog | on, 300 ms, both CPUs: resets |
 | Panic | print and reboot, 0 s delay (`CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT`) |
 | Brownout | detector on, level 7. `4mb` caps Wi-Fi TX power at 10 dBm (`CONFIG_ESP_PHY_MAX_WIFI_TX_POWER`) because the SuperMini's regulator browns out at 15 dBm or more |
 | Core dump | to flash, ELF, CRC32, every task (`CONFIG_ESP_COREDUMP_MAX_TASKS_NUM` 64, no DRAM capture): partition `coredump`, 128 KB, at `0x820000` (`16mb`) or `0x3E0000` (`4mb`). Measured: 25 tasks, 46 KB (each task its TCB, the used part of its stack and a register note, about 1.8 KB). A dump that doesn't fit isn't written (the console says `Not enough space to save core dump!`) and the one before stays |
 
-Only the self-test touches the task watchdog (removes core 1's idle task while it runs, §3).
+The self-test's removal of core 1's idle task from the task watchdog (§3) does nothing now: it isn't watched.
 
 ### Reset reason and crash report
 

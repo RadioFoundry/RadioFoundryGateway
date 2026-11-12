@@ -138,7 +138,7 @@ void sdr_mqtt_start(void)
         return;
     }
     snprintf(status_topic, sizeof status_topic, "%s/_sdr/%s/status", g_scfg.mqtt_root, g_scfg.name);
-    snprintf(client_id, sizeof client_id, "rdof-sdr-%s", g_scfg.name);
+    snprintf(client_id, sizeof client_id, "rdof-sdr-%s-%s", g_scfg.name, net_hwid());
     for (int k = 0; k < 2; k++) /* aliases: every channel's raw, then every channel's json */
         for (int c = 0; c < g_scfg.nch; c++) {
             topic(g_scfg.ch[c].id, k ? "json" : "raw", alias_buf[k * g_scfg.nch + c], sizeof alias_buf[0]);

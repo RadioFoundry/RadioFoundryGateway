@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "app.h"
+#include "esp_mac.h"
 #include "esp_log.h"
 #include "lwip/netdb.h"
 #include "lwip/sockets.h"
@@ -175,7 +176,10 @@ static void fall_back(post_queue_t *q)
             esp_mqtt_client_stop(q->client);
             client_cfg[i].session.protocol_ver = MQTT_PROTOCOL_V_3_1_1;
             esp_mqtt_set_config(q->client, &client_cfg[i]);
-            esp_mqtt_client_start(q->client);
+            /* esp-mqtt's task takes 6 KB of internal RAM, and the board's other connections fall back at the same
+             * moment: tried until it starts, so a start that fails doesn't leave the connection off for good */
+            for (int k = 0; k < 30 && esp_mqtt_client_start(q->client) != ESP_OK; k++)
+                vTaskDelay(pdMS_TO_TICKS(1000));
         }
 }
 #endif
@@ -294,6 +298,11 @@ struct esp_mqtt_client *net_mqtt_start(net_mqtt_t *m)
     static char uri[2][112];
     if (n_client >= 2)
         return NULL;
+    if (net_sample_host(m->host)) { /* the default settings' broker: it would time out every few seconds for good */
+        ESP_LOGW(TAG, "%s: the broker %s is a sample address, not a broker: MQTT off until it's set", m->client_id,
+                 m->host);
+        return NULL;
+    }
     bool tls = false;
 #if CONFIG_RDOF_MQTT_TLS
     tls = m->tls;
@@ -366,4 +375,33 @@ int net_udp_connect(const char *host, int port)
     }
     freeaddrinfo(res);
     return s;
+}
+
+const char *net_hwid(void)
+{
+    static char id[7];
+    if (!id[0]) {
+        uint8_t mac[6] = {0};
+        esp_read_mac(mac, ESP_MAC_BASE);
+        snprintf(id, sizeof id, "%02x%02x%02x", mac[3], mac[4], mac[5]);
+    }
+    return id;
+}
+
+bool net_sample_host(const char *host)
+{
+    static const char *const blocks[] = {"192.0.2.", "198.51.100.", "203.0.113."};
+    static const char *const names[] = {"example.com", "example.net", "example.org", ".example", ".invalid"};
+    if (!host || !host[0])
+        return false;
+    for (size_t i = 0; i < sizeof blocks / sizeof blocks[0]; i++)
+        if (!strncmp(host, blocks[i], strlen(blocks[i])))
+            return true;
+    const size_t n = strlen(host);
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
+        const size_t k = strlen(names[i]);
+        if (n >= k && !strcasecmp(host + n - k, names[i]) && (n == k || names[i][0] == '.' || host[n - k - 1] == '.'))
+            return true;
+    }
+    return false;
 }

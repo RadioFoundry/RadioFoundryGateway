@@ -9,7 +9,8 @@
  * (a late entry's from its embedded LC), terminator set on a voice terminator. A stream ends there, or at SET_MODE
  * idle (the job unkeyed or stopped): the
  * next burst starts a new one. A call's further terminators are dropped (the router's transceiver sends its own
- * count of headers and terminators a call, R11.4). A burst the router refuses (no transmitter free) is NAKed, so the job stops.
+ * count of headers and terminators a call, R11.4). A burst the router refuses (no transmitter free, or the transceiver
+ * refused the stream at its tune) is NAKed, so the job stops.
  *
  * The job's frequency and color code don't reach the air from here: the router tunes its transmitter to the path's
  * (the job's frequency must be one of the site's paths). Its power does, as the most the stream sends at

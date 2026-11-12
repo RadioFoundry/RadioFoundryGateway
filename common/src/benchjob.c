@@ -696,9 +696,9 @@ static size_t user_data(const rdof_bj_job_t *j, int index, uint8_t *out)
             len = (size_t)j->udp_octets;
             for (size_t i = 0; i < len; i++)
                 pl[i] = (uint8_t)((i * 7 + 1) & 0xFF);
+            if (len >= 2) /* the packet's index first, big endian: filler only; a payload given goes out as it is */
+                pl[0] = (uint8_t)(index >> 8), pl[1] = (uint8_t)index;
         }
-        if (len >= 2) /* the packet's index first, big endian */
-            pl[0] = (uint8_t)(index >> 8), pl[1] = (uint8_t)index;
         const int sport = j->udp_src_port >= 0 ? j->udp_src_port : j->udp_port;
         return udp_datagram(j->src, j->dst, sport, j->udp_port, (uint16_t)(1 + index), pl, len, out);
     }

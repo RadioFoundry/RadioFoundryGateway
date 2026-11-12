@@ -13,6 +13,8 @@
 #include <string.h>
 #include <time.h>
 
+#include "rdof/bits.h"
+#include "rdof/layer2.h"
 #include "rdof/mmdvm.h"
 #include "rdof/pdu.h"
 #include "rdof/rawburst.h"
@@ -294,13 +296,23 @@ static void test_alloc(void)
 #define UTC_OFFSET_US 1000
 
 struct utc_ctx {
-    long bursts, stamped, raw, raw_utc, wrong;
+    long bursts, stamped, raw, raw_utc, wrong, cach, cach_wrong;
 };
 
 static void utc_burst(void *ctx, int c, const rdof_sdr_burst_t *b, double t)
 {
     struct utc_ctx *u = ctx;
     u->bursts++;
+    /* a BS burst carries its CACH, the slot it names the burst's; no other burst has one */
+    if (b->b.family == RDOF_FAMILY_BS) {
+        uint8_t c24[24];
+        rdof_bytes_to_bits(b->cach, 3, c24);
+        u->cach++;
+        if (!b->has_cach || rdof_decode_cach_slot(c24) != b->b.slot)
+            u->cach_wrong++;
+    } else if (b->has_cach) {
+        u->cach_wrong++;
+    }
     const bool timed = b->b.family == RDOF_FAMILY_BS || b->b.family == RDOF_FAMILY_MS;
     if (b->b.utc != timed) {
         u->wrong++;
@@ -358,6 +370,7 @@ static void test_rx_utc(void)
             CHECK(u.bursts > 20 && u.stamped > 20 && !u.wrong, "mapped: %ld bursts, %ld stamped, %ld wrong", u.bursts,
                   u.stamped, u.wrong);
             CHECK(u.raw > 0 && u.raw_utc > 0, "mapped: %ld raw, %ld with the UTC slot", u.raw, u.raw_utc);
+            CHECK(u.cach > 10 && !u.cach_wrong, "%ld BS bursts with their CACH, %ld wrong", u.cach, u.cach_wrong);
         } else {
             CHECK(u.bursts > 20 && u.stamped == 0 && u.raw > 0 && u.raw_utc == 0, "unmapped: %ld bursts, %ld stamped, "
                   "%ld raw with the UTC slot", u.bursts, u.stamped, u.raw_utc);
@@ -600,6 +613,36 @@ static void test_chz_level(void)
         in[i].re = 1.0f; /* DC: all of it in the one bin */
     got = rdof_chz_process(&z, in, 2000, out, 2000);
     CHECK(got > 0 && z.level[0] > 1000.0f, "a strong tone over a silent band reads %g", z.level[0]);
+    rdof_chz_free(&z);
+}
+
+/* rdof_chz_set_offset: a channel moved to another offset hears a tone there, and no longer its old one */
+static void test_chz_set_offset(void)
+{
+    rdof_chz_t z;
+    const double off[2] = {-50000.0, 30000.0};
+    CHECK(rdof_chz_init(&z, 288e3, off, 2, 6, 64, 7500) == 0, "init");
+    enum { N = 9000 };
+    static rdof_cf_t in[N], out[2 * N];
+    const double tone = 101000.0; /* 101 kHz: channel 1 moved to 100 kHz hears it as 1 kHz */
+    for (int i = 0; i < N; i++)
+        in[i].re = (float)cos(2 * M_PI * tone * i / 288e3), in[i].im = (float)sin(2 * M_PI * tone * i / 288e3);
+    int got = rdof_chz_process(&z, in, N, out, N);
+    double p0 = 0;
+    for (int i = got / 2; i < got; i++)
+        p0 += out[N + i].re * out[N + i].re + out[N + i].im * out[N + i].im;
+    rdof_chz_set_offset(&z, 1, 100000.0);
+    got = rdof_chz_process(&z, in, N, out, N);
+    double p1 = 0, ph = 0;
+    int n1 = 0;
+    for (int i = got / 2; i < got - 1; i++, n1++) {
+        const rdof_cf_t a = out[N + i], b = out[N + i + 1];
+        p1 += a.re * a.re + a.im * a.im;
+        ph += atan2(a.re * b.im - a.im * b.re, a.re * b.re + a.im * b.im);
+    }
+    const double hz = ph / n1 * 48000.0 / (2 * M_PI);
+    CHECK(got > 0 && p1 > 1000 * p0 && fabs(hz - 1000.0) < 20, "moved: %.3g over %.3g before, the tone at %.1f Hz",
+          p1, p0, hz);
     rdof_chz_free(&z);
 }
 
@@ -2891,7 +2934,7 @@ int main(void)
     /* RDOF_EDGE_TIMES=1 prints the seconds each test takes */
     const bool times = getenv("RDOF_EDGE_TIMES") != NULL;
     static void (*const tests[])(void) = {
-        test_alloc, test_bench, test_rx_utc, test_bench_busy, test_chz_args, test_chz_odd, test_chz_clock, test_chz_level,
+        test_alloc, test_bench, test_rx_utc, test_bench_busy, test_chz_args, test_chz_odd, test_chz_clock, test_chz_level, test_chz_set_offset,
         test_rrc, test_fm_edges, test_plan_edges, test_scene, test_demod_edges, test_demod_bent, test_demod_small_feed, test_demod_weaker, test_voice, test_rx_edges, test_frontend_edges,
         test_mod_edges, test_resamp_edges, test_resamp_tones, test_fft_edges, test_rate_edges, test_ppm_edges, test_config_edges, test_config_board_keys, test_describe_edges,
         test_status_edges, test_agc_empty, test_txguard,

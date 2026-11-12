@@ -264,6 +264,22 @@ chain's end.
   `rdof_ipgw_tx_t` about 4.5 KB (a packet going on air), in PSRAM when there is some.
 - `GET /api/status` has `ip_gateway` with the counters ([interfaces-http.md](interfaces-http.md) §3.4).
 
+### 13.1 On rdofradio
+
+`rdofradio_ipgw.c`, on the main loop's thread (no task, no queue):
+
+- The modem's tracker (`--mmdvm`) and each SDR channel's get a sink (`gw_on_frame`): a data burst goes in when the
+  path it was heard on lists the app (`apps`, [config-v3.md](config-v3.md) §6). A frequency both hear reaches it
+  twice: the second is a duplicate.
+- Each poll (20 ms) reads the flows' sockets without waiting; the tick is every 250 ms. Route names are looked up
+  on a thread of their own, every 30 s until each has an address.
+- Replies go out through the repeater that hears the radio's frequency (the unit's, or a split's), on the slot the
+  radio was heard on; a transceiver sends them on the path the radio was heard on, through the router's pool. A
+  repeater takes one packet at a time: up to 4 wait behind it (a host's reply often comes back while the radio's
+  ACK still waits for the slot), 6 s at most; more are dropped and counted in `tx_busy`.
+- NAT's ICMP needs a raw socket (root or `CAP_NET_RAW`); without one NAT is UDP only, and the start says so.
+- `GET /api/status` has the same `ip_gateway`.
+
 ## 14. Not supported
 
 - IPv6, IPv4 fragments, TCP/IP header compression, other SAPs (short data, UDT); SAP 3 with a SAID other than 0,

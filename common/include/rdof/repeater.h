@@ -41,6 +41,7 @@ extern "C" {
 #define RDOF_RPT_KEY_LEAD_S 0.36     /* R3.3 */
 #define RDOF_RPT_STATUS_EVERY_S 0.06
 #define RDOF_RPT_IDLE_STATUS_EVERY_S 2.0
+#define RDOF_RPT_KEEP_UP 3 /* idle bursts kept queued per slot while keyed with nothing to send (180 ms) */
 #define RDOF_RPT_STATUS_GIVE_UP_S 2.0
 #define RDOF_RPT_NET_TIMEOUT_S 1.5
 #define RDOF_RPT_RF_TIMEOUT_S 1.0
@@ -156,6 +157,7 @@ typedef struct rdof_repeater {
     double cwid_every_s;
     bool sfr;
     bool dcdm;            /* dual capacity direct mode: a gateway on one frequency, both slots, nothing repeated */
+    bool keep_up;         /* keyed with nothing to send: idle bursts stay queued (a real modem drops its carrier otherwise) */
     int inbound, outbound;
 
     void (*on_tx)(void *ctx, const char *action, const rdof_tx_call_info_t *call, double duration);

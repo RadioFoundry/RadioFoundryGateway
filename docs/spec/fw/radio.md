@@ -136,7 +136,7 @@ idle receiver heard. Every DMR_DATA or DMR_LOST sets `rdof_modem_t.last_rx` to t
 **DMR_SHORTLC**: 9 bytes, the CACH short LC encoded and interleaved
 (`common/src/duplex.c:rdof_short_lc`, `rdof_activity_lc`; ETSI TS 102 361-1 §7.1.4). Repeater only.
 
-**DMR_START**: `01` key / `00` unkey. **DMR_ABORT**: slot `01` / `02`. Repeater only.
+**DMR_START**: `01` key / `00` unkey. **DMR_ABORT**: slot `01` / `02`. Repeater only. The modem takes DMR_START only in DMR mode, and that mode lapses between key-ups (a NAK, error 4): a host sends SET_MODE DMR right before each key. Keyed with nothing queued, a modem drops its carrier and its mode after about a second, so a host keeps a few idle bursts queued (`rdof_repeater_t.keep_up`).
 
 **ACK** `70 <cmd>`; **NAK** `7F <cmd> <reason>`. Reasons the firmware names: 2 SFR off (`RDOF_NAK_SFR_OFF`), 6 RF busy
 (`RDOF_NAK_RF_BUSY`); the others are logged as numbers (MP §2.2).

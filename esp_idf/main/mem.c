@@ -13,6 +13,7 @@
 #include "app.h"
 #include "esp_attr.h"
 #include "esp_heap_caps.h"
+#include "esp_ipc.h"
 #include "esp_log.h"
 #include "freertos/semphr.h"
 
@@ -50,14 +51,46 @@ static uint32_t heap_caps_of(int where)
     }
 }
 
+/* The largest free blocks: each is a walk of its heaps with interrupts off on the core that asks, 0.1 to 0.6 ms
+ * for the internal ones and 0.4 to 2.9 ms for PSRAM (W12 #3). The LR2021's reader on core 0 has about 0.5 ms to
+ * spare, and each /api/status cost it a FIFO now and then (lr2021-iq.md R3.59), so the walks run on core 1. */
+static void largest(void *arg)
+{
+    rdof_mem_avail_t *a = arg;
+    a->internal_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    a->dma_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    a->psram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+}
+
+/* Allocations the heap refused (heap_caps' own hook: in the asking task, so it only counts). */
+static volatile uint32_t fail_n, fail_size, fail_caps;
+static char fail_task[configMAX_TASK_NAME_LEN];
+
+static void alloc_failed(size_t size, uint32_t caps, const char *fn)
+{
+    (void)fn;
+    fail_n++;
+    fail_size = (uint32_t)size;
+    fail_caps = caps;
+    if (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING && !xPortInIsrContext())
+        strlcpy(fail_task, pcTaskGetName(NULL), sizeof fail_task);
+}
+
 static void avail(rdof_mem_avail_t *a)
 {
+    a->alloc_fails = fail_n;
+    a->alloc_fail_size = fail_size;
+    a->alloc_fail_caps = fail_caps;
+    a->alloc_fail_task = fail_task;
     a->internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    a->internal_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     a->dma_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
-    a->dma_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
     a->psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    a->psram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+#if CONFIG_FREERTOS_NUMBER_OF_CORES > 1
+    if (xPortGetCoreID() != 1 && xTaskGetSchedulerState() == taskSCHEDULER_RUNNING &&
+        esp_ipc_call_blocking(1, largest, a) == ESP_OK)
+        return;
+#endif
+    largest(a);
 }
 
 int mem_add(const char *role, const char *name, size_t size, size_t align, uint8_t caps, rdof_mem_how_t how)
@@ -90,6 +123,12 @@ static void board_claims(void)
     mem_add("board", "httpd", 8192 + 1024, 4, RDOF_MEM_INTERNAL, RDOF_MEM_BUDGET); /* web.c's stack_size, its state */
     mem_add("board", "wifilist", 4096, 4, RDOF_MEM_INTERNAL, RDOF_MEM_BUDGET);
     mem_add("board", "netclock", 6144, 4, RDOF_MEM_INTERNAL, RDOF_MEM_BUDGET); /* its NTP task, once Wi-Fi is up */
+#if CONFIG_RDOF_ROAMER
+    /* the MQTT network's own connection (format v3; mqttnet_task.c): esp-mqtt's task and state, as a role's. It had
+     * no claim, and came out of the margin: on a W12 with both reporting connections its task's 6 KB was refused */
+    if (site_mn_net() >= 0)
+        mem_add("board", "mqtt_net", MQTT_CLIENT_INTERNAL, 4, RDOF_MEM_INTERNAL, RDOF_MEM_BUDGET);
+#endif
 #if CONFIG_RDOF_OLED
     if (g_roles.has_sdr || g_roles.has_radio)
         mem_add("board", "oled", 4096, 4, RDOF_MEM_INTERNAL, RDOF_MEM_BUDGET);
@@ -166,6 +205,7 @@ static void allocate(void)
 
 void mem_plan_boot(bool usb_either)
 {
+    heap_caps_register_failed_alloc_callback(alloc_failed);
     lock = xSemaphoreCreateMutex();
     rdof_memplan_init(&P, CONFIG_RDOF_MEM_MARGIN_KB * 1024, STRICT);
     declaring = true;

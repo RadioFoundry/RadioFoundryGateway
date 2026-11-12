@@ -85,6 +85,11 @@ static float die_temp(void)
 #endif
 }
 
+#define STORE_HOLD_MAX_US (15 * 60 * 1000000LL)
+static bool (*s_store_hold)(void);
+
+void netclock_set_store_hold(bool (*hold)(void)) { s_store_hold = hold; }
+
 // The rate, and the table when it was learned into (tcal: NULL to leave it).
 static void rate_store(double rate, const nc_tcal_t *tcal)
 {
@@ -142,8 +147,22 @@ static nc_result_t add_reference(netclock_source_t src, int64_t t_us, int64_t ut
              r == NC_STEP ? "step" : r == NC_SLEW ? "slew" : "OUTLIER, ignored", m.last_err_us / 1000.0,
              m.rate * 1e6, m.rate_learned ? "learned" : from_store ? "stored" : "none", m.n, m.rate_span_s / 60,
              m.resid_rms_us / 1000, die);
+    // the write waits for a measurement (netclock_set_store_hold), then goes with what's known by then
+    static bool pending, pending_tcal;  // under s_wlock
+    static int64_t pending_since;
     if (store) {
-        rate_store(m.fit_rate, tcal ? &tcal_copy : NULL);
+        if (!pending) {
+            pending_since = t_us;
+        }
+        pending = true;
+        pending_tcal |= tcal;
+    }
+    if (pending && !(s_store_hold && s_store_hold() && t_us - pending_since < STORE_HOLD_MAX_US)) {
+        if (pending_tcal) {
+            tcal_copy = s_scratch.tcal;
+        }
+        rate_store(m.fit_rate, pending_tcal ? &tcal_copy : NULL);
+        pending = pending_tcal = false;
     }
     xSemaphoreGive(s_wlock);
 #if CONFIG_NETCLOCK_SET_SYSTEM_TIME
@@ -275,6 +294,8 @@ static void IRAM_ATTR pps_isr(void *arg)
         portYIELD_FROM_ISR();
     }
 }
+
+int64_t netclock_pps_last_us(void) { return s_pps_last_us; }
 
 static void pps_task(void *arg)
 {

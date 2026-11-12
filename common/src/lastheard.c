@@ -370,6 +370,10 @@ size_t rdof_lh_json(const rdof_lh_t *lh, uint32_t since, double now, int64_t now
                                 (unsigned long)lh->seq, (long long)(now_ms > 0 ? now_ms : 0), lh->cap);
     bool first = true, more = false;
     const size_t tail = 16; /* ],"more":true}  */
+    if (n + sizeof "],\"more\":true}" > cap) { /* no room to close what the header opened: nothing, not cut JSON */
+        out[0] = 0;
+        return 0;
+    }
     for (int i = 0; i < lh->n; i++) {
         const rdof_lh_entry_t *e = nth(lh, i);
         if (e->seq <= since)

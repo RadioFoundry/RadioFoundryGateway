@@ -37,7 +37,7 @@ The setup access point is `radiofoundry-<suffix>` (format `"radiofoundry-%s"`), 
 | GET | `/api/tasks` | `CONFIG_FREERTOS_USE_TRACE_FACILITY` and `CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS` | none | `text/plain`, `no-store`: the seconds since the last ask, then a line a task: name, core (0, 1 or any), priority and its share of a core in % since the last ask (the first ask after a restart shows 0) | none |
 | GET | `/api/coredump` | always | none | `application/octet-stream`, `no-store`, `Content-Disposition: attachment; filename="<box>-coredump-<elf>.bin"`: the core dump as stored in the `coredump` partition (header, ELF core, CRC; `esp-coredump -t raw` reads it), or 404 `no core dump` (`no core dump (not in this build)` without `CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH`) | none |
 | DELETE | `/api/coredump` | `CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH` | none | 200 `erased`, or 500 with the error's name | erases the partition (`esp_core_dump_image_erase`); `crash` leaves `/api/status` |
-| POST | `/api/crash` | `CONFIG_RDOF_CRASH_TEST` (default n; debug builds only) | none | 200 `crashing: the board saves a core dump and restarts` | 500 ms later a task `crash_test` stores to address 0 (StoreProhibited): core dump, reboot |
+| POST | `/api/crash` | `CONFIG_RDOF_CRASH_TEST` (default n; debug builds only) | none | 200 `crashing: the board saves a core dump and restarts` | 500 ms later a task `crash_test` stores to address 0 (StoreProhibited): core dump, reboot. `?how=hang`: 200 `hanging: ...`, and a task `hang_test` loops without yielding at priority 7 on core 0: the task watchdog's panic 30 s on (core dump, reboot, `reset` `task watchdog`) |
 | POST | `/api/restart` | always | none (ignored) | 200 `restarting` | restart after 1 s |
 | POST | `/api/power_off` | `CONFIG_RDOF_POWER_KEY_GPIO` >= 0 | none (ignored) | 200 `turning off; hold the power key to turn it on` | 500 ms later the board turns off as the power key does ([device.md](device.md) §6) |
 | POST | `/api/selftest` | `CONFIG_RDOF_SDR` | none | 200 `restarting to run the self-test (about 20 s; then see the log)` | NVS `rd`/`selftest` = 1 (u8), restart after 1 s; the boot runs the DSP self-test and clears the flag; the verdict is `/api/status` `selftest` and the log |
@@ -94,8 +94,12 @@ platform's own fields at that point (`web.c:fw_status`), then `settings_source` 
 | `psram_free` | int | bytes | PSRAM free | always |
 | `cpu` | array of number | fraction | each core's busy share (1 less its idle task's), core 0 first, over at least the last 2 s | built with the FreeRTOS run-time stats (`CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS`, on in `sdkconfig.defaults`); omitted on the first ask |
 | `memory` | object | | the memory plan (§3.5) | always |
+| `flash` | object | | the flash chip's use since boot (`flash_watch.c`): `ops` (times both cores stopped for a flash operation), `long_ops` (those over 1 ms: programs and erases), `worst_us`; `writes`, `write_bytes`, `erases`, `erase_kb` (programs and erases asked of the driver: the wear; a setting saved unchanged writes nothing); after a long one `last_us`, `last_ago_ms`, `last_by` (its task) | always |
+| `stalls` | object | | a core's tick stopped for over 5 ms (interrupts off that long): `core<c>_<k>` each `n`, `us`, `ago_ms`, `pc`, `a0`, and what each core ran; `{}` when none | always |
+| `apps` | array | | the settings' apps in their order, each with what it's doing (`rdof_router_apps_json`): `name`, `type` (`repeater`, `parrot`, `ipgw`); a repeater's `in`, `out` (Hz), `cc`, `net` (its network's name), `slots` (each `slot`, `path`, `peer` when the path has its own HBlink peer, `sending`: a network call goes out there now), and from rdofradio `keyed`, `heard` (each `slot`, `src`, `dst`, `group`), `bursts_heard`, `bursts_sent`, `dropped`; a parrot's or IP gateway's `id`, `group`, and a parrot's `state`, `replayed`, `ignored`, `cut` (`src`, `dst` during a call). The page's Radios tab shows a card for each | when the settings have apps |
 | `settings_ok` | bool | | the stored settings parsed and resolved; false: the board runs `DEFAULT_JSON` | always |
 | `settings_error` | string | | why not (empty if ok) | always |
+| `settings_warning` | string | | a setting that passed the check and that this build doesn't carry (an mqtt network's calls in the `dmrd` format on a board; format `v3` on a receiver-only image), or a network whose host is a sample address (192.0.2.x, 198.51.100.x, 203.0.113.x, an `example` name: the default settings' networks), which the board doesn't connect its MQTT to; absent when there is none | board |
 | `wifi` | bool | | station has an IP | always |
 | `ap_mode` | bool | | setup access point up | always |
 | `ip` | string | | station IP, `""` if none | always |
@@ -151,7 +155,7 @@ with its counters at zero.
 | `jitter` | object | | the jitter buffer for network voice: `mode` (`auto` or `fixed`), `target_ms` (the prebuffer now, or the last call's; fixed: the setting), `jitter_ms` (RFC 3550 interarrival jitter), `late_ms` (the arrival window's second worst lateness), `min_ms` and `max_ms` (auto only), and counts since boot `streams`, `underruns`, `grown`, `shrunk`; [roamer.md](roamer.md), "Jitter buffer" | roamer (TX build) and repeater |
 | `frequency` | int | Hz | where it is now (repeater: RX frequency) | always |
 | `colorCode` | int | | its color code now | always |
-| `hblink` | bool | | HBlink4 link up (a DMRP within 3 keepalives) | always |
+| `hblink` | bool | | HBlink4 link up (a DMRP within 3 keepalives) | when the unit is an HBlink peer (config-v3.md §7.1); with `hblink_tx` and `hblink_rx` left out otherwise |
 | `hblink_tx`, `hblink_rx` | int | packets | to and from HBlink4 | always |
 | `sctp` | object | | tinysctp association: `state, srtt_ms, rto_ms, cwnd, flight, peer_rwnd, queued, outstanding, errors, prsctp, streams[2], pkts_in, pkts_out, msgs_sent, msgs_received, retransmits, fast_retransmits, t3_expiries, abandoned, dropped_unsent, fwd_tsn_sent, fwd_tsn_received, dups, bad_checksum, hb_sent, hb_acked, established, restarts, failures, aborts, send_rejected` | `CONFIG_RDOF_HBLINK_SCTP` and transport `sctp` |
 | `mqtt` | bool | | its MQTT connection is up | always |
@@ -241,6 +245,7 @@ The boot memory plan and the heap now ([memory.md](memory.md)). Sizes in bytes.
 | `spare` | int | internal free at plan time less the plan and the margin (negative: short) |
 | `internal` | object | `free`, `largest` (now); `at_plan` (free when planned); `planned` (allocated by the plan); `budget` (declared, allocated by others later); `outside_plan` (`at_plan` − `planned` − `free`: taken since by the budgets' owners, Wi-Fi, lwIP and what isn't planned; compare with `budget` + `margin`) |
 | `dma` | object | `free`, `largest`: internal DMA-capable now |
+| `alloc_fails` | object | allocations the heap has refused since boot, whoever asked (Wi-Fi, lwIP, a role): `n`; the last one's `size` (bytes), `caps` (ESP-IDF's `MALLOC_CAP_` bits) and `task` |
 | `psram` | object | `free`, `largest` now; `planned` |
 | `roles` | object | keyed by role (`sdr`, `sdr_fe`, `sdr_net`, `radio1`, `radio2`, `ipgw`, `usb`, `board`): `state` (`planned`, `refused`, `released`), `why` (refused or released: why), `internal`, `dma`, `psram` (bytes planned in each), `budget`, `claims` |
 | `roles.*.claims` | object | keyed by claim name: `bytes` (each × count), `in` (`internal`, `dma`, `psram`, `nowhere`), `how` (`alloc`, `hold`, `budget`), `align` (only when over 4), `taken` (alloc: the role took it) or `handed` (hold: blocks handed to their driver) |

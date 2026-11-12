@@ -1,0 +1,91 @@
+// pluto repeater + 4 radios simplex (host ports)
+{
+ "version": 3,
+ "id": 9800100,
+ "callsign": "N0CALL",
+ "defaults": {
+  "cc": 1
+ },
+ "devices": [
+  {
+   "name": "pluto",
+   "kind": "sdr",
+   "driver": "iio",
+   "transmits": [
+    "out"
+   ]
+  },
+  {
+   "name": "m0",
+   "kind": "modem",
+   "type": "radio_hotspot",
+   "port": {
+    "path": "/dev/ttyACM0"
+   },
+   "transmits": [
+    438.5
+   ]
+  },
+  {
+   "name": "m1",
+   "kind": "modem",
+   "type": "radio_hotspot",
+   "port": {
+    "path": "/dev/ttyACM1"
+   },
+   "transmits": [
+    438.5125
+   ]
+  },
+  {
+   "name": "m2",
+   "kind": "modem",
+   "type": "radio_hotspot",
+   "port": {
+    "path": "/dev/ttyACM2"
+   },
+   "transmits": [
+    438.525
+   ]
+  },
+  {
+   "name": "m3",
+   "kind": "modem",
+   "type": "radio_hotspot",
+   "port": {
+    "path": "/dev/ttyACM3"
+   },
+   "transmits": [
+    438.5375
+   ]
+  }
+ ],
+ "frequencies": [
+  {
+   "name": "in",
+   "freq": 438.75
+  },
+  {
+   "name": "out",
+   "freq": 438.25
+  },
+  438.5,
+  438.5125,
+  438.525,
+  438.5375
+ ],
+ "apps": [
+  {
+   "name": "R1",
+   "type": "repeater",
+   "in": "in",
+   "out": "out"
+  }
+ ],
+ "networks": [
+  {
+   "type": "hblink",
+   "host": "hb.example.net"
+  }
+ ]
+}

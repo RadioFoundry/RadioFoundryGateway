@@ -118,6 +118,12 @@ void rdof_txpool_end(rdof_txpool_t *p, int i, double now)
     t->until = now + t->answer_s;
 }
 
+void rdof_txpool_release(rdof_txpool_t *p, int i)
+{
+    if (i >= 0 && i < p->n)
+        p->tx[i].state = RDOF_TXP_FREE;
+}
+
 rdof_txp_state_t rdof_txpool_state(rdof_txpool_t *p, int i, double now)
 {
     if (i < 0 || i >= p->n)

@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 /* The parrot (rdof/parrot.h): a voice call, data and a CSBK sent back burst for burst, paced, after the delay;
- * the id filter; a lost call; the other slot while busy; a recording that fills; bit errors regenerated out. */
+ * the id filter; a lost call; the other slot while busy; a recording that fills; bit errors regenerated out; data
+ * sent back to its sender, unconfirmed or confirmed; the state's names. */
 #include <stdio.h>
 #include <string.h>
 
 #include "rdof/ambe.h"
 #include "rdof/bits.h"
+#include "rdof/fec.h"
 #include "rdof/ipgw.h"
 #include "rdof/layer2.h"
 #include "rdof/mmdvm.h"
@@ -539,6 +541,83 @@ static void test_data_reply(void)
     CHECK(P.data_replies == 0 && S.n == pk.nbursts && S.dst == 91 && S.group);
 }
 
+/* Confirmed rate 1/2 blocks for an IPv4 datagram (SAP 4): 10 octets each, the CRC-9 over each with its serial
+ * number; spoil: the first block's CRC-9 wrong. */
+static void confirmed(uint32_t src, uint32_t dst, const uint8_t *data, size_t len, bool spoil, rdof_ipgw_dmr_t *p)
+{
+    int blocks = (int)((len + 4 + 9) / 10), pad = blocks * 10 - (int)len - 4;
+    uint8_t h[12], buf[256];
+    rdof_ipgw_data_header(false, true, true, RDOF_SAP_IP, pad, dst, src, blocks, 0, h);
+    rdof_data_burst(h, RDOF_DT_DATA_HEADER, 1, DATA_SYNC, p->bursts[0]);
+    p->control[0] = RDOF_SYNC_DATA | RDOF_DT_DATA_HEADER;
+    memcpy(buf, data, len);
+    memset(buf + len, 0, (size_t)pad);
+    uint32_t crc = rdof_crc32_dmr(buf, len + (size_t)pad);
+    for (int i = 0; i < 4; i++)
+        buf[len + (size_t)pad + (size_t)i] = (uint8_t)(crc >> (8 * i));
+    for (int b = 0; b < blocks; b++) {
+        uint8_t blk[12], bits[87];
+        memcpy(blk + 2, buf + 10 * b, 10);
+        rdof_bytes_to_bits(blk + 2, 10, bits);
+        rdof_u64_to_bits((uint64_t)b, 7, bits + 80);
+        int c9 = rdof_crc9_dmr(bits, 87) ^ RDOF_MASK_CRC9_RATE12;
+        if (spoil && b == 0)
+            c9 ^= 1;
+        blk[0] = (uint8_t)(b << 1 | c9 >> 8);
+        blk[1] = (uint8_t)c9;
+        rdof_data_burst(blk, RDOF_DT_RATE_12, 1, DATA_SYNC, p->bursts[1 + b]);
+        p->control[1 + b] = RDOF_SYNC_DATA | RDOF_DT_RATE_12;
+    }
+    p->nbursts = 1 + blocks;
+}
+
+/* Confirmed data comes back too, as unconfirmed rate 1/2; with a block's CRC-9 wrong, as it was heard. */
+static void test_data_reply_confirmed(void)
+{
+    const uint32_t radio = 9800001, parrot = 9990, rip = 0x0C2F4E61, pip = 0x0C000000 | parrot;
+    uint8_t dg[128], m[RDOF_IPGW_MAX_PACKET + 32];
+    static rdof_ipgw_dmr_t pk;
+    const size_t n = rdof_ipgw_udp_datagram(rip, 4001, pip, 4007, 78, (const uint8_t *)"confirmed", 9, dg, sizeof dg);
+    confirmed(radio, parrot, dg, n, false, &pk);
+    reset(parrot);
+    for (int i = 0; i < pk.nbursts; i++)
+        hear(1, pk.control[i], pk.bursts[i]);
+    run(RDOF_PARROT_DELAY_S + 2.0);
+    CHECK(P.data_replies == 1 && S.starts == 1 && S.src == parrot && S.dst == radio && !S.group);
+    rdof_data_header_t h;
+    rdof_decode_data_header(S.b[0].burst, &h);
+    CHECK(h.crc_ok && h.dpf == RDOF_DPF_UNCONFIRMED && h.src_id == parrot && h.dst_id == radio);
+    const int len = reply_message(0, m);
+    CHECK(len == (int)n && rdof_be32(m + 12) == pip && rdof_be32(m + 16) == rip);
+    CHECK(be16(m + 20) == 4007 && be16(m + 22) == 4001 && !memcmp(m + 28, "confirmed", 9));
+
+    confirmed(radio, parrot, dg, n, true, &pk);
+    reset(parrot);
+    for (int i = 0; i < pk.nbursts; i++)
+        hear(1, pk.control[i], pk.bursts[i]);
+    run(RDOF_PARROT_DELAY_S + 2.0);
+    CHECK(P.data_replies == 0 && S.n == pk.nbursts && S.src == radio && S.dst == parrot);
+}
+
+static void test_state_names(void)
+{
+    reset(0);
+    CHECK(!strcmp(rdof_parrot_state_name(&P), "idle"));
+    uint8_t b[RDOF_BURST_BYTES];
+    lc_burst(RDOF_DT_VOICE_LC_HEADER, 9800001, 91, true, b);
+    hear(1, RDOF_SYNC_DATA | RDOF_DT_VOICE_LC_HEADER, b);
+    CHECK(!strcmp(rdof_parrot_state_name(&P), "recording"));
+    memset(b, 0, sizeof b);
+    for (int k = 0; k < 12; k++) /* longer than what goes out ahead, so it's still replaying after the first poll */
+        hear(1, k % 6 ? (uint8_t)(k % 6) : RDOF_SYNC_AUDIO, b);
+    lc_burst(RDOF_DT_TERMINATOR_WITH_LC, 9800001, 91, true, b);
+    hear(1, RDOF_SYNC_DATA | RDOF_DT_TERMINATOR_WITH_LC, b);
+    CHECK(!strcmp(rdof_parrot_state_name(&P), "waiting"));
+    while (P.state == RDOF_PARROT_WAITING)
+        run(0.02);
+    CHECK(!strcmp(rdof_parrot_state_name(&P), "replaying"));
+}
+
 int main(void)
 {
     test_voice();
@@ -549,8 +628,10 @@ int main(void)
     test_frequencies();
     test_data();
     test_data_reply();
+    test_data_reply_confirmed();
     test_busy_and_full();
     test_regen();
+    test_state_names();
     printf("parrot: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
 }

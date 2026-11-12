@@ -137,7 +137,7 @@ rdofradio_dev_t *rdofradio_file_open(const char *spec, const rdofradio_dev_setup
     }
     rdofradio_dev_t *d = &f->d;
     snprintf(d->name, sizeof d->name, "file");
-    d->rate = s->rate;
+    d->rate = d->tx_rate = s->rate; /* TX at the rate the file is written at */
     d->tx_gain_min = 0, d->tx_gain_max = 89;
     d->set_rx_freq = set_freq;
     d->set_tx_freq = set_freq;

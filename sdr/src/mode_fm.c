@@ -17,6 +17,9 @@
 #include <string.h>
 
 #include "rdof/sdr/fmgen.h"
+#include "rdof/sdr/afskrx.h"
+#include "rdof/sdr/dtmfdet.h"
+#include "rdof/sdr/tonerun.h"
 #include "rdof/sdr/fmrx.h"
 #include "sdr_private.h"
 
@@ -336,12 +339,29 @@ static size_t fm_tx_report(void *tx, char *out, size_t cap)
 
 enum { S_AUDIO = 1, S_DISC = 2 };
 
+#define TRUNS 4000 /* a summary's tone runs: about 60 */
+
 typedef struct {
     rdof_fmrx_t *r;
     unsigned streams;            /* S_* asked for */
     double fs, full_audio;
     float *disc, *audio;         /* this feed's, when a stream isn't asked for */
     int room;
+    rdof_dtmfdet_t *dtmf;        /* "dtmf": digits in the filtered audio */
+    double delay_s, ra;          /* the audio's lag behind the input; its rate */
+    char digits[65];             /* the summary's (at most 64) */
+    int ndigits;
+    char runs[1400];             /* and each digit's record, for the summary */
+    size_t nruns;
+    rdof_tonerun_t *tones;       /* "tones": timed steady tones in the filtered audio */
+    char *truns;                 /* each run's record, for the summary (TRUNS bytes) */
+    size_t ntruns;
+    long ntones;
+    rdof_afskrx_t *aprs;         /* "aprs": AX.25 frames in the audio */
+    long frames;
+    struct aprs_text {           /* a frame's record's text (off the caller's stack) */
+        char info[RDOF_AFSK_INFO * 6 + 4], tnc2[RDOF_AFSK_INFO * 6 + 160], t[RDOF_AFSK_INFO + 140];
+    } *at;
 } fm_rx_t;
 
 static void *fm_rx_new(const rdof_jdoc_t *d, int req, double fs, double squelch_dbfs, char *error, size_t ecap)
@@ -373,6 +393,34 @@ static void *fm_rx_new(const rdof_jdoc_t *d, int req, double fs, double squelch_
     x->streams = (strstr(s, "audio") ? S_AUDIO : 0) | (strstr(s, "disc") ? S_DISC : 0);
     x->full_audio = rdof_sig_num(d, req, "audio_full_hz", 5000);
     x->fs = fs;
+    x->ra = rdof_fmrx_audio_rate(x->r);
+    x->delay_s = rdof_fmrx_delay_s(x->r);
+    if (rdof_sig_flag(d, req, "dtmf") && !(x->dtmf = rdof_dtmfdet_new(x->ra, rdof_sdr_alloc, rdof_sdr_free))) {
+        rdof_fmrx_free(x->r);
+        rdof_sdr_free(x);
+        snprintf(error, ecap, "no memory for a DTMF decoder");
+        return NULL;
+    }
+    if (rdof_sig_flag(d, req, "tones") && (!(x->tones = rdof_tonerun_new(x->ra, rdof_sdr_alloc, rdof_sdr_free)) ||
+                                           !(x->truns = rdof_sdr_alloc(TRUNS)))) {
+        rdof_tonerun_free(x->tones);
+        rdof_dtmfdet_free(x->dtmf);
+        rdof_fmrx_free(x->r);
+        rdof_sdr_free(x);
+        snprintf(error, ecap, "no memory for a tone detector");
+        return NULL;
+    }
+    if (rdof_sig_flag(d, req, "aprs") && (!(x->aprs = rdof_afskrx_new(x->ra, rdof_sdr_alloc, rdof_sdr_free)) ||
+                                          !(x->at = rdof_sdr_alloc(sizeof *x->at)))) {
+        rdof_afskrx_free(x->aprs);
+        rdof_tonerun_free(x->tones);
+        rdof_sdr_free(x->truns);
+        rdof_dtmfdet_free(x->dtmf);
+        rdof_fmrx_free(x->r);
+        rdof_sdr_free(x);
+        snprintf(error, ecap, "no memory for an APRS decoder");
+        return NULL;
+    }
     return x;
 }
 
@@ -382,6 +430,11 @@ static void fm_rx_free(void *rx)
     if (!x)
         return;
     rdof_fmrx_free(x->r);
+    rdof_dtmfdet_free(x->dtmf);
+    rdof_tonerun_free(x->tones);
+    rdof_sdr_free(x->truns);
+    rdof_afskrx_free(x->aprs);
+    rdof_sdr_free(x->at);
     rdof_sdr_free(x->disc), rdof_sdr_free(x->audio);
     rdof_sdr_free(x);
 }
@@ -409,6 +462,12 @@ static void fm_rx_feed(void *rx, const float *iq, int n, float *const *out, int 
     float *audio = (x->streams & S_AUDIO) ? out[k++] : x->room ? x->audio : NULL;
     float *disc = (x->streams & S_DISC) ? out[k] : NULL;
     rdof_fmrx_feed(x->r, iq, n, disc, audio, &na);
+    if (x->dtmf && audio)
+        rdof_dtmfdet_feed(x->dtmf, audio, na);
+    if (x->tones && audio)
+        rdof_tonerun_feed(x->tones, audio, na);
+    if (x->aprs && audio)
+        rdof_afskrx_feed(x->aprs, audio, na);
     k = 0;
     if (x->streams & S_AUDIO)
         nout[k++] = na;
@@ -416,9 +475,160 @@ static void fm_rx_feed(void *rx, const float *iq, int n, float *const *out, int 
         nout[k] = n;
 }
 
+/* A digit's JSON: its span in s from the stream's start (the audio's lag taken out), as the blocks' t */
+static size_t dtmf_json(const fm_rx_t *x, const rdof_dtmf_run_t *r, char *out, size_t cap)
+{
+    const int n = snprintf(out, cap, "{\"digit\":\"%c\",\"t0\":%.3f,\"t1\":%.3f,\"s\":%.3f,\"dev_hz\":%.0f,"
+                           "\"twist_db\":%.1f}", r->digit, r->t0 - x->delay_s, r->t1 - x->delay_s, r->t1 - r->t0,
+                           r->dev_hz, r->twist_db);
+    return n > 0 && (size_t)n < cap ? (size_t)n : 0;
+}
+
+/* A digit kept for the summary: its JSON's length into one (0: none) */
+static size_t dtmf_keep(fm_rx_t *x, const rdof_dtmf_run_t *r, char *one, size_t cap)
+{
+    if (x->ndigits < 64)
+        x->digits[x->ndigits++] = r->digit, x->digits[x->ndigits] = 0;
+    const size_t m = dtmf_json(x, r, one, cap);
+    if (m && x->nruns + m + 2 < sizeof x->runs) {
+        if (x->nruns)
+            x->runs[x->nruns++] = ',';
+        memcpy(x->runs + x->nruns, one, m);
+        x->nruns += m;
+        x->runs[x->nruns] = 0;
+    }
+    return m;
+}
+
+/* A digit: a record of its own, and kept for the summary */
+static size_t dtmf_record(fm_rx_t *x, char *out, size_t cap)
+{
+    rdof_dtmf_run_t r;
+    if (!x->dtmf || cap < 200 || !rdof_dtmfdet_take(x->dtmf, &r))
+        return 0;
+    char one[160];
+    const size_t m = dtmf_keep(x, &r, one, sizeof one);
+    if (!m)
+        return 0;
+    memcpy(out, "{\"dtmf\":", 8);
+    memcpy(out + 8, one, m);
+    out[8 + m] = '}';
+    return 9 + m;
+}
+
+/* A tone run's JSON: its span in s from the stream's start, as a digit's */
+static size_t tone_json(const fm_rx_t *x, const rdof_tone_run_t *r, char *out, size_t cap)
+{
+    const int n = snprintf(out, cap, "{\"hz\":%.1f,\"t0\":%.3f,\"t1\":%.3f,\"s\":%.3f,\"dev_hz\":%.0f}", r->hz,
+                           r->t0 - x->delay_s, r->t1 - x->delay_s, r->t1 - r->t0, r->dev_hz);
+    return n > 0 && (size_t)n < cap ? (size_t)n : 0;
+}
+
+/* A run kept for the summary: its JSON's length into one (0: none) */
+static size_t tone_keep(fm_rx_t *x, const rdof_tone_run_t *r, char *one, size_t cap)
+{
+    x->ntones++;
+    const size_t m = tone_json(x, r, one, cap);
+    if (m && x->ntruns + m + 2 < TRUNS) {
+        if (x->ntruns)
+            x->truns[x->ntruns++] = ',';
+        memcpy(x->truns + x->ntruns, one, m);
+        x->ntruns += m;
+        x->truns[x->ntruns] = 0;
+    }
+    return m;
+}
+
+/* A tone run: a record of its own, and kept for the summary */
+static size_t tone_record(fm_rx_t *x, char *out, size_t cap)
+{
+    rdof_tone_run_t r;
+    if (!x->tones || cap < 200 || !rdof_tonerun_take(x->tones, &r))
+        return 0;
+    char one[160];
+    const size_t m = tone_keep(x, &r, one, sizeof one);
+    if (!m)
+        return 0;
+    memcpy(out, "{\"tone_run\":", 12);
+    memcpy(out + 12, one, m);
+    out[12 + m] = '}';
+    return 13 + m;
+}
+
+static void put_num(char *out, size_t cap, double v, int prec)
+{
+    if (isfinite(v))
+        snprintf(out, cap, "%.*f", prec, v);
+    else
+        snprintf(out, cap, "null");
+}
+
+/* A JSON string's text of n bytes (quotes added; control bytes and those over 0x7E as \u00XX) */
+static size_t jtext(const char *s, int n, char *out, size_t cap)
+{
+    size_t k = 0;
+    if (cap < 3)
+        return 0;
+    out[k++] = '"';
+    for (int i = 0; i < n && k + 8 < cap; i++) {
+        const unsigned char ch = (unsigned char)s[i];
+        if (ch == '"' || ch == '\\')
+            out[k++] = '\\', out[k++] = (char)ch;
+        else if (ch < 0x20 || ch > 0x7E)
+            k += (size_t)snprintf(out + k, cap - k, "\\u%04x", ch);
+        else
+            out[k++] = (char)ch;
+    }
+    out[k++] = '"';
+    out[k] = 0;
+    return k;
+}
+
+/* An APRS frame: its record */
+static size_t aprs_record(fm_rx_t *x, char *out, size_t cap)
+{
+    rdof_afsk_frame_t f;
+    if (!x->aprs || cap < 1200 || !rdof_afskrx_take(x->aprs, &f))
+        return 0;
+    x->frames++;
+    char *info = x->at->info, *tnc2 = x->at->tnc2, *t = x->at->t;
+    char pk[24], mx[24], rm[24], md[24], sd[24], tw[24], mh[24], sh[24];
+    const int il = f.info_len < RDOF_AFSK_INFO - 1 ? f.info_len : RDOF_AFSK_INFO - 1;
+    jtext(f.info, il, info, sizeof x->at->info);
+    const int tn = snprintf(t, sizeof x->at->t, "%s>%s%s%s:", f.src, f.dst, f.digis[0] ? "," : "", f.digis);
+    if (tn > 0 && (size_t)(tn + il) < sizeof x->at->t) {
+        memcpy(t + tn, f.info, (size_t)il);
+        jtext(t, tn + il, tnc2, sizeof x->at->tnc2);
+    } else {
+        snprintf(tnc2, sizeof x->at->tnc2, "null");
+    }
+    put_num(pk, sizeof pk, f.peak_dev_hz, 0), put_num(mx, sizeof mx, f.max_dev_hz, 0);
+    put_num(rm, sizeof rm, f.rms_dev_hz, 0), put_num(md, sizeof md, f.mark_dev_hz, 0);
+    put_num(sd, sizeof sd, f.space_dev_hz, 0), put_num(tw, sizeof tw, f.twist_db, 2);
+    put_num(mh, sizeof mh, f.mark_hz, 1), put_num(sh, sizeof sh, f.space_hz, 1);
+    const int n = snprintf(out, cap,
+                           "{\"aprs\":{\"tnc2\":%s,\"src\":\"%s\",\"dst\":\"%s\",\"digis\":\"%s\",\"control\":%u,"
+                           "\"pid\":%u,\"info\":%s,\"fcs_ok\":true,\"t0\":%.4f,\"t1\":%.4f,\"txdelay_flags\":%d,"
+                           "\"txdelay_ms\":%.1f,\"decision_gain\":%.2f,\"peak_dev_hz\":%s,\"max_dev_hz\":%s,"
+                           "\"rms_dev_hz\":%s,\"mark_dev_hz\":%s,\"space_dev_hz\":%s,\"twist_db\":%s,\"mark_hz\":%s,"
+                           "\"space_hz\":%s}}",
+                           tnc2, f.src, f.dst, f.digis, f.control, f.pid, info, f.t0 - x->delay_s, f.t1 - x->delay_s,
+                           f.txdelay_flags, f.txdelay_flags * 8 / 1.2, f.decision_gain, pk, mx, rm, md, sd, tw, mh, sh);
+    return n > 0 && (size_t)n < cap ? (size_t)n : 0;
+}
+
 static size_t fm_rx_record(void *rx, char *out, size_t cap)
 {
     fm_rx_t *x = rx;
+    size_t dn = dtmf_record(x, out, cap);
+    if (dn)
+        return dn;
+    dn = tone_record(x, out, cap);
+    if (dn)
+        return dn;
+    dn = aprs_record(x, out, cap);
+    if (dn)
+        return dn;
     rdof_fmrx_block_t b;
     if (cap < 16 || !rdof_fmrx_block(x->r, &b))
         return 0;
@@ -435,7 +645,33 @@ static size_t fm_rx_summary(void *rx, char *out, size_t cap)
     fm_rx_t *x = rx;
     rdof_fmrx_summary_t s;
     rdof_fmrx_summary(x->r, &s);
-    return rdof_fmrx_summary_json(x->r, &s, out, cap);
+    size_t n = rdof_fmrx_summary_json(x->r, &s, out, cap);
+    if (x->aprs && n && out[n - 1] == '}') { /* frames are records only: the summary counts them */
+        const int m = snprintf(out + n - 1, cap - (n - 1), ",\"aprs\":{\"frames\":%ld,\"fcs_bad\":%ld}}", x->frames,
+                               rdof_afskrx_fcs_bad(x->aprs));
+        n = m > 0 && (size_t)m < cap - (n - 1) ? n - 1 + (size_t)m : 0;
+    }
+    if (x->tones && n && out[n - 1] == '}') { /* a run still going ends here; the summary has it */
+        rdof_tonerun_finish(x->tones);
+        rdof_tone_run_t r;
+        char one[160];
+        while (rdof_tonerun_take(x->tones, &r))
+            tone_keep(x, &r, one, sizeof one);
+        const int m = snprintf(out + n - 1, cap - (n - 1), ",\"tones\":{\"count\":%ld,\"runs\":[%s]}}", x->ntones,
+                               x->ntruns ? x->truns : "");
+        n = m > 0 && (size_t)m < cap - (n - 1) ? n - 1 + (size_t)m : 0;
+    }
+    if (!x->dtmf || !n || out[n - 1] != '}')
+        return n;
+    /* the digits: a run still going ends here, its record left out (the summary has it) */
+    rdof_dtmfdet_finish(x->dtmf);
+    rdof_dtmf_run_t r;
+    char one[160];
+    while (rdof_dtmfdet_take(x->dtmf, &r))
+        dtmf_keep(x, &r, one, sizeof one);
+    const int m = snprintf(out + n - 1, cap - (n - 1), ",\"dtmf\":{\"digits\":\"%s\",\"runs\":[%s]}}", x->digits,
+                           x->runs);
+    return m > 0 && (size_t)m < cap - (n - 1) ? n - 1 + (size_t)m : 0;
 }
 
 const rdof_sig_mode_t rdof_mode_fm = {

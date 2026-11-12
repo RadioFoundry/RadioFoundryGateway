@@ -65,6 +65,8 @@ void rdofnet_peer_set_login(rdofnet_peer_t *p, const char *password, const char 
     rdof_hb_peer_set_login(&p->peer, password, location, description, url);
 }
 
+void rdofnet_peer_set_dl5di(rdofnet_peer_t *p, bool on) { rdof_hb_peer_set_dl5di(&p->peer, on); }
+
 void rdofnet_peer_send(rdofnet_peer_t *p, const uint8_t *d, size_t n)
 {
     if (p->sock < 0)
@@ -72,7 +74,7 @@ void rdofnet_peer_send(rdofnet_peer_t *p, const uint8_t *d, size_t n)
     if (n >= 4 && !memcmp(d, "DMRD", 4) && !rdof_hb_peer_may_send(&p->peer))
         return; /* not logged in yet */
     uint8_t tmp[RDOF_HB_OUT_MAX];
-    d = rdof_hb_peer_up(&p->peer, d, n, tmp);
+    d = rdof_hb_peer_up(&p->peer, d, &n, tmp);
     if (send(p->sock, d, n, 0) == (ssize_t)n)
         p->peer.tx++;
     else
@@ -127,10 +129,14 @@ void rdofnet_peer_poll(rdofnet_peer_t *p, double now)
             else if (!refused) /* it refuses every keepalive: say it once */
                 sayf(p, "%s: %s (peer %u) refused by the master: %.6s", net, p->label, id, (const char *)buf);
             break;
-        case RDOF_HBP_PACKET:
+        case RDOF_HBP_PACKET: {
+            uint8_t tmp[RDOF_DMRD_LEN];
+            size_t k = (size_t)n;
+            const uint8_t *d = rdof_hb_peer_down(&p->peer, buf, &k, now, tmp);
             if (p->on_packet)
-                p->on_packet(p->ctx, buf, (size_t)n);
+                p->on_packet(p->ctx, d, k);
             break;
+        }
         default:
             break;
         }
@@ -139,7 +145,7 @@ void rdofnet_peer_poll(rdofnet_peer_t *p, double now)
 
 void rdofnet_peer_close(rdofnet_peer_t *p)
 {
-    uint8_t cl[9];
+    uint8_t cl[RDOF_HB_CLOSE_MAX];
     const size_t n = rdof_hb_peer_close_packet(&p->peer, cl);
     if (p->sock >= 0 && n && p->peer.state == RDOF_HBL_UP)
         rdofnet_peer_send(p, cl, n); /* RPTCL: the master drops the login now, not after its timeout */

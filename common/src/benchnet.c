@@ -26,6 +26,31 @@
 
 #define SEND_CHUNK 16384
 
+/* A client gone without a word (its host off the network, a tunnel torn down) leaves the connection open here, and
+ * its session with it: one waits for nothing but the close, so it was held until the program restarted. Probes on an
+ * idle connection find it gone in about a minute: the read fails, and the session ends as on a close. */
+#define KEEP_IDLE_S 30
+#define KEEP_INTVL_S 10
+#define KEEP_CNT 3
+
+static void keepalive(int fd)
+{
+    const int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof one);
+#if defined(TCP_KEEPIDLE)
+    const int idle = KEEP_IDLE_S;
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof idle);
+#elif defined(TCP_KEEPALIVE) /* macOS */
+    const int idle = KEEP_IDLE_S;
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, &idle, sizeof idle);
+#endif
+#if defined(TCP_KEEPINTVL) && defined(TCP_KEEPCNT)
+    const int intvl = KEEP_INTVL_S, cnt = KEEP_CNT;
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof intvl);
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof cnt);
+#endif
+}
+
 struct rdof_bnet {
     rdof_bl_t *bl;
     double (*now)(void);
@@ -98,6 +123,8 @@ static void *serve(void *arg)
         const double now = n->now();
         if (r > 0 && FD_ISSET(n->lfd, &rd)) {
             const int fd = accept(n->lfd, NULL, NULL);
+            if (fd >= 0)
+                fcntl(fd, F_SETFD, FD_CLOEXEC);
             if (fd >= 0) {
                 const int c = rdof_bl_open(n->bl, now);
                 if (c < 0 || c >= RDOF_BL_CONNS || n->fd[c] >= 0) {
@@ -109,6 +136,7 @@ static void *serve(void *arg)
                 } else {
                     const int one = 1;
                     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+                    keepalive(fd);
                     nonblock(fd);
                     n->fd[c] = fd;
                 }
@@ -165,6 +193,9 @@ rdof_bnet_t *rdof_bnet_start(rdof_bl_t *bl, const char *addr, int port, double (
         snprintf(error, cap, "socket: %s", strerror(errno));
         goto fail;
     }
+    /* a child the program starts (the DNS-SD publisher) mustn't keep the port: across a restart (exec) it would
+     * hold it and the new program couldn't listen */
+    fcntl(n->lfd, F_SETFD, FD_CLOEXEC);
     const int one = 1;
     setsockopt(n->lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
     struct sockaddr_in sa = {0};

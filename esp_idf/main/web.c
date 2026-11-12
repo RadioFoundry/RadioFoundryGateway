@@ -172,6 +172,9 @@ static void fw_status(void *ctx, rdof_json_t *j, rdof_webapi_at_t at)
     switch (at) {
     case RDOF_WEBAPI_AT_BOARD:
         rdof_json_bool(j, "safe_mode", g_board.safe_mode);
+        if (site_warning()[0])
+            rdof_json_str(j, "settings_warning", site_warning());
+        flash_watch_json(j);
         power_status_json(j); /* the power key and the battery, when the board has them (power.c) */
         crash_status_json(j); /* the core dump in flash, if any (crash.c) */
         break;
@@ -194,6 +197,11 @@ static void fw_status(void *ctx, rdof_json_t *j, rdof_webapi_at_t at)
             rdof_json_raw(j, "gnss", g);
     }
 #endif
+    {
+        EXT_RAM_BSS_ATTR static char apps[2048]; /* one status at a time, as gnss above */
+        if (site_apps_json(apps, sizeof apps))
+            rdof_json_raw(j, "apps", apps);
+    }
         rdof_json_bool(j, "usb_either", g_board.usb_either);
 #if CONFIG_RDOF_ROAMER
         rdof_json_bool(j, "build_roamer", true);

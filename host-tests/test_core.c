@@ -307,7 +307,7 @@ static void t_json(void)
 }
 
 /* FNV-1a over what a parse left: the result, the error, every node. A digest of many parses pins their output to
-   the C's (rdof_tests_rust runs the same digests against the Rust). */
+   the C's (rdof_tests runs the same digests against the Rust). */
 static uint32_t fnv(uint32_t h, const void *p, size_t n)
 {
     for (size_t i = 0; i < n; i++)

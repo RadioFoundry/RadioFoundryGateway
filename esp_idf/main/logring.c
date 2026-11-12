@@ -46,14 +46,41 @@ void logring_init(void)
     original = esp_log_set_vprintf(ring_vprintf);
 }
 
+/* The copy runs outside the lock: the ring is up to 256 KB of PSRAM, and a copy under the lock kept interrupts off
+ * for 13 ms on the caller's core (the LR2021's reader lost ten FIFOs to each /api/log, W12 #3, 2026-11-10). Lines
+ * logged during the copy overwrite the ring's oldest bytes, so what they took is cut from the front after it. */
 size_t logring_read(char *out, size_t cap)
 {
     if (!ring.buf || cap == 0)
         return 0;
     portENTER_CRITICAL(&lock);
-    size_t n = rdof_bring_read(&ring, out, cap);
+    const size_t h1 = ring.head;
+    const bool w1 = ring.wrapped;
     portEXIT_CRITICAL(&lock);
-    return n;
+    size_t total = w1 ? ring.size : h1, start = w1 ? h1 : 0, skip = 0; /* skip: the oldest bytes left out */
+    if (total > cap - 1) {
+        skip = total - (cap - 1);
+        start = (start + skip) % ring.size;
+        total = cap - 1;
+    }
+    const size_t a = total < ring.size - start ? total : ring.size - start;
+    memcpy(out, ring.buf + start, a);
+    memcpy(out + a, ring.buf, total - a);
+    portENTER_CRITICAL(&lock);
+    const size_t h2 = ring.head;
+    const bool w2 = ring.wrapped;
+    portEXIT_CRITICAL(&lock);
+    /* the oldest bytes written over meanwhile (fewer than a ring's worth are logged during one copy) */
+    const size_t over = w1 ? (h2 + ring.size - h1) % ring.size : w2 ? h2 : 0;
+    if (over > skip) {
+        size_t drop = over - skip < total ? over - skip : total;
+        while (drop < total && out[drop - 1] != '\n')
+            drop++; /* to the next line's start */
+        memmove(out, out + drop, total - drop);
+        total -= drop;
+    }
+    out[total] = 0;
+    return total;
 }
 
 #else

@@ -99,6 +99,18 @@ def test_status_fields(status):
     assert status["heap_free"] > floor, f"internal heap is nearly gone ({status['heap_free']} B)"
 
 
+def test_settings_carried_and_no_allocation_refused(status):
+    """The settings hold nothing this build accepts and doesn't carry (`settings_warning`), and the heap has refused
+    no allocation since boot (`memory.alloc_fails`): on a W12 the internal RAM left is a few KB, and a refusal there
+    is a task that didn't start or a connection that stays down."""
+    assert not status.get("settings_warning"), status.get("settings_warning")
+    fails = (status.get("memory") or {}).get("alloc_fails")
+    if fails is None:
+        pytest.skip("firmware older than memory.alloc_fails")
+    assert fails["n"] == 0, f"{fails['n']} allocations refused since boot; the last {fails['size']} B (caps " \
+                            f"0x{fails['caps']:x}) in task {fails['task']!r}"
+
+
 def test_status_headers_and_size():
     code, hdrs, body = request("GET", "/api/status")
     assert code == 200
@@ -170,7 +182,7 @@ def test_resolved_matches_status(status):
     code, hdrs, body = request("GET", "/api/resolved")
     assert code == 200
     assert hdrs["Content-Type"].startswith("text/plain")
-    assert len(body) <= 5120
+    assert len(body) <= 16384  # interfaces-http.md: the board's cap
     text = body.decode()
     assert f"{status['name']} runs:" in text
     if "sdr" in status:
@@ -190,7 +202,7 @@ def test_log_is_text():
     code, hdrs, body = request("GET", "/api/log")
     assert code == 200
     assert hdrs["Content-Type"].startswith("text/plain")
-    assert len(body) <= 64 * 1024
+    assert len(body) <= 256 * 1024  # CONFIG_RDOF_LOG_RING_KB on the W12
 
 
 def test_spectrum(status):
@@ -231,7 +243,8 @@ def test_unknown_path_is_404():
 def test_clock(status):
     c = get_json("/api/clock")
     has(c, {"source": str, "synced": bool, "poll_s": int, "utc_ms": int, "sources": list, "log": list})
-    assert c["source"] == status["clock"]
+    # a fresh status: the source changes in a board's first minute (none, ntp, gnss), and `status` is the session's
+    assert c["source"] in (get_json("/api/status")["clock"], get_json("/api/status")["clock"])
     if c["synced"]:
         assert abs(c["utc_ms"] / 1000 - time.time()) < 5, "board's UTC is off by more than 5 s"
 
@@ -356,6 +369,43 @@ def text_frames(msgs):
     return [json.loads(m) for m in msgs if isinstance(m, str)]
 
 
+# A W12 with a good link gives its 24 KB page in 0.1 to 0.3 s (85 to 240 KB/s, the connection's setup included) and
+# carries 160 to 300 KB/s of a stream; W12 #1 took 0.5 to 1.2 s a page and carried 20 to 80 KB/s whatever its
+# settings (lr2021-iq.md R3.59). On a link that slow a stream past its time ends short or late, or its socket's 5 s
+# send limit drops it: the link's, not the firmware's.
+SLOW_LINK_BPS = 80e3
+
+
+def link_bps():
+    """What the board's link carries now, measured apart from the streams: the page, five times, by the median."""
+    rates = []
+    for _ in range(5):
+        t0 = time.monotonic()
+        code, _, body = request("GET", "/")
+        assert code == 200
+        rates.append(len(body) / max(time.monotonic() - t0, 1e-3))
+    return sorted(rates)[2]
+
+
+def timed_messages(path, query, timeout):
+    """A stream's messages, and the bytes a second its binary frames came at."""
+    t0 = time.monotonic()
+    msgs = list(ws_messages(URL, path, query, timeout))
+    took = max(time.monotonic() - t0, 1e-3)
+    return msgs, sum(len(m) for m in msgs if isinstance(m, bytes)) / took
+
+
+def xfail_slow_link(texts, bps, what):
+    """A stream with no done frame, on a board whose link is slow by a measure of its own (the page, not the
+    stream): an expected failure, with both rates. With a good link it's the caller's to fail."""
+    if texts and texts[-1].get("type") == "done":
+        return
+    link = link_bps()
+    if link < SLOW_LINK_BPS:
+        pytest.xfail(f"{what}: no done frame; the board's link gives its page at {link / 1e3:.0f} KB/s (a good "
+                     f"one 85 to 240) and carried {bps / 1e3:.0f} KB/s of the stream: the link, not the stream")
+
+
 def test_spectrum_stream(info):
     msgs = list(ws_messages(URL, API + "/spectrum/ws", {"seconds": 1.5}, 12))
     texts = text_frames(msgs)
@@ -375,7 +425,11 @@ def test_bursts_stream(bench, info, status):
     if not active:
         pytest.skip("no channel has had a burst")
     got = list(bench.bursts(channel=active[0]["id"], seconds=4, max_bursts=5))
-    assert got, f"no bursts on {active[0]['id']} in 4 s"
+    if not got:  # the channel had a burst once (someone's test call): whether it has one now is the air's business
+        now = [c for c in get_json("/api/status").get("sdr", {}).get("channels", []) if c["id"] == active[0]["id"]]
+        if now and now[0]["bursts"] == active[0]["bursts"]:
+            pytest.skip(f"nothing on {active[0]['id']} in these 4 s")
+    assert got, f"the board counted bursts on {active[0]['id']} and the stream gave none"
 
 
 def test_iq_stream(info):
@@ -396,6 +450,16 @@ def test_iq_stream(info):
             n += h["n"]
     assert n == done["samples"]
     assert abs(n - 0.5 * start["rate"]) < 0.2 * start["rate"]
+    # the gap flag (1) only where samples are missing: a frame that starts where the last one ended has none unless
+    # the front end's filler is in it. `sc` counts wideband samples (clock.rate), a frame's n the stream's own. Every
+    # frame after the first said gap once (the board added a channel's n to sc as it was)
+    hs = [iq_header(m) for m in msgs if isinstance(m, bytes)]
+    ratio = start["clock"]["rate"] / start["rate"]
+    flagged = sum(1 for h in hs if h["flags"] & 1)
+    assert done.get("gaps", flagged) == flagged, (done, flagged)
+    if not done.get("filled"):
+        wrong = [b["sc"] for a, b in zip(hs, hs[1:]) if abs(b["sc"] - (a["sc"] + a["n"] * ratio)) <= 1 and b["flags"] & 1]
+        assert not wrong, f"{len(wrong)} of {len(hs)} frames say gap with no samples missing before them"
 
 
 def iq_zero_runs(msgs, min_n):
@@ -426,8 +490,11 @@ def test_concurrent_iq_streams_count_filler(info):
     f = info["channels"][0]["freq_hz"]
     got = {}
 
+    rate = {}
+
     def run(key, q):
-        got[key] = list(ws_messages(URL, API + "/iq", q, 20))
+        # 3 s of samples, and the 20 s a stream may run past its time while frames still come (bench-api.md 9)
+        got[key], rate[key] = timed_messages(API + "/iq", q, 30)
 
     ts = [threading.Thread(target=run, args=("wide", {"rate": "wide", "fmt": "cs8", "seconds": 3})),
           threading.Thread(target=run, args=("ch", {"freq_hz": f, "fmt": "cs16", "seconds": 3}))]
@@ -435,6 +502,7 @@ def test_concurrent_iq_streams_count_filler(info):
     [t.join() for t in ts]
     for key, msgs in got.items():
         texts = text_frames(msgs)
+        xfail_slow_link(texts, sum(rate.values()), "a wideband and a channel stream at once")
         start, done = texts[0], texts[-1]
         assert done["type"] == "done", (key, done)
         zeros = iq_zero_runs(msgs, int(0.005 * start["rate"]))
@@ -499,6 +567,39 @@ def test_crash_round_trip():
     assert (code, body) == (200, b"erased")
     assert "crash" not in get_json("/api/status")
     assert request("GET", "/api/coredump")[0] == 404
+
+
+@mutate
+def test_hang_is_caught():
+    """POST /api/crash?how=hang (CONFIG_RDOF_CRASH_TEST builds only): a task that never yields starves core 0's
+    canary, and the task watchdog saves a dump naming it and restarts the board, 30 s on (watch.c)."""
+    before = get_json("/api/status")
+    if before.get("crash") and before["crash"].get("task") not in ("crash_test", "hang_test"):
+        pytest.skip("the board holds a real crash: download it and erase it first")
+    code, _, body = request("POST", "/api/crash?how=hang")
+    if code == 404:
+        pytest.skip("not a CONFIG_RDOF_CRASH_TEST build")
+    assert code == 200 and body.startswith(b"hanging"), body
+    time.sleep(25)  # it answers until the watchdog's 30 s are up
+    deadline = time.monotonic() + 90
+    after = None
+    while time.monotonic() < deadline:
+        try:
+            after = get_json("/api/status")
+            if after["uptime_s"] < before["uptime_s"]:
+                break
+        except (OSError, AssertionError):
+            pass
+        time.sleep(2)
+    assert after and after["uptime_s"] < before["uptime_s"], "the board didn't restart"
+    assert after["reset"] == "task watchdog"
+    crash = after["crash"]
+    assert crash["this_image"] is True
+    # crash.task is whatever ran on the core when the watchdog fired (the hung task, or one above it): the canary
+    # that went unfed is what says core 0 was held
+    assert "watch0" in crash["details"], crash
+    code, _, body = request("DELETE", "/api/coredump")
+    assert (code, body) == (200, b"erased")
 
 
 @mutate

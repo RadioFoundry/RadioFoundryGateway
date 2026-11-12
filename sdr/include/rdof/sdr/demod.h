@@ -37,11 +37,18 @@ extern "C" {
 #define RDOF_DEMOD_WEAKER_DB 15.0 /* a voice sync this much weaker than a slot's call can't take it over */
 
 /* One burst from the demod: what the tracker reads, plus where and how it was heard. */
+/* A burst's position runs this far (48 kS/s samples) past its first symbol's center in the I/Q fed: the
+ * discriminator's filter (RDOF_FM_DELAY, 4 symbols). What lines a burst up with those samples takes it off. */
+#define RDOF_DEMOD_LAG RDOF_FM_DELAY
+
 typedef struct {
     rdof_burst_t b;
-    int64_t position;      /* absolute sample index (48 kS/s) of the burst start */
+    int64_t position;      /* absolute sample index (48 kS/s) of the burst start: RDOF_DEMOD_LAG past its first
+                            * symbol's center in the samples fed */
     float freq_offset_hz;  /* center of the 4FSK levels; drives AFC */
     float deviation_hz;    /* outer (+-3) level */
+    bool has_cach;         /* BS sync: cach holds the 12 symbols before the burst */
+    uint8_t cach[3];       /* those 24 bits as sliced, in air order (first bit in bit 7 of cach[0]) */
 } rdof_sdr_burst_t;
 
 typedef struct {

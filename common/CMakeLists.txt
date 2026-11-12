@@ -44,6 +44,8 @@ set(RDOF_COMMON_SRCS
     src/benchroute.c
     src/benchjob.c
     src/benchline.c
+    src/benchenv.c
+    src/benchramp.c
     src/benchnet.c
     src/ipgw.c
     src/ipgwcfg.c
@@ -64,10 +66,21 @@ if(NOT CMAKE_SCRIPT_MODE_FILE)  # ESP-IDF reads this file as a script first, to 
     set_source_files_properties(src/split.c PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 endif()
 
+list(APPEND RDOF_COMMON_SRCS src/mssim.c) # the bench's confirmed-data responder (its users check RDOF_FEATURE_DATA_BLOCKS)
+
 if(ESP_PLATFORM)
-    # CONFIG_RDOF_RUST: rust's modules (Espressif's Rust toolchain, `espup`) in place of their C files.
+    # CONFIG_RDOF_RUST (the default): rust's modules (Espressif's Rust toolchain, `espup`) in place of their C files.
     if(CONFIG_RDOF_RUST)
         include(${CMAKE_CURRENT_LIST_DIR}/../rust/rust.cmake)
+        if(NOT CMAKE_BUILD_EARLY_EXPANSION)
+            idf_build_get_property(rdof_idf_target IDF_TARGET)
+            rdof_rust_check(rdof_rust_missing TARGET xtensa-${rdof_idf_target}-none-elf TOOLCHAIN esp BUILD_STD)
+            if(rdof_rust_missing)
+                message(FATAL_ERROR "The Rust modules (the default) can't be built here. Missing:\n${rdof_rust_missing}"
+                    "Install it, or build the C modules instead: add sdkconfig.defaults.c to SDKCONFIG_DEFAULTS "
+                    "(as -D SDKCONFIG_DEFAULTS=\"...;sdkconfig.defaults.c\") in a new build dir.")
+            endif()
+        endif()
         foreach(m ${RDOF_RUST_MODULES})
             list(REMOVE_ITEM RDOF_COMMON_SRCS src/${m}.c)
         endforeach()
@@ -76,7 +89,7 @@ if(ESP_PLATFORM)
     idf_component_register(SRCS ${RDOF_COMMON_SRCS} INCLUDE_DIRS include)
     # The bench engine filters a W12's 384 kS/s history for a trigger: at -Os it fell behind the history (a third of
     # an 11 s capture lost), at -O2 with the loop's other fixes it keeps up
-    set_source_files_properties(src/benchline.c PROPERTIES COMPILE_OPTIONS -O2)
+    set_source_files_properties(src/benchline.c src/benchenv.c src/benchramp.c PROPERTIES COMPILE_OPTIONS -O2)
     if(CONFIG_RDOF_RUST)
         idf_build_get_property(idf_target IDF_TARGET)
         rdof_rust_add(rdof_rust TARGET xtensa-${idf_target}-none-elf TOOLCHAIN esp BUILD_STD)
@@ -95,7 +108,56 @@ if(ESP_PLATFORM)
 else()
     cmake_minimum_required(VERSION 3.16)
     project(rdof_common C)
+    # The modules ported to Rust (rust/) in place of their C files: the default, what the tools and the tests run.
+    # It needs cargo, and a cross build the Rust target's name (RDOF_RUST_TARGET, as armv7-unknown-linux-gnueabihf).
+    # -DRDOF_RUST=OFF keeps the C.
+    option(RDOF_RUST "The modules ported to Rust in place of their C" ON)
+    set(RDOF_RUST_TARGET "" CACHE STRING "The Rust target of a cross build")
+    set(RDOF_COMMON_RUST OFF)
+    if(RDOF_RUST)
+        set(RDOF_COMMON_RUST ON)
+        include(${CMAKE_CURRENT_LIST_DIR}/../rust/rust.cmake)
+        if(RDOF_RUST_TARGET)
+            rdof_rust_check(rdof_rust_missing TARGET ${RDOF_RUST_TARGET})
+        else()
+            rdof_rust_check(rdof_rust_missing)
+        endif()
+        if(CMAKE_CROSSCOMPILING AND NOT RDOF_RUST_TARGET)
+            string(APPEND rdof_rust_missing "  - the cross build's Rust target: -DRDOF_RUST_TARGET=<triple>, as armv7-unknown-linux-gnueabihf\n")
+        endif()
+        if(rdof_rust_missing)
+            message(FATAL_ERROR "The Rust modules (the default) can't be built here. Missing:\n${rdof_rust_missing}"
+                "Install it, or build the C modules instead: pass -DRDOF_RUST=OFF to cmake.")
+        endif()
+        foreach(m ${RDOF_RUST_MODULES})
+            list(REMOVE_ITEM RDOF_COMMON_SRCS src/${m}.c)
+        endforeach()
+        list(APPEND RDOF_COMMON_SRCS ${RDOF_RUST_C_SRCS})
+    else()
+        message(STATUS "rdof_common: the C modules (RDOF_RUST off)")
+    endif()
     add_library(rdof_common STATIC ${RDOF_COMMON_SRCS})
+    if(RDOF_COMMON_RUST)
+        # RDOF_TRUNK: the trunked site's controller (rust's t3 feature) goes in the same library; a second Rust
+        # static library in one program would bring a second core and panic handler.
+        option(RDOF_TRUNK "The trunked site's controller (rust's t3 feature) in the Rust library" ON)
+        set(rdof_rust_features)
+        if(RDOF_TRUNK)
+            set(rdof_rust_features FEATURES t3)
+        endif()
+        if(RDOF_RUST_TARGET)
+            rdof_rust_add(rdof_rust TARGET ${RDOF_RUST_TARGET} ${rdof_rust_features})
+        else()
+            rdof_rust_add(rdof_rust ${rdof_rust_features})
+        endif()
+        if(RDOF_TRUNK)
+            target_compile_definitions(rdof_common PUBLIC RDOF_RUST_T3=1)
+        endif()
+        # The Rust calls back into this library (the FEC, RadioFoundry's codes): the two link as a cycle.
+        target_link_libraries(rdof_common PUBLIC rdof_rust)
+        set_property(TARGET rdof_rust APPEND PROPERTY INTERFACE_LINK_LIBRARIES rdof_common)
+        target_compile_definitions(rdof_common PUBLIC RDOF_RUST=1)
+    endif()
     target_include_directories(rdof_common PUBLIC include)
     set_target_properties(rdof_common PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
     target_compile_options(rdof_common PRIVATE -Wall -Wextra -Wno-unused-parameter)

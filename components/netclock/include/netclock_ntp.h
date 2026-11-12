@@ -68,6 +68,13 @@ typedef enum {
 // A reply that arrived at local time t4. `iburst`: during the first polls.
 nc_reply_t nc_src_reply(nc_src_t *s, const uint8_t *p, int len, int64_t t4, bool iburst);
 
+// Root distance from its parts (us). A server at NC_NTP_HIGH_STRATUM or above is running on its own clock (chrony's
+// `local stratum 10`, a lost PPS): its root delay and dispersion read as 0, the best distance of all, while its time
+// has no reference. The penalty makes any real server win; with none left it's still used.
+#define NC_NTP_HIGH_STRATUM 8
+#define NC_NTP_HIGH_STRATUM_US 1000000.0
+double nc_root_distance_us(double us, int stratum);
+
 // After a poll's reply window: reach and misses.
 void nc_src_poll_end(nc_src_t *s);
 

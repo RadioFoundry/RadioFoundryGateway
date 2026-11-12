@@ -3,7 +3,9 @@
 What: connect the gateway's talk paths to BrandMeister as a network type of its own, beside `hblink` and `mqtt`. A
 simplex frequency or a repeater (a duplex pair) logs in to a BrandMeister master as a hotspot or a repeater; one
 box can hold several logins at once, one per path, as `identity: per_path` does for HBlink4.
-Status (2026-11-06): built and host tested against a simulated master (`fakebm`); not yet run against BrandMeister.
+Status (2026-11-11): built and host tested against a simulated master (`fakebm`). Since 2026-11-11 it logs in in the
+2015 specification's dialect on port 62030 (§3); a probe with that dialect logged in to BrandMeister and made a
+parrot call. The gateway itself hasn't logged in to BrandMeister yet.
 The settings are config-v3 §7.3.
 Related: [hblink.md](hblink.md) (the DMRC peer this builds on), [config-v3.md](config-v3.md) §7, [ipgw.md](ipgw.md),
 [roamer.md](roamer.md), [../repeater.md](../repeater.md).
@@ -24,8 +26,8 @@ So the gateway becomes a Homebrew client: the same `DMRD` bursts it sends HBlink
 
 | Item | HBlink4 today ([hblink.md](hblink.md)) | BrandMeister |
 |---|---|---|
-| Login | none: `DMRC`, answered by `DMRP` | `RPTL` → `RPTACK` + salt → `RPTK` (SHA-256 of salt + password) → `RPTACK` → `RPTC` (302-byte config) → `RPTACK` |
-| Keepalive | a `DMRC` every 5 or 10 s | `RPTPING` → `MSTPONG` |
+| Login | none: `DMRC`, answered by `DMRP` | `RPTL` → `MSTACK` + salt → `RPTK` (SHA-256 of salt + password) → `MSTACK` → `RPTC` (306-byte config) → `MSTACK` |
+| Keepalive | a `DMRC` every 5 or 10 s | `MSTPING` → `RPTPONG` |
 | Refusal, close | `MSTNAK`, `MSTCL` | the same, plus `RPTCL` from us on shutdown; `MSTNAK` during login says which step failed |
 | Config | `DMRC` with location and idle tails | `RPTC` once per login; a change (a retune) needs a new login |
 | Roaming (`DMRT` / `DMRK`) | yes | no: a transceiver on BrandMeister stays on its path's frequency |
@@ -39,23 +41,76 @@ So the gateway becomes a Homebrew client: the same `DMRD` bursts it sends HBlink
 
 ## 3. The protocol (client side)
 
-All integers are big endian. IDs are 4-byte binary in this dialect.
+Two dialects of the Homebrew protocol exist, and `rdof/hbpeer.h` speaks both, chosen by the network's type:
 
-| Packet | Direction | Layout |
+- **The 2015 specification's** (type `brandmeister`, port 62030): the 2015-07-26 "IPSC Protocol Specs for homebrew
+  DMR repeater" (DL5DI, G4KLX, DG1HT), which BrandMeister's wiki hosts. Taken from that document and checked against
+  BrandMeister on 2026-11-11 (§3.1).
+- **HBlink's** (type `homebrew`, port 62031): the variant hotspots use and HBlink3 / HBlink4 answer. Binary IDs,
+  `RPTACK` for `MSTACK`, `RPTPING` / `MSTPONG`, a slots byte in `RPTC`, `DMRD` of 55 bytes with the flags in another
+  order. BrandMeister's port 62031 speaks it too, but refuses an `RPTC` whose package ID isn't `MMDVM` (§3.1).
+
+Inside the gateway every `DMRD` is HBlink's kind; `rdof_hb_peer_up` and `rdof_hb_peer_down` convert at the socket.
+
+| Packet | Direction | The 2015 dialect | HBlink's |
+|---|---|---|---|
+| `RPTL` | us → master | `RPTL` + ID as 8 hex characters (12) | `RPTL` + ID, 4 bytes (8) |
+| ack + salt | master → us | `MSTACK` + ID + salt as 8 hex characters (22) | `RPTACK` + 4-byte salt |
+| `RPTK` | us → master | `RPTK` + ID + SHA-256(salt text ‖ password) as 64 lower-case hex characters (76) | `RPTK` + ID + SHA-256(salt bytes ‖ password) (40) |
+| `RPTC` | us → master | 306 bytes, §3.2 | 302 bytes, §3.2 |
+| ack | master → us | `MSTACK` + ID | `RPTACK` + ID |
+| ping | us → master | `MSTPING` + ID (15) | `RPTPING` + ID (11) |
+| pong | master → us | `RPTPONG` + ID | `MSTPONG` + ID |
+| `MSTNAK` | master → us | `MSTNAK` + ID: refused; start over from `RPTL` | the same |
+| `MSTCL` / `RPTCL` | either | + ID: closing (`RPTCL` 13 bytes) | the same (9) |
+| `DMRD` | both | 53 bytes; peer ID binary; flags: bit 0 slot (1 = slot 2), bit 1 private call, bits 3-2 frame type, bits 7-4 data type or voice sequence | 55 bytes (BER, RSSI); flags: bit 7 slot, bit 6 private, bits 5-4 frame type, bits 3-0 data type ([hblink.md](hblink.md) §2.2) |
+| `RPTO` | us → master | `RPTO` + ID + options text. Other masters use it for TG selection; BrandMeister takes TGs from SelfCare. Not sent | |
+| `RPTSBKN` | master → us | asks for a beacon. Answer it on a repeater that has CW ID or beacons; else ignore | |
+
+Numbers inside `DMRD` are big endian. BrandMeister answers the hex IDs in lower case; compare them without case.
+The specification's own `RPTK` example (ID `00040178`, salt `0A7ED498`, passphrase `DL5DI`, hash `cbf0e29a…`)
+hashes the salt as its 8 characters; the host tests check ours against it.
+
+### 3.1 Checked against BrandMeister (2026-11-11)
+
+A probe on a hotspot login (the owner's ID with a suffix) against `3102.master.brandmeister.network`:
+
+- Port 62030 answered the 2015 dialect: `MSTACK` + salt, `MSTACK` to the `RPTK` and the 306-byte `RPTC`, `RPTPONG`
+  to each `MSTPING`, and `RPTCL` closed it.
+- It took the package ID `RadioFoundry Gateway <commit>`. Port 62031 had refused the `RPTC` with any package ID but
+  `MMDVM` (2026-11-06: `RFG`, `radiofoundry_gateway simplex`).
+- A private call to the parrot (9990) from the owner's DMR ID came back: 52 `DMRD` of 53 bytes, three voice headers
+  (flags `0x1b`), voice sync (`0x07`), bursts B to F (`0x13` to `0x53`), the terminator (`0x2b`), all with stream ID
+  0. The gateway gives a call with stream ID 0 one of its own (a new one after a terminator, a new source or
+  destination, or 2 s of quiet), since everything after it keys on the stream ID.
+
+### 3.2 `RPTC`
+
+Fixed-width ASCII, space padded, numbers zero padded.
+
+The 2015 dialect (306 bytes):
+
+| Offset | Size | Field |
 |---|---|---|
-| `RPTL` | us → master | `RPTL` + ID (8) |
-| `RPTACK` | master → us | `RPTACK` + 4-byte salt (to `RPTL`), else `RPTACK` + ID |
-| `RPTK` | us → master | `RPTK` + ID + SHA-256(salt ‖ password) (40). The salt is the 4 bytes as received. The 2015 spec's own example hashes the salt as 8 hex characters instead, which contradicts its text; BrandMeister and HBlink take the bytes |
-| `RPTC` | us → master | 302 bytes, below |
-| `RPTPING` | us → master | `RPTPING` + ID (11) |
-| `MSTPONG` | master → us | `MSTPONG` + ID (11) |
-| `MSTNAK` | master → us | `MSTNAK` + ID: refused; start over from `RPTL` |
-| `MSTCL` / `RPTCL` | either | `MSTCL` / `RPTCL` + ID: closing |
-| `DMRD` | both | as [hblink.md](hblink.md) §2.2 (53 bytes, or 55 with BER and RSSI) |
-| `RPTO` | us → master | `RPTO` + ID + options text. Other masters use it for TG selection; BrandMeister takes TGs from SelfCare. Not sent |
-| `RPTSBKN` | master → us | asks for a beacon. Answer it on a repeater that has CW ID or beacons; else ignore |
+| 0 | 4 | `RPTC` |
+| 4 | 8 | callsign |
+| 12 | 8 | ID, 8 hex characters |
+| 20 | 9 | RX frequency, Hz |
+| 29 | 9 | TX frequency, Hz |
+| 38 | 2 | TX power, dBm (as HBlink's, below) |
+| 40 | 2 | color code, `01`-`15` |
+| 42 | 8 | latitude, `%+08.4f` (`+33.6198`) |
+| 50 | 9 | longitude, `%+09.4f` (`-086.6089`) |
+| 59 | 3 | antenna height, m |
+| 62 | 20 | location |
+| 82 | 20 | description |
+| 102 | 124 | URL |
+| 226 | 40 | software ID: ours (`RadioFoundry Gateway hotspot`) |
+| 266 | 40 | package ID: the build's software string (`radiofoundry_gateway simplex`) |
 
-`RPTC` (fixed-width ASCII, space padded, numbers zero padded):
+No slots field: the master takes simplex from RX = TX.
+
+HBlink's (302 bytes):
 
 | Offset | Size | Field |
 |---|---|---|
@@ -74,22 +129,21 @@ All integers are big endian. IDs are 4-byte binary in this dialect.
 | 97 | 1 | slots: `'1'`, `'2'`, `'3'` both, `'4'` simplex |
 | 98 | 124 | URL |
 | 222 | 40 | software ID, with its version: ours (`RadioFoundry Gateway hotspot`) |
-| 262 | 40 | package ID: `MMDVM`. BrandMeister refused the RPTC (MSTNAK at this step) with `RFG` and with `radiofoundry_gateway simplex` here, everything else the same, and took it with `MMDVM` (2026-11-06) |
+| 262 | 40 | package ID: the build's software string. BrandMeister's port 62031 takes only `MMDVM` here (§3.1) |
 
-The source is the 2015-07-26 "IPSC Protocol Specs for homebrew DMR repeater" (DL5DI, G4KLX, DG1HT), which
-BrandMeister's wiki hosts, plus the hotspot dialect it doesn't describe (`RPTACK` for `MSTACK`, `RPTPING` / `MSTPONG`,
-the slots byte). The free text fields are ASCII only: no URLs, HTML or advertising. Checked against a working
-hotspot's login on the bench, byte for byte: our RPTC differs only in the ID, frequencies, slots and software ID.
+
+The free text fields are ASCII only: no URLs, HTML or advertising. HBlink's layout was checked against a working
+hotspot's login on the bench, byte for byte.
 
 Login state machine (per login):
 
 ```mermaid
 stateDiagram-v2
     [*] --> LOGIN: socket open
-    LOGIN --> AUTH: RPTACK + salt
-    AUTH --> CONFIG: RPTACK
-    CONFIG --> UP: RPTACK
-    UP --> UP: RPTPING / MSTPONG
+    LOGIN --> AUTH: ack + salt
+    AUTH --> CONFIG: ack
+    CONFIG --> UP: ack
+    UP --> UP: ping / pong
     LOGIN --> BACKOFF: MSTNAK / no answer 5 s
     AUTH --> BACKOFF: MSTNAK (wrong password)
     CONFIG --> BACKOFF: MSTNAK
@@ -179,19 +233,33 @@ Steps 1-7 and 10-11 are done (commits from 2026-11-06); 8 has one open item, 9 i
 Tests:
 
 - **Host tests and HIL tests run against a simulated BrandMeister master**, never the real network: a small fake
-  master (UDP, the login of §3 with a known salt and password, `MSTPONG`, `MSTNAK` on demand, `DMRD` echo and
-  scripted calls, confirmed-data ACKs and TMS ACKs as §7 recorded them). The C host tests drive it in process; the
+  master (UDP, the login of §3 in either dialect, `--dialect dl5di` (the default, port 62030) or `homebrew` (62031),
+  with a known salt and password, pongs, `MSTNAK` on demand, `DMRD` echo and
+  scripted calls, confirmed-data ACKs and TMS ACKs as §7 recorded them). It relays a group call to every other login
+  that keyed the same TG in the last 15 minutes, as BrandMeister's dynamic talkgroups do: to a repeater on the slot it
+  keyed it on, to a simplex hotspot on slot 2. As BrandMeister (§7), it ignores data whose header came after fewer
+  than 12 preamble CSBKs (`--min-preambles`), a radio's ACK excepted, and a radio's link ACK counts as not received
+  when another transmission of the radio's starts within 1 s of it; `fakemodem` sends 16 before a text
+  (`--preambles` to change it). The gateway passes a radio's preambles up as it hears them. The C host tests drive it in process; the
   HIL tests point a board or rdofradio at it on the LAN. No automated or recurring test reaches BrandMeister.
 - **No RF, on one host:** `fakemodem` (sdr/cli) is a simplex MMDVM_HS hotspot on a pty, answering as the host
   tests' fake radio. It plays a radio's calls and texts into `rdofradio --allow-tx --mmdvm <pty> --config ...`
   (`--call 9990:private:3`, `--call 91:group:2`, `--text 262993:hi`) and logs every burst rdofradio has it send,
   decoded (slot, kind, LC or header addresses, the embedded LC). With `fakebm` on 127.0.0.1 this checks the login,
   calls up on slot 2, the parrot's echo and the TMS ACK and answer back on RF. A group call goes up only when the
-  path carries the TG (`tg` or `ptt`; none by default).
+  path carries the TG (`tg` or `ptt`; none by default; a repeater's slots don't take `defaults`, so each slot needs
+  its own). `fakemodem --kind mmdvm` is a duplex modem, and `--slot 1|2` sets the slot of the calls and texts after
+  it: a repeater on it checks both slots.
+- **Duplex, no RF (2026-11-06):** rdofradio as a repeater (438.75 in, 438.25 out) on `fakemodem --kind mmdvm`, and
+  a simplex hotspot beside it, both logged in to `fakebm`. The repeater's `RPTC`: RX 438750000, TX 438250000, slots
+  `3`, package MMDVM. A private call to 9990 on each slot went up on that slot and came back on it; a text to 262993
+  on slot 2 got its TMS ACK and answer back on slot 2. TG 91 keyed on slot 1 and TG 92 on slot 2 went up on their
+  slots and reached the hotspot; the hotspot's calls to them came down to the repeater on slot 1 and slot 2 and went
+  out on those slots.
 - **Against real BrandMeister: one-off, by hand**, once per change that needs it, on the owner's registered IDs,
   with the results written here. For the first build, in order: rdofradio as one simplex hotspot (a spare 9-digit
   hotspot ID) with the bench's radios (parrot 9990, a TG, a private call, an SMS to 262993); then two simplex
-  logins at once; then a W12; then a repeater.
+  logins at once; then a W12; then a repeater (a duplex login: slots `3`, its RX and TX).
 
 ## 7. Observed: a radio's text message through a BrandMeister hotspot (2026-11-06)
 
@@ -233,8 +301,37 @@ What the gateway takes from it:
   copies with bit errors as they were (no CRC check). The gateway checks CRC-9 per block and CRC-32: it should drop
   a bad copy rather than forward it (§6.8).
 - **Packets back to back.** BrandMeister answered neither TMS ACK the radio sent 0.5 s after its link ACK with one
-  preamble (one good, one with bit errors), and answered both retries, sent with 12-17 preambles. One sample of
-  each, so a guess: the short lead-in, or one stream for both. The next capture records the stream ids.
+  preamble (one good, one with bit errors), and answered both retries, sent with 12-17 preambles. Confirmed on
+  2026-11-06 at 23:48 UTC: the same radio sent the same text twice through the same hotspot, the same bytes and N(S),
+  both CRC good. The copy with 1 preamble CSBK got no answer; the copy with 16 got the link ACK 0.7 s later, then the
+  TMS ACK and the answer. Another radio's confirmed and unconfirmed packets, rate 1/2 and 3/4, intact, each with 1
+  or 2 preambles, got no answer either (ten sends). **BrandMeister answers data only after a long preamble: send
+  about 15 preamble CSBKs before a data header going up.** Its own packets down have one.
+- **A link ACK with something right behind it is missed.** 2026-11-07, 00:26-00:27 UTC: a radio's link ACK to
+  BrandMeister's answer text, intact, followed 0.3 s later by the preambles of its TMS ACK, got the text sent again
+  3 s later; each time the link ACK had nothing behind it for a second, BrandMeister took it. A radio's TMS ACK sent
+  0.5 s after its link ACK wasn't answered either. Leave about 1.5 s after a link ACK before the next packet.
+- **A TMS ACK has to be confirmed.** 2026-11-07, 00:48 UTC: a radio's link ACK to the answer text, with nothing
+  behind it for 1.7 s, was taken; its TMS ACK after it, unconfirmed rate 1/2 with 16 preamble CSBKs and intact
+  (`BF 00 91 40`, sequence 81), wasn't: 36 s later BrandMeister sent the text again with a new sequence (89). A radio
+  whose TMS ACKs BrandMeister takes sends them confirmed, with 16 preambles, about 1.4 s after its link ACK.
+- **Selective retry.** 2026-11-07, 01:17 UTC: the last block (DBSN 8) of a 9-block rate 3/4 answer was lost on the
+  way to the hotspot. The radio's SACK (class 2, one rate 1/2 block: flag map `ff fe ff ff ff ff ff ff`, block n
+  = octet n/8, bit n%8 from the LSB, 0 = resend) got that block alone 0.6 s later: 1 preamble CSBK, the header with
+  F=0 and 1 block to follow but the whole message's pad (12), S, N(S) and FSN, then block DBSN 8 with its CRC-32.
+  After a NACK (class 1, type 1: CRC-32 failure) BrandMeister resent the whole packet.
+- **The echo service answers twice.** BrandMeister's echo service sends its answer twice, 23-40 s apart, each with
+  its own sequence. A radio's confirmed TMS ACK to the first was link-ACKed every time (3 of 3); one to the second
+  was link-ACKed two times in four (2026-11-07 01:25 and 01:31, sequences 12 and 25 in the short form; not at 01:12
+  or 01:18, sequences 103 and 110, first tries and retries intact). Not explained; the second answer wasn't sent
+  again either way.
+- **Compressed headers work going up.** 2026-11-07 01:30: a radio's TMS text and TMS ACKs with the compressed
+  UDP/IPv4 header (SAP 3; 5 octets: IPv4 ID, SAID/DAID `00`, port IDs `62 62`) were each link-ACKed, the response in
+  SAP 3; BrandMeister's TMS ACK and answers came back in full UDP/IP (SAP 4) all the same.
+- **Data to a radio on the same login isn't relayed.** 2026-11-07 01:36-01:38: three confirmed texts from one radio
+  to another radio last heard on the same hotspot (one SAP 3, two SAP 4 tries): BrandMeister sent that hotspot one
+  preamble CSBK for each, about 4 s after the first try, and neither header nor blocks. Whether it relays
+  radio-to-radio data between two logins is not tested yet.
 - **The first try is often missed.** BrandMeister answered the second copy of the first message, not the first. The
   hotspot logged both. Not explained yet; compare with the gateway once it logs in.
 - **IDs.** The radio uses its 7-digit DMR ID; BrandMeister routes the answer to the hotspot (9-digit ID) where it was
@@ -243,9 +340,9 @@ What the gateway takes from it:
 ## 8. Open questions
 
 - Which slot a simplex hotspot's `DMRD` use, both ways.
-- Which other package IDs BrandMeister takes (`MMDVM` works; two of ours were refused), and what it checks in the
-  software ID: software `20261028` with package `MMDVM` was taken; `RadioFoundry Gateway hotspot` with `MMDVM`, power
-  21 and our own location and description was refused (2026-11-06), so one of those four is checked too.
+- On port 62031 (HBlink's dialect) BrandMeister takes only package `MMDVM`, and refused software `RadioFoundry
+  Gateway hotspot` with `MMDVM`, power 21 and our own location and description (2026-11-06). Port 62030 took our own
+  IDs (§3.1); whether it checks anything else in `RPTC` is open.
 - Whether BrandMeister takes `DMRD` talker alias or GPS in its own packets (`DMRA`, `DMRG`) from a hotspot, or only
   in-band.
 - How long a dynamic TG holds on BrandMeister now, so `ptt_hold_s` can match it.

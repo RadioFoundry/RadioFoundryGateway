@@ -22,6 +22,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "esp_system.h"
 #include "lwip/sockets.h"
 #include "rdof/hbpeer.h"
 #if CONFIG_RDOF_HBLINK_SCTP
@@ -73,7 +74,7 @@ void roam_hb_send(roam_t *r, const uint8_t *data, size_t len)
     uint8_t tmp[RDOF_HB_OUT_MAX];
     xSemaphoreTake(h->lock, portMAX_DELAY);
     const bool hold = len >= 4 && !memcmp(data, "DMRD", 4) && !rdof_hb_peer_may_send(&h->peer); /* not logged in */
-    data = rdof_hb_peer_up(&h->peer, data, len, tmp);
+    data = rdof_hb_peer_up(&h->peer, data, &len, tmp);
     if (!hold && h->sock >= 0 && send(h->sock, data, len, 0) == (ssize_t)len)
         r->st.hblink_tx++;
     xSemaphoreGive(h->lock);
@@ -142,7 +143,11 @@ static void received(roam_t *r, const uint8_t *buf, size_t n)
     struct roam_hb *h = r->hb;
     r->st.hblink_rx++;
     xSemaphoreTake(h->lock, portMAX_DELAY);
-    const rdof_hbp_event_t ev = rdof_hb_peer_received(&h->peer, buf, n, now_s());
+    const double now = now_s();
+    const rdof_hbp_event_t ev = rdof_hb_peer_received(&h->peer, buf, n, now);
+    uint8_t tmp[RDOF_DMRD_LEN];
+    if (ev == RDOF_HBP_PACKET)
+        buf = rdof_hb_peer_down(&h->peer, buf, &n, now, tmp); /* the 2015 dialect's DMRD as ours */
     xSemaphoreGive(h->lock);
     if (ev == RDOF_HBP_REGISTERED) {
         ESP_LOGI(TAG, "peer %lu (%s) %s %s:%d", (unsigned long)r->cfg->peer_id, r->cfg->name,
@@ -332,12 +337,33 @@ static void peer_task(void *arg)
     }
 }
 
+/* A restart: each logged-in radio's peer says RPTCL (sdr_hblink.c close_logins has why). */
+static struct roam_hb *s_logins[RDOF_MAX_RADIOS];
+static int s_nlogins;
+
+static void close_logins(void)
+{
+    bool sent = false;
+    for (int i = 0; i < s_nlogins; i++) {
+        uint8_t cl[RDOF_HB_CLOSE_MAX];
+        const size_t n = rdof_hb_peer_close_packet(&s_logins[i]->peer, cl);
+        if (n && s_logins[i]->sock >= 0 && s_logins[i]->peer.state == RDOF_HBL_UP)
+            sent |= send(s_logins[i]->sock, cl, n, 0) > 0;
+    }
+    if (sent)
+        vTaskDelay(pdMS_TO_TICKS(100)); /* let Wi-Fi send them before it stops */
+}
+
 void roam_hb_start(roam_t *r)
 {
     roam_t *o = site_hb_owner(r);
     if (o != r) { /* one identity: the box's peer is another role's */
         r->hb_via = o;
         ESP_LOGI(TAG, "%s: HBlink4 through %s's peer", r->cfg->name, o->cfg->name);
+        return;
+    }
+    if (!site_hb_wanted(r->cfg->receiver_hblink)) { /* its path is local, or on MQTT: no login, nothing sent */
+        ESP_LOGI(TAG, "%s: not on an HBlink network: no peer", r->cfg->name);
         return;
     }
     struct roam_hb *h = calloc(1, sizeof *h);
@@ -348,8 +374,13 @@ void roam_hb_start(roam_t *r)
     if (r->cfg->hb_login) {
         rdof_hb_peer_set_login(&h->peer, r->cfg->hb_password, r->cfg->hb_location, r->cfg->hb_description,
                                r->cfg->hb_url);
-        ESP_LOGI(TAG, "%s: BrandMeister login %lu at %s:%d", r->cfg->name, (unsigned long)r->cfg->peer_id,
+        rdof_hb_peer_set_dl5di(&h->peer, r->cfg->hb_dl5di);
+        ESP_LOGI(TAG, "%s: login %lu at %s:%d", r->cfg->name, (unsigned long)r->cfg->peer_id,
                  r->cfg->master_host, r->cfg->master_port);
+        if (!s_nlogins)
+            esp_register_shutdown_handler(close_logins);
+        if (s_nlogins < RDOF_MAX_RADIOS)
+            s_logins[s_nlogins++] = h;
     }
     r->hb = h;
 #if CONFIG_RDOF_HBLINK_SCTP

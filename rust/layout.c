@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
-/* rust's struct mirrors against the C headers (src/layout.rs): built with the Rust, into rdof_tests_rust and the
+/* rust's struct mirrors against the C headers (src/layout.rs): built with the Rust, into rdof_tests and the
  * firmware (CONFIG_RDOF_RUST), which check rdof_rust_layout_mismatch() is NULL. */
 #include <stdalign.h>
 #include <stdbool.h>
@@ -12,10 +12,13 @@
 #include "rdof/duplex.h"
 #include "rdof/features.h"
 #include "rdof/hblink.h"
+#include "rdof/ipgw.h"
 #include "rdof/jitter.h"
 #include "rdof/oled.h"
+#include "rdof/parrot.h"
 #include "rdof/json.h"
 #include "rdof/jsonp.h"
+#include "rdof/lastheard.h"
 #include "rdof/mmdvm.h"
 #include "rdof/modem.h"
 #include "rdof/netcalls.h"
@@ -74,6 +77,7 @@ static const rdof_rust_layout_t c_layouts[] = {
     L(rdof_benchtx_item_t),
     L(rdof_benchtx_policy_t),
     L(rdof_benchtx_t),
+    L(rdof_benchtx_track_t),
     L(rdof_modem_port_t),
     L(rdof_modem_t),
     L(rdof_rssi_map_t),
@@ -122,6 +126,15 @@ static const rdof_rust_layout_t c_layouts[] = {
     L(rdof_rpt_rf_in_t),
     L(rdof_repeater_t),
 #endif
+    L(rdof_lh_entry_t),
+    L(rdof_lh_t),
+#if RDOF_FEATURE_DATA_BLOCKS
+    L(rdof_ipgw_dmr_t),
+#endif
+#if RDOF_FEATURE_TX
+    L(rdof_parrot_burst_t),
+    L(rdof_parrot_t),
+#endif
 };
 
 static bool is_repeater_struct(const char *name)
@@ -152,6 +165,10 @@ const char *rdof_rust_layout_mismatch(void)
                                    !strncmp(r->name, "rdof_jb_", 8)))
                 continue;
             if (!RDOF_FEATURE_REPEATER && is_repeater_struct(r->name))
+                continue;
+            if (!RDOF_FEATURE_DATA_BLOCKS && !strcmp(r->name, "rdof_ipgw_dmr_t"))
+                continue;
+            if (!RDOF_FEATURE_TX && !strncmp(r->name, "rdof_parrot_", 12))
                 continue;
             return r->name;
         }

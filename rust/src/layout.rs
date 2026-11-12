@@ -1,23 +1,25 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 //! The structs this crate shares with C, by C name, with their size and alignment. rust/layout.c checks them
-//! against the C headers' (rdof_tests_rust, and the firmware at boot): a mirror that drifts from its header would
+//! against the C headers' (rdof_tests, and the firmware at boot): a mirror that drifts from its header would
 //! corrupt memory without a word. A module that mirrors a struct adds it here and to layout.c's table.
 
 use core::ffi::c_char;
 use core::mem::{align_of, size_of};
 
 use crate::benchcfg::RdofBenchRadio;
-use crate::benchtx::{RdofBenchtx, RdofBenchtxIo, RdofBenchtxItem, RdofBenchtxPolicy};
+use crate::benchtx::{RdofBenchtx, RdofBenchtxIo, RdofBenchtxItem, RdofBenchtxPolicy, RdofBenchtxTrack};
 use crate::config::{RdofCfgChannel, RdofCfgPort, RdofConfig, RdofRoles};
 use crate::hblink::{RdofHbSink, RdofLocation, RdofNetBurst, RdofTune};
 use crate::jitter::{RdofJb, RdofJbKey, RdofJbStream};
 use crate::json::RdofJson;
 use crate::jsonp::{JDoc, JNode};
+use crate::lastheard::{RdofLh, RdofLhEntry};
 use crate::mmdvm::{RdofMmdvmReader, RdofMmdvmStatus, RdofModemConfig};
 use crate::modem::{RdofModem, RdofModemPort, RdofRadio, RdofRssiMap};
 use crate::netcalls::{RdofNetcalls, RdofTxCallInfo};
 use crate::oled::{RdofFrameBuf, RdofOledStatus};
+use crate::parrot::{RdofIpgwDmr, RdofParrot, RdofParrotBurst};
 use crate::plan::{
     RdofApp3, RdofDevBench, RdofDevice3, RdofFreq, RdofIdrange, RdofIdset, RdofNet3, RdofPath, RdofPlanDev, RdofPlanExtra,
     RdofPolicy, RdofPort, RdofSite, RdofTxmap, RdofUnit,
@@ -83,6 +85,7 @@ static LAYOUTS: &[Layout] = &layouts![
     ("rdof_benchtx_item_t", RdofBenchtxItem),
     ("rdof_benchtx_policy_t", RdofBenchtxPolicy),
     ("rdof_benchtx_t", RdofBenchtx),
+    ("rdof_benchtx_track_t", RdofBenchtxTrack),
     ("rdof_modem_port_t", RdofModemPort),
     ("rdof_modem_t", RdofModem),
     ("rdof_rssi_map_t", RdofRssiMap),
@@ -127,6 +130,11 @@ static LAYOUTS: &[Layout] = &layouts![
     ("rdof_rpt_slot_t", RdofRptSlot),
     ("rdof_rpt_rf_in_t", RdofRptRfIn),
     ("rdof_repeater_t", RdofRepeater),
+    ("rdof_lh_entry_t", RdofLhEntry),
+    ("rdof_lh_t", RdofLh),
+    ("rdof_ipgw_dmr_t", RdofIpgwDmr),
+    ("rdof_parrot_burst_t", RdofParrotBurst),
+    ("rdof_parrot_t", RdofParrot),
 ];
 
 /// The i-th struct, or NULL past the last.

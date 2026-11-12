@@ -4,17 +4,31 @@
  * fakebm: a simulated BrandMeister master for tests (docs/spec/fw/brandmeister.md, "Tests"). Never the real
  * network: the gateway's HIL runs point a board or rdofradio here on the LAN.
  *
- *   fakebm [--port 62031] [--password P] [--ids ID,ID...] [--nak-step login|auth|config] [--no-pong]
- *          [--reply-s 3] [--reply TEXT] [--no-tms-ack] [--log FILE]
+ *   fakebm [--dialect dl5di|homebrew] [--port 62030] [--password P] [--ids ID,ID...]
+ *          [--nak-step login|auth|config] [--no-pong] [--reply-s 3] [--reply TEXT] [--no-tms-ack]
+ *          [--min-preambles 12] [--log FILE]
  *
- * It speaks the Homebrew login (RPTL, RPTACK + salt, RPTK checked against SHA-256(salt || password), RPTC,
- * RPTPING / MSTPONG, MSTNAK, RPTCL), any number of logins at once, each by its ID and address. What a logged-in peer
+ * It speaks the Homebrew login (RPTL, an acknowledgment + salt, RPTK checked against SHA-256(salt || password),
+ * RPTC, ping / pong, MSTNAK, RPTCL), any number of logins at once, each by its ID and address, in one of two dialects
+ * (rdof/hbpeer.h):
+ *   - dl5di (the default; port 62030): the 2015 specification's, as BrandMeister's port 62030 answers it: IDs as hex
+ *     text (answered in lower case), MSTACK, MSTPING / RPTPONG, the salt as 8 hex characters, a 306-byte RPTC with
+ *     any package ID, 53-byte DMRD with the slot in bit 0; its DMRD down carry stream ID 0, as BrandMeister's parrot
+ *     sends them;
+ *   - homebrew (port 62031): HBlink's: binary IDs, RPTACK, RPTPING / MSTPONG, a 302-byte RPTC whose package ID must
+ *     be MMDVM (BrandMeister's port 62031 refuses others), 55-byte DMRD.
+ * Inside, everything is the second kind: packets are converted as they come in and go out. What a logged-in peer
  * sends:
  *   - a private call to 9990 (voice or data) is recorded and played back to that peer (the gateway's own parrot);
  *   - packet data to 262993 (the SMS service) is taken as the IP gateway takes it (rate 1/2, 3/4 or 1, confirmed or
  *     not, CRC checked): a confirmed packet gets the link-level ACK; a TMS text (UDP 4007) gets the TMS ACK
  *     (`BF 00 <seq>`), then after --reply-s an answer text, as BrandMeister's service does (§7). Unlike
- *     BrandMeister, its own packets go down unconfirmed at rate 1/2 (the IP gateway's);
+ *     BrandMeister, its own packets go down unconfirmed at rate 1/2 (the IP gateway's). As BrandMeister, it ignores
+ *     a packet whose data header came after fewer than --min-preambles preamble CSBKs (12; 0: any), a radio's
+ *     response header (its ACK) excepted; that link ACK counts as not received when another transmission of the
+ *     radio's (a preamble CSBK or a data header) starts within 1 s of it (brandmeister.md §7);
+ *   - a group call goes to every other login that keyed the same TG in the last 15 minutes (BrandMeister's dynamic
+ *     talkgroup and its default timer): a repeater's on the slot it keyed it on, a simplex hotspot's on slot 2;
  *   - every packet is logged one line each (stdout, and --log).
  * Each peer's DMRD down carry its own peer ID. Single threaded; POSIX sockets.
  */
@@ -25,6 +39,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -32,6 +47,7 @@
 #include <unistd.h>
 
 #include "rdof/bits.h"
+#include "rdof/fec.h"
 #include "rdof/hblink.h"
 #include "rdof/hbpeer.h"
 #include "rdof/ipgw.h"
@@ -45,6 +61,8 @@
 #define SMS_ID 262993u
 #define PARROT_ID 9990u
 #define TMS_PORT 4007
+#define DYN_TGS 4
+#define DYN_S 900.0 /* BrandMeister's default dynamic talkgroup timer: 15 minutes */
 
 enum { ST_FREE = 0, ST_SALTED, ST_AUTHED, ST_UP };
 
@@ -53,19 +71,36 @@ typedef struct {
     uint32_t id;
     struct sockaddr_in addr;
     uint8_t salt[4];
+    char salt_hex[9]; /* dl5di: the salt as sent, 8 hex characters */
     double last;
     uint8_t rptc[RDOF_RPTC_LEN];
     unsigned dmrd_in, dmrd_out;
     uint32_t last_src; /* who was heard here last: the SMS answers go to the peer that heard the radio */
+    struct {
+        uint32_t tg;
+        int slot;
+        double at;
+    } dyn[DYN_TGS]; /* the TGs keyed here: dynamic subscriptions */
+    uint32_t relay_sid; /* the last stream relayed here, for its log line */
+    int preambles[3];   /* per slot: preamble CSBKs to the SMS service since its last data header */
+    bool ignoring[3];   /* per slot: the packet under way came after too few: its blocks are dropped */
+    struct {
+        bool on;
+        double at;
+        uint32_t src;
+        uint8_t burst[33];
+    } ack[3]; /* per slot: a radio's response header held for a second, until nothing of its own follows it */
 } peer_t;
 
 static struct {
     int sock;
+    bool dl5di;
     const char *password;
     uint32_t ids[MAX_PEERS];
     int nids;
     int nak_step; /* -1 none, else ST_FREE (RPTL), ST_SALTED (RPTK), ST_AUTHED (RPTC) */
     int no_pong, no_tms_ack;
+    int min_preambles;
     double reply_s;
     const char *reply;
     FILE *log;
@@ -112,12 +147,30 @@ static void say(const char *fmt, ...)
 
 static void send_to(const peer_t *p, const uint8_t *d, size_t n)
 {
+    uint8_t x[RDOF_DMRD_LEN];
+    if (F.dl5di && n >= RDOF_DMRD_DL5DI_LEN && !memcmp(d, "DMRD", 4)) { /* 53 bytes, the flags in its order */
+        memcpy(x, d, RDOF_DMRD_DL5DI_LEN);
+        x[15] = rdof_dmrd_flags_to_dl5di(d[15]);
+        memset(x + 16, 0, 4); /* stream ID 0, as BrandMeister's parrot */
+        d = x;
+        n = RDOF_DMRD_DL5DI_LEN;
+    }
     sendto(F.sock, d, n, 0, (const struct sockaddr *)&p->addr, sizeof p->addr);
 }
 
 static void answer(const struct sockaddr_in *a, const char *tag, uint32_t id, const uint8_t *extra, size_t ne)
 {
     uint8_t out[32];
+    if (F.dl5di) { /* its names, the ID as lower-case hex text */
+        if (!strcmp(tag, "RPTACK"))
+            tag = "MSTACK";
+        else if (!strcmp(tag, "MSTPONG"))
+            tag = "RPTPONG";
+        const int n = snprintf((char *)out, sizeof out, "%s%08lx%.*s", tag, (unsigned long)id, (int)ne,
+                               extra ? (const char *)extra : "");
+        sendto(F.sock, out, (size_t)n, 0, (const struct sockaddr *)a, sizeof *a);
+        return;
+    }
     size_t n = strlen(tag);
     memcpy(out, tag, n);
     if (extra) {
@@ -318,6 +371,8 @@ static const char *dt_name(int dt)
     return N[dt & 15];
 }
 
+static void relay_group(peer_t *from, const uint8_t *d, size_t n, const rdof_net_burst_t *b, double now);
+
 static void dmrd_up(peer_t *p, const uint8_t *d, size_t n, double now)
 {
     rdof_net_burst_t b;
@@ -337,14 +392,173 @@ static void dmrd_up(peer_t *p, const uint8_t *d, size_t n, double now)
         F.parrot_peer = p;
         rdof_parrot_heard(&F.parrot, b.slot, b.control, b.burst, now);
     }
+    if (b.group)
+        relay_group(p, d, n, &b, now);
     if (b.dst == SMS_ID && !b.group && ft == 2) {
+        const int s = b.slot == 1 ? 1 : 2;
+        if (p->ack[s].on && (dt == RDOF_DT_CSBK || dt == RDOF_DT_DATA_HEADER)) {
+            p->ack[s].on = false;
+            say("sms from %u: link ACK ignored, another transmission %.2f s behind it (BrandMeister counts it not "
+                "received)",
+                (unsigned)b.src, now - p->ack[s].at);
+        }
+        if (dt == RDOF_DT_CSBK) {
+            p->preambles[s]++;
+        } else if (dt == RDOF_DT_DATA_HEADER) {
+            uint8_t h[12];
+            const bool response = rdof_bptc196_decode(b.burst, h) && (h[0] & 0x0F) == 1;
+            p->ignoring[s] = !response && p->preambles[s] < F.min_preambles;
+            if (p->ignoring[s])
+                say("sms from %u: ignored, %d preamble CSBKs before its header (BrandMeister answers after %d)",
+                    (unsigned)b.src, p->preambles[s], F.min_preambles);
+            p->preambles[s] = 0;
+            if (response) {
+                p->ack[s].on = true;
+                p->ack[s].at = now;
+                p->ack[s].src = b.src;
+                memcpy(p->ack[s].burst, b.burst, sizeof p->ack[s].burst);
+                return;
+            }
+        }
+        if (p->ignoring[s])
+            return;
         const rdof_ipgw_where_t w = {.source = (int)(p - F.peers), .slot = b.slot, .freq = 0, .cc = -1};
         rdof_ipgw_burst(&F.gw, &w, dt, b.burst, now);
     }
 }
 
+/* A radio's link ACK with nothing of its own starting within a second of it is taken (brandmeister.md §7). */
+static void acks_due(double now)
+{
+    for (int i = 0; i < MAX_PEERS; i++)
+        for (int s = 1; s <= 2; s++) {
+            peer_t *p = &F.peers[i];
+            if (!p->ack[s].on || now - p->ack[s].at < 1.0)
+                continue;
+            p->ack[s].on = false;
+            if (p->state != ST_UP)
+                continue;
+            say("sms from %u: link ACK taken", (unsigned)p->ack[s].src);
+            const rdof_ipgw_where_t w = {.source = i, .slot = s, .freq = 0, .cc = -1};
+            rdof_ipgw_burst(&F.gw, &w, RDOF_DT_DATA_HEADER, p->ack[s].burst, p->ack[s].at);
+        }
+}
+
+/* A group call: this login subscribes to its TG on its slot, and it goes to every other login subscribed to it. */
+static void relay_group(peer_t *from, const uint8_t *d, size_t n, const rdof_net_burst_t *b, double now)
+{
+    int k = 0;
+    for (int i = 0; i < DYN_TGS; i++) {
+        if (from->dyn[i].tg == b->dst) {
+            k = i;
+            break;
+        }
+        if (from->dyn[i].at < from->dyn[k].at)
+            k = i;
+    }
+    from->dyn[k].tg = b->dst;
+    from->dyn[k].slot = b->slot;
+    from->dyn[k].at = now;
+    for (int i = 0; i < MAX_PEERS; i++) {
+        peer_t *p = &F.peers[i];
+        if (p == from || p->state != ST_UP)
+            continue;
+        int slot = 0;
+        for (int j = 0; j < DYN_TGS; j++)
+            if (p->dyn[j].tg == b->dst && now - p->dyn[j].at < DYN_S)
+                slot = p->dyn[j].slot;
+        if (!slot)
+            continue;
+        if (p->rptc[97] == '4')
+            slot = 2; /* a simplex hotspot: slot 2 */
+        uint8_t out[RDOF_DMRD_LEN + 2];
+        const size_t m = n < sizeof out ? n : sizeof out;
+        memcpy(out, d, m);
+        rdof_put_be32(out + 11, p->id);
+        out[15] = (uint8_t)((out[15] & 0x7F) | (slot == 2 ? 0x80 : 0));
+        send_to(p, out, m);
+        p->dmrd_out++;
+        const uint32_t sid = rdof_be32(d + 16);
+        if (sid != p->relay_sid) {
+            p->relay_sid = sid;
+            say("relay TG %u from peer %u s%d to peer %u s%d", (unsigned)b->dst, (unsigned)from->id, b->slot,
+                (unsigned)p->id, slot);
+        }
+    }
+}
+
+/* 8 hex characters at s as an ID; false when they aren't */
+static bool hex_id(const uint8_t *s, uint32_t *id)
+{
+    char h[9];
+    memcpy(h, s, 8);
+    h[8] = 0;
+    char *end;
+    *id = (uint32_t)strtoul(h, &end, 16);
+    return end == h + 8;
+}
+
+/* A dl5di packet in the homebrew form, into x: the ID binary, MSTPING as RPTPING, RPTC as 302 bytes (no slots field:
+   '4' when RX and TX are the same, else '3'), DMRD as 55 bytes. RPTK keeps its 64 hex characters (72 bytes). Returns
+   the length, 0 when it isn't one. */
+static size_t from_dl5di(const uint8_t *d, size_t n, uint8_t *x)
+{
+    uint32_t id;
+    if (n == 12 && !memcmp(d, "RPTL", 4) && hex_id(d + 4, &id)) {
+        memcpy(x, "RPTL", 4);
+        rdof_put_be32(x + 4, id);
+        return 8;
+    }
+    if (n == 76 && !memcmp(d, "RPTK", 4) && hex_id(d + 4, &id)) {
+        memcpy(x, "RPTK", 4);
+        rdof_put_be32(x + 4, id);
+        memcpy(x + 8, d + 12, 64);
+        return 72;
+    }
+    if (n == 15 && !memcmp(d, "MSTPING", 7) && hex_id(d + 7, &id)) {
+        memcpy(x, "RPTPING", 7);
+        rdof_put_be32(x + 7, id);
+        return 11;
+    }
+    if (n == 13 && !memcmp(d, "RPTCL", 5) && hex_id(d + 5, &id)) {
+        memcpy(x, "RPTCL", 5);
+        rdof_put_be32(x + 5, id);
+        return 9;
+    }
+    if (n == RDOF_RPTC_DL5DI_LEN && !memcmp(d, "RPTC", 4) && hex_id(d + 12, &id)) {
+        memcpy(x, "RPTC", 4);
+        rdof_put_be32(x + 4, id);
+        memcpy(x + 8, d + 4, 8);      /* callsign */
+        memcpy(x + 16, d + 20, 22);   /* RX, TX, power, color code */
+        memcpy(x + 38, d + 42, 20);   /* latitude, longitude, height */
+        memcpy(x + 58, d + 62, 20);   /* location */
+        memcpy(x + 78, d + 82, 19);   /* description, cut to 19 */
+        x[97] = memcmp(d + 20, d + 29, 9) ? '3' : '4';
+        memcpy(x + 98, d + 102, 124); /* URL */
+        memcpy(x + 222, d + 226, 80); /* software and package IDs */
+        return RDOF_RPTC_LEN;
+    }
+    if (n == RDOF_DMRD_DL5DI_LEN && !memcmp(d, "DMRD", 4)) {
+        memcpy(x, d, n);
+        x[15] = rdof_dmrd_flags_from_dl5di(d[15]);
+        x[53] = x[54] = 0;
+        return RDOF_DMRD_LEN;
+    }
+    return 0;
+}
+
 static void received(const struct sockaddr_in *a, const uint8_t *d, size_t n, double now)
 {
+    uint8_t x[RDOF_RPTC_LEN];
+    if (F.dl5di) {
+        const size_t k = from_dl5di(d, n, x);
+        if (!k) {
+            say("%.7s (%zu bytes) from %s: not the 2015 dialect: ignored", (const char *)d, n, inet_ntoa(a->sin_addr));
+            return;
+        }
+        d = x;
+        n = k;
+    }
     if (n >= 8 && !memcmp(d, "RPTL", 4)) {
         const uint32_t id = rdof_be32(d + 4);
         if (F.nak_step == ST_FREE || !id_allowed(id)) {
@@ -367,7 +581,11 @@ static void received(const struct sockaddr_in *a, const uint8_t *d, size_t n, do
         p->last = now;
         for (int i = 0; i < 4; i++)
             p->salt[i] = (uint8_t)rand();
-        answer(a, "RPTACK", 0, p->salt, 4);
+        snprintf(p->salt_hex, sizeof p->salt_hex, "%02X%02X%02X%02X", p->salt[0], p->salt[1], p->salt[2], p->salt[3]);
+        if (F.dl5di) /* MSTACK + the ID + the salt as hex text */
+            answer(a, "RPTACK", id, (const uint8_t *)p->salt_hex, 8);
+        else
+            answer(a, "RPTACK", 0, p->salt, 4);
         say("RPTL %u from %s:%d: salt %02x%02x%02x%02x", (unsigned)id, inet_ntoa(a->sin_addr), ntohs(a->sin_port),
             p->salt[0], p->salt[1], p->salt[2], p->salt[3]);
         return;
@@ -385,14 +603,26 @@ static void received(const struct sockaddr_in *a, const uint8_t *d, size_t n, do
         return;
     }
     p->last = now;
-    if (n == 40 && !memcmp(d, "RPTK", 4)) {
+    if (n == (F.dl5di ? 72u : 40u) && !memcmp(d, "RPTK", 4)) {
         uint8_t want[32];
         rdof_sha256_t h;
         rdof_sha256_init(&h);
-        rdof_sha256_update(&h, p->salt, 4);
+        if (F.dl5di) /* the salt's text, the hash as hex text */
+            rdof_sha256_update(&h, p->salt_hex, 8);
+        else
+            rdof_sha256_update(&h, p->salt, 4);
         rdof_sha256_update(&h, F.password, strlen(F.password));
         rdof_sha256_final(&h, want);
-        if (p->state != ST_SALTED || memcmp(want, d + 8, 32) || F.nak_step == ST_SALTED) {
+        bool good = true;
+        if (F.dl5di) {
+            char hx[65];
+            for (int i = 0; i < 32; i++)
+                snprintf(hx + 2 * i, 3, "%02x", want[i]);
+            good = !strncasecmp(hx, (const char *)d + 8, 64);
+        } else {
+            good = !memcmp(want, d + 8, 32);
+        }
+        if (p->state != ST_SALTED || !good || F.nak_step == ST_SALTED) {
             say("RPTK %u: %s: MSTNAK", (unsigned)id, p->state != ST_SALTED ? "out of order" : "wrong password");
             answer(a, "MSTNAK", id, NULL, 0);
             p->state = ST_FREE;
@@ -402,9 +632,10 @@ static void received(const struct sockaddr_in *a, const uint8_t *d, size_t n, do
         answer(a, "RPTACK", id, NULL, 0);
         say("RPTK %u: password good", (unsigned)id);
     } else if (n >= RDOF_RPTC_LEN && !memcmp(d, "RPTC", 4)) {
-        /* BrandMeister refuses an RPTC whose package ID isn't MMDVM (docs/spec/fw/brandmeister.md §3, RPTC) */
+        /* BrandMeister's port 62031 refuses an RPTC whose package ID isn't MMDVM; 62030 takes any
+           (docs/spec/fw/brandmeister.md §3, RPTC) */
         static const char mmdvm[] = "MMDVM                                   ";
-        const bool pkg_ok = !memcmp(d + 262, mmdvm, 40);
+        const bool pkg_ok = F.dl5di || !memcmp(d + 262, mmdvm, 40);
         if (p->state < ST_AUTHED || F.nak_step == ST_AUTHED || !pkg_ok) {
             say("RPTC %u: MSTNAK%s", (unsigned)id, pkg_ok ? "" : " (package ID not MMDVM)");
             answer(a, "MSTNAK", id, NULL, 0);
@@ -435,16 +666,19 @@ static void received(const struct sockaddr_in *a, const uint8_t *d, size_t n, do
 
 static void usage(void)
 {
-    fprintf(stderr, "usage: fakebm [--port 62031] [--password P] [--ids ID,...] [--nak-step login|auth|config]\n"
-                    "              [--no-pong] [--reply-s S] [--reply TEXT] [--no-tms-ack] [--log FILE]\n");
+    fprintf(stderr, "usage: fakebm [--dialect dl5di|homebrew] [--port 62030] [--password P] [--ids ID,...]\n"
+                    "              [--nak-step login|auth|config] [--no-pong] [--reply-s S] [--reply TEXT]\n"
+                    "              [--no-tms-ack] [--min-preambles 12] [--log FILE]\n");
     exit(2);
 }
 
 int main(int argc, char **argv)
 {
-    int port = 62031;
+    int port = 0;
+    F.dl5di = true;
     F.password = "passw0rd";
     F.nak_step = -1;
+    F.min_preambles = 12;
     F.reply_s = 3.0;
     F.reply = "fakebm got it";
     F.ans_flow = -1;
@@ -452,6 +686,8 @@ int main(int argc, char **argv)
         const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
         if (!strcmp(a, "--port") && v)
             port = atoi(v), i++;
+        else if (!strcmp(a, "--dialect") && v && (!strcmp(v, "dl5di") || !strcmp(v, "homebrew")))
+            F.dl5di = !strcmp(v, "dl5di"), i++;
         else if (!strcmp(a, "--password") && v)
             F.password = v, i++;
         else if (!strcmp(a, "--ids") && v) {
@@ -465,6 +701,8 @@ int main(int argc, char **argv)
             i++;
         } else if (!strcmp(a, "--no-pong"))
             F.no_pong = 1;
+        else if (!strcmp(a, "--min-preambles") && v)
+            F.min_preambles = atoi(v), i++;
         else if (!strcmp(a, "--no-tms-ack"))
             F.no_tms_ack = 1;
         else if (!strcmp(a, "--reply-s") && v)
@@ -476,6 +714,8 @@ int main(int argc, char **argv)
         else
             usage();
     }
+    if (!port)
+        port = F.dl5di ? 62030 : 62031;
     srand((unsigned)time(NULL) ^ (unsigned)getpid());
     F.sock = socket(AF_INET, SOCK_DGRAM, 0);
     struct sockaddr_in me = {.sin_family = AF_INET, .sin_port = htons((uint16_t)port), .sin_addr.s_addr = INADDR_ANY};
@@ -506,7 +746,7 @@ int main(int argc, char **argv)
     F.gw.close = gw_close;
     F.gw.send_udp = gw_send_udp;
     F.gw.send_dmr = gw_send_dmr;
-    say("fakebm on UDP %d%s%s", port, F.nids ? ", IDs limited" : "", F.nak_step >= 0 ? ", refusing a step" : "");
+    say("fakebm on UDP %d, %s dialect%s%s", port, F.dl5di ? "the 2015 (dl5di)" : "the homebrew", F.nids ? ", IDs limited" : "", F.nak_step >= 0 ? ", refusing a step" : "");
     double last_status = now_s();
     for (;;) {
         fd_set fds;
@@ -525,6 +765,7 @@ int main(int argc, char **argv)
         rdof_parrot_poll(&F.parrot, now);
         rdof_ipgw_tick(&F.gw, now);
         sms_answer_due(now);
+        acks_due(now);
         for (int i = 0; i < MAX_PEERS; i++)
             if (F.peers[i].state != ST_FREE && now - F.peers[i].last > 60) {
                 say("peer %u: nothing for 60 s: dropped", (unsigned)F.peers[i].id);

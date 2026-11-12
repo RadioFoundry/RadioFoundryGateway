@@ -105,7 +105,7 @@ typedef struct {
     rdof_hostweb_role_t role;
     char name[24];     /* the radio's name; "" uses the name given to start */
     char radio[48];    /* the front end, "SoapySDR PlutoSDR" */
-    char modem[48];    /* what answers as the modem, "SDR modem" */
+    char modem[128];   /* what answers as the modem (a modem's whole version text), "SDR modem" */
     char protocol[16]; /* "" shows "host" */
     char state[16];    /* free text, "idle", "hang" */
     char error[96];    /* a radio error; non-empty shows the radio as not ready */
@@ -116,6 +116,7 @@ typedef struct {
     bool links;        /* the tool has a network (HBlink4): the page shows hblink, and mqtt when has_mqtt */
     bool has_mqtt;
     bool hblink, mqtt; /* the links' state (the page warns when down) */
+    bool has_hblink;   /* the radio is an HBlink4 peer: hblink, hblink_tx and hblink_rx are written */
     unsigned hblink_tx, hblink_rx; /* HBlink4 packets, as the board counts them */
     char brandmeister[192];        /* a BrandMeister login's status (rdof_hb_peer_login_status), or "" */
     uint32_t rx_hz, tx_hz;
@@ -145,6 +146,10 @@ typedef struct {
         char name[24];
         int64_t value;
     } extra[8];
+    /* the apps it runs, as a JSON array (rdof_router_apps_json); "": none to show */
+    char apps[2048];
+    /* the IP gateway's status as a JSON object (rdof_ipgw_status_json's); "": it isn't running */
+    char ip_gateway[1536];
     bool spectrum; /* the tool makes the page's spectrum (rdof_hostweb_spectrum_row) */
     uint32_t mqtt_dropped; /* the radio's MQTT posts dropped (has_mqtt) */
     /* the SDRs it runs and the radios or modems it drives on a port (below) */

@@ -528,6 +528,27 @@ static void tcal(void)
         nc_tcal_put(&c, t, 0.1 * t);
     }
     CHECK(c.count == NC_TCAL_N && nc_tcal_valid(&c), "tcal: full, %d", c.count);
+    // Each bin is due again on its own time: a die on the edge of two bins (52.9, 53.9, 52.9, ...) learns each
+    // once, not at every change.
+    nc_tcal_seen_t seen;
+    nc_tcal_seen_init(&seen);
+    int learned = 0;
+    for (int i = 0; i < 1000; i++) {
+        double temp = i % 2 ? 53.9 : 52.9, t_s = 100.0 + 5.0 * i; // 83 minutes
+        if (nc_tcal_seen_due(&seen, temp, t_s, 7200)) {
+            nc_tcal_seen_mark(&seen, temp, t_s);
+            learned++;
+        }
+    }
+    CHECK(learned == 2, "tcal: two bins learned once each while the die goes between them, %d", learned);
+    CHECK(!nc_tcal_seen_due(&seen, 52.9, 100.0 + 7100, 7200) && nc_tcal_seen_due(&seen, 52.9, 100.0 + 7260, 7200),
+          "tcal: a bin is due again after its time");
+    CHECK(nc_tcal_seen_due(&seen, 20.0, 200.0, 7200) && nc_tcal_seen_due(&seen, -40.0, 200.0, 7200) &&
+              !nc_tcal_seen_due(&seen, NAN, 200.0, 7200), "tcal: a bin not learned yet is due; no temperature isn't");
+    // 41 days on, the minutes start over: nothing is lost but one more learning a bin.
+    nc_tcal_seen_mark(&seen, 30.0, 70000.0 * 60);
+    CHECK(!nc_tcal_seen_due(&seen, 30.0, 70000.0 * 60 + 600, 7200) && nc_tcal_seen_due(&seen, 30.0, 70130.0 * 60, 7200),
+          "tcal: the marks hold past 16 bits of minutes");
     nc_tcal_put(&c, 80, 1.0);
     CHECK(c.count == NC_TCAL_N && !nc_tcal_find(&c, 52) && nc_tcal_find(&c, 80) && nc_tcal_find(&c, 30) &&
               nc_tcal_valid(&c),
@@ -1063,10 +1084,25 @@ static void status_edges(void)
     CHECK(netclock_status_json(&st, small, n + 1) == n && netclock_status_json(&st, small, n) == 0, "exact fit, one byte short");
 }
 
+// A LAN server on its own clock (stratum 10, root distance near 0, 200 ms off) must lose to a real one 30 ms away.
+static void high_stratum(void)
+{
+    CHECK(nc_root_distance_us(6000, 1) == 6000, "stratum 1: the distance as measured");
+    CHECK(nc_root_distance_us(100, 7) == 500, "stratum 7: the floor only");
+    CHECK(nc_root_distance_us(6000, 10) > 1000000, "stratum 10: past any real server");
+    nc_cand_t c[2] = {{true, 200000, nc_root_distance_us(6600, 10)}, {true, 3000, nc_root_distance_us(30000, 1)}};
+    char mark[2];
+    double off = 0;
+    CHECK(nc_select(c, 2, mark, &off) == 1, "the real server is the best");
+    CHECK(fabs(off - 3000) < 500, "and the time is close to its own (%g)", off);
+    CHECK(nc_select(c, 1, mark, &off) == 0 && off == 200000, "alone, it's still used");
+}
+
 int main(void)
 {
     model_steps();
     selection();
+    high_stratum();
     ntp();
     core();
     pps_edges();

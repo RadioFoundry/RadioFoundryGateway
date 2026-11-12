@@ -1,0 +1,54 @@
+// pluto 2 repeaters (host ports)
+{
+ "version": 3,
+ "id": 9800100,
+ "callsign": "N0CALL",
+ "defaults": {
+  "cc": 1
+ },
+ "devices": [
+  {
+   "name": "pluto",
+   "kind": "sdr",
+   "driver": "iio"
+  }
+ ],
+ "frequencies": [
+  {
+   "name": "in",
+   "freq": 438.75
+  },
+  {
+   "name": "out",
+   "freq": 438.25
+  },
+  {
+   "name": "in2",
+   "freq": 438.775
+  },
+  {
+   "name": "out2",
+   "freq": 438.275
+  }
+ ],
+ "apps": [
+  {
+   "name": "R1",
+   "type": "repeater",
+   "in": "in",
+   "out": "out"
+  },
+  {
+   "name": "R2",
+   "type": "repeater",
+   "in": "in2",
+   "out": "out2"
+  }
+ ],
+ "networks": [
+  {
+   "type": "hblink",
+   "host": "hb.example.net"
+  }
+ ]
+}

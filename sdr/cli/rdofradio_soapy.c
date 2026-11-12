@@ -15,6 +15,7 @@
 #include <SoapySDR/Device.h>
 #include <SoapySDR/Formats.h>
 
+#include "rdof/benchline.h"
 #include "rdofradio_dev.h"
 
 typedef struct {
@@ -56,6 +57,17 @@ static int set_tx_gain(rdofradio_dev_t *d, double db)
 }
 
 static double rx_gain(rdofradio_dev_t *d) { return SoapySDRDevice_getGain(((soapy_t *)d)->dev, SOAPY_SDR_RX, 0); }
+
+static int set_rx_gain(rdofradio_dev_t *d, double db)
+{
+    soapy_t *s = (soapy_t *)d;
+    if (SoapySDRDevice_setGainMode(s->dev, SOAPY_SDR_RX, 0, isnan(db)) ||
+        (!isnan(db) && SoapySDRDevice_setGain(s->dev, SOAPY_SDR_RX, 0, db))) {
+        fail(d, "RX gain");
+        return -1;
+    }
+    return 0;
+}
 
 static double bandwidth(rdofradio_dev_t *d) { return SoapySDRDevice_getBandwidth(((soapy_t *)d)->dev, SOAPY_SDR_RX, 0); }
 
@@ -132,6 +144,7 @@ rdofradio_dev_t *rdofradio_soapy_open(const char *args, const rdofradio_dev_setu
     d->set_tx_freq = set_tx_freq;
     d->set_tx_gain = set_tx_gain;
     d->rx_gain = rx_gain;
+    d->set_rx_gain = set_rx_gain;
     d->bandwidth = bandwidth;
     d->start = start;
     d->read = rd;
@@ -149,7 +162,20 @@ rdofradio_dev_t *rdofradio_soapy_open(const char *args, const rdofradio_dev_setu
     char *driver = SoapySDRDevice_getDriverKey(s->dev);
     snprintf(d->name, sizeof d->name, "SoapySDR %s", driver ? driver : "");
     const bool pluto = driver && !strcasecmp(driver, "plutosdr");
+    const bool rtl = driver && !strcasecmp(driver, "rtlsdr");
     free(driver);
+    for (int i = 0; i < su->n_settings; i++) { /* a bias tee nobody turned on looks like a dead antenna: not ignored */
+        char key[64];
+        const char *eq = strchr(su->settings[i], '=');
+        snprintf(key, sizeof key, "%.*s", eq ? (int)(eq - su->settings[i]) : 0, su->settings[i]);
+        if (!eq || SoapySDRDevice_writeSetting(s->dev, key, eq + 1)) {
+            snprintf(err, cap, "soapy setting %s: %s", eq ? key : su->settings[i],
+                     eq ? SoapySDRDevice_lastError() : "not KEY=VALUE");
+            SoapySDRDevice_unmake(s->dev);
+            free(s);
+            return NULL;
+        }
+    }
     const bool tx = !su->rx_only;
     if (tx) {
         const SoapySDRRange tr = SoapySDRDevice_getGainRange(s->dev, SOAPY_SDR_TX, 0);
@@ -171,10 +197,17 @@ rdofradio_dev_t *rdofradio_soapy_open(const char *args, const rdofradio_dev_setu
     }
     d->rate = SoapySDRDevice_getSampleRate(s->dev, SOAPY_SDR_RX, 0);
     d->tx_rate = d->rate;
+    double native_scale = 0;
+    free(SoapySDRDevice_getNativeStreamFormat(s->dev, SOAPY_SDR_RX, 0, &native_scale));
+    d->iq_scale = rdof_bl_ring_scale(native_scale);
     /* the streams' own arguments (--stream), for both. A PlutoSDR's own 65536-sample buffers made the loop delay
      * vary by a buffer (27 ms at 2.4 MS/s) from run to run; 16384 underran its transmitter without a word (bit
-     * errors in every burst); 32768 holds the delay within a few ms and sends clean */
-    const char *stream = su->stream && *su->stream ? su->stream : pluto ? "bufflen=32768" : "";
+     * errors in every burst); 32768 holds the delay within a few ms and sends clean. An RTL-SDR's own 262144-byte
+     * buffers are 85 ms of samples at 1.536 MS/s, handed over a few ms early or late: the receive loop's check of
+     * the stream against the clock (rdofradio.c clock_read) took the late ones for dropped samples and put zeros
+     * into a whole stream, every second or two (the bench Cubie, 2026-11-11: rtl_test lost nothing). 16384 bytes
+     * are 5 ms: no false loss */
+    const char *stream = su->stream && *su->stream ? su->stream : pluto ? "bufflen=32768" : rtl ? "bufflen=16384" : "";
     SoapySDRKwargs sa = SoapySDRKwargs_fromString(stream);
     s->rx = SoapySDRDevice_setupStream(s->dev, SOAPY_SDR_RX, SOAPY_SDR_CF32, NULL, 0, &sa);
     if (tx)

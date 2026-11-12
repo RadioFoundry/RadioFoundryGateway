@@ -7,8 +7,8 @@
 #   libmosquitto 2.x (libmosquitto-dev, Homebrew mosquitto; the PlutoSDR build makes its own): rdofradio's MQTT
 #   RDOF_HOST_WEB: rdofradio --web
 #   RDOF_VERSION: the version rdofradio reports (default: git describe at configure time)
-#   RDOF_TRUNK (ON) with cargo: rdofradio runs a trunked site and --sim-air (the controller is rust's t3 feature,
-#   built alone); RDOF_RUST_TARGET is cargo's target for a cross build (armv7-unknown-linux-gnueabihf on a PlutoSDR)
+#   RDOF_TRUNK (ON) with cargo: rdofradio runs a trunked site and --sim-air (the controller is rust's t3 feature, in
+#   rdof_common's Rust library, or alone with the C modules); RDOF_RUST_TARGET is cargo's target for a cross build (armv7-unknown-linux-gnueabihf on a PlutoSDR)
 set(RDOF_CLI ${CMAKE_CURRENT_LIST_DIR})
 find_package(Threads REQUIRED)
 
@@ -46,7 +46,7 @@ find_path(AD9361_INCLUDE_DIR ad9361.h)
 find_library(AD9361_LIBRARY ad9361)
 set(RDOF_RADIO_SRCS ${RDOF_CLI}/rdofradio.c ${RDOF_CLI}/rdofradio_cfg.c ${RDOF_CLI}/rdofradio_serial.c
     ${RDOF_CLI}/rdofradio_net.c ${RDOF_CLI}/rdofradio_fpga.c ${RDOF_CLI}/rdofradio_dnssd.c
-    ${RDOF_CLI}/rdofradio_file.c)
+    ${RDOF_CLI}/rdofradio_file.c ${RDOF_CLI}/rdofradio_sim.c ${RDOF_CLI}/rdofradio_ipgw.c)
 set(RDOF_RADIO_DEFS)
 set(RDOF_RADIO_INCS)
 set(RDOF_RADIO_LIBS)
@@ -128,33 +128,26 @@ if(RDOF_RADIO_DEFS AND NOT WIN32)
         endif()
     endif()
     target_compile_definitions(rdofradio PRIVATE RDOF_VERSION="${RDOF_VERSION}")
-    # the trunked site (rdofradio_trunk.c): the controller in rust (t3 only, no_std), the trunk unit and the simulator
+    # the trunked site (rdofradio_trunk.c): the controller in rust (rdof_common's Rust with the t3 feature, or t3
+    # built alone beside the C modules), the trunk unit and the simulator
     option(RDOF_TRUNK "rdofradio runs a trunked site (needs cargo)" ON)
     set(RDOF_RUST_TARGET "" CACHE STRING "cargo's --target for the trunk controller (empty: the host)")
+    set(RDOF_T3_LIB NOTFOUND)
     if(RDOF_TRUNK)
-        find_program(RDOF_CARGO cargo HINTS $ENV{HOME}/.cargo/bin)
-    endif()
-    if(RDOF_TRUNK AND RDOF_CARGO)
-        message(STATUS "cargo found: rdofradio runs a trunked site")
-        if(NOT COMMAND rdof_rust_add)
+        if(NOT COMMAND rdof_t3_lib)
             include(${RDOF_CLI}/../../rust/rust.cmake)
         endif()
-        if(RDOF_RUST_TARGET)
-            set(RDOF_T3_LIB rdof_rust_t3_${RDOF_RUST_TARGET})
-            string(REPLACE "-" "_" RDOF_T3_LIB ${RDOF_T3_LIB})
-            if(NOT TARGET ${RDOF_T3_LIB})
-                rdof_rust_add(${RDOF_T3_LIB} TARGET ${RDOF_RUST_TARGET} NO_DEFAULT_FEATURES FEATURES t3)
-            endif()
-        else()
-            set(RDOF_T3_LIB rdof_rust_t3)
-            if(NOT TARGET rdof_rust_t3)
-                rdof_rust_add(rdof_rust_t3 NO_DEFAULT_FEATURES FEATURES t3)
-            endif()
-        endif()
-        target_sources(rdofradio PRIVATE ${RDOF_CLI}/rdofradio_trunk.c ${RDOF_CLI}/rdofradio_simext.c ${RDOF_CLI}/../../sdr/src/trunksplit.c ${RDOF_CLI}/../../common/src/trunkunit.c
+        rdof_t3_lib(RDOF_T3_LIB rdof_common)
+    endif()
+    if(RDOF_TRUNK AND NOT RDOF_T3_LIB STREQUAL "NOTFOUND")
+        message(STATUS "rdofradio runs a trunked site")
+        target_sources(rdofradio PRIVATE ${RDOF_CLI}/rdofradio_trunk.c ${RDOF_CLI}/rdofradio_simext.c
+                       ${RDOF_CLI}/../../sdr/src/trunksplit.c ${RDOF_CLI}/../../common/src/trunkunit.c
                        ${RDOF_CLI}/../../common/src/trunksim.c)
         target_compile_definitions(rdofradio PRIVATE RDOF_TRUNK)
-        target_link_libraries(rdofradio PRIVATE ${RDOF_T3_LIB})
+        if(RDOF_T3_LIB)
+            target_link_libraries(rdofradio PRIVATE ${RDOF_T3_LIB})
+        endif()
     else()
         message(STATUS "rdofradio without the trunked site (RDOF_TRUNK off or no cargo)")
     endif()
@@ -162,6 +155,47 @@ if(RDOF_RADIO_DEFS AND NOT WIN32)
     if(RDOF_HOST_WEB)
         target_link_libraries(rdofradio PRIVATE rdof_hostweb)
         target_compile_definitions(rdofradio PRIVATE RDOF_HOST_WEB)
+    endif()
+endif()
+
+# rdofradio's refusals, checked before a device is opened (192.0.2.1 is never reached): --listen never transmits, and
+# without it a run needs --allow-tx
+if(TARGET rdofradio AND IIO_INCLUDE_DIR AND IIO_LIBRARY)
+    add_test(NAME rdofradio_listen_refuses_tx COMMAND rdofradio --iio ip:192.0.2.1 --listen --allow-tx --rx 446)
+    set_tests_properties(rdofradio_listen_refuses_tx PROPERTIES PASS_REGULAR_EXPRESSION "--listen receives only")
+    add_test(NAME rdofradio_listen_refuses_tx_flags COMMAND rdofradio --iio ip:192.0.2.1 --listen --rx 446 --tx-gain 10)
+    set_tests_properties(rdofradio_listen_refuses_tx_flags PROPERTIES PASS_REGULAR_EXPRESSION "--listen receives only")
+    add_test(NAME rdofradio_needs_allow_tx COMMAND rdofradio --iio ip:192.0.2.1 --rx 446)
+    set_tests_properties(rdofradio_needs_allow_tx PROPERTIES PASS_REGULAR_EXPRESSION "pass --allow-tx \\(or --listen")
+endif()
+
+if(TARGET rdofradio AND TARGET fakemodem AND UNIX)
+    # no RF: fakemodem, rdofradio and fakebm on this host, a login of each type, a call up and its echo on air
+    foreach(net brandmeister homebrew)
+        add_test(NAME rdofradio_e2e_${net} COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_login.sh
+                 $<TARGET_FILE_DIR:rdofradio> ${net} $<IF:$<STREQUAL:${net},homebrew>,62078,62077>)
+        set_tests_properties(rdofradio_e2e_${net} PROPERTIES TIMEOUT 60)
+    endforeach()
+    # no RF, no network: config/examples' standalone MMDVM settings, the IP gateway to a listener on this host
+    find_program(RDOF_PYTHON3 python3)
+    if(RDOF_PYTHON3)
+        add_test(NAME rdofradio_e2e_ipgw COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_ipgw.sh
+                 $<TARGET_FILE_DIR:rdofradio> 47011 ${RDOF_CLI}/../../config/examples)
+        set_tests_properties(rdofradio_e2e_ipgw PROPERTIES TIMEOUT 90)
+        # no RF, no network: each of config/examples as written, on simulated hardware, its clock, bench and network
+        add_test(NAME rdofradio_e2e_examples COMMAND ${RDOF_PYTHON3} ${RDOF_CLI}/../../host-tests/test_examples.py
+                 $<TARGET_FILE:rdofradio> $<TARGET_FILE:fakemodem> $<TARGET_FILE:fakebm>
+                 ${RDOF_CLI}/../../config/examples)
+        set_tests_properties(rdofradio_e2e_examples PROPERTIES TIMEOUT 300)
+    endif()
+    # no RF: two boxes, each on a fakemodem, joined by the MQTT network (format v3) through a broker on this host
+    find_program(MOSQUITTO_BROKER mosquitto HINTS /usr/sbin /usr/local/sbin /opt/homebrew/sbin)
+    if(MOSQUITTO_BROKER AND MOSQUITTO_INCLUDE_DIR AND MOSQUITTO_LIBRARY)
+        add_test(NAME rdofradio_e2e_mqttnet COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_mqttnet.sh
+                 $<TARGET_FILE_DIR:rdofradio> ${MOSQUITTO_BROKER} 18873)
+        set_tests_properties(rdofradio_e2e_mqttnet PROPERTIES TIMEOUT 60)
+    else()
+        message(STATUS "no mosquitto broker (or rdofradio without MQTT): the MQTT network's end-to-end test is off")
     endif()
 endif()
 

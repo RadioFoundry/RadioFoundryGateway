@@ -340,6 +340,19 @@ bool rdof_sfr_slots(const char *description, int *inbound, int *outbound)
     return true;
 }
 
+bool rdof_modem_simplex_only(const char *description)
+{
+    switch (rdof_radio_detect(description)) {
+    case RDOF_RADIO_HOTSPOT:
+        return true;
+    case RDOF_RADIO_MMDVM_HS:
+        /* one ADF7021 unless the board says two (MMDVM_HS_Dual_Hat, D2RG's MMDVM_HS) */
+        return !contains_upper(description, "DUAL") && !contains_upper(description, "D2RG");
+    default:
+        return false; /* MMDVM boards run duplex; an unknown one may: the modem's answer decides */
+    }
+}
+
 bool rdof_dcdm_capable(const char *description)
 {
     char d[256];

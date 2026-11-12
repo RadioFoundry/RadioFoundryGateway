@@ -1,0 +1,44 @@
+// pluto duplex repeater on bm (host ports)
+{
+ "version": 3,
+ "id": 9800100,
+ "callsign": "N0CALL",
+ "defaults": {
+  "cc": 1
+ },
+ "devices": [
+  {
+   "name": "pluto",
+   "kind": "sdr",
+   "driver": "iio"
+  }
+ ],
+ "networks": [
+  {
+   "type": "brandmeister",
+   "host": "bm.example.net",
+   "password": "x",
+   "peer_ids": {
+    "R1": 310012
+   }
+  }
+ ],
+ "frequencies": [
+  {
+   "name": "in",
+   "freq": 438.75
+  },
+  {
+   "name": "out",
+   "freq": 438.25
+  }
+ ],
+ "apps": [
+  {
+   "name": "R1",
+   "type": "repeater",
+   "in": "in",
+   "out": "out"
+  }
+ ]
+}
