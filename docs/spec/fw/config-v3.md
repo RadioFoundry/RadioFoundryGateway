@@ -549,7 +549,7 @@ required: each login's `RPTC` carries it, and BrandMeister checks it against the
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `host` | str | | required: the master, `<country code>.master.brandmeister.network` |
-| `port` | int | 62031 | |
+| `port` | int | 62030 | the 2015 dialect's port ([brandmeister.md](brandmeister.md) §3) |
 | `password` | str, 1..63 | | required: the hotspot security password (SelfCare), or a repeater's device password |
 | `peer_ids` | object | | required: `{"<frequency or repeater>": id}`, a registered ID for each path on the network (a hotspot: the DMR ID and two digits). No two paths share one, and none is derived |
 | `location` | str, ≤ 20 | `""` | `RPTC` location text |
@@ -568,6 +568,9 @@ peer), TGIF, a FreeDMR or DMR+ style server. The keys, the login and the rules a
 or repeater with its ID in `peer_ids`, the top-level `callsign` in each `RPTC`. `password` is the one the master
 has for that login (TGIF: the hotspot security key of its self care page), `host` the master's. Use `hblink` only
 for an HBlink4 that knows `DMRC` (§7.1).
+
+It speaks HBlink's dialect of the protocol (binary IDs, `RPTACK`, 55-byte `DMRD`; [brandmeister.md](brandmeister.md)
+§3), on `port` 62031 by default; `brandmeister` speaks the 2015 specification's.
 
 Status (2026-11-11): the settings and the login are the ones tested against the simulated master; not yet run
 against a stock HBlink or TGIF. `RPTO` (an options string, which some masters take static talkgroups from) isn't

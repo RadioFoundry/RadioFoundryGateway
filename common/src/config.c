@@ -888,11 +888,14 @@ bool rdof_plan_radio(const rdof_plan_t *p, const char *name, rdof_config_t *cfg,
     char hbw[RDOF_SITE_NAME + 16];
     snprintf(hbw, sizeof hbw, "networks.%s", hbk >= 0 ? s->net[hbk].name : "hblink");
     sget(c, hb, "host", "localhost", cfg->master_host, sizeof cfg->master_host);
-    if (!iget(c, hb, "port", 62031, &port, hbw))
+    /* brandmeister: RPTL and the rest (rdof/hbpeer.h), in the 2015 specification's dialect on BrandMeister's port for
+       it; homebrew: HBlink's dialect */
+    cfg->hb_login = hbk >= 0 && s->net[hbk].login;
+    cfg->hb_dl5di = cfg->hb_login && !s->net[hbk].homebrew;
+    if (!iget(c, hb, "port", cfg->hb_dl5di ? 62030 : 62031, &port, hbw))
         return false;
     cfg->master_port = (int)port;
     sget(c, hb, "transport", "udp", cfg->transport, sizeof cfg->transport);
-    cfg->hb_login = hbk >= 0 && s->net[hbk].login; /* brandmeister: RPTL and the rest (rdof/hbpeer.h) */
     sget(c, hb, "password", "", cfg->hb_password, sizeof cfg->hb_password);
     sget(c, hb, "location", "", cfg->hb_location, sizeof cfg->hb_location);
     sget(c, hb, "description", "", cfg->hb_description, sizeof cfg->hb_description);

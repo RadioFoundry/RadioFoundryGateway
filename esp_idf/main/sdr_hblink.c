@@ -47,8 +47,10 @@ static int chan_peer[RDOF_SDR_MAX_CHANNELS] = {-1};
 static void peer_send(void *ctx, const uint8_t *data, size_t len)
 {
     peer_t *p = ctx;
+    uint8_t tmp[RDOF_HB_OUT_MAX];
     xSemaphoreTake(p->lock, portMAX_DELAY);
     const bool hold = len >= 4 && !memcmp(data, "DMRD", 4) && !rdof_hb_peer_may_send(&p->peer); /* not logged in */
+    data = rdof_hb_peer_up(&p->peer, data, &len, tmp); /* the 2015 dialect's DMRD, for a brandmeister login */
     if (p->sock >= 0 && !hold)
         send(p->sock, data, len, 0);
     xSemaphoreGive(p->lock);
@@ -189,15 +191,20 @@ static void peer_task(void *arg)
                 rdof_hb_peer_link_down(&p->peer);
                 continue;
             }
-            const rdof_hbp_event_t ev = rdof_hb_peer_received(&p->peer, buf, (size_t)n, esp_timer_get_time() / 1e6);
+            const double now = esp_timer_get_time() / 1e6;
+            const rdof_hbp_event_t ev = rdof_hb_peer_received(&p->peer, buf, (size_t)n, now);
             if (ev == RDOF_HBP_REGISTERED)
                 ESP_LOGI(TAG, "peer %lu (%s) %s %s:%d", (unsigned long)p->peer.peer_id, g_scfg.ch[p->channel].id,
                          p->peer.login ? "logged in to" : "registered with", g_scfg.hb_host, g_scfg.hb_port);
             else if (ev == RDOF_HBP_REFUSED)
                 ESP_LOGW(TAG, "peer %lu refused by the master: %.6s%s", (unsigned long)p->peer.peer_id,
                          (const char *)buf, p->peer.bad_password ? " (the password)" : "");
-            else if (ev == RDOF_HBP_PACKET)
-                site_dmrd(p->peer.peer_id, buf, (size_t)n); /* version 3: the call router's, else nothing sends */
+            else if (ev == RDOF_HBP_PACKET) {
+                static uint8_t tmp[RDOF_DMRD_LEN]; /* this task's */
+                size_t k = (size_t)n;
+                const uint8_t *d = rdof_hb_peer_down(&p->peer, buf, &k, now, tmp); /* the 2015 dialect's as ours */
+                site_dmrd(p->peer.peer_id, d, k); /* version 3: the call router's, else nothing sends */
+            }
         }
     }
 }
@@ -208,7 +215,7 @@ static void close_logins(void)
 {
     bool sent = false;
     for (int i = 0; i < npeers; i++) {
-        uint8_t cl[9];
+        uint8_t cl[RDOF_HB_CLOSE_MAX];
         const size_t n = rdof_hb_peer_close_packet(&peers[i].peer, cl);
         if (n && !peers[i].via && peers[i].sock >= 0 && peers[i].peer.state == RDOF_HBL_UP)
             sent |= send(peers[i].sock, cl, n, 0) > 0;
@@ -244,9 +251,11 @@ void sdr_hb_start(void)
         p->via = via;
         const uint32_t id = via ? site_id() : (uint32_t)ch->peer_id;
         rdof_hb_peer_init(&p->peer, id, RDOF_HB_KEEPALIVE_SECONDS);
-        if (g_scfg.hb_login)
+        if (g_scfg.hb_login) {
             rdof_hb_peer_set_login(&p->peer, g_scfg.hb_password, g_scfg.hb_location, g_scfg.hb_description,
                                    g_scfg.hb_url);
+            rdof_hb_peer_set_dl5di(&p->peer, g_scfg.hb_dl5di);
+        }
         p->sock = -1;
         p->lock = xSemaphoreCreateMutex();
         rdof_hb_sink_init(&p->sink, id);

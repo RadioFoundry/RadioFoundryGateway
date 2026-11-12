@@ -243,8 +243,9 @@ pub unsafe extern "C" fn rdof_hb_kind(data: *const u8, len: usize) -> c_char {
         Some(b"MSTN" | b"MSTC") => b'N',
         Some(b"DMRT") => b'T',
         Some(b"DMRD") => b'D',
-        _ if d.starts_with(b"RPTACK") => b'A',
-        _ if d.starts_with(b"MSTPONG") => b'G',
+        // MSTACK, RPTPONG: the 2015 specification's names
+        _ if d.starts_with(b"RPTACK") || d.starts_with(b"MSTACK") => b'A',
+        _ if d.starts_with(b"MSTPONG") || d.starts_with(b"RPTPONG") => b'G',
         _ => 0,
     };
     kind as c_char

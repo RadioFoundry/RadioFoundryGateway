@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
-/* The BrandMeister login (rdof/hbpeer.h with rdof_hb_peer_set_login) against a fake master in process: SHA-256,
- * RPTC from a DMRC, the login, pings and pongs, a wrong password, MSTNAK at each step, lost answers, MSTCL, the
- * back-off, a config change, DMRD only while logged in. No network. */
+/* The Homebrew login (rdof/hbpeer.h with rdof_hb_peer_set_login) against a fake master in process: SHA-256, RPTC
+ * from a DMRC, the login, pings and pongs, a wrong password, MSTNAK at each step, lost answers, MSTCL, the back-off,
+ * a config change, DMRD only while logged in: in HBlink's dialect (a homebrew network). Then the 2015
+ * specification's (a brandmeister network): its worked example's hash, its RPTC, the login, and DMRD both ways. No
+ * network. */
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -311,11 +313,15 @@ static void test_login(void)
     /* a simplex login ('4'): DMRD goes up on slot 2; anything else as it is */
     uint8_t tmp[RDOF_HB_OUT_MAX];
     dmrd[15] = 0x01; /* slot 1, a group call, voice B */
-    const uint8_t *up = rdof_hb_peer_up(&p, dmrd, sizeof dmrd, tmp);
-    CHECK(up == tmp && tmp[15] == 0x81 && !memcmp(tmp + 16, dmrd + 16, sizeof dmrd - 16) && dmrd[15] == 0x01);
-    CHECK(rdof_hb_peer_up(&p, (const uint8_t *)"RPTPING\x12\x7b\x6f\xef", 11, tmp) != tmp);
+    size_t un = sizeof dmrd;
+    const uint8_t *up = rdof_hb_peer_up(&p, dmrd, &un, tmp);
+    CHECK(up == tmp && un == RDOF_DMRD_LEN && tmp[15] == 0x81 && !memcmp(tmp + 16, dmrd + 16, sizeof dmrd - 16) &&
+          dmrd[15] == 0x01);
+    un = 11;
+    CHECK(rdof_hb_peer_up(&p, (const uint8_t *)"RPTPING\x12\x7b\x6f\xef", &un, tmp) != tmp && un == 11);
     p.dmrc[38] = '3';
-    CHECK(rdof_hb_peer_up(&p, dmrd, sizeof dmrd, tmp) == dmrd);
+    un = sizeof dmrd;
+    CHECK(rdof_hb_peer_up(&p, dmrd, &un, tmp) == dmrd);
     p.dmrc[38] = '4';
 
     /* a new config while up: log in again with it */
@@ -354,6 +360,7 @@ static void test_callsign(void)
     if (!ok)
         return;
     CHECK(cfg.hb_login && cfg.peer_id == 310012301 && !strcmp(cfg.callsign, "N0CALL"));
+    CHECK(cfg.hb_dl5di && cfg.master_port == 62030); /* brandmeister: the 2015 dialect, on its port */
     uint8_t d[RDOF_DMRC_MAX], r[RDOF_RPTC_LEN];
     const size_t n = rdof_hb_role_dmrc(&cfg, 438500000, 1, d);
     CHECK(rdof_rptc_from_dmrc(d, n, 0, "", "", "", r) == RDOF_RPTC_LEN);
@@ -380,7 +387,7 @@ static void test_repeater(void)
     CHECK(ok);
     if (!ok)
         return;
-    CHECK(cfg.hb_login && cfg.mode == RDOF_CFG_REPEATER && cfg.peer_id == 310012303);
+    CHECK(cfg.hb_login && cfg.mode == RDOF_CFG_REPEATER && cfg.peer_id == 310012303 && cfg.hb_dl5di);
     uint8_t d[RDOF_DMRC_MAX], r[RDOF_RPTC_LEN];
     const size_t n = rdof_hb_role_dmrc(&cfg, 0, 1, d);
     CHECK(rdof_rptc_from_dmrc(d, n, 0, "", "", "", r) == RDOF_RPTC_LEN);
@@ -393,10 +400,190 @@ static void test_repeater(void)
     rdof_hb_peer_init(&p, cfg.peer_id, 10);
     rdof_hb_peer_set_config(&p, d, n, true, 0);
     uint8_t dmrd[RDOF_DMRD_LEN] = {'D', 'M', 'R', 'D'}, tmp[RDOF_HB_OUT_MAX];
+    size_t un = sizeof dmrd;
     dmrd[15] = 0x01;
-    CHECK(rdof_hb_peer_up(&p, dmrd, sizeof dmrd, tmp) == dmrd);
+    CHECK(rdof_hb_peer_up(&p, dmrd, &un, tmp) == dmrd);
     dmrd[15] = 0x81;
-    CHECK(rdof_hb_peer_up(&p, dmrd, sizeof dmrd, tmp) == dmrd);
+    CHECK(rdof_hb_peer_up(&p, dmrd, &un, tmp) == dmrd && un == sizeof dmrd);
+}
+
+/* A homebrew network: HBlink's dialect on 62031. */
+static void test_homebrew_config(void)
+{
+    static const char json[] =
+        "{\"version\": 3, \"callsign\": \"N0CALL\", \"defaults\": {\"cc\": 1},"
+        " \"devices\": [{\"name\": \"w12\", \"kind\": \"sdr\", \"driver\": \"lr2021\"}],"
+        " \"frequencies\": [{\"name\": \"438.500\", \"freq\": 438.5}],"
+        " \"networks\": [{\"type\": \"homebrew\", \"host\": \"hb.example.net\", \"password\": \"example\","
+        " \"peer_ids\": {\"438.500\": 310012301}}]}";
+    static rdof_config_t cfg;
+    char error[256] = "";
+    bool ok = rdof_config_parse(json, strlen(json), &cfg, error, sizeof error);
+    if (!ok)
+        printf("config: %s\n", error);
+    CHECK(ok && cfg.hb_login && !cfg.hb_dl5di && cfg.master_port == 62031);
+}
+
+/* ---- the 2015 specification's dialect ---- */
+static struct {
+    int logins, configs, pings, closes;
+    uint8_t rptc[RDOF_RPTC_DL5DI_LEN];
+    char id[9];
+    char salt[9];
+    const char *password;
+} D;
+
+/* A master as the 2015 specification's examples and BrandMeister's port 62030 answer: IDs as hex text (answered in
+   lower case, as BrandMeister does), the salt as 8 hex characters. */
+static size_t master_dl5di(const uint8_t *d, size_t n, uint8_t *out)
+{
+    char want[65];
+    if (n == 12 && !memcmp(d, "RPTL", 4)) {
+        D.logins++;
+        memcpy(D.id, d + 4, 8);
+        return (size_t)snprintf((char *)out, 64, "MSTACK%s%s", D.id, D.salt);
+    }
+    if (n == 76 && !memcmp(d, "RPTK", 4)) {
+        uint8_t h[32];
+        rdof_sha256_t s;
+        rdof_sha256_init(&s);
+        rdof_sha256_update(&s, D.salt, 8);
+        rdof_sha256_update(&s, D.password, strlen(D.password));
+        rdof_sha256_final(&s, h);
+        for (int i = 0; i < 32; i++)
+            snprintf(want + 2 * i, 3, "%02x", h[i]);
+        return (size_t)snprintf((char *)out, 64, memcmp(d + 12, want, 64) ? "MSTNAK%s" : "MSTACK%s", "127c2bf1");
+    }
+    if (n == RDOF_RPTC_DL5DI_LEN && !memcmp(d, "RPTC", 4)) {
+        D.configs++;
+        memcpy(D.rptc, d, n);
+        return (size_t)snprintf((char *)out, 64, "MSTACK%s", "127c2bf1");
+    }
+    if (n == 15 && !memcmp(d, "MSTPING", 7)) {
+        D.pings++;
+        return (size_t)snprintf((char *)out, 64, "RPTPONG%s", "127c2bf1");
+    }
+    return 0;
+}
+
+static void run_dl5di(rdof_hb_peer_t *p, double t0, double t1)
+{
+    for (double t = t0; t < t1; t += 0.05) {
+        rdof_hbp_event_t ev;
+        if (rdof_hb_peer_tick(p, t, &ev)) {
+            rdof_hb_peer_set_config(p, DMRC, DMRC_N, true, t);
+            uint8_t pkt[RDOF_HB_OUT_MAX], ans[64];
+            const size_t k = master_dl5di(pkt, rdof_hb_peer_packet(p, pkt), ans);
+            if (k)
+                rdof_hb_peer_received(p, ans, k, t + 0.01);
+        }
+    }
+}
+
+static void test_dl5di(void)
+{
+    /* the specification's worked example: ID 00040178, salt 0A7ED498, passphrase DL5DI */
+    rdof_hb_peer_t p;
+    uint8_t pkt[RDOF_HB_OUT_MAX];
+    memset(&D, 0, sizeof D);
+    strcpy(D.salt, "0A7ED498");
+    D.password = "DL5DI";
+    rdof_hb_peer_init(&p, 0x00040178, 5.0);
+    rdof_hb_peer_set_login(&p, "DL5DI", "Trussville, AL", "RadioFoundry test", "https://example.org");
+    rdof_hb_peer_set_dl5di(&p, true);
+    rdof_hb_peer_link_up(&p);
+    rdof_hbp_event_t ev;
+    CHECK(rdof_hb_peer_tick(&p, 0, &ev) && rdof_hb_peer_packet(&p, pkt) == 12 && !memcmp(pkt, "RPTL00040178", 12));
+    CHECK(rdof_hb_peer_received(&p, (const uint8_t *)"MSTACK000401780A7ED498", 22, 0.01) == RDOF_HBP_NONE);
+    CHECK(p.state == RDOF_HBL_AUTH && rdof_hb_peer_tick(&p, 0.02, &ev));
+    CHECK(rdof_hb_peer_packet(&p, pkt) == 76 &&
+          !memcmp(pkt, "RPTK00040178cbf0e29abbd11c6573825d36a664e3064441f91fc815ac5dc5ca570d4c4a5f85", 76));
+
+    /* the whole login against the fake master, then pings; the master's lower-case IDs are fine */
+    memset(&D, 0, sizeof D);
+    strcpy(D.salt, "81bd9077");
+    D.password = PASSWORD;
+    const rdof_location_t loc = {33.6198, -86.6089, 12};
+    DMRC_N = rdof_dmrc_packet(310127601, "N0CALL", 438500000, 438500000, 1, '4', 5, "RadioFoundry Gateway hotspot",
+                              "radiofoundry_gateway simplex", &loc, NULL, NULL, DMRC);
+    rdof_hb_peer_init(&p, 310127601, 5.0);
+    rdof_hb_peer_set_login(&p, PASSWORD, "Trussville, AL", "RadioFoundry test", "https://example.org");
+    rdof_hb_peer_set_dl5di(&p, true);
+    rdof_hb_peer_link_up(&p);
+    run_dl5di(&p, 0, 0.3);
+    CHECK(p.up && D.logins == 1 && D.configs == 1 && !strcmp(D.id, "127C2BF1"));
+    run_dl5di(&p, 0.3, 30);
+    CHECK(p.up && D.pings == 5 && D.logins == 1);
+    CHECK(rdof_hb_peer_close_packet(&p, pkt) == 13 && !memcmp(pkt, "RPTCL127C2BF1", 13));
+    uint8_t r[RDOF_RPTC_DL5DI_LEN];
+    memcpy(r, D.rptc, sizeof r);
+    /* a wrong password */
+    D.password = "wrong";
+    rdof_hb_peer_init(&p, 310127601, 5.0);
+    rdof_hb_peer_set_login(&p, PASSWORD, NULL, NULL, NULL);
+    rdof_hb_peer_set_dl5di(&p, true);
+    rdof_hb_peer_link_up(&p);
+    run_dl5di(&p, 0, 1);
+    CHECK(!p.up && p.bad_password);
+    D.password = PASSWORD;
+    rdof_hb_peer_init(&p, 310127601, 5.0);
+    rdof_hb_peer_set_login(&p, PASSWORD, NULL, NULL, NULL);
+    rdof_hb_peer_set_dl5di(&p, true);
+    rdof_hb_peer_link_up(&p);
+    run_dl5di(&p, 0, 1);
+    CHECK(p.up);
+
+    /* RPTC: callsign before the ID, no slots, signed coordinates with 4 decimals */
+    CHECK(!memcmp(r, "RPTCN0CALL  127C2BF1", 20));
+    CHECK(!memcmp(r + 20, "438500000438500000", 18));
+    CHECK(!memcmp(r + 38, "0001", 4)); /* power (no map: 0), color code */
+    CHECK(!memcmp(r + 42, "+33.6198-086.6089012", 20));
+    CHECK(!memcmp(r + 62, "Trussville, AL      ", 20));
+    CHECK(!memcmp(r + 82, "RadioFoundry test   ", 20));
+    CHECK(!memcmp(r + 102, "https://example.org ", 20) && r[225] == ' ');
+    CHECK(!memcmp(r + 226, "RadioFoundry Gateway hotspot", 28) && r[265] == ' ');
+    CHECK(!memcmp(r + 266, "radiofoundry_gateway simplex", 28) && r[305] == ' ');
+
+    /* DMRD up: 53 bytes, the flags in the specification's order (a simplex login: slot 2) */
+    uint8_t dmrd[RDOF_DMRD_LEN], tmp[RDOF_HB_OUT_MAX], dn[RDOF_DMRD_LEN];
+    for (size_t i = 0; i < sizeof dmrd; i++)
+        dmrd[i] = (uint8_t)i;
+    memcpy(dmrd, "DMRD", 4);
+    dmrd[15] = 0x61; /* slot 1, private, data sync, voice header */
+    size_t n = sizeof dmrd;
+    const uint8_t *up = rdof_hb_peer_up(&p, dmrd, &n, tmp);
+    CHECK(up == tmp && n == RDOF_DMRD_DL5DI_LEN && tmp[15] == 0x1b && !memcmp(tmp + 16, dmrd + 16, 37));
+    CHECK(rdof_dmrd_flags_to_dl5di(0xe2) == 0x2b && rdof_dmrd_flags_to_dl5di(0xd0) == 0x07 &&
+          rdof_dmrd_flags_to_dl5di(0x83) == 0x31);
+    for (int f = 0; f < 256; f++)
+        CHECK(rdof_dmrd_flags_from_dl5di(rdof_dmrd_flags_to_dl5di((uint8_t)f)) == f);
+
+    /* DMRD down, as BrandMeister's parrot sends them: 53 bytes, stream ID 0. Ours: 55, one stream ID per call */
+    static const uint8_t flags[] = {0x1b, 0x1b, 0x07, 0x13, 0x2b};
+    uint8_t m[RDOF_DMRD_DL5DI_LEN] = {'D', 'M', 'R', 'D', 0, 0x00, 0x27, 0x06, 0x2f, 0x63, 0xca};
+    uint32_t sid[2][5];
+    for (int call = 0; call < 2; call++)
+        for (int i = 0; i < 5; i++) {
+            m[15] = flags[i];
+            CHECK(rdof_hb_peer_received(&p, m, sizeof m, 40) == RDOF_HBP_PACKET);
+            n = sizeof m;
+            const uint8_t *g = rdof_hb_peer_down(&p, m, &n, 40 + call + 0.06 * i, dn);
+            CHECK(g == dn && n == RDOF_DMRD_LEN && dn[53] == 0 && dn[54] == 0);
+            CHECK(dn[15] == rdof_dmrd_flags_from_dl5di(flags[i]) && (dn[15] & 0x80) && (dn[15] & 0x40));
+            sid[call][i] = rdof_be32(dn + 16);
+        }
+    CHECK(sid[0][0] && sid[0][0] == sid[0][4] && sid[1][0] == sid[1][4] && sid[0][0] != sid[1][0]);
+    rdof_net_burst_t b;
+    CHECK(rdof_parse_dmrd(dn, n, &b) && b.slot == 2 && b.src == 9990 && b.dst == 3105738 && !b.group);
+    /* a master's own stream ID stays */
+    m[16] = 0x11, m[19] = 0x22;
+    n = sizeof m;
+    rdof_hb_peer_down(&p, m, &n, 50, dn);
+    CHECK(rdof_be32(dn + 16) == 0x11000022u);
+    /* HBlink's dialect: nothing converted */
+    rdof_hb_peer_set_dl5di(&p, false);
+    n = sizeof dmrd;
+    CHECK(rdof_hb_peer_down(&p, dmrd, &n, 50, dn) == dmrd && n == sizeof dmrd);
 }
 
 int main(void)
@@ -406,6 +593,8 @@ int main(void)
     test_repeater();
     test_rptc();
     test_login();
+    test_homebrew_config();
+    test_dl5di();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

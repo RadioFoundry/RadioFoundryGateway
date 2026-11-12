@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 # No RF, on one host: rdofradio on a simulated hotspot modem (fakemodem) logs in to a simulated Homebrew master
-# (fakebm), sends a radio's private call to the parrot up, and puts the echo back on air.
+# (fakebm) in the type's dialect, sends a radio's private call to the parrot up, and puts the echo back on air.
 #
 #   sh host-tests/e2e_login.sh <dir with fakebm, fakemodem, rdofradio> <brandmeister|homebrew> <port>
 set -u
@@ -10,7 +10,9 @@ BIN=$1 TYPE=$2 PORT=$3
 D=$(mktemp -d "${TMPDIR:-/tmp}/rdof-e2e.XXXXXX")
 trap 'kill $RR $FM $BM 2>/dev/null; wait 2>/dev/null; rm -rf "$D"' EXIT # wait: the port is free for the next run
 RR= FM= BM=
-"$BIN/fakebm" --port "$PORT" --password pw1 --ids 310012301 --log "$D/bm.log" >/dev/null 2>&1 &
+DIALECT=dl5di # brandmeister: the 2015 specification's; homebrew: HBlink's
+[ "$TYPE" = homebrew ] && DIALECT=homebrew
+"$BIN/fakebm" --dialect $DIALECT --port "$PORT" --password pw1 --ids 310012301 --log "$D/bm.log" >/dev/null 2>&1 &
 BM=$!
 "$BIN/fakemodem" --cc 1 --src 3100123 --delay-s 2 --call 9990:private:1 --path-file "$D/pty" --exit-after-s 7 \
     --log "$D/modem.log" >/dev/null 2>&1 &

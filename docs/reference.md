@@ -10,7 +10,7 @@ Outputs:
   retained status and `Receiver` message per radio ([mqtt.md](spec/fw/mqtt.md)).
 - **HBlink4**: a peer per radio, or per SDR channel; DMRC, DMRD both ways, DMRT / DMRK call routing; UDP, or SCTP
   over UDP for the roamer ([hblink.md](spec/fw/hblink.md)).
-- **BrandMeister**: the same peer with the homebrew login (RPTL, RPTK, RPTC, RPTPING), as a simplex hotspot or a
+- **BrandMeister**: the same peer with the homebrew login (RPTL, RPTK, RPTC, a ping; the 2015 specification's dialect on port 62030), as a simplex hotspot or a
   repeater, one login per path ([brandmeister.md](spec/fw/brandmeister.md)). The same login to any other Homebrew
   master (a stock HBlink, TGIF) is network type `homebrew` (config-v3.md §7.4).
 - **HTTP**: the web page, a JSON API and the bench API ([interfaces-http.md](spec/fw/interfaces-http.md),

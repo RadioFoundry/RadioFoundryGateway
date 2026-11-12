@@ -295,8 +295,9 @@ bool rdof_plan_sdr(const rdof_plan_t *p, const char *name, rdof_sdr_config_t *g,
     int hk = rdof_plan_net_of(p, RDOF_NET_HBLINK), hb = rdof_plan_net_node(p, hk);
     g->hb_enabled = hk >= 0 && rcv >= 0;
     str_or(c, hb, "host", g->hb_host, sizeof g->hb_host, "localhost");
-    g->hb_port = (int)num_or(c, hb, "port", 62031);
-    g->hb_login = hk >= 0 && s->net[hk].login; /* brandmeister */
+    g->hb_login = hk >= 0 && s->net[hk].login; /* brandmeister or homebrew */
+    g->hb_dl5di = g->hb_login && !s->net[hk].homebrew;
+    g->hb_port = (int)num_or(c, hb, "port", g->hb_dl5di ? 62030 : 62031);
     str_or(c, hb, "password", g->hb_password, sizeof g->hb_password, "");
     str_or(c, hb, "location", g->hb_location, sizeof g->hb_location, "");
     str_or(c, hb, "description", g->hb_description, sizeof g->hb_description, "");

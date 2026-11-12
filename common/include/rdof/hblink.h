@@ -75,8 +75,8 @@ enum { RDOF_DMRK_ON_AIR = 0, RDOF_DMRK_CHANNEL_BUSY, RDOF_DMRK_NOT_ALLOWED, RDOF
 void rdof_dmrk_packet(uint32_t peer_id, const uint8_t stream_id[4], int status, uint32_t freq, int cc,
                     uint8_t out[RDOF_DMRK_LEN]);
 
-/* What a received packet is: 'P' DMRP, 'N' refused (MSTN / MSTC), 'T' DMRT, 'D' DMRD, 'A' RPTACK, 'G' MSTPONG,
-   0 other. */
+/* What a received packet is: 'P' DMRP, 'N' refused (MSTN / MSTC), 'T' DMRT, 'D' DMRD, 'A' RPTACK or MSTACK,
+   'G' MSTPONG or RPTPONG, 0 other. */
 char rdof_hb_kind(const uint8_t *data, size_t len);
 
 #if RDOF_FEATURE_TRACKER

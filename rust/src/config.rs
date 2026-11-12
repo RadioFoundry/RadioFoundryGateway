@@ -74,6 +74,7 @@ pub struct RdofConfig {
     pub master_port: c_int,
     pub transport: [u8; 8],
     pub hb_login: bool,
+    pub hb_dl5di: bool,
     pub hb_password: [u8; 64],
     pub hb_location: [u8; 21],
     pub hb_description: [u8; 20],
@@ -1145,10 +1146,12 @@ impl Cx<'_> {
         print(&mut hbw, &[S(b"networks."), S(if hbk >= 0 { field(&s.net[hbk as usize].name) } else { b"hblink" })]);
         let hbw = field(&hbw);
         self.sget(hb, c"host", b"localhost", &mut cfg.master_host);
-        cfg.master_port = self.iget(hb, c"port", 62031, hbw)? as c_int;
-        self.sget(hb, c"transport", b"udp", &mut cfg.transport);
-        // brandmeister: RPTL and the rest (rdof/hbpeer.h)
+        // brandmeister: RPTL and the rest (rdof/hbpeer.h), in the 2015 specification's dialect on BrandMeister's
+        // port for it; homebrew: HBlink's dialect
         cfg.hb_login = hbk >= 0 && s.net[hbk as usize].login;
+        cfg.hb_dl5di = cfg.hb_login && !s.net[hbk as usize].homebrew;
+        cfg.master_port = self.iget(hb, c"port", if cfg.hb_dl5di { 62030 } else { 62031 }, hbw)? as c_int;
+        self.sget(hb, c"transport", b"udp", &mut cfg.transport);
         self.sget(hb, c"password", b"", &mut cfg.hb_password);
         self.sget(hb, c"location", b"", &mut cfg.hb_location);
         self.sget(hb, c"description", b"", &mut cfg.hb_description);
