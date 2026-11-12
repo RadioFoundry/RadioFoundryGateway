@@ -70,7 +70,11 @@ pub mod t3ms;
 #[cfg(feature = "t3")]
 pub mod t3pdu;
 #[cfg(feature = "t3")]
+pub mod t3rc;
+#[cfg(feature = "t3")]
 pub mod t3site;
+#[cfg(all(test, feature = "t3"))]
+mod t3ctltests;
 #[cfg(all(test, feature = "t3"))]
 mod t3tests;
 #[cfg(all(test, feature = "t3"))]

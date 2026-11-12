@@ -21,6 +21,8 @@ use crate::layer2::{
 use crate::mmdvm::{rdof_mmdvm_frame, RDOF_SYNC_DATA};
 use crate::pdu::{rdof_decode_voice_lc, RdofFullLc};
 use crate::repeater::RdofVoiceRegen;
+use crate::t3rc::{rc_bits, rc_decode};
+use crate::t3site::RC_SEND;
 use crate::tracker::{RdofBurst, RdofFrame};
 
 pub const CARRIERS: usize = 4;
@@ -123,6 +125,10 @@ pub struct T3rfCh {
     pub net_dropped: u32,
     pub overflows: u32,
     pub lost: u32,
+    pub rc: c_int,
+    pub after_term: bool,
+    pub rc_k: i64,
+    pub rc_sent: u32,
 }
 
 /// rdof_t3rf_io_t
@@ -643,7 +649,75 @@ pub unsafe extern "C" fn rdof_t3rf_tick(t: *mut T3rf, k: i64) {
     }
 }
 
-fn ch_next(t: &mut T3rf, ch: c_int, control: &mut u8, out: &mut Burst) -> c_int {
+// ── the Reverse Channel (361-1 5.1.5, 6.4.2, 9.1.5, B.2.2.2) ─────────────────
+
+/// 361-1 5.1.5.1: RC messages at least 360 ms apart.
+const RC_EVERY_K: i64 = 12;
+const VOICE_F: u8 = 5;
+
+/// RC info in a burst's 48-bit middle: the EMB (CC, PI = 1, LCSS single fragment) around the 32 RC bits.
+fn rc_embed(burst: &mut Burst, cc: c_int, info: u8) {
+    let mut mid = [0u8; 48];
+    crate::layer2::rdof_voice_middle(cc, 0, &rc_bits(info), 1, &mut mid);
+    for (j, &bit) in mid.iter().enumerate() {
+        let (n, m) = ((108 + j) / 8, 0x80u8 >> ((108 + j) % 8));
+        burst[n] = if bit != 0 { burst[n] | m } else { burst[n] & !m };
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rdof_t3rf_rc_read(burst: &Burst) -> c_int {
+    let mut tx = [0u8; 32];
+    for (j, b) in tx.iter_mut().enumerate() {
+        *b = burst[(116 + j) / 8] >> (7 - (116 + j) % 8) & 1;
+    }
+    rc_decode(&tx).map_or(-1, c_int::from)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3rf_rc(t: *mut T3rf, ch: c_int, rc: c_int) {
+    let t = &mut *t;
+    if (0..2 * t.ncarriers).contains(&ch) {
+        let c = &mut t.ch[ch as usize];
+        if rc < 0 {
+            c.rc = 0;
+        } else if rc & RC_SEND as c_int != 0 {
+            c.rc = rc; // goes once, in the next burst that may carry it
+        }
+    }
+}
+
+/// The pending RC into the burst going out on c in slot k, where one may go: an idle burst (a dedicated RC) or
+/// voice burst F (an embedded RC). True when it went.
+fn rc_put(c: &mut T3rfCh, k: i64, kind: c_int, control: u8, out: &mut Burst) -> bool {
+    let fits = match kind {
+        OUT_IDLE => true,
+        OUT_TRAFFIC => control == VOICE_F, // no sync flag: a voice burst, F the sixth
+        _ => false,
+    };
+    if c.rc == 0 || !fits || c.after_term || k - c.rc_k < RC_EVERY_K {
+        return false;
+    }
+    rc_embed(out, c.cc, (c.rc & 0x0F) as u8);
+    c.rc = 0;
+    c.rc_k = k;
+    c.rc_sent += 1;
+    true
+}
+
+fn ch_next(t: &mut T3rf, ch: c_int, k: i64, control: &mut u8, out: &mut Burst) -> c_int {
+    let kind = ch_burst(t, ch, control, out);
+    if let Some(c) = channel(t, ch) {
+        if rc_put(c, k, kind, *control, out) && kind == OUT_IDLE {
+            c.after_term = false;
+            return OUT_CONTROL; // signalling, not idle: a split half sends it
+        }
+        c.after_term = kind == OUT_TRAFFIC && *control == RDOF_SYNC_DATA | RDOF_DT_TERMINATOR_WITH_LC as u8;
+    }
+    kind
+}
+
+fn ch_burst(t: &mut T3rf, ch: c_int, control: &mut u8, out: &mut Burst) -> c_int {
     *control = RDOF_SYNC_DATA | DT_IDLE as u8;
     let cc = t.cc;
     let Some(c) = channel(t, ch) else {
@@ -688,11 +762,11 @@ fn ch_next(t: &mut T3rf, ch: c_int, control: &mut u8, out: &mut Burst) -> c_int 
 pub unsafe extern "C" fn rdof_t3rf_ch_next(
     t: *mut T3rf,
     ch: c_int,
-    _k: i64,
+    k: i64,
     control: &mut u8,
     out: &mut Burst,
 ) -> c_int {
-    ch_next(&mut *t, ch, control, out)
+    ch_next(&mut *t, ch, k, control, out)
 }
 
 #[no_mangle]
@@ -728,9 +802,18 @@ pub unsafe extern "C" fn rdof_t3rf_slot(
         } else {
             rdof_duplex_idle(t.cc, burst.as_mut_ptr());
             t.tscc_idle += 1;
+            // a slot the controller left free: the RC for the talker on the TSCC carrier's other slot
+            let cc = t.cc;
+            let c0 = &mut t.ch[0];
+            if c0.rc != 0 && k - c0.rc_k >= RC_EVERY_K {
+                rc_embed(burst, cc, (c0.rc & 0x0F) as u8);
+                c0.rc = 0;
+                c0.rc_k = k;
+                c0.rc_sent += 1;
+            }
         }
     } else if c >= 0 && c < t.ncarriers {
-        ch_next(t, 2 * c + (k & 1) as c_int, &mut ctl, burst);
+        ch_next(t, 2 * c + (k & 1) as c_int, k, &mut ctl, burst);
     } else {
         rdof_duplex_idle(t.cc, burst.as_mut_ptr());
     }
@@ -826,8 +909,9 @@ pub unsafe extern "C" fn rdof_t3rf_split_pump(
             o.short_lcs += 1;
         }
         if sched {
-            if control & 0x0F == DT_IDLE as u8 && control & RDOF_SYNC_DATA != 0 {
-                continue; // the half sends idle between scheduled bursts
+            let rc_here = (*t).ch[(2 * o.carrier + (k & 1) as c_int) as usize].rc_k == k && k != 0;
+            if control & 0x0F == DT_IDLE as u8 && control & RDOF_SYNC_DATA != 0 && !rc_here {
+                continue; // the half sends idle between scheduled bursts (an RC burst isn't idle)
             }
             if rdof_split_sched(s, k, control, burst.as_ptr()) {
                 o.sched_bursts += 1;

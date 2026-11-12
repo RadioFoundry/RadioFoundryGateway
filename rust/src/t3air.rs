@@ -6,7 +6,7 @@
 //! solicited answer to a block in slot k goes in slot k + 2 at the earliest, as on air.
 
 use crate::t3ms::{Ms, MsTx, TX_PDU, TX_VOICE};
-use crate::t3site::{Event, Site, SlotOut, CHANNELS};
+use crate::t3site::{Event, Site, SlotOut, CHANNELS, RC_SEND};
 
 pub const SLOT_MS: i64 = 30;
 
@@ -72,6 +72,10 @@ impl<'a, const N: usize> Air<'a, N> {
                 m.rx(ch, k, out.tscc_dt, &out.tscc_pdu, out.at != 0);
             } else if ch < CHANNELS && ch as i64 & 1 == k & 1 {
                 m.rx(ch, k, out.ch[ch].dt, &out.ch[ch].pdu, false);
+            }
+            // a Reverse Channel PDU for it, in its carrier's other outbound slot
+            if ch < CHANNELS && (ch ^ 1) as i64 & 1 == k & 1 && out.ch[ch ^ 1].rc & RC_SEND != 0 {
+                m.rc(ch, out.ch[ch ^ 1].rc & 0x0F);
             }
         }
         self.last = out;

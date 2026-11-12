@@ -11,6 +11,7 @@
 #include "rdof/pdu.h"
 #include "rdof/split.h"
 #include "rdof/splitops.h"
+#include "rdof/t3.h"
 #include "rdof/t3rf.h"
 
 static int fails;
@@ -363,6 +364,66 @@ static void test_tscc(void)
     CHECK(rec.tsccs == 8 && control == (RDOF_SYNC_DATA | RDOF_DT_IDLE), "TS2: channel 1 (closed: idle)");
 }
 
+/* The Reverse Channel (361-1 5.1.5): in an idle burst of the alternate slot, in voice burst F (not A-E, not a header
+ * or right after a terminator), 360 ms apart, once; in a TSCC slot left without a block. */
+static void test_rc(void)
+{
+    static rdof_t3rf_t t;
+    memset(&rec, 0, sizeof rec);
+    rdof_t3rf_init(&t, &IO, 2, CC, true);
+    uint8_t out[33], control;
+    /* channel 3 idle: the RC goes in its next burst, as a dedicated RC (an idle burst's sync replaced) */
+    rdof_t3rf_rc(&t, 3, RDOF_T3_RC_SEND | RDOF_T3_RC_CEASE);
+    rdof_t3rf_out_t o = rdof_t3rf_ch_next(&t, 3, 101, &control, out);
+    CHECK(o == RDOF_T3RF_CONTROL && rdof_t3rf_rc_read(out) == RDOF_T3_RC_CEASE && t.ch[3].rc_sent == 1,
+          "a dedicated RC: %d %d", o, rdof_t3rf_rc_read(out));
+    int dt, cc;
+    CHECK(rdof_decode_slot_type(out, &cc, &dt, NULL) && dt == RDOF_DT_IDLE && cc == CC, "an idle burst's slot type");
+    o = rdof_t3rf_ch_next(&t, 3, 103, &control, out);
+    CHECK(o == RDOF_T3RF_IDLE && rdof_t3rf_rc_read(out) < 0, "once");
+    /* not within 360 ms of the last */
+    rdof_t3rf_rc(&t, 3, RDOF_T3_RC_SEND | RDOF_T3_RC_CEASE);
+    o = rdof_t3rf_ch_next(&t, 3, 111, &control, out);
+    CHECK(o == RDOF_T3RF_IDLE && t.ch[3].rc_sent == 1, "360 ms apart");
+    o = rdof_t3rf_ch_next(&t, 3, 113, &control, out);
+    CHECK(o == RDOF_T3RF_CONTROL && t.ch[3].rc_sent == 2, "then it goes");
+    /* -1 drops one not sent */
+    rdof_t3rf_rc(&t, 3, RDOF_T3_RC_SEND | RDOF_T3_RC_CEASE);
+    rdof_t3rf_rc(&t, 3, -1);
+    o = rdof_t3rf_ch_next(&t, 3, 141, &control, out);
+    CHECK(o == RDOF_T3RF_IDLE && t.ch[3].rc_sent == 2, "dropped");
+
+    /* channel 2 carries a call: only voice burst F takes the RC, the voice around it untouched */
+    rdof_t3rf_open(&t, 2, 3100123, 91, true, 0);
+    int64_t k = ms_call(&t, 1, 200, 3100777, 91, 2, true, true);
+    rdof_t3rf_rc(&t, 2, RDOF_T3_RC_SEND | RDOF_T3_RC_CEASE);
+    int n = 0, rc_at = -1;
+    while (rdof_t3rf_ch_next(&t, 2, k, &control, out) == RDOF_T3RF_TRAFFIC) {
+        if (rdof_t3rf_rc_read(out) == RDOF_T3_RC_CEASE)
+            rc_at = n;
+        n++, k += 2;
+    }
+    CHECK(n == 14 && rc_at == 6 && t.ch[2].rc_sent == 1, "in the first burst F (6th after the header): %d at %d", n,
+          rc_at);
+    /* right after a terminator: not in that idle, in the next */
+    rdof_t3rf_open(&t, 2, 3100123, 91, true, 0);
+    k = ms_call(&t, 1, k + 40, 3100777, 91, 0, true, true);
+    rdof_t3rf_ch_next(&t, 2, k, &control, out); /* the header */
+    rdof_t3rf_ch_next(&t, 2, k + 2, &control, out); /* the terminator */
+    rdof_t3rf_rc(&t, 2, RDOF_T3_RC_SEND | RDOF_T3_RC_CEASE);
+    o = rdof_t3rf_ch_next(&t, 2, k + 4, &control, out);
+    CHECK(o == RDOF_T3RF_IDLE && rdof_t3rf_rc_read(out) < 0, "not right after a terminator");
+    o = rdof_t3rf_ch_next(&t, 2, k + 6, &control, out);
+    CHECK(o == RDOF_T3RF_CONTROL && rdof_t3rf_rc_read(out) == RDOF_T3_RC_CEASE, "the next idle");
+
+    /* the TSCC: a slot without a block carries it */
+    int at;
+    int32_t slc;
+    rdof_t3rf_rc(&t, 0, RDOF_T3_RC_SEND | RDOF_T3_RC_CEASE);
+    rdof_t3rf_slot(&t, 0, 404, out, &control, &at, &slc); /* r_tscc gives no block at k % 8 == 4 */
+    CHECK(rdof_t3rf_rc_read(out) == RDOF_T3_RC_CEASE && t.ch[0].rc_sent == 1, "RC in the TSCC's free slot");
+}
+
 /* ── carrier 1 on a split TX half: the frames it writes ──────────────────── */
 
 static struct {
@@ -468,6 +529,7 @@ int main(void)
     test_cach();
     test_payload();
     test_tscc();
+    test_rc();
     test_split(true);
     test_split(false);
     printf("%s\n", fails ? "trunkrf: FAILED" : "trunkrf: ok");

@@ -536,7 +536,8 @@
         "static_tg": {"$ref": "#/$defs/idset"},
         "foacsu": {"type": "boolean"},
         "timers": {"type": "object"},
-        "broadcast": {"type": "object"}
+        "broadcast": {"type": "object"},
+        "services": {"type": "object"}
       }
     },
     "app3": {

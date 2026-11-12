@@ -68,6 +68,8 @@ typedef struct {
     uint32_t reg_hold_s;
     uint32_t adjacent_ms, chan_freq_ms, local_time_ms, gen_site_ms; /* 0: not broadcast */
     uint32_t stream_seed; /* first stream ID for setups the site starts */
+    uint8_t preempt;      /* 1: an emergency with no channel free clears a non-emergency call (361-4 6.4.14.3.1) */
+    uint8_t pad1[3];
 } rdof_t3_cfg_t;
 
 typedef struct {
@@ -156,6 +158,7 @@ typedef struct {
 #define RDOF_T3_CLOSE_DISCON 3   /* P_MAINT DISCON */
 #define RDOF_T3_CLOSE_CMD 4      /* a command or a cancel */
 #define RDOF_T3_CLOSE_WITHDRAW 5 /* the site went off the air */
+#define RDOF_T3_CLOSE_PREEMPT 6  /* cleared for an emergency call (361-4 6.4.14.3.1) */
 
 #define RDOF_T3_ACT_REG 1   /* op: 1 register, 2 deregister, 3 expire, 4 deny, 5 refuse */
 #define RDOF_T3_ACT_GRANT 2 /* flags: group, late, net */
@@ -188,10 +191,16 @@ typedef struct {
 #define RDOF_T3_USE_HANG 4  /* granted, no one talking */
 #define RDOF_T3_USE_CLEAR 5 /* sending P_CLEAR */
 
+/* rdof_t3_ch_out_t.rc: RC info (361-4 table 6.32) with this flag */
+#define RDOF_T3_RC_SEND 0x10
+#define RDOF_T3_RC_CEASE 0x4 /* cease transmission command */
+
 typedef struct {
     uint8_t dt;      /* RDOF_T3_DT_*, 0: nothing (send voice, idle, or nothing as the channel's use says) */
     uint8_t pdu[10];
     uint8_t use;     /* RDOF_T3_USE_* now */
+    uint8_t rc;      /* RDOF_T3_RC_SEND | RC info: a Reverse Channel PDU in this outbound burst, for the other slot's
+                        talker (361-1 5.1.5); 0 none */
 } rdof_t3_ch_out_t;
 
 typedef struct {

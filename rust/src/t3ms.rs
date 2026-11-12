@@ -8,6 +8,7 @@
 use core::ffi::c_int;
 
 use crate::t3pdu::*;
+use crate::t3rc::RC_CEASE;
 use crate::t3site::{CARRIERS, VOICE_FRAME, VOICE_HEADER, VOICE_TERM};
 
 pub const ANSWER_ACCEPT: u8 = 0;
@@ -124,6 +125,8 @@ pub struct Ms {
     pay_group: bool,
     pay_src: u32,
     pay_dst: u32,
+    cease_left: u8, // told to cease (RC): bursts left of its superframe; 0 none
+    ceasing: bool,
     // counters
     last_reason: u8,
     grants: u32,
@@ -131,6 +134,7 @@ pub struct Ms {
     calls_failed: u32,
     ahoys: u32,
     clears: u32,
+    ceased: u32,
 }
 
 impl Ms {
@@ -439,6 +443,7 @@ impl Ms {
         self.ch = ch;
         self.mine = mine;
         self.talking = mine;
+        self.ceasing = false;
         self.header_sent = false;
         self.maint_left = 0;
         self.pay_group = g.op != OP_PV_GRANT;
@@ -452,6 +457,20 @@ impl Ms {
             self.pay_src = src;
             self.pay_dst = dst;
         }
+    }
+
+    /// A Reverse Channel PDU heard on the alternate slot of its payload channel ch (361-1 5.1.5). Cease
+    /// transmission (361-4 6.4.15): it finishes its superframe, sends a terminator and stops talking.
+    pub fn rc(&mut self, ch: usize, info: u8) {
+        if self.state == PAYLOAD && ch == self.ch && self.talking && !self.ceasing && info == RC_CEASE {
+            self.ceasing = true;
+            self.cease_left = 5;
+        }
+    }
+
+    /// Times it stopped talking for an RC cease.
+    pub fn ceased(&self) -> u32 {
+        self.ceased
     }
 
     /// Inbound slot k: Some when it transmits.
@@ -550,6 +569,16 @@ impl Ms {
                 self.header_sent = true;
                 self.talk_end = self.now + self.cur.talk_ms as i64;
                 return Some(voice(VOICE_HEADER, self));
+            }
+            if self.ceasing {
+                if self.cease_left > 0 {
+                    self.cease_left -= 1;
+                    return Some(voice(VOICE_FRAME, self));
+                }
+                self.ceasing = false;
+                self.talking = false;
+                self.ceased += 1;
+                return Some(voice(VOICE_TERM, self));
             }
             if self.now >= self.talk_end {
                 self.talking = false;
