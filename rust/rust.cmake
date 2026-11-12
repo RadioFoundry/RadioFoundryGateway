@@ -6,7 +6,7 @@
 # Rust's compiler_builtins (strip_builtins.cmake).
 set(RDOF_RUST_DIR ${CMAKE_CURRENT_LIST_DIR})
 # common modules the crate replaces: common/src/<module>.c each.
-set(RDOF_RUST_MODULES ambe benchcfg benchtx bits config hblink jitter json jsonp layer2 mmdvm modem netcalls oled pdu rawburst repeater slotgrid status tracker txvr usbmatch)
+set(RDOF_RUST_MODULES ambe benchcfg benchtx bits config hblink jitter json jsonp lastheard layer2 mmdvm modem netcalls oled pdu rawburst repeater slotgrid status tracker txvr usbmatch)
 # C built with them: the check of the structs they share (layout.c).
 set(RDOF_RUST_C_SRCS ${RDOF_RUST_DIR}/layout.c)
 

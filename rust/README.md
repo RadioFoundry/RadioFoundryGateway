@@ -21,6 +21,7 @@ them; a new module goes there and in `src/lib.rs`.
 | `jitter.rs` | `common/src/jitter.c` (`ceil` and `rint` through the C library) |
 | `json.rs` | `common/src/json.c` (floats through the C library's `snprintf`) |
 | `jsonp.rs` | `common/src/jsonp.c` (numbers through the C library's `strtod`) |
+| `lastheard.rs` | `common/src/lastheard.c` (a frequency's text through the C library's `sscanf` and `llround`) |
 | `layer2.rs` | `common/src/layer2.c` |
 | `mmdvm.rs` | `common/src/mmdvm.c` |
 | `modem.rs` | `common/src/modem.c` (`rint` and `%.5f` through the C library) |

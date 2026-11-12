@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 //! The C this crate calls: common's FEC (rdof/fec.h) and repeater bursts (rdof/duplex.h), RadioFoundry's block
-//! codes (common/src/radiofoundry), and the C library's snprintf, strtod, strtol, ceil, floor, rint and
-//! modf.
+//! codes (common/src/radiofoundry), and the C library's snprintf, sscanf, strtod, strtol, ceil, floor, rint,
+//! llround and modf.
 
 use core::ffi::{c_char, c_int};
 
@@ -35,6 +35,7 @@ pub const RDOF_DT_VOICE: c_int = 0xF1;
 extern "C" {
     pub fn abort() -> !;
     pub fn snprintf(buf: *mut c_char, n: usize, format: *const c_char, ...) -> c_int;
+    pub fn sscanf(s: *const c_char, format: *const c_char, ...) -> c_int;
 
     // the C library's number parsing, as the C modules use it
     pub fn strtod(s: *const c_char, end: *mut *mut c_char) -> f64;
@@ -44,6 +45,7 @@ extern "C" {
     pub fn ceil(x: f64) -> f64;
     pub fn floor(x: f64) -> f64;
     pub fn rint(x: f64) -> f64;
+    pub fn llround(x: f64) -> core::ffi::c_longlong;
     pub fn modf(x: f64, ip: *mut f64) -> f64;
 
     // rdof/fec.h

@@ -14,6 +14,7 @@ use crate::hblink::{RdofHbSink, RdofLocation, RdofNetBurst, RdofTune};
 use crate::jitter::{RdofJb, RdofJbKey, RdofJbStream};
 use crate::json::RdofJson;
 use crate::jsonp::{JDoc, JNode};
+use crate::lastheard::{RdofLh, RdofLhEntry};
 use crate::mmdvm::{RdofMmdvmReader, RdofMmdvmStatus, RdofModemConfig};
 use crate::modem::{RdofModem, RdofModemPort, RdofRadio, RdofRssiMap};
 use crate::netcalls::{RdofNetcalls, RdofTxCallInfo};
@@ -128,6 +129,8 @@ static LAYOUTS: &[Layout] = &layouts![
     ("rdof_rpt_slot_t", RdofRptSlot),
     ("rdof_rpt_rf_in_t", RdofRptRfIn),
     ("rdof_repeater_t", RdofRepeater),
+    ("rdof_lh_entry_t", RdofLhEntry),
+    ("rdof_lh_t", RdofLh),
 ];
 
 /// The i-th struct, or NULL past the last.

@@ -16,6 +16,7 @@ pub mod hblink;
 pub mod jitter;
 pub mod json;
 pub mod jsonp;
+pub mod lastheard;
 pub mod layer2;
 mod layout;
 pub mod mmdvm;

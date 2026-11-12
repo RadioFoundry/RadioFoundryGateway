@@ -16,6 +16,7 @@
 #include "rdof/oled.h"
 #include "rdof/json.h"
 #include "rdof/jsonp.h"
+#include "rdof/lastheard.h"
 #include "rdof/mmdvm.h"
 #include "rdof/modem.h"
 #include "rdof/netcalls.h"
@@ -123,6 +124,8 @@ static const rdof_rust_layout_t c_layouts[] = {
     L(rdof_rpt_rf_in_t),
     L(rdof_repeater_t),
 #endif
+    L(rdof_lh_entry_t),
+    L(rdof_lh_t),
 };
 
 static bool is_repeater_struct(const char *name)

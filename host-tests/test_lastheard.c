@@ -2,9 +2,11 @@
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 /* Last heard (rdof/lastheard.h): the ring, the tracker's JSON, NET calls, the JSON out; then every golden
  * tracker scenario through it. */
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
+#include "rdof/fec.h"
 #include "rdof/jsonp.h"
 #include "rdof/lastheard.h"
 #include "rdof/tracker.h"
@@ -262,6 +264,56 @@ static void test_ring_and_since(void)
     CHECK(lh.n == 1 && ring[0].active && ring[0].start == 2);
 }
 
+/* rdof_lh_json into cap bytes is want, exactly. */
+static void exact(const rdof_lh_t *lh, size_t cap, const char *want)
+{
+    size_t len = rdof_lh_json(lh, 0, 110.1234, 1700000000999LL, out, cap);
+    CHECK(len == strlen(out) && !strcmp(out, want));
+    if (strcmp(out, want))
+        printf("  got  %s\n  want %s\n", out, want);
+}
+
+/* The JSON out byte for byte (the C and the Rust port both give it): names cut to fit, a long name matched by what
+ * was kept of it, a CSBK's description cut, the metrics, and a buffer too small for every entry. */
+static void test_exact(void)
+{
+    rdof_lh_t lh;
+    rdof_lh_init(&lh, ring, 3);
+    CHECK(rdof_lh_tracker_json(&lh, "repeater-1", "a-radio-name-longer-than-23", "a-channel-name-longer-than-23",
+                               START, 100.0, 1700000000123LL));
+    CHECK(rdof_lh_privacy(&lh, "a-radio-name-longer-than-XX", "a-channel-name-longer-thYY", 1)); /* 23 the same */
+    CHECK(rdof_lh_tracker_json(&lh, "x", "a-radio-name-longer-than-2", "a-channel-name-longer-than-2", END, 101.25, 0));
+    rdof_tx_call_info_t call = {.src = 16777215, .dst = 1, .slot = 2, .freq = 446075000, .cc = 15, .frames = -1};
+    uint8_t pl[12] = {0x04}, info[196]; /* "Unit to Unit Voice Service Request" */
+    rdof_bptc196_encode(pl, info);
+    rdof_build_burst(info, NULL, NULL, call.csbk);
+    call.has_csbk = true;
+    CHECK(rdof_lh_tx(&lh, "roamer", "r", "start", &call, 0, 102, 0));
+    call.has_csbk = false;
+    call.frames = 7;
+    CHECK(rdof_lh_tx(&lh, "roamer", "r", "start", &call, 0, 103, -5));
+    CHECK(rdof_lh_tx(&lh, "roamer", "r", "end", &call, NAN, 104.0005, 0));
+    CHECK(lh.n == 3);
+    exact(&lh, sizeof out,
+          "{\"seq\":6,\"now_ms\":1700000000999,\"max\":3,\"calls\":[{\"id\":5,\"seq\":6,\"dir\":\"net\","
+          "\"kind\":\"data\",\"role\":\"roamer\",\"radio\":\"r\",\"slot\":2,\"src\":16777215,\"dst\":1,"
+          "\"group\":false,\"freq\":446075000,\"cc\":15,\"age_s\":7.123,\"active\":false,\"duration\":1.001,"
+          "\"end\":\"end\",\"frames\":7},{\"id\":4,\"seq\":4,\"dir\":\"net\",\"kind\":\"csbk\",\"role\":\"roamer\","
+          "\"radio\":\"r\",\"slot\":2,\"src\":16777215,\"dst\":1,\"group\":false,\"freq\":446075000,\"cc\":15,"
+          "\"age_s\":8.123,\"active\":false,\"desc\":\"Unit to Unit Voice Serv\"},{\"id\":1,\"seq\":3,"
+          "\"dir\":\"rf\",\"kind\":\"voice\",\"role\":\"repeater-\",\"radio\":\"a-radio-name-longer-tha\","
+          "\"channel\":\"a-channel-name-longer-t\",\"slot\":1,\"src\":9990070,\"dst\":202,\"group\":true,"
+          "\"freq\":438487500,\"cc\":2,\"start_ms\":1700000000123,\"age_s\":10.123,\"active\":false,"
+          "\"duration\":1.14,\"end\":\"end\",\"ber\":0.25,\"rssi\":-98,\"rssi_min\":-101,\"rssi_max\":-95,"
+          "\"encrypted\":true}]}");
+    exact(&lh, 300,
+          "{\"seq\":6,\"now_ms\":1700000000999,\"max\":3,\"calls\":[{\"id\":5,\"seq\":6,\"dir\":\"net\","
+          "\"kind\":\"data\",\"role\":\"roamer\",\"radio\":\"r\",\"slot\":2,\"src\":16777215,\"dst\":1,"
+          "\"group\":false,\"freq\":446075000,\"cc\":15,\"age_s\":7.123,\"active\":false,\"duration\":1.001,"
+          "\"end\":\"end\",\"frames\":7}],\"more\":true}");
+    exact(&lh, 64, "{\"seq\":6,\"now_ms\":1700000000999,\"max\":3,\"calls\":[],\"more\":true}");
+}
+
 #if RDOF_FEATURE_TRACKER
 /* Every golden tracker scenario through the ring: each end matches a start, and nothing's left active. */
 struct lh_cap {
@@ -343,6 +395,7 @@ int main(void)
     test_rf();
     test_net();
     test_ring_and_since();
+    test_exact();
 #if RDOF_FEATURE_TRACKER
     test_scenarios();
 #endif
