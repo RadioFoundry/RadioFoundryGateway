@@ -763,11 +763,21 @@ type `tier3` (was `trunk`), the build option `RDOF_TIER3`, the modules `t3*`.
 | 2 | Rust only: `t3rf`, `t3cfg`, `t3unit`, `t3sim`, `t3split` ported from C to rust/src (cargo feature `tier3` = `legacy` + `t3`, in rdof_common's one Rust library); the C files removed; the C headers stay the API for rdofradio, whose device, MQTT and socket glue (`rdofradio_t3.c`, `rdofradio_simext.c`) stays C with the rest of that program. A C-modules build (`RDOF_RUST` off) has no Tier III site | done 2026-11-12: host tests (74, and 68 with `RDOF_RUST` off), the cargo tests, the two-site system test |
 | 3 | After the port: the modules call each other by Rust path, not through their C API; one copy of each mirror | done 2026-11-12, as step 2 |
 | 4 | Carrier timing: carrier A's slots followed the SDR's sample clock and carrier B's the host's, with the offset taken once, so they drifted apart by the SDR's clock error (20 ppm: one slot in 25 minutes). Now carrier A sits on the host's slot grid too, through the stream's sample clock timed against the host's (9.4) | done on the host: an SDR 20 ppm fast for 3 hours stays within 69 us, 2 us of drift (`rdof_radio_utc_tests`); on a file device the site keys on the grid. On the bench: carrier B's bursts stay on carrier A's grid |
-| 5 | The Pluto bundle with `tier3` (tools/pluto/build.sh): rdofradio.gz still fits the settings flash's 896 KB with the controller in it | the bundle builds; its size in reference.md |
-| 6 | Bench, step 1 (owner's go, a bench TX frequency with a lease, cabled or lowest power): the Pluto runs a one-carrier site (TSCC on TS1, a payload channel on TS2) and a bench receiver checks the TSCC: C_SYS_Parms and its counter, C_ALOHA at least every 4th TSCC slot, the broadcasts' cadence, CRCs, the CACH (TC, AT) | an hour of TSCC decoded with no bad block |
+| 5 | The Pluto bundle with `tier3` (tools/pluto/build.sh): rdofradio.gz still fits the settings flash's 896 KB with the controller in it | done 2026-11-12: gzip gave 746 KB, too big; the bundle now carries rdofradio.xz (628 KB) |
+| 6 | Bench, step 1 (owner's go, a bench TX frequency with a lease, cabled or lowest power): the Pluto runs a one-carrier site (TSCC on TS1, a payload channel on TS2) and a bench receiver checks the TSCC: C_SYS_Parms and its counter, C_ALOHA at least every 4th TSCC slot, the broadcasts' cadence, CRCs, the CACH (TC, AT) | an hour of TSCC decoded with no bad block ; first run 2026-11-12: 30 s from a W12, 997 bursts, every CRC good, an Aloha at least every 4th TSCC slot. The run found the grid moved when netclock stepped the clock after key-up (fixed: carrier 1 keys once the clock settles) |
 | 7 | Bench, step 2: an MS against the site. In order of reach: a standard Tier III radio, if one is to hand (registration, a group call, a private call with the availability check); RadioFoundry's MS engine once it exists (handoff notes section 2) | registration accepted, a group call heard on the payload channel |
 | 8 | Bench, step 3: carrier B on a split radio's TX half (RadioFoundry's split protocol), two payload slots on it | a call granted on carrier B heard there |
 | 9 | Merge into main | the owner's go |
+
+An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
+apart from the code, found seven deviations; six are fixed (2026-11-12):
+- An MBC last block's CRC had the header's mask 0xAAAA; it takes none (361-1 7.4.0, B.3.12). A standard radio would
+  have dropped every Chan_Freq broadcast.
+- An MBC could start in the slot before a due C_ALOHA and push it to the fifth slot (this document's 3.2).
+- The simulated MS ignored the Aloha's Mask and Service Function (6.2.1.1.1, 6.2.1.1.2), made 6 attempts for an
+  emergency request instead of NRand_NE (10), and sent P_MAINT to the called MS instead of TSI (table 7.32).
+- Open: the settings refuse SITE 0, which table 6.5 seems to count (a Small network's 5-bit SITE gives 32 sites).
+  Kept until the code's use of 0 as "no site" is checked.
 
 Out of round 2, unchanged from section 1.2: dedicated multi-carrier sites beyond two, multi-site roaming on air,
 packet data, authentication, the standby controller.
