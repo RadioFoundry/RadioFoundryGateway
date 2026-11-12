@@ -16,7 +16,9 @@
 #include "rdof/pdu.h"
 #include "rdof/sdr/sdrmodem.h"
 #include "rdof/sdr/sdrsplit.h"
+#if RDOF_RUST_T3
 #include "rdof/t3rf.h"
+#endif
 
 static int fails;
 
@@ -1969,6 +1971,7 @@ static void test_outbound_back(void)
     printf("outbound and back: %d BS idle bursts, unkeyed, role dropped, a simplex MS burst after\n", keyed_n);
 }
 
+#if RDOF_RUST_T3 /* the radio layer is Rust only (the tier3 feature) */
 /* A trunked site's control carrier (docs/spec/fw/tier3.md 9.1): a duplex modem held keyed with no host traffic, a
  * slot source giving a CSBK in every TS1 slot (TS2 left to the modem: idle), the AT and a short LC from it. The
  * source is asked once per slot, k after k; the receiver hears our blocks on TS1 and idles on TS2; the short LC goes
@@ -2068,6 +2071,7 @@ static void test_slot_source(void)
     printf("slot source: %d slots asked, %d CSBKs heard on TS1, the short LC on air, held through DMR_START 00\n",
            calls, ours);
 }
+#endif
 
 #endif
 
@@ -2277,7 +2281,9 @@ int main(void)
     test_dcdm_e2e();
     test_outbound();
     test_outbound_back();
+#if RDOF_RUST_T3
     test_slot_source();
+#endif
 #endif
     test_write_from_reply();
     test_signal(true);
