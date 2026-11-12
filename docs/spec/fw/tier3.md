@@ -4,7 +4,9 @@ Covers: what the `tier3` app is, how the site controller, the radio layer, the M
 services split the work, the protocol subset, the settings, the network messages, failure and isolation behavior,
 the road to multi-site roaming, what is built in this round and what comes later, and how it is tested.
 
-Status (2026-11-05): design. Branch `tier3-trunk`, from `mqtt-net-rebase`.
+Status (2026-11-12): round 1 built and run on simulated air only (two sites over a broker, external MSs through
+`--sim-ext`); never on air. Round 2 under way (section 13): the site in Rust only, then the bench. Branch
+`tier3-trunk`, on main as of 2026-11-12.
 
 Sources: ETSI TS 102 361-1 (air interface), -2 (voice), -4 (trunking, V1.12.1). Clause numbers below are 361-4's
 unless marked. Clean room: the ETSI text and our own MIT code only. Authentication (361-4 6.4.8, 6.4.9.2, 6.4.10) is
@@ -731,16 +733,32 @@ and against `t3ms` on one air.
 
 ## 13. Work order
 
-1. This document; the mqtt-net additions in mqtt-net.md; the `tier3` app in config-v3.md.
-2. Rust: PDU codec (`t3pdu`), controller (`t3site`), simulator (`t3ms`, `t3air`), C API, cargo tests.
-3. Build: `rust.cmake` features, host test target, Linux build of the `t3` feature, Pluto container.
-4. Settings: `trunk` app parse, schema, fixtures.
-5. Radio layer: burst helpers, SDR modem slot source, payload channels, split output, receive path; host tests.
-6. mqtt-net: `setup` item, Tier II answer, records, status, `cfg` and cache; host tests.
-7. rdofradio: Tier III unit, `--sim-air`, `--state-dir`.
-8. Network services: library, router, manager, dashboard; tests; the system test.
-9. Docs: reference.md (layout, limits), overview.md roles, rxtx-combinations.md, transmitters.md.
-10. Pluto bundle build; bench run when the owner says.
+### 13.1 Round 1 (2026-11-05 to 11-06): built
+
+This document; the mqtt-net additions; the `tier3` app in config-v3.md. Rust: the PDU codec, controller and MS
+simulator with cargo tests. C: the radio layer, settings, Tier III unit, simulated air, the split carrier, rdofradio's
+site, `--sim-air` and `--sim-ext`. Network services: library, router, manager, dashboard, the two-site system test.
+Docs. Not run on a device.
+
+### 13.2 Round 2 (from 2026-11-12)
+
+The owner's direction: Rust is the code priority, and the Tier III site is Rust only. Its name is Tier III: the app
+type `tier3` (was `trunk`), the build option `RDOF_TIER3`, the modules `t3*`.
+
+| Step | What | Done when |
+|---|---|---|
+| 1 | The branch on main (merged 2026-11-12) and the Tier III names | host tests pass (done) |
+| 2 | Rust only: `t3rf`, `t3cfg`, `t3unit`, `t3sim`, `t3split` ported from C to rust/src (cargo feature `tier3` = `legacy` + `t3`, in rdof_common's one Rust library); the C files removed; the C headers stay the API for rdofradio, whose device, MQTT and socket glue (`rdofradio_t3.c`, `rdofradio_simext.c`) stays C with the rest of that program. A C-modules build (`RDOF_RUST` off) has no Tier III site | host tests, the cargo tests, the two-site system test |
+| 3 | After the port: the modules call each other by Rust path, not through their C API; the structs C no longer reads become plain Rust | as step 2 |
+| 4 | Carrier timing: carrier A's slots follow the SDR's sample clock, carrier B's split half follows the host's (UTC) clock, and the offset between them is taken once, so they drift apart by the SDR's clock error (20 ppm: one slot in 25 minutes). Carrier B follows carrier A instead: its slot grid is carrier A's, as measured against the host clock, re-aligned each minute; UTC stays only the slots' numbering | a host test with a 20 ppm SDR clock over hours of slots; on the bench, carrier B's bursts stay on carrier A's grid |
+| 5 | The Pluto bundle with `tier3` (tools/pluto/build.sh): rdofradio.gz still fits the settings flash's 896 KB with the controller in it | the bundle builds; its size in reference.md |
+| 6 | Bench, step 1 (owner's go, a bench TX frequency with a lease, cabled or lowest power): the Pluto runs a one-carrier site (TSCC on TS1, a payload channel on TS2) and a bench receiver checks the TSCC: C_SYS_Parms and its counter, C_ALOHA at least every 4th TSCC slot, the broadcasts' cadence, CRCs, the CACH (TC, AT) | an hour of TSCC decoded with no bad block |
+| 7 | Bench, step 2: an MS against the site. In order of reach: a standard Tier III radio, if one is to hand (registration, a group call, a private call with the availability check); RadioFoundry's MS engine once it exists (handoff notes section 2) | registration accepted, a group call heard on the payload channel |
+| 8 | Bench, step 3: carrier B on a split radio's TX half (RadioFoundry's split protocol), two payload slots on it | a call granted on carrier B heard there |
+| 9 | Merge into main | the owner's go |
+
+Out of round 2, unchanged from section 1.2: dedicated multi-carrier sites beyond two, multi-site roaming on air,
+packet data, authentication, the standby controller.
 
 ## 14. Open questions for the owner
 
@@ -748,3 +766,5 @@ and against `t3ms` on one air.
 2. Whether a third-party Tier III radio is available for the interop test, and which.
 3. The network identity to use for tests (MODEL/NET), and whether DMR IDs for sites follow the existing 999xxxx test
    range.
+4. Whether mqtt-net's keys follow the new name too: info's `trunk` object and a path's `"trunk": true`, status's
+   `trunk` (shared with the network services; unchanged so far).
