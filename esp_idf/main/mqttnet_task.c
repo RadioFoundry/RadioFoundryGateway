@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 /*
  * The MQTT network on the board (docs/spec/fw/mqtt-net.md, rdof/mqttnet.h): an mqtt network with calls and format
- * "v3" carries the calls as call messages, on a connection of its own (client rdof-net-{name}, will online "0").
+ * "v3" carries the calls as call messages, on a connection of its own (client rdof-net-{name}-{hw}, will online "0").
  *
  * Up: each receiver's tracker (the SDR's channels, each radio's) hands its frames to mn_sink's queue; the task runs
  * them through an uplink per receiver (rdof_mn_up) and publishes on {root}/tg|pc/{dst}/{node}. Down: esp-mqtt's
@@ -652,7 +652,7 @@ void mn_start(void)
 #endif
     m->use_tls = use_tls;
     snprintf(uri, sizeof uri, "%s://%s:%d", use_tls ? "mqtts" : "mqtt", host, port);
-    rdof_mn_client_id(id, sizeof id, root, m->node);
+    rdof_mn_client_id(id, sizeof id, root, m->node, net_hwid());
     client_cfg = (esp_mqtt_client_config_t){
         .broker.address.uri = uri,
 #if CONFIG_RDOF_MQTT_TLS

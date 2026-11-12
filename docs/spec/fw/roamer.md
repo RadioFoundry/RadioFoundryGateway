@@ -391,7 +391,7 @@ lifetime, DMRC / DMRK reliable).
 ### 7.2 MQTT ([mqtt.md](mqtt.md))
 
 Topics `{root}/{name}/roaming/{json,raw,tx}` and retained `{root}/_sdr/{name}/status`; client id
-`rdof-roaming-<name>`; last will `{"state": "offline"}`.
+`rdof-roaming-<name>-<hw>` (mqtt.md); last will `{"state": "offline"}`.
 
 | Message | When |
 |---|---|

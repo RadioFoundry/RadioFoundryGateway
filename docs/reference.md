@@ -454,7 +454,7 @@ Keys: [config-v3.md](spec/fw/config-v3.md) §6.3; how it works and what's left: 
 
 An `mqtt` network with `"calls": true, "format": "v3"` carries calls as the MQTT network's messages
 ([mqtt-net.md](spec/fw/mqtt-net.md)) in place of DMRD packets. The board opens a second connection for it
-(`mqttnet_task.c`, client ID `rdof-net-{name}`, the box's `name` as its node), with the network's broker, user, root
+(`mqttnet_task.c`, client ID `rdof-net-{name}-{hw}`, the box's `name` as its node), with the network's broker, user, root
 and TLS.
 
 - **Up:** every receiver (the SDR's channels, each roamer's or repeater's radio) sends the calls the router gives this
@@ -1244,7 +1244,7 @@ rdofradio --soapy driver=plutosdr -r 2400000 --allow-tx --config example.json --
 - **HBlink4:** with an `hblink` network it's a peer, the board's peer state (`common/src/hbpeer.c`) under a POSIX
   UDP socket (`sdr/cli/rdofradio_net.c`). UDP only: `transport` sctp falls back to UDP with a warning.
 - **MQTT:** an `mqtt` network with `calls` carries the calls: as DMRD packets, or with `format: "v3"` as the MQTT
-  network's call messages ([mqtt-net.md](spec/fw/mqtt-net.md)) on a connection of its own (`rdof-net-{name}`).
+  network's call messages ([mqtt-net.md](spec/fw/mqtt-net.md)) on a connection of its own (`rdof-net-{name}-{hw}`).
 - **Channels:** the receiver's channels are the SDR's as the board resolves them (`rdof_plan_sdr`): its receiver's
   frequencies, then the ones it hears for the unit (a transceiver's, a repeater's input), all in the rate's window,
   up to 16. They're all alike: with `identity: per_path` each is a peer of its own (one with the unit's peer id is the

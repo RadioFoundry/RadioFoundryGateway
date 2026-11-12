@@ -33,6 +33,11 @@ typedef struct {
     void *ctx;
 } rdofmq_opts_t;
 
+/* This machine's own id for a client ID, six hex digits, the same at every start: the last three bytes of its first
+   network interface's hardware address (by name; not the loopback, not an address of zeros), else the last six
+   digits of /etc/machine-id, else a hash of the host's name. Two machines given the same settings stay two
+   clients. */
+const char *rdofmq_hwid(void);
 /* Connects in the background. NULL: libmosquitto refused the options (said why). */
 rdofmq_t *rdofmq_start(const rdofmq_opts_t *o);
 #define RDOFMQ_SUBS 32

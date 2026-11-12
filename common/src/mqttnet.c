@@ -2043,14 +2043,17 @@ static bool sub_add(uint32_t *tgs, int *n, int max, uint32_t tg)
     return true;
 }
 
-size_t rdof_mn_client_id(char *out, size_t cap, const char *root, const char *node)
+size_t rdof_mn_client_id(char *out, size_t cap, const char *root, const char *node, const char *hwid)
 {
     if (!cap)
         return 0;
+    const char *const sep = hwid && hwid[0] ? "-" : "";
+    if (!hwid)
+        hwid = "";
     if (!root || !root[0] || !strcmp(root, "DMR"))
-        snprintf(out, cap, "rdof-net-%s", node);
+        snprintf(out, cap, "rdof-net-%s%s%s", node, sep, hwid);
     else
-        snprintf(out, cap, "rdof-net-%s-%s", root, node);
+        snprintf(out, cap, "rdof-net-%s-%s%s%s", root, node, sep, hwid);
     for (char *q = out; *q; q++)
         if (*q == '/')
             *q = '-';

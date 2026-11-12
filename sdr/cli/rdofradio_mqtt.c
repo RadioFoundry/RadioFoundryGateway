@@ -8,12 +8,15 @@
 #if LIBMOSQUITTO_MAJOR == 2 && LIBMOSQUITTO_MINOR == 0 /* the protocol's numbers: their own header in 2.0 */
 #include <mqtt_protocol.h>
 #endif
+#include <ctype.h>
+#include <dirent.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #define MAX_ALIASES 64
 
@@ -110,6 +113,61 @@ static void on_message(struct mosquitto *m, void *ctx, const struct mosquitto_me
     rdofmq_t *q = ctx;
     if (q->o.on_message && msg->topic)
         q->o.on_message(q->o.ctx, msg->topic, msg->payload, msg->payloadlen);
+}
+
+static bool hex6(const char *s, size_t n, char out[7])
+{
+    int k = 0;
+    for (size_t i = 0; i < n && k < 6; i++)
+        if (isxdigit((unsigned char)s[i]))
+            out[k++] = (char)tolower((unsigned char)s[i]);
+    out[k] = 0;
+    return k == 6;
+}
+
+const char *rdofmq_hwid(void)
+{
+    static char id[7];
+    if (id[0])
+        return id;
+    /* the first interface by name with a hardware address (Linux) */
+    struct dirent **list = NULL;
+    const int n = scandir("/sys/class/net", &list, NULL, alphasort);
+    for (int i = 0; i < n; i++) {
+        char path[300], mac[32] = "";
+        if (!id[0] && list[i]->d_name[0] != '.' && strcmp(list[i]->d_name, "lo")) {
+            snprintf(path, sizeof path, "/sys/class/net/%s/address", list[i]->d_name);
+            FILE *f = fopen(path, "r");
+            if (f) {
+                if (fgets(mac, sizeof mac, f) && strlen(mac) >= 17 && strncmp(mac, "00:00:00:00:00:00", 17))
+                    hex6(mac + 9, 8, id);
+                fclose(f);
+            }
+        }
+        free(list[i]);
+    }
+    free(list);
+    if (!id[0]) {
+        char line[80] = "";
+        FILE *f = fopen("/etc/machine-id", "r");
+        if (f) {
+            if (fgets(line, sizeof line, f)) {
+                size_t len = strcspn(line, "\r\n");
+                if (len >= 6)
+                    hex6(line + len - 6, 6, id);
+            }
+            fclose(f);
+        }
+    }
+    if (!id[0]) {
+        char host[256] = "";
+        gethostname(host, sizeof host - 1);
+        uint32_t h = 2166136261u; /* FNV-1a */
+        for (const char *p = host; *p; p++)
+            h = (h ^ (uint8_t)*p) * 16777619u;
+        snprintf(id, sizeof id, "%06x", (unsigned)(h & 0xffffff));
+    }
+    return id;
 }
 
 rdofmq_t *rdofmq_start(const rdofmq_opts_t *o)

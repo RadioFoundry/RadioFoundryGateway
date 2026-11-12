@@ -864,11 +864,16 @@ static void test_info(void)
     /* the connection's client ID: the node's under the default root, the root's too under another */
     {
         char id[64];
-        CHECK(rdof_mn_client_id(id, sizeof id, "DMR", "pluto") == 14 && !strcmp(id, "rdof-net-pluto"));
-        rdof_mn_client_id(id, sizeof id, "club/test", "pluto");
+        CHECK(rdof_mn_client_id(id, sizeof id, "DMR", "pluto", NULL) == 14 && !strcmp(id, "rdof-net-pluto"));
+        rdof_mn_client_id(id, sizeof id, "club/test", "pluto", "");
         CHECK(!strcmp(id, "rdof-net-club-test-pluto"));
-        rdof_mn_client_id(id, 12, "DMR", "pluto");
+        rdof_mn_client_id(id, 12, "DMR", "pluto", NULL);
         CHECK(!strcmp(id, "rdof-net-pl"));
+        /* the machine's id last: two boxes of one name stay two clients */
+        rdof_mn_client_id(id, sizeof id, "DMR", "w12", "ae1948");
+        CHECK(!strcmp(id, "rdof-net-w12-ae1948"));
+        rdof_mn_client_id(id, sizeof id, "club/test", "w12", "ad08f8");
+        CHECK(!strcmp(id, "rdof-net-club-test-w12-ad08f8"));
     }
     /* the apps' IDs, to subscribe: the parrot's talkgroup on tg, nothing on pc; with an IP gateway on pc 9991
        beside it, that one on pc */

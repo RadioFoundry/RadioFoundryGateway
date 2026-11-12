@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "app.h"
+#include "esp_mac.h"
 #include "esp_log.h"
 #include "lwip/netdb.h"
 #include "lwip/sockets.h"
@@ -369,4 +370,15 @@ int net_udp_connect(const char *host, int port)
     }
     freeaddrinfo(res);
     return s;
+}
+
+const char *net_hwid(void)
+{
+    static char id[7];
+    if (!id[0]) {
+        uint8_t mac[6] = {0};
+        esp_read_mac(mac, ESP_MAC_BASE);
+        snprintf(id, sizeof id, "%02x%02x%02x", mac[3], mac[4], mac[5]);
+    }
+    return id;
 }

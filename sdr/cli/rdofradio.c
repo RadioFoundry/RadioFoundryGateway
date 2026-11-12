@@ -1826,7 +1826,7 @@ static void mn_start(void)
     mn_down.burst = mn_burst;
     mn_down.data = mn_data;
     mn_down.setup = mn_setup;
-    rdof_mn_client_id(id, sizeof id, c->mqtt_root, mn_node);
+    rdof_mn_client_id(id, sizeof id, c->mqtt_root, mn_node, rdofmq_hwid());
     rdofmq_opts_t o = {.host = c->mqtt_host, .user = c->mqtt_user, .pass = c->mqtt_pass, .port = c->mqtt_port,
                        .tls = c->mqtt_tls, .client_id = id, .will_topic = mn_online, .will_msg = "0",
                        .queue_max = 1000, .say = net_say, .on_message = mn_message, .no_local = true,
@@ -1925,7 +1925,7 @@ static void mq_start(void)
         return;
     rdof_netcalls_init(&mq_calls);
     snprintf(mq_status, sizeof mq_status, "%s/_sdr/%s/status", c->mqtt_root, rcfg.name);
-    snprintf(id, sizeof id, "rdof-%s-%s", R.full ? "repeater" : "roaming", rcfg.name);
+    snprintf(id, sizeof id, "rdof-%s-%s-%s", R.full ? "repeater" : "roaming", rcfg.name, rdofmq_hwid());
     mq_topic("raw", mq_alias[0], sizeof mq_alias[0]);
     mq_topic("json", mq_alias[1], sizeof mq_alias[1]);
     mq_alias_p[0] = mq_alias[0], mq_alias_p[1] = mq_alias[1];
@@ -1945,7 +1945,7 @@ static void mq_start(void)
         mq_calls_start();
     if (nchn && mq_report) {
         snprintf(mq_sdr_status, sizeof mq_sdr_status, "%s/_sdr/%s/status", c->mqtt_root, rcfg.sdr_name);
-        snprintf(sid, sizeof sid, "rdof-sdr-%s", rcfg.sdr_name);
+        snprintf(sid, sizeof sid, "rdof-sdr-%s-%s", rcfg.sdr_name, rdofmq_hwid());
         for (int k = 0; k < 2; k++) /* aliases: every channel's raw, then every channel's json */
             for (int i = 0; i < nchn; i++) {
                 mq_sdr_topic(CHN[i].ch->id, k ? "json" : "raw", mq_sdr_alias[k * nchn + i], sizeof mq_sdr_alias[0]);

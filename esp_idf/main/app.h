@@ -137,6 +137,9 @@ struct esp_mqtt_client *net_mqtt_start(net_mqtt_t *m);
  * timeout), so a publish from the DSP or the radio's loop would stall there while the broker is unreachable.
  * The message goes on a queue a task of its own hands to esp-mqtt. QoS 0 while not connected is dropped, as
  * paho does; so is anything when the queue is full. Returns whether it was queued. */
+/* The board's own id for what must differ between two boards given the same settings (an MQTT client ID): the last
+ * three bytes of its base MAC, six hex digits. */
+const char *net_hwid(void);
 bool net_mqtt_post(net_mqtt_t *m, const char *topic, const void *data, int len, int qos, bool retain); /* len < 0: a string */
 /* A UDP socket connected to host:port, or -1. */
 int net_udp_connect(const char *host, int port);

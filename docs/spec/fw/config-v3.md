@@ -538,7 +538,7 @@ packets on `{root}/calls/{tg|pc}/{dst}/{box}` and takes the other boxes' from `{
 v3`, `transport: mqtt/tcp or mqtt/tls (the others aren't built yet)`. A board carries the `v3` format only (rdofradio both), and only an image with the
 transceiver built in: with `dmrd`, or on a receiver-only image, it says so in its log and in `/api/status`
 `settings_warning`, and carries none. The v3 calls run on a connection of their own
-(client ID `rdof-net-{name}`, the box's `name` as the node, so it must be letters, digits, `.`, `_` or `-`), in
+(client ID `rdof-net-{name}-{hw}`, the box's `name` as the node, so it must be letters, digits, `.`, `_` or `-`), in
 rdofradio and on the board; one network in a file takes `format: "v3"` (the first, if several do).
 
 ### 7.3 `brandmeister`
