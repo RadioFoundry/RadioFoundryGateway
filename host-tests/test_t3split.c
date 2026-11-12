@@ -159,7 +159,7 @@ int main(void)
     cfg.ncarriers = 2;
     cfg.carriers[0] = (rdof_t3_carrier_t){.tx_hz = TX_A, .rx_hz = RX_A, .chan = 1, .tscc = 1, .enabled = 1};
     cfg.carriers[1] = (rdof_t3_carrier_t){.tx_hz = TX_B, .rx_hz = RX_B, .chan = 2, .tscc = 0, .enabled = 1};
-    S.u = calloc(1, sizeof *S.u);
+    S.u = calloc(1, rdof_t3unit_size());
     void *mem = aligned_alloc(8, (rdof_t3_site_size() + 7) / 8 * 8);
     const rdof_t3unit_io_t io = {no_publish, no_subscribe, say, NULL, rand32, NULL};
     char err[120];

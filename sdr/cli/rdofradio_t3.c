@@ -127,7 +127,7 @@ static void io_cache(void *ctx)
         tsay("%s: %s", tmp, strerror(errno));
         return;
     }
-    rdof_mn_cfg_cache(&T.u->mc, cache_line, f);
+    rdof_mn_cfg_cache(rdof_t3unit_mc(T.u), cache_line, f);
     if (fclose(f) || rename(tmp, path))
         tsay("%s: %s", path, strerror(errno));
 }
@@ -147,7 +147,7 @@ static void cache_load(void)
         size_t len = strlen(line);
         while (len && (line[len - 1] == '\n' || line[len - 1] == '\r'))
             line[--len] = 0;
-        if (len && rdof_mn_cfg_cache_line(&T.u->mc, line, len) == RDOF_MN_CFG_APPLIED)
+        if (len && rdof_mn_cfg_cache_line(rdof_t3unit_mc(T.u), line, len) == RDOF_MN_CFG_APPLIED)
             n++;
     }
     fclose(f);
@@ -223,7 +223,7 @@ static bool start_common(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o,
         tsay("rdofradio was built without libmosquitto (RDOF_MQTT): the site runs alone");
     T.net = false;
 #endif
-    T.u = calloc(1, sizeof *T.u);
+    T.u = calloc(1, rdof_t3unit_size());
     T.site_mem = aligned_alloc(8, (rdof_t3_site_size() + 7) / 8 * 8);
     if (!T.u || !T.site_mem) {
         snprintf(err, cap, "no memory");
@@ -233,7 +233,7 @@ static bool start_common(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o,
     if (!rdof_t3unit_init(T.u, T.site_mem, &t->cfg, &t->pol, &io, T.net ? t->root : NULL, T.net ? T.node : NULL,
                              t->path, "rdofradio " RDOF_VERSION, err, cap))
         return false;
-    T.u->now_ms = wall_ms();
+    rdof_t3unit_set_now(T.u, wall_ms());
     cache_load();
 #ifdef RDOF_MQTT
     if (T.net) {
@@ -262,7 +262,7 @@ static bool start_common(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o,
 /* messages in, the link's changes, timers; T.mu held */
 static void poll_locked(int64_t now_ms)
 {
-    T.u->now_ms = now_ms;
+    rdof_t3unit_set_now(T.u, now_ms);
     for (;;) {
         pthread_mutex_lock(&inq_mu);
         const bool any = inq_tail != inq_head;
@@ -402,7 +402,7 @@ int rdofradio_t3_sim(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o, vol
             ids[n++] = acts[a].id;
     }
     static rdof_t3ms_t *ms[RDOF_T3SIM_MS];
-    const rdof_t3_cfg_t *cfg = &T.u->cfg;
+    const rdof_t3_cfg_t *cfg = rdof_t3unit_cfg(T.u);
     uint16_t chans[RDOF_T3_CARRIERS];
     for (int k = 0; k < cfg->ncarriers; k++)
         chans[k] = cfg->carriers[k].chan;
@@ -488,8 +488,8 @@ int rdofradio_t3_sim(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o, vol
                          rdofradio_simext_clients(), (unsigned)sim.ext_in_n, (unsigned)sim.ext_drop);
             tsay("%d of %d MSs registered; out %u PDUs, in %u PDUs %u voice, %u collisions; net in %u, setups %u/%u%s%s",
                  reg, n, (unsigned)sim.out_pdus, (unsigned)sim.in_pdus, (unsigned)sim.in_voice,
-                 (unsigned)sim.collisions, (unsigned)T.u->net_in, (unsigned)T.u->setups_out,
-                 (unsigned)T.u->setups_in, extra, skipped ? "; slots skipped" : "");
+                 (unsigned)sim.collisions, (unsigned)rdof_t3unit_counts(T.u)->net_in, (unsigned)rdof_t3unit_counts(T.u)->setups_out,
+                 (unsigned)rdof_t3unit_counts(T.u)->setups_in, extra, skipped ? "; slots skipped" : "");
             if (o->verbose)
                 for (int i = 0; i < n; i++) {
                     rdof_t3ms_status_t st;
@@ -561,7 +561,7 @@ static bool source_slot(void *ctx, int64_t k, uint8_t burst[RDOF_BURST_BYTES], i
 {
     uint8_t control;
     pthread_mutex_lock(&T.mu);
-    T.u->now_ms = wall_ms();
+    rdof_t3unit_set_now(T.u, wall_ms());
     if (!A.placed || k < A.last_k) { /* the first, or the modem started its slots again */
         const int64_t want = wall_ms() / 30 + 2;
         A.d = want - k;

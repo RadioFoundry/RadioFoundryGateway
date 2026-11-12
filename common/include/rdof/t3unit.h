@@ -15,11 +15,10 @@
  *   the settings, commands and their results, status every 10 s, the activity events.
  *
  * The platform publishes online and info itself (rdof_t3unit_trunk_json gives info's trunk object) and keeps the
- * provisioning cache (rdof_mn_cfg_cache on u->mc, rdof_t3unit_apply after loading it).
+ * provisioning cache (rdof_mn_cfg_cache on rdof_t3unit_mc, rdof_t3unit_apply after loading it).
  *
- * Needs the controller (rust's t3 feature): not part of rdof_common; rdofradio and its test build it beside
- * rdof_rust_t3. No I/O, no allocation, no locking: the platform serializes the calls. About 200 KB (the provisioning
- * and the uplinks): allocate it.
+ * Rust (rust/src/t3unit.rs, the tier3 feature of rdof_rust, in rdof_common). No I/O, no allocation, no locking: the
+ * platform serializes the calls. About 200 KB (the provisioning and the uplinks): allocate it.
  */
 #ifndef RDOF_T3UNIT_H
 #define RDOF_T3UNIT_H
@@ -63,66 +62,23 @@ typedef struct {
     void (*subscribe)(void *ctx, const char *const *filters, int n);
     /* A line for the log (no newline). */
     void (*log)(void *ctx, const char *text);
-    /* Provisioning changed: write the cache (rdof_mn_cfg_cache on u->mc). NULL: none kept. */
+    /* Provisioning changed: write the cache (rdof_mn_cfg_cache on rdof_t3unit_mc). NULL: none kept. */
     void (*cache)(void *ctx);
     uint32_t (*rand32)(void *ctx);
     void *ctx;
 } rdof_t3unit_io_t;
 
+/* counters */
 typedef struct {
-    bool used, mapped, group, ended;
-    uint32_t stream, src, dst;
-    int ch;
-    int64_t last_ms;
-    rdof_frame_t hold[RDOF_T3UNIT_HOLD];
-    int nhold;
-} rdof_t3unit_stream_t;
-
-typedef struct {
-    int64_t k; /* -1: none */
-    rdof_t3_slot_out_t o;
-} rdof_t3unit_held_t;
-
-struct rdof_t3unit;
-typedef struct {
-    struct rdof_t3unit *u;
-    int c;
-} rdof_t3unit_upctx_t;
-
-typedef struct rdof_t3unit {
-    rdof_t3unit_io_t io;
-    bool net;                       /* on the MQTT network (a root and node given) */
-    char root[32], node[RDOF_MN_NODE_MAX + 1], firmware[48];
-    int path;                       /* the trunk's path on the site (events, the uplink's path byte); -1 none */
-    rdof_t3_site_t *site;
-    rdof_t3_cfg_t base, cfg;        /* the settings file's; what runs (provisioning over it) */
-    rdof_t3_policy_t base_pol, pol;
-    bool withdrawn_cfg;             /* cfg/node's enabled false */
-    rdof_t3rf_t rf;
-    rdof_mn_cfg_t mc;               /* provisioning as received */
-    uint32_t ms_ids[RDOF_T3_MS_POLICIES];
-    int nms;
-    uint32_t tg_ids[RDOF_T3_TG_POLICIES]; /* cfg/tg documents applied */
-    int ntgp;
-    rdof_t3unit_peer_t peers[RDOF_T3UNIT_PEERS]; /* the other nodes' trunk info and presence */
-    int npeers;
-    int nneighbors;                 /* in the controller's adjacent-site list */
-    rdof_mn_up_t up[RDOF_T3_CARRIERS];
-    rdof_t3unit_upctx_t upctx[RDOF_T3_CARRIERS];
-    rdof_mn_down_t down;
-    rdof_t3unit_held_t ring[RDOF_T3UNIT_RING];
-    int64_t k_next;                 /* the next slot for the controller; -1 before the first */
-    uint8_t ch_flags[RDOF_T3_CHANNELS]; /* RDOF_T3_F_* of the call on each channel (0: none) */
-    rdof_t3unit_stream_t st[RDOF_T3UNIT_STREAMS];
-    uint32_t tgs[RDOF_T3UNIT_TGS];
-    int ntgs;
-    bool tg_all;                    /* subscribed {root}/tg/+/+ */
-    bool connected;
-    int64_t now_ms, start_ms, status_ms;
-    /* counters */
     uint32_t net_in, net_held, net_dropped, setups_out, setups_in, records_out, records_in, cfg_applied, cfg_bad,
         cmds, tg_filtered;
-} rdof_t3unit_t;
+} rdof_t3unit_counts_t;
+
+/* Opaque (Rust, rust/src/t3unit.rs): rdof_t3unit_size() bytes, aligned to 8 (malloc's), kept by the caller. It
+   holds the mqtt-net uplinks and downlink (rdof/mqttnet.h) and the provisioning (rdof/mnctl.h). */
+typedef struct rdof_t3unit rdof_t3unit_t;
+
+size_t rdof_t3unit_size(void);
 
 /* site_mem: rdof_t3_site_size() bytes, aligned to 8, kept by the caller. cfg, pol: the settings file's (rdof/t3cfg.h
    rdof_t3cfg_plan). root and node: the MQTT network's (NULL: none, the site alone). path: the trunk's path on
@@ -153,13 +109,32 @@ void rdof_t3unit_link(rdof_t3unit_t *u, bool up);
 /* Timers: the network's streams and uplinks, status every RDOF_T3UNIT_STATUS_S. now_ms: the wall clock. */
 void rdof_t3unit_tick(rdof_t3unit_t *u, int64_t now_ms);
 
-/* Provisioning (u->mc) over the settings again, into the controller: after loading the cache. False with the
+/* Provisioning (rdof_t3unit_mc) over the settings again, into the controller: after loading the cache. False with the
    reason logged (the controller keeps what it had). */
 bool rdof_t3unit_apply(rdof_t3unit_t *u);
 /* info's trunk object (rdof_mn_info_t.trunk). */
 size_t rdof_t3unit_trunk_json(const rdof_t3unit_t *u, char *out, size_t cap);
 /* The status document (node/{node}/status), as published. */
 size_t rdof_t3unit_status_json(const rdof_t3unit_t *u, char *out, size_t cap);
+
+/* The wall clock in ms for what follows (rdof_t3unit_slot and rdof_t3unit_split_pump keep the last one given). */
+void rdof_t3unit_set_now(rdof_t3unit_t *u, int64_t now_ms);
+/* The settings that run (provisioning over the settings file's). */
+const rdof_t3_cfg_t *rdof_t3unit_cfg(const rdof_t3unit_t *u);
+/* Provisioning as received: for rdof_mn_cfg_cache and rdof_mn_cfg_cache_line (rdof_t3unit_apply after loading). */
+rdof_mn_cfg_t *rdof_t3unit_mc(rdof_t3unit_t *u);
+const rdof_t3rf_t *rdof_t3unit_rf(const rdof_t3unit_t *u);
+const rdof_t3unit_counts_t *rdof_t3unit_counts(const rdof_t3unit_t *u);
+/* The other nodes seen in info and online (*n of them). */
+const rdof_t3unit_peer_t *rdof_t3unit_peers(const rdof_t3unit_t *u, int *n);
+/* The sites in the controller's adjacent-site list. */
+int rdof_t3unit_neighbors(const rdof_t3unit_t *u);
+/* The cfg/tg documents applied: their talkgroups (*ids, at most RDOF_T3_TG_POLICIES). */
+int rdof_t3unit_tg_policies(const rdof_t3unit_t *u, const uint32_t **ids);
+
+/* The structs the Rust shares with C, by name, with their Rust size and alignment (i from 0; NULL name at the end);
+   host-tests/test_t3unit.c compares them with this header's and mqttnet.h's, mnctl.h's. */
+const rdof_t3_layout_t *rdof_t3unit_layout(size_t i);
 
 #endif /* RDOF_FEATURE_REPEATER */
 
