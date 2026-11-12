@@ -69,6 +69,10 @@ void rdofradio_utc_setup(const rdof_slot_timing_t *t, double rate, bool own_time
 
 bool rdofradio_utc_enabled(void) { return U.on; }
 
+static bool (*clock_ready)(void);
+void rdofradio_utc_clock_ready(bool (*ready)(void)) { clock_ready = ready; }
+bool rdofradio_utc_clock_settled(void) { return !clock_ready || clock_ready(); }
+
 static void gate_tick(double now_s)
 {
     double err = NAN;

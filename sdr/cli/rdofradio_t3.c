@@ -523,6 +523,7 @@ static rdofradio_t3_dev_t DEV;
  * slot k is the UTC slot itself, the one carrier 2 counts too; off it (no map within GRID_WAIT_S) the modem's own
  * count, placed once against the host's clock, which its sample clock then drifts from. */
 #define GRID_WAIT_S 10.0
+#define CLOCK_WAIT_S 30.0 /* for the host's clock to settle (rdofradio_utc_clock_settled) */
 static struct {
     bool placed, on_grid;
     int64_t d;        /* trunk k = modem k + d (even: the modem's TS1 is the trunk's LCN 0) */
@@ -764,6 +765,11 @@ static bool key_carrier1(void)
     const bool mapped = rdofradio_utc_map48(&i0, &t0, &rate);
     if (!mapped && DEV.now() < A.key_by)
         return true;
+    if (rdofradio_utc_enabled() && !rdofradio_utc_clock_settled()) {
+        if (DEV.now() < A.key_by - GRID_WAIT_S + CLOCK_WAIT_S)
+            return true;
+        tsay("carrier 1: the host's clock hasn't settled after %.0f s: keyed anyway", CLOCK_WAIT_S);
+    }
     if (!mapped && rdofradio_utc_enabled()) {
         const char *why = "";
         rdofradio_utc_state(&why, NULL);

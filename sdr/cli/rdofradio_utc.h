@@ -49,5 +49,10 @@ bool rdofradio_utc_map48(int64_t *i0, int64_t *t0, double *rate);
 void rdofradio_utc_apply(struct rdof_sdrmodem *m);
 /* The gate's state, why it's off the grid (empty when on it), the sample clock's ppm. */
 rdof_gate_state_t rdofradio_utc_state(const char **why, double *ppm);
+/* Whether the host's clock has settled: a program that sets the clock itself (netclock with --set-os-clock) steps it
+ * at its first fix, which would move a keyed carrier's grid (the modem then steers a sample a frame, a minute or
+ * more for a step of tens of ms). ready NULL: always settled. */
+void rdofradio_utc_clock_ready(bool (*ready)(void));
+bool rdofradio_utc_clock_settled(void);
 
 #endif

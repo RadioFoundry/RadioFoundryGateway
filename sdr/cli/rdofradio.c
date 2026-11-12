@@ -1404,6 +1404,9 @@ static void clock_start(void)
             set_os_clock ? ", setting the OS clock" : "");
 }
 
+/* the slot grid waits for netclock's first fix when netclock sets the OS clock (rdofradio_utc.h) */
+static bool clock_ready(void) { return netclock_posix_synced(); }
+
 static void clock_stop(void)
 {
     if (!clock_on)
@@ -7185,6 +7188,10 @@ int main(int argc, char **argv)
             rdof_slot_timing_default(&st);
             st.utc = true;
             rdofradio_utc_setup(&st, R.rate, true, NULL);
+#ifdef RDOF_NETCLOCK
+            if (clock_on && set_os_clock)
+                rdofradio_utc_clock_ready(clock_ready);
+#endif
             if (!rdofradio_t3_start(&rcfg, &to, &R.m, &td, terr, sizeof terr)) {
                 fprintf(stderr, "tier3: %s\n", terr);
                 return 1;
