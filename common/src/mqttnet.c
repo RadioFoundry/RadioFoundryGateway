@@ -659,6 +659,9 @@ void rdof_mn_up_init(rdof_mn_up_t *u, const char *node)
     u->node = node;
 }
 
+size_t rdof_mn_up_size(void) { return sizeof(rdof_mn_up_t); }
+size_t rdof_mn_up_align(void) { return _Alignof(rdof_mn_up_t); }
+
 static double up_wall(rdof_mn_up_t *u) { return u->wall ? u->wall(u->ctx) : 0.0; }
 
 static void up_event(rdof_mn_up_t *u, rdof_json_t *j)
@@ -1569,6 +1572,9 @@ void rdof_mn_down_init(rdof_mn_down_t *d)
     memset(d, 0, sizeof *d);
     d->max_preambles = 8;
 }
+
+size_t rdof_mn_down_size(void) { return sizeof(rdof_mn_down_t); }
+size_t rdof_mn_down_align(void) { return _Alignof(rdof_mn_down_t); }
 
 const char *rdof_mn_down_from(const rdof_mn_down_t *d, uint32_t stream)
 {

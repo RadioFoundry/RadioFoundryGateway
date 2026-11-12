@@ -6,6 +6,8 @@
  * call across the sites through the setup, provisioning (cfg/net), commands, and a restart that reads the records
  * back. */
 #include <stdarg.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -219,7 +221,7 @@ static void site_open(site_t *s, int client, const char *node, int site_no, uint
     rdof_t3cfg_default(&cfg, &pol);
     cfg.site = (uint16_t)site_no;
     pol.wide_tg.all = 1;
-    s->u = calloc(1, sizeof *s->u);
+    s->u = calloc(1, rdof_t3unit_size());
     s->mem = aligned_alloc(8, (rdof_t3_site_size() + 7) / 8 * 8);
     const rdof_t3unit_io_t io = {io_publish, io_subscribe, io_log, NULL, io_rand, s};
     char err[120];
@@ -313,7 +315,7 @@ static int ext_in(void *ctx, int64_t k, rdof_t3sim_in_t *in, int max)
         X.voice_n = tx.what == RDOF_T3_VOICE_FRAME ? (vn + 1) % 6 : 0;
     for (int d = 0; d <= (X.dup && tx.kind == 1) && n < max; d++) {
         in[n].ch = tx.ch;
-        if (rdof_t3sim_ms_burst(&tx, vn, A.u->cfg.cc, &in[n].b))
+        if (rdof_t3sim_ms_burst(&tx, vn, rdof_t3unit_cfg(A.u)->cc, &in[n].b))
             n++;
     }
     return n;
@@ -340,8 +342,90 @@ static void ext_out(void *ctx, int64_t k, const rdof_t3sim_out_t *out, int ncar,
     rdof_t3ms_rx(X.ms, st.ch, k, (uint8_t)(o->pdu_ok ? o->dt : 0), o->pdu, st.ch == 0 && at_next > 0);
 }
 
+/* ── the Rust's mirrors of the C structs, and its memory ─────────────────── */
+
+#define LAYOUT(t) {#t, sizeof(t), _Alignof(t)}
+#define HEAD(t) {#t " head", offsetof(t, ctx) + sizeof(void *), _Alignof(t)}
+
+static void test_layouts(void)
+{
+    static const rdof_t3_layout_t c[] = {
+        LAYOUT(rdof_t3unit_peer_t),     LAYOUT(rdof_t3unit_io_t),     LAYOUT(rdof_t3unit_counts_t),
+        LAYOUT(rdof_mn_hdr_t),          LAYOUT(rdof_mn_setup_t),      LAYOUT(rdof_mn_ev_t),
+        LAYOUT(rdof_mn_record_t),       LAYOUT(rdof_mn_where_t),      LAYOUT(rdof_mn_chan_status_t),
+        LAYOUT(rdof_mn_trunk_status_t), LAYOUT(rdof_mn_status_t),     LAYOUT(rdof_mn_carrier_t),
+        LAYOUT(rdof_mn_trunk_info_t),   LAYOUT(rdof_mn_timer_t),      LAYOUT(rdof_mn_site_cfg_t),
+        LAYOUT(rdof_mn_tg_cfg_t),       LAYOUT(rdof_mn_ms_cfg_t),     LAYOUT(rdof_mn_cfg_t),
+        LAYOUT(rdof_mn_cmd_t),          HEAD(rdof_mn_up_t),           HEAD(rdof_mn_down_t),
+    };
+    const size_t n = sizeof c / sizeof c[0];
+    size_t i = 0;
+    for (const rdof_t3_layout_t *r; (r = rdof_t3unit_layout(i)) && r->name; i++) {
+        CHECK(i < n, "rust lists %s, C doesn't", r->name);
+        if (i >= n)
+            break;
+        CHECK(strcmp(r->name, c[i].name) == 0, "%zu: rust %s, C %s", i, r->name, c[i].name);
+        CHECK(r->size == c[i].size && r->align == c[i].align, "%s: rust %zu/%zu, C %zu/%zu", c[i].name, r->size,
+              r->align, c[i].size, c[i].align);
+    }
+    CHECK(i == n, "rust lists %zu structs, C %zu", i, n);
+    CHECK(rdof_mn_up_size() == sizeof(rdof_mn_up_t) && rdof_mn_up_align() == _Alignof(rdof_mn_up_t) &&
+              rdof_mn_down_size() == sizeof(rdof_mn_down_t) && rdof_mn_down_align() == _Alignof(rdof_mn_down_t),
+          "mqtt-net's sizes");
+}
+
+/* The unit's memory: room for the uplinks and the downlink, malloc's alignment enough, less refused; a unit off the
+   network publishes nothing. */
+static int quiet_publishes;
+static void quiet_publish(void *ctx, const char *topic, const void *data, size_t len, int qos, bool retain)
+{
+    quiet_publishes++;
+}
+
+static void test_memory(void)
+{
+    const size_t size = rdof_t3unit_size();
+    CHECK(size > 4 * sizeof(rdof_mn_up_t) + sizeof(rdof_mn_down_t) + sizeof(rdof_mn_cfg_t), "size %zu", size);
+    rdof_t3_cfg_t cfg;
+    rdof_t3_policy_t pol;
+    rdof_t3cfg_default(&cfg, &pol);
+    const rdof_t3unit_io_t io = {quiet_publish, NULL, NULL, NULL, NULL, NULL};
+    void *mem = aligned_alloc(8, (rdof_t3_site_size() + 7) / 8 * 8);
+    uint8_t *raw = malloc(size + 16);
+    char err[120] = "";
+    CHECK(!rdof_t3unit_init((rdof_t3unit_t *)(raw + 1), mem, &cfg, &pol, &io, "DMR", "x", 0, NULL, err, sizeof err) &&
+              strstr(err, "aligned"),
+          "misaligned memory refused: %s", err);
+    rdof_t3unit_t *u = (rdof_t3unit_t *)(raw + 8);
+    memset(raw, 0xA5, size + 16);
+    CHECK(rdof_t3unit_init(u, mem, &cfg, &pol, &io, NULL, NULL, -1, NULL, err, sizeof err), "init: %s", err);
+    CHECK(raw[8 + size] == 0xA5 && raw[7] == 0xA5, "init stays in its %zu bytes", size);
+    CHECK(rdof_t3unit_cfg(u)->cc == cfg.cc && rdof_t3unit_cfg(u)->ncarriers == cfg.ncarriers, "cfg");
+    CHECK(rdof_t3unit_rf(u)->tscc && rdof_t3unit_rf(u)->ncarriers == cfg.ncarriers, "the radio layer");
+    int np = -1;
+    const uint32_t *ids = NULL;
+    CHECK(rdof_t3unit_peers(u, &np) && np == 0 && rdof_t3unit_neighbors(u) == 0 &&
+              rdof_t3unit_tg_policies(u, &ids) == 0 && ids,
+          "no peers, neighbors or cfg/tg (%d)", np);
+    rdof_t3unit_run(u, 0, T0);
+    rdof_t3unit_run(u, 40, T0 + 1200);
+    rdof_t3unit_message(u, "DMR/cfg/net", "{\"rev\":1}", 9);
+    rdof_t3unit_link(u, true);
+    rdof_t3unit_tick(u, T0 + 20000);
+    CHECK(quiet_publishes == 0 && rdof_t3unit_counts(u)->cfg_applied == 0, "off the network: %d published",
+          quiet_publishes);
+    char st[2048];
+    CHECK(rdof_t3unit_status_json(u, st, sizeof st) > 0 && strstr(st, "\"uptime_s\":20"), "status: %s", st);
+    CHECK(rdof_t3unit_at(u, 40) >= 0 && rdof_t3unit_at(u, 40 - RDOF_T3UNIT_RING) == -1 && rdof_t3unit_at(u, -1) == -1,
+          "the held slots");
+    free(raw);
+    free(mem);
+}
+
 int main(void)
 {
+    test_layouts();
+    test_memory();
     site_open(&A, 0, "site-a", 3, 3100001, T0);
     site_open(&Bs, 1, "site-b", 4, 3100101, T0);
     run(6000);
@@ -368,8 +452,8 @@ int main(void)
     CHECK(b0.state == RDOF_T3MS_PAYLOAD && b0.heard_src == 3100001 && b0.heard_dst == TG,
           "B's MS follows the call from A (state %d, heard %u -> %u)", b0.state, (unsigned)b0.heard_src,
           (unsigned)b0.heard_dst);
-    CHECK(Bs.u->net_in > 0 && Bs.u->rf.ch[1].net_bursts > 0, "B's payload channel carried the network's bursts (%u, %u)",
-          Bs.u->net_in, Bs.u->rf.ch[1].net_bursts);
+    CHECK(rdof_t3unit_counts(Bs.u)->net_in > 0 && rdof_t3unit_rf(Bs.u)->ch[1].net_bursts > 0, "B's payload channel carried the network's bursts (%u, %u)",
+          rdof_t3unit_counts(Bs.u)->net_in, rdof_t3unit_rf(Bs.u)->ch[1].net_bursts);
     run(8000);
     CHECK(ms_status(&A, 0).calls_done == 1, "the call ended");
     CHECK(ms_status(&Bs, 0).state == RDOF_T3MS_IDLE, "B's MS back on the TSCC (%d)", ms_status(&Bs, 0).state);
@@ -379,9 +463,9 @@ int main(void)
     rdof_t3ms_do(A.ms[1], RDOF_T3MS_DO_PRIVATE, 3100101, 2000, 0, T0 + K * 30);
     run(4000);
     CHECK(B.pc_routed > routed, "the setup went through the router");
-    CHECK(A.u->setups_out > 0 && Bs.u->setups_in > 0 && Bs.u->setups_out > 0 && A.u->setups_in > 0,
-          "setups: A out %u, B in %u, B out %u, A in %u", A.u->setups_out, Bs.u->setups_in, Bs.u->setups_out,
-          A.u->setups_in);
+    CHECK(rdof_t3unit_counts(A.u)->setups_out > 0 && rdof_t3unit_counts(Bs.u)->setups_in > 0 && rdof_t3unit_counts(Bs.u)->setups_out > 0 && rdof_t3unit_counts(A.u)->setups_in > 0,
+          "setups: A out %u, B in %u, B out %u, A in %u", rdof_t3unit_counts(A.u)->setups_out, rdof_t3unit_counts(Bs.u)->setups_in, rdof_t3unit_counts(Bs.u)->setups_out,
+          rdof_t3unit_counts(A.u)->setups_in);
     rdof_t3ms_status_t called = ms_status(&Bs, 0);
     CHECK(called.ahoys >= 1, "B's MS was asked (ahoys %u)", called.ahoys);
     CHECK(ms_status(&A, 1).grants >= 1, "A's caller granted (%u)", ms_status(&A, 1).grants);
@@ -392,19 +476,20 @@ int main(void)
     const char *net = "{\"rev\":2,\"at\":\"2026-11-06T10:00:00Z\",\"timers\":{\"hang_s\":5}}";
     broker_publish(2, "DMR/cfg/net", net, strlen(net), true);
     broker_deliver();
-    CHECK(A.u->cfg.hang_ms == 5000 && Bs.u->cfg.hang_ms == 5000, "hang from cfg/net: %u %u", A.u->cfg.hang_ms,
-          Bs.u->cfg.hang_ms);
+    CHECK(rdof_t3unit_cfg(A.u)->hang_ms == 5000 && rdof_t3unit_cfg(Bs.u)->hang_ms == 5000, "hang from cfg/net: %u %u", rdof_t3unit_cfg(A.u)->hang_ms,
+          rdof_t3unit_cfg(Bs.u)->hang_ms);
 
     /* cfg/tg: talkgroup 9 hangs 8 s (the network's 5 s for the rest); a call's channel held about talk + 8 s */
     const char *tgdoc = "{\"rev\":1,\"at\":\"2026-11-06T10:00:00Z\",\"name\":\"Ops\",\"hang_s\":8,\"priority\":2}";
     broker_publish(2, "DMR/cfg/tg/9", tgdoc, strlen(tgdoc), true);
     broker_deliver();
-    CHECK(A.u->ntgp == 1 && A.u->tg_ids[0] == TG && Bs.u->ntgp == 1, "cfg/tg applied: %d %d", A.u->ntgp, Bs.u->ntgp);
+    const uint32_t *tgids = NULL;
+    CHECK(rdof_t3unit_tg_policies(A.u, &tgids) == 1 && tgids[0] == TG && rdof_t3unit_tg_policies(Bs.u, NULL) == 1, "cfg/tg applied: %d %d", rdof_t3unit_tg_policies(A.u, NULL), rdof_t3unit_tg_policies(Bs.u, NULL));
     int held = hang_ms(1500);
     CHECK(held > 9000 && held < 11000, "tg 9's channel held %d ms (1.5 s talk, 8 s hang)", held);
     broker_publish(2, "DMR/cfg/tg/9", "", 0, true); /* deleted: the network's again */
     broker_deliver();
-    CHECK(A.u->ntgp == 0, "cfg/tg deleted");
+    CHECK(rdof_t3unit_tg_policies(A.u, NULL) == 0, "cfg/tg deleted");
     held = hang_ms(1500);
     CHECK(held > 6000 && held < 8000, "then held %d ms (1.5 s talk, 5 s hang)", held);
 
@@ -419,22 +504,23 @@ int main(void)
     snprintf(info, sizeof info, "{\"schema\":1,\"trunk\":%s}", tj);
     broker_publish(0, "DMR/node/site-a/info", info, strlen(info), true);
     broker_deliver();
-    CHECK(A.u->nneighbors == 1 && Bs.u->nneighbors == 1, "neighbors: A %d, B %d", A.u->nneighbors, Bs.u->nneighbors);
-    const rdof_t3unit_peer_t *pb = &A.u->peers[0];
-    CHECK(A.u->npeers >= 1 && !strcmp(pb->node, "site-b") && pb->site == 4 && pb->chan == 1 && pb->online &&
-              pb->syscode == rdof_t3_syscode(A.u->cfg.model, A.u->cfg.net, 4, A.u->cfg.par),
+    CHECK(rdof_t3unit_neighbors(A.u) == 1 && rdof_t3unit_neighbors(Bs.u) == 1, "neighbors: A %d, B %d", rdof_t3unit_neighbors(A.u), rdof_t3unit_neighbors(Bs.u));
+    int npeers = 0;
+    const rdof_t3unit_peer_t *pb = rdof_t3unit_peers(A.u, &npeers);
+    CHECK(npeers >= 1 && !strcmp(pb->node, "site-b") && pb->site == 4 && pb->chan == 1 && pb->online &&
+              pb->syscode == rdof_t3_syscode(rdof_t3unit_cfg(A.u)->model, rdof_t3unit_cfg(A.u)->net, 4, rdof_t3unit_cfg(A.u)->par),
           "A's neighbor: %s site %u chan %u syscode 0x%04x", pb->node, pb->site, pb->chan, pb->syscode);
     broker_publish(1, "DMR/node/site-b/online", "0", 1, true);
     broker_deliver();
-    CHECK(!A.u->peers[0].online && A.u->nneighbors == 1, "B offline: still listed, inactive");
+    CHECK(!rdof_t3unit_peers(A.u, NULL)[0].online && rdof_t3unit_neighbors(A.u) == 1, "B offline: still listed, inactive");
     const char *nodedoc = "{\"rev\":1,\"at\":\"2026-11-06T10:00:00Z\",\"neighbors\":[7]}";
     broker_publish(2, "DMR/cfg/node/site-a", nodedoc, strlen(nodedoc), true);
     broker_deliver();
-    CHECK(A.u->nneighbors == 0 && Bs.u->nneighbors == 1, "cfg/node's neighbors [7]: A %d, B %d", A.u->nneighbors,
-          Bs.u->nneighbors);
+    CHECK(rdof_t3unit_neighbors(A.u) == 0 && rdof_t3unit_neighbors(Bs.u) == 1, "cfg/node's neighbors [7]: A %d, B %d", rdof_t3unit_neighbors(A.u),
+          rdof_t3unit_neighbors(Bs.u));
     broker_publish(2, "DMR/cfg/node/site-a", "", 0, true);
     broker_deliver();
-    CHECK(A.u->nneighbors == 1, "the list from info again (%d)", A.u->nneighbors);
+    CHECK(rdof_t3unit_neighbors(A.u) == 1, "the list from info again (%d)", rdof_t3unit_neighbors(A.u));
 
     /* commands: status, and deregister (the record goes) */
     const char *cmd = "{\"id\":\"c-1\",\"cmd\":\"deregister\",\"ms\":3100002}";
@@ -442,14 +528,14 @@ int main(void)
     broker_deliver();
     CHECK(retained("DMR/node/site-a/ms/3100002") == NULL, "the deregistered MS's record deleted");
     rdof_t3_record_t rec;
-    CHECK(!rdof_t3_record(A.u->site, 3100002, &rec), "and gone from the controller");
+    CHECK(!rdof_t3_record(A.mem, 3100002, &rec), "and gone from the controller");
 
     /* a restart of A: the records come back from the broker */
     site_close(&A);
     site_open(&A, 0, "site-a", 3, 3100001, T0 + K * 30);
     broker_deliver();
-    CHECK(rdof_t3_record(A.u->site, 3100001, &rec) && rec.sub_tg == TG, "A read its record back after a restart");
-    CHECK(A.u->cfg.hang_ms == 5000, "and the retained provisioning (%u)", A.u->cfg.hang_ms);
+    CHECK(rdof_t3_record(A.mem, 3100001, &rec) && rec.sub_tg == TG, "A read its record back after a restart");
+    CHECK(rdof_t3unit_cfg(A.u)->hang_ms == 5000, "and the retained provisioning (%u)", rdof_t3unit_cfg(A.u)->hang_ms);
 
 
     /* an external MS on A, through the hooks: a forced collision first (its C_RAND twice), then it registers */
@@ -471,7 +557,7 @@ int main(void)
         X.dup = 0;
         run(8000);
         rdof_t3ms_status(X.ms, &xs);
-        CHECK(xs.registered && rdof_t3_record(A.u->site, 3100009, &rec), "the external MS registered");
+        CHECK(xs.registered && rdof_t3_record(A.mem, 3100009, &rec), "the external MS registered");
         CHECK(X.cach_ok > 100 && X.cach_bad == 0, "its CACH: %u read, %u wrong", X.cach_ok, X.cach_bad);
         /* a group call from it: A's own MS follows it */
         rdof_t3ms_do(X.ms, RDOF_T3MS_DO_GROUP, TG, 1500, 0, T0 + K * 30);

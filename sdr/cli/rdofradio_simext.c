@@ -275,7 +275,7 @@ static void take_tx(client_t *c, const rdof_jdoc_t *d, int t, int64_t base)
         k++;
     k = jll(d, t, "k", k);
     const uint32_t id = (uint32_t)jll(d, t, "id", 0);
-    const int off = jint(d, t, "offset_us", 0), cc = jint(d, t, "cc", u->cfg.cc), n = jint(d, t, "n", 0);
+    const int off = jint(d, t, "offset_us", 0), cc = jint(d, t, "cc", rdof_t3unit_cfg(u)->cc), n = jint(d, t, "n", 0);
     rdof_t3ms_tx_t tx;
     memset(&tx, 0, sizeof tx);
     tx.ch = (uint8_t)(ch < 0 ? 0 : ch);

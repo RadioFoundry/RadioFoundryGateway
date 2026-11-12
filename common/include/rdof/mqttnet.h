@@ -306,6 +306,10 @@ void rdof_mn_up_init(rdof_mn_up_t *u, const char *node);
 void rdof_mn_up_frame(rdof_mn_up_t *u, const rdof_frame_t *f, double now);
 /* Call a few times a second: folded CSBKs that waited long enough go out, held voice and data calls expire. */
 void rdof_mn_up_tick(rdof_mn_up_t *u, double now);
+/* sizeof and _Alignof of rdof_mn_up_t, for a caller that lays out its own memory (rdof/t3unit.h, in Rust). That
+   caller sets the hooks through a mirror of the struct's head: keep node to ctx first, in this order. */
+size_t rdof_mn_up_size(void);
+size_t rdof_mn_up_align(void);
 
 /* ── the downlink: call messages, as network bursts ──────────────────────── */
 
@@ -362,6 +366,9 @@ void rdof_mn_down_init(rdof_mn_down_t *d);
 bool rdof_mn_down_message(rdof_mn_down_t *d, const char *node, bool dl, const uint8_t *msg, size_t len, double now);
 /* Streams with nothing for RDOF_MN_DOWN_IDLE_S end (a terminator goes out after voice). */
 void rdof_mn_down_tick(rdof_mn_down_t *d, double now);
+/* sizeof and _Alignof of rdof_mn_down_t, as rdof_mn_up_size (keep raw_tx to ctx first, in this order). */
+size_t rdof_mn_down_size(void);
+size_t rdof_mn_down_align(void);
 /* The publisher of stream id lately, NULL none (for the tx event's "from"). */
 const char *rdof_mn_down_from(const rdof_mn_down_t *d, uint32_t stream);
 

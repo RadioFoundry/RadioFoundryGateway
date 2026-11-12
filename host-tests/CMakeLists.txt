@@ -221,9 +221,9 @@ if(NOT RDOF_T3_LIB STREQUAL "NOTFOUND")
         target_link_options(rdof_t3_tests PRIVATE -fsanitize=address,undefined)
     endif()
     add_test(NAME rdof_t3_tests COMMAND rdof_t3_tests)
-    # The site joined up (t3unit.c, t3sim.c: they call the controller, so they're not in rdof_common): two sites,
-    # simulated MSs over the burst path, an in-process broker.
-    add_executable(rdof_t3unit_tests test_t3unit.c ../common/src/t3unit.c ../common/src/t3sim.c)
+    # The site joined up (the unit in rdof_common's Rust; t3sim.c calls the controller, so it's not in rdof_common):
+    # two sites, simulated MSs over the burst path, an in-process broker.
+    add_executable(rdof_t3unit_tests test_t3unit.c ../common/src/t3sim.c)
     target_include_directories(rdof_t3unit_tests PRIVATE ../common/include)
     target_link_libraries(rdof_t3unit_tests PRIVATE ${RDOF_T3_LIB} rdof_common)
     set_target_properties(rdof_t3unit_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)

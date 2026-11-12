@@ -81,7 +81,7 @@ static bool is_voice(int dt) { return dt == RDOF_DT_VOICE || dt == RDOF_DT_VOICE
 void rdof_t3sim_slot(rdof_t3sim_t *s, int64_t k, int64_t now_ms)
 {
     rdof_t3unit_t *u = s->u;
-    const int ncar = u->cfg.ncarriers, cc = u->cfg.cc;
+    const int ncar = rdof_t3unit_cfg(u)->ncarriers, cc = rdof_t3unit_cfg(u)->cc;
     rdof_t3unit_run(u, k, now_ms);
 
     /* the outbound of slot k, read back as an MS would */

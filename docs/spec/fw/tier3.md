@@ -82,7 +82,7 @@ site: one chain is simplest; two chains keep each carrier on its own amplifier.
 |---|---|---|
 | Site controller | Rust, `rust/src/t3*.rs` (the `t3` feature of `rdof_rust`), C API `rdof/t3.h` | Every Tier III decision. No I/O, no allocation, no clock of its own: the caller feeds it PDUs, voice activity, network events and time; it returns what to send per slot and events to act on. Runs in rdofradio now; built `no_std` so a board can run it later |
 | Radio layer | Rust, `rust/src/t3rf.rs` (portable) and `t3split.rs` (carrier B's split), + `sdr/cli/rdofradio_t3.c` | Burst building and parsing (BPTC, CRC masks, slot type, sync, CACH, short LC), the per-slot hook into the SDR modem, the payload channels (local repeat, network voice in, idle, the controller's payload PDUs), the split radio for carrier B, the receive path from the SDR's channels |
-| Network side of the site | C, `common/src/mqttnet.c` and rdofradio | mqtt-net as today, plus the setup item, registration records, the trunk part of `info` and `status`, provisioning topics and their cache |
+| Network side of the site | C, `common/src/mqttnet.c` and rdofradio; the unit that joins it to the controller and the radio layer is Rust, `rust/src/t3unit.rs` (C API `rdof/t3unit.h`) | mqtt-net as today, plus the setup item, registration records, the trunk part of `info` and `status`, provisioning topics and their cache |
 | MS simulator | Rust, `rust/src/t3ms.rs`, `t3air.rs` | Simulated radios that follow 361-4 (hunt omitted, access, registration, calls, answers), and a slot-exact air model with collisions. Used by the Rust tests, the C tests, and rdofradio's `--sim-air` |
 | Router | Python, network services | As today, plus location from registration records and an early refusal for an unknown called party |
 | Manager | Python, network services | The provisioning source of truth: network identity, sites, talkgroups, radios, permissions, timers. Publishes retained `cfg` topics; sends commands; serves the dashboard and a small REST API |
@@ -631,9 +631,12 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
 
 ### 9.4 rdofradio
 
-- The core is `rdof/t3unit.h` (`common/src/t3unit.c`): the controller run ahead of the air into a ring of
-  slots, the radio layer, and mqtt-net, with no I/O of its own (publish, subscribe, log, cache and random numbers are
-  callbacks). `sdr/cli/rdofradio_t3.c` gives it libmosquitto, the clock and the device; the host tests give it an
+- The core is `rdof/t3unit.h` (Rust, `rust/src/t3unit.rs`, in `rdof_common` with the `tier3` feature): the
+  controller run ahead of the air into a ring of slots, the radio layer, and mqtt-net, with no I/O of its own
+  (publish, subscribe, log, cache and random numbers are callbacks). `rdof_t3unit_t` is opaque: the caller allocates
+  `rdof_t3unit_size()` bytes, which hold mqtt-net's uplinks and downlink at the sizes C gives
+  (`rdof_mn_up_size`, `rdof_mn_down_size`), and reads it through accessors (`rdof_t3unit_cfg`, `_mc`, `_rf`,
+  `_counts`, `_peers`, `_neighbors`, `_tg_policies`). `sdr/cli/rdofradio_t3.c` gives it libmosquitto, the clock and the device; the host tests give it an
   in-process broker (`host-tests/test_t3unit.c`).
 - `--config` with a `tier3` app: rdofradio opens the SDR full duplex for carrier A. The Tier III unit is the SDR
   modem's slot source (`rdof_sdrmodem_set_source`) and the modem stays keyed (`rdof_sdrmodem_hold_key`); the repeater

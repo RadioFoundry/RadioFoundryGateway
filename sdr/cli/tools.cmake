@@ -143,7 +143,6 @@ if(RDOF_RADIO_DEFS AND NOT WIN32)
     if(RDOF_TIER3 AND NOT RDOF_T3_LIB STREQUAL "NOTFOUND")
         message(STATUS "rdofradio runs a trunked site")
         target_sources(rdofradio PRIVATE ${RDOF_CLI}/rdofradio_t3.c ${RDOF_CLI}/rdofradio_simext.c
-                       ${RDOF_CLI}/../../common/src/t3unit.c
                        ${RDOF_CLI}/../../common/src/t3sim.c)
         target_compile_definitions(rdofradio PRIVATE RDOF_TIER3)
         if(RDOF_T3_LIB)
