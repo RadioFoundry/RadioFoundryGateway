@@ -41,7 +41,8 @@ are committed (`host-tests/vectors.h`, `scenarios.h`, `fixtures/`) and the C mus
 | `rdof_tests`, `rdof_tests_min` | `common/` with every feature on, and with every `RDOF_FEATURE_*` off: FEC, layer 2, PDUs, AMBE, MMDVM, HBlink4 and the OLED frame against golden vectors; the tracker, the roaming transceiver and the repeater (duplex, SFR, DCDM) against golden scenarios; split duplex; the jitter buffer; settings; two radios a board |
 | `rdof_tests_c` | the core tests on the C that `rust/`'s modules replace: with cargo installed, every other test runs the Rust |
 | `rdofradio_e2e_brandmeister`, `rdofradio_e2e_homebrew` | no RF, three processes (`host-tests/e2e_login.sh`): rdofradio on `fakemodem` logs in to `fakebm`, a radio's private call goes up, the parrot's echo goes out on air, RPTCL at exit |
-| `rdof_site_tests`, `rdof_plan_tests`, `rdof_schema_tests` | settings version 3: the parser, router and pool; the plan and its units; the JSON schema (Node) over the fixtures in `fixtures/config/v3/` |
+| `rdofradio_e2e_ipgw` | no RF, no network (`host-tests/e2e_ipgw.sh`): `config/examples`' standalone MMDVM settings, simplex then duplex, on `fakemodem`: a radio's confirmed UDP text goes out through the IP gateway to a listener, its ACK and the listener's reply go out on air |
+| `rdof_site_tests`, `rdof_plan_tests`, `rdof_schema_tests` | settings version 3: the parser, router and pool; the plan and its units; the JSON schema (Node) over the fixtures in `fixtures/config/v3/` and `config/examples/` |
 | `rdof_sdr_tests`, `rdof_sdr_tests_min`, `rdof_sdr_edge_tests` | the SDR receive path against golden vectors; the corners they don't reach ("SDR core" below) |
 | `rdof_mod_tests`, `sdrmodem_tests`, `rdof_loopback_edge_tests` | the modulator, the SDR modem, its loopbacks |
 | `rdof_chzfx_tests`, `rdof_chzhw_tests`, `rdof_chzrx_tests`, `rdof_plutofpga_tests` | the PlutoSDR FPGA channelizer's model, its driver, the receiver on its frames, the board and bitstream checks |
@@ -145,7 +146,7 @@ build `-O2`. `idf.py menuconfig` has the menus "RadioFoundry Gateway", "RadioFou
 | `systest/` | the system tests: `radiosim`, `radiolink.c`, `test_radiosim.c` |
 | `hil-tests/` | hardware-in-the-loop tests (pytest) |
 | `tools/` | `bench/` (bench API clients: `benchapi.py`, `rfgbench.py`), `pluto/` (the PlutoSDR build, bundle and bitstream), `linux-arm64/` (rdofradio cross-built for a Debian 13 arm64 box with the Rust modules, its run script and systemd unit), `config_check.py`, `hblink4_sctp_check.sh`, `rtl_fir_design.py` |
-| `config/` | the settings' JSON schema (`rdof-config.schema.json`) |
+| `config/` | the settings' JSON schema (`rdof-config.schema.json`); `examples/`: settings to start from ([README](../config/examples/README.md)) |
 | `docs/spec/` | the specs |
 | `LICENSES/`, `PROVENANCE.md` | third-party license texts, and where each piece of copied or ported code came from |
 

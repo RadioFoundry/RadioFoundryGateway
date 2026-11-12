@@ -1,0 +1,21 @@
+// A PlutoSDR as a duplex repeater on its own: no network. It repeats what it hears; a call to TG 9990 is played
+// back, and radios reach IP hosts through the gateway at ID 9991.
+{
+  "version": 3,
+  "name": "pluto",
+  "id": 9800100,
+  "callsign": "N0CALL",
+  "defaults": {"cc": 1},
+  "devices": [
+    {"name": "pluto", "kind": "sdr", "driver": "iio", "match": {"uri": "local:"}, "tx": {}}
+  ],
+  "frequencies": [
+    {"name": "in", "freq": 438.25},
+    {"name": "out", "freq": 438.75}
+  ],
+  "apps": [
+    {"name": "R1", "type": "repeater", "in": "in", "out": "out"},
+    {"type": "parrot", "tg": 9990},
+    {"type": "ipgw", "tg": 9991, "nat": true}
+  ]
+}

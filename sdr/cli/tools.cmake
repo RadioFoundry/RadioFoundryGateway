@@ -44,7 +44,7 @@ find_path(AD9361_INCLUDE_DIR ad9361.h)
 find_library(AD9361_LIBRARY ad9361)
 set(RDOF_RADIO_SRCS ${RDOF_CLI}/rdofradio.c ${RDOF_CLI}/rdofradio_cfg.c ${RDOF_CLI}/rdofradio_serial.c
     ${RDOF_CLI}/rdofradio_net.c ${RDOF_CLI}/rdofradio_fpga.c ${RDOF_CLI}/rdofradio_dnssd.c
-    ${RDOF_CLI}/rdofradio_file.c ${RDOF_CLI}/rdofradio_sim.c)
+    ${RDOF_CLI}/rdofradio_file.c ${RDOF_CLI}/rdofradio_sim.c ${RDOF_CLI}/rdofradio_ipgw.c)
 set(RDOF_RADIO_DEFS)
 set(RDOF_RADIO_INCS)
 set(RDOF_RADIO_LIBS)
@@ -151,6 +151,13 @@ if(TARGET rdofradio AND TARGET fakemodem AND UNIX)
                  $<TARGET_FILE_DIR:rdofradio> ${net} $<IF:$<STREQUAL:${net},homebrew>,62078,62077>)
         set_tests_properties(rdofradio_e2e_${net} PROPERTIES TIMEOUT 60)
     endforeach()
+    # no RF, no network: config/examples' standalone MMDVM settings, the IP gateway to a listener on this host
+    find_program(RDOF_PYTHON3 python3)
+    if(RDOF_PYTHON3)
+        add_test(NAME rdofradio_e2e_ipgw COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_ipgw.sh
+                 $<TARGET_FILE_DIR:rdofradio> 47011 ${RDOF_CLI}/../../config/examples)
+        set_tests_properties(rdofradio_e2e_ipgw PROPERTIES TIMEOUT 90)
+    endif()
     # no RF: two boxes, each on a fakemodem, joined by the MQTT network (format v3) through a broker on this host
     find_program(MOSQUITTO_BROKER mosquitto HINTS /usr/sbin /usr/local/sbin /opt/homebrew/sbin)
     if(MOSQUITTO_BROKER AND MOSQUITTO_INCLUDE_DIR AND MOSQUITTO_LIBRARY)

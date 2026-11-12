@@ -24,6 +24,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "rdof/ipgw.h"
 #include "rdof/config.h"
 #include "rdof/repeater.h"
 #include "rdof/site.h"
@@ -70,6 +71,9 @@ typedef struct {
     /* split repeaters with the SDR as the RX half: the first is the radio above */
     int nsplit;
     rdofradio_split_t split[RDOF_ROLES_MAX];
+    /* the IP gateway app (apps: type ipgw), when the document has one */
+    bool has_ipgw;
+    rdof_ipgw_config_t ipgw;
 } rdofradio_cfg_t;
 
 /* Read a settings document. False: err says why (the parser's reason, or what rdofradio can't run). */

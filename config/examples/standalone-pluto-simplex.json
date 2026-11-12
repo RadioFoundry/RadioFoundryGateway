@@ -1,0 +1,17 @@
+// A PlutoSDR as a simplex transceiver on its own: no network. A call to TG 9990 is played back on the frequency it
+// was heard on, and radios reach IP hosts through the gateway at ID 9991.
+{
+  "version": 3,
+  "name": "pluto",
+  "id": 9800100,
+  "callsign": "N0CALL",
+  "defaults": {"cc": 1},
+  "devices": [
+    {"name": "pluto", "kind": "sdr", "driver": "iio", "match": {"uri": "local:"}, "tx": {}}
+  ],
+  "frequencies": [438.5],
+  "apps": [
+    {"type": "parrot", "tg": 9990},
+    {"type": "ipgw", "tg": 9991, "nat": true}
+  ]
+}

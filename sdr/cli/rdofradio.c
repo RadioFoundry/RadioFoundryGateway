@@ -148,6 +148,7 @@
 #include "rdofradio_cfg.h"
 #include "rdofradio_dev.h"
 #include "rdofradio_fpga.h"
+#include "rdofradio_ipgw.h"
 #include "rdofradio_dnssd.h"
 #include "rdofradio_net.h"
 #include "rdofradio_serial.h"
@@ -4330,6 +4331,7 @@ static void web_publish(double rx, double tx, int cc)
     w.extra[1].value = (int64_t)llround(R.m.inbound_off * 100);
     if (SR.router.site && rcfg.site.napp)
         rdof_router_apps_json(&SR.router, now_s(), web_app_extra, NULL, w.apps, sizeof w.apps);
+    rdofgw_status_text(w.ip_gateway, sizeof w.ip_gateway);
     w.spectrum = dev != NULL; /* --fpga-chz: the channels' own (web_spectrum_chs) */
     if (dev)
         web_sdr(&w.sdrs[w.nsdr++]);
@@ -5329,6 +5331,122 @@ typedef struct {
 } xsplit_t;
 static xsplit_t *X[RDOF_ROLES_MAX];
 
+/* ── the IP gateway app (rdofradio_ipgw.c): the trackers' data bursts in, its packets out on the air ───────── */
+
+static int sr_ipgw = -1;     /* the site's ipgw app */
+static rdof_ipgw_tx_t GWX;   /* a packet going into a repeater (rdof/ipgwtx.h) */
+static rdof_repeater_t *gwx_r; /* the repeater it's going into */
+/* Packets behind it: a repeater takes one at a time, and a host's reply can come back while the radio's ACK still
+   waits for the slot. */
+#define GW_WAITING 4
+static struct {
+    rdof_ipgw_dmr_t p;
+    rdof_repeater_t *r;
+    double at;
+} *gw_wait;
+static int gw_nwait;
+static uint32_t gw_wait_dropped;
+
+/* a tracker's frames: ctx is the receiver's channel, NULL the modem's RX (--mmdvm) */
+static void gw_on_frame(void *ctx, const char *channel, const rdof_frame_t *f)
+{
+    if (f->dt != RDOF_DT_DATA_HEADER && f->dt != RDOF_DT_RATE_12 && f->dt != RDOF_DT_RATE_34 &&
+        f->dt != RDOF_DT_RATE_1)
+        return;
+    const chan_t *m = ctx;
+    const uint32_t hz = m ? chan_hz(m) : heard_hz();
+    if (!rdof_siteroute_reaches(&SR, hz, f->slot, sr_ipgw))
+        return; /* the path's apps don't list it */
+    rdofgw_heard(m ? 1 + (int)(m - CHN) : 0, f->slot, hz, -1, f->dt, f->burst, now_s());
+}
+/* The repeater that hears hz: the unit's, or a split's. */
+static rdof_repeater_t *gw_repeater(uint32_t hz)
+{
+    for (int k = 0; k < NX; k++)
+        if (X[k]->up && X[k]->u->rx_hz == hz)
+            return &X[k]->r;
+    return R.full ? &R.r : NULL;
+}
+static bool gw_send(void *ctx, const rdof_ipgw_dmr_t *p)
+{
+    uint8_t sid[4];
+    rdof_put_be32(sid, sink_rand(NULL));
+    rdof_repeater_t *r = gw_repeater(p->freq);
+    if (r) { /* on the slot the radio was heard on; what doesn't fit at once goes in from gw_poll */
+        if (GWX.busy || gw_nwait) { /* behind the packet going in */
+            if (!gw_wait || gw_nwait >= GW_WAITING) {
+                gw_wait_dropped++;
+                return false;
+            }
+            gw_wait[gw_nwait].p = *p;
+            gw_wait[gw_nwait].r = r;
+            gw_wait[gw_nwait++].at = now_s();
+            return true;
+        }
+        if (!rdof_ipgw_tx_repeater(&GWX, r, p, sid))
+            return false;
+        gwx_r = r;
+        return true;
+    }
+    /* a transceiver: on the path the radio was heard on, through the router's pool */
+    const int path = rdof_siteroute_path_at(&SR, p->freq, p->slot);
+    if (path < 0 || p->nbursts <= 0)
+        return false;
+    const double now = now_s();
+    for (int i = 0; i < p->nbursts; i++) {
+        rdof_net_burst_t b;
+        rdof_ipgw_net_burst(p, i, sid, p->slot, GWX.seq++, &b);
+        if (!rdof_siteroute_app_burst(&SR, path, &b, true, INFINITY, now))
+            return false;
+    }
+    return true;
+}
+static void gw_start(void)
+{
+    if (!rcfg.has_ipgw || !sr_on || listen_only)
+        return;
+    sr_ipgw = rdof_site_app_of(&rcfg.site, RDOF_APP_IPGW);
+    if (sr_ipgw < 0)
+        return;
+    if (!rng_state) { /* stream ids (net_start seeds it when there's an HBlink link) */
+        rng_state = (uint32_t)time(NULL) ^ ((uint32_t)getpid() << 16) ^ (uint32_t)(now_s() * 1e6);
+        if (!rng_state)
+            rng_state = 1;
+    }
+    gw_wait = calloc(GW_WAITING, sizeof *gw_wait);
+    if (!rdofgw_start(&rcfg.ipgw, gw_send, NULL)) {
+        fprintf(stderr, "ip gateway: no memory\n");
+        return;
+    }
+    for (int i = R.mmdvm ? -1 : 0; i < nchn; i++) {
+        rdof_sink_t sk = {.on_frame = gw_on_frame, .ctx = i >= 0 ? &CHN[i] : NULL};
+        if (i >= 0)
+            rdof_sdr_rx_add_sink(&R.rx, CHN[i].c, &sk);
+        else
+            rdof_tracker_add_sink(&MT, sk);
+    }
+}
+static void gw_poll(double now)
+{
+    if (!rdofgw_on())
+        return;
+    rdofgw_poll(now, rdof_data_sync(R.full || NX ? RDOF_BS_VOICE : RDOF_MS_VOICE));
+    if (GWX.busy && gwx_r)
+        rdof_ipgw_tx_more(&GWX, gwx_r);
+    while (!GWX.busy && gw_nwait) { /* the next one waiting; one that waited too long is dropped */
+        uint8_t sid[4];
+        rdof_put_be32(sid, sink_rand(NULL));
+        if (now - gw_wait[0].at > 3 * RDOF_IPGW_TX_WAIT_S)
+            gw_wait_dropped++;
+        else if (rdof_ipgw_tx_repeater(&GWX, gw_wait[0].r, &gw_wait[0].p, sid))
+            gwx_r = gw_wait[0].r;
+        else
+            gw_wait_dropped++;
+        memmove(&gw_wait[0], &gw_wait[1], (size_t)--gw_nwait * sizeof *gw_wait);
+    }
+    rdofgw_tx_busy(GWX.gave_up + gw_wait_dropped);
+}
+
 static void xs_to_radio(void *ctx, int i, const uint8_t *d, size_t n)
 {
     if (!X[i]->p.gone && !rdofradio_serial_write(X[i]->p.fd, d, n))
@@ -5662,6 +5780,7 @@ static int split_main(int argc, char **argv, const char *port, int baud, int pow
             last_poll = now;
             if (R.parrot)
                 rdof_parrot_poll(R.parrot, now);
+            gw_poll(now);
             if (!rdof_repeater_poll(&R.r))
                 fprintf(stderr, "poll: %s\n", R.client.error);
             for (int k = 0; k < NX; k++)
@@ -5951,6 +6070,7 @@ static int mmdvm_main(int argc, char **argv, const char *port, int baud, double 
             last_poll = now;
             if (R.parrot)
                 rdof_parrot_poll(R.parrot, now);
+            gw_poll(now);
             if (!bench_tx_poll(now) && !bench_rpt_poll(now) &&
                 !(R.full ? rdof_repeater_poll(&R.r) : rdof_txvr_poll(&R.t)))
                 fprintf(stderr, "poll: %s\n", R.client.error);
@@ -6600,6 +6720,7 @@ int main(int argc, char **argv)
             sr_start();
             net_start();
             mq_start();
+            gw_start();
             clock_start();
 #ifdef RDOF_HOST_WEB
             rdof_hostweb_version(RDOF_VERSION);
@@ -6708,6 +6829,7 @@ int main(int argc, char **argv)
     net_start();
     chan_start();
     mq_start();
+    gw_start();
     if (!R.full) { /* listen-before-talk's last call heard: a reply to it isn't held back by it (as the board's) */
         const rdof_sink_t hk = {.on_call = txvr_heard_call};
         rdof_sdr_rx_add_sink(&R.rx, 0, &hk);
@@ -7035,6 +7157,7 @@ int main(int argc, char **argv)
             last_poll = now;
             if (R.parrot)
                 rdof_parrot_poll(R.parrot, now);
+            gw_poll(now);
             if (!bench_tx_poll(now) && !bench_rpt_poll(now) &&
                 !(R.full ? rdof_repeater_poll(&R.r) : rdof_txvr_poll(&R.t)))
                 fprintf(stderr, "poll: %s\n", R.client.error);

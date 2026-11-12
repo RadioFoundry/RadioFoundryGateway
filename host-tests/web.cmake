@@ -36,7 +36,8 @@ if(NOT WIN32)
         target_compile_options(rdof_combos_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
         target_link_options(rdof_combos_tests PRIVATE -fsanitize=address,undefined)
     endif()
-    add_test(NAME rdof_combos_tests COMMAND rdof_combos_tests ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/config/combos)
+    add_test(NAME rdof_combos_tests COMMAND rdof_combos_tests ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/config/combos
+        ${CMAKE_CURRENT_SOURCE_DIR}/../config/examples)
     # rdofradio's HBlink4 peer against a fake master on the loopback
     add_executable(rdof_rdofnet_tests test_rdofnet.c ../sdr/cli/rdofradio_net.c)
     target_include_directories(rdof_rdofnet_tests PRIVATE ../sdr/cli)

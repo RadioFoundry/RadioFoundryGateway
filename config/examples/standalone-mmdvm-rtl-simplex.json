@@ -1,0 +1,18 @@
+// A simplex MMDVM hotspot board that transmits, with an RTL-SDR that also hears the frequency (its receiver reports
+// level, BER and the spectrum): no network. Parrot on TG 9990, the IP gateway at ID 9991.
+{
+  "version": 3,
+  "name": "hotspot",
+  "id": 9800100,
+  "callsign": "N0CALL",
+  "defaults": {"cc": 1},
+  "devices": [
+    {"name": "hat", "kind": "modem", "type": "mmdvm_hs", "port": {"path": "/dev/ttyAMA0"}, "transmits": [438.5]},
+    {"name": "rtl", "kind": "sdr", "driver": "rtlsdr", "rx": {"rate": 288000}}
+  ],
+  "frequencies": [438.5],
+  "apps": [
+    {"type": "parrot", "tg": 9990},
+    {"type": "ipgw", "tg": 9991, "nat": true}
+  ]
+}

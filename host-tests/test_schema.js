@@ -59,6 +59,13 @@ for (const f of fs.readdirSync(dir).filter((f) => f.endsWith(".json")).sort()) {
     else expect(errs.length > 0, f + " should fail the schema");
 }
 
+// The examples in config/examples: each passes the schema.
+const exdir = path.join(top, "config/examples");
+for (const f of fs.readdirSync(exdir).filter((f) => f.endsWith(".json")).sort()) {
+    const errs = check(schema, jsonc(fs.readFileSync(path.join(exdir, f), "utf8")));
+    expect(!errs.length, "config/examples/" + f + " should pass the schema: " + errs.map((e) => e.path + ": " + e.message).join("; "));
+}
+
 // The key lists: each C list against the schema's place for it.
 function lists(file) {
     const src = fs.readFileSync(path.join(top, file), "utf8");

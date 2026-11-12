@@ -8,7 +8,7 @@
 
    units: "name:kind,..." as the open makes them, or "refused: <the open's reason>". board and rdofradio: "ok", or
    the reason that platform refuses the file (rdof_plan_check and rdof_plan_roles; rdofradio_cfg_parse). A limit that
-   is lifted changes its line here. */
+   is lifted changes its line here. A file named examples/<name> is config/examples/<name> (the second argument). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,6 +30,7 @@ static int checks, fails;
 
 static const char *const KIND[] = {"?", "repeater", "sfr", "dcdm", "transceiver", "receiver"};
 static rdofradio_cfg_t RC;
+static const char *examples_dir = ".";
 
 static void one(const char *dir, char *line)
 {
@@ -40,7 +41,10 @@ static void one(const char *dir, char *line)
         return;
     *units++ = *board++ = *host++ = 0;
     char path[512];
-    snprintf(path, sizeof path, "%s/%s", dir, file);
+    if (!strncmp(file, "examples/", 9)) /* config/examples, beside the fixtures */
+        snprintf(path, sizeof path, "%s/%s", examples_dir, file + 9);
+    else
+        snprintf(path, sizeof path, "%s/%s", dir, file);
     FILE *f = fopen(path, "rb");
     CHECK(f, "%s: can't read", path);
     if (!f)
@@ -76,10 +80,12 @@ static void one(const char *dir, char *line)
 
 int main(int argc, char **argv)
 {
-    if (argc != 2) {
-        fprintf(stderr, "usage: %s fixtures/config/combos\n", argv[0]);
+    if (argc != 2 && argc != 3) {
+        fprintf(stderr, "usage: %s fixtures/config/combos [config/examples]\n", argv[0]);
         return 2;
     }
+    if (argc == 3)
+        examples_dir = argv[2];
     char path[512];
     snprintf(path, sizeof path, "%s/expect.txt", argv[1]);
     FILE *f = fopen(path, "r");

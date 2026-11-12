@@ -477,7 +477,7 @@ It needs `routes` or `nat` ("nothing to do"). A route:
 | `to` | `"host:port"` or `"host"` | | required: where they go (`host` keeps each datagram's port) |
 | `payload` | `udp` \| `ip` | `udp` | the UDP payload, or the whole IP packet |
 
-A firmware build without `CONFIG_RDOF_IPGW` refuses an `ipgw` app, and so does rdofradio (it runs none).
+A firmware build without `CONFIG_RDOF_IPGW` refuses an `ipgw` app. rdofradio runs it too ([ipgw.md](ipgw.md) §13.1).
 
 ## 7. Networks
 

@@ -148,6 +148,8 @@ typedef struct {
     } extra[8];
     /* the apps it runs, as a JSON array (rdof_router_apps_json); "": none to show */
     char apps[2048];
+    /* the IP gateway's status as a JSON object (rdof_ipgw_status_json's); "": it isn't running */
+    char ip_gateway[1536];
     bool spectrum; /* the tool makes the page's spectrum (rdof_hostweb_spectrum_row) */
     uint32_t mqtt_dropped; /* the radio's MQTT posts dropped (has_mqtt) */
     /* the SDRs it runs and the radios or modems it drives on a port (below) */

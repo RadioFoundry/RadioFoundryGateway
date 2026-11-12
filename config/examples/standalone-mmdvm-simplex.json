@@ -1,0 +1,18 @@
+// A simplex MMDVM hotspot board (an MMDVM_HS hat) on its own: no network. A call to TG 9990 is played back, and
+// radios reach IP hosts through the gateway at ID 9991. The modem is on a serial port; give rdofradio the same
+// path with --mmdvm.
+{
+  "version": 3,
+  "name": "hotspot",
+  "id": 9800100,
+  "callsign": "N0CALL",
+  "defaults": {"cc": 1},
+  "devices": [
+    {"name": "hat", "kind": "modem", "type": "mmdvm_hs", "port": {"path": "/dev/ttyAMA0"}}
+  ],
+  "frequencies": [438.5],
+  "apps": [
+    {"type": "parrot", "tg": 9990},
+    {"type": "ipgw", "tg": 9991, "nat": true}
+  ]
+}
