@@ -12,7 +12,7 @@ use crate::ffi::{
 use crate::layer2::{rdof_group_lc, rdof_lc_burst, RDOF_DATA_XOR, RDOF_MS_VOICE};
 use crate::t3ms::{Ms, MsTx};
 use crate::t3rf::{BURST_BYTES, PDU_BAD, PDU_OK};
-use crate::t3site::{Cfg, CARRIERS, VOICE_FRAME, VOICE_HEADER, VOICE_TERM};
+use crate::t3site::{CARRIERS, VOICE_FRAME, VOICE_HEADER, VOICE_TERM};
 use crate::tracker::RdofBurst;
 
 pub const MS_MAX: usize = 64; // RDOF_T3SIM_MS
@@ -25,31 +25,10 @@ pub const HEARD: u32 = 0;
 pub const COLLIDED: u32 = 1;
 pub const DROPPED: u32 = 2;
 
-/// rdof_t3unit_t: only its pointer.
-#[repr(C)]
-pub struct T3unit {
-    _private: [u8; 0],
-}
-
-// rdof/t3unit.h, rdof/t3rf.h
-extern "C" {
-    fn rdof_t3unit_cfg(u: *const T3unit) -> *const Cfg;
-    fn rdof_t3unit_run(u: *mut T3unit, k_upto: i64, now_ms: i64);
-    fn rdof_t3unit_slot(
-        u: *mut T3unit,
-        c: c_int,
-        k: i64,
-        burst: *mut u8,
-        control: *mut u8,
-        at: *mut c_int,
-        slc28: *mut i32,
-    ) -> bool;
-    fn rdof_t3unit_at(u: *const T3unit, k: i64) -> c_int;
-    fn rdof_t3unit_rx(u: *mut T3unit, c: c_int, k: i64, b: *const RdofBurst, rssi: c_int);
-    fn rdof_t3rf_pdu_burst(dt: c_int, pdu: *const u8, cc: c_int, family: u32, out: *mut u8) -> bool;
-    fn rdof_t3rf_burst_pdu(burst: *const u8, dt: *mut c_int, cc: *mut c_int, pdu: *mut u8) -> c_int;
-    fn rdof_t3rf_cach4(slc28: u32, at: *const c_int, k: i64, out: *mut [u8; 3]);
-}
+use crate::t3rf::{rdof_t3rf_burst_pdu, rdof_t3rf_cach4, rdof_t3rf_pdu_burst};
+/// rdof_t3unit_t
+pub use crate::t3unit::Unit as T3unit;
+use crate::t3unit::{rdof_t3unit_at, rdof_t3unit_cfg, rdof_t3unit_run, rdof_t3unit_rx, rdof_t3unit_slot};
 
 /// rdof_t3sim_in_t
 #[repr(C)]
@@ -121,7 +100,7 @@ fn ms_burst(tx: &MsTx, n: c_int, cc: c_int, b: &mut RdofBurst) -> bool {
     b.cc = cc;
     b.slot = c_int::from(tx.ch & 1) + 1;
     if tx.kind == 1 {
-        if !unsafe { rdof_t3rf_pdu_burst(tx.dt.into(), tx.pdu.as_ptr(), cc, FAMILY_MS, b.burst.as_mut_ptr()) } {
+        if !rdof_t3rf_pdu_burst(tx.dt.into(), &tx.pdu, cc, FAMILY_MS, &mut b.burst) {
             return false;
         }
         b.dt = tx.dt.into();
@@ -203,12 +182,12 @@ fn slot(s: &mut Sim, k: i64, now_ms: i64) {
         o.at = c_int::from(at > 0);
         at4[(k & 3) as usize] = o.at;
         let slc28 = if s.slc[c] >= 0 { s.slc[c] as u32 } else { 0 };
-        unsafe { rdof_t3rf_cach4(slc28, at4.as_ptr(), k & !3, c4.as_mut_ptr()) };
+        rdof_t3rf_cach4(slc28, &at4, k & !3, &mut c4);
         o.cach = c4[(k & 3) as usize];
         if !o.aired {
             continue;
         }
-        let r = unsafe { rdof_t3rf_burst_pdu(o.burst.as_ptr(), &mut rdt, &mut rcc, o.pdu.as_mut_ptr()) };
+        let r = rdof_t3rf_burst_pdu(&o.burst, &mut rdt, &mut rcc, &mut o.pdu);
         o.dt = rdt;
         o.cc = rcc;
         if r == PDU_OK {
@@ -338,16 +317,7 @@ pub unsafe extern "C" fn rdof_t3sim_find(s: *const Sim, id: u32) -> c_int {
 
 // ── layouts (rdof_t3sim_layout) ───────────────────────────────────────────────
 
-/// A mirrored struct's size, as rdof_t3_layout's: the host test compares them with the C's.
-#[repr(C)]
-pub struct Layout {
-    name: *const core::ffi::c_char,
-    size: usize,
-    align: usize,
-}
-
-// SAFETY: the names are static strings, never written
-unsafe impl Sync for Layout {}
+pub use crate::t3site::Layout;
 
 macro_rules! layout {
     ($name:literal, $t:ty) => {

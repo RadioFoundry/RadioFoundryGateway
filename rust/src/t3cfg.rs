@@ -17,9 +17,6 @@ const ID_MAX: f64 = 16_777_215.0; // RDOF_ID_MAX
 // ── rdof/mnctl.h's provisioning, as rdof_t3cfg_site reads it ──────────────────
 
 const MN_CFG_TIMERS: usize = 16;
-const MN_CFG_BROADCASTS: usize = 4;
-const MN_CFG_NEIGHBORS: usize = 32;
-const MN_CFG_NAME: usize = 32;
 
 const MN_HAS_MODEL: u32 = 1 << 0;
 const MN_HAS_NET: u32 = 1 << 1;
@@ -36,40 +33,8 @@ const MN_HAS_STATIC_TG: u32 = 1 << 11;
 const MN_HAS_REQUIRE_REG: u32 = 1 << 12;
 const MN_HAS_FOACSU: u32 = 1 << 13;
 
-/// rdof_mn_timer_t
-#[repr(C)]
-pub struct MnTimer {
-    pub name: [u8; 20],
-    pub value: f64,
-}
-
-/// rdof_mn_site_cfg_t
-#[repr(C)]
-pub struct MnSiteCfg {
-    pub has: u32,
-    pub name: [u8; MN_CFG_NAME],
-    pub model: c_int,
-    pub net: c_int,
-    pub site: c_int,
-    pub par: c_int,
-    pub area_bits: c_int,
-    pub listed: bool,
-    pub refused: bool,
-    pub require_registration: bool,
-    pub foacsu: bool,
-    pub enabled: bool,
-    pub ms: RdofIdset,
-    pub private_: RdofIdset,
-    pub tg: RdofIdset,
-    pub wide_tg: RdofIdset,
-    pub static_tg: RdofIdset,
-    pub neighbors: [c_int; MN_CFG_NEIGHBORS],
-    pub nneighbors: c_int,
-    pub timers: [MnTimer; MN_CFG_TIMERS],
-    pub ntimers: c_int,
-    pub broadcast: [MnTimer; MN_CFG_BROADCASTS],
-    pub nbroadcast: c_int,
-}
+// rdof_mn_timer_t, rdof_mn_site_cfg_t: mirrored with the rest of mqtt-net in t3unit.rs
+pub use crate::t3unit::{MnSiteCfg, MnTimer};
 
 // rdof/idset.h (C)
 extern "C" {
@@ -756,16 +721,7 @@ pub unsafe extern "C" fn rdof_t3cfg_site(
 
 // ── layouts (rdof_t3cfg_layout) ───────────────────────────────────────────────
 
-/// A mirrored struct's size, as rdof_t3_layout's: the host test compares them with the C's.
-#[repr(C)]
-pub struct Layout {
-    name: *const c_char,
-    size: usize,
-    align: usize,
-}
-
-// SAFETY: the names are static strings, never written
-unsafe impl Sync for Layout {}
+pub use crate::t3site::Layout;
 
 macro_rules! layout {
     ($name:literal, $t:ty) => {

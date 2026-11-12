@@ -20,7 +20,12 @@ use crate::hblink::RdofNetBurst;
 use crate::jsonp::{rdof_jat, rdof_jget, rdof_jnode, rdof_jparse, JDoc, JNode, RDOF_JNUM, RDOF_JSTR};
 use crate::mmdvm::rdof_control_to_dt;
 use crate::plan::RdofIdset;
-use crate::t3rf::{T3rf, T3rfCh, T3rfIo, T3rfSplit, WARMUP};
+use crate::t3cfg::{rdof_t3cfg_check, rdof_t3cfg_site};
+use crate::t3rf::{
+    rdof_t3rf_channel, rdof_t3rf_close, rdof_t3rf_control, rdof_t3rf_init, rdof_t3rf_net, rdof_t3rf_net_end,
+    rdof_t3rf_open, rdof_t3rf_rx, rdof_t3rf_slot, rdof_t3rf_split_pump, rdof_t3rf_tick, T3rf, T3rfIo, T3rfSplit,
+    WARMUP,
+};
 use crate::t3site::{
     self as t3, Cfg, Event, IdSet, MsPolicy, Neighbor, Policy, Record, Setup, Site, SlotOut, Status, TgPolicy,
 };
@@ -502,31 +507,6 @@ extern "C" {
         cap: usize,
     ) -> usize;
 
-    // rdof/t3cfg.h
-    fn rdof_t3cfg_site(sc: *const MnSiteCfg, cfg: *mut Cfg, pol: *mut Policy, err: *mut c_char, cap: usize) -> bool;
-    fn rdof_t3cfg_check(cfg: *const Cfg, err: *mut c_char, cap: usize) -> bool;
-
-    // rdof/t3rf.h
-    fn rdof_t3rf_init(t: *mut T3rf, io: *const T3rfIo, ncarriers: c_int, cc: c_int, tscc: bool) -> bool;
-    fn rdof_t3rf_channel(t: *mut T3rf, ch: c_int) -> *mut T3rfCh;
-    fn rdof_t3rf_open(t: *mut T3rf, ch: c_int, src: u32, dst: u32, group: bool, warmup: c_int) -> bool;
-    fn rdof_t3rf_close(t: *mut T3rf, ch: c_int);
-    fn rdof_t3rf_control(t: *mut T3rf, ch: c_int, dt: c_int, pdu: *const u8, repeats: c_int, close_after: bool)
-        -> bool;
-    fn rdof_t3rf_rx(t: *mut T3rf, c: c_int, k: i64, b: *const RdofBurst, rssi: c_int);
-    fn rdof_t3rf_net(t: *mut T3rf, ch: c_int, f: *const RdofFrame) -> bool;
-    fn rdof_t3rf_net_end(t: *mut T3rf, ch: c_int);
-    fn rdof_t3rf_tick(t: *mut T3rf, k: i64);
-    fn rdof_t3rf_slot(
-        t: *mut T3rf,
-        c: c_int,
-        k: i64,
-        burst: *mut u8,
-        control: *mut u8,
-        at: *mut c_int,
-        slc28: *mut i32,
-    ) -> bool;
-    fn rdof_t3rf_split_pump(t: *mut T3rf, o: *mut T3rfSplit, s: *mut c_void, k_now: i64, ahead: c_int, now: f64);
 }
 
 // ── the unit ───────────────────────────────────────────────────────────────────
@@ -1624,7 +1604,7 @@ pub unsafe extern "C" fn rdof_t3unit_run(u: *mut Unit, k_upto: i64, now_ms: i64)
             }
             let o = addr_of!((*r).o.ch[ch]);
             if (*o).dt != 0 {
-                rdof_t3rf_control(rf(u), ch as c_int, c_int::from((*o).dt), (*o).pdu.as_ptr(), 1, false);
+                rdof_t3rf_control(rf(u), ch as c_int, c_int::from((*o).dt), &(*o).pdu, 1, false);
             }
         }
         drain(u);
@@ -1647,7 +1627,7 @@ pub unsafe extern "C" fn rdof_t3unit_slot(
     if (*u).k_next <= k {
         rdof_t3unit_run(u, k, (*u).now_ms);
     }
-    let ok = rdof_t3rf_slot(rf(u), c, k, burst, control, at, slc28);
+    let ok = rdof_t3rf_slot(rf(u), c, k, &mut *burst.cast(), control, &mut *at, &mut *slc28);
     drain(u);
     ok
 }
@@ -1970,15 +1950,7 @@ pub unsafe extern "C" fn rdof_t3unit_tg_policies(u: *const Unit, ids: *mut *cons
 
 // ── layouts (rdof_t3unit_layout) ───────────────────────────────────────────────
 
-#[repr(C)]
-pub struct Layout {
-    name: *const c_char,
-    size: usize,
-    align: usize,
-}
-
-// SAFETY: the names are static strings, never written
-unsafe impl Sync for Layout {}
+pub use crate::t3site::Layout;
 
 macro_rules! layout {
     ($name:literal, $size:expr, $align:expr) => {

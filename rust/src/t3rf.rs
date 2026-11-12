@@ -6,7 +6,7 @@
 //! Written from ETSI TS 102 361-1 (bursts, CACH, short LC, CRC masks) and -4 (the TSCC and payload channels' use of
 //! them). The FEC, the voice regeneration and the split stay C (fec.c, duplex.c, split.c, RadioFoundry's CACH codes).
 
-use core::ffi::{c_char, c_int, c_void};
+use core::ffi::{c_int, c_void};
 use core::ptr::null_mut;
 
 use crate::ffi::{
@@ -842,16 +842,7 @@ pub unsafe extern "C" fn rdof_t3rf_split_pump(
 
 // ── layouts (rdof_t3rf_layout) ─────────────────────────────────────────────────
 
-/// rdof_t3rf_layout_t: a mirrored struct's C name, size and alignment.
-#[repr(C)]
-pub struct Layout {
-    pub name: *const c_char,
-    pub size: usize,
-    pub align: usize,
-}
-
-// SAFETY: the names are static strings, never written
-unsafe impl Sync for Layout {}
+pub use crate::t3site::Layout;
 
 macro_rules! layouts {
     ($(($name:literal, $t:ty)),* $(,)?) => {

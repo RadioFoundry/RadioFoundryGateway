@@ -2455,9 +2455,9 @@ pub unsafe fn init_in_place(s: *mut Site, cfg: &Cfg, err: &mut [u8]) -> bool {
 
 #[repr(C)]
 pub struct Layout {
-    name: *const c_char,
-    size: usize,
-    align: usize,
+    pub name: *const c_char,
+    pub size: usize,
+    pub align: usize,
 }
 
 // SAFETY: the names are static strings, never written
