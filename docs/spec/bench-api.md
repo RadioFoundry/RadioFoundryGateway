@@ -706,6 +706,22 @@ by their long names with `_` for `-`:
 - `family` on `voice`, `csbk` and `data` (`ms`, `bs`, `ts1`, `ts2`), a voice job's `headers`, `terminators` and
   `late` go out as asked: every job takes the raw SDR modem (a roamer's parked, given back after). `outbound` is BS
   only.
+- A carrier offset, for a receiver's bit errors against frequency error: `offset_hz` (`--offset-hz`, ±2500 Hz at
+  most, so a 12.5 kHz channel's signal stays inside it) sends a `voice`, `csbk` or `data` job's bursts that far
+  from `freq`; the claim, the lease and the plan check stay on `freq`. `offset_sweep` (`--offset-sweep FROM:TO:STEP`,
+  Hz, STEP toward TO, 200 steps at most, every one within ±2500) steps one voice call through the offsets, each step
+  `superframes_per_step` (`--superframes-per-step`, 1) superframes long; the call has steps × that many superframes
+  (`superframes` left out, or equal), an `ambe_hex` looped to fill them. The headers go with the first step, the
+  terminators with the last. Refused, before anything keys: a sweep with `calls` above 1, with `offset_hz`, on
+  another command or past the limits, and either one on a bench whose transmitter can't move its carrier
+  (`unsupported`; rdofradio with an MMDVM modem). A job with either takes the raw SDR modem, as `family` does. Each
+  step starts with a record before its first burst:
+  `{"type": "step", "step": k, "steps": n, "offset_hz", "t", "superframes": [first, last], "bursts": [first, last]}`
+  (superframes from 0 counted from the call's first, bursts from 0 counted with the headers; `t` the first burst's
+  hand-over plus 60 ms a burst, the step's modeled start on air). A constant `offset_hz` logs one line. The W12 moves
+  its synthesizer per transmission rather than spending the samples' ±4064 Hz (a DMR burst's frequency peaks near
+  3.7 kHz): a DMO burst is a transmission of its own, and a continuous one (a BS family's) ends where the step
+  changes and keys again at the new carrier, so a sample or two at the seam may go. The Pluto turns its I/Q.
 - `bench_repeater` runs a duplex repeater with no network on the job's `rx` (a receiver channel that decodes DMR;
   where none does, the receiver tunes there for the job, as for any job that hears; on rdofradio that channel decodes the job's `cc` while it runs) and `tx` (a TX frequency) for `seconds`: `slots`, `hang` (T_MSInactiv), `call_hang`, and idle beacons every
   `beacon` seconds from `beacon_phase` on (a local BS_Dwn_Act into its receive path, the hang `beacon_len`; skipped

@@ -537,6 +537,9 @@ const char *bench_tx_line_why(void);
 bool bench_tx_line_open(uint32_t freq, int cc, rdof_bench_power_t power, bool as_built, char *why, size_t cap);
 int bench_tx_line_space(char *why, size_t cap);
 void bench_tx_line_push(uint8_t control, const uint8_t burst[33]);
+/* The line job's bursts pushed from now on go out hz from its frequency (bench-api.md 14.3, --offset-hz and the
+ * sweep): NULL, or why not. */
+const char *bench_tx_line_offset(double hz);
 bool bench_tx_line_idle(void);
 size_t bench_tx_line_event(char *out, size_t cap);
 void bench_tx_line_close(void);
@@ -616,6 +619,8 @@ void edge_time_rx_mark(double pos48, double us, uint32_t failed);
 bool edge_time_rx_take(double *pos48, double *us); /* the newest mark not yet taken */
 void edge_time_rx_lag(double lag_s); /* the mark against the stream's time: the JSON's rx_lag_* */
 void sdr_modem_bench_write(const uint8_t *data, size_t len);
+/* The bench's DMR bursts from the from-th DMR_DATA on go out hz from the channel (rdof_sdrmodem_offset_from). */
+bool sdr_modem_bench_offset(uint32_t from, double hz);
 void sdr_modem_bench_close(void);
 /* The receiver streams again, at a new center or not (sdr_task.c): the modem's carrier tuned again (a roamer
  * given back while a bench session had the receiver elsewhere kept the session's) */

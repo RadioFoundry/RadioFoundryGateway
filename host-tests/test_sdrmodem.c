@@ -83,6 +83,32 @@ static int at_bit(rdof_sdrmodem_t *m, long k)
     return bits[0]; /* AT is the first bit on air */
 }
 
+/* The bench's carrier offsets: from the from-th DMR_DATA accepted on, each burst queued with the one in force. */
+static void test_offsets(void)
+{
+    static rdof_sdrmodem_t m;
+    const rdof_sdrmodem_io_t io = {no_reply, NULL, NULL, NULL, NULL};
+    CHECK(rdof_sdrmodem_init(&m, &io, 48000, 48000, false) == 0, "init: %s", m.error);
+    m.mode = RDOF_MODE_DMR;
+    m.tuned = true;
+    CHECK(rdof_sdrmodem_offset_from(&m, 0, -200) && m.off_now == -200.0f && !m.off_n, "from now: at once");
+    CHECK(rdof_sdrmodem_offset_from(&m, 2, 300) && rdof_sdrmodem_offset_from(&m, 4, 0) && m.off_n == 2,
+          "later ones wait");
+    uint8_t p[34] = {RDOF_SYNC_AUDIO}, f[64];
+    for (int i = 0; i < 5; i++)
+        rdof_sdrmodem_write(&m, f, rdof_mmdvm_frame(RDOF_MMDVM_DMR_DATA2, p, sizeof p, f, sizeof f));
+    const float want[5] = {-200, -200, 300, 300, 0};
+    CHECK(m.qn[1] == 5 && m.data_in == 5, "5 queued (%d), 5 counted (%u)", m.qn[1], (unsigned)m.data_in);
+    for (int i = 0; i < 5 && i < m.qn[1]; i++)
+        CHECK(m.q[1][(m.qh[1] + i) % RDOF_SDRMODEM_QUEUE].off_hz == want[i], "burst %d at %g Hz, not %g", i,
+              m.q[1][(m.qh[1] + i) % RDOF_SDRMODEM_QUEUE].off_hz, want[i]);
+    CHECK(!m.off_n && m.off_now == 0, "the schedule's done");
+    for (int i = 0; i < RDOF_SDRMODEM_OFFSETS; i++)
+        rdof_sdrmodem_offset_from(&m, 100 + (uint32_t)i, i);
+    CHECK(!rdof_sdrmodem_offset_from(&m, 200, 1), "a full schedule refuses");
+    rdof_sdrmodem_free(&m);
+}
+
 static void test_cach(void)
 {
     static rdof_sdrmodem_t m;
@@ -2158,6 +2184,7 @@ int main(void)
     char report[1024];
 #if RDOF_FEATURE_REPEATER
     test_cach();
+    test_offsets();
     test_split_matrix();
     test_sdrsplits();
     test_split_rx_solo();

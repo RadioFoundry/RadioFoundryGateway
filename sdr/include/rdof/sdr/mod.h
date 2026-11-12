@@ -54,6 +54,7 @@ typedef struct {
     int64_t lo, hi;                 /* the samples it touches: [lo, hi) */
     int16_t first, count;           /* sym[0] is symbol first (-12 with a CACH in front) */
     uint8_t flags;                  /* RDOF_MOD_RAMP_* */
+    float off_hz;                   /* its carrier offset on top of the modulator's (rdof_mod_t next_off_hz) */
     float sym[RDOF_MOD_PAD + RDOF_MOD_MAX_SYMBOLS + RDOF_MOD_PAD]; /* as floats: no conversions per tap */
 } rdof_mod_seg_t;
 
@@ -71,6 +72,8 @@ typedef struct {
     int64_t pos;                    /* sample index of the next output sample */
     rdof_mod_seg_t *q;                /* ring of queued segments, in start order */
     int qcap, qhead, qn;
+    float next_off_hz;              /* a carrier offset (Hz) for segments queued from now on, on top of offset_hz */
+    float pulled_off_hz;            /* the segment offset of the last rdof_mod_iq / _freq call's samples (0: none) */
 } rdof_mod_t;
 
 #define RDOF_MOD_LUT_BITS 8
@@ -117,7 +120,9 @@ void rdof_mod_skip(rdof_mod_t *m, int64_t pos);
 /* The next n samples of complex baseband: |x| = amplitude while keyed. */
 void rdof_mod_iq(rdof_mod_t *m, rdof_cf_t *out, int n);
 /* Or the next n samples' instantaneous frequency (Hz, offset included) and envelope (0..1, may be NULL), for a chip
- * with its own FM modulator. Either advances the position and the phase. */
+ * with its own FM modulator. Either advances the position and the phase. A segment's own offset (next_off_hz when it
+ * was queued) applies to the 64-sample blocks it touches; pulled_off_hz says which one the call's samples had, so a
+ * front end that tunes its carrier per key-up can move the carrier by it and take it out of the samples. */
 void rdof_mod_freq(rdof_mod_t *m, float *hz, float *env, int n);
 
 #ifdef __cplusplus

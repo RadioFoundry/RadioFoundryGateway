@@ -34,6 +34,8 @@ enum { RDOF_BJ_VOICE = 1, RDOF_BJ_CSBK, RDOF_BJ_DATA, RDOF_BJ_LISTEN, RDOF_BJ_RE
 #define RDOF_BJ_OUTBOUND_MAX_S 60 /* an outbound job's --seconds at most (bench.tx's max_key_s doesn't apply) */
 #define RDOF_BJ_OB_CALLS 8        /* voice calls an outbound job carries at most */
 #define RDOF_BJ_OB_HEADERS 3      /* an outbound call's voice LC headers when it doesn't say */
+#define RDOF_BJ_OFFSET_MAX 2500.0 /* a carrier offset at most (Hz): the signal stays inside its 12.5 kHz channel */
+#define RDOF_BJ_STEPS 200         /* an offset sweep's steps at most */
 
 /* A voice call in an outbound job's slots (bench-api.md 14.3, `voice`): BS bursts as a repeater sends them, from
  * start_s after the key-up. late >= 0 is a late entry: no headers, the first superframe from voice burst late (A-F
@@ -63,6 +65,10 @@ typedef struct {
     const uint8_t *ambe;        /* 9-byte AMBE+2 frames with FEC (the request's ambe_hex, decoded; kept by the caller) */
     size_t ambe_len;
     char talker_alias[RDOF_BJ_TEXT];
+    /* the carrier from freq (Hz): offset_hz throughout, or a voice call's sweep, steps of sf_per_step superframes from
+     * sweep_from by sweep_step (steps > 0) */
+    double offset_hz, sweep_from, sweep_step;
+    int steps, sf_per_step;
     bool gps;
     double lat, lon;
     int gps_err;
@@ -107,6 +113,12 @@ int rdof_bj_build(const rdof_bj_job_t *j, int k, rdof_bj_burst_t *out, int cap, 
                   char *error, size_t ecap);
 /* Bursts key-up k has at most (for the buffer). */
 int rdof_bj_max_bursts(const rdof_bj_job_t *j);
+/* Whether the job moves its carrier (--offset-hz, --offset-sweep). */
+bool rdof_bj_offsets(const rdof_bj_job_t *j);
+/* The sweep's step that burst i of a key-up (as built) belongs to (headers: the first; terminators: the last), and step
+ * k's offset (Hz). Without a sweep: step 0, offset_hz. */
+int rdof_bj_step_of(const rdof_bj_job_t *j, int i);
+double rdof_bj_step_hz(const rdof_bj_job_t *j, int k);
 /* An outbound job's voice call i, as the BS bursts it sends one a slot of its own (every 60 ms) into out (up to
  * cap): how many it has (more than cap when they didn't all fit), -1 with no memory. */
 int rdof_bj_ob_call_build(const rdof_bj_job_t *j, int i, rdof_bj_burst_t *out, int cap);

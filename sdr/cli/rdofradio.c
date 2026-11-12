@@ -2524,6 +2524,10 @@ static struct {
     int nin, queued;
     rdof_benchtx_t tx;
     int heard_ch;     /* the receive channel that hears the job, -1 none */
+    uint32_t pushed;  /* bursts pushed (each one DMR_DATA to the modem in order) */
+    uint32_t base;    /* the SDR modem's DMR_DATA count when the job took it */
+    struct { uint32_t from; double hz; } off[RDOF_SDRMODEM_OFFSETS]; /* carrier offsets not yet handed to it */
+    int noff;
 } BT = {.mu = PTHREAD_MUTEX_INITIALIZER, .heard_ch = -1};
 static bool bt_ticking; /* the main loop holds BT.mu (a modem's reply can come back inside the tick) */
 
@@ -2540,6 +2544,7 @@ static bool bl_tx_open(void *ctx, uint32_t freq, int cc, rdof_bench_power_t powe
         BT.want = 1, BT.freq = freq, BT.cc = cc, BT.asked = now_s();
         BT.ready = BT.failed = BT.idle = false;
         BT.nin = BT.queued = 0;
+        BT.pushed = 0, BT.noff = 0;
     }
     pthread_mutex_unlock(&BT.mu);
     if (busy)
@@ -2568,8 +2573,22 @@ static void bl_tx_push(void *ctx, uint8_t control, const uint8_t burst[33])
         BT.in[BT.nin].control = control;
         memcpy(BT.in[BT.nin++].burst, burst, 33);
         BT.idle = false;
+        BT.pushed++;
     }
     pthread_mutex_unlock(&BT.mu);
+}
+
+/* The bursts pushed from now on hz off the job's frequency: the SDR modem's carrier (the main loop hands it over). */
+static const char *bl_tx_offset(void *ctx, double hz)
+{
+    if (R.mmdvm)
+        return "this bench's MMDVM modem can't move its carrier";
+    pthread_mutex_lock(&BT.mu);
+    const bool full = BT.noff == RDOF_SDRMODEM_OFFSETS;
+    if (!full)
+        BT.off[BT.noff].from = BT.pushed, BT.off[BT.noff++].hz = hz;
+    pthread_mutex_unlock(&BT.mu);
+    return full ? "too many offset changes waiting" : NULL;
 }
 
 static void bl_tx_unkey(void *ctx) {} /* the job's modem unkeys once its queue has gone out */
@@ -3134,6 +3153,8 @@ static bool bench_tx_poll(double now)
         }
         BT.want = 0, BT.active = true;
         bench_power_on(BT.pw);
+        BT.base = R.m.data_in;
+        R.m.off_n = 0, R.m.off_now = 0; /* the carrier on its channel until the job moves it */
         const rdof_benchtx_io_t io = {bt_to_modem, bt_to_tool, bt_keying, NULL, NULL};
         bt_ticking = true;
         rdof_benchtx_init(&BT.tx, &io, BT.freq, BT.cc, R.mmdvm ? BT.power : 255, bench_max_key_s, now); /* SDR: --tx-power */
@@ -3157,10 +3178,15 @@ static bool bench_tx_poll(double now)
         pthread_mutex_lock(&BT.mu);
         BT.active = false, BT.want = 0;
         bench_power_off();
+        R.m.off_n = 0, R.m.off_now = 0;
         pthread_mutex_unlock(&BT.mu);
         owner_resume(true);
         return true;
     }
+    for (int i = 0; i < BT.noff; i++)
+        if (!rdof_sdrmodem_offset_from(&R.m, BT.base + BT.off[i].from, BT.off[i].hz))
+            say("bench: the SDR modem's offset queue is full: %+.0f Hz dropped\n", BT.off[i].hz);
+    BT.noff = 0;
     for (int i = 0; i < BT.nin && BT.tx.qn < RDOF_BENCHTX_QUEUE; i++)
         BT.tx.q[(BT.tx.qh + BT.tx.qn++) % RDOF_BENCHTX_QUEUE] = BT.in[i];
     BT.nin = 0;
@@ -3672,7 +3698,7 @@ static void bench_start(void)
                                           .iq_read = bl_iq_read, .iq_filled = bl_iq_filled, .utc = bl_utc,
                                           .sc_utc = bl_sc_utc,
                                           .rx_stats = bl_rx_stats, .can_tx = bl_can_tx, .tx_open = bl_tx_open, .mssim = bl_mssim,
-                                          .tx_space = bl_tx_space, .tx_push = bl_tx_push, .tx_unkey = bl_tx_unkey,
+                                          .tx_space = bl_tx_space, .tx_push = bl_tx_push, .tx_unkey = bl_tx_unkey, .tx_offset = bl_tx_offset,
                                           .tx_idle = bl_tx_idle, .tx_close = bl_tx_close, .tx_event = bl_tx_event, .rpt_open = bl_rpt_open,
                                           .rpt_state = bl_rpt_state, .rpt_event = bl_rpt_event,
                                           .rpt_wake = bl_rpt_wake, .rpt_close = bl_rpt_close,

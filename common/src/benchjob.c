@@ -290,6 +290,66 @@ static bool parse_repeater(const rdof_jdoc_t *d, int obj, rdof_bj_job_t *j, char
     return true;
 }
 
+/* --offset-hz, --offset-sweep FROM:TO:STEP and --superframes-per-step (bench-api.md 14.3): the claim, lease and plan
+ * stay on freq, and the signal inside its channel. */
+static bool parse_offset(const rdof_jdoc_t *d, int obj, rdof_bj_job_t *j, char *error, size_t ecap)
+{
+    char s[64];
+    j->offset_hz = num(d, obj, "offset_hz", 0);
+    const bool sweep = text(d, obj, "offset_sweep", s, sizeof s);
+    const bool per = node(d, obj, "superframes_per_step") != NULL;
+    if (!(fabs(j->offset_hz) <= RDOF_BJ_OFFSET_MAX)) {
+        snprintf(error, ecap, "--offset-hz %g: at most +-%.0f Hz (the signal stays inside its 12.5 kHz channel)",
+                 j->offset_hz, RDOF_BJ_OFFSET_MAX);
+        return false;
+    }
+    if (!sweep) {
+        if (per) {
+            snprintf(error, ecap, "--superframes-per-step goes with --offset-sweep");
+            return false;
+        }
+        if (j->offset_hz != 0 && j->cmd == RDOF_BJ_LISTEN) {
+            snprintf(error, ecap, "--offset-hz: listen doesn't transmit");
+            return false;
+        }
+        return true;
+    }
+    double a, b, st;
+    char extra;
+    if (sscanf(s, "%lf:%lf:%lf%c", &a, &b, &st, &extra) != 3 || !(st != 0) || (b - a) / st < -1e-9) {
+        snprintf(error, ecap, "--offset-sweep %s: FROM:TO:STEP in Hz, STEP toward TO", s);
+        return false;
+    }
+    const double n = floor((b - a) / st + 1e-9) + 1;
+    const double last = a + (n - 1) * st;
+    if (!(fabs(a) <= RDOF_BJ_OFFSET_MAX && fabs(last) <= RDOF_BJ_OFFSET_MAX) || n > RDOF_BJ_STEPS) {
+        snprintf(error, ecap, "--offset-sweep %s: offsets within +-%.0f Hz, %d steps at most", s, RDOF_BJ_OFFSET_MAX,
+                 RDOF_BJ_STEPS);
+        return false;
+    }
+    if (j->cmd != RDOF_BJ_VOICE || j->calls != 1 || j->offset_hz != 0) {
+        snprintf(error, ecap, "--offset-sweep: one voice call (no --calls, no --offset-hz)");
+        return false;
+    }
+    j->sf_per_step = (int)num(d, obj, "superframes_per_step", 1);
+    const int sf = (int)n * j->sf_per_step;
+    if (j->sf_per_step < 1 || sf > 200) {
+        snprintf(error, ecap, "--superframes-per-step %d: 1 or more, the sweep's superframes (%d steps) 200 at most",
+                 j->sf_per_step, (int)n);
+        return false;
+    }
+    if (node(d, obj, "superframes") && j->superframes != sf) {
+        snprintf(error, ecap, "--superframes %d: a sweep of %d steps of %d has %d (leave it out)", j->superframes, (int)n,
+                 j->sf_per_step, sf);
+        return false;
+    }
+    j->superframes = sf;
+    j->sweep_from = a;
+    j->sweep_step = st;
+    j->steps = (int)n;
+    return true;
+}
+
 bool rdof_bj_parse(const rdof_jdoc_t *d, int obj, rdof_bj_job_t *j, uint8_t *ambe_buf, size_t cap, char *error,
                    size_t ecap)
 {
@@ -371,6 +431,8 @@ bool rdof_bj_parse(const rdof_jdoc_t *d, int obj, rdof_bj_job_t *j, uint8_t *amb
         snprintf(error, ecap, "--superframes 1-200, --calls 1-50");
         return false;
     }
+    if (!parse_offset(d, obj, j, error, ecap))
+        return false;
     /* csbk */
     j->count = (int)num(d, obj, "count", 4);
     j->opcode = hexnum(d, obj, "opcode", -1);
@@ -475,7 +537,35 @@ static void push(rdof_bj_burst_t *out, int *n, int cap, uint8_t control, const u
     (*n)++;
 }
 
-static int voice_frames(const rdof_bj_job_t *j) { return j->ambe ? (int)(j->ambe_len / 9) : 18 * j->superframes; }
+/* A sweep's call is its steps' superframes whatever the AMBE's length (the AMBE looped). */
+static int voice_frames(const rdof_bj_job_t *j)
+{
+    return j->ambe && j->steps <= 0 ? (int)(j->ambe_len / 9) : 18 * j->superframes;
+}
+
+/* The voice LC headers a call has (0: a late entry). */
+static int voice_headers(const rdof_bj_job_t *j)
+{
+    return j->late >= 0 ? 0 : j->headers < 0 ? HEADERS : j->headers < 1 ? 1 : j->headers;
+}
+
+bool rdof_bj_offsets(const rdof_bj_job_t *j) { return j->steps > 0 || j->offset_hz != 0; }
+
+int rdof_bj_step_of(const rdof_bj_job_t *j, int i)
+{
+    if (j->steps <= 0)
+        return 0;
+    const int v = i - voice_headers(j) + (j->late > 0 ? j->late : 0); /* the voice burst, A of the first superframe 0 */
+    if (v < 0)
+        return 0;
+    const int k = v / 6 / j->sf_per_step;
+    return k < j->steps ? k : j->steps - 1;
+}
+
+double rdof_bj_step_hz(const rdof_bj_job_t *j, int k)
+{
+    return j->steps > 0 ? j->sweep_from + k * j->sweep_step : j->offset_hz;
+}
 
 static int build_voice(const rdof_bj_job_t *j, int call, rdof_bj_burst_t *out, int cap, char *note, char *done,
                        size_t ncap)
@@ -495,7 +585,7 @@ static int build_voice(const rdof_bj_job_t *j, int call, rdof_bj_burst_t *out, i
     uint8_t b[33];
     if (j->late < 0) {
         rdof_lc_burst(lc, RDOF_DT_VOICE_LC_HEADER, cc, rdof_data_sync(vs), b);
-        for (int i = 0; i < (j->headers < 0 ? HEADERS : j->headers < 1 ? 1 : j->headers); i++)
+        for (int i = 0; i < voice_headers(j); i++)
             push(out, &n, cap, RDOF_SYNC_DATA | RDOF_DT_VOICE_LC_HEADER, b);
     }
     const int voice0 = n;
@@ -509,8 +599,9 @@ static int build_voice(const rdof_bj_job_t *j, int call, rdof_bj_burst_t *out, i
         rdof_embedded_lc_encode(e, emb);
         for (int v = 0; v < 6; v++) {
             uint8_t frames[27];
+            const int na = j->ambe ? (int)(j->ambe_len / 9) : 0;
             for (int f = 0; f < 3; f++, k++)
-                memcpy(frames + 9 * f, k < nframes && j->ambe ? j->ambe + 9 * k : SILENCE, 9);
+                memcpy(frames + 9 * f, k < nframes && na ? j->ambe + 9 * (k % na) : SILENCE, 9);
             uint8_t bits[216], mid[48];
             rdof_bytes_to_bits(frames, 27, bits);
             if (v == 0) {

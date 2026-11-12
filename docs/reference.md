@@ -289,6 +289,7 @@ From `idf.py size`. Run it after a change that adds code or RAM, and update this
 
 | Build | Date | App image | Free in its slot | DIRAM used (of 334 KB) |
 |---|---|---|---|---|
+| `16mb` + `w12` (the Rust modules) | 2026-11-12 | 2483 KB | 1.6 MB of 4 MB | 187 KB |
 | `16mb` + `w12` (the Rust modules) | 2026-11-11 | 2492 KB | 1.6 MB of 4 MB | 187 KB |
 | `16mb` + `w12` (the Rust modules) | 2026-11-10 | 2477 KB | 1.6 MB of 4 MB | |
 | `16mb` + `w12`, `CONFIG_RDOF_RUST=n` | 2026-11-10 | 2411 KB | 1.6 MB of 4 MB | |

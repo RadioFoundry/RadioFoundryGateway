@@ -75,6 +75,7 @@ typedef struct {
     char why[128];
     rdof_benchtx_t *job;
     StreamBufferHandle_t from_modem;
+    uint32_t pushed;      /* line: bursts pushed, each one DMR_DATA to the modem in order (the offset's count) */
 } txjob_t;
 
 typedef struct {
@@ -597,8 +598,19 @@ void bench_tx_line_push(uint8_t control, const uint8_t burst[33])
         rdof_benchtx_item_t *it = &t->q[(t->qh + t->qn++) % RDOF_BENCHTX_QUEUE];
         it->control = control;
         memcpy(it->burst, burst, 33);
+        J.pushed++;
     }
     xSemaphoreGive(mu);
+}
+
+const char *bench_tx_line_offset(double hz)
+{
+    xSemaphoreTake(mu, portMAX_DELAY);
+    const char *no = !J.on || !J.line ? "no bench job" : J.routed ? "a routed call's transmitter frames it itself"
+                     : !sdr_modem_bench_offset(J.pushed, hz) ? "the SDR modem has too many offset changes waiting"
+                                                              : NULL;
+    xSemaphoreGive(mu);
+    return no;
 }
 
 bool bench_tx_line_idle(void)
@@ -1003,6 +1015,7 @@ bool bench_tx_line_open(uint32_t freq, int cc, rdof_bench_power_t power, bool as
 }
 int bench_tx_line_space(char *why, size_t cap) { return -1; }
 void bench_tx_line_push(uint8_t control, const uint8_t burst[33]) {}
+const char *bench_tx_line_offset(double hz) { return bench_tx_line_why(); }
 bool bench_tx_line_idle(void) { return true; }
 size_t bench_tx_line_event(char *out, size_t cap) { return 0; }
 void bench_tx_line_close(void) {}

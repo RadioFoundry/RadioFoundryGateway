@@ -126,6 +126,10 @@ typedef struct {
      * transmission that renders I/Q), so the front end pulls it with (try_)pull_iq in place of pull_freq. */
     bool (*iq_now)(void *ctx);
     int (*try_pull_iq)(void *ctx, int64_t pos, rdof_cf_t *iq, int n);
+    /* Optional, for an RDOF_FE_TX_FREQ front end: the carrier offset (Hz) of the keyed samples the last (try_)pull_freq
+     * gave, included in their Hz (a bench sweep's step). A front end that tunes its carrier per key-up may move the
+     * carrier by it and take it out of the samples, so the offset doesn't spend the deviation it can send. */
+    float (*carrier_off)(void *ctx);
 } rdof_fe_tx_source_t;
 
 typedef struct {

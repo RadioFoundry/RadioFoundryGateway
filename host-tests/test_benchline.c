@@ -198,9 +198,24 @@ static int f_tx_space(void *ctx, char *why, size_t cap)
     pthread_mutex_unlock(&txmu);
     return n;
 }
+/* The carrier offsets asked for: at which push (of the bench's life), how far. */
+static struct {
+    int n, pushes, at[64];
+    double hz[64];
+    const char *refuse;
+} offs;
+static const char *f_tx_offset(void *ctx, double hz)
+{
+    if (offs.refuse)
+        return offs.refuse;
+    if (offs.n < 64)
+        offs.at[offs.n] = offs.pushes, offs.hz[offs.n++] = hz;
+    return NULL;
+}
 static void f_tx_push(void *ctx, uint8_t control, const uint8_t b[33])
 {
     pthread_mutex_lock(&txmu);
+    offs.pushes++;
     if (tx.qn == 0 && tx.unkeyed)
         tx.keyups++;
     tx.unkeyed = false;
@@ -386,6 +401,14 @@ static const rdof_bl_platform_t PLAT = {.device = f_device, .window = f_window, 
                                         .rpt_event = f_rpt_event, .rpt_wake = f_rpt_wake, .rpt_close = f_rpt_close,
                                         .tx_why_family = f_why_family, .ob_open = f_ob_open, .ob_state = f_ob_state,
                                         .ob_unkey = f_ob_unkey, .ob_close = f_ob_close, .ob_push = f_ob_push};
+
+/* The same bench, one whose transmitter moves its carrier */
+static rdof_bl_platform_t plat_offset(void)
+{
+    rdof_bl_platform_t p = PLAT;
+    p.tx_offset = f_tx_offset;
+    return p;
+}
 
 /* ── helpers ── */
 
@@ -2180,6 +2203,100 @@ static int run_ob(rdof_bl_t *bl, const char *req, double *now, char *out, size_t
     return c;
 }
 
+/* bench_tx --offset-hz and --offset-sweep: refused where the carrier can't move or the job's wrong; a sweep's steps
+ * set before their first burst, each with a step record; a constant offset for every call. */
+static void test_offset(void)
+{
+    static char out[1 << 18];
+    double now = 5000;
+    memset(&tx, 0, sizeof tx);
+    memset(&offs, 0, sizeof offs);
+    rdof_bl_t *bl = rdof_bl_new(&PLAT);
+    int c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"freq\":438.1125,"
+                    "\"offset_hz\":500}}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"unsupported\"") && strstr(out, "can't move its carrier"), "no tx_offset: %s", out);
+    rdof_bl_closed(bl, c, now);
+    rdof_bl_free(bl);
+
+    const rdof_bl_platform_t po = plat_offset();
+    bl = rdof_bl_new(&po);
+    static const char *const BAD[][2] = {
+        {"\"offset_hz\":2600", "at most +-2500"},
+        {"\"offset_sweep\":\"-3000:0:500\"", "within +-2500"},
+        {"\"offset_sweep\":\"-500:500:0\"", "FROM:TO:STEP"},
+        {"\"offset_sweep\":\"500:-500:250\"", "FROM:TO:STEP"},
+        {"\"offset_sweep\":\"-500:500:250\",\"calls\":2", "one voice call"},
+        {"\"offset_sweep\":\"-500:500:250\",\"offset_hz\":100", "one voice call"},
+        {"\"offset_sweep\":\"-500:500:250\",\"superframes\":3", "leave it out"},
+        {"\"offset_sweep\":\"-2000:2000:100\",\"superframes_per_step\":5", "200 at most"},
+        {"\"offset_sweep\":\"-2000:2000:10\"", "200 steps at most"},
+        {"\"superframes_per_step\":2", "goes with --offset-sweep"},
+    };
+    for (size_t k = 0; k < sizeof BAD / sizeof BAD[0]; k++) {
+        char req[300];
+        snprintf(req, sizeof req, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"freq\":438.1125,%s}}",
+                 BAD[k][0]);
+        c = ask(bl, req, now);
+        drain(bl, c, out, sizeof out);
+        CHECK(strstr(out, "\"code\":\"unsupported\"") && strstr(out, BAD[k][1]), "%s: %s", BAD[k][0], out);
+        rdof_bl_closed(bl, c, now);
+    }
+
+    /* a sweep: 3 headers, 3 steps of 2 superframes (12 voice bursts each), 3 terminators */
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"freq\":438.1125,\"headers\":3,"
+                "\"terminators\":3,\"offset_sweep\":\"-500:500:500\",\"superframes_per_step\":2}}", now);
+    size_t no = 0;
+    for (int i = 0; i < 600 && !rdof_bl_finished(bl, c); i++) {
+        now += 0.01;
+        rdof_bl_tick(bl, now);
+        tx_air(bl, now, -1);
+        no = drain_all(bl, c, out, sizeof out, no);
+    }
+    CHECK(strstr(out, "\"exit\":0") && tx.as_built, "the sweep ran, as built (%d): %.400s", tx.as_built, out);
+    CHECK(offs.n == 3 && offs.at[0] == 0 && offs.at[1] == 15 && offs.at[2] == 27, "steps set at %d, %d, %d (%d)",
+          offs.at[0], offs.at[1], offs.at[2], offs.n);
+    CHECK(offs.hz[0] == -500 && offs.hz[1] == 0 && offs.hz[2] == 500, "steps %g %g %g", offs.hz[0], offs.hz[1],
+          offs.hz[2]);
+    CHECK(count(out, "\\\"type\\\":\\\"step\\\"") == 3, "3 step records: %.1500s", out);
+    CHECK(strstr(out, "\\\"step\\\":2,\\\"steps\\\":3,\\\"offset_hz\\\":500.0") &&
+              strstr(out, "\\\"superframes\\\":[4,5],\\\"bursts\\\":[27,41]"),
+          "the last step's record: %.1500s", out);
+    CHECK(strstr(out, "\\\"superframes\\\":[0,1],\\\"bursts\\\":[0,14]"), "the first step has the headers: %.1500s",
+          out);
+    rdof_bl_closed(bl, c, now);
+
+    /* a constant offset: each call's first burst; refused by the transmitter: the job fails */
+    memset(&offs, 0, sizeof offs);
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"freq\":438.1125,\"superframes\":1,"
+                "\"calls\":2,\"offset_hz\":-1250}}", now);
+    no = 0;
+    for (int i = 0; i < 600 && !rdof_bl_finished(bl, c); i++) {
+        now += 0.01;
+        rdof_bl_tick(bl, now);
+        tx_air(bl, now, -1);
+        no = drain_all(bl, c, out, sizeof out, no);
+    }
+    CHECK(strstr(out, "\"exit\":0") && offs.n == 2 && offs.hz[0] == -1250 && offs.hz[1] == -1250 && offs.at[0] == 0 &&
+              offs.at[1] > 0 && strstr(out, "the carrier -1250 Hz from 438.1125 MHz"),
+          "two calls at -1250 Hz (%d): %.600s", offs.n, out);
+    rdof_bl_closed(bl, c, now);
+    offs.refuse = "no";
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"freq\":438.1125,\"offset_hz\":100}}",
+            now);
+    no = 0;
+    for (int i = 0; i < 100 && !rdof_bl_finished(bl, c); i++) {
+        now += 0.01;
+        rdof_bl_tick(bl, now);
+        tx_air(bl, now, -1);
+        no = drain_all(bl, c, out, sizeof out, no);
+    }
+    CHECK(strstr(out, "\"exit\":1") && strstr(out, "can't move the carrier: no"), "refused: %.600s", out);
+    rdof_bl_closed(bl, c, now);
+    offs.refuse = NULL;
+    rdof_bl_free(bl);
+}
+
 static void test_outbound(void)
 {
     static char out[1 << 18];
@@ -3251,6 +3368,7 @@ int main(int argc, char **argv)
     test_udp_payload_kept();
     test_late();
     test_run();
+    test_offset();
     test_repeater();
     test_outbound();
     test_outbound_voice();
