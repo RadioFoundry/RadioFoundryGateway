@@ -111,7 +111,9 @@ if ls "$ROOT"/tools/pluto/fpga/*.bit.bin > /dev/null 2>&1; then
     mkdir -p "$OUT/$B/fpga"
     cp "$ROOT"/tools/pluto/fpga/* "$OUT/$B/fpga/"
 fi
-gzip -9 -c "$OUT/rdofradio" > "$OUT/$B/rdofradio.gz"
+# xz: about 15 % smaller than gzip -9 (the Pluto's flash holds about 700 KB of program); crc32, no filter: busybox's
+# unxz decodes it
+xz -9e --check=crc32 -c "$OUT/rdofradio" > "$OUT/$B/rdofradio.xz"
 echo "$VERSION" > "$OUT/$B/VERSION"
 chmod 755 "$OUT/$B/install.sh" "$OUT/$B/run.sh"
 tar -C "$OUT" -czf "$OUT/$B.tar.gz" "$B"

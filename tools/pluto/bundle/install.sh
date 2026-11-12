@@ -42,7 +42,7 @@ DIR=$(cd "$(dirname "$0")" && pwd)
 
 if [ $HERE = 0 ]; then
     # from a computer: the bundle (and the settings, if given) to the Pluto's /tmp, then this script there
-    FILES="install.sh run.sh rdofradio.gz config.example.json flags.example VERSION"
+    FILES="install.sh run.sh rdofradio.xz config.example.json flags.example VERSION"
     [ -d "$DIR/fpga" ] && FILES="$FILES fpga"
     if [ -n "$CONFIG" ]; then
         cp "$CONFIG" "$DIR/config.user.json"
@@ -88,7 +88,7 @@ if [ -z "$CONFIG" ] && [ $EXAMPLE = 0 ] && [ ! -f $D/config.json ]; then
     exit 2
 fi
 # check the settings before anything changes: a start that fails at once
-gunzip -c rdofradio.gz > /tmp/rdofradio.check && chmod 755 /tmp/rdofradio.check
+unxz -c rdofradio.xz > /tmp/rdofradio.check && chmod 755 /tmp/rdofradio.check
 NEW=
 [ -n "$CONFIG" ] && NEW=$CONFIG
 [ -z "$NEW" ] && [ $EXAMPLE = 1 ] && NEW=config.example.json
@@ -134,7 +134,8 @@ rm -f /tmp/rdofradio.check
 
 stop
 mkdir -p $D
-cp rdofradio.gz run.sh VERSION $D/
+rm -f $D/rdofradio.gz # from before the bundle used xz: no room for both
+cp rdofradio.xz run.sh VERSION $D/
 chmod 755 $D/run.sh
 [ -n "$NEW" ] && cp "$NEW" $D/config.json
 [ -f $D/flags ] || cp flags.example $D/flags

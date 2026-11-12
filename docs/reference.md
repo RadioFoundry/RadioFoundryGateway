@@ -1461,10 +1461,14 @@ starts `rdofradio` again 5 s after it exits.
 - The settings stay in `/mnt/jffs2/rdof/config.json` (the page edits them), the device flags in `flags`
   (`flags.example`: `--gain 20 --tx-gain 0 --web 0.0.0.0:8080 --clock-state ... --set-os-clock --bench 7373`).
   netclock's state is kept in `/mnt/jffs2/rdof/netclock.state` and sets the Pluto's clock (it starts in 1970).
-- **Updates:** the page's Firmware update (`POST /api/ota`; `--ota FILE`: the bundle's `rdofradio.gz`, or an ELF for
-  the Pluto's ARM) leaves the new program in RAM and stops rdofradio; `run.sh` checks it runs, puts it in the flash
+- **Updates:** the page's Firmware update (`POST /api/ota`; `--ota FILE`: the bundle's `rdofradio.xz`, `rdofradio`
+  gzipped, or an ELF for the Pluto's ARM) leaves the new program in RAM and stops rdofradio; `run.sh` checks it runs, puts it in the flash
   in place of the old one (there's no room for both), and puts the old one back if the new one ends in error within
   30 s.
+- **Size:** the flash (`mtd2`, jffs2, 896 KB) holds the program and the settings, about 690 KB of program at most.
+  The bundle's program is xz (`xz -9e --check=crc32`; no BCJ filter, which busybox's `unxz` can't decode): with the
+  Tier III site in it, 628 KB (2026-11-12), where `gzip -9` gives 746 KB. A bundle from before xz installed
+  `rdofradio.gz`; `install.sh` replaces it, and `run.sh` runs either.
 - The Pluto makes a new ssh host key at every boot, so the script doesn't check it.
 - At `--tx-gain 0` (the default) the start's calibration pulse isn't heard, so the outbound slot timing isn't
   measured.

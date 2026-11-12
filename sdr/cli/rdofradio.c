@@ -4524,15 +4524,17 @@ static void web_settings(int argc, char **argv)
     rdof_hostweb_settings(&s);
 }
 
-/* --ota FILE: the page's update (POST /api/ota) writes a new program there, gzipped as the Pluto bundle's
- * rdofradio.gz or an ELF for this machine (the class, byte order and machine of the one running), and this program
+/* --ota FILE: the page's update (POST /api/ota) writes a new program there: xz as the Pluto bundle's
+ * rdofradio.xz, gzipped, or an ELF for this machine (the class, byte order and machine of the one running), and this program
  * stops: its supervisor (the bundle's run.sh) puts the image in place and starts it. */
 static bool ota_check(void *ctx, const uint8_t *img, size_t len, char *err, size_t cap)
 {
     if (len >= 18 && img[0] == 0x1f && img[1] == 0x8b && img[2] == 8)
         return true; /* gzip, deflate: run.sh tests it whole before it takes it */
+    if (len >= 32 && !memcmp(img, "\xfd" "7zXZ\0", 6))
+        return true; /* xz: the same */
     if (len < 64 || memcmp(img, "\x7f" "ELF", 4)) {
-        snprintf(err, cap, "not a program: a gzipped rdofradio (the bundle's rdofradio.gz) or an ELF");
+        snprintf(err, cap, "not a program: rdofradio as xz (the bundle's rdofradio.xz), gzipped, or an ELF");
         return false;
     }
     uint8_t me[20];
