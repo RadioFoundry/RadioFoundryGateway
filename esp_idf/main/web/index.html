@@ -109,7 +109,7 @@ dimmed past its filter's cutoff, and channels that close make one strip.
 networks and policies. Every unit it makes runs: a repeater app, an SFR or DCDM frequency, a device that transmits
 on simplex frequencies, an SDR that hears; two units that transmit and one SDR at most. On a modem: type, port
 {uart, tx, rx} or {usb, serial, usb_port} (to tell two on a hub apart), hears and transmits. On the SDR: driver, rx
-{rate, gain_db}, usb {transfers, transfer_kb}, dsp_cores (1 or 2); its rate is 288000 or 240000 here. At the top:
+{rate, gain_db}, usb {transfers, transfer_kb}, dsp_cores (1 or 2); an RTL-SDR's rate is 288000 or 240000 on a board. At the top:
 oled {sda, scl}. A modem on USB and an SDR both run: whichever is plugged in runs, unless "usb_hub": true. Comments
 are fine. It's checked before it's saved. The Wi-Fi networks and the NTP servers show as wifi {networks} and ntp
 {servers, poll_s}: passwords never leave the board, so a network without a "password" keeps the one it has (add
@@ -220,6 +220,8 @@ function problems(s) {
     if (d.mqtt_dropped) warn(n + num(d.mqtt_dropped) + ' MQTT posts dropped');
     if (d.hblink_up < d.hblink_peers) warn(n + d.hblink_up + ' of ' + d.hblink_peers + ' HBlink4 peers up');
   });
+  const af = s.memory && s.memory.alloc_fails;
+  if (af && af.n) warn('Memory: ' + num(af.n) + ' allocation' + (af.n > 1 ? 's' : '') + ' refused since boot (the last ' + num(af.size) + ' bytes, in ' + (af.task || 'a task') + ')');
   if (s.safe_mode) bad('Safe mode: the board crashed several times in a row soon after boot, so its radios are off. Fix the settings, then restart.');
   modems(s).forEach(m => {
     const n = (m.kind || 'Modem') + ' ' + m.name + ': ';
@@ -622,8 +624,8 @@ async function status() {
 }
 function clock() {
   const s = S.s, ms = S.now ? S.now + Date.now() - S.nowAt : 0;
-  $('clock').innerHTML = (ms ? new Date(ms).toISOString().slice(11, 19) + ' UTC' : sp('warn', 'clock not set')) +
-    (s ? ' · up ' + dur(s.uptime_s + (Date.now() - S.statusAt) / 1000).replace(/\.\d/, '') : '');
+  $('clock').innerHTML = [ms ? new Date(ms).toISOString().slice(11, 19) + ' UTC' : S.nowAt ? sp('warn', 'clock not set') : '',
+    s ? 'up ' + dur(s.uptime_s + (Date.now() - S.statusAt) / 1000).replace(/\.\d/, '') : ''].filter(Boolean).join(' · ');
 }
 let n = 0;
 async function tick() {
