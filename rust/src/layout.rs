@@ -19,6 +19,7 @@ use crate::mmdvm::{RdofMmdvmReader, RdofMmdvmStatus, RdofModemConfig};
 use crate::modem::{RdofModem, RdofModemPort, RdofRadio, RdofRssiMap};
 use crate::netcalls::{RdofNetcalls, RdofTxCallInfo};
 use crate::oled::{RdofFrameBuf, RdofOledStatus};
+use crate::parrot::{RdofIpgwDmr, RdofParrot, RdofParrotBurst};
 use crate::plan::{
     RdofApp3, RdofDevBench, RdofDevice3, RdofFreq, RdofIdrange, RdofIdset, RdofNet3, RdofPath, RdofPlanDev, RdofPlanExtra,
     RdofPolicy, RdofPort, RdofSite, RdofTxmap, RdofUnit,
@@ -131,6 +132,9 @@ static LAYOUTS: &[Layout] = &layouts![
     ("rdof_repeater_t", RdofRepeater),
     ("rdof_lh_entry_t", RdofLhEntry),
     ("rdof_lh_t", RdofLh),
+    ("rdof_ipgw_dmr_t", RdofIpgwDmr),
+    ("rdof_parrot_burst_t", RdofParrotBurst),
+    ("rdof_parrot_t", RdofParrot),
 ];
 
 /// The i-th struct, or NULL past the last.

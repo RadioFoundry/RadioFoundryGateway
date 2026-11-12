@@ -23,6 +23,7 @@ pub mod mmdvm;
 pub mod modem;
 pub mod netcalls;
 pub mod oled;
+pub mod parrot;
 pub mod pdu;
 mod plan;
 pub mod rawburst;

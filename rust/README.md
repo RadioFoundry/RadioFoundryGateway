@@ -27,6 +27,7 @@ them; a new module goes there and in `src/lib.rs`.
 | `modem.rs` | `common/src/modem.c` (`rint` and `%.5f` through the C library) |
 | `netcalls.rs` | `common/src/netcalls.c` |
 | `oled.rs` | `common/src/oled.c` |
+| `parrot.rs` | `common/src/parrot.c` (through the raw pointer: the hooks may look at it; the voice regeneration, the CRC-32 and the data reply's bursts stay C: `duplex.c`, `fec.c`, `ipgw.c`) |
 | `tracker.rs` | `common/src/tracker.c` (`modf`, `rint` and the FEC through C; also the timestamps) |
 | `txvr.rs` | `common/src/txvr.c` (the struct shared by three tasks through the raw pointer, `tuning` volatile) |
 | `usbmatch.rs` | `common/src/usbmatch.c` |

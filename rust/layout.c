@@ -12,8 +12,10 @@
 #include "rdof/duplex.h"
 #include "rdof/features.h"
 #include "rdof/hblink.h"
+#include "rdof/ipgw.h"
 #include "rdof/jitter.h"
 #include "rdof/oled.h"
+#include "rdof/parrot.h"
 #include "rdof/json.h"
 #include "rdof/jsonp.h"
 #include "rdof/lastheard.h"
@@ -126,6 +128,13 @@ static const rdof_rust_layout_t c_layouts[] = {
 #endif
     L(rdof_lh_entry_t),
     L(rdof_lh_t),
+#if RDOF_FEATURE_DATA_BLOCKS
+    L(rdof_ipgw_dmr_t),
+#endif
+#if RDOF_FEATURE_TX
+    L(rdof_parrot_burst_t),
+    L(rdof_parrot_t),
+#endif
 };
 
 static bool is_repeater_struct(const char *name)
@@ -156,6 +165,10 @@ const char *rdof_rust_layout_mismatch(void)
                                    !strncmp(r->name, "rdof_jb_", 8)))
                 continue;
             if (!RDOF_FEATURE_REPEATER && is_repeater_struct(r->name))
+                continue;
+            if (!RDOF_FEATURE_DATA_BLOCKS && !strcmp(r->name, "rdof_ipgw_dmr_t"))
+                continue;
+            if (!RDOF_FEATURE_TX && !strncmp(r->name, "rdof_parrot_", 12))
                 continue;
             return r->name;
         }
