@@ -76,6 +76,8 @@ mod t3tests;
 #[cfg(all(test, feature = "t3"))]
 mod t3spec_bits;
 #[cfg(all(test, feature = "t3"))]
+mod t3spec_ms;
+#[cfg(all(test, feature = "t3"))]
 mod t3spec_pdu;
 #[cfg(all(test, feature = "t3"))]
 mod t3spec_site;
