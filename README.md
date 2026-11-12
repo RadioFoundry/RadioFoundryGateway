@@ -165,7 +165,7 @@ idf.py -B ../build/w12 -D SDKCONFIG=../build/w12/sdkconfig -p <port> flash   # f
 curl -X POST --data-binary @../build/w12/radiofoundry_gateway.bin http://<board>/api/ota   # after that
 ```
 
-Overlays: `.roamer` / `.sdr` (one role only), `.hub`, `.dspfast`.
+Overlays: `.roamer` / `.sdr` (one role only), `.c` (no Rust toolchain), `.hub`, `.dspfast`.
 
 <details>
 <summary>Linux / macOS build and system tests</summary>

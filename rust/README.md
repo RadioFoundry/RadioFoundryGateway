@@ -3,9 +3,10 @@
 The gateway's C ported to Rust a module at a time. Each module exports its C header's functions under the same names and
 signatures, so the C that calls it doesn't change, and links in place of its `.c` file.
 
-The Rust is what runs, by default: the firmware (`CONFIG_RDOF_RUST`, default `y`; `n` keeps the C), and the host
-tools and every host test (`common/CMakeLists.txt`: it needs cargo and stops without it; `-DRDOF_RUST=OFF` keeps the
-C, and a cross build needs `RDOF_RUST_TARGET`). The C files it replaces are kept for now, for a build without a Rust toolchain and the
+The Rust is what runs, by default: the firmware (`CONFIG_RDOF_RUST`, default `y`) and the host tools and every host
+test (`common/CMakeLists.txt`; a cross build needs `RDOF_RUST_TARGET`). A build that lacks cargo, the toolchain or the
+target stops, lists what is missing and names the switch for the C: the `sdkconfig.defaults.c` overlay for the
+firmware, `-DRDOF_RUST=OFF` for the host. The C files it replaces are kept for now, for a build without a Rust toolchain and the
 feature-off builds (the Rust needs every `RDOF_FEATURE_*` on); `rdof_tests_c` runs the core tests on them. A change
 to one of these modules goes in the Rust, and in the C while it's kept. `RDOF_RUST_MODULES` in `rust.cmake` lists
 them; a new module goes there and in `src/lib.rs`.

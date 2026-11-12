@@ -120,6 +120,7 @@ curl -X POST --data-binary @../build/16mb/radiofoundry_gateway.bin http://<board
 |---|---|---|
 | `sdkconfig.defaults.w12` | `16mb` | the Meshnology W12: the LR2021 front end and its pins, GNSS, the OLED, the power key, the RGB LED on GPIO46 |
 | `sdkconfig.defaults.roamer` / `.sdr` | any | one role only |
+| `sdkconfig.defaults.c` | any | the C modules in place of the Rust ones (`CONFIG_RDOF_RUST=n`): a build without a Rust toolchain. The build says what's missing and names this overlay |
 | `sdkconfig.defaults.hub` | `4mb` | USB hub support (`16mb` has it) |
 | `sdkconfig.defaults.dspfast` | `16mb` | experiment: the receive path's hot code in IRAM (`CONFIG_RDOF_SDR_DSP_IRAM`, about 33 KB of internal RAM) and the 64 KB data cache |
 
