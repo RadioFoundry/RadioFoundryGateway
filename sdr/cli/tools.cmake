@@ -151,6 +151,15 @@ if(TARGET rdofradio AND TARGET fakemodem AND UNIX)
                  $<TARGET_FILE_DIR:rdofradio> ${net} $<IF:$<STREQUAL:${net},homebrew>,62078,62077>)
         set_tests_properties(rdofradio_e2e_${net} PROPERTIES TIMEOUT 60)
     endforeach()
+    # no RF: two boxes, each on a fakemodem, joined by the MQTT network (format v3) through a broker on this host
+    find_program(MOSQUITTO_BROKER mosquitto HINTS /usr/sbin /usr/local/sbin /opt/homebrew/sbin)
+    if(MOSQUITTO_BROKER AND MOSQUITTO_INCLUDE_DIR AND MOSQUITTO_LIBRARY)
+        add_test(NAME rdofradio_e2e_mqttnet COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_mqttnet.sh
+                 $<TARGET_FILE_DIR:rdofradio> ${MOSQUITTO_BROKER} 18873)
+        set_tests_properties(rdofradio_e2e_mqttnet PROPERTIES TIMEOUT 60)
+    else()
+        message(STATUS "no mosquitto broker (or rdofradio without MQTT): the MQTT network's end-to-end test is off")
+    endif()
 endif()
 
 if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")

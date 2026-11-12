@@ -16,9 +16,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - name: Device libraries (rdofradio is built only with one)
+      - name: Device libraries (rdofradio is built only with one), MQTT and a broker for its end-to-end test
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libiio-dev libad9361-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libiio-dev libad9361-dev libmosquitto-dev mosquitto
       - name: Build
         run: cmake -S host-tests -B build/host && cmake --build build/host -j4
       - name: Test
