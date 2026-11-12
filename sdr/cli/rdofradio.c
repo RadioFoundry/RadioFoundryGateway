@@ -153,6 +153,7 @@
 #include "rdofradio_dev.h"
 #include "rdofradio_fpga.h"
 #include "rdofradio_ipgw.h"
+#include "rdofradio_utc.h"
 #include "rdofradio_dnssd.h"
 #include "rdofradio_net.h"
 #include "rdofradio_serial.h"
@@ -7176,6 +7177,12 @@ int main(int argc, char **argv)
                                                .verbose = verbose != 0};
             char terr[200];
             const rdofradio_t3_dev_t td = {trunk_channel, main_now48, now_s, (uint32_t)R.rate};
+            /* the site's slots on the host's clock (UTC when it's synced): carrier 1's from the SDR's sample clock as
+             * timed against it, carrier 2's split half from it, so both carriers share one clock */
+            rdof_slot_timing_t st;
+            rdof_slot_timing_default(&st);
+            st.utc = true;
+            rdofradio_utc_setup(&st, R.rate, true, NULL);
             if (!rdofradio_t3_start(&rcfg, &to, &R.m, &td, terr, sizeof terr)) {
                 fprintf(stderr, "tier3: %s\n", terr);
                 return 1;
@@ -7365,6 +7372,7 @@ int main(int argc, char **argv)
         WS.last_samples = now;
         WS.n += n;
         main_clock(now, total + n);
+        rdofradio_utc_arrived(total + n, now);
         const double t_poll = now;
         if (now - last_poll >= POLL_S) {
             last_poll = now;
@@ -7384,6 +7392,7 @@ int main(int argc, char **argv)
         const int ntx = (int)((total + n) / txr - total / txr);
         const double t_mod = now_s();
         ms_poll(now);
+        rdofradio_utc_apply(&R.m);
         const bool keyed = rdof_sdrmodem_pull_iq(&R.m, txn - lead + offset, out, ntx);
         WS.mod += now_s() - t_mod;
         const double d_poll = t_mod - t_poll, d_mod = now_s() - t_mod;
