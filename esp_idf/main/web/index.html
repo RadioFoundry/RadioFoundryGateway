@@ -37,6 +37,7 @@ tr.live td{background:var(--hi)}td.n,th.n{text-align:right}
 .wrap{overflow-x:auto}
 ul.prob{margin:0 0 8px;padding-left:18px}
 textarea{width:100%;height:380px;font:12px/1.35 ui-monospace,monospace;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+[hidden]{display:none!important}
 button,.btn{display:inline-block;margin:8px 8px 0 0;padding:7px 14px;border:0;border-radius:6px;background:var(--accent);color:#fff;font:inherit;cursor:pointer;text-decoration:none}
 .sec{background:none;color:var(--accent);border:1px solid var(--line)}button.dang{background:var(--bad)}h2 button{margin:0;padding:2px 10px}
 .seg button{margin:0 4px 8px 0;padding:3px 10px;background:none;color:var(--mute);border:1px solid var(--line)}.seg button.on{color:var(--fg);border-color:var(--accent)}
@@ -59,7 +60,6 @@ canvas{display:block;width:100%;background:#0b0b10;border-radius:6px}#spec{heigh
 <div class="card" id="ov_health"></div>
 <div class="cards" id="ov_cards"></div>
 <div class="card"><h2>Last heard <small id="ov_lhn"></small><a class="mute" href="#heard">all calls</a></h2><div class="wrap" id="ov_heard"></div></div>
-<div class="cards" id="ov_more"></div>
 </section>
 
 <section data-tab="heard">
@@ -148,6 +148,7 @@ expected output (no dongle needed). The USB spike measures how much of the RTL-S
 <p id="testmsg"></p>
 <dl class="kv" id="tests_t"></dl></div>
 </div>
+<div class="cards" id="m_more"></div>
 <div class="card"><h2>Log <button type="button" class="sec" onclick="loadLog()">Refresh</button>
 <label class="mute"><input type="checkbox" id="logauto"> every 5 s</label><a class="mute" href="/api/log" target="_blank">as text</a></h2>
 <pre id="log"></pre></div>
@@ -219,6 +220,7 @@ function problems(s) {
     if (d.mqtt_dropped) warn(n + num(d.mqtt_dropped) + ' MQTT posts dropped');
     if (d.hblink_up < d.hblink_peers) warn(n + d.hblink_up + ' of ' + d.hblink_peers + ' HBlink4 peers up');
   });
+  if (s.safe_mode) bad('Safe mode: the board crashed several times in a row soon after boot, so its radios are off. Fix the settings, then restart.');
   modems(s).forEach(m => {
     const n = (m.kind || 'Modem') + ' ' + m.name + ': ';
     if (m.error) bad(n + m.error);
@@ -232,8 +234,8 @@ function problems(s) {
 }
 
 // ── anything in /api/status this page doesn't know: shown as it comes ─────
-const KNOWN = 'name version idf uptime_s reset crash heap_free psram_free cpu memory settings_ok settings_error settings_warning wifi ap_mode ip clock usb_either build_roamer build_sdr selftest spike roamer roamers sdr sdrs modems cpu_process last_exit caps clock_os settings_source rss rss_peak mem_total mem_avail power'.split(' ');
-const extras = s => Object.entries(s).filter(([k]) => !KNOWN.includes(k));
+const KNOWN = 'name version idf uptime_s reset crash heap_free psram_free cpu memory settings_ok settings_error settings_warning wifi ap_mode ip clock usb_either build_roamer build_sdr selftest spike roamer roamers sdr sdrs modems cpu_process last_exit caps clock_os settings_source rss rss_peak mem_total mem_avail power apps safe_mode'.split(' ');
+const extras = s => Object.entries(s).filter(([k, v]) => !KNOWN.includes(k) && !(v && typeof v == 'object' && !flat(v).length));
 const flat = (o, pre = '') => Object.entries(o).flatMap(([k, v]) => v && typeof v == 'object' ?
   (Array.isArray(v) && v.every(x => typeof x != 'object') ? [[pre + k, v.join(', ')]] : flat(v, pre + k + '.')) : [[pre + k, v]]);
 function tone(k, v) {
@@ -516,7 +518,6 @@ function render() {
       p.map(x => '<li class="' + x[0] + '">' + esc(x[1]) + '</li>').join('') + '</ul>' : '') + kv(boardRows(s));
     $('ov_cards').innerHTML = rs.map((r, i) => roamerBrief(r, s.usb_either && !i)).join('') + ds.map(d => sdrBrief(d, s.usb_either)).join('') +
       modems(s).map(modemBrief).join('');
-    $('ov_more').innerHTML = extras(s).map(([k, v]) => card(esc(k.replace(/_/g, ' ')), v && typeof v == 'object' ? fields(flat(v)) : fv(k, v))).join('');
   } else if (t == 'radios') {
     $('apps').innerHTML = (s.apps || []).map(appCard).join('');
     $('radios').innerHTML = rs.map((r, i) => roamerFull(r, s.usb_either && !i)).join('');
@@ -547,6 +548,7 @@ function render() {
       [has(s, 'coredump') ? 'Last reset' : 'Last start', esc(s.reset)], memRow(s), cpuRow(s), battRow(s),
       has(s, 'coredump') && ['Built with', [s.build_roamer && 'roamer', s.build_sdr && 'SDR'].filter(Boolean).join(', ') || '-']]);
     $('pwroff').hidden = !(s.power && s.power.key);
+    $('m_more').innerHTML = extras(s).map(([k, v]) => card(esc(k.replace(/_/g, ' ')), v && typeof v == 'object' ? fields(flat(v)) : fv(k, v))).join('');
     const c = s.crash, x = s.last_exit;
     if (has(s, 'crash')) $('m_crash').innerHTML = '<h2>Last exit ' + (x ? pill(x.signal ? 'bad' : 'warn', x.signal ? 'crashed' : 'stopped') : pill('ok', 'none')) +
       '</h2>' + kv([['Last', exitText(x)], x && x.last_line && ['Its last line', '<code>' + esc(x.last_line) + '</code>']]) +

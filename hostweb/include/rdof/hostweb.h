@@ -105,7 +105,7 @@ typedef struct {
     rdof_hostweb_role_t role;
     char name[24];     /* the radio's name; "" uses the name given to start */
     char radio[48];    /* the front end, "SoapySDR PlutoSDR" */
-    char modem[48];    /* what answers as the modem, "SDR modem" */
+    char modem[128];   /* what answers as the modem (a modem's whole version text), "SDR modem" */
     char protocol[16]; /* "" shows "host" */
     char state[16];    /* free text, "idle", "hang" */
     char error[96];    /* a radio error; non-empty shows the radio as not ready */
