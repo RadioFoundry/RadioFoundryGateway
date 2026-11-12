@@ -12,6 +12,11 @@ use core::fmt::Write;
 
 use crate::t3pdu::*;
 
+// features in their own files, inside this module (they reach the site's state)
+#[path = "t3emerg.rs"]
+mod emerg;
+pub use emerg::RC_SEND;
+
 pub const CARRIERS: usize = 4;
 pub const CHANNELS: usize = CARRIERS * 2;
 pub const REGS: usize = 1024;
@@ -80,6 +85,8 @@ pub struct Cfg {
     pub local_time_ms: u32,
     pub gen_site_ms: u32,
     pub stream_seed: u32,
+    pub preempt: u8, // 1: an emergency with no channel free clears a non-emergency call (361-4 6.4.14.3.1)
+    pub pad1: [u8; 3],
 }
 
 #[repr(C)]
@@ -278,6 +285,7 @@ pub const CLOSE_TIMER: u8 = 2;
 pub const CLOSE_DISCON: u8 = 3;
 pub const CLOSE_CMD: u8 = 4;
 pub const CLOSE_WITHDRAW: u8 = 5;
+pub const CLOSE_PREEMPT: u8 = 6;
 
 pub const ACT_REG: u8 = 1;
 pub const ACT_GRANT: u8 = 2;
@@ -365,6 +373,7 @@ pub struct ChOut {
     pub dt: u8,
     pub pdu: [u8; 10],
     pub r#use: u8,
+    pub rc: u8, // RC_SEND | RC info: a Reverse Channel PDU in this channel's outbound burst, for its other slot's talker
 }
 
 #[repr(C)]
@@ -452,6 +461,9 @@ struct Chan {
     idle_until_ms: i64,
     grant_next_ms: i64,
     last_voice_ms: i64,
+    preempt: bool, // being cleared for an emergency (t3emerg.rs)
+    preempt_until_ms: i64,
+    rc_next_ms: i64,
 }
 
 const P_AHOY: u8 = 1; // waiting for the called MS's answer to C_AHOY
@@ -728,6 +740,9 @@ fn check(c: &Cfg, err: &mut Buf) -> bool {
     }
     if !(60..=604_800).contains(&c.reg_hold_s) {
         no!("timers.reg_hold_s: 60 to 604800");
+    }
+    if c.preempt > 1 {
+        no!("emergency_preempt: true or false");
     }
     true
 }
@@ -1227,7 +1242,7 @@ impl Site {
 
     /// Queues a request for a channel (C_QACKD to a local caller), or refuses it when the queue is full.
     fn enqueue(&mut self, mut p: Pend) {
-        let full = self.queue_len() >= self.cfg.queue_max as usize;
+        let full = self.queue_len() >= self.cfg.queue_max as usize && !self.preempts(p.svc);
         match (full, self.free_pend()) {
             (false, Some(i)) => {
                 p.used = true;
@@ -1541,6 +1556,9 @@ impl Site {
 
     fn group_go(&mut self, src: u32, tg: u32, svc: u8, ch: usize) {
         if let Some(c) = self.group_channel(tg) {
+            if svc & SO_EMERGENCY != 0 {
+                self.emergency_upgrade(c);
+            }
             self.regrant(c, src);
             return;
         }
@@ -2089,8 +2107,9 @@ impl Site {
         self.channel_timers();
         self.reg_timers();
         let mut out = SlotOut::default();
+        let rc_on_tscc = self.preempt_tick(&mut out);
         if !self.withdrawn {
-            if k & 1 == 0 {
+            if k & 1 == 0 && !rc_on_tscc {
                 self.tscc_slot(&mut out);
             } else {
                 // the CACH before the TSCC carrier's next TS1 slot: TS2's inbound in use

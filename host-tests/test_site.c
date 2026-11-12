@@ -767,6 +767,13 @@ static void test_trunk(const char *dir)
           "%s", err);
     CHECK(!apply_text("{\"timers\": {\"backoff_min\": 10, \"backoff_max\": 4}}", "x", &c, &pol, err, sizeof err),
           "backoff order");
+    rdof_t3cfg_default(&c, &pol); /* a refused text leaves cfg half applied */
+    CHECK(!c.preempt && apply_text("{\"services\": {\"emergency_preempt\": true}}", "x", &c, &pol, err, sizeof err) &&
+              c.preempt == 1,
+          "services.emergency_preempt: %s", err);
+    CHECK(!apply_text("{\"services\": {\"preempt\": true}}", "x", &c, &pol, err, sizeof err) &&
+              !strcmp(err, "x.services.preempt: not a key here"),
+          "%s", err);
     CHECK(!apply_text("{\"timers\": {\"warmup_cach\": 3}}", "x", &c, &pol, err, sizeof err), "warmup 3");
     CHECK(!apply_text("{\"wide_tg\": \"1,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31,33\"}", "x", &c, &pol, err,
                       sizeof err),

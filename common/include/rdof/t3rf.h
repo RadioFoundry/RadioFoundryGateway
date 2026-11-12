@@ -115,6 +115,11 @@ typedef struct {
     rdof_voice_regen_t net_regen;
     /* counters */
     uint32_t rx_bursts, rx_pdus, tx_traffic, tx_idle, tx_control, net_bursts, net_dropped, overflows, lost;
+    /* the Reverse Channel for the other slot's talker (361-1 5.1.5): RDOF_T3_RC_SEND | RC info, 0 none */
+    int rc;
+    bool after_term;   /* the last burst out was a terminator: no RC in the next */
+    int64_t rc_k;      /* the slot of the last RC sent (360 ms apart) */
+    uint32_t rc_sent;
 } rdof_t3rf_ch_t;
 
 /* ── the site ─────────────────────────────────────────────────────────────── */
@@ -158,6 +163,14 @@ void rdof_t3rf_close(rdof_t3rf_t *t, int ch);
  * close_after: the channel closes once it has gone out (queued voice is dropped then). False: no such channel, or a
  * data type without a mask. */
 bool rdof_t3rf_control(rdof_t3rf_t *t, int ch, int dt, const uint8_t pdu[10], int repeats, bool close_after);
+
+/* The Reverse Channel PDU channel ch's outbound carries once for its carrier's other slot (rdof_t3_ch_out_t.rc: 0
+ * changes nothing, -1 drops one not yet sent): in place of a voice burst F's embedded LC or of an idle burst's sync (an embedded / dedicated outbound RC), never
+ * in a header or a control block, not right after a terminator, 360 ms apart (361-1 5.1.5.1, 6.4.2). Channel 0 may
+ * be the TSCC: its RC goes in a slot the controller left without a block (an idle burst). */
+void rdof_t3rf_rc(rdof_t3rf_t *t, int ch, int rc);
+/* The RC info in a burst's embedded field (an outbound RC burst), or -1. */
+int rdof_t3rf_rc_read(const uint8_t burst[RDOF_BURST_BYTES]);
 
 /* A burst heard on carrier c under outbound slot k (TS1 even): the TSCC's inbound to pdu / bad, a payload channel's
  * to that channel (repeated on its outbound, voice to activity and uplink). rssi in dBm (0: unknown). */

@@ -40,6 +40,7 @@ Principles:
 | Group voice | C_RAND, C_WACKD/C_QACKD, TV_GRANT (repeated; Late_Entry grants through the call), BTV_GRANT for ALLMSID calls, quasi-transmission trunking (hang time), P_CLEAR on hang expiry, call timer or P_MAINT DISCON |
 | Individual voice | C_AHOY availability check (OACSU or FOACSU, a setting), C_ACKU/C_NACKU, Call Answer, PV_GRANT, cancel (Service_Kind 1111b) |
 | Queueing | One queue by priority (emergency first, then PRIORTY_SV, then age); C_QACKD; SYSbusy_Refused when full |
+| Emergency | Emergency group calls (the emergency call timer, the Emergency flag in grants; an emergency request on an open call upgrades it); pre-emption of a running call when no channel is free (6.4.14.3.1), with the Reverse Channel cease command (6.4.15, table 6.32) to its talker; a setting, off by default (section 3.9) |
 | Refusals | C_NACKD(Not_Supported) for every other Service_Kind; Called_Party_Busy, Called_Group_Not_Allowed, Perm_User_Refused as provisioning says |
 | Network | Wide-area group calls both ways; individual calls across sites with an availability check over the network; Tier II to Tier III and back; registration records; site description; provisioning from the manager, cached at the site |
 | Services | The site controller (Rust, in RFG), the radio layer (C, in RFG), the router's additions, the manager and its dashboard (Python, network services), the MS simulator |
@@ -49,8 +50,7 @@ Principles:
 
 Packet data and UDT short data, talkgroup list subscription (UDT upload), power save, mass re-registration,
 Vote Now, C_MOVE and a second TSCC, composite TSCC, TSCCAS, the asynchronous (hibernating) TSCC, DGNA,
-stun/revive/kill, gateways (PSTN, PABX, dispatcher), duplex calls, ambient listening, emergency pre-emption of a
-running call, a standby controller, trunking on the W12 (the LR2021 can't stay keyed: slot-timing.md), two carriers
+stun/revive/kill, gateways (PSTN, PABX, dispatcher), duplex calls, ambient listening, a standby controller, trunking on the W12 (the LR2021 can't stay keyed: slot-timing.md), two carriers
 out of one SDR, authentication (owner's go-ahead first), encryption beyond pass-through.
 
 Two carriers out of one SDR (tried on the Pluto, 2026-11-06, with fixed test signals, not the site): two DMR BS
@@ -235,6 +235,37 @@ status and UDT requests likewise.
 The parser is `rust/src/t3cfg.rs` (`rdof/t3cfg.h`); it takes the same keys from the manager's `cfg/net` and
 `cfg/node/{node}` (section 5.7).
 
+### 3.9 Emergency calls and pre-emption
+
+An emergency request (C_RAND with the Emergency service option) is queued ahead of everything else. Its call runs
+under `emergency_call_s` (T_EMERG_TIMER) and its grants carry the Emergency flag. An emergency request for a
+talkgroup whose call is already open upgrades that call: the flag and the emergency timer from the call's start.
+
+Pre-emption (6.4.14.3.1, "Emergency Pre-emption MS De-key"; `services.emergency_preempt`, off by default): when an
+emergency call waits and no payload channel is free or already being freed, the site picks a non-emergency call and
+clears it:
+
+1. The call to clear: one in hang time first (nobody to de-key), then one whose talker is on a payload carrier, then
+   the oldest. One call per waiting emergency.
+2. Its talker on RF gets the Reverse Channel "cease transmission" command (RC info 0100b, table 6.32) on the other
+   slot of its carrier, every 360 ms (the least the air interface allows, 361-1 5.1.5.1). The MS finishes its
+   superframe, sends a terminator and stops (6.4.15).
+3. Once the inbound stops (or after 3 s regardless), the channel sends P_CLEAR and frees; the queue gives it to the
+   emergency call. A call with nobody talking, or with network voice only, is cleared at once.
+4. When nothing waits any more (the emergency got another channel, or was cancelled), the pre-emption stops and the
+   call goes on.
+
+With pre-emption on, an emergency request is queued even when the queue is full.
+
+The RC burst (361-1 9.1.5, B.2.2.2, B.3.12, B.3.13): 4 info bits and a CRC-7 masked with 7Ah, one Hamming
+(16,11,4) row over an odd-parity row, interleaved into the 32 bits of the embedded field, with PI = 1 in the EMB.
+The radio layer puts it where the alternate slot's outbound has room: voice burst F's embedded field (an embedded
+RC), or an idle burst in place of its sync (a dedicated RC); never in a header, never in the burst right after a
+terminator. When the talker is on the TSCC carrier's payload slot, the alternate slot is the TSCC: the controller
+leaves that slot's block out and the radio sends the RC in an idle burst (a few control blocks lost a second, only
+while a talker is being de-keyed). Choice: the cease command (0100b), not the cease request (0101b): 6.4.14.3.1 is a
+de-key, and a request may be ignored by the MS.
+
 ## 4. Settings (config-v3 `tier3` app)
 
 The app takes the place reserved for it in config-v3.md section 6 ("a control frequency and a pool; it assigns its own
@@ -281,6 +312,7 @@ paths").
 | `foacsu` | bool | false | full off-air call setup for individual calls |
 | `timers` | object | section 3.8 | |
 | `broadcast` | object | section 3.2 | `adjacent_s`, `chan_freq_s`, `local_time_s` (0 = off) |
+| `services` | object | | `emergency_preempt` (bool, false): clear a running call for a waiting emergency (section 3.9). Local settings only for now; the manager's `cfg` doesn't carry it |
 
 Checks (refusals name the key): exactly one `tscc` carrier; every carrier's `out` on a device that transmits and its
 `in` on a device that receives; the TSCC carrier's `in` and `out` on one full-duplex SDR (a split TX half
@@ -610,7 +642,9 @@ called about one slot plus the TX lead ahead of air: the controller decides a sl
 - network bursts for the channel's call (from the mqtt-net downlink, after a 240 ms prebuffer) queued the same way,
   unless RF holds the channel;
 - the controller's payload PDUs (P_CLEAR) take precedence over voice;
-- idle bursts fill.
+- idle bursts fill;
+- a Reverse Channel PDU for the other slot's talker (`rdof_t3rf_rc`, from `rdof_t3_ch_out_t.rc`) goes once into the
+  next voice burst F or idle burst, 360 ms apart, not right after a terminator (section 3.9).
 
 Outbound sinks: carrier A's channels are read by the slot source (9.1); carrier B's go to the split radio's TX half
 (`rdof_split_t`) in the scheduled stream (SET_ROLE stream 1, TX_SCHED): each burst tagged with its slot counter,

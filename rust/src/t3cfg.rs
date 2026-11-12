@@ -57,6 +57,7 @@ fn model_bits(model: c_int) -> (c_int, c_int) {
 const MODELS: [&[u8]; 4] = [b"tiny", b"small", b"large", b"huge"];
 const SYSTEM_KEYS: &[&[u8]] = &[b"model", b"net", b"site", b"par", b"area_bits"];
 const BROADCAST_KEYS: &[&[u8]] = &[b"adjacent_s", b"chan_freq_s", b"local_time_s"];
+const SERVICES_KEYS: &[&[u8]] = &[b"emergency_preempt"];
 
 /// Where a timer goes in the settings: a code, ms from seconds, or seconds.
 #[derive(Clone, Copy)]
@@ -479,6 +480,14 @@ impl<'a> Cx<'a> {
         let t = self.get(obj, c"timers");
         if t >= 0 && !self.timer_keys(t, path, cfg) {
             return false;
+        }
+        let sv = self.get(obj, c"services");
+        if sv >= 0 {
+            let mut pb = [0u8; 96];
+            let p = join(&mut pb, path, b".services");
+            if !self.known(sv, p, SERVICES_KEYS) || !self.bool_of(sv, c"emergency_preempt", p, &mut cfg.preempt) {
+                return false;
+            }
         }
         let b = self.get(obj, c"broadcast");
         if b >= 0 {

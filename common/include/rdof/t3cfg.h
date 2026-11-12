@@ -28,7 +28,7 @@ void rdof_t3cfg_default(rdof_t3_cfg_t *cfg, rdof_t3_policy_t *pol);
 
 /* The keys of one object over cfg and pol: those it has, the rest left as they are. Takes the app's keys (system,
    registration, ms, require_registration, refuse_unlisted, private, tg, wide_tg, static_tg, foacsu, timers,
-   broadcast) and, for cfg/node, a top-level site and area_bits; carriers, rev, at, neighbors and enabled are the
+   broadcast, services) and, for cfg/node, a top-level site and area_bits; carriers, rev, at, neighbors and enabled are the
    caller's. path names the object in errors ("apps.site", "cfg/net"). false with err set ("path.key: why"); cfg
    and pol may then be half applied. The ranges are checked once all keys are in (rdof_t3cfg_check). */
 bool rdof_t3cfg_apply(const rdof_jdoc_t *doc, int obj, const char *path, rdof_t3_cfg_t *cfg,

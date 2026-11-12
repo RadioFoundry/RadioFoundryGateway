@@ -23,7 +23,7 @@ use crate::plan::RdofIdset;
 use crate::t3cfg::{rdof_t3cfg_check, rdof_t3cfg_site};
 use crate::t3rf::{
     rdof_t3rf_channel, rdof_t3rf_close, rdof_t3rf_control, rdof_t3rf_init, rdof_t3rf_net, rdof_t3rf_net_end,
-    rdof_t3rf_open, rdof_t3rf_rx, rdof_t3rf_slot, rdof_t3rf_split_pump, rdof_t3rf_tick, T3rf, T3rfIo, T3rfSplit,
+    rdof_t3rf_open, rdof_t3rf_rc, rdof_t3rf_rx, rdof_t3rf_slot, rdof_t3rf_split_pump, rdof_t3rf_tick, T3rf, T3rfIo, T3rfSplit,
     WARMUP,
 };
 use crate::t3site::{
@@ -965,6 +965,7 @@ unsafe fn drain(u: *mut Unit) {
             }
             t3::EV_CH_CLOSE => {
                 let ch = c_int::from(e.ch);
+                rdof_t3rf_rc(rf(u), ch ^ 1, -1); // an RC for its talker not sent yet
                 let c = rdof_t3rf_channel(rf(u), ch);
                 if !c.is_null() && (*c).ctl_left > 0 {
                     (*c).close_after = true; // after its last P_CLEAR
@@ -1019,6 +1020,9 @@ unsafe fn held(u: *const Unit, k: i64) -> *const SlotOut {
 
 unsafe extern "C" fn io_tscc(ctx: *mut c_void, k: i64, dt: *mut c_int, pdu: *mut u8) -> bool {
     let o = held(ctx.cast(), k);
+    if !o.is_null() && (*o).tscc_dt == 0 && (*o).ch[0].rc != 0 {
+        rdof_t3rf_rc(rf(ctx.cast()), 0, c_int::from((*o).ch[0].rc)); // the slot is the RC's (an idle burst)
+    }
     if o.is_null() || (*o).tscc_dt == 0 {
         return false;
     }
@@ -1600,8 +1604,9 @@ pub unsafe extern "C" fn rdof_t3unit_run(u: *mut Unit, k_upto: i64, now_ms: i64)
         for c in 0..usize::from((*u).cfg.ncarriers) {
             let ch = 2 * c + (k & 1) as usize;
             if ch == 0 && (*u).rf_tscc {
-                continue;
+                continue; // the TSCC's RC goes with its slot (io_tscc)
             }
+            rdof_t3rf_rc(rf(u), ch as c_int, c_int::from((*r).o.ch[ch].rc));
             let o = addr_of!((*r).o.ch[ch]);
             if (*o).dt != 0 {
                 rdof_t3rf_control(rf(u), ch as c_int, c_int::from((*o).dt), &(*o).pdu, 1, false);
