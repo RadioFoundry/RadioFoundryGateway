@@ -165,6 +165,7 @@ typedef struct {
 #define RDOF_T3_ACT_QUEUE 3 /* op: 1 in, 2 out, 3 drop; reason: the C_NACKD reason when dropped */
 #define RDOF_T3_ACT_SETUP 4 /* op, reason: as the setup message */
 #define RDOF_T3_ACT_REFUSE 5 /* reason: the C_NACKD reason */
+#define RDOF_T3_ACT_STATUS 6 /* a status delivered or not (361-4 6.6.6): op the status, flags group, reason the caller's ack */
 
 #define RDOF_T3_F_GROUP 0x01
 #define RDOF_T3_F_EMERGENCY 0x02
@@ -297,7 +298,9 @@ void rdof_t3_status(const rdof_t3_site_t *s, rdof_t3_status_t *st);
 #define RDOF_T3MS_DO_GROUP 3       /* arg: talkgroup; talk_ms; flags RDOF_T3MS_F_* */
 #define RDOF_T3MS_DO_PRIVATE 4     /* arg: called MS; talk_ms */
 #define RDOF_T3MS_DO_CANCEL 5
+#define RDOF_T3MS_DO_STATUS 7     /* arg: an MS, a talkgroup (F_TO_GROUP) or TSI; talk_ms: the status (126 alarm) */
 #define RDOF_T3MS_F_EMERGENCY 0x01
+#define RDOF_T3MS_F_TO_GROUP 0x02 /* DO_STATUS to a talkgroup */
 
 #define RDOF_T3MS_IDLE 0     /* on the TSCC, nothing to do */
 #define RDOF_T3MS_ACCESS 1   /* random access in progress */

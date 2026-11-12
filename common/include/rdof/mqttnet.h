@@ -481,6 +481,10 @@ size_t rdof_mn_grant_event(const rdof_mn_ev_t *e, uint32_t src, uint32_t dst, bo
 /* {"ev":"queue",...}: action "in", "out", "drop"; why NULL: none */
 size_t rdof_mn_queue_event(const rdof_mn_ev_t *e, uint32_t src, uint32_t dst, bool group, const char *action,
                            const char *why, char *out, size_t cap);
+/* {"ev":"status",...}: a status delivered or not (361-4 6.6.6); status 0-126, alarm "emergency" (126) or "cancel"
+   (124) beside it; result "delivered", "refused", "away", "busy", else "failed" */
+size_t rdof_mn_status_event(const rdof_mn_ev_t *e, uint32_t src, uint32_t dst, bool group, int status,
+                            const char *result, char *out, size_t cap);
 /* {"ev":"setup",...}: a call setup sent or received; peer the other node, NULL: none */
 size_t rdof_mn_setup_event(const rdof_mn_ev_t *e, uint32_t src, uint32_t dst, int op, int reason, const char *peer,
                            char *out, size_t cap);

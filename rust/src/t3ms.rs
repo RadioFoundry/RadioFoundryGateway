@@ -9,7 +9,7 @@ use core::ffi::c_int;
 
 use crate::t3pdu::*;
 use crate::t3rc::RC_CEASE;
-use crate::t3site::{CARRIERS, VOICE_FRAME, VOICE_HEADER, VOICE_TERM};
+use crate::t3site::{ahoy_status, status_rand, CARRIERS, VOICE_FRAME, VOICE_HEADER, VOICE_TERM};
 
 pub const ANSWER_ACCEPT: u8 = 0;
 pub const ANSWER_BUSY: u8 = 1;
@@ -23,7 +23,9 @@ pub const DO_GROUP: u8 = 3;
 pub const DO_PRIVATE: u8 = 4;
 pub const DO_CANCEL: u8 = 5;
 const DO_ANSWER: u8 = 6; // FOACSU Call Answer, queued by the MS itself
+pub const DO_STATUS: u8 = 7; // a status delivery (act_status)
 pub const F_EMERGENCY: u8 = 0x01;
+pub const F_TO_GROUP: u8 = 0x02; // DO_STATUS: the target is a talkgroup
 
 pub const IDLE: u8 = 0;
 pub const ACCESS: u8 = 1;
@@ -131,6 +133,9 @@ pub struct Ms {
     ahoys: u32,
     clears: u32,
     ceased: u32,
+    statuses: u32,          // statuses delivered to it (C_AHOY, Service_Kind Status)
+    last_status: (u32, u32, u8), // the last one's source, target and value
+    last_status_ms: i64,
 }
 
 impl Ms {
@@ -178,6 +183,17 @@ impl Ms {
         self.actions[self.nact] = Action { what, flags, arg, talk_ms, at_ms };
         self.nact += 1;
         true
+    }
+
+    /// A status delivery (361-4 6.6.6.1.2) to an MS or, with group, a talkgroup; 126 is the emergency alarm.
+    pub fn act_status(&mut self, status: u8, group: bool, target: u32, at_ms: i64) -> bool {
+        let flags = if group { F_TO_GROUP } else { 0 };
+        self.act(DO_STATUS, target, u32::from(status & 0x7F), flags, at_ms)
+    }
+
+    /// Statuses delivered to it, and the last one (source, target, value).
+    pub fn statuses(&self) -> (u32, (u32, u32, u8)) {
+        (self.statuses, self.last_status)
     }
 
     fn act_front(&mut self, a: Action) {
@@ -243,6 +259,7 @@ impl Ms {
                 ..Default::default()
             },
             DO_ANSWER => Rand { service_kind: SK_CALL_ANSWER, target: a.arg, source: self.id, ..Default::default() },
+            DO_STATUS => status_rand(a.talk_ms as u8, a.flags & F_TO_GROUP != 0, a.arg, self.id),
             _ => Rand { service_kind: SK_CANCEL, target: a.arg, source: self.id, ..Default::default() },
         };
         r.encode()
@@ -262,7 +279,7 @@ impl Ms {
     }
 
     fn done(&mut self, ok: bool) {
-        if self.has_cur && matches!(self.cur.what, DO_GROUP | DO_PRIVATE) {
+        if self.has_cur && matches!(self.cur.what, DO_GROUP | DO_PRIVATE | DO_STATUS) {
             if ok {
                 self.calls_done += 1;
             } else {
@@ -329,7 +346,7 @@ impl Ms {
                 self.on_ack(&a);
             }
         } else if let Some(a) = Ahoy::decode(pdu) {
-            if a.target == self.id {
+            if a.target == self.id || (a.group && a.service_kind == SK_STATUS && self.my_tg(a.target)) {
                 self.on_ahoy(&a);
             }
         } else if let Some(g) = Grant::decode(pdu) {
@@ -383,8 +400,26 @@ impl Ms {
             }
             return;
         }
-        self.ahoys += 1;
         let ack = |reason, s: &Ms| Ack { op: OP_ACKU, response_info: 0, reason, target: a.source, source: s.id }.encode();
+        if a.service_kind == SK_STATUS {
+            // 6.6.6.1.2.1.5 / 6.6.6.1.2.2.5: store it; an individual one is answered, a talkgroup's isn't
+            let st = (a.source, a.target, ahoy_status(a));
+            if st != self.last_status || self.now - self.last_status_ms > 2000 {
+                self.statuses += 1; // not the same one repeated
+            }
+            self.last_status = st;
+            self.last_status_ms = self.now;
+            if !a.group {
+                self.reply = match self.answer {
+                    ANSWER_SILENT => None,
+                    ANSWER_BUSY => Some(ack(R_EQUIP_BUSY, self)),
+                    ANSWER_REFUSE => Some(ack(R_RECIPIENT_REFUSED, self)),
+                    _ => Some(ack(R_MS_ACCEPTED, self)),
+                };
+            }
+            return;
+        }
+        self.ahoys += 1;
         self.reply = match self.answer {
             ANSWER_ACCEPT => Some(ack(R_MS_ACCEPTED, self)),
             ANSWER_BUSY => Some(ack(R_EQUIP_BUSY, self)),
@@ -611,7 +646,7 @@ pub unsafe extern "C" fn rdof_t3ms_answer(ms: *mut Ms, answer: u8, answer_ms: u3
 
 #[no_mangle]
 pub unsafe extern "C" fn rdof_t3ms_do(ms: *mut Ms, what: u8, arg: u32, talk_ms: u32, flags: u8, at_ms: i64) -> bool {
-    matches!(what, DO_REGISTER..=DO_CANCEL) && (*ms).act(what, arg, talk_ms, flags, at_ms)
+    matches!(what, DO_REGISTER..=DO_CANCEL | DO_STATUS) && (*ms).act(what, arg, talk_ms, flags, at_ms)
 }
 
 #[no_mangle]

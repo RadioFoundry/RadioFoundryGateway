@@ -512,6 +512,21 @@ size_t rdof_mn_queue_event(const rdof_mn_ev_t *e, uint32_t src, uint32_t dst, bo
     return ev_done(&j);
 }
 
+size_t rdof_mn_status_event(const rdof_mn_ev_t *e, uint32_t src, uint32_t dst, bool group, int status,
+                            const char *result, char *out, size_t cap)
+{
+    rdof_json_t j;
+    ev_common(&j, out, cap, "status", e);
+    rdof_json_int(&j, "src", src);
+    rdof_json_int(&j, "dst", dst);
+    rdof_json_bool(&j, "group", group);
+    rdof_json_int(&j, "status", status);
+    if (status == 126 || status == 124)
+        rdof_json_str(&j, "alarm", status == 126 ? "emergency" : "cancel");
+    rdof_json_str(&j, "result", result);
+    return ev_done(&j);
+}
+
 size_t rdof_mn_setup_event(const rdof_mn_ev_t *e, uint32_t src, uint32_t dst, int op, int reason, const char *peer,
                            char *out, size_t cap)
 {

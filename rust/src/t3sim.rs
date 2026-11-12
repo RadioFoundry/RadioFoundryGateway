@@ -25,7 +25,7 @@ pub const HEARD: u32 = 0;
 pub const COLLIDED: u32 = 1;
 pub const DROPPED: u32 = 2;
 
-use crate::t3rf::{rdof_t3rf_burst_pdu, rdof_t3rf_cach4, rdof_t3rf_pdu_burst};
+use crate::t3rf::{rdof_t3rf_burst_pdu, rdof_t3rf_cach4, rdof_t3rf_pdu_burst, rdof_t3rf_rc_read};
 /// rdof_t3unit_t
 pub use crate::t3unit::Unit as T3unit;
 use crate::t3unit::{rdof_t3unit_at, rdof_t3unit_cfg, rdof_t3unit_run, rdof_t3unit_rx, rdof_t3unit_slot};
@@ -85,6 +85,7 @@ pub struct Sim {
     pub collisions: u32,
     pub ext_in_n: u32,
     pub ext_drop: u32,
+    pub out_rc: u32,
 }
 
 impl Sim {
@@ -278,6 +279,19 @@ fn slot(s: &mut Sim, k: i64, now_ms: i64) {
             continue;
         }
         ms.rx(ch, k, dt[ch / 2], &pdu[ch / 2], ch == 0 && at > 0);
+    }
+    // a Reverse Channel PDU in slot k is for the talker on its carrier's other slot (361-1 5.1.5)
+    for (c, o) in out.iter().enumerate().take(ncar) {
+        let info = if o.aired { rdof_t3rf_rc_read(&o.burst) } else { -1 };
+        if info < 0 {
+            continue;
+        }
+        s.out_rc += 1;
+        let ch = 2 * c + (parity ^ 1);
+        for i in 0..nms {
+            let ms = unsafe { &mut *s.ms[i] };
+            ms.rc(ch, info as u8);
+        }
     }
     if let Some(f) = s.ext_out {
         unsafe { f(s.ext_ctx, k, out.as_ptr(), ncar as c_int, at, ext.as_ptr(), next as c_int) };

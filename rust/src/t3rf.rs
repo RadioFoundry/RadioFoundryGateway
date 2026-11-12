@@ -508,8 +508,8 @@ unsafe fn payload_rx(io: &T3rfIo, c: &mut T3rfCh, k: i64, b: &RdofBurst, rssi: c
     let control = if b.dt == RDOF_DT_VOICE_SYNC { SYNC_AUDIO } else { (b.n & 0x0F) as u8 };
     rdof_voice_regen_burst(&mut c.rf_regen, control, b.burst.as_ptr(), out.as_mut_ptr());
     push(c, control, false, &out);
-    if late {
-        activity(io, c, k, VOICE);
+    if late || b.dt == RDOF_DT_VOICE_SYNC {
+        activity(io, c, k, VOICE); // and once a superframe: the controller's talker is still there
     }
     up(io, c, b.dt, b.n, &out, late);
 }
@@ -665,6 +665,10 @@ fn rc_embed(burst: &mut Burst, cc: c_int, info: u8) {
 
 #[no_mangle]
 pub extern "C" fn rdof_t3rf_rc_read(burst: &Burst) -> c_int {
+    let (mut pi, mut lcss) = (0, 0);
+    if !crate::layer2::rdof_decode_emb(burst, None, Some(&mut pi), Some(&mut lcss), None) || pi != 1 || lcss != 0 {
+        return -1; // an RC burst's EMB: PI = 1, single fragment
+    }
     let mut tx = [0u8; 32];
     for (j, b) in tx.iter_mut().enumerate() {
         *b = burst[(116 + j) / 8] >> (7 - (116 + j) % 8) & 1;

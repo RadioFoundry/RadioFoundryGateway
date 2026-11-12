@@ -384,6 +384,7 @@ merge duplicates by `call_key`.
 | `grant` | a trunked site grants a payload channel | `src, dst, group, chan` (logical channel), `lcn` (0 or 1), `late` (a late entry grant); `source` `rf` or `net` (who asked) |
 | `queue` | a trunked site queues a request, serves it, or drops it | `src, dst, group, action` (`in`, `out`, `drop`), `why` (on a drop) |
 | `setup` | a call setup sent or received (§9.4) | `src, dst, op, reason, peer` (the other node) |
+| `status` | a trunked site delivered a status, or couldn't (tier3.md 3.10) | `src, dst, group, status` (0-126), `alarm` (`emergency` for 126, `cancel` for 124), `result` (`delivered`, `refused`, `away`, `busy`, `failed`) |
 
 On a trunked site, `call_start` and `call_end` carry `chan` and `lcn`; `path` is the site's one path and `slot` the
 payload channel's slot.

@@ -33,14 +33,15 @@ Principles:
 
 | Area | Built |
 |---|---|
-| RF layout | 2 carriers: A (SDR TX + SDR RX) carries the dedicated TSCC on TS1 and a payload channel on TS2; B (split radio TX + SDR RX) carries two payload channels. 1 control slot, 3 payload slots. The code takes N carriers. |
+| RF layout | 2 carriers: A (SDR TX + SDR RX) carries the dedicated TSCC on TS1 and a payload channel on TS2; B (split radio TX + SDR RX) carries two payload channels. 1 control slot, 3 payload slots. The controller, the radio layer, the unit and the simulator take 1-4 carriers (up to 7 payload channels), the TSCC on the first; tested with 3 and 4 on simulated air. rdofradio drives 2 at most (hardware) |
 | Control channel | C_SYS_Parms short LC with a counting Common_Slot_Counter; C_ALOHA; C_BCAST Adjacent_Site (from the network), Chan_Freq (the site's own channel plan), Local_Time (when the clock is good), Gen_Site_Params; CACH AT driven by the controller |
 | Random access | Slotted Aloha, Mask 0, Service Function from load, adaptive Backoff, NRand_Wait from settings; a response to every random access |
 | Registration | Open or listed (ID sets); register, de-register, implicit registration from call requests; single-talkgroup subscription (TRGT_ADR_CNTS 01b); Reg_Accepted / Reg_Refused / Reg_Denied; MS_Not_Registered |
 | Group voice | C_RAND, C_WACKD/C_QACKD, TV_GRANT (repeated; Late_Entry grants through the call), BTV_GRANT for ALLMSID calls, quasi-transmission trunking (hang time), P_CLEAR on hang expiry, call timer or P_MAINT DISCON |
 | Individual voice | C_AHOY availability check (OACSU or FOACSU, a setting), C_ACKU/C_NACKU, Call Answer, PV_GRANT, cancel (Service_Kind 1111b) |
 | Queueing | One queue by priority (emergency first, then PRIORTY_SV, then age); C_QACKD; SYSbusy_Refused when full |
-| Emergency | Emergency group calls (the emergency call timer, the Emergency flag in grants; an emergency request on an open call upgrades it); pre-emption of a running call when no channel is free (6.4.14.3.1), with the Reverse Channel cease command (6.4.15, table 6.32) to its talker; a setting, off by default (section 3.9) |
+| Emergency | Emergency group calls (the emergency call timer, the Emergency flag in grants; an emergency request on an open call upgrades it); pre-emption of a running call when no channel is free (6.4.14.3.1), with the Reverse Channel cease command (6.4.15, table 6.32) to its talker; a setting, off by default (section 3.9). The emergency alarm and its cancel (status 126 and 124, 6.6.6.3) through status delivery |
+| Status delivery | Status Transport Service delivery (6.6.6.1): a 7-bit status to an MS (C_AHOY, its C_ACKU or C_NACKU mirrored), a talkgroup (C_AHOY, no answer, C_ACKD to the caller) or the TSCC; stored while the called MS is on a payload channel; an `activity` `status` event (section 3.10) |
 | Refusals | C_NACKD(Not_Supported) for every other Service_Kind; Called_Party_Busy, Called_Group_Not_Allowed, Perm_User_Refused as provisioning says |
 | Network | Wide-area group calls both ways; individual calls across sites with an availability check over the network; Tier II to Tier III and back; registration records; site description; provisioning from the manager, cached at the site |
 | Services | The site controller (Rust, in RFG), the radio layer (C, in RFG), the router's additions, the manager and its dashboard (Python, network services), the MS simulator |
@@ -207,9 +208,9 @@ default 10 s). On expiry the controller abandons the request.
 
 ### 3.7 Refusals
 
-Every C_RAND Service_Kind other than 0000b, 0001b, 1001b (Call Answer), 1110b and 1111b gets
-C_NACKD(Not_Supported) (4.2). Gateway addresses (PSTNI and the rest) as targets also get Not_Supported. Data,
-status and UDT requests likewise.
+Every C_RAND Service_Kind other than 0000b, 0001b, 0111b (status delivery, section 3.10), 1001b (Call Answer),
+1110b and 1111b gets C_NACKD(Not_Supported) (4.2). Gateway addresses (PSTNI and the rest) as targets also get
+Not_Supported. Data, status polling and UDT requests likewise.
 
 ### 3.8 Timers and constants (settings, under the app's `timers`)
 
@@ -265,6 +266,29 @@ terminator. When the talker is on the TSCC carrier's payload slot, the alternate
 leaves that slot's block out and the radio sends the RC in an idle burst (a few control blocks lost a second, only
 while a talker is being de-keyed). Choice: the cease command (0100b), not the cease request (0101b): 6.4.14.3.1 is a
 de-key, and a request may be ignored by the MS.
+
+### 3.10 Status delivery and the emergency alarm
+
+The Status Transport Service (Service_Kind 0111b, 6.6.6.1) carries a 7-bit status on the control channel. The
+C_RAND has it in Service_Options (G/I, SUPED_SV, the high 5 bits) and the two bits before the Service_Kind (table
+6.57); the C_AHOY to the called party has it in Service_Options_Mirror and Appended_Blocks (table 7.22, note 2).
+Status 126 is the emergency alarm and 124 its cancel (6.6.6.3): an emergency without a voice call.
+
+- To an MS registered here: C_AHOY to it (AT set), repeated as for an individual call (`ahoy_tries`,
+  `ahoy_every_s`). Its C_ACKU(MS_Accepted) goes to the caller as C_ACKD with the same reason; a C_NACKU's reason
+  goes back mirrored in C_NACKD. No answer: C_NACKD(MSaway_Refused). The C_AHOY doesn't carry the voice call's
+  emergency check: an MS may send the alarm only if its provisioning allows emergencies (`emergency`).
+- The called MS is on a payload channel (an individual call, or it set up or last talked in a group call): the
+  caller gets C_QACKD(Queued_for_Busy) and the status waits, up to `tp_s` (6.6.6.1.1.5), until the MS is back.
+- To a talkgroup: C_AHOY to the talkgroup twice, no answer expected; then C_ACKD(Message_Accepted) to the caller
+  (6.6.6.1.1.4). Local only for now: the status doesn't go to the talkgroup's other sites.
+- To the TSCC (target TSI): a system message, taken here, C_ACKD(Message_Accepted).
+- Not served (C_NACKD(Not_Supported)): polling (127, the data services'), the transmit interrupt statuses (123,
+  125), gateway targets and extended addresses (the Proxy Flag). An MS not registered here: C_NACKD(MSaway_Refused);
+  delivery across sites is a later item. A request for supplementary data is ignored (6.6.6.1.2.1.2 a).
+
+Each delivered or failed status is an `activity` `status` event (mqtt-net.md section 7) with `alarm` on 126 and
+124, and the alarm goes in the log.
 
 ## 4. Settings (config-v3 `tier3` app)
 
@@ -643,6 +667,8 @@ called about one slot plus the TX lead ahead of air: the controller decides a sl
   unless RF holds the channel;
 - the controller's payload PDUs (P_CLEAR) take precedence over voice;
 - idle bursts fill;
+- voice activity to the controller: the header, each voice sync burst (once a superframe, so a long call isn't taken
+  for a lost one), the terminator, or lost;
 - a Reverse Channel PDU for the other slot's talker (`rdof_t3rf_rc`, from `rdof_t3_ch_out_t.rc`) goes once into the
   next voice burst F or idle burst, 360 ms apart, not right after a terminator (section 3.9).
 
@@ -717,7 +743,8 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
 - Tests: `rdof_t3split_tests` (a two-carrier site, carrier B on a fake split TX half: bring-up, UTC alignment,
   a call on carrier B as `TX_SCHED` on the UTC slots followed by a simulated MS from what the half airs, a heard burst
   labeled by slot, unkeyed after the hang); `rdof_t3unit_tests` (two sites over a broker, `cfg/tg` hang, the
-  neighbor list).
+  neighbor list; a four-carrier site on the burst path: every payload channel in use, a pre-emption with the RC read
+  back from the air, an emergency alarm).
 - Carrier timing: both carriers count the host's UTC slots. Carrier B's split half follows the host's clock
   (`rdof_t3split_utc`, measured each minute). Carrier A's modem sits on the same grid through rdofradio's slot timing
   (`sdr/cli/rdofradio_utc.c`): each read of the receive stream stamped with its arrival on the host's clock, the
@@ -754,11 +781,15 @@ In the network services' own repository (with the router, the Python library and
 - group and individual call requests; follows grants to the payload channel; talks for a set time (voice header,
   voice bursts, terminator), P_MAINT DISCON at the end of an individual call; returns on P_CLEAR or TV_Inactive;
 - answers C_AHOY: accept, busy, no answer, or FOACSU alerting then answer, as configured;
-- emergency and priority options; cancel.
+- emergency and priority options; cancel;
+- the Reverse Channel cease command: finishes its superframe, sends a terminator and stops talking (6.4.15);
+- status delivery (`RDOF_T3MS_DO_STATUS`, the status in `talk_ms`): sends one to an MS, a talkgroup or TSI; stores
+  the ones delivered to it or its talkgroup and answers an individual one as configured.
 
 `t3air`: a slot-exact air between one site controller and N MSs: TSCC outbound to every MS on the TSCC; inbound
 collisions (two MSs in one inbound slot: neither is heard, and the site gets `rx_bad`); payload channels with their
-members; optional loss rate and delay. Scenarios script MS actions by time and check outcomes.
+members; the Reverse Channel to the MSs on the other slot; optional loss rate and delay. Scenarios script MS actions
+by time and check outcomes. The burst-path simulator (`t3sim`) reads the RC out of the aired bursts the same way.
 
 Used by: `cargo test` (scenarios), the C host tests (through the C API), rdofradio `--sim-air`. External MSs join
 the same air through `--sim-ext` (section 9.4), so another MS implementation can be checked against the site

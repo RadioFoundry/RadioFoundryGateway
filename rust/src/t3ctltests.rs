@@ -230,3 +230,177 @@ fn emergency_past_a_full_queue() {
     // and the queued normal call is still waiting behind it
     assert_eq!(air.ms[1].state(), t3ms::WAITING);
 }
+
+// ── status delivery and the emergency alarm (361-4 6.6.6.1, 6.6.6.3) ──
+
+fn statuses(log: &Log) -> Vec<(u8, u32, u32, u8, bool)> {
+    let acts = log.of(EV_ACTIVITY);
+    acts.iter().filter(|e| e.kind == ACT_STATUS).map(|e| (e.op, e.src, e.dst, e.reason, e.flags & F_GROUP != 0)).collect()
+}
+
+/// The emergency alarm to a talkgroup: its members store it, nobody answers, the caller gets C_ACKD.
+#[test]
+fn emergency_alarm_to_a_talkgroup() {
+    let mut s = site_with(|_| {});
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG], &[1]), ms(1002, &[TG], &[1]), ms(1003, &[10], &[1])], T0);
+    register_all(&mut air, &mut log);
+    let now = air.now();
+    air.ms[0].act_status(STATUS_EMERGENCY_ALARM, true, TG, now);
+    assert!(air.until(3000, &mut log.f(), |a| a.ms[0].status().calls_done == 1));
+    air.run(500, &mut log.f());
+    assert_eq!(air.ms[0].status().last_reason, R_MESSAGE_ACCEPTED);
+    assert_eq!(air.ms[1].statuses(), (1, (1001, TG, STATUS_EMERGENCY_ALARM)));
+    assert_eq!(air.ms[2].statuses().0, 0, "another talkgroup's member");
+    assert_eq!(statuses(&log), [(STATUS_EMERGENCY_ALARM, 1001, TG, R_MESSAGE_ACCEPTED, true)]);
+    assert!(log.of(EV_LOG).iter().any(|e| e.text().contains("emergency alarm from 1001")));
+    // and the cancel to the TSCC: a system message, taken there
+    let now = air.now();
+    air.ms[0].act_status(STATUS_CANCEL_ALARM, false, TSI, now);
+    assert!(air.until(3000, &mut log.f(), |a| a.ms[0].status().calls_done == 2));
+    assert_eq!(statuses(&log)[1], (STATUS_CANCEL_ALARM, 1001, TSI, R_MESSAGE_ACCEPTED, false));
+}
+
+/// A status to an MS: C_AHOY, its C_ACKU mirrored to the caller; refused, its C_NACKU mirrored; silent, MSaway.
+#[test]
+fn status_to_an_ms() {
+    let mut s = site_with(|_| {});
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG], &[1]), ms(1002, &[TG], &[1])], T0);
+    register_all(&mut air, &mut log);
+    let now = air.now();
+    air.ms[0].act_status(42, false, 1002, now);
+    assert!(air.until(3000, &mut log.f(), |a| a.ms[0].status().calls_done == 1));
+    assert_eq!(air.ms[0].status().last_reason, R_MS_ACCEPTED);
+    assert_eq!(air.ms[1].statuses(), (1, (1001, 1002, 42)));
+    air.ms[1].set_answer(t3ms::ANSWER_REFUSE, 0);
+    let now = air.now();
+    air.ms[0].act_status(7, false, 1002, now);
+    assert!(air.until(3000, &mut log.f(), |a| a.ms[0].status().calls_failed == 1));
+    assert_eq!(air.ms[0].status().last_reason, R_RECIPIENT_REFUSED);
+    air.ms[1].set_answer(t3ms::ANSWER_SILENT, 0);
+    let now = air.now();
+    air.ms[0].act_status(8, false, 1002, now);
+    assert!(air.until(8000, &mut log.f(), |a| a.ms[0].status().calls_failed == 2));
+    assert_eq!(air.ms[0].status().last_reason, R_MSAWAY);
+    assert_eq!(air.ms[1].statuses().0, 3, "each C_AHOY heard");
+    let st = statuses(&log);
+    assert_eq!(st.iter().map(|s| (s.0, s.3)).collect::<Vec<_>>(), [(42, R_MS_ACCEPTED), (7, R_RECIPIENT_REFUSED), (8, R_MSAWAY)]);
+}
+
+/// A status to an MS in a call waits (C_QACKD) until it's back on the TSCC; polling and unknown MSs are refused.
+#[test]
+fn status_stored_while_the_called_ms_talks() {
+    let mut s = site_with(|_| {});
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG], &[1]), ms(1002, &[10], &[1]), ms(1003, &[10], &[1])], T0);
+    register_all(&mut air, &mut log);
+    let now = air.now();
+    air.ms[1].act(t3ms::DO_GROUP, 10, 3000, 0, now);
+    assert!(air.until(3000, &mut log.f(), |a| a.ms[1].state() == t3ms::PAYLOAD));
+    let now = air.now();
+    air.ms[0].act_status(STATUS_EMERGENCY_ALARM, false, 1002, now);
+    assert!(air.until(3000, &mut log.f(), |a| a.ms[0].status().last_reason == R_QUEUED_BUSY));
+    assert_eq!(air.ms[1].statuses().0, 0);
+    assert!(air.until(15_000, &mut log.f(), |a| a.ms[0].status().calls_done == 1));
+    assert_eq!(air.ms[0].status().last_reason, R_MS_ACCEPTED);
+    assert_eq!(air.ms[1].statuses(), (1, (1001, 1002, STATUS_EMERGENCY_ALARM)));
+    // polling isn't served here; an MS not registered here is away
+    let now = air.now();
+    air.ms[0].act_status(127, false, 1002, now);
+    assert!(air.until(3000, &mut log.f(), |a| a.ms[0].status().calls_failed == 1));
+    assert_eq!(air.ms[0].status().last_reason, R_NOT_SUPPORTED);
+    let now = air.now();
+    air.ms[0].act_status(5, false, 1999, now);
+    assert!(air.until(3000, &mut log.f(), |a| a.ms[0].status().calls_failed == 2));
+    assert_eq!(air.ms[0].status().last_reason, R_MSAWAY);
+}
+
+#[test]
+fn status_pdus_round_trip() {
+    for st in [0u8, 1, 42, 99, 124, 126] {
+        for group in [false, true] {
+            let r = Rand::decode(&status_rand(st, group, 9, 1001).encode()).unwrap();
+            assert_eq!((r.service_kind, r.service_options & 0x40 != 0, status_of(&r)), (SK_STATUS, group, st));
+            let a = Ahoy::decode(&status_ahoy(st, group, 9, 1001).encode()).unwrap();
+            assert_eq!((a.service_kind, a.group, ahoy_status(&a)), (SK_STATUS, group, st));
+        }
+    }
+    // table 6.57: 126 = 111 1110b: STATUS(5) 11111 in Service_Options' low bits, STATUS(2) 10
+    let r = status_rand(126, false, 9, 1001);
+    assert_eq!((r.service_options, r.dep), (0x1F, 0b10));
+}
+
+// ── N carriers ──
+
+/// Three carriers, five payload channels: five calls fill them, a sixth queues and gets the first freed; a carrier
+/// out of service isn't granted.
+#[test]
+fn three_carriers_fill_queue_and_free() {
+    let mut s = site_with(|c| carriers(c, 3));
+    let mut log = Log::default();
+    let ch = [1u16, 2, 3];
+    let mut air = Air::new(
+        &mut s,
+        [ms(1001, &[10], &ch), ms(1002, &[11], &ch), ms(1003, &[12], &ch), ms(1004, &[13], &ch), ms(1005, &[14], &ch), ms(1006, &[15], &ch)],
+        T0,
+    );
+    register_all(&mut air, &mut log);
+    let now = air.now();
+    for i in 0..5 {
+        let talk = if i == 2 { 2000 } else { 30_000 };
+        air.ms[i].act(t3ms::DO_GROUP, 10 + i as u32, talk, 0, now + 200 * i as i64);
+    }
+    air.ms[5].act(t3ms::DO_GROUP, 15, 1000, 0, now + 1500);
+    assert!(air.until(4000, &mut log.f(), |a| a.ms[5].status().last_reason == R_QUEUED));
+    let busy: Vec<_> = air.ms[..5].iter().map(|m| (m.state(), m.ch())).collect();
+    assert!(busy.iter().all(|&(st, _)| st == t3ms::PAYLOAD), "{busy:?}");
+    let mut chs: Vec<_> = busy.iter().map(|&(_, c)| c).collect();
+    chs.sort();
+    assert_eq!(chs, [1, 2, 3, 4, 5]);
+    // the 2 s call ends (hang 3 s): the queued one takes its channel
+    let freed = air.ms[2].ch();
+    assert!(air.until(10_000, &mut log.f(), |a| a.ms[5].state() == t3ms::PAYLOAD));
+    assert_eq!(air.ms[5].ch(), freed);
+
+    // carrier 3 out of service: only channels 1-3
+    let mut s = site_with(|c| {
+        carriers(c, 3);
+        c.carriers[2].enabled = 0;
+    });
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[10], &ch), ms(1002, &[11], &ch), ms(1003, &[12], &ch), ms(1004, &[13], &ch)], T0);
+    register_all(&mut air, &mut log);
+    let now = air.now();
+    for i in 0..4 {
+        air.ms[i].act(t3ms::DO_GROUP, 10 + i as u32, 30_000, 0, now + 200 * i as i64);
+    }
+    assert!(air.until(4000, &mut log.f(), |a| a.ms[3].status().last_reason == R_QUEUED));
+    let mut chs: Vec<_> = air.ms[..3].iter().map(|m| m.ch()).collect();
+    chs.sort();
+    assert_eq!(chs, [1, 2, 3]);
+}
+
+/// Four carriers: the Chan_Freq broadcast names each carrier's frequencies in turn.
+#[test]
+fn four_carriers_chan_freq_each() {
+    let mut s = site_with(|c| {
+        carriers(c, 4);
+        c.chan_freq_ms = 2000;
+    });
+    let mut seen = [false; 5];
+    let mut air = Air::new(&mut s, [ms(1001, &[10], &[1, 2, 3, 4])], T0);
+    let mut hdr = false;
+    for _ in 0..400 {
+        air.step(&mut |_| {});
+        let o = air.last;
+        if o.tscc_dt == DT_MBC_HDR {
+            hdr = Bcast::decode(&o.tscc_pdu).is_some_and(|b| b.ann == BC_CHAN_FREQ);
+        } else if o.tscc_dt == DT_MBC_CONT && hdr {
+            let ap = BcAp::decode(&o.tscc_pdu).unwrap();
+            assert_eq!(ap.rx_hz, if ap.chan == 1 { 438_750_000 } else { 438_600_000 + (ap.chan as u32 - 1) * 25_000 }, "{ap:?}");
+            seen[ap.chan as usize] = true;
+        }
+    }
+    assert_eq!(seen, [false, true, true, true, true]);
+}

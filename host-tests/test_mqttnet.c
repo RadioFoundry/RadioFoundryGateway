@@ -1104,6 +1104,11 @@ static void test_setup(void)
     const rdof_mn_ev_t e2 = {.node = "site-a", .wall = 0, .path = -1, .slot = 1};
     rdof_mn_queue_event(&e2, 1, 2, false, "in", NULL, ev, sizeof ev);
     CHECK(strstr(ev, "\"path\":null") && strstr(ev, "\"source\":\"rf\"") && !strstr(ev, "why"));
+    rdof_mn_status_event(&e2, 3100123, 91, true, 126, "delivered", ev, sizeof ev);
+    CHECK(strstr(ev, "\"ev\":\"status\"") &&
+          strstr(ev, "\"src\":3100123,\"dst\":91,\"group\":true,\"status\":126,\"alarm\":\"emergency\",\"result\":\"delivered\""));
+    rdof_mn_status_event(&e2, 1, 2, false, 42, "away", ev, sizeof ev);
+    CHECK(strstr(ev, "\"status\":42,\"result\":\"away\"") != NULL);
 }
 
 /* ── registration records, where, status, the trunk object ── */

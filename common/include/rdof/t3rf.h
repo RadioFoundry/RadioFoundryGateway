@@ -74,7 +74,8 @@ bool rdof_t3rf_slc_join(const uint32_t rows[4], uint32_t *slc28);
 /* What rdof_t3rf_io_t's activity reports. */
 enum {
     RDOF_T3RF_HEADER = 1, /* a voice LC header (the addresses its LC gives) */
-    RDOF_T3RF_VOICE,      /* voice with no header first (late entry; the channel's addresses) */
+    RDOF_T3RF_VOICE,      /* voice with no header first (late entry; the channel's addresses), then each voice sync
+                             burst (once a superframe: the talker is still there) */
     RDOF_T3RF_TERM,       /* a terminator with LC */
     RDOF_T3RF_LOST,       /* RF voice stopped without a terminator */
 };
@@ -169,7 +170,7 @@ bool rdof_t3rf_control(rdof_t3rf_t *t, int ch, int dt, const uint8_t pdu[10], in
  * in a header or a control block, not right after a terminator, 360 ms apart (361-1 5.1.5.1, 6.4.2). Channel 0 may
  * be the TSCC: its RC goes in a slot the controller left without a block (an idle burst). */
 void rdof_t3rf_rc(rdof_t3rf_t *t, int ch, int rc);
-/* The RC info in a burst's embedded field (an outbound RC burst), or -1. */
+/* The RC info in a burst's embedded field (an outbound RC burst: EMB PI = 1, LCSS single fragment), or -1. */
 int rdof_t3rf_rc_read(const uint8_t burst[RDOF_BURST_BYTES]);
 
 /* A burst heard on carrier c under outbound slot k (TS1 even): the TSCC's inbound to pdu / bad, a payload channel's

@@ -16,6 +16,9 @@ use crate::t3pdu::*;
 #[path = "t3emerg.rs"]
 mod emerg;
 pub use emerg::RC_SEND;
+#[path = "t3status.rs"]
+mod status;
+pub use status::{ahoy_status, status_ahoy, status_of, status_rand, STATUS_CANCEL_ALARM, STATUS_EMERGENCY_ALARM};
 
 pub const CARRIERS: usize = 4;
 pub const CHANNELS: usize = CARRIERS * 2;
@@ -292,6 +295,7 @@ pub const ACT_GRANT: u8 = 2;
 pub const ACT_QUEUE: u8 = 3;
 pub const ACT_SETUP: u8 = 4;
 pub const ACT_REFUSE: u8 = 5;
+pub const ACT_STATUS: u8 = 6;
 pub const REG_REGISTER: u8 = 1;
 pub const REG_DEREGISTER: u8 = 2;
 pub const REG_EXPIRE: u8 = 3;
@@ -566,6 +570,7 @@ pub struct Site {
     chans: [Chan; CHANNELS],
     pend: [Pend; PENDING],
     net: [NetWait; STREAMS],
+    stat: [status::StatPend; status::STATUS_PENDING],
     // registrations and provisioning
     regs: [Reg; REGS],
     reg_scan: usize,
@@ -1421,6 +1426,7 @@ impl Site {
             SK_IND_VOICE | SK_TG_VOICE => self.call_request(r),
             SK_CALL_ANSWER => self.call_answer(r),
             SK_CANCEL => self.cancel(r.source),
+            SK_STATUS => self.status_request(r),
             _ => self.refuse(R_NOT_SUPPORTED, r.source, r.target),
         }
     }
@@ -1630,6 +1636,9 @@ impl Site {
     /// C_ACKU or C_NACKU from a called MS: its source is the AHOY's target.
     fn ms_ack(&mut self, a: &Ack) {
         self.heard(a.source);
+        if self.status_ack(a) {
+            return;
+        }
         let Some(i) =
             self.pend.iter().position(|p| p.used && p.state == P_AHOY && p.called == a.source && p.caller == a.target)
         else {
@@ -2104,6 +2113,7 @@ impl Site {
         self.now = now_ms;
         self.roll_load();
         self.pending_timers();
+        self.status_timers();
         self.channel_timers();
         self.reg_timers();
         let mut out = SlotOut::default();

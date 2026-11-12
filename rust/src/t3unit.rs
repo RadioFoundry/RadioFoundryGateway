@@ -444,6 +444,16 @@ extern "C" {
         out: *mut c_char,
         cap: usize,
     ) -> usize;
+    fn rdof_mn_status_event(
+        e: *const MnEv,
+        src: u32,
+        dst: u32,
+        group: bool,
+        status: c_int,
+        result: *const c_char,
+        out: *mut c_char,
+        cap: usize,
+    ) -> usize;
     fn rdof_mn_setup_event(
         e: *const MnEv,
         src: u32,
@@ -885,6 +895,16 @@ unsafe fn activity_out(u: *mut Unit, e: &Event) {
             rdof_mn_setup_event(&ev, e.src, e.dst, c_int::from(e.op), c_int::from(e.reason), null(), jp, jn)
         }
         t3::ACT_REFUSE => rdof_mn_queue_event(&ev, e.src, e.dst, group, c"refuse".as_ptr(), cp(&why), jp, jn),
+        t3::ACT_STATUS => {
+            let result = match e.reason {
+                crate::t3pdu::R_MS_ACCEPTED | crate::t3pdu::R_MESSAGE_ACCEPTED => c"delivered",
+                crate::t3pdu::R_MSAWAY => c"away",
+                crate::t3pdu::R_EQUIP_BUSY => c"busy",
+                crate::t3pdu::R_RECIPIENT_REFUSED => c"refused",
+                _ => c"failed",
+            };
+            rdof_mn_status_event(&ev, e.src, e.dst, group, c_int::from(e.op), result.as_ptr(), jp, jn)
+        }
         _ => 0,
     };
     if n != 0 {
