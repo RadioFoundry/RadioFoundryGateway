@@ -26,6 +26,7 @@
 #endif
 #include "rdofradio_serial.h"
 #include "rdofradio_simext.h"
+#include "rdofradio_utc.h"
 
 #ifndef RDOF_VERSION
 #define RDOF_VERSION "dev"
@@ -518,12 +519,17 @@ int rdofradio_t3_sim(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o, vol
 static rdof_sdrmodem_t *M;
 static rdofradio_t3_dev_t DEV;
 
-/* carrier 1: the modem's slots on the trunk's (UTC) slots */
+/* carrier 1: the modem's slots on the trunk's (UTC) slots. On the host's slot grid (rdofradio_utc.h) the modem's
+ * slot k is the UTC slot itself, the one carrier 2 counts too; off it (no map within GRID_WAIT_S) the modem's own
+ * count, placed once against the host's clock, which its sample clock then drifts from. */
+#define GRID_WAIT_S 10.0
 static struct {
-    bool placed;
-    int64_t d;      /* trunk k = modem k + d (even: the modem's TS1 is the trunk's LCN 0) */
-    int64_t last_k; /* the modem's last slot asked */
-    int chan;       /* the receiver's channel on carrier 1's inbound */
+    bool placed, on_grid;
+    int64_t d;        /* trunk k = modem k + d (even: the modem's TS1 is the trunk's LCN 0) */
+    int64_t last_k;   /* the modem's last slot asked */
+    int chan;         /* the receiver's channel on carrier 1's inbound */
+    bool keyed;       /* the key-up held */
+    double key_by;    /* hold the key-up by then, on the grid or not */
 } A = {.chan = -1};
 
 /* carrier 2: its split TX half */
@@ -562,14 +568,21 @@ static bool source_slot(void *ctx, int64_t k, uint8_t burst[RDOF_BURST_BYTES], i
     uint8_t control;
     pthread_mutex_lock(&T.mu);
     rdof_t3unit_set_now(T.u, wall_ms());
-    if (!A.placed || k < A.last_k) { /* the first, or the modem started its slots again */
+    const bool on_grid = M && M->grid_placed;
+    if (on_grid) {
+        if (!A.placed || !A.on_grid)
+            tsay("carrier 1: on the slot grid (modem slot %lld is the UTC slot)", (long long)k);
+        A.d = 0;
+        A.placed = true;
+    } else if (!A.placed || A.on_grid || k < A.last_k) { /* the first, off the grid, or the modem started again */
         const int64_t want = wall_ms() / 30 + 2;
         A.d = want - k;
         A.d += A.d & 1;
         A.placed = true;
-        if (T.o.verbose)
-            tsay("carrier 1: modem slot %lld is trunk slot %lld", (long long)k, (long long)(k + A.d));
+        tsay("carrier 1: off the slot grid: modem slot %lld is trunk slot %lld (the SDR's clock drifts from it)",
+             (long long)k, (long long)(k + A.d));
     }
+    A.on_grid = on_grid;
     A.last_k = k;
     const bool ok = rdof_t3unit_slot(T.u, 0, k + A.d, burst, &control, at, slc28);
     pthread_mutex_unlock(&T.mu);
@@ -734,11 +747,30 @@ bool rdofradio_t3_start(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o, 
     M = m;
     const rdof_sdrmodem_source_t src = {source_slot, NULL};
     rdof_sdrmodem_set_source(m, &src);
-    if (!rdof_sdrmodem_hold_key(m, true)) {
-        snprintf(err, cap, "the modem won't hold its key (not duplex?)");
-        return false;
-    }
+    /* keyed once the slot grid has a map (the modem snaps to it at key-up; a held key-up is only steered), else
+     * after GRID_WAIT_S on its own count */
+    A.keyed = false;
+    A.key_by = DEV.now() + (rdofradio_utc_enabled() ? GRID_WAIT_S : 0);
     return true;
+}
+
+/* the main loop's, before the modem's pull */
+static bool key_carrier1(void)
+{
+    if (A.keyed || !M)
+        return true;
+    int64_t i0, t0;
+    double rate;
+    const bool mapped = rdofradio_utc_map48(&i0, &t0, &rate);
+    if (!mapped && DEV.now() < A.key_by)
+        return true;
+    if (!mapped && rdofradio_utc_enabled()) {
+        const char *why = "";
+        rdofradio_utc_state(&why, NULL);
+        tsay("carrier 1: no slot grid after %.0f s (%s): keyed on the SDR's own clock", GRID_WAIT_S, why);
+    }
+    A.keyed = true;
+    return rdof_sdrmodem_hold_key(M, true);
 }
 
 bool rdofradio_t3_on(void) { return T.on; }
@@ -769,6 +801,10 @@ void rdofradio_t3_poll(void)
 {
     if (!T.on)
         return;
+    if (!key_carrier1()) {
+        tsay("carrier 1: the modem won't hold its key (not duplex?)");
+        A.keyed = true;
+    }
     pthread_mutex_lock(&T.mu);
     poll_locked(wall_ms());
     if (BC.up) {

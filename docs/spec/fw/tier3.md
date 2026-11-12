@@ -684,8 +684,16 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
   a call on carrier B as `TX_SCHED` on the UTC slots followed by a simulated MS from what the half airs, a heard burst
   labeled by slot, unkeyed after the hang); `rdof_t3unit_tests` (two sites over a broker, `cfg/tg` hang, the
   neighbor list).
-- Not done: run on a device (carrier A on the Pluto, carrier B's half on air); the carriers' relative timing on air
-  (carrier A's slots follow the SDR modem's own clock, not UTC).
+- Carrier timing: both carriers count the host's UTC slots. Carrier B's split half follows the host's clock
+  (`rdof_t3split_utc`, measured each minute). Carrier A's modem sits on the same grid through rdofradio's slot timing
+  (`sdr/cli/rdofradio_utc.c`): each read of the receive stream stamped with its arrival on the host's clock, the
+  sample clock on the earliest arrival of every 2 s and its rate from anchors two minutes apart, the map handed to the
+  modem before every pull. The site keys carrier A once the map exists (the modem snaps to the grid at key-up, then
+  steers a sample a slot at most), or after 10 s without one, on its own count as before. The host's clock is the
+  reference even when nothing disciplines it ("own time": a PlutoSDR runs no NTP client); one site needs its carriers
+  on one clock, not on UTC. A step in the host's clock moves both carriers' grids; carrier A steers there at 21 us a
+  slot, carrier B jumps at its next measurement.
+- Not done: run on a device (carrier A on the Pluto, carrier B's half on air); the carriers' timing checked on air.
 
 ## 10. Network services
 
@@ -754,7 +762,7 @@ type `tier3` (was `trunk`), the build option `RDOF_TIER3`, the modules `t3*`.
 | 1 | The branch on main (merged 2026-11-12) and the Tier III names | host tests pass (done) |
 | 2 | Rust only: `t3rf`, `t3cfg`, `t3unit`, `t3sim`, `t3split` ported from C to rust/src (cargo feature `tier3` = `legacy` + `t3`, in rdof_common's one Rust library); the C files removed; the C headers stay the API for rdofradio, whose device, MQTT and socket glue (`rdofradio_t3.c`, `rdofradio_simext.c`) stays C with the rest of that program. A C-modules build (`RDOF_RUST` off) has no Tier III site | host tests, the cargo tests, the two-site system test |
 | 3 | After the port: the modules call each other by Rust path, not through their C API; the structs C no longer reads become plain Rust | as step 2 |
-| 4 | Carrier timing: carrier A's slots follow the SDR's sample clock, carrier B's split half follows the host's (UTC) clock, and the offset between them is taken once, so they drift apart by the SDR's clock error (20 ppm: one slot in 25 minutes). Carrier B follows carrier A instead: its slot grid is carrier A's, as measured against the host clock, re-aligned each minute; UTC stays only the slots' numbering | a host test with a 20 ppm SDR clock over hours of slots; on the bench, carrier B's bursts stay on carrier A's grid |
+| 4 | Carrier timing: carrier A's slots followed the SDR's sample clock and carrier B's the host's, with the offset taken once, so they drifted apart by the SDR's clock error (20 ppm: one slot in 25 minutes). Now carrier A sits on the host's slot grid too, through the stream's sample clock timed against the host's (9.4) | done on the host: an SDR 20 ppm fast for 3 hours stays within 69 us, 2 us of drift (`rdof_radio_utc_tests`); on a file device the site keys on the grid. On the bench: carrier B's bursts stay on carrier A's grid |
 | 5 | The Pluto bundle with `tier3` (tools/pluto/build.sh): rdofradio.gz still fits the settings flash's 896 KB with the controller in it | the bundle builds; its size in reference.md |
 | 6 | Bench, step 1 (owner's go, a bench TX frequency with a lease, cabled or lowest power): the Pluto runs a one-carrier site (TSCC on TS1, a payload channel on TS2) and a bench receiver checks the TSCC: C_SYS_Parms and its counter, C_ALOHA at least every 4th TSCC slot, the broadcasts' cadence, CRCs, the CACH (TC, AT) | an hour of TSCC decoded with no bad block |
 | 7 | Bench, step 2: an MS against the site. In order of reach: a standard Tier III radio, if one is to hand (registration, a group call, a private call with the availability check); RadioFoundry's MS engine once it exists (handoff notes section 2) | registration accepted, a group call heard on the payload channel |
