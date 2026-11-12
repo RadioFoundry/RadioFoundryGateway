@@ -99,6 +99,18 @@ def test_status_fields(status):
     assert status["heap_free"] > floor, f"internal heap is nearly gone ({status['heap_free']} B)"
 
 
+def test_settings_carried_and_no_allocation_refused(status):
+    """The settings hold nothing this build accepts and doesn't carry (`settings_warning`), and the heap has refused
+    no allocation since boot (`memory.alloc_fails`): on a W12 the internal RAM left is a few KB, and a refusal there
+    is a task that didn't start or a connection that stays down."""
+    assert not status.get("settings_warning"), status.get("settings_warning")
+    fails = (status.get("memory") or {}).get("alloc_fails")
+    if fails is None:
+        pytest.skip("firmware older than memory.alloc_fails")
+    assert fails["n"] == 0, f"{fails['n']} allocations refused since boot; the last {fails['size']} B (caps " \
+                            f"0x{fails['caps']:x}) in task {fails['task']!r}"
+
+
 def test_status_headers_and_size():
     code, hdrs, body = request("GET", "/api/status")
     assert code == 200
@@ -357,6 +369,43 @@ def text_frames(msgs):
     return [json.loads(m) for m in msgs if isinstance(m, str)]
 
 
+# A W12 with a good link gives its 24 KB page in 0.1 to 0.3 s (85 to 240 KB/s, the connection's setup included) and
+# carries 160 to 300 KB/s of a stream; W12 #1 took 0.5 to 1.2 s a page and carried 20 to 80 KB/s whatever its
+# settings (lr2021-iq.md R3.59). On a link that slow a stream past its time ends short or late, or its socket's 5 s
+# send limit drops it: the link's, not the firmware's.
+SLOW_LINK_BPS = 80e3
+
+
+def link_bps():
+    """What the board's link carries now, measured apart from the streams: the page, five times, by the median."""
+    rates = []
+    for _ in range(5):
+        t0 = time.monotonic()
+        code, _, body = request("GET", "/")
+        assert code == 200
+        rates.append(len(body) / max(time.monotonic() - t0, 1e-3))
+    return sorted(rates)[2]
+
+
+def timed_messages(path, query, timeout):
+    """A stream's messages, and the bytes a second its binary frames came at."""
+    t0 = time.monotonic()
+    msgs = list(ws_messages(URL, path, query, timeout))
+    took = max(time.monotonic() - t0, 1e-3)
+    return msgs, sum(len(m) for m in msgs if isinstance(m, bytes)) / took
+
+
+def xfail_slow_link(texts, bps, what):
+    """A stream with no done frame, on a board whose link is slow by a measure of its own (the page, not the
+    stream): an expected failure, with both rates. With a good link it's the caller's to fail."""
+    if texts and texts[-1].get("type") == "done":
+        return
+    link = link_bps()
+    if link < SLOW_LINK_BPS:
+        pytest.xfail(f"{what}: no done frame; the board's link gives its page at {link / 1e3:.0f} KB/s (a good "
+                     f"one 85 to 240) and carried {bps / 1e3:.0f} KB/s of the stream: the link, not the stream")
+
+
 def test_spectrum_stream(info):
     msgs = list(ws_messages(URL, API + "/spectrum/ws", {"seconds": 1.5}, 12))
     texts = text_frames(msgs)
@@ -441,8 +490,11 @@ def test_concurrent_iq_streams_count_filler(info):
     f = info["channels"][0]["freq_hz"]
     got = {}
 
+    rate = {}
+
     def run(key, q):
-        got[key] = list(ws_messages(URL, API + "/iq", q, 20))
+        # 3 s of samples, and the 20 s a stream may run past its time while frames still come (bench-api.md 9)
+        got[key], rate[key] = timed_messages(API + "/iq", q, 30)
 
     ts = [threading.Thread(target=run, args=("wide", {"rate": "wide", "fmt": "cs8", "seconds": 3})),
           threading.Thread(target=run, args=("ch", {"freq_hz": f, "fmt": "cs16", "seconds": 3}))]
@@ -450,6 +502,7 @@ def test_concurrent_iq_streams_count_filler(info):
     [t.join() for t in ts]
     for key, msgs in got.items():
         texts = text_frames(msgs)
+        xfail_slow_link(texts, sum(rate.values()), "a wideband and a channel stream at once")
         start, done = texts[0], texts[-1]
         assert done["type"] == "done", (key, done)
         zeros = iq_zero_runs(msgs, int(0.005 * start["rate"]))

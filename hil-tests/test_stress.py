@@ -21,7 +21,8 @@ import urllib.parse
 
 import pytest
 
-from test_board import API, BOARD, URL, get_json, request, text_frames, ws_messages
+from test_board import (API, BOARD, URL, get_json, request, text_frames, timed_messages, ws_messages,
+                        xfail_slow_link)
 
 pytestmark = pytest.mark.skipif(not BOARD or os.environ.get("RDOF_BOARD_STRESS") != "1",
                                 reason="RDOF_BOARD and RDOF_BOARD_STRESS=1 are not both set")
@@ -60,9 +61,13 @@ class Counters:
                 "bytes_lost": self.lost - before.lost}
 
 
+RATES = {}  # each stream's bytes a second, by key (run_stream)
+
+
 def run_stream(query, out, key, timeout=SECONDS * 4 + 15):
     try:
-        out[key] = text_frames(ws_messages(URL, API + "/iq", dict(query, seconds=SECONDS), timeout))
+        msgs, RATES[key] = timed_messages(API + "/iq", dict(query, seconds=SECONDS), timeout)
+        out[key] = text_frames(msgs)
     except Exception as e:  # the assertion is in the test's thread
         out[key] = [{"type": "error", "error": repr(e)}]
 
@@ -76,6 +81,8 @@ def streams(queries, also=None):
     [t.start() for t in ts]
     [t.join() for t in ts]
     for k, texts in out.items():
+        if texts and texts[0]["type"] == "start":
+            xfail_slow_link(texts, sum(RATES.get(q, 0) for q in queries), f"stream {k}")
         assert texts and texts[0]["type"] == "start" and texts[-1]["type"] == "done", (k, texts[:1], texts[-1:])
     return out
 
@@ -200,6 +207,7 @@ def test_second_wideband_stream_is_refused_cleanly(info):
     except Exception as e:
         second = [{"type": "error", "error": repr(e)}]
     first.join()
+    xfail_slow_link(out["first"], RATES.get("first", 0), "the first wideband stream")
     assert out["first"][-1]["type"] == "done", out["first"][-1:]
     assert not second or second[-1]["type"] != "done" or second[-1].get("samples", 0) == 0 or \
         get_json(API + "/info")["limits"].get("wide_streams", 1) > 1, json.dumps(second)[:300]
@@ -217,6 +225,7 @@ def test_pings_do_not_break_frames(info):
     u = up.urlsplit(URL)
     url = f"ws://{u.netloc}{API}/iq?{up.urlencode(dict(WIDE, seconds=4))}"
     texts, seqs, pongs = [], [], []
+    got, t0 = 0, time.monotonic()
     with connect(url, open_timeout=10, max_size=None, ping_interval=None) as ws:
         deadline = time.monotonic() + 40
         next_ping = time.monotonic()
@@ -234,8 +243,10 @@ def test_pings_do_not_break_frames(info):
                 else:
                     h = iq_header(m)  # raises on a frame that doesn't start with the magic
                     seqs.append((h["sc"], h["n"], h["flags"]))
-        except ConnectionClosed:
+                    got += len(m)
+        except (ConnectionClosed, TimeoutError):
             pass
+    xfail_slow_link(texts, got / max(time.monotonic() - t0, 1e-3), "a wideband stream with pings")
     assert texts and texts[-1]["type"] == "done", texts[-1:]
     # a frame that doesn't start where the last one ended says so (flag 1, gap): a W12 sends a wideband stream's
     # frames as fast as Wi-Fi takes them and drops the rest whole
