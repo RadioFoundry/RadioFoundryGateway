@@ -830,6 +830,8 @@ void rdof_t3unit_split_pump(rdof_t3unit_t *u, rdof_t3rf_split_t *o, struct rdof_
     drain(u);
 }
 
+const rdof_t3_cfg_t *rdof_t3unit_cfg(const rdof_t3unit_t *u) { return &u->cfg; }
+
 int rdof_t3unit_at(const rdof_t3unit_t *u, int64_t k)
 {
     const rdof_t3unit_held_t *r = k >= 0 ? &u->ring[k % RDOF_T3UNIT_RING] : NULL;

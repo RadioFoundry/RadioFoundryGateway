@@ -13,7 +13,9 @@
 #include "rdof/jitter.h"
 #include "rdof/jsonp.h"
 #include "rdof/siteplan.h"
+#ifdef RDOF_TIER3
 #include "rdof/t3cfg.h"
+#endif
 
 /* ntp: a string of servers, or {servers, poll_s, clock}. The clock is netclock's when servers are set, unless
    clock is "os"; "netclock" without servers runs it on the browser's time alone. */
@@ -116,6 +118,7 @@ static bool split_on_sdr(const rdof_plan_t *p, const char *name, rdofradio_split
     return true;
 }
 
+#ifdef RDOF_TIER3
 static void str_key(const rdof_jdoc_t *d, int obj, const char *key, const char *dflt, char *out, size_t cap)
 {
     const int i = obj >= 0 ? rdof_jget(d, obj, key) : -1;
@@ -179,11 +182,26 @@ static bool from_trunk(const rdof_plan_t *p, int unit, rdofradio_cfg_t *o, char 
     o->site = *s;
     return clock_settings(p, o, err, cap);
 }
+#endif
+
+/* The plan's Tier III unit (a tier3 app), -1 none. */
+static int trunk_unit(const rdof_plan_t *p)
+{
+#ifdef RDOF_TIER3
+    return rdof_t3cfg_unit(p);
+#else
+    for (int k = 0; k < rdof_plan_nunits(p); k++)
+        if (rdof_plan_unit(p, k)->kind == RDOF_UNIT_TIER3)
+            return k;
+    return -1;
+#endif
+}
 
 static bool from_plan(const rdof_plan_t *p, rdofradio_cfg_t *o, char *err, size_t cap)
 {
-    const int tu = rdof_t3cfg_unit(p);
+    const int tu = trunk_unit(p);
     if (tu >= 0) {
+#ifdef RDOF_TIER3
         if (!rdof_plan_check(p, &rdof_plan_host, err, cap))
             return false;
         rdof_roles_t roles;
@@ -191,6 +209,11 @@ static bool from_plan(const rdof_plan_t *p, rdofradio_cfg_t *o, char *err, size_
             snprintf(o->box, sizeof o->box, "%s", roles.box);
         err[0] = 0;
         return from_trunk(p, tu, o, err, cap);
+#else /* the Tier III site is rust's (RDOF_TIER3): none here */
+        snprintf(err, cap, "%s is a trunked site: this rdofradio was built without it (RDOF_TIER3, cargo)",
+                 rdof_plan_unit(p, tu)->name);
+        return false;
+#endif
     }
     rdof_roles_t roles;
     if (!rdof_plan_check(p, &rdof_plan_host, err, cap) || !rdof_plan_roles_on(p, &rdof_plan_host, &roles, err, cap))

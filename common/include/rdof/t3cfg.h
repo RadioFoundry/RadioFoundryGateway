@@ -3,8 +3,8 @@
 /*
  * A trunked site's settings (docs/spec/fw/tier3.md sections 3.8 and 4): the `tier3` app's object, and the manager's
  * provisioning documents (cfg/net, cfg/node/{node}: section 5.7), into the controller's settings and policy
- * (rdof/t3.h). Portable C, no allocation; it needs no Rust (the defaults are kept here beside the controller's own,
- * and a host test checks they match when the controller is built).
+ * (rdof/t3.h). In Rust (rust/src/t3cfg.rs, the tier3 feature), no allocation; its defaults are the controller's (a
+ * host test checks they match).
  */
 #ifndef RDOF_TRUNKCFG_H
 #define RDOF_TRUNKCFG_H

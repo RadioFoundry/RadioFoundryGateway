@@ -170,8 +170,9 @@ sockets, NVS, HTTP, MQTT) stays in each target.
 | `netcalls`, `status` | network calls, `tx`, status and Receiver messages |
 | `site`, `idset` | the settings parser (version 3), ID sets, the resolved view (C only) |
 | `siteplan` | one parse of the settings into what runs: units, devices, checks ([config-v3.md](spec/fw/config-v3.md) §12, §13.1) (C only) |
-| `trunkrf`, `trunkcfg` | a trunked site's radio layer (control blocks to bursts and back, the CACH, the carriers' slots) and its settings into the controller's (`rdof/t3.h`, built in Rust: [tier3.md](spec/fw/tier3.md)) |
-| `trunkunit`, `trunksim` | a trunked site in one sans-IO core: the controller, the radio layer and mqtt-net (streams, setup, records, `where/`, `cfg`, `cmd`, status, activity); simulated MSs on its air through the burst path. Need the controller, so not in `common/CMakeLists.txt`: rdofradio and `rdof_t3unit_tests` build them |
+| `trunkrf` | a trunked site's radio layer (control blocks to bursts and back, the CACH, the carriers' slots) (`rdof/t3.h`, built in Rust: [tier3.md](spec/fw/tier3.md)) |
+| `t3cfg`, `t3sim` | Rust only (`rust/src/t3cfg.rs`, `t3sim.rs`, the tier3 feature): a trunked site's settings into the controller's (`rdof/t3cfg.h`); simulated MSs on its air through the burst path (`rdof/t3sim.h`) |
+| `trunkunit` | a trunked site in one sans-IO core: the controller, the radio layer and mqtt-net (streams, setup, records, `where/`, `cfg`, `cmd`, status, activity). Needs the controller, so in `rdof_common` only with the tier3 Rust (`RDOF_TIER3`) |
 | `config`, `jsonp` | a unit's settings from the plan (`rdof_plan_radio`), what a board runs, the port checks; the JSON reader |
 | `router`, `siteroute` | the call router: which network an RF call goes to, which paths a network call goes out on (C only) |
 | `txpool` | the transmitter pool ([transmitters.md](spec/fw/transmitters.md)) (C only) |

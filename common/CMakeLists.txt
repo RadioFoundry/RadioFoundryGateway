@@ -58,7 +58,6 @@ set(RDOF_COMMON_SRCS
     src/webapi.c
     src/sigmode.c
     src/t3rf.c
-    src/t3cfg.c
     src/radiofoundry/dmrFec.c src/radiofoundry/dmrCach.c src/radiofoundry/dmr_lc.c src/radiofoundry/dmrTrellis.c src/radiofoundry/dmrDataCrc.c
 )
 # split.c's clock arithmetic matches the golden scenarios to the bit: no fused multiply-add.
@@ -153,6 +152,8 @@ else()
         endif()
         if(RDOF_TIER3)
             target_compile_definitions(rdof_common PUBLIC RDOF_RUST_T3=1)
+            # The Tier III unit, C until its port: the Rust (t3sim.rs) calls it, so it's in the library with it.
+            target_sources(rdof_common PRIVATE src/t3unit.c)
         endif()
         # The Rust calls back into this library (the FEC, RadioFoundry's codes): the two link as a cycle.
         target_link_libraries(rdof_common PUBLIC rdof_rust)
