@@ -14,7 +14,7 @@ path = "src/lib.rs"
 [dependencies]
 
 # legacy: the modules that replace common's C (the firmware's and rdof_tests_rust's build).
-# t3: the trunked site (DMR Tier III): the PDU codec, the site controller and the MS simulator (docs/spec/fw/trunk.md).
+# t3: the trunked site (DMR Tier III): the PDU codec, the site controller and the MS simulator (docs/spec/fw/tier3.md).
 [features]
 default = ["legacy"]
 legacy = []

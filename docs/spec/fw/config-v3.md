@@ -487,9 +487,9 @@ A firmware build without `CONFIG_RDOF_IPGW` refuses an `ipgw` app. rdofradio run
 
 ### 6.4 `trunk`
 
-A DMR Tier III trunked site ([trunk.md](trunk.md)): a control channel (TSCC) on one carrier's TS1, the other slots
+A DMR Tier III trunked site ([tier3.md](tier3.md)): a control channel (TSCC) on one carrier's TS1, the other slots
 payload channels. One a box; it runs on a host (`rdofradio`), not on a board. The keys, defaults and ranges are
-trunk.md section 4 and 3.8; the manager's `cfg` documents override them (trunk.md 5.7).
+tier3.md section 4 and 3.8; the manager's `cfg` documents override them (tier3.md 5.7).
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
@@ -501,7 +501,7 @@ trunk.md section 4 and 3.8; the manager's `cfg` documents override them (trunk.m
 | `require_registration` | bool | true | |
 | `refuse_unlisted` | `denied`, `refused` | `denied` | |
 | `foacsu` | bool | false | |
-| `timers` | object | trunk.md 3.8 | |
+| `timers` | object | tier3.md 3.8 | |
 | `broadcast` | object | 5, 10, 6 | `adjacent_s`, `chan_freq_s`, `local_time_s`: 0 (off) or 1-600 |
 
 Its frequencies are its own: no other app, gateway, transceiver or receiver uses them, and every carrier's color

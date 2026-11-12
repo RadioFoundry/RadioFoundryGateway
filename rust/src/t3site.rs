@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 //! The trunked site controller (DMR Tier III, ETSI TS 102 361-4): registration, random access, group and individual
-//! calls, the queue, grants, the TSCC schedule and the timers (docs/spec/fw/trunk.md section 3). C API: rdof/t3.h.
+//! calls, the queue, grants, the TSCC schedule and the timers (docs/spec/fw/tier3.md section 3). C API: rdof/t3.h.
 //!
 //! Sans-IO: no clock, no allocation, no I/O. The caller gives it the inbound PDUs, payload voice activity, network
 //! events and the time; per slot it returns the blocks to send, and events say what else to do. Every struct here
@@ -592,7 +592,7 @@ impl Write for Buf<'_> {
     }
 }
 
-/// The defaults of trunk.md section 3.8: one composite carrier.
+/// The defaults of tier3.md section 3.8: one composite carrier.
 pub fn cfg_default() -> Cfg {
     let mut c = Cfg {
         model: MODEL_SMALL,

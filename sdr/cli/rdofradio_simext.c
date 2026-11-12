@@ -19,7 +19,7 @@
 
 #include "rdof/jsonp.h"
 #include "rdof/pdu.h"
-#include "rdof/trunkrf.h"
+#include "rdof/t3rf.h"
 
 #define CLIENTS 16
 #define LINE 16384
@@ -54,13 +54,13 @@ typedef struct {
 } qent_t;
 
 static struct {
-    rdof_trunksim_t *sim;
+    rdof_t3sim_t *sim;
     int lfd;
     char path[sizeof(((struct sockaddr_un *)0)->sun_path)];
     client_t *cl[CLIENTS];
     qent_t q[QMAX];
     int nq;
-    qent_t taken[RDOF_TRUNKSIM_EXT]; /* the bursts given to the sim for this slot */
+    qent_t taken[RDOF_T3SIM_EXT]; /* the bursts given to the sim for this slot */
     double loss, err;
     uint32_t rng;
     bool verbose;
@@ -142,7 +142,7 @@ static void drop(int i, const char *why)
 
 /* ── the sim's hooks ──────────────────────────────────────────────────────── */
 
-static int ext_in(void *ctx, int64_t k, rdof_trunksim_in_t *in, int max)
+static int ext_in(void *ctx, int64_t k, rdof_t3sim_in_t *in, int max)
 {
     (void)ctx;
     int n = 0, keep = 0;
@@ -176,28 +176,28 @@ static int ext_in(void *ctx, int64_t k, rdof_trunksim_in_t *in, int max)
     return n;
 }
 
-static void ext_out(void *ctx, int64_t k, const rdof_trunksim_out_t *out, int ncar, int at_next,
-                    const rdof_trunksim_in_t *in, int nin)
+static void ext_out(void *ctx, int64_t k, const rdof_t3sim_out_t *out, int ncar, int at_next,
+                    const rdof_t3sim_in_t *in, int nin)
 {
     (void)ctx;
     for (int e = 0; e < nin; e++) {
         const qent_t *q = in[e].tag;
-        const char *f = in[e].fate == RDOF_TRUNKSIM_DROPPED    ? "no-slot"
-                        : in[e].fate == RDOF_TRUNKSIM_COLLIDED ? "collided"
+        const char *f = in[e].fate == RDOF_T3SIM_DROPPED    ? "no-slot"
+                        : in[e].fate == RDOF_T3SIM_COLLIDED ? "collided"
                         : q->corrupt                           ? "corrupted"
                                                                : "heard";
         fate(q->cl, k, q->ch, q->id, q->off_us, q->b.dt, f,
-             in[e].fate == RDOF_TRUNKSIM_DROPPED ? "(that channel isn't on air in this slot)" : NULL);
+             in[e].fate == RDOF_T3SIM_DROPPED ? "(that channel isn't on air in this slot)" : NULL);
     }
     /* the carriers, the same for every client */
     static char car[RDOF_T3_CARRIERS * 256];
     size_t m = 0;
     for (int c = 0; c < ncar; c++) {
-        const rdof_trunksim_out_t *o = &out[c];
+        const rdof_t3sim_out_t *o = &out[c];
         char b[2 * RDOF_BURST_BYTES + 1], p[24], ch[8];
         int at = 0, tc = 0, lcss = 0;
         uint32_t p17 = 0;
-        rdof_trunk_cach_read(o->cach, &at, &tc, &lcss, &p17);
+        rdof_t3rf_cach_read(o->cach, &at, &tc, &lcss, &p17);
         hex(b, o->burst, RDOF_BURST_BYTES);
         if (o->pdu_ok) {
             p[0] = '"';
@@ -266,7 +266,7 @@ static const char *jstr(const rdof_jdoc_t *d, int obj, const char *key)
 /* one TX of a client's answer to slot base */
 static void take_tx(client_t *c, const rdof_jdoc_t *d, int t, int64_t base)
 {
-    const rdof_trunkunit_t *u = X.sim->u;
+    const rdof_t3unit_t *u = X.sim->u;
     int ch = jint(d, t, "ch", -1);
     if (ch < 0)
         ch = 2 * jint(d, t, "c", 0) + jint(d, t, "slot", 1) - 1;
@@ -285,7 +285,7 @@ static void take_tx(client_t *c, const rdof_jdoc_t *d, int t, int64_t base)
     if (pdu) {
         tx.kind = 1;
         tx.dt = (uint8_t)jint(d, t, "dt", -1);
-        ok = unhex(pdu, tx.pdu, 10) && rdof_trunksim_ms_burst(&tx, 0, cc, &q.b);
+        ok = unhex(pdu, tx.pdu, 10) && rdof_t3sim_ms_burst(&tx, 0, cc, &q.b);
     } else if (voice) {
         tx.kind = 2;
         tx.what = !strcmp(voice, "header") ? RDOF_T3_VOICE_HEADER
@@ -296,11 +296,11 @@ static void take_tx(client_t *c, const rdof_jdoc_t *d, int t, int64_t base)
         tx.dst = (uint32_t)jll(d, t, "dst", 0);
         const rdof_jnode_t *g = rdof_jnode(d, rdof_jget(d, t, "group"));
         tx.group = !g || g->type != RDOF_JBOOL || g->b;
-        ok = tx.what && rdof_trunksim_ms_burst(&tx, n, cc, &q.b);
+        ok = tx.what && rdof_t3sim_ms_burst(&tx, n, cc, &q.b);
     } else if (burst && unhex(burst, q.b.burst, RDOF_BURST_BYTES)) {
         int dt = -1, rcc = -1;
         uint8_t p[10];
-        if (rdof_trunk_burst_pdu(q.b.burst, &dt, &rcc, p) != RDOF_TRUNK_PDU_OK)
+        if (rdof_t3rf_burst_pdu(q.b.burst, &dt, &rcc, p) != RDOF_T3RF_PDU_OK)
             dt = n ? RDOF_DT_VOICE : RDOF_DT_VOICE_SYNC;
         q.b.dt = jint(d, t, "dt", dt);
         q.b.n = n;
@@ -398,7 +398,7 @@ static void accept_new(void)
 
 /* ── the API ──────────────────────────────────────────────────────────────── */
 
-bool rdofradio_simext_open(rdof_trunksim_t *sim, const char *path, double loss, double err_rate, uint32_t seed,
+bool rdofradio_simext_open(rdof_t3sim_t *sim, const char *path, double loss, double err_rate, uint32_t seed,
                            bool verbose, char *err, size_t cap)
 {
     struct sockaddr_un a;

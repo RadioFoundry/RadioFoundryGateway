@@ -7,7 +7,7 @@ Status: phase 1 built, 2026-11-02 (§1.1): `common/src/mqttnet.c`, run by rdofra
 network and back out from another node on both slots, speech, every voice burst in order; the board's task is built,
 not yet run on hardware. Today's MQTT calls (`{root}/calls/...`, DMRD packets, [mqtt.md](mqtt.md) §10) stay the
 default; this replaces them later.
-Trunked sites (Tier III, [trunk.md](trunk.md)) use the same calls and topics, plus a call setup item (§9.4),
+Trunked sites (Tier III, [tier3.md](tier3.md)) use the same calls and topics, plus a call setup item (§9.4),
 registration records (§15), node status (§16) and provisioning from a manager (§17); a Tier II box needs only the
 setup answer (§9.4). The format stays 3: it is a draft until released.
 Related: [config-v3.md](config-v3.md) (talk paths, policies, networks), [dmr-core.md](dmr-core.md) (PDU layouts),
@@ -348,7 +348,7 @@ place a call comes in or goes out, so the slot is part of the path where the slo
 | `paths[].tx_ok` | the path can transmit; only these can deliver a private call or answer confirmed data |
 | `paths[].tg`, `ptt`, `pc` | the path's resolved policy, in config v3's ID-set syntax ([config-v3.md](config-v3.md) §3, §8); only paths whose `net` is this network are listed |
 | `claims` | IDs this node answers for (apps, and a box's own `parrot` / `ipgw` apps); §9.2 |
-| `paths[].trunk` | `true` on a trunked site's path ([trunk.md](trunk.md)): the network addresses the site, never a slot |
+| `paths[].trunk` | `true` on a trunked site's path ([tier3.md](tier3.md)): the network addresses the site, never a slot |
 | `trunk` | a trunked site only: its system code, control channel and carriers, as below |
 
 ```json
@@ -551,7 +551,7 @@ site A: grants the caller; the voice then goes as an ordinary private call both 
   turns the early refusal off; the request is then just dropped and the caller's timer ends it.
 - A setup message never becomes bursts: the downlink hands it to the box's handler (`rdof_mn_down_t.setup`).
 - A private call from a Tier II radio to a Tier III radio needs no setup: the trunked site does the check itself
-  when the voice arrives ([trunk.md](trunk.md) §3.6).
+  when the voice arrives ([tier3.md](tier3.md) §3.6).
 
 ## 10. Config
 
@@ -675,7 +675,7 @@ two confirmed ones, one in parts (with the u16 length).
 
 ## 15. Registration records (`node/{node}/ms/{id}`)
 
-A trunked site publishes one retained record per radio it serves ([trunk.md](trunk.md) §3.4):
+A trunked site publishes one retained record per radio it serves ([tier3.md](tier3.md) §3.4):
 
 ```json
 {"id": 3100123, "at": "2026-11-05T21:04:11.250Z", "exp": "2026-11-06T01:04:11.000Z",
@@ -695,7 +695,7 @@ A trunked site publishes one retained record per radio it serves ([trunk.md](tru
   de-registration, expiry, a refusal after a policy change, or when `where/{id}` names another node with a newer
   time.
 - On a restart the site reads its own records back from the broker and serves those radios at once. A standby
-  controller does the same ([trunk.md](trunk.md) §6.2).
+  controller does the same ([tier3.md](tier3.md) §6.2).
 - The router reads them as sightings with `source: "reg"` at the record's `at`, valid until `exp`. A newer sighting
   anywhere (a record or heard traffic) wins; at the same time the record wins. It publishes `where/{id}` with
   `source`.
@@ -743,10 +743,10 @@ change (frequencies, devices, carriers), is ignored and reported (in the log, or
 `cfg/node/{node}`, one site: `rev`, `at`, `name`, `site`, `par`, `area_bits`, `neighbors` (site numbers), `tg`,
 `static_tg`, `timers`, `broadcast`, `enabled` (false takes the site off the air: it withdraws its control channel).
 `site`, `par` and `area_bits` go at the document's top level (as the manager writes them) or in `system`. Both
-site-level documents take the same keys as the settings file's `trunk` app ([trunk.md](trunk.md) §4): `system`
+site-level documents take the same keys as the settings file's `trunk` app ([tier3.md](tier3.md) §4): `system`
 (`model`, `net`, `site`, `par`, `area_bits`), `registration` (`open`, `listed`), `ms`, `refuse_unlisted` (`denied`,
 `refused`), `private`, `tg`, `wide_tg`, `static_tg` (ID sets), `require_registration`, `foacsu`, `enabled`,
-`neighbors`, `timers` (names to numbers), `broadcast` (the control channel's broadcast intervals, [trunk.md](trunk.md)
+`neighbors`, `timers` (names to numbers), `broadcast` (the control channel's broadcast intervals, [tier3.md](tier3.md)
 §3.2: `adjacent_s`, `chan_freq_s`, `local_time_s`, seconds, 0 off). Both also take `name`: a name for people (the
 manager and dashboards show it); a site keeps it and doesn't act on it.
 

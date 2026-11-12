@@ -1117,7 +1117,7 @@ impl Cx<'_> {
             return match want {
                 Some(w) if trunk => self.err(&[
                     S(w),
-                    S(b" is a trunked site: rdofradio runs it (rdof/trunkcfg.h), not a radio unit"),
+                    S(b" is a trunked site: rdofradio runs it (rdof/t3cfg.h), not a radio unit"),
                 ]),
                 Some(w) => self.err(&[
                     S(w),

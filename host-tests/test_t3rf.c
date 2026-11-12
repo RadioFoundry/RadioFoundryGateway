@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
-/* A trunked site's radio layer (rdof/trunkrf.h): control blocks to bursts and back, the CACH with a short LC and the
+/* A trunked site's radio layer (rdof/t3rf.h): control blocks to bursts and back, the CACH with a short LC and the
  * controller's AT, payload channels (warm-up, repeat, the controller's PDU, the network's prebuffer, RF over the
  * network, a lost call), the TSCC's inbound, and a payload carrier on a split TX half (TX_SCHED, and the FIFO). */
 #include <stdio.h>
@@ -10,7 +10,7 @@
 #include "rdof/pdu.h"
 #include "rdof/split.h"
 #include "rdof/splitops.h"
-#include "rdof/trunkrf.h"
+#include "rdof/t3rf.h"
 
 static int fails;
 
@@ -37,8 +37,8 @@ static void test_blocks(void)
             uint8_t b[RDOF_BURST_BYTES], pdu[10];
             int dt, cc;
             const rdof_family_t fam = f ? RDOF_FAMILY_MS : RDOF_FAMILY_BS;
-            CHECK(rdof_trunk_pdu_burst(dts[i], ALOHA, CC, fam, b), "dt %d builds", dts[i]);
-            CHECK(rdof_trunk_burst_pdu(b, &dt, &cc, pdu) == RDOF_TRUNK_PDU_OK && dt == dts[i] && cc == CC &&
+            CHECK(rdof_t3rf_pdu_burst(dts[i], ALOHA, CC, fam, b), "dt %d builds", dts[i]);
+            CHECK(rdof_t3rf_burst_pdu(b, &dt, &cc, pdu) == RDOF_T3RF_PDU_OK && dt == dts[i] && cc == CC &&
                       !memcmp(pdu, ALOHA, 10),
                   "dt %d family %d reads back (dt %d cc %d)", dts[i], f, dt, cc);
             rdof_family_t got;
@@ -46,9 +46,9 @@ static void test_blocks(void)
             int e;
             CHECK(rdof_detect_sync(b, 0, &got, &data, &e) && data && got == fam, "family %d's data sync", f);
         }
-    CHECK(!rdof_trunk_pdu_burst(RDOF_DT_IDLE, ALOHA, CC, RDOF_FAMILY_BS, (uint8_t[33]){0}), "no idle PDU");
-    CHECK(rdof_trunk_mask(RDOF_DT_CSBK) == 0xA5A5 && rdof_trunk_mask(RDOF_DT_MBC_HEADER) == 0xAAAA &&
-              rdof_trunk_mask(RDOF_DT_DATA_HEADER) == 0xCCCC && rdof_trunk_mask(RDOF_DT_RATE_12) < 0,
+    CHECK(!rdof_t3rf_pdu_burst(RDOF_DT_IDLE, ALOHA, CC, RDOF_FAMILY_BS, (uint8_t[33]){0}), "no idle PDU");
+    CHECK(rdof_t3rf_mask(RDOF_DT_CSBK) == 0xA5A5 && rdof_t3rf_mask(RDOF_DT_MBC_HEADER) == 0xAAAA &&
+              rdof_t3rf_mask(RDOF_DT_DATA_HEADER) == 0xCCCC && rdof_t3rf_mask(RDOF_DT_RATE_12) < 0,
           "masks");
 
     /* a CSBK sent with the MBC mask (or one bit flipped past BPTC's reach) fails the CSBK's check */
@@ -58,17 +58,17 @@ static void test_blocks(void)
     const uint16_t crc = (uint16_t)(rdof_crc16_ccitt(b12, 10) ^ 0xAAAA);
     b12[10] = (uint8_t)(crc >> 8), b12[11] = (uint8_t)crc;
     rdof_data_burst(b12, RDOF_DT_CSBK, CC, rdof_data_sync(RDOF_MS_VOICE), b);
-    CHECK(rdof_trunk_burst_pdu(b, &dt, &cc, pdu) == RDOF_TRUNK_PDU_BAD && dt == RDOF_DT_CSBK, "wrong mask: bad");
-    rdof_trunk_pdu_burst(RDOF_DT_CSBK, ALOHA, CC, RDOF_FAMILY_MS, b);
+    CHECK(rdof_t3rf_burst_pdu(b, &dt, &cc, pdu) == RDOF_T3RF_PDU_BAD && dt == RDOF_DT_CSBK, "wrong mask: bad");
+    rdof_t3rf_pdu_burst(RDOF_DT_CSBK, ALOHA, CC, RDOF_FAMILY_MS, b);
     for (int i = 0; i < 12; i++)
         b[i] ^= 0xFF; /* 96 info bits gone */
-    CHECK(rdof_trunk_burst_pdu(b, &dt, &cc, pdu) == RDOF_TRUNK_PDU_BAD, "a collision: bad");
+    CHECK(rdof_t3rf_burst_pdu(b, &dt, &cc, pdu) == RDOF_T3RF_PDU_BAD, "a collision: bad");
 
     /* not control blocks: an idle burst, a voice burst */
     rdof_duplex_idle(CC, b);
-    CHECK(rdof_trunk_burst_pdu(b, &dt, &cc, pdu) == RDOF_TRUNK_NOT_PDU && dt == RDOF_DT_IDLE, "idle: not a PDU");
+    CHECK(rdof_t3rf_burst_pdu(b, &dt, &cc, pdu) == RDOF_T3RF_NOT_PDU && dt == RDOF_DT_IDLE, "idle: not a PDU");
     rdof_silence_burst(0, CC, true, NULL, b);
-    CHECK(rdof_trunk_burst_pdu(b, &dt, &cc, pdu) == RDOF_TRUNK_NOT_PDU, "voice: not a PDU");
+    CHECK(rdof_t3rf_burst_pdu(b, &dt, &cc, pdu) == RDOF_T3RF_NOT_PDU, "voice: not a PDU");
 }
 
 static void test_cach(void)
@@ -77,22 +77,22 @@ static void test_cach(void)
     const uint32_t slc = 0x2u << 24 | 0x5A5A5Au;
     const int at[4] = {1, 0, 0, 1};
     uint8_t c[4][3];
-    rdof_trunk_cach4(slc, at, 8, c);
+    rdof_t3rf_cach4(slc, at, 8, c);
     uint32_t rows[4];
     static const int want_lcss[4] = {1, 3, 3, 2};
     bool ok = true;
     for (int q = 0; q < 4; q++) {
         int a, slot, lcss;
-        rdof_trunk_cach_read(c[q], &a, &slot, &lcss, &rows[q]);
+        rdof_t3rf_cach_read(c[q], &a, &slot, &lcss, &rows[q]);
         ok &= a == at[q] && slot == (q & 1) + 1 && lcss == want_lcss[q];
     }
     uint32_t got = 0;
     CHECK(ok, "AT, TC and LCSS read back");
-    CHECK(rdof_trunk_slc_join(rows, &got) && got == slc, "the short LC: %07x", (unsigned)got);
+    CHECK(rdof_t3rf_slc_join(rows, &got) && got == slc, "the short LC: %07x", (unsigned)got);
     rows[1] ^= 0x3; /* two bits of one CACH: interleaved into two Hamming rows, both corrected */
-    CHECK(rdof_trunk_slc_join(rows, &got) && got == slc, "two bits of one CACH corrected");
+    CHECK(rdof_t3rf_slc_join(rows, &got) && got == slc, "two bits of one CACH corrected");
     rows[2] ^= 0x1FFFF; /* a whole CACH lost */
-    CHECK(!rdof_trunk_slc_join(rows, &got), "a lost CACH: refused");
+    CHECK(!rdof_t3rf_slc_join(rows, &got), "a lost CACH: refused");
 }
 
 /* ── the payload channels and the TSCC, against a recording controller ───── */
@@ -139,7 +139,7 @@ static void r_up(void *ctx, int ch, const rdof_frame_t *f)
     rec.src = f->src, rec.dst = f->dst;
 }
 
-static const rdof_trunkrf_io_t IO = {r_tscc, r_cach, r_pdu, r_bad, r_act, r_up, NULL};
+static const rdof_t3rf_io_t IO = {r_tscc, r_cach, r_pdu, r_bad, r_act, r_up, NULL};
 
 static rdof_burst_t inbound(const uint8_t b[33], int dt, int n, int cc)
 {
@@ -151,7 +151,7 @@ static rdof_burst_t inbound(const uint8_t b[33], int dt, int n, int cc)
 }
 
 /* A radio's call on carrier c's slot from k: header, superframes of voice, terminator; returns the next k. */
-static int64_t ms_call(rdof_trunkrf_t *t, int c, int64_t k, uint32_t src, uint32_t dst, int superframes, bool header,
+static int64_t ms_call(rdof_t3rf_t *t, int c, int64_t k, uint32_t src, uint32_t dst, int superframes, bool header,
                        bool term)
 {
     uint8_t lc9[9], b[33];
@@ -159,18 +159,18 @@ static int64_t ms_call(rdof_trunkrf_t *t, int c, int64_t k, uint32_t src, uint32
     if (header) {
         rdof_lc_burst(lc9, RDOF_DT_VOICE_LC_HEADER, CC, rdof_data_sync(RDOF_MS_VOICE), b);
         rdof_burst_t x = inbound(b, RDOF_DT_VOICE_LC_HEADER, 0, CC);
-        rdof_trunkrf_rx(t, c, k, &x, -80);
+        rdof_t3rf_rx(t, c, k, &x, -80);
         k += 2;
     }
     for (int i = 0; i < 6 * superframes; i++, k += 2) {
         rdof_silence_burst(i % 6, CC, false, NULL, b);
         rdof_burst_t x = inbound(b, i % 6 ? RDOF_DT_VOICE : RDOF_DT_VOICE_SYNC, i % 6, CC);
-        rdof_trunkrf_rx(t, c, k, &x, -80);
+        rdof_t3rf_rx(t, c, k, &x, -80);
     }
     if (term) {
         rdof_lc_burst(lc9, RDOF_DT_TERMINATOR_WITH_LC, CC, rdof_data_sync(RDOF_MS_VOICE), b);
         rdof_burst_t x = inbound(b, RDOF_DT_TERMINATOR_WITH_LC, 0, CC);
-        rdof_trunkrf_rx(t, c, k, &x, -80);
+        rdof_t3rf_rx(t, c, k, &x, -80);
         k += 2;
     }
     return k;
@@ -178,31 +178,31 @@ static int64_t ms_call(rdof_trunkrf_t *t, int c, int64_t k, uint32_t src, uint32
 
 static void test_payload(void)
 {
-    static rdof_trunkrf_t t;
+    static rdof_t3rf_t t;
     memset(&rec, 0, sizeof rec);
-    CHECK(!rdof_trunkrf_init(&t, &IO, 0, CC, true) && !rdof_trunkrf_init(&t, &IO, 5, CC, true), "carriers 1-4");
-    CHECK(rdof_trunkrf_init(&t, &IO, 2, CC, true), "init");
-    CHECK(!rdof_trunkrf_channel(&t, 0) && rdof_trunkrf_channel(&t, 1) && rdof_trunkrf_channel(&t, 3) &&
-              !rdof_trunkrf_channel(&t, 4),
+    CHECK(!rdof_t3rf_init(&t, &IO, 0, CC, true) && !rdof_t3rf_init(&t, &IO, 5, CC, true), "carriers 1-4");
+    CHECK(rdof_t3rf_init(&t, &IO, 2, CC, true), "init");
+    CHECK(!rdof_t3rf_channel(&t, 0) && rdof_t3rf_channel(&t, 1) && rdof_t3rf_channel(&t, 3) &&
+              !rdof_t3rf_channel(&t, 4),
           "channel 0 is the TSCC; 1-3 payload; 4 none");
-    CHECK(rdof_trunkrf_carrier_busy(&t, 0) && !rdof_trunkrf_carrier_busy(&t, 1), "the TSCC's carrier always busy");
+    CHECK(rdof_t3rf_carrier_busy(&t, 0) && !rdof_t3rf_carrier_busy(&t, 1), "the TSCC's carrier always busy");
 
     /* a grant: channel 2 (carrier 1 TS1); warm-up idles first, then the radio's call repeated */
     const int ch = 2;
-    CHECK(rdof_trunkrf_open(&t, ch, 3100123, 91, true, RDOF_TRUNKRF_WARMUP), "open");
-    CHECK(rdof_trunkrf_carrier_busy(&t, 1), "carrier 1 busy once open");
+    CHECK(rdof_t3rf_open(&t, ch, 3100123, 91, true, RDOF_T3RF_WARMUP), "open");
+    CHECK(rdof_t3rf_carrier_busy(&t, 1), "carrier 1 busy once open");
     uint8_t out[33], control;
     int64_t k = 1000;
-    CHECK(rdof_trunkrf_ch_next(&t, ch, k, &control, out) == RDOF_TRUNKRF_IDLE &&
-              rdof_trunkrf_ch_next(&t, ch, k + 2, &control, out) == RDOF_TRUNKRF_IDLE,
+    CHECK(rdof_t3rf_ch_next(&t, ch, k, &control, out) == RDOF_T3RF_IDLE &&
+              rdof_t3rf_ch_next(&t, ch, k + 2, &control, out) == RDOF_T3RF_IDLE,
           "two warm-up idles");
     k = ms_call(&t, 1, 1000, 3100777, 91, 2, true, true);
-    CHECK(rec.acts == 2 && rec.last_what == RDOF_TRUNKRF_TERM && rec.src == 3100777 && rec.dst == 91 && rec.group,
+    CHECK(rec.acts == 2 && rec.last_what == RDOF_T3RF_TERM && rec.src == 3100777 && rec.dst == 91 && rec.group,
           "header then terminator reported: %d, src %u", rec.acts, (unsigned)rec.src);
     CHECK(rec.ups == 14, "14 bursts up: %d", rec.ups);
     int traffic = 0, voice_sync = 0, lc_ok = 0;
-    rdof_trunkrf_out_t o;
-    while ((o = rdof_trunkrf_ch_next(&t, ch, k, &control, out)) == RDOF_TRUNKRF_TRAFFIC) {
+    rdof_t3rf_out_t o;
+    while ((o = rdof_t3rf_ch_next(&t, ch, k, &control, out)) == RDOF_T3RF_TRAFFIC) {
         traffic++;
         rdof_family_t fam;
         bool data;
@@ -220,102 +220,102 @@ static void test_payload(void)
     /* late entry: voice with no header; the channel's addresses; then lost */
     memset(&rec, 0, sizeof rec);
     k = ms_call(&t, 1, k, 0, 0, 1, false, false);
-    CHECK(rec.acts == 1 && rec.last_what == RDOF_TRUNKRF_VOICE && rec.src == 3100123 && rec.dst == 91 && rec.new_stream,
+    CHECK(rec.acts == 1 && rec.last_what == RDOF_T3RF_VOICE && rec.src == 3100123 && rec.dst == 91 && rec.new_stream,
           "late entry with the grant's addresses: acts %d what %d src %u dst %u new %d", rec.acts, rec.last_what,
           (unsigned)rec.src, (unsigned)rec.dst, rec.new_stream);
-    rdof_trunkrf_tick(&t, k - 2 + RDOF_TRUNKRF_LOST_K); /* the last burst at k - 2 */
+    rdof_t3rf_tick(&t, k - 2 + RDOF_T3RF_LOST_K); /* the last burst at k - 2 */
     CHECK(rec.acts == 1, "not lost yet");
-    rdof_trunkrf_tick(&t, k - 2 + RDOF_TRUNKRF_LOST_K + 1);
-    CHECK(rec.acts == 2 && rec.last_what == RDOF_TRUNKRF_LOST && t.ch[ch].lost == 1, "lost");
+    rdof_t3rf_tick(&t, k - 2 + RDOF_T3RF_LOST_K + 1);
+    CHECK(rec.acts == 2 && rec.last_what == RDOF_T3RF_LOST && t.ch[ch].lost == 1, "lost");
 
     /* P_CLEAR: ahead of the queued voice, 4 times, then closed and idle */
     const uint8_t clear[10] = {0x80 | 46, 0, 0, 0, 0xFF, 0xFF, 0xD4, 0x00, 0x00, 0x01};
-    CHECK(rdof_trunkrf_control(&t, ch, RDOF_DT_CSBK, clear, 4, true), "P_CLEAR");
+    CHECK(rdof_t3rf_control(&t, ch, RDOF_DT_CSBK, clear, 4, true), "P_CLEAR");
     int ctl = 0;
     for (int i = 0; i < 6; i++) {
-        o = rdof_trunkrf_ch_next(&t, ch, k + 2 * i, &control, out);
-        if (o == RDOF_TRUNKRF_CONTROL) {
+        o = rdof_t3rf_ch_next(&t, ch, k + 2 * i, &control, out);
+        if (o == RDOF_T3RF_CONTROL) {
             uint8_t pdu[10];
             int dt, cc;
-            ctl += rdof_trunk_burst_pdu(out, &dt, &cc, pdu) == RDOF_TRUNK_PDU_OK && dt == RDOF_DT_CSBK &&
+            ctl += rdof_t3rf_burst_pdu(out, &dt, &cc, pdu) == RDOF_T3RF_PDU_OK && dt == RDOF_DT_CSBK &&
                    !memcmp(pdu, clear, 10) && control == (RDOF_SYNC_DATA | RDOF_DT_CSBK);
         } else {
-            CHECK(o == RDOF_TRUNKRF_IDLE, "idle after");
+            CHECK(o == RDOF_T3RF_IDLE, "idle after");
         }
     }
-    CHECK(ctl == 4 && !t.ch[ch].open && !rdof_trunkrf_carrier_busy(&t, 1), "4 P_CLEARs, then closed: %d", ctl);
+    CHECK(ctl == 4 && !t.ch[ch].open && !rdof_t3rf_carrier_busy(&t, 1), "4 P_CLEARs, then closed: %d", ctl);
 
     /* the network: held for the prebuffer, then plays; RF takes the channel from it */
-    CHECK(rdof_trunkrf_open(&t, ch, 9990001, 91, true, 0), "open for the network");
+    CHECK(rdof_t3rf_open(&t, ch, 9990001, 91, true, 0), "open for the network");
     rdof_frame_t f;
     memset(&f, 0, sizeof f);
     uint8_t lc9[9];
     rdof_group_lc(9990001, 91, true, 0, lc9);
     rdof_lc_burst(lc9, RDOF_DT_VOICE_LC_HEADER, 7, rdof_data_sync(RDOF_BS_VOICE), f.burst);
     f.dt = RDOF_DT_VOICE_LC_HEADER;
-    CHECK(rdof_trunkrf_net(&t, ch, &f), "a network header");
+    CHECK(rdof_t3rf_net(&t, ch, &f), "a network header");
     for (int i = 0; i < 2; i++) {
         f.dt = i ? RDOF_DT_VOICE : RDOF_DT_VOICE_SYNC, f.n = i;
         rdof_silence_burst(i, 7, true, NULL, f.burst);
-        CHECK(rdof_trunkrf_net(&t, ch, &f), "network voice");
+        CHECK(rdof_t3rf_net(&t, ch, &f), "network voice");
     }
-    CHECK(rdof_trunkrf_ch_next(&t, ch, k, &control, out) == RDOF_TRUNKRF_IDLE, "held: 3 of 4");
+    CHECK(rdof_t3rf_ch_next(&t, ch, k, &control, out) == RDOF_T3RF_IDLE, "held: 3 of 4");
     f.dt = RDOF_DT_VOICE, f.n = 2;
     rdof_silence_burst(2, 7, true, NULL, f.burst);
-    rdof_trunkrf_net(&t, ch, &f);
-    o = rdof_trunkrf_ch_next(&t, ch, k, &control, out);
+    rdof_t3rf_net(&t, ch, &f);
+    o = rdof_t3rf_ch_next(&t, ch, k, &control, out);
     int dt0, cc0;
-    CHECK(o == RDOF_TRUNKRF_TRAFFIC && control == (RDOF_SYNC_DATA | RDOF_DT_VOICE_LC_HEADER) &&
+    CHECK(o == RDOF_T3RF_TRAFFIC && control == (RDOF_SYNC_DATA | RDOF_DT_VOICE_LC_HEADER) &&
               rdof_decode_slot_type(out, &cc0, &dt0, NULL) && cc0 == CC,
           "plays at 4, on the site's color code (%d)", cc0);
     memset(&rec, 0, sizeof rec);
     ms_call(&t, 1, k, 3100555, 91, 0, true, false);
-    CHECK(t.ch[ch].net_dropped == 1 && !rdof_trunkrf_net(&t, ch, &f) && rec.acts == 1,
+    CHECK(t.ch[ch].net_dropped == 1 && !rdof_t3rf_net(&t, ch, &f) && rec.acts == 1,
           "RF's header drops the network's stream, and it stays out");
-    o = rdof_trunkrf_ch_next(&t, ch, k, &control, out);
-    CHECK(o == RDOF_TRUNKRF_TRAFFIC && control == (RDOF_SYNC_DATA | RDOF_DT_VOICE_LC_HEADER), "RF's header next");
-    rdof_trunkrf_close(&t, ch);
-    CHECK(!rdof_trunkrf_net(&t, ch, &f), "nothing on a closed channel");
+    o = rdof_t3rf_ch_next(&t, ch, k, &control, out);
+    CHECK(o == RDOF_T3RF_TRAFFIC && control == (RDOF_SYNC_DATA | RDOF_DT_VOICE_LC_HEADER), "RF's header next");
+    rdof_t3rf_close(&t, ch);
+    CHECK(!rdof_t3rf_net(&t, ch, &f), "nothing on a closed channel");
 
     /* a P_MAINT heard on the payload inbound goes to the controller, not the air */
-    rdof_trunkrf_open(&t, ch, 1, 2, false, 0);
+    rdof_t3rf_open(&t, ch, 1, 2, false, 0);
     uint8_t b[33];
     const uint8_t maint[10] = {0x80 | 42, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-    rdof_trunk_pdu_burst(RDOF_DT_CSBK, maint, CC, RDOF_FAMILY_MS, b);
+    rdof_t3rf_pdu_burst(RDOF_DT_CSBK, maint, CC, RDOF_FAMILY_MS, b);
     rdof_burst_t x = inbound(b, RDOF_DT_CSBK, 0, CC);
-    rdof_trunkrf_rx(&t, 1, 2000, &x, -70);
+    rdof_t3rf_rx(&t, 1, 2000, &x, -70);
     CHECK(rec.pdus == 1 && rec.last_ch == ch && rec.last_dt == RDOF_DT_CSBK && !memcmp(rec.pdu, maint, 10) &&
               !t.ch[ch].qn,
           "P_MAINT up, nothing repeated");
     x.cc = 5;
-    rdof_trunkrf_rx(&t, 1, 2000, &x, -70);
+    rdof_t3rf_rx(&t, 1, 2000, &x, -70);
     CHECK(rec.pdus == 1 && t.rx_ignored == 1, "another color code ignored");
 }
 
 static void test_tscc(void)
 {
-    static rdof_trunkrf_t t;
+    static rdof_t3rf_t t;
     memset(&rec, 0, sizeof rec);
-    rdof_trunkrf_init(&t, &IO, 2, CC, true);
+    rdof_t3rf_init(&t, &IO, 2, CC, true);
     uint8_t b[33];
     /* inbound: a random access on TS1 of carrier 0; and a collision */
     const uint8_t rand_[10] = {0x80 | 31, 0, 0x10, 0, 0, 91, 0x2F, 0x4D, 0x5B, 0};
-    rdof_trunk_pdu_burst(RDOF_DT_CSBK, rand_, CC, RDOF_FAMILY_MS, b);
+    rdof_t3rf_pdu_burst(RDOF_DT_CSBK, rand_, CC, RDOF_FAMILY_MS, b);
     rdof_burst_t x = inbound(b, RDOF_DT_CSBK, 0, CC);
-    rdof_trunkrf_rx(&t, 0, 4000, &x, -90);
+    rdof_t3rf_rx(&t, 0, 4000, &x, -90);
     CHECK(rec.pdus == 1 && rec.last_ch == 0 && rec.last_k == 4000 && !memcmp(rec.pdu, rand_, 10), "C_RAND to ch 0");
     for (int i = 0; i < 12; i++)
         x.burst[i] ^= 0x5A;
-    rdof_trunkrf_rx(&t, 0, 4002, &x, -90);
+    rdof_t3rf_rx(&t, 0, 4002, &x, -90);
     CHECK(rec.bads == 1 && rec.last_k == 4002 && t.rx_tscc_bad == 1, "a collision counted");
     rdof_silence_burst(0, CC, false, NULL, b);
     x = inbound(b, RDOF_DT_VOICE_SYNC, 0, CC);
-    rdof_trunkrf_rx(&t, 0, 4004, &x, -90);
+    rdof_t3rf_rx(&t, 0, 4004, &x, -90);
     CHECK(rec.pdus == 1 && rec.bads == 1, "voice on the TSCC: nothing");
     /* the same burst under an odd slot is carrier 0's payload channel 1 (closed: nothing goes out) */
-    rdof_trunk_pdu_burst(RDOF_DT_CSBK, rand_, CC, RDOF_FAMILY_MS, b);
+    rdof_t3rf_pdu_burst(RDOF_DT_CSBK, rand_, CC, RDOF_FAMILY_MS, b);
     x = inbound(b, RDOF_DT_CSBK, 0, CC);
-    rdof_trunkrf_rx(&t, 0, 4005, &x, -90);
+    rdof_t3rf_rx(&t, 0, 4005, &x, -90);
     CHECK(rec.pdus == 2 && rec.last_ch == 1, "TS2 is channel 1");
 
     /* outbound: the TSCC's blocks in even slots, the controller's CACH */
@@ -325,10 +325,10 @@ static void test_tscc(void)
     int32_t slc;
     int csbks = 0, idles = 0;
     for (int64_t k = 0; k < 16; k += 2) {
-        rdof_trunkrf_slot(&t, 0, k, b, &control, &at, &slc);
+        rdof_t3rf_slot(&t, 0, k, b, &control, &at, &slc);
         uint8_t pdu[10];
         int dt, cc;
-        if (rdof_trunk_burst_pdu(b, &dt, &cc, pdu) == RDOF_TRUNK_PDU_OK && !memcmp(pdu, ALOHA, 10) &&
+        if (rdof_t3rf_burst_pdu(b, &dt, &cc, pdu) == RDOF_T3RF_PDU_OK && !memcmp(pdu, ALOHA, 10) &&
             control == (RDOF_SYNC_DATA | RDOF_DT_CSBK))
             csbks++;
         else if (control == (RDOF_SYNC_DATA | RDOF_DT_IDLE))
@@ -336,7 +336,7 @@ static void test_tscc(void)
         CHECK(at == 1 && slc == (k % 4 ? -1 : 0x2123456), "k %lld: AT %d slc %d", (long long)k, at, (int)slc);
     }
     CHECK(csbks == 6 && idles == 2 && rec.tsccs == 8, "6 blocks and 2 idles: %d %d", csbks, idles);
-    rdof_trunkrf_slot(&t, 0, 17, b, &control, &at, &slc);
+    rdof_t3rf_slot(&t, 0, 17, b, &control, &at, &slc);
     CHECK(rec.tsccs == 8 && control == (RDOF_SYNC_DATA | RDOF_DT_IDLE), "TS2: channel 1 (closed: idle)");
 }
 
@@ -383,12 +383,12 @@ static void drain(rdof_split_t *s)
 
 static void test_split(bool scheduled)
 {
-    static rdof_trunkrf_t t;
+    static rdof_t3rf_t t;
     static rdof_split_t s;
     memset(&rec, 0, sizeof rec);
     memset(&fr, 0, sizeof fr);
     rec.at = -1, rec.slc = 0x3000ABC; /* P_SYS_Parms: SLCO 0011b */
-    rdof_trunkrf_init(&t, &IO, 2, CC, true);
+    rdof_t3rf_init(&t, &IO, 2, CC, true);
     rdof_split_params_t p;
     rdof_split_params_default(&p);
     p.stream_mode = scheduled ? RDOF_OPS_STREAM_SCHEDULED : RDOF_OPS_STREAM_FIFO;
@@ -400,18 +400,18 @@ static void test_split(bool scheduled)
     if (scheduled)
         s.align_state = RDOF_ALIGN_LOCKED;
     CHECK(rdof_split_sched_ok(&s) == scheduled, "the scheduled stream up: %d", rdof_split_sched_ok(&s));
-    rdof_trunkrf_split_t o;
-    rdof_trunkrf_split_init(&o, 1);
-    rdof_trunkrf_split_pump(&t, &o, &s, 100, 0, 1.0);
+    rdof_t3rf_split_t o;
+    rdof_t3rf_split_init(&o, 1);
+    rdof_t3rf_split_pump(&t, &o, &s, 100, 0, 1.0);
     drain(&s);
     CHECK(!fr.starts && !fr.scheds && !fr.data[0] && !o.keyed, "nothing while the carrier is idle");
 
     /* a call on channel 3 (carrier 1 TS2) */
-    rdof_trunkrf_open(&t, 3, 3100123, 91, true, RDOF_TRUNKRF_WARMUP);
+    rdof_t3rf_open(&t, 3, 3100123, 91, true, RDOF_T3RF_WARMUP);
     ms_call(&t, 1, 101, 3100123, 91, 1, true, true);
     int64_t k = 100;
     for (int i = 0; i < 30; i++, k++) {
-        rdof_trunkrf_split_pump(&t, &o, &s, k, 0, 1.0 + 0.03 * i);
+        rdof_t3rf_split_pump(&t, &o, &s, k, 0, 1.0 + 0.03 * i);
         drain(&s);
     }
     CHECK(fr.starts == 1 && o.keyed, "keyed once: %d", fr.starts);
@@ -430,8 +430,8 @@ static void test_split(bool scheduled)
         CHECK(fr.data[0] == 15 && fr.data[1] == 15 && !fr.scheds, "every slot in order: %d + %d", fr.data[0],
               fr.data[1]);
     }
-    rdof_trunkrf_close(&t, 3);
-    rdof_trunkrf_split_pump(&t, &o, &s, k, 0, 2.0);
+    rdof_t3rf_close(&t, 3);
+    rdof_t3rf_split_pump(&t, &o, &s, k, 0, 2.0);
     drain(&s);
     CHECK(fr.stops == 1 && !o.keyed, "unkeyed when the carrier goes idle");
     printf("split %s: %d TX_SCHED, %d + %d DMR_DATA\n", scheduled ? "scheduled" : "FIFO", fr.scheds, fr.data[0],

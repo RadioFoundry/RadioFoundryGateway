@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 /*
- * rdofradio --sim-ext PATH: external MSs on a --sim-air site's air (docs/spec/fw/trunk.md 9.4). A unix stream socket
+ * rdofradio --sim-ext PATH: external MSs on a --sim-air site's air (docs/spec/fw/tier3.md 9.4). A unix stream socket
  * at PATH; each client is one or more MSs of its own (another program: RadioFoundry's MS engine built for the host,
  * say). JSON lines both ways, in lockstep with the site's slot clock:
  *
@@ -39,10 +39,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "rdof/trunksim.h"
+#include "rdof/t3sim.h"
 
 /* Listen on path (an old socket file there is replaced), hooks set on sim. False with err set. */
-bool rdofradio_simext_open(rdof_trunksim_t *sim, const char *path, double loss, double err_rate, uint32_t seed,
+bool rdofradio_simext_open(rdof_t3sim_t *sim, const char *path, double loss, double err_rate, uint32_t seed,
                            bool verbose, char *err, size_t cap);
 /* After slot k ran: take new clients, wait (up to 2 s) for each joined client's answer to slot k. */
 void rdofradio_simext_wait(int64_t k);

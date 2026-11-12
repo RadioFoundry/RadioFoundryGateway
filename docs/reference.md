@@ -170,8 +170,8 @@ sockets, NVS, HTTP, MQTT) stays in each target.
 | `netcalls`, `status` | network calls, `tx`, status and Receiver messages |
 | `site`, `idset` | the settings parser (version 3), ID sets, the resolved view (C only) |
 | `siteplan` | one parse of the settings into what runs: units, devices, checks ([config-v3.md](spec/fw/config-v3.md) §12, §13.1) (C only) |
-| `trunkrf`, `trunkcfg` | a trunked site's radio layer (control blocks to bursts and back, the CACH, the carriers' slots) and its settings into the controller's (`rdof/t3.h`, built in Rust: [trunk.md](spec/fw/trunk.md)) |
-| `trunkunit`, `trunksim` | a trunked site in one sans-IO core: the controller, the radio layer and mqtt-net (streams, setup, records, `where/`, `cfg`, `cmd`, status, activity); simulated MSs on its air through the burst path. Need the controller, so not in `common/CMakeLists.txt`: rdofradio and `rdof_trunkunit_tests` build them |
+| `trunkrf`, `trunkcfg` | a trunked site's radio layer (control blocks to bursts and back, the CACH, the carriers' slots) and its settings into the controller's (`rdof/t3.h`, built in Rust: [tier3.md](spec/fw/tier3.md)) |
+| `trunkunit`, `trunksim` | a trunked site in one sans-IO core: the controller, the radio layer and mqtt-net (streams, setup, records, `where/`, `cfg`, `cmd`, status, activity); simulated MSs on its air through the burst path. Need the controller, so not in `common/CMakeLists.txt`: rdofradio and `rdof_t3unit_tests` build them |
 | `config`, `jsonp` | a unit's settings from the plan (`rdof_plan_radio`), what a board runs, the port checks; the JSON reader |
 | `router`, `siteroute` | the call router: which network an RF call goes to, which paths a network call goes out on (C only) |
 | `txpool` | the transmitter pool ([transmitters.md](spec/fw/transmitters.md)) (C only) |
@@ -1174,12 +1174,12 @@ rdofradio --soapy driver=plutosdr -r 2400000 --allow-tx --rx 438.25 --tx 438.75 
     --duplex full --cc 1 --gain 20 --tx-gain 65 --tx-offset 0.063
 ```
 
-A trunked site ([trunk.md](spec/fw/trunk.md) 9.4, `sdr/cli/rdofradio_trunk.c`): `--config` with a `trunk` app runs
+A trunked site ([tier3.md](spec/fw/tier3.md) 9.4, `sdr/cli/rdofradio_t3.c`): `--config` with a `tier3` app runs
 the site, on the mqtt network as the box's node (the provisioning cached in `--state-dir DIR`'s `cfg-cache.json`).
 On a device the SDR sends carrier A (the TSCC's) full duplex; a second carrier is a split TX half on its radio's
 port, aligned to UTC from the host's clock and fed by the scheduled stream, the SDR's receiver its RX half (two
-carriers at most; trunk.md 9.4). Not yet run on a device.
-Built with `RDOF_TRUNK` (on by default; needs cargo: the controller is rust's `t3` feature, linked alone, for
+carriers at most; tier3.md 9.4). Not yet run on a device.
+Built with `RDOF_TIER3` (on by default; needs cargo: the controller is rust's `t3` feature, linked alone, for
 `RDOF_RUST_TARGET` when cross building); without it such a file is refused with the reason. `--sim-air N` needs no
 device: N simulated MSs (IDs from `--sim-id`, default 1000001) register with `--sim-tg` (default 9) and run through
 the full burst path on a wall-clock slot clock; `--sim-talk S` makes one call the talkgroup every S seconds;

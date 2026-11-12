@@ -127,7 +127,7 @@ static const char *const REPEATER_KEYS[] = {"name", "type", "in", "out", "slots"
                                             "slot_timing", "split", "prebuffer", "jitter_buffer", "jitter_min_ms",
                                             "jitter_max_ms", "active_slots", NULL};
 static const char *const PARROT_KEYS[] = {"name", "type", "tg", "pc", NULL};
-static const char *const TRUNK_KEYS[] = {"name", "type", "carriers", "system", "registration", "ms",
+static const char *const TIER3_KEYS[] = {"name", "type", "carriers", "system", "registration", "ms",
                                          "require_registration", "refuse_unlisted", "private", "tg", "wide_tg",
                                          "static_tg", "foacsu", "timers", "broadcast", NULL};
 static const char *const CARRIER_KEYS[] = {"out", "in", "chan", "tscc", NULL};
@@ -704,12 +704,12 @@ static bool parse_nets(ctx_t *c, rdof_site_t *s)
     return true;
 }
 
-/* A trunked site's carriers (docs/spec/fw/trunk.md section 4): each an out and an in frequency of its own, a
+/* A trunked site's carriers (docs/spec/fw/tier3.md section 4): each an out and an in frequency of its own, a
    logical channel number, exactly one the TSCC's (put first). One trunked site a box. */
 static bool trunk_app(ctx_t *c, rdof_site_t *s, rdof_app3_t *a, int e, const char *path)
 {
     char p[96];
-    if (rdof_site_app_of(s, RDOF_APP_TRUNK) >= 0)
+    if (rdof_site_app_of(s, RDOF_APP_TIER3) >= 0)
         return fail(c, "%s: one trunked site a box", path);
     int cl = get(c, e, "carriers");
     snprintf(p, sizeof p, "%s.carriers", path);
@@ -806,12 +806,12 @@ static bool parse_apps(ctx_t *c, rdof_site_t *s)
         a->in = a->out = a->path[0] = a->path[1] = -1;
         c->anode[s->napp] = e;
         const char *t = str_of(c, get(c, e, "type"));
-        static const char *const types[] = {"", "repeater", "parrot", "ipgw", "trunk"};
-        for (int x = 1; t && x <= RDOF_APP_TRUNK; x++)
+        static const char *const types[] = {"", "repeater", "parrot", "ipgw", "tier3"};
+        for (int x = 1; t && x <= RDOF_APP_TIER3; x++)
             if (!strcmp(t, types[x]))
                 a->type = (uint8_t)x;
         if (!a->type)
-            return fail(c, "%s.type: repeater, parrot, ipgw or trunk", path);
+            return fail(c, "%s.type: repeater, parrot, ipgw or tier3", path);
         const char *nmv = str_of(c, get(c, e, "name"));
         if (get(c, e, "name") >= 0 && (!nmv || !name_ok(nmv)))
             return fail(c, "%s.name: a name under %d characters, without '/'", path, RDOF_SITE_NAME);
@@ -821,10 +821,10 @@ static bool parse_apps(ctx_t *c, rdof_site_t *s)
         snprintf(path, sizeof path, "apps.%s", a->name);
         if (!known(c, e, path, a->type == RDOF_APP_REPEATER ? REPEATER_KEYS
                                 : a->type == RDOF_APP_PARROT ? PARROT_KEYS
-                                : a->type == RDOF_APP_TRUNK ? TRUNK_KEYS : IPGW_KEYS))
+                                : a->type == RDOF_APP_TIER3 ? TIER3_KEYS : IPGW_KEYS))
             return false;
         char p[80];
-        if (a->type == RDOF_APP_TRUNK) {
+        if (a->type == RDOF_APP_TIER3) {
             if (!trunk_app(c, s, a, e, path))
                 return false;
         } else if (a->type == RDOF_APP_REPEATER) {
@@ -1274,7 +1274,7 @@ static bool make_paths(ctx_t *c, rdof_site_t *s)
     }
     for (int a = 0; a < s->napp; a++) {
         rdof_app3_t *ap = &s->app[a];
-        if (ap->type != RDOF_APP_TRUNK)
+        if (ap->type != RDOF_APP_TIER3)
             continue;
         /* a trunked site: one path, named for it, on its TSCC carrier; the network carries wide_tg (none
            without it) and private calls */

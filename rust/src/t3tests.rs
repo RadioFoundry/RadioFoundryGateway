@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
-//! Scenario tests: the site and simulated MSs on the slot-exact air (docs/spec/fw/trunk.md section 12, the
+//! Scenario tests: the site and simulated MSs on the slot-exact air (docs/spec/fw/tier3.md section 12, the
 //! controller list).
 
 use std::boxed::Box;

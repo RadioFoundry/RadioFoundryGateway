@@ -43,7 +43,7 @@ extern "C" {
 typedef enum { RDOF_FMODE_SIMPLEX = 0, RDOF_FMODE_SFR, RDOF_FMODE_DCDM } rdof_fmode_t;
 typedef enum { RDOF_FLOW_RF_NET = 1, RDOF_FLOW_NET_RF = 2, RDOF_FLOW_BOTH = 3 } rdof_flow_t;
 typedef enum { RDOF_HEARS_WINDOW = 0, RDOF_HEARS_IDLE, RDOF_HEARS_SCAN, RDOF_HEARS_NONE } rdof_hears_t;
-typedef enum { RDOF_APP_REPEATER = 1, RDOF_APP_PARROT, RDOF_APP_IPGW, RDOF_APP_TRUNK } rdof_app_type_t;
+typedef enum { RDOF_APP_REPEATER = 1, RDOF_APP_PARROT, RDOF_APP_IPGW, RDOF_APP_TIER3 } rdof_app_type_t;
 typedef enum { RDOF_NET_HBLINK = 1, RDOF_NET_MQTT } rdof_net_type_t;
 enum { RDOF_MQTT_FORMAT_DMRD = 0, RDOF_MQTT_FORMAT_V3 = 1 };
 enum { RDOF_MQTT_TCP = 0, RDOF_MQTT_TLS = 1 };
@@ -97,8 +97,8 @@ typedef struct {
     int in, out;     /* a repeater: its frequencies */
     int path[2];     /* a repeater: its slots' paths; a trunked site: path[0] its one path */
     rdof_idset_t tg, pc; /* a parrot's, an IP gateway's: the IDs it answers */
-    /* a trunked site (docs/spec/fw/trunk.md section 4): its carriers, the TSCC's first; the rest of its keys are
-       read by the trunk unit from the app's own object */
+    /* a trunked site (docs/spec/fw/tier3.md section 4): its carriers, the TSCC's first; the rest of its keys are
+       read by the Tier III unit from the app's own object */
     rdof_carrier3_t carrier[RDOF_SITE_MAX_CARRIERS];
     uint8_t ncarrier;
 } rdof_app3_t;

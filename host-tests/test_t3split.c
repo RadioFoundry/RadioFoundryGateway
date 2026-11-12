@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
-/* A two-carrier trunked site (rdof/trunkunit.h): carrier A (the TSCC) as the SDR repeater carries it, carrier B on a
- * split TX half (rdof/sdr/trunksplit.h) with the SDR's receiver as its RX half. The TX half is a fake radio
+/* A two-carrier trunked site (rdof/t3unit.h): carrier A (the TSCC) as the SDR repeater carries it, carrier B on a
+ * split TX half (rdof/sdr/t3split.h) with the SDR's receiver as its RX half. The TX half is a fake radio
  * (odr_split) with its own clock: it comes up, takes the carrier's settings, aligns its slot counter to UTC and takes
  * the scheduled stream. A group call granted on carrier B goes out as TX_SCHED for the trunk's slots (the UTC slot
  * numbers), and an MS on carrier B follows it from what the half airs; a burst the receiver hears on carrier B's
@@ -13,12 +13,12 @@
 
 #include "fake_radio.h"
 #include "rdof/pdu.h"
-#include "rdof/sdr/trunksplit.h"
+#include "rdof/sdr/t3split.h"
 #include "rdof/split.h"
 #include "rdof/splitops.h"
-#include "rdof/trunkcfg.h"
-#include "rdof/trunksim.h"
-#include "rdof/trunkunit.h"
+#include "rdof/t3cfg.h"
+#include "rdof/t3sim.h"
+#include "rdof/t3unit.h"
 
 static int fails;
 
@@ -43,9 +43,9 @@ static int fails;
 static struct {
     double clock;
     fake_radio_t f;
-    rdof_trunksplit_t ts;
-    rdof_trunkunit_t *u;
-    rdof_trunksim_t sim;
+    rdof_t3split_t ts;
+    rdof_t3unit_t *u;
+    rdof_t3sim_t sim;
     rdof_t3ms_t *ms[NMS];
     uint32_t id[NMS];
     int64_t k_done;
@@ -62,7 +62,7 @@ static void pump(void)
     uint8_t buf[4096];
     size_t n;
     while ((n = fake_take(&S.f, buf, sizeof buf)) > 0)
-        rdof_trunksplit_from_radio(&S.ts, buf, n, S.clock);
+        rdof_t3split_from_radio(&S.ts, buf, n, S.clock);
 }
 
 /* carrier B's slot k as the half airs it (queued or gone out) */
@@ -90,17 +90,17 @@ static void run(double seconds)
     while (S.clock < end) {
         S.clock += 0.01;
         const int64_t k_now = utc_ms() / 30;
-        rdof_trunksplit_tick(&S.ts, S.clock);
+        rdof_t3split_tick(&S.ts, S.clock);
         pump();
-        if (S.ts.state == RDOF_TRUNKSPLIT_UP) {
-            rdof_trunkunit_split_pump(S.u, &S.ts.o, rdof_trunksplit_split(&S.ts), k_now, S.clock);
+        if (S.ts.state == RDOF_T3SPLIT_UP) {
+            rdof_t3unit_split_pump(S.u, &S.ts.o, rdof_t3split_split(&S.ts), k_now, S.clock);
             pump();
         }
         for (; S.k_done < k_now; S.k_done++) {
             const int64_t k = S.k_done + 1;
-            rdof_trunksim_slot(&S.sim, k, k * 30);
+            rdof_t3sim_slot(&S.sim, k, k * 30);
             if (k % 10 == 0)
-                rdof_trunkunit_tick(S.u, k * 30);
+                rdof_t3unit_tick(S.u, k * 30);
         }
         if (S.f.non_air > 48) { /* keep the newest */
             memmove(S.f.on_air, S.f.on_air + 32, 16 * sizeof S.f.on_air[0]);
@@ -155,15 +155,15 @@ int main(void)
     /* the site: carrier A the TSCC, carrier B a payload carrier */
     rdof_t3_cfg_t cfg;
     rdof_t3_policy_t pol;
-    rdof_trunk_cfg_default(&cfg, &pol);
+    rdof_t3cfg_default(&cfg, &pol);
     cfg.ncarriers = 2;
     cfg.carriers[0] = (rdof_t3_carrier_t){.tx_hz = TX_A, .rx_hz = RX_A, .chan = 1, .tscc = 1, .enabled = 1};
     cfg.carriers[1] = (rdof_t3_carrier_t){.tx_hz = TX_B, .rx_hz = RX_B, .chan = 2, .tscc = 0, .enabled = 1};
     S.u = calloc(1, sizeof *S.u);
     void *mem = aligned_alloc(8, (rdof_t3_site_size() + 7) / 8 * 8);
-    const rdof_trunkunit_io_t io = {no_publish, no_subscribe, say, NULL, rand32, NULL};
+    const rdof_t3unit_io_t io = {no_publish, no_subscribe, say, NULL, rand32, NULL};
     char err[120];
-    CHECK(rdof_trunkunit_init(S.u, mem, &cfg, &pol, &io, NULL, NULL, -1, "test", err, sizeof err), "init: %s", err);
+    CHECK(rdof_t3unit_init(S.u, mem, &cfg, &pol, &io, NULL, NULL, -1, "test", err, sizeof err), "init: %s", err);
 
     /* two MSs on talkgroup 9, two on 10 */
     const uint16_t chans[2] = {1, 2};
@@ -174,25 +174,25 @@ int main(void)
         rdof_t3ms_init(S.ms[i], S.id[i], &tg, 1, chans, 2, 11 + (uint32_t)i);
         rdof_t3ms_do(S.ms[i], RDOF_T3MS_DO_REGISTER, tg, 0, 0, T0 + 300 + 400 * i);
     }
-    rdof_trunksim_init(&S.sim, S.u, NMS, S.ms, S.id);
+    rdof_t3sim_init(&S.sim, S.u, NMS, S.ms, S.id);
     S.sim.outside = 1u << 1;
     S.sim.outbound = outbound;
     S.k_done = T0 / 30;
-    rdof_trunkunit_run(S.u, S.k_done, T0);
+    rdof_t3unit_run(S.u, S.k_done, T0);
 
     /* carrier B's split: bring-up, its settings, UTC */
-    const rdof_trunksplit_io_t tio = {to_radio, rx_channel, now48, NULL};
-    CHECK(rdof_trunksplit_init(&S.ts, &tio, 1632000, 1, RX_B, TX_B, cfg.cc, S.clock), "split init: %s", S.ts.error);
+    const rdof_t3split_io_t tio = {to_radio, rx_channel, now48, NULL};
+    CHECK(rdof_t3split_init(&S.ts, &tio, 1632000, 1, RX_B, TX_B, cfg.cc, S.clock), "split init: %s", S.ts.error);
     pump();
-    for (int i = 0; i < 300 && S.ts.state != RDOF_TRUNKSPLIT_UP && S.ts.state != RDOF_TRUNKSPLIT_FAILED; i++)
+    for (int i = 0; i < 300 && S.ts.state != RDOF_T3SPLIT_UP && S.ts.state != RDOF_T3SPLIT_FAILED; i++)
         run(0.01);
-    CHECK(S.ts.state == RDOF_TRUNKSPLIT_UP, "the split up: state %d %s", S.ts.state, S.ts.error);
+    CHECK(S.ts.state == RDOF_T3SPLIT_UP, "the split up: state %d %s", S.ts.state, S.ts.error);
     CHECK(S.f.freq == RX_B && S.f.tx_freq == TX_B && S.f.cc == cfg.cc, "the half on carrier B: %u / %u cc %d",
           (unsigned)S.f.freq, (unsigned)S.f.tx_freq, S.f.cc);
-    rdof_trunksplit_utc(&S.ts, UTC_MINUS_HOST_US, 10, S.clock);
+    rdof_t3split_utc(&S.ts, UTC_MINUS_HOST_US, 10, S.clock);
     pump();
     run(3.0);
-    const rdof_split_t *sp = rdof_trunksplit_split(&S.ts);
+    const rdof_split_t *sp = rdof_t3split_split(&S.ts);
     CHECK(rdof_split_sched_ok(sp) && S.f.stream_mode == RDOF_OPS_STREAM_SCHEDULED && S.f.naligns > 0,
           "scheduled stream on UTC: align %s, stream %d, aligns %d", rdof_align_state_name(sp->align_state),
           S.f.stream_mode, S.f.naligns);
@@ -229,7 +229,7 @@ int main(void)
     CHECK(S.f.non_air > 0 && off == 0, "the half's counter is the UTC slot (%d of %d off)", off, S.f.non_air);
 
     /* the receiver hears a CSBK on carrier B's inbound TS2: up labeled slot 2 */
-    while (rdof_trunksplit_take(&S.ts, &(int){0}, &(uint8_t){0}, (uint8_t[RDOF_BURST_BYTES]){0}, NULL))
+    while (rdof_t3split_take(&S.ts, &(int){0}, &(uint8_t){0}, (uint8_t[RDOF_BURST_BYTES]){0}, NULL))
         ;
     const double t = slot_time(2, 0.05);
     run(t - S.clock);
@@ -239,14 +239,14 @@ int main(void)
     hb.b.dt = RDOF_DT_CSBK;
     hb.b.family = RDOF_FAMILY_MS;
     hb.position = llround(t * 48000.0);
-    rdof_trunksplit_heard(&S.ts, 1, &hb);
+    rdof_t3split_heard(&S.ts, 1, &hb);
     run(0.1);
     int slot = 0;
     uint8_t control = 0, burst[RDOF_BURST_BYTES];
-    const bool got = rdof_trunksplit_take(&S.ts, &slot, &control, burst, NULL);
+    const bool got = rdof_t3split_take(&S.ts, &slot, &control, burst, NULL);
     rdof_burst_t rb;
     if (got)
-        rdof_trunksplit_burst(&S.ts, slot, control, burst, &rb);
+        rdof_t3split_burst(&S.ts, slot, control, burst, &rb);
     CHECK(got && slot == 2 && rb.dt == RDOF_DT_CSBK && rb.slot == 2 && rb.family == RDOF_FAMILY_MS,
           "heard on carrier B: got %d slot %d control 0x%02x", got, slot, control);
 
@@ -256,14 +256,14 @@ int main(void)
     CHECK(!S.ts.o.keyed && S.ts.o.keyups == 1, "carrier B unkeyed after the hang (keyed %d, keyups %u)", S.ts.o.keyed,
           S.ts.o.keyups);
 
-    rdof_trunksplit_free(&S.ts);
+    rdof_t3split_free(&S.ts);
     for (int i = 0; i < NMS; i++)
         free(S.ms[i]);
     free(mem);
     free(S.u);
     if (fails)
-        printf("rdof_trunksplit_tests: %d failed\n", fails);
+        printf("rdof_t3split_tests: %d failed\n", fails);
     else
-        printf("rdof_trunksplit_tests: all passed\n");
+        printf("rdof_t3split_tests: all passed\n");
     return fails != 0;
 }

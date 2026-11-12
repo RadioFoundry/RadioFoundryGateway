@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 /* The trunked site controller (DMR Tier III, ETSI TS 102 361-4) and its MS simulator, in Rust (rust/src/t3site.rs,
- * t3ms.rs; docs/spec/fw/trunk.md sections 3 and 8).
+ * t3ms.rs; docs/spec/fw/tier3.md sections 3 and 8).
  *
  * The controller makes every Tier III decision and does no I/O: the caller feeds it the inbound PDUs, payload voice
  * activity, network events and the time, and per slot it returns what goes on air; events say what else to do
@@ -110,7 +110,7 @@ typedef struct {
     int64_t at_ms, exp_ms;
 } rdof_t3_record_t;
 
-/* setup ops and reasons (mqtt-net's setup item, trunk.md 5.4) */
+/* setup ops and reasons (mqtt-net's setup item, tier3.md 5.4) */
 #define RDOF_T3_SETUP_REQUEST 1
 #define RDOF_T3_SETUP_ACCEPT 2
 #define RDOF_T3_SETUP_REJECT 3
@@ -227,7 +227,7 @@ typedef struct {
 
 typedef struct rdof_t3_site rdof_t3_site_t;
 
-/* the defaults of trunk.md section 3.8, one carrier */
+/* the defaults of tier3.md section 3.8, one carrier */
 void rdof_t3_cfg_default(rdof_t3_cfg_t *cfg);
 void rdof_t3_policy_default(rdof_t3_policy_t *p);
 size_t rdof_t3_site_size(void);

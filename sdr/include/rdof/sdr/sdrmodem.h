@@ -136,7 +136,7 @@ typedef struct {
     uint8_t b[RDOF_BURST_BYTES];
 } rdof_sdrmodem_burst_t;
 
-/* A slot source (duplex, role 0): what a trunked site's control carrier sends (docs/spec/fw/trunk.md 9.1). Asked for
+/* A slot source (duplex, role 0): what a trunked site's control carrier sends (docs/spec/fw/tier3.md 9.1). Asked for
  * every outbound slot before the modem looks at its DMR_DATA queue, about one slot plus the transmit lead before air.
  * k: the slot, TS1 even; on the UTC grid the grid slot n (rdof_sdrmodem_grid), else the modem's own count from the
  * key-up. Fills burst and returns true, or false for the modem's own (queued or idle). *at (preset -1): the AT bit
@@ -327,7 +327,7 @@ int rdof_sdrmodem_label(rdof_sdrmodem_t *m, int64_t pos48);
 /* Duplex repeater, keyed: the inbound slot (1, 2) of a handheld's burst by its timing; 0 for any other burst. */
 int rdof_sdrmodem_inbound(rdof_sdrmodem_t *m, const rdof_sdr_burst_t *sb);
 /* The same burst's outbound slot k, as the slot source counts it (the UTC grid's n when placed on it); -1 for any
- * other burst. A trunked site gives it to the controller (rdof_trunkunit_rx). */
+ * other burst. A trunked site gives it to the controller (rdof_t3unit_rx). */
 int64_t rdof_sdrmodem_inbound_k(rdof_sdrmodem_t *m, const rdof_sdr_burst_t *sb);
 /* Duplex: the inbound slots busy now (bit 0 TS1, bit 1 TS2), what the CACH's AT bits say. */
 int rdof_sdrmodem_busy(const rdof_sdrmodem_t *m);

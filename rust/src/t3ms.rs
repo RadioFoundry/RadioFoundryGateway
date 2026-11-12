@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
-//! An MS simulator for the trunked site (docs/spec/fw/trunk.md section 11): a radio that knows one site and follows
+//! An MS simulator for the trunked site (docs/spec/fw/tier3.md section 11): a radio that knows one site and follows
 //! ETSI TS 102 361-4 for the services the site supports. It hunts the TSCC, waits for C_ALOHA, makes slotted random
 //! accesses with the site's backoff and NRand_Wait, answers C_AHOY, follows grants to the payload channel, talks,
 //! and returns on P_CLEAR. Sans-IO like the site: the caller (t3air, or C) moves the blocks and the time.

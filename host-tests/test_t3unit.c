@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
-/* Two trunked sites (rdof/trunkunit.h) with simulated MSs over the full burst path (rdof/trunksim.h), joined by an
+/* Two trunked sites (rdof/t3unit.h) with simulated MSs over the full burst path (rdof/t3sim.h), joined by an
  * in-process broker (retained messages, + wildcards, no local echo) with a stand-in router (pc/{dst} to dl/{the node
  * whose record has dst}): registration and its records, a wide group call heard at the other site, an individual
  * call across the sites through the setup, provisioning (cfg/net), commands, and a restart that reads the records
@@ -10,9 +10,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "rdof/trunkcfg.h"
-#include "rdof/trunksim.h"
-#include "rdof/trunkunit.h"
+#include "rdof/t3cfg.h"
+#include "rdof/t3sim.h"
+#include "rdof/t3unit.h"
 
 static int fails;
 
@@ -49,7 +49,7 @@ static struct {
         msg_t m;
     } q[QUEUE];
     int qn;
-    rdof_trunkunit_t *unit[CLIENTS];
+    rdof_t3unit_t *unit[CLIENTS];
     int published, pc_routed;
 } B;
 
@@ -146,7 +146,7 @@ static void broker_deliver(void)
 {
     for (int i = 0; i < B.qn; i++) {
         if (B.unit[B.q[i].to])
-            rdof_trunkunit_message(B.unit[B.q[i].to], B.q[i].m.topic, B.q[i].m.data, B.q[i].m.len);
+            rdof_t3unit_message(B.unit[B.q[i].to], B.q[i].m.topic, B.q[i].m.data, B.q[i].m.len);
         free(B.q[i].m.data);
     }
     B.qn = 0;
@@ -164,9 +164,9 @@ static const msg_t *retained(const char *topic)
 
 typedef struct {
     int client;
-    rdof_trunkunit_t *u;
+    rdof_t3unit_t *u;
     void *mem;
-    rdof_trunksim_t sim;
+    rdof_t3sim_t sim;
     rdof_t3ms_t *ms[2];
     uint32_t id[2];
     int logs;
@@ -216,14 +216,14 @@ static void site_open(site_t *s, int client, const char *node, int site_no, uint
     s->client = client;
     rdof_t3_cfg_t cfg;
     rdof_t3_policy_t pol;
-    rdof_trunk_cfg_default(&cfg, &pol);
+    rdof_t3cfg_default(&cfg, &pol);
     cfg.site = (uint16_t)site_no;
     pol.wide_tg.all = 1;
     s->u = calloc(1, sizeof *s->u);
     s->mem = aligned_alloc(8, (rdof_t3_site_size() + 7) / 8 * 8);
-    const rdof_trunkunit_io_t io = {io_publish, io_subscribe, io_log, NULL, io_rand, s};
+    const rdof_t3unit_io_t io = {io_publish, io_subscribe, io_log, NULL, io_rand, s};
     char err[120];
-    CHECK(rdof_trunkunit_init(s->u, s->mem, &cfg, &pol, &io, "DMR", node, 0, "test", err, sizeof err), "init: %s",
+    CHECK(rdof_t3unit_init(s->u, s->mem, &cfg, &pol, &io, "DMR", node, 0, "test", err, sizeof err), "init: %s",
           err);
     B.unit[client] = s->u;
     const uint32_t tg[1] = {TG};
@@ -234,9 +234,9 @@ static void site_open(site_t *s, int client, const char *node, int site_no, uint
         rdof_t3ms_init(s->ms[i], s->id[i], tg, 1, chans, 1, 7 + (uint32_t)client * 2 + (uint32_t)i);
         rdof_t3ms_do(s->ms[i], RDOF_T3MS_DO_REGISTER, TG, 0, 0, at_ms + 300 + 400 * i);
     }
-    rdof_trunksim_init(&s->sim, s->u, 2, s->ms, s->id);
-    rdof_trunkunit_run(s->u, (at_ms - T0) / 30, at_ms);
-    rdof_trunkunit_link(s->u, true);
+    rdof_t3sim_init(&s->sim, s->u, 2, s->ms, s->id);
+    rdof_t3unit_run(s->u, (at_ms - T0) / 30, at_ms);
+    rdof_t3unit_link(s->u, true);
 }
 
 static void site_close(site_t *s)
@@ -255,12 +255,12 @@ static void run(int ms)
 {
     for (int64_t end = K + ms / 30; K < end; K++) {
         const int64_t now = T0 + K * 30;
-        rdof_trunksim_slot(&A.sim, K, now);
-        rdof_trunksim_slot(&Bs.sim, K, now);
+        rdof_t3sim_slot(&A.sim, K, now);
+        rdof_t3sim_slot(&Bs.sim, K, now);
         broker_deliver();
         if (K % 10 == 0) {
-            rdof_trunkunit_tick(A.u, now);
-            rdof_trunkunit_tick(Bs.u, now);
+            rdof_t3unit_tick(A.u, now);
+            rdof_t3unit_tick(Bs.u, now);
         }
     }
 }
@@ -295,7 +295,7 @@ static struct {
     uint32_t cach_bad, cach_ok, heard, fates[3];
 } X;
 
-static int ext_in(void *ctx, int64_t k, rdof_trunksim_in_t *in, int max)
+static int ext_in(void *ctx, int64_t k, rdof_t3sim_in_t *in, int max)
 {
     (void)ctx;
     int n = 0;
@@ -303,7 +303,7 @@ static int ext_in(void *ctx, int64_t k, rdof_trunksim_in_t *in, int max)
     if (X.stray && max > n) { /* a burst on the slot not on air */
         rdof_t3ms_tx_t t = {.ch = (uint8_t)(1 - (k & 1)), .kind = 2, .what = RDOF_T3_VOICE_FRAME};
         in[n].ch = t.ch;
-        rdof_trunksim_ms_burst(&t, 1, 1, &in[n].b);
+        rdof_t3sim_ms_burst(&t, 1, 1, &in[n].b);
         n++;
     }
     if (!rdof_t3ms_tx(X.ms, k, T0 + k * 30, &tx))
@@ -313,21 +313,21 @@ static int ext_in(void *ctx, int64_t k, rdof_trunksim_in_t *in, int max)
         X.voice_n = tx.what == RDOF_T3_VOICE_FRAME ? (vn + 1) % 6 : 0;
     for (int d = 0; d <= (X.dup && tx.kind == 1) && n < max; d++) {
         in[n].ch = tx.ch;
-        if (rdof_trunksim_ms_burst(&tx, vn, A.u->cfg.cc, &in[n].b))
+        if (rdof_t3sim_ms_burst(&tx, vn, A.u->cfg.cc, &in[n].b))
             n++;
     }
     return n;
 }
 
-static void ext_out(void *ctx, int64_t k, const rdof_trunksim_out_t *out, int ncar, int at_next,
-                    const rdof_trunksim_in_t *in, int nin)
+static void ext_out(void *ctx, int64_t k, const rdof_t3sim_out_t *out, int ncar, int at_next,
+                    const rdof_t3sim_in_t *in, int nin)
 {
     (void)ctx;
     for (int e = 0; e < nin; e++)
         X.fates[in[e].fate]++;
     int at, slot, lcss;
     uint32_t p17;
-    if (rdof_trunk_cach_read(out[0].cach, &at, &slot, &lcss, &p17) && at == out[0].at && slot == (int)(k & 1) + 1)
+    if (rdof_t3rf_cach_read(out[0].cach, &at, &slot, &lcss, &p17) && at == out[0].at && slot == (int)(k & 1) + 1)
         X.cach_ok++;
     else
         X.cach_bad++;
@@ -335,7 +335,7 @@ static void ext_out(void *ctx, int64_t k, const rdof_trunksim_out_t *out, int nc
     rdof_t3ms_status(X.ms, &st);
     if ((st.ch & 1) != (int)(k & 1) || st.ch / 2 >= ncar)
         return;
-    const rdof_trunksim_out_t *o = &out[st.ch / 2];
+    const rdof_t3sim_out_t *o = &out[st.ch / 2];
     X.heard += o->pdu_ok;
     rdof_t3ms_rx(X.ms, st.ch, k, (uint8_t)(o->pdu_ok ? o->dt : 0), o->pdu, st.ch == 0 && at_next > 0);
 }
@@ -411,16 +411,16 @@ int main(void)
     /* neighbors: each site's info names the other as an adjacent site; online 0 makes it inactive; cfg/node's
        neighbors list leaves out the ones it doesn't name */
     char tj[1024], info[1200];
-    rdof_trunkunit_trunk_json(Bs.u, tj, sizeof tj);
+    rdof_t3unit_trunk_json(Bs.u, tj, sizeof tj);
     snprintf(info, sizeof info, "{\"schema\":1,\"trunk\":%s}", tj);
     broker_publish(1, "DMR/node/site-b/info", info, strlen(info), true);
     broker_publish(1, "DMR/node/site-b/online", "1", 1, true);
-    rdof_trunkunit_trunk_json(A.u, tj, sizeof tj);
+    rdof_t3unit_trunk_json(A.u, tj, sizeof tj);
     snprintf(info, sizeof info, "{\"schema\":1,\"trunk\":%s}", tj);
     broker_publish(0, "DMR/node/site-a/info", info, strlen(info), true);
     broker_deliver();
     CHECK(A.u->nneighbors == 1 && Bs.u->nneighbors == 1, "neighbors: A %d, B %d", A.u->nneighbors, Bs.u->nneighbors);
-    const rdof_trunkunit_peer_t *pb = &A.u->peers[0];
+    const rdof_t3unit_peer_t *pb = &A.u->peers[0];
     CHECK(A.u->npeers >= 1 && !strcmp(pb->node, "site-b") && pb->site == 4 && pb->chan == 1 && pb->online &&
               pb->syscode == rdof_t3_syscode(A.u->cfg.model, A.u->cfg.net, 4, A.u->cfg.par),
           "A's neighbor: %s site %u chan %u syscode 0x%04x", pb->node, pb->site, pb->chan, pb->syscode);
@@ -466,8 +466,8 @@ int main(void)
         run(1500);
         rdof_t3ms_status_t xs;
         rdof_t3ms_status(X.ms, &xs);
-        CHECK(A.sim.collisions > coll && !xs.registered && X.fates[RDOF_TRUNKSIM_COLLIDED] >= 2,
-              "the doubled request collided (%u, fates %u)", A.sim.collisions - coll, X.fates[RDOF_TRUNKSIM_COLLIDED]);
+        CHECK(A.sim.collisions > coll && !xs.registered && X.fates[RDOF_T3SIM_COLLIDED] >= 2,
+              "the doubled request collided (%u, fates %u)", A.sim.collisions - coll, X.fates[RDOF_T3SIM_COLLIDED]);
         X.dup = 0;
         run(8000);
         rdof_t3ms_status(X.ms, &xs);
@@ -487,9 +487,9 @@ int main(void)
         X.stray = 1;
         run(300);
         X.stray = 0;
-        CHECK(A.sim.ext_drop >= drop + 10 && X.fates[RDOF_TRUNKSIM_DROPPED] == A.sim.ext_drop - drop,
+        CHECK(A.sim.ext_drop >= drop + 10 && X.fates[RDOF_T3SIM_DROPPED] == A.sim.ext_drop - drop,
               "stray bursts dropped (%u)", A.sim.ext_drop - drop);
-        CHECK(X.fates[RDOF_TRUNKSIM_HEARD] > 5, "its bursts heard (%u)", X.fates[RDOF_TRUNKSIM_HEARD]);
+        CHECK(X.fates[RDOF_T3SIM_HEARD] > 5, "its bursts heard (%u)", X.fates[RDOF_T3SIM_HEARD]);
         A.sim.ext_in = NULL;
         A.sim.ext_out = NULL;
         free(X.ms);
@@ -500,8 +500,8 @@ int main(void)
     for (int i = 0; i < B.nret; i++)
         free(B.retained[i].data);
     if (fails)
-        printf("rdof_trunkunit_tests: %d failed\n", fails);
+        printf("rdof_t3unit_tests: %d failed\n", fails);
     else
-        printf("rdof_trunkunit_tests: all passed\n");
+        printf("rdof_t3unit_tests: all passed\n");
     return fails != 0;
 }

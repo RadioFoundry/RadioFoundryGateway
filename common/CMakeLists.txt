@@ -57,8 +57,8 @@ set(RDOF_COMMON_SRCS
     src/memplan.c
     src/webapi.c
     src/sigmode.c
-    src/trunkrf.c
-    src/trunkcfg.c
+    src/t3rf.c
+    src/t3cfg.c
     src/radiofoundry/dmrFec.c src/radiofoundry/dmrCach.c src/radiofoundry/dmr_lc.c src/radiofoundry/dmrTrellis.c src/radiofoundry/dmrDataCrc.c
 )
 # split.c's clock arithmetic matches the golden scenarios to the bit: no fused multiply-add.
@@ -138,11 +138,11 @@ else()
     endif()
     add_library(rdof_common STATIC ${RDOF_COMMON_SRCS})
     if(RDOF_COMMON_RUST)
-        # RDOF_TRUNK: the trunked site's controller (rust's t3 feature) goes in the same library; a second Rust
+        # RDOF_TIER3: the trunked site's controller (rust's t3 feature) goes in the same library; a second Rust
         # static library in one program would bring a second core and panic handler.
-        option(RDOF_TRUNK "The trunked site's controller (rust's t3 feature) in the Rust library" ON)
+        option(RDOF_TIER3 "The trunked site's controller (rust's t3 feature) in the Rust library" ON)
         set(rdof_rust_features)
-        if(RDOF_TRUNK)
+        if(RDOF_TIER3)
             set(rdof_rust_features FEATURES t3)
         endif()
         if(RDOF_RUST_TARGET)
@@ -150,7 +150,7 @@ else()
         else()
             rdof_rust_add(rdof_rust ${rdof_rust_features})
         endif()
-        if(RDOF_TRUNK)
+        if(RDOF_TIER3)
             target_compile_definitions(rdof_common PUBLIC RDOF_RUST_T3=1)
         endif()
         # The Rust calls back into this library (the FEC, RadioFoundry's codes): the two link as a cycle.

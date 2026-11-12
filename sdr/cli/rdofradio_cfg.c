@@ -13,7 +13,7 @@
 #include "rdof/jitter.h"
 #include "rdof/jsonp.h"
 #include "rdof/siteplan.h"
-#include "rdof/trunkcfg.h"
+#include "rdof/t3cfg.h"
 
 /* ntp: a string of servers, or {servers, poll_s, clock}. The clock is netclock's when servers are set, unless
    clock is "os"; "netclock" without servers runs it on the browser's time alone. */
@@ -127,19 +127,19 @@ static void str_key(const rdof_jdoc_t *d, int obj, const char *key, const char *
    unit_mqtt reads it: host, port, username, password, root without its slashes, tls). */
 static bool from_trunk(const rdof_plan_t *p, int unit, rdofradio_cfg_t *o, char *err, size_t cap)
 {
-    rdofradio_trunk_cfg_t *t = &o->t;
+    rdofradio_t3_cfg_t *t = &o->t;
     const rdof_site_t *s = rdof_plan_site(p);
     const rdof_unit_t *u = rdof_plan_unit(p, unit);
-    if (!rdof_trunk_cfg_plan(p, unit, &t->cfg, &t->pol, err, cap))
+    if (!rdof_t3cfg_plan(p, unit, &t->cfg, &t->pol, err, cap))
         return false;
-    o->trunk = true;
+    o->tier3 = true;
     snprintf(t->name, sizeof t->name, "%s", u->name);
     snprintf(o->name, sizeof o->name, "%s", u->name);
     t->path = s->app[u->app].path[0];
     t->ncar = t->cfg.ncarriers;
     for (int k = 0; k < t->ncar; k++) {
         int rx = -1, tx = -1;
-        if (!rdof_plan_trunk_carrier(p, unit, k, &rx, &tx)) {
+        if (!rdof_plan_t3_carrier(p, unit, k, &rx, &tx)) {
             snprintf(err, cap, "apps.%s: carrier %d has no device", s->app[u->app].name, k + 1);
             return false;
         }
@@ -182,7 +182,7 @@ static bool from_trunk(const rdof_plan_t *p, int unit, rdofradio_cfg_t *o, char 
 
 static bool from_plan(const rdof_plan_t *p, rdofradio_cfg_t *o, char *err, size_t cap)
 {
-    const int tu = rdof_trunk_unit(p);
+    const int tu = rdof_t3cfg_unit(p);
     if (tu >= 0) {
         if (!rdof_plan_check(p, &rdof_plan_host, err, cap))
             return false;

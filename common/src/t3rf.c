@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 /*
- * A trunked site's radio layer (rdof/trunkrf.h; docs/spec/fw/trunk.md section 9). Written from ETSI TS 102 361-1
+ * A trunked site's radio layer (rdof/t3rf.h; docs/spec/fw/tier3.md section 9). Written from ETSI TS 102 361-1
  * (bursts, CACH, short LC, CRC masks) and -4 (the TSCC and payload channels' use of them).
  */
-#include "rdof/trunkrf.h"
+#include "rdof/t3rf.h"
 
 #if RDOF_FEATURE_REPEATER
 
@@ -18,7 +18,7 @@
 
 /* ── control blocks ───────────────────────────────────────────────────────── */
 
-int rdof_trunk_mask(int dt)
+int rdof_t3rf_mask(int dt)
 {
     switch (dt) {
     case RDOF_DT_CSBK: return RDOF_MASK_CSBK;
@@ -29,9 +29,9 @@ int rdof_trunk_mask(int dt)
     }
 }
 
-bool rdof_trunk_pdu_burst(int dt, const uint8_t pdu[10], int cc, rdof_family_t family, uint8_t out[RDOF_BURST_BYTES])
+bool rdof_t3rf_pdu_burst(int dt, const uint8_t pdu[10], int cc, rdof_family_t family, uint8_t out[RDOF_BURST_BYTES])
 {
-    const int mask = rdof_trunk_mask(dt);
+    const int mask = rdof_t3rf_mask(dt);
     if (mask < 0)
         return false;
     uint8_t b12[12];
@@ -43,26 +43,26 @@ bool rdof_trunk_pdu_burst(int dt, const uint8_t pdu[10], int cc, rdof_family_t f
     return true;
 }
 
-rdof_trunk_pdu_t rdof_trunk_burst_pdu(const uint8_t burst[RDOF_BURST_BYTES], int *dt, int *cc, uint8_t pdu[10])
+rdof_trunk_pdu_t rdof_t3rf_burst_pdu(const uint8_t burst[RDOF_BURST_BYTES], int *dt, int *cc, uint8_t pdu[10])
 {
     *dt = *cc = -1;
     rdof_family_t fam;
     bool data;
     int e;
     if (!rdof_detect_sync(burst, 4, &fam, &data, &e) || !data)
-        return RDOF_TRUNK_NOT_PDU;
+        return RDOF_T3RF_NOT_PDU;
     if (!rdof_decode_slot_type(burst, cc, dt, &e)) {
         *dt = *cc = -1;
-        return RDOF_TRUNK_PDU_BAD; /* a data sync with an unreadable slot type: two radios at once, most likely */
+        return RDOF_T3RF_PDU_BAD; /* a data sync with an unreadable slot type: two radios at once, most likely */
     }
-    const int mask = rdof_trunk_mask(*dt);
+    const int mask = rdof_t3rf_mask(*dt);
     if (mask < 0)
-        return RDOF_TRUNK_NOT_PDU;
+        return RDOF_T3RF_NOT_PDU;
     uint8_t b12[12];
     if (!rdof_bptc196_decode(burst, b12) || !rdof_check_crc16(b12, (uint16_t)mask))
-        return RDOF_TRUNK_PDU_BAD;
+        return RDOF_T3RF_PDU_BAD;
     memcpy(pdu, b12, 10);
-    return RDOF_TRUNK_PDU_OK;
+    return RDOF_T3RF_PDU_OK;
 }
 
 static void pack24(uint32_t bits, uint8_t out[3])
@@ -72,7 +72,7 @@ static void pack24(uint32_t bits, uint8_t out[3])
     out[2] = (uint8_t)bits;
 }
 
-void rdof_trunk_cach4(uint32_t slc28, const int at[4], int64_t k, uint8_t out[4][3])
+void rdof_t3rf_cach4(uint32_t slc28, const int at[4], int64_t k, uint8_t out[4][3])
 {
     static const uint8_t lcss[4] = {DMR_LCSS_FIRST, DMR_LCSS_CONT, DMR_LCSS_CONT, DMR_LCSS_LAST};
     uint32_t rows[4];
@@ -81,7 +81,7 @@ void rdof_trunk_cach4(uint32_t slc28, const int at[4], int64_t k, uint8_t out[4]
         pack24(dmrCachBuild((uint8_t)(at[q] & 1), (uint8_t)((k + q) & 1), lcss[q], rows[q]), out[q]);
 }
 
-bool rdof_trunk_cach_read(const uint8_t c3[3], int *at, int *slot, int *lcss, uint32_t *payload17)
+bool rdof_t3rf_cach_read(const uint8_t c3[3], int *at, int *slot, int *lcss, uint32_t *payload17)
 {
     uint8_t tact, a, tc, ls;
     uint32_t payload;
@@ -94,57 +94,57 @@ bool rdof_trunk_cach_read(const uint8_t c3[3], int *at, int *slot, int *lcss, ui
     return true;
 }
 
-bool rdof_trunk_slc_join(const uint32_t rows[4], uint32_t *slc28) { return dmrShortLcDecode(rows, slc28); }
+bool rdof_t3rf_slc_join(const uint32_t rows[4], uint32_t *slc28) { return dmrShortLcDecode(rows, slc28); }
 
 /* ── payload channels ─────────────────────────────────────────────────────── */
 
-static bool is_payload(const rdof_trunkrf_t *t, int ch)
+static bool is_payload(const rdof_t3rf_t *t, int ch)
 {
     return ch >= 0 && ch < 2 * t->ncarriers && !(t->tscc && ch == 0);
 }
 
-rdof_trunkrf_ch_t *rdof_trunkrf_channel(rdof_trunkrf_t *t, int ch) { return is_payload(t, ch) ? &t->ch[ch] : NULL; }
+rdof_t3rf_ch_t *rdof_t3rf_channel(rdof_t3rf_t *t, int ch) { return is_payload(t, ch) ? &t->ch[ch] : NULL; }
 
-bool rdof_trunkrf_init(rdof_trunkrf_t *t, const rdof_trunkrf_io_t *io, int ncarriers, int cc, bool tscc)
+bool rdof_t3rf_init(rdof_t3rf_t *t, const rdof_t3rf_io_t *io, int ncarriers, int cc, bool tscc)
 {
     memset(t, 0, sizeof *t);
-    if (ncarriers < 1 || ncarriers > RDOF_TRUNKRF_CARRIERS)
+    if (ncarriers < 1 || ncarriers > RDOF_T3RF_CARRIERS)
         return false;
     if (io)
         t->io = *io;
     t->ncarriers = ncarriers;
     t->cc = cc & 0x0F;
     t->tscc = tscc;
-    for (int i = 0; i < RDOF_TRUNKRF_CHANNELS; i++) {
+    for (int i = 0; i < RDOF_T3RF_CHANNELS; i++) {
         t->ch[i].index = i;
         t->ch[i].cc = t->cc;
     }
     return true;
 }
 
-static void flush(rdof_trunkrf_ch_t *c)
+static void flush(rdof_t3rf_ch_t *c)
 {
     c->qh = c->qn = 0;
     c->net = c->net_started = c->net_regen_on = false;
     c->net_held = 0;
 }
 
-static void push(rdof_trunkrf_ch_t *c, uint8_t control, bool net, const uint8_t b[RDOF_BURST_BYTES])
+static void push(rdof_t3rf_ch_t *c, uint8_t control, bool net, const uint8_t b[RDOF_BURST_BYTES])
 {
-    if (c->qn == RDOF_TRUNKRF_QUEUE) {
+    if (c->qn == RDOF_T3RF_QUEUE) {
         c->overflows++;
         return;
     }
-    rdof_trunkrf_burst_t *q = &c->q[(c->qh + c->qn) % RDOF_TRUNKRF_QUEUE];
+    rdof_t3rf_burst_t *q = &c->q[(c->qh + c->qn) % RDOF_T3RF_QUEUE];
     q->control = control;
     q->net = net;
     memcpy(q->b, b, RDOF_BURST_BYTES);
     c->qn++;
 }
 
-bool rdof_trunkrf_open(rdof_trunkrf_t *t, int ch, uint32_t src, uint32_t dst, bool group, int warmup)
+bool rdof_t3rf_open(rdof_t3rf_t *t, int ch, uint32_t src, uint32_t dst, bool group, int warmup)
 {
-    rdof_trunkrf_ch_t *c = rdof_trunkrf_channel(t, ch);
+    rdof_t3rf_ch_t *c = rdof_t3rf_channel(t, ch);
     if (!c)
         return false;
     if (!c->open) {
@@ -161,9 +161,9 @@ bool rdof_trunkrf_open(rdof_trunkrf_t *t, int ch, uint32_t src, uint32_t dst, bo
     return true;
 }
 
-void rdof_trunkrf_close(rdof_trunkrf_t *t, int ch)
+void rdof_t3rf_close(rdof_t3rf_t *t, int ch)
 {
-    rdof_trunkrf_ch_t *c = rdof_trunkrf_channel(t, ch);
+    rdof_t3rf_ch_t *c = rdof_t3rf_channel(t, ch);
     if (!c)
         return;
     flush(c);
@@ -172,10 +172,10 @@ void rdof_trunkrf_close(rdof_trunkrf_t *t, int ch)
     c->close_after = false;
 }
 
-bool rdof_trunkrf_control(rdof_trunkrf_t *t, int ch, int dt, const uint8_t pdu[10], int repeats, bool close_after)
+bool rdof_t3rf_control(rdof_t3rf_t *t, int ch, int dt, const uint8_t pdu[10], int repeats, bool close_after)
 {
-    rdof_trunkrf_ch_t *c = rdof_trunkrf_channel(t, ch);
-    if (!c || repeats < 1 || !rdof_trunk_pdu_burst(dt, pdu, c->cc, RDOF_FAMILY_BS, c->ctl))
+    rdof_t3rf_ch_t *c = rdof_t3rf_channel(t, ch);
+    if (!c || repeats < 1 || !rdof_t3rf_pdu_burst(dt, pdu, c->cc, RDOF_FAMILY_BS, c->ctl))
         return false;
     c->ctl_left = repeats;
     c->close_after = close_after;
@@ -186,7 +186,7 @@ bool rdof_trunkrf_control(rdof_trunkrf_t *t, int ch, int dt, const uint8_t pdu[1
 
 static void lc_of(uint32_t src, uint32_t dst, bool group, uint8_t lc9[9]) { rdof_group_lc(src, dst, group, 0, lc9); }
 
-static void up(rdof_trunkrf_t *t, rdof_trunkrf_ch_t *c, int dt, int n, const uint8_t *b, bool new_stream)
+static void up(rdof_t3rf_t *t, rdof_t3rf_ch_t *c, int dt, int n, const uint8_t *b, bool new_stream)
 {
     if (!t->io.uplink)
         return;
@@ -204,14 +204,14 @@ static void up(rdof_trunkrf_t *t, rdof_trunkrf_ch_t *c, int dt, int n, const uin
     t->io.uplink(t->io.ctx, c->index, &f);
 }
 
-static void activity(rdof_trunkrf_t *t, rdof_trunkrf_ch_t *c, int64_t k, int what)
+static void activity(rdof_t3rf_t *t, rdof_t3rf_ch_t *c, int64_t k, int what)
 {
     if (t->io.activity)
         t->io.activity(t->io.ctx, c->index, k, what, c->rf_src, c->rf_dst, c->rf_group);
 }
 
-/* RF beats the network (trunk.md 3.6): a network stream on the channel is dropped. */
-static void rf_takes(rdof_trunkrf_ch_t *c)
+/* RF beats the network (tier3.md 3.6): a network stream on the channel is dropped. */
+static void rf_takes(rdof_t3rf_ch_t *c)
 {
     if (c->net) {
         c->net_dropped++;
@@ -220,13 +220,13 @@ static void rf_takes(rdof_trunkrf_ch_t *c)
 }
 
 /* An inbound burst on payload channel c, repeated (regenerated) on its outbound when it is open. */
-static void payload_rx(rdof_trunkrf_t *t, rdof_trunkrf_ch_t *c, int64_t k, const rdof_burst_t *b, int rssi)
+static void payload_rx(rdof_t3rf_t *t, rdof_t3rf_ch_t *c, int64_t k, const rdof_burst_t *b, int rssi)
 {
     c->rx_bursts++;
     uint8_t out[RDOF_BURST_BYTES], pdu[10];
     int dt, cc;
-    if (b->dt != RDOF_DT_VOICE && b->dt != RDOF_DT_VOICE_SYNC && rdof_trunk_mask(b->dt) >= 0) {
-        if (rdof_trunk_burst_pdu(b->burst, &dt, &cc, pdu) == RDOF_TRUNK_PDU_OK) {
+    if (b->dt != RDOF_DT_VOICE && b->dt != RDOF_DT_VOICE_SYNC && rdof_t3rf_mask(b->dt) >= 0) {
+        if (rdof_t3rf_burst_pdu(b->burst, &dt, &cc, pdu) == RDOF_T3RF_PDU_OK) {
             c->rx_pdus++;
             if (t->io.pdu)
                 t->io.pdu(t->io.ctx, c->index, k, dt, pdu, rssi);
@@ -253,7 +253,7 @@ static void payload_rx(rdof_trunkrf_t *t, rdof_trunkrf_ch_t *c, int64_t k, const
             rdof_duplex_lc_burst(lc.raw, RDOF_DT_VOICE_LC_HEADER, c->cc, out);
             push(c, RDOF_SYNC_DATA | RDOF_DT_VOICE_LC_HEADER, false, out);
             if (fresh)
-                activity(t, c, k, RDOF_TRUNKRF_HEADER);
+                activity(t, c, k, RDOF_T3RF_HEADER);
             up(t, c, b->dt, 0, out, fresh);
             return;
         }
@@ -262,7 +262,7 @@ static void payload_rx(rdof_trunkrf_t *t, rdof_trunkrf_ch_t *c, int64_t k, const
         rdof_duplex_lc_burst(lc.raw, RDOF_DT_TERMINATOR_WITH_LC, c->cc, out);
         push(c, RDOF_SYNC_DATA | RDOF_DT_TERMINATOR_WITH_LC, false, out);
         up(t, c, b->dt, 0, out, false);
-        activity(t, c, k, RDOF_TRUNKRF_TERM);
+        activity(t, c, k, RDOF_T3RF_TERM);
         c->rf = c->rf_regen_on = false;
         return;
     }
@@ -284,11 +284,11 @@ static void payload_rx(rdof_trunkrf_t *t, rdof_trunkrf_ch_t *c, int64_t k, const
     rdof_voice_regen_burst(&c->rf_regen, control, b->burst, out);
     push(c, control, false, out);
     if (late)
-        activity(t, c, k, RDOF_TRUNKRF_VOICE);
+        activity(t, c, k, RDOF_T3RF_VOICE);
     up(t, c, b->dt, b->n, out, late);
 }
 
-void rdof_trunkrf_rx(rdof_trunkrf_t *t, int c, int64_t k, const rdof_burst_t *b, int rssi)
+void rdof_t3rf_rx(rdof_t3rf_t *t, int c, int64_t k, const rdof_burst_t *b, int rssi)
 {
     if (c < 0 || c >= t->ncarriers || !b) {
         t->rx_ignored++;
@@ -298,8 +298,8 @@ void rdof_trunkrf_rx(rdof_trunkrf_t *t, int c, int64_t k, const rdof_burst_t *b,
     if (t->tscc && ch == 0) {
         uint8_t pdu[10];
         int dt, cc;
-        switch (rdof_trunk_burst_pdu(b->burst, &dt, &cc, pdu)) {
-        case RDOF_TRUNK_PDU_OK:
+        switch (rdof_t3rf_burst_pdu(b->burst, &dt, &cc, pdu)) {
+        case RDOF_T3RF_PDU_OK:
             if (cc != t->cc) { /* another site's, or a stray: not ours */
                 t->rx_ignored++;
                 return;
@@ -308,7 +308,7 @@ void rdof_trunkrf_rx(rdof_trunkrf_t *t, int c, int64_t k, const rdof_burst_t *b,
             if (t->io.pdu)
                 t->io.pdu(t->io.ctx, 0, k, dt, pdu, rssi);
             return;
-        case RDOF_TRUNK_PDU_BAD:
+        case RDOF_T3RF_PDU_BAD:
             t->rx_tscc_bad++;
             if (t->io.bad)
                 t->io.bad(t->io.ctx, 0, k);
@@ -316,16 +316,16 @@ void rdof_trunkrf_rx(rdof_trunkrf_t *t, int c, int64_t k, const rdof_burst_t *b,
         default: t->rx_ignored++; return; /* voice on the TSCC: nothing to do with it */
         }
     }
-    if (b->cc >= 0 && b->cc != t->cc) { /* the payload channels use the TSCC's color code (trunk.md 3.1) */
+    if (b->cc >= 0 && b->cc != t->cc) { /* the payload channels use the TSCC's color code (tier3.md 3.1) */
         t->rx_ignored++;
         return;
     }
     payload_rx(t, &t->ch[ch], k, b, rssi);
 }
 
-bool rdof_trunkrf_net(rdof_trunkrf_t *t, int ch, const rdof_frame_t *f)
+bool rdof_t3rf_net(rdof_t3rf_t *t, int ch, const rdof_frame_t *f)
 {
-    rdof_trunkrf_ch_t *c = rdof_trunkrf_channel(t, ch);
+    rdof_t3rf_ch_t *c = rdof_t3rf_channel(t, ch);
     if (!c || !c->open || c->rf || c->close_after) {
         if (c)
             c->net_dropped++;
@@ -374,45 +374,45 @@ bool rdof_trunkrf_net(rdof_trunkrf_t *t, int ch, const rdof_frame_t *f)
         c->net_dropped++; /* data and control blocks from the network: not carried here */
         return false;
     }
-    if (c->qn == RDOF_TRUNKRF_QUEUE) {
+    if (c->qn == RDOF_T3RF_QUEUE) {
         c->overflows++;
         return false;
     }
     push(c, control, true, out);
     c->net_bursts++;
     c->net_held++;
-    if (f->dt == RDOF_DT_TERMINATOR_WITH_LC || c->net_held >= RDOF_TRUNKRF_NET_PREBUFFER)
+    if (f->dt == RDOF_DT_TERMINATOR_WITH_LC || c->net_held >= RDOF_T3RF_NET_PREBUFFER)
         c->net_started = true;
     if (f->dt == RDOF_DT_TERMINATOR_WITH_LC)
         c->net = c->net_regen_on = false; /* what's queued plays out */
     return true;
 }
 
-void rdof_trunkrf_net_end(rdof_trunkrf_t *t, int ch)
+void rdof_t3rf_net_end(rdof_t3rf_t *t, int ch)
 {
-    rdof_trunkrf_ch_t *c = rdof_trunkrf_channel(t, ch);
+    rdof_t3rf_ch_t *c = rdof_t3rf_channel(t, ch);
     if (!c || !c->net)
         return;
     c->net_started = true;
     c->net = c->net_regen_on = false;
 }
 
-void rdof_trunkrf_tick(rdof_trunkrf_t *t, int64_t k)
+void rdof_t3rf_tick(rdof_t3rf_t *t, int64_t k)
 {
     for (int i = 0; i < 2 * t->ncarriers; i++) {
-        rdof_trunkrf_ch_t *c = rdof_trunkrf_channel(t, i);
-        if (c && c->rf && k - c->rf_last > RDOF_TRUNKRF_LOST_K) {
+        rdof_t3rf_ch_t *c = rdof_t3rf_channel(t, i);
+        if (c && c->rf && k - c->rf_last > RDOF_T3RF_LOST_K) {
             c->rf = c->rf_regen_on = false;
             c->lost++;
-            activity(t, c, k, RDOF_TRUNKRF_LOST);
+            activity(t, c, k, RDOF_T3RF_LOST);
         }
     }
 }
 
-rdof_trunkrf_out_t rdof_trunkrf_ch_next(rdof_trunkrf_t *t, int ch, int64_t k, uint8_t *control,
+rdof_t3rf_out_t rdof_t3rf_ch_next(rdof_t3rf_t *t, int ch, int64_t k, uint8_t *control,
                                       uint8_t out[RDOF_BURST_BYTES])
 {
-    rdof_trunkrf_ch_t *c = rdof_trunkrf_channel(t, ch);
+    rdof_t3rf_ch_t *c = rdof_t3rf_channel(t, ch);
     *control = RDOF_SYNC_DATA | RDOF_DT_IDLE;
     if (c && c->ctl_left > 0) {
         memcpy(out, c->ctl, RDOF_BURST_BYTES);
@@ -420,21 +420,21 @@ rdof_trunkrf_out_t rdof_trunkrf_ch_next(rdof_trunkrf_t *t, int ch, int64_t k, ui
         *control = (uint8_t)(RDOF_SYNC_DATA | (rdof_decode_slot_type(out, &cc, &dt, &e) ? dt : RDOF_DT_CSBK));
         c->tx_control++;
         if (--c->ctl_left == 0 && c->close_after)
-            rdof_trunkrf_close(t, ch);
-        return RDOF_TRUNKRF_CONTROL;
+            rdof_t3rf_close(t, ch);
+        return RDOF_T3RF_CONTROL;
     }
     if (c && c->open && c->warmup > 0) {
         c->warmup--;
     } else if (c && c->qn && (!c->q[c->qh].net || c->net_started)) {
-        const rdof_trunkrf_burst_t *q = &c->q[c->qh];
+        const rdof_t3rf_burst_t *q = &c->q[c->qh];
         memcpy(out, q->b, RDOF_BURST_BYTES);
         *control = q->control;
-        c->qh = (c->qh + 1) % RDOF_TRUNKRF_QUEUE;
+        c->qh = (c->qh + 1) % RDOF_T3RF_QUEUE;
         c->qn--;
         if (!c->qn && !c->net)
             c->net_started = false;
         c->tx_traffic++;
-        return RDOF_TRUNKRF_TRAFFIC;
+        return RDOF_T3RF_TRAFFIC;
     } else if (c && c->net_started && !c->qn) {
         c->net_started = c->net; /* an underrun mid stream: it carries on as bursts come */
     }
@@ -442,10 +442,10 @@ rdof_trunkrf_out_t rdof_trunkrf_ch_next(rdof_trunkrf_t *t, int ch, int64_t k, ui
         c->tx_idle++;
     rdof_duplex_idle(t->cc, out);
     (void)k;
-    return RDOF_TRUNKRF_IDLE;
+    return RDOF_T3RF_IDLE;
 }
 
-bool rdof_trunkrf_slot(rdof_trunkrf_t *t, int c, int64_t k, uint8_t burst[RDOF_BURST_BYTES], uint8_t *control, int *at,
+bool rdof_t3rf_slot(rdof_t3rf_t *t, int c, int64_t k, uint8_t burst[RDOF_BURST_BYTES], uint8_t *control, int *at,
                      int32_t *slc28)
 {
     uint8_t ctl = RDOF_SYNC_DATA | RDOF_DT_IDLE;
@@ -459,7 +459,7 @@ bool rdof_trunkrf_slot(rdof_trunkrf_t *t, int c, int64_t k, uint8_t burst[RDOF_B
         int dt = -1;
         uint8_t pdu[10];
         if (t->io.tscc && t->io.tscc(t->io.ctx, k, &dt, pdu) &&
-            rdof_trunk_pdu_burst(dt, pdu, t->cc, RDOF_FAMILY_BS, burst)) {
+            rdof_t3rf_pdu_burst(dt, pdu, t->cc, RDOF_FAMILY_BS, burst)) {
             ctl = (uint8_t)(RDOF_SYNC_DATA | dt);
             t->tscc_sent++;
         } else {
@@ -467,7 +467,7 @@ bool rdof_trunkrf_slot(rdof_trunkrf_t *t, int c, int64_t k, uint8_t burst[RDOF_B
             t->tscc_idle++;
         }
     } else if (c >= 0 && c < t->ncarriers) {
-        rdof_trunkrf_ch_next(t, 2 * c + (int)(k & 1), k, &ctl, burst);
+        rdof_t3rf_ch_next(t, 2 * c + (int)(k & 1), k, &ctl, burst);
     } else {
         rdof_duplex_idle(t->cc, burst);
     }
@@ -476,7 +476,7 @@ bool rdof_trunkrf_slot(rdof_trunkrf_t *t, int c, int64_t k, uint8_t burst[RDOF_B
     return true;
 }
 
-bool rdof_trunkrf_carrier_busy(const rdof_trunkrf_t *t, int c)
+bool rdof_t3rf_carrier_busy(const rdof_t3rf_t *t, int c)
 {
     if (c < 0 || c >= t->ncarriers)
         return false;
@@ -484,7 +484,7 @@ bool rdof_trunkrf_carrier_busy(const rdof_trunkrf_t *t, int c)
         const int ch = 2 * c + s;
         if (t->tscc && ch == 0)
             return true; /* a TSCC's carrier is always on */
-        const rdof_trunkrf_ch_t *x = &t->ch[ch];
+        const rdof_t3rf_ch_t *x = &t->ch[ch];
         if (x->open || x->ctl_left || x->qn)
             return true;
     }
@@ -493,7 +493,7 @@ bool rdof_trunkrf_carrier_busy(const rdof_trunkrf_t *t, int c)
 
 /* ── a payload carrier on a split TX half ─────────────────────────────────── */
 
-void rdof_trunkrf_split_init(rdof_trunkrf_split_t *o, int carrier)
+void rdof_t3rf_split_init(rdof_t3rf_split_t *o, int carrier)
 {
     memset(o, 0, sizeof *o);
     o->carrier = carrier;
@@ -508,10 +508,10 @@ static void upstream(rdof_split_t *s, uint8_t cmd, const uint8_t *p, size_t n, d
         rdof_split_upstream(s, f, len, now);
 }
 
-void rdof_trunkrf_split_pump(rdof_trunkrf_t *t, rdof_trunkrf_split_t *o, struct rdof_split *s, int64_t k_now, int ahead,
+void rdof_t3rf_split_pump(rdof_t3rf_t *t, rdof_t3rf_split_t *o, struct rdof_split *s, int64_t k_now, int ahead,
                            double now)
 {
-    const bool busy = rdof_trunkrf_carrier_busy(t, o->carrier);
+    const bool busy = rdof_t3rf_carrier_busy(t, o->carrier);
     if (!s->ready) {
         o->keyed = false;
         return;
@@ -544,7 +544,7 @@ void rdof_trunkrf_split_pump(rdof_trunkrf_t *t, rdof_trunkrf_split_t *o, struct 
         uint8_t burst[RDOF_BURST_BYTES], control;
         int at;
         int32_t slc;
-        rdof_trunkrf_slot(t, o->carrier, k, burst, &control, &at, &slc);
+        rdof_t3rf_slot(t, o->carrier, k, burst, &control, &at, &slc);
         if (slc >= 0 && slc != o->slc_sent) {
             uint8_t lc5[5] = {(uint8_t)(slc >> 24 & 0x0F), (uint8_t)(slc >> 16), (uint8_t)(slc >> 8), (uint8_t)slc, 0};
             uint8_t sl9[9];

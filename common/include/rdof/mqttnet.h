@@ -464,7 +464,7 @@ typedef struct {
     uint32_t stream;
 } rdof_mn_ev_t;
 
-/* A trunked site's events (section 7, trunk.md): */
+/* A trunked site's events (section 7, tier3.md): */
 /* {"ev":"reg",...}: action "register", "deregister", "expire", "deny", "refuse"; tg the radio's talkgroups */
 size_t rdof_mn_reg_event(const rdof_mn_ev_t *e, uint32_t src, const char *action, const uint32_t *tg, int ntg,
                          char *out, size_t cap);

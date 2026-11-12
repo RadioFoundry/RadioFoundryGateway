@@ -170,7 +170,7 @@ typedef struct {
     int nneighbors;
     rdof_mn_timer_t timers[RDOF_MN_CFG_TIMERS]; /* by name; a later layer's value replaces an earlier one's */
     int ntimers;
-    /* the control channel's broadcast intervals (trunk.md 3.2: adjacent_s, chan_freq_s, local_time_s; 0 off), by name
+    /* the control channel's broadcast intervals (tier3.md 3.2: adjacent_s, chan_freq_s, local_time_s; 0 off), by name
        as the timers */
     rdof_mn_timer_t broadcast[RDOF_MN_CFG_BROADCASTS];
     int nbroadcast;
@@ -232,7 +232,7 @@ double rdof_mn_cfg_broadcast(const rdof_mn_site_cfg_t *s, const char *name, doub
 const rdof_mn_tg_cfg_t *rdof_mn_cfg_tg(const rdof_mn_cfg_t *c, uint32_t tg);
 const rdof_mn_ms_cfg_t *rdof_mn_cfg_ms(const rdof_mn_cfg_t *c, uint32_t id);
 /* A site-level document (cfg/net or cfg/node) from its JSON: what rdof_mn_cfg_message does for those two, for the
-   settings file's trunk app too. False with err. */
+   settings file's tier3 app too. False with err. */
 bool rdof_mn_site_cfg_parse(const char *json, size_t len, rdof_mn_site_cfg_t *out, long *rev, char *note, size_t ncap,
                             char *err, size_t cap);
 

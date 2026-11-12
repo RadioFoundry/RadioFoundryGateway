@@ -8,7 +8,7 @@
 #include <string.h>
 
 #include "rdof/t3.h"
-#include "rdof/trunkcfg.h"
+#include "rdof/t3cfg.h"
 
 static int fails;
 
@@ -150,11 +150,11 @@ static void test_cfg_defaults(void)
     memset(&pa, 0, sizeof pa);
     rdof_t3_cfg_default(&a);
     rdof_t3_policy_default(&pa);
-    rdof_trunk_cfg_default(&b, &pb);
+    rdof_t3cfg_default(&b, &pb);
     CHECK(!memcmp(&a, &b, sizeof a), "trunkcfg's defaults are rdof_t3_cfg_default's");
     CHECK(!memcmp(&pa, &pb, sizeof pa), "trunkcfg's policy is rdof_t3_policy_default's");
     char err[96];
-    CHECK(rdof_trunk_cfg_check(&b, err, sizeof err), "defaults pass: %s", err);
+    CHECK(rdof_t3cfg_check(&b, err, sizeof err), "defaults pass: %s", err);
 }
 
 static void test_scenario(void)

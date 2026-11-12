@@ -21,7 +21,7 @@
 #include "rdof/site.h"
 #include "rdof/siteplan.h"
 #include "rdof/siteroute.h"
-#include "rdof/trunkcfg.h"
+#include "rdof/t3cfg.h"
 #include "rdof/txpool.h"
 #include "rdof/txvr.h"
 
@@ -648,7 +648,7 @@ static void test_siteroute(const char *dir)
     }
 }
 
-/* A trunked site's file: its plan, what a host runs, the trunk unit's settings and the SDR's. */
+/* A trunked site's file: its plan, what a host runs, the Tier III unit's settings and the SDR's. */
 static bool trunk_taken(const char *t, size_t len, char *err, size_t cap)
 {
     rdof_plan_t *p = rdof_plan_open(t, len, err, cap);
@@ -659,12 +659,12 @@ static bool trunk_taken(const char *t, size_t len, char *err, size_t cap)
     static rdof_t3_policy_t pol;
     static rdof_sdr_config_t sc;
     bool ok = rdof_plan_roles_on(p, &rdof_plan_host, &roles, err, cap) &&
-              rdof_trunk_cfg_plan(p, -1, &cfg, &pol, err, cap) && rdof_plan_sdr(p, NULL, &sc, err, cap);
+              rdof_t3cfg_plan(p, -1, &cfg, &pol, err, cap) && rdof_plan_sdr(p, NULL, &sc, err, cap);
     rdof_plan_close(p);
     return ok;
 }
 
-/* A JSON text's top object over cfg and pol (rdof_trunk_cfg_apply). */
+/* A JSON text's top object over cfg and pol (rdof_t3cfg_apply). */
 static bool apply_text(const char *text, const char *path, rdof_t3_cfg_t *cfg, rdof_t3_policy_t *pol, char *err,
                        size_t cap)
 {
@@ -676,15 +676,15 @@ static bool apply_text(const char *text, const char *path, rdof_t3_cfg_t *cfg, r
         snprintf(err, cap, "json: %s", doc.error);
         return false;
     }
-    return rdof_trunk_cfg_apply(&doc, root, path, cfg, pol, err, cap) && rdof_trunk_cfg_check(cfg, err, cap);
+    return rdof_t3cfg_apply(&doc, root, path, cfg, pol, err, cap) && rdof_t3cfg_check(cfg, err, cap);
 }
 
-/* The trunk unit: its devices, its carriers, its settings (rdof/trunkcfg.h), and the manager's documents over them. */
+/* The Tier III unit: its devices, its carriers, its settings (rdof/t3cfg.h), and the manager's documents over them. */
 static void test_trunk(const char *dir)
 {
     char p[512], err[200] = "";
     size_t n;
-    snprintf(p, sizeof p, "%s/v3/good-trunk.json", dir);
+    snprintf(p, sizeof p, "%s/v3/good-tier3.json", dir);
     char *t = slurp(p, &n);
     rdof_plan_t *pl = t ? rdof_plan_open(t, n, err, sizeof err) : NULL;
     CHECK(pl, "good-trunk: %s", err);
@@ -692,8 +692,8 @@ static void test_trunk(const char *dir)
     if (!pl)
         return;
     const rdof_site_t *s = rdof_plan_site(pl);
-    int u = rdof_trunk_unit(pl);
-    CHECK(u >= 0 && !strcmp(rdof_plan_unit(pl, u)->name, "site"), "the trunk unit");
+    int u = rdof_t3cfg_unit(pl);
+    CHECK(u >= 0 && !strcmp(rdof_plan_unit(pl, u)->name, "site"), "the Tier III unit");
     int rx = -1, tx = -1, d0 = -1, d1 = -1;
     for (int d = 0; d < s->ndev; d++) {
         if (!strcmp(s->dev[d].name, "pluto"))
@@ -701,9 +701,9 @@ static void test_trunk(const char *dir)
         if (!strcmp(s->dev[d].name, "txb"))
             d1 = d;
     }
-    CHECK(rdof_plan_trunk_carrier(pl, u, 0, &rx, &tx) && rx == d0 && tx == d0, "the TSCC on the Pluto: %d %d", rx, tx);
-    CHECK(rdof_plan_trunk_carrier(pl, u, 1, &rx, &tx) && rx == d0 && tx == d1, "B heard on the Pluto, sent by txb");
-    CHECK(!rdof_plan_trunk_carrier(pl, u, 2, &rx, &tx), "two carriers");
+    CHECK(rdof_plan_t3_carrier(pl, u, 0, &rx, &tx) && rx == d0 && tx == d0, "the TSCC on the Pluto: %d %d", rx, tx);
+    CHECK(rdof_plan_t3_carrier(pl, u, 1, &rx, &tx) && rx == d0 && tx == d1, "B heard on the Pluto, sent by txb");
+    CHECK(!rdof_plan_t3_carrier(pl, u, 2, &rx, &tx), "two carriers");
     CHECK(rdof_plan_unit_uses(pl, u, d1) && rdof_plan_sdr_used(pl, d0), "uses");
     CHECK(rdof_plan_nextra(pl) == 2 && rdof_plan_extra(pl, 0)->hz == 438250000 &&
               rdof_plan_extra(pl, 1)->hz == 438500000 && !strcmp(rdof_plan_extra(pl, 1)->id, "site-2"),
@@ -716,7 +716,7 @@ static void test_trunk(const char *dir)
     CHECK(!rdof_plan_radio(pl, "site", &rc, err, sizeof err) && strstr(err, "trunked site"), "no radio: %s", err);
     static rdof_t3_cfg_t c;
     static rdof_t3_policy_t pol;
-    CHECK(rdof_trunk_cfg_plan(pl, -1, &c, &pol, err, sizeof err), "cfg: %s", err);
+    CHECK(rdof_t3cfg_plan(pl, -1, &c, &pol, err, sizeof err), "cfg: %s", err);
     CHECK(c.model == 1 && c.net == 5 && c.site == 3 && c.par == 3 && c.area_bits == 5 && c.cc == 1, "system");
     CHECK(c.ncarriers == 2 && c.carriers[0].tscc && c.carriers[0].chan == 1 && c.carriers[0].tx_hz == 438750000 &&
               c.carriers[0].rx_hz == 438250000 && !c.carriers[1].tscc && c.carriers[1].chan == 2 &&
@@ -768,16 +768,16 @@ static void test_trunk(const char *dir)
         const char *doc = "{\"rev\": 4, \"system\": {\"model\": \"small\", \"net\": 7}, \"site\": 9, "
                           "\"registration\": \"listed\", \"timers\": {\"hang_s\": 2, \"queue_max\": 8}}";
         CHECK(rdof_mn_site_cfg_parse(doc, strlen(doc), &sc, &rev, note, sizeof note, err, sizeof err), "%s", err);
-        rdof_trunk_cfg_default(&c, &pol);
-        CHECK(rdof_trunk_cfg_site(&sc, &c, &pol, err, sizeof err), "site cfg: %s", err);
+        rdof_t3cfg_default(&c, &pol);
+        CHECK(rdof_t3cfg_site(&sc, &c, &pol, err, sizeof err), "site cfg: %s", err);
         CHECK(c.net == 7 && c.site == 9 && c.hang_ms == 2000 && c.queue_max == 8 && !pol.open && !pol.ms.all &&
                   !pol.ms.n,
               "site cfg applied");
         sc.timers[0].value = 99;
-        CHECK(!rdof_trunk_cfg_site(&sc, &c, &pol, err, sizeof err) && !strcmp(err, "cfg.timers.hang_s: 1 to 60"),
+        CHECK(!rdof_t3cfg_site(&sc, &c, &pol, err, sizeof err) && !strcmp(err, "cfg.timers.hang_s: 1 to 60"),
               "%s", err);
     }
-    rdof_trunk_cfg_default(&c, &pol);
+    rdof_t3cfg_default(&c, &pol);
     CHECK(apply_text("{\"system\": {\"model\": \"tiny\", \"net\": 511, \"site\": 7}}", "x", &c, &pol, err, sizeof err) &&
               c.area_bits == 3,
           "tiny: %s", err);
@@ -800,7 +800,7 @@ static void test_fixtures(const char *dir)
         char *t = slurp(p, &len);
         bool good = !strncmp(e->d_name, "good-", 5);
         bool ok = rdof_site_parse(t, len, &S, err, sizeof err);
-        const bool trunk = ok && rdof_site_app_of(&S, RDOF_APP_TRUNK) >= 0;
+        const bool trunk = ok && rdof_site_app_of(&S, RDOF_APP_TIER3) >= 0;
         if (trunk)
             ok = trunk_taken(t, len, err, sizeof err);
         CHECK(ok == good, "%s: %s", e->d_name, ok ? "taken" : err);

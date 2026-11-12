@@ -26,7 +26,7 @@ struct rdof_plan {
     rdof_plan_extra_t extra[MAX_EXTRA];
     int nbench;
     int bench[RDOF_SITE_MAX_DEVICES];
-    /* the trunk unit (one a box, -1 none) and its carriers' devices, in its app's order */
+    /* the Tier III unit (one a box, -1 none) and its carriers' devices, in its app's order */
     int trunk;
     int trx[RDOF_SITE_MAX_CARRIERS], ttx[RDOF_SITE_MAX_CARRIERS];
 };
@@ -464,7 +464,7 @@ static void unit_path(const plan_t *p, const rdof_unit_t *u, char *out, size_t c
     const rdof_site_t *s = &p->site;
     switch (u->kind) {
     case RDOF_UNIT_REPEATER:
-    case RDOF_UNIT_TRUNK: snprintf(out, cap, "apps.%s", s->app[u->app].name); break;
+    case RDOF_UNIT_TIER3: snprintf(out, cap, "apps.%s", s->app[u->app].name); break;
     case RDOF_UNIT_SFR:
     case RDOF_UNIT_DCDM: snprintf(out, cap, "frequencies.%s", s->freq[u->freq].name); break;
     default: snprintf(out, cap, "devices.%s", s->dev[u->rx].name); break;
@@ -553,7 +553,7 @@ static bool make_units(plan_t *p)
        hears it, else the first SDR that does */
     for (int a = 0; a < s->napp; a++) {
         const rdof_app3_t *ap = &s->app[a];
-        if (ap->type != RDOF_APP_TRUNK)
+        if (ap->type != RDOF_APP_TIER3)
             continue;
         char where[64];
         snprintf(where, sizeof where, "apps.%s", ap->name);
@@ -580,7 +580,7 @@ static bool make_units(plan_t *p)
             mine |= 1ull << cr->in | 1ull << cr->out;
         }
         p->trunk = p->nunit;
-        rdof_unit_t *u = add_unit(p, ap->name, RDOF_UNIT_TRUNK, where);
+        rdof_unit_t *u = add_unit(p, ap->name, RDOF_UNIT_TIER3, where);
         if (!u)
             return false;
         u->rx = p->trx[0];
@@ -715,7 +715,7 @@ static bool check_units(plan_t *p)
         unit_path(p, u, where, sizeof where);
         if (u->kind == RDOF_UNIT_RECEIVER)
             continue;
-        if (u->kind == RDOF_UNIT_TRUNK) {
+        if (u->kind == RDOF_UNIT_TIER3) {
             if (!check_trunk(p, u, where))
                 return false;
             continue;
@@ -815,7 +815,7 @@ static bool make_extras(plan_t *p)
         } else if (u->kind == RDOF_UNIT_REPEATER) {
             f[n] = s->freq[s->app[u->app].in].hz;
             cc[n++] = s->freq[s->app[u->app].out].cc; /* the repeater's color code: its out's */
-        } else if (u->kind == RDOF_UNIT_TRUNK) {
+        } else if (u->kind == RDOF_UNIT_TIER3) {
             /* every carrier's in, in the app's order: channel "<unit>-<k + 1>" is carrier k */
             const rdof_app3_t *ap = &s->app[u->app];
             for (int c = 0; c < ap->ncarrier; c++) {
@@ -876,7 +876,7 @@ static uint64_t unit_hears(const plan_t *p, const rdof_unit_t *u)
     case RDOF_UNIT_RECEIVER:
     case RDOF_UNIT_TRANSCEIVER: return u->freqs;
     case RDOF_UNIT_REPEATER: return 1ull << p->site.app[u->app].in;
-    case RDOF_UNIT_TRUNK: {
+    case RDOF_UNIT_TIER3: {
         uint64_t set = 0;
         for (int k = 0; k < p->site.app[u->app].ncarrier; k++)
             set |= 1ull << p->site.app[u->app].carrier[k].in;
@@ -951,7 +951,7 @@ static bool sdr_sends(plan_t *p, int d, const sdr_caps_t *c)
         if (u->kind == RDOF_UNIT_RECEIVER)
             continue;
         int on = u->tx == d; /* the carriers it sends on d */
-        if (u->kind == RDOF_UNIT_TRUNK) {
+        if (u->kind == RDOF_UNIT_TIER3) {
             on = 0;
             for (int c = 0; c < s->app[u->app].ncarrier; c++)
                 on += p->ttx[c] == d;
@@ -960,7 +960,7 @@ static bool sdr_sends(plan_t *p, int d, const sdr_caps_t *c)
             continue;
         char where[64];
         unit_path(p, u, where, sizeof where);
-        if (u->kind == RDOF_UNIT_TRUNK && u->tx == d && !c->full_duplex)
+        if (u->kind == RDOF_UNIT_TIER3 && u->tx == d && !c->full_duplex)
             return fail(p, "%s: devices.%s (%s) is half duplex: the TSCC sends every slot and hears the inbound "
                            "between them", where, dv->name, dv->driver);
         if (u->kind == RDOF_UNIT_REPEATER && !c->full_duplex)
@@ -1128,7 +1128,7 @@ int rdof_plan_receiver(const rdof_plan_t *p, int dev)
     return -1;
 }
 
-bool rdof_plan_trunk_carrier(const rdof_plan_t *p, int unit, int k, int *rx, int *tx)
+bool rdof_plan_t3_carrier(const rdof_plan_t *p, int unit, int k, int *rx, int *tx)
 {
     if (unit < 0 || unit != p->trunk || k < 0 || k >= p->site.app[p->unit[unit].app].ncarrier)
         return false;
@@ -1177,7 +1177,7 @@ bool rdof_plan_roles_on(const rdof_plan_t *p, const rdof_plan_platform_t *plat, 
     int sdr = -1;
     for (int k = 0; k < p->nunit; k++) {
         const rdof_unit_t *u = &p->unit[k];
-        if (u->kind == RDOF_UNIT_TRUNK && !plat->host_drivers) {
+        if (u->kind == RDOF_UNIT_TIER3 && !plat->host_drivers) {
             snprintf(err, cap, "apps.%s: a trunked site runs on a host (rdofradio), not on %s", p->site.app[u->app].name,
                      plat->name);
             return false;

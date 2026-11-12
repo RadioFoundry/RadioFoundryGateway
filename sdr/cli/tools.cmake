@@ -7,7 +7,7 @@
 #   libmosquitto 2.x (libmosquitto-dev, Homebrew mosquitto; the PlutoSDR build makes its own): rdofradio's MQTT
 #   RDOF_HOST_WEB: rdofradio --web
 #   RDOF_VERSION: the version rdofradio reports (default: git describe at configure time)
-#   RDOF_TRUNK (ON) with cargo: rdofradio runs a trunked site and --sim-air (the controller is rust's t3 feature, in
+#   RDOF_TIER3 (ON) with cargo: rdofradio runs a trunked site and --sim-air (the controller is rust's t3 feature, in
 #   rdof_common's Rust library, or alone with the C modules); RDOF_RUST_TARGET is cargo's target for a cross build (armv7-unknown-linux-gnueabihf on a PlutoSDR)
 set(RDOF_CLI ${CMAKE_CURRENT_LIST_DIR})
 find_package(Threads REQUIRED)
@@ -128,28 +128,28 @@ if(RDOF_RADIO_DEFS AND NOT WIN32)
         endif()
     endif()
     target_compile_definitions(rdofradio PRIVATE RDOF_VERSION="${RDOF_VERSION}")
-    # the trunked site (rdofradio_trunk.c): the controller in rust (rdof_common's Rust with the t3 feature, or t3
-    # built alone beside the C modules), the trunk unit and the simulator
-    option(RDOF_TRUNK "rdofradio runs a trunked site (needs cargo)" ON)
+    # the trunked site (rdofradio_t3.c): the controller in rust (rdof_common's Rust with the t3 feature, or t3
+    # built alone beside the C modules), the Tier III unit and the simulator
+    option(RDOF_TIER3 "rdofradio runs a trunked site (needs cargo)" ON)
     set(RDOF_RUST_TARGET "" CACHE STRING "cargo's --target for the trunk controller (empty: the host)")
     set(RDOF_T3_LIB NOTFOUND)
-    if(RDOF_TRUNK)
+    if(RDOF_TIER3)
         if(NOT COMMAND rdof_t3_lib)
             include(${RDOF_CLI}/../../rust/rust.cmake)
         endif()
         rdof_t3_lib(RDOF_T3_LIB rdof_common)
     endif()
-    if(RDOF_TRUNK AND NOT RDOF_T3_LIB STREQUAL "NOTFOUND")
+    if(RDOF_TIER3 AND NOT RDOF_T3_LIB STREQUAL "NOTFOUND")
         message(STATUS "rdofradio runs a trunked site")
-        target_sources(rdofradio PRIVATE ${RDOF_CLI}/rdofradio_trunk.c ${RDOF_CLI}/rdofradio_simext.c
-                       ${RDOF_CLI}/../../sdr/src/trunksplit.c ${RDOF_CLI}/../../common/src/trunkunit.c
-                       ${RDOF_CLI}/../../common/src/trunksim.c)
-        target_compile_definitions(rdofradio PRIVATE RDOF_TRUNK)
+        target_sources(rdofradio PRIVATE ${RDOF_CLI}/rdofradio_t3.c ${RDOF_CLI}/rdofradio_simext.c
+                       ${RDOF_CLI}/../../sdr/src/t3split.c ${RDOF_CLI}/../../common/src/t3unit.c
+                       ${RDOF_CLI}/../../common/src/t3sim.c)
+        target_compile_definitions(rdofradio PRIVATE RDOF_TIER3)
         if(RDOF_T3_LIB)
             target_link_libraries(rdofradio PRIVATE ${RDOF_T3_LIB})
         endif()
     else()
-        message(STATUS "rdofradio without the trunked site (RDOF_TRUNK off or no cargo)")
+        message(STATUS "rdofradio without the trunked site (RDOF_TIER3 off or no cargo)")
     endif()
     option(RDOF_HOST_WEB "Link the web page server into the host tools (rdofradio --web [ADDR:]PORT)" OFF)
     if(RDOF_HOST_WEB)

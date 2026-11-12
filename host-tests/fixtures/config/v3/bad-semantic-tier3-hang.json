@@ -12,7 +12,22 @@
    "driver": "iio",
    "match": {
     "uri": "local:"
-   }
+   },
+   "transmits": [
+    "A-out"
+   ]
+  },
+  {
+   "name": "txb",
+   "kind": "modem",
+   "type": "radio_hotspot",
+   "port": {
+    "path": "/dev/ttyACM0"
+   },
+   "hears": false,
+   "transmits": [
+    "B-out"
+   ]
   }
  ],
  "frequencies": [
@@ -27,8 +42,7 @@
   },
   {
    "name": "B-out",
-   "freq": 438.6,
-   "cc": 2
+   "freq": 438.6
   },
   {
    "name": "B-in",
@@ -39,7 +53,7 @@
  "apps": [
   {
    "name": "site",
-   "type": "trunk",
+   "type": "tier3",
    "system": {
     "model": "small",
     "net": 5,
@@ -62,7 +76,7 @@
    "registration": "open",
    "wide_tg": "1-99999",
    "timers": {
-    "hang_s": 3
+    "hang_s": 0
    }
   }
  ],

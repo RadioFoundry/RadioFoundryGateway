@@ -15,7 +15,7 @@
     {"name": "B-in",  "freq": 438.5, "tx": false}
   ],
   "apps": [
-    {"name": "site", "type": "trunk",
+    {"name": "site", "type": "tier3",
      "system": {"model": "small", "net": 5, "site": 3, "par": "ab"},
      "carriers": [
        {"out": "B-out", "in": "B-in", "chan": 2},

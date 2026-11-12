@@ -27,7 +27,8 @@
   },
   {
    "name": "B-out",
-   "freq": 438.6
+   "freq": 438.6,
+   "cc": 2
   },
   {
    "name": "B-in",
@@ -38,7 +39,7 @@
  "apps": [
   {
    "name": "site",
-   "type": "trunk",
+   "type": "tier3",
    "system": {
     "model": "small",
     "net": 5,

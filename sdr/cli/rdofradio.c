@@ -147,8 +147,8 @@
 #include "rdof/sdr/spectrum.h"
 #include "rdof/txvr.h"
 #include "rdofradio_cfg.h"
-#ifdef RDOF_TRUNK
-#include "rdofradio_trunk.h"
+#ifdef RDOF_TIER3
+#include "rdofradio_t3.h"
 #endif
 #include "rdofradio_dev.h"
 #include "rdofradio_fpga.h"
@@ -317,14 +317,14 @@ static void on_signal(int s) { stop = 1; }
 
 /* --config: the file, and the radio it (or the command line) sets */
 static const char *config_path;
-/* a trunked site's (rdofradio_trunk.h): --sim-air and the rest */
+/* a trunked site's (rdofradio_t3.h): --sim-air and the rest */
 static struct {
     int sim_n;
     uint32_t sim_id, sim_tg;
     double sim_talk_s, sim_ext_loss, sim_ext_err;
     const char *sim_script, *state_dir, *sim_ext;
     bool sim_fast;
-} trunk_opts = {.sim_id = 1000001, .sim_tg = 9};
+} t3_opts = {.sim_id = 1000001, .sim_tg = 9};
 static rdofradio_cfg_t rcfg;
 #ifdef RDOF_HOST_WEB
 static char held[300]; /* hold (below): why the settings don't run, "" when they do */
@@ -543,7 +543,7 @@ static void usage(void)
             "       rdofradio DEVICE --allow-tx --config FILE (a trunked site) [--state-dir DIR] [the device's flags]\n"
             "       rdofradio --config FILE --sim-air N [--sim-id ID] [--sim-tg TG] [--sim-talk S] [--sim-script FILE]\n"
             "                 [--sim-ext PATH [--sim-fast] [--sim-ext-loss P] [--sim-ext-err P]]\n"
-            "                 [--state-dir DIR] [--seconds S] [-v] (a trunked site's air simulated, rdofradio_trunk.h)\n"
+            "                 [--state-dir DIR] [--seconds S] [-v] (a trunked site's air simulated, rdofradio_t3.h)\n"
             "--soapy takes --setting KEY=VALUE, repeated: the driver's own (an RTL-SDR's biastee=true)\n"
             "DEVICE: %s (or, receive only, --sim-sdr: noise, for tests with no RF)\n",
 #if defined(RDOF_SOAPY) && defined(RDOF_IIO)
@@ -1956,7 +1956,7 @@ static void mq_start(void)
     }
     MQ = rdofmq_start(&o);
     o.subscribe = NULL, o.on_message = NULL;
-    if (v3 && rcfg.trunk) /* a trunked site's node on the network is the trunk unit's (rdofradio_trunk.c) alone */
+    if (v3 && rcfg.tier3) /* a trunked site's node on the network is the Tier III unit's (rdofradio_t3.c) alone */
         fprintf(stderr, "mqtt-net: the trunked site's own connection carries the network\n");
     else if (v3)
         mn_start();
@@ -3728,15 +3728,15 @@ static int64_t main_now48(void)
     const double floor = isfinite(MC.floor) ? MC.floor : MC.win_min;
     return (int64_t)(((now_s() - MC.t0) * R.rate - floor) * 48000.0 / R.rate);
 }
-#ifdef RDOF_TRUNK
+#ifdef RDOF_TIER3
 static int trunk_channel(uint32_t hz) { return channel_of(hz); }
 #endif
 
 static void on_burst(void *ctx, int c, const rdof_sdr_burst_t *b, double t)
 {
-#ifdef RDOF_TRUNK
-    if (rdofradio_trunk_on()) /* carrier 1's inbound (the TSCC's), carrier 2's */
-        rdofradio_trunk_heard(c, b);
+#ifdef RDOF_TIER3
+    if (rdofradio_t3_on()) /* carrier 1's inbound (the TSCC's), carrier 2's */
+        rdofradio_t3_heard(c, b);
 #endif
     pthread_mutex_lock(&BT.mu);
     if (BT.active && c == BT.heard_ch)
@@ -6440,33 +6440,33 @@ int main(int argc, char **argv)
             config_path = v;
         } else if (!strcmp(a, "--sim-air")) {
             NEXT();
-            trunk_opts.sim_n = atoi(v);
+            t3_opts.sim_n = atoi(v);
         } else if (!strcmp(a, "--sim-id")) {
             NEXT();
-            trunk_opts.sim_id = (uint32_t)strtoul(v, NULL, 10);
+            t3_opts.sim_id = (uint32_t)strtoul(v, NULL, 10);
         } else if (!strcmp(a, "--sim-tg")) {
             NEXT();
-            trunk_opts.sim_tg = (uint32_t)strtoul(v, NULL, 10);
+            t3_opts.sim_tg = (uint32_t)strtoul(v, NULL, 10);
         } else if (!strcmp(a, "--sim-talk")) {
             NEXT();
-            trunk_opts.sim_talk_s = atof(v);
+            t3_opts.sim_talk_s = atof(v);
         } else if (!strcmp(a, "--sim-script")) {
             NEXT();
-            trunk_opts.sim_script = v;
+            t3_opts.sim_script = v;
         } else if (!strcmp(a, "--sim-ext")) {
             NEXT();
-            trunk_opts.sim_ext = v;
+            t3_opts.sim_ext = v;
         } else if (!strcmp(a, "--sim-ext-loss")) {
             NEXT();
-            trunk_opts.sim_ext_loss = atof(v);
+            t3_opts.sim_ext_loss = atof(v);
         } else if (!strcmp(a, "--sim-ext-err")) {
             NEXT();
-            trunk_opts.sim_ext_err = atof(v);
+            t3_opts.sim_ext_err = atof(v);
         } else if (!strcmp(a, "--sim-fast")) {
-            trunk_opts.sim_fast = true;
+            t3_opts.sim_fast = true;
         } else if (!strcmp(a, "--state-dir")) {
             NEXT();
-            trunk_opts.state_dir = v;
+            t3_opts.state_dir = v;
         } else if (!strcmp(a, "-r") || !strcmp(a, "--rate")) {
             NEXT();
             rate = atof(v);
@@ -6645,7 +6645,7 @@ int main(int argc, char **argv)
         printf("%s %s\n", b, f);
         return 0;
     }
-    if ((trunk_opts.sim_n > 0 || trunk_opts.sim_script || trunk_opts.sim_ext) && !config_path) {
+    if ((t3_opts.sim_n > 0 || t3_opts.sim_script || t3_opts.sim_ext) && !config_path) {
         fprintf(stderr, "--sim-air: a trunked site's settings (--config FILE)\n");
         return 2;
     }
@@ -6672,24 +6672,24 @@ int main(int argc, char **argv)
             snprintf(why, sizeof why, "%s: %s", config_path, err);
             return hold(argc, argv, why);
         }
-        if (rcfg.trunk) {
-#ifdef RDOF_TRUNK
-            const rdofradio_trunk_opts_t to = {.sim_n = trunk_opts.sim_n,
-                                               .sim_id = trunk_opts.sim_id,
-                                               .sim_tg = trunk_opts.sim_tg,
-                                               .sim_talk_s = trunk_opts.sim_talk_s,
-                                               .sim_script = trunk_opts.sim_script,
-                                               .sim_ext = trunk_opts.sim_ext,
-                                               .sim_ext_loss = trunk_opts.sim_ext_loss,
-                                               .sim_ext_err = trunk_opts.sim_ext_err,
-                                               .sim_fast = trunk_opts.sim_fast,
-                                               .state_dir = trunk_opts.state_dir,
+        if (rcfg.tier3) {
+#ifdef RDOF_TIER3
+            const rdofradio_t3_opts_t to = {.sim_n = t3_opts.sim_n,
+                                               .sim_id = t3_opts.sim_id,
+                                               .sim_tg = t3_opts.sim_tg,
+                                               .sim_talk_s = t3_opts.sim_talk_s,
+                                               .sim_script = t3_opts.sim_script,
+                                               .sim_ext = t3_opts.sim_ext,
+                                               .sim_ext_loss = t3_opts.sim_ext_loss,
+                                               .sim_ext_err = t3_opts.sim_ext_err,
+                                               .sim_fast = t3_opts.sim_fast,
+                                               .state_dir = t3_opts.state_dir,
                                                .seconds = seconds,
                                                .verbose = verbose != 0};
             if (to.sim_n > 0 || to.sim_script || to.sim_ext) {
                 signal(SIGINT, on_signal);
                 signal(SIGTERM, on_signal);
-                return rdofradio_trunk_sim(&rcfg, &to, &stop);
+                return rdofradio_t3_sim(&rcfg, &to, &stop);
             }
             if (split_tx || mmdvm) {
                 fprintf(stderr, "%s: a trunked site: the SDR sends its TSCC carrier (no --split-tx, --mmdvm)\n",
@@ -6698,7 +6698,7 @@ int main(int argc, char **argv)
             }
 #else
             char why[300];
-            snprintf(why, sizeof why, "%s: %s is a trunked site: this rdofradio was built without it (RDOF_TRUNK, "
+            snprintf(why, sizeof why, "%s: %s is a trunked site: this rdofradio was built without it (RDOF_TIER3, "
                      "cargo)", config_path, rcfg.name);
             return hold(argc, argv, why);
 #endif
@@ -6931,9 +6931,9 @@ int main(int argc, char **argv)
     {
         rdof_sdr_channel_t own[3];
         int nown = 0;
-#ifdef RDOF_TRUNK
+#ifdef RDOF_TIER3
         /* a trunked site's carrier 2: its split's RX half hears its inbound here */
-        if (rcfg.trunk && rcfg.t.ncar > 1 && rdofradio_cfg_channel_at(&rcfg, rcfg.t.car[1].rx_hz) < 0)
+        if (rcfg.tier3 && rcfg.t.ncar > 1 && rdofradio_cfg_channel_at(&rcfg, rcfg.t.car[1].rx_hz) < 0)
             own[nown++] = (rdof_sdr_channel_t){"carrier-2", rcfg.t.car[1].rx_hz, rcfg.t.cfg.cc, 1};
 #endif
         if (R.mmdvm && rdofradio_cfg_channel_at(&rcfg, R.rx_hz) < 0)
@@ -7161,7 +7161,7 @@ int main(int argc, char **argv)
     if (R.full) {
         rdof_repeater_init(&R.r, &R.radio, rcfg.peer_id, R.rx_hz, R.tx_hz, cc);
         R.r.keep_up = R.mmdvm; /* a modem drops its carrier when keyed with nothing queued */
-        if (config_path && !rcfg.trunk)
+        if (config_path && !rcfg.tier3)
             rdofradio_cfg_apply_repeater(&rcfg, &R.r); /* slots, hangs, jitter buffer, CW ID, as the firmware */
         R.r.clock = p_clock;
         R.r.on_tx = on_tx;
@@ -7169,15 +7169,15 @@ int main(int argc, char **argv)
         R.r.on_key = on_key;
         R.r.ctx = &R;
         ok = rdof_repeater_start(&R.r);
-#ifdef RDOF_TRUNK
+#ifdef RDOF_TIER3
         /* a trunked site: the repeater keeps the modem set up; the site's slot source sends every slot */
-        if (ok && rcfg.trunk) {
-            const rdofradio_trunk_opts_t to = {.state_dir = trunk_opts.state_dir, .seconds = seconds,
+        if (ok && rcfg.tier3) {
+            const rdofradio_t3_opts_t to = {.state_dir = t3_opts.state_dir, .seconds = seconds,
                                                .verbose = verbose != 0};
             char terr[200];
-            const rdofradio_trunk_dev_t td = {trunk_channel, main_now48, now_s, (uint32_t)R.rate};
-            if (!rdofradio_trunk_start(&rcfg, &to, &R.m, &td, terr, sizeof terr)) {
-                fprintf(stderr, "trunk: %s\n", terr);
+            const rdofradio_t3_dev_t td = {trunk_channel, main_now48, now_s, (uint32_t)R.rate};
+            if (!rdofradio_t3_start(&rcfg, &to, &R.m, &td, terr, sizeof terr)) {
+                fprintf(stderr, "tier3: %s\n", terr);
                 return 1;
             }
         }
@@ -7376,8 +7376,8 @@ int main(int argc, char **argv)
                 fprintf(stderr, "poll: %s\n", R.client.error);
             net_poll(now);
             mq_poll(now);
-#ifdef RDOF_TRUNK
-            rdofradio_trunk_poll();
+#ifdef RDOF_TIER3
+            rdofradio_t3_poll();
 #endif
         }
         /* as many transmit samples as were read (one for every txr), at the modem's position for them */
@@ -7644,8 +7644,8 @@ int main(int argc, char **argv)
                 1e3 * dt_read, 1e3 * FX.t_rx, 1e3 * d_poll, 1e3 * d_mod, 1e3 * d_write);
         total += n;
     }
-#ifdef RDOF_TRUNK
-    rdofradio_trunk_stop();
+#ifdef RDOF_TIER3
+    rdofradio_t3_stop();
 #endif
     if (R.full)
         rdof_repeater_stop(&R.r);

@@ -1,6 +1,6 @@
 # Trunked site (DMR Tier III): design and plan
 
-Covers: what the `trunk` app is, how the site controller, the radio layer, the MQTT network and the network
+Covers: what the `tier3` app is, how the site controller, the radio layer, the MQTT network and the network
 services split the work, the protocol subset, the settings, the network messages, failure and isolation behavior,
 the road to multi-site roaming, what is built in this round and what comes later, and how it is tested.
 
@@ -79,7 +79,7 @@ site: one chain is simplest; two chains keep each carrier on its own amplifier.
 | Part | Language, where | Does |
 |---|---|---|
 | Site controller | Rust, `rust/src/t3*.rs` (the `t3` feature of `rdof_rust`), C API `rdof/t3.h` | Every Tier III decision. No I/O, no allocation, no clock of its own: the caller feeds it PDUs, voice activity, network events and time; it returns what to send per slot and events to act on. Runs in rdofradio now; built `no_std` so a board can run it later |
-| Radio layer | C, `common/src/trunkrf.c` (portable) + `sdr/cli/rdofradio_trunk.c` | Burst building and parsing (BPTC, CRC masks, slot type, sync, CACH, short LC), the per-slot hook into the SDR modem, the payload channels (local repeat, network voice in, idle, the controller's payload PDUs), the split radio for carrier B, the receive path from the SDR's channels |
+| Radio layer | C, `common/src/t3rf.c` (portable) + `sdr/cli/rdofradio_t3.c` | Burst building and parsing (BPTC, CRC masks, slot type, sync, CACH, short LC), the per-slot hook into the SDR modem, the payload channels (local repeat, network voice in, idle, the controller's payload PDUs), the split radio for carrier B, the receive path from the SDR's channels |
 | Network side of the site | C, `common/src/mqttnet.c` and rdofradio | mqtt-net as today, plus the setup item, registration records, the trunk part of `info` and `status`, provisioning topics and their cache |
 | MS simulator | Rust, `rust/src/t3ms.rs`, `t3air.rs` | Simulated radios that follow 361-4 (hunt omitted, access, registration, calls, answers), and a slot-exact air model with collisions. Used by the Rust tests, the C tests, and rdofradio's `--sim-air` |
 | Router | Python, network services | As today, plus location from registration records and an early refusal for an unknown called party |
@@ -230,10 +230,10 @@ status and UDT requests likewise.
 | `setup_s` | wait for a network setup answer | 5 | 1-30 |
 | `start_grace_s` | a granted channel waits this long, past the hang, for the first voice | 2 | 0-10 |
 
-The parser is `common/src/trunkcfg.c` (`rdof/trunkcfg.h`); it takes the same keys from the manager's `cfg/net` and
+The parser is `common/src/t3cfg.c` (`rdof/t3cfg.h`); it takes the same keys from the manager's `cfg/net` and
 `cfg/node/{node}` (section 5.7).
 
-## 4. Settings (config-v3 `trunk` app)
+## 4. Settings (config-v3 `tier3` app)
 
 The app takes the place reserved for it in config-v3.md section 6 ("a control frequency and a pool; it assigns its own
 paths").
@@ -247,7 +247,7 @@ paths").
     {"name": "B-in",  "freq": 438.5,  "devices": ["pluto"], "tx": false}
   ],
   "apps": [
-    {"name": "site", "type": "trunk",
+    {"name": "site", "type": "tier3",
      "system": {"model": "small", "net": 5, "site": 3, "par": "ab"},
      "carriers": [
        {"out": "A-out", "in": "A-in", "chan": 1, "tscc": true},
@@ -284,7 +284,7 @@ Checks (refusals name the key): exactly one `tscc` carrier; every carrier's `out
 `in` on a device that receives; the TSCC carrier's `in` and `out` on one full-duplex SDR (a split TX half
 can't carry the TSCC yet: radiofoundry-handoff.md 1.4); every carrier's `in` on that SDR; another carrier's `out` on
 an SDR or a split TX half (one carrier a radio); `chan` unique; the `system` numbers inside the model's ranges; at most 4 carriers;
-a frequency used by a `trunk` app can't be used by another app or a talk path.
+a frequency used by a `tier3` app can't be used by another app or a talk path.
 
 Paths: the app offers one talk path, named after the app, with `trunk: true` in `info`. The slots are internal: the
 network never addresses a slot, only the site.
@@ -600,7 +600,7 @@ called about one slot plus the TX lead ahead of air: the controller decides a sl
 
 ### 9.2 Payload channels
 
-`rdof_trunkrf_ch_t` (portable C): per payload channel (carrier, LCN):
+`rdof_t3rf_ch_t` (portable C): per payload channel (carrier, LCN):
 
 - inbound bursts (from the receiver, MS sync) on an open channel: regenerated (`rdof_duplex_data`, `rdof_voice_regen_*`)
   and queued for the outbound slot one frame later; voice activity to `rdof_t3_rx_voice`; CSBKs (P_MAINT) to
@@ -629,29 +629,29 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
 
 ### 9.4 rdofradio
 
-- The core is `rdof/trunkunit.h` (`common/src/trunkunit.c`): the controller run ahead of the air into a ring of
+- The core is `rdof/t3unit.h` (`common/src/t3unit.c`): the controller run ahead of the air into a ring of
   slots, the radio layer, and mqtt-net, with no I/O of its own (publish, subscribe, log, cache and random numbers are
-  callbacks). `sdr/cli/rdofradio_trunk.c` gives it libmosquitto, the clock and the device; the host tests give it an
-  in-process broker (`host-tests/test_trunkunit.c`).
-- `--config` with a `trunk` app: rdofradio opens the SDR full duplex for carrier A. The trunk unit is the SDR
+  callbacks). `sdr/cli/rdofradio_t3.c` gives it libmosquitto, the clock and the device; the host tests give it an
+  in-process broker (`host-tests/test_t3unit.c`).
+- `--config` with a `tier3` app: rdofradio opens the SDR full duplex for carrier A. The Tier III unit is the SDR
   modem's slot source (`rdof_sdrmodem_set_source`) and the modem stays keyed (`rdof_sdrmodem_hold_key`); the repeater
   still runs as the modem's client to set it up, its output shadowed by the source. What the SDR hears on carrier
   A's `in` goes to the controller with the slot its timing gives (`rdof_sdrmodem_inbound_k`).
 - The trunk's slot k is the UTC slot number, floor(UTC ms / 30). Carrier A's modem slots are moved onto it by an even
   offset taken at the first slot the modem asks for (again if its slots restart), so the modem's TS1 is LCN 0. The
   carriers aren't slot-synchronized (`site_sync` 0: the payload warm-up).
-- Carrier B, the first build's second carrier, is a split TX half on its radio's port (`rdof/sdr/trunksplit.h`,
-  `sdr/src/trunksplit.c`): one split of `rdof_sdrsplits` with the SDR's receiver as its RX half. Before the receiver
+- Carrier B, the first build's second carrier, is a split TX half on its radio's port (`rdof/sdr/t3split.h`,
+  `sdr/src/t3split.c`): one split of `rdof_sdrsplits` with the SDR's receiver as its RX half. Before the receiver
   starts, rdofradio brings the half up and sends the carrier's settings (`SET_CONFIG`, `SET_MODE`, `SET_FREQ`; no
   answer in 8 s, or a NAK, and the site doesn't start), then aligns the half's slot counter to UTC from the host's
   clock (`rdof_split_set_utc`, again each minute) with the scheduled stream. The main loop's 20 ms poll pumps it
-  (`rdof_trunkunit_split_pump`: the controller 4 slots ahead, then `rdof_trunkrf_split_pump`): keyed while the
+  (`rdof_t3unit_split_pump`: the controller 4 slots ahead, then `rdof_t3rf_split_pump`): keyed while the
   carrier has a call, `TX_SCHED` for each traffic or control burst on its UTC slot, the short LC when it changes. The
   receiver gets a channel on carrier B's `in` when the settings have none; its bursts go to the split's RX half, which
   labels each with its slot, and come up with the UTC slot of that parity nearest the burst's position. Three
   carriers or more, or carrier B on the SDR, are refused.
 - `--state-dir DIR`: the `cfg` cache (`cfg-cache.json`, one document a line, rewritten on each change).
-- `--sim-air N`: no SDR, no split radio: the trunk unit runs against the MS simulator (`rdof/trunksim.h`: N radios,
+- `--sim-air N`: no SDR, no split radio: the Tier III unit runs against the MS simulator (`rdof/t3sim.h`: N radios,
   `--sim-id`, `--sim-tg`, `--sim-talk S`, timed actions from `--sim-script FILE`), through the full burst path (the
   simulator's PDUs are built into bursts and parsed back), with real mqtt-net, slot k = wall clock ms / 30. Two
   rdofradios with `--sim-air` and different `site` numbers make a two-site system on one computer.
@@ -666,7 +666,7 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
   the slots as fast as the clients answer. Each inbound burst gets a log line. The format is in
   `sdr/cli/rdofradio_simext.h`.
 - Rust in the Linux build: `rust.cmake` has `FEATURES`; `sdr/cli/tools.cmake` builds `rdof_rust` with only the `t3`
-  feature (so the C modules stay C) when cargo is found and `RDOF_TRUNK` is on, for `RDOF_RUST_TARGET` when cross
+  feature (so the C modules stay C) when cargo is found and `RDOF_TIER3` is on, for `RDOF_RUST_TARGET` when cross
   building; the Pluto container installs rustup with `armv7-unknown-linux-gnueabihf`.
 - Provisioning: each `cfg/tg` document's `hang_s` (1-60 s; else the site's) and `priority` (0-3) go to the controller
   (`rdof_t3_tg_policy`, 64 talkgroups): a group call's channel hangs for its talkgroup's time, and a group request's
@@ -674,9 +674,9 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
 - Neighbors: the unit subscribes `node/+/info` and `node/+/online`. Another node whose `info` has a `trunk` object of
   the same MODEL and NET is an adjacent site (its C_SYScode from its system, `rdof_t3_syscode`, and its TSCC channel),
   active while its `online` is `1`; `cfg/node`'s `neighbors`, when given, keeps only the sites it lists.
-- Tests: `rdof_trunksplit_tests` (a two-carrier site, carrier B on a fake split TX half: bring-up, UTC alignment,
+- Tests: `rdof_t3split_tests` (a two-carrier site, carrier B on a fake split TX half: bring-up, UTC alignment,
   a call on carrier B as `TX_SCHED` on the UTC slots followed by a simulated MS from what the half airs, a heard burst
-  labeled by slot, unkeyed after the hang); `rdof_trunkunit_tests` (two sites over a broker, `cfg/tg` hang, the
+  labeled by slot, unkeyed after the hang); `rdof_t3unit_tests` (two sites over a broker, `cfg/tg` hang, the
   neighbor list).
 - Not done: run on a device (carrier A on the Pluto, carrier B's half on air); the carriers' relative timing on air
   (carrier A's slots follow the SDR modem's own clock, not UTC).
@@ -724,20 +724,20 @@ and against `t3ms` on one air.
 | Controller | Scenarios over `t3air`: registration open/listed/denied, collisions and backoff, group call, queue and grant on release, late entry repeats, hang and P_CLEAR, call timer, individual OACSU and FOACSU, no answer, cancel, busy called party, Not_Supported, network group in and out, network setup both ways, Tier II implicit setup, records reload, provisioning changes, link loss | Rust tests (`cargo test`, run by ctest) |
 | C API | Init, a short scenario through the FFI, layouts | C host test `rdof_t3_tests` |
 | Radio layer | Burst building (CSBK, MBC, CACH with C_SYS_Parms and AT), parsing back, the slot source in the SDR modem (timing, short LC, AT), payload channel regeneration and P_CLEAR, split output frames | C host tests |
-| Settings | the `trunk` app: good and bad files, schema | C host tests, `test_schema.js` |
+| Settings | the `tier3` app: good and bad files, schema | C host tests, `test_schema.js` |
 | Network | `setup` item vectors, Tier II auto-answer, records, `cfg` parsing and precedence, cache | C host tests (`rdof_mqttnet_tests`), Python tests in the network services |
-| System | Two `rdofradio --sim-air` sites + router + manager over mosquitto: registration, local and wide-area group calls, a private call across sites, a move from site to site, link loss and recovery | network services' `tests/test_e2e_t3_sim.py` (skipped without mosquitto or rdofradio); in-process: `rdof_trunkunit_tests` |
+| System | Two `rdofradio --sim-air` sites + router + manager over mosquitto: registration, local and wide-area group calls, a private call across sites, a move from site to site, link loss and recovery | network services' `tests/test_e2e_t3_sim.py` (skipped without mosquitto or rdofradio); in-process: `rdof_t3unit_tests` |
 | Bench | The Pluto sends a TSCC on the bench (cabled), our receiver decodes it (C_SYS_Parms counter, Aloha, broadcast timing, AT), the bench's decoder confirms the CSBK checks; then a registration and calls from a Tier III radio | owner's go-ahead, a licensed frequency, lowest power |
 
 ## 13. Work order
 
-1. This document; the mqtt-net additions in mqtt-net.md; the `trunk` app in config-v3.md.
+1. This document; the mqtt-net additions in mqtt-net.md; the `tier3` app in config-v3.md.
 2. Rust: PDU codec (`t3pdu`), controller (`t3site`), simulator (`t3ms`, `t3air`), C API, cargo tests.
 3. Build: `rust.cmake` features, host test target, Linux build of the `t3` feature, Pluto container.
 4. Settings: `trunk` app parse, schema, fixtures.
 5. Radio layer: burst helpers, SDR modem slot source, payload channels, split output, receive path; host tests.
 6. mqtt-net: `setup` item, Tier II answer, records, status, `cfg` and cache; host tests.
-7. rdofradio: trunk unit, `--sim-air`, `--state-dir`.
+7. rdofradio: Tier III unit, `--sim-air`, `--state-dir`.
 8. Network services: library, router, manager, dashboard; tests; the system test.
 9. Docs: reference.md (layout, limits), overview.md roles, rxtx-combinations.md, transmitters.md.
 10. Pluto bundle build; bench run when the owner says.

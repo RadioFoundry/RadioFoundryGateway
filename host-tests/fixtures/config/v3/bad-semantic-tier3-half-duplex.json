@@ -7,12 +7,9 @@
  },
  "devices": [
   {
-   "name": "pluto",
+   "name": "w12",
    "kind": "sdr",
-   "driver": "iio",
-   "match": {
-    "uri": "local:"
-   }
+   "driver": "lr2021"
   }
  ],
  "frequencies": [
@@ -38,7 +35,7 @@
  "apps": [
   {
    "name": "site",
-   "type": "trunk",
+   "type": "tier3",
    "system": {
     "model": "small",
     "net": 5,
@@ -46,11 +43,6 @@
     "par": "ab"
    },
    "carriers": [
-    {
-     "out": "B-out",
-     "in": "B-in",
-     "chan": 1
-    },
     {
      "out": "A-out",
      "in": "A-in",

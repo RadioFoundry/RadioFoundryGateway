@@ -85,7 +85,7 @@ typedef enum {
     RDOF_UNIT_DCDM,
     RDOF_UNIT_TRANSCEIVER,
     RDOF_UNIT_RECEIVER,
-    RDOF_UNIT_TRUNK,   /* a trunked site (a trunk app): rx hears the TSCC carrier's in, tx sends its out */
+    RDOF_UNIT_TIER3,   /* a trunked site (a tier3 app): rx hears the TSCC carrier's in, tx sends its out */
 } rdof_unit_kind_t;
 
 typedef struct {
@@ -136,10 +136,10 @@ const rdof_plan_extra_t *rdof_plan_extra(const rdof_plan_t *p, int k);
 /* bench.devices: how many, and each one's device index. */
 int rdof_plan_nbench(const rdof_plan_t *p);
 int rdof_plan_bench(const rdof_plan_t *p, int k);
-/* A trunk unit's carrier k (its app's order, the TSCC's first): the SDR that hears its in and the device that sends
+/* A Tier III unit's carrier k (its app's order, the TSCC's first): the SDR that hears its in and the device that sends
    its out (the TSCC's SDR, another SDR, or a radio as a split's TX half). false: no such carrier. */
-bool rdof_plan_trunk_carrier(const rdof_plan_t *p, int unit, int k, int *rx, int *tx);
-/* Whether unit k uses device d (a trunk unit: any carrier's). */
+bool rdof_plan_t3_carrier(const rdof_plan_t *p, int unit, int k, int *rx, int *tx);
+/* Whether unit k uses device d (a Tier III unit: any carrier's). */
 bool rdof_plan_unit_uses(const rdof_plan_t *p, int k, int d);
 /* An SDR's receiver unit, -1 none; whether any unit uses the SDR. */
 int rdof_plan_receiver(const rdof_plan_t *p, int dev);

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
-//! A slot-exact air between a site and N simulated MSs (docs/spec/fw/trunk.md section 11). Each slot k: the site
+//! A slot-exact air between a site and N simulated MSs (docs/spec/fw/tier3.md section 11). Each slot k: the site
 //! makes its outbound blocks, the MSs transmit (from what they heard before k), the site hears the inbound slot
 //! (two PDUs on the TSCC in one slot are a collision: a burst with a bad CRC), then the MSs hear slot k. A
 //! solicited answer to a block in slot k goes in slot k + 2 at the earliest, as on air.

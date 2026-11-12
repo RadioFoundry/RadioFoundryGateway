@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
-/* A trunked site, joined up (rdof/trunkunit.h). */
-#include "rdof/trunkunit.h"
+/* A trunked site, joined up (rdof/t3unit.h). */
+#include "rdof/t3unit.h"
 
 #include <inttypes.h>
 #include <math.h>
@@ -12,13 +12,13 @@
 #include "rdof/bits.h"
 #include "rdof/jsonp.h"
 #include "rdof/mmdvm.h"
-#include "rdof/trunkcfg.h"
+#include "rdof/t3cfg.h"
 
 #if RDOF_FEATURE_REPEATER
 
 static const char *const MODELS[] = {"tiny", "small", "large", "huge"};
 
-static void logf_(rdof_trunkunit_t *u, const char *fmt, ...)
+static void logf_(rdof_t3unit_t *u, const char *fmt, ...)
 {
     if (!u->io.log)
         return;
@@ -30,20 +30,20 @@ static void logf_(rdof_trunkunit_t *u, const char *fmt, ...)
     u->io.log(u->io.ctx, t);
 }
 
-static void pub(rdof_trunkunit_t *u, const char *topic, const void *data, size_t len, int qos, bool retain)
+static void pub(rdof_t3unit_t *u, const char *topic, const void *data, size_t len, int qos, bool retain)
 {
     if (u->net && u->io.publish)
         u->io.publish(u->io.ctx, topic, data, len, qos, retain);
 }
 
-static void pub_str(rdof_trunkunit_t *u, const char *topic, const char *s, int qos, bool retain)
+static void pub_str(rdof_t3unit_t *u, const char *topic, const char *s, int qos, bool retain)
 {
     pub(u, topic, s, strlen(s), qos, retain);
 }
 
-static double wall_s(const rdof_trunkunit_t *u) { return (double)u->now_ms / 1000.0; }
+static double wall_s(const rdof_t3unit_t *u) { return (double)u->now_ms / 1000.0; }
 
-static uint32_t rnd(rdof_trunkunit_t *u)
+static uint32_t rnd(rdof_t3unit_t *u)
 {
     uint32_t r = u->io.rand32 ? u->io.rand32(u->io.ctx) : 0x9E3779B9u * (uint32_t)(u->now_ms + 1);
     return r ? r : 1;
@@ -62,13 +62,13 @@ static bool tg_in(const rdof_t3_idset_t *s, uint32_t tg)
 }
 
 /* The talkgroups the site needs: its MSs' (the controller's) and static_tg; all when they're too many to list. */
-static void want_tgs(rdof_trunkunit_t *u, uint32_t *tgs, int *n, bool *all)
+static void want_tgs(rdof_t3unit_t *u, uint32_t *tgs, int *n, bool *all)
 {
-    uint32_t t[RDOF_TRUNKUNIT_TGS + 1];
-    size_t m = rdof_t3_subs(u->site, t, RDOF_TRUNKUNIT_TGS + 1);
-    *all = m > RDOF_TRUNKUNIT_TGS || u->pol.static_tg.all;
+    uint32_t t[RDOF_T3UNIT_TGS + 1];
+    size_t m = rdof_t3_subs(u->site, t, RDOF_T3UNIT_TGS + 1);
+    *all = m > RDOF_T3UNIT_TGS || u->pol.static_tg.all;
     *n = 0;
-    for (size_t i = 0; i < m && i < RDOF_TRUNKUNIT_TGS; i++)
+    for (size_t i = 0; i < m && i < RDOF_T3UNIT_TGS; i++)
         tgs[(*n)++] = t[i];
     const rdof_t3_idset_t *s = &u->pol.static_tg;
     for (int i = 0; i < s->n && !*all; i++)
@@ -78,16 +78,16 @@ static void want_tgs(rdof_trunkunit_t *u, uint32_t *tgs, int *n, bool *all)
                 have |= tgs[j] == g;
             if (have)
                 continue;
-            if (*n == RDOF_TRUNKUNIT_TGS)
+            if (*n == RDOF_T3UNIT_TGS)
                 *all = true;
             else
                 tgs[(*n)++] = (uint32_t)g;
         }
 }
 
-static void subscribe(rdof_trunkunit_t *u, bool force)
+static void subscribe(rdof_t3unit_t *u, bool force)
 {
-    uint32_t tgs[RDOF_TRUNKUNIT_TGS];
+    uint32_t tgs[RDOF_T3UNIT_TGS];
     int n;
     bool all;
     want_tgs(u, tgs, &n, &all);
@@ -99,8 +99,8 @@ static void subscribe(rdof_trunkunit_t *u, bool force)
     u->tg_all = all;
     if (same || !u->net || !u->io.subscribe)
         return;
-    char f[RDOF_TRUNKUNIT_FILTERS][128];
-    const char *fp[RDOF_TRUNKUNIT_FILTERS];
+    char f[RDOF_T3UNIT_FILTERS][128];
+    const char *fp[RDOF_T3UNIT_FILTERS];
     int k = 0;
     rdof_mn_topic(f[k++], sizeof f[0], u->root, RDOF_MN_T_DL, 0, u->node);
     snprintf(f[k++], sizeof f[0], "%s/cfg/net", u->root);
@@ -124,21 +124,21 @@ static void subscribe(rdof_trunkunit_t *u, bool force)
 
 /* ── events out ──────────────────────────────────────────────────────────── */
 
-static void activity_json(rdof_trunkunit_t *u, const char *json)
+static void activity_json(rdof_t3unit_t *u, const char *json)
 {
     char t[128];
     if (rdof_mn_node_topic(t, sizeof t, u->root, u->node, "activity"))
         pub_str(u, t, json, 1, false);
 }
 
-static rdof_mn_ev_t ev_of(const rdof_trunkunit_t *u, int ch, bool net, uint32_t stream)
+static rdof_mn_ev_t ev_of(const rdof_t3unit_t *u, int ch, bool net, uint32_t stream)
 {
     rdof_mn_ev_t e = {.node = u->node, .wall = wall_s(u), .path = u->path, .slot = ch >= 0 ? (ch & 1) + 1 : 0,
                       .source = net ? "net" : "rf", .stream = stream};
     return e;
 }
 
-static void record_out(rdof_trunkunit_t *u, uint32_t id, bool del)
+static void record_out(rdof_t3unit_t *u, uint32_t id, bool del)
 {
     char t[128], j[512];
     if (!rdof_mn_ms_topic(t, sizeof t, u->root, u->node, id))
@@ -167,7 +167,7 @@ static bool answer_op(int op)
            op == RDOF_MN_SETUP_ANSWERED;
 }
 
-static void setup_out(rdof_trunkunit_t *u, const rdof_t3_event_t *e)
+static void setup_out(rdof_t3unit_t *u, const rdof_t3_event_t *e)
 {
     const rdof_mn_setup_t s = {.op = e->op, .reason = e->reason, .flags = e->flags, .options = e->svc, .ref = e->ref};
     const bool ans = answer_op(e->op);
@@ -182,7 +182,7 @@ static void setup_out(rdof_trunkunit_t *u, const rdof_t3_event_t *e)
     }
 }
 
-static void activity_out(rdof_trunkunit_t *u, const rdof_t3_event_t *e)
+static void activity_out(rdof_t3unit_t *u, const rdof_t3_event_t *e)
 {
     static const char *const REG[] = {"?", "register", "deregister", "expire", "deny", "refuse"};
     static const char *const QUEUE[] = {"?", "in", "out", "drop"};
@@ -224,23 +224,23 @@ static void activity_out(rdof_trunkunit_t *u, const rdof_t3_event_t *e)
 
 /* ── network streams ─────────────────────────────────────────────────────── */
 
-static rdof_trunkunit_stream_t *stream_find(rdof_trunkunit_t *u, uint32_t id)
+static rdof_t3unit_stream_t *stream_find(rdof_t3unit_t *u, uint32_t id)
 {
-    for (int i = 0; i < RDOF_TRUNKUNIT_STREAMS; i++)
+    for (int i = 0; i < RDOF_T3UNIT_STREAMS; i++)
         if (u->st[i].used && u->st[i].stream == id)
             return &u->st[i];
     return NULL;
 }
 
-static void stream_feed(rdof_trunkunit_t *u, rdof_trunkunit_stream_t *s, const rdof_frame_t *f)
+static void stream_feed(rdof_t3unit_t *u, rdof_t3unit_stream_t *s, const rdof_frame_t *f)
 {
     if (s->mapped) {
-        if (!rdof_trunkrf_net(&u->rf, s->ch, f))
+        if (!rdof_t3rf_net(&u->rf, s->ch, f))
             u->net_dropped++;
         return;
     }
-    if (s->nhold == RDOF_TRUNKUNIT_HOLD) { /* keep the header (the first), drop the oldest after it */
-        memmove(&s->hold[1], &s->hold[2], (RDOF_TRUNKUNIT_HOLD - 2) * sizeof s->hold[0]);
+    if (s->nhold == RDOF_T3UNIT_HOLD) { /* keep the header (the first), drop the oldest after it */
+        memmove(&s->hold[1], &s->hold[2], (RDOF_T3UNIT_HOLD - 2) * sizeof s->hold[0]);
         s->nhold--;
         u->net_dropped++;
     }
@@ -248,23 +248,23 @@ static void stream_feed(rdof_trunkunit_t *u, rdof_trunkunit_stream_t *s, const r
     u->net_held++;
 }
 
-static void stream_map(rdof_trunkunit_t *u, uint32_t id, int ch)
+static void stream_map(rdof_t3unit_t *u, uint32_t id, int ch)
 {
-    rdof_trunkunit_stream_t *s = stream_find(u, id);
+    rdof_t3unit_stream_t *s = stream_find(u, id);
     if (!s || s->mapped)
         return;
     s->mapped = true;
     s->ch = ch;
     for (int i = 0; i < s->nhold; i++)
-        if (!rdof_trunkrf_net(&u->rf, ch, &s->hold[i]))
+        if (!rdof_t3rf_net(&u->rf, ch, &s->hold[i]))
             u->net_dropped++;
     s->nhold = 0;
 }
 
-static void stream_end(rdof_trunkunit_t *u, rdof_trunkunit_stream_t *s, bool term)
+static void stream_end(rdof_t3unit_t *u, rdof_t3unit_stream_t *s, bool term)
 {
     if (s->mapped && !term)
-        rdof_trunkrf_net_end(&u->rf, s->ch);
+        rdof_t3rf_net_end(&u->rf, s->ch);
     if (s->group)
         rdof_t3_net_group_end(u->site, s->stream);
     else
@@ -274,7 +274,7 @@ static void stream_end(rdof_trunkunit_t *u, rdof_trunkunit_stream_t *s, bool ter
 
 /* ── the controller's events ─────────────────────────────────────────────── */
 
-static void drain(rdof_trunkunit_t *u)
+static void drain(rdof_t3unit_t *u)
 {
     rdof_t3_event_t e;
     bool subs = false;
@@ -283,20 +283,20 @@ static void drain(rdof_trunkunit_t *u)
         case RDOF_T3_EV_CH_OPEN:
             if (e.ch < RDOF_T3_CHANNELS) {
                 u->ch_flags[e.ch] = e.flags; /* the call's, for the uplink */
-                rdof_trunkrf_open(&u->rf, e.ch, e.src, e.dst, (e.flags & RDOF_T3_F_GROUP) != 0, RDOF_TRUNKRF_WARMUP);
+                rdof_t3rf_open(&u->rf, e.ch, e.src, e.dst, (e.flags & RDOF_T3_F_GROUP) != 0, RDOF_T3RF_WARMUP);
                 if (e.stream)
                     stream_map(u, e.stream, e.ch);
             }
             break;
         case RDOF_T3_EV_CH_CLOSE: {
-            rdof_trunkrf_ch_t *c = rdof_trunkrf_channel(&u->rf, e.ch);
+            rdof_t3rf_ch_t *c = rdof_t3rf_channel(&u->rf, e.ch);
             if (c && c->ctl_left > 0)
                 c->close_after = true; /* after its last P_CLEAR */
             else if (c)
-                rdof_trunkrf_close(&u->rf, e.ch);
+                rdof_t3rf_close(&u->rf, e.ch);
             if (e.ch < RDOF_T3_CHANNELS)
                 u->ch_flags[e.ch] = 0;
-            for (int i = 0; i < RDOF_TRUNKUNIT_STREAMS; i++)
+            for (int i = 0; i < RDOF_T3UNIT_STREAMS; i++)
                 if (u->st[i].used && u->st[i].mapped && u->st[i].ch == e.ch)
                     u->st[i].mapped = false, u->st[i].ended = true;
             break;
@@ -317,10 +317,10 @@ static void drain(rdof_trunkunit_t *u)
             activity_out(u, &e);
             break;
         case RDOF_T3_EV_NET_DROP:
-            logf_(u, "trunk: network stream %08" PRIx32 " not carried (%u)", e.stream, e.why);
+            logf_(u, "tier3: network stream %08" PRIx32 " not carried (%u)", e.stream, e.why);
             break;
         case RDOF_T3_EV_LOG:
-            logf_(u, "trunk: %.*s", (int)sizeof e.text, e.text);
+            logf_(u, "tier3: %.*s", (int)sizeof e.text, e.text);
             break;
         default:
             break;
@@ -332,11 +332,11 @@ static void drain(rdof_trunkunit_t *u)
 
 /* ── the radio layer's callbacks ─────────────────────────────────────────── */
 
-static rdof_t3_slot_out_t *held(rdof_trunkunit_t *u, int64_t k)
+static rdof_t3_slot_out_t *held(rdof_t3unit_t *u, int64_t k)
 {
     if (k < 0)
         return NULL;
-    rdof_trunkunit_held_t *r = &u->ring[k % RDOF_TRUNKUNIT_RING];
+    rdof_t3unit_held_t *r = &u->ring[k % RDOF_T3UNIT_RING];
     return r->k == k ? &r->o : NULL;
 }
 
@@ -352,7 +352,7 @@ static bool io_tscc(void *ctx, int64_t k, int *dt, uint8_t pdu[10])
 
 static void io_cach(void *ctx, int carrier, int64_t k, int *at, int32_t *slc28)
 {
-    rdof_trunkunit_t *u = ctx;
+    rdof_t3unit_t *u = ctx;
     const rdof_t3_slot_out_t *o = held(u, k), *prev = held(u, k - 1);
     const bool tscc = carrier == 0 && u->rf.tscc;
     if (tscc && prev)
@@ -363,19 +363,19 @@ static void io_cach(void *ctx, int carrier, int64_t k, int *at, int32_t *slc28)
 
 static void io_pdu(void *ctx, int ch, int64_t k, int dt, const uint8_t pdu[10], int rssi)
 {
-    rdof_trunkunit_t *u = ctx;
+    rdof_t3unit_t *u = ctx;
     rdof_t3_rx_pdu(u->site, ch, k, (uint8_t)dt, pdu, rssi);
 }
 
 static void io_bad(void *ctx, int ch, int64_t k)
 {
-    rdof_trunkunit_t *u = ctx;
+    rdof_t3unit_t *u = ctx;
     rdof_t3_rx_bad(u->site, ch, k);
 }
 
 static void io_activity(void *ctx, int ch, int64_t k, int what, uint32_t src, uint32_t dst, bool group)
 {
-    rdof_trunkunit_t *u = ctx;
+    rdof_t3unit_t *u = ctx;
     static const uint8_t MAP[] = {0, RDOF_T3_VOICE_HEADER, RDOF_T3_VOICE_FRAME, RDOF_T3_VOICE_TERM,
                                   RDOF_T3_VOICE_LOST};
     if (what >= 1 && what <= 4)
@@ -384,16 +384,16 @@ static void io_activity(void *ctx, int ch, int64_t k, int what, uint32_t src, ui
 
 static void io_uplink(void *ctx, int ch, const rdof_frame_t *f)
 {
-    rdof_trunkunit_t *u = ctx;
+    rdof_t3unit_t *u = ctx;
     if (u->net && ch / 2 < RDOF_T3_CARRIERS)
         rdof_mn_up_frame(&u->up[ch / 2], f, wall_s(u));
 }
 
 /* ── the uplinks: a carrier each, its slots its LCNs ─────────────────────── */
 
-static rdof_trunkunit_t *up_unit(void *ctx, int *c)
+static rdof_t3unit_t *up_unit(void *ctx, int *c)
 {
-    const rdof_trunkunit_upctx_t *x = ctx;
+    const rdof_t3unit_upctx_t *x = ctx;
     *c = x->c;
     return x->u;
 }
@@ -401,7 +401,7 @@ static rdof_trunkunit_t *up_unit(void *ctx, int *c)
 static int up_path_of(void *ctx, int slot)
 {
     int c;
-    rdof_trunkunit_t *u = up_unit(ctx, &c);
+    rdof_t3unit_t *u = up_unit(ctx, &c);
     const int ch = 2 * c + (slot == 2);
     return u->path >= 0 && (u->ch_flags[ch] & (RDOF_T3_F_WIDE | RDOF_T3_F_PRIVATE_NET)) ? u->path : -1;
 }
@@ -409,14 +409,14 @@ static int up_path_of(void *ctx, int slot)
 static bool up_admit(void *ctx, int slot, uint32_t src, uint32_t dst, bool group)
 {
     int c;
-    rdof_trunkunit_t *u = up_unit(ctx, &c);
+    rdof_t3unit_t *u = up_unit(ctx, &c);
     return (u->ch_flags[2 * c + (slot == 2)] & (RDOF_T3_F_WIDE | RDOF_T3_F_PRIVATE_NET)) != 0;
 }
 
 static void up_publish(void *ctx, int kind, uint32_t dst, const uint8_t *msg, size_t len)
 {
     int c;
-    rdof_trunkunit_t *u = up_unit(ctx, &c);
+    rdof_t3unit_t *u = up_unit(ctx, &c);
     char t[128];
     if (rdof_mn_topic(t, sizeof t, u->root, kind, dst, u->node))
         pub(u, t, msg, len, 0, false);
@@ -444,7 +444,7 @@ static double up_wall(void *ctx)
 
 static void down_burst(void *ctx, const rdof_net_burst_t *b, int path, bool dl, uint8_t flags, const char *from)
 {
-    rdof_trunkunit_t *u = ctx;
+    rdof_t3unit_t *u = ctx;
     const uint32_t id = rdof_be32(b->stream_id);
     rdof_frame_t f;
     memset(&f, 0, sizeof f);
@@ -456,15 +456,15 @@ static void down_burst(void *ctx, const rdof_net_burst_t *b, int path, bool dl, 
     f.dst = b->dst;
     f.group = b->group;
     u->net_in++;
-    rdof_trunkunit_stream_t *s = stream_find(u, id);
+    rdof_t3unit_stream_t *s = stream_find(u, id);
     if (!s) {
         if (b->terminator)
             return; /* the end of a stream not carried */
         if (b->group && u->tg_all && !tg_in(&u->pol.static_tg, b->dst)) {
             /* {root}/tg/+/+: only the talkgroups the site's MSs need (all of them when it has too many to tell) */
-            uint32_t t[RDOF_TRUNKUNIT_TGS + 1];
-            const size_t m = rdof_t3_subs(u->site, t, RDOF_TRUNKUNIT_TGS + 1);
-            bool want = m > RDOF_TRUNKUNIT_TGS;
+            uint32_t t[RDOF_T3UNIT_TGS + 1];
+            const size_t m = rdof_t3_subs(u->site, t, RDOF_T3UNIT_TGS + 1);
+            bool want = m > RDOF_T3UNIT_TGS;
             for (size_t i = 0; i < m; i++)
                 want |= t[i] == b->dst;
             if (!want) {
@@ -472,14 +472,14 @@ static void down_burst(void *ctx, const rdof_net_burst_t *b, int path, bool dl, 
                 return;
             }
         }
-        for (int i = 0; i < RDOF_TRUNKUNIT_STREAMS && !s; i++)
+        for (int i = 0; i < RDOF_T3UNIT_STREAMS && !s; i++)
             if (!u->st[i].used)
                 s = &u->st[i];
         if (!s) {
             u->net_dropped++;
             return;
         }
-        *s = (rdof_trunkunit_stream_t){.used = true, .group = b->group, .stream = id, .src = b->src, .dst = b->dst,
+        *s = (rdof_t3unit_stream_t){.used = true, .group = b->group, .stream = id, .src = b->src, .dst = b->dst,
                                        .last_ms = u->now_ms};
         if (b->group)
             rdof_t3_net_group(u->site, id, b->src, b->dst,
@@ -501,7 +501,7 @@ static void down_burst(void *ctx, const rdof_net_burst_t *b, int path, bool dl, 
 
 static void down_setup(void *ctx, const rdof_mn_hdr_t *h, const rdof_mn_setup_t *s, bool dl, const char *from)
 {
-    rdof_trunkunit_t *u = ctx;
+    rdof_t3unit_t *u = ctx;
     if (!dl)
         return;
     const bool ans = answer_op(s->op);
@@ -515,7 +515,7 @@ static void down_setup(void *ctx, const rdof_mn_hdr_t *h, const rdof_mn_setup_t 
 
 /* ── provisioning ────────────────────────────────────────────────────────── */
 
-static void ms_policies(rdof_trunkunit_t *u)
+static void ms_policies(rdof_t3unit_t *u)
 {
     uint32_t now[RDOF_T3_MS_POLICIES];
     int n = 0;
@@ -539,7 +539,7 @@ static void ms_policies(rdof_trunkunit_t *u)
     u->nms = n;
 }
 
-static void tg_policies(rdof_trunkunit_t *u)
+static void tg_policies(rdof_t3unit_t *u)
 {
     uint32_t now[RDOF_T3_TG_POLICIES];
     int n = 0;
@@ -549,7 +549,7 @@ static void tg_policies(rdof_trunkunit_t *u)
         rdof_t3_tg_policy_t p = {.hang_ms = h >= 1000.0 && h <= 60000.0 ? (uint32_t)lround(h) : 0,
                                  .priority = (uint8_t)(t->priority < 0 ? 0 : t->priority > 3 ? 3 : t->priority)};
         if (t->hang_s > 0 && !p.hang_ms)
-            logf_(u, "trunk: cfg/tg/%" PRIu32 ": hang_s %.1f outside 1-60: the site's", t->tg, t->hang_s);
+            logf_(u, "tier3: cfg/tg/%" PRIu32 ": hang_s %.1f outside 1-60: the site's", t->tg, t->hang_s);
         if (rdof_t3_tg_policy(u->site, t->tg, &p))
             now[n++] = t->tg;
     }
@@ -566,14 +566,14 @@ static void tg_policies(rdof_trunkunit_t *u)
 
 /* The adjacent-site list: the other online-or-not trunked nodes of the same MODEL and NET (from their info), only
    the sites cfg/node's neighbors lists when it gives them. */
-static void neighbors(rdof_trunkunit_t *u)
+static void neighbors(rdof_t3unit_t *u)
 {
     rdof_mn_site_cfg_t sc;
     rdof_mn_cfg_site(&u->mc, NULL, &sc);
     rdof_t3_neighbor_t nb[RDOF_T3_NEIGHBORS];
     int n = 0;
     for (int i = 0; i < u->npeers && n < RDOF_T3_NEIGHBORS; i++) {
-        const rdof_trunkunit_peer_t *p = &u->peers[i];
+        const rdof_t3unit_peer_t *p = &u->peers[i];
         if (!p->trunk || !p->syscode || p->site == u->cfg.site)
             continue;
         /* same MODEL and NET: their syscode is what ours would be with their SITE and PAR */
@@ -592,12 +592,12 @@ static void neighbors(rdof_trunkunit_t *u)
     u->nneighbors = n;
 }
 
-static int peer_of(rdof_trunkunit_t *u, const char *node)
+static int peer_of(rdof_t3unit_t *u, const char *node)
 {
     for (int i = 0; i < u->npeers; i++)
         if (!strcmp(u->peers[i].node, node))
             return i;
-    if (u->npeers == RDOF_TRUNKUNIT_PEERS)
+    if (u->npeers == RDOF_T3UNIT_PEERS)
         return -1;
     const int i = u->npeers++;
     memset(&u->peers[i], 0, sizeof u->peers[i]);
@@ -608,7 +608,7 @@ static int peer_of(rdof_trunkunit_t *u, const char *node)
 static const char *const MODEL_NAMES[] = {"tiny", "small", "large", "huge"};
 
 /* another node's info: its trunk object's system and TSCC channel (none: not a neighbor) */
-static void peer_info(rdof_trunkunit_t *u, const char *node, const char *text, size_t len)
+static void peer_info(rdof_t3unit_t *u, const char *node, const char *text, size_t len)
 {
     const int i = peer_of(u, node);
     if (i < 0)
@@ -644,21 +644,21 @@ static void peer_info(rdof_trunkunit_t *u, const char *node, const char *text, s
     u->peers[i].trunk = u->peers[i].syscode != 0;
 }
 
-bool rdof_trunkunit_apply(rdof_trunkunit_t *u)
+bool rdof_t3unit_apply(rdof_t3unit_t *u)
 {
     rdof_mn_site_cfg_t sc;
     rdof_mn_cfg_site(&u->mc, NULL, &sc);
     rdof_t3_cfg_t cfg = u->base;
     rdof_t3_policy_t pol = u->base_pol;
     char err[120];
-    if (!rdof_trunk_cfg_site(&sc, &cfg, &pol, err, sizeof err) || !rdof_trunk_cfg_check(&cfg, err, sizeof err)) {
-        logf_(u, "trunk: provisioning refused: %s", err);
+    if (!rdof_t3cfg_site(&sc, &cfg, &pol, err, sizeof err) || !rdof_t3cfg_check(&cfg, err, sizeof err)) {
+        logf_(u, "tier3: provisioning refused: %s", err);
         u->cfg_bad++;
         return false;
     }
     if (memcmp(&cfg, &u->cfg, sizeof cfg)) {
         if (!rdof_t3_reconfigure(u->site, &cfg, err, sizeof err)) {
-            logf_(u, "trunk: provisioning refused by the controller: %s", err);
+            logf_(u, "tier3: provisioning refused by the controller: %s", err);
             u->cfg_bad++;
             return false;
         }
@@ -672,7 +672,7 @@ bool rdof_trunkunit_apply(rdof_trunkunit_t *u)
     if (off != u->withdrawn_cfg) {
         rdof_t3_withdraw(u->site, off);
         u->withdrawn_cfg = off;
-        logf_(u, "trunk: %s by provisioning", off ? "withdrawn" : "back on the air");
+        logf_(u, "tier3: %s by provisioning", off ? "withdrawn" : "back on the air");
     }
     ms_policies(u);
     tg_policies(u);
@@ -685,15 +685,15 @@ bool rdof_trunkunit_apply(rdof_trunkunit_t *u)
 
 /* ── commands ────────────────────────────────────────────────────────────── */
 
-static void publish_status(rdof_trunkunit_t *u)
+static void publish_status(rdof_t3unit_t *u)
 {
     char t[128], j[2048];
-    if (rdof_mn_node_topic(t, sizeof t, u->root, u->node, "status") && rdof_trunkunit_status_json(u, j, sizeof j))
+    if (rdof_mn_node_topic(t, sizeof t, u->root, u->node, "status") && rdof_t3unit_status_json(u, j, sizeof j))
         pub_str(u, t, j, 1, true);
     u->status_ms = u->now_ms;
 }
 
-static void command(rdof_trunkunit_t *u, const char *json, size_t len)
+static void command(rdof_t3unit_t *u, const char *json, size_t len)
 {
     rdof_mn_cmd_t c;
     char err[96] = "", t[128], j[256];
@@ -736,8 +736,8 @@ static void command(rdof_trunkunit_t *u, const char *json, size_t len)
 
 /* ── the API ─────────────────────────────────────────────────────────────── */
 
-bool rdof_trunkunit_init(rdof_trunkunit_t *u, void *site_mem, const rdof_t3_cfg_t *cfg, const rdof_t3_policy_t *pol,
-                         const rdof_trunkunit_io_t *io, const char *root, const char *node, int path,
+bool rdof_t3unit_init(rdof_t3unit_t *u, void *site_mem, const rdof_t3_cfg_t *cfg, const rdof_t3_policy_t *pol,
+                         const rdof_t3unit_io_t *io, const char *root, const char *node, int path,
                          const char *firmware, char *err, size_t cap)
 {
     memset(u, 0, sizeof *u);
@@ -747,7 +747,7 @@ bool rdof_trunkunit_init(rdof_trunkunit_t *u, void *site_mem, const rdof_t3_cfg_
     u->base_pol = u->pol = *pol;
     u->path = path;
     u->k_next = -1;
-    for (int i = 0; i < RDOF_TRUNKUNIT_RING; i++)
+    for (int i = 0; i < RDOF_T3UNIT_RING; i++)
         u->ring[i].k = -1;
     snprintf(u->firmware, sizeof u->firmware, "%s", firmware ? firmware : "rdofradio");
     u->net = root && node && root[0] && rdof_mn_node_ok(node);
@@ -756,10 +756,10 @@ bool rdof_trunkunit_init(rdof_trunkunit_t *u, void *site_mem, const rdof_t3_cfg_
     if (!rdof_t3_init(u->site, cfg, err, cap))
         return false;
     rdof_t3_policy(u->site, pol);
-    const rdof_trunkrf_io_t rio = {io_tscc, io_cach, io_pdu, io_bad, io_activity, io_uplink, u};
-    if (!rdof_trunkrf_init(&u->rf, &rio, cfg->ncarriers, cfg->cc, cfg->carriers[0].tscc != 0)) {
-        snprintf(err, cap, "trunk: %d carriers: the radio layer takes 1 to %d", cfg->ncarriers,
-                 RDOF_TRUNKRF_CARRIERS);
+    const rdof_t3rf_io_t rio = {io_tscc, io_cach, io_pdu, io_bad, io_activity, io_uplink, u};
+    if (!rdof_t3rf_init(&u->rf, &rio, cfg->ncarriers, cfg->cc, cfg->carriers[0].tscc != 0)) {
+        snprintf(err, cap, "tier3: %d carriers: the radio layer takes 1 to %d", cfg->ncarriers,
+                 RDOF_T3RF_CARRIERS);
         return false;
     }
     rdof_mn_cfg_init(&u->mc, u->node);
@@ -786,16 +786,16 @@ bool rdof_trunkunit_init(rdof_trunkunit_t *u, void *site_mem, const rdof_t3_cfg_
     return true;
 }
 
-void rdof_trunkunit_run(rdof_trunkunit_t *u, int64_t k_upto, int64_t now_ms)
+void rdof_t3unit_run(rdof_t3unit_t *u, int64_t k_upto, int64_t now_ms)
 {
     u->now_ms = now_ms;
     if (!u->start_ms)
         u->start_ms = now_ms;
-    if (u->k_next < 0 || k_upto - u->k_next > RDOF_TRUNKUNIT_RING * 8)
+    if (u->k_next < 0 || k_upto - u->k_next > RDOF_T3UNIT_RING * 8)
         u->k_next = k_upto; /* the first slot, or the clock jumped: start again there */
     for (; u->k_next <= k_upto; u->k_next++) {
         const int64_t k = u->k_next;
-        rdof_trunkunit_held_t *r = &u->ring[k % RDOF_TRUNKUNIT_RING];
+        rdof_t3unit_held_t *r = &u->ring[k % RDOF_T3UNIT_RING];
         rdof_t3_slot(u->site, k, now_ms, &r->o);
         r->k = k;
         for (int c = 0; c < u->cfg.ncarriers; c++) {
@@ -803,46 +803,46 @@ void rdof_trunkunit_run(rdof_trunkunit_t *u, int64_t k_upto, int64_t now_ms)
             if (ch == 0 && u->rf.tscc)
                 continue;
             if (r->o.ch[ch].dt)
-                rdof_trunkrf_control(&u->rf, ch, r->o.ch[ch].dt, r->o.ch[ch].pdu, 1, false);
+                rdof_t3rf_control(&u->rf, ch, r->o.ch[ch].dt, r->o.ch[ch].pdu, 1, false);
         }
         drain(u);
-        rdof_trunkrf_tick(&u->rf, k);
+        rdof_t3rf_tick(&u->rf, k);
         drain(u);
     }
 }
 
-bool rdof_trunkunit_slot(rdof_trunkunit_t *u, int c, int64_t k, uint8_t burst[RDOF_BURST_BYTES], uint8_t *control,
+bool rdof_t3unit_slot(rdof_t3unit_t *u, int c, int64_t k, uint8_t burst[RDOF_BURST_BYTES], uint8_t *control,
                          int *at, int32_t *slc28)
 {
     if (u->k_next <= k)
-        rdof_trunkunit_run(u, k, u->now_ms);
-    const bool ok = rdof_trunkrf_slot(&u->rf, c, k, burst, control, at, slc28);
+        rdof_t3unit_run(u, k, u->now_ms);
+    const bool ok = rdof_t3rf_slot(&u->rf, c, k, burst, control, at, slc28);
     drain(u);
     return ok;
 }
 
-void rdof_trunkunit_split_pump(rdof_trunkunit_t *u, rdof_trunkrf_split_t *o, struct rdof_split *s, int64_t k_now,
+void rdof_t3unit_split_pump(rdof_t3unit_t *u, rdof_t3rf_split_t *o, struct rdof_split *s, int64_t k_now,
                                double now)
 {
     if (u->k_next <= k_now + 4)
-        rdof_trunkunit_run(u, k_now + 4, u->now_ms);
-    rdof_trunkrf_split_pump(&u->rf, o, s, k_now, 0, now);
+        rdof_t3unit_run(u, k_now + 4, u->now_ms);
+    rdof_t3rf_split_pump(&u->rf, o, s, k_now, 0, now);
     drain(u);
 }
 
-int rdof_trunkunit_at(const rdof_trunkunit_t *u, int64_t k)
+int rdof_t3unit_at(const rdof_t3unit_t *u, int64_t k)
 {
-    const rdof_trunkunit_held_t *r = k >= 0 ? &u->ring[k % RDOF_TRUNKUNIT_RING] : NULL;
+    const rdof_t3unit_held_t *r = k >= 0 ? &u->ring[k % RDOF_T3UNIT_RING] : NULL;
     return r && r->k == k ? r->o.at : -1;
 }
 
-void rdof_trunkunit_rx(rdof_trunkunit_t *u, int c, int64_t k, const rdof_burst_t *b, int rssi)
+void rdof_t3unit_rx(rdof_t3unit_t *u, int c, int64_t k, const rdof_burst_t *b, int rssi)
 {
-    rdof_trunkrf_rx(&u->rf, c, k, b, rssi);
+    rdof_t3rf_rx(&u->rf, c, k, b, rssi);
     drain(u);
 }
 
-void rdof_trunkunit_message(rdof_trunkunit_t *u, const char *topic, const void *data, size_t len)
+void rdof_t3unit_message(rdof_t3unit_t *u, const char *topic, const void *data, size_t len)
 {
     if (!u->net)
         return;
@@ -890,12 +890,12 @@ void rdof_trunkunit_message(rdof_trunkunit_t *u, const char *topic, const void *
         const rdof_mn_cfg_result_t r = rdof_mn_cfg_message(&u->mc, u->root, topic, text, len, note, sizeof note);
         if (r == RDOF_MN_CFG_APPLIED || r == RDOF_MN_CFG_DELETED) {
             if (note[0])
-                logf_(u, "trunk: %s: %s", leaf, note);
-            rdof_trunkunit_apply(u);
+                logf_(u, "tier3: %s: %s", leaf, note);
+            rdof_t3unit_apply(u);
             if (u->io.cache)
                 u->io.cache(u->io.ctx);
         } else if (r == RDOF_MN_CFG_BAD || r == RDOF_MN_CFG_FULL) {
-            logf_(u, "trunk: %s: %s", leaf, r == RDOF_MN_CFG_FULL ? "no room" : "malformed");
+            logf_(u, "tier3: %s: %s", leaf, r == RDOF_MN_CFG_FULL ? "no room" : "malformed");
             u->cfg_bad++;
         }
         return;
@@ -905,7 +905,7 @@ void rdof_trunkunit_message(rdof_trunkunit_t *u, const char *topic, const void *
             return; /* another node's, or a deletion */
         rdof_mn_record_t m;
         if (!rdof_mn_record_parse(text, len, &m, err, sizeof err)) {
-            logf_(u, "trunk: %s: %s", leaf, err);
+            logf_(u, "tier3: %s: %s", leaf, err);
             return;
         }
         rdof_t3_record_t r = {.id = m.id, .sub_tg = m.sub, .how = RDOF_T3_HOW_LOADED,
@@ -935,7 +935,7 @@ void rdof_trunkunit_message(rdof_trunkunit_t *u, const char *topic, const void *
         command(u, text, len);
 }
 
-void rdof_trunkunit_link(rdof_trunkunit_t *u, bool up)
+void rdof_t3unit_link(rdof_t3unit_t *u, bool up)
 {
     u->connected = up;
     rdof_t3_net_link(u->site, up);
@@ -949,7 +949,7 @@ void rdof_trunkunit_link(rdof_trunkunit_t *u, bool up)
     }
 }
 
-void rdof_trunkunit_tick(rdof_trunkunit_t *u, int64_t now_ms)
+void rdof_t3unit_tick(rdof_t3unit_t *u, int64_t now_ms)
 {
     u->now_ms = now_ms;
     if (!u->start_ms)
@@ -958,15 +958,15 @@ void rdof_trunkunit_tick(rdof_trunkunit_t *u, int64_t now_ms)
     rdof_mn_down_tick(&u->down, now);
     for (int c = 0; c < u->cfg.ncarriers; c++)
         rdof_mn_up_tick(&u->up[c], now);
-    for (int i = 0; i < RDOF_TRUNKUNIT_STREAMS; i++) /* a stream gone quiet without its terminator */
+    for (int i = 0; i < RDOF_T3UNIT_STREAMS; i++) /* a stream gone quiet without its terminator */
         if (u->st[i].used && now_ms - u->st[i].last_ms > 3000)
             stream_end(u, &u->st[i], false);
     drain(u);
-    if (u->connected && now_ms - u->status_ms >= RDOF_TRUNKUNIT_STATUS_S * 1000)
+    if (u->connected && now_ms - u->status_ms >= RDOF_T3UNIT_STATUS_S * 1000)
         publish_status(u);
 }
 
-size_t rdof_trunkunit_trunk_json(const rdof_trunkunit_t *u, char *out, size_t cap)
+size_t rdof_t3unit_trunk_json(const rdof_t3unit_t *u, char *out, size_t cap)
 {
     static const char *const PAR[] = {"?", "a", "b", "ab"};
     static const char *const SERVICES[] = {"reg", "group", "private", "allcall"};
@@ -988,7 +988,7 @@ size_t rdof_trunkunit_trunk_json(const rdof_trunkunit_t *u, char *out, size_t ca
     return rdof_mn_trunk_info_json(&t, out, cap);
 }
 
-size_t rdof_trunkunit_status_json(const rdof_trunkunit_t *u, char *out, size_t cap)
+size_t rdof_t3unit_status_json(const rdof_t3unit_t *u, char *out, size_t cap)
 {
     static const char *const USE[] = {"off", "idle", "tscc", "call", "hang", "hang"};
     rdof_t3_status_t s;

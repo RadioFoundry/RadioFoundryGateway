@@ -78,7 +78,7 @@ DMR_SHORTLC for P_SYS_Parms, SET_AT. A split radio carrying the control channel 
 ## 2. The radio as a Tier III mobile (MS)
 
 What the gateway's trunked site does now, so RadioFoundry's MS knows what it will meet. The standard (361-4) is the
-spec for both; this lists only the gateway's choices and limits. The full design is trunk.md.
+spec for both; this lists only the gateway's choices and limits. The full design is tier3.md.
 
 ### 2.1 What the site supports (phase 1)
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
-/* A trunked site's settings into the controller's (rdof/trunkcfg.h, docs/spec/fw/trunk.md sections 3.8 and 4). */
-#include "rdof/trunkcfg.h"
+/* A trunked site's settings into the controller's (rdof/t3cfg.h, docs/spec/fw/tier3.md sections 3.8 and 4). */
+#include "rdof/t3cfg.h"
 
 #include <math.h>
 #include <stddef.h>
@@ -166,7 +166,7 @@ static bool idset_of(ctx_t *c, int obj, const char *key, const char *path, rdof_
     return to_t3(c, path, key, &s, out);
 }
 
-void rdof_trunk_cfg_default(rdof_t3_cfg_t *cfg, rdof_t3_policy_t *pol)
+void rdof_t3cfg_default(rdof_t3_cfg_t *cfg, rdof_t3_policy_t *pol)
 {
     if (cfg) {
         memset(cfg, 0, sizeof *cfg);
@@ -259,7 +259,7 @@ static bool system_keys(ctx_t *c, int o, const char *path, bool top, rdof_t3_cfg
     return true;
 }
 
-/* The timers (trunk.md 3.8): each a cfg field in its unit (ms from seconds, a code, seconds), its range. */
+/* The timers (tier3.md 3.8): each a cfg field in its unit (ms from seconds, a code, seconds), its range. */
 typedef enum { T_U8, T_MS, T_S } tkind_t;
 typedef struct {
     const char *name;
@@ -332,7 +332,7 @@ static bool timer_keys(ctx_t *c, int t, const char *path, rdof_t3_cfg_t *cfg)
     return true;
 }
 
-bool rdof_trunk_cfg_apply(const rdof_jdoc_t *doc, int obj, const char *path, rdof_t3_cfg_t *cfg,
+bool rdof_t3cfg_apply(const rdof_jdoc_t *doc, int obj, const char *path, rdof_t3_cfg_t *cfg,
                           rdof_t3_policy_t *pol, char *err, size_t cap)
 {
     char dummy[8];
@@ -390,7 +390,7 @@ bool rdof_trunk_cfg_apply(const rdof_jdoc_t *doc, int obj, const char *path, rdo
     return true;
 }
 
-bool rdof_trunk_cfg_check(const rdof_t3_cfg_t *cfg, char *err, size_t cap)
+bool rdof_t3cfg_check(const rdof_t3_cfg_t *cfg, char *err, size_t cap)
 {
     char dummy[8];
     ctx_t cx = {.err = err && cap ? err : dummy, .cap = err && cap ? cap : sizeof dummy}, *c = &cx;
@@ -430,15 +430,15 @@ bool rdof_trunk_cfg_check(const rdof_t3_cfg_t *cfg, char *err, size_t cap)
     return true;
 }
 
-int rdof_trunk_unit(const struct rdof_plan *p)
+int rdof_t3cfg_unit(const struct rdof_plan *p)
 {
     for (int k = 0; k < rdof_plan_nunits(p); k++)
-        if (rdof_plan_unit(p, k)->kind == RDOF_UNIT_TRUNK)
+        if (rdof_plan_unit(p, k)->kind == RDOF_UNIT_TIER3)
             return k;
     return -1;
 }
 
-bool rdof_trunk_cfg_plan(const struct rdof_plan *p, int unit, rdof_t3_cfg_t *cfg, rdof_t3_policy_t *pol, char *err,
+bool rdof_t3cfg_plan(const struct rdof_plan *p, int unit, rdof_t3_cfg_t *cfg, rdof_t3_policy_t *pol, char *err,
                          size_t cap)
 {
     char dummy[8];
@@ -446,18 +446,18 @@ bool rdof_trunk_cfg_plan(const struct rdof_plan *p, int unit, rdof_t3_cfg_t *cfg
         err = dummy, cap = sizeof dummy;
     err[0] = 0;
     if (unit < 0)
-        unit = rdof_trunk_unit(p);
-    if (unit < 0 || unit >= rdof_plan_nunits(p) || rdof_plan_unit(p, unit)->kind != RDOF_UNIT_TRUNK) {
-        snprintf(err, cap, "no trunked site (an app of type trunk)");
+        unit = rdof_t3cfg_unit(p);
+    if (unit < 0 || unit >= rdof_plan_nunits(p) || rdof_plan_unit(p, unit)->kind != RDOF_UNIT_TIER3) {
+        snprintf(err, cap, "no trunked site (an app of type tier3)");
         return false;
     }
     const rdof_site_t *s = rdof_plan_site(p);
     const rdof_unit_t *u = rdof_plan_unit(p, unit);
     const rdof_app3_t *ap = &s->app[u->app];
-    rdof_trunk_cfg_default(cfg, pol);
+    rdof_t3cfg_default(cfg, pol);
     char path[RDOF_SITE_NAME + 8];
     snprintf(path, sizeof path, "apps.%s", ap->name);
-    if (!rdof_trunk_cfg_apply(rdof_plan_doc(p), rdof_plan_app_node(p, u->app), path, cfg, pol, err, cap))
+    if (!rdof_t3cfg_apply(rdof_plan_doc(p), rdof_plan_app_node(p, u->app), path, cfg, pol, err, cap))
         return false;
     memset(cfg->carriers, 0, sizeof cfg->carriers);
     cfg->ncarriers = ap->ncarrier;
@@ -467,7 +467,7 @@ bool rdof_trunk_cfg_plan(const struct rdof_plan *p, int unit, rdof_t3_cfg_t *cfg
                                                .chan = cr->chan, .tscc = k == 0, .enabled = 1};
     }
     cfg->cc = (uint8_t)s->freq[ap->carrier[0].out].cc;
-    if (!rdof_trunk_cfg_check(cfg, err, cap)) {
+    if (!rdof_t3cfg_check(cfg, err, cap)) {
         char why[160];
         snprintf(why, sizeof why, "%s", err);
         snprintf(err, cap, "%s.%s", path, why);
@@ -476,7 +476,7 @@ bool rdof_trunk_cfg_plan(const struct rdof_plan *p, int unit, rdof_t3_cfg_t *cfg
     return true;
 }
 
-bool rdof_trunk_cfg_site(const rdof_mn_site_cfg_t *sc, rdof_t3_cfg_t *cfg, rdof_t3_policy_t *pol, char *err,
+bool rdof_t3cfg_site(const rdof_mn_site_cfg_t *sc, rdof_t3_cfg_t *cfg, rdof_t3_policy_t *pol, char *err,
                          size_t cap)
 {
     char dummy[8];
@@ -520,5 +520,5 @@ bool rdof_trunk_cfg_site(const rdof_mn_site_cfg_t *sc, rdof_t3_cfg_t *cfg, rdof_
     for (int i = 0; i < sc->ntimers; i++)
         if (!set_timer(c, "cfg.timers", sc->timers[i].name, sc->timers[i].value, cfg))
             return false;
-    return rdof_trunk_cfg_check(cfg, c->err, c->cap);
+    return rdof_t3cfg_check(cfg, c->err, c->cap);
 }

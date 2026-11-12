@@ -59,17 +59,17 @@ if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
 endif()
 add_test(NAME rdof_bm_tests COMMAND rdof_bm_tests)
 
-# A trunked site's radio layer (rdof/trunkrf.h).
-add_executable(rdof_trunkrf_tests test_trunkrf.c)
-target_include_directories(rdof_trunkrf_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(rdof_trunkrf_tests PRIVATE rdof_common)
-set_target_properties(rdof_trunkrf_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
-target_compile_options(rdof_trunkrf_tests PRIVATE -Wall -Wno-unused-parameter)
+# A trunked site's radio layer (rdof/t3rf.h).
+add_executable(rdof_t3rf_tests test_t3rf.c)
+target_include_directories(rdof_t3rf_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(rdof_t3rf_tests PRIVATE rdof_common)
+set_target_properties(rdof_t3rf_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_compile_options(rdof_t3rf_tests PRIVATE -Wall -Wno-unused-parameter)
 if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
-    target_compile_options(rdof_trunkrf_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
-    target_link_options(rdof_trunkrf_tests PRIVATE -fsanitize=address,undefined)
+    target_compile_options(rdof_t3rf_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(rdof_t3rf_tests PRIVATE -fsanitize=address,undefined)
 endif()
-add_test(NAME rdof_trunkrf_tests COMMAND rdof_trunkrf_tests)
+add_test(NAME rdof_t3rf_tests COMMAND rdof_t3rf_tests)
 
 # The web API's shared part (rdof/webapi.h), with fake platforms.
 add_executable(rdof_webapi_tests test_webapi.c)
@@ -207,7 +207,7 @@ if(RDOF_COMMON_IS_RUST MATCHES "RDOF_RUST=1")
 endif()
 
 # The trunked site controller (rust's t3 feature, rdof/t3.h): its own tests (cargo test: the PDU codec and the
-# scenarios), and the C API from C. rdof_common's Rust has it (RDOF_TRUNK, the default), else t3 is built alone.
+# scenarios), and the C API from C. rdof_common's Rust has it (RDOF_TIER3, the default), else t3 is built alone.
 include(../rust/rust.cmake)
 rdof_t3_lib(RDOF_T3_LIB rdof_common)
 if(NOT RDOF_T3_LIB STREQUAL "NOTFOUND")
@@ -221,18 +221,18 @@ if(NOT RDOF_T3_LIB STREQUAL "NOTFOUND")
         target_link_options(rdof_t3_tests PRIVATE -fsanitize=address,undefined)
     endif()
     add_test(NAME rdof_t3_tests COMMAND rdof_t3_tests)
-    # The site joined up (trunkunit.c, trunksim.c: they call the controller, so they're not in rdof_common): two sites,
+    # The site joined up (t3unit.c, t3sim.c: they call the controller, so they're not in rdof_common): two sites,
     # simulated MSs over the burst path, an in-process broker.
-    add_executable(rdof_trunkunit_tests test_trunkunit.c ../common/src/trunkunit.c ../common/src/trunksim.c)
-    target_include_directories(rdof_trunkunit_tests PRIVATE ../common/include)
-    target_link_libraries(rdof_trunkunit_tests PRIVATE ${RDOF_T3_LIB} rdof_common)
-    set_target_properties(rdof_trunkunit_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
-    target_compile_options(rdof_trunkunit_tests PRIVATE -Wall -Wno-unused-parameter)
+    add_executable(rdof_t3unit_tests test_t3unit.c ../common/src/t3unit.c ../common/src/t3sim.c)
+    target_include_directories(rdof_t3unit_tests PRIVATE ../common/include)
+    target_link_libraries(rdof_t3unit_tests PRIVATE ${RDOF_T3_LIB} rdof_common)
+    set_target_properties(rdof_t3unit_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+    target_compile_options(rdof_t3unit_tests PRIVATE -Wall -Wno-unused-parameter)
     if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
-        target_compile_options(rdof_trunkunit_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
-        target_link_options(rdof_trunkunit_tests PRIVATE -fsanitize=address,undefined)
+        target_compile_options(rdof_t3unit_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(rdof_t3unit_tests PRIVATE -fsanitize=address,undefined)
     endif()
-    add_test(NAME rdof_trunkunit_tests COMMAND rdof_trunkunit_tests)
+    add_test(NAME rdof_t3unit_tests COMMAND rdof_t3unit_tests)
     add_test(NAME rdof_t3_cargo_tests
         COMMAND ${RDOF_CARGO} test --no-default-features --features t3 --manifest-path ${RDOF_RUST_DIR}/Cargo.toml
                 --target-dir ${CMAKE_CURRENT_BINARY_DIR}/rdof_rust_t3-cargo-test)

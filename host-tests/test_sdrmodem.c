@@ -16,7 +16,7 @@
 #include "rdof/pdu.h"
 #include "rdof/sdr/sdrmodem.h"
 #include "rdof/sdr/sdrsplit.h"
-#include "rdof/trunkrf.h"
+#include "rdof/t3rf.h"
 
 static int fails;
 
@@ -1969,7 +1969,7 @@ static void test_outbound_back(void)
     printf("outbound and back: %d BS idle bursts, unkeyed, role dropped, a simplex MS burst after\n", keyed_n);
 }
 
-/* A trunked site's control carrier (docs/spec/fw/trunk.md 9.1): a duplex modem held keyed with no host traffic, a
+/* A trunked site's control carrier (docs/spec/fw/tier3.md 9.1): a duplex modem held keyed with no host traffic, a
  * slot source giving a CSBK in every TS1 slot (TS2 left to the modem: idle), the AT and a short LC from it. The
  * source is asked once per slot, k after k; the receiver hears our blocks on TS1 and idles on TS2; the short LC goes
  * on air; DMR_START 00 doesn't unkey a held key-up, hold_key false does. Without a source the modem is as before. */
@@ -1988,7 +1988,7 @@ static bool src_slot(void *ctx, int64_t k, uint8_t burst[RDOF_BURST_BYTES], int 
     *at = 1;
     if (k % 4 == 0)
         *slc28 = (int32_t)SRC_SLC;
-    return !(k & 1) && rdof_trunk_pdu_burst(RDOF_DT_CSBK, SRC_PDU, DC_CC, RDOF_FAMILY_BS, burst);
+    return !(k & 1) && rdof_t3rf_pdu_burst(RDOF_DT_CSBK, SRC_PDU, DC_CC, RDOF_FAMILY_BS, burst);
 }
 
 static struct {
@@ -2000,7 +2000,7 @@ static void src_heard(void *ctx, int c, const rdof_sdr_burst_t *b, double t)
     uint8_t pdu[10];
     int dt, cc;
     srch.n++;
-    if (rdof_trunk_burst_pdu(b->b.burst, &dt, &cc, pdu) == RDOF_TRUNK_PDU_OK && dt == RDOF_DT_CSBK &&
+    if (rdof_t3rf_burst_pdu(b->b.burst, &dt, &cc, pdu) == RDOF_T3RF_PDU_OK && dt == RDOF_DT_CSBK &&
         !memcmp(pdu, SRC_PDU, 10) && b->b.slot == 1)
         srch.ours++;
     else if (b->b.dt == RDOF_DT_IDLE && b->b.slot == 2)
