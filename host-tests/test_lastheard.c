@@ -312,6 +312,15 @@ static void test_exact(void)
           "\"group\":false,\"freq\":446075000,\"cc\":15,\"age_s\":7.123,\"active\":false,\"duration\":1.001,"
           "\"end\":\"end\",\"frames\":7}],\"more\":true}");
     exact(&lh, 64, "{\"seq\":6,\"now_ms\":1700000000999,\"max\":3,\"calls\":[],\"more\":true}");
+    {
+        /* a header with no room left to close it: nothing, not cut JSON */
+        rdof_lh_t big = lh;
+        big.seq = 4000000000u;
+        char out[64];
+        memset(out, 'x', sizeof out);
+        CHECK(rdof_lh_json(&big, 0, 0, INT64_MAX, out, sizeof out) == 0 && out[0] == 0);
+        CHECK(rdof_lh_json(&big, 0, 0, INT64_MAX, out, 63) == 0);
+    }
 }
 
 #if RDOF_FEATURE_TRACKER

@@ -622,6 +622,10 @@ pub unsafe extern "C" fn rdof_lh_json(
     );
     let (mut first, mut more) = (true, false);
     const TAIL: usize = 16; // ],"more":true}
+    if n + b"],\"more\":true}".len() + 1 > cap {
+        buf[0] = 0; // no room to close what the header opened: nothing, not cut JSON
+        return 0;
+    }
     let ring = lh.ring();
     for i in 0..lh.n {
         let e = &ring[nth(lh.head, lh.cap, i)];
