@@ -63,8 +63,9 @@ bool settings_take_flag(const char *key);
 
 /* ── the board ────────────────────────────────────────────────────────────── */
 
-/* Internal RAM an esp-mqtt client takes: its task's stack (6 KB), its in and out buffers (1 KB each), its state. */
-#define MQTT_CLIENT_INTERNAL (6144 + 2 * 1024 + 1536)
+/* Internal RAM an esp-mqtt client takes: its in and out buffers (1 KB each), its state and its task's control
+ * block, and its task's stack (6 KB) on a board without PSRAM (with it, the stack is there: task_ext.c). */
+#define MQTT_CLIENT_INTERNAL ((size_t)(heap_caps_get_total_size(MALLOC_CAP_SPIRAM) ? 0 : 6144) + 2 * 1024 + 1536)
 /* The memory plan's claims of the roamer (roamer.c; true if a radio is on USB) and the IP gateway (ipgw_task.c). */
 bool roamer_mem_claims(void);
 void ipgw_mem_claims(void);

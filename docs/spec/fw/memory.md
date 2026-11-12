@@ -137,7 +137,7 @@ Per role, what is declared (bytes; "×n" a count). Sizes are the code's; the SDR
 | | `dsp` | 8192 stack + control block | internal | alloc | |
 | | `dsp_helper` | `CONFIG_RDOF_SDR_HELPER_STACK` (6144) | internal | alloc | `dsp_cores` 2 and the self-test hasn't started it |
 | `sdr_net` | `sdr_status` | 4096 | internal | alloc | |
-| | `mqtt` | `MQTT_CLIENT_INTERNAL` (9728) | internal | budget | |
+| | `mqtt` | `MQTT_CLIENT_INTERNAL` (3584; 9728 without PSRAM) | internal | budget | |
 | | `sdr_hblink` | 4096 | internal | alloc | a channel has an HBlink4 peer |
 | `sdr_fe` (LR2021) | `lr2021_dev` | `lr2021_handle_size()` (the frames) | DMA | alloc | |
 | | `lr2021` | 4096 (the reader) | internal | alloc | |
@@ -152,7 +152,7 @@ Per role, what is declared (bytes; "×n" a count). Sizes are the code's; the SDR
 | | `uart_rx`; `usb_open` + `cdc`; `sdrmodem` | 3072; 4096 + 1536 DMA budget; 4096 | internal | alloc | per port by its `modem_port` |
 | | `split` | 4096 | internal | alloc | two ports |
 | | `uart_rx_buf`, `uart_tx_buf` | 4096, 2048 × UART ports | internal | hold | a UART port |
-| | `mqtt`, `heap` | 9728, 4096 | internal | budget | |
+| | `mqtt`, `heap` | 3584 (9728 without PSRAM), 4096 | internal | budget | |
 | | `sctp` | 11264 | internal | budget | `transport: sctp` |
 | `radio2` | as `radio1`, no `heap` | | `roam_t` PSRAM; stacks internal or PSRAM (fallback) | | a second radio |
 | `ipgw` | `ipgw` | 6144 | internal | alloc | the IP gateway configured |
@@ -161,7 +161,7 @@ Per role, what is declared (bytes; "×n" a count). Sizes are the code's; the SDR
 | `usb` | `usb_lib`, `usb_kick` | 4096, 2560 | internal | alloc | anything planned on USB |
 | | `host` | 4096 | DMA | budget | |
 | `board` | `httpd`, `wifilist`, `netclock` | 9216, 4096, 6144 | internal | budget | always |
-| | `mqtt_net` | `MQTT_CLIENT_INTERNAL` (9728) | internal | budget | an mqtt network with `format: "v3"`, on an image with the transceiver |
+| | `mqtt_net` | `MQTT_CLIENT_INTERNAL` (3584; 9728 without PSRAM) | internal | budget | an mqtt network with `format: "v3"`, on an image with the transceiver |
 | | `oled` | 4096 | internal | budget | `CONFIG_RDOF_OLED` and a role |
 
 Not planned: Wi-Fi and lwIP (the margin), mbedTLS (PSRAM on 16mb), the DSP's other buffers (§5), the page's spectrum,
@@ -170,6 +170,14 @@ and the web page's buffers (PSRAM BSS).
 
 "Either" boards (a radio on USB and an RTL-SDR on the one port, no hub) plan neither role: what is plugged in
 decides the role after the plan. Those roles allocate from the heap as before.
+
+esp-mqtt's tasks: each MQTT connection has a task of esp-mqtt's, with a 6 KB stack that esp-mqtt takes from internal
+RAM. On a board with PSRAM `task_ext.c` puts those stacks there: the linker wraps `xTaskCreatePinnedToCore` and
+`vTaskDelete`, and a task named `mqtt_task` gets a PSRAM stack and a static control block, from four slots that are
+used again (a slot 5 s after its task ended). The task only waits, parses and copies, and never writes the flash (a
+task on a PSRAM stack can't). A W12 with the SDR, a transceiver and the MQTT network had three such tasks: 18 KB of
+internal RAM, with 79 bytes of DMA-capable memory left and one stack refused (2026-11-11); with the stacks in PSRAM
+the same board had 2 KB left and nothing refused (17 KB with two connections).
 
 ## 8. Giving memory back, claiming at run time
 
