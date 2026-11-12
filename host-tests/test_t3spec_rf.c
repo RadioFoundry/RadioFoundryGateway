@@ -23,15 +23,11 @@ static int fails, checks;
         }                                                                                                          \
     } while (0)
 
-/* A known deviation: printed once, then its checks are skipped (they stay in the file as the finding's test). */
-static int finding7;
+/* Finding 7 (361-1 7.4.1, B.3.12 note 1: an MBC last block's CRC takes no mask) is fixed: its checks run. */
 static bool skip_finding7(int dt)
 {
-    if (dt != 5)
-        return false;
-    if (!finding7++)
-        printf("SPEC FINDING 7: 361-1 7.4.1, B.3.12 note 1: an MBC last block's CRC takes no mask; ours uses 0xAAAA\n");
-    return true;
+    (void)dt;
+    return false;
 }
 
 /* Data types (table 9.22). An MBC continuation here is a two-block MBC's last block: its CRC covers that block only

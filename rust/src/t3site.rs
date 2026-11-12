@@ -1001,7 +1001,8 @@ impl Site {
         let (dt, pdu, solicit) = if self.cont_pending {
             self.cont_pending = false;
             (DT_MBC_CONT, self.cont, false)
-        } else if self.since_aloha >= 3 {
+        } else if self.since_aloha >= 3 || (self.since_aloha == 2 && self.resp_len > 0 && self.resp[self.resp_head].has_cont) {
+            // an MBC's two blocks must end before the Aloha that's due: it waits a slot
             (DT_CSBK, self.aloha(), false)
         } else if self.resp_len > 0 {
             let r = self.resp[self.resp_head];
@@ -1014,7 +1015,7 @@ impl Site {
             (r.dt, r.pdu, r.solicit)
         } else if let Some(g) = self.due_grant() {
             (DT_CSBK, g, false)
-        } else if let Some((b, dt, cont)) = self.due_bcast() {
+        } else if let Some((b, dt, cont)) = if self.since_aloha < 2 { self.due_bcast() } else { None } {
             if let Some(c) = cont {
                 self.cont_pending = true;
                 self.cont = c;

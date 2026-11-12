@@ -154,7 +154,6 @@ fn honors_at() {
 
 /// 6.2.1.1.1: Mask 24 with ADRNULL lets no MS access.
 #[test]
-#[ignore = "spec finding 3: the MS doesn't apply the Aloha's Mask (6.2.1.1.1)"]
 fn mask_24_adrnull_bars_access() {
     let mut r = Rig::new(ID, 7);
     r.frame(aloha_with(24, spec::ADRNULL, 0, 2, 3), false);
@@ -165,7 +164,6 @@ fn mask_24_adrnull_bars_access() {
 
 /// 6.2.1.1.1: Mask 1 with an even address: only even MS IDs may access (non-emergency).
 #[test]
-#[ignore = "spec finding 3: the MS doesn't apply the Aloha's Mask (6.2.1.1.1)"]
 fn mask_1_splits_population() {
     let a = aloha_with(1, 0x000000, 0, 2, 3);
     let mut odd = Rig::new(ID, 7);
@@ -195,7 +193,6 @@ fn mask_0_lets_all_access() {
 
 /// 6.2.1.1.2, table 6.1: Service Function 11b invites registration only: no call request.
 #[test]
-#[ignore = "spec finding 4: the MS doesn't check the Aloha's Service Function (6.2.1.1.2)"]
 fn service_function_registration_only() {
     let a = aloha_with(0, 0, 0b11, 2, 3);
     let mut r = Rig::new(ID, 7);
@@ -207,7 +204,6 @@ fn service_function_registration_only() {
 
 /// Table 6.1: Service Function 10b doesn't invite services that need a payload channel.
 #[test]
-#[ignore = "spec finding 4: the MS doesn't check the Aloha's Service Function (6.2.1.1.2)"]
 fn service_function_no_payload() {
     let a = aloha_with(0, 0, 0b10, 2, 3);
     let mut r = Rig::new(ID, 7);
@@ -246,7 +242,6 @@ fn attempts_nrand_nr() {
 
 /// Table A.6 and 6.2.1.1.7: NRand_NE (10) attempts for an emergency request.
 #[test]
-#[ignore = "spec finding 5: the MS makes 6 attempts for an emergency request, not NRand_NE (10)"]
 fn attempts_nrand_ne() {
     let mut r = Rig::ready(ID, t3ms::DO_GROUP, TG, t3ms::F_EMERGENCY);
     let n = r.frames(4000, aloha(), false);
@@ -467,7 +462,6 @@ fn p_maint_count() {
 
 /// Table 7.32: P_MAINT's target address is TSI.
 #[test]
-#[ignore = "spec finding 6: the MS's P_MAINT targets the called MS, not TSI (table 7.32)"]
 fn p_maint_target_tsi() {
     let m: Vec<_> = call_end().into_iter().filter(|b| csbko(b) == spec::P_MAINT).collect();
     assert!(!m.is_empty());

@@ -311,7 +311,6 @@ fn aloha_syscode_each_model() {
 /// 6.2.1.3 and tier3.md 3.2: an MS waits for a C_ALOHA before it accesses, so one goes out at least every fourth
 /// TSCC slot even while grants, broadcasts and acknowledgements are due.
 #[test]
-#[ignore = "spec finding 2: against tier3.md 3.2, not ETSI: an MBC continuation in the fourth slot pushes the C_ALOHA to the fifth"]
 fn aloha_at_least_every_fourth_tscc_slot() {
     let mut r = Rig::new(|c| {
         two_carriers(c);

@@ -175,8 +175,10 @@ pub struct T3rfSplit {
 pub extern "C" fn rdof_t3rf_mask(dt: c_int) -> c_int {
     match dt {
         RDOF_DT_CSBK => RDOF_MASK_CSBK as c_int,
-        // an MBC's last block takes the header's mask
-        RDOF_DT_MBC_HEADER | RDOF_DT_MBC_CONTINUATION => MASK_MBC_HEADER as c_int,
+        RDOF_DT_MBC_HEADER => MASK_MBC_HEADER as c_int,
+        // a last block's CRC takes no mask: it covers every block but the header (361-1 7.4.0, B.3.12). The site's
+        // MBCs are two blocks, so it covers the last block alone
+        RDOF_DT_MBC_CONTINUATION => 0,
         RDOF_DT_DATA_HEADER => RDOF_MASK_DATA_HEADER as c_int,
         _ => -1,
     }

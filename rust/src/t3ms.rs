@@ -33,7 +33,8 @@ pub const TX_PDU: u8 = 1;
 pub const TX_VOICE: u8 = 2;
 
 const ACTIONS: usize = 8;
-const TRIES: u8 = 6; // random access attempts before giving up
+const TRIES: u8 = 6; // random access attempts before giving up: NRand_NR (table A.6)
+const TRIES_EMERGENCY: u8 = 10; // NRand_NE
 const WAIT_MS: i64 = 30_000; // after C_WACKD / C_QACKD / MS_Alerting, the longest wait for the outcome
 const HUNT_SLOTS: u32 = 100; // TSCC slots without C_ALOHA before trying the next carrier
 const MAINT_REPEATS: u8 = 4;
@@ -96,6 +97,9 @@ pub struct Ms {
     syscode: u16,
     nrand: u8,
     backoff: u8,
+    mask: u8,         // the population subdivision (6.2.1.1.1)
+    aloha_addr: u32,  // its address
+    service_fn: u8,   // the services invited (6.2.1.1.2, table 6.1)
     no_aloha: u32,
     at: bool, // the AT bit for the next TSCC inbound slot
     // what it does
@@ -305,6 +309,9 @@ impl Ms {
                 self.syscode = a.syscode;
                 self.nrand = a.nrand_wait;
                 self.backoff = a.backoff;
+                self.mask = a.mask;
+                self.aloha_addr = a.addr;
+                self.service_fn = a.service_function;
             }
             None => self.no_aloha += 1,
         }
@@ -484,7 +491,8 @@ impl Ms {
             }
             // no answer: back off and try again
             self.tries += 1;
-            if self.tries >= TRIES {
+            let tries = if self.cur.flags & F_EMERGENCY != 0 { TRIES_EMERGENCY } else { TRIES };
+            if self.tries >= tries {
                 self.last_reason = 0;
                 self.done(false);
                 return None;
@@ -499,9 +507,35 @@ impl Ms {
         if self.at {
             return None; // the slot is kept for a solicited answer
         }
+        if !self.invited() {
+            return None; // not this MS's subset or service this time: a later Aloha may invite it
+        }
         self.wait = 0;
         self.resp_wait = nwait_frames(self.nrand) + 2;
         Some(pdu_tx(self.pdu, self))
+    }
+
+    /// Whether the last C_ALOHA invites this access: its Mask (6.2.1.1.1: the Mask least significant bits of the
+    /// Aloha's address against the MS's; an emergency request ignores it, except Mask 24) and its Service Function
+    /// (6.2.1.1.2, table 6.1; not checked for an emergency request).
+    fn invited(&self) -> bool {
+        let emergency = self.cur.flags & F_EMERGENCY != 0;
+        let m = self.mask.min(24) as u32;
+        let bits = if m == 0 { 0 } else { (1u32 << m) - 1 };
+        if (!emergency || m == 24) && (self.id ^ self.aloha_addr) & bits != 0 {
+            return false;
+        }
+        if emergency {
+            return true;
+        }
+        let registration = matches!(self.cur.what, DO_REGISTER | DO_DEREGISTER);
+        let payload = matches!(self.cur.what, DO_GROUP | DO_PRIVATE | DO_ANSWER);
+        match self.service_fn & 3 {
+            0 => true,
+            1 => registration || payload,
+            2 => registration || !payload,
+            _ => registration,
+        }
     }
 
     fn tx_payload(&mut self, k: i64) -> Option<MsTx> {
@@ -528,7 +562,7 @@ impl Ms {
         }
         if self.maint_left > 0 {
             self.maint_left -= 1;
-            let m = Maint { kind: MAINT_DISCON, target: dst, source: self.id };
+            let m = Maint { kind: MAINT_DISCON, target: TSI, source: self.id }; // table 7.32
             return Some(MsTx { ch: self.ch as u8, kind: TX_PDU, dt: DT_CSBK, pdu: m.encode(), ..Default::default() });
         }
         None
