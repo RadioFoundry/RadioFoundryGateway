@@ -232,7 +232,7 @@ status and UDT requests likewise.
 | `setup_s` | wait for a network setup answer | 5 | 1-30 |
 | `start_grace_s` | a granted channel waits this long, past the hang, for the first voice | 2 | 0-10 |
 
-The parser is `common/src/t3cfg.c` (`rdof/t3cfg.h`); it takes the same keys from the manager's `cfg/net` and
+The parser is `rust/src/t3cfg.rs` (`rdof/t3cfg.h`); it takes the same keys from the manager's `cfg/net` and
 `cfg/node/{node}` (section 5.7).
 
 ## 4. Settings (config-v3 `tier3` app)
@@ -656,10 +656,11 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
   labels each with its slot, and come up with the UTC slot of that parity nearest the burst's position. Three
   carriers or more, or carrier B on the SDR, are refused.
 - `--state-dir DIR`: the `cfg` cache (`cfg-cache.json`, one document a line, rewritten on each change).
-- `--sim-air N`: no SDR, no split radio: the Tier III unit runs against the MS simulator (`rdof/t3sim.h`: N radios,
-  `--sim-id`, `--sim-tg`, `--sim-talk S`, timed actions from `--sim-script FILE`), through the full burst path (the
-  simulator's PDUs are built into bursts and parsed back), with real mqtt-net, slot k = wall clock ms / 30. Two
-  rdofradios with `--sim-air` and different `site` numbers make a two-site system on one computer.
+- `--sim-air N`: no SDR, no split radio: the Tier III unit runs against the MS simulator (`rdof/t3sim.h`, in Rust
+  `rust/src/t3sim.rs`: N radios, `--sim-id`, `--sim-tg`, `--sim-talk S`, timed actions from `--sim-script FILE`),
+  through the full burst path (the simulator's PDUs are built into bursts and parsed back), with real mqtt-net, slot
+  k = wall clock ms / 30. Two rdofradios with `--sim-air` and different `site` numbers make a two-site system on one
+  computer.
 - `--sim-ext PATH`: external MSs (other programs, such as a radio's MS engine built for the host) on the simulated
   air, through a unix socket, beside the N simulated ones (N may be 0). JSON lines in lockstep with the slots: after
   slot k each client gets what every carrier aired (the burst, its data type and CC, the PDU when its CRC passed, the

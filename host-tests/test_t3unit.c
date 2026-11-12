@@ -5,6 +5,7 @@
  * whose record has dst}): registration and its records, a wide group call heard at the other site, an individual
  * call across the sites through the setup, provisioning (cfg/net), commands, and a restart that reads the records
  * back. */
+#include <stdalign.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -422,9 +423,29 @@ static void test_memory(void)
     free(mem);
 }
 
+/* rdof/t3sim.h's Rust (rust/src/t3sim.rs) mirrors its structs: the same layouts. */
+const rdof_t3_layout_t *rdof_t3sim_layout(size_t i);
+
+static void test_sim_layouts(void)
+{
+    static const rdof_t3_layout_t c[] = {LAYOUT(rdof_t3sim_in_t), LAYOUT(rdof_t3sim_out_t), LAYOUT(rdof_t3sim_t)};
+    const size_t n = sizeof c / sizeof c[0];
+    size_t i = 0;
+    for (const rdof_t3_layout_t *r; (r = rdof_t3sim_layout(i)) && r->name; i++) {
+        CHECK(i < n, "rust lists %s, C doesn't", r->name);
+        if (i >= n)
+            break;
+        CHECK(strcmp(r->name, c[i].name) == 0, "%zu: rust %s, C %s", i, r->name, c[i].name);
+        CHECK(r->size == c[i].size && r->align == c[i].align, "%s: rust %zu/%zu, C %zu/%zu", c[i].name, r->size,
+              r->align, c[i].size, c[i].align);
+    }
+    CHECK(i == n, "rust lists %zu structs, C %zu", i, n);
+}
+
 int main(void)
 {
     test_layouts();
+    test_sim_layouts();
     test_memory();
     site_open(&A, 0, "site-a", 3, 3100001, T0);
     site_open(&Bs, 1, "site-b", 4, 3100101, T0);

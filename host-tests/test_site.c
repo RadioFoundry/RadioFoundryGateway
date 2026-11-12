@@ -648,6 +648,7 @@ static void test_siteroute(const char *dir)
     }
 }
 
+#if RDOF_RUST_T3 /* the Tier III unit's settings (rdof/t3cfg.h) are rust's (tier3) */
 /* A trunked site's file: its plan, what a host runs, the Tier III unit's settings and the SDR's. */
 static bool trunk_taken(const char *t, size_t len, char *err, size_t cap)
 {
@@ -678,6 +679,7 @@ static bool apply_text(const char *text, const char *path, rdof_t3_cfg_t *cfg, r
     }
     return rdof_t3cfg_apply(&doc, root, path, cfg, pol, err, cap) && rdof_t3cfg_check(cfg, err, cap);
 }
+#endif
 
 /* The Tier III unit: its devices, its carriers, its settings (rdof/t3cfg.h), and the manager's documents over them. */
 static void test_trunk(const char *dir)
@@ -692,7 +694,13 @@ static void test_trunk(const char *dir)
     if (!pl)
         return;
     const rdof_site_t *s = rdof_plan_site(pl);
+#if RDOF_RUST_T3
     int u = rdof_t3cfg_unit(pl);
+#else
+    int u = -1;
+    for (int k = 0; u < 0 && k < rdof_plan_nunits(pl); k++)
+        u = rdof_plan_unit(pl, k)->kind == RDOF_UNIT_TIER3 ? k : -1;
+#endif
     CHECK(u >= 0 && !strcmp(rdof_plan_unit(pl, u)->name, "site"), "the Tier III unit");
     int rx = -1, tx = -1, d0 = -1, d1 = -1;
     for (int d = 0; d < s->ndev; d++) {
@@ -714,6 +722,7 @@ static void test_trunk(const char *dir)
           "a host: %s", err);
     static rdof_config_t rc;
     CHECK(!rdof_plan_radio(pl, "site", &rc, err, sizeof err) && strstr(err, "trunked site"), "no radio: %s", err);
+#if RDOF_RUST_T3
     static rdof_t3_cfg_t c;
     static rdof_t3_policy_t pol;
     CHECK(rdof_t3cfg_plan(pl, -1, &c, &pol, err, sizeof err), "cfg: %s", err);
@@ -727,7 +736,9 @@ static void test_trunk(const char *dir)
     CHECK(!pol.wide_tg.all && pol.wide_tg.n == 1 && pol.wide_tg.r[0].lo == 1 && pol.wide_tg.r[0].hi == 99999,
           "wide_tg");
     CHECK(!pol.static_tg.all && !pol.static_tg.n, "no static_tg");
+#endif
     rdof_plan_close(pl);
+#if RDOF_RUST_T3
 
     /* cfg/net over it, then cfg/node */
     CHECK(apply_text("{\"rev\": 12, \"system\": {\"model\": \"large\", \"net\": 9}, \"registration\": \"listed\", "
@@ -781,6 +792,7 @@ static void test_trunk(const char *dir)
     CHECK(apply_text("{\"system\": {\"model\": \"tiny\", \"net\": 511, \"site\": 7}}", "x", &c, &pol, err, sizeof err) &&
               c.area_bits == 3,
           "tiny: %s", err);
+#endif
 }
 
 /* Every fixture: good- taken, bad- refused; a good one's units and SDR parse. */
@@ -801,8 +813,15 @@ static void test_fixtures(const char *dir)
         bool good = !strncmp(e->d_name, "good-", 5);
         bool ok = rdof_site_parse(t, len, &S, err, sizeof err);
         const bool trunk = ok && rdof_site_app_of(&S, RDOF_APP_TIER3) >= 0;
+#if RDOF_RUST_T3
         if (trunk)
             ok = trunk_taken(t, len, err, sizeof err);
+#else
+        if (trunk) { /* the Tier III unit's settings are rust's (tier3): not checked here */
+            free(t);
+            continue;
+        }
+#endif
         CHECK(ok == good, "%s: %s", e->d_name, ok ? "taken" : err);
         if (!good)
             printf("  %s: %s\n", e->d_name, err);

@@ -47,6 +47,25 @@ static void test_layouts(void)
     CHECK(i == n, "rust lists %zu structs, C %zu", i, n);
 }
 
+/* rdof/t3cfg.h's Rust (rust/src/t3cfg.rs) mirrors mnctl.h's provisioning struct: the same layouts. */
+const rdof_t3_layout_t *rdof_t3cfg_layout(size_t i);
+
+static void test_cfg_layouts(void)
+{
+    static const rdof_t3_layout_t c[] = {LAYOUT(rdof_mn_timer_t), LAYOUT(rdof_mn_site_cfg_t)};
+    const size_t n = sizeof c / sizeof c[0];
+    size_t i = 0;
+    for (const rdof_t3_layout_t *r; (r = rdof_t3cfg_layout(i)) && r->name; i++) {
+        CHECK(i < n, "rust lists %s, C doesn't", r->name);
+        if (i >= n)
+            break;
+        CHECK(strcmp(r->name, c[i].name) == 0, "%zu: rust %s, C %s", i, r->name, c[i].name);
+        CHECK(r->size == c[i].size && r->align == c[i].align, "%s: rust %zu/%zu, C %zu/%zu", c[i].name, r->size,
+              r->align, c[i].size, c[i].align);
+    }
+    CHECK(i == n, "rust lists %zu structs, C %zu", i, n);
+}
+
 static rdof_t3_site_t *new_site(const rdof_t3_cfg_t *cfg)
 {
     rdof_t3_site_t *s = aligned_alloc(16, (rdof_t3_site_size() + 15) & ~(size_t)15);
@@ -141,7 +160,7 @@ static void run(struct air *a, int ms)
         step(a);
 }
 
-/* The settings parser's defaults (C, built without the controller) are the controller's. */
+/* The settings parser's defaults (rust/src/t3cfg.rs) are the controller's. */
 static void test_cfg_defaults(void)
 {
     rdof_t3_cfg_t a, b;
@@ -214,6 +233,7 @@ static void test_scenario(void)
 int main(void)
 {
     test_layouts();
+    test_cfg_layouts();
     test_settings();
     test_cfg_defaults();
     test_scenario();

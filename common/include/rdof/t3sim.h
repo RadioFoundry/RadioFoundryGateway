@@ -7,7 +7,7 @@
  * bursts (control blocks with the MS data sync, voice headers and terminators with their LC, voice) and heard by the
  * site (rdof_t3unit_rx). Two MSs in one TSCC inbound slot collide: the site hears a burst whose CRC fails.
  *
- * What rdofradio --sim-air runs, and the host tests. Needs the controller (rust's t3 feature), as trunkunit does.
+ * What rdofradio --sim-air runs, and the host tests. In Rust (rust/src/t3sim.rs, the tier3 feature).
  */
 #ifndef RDOF_T3SIM_H
 #define RDOF_T3SIM_H

@@ -97,6 +97,8 @@ bool rdof_t3unit_slot(rdof_t3unit_t *u, int c, int64_t k, uint8_t burst[RDOF_BUR
    slot on air now). */
 void rdof_t3unit_split_pump(rdof_t3unit_t *u, rdof_t3rf_split_t *o, struct rdof_split *s, int64_t k_now,
                                double now);
+/* The settings that run (the settings file's, provisioning over them). */
+const rdof_t3_cfg_t *rdof_t3unit_cfg(const rdof_t3unit_t *u);
 /* The AT bit of the TSCC carrier's CACH after slot k (before k + 1): 0, 1; -1 not held. */
 int rdof_t3unit_at(const rdof_t3unit_t *u, int64_t k);
 /* A burst heard on carrier c's inbound under slot k. */
