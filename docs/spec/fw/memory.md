@@ -161,6 +161,7 @@ Per role, what is declared (bytes; "×n" a count). Sizes are the code's; the SDR
 | `usb` | `usb_lib`, `usb_kick` | 4096, 2560 | internal | alloc | anything planned on USB |
 | | `host` | 4096 | DMA | budget | |
 | `board` | `httpd`, `wifilist`, `netclock` | 9216, 4096, 6144 | internal | budget | always |
+| | `mqtt_net` | `MQTT_CLIENT_INTERNAL` (9728) | internal | budget | an mqtt network with `format: "v3"`, on an image with the transceiver |
 | | `oled` | 4096 | internal | budget | `CONFIG_RDOF_OLED` and a role |
 
 Not planned: Wi-Fi and lwIP (the margin), mbedTLS (PSRAM on 16mb), the DSP's other buffers (§5), the page's spectrum,

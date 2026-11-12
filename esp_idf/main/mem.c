@@ -123,6 +123,12 @@ static void board_claims(void)
     mem_add("board", "httpd", 8192 + 1024, 4, RDOF_MEM_INTERNAL, RDOF_MEM_BUDGET); /* web.c's stack_size, its state */
     mem_add("board", "wifilist", 4096, 4, RDOF_MEM_INTERNAL, RDOF_MEM_BUDGET);
     mem_add("board", "netclock", 6144, 4, RDOF_MEM_INTERNAL, RDOF_MEM_BUDGET); /* its NTP task, once Wi-Fi is up */
+#if CONFIG_RDOF_ROAMER
+    /* the MQTT network's own connection (format v3; mqttnet_task.c): esp-mqtt's task and state, as a role's. It had
+     * no claim, and came out of the margin: on a W12 with both reporting connections its task's 6 KB was refused */
+    if (site_mn_net() >= 0)
+        mem_add("board", "mqtt_net", MQTT_CLIENT_INTERNAL, 4, RDOF_MEM_INTERNAL, RDOF_MEM_BUDGET);
+#endif
 #if CONFIG_RDOF_OLED
     if (g_roles.has_sdr || g_roles.has_radio)
         mem_add("board", "oled", 4096, 4, RDOF_MEM_INTERNAL, RDOF_MEM_BUDGET);
