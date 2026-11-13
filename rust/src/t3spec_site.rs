@@ -1133,3 +1133,16 @@ fn cc_and_channel_ranges() {
     assert!(!accepts(|c| c.carriers[0].chan = 0));
     assert!(!accepts(|c| c.carriers[0].chan = 4095));
 }
+
+/// A standard radio's registration with one talkgroup, its bytes as captured from a RadioFoundry radio on the
+/// bench (2026-11-13): 9F 00 02 4E 000001 2F63CA. Service_Options 0000001b (register), TRGT_ADR_CNTS 01b, the
+/// talkgroup in the target (6.4.4.1, table 6.9). Accepted, and the talkgroup is the record's subscription.
+#[test]
+fn registration_with_talkgroup_captured() {
+    let mut r = Rig::new(|_| {});
+    let pdu = [0x9F, 0x00, 0x02, 0x4E, 0x00, 0x00, 0x01, 0x2F, 0x63, 0xCA];
+    let k = r.send(pdu);
+    let (_, (_, reason, _, _)) = r.ack_to(k, 30, 3105738).expect("answered");
+    let rec = r.s.record(3105738).expect("registered");
+    assert_eq!((reason, rec.sub_tg), (0x62, 1), "reason {reason:#04x}, subscription {}", rec.sub_tg);
+}
