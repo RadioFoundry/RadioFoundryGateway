@@ -77,6 +77,28 @@ typedef struct {
  * waits on the port. False with err set (carrier 2's out on another device, a carrier past the TX LO's reach). */
 bool rdofradio_t3_start(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o, struct rdof_sdrmodem *m,
                            const rdofradio_t3_dev_t *dev, char *err, size_t cap);
+/* --tier3 FILE with --mmdvm: the site's one carrier on a stock duplex MMDVM modem (docs/spec/fw/tier3-hat.md,
+ * rdof/t3hat.h). The modem keeps its own slot clock; the receiver hears the carrier's out (dev->channel on its tx) and
+ * the bursts there give the modem's slot grid, and a writer thread writes each trunk slot's burst a lead before its
+ * air time (lead_idle_s, or lead_busy_s where the burst should set the AT of the CACH before it busy) and the short LC
+ * as each 4-slot cycle starts. What the receiver hears on the carrier's in is placed on the grid by its position. The
+ * modem is set up (duplex, DMR, DMR_START) by the caller. */
+typedef struct {
+    bool (*write)(const uint8_t *frame, size_t n); /* a whole frame to the modem, from the writer thread */
+    double lead_idle_s, lead_busy_s;
+} rdofradio_t3_hat_t;
+bool rdofradio_t3_start_hat(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o, const rdofradio_t3_dev_t *dev,
+                            const rdofradio_t3_hat_t *hat, char *err, size_t cap);
+/* A bench job has the modem (true; nothing written, the grid dropped), or it's back (false: set up again first). */
+void rdofradio_t3_hat_pause(bool pause);
+/* An outbound burst of carrier 1 heard (without a receiver: the simulated modem's). */
+void rdofradio_t3_hat_heard(int64_t pos48, int slot, int at, int lcss, const uint8_t burst[33]);
+/* --mmdvm sim-hat: the stock modem simulated on a socket (ppm: its clock's error; fetch_s: how long before a slot's
+ * air time it takes its burst); returns rdofradio's end, -1 with err set. What it sends goes to
+ * rdofradio_t3_hat_heard, its slots' positions at 48 kS/s on CLOCK_MONOTONIC (the device's now48 without an SDR). */
+int rdofradio_t3_hat_sim(double ppm, double fetch_s, char *err, size_t cap);
+/* After rdofradio's end is closed. */
+void rdofradio_t3_hat_sim_stop(void);
 bool rdofradio_t3_on(void);
 /* A burst the receiver heard on its channel c: carrier 1's inbound (the modem places it), carrier 2's (the split's
  * RX half), else nothing. */

@@ -66,6 +66,8 @@ pub mod usbmatch;
 #[cfg(feature = "t3")]
 pub mod t3air;
 #[cfg(feature = "t3")]
+pub mod t3hat;
+#[cfg(feature = "t3")]
 pub mod t3auth;
 #[cfg(feature = "t3")]
 pub mod t3ms;

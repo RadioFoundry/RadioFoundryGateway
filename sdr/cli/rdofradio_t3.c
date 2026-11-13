@@ -12,14 +12,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
 
+#include "rdof/duplex.h"
+#include "rdof/mmdvm.h"
 #include "rdof/mnctl.h"
 #include "rdof/mqttnet.h"
 #include "rdof/sdr/sdrmodem.h"
 #include "rdof/sdr/t3split.h"
 #include "rdof/t3.h"
+#include "rdof/t3hat.h"
 #include "rdof/t3sim.h"
 #include "rdof/t3unit.h"
 #ifdef RDOF_MQTT
@@ -1275,6 +1279,392 @@ static bool b_start(const rdofradio_t3_cfg_t *t, char *err, size_t cap)
     return true;
 }
 
+/* ── carrier 1 on a duplex MMDVM modem (--tier3 with --mmdvm; docs/spec/fw/tier3-hat.md) ─────────────────────── */
+
+#define HAT_KEEP_S 0.058   /* before the grid is placed: an idle burst on TS1 this often holds the carrier */
+#define HAT_REPORT_S 10.0
+static struct {
+    bool on, paused;
+    rdof_t3hat_t *h;
+    rdofradio_t3_hat_t io;
+    pthread_t thread;
+    volatile bool quit;
+    int out_chan, in_chan, cc;
+    int64_t k_next;       /* the next trunk slot it may place on */
+    double last_keep;
+    uint8_t slc[9];       /* the last DMR_SHORTLC sent */
+    bool slc_sent;
+    uint32_t keeps, slcs, heard_out, heard_in, in_unplaced, airs_at[2];
+    uint32_t at_same, at_diff; /* the AT heard before a slot of ours against the controller's (after the slot before) */
+    double next_report;
+    rdof_t3hat_stats_t last;
+} H = {.out_chan = -1, .in_chan = -1};
+
+static bool hat_frame(uint8_t cmd, const uint8_t *p, size_t n)
+{
+    uint8_t f[64];
+    const size_t len = rdof_mmdvm_frame(cmd, p, n, f, sizeof f);
+    return len && H.io.write(f, len);
+}
+
+/* slc28 as DMR_SHORTLC's 9 bytes: its four CACH rows joined */
+static void hat_slc9(uint32_t slc28, uint8_t out[9])
+{
+    static const int at[4] = {0, 0, 0, 0};
+    uint8_t c[4][3];
+    uint32_t rows[4];
+    rdof_t3rf_cach4(slc28, at, 0, c);
+    for (int q = 0; q < 4; q++) {
+        int a, slot, lcss;
+        rdof_t3rf_cach_read(c[q], &a, &slot, &lcss, &rows[q]);
+    }
+    rdof_short_lc_join(rows, out);
+}
+
+/* trunk slot k to the modem, lead s before its air time; T.mu held */
+static void hat_write(int64_t k, double now, double lead)
+{
+    uint8_t burst[RDOF_BURST_BYTES], control = 0;
+    int at = -1;
+    int32_t slc28 = -1;
+    rdof_t3unit_set_now(T.u, wall_ms());
+    const bool ok = rdof_t3unit_slot(T.u, 0, k, burst, &control, &at, &slc28);
+    air_in(k);
+    air_out(0, k, burst, ok);
+    if (!ok) { /* nothing on it: an idle burst, so the modem keeps both slots as the host's */
+        rdof_duplex_idle(H.cc, burst);
+        control = RDOF_SYNC_DATA | 9;
+    }
+    if ((k & 3) == 0) { /* the short LC for the 4 CACH from k: latched by the modem as the cycle starts */
+        int64_t slc = rdof_t3unit_slc(T.u, 0, k);
+        if (slc < 0)
+            slc = slc28;
+        if (slc >= 0) {
+            uint8_t s9[9];
+            hat_slc9((uint32_t)slc, s9);
+            if (!H.slc_sent || memcmp(s9, H.slc, 9)) {
+                hat_frame(RDOF_MMDVM_DMR_SHORTLC, s9, 9);
+                memcpy(H.slc, s9, 9);
+                H.slc_sent = true;
+                H.slcs++;
+            }
+        }
+    }
+    uint8_t p[1 + RDOF_BURST_BYTES];
+    p[0] = control;
+    memcpy(p + 1, burst, RDOF_BURST_BYTES);
+    hat_frame((k & 1) ? RDOF_MMDVM_DMR_DATA2 : RDOF_MMDVM_DMR_DATA1, p, sizeof p);
+    rdof_t3hat_wrote(H.h, k, burst, now, lead);
+}
+
+static void hat_events(void)
+{
+    int kind, ts;
+    int64_t k, m;
+    double v[4];
+    while (rdof_t3hat_event(H.h, &kind, &ts, &k, &m, v)) {
+        if (kind == RDOF_T3HAT_GRID)
+            tsay("carrier 1 (modem): its slot grid from what the receiver hears%s", H.last.grids ? " (again: it keyed up anew)" : "");
+        else if (kind == RDOF_T3HAT_PLACE)
+            tsay("carrier 1 (modem): trunk slot %lld is its slot %lld", (long long)k, (long long)m);
+        else if (kind == RDOF_T3HAT_AIR) {
+            if (v[0] != 0 && T.o.verbose)
+                tsay("carrier 1 (modem): slot %lld aired %+.0f slots off (written %.1f ms ahead)", (long long)k, v[0],
+                     v[2] * 1e3);
+            if (ts == 2 && v[0] == 0)
+                H.airs_at[v[3] > 0]++;
+            const int want = rdof_t3unit_at(T.u, k - 1);
+            if (v[0] == 0 && want >= 0 && v[3] >= 0) {
+                if ((want > 0) == (v[3] > 0))
+                    H.at_same++;
+                else
+                    H.at_diff++;
+            }
+        }
+        H.last.grids += kind == RDOF_T3HAT_GRID;
+    }
+}
+
+static void *hat_writer(void *arg)
+{
+    (void)arg;
+    while (!H.quit) {
+        const struct timespec ts = {0, 1000000L};
+        nanosleep(&ts, NULL);
+        pthread_mutex_lock(&T.mu);
+        if (H.paused || !T.on) {
+            pthread_mutex_unlock(&T.mu);
+            continue;
+        }
+        const double now = DEV.now();
+        rdof_t3hat_stats_t st;
+        rdof_t3hat_stats(H.h, &st);
+        if (!st.placed) { /* the trunk's slots follow the wall clock until placed (then each in turn) */
+            int64_t w = wall_ms() / 30 + 2;
+            w += w & 1;
+            if (w > H.k_next)
+                H.k_next = w;
+        }
+        int64_t k;
+        double air;
+        if (!rdof_t3hat_next(H.h, now, H.k_next, &k, &air)) {
+            if (now - H.last_keep >= HAT_KEEP_S) {
+                uint8_t p[1 + RDOF_BURST_BYTES];
+                p[0] = RDOF_SYNC_DATA | 9;
+                rdof_duplex_idle(H.cc, p + 1);
+                hat_frame(RDOF_MMDVM_DMR_DATA1, p, sizeof p);
+                H.last_keep = now;
+                H.keeps++;
+            }
+        } else {
+            /* written early, the slot's burst sets the AT of the CACH after slot k - 2: the controller's */
+            const int at = rdof_t3unit_at(T.u, k - 2);
+            const double lead = rdof_t3hat_lead(H.h, at > 0);
+            if (now >= air - lead) {
+                if (!rdof_t3hat_dropping(H.h, k))
+                    hat_write(k, now, air - now);
+                H.k_next = k + 1;
+            }
+        }
+        hat_events();
+        pthread_mutex_unlock(&T.mu);
+    }
+    return NULL;
+}
+
+/* an outbound burst heard on carrier 1's out; T.mu held */
+static void hat_heard_out(int64_t pos48, int slot, int at, int lcss, const uint8_t burst[RDOF_BURST_BYTES])
+{
+    rdof_t3hat_heard(H.h, pos48, slot, at, lcss, burst, NULL);
+    H.heard_out++;
+}
+
+void rdofradio_t3_hat_heard(int64_t pos48, int slot, int at, int lcss, const uint8_t burst[RDOF_BURST_BYTES])
+{
+    if (!H.on)
+        return;
+    pthread_mutex_lock(&T.mu);
+    hat_heard_out(pos48, slot, at, lcss, burst);
+    pthread_mutex_unlock(&T.mu);
+}
+
+/* what the receiver heard on carrier 1's out or in; T.mu not held */
+static void hat_rx(int c, const rdof_sdr_burst_t *b)
+{
+    if (c == H.out_chan) {
+        int at = -1, slot = b->b.slot, lcss = -1;
+        uint32_t pl;
+        if (b->has_cach && !rdof_t3rf_cach_read(b->cach, &at, &slot, &lcss, &pl))
+            at = -1, slot = b->b.slot, lcss = -1;
+        pthread_mutex_lock(&T.mu);
+        hat_heard_out(b->position, slot, at, lcss, b->b.burst);
+        pthread_mutex_unlock(&T.mu);
+    }
+    if (c == H.in_chan) {
+        pthread_mutex_lock(&T.mu);
+        const int64_t k = rdof_t3hat_inbound_k(H.h, b->position);
+        if (k >= 0) {
+            rdof_t3unit_rx(T.u, 0, k, &b->b, 0);
+            H.heard_in++;
+            if (T.o.verbose)
+                tsay("carrier 1 (modem): heard %s dt %d on TS%d, trunk slot %lld", rdof_family_name(b->b.family),
+                     b->b.dt, b->b.slot, (long long)k);
+        } else {
+            H.in_unplaced++;
+        }
+        pthread_mutex_unlock(&T.mu);
+    }
+}
+
+/* the main loop's; T.mu held */
+static void hat_poll(double now)
+{
+    rdof_t3hat_clock(H.h, now, DEV.now48());
+    if (now < H.next_report)
+        return;
+    H.next_report = now + HAT_REPORT_S;
+    rdof_t3hat_stats_t s;
+    rdof_t3hat_stats(H.h, &s);
+    const rdof_t3hat_stats_t *l = &H.last;
+    tsay("carrier 1 (modem): %u written, %u on their slot, %u late, %u early, %u lost, %u skipped, %u its own; "
+         "%u heard out, %u in; write to air %.1f-%.1f ms; its clock %+.2f ppm; AT busy %u of %u, as the controller's "
+         "%u of %u",
+         s.written - l->written, s.on_time - l->on_time, s.late - l->late, s.early - l->early, s.lost - l->lost,
+         s.skipped - l->skipped, s.fills - l->fills, H.heard_out, H.heard_in,
+         s.on_time > l->on_time ? s.delay_min * 1e3 : 0.0, s.on_time > l->on_time ? s.delay_max * 1e3 : 0.0, s.ppm,
+         H.airs_at[1], H.airs_at[0] + H.airs_at[1], H.at_same, H.at_same + H.at_diff);
+    const uint32_t grids = H.last.grids;
+    H.last = s;
+    H.last.grids = grids;
+    H.heard_out = H.heard_in = 0;
+    H.airs_at[0] = H.airs_at[1] = 0;
+    H.at_same = H.at_diff = 0;
+}
+
+void rdofradio_t3_hat_pause(bool pause)
+{
+    if (!H.on)
+        return;
+    pthread_mutex_lock(&T.mu);
+    if (pause != H.paused) {
+        H.paused = pause;
+        rdof_t3hat_reset(H.h);
+        H.slc_sent = false;
+        tsay("carrier 1 (modem): %s", pause ? "a bench job has the modem: paused" : "the modem is back: on again");
+    }
+    pthread_mutex_unlock(&T.mu);
+}
+
+bool rdofradio_t3_start_hat(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o, const rdofradio_t3_dev_t *dev,
+                            const rdofradio_t3_hat_t *hat, char *err, size_t cap)
+{
+    const rdofradio_t3_cfg_t *t = &c->t;
+    if (t->ncar != 1) {
+        snprintf(err, cap, "%s: %d carriers: on a modem the site runs one", t->name, t->ncar);
+        return false;
+    }
+    DEV = *dev;
+    H.io = *hat;
+    H.cc = t->cfg.cc;
+    H.out_chan = DEV.channel(t->car[0].tx_hz);
+    H.in_chan = DEV.channel(t->car[0].rx_hz);
+    H.h = aligned_alloc(16, (rdof_t3hat_size() + 15) / 16 * 16);
+    if (!H.h) {
+        snprintf(err, cap, "no memory");
+        return false;
+    }
+    rdof_t3hat_init(H.h, hat->lead_idle_s, hat->lead_busy_s);
+    rdof_t3hat_set_leads(H.h, hat->lead_idle_s, hat->lead_busy_s, hat->lead_idle_s - 0.01);
+    if (!start_common(c, o, err, cap))
+        return false;
+    if (!air_start(o, err, cap)) {
+        stop_common();
+        return false;
+    }
+    H.k_next = 0;
+    H.quit = false;
+    H.paused = false;
+    H.next_report = DEV.now() + HAT_REPORT_S;
+    H.on = true;
+    if (pthread_create(&H.thread, NULL, hat_writer, NULL)) {
+        H.on = false;
+        air_stop();
+        stop_common();
+        snprintf(err, cap, "the modem's writer: no thread");
+        return false;
+    }
+    tsay("carrier 1 on the modem (tx %.5f, rx %.5f MHz): the receiver %s its out, %s its in; leads %.1f / %.1f ms",
+         t->car[0].tx_hz / 1e6, t->car[0].rx_hz / 1e6, H.out_chan >= 0 ? "hears" : "doesn't hear",
+         H.in_chan >= 0 ? "hears" : "doesn't hear", hat->lead_idle_s * 1e3, hat->lead_busy_s * 1e3);
+    return true;
+}
+
+static void hat_stop(void)
+{
+    if (!H.on)
+        return;
+    H.quit = true;
+    pthread_join(H.thread, NULL);
+    rdof_t3hat_stats_t s;
+    rdof_t3hat_stats(H.h, &s);
+    tsay("carrier 1 (modem): %u written, %u on their slot, %u late, %u early, %u lost, %u skipped, %u its own, "
+         "%u grids, %u short LCs; its clock %+.2f ppm", s.written, s.on_time, s.late, s.early, s.lost, s.skipped,
+         s.fills, s.grids, H.slcs, s.ppm);
+    H.on = false;
+    free(H.h);
+    H.h = NULL;
+}
+
+/* --mmdvm sim-hat: the stock modem simulated (rdof/t3hat.h) on a socket; what it sends heard as the receiver would */
+static struct {
+    bool on;
+    volatile bool quit;
+    int fd;
+    pthread_t thread;
+    rdof_t3hatsim_t *s;
+    double rx_delay;
+    uint32_t rng;
+} HS = {.fd = -1, .rng = 1};
+
+static double mono_s(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + ts.tv_nsec / 1e9;
+}
+
+static void *hat_sim_thread(void *arg)
+{
+    (void)arg;
+    while (!HS.quit) {
+        struct pollfd pf = {HS.fd, POLLIN, 0};
+        const int r = poll(&pf, 1, 1);
+        const double now = mono_s();
+        if (r > 0 && (pf.revents & POLLIN)) {
+            uint8_t b[512];
+            const ssize_t n = read(HS.fd, b, sizeof b);
+            if (n <= 0)
+                break;
+            rdof_t3hatsim_input(HS.s, now, b, (size_t)n);
+        }
+        rdof_t3hatsim_run(HS.s, now);
+        uint8_t out[512];
+        const size_t n = rdof_t3hatsim_output(HS.s, out, sizeof out);
+        if (n && write(HS.fd, out, n) != (ssize_t)n)
+            break;
+        int64_t m;
+        int slot, at, lcss, frag;
+        double t;
+        uint8_t burst[RDOF_BURST_BYTES], slc9[9];
+        bool host;
+        while (rdof_t3hatsim_aired(HS.s, now - HS.rx_delay, &m, &slot, &t, burst, &host, &at, &lcss, slc9, &frag)) {
+            /* a receiver's position wanders by a sample or so: whole samples alone would alias with the slot */
+            HS.rng = HS.rng * 1103515245u + 12345u;
+            const double dither = (double)(HS.rng >> 8 & 0xffff) / 65536.0 - 0.5;
+            rdofradio_t3_hat_heard((int64_t)llround(t * 48000.0 + dither), slot, at, lcss, burst);
+        }
+    }
+    return NULL;
+}
+
+int rdofradio_t3_hat_sim(double ppm, double fetch_s, char *err, size_t cap)
+{
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv)) {
+        snprintf(err, cap, "sim-hat: %s", strerror(errno));
+        return -1;
+    }
+    HS.s = aligned_alloc(16, (rdof_t3hatsim_size() + 15) / 16 * 16);
+    if (!HS.s) {
+        close(sv[0]), close(sv[1]);
+        snprintf(err, cap, "sim-hat: no memory");
+        return -1;
+    }
+    rdof_t3hatsim_init(HS.s, ppm, fetch_s, 8);
+    HS.fd = sv[1];
+    HS.rx_delay = 0.004;
+    HS.quit = false;
+    if (pthread_create(&HS.thread, NULL, hat_sim_thread, NULL)) {
+        close(sv[0]), close(sv[1]);
+        free(HS.s);
+        snprintf(err, cap, "sim-hat: no thread");
+        return -1;
+    }
+    HS.on = true;
+    return sv[0];
+}
+
+void rdofradio_t3_hat_sim_stop(void)
+{
+    if (!HS.on)
+        return;
+    HS.quit = true;
+    pthread_join(HS.thread, NULL);
+    close(HS.fd);
+    free(HS.s);
+    HS.on = false;
+}
+
 bool rdofradio_t3_start(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o, rdof_sdrmodem_t *m,
                            const rdofradio_t3_dev_t *dev, char *err, size_t cap)
 {
@@ -1357,6 +1747,10 @@ void rdofradio_t3_heard(int c, const rdof_sdr_burst_t *b)
 {
     if (!T.on || c < 0)
         return;
+    if (H.on) {
+        hat_rx(c, b);
+        return;
+    }
     if (c == A.chan) {
         const int64_t k = M ? rdof_sdrmodem_inbound_k(M, b) : -1;
         pthread_mutex_lock(&T.mu);
@@ -1398,6 +1792,8 @@ void rdofradio_t3_poll(void)
     }
     pthread_mutex_lock(&T.mu);
     poll_locked(wall_ms());
+    if (H.on)
+        hat_poll(DEV.now());
     if (BC.up) {
         const double now = DEV.now();
         if (now >= BC.next_utc) { /* the host's clock follows NTP: the TX half follows it */
@@ -1477,6 +1873,7 @@ void rdofradio_t3_stop(void)
         rdof_sdrmodem_hold_key(&C2.m, false);
         c2_stop();
     }
+    hat_stop();
     b_stop();
     stop_common();
     air_stop();

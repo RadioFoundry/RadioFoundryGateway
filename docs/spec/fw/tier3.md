@@ -1228,6 +1228,9 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
 - The trunk's slot k is the UTC slot number, floor(UTC ms / 30). Carrier A's modem slots are moved onto it by an even
   offset taken at the first slot the modem asks for (again if its slots restart), so the modem's TS1 is LCN 0. The
   carriers aren't slot-synchronized (`site_sync` 0: the payload warm-up).
+- `--tier3 FILE` with `--mmdvm PORT`: a one-carrier site out of a stock duplex MMDVM modem, an SDR receiver hearing
+  its out and in; the trunk's slots follow the modem's own clock, placed by when each burst is written
+  ([tier3-hat.md](tier3-hat.md)).
 - Carrier B, the first build's second carrier, is a split TX half on its radio's port (`rdof/sdr/t3split.h`,
   `rust/src/t3split.rs`): one split of `rdof_sdrsplits` with the SDR's receiver as its RX half. Before the receiver
   starts, rdofradio brings the half up and sends the carrier's settings (`SET_CONFIG`, `SET_MODE`, `SET_FREQ`; no

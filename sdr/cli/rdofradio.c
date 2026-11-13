@@ -327,6 +327,15 @@ static struct {
     bool sim_fast;
 } t3_opts = {.sim_id = 1000001, .sim_tg = 9};
 static rdofradio_cfg_t rcfg;
+/* --tier3 FILE with --mmdvm: a trunked site's carrier on the modem (rdofradio_t3_start_hat), its settings beside
+ * --config's (the receiver's channels, the networks, the bench) */
+static const char *t3_path;
+static rdofradio_cfg_t t3cfg;
+static double hat_lead_ms[2] = {25, 55};
+static bool hat_on; /* the site has the modem */
+#ifdef RDOF_TIER3
+static bool hat_modem_up(void);
+#endif
 static bool t3_sdr2; /* a trunked site's carrier 2 sent by the SDR too: the TX LO between the two, fixed */
 #ifdef RDOF_HOST_WEB
 static char held[300]; /* hold (below): why the settings don't run, "" when they do */
@@ -545,6 +554,9 @@ static void usage(void)
             "       rdofradio DEVICE --allow-tx --config FILE (a trunked site) [--state-dir DIR] [the device's flags]\n"
             "                 [--air-ms N [--sim-id ID] [--sim-tg TG] [--sim-talk S]] [--sim-script FILE] (simulated MSs\n"
             "                 beside the radios on the air)\n"
+            "       rdofradio [DEVICE] --allow-tx --mmdvm PORT|sim-hat --config FILE --tier3 FILE [--hat-lead IDLE_MS,BUSY_MS]\n"
+            "                 [--air-ms N ...] (a trunked site's carrier on a stock duplex modem, the SDR hearing it;\n"
+            "                 sim-hat: the modem simulated, no SDR)\n"
             "       rdofradio --config FILE --sim-air N [--sim-id ID] [--sim-tg TG] [--sim-talk S] [--sim-script FILE]\n"
             "                 [--sim-ext PATH [--sim-fast] [--sim-ext-loss P] [--sim-ext-err P]]\n"
             "                 [--state-dir DIR] [--seconds S] [-v] (a trunked site's air simulated, rdofradio_t3.h)\n"
@@ -2860,6 +2872,17 @@ static void ob_clock(double now)
  * 1: the job may start; 0: not yet, the owner paused while the key-down ramps out; -1: not yet, the owner runs. */
 static int owner_yield(double now, double asked)
 {
+#ifdef RDOF_TIER3
+    if (hat_on) { /* the site stops writing; what it queued plays out in a few slots */
+        if (!RP.on) {
+            RP.on = true;
+            rdofradio_t3_hat_pause(true);
+            rdof_modem_dmr_start(&R.client, false);
+            say("bench: a job pauses the trunked site on the modem\n");
+        }
+        return 1;
+    }
+#endif
     if (R.mmdvm) {
         if (R.full) { /* a duplex repeater stops for the job and starts again after it (owner_resume) */
             if (!RP.on) {
@@ -2899,6 +2922,16 @@ static void owner_resume(bool txvr)
 {
     const bool was = RP.on;
     RP.on = false;
+#ifdef RDOF_TIER3
+    if (hat_on) {
+        if (!rdof_modem_start(&R.client, 1) || !hat_modem_up())
+            say("bench: the modem didn't go back to the trunked site: %s\n", R.client.error);
+        else
+            say("bench: the modem is the trunked site's again\n");
+        rdofradio_t3_hat_pause(false);
+        return;
+    }
+#endif
     if (R.full && was) {
         if (R.tx_lo != RP.lo) {
             if (!dev || !dev->set_tx_freq || dev->set_tx_freq(dev, RP.lo))
@@ -6014,6 +6047,7 @@ out:
 /* a whole frame to the modem, its RF level capped */
 static bool mm_write(const uint8_t *d, size_t n)
 {
+    static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER; /* a trunked site's writer thread writes too */
     uint8_t f[RDOF_MMDVM_MAX_FRAME];
     if (P.gone)
         return false;
@@ -6023,8 +6057,10 @@ static bool mm_write(const uint8_t *d, size_t n)
             mm_capped++;
         d = f;
     }
+    pthread_mutex_lock(&mu);
     if (!rdofradio_serial_write(P.fd, d, n))
         P.gone = true;
+    pthread_mutex_unlock(&mu);
     return !P.gone;
 }
 
@@ -6104,13 +6140,47 @@ static void mm_tracker_init(void)
     rdof_tracker_add_sink(&MT, out);
 }
 
+#ifdef RDOF_TIER3
+/* --tier3: the site's carrier on the modem (rdofradio_t3_start_hat) */
+static bool hat_frame_out(const uint8_t *d, size_t n) { return mm_write(d, n); }
+static int64_t hat_now48(void) { return dev ? split_now48(NULL) : (int64_t)llround(now_s() * 48000.0); }
+static int hat_channel(uint32_t hz) { return dev ? channel_of(hz) : -1; }
+
+/* the modem duplex on the site's carrier, its transmitter on */
+static bool hat_modem_up(void)
+{
+    const rdofradio_t3_cfg_t *t = &t3cfg.t;
+    return rdof_radio_tune_duplex(&R.radio, t->car[0].rx_hz, t->car[0].tx_hz, t->cfg.cc, 255) &&
+           rdof_modem_dmr_start(&R.client, true);
+}
+
+static bool hat_start(char *err, size_t cap)
+{
+    if (!hat_modem_up()) {
+        snprintf(err, cap, "the modem won't go duplex on the site's carrier: %s", R.client.error);
+        return false;
+    }
+    const rdofradio_t3_opts_t to = {.air_ms = t3_opts.air_ms, .sim_id = t3_opts.sim_id, .sim_tg = t3_opts.sim_tg,
+                                    .sim_talk_s = t3_opts.sim_talk_s, .sim_script = t3_opts.sim_script,
+                                    .state_dir = t3_opts.state_dir, .verbose = R.verbose};
+    const rdofradio_t3_dev_t td = {hat_channel, hat_now48, now_s, dev ? (uint32_t)R.rate : 48000, NULL, NULL, 0};
+    const rdofradio_t3_hat_t hat = {hat_frame_out, hat_lead_ms[0] / 1e3, hat_lead_ms[1] / 1e3};
+    return rdofradio_t3_start_hat(&t3cfg, &to, &td, &hat, err, cap);
+}
+#endif
+
 /* The whole run with --mmdvm, once the SDR (if any) is open receive only. */
 static int mmdvm_main(int argc, char **argv, const char *port, int baud, double seconds, double rx_off, double tx_off,
                       double rx_level, double tx_level)
 {
     char err[256];
     P.path = port;
-    P.fd = rdofradio_serial_open(port, baud, err, sizeof err);
+#ifdef RDOF_TIER3
+    if (!strcmp(port, "sim-hat")) /* the stock modem simulated (rdofradio_t3.h) */
+        P.fd = rdofradio_t3_hat_sim(3.6, 0.010, err, sizeof err);
+    else
+#endif
+        P.fd = rdofradio_serial_open(port, baud, err, sizeof err);
     if (P.fd < 0) {
         fprintf(stderr, "--mmdvm %s\n", err);
         return 1;
@@ -6157,6 +6227,16 @@ static int mmdvm_main(int argc, char **argv, const char *port, int baud, double 
             R.radio.config.tx_level = tx_level;
     }
     bool ok;
+#ifdef RDOF_TIER3
+    if (t3_path) {
+        if (!hat_start(err, sizeof err)) {
+            fprintf(stderr, "tier3: %s\n", err);
+            goto out;
+        }
+        hat_on = true;
+        ok = true;
+    } else
+#endif
     if (R.full) {
         rdof_repeater_init(&R.r, &R.radio, rcfg.peer_id, R.rx_hz, R.tx_hz, R.cc);
         R.r.keep_up = R.mmdvm; /* a modem drops its carrier when keyed with nothing queued */
@@ -6196,7 +6276,7 @@ static int mmdvm_main(int argc, char **argv, const char *port, int baud, double 
     }
     deliver_heard();
     fprintf(stderr, "%s: %s (%s) on %s, RX %.4f MHz, TX %.4f MHz, cc %d, RF level cap %d%s%s\n",
-            R.full ? "repeater" : "transceiver", R.client.version, rdof_radio_kind_name(R.radio.kind), port,
+            hat_on ? "trunked site" : R.full ? "repeater" : "transceiver", R.client.version, rdof_radio_kind_name(R.radio.kind), port,
             R.rx_hz / 1e6, R.tx_hz / 1e6, R.cc, mm_rf_level, dev ? "; SDR: " : "", dev ? dev->name : "");
 #ifdef RDOF_HOST_WEB
     if (web_port >= 0) {
@@ -6216,12 +6296,16 @@ static int mmdvm_main(int argc, char **argv, const char *port, int baud, double 
         bench_ob_fast();
         const double now = now_s();
         ms_poll(now);
+#ifdef RDOF_TIER3
+        if (hat_on)
+            rdofradio_t3_poll();
+#endif
         if (now - last_poll >= POLL_S) {
             last_poll = now;
             if (R.parrot)
                 rdof_parrot_poll(R.parrot, now);
             gw_poll(now);
-            if (!bench_tx_poll(now) && !bench_rpt_poll(now) &&
+            if (!bench_tx_poll(now) && !bench_rpt_poll(now) && !hat_on &&
                 !(R.full ? rdof_repeater_poll(&R.r) : rdof_txvr_poll(&R.t)))
                 fprintf(stderr, "poll: %s\n", R.client.error);
             rdof_tracker_tick(&MT, wall_s());
@@ -6242,7 +6326,13 @@ static int mmdvm_main(int argc, char **argv, const char *port, int baud, double 
                     R.client.refused, dev ? "" : "; no SDR");
         }
     }
-    if (R.full)
+#ifdef RDOF_TIER3
+    if (hat_on) {
+        rdofradio_t3_stop();
+        rdof_modem_dmr_start(&R.client, false);
+    }
+#endif
+    if (R.full && !hat_on)
         rdof_repeater_stop(&R.r);
     rdof_modem_set_mode(&R.client, RDOF_MODE_IDLE); /* the modem idle: it doesn't key on its own */
     for (int i = 0; i < 10; i++) /* the last frames out to the modem */
@@ -6252,6 +6342,9 @@ out:
     P.quit = true;
     pthread_join(P.thread, NULL);
     close(P.fd);
+#ifdef RDOF_TIER3
+    rdofradio_t3_hat_sim_stop();
+#endif
     if (dev)
         dev->close(dev);
     fprintf(stderr, "%.1f s; modem: %lld bursts heard, %u requests, %u unanswered, %u refused, %lld SET_FREQ capped; "
@@ -6490,6 +6583,16 @@ int main(int argc, char **argv)
         } else if (!strcmp(a, "--sim-air")) {
             NEXT();
             t3_opts.sim_n = atoi(v);
+        } else if (!strcmp(a, "--tier3")) {
+            NEXT();
+            t3_path = v;
+        } else if (!strcmp(a, "--hat-lead")) {
+            NEXT();
+            if (sscanf(v, "%lf,%lf", &hat_lead_ms[0], &hat_lead_ms[1]) != 2 || hat_lead_ms[0] <= 0 ||
+                hat_lead_ms[1] <= hat_lead_ms[0]) {
+                fprintf(stderr, "--hat-lead IDLE_MS,BUSY_MS (0 < IDLE < BUSY)\n");
+                return 2;
+            }
         } else if (!strcmp(a, "--air-ms")) {
             NEXT();
             t3_opts.air_ms = atoi(v);
@@ -6973,6 +7076,26 @@ int main(int argc, char **argv)
         rcfg.parrot = R.parrot ? R.parrot->id : 0;
     }
     setvbuf(stdout, NULL, _IOLBF, 0);
+    if (t3_path) {
+#ifdef RDOF_TIER3
+        size_t len;
+        char *text = read_file(t3_path, &len), err[200];
+        if (!text) {
+            fprintf(stderr, "--tier3 %s: %s\n", t3_path, strerror(errno));
+            return 2;
+        }
+        const bool ok = rdofradio_cfg_parse(text, len, &t3cfg, err, sizeof err);
+        free(text);
+        if (!ok || !t3cfg.tier3 || !R.mmdvm) {
+            fprintf(stderr, "--tier3 %s: %s\n", t3_path,
+                    !ok ? err : !t3cfg.tier3 ? "no tier3 app in it" : "the site's carrier is a modem's (--mmdvm PORT)");
+            return 2;
+        }
+#else
+        fprintf(stderr, "--tier3: this rdofradio was built without the trunked site (RDOF_TIER3, cargo)\n");
+        return 2;
+#endif
+    }
 
     if (R.mmdvm) {
         mm_tracker_init(); /* the modem's: the radio's RX for the network, MQTT and the page */
@@ -6997,8 +7120,15 @@ int main(int argc, char **argv)
        them. Without the FPGA's bitstream, the ones that fit the ARM's window, the unit's kept. */
     int unfit = 0, nlisted = 0;
     {
-        rdof_sdr_channel_t own[3];
+        rdof_sdr_channel_t own[5];
         int nown = 0;
+#ifdef RDOF_TIER3
+        /* --tier3: the site's carrier, its out (the modem's slot grid from it) and its in */
+        if (t3_path && rdofradio_cfg_channel_at(&rcfg, t3cfg.t.car[0].tx_hz) < 0)
+            own[nown++] = (rdof_sdr_channel_t){"site-out", t3cfg.t.car[0].tx_hz, t3cfg.t.cfg.cc, 1};
+        if (t3_path && rdofradio_cfg_channel_at(&rcfg, t3cfg.t.car[0].rx_hz) < 0)
+            own[nown++] = (rdof_sdr_channel_t){"site-in", t3cfg.t.car[0].rx_hz, t3cfg.t.cfg.cc, 1};
+#endif
 #ifdef RDOF_TIER3
         /* a trunked site's carrier 2: its split's RX half hears its inbound here */
         if (rcfg.tier3 && rcfg.t.ncar > 1 && rdofradio_cfg_channel_at(&rcfg, rcfg.t.car[1].rx_hz) < 0)

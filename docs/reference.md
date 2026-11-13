@@ -1179,6 +1179,10 @@ among the SDR's `transmits`, `tx.carriers` 2: a second SDR modem on the same slo
 stream with each carrier at half amplitude, the TX LO halfway between the outs; with `--fpga-duc` the stream is
 384 kS/s) or by a split TX half on its radio's port, aligned to UTC from the host's clock and fed by the scheduled
 stream, the SDR's receiver its RX half (two carriers at most; tier3.md 9.4). Not yet run on a device.
+A one-carrier site can instead go out of a stock duplex MMDVM modem, an SDR receiver beside it hearing its out
+and in: `--mmdvm PORT --config BOX.json --tier3 SITE.json [--hat-lead IDLE_MS,BUSY_MS]`, each burst written a lead
+before its slot on the modem's own slot clock as the receiver hears it (`rdof/t3hat.h`, [tier3-hat.md](spec/fw/tier3-hat.md));
+`--mmdvm sim-hat` simulates the modem.
 Built with `RDOF_TIER3` (on by default; needs cargo: the controller is rust's `t3` feature, linked alone, for
 `RDOF_RUST_TARGET` when cross building); without it such a file is refused with the reason. `--sim-air N` needs no
 device: N simulated MSs (IDs from `--sim-id`, default 1000001) register with `--sim-tg` (default 9) and run through
