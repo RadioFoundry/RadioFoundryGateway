@@ -159,6 +159,7 @@ typedef struct {
 #define RDOF_T3_WHY_TIMEOUT 7
 #define RDOF_T3_SETUP_F_FOACSU 0x01
 #define RDOF_T3_SETUP_F_UNCONFIRMED 0x02
+#define RDOF_T3_SETUP_F_DATA 0x04 /* a packet data call (tier3.md 5.10) */
 
 typedef struct {
     uint8_t op, reason, flags, svc; /* svc: C_RAND's service options */
@@ -191,7 +192,7 @@ typedef struct {
 #define RDOF_T3_EV_LOG 9         /* text */
 #define RDOF_T3_EV_SD 20         /* short data for the site, or the result of one it sent (rdof_t3_sd_of_event) */
 #define RDOF_T3_EV_NET_SD 21     /* short data or a result to publish (mqtt-net sdata, tier3.md 5.9) */
-#define RDOF_T3_EV_PD 22         /* packet data: op RDOF_T3_PD_OPEN (ch, src, dst; kind 1 the site a party) or _FAILED */
+#define RDOF_T3_EV_PD 22         /* packet data: op RDOF_T3_PD_OPEN (ch, src, dst; kind RDOF_T3_PARTY_*) or _FAILED */
 
 #define RDOF_T3_CLOSE_HANG 1     /* hang time expired */
 #define RDOF_T3_CLOSE_TIMER 2    /* call timer */
@@ -296,7 +297,9 @@ typedef struct {
 #define RDOF_T3_DATA_END_CONFIRMED 4 /* the last block of a confirmed message */
 #define RDOF_T3_DATA_RESPONSE 5      /* a response header */
 #define RDOF_T3_PD_OPEN 1
-#define RDOF_T3_PD_FAILED 2 /* the site's own data call (rdof_t3_pd_send): reason, src, dst */
+#define RDOF_T3_PD_FAILED 2 /* the site's own data call, or one from the network (kind PARTY_NET): reason, src, dst */
+#define RDOF_T3_PARTY_SITE 1 /* PD_OPEN kind: the site is a party (its IP gateway) */
+#define RDOF_T3_PARTY_NET 2  /* the far party is on the network: the unit relays (tier3.md 5.10) */
 
 typedef struct rdof_t3_site rdof_t3_site_t;
 
@@ -322,6 +325,10 @@ void rdof_t3_rx_data(rdof_t3_site_t *s, int ch, int64_t k, uint8_t what, uint32_
 /* The site's own packet data from src (its data ID or TSI) to an MS or a talkgroup: a channel is asked for (an MS's
  * availability check first); RDOF_T3_EV_PD PD_OPEN names it, or PD_FAILED. False: not registered here, busy, no room. */
 bool rdof_t3_pd_send(rdof_t3_site_t *s, uint32_t src, uint32_t dst, bool group, int64_t now_ms);
+/* Packet data from the network (tier3.md 5.10) from src to an MS or a talkgroup here: a channel is asked for (after a
+ * setup the far site answered, at once; else the MS's availability check first); PD_OPEN (kind PARTY_NET) names it,
+ * or PD_FAILED. False: not here, busy, no room. */
+bool rdof_t3_pd_net_in(rdof_t3_site_t *s, uint32_t src, uint32_t dst, bool group, int64_t now_ms);
 
 /* the network */
 void rdof_t3_net_group(rdof_t3_site_t *s, uint32_t stream, uint32_t src, uint32_t tg, uint8_t flags, int64_t now_ms);

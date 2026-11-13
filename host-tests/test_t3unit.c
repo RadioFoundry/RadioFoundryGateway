@@ -3,7 +3,8 @@
 /* Two trunked sites (rdof/t3unit.h) with simulated MSs over the full burst path (rdof/t3sim.h), joined by an
  * in-process broker (retained messages, + wildcards, no local echo) with a stand-in router (pc/{dst} to dl/{the node
  * whose record has dst}): registration and its records, a wide group call heard at the other site, an individual
- * call across the sites through the setup, provisioning (cfg/net), commands, and a restart that reads the records
+ * call across the sites through the setup, packet data across the sites (the setup with its data flag, the data_pdu
+ * item: tier3.md 5.10, checked byte for byte), provisioning (cfg/net), commands, and a restart that reads the records
  * back. */
 #include <stdalign.h>
 #include <stdarg.h>
@@ -57,7 +58,9 @@ static struct {
     int qn;
     rdof_t3unit_t *unit[CLIENTS];
     int published, pc_routed;
-} B;
+    msg_t pc[16]; /* the pc messages the sites publish, while capturing (npc >= 0) */
+    int npc;
+} B = {.npc = -1};
 
 static bool match(const char *f, const char *t)
 {
@@ -114,6 +117,8 @@ static int record_node(uint32_t id, char *node, size_t cap)
 static void broker_publish(int from, const char *topic, const void *data, size_t len, bool retain)
 {
     B.published++;
+    if (B.npc >= 0 && B.npc < 16 && from >= 0 && !strncmp(topic, "DMR/pc/", 7))
+        B.pc[B.npc++] = copy_msg(topic, data, len);
     if (retain) {
         int i = 0;
         while (i < B.nret && strcmp(B.retained[i].topic, topic))
@@ -895,6 +900,87 @@ int main(void)
     GW.site = NULL;
     free(GW.g);
     GW.g = NULL;
+
+    /* packet data across the sites (tier3.md 5.10): A's MS to B's, confirmed. A asks B through the setup (flag
+       data), B checks its MS and accepts, A grants its caller and answers the message on its air, then publishes it
+       whole as a data_pdu; B grants its MS and sends it confirmed, and reports data_result */
+    B.npc = 0;
+    static const uint8_t across[] = "Packet data to an MS at the other site";
+    const uint32_t a_out = rdof_t3unit_counts(A.u)->data_out, b_in = rdof_t3unit_counts(Bs.u)->data_in;
+    CHECK(rdof_t3ms_data(A.ms[1], 3100101, RDOF_T3MS_F_CONFIRMED, across, sizeof across - 1, T0 + K * 30), "queued");
+    run(10000);
+    n = rdof_t3ms_data_inbox(Bs.ms[0], got, sizeof got, &from);
+    CHECK(n == (int)sizeof across - 1 && from == 3100002 && !memcmp(got, across, sizeof across - 1),
+          "B's MS got A's MS's data (%d from %u)", n, (unsigned)from);
+    sd = ms_status(&A, 1);
+    CHECK(sd.calls_done == 5 && sd.state == RDOF_T3MS_IDLE, "the caller's message acknowledged at A (done %u, failed %u)",
+          sd.calls_done, sd.calls_failed);
+    CHECK(rdof_t3unit_counts(A.u)->data_out == a_out + 1 && rdof_t3unit_counts(Bs.u)->data_in == b_in + 1,
+          "one message over the network (A out %u, B in %u)", rdof_t3unit_counts(A.u)->data_out,
+          rdof_t3unit_counts(Bs.u)->data_in);
+    /* the setup request, byte for byte but its stream (mqtt-net.md 9.4): from 3100002 (2F4D62) to 3100101
+       (2F4DC5), A's path 0, flags data (04) */
+    static const uint8_t setup_req[] = {0x03, 0x00, 0x00, 0x00, 0, 0, 0, 0, 0x62, 0x4D, 0x2F, 0xC5, 0x4D, 0x2F,
+                                        0x0C, 0x08, 0x01, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00};
+    /* the data_pdu (mqtt-net.md 4.2, 4.4): part 0, rate 1/2, one header: confirmed (DPF 3, A set), SAP 4, pad 8 (38
+       octets and the CRC-32 in a confirmed rate 1/2 block's 10s: 5 blocks), dst, src, F 1 and 5 blocks, N(S) and
+       FSN as the MS sent them; the data with no serial numbers, CRCs or pad */
+    uint8_t pdu_msg[14 + 5 + 10 + sizeof across - 1] = {0x03, 0x00, 0x00, 0x00, 0, 0, 0, 0, 0x62, 0x4D, 0x2F,
+                                                        0xC5, 0x4D, 0x2F, 0x07, 3 + 10 + sizeof across - 1, 0x00,
+                                                        0x00, 0x01, 0x43, 0x48, 0x2F, 0x4D, 0xC5, 0x2F, 0x4D,
+                                                        0x62, 0x85, 0x00};
+    memcpy(pdu_msg + 29, across, sizeof across - 1);
+    const msg_t *req = NULL, *pdm = NULL;
+    for (int i = 0; i < B.npc; i++) {
+        if (B.pc[i].len == sizeof setup_req && B.pc[i].data[14] == 0x0C && B.pc[i].data[16] == 1)
+            req = &B.pc[i];
+        if (B.pc[i].len > 14 && B.pc[i].data[14] == 0x07)
+            pdm = &B.pc[i];
+    }
+    CHECK(req && !strcmp(req->topic, "DMR/pc/3100101/site-a") && !memcmp(req->data, setup_req, 4) &&
+              !memcmp(req->data + 8, setup_req + 8, sizeof setup_req - 8),
+          "the setup request's bytes (%s)", req ? req->topic : "none");
+    if (pdm) {
+        /* N(S) and FSN are the MS's (octet 9): take them from the message, the rest is fixed */
+        pdu_msg[14 + 5 + 9] = pdm->len > 28 ? pdm->data[28] : 0;
+    }
+    CHECK(pdm && !strcmp(pdm->topic, "DMR/pc/3100101/site-a") && pdm->len == sizeof pdu_msg &&
+              !memcmp(pdm->data, pdu_msg, 4) && !memcmp(pdm->data + 8, pdu_msg + 8, sizeof pdu_msg - 8),
+          "the data_pdu message's bytes (%s, %zu)", pdm ? pdm->topic : "none", pdm ? pdm->len : 0);
+    if (pdm && getenv("RDOF_TEST_VERBOSE")) {
+        for (size_t i = 0; i < pdm->len; i++)
+            printf("%02X%s", pdm->data[i], i + 1 < pdm->len ? " " : "\n");
+    }
+
+    /* the site's IP gateway answers an MS at the other site (tier3.md 3.16): its packet goes over the network as a
+       data_pdu, unconfirmed, and B sends it on after checking its MS */
+    rdof_ipgw_dmr_t reply;
+    static const uint8_t back[] = "reply";
+    CHECK(rdof_ipgw_build_dmr(9999, 3100101, 4, back, sizeof back - 1, 1, 0xDFF57D75DF5DULL, &reply), "reply built");
+    const int npc = B.npc;
+    CHECK(rdof_t3unit_data_tx(A.u, 9999, 3100101, false, reply.nbursts, reply.control, &reply.bursts[0][0]),
+          "the gateway's packet taken for the network");
+    run(6000);
+    n = rdof_t3ms_data_inbox(Bs.ms[0], got, sizeof got, &from);
+    CHECK(n == (int)sizeof back - 1 && from == 9999 && !memcmp(got, back, sizeof back - 1),
+          "B's MS got the gateway's reply (%d from %u)", n, (unsigned)from);
+    /* its bytes: from 9999 (00270F), unconfirmed (DPF 2), SAP 4, pad 3 (5 octets and the CRC-32 in 12), one block,
+       FSN 8 (the gateway's: its last fragment) */
+    static const uint8_t reply_msg[] = {0x03, 0x00, 0x00, 0x00, 0, 0, 0, 0, 0x0F, 0x27, 0x00, 0xC5, 0x4D, 0x2F,
+                                        0x07, 3 + 10 + 5, 0x00, 0x00, 0x01, 0x02, 0x43, 0x2F, 0x4D, 0xC5, 0x00,
+                                        0x27, 0x0F, 0x81, 0x08, 'r', 'e', 'p', 'l', 'y'};
+    const msg_t *rm = B.npc > npc ? &B.pc[B.npc - 1] : NULL;
+    CHECK(rm && rm->len == sizeof reply_msg && !memcmp(rm->data, reply_msg, 4) &&
+              !memcmp(rm->data + 8, reply_msg + 8, sizeof reply_msg - 8),
+          "the reply's bytes (%zu)", rm ? rm->len : 0);
+    if (rm && getenv("RDOF_TEST_VERBOSE")) {
+        for (size_t i = 0; i < rm->len; i++)
+            printf("%02X%s", rm->data[i], i + 1 < rm->len ? " " : "\n");
+    }
+    for (int i = 0; i < B.npc; i++)
+        free(B.pc[i].data);
+    B.npc = -1;
+    run(4000);
 
     /* provisioning: cfg/net's hang time reaches both sites */
     const char *net = "{\"rev\":2,\"at\":\"2026-11-06T10:00:00Z\",\"timers\":{\"hang_s\":5}}";

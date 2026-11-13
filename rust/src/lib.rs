@@ -72,6 +72,8 @@ pub mod t3auth;
 #[cfg(feature = "t3")]
 pub mod t3ms;
 #[cfg(feature = "t3")]
+pub mod t3pdnet;
+#[cfg(feature = "t3")]
 pub mod t3pdrate;
 #[cfg(feature = "t3")]
 pub mod t3pdu;
@@ -99,6 +101,8 @@ mod t3spec_site;
 mod t3sdtests;
 #[cfg(all(test, feature = "t3"))]
 mod t3pdtests;
+#[cfg(all(test, feature = "t3"))]
+mod t3pdnettests;
 #[cfg(all(test, feature = "t3"))]
 mod t3tgtests;
 #[cfg(all(test, feature = "t3"))]
