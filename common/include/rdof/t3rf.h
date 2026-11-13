@@ -82,6 +82,7 @@ enum {
     RDOF_T3RF_VOICE,      /* voice with no header first (late entry; the channel's addresses) */
     RDOF_T3RF_TERM,       /* a terminator with LC */
     RDOF_T3RF_LOST,       /* RF voice stopped without a terminator */
+    RDOF_T3RF_DATA,       /* a packet data block repeated (the header goes to pdu; tier3.md 3.10) */
 };
 /* What a payload channel's slot carries (rdof_t3rf_ch_next). */
 typedef enum {
@@ -165,6 +166,12 @@ void rdof_t3rf_close(rdof_t3rf_t *t, int ch);
  * close_after: the channel closes once it has gone out (queued voice is dropped then). False: no such channel, or a
  * data type without a mask. */
 bool rdof_t3rf_control(rdof_t3rf_t *t, int ch, int dt, const uint8_t pdu[10], int repeats, bool close_after);
+
+/* A data burst the site sends (a header or block; control as MMDVM's DMR_DATA, the burst with any sync) on open
+ * channel ch's outbound, regenerated with the BS sync and the colour code. False: closed, not data, or no room. */
+bool rdof_t3rf_data(rdof_t3rf_t *t, int ch, uint8_t control, const uint8_t burst[RDOF_BURST_BYTES]);
+/* Room on open channel ch's outbound queue, in bursts (0: closed or full). */
+int rdof_t3rf_room(const rdof_t3rf_t *t, int ch);
 
 /* A burst heard on carrier c under outbound slot k (TS1 even): the TSCC's inbound to pdu / bad, a payload channel's
  * to that channel (repeated on its outbound, voice to activity and uplink). rssi in dBm (0: unknown). */

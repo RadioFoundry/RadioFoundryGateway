@@ -66,6 +66,9 @@ typedef struct {
     void (*cache)(void *ctx);
     uint32_t (*rand32)(void *ctx);
     void *ctx;
+    /* Packet data the site is a party to (tier3.md 3.10): each burst of it heard on payload channel ch (dt 6 a data
+     * header, 7, 8 or 10 a block; BS sync), for the IP gateway. NULL: none taken. */
+    void (*data)(void *ctx, int ch, int dt, const uint8_t burst[RDOF_BURST_BYTES], uint32_t src, uint32_t dst);
 } rdof_t3unit_io_t;
 
 /* counters */
@@ -103,6 +106,13 @@ const rdof_t3_cfg_t *rdof_t3unit_cfg(const rdof_t3unit_t *u);
 int rdof_t3unit_at(const rdof_t3unit_t *u, int64_t k);
 /* A burst heard on carrier c's inbound under slot k. */
 void rdof_t3unit_rx(rdof_t3unit_t *u, int c, int64_t k, const rdof_burst_t *b, int rssi);
+/* The site sends packet data (tier3.md 3.10): a data header and its n - 1 blocks (control as MMDVM's DMR_DATA, as the
+ * IP gateway builds them; up to RDOF_T3UNIT_DATA_BURSTS) from src (the site's data ID or TSI) to an MS or, group, a
+ * talkgroup. The controller asks for a channel (an MS's availability check first) and the packet goes once it is open.
+ * One at a time; false: one is waiting, it doesn't fit, or the controller can't (not registered here, busy). */
+bool rdof_t3unit_data_tx(rdof_t3unit_t *u, uint32_t src, uint32_t dst, bool group, int n, const uint8_t *control,
+                         const uint8_t *bursts);
+#define RDOF_T3UNIT_DATA_BURSTS 128
 
 /* An MQTT message (any topic the subscriptions bring). */
 void rdof_t3unit_message(rdof_t3unit_t *u, const char *topic, const void *data, size_t len);

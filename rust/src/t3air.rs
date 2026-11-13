@@ -5,9 +5,9 @@
 //! (two PDUs on the TSCC in one slot are a collision: a burst with a bad CRC), then the MSs hear slot k. A
 //! solicited answer to a block in slot k goes in slot k + 2 at the earliest, as on air.
 
-use crate::t3ms::{Ms, MsTx, TX_PDU, TX_VOICE};
-use crate::t3site::{Event, Site, SlotOut, CHANNELS};
-use crate::t3udt::DT_RATE12;
+use crate::t3ms::{Ms, MsTx, TX_DATA, TX_PDU, TX_VOICE};
+use crate::t3site::{DataRx, Event, Site, SlotOut, CHANNELS};
+use crate::t3udt::{DT_DATA_HDR, DT_RATE12};
 
 pub const SLOT_MS: i64 = 30;
 
@@ -19,11 +19,13 @@ pub struct Air<'a, const N: usize> {
     pub collisions: u32,
     pub last: SlotOut,
     pub inbound: [Option<MsTx>; N],
+    pub data: [DataRx; CHANNELS], // the radio layer's part: what each channel's data is
 }
 
 impl<'a, const N: usize> Air<'a, N> {
     pub fn new(site: &'a mut Site, ms: [Ms; N], t0: i64) -> Self {
-        Air { site, ms, k: 0, t0, collisions: 0, last: SlotOut::default(), inbound: [None; N] }
+        let data = Default::default();
+        Air { site, ms, k: 0, t0, collisions: 0, last: SlotOut::default(), inbound: [None; N], data }
     }
 
     pub fn now(&self) -> i64 {
@@ -61,6 +63,20 @@ impl<'a, const N: usize> Air<'a, N> {
                 self.site.rx_block(ch, t.dt, &b);
             } else if t.kind == TX_PDU {
                 self.site.rx_pdu(ch, t.dt, &t.pdu);
+            } else if t.kind == TX_DATA {
+                // the radio layer counts the message for the controller and repeats it on the outbound
+                let mut b = [0u8; 12];
+                b[..10].copy_from_slice(&t.pdu);
+                b[10..].copy_from_slice(&t.ext);
+                let what = if t.dt == DT_DATA_HDR {
+                    self.data[ch].header(&t.pdu)
+                } else {
+                    self.data[ch].block()
+                };
+                self.site.rx_data(ch, what, t.src);
+                for m in self.ms.iter_mut() {
+                    m.rx_data(ch, t.dt, &b);
+                }
             } else if t.kind == TX_VOICE {
                 self.site.rx_voice(ch, t.what, t.src);
                 for m in self.ms.iter_mut() {

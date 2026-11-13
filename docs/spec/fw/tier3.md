@@ -41,6 +41,7 @@ Principles:
 | Individual voice | C_AHOY availability check (OACSU or FOACSU, a setting), C_ACKU/C_NACKU, Call Answer, PV_GRANT, cancel (Service_Kind 1111b) |
 | Queueing | One queue by priority (emergency first, then PRIORTY_SV, then age); C_QACKD; SYSbusy_Refused when full |
 | Short data | UDT short data on the TSCC both ways (C_UDTHD/C_UDTHU, 1-4 rate 1/2 blocks, up to 46 octets), stored and forwarded MS to MS, MS to talkgroup, MS to site and site to MS; status messages and status polling; across sites in mqtt-net's `sdata` item (3.9, 5.9) |
+| Packet data | Individual and talkgroup packet data calls (C_RAND 0010b/0011b): the availability check (C_AHOY 0010b), PD_GRANT/TD_GRANT single or multi-item, the payload channel in data mode (each data burst repeated), confirmed and unconfirmed data, data hang time and clearing; MS to MS, MS to talkgroup, MS to the site's IP gateway (TSI, its data ID or IPI) and the gateway's replies down (3.10) |
 | Refusals | C_NACKD(Not_Supported) for every other Service_Kind; Called_Party_Busy, Called_Group_Not_Allowed, Perm_User_Refused as provisioning says |
 | Network | Wide-area group calls both ways; individual calls across sites with an availability check over the network; Tier II to Tier III and back; registration records; site description; provisioning from the manager, cached at the site |
 | Services | The site controller (Rust, in RFG), the radio layer (C, in RFG), the router's additions, the manager and its dashboard (Python, network services), the MS simulator |
@@ -48,8 +49,9 @@ Principles:
 
 ### 1.2 Later (the design leaves room; nothing here is built)
 
-Packet data, talkgroup list subscription (UDT upload), short data to gateways (extended addresses, supplementary
-data), power save, mass re-registration,
+Packet data across sites, multi-part packet data (extended addresses through gateways), dual-slot (HI_RATE) data,
+talkgroup list subscription (UDT upload), short data to gateways (extended addresses, supplementary data), power
+save, mass re-registration,
 Vote Now, C_MOVE and a second TSCC, composite TSCC, TSCCAS, the asynchronous (hibernating) TSCC, DGNA,
 stun/revive/kill, gateways (PSTN, PABX, dispatcher), duplex calls, ambient listening, emergency pre-emption of a
 running call, a standby controller, trunking on the W12 (the LR2021 can't stay keyed: slot-timing.md), two carriers
@@ -209,9 +211,10 @@ default 10 s). On expiry the controller abandons the request.
 
 ### 3.7 Refusals
 
-Every C_RAND Service_Kind other than 0000b, 0001b, 0100b, 0101b, 0111b (short data and status, 3.9), 1001b (Call
-Answer), 1110b and 1111b gets C_NACKD(Not_Supported) (4.2). Gateway addresses (PSTNI and the rest) as targets also
-get Not_Supported, TSI excepted for short data and status. Packet data requests and UDT polling (0110b) likewise.
+Every C_RAND Service_Kind other than 0000b, 0001b, 0010b, 0011b (packet data, 3.10), 0100b, 0101b, 0111b (short
+data and status, 3.9), 1001b (Call Answer), 1110b and 1111b gets C_NACKD(Not_Supported) (4.2). Gateway addresses
+(PSTNI and the rest) as targets also get Not_Supported, TSI excepted for short data, status and packet data, and IPI
+for packet data with nothing to upload. UDT polling (0110b) likewise.
 
 ### 3.8 Timers and constants (settings, under the app's `timers`)
 
@@ -236,6 +239,7 @@ get Not_Supported, TSI excepted for short data and status. Packet data requests 
 | `sd_tries` | short data or a status to an MS: sends (each `ahoy_every_s` apart) before MSaway | 3 | 1-10 |
 | `sd_repeats` | short data or a status to a talkgroup: sends | 2 | 1-10 |
 | `sd_store_s` | how long short data waits for a busy MS (6.6.6.1.1.5) | 30 | 0-600 |
+| `data_hang_s` | data hang time: a data channel waits this long for more after a message (6.6.3.3.1.6) | 3 | 0.5-30 |
 
 The parser is `rust/src/t3cfg.rs` (`rdof/t3cfg.h`); it takes the same keys from the manager's `cfg/net` and
 `cfg/node/{node}` (section 5.7).
@@ -293,6 +297,48 @@ Not built: short data to gateways and extended addresses (the multi-part address
 polling (0110b: Not_Supported), the optional availability check before an individual download, call diversion of
 short data.
 
+### 3.10 Packet data calls (361-4 6.6.3)
+
+The code is `rust/src/t3pdata.rs` (a part of the controller, with the data header codec, the message CRCs and a
+block counter the radio layer shares); the MS side is in `t3ms`. Up to 8 data calls are being set up at once.
+
+Request (C_RAND Service_Kind 0010b individual, 0011b talkgroup; Service_Options table 6.50: EMERG, Privacy,
+SUPED_SV, HI_RATE, SIMI, priority):
+
+1. Checks as a call (registered or an implicit record, `ms`, `tg`). The called party: an MS, a talkgroup, or the
+   site: TSI, the `data_gateway` ID, or IPI with no extended address to upload (the IP destination is the datagram's:
+   6.6.3.3, "derived from the DLL address"). Other gateways (multi-part addressing, 6.6.3.2.3) get Not_Supported;
+   an MS not registered here, NoregMSaway (packet data across sites isn't carried); one in a call or a data call,
+   Called_Party_Busy; itself, Not_Supported. A repeat of a request being set up gets the same answer again.
+2. An individual call to an MS: the availability check (6.6.3.1.4), C_AHOY (Service_Options_Mirror, Service_Kind
+   0010b, source the caller, target the called), repeated every `ahoy_every_s` up to `ahoy_tries`; the caller hears
+   C_WACKD every 2 s. C_ACKU (the MS answers Message_Accepted) leads on; C_NACKU is mirrored; no answer, MSaway.
+3. A channel: PD_GRANT (individual) or TD_GRANT (talkgroup), opcodes 51/52, or 55/56 when SIMI asked for a
+   multi-item call (7.1.1.1.1.4, 7.1.1.1.1.5), sent twice like the voice grants; HI_RATE is always 0 (single slot:
+   dual-slot data isn't built, a HI_RATE request gets a single-slot grant). None free: C_QACKD(Queued_for_Resource)
+   every 4 s; queued data calls take the channels queued voice leaves (voice first), `queue_s` at most, then
+   SYSbusy. A channel already open between the same parties is granted again.
+4. On the channel (361-1 9.2, 361-3): the site repeats every data header and block (data types 6, 7, 8, 10),
+   regenerated with the BS sync; voice LC and late entry don't apply. The radio layer counts each message (its
+   header says how many blocks follow) for the controller, which holds the channel `data_hang_s` after any burst.
+5. Clearing (6.6.3.3.1.6 b): an unconfirmed single-item message ends the call once repeated (P_CLEAR about 0.5 s
+   after its last block); a confirmed one, `data_hang_s` after the response (the called MS's ACK goes back through
+   the repeat); a multi-item call, `data_hang_s` after its last burst, or at once on P_MAINT DISCON; any data call
+   at `call_s` (T_PACKET_TIMER).
+
+The site as a party: data to TSI, the data ID or IPI goes, burst by burst, to the unit's `data` hook (rdofradio:
+the IP gateway app, when the document has one: [ipgw.md](ipgw.md)). What the gateway
+sends (its replies, the ACK of a confirmed message) goes down through `rdof_t3unit_data_tx`: on the open channel at
+once, else the site asks for one (`rdof_t3_pd_send`: the availability check to an MS, or TD_GRANT for a talkgroup)
+and sends it when granted, source the site's ID; 30 s at most, one packet at a time.
+
+Choices where 361-4 leaves them open: the TS doesn't poll MSs on the channel (P_AHOY radio check, 6.6.3.3.1.1) and
+doesn't share a data channel between calls; supplementary data (SUPED_SV) is abandoned (6.6.3.2.2 a); a new data
+call to an MS on a data channel waits as busy rather than joining it.
+
+Not built: multi-part calls (extended addresses through PSTNI, PABXI, LINEI, DISPATI, IPI with an upload),
+supplementary data, dual-slot data, packet data across sites, the TS's own P_AHOY radio check and selective clear.
+
 ## 4. Settings (config-v3 `tier3` app)
 
 The app takes the place reserved for it in config-v3.md section 6 ("a control frequency and a pool; it assigns its own
@@ -337,6 +383,7 @@ paths").
 | `wide_tg` | ID set | `""` | talkgroups carried on the network (wide area); others stay local |
 | `static_tg` | ID set | `""` | talkgroups the site always subscribes to on the network (as a Tier II repeater's `tg`) |
 | `foacsu` | bool | false | full off-air call setup for individual calls |
+| `data_gateway` | integer | 0 | the site's own data ID besides TSI (1-16776415): packet data to it, to TSI or to IPI goes to the site's IP gateway (3.10) |
 | `timers` | object | section 3.8 | |
 | `broadcast` | object | section 3.2 | `adjacent_s`, `chan_freq_s`, `local_time_s` (0 = off) |
 
@@ -606,7 +653,8 @@ The Rust exports a C API (the repo's convention: the header is the contract; str
 t3 structs aren't in `rust/src/layout.rs` (a legacy-only module): `rdof_t3_layout()` reports their sizes and
 alignments and `host-tests/test_t3.c` compares them with the header's. The exact API is `common/include/rdof/t3.h`;
 the sketch below is the design, which the header extends (`rdof_t3_net_private_end`, `rdof_t3_record`,
-`rdof_t3_subs`, the MS simulator's `rdof_t3ms_*`).
+`rdof_t3_subs`, short data's `rdof_t3_sd_*`, packet data's `rdof_t3_rx_data` and `rdof_t3_pd_send`, the MS
+simulator's `rdof_t3ms_*`).
 
 ```c
 typedef struct rdof_t3_site rdof_t3_site_t;          /* opaque, caller allocates rdof_t3_site_size() bytes */
@@ -689,6 +737,9 @@ called about one slot plus the TX lead ahead of air: the controller decides a sl
 - inbound bursts (from the receiver, MS sync) on an open channel: regenerated (`rdof_duplex_data`, `rdof_voice_regen_*`)
   and queued for the outbound slot one frame later; voice activity to `rdof_t3_rx_voice`; CSBKs (P_MAINT) to
   `rdof_t3_rx_pdu`; the frames to the mqtt-net uplink (with the site's path) when the call is wide-area;
+- packet data (3.10): data headers and blocks repeated the same way; the unit counts each message
+  (`rdof_t3_rx_data`) and, when the site is a party, hands the bursts to its `data` hook instead of the uplink; the
+  site's own data goes on the queue with `rdof_t3rf_data` (`rdof_t3rf_room` says how much fits);
 - network bursts for the channel's call (from the mqtt-net downlink, after a 240 ms prebuffer) queued the same way,
   unless RF holds the channel;
 - the controller's payload PDUs (P_CLEAR) take precedence over voice;
@@ -802,6 +853,9 @@ In the network services' own repository (with the router, the Python library and
 - group and individual call requests; follows grants to the payload channel; talks for a set time (voice header,
   voice bursts, terminator), P_MAINT DISCON at the end of an individual call; returns on P_CLEAR or TV_Inactive;
 - answers C_AHOY: accept, busy, no answer, or FOACSU alerting then answer, as configured;
+- packet data (`send_data`, `rdof_t3ms_data`): one message (SAP 4, confirmed or not, single or multi-item) to an MS,
+  a talkgroup or the site; it takes messages addressed to it or its talkgroup (CRCs checked), answers confirmed ones
+  with an ACK and leaves the channel as 6.6.3.3.2.5 says;
 - emergency and priority options; cancel.
 
 `t3air`: a slot-exact air between one site controller and N MSs: TSCC outbound to every MS on the TSCC; inbound
@@ -817,8 +871,9 @@ and against `t3ms` on one air.
 | Level | What | Where |
 |---|---|---|
 | PDU codec | Every PDU the site sends or reads: field packing against the 361-4 tables, round trips, known vectors from a standard site's captures (decoded values, not checks) | Rust unit tests |
-| Controller | Scenarios over `t3air`: registration open/listed/denied, collisions and backoff, group call, queue and grant on release, late entry repeats, hang and P_CLEAR, call timer, individual OACSU and FOACSU, no answer, cancel, busy called party, Not_Supported, network group in and out, network setup both ways, Tier II implicit setup, records reload, provisioning changes, link loss; short data (`t3sdtests.rs`): UDT MS to MS, MS, talkgroup and site, 1 to 4 blocks, refusals, store while busy and its timeout, cancel, the kept upload slots, CRC errors and a missing upload, status to MS, talkgroup and site, polling, the site's own sends, a full table, the network both ways | Rust tests (`cargo test`, run by ctest) |
+| Controller | Scenarios over `t3air`: registration open/listed/denied, collisions and backoff, group call, queue and grant on release, late entry repeats, hang and P_CLEAR, call timer, individual OACSU and FOACSU, no answer, cancel, busy called party, Not_Supported, network group in and out, network setup both ways, Tier II implicit setup, records reload, provisioning changes, link loss; short data (`t3sdtests.rs`): UDT MS to MS, MS, talkgroup and site, 1 to 4 blocks, refusals, store while busy and its timeout, cancel, the kept upload slots, CRC errors and a missing upload, status to MS, talkgroup and site, polling, the site's own sends, a full table, the network both ways; packet data (`t3pdtests.rs`): MS to MS unconfirmed and confirmed, the availability check, PD/TD_GRANT single and multi-item, data hang and clearing, to a talkgroup, to the site (TSI, data ID, IPI), refusals (NACKU mirrored, no answer, not here, multi-part, itself, talkgroup not allowed, busy), queued and cancelled, the site's own sends | Rust tests (`cargo test`, run by ctest) |
 | C API | Init, a short scenario through the FFI, layouts | C host test `rdof_t3_tests` |
+| Packet data on bursts | MS to MS confirmed data and MS to the site's IP gateway (NAT, the gateway's ACK sent down by the site) over the burst path | `rdof_t3unit_tests` |
 | Radio layer | Burst building (CSBK, MBC, CACH with C_SYS_Parms and AT), parsing back, the slot source in the SDR modem (timing, short LC, AT), payload channel regeneration and P_CLEAR, split output frames | C host tests |
 | Settings | the `tier3` app: good and bad files, schema | C host tests, `test_schema.js` |
 | Network | `setup` item vectors, Tier II auto-answer, records, `cfg` parsing and precedence, cache | C host tests (`rdof_mqttnet_tests`), Python tests in the network services |

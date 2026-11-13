@@ -23,7 +23,8 @@ use crate::plan::RdofIdset;
 use crate::t3cfg::{rdof_t3cfg_check, rdof_t3cfg_site};
 use crate::t3rf::{
     rdof_t3rf_channel, rdof_t3rf_close, rdof_t3rf_control, rdof_t3rf_init, rdof_t3rf_net, rdof_t3rf_net_end,
-    rdof_t3rf_open, rdof_t3rf_rx, rdof_t3rf_slot, rdof_t3rf_split_pump, rdof_t3rf_tick, T3rf, T3rfIo, T3rfSplit,
+    rdof_t3rf_data, rdof_t3rf_open, rdof_t3rf_room, rdof_t3rf_rx, rdof_t3rf_slot, rdof_t3rf_split_pump, rdof_t3rf_tick,
+    T3rf, T3rfIo, T3rfSplit,
     WARMUP,
 };
 use crate::t3site::{
@@ -110,6 +111,10 @@ pub struct Io {
     pub cache: Option<unsafe extern "C" fn(ctx: *mut c_void)>,
     pub rand32: Option<unsafe extern "C" fn(ctx: *mut c_void) -> u32>,
     pub ctx: *mut c_void,
+    /// Packet data the site is a party to (tier3.md 3.10): each burst of it heard on channel ch (dt 6 a header, 7, 8
+    /// or 10 a block; BS sync). NULL: none taken.
+    pub data:
+        Option<unsafe extern "C" fn(ctx: *mut c_void, ch: c_int, dt: c_int, burst: *const u8, src: u32, dst: u32)>,
 }
 
 /// rdof_t3unit_counts_t
@@ -582,7 +587,30 @@ pub struct Unit {
     // peer_info's parse
     jnodes: [JNode; JNODES],
     jbuf: [u8; JBUF],
+    // packet data (tier3.md 3.10)
+    data_rx: [t3::DataRx; CHANNELS],
+    site_party: [bool; CHANNELS], // the site is a party to the data call on the channel
+    dl: DataDown,
 }
+
+/// A packet the site sends (rdof_t3unit_data_tx): held until its channel opens, then fed to its queue.
+#[derive(Clone, Copy)]
+struct DataDown {
+    on: bool,
+    ch: c_int, // -1 until EV_PD opens it
+    src: u32,
+    dst: u32,
+    group: bool,
+    n: usize,
+    pos: usize,
+    until_ms: i64,
+    rx: t3::DataRx,
+    control: [u8; DATA_BURSTS],
+    bursts: [[u8; 33]; DATA_BURSTS],
+}
+
+pub const DATA_BURSTS: usize = 128; // RDOF_IPGW_MAX_BURSTS
+const DATA_WAIT_MS: i64 = 30_000; // a packet waits this long for its channel
 
 const fn round_up(n: usize, a: usize) -> usize {
     n.div_ceil(a) * a
@@ -1097,6 +1125,13 @@ unsafe fn drain(u: *mut Unit) {
             }
             t3::EV_CH_CLOSE => {
                 let ch = c_int::from(e.ch);
+                if usize::from(e.ch) < CHANNELS {
+                    (*u).site_party[usize::from(e.ch)] = false;
+                    (*u).data_rx[usize::from(e.ch)] = t3::DataRx::default();
+                }
+                if (*u).dl.on && (*u).dl.ch == ch {
+                    (*u).dl.on = false; // its channel went before it all did
+                }
                 let c = rdof_t3rf_channel(rf(u), ch);
                 if !c.is_null() && (*c).ctl_left > 0 {
                     (*c).close_after = true; // after its last P_CLEAR
@@ -1118,6 +1153,7 @@ unsafe fn drain(u: *mut Unit) {
             t3::EV_NET_SETUP => setup_out(u, &e),
             t3::EV_NET_SD => sdata_out(u, &e),
             t3::EV_SD => sdata_here(u, &e),
+            t3::EV_PD => data_event(u, &e),
             t3::EV_NET_SUBS => subs = true,
             t3::EV_RECORD => record_out(u, e.src, e.why == 1),
             t3::EV_ACTIVITY => activity_out(u, &e),
@@ -1178,7 +1214,17 @@ unsafe extern "C" fn io_cach(ctx: *mut c_void, carrier: c_int, k: i64, at: *mut 
 
 unsafe extern "C" fn io_pdu(ctx: *mut c_void, ch: c_int, k: i64, dt: c_int, pdu: *const u8, rssi: c_int) {
     let u: *mut Unit = ctx.cast();
+    if dt == c_int::from(crate::t3udt::DT_DATA_HDR) && data_ch(u, ch) {
+        let what = (*u).data_rx[ch as usize].header(&*pdu.cast::<[u8; 10]>());
+        t3::rdof_t3_rx_data((*u).site, ch, k, what, (*u).data_rx[ch as usize].src);
+        return;
+    }
     t3::rdof_t3_rx_pdu((*u).site, ch, k, dt as u8, pdu.cast(), rssi);
+}
+
+/// A packet data call on payload channel ch.
+unsafe fn data_ch(u: *const Unit, ch: c_int) -> bool {
+    (0..CHANNELS as c_int).contains(&ch) && (*u).ch_flags[ch as usize] & t3::F_DATA != 0
 }
 
 unsafe extern "C" fn io_bad(ctx: *mut c_void, ch: c_int, k: i64) {
@@ -1191,15 +1237,127 @@ unsafe extern "C" fn io_activity(ctx: *mut c_void, ch: c_int, k: i64, what: c_in
     let u: *mut Unit = ctx.cast();
     if (1..=4).contains(&what) {
         t3::rdof_t3_rx_voice((*u).site, ch, k, MAP[what as usize], src, dst, group);
+    } else if what == crate::t3rf::DATA && data_ch(u, ch) {
+        let r = &mut (*u).data_rx[ch as usize];
+        let what = r.block();
+        let src = r.src;
+        t3::rdof_t3_rx_data((*u).site, ch, k, what, src);
     }
 }
 
 unsafe extern "C" fn io_uplink(ctx: *mut c_void, ch: c_int, f: *const RdofFrame) {
     let u: *mut Unit = ctx.cast();
+    if data_ch(u, ch) {
+        // packet data stays on the site: to its IP gateway when it is a party
+        let r = &(*u).data_rx[ch as usize];
+        if let (true, Some(d)) = ((*u).site_party[ch as usize], (*u).io.data) {
+            d((*u).io.ctx, ch, (*f).dt, (*f).burst.as_ptr(), r.src, r.dst);
+        }
+        return;
+    }
     let c = ch / 2;
     if (*u).net && (0..CARRIERS as c_int).contains(&c) {
         rdof_mn_up_frame((*u).up[c as usize], f, wall_s(u));
     }
+}
+
+// ── packet data with the site as a party (tier3.md 3.10) ──────────────────────
+
+unsafe fn data_event(u: *mut Unit, e: &Event) {
+    let ch = usize::from(e.ch);
+    let d = addr_of_mut!((*u).dl);
+    if e.op == t3::PD_OPEN && ch < CHANNELS {
+        (*u).site_party[ch] = e.kind != 0 || ((*d).on && (*d).group && e.dst == (*d).dst);
+        if (*d).on && (*d).ch < 0 && e.dst == (*d).dst {
+            (*d).ch = ch as c_int;
+        }
+    } else if e.op == t3::PD_FAILED && (*d).on && (*d).ch < 0 && e.dst == (*d).dst {
+        (*d).on = false;
+        log(u, |o| {
+            o.bytes(b"tier3: packet data to ");
+            o.int(i64::from(e.dst), 0);
+            o.bytes(b" not sent: reason 0x");
+            hex(o, u32::from(e.reason), 2);
+        });
+    }
+}
+
+/// Feeds the held packet to its channel's queue as room allows; the controller counts it as it goes.
+unsafe fn data_feed(u: *mut Unit, k: i64) {
+    let d = addr_of_mut!((*u).dl);
+    if !(*d).on {
+        return;
+    }
+    if (*d).ch < 0 {
+        if (*u).now_ms >= (*d).until_ms {
+            (*d).on = false;
+        }
+        return;
+    }
+    let ch = (*d).ch;
+    let mut room = rdof_t3rf_room(rf(u), ch) - 2; // a little left for the controller's own
+    while room > 0 && (*d).pos < (*d).n {
+        let i = (*d).pos;
+        let control = (*d).control[i];
+        if !rdof_t3rf_data(rf(u), ch, control, (*d).bursts[i].as_ptr()) {
+            break;
+        }
+        let what = if i == 0 {
+            let mut b12 = [0u8; 12];
+            crate::ffi::rdof_bptc196_decode((*d).bursts[i].as_ptr(), b12.as_mut_ptr());
+            let mut h = [0u8; 10];
+            h.copy_from_slice(&b12[..10]);
+            (*d).rx.header(&h)
+        } else {
+            (*d).rx.block()
+        };
+        t3::rdof_t3_rx_data((*u).site, ch, k, what, (*d).src);
+        (*d).pos += 1;
+        room -= 1;
+    }
+    if (*d).pos >= (*d).n {
+        (*d).on = false;
+    }
+}
+
+/// The site sends a packet (a data header and its blocks, as the IP gateway builds them: control as MMDVM's
+/// DMR_DATA) from src to dst (an MS or, group, a talkgroup): a channel is asked for and the packet goes once it is
+/// open. One at a time; false: one is waiting, too long, or the controller can't (not here, busy).
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3unit_data_tx(
+    u: *mut Unit,
+    src: u32,
+    dst: u32,
+    group: bool,
+    n: c_int,
+    control: *const u8,
+    bursts: *const u8,
+) -> bool {
+    let d = addr_of_mut!((*u).dl);
+    if (*d).on || n < 1 || n as usize > DATA_BURSTS || control.is_null() || bursts.is_null() {
+        return false;
+    }
+    if control.read() & 0x0F != crate::t3udt::DT_DATA_HDR {
+        return false;
+    }
+    let n = n as usize;
+    (*d).on = true;
+    (*d).ch = -1;
+    (*d).src = src;
+    (*d).dst = dst;
+    (*d).group = group;
+    (*d).n = n;
+    (*d).pos = 0;
+    (*d).until_ms = (*u).now_ms + DATA_WAIT_MS;
+    (*d).rx = t3::DataRx::default();
+    ptr::copy_nonoverlapping(control, (*d).control.as_mut_ptr(), n);
+    ptr::copy_nonoverlapping(bursts, (*d).bursts.as_mut_ptr().cast::<u8>(), n * 33);
+    if !t3::rdof_t3_pd_send((*u).site, src, dst, group, (*u).now_ms) {
+        (*d).on = false;
+        return false;
+    }
+    drain(u);
+    true
 }
 
 // ── the uplinks: a carrier each, its slots its LCNs ────────────────────────────
@@ -1745,6 +1903,7 @@ pub unsafe extern "C" fn rdof_t3unit_run(u: *mut Unit, k_upto: i64, now_ms: i64)
             }
         }
         drain(u);
+        data_feed(u, k);
         rdof_t3rf_tick(rf(u), k);
         drain(u);
         (*u).k_next += 1;

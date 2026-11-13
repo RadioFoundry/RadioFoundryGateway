@@ -79,7 +79,7 @@ const fn tm(name: &'static [u8], at: At, lo: f64, hi: f64, frac: bool) -> Timer 
     Timer { name, at, lo, hi, frac }
 }
 
-static TIMERS: [Timer; 22] = [
+static TIMERS: [Timer; 23] = [
     tm(b"nrand_wait", At::U8(|c| &mut c.nrand_wait), 0.0, 15.0, false),
     tm(b"backoff_min", At::U8(|c| &mut c.backoff_min), 1.0, 15.0, false),
     tm(b"backoff_max", At::U8(|c| &mut c.backoff_max), 1.0, 15.0, false),
@@ -102,6 +102,7 @@ static TIMERS: [Timer; 22] = [
     tm(b"sd_tries", At::U8(|c| &mut c.sd_tries), 1.0, 10.0, false),
     tm(b"sd_repeats", At::U8(|c| &mut c.sd_repeats), 1.0, 10.0, false),
     tm(b"sd_store_s", At::Ms(|c| &mut c.sd_store_ms), 0.0, 600.0, false),
+    tm(b"data_hang_s", At::Ms(|c| &mut c.data_hang_ms), 0.5, 30.0, true),
 ];
 
 // ── text ──────────────────────────────────────────────────────────────────────
@@ -479,6 +480,11 @@ impl<'a> Cx<'a> {
         {
             return false;
         }
+        let mut id = f64::from(cfg.data_id);
+        if !self.num_in(obj, c"data_gateway", path, 0.0, f64::from(0xFFFCDFu32), false, &mut id) {
+            return false;
+        }
+        cfg.data_id = id as u32;
         let t = self.get(obj, c"timers");
         if t >= 0 && !self.timer_keys(t, path, cfg) {
             return false;

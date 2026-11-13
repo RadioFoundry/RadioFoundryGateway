@@ -11,7 +11,7 @@ use core::ffi::{c_char, c_int, CStr};
 use core::fmt::Write;
 
 use crate::t3pdu::*;
-use crate::t3udt::{DT_DATA_HDR, DT_RATE12, SK_IND_UDT, SK_STATUS, SK_TG_UDT};
+use crate::t3udt::{DT_DATA_HDR, DT_RATE12, SK_IND_PD, SK_IND_UDT, SK_STATUS, SK_TG_PD, SK_TG_UDT};
 
 // short data on the TSCC (UDT short data, status, polling): tier3.md 3.9
 #[path = "t3sdata.rs"]
@@ -19,6 +19,15 @@ mod sdata;
 pub use sdata::{
     rdof_t3_net_sd, rdof_t3_sd_of_event, rdof_t3_sd_send, SdMsg, SD_F_EMERGENCY, SD_F_GROUP, SD_POLL, SD_RESULT,
     SD_SEND, SD_STATUS, SD_UDT,
+};
+// packet data calls on the payload channels: tier3.md 3.10
+#[path = "t3pdata.rs"]
+mod pdata;
+pub use pdata::{
+    data_op, rdof_t3_pd_send, rdof_t3_rx_data, DataGrant, DataHead, DataMsg, DataRx, DATA_BLOCK, DATA_END,
+    DATA_END_CONFIRMED, DATA_HEADER, DATA_RESPONSE, DPF_CONFIRMED, DPF_RESPONSE, DPF_UNCONFIRMED, MSG_BLOCKS,
+    OP_PD_GRANT, OP_PD_GRANT_MI, OP_TD_GRANT, OP_TD_GRANT_MI, PD_FAILED, PD_OPEN, SAP_IP, SO_HI_RATE, SO_SIMI,
+    SO_SUPED,
 };
 
 pub const CARRIERS: usize = 4;
@@ -93,6 +102,8 @@ pub struct Cfg {
     pub sd_repeats: u8,
     pub pad1: [u8; 2],
     pub sd_store_ms: u32,
+    pub data_hang_ms: u32,
+    pub data_id: u32,
 }
 
 #[repr(C)]
@@ -287,6 +298,7 @@ pub const EV_NET_DROP: u8 = 8;
 pub const EV_LOG: u8 = 9;
 pub const EV_SD: u8 = 20; // short data for the site, or the result of one it sent (SdMsg::of_event)
 pub const EV_NET_SD: u8 = 21; // short data or a result to publish (mqtt-net sdata)
+pub const EV_PD: u8 = 22; // a data channel opened (PD_OPEN), or the site's own data call failed (PD_FAILED)
 
 pub const CLOSE_HANG: u8 = 1;
 pub const CLOSE_TIMER: u8 = 2;
@@ -315,6 +327,7 @@ pub const F_WIDE: u8 = 0x08;
 pub const F_ALLCALL: u8 = 0x10;
 pub const F_LATE: u8 = 0x20;
 pub const F_PRIVATE_NET: u8 = 0x40;
+pub const F_DATA: u8 = 0x80; // a packet data call (tier3.md 3.10)
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -586,6 +599,7 @@ pub struct Site {
     ev_len: usize,
     counters: Counters,
     sd: sdata::SdState,
+    pd: pdata::PdState,
 }
 
 /// Text into a fixed buffer, NUL terminated, cut when full (LOG events, errors).
@@ -651,6 +665,7 @@ pub fn cfg_default() -> Cfg {
         sd_tries: 3,
         sd_repeats: 2,
         sd_store_ms: 30_000,
+        data_hang_ms: 3000,
         ..Default::default()
     };
     c.carriers[0] = Carrier { tx_hz: 438_750_000, rx_hz: 438_250_000, chan: 1, tscc: 1, enabled: 1 };
@@ -748,6 +763,12 @@ fn check(c: &Cfg, err: &mut Buf) -> bool {
     }
     if c.sd_tries > 10 || c.sd_repeats > 10 || c.sd_store_ms > 600_000 {
         no!("timers.sd_tries 1 to 10, sd_repeats 1 to 10, sd_store_s 0 to 600");
+    }
+    if !(500..=30_000).contains(&c.data_hang_ms) {
+        no!("timers.data_hang_s: 0.5 to 30");
+    }
+    if c.data_id > 0xFFFCDF {
+        no!("data_id: an individual ID, 1 to 16776415, or 0");
     }
     if !(60..=604_800).contains(&c.reg_hold_s) {
         no!("timers.reg_hold_s: 60 to 604800");
@@ -957,11 +978,13 @@ impl Site {
             KIND_ALLCALL => OP_BTV_GRANT,
             _ => OP_TV_GRANT,
         };
+        let data = c.flags & F_DATA != 0;
+        let op = if data { data_op(c.kind != KIND_PRIVATE, self.pd.multi_on(ch)) } else { op };
         Grant {
             op,
             chan: self.cfg.carriers[ch / 2].chan,
             lcn: (ch % 2) as u8,
-            late_entry: late && op != OP_PV_GRANT,
+            late_entry: late && op != OP_PV_GRANT && !data, // a data grant's HI_RATE: single slot
             emergency: c.flags & F_EMERGENCY != 0,
             offset: false,
             target: c.dst,
@@ -1146,20 +1169,24 @@ impl Site {
         let on = carrier < self.cfg.ncarriers as usize && self.cfg.carriers[carrier].enabled != 0;
         self.chans[ch] = Chan { r#use: if on { USE_IDLE } else { USE_OFF }, ..Default::default() };
         self.serve_queue();
+        self.pd_serve();
     }
 
     /// The group call (or all-call) on tg, if one is open.
     fn group_channel(&self, tg: u32) -> Option<usize> {
         (0..CHANNELS).find(|&i| {
             let c = &self.chans[i];
-            Self::live(c) && matches!(c.kind, KIND_GROUP | KIND_ALLCALL) && c.dst == tg
+            Self::live(c) && matches!(c.kind, KIND_GROUP | KIND_ALLCALL) && c.dst == tg && c.flags & F_DATA == 0
         })
     }
 
     fn private_channel(&self, a: u32, b: u32) -> Option<usize> {
         (0..CHANNELS).find(|&i| {
             let c = &self.chans[i];
-            Self::live(c) && c.kind == KIND_PRIVATE && ((c.src == a && c.dst == b) || (c.src == b && c.dst == a))
+            Self::live(c)
+                && c.kind == KIND_PRIVATE
+                && c.flags & F_DATA == 0
+                && ((c.src == a && c.dst == b) || (c.src == b && c.dst == a))
         })
     }
 
@@ -1435,6 +1462,7 @@ impl Site {
             SK_CALL_ANSWER => self.call_answer(r),
             SK_CANCEL => self.cancel(r.source),
             SK_IND_UDT | SK_TG_UDT | SK_STATUS => self.sd_rand(r),
+            SK_IND_PD | SK_TG_PD => self.pd_rand(r),
             _ => self.refuse(R_NOT_SUPPORTED, r.source, r.target),
         }
     }
@@ -1442,8 +1470,10 @@ impl Site {
     /// The checks every call request passes: Some(priority) when it may go on.
     fn admit(&mut self, r: &Rand) -> Option<u8> {
         let ms = r.source;
-        let group = r.service_kind == SK_TG_VOICE;
-        if is_gateway(r.target) || r.target == ADRNULL || (!group && (r.target == ms || is_allcall(r.target))) {
+        let group = matches!(r.service_kind, SK_TG_VOICE | SK_TG_PD);
+        let site = self.pd_to_site(r); // data to the site itself
+        let not_ms = !group && (r.target == ms || is_allcall(r.target));
+        if (is_gateway(r.target) && !site) || r.target == ADRNULL || not_ms {
             self.refuse(R_NOT_SUPPORTED, ms, r.target);
             return None;
         }
@@ -1641,7 +1671,7 @@ impl Site {
     /// C_ACKU or C_NACKU from a called MS: its source is the AHOY's target.
     fn ms_ack(&mut self, a: &Ack) {
         self.heard(a.source);
-        if self.sd_ack(a) {
+        if self.sd_ack(a) || self.pd_ack(a) {
             return;
         }
         let Some(i) =
@@ -1708,7 +1738,7 @@ impl Site {
     }
 
     fn cancel(&mut self, ms: u32) {
-        if self.sd_cancel(ms) {
+        if self.sd_cancel(ms) || self.pd_cancel(ms) {
             return;
         }
         if let Some(i) = self.pend.iter().position(|p| p.used && p.caller_local && p.caller == ms) {
@@ -2122,6 +2152,7 @@ impl Site {
         self.roll_load();
         self.pending_timers();
         self.sd_timers();
+        self.pd_timers();
         self.channel_timers();
         self.reg_timers();
         let mut out = SlotOut::default();

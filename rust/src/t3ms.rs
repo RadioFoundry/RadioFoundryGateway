@@ -8,7 +8,10 @@
 use core::ffi::c_int;
 
 use crate::t3pdu::*;
-use crate::t3site::{CARRIERS, VOICE_FRAME, VOICE_HEADER, VOICE_TERM};
+use crate::t3site::{
+    DataGrant, DataHead, DataMsg, CARRIERS, DPF_CONFIRMED, DPF_RESPONSE, DPF_UNCONFIRMED, MSG_BLOCKS, SAP_IP, SO_SIMI,
+    VOICE_FRAME, VOICE_HEADER, VOICE_TERM,
+};
 use crate::t3udt::*;
 
 pub const ANSWER_ACCEPT: u8 = 0;
@@ -26,7 +29,10 @@ const DO_ANSWER: u8 = 6; // FOACSU Call Answer, queued by the MS itself
 pub const DO_SDM: u8 = 7; // UDT short data (send_sdm): arg the MS or talkgroup
 pub const DO_STATUS: u8 = 8; // a status (talk_ms: the value; 127 polls): arg the MS or talkgroup
 pub const F_EMERGENCY: u8 = 0x01;
-pub const F_GROUP: u8 = 0x02; // DO_SDM, DO_STATUS: arg is a talkgroup
+pub const F_GROUP: u8 = 0x02; // DO_SDM, DO_STATUS, DO_DATA: arg is a talkgroup
+pub const DO_DATA: u8 = 9; // a packet data call (send_data): arg the MS, talkgroup or gateway
+pub const F_CONFIRMED: u8 = 0x04; // DO_DATA: confirmed data
+pub const F_MULTI: u8 = 0x08; // DO_DATA: multi-item (P_MAINT after the item)
 
 pub const IDLE: u8 = 0;
 pub const ACCESS: u8 = 1;
@@ -35,12 +41,14 @@ pub const PAYLOAD: u8 = 3;
 
 pub const TX_PDU: u8 = 1;
 pub const TX_VOICE: u8 = 2;
+pub const TX_DATA: u8 = 3; // packet data on a payload channel: dt 6 a header (pdu), dt 7 a rate 1/2 block (pdu, ext)
 
 const ACTIONS: usize = 8;
 const TRIES: u8 = 6; // random access attempts before giving up
 const WAIT_MS: i64 = 30_000; // after C_WACKD / C_QACKD / MS_Alerting, the longest wait for the outcome
 const HUNT_SLOTS: u32 = 100; // TSCC slots without C_ALOHA before trying the next carrier
 const MAINT_REPEATS: u8 = 4;
+const DATA_ACK_MS: i64 = 3000; // confirmed data: the longest wait for the response
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -151,6 +159,20 @@ pub struct Ms {
     last_status_src: u32,
     statuses: u32,
     poll_result: u8,
+    // packet data
+    pd_out: DataMsg,
+    pd_pos: u8, // 0: the header next, then the blocks
+    pd_sending: bool,
+    pd_wait_ack: bool,
+    pd_until: i64,
+    pd_multi: bool, // the channel's grant is multi-item
+    pd_in: DataMsg,
+    pd_in_on: bool,
+    pd_in_got: u8,
+    pd_inbox: DataMsg,
+    pd_inbox_n: u32,
+    pd_resp: Option<[u8; 10]>,
+    pd_leave: bool, // single item: back to the TSCC after the response goes
 }
 
 impl Ms {
@@ -217,6 +239,33 @@ impl Ms {
         self.sd_out = b;
         self.sd_fmt = format;
         self.act(DO_SDM, dst, 0, flags, at_ms)
+    }
+
+    /// Queues a packet data call with one message (unconfirmed, or confirmed with F_CONFIRMED; SAP 4) to dst;
+    /// false when the data doesn't fit.
+    pub fn send_data(&mut self, dst: u32, flags: u8, data: &[u8], at_ms: i64) -> bool {
+        let head = DataHead {
+            dpf: if flags & F_CONFIRMED != 0 { DPF_CONFIRMED } else { DPF_UNCONFIRMED },
+            group: flags & F_GROUP != 0,
+            response: flags & F_CONFIRMED != 0,
+            sap: SAP_IP,
+            dst,
+            src: self.id,
+            ..Default::default()
+        };
+        let Some(m) = DataMsg::build(head, data) else { return false };
+        self.pd_out = m;
+        self.act(DO_DATA, dst, 0, flags, at_ms)
+    }
+
+    /// The last packet data message it took: the header, the data and its length, and how many it took.
+    pub fn data_inbox(&self) -> Option<(DataHead, [u8; 12 * MSG_BLOCKS], usize, u32)> {
+        if self.pd_inbox_n == 0 {
+            return None;
+        }
+        let mut d = [0u8; 12 * MSG_BLOCKS];
+        let n = self.pd_inbox.data(&mut d)?;
+        Some((self.pd_inbox.head, d, n, self.pd_inbox_n))
     }
 
     /// The status it answers a poll with.
@@ -311,6 +360,14 @@ impl Ms {
                     ..Default::default()
                 }
             }
+            // 6.6.3.2.1 table 6.50
+            DO_DATA => Rand {
+                service_options: emergency | if a.flags & F_MULTI != 0 { SO_SIMI } else { 0 },
+                service_kind: if a.flags & F_GROUP != 0 { SK_TG_PD } else { SK_IND_PD },
+                target: a.arg,
+                source: self.id,
+                ..Default::default()
+            },
             _ => Rand { service_kind: SK_CANCEL, target: a.arg, source: self.id, ..Default::default() },
         };
         r.encode()
@@ -330,7 +387,7 @@ impl Ms {
     }
 
     fn done(&mut self, ok: bool) {
-        if self.has_cur && matches!(self.cur.what, DO_GROUP | DO_PRIVATE | DO_SDM | DO_STATUS) {
+        if self.has_cur && matches!(self.cur.what, DO_GROUP | DO_PRIVATE | DO_SDM | DO_STATUS | DO_DATA) {
             if ok {
                 self.calls_done += 1;
             } else {
@@ -347,6 +404,11 @@ impl Ms {
         self.ch = self.tscc_ch;
         self.talking = false;
         self.maint_left = 0;
+        self.pd_sending = false;
+        self.pd_wait_ack = false;
+        self.pd_in_on = false;
+        self.pd_resp = None;
+        self.pd_leave = false;
     }
 
     /// Outbound slot k on channel ch (a block when dt isn't 0); at: the CACH's AT bit for the next slot.
@@ -365,12 +427,17 @@ impl Ms {
             return;
         }
         if self.state == PAYLOAD {
+            if dt == DT_DATA_HDR || dt == DT_RATE12 {
+                self.rx_data(ch, dt, blk);
+                return;
+            }
             if dt == DT_CSBK && Clear::decode(pdu).is_some() {
                 self.clears += 1;
                 let mine = self.mine && self.has_cur;
                 self.mine = false;
                 if mine {
-                    self.done(true);
+                    let ok = !(self.cur.what == DO_DATA && (self.pd_sending || self.pd_wait_ack));
+                    self.done(ok);
                 }
                 self.back_to_tscc();
             }
@@ -416,7 +483,107 @@ impl Ms {
             }
         } else if let Some(g) = Grant::decode(pdu) {
             self.on_grant(&g);
+        } else if let Some(g) = DataGrant::decode(pdu) {
+            self.on_data_grant(&g);
         }
+    }
+
+    /// A data channel grant (6.6.3.2.7): its own call, a call to it, or (idle) one to its talkgroup.
+    fn on_data_grant(&mut self, g: &DataGrant) {
+        let asked = self.has_cur && matches!(self.state, ACCESS | WAITING);
+        let mine = asked && self.cur.what == DO_DATA && g.source == self.id && g.target == self.cur.arg;
+        let to_me = if g.group() { self.my_tg(g.target) } else { g.target == self.id };
+        let follow = mine || ((self.state == IDLE || !self.has_cur) && to_me);
+        if !follow || (self.state == PAYLOAD && !mine) {
+            return;
+        }
+        let Some(ch) = self.chan_index(g.chan, g.lcn) else { return };
+        self.grants += 1;
+        self.state = PAYLOAD;
+        self.ch = ch;
+        self.mine = mine;
+        self.talking = false;
+        self.maint_left = 0;
+        self.pd_sending = mine;
+        self.pd_pos = 0;
+        self.pd_wait_ack = false;
+        self.pd_in_on = false;
+        self.pd_resp = None;
+        self.pd_leave = false;
+        self.pd_multi = matches!(g.op, crate::t3site::OP_PD_GRANT_MI | crate::t3site::OP_TD_GRANT_MI);
+        self.pay_group = g.group();
+        self.pay_src = g.source;
+        self.pay_dst = g.target;
+    }
+
+    /// A data header or rate 1/2 block on its payload channel (the site's repeat): its own call's response, or a
+    /// message for it or its talkgroup (answered when confirmed: 361-1 9.2.3).
+    pub fn rx_data(&mut self, ch: usize, dt: u8, blk: &[u8; 12]) {
+        if self.state != PAYLOAD || ch != self.ch {
+            return;
+        }
+        if dt == DT_DATA_HDR {
+            let mut p = [0u8; 10];
+            p.copy_from_slice(&blk[..10]);
+            self.pd_in_on = false;
+            let Some(h) = DataHead::decode(&p) else { return };
+            if h.src == self.id {
+                return; // its own, repeated
+            }
+            if h.dpf == DPF_RESPONSE {
+                if h.dst == self.id && self.pd_wait_ack && (h.class, h.rtype) == (0, 1) {
+                    self.pd_wait_ack = false;
+                    self.pay_src = h.src;
+                    self.item_done();
+                }
+                return;
+            }
+            if h.dst == self.id || (h.group && self.my_tg(h.dst)) {
+                self.pd_in = DataMsg { head: h, n: h.blocks.min(MSG_BLOCKS as u8), ..Default::default() };
+                self.pd_in_got = 0;
+                self.pd_in_on = h.blocks > 0 && h.blocks as usize <= MSG_BLOCKS;
+                self.pay_src = h.src;
+            }
+            return;
+        }
+        if !self.pd_in_on {
+            return;
+        }
+        self.pd_in.b[self.pd_in_got as usize] = *blk;
+        self.pd_in_got += 1;
+        if self.pd_in_got < self.pd_in.n {
+            return;
+        }
+        self.pd_in_on = false;
+        let mut d = [0u8; 12 * MSG_BLOCKS];
+        if self.pd_in.data(&mut d).is_none() {
+            return; // confirmed: no response, the sender tries again
+        }
+        let h = self.pd_in.head;
+        if !(self.pd_inbox_n > 0 && self.pd_inbox == self.pd_in) {
+            self.pd_inbox = self.pd_in;
+            self.pd_inbox_n += 1;
+        }
+        if h.dpf == DPF_CONFIRMED && h.response && !h.group {
+            let (dpf, sap, dst, src) = (DPF_RESPONSE, h.sap, h.src, self.id);
+            let r = DataHead { dpf, sap, dst, src, rtype: 1, status: h.ns, ..Default::default() };
+            self.pd_resp = Some(r.encode());
+            self.pd_leave = !self.pd_multi && !self.mine;
+        } else if !self.pd_multi && !self.mine {
+            self.back_to_tscc(); // 6.6.3.3.2.5 b): a single item taken
+        }
+    }
+
+    /// Its message went (unconfirmed) or was acknowledged: P_MAINT after a multi-item call, else back to the TSCC
+    /// (6.6.3.3.2.5 a, c).
+    fn item_done(&mut self) {
+        if self.pd_multi {
+            self.maint_left = MAINT_REPEATS;
+            return;
+        }
+        self.mine = false;
+        self.done(true);
+        self.back_to_tscc();
     }
 
     /// A UDT header or appended block on the TSCC (6.6.4.7): data for it or its talkgroup is taken, and an
@@ -558,6 +725,8 @@ impl Ms {
         }
         self.ahoys += 1;
         let ack = |reason, s: &Ms| Ack { op: OP_ACKU, response_info: 0, reason, target: a.source, source: s.id }.encode();
+        // a packet data call's availability check is answered Message_Accepted (6.6.3.2.6)
+        let accepted = if a.service_kind == SK_IND_PD { R_MESSAGE_ACCEPTED } else { R_MS_ACCEPTED };
         if a.service_kind == SK_STATUS {
             // 6.6.6.1.2.1.5, 6.6.6.2.2.1.5: Service_Options_Mirror the five MSBs, Appended_Blocks the two LSBs
             let st = (a.service_options & 0x1F) << 2 | a.appended;
@@ -574,10 +743,10 @@ impl Ms {
                 return; // a talkgroup's: no answer (6.6.6.1.2.2.5)
             }
         }
-        let status = a.service_kind == SK_STATUS;
+        let status = matches!(a.service_kind, SK_STATUS | SK_IND_PD);
         let answer = if status && self.answer == ANSWER_FOACSU { ANSWER_ACCEPT } else { self.answer };
         self.reply = match answer {
-            ANSWER_ACCEPT => Some(ack(R_MS_ACCEPTED, self)),
+            ANSWER_ACCEPT => Some(ack(accepted, self)),
             ANSWER_BUSY => Some(ack(R_EQUIP_BUSY, self)),
             ANSWER_REFUSE => Some(ack(R_RECIPIENT_REFUSED, self)),
             ANSWER_FOACSU => {
@@ -711,6 +880,9 @@ impl Ms {
         if k & 1 != (self.ch & 1) as i64 {
             return None;
         }
+        if let Some(t) = self.tx_data() {
+            return Some(t);
+        }
         let group = self.pay_group as u8;
         let dst = if self.mine { self.cur.arg } else { self.pay_dst };
         let voice = |what, s: &Ms| MsTx { ch: s.ch as u8, kind: TX_VOICE, what, group, src: s.id, dst, ..Default::default() };
@@ -733,6 +905,57 @@ impl Ms {
             self.maint_left -= 1;
             let m = Maint { kind: MAINT_DISCON, target: dst, source: self.id };
             return Some(MsTx { ch: self.ch as u8, kind: TX_PDU, dt: DT_CSBK, pdu: m.encode(), ..Default::default() });
+        }
+        None
+    }
+
+    /// Packet data on the payload channel: its message, a response it owes, the wait for its own response.
+    fn tx_data(&mut self) -> Option<MsTx> {
+        let data = |dt, b: &[u8; 12], s: &Ms| {
+            let mut pdu = [0u8; 10];
+            pdu.copy_from_slice(&b[..10]);
+            let (src, dst, group) = (s.id, s.pd_out.head.dst, s.pay_group as u8);
+            MsTx { ch: s.ch as u8, kind: TX_DATA, dt, pdu, ext: [b[10], b[11]], group, src, dst, ..Default::default() }
+        };
+        if let Some(r) = self.pd_resp.take() {
+            let mut b = [0u8; 12];
+            b[..10].copy_from_slice(&r);
+            let mut t = data(DT_DATA_HDR, &b, self);
+            t.dst = self.pay_src;
+            t.group = 0;
+            if self.pd_leave {
+                self.back_to_tscc(); // 6.6.3.3.2.5 d): it answered a single item
+            }
+            return Some(t);
+        }
+        if self.pd_sending {
+            if self.pd_pos == 0 {
+                self.pd_pos = 1;
+                let mut b = [0u8; 12];
+                b[..10].copy_from_slice(&self.pd_out.head.encode());
+                return Some(data(DT_DATA_HDR, &b, self));
+            }
+            let j = (self.pd_pos - 1) as usize;
+            let b = self.pd_out.b[j];
+            self.pd_pos += 1;
+            if self.pd_pos as usize > self.pd_out.n as usize {
+                self.pd_sending = false;
+                if self.pd_out.head.dpf == DPF_CONFIRMED {
+                    self.pd_wait_ack = true;
+                    self.pd_until = self.now + DATA_ACK_MS;
+                } else {
+                    let t = data(DT_RATE12, &b, self);
+                    self.item_done();
+                    return Some(t);
+                }
+            }
+            return Some(data(DT_RATE12, &b, self));
+        }
+        if self.pd_wait_ack && self.now >= self.pd_until {
+            self.pd_wait_ack = false;
+            self.mine = false;
+            self.done(false);
+            self.back_to_tscc();
         }
         None
     }
@@ -789,6 +1012,31 @@ pub unsafe extern "C" fn rdof_t3ms_do(ms: *mut Ms, what: u8, arg: u32, talk_ms: 
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn rdof_t3ms_data_inbox(ms: *const Ms, out: *mut u8, cap: usize, src: *mut u32) -> c_int {
+    let Some((h, d, n, _)) = (*ms).data_inbox() else { return -1 };
+    if !src.is_null() {
+        *src = h.src;
+    }
+    if !out.is_null() {
+        core::ptr::copy_nonoverlapping(d.as_ptr(), out, n.min(cap));
+    }
+    n as c_int
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3ms_data(
+    ms: *mut Ms,
+    dst: u32,
+    flags: u8,
+    data: *const u8,
+    len: usize,
+    at_ms: i64,
+) -> bool {
+    let d = if data.is_null() || len == 0 { &[][..] } else { core::slice::from_raw_parts(data, len) };
+    (*ms).send_data(dst, flags, d, at_ms)
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn rdof_t3ms_sdm(
     ms: *mut Ms,
     dst: u32,
@@ -807,7 +1055,8 @@ pub unsafe extern "C" fn rdof_t3ms_rx(ms: *mut Ms, ch: c_int, k: i64, dt: u8, pd
     if ch >= 0 {
         let mut b = [0u8; 12];
         if !pdu.is_null() {
-            let n = if dt == DT_RATE12 { 12 } else { 10 }; // a rate 1/2 block: 12 octets
+            // a rate 1/2 block: 12 octets; a data header on a payload channel too
+            let n = if dt == DT_RATE12 || (dt == DT_DATA_HDR && ch as usize != (*ms).tscc_ch) { 12 } else { 10 };
             core::ptr::copy_nonoverlapping(pdu.cast::<u8>(), b.as_mut_ptr(), n);
         }
         (*ms).rx_block(ch as usize, k, dt, &b, at);

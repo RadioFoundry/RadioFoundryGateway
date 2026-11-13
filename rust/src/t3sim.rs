@@ -100,7 +100,8 @@ fn ms_burst(tx: &MsTx, n: c_int, cc: c_int, b: &mut RdofBurst) -> bool {
     b.family = FAMILY_MS;
     b.cc = cc;
     b.slot = c_int::from(tx.ch & 1) + 1;
-    if tx.kind == 1 {
+    if tx.kind == 1 || tx.kind == 3 {
+        // a control block, or packet data (a data header or rate 1/2 block)
         let mut blk = [0u8; 12];
         blk[..10].copy_from_slice(&tx.pdu);
         blk[10..].copy_from_slice(&tx.ext); // a rate 1/2 block's last two octets
@@ -133,9 +134,9 @@ fn ms_burst(tx: &MsTx, n: c_int, cc: c_int, b: &mut RdofBurst) -> bool {
 /// What MS i sends, as its burst, its voice counter kept.
 fn sim_ms_burst(s: &mut Sim, i: usize, tx: &MsTx, cc: c_int, b: &mut RdofBurst) -> bool {
     let n = s.voice_n[i];
-    if tx.kind != 1 && tx.what == VOICE_FRAME {
+    if tx.kind == 2 && tx.what == VOICE_FRAME {
         s.voice_n[i] = (n + 1) % 6;
-    } else if tx.kind != 1 {
+    } else if tx.kind == 2 {
         s.voice_n[i] = 0;
     }
     ms_burst(tx, n, cc, b)

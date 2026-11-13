@@ -11,7 +11,8 @@ use core::ptr::null_mut;
 
 use crate::ffi::{
     dmrCachDeinterleave, dmrCachInterleave, dmrCachTactDecode, dmrCachTactEncode, rdof_bptc196_decode,
-    rdof_check_crc16, rdof_crc16_ccitt, rdof_duplex_lc_burst, rdof_voice_regen_burst, rdof_voice_regen_init,
+    rdof_check_crc16, rdof_crc16_ccitt, rdof_duplex_data, rdof_duplex_lc_burst, rdof_voice_regen_burst,
+    rdof_voice_regen_init,
     RDOF_DT_CSBK, RDOF_DT_DATA_HEADER, RDOF_DT_MBC_CONTINUATION, RDOF_DT_MBC_HEADER, RDOF_DT_TERMINATOR_WITH_LC,
     RDOF_DT_VOICE, RDOF_DT_VOICE_LC_HEADER, RDOF_DT_VOICE_SYNC, RDOF_MASK_CSBK, RDOF_MASK_DATA_HEADER,
 };
@@ -71,6 +72,7 @@ pub const HEADER: c_int = 1;
 pub const VOICE: c_int = 2;
 pub const TERM: c_int = 3;
 pub const LOST: c_int = 4;
+pub const DATA: c_int = 5; // a packet data block (rate 1/2, 3/4 or 1) repeated on an open channel
 
 /// rdof_t3rf_out_t
 pub const OUT_IDLE: c_int = 0;
@@ -456,6 +458,59 @@ fn rf_takes(c: &mut T3rfCh) {
     }
 }
 
+const DT_RATE34: c_int = 8;
+const DT_RATE1: c_int = 10;
+
+/// Packet data on an open channel (tier3.md 3.10): regenerated with the BS sync and repeated, given to the uplink
+/// (the site's data, when it is a party), and a block counted (activity DATA; the header goes to io.pdu).
+unsafe fn data_rx(io: &T3rfIo, c: &mut T3rfCh, k: i64, b: &RdofBurst, header: bool) {
+    let mut out = [0u8; BURST_BYTES];
+    let control = RDOF_SYNC_DATA | b.dt as u8;
+    if !rdof_duplex_data(control, b.burst.as_ptr(), c.cc, out.as_mut_ptr()) {
+        return;
+    }
+    rf_takes(c);
+    c.rf_src = c.src;
+    c.rf_dst = c.dst;
+    c.rf_group = c.group;
+    push(c, control, false, &out);
+    up(io, c, b.dt, 0, &out, header);
+    if !header {
+        activity(io, c, k, DATA);
+    }
+}
+
+/// Puts a data burst (a header or block the site sends: control as MMDVM's) on open channel ch's outbound queue,
+/// regenerated with the BS sync and the channel's colour code; false when closed, not data or the queue is full.
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3rf_data(t: *mut T3rf, ch: c_int, control: u8, burst: *const u8) -> bool {
+    let Some(c) = channel(&mut *t, ch) else { return false };
+    let dt = c_int::from(control & 0x0F);
+    if !c.open || burst.is_null() || !matches!(dt, RDOF_DT_DATA_HEADER | DT_RATE12 | DT_RATE34 | DT_RATE1) {
+        return false;
+    }
+    if c.qn >= QUEUE as c_int {
+        return false;
+    }
+    let mut out = [0u8; BURST_BYTES];
+    let control = RDOF_SYNC_DATA | dt as u8;
+    if !rdof_duplex_data(control, burst, c.cc, out.as_mut_ptr()) {
+        return false;
+    }
+    push(c, control, false, &out);
+    true
+}
+
+/// Room on open channel ch's outbound queue (bursts).
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3rf_room(t: *const T3rf, ch: c_int) -> c_int {
+    let t = &*t;
+    if !is_payload(t, ch) || !t.ch[ch as usize].open {
+        return 0;
+    }
+    QUEUE as c_int - t.ch[ch as usize].qn
+}
+
 fn is_voice(dt: c_int) -> bool {
     dt == RDOF_DT_VOICE || dt == RDOF_DT_VOICE_SYNC
 }
@@ -468,6 +523,9 @@ unsafe fn payload_rx(io: &T3rfIo, c: &mut T3rfCh, k: i64, b: &RdofBurst, rssi: c
         let (mut dt, mut cc, mut pdu) = (0, 0, [0u8; 10]);
         if rdof_t3rf_burst_pdu(&b.burst, &mut dt, &mut cc, &mut pdu) == PDU_OK {
             c.rx_pdus += 1;
+            if b.dt == RDOF_DT_DATA_HEADER && c.open {
+                data_rx(io, c, k, b, true); // packet data (tier3.md 3.10): repeated, the controller counts it
+            }
             if let Some(p) = io.pdu {
                 p(io.ctx, c.index, k, dt, pdu.as_ptr(), rssi);
             }
@@ -512,7 +570,10 @@ unsafe fn payload_rx(io: &T3rfIo, c: &mut T3rfCh, k: i64, b: &RdofBurst, rssi: c
         return;
     }
     if !is_voice(b.dt) {
-        return; // data blocks: not carried (packet data is later work)
+        if matches!(b.dt, DT_RATE12 | DT_RATE34 | DT_RATE1) {
+            data_rx(io, c, k, b, false);
+        }
+        return;
     }
     let mut late = false;
     if !c.rf_regen_on {
