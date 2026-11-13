@@ -1229,7 +1229,8 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
   offset taken at the first slot the modem asks for (again if its slots restart), so the modem's TS1 is LCN 0. The
   carriers aren't slot-synchronized (`site_sync` 0: the payload warm-up).
 - `--tier3 FILE` with `--mmdvm PORT`: a one-carrier site out of a stock duplex MMDVM modem, an SDR receiver hearing
-  its out and in; the trunk's slots follow the modem's own clock, placed by when each burst is written
+  its out and in; the trunk's slots follow the modem's own clock, placed by when each burst is written (inside the
+  lead windows that set each CACH's AT), the modem keyed once by a write and held by `GET_STATUS` every 250 ms
   ([tier3-hat.md](tier3-hat.md)).
 - Carrier B, the first build's second carrier, is a split TX half on its radio's port (`rdof/sdr/t3split.h`,
   `rust/src/t3split.rs`): one split of `rdof_sdrsplits` with the SDR's receiver as its RX half. Before the receiver
