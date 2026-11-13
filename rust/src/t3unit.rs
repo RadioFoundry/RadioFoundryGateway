@@ -23,7 +23,8 @@ use crate::plan::RdofIdset;
 use crate::t3cfg::{rdof_t3cfg_check, rdof_t3cfg_site};
 use crate::t3rf::{
     rdof_t3rf_channel, rdof_t3rf_close, rdof_t3rf_control, rdof_t3rf_init, rdof_t3rf_net, rdof_t3rf_net_end,
-    rdof_t3rf_duplex, rdof_t3rf_open, rdof_t3rf_rc, rdof_t3rf_rx, rdof_t3rf_slot, rdof_t3rf_split_pump, rdof_t3rf_tick, T3rf, T3rfIo, T3rfSplit,
+    rdof_t3rf_data, rdof_t3rf_duplex, rdof_t3rf_open, rdof_t3rf_rc, rdof_t3rf_room, rdof_t3rf_rx, rdof_t3rf_slot,
+    rdof_t3rf_split_pump, rdof_t3rf_tick, T3rf, T3rfIo, T3rfSplit,
     WARMUP,
 };
 use crate::t3site::{
@@ -55,6 +56,9 @@ const MN_PATH_NONE: u8 = 0xFF;
 const MN_HEADER: usize = 14;
 const MN_SETUP_LEN: usize = 8;
 const MN_F_EMERGENCY: u8 = 0x04;
+const MN_F_GROUP: u8 = 0x02;
+const MN_SDATA: c_int = 0x0D; // the sdata item (tier3.md 5.9)
+const MN_SDATA_HEAD: usize = 12; // its fixed part; the data follows
 const MN_REC_TG: usize = 8;
 const MN_HAS_ENABLED: u32 = 1 << 14;
 const MN_CFG_TIMERS: usize = 16;
@@ -110,6 +114,10 @@ pub struct Io {
     pub cache: Option<unsafe extern "C" fn(ctx: *mut c_void)>,
     pub rand32: Option<unsafe extern "C" fn(ctx: *mut c_void) -> u32>,
     pub ctx: *mut c_void,
+    /// Packet data the site is a party to (tier3.md 3.16): each burst of it heard on channel ch (dt 6 a header, 7, 8
+    /// or 10 a block; BS sync). NULL: none taken.
+    pub data:
+        Option<unsafe extern "C" fn(ctx: *mut c_void, ch: c_int, dt: c_int, burst: *const u8, src: u32, dst: u32)>,
 }
 
 /// rdof_t3unit_counts_t
@@ -597,7 +605,30 @@ pub struct Unit {
     // peer_info's parse
     jnodes: [JNode; JNODES],
     jbuf: [u8; JBUF],
+    // packet data (tier3.md 3.16)
+    data_rx: [t3::DataRx; CHANNELS],
+    site_party: [bool; CHANNELS], // the site is a party to the data call on the channel
+    dl: DataDown,
 }
+
+/// A packet the site sends (rdof_t3unit_data_tx): held until its channel opens, then fed to its queue.
+#[derive(Clone, Copy)]
+struct DataDown {
+    on: bool,
+    ch: c_int, // -1 until EV_PD opens it
+    src: u32,
+    dst: u32,
+    group: bool,
+    n: usize,
+    pos: usize,
+    until_ms: i64,
+    rx: t3::DataRx,
+    control: [u8; DATA_BURSTS],
+    bursts: [[u8; 33]; DATA_BURSTS],
+}
+
+pub const DATA_BURSTS: usize = 128; // RDOF_IPGW_MAX_BURSTS
+const DATA_WAIT_MS: i64 = 30_000; // a packet waits this long for its channel
 
 const fn round_up(n: usize, a: usize) -> usize {
     n.div_ceil(a) * a
@@ -869,6 +900,135 @@ unsafe fn setup_out(u: *mut Unit, e: &Event) {
     }
 }
 
+// ── short data across the network (the sdata item, tier3.md 5.9) ───────────────
+
+/// rdof_mn_writer_t
+#[repr(C)]
+struct MnWriter {
+    buf: *mut u8,
+    cap: usize,
+    len: usize,
+    items: c_int,
+    overflow: bool,
+}
+
+/// rdof_mn_reader_t
+#[repr(C)]
+struct MnReader {
+    msg: *const u8,
+    len: usize,
+    at: usize,
+    count: c_int,
+    bad: bool,
+}
+
+/// rdof_mn_item_t
+#[repr(C)]
+struct MnItem {
+    r#type: c_int,
+    value: *const u8,
+    len: usize,
+}
+
+extern "C" {
+    fn rdof_mn_begin(w: *mut MnWriter, buf: *mut u8, cap: usize, h: *const MnHdr);
+    fn rdof_mn_item(w: *mut MnWriter, ty: c_int, value: *const c_void, len: usize) -> bool;
+    fn rdof_mn_end(w: *mut MnWriter) -> usize;
+    fn rdof_mn_parse(msg: *const u8, len: usize, h: *mut MnHdr) -> bool;
+    fn rdof_mn_reader(r: *mut MnReader, msg: *const u8, len: usize);
+    fn rdof_mn_next(r: *mut MnReader, it: *mut MnItem) -> bool;
+}
+
+/// A short data message or result for another site: on pc/{dst}/{node} (a result: pc/{caller}/{node}, src and dst
+/// swapped as a setup answer's), or tg/{tg}/{node} for a talkgroup.
+unsafe fn sdata_out(u: *mut Unit, e: &Event) {
+    let m = t3::SdMsg::of_event(e);
+    let group = m.flags & t3::SD_F_GROUP != 0;
+    let result = m.op == t3::SD_RESULT;
+    let mut v = [0u8; MN_SDATA_HEAD + 46];
+    v[..8].copy_from_slice(&[m.op, m.what, m.reason, m.value, m.flags, m.pad_nibble, m.why, 0]);
+    v[8..12].copy_from_slice(&m.r#ref.to_le_bytes());
+    let d = m.data();
+    v[MN_SDATA_HEAD..MN_SDATA_HEAD + d.len()].copy_from_slice(d);
+    let (src, dst) = if result { (m.dst, m.src) } else { (m.src, m.dst) };
+    let flags = if group { MN_F_GROUP } else { 0 } | if m.flags & t3::SD_F_EMERGENCY != 0 { MN_F_EMERGENCY } else { 0 };
+    let path = if (*u).path >= 0 { (*u).path as u8 } else { MN_PATH_NONE };
+    let h = MnHdr { flags, path, seq: 0, stream: m.stream, src, dst };
+    let mut buf = [0u8; MN_HEADER + 2 + MN_SDATA_HEAD + 46];
+    let mut w: MnWriter = core::mem::zeroed();
+    rdof_mn_begin(&mut w, buf.as_mut_ptr(), buf.len(), &h);
+    rdof_mn_item(&mut w, MN_SDATA, v.as_ptr().cast(), MN_SDATA_HEAD + d.len());
+    let n = rdof_mn_end(&mut w);
+    let mut t = [0u8; 128];
+    let kind = if group { MN_T_TG } else { MN_T_PC };
+    if n != 0 && rdof_mn_topic(cpm(&mut t), t.len(), root(u), kind, dst, node(u)) != 0 {
+        publish(u, cp(&t), buf.as_ptr().cast(), n, 1, false);
+    }
+}
+
+/// A message whose first item is sdata: true when it was one (handled, or malformed and dropped).
+unsafe fn sdata_in(u: *mut Unit, msg: *const u8, len: usize) -> bool {
+    let mut h: MnHdr = core::mem::zeroed();
+    let mut r: MnReader = core::mem::zeroed();
+    let mut it: MnItem = core::mem::zeroed();
+    if msg.is_null() || !rdof_mn_parse(msg, len, &mut h) {
+        return false;
+    }
+    rdof_mn_reader(&mut r, msg, len);
+    if !rdof_mn_next(&mut r, &mut it) || it.r#type != MN_SDATA {
+        return false;
+    }
+    if it.len < MN_SDATA_HEAD || it.len > MN_SDATA_HEAD + 46 {
+        return true;
+    }
+    let v = core::slice::from_raw_parts(it.value, it.len);
+    let mut m = t3::SdMsg {
+        op: v[0],
+        what: v[1],
+        reason: v[2],
+        value: v[3],
+        flags: v[4],
+        pad_nibble: v[5],
+        why: v[6],
+        len: (it.len - MN_SDATA_HEAD) as u8,
+        r#ref: u32::from_le_bytes([v[8], v[9], v[10], v[11]]),
+        stream: h.stream,
+        ..Default::default()
+    };
+    let result = m.op == t3::SD_RESULT;
+    (m.src, m.dst) = if result { (h.dst, h.src) } else { (h.src, h.dst) };
+    m.data[..usize::from(m.len)].copy_from_slice(&v[MN_SDATA_HEAD..]);
+    t3::rdof_t3_net_sd((*u).site, &m, (*u).now_ms);
+    drain(u);
+    true
+}
+
+/// Short data for the site itself, or the result of one it sent: logged.
+unsafe fn sdata_here(u: *mut Unit, e: &Event) {
+    let m = t3::SdMsg::of_event(e);
+    log(u, |o| {
+        if m.op == t3::SD_RESULT {
+            o.bytes(b"tier3: short data to ");
+            o.int(i64::from(m.dst), 0);
+            o.bytes(b": reason 0x");
+            hex(o, u32::from(m.reason), 2);
+            return;
+        }
+        o.bytes(if m.what == t3::SD_STATUS { b"tier3: status from " } else { b"tier3: short data from " });
+        o.int(i64::from(m.src), 0);
+        o.bytes(b": ");
+        if m.what == t3::SD_STATUS {
+            o.int(i64::from(m.value), 0);
+        } else {
+            o.bytes(b"format ");
+            o.int(i64::from(m.value), 0);
+            o.bytes(b", ");
+            o.int(i64::from(m.len), 0);
+            o.bytes(b" octets");
+        }
+    });
+}
+
 unsafe fn activity_out(u: *mut Unit, e: &Event) {
     const REG: [&CStr; 9] =
         [c"?", c"register", c"deregister", c"expire", c"deny", c"refuse", c"auth_ok", c"auth_fail", c"auth_none"];
@@ -907,7 +1067,7 @@ unsafe fn activity_out(u: *mut Unit, e: &Event) {
         t3::ACT_STATUS => {
             let result = match e.reason {
                 crate::t3pdu::R_MS_ACCEPTED | crate::t3pdu::R_MESSAGE_ACCEPTED => c"delivered",
-                crate::t3pdu::R_MSAWAY => c"away",
+                crate::t3pdu::R_MSAWAY | crate::t3pdu::R_NOREG_MSAWAY => c"away",
                 crate::t3pdu::R_EQUIP_BUSY => c"busy",
                 crate::t3pdu::R_RECIPIENT_REFUSED => c"refused",
                 _ => c"failed",
@@ -987,7 +1147,7 @@ unsafe fn drain(u: *mut Unit) {
                 if ch < CHANNELS {
                     (*u).ch_flags[ch] = e.flags; // the call's, for the uplink
                     rdof_t3rf_open(rf(u), ch as c_int, e.src, e.dst, e.flags & t3::F_GROUP != 0, WARMUP);
-                    rdof_t3rf_duplex(rf(u), ch as c_int, e.flags & t3::F_DUPLEX != 0);
+                    rdof_t3rf_duplex(rf(u), ch as c_int, e.why == t3::OPEN_DUPLEX);
                     if e.stream != 0 {
                         stream_map(u, e.stream, ch as c_int);
                     }
@@ -996,6 +1156,13 @@ unsafe fn drain(u: *mut Unit) {
             t3::EV_CH_CLOSE => {
                 let ch = c_int::from(e.ch);
                 rdof_t3rf_rc(rf(u), ch ^ 1, -1); // an RC for its talker not sent yet
+                if usize::from(e.ch) < CHANNELS {
+                    (*u).site_party[usize::from(e.ch)] = false;
+                    (*u).data_rx[usize::from(e.ch)] = t3::DataRx::default();
+                }
+                if (*u).dl.on && (*u).dl.ch == ch {
+                    (*u).dl.on = false; // its channel went before it all did
+                }
                 let c = rdof_t3rf_channel(rf(u), ch);
                 if !c.is_null() && (*c).ctl_left > 0 {
                     (*c).close_after = true; // after its last P_CLEAR
@@ -1015,6 +1182,9 @@ unsafe fn drain(u: *mut Unit) {
             }
             t3::EV_CH_STREAM => stream_map(u, e.stream, c_int::from(e.ch)),
             t3::EV_NET_SETUP => setup_out(u, &e),
+            t3::EV_NET_SD => sdata_out(u, &e),
+            t3::EV_SD => sdata_here(u, &e),
+            t3::EV_PD => data_event(u, &e),
             t3::EV_NET_SUBS => subs = true,
             t3::EV_RECORD => record_out(u, e.src, e.why == 1),
             t3::EV_ACTIVITY => activity_out(u, &e),
@@ -1058,6 +1228,9 @@ unsafe extern "C" fn io_tscc(ctx: *mut c_void, k: i64, dt: *mut c_int, pdu: *mut
     }
     *dt = c_int::from((*o).tscc_dt);
     ptr::copy_nonoverlapping((*o).tscc_pdu.as_ptr(), pdu, 10);
+    if (*o).tscc_dt == crate::t3udt::DT_RATE12 {
+        ptr::copy_nonoverlapping((*o).tscc_ext.as_ptr(), pdu.add(10), 2); // a UDT block: 12 octets
+    }
     true
 }
 
@@ -1075,7 +1248,17 @@ unsafe extern "C" fn io_cach(ctx: *mut c_void, carrier: c_int, k: i64, at: *mut 
 
 unsafe extern "C" fn io_pdu(ctx: *mut c_void, ch: c_int, k: i64, dt: c_int, pdu: *const u8, rssi: c_int) {
     let u: *mut Unit = ctx.cast();
+    if dt == c_int::from(crate::t3udt::DT_DATA_HDR) && data_ch(u, ch) {
+        let what = (*u).data_rx[ch as usize].header(&*pdu.cast::<[u8; 10]>());
+        t3::rdof_t3_rx_data((*u).site, ch, k, what, (*u).data_rx[ch as usize].src);
+        return;
+    }
     t3::rdof_t3_rx_pdu((*u).site, ch, k, dt as u8, pdu.cast(), rssi);
+}
+
+/// A packet data call on payload channel ch.
+unsafe fn data_ch(u: *const Unit, ch: c_int) -> bool {
+    (0..CHANNELS as c_int).contains(&ch) && (*u).ch_flags[ch as usize] & t3::F_DATA != 0
 }
 
 unsafe extern "C" fn io_bad(ctx: *mut c_void, ch: c_int, k: i64) {
@@ -1088,15 +1271,127 @@ unsafe extern "C" fn io_activity(ctx: *mut c_void, ch: c_int, k: i64, what: c_in
     let u: *mut Unit = ctx.cast();
     if (1..=4).contains(&what) {
         t3::rdof_t3_rx_voice((*u).site, ch, k, MAP[what as usize], src, dst, group);
+    } else if what == crate::t3rf::DATA && data_ch(u, ch) {
+        let r = &mut (*u).data_rx[ch as usize];
+        let what = r.block();
+        let src = r.src;
+        t3::rdof_t3_rx_data((*u).site, ch, k, what, src);
     }
 }
 
 unsafe extern "C" fn io_uplink(ctx: *mut c_void, ch: c_int, f: *const RdofFrame) {
     let u: *mut Unit = ctx.cast();
+    if data_ch(u, ch) {
+        // packet data stays on the site: to its IP gateway when it is a party
+        let r = &(*u).data_rx[ch as usize];
+        if let (true, Some(d)) = ((*u).site_party[ch as usize], (*u).io.data) {
+            d((*u).io.ctx, ch, (*f).dt, (*f).burst.as_ptr(), r.src, r.dst);
+        }
+        return;
+    }
     let c = ch / 2;
     if (*u).net && (0..CARRIERS as c_int).contains(&c) {
         rdof_mn_up_frame((*u).up[c as usize], f, wall_s(u));
     }
+}
+
+// ── packet data with the site as a party (tier3.md 3.16) ──────────────────────
+
+unsafe fn data_event(u: *mut Unit, e: &Event) {
+    let ch = usize::from(e.ch);
+    let d = addr_of_mut!((*u).dl);
+    if e.op == t3::PD_OPEN && ch < CHANNELS {
+        (*u).site_party[ch] = e.kind != 0 || ((*d).on && (*d).group && e.dst == (*d).dst);
+        if (*d).on && (*d).ch < 0 && e.dst == (*d).dst {
+            (*d).ch = ch as c_int;
+        }
+    } else if e.op == t3::PD_FAILED && (*d).on && (*d).ch < 0 && e.dst == (*d).dst {
+        (*d).on = false;
+        log(u, |o| {
+            o.bytes(b"tier3: packet data to ");
+            o.int(i64::from(e.dst), 0);
+            o.bytes(b" not sent: reason 0x");
+            hex(o, u32::from(e.reason), 2);
+        });
+    }
+}
+
+/// Feeds the held packet to its channel's queue as room allows; the controller counts it as it goes.
+unsafe fn data_feed(u: *mut Unit, k: i64) {
+    let d = addr_of_mut!((*u).dl);
+    if !(*d).on {
+        return;
+    }
+    if (*d).ch < 0 {
+        if (*u).now_ms >= (*d).until_ms {
+            (*d).on = false;
+        }
+        return;
+    }
+    let ch = (*d).ch;
+    let mut room = rdof_t3rf_room(rf(u), ch) - 2; // a little left for the controller's own
+    while room > 0 && (*d).pos < (*d).n {
+        let i = (*d).pos;
+        let control = (*d).control[i];
+        if !rdof_t3rf_data(rf(u), ch, control, (*d).bursts[i].as_ptr()) {
+            break;
+        }
+        let what = if i == 0 {
+            let mut b12 = [0u8; 12];
+            crate::ffi::rdof_bptc196_decode((*d).bursts[i].as_ptr(), b12.as_mut_ptr());
+            let mut h = [0u8; 10];
+            h.copy_from_slice(&b12[..10]);
+            (*d).rx.header(&h)
+        } else {
+            (*d).rx.block()
+        };
+        t3::rdof_t3_rx_data((*u).site, ch, k, what, (*d).src);
+        (*d).pos += 1;
+        room -= 1;
+    }
+    if (*d).pos >= (*d).n {
+        (*d).on = false;
+    }
+}
+
+/// The site sends a packet (a data header and its blocks, as the IP gateway builds them: control as MMDVM's
+/// DMR_DATA) from src to dst (an MS or, group, a talkgroup): a channel is asked for and the packet goes once it is
+/// open. One at a time; false: one is waiting, too long, or the controller can't (not here, busy).
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3unit_data_tx(
+    u: *mut Unit,
+    src: u32,
+    dst: u32,
+    group: bool,
+    n: c_int,
+    control: *const u8,
+    bursts: *const u8,
+) -> bool {
+    let d = addr_of_mut!((*u).dl);
+    if (*d).on || n < 1 || n as usize > DATA_BURSTS || control.is_null() || bursts.is_null() {
+        return false;
+    }
+    if control.read() & 0x0F != crate::t3udt::DT_DATA_HDR {
+        return false;
+    }
+    let n = n as usize;
+    (*d).on = true;
+    (*d).ch = -1;
+    (*d).src = src;
+    (*d).dst = dst;
+    (*d).group = group;
+    (*d).n = n;
+    (*d).pos = 0;
+    (*d).until_ms = (*u).now_ms + DATA_WAIT_MS;
+    (*d).rx = t3::DataRx::default();
+    ptr::copy_nonoverlapping(control, (*d).control.as_mut_ptr(), n);
+    ptr::copy_nonoverlapping(bursts, (*d).bursts.as_mut_ptr().cast::<u8>(), n * 33);
+    if !t3::rdof_t3_pd_send((*u).site, src, dst, group, (*u).now_ms) {
+        (*d).on = false;
+        return false;
+    }
+    drain(u);
+    true
 }
 
 // ── the uplinks: a carrier each, its slots its LCNs ────────────────────────────
@@ -1651,6 +1946,7 @@ pub unsafe extern "C" fn rdof_t3unit_run(u: *mut Unit, k_upto: i64, now_ms: i64)
             }
         }
         drain(u);
+        data_feed(u, k);
         rdof_t3rf_tick(rf(u), k);
         drain(u);
         (*u).k_next += 1;
@@ -1758,13 +2054,13 @@ pub unsafe extern "C" fn rdof_t3unit_message(u: *mut Unit, topic: *const c_char,
     let kind = rdof_mn_topic_parse(topic, root(u), &mut id, cpm(&mut nd), nd.len());
     let me = cstr(&(*u).node);
     if kind == MN_T_DL {
-        if cstr(&nd) == me {
+        if cstr(&nd) == me && !sdata_in(u, data.cast(), len) {
             rdof_mn_down_message((*u).down, c"router".as_ptr(), true, data.cast(), len, wall_s(u));
         }
         return;
     }
     if kind == MN_T_TG {
-        if cstr(&nd) != me {
+        if cstr(&nd) != me && !sdata_in(u, data.cast(), len) {
             rdof_mn_down_message((*u).down, cp(&nd), false, data.cast(), len, wall_s(u));
         }
         return;

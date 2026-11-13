@@ -93,6 +93,22 @@ static void test_blocks(void)
     CHECK(rdof_t3rf_burst_pdu(b, &dt, &cc, pdu) == RDOF_T3RF_NOT_PDU && dt == RDOF_DT_IDLE, "idle: not a PDU");
     rdof_silence_burst(0, CC, true, NULL, b);
     CHECK(rdof_t3rf_burst_pdu(b, &dt, &cc, pdu) == RDOF_T3RF_NOT_PDU, "voice: not a PDU");
+
+    /* a UDT's appended block (rate 1/2 data, 12 octets as given) and a control block, as blocks */
+    uint8_t blk[12], back[12];
+    for (int i = 0; i < 12; i++)
+        blk[i] = (uint8_t)(0x31 * i + 7);
+    CHECK(rdof_t3rf_block_burst(RDOF_DT_RATE_12, blk, CC, RDOF_FAMILY_MS, b), "rate 1/2 block builds");
+    CHECK(rdof_t3rf_burst_pdu(b, &dt, &cc, pdu) == RDOF_T3RF_NOT_PDU && dt == RDOF_DT_RATE_12, "not a control block");
+    CHECK(rdof_t3rf_burst_block(b, &dt, &cc, back) == RDOF_T3RF_PDU_OK && dt == RDOF_DT_RATE_12 && cc == CC &&
+              !memcmp(back, blk, 12),
+          "rate 1/2 block reads back");
+    memcpy(blk, ALOHA, 10);
+    CHECK(rdof_t3rf_block_burst(RDOF_DT_CSBK, blk, CC, RDOF_FAMILY_BS, b) &&
+              rdof_t3rf_burst_block(b, &dt, &cc, back) == RDOF_T3RF_PDU_OK && dt == RDOF_DT_CSBK &&
+              !memcmp(back, ALOHA, 10),
+          "a CSBK as a block");
+    CHECK(!rdof_t3rf_block_burst(RDOF_DT_IDLE, blk, CC, RDOF_FAMILY_BS, b), "no idle block");
 }
 
 static void test_cach(void)
@@ -132,7 +148,7 @@ static struct {
     int32_t slc;
 } rec;
 
-static bool r_tscc(void *ctx, int64_t k, int *dt, uint8_t pdu[10])
+static bool r_tscc(void *ctx, int64_t k, int *dt, uint8_t pdu[12])
 {
     rec.tsccs++;
     if (k % 8 == 4)
@@ -146,7 +162,7 @@ static void r_cach(void *ctx, int carrier, int64_t k, int *at, int32_t *slc28)
     *at = rec.at;
     *slc28 = rec.slc;
 }
-static void r_pdu(void *ctx, int ch, int64_t k, int dt, const uint8_t pdu[10], int rssi)
+static void r_pdu(void *ctx, int ch, int64_t k, int dt, const uint8_t *pdu, int rssi)
 {
     rec.pdus++, rec.last_ch = ch, rec.last_k = k, rec.last_dt = dt;
     memcpy(rec.pdu, pdu, 10);

@@ -291,13 +291,13 @@ bool rdof_mn_setup_parse(const uint8_t *msg, size_t len, rdof_mn_hdr_t *h, rdof_
     return rdof_mn_next(&r, &it) && rdof_mn_setup_of(&it, s);
 }
 
-/* The message's first item is a setup item (valid or not). */
+/* The message's first item is a setup item (valid or not), or Tier III short data: never a stream. */
 static bool setup_first(const uint8_t *msg, size_t len)
 {
     rdof_mn_reader_t r;
     rdof_mn_item_t it;
     rdof_mn_reader(&r, msg, len);
-    return rdof_mn_next(&r, &it) && it.type == RDOF_MN_SETUP;
+    return rdof_mn_next(&r, &it) && (it.type == RDOF_MN_SETUP || it.type == RDOF_MN_SDATA);
 }
 
 const char *rdof_mn_setup_op_name(int op)
@@ -1753,7 +1753,7 @@ bool rdof_mn_down_message(rdof_mn_down_t *d, const char *node, bool dl, const ui
             d->setup(d->ctx, &h, &setup, dl, node);
         return true;
     }
-    if (setup_first(msg, len)) { /* a setup item of the wrong length or op: dropped, never a stream */
+    if (setup_first(msg, len)) { /* a setup item of the wrong length or op, or short data: dropped, never a stream */
         d->bad++;
         return false;
     }

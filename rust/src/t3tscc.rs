@@ -130,7 +130,7 @@ impl Site {
             || self.chans.iter().any(Self::live)
             || self.pend.iter().any(|p| p.used)
             || self.net.iter().any(|n| n.used)
-            || self.stat.iter().any(|p| p.used);
+            || self.sd_pending();
         if self.tscc.hibernating {
             if busy {
                 self.tscc_heard(); // something to send: awake again

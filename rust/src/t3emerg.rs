@@ -84,7 +84,7 @@ impl Site {
             if !c.preempt || !Self::live(&c) {
                 continue;
             }
-            if !c.talking || c.talking_net || now >= c.preempt_until_ms || c.flags & F_DUPLEX != 0 {
+            if !c.talking || c.talking_net || now >= c.preempt_until_ms || c.kind == KIND_DUPLEX {
                 // nobody on RF to de-key, the talker stopped, or it didn't in time (or a duplex call, whose
                 // parties don't listen on the other slot): P_CLEAR now
                 self.clear(ch, CLOSE_PREEMPT);

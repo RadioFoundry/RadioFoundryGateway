@@ -30,7 +30,7 @@ pub const HEARD: u32 = 0;
 pub const COLLIDED: u32 = 1;
 pub const DROPPED: u32 = 2;
 
-use crate::t3rf::{rdof_t3rf_burst_pdu, rdof_t3rf_cach4, rdof_t3rf_pdu_burst, rdof_t3rf_rc_read};
+use crate::t3rf::{rdof_t3rf_block_burst, rdof_t3rf_burst_block, rdof_t3rf_cach4, rdof_t3rf_rc_read};
 /// rdof_t3unit_t
 pub use crate::t3unit::Unit as T3unit;
 use crate::t3unit::{rdof_t3unit_at, rdof_t3unit_cfg, rdof_t3unit_run, rdof_t3unit_rx, rdof_t3unit_slot};
@@ -55,6 +55,7 @@ pub struct SimOut {
     pub pdu_ok: bool,
     pub pdu: [u8; 10],
     pub cach: [u8; 3],
+    pub pdu_ext: [u8; 2],
     pub at: c_int,
 }
 
@@ -105,8 +106,12 @@ fn ms_burst(tx: &MsTx, n: c_int, cc: c_int, b: &mut RdofBurst) -> bool {
     b.family = FAMILY_MS;
     b.cc = cc;
     b.slot = c_int::from(tx.ch & 1) + 1;
-    if tx.kind == 1 {
-        if !rdof_t3rf_pdu_burst(tx.dt.into(), &tx.pdu, cc, FAMILY_MS, &mut b.burst) {
+    if tx.kind == 1 || tx.kind == 3 {
+        // a control block, or packet data (a data header or rate 1/2 block)
+        let mut blk = [0u8; 12];
+        blk[..10].copy_from_slice(&tx.pdu);
+        blk[10..].copy_from_slice(&tx.ext); // a rate 1/2 block's last two octets
+        if !rdof_t3rf_block_burst(tx.dt.into(), &blk, cc, FAMILY_MS, &mut b.burst) {
             return false;
         }
         b.dt = tx.dt.into();
@@ -146,9 +151,9 @@ fn ms_burst(tx: &MsTx, n: c_int, cc: c_int, b: &mut RdofBurst) -> bool {
 /// What MS i sends, as its burst, its voice counter kept.
 fn sim_ms_burst(s: &mut Sim, i: usize, tx: &MsTx, cc: c_int, b: &mut RdofBurst) -> bool {
     let n = s.voice_n[i];
-    if tx.kind != 1 && tx.what == VOICE_FRAME {
+    if tx.kind == 2 && tx.what == VOICE_FRAME {
         s.voice_n[i] = (n + 1) % 6;
-    } else if tx.kind != 1 {
+    } else if tx.kind == 2 {
         s.voice_n[i] = 0;
     }
     ms_burst(tx, n, cc, b)
@@ -167,7 +172,7 @@ fn slot(s: &mut Sim, k: i64, now_ms: i64) {
 
     // the outbound of slot k, read back as an MS would
     let mut dt = [0u8; CARRIERS];
-    let mut pdu = [[0u8; 10]; CARRIERS];
+    let mut pdu = [[0u8; 12]; CARRIERS];
     let mut out = [SimOut {
         aired: false,
         burst: [0; BURST_BYTES],
@@ -176,6 +181,7 @@ fn slot(s: &mut Sim, k: i64, now_ms: i64) {
         pdu_ok: false,
         pdu: [0; 10],
         cach: [0; 3],
+        pdu_ext: [0; 2],
         at: 0,
     }; CARRIERS];
     for (c, o) in out.iter_mut().enumerate().take(ncar) {
@@ -204,14 +210,17 @@ fn slot(s: &mut Sim, k: i64, now_ms: i64) {
         if !o.aired {
             continue;
         }
-        let r = rdof_t3rf_burst_pdu(&o.burst, &mut rdt, &mut rcc, &mut o.pdu);
+        let mut blk = [0u8; 12];
+        let r = rdof_t3rf_burst_block(&o.burst, &mut rdt, &mut rcc, &mut blk);
+        o.pdu.copy_from_slice(&blk[..10]);
+        o.pdu_ext = [blk[10], blk[11]];
         o.dt = rdt;
         o.cc = rcc;
         if r == PDU_OK {
             s.out_pdus += 1;
             o.pdu_ok = true;
             dt[c] = rdt as u8;
-            pdu[c] = o.pdu;
+            pdu[c] = blk;
         } else {
             s.out_bad += u32::from(r == PDU_BAD);
         }
@@ -295,7 +304,7 @@ fn slot(s: &mut Sim, k: i64, now_ms: i64) {
         if ch & 1 != parity || ch / 2 >= ncar {
             continue;
         }
-        ms.rx(ch, k, dt[ch / 2], &pdu[ch / 2], ch == 0 && at > 0);
+        ms.rx_block(ch, k, dt[ch / 2], &pdu[ch / 2], ch == 0 && at > 0);
     }
     // a Reverse Channel PDU in slot k is for the talker on its carrier's other slot (361-1 5.1.5)
     for (c, o) in out.iter().enumerate().take(ncar) {

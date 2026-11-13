@@ -22,8 +22,8 @@ pub const OP_PV_GRANT_DX: u8 = 0b11_0101;
 pub const R_DUPLEX_NOT_SUPPORTED: u8 = 0x16;
 /// Pend.kind and Chan.kind of a duplex call (after t3site's KIND_*).
 pub(super) const KIND_DUPLEX: u8 = 4;
-/// Event flag: a channel of a full-duplex call (offset timing, crossed repeat).
-pub const F_DUPLEX: u8 = 0x80;
+/// EV_CH_OPEN why: a channel of a full-duplex call (offset timing, crossed repeat). Not a flag: those are full.
+pub const OPEN_DUPLEX: u8 = 1;
 
 /// PV_GRANT_DX (table 7.10): the logical channel and LCN of the target's own slot, Call Direction (true: the
 /// target is the calling MS), the target and its partner.
@@ -130,7 +130,7 @@ impl Site {
             self.fail(p, R_SYSBUSY, WHY_CONGESTION);
             return;
         };
-        let mut flags = F_DUPLEX;
+        let mut flags = 0;
         if p.svc & SO_EMERGENCY != 0 {
             flags |= F_EMERGENCY;
         }

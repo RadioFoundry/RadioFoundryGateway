@@ -65,6 +65,7 @@ enum {
     RDOF_MN_QUALITY = 0x0A,
     RDOF_MN_ORIGIN = 0x0B,
     RDOF_MN_SETUP = 0x0C,
+    RDOF_MN_SDATA = 0x0D, /* Tier III short data (tier3.md 5.9): read by the trunk unit, never a stream */
     RDOF_MN_RAW = 0x7F,
 };
 

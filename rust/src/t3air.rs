@@ -5,9 +5,10 @@
 //! (two PDUs on the TSCC in one slot are a collision: a burst with a bad CRC), then the MSs hear slot k. A
 //! solicited answer to a block in slot k goes in slot k + 2 at the earliest, as on air.
 
-use crate::t3ms::{Ms, MsTx, TX_PDU, TX_VOICE};
+use crate::t3ms::{Ms, MsTx, TX_DATA, TX_PDU, TX_VOICE};
 use crate::t3pdu::{opcode, DT_CSBK};
-use crate::t3site::{Event, Site, SlotOut, CHANNELS, RC_SEND};
+use crate::t3site::{DataRx, Event, Site, SlotOut, CHANNELS, RC_SEND};
+use crate::t3udt::{DT_DATA_HDR, DT_RATE12};
 
 pub const SLOT_MS: i64 = 30;
 
@@ -19,6 +20,7 @@ pub struct Air<'a, const N: usize> {
     pub collisions: u32,
     pub last: SlotOut,
     pub inbound: [Option<MsTx>; N],
+    pub data: [DataRx; CHANNELS], // the radio layer's part: what each channel's data is
     /// (opcode, n): the next n TSCC blocks (outbound) or MS PDUs (inbound) with that opcode are lost on the air.
     pub lose_out: (u8, u32),
     pub lose_in: (u8, u32),
@@ -45,6 +47,7 @@ impl<'a, const N: usize> Air<'a, N> {
             inbound: [None; N],
             lose_out: (0, 0),
             lose_in: (0, 0),
+            data: Default::default(),
         }
     }
 
@@ -76,9 +79,28 @@ impl<'a, const N: usize> Air<'a, N> {
             if pdus > 1 && ch == self.site.tscc_ch() {
                 self.collisions += 1;
                 self.site.rx_bad(ch);
+            } else if t.kind == TX_PDU && t.dt == DT_RATE12 {
+                let mut b = [0u8; 12];
+                b[..10].copy_from_slice(&t.pdu);
+                b[10..].copy_from_slice(&t.ext);
+                self.site.rx_block(ch, t.dt, &b);
             } else if t.kind == TX_PDU {
                 if !lose(&mut self.lose_in, &t.pdu) {
                     self.site.rx_pdu(ch, t.dt, &t.pdu);
+                }
+            } else if t.kind == TX_DATA {
+                // the radio layer counts the message for the controller and repeats it on the outbound
+                let mut b = [0u8; 12];
+                b[..10].copy_from_slice(&t.pdu);
+                b[10..].copy_from_slice(&t.ext);
+                let what = if t.dt == DT_DATA_HDR {
+                    self.data[ch].header(&t.pdu)
+                } else {
+                    self.data[ch].block()
+                };
+                self.site.rx_data(ch, what, t.src);
+                for m in self.ms.iter_mut() {
+                    m.rx_data(ch, t.dt, &b);
                 }
             } else if t.kind == TX_VOICE {
                 self.site.rx_voice(ch, t.what, t.src);
@@ -96,7 +118,10 @@ impl<'a, const N: usize> Air<'a, N> {
         for m in self.ms.iter_mut() {
             let ch = m.ch();
             if ch == tscc && k & 1 == 0 {
-                m.rx(ch, k, if lost { 0 } else { out.tscc_dt }, &out.tscc_pdu, out.at != 0);
+                let mut b = [0u8; 12];
+                b[..10].copy_from_slice(&out.tscc_pdu);
+                b[10..].copy_from_slice(&out.tscc_ext);
+                m.rx_block(ch, k, if lost { 0 } else { out.tscc_dt }, &b, out.at != 0);
             } else if ch < CHANNELS && ch as i64 & 1 == k & 1 {
                 m.rx(ch, k, out.ch[ch].dt, &out.ch[ch].pdu, false);
             }

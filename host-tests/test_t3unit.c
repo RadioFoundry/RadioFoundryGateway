@@ -14,6 +14,7 @@
 #include <string.h>
 
 #include "rdof/fec.h"
+#include "rdof/ipgw.h"
 #include "rdof/t3cfg.h"
 #include "rdof/t3sim.h"
 #include "rdof/t3unit.h"
@@ -214,6 +215,37 @@ static uint32_t io_rand(void *ctx)
 #define TG 9
 #define T0 1793912651000LL
 
+/* site A's IP gateway (tier3.md 3.16): packet data to the site goes in, what it sends goes down as the site's data */
+static struct {
+    rdof_ipgw_t *g;
+    site_t *site;
+    int bursts, sent, udp;
+} GW;
+
+static void io_data(void *ctx, int ch, int dt, const uint8_t *burst, uint32_t src, uint32_t dst)
+{
+    site_t *s = ctx;
+    if (!GW.g || s != GW.site)
+        return;
+    GW.bursts++;
+    const rdof_ipgw_where_t w = {.source = 0, .slot = (ch & 1) + 1, .freq = 0, .cc = 1};
+    rdof_ipgw_burst(GW.g, &w, dt, burst, 1.0);
+}
+
+static bool gw_send_dmr(void *ctx, const rdof_ipgw_dmr_t *p)
+{
+    site_t *s = ctx;
+    GW.sent++;
+    return rdof_t3unit_data_tx(s->u, p->src, p->dst, false, p->nbursts, p->control, &p->bursts[0][0]);
+}
+
+static bool gw_open(void *ctx, int flow) { return true; }
+static bool gw_send_udp(void *ctx, int flow, uint32_t ip, uint16_t port, const uint8_t *data, size_t len, int ttl)
+{
+    GW.udp++;
+    return true;
+}
+
 static void site_open(site_t *s, int client, const char *node, int site_no, uint32_t id0, int64_t at_ms)
 {
     memset(s, 0, sizeof *s);
@@ -225,7 +257,7 @@ static void site_open(site_t *s, int client, const char *node, int site_no, uint
     pol.wide_tg.all = 1;
     s->u = calloc(1, rdof_t3unit_size());
     s->mem = aligned_alloc(8, (rdof_t3_site_size() + 7) / 8 * 8);
-    const rdof_t3unit_io_t io = {io_publish, io_subscribe, io_log, NULL, io_rand, s};
+    const rdof_t3unit_io_t io = {io_publish, io_subscribe, io_log, NULL, io_rand, s, io_data};
     char err[120];
     CHECK(rdof_t3unit_init(s->u, s->mem, &cfg, &pol, &io, "DMR", node, 0, "test", err, sizeof err), "init: %s",
           err);
@@ -671,6 +703,67 @@ int main(void)
     CHECK(ms_status(&A, 1).grants >= 1, "A's caller granted (%u)", ms_status(&A, 1).grants);
     run(10000);
     CHECK(ms_status(&A, 1).calls_done == 1, "the individual call done (failed %u)", ms_status(&A, 1).calls_failed);
+
+    /* short data across the network (tier3.md 5.9): A's MS sends UDT short data and a status to B's, each over the
+       air on both sites (upload, download as rate 1/2 bursts) and mqtt-net's sdata; the caller gets B's MS's
+       C_ACKU mirrored */
+    static const uint8_t text[] = "Short data from site A to site B";
+    CHECK(rdof_t3ms_sdm(A.ms[1], 3100101, 0, 4, text, sizeof text - 1, T0 + K * 30), "short data queued");
+    run(6000);
+    rdof_t3ms_status_t sd = ms_status(&A, 1);
+    CHECK(sd.calls_done == 2 && sd.last_reason == 0x44, "short data delivered (done %u, failed %u, reason 0x%02x)",
+          sd.calls_done, sd.calls_failed, sd.last_reason);
+    rdof_t3ms_do(A.ms[1], RDOF_T3MS_DO_STATUS, 3100101, 42, 0, T0 + K * 30);
+    run(5000);
+    sd = ms_status(&A, 1);
+    CHECK(sd.calls_done == 3 && sd.last_reason == 0x44, "status delivered (done %u, failed %u, reason 0x%02x)",
+          sd.calls_done, sd.calls_failed, sd.last_reason);
+
+    /* packet data (tier3.md 3.16) over the burst path: A's MS to A's other MS (confirmed: the called MS's ACK
+       comes back through the site's repeat), then to the site itself, whose IP gateway takes the datagram and
+       answers the confirmed message with an ACK the site sends down on the data channel */
+    static const uint8_t pd[] = "Packet data from one MS to another, 52 octets long..";
+    CHECK(rdof_t3ms_data(A.ms[1], 3100001, RDOF_T3MS_F_CONFIRMED, pd, sizeof pd - 1, T0 + K * 30), "data queued");
+    run(6000);
+    uint8_t got[160];
+    uint32_t from = 0;
+    int n = rdof_t3ms_data_inbox(A.ms[0], got, sizeof got, &from);
+    CHECK(n == (int)sizeof pd - 1 && from == 3100002 && !memcmp(got, pd, sizeof pd - 1), "MS to MS data (%d from %u)",
+          n, (unsigned)from);
+    sd = ms_status(&A, 1);
+    CHECK(sd.calls_done == 4 && sd.state == RDOF_T3MS_IDLE, "confirmed data acknowledged (done %u, failed %u)",
+          sd.calls_done, sd.calls_failed);
+    run(4000);
+
+    rdof_ipgw_config_t gc;
+    rdof_ipgw_config_default(&gc);
+    gc.on = true;
+    gc.nat = true;
+    GW.g = calloc(1, sizeof *GW.g);
+    rdof_ipgw_init(GW.g, &gc);
+    GW.g->send_dmr = gw_send_dmr;
+    GW.g->open = gw_open;
+    GW.g->send_udp = gw_send_udp;
+    GW.g->ctx = &A;
+    GW.g->sync48 = 0xDFF57D75DF5DULL; /* BS data */
+    GW.site = &A;
+    uint8_t dg[64], hello[] = "datagram up";
+    const size_t dlen = rdof_ipgw_udp_datagram(rdof_ipgw_radio_ip(&gc.radio_net, 3100001), 4000, 0x09090909, 53, 1,
+                                               hello, sizeof hello - 1, dg, sizeof dg);
+    CHECK(dlen == 28 + sizeof hello - 1, "datagram built");
+    const uint32_t done0 = ms_status(&A, 0).calls_done;
+    CHECK(rdof_t3ms_data(A.ms[0], 0xFFFECA, RDOF_T3MS_F_CONFIRMED, dg, dlen, T0 + K * 30), "data to the site queued");
+    run(6000);
+    CHECK(GW.g->n.rx_messages == 1 && GW.udp == 1 && GW.g->n.acks == 1 && GW.sent == 1,
+          "the IP gateway took it (bursts %d, messages %u, bad %u, udp %d, acks %u)", GW.bursts,
+          GW.g->n.rx_messages, GW.g->n.rx_bad, GW.udp, GW.g->n.acks);
+    rdof_t3ms_status_t pd0 = ms_status(&A, 0);
+    CHECK(pd0.calls_done == done0 + 1 && pd0.state == RDOF_T3MS_IDLE,
+          "the site's ACK reached the MS (done %u, failed %u)", pd0.calls_done, pd0.calls_failed);
+    run(4000);
+    GW.site = NULL;
+    free(GW.g);
+    GW.g = NULL;
 
     /* provisioning: cfg/net's hang time reaches both sites */
     const char *net = "{\"rev\":2,\"at\":\"2026-11-06T10:00:00Z\",\"timers\":{\"hang_s\":5}}";

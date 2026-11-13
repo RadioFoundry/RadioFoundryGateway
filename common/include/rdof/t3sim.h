@@ -45,9 +45,10 @@ typedef struct {
     bool aired;                      /* false: nothing (an outside carrier with no burst) */
     uint8_t burst[RDOF_BURST_BYTES];
     int dt, cc;                      /* from the slot type, -1 unreadable (voice) */
-    bool pdu_ok;                     /* pdu: a control block whose CRC passed */
+    bool pdu_ok;                     /* pdu: a control block whose CRC passed, or a rate 1/2 block */
     uint8_t pdu[10];
     uint8_t cach[3];                 /* the CACH before this slot: AT, TC, LCSS, a short LC fragment */
+    uint8_t pdu_ext[2];              /* dt RDOF_DT_RATE_12 (a UDT block, pdu_ok when its BPTC decodes): octets 10-11 */
     int at;                          /* its AT bit */
 } rdof_t3sim_out_t;
 

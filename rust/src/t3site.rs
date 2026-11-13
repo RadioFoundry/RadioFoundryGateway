@@ -11,6 +11,36 @@ use core::ffi::{c_char, c_int, CStr};
 use core::fmt::Write;
 
 use crate::t3pdu::*;
+use crate::t3udt::{DGNAI, DT_DATA_HDR, DT_RATE12, SK_IND_PD, SK_IND_UDT, SK_STATUS, SK_SUPPL, SK_TG_PD, SK_TG_UDT};
+
+// short data on the TSCC (UDT short data, status, polling): tier3.md 3.15
+#[path = "t3sdata.rs"]
+mod sdata;
+pub use sdata::{
+    rdof_t3_net_sd, rdof_t3_sd_of_event, rdof_t3_sd_send, SdMsg, SD_DGNA, SD_F_EMERGENCY, SD_F_GROUP, SD_POLL,
+    SD_RESULT, SD_SEND, SD_STATUS, SD_UDT,
+};
+use sdata::{SD_DIVERT, SD_TGLIST};
+// talkgroup lists: registration with a list, DGNA (tier3.md 3.17)
+#[path = "t3tglist.rs"]
+mod tglist;
+pub use tglist::{DGNA_TGS, LIST_TGS, TGLISTS};
+// supplementary services: stun/revive, ambient listening, call diversion (tier3.md 3.18)
+#[path = "t3supp.rs"]
+mod supp;
+pub use supp::{
+    ACT_SUPP, DEP_ALS, DIVERSIONS, DIV_KINDS, DIV_ON, DIV_PD, DIV_SD, DIV_STATUS, DIV_VOICE, STUNNED, STUN_JOBS,
+    SUPP_DIVERT, SUPP_DIVERT_CLEAR, SUPP_REVIVE, SUPP_STUN,
+};
+// packet data calls on the payload channels: tier3.md 3.16
+#[path = "t3pdata.rs"]
+mod pdata;
+pub use pdata::{
+    data_op, rdof_t3_pd_send, rdof_t3_rx_data, DataGrant, DataHead, DataMsg, DataRx, DATA_BLOCK, DATA_END,
+    DATA_END_CONFIRMED, DATA_HEADER, DATA_RESPONSE, DPF_CONFIRMED, DPF_RESPONSE, DPF_UNCONFIRMED, MSG_BLOCKS,
+    OP_PD_GRANT, OP_PD_GRANT_MI, OP_TD_GRANT, OP_TD_GRANT_MI, PD_FAILED, PD_OPEN, SAP_IP, SO_HI_RATE, SO_SIMI,
+    SO_SUPED,
+};
 
 // features in their own files, inside this module (they reach the site's state)
 #[path = "t3emerg.rs"]
@@ -34,7 +64,7 @@ mod tscc;
 #[path = "t3duplex.rs"]
 mod duplex;
 use duplex::KIND_DUPLEX;
-pub use duplex::{DxGrant, F_DUPLEX, OP_PV_GRANT_DX, R_DUPLEX_NOT_SUPPORTED, SK_DUPLEX};
+pub use duplex::{DxGrant, OPEN_DUPLEX, OP_PV_GRANT_DX, R_DUPLEX_NOT_SUPPORTED, SK_DUPLEX};
 pub use tscc::{bs_dwn_act, bs_dwn_act_of, move_of, move_pdu, OP_BS_DWN_ACT};
 
 pub const CARRIERS: usize = 4;
@@ -114,8 +144,16 @@ pub struct Cfg {
     pub ann_tscc_ms: u32,    // Ann_WD_TSCC for the adjacent sites in this time; 0: not broadcast
     pub awake_ms: u32,       // how long an MS in power save stays awake after a PDU (the site's T_Awake)
     pub hibernate_ms: u32,   // T_BS_Inactive: the TSCC hibernates after this long with no inbound; 0 never
+    pub sd_tries: u8,
+    pub sd_repeats: u8,
+    pub dgna_ms: u8,
+    pub als: u8,
+    pub sd_store_ms: u32,
+    pub data_hang_ms: u32,
+    pub data_id: u32,
+    pub divert: u8,
     pub auth: u8, // AUTH_*: MS authentication at registration (361-4 6.4.8; t3authsite.rs)
-    pub pad1: [u8; 3],
+    pub pad1: [u8; 2],
 }
 
 #[repr(C)]
@@ -327,6 +365,9 @@ pub const EV_RECORD: u8 = 6;
 pub const EV_ACTIVITY: u8 = 7;
 pub const EV_NET_DROP: u8 = 8;
 pub const EV_LOG: u8 = 9;
+pub const EV_SD: u8 = 20; // short data for the site, or the result of one it sent (SdMsg::of_event)
+pub const EV_NET_SD: u8 = 21; // short data or a result to publish (mqtt-net sdata)
+pub const EV_PD: u8 = 22; // a data channel opened (PD_OPEN), or the site's own data call failed (PD_FAILED)
 
 pub const CLOSE_HANG: u8 = 1;
 pub const CLOSE_TIMER: u8 = 2;
@@ -357,6 +398,7 @@ pub const F_WIDE: u8 = 0x08;
 pub const F_ALLCALL: u8 = 0x10;
 pub const F_LATE: u8 = 0x20;
 pub const F_PRIVATE_NET: u8 = 0x40;
+pub const F_DATA: u8 = 0x80; // a packet data call (tier3.md 3.16)
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -432,7 +474,8 @@ pub struct SlotOut {
     pub tscc_pdu: [u8; 10],
     pub at: u8,
     pub has_slc: u8,
-    pub pad: [u8; 3],
+    pub tscc_ext: [u8; 2],
+    pub pad: u8,
     pub slc_tscc: u32,
     pub slc_payload: u32,
     pub ch: [ChOut; CHANNELS],
@@ -539,6 +582,7 @@ struct Pend {
     deadline_ms: i64,
     next_ahoy_ms: i64,
     next_ack_ms: i64,
+    als: bool, // an Ambient Listening Service call (6.6.2.6)
 }
 
 #[derive(Clone, Copy, Default)]
@@ -619,7 +663,6 @@ pub struct Site {
     chans: [Chan; CHANNELS],
     pend: [Pend; PENDING],
     net: [NetWait; STREAMS],
-    stat: [status::StatPend; status::STATUS_PENDING],
     bc: bcast::BcState,
     tscc: tscc::TsccState,
     // registrations and provisioning
@@ -637,6 +680,10 @@ pub struct Site {
     ev_head: usize,
     ev_len: usize,
     counters: Counters,
+    sd: sdata::SdState,
+    pd: pdata::PdState,
+    tgl: tglist::TglState,
+    supp: supp::SuppState,
 }
 
 /// Text into a fixed buffer, NUL terminated, cut when full (LOG events, errors).
@@ -700,6 +747,11 @@ pub fn cfg_default() -> Cfg {
         gen_site_ms: 10_000,
         stream_seed: 1,
         awake_ms: 1000,
+        sd_tries: 3,
+        sd_repeats: 2,
+        sd_store_ms: 30_000,
+        data_hang_ms: 3000,
+        divert: 1,
         ..Default::default()
     };
     c.carriers[0] = Carrier { tx_hz: 438_750_000, rx_hz: 438_250_000, chan: 1, tscc: 1, enabled: 1 };
@@ -805,6 +857,15 @@ fn check(c: &Cfg, err: &mut Buf) -> bool {
     if c.power_save > 7 || c.mass_reg_start > 15 || !(100..=60_000).contains(&c.awake_ms) {
         no!("services.power_save 0 to 7, power_save_awake_s 0.1 to 60, mass_reg_at_start_s 0 to 200000");
     }
+    if c.sd_tries > 10 || c.sd_repeats > 10 || c.sd_store_ms > 600_000 {
+        no!("timers.sd_tries 1 to 10, sd_repeats 1 to 10, sd_store_s 0 to 600");
+    }
+    if !(500..=30_000).contains(&c.data_hang_ms) {
+        no!("timers.data_hang_s: 0.5 to 30");
+    }
+    if c.data_id > 0xFFFCDF {
+        no!("data_id: an individual ID, 1 to 16776415, or 0");
+    }
     if !(60..=604_800).contains(&c.reg_hold_s) {
         no!("timers.reg_hold_s: 60 to 604800");
     }
@@ -883,6 +944,7 @@ impl Site {
         Event {
             r#type: ty,
             ch: ch as u8,
+            why: if ty == EV_CH_OPEN && c.kind == KIND_DUPLEX { OPEN_DUPLEX } else { 0 },
             flags: c.flags,
             chan: self.cfg.carriers[ch / 2].chan,
             lcn: (ch % 2) as u8,
@@ -1022,11 +1084,13 @@ impl Site {
             KIND_ALLCALL => OP_BTV_GRANT,
             _ => OP_TV_GRANT,
         };
+        let data = c.flags & F_DATA != 0;
+        let op = if data { data_op(c.kind != KIND_PRIVATE, self.pd.multi_on(ch)) } else { op };
         Grant {
             op,
             chan: self.cfg.carriers[ch / 2].chan,
             lcn: (ch % 2) as u8,
-            late_entry: late && op != OP_PV_GRANT,
+            late_entry: late && op != OP_PV_GRANT && !data, // a data grant's HI_RATE: single slot
             emergency: c.flags & F_EMERGENCY != 0,
             offset: false,
             target: c.dst,
@@ -1094,6 +1158,8 @@ impl Site {
             (DT_MBC_CONT, self.cont, false)
         } else if let Some(a) = self.vote_blocked() {
             (DT_CSBK, a, false)
+        } else if let Some(b) = self.sd_cont() {
+            b // a UDT's next block, or a slot kept for an upload
         } else if self.since_aloha >= 3 || (self.since_aloha == 2 && self.resp_len > 0 && self.resp[self.resp_head].has_cont) {
             // an MBC's two blocks must end before the Aloha that's due: it waits a slot
             (DT_CSBK, self.aloha(), false)
@@ -1106,6 +1172,8 @@ impl Site {
                 self.cont = r.cont;
             }
             (r.dt, r.pdu, r.solicit)
+        } else if let Some(b) = self.sd_start() {
+            b
         } else if let Some(g) = self.due_grant() {
             (DT_CSBK, g, false)
         } else if let Some((b, dt, cont)) = if self.since_aloha < 2 { self.due_bcast() } else { None } {
@@ -1124,6 +1192,7 @@ impl Site {
         }
         out.tscc_dt = dt;
         out.tscc_pdu = pdu;
+        out.tscc_ext = self.sd_ext();
         out.at = solicit as u8;
     }
 
@@ -1213,20 +1282,24 @@ impl Site {
         let on = carrier < self.cfg.ncarriers as usize && self.cfg.carriers[carrier].enabled != 0;
         self.chans[ch] = Chan { r#use: if on { USE_IDLE } else { USE_OFF }, ..Default::default() };
         self.serve_queue();
+        self.pd_serve();
     }
 
     /// The group call (or all-call) on tg, if one is open.
     fn group_channel(&self, tg: u32) -> Option<usize> {
         (0..CHANNELS).find(|&i| {
             let c = &self.chans[i];
-            Self::live(c) && matches!(c.kind, KIND_GROUP | KIND_ALLCALL) && c.dst == tg
+            Self::live(c) && matches!(c.kind, KIND_GROUP | KIND_ALLCALL) && c.dst == tg && c.flags & F_DATA == 0
         })
     }
 
     fn private_channel(&self, a: u32, b: u32) -> Option<usize> {
         (0..CHANNELS).find(|&i| {
             let c = &self.chans[i];
-            Self::live(c) && c.kind == KIND_PRIVATE && ((c.src == a && c.dst == b) || (c.src == b && c.dst == a))
+            Self::live(c)
+                && c.kind == KIND_PRIVATE
+                && c.flags & F_DATA == 0
+                && ((c.src == a && c.dst == b) || (c.src == b && c.dst == a))
         })
     }
 
@@ -1381,6 +1454,7 @@ impl Site {
     fn delete_record(&mut self, i: usize, op: u8) {
         let id = self.regs[i].rec.id;
         self.regs[i] = Reg::default();
+        self.tgl_forget(id);
         self.nregs = self.nregs.saturating_sub(1);
         self.subs_dirty = true;
         self.ev(Event { r#type: EV_RECORD, why: 1, src: id, ..Default::default() });
@@ -1442,10 +1516,11 @@ impl Site {
             self.refuse(R_NOT_SUPPORTED, ms, REGI);
             return;
         }
+        let from = if cnts == 2 { TATTSI } else { REGI }; // a list's refusal comes from TATTSI (6.4.4.1.13.2)
         if !self.allowed(ms) {
             let (reason, op) =
                 if self.policy.refuse_unlisted != 0 { (R_REG_REFUSED, REG_REFUSE) } else { (R_REG_DENIED, REG_DENY) };
-            self.ack(reason, ms, REGI);
+            self.ack(reason, ms, from);
             self.activity(ACT_REG, op, ms, 0, reason);
             if let Some(i) = self.reg_index(ms) {
                 self.delete_record(i, op);
@@ -1462,8 +1537,9 @@ impl Site {
     /// answer.
     fn register(&mut self, r: &Rand) {
         let (ms, cnts) = (r.source, r.trgt_adr_cnts());
+        let from = if cnts == 2 { TATTSI } else { REGI }; // a list's refusal comes from TATTSI (6.4.4.1.13.2)
         let Some(i) = self.record_for(ms, HOW_REGISTER) else {
-            self.ack(R_REG_REFUSED, ms, REGI);
+            self.ack(R_REG_REFUSED, ms, from);
             self.activity(ACT_REG, REG_REFUSE, ms, 0, R_REG_REFUSED);
             return;
         };
@@ -1475,7 +1551,9 @@ impl Site {
         let mut reason = R_REG_ACCEPTED;
         match cnts {
             1 if r.target == ADRNULL => {
-                // ADRNULL removes the subscription
+                // ADRNULL removes the subscription, a list's too
+                self.tgl_clear_list(ms);
+                let rec = &mut self.regs[i].rec;
                 let old = rec.sub_tg;
                 rec.sub_tg = 0;
                 if old != 0 {
@@ -1484,6 +1562,7 @@ impl Site {
             }
             1 => {
                 let tg = r.target;
+                self.tgl_clear_list(ms); // a single subscription replaces a list
                 if self.policy.tg.contains(tg) && !is_gateway(tg) && !is_allcall(tg) {
                     let rec = &mut self.regs[i].rec;
                     let old = rec.sub_tg;
@@ -1496,7 +1575,13 @@ impl Site {
                     reason = R_REG_SUBSCRIPTION; // registered, the talkgroup refused
                 }
             }
-            2 => reason = R_REG_SUBSCRIPTION, // a list comes in a UDT upload, not built: registered, no groups
+            2 => {
+                // the list comes in a UDT upload (C_AHOY from TATTSI); the C_ACK follows it (tier3.md 3.17)
+                self.subs_dirty = true;
+                self.write_record(i);
+                self.tgl_register(r);
+                return;
+            }
             _ => {}
         }
         self.subs_dirty = true;
@@ -1509,12 +1594,18 @@ impl Site {
     // ── service requests ──
 
     fn service(&mut self, r: &Rand) {
+        if self.supp_gate(r) {
+            return; // stunned, diverted, or a diversion request
+        }
         match r.service_kind {
             SK_IND_VOICE | SK_TG_VOICE => self.call_request(r),
             SK_CALL_ANSWER => self.call_answer(r),
             SK_CANCEL => self.cancel(r.source),
-            SK_STATUS => self.status_request(r),
+            SK_STATUS => self.sd_rand(r), // status delivery and polling (6.6.6; t3sdata.rs, t3status.rs)
             SK_DUPLEX => self.duplex_request(r),
+            SK_IND_UDT | SK_TG_UDT => self.sd_rand(r),
+            SK_SUPPL if r.target == DGNAI => self.sd_rand(r),
+            SK_IND_PD | SK_TG_PD => self.pd_rand(r),
             _ => self.refuse(R_NOT_SUPPORTED, r.source, r.target),
         }
     }
@@ -1522,8 +1613,10 @@ impl Site {
     /// The checks every call request passes: Some(priority) when it may go on.
     fn admit(&mut self, r: &Rand) -> Option<u8> {
         let ms = r.source;
-        let group = r.service_kind == SK_TG_VOICE;
-        if is_gateway(r.target) || r.target == ADRNULL || (!group && (r.target == ms || is_allcall(r.target))) {
+        let group = matches!(r.service_kind, SK_TG_VOICE | SK_TG_PD);
+        let site = self.pd_to_site(r); // data to the site itself
+        let not_ms = !group && (r.target == ms || is_allcall(r.target));
+        if (is_gateway(r.target) && !site) || r.target == ADRNULL || not_ms {
             self.refuse(R_NOT_SUPPORTED, ms, r.target);
             return None;
         }
@@ -1624,6 +1717,7 @@ impl Site {
             called: dst,
             since_ms: self.now,
             next_ack_ms: self.now + WACK_EVERY_MS,
+            als: r.dep & DEP_ALS != 0,
             ..Default::default()
         };
         if self.reg_index(dst).is_some() {
@@ -1635,6 +1729,8 @@ impl Site {
             self.ack(R_WAIT, ms, dst);
             self.pend[i] = p;
             self.ahoy_tick(i);
+        } else if p.als {
+            self.refuse(R_NOT_SUPPORTED, ms, dst); // ALS isn't carried across sites
         } else if self.connected && self.ms_policy(ms).wide_private != 0 {
             p.state = P_NET;
             p.stream = self.new_stream();
@@ -1716,10 +1812,11 @@ impl Site {
             self.fail(&p, R_MSAWAY, WHY_NO_ANSWER);
             return;
         }
+        // an ALS radio check (table 6.46): Service_Options_Mirror 0, Service_Kind_Flag 0, ALS_SERV 1
         let a = Ahoy {
-            service_options: p.svc,
-            service_kind_flag: self.cfg.foacsu != 0,
-            als: false,
+            service_options: if p.als { 0 } else { p.svc },
+            service_kind_flag: self.cfg.foacsu != 0 && !p.als,
+            als: p.als,
             group: false,
             appended: 0,
             service_kind: if p.kind == KIND_DUPLEX { SK_DUPLEX } else { SK_IND_VOICE },
@@ -1735,7 +1832,7 @@ impl Site {
     /// C_ACKU or C_NACKU from a called MS: its source is the AHOY's target.
     fn ms_ack(&mut self, a: &Ack) {
         self.heard(a.source);
-        if self.status_ack(a) {
+        if self.sd_ack(a) || self.pd_ack(a) || self.supp_ack(a) {
             return;
         }
         let Some(i) =
@@ -1802,6 +1899,9 @@ impl Site {
     }
 
     fn cancel(&mut self, ms: u32) {
+        if self.sd_cancel(ms) || self.pd_cancel(ms) {
+            return;
+        }
         if let Some(i) = self.pend.iter().position(|p| p.used && p.caller_local && p.caller == ms) {
             let p = self.pend[i];
             self.pend[i].used = false;
@@ -1888,6 +1988,7 @@ impl Site {
             return true;
         }
         self.regs.iter().any(|r| r.used && (r.rec.tgs().contains(&tg) || self.ms_policy(r.rec.id).tgs().contains(&tg)))
+            || self.tgl_wants(tg)
     }
 
     fn net_group_go(&mut self, stream: u32, src: u32, tg: u32, emergency: bool, ch: Option<usize>) {
@@ -2182,6 +2283,9 @@ impl Site {
             for &tg in self.ms_policy(r.rec.id).tgs() {
                 add(tg, out);
             }
+            for tg in self.tgl_of(r.rec.id) {
+                add(tg, out);
+            }
         }
         n
     }
@@ -2213,7 +2317,9 @@ impl Site {
         self.roll_load();
         self.pending_timers();
         self.auth_timers();
-        self.status_timers();
+        self.sd_timers();
+        self.pd_timers();
+        self.supp_timers();
         self.channel_timers();
         self.reg_timers();
         let mut out = SlotOut::default();
@@ -2242,8 +2348,11 @@ impl Site {
             return;
         }
         if ch == self.tscc_carrier * 2 {
+            if dt == DT_DATA_HDR {
+                self.sd_rx_head(pdu);
+            }
             if dt != DT_CSBK {
-                return; // UDT and MBC uploads: none is asked for
+                return; // MBC uploads: none is asked for
             }
             self.tscc_heard(); // a BS_Dwn_Act wakes a hibernating TSCC, as any good block does
             if let Some(r) = Rand::decode(pdu) {
@@ -2271,6 +2380,13 @@ impl Site {
             }
         }
         self.check_subs();
+    }
+
+    /// A rate 1/2 data block (12 octets) on the TSCC: a UDT's appended block.
+    pub fn rx_block(&mut self, ch: usize, dt: u8, b: &[u8; 12]) {
+        if !self.withdrawn && ch == self.tscc_carrier * 2 && dt == DT_RATE12 {
+            self.sd_rx_block(b);
+        }
     }
 
     pub fn rx_bad(&mut self, ch: usize) {
@@ -2438,6 +2554,7 @@ impl Site {
             "mass_reg" => self.mass_registration(a1, a2),
             "move" => self.move_cmd(a1, a2),
             "auth" => self.auth_poll(a1),
+            "stun" | "revive" => self.stun(a1, cmd == "revive"), // 6.4.9.1; "kill" (6.4.10) needs authentication
             _ => false,
         }
     }
@@ -2607,7 +2724,7 @@ macro_rules! layouts {
     };
 }
 
-static LAYOUTS: [Layout; 18] = layouts![
+static LAYOUTS: [Layout; 19] = layouts![
     ("rdof_t3_carrier_t", Carrier),
     ("rdof_t3_cfg_t", Cfg),
     ("rdof_t3_range_t", Range),
@@ -2625,6 +2742,7 @@ static LAYOUTS: [Layout; 18] = layouts![
     ("rdof_t3ms_tx_t", crate::t3ms::MsTx),
     ("rdof_t3ms_status_t", crate::t3ms::MsStatus),
     ("rdof_t3_tg_policy_t", TgPolicy),
+    ("rdof_t3_sd_t", SdMsg),
 ];
 
 #[no_mangle]
@@ -2675,7 +2793,9 @@ pub unsafe extern "C" fn rdof_t3_slot(s: *mut Site, k: i64, now_ms: i64, out: *m
 
 #[no_mangle]
 pub unsafe extern "C" fn rdof_t3_rx_pdu(s: *mut Site, ch: c_int, _k: i64, dt: u8, pdu: *const [u8; 10], _rssi: c_int) {
-    if ch >= 0 {
+    if ch >= 0 && dt == DT_RATE12 {
+        (*s).rx_block(ch as usize, dt, &*pdu.cast::<[u8; 12]>()); // a rate 1/2 block: 12 octets
+    } else if ch >= 0 {
         (*s).rx_pdu(ch as usize, dt, &*pdu);
     }
 }

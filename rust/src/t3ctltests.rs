@@ -305,15 +305,16 @@ fn status_stored_while_the_called_ms_talks() {
     assert!(air.until(15_000, &mut log.f(), |a| a.ms[0].status().calls_done == 1));
     assert_eq!(air.ms[0].status().last_reason, R_MS_ACCEPTED);
     assert_eq!(air.ms[1].statuses(), (1, (1001, 1002, STATUS_EMERGENCY_ALARM)));
-    // polling isn't served here; an MS not registered here is away
+    // a poll (127) is answered by the polled MS (6.6.6.2); an MS not registered here, with no network to look in,
+    // is NoregMSaway_Refused (table 7.29: not in radio contact and not registered)
     let now = air.now();
     air.ms[0].act_status(127, false, 1002, now);
-    assert!(air.until(3000, &mut log.f(), |a| a.ms[0].status().calls_failed == 1));
-    assert_eq!(air.ms[0].status().last_reason, R_NOT_SUPPORTED);
+    assert!(air.until(3000, &mut log.f(), |a| a.ms[0].status().calls_done == 2));
+    assert_eq!(air.ms[0].status().last_reason, crate::t3udt::R_POLL_MS);
     let now = air.now();
     air.ms[0].act_status(5, false, 1999, now);
-    assert!(air.until(3000, &mut log.f(), |a| a.ms[0].status().calls_failed == 2));
-    assert_eq!(air.ms[0].status().last_reason, R_MSAWAY);
+    assert!(air.until(3000, &mut log.f(), |a| a.ms[0].status().calls_failed == 1));
+    assert_eq!(air.ms[0].status().last_reason, R_NOREG_MSAWAY);
 }
 
 #[test]
@@ -649,7 +650,7 @@ fn duplex_call_both_talk() {
     let st = air.site.status();
     assert!(st.ch[2].r#use != USE_IDLE && st.ch[3].r#use != USE_IDLE);
     let opens = log.of(EV_CH_OPEN);
-    assert!(opens.len() == 2 && opens.iter().all(|e| e.flags & F_DUPLEX != 0));
+    assert!(opens.len() == 2 && opens.iter().all(|e| e.why == OPEN_DUPLEX));
     assert!((opens[0].src, opens[0].dst, opens[1].src, opens[1].dst) == (1001, 1002, 1002, 1001));
     air.run(1500, &mut log.f());
     assert!(air.ms[0].voice_heard() > 20 && air.ms[1].voice_heard() > 20, "both directions at once");

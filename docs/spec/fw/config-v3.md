@@ -501,6 +501,10 @@ tier3.md section 4 and 3.8; the manager's `cfg` documents override them (tier3.m
 | `require_registration` | bool | true | |
 | `refuse_unlisted` | `denied`, `refused` | `denied` | |
 | `foacsu` | bool | false | |
+| `dgna_from_ms` | bool | false | MSs may assign talkgroups to other MSs (DGNA, tier3.md 3.17); the site's own DGNA needs no setting |
+| `ambient_listening` | bool | false | MSs may ask for the Ambient Listening Service (an individual call the called MS answers by transmitting, tier3.md 3.18) |
+| `call_diversion` | bool | true | MSs may divert their calls to another MS or a talkgroup (tier3.md 3.18) |
+| `data_gateway` | integer | 0 | the site's own data ID besides TSI: packet data to it goes to the site's IP gateway (tier3.md 3.16); 0 none |
 | `timers` | object | tier3.md 3.8 | |
 | `broadcast` | object | 5, 10, 6, 0, 0, 0 | `adjacent_s`, `chan_freq_s`, `local_time_s`, `call_timers_s`, `vote_now_s`, `ann_tscc_s`: 0 (off) or 1-600 |
 | `services` | object | | `emergency_preempt` (bool, false): clear a running call for a waiting emergency (tier3.md 3.9); `power_save` (0-7, 0), `power_save_awake_s` (0.1-60, 1), `mass_reg_at_start_s` (0-200000, 0) (tier3.md 3.11); `hibernate_s` (0 or 1-300, 0) (tier3.md 3.12); `duplex` (bool, false) (tier3.md 3.13) |

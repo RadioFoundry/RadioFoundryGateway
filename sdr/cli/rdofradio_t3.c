@@ -23,6 +23,7 @@
 #include "rdof/t3sim.h"
 #include "rdof/t3unit.h"
 #ifdef RDOF_MQTT
+#include "rdofradio_ipgw.h"
 #include "rdofradio_mqtt.h"
 #endif
 #include "rdofradio_serial.h"
@@ -217,6 +218,19 @@ static void publish_node(void)
 #endif
 }
 
+/* Packet data the site is a party to (tier3.md 3.16) goes to the IP gateway app, when the document has one; what
+ * the gateway sends goes down as the site's own data. Both under T.mu: io_data is the unit's, the gateway's poll
+ * runs in poll_locked. */
+static void io_data(void *ctx, int ch, int dt, const uint8_t *burst, uint32_t src, uint32_t dst)
+{
+    if (rdofgw_on())
+        rdofgw_heard(0, (ch & 1) + 1, 0, -1, dt, burst, (double)wall_ms() / 1000.0);
+}
+static bool t3_gw_send(void *ctx, const rdof_ipgw_dmr_t *p)
+{
+    return rdof_t3unit_data_tx(T.u, p->src, p->dst, false, p->nbursts, p->control, &p->bursts[0][0]);
+}
+
 static bool start_common(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o, char *err, size_t cap)
 {
     T.c = c;
@@ -250,12 +264,14 @@ static bool start_common(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o,
         snprintf(err, cap, "no memory");
         return false;
     }
-    const rdof_t3unit_io_t io = {io_publish, io_subscribe, io_log, io_cache, io_rand, NULL};
+    const rdof_t3unit_io_t io = {io_publish, io_subscribe, io_log, io_cache, io_rand, NULL, io_data};
     if (!rdof_t3unit_init(T.u, T.site_mem, &t->cfg, &t->pol, &io, T.net ? t->root : NULL, T.net ? T.node : NULL,
                              t->path, "rdofradio " RDOF_VERSION, err, cap))
         return false;
     rdof_t3unit_set_now(T.u, wall_ms());
     cache_load();
+    if (c->has_ipgw && c->ipgw.on && !rdofgw_on() && !rdofgw_start(&c->ipgw, t3_gw_send, NULL))
+        tsay("ip gateway: no memory: packet data to the site goes unanswered");
 #ifdef RDOF_MQTT
     if (T.net) {
         static char id[64];
@@ -286,6 +302,7 @@ static bool air_command(const char *topic, const void *data, size_t len);
 static void poll_locked(int64_t now_ms)
 {
     rdof_t3unit_set_now(T.u, now_ms);
+    rdofgw_poll((double)now_ms / 1000.0, rdof_data_sync(RDOF_BS_VOICE)); /* the site regenerates it anyway */
     for (;;) {
         pthread_mutex_lock(&inq_mu);
         const bool any = inq_tail != inq_head;

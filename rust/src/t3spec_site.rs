@@ -541,14 +541,16 @@ fn registration_with_talkgroup() {
     assert_eq!(r.s.record(A).unwrap().sub_tg, TG);
 }
 
-/// 6.4.4.1.13.1 and tier3.md 3.4: a list subscription (TRGT_ADR_CNTS 10b, TATTSI) isn't built: Reg_Subscription
-/// (0110 0101b) with an index pattern of 0 (no talkgroup accepted; table 7.41).
+/// 6.4.4.1.13.2 and tier3.md 3.17: a list subscription (TRGT_ADR_CNTS 10b, target TATTSI): the TSCC asks for the
+/// list with a C_AHOY; an MS that never uploads it is registered with every talkgroup refused, Reg_Subscription
+/// (0110 0101b) with an index pattern of 0 (table 6.10). The answer comes from TATTSI, the C_RAND's target: 6.4.4.1.13.2
+/// names TATTSI as the source of a refusal and doesn't give the final C_ACK another.
 #[test]
 fn registration_list_subscription() {
     let mut r = Rig::new(|_| {});
     let k = r.send(rand(0b000_0001, 0b1000, spec::SK_REG, spec::TATTSI, A));
     let (_, (ri, reason, target, source)) = r.ack_to(k, 30, A).unwrap();
-    assert_eq!((reason, ri, target, source), (spec::REG_SUBSCRIPTION, 0, A, spec::REGI));
+    assert_eq!((reason, ri, target, source), (spec::REG_SUBSCRIPTION, 0, A, spec::TATTSI));
 }
 
 /// 6.4.4.1.0 and tier3.md 3.4: a registration whose REG_ADDR isn't this site's C_SYScode is discarded: no answer
@@ -1008,11 +1010,12 @@ fn cancel_after_answer_ahoy() {
     assert_eq!((tgt(&b), src(&b)), (B, A));
 }
 
-/// tier3.md 3.7 (4.2): a Service_Kind the site doesn't offer gets C_NACKD(Not_Supported). Status delivery is
-/// offered (tier3.md 3.10); duplex calls are off by default (`services.duplex`).
+/// tier3.md 3.7 (4.2): a Service_Kind the site doesn't offer gets C_NACKD(Not_Supported). Status, short data and
+/// packet data are offered (tier3.md 3.15, 3.16); UDT polling isn't; duplex calls are off by default
+/// (`services.duplex`).
 #[test]
 fn unsupported_service_not_supported() {
-    for sk in [spec::SK_IND_PACKET, spec::SK_TG_PACKET, spec::SK_UDT_OUT, spec::SK_DUPLEX_IND] {
+    for sk in [spec::SK_POLL, spec::SK_DUPLEX_IND] {
         let mut r = two(false);
         let k = r.send(rand(0, 0, sk, B, A));
         let (ko, (_, reason, target, _)) = r.ack_to(k, 30, A).expect("answered");

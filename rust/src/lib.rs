@@ -75,6 +75,8 @@ pub mod t3pdu;
 pub mod t3rc;
 #[cfg(feature = "t3")]
 pub mod t3site;
+#[cfg(feature = "t3")]
+pub mod t3udt;
 #[cfg(all(test, feature = "t3"))]
 mod t3authtests;
 #[cfg(all(test, feature = "t3"))]
@@ -89,6 +91,14 @@ mod t3spec_ms;
 mod t3spec_pdu;
 #[cfg(all(test, feature = "t3"))]
 mod t3spec_site;
+#[cfg(all(test, feature = "t3"))]
+mod t3sdtests;
+#[cfg(all(test, feature = "t3"))]
+mod t3pdtests;
+#[cfg(all(test, feature = "t3"))]
+mod t3tgtests;
+#[cfg(all(test, feature = "t3"))]
+mod t3sutests;
 
 // The Tier III site around the controller (the tier3 feature; docs/spec/fw/tier3.md 9). Their C headers are the
 // contract: rdof/t3rf.h, rdof/t3cfg.h, rdof/t3unit.h, rdof/t3sim.h, rdof/sdr/t3split.h.
