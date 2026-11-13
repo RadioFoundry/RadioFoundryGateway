@@ -1301,7 +1301,8 @@ bool rdof_mn_cmd_parse(const char *json, size_t len, rdof_mn_cmd_t *c, char *err
                 {"withdraw", RDOF_MN_CMD_WITHDRAW},       {"restore", RDOF_MN_CMD_RESTORE},
                 {"resend_records", RDOF_MN_CMD_RESEND_RECORDS}, {"status", RDOF_MN_CMD_STATUS},
                 {"mass_reg", RDOF_MN_CMD_MASS_REG}, {"move", RDOF_MN_CMD_MOVE},
-                {"auth", RDOF_MN_CMD_AUTH}};
+                {"auth", RDOF_MN_CMD_AUTH}, {"stun", RDOF_MN_CMD_STUN}, {"revive", RDOF_MN_CMD_REVIVE},
+                {"dgna", RDOF_MN_CMD_DGNA}};
     memset(c, 0, sizeof *c);
     c->chan = c->lcn = -1;
     const int root = jp_parse(&P, json, len, err, cap);
@@ -1327,11 +1328,23 @@ bool rdof_mn_cmd_parse(const char *json, size_t len, rdof_mn_cmd_t *c, char *err
     case RDOF_MN_CMD_UNKNOWN: seterr(err, cap, "unknown command"); return false;
     case RDOF_MN_CMD_DEREGISTER:
     case RDOF_MN_CMD_AUTH:
+    case RDOF_MN_CMD_STUN:
+    case RDOF_MN_CMD_REVIVE:
+    case RDOF_MN_CMD_DGNA:
         if (!jint(jget(&P, root, "ms"), 1, RDOF_ID_MAX, &v)) {
             seterr(err, cap, "ms: 1 to 16777215");
             return false;
         }
         c->ms = (uint32_t)v;
+        if (c->cmd == RDOF_MN_CMD_DGNA) { /* tg: up to 15 talkgroups, [] clears them */
+            const int tg = rdof_jget(&P.doc, root, "tg");
+            if (tg < 0 || rdof_jnode(&P.doc, tg)->type != RDOF_JARR || rdof_jnode(&P.doc, tg)->count > 15) {
+                seterr(err, cap, "tg: a list of up to 15 talkgroups");
+                return false;
+            }
+            if (!jids(&P, tg, c->tg, 15, &c->ntg, err, cap))
+                return false;
+        }
         break;
     case RDOF_MN_CMD_CLEAR:
         if (!jint(jget(&P, root, "chan"), 1, 4094, &v)) {

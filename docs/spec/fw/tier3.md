@@ -882,6 +882,8 @@ Commands (`node/{node}/cmd`, JSON `{"id": "c-123", "cmd": "...", ...}`; the resu
 | `mass_reg` | `window_s` (0-200000, 0 cancels), `ms` (optional: one MS) | a mass re-registration (section 3.11) |
 | `move` | `chan` (1-4094), `ms` (optional: one MS) | C_MOVE: the MSs leave for the TSCC on that channel (section 3.12) |
 | `auth` | `ms` | an authentication poll of a registered MS with a key (section 3.14); a failure removes its registration |
+| `stun` / `revive` | `ms` | stun or revive an MS from the site, without authentication (section 3.18) |
+| `dgna` | `ms`, `tg` (a list of 0-15 talkgroups) | DGNA_Address from DGNAI to the MS (section 3.17); `[]` sends ADRNULL, which clears what DGNA gave it |
 
 ### 5.8 Security
 

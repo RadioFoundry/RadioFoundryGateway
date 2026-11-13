@@ -80,6 +80,9 @@ const MN_CMD_STATUS: c_int = 6;
 const MN_CMD_MASS_REG: c_int = 7;
 const MN_CMD_MOVE: c_int = 8;
 const MN_CMD_AUTH: c_int = 9;
+const MN_CMD_STUN: c_int = 10;
+const MN_CMD_REVIVE: c_int = 11;
+const MN_CMD_DGNA: c_int = 12;
 
 // ── the C structs: rdof/t3unit.h's ─────────────────────────────────────────────
 
@@ -352,6 +355,8 @@ pub struct MnCmd {
     pub chan: c_int,
     pub lcn: c_int,
     pub window_s: u32,
+    pub tg: [u32; 15],
+    pub ntg: c_int,
 }
 
 /// rdof_mn_up_t's head: node to ctx (the hooks). The rest is the C's alone, rdof_mn_up_size() bytes in all.
@@ -1779,6 +1784,28 @@ unsafe fn publish_status(u: *mut Unit) {
     (*u).status_ms = (*u).now_ms;
 }
 
+/// The `dgna` command: DGNA_Address from the site (DGNAI) to an MS, its talkgroups (none: ADRNULL, which clears
+/// them; tier3.md 3.17).
+unsafe fn dgna_cmd(u: *mut Unit, c: &MnCmd) -> bool {
+    use crate::t3udt::{AddrList, FMT_ADDRESS, MAX_DATA};
+    let tgs = &c.tg[..(c.ntg.clamp(0, 15) as usize)];
+    let Some(b) = AddrList::blocks(false, if tgs.is_empty() { &[crate::t3pdu::ADRNULL] } else { tgs }) else {
+        return false;
+    };
+    let mut d = [0u8; MAX_DATA];
+    let n = b.data(&mut d);
+    let mut m = crate::t3site::SdMsg {
+        op: crate::t3site::SD_SEND,
+        what: crate::t3site::SD_DGNA,
+        value: FMT_ADDRESS,
+        len: n as u8,
+        dst: c.ms,
+        ..Default::default()
+    };
+    m.data[..n].copy_from_slice(&d[..n]);
+    crate::t3site::rdof_t3_sd_send((*u).site, &m, (*u).now_ms)
+}
+
 unsafe fn command(u: *mut Unit, json: *const c_char, len: usize) {
     let mut c: MnCmd = core::mem::zeroed();
     let mut err = [0u8; 96];
@@ -1798,6 +1825,9 @@ unsafe fn command(u: *mut Unit, json: *const c_char, len: usize) {
             MN_CMD_MASS_REG => t3::rdof_t3_command(site, c"mass_reg".as_ptr(), c.window_s, c.ms),
             MN_CMD_MOVE => t3::rdof_t3_command(site, c"move".as_ptr(), c.chan as u32, c.ms),
             MN_CMD_AUTH => t3::rdof_t3_command(site, c"auth".as_ptr(), c.ms, 0),
+            MN_CMD_STUN => t3::rdof_t3_command(site, c"stun".as_ptr(), c.ms, 0),
+            MN_CMD_REVIVE => t3::rdof_t3_command(site, c"revive".as_ptr(), c.ms, 0),
+            MN_CMD_DGNA => dgna_cmd(u, &c),
             _ => false,
         };
         if !ok {

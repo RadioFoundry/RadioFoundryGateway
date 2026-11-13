@@ -1410,6 +1410,22 @@ static void test_cmd(void)
     static const char move[] = "{\"id\":\"v\",\"cmd\":\"move\",\"chan\":7}";
     CHECK(rdof_mn_cmd_parse(move, sizeof move - 1, &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_MOVE && c.chan == 7 &&
           c.ms == 0);
+    static const char stun[] = "{\"id\":\"s\",\"cmd\":\"stun\",\"ms\":3100123}";
+    CHECK(rdof_mn_cmd_parse(stun, sizeof stun - 1, &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_STUN && c.ms == 3100123);
+    static const char revive[] = "{\"id\":\"r\",\"cmd\":\"revive\",\"ms\":3100123}";
+    CHECK(rdof_mn_cmd_parse(revive, sizeof revive - 1, &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_REVIVE);
+    static const char stun_bad[] = "{\"id\":\"s\",\"cmd\":\"stun\"}";
+    CHECK(!rdof_mn_cmd_parse(stun_bad, sizeof stun_bad - 1, &c, err, sizeof err) && strstr(err, "ms"));
+    static const char dgna[] = "{\"id\":\"d\",\"cmd\":\"dgna\",\"ms\":3100123,\"tg\":[5,6,700]}";
+    CHECK(rdof_mn_cmd_parse(dgna, sizeof dgna - 1, &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_DGNA &&
+          c.ms == 3100123 && c.ntg == 3 && c.tg[0] == 5 && c.tg[2] == 700);
+    static const char dgna_clear[] = "{\"id\":\"d\",\"cmd\":\"dgna\",\"ms\":3100123,\"tg\":[]}";
+    CHECK(rdof_mn_cmd_parse(dgna_clear, sizeof dgna_clear - 1, &c, err, sizeof err) && c.ntg == 0);
+    static const char dgna_long[] =
+        "{\"id\":\"d\",\"cmd\":\"dgna\",\"ms\":3,\"tg\":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]}";
+    CHECK(!rdof_mn_cmd_parse(dgna_long, sizeof dgna_long - 1, &c, err, sizeof err) && strstr(err, "tg"));
+    static const char dgna_none[] = "{\"id\":\"d\",\"cmd\":\"dgna\",\"ms\":3}";
+    CHECK(!rdof_mn_cmd_parse(dgna_none, sizeof dgna_none - 1, &c, err, sizeof err) && strstr(err, "tg"));
     CHECK(rdof_mn_cmd_result_json("c-123", true, NULL, out, sizeof out) && !strcmp(out, "{\"id\":\"c-123\",\"ok\":true}"));
     CHECK(rdof_mn_cmd_result_json("c-4", false, "unknown command", out, sizeof out) &&
           !strcmp(out, "{\"id\":\"c-4\",\"ok\":false,\"error\":\"unknown command\"}"));

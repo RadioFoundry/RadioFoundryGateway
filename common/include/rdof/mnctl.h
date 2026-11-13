@@ -259,6 +259,9 @@ typedef enum {
     RDOF_MN_CMD_MASS_REG, /* window_s, ms (0: all) */
     RDOF_MN_CMD_MOVE,     /* chan, ms (0: all) */
     RDOF_MN_CMD_AUTH, /* ms: an authentication poll */
+    RDOF_MN_CMD_STUN,   /* ms */
+    RDOF_MN_CMD_REVIVE, /* ms */
+    RDOF_MN_CMD_DGNA,   /* ms, tg[ntg] (0-15; none clears) */
 } rdof_mn_cmd_kind_t;
 
 typedef struct {
@@ -268,6 +271,8 @@ typedef struct {
     uint32_t ms;
     int chan, lcn;
     uint32_t window_s;
+    uint32_t tg[15]; /* dgna */
+    int ntg;
 } rdof_mn_cmd_t;
 
 /* False with err when it can't be carried out (unknown command, a missing argument); c->id is filled whenever the
