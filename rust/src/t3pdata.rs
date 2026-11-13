@@ -35,8 +35,11 @@ pub const DATA_END_CONFIRMED: u8 = 4; // the last block of a confirmed message
 pub const DATA_RESPONSE: u8 = 5; // a response header (361-1 9.2.3)
 
 /// EV_PD's op.
-pub const PD_OPEN: u8 = 1; // a data channel: ch, src, dst; kind 1 when the site is a party
-pub const PD_FAILED: u8 = 2; // the site's own call failed: reason, src, dst
+pub const PD_OPEN: u8 = 1; // a data channel: ch, src, dst; kind PARTY_SITE or PARTY_NET when not just MSs here
+pub const PD_FAILED: u8 = 2; // the site's own call, or one from the network (kind PARTY_NET), failed: reason, src, dst
+/// EV_PD kinds: the site is a party (its IP gateway); the network is (the far party: tier3.md 5.10).
+pub const PARTY_SITE: u8 = 1;
+pub const PARTY_NET: u8 = 2;
 
 /// Data packet formats (361-1, the Data Packet Format element): a data header's octet 0, low four bits.
 pub const DPF_RESPONSE: u8 = 1;
@@ -393,6 +396,11 @@ pub fn data_op(group: bool, multi: bool) -> u8 {
 
 const PD_AHOY: u8 = 1; // the called MS's availability check
 const PD_QUEUED: u8 = 2; // waiting for a payload channel
+const PD_NET: u8 = 3; // the calling site's: waiting for the far site's answer to its setup request
+const PD_HELD: u8 = 4; // the far site's: the call accepted, waiting for its data
+const PD_GO: u8 = 5; // answered across the network: a channel next, or the queue
+/// How long the far site keeps an accepted call for its data (the calling site may queue it first).
+const PD_HOLD_MS: i64 = 30_000;
 
 #[derive(Clone, Copy, Default)]
 struct Pd {
@@ -400,6 +408,9 @@ struct Pd {
     state: u8,
     group: bool,
     from_site: bool, // the site's own call (rdof_t3_pd_send): no caller on the TSCC
+    far: bool,       // the called MS is at another site: the calling site's side (tier3.md 5.10)
+    net: bool,       // the caller is on the network: the far site's side
+    stream: u32,     // the setup request's stream (far, or net with a setup)
     svc: u8,
     prio: u8,
     ahoy_left: u8,
@@ -460,7 +471,7 @@ impl Site {
     pub(super) fn pd_rand(&mut self, r: &Rand) {
         let (ms, dst) = (r.source, r.target);
         let group = r.service_kind == SK_TG_PD;
-        if let Some(i) = self.pd.pds.iter().position(|p| p.used && !p.from_site && p.caller == ms && p.called == dst) {
+        if let Some(i) = self.pd.pds.iter().position(|p| p.used && Self::pd_local(p) && p.caller == ms && p.called == dst) {
             let reason = if self.pd.pds[i].state == PD_QUEUED { R_QUEUED } else { R_WAIT };
             self.ack(reason, ms, dst); // a repeat: the same answer
             return;
@@ -471,12 +482,16 @@ impl Site {
             return;
         }
         let site = self.pd_to_site(r);
+        let mut far = false;
         if !group && !site {
             if self.reg_index(dst).is_none() {
-                self.refuse(R_NOREG_MSAWAY, ms, dst); // packet data across the network: not built
-                return;
-            }
-            if self.ms_busy(dst) || self.pd_busy(dst) {
+                // across the network (tier3.md 5.10), as an individual voice call goes
+                if !self.connected || self.ms_policy(ms).wide_private == 0 {
+                    self.refuse(R_NOREG_MSAWAY, ms, dst);
+                    return;
+                }
+                far = true;
+            } else if self.ms_busy(dst) || self.pd_busy(dst) {
                 self.refuse(R_CALLED_PARTY_BUSY, ms, dst);
                 return;
             }
@@ -490,6 +505,7 @@ impl Site {
             group,
             svc: r.service_options,
             prio,
+            far,
             caller: ms,
             called: dst,
             since_ms: self.now,
@@ -497,10 +513,31 @@ impl Site {
         };
         if group || site {
             self.pd_ready(i);
+        } else if far {
+            self.pd_ask(i);
+            self.ack(R_WAIT, ms, dst);
         } else {
             self.pd_check(i);
             self.ack(R_WAIT, ms, dst);
         }
+    }
+
+    /// A call whose caller is an MS here (on the TSCC).
+    fn pd_local(p: &Pd) -> bool {
+        !p.from_site && !p.net
+    }
+
+    /// The called MS is at another site: the setup request (mqtt-net.md 9.4, flag data); the far site checks it.
+    fn pd_ask(&mut self, i: usize) {
+        let now = self.now;
+        let stream = self.new_stream();
+        let p = &mut self.pd.pds[i];
+        p.state = PD_NET;
+        p.stream = stream;
+        p.deadline_ms = now + self.cfg.setup_ms as i64;
+        p.next_ack_ms = now + WACK_EVERY_MS;
+        let p = *p;
+        self.setup_out(SETUP_REQUEST, WHY_OK, SETUP_F_DATA, p.svc, p.caller, p.called, p.stream);
     }
 
     /// Whether an MS is a party of a data call being set up.
@@ -559,7 +596,7 @@ impl Site {
         q.state = PD_QUEUED;
         q.deadline_ms = now + self.cfg.queue_ms as i64;
         q.next_ack_ms = now + QACK_EVERY_MS;
-        if !p.from_site {
+        if Self::pd_local(&p) {
             self.ack(R_QUEUED, p.caller, p.called);
         }
         self.counters.queued += 1;
@@ -587,19 +624,45 @@ impl Site {
         if p.svc & SO_EMERGENCY != 0 {
             flags |= F_EMERGENCY;
         }
+        if !p.group && (p.far || p.net) {
+            flags |= F_PRIVATE_NET;
+        }
+        if p.net {
+            flags |= F_NET;
+        }
+        let tg = p.called;
+        if p.group && !p.net && (tg == ALLMSID || (!is_allcall(tg) && self.policy.wide_tg.contains(tg))) {
+            flags |= F_WIDE; // a wide talkgroup's data goes to the network too (tier3.md 5.10)
+        }
         self.pd.multi[ch] = p.svc & SO_SIMI != 0;
         self.open(ch, kind, p.caller, p.called, flags, 0, false);
         self.chans[ch].idle_until_ms = self.now + self.cfg.start_grace_ms as i64 + self.pd_hang();
         self.pd.calls += 1;
         let site = !p.group && (self.pd_site(p.called) || p.called == IPI || p.from_site);
+        let net = p.far || p.net || (flags & F_WIDE != 0 && self.connected && !p.from_site);
         let mut e = self.chan_ev(ch, EV_PD);
         e.op = PD_OPEN;
-        e.kind = site as u8;
+        e.kind = if net { PARTY_NET } else if site { PARTY_SITE } else { 0 };
         self.ev(e);
     }
 
     fn pd_fail(&mut self, p: &Pd, reason: u8) {
-        if p.from_site {
+        if p.net {
+            if p.stream != 0 && p.state == PD_AHOY {
+                let why = Self::why_of_reason(reason);
+                self.setup_out(SETUP_REJECT, why, SETUP_F_DATA, p.svc, p.caller, p.called, p.stream);
+            }
+            self.ev(Event {
+                r#type: EV_PD,
+                op: PD_FAILED,
+                kind: PARTY_NET,
+                reason,
+                src: p.caller,
+                dst: p.called,
+                flags: if p.group { F_GROUP } else { 0 },
+                ..Default::default()
+            });
+        } else if p.from_site {
             self.ev(Event {
                 r#type: EV_PD,
                 op: PD_FAILED,
@@ -611,6 +674,22 @@ impl Site {
             });
         } else {
             self.refuse(reason, p.caller, p.called);
+            if p.far {
+                // no channel after all: the far site's MS is let go
+                self.setup_out(SETUP_CANCEL, WHY_OK, SETUP_F_DATA, p.svc, p.caller, p.called, p.stream);
+            }
+        }
+    }
+
+    /// The reason a network caller gets for a refusal here (mqtt-net.md 9.4 reasons).
+    fn why_of_reason(reason: u8) -> u8 {
+        match reason {
+            R_NOREG_MSAWAY => WHY_NOT_FOUND,
+            R_MSAWAY => WHY_NO_ANSWER,
+            R_CALLED_PARTY_BUSY => WHY_BUSY,
+            R_SYSBUSY => WHY_CONGESTION,
+            R_NOT_SUPPORTED => WHY_NOT_SUPPORTED,
+            _ => WHY_REFUSED,
         }
     }
 
@@ -642,6 +721,13 @@ impl Site {
         match (reason_type(a.reason), a.reason) {
             // C_ACKU(Message_Accepted): a channel (6.6.3.1.4, 6.6.3.2.6); MS_Accepted is the same answer with the
             // MS-sent direction bit (table 7.42, 7.2.8.0)
+            (1, R_MESSAGE_ACCEPTED | R_MS_ACCEPTED) if p.net && p.stream != 0 => {
+                // the far site's side: the caller's site grants its caller now; the data comes after
+                self.setup_out(SETUP_ACCEPT, WHY_OK, SETUP_F_DATA, p.svc, p.caller, p.called, p.stream);
+                let q = &mut self.pd.pds[i];
+                q.state = PD_HELD;
+                q.deadline_ms = self.now + PD_HOLD_MS;
+            }
             (1, R_MESSAGE_ACCEPTED | R_MS_ACCEPTED) => self.pd_ready(i),
             // it will call back: no channel, the reason mirrored to the caller (as for voice, 6.6.2.2.6)
             (1, R_CALLBACK) => {
@@ -661,12 +747,15 @@ impl Site {
 
     /// Cancel from a caller whose data call waits: true when it was one.
     pub(super) fn pd_cancel(&mut self, ms: u32) -> bool {
-        let Some(i) = self.pd.pds.iter().position(|p| p.used && !p.from_site && p.caller == ms) else {
+        let Some(i) = self.pd.pds.iter().position(|p| p.used && Self::pd_local(p) && p.caller == ms) else {
             return false;
         };
         let p = self.pd.pds[i];
         self.pd.pds[i].used = false;
         self.ack(R_MESSAGE_ACCEPTED, ms, p.called);
+        if p.far {
+            self.setup_out(SETUP_CANCEL, WHY_OK, SETUP_F_DATA, p.svc, p.caller, p.called, p.stream);
+        }
         if p.state == PD_QUEUED {
             self.activity(ACT_QUEUE, QUEUE_DROP, p.caller, p.called, 0);
         }
@@ -695,7 +784,7 @@ impl Site {
                     continue;
                 }
             }
-            if !p.from_site && now >= p.next_ack_ms {
+            if Self::pd_local(&p) && p.state != PD_HELD && now >= p.next_ack_ms {
                 let (reason, every) =
                     if p.state == PD_QUEUED { (R_QUEUED, QACK_EVERY_MS) } else { (R_WAIT, WACK_EVERY_MS) };
                 self.ack(reason, p.caller, p.called);
@@ -773,6 +862,141 @@ impl Site {
     }
 }
 
+// ── across the network (tier3.md 5.10) ──────────────────────────────────────────
+
+impl Site {
+    /// The far site's answer to a setup request for a data call: true when it was one.
+    pub(super) fn pd_net_answer(&mut self, m: &Setup) -> bool {
+        let Some(i) = self.pd.pds.iter().position(|p| p.used && p.far && p.state == PD_NET && p.stream == m.r#ref)
+        else {
+            return false;
+        };
+        let p = self.pd.pds[i];
+        match m.op {
+            SETUP_ACCEPT | SETUP_ANSWERED => {
+                self.pd.pds[i].state = PD_GO;
+                self.pd_ready(i);
+            }
+            SETUP_REJECT => {
+                self.pd.pds[i].used = false;
+                self.refuse(Self::reason_of_why(m.reason), p.caller, p.called);
+            }
+            _ => {} // alerting: a data call doesn't alert; the wait goes on
+        }
+        true
+    }
+
+    /// The caller's site let a data call go: true when it was one.
+    pub(super) fn pd_net_cancel(&mut self, m: &Setup) -> bool {
+        let Some(i) = self.pd.pds.iter().position(|p| p.used && p.net && p.stream != 0 && p.stream == m.r#ref)
+        else {
+            return false;
+        };
+        self.pd.pds[i].used = false;
+        true
+    }
+
+    /// A setup request for a data call to an MS here (6.6.3.1.4: the check before a channel; here for the caller's
+    /// site): C_AHOY Service_Kind 0010b, source the caller; the answer goes back as accept or reject.
+    pub(super) fn pd_net_request(&mut self, m: &Setup) {
+        if self.pd.pds.iter().any(|p| p.used && p.net && p.stream == m.stream) {
+            return; // a repeat
+        }
+        let why = if self.reg_index(m.dst).is_none() {
+            WHY_NOT_FOUND
+        } else if self.ms_busy(m.dst) || self.pd_busy(m.dst) {
+            WHY_BUSY
+        } else {
+            WHY_OK
+        };
+        let free = self.pd_free();
+        let why = if why == WHY_OK && free.is_none() { WHY_CONGESTION } else { why };
+        let Some(i) = free.filter(|_| why == WHY_OK) else {
+            self.setup_out(SETUP_REJECT, why, SETUP_F_DATA, m.svc, m.src, m.dst, m.stream);
+            return;
+        };
+        self.pd.pds[i] = Pd {
+            used: true,
+            net: true,
+            svc: m.svc,
+            prio: m.svc & SO_PRIORITY,
+            caller: m.src,
+            called: m.dst,
+            stream: m.stream,
+            since_ms: self.now,
+            ..Default::default()
+        };
+        self.pd_check(i);
+    }
+
+    /// The network went: data calls waiting on it fail.
+    pub(super) fn pd_link_down(&mut self) {
+        for i in 0..PDS {
+            let p = self.pd.pds[i];
+            if !p.used || !(p.far || p.net) || p.state == PD_QUEUED {
+                continue;
+            }
+            self.pd.pds[i].used = false;
+            if p.far {
+                self.refuse(R_MSAWAY, p.caller, p.called);
+            } else {
+                let mut q = p;
+                q.stream = 0; // no reject to send
+                self.pd_fail(&q, R_MSAWAY);
+            }
+        }
+    }
+
+    /// Packet data from the network for an MS or a talkgroup here (tier3.md 5.10): a channel to send it on, granted
+    /// with the caller as source. A call the far site set up (pd_net_request) goes at once; one with no setup (a Tier
+    /// II radio, an application) gets the availability check first. An open channel of the same call is granted
+    /// again (the called MS went back to the TSCC after an item, 6.6.3.3.2.5). EV_PD PD_OPEN (kind PARTY_NET) says
+    /// where; PD_FAILED, that it can't go. false: not here, or busy.
+    pub fn pd_net_in(&mut self, src: u32, dst: u32, group: bool, now_ms: i64) -> bool {
+        self.now = self.now.max(now_ms);
+        if self.withdrawn || src == 0 || dst == 0 {
+            return false;
+        }
+        let same = (0..CHANNELS).find(|&i| {
+            let c = &self.chans[i];
+            Self::live(c) && c.flags & F_DATA != 0 && (c.kind != KIND_PRIVATE) == group && c.dst == dst
+                && (group || c.src == src)
+        });
+        if let Some(ch) = same {
+            self.regrant(ch, src);
+            let mut e = self.chan_ev(ch, EV_PD);
+            e.op = PD_OPEN;
+            e.kind = PARTY_NET;
+            self.ev(e);
+            return true;
+        }
+        if let Some(i) =
+            self.pd.pds.iter().position(|p| p.used && p.net && p.caller == src && p.called == dst && p.group == group)
+        {
+            if self.pd.pds[i].state == PD_HELD {
+                self.pd.pds[i].state = PD_GO;
+                self.pd_ready(i);
+            }
+            return true; // or on its way
+        }
+        if group {
+            if !self.wants_tg(dst) && !is_allcall(dst) {
+                return false;
+            }
+        } else if self.reg_index(dst).is_none() || self.ms_busy(dst) || self.pd_busy(dst) {
+            return false;
+        }
+        let Some(i) = self.pd_free() else { return false };
+        self.pd.pds[i] = Pd { used: true, group, net: true, caller: src, called: dst, since_ms: self.now, ..Default::default() };
+        if group {
+            self.pd_ready(i);
+        } else {
+            self.pd_check(i);
+        }
+        true
+    }
+}
+
 // ── C API (rdof/t3.h) ──────────────────────────────────────────────────────────
 
 #[no_mangle]
@@ -780,6 +1004,11 @@ pub unsafe extern "C" fn rdof_t3_rx_data(s: *mut Site, ch: c_int, _k: i64, what:
     if ch >= 0 {
         (*s).rx_data(ch as usize, what, src);
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3_pd_net_in(s: *mut Site, src: u32, dst: u32, group: bool, now_ms: i64) -> bool {
+    (*s).pd_net_in(src, dst, group, now_ms)
 }
 
 #[no_mangle]

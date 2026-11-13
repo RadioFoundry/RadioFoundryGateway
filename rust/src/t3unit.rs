@@ -21,11 +21,12 @@ use crate::jsonp::{rdof_jat, rdof_jget, rdof_jnode, rdof_jparse, JDoc, JNode, RD
 use crate::mmdvm::rdof_control_to_dt;
 use crate::plan::RdofIdset;
 use crate::t3cfg::{rdof_t3cfg_check, rdof_t3cfg_site};
+use crate::t3pdnet::{NetData, PdNet, HELD, RESULT_DELIVERED, RESULT_NO_RESPONSE, RESULT_UNCONFIRMED};
 use crate::t3rf::{
-    rdof_t3rf_channel, rdof_t3rf_close, rdof_t3rf_control, rdof_t3rf_init, rdof_t3rf_net, rdof_t3rf_net_end,
-    rdof_t3rf_data, rdof_t3rf_duplex, rdof_t3rf_open, rdof_t3rf_rc, rdof_t3rf_room, rdof_t3rf_rx, rdof_t3rf_slot,
-    rdof_t3rf_split_pump, rdof_t3rf_tick, T3rf, T3rfIo, T3rfSplit,
-    WARMUP,
+    rdof_t3rf_block_burst, rdof_t3rf_burst_block, rdof_t3rf_channel, rdof_t3rf_close, rdof_t3rf_control,
+    rdof_t3rf_data, rdof_t3rf_duplex, rdof_t3rf_init, rdof_t3rf_net, rdof_t3rf_net_end, rdof_t3rf_open,
+    rdof_t3rf_rc, rdof_t3rf_room, rdof_t3rf_rx, rdof_t3rf_slot, rdof_t3rf_split_pump, rdof_t3rf_tick, T3rf,
+    T3rfIo, T3rfSplit, WARMUP,
 };
 use crate::t3site::{
     self as t3, Cfg, Event, IdSet, MsPolicy, Neighbor, Policy, Record, Setup, Site, SlotOut, Status, TgPolicy, REV_CALL,
@@ -58,6 +59,7 @@ const MN_HEADER: usize = 14;
 const MN_SETUP_LEN: usize = 8;
 const MN_F_EMERGENCY: u8 = 0x04;
 const MN_F_GROUP: u8 = 0x02;
+const MN_DATA_PDU: c_int = 0x07; // the data_pdu item (mqtt-net.md 4.4; tier3.md 5.10)
 const MN_SDATA: c_int = 0x0D; // the sdata item (tier3.md 5.9)
 const MN_SDATA_HEAD: usize = 12; // its fixed part; the data follows
 const MN_REC_TG: usize = 8;
@@ -144,6 +146,9 @@ pub struct Counts {
     pub cfg_bad: u32,
     pub cmds: u32,
     pub tg_filtered: u32,
+    pub data_in: u32,
+    pub data_out: u32,
+    pub data_dropped: u32,
 }
 
 // ── the C structs: mqtt-net's ──────────────────────────────────────────────────
@@ -622,6 +627,10 @@ pub struct Unit {
     data_rx: [t3::DataRx; CHANNELS],
     site_party: [bool; CHANNELS], // the site is a party to the data call on the channel
     dl: DataDown,
+    // packet data across sites (tier3.md 5.10): the relays, their own blocks counted, who sent what they hold
+    pdnet: PdNet,
+    relay_rx: [t3::DataRx; CHANNELS],
+    pd_from: [(u32, [u8; NODE_MAX + 1]); HELD],
 }
 
 /// A packet the site sends (rdof_t3unit_data_tx): held until its channel opens, then fed to its queue.
@@ -1176,7 +1185,9 @@ unsafe fn drain(u: *mut Unit) {
                 if usize::from(e.ch) < CHANNELS {
                     (*u).site_party[usize::from(e.ch)] = false;
                     (*u).data_rx[usize::from(e.ch)] = t3::DataRx::default();
+                    (*u).relay_rx[usize::from(e.ch)] = t3::DataRx::default();
                 }
+                (*u).pdnet.event(&e, (*u).now_ms);
                 if (*u).dl.on && (*u).dl.ch == ch {
                     (*u).dl.on = false; // its channel went before it all did
                 }
@@ -1201,7 +1212,10 @@ unsafe fn drain(u: *mut Unit) {
             t3::EV_NET_SETUP => setup_out(u, &e),
             t3::EV_NET_SD => sdata_out(u, &e),
             t3::EV_SD => sdata_here(u, &e),
-            t3::EV_PD => data_event(u, &e),
+            t3::EV_PD => {
+                data_event(u, &e);
+                (*u).pdnet.event(&e, (*u).now_ms);
+            }
             t3::EV_NET_SUBS => subs = true,
             t3::EV_RECORD => record_out(u, e.src, e.why == 1),
             t3::EV_ACTIVITY => {
@@ -1305,7 +1319,11 @@ unsafe extern "C" fn io_activity(ctx: *mut c_void, ch: c_int, k: i64, what: c_in
 unsafe extern "C" fn io_uplink(ctx: *mut c_void, ch: c_int, f: *const RdofFrame) {
     let u: *mut Unit = ctx.cast();
     if data_ch(u, ch) {
-        // packet data stays on the site: to its IP gateway when it is a party
+        // packet data stays on the site: to its IP gateway when it is a party, to the network through the relay
+        // when the far party is there (tier3.md 5.10)
+        if (*u).pdnet.relay[ch as usize].on {
+            relay_rx(u, ch as usize, f);
+        }
         let r = &(*u).data_rx[ch as usize];
         if let (true, Some(d)) = ((*u).site_party[ch as usize], (*u).io.data) {
             d((*u).io.ctx, ch, (*f).dt, (*f).burst.as_ptr(), r.src, r.dst);
@@ -1324,7 +1342,7 @@ unsafe fn data_event(u: *mut Unit, e: &Event) {
     let ch = usize::from(e.ch);
     let d = addr_of_mut!((*u).dl);
     if e.op == t3::PD_OPEN && ch < CHANNELS {
-        (*u).site_party[ch] = e.kind != 0 || ((*d).on && (*d).group && e.dst == (*d).dst);
+        (*u).site_party[ch] = e.kind == t3::PARTY_SITE || ((*d).on && (*d).group && e.dst == (*d).dst);
         if (*d).on && (*d).ch < 0 && e.dst == (*d).dst {
             (*d).ch = ch as c_int;
         }
@@ -1341,6 +1359,7 @@ unsafe fn data_event(u: *mut Unit, e: &Event) {
 
 /// Feeds the held packet to its channel's queue as room allows; the controller counts it as it goes.
 unsafe fn data_feed(u: *mut Unit, k: i64) {
+    relay_feed(u, k);
     let d = addr_of_mut!((*u).dl);
     if !(*d).on {
         return;
@@ -1411,9 +1430,286 @@ pub unsafe extern "C" fn rdof_t3unit_data_tx(
     ptr::copy_nonoverlapping(bursts, (*d).bursts.as_mut_ptr().cast::<u8>(), n * 33);
     if !t3::rdof_t3_pd_send((*u).site, src, dst, group, (*u).now_ms) {
         (*d).on = false;
+        let mut r = Record::default();
+        if !group && (*u).net && (*u).connected && !t3::rdof_t3_record((*u).site, dst, &mut r) {
+            return data_tx_net(u, n, control, bursts); // an MS at another site: over the network (tier3.md 5.10)
+        }
         return false;
     }
     drain(u);
+    true
+}
+
+// ── packet data across sites (tier3.md 5.10) ───────────────────────────────────
+
+/// rdof_mn_pdu_t
+#[repr(C)]
+struct MnPdu {
+    part: c_int,
+    more: bool,
+    rate: c_int,
+    nheaders: c_int,
+    headers: *const u8,
+    data: *const u8,
+    len: usize,
+}
+
+extern "C" {
+    fn rdof_mn_data_pdu(
+        w: *mut MnWriter,
+        part: c_int,
+        more: bool,
+        rate: c_int,
+        nheaders: c_int,
+        headers10: *const u8,
+        data: *const u8,
+        len: usize,
+    ) -> bool;
+    fn rdof_mn_pdu(it: *const MnItem, out: *mut MnPdu) -> bool;
+    fn rdof_mn_data_result_event(
+        node: *const c_char,
+        wall: f64,
+        path: c_int,
+        slot: c_int,
+        stream: u32,
+        src: u32,
+        dst: u32,
+        from: *const c_char,
+        from_stream: u32,
+        result: *const c_char,
+        tries: c_int,
+        out: *mut c_char,
+        cap: usize,
+    ) -> usize;
+}
+
+/// A data header or block from a burst: its data type and octets; None when it isn't one.
+unsafe fn burst_block(dt: c_int, burst: &[u8; 33]) -> Option<(u8, [u8; t3::BLOCK_MAX])> {
+    let mut blk = [0u8; t3::BLOCK_MAX];
+    if dt == c_int::from(crate::t3udt::DT_DATA_HDR) {
+        let mut b12 = [0u8; 12];
+        if !crate::ffi::rdof_bptc196_decode(burst.as_ptr(), b12.as_mut_ptr()) {
+            return None;
+        }
+        blk[..12].copy_from_slice(&b12);
+        return Some((crate::t3udt::DT_DATA_HDR, blk));
+    }
+    let (mut got, mut cc) = (0, 0);
+    let _ = rdof_t3rf_burst_block(burst, &mut got, &mut cc, &mut blk); // a block's CRCs are the message's
+    let dt = dt as u8;
+    matches!(dt, t3::DT_R12 | t3::DT_R34 | t3::DT_R1).then_some((dt, blk))
+}
+
+/// A burst an MS sent on a relay's channel: taken; a whole message goes to the network.
+unsafe fn relay_rx(u: *mut Unit, ch: usize, f: *const RdofFrame) {
+    let Some((dt, blk)) = burst_block((*f).dt, &(*f).burst) else { return };
+    let nd = (*u).pdnet.rx(ch, dt, &blk, (*u).now_ms);
+    if let Some(nd) = nd {
+        pdata_out(u, &nd);
+    }
+}
+
+/// The relays' blocks to their channels' queues as room allows (responses, messages from the network), counted for
+/// the controller as the site's own data is; their timers and results.
+unsafe fn relay_feed(u: *mut Unit, k: i64) {
+    let now = (*u).now_ms;
+    (*u).pdnet.tick(now);
+    for ch in 0..CHANNELS {
+        if !(*u).pdnet.relay[ch].on {
+            continue;
+        }
+        let c = rdof_t3rf_channel(rf(u), ch as c_int);
+        if c.is_null() {
+            continue;
+        }
+        let cc = (*c).cc;
+        let mut room = rdof_t3rf_room(rf(u), ch as c_int) - 2; // a little left for the controller's own
+        while room > 0 {
+            let Some((dt, blk)) = (*u).pdnet.next(ch, now) else { break };
+            let mut b = [0u8; 33];
+            if !rdof_t3rf_block_burst(c_int::from(dt), blk.as_ptr(), cc, 0, &mut b)
+                || !rdof_t3rf_data(rf(u), ch as c_int, dt, b.as_ptr())
+            {
+                break;
+            }
+            let r = addr_of_mut!((*u).relay_rx[ch]);
+            let what = if dt == crate::t3udt::DT_DATA_HDR {
+                let mut h = [0u8; 10];
+                h.copy_from_slice(&blk[..10]);
+                (*r).header(&h)
+            } else {
+                (*r).block()
+            };
+            t3::rdof_t3_rx_data((*u).site, ch as c_int, k, what, (*r).src);
+            room -= 1;
+        }
+    }
+    while let Some((src, dst, from, result, tries)) = (*u).pdnet.take_result() {
+        data_result(u, src, dst, from, result, tries);
+    }
+    drain(u);
+}
+
+/// What became of a message from the network: `data_result` in activity (mqtt-net.md 7), and the log.
+unsafe fn data_result(u: *mut Unit, src: u32, dst: u32, from: u32, result: u8, tries: u8) {
+    let name = match result {
+        RESULT_DELIVERED => c"delivered",
+        RESULT_NO_RESPONSE => c"no_response",
+        RESULT_UNCONFIRMED => c"unconfirmed",
+        _ => c"failed",
+    };
+    let mut node = [0u8; NODE_MAX + 1];
+    for p in (*u).pd_from.iter_mut().filter(|p| p.0 == from && from != 0) {
+        node = p.1;
+        p.0 = 0;
+    }
+    let mut j = [0u8; 384];
+    let ev = ev_of(u, -1, true, from);
+    let n = rdof_mn_data_result_event(
+        ev.node,
+        ev.wall,
+        ev.path,
+        0,
+        rnd(u),
+        src,
+        dst,
+        cp(&node),
+        from,
+        name.as_ptr(),
+        c_int::from(tries),
+        cpm(&mut j),
+        j.len(),
+    );
+    if n != 0 {
+        activity_json(u, cp(&j));
+    }
+    log(u, |o| {
+        o.bytes(b"tier3: packet data ");
+        o.int(i64::from(src), 0);
+        o.bytes(b" > ");
+        o.int(i64::from(dst), 0);
+        o.bytes(b" from the network: ");
+        o.bytes(name.to_bytes());
+    });
+}
+
+/// A message for the network: a data_pdu item (mqtt-net.md 4.4) on pc/{dst}/{node}, or tg/{tg}/{node}.
+unsafe fn pdata_out(u: *mut Unit, nd: &NetData) {
+    let group = nd.head.group;
+    let path = if (*u).path >= 0 { (*u).path as u8 } else { MN_PATH_NONE };
+    let h = MnHdr {
+        flags: if group { MN_F_GROUP } else { 0 },
+        path,
+        seq: 0,
+        stream: rnd(u),
+        src: nd.head.src,
+        dst: nd.head.dst,
+    };
+    let head = nd.head.encode();
+    let mut buf = [0u8; MN_HEADER + 4 + 3 + 10 + t3::MSG_OCTETS];
+    let mut w: MnWriter = core::mem::zeroed();
+    rdof_mn_begin(&mut w, buf.as_mut_ptr(), buf.len(), &h);
+    rdof_mn_data_pdu(&mut w, 0, false, c_int::from(nd.rate()), 1, head.as_ptr(), nd.data.as_ptr(), nd.len);
+    let n = rdof_mn_end(&mut w);
+    let mut t = [0u8; 128];
+    let kind = if group { MN_T_TG } else { MN_T_PC };
+    if n != 0 && rdof_mn_topic(cpm(&mut t), t.len(), root(u), kind, nd.head.dst, node(u)) != 0 {
+        publish(u, cp(&t), buf.as_ptr().cast(), n, 1, false);
+        (*u).n.data_out += 1;
+    }
+}
+
+/// A message that holds a data_pdu item (a data call, whole: mqtt-net.md 4.4): true when it was one (sent on to an
+/// MS or a talkgroup here, or dropped). from: the publisher's node.
+unsafe fn pdata_in(u: *mut Unit, from: &[u8], msg: *const u8, len: usize) -> bool {
+    let mut h: MnHdr = core::mem::zeroed();
+    let mut r: MnReader = core::mem::zeroed();
+    let mut it: MnItem = core::mem::zeroed();
+    if msg.is_null() || !rdof_mn_parse(msg, len, &mut h) {
+        return false;
+    }
+    rdof_mn_reader(&mut r, msg, len);
+    let mut found = false;
+    while rdof_mn_next(&mut r, &mut it) {
+        if it.r#type == MN_DATA_PDU {
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        return false;
+    }
+    let mut p: MnPdu = core::mem::zeroed();
+    let mut nd = NetData::default();
+    let ok = rdof_mn_pdu(&it, &mut p)
+        && p.part == 0
+        && !p.more
+        && p.nheaders >= 1
+        && p.len <= t3::MSG_OCTETS
+        && NetData::dt_of_rate(p.rate as u8).is_some();
+    let head = if ok { t3::DataHead::decode(&*p.headers.cast::<[u8; 10]>()) } else { None };
+    let Some(head) = head.filter(|d| d.dpf == t3::DPF_UNCONFIRMED || d.dpf == t3::DPF_CONFIRMED) else {
+        (*u).n.data_dropped += 1; // in parts, or not a data message the site can send (a header it doesn't know)
+        return true;
+    };
+    nd.head = head;
+    nd.dt = NetData::dt_of_rate(p.rate as u8).unwrap_or(t3::DT_R12);
+    nd.len = p.len;
+    if p.len > 0 {
+        nd.data[..p.len].copy_from_slice(core::slice::from_raw_parts(p.data, p.len));
+    }
+    // the message's addresses are the header's: the data header's follow them (a gateway names itself in both)
+    nd.head.src = h.src;
+    nd.head.dst = h.dst;
+    nd.head.group = h.flags & MN_F_GROUP != 0;
+    let now = (*u).now_ms;
+    if nd.msg().is_none() || !(*u).pdnet.hold(&nd, h.stream, now) {
+        (*u).n.data_dropped += 1;
+        return true;
+    }
+    if !t3::rdof_t3_pd_net_in((*u).site, h.src, h.dst, nd.head.group, now) {
+        (*u).pdnet.drop_held(h.stream);
+        if !nd.head.group {
+            log(u, |o| {
+                o.bytes(b"tier3: packet data to ");
+                o.int(i64::from(h.dst), 0);
+                o.bytes(b" from the network: not here or busy");
+            });
+        }
+        return true;
+    }
+    (*u).n.data_in += 1;
+    if let Some(slot) = (*u).pd_from.iter_mut().find(|p| p.0 == 0).or_else(|| (*u).pd_from.first_mut()) {
+        slot.0 = h.stream;
+        slot.1 = [0; NODE_MAX + 1];
+        let n = from.len().min(NODE_MAX);
+        slot.1[..n].copy_from_slice(&from[..n]);
+    }
+    drain(u);
+    true
+}
+
+/// The site's packet (rdof_t3unit_data_tx) for an MS at another site: its blocks read back into one message for
+/// the network. The site's IP gateway answers this way an MS whose site sent its datagram on (tier3.md 3.16).
+unsafe fn data_tx_net(u: *mut Unit, n: usize, control: *const u8, bursts: *const u8) -> bool {
+    let mut asm = crate::t3pdrate::DataAsm::default();
+    let mut taken = None;
+    for i in 0..n {
+        let b = &*bursts.add(i * 33).cast::<[u8; 33]>();
+        let Some((dt, blk)) = burst_block(c_int::from(control.add(i).read() & 0x0F), b) else { continue };
+        if dt == crate::t3udt::DT_DATA_HDR {
+            let mut h = [0u8; 10];
+            h.copy_from_slice(&blk[..10]);
+            if let Some(h) = t3::DataHead::decode(&h).filter(|h| h.dpf != t3::DPF_RESPONSE) {
+                asm.header(&h);
+            }
+            continue;
+        }
+        taken = asm.block(dt, &blk).or(taken);
+    }
+    let nd = (taken == Some(crate::t3pdrate::Taken::Ok)).then(|| NetData::of_msg(&asm.m)).flatten();
+    let Some(nd) = nd else { return false };
+    pdata_out(u, &nd);
     true
 }
 
@@ -2143,13 +2439,13 @@ pub unsafe extern "C" fn rdof_t3unit_message(u: *mut Unit, topic: *const c_char,
     let kind = rdof_mn_topic_parse(topic, root(u), &mut id, cpm(&mut nd), nd.len());
     let me = cstr(&(*u).node);
     if kind == MN_T_DL {
-        if cstr(&nd) == me && !sdata_in(u, data.cast(), len) {
+        if cstr(&nd) == me && !sdata_in(u, data.cast(), len) && !pdata_in(u, c"router".to_bytes(), data.cast(), len) {
             rdof_mn_down_message((*u).down, c"router".as_ptr(), true, data.cast(), len, wall_s(u));
         }
         return;
     }
     if kind == MN_T_TG {
-        if cstr(&nd) != me && !sdata_in(u, data.cast(), len) {
+        if cstr(&nd) != me && !sdata_in(u, data.cast(), len) && !pdata_in(u, cstr(&nd), data.cast(), len) {
             rdof_mn_down_message((*u).down, cp(&nd), false, data.cast(), len, wall_s(u));
         }
         return;

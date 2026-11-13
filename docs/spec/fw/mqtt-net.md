@@ -253,7 +253,8 @@ the rate in the item, and recomputes the header fields that depend on them (bloc
 - **Confirmed data is answered hop by hop.** The box that hears a confirmed data call answers the radio on RF itself
   (ACK, or a selective NAK for missing blocks) as soon as it has the call, then publishes it. It answers the way
   [ipgw.md](ipgw.md) §10 does. The box that delivers it sends it to the destination radio as confirmed data and
-  reports the result in `activity` (`data_result`, §7). Phase 1 sends it once; retries come later.
+  reports the result in `activity` (`data_result`, §7). Phase 1 sends it once; retries come later (a Tier III site
+  already retries: [tier3.md](tier3.md) 5.10).
   - Why: a radio waits `T_RspnsWait` for the response, 180 ms recommended (2 s minimum on simulcast; TS 102 361-3
     annex A.1), too short for a trip through the broker. ETSI leaves relaying between base stations out of scope
     (TS 102 361-3 §5).
@@ -516,7 +517,7 @@ options' emergency bit (bit 7), in the request and in every answer to it.
 |---|---|---|
 | 0 | op | 1 `request`, 2 `accept`, 3 `reject`, 4 `alerting`, 5 `cancel`, 6 `answered` |
 | 1 | reason | 0 ok, 1 `not_found`, 2 `busy`, 3 `no_answer`, 4 `refused` (by the radio or policy), 5 `not_supported`, 6 `congestion` (no channel), 7 `timeout` |
-| 2 | flags | bit 0 `foacsu` (the called radio is alerted first), bit 1 `unconfirmed` (the answerer couldn't ask the radio: a Tier II box); bits 2–7 zero |
+| 2 | flags | bit 0 `foacsu` (the called radio is alerted first), bit 1 `unconfirmed` (the answerer couldn't ask the radio: a Tier II box), bit 2 `data` (a packet data call: [tier3.md](tier3.md) 5.10; set in every message of its setup); bits 3–7 zero |
 | 3 | service options | as the trunking random access's: bit 7 emergency, bit 6 privacy, bits 1–0 priority |
 | 4 | ref | u32 little endian: the stream ID of the `request` this message answers; 0 in a request |
 
@@ -555,7 +556,13 @@ site A: grants the caller; the voice then goes as an ordinary private call both 
   turns the early refusal off; the request is then just dropped and the caller's timer ends it.
 - A setup message never becomes bursts: the downlink hands it to the box's handler (`rdof_mn_down_t.setup`).
 - A private call from a Tier II radio to a Tier III radio needs no setup: the trunked site does the check itself
-  when the voice arrives ([tier3.md](tier3.md) §3.6).
+  when the voice arrives ([tier3.md](tier3.md) §3.6). The same for data: a `data_pdu` to a Tier III radio with no
+  setup before it gets the check when it arrives.
+- **Packet data:** a trunked site asks with the `data` flag before it grants its radio a data channel; the answering
+  site checks its radio the same way and holds the accept 30 s for the `data_pdu` that follows (§4.4,
+  [tier3.md](tier3.md) 5.10). A Tier II box answers a data request like any other
+  (`accept` with `unconfirmed`, no `data` flag: the calling site goes by `ref`) and delivers the `data_pdu` as
+  ordinary data. A service that decodes a setup and encodes it again keeps every flag bit.
 
 ## 10. Config
 

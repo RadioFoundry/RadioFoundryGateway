@@ -4,8 +4,12 @@
 //! makes its outbound blocks, the MSs transmit (from what they heard before k), the site hears the inbound slot
 //! (two PDUs on the TSCC in one slot are a collision: a burst with a bad CRC), then the MSs hear slot k. A
 //! solicited answer to a block in slot k goes in slot k + 2 at the earliest, as on air.
+//!
+//! Packet data with the network as the far party (tier3.md 5.10) goes through a PdNet, as in the unit: what it
+//! takes from the MSs waits in `published` for a test's network; net_data gives it what comes from one.
 
 use crate::t3ms::{Ms, MsTx, TX_DATA, TX_PDU, TX_VOICE};
+use crate::t3pdnet::{NetData, PdNet};
 use crate::t3pdu::{opcode, DT_CSBK};
 use crate::t3site::{block_len, DataRx, Event, Site, SlotOut, BLOCK_MAX, CHANNELS, RC_SEND, REV_CALL};
 use crate::t3udt::{DT_DATA_HDR, DT_RATE12};
@@ -26,6 +30,10 @@ pub struct Air<'a, const N: usize> {
     pub lose_in: (u8, u32),
     /// Packet data blocks the MSs hear damaged: bit j, the j-th block from now (a header doesn't count).
     pub damage: u32,
+    /// The site's relays (tier3.md 5.10) and what they took for the network, oldest first.
+    pub net: PdNet,
+    pub published: [Option<NetData>; 4],
+    out_data: [DataRx; CHANNELS], // the relays' own blocks, counted for the controller
 }
 
 /// Whether pdu is one to lose, counting it.
@@ -51,6 +59,37 @@ impl<'a, const N: usize> Air<'a, N> {
             lose_in: (0, 0),
             damage: 0,
             data: Default::default(),
+            net: PdNet::default(),
+            published: [None; 4],
+            out_data: Default::default(),
+        }
+    }
+
+    /// A message from the network (its stream from): held for a channel the controller is asked for; false when
+    /// it can't go (not here, busy, nothing free).
+    pub fn net_data(&mut self, nd: &NetData, from: u32) -> bool {
+        let now = self.now();
+        if !self.net.hold(nd, from, now) {
+            return false;
+        }
+        let ok = self.site.pd_net_in(nd.head.src, nd.head.dst, nd.head.group, now);
+        if !ok {
+            self.net.drop_held(from);
+        }
+        ok // its events go with the next slot's
+    }
+
+    /// The next message the relays took, for the network.
+    pub fn take_published(&mut self) -> Option<NetData> {
+        let i = self.published.iter().position(|p| p.is_some())?;
+        let p = self.published[i].take();
+        self.published[i..].rotate_left(1);
+        p
+    }
+
+    fn publish(&mut self, nd: NetData) {
+        if let Some(s) = self.published.iter_mut().find(|s| s.is_none()) {
+            *s = Some(nd);
         }
     }
 
@@ -64,8 +103,10 @@ impl<'a, const N: usize> Air<'a, N> {
         let now = self.now();
         let out = self.site.slot(k, now);
         while let Some(e) = self.site.next_event() {
+            self.net.event(&e, now);
             f(&e);
         }
+        self.net.tick(now);
         for i in 0..N {
             self.inbound[i] = self.ms[i].tx(k, now);
         }
@@ -109,6 +150,11 @@ impl<'a, const N: usize> Air<'a, N> {
                 for m in self.ms.iter_mut() {
                     m.rx_data(ch, t.dt, &b);
                 }
+                let mut blk = [0u8; BLOCK_MAX];
+                blk.copy_from_slice(&b);
+                if let Some(nd) = self.net.rx(ch, t.dt, &blk, now) {
+                    self.publish(nd);
+                }
             } else if t.kind == TX_VOICE {
                 self.site.rx_voice(ch, t.what, t.src);
                 let out_ch = self.site.repeat_channel(ch); // a duplex call: the other party's slot
@@ -117,7 +163,31 @@ impl<'a, const N: usize> Air<'a, N> {
                 }
             }
         }
+        // the relays' blocks, one a channel in its slot
+        for ch in (0..CHANNELS).filter(|&c| c as i64 & 1 == k & 1) {
+            let Some((dt, b)) = self.net.next(ch, now) else { continue };
+            let what = if dt == DT_DATA_HDR {
+                let mut p = [0u8; 10];
+                p.copy_from_slice(&b[..10]);
+                self.out_data[ch].header(&p)
+            } else {
+                self.out_data[ch].block()
+            };
+            let src = self.out_data[ch].src;
+            self.site.rx_data(ch, what, src);
+            let mut b = b;
+            if dt != DT_DATA_HDR {
+                if self.damage & 1 != 0 {
+                    b[block_len(dt).max(12) - 3] ^= 0x24;
+                }
+                self.damage >>= 1;
+            }
+            for m in self.ms.iter_mut() {
+                m.rx_data(ch, dt, &b);
+            }
+        }
         while let Some(e) = self.site.next_event() {
+            self.net.event(&e, now);
             f(&e);
         }
         let tscc = self.site.tscc_ch();

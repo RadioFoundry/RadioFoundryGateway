@@ -40,8 +40,8 @@ pub use pdata::{
     block_len, crc32, crc9, crc9_mask, data_op, rdof_t3_pd_send, rdof_t3_rx_data, DataGrant, DataHead, DataMsg, DataRx,
     BLOCK_MAX, CRC9_RATE1, CRC9_RATE12, CRC9_RATE34, DATA_BLOCK, DATA_END, DT_R1, DT_R12, DT_R34, MSG_OCTETS,
     DATA_END_CONFIRMED, DATA_HEADER, DATA_RESPONSE, DPF_CONFIRMED, DPF_RESPONSE, DPF_UNCONFIRMED, MSG_BLOCKS,
-    OP_PD_GRANT, OP_PD_GRANT_MI, OP_TD_GRANT, OP_TD_GRANT_MI, PD_FAILED, PD_OPEN, SAP_IP, SO_HI_RATE, SO_SIMI,
-    SO_SUPED,
+    OP_PD_GRANT, OP_PD_GRANT_MI, OP_TD_GRANT, OP_TD_GRANT_MI, PARTY_NET, PARTY_SITE, PD_FAILED, PD_OPEN, SAP_IP,
+    SO_HI_RATE, SO_SIMI, SO_SUPED, rdof_t3_pd_net_in,
 };
 
 // features in their own files, inside this module (they reach the site's state)
@@ -345,6 +345,7 @@ pub const WHY_CONGESTION: u8 = 6;
 pub const WHY_TIMEOUT: u8 = 7;
 pub const SETUP_F_FOACSU: u8 = 0x01;
 pub const SETUP_F_UNCONFIRMED: u8 = 0x02;
+pub const SETUP_F_DATA: u8 = 0x04; // a packet data call (tier3.md 5.10)
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -2188,6 +2189,9 @@ impl Site {
         match m.op {
             SETUP_REQUEST => self.net_request(m),
             SETUP_ACCEPT | SETUP_ANSWERED | SETUP_ALERTING | SETUP_REJECT => {
+                if self.pd_net_answer(m) {
+                    return;
+                }
                 let Some(i) =
                     self.pend.iter().position(|p| p.used && p.caller_local && !p.called_local && p.stream == m.r#ref)
                 else {
@@ -2209,15 +2213,7 @@ impl Site {
                     }
                     SETUP_REJECT => {
                         self.pend[i].used = false;
-                        let reason = match m.reason {
-                            WHY_NOT_FOUND => R_NOREG_MSAWAY,
-                            WHY_BUSY => R_CALLED_PARTY_BUSY,
-                            WHY_REFUSED => R_RECIPIENT_REFUSED,
-                            WHY_NOT_SUPPORTED => R_NOT_SUPPORTED,
-                            WHY_CONGESTION => R_SYSBUSY,
-                            _ => R_MSAWAY,
-                        };
-                        self.refuse(reason, p.caller, p.called);
+                        self.refuse(Self::reason_of_why(m.reason), p.caller, p.called);
                     }
                     _ => {
                         self.pend[i].state = P_AHOY; // answered: a later failure needs no cancel
@@ -2226,6 +2222,9 @@ impl Site {
                 }
             }
             SETUP_CANCEL => {
+                if self.pd_net_cancel(m) {
+                    return;
+                }
                 if let Some(i) = self.pend.iter().position(|p| p.used && !p.caller_local && p.stream == m.r#ref) {
                     let p = self.pend[i];
                     self.pend[i].used = false;
@@ -2246,8 +2245,24 @@ impl Site {
         }
     }
 
+    /// The reason a local caller gets for a network reject (mqtt-net.md 9.4 reasons).
+    pub(super) fn reason_of_why(why: u8) -> u8 {
+        match why {
+            WHY_NOT_FOUND => R_NOREG_MSAWAY,
+            WHY_BUSY => R_CALLED_PARTY_BUSY,
+            WHY_REFUSED => R_RECIPIENT_REFUSED,
+            WHY_NOT_SUPPORTED => R_NOT_SUPPORTED,
+            WHY_CONGESTION => R_SYSBUSY,
+            _ => R_MSAWAY,
+        }
+    }
+
     /// A network caller asks for an MS: if it's registered here and free, check it with C_AHOY.
     fn net_request(&mut self, m: &Setup) {
+        if m.flags & SETUP_F_DATA != 0 {
+            self.pd_net_request(m); // a packet data call (tier3.md 5.10)
+            return;
+        }
         if self.pend.iter().any(|p| p.used && !p.caller_local && p.stream == m.stream) {
             return; // a repeat
         }
@@ -2337,6 +2352,7 @@ impl Site {
             return;
         }
         // what waits on the network fails; local calls go on
+        self.pd_link_down();
         for i in 0..PENDING {
             let p = self.pend[i];
             if p.used && (!p.caller_local || !p.called_local) && p.state != P_QUEUED {

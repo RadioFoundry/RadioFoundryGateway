@@ -78,6 +78,8 @@ typedef struct {
 typedef struct {
     uint32_t net_in, net_held, net_dropped, setups_out, setups_in, records_out, records_in, cfg_applied, cfg_bad,
         cmds, tg_filtered;
+    /* packet data across sites (tier3.md 5.10): messages from the network sent on here, published, dropped */
+    uint32_t data_in, data_out, data_dropped;
 } rdof_t3unit_counts_t;
 
 /* Opaque (Rust, rust/src/t3unit.rs): rdof_t3unit_size() bytes, aligned to 8 (malloc's), kept by the caller. It
