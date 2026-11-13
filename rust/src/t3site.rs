@@ -68,6 +68,10 @@ mod tscc;
 mod duplex;
 #[path = "t3composite.rs"]
 mod composite;
+// transmit interrupt: payload interrupt, ALS termination and call timer de-key (tier3.md 3.20)
+#[path = "t3intr.rs"]
+mod intr;
+pub use intr::{ACT_INTR, INTR_ACCEPTED, INTR_CEASED, INTR_GAVE_UP, INTR_TALKS, STATUS_ALS_END, STATUS_INTERRUPT};
 use duplex::KIND_DUPLEX;
 pub use duplex::{DxGrant, OPEN_DUPLEX, OP_PV_GRANT_DX, R_DUPLEX_NOT_SUPPORTED, SK_DUPLEX};
 pub use tscc::{bs_dwn_act, bs_dwn_act_of, move_of, move_pdu, OP_BS_DWN_ACT};
@@ -161,7 +165,8 @@ pub struct Cfg {
     pub composite: u8, // 1: the TSCC's slot carries a call when no payload channel is free (361-4 5.3.2)
     pub vote_blk: u8,  // VOTE_BLK: TDMA frames of blocked random access after a Vote Now Advice (361-4 A.2: 2-10)
     pub priority: u8,  // the site's priority radiated with its neighbors (361-4 table 6.81: 1 highest, 7 lowest, 0 none)
-    pub pad1: [u8; 3],
+    pub intr: u8,      // 1: transmit interrupt (361-4 6.4.14.3.2-6.4.14.3.4, 6.4.15; t3intr.rs)
+    pub pad1: [u8; 2],
 }
 
 #[repr(C)]
@@ -388,6 +393,7 @@ pub const CLOSE_DISCON: u8 = 3;
 pub const CLOSE_CMD: u8 = 4;
 pub const CLOSE_WITHDRAW: u8 = 5;
 pub const CLOSE_PREEMPT: u8 = 6;
+pub const CLOSE_INTR: u8 = 7; // an ALS call ended at its caller's request (361-4 6.4.14.3.4)
 
 pub const ACT_REG: u8 = 1;
 pub const ACT_GRANT: u8 = 2;
@@ -573,6 +579,12 @@ struct Chan {
     preempt: bool, // being cleared for an emergency (t3emerg.rs)
     preempt_until_ms: i64,
     rc_next_ms: i64,
+    als: bool,       // an Ambient Listening Service call (6.6.2.6): the called MS (dst) transmits
+    dekey: u8,       // a transmit interrupt de-keys its talker (t3intr.rs DK_*)
+    dekey_until_ms: i64,
+    intr_ms: u32,    // the interrupting MS
+    protect_ms: u32, // P_PROTECT(EN_PTT_ONE_MS) to this MS while the channel waits for it (t3intr.rs)
+    protect_until_ms: i64,
 }
 
 const P_AHOY: u8 = 1; // waiting for the called MS's answer to C_AHOY
@@ -900,6 +912,9 @@ fn check(c: &Cfg, err: &mut Buf) -> bool {
     }
     if c.preempt > 1 {
         no!("emergency_preempt: true or false");
+    }
+    if c.intr > 1 {
+        no!("transmit_interrupt: true or false");
     }
     if c.auth > AUTH_REQUIRED {
         no!("auth: off, registration or required");
@@ -1379,6 +1394,9 @@ impl Site {
         let lcn = (self.k & 1) as usize;
         for ch in 0..CHANNELS {
             out.ch[ch].r#use = self.chans[ch].r#use;
+            if ch % 2 == lcn && self.chans[ch].protect_ms != 0 {
+                self.protect_slot(ch, &mut out.ch[ch]);
+            }
             if ch % 2 != lcn || self.chans[ch].r#use != USE_CLEAR {
                 continue;
             }
@@ -1400,7 +1418,9 @@ impl Site {
                 continue;
             }
             if now >= c.call_end_ms {
-                self.clear(ch, CLOSE_TIMER);
+                if !self.timer_dekey(ch) {
+                    self.clear(ch, CLOSE_TIMER); // or after its talker is de-keyed (6.4.14.3.2, t3intr.rs)
+                }
                 continue;
             }
             if c.talking && !c.talking_net && now - c.last_voice_ms > VOICE_LOST_MS {
@@ -1852,6 +1872,7 @@ impl Site {
         }
         let talking = !p.caller_local && p.net_stream != 0; // a network caller already talking
         self.open(ch, KIND_PRIVATE, p.caller, p.called, flags, p.net_stream, talking);
+        self.chans[ch].als = p.als;
     }
 
     /// Both parties ready: a channel now, or the queue.
@@ -2400,7 +2421,7 @@ impl Site {
         self.channel_timers();
         self.reg_timers();
         let mut out = SlotOut::default();
-        let rc_on_tscc = self.preempt_tick(&mut out);
+        let rc_on_tscc = self.preempt_tick(&mut out) | self.intr_tick(&mut out);
         let rev = self.reverted();
         if !self.withdrawn && (rev || !self.hibernate_tick()) {
             if k & 1 == 0 && rev {

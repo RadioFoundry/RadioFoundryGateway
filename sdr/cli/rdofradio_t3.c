@@ -369,6 +369,7 @@ typedef struct {
 #define ACT_HELP                                                                                                       \
     "ID register [TG] | deregister | group TG [TALK_MS] | private ID [TALK_MS] | status ID N | gstatus TG N | "        \
     "sdm ID TEXT | gsdm TG TEXT | data ID TEXT | cdata ID TEXT | gdata TG TEXT (data34, cdata1 ...: rate 3/4, 1) | "  \
+    "interrupt ID [TALK_MS] | ginterrupt TG [TALK_MS] | als ID | alsend ID | "                                        \
     "setstatus N | cancel | ambe FILE|off (any MS: all MSs' voice, raw 9-octet AMBE+2 frames)"
 
 #define ACTS 256
@@ -417,6 +418,13 @@ static int act_parse(const char *text, act_t *x)
         x->what = RDOF_T3MS_DO_GROUP, x->arg = (uint32_t)a1, x->talk_ms = got >= 4 ? (uint32_t)a2 : 2000;
     else if (!strcmp(what, "private") && got >= 3)
         x->what = RDOF_T3MS_DO_PRIVATE, x->arg = (uint32_t)a1, x->talk_ms = got >= 4 ? (uint32_t)a2 : 2000;
+    else if (!strcmp(what, "als") && got >= 3)
+        x->what = RDOF_T3MS_DO_PRIVATE, x->arg = (uint32_t)a1, x->flags = RDOF_T3MS_F_ALS;
+    else if ((!strcmp(what, "interrupt") || !strcmp(what, "ginterrupt")) && got >= 3)
+        x->what = RDOF_T3MS_DO_INTERRUPT, x->arg = (uint32_t)a1, x->talk_ms = got >= 4 ? (uint32_t)a2 : 2000,
+        x->flags = what[0] == 'g' ? RDOF_T3MS_F_TO_GROUP : 0;
+    else if (!strcmp(what, "alsend") && got >= 3)
+        x->what = RDOF_T3MS_DO_INTERRUPT, x->arg = (uint32_t)a1, x->flags = RDOF_T3MS_F_ALS;
     else if ((!strcmp(what, "status") || !strcmp(what, "gstatus")) && got >= 4 && a2 <= 127)
         x->what = RDOF_T3MS_DO_STATUS, x->arg = (uint32_t)a1, x->talk_ms = (uint32_t)a2,
         x->flags = what[0] == 'g' ? RDOF_T3MS_F_TO_GROUP : 0;

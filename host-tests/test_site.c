@@ -814,6 +814,12 @@ static void test_trunk(const char *dir)
           "composite_tscc: %s", err);
     CHECK(!apply_text("{\"services\": {\"composite_tscc\": 1}}", "x", &c, &pol, err, sizeof err), "composite_tscc 1");
     rdof_t3cfg_default(&c, &pol);
+    CHECK(c.intr == 0 && apply_text("{\"services\": {\"transmit_interrupt\": true}}", "x", &c, &pol, err, sizeof err) &&
+              c.intr == 1,
+          "transmit_interrupt: %s", err);
+    CHECK(!apply_text("{\"services\": {\"transmit_interrupt\": \"on\"}}", "x", &c, &pol, err, sizeof err),
+          "transmit_interrupt on");
+    rdof_t3cfg_default(&c, &pol);
     CHECK(!apply_text("{\"timers\": {\"warmup_cach\": 3}}", "x", &c, &pol, err, sizeof err), "warmup 3");
     CHECK(!apply_text("{\"wide_tg\": \"1,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31,33\"}", "x", &c, &pol, err,
                       sizeof err),

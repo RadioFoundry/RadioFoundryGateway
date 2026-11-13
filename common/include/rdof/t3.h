@@ -91,7 +91,9 @@ typedef struct {
     uint8_t vote_blk;  /* VOTE_BLK: TDMA frames of blocked random access after a Vote Now Advice (361-4 A.2: 2-10) */
     uint8_t priority;  /* the site's priority radiated with its neighbors (361-4 table 6.81: 1 highest .. 7 lowest,
                           0 non-preferred) */
-    uint8_t pad1[3];
+    uint8_t intr;      /* 1: transmit interrupt, the payload interrupt and ALS termination de-key and the call timer
+                          de-key (361-4 6.4.14.3.2-6.4.14.3.4, 6.4.15; tier3.md 3.20) */
+    uint8_t pad1[2];
 } rdof_t3_cfg_t;
 
 #define RDOF_T3_AUTH_OFF 0          /* none */
@@ -199,6 +201,7 @@ typedef struct {
 #define RDOF_T3_CLOSE_CMD 4      /* a command or a cancel */
 #define RDOF_T3_CLOSE_WITHDRAW 5 /* the site went off the air */
 #define RDOF_T3_CLOSE_PREEMPT 6  /* cleared for an emergency call (361-4 6.4.14.3.1) */
+#define RDOF_T3_CLOSE_INTR 7     /* an ALS call ended at its caller's request (361-4 6.4.14.3.4) */
 
 #define RDOF_T3_ACT_REG 1   /* op: 1 register, 2 deregister, 3 expire, 4 deny, 5 refuse, 6 auth_ok, 7 auth_fail,
                                8 auth_none (no answer to a challenge, or no support where it isn't required) */
@@ -216,6 +219,13 @@ typedef struct {
 #define RDOF_T3_SUPP_DIVERT 3
 #define RDOF_T3_SUPP_DIVERT_CLEAR 4
 #define RDOF_T3_SUPP_KILL 5
+/* a transmit interrupt's progress (tier3.md 3.20): op RDOF_T3_INTR_*, src the interrupting MS, dst the call's
+ * destination, ch its channel */
+#define RDOF_T3_ACT_INTR 8
+#define RDOF_T3_INTR_ACCEPTED 1 /* C_ACKD(Message_Accepted) to the interrupting MS */
+#define RDOF_T3_INTR_CEASED 2   /* the talker stopped */
+#define RDOF_T3_INTR_GAVE_UP 3  /* the talker didn't stop: the call goes on (an ALS call is cleared) */
+#define RDOF_T3_INTR_TALKS 4    /* the interrupting MS talks on the channel */
 
 #define RDOF_T3_F_GROUP 0x01
 #define RDOF_T3_F_EMERGENCY 0x02
@@ -412,6 +422,9 @@ void rdof_t3_status(const rdof_t3_site_t *s, rdof_t3_status_t *st);
 #define RDOF_T3MS_DO_STATUS 7     /* arg: an MS, a talkgroup (F_TO_GROUP) or TSI; talk_ms: the status (126 alarm, 127 polls) */
 #define RDOF_T3MS_DO_DUPLEX 8     /* arg: called MS; talk_ms (a full-duplex call: both talk) */
 #define RDOF_T3MS_DO_SD_STATUS 10 /* as DO_STATUS, by the MS's short data path (flags RDOF_T3MS_F_GROUP) */
+#define RDOF_T3MS_DO_INTERRUPT 14 /* from the call it listens to: arg the MS or (F_TO_GROUP) the talkgroup; talk_ms; F_ALS
+                                     an ALS call's end (status 123), else a payload interrupt (125, tier3.md 3.20) */
+#define RDOF_T3MS_F_ALS 0x20      /* DO_PRIVATE: an ALS call; DO_INTERRUPT: its end */
 #define RDOF_T3MS_F_EMERGENCY 0x01
 #define RDOF_T3MS_F_TO_GROUP 0x02 /* DO_STATUS to a talkgroup */
 #define RDOF_T3MS_F_GROUP 0x02    /* DO_SD_STATUS, rdof_t3ms_sdm, rdof_t3ms_data: to a talkgroup */

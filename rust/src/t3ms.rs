@@ -14,7 +14,7 @@ use crate::t3rc::RC_CEASE;
 use crate::t3site::{
     ahoy_status, bs_dwn_act, mass_reg_applies, Ackvit, R_AUTH_RESPONSE_TS, mass_reg_of, move_of, ps_wake, reg_window_ms, status_rand, DataGrant, DataHead,
     DataMsg, DxGrant, CARRIERS, DEP_ALS, DIV_ON, DPF_CONFIRMED, DPF_RESPONSE, DPF_UNCONFIRMED, MSG_BLOCKS, R_DUPLEX_NOT_SUPPORTED,
-    SAP_IP, SK_DUPLEX, SO_SIMI, VOICE_FRAME, VOICE_HEADER, VOICE_TERM,
+    SAP_IP, SK_DUPLEX, SO_SIMI, STATUS_ALS_END, STATUS_INTERRUPT, VOICE_FRAME, VOICE_HEADER, VOICE_TERM,
 };
 use crate::t3site::{block_len, BLOCK_MAX, DT_R1, DT_R12, DT_R34, MSG_OCTETS};
 use crate::t3udt::*;
@@ -53,6 +53,9 @@ pub const F_LIST: u8 = 0x10; // DO_REGISTER: with the talkgroup list set by regi
 pub const DO_DGNA: u8 = 12; // assign talkgroups to an MS (send_dgna): arg the MS
 pub const DO_DIVERT: u8 = 13; // set or clear a call diversion (divert, divert_clear): arg MSI, GPI, TSI or DIVERTI
 pub const F_ALS: u8 = 0x20; // DO_PRIVATE: an Ambient Listening Service call (it listens, the called MS talks)
+/// A transmit interrupt from the payload channel it listens on (interrupt, als_end): arg the MS or, F_TO_GROUP, the
+/// talkgroup; F_ALS ends an ALS call (status 123), else a payload interrupt (status 125) and it talks talk_ms.
+pub const DO_INTERRUPT: u8 = 14;
 
 pub const IDLE: u8 = 0;
 pub const ACCESS: u8 = 1;
@@ -75,6 +78,8 @@ const TNP_MS: i64 = 10_000; // TNP_Timer: after answering a registration's chall
 const DATA_ACK_MS: i64 = 3000; // confirmed data: the longest wait for the response
 const ALS_LIFE_MS: i64 = 10_000; // T_ALS_REQUEST_LIFE_SPAN (table A.1: 1 s to 10 s)
 const ALS_MS: i64 = 10_000; // T_ALS, how long an ALS call's called MS transmits (table A.1: 10 s to 300 s)
+/// After an accepted payload interrupt, the longest wait for the outbound PDU that says it may transmit (6.4.14.3.3)
+const INTR_WAIT_MS: i64 = 6000;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -259,6 +264,19 @@ pub struct Ms {
     diverted: u32,      // the last diverted address a request of its own got (6.6.7.2)
     diverted_src: u32,  // MSI or GPI
     diverted_n: u32,
+    // transmit interrupt (361-4 6.4.14.3.3, 6.4.14.3.4)
+    intr_ch: usize,     // the payload channel it left to ask
+    intr_away: bool,    // on the TSCC for an interrupt request, back to intr_ch after the answer
+    intr_wait: bool,    // accepted: waits for P_PROTECT(EN_PTT_ONE_MS) to it
+    intr_until: i64,
+    intr_talk: u32,     // then talks this long
+    intr_heard: u32,    // voice_heard when it came back
+    intr_talking: bool, // talks after an interrupt (not its own call: no P_MAINT DISCON after)
+    intr_ok: u32,       // interrupts that got it the channel
+    intr_lost: u32,     // accepted ones that didn't
+    protects: u32,      // P_PROTECTs heard on its payload channel
+    protects_other: u32, // of them EN_PTT_ONE_MS to another MS: its PTT disabled meanwhile (6.6.2.3.2.3)
+    rc_deaf: bool,
 }
 
 impl Ms {
@@ -324,6 +342,22 @@ impl Ms {
     pub fn act_status(&mut self, status: u8, group: bool, target: u32, at_ms: i64) -> bool {
         let flags = if group { F_TO_GROUP } else { 0 };
         self.act(DO_STATUS, target, u32::from(status & 0x7F), flags, at_ms)
+    }
+
+    /// A payload interrupt (361-4 6.4.14.3.3) of the call it listens to: status 125 to target (the talkgroup with
+    /// group, or the MS to interrupt), then back on the payload channel it talks talk_ms once the site lets it.
+    pub fn interrupt(&mut self, target: u32, group: bool, talk_ms: u32, at_ms: i64) -> bool {
+        self.act(DO_INTERRUPT, target, talk_ms, if group { F_TO_GROUP } else { 0 }, at_ms)
+    }
+
+    /// The end of the ALS call it listens to (361-4 6.4.14.3.4): status 123 to the called MS; it stays on the TSCC.
+    pub fn als_end(&mut self, target: u32, at_ms: i64) -> bool {
+        self.act(DO_INTERRUPT, target, 0, F_ALS, at_ms)
+    }
+
+    /// Payload interrupts: (got the channel, accepted but didn't), and the P_PROTECTs heard (all, to another MS).
+    pub fn interrupts(&self) -> (u32, u32, u32, u32) {
+        (self.intr_ok, self.intr_lost, self.protects, self.protects_other)
     }
 
     /// Statuses delivered to it, and the last one (source, target, value).
@@ -557,6 +591,11 @@ impl Ms {
             },
             DO_ANSWER => Rand { service_kind: SK_CALL_ANSWER, target: a.arg, source: self.id, ..Default::default() },
             DO_STATUS => status_rand(a.talk_ms as u8, a.flags & F_TO_GROUP != 0, a.arg, self.id),
+            // 6.4.14.3.3.2, 6.4.14.3.4.3: a status call, 125 (payload interrupt) or 123 (ALS termination)
+            DO_INTERRUPT => {
+                let st = if a.flags & F_ALS != 0 { STATUS_ALS_END } else { STATUS_INTERRUPT };
+                status_rand(st, a.flags & F_TO_GROUP != 0, a.arg, self.id)
+            }
             // 6.6.4.2 table 6.55: Appended_UDT_Short_Data the blocks less one
             DO_SDM => Rand {
                 dep: self.sd_out.n.max(1) - 1,
@@ -632,16 +671,87 @@ impl Ms {
     }
 
     fn done(&mut self, ok: bool) {
-        if self.has_cur && matches!(self.cur.what, DO_GROUP | DO_PRIVATE | DO_STATUS | DO_DUPLEX | DO_SDM | DO_SD_STATUS | DO_DATA | DO_DGNA | DO_DIVERT) {
+        if self.has_cur && matches!(self.cur.what, DO_GROUP | DO_PRIVATE | DO_STATUS | DO_DUPLEX | DO_SDM | DO_SD_STATUS | DO_DATA | DO_DGNA | DO_DIVERT | DO_INTERRUPT) {
             if ok {
                 self.calls_done += 1;
             } else {
                 self.calls_failed += 1;
             }
         }
+        let intr = self.has_cur && self.cur.what == DO_INTERRUPT;
         self.has_cur = false;
         self.state = IDLE;
         self.ch = self.tscc_ch;
+        if intr && self.intr_away {
+            self.intr_back(ok);
+        }
+    }
+
+    /// The TSCC answered its interrupt request (or didn't). A payload interrupt: "the interrupting MS shall then
+    /// return to the payload channel in either case" (6.4.14.3.3); accepted, it waits for leave to talk. An ALS
+    /// termination: "the terminating MS shall remain on the TSCC" (6.4.14.3.4.3).
+    fn intr_back(&mut self, ok: bool) {
+        self.intr_away = false;
+        if self.cur.flags & F_ALS != 0 {
+            return;
+        }
+        self.state = PAYLOAD;
+        self.ch = self.intr_ch;
+        self.talking = false;
+        self.header_sent = false;
+        self.intr_wait = ok;
+        self.intr_until = self.now + INTR_WAIT_MS;
+        self.intr_talk = self.cur.talk_ms;
+        self.intr_heard = self.voice_heard;
+    }
+
+    /// In a call on a payload channel, listening: an interrupt request that is due takes it to the TSCC
+    /// (6.4.14.3.3.2: "The interrupting MS shall return to the TSCC").
+    fn intr_leave(&mut self) {
+        if self.intr_wait && self.now >= self.intr_until {
+            // no leave to talk: the talker kept the channel (6.4.15.1), or the call ended while it was away
+            self.intr_wait = false;
+            self.intr_lost += 1;
+            if self.voice_heard == self.intr_heard {
+                self.back_to_tscc();
+                return;
+            }
+        }
+        let listening = !self.talking && self.maint_left == 0 && !self.dx && !self.pd_sending && !self.pd_wait_ack;
+        if !listening || self.intr_wait || self.stunned {
+            return;
+        }
+        let Some(a) = self.take_due(|a| a.what == DO_INTERRUPT) else { return };
+        if self.mine && self.has_cur {
+            self.calls_done += 1; // its own call went; it now asks as a listener
+        }
+        self.mine = false;
+        self.has_cur = false;
+        self.intr_ch = self.ch;
+        self.intr_away = true;
+        self.state = IDLE;
+        self.ch = self.tscc_ch;
+        self.start(a);
+    }
+
+    /// P_PROTECT on its payload channel (6.6.2.3.2.3). EN_PTT_ONE_MS to it after an accepted interrupt: it talks.
+    fn on_protect(&mut self, p: &Protect) {
+        self.protects += 1;
+        if p.kind != PROTECT_EN_PTT_ONE_MS {
+            return;
+        }
+        if p.target != self.id {
+            self.protects_other += 1;
+            return;
+        }
+        if self.intr_wait && !self.talking {
+            self.intr_wait = false;
+            self.intr_ok += 1;
+            self.talking = true;
+            self.intr_talking = true;
+            self.header_sent = false;
+            self.ceasing = false;
+        }
     }
 
     fn back_to_tscc(&mut self) {
@@ -658,6 +768,11 @@ impl Ms {
         self.pd_resp_blk = None;
         self.pd_leave = false;
         self.als_on = false;
+        if self.intr_wait {
+            self.intr_lost += 1;
+        }
+        self.intr_wait = false;
+        self.intr_talking = false;
     }
 
     /// Outbound slot k on channel ch (a block when dt isn't 0); at: the CACH's AT bit for the next slot.
@@ -681,6 +796,12 @@ impl Ms {
             if dt == DT_DATA_HDR || block_len(dt) > 0 {
                 self.rx_data(ch, dt, blk);
                 return;
+            }
+            if dt == DT_CSBK {
+                if let Some(p) = Protect::decode(pdu) {
+                    self.on_protect(&p);
+                    return;
+                }
             }
             if dt == DT_CSBK && Clear::decode(pdu).is_some() {
                 self.clears += 1;
@@ -1078,6 +1199,9 @@ impl Ms {
         if matches!(self.cur.what, DO_SDM | DO_SD_STATUS) && a.source != self.cur.arg {
             return; // not about this request (a repeat of an earlier one's final acknowledgement)
         }
+        if self.cur.what == DO_INTERRUPT && a.source != TSI {
+            return; // 6.4.14.3.3: the answer comes from TSI
+        }
         if self.cur.what == DO_DGNA && a.source != self.cur.arg && a.source != DGNAI {
             return;
         }
@@ -1469,10 +1593,18 @@ impl Ms {
     /// A Reverse Channel PDU heard on the alternate slot of its payload channel ch (361-1 5.1.5). Cease
     /// transmission (361-4 6.4.15): it finishes its superframe, sends a terminator and stops talking.
     pub fn rc(&mut self, ch: usize, info: u8) {
+        if self.rc_deaf {
+            return;
+        }
         if self.state == PAYLOAD && ch == self.ch && self.talking && !self.ceasing && info == RC_CEASE {
             self.ceasing = true;
             self.cease_left = 5;
         }
+    }
+
+    /// Deaf to the Reverse Channel (a radio that doesn't obey it), for tests.
+    pub fn rc_deaf(&mut self, deaf: bool) {
+        self.rc_deaf = deaf;
     }
 
     /// Times it stopped talking for an RC cease.
@@ -1483,6 +1615,9 @@ impl Ms {
     /// Inbound slot k: Some when it transmits.
     pub fn tx(&mut self, k: i64, now_ms: i64) -> Option<MsTx> {
         self.now = now_ms;
+        if self.state == PAYLOAD {
+            self.intr_leave();
+        }
         if self.state == PAYLOAD {
             return self.tx_payload(k);
         }
@@ -1601,8 +1736,8 @@ impl Ms {
             self.dx_peer
         } else if self.mine {
             self.cur.arg
-        } else if self.als_on {
-            self.pay_src
+        } else if self.als_on || (!self.pay_group && self.pay_dst == self.id) {
+            self.pay_src // the other party
         } else {
             self.pay_dst
         };
@@ -1634,6 +1769,8 @@ impl Ms {
                     DX_CALLED_TALK_MS
                 } else if self.als_on {
                     ALS_MS
+                } else if self.intr_talking {
+                    self.intr_talk as i64
                 } else {
                     self.cur.talk_ms as i64
                 };
@@ -1647,12 +1784,14 @@ impl Ms {
                 }
                 self.ceasing = false;
                 self.talking = false;
+                self.intr_talking = false;
                 self.ceased += 1;
                 return Some(voice(VOICE_TERM, self));
             }
             if self.now >= self.talk_end {
                 self.talking = false;
-                if !self.pay_group && (!self.dx || self.mine) {
+                let interrupter = core::mem::take(&mut self.intr_talking);
+                if !self.pay_group && (!self.dx || self.mine) && !interrupter {
                     // a duplex call: the caller ends it
                     self.maint_left = MAINT_REPEATS;
                 }
@@ -1791,7 +1930,7 @@ pub unsafe extern "C" fn rdof_t3ms_key(ms: *mut Ms, k: *const [u8; 16], psn: u32
 
 #[no_mangle]
 pub unsafe extern "C" fn rdof_t3ms_do(ms: *mut Ms, what: u8, arg: u32, talk_ms: u32, flags: u8, at_ms: i64) -> bool {
-    matches!(what, DO_REGISTER..=DO_CANCEL | DO_STATUS | DO_DUPLEX | DO_SD_STATUS) && (*ms).act(what, arg, talk_ms, flags, at_ms)
+    matches!(what, DO_REGISTER..=DO_CANCEL | DO_STATUS | DO_DUPLEX | DO_SD_STATUS | DO_INTERRUPT) && (*ms).act(what, arg, talk_ms, flags, at_ms)
 }
 
 #[no_mangle]
