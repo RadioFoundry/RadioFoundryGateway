@@ -37,8 +37,9 @@ Principles:
 | Control channel | C_SYS_Parms short LC with a counting Common_Slot_Counter; C_ALOHA; C_BCAST Adjacent_Site (from the network), Chan_Freq (the site's own channel plan), Local_Time (when the clock is good), Gen_Site_Params, CallTimer_Parms, Vote_Now (with the VOTE_BLK block), Ann_WD_TSCC, MassReg (section 3.11); CACH AT driven by the controller |
 | Random access | Slotted Aloha, Mask 0, Service Function from load, adaptive Backoff, NRand_Wait from settings; a response to every random access |
 | Registration | Open or listed (ID sets); register, de-register, implicit registration from call requests; single-talkgroup subscription (TRGT_ADR_CNTS 01b); Reg_Accepted / Reg_Refused / Reg_Denied; MS_Not_Registered |
-| Group voice | C_RAND, C_WACKD/C_QACKD, TV_GRANT (repeated; Late_Entry grants through the call), BTV_GRANT for ALLMSID calls, quasi-transmission trunking (hang time), P_CLEAR on hang expiry, call timer or P_MAINT DISCON |
+| Group voice | C_RAND, C_WACKD/C_QACKD, TV_GRANT (repeated; Late_Entry grants through the call), BTV_GRANT for all-calls (ALLMSID, ALLMSIDL, ALLMSIDZ) and broadcast calls to a talkgroup (BCAST_SV), quasi-transmission trunking (hang time), P_CLEAR on hang expiry, call timer or P_MAINT DISCON |
 | Individual voice | C_AHOY availability check (OACSU or FOACSU, a setting), C_ACKU/C_NACKU, Call Answer, PV_GRANT, cancel (Service_Kind 1111b) |
+| Full-duplex individual voice | Service_Kind 1010b (6.6.9): radio check, a whole carrier in offset timing, a PV_GRANT_DX to each party, each party's inbound repeated on the other's slot; local calls; a setting, off by default (section 3.13) |
 | Queueing | One queue by priority (emergency first, then PRIORTY_SV, then age); C_QACKD; SYSbusy_Refused when full |
 | Emergency | Emergency group calls (the emergency call timer, the Emergency flag in grants; an emergency request on an open call upgrades it); pre-emption of a running call when no channel is free (6.4.14.3.1), with the Reverse Channel cease command (6.4.15, table 6.32) to its talker; a setting, off by default (section 3.9). The emergency alarm and its cancel (status 126 and 124, 6.6.6.3) through status delivery |
 | Status delivery | Status Transport Service delivery (6.6.6.1): a 7-bit status to an MS (C_AHOY, its C_ACKU or C_NACKU mirrored), a talkgroup (C_AHOY, no answer, C_ACKD to the caller) or the TSCC; stored while the called MS is on a payload channel; an `activity` `status` event (section 3.10) |
@@ -53,7 +54,7 @@ Principles:
 ### 1.2 Later (the design leaves room; nothing here is built)
 
 Packet data and UDT short data, talkgroup list subscription (UDT upload), a second TSCC, composite TSCC, TSCCAS (section 3.12 says why), DGNA,
-stun/revive/kill, gateways (PSTN, PABX, dispatcher), duplex calls, ambient listening, a standby controller, trunking on the W12 (the LR2021 can't stay keyed: slot-timing.md), two carriers
+stun/revive/kill, gateways (PSTN, PABX, dispatcher), duplex calls over the network and duplex packet data, ambient listening, a standby controller, trunking on the W12 (the LR2021 can't stay keyed: slot-timing.md), two carriers
 out of one SDR, authentication (owner's go-ahead first), encryption beyond pass-through.
 
 Two carriers out of one SDR (tried on the Pluto, 2026-11-06, with fixed test signals, not the site): two DMR BS
@@ -171,7 +172,8 @@ Group call (talkgroup, ALLMSID):
 
 1. C_RAND (Service_Kind 0001b). Checks: registered (if required), allowed on this talkgroup (provisioning), the
    talkgroup allowed at this site.
-2. A free payload slot: TV_GRANT (BTV_GRANT for ALLMSID/ALLMSIDL/ALLMSIDZ) twice, then repeats. None free: C_QACKD and
+2. A free payload slot: TV_GRANT (BTV_GRANT for ALLMSID/ALLMSIDL/ALLMSIDZ, and for a broadcast call, BCAST_SV
+   in the request: one way, 6.6.2) twice, then repeats. None free: C_QACKD and
    into the queue; queue full: C_NACKD(SYSbusy_Refused).
 3. The payload channel starts sending idles at once, then repeats the inbound voice of whoever talks, and plays
    network voice for the talkgroup.
@@ -362,6 +364,27 @@ Not built, and why:
 - TSCCAS (6.1.1.3): its content is USBD polling, which belongs to the data services (with LIP). C_ALOHA's TSCCAS
   flag stays 0.
 
+### 3.13 Full-duplex individual calls
+
+6.6.9, off unless `services.duplex` is true (off: C_NACKD(Not_Supported), as before). An MS asks with C_RAND,
+Service_Kind 1010b (table 6.73), to another MS registered at this site:
+
+1. The checks of an individual call (section 3.5); the called party must be local (a duplex call over mqtt-net
+   would need a stream each way: not built; C_NACKD(NoReg_MSaway)), not busy, and not asked by proxy.
+2. C_WACKD to the caller, then the radio check: C_AHOY with Service_Kind 1010b (6.6.9.1.4; FOACSU as set). The
+   called MS's C_NACKU is mirrored, MS_Duplex_Not_Supported (0x16) among them (the caller may then try an
+   ordinary individual call); C_ACKU(CallBack) gives the caller C_ACKD(CallBack).
+3. Accepted: the call needs a whole carrier, both slots free, so never the TSCC's. None free: C_NACKD(SYSbusy):
+   duplex requests aren't queued, and a duplex emergency doesn't pre-empt.
+4. A PV_GRANT_DX (table 7.10) to each party, twice: LCN 1 to the caller (Call Direction 1), LCN 2 to the called
+   MS, the partner as source. The carrier runs offset timing (361-1 5.1.1.2, table 5.1): an MS on LCN n
+   transmits in inbound slot n, which is the other slot to the one it hears, so it talks and listens at once. The
+   radio layer (`rdof_t3rf_duplex`, set on both channels from the channel's `RDOF_T3_F_DUPLEX` open event) reads
+   the carrier's inbound slots the other way round and repeats each party's inbound on the other's outbound.
+5. Each channel keeps its own talker and hang time; the call ends when both are quiet past hang time, on the
+   call timer, or on either party's P_MAINT DISCON: both slots send P_CLEAR. A duplex call that pre-emption
+   picks is cleared at once (its parties don't listen on the other slot, where the RC would go).
+
 ## 4. Settings (config-v3 `tier3` app)
 
 The app takes the place reserved for it in config-v3.md section 6 ("a control frequency and a pool; it assigns its own
@@ -408,7 +431,7 @@ paths").
 | `foacsu` | bool | false | full off-air call setup for individual calls |
 | `timers` | object | section 3.8 | |
 | `broadcast` | object | section 3.2 | `adjacent_s`, `chan_freq_s`, `local_time_s`, `call_timers_s`, `vote_now_s`, `ann_tscc_s` (0 = off; the last three off by default, section 3.11) |
-| `services` | object | | `emergency_preempt` (bool, false): clear a running call for a waiting emergency (section 3.9); `power_save` (0-7, 0): the largest PowerSave_RQ granted, 0 none; `power_save_awake_s` (0.1-60, 1); `mass_reg_at_start_s` (0-200000, 0): a mass re-registration at start within this time (section 3.11); `hibernate_s` (0 or 1-300, 0): T_BS_Inactive of the asynchronous TSCC, 0 never (section 3.12). Local settings only for now; the manager's `cfg` doesn't carry them |
+| `services` | object | | `emergency_preempt` (bool, false): clear a running call for a waiting emergency (section 3.9); `power_save` (0-7, 0): the largest PowerSave_RQ granted, 0 none; `power_save_awake_s` (0.1-60, 1); `mass_reg_at_start_s` (0-200000, 0): a mass re-registration at start within this time (section 3.11); `hibernate_s` (0 or 1-300, 0): T_BS_Inactive of the asynchronous TSCC, 0 never (section 3.12); `duplex` (bool, false): full-duplex individual calls (section 3.13). Local settings only for now; the manager's `cfg` doesn't carry them |
 
 Checks (refusals name the key): exactly one `tscc` carrier; every carrier's `out` on a device that transmits and its
 `in` on a device that receives; the TSCC carrier's `in` and `out` on one full-duplex SDR (a split TX half
@@ -744,7 +767,9 @@ called about one slot plus the TX lead ahead of air: the controller decides a sl
 - voice activity to the controller: the header, each voice sync burst (once a superframe, so a long call isn't taken
   for a lost one), the terminator, or lost;
 - a Reverse Channel PDU for the other slot's talker (`rdof_t3rf_rc`, from `rdof_t3_ch_out_t.rc`) goes once into the
-  next voice burst F or idle burst, 360 ms apart, not right after a terminator (section 3.9).
+  next voice burst F or idle burst, 360 ms apart, not right after a terminator (section 3.9);
+- a full-duplex call's channels (`rdof_t3rf_duplex`, section 3.13): the carrier's inbound slots read in offset
+  timing, each channel's regenerated inbound queued on the other's outbound.
 
 Outbound sinks: carrier A's channels are read by the slot source (9.1); carrier B's go to the split radio's TX half
 (`rdof_split_t`) in the scheduled stream (SET_ROLE stream 1, TX_SCHED): each burst tagged with its slot counter,
@@ -864,6 +889,10 @@ In the network services' own repository (with the router, the Python library and
   repeats inside it, a Reg_Window 0 cancels; counts the C_BCASTs it hears by type.
 - C_MOVE: an idle MS it applies to moves to that channel's LCN 0 (one in its list); a TSCC that said it
   hibernates: no hunting, and BS_Dwn_Act when it has something to do.
+- full-duplex calls (`RDOF_T3MS_DO_DUPLEX`): follows a PV_GRANT_DX to it, transmits in offset timing
+  (`rdof_t3ms_tx_t.offset`), both parties talk (the called MS 2 s), the caller disconnects; `set_no_duplex` answers
+  the radio check C_NACKU(MS_Duplex_Not_Supported). `RDOF_T3MS_F_BROADCAST` makes a group call a broadcast call;
+  a BTV_GRANT is followed by the talkgroup's members (any MS for an all-call).
 
 `t3air`: a slot-exact air between one site controller and N MSs: TSCC outbound to every MS on the TSCC; inbound
 collisions (two MSs in one inbound slot: neither is heard, and the site gets `rx_bad`); payload channels with their
@@ -880,6 +909,7 @@ and against `t3ms` on one air.
 |---|---|---|
 | PDU codec | Every PDU the site sends or reads: field packing against the 361-4 tables, round trips, known vectors from a standard site's captures (decoded values, not checks) | Rust unit tests |
 | Controller | Scenarios over `t3air`: registration open/listed/denied, collisions and backoff, group call, queue and grant on release, late entry repeats, hang and P_CLEAR, call timer, individual OACSU and FOACSU, no answer, cancel, busy called party, Not_Supported, network group in and out, network setup both ways, Tier II implicit setup, records reload, provisioning changes, link loss | Rust tests (`cargo test`, run by ctest) |
+| Control channel features | Scenarios over `t3air` (`rust/src/t3ctltests.rs`): pre-emption and the RC cease, status delivery and alarms, 3 and 4 carriers, the C_BCASTs, mass re-registration, power save, C_MOVE, the asynchronous TSCC, full-duplex and broadcast calls; through the radio layer and `t3sim`: 4 carriers with pre-emption, a duplex call | Rust tests; C host test `rdof_t3unit_tests` |
 | C API | Init, a short scenario through the FFI, layouts | C host test `rdof_t3_tests` |
 | Radio layer | Burst building (CSBK, MBC, CACH with C_SYS_Parms and AT), parsing back, the slot source in the SDR modem (timing, short LC, AT), payload channel regeneration and P_CLEAR, split output frames | C host tests |
 | Settings | the `tier3` app: good and bad files, schema | C host tests, `test_schema.js` |

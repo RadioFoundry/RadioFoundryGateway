@@ -57,8 +57,9 @@ impl<'a, const N: usize> Air<'a, N> {
                 self.site.rx_pdu(ch, t.dt, &t.pdu);
             } else if t.kind == TX_VOICE {
                 self.site.rx_voice(ch, t.what, t.src);
+                let out_ch = self.site.repeat_channel(ch); // a duplex call: the other party's slot
                 for m in self.ms.iter_mut() {
-                    m.hear(ch, t.src, t.dst);
+                    m.hear(out_ch, t.src, t.dst);
                 }
             }
         }

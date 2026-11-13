@@ -121,6 +121,7 @@ typedef struct {
     bool after_term;   /* the last burst out was a terminator: no RC in the next */
     int64_t rc_k;      /* the slot of the last RC sent (360 ms apart) */
     uint32_t rc_sent;
+    bool duplex;       /* a full-duplex call's party (rdof_t3rf_duplex) */
 } rdof_t3rf_ch_t;
 
 /* ── the site ─────────────────────────────────────────────────────────────── */
@@ -158,6 +159,10 @@ rdof_t3rf_ch_t *rdof_t3rf_channel(rdof_t3rf_t *t, int ch);
 /* The controller's grant took payload channel ch for a call: open it (a fresh one: warmup idles first; already open:
  * the new call's addresses, the channel carries on). */
 bool rdof_t3rf_open(rdof_t3rf_t *t, int ch, uint32_t src, uint32_t dst, bool group, int warmup);
+/* Payload channel ch is a party's of a full-duplex call (361-4 6.6.9.4): its carrier in offset timing (the
+ * inbound in the carrier's other inbound slot), its inbound repeated on the other channel's outbound. Closing the
+ * channel ends it. */
+bool rdof_t3rf_duplex(rdof_t3rf_t *t, int ch, bool on);
 /* Closed at once: what's queued is dropped, the channel goes idle. */
 void rdof_t3rf_close(rdof_t3rf_t *t, int ch);
 /* The controller's PDU (dt, 10 octets) on channel ch's outbound, ahead of any voice, repeats times (P_CLEAR: 4);

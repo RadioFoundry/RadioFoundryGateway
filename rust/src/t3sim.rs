@@ -227,7 +227,8 @@ fn slot(s: &mut Sim, k: i64, now_ms: i64) {
     }
     for ch in (parity..2 * ncar).step_by(2) {
         let chi = ch as c_int;
-        let on = |i: usize| has[i] && usize::from(tx[i].ch) == ch;
+        // offset timing (a duplex call): the MS's burst is in its carrier's other inbound slot
+        let on = |i: usize| has[i] && usize::from(tx[i].ch) ^ usize::from(tx[i].offset) == ch;
         let first = (0..nms).find(|&i| on(i));
         let count = (0..nms).filter(|&i| on(i)).count() + ext[..next].iter().filter(|e| e.ch == chi).count();
         if count == 0 {

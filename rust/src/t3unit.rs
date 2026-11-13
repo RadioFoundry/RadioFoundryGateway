@@ -23,7 +23,7 @@ use crate::plan::RdofIdset;
 use crate::t3cfg::{rdof_t3cfg_check, rdof_t3cfg_site};
 use crate::t3rf::{
     rdof_t3rf_channel, rdof_t3rf_close, rdof_t3rf_control, rdof_t3rf_init, rdof_t3rf_net, rdof_t3rf_net_end,
-    rdof_t3rf_open, rdof_t3rf_rc, rdof_t3rf_rx, rdof_t3rf_slot, rdof_t3rf_split_pump, rdof_t3rf_tick, T3rf, T3rfIo, T3rfSplit,
+    rdof_t3rf_duplex, rdof_t3rf_open, rdof_t3rf_rc, rdof_t3rf_rx, rdof_t3rf_slot, rdof_t3rf_split_pump, rdof_t3rf_tick, T3rf, T3rfIo, T3rfSplit,
     WARMUP,
 };
 use crate::t3site::{
@@ -981,6 +981,7 @@ unsafe fn drain(u: *mut Unit) {
                 if ch < CHANNELS {
                     (*u).ch_flags[ch] = e.flags; // the call's, for the uplink
                     rdof_t3rf_open(rf(u), ch as c_int, e.src, e.dst, e.flags & t3::F_GROUP != 0, WARMUP);
+                    rdof_t3rf_duplex(rf(u), ch as c_int, e.flags & t3::F_DUPLEX != 0);
                     if e.stream != 0 {
                         stream_map(u, e.stream, ch as c_int);
                     }

@@ -10,7 +10,7 @@ use core::ffi::c_int;
 use crate::t3pdu::*;
 use crate::t3rc::RC_CEASE;
 use crate::t3site::{
-    ahoy_status, bs_dwn_act, mass_reg_applies, mass_reg_of, move_of, ps_wake, reg_window_ms, status_rand, CARRIERS,
+    ahoy_status, bs_dwn_act, mass_reg_applies, DxGrant, R_DUPLEX_NOT_SUPPORTED, SK_DUPLEX, mass_reg_of, move_of, ps_wake, reg_window_ms, status_rand, CARRIERS,
     VOICE_FRAME, VOICE_HEADER, VOICE_TERM,
 };
 
@@ -27,8 +27,12 @@ pub const DO_PRIVATE: u8 = 4;
 pub const DO_CANCEL: u8 = 5;
 const DO_ANSWER: u8 = 6; // FOACSU Call Answer, queued by the MS itself
 pub const DO_STATUS: u8 = 7; // a status delivery (act_status)
+pub const DO_DUPLEX: u8 = 8; // a full-duplex individual call (6.6.9): both parties talk
+/// How long a called MS talks in a duplex call.
+const DX_CALLED_TALK_MS: i64 = 2000;
 pub const F_EMERGENCY: u8 = 0x01;
 pub const F_TO_GROUP: u8 = 0x02; // DO_STATUS: the target is a talkgroup
+pub const F_BROADCAST: u8 = 0x04; // DO_GROUP: a broadcast call (BCAST_SV): one way
 const F_MASS: u8 = 0x80; // DO_REGISTER: a mass re-registration's (cancelled by a Reg_Window 0)
 /// T_Awake (annex A.1): how long it stays awake after a PDU addressed to it, in power save.
 const T_AWAKE_MS: i64 = 2000;
@@ -56,7 +60,7 @@ pub struct MsTx {
     pub what: u8,
     pub pdu: [u8; 10],
     pub group: u8,
-    pub pad: u8,
+    pub offset: u8, // offset timing (a duplex call): sent in the other inbound slot of ch's carrier
     pub src: u32,
     pub dst: u32,
 }
@@ -154,6 +158,11 @@ pub struct Ms {
     next_activation_ms: i64,
     activations: u32,
     moves: u32,
+    // full-duplex calls (6.6.9)
+    no_duplex: bool, // answers a duplex radio check C_NACKU(MS_Duplex_Not_Supported)
+    dx: bool,        // in a duplex call: offset timing, talks while it listens
+    dx_peer: u32,
+    voice_heard: u32,
 }
 
 impl Ms {
@@ -263,7 +272,7 @@ impl Ms {
                 ..Default::default()
             },
             DO_GROUP => Rand {
-                service_options: emergency,
+                service_options: emergency | if a.flags & F_BROADCAST != 0 { SO_BROADCAST } else { 0 },
                 service_kind: SK_TG_VOICE,
                 target: a.arg,
                 source: self.id,
@@ -272,6 +281,13 @@ impl Ms {
             DO_PRIVATE => Rand {
                 service_options: emergency,
                 service_kind: SK_IND_VOICE,
+                target: a.arg,
+                source: self.id,
+                ..Default::default()
+            },
+            DO_DUPLEX => Rand {
+                service_options: emergency,
+                service_kind: SK_DUPLEX,
                 target: a.arg,
                 source: self.id,
                 ..Default::default()
@@ -297,7 +313,7 @@ impl Ms {
     }
 
     fn done(&mut self, ok: bool) {
-        if self.has_cur && matches!(self.cur.what, DO_GROUP | DO_PRIVATE | DO_STATUS) {
+        if self.has_cur && matches!(self.cur.what, DO_GROUP | DO_PRIVATE | DO_STATUS | DO_DUPLEX) {
             if ok {
                 self.calls_done += 1;
             } else {
@@ -310,6 +326,7 @@ impl Ms {
     }
 
     fn back_to_tscc(&mut self) {
+        self.dx = false;
         self.state = IDLE;
         self.ch = self.tscc_ch;
         self.talking = false;
@@ -372,6 +389,8 @@ impl Ms {
             }
         } else if let Some(g) = Grant::decode(pdu) {
             self.on_grant(&g);
+        } else if let Some(g) = DxGrant::decode(pdu) {
+            self.on_dx_grant(&g);
         } else if let Some(b) = Bcast::decode(pdu) {
             self.on_bcast(&b);
         } else if let Some((mask, chan, addr)) = move_of(pdu) {
@@ -526,6 +545,10 @@ impl Ms {
             return;
         }
         self.ahoys += 1;
+        if a.service_kind == SK_DUPLEX && self.no_duplex {
+            self.reply = Some(ack(R_DUPLEX_NOT_SUPPORTED, self)); // 6.6.9.2.5
+            return;
+        }
         self.reply = match self.answer {
             ANSWER_ACCEPT => Some(ack(R_MS_ACCEPTED, self)),
             ANSWER_BUSY => Some(ack(R_EQUIP_BUSY, self)),
@@ -554,8 +577,9 @@ impl Ms {
                 (mine, mine || (self.state == IDLE && self.my_tg(g.target)))
             }
             OP_BTV_GRANT => {
+                // an all-call, or a broadcast call to one of its talkgroups
                 let mine = asked && self.cur.what == DO_GROUP && g.target == self.cur.arg;
-                (mine, mine || self.state == IDLE)
+                (mine, mine || (self.state == IDLE && (is_allcall(g.target) || self.my_tg(g.target))))
             }
             _ => (false, false),
         };
@@ -585,9 +609,49 @@ impl Ms {
         self.pay_dst = g.target;
     }
 
+    /// PV_GRANT_DX (6.6.9.2.6): applicable when it's the target; its own slot of the carrier, offset timing.
+    fn on_dx_grant(&mut self, g: &DxGrant) {
+        if g.target != self.id {
+            return;
+        }
+        let asked = self.has_cur && matches!(self.state, ACCESS | WAITING);
+        let mine = asked && self.cur.what == DO_DUPLEX && g.source == self.cur.arg;
+        let Some(ch) = self.chan_index(g.chan, g.lcn) else { return };
+        if self.has_cur && self.cur.what == DO_ANSWER {
+            self.has_cur = false; // the grant answers its Call Answer
+        } else if !mine && self.has_cur && self.state != IDLE {
+            return;
+        }
+        self.alert_caller = 0;
+        self.grants += 1;
+        self.state = PAYLOAD;
+        self.ch = ch;
+        self.dx = true;
+        self.dx_peer = g.source;
+        self.mine = mine;
+        self.talking = true; // both talk
+        self.ceasing = false;
+        self.header_sent = false;
+        self.maint_left = 0;
+        self.pay_group = false;
+        self.pay_src = g.source;
+        self.pay_dst = g.target;
+    }
+
+    /// Doesn't support full-duplex calls: answers their radio check C_NACKU(MS_Duplex_Not_Supported).
+    pub fn set_no_duplex(&mut self, no: bool) {
+        self.no_duplex = no;
+    }
+
+    /// Voice bursts heard from another MS on its payload channel.
+    pub fn voice_heard(&self) -> u32 {
+        self.voice_heard
+    }
+
     /// A voice burst heard on its payload channel (from the air's repeat of another MS).
     pub fn hear(&mut self, ch: usize, src: u32, dst: u32) {
         if self.state == PAYLOAD && ch == self.ch && src != self.id {
+            self.voice_heard += 1;
             self.pay_src = src;
             self.pay_dst = dst;
         }
@@ -675,16 +739,26 @@ impl Ms {
     }
 
     fn tx_payload(&mut self, k: i64) -> Option<MsTx> {
-        if k & 1 != (self.ch & 1) as i64 {
+        // offset timing in a duplex call: its inbound is the carrier's other slot (361-1 5.1.1.2)
+        if k & 1 != ((self.ch & 1) ^ usize::from(self.dx)) as i64 {
             return None;
         }
         let group = self.pay_group as u8;
-        let dst = if self.mine { self.cur.arg } else { self.pay_dst };
-        let voice = |what, s: &Ms| MsTx { ch: s.ch as u8, kind: TX_VOICE, what, group, src: s.id, dst, ..Default::default() };
+        let dst = if self.dx {
+            self.dx_peer
+        } else if self.mine {
+            self.cur.arg
+        } else {
+            self.pay_dst
+        };
+        let offset = u8::from(self.dx);
+        let voice =
+            |what, s: &Ms| MsTx { ch: s.ch as u8, kind: TX_VOICE, what, group, offset, src: s.id, dst, ..Default::default() };
         if self.talking {
             if !self.header_sent {
                 self.header_sent = true;
-                self.talk_end = self.now + self.cur.talk_ms as i64;
+                let talk = if self.dx && !self.mine { DX_CALLED_TALK_MS } else { self.cur.talk_ms as i64 };
+                self.talk_end = self.now + talk;
                 return Some(voice(VOICE_HEADER, self));
             }
             if self.ceasing {
@@ -699,7 +773,8 @@ impl Ms {
             }
             if self.now >= self.talk_end {
                 self.talking = false;
-                if !self.pay_group {
+                if !self.pay_group && (!self.dx || self.mine) {
+                    // a duplex call: the caller ends it
                     self.maint_left = MAINT_REPEATS;
                 }
                 return Some(voice(VOICE_TERM, self));
@@ -709,7 +784,7 @@ impl Ms {
         if self.maint_left > 0 {
             self.maint_left -= 1;
             let m = Maint { kind: MAINT_DISCON, target: dst, source: self.id };
-            return Some(MsTx { ch: self.ch as u8, kind: TX_PDU, dt: DT_CSBK, pdu: m.encode(), ..Default::default() });
+            return Some(MsTx { ch: self.ch as u8, kind: TX_PDU, dt: DT_CSBK, pdu: m.encode(), offset, ..Default::default() });
         }
         None
     }
@@ -762,7 +837,7 @@ pub unsafe extern "C" fn rdof_t3ms_answer(ms: *mut Ms, answer: u8, answer_ms: u3
 
 #[no_mangle]
 pub unsafe extern "C" fn rdof_t3ms_do(ms: *mut Ms, what: u8, arg: u32, talk_ms: u32, flags: u8, at_ms: i64) -> bool {
-    matches!(what, DO_REGISTER..=DO_CANCEL | DO_STATUS) && (*ms).act(what, arg, talk_ms, flags, at_ms)
+    matches!(what, DO_REGISTER..=DO_CANCEL | DO_STATUS | DO_DUPLEX) && (*ms).act(what, arg, talk_ms, flags, at_ms)
 }
 
 #[no_mangle]

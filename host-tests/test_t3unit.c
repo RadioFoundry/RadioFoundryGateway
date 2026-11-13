@@ -540,12 +540,71 @@ static void test_carriers4(void)
     free(u);
 }
 
+/* A full-duplex call through the radio layer: carrier 2 in offset timing, each party's inbound repeated on the
+ * other's slot (361-4 6.6.9). */
+static void test_duplex(void)
+{
+    rdof_t3_cfg_t cfg;
+    rdof_t3_policy_t pol;
+    rdof_t3cfg_default(&cfg, &pol);
+    cfg.ncarriers = 2;
+    cfg.carriers[1] = (rdof_t3_carrier_t){438625000u, 431025000u, 2, 0, 1};
+    cfg.duplex = 1;
+    const rdof_t3unit_io_t io = {quiet_publish, NULL, NULL, NULL, NULL, NULL};
+    rdof_t3unit_t *u = calloc(1, rdof_t3unit_size());
+    void *mem = aligned_alloc(8, (rdof_t3_site_size() + 7) / 8 * 8);
+    char err[120] = "";
+    CHECK(rdof_t3unit_init(u, mem, &cfg, &pol, &io, NULL, NULL, -1, NULL, err, sizeof err), "init: %s", err);
+    rdof_t3ms_t *ms[2];
+    uint32_t id[2] = {3100301, 3100302};
+    const uint16_t chans[2] = {1, 2};
+    const uint32_t tg[1] = {10};
+    for (int i = 0; i < 2; i++) {
+        ms[i] = malloc(rdof_t3ms_size());
+        rdof_t3ms_init(ms[i], id[i], tg, 1, chans, 2, 70 + (uint32_t)i);
+        rdof_t3ms_do(ms[i], RDOF_T3MS_DO_REGISTER, 10, 0, 0, T0 + 300 + 250 * i);
+    }
+    static rdof_t3sim_t sim;
+    rdof_t3sim_init(&sim, u, 2, ms, id);
+    int64_t k = 0;
+#define RUN(msec)                                                                                                  \
+    for (int64_t end_ = k + (msec) / 30; k < end_; k++)                                                            \
+    rdof_t3sim_slot(&sim, k, T0 + k * 30)
+    RUN(5000);
+    rdof_t3ms_do(ms[0], RDOF_T3MS_DO_DUPLEX, id[1], 3000, 0, T0 + k * 30);
+    RUN(3000);
+    rdof_t3ms_status_t a, b;
+    rdof_t3ms_status(ms[0], &a);
+    rdof_t3ms_status(ms[1], &b);
+    CHECK(a.state == RDOF_T3MS_PAYLOAD && b.state == RDOF_T3MS_PAYLOAD && a.ch == 2 && b.ch == 3,
+          "both on carrier 2: %d/%d %d/%d", a.state, a.ch, b.state, b.ch);
+    const rdof_t3rf_t *rf = rdof_t3unit_rf(u);
+    CHECK(rf->ch[2].duplex && rf->ch[3].duplex, "offset timing on carrier 2");
+    CHECK(rf->ch[2].rx_bursts > 20 && rf->ch[3].rx_bursts > 20, "each party heard on its own channel: %u %u",
+          rf->ch[2].rx_bursts, rf->ch[3].rx_bursts);
+    CHECK(rf->ch[2].tx_traffic > 20 && rf->ch[3].tx_traffic > 20, "each repeated on the other's slot: %u %u",
+          rf->ch[2].tx_traffic, rf->ch[3].tx_traffic);
+    RUN(5000);
+    rdof_t3ms_status(ms[0], &a);
+    rdof_t3ms_status(ms[1], &b);
+    CHECK(a.calls_done == 1 && a.state == RDOF_T3MS_IDLE && b.state == RDOF_T3MS_IDLE, "cleared: %u %d %d",
+          a.calls_done, a.state, b.state);
+    CHECK(!rf->ch[2].open && !rf->ch[3].open && !rf->ch[2].duplex && !rf->ch[3].duplex, "both closed");
+    CHECK(sim.out_bad == 0, "no bad outbound blocks (%u)", sim.out_bad);
+#undef RUN
+    for (int i = 0; i < 2; i++)
+        free(ms[i]);
+    free(mem);
+    free(u);
+}
+
 int main(void)
 {
     test_layouts();
     test_sim_layouts();
     test_memory();
     test_carriers4();
+    test_duplex();
     site_open(&A, 0, "site-a", 3, 3100001, T0);
     site_open(&Bs, 1, "site-b", 4, 3100101, T0);
     run(6000);

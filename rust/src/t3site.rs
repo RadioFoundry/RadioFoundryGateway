@@ -26,6 +26,10 @@ pub use bcast::{
 };
 #[path = "t3tscc.rs"]
 mod tscc;
+#[path = "t3duplex.rs"]
+mod duplex;
+use duplex::KIND_DUPLEX;
+pub use duplex::{DxGrant, F_DUPLEX, OP_PV_GRANT_DX, R_DUPLEX_NOT_SUPPORTED, SK_DUPLEX};
 pub use tscc::{bs_dwn_act, bs_dwn_act_of, move_of, move_pdu, OP_BS_DWN_ACT};
 
 pub const CARRIERS: usize = 4;
@@ -99,7 +103,7 @@ pub struct Cfg {
     pub preempt: u8, // 1: an emergency with no channel free clears a non-emergency call (361-4 6.4.14.3.1)
     pub power_save: u8,     // the highest PowerSave_RQ granted (1-7: 1:2 to 1:128); 0: not offered (6.4.7)
     pub mass_reg_start: u8, // Reg_Window (table 6.12) of a mass re-registration at start; 0: none (6.4.5)
-    pub pad1: u8,
+    pub duplex: u8, // full-duplex MS to MS calls (section 3.13): 0 refused
     pub call_timers_ms: u32, // CallTimer_Parms every; 0: not broadcast
     pub vote_now_ms: u32,    // Vote_Now for each adjacent site in this time; 0: not broadcast
     pub ann_tscc_ms: u32,    // Ann_WD_TSCC for the adjacent sites in this time; 0: not broadcast
@@ -764,6 +768,9 @@ fn check(c: &Cfg, err: &mut Buf) -> bool {
     if c.start_grace_ms > 10_000 {
         no!("timers.start_grace_s: 0 to 10");
     }
+    if c.duplex > 1 {
+        no!("services.duplex: a bool");
+    }
     if c.hibernate_ms != 0 && !(1000..=300_000).contains(&c.hibernate_ms) {
         no!("services.hibernate_s: 0 (never) or 1 to 300");
     }
@@ -976,6 +983,9 @@ impl Site {
 
     fn grant_pdu(&self, ch: usize, late: bool, source: u32) -> [u8; 10] {
         let c = &self.chans[ch];
+        if c.kind == KIND_DUPLEX {
+            return self.duplex_grant(ch);
+        }
         let op = match c.kind {
             KIND_PRIVATE => OP_PV_GRANT,
             KIND_ALLCALL => OP_BTV_GRANT,
@@ -998,7 +1008,7 @@ impl Site {
     fn due_grant(&mut self) -> Option<[u8; 10]> {
         let now = self.now;
         let ch = (0..CHANNELS)
-            .filter(|&i| Self::live(&self.chans[i]) && self.chans[i].kind != KIND_PRIVATE && now >= self.chans[i].grant_next_ms)
+            .filter(|&i| Self::live(&self.chans[i]) && !matches!(self.chans[i].kind, KIND_PRIVATE | KIND_DUPLEX) && now >= self.chans[i].grant_next_ms)
             .min_by_key(|&i| self.chans[i].grant_next_ms)?;
         self.chans[ch].grant_next_ms = now + self.cfg.grant_every_ms as i64;
         let c = self.chans[ch];
@@ -1160,6 +1170,7 @@ impl Site {
         if net && stream != 0 {
             self.drop_stream(stream, WHY_CONGESTION);
         }
+        self.duplex_clear(ch, why);
     }
 
     fn close(&mut self, ch: usize) {
@@ -1189,8 +1200,9 @@ impl Site {
 
     /// Whether an MS is in an individual call, or a party of one being set up.
     fn ms_busy(&self, ms: u32) -> bool {
-        self.chans.iter().any(|c| Self::live(c) && c.kind == KIND_PRIVATE && (c.src == ms || c.dst == ms))
-            || self.pend.iter().any(|p| p.used && p.kind == KIND_PRIVATE && (p.called == ms || p.caller == ms))
+        let ind = |kind| kind == KIND_PRIVATE || kind == KIND_DUPLEX;
+        self.chans.iter().any(|c| Self::live(c) && ind(c.kind) && (c.src == ms || c.dst == ms))
+            || self.pend.iter().any(|p| p.used && ind(p.kind) && (p.called == ms || p.caller == ms))
     }
 
     fn payload_slot(&mut self, out: &mut SlotOut) {
@@ -1229,7 +1241,7 @@ impl Site {
                 c.idle_until_ms = now + hang;
             }
             let c = self.chans[ch];
-            if !c.talking && now >= c.idle_until_ms {
+            if !c.talking && now >= c.idle_until_ms && !self.duplex_held(ch) {
                 self.clear(ch, CLOSE_HANG);
             }
         }
@@ -1460,6 +1472,7 @@ impl Site {
             SK_CALL_ANSWER => self.call_answer(r),
             SK_CANCEL => self.cancel(r.source),
             SK_STATUS => self.status_request(r),
+            SK_DUPLEX => self.duplex_request(r),
             _ => self.refuse(R_NOT_SUPPORTED, r.source, r.target),
         }
     }
@@ -1605,13 +1618,15 @@ impl Site {
         let kind = if is_allcall(tg) {
             flags |= F_ALLCALL;
             KIND_ALLCALL
+        } else if svc & SO_BROADCAST != 0 {
+            KIND_ALLCALL // a broadcast call to a talkgroup (BCAST_SV, 6.6.2): BTV_GRANT, one way
         } else {
             KIND_GROUP
         };
         if svc & SO_EMERGENCY != 0 {
             flags |= F_EMERGENCY;
         }
-        if tg == ALLMSID || (kind == KIND_GROUP && self.policy.wide_tg.contains(tg)) {
+        if tg == ALLMSID || (!is_allcall(tg) && self.policy.wide_tg.contains(tg)) {
             flags |= F_WIDE;
         }
         self.open(ch, kind, src, tg, flags, 0, false);
@@ -1637,6 +1652,10 @@ impl Site {
     fn private_ready(&mut self, i: usize) {
         let p = self.pend[i];
         self.pend[i].used = false;
+        if p.kind == KIND_DUPLEX {
+            self.duplex_ready(&p);
+            return;
+        }
         match self.free_channel() {
             Some(ch) => self.private_go(&p, ch),
             None => self.enqueue(p),
@@ -1661,7 +1680,7 @@ impl Site {
             als: false,
             group: false,
             appended: 0,
-            service_kind: SK_IND_VOICE,
+            service_kind: if p.kind == KIND_DUPLEX { SK_DUPLEX } else { SK_IND_VOICE },
             target: p.called,
             source: p.caller,
         };

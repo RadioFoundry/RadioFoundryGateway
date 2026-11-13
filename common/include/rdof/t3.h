@@ -71,7 +71,7 @@ typedef struct {
     uint8_t preempt;      /* 1: an emergency with no channel free clears a non-emergency call (361-4 6.4.14.3.1) */
     uint8_t power_save;     /* the highest PowerSave_RQ granted (1-7: 1:2 to 1:128); 0: not offered (6.4.7) */
     uint8_t mass_reg_start; /* Reg_Window (table 6.12) of a mass re-registration at start; 0: none (6.4.5) */
-    uint8_t pad1;
+    uint8_t duplex; /* full-duplex MS to MS calls (tier3.md 3.13): 0 refused */
     uint32_t call_timers_ms, vote_now_ms, ann_tscc_ms; /* CallTimer_Parms, Vote_Now, Ann_WD_TSCC; 0: not broadcast */
     uint32_t awake_ms; /* how long an MS in power save stays awake after a PDU (the site's T_Awake) */
     uint32_t hibernate_ms; /* T_BS_Inactive: the TSCC hibernates after this long with no inbound; 0 never */
@@ -179,6 +179,7 @@ typedef struct {
 #define RDOF_T3_F_ALLCALL 0x10
 #define RDOF_T3_F_LATE 0x20
 #define RDOF_T3_F_PRIVATE_NET 0x40 /* an individual call whose other party is on the network */
+#define RDOF_T3_F_DUPLEX 0x80      /* a full-duplex call's channel: offset timing, the inbound repeated on the other slot */
 
 typedef struct {
     uint8_t type, ch, why, flags;
@@ -306,8 +307,10 @@ void rdof_t3_status(const rdof_t3_site_t *s, rdof_t3_status_t *st);
 #define RDOF_T3MS_DO_PRIVATE 4     /* arg: called MS; talk_ms */
 #define RDOF_T3MS_DO_CANCEL 5
 #define RDOF_T3MS_DO_STATUS 7     /* arg: an MS, a talkgroup (F_TO_GROUP) or TSI; talk_ms: the status (126 alarm) */
+#define RDOF_T3MS_DO_DUPLEX 8     /* arg: called MS; talk_ms (a full-duplex call: both talk) */
 #define RDOF_T3MS_F_EMERGENCY 0x01
 #define RDOF_T3MS_F_TO_GROUP 0x02 /* DO_STATUS to a talkgroup */
+#define RDOF_T3MS_F_BROADCAST 0x04 /* DO_GROUP: a broadcast call (BCAST_SV), one way: BTV_GRANT */
 
 #define RDOF_T3MS_IDLE 0     /* on the TSCC, nothing to do */
 #define RDOF_T3MS_ACCESS 1   /* random access in progress */
@@ -321,7 +324,8 @@ typedef struct {
     uint8_t dt;      /* PDU */
     uint8_t what;    /* voice: RDOF_T3_VOICE_* */
     uint8_t pdu[10];
-    uint8_t group, pad;
+    uint8_t group;
+    uint8_t offset;  /* sent in offset timing (a duplex call): in the other inbound slot of ch's carrier */
     uint32_t src, dst;
 } rdof_t3ms_tx_t;
 

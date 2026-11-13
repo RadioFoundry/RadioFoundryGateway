@@ -129,6 +129,7 @@ pub struct T3rfCh {
     pub after_term: bool,
     pub rc_k: i64,
     pub rc_sent: u32,
+    pub duplex: bool,
 }
 
 /// rdof_t3rf_io_t
@@ -364,6 +365,7 @@ pub unsafe extern "C" fn rdof_t3rf_open(
 fn close(t: &mut T3rf, ch: c_int) {
     let Some(c) = channel(t, ch) else { return };
     flush(c);
+    c.duplex = false;
     c.open = false;
     c.rf = false;
     c.rf_regen_on = false;
@@ -375,6 +377,20 @@ fn close(t: &mut T3rf, ch: c_int) {
 #[no_mangle]
 pub unsafe extern "C" fn rdof_t3rf_close(t: *mut T3rf, ch: c_int) {
     close(&mut *t, ch);
+}
+
+/// Payload channel ch is one party's of a full-duplex call (361-4 6.6.9.4): its carrier in offset timing (its
+/// inbound in the carrier's other inbound slot, 361-1 5.1.1.2), its inbound repeated on the other channel's
+/// outbound. Closing the channel ends it.
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3rf_duplex(t: *mut T3rf, ch: c_int, on: bool) -> bool {
+    match channel(&mut *t, ch) {
+        Some(c) => {
+            c.duplex = on;
+            true
+        }
+        None => false,
+    }
 }
 
 #[no_mangle]
@@ -552,7 +568,18 @@ pub unsafe extern "C" fn rdof_t3rf_rx(t: *mut T3rf, c: c_int, k: i64, b: *const 
         return;
     }
     let io = t.io;
-    payload_rx(&io, &mut t.ch[ch as usize], k, b, rssi);
+    // offset timing on a duplex carrier: this inbound slot is the other channel's
+    let ch = if t.ch[(2 * c) as usize].duplex || t.ch[(2 * c + 1) as usize].duplex { ch ^ 1 } else { ch };
+    let c = &mut t.ch[ch as usize];
+    let before = c.qn;
+    payload_rx(&io, c, k, b, rssi);
+    if c.duplex && c.qn > before {
+        // the repeat goes out on the other party's slot
+        // (one burst a call: the header, a voice burst or the terminator)
+        let q = c.q[((c.qh + before) as usize) % QUEUE];
+        c.qn = before;
+        push(&mut t.ch[(ch ^ 1) as usize], q.control, q.net, &q.b);
+    }
 }
 
 #[no_mangle]

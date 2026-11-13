@@ -628,3 +628,87 @@ fn asynchronous_tscc_hibernates_and_wakes() {
     assert!(air.until(10_000, &mut log.f(), |a| a.ms[0].status().calls_done == 1));
     assert!(air.until(10_000, &mut log.f(), |a| a.site.hibernation().0), "and back to sleep");
 }
+
+// ── full-duplex MS to MS calls (6.6.9) ──
+
+/// Two carriers: the duplex call takes carrier 2 whole, each party on its own slot in offset timing; each hears
+/// the other while it talks; the caller's disconnect clears both slots.
+#[test]
+fn duplex_call_both_talk() {
+    let mut s = site_with(|c| {
+        carriers(c, 2);
+        c.duplex = 1;
+    });
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG], &[1, 2]), ms(1002, &[TG], &[1, 2])], T0);
+    register_all(&mut air, &mut log);
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_DUPLEX, 1002, 3000, 0, now);
+    assert!(air.until(5000, &mut log.f(), |a| a.ms.iter().all(|m| m.state() == t3ms::PAYLOAD)));
+    assert_eq!((air.ms[0].ch(), air.ms[1].ch()), (2, 3), "carrier 2: LCN 1 the caller's, LCN 2 the called MS's");
+    let st = air.site.status();
+    assert!(st.ch[2].r#use != USE_IDLE && st.ch[3].r#use != USE_IDLE);
+    let opens = log.of(EV_CH_OPEN);
+    assert!(opens.len() == 2 && opens.iter().all(|e| e.flags & F_DUPLEX != 0));
+    assert!((opens[0].src, opens[0].dst, opens[1].src, opens[1].dst) == (1001, 1002, 1002, 1001));
+    air.run(1500, &mut log.f());
+    assert!(air.ms[0].voice_heard() > 20 && air.ms[1].voice_heard() > 20, "both directions at once");
+    assert!(air.until(8000, &mut log.f(), |a| a.ms[0].status().calls_done == 1));
+    assert!(air.until(2000, &mut log.f(), |a| a.ms.iter().all(|m| m.state() == t3ms::IDLE)));
+    assert!(air.until(2000, &mut log.f(), |a| a.site.status().ch[2].r#use == USE_IDLE && a.site.status().ch[3].r#use == USE_IDLE));
+}
+
+/// Off (the default): refused, as before. A called MS without the service: its reason mirrored. One carrier:
+/// no carrier free (the TSCC's has one payload slot), busy.
+#[test]
+fn duplex_refusals() {
+    let mut s = site_with(|_| {});
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG], &[1]), ms(1002, &[TG], &[1])], T0);
+    register_all(&mut air, &mut log);
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_DUPLEX, 1002, 1000, 0, now);
+    assert!(air.until(5000, &mut log.f(), |a| a.ms[0].status().calls_failed == 1));
+    assert_eq!(air.ms[0].status().last_reason, R_NOT_SUPPORTED);
+
+    let mut s = site_with(|c| c.duplex = 1);
+    let mut air = Air::new(&mut s, [ms(1001, &[TG], &[1]), ms(1002, &[TG], &[1])], T0);
+    register_all(&mut air, &mut log);
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_DUPLEX, 1002, 1000, 0, now);
+    assert!(air.until(5000, &mut log.f(), |a| a.ms[0].status().calls_failed == 1));
+    assert_eq!(air.ms[0].status().last_reason, R_SYSBUSY, "one carrier: none free");
+    air.ms[1].set_no_duplex(true);
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_DUPLEX, 1002, 1000, 0, now);
+    assert!(air.until(5000, &mut log.f(), |a| a.ms[0].status().calls_failed == 2));
+    assert_eq!(air.ms[0].status().last_reason, R_DUPLEX_NOT_SUPPORTED, "mirrored");
+}
+
+/// A broadcast call to a talkgroup (BCAST_SV, 6.6.2): BTV_GRANT, which the talkgroup's members follow and the
+/// others don't; an all-call (ALLMSIDL) still takes everyone.
+#[test]
+fn broadcast_call_to_a_talkgroup() {
+    let mut s = site_with(|c| carriers(c, 2));
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG], &[1, 2]), ms(1002, &[TG], &[1, 2]), ms(1003, &[11], &[1, 2])], T0);
+    register_all(&mut air, &mut log);
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_GROUP, TG, 1500, t3ms::F_BROADCAST, now);
+    let mut btv = 0;
+    let saw = air.until(5000, &mut log.f(), |a| {
+        let o = a.last;
+        if o.tscc_dt == DT_CSBK && Grant::decode(&o.tscc_pdu).is_some_and(|g| g.op == OP_BTV_GRANT && g.target == TG) {
+            btv += 1;
+        }
+        a.ms[1].state() == t3ms::PAYLOAD
+    });
+    assert!(saw && btv >= 1, "BTV_GRANT to the talkgroup");
+    air.run(300, &mut log.f());
+    assert_eq!(air.ms[2].state(), t3ms::IDLE, "not its talkgroup");
+    assert!(air.until(8000, &mut log.f(), |a| a.ms[0].status().calls_done == 1));
+    assert!(air.until(8000, &mut log.f(), |a| a.ms.iter().all(|m| m.state() == t3ms::IDLE)));
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_GROUP, ALLMSIDL, 1000, 0, now);
+    assert!(air.until(5000, &mut log.f(), |a| a.ms.iter().all(|m| m.state() == t3ms::PAYLOAD)), "an all-call: everyone");
+}
