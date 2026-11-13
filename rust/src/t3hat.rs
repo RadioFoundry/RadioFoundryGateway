@@ -3,18 +3,17 @@
 //! A Tier III carrier on a stock duplex MMDVM modem (docs/spec/fw/tier3-hat.md; C header rdof/t3hat.h).
 //!
 //! The modem keeps its own slot clock, sends its own CACH and plays the host's bursts from a queue per timeslot,
-//! filling a slot whose queue is empty with its own idle burst. The host can't name the slot a burst goes in: it
-//! can only choose when to write it. This places the writes: the receiver (an SDR beside the modem) hears the
-//! carrier, its bursts give the modem's slot grid on the receiver's sample clock, and each burst is written a lead
-//! before its slot's air time, inside the window where the modem takes it for that slot and no earlier one. A
-//! burst written that late leaves its queue empty when the modem builds the CACH before the other timeslot, so the
-//! AT there says idle; written one slot earlier, it is queued then and the AT says busy (the modem's own rule,
-//! measured: tier3-hat.md section 2). Each burst heard is matched to the one written for it, which checks where it
-//! went; a timeslot that runs behind (its queue holds one too many) drops a write to catch up.
+//! filling a slot whose queue is empty with its own idle burst. Once keyed it stays keyed on that fill as long as the
+//! host polls GET_STATUS (its watchdog drops it to IDLE after about 1 s without one). The host can't name the slot a
+//! burst goes in: it can only choose when to write it. This places the writes: the receiver (an SDR beside the
+//! modem) hears the carrier, its bursts give the modem's slot grid on the receiver's sample clock, and each burst is
+//! written a lead before its slot's air time, after the modem has taken the burst before it on that timeslot and
+//! before it takes this one (about 106 ms ahead of the air). Written late in that window, its queue is empty when the
+//! modem builds the CACH before the other timeslot's slot, so the AT there says idle; written early in it, the queue
+//! holds it then and the AT says busy. Each burst heard is matched to the one written for it, which checks where it
+//! went; a timeslot that runs behind (its queue holds one too many) is flushed with DMR_ABORT before its next write.
 //!
-//! `Sim` is the modem as measured, for the host tests: its own clock with a ppm error, a queue per timeslot, the
-//! idle fill, its CACH (TC, the AT from the other timeslot's queue, the short LC from DMR_SHORTLC latched at the
-//! start of each 4-slot cycle), and the drop of its carrier when both queues have been empty a while.
+//! `Sim` is the modem as expected (tier3-hat.md section 4), for the host tests.
 //!
 //! No I/O, no allocation; the platform serializes the calls.
 
@@ -24,11 +23,16 @@ pub const BURST: usize = 33;
 const PEND: usize = 16; // bursts written and not yet heard, per timeslot
 const FIT: usize = 128; // the bursts heard that the grid's line is fitted to
 const EVQ: usize = 512;
+const INB: usize = 16; // inbound bursts placed, for the modem's own reports to match
 const SLOT48: f64 = 1440.0; // a 30 ms slot at 48 kS/s
-const RESTART_GAP48: i64 = 19200; // 400 ms with nothing heard: the modem may have keyed again (a new grid)
-const OUTLIER48: f64 = 192.0; // 4 ms off the line
+const RESTART_GAP48: i64 = 96000; // 2 s with nothing heard: start the grid over (the modem's status says first)
+const OUTLIER48: f64 = 96.0; // 2 ms off the line
 const MATCH_BITS: u32 = 24; // a heard burst is a written one with at most this many bits different
 const INBOUND_OFF48: f64 = 60.0; // an inbound burst starts 1.25 ms before its outbound slot's burst
+const INBOUND_END_S: f64 = 0.02625; // and ends 26.25 ms after that burst starts
+const FETCH_S: f64 = 0.106; // the modem takes a burst about this long before it airs (expected; the bench measures)
+const SLOT_S: f64 = 0.03;
+const KEEP_S: f64 = 0.5; // unplaced and not keyed: a write to key it at most this often
 
 // events (rdof_t3hat_event)
 pub const EV_WRITE: c_int = 1; // k, ts; v: written at, lead, air time
@@ -36,8 +40,10 @@ pub const EV_AIR: c_int = 2; // k, m, ts; v: e (slots late), air time less writt
 pub const EV_FILL: c_int = 3; // m, ts: the modem's own burst (none of ours matched); v: AT before it
 pub const EV_LOST: c_int = 4; // k, ts: written, never heard
 pub const EV_GRID: c_int = 5; // m: the grid (re)started; v: position, slot length (48 kS/s samples)
-pub const EV_PLACE: c_int = 6; // k, m: trunk slot k is modem slot m from now; v: d
-pub const EV_SKIP: c_int = 7; // k, ts: not written (too late for it, or its timeslot runs behind)
+pub const EV_PLACE: c_int = 6; // k, m: trunk slot k is modem slot m from now; v: d, the short LC's cycle start (k % 4)
+pub const EV_SKIP: c_int = 7; // k, ts: not written (too late for it)
+pub const EV_REKEY: c_int = 8; // the modem unkeyed under the site (its status): placed again on its next key-up
+pub const EV_ABORT: c_int = 9; // k, ts: DMR_ABORT before slot k's write (its timeslot ran behind); v[0]: why (0 heard, 1 status, 2 NAK)
 
 /// rdof_t3hat_stats_t
 #[repr(C)]
@@ -54,10 +60,25 @@ pub struct Stats {
     pub grids: u32,
     pub placed: bool,
     pub d: i64,
-    pub ppm: f64,      // the modem's slot clock against the receiver's sample clock (+: slots shorter), 0 unknown
+    pub ppm: f64, // the modem's slot clock against the receiver's sample clock (+: slots shorter), 0 unknown
     pub delay_min: f64, // air time less write time of the bursts on time, s
     pub delay_max: f64,
     pub delay_sum: f64,
+    // GET_STATUS
+    pub polls: u32,          // replies
+    pub idle: u32,           // replies with the modem in IDLE (its watchdog fired)
+    pub unkeyed: u32,        // replies with the transmitter off while placed (each a re-key: placed again)
+    pub overflows: u32,      // replies with an overflow flag (RX or TX bit buffer)
+    pub depth_max: [u32; 2], // the most bursts a timeslot's queue held (from its free space)
+    pub aborts: u32,         // DMR_ABORT sent
+    pub naks: u32,           // writes NAKed (a queue full)
+    // the modem's own inbound reports against the receiver's (tier3-hat.md 3.5)
+    pub rx_n: u32,
+    pub rx_same: u32,      // matched an inbound burst placed by the receiver, tagged with its timeslot
+    pub rx_other: u32,     // matched, tagged with the other timeslot
+    pub rx_unmatched: u32, // the receiver placed none like it
+    pub rx_delay_min: f64, // report time less the inbound burst's end (host s), matched ones
+    pub rx_delay_max: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -100,13 +121,20 @@ fn absf(x: f64) -> f64 {
         x
     }
 }
+fn maxf(a: f64, b: f64) -> f64 {
+    if a > b {
+        a
+    } else {
+        b
+    }
+}
 
 pub fn bit_distance(a: &[u8; BURST], b: &[u8; BURST]) -> u32 {
     a.iter().zip(b.iter()).map(|(x, y)| (x ^ y).count_ones()).sum()
 }
 
 pub struct Hat {
-    lead: [f64; 2], // by the AT wanted in the CACH before the other timeslot's next slot: 0 just in time, 1 a slot ahead
+    lead: [f64; 2], // by the AT wanted in the CACH before the other timeslot's next slot: 0 idle, 1 busy
     min_lead: f64,  // a burst due with less than this left is skipped
     // the receiver's clock: host time = off + position / 48000 (the earliest arrival, over 2 s windows)
     off: f64,
@@ -128,7 +156,7 @@ pub struct Hat {
     first_m: i64,
     first_p: i64,
     long: [f64; 5], // the slope over the whole grid: n, sum x, sum y, sum xx, sum xy (from the first burst)
-    lc_phase: i64, // m % 4 of the slots whose CACH starts a short LC, -1 unknown
+    lc_phase: i64,  // m % 4 of the slots whose CACH carries LCSS 1 (the modem's own count), -1 unknown
     // the trunk's slots: trunk k is modem slot k - d
     placed: bool,
     d: i64,
@@ -137,7 +165,14 @@ pub struct Hat {
     np: [usize; 2],
     slip: [i64; 2],
     slip_n: [u32; 2],
-    drop: [u32; 2],
+    abort: [c_int; 2], // a DMR_ABORT due before the timeslot's next write: 0 none, else 1 + why
+    // the modem's status
+    keyed: i8, // the transmitter, as the last GET_STATUS said: -1 not known
+    last_key: f64,
+    // inbound bursts placed by the receiver: trunk slot, burst
+    inb_k: [i64; INB],
+    inb_b: [[u8; BURST]; INB],
+    inb_i: usize,
     ev: [Ev; EVQ],
     ev_h: usize,
     ev_n: usize,
@@ -175,11 +210,21 @@ impl Hat {
             np: [0; 2],
             slip: [0; 2],
             slip_n: [0; 2],
-            drop: [0; 2],
+            abort: [0; 2],
+            keyed: -1,
+            last_key: f64::NEG_INFINITY,
+            inb_k: [-1; INB],
+            inb_b: [[0; BURST]; INB],
+            inb_i: 0,
             ev: [Ev::default(); EVQ],
             ev_h: 0,
             ev_n: 0,
-            st: Stats { delay_min: f64::INFINITY, ..Stats::default() },
+            st: Stats {
+                delay_min: f64::INFINITY,
+                rx_delay_min: f64::INFINITY,
+                rx_delay_max: f64::NEG_INFINITY,
+                ..Stats::default()
+            },
         }
     }
 
@@ -259,11 +304,11 @@ impl Hat {
             }
             self.np[ts] = 0;
             self.slip_n[ts] = 0;
-            self.drop[ts] = 0;
+            self.abort[ts] = 0;
         }
     }
 
-    /// Start over (the modem unkeyed, or a bench job took it): a new grid and a new placing.
+    /// Start over (a bench job took the modem, or it unkeyed): a new grid and a new placing.
     pub fn reset(&mut self) {
         self.lose_all();
         self.grid = false;
@@ -271,6 +316,8 @@ impl Hat {
         self.st.placed = false;
         self.nfit = 0;
         self.lc_phase = -1;
+        self.keyed = -1;
+        self.last_key = f64::NEG_INFINITY;
     }
 
     fn fit(&mut self) {
@@ -331,6 +378,7 @@ impl Hat {
         if slot != 1 && slot != 2 {
             return None;
         }
+        // one key-up holds for the run: a gap in what's heard is the receiver's, and the grid carries over it
         if !self.grid || pos48 - self.last_pos > RESTART_GAP48 || pos48 < self.last_pos - RESTART_GAP48 {
             self.restart(pos48, slot);
         }
@@ -341,7 +389,7 @@ impl Hat {
             if self.bad < 3 {
                 return None;
             }
-            self.restart(pos48, slot);
+            self.restart(pos48, slot); // the exception: the modem keyed again at a new phase
             m = self.a_m;
         }
         self.bad = 0;
@@ -369,7 +417,8 @@ impl Hat {
             let per = (l[0] * l[4] - l[1] * l[2]) / den;
             self.st.ppm = (SLOT48 / per - 1.0) * 1e6;
         }
-        if lcss == 1 && slot == 1 {
+        // the modem's short LC count runs on its own (never reset): where its cycle starts is heard, either timeslot
+        if lcss == 1 {
             self.lc_phase = m.rem_euclid(4);
         }
         if self.placed {
@@ -429,9 +478,9 @@ impl Hat {
                 self.slip[ts] = e;
                 self.slip_n[ts] = 1;
             }
-            // two in a row a slot behind: the queue holds one too many; a write dropped takes it out
-            if e > 0 && self.slip_n[ts] >= 2 && self.drop[ts] == 0 {
-                self.drop[ts] = (e / 2) as u32;
+            // two in a row a slot behind: the queue holds one too many; DMR_ABORT before the next write flushes it
+            if e > 0 && self.slip_n[ts] >= 2 && self.abort[ts] == 0 {
+                self.abort[ts] = 1;
                 self.slip_n[ts] = 0;
             }
         }
@@ -447,6 +496,104 @@ impl Hat {
         Some(m + self.d)
     }
 
+    /// An inbound burst placed under trunk slot k (the receiver's), for the modem's own report of it to match.
+    pub fn inbound(&mut self, k: i64, burst: &[u8; BURST]) {
+        self.inb_k[self.inb_i] = k;
+        self.inb_b[self.inb_i] = *burst;
+        self.inb_i = (self.inb_i + 1) % INB;
+    }
+
+    /// The modem's own report of an inbound burst (DMR_DATA1/2 from it, slot its tag), at now: matched to one the
+    /// receiver placed, a cross-check of the timeslot and a coarse check of the phase. Returns that one's trunk slot.
+    pub fn modem_rx(&mut self, now: f64, slot: c_int, burst: &[u8; BURST]) -> Option<i64> {
+        self.st.rx_n += 1;
+        // the same burst may come again (a call's repeats): the one whose end is nearest now
+        let mut hit = None;
+        let mut best = f64::INFINITY;
+        for i in 0..INB {
+            if self.inb_k[i] < 0 || bit_distance(&self.inb_b[i], burst) > MATCH_BITS {
+                continue;
+            }
+            let dt = self.air(self.inb_k[i]).map_or(0.0, |a| absf(now - (a + INBOUND_END_S)));
+            if hit.is_none() || dt < best {
+                hit = Some(i);
+                best = dt;
+            }
+        }
+        let Some(i) = hit else {
+            self.st.rx_unmatched += 1;
+            return None;
+        };
+        let k = self.inb_k[i];
+        self.inb_k[i] = -1;
+        if i64::from(slot) == (k & 1) + 1 {
+            self.st.rx_same += 1;
+        } else {
+            self.st.rx_other += 1;
+        }
+        if let Some(a) = self.air(k) {
+            let delay = now - (a + INBOUND_END_S);
+            if delay < self.st.rx_delay_min {
+                self.st.rx_delay_min = delay;
+            }
+            if delay > self.st.rx_delay_max {
+                self.st.rx_delay_max = delay;
+            }
+        }
+        Some(k)
+    }
+
+    /// A GET_STATUS reply at now: the modem's state (2 DMR, 0 IDLE, -1 not known), its flags (bit 0 the
+    /// transmitter on, 2 and 3 an overflow), each timeslot's free space (bursts). A queue deeper than the leads
+    /// allow is a backlog: flushed before its next write. The transmitter off while placed is a re-key: placed
+    /// again on the grid its next key-up starts.
+    pub fn status(&mut self, state: c_int, flags: c_int, space: [c_int; 2]) {
+        self.st.polls += 1;
+        if state == 0 {
+            self.st.idle += 1;
+        }
+        if flags & 0x0C != 0 {
+            self.st.overflows += 1;
+        }
+        // the queue holds a burst from its write to its fetch: one at most while every lead is under a slot pair
+        let lead = maxf(self.lead[0], self.lead[1]);
+        let allowed = ceil((lead - FETCH_S) / (2.0 * SLOT_S)).max(1);
+        for (ts, sp) in space.iter().enumerate() {
+            let depth = (28 - sp).max(0) as u32; // empty reads 28 (its free bytes / 35)
+            if depth > self.st.depth_max[ts] {
+                self.st.depth_max[ts] = depth;
+            }
+            if self.placed && i64::from(depth) > allowed && self.abort[ts] == 0 {
+                self.abort[ts] = 2;
+            }
+        }
+        let keyed = flags & 1 != 0;
+        if self.placed && !keyed && self.keyed == 1 {
+            self.st.unkeyed += 1;
+            self.reset();
+            self.event(EV_REKEY, 0, 0, 0, [0.0; 4]);
+        }
+        self.keyed = i8::from(keyed);
+    }
+
+    /// A write to timeslot slot NAKed (its queue full): flushed before its next write.
+    pub fn nak(&mut self, slot: c_int) {
+        self.st.naks += 1;
+        if (slot == 1 || slot == 2) && self.placed {
+            self.abort[(slot - 1) as usize] = 3;
+        }
+    }
+
+    /// Whether to write an idle burst on TS1 now to key the modem: not placed and not keyed (as its status says),
+    /// at most every 0.5 s. Placed, the slots written hold the key.
+    pub fn keep(&mut self, now: f64) -> bool {
+        if self.placed || self.keyed == 1 || now - self.last_key < KEEP_S {
+            return false;
+        }
+        self.last_key = now;
+        true
+    }
+
     /// The next slot to write and its air time; None while the grid isn't known. k_min: the first trunk slot it
     /// may place on (the next after the last the controller gave). Slots too late to make are skipped here.
     pub fn next(&mut self, now: f64, k_min: i64) -> Option<(i64, f64)> {
@@ -455,22 +602,24 @@ impl Hat {
             return None;
         }
         if !self.placed {
-            let lead = if self.lead[1] > self.lead[0] { self.lead[1] } else { self.lead[0] };
+            let lead = maxf(self.lead[0], self.lead[1]);
             let want48 = (now + lead + 0.01 - self.off) * 48000.0;
             let mut m = self.a_m + ceil((want48 - self.a_p) / self.per);
             m += m & 1; // TS1
             let mut k0 = k_min;
             k0 += k0 & 1;
             let mut d = k0 - m;
-            if self.lc_phase >= 0 && (self.lc_phase + d).rem_euclid(4) != 0 {
-                d += 2; // the modem's short LC cycle starts on trunk slots k % 4 == 0
+            // the modem's short LC cycle on trunk slots k % 4 == 0 when it starts before TS1, else k % 4 == 1
+            if self.lc_phase >= 0 && (self.lc_phase + d).rem_euclid(4) >= 2 {
+                d += 2;
             }
             self.d = d;
             self.next_k = m + d;
             self.placed = true;
             self.st.placed = true;
             self.st.d = d;
-            self.event(EV_PLACE, 1, m + d, m, [d as f64, 0.0, 0.0, 0.0]);
+            let c = if self.lc_phase >= 0 { (self.lc_phase + d).rem_euclid(4) as f64 } else { -1.0 };
+            self.event(EV_PLACE, 1, m + d, m, [d as f64, c, 0.0, 0.0]);
         }
         loop {
             let k = self.next_k;
@@ -488,14 +637,22 @@ impl Hat {
         self.next_k = k + 1;
     }
 
-    /// Whether slot k's burst should go unwritten: its timeslot's queue holds one too many.
-    pub fn dropping(&mut self, k: i64) -> bool {
+    /// Whether the CACH before trunk slot k starts the modem's short LC cycle (LCSS 1): DMR_SHORTLC for that cycle
+    /// goes with slot k's write, before the modem latches it.
+    pub fn lc_start(&self, k: i64) -> bool {
+        self.placed && self.lc_phase >= 0 && (k - self.d - self.lc_phase).rem_euclid(4) == 0
+    }
+
+    /// Whether DMR_ABORT for slot k's timeslot goes just before its write (that timeslot ran behind): true once.
+    pub fn abort(&mut self, k: i64) -> bool {
         let ts = (k & 1) as usize;
-        if self.drop[ts] == 0 {
+        let why = self.abort[ts];
+        if why == 0 {
             return false;
         }
-        self.drop[ts] -= 1;
-        self.skip(k);
+        self.abort[ts] = 0;
+        self.st.aborts += 1;
+        self.event(EV_ABORT, ts as c_int + 1, k, 0, [f64::from(why - 1), 0.0, 0.0, 0.0]);
         true
     }
 
@@ -529,9 +686,25 @@ impl Hat {
 }
 
 // ── the modem, simulated ────────────────────────────────────────────────────────────────────────────────────
+//
+// The stock modem as expected (tier3-hat.md section 4; what isn't measured yet is marked so there). Its time is the
+// host's: a frame from the host takes effect when its last byte is in (115200 baud); a slot is fetched from its
+// timeslot's queue `fetch` before its air time (the TX bit buffer kept full, a few bits' jitter), and the CACH before
+// it is built 24 bits before that.
 
-const SIM_CAP_MAX: usize = 16;
+const SIM_FIFO_BYTES: usize = 1000; // each timeslot's queue; a burst takes 33
+const SIM_CAP_MAX: usize = SIM_FIFO_BYTES / BURST;
 const SIM_AIRQ: usize = 16;
+const SIM_RXQ: usize = 8;
+const SIM_BYTE_S: f64 = 10.0 / 115200.0;
+const SIM_BIT_S: f64 = 1.0 / 9600.0;
+const SIM_CACH_LEAD: f64 = 24.0 * SIM_BIT_S; // the CACH before a slot is built this long before its burst's fetch
+const SIM_BURST_S: f64 = 264.0 * SIM_BIT_S;
+const SIM_TAG_S: f64 = 72.0 * SIM_BIT_S; // the inbound tag moves to the outbound timeslot 9 bytes into its burst
+const SIM_RX_LATENCY: f64 = 0.001;
+const SIM_WATCHDOG: f64 = 1.0;
+const SIM_HOLD: u32 = 20; // slots after a key-up by DMR_START 1: the queues not read, the AT 0
+const SIM_JITTER: f64 = 0.0008; // the fetch lead's spread (the bit buffer 1016-1023 bits)
 const IDLE_BURST: [u8; BURST] = [0x55; BURST]; // the sim's own fill: not a valid burst, never one of the host's
 
 /// A slot the simulated modem sent.
@@ -542,41 +715,66 @@ pub struct SimAir {
     pub t: f64,
     pub burst: [u8; BURST],
     pub host: bool, // the host's burst (false: its idle fill)
-    pub at: c_int,
+    pub at: c_int,  // the CACH before it (-1: none, the first slot of a key-up)
     pub lcss: c_int,
     pub frag: c_int, // which of the short LC's 4 rows
     pub slc: [u8; 9],
 }
 
 const NO_AIR: SimAir =
-    SimAir { m: 0, slot: 0, t: 0.0, burst: [0; BURST], host: false, at: 0, lcss: 0, frag: 0, slc: [0; 9] };
+    SimAir { m: 0, slot: 0, t: 0.0, burst: [0; BURST], host: false, at: -1, lcss: -1, frag: -1, slc: [0; 9] };
+
+#[derive(Clone, Copy)]
+struct SimRx {
+    t: f64, // its sync's end
+    control: u8,
+    burst: [u8; BURST],
+}
 
 pub struct Sim {
     ppm: f64,
     fetch: f64,
     cap: usize,
-    hang: u32,
-    key_delay: f64,
-    on: bool,
+    dmr: bool,     // in DMR mode (else IDLE)
+    dmr_t: f64,    // when it went to DMR
+    status_t: f64, // the last GET_STATUS
     keyed: bool,
+    feeding: bool,  // taking slots from the queues (false: draining what it took, then unkeyed)
+    key_t: f64,     // slots due to be fetched before this are fetched at it (a key-up, a resume)
+    drain_end: f64, // the end of the last burst it took
     t0: f64,
     m_next: i64,
     m_base: i64,
+    jit: f64, // m_next's fetch lead
+    cach_built: bool,
+    cur_at: c_int,
+    cur_lcss: c_int,
+    cur_frag: c_int,
+    hold: u32,
     q: [[[u8; BURST]; SIM_CAP_MAX]; 2],
     qn: [usize; 2],
-    empty: u32,
+    abort: [bool; 2],
+    cach_n: u64, // its short LC count: never reset
     slc: [u8; 9],
-    slc_pend: [u8; 9],
-    has_pend: bool,
-    out: [u8; 512],
+    slc_cycle: [u8; 9],
+    rng: u32,
+    uart_t: f64,
+    out: [u8; 1024],
     nout: usize,
     air: [SimAir; SIM_AIRQ],
     air_h: usize,
     air_n: usize,
+    rx: [SimRx; SIM_RXQ],
+    rx_n: usize,
     rd: [u8; 256],
     nrd: usize,
     pub naks: u32,
     pub keyups: u32,
+    pub unkeys: u32,
+    pub drops: u32,       // the watchdog fired while keyed
+    pub idles: u32,       // the watchdog fired
+    pub nulls: u32,       // short LC cycles latched Null (both queues empty) while the host writes
+    last_write: [f64; 2], // the host's last two writes
 }
 
 const ACK: u8 = 0x70;
@@ -588,29 +786,52 @@ impl Sim {
             ppm,
             fetch,
             cap: if cap == 0 || cap > SIM_CAP_MAX { SIM_CAP_MAX } else { cap },
-            hang: 6,
-            key_delay: 0.02,
-            on: false,
+            dmr: false,
+            dmr_t: 0.0,
+            status_t: 0.0,
             keyed: false,
+            feeding: false,
+            key_t: 0.0,
+            drain_end: 0.0,
             t0: 0.0,
             m_next: 0,
             m_base: 0,
+            jit: fetch,
+            cach_built: false,
+            cur_at: -1,
+            cur_lcss: -1,
+            cur_frag: -1,
+            hold: 0,
             q: [[[0; BURST]; SIM_CAP_MAX]; 2],
             qn: [0; 2],
-            empty: 0,
+            abort: [false; 2],
+            cach_n: 0,
             slc: [0; 9],
-            slc_pend: [0; 9],
-            has_pend: false,
-            out: [0; 512],
+            slc_cycle: [0; 9],
+            rng: 12345,
+            uart_t: f64::NEG_INFINITY,
+            out: [0; 1024],
             nout: 0,
             air: [NO_AIR; SIM_AIRQ],
             air_h: 0,
             air_n: 0,
+            rx: [SimRx { t: 0.0, control: 0, burst: [0; BURST] }; SIM_RXQ],
+            rx_n: 0,
             rd: [0; 256],
             nrd: 0,
             naks: 0,
             keyups: 0,
+            unkeys: 0,
+            drops: 0,
+            idles: 0,
+            nulls: 0,
+            last_write: [f64::NEG_INFINITY; 2],
         }
+    }
+
+    /// Its short LC count, so a test can start a key-up at another phase of it.
+    pub fn set_lc_count(&mut self, n: u64) {
+        self.cach_n = n;
     }
 
     fn reply(&mut self, cmd: u8, p: &[u8]) {
@@ -623,11 +844,40 @@ impl Sim {
         self.nout += n;
     }
 
-    fn slot_t(&self, m: i64) -> f64 {
-        self.t0 + m as f64 * 0.03 / (1.0 + self.ppm * 1e-6)
+    fn slot_len(&self) -> f64 {
+        SLOT_S / (1.0 + self.ppm * 1e-6)
     }
 
-    fn command(&mut self, cmd: u8, p: &[u8], now: f64) {
+    fn slot_t(&self, m: i64) -> f64 {
+        self.t0 + m as f64 * self.slot_len()
+    }
+
+    fn new_jitter(&mut self) {
+        self.rng = self.rng.wrapping_mul(1103515245).wrapping_add(12345);
+        let u = f64::from(self.rng >> 8 & 0xffff) / 65536.0;
+        self.jit = self.fetch + (u - 0.5) * SIM_JITTER;
+    }
+
+    fn key(&mut self, t: f64, hold: u32) {
+        self.keyed = true;
+        self.feeding = true;
+        self.key_t = t;
+        self.t0 = t; // TS1 first, no CACH before it (the transmitter's own turn-on delay isn't modeled)
+        self.m_base += 1000;
+        self.m_next = 0;
+        self.cach_built = false;
+        self.hold = hold;
+        self.keyups += 1;
+        self.new_jitter();
+    }
+
+    /// Stop taking slots: what it took plays out, then it unkeys.
+    fn stop(&mut self) {
+        self.feeding = false;
+        self.qn = [0; 2];
+    }
+
+    fn command(&mut self, cmd: u8, p: &[u8], t: f64) {
         match cmd {
             0x00 => {
                 let mut v = [0u8; 24];
@@ -636,12 +886,35 @@ impl Sim {
                 self.reply(0x00, &v[..21]);
             }
             0x01 => {
-                let flags = if self.keyed { 0x01 } else { 0 };
-                let s = [0x02, 0x02, flags, 0, (self.cap - self.qn[0]) as u8, (self.cap - self.qn[1]) as u8, 0, 0];
+                self.status_t = t;
+                let flags = u8::from(self.keyed);
+                let space = |n: usize| ((SIM_FIFO_BYTES - n * BURST) / 35) as u8;
+                let s =
+                    [0x02, if self.dmr { 2 } else { 0 }, flags, 0, space(self.qn[0]), space(self.qn[1]), 0, 0, 0, 0];
                 self.reply(0x01, &s);
+            }
+            0x03 => {
+                if p.first().copied() == Some(2) {
+                    if !self.dmr {
+                        self.dmr = true;
+                        self.dmr_t = t;
+                    }
+                } else if self.dmr {
+                    self.dmr = false;
+                    self.stop();
+                }
+                self.reply(ACK, &[cmd]);
             }
             0x18 | 0x1A => {
                 let ts = if cmd == 0x18 { 0 } else { 1 };
+                if !self.dmr {
+                    self.dmr = true; // a write in IDLE goes back to DMR
+                    self.dmr_t = t;
+                }
+                if self.abort[ts] {
+                    self.abort[ts] = false;
+                    self.qn[ts] = 0;
+                }
                 if p.len() < 1 + BURST || self.qn[ts] >= self.cap {
                     self.naks += 1;
                     self.reply(NAK, &[cmd, 5]);
@@ -650,41 +923,37 @@ impl Sim {
                 let n = self.qn[ts];
                 self.q[ts][n].copy_from_slice(&p[1..1 + BURST]);
                 self.qn[ts] += 1;
-                self.key(now);
+                self.last_write = [self.last_write[1], t];
+                if !self.keyed {
+                    self.key(t, 0);
+                } else if !self.feeding {
+                    self.feeding = true; // still draining: it takes slots again, on the same grid
+                    self.key_t = t;
+                }
             }
             0x1C => {
                 if p.len() >= 9 {
-                    self.slc_pend.copy_from_slice(&p[..9]);
-                    self.has_pend = true;
+                    self.slc.copy_from_slice(&p[..9]);
                 }
             }
             0x1D => {
-                self.on = p.first().copied().unwrap_or(0) != 0;
-                if !self.on {
-                    self.keyed = false;
-                    self.qn = [0; 2];
+                if p.first().copied().unwrap_or(0) != 0 {
+                    if self.dmr && !self.keyed {
+                        self.key(t, SIM_HOLD);
+                    }
+                } else if self.keyed {
+                    self.stop();
                 }
             }
             0x1E => {
                 let ts = if p.first().copied().unwrap_or(1) == 2 { 1 } else { 0 };
-                self.qn[ts] = 0;
+                self.abort[ts] = true;
             }
             _ => self.reply(ACK, &[cmd]),
         }
     }
 
-    fn key(&mut self, now: f64) {
-        if self.on && !self.keyed && self.qn[0] + self.qn[1] > 0 {
-            self.keyed = true;
-            self.keyups += 1;
-            self.t0 = now + self.key_delay + self.fetch;
-            self.m_base += 1000;
-            self.m_next = 0;
-            self.empty = 0;
-        }
-    }
-
-    /// Bytes from the host.
+    /// Bytes from the host, sent at now.
     pub fn input(&mut self, now: f64, d: &[u8]) {
         for &b in d {
             if self.nrd == 0 && b != 0xE0 {
@@ -699,14 +968,18 @@ impl Sim {
                 let mut p = [0u8; 256];
                 p[..n - 3].copy_from_slice(&self.rd[3..n]);
                 self.nrd = 0;
-                self.command(cmd, &p[..n - 3], now);
+                // in when its last byte is: the serial line one frame after another
+                let t = maxf(self.uart_t, now) + n as f64 * SIM_BYTE_S;
+                self.uart_t = t;
+                self.run(t);
+                self.command(cmd, &p[..n - 3], t);
             } else if self.nrd >= 2 && (self.rd[1] < 3) {
                 self.nrd = 0;
             }
         }
     }
 
-    /// Bytes to the host (replies, NAKs), up to out.len(); returns how many.
+    /// Bytes to the host (replies, NAKs, what it heard), up to out.len(); returns how many.
     pub fn output(&mut self, out: &mut [u8]) -> usize {
         let n = if self.nout < out.len() { self.nout } else { out.len() };
         out[..n].copy_from_slice(&self.out[..n]);
@@ -715,43 +988,133 @@ impl Sim {
         n
     }
 
-    /// The modem's clock run to now: each slot taken from its queue (or filled) fetch before its air time.
-    pub fn run(&mut self, now: f64) {
-        while self.keyed && self.slot_t(self.m_next) - self.fetch <= now && self.air_n < SIM_AIRQ {
-            let m = self.m_next;
-            let ts = (m & 1) as usize;
-            let mut a = SimAir { m: self.m_base + m, slot: ts as c_int + 1, t: self.slot_t(m), ..NO_AIR };
-            if self.qn[ts] > 0 {
-                a.burst = self.q[ts][0];
-                a.host = true;
-                let n = self.qn[ts];
-                self.q[ts].copy_within(1..n, 0);
-                self.qn[ts] -= 1;
-            } else {
-                a.burst = IDLE_BURST;
-            }
-            // the CACH before it: the AT says whether the other timeslot has a burst queued
-            a.at = c_int::from(self.qn[1 - ts] > 0);
-            let c = m.rem_euclid(4);
-            if c == 0 && self.has_pend {
-                self.slc = self.slc_pend;
-                self.has_pend = false;
-            }
-            a.frag = c as c_int;
-            a.lcss = [1, 3, 3, 2][c as usize];
-            a.slc = self.slc;
-            self.air[(self.air_h + self.air_n) % SIM_AIRQ] = a;
-            self.air_n += 1;
-            self.m_next += 1;
-            // slots it fills in a row (assumed: the measurement can't tell this from both queues empty at fetch)
-            if a.host {
-                self.empty = 0;
-            } else {
-                self.empty += 1;
-                if self.empty >= self.hang && self.qn[0] + self.qn[1] == 0 {
-                    self.keyed = false; // the carrier drops; the next burst keys it again on a new grid
+    /// An MS's burst on the inbound, its sync ending at t_sync (host s): reported as DMR_DATA1/2 when the burst ends,
+    /// tagged with the outbound timeslot it was sending then (TS1 unkeyed).
+    pub fn hear(&mut self, t_sync: f64, control: u8, burst: &[u8; BURST]) {
+        if self.rx_n < SIM_RXQ {
+            self.rx[self.rx_n] = SimRx { t: t_sync, control, burst: *burst };
+            self.rx_n += 1;
+        }
+    }
+
+    fn next_fetch(&self) -> f64 {
+        maxf(self.key_t, self.slot_t(self.m_next) - self.jit)
+    }
+
+    fn next_step(&self) -> f64 {
+        let f = self.next_fetch();
+        if self.m_next > 0 && !self.cach_built {
+            maxf(self.key_t, f - SIM_CACH_LEAD)
+        } else {
+            f
+        }
+    }
+
+    fn step(&mut self, t: f64) {
+        let m = self.m_next;
+        let ts = (m & 1) as usize;
+        if m > 0 && !self.cach_built {
+            // the CACH before slot m: TC its timeslot, the AT the other timeslot's queue, the short LC's count
+            let pos = (self.cach_n % 4) as usize;
+            if pos == 0 {
+                if self.qn[0] + self.qn[1] == 0 {
+                    self.slc_cycle = [0; 9];
+                    if t - self.last_write[0] < 0.1 {
+                        self.nulls += 1;
+                    }
+                } else {
+                    self.slc_cycle = self.slc;
                 }
             }
+            self.cur_at = if self.hold > 0 { 0 } else { c_int::from(self.qn[1 - ts] > 0) };
+            self.cur_lcss = [1, 3, 3, 2][pos];
+            self.cur_frag = pos as c_int;
+            self.cach_n += 1;
+            self.cach_built = true;
+            return;
+        }
+        let mut a =
+            SimAir { m: self.m_base + m, slot: ts as c_int + 1, t: self.slot_t(m), slc: self.slc_cycle, ..NO_AIR };
+        if m > 0 {
+            a.at = self.cur_at;
+            a.lcss = self.cur_lcss;
+            a.frag = self.cur_frag;
+        }
+        if self.hold > 0 {
+            self.hold -= 1;
+            a.burst = IDLE_BURST;
+        } else if self.qn[ts] > 0 {
+            a.burst = self.q[ts][0];
+            a.host = true;
+            let n = self.qn[ts];
+            self.q[ts].copy_within(1..n, 0);
+            self.qn[ts] -= 1;
+        } else {
+            a.burst = IDLE_BURST;
+            self.abort[ts] = false; // an idle fill clears a DMR_ABORT, nothing flushed
+        }
+        self.air[(self.air_h + self.air_n) % SIM_AIRQ] = a;
+        self.air_n += 1;
+        self.drain_end = a.t + SIM_BURST_S;
+        self.m_next += 1;
+        self.cach_built = false;
+        self.new_jitter();
+    }
+
+    /// The modem run to t: its watchdog, each CACH built and each slot taken from its queue (or filled), the key
+    /// dropped once it stops taking and what it took has aired, its reports of what it heard.
+    pub fn run(&mut self, t: f64) {
+        loop {
+            let ev = if self.keyed && self.feeding { self.next_step() } else { f64::INFINITY };
+            if self.dmr {
+                let wd = maxf(self.status_t, self.dmr_t) + SIM_WATCHDOG;
+                if wd <= t && wd <= ev {
+                    self.dmr = false;
+                    self.idles += 1;
+                    if self.keyed && self.feeding {
+                        self.drops += 1;
+                    }
+                    self.stop(); // IDLE: it stops taking slots (its queues emptied: assumed)
+                    continue;
+                }
+            }
+            if !self.keyed {
+                break;
+            }
+            if !self.feeding {
+                if self.drain_end <= t {
+                    self.keyed = false;
+                    self.unkeys += 1;
+                }
+                break;
+            }
+            if ev > t || self.air_n == SIM_AIRQ {
+                break;
+            }
+            self.step(ev);
+        }
+        // what it heard, out when the burst has ended (108 bits after its sync) and a little latency
+        let mut i = 0;
+        while i < self.rx_n {
+            let r = self.rx[i];
+            let t_out = r.t + 108.0 * SIM_BIT_S + SIM_RX_LATENCY;
+            if t_out > t {
+                i += 1;
+                continue;
+            }
+            let mut slot = 1;
+            if self.keyed {
+                let m = floor((r.t - SIM_TAG_S - self.t0) / self.slot_len()) as i64;
+                if m >= 0 {
+                    slot = (m & 1) + 1;
+                }
+            }
+            let mut p = [0u8; 1 + BURST];
+            p[0] = r.control;
+            p[1..].copy_from_slice(&r.burst);
+            self.reply(if slot == 1 { 0x18 } else { 0x1A }, &p);
+            self.rx.copy_within(i + 1..self.rx_n, i);
+            self.rx_n -= 1;
         }
     }
 
@@ -833,6 +1196,31 @@ pub unsafe extern "C" fn rdof_t3hat_inbound_k(h: *const Hat, pos48: i64) -> i64 
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn rdof_t3hat_inbound(h: *mut Hat, k: i64, burst: *const u8) {
+    (*h).inbound(k, &*(burst as *const [u8; BURST]));
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3hat_modem_rx(h: *mut Hat, now: f64, slot: c_int, burst: *const u8) -> i64 {
+    (*h).modem_rx(now, slot, &*(burst as *const [u8; BURST])).unwrap_or(-1)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3hat_status(h: *mut Hat, state: c_int, flags: c_int, space1: c_int, space2: c_int) {
+    (*h).status(state, flags, [space1, space2]);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3hat_nak(h: *mut Hat, slot: c_int) {
+    (*h).nak(slot);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3hat_keep(h: *mut Hat, now: f64) -> bool {
+    (*h).keep(now)
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn rdof_t3hat_next(h: *mut Hat, now: f64, k_min: i64, k: *mut i64, air: *mut f64) -> bool {
     match (*h).next(now, k_min) {
         Some((kk, a)) => {
@@ -845,8 +1233,13 @@ pub unsafe extern "C" fn rdof_t3hat_next(h: *mut Hat, now: f64, k_min: i64, k: *
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rdof_t3hat_dropping(h: *mut Hat, k: i64) -> bool {
-    (*h).dropping(k)
+pub unsafe extern "C" fn rdof_t3hat_lc_start(h: *const Hat, k: i64) -> bool {
+    (*h).lc_start(k)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3hat_abort(h: *mut Hat, k: i64) -> bool {
+    (*h).abort(k)
 }
 
 #[no_mangle]
@@ -921,8 +1314,21 @@ pub unsafe extern "C" fn rdof_t3hatsim_run(s: *mut Sim, now: f64) {
     (*s).run(now);
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3hatsim_hear(s: *mut Sim, t_sync: f64, control: u8, burst: *const u8) {
+    (*s).hear(t_sync, control, &*(burst as *const [u8; BURST]));
+}
+
+/// Its counts: key-ups, unkeys, watchdog drops (while keyed), short LC cycles latched Null, writes NAKed.
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3hatsim_counts(s: *const Sim, out: *mut u32) {
+    let s = &*s;
+    let c = [s.keyups, s.unkeys, s.drops, s.nulls, s.naks];
+    core::ptr::copy_nonoverlapping(c.as_ptr(), out, c.len());
+}
+
 /// The next slot sent by now: its modem slot, timeslot, air time, burst, whether the host's, the AT and LCSS of the
-/// CACH before it, the short LC (9 bytes, as DMR_SHORTLC took it) and which of its rows that CACH carries.
+/// CACH before it (-1: none), the short LC (9 bytes, as DMR_SHORTLC took it) and which of its rows that CACH carries.
 #[no_mangle]
 pub unsafe extern "C" fn rdof_t3hatsim_aired(
     s: *mut Sim,
@@ -963,6 +1369,11 @@ mod tests {
         (f, p.len() + 3)
     }
 
+    fn send(s: &mut Sim, t: f64, cmd: u8, p: &[u8]) {
+        let (f, n) = frame(cmd, p);
+        s.input(t, &f[..n]);
+    }
+
     fn burst_for(k: i64) -> [u8; BURST] {
         let mut b = [0u8; BURST];
         for (i, x) in b.iter_mut().enumerate() {
@@ -971,35 +1382,83 @@ mod tests {
         b
     }
 
+    fn data(b: &[u8; BURST]) -> [u8; 34] {
+        let mut p = [0u8; 34];
+        p[0] = 0x40;
+        p[1..].copy_from_slice(b);
+        p
+    }
+
+    fn slc_for(k: i64) -> [u8; 9] {
+        [((k >> 2) as u8) | 0x80; 9]
+    }
+
+    const KEY_BURST: [u8; BURST] = [0x40; BURST];
+    // a frame's time on the serial line: DMR_DATA 37 bytes
+    const DATA_S: f64 = 37.0 * SIM_BYTE_S;
+
     /// The host and the simulated modem: the receiver hears every slot (position on a 48 kS/s clock that is the
-    /// host's, plus a constant receive delay), the writer writes each slot lead before its air time.
+    /// host's, plus a constant receive delay), the writer polls GET_STATUS and writes each slot lead before its air
+    /// time, the short LC with the slot whose CACH starts its cycle.
     struct Bench {
         h: Hat,
         s: Sim,
         now: f64,
-        written: [Option<i64>; 4096], // by modem slot index into the trunk: which k was aired where
         aired_ok: u32,
-        aired_at: [[u32; 2]; 2],      // [ts][at]
+        aired_at: [[u32; 2]; 2], // [ts][at]
         fills: u32,
         ts1_at: [u32; 2],
+        slc_ok: u32,
         strict: bool,
+        polling: bool,
+        next_poll: f64,
+        rx_k: [i64; 64],
+        rx_n: usize,
     }
 
     impl Bench {
-        fn new(ppm: f64, fetch: f64) -> Bench {
-            let mut s = Sim::new(ppm, fetch, 8);
-            let (f, n) = frame(0x1D, &[1]);
-            s.input(0.0, &f[..n]);
+        fn new(ppm: f64, lc_count: u64) -> Bench {
+            let mut s = Sim::new(ppm, 0.106, 0);
+            s.set_lc_count(lc_count);
+            send(&mut s, 0.0, 0x03, &[2]); // DMR
             Bench {
-                h: Hat::new(0.025, 0.055),
+                h: Hat::new(0.125, 0.155),
                 s,
                 now: 0.0,
-                written: [None; 4096],
                 aired_ok: 0,
                 aired_at: [[0; 2]; 2],
                 fills: 0,
                 ts1_at: [0; 2],
+                slc_ok: 0,
                 strict: true,
+                polling: true,
+                next_poll: 0.0,
+                rx_k: [0; 64],
+                rx_n: 0,
+            }
+        }
+
+        /// the modem's replies: status, NAKs, what it heard
+        fn replies(&mut self) {
+            let mut out = [0u8; 1024];
+            let n = self.s.output(&mut out);
+            let mut i = 0;
+            while i + 3 <= n {
+                let len = out[i + 1] as usize;
+                let (cmd, p) = (out[i + 2], &out[i + 3..i + len]);
+                match cmd {
+                    0x01 => self.h.status(c_int::from(p[1]), c_int::from(p[2]), [p[4].into(), p[5].into()]),
+                    0x7F => self.h.nak(if p[0] == 0x18 { 1 } else { 2 }),
+                    0x18 | 0x1A => {
+                        let b: [u8; BURST] = p[1..1 + BURST].try_into().unwrap();
+                        if let Some(k) = self.h.modem_rx(self.now, if cmd == 0x18 { 1 } else { 2 }, &b) {
+                            self.rx_k[self.rx_n % 64] = k;
+                            self.rx_n += 1;
+                        }
+                    }
+                    _ => {}
+                }
+                i += len;
             }
         }
 
@@ -1010,139 +1469,202 @@ mod tests {
             let rx_delay = 0.004;
             self.h.clock(now, ((now - rx_delay) * 48000.0) as i64);
             self.s.run(now);
+            self.replies();
             while let Some(a) = self.s.aired(now - rx_delay - 0.0001) {
                 let pos = (a.t * 48000.0) as i64;
-                let lcss = a.lcss;
-                let m = self.h.heard(pos, a.slot, a.at, lcss, &a.burst);
-                if let Some(m) = m {
-                    if self.h.placed() {
-                        let k = m + self.h.d();
-                        if self.strict && a.lcss == 1 {
-                            assert_eq!(k.rem_euclid(4), 0, "the short LC starts on slot {k}");
-                        }
-                        if a.host && a.burst == [0x40; BURST] {
-                            // a burst that held the carrier before the placing
-                        } else if a.host {
-                            if self.strict {
-                                assert_eq!(a.burst, burst_for(k), "slot {k} aired someone else's burst");
-                            }
-                            self.aired_ok += 1;
-                            if a.slot == 2 {
-                                // the CACH before this TS2 slot carries the AT after TS1 slot k - 1
-                                self.aired_at[1][a.at as usize] += 1;
-                                let want = at_of(k - 1);
-                                if want >= 0 && self.strict {
-                                    assert_eq!(a.at, want, "the AT after TS1 slot {}", k - 1);
-                                    self.ts1_at[a.at as usize] += 1;
-                                }
-                            }
-                        } else {
-                            self.fills += 1;
+                let m = self.h.heard(pos, a.slot, a.at, a.lcss, &a.burst);
+                let (Some(m), true) = (m, self.h.placed()) else { continue };
+                let k = m + self.h.d();
+                if self.strict && a.lcss == 1 {
+                    assert!(self.h.lc_start(k), "the short LC's cycle starts before slot {k}");
+                    assert!(k.rem_euclid(4) <= 1, "the cycle starts on slot {k}");
+                    if a.host {
+                        assert_eq!(a.slc, slc_for(k), "the short LC from slot {k}");
+                        self.slc_ok += 1;
+                    }
+                }
+                if a.host && a.burst == KEY_BURST {
+                    // the burst that keyed the modem before the placing
+                } else if a.host {
+                    if self.strict {
+                        assert_eq!(a.burst, burst_for(k), "slot {k} aired someone else's burst");
+                    }
+                    self.aired_ok += 1;
+                    if a.slot == 2 && a.at >= 0 {
+                        // the CACH before this TS2 slot carries the AT after TS1 slot k - 1
+                        self.aired_at[1][a.at as usize] += 1;
+                        let want = at_of(k - 1);
+                        if want >= 0 && self.strict {
+                            assert_eq!(a.at, want, "the AT after TS1 slot {}", k - 1);
+                            self.ts1_at[a.at as usize] += 1;
                         }
                     }
+                } else {
+                    self.fills += 1;
                 }
             }
             // the writer, as the platform's thread runs it
-            if !self.h.placed() && self.s.queued(0) + self.s.queued(1) == 0 {
-                // not placed yet: a burst at a time keys the modem and holds it
-                let (f, n) = frame(0x18, &[0x40; 34]);
-                self.s.input(now, &f[..n]);
+            if self.polling && now >= self.next_poll {
+                send(&mut self.s, now, 0x01, &[]);
+                self.next_poll = now + 0.25;
             }
-            if let Some((k, air)) = self.h.next(now, *k_min) {
-                let lead = self.h.lead(at_of(k - 2));
-                if now >= air - lead {
-                    if !self.h.dropping(k) {
-                        let b = burst_for(k);
-                        let mut p = [0u8; 34];
-                        p[0] = 0x40;
-                        p[1..].copy_from_slice(&b);
-                        let (f, n) = frame(if k & 1 == 0 { 0x18 } else { 0x1A }, &p);
-                        self.s.input(now, &f[..n]);
-                        self.h.wrote(k, &b, now, lead);
-                        if (k as usize) < self.written.len() {
-                            self.written[k as usize] = Some(k);
-                        }
+            match self.h.next(now, *k_min) {
+                None => {
+                    if self.h.keep(now) {
+                        send(&mut self.s, now, 0x18, &data(&KEY_BURST));
                     }
-                    *k_min = k + 1;
                 }
+                Some((k, air)) => {
+                    let lead = self.h.lead(at_of(k - 2));
+                    if now >= air - lead {
+                        if self.h.abort(k) {
+                            send(&mut self.s, now, 0x1E, &[(k & 1) as u8 + 1]);
+                        }
+                        if self.h.lc_start(k) {
+                            send(&mut self.s, now, 0x1C, &slc_for(k));
+                        }
+                        let b = burst_for(k);
+                        send(&mut self.s, now, if k & 1 == 0 { 0x18 } else { 0x1A }, &data(&b));
+                        self.h.wrote(k, &b, now, air - now);
+                        *k_min = k + 1;
+                    }
+                }
+            }
+        }
+
+        fn run(&mut self, ms: u32, k_min: &mut i64, at_of: &dyn Fn(i64) -> c_int) {
+            for _ in 0..ms {
+                self.step(k_min, at_of);
             }
         }
     }
 
     #[test]
     fn places_and_keeps_every_burst_on_its_slot() {
-        let mut b = Bench::new(3.6, 0.010);
+        let mut b = Bench::new(3.6, 3); // the short LC's cycle before TS1, as on the bench (H5)
         let mut k_min = 100;
-        for _ in 0..20000 {
-            b.step(&mut k_min, &|_| 0);
-        }
+        b.run(20000, &mut k_min, &|_| 0);
         let st = b.h.stats();
         assert!(st.placed);
         assert!(b.aired_ok > 600, "aired {}", b.aired_ok);
         assert_eq!(st.late + st.early, 0, "late {} early {}", st.late, st.early);
         assert!(st.on_time + 10 >= st.written, "on time {} written {}", st.on_time, st.written);
-        // all just in time: the AT after each TS1 slot idle
+        // all in the idle window: the AT after each TS1 slot idle
         assert!(b.aired_at[1][1] <= 2, "AT busy {}", b.aired_at[1][1]);
         assert!(st.ppm > 3.4 && st.ppm < 3.8, "ppm {}", st.ppm);
-        assert_eq!(b.s.keyups, 1);
+        assert!(b.slc_ok > 100, "short LCs {}", b.slc_ok);
+        // one key-up, held all the way by the status polls
+        assert_eq!((b.s.keyups, b.s.unkeys, b.s.drops, b.s.nulls), (1, 0, 0, 0));
+        assert!(st.polls > 70 && st.idle == 0 && st.aborts == 0, "polls {} idle {}", st.polls, st.idle);
+        assert!(st.depth_max[0] <= 1 && st.depth_max[1] <= 1);
+        assert!(st.delay_min > 0.11 && st.delay_max < 0.14, "{} {}", st.delay_min, st.delay_max);
     }
 
     #[test]
-    fn a_burst_written_a_slot_ahead_sets_the_at() {
-        let mut b = Bench::new(-2.0, 0.012);
+    fn the_short_lc_cycle_may_start_before_ts2() {
+        let mut b = Bench::new(-1.0, 0); // the count at a key-up puts LCSS 1 before TS2
+        let mut k_min = 0;
+        b.run(8000, &mut k_min, &|_| 0);
+        let st = b.h.stats();
+        assert_eq!(st.late + st.early, 0);
+        assert!(b.slc_ok > 40, "short LCs {}", b.slc_ok);
+        assert_eq!(b.s.nulls, 0);
+    }
+
+    #[test]
+    fn a_burst_written_early_sets_the_at() {
+        let mut b = Bench::new(-2.0, 3);
         let mut k_min = 0;
         // the AT busy after every 4th TS1 slot (a soliciting PDU), idle otherwise
         let at = |k: i64| if k & 1 == 0 && k % 8 == 4 { 1 } else { 0 };
-        for _ in 0..20000 {
-            b.step(&mut k_min, &at);
-        }
+        b.run(20000, &mut k_min, &at);
         let st = b.h.stats();
         assert_eq!(st.late + st.early, 0);
         assert!(b.ts1_at[1] > 50 && b.ts1_at[0] > 150, "AT busy {} idle {}", b.ts1_at[1], b.ts1_at[0]);
+        assert_eq!((b.s.keyups, b.s.unkeys), (1, 0));
     }
 
     #[test]
     fn a_late_write_is_caught_up() {
-        let mut b = Bench::new(0.0, 0.010);
+        let mut b = Bench::new(0.0, 3);
         b.strict = false;
         let mut k_min = 0;
-        for _ in 0..8000 {
-            b.step(&mut k_min, &|_| 0);
-        }
-        // a stall: the writer misses 70 ms, then writes the slots it can still make; the modem fills the gap
-        b.h.set_leads(0.025, 0.055, -1.0); // as a writer that doesn't check how late it is
-        let k_stall = k_min;
+        b.run(8000, &mut k_min, &|_| 0);
+        // a stall: the writer misses 70 ms, then writes the slots it can still make, some past their fetch
+        b.h.set_leads(0.125, 0.155, -1.0); // as a writer that doesn't check how late it is
         for _ in 0..70 {
             b.now += 0.001;
         }
-        for _ in 0..200 {
-            b.step(&mut k_min, &|_| 0);
-        }
-        b.h.set_leads(0.025, 0.055, 0.015);
-        for _ in 0..8000 {
-            b.step(&mut k_min, &|_| 0);
-        }
+        b.run(200, &mut k_min, &|_| 0);
+        b.h.set_leads(0.125, 0.155, 0.115);
+        b.run(8000, &mut k_min, &|_| 0);
         let st = b.h.stats();
         assert!(st.late >= 2, "late {}", st.late);
-        assert!(st.skipped >= 1);
-        // caught up: the last second all on time
+        assert!(st.aborts >= 1, "aborts {}", st.aborts);
+        // caught up: the last second all on time, on the same key-up
         let before = st.on_time;
-        for _ in 0..1000 {
-            b.step(&mut k_min, &|_| 0);
-        }
+        b.run(1000, &mut k_min, &|_| 0);
         let st2 = b.h.stats();
         assert_eq!(st2.late, st.late, "still late after the catch-up");
         assert!(st2.on_time > before + 25);
-        assert!(k_stall > 0);
+        assert_eq!(b.s.keyups, 1);
+    }
+
+    #[test]
+    fn a_host_stall_past_the_watchdog_places_again() {
+        let mut b = Bench::new(2.0, 3);
+        b.strict = false;
+        let mut k_min = 0;
+        b.run(5000, &mut k_min, &|_| 0);
+        // 1.5 s with nothing written and no status: the modem goes IDLE, drains, unkeys
+        for _ in 0..1500 {
+            b.now += 0.001;
+            b.s.run(b.now);
+            while b.s.aired(b.now).is_some() {}
+        }
+        assert!(!b.s.keyed() && b.s.drops == 1);
+        b.run(8000, &mut k_min, &|_| 0);
+        let st = b.h.stats();
+        assert!(st.grids >= 2, "grids {}", st.grids);
+        assert!(st.placed);
+        let before = (st.on_time, st.late, st.early);
+        b.run(2000, &mut k_min, &|_| 0);
+        let st2 = b.h.stats();
+        assert_eq!((st2.late, st2.early), (before.1, before.2), "placed again, all on time");
+        assert!(st2.on_time > before.0 + 50);
+        assert_eq!(b.s.keyups, 2);
+    }
+
+    #[test]
+    fn the_modem_tags_an_inbound_burst_with_its_timeslot() {
+        let mut b = Bench::new(1.0, 3);
+        let mut k_min = 0;
+        b.run(3000, &mut k_min, &|_| 0);
+        assert!(b.h.placed());
+        let k0 = k_min + 8;
+        for i in 0..20 {
+            let k = k0 + 3 * i;
+            let mut x = burst_for(k);
+            x[0] ^= 0xA5; // not one of the outbound's
+            b.h.inbound(k, &x);
+            // the MS's burst starts 1.25 ms before slot k's, its sync ends 156 bits in
+            let t_sync = b.h.air(k).unwrap() - 0.004 - 0.00125 + 156.0 * SIM_BIT_S;
+            b.s.hear(t_sync, 0x40 | 6, &x);
+            b.run(90, &mut k_min, &|_| 0);
+        }
+        b.run(500, &mut k_min, &|_| 0);
+        let st = b.h.stats();
+        assert_eq!((st.rx_n, st.rx_same, st.rx_other, st.rx_unmatched), (20, 20, 0, 0));
+        // reported 1 ms after the burst ends (and a ms step); the receiver's 4 ms delay puts its end that late
+        assert!(st.rx_delay_min > -0.0035 && st.rx_delay_max < -0.001, "{} {}", st.rx_delay_min, st.rx_delay_max);
+        assert_eq!(b.rx_k[0], k0);
     }
 
     #[test]
     fn inbound_slot_from_its_position() {
-        let mut b = Bench::new(1.0, 0.010);
+        let mut b = Bench::new(1.0, 3);
         let mut k_min = 10;
-        for _ in 0..3000 {
-            b.step(&mut k_min, &|_| 0);
-        }
+        b.run(3000, &mut k_min, &|_| 0);
         let k = k_min + 4;
         let air = b.h.air(k).unwrap();
         // an inbound burst under slot k starts 1.25 ms before its outbound burst, 1 ms of timing error either way
@@ -1152,42 +1674,174 @@ mod tests {
         }
     }
 
-    #[test]
-    fn sim_latches_the_short_lc_at_its_cycle_start() {
-        let mut s = Sim::new(0.0, 0.01, 8);
-        let (f, n) = frame(0x1D, &[1]);
-        s.input(0.0, &f[..n]);
-        let (f, n) = frame(0x18, &[0x40; 34]);
-        s.input(0.0, &f[..n]);
-        let (f, n) = frame(0x1C, &[7; 9]);
-        let mut t = 0.0;
-        let mut seen = 0;
-        for i in 0..400 {
+    // ── the simulated modem alone ──
+
+    /// Runs the sim to t in 1 ms steps, polling GET_STATUS every 250 ms when poll; collects what aired.
+    fn sim_to(s: &mut Sim, t0: f64, t1: f64, poll: bool, aired: &mut [SimAir; 512], n: &mut usize) {
+        let mut t = t0;
+        while t < t1 {
             t += 0.001;
-            if i == 45 {
-                s.input(t, &f[..n]);
-            }
-            if i % 30 == 0 {
-                let (g, gn) = frame(0x1A, &[0x40; 34]);
-                s.input(t, &g[..gn]);
+            if poll && ((t * 1000.0).round() as i64) % 250 == 0 {
+                send(s, t, 0x01, &[]);
             }
             s.run(t);
+            let mut out = [0u8; 1024];
+            s.output(&mut out);
             while let Some(a) = s.aired(t) {
-                if a.slc == [7; 9] {
-                    if seen == 0 {
-                        assert_eq!(a.frag, 0, "a new short LC starts its cycle");
-                        assert_eq!(a.lcss, 1);
-                    }
-                    seen += 1;
+                if *n < aired.len() {
+                    aired[*n] = a;
                 }
+                *n += 1;
             }
         }
-        assert!(seen > 4);
-        let (f, n) = frame(0x01, &[]);
-        s.input(t, &f[..n]);
+    }
+
+    #[test]
+    fn sim_holds_the_key_while_polled_and_drops_it_on_the_watchdog() {
+        let mut s = Sim::new(0.0, 0.106, 0);
+        send(&mut s, 0.0, 0x03, &[2]);
+        send(&mut s, 0.0, 0x18, &data(&KEY_BURST)); // a write keys it: TS1 first, no hold
+        let mut a = [NO_AIR; 512];
+        let mut n = 0;
+        sim_to(&mut s, 0.0, 3.0, true, &mut a, &mut n);
+        assert!(s.keyed());
+        assert_eq!((s.keyups, s.unkeys), (1, 0));
+        assert!(a[0].host && a[0].slot == 1 && a[0].at < 0, "the written burst first, on TS1, no CACH before it");
+        assert!(n > 95 && a[1..n].iter().all(|x| !x.host), "idle filled after: {n}");
+        // the last poll at 3.0: IDLE at 4.0, then what it took (about 106 ms) plays out and it unkeys
+        let mut t = 3.0;
+        while s.keyed() {
+            t += 0.001;
+            s.run(t);
+            while s.aired(t).is_some() {}
+        }
+        assert!(t > 4.1 && t < 4.16, "unkeyed at {t}");
+        assert_eq!((s.drops, s.unkeys), (1, 1));
+        // a write keys it again, a new grid, TS1 first
+        send(&mut s, 5.0, 0x1A, &data(&burst_for(1)));
+        n = 0;
+        sim_to(&mut s, 5.0, 5.2, true, &mut a, &mut n);
+        assert_eq!(s.keyups, 2);
+        assert!(a[0].slot == 1 && !a[0].host && a[1].slot == 2 && a[1].host);
+        assert!(a[0].t > 5.0 && a[0].t < 5.01);
+    }
+
+    #[test]
+    fn sim_dmr_start_holds_twenty_slots() {
+        let mut s = Sim::new(0.0, 0.106, 0);
+        send(&mut s, 0.0, 0x03, &[2]);
+        send(&mut s, 0.0, 0x1D, &[1]);
+        let mut a = [NO_AIR; 512];
+        let mut n = 0;
+        let mut t = 0.0;
+        for i in 0..40 {
+            // a burst a slot on each timeslot from the start
+            send(&mut s, t, if i & 1 == 0 { 0x18 } else { 0x1A }, &data(&burst_for(i)));
+            sim_to(&mut s, t, t + 0.03, true, &mut a, &mut n);
+            t += 0.03;
+        }
+        assert!(a[..20].iter().all(|x| !x.host && x.at <= 0), "the hold: idle fill, AT 0");
+        assert!(a[20].host && a[20].burst == burst_for(0), "then the backlog plays");
+        assert!(a[21].at == 1, "the AT from the queues again");
+    }
+
+    #[test]
+    fn sim_fetch_and_at_edges() {
+        let mut s = Sim::new(0.0, 0.106, 0);
+        send(&mut s, 0.0, 0x03, &[2]);
+        send(&mut s, 0.0, 0x18, &data(&KEY_BURST));
+        let mut a = [NO_AIR; 512];
+        let mut n = 0;
+        sim_to(&mut s, 0.0, 0.5, true, &mut a, &mut n);
+        // TS1 slots m (air T): the burst in the queue (its last byte) at T - lead
+        let mut t = 0.5;
+        let cases = [(40, 0.100), (48, 0.112), (56, 0.135), (64, 0.142), (72, 0.160), (80, 0.170)];
+        for &(m, lead) in &cases {
+            let at = s.slot_t(m) - lead - DATA_S;
+            sim_to(&mut s, t, at, true, &mut a, &mut n);
+            send(&mut s, at, 0x18, &data(&burst_for(m)));
+            t = at;
+        }
+        sim_to(&mut s, t, 3.0, true, &mut a, &mut n);
+        let find = |m: i64| a[..n].iter().position(|x| x.m == 1000 + m).unwrap();
+        // under 106 ms: misses its fetch, airs on the next TS1 slot
+        assert!(!a[find(40)].host && a[find(42)].burst == burst_for(40));
+        // 106-138.5 ms: on its slot, the AT before the slot ahead of it idle
+        for m in [48, 56] {
+            assert!(a[find(m)].burst == burst_for(m) && a[find(m - 1)].at == 0, "slot {m}");
+        }
+        // 138.5-166 ms: on its slot, that AT busy
+        for m in [64, 72] {
+            assert!(a[find(m)].burst == burst_for(m) && a[find(m - 1)].at == 1, "slot {m}");
+        }
+        // over 166 ms: taken a slot pair early
+        assert!(a[find(78)].burst == burst_for(80));
+    }
+
+    #[test]
+    fn sim_latches_the_short_lc_and_never_resets_its_count() {
+        let mut s = Sim::new(0.0, 0.106, 0);
+        send(&mut s, 0.0, 0x03, &[2]);
+        send(&mut s, 0.0, 0x1C, &[7; 9]);
+        send(&mut s, 0.0, 0x1A, &data(&burst_for(1))); // keys it: TS1 first, its idle fill
+        let mut a = [NO_AIR; 512];
+        let mut n = 0;
+        sim_to(&mut s, 0.0, 0.6, true, &mut a, &mut n);
+        // the first cycle: TS2's burst queued at the latch; the next, both queues empty: Null
+        assert!(a[1].lcss == 1 && a[1].slc == [7; 9] && a[1].slot == 2);
+        assert!(a[5].lcss == 1 && a[5].slc == [0; 9]);
+        // a burst a slot from now on: the short LC latched each cycle
+        let mut t = 0.6;
+        let m0 = (s.m_next + 8) & !1;
+        for m in m0..m0 + 16 {
+            let at = s.slot_t(m) - 0.125;
+            sim_to(&mut s, t, at, true, &mut a, &mut n);
+            send(&mut s, at, if m & 1 == 0 { 0x18 } else { 0x1A }, &data(&burst_for(m)));
+            t = at;
+        }
+        sim_to(&mut s, t, 1.6, true, &mut a, &mut n);
+        let lc1 = a[..n].iter().filter(|x| x.lcss == 1 && x.m >= 1000 + m0 + 1 && x.m < 1000 + m0 + 16);
+        assert!(lc1.clone().count() >= 3 && lc1.clone().all(|x| x.slc == [7; 9]));
+        // unkeyed (DMR_START 0) after an odd number of CACH, keyed again: its cycle starts before the other timeslot
+        let count = s.cach_n;
+        send(&mut s, t, 0x1D, &[0]);
+        sim_to(&mut s, t, 2.0, true, &mut a, &mut n);
+        assert!(!s.keyed());
+        s.set_lc_count(count | 1); // (the count there as if one more CACH had gone)
+        send(&mut s, 2.0, 0x18, &data(&KEY_BURST));
+        n = 0;
+        sim_to(&mut s, 2.0, 2.3, true, &mut a, &mut n);
+        let first = a[..n].iter().find(|x| x.lcss == 1).unwrap();
+        assert_eq!(first.slot, if (count | 1) % 4 == 3 { 2 } else { 1 });
+    }
+
+    #[test]
+    fn sim_queue_is_thirty_bursts_and_status_reads_its_space() {
+        let mut s = Sim::new(0.0, 0.106, 0);
+        send(&mut s, 0.0, 0x03, &[2]);
+        send(&mut s, 0.0, 0x1D, &[1]); // the hold: nothing taken from the queues for 20 slots
+        s.output(&mut [0u8; 64]);
+        let space = |s: &mut Sim, t: f64| {
+            send(s, t, 0x01, &[]);
+            let mut out = [0u8; 64];
+            let n = s.output(&mut out);
+            assert_eq!(n, 13);
+            (out[4], out[5], out[7], out[8])
+        };
+        assert_eq!(space(&mut s, 0.0), (2, 1, 28, 28));
+        for i in 0..31 {
+            send(&mut s, 0.001, 0x18, &data(&burst_for(i)));
+        }
         let mut out = [0u8; 64];
-        let k = s.output(&mut out);
-        assert!(k >= 11 && out[2] == 0x01);
+        let n = s.output(&mut out);
+        assert_eq!(&out[..n], &[0xE0, 5, 0x7F, 0x18, 5], "the 31st NAKed");
+        assert_eq!(s.queued(0), 30);
+        assert_eq!(space(&mut s, 0.2), (2, 1, 0, 28));
+        // DMR_ABORT: the next write to that timeslot empties its queue first
+        send(&mut s, 0.2, 0x1E, &[1]);
+        assert_eq!(s.queued(0), 30);
+        send(&mut s, 0.2, 0x18, &data(&burst_for(99)));
+        assert_eq!(s.queued(0), 1);
+        assert_eq!(space(&mut s, 0.21).2, 27);
     }
 }
-
