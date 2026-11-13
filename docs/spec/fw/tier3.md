@@ -146,7 +146,12 @@ At least one C_ALOHA goes out every 4 TSCC slots whatever else is due (an MS wai
 
 CACH on carrier A: TC alternates; the short LC is C_SYS_Parms (SLCO 0010b) with the Common_Slot_Counter, which
 advances every 4 slots; Reg matches C_ALOHA. AT = 1 in the CACH before the inbound slot where a solicited response
-is expected (after C_AHOY, after a response that solicits), else 0. Carrier B, payload only, sends P_SYS_Parms
+is expected (after C_AHOY, after a response that solicits), else 0. With aligned timing that is the CACH right after
+the TSCC's TS1 burst (its TC names TS2): 361-1 table 5.1 pairs outbound TS1 with inbound TS2 in one logical channel,
+and 4.5 / figure 4.8 tie a CACH to the inbound slot its TC names; 361-4 6.2.1.1.3 puts the AT in "the CACH
+following" the Aloha or the soliciting PDU. A standard site's TSCC on air agrees (RadioMax capture, 80 k bursts:
+after an Aloha that CACH said idle 97% of the time; after a soliciting PDU, busy). The CACH before TS1 carries TS2's
+inbound: busy while a call holds TS2. Carrier B, payload only, sends P_SYS_Parms
 (SLCO 0011b) while either slot is active and Activity Update otherwise; when both slots are idle and the split
 radio's call ends, carrier B unkeys.
 
