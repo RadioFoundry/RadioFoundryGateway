@@ -517,7 +517,10 @@ SUPED_SV, HI_RATE, SIMI, priority):
    Called_Party_Busy; itself, Not_Supported. A repeat of a request being set up gets the same answer again.
 2. An individual call to an MS: the availability check (6.6.3.1.4), C_AHOY (Service_Options_Mirror, Service_Kind
    0010b, source the caller, target the called), repeated every `ahoy_every_s` up to `ahoy_tries`; the caller hears
-   C_WACKD every 2 s. C_ACKU (the MS answers Message_Accepted) leads on; C_NACKU is mirrored; no answer, MSaway.
+   C_WACKD every 2 s. C_ACKU(Message_Accepted) leads on (6.6.3.1.4, 6.6.3.2.6), and so does MS_Accepted (the same
+   answer with the MS-sent direction bit, table 7.42); C_ACKU(CallBack) is mirrored to the caller with no channel,
+   as for voice (6.6.2.2.6); another C_ACKU (MS_Alerting) doesn't accept a data call, so the check runs on to no
+   answer; C_NACKU is mirrored; no answer, MSaway.
 3. A channel: PD_GRANT (individual) or TD_GRANT (talkgroup), opcodes 51/52, or 55/56 when SIMI asked for a
    multi-item call (7.1.1.1.1.4, 7.1.1.1.1.5), sent twice like the voice grants; HI_RATE is always 0 (single slot:
    dual-slot data isn't built, a HI_RATE request gets a single-slot grant). None free: C_QACKD(Queued_for_Resource)

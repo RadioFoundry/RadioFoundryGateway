@@ -80,6 +80,7 @@ pub mod spec {
     pub const PV_GRANT: u8 = 0b11_0000; // table 7.9
     pub const TV_GRANT: u8 = 0b11_0001; // table 7.11
     pub const BTV_GRANT: u8 = 0b11_0010; // table 7.12
+    pub const PD_GRANT: u8 = 0b11_0011; // table 7.13, single item
     pub const C_MOVE: u8 = 0b11_1001; // table 7.17
 
     // Gateway and special addresses (361-4 A.4)
