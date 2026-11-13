@@ -10,7 +10,10 @@ use crate::ffi::{
     rdof_duplex_silence, RDOF_DT_TERMINATOR_WITH_LC, RDOF_DT_VOICE, RDOF_DT_VOICE_LC_HEADER, RDOF_DT_VOICE_SYNC,
 };
 use crate::layer2::{rdof_group_lc, rdof_lc_burst, RDOF_DATA_XOR, RDOF_MS_VOICE};
+use crate::ambe::{rdof_ambe_decode_frame, rdof_ambe_encode_frame};
+use crate::bits::{get_field, set_field};
 use crate::mmdvm::rdof_silence_burst;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 extern "C" {
     fn rdof_embedded_lc_encode(lc9: *const u8, raw128: *mut u8);
@@ -100,6 +103,38 @@ impl Sim {
 }
 
 /// An MS's burst for tx (rdof_t3sim_ms_burst).
+/// The three AMBE+2 frames of a voice burst (bits 0-107 and 156-263), as one 216-bit run.
+fn ambe_frames(burst: &[u8], frames: &mut [u8; 27]) {
+    set_field(frames, 0, 64, get_field(burst, 0, 64));
+    set_field(frames, 64, 44, get_field(burst, 64, 44));
+    for k in 0..3 {
+        set_field(frames, 108 + 36 * k, 36, get_field(burst, 156 + 36 * k, 36));
+    }
+}
+
+/// A simulated MS's voice: the silence frame's parameters with a counter in the 8 lowest of the 49, FEC coded
+/// again. Near-silence that never repeats a frame: a radio may take a frame equal to the one before for a stale read.
+fn vary_ambe(burst: &mut [u8]) {
+    static COUNT: AtomicU32 = AtomicU32::new(0);
+    let mut frames = [0u8; 27];
+    ambe_frames(burst, &mut frames);
+    for f in frames.chunks_exact_mut(9) {
+        let frame: &mut [u8; 9] = f.try_into().unwrap();
+        let mut p = [0u8; 49];
+        rdof_ambe_decode_frame(frame, Some(&mut p));
+        let c = COUNT.fetch_add(1, Ordering::Relaxed);
+        for (i, b) in p[41..].iter_mut().enumerate() {
+            *b ^= (c >> i & 1) as u8;
+        }
+        rdof_ambe_encode_frame(&p, frame);
+    }
+    set_field(burst, 0, 64, get_field(&frames, 0, 64));
+    set_field(burst, 64, 44, get_field(&frames, 64, 44));
+    for k in 0..3 {
+        set_field(burst, 156 + 36 * k, 36, get_field(&frames, 108 + 36 * k, 36));
+    }
+}
+
 fn ms_burst(tx: &MsTx, n: c_int, cc: c_int, b: &mut RdofBurst) -> bool {
     unsafe { core::ptr::write_bytes(b as *mut RdofBurst, 0, 1) };
     b.family = FAMILY_MS;
@@ -135,6 +170,7 @@ fn ms_burst(tx: &MsTx, n: c_int, cc: c_int, b: &mut RdofBurst) -> bool {
             } else {
                 unsafe { rdof_duplex_silence(n, cc, b.burst.as_mut_ptr()) };
             }
+            vary_ambe(&mut b.burst);
             b.dt = if n != 0 { RDOF_DT_VOICE } else { RDOF_DT_VOICE_SYNC };
             b.n = n;
             true
@@ -371,3 +407,4 @@ static LAYOUTS: [Layout; 4] = [
 pub extern "C" fn rdof_t3sim_layout(i: usize) -> *const Layout {
     LAYOUTS.get(i).map_or(core::ptr::null(), |l| l as *const Layout)
 }
+
