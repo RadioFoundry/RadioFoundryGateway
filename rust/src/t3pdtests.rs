@@ -315,3 +315,116 @@ fn site_sends_packet_data() {
     let f: Vec<Event> = log.of(EV_PD).into_iter().filter(|e| e.op == PD_FAILED).collect();
     assert_eq!((f.len(), f[0].reason, f[0].dst), (1, R_MSAWAY, 1002));
 }
+
+// ── rate 3/4 and rate 1 (361-1 8.2.2; 361-3 5.3.1.2, 5.3.1.3, 5.4.1.2, 5.4.1.2A) ──
+
+/// Steps the air, keeping every packet data burst an MS sends (its dt, its decoded header if one).
+fn data_bursts<const N: usize>(air: &mut Air<N>, log: &mut Log, ms: i64) -> Vec<(usize, u8, Option<DataHead>)> {
+    let mut v = Vec::new();
+    let end = air.now() + ms;
+    while air.now() < end {
+        air.step(&mut log.f());
+        for (i, t) in air.inbound.iter().enumerate() {
+            if let Some(t) = t.filter(|t| t.kind == t3ms::TX_DATA) {
+                v.push((i, t.dt, if t.dt == 6 { DataHead::decode(&t.pdu) } else { None }));
+            }
+        }
+    }
+    v
+}
+
+const LONG: &[u8] = b"a longer datagram for the faster rates: rate 3/4 carries sixteen octets a confirmed block";
+
+#[test]
+fn packet_data_rate34_confirmed_selective_retry() {
+    let mut s = site_with(|c| c.data_hang_ms = 4000);
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG]), ms(1002, &[TG])], T0);
+    register_all(&mut air, &mut log);
+    let now = air.now();
+    assert!(air.ms[0].send_data(1002, t3ms::F_CONFIRMED | t3ms::F_RATE34, LONG, now));
+    // 91 octets and the CRC-32 in 16s: 6 blocks; the third arrives damaged
+    air.damage = 0b100;
+    let v = data_bursts(&mut air, &mut log, 8000);
+    assert!(air.ms[0].state() == t3ms::IDLE);
+    assert_eq!(air.ms[0].status().calls_done, 1, "acknowledged after the retry");
+    let (h, d, n, count) = air.ms[1].data_inbox().expect("delivered");
+    assert_eq!((h.dpf, h.src, count), (DPF_CONFIRMED, 1001, 1));
+    assert_eq!(&d[..n], LONG);
+    let heads: Vec<(usize, DataHead)> = v.iter().filter_map(|&(i, _, h)| h.map(|h| (i, h))).collect();
+    // C_HEAD, F = 1, 6 blocks (9.2.2): rate 3/4 blocks after it (DT 1000b)
+    let (i, c) = heads[0];
+    assert_eq!((i, c.dpf, c.full, c.blocks, c.response), (0, DPF_CONFIRMED, true, 6, true));
+    assert_eq!(c.pad as usize, 6 * 16 - 4 - LONG.len());
+    let first: Vec<u8> = v.iter().skip_while(|b| b.2.is_none()).skip(1).take(6).map(|b| b.1).collect();
+    assert_eq!(first, [8; 6]);
+    // the called MS's SACK (class 10b) and its C_RDATA (rate 1/2) listing block 2 (8.2.2.3, figure 8.17)
+    let (i, r) = heads[1];
+    assert_eq!((i, r.dpf, r.class, r.rtype, r.blocks, r.dst), (1, DPF_RESPONSE, 2, 0, 1, 1001));
+    let k = v.iter().position(|b| b.2 == Some(r)).unwrap();
+    assert_eq!((v[k + 1].0, v[k + 1].1), (1, 7));
+    // the caller sends block 2 again after a C_HEAD with F = 0 and one block to follow (361-3 5.4.1)
+    let (i, c2) = heads[2];
+    assert_eq!((i, c2.dpf, c2.full, c2.blocks, c2.ns), (0, DPF_CONFIRMED, false, 1, c.ns));
+    let k = v.iter().position(|b| b.2 == Some(c2)).unwrap();
+    assert_eq!((v[k + 1].0, v[k + 1].1), (0, 8));
+    // then the ACK (class 00b type 001b)
+    let (i, a) = heads[3];
+    assert_eq!((i, a.class, a.rtype, a.blocks), (1, 0, 1, 0));
+    assert_eq!(heads.len(), 4);
+}
+
+#[test]
+fn packet_data_rate34_and_rate1_unconfirmed() {
+    for (flag, dt, per) in [(t3ms::F_RATE34, 8u8, 18usize), (t3ms::F_RATE1, 10, 24)] {
+        let mut s = site_with(|_| {});
+        let mut log = Log::default();
+        let mut air = Air::new(&mut s, [ms(1001, &[TG]), ms(1002, &[TG]), ms(1003, &[TG])], T0);
+        register_all(&mut air, &mut log);
+        let now = air.now();
+        assert!(air.ms[0].send_data(1002, flag, LONG, now));
+        let v = data_bursts(&mut air, &mut log, 4000);
+        assert_eq!(air.ms[0].status().calls_done, 1);
+        let (h, d, n, _) = air.ms[1].data_inbox().expect("delivered");
+        assert_eq!((h.dpf, h.blocks as usize), (DPF_UNCONFIRMED, (LONG.len() + 4).div_ceil(per)));
+        assert_eq!(&d[..n], LONG);
+        assert!(v.iter().skip(1).all(|b| b.1 == dt), "every block at the one rate");
+        // to a talkgroup, rate 1 or 3/4 too
+        let now = air.now();
+        assert!(air.ms[0].send_data(TG, flag | t3ms::F_GROUP, b"to all", now));
+        assert!(air.until(4000, &mut log.f(), |a| a.ms[2].data_inbox().is_some_and(|x| &x.1[..x.2] == b"to all")));
+        // a damaged block: the CRC-32 fails, nothing is taken (unconfirmed: no retry)
+        let before = air.ms[1].data_inbox().unwrap().3;
+        let now = air.now();
+        assert!(air.ms[0].send_data(1002, flag, b"lost on the air, all of it", now));
+        air.damage = 0b1;
+        air.run(4000, &mut log.f());
+        assert_eq!(air.ms[1].data_inbox().unwrap().3, before);
+    }
+}
+
+#[test]
+fn packet_data_rate1_confirmed_retries_end() {
+    // every first block arrives damaged: SACK, F = 0 retries, then the caller gives up after its sends (N_RtryLmt)
+    let mut s = site_with(|c| c.data_hang_ms = 4000);
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG]), ms(1002, &[TG])], T0);
+    register_all(&mut air, &mut log);
+    let now = air.now();
+    assert!(air.ms[0].send_data(1002, t3ms::F_CONFIRMED | t3ms::F_RATE1, LONG, now));
+    // 5 blocks of 22, then the SACK's C_RDATA and each retry's single block in turn
+    air.damage = 0b1 | 0b1 << 6 | 0b1 << 8 | 0b1 << 10;
+    let v = data_bursts(&mut air, &mut log, 10_000);
+    assert_eq!((air.ms[0].status().calls_done, air.ms[0].status().calls_failed), (0, 1));
+    assert!(air.ms[1].data_inbox().is_none());
+    let c_heads = v.iter().filter(|b| b.0 == 0 && b.2.is_some()).count();
+    assert_eq!(c_heads, 4, "four sends");
+    assert!(v.iter().filter(|b| b.0 == 0 && b.2.is_none()).all(|b| b.1 == 10));
+    // with one damaged block only, it gets through on the retry
+    let now = air.now();
+    assert!(air.ms[0].send_data(1002, t3ms::F_CONFIRMED | t3ms::F_RATE1, LONG, now + 500));
+    air.damage = 0b10000;
+    assert!(air.until(10_000, &mut log.f(), settled(0, 1)));
+    assert_eq!(air.ms[0].status().calls_done, 1);
+    assert_eq!(&air.ms[1].data_inbox().unwrap().1[..LONG.len()], LONG);
+}

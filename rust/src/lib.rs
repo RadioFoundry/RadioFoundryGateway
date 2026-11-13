@@ -70,6 +70,8 @@ pub mod t3auth;
 #[cfg(feature = "t3")]
 pub mod t3ms;
 #[cfg(feature = "t3")]
+pub mod t3pdrate;
+#[cfg(feature = "t3")]
 pub mod t3pdu;
 #[cfg(feature = "t3")]
 pub mod t3rc;

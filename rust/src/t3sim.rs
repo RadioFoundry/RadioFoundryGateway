@@ -60,6 +60,7 @@ pub struct SimOut {
     pub cach: [u8; 3],
     pub pdu_ext: [u8; 2],
     pub at: c_int,
+    pub blk: [u8; 24],
 }
 
 /// rdof_t3sim_t
@@ -141,11 +142,11 @@ fn ms_burst(tx: &MsTx, n: c_int, cc: c_int, b: &mut RdofBurst) -> bool {
     b.cc = cc;
     b.slot = c_int::from(tx.ch & 1) + 1;
     if tx.kind == 1 || tx.kind == 3 {
-        // a control block, or packet data (a data header or rate 1/2 block)
-        let mut blk = [0u8; 12];
+        // a control block, or packet data (a data header, a rate 1/2, 3/4 or 1 block)
+        let mut blk = [0u8; 24];
         blk[..10].copy_from_slice(&tx.pdu);
-        blk[10..].copy_from_slice(&tx.ext); // a rate 1/2 block's last two octets
-        if !rdof_t3rf_block_burst(tx.dt.into(), &blk, cc, FAMILY_MS, &mut b.burst) {
+        blk[10..].copy_from_slice(&tx.ext); // a data block's octets 10 on
+        if !unsafe { rdof_t3rf_block_burst(tx.dt.into(), blk.as_ptr(), cc, FAMILY_MS, &mut b.burst) } {
             return false;
         }
         b.dt = tx.dt.into();
@@ -207,7 +208,7 @@ fn slot(s: &mut Sim, k: i64, now_ms: i64) {
 
     // the outbound of slot k, read back as an MS would
     let mut dt = [0u8; CARRIERS];
-    let mut pdu = [[0u8; 12]; CARRIERS];
+    let mut pdu = [[0u8; 24]; CARRIERS];
     let mut out = [SimOut {
         aired: false,
         burst: [0; BURST_BYTES],
@@ -218,6 +219,7 @@ fn slot(s: &mut Sim, k: i64, now_ms: i64) {
         cach: [0; 3],
         pdu_ext: [0; 2],
         at: 0,
+        blk: [0; 24],
     }; CARRIERS];
     for (c, o) in out.iter_mut().enumerate().take(ncar) {
         let mut control = 0u8;
@@ -245,10 +247,11 @@ fn slot(s: &mut Sim, k: i64, now_ms: i64) {
         if !o.aired {
             continue;
         }
-        let mut blk = [0u8; 12];
+        let mut blk = [0u8; 24];
         let r = rdof_t3rf_burst_block(&o.burst, &mut rdt, &mut rcc, &mut blk);
         o.pdu.copy_from_slice(&blk[..10]);
         o.pdu_ext = [blk[10], blk[11]];
+        o.blk = blk;
         o.dt = rdt;
         o.cc = rcc;
         if r == PDU_OK {

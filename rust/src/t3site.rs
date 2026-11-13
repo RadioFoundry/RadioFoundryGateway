@@ -36,7 +36,8 @@ pub use supp::{
 #[path = "t3pdata.rs"]
 mod pdata;
 pub use pdata::{
-    data_op, rdof_t3_pd_send, rdof_t3_rx_data, DataGrant, DataHead, DataMsg, DataRx, DATA_BLOCK, DATA_END,
+    block_len, crc32, crc9, crc9_mask, data_op, rdof_t3_pd_send, rdof_t3_rx_data, DataGrant, DataHead, DataMsg, DataRx,
+    BLOCK_MAX, CRC9_RATE1, CRC9_RATE12, CRC9_RATE34, DATA_BLOCK, DATA_END, DT_R1, DT_R12, DT_R34, MSG_OCTETS,
     DATA_END_CONFIRMED, DATA_HEADER, DATA_RESPONSE, DPF_CONFIRMED, DPF_RESPONSE, DPF_UNCONFIRMED, MSG_BLOCKS,
     OP_PD_GRANT, OP_PD_GRANT_MI, OP_TD_GRANT, OP_TD_GRANT_MI, PD_FAILED, PD_OPEN, SAP_IP, SO_HI_RATE, SO_SIMI,
     SO_SUPED,

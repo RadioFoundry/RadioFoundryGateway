@@ -134,7 +134,7 @@ pub fn crc32(d: &[u8]) -> u32 {
 }
 
 /// A confirmed block's CRC (361-1 B.3.10): x^9 + x^6 + x^4 + x^3 + 1 over the block's data then its 7-bit serial
-/// number, inverted, then the rate's mask (rate 1/2: 0F0h).
+/// number, inverted, then the rate's mask (table B.21: rate 1/2 0F0h, rate 3/4 1FFh, rate 1 10Fh).
 pub fn crc9(d: &[u8], dbsn: u8, mask: u16) -> u16 {
     let mut crc = 0u16;
     let n = d.len() * 8;
@@ -150,61 +150,122 @@ pub fn crc9(d: &[u8], dbsn: u8, mask: u16) -> u16 {
 }
 
 pub const CRC9_RATE12: u16 = 0x0F0;
+pub const CRC9_RATE34: u16 = 0x1FF;
+pub const CRC9_RATE1: u16 = 0x10F;
 pub const MSG_BLOCKS: usize = 12;
+/// A block's octets at most (rate 1).
+pub const BLOCK_MAX: usize = 24;
+/// A message's octets at most (MSG_BLOCKS rate 1 blocks).
+pub const MSG_OCTETS: usize = BLOCK_MAX * MSG_BLOCKS;
 
-/// A packet data message in rate 1/2 blocks (361-1 9.2.6, 9.2.7): unconfirmed 12 user octets a block, confirmed 10
-/// (after the serial number and CRC-9); the CRC-32 ends the last block.
+/// Data blocks' data types (361-1 table 9.2 / 9.3.6): rate 1/2, rate 3/4, rate 1.
+pub const DT_R12: u8 = 7;
+pub const DT_R34: u8 = 8;
+pub const DT_R1: u8 = 10;
+
+/// A data block's octets for its data type (361-1 8.2.2: rate 1/2 12, rate 3/4 18, rate 1 24); 0 not a data block.
+pub fn block_len(dt: u8) -> usize {
+    match dt {
+        DT_R12 => 12,
+        DT_R34 => 18,
+        DT_R1 => 24,
+        _ => 0,
+    }
+}
+
+/// A confirmed block's CRC-9 mask for its data type (361-1 B.3.12, table B.21).
+pub fn crc9_mask(dt: u8) -> u16 {
+    match dt {
+        DT_R34 => CRC9_RATE34,
+        DT_R1 => CRC9_RATE1,
+        _ => CRC9_RATE12,
+    }
+}
+
+/// A packet data message in blocks of one rate (361-1 8.2.2.1, 8.2.2.2, 9.2.6, 9.2.7): unconfirmed the whole block is
+/// user data (rate 1/2 12 octets, rate 3/4 18, rate 1 24), confirmed the block's octets 2 on (10, 16, 22) after the
+/// 7-bit serial number and the CRC-9; the CRC-32 ends the last block.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DataMsg {
     pub head: DataHead,
     pub n: u8,
-    pub b: [[u8; 12]; MSG_BLOCKS],
+    pub dt: u8, // the blocks' data type, DT_R12 (0 reads as it), DT_R34 or DT_R1
+    pub b: [[u8; BLOCK_MAX]; MSG_BLOCKS],
 }
 
 impl DataMsg {
+    /// In rate 1/2 blocks.
     pub fn build(head: DataHead, data: &[u8]) -> Option<DataMsg> {
+        Self::build_rate(head, data, DT_R12)
+    }
+
+    /// In blocks of data type dt (DT_R12, DT_R34, DT_R1): the header's Blocks to Follow, pad octet count and F set.
+    pub fn build_rate(head: DataHead, data: &[u8], dt: u8) -> Option<DataMsg> {
         let confirmed = head.dpf == DPF_CONFIRMED;
-        let per = if confirmed { 10 } else { 12 };
+        let len = block_len(dt);
+        if len == 0 {
+            return None;
+        }
+        let per = if confirmed { len - 2 } else { len };
         let total = data.len() + 4;
         let n = total.div_ceil(per);
         if n > MSG_BLOCKS || n == 0 {
             return None;
         }
-        let pad = n * per - total;
-        let mut u = [0u8; 12 * MSG_BLOCKS];
+        let pad = n * per - total; // fewer than a block's: 5 bits are enough
+        let mut u = [0u8; MSG_OCTETS];
         u[..data.len()].copy_from_slice(data);
         let crc = crc32(&u[..data.len() + pad]);
         u[data.len() + pad..total + pad].copy_from_slice(&crc.to_le_bytes());
         let mut m = DataMsg {
             head: DataHead { blocks: n as u8, pad: pad as u8, full: true, ..head },
             n: n as u8,
+            dt,
             ..Default::default()
         };
         for j in 0..n {
             let src = &u[j * per..(j + 1) * per];
             if confirmed {
                 let dbsn = j as u8 & 0x7F;
-                let c = crc9(src, dbsn, CRC9_RATE12);
+                let c = crc9(src, dbsn, crc9_mask(dt));
                 m.b[j][0] = dbsn << 1 | (c >> 8) as u8;
                 m.b[j][1] = c as u8;
-                m.b[j][2..].copy_from_slice(src);
+                m.b[j][2..len].copy_from_slice(src);
             } else {
-                m.b[j].copy_from_slice(src);
+                m.b[j][..len].copy_from_slice(src);
             }
         }
         Some(m)
     }
 
+    /// The blocks' data type.
+    pub fn rate(&self) -> u8 {
+        if self.dt == 0 {
+            DT_R12
+        } else {
+            self.dt
+        }
+    }
+
+    /// Confirmed: block j's serial number and whether its CRC-9 holds (361-1 B.3.10).
+    pub fn block_ok(&self, j: usize) -> (u8, bool) {
+        let len = block_len(self.rate());
+        let b = &self.b[j];
+        let (dbsn, stored) = (b[0] >> 1, u16::from(b[0] & 1) << 8 | u16::from(b[1]));
+        (dbsn, crc9(&b[2..len], dbsn, crc9_mask(self.rate())) == stored)
+    }
+
     /// The user data (pad octets off) when the CRC-32 holds.
-    pub fn data(&self, out: &mut [u8; 12 * MSG_BLOCKS]) -> Option<usize> {
+    pub fn data(&self, out: &mut [u8; MSG_OCTETS]) -> Option<usize> {
         let confirmed = self.head.dpf == DPF_CONFIRMED;
-        let per = if confirmed { 10 } else { 12 };
+        let len = block_len(self.rate());
+        let per = if confirmed { len - 2 } else { len };
         let n = self.n as usize;
-        if n == 0 || n > MSG_BLOCKS {
+        if n == 0 || n > MSG_BLOCKS || per == 0 {
             return None;
         }
         for j in 0..n {
-            let src = if confirmed { &self.b[j][2..] } else { &self.b[j][..] };
+            let src = if confirmed { &self.b[j][2..len] } else { &self.b[j][..len] };
             out[j * per..(j + 1) * per].copy_from_slice(src);
         }
         let total = n * per;
@@ -766,7 +827,7 @@ mod tests {
             let h = DataHead { dpf, sap: SAP_IP, dst: 1, src: 2, ..Default::default() };
             let m = DataMsg::build(h, &data).unwrap();
             assert_eq!(m.n, if dpf == DPF_CONFIRMED { 4 } else { 3 });
-            let mut out = [0u8; 12 * MSG_BLOCKS];
+            let mut out = [0u8; MSG_OCTETS];
             assert_eq!(m.data(&mut out), Some(30));
             assert_eq!(&out[..30], &data);
             let mut bad = m;
@@ -775,7 +836,7 @@ mod tests {
             if dpf == DPF_CONFIRMED {
                 for j in 0..m.n as usize {
                     let c = u16::from(m.b[j][0] & 1) << 8 | u16::from(m.b[j][1]);
-                    assert_eq!(c, crc9(&m.b[j][2..], m.b[j][0] >> 1, CRC9_RATE12));
+                    assert_eq!(c, crc9(&m.b[j][2..12], m.b[j][0] >> 1, CRC9_RATE12));
                 }
             }
         }

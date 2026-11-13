@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "rdof/fec.h"
 #include "rdof/mmdvm.h"
 #include "rdof/pdu.h"
 #include "rdof/split.h"
@@ -95,8 +96,8 @@ static void test_blocks(void)
     CHECK(rdof_t3rf_burst_pdu(b, &dt, &cc, pdu) == RDOF_T3RF_NOT_PDU, "voice: not a PDU");
 
     /* a UDT's appended block (rate 1/2 data, 12 octets as given) and a control block, as blocks */
-    uint8_t blk[12], back[12];
-    for (int i = 0; i < 12; i++)
+    uint8_t blk[24], back[24];
+    for (int i = 0; i < 24; i++)
         blk[i] = (uint8_t)(0x31 * i + 7);
     CHECK(rdof_t3rf_block_burst(RDOF_DT_RATE_12, blk, CC, RDOF_FAMILY_MS, b), "rate 1/2 block builds");
     CHECK(rdof_t3rf_burst_pdu(b, &dt, &cc, pdu) == RDOF_T3RF_NOT_PDU && dt == RDOF_DT_RATE_12, "not a control block");
@@ -109,6 +110,31 @@ static void test_blocks(void)
               !memcmp(back, ALOHA, 10),
           "a CSBK as a block");
     CHECK(!rdof_t3rf_block_burst(RDOF_DT_IDLE, blk, CC, RDOF_FAMILY_BS, b), "no idle block");
+
+    /* rate 3/4 (18 octets, the trellis) and rate 1 (24, uncoded) data blocks (361-1 8.2.2, B.2) */
+    for (int i = 0; i < 24; i++)
+        blk[i] = (uint8_t)(0x5B * i + 3);
+    const int rates[2][2] = {{RDOF_DT_RATE_34, 18}, {RDOF_DT_RATE_1, 24}};
+    for (int r = 0; r < 2; r++) {
+        const int rdt = rates[r][0], len = rates[r][1];
+        memset(back, 0, sizeof back);
+        CHECK(rdof_t3rf_block_burst(rdt, blk, CC, RDOF_FAMILY_MS, b), "rate %d block builds", rdt);
+        CHECK(rdof_t3rf_burst_block(b, &dt, &cc, back) == RDOF_T3RF_PDU_OK && dt == rdt && cc == CC &&
+                  !memcmp(back, blk, (size_t)len),
+              "rate %d block reads back", rdt);
+        uint8_t p18[18], p24[24];
+        if (rdt == RDOF_DT_RATE_34) {
+            /* the common decoder agrees, with a few bit errors the trellis corrects */
+            b[3] ^= 0x10;
+            b[29] ^= 0x01;
+            CHECK(rdof_trellis34_decode(b, p18) >= 0 && !memcmp(p18, blk, 18), "rate 3/4: errors corrected");
+            CHECK(rdof_t3rf_burst_block(b, &dt, &cc, back) == RDOF_T3RF_PDU_OK && !memcmp(back, blk, 18),
+                  "rate 3/4 with errors reads back");
+        } else {
+            rdof_rate1_payload(b, p24);
+            CHECK(!memcmp(p24, blk, 24), "rate 1: the common reader agrees");
+        }
+    }
 }
 
 static void test_cach(void)
