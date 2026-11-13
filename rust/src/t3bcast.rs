@@ -203,6 +203,7 @@ pub(super) struct BcState {
     mass_frame: i64,
     next_mass_ms: i64,
     started: bool,
+    ps_grant_frame: i64, // the last power save frame whose sleepers' calls were looked at (ps_regrant)
 }
 
 impl Site {
@@ -376,7 +377,7 @@ impl Site {
             0
         };
         let g = &mut self.regs[i];
-        (g.ps, g.ps_off) = if off != 0 { (rq, off) } else { (0, 0) };
+        (g.rec.ps_rq, g.rec.ps_off) = if off != 0 { (rq, off) } else { (0, 0) };
         g.awake_ms = self.now + self.cfg.awake_ms as i64;
         let a = Ack { op: OP_ACKD, response_info: off, reason, target: r.source, source: REGI };
         self.push(DT_CSBK, a.encode(), false, None);
@@ -388,12 +389,12 @@ impl Site {
         let Some(i) = self.reg_index(ms) else { return true };
         let (now, k) = (self.now, self.k);
         let g = &mut self.regs[i];
-        if g.ps == 0 {
+        if g.rec.ps_rq == 0 {
             return true;
         }
         let awake = now < g.awake_ms
             || now - g.rec.at_ms < self.cfg.awake_ms as i64
-            || (ps_wake(k, g.ps, g.ps_off) && k.rem_euclid(PS_FRAME_K) < PS_SEND_K);
+            || (ps_wake(k, g.rec.ps_rq, g.rec.ps_off) && k.rem_euclid(PS_FRAME_K) < PS_SEND_K);
         if awake {
             g.awake_ms = g.awake_ms.max(now + self.cfg.awake_ms as i64);
         }
@@ -402,7 +403,73 @@ impl Site {
 
     /// The PowerSave_RQ and PowerSave_Offset the site holds for ms.
     pub fn power_save_of(&self, ms: u32) -> (u8, u8) {
-        self.reg_index(ms).map_or((0, 0), |i| (self.regs[i].ps, self.regs[i].ps_off))
+        self.reg_index(ms).map_or((0, 0), |i| (self.regs[i].rec.ps_rq, self.regs[i].rec.ps_off))
+    }
+
+    /// Whether record i's MS is a member of tg (its subscription or one of its talkgroups; everyone for an all
+    /// call) and asleep: in power save, and neither heard from nor signalled within T_Awake.
+    fn ps_sleeper(&self, i: usize, tg: u32) -> bool {
+        let g = &self.regs[i];
+        g.used
+            && g.rec.ps_rq != 0
+            && self.now >= g.awake_ms
+            && self.now - g.rec.at_ms >= self.cfg.awake_ms as i64
+            && (is_allcall(tg) || g.rec.sub_tg == tg || g.rec.tgs().contains(&tg))
+    }
+
+    /// A group call to tg: 6.4.7.1, a "transaction to a sleeping MS (or group of MSs) shall be queued on the TSCC
+    /// until the designated power save frame has been reached". The slots to wait for a frame that every sleeping
+    /// member is awake in, early enough in it for the grant: Some(0) when none sleeps (or it's that frame now); None
+    /// when no such frame comes within services.power_save_group_hold_s (members with different wake frames).
+    pub(super) fn ps_group_wait(&self, tg: u32) -> Option<i64> {
+        let mut frames = [(0u8, 0u8); 16]; // the sleepers' distinct (PowerSave_RQ, PowerSave_Offset)
+        let mut n = 0;
+        for i in 0..REGS {
+            if self.ps_sleeper(i, tg) {
+                let f = (self.regs[i].rec.ps_rq, self.regs[i].rec.ps_off);
+                if !frames[..n].contains(&f) {
+                    if n == frames.len() {
+                        return None;
+                    }
+                    frames[n] = f;
+                    n += 1;
+                }
+            }
+        }
+        if n == 0 {
+            return Some(0);
+        }
+        // the grant in the first half of the frame's signalling slots: the response queue may hold it a few slots
+        let early = |k: i64| k.rem_euclid(PS_FRAME_K) < PS_SEND_K / 2;
+        (0..=self.cfg.ps_hold_ms as i64 / 30)
+            .find(|&d| early(self.k + d) && frames[..n].iter().all(|&(rq, off)| ps_wake(self.k + d, rq, off)))
+    }
+
+    /// Once a power save frame, early in it: a group call whose talkgroup has a member asleep that wakes in this
+    /// frame sends its grant repeat now (Late_Entry), so a call it missed the start of reaches it in its wake frame
+    /// whatever timers.grant_every_s is (a network call, or one that couldn't wait for it).
+    pub(super) fn ps_regrant(&mut self) {
+        let frame = self.k.div_euclid(PS_FRAME_K);
+        if frame == self.bc.ps_grant_frame || self.k.rem_euclid(PS_FRAME_K) >= PS_SEND_K / 2 {
+            return;
+        }
+        self.bc.ps_grant_frame = frame;
+        if self.cfg.power_save == 0 {
+            return;
+        }
+        for ch in 0..CHANNELS {
+            let c = self.chans[ch];
+            if !Self::live(&c) || matches!(c.kind, KIND_PRIVATE | KIND_DUPLEX) || c.flags & F_GROUP == 0 {
+                continue;
+            }
+            let k = self.k;
+            let waking = (0..REGS).any(|i| {
+                self.ps_sleeper(i, c.dst) && ps_wake(k, self.regs[i].rec.ps_rq, self.regs[i].rec.ps_off)
+            });
+            if waking {
+                self.chans[ch].grant_next_ms = self.now;
+            }
+        }
     }
 
     /// The longest wait for an MS's wake frame, in ms (added to a call's set-up time limit while it sleeps).

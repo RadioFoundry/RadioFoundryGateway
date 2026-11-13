@@ -793,6 +793,11 @@ static void test_trunk(const char *dir)
               c.vote_now_ms == 20000 && c.ann_tscc_ms == 40000 && c.hibernate_ms == 20000 && c.duplex == 1,
           "power save, mass registration, broadcasts: %s", err);
     CHECK(!apply_text("{\"services\": {\"power_save\": 8}}", "x", &c, &pol, err, sizeof err), "power_save 8");
+    CHECK(c.ps_hold_ms == 2000 &&
+              apply_text("{\"services\": {\"power_save_group_hold_s\": 0}}", "x", &c, &pol, err, sizeof err) &&
+              c.ps_hold_ms == 0 &&
+              !apply_text("{\"services\": {\"power_save_group_hold_s\": 11}}", "x", &c, &pol, err, sizeof err),
+          "power_save_group_hold_s: %s", err);
     /* VOTE_BLK (361-4 A.2: 2 to 10 frames, default 6) and the site's priority (table 6.81: 0 to 7, default 0) */
     rdof_t3cfg_default(&c, &pol);
     CHECK(c.vote_blk == 6 && c.priority == 0 &&

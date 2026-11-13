@@ -54,6 +54,7 @@ typedef struct {
     int ntg;
     uint32_t sub; /* the subscribed talkgroup, 0: none */
     int area;     /* the registration area (SYS_AREA); -1: not given */
+    int ps_rq, ps_off; /* power save granted (PowerSave_RQ 1-7, PowerSave_Offset); 0: none */
 } rdof_mn_record_t;
 
 size_t rdof_mn_record_json(const rdof_mn_record_t *r, char *out, size_t cap);

@@ -169,6 +169,7 @@ pub struct Cfg {
     pub priority: u8,  // the site's priority radiated with its neighbors (361-4 table 6.81: 1 highest, 7 lowest, 0 none)
     pub intr: u8,      // 1: transmit interrupt (361-4 6.4.14.3.2-6.4.14.3.4, 6.4.15; t3intr.rs)
     pub pad1: [u8; 2],
+    pub ps_hold_ms: u32, // a group call waits up to this long for its sleeping members' wake frame (6.4.7.1); 0 never
 }
 
 #[repr(C)]
@@ -290,6 +291,9 @@ pub struct Record {
     pub area: u8,
     pub pad: u8,
     pub tg: [u32; REG_TGS],
+    pub ps_rq: u8,  // power save granted: PowerSave_RQ (6.4.7); 0 none
+    pub ps_off: u8, // and PowerSave_Offset
+    pub pad2: [u8; 2],
     pub at_ms: i64,
     pub exp_ms: i64,
 }
@@ -595,6 +599,7 @@ const P_AHOY: u8 = 1; // waiting for the called MS's answer to C_AHOY
 const P_ALERTING: u8 = 2; // FOACSU: the called party alerts; waiting for Call Answer
 const P_NET: u8 = 3; // waiting for the network's answer to our setup request
 const P_QUEUED: u8 = 4; // both parties ready (or a group call): waiting for a payload channel
+const P_WAKE: u8 = 5; // a group call waiting for its members' power save wake frame (6.4.7.1)
 
 #[derive(Clone, Copy, Default)]
 struct Pend {
@@ -634,9 +639,7 @@ struct Reg {
     used: bool,
     rec: Record,
     written_ms: i64,
-    ps: u8,        // PowerSave_RQ granted, 0 none
-    ps_off: u8,    // PowerSave_Offset
-    awake_ms: i64, // awake until (power save)
+    awake_ms: i64, // awake until (power save; what was granted is in the record)
     demanded: bool, // expired, and a registration demanded of it (6.4.5.0); deleted if it doesn't answer
 }
 
@@ -788,6 +791,7 @@ pub fn cfg_default() -> Cfg {
         data_hang_ms: 3000,
         divert: 1,
         vote_blk: 6,
+        ps_hold_ms: 2000,
         ..Default::default()
     };
     c.carriers[0] = Carrier { tx_hz: 438_750_000, rx_hz: 438_250_000, chan: 1, tscc: 1, enabled: 1 };
@@ -1171,6 +1175,7 @@ impl Site {
     /// A grant repeat that is due (Late_Entry, for MSs that missed the start): the oldest one. Through the call and
     /// its hang time, until P_CLEAR (6.6.2.4.1, "while a call is active"; the captured site does the same).
     fn due_grant(&mut self) -> Option<[u8; 10]> {
+        self.ps_regrant();
         let now = self.now;
         let ch = (0..CHANNELS)
             .filter(|&i| Self::live(&self.chans[i]) && !matches!(self.chans[i].kind, KIND_PRIVATE | KIND_DUPLEX) && now >= self.chans[i].grant_next_ms)
@@ -1775,20 +1780,32 @@ impl Site {
                     }
                 }
             }
-            match self.group_channel(dst).or_else(|| self.free_channel()) {
-                Some(ch) => self.group_go(ms, dst, r.service_options, ch),
-                None => self.enqueue(Pend {
-                    kind: KIND_GROUP,
-                    svc: r.service_options,
-                    prio,
-                    caller_local: true,
-                    called_local: true,
-                    caller: ms,
-                    called: dst,
-                    since_ms: self.now,
-                    ..Default::default()
-                }),
+            let svc = r.service_options;
+            if self.group_channel(dst).is_none() && svc & SO_EMERGENCY == 0 {
+                if let (Some(d @ 1..), Some(i)) = (self.ps_group_wait(dst), self.free_pend()) {
+                    // members asleep: the grant waits for their wake frame (6.4.7.1), C_WACKD meanwhile
+                    self.pend[i] = Pend {
+                        used: true,
+                        kind: KIND_GROUP,
+                        state: P_WAKE,
+                        svc,
+                        prio,
+                        caller_local: true,
+                        called_local: true,
+                        caller: ms,
+                        called: dst,
+                        since_ms: self.now,
+                        deadline_ms: self.now + d * 30,
+                        next_ack_ms: self.now + WACK_EVERY_MS,
+                        ..Default::default()
+                    };
+                    self.ack(R_WAIT, ms, dst);
+                    let ms = d * 30;
+                    self.log(format_args!("power save: the call to {dst} waits {ms} ms for its members' wake frame"));
+                    return;
+                }
             }
+            self.group_start(ms, dst, svc, prio);
             return;
         }
         // individual
@@ -1838,6 +1855,24 @@ impl Site {
             self.setup_out(SETUP_REQUEST, WHY_OK, flags, p.svc, ms, dst, p.stream);
         } else {
             self.refuse(R_NOREG_MSAWAY, ms, dst);
+        }
+    }
+
+    /// A local group call: its channel (a free one, or the one the talkgroup is on), or the queue.
+    fn group_start(&mut self, ms: u32, dst: u32, svc: u8, prio: u8) {
+        match self.group_channel(dst).or_else(|| self.free_channel()) {
+            Some(ch) => self.group_go(ms, dst, svc, ch),
+            None => self.enqueue(Pend {
+                kind: KIND_GROUP,
+                svc,
+                prio,
+                caller_local: true,
+                called_local: true,
+                caller: ms,
+                called: dst,
+                since_ms: self.now,
+                ..Default::default()
+            }),
         }
     }
 
@@ -2029,6 +2064,11 @@ impl Site {
         for i in 0..PENDING {
             let p = self.pend[i];
             if !p.used {
+                continue;
+            }
+            if p.state == P_WAKE && (now >= p.deadline_ms || self.ps_group_wait(p.called) == Some(0)) {
+                self.pend[i].used = false; // the members' wake frame: the grant now
+                self.group_start(p.caller, p.called, p.svc, p.prio);
                 continue;
             }
             if now >= p.deadline_ms {

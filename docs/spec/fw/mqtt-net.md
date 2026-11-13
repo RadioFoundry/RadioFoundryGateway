@@ -701,6 +701,7 @@ A trunked site publishes one retained record per radio it serves ([tier3.md](tie
 | `tg` | the talkgroups the site carries for it (the subscribed one first, then its recent calls, then provisioning), at most 8 |
 | `sub` | the talkgroup the radio subscribed to when it registered (absent: none) |
 | `area` | the registration area (absent: not given) |
+| `ps_rq`, `ps_off` | power save granted at registration: PowerSave_RQ (1-7) and PowerSave_Offset (1 to 2^`ps_rq` - 1); absent: none ([tier3.md](tier3.md) §3.11) |
 
 - Written on every change and at most once a minute for a refresh. Deleted (an empty retained message) on
   de-registration, expiry, a refusal after a policy change, or when `where/{id}` names another node with a newer

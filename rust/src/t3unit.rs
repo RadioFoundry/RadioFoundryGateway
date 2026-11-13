@@ -196,6 +196,8 @@ pub struct MnRecord {
     pub ntg: c_int,
     pub sub: u32,
     pub area: c_int,
+    pub ps_rq: c_int,
+    pub ps_off: c_int,
 }
 
 /// rdof_mn_where_t
@@ -895,6 +897,8 @@ unsafe fn record_out(u: *mut Unit, id: u32, del: bool) {
         ntg: ntg as c_int,
         sub: r.sub_tg,
         area: c_int::from(r.area),
+        ps_rq: c_int::from(r.ps_rq),
+        ps_off: c_int::from(r.ps_off),
     };
     m.tg[..ntg].copy_from_slice(&r.tg[..ntg]);
     if rdof_mn_record_json(&m, cpm(&mut j), j.len()) != 0 {
@@ -2410,6 +2414,8 @@ unsafe fn record_in(u: *mut Unit, leaf: &[u8], text: *const c_char, len: usize) 
         how: t3::HOW_LOADED,
         area: if m.area >= 0 { m.area as u8 } else { 0 },
         ntg: ntg as u8,
+        ps_rq: m.ps_rq.clamp(0, 7) as u8,
+        ps_off: if m.ps_rq > 0 { m.ps_off.clamp(0, 127) as u8 } else { 0 },
         at_ms: m.at_ms,
         exp_ms: m.exp_ms,
         ..Default::default()

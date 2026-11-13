@@ -290,6 +290,10 @@ size_t rdof_mn_record_json(const rdof_mn_record_t *r, char *out, size_t cap)
         rdof_json_int(&j, "sub", r->sub);
     if (r->area >= 0)
         rdof_json_int(&j, "area", r->area);
+    if (r->ps_rq > 0) {
+        rdof_json_int(&j, "ps_rq", r->ps_rq);
+        rdof_json_int(&j, "ps_off", r->ps_off);
+    }
     rdof_json_close(&j);
     return rdof_json_done(&j) ? j.len : 0;
 }
@@ -326,6 +330,9 @@ bool rdof_mn_record_parse(const char *json, size_t len, rdof_mn_record_t *r, cha
         r->sub = (uint32_t)v;
     if (jint(jget(&P, root, "area"), 0, 1 << 16, &v))
         r->area = (int)v;
+    long off;
+    if (jint(jget(&P, root, "ps_rq"), 1, 7, &v) && jint(jget(&P, root, "ps_off"), 1, 127, &off) && off < 1L << v)
+        r->ps_rq = (int)v, r->ps_off = (int)off;
     return true;
 }
 

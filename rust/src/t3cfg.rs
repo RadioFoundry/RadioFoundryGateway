@@ -70,6 +70,7 @@ const SERVICES_KEYS: &[&[u8]] = &[
     b"emergency_preempt",
     b"power_save",
     b"power_save_awake_s",
+    b"power_save_group_hold_s",
     b"mass_reg_at_start_s",
     b"hibernate_s",
     b"duplex",
@@ -532,6 +533,7 @@ impl<'a> Cx<'a> {
                 || !self.bool_of(sv, c"transmit_interrupt", p, &mut cfg.intr)
                 || !self.u8_in(sv, c"power_save", p, 0, 7, &mut cfg.power_save)
                 || !self.ms_in(sv, c"power_save_awake_s", p, 0.1, 60.0, &mut cfg.awake_ms)
+                || !self.ms_in(sv, c"power_save_group_hold_s", p, 0.0, 10.0, &mut cfg.ps_hold_ms)
                 || !self.ms_in(sv, c"mass_reg_at_start_s", p, 0.0, 200_000.0, &mut mass_ms)
                 || !self.ms_in(sv, c"hibernate_s", p, 0.0, 300.0, &mut cfg.hibernate_ms)
             {

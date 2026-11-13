@@ -1149,6 +1149,15 @@ static void test_records(void)
     static const char noexp[] = "{\"id\":7,\"at\":\"2026-11-05T21:04:11Z\"}";
     CHECK(!rdof_mn_record_parse(noexp, sizeof noexp - 1, &b, err, sizeof err) && strstr(err, "exp"));
     CHECK(!rdof_mn_record_parse("[]", 2, &b, err, sizeof err));
+    /* power save granted (PowerSave_RQ 2, offset 3): kept, so a restarted site pages the MS in its wake frame */
+    rdof_mn_record_t ps = r;
+    ps.ps_rq = 2, ps.ps_off = 3;
+    const size_t pn = rdof_mn_record_json(&ps, j, sizeof j);
+    CHECK(pn > 0 && strstr(j, "\"ps_rq\":2,\"ps_off\":3}") && rdof_mn_record_parse(j, pn, &b, err, sizeof err) &&
+          !memcmp(&b, &ps, sizeof ps));
+    static const char badoff[] = "{\"id\":7,\"at\":\"2026-11-05T21:04:11Z\",\"exp\":\"2026-11-05T22:04:11Z\","
+                                 "\"ps_rq\":1,\"ps_off\":2}";
+    CHECK(rdof_mn_record_parse(badoff, sizeof badoff - 1, &b, err, sizeof err) && b.ps_rq == 0 && b.ps_off == 0);
 
     static const char where[] =
         "{\"node\":\"site-b\",\"path\":{\"i\":1,\"name\":\"site\"},\"at\":\"2026-11-05T21:04:11.250Z\",\"source\":\"reg\"}";

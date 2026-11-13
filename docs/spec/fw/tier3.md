@@ -411,10 +411,18 @@ is the Common_Slot_Counter's 7 high bits (one power save frame is 4 counts, 480 
 PS_Counter masked to n bits equals its offset (table 6.14). A C_AHOY to a sleeping MS (an individual call, a
 status) waits for the first 8 slots of its wake frame, and the call's set-up time limit stretches by one cycle; the
 MS is taken as awake for `services.power_save_awake_s` (the site's T_Awake, 1 s) after a PDU to or from it, so the
-following C_AHOYs and the grant go at once. Not built: a group call's grants aren't held for its members' wake
-frames (they catch a Late_Entry grant repeat that falls in theirs: `grant_every_s` under 0.48 s makes sure), and
-the offset isn't kept in the registration record (a restarted site pages a sleeping MS at any time until it
-registers again: `mass_reg_at_start_s`).
+following C_AHOYs and the grant go at once.
+
+A group call is a transaction to a "group of MSs" (6.4.7.1: it "shall be queued on the TSCC until the designated
+power save frame has been reached"). A local group call to a talkgroup with members asleep (in power save, not
+awake as above; for an all call, every MS) waits, the caller answered C_WACKD, for the first frame that all of them
+wake in, early enough in it (its first 4 slots) for the grant: up to `services.power_save_group_hold_s` (default
+2 s; 0 never waits). Members subscribed to one talkgroup with one PowerSave_RQ share that frame. With no such frame
+in that time (members with different ratios or offsets), an emergency, a call from another site (its talker is
+already talking) or a talkgroup already on a channel, the grant goes at once, and in each power save frame a call
+whose talkgroup has a member asleep that wakes in it sends its Late_Entry grant repeat early in the frame, whatever
+`timers.grant_every_s` is. The registration record keeps the grant (PowerSave_RQ and PowerSave_Offset; mqtt-net
+`ps_rq`, `ps_off`), so a restarted site that reads its records back pages a sleeping MS in its wake frame.
 
 ### 3.12 TSCC modes: C_MOVE, the asynchronous TSCC, and what isn't built
 
@@ -950,7 +958,7 @@ paths").
 | `data_gateway` | integer | 0 | the site's own data ID besides TSI (1-16776415): packet data to it, to TSI or to IPI goes to the site's IP gateway (3.16) |
 | `timers` | object | section 3.8 | |
 | `broadcast` | object | section 3.2 | `adjacent_s`, `chan_freq_s`, `local_time_s`, `call_timers_s`, `vote_now_s`, `ann_tscc_s` (0 = off, else 1-600 s; the last three off by default, section 3.11); `vote_blk` (2-10 TDMA frames, 6): VOTE_BLK after a Vote_Now; `priority` (0-7, 0): the site's priority for the Radiated Preference Strategy (table 6.81: 1 highest, 7 lowest, 0 non-preferred), sent as the confirmed priority with each neighbor and in `info` (section 3.11). Local settings: the manager's `cfg` doesn't carry them |
-| `services` | object | | `emergency_preempt` (bool, false): clear a running call for a waiting emergency (section 3.9); `power_save` (0-7, 0): the largest PowerSave_RQ granted, 0 none; `power_save_awake_s` (0.1-60, 1); `mass_reg_at_start_s` (0-200000, 0): a mass re-registration at start within this time (section 3.11); `hibernate_s` (0 or 1-300, 0): T_BS_Inactive of the asynchronous TSCC, 0 never (section 3.12); `duplex` (bool, false): full-duplex individual calls (section 3.13); `composite_tscc` (bool, false): the TSCC's slot carries a call when no payload channel is free (section 3.19); `transmit_interrupt` (bool, false): payload interrupt, ALS termination and the call timer de-key (section 3.20). Local settings only for now; the manager's `cfg` doesn't carry them |
+| `services` | object | | `emergency_preempt` (bool, false): clear a running call for a waiting emergency (section 3.9); `power_save` (0-7, 0): the largest PowerSave_RQ granted, 0 none; `power_save_awake_s` (0.1-60, 1); `power_save_group_hold_s` (0-10, 2): how long a group call waits for its sleeping members' wake frame (section 3.11); `mass_reg_at_start_s` (0-200000, 0): a mass re-registration at start within this time (section 3.11); `hibernate_s` (0 or 1-300, 0): T_BS_Inactive of the asynchronous TSCC, 0 never (section 3.12); `duplex` (bool, false): full-duplex individual calls (section 3.13); `composite_tscc` (bool, false): the TSCC's slot carries a call when no payload channel is free (section 3.19); `transmit_interrupt` (bool, false): payload interrupt, ALS termination and the call timer de-key (section 3.20). Local settings only for now; the manager's `cfg` doesn't carry them |
 | `auth` | `off`, `registration`, `required` | `off` | MS authentication (section 3.14): challenge MSs with a key at registration, or every MS. Local settings only; the manager's `cfg` doesn't carry it |
 
 Checks (refusals name the key): exactly one `tscc` carrier; every carrier's `out` on a device that transmits and its

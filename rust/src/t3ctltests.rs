@@ -657,6 +657,66 @@ fn power_save_wake_frames() {
     assert_eq!(air.ms[1].statuses(), (1, (1001, 1002, 9)));
 }
 
+/// Power save and group calls (6.4.7.1: a transaction to a sleeping "group of MSs shall be queued on the TSCC until
+/// the designated power save frame"): the call to a talkgroup whose members sleep waits for their wake frame, so its
+/// first grant reaches them. With no wait (services.power_save_group_hold_s 0, as for a call from another site), the
+/// grant repeat goes in their wake frame, though timers.grant_every_s is 5 s. The record keeps the grant: a site
+/// that loads it pages the MS in the same frame.
+#[test]
+fn power_save_group_call_waits_for_the_wake_frame() {
+    for hold in [true, false] {
+        let mut s = site_with(|c| {
+            c.power_save = 3;
+            c.grant_every_ms = 5000;
+            if !hold {
+                c.ps_hold_ms = 0;
+            }
+        });
+        let mut log = Log::default();
+        let mut air = Air::new(&mut s, [ms(1001, &[TG], &[1]), ms(1002, &[TG], &[1]), ms(1003, &[TG], &[1])], T0);
+        air.ms[1].set_power_save(2); // 1:4, 1.92 s
+        air.ms[2].set_power_save(2);
+        let now = air.now();
+        for (i, m) in air.ms.iter_mut().enumerate() {
+            m.act(t3ms::DO_REGISTER, TG, 0, 0, now + 100 * i as i64); // subscribed to TG
+        }
+        assert!(air.until(30_000, &mut log.f(), |a| a.ms.iter().all(|m| m.status().registered != 0)));
+        let (rq, off) = air.ms[1].power_save();
+        assert!(rq == 2 && off != 0, "{rq} {off}");
+        assert_eq!(air.ms[2].power_save(), (rq, off), "one talkgroup subscribed, one wake frame");
+        air.run(3000, &mut log.f()); // asleep
+        assert!((0..8).all(|d| !ps_wake(air.k + d, rq, off)), "not in the wake frame yet: try another start");
+        let t0 = air.now();
+        air.ms[0].act(t3ms::DO_GROUP, TG, 3000, 0, t0);
+        let mut first = None;
+        let joined = air.until(4000, &mut log.f(), |a| {
+            let o = a.last;
+            if first.is_none() && o.tscc_dt == DT_CSBK && Grant::decode(&o.tscc_pdu).is_some_and(|g| g.target == TG) {
+                first = Some((a.k - 1, a.now()));
+            }
+            a.ms[1].state() == t3ms::PAYLOAD && a.ms[2].state() == t3ms::PAYLOAD
+        });
+        let (k, at) = first.expect("a grant");
+        assert!(joined, "hold {hold}: the sleepers joined within 4 s (the grant repeat is 5 s)");
+        if hold {
+            assert!(ps_wake(k, rq, off), "the first grant in their wake frame, slot {k}");
+            assert!(at - t0 > 100, "it waited: {} ms", at - t0);
+            assert!(air.now() - at < 400, "they took the first grant: joined {} ms after it", air.now() - at);
+        } else {
+            assert!(at - t0 < 300, "no wait: the grant at once ({} ms)", at - t0);
+        }
+        assert!(air.until(10_000, &mut log.f(), |a| a.ms[0].status().calls_done == 1));
+        if !hold {
+            continue;
+        }
+        let r = air.site.record(1002).expect("a record");
+        assert_eq!((r.ps_rq, r.ps_off), (rq, off), "the record holds the grant");
+        let mut s2 = site_with(|c| c.power_save = 3);
+        assert!(s2.load_record(&r));
+        assert_eq!(s2.power_save_of(1002), (rq, off), "and a site that loads it");
+    }
+}
+
 // ── the composite TSCC (361-4 5.3.2) ──
 
 /// Two carriers, three payload channels busy with A, B and C's calls: D's call takes the TSCC's own slot (5.3.2),

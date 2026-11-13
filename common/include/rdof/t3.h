@@ -94,6 +94,9 @@ typedef struct {
     uint8_t intr;      /* 1: transmit interrupt, the payload interrupt and ALS termination de-key and the call timer
                           de-key (361-4 6.4.14.3.2-6.4.14.3.4, 6.4.15; tier3.md 3.20) */
     uint8_t pad1[2];
+    /* a group call to a talkgroup with members in power save waits up to this long for a frame they're all awake
+     * in (361-4 6.4.7.1); 0: never waits */
+    uint32_t ps_hold_ms;
 } rdof_t3_cfg_t;
 
 #define RDOF_T3_AUTH_OFF 0          /* none */
@@ -141,6 +144,7 @@ typedef struct {
     uint32_t id, sub_tg; /* sub_tg 0: none */
     uint8_t how, ntg, area, pad;
     uint32_t tg[RDOF_T3_REG_TGS];
+    uint8_t ps_rq, ps_off, pad2[2]; /* power save granted: PowerSave_RQ and PowerSave_Offset (6.4.7); 0: none */
     int64_t at_ms, exp_ms;
 } rdof_t3_record_t;
 
