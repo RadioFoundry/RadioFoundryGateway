@@ -131,8 +131,9 @@ Carrier A TS1 sends a CSBK or MBC block every slot (every 60 ms). The controller
 1. A response that is due: an acknowledgment, a C_AHOY, an initial grant (each initial grant twice, in consecutive
    TSCC slots).
 2. The continuation block of an MBC already started.
-3. A grant repeat that is due: every `grant_every_s` (default 1.2 s) per active call, with Late_Entry = 1, through the
-   call and its hang time (as the RadioMax reference does).
+3. A grant repeat that is due: every `grant_every_s` (default 1.2 s) per active call, with Late_Entry = 1, while
+   someone talks. None in hang time: an MS on the TSCC would follow one to a quiet channel (a radio on the bench
+   re-followed a finished call that way, 2026-11-13); they start again with the next talker's voice.
 4. A broadcast that is due: MassReg while one runs, CallTimer_Parms every `call_timers_s`, Vote_Now per neighbor
    every `vote_now_s`, Ann_WD_TSCC every `ann_tscc_s` (section 3.11; all off by default), Adjacent_Site per neighbor
    every `adjacent_s` (default 5 s), Chan_Freq every `chan_freq_s`, Local_Time every `local_time_s` (default 6 s)

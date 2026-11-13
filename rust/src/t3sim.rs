@@ -119,8 +119,7 @@ fn vary_ambe(burst: &mut [u8]) {
     static COUNT: AtomicU32 = AtomicU32::new(0);
     let mut frames = [0u8; 27];
     ambe_frames(burst, &mut frames);
-    for f in frames.chunks_exact_mut(9) {
-        let frame: &mut [u8; 9] = f.try_into().unwrap();
+    for frame in frames.as_chunks_mut::<9>().0 {
         let mut p = [0u8; 49];
         rdof_ambe_decode_frame(frame, Some(&mut p));
         let c = COUNT.fetch_add(1, Ordering::Relaxed);
