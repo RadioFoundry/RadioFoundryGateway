@@ -639,11 +639,22 @@ impl Site {
             return false;
         };
         let p = self.pd.pds[i];
-        if reason_type(a.reason) == 1 {
-            self.pd_ready(i); // C_ACKU: a channel (6.6.3.1.4)
-        } else {
-            self.pd.pds[i].used = false;
-            self.pd_fail(&p, a.reason); // C_NACKU: its reason, mirrored
+        match (reason_type(a.reason), a.reason) {
+            // C_ACKU(Message_Accepted): a channel (6.6.3.1.4, 6.6.3.2.6); MS_Accepted is the same answer with the
+            // MS-sent direction bit (table 7.42, 7.2.8.0)
+            (1, R_MESSAGE_ACCEPTED | R_MS_ACCEPTED) => self.pd_ready(i),
+            // it will call back: no channel, the reason mirrored to the caller (as for voice, 6.6.2.2.6)
+            (1, R_CALLBACK) => {
+                self.pd.pds[i].used = false;
+                self.pd_fail(&p, a.reason);
+            }
+            // another C_ACKU (MS_Alerting, ...) doesn't accept a data call: the check goes on, its repeats and then
+            // no answer
+            (1, _) => {}
+            _ => {
+                self.pd.pds[i].used = false;
+                self.pd_fail(&p, a.reason); // C_NACKU: its reason, mirrored
+            }
         }
         true
     }

@@ -156,7 +156,7 @@ fn ms_burst(tx: &MsTx, n: c_int, cc: c_int, b: &mut RdofBurst) -> bool {
         VOICE_HEADER | VOICE_TERM => {
             let dt = if tx.what == VOICE_HEADER { RDOF_DT_VOICE_LC_HEADER } else { RDOF_DT_TERMINATOR_WITH_LC };
             let mut lc9 = [0u8; 9];
-            rdof_group_lc(tx.src, tx.dst, tx.group != 0, 0, &mut lc9);
+            rdof_group_lc(tx.src, tx.dst, tx.group != 0, c_int::from(tx.so), &mut lc9);
             rdof_lc_burst(&lc9, dt, cc, RDOF_MS_VOICE ^ RDOF_DATA_XOR, &mut b.burst);
             b.dt = dt;
             true
@@ -166,7 +166,7 @@ fn ms_burst(tx: &MsTx, n: c_int, cc: c_int, b: &mut RdofBurst) -> bool {
             if (1..=4).contains(&n) {
                 // B-E carry the call's LC embedded (361-1 7.1.4), for a radio entering late
                 let mut lc9 = [0u8; 9];
-                rdof_group_lc(tx.src, tx.dst, tx.group != 0, 0, &mut lc9);
+                rdof_group_lc(tx.src, tx.dst, tx.group != 0, c_int::from(tx.so), &mut lc9);
                 let mut raw = [0u8; 128];
                 unsafe {
                     rdof_embedded_lc_encode(lc9.as_ptr(), raw.as_mut_ptr());

@@ -92,6 +92,7 @@ typedef enum {
     RDOF_T3RF_IDLE = 0,
     RDOF_T3RF_TRAFFIC, /* voice (or its header / terminator), repeated from RF or from the network */
     RDOF_T3RF_CONTROL, /* the controller's PDU (P_CLEAR, a grant) */
+    RDOF_T3RF_HANG,    /* a call hang time Terminator with LC: the last call's, after its terminator (361-1 5.2.1.4) */
 } rdof_t3rf_out_t;
 
 typedef struct {
@@ -130,6 +131,10 @@ typedef struct {
     int64_t rc_k;      /* the slot of the last RC sent (360 ms apart) */
     uint32_t rc_sent;
     bool duplex;       /* a full-duplex call's party (rdof_t3rf_duplex) */
+    uint8_t so;        /* the call's Service Options for an LC the layer makes (late entry, network voice without
+                          one): 361-2 table 7.11, Emergency 80h, Broadcast 08h; the owner sets it, closing clears it */
+    bool hang;          /* in the call hang time: the outbound sends Terminator with LC (hang_lc) where it was idle */
+    uint8_t hang_lc[9]; /* the last terminator's LC */
 } rdof_t3rf_ch_t;
 
 /* ── the site ─────────────────────────────────────────────────────────────── */
@@ -199,9 +204,11 @@ void rdof_t3rf_rx(rdof_t3rf_t *t, int c, int64_t k, const rdof_burst_t *b, int r
 /* A network burst for payload channel ch (f->dt, f->n, f->burst as a box sends it on mqtt-net): regenerated and
  * queued behind a prebuffer, or dropped while RF holds the channel. False: dropped (closed channel, RF, full). */
 bool rdof_t3rf_net(rdof_t3rf_t *t, int ch, const rdof_frame_t *f);
-/* The network's stream on ch ended without a terminator: what's held plays out. */
+/* The network's stream on ch ended without a terminator: what's held plays out, then a terminator with the stream's
+ * LC and the call hang time (361-1 5.2.1.4). */
 void rdof_t3rf_net_end(rdof_t3rf_t *t, int ch);
-/* Timers at slot k: RF calls lost (activity LOST). Call once a slot or so. */
+/* Timers at slot k: RF calls lost (activity LOST; a terminator with the call's LC queued, then the hang time). Call
+ * once a slot or so. */
 void rdof_t3rf_tick(rdof_t3rf_t *t, int64_t k);
 
 /* Payload channel ch's next outbound burst, for slot k: the controller's PDU, warm-up idle, queued traffic, idle. */

@@ -76,8 +76,11 @@ impl Site {
     }
 
     /// The uploaded list (B.3.2 Address Format): kept, replacing ms's last; (reason, Response_Info) for the final
-    /// C_ACK. One bit per address, ADDRESS1 the MSB of the seven (table 6.10): 1 accepted. ADRNULL and the bits
-    /// past the addresses sent are 1 (all accepted is 1111111b whatever the count).
+    /// C_ACK (6.4.4.1.13.2). Every address taken: Reg_Accepted with 1111111b ("regardless of the number of
+    /// Subscription/Attachment TGs the MS has sent"). Else Reg_Subscription/Attachment with one bit per address,
+    /// ADDRESS1 the MSB of the seven (table 6.10): 1 accepted, 0 refused, 0 for an ADRNULL ("For an address where MS
+    /// sent an ADRNULL the response shall be 0") and for a position not sent. No room to keep it: 000 0000 ("The TSCC
+    /// may accept the registration but send Response_Info = 000 0000").
     pub(super) fn tgl_apply(&mut self, ms: u32, list: &AddrList) -> (u8, u8) {
         let Some(r) = self.reg_index(ms) else { return (R_REG_SUBSCRIPTION, 0) };
         // the single subscription goes: the list replaces it
@@ -88,15 +91,16 @@ impl Site {
         }
         let slot = self.tgl_entry(ms);
         let mut sub = [0u32; LIST_TGS];
-        let mut info = 0x7F;
+        let (mut info, mut all) = (0u8, true);
         for (j, &tg) in list.addrs().iter().take(LIST_TGS).enumerate() {
             if tg == ADRNULL {
                 continue;
             }
             if slot.is_some() && self.tgl_allowed(tg) {
                 sub[j] = tg;
+                info |= 0x40 >> j;
             } else {
-                info &= !(0x40 >> j);
+                all = false;
             }
         }
         if let Some(i) = slot {
@@ -104,7 +108,11 @@ impl Site {
         }
         self.subs_dirty = true;
         self.write_record(r);
-        (if info == 0x7F { R_REG_ACCEPTED } else { R_REG_SUBSCRIPTION }, info)
+        if all {
+            (R_REG_ACCEPTED, 0x7F)
+        } else {
+            (R_REG_SUBSCRIPTION, info) // no room: no bit set, 000 0000
+        }
     }
 
     /// A single subscription (Trgt_Adr_Cnts 01b) or deregistration: the list goes.
@@ -183,5 +191,32 @@ impl Site {
             Some(i) if ms != 0 => (self.tgl.l[i].sub, self.tgl.l[i].dgna),
             _ => ([0; LIST_TGS], [0; DGNA_TGS]),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 6.4.4.1.13.2: "The TSCC may accept the registration but send Response_Info = 000 0000. In that case the TSCC
+    /// has rejected all of the talkgroup Subscription/Attachment addresses in the list." The site does that when it
+    /// has no room left to keep a list.
+    #[test]
+    fn list_table_full() {
+        let mut s = new_site(&cfg_default());
+        for ms in 0..TGLISTS as u32 {
+            let ms = 5000 + ms;
+            assert!(s.record_for(ms, HOW_REGISTER).is_some());
+            assert!(s.tgl_entry(ms).is_some());
+        }
+        assert!(s.record_for(6000, HOW_REGISTER).is_some());
+        let mut list = AddrList { n: 3, ..Default::default() };
+        list.a[..3].copy_from_slice(&[9, 10, ADRNULL]);
+        assert_eq!(s.tgl_apply(6000, &list), (R_REG_SUBSCRIPTION, 0));
+        assert_eq!(s.tg_lists(6000).0, [0; LIST_TGS]);
+        // with room: every one taken, Reg_Accepted and 1111111b "regardless of the number ... the MS has sent"
+        let mut s = new_site(&cfg_default());
+        assert!(s.record_for(6000, HOW_REGISTER).is_some());
+        assert_eq!(s.tgl_apply(6000, &list), (R_REG_ACCEPTED, 0x7F));
     }
 }

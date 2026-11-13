@@ -102,13 +102,31 @@ fn registration_with_a_talkgroup_list() {
     let a = pdus.iter().find_map(Ahoy::decode).expect("C_AHOY for the list");
     assert_eq!((a.source, a.target, a.service_kind, a.service_kind_flag, a.appended), (TATTSI, 1001, SK_REG, true, 1));
     assert!(!a.als && !a.group);
-    // table 6.10: one bit per address, ADDRESS1 the MSB; ADDRESS3 refused; the bits past the list are 1
+    // 6.4.4.1.13.2, table 6.10: one bit per address, ADDRESS1 the MSB; ADDRESS3 refused (0); ADDRESS5-7 the MS
+    // sent as ADRNULL (B.3.2: two blocks hold seven), "For an address where MS sent an ADRNULL the response shall be 0"
     assert_eq!(air.ms[0].status().last_reason, R_REG_SUBSCRIPTION);
-    assert_eq!(air.ms[0].reg_info(), 0b110_1111);
+    assert_eq!(air.ms[0].reg_info(), 0b110_1000);
     let ack = pdus.iter().filter_map(Ack::decode).find(|a| a.reason == R_REG_SUBSCRIPTION).unwrap();
-    assert_eq!((ack.source, ack.target, ack.response_info), (TATTSI, 1001, 0b110_1111));
+    assert_eq!((ack.source, ack.target, ack.response_info), (TATTSI, 1001, 0b110_1000));
     assert_eq!(air.site.tg_lists(1001).0, [TG, 10, 0, 11, 0, 0, 0]);
     assert_eq!(subs(air.site), [TG, 10, 11]);
+}
+
+/// 6.4.4.1.13.2: some talkgroups refused, an ADRNULL among those sent: its bit 0, and 0 for the positions a
+/// one-block list doesn't carry (B.3.2: three addresses).
+#[test]
+fn talkgroup_list_partial_with_adrnull() {
+    let mut s = site_with(|_| {});
+    tgs_to_99(&mut s);
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG])], T0);
+    let now = air.now();
+    assert!(air.ms[0].register_list(&[TG, ADRNULL, 500], now));
+    let pdus = tscc_csbks(&mut air, &mut log, 3000);
+    assert_eq!(air.ms[0].status().registered, 1);
+    let ack = pdus.iter().filter_map(Ack::decode).find(|a| a.target == 1001 && a.source == TATTSI).unwrap();
+    assert_eq!((ack.reason, ack.response_info), (R_REG_SUBSCRIPTION, 0b100_0000));
+    assert_eq!(air.site.tg_lists(1001).0, [TG, 0, 0, 0, 0, 0, 0]);
 }
 
 #[test]

@@ -541,6 +541,26 @@ fn registration_with_talkgroup() {
     assert_eq!(r.s.record(A).unwrap().sub_tg, TG);
 }
 
+/// 6.4.4.1.13.1: a talkgroup refused at registration gets "C_ACK(Reason Code = Subscription/Attachment (0110 0101)
+/// and Response_Info = 000 0000)", also from an MS that asks for power save as well (PS_RQ isn't 000b, which the
+/// clause forbids); table 7.41 gives PowerSave_Offset to Reg_Accepted only. Accepted, the offset goes as asked.
+#[test]
+fn registration_talkgroup_refused_with_power_save() {
+    let mut r = Rig::new(|c| c.power_save = 3);
+    let mut p = Policy::default_open();
+    p.tg = IdSet::of(&[(1, 99)]);
+    r.s.policy_set(&p);
+    let ps2 = 0b000_0101; // PS_RQ 010b (1:4), REG_DEREG 1
+    let k = r.send(rand(ps2, 0b0100, spec::SK_REG, 500, A));
+    let (_, (ri, reason, target, source)) = r.ack_to(k, 30, A).unwrap();
+    assert_eq!((reason, ri, target, source), (spec::REG_SUBSCRIPTION, 0, A, spec::REGI));
+    assert_eq!(r.s.power_save_of(A), (0, 0));
+    let k = r.send(rand(ps2, 0b0100, spec::SK_REG, TG, B));
+    let (_, (ri, reason, _, _)) = r.ack_to(k, 30, B).unwrap();
+    assert_eq!(reason, spec::REG_ACCEPTED);
+    assert!((1..4).contains(&ri), "PowerSave_Offset {ri}");
+}
+
 /// 6.4.4.1.13.2 and tier3.md 3.17: a list subscription (TRGT_ADR_CNTS 10b, target TATTSI): the TSCC asks for the
 /// list with a C_AHOY; an MS that never uploads it is registered with every talkgroup refused, Reg_Subscription
 /// (0110 0101b) with an index pattern of 0 (table 6.10). The answer comes from TATTSI, the C_RAND's target: 6.4.4.1.13.2
@@ -921,6 +941,38 @@ fn callback_mirrored() {
     let k = r.send(acku(spec::CALLBACK, A, B));
     r.ack_with(k, 30, A, spec::CALLBACK).expect("C_ACKD(CallBack) to the caller");
     assert!(r.find(k, 60, |dt, b| is(dt, b, spec::PV_GRANT)).is_none());
+}
+
+/// 6.6.3.1.4, 6.6.3.2.6: a packet data call to an MS: the TSCC allocates a payload channel (PD_GRANT, table 7.13)
+/// on the called MS's C_ACKU(Message_Accepted); MS_Accepted is the same answer with the MS-sent direction bit (table
+/// 7.42, 7.2.8.0). CallBack doesn't accept the call: mirrored to the caller as for voice (6.6.2.2.6), no channel.
+/// MS_Alerting isn't an answer to a data check: no channel, and the check ends as unanswered (MSaway).
+#[test]
+fn packet_data_ready_only_on_accepted() {
+    let pd_grant = |dt: u8, b: &[u8; 10]| is(dt, b, spec::PD_GRANT);
+    for reason in [spec::MESSAGE_ACCEPTED, spec::MS_ACCEPTED] {
+        let mut r = two(false);
+        let k = r.send(rand(0, 0, spec::SK_IND_PACKET, B, A));
+        let (_, o) = r.find(k, 30, ahoy).expect("C_AHOY");
+        assert_eq!(ahoy_f(&o.tscc_pdu).5, spec::SK_IND_PACKET);
+        let k = r.send(acku(reason, A, B));
+        assert!(r.find(k, 30, pd_grant).is_some(), "{reason:#x}: PD_GRANT");
+    }
+    let mut r = two(false);
+    let k = r.send(rand(0, 0, spec::SK_IND_PACKET, B, A));
+    r.find(k, 30, ahoy).unwrap();
+    let k = r.send(acku(spec::CALLBACK, A, B));
+    r.ack_with(k, 30, A, spec::CALLBACK).expect("C_ACKD(CallBack) to the caller");
+    assert!(r.find(k, 60, pd_grant).is_none());
+
+    let mut r = two(false);
+    let k = r.send(rand(0, 0, spec::SK_IND_PACKET, B, A));
+    r.find(k, 30, ahoy).unwrap();
+    let k = r.send(acku(spec::MS_ALERTING, A, B));
+    let frames = (r.cfg.ahoy_tries as i64 + 2) * r.cfg.ahoy_every_ms as i64 / 60 + 50;
+    assert!(r.find(k, frames, pd_grant).is_none(), "no channel on MS_Alerting");
+    let (_, o) = r.find(k, frames, |dt, b| is(dt, b, spec::C_ACKD) && tgt(b) == A && field(b, 23, 2) == 0).expect("C_NACKD");
+    assert_eq!(field(&o.tscc_pdu, 23, 8) as u8, spec::MSAWAY_REFUSED);
 }
 
 /// 6.6.2.1.4: C_NACKU from the called MS: C_NACKD to the caller with the reason mirrored.

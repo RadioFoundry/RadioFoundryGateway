@@ -1152,6 +1152,10 @@ unsafe fn drain(u: *mut Unit) {
                 if ch < CHANNELS {
                     (*u).ch_flags[ch] = e.flags; // the call's, for the uplink
                     rdof_t3rf_open(rf(u), ch as c_int, e.src, e.dst, e.flags & t3::F_GROUP != 0, WARMUP);
+                    let c = rdof_t3rf_channel(rf(u), ch as c_int);
+                    if !c.is_null() {
+                        (*c).so = e.svc; // the LC's Service Options for a late entry or network voice
+                    }
                     rdof_t3rf_duplex(rf(u), ch as c_int, e.why == t3::OPEN_DUPLEX);
                     if e.stream != 0 {
                         stream_map(u, e.stream, ch as c_int);
@@ -1192,7 +1196,13 @@ unsafe fn drain(u: *mut Unit) {
             t3::EV_PD => data_event(u, &e),
             t3::EV_NET_SUBS => subs = true,
             t3::EV_RECORD => record_out(u, e.src, e.why == 1),
-            t3::EV_ACTIVITY => activity_out(u, &e),
+            t3::EV_ACTIVITY => {
+                let c = rdof_t3rf_channel(rf(u), c_int::from(e.ch));
+                if e.kind == t3::ACT_GRANT && !c.is_null() && (*c).open {
+                    (*c).so = e.svc; // a grant again: an emergency request may have made it an emergency call
+                }
+                activity_out(u, &e)
+            }
             t3::EV_NET_DROP => log(u, |o| {
                 o.bytes(b"tier3: network stream ");
                 hex(o, e.stream, 8);

@@ -81,6 +81,7 @@ pub const DATA: c_int = 5; // a packet data block (rate 1/2, 3/4 or 1) repeated 
 pub const OUT_IDLE: c_int = 0;
 pub const OUT_TRAFFIC: c_int = 1;
 pub const OUT_CONTROL: c_int = 2;
+pub const OUT_HANG: c_int = 3; // a call hang time terminator (361-1 5.2.1.4)
 
 /// rdof_t3rf_burst_t
 #[repr(C)]
@@ -134,6 +135,9 @@ pub struct T3rfCh {
     pub rc_k: i64,
     pub rc_sent: u32,
     pub duplex: bool,
+    pub so: u8,
+    pub hang: bool,
+    pub hang_lc: [u8; 9],
 }
 
 /// rdof_t3rf_io_t
@@ -419,6 +423,7 @@ pub unsafe extern "C" fn rdof_t3rf_open(
         c.ctl_left = 0;
         c.close_after = false;
         c.warmup = warmup.max(0);
+        c.hang = false;
     }
     c.open = true;
     c.src = src;
@@ -431,6 +436,8 @@ fn close(t: &mut T3rf, ch: c_int) {
     let Some(c) = channel(t, ch) else { return };
     flush(c);
     c.duplex = false;
+    c.so = 0;
+    c.hang = false;
     c.open = false;
     c.rf = false;
     c.rf_regen_on = false;
@@ -479,9 +486,11 @@ pub unsafe extern "C" fn rdof_t3rf_control(
     true
 }
 
-fn lc_of(src: u32, dst: u32, group: bool) -> [u8; 9] {
+/// The LC the site makes for a call it joins without one (late entry, network voice): the call's Service Options
+/// kept (361-2 5.3.2.1, 5.3.3.1, table 7.11: Emergency, Broadcast).
+fn lc_of(src: u32, dst: u32, group: bool, so: u8) -> [u8; 9] {
     let mut lc9 = [0u8; 9];
-    rdof_group_lc(src, dst, group, 0, &mut lc9);
+    rdof_group_lc(src, dst, group, c_int::from(so), &mut lc9);
     lc9
 }
 
@@ -638,7 +647,7 @@ unsafe fn payload_rx(io: &T3rfIo, c: &mut T3rfCh, k: i64, b: &RdofBurst, rssi: c
         c.rf_src = c.src;
         c.rf_dst = c.dst;
         c.rf_group = c.group;
-        let lc9 = lc_of(c.src, c.dst, c.group);
+        let lc9 = lc_of(c.src, c.dst, c.group, c.so);
         rdof_voice_regen_init(&mut c.rf_regen, lc9.as_ptr(), c.cc);
         c.rf_regen_on = true;
         c.rf = true;
@@ -721,9 +730,9 @@ pub unsafe extern "C" fn rdof_t3rf_net(t: *mut T3rf, ch: c_int, f: *const RdofFr
         let lc9 = if rdof_decode_voice_lc(&f.burst, f.dt, &mut lc) {
             lc.raw
         } else if f.has_addr {
-            lc_of(f.src, f.dst, f.group)
+            lc_of(f.src, f.dst, f.group, c.so)
         } else {
-            lc_of(c.src, c.dst, c.group)
+            lc_of(c.src, c.dst, c.group, c.so)
         };
         if f.dt == RDOF_DT_VOICE_LC_HEADER {
             if !c.net {
@@ -742,7 +751,7 @@ pub unsafe extern "C" fn rdof_t3rf_net(t: *mut T3rf, ch: c_int, f: *const RdofFr
     } else if is_voice(f.dt) {
         if !c.net_regen_on {
             // joined late: the addresses it gives, else the channel's
-            let lc9 = if f.has_addr { lc_of(f.src, f.dst, f.group) } else { lc_of(c.src, c.dst, c.group) };
+            let lc9 = if f.has_addr { lc_of(f.src, f.dst, f.group, c.so) } else { lc_of(c.src, c.dst, c.group, c.so) };
             rdof_voice_regen_init(&mut c.net_regen, lc9.as_ptr(), c.cc);
             c.net_regen_on = true;
             c.net = true;
@@ -778,6 +787,12 @@ pub unsafe extern "C" fn rdof_t3rf_net_end(t: *mut T3rf, ch: c_int) {
     if !c.net {
         return;
     }
+    if c.net_regen_on && !c.duplex {
+        // ended without its terminator: the site sends one (the call hang time follows, 361-1 5.2.1.4)
+        let mut out = [0u8; BURST_BYTES];
+        rdof_duplex_lc_burst(c.net_regen.lc9.as_ptr(), RDOF_DT_TERMINATOR_WITH_LC, c.cc, out.as_mut_ptr());
+        push(c, RDOF_SYNC_DATA | RDOF_DT_TERMINATOR_WITH_LC as u8, true, &out);
+    }
     c.net_started = true;
     c.net = false;
     c.net_regen_on = false;
@@ -790,6 +805,13 @@ pub unsafe extern "C" fn rdof_t3rf_tick(t: *mut T3rf, k: i64) {
     for i in 0..2 * t.ncarriers {
         let Some(c) = channel(t, i) else { continue };
         if c.rf && k - c.rf_last > LOST_K {
+            if c.rf_regen_on && !c.duplex {
+                // the talker went without its terminator: the site sends one (the call hang time follows,
+                // 361-1 5.2.1.4)
+                let mut out = [0u8; BURST_BYTES];
+                rdof_duplex_lc_burst(c.rf_regen.lc9.as_ptr(), RDOF_DT_TERMINATOR_WITH_LC, c.cc, out.as_mut_ptr());
+                push(c, RDOF_SYNC_DATA | RDOF_DT_TERMINATOR_WITH_LC as u8, false, &out);
+            }
             c.rf = false;
             c.rf_regen_on = false;
             c.lost += 1;
@@ -859,8 +881,15 @@ fn rc_put(c: &mut T3rfCh, k: i64, kind: c_int, control: u8, out: &mut Burst) -> 
 }
 
 fn ch_next(t: &mut T3rf, ch: c_int, k: i64, control: &mut u8, out: &mut Burst) -> c_int {
-    let kind = ch_burst(t, ch, control, out);
+    let mut kind = ch_burst(t, ch, control, out);
     if let Some(c) = channel(t, ch) {
+        if kind == OUT_HANG && c.rc != 0 && !c.after_term && k - c.rc_k >= RC_EVERY_K {
+            // the RC for the other slot's talker in place of a hang time terminator: an idle burst carries it (a
+            // dedicated RC, 361-1 5.1.5.2), not the first burst after the voice (5.1.5.1)
+            *control = RDOF_SYNC_DATA | DT_IDLE as u8;
+            unsafe { rdof_duplex_idle(c.cc, out.as_mut_ptr()) };
+            kind = OUT_IDLE;
+        }
         if rc_put(c, k, kind, *control, out) && kind == OUT_IDLE {
             c.after_term = false;
             return OUT_CONTROL; // signalling, not idle: a split half sends it
@@ -902,9 +931,26 @@ fn ch_burst(t: &mut T3rf, ch: c_int, control: &mut u8, out: &mut Burst) -> c_int
             c.net_started = false;
         }
         c.tx_traffic += 1;
+        // after a voice call's terminator, the call hang time (361-1 5.2.1.4): its LC for the hang time terminators
+        let mut lc: RdofFullLc = unsafe { core::mem::zeroed() };
+        c.hang = *control == RDOF_SYNC_DATA | RDOF_DT_TERMINATOR_WITH_LC as u8
+            && !c.duplex
+            && rdof_decode_voice_lc(out, RDOF_DT_TERMINATOR_WITH_LC, &mut lc);
+        if c.hang {
+            c.hang_lc = lc.raw;
+        }
         return OUT_TRAFFIC;
     } else if c.net_started && c.qn == 0 {
         c.net_started = c.net; // an underrun mid stream: it carries on as bursts come
+    }
+    if c.open && c.hang {
+        // 361-1 5.2.1.4: in the call hang time the BS "shall maintain the channel in the Busy state by transmitting
+        // Terminator with LC (hang time) messages ... with the source and destination IDs set to reflect the voice
+        // call in progress"; until the next talker's voice, or the controller's P_CLEAR
+        *control = RDOF_SYNC_DATA | RDOF_DT_TERMINATOR_WITH_LC as u8;
+        unsafe { rdof_duplex_lc_burst(c.hang_lc.as_ptr(), RDOF_DT_TERMINATOR_WITH_LC, cc, out.as_mut_ptr()) };
+        c.tx_traffic += 1;
+        return OUT_HANG;
     }
     c.tx_idle += 1;
     unsafe { rdof_duplex_idle(cc, out.as_mut_ptr()) };

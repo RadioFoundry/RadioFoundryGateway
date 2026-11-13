@@ -168,7 +168,8 @@ typedef struct {
 } rdof_t3_neighbor_t;
 
 /* events */
-#define RDOF_T3_EV_CH_OPEN 1     /* a payload channel's call starts: ch, src, dst, flags, stream (network), chan, lcn */
+#define RDOF_T3_EV_CH_OPEN 1     /* a payload channel's call starts: ch, src, dst, flags, stream (network), chan, lcn,
+                                    svc (the Service Options of an LC the site makes: 80h emergency, 08h broadcast) */
 #define RDOF_T3_EV_CH_CLOSE 2    /* ch, why (RDOF_T3_CLOSE_*) */
 #define RDOF_T3_EV_CH_STREAM 3   /* a network stream now feeds open channel ch: stream, src */
 #define RDOF_T3_EV_NET_SETUP 4   /* publish a setup message: op, reason, flags (setup flags), svc, src, dst, stream, ref */
@@ -422,7 +423,8 @@ typedef struct {
     uint8_t offset;  /* sent in offset timing (a duplex call): in the other inbound slot of ch's carrier */
     uint32_t src, dst;
     uint8_t ext[14]; /* a data block (dt 7, 8, 10) or header: its octets 10 on (to 11, 17 or 23) */
-    uint8_t pad2[2];
+    uint8_t so;      /* voice: the LC's Service Options (361-2 table 7.11: Emergency 80h, Broadcast 08h) */
+    uint8_t pad2;
 } rdof_t3ms_tx_t;
 
 typedef struct {

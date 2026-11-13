@@ -4,7 +4,9 @@ A running list of what RadioFoundry's radio firmware needs to know or change for
 only what isn't already in a spec: requests, choices the gateway made, limits of what the gateway supports now, and
 facts found while building. Add to it as things come up; mark items done when RadioFoundry has them.
 
-Status (2026-11-06): nothing sent yet.
+Status (2026-11-13): RadioFoundry's MS engine has run against the site on air (tier3.md, phase 7). Section 2.1 is
+the phase 1 scope; the site does more now (tier3.md section 1). Section 2.5 lists the site's changes from the
+2026-11-13 audit that an MS sees.
 
 ## 1. The radio as a split duplex transmitter (TX half)
 
@@ -107,7 +109,7 @@ spec for both; this lists only the gateway's choices and limits. The full design
 | NRand_Wait | 6 (360 ms) |
 | Backoff | 3 when quiet, up to 9 under load |
 | Service Function | 00 normally; 11 (registration only) while the queue is full |
-| Grant repetition | each grant twice in consecutive TSCC slots, then every 1.2 s with Late_Entry = 1 through the call and hang |
+| Grant repetition | each grant twice in consecutive TSCC slots, then every 1.2 s with Late_Entry = 1 through the call and its hang, up to P_CLEAR (6.6.2.4.1, "while a call is active"; the captured site does the same). The MS should count the hang as activity (2.5) |
 | Hang (TV_Hangtime) | 3 s |
 | Call end | P_CLEAR to ALLMSI, 4 times, channel 0 (back to the TSCC) |
 | Individual call timer | 180 s (emergency 300 s) |
@@ -156,3 +158,20 @@ spec for both; this lists only the gateway's choices and limits. The full design
 - The simulator is a second implementation of the MS procedures the site needs: when the radio and the site
   disagree, compare the radio's behavior with it, and check both against the standard.
 - First on-air tests: the Pluto on the SDR bench (cabled), on a frequency the owner gives.
+
+### 2.5 Site changes an MS sees (2026-11-13 audit)
+
+- Hang time: the payload channel sends the last item's Terminator with LC in every slot of the hang (361-1 5.2.1.4,
+  361-2 5.1.1.3; the captured site does too), not idle bursts. An MS should count any burst with a good sync on its
+  slot as call activity (idles too), so it stays to P_CLEAR. Late_Entry grants go out in the hang too: an MS that
+  has just left a call may discard Late_Entry = 1 grants for it (6.6.2.4.1), but not a Late_Entry = 0 grant.
+- The LC the site makes (late entry, network voice) carries the call's Service Options: Emergency 80h, Broadcast
+  08h for all-calls and broadcast calls (361-2 5.3.2.1, 5.3.3.1, table 7.11).
+- Talkgroup list registration (6.4.4.1.13.2, table 6.10): all accepted, C_ACKD(Reg_Accepted) with Response_Info
+  1111111b; else C_ACKD(65h) with a bit per accepted address (ADDRESS1 the MSB), 0 for ADRNULL and unsent
+  positions; a full talkgroup table, 65h with 0000000b.
+- A single talkgroup refused (TRGT_ADR_CNTS 01b): C_ACKD(65h) with Response_Info 0000000b even when the MS asked
+  for power save; PowerSave_Offset only comes with Reg_Accepted (table 7.41).
+- Packet data availability check: the MS answers C_ACKU(Message_Accepted) (6.6.3.2.6; MS_Accepted works too) or
+  C_NACKU when its data terminal isn't ready. CallBack is mirrored to the caller; MS_Alerting isn't an answer to a
+  data check.

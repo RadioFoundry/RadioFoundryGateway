@@ -37,7 +37,7 @@ Principles:
 | Control channel | C_SYS_Parms short LC with a counting Common_Slot_Counter; C_ALOHA; C_BCAST Adjacent_Site (from the network), Chan_Freq (the site's own channel plan), Local_Time (when the clock is good), Gen_Site_Params, CallTimer_Parms, Vote_Now (with the VOTE_BLK block), Ann_WD_TSCC, MassReg (section 3.11); CACH AT driven by the controller |
 | Random access | Slotted Aloha, Mask 0, Service Function from load, adaptive Backoff, NRand_Wait from settings; a response to every random access |
 | Registration | Open or listed (ID sets); register, de-register, implicit registration from call requests; single-talkgroup subscription (TRGT_ADR_CNTS 01b) and a list of up to 7 by UDT upload (10b, 3.17); Reg_Accepted / Reg_Refused / Reg_Denied; MS_Not_Registered |
-| Group voice | C_RAND, C_WACKD/C_QACKD, TV_GRANT (repeated; Late_Entry grants through the call), BTV_GRANT for all-calls (ALLMSID, ALLMSIDL, ALLMSIDZ) and broadcast calls to a talkgroup (BCAST_SV), quasi-transmission trunking (hang time), P_CLEAR on hang expiry, call timer or P_MAINT DISCON |
+| Group voice | C_RAND, C_WACKD/C_QACKD, TV_GRANT (repeated; Late_Entry grants through the call and its hang time), BTV_GRANT for all-calls (ALLMSID, ALLMSIDL, ALLMSIDZ) and broadcast calls to a talkgroup (BCAST_SV), quasi-transmission trunking (hang time), P_CLEAR on hang expiry, call timer or P_MAINT DISCON |
 | Individual voice | C_AHOY availability check (OACSU or FOACSU, a setting), C_ACKU/C_NACKU, Call Answer, PV_GRANT, cancel (Service_Kind 1111b) |
 | Full-duplex individual voice | Service_Kind 1010b (6.6.9): radio check, a whole carrier in offset timing, a PV_GRANT_DX to each party, each party's inbound repeated on the other's slot; local calls; a setting, off by default (section 3.13) |
 | Queueing | One queue by priority (emergency first, then PRIORTY_SV, then age); C_QACKD; SYSbusy_Refused when full |
@@ -132,9 +132,12 @@ Carrier A TS1 sends a CSBK or MBC block every slot (every 60 ms). The controller
 1. A response that is due: an acknowledgment, a C_AHOY, an initial grant (each initial grant twice, in consecutive
    TSCC slots).
 2. The continuation block of an MBC already started.
-3. A grant repeat that is due: every `grant_every_s` (default 1.2 s) per active call, with Late_Entry = 1, while
-   someone talks. None in hang time: an MS on the TSCC would follow one to a quiet channel (a radio on the bench
-   re-followed a finished call that way, 2026-11-13); they start again with the next talker's voice.
+3. A grant repeat that is due: every `grant_every_s` (default 1.2 s) per active call, with Late_Entry = 1, through
+   the call and its hang time, until P_CLEAR (6.6.2.4.1, "while a call is active"; the captured site sends them up
+   to P_CLEAR). For a while (69c77db6) none went out in the hang: a radio on the bench re-followed a finished call
+   from one (2026-11-13). The likely cause is on the radio's side: it took the idle bursts of the hang for a dead
+   channel, left early, and then followed the call's next Late_Entry grant back (inferred from its code, not seen on
+   air). The hang now carries terminators (3.5), and an MS that counts them as activity stays to P_CLEAR.
 4. A broadcast that is due: MassReg while one runs, CallTimer_Parms every `call_timers_s`, Vote_Now per neighbor
    every `vote_now_s`, Ann_WD_TSCC every `ann_tscc_s` (section 3.11; all off by default), Adjacent_Site per neighbor
    every `adjacent_s` (default 5 s), Chan_Freq every `chan_freq_s`, Local_Time every `local_time_s` (default 6 s)
@@ -192,7 +195,10 @@ Group call (talkgroup, ALLMSID):
    into the queue; queue full: C_NACKD(SYSbusy_Refused).
 3. The payload channel starts sending idles at once, then repeats the inbound voice of whoever talks, and plays
    network voice for the talkgroup.
-4. Hang (`hang_s`, default 3 s, TV_Hangtime) after each item; any member may talk again during it. The call ends on
+4. Hang (`hang_s`, default 3 s, TV_Hangtime) after each item; any member may talk again during it. The payload
+   channel keeps sending the item's Terminator with LC (its source and destination) in every slot of the hang, AT
+   busy (361-1 5.2.1.4, 361-2 5.1.1.3; the captured site sends them too); a talker that went without a terminator
+   gets one from the site first. The call ends on
    hang expiry, the call timer (`call_s`, default 180 s, T_MS-MS_TIMER), or P_MAINT DISCON from the initiator: the
    payload channel sends P_CLEAR (target ALLMSI, source TSI, channel 0 = back to the TSCC) 4 times, then frees.
 5. A new request for a talkgroup that already has a call in progress or in hang gets the same channel (a fresh
@@ -339,7 +345,9 @@ Window 0 cancels a mass re-registration (the pending attempts with it), repeated
 
 Power save (6.4.7), off unless `services.power_save` is set: an MS that asks for 1:2^n (PowerSave_RQ n, 1-7) with n
 up to the setting gets a PowerSave_Offset (1 to 2^n - 1, table 6.13) in Response_Info of its registration's
-C_ACKD; a larger n or none gets 0 (registered, power save not available: the site doesn't refuse it). The offset
+C_ACKD; a larger n or none gets 0 (registered, power save not available: the site doesn't refuse it). Only
+Reg_Accepted carries the offset (table 7.41): a registration whose single talkgroup is refused gets 0110 0101b with
+Response_Info 000 0000b (6.4.4.1.13.1) and no power save, even if it asked (the clause has PS_RQ 000b there). The offset
 comes from the MS's subscribed talkgroup (else its address), so a talkgroup's members share a wake frame. PS_Counter
 is the Common_Slot_Counter's 7 high bits (one power save frame is 4 counts, 480 ms; figure 6.29); the MS wakes when
 PS_Counter masked to n bits equals its offset (table 6.14). A C_AHOY to a sleeping MS (an individual call, a
@@ -517,7 +525,10 @@ SUPED_SV, HI_RATE, SIMI, priority):
    Called_Party_Busy; itself, Not_Supported. A repeat of a request being set up gets the same answer again.
 2. An individual call to an MS: the availability check (6.6.3.1.4), C_AHOY (Service_Options_Mirror, Service_Kind
    0010b, source the caller, target the called), repeated every `ahoy_every_s` up to `ahoy_tries`; the caller hears
-   C_WACKD every 2 s. C_ACKU (the MS answers Message_Accepted) leads on; C_NACKU is mirrored; no answer, MSaway.
+   C_WACKD every 2 s. C_ACKU(Message_Accepted) leads on (6.6.3.1.4, 6.6.3.2.6), and so does MS_Accepted (the same
+   answer with the MS-sent direction bit, table 7.42); C_ACKU(CallBack) is mirrored to the caller with no channel,
+   as for voice (6.6.2.2.6); another C_ACKU (MS_Alerting) doesn't accept a data call, so the check runs on to no
+   answer; C_NACKU is mirrored; no answer, MSaway.
 3. A channel: PD_GRANT (individual) or TD_GRANT (talkgroup), opcodes 51/52, or 55/56 when SIMI asked for a
    multi-item call (7.1.1.1.1.4, 7.1.1.1.1.5), sent twice like the voice grants; HI_RATE is always 0 (single slot:
    dual-slot data isn't built, a HI_RATE request gets a single-slot grant). None free: C_QACKD(Queued_for_Resource)
@@ -576,9 +587,14 @@ Appended_UDT_Short_Data the blocks less one.
    asked, Service_Kind 1110b, source TATTSI), then the inbound slots kept for the upload as for short data (C_ALOHA
    mask 24, AT busy). The MS sends C_UDTHU (target TATTSI, A = 0, SF = 1, UDT_Format 0001b) and the blocks.
 3. Each of ADDRESS1-7 is checked against `tg` (not a gateway or an all-call). C_ACKD once, source TATTSI:
-   Reg_Accepted with Response_Info 1111111b when every one is taken, else 0110 0101b (registration accepted,
-   subscription) with one bit per address, ADDRESS1 the MSB (table 6.10), 1 accepted. ADRNULL and the bits past the
-   addresses sent are 1 ("all accepted is 1111111b whatever the count").
+   Reg_Accepted with Response_Info 1111111b when every address sent (ADRNULL aside) is taken ("This is true
+   regardless of the number of Subscription/Attachment TGs the MS has sent"), else 0110 0101b (registration accepted,
+   subscription) with one bit per address, ADDRESS1 the MSB (table 6.10), 1 accepted, 0 refused. An ADRNULL's bit is
+   0 ("For an address where MS sent an ADRNULL the response shall be 0"), and so is the bit of a position the upload
+   doesn't carry (a one-block list holds three; the text doesn't say, 0 matches the ADRNULL rule). The clause allows
+   Reg_Accepted or 0110 0101b with 1111111b for all accepted; the site sends Reg_Accepted, the reason 6.4.4.1.2
+   names as success. Its 1111111b is the pattern 6.4.4.1.13.2 asks of either reason; table 7.41's PowerSave_Offset
+   for Reg_Accepted applies to a request that invokes power save, which a list registration can't (PS_RQ 000b).
 4. The list replaces the MS's last list and its single subscription; a single subscription (01b) or ADRNULL
    replaces the list; deregistration or the record's expiry drops it. No upload (`ahoy_tries` asks, `tnp_s` at
    most) or a refused one: the registration stands, Response_Info 0 (the list refused).
@@ -600,7 +616,8 @@ DGNA (6.6.8, figure 6.67), only to an individual MS:
 
 What the site keeps: a table of 64 MSs (the list's 7 and DGNA's 16 talkgroups each), apart from the registration
 record (its format and the network's records don't change). The site carries every talkgroup a registered MS
-holds in either (its network subscriptions, 5.5). Full table: a new list is refused (Response_Info 0), a DGNA
+holds in either (its network subscriptions, 5.5). Full table: a new list is refused (0110 0101b, Response_Info
+000 0000b: "The TSCC may accept the registration but send Response_Info = 000 0000"), a DGNA
 result isn't kept (logged). An MS that roams re-registers with its list at the new site; its dynamic talkgroups
 aren't carried with its record (1.2).
 
@@ -1082,12 +1099,22 @@ called about one slot plus the TX lead ahead of air: the controller decides a sl
   site's own data goes on the queue with `rdof_t3rf_data` (`rdof_t3rf_room` says how much fits);
 - network bursts for the channel's call (from the mqtt-net downlink, after a 240 ms prebuffer) queued the same way,
   unless RF holds the channel;
+- an LC the layer makes itself (voice joined late from RF, with no header heard; network voice without an LC) has
+  the call's addresses and its Service Options from `rdof_t3rf_ch_t.so`: Emergency (80h) for an emergency call,
+  Broadcast (08h) for an all-call or a broadcast call (361-2 5.3.2.1, 5.3.3.1, table 7.11). The unit sets `so` from
+  the controller's EV_CH_OPEN `svc`, and again from a grant's activity event (an emergency request makes an open call
+  an emergency call, 3.9). An LC heard from the talker goes out as heard;
 - the controller's payload PDUs (P_CLEAR) take precedence over voice;
-- idle bursts fill;
+- after a voice call's terminator, the call hang time: the terminator's LC again in each free slot
+  (`RDOF_T3RF_HANG`, `hang` and `hang_lc`; 361-1 5.2.1.4), until voice comes again or the channel closes. When RF
+  voice is lost (no terminator) or the network's stream ends without one, the layer queues a terminator with the
+  stream's LC first. A full-duplex call has none;
+- idle bursts fill otherwise;
 - voice activity to the controller: the header, each voice sync burst (once a superframe, so a long call isn't taken
   for a lost one), the terminator, or lost;
 - a Reverse Channel PDU for the other slot's talker (`rdof_t3rf_rc`, from `rdof_t3_ch_out_t.rc`) goes once into the
-  next voice burst F or idle burst, 360 ms apart, not right after a terminator (section 3.9);
+  next voice burst F or idle burst, 360 ms apart, not right after a terminator (section 3.9); in hang time an idle
+  burst carrying it takes one hang time terminator's place (361-1 5.1.5.2);
 - a full-duplex call's channels (`rdof_t3rf_duplex`, section 3.13): the carrier's inbound slots read in offset
   timing, each channel's regenerated inbound queued on the other's outbound.
 
@@ -1296,7 +1323,7 @@ and against `t3ms` on one air.
 | Level | What | Where |
 |---|---|---|
 | PDU codec | Every PDU the site sends or reads: field packing against the 361-4 tables, round trips, known vectors from a standard site's captures (decoded values, not checks) | Rust unit tests |
-| Controller | Scenarios over `t3air`: registration open/listed/denied, collisions and backoff, group call, queue and grant on release, late entry repeats, hang and P_CLEAR, call timer, individual OACSU and FOACSU, no answer, cancel, busy called party, Not_Supported, network group in and out, network setup both ways, Tier II implicit setup, records reload, provisioning changes, link loss; short data (`t3sdtests.rs`): UDT MS to MS, MS, talkgroup and site, 1 to 4 blocks, refusals, store while busy and its timeout, cancel, the kept upload slots, CRC errors and a missing upload, status to MS, talkgroup and site, polling, the site's own sends, a full table, the network both ways; packet data (`t3pdtests.rs`): MS to MS unconfirmed and confirmed, rate 3/4 and rate 1 (unconfirmed to an MS and a talkgroup, a damaged block lost; confirmed with a damaged block: SACK, C_RDATA, the F = 0 retry, the ACK; retries to N_RtryLmt; `t3pdrate.rs`: the blocks at each rate, CRC-9 and CRC-32 against the B.3.9 / B.3.10 formulas), the availability check, PD/TD_GRANT single and multi-item, data hang and clearing, to a talkgroup, to the site (TSI, data ID, IPI), refusals (NACKU mirrored, no answer, not here, multi-part, itself, talkgroup not allowed, busy), queued and cancelled, the site's own sends; talkgroup lists (`t3tgtests.rs`): registration with a list (the
+| Controller | Scenarios over `t3air`: registration open/listed/denied, collisions and backoff, group call, queue and grant on release, late entry repeats (through the hang time), hang and P_CLEAR, call timer, individual OACSU and FOACSU, no answer, cancel, busy called party, Not_Supported, network group in and out, network setup both ways, Tier II implicit setup, records reload, provisioning changes, link loss; short data (`t3sdtests.rs`): UDT MS to MS, MS, talkgroup and site, 1 to 4 blocks, refusals, store while busy and its timeout, cancel, the kept upload slots, CRC errors and a missing upload, status to MS, talkgroup and site, polling, the site's own sends, a full table, the network both ways; packet data (`t3pdtests.rs`): MS to MS unconfirmed and confirmed, rate 3/4 and rate 1 (unconfirmed to an MS and a talkgroup, a damaged block lost; confirmed with a damaged block: SACK, C_RDATA, the F = 0 retry, the ACK; retries to N_RtryLmt; `t3pdrate.rs`: the blocks at each rate, CRC-9 and CRC-32 against the B.3.9 / B.3.10 formulas), the availability check, PD/TD_GRANT single and multi-item, data hang and clearing, to a talkgroup, to the site (TSI, data ID, IPI), refusals (NACKU mirrored, no answer, not here, multi-part, itself, talkgroup not allowed, busy), queued and cancelled, the site's own sends; talkgroup lists (`t3tgtests.rs`): registration with a list (the
 C_AHOY's fields, the Response_Info bits, a talkgroup refused), all accepted, replaced, replaced by a single
 subscription, dropped on deregistration, a refused registration; DGNA MS to MS (address mode, a call on the new
 talkgroup, alias mode, delete all), refusals (off, talkgroup not allowed, itself, the site, not here, the called MS
@@ -1336,7 +1363,7 @@ type `tier3` (was `trunk`), the build option `RDOF_TIER3`, the modules `t3*`.
 | 4 | Carrier timing: carrier A's slots followed the SDR's sample clock and carrier B's the host's, with the offset taken once, so they drifted apart by the SDR's clock error (20 ppm: one slot in 25 minutes). Now carrier A sits on the host's slot grid too, through the stream's sample clock timed against the host's (9.4) | done on the host: an SDR 20 ppm fast for 3 hours stays within 69 us, 2 us of drift (`rdof_radio_utc_tests`); on a file device the site keys on the grid. On the bench: carrier B's bursts stay on carrier A's grid |
 | 5 | The Pluto bundle with `tier3` (tools/pluto/build.sh): rdofradio.gz still fits the settings flash's 896 KB with the controller in it | done 2026-11-12: gzip gave 746 KB, too big; the bundle now carries rdofradio.xz (628 KB) |
 | 6 | Bench, step 1 (owner's go, a bench TX frequency with a lease, cabled or lowest power): the Pluto runs a one-carrier site (TSCC on TS1, a payload channel on TS2) and a bench receiver checks the TSCC: C_SYS_Parms and its counter, C_ALOHA at least every 4th TSCC slot, the broadcasts' cadence, CRCs, the CACH (TC, AT) | an hour of TSCC decoded with no bad block ; first run 2026-11-12: 30 s from a W12, 997 bursts, every CRC good, an Aloha at least every 4th TSCC slot. The run found the grid moved when netclock stepped the clock after key-up (fixed: carrier 1 keys once the clock settles). Second run, the fixed image: 12 min, 24,519 bursts, no gap, every FEC and CRC good (12,113 CSBKs, 73 MBCs: header residue AAAA, last block 0000), never more than two TSCC blocks between Alohas, the grid within 3 ms. Then simulated MSs (`--air-ms 2`) beside the carrier: both registered, and a group call and an individual call (with its availability check) were granted and decoded on TS2 from the air, header to terminator. The capture showed their voice had no embedded LC (fixed) |
-| 7 | Bench, step 2: an MS against the site. In order of reach: a standard Tier III radio, if one is to hand (registration, a group call, a private call with the availability check); RadioFoundry's MS engine once it exists (handoff notes section 2) | registration accepted, a group call heard on the payload channel ; done 2026-11-13 with a commercial portable running RadioFoundry's MS engine (1 W, the Pluto site, simulated MSs beside it with `--air-ms 2`), each checked from both ends (the radio's log, a W12 decoding the outbound and at times the inbound): registration, with one talkgroup and with a talkgroup list (3.17; one talkgroup refused by `tg`: C_ACKD 65h, Response_Info 1101111b); group and private calls both ways, the radio following the grant, playing 5 s of voice and returning (the simulated voice had to vary frame to frame, section 11); a group call to the refused talkgroup refused (2Fh); status to an MS and to a talkgroup and polls both ways (3.10, 3.15); UDT short data both ways, to an MS and to a talkgroup, the blocks byte for byte (the run found the site's own padding wrong for character formats: fixed, annex B). Found on the way: Late_Entry grant repeats in hang time sent a returned radio back to the channel (3.5, fixed) |
+| 7 | Bench, step 2: an MS against the site. In order of reach: a standard Tier III radio, if one is to hand (registration, a group call, a private call with the availability check); RadioFoundry's MS engine once it exists (handoff notes section 2) | registration accepted, a group call heard on the payload channel ; done 2026-11-13 with a commercial portable running RadioFoundry's MS engine (1 W, the Pluto site, simulated MSs beside it with `--air-ms 2`), each checked from both ends (the radio's log, a W12 decoding the outbound and at times the inbound): registration, with one talkgroup and with a talkgroup list (3.17; one talkgroup refused by `tg`: C_ACKD 65h, Response_Info 1101111b, which was wrong: the ADRNULL positions are 0, 1101000b, fixed since); group and private calls both ways, the radio following the grant, playing 5 s of voice and returning (the simulated voice had to vary frame to frame, section 11); a group call to the refused talkgroup refused (2Fh); status to an MS and to a talkgroup and polls both ways (3.10, 3.15); UDT short data both ways, to an MS and to a talkgroup, the blocks byte for byte (the run found the site's own padding wrong for character formats: fixed, annex B). Found on the way: a returned radio went back to the channel on a Late_Entry grant repeat in hang time; repeats in the hang were stopped for a while; the likely cause is the radio leaving early on the idle-filled hang, and they're back (3.2) |
 | 8 | Bench, step 3: carrier B on a split radio's TX half (RadioFoundry's split protocol), two payload slots on it | a call granted on carrier B heard there |
 | 9 | Merge into main | the owner's go |
 

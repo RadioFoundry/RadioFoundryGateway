@@ -255,9 +255,11 @@ impl Site {
     /// The registration's C_ACKD, with PowerSave_Offset in Response_Info (6.4.7.2.1, table 6.13): granted when the
     /// MS asks for 1:2^rq with rq up to services.power_save; 0 (registered, power save not available) otherwise.
     /// The offset spreads the MSs over the frames by subscribed talkgroup (one frame for a talkgroup's members).
+    /// Only Reg_Accepted carries it (table 7.41): a talkgroup refused (Reg_Subscription/Attachment) gets
+    /// Response_Info 000 0000 (6.4.4.1.13.1) and no power save (the MS may not ask for both: PS_RQ 000b there).
     pub(super) fn reg_ack(&mut self, i: usize, r: &Rand, reason: u8) {
         let rq = (r.service_options & SO_PS_RQ) >> 1;
-        let off = if rq != 0 && rq <= self.cfg.power_save {
+        let off = if reason == R_REG_ACCEPTED && rq != 0 && rq <= self.cfg.power_save {
             let key = if self.regs[i].rec.sub_tg != 0 { self.regs[i].rec.sub_tg } else { self.regs[i].rec.id };
             let n = (1u32 << rq) - 1; // offsets 1 to 2^rq - 1
             (1 + key.wrapping_mul(2_654_435_761) % n) as u8
