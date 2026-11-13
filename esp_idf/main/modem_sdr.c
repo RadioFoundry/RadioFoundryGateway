@@ -375,6 +375,24 @@ void sdr_modem_bench_write(const uint8_t *data, size_t len)
     GIVE();
 }
 
+bool sdr_modem_bench_dev_scale(double scale, char *note, size_t cap)
+{
+    note[0] = 0;
+    TAKE();
+    const bool ok = mdm && bench_reply && mdm->mod_ok;
+    double peak = 0;
+    if (ok) { /* under the lock: the front end's pulls read it */
+        rdof_mod_set_dev_scale(&mdm->mod, scale);
+        peak = rdof_mod_peak_hz(&mdm->mod);
+    }
+    GIVE();
+    const rdof_fe_caps_t *c = fe.caps;
+    if (ok && c->tx_mode == RDOF_FE_TX_FREQ && c->tx_dev_max_hz > 0 && peak > c->tx_dev_max_hz)
+        snprintf(note, cap, "the %s sends at most %.0f Hz of deviation: at %.2f the overshoots between symbols "
+                 "(to %.0f Hz) clip", c->kind, c->tx_dev_max_hz, scale, peak);
+    return ok;
+}
+
 void sdr_modem_bench_close(void)
 {
     if (!bench_reply)

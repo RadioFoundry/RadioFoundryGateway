@@ -2349,15 +2349,38 @@ static double bench_atten_db(rdof_bench_power_t p)
         return 0;
     return rdof_bench_sdr_atten_db(&bench_cfg_lim, p, gain_dbm(txg_full), txg_full - dev->tx_gain_min);
 }
-/* A job took the transmitter (its power applies from the next key-up, or at once if keyed), or let it go */
+/* A job's deviation on the SDR's modulator, from its next sample on. Only the main loop sets it, and the main loop
+ * pulls the modulator. An MMDVM modem keeps its own (a job that asks another is refused: bl_cannot). */
+static bool bench_dev_reset; /* a job let the transmitter go: nominal once what it queued has gone out */
+static void bench_dev_scale(double scale)
+{
+    bench_dev_reset = false;
+    if (!R.mmdvm && R.m.mod_ok)
+        rdof_mod_set_dev_scale(&R.m.mod, scale);
+}
+/* Before each pull: an outbound's last slots can still be in the modulator when it closes. */
+static void bench_dev_settle(void)
+{
+    if (bench_dev_reset && rdof_mod_idle(&R.m.mod))
+        bench_dev_scale(1.0);
+}
+/* A job took the transmitter (its power applies from the next key-up, or at once if keyed; its deviation at once), or
+ * let it go */
 static void bench_power_on(rdof_bench_power_t p)
 {
-    const double a = bench_atten_db(p);
+    const double a = bench_atten_db(p), ds = rdof_bench_dev_scale(p);
     atomic_store(&bench_atten_cdb, (int)lround(100 * a));
     if (a > 0)
         say("bench: the job transmits %.1f dB under --tx-power: %.1f dBm\n", a, gain_dbm(txg_full) - a);
+    bench_dev_scale(ds);
+    if (ds != 1.0 && !R.mmdvm)
+        say("bench: the job's DMR deviation is %.2f of nominal\n", ds);
 }
-static void bench_power_off(void) { atomic_store(&bench_atten_cdb, -1); }
+static void bench_power_off(void)
+{
+    atomic_store(&bench_atten_cdb, -1);
+    bench_dev_reset = !R.mmdvm && R.m.mod_ok;
+}
 /* The settings' gates a job meets before it takes the transmitter: false with why. */
 static bool bench_gates(double seconds, char *why, size_t cap)
 {
@@ -2471,6 +2494,8 @@ static const char *bl_station(void *ctx, char *model, size_t cap)
 /* What an MMDVM modem physically can't do (the SDR beside it only receives). */
 static const char *bl_cannot(void *ctx, const char *what)
 {
+    if (!strcmp(what, "dev_scale"))
+        return "an MMDVM modem sets its own deviation: --dev-scale scales the SDR's modulator";
     if (!strcmp(what, "signal_tx"))
         return "an MMDVM modem's serial protocol sends DMR bursts: no FM, AM or arbitrary I/Q, and the SDR beside it "
                "only receives";
@@ -7288,6 +7313,7 @@ int main(int argc, char **argv)
         const int ntx = (int)((total + n) / txr - total / txr);
         const double t_mod = now_s();
         ms_poll(now);
+        bench_dev_settle();
         const bool keyed = rdof_sdrmodem_pull_iq(&R.m, txn - lead + offset, out, ntx);
         WS.mod += now_s() - t_mod;
         const double d_poll = t_mod - t_poll, d_mod = now_s() - t_mod;

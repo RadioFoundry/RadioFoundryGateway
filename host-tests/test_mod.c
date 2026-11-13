@@ -267,6 +267,77 @@ static void test_skip(void)
     rdof_mod_free(&b);
 }
 
+/* rdof_mod_set_dev_scale (a bench job's --dev-scale): 1.0 is init's output bit for bit; 0.9 and 1.1 scale the
+ * frequency, its peak with it, on both outputs (the Pluto's I/Q, the W12's frequency). The most a 1.5 can swing, from
+ * the pulse's taps, against the W12's int8 frequency samples (32 Hz a count: 4064 Hz). */
+static void test_dev_scale(void)
+{
+    enum { FS = 48000, N = 4800, AT = 600 };
+    static const double SC[] = {1.0, 1.0, 0.9, 1.1, 0.5, 1.5};
+    enum { K = sizeof SC / sizeof SC[0] };
+    static float hz[K][N], env[N];
+    static rdof_cf_t iq[K][N];
+    double peak[K];
+    for (int k = 0; k < K; k++) {
+        for (int w = 0; w < 2; w++) {
+            rdof_mod_t m;
+            CHECK(rdof_mod_init(&m, FS, 0.0, 4.0, 1.0f, 4, 0) == 0, "init");
+            if (k) /* 0: as init leaves it */
+                rdof_mod_set_dev_scale(&m, SC[k]);
+            for (int i = 0; i < 2; i++) {
+                const struct v_mod_seg *g = &v_mod_segs[i];
+                CHECK(rdof_mod_queue(&m, AT + i * 1440, g->sym, g->first, g->count, (unsigned)g->flags) == 0,
+                      "queue %d", i);
+            }
+            if (w)
+                rdof_mod_iq(&m, iq[k], N);
+            else
+                rdof_mod_freq(&m, hz[k], env, N);
+            rdof_mod_free(&m);
+        }
+        peak[k] = 0;
+        for (int i = 0; i < N; i++)
+            peak[k] = fmax(peak[k], fabs(hz[k][i]));
+    }
+    CHECK(!memcmp(hz[0], hz[1], sizeof hz[0]) && !memcmp(iq[0], iq[1], sizeof iq[0]),
+          "a scale of 1.0 changes the output");
+    for (int k = 2; k < K; k++) {
+        double e = 0, eiq = 0;
+        for (int i = 0; i < N; i++) {
+            e = fmax(e, fabs(hz[k][i] - SC[k] * hz[0][i]));
+            /* the I/Q's frequency: its phase step a sample, where it's keyed */
+            const rdof_cf_t a = iq[k][i], b = i ? iq[k][i - 1] : (rdof_cf_t){0, 0};
+            if (hypotf(a.re, a.im) > 0.5f && hypotf(b.re, b.im) > 0.5f) {
+                const double f =
+                    atan2(a.im * b.re - a.re * b.im, a.re * b.re + a.im * b.im) * FS / (2 * 3.14159265358979);
+                eiq = fmax(eiq, fabs(f - SC[k] * hz[0][i]));
+            }
+        }
+        printf("mod dev scale %.1f: peak %.1f Hz (%.4f of 1.0's %.1f), frequency within %.4f Hz, I/Q's within %.3f "
+               "Hz\n", SC[k], peak[k], peak[k] / peak[0], peak[0], e, eiq);
+        CHECK(fabs(peak[k] / peak[0] - SC[k]) < 1e-4, "scale %.1f: peak %.1f Hz against %.1f", SC[k], peak[k], peak[0]);
+        CHECK(e < 0.01 && eiq < 0.5, "scale %.1f: frequency off by %g Hz, the I/Q's by %g Hz", SC[k], e, eiq);
+    }
+    /* the most it can swing, at the rates the boards run: over what these symbols reached, and on the W12 (int8
+       frequency samples, 4064 Hz at most, no offset) clear to 1.1; past that its overshoots can clip */
+    static const uint32_t RATES[] = {FS, 125000, 288000};
+    for (int r = 0; r < 3; r++) {
+        rdof_mod_t m;
+        rdof_mod_init(&m, RATES[r], 0.0, 4.0, 1.0f, 4, 0);
+        const double most = rdof_mod_peak_hz(&m);
+        rdof_mod_set_dev_scale(&m, 1.1);
+        const double at11 = rdof_mod_peak_hz(&m);
+        rdof_mod_set_dev_scale(&m, 1.5);
+        const double at15 = rdof_mod_peak_hz(&m);
+        rdof_mod_free(&m);
+        printf("mod dev scale at %u S/s: the frequency swings %.0f Hz at most (1.1: %.0f, 1.5: %.0f)\n", RATES[r],
+               most, at11, at15);
+        CHECK(most >= peak[0] && most < 3800 && fabs(at15 / most - 1.5) < 1e-6, "%u S/s: at most %.0f Hz (%.0f seen)",
+              RATES[r], most, peak[0]);
+        CHECK(at11 < 4064, "%u S/s: 1.1 swings to %.0f Hz, past the W12's 4064", RATES[r], at11);
+    }
+}
+
 /* A repeater's continuous downlink at 288 kS/s: time per second of I/Q (rough, on the host). */
 static void bench(void)
 {
@@ -304,6 +375,7 @@ int main(void)
         }
     test_just_in_time();
     test_skip();
+    test_dev_scale();
     bench();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

@@ -177,6 +177,11 @@ for name, kind, sdr in (("standalone-mmdvm-simplex.json", "mmdvm_hs", ()),
         check(info["stations"][0]["kind"] == "mmdvm", f"{name}: the station {info['stations']}")
         for job in ("mssim", "outbound"):  # fakemodem's hotspot is a dual hat: two transceivers, an outbound's
             check((info["jobs"][job] is None) == has_sdr, f"{name}: {job} {info['jobs'][job]}")
+        if not has_sdr:  # a modem keeps its own deviation: --dev-scale is refused, before anything keys
+            check(info["features"]["dev_scale"] is False, f"{name}: features {info['features']}")
+            out = b.job(438.75, "csbk", dev_scale=0.9)
+            check(out and out[-1].get("code") == "unsupported" and "deviation" in out[-1]["error"],
+                  f"{name}: --dev-scale on a modem: {out[-2:]}")
         modem = read(b.log)
         check(re.search(r"TX s[12] ", modem), f"{name}: the modem sent the jobs' bursts: {modem[-300:]}")
         if duplex and has_sdr:
@@ -232,6 +237,14 @@ for name in ("standalone-pluto-simplex.json", "standalone-pluto-duplex.json"):
         if "simplex" in name:  # duplex runs two chains: a sanitizer build falls behind, and the modem's queue fills
             out = b.job(146.52, "voice", superframes=2)
             check(exited(out) and "sent 23 bursts" in json.dumps(out), f"{name}: a voice call on 2 m: {out[-3:]}")
+            check("DMR deviation" not in read(b.err), f"{name}: a job naming no --dev-scale changed the deviation")
+            check(info["features"]["dev_scale"] is True, f"{name}: features {info['features']}")
+            out = b.job(146.52, "voice", superframes=1, dev_scale=0.9)  # the SDR's modulator at 0.9 for the job
+            check(exited(out) and "--dev-scale 0.90" in json.dumps(out) and
+                  "the job's DMR deviation is 0.90 of nominal" in read(b.err), f"{name}: --dev-scale 0.9: {out[-3:]}")
+            out = b.job(146.52, "voice", superframes=1, dev_scale=1.6)
+            check(out and out[-1].get("code") == "unsupported" and "--dev-scale 1.6" in out[-1]["error"],
+                  f"{name}: --dev-scale 1.6: {out[-2:]}")
         if "duplex" in name:
             out = b.job(438.75, "outbound", seconds=12)
             check(out and "max_key_s 10.0" in json.dumps(out), f"{name}: a 12 s outbound: {out[-2:]}")

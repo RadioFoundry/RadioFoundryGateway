@@ -53,6 +53,7 @@ typedef struct {
     double freq_mhz;
     int cc, power, burst_cc;    /* power: the older 0..255 on the transmitter's range */
     double power_dbm;           /* at the antenna, NAN: power's */
+    double dev_scale;           /* the DMR 4FSK deviation, a fraction of nominal (--dev-scale 0.5-1.5; 1.0) */
     double listen_after;
     char ambe_out[64];          /* "" none */
     uint32_t src, dst, src2;

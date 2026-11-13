@@ -616,6 +616,10 @@ void edge_time_rx_mark(double pos48, double us, uint32_t failed);
 bool edge_time_rx_take(double *pos48, double *us); /* the newest mark not yet taken */
 void edge_time_rx_lag(double lag_s); /* the mark against the stream's time: the JSON's rx_lag_* */
 void sdr_modem_bench_write(const uint8_t *data, size_t len);
+/* The bench modem's DMR deviation, a fraction of nominal (a job's --dev-scale), from its next sample on: false when the
+ * bench doesn't hold a modem that transmits. note: what the front end makes of it ("" nothing to say). The job's modem
+ * is its own: closing it drops the scale. */
+bool sdr_modem_bench_dev_scale(double scale, char *note, size_t cap);
 void sdr_modem_bench_close(void);
 /* The receiver streams again, at a new center or not (sdr_task.c): the modem's carrier tuned again (a roamer
  * given back while a bench session had the receiver elsewhere kept the session's) */

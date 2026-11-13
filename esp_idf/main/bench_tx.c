@@ -175,6 +175,14 @@ static void over_note(char *why, size_t cap, const char *pre, double asked, doub
         snprintf(why, cap, "%s", pre);
 }
 
+/* more after the note in why ("" none) */
+static void add_note(char *why, size_t cap, const char *more)
+{
+    const size_t n = strlen(why);
+    if (more[0] && n + 1 < cap)
+        snprintf(why + n, cap - n, "%s%s", n ? "; " : "", more);
+}
+
 /* A burst to the pool (under mu, then the site's lock); false: no transmitter free, the burst is NAKed. */
 static bool route_burst(void *ctx, const rdof_net_burst_t *b)
 {
@@ -376,7 +384,7 @@ static esp_err_t tx_open(httpd_req_t *req)
     J = (txjob_t){.on = true, .fd = httpd_req_to_sockfd(req), .opened_us = esp_timer_get_time(),
                   .lease_us = esp_timer_get_time(), .freq = isfinite(freq) ? (uint32_t)llround(freq) : 0,
                   .radio = !strncmp(via, "radio:", 6), .job = job, .from_modem = sb};
-    const rdof_bench_power_t most = {NAN, 255};
+    const rdof_bench_power_t most = {NAN, 255, 1.0};
     double asked;
     J.cap_dbm = job_dbm(most, &asked);
     snprintf(J.session, sizeof J.session, "%s", session);
@@ -552,7 +560,16 @@ bool bench_tx_line_open(uint32_t freq, int cc, rdof_bench_power_t power, bool as
         /* as built: the router's transmitter would frame the call itself (its own headers and terminators) */
         const bool routed = via_router() && !as_built && has_path(freq);
         const bool borrow = as_built || via_router();
-        if ((no = routed ? route_open(freq) : sdr_modem_bench_open(modem_bytes, NULL, dbm, borrow)) != NULL) {
+        const double ds = rdof_bench_dev_scale(power);
+        char clip[120] = "";
+        if (routed && ds != 1.0) {
+            no = "--dev-scale: a routed job goes out on the roamer's modem, at its deviation";
+            J.on = false;
+        } else if ((no = routed ? route_open(freq) : sdr_modem_bench_open(modem_bytes, NULL, dbm, borrow)) != NULL) {
+            J.on = false;
+        } else if (!routed && ds != 1.0 && !sdr_modem_bench_dev_scale(ds, clip, sizeof clip)) { /* a new modem's: 1.0 */
+            no = "the SDR's modem has no modulator";
+            sdr_modem_bench_close();
             J.on = false;
         } else {
             const rdof_benchtx_io_t io = {job_to_modem, job_to_tool, job_keying, job_utc, NULL};
@@ -565,6 +582,7 @@ bool bench_tx_line_open(uint32_t freq, int cc, rdof_bench_power_t power, bool as
                                                            "this frequency (not one of the site's), the roamer paused"
                                                          : "the modem, the bursts as built";
             over_note(why, cap, path, asked, dbm);
+            add_note(why, cap, clip);
             ESP_LOGI(TAG, "tx: a line protocol job on %.5f MHz, cc %d, at most %.1f dBm, %s", freq / 1e6, cc, dbm,
                      path);
         }
@@ -778,6 +796,8 @@ bool bench_tx_ob_open(uint32_t freq, int cc, rdof_bench_power_t power, double se
     double asked;
     const double dbm = job_dbm(power, &asked);
     const int level = job_level(power);
+    const double ds = rdof_bench_dev_scale(power);
+    char clip[120] = "";
     if (!bench_tx_enabled())
         no = policy_err[0] ? policy_err : "no transmit frequencies (bench.tx in the settings)";
     else if (!J.job || !J.from_modem)
@@ -785,7 +805,11 @@ bool bench_tx_ob_open(uint32_t freq, int cc, rdof_bench_power_t power, double se
     else if (J.on)
         no = "the transmitter is busy with another bench job";
     else if ((no = rdof_benchtx_gates(&policy, true, true, freq, &freq, 1, armed())) == NULL &&
-             (no = sdr_modem_bench_open(modem_bytes, NULL, dbm, true)) == NULL) {
+             (no = sdr_modem_bench_open(modem_bytes, NULL, dbm, true)) == NULL && ds != 1.0 &&
+             !sdr_modem_bench_dev_scale(ds, clip, sizeof clip)) { /* a new modem's is 1.0 */
+        no = "the SDR's modem has no modulator";
+        sdr_modem_bench_close();
+    } else if (!no) {
         StreamBufferHandle_t sb = J.from_modem;
         rdof_benchtx_t *job = J.job;
         J = (txjob_t){.on = true, .line = true, .ob = true, .fd = -1, .freq = freq, .job = job, .from_modem = sb,
@@ -799,6 +823,7 @@ bool bench_tx_ob_open(uint32_t freq, int cc, rdof_bench_power_t power, double se
         const size_t n = rdof_sdrmodem_outbound_frames(freq, cc, level, s + 15, s + 10, f, sizeof f);
         sdr_modem_bench_write(f, n);
         over_note(why, cap, "", asked, dbm);
+        add_note(why, cap, clip);
         ESP_LOGW(TAG, "TX: outbound on %.5f MHz, cc %d, %.1f s, %.1f dBm", freq / 1e6, cc, seconds, dbm);
     }
     xSemaphoreGive(mu);

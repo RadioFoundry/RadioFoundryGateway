@@ -60,6 +60,29 @@ static double num(const rdof_jdoc_t *d, int obj, const char *key, double dflt)
     return dflt;
 }
 
+/* --dev-scale: the DMR 4FSK deviation as a fraction of nominal, 1.0 when it isn't given; false (error set) when it
+ * isn't a number in RDOF_BENCH_DEV_SCALE_MIN..MAX. */
+static bool dev_scale(const rdof_jdoc_t *d, int obj, rdof_bj_job_t *j, char *error, size_t ecap)
+{
+    const rdof_jnode_t *n = node(d, obj, "dev_scale");
+    j->dev_scale = !n ? 1.0 : n->type == RDOF_JNUM ? n->num : NAN;
+    if (n && n->type == RDOF_JSTR) {
+        char *end;
+        const double v = strtod(n->str, &end);
+        if (end != n->str && !*end)
+            j->dev_scale = v;
+    }
+    if (j->dev_scale >= RDOF_BENCH_DEV_SCALE_MIN && j->dev_scale <= RDOF_BENCH_DEV_SCALE_MAX)
+        return true;
+    if (isfinite(j->dev_scale))
+        snprintf(error, ecap, "--dev-scale %g is out of range: %.1f-%.1f (the DMR deviation, 1.0 nominal)",
+                 j->dev_scale, RDOF_BENCH_DEV_SCALE_MIN, RDOF_BENCH_DEV_SCALE_MAX);
+    else
+        snprintf(error, ecap, "--dev-scale isn't a number: %.1f-%.1f (the DMR deviation, 1.0 nominal)",
+                 RDOF_BENCH_DEV_SCALE_MIN, RDOF_BENCH_DEV_SCALE_MAX);
+    return false;
+}
+
 /* argparse's type=lambda s: int(s, 16): a string of hex digits (or a number as sent) */
 static int hexnum(const rdof_jdoc_t *d, int obj, const char *key, int dflt)
 {
@@ -215,6 +238,8 @@ static bool parse_outbound(const rdof_jdoc_t *d, int obj, rdof_bj_job_t *j, uint
     j->cc = (int)num(d, obj, "cc", 1);
     j->power = (int)num(d, obj, "power", 255);
     j->power_dbm = num(d, obj, "power_dbm", NAN);
+    if (!dev_scale(d, obj, j, error, ecap))
+        return false;
     j->seconds = num(d, obj, "seconds", 10);
     j->src = (uint32_t)num(d, obj, "src", 9990301);
     j->slots = slots(d, obj);
@@ -259,6 +284,8 @@ static bool parse_repeater(const rdof_jdoc_t *d, int obj, rdof_bj_job_t *j, char
     j->cc = (int)num(d, obj, "cc", 2);
     j->power = (int)num(d, obj, "power", 255);
     j->power_dbm = num(d, obj, "power_dbm", NAN);
+    if (!dev_scale(d, obj, j, error, ecap))
+        return false;
     j->seconds = num(d, obj, "seconds", 60);
     j->json = flag(d, obj, "json");
     j->hang = num(d, obj, "hang", 4.0);
@@ -315,6 +342,8 @@ bool rdof_bj_parse(const rdof_jdoc_t *d, int obj, rdof_bj_job_t *j, uint8_t *amb
     j->cc = (int)num(d, obj, "cc", 2);
     j->power = (int)num(d, obj, "power", 255);
     j->power_dbm = num(d, obj, "power_dbm", NAN);
+    if (!dev_scale(d, obj, j, error, ecap))
+        return false;
     j->burst_cc = (int)num(d, obj, "burst_cc", j->cc);
     j->listen_after = num(d, obj, "listen_after", 0);
     text(d, obj, "ambe_out", j->ambe_out, sizeof j->ambe_out);
