@@ -87,6 +87,12 @@ bool rdofradio_t3_start(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o, 
 typedef struct {
     bool (*write)(const uint8_t *frame, size_t n); /* a whole frame to the modem, from the writer thread */
     double lead_idle_s, lead_busy_s;
+    bool mark; /* the host's idle bursts each told apart on air (rdof_duplex_idle_mark): for measuring */
+    /* a lead sweep once placed (sweep_s > 0): both leads from sweep_from_s to sweep_to_s (up or down) by
+     * sweep_step_s, each sweep_s long, no catch-up, both queues flushed at each step's start unless sweep_keep; a line
+     * per step (where the bursts aired, the AT and short LC heard, the queues, the flushes) */
+    double sweep_from_s, sweep_to_s, sweep_step_s, sweep_s;
+    bool sweep_keep;
 } rdofradio_t3_hat_t;
 bool rdofradio_t3_start_hat(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o, const rdofradio_t3_dev_t *dev,
                             const rdofradio_t3_hat_t *hat, char *err, size_t cap);
@@ -97,8 +103,10 @@ void rdofradio_t3_hat_pause(bool pause);
 void rdofradio_t3_hat_status(int protocol, const uint8_t *p, size_t len);
 void rdofradio_t3_hat_nak(uint8_t cmd, int err);
 void rdofradio_t3_hat_modem_rx(int slot, const uint8_t burst[33], double now);
-/* An outbound burst of carrier 1 heard (without a receiver: the simulated modem's). */
-void rdofradio_t3_hat_heard(int64_t pos48, int slot, int at, int lcss, const uint8_t burst[33]);
+/* An outbound burst of carrier 1 heard (without a receiver: the simulated modem's; slc9 the short LC of the cycle its
+ * CACH is in, frag which of its 4 CACH). */
+void rdofradio_t3_hat_heard(int64_t pos48, int slot, int at, int lcss, const uint8_t burst[33], const uint8_t slc9[9],
+                            int frag);
 /* --mmdvm sim-hat: the stock modem simulated on a socket (ppm: its clock's error; fetch_s: how long before a slot's
  * air time it takes its burst, about 0.106); returns rdofradio's end, -1 with err set. What it hears is the air MSs'
  * inbound (--air-ms). What it sends goes to
