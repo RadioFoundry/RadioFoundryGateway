@@ -750,8 +750,10 @@ transceiver. Its records' times are the modem's slot clock on the receiver's tim
 delay. On `--mmdvm` a duplex modem runs it, with `DMR_START` and `DMR_DATA1` / `DMR_DATA2`: the modem makes the CACH and its own
 idle downlink, and the records' slot times come from a burst of it the SDR hears (or from the time it keyed, until
 one is heard). A simplex hotspot has one transceiver and no CACH: an `outbound` or a `bench_repeater` there is
-`unsupported`, naming that. The frequencies are `--bench-tx`'s; the job transmits at
-`--tx-power`, and the log says the job's power isn't applied. The ESP32 boards run no repeater jobs (`unsupported`).
+`unsupported`, naming that. The frequencies are `--bench-tx`'s. On an SDR the job transmits at `--tx-power`, or
+lower when it asks a `power_dbm` under that (and under `bench.tx.max_dbm`): the SDR's gain turns down by the
+difference for the job, down to the device's least gain, and the log says the dBm. A `power` 0-255 isn't applied on
+an SDR (a job naming no power asks 0), and the note says so. The ESP32 boards run no repeater jobs (`unsupported`).
 
 ### 14.5 The client
 

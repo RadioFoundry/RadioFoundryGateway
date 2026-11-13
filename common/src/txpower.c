@@ -74,6 +74,15 @@ int rdof_bench_power_level(const rdof_bench_limit_t *lim, rdof_bench_power_t wan
     return l > 0 && rdof_txpower_dbm(map, l) > d + 1e-9 ? l - 1 : l; /* never over */
 }
 
+double rdof_bench_sdr_atten_db(const rdof_bench_limit_t *lim, rdof_bench_power_t want, double full, double span)
+{
+    if (isnan(want.dbm))
+        return 0;
+    const double d = lim->has_max_dbm && lim->max_dbm < want.dbm ? lim->max_dbm : want.dbm;
+    const double a = full - d;
+    return a < 0 ? 0 : a > span ? span : a;
+}
+
 void rdof_txpower_range(const rdof_txpower_fe_t *fe, bool pa_ok, double *min_dbm, double *max_dbm)
 {
     *min_dbm = fe->chip_min + fe->bypass_gain;

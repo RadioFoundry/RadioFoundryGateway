@@ -77,6 +77,10 @@ double rdof_bench_power_dbm(const rdof_bench_limit_t *lim, rdof_bench_power_t wa
 /* The same as an RF level on a modem's map. Without a map a dBm can't be told: a dBm asked or allowed sends at 0
    (the least), else the job's level under the limit's rf_level. */
 int rdof_bench_power_level(const rdof_bench_limit_t *lim, rdof_bench_power_t want, const rdof_txmap_t *map);
+/* On an SDR that sends `full` dBm at its set power and can turn its gain down `span` dB from there: how many dB under
+   `full` a job sends, from its power_dbm under the limit's max_dbm (0: all of it, never more). A job's power 0-255
+   doesn't count here: a job that names no power asks 0, and the SDR keeps sending at its set power for it. */
+double rdof_bench_sdr_atten_db(const rdof_bench_limit_t *lim, rdof_bench_power_t want, double full, double span);
 
 #ifdef __cplusplus
 }
