@@ -187,7 +187,10 @@ Group call (talkgroup, ALLMSID):
    into the queue; queue full: C_NACKD(SYSbusy_Refused).
 3. The payload channel starts sending idles at once, then repeats the inbound voice of whoever talks, and plays
    network voice for the talkgroup.
-4. Hang (`hang_s`, default 3 s, TV_Hangtime) after each item; any member may talk again during it. The call ends on
+4. Hang (`hang_s`, default 3 s, TV_Hangtime) after each item; any member may talk again during it. The payload
+   channel keeps sending the item's Terminator with LC (its source and destination) in every slot of the hang, AT
+   busy (361-1 5.2.1.4, 361-2 5.1.1.3; the captured site sends them too); a talker that went without a terminator
+   gets one from the site first. The call ends on
    hang expiry, the call timer (`call_s`, default 180 s, T_MS-MS_TIMER), or P_MAINT DISCON from the initiator: the
    payload channel sends P_CLEAR (target ALLMSI, source TSI, channel 0 = back to the TSCC) 4 times, then frees.
 5. A new request for a talkgroup that already has a call in progress or in hang gets the same channel (a fresh
@@ -1091,11 +1094,16 @@ called about one slot plus the TX lead ahead of air: the controller decides a sl
   the controller's EV_CH_OPEN `svc`, and again from a grant's activity event (an emergency request makes an open call
   an emergency call, 3.9). An LC heard from the talker goes out as heard;
 - the controller's payload PDUs (P_CLEAR) take precedence over voice;
-- idle bursts fill;
+- after a voice call's terminator, the call hang time: the terminator's LC again in each free slot
+  (`RDOF_T3RF_HANG`, `hang` and `hang_lc`; 361-1 5.2.1.4), until voice comes again or the channel closes. When RF
+  voice is lost (no terminator) or the network's stream ends without one, the layer queues a terminator with the
+  stream's LC first. A full-duplex call has none;
+- idle bursts fill otherwise;
 - voice activity to the controller: the header, each voice sync burst (once a superframe, so a long call isn't taken
   for a lost one), the terminator, or lost;
 - a Reverse Channel PDU for the other slot's talker (`rdof_t3rf_rc`, from `rdof_t3_ch_out_t.rc`) goes once into the
-  next voice burst F or idle burst, 360 ms apart, not right after a terminator (section 3.9);
+  next voice burst F or idle burst, 360 ms apart, not right after a terminator (section 3.9); in hang time an idle
+  burst carrying it takes one hang time terminator's place (361-1 5.1.5.2);
 - a full-duplex call's channels (`rdof_t3rf_duplex`, section 3.13): the carrier's inbound slots read in offset
   timing, each channel's regenerated inbound queued on the other's outbound.
 

@@ -447,16 +447,22 @@ static void test_rc(void)
     }
     CHECK(n == 14 && rc_at == 6 && t.ch[2].rc_sent == 1, "in the first burst F (6th after the header): %d at %d", n,
           rc_at);
-    /* right after a terminator: not in that idle, in the next */
+    /* right after a terminator: not in the first burst after the voice (361-1 5.1.5.1, a hang time terminator
+     * there), in the next, an idle burst in place of a hang time terminator (a dedicated RC, 5.1.5.2) */
     rdof_t3rf_open(&t, 2, 3100123, 91, true, 0);
     k = ms_call(&t, 1, k + 40, 3100777, 91, 0, true, true);
     rdof_t3rf_ch_next(&t, 2, k, &control, out); /* the header */
     rdof_t3rf_ch_next(&t, 2, k + 2, &control, out); /* the terminator */
     rdof_t3rf_rc(&t, 2, RDOF_T3_RC_SEND | RDOF_T3_RC_CEASE);
     o = rdof_t3rf_ch_next(&t, 2, k + 4, &control, out);
-    CHECK(o == RDOF_T3RF_IDLE && rdof_t3rf_rc_read(out) < 0, "not right after a terminator");
+    CHECK(o == RDOF_T3RF_HANG && rdof_t3rf_rc_read(out) < 0, "not right after a terminator");
     o = rdof_t3rf_ch_next(&t, 2, k + 6, &control, out);
-    CHECK(o == RDOF_T3RF_CONTROL && rdof_t3rf_rc_read(out) == RDOF_T3_RC_CEASE, "the next idle");
+    CHECK(o == RDOF_T3RF_CONTROL && rdof_t3rf_rc_read(out) == RDOF_T3_RC_CEASE &&
+              control == (RDOF_SYNC_DATA | RDOF_DT_IDLE),
+          "the next, in an idle burst");
+    o = rdof_t3rf_ch_next(&t, 2, k + 8, &control, out);
+    CHECK(o == RDOF_T3RF_HANG, "then the hang time terminators again");
+    rdof_t3rf_close(&t, 2);
 
     /* the TSCC: a slot without a block carries it */
     int at;
@@ -471,6 +477,7 @@ static void test_rc(void)
 static struct {
     int starts, stops, shortlcs, data[2], scheds, sched_data;
     int64_t counters[64];
+    uint8_t controls[64];
     int ncounters;
     uint32_t slc;
 } fr;
@@ -490,7 +497,7 @@ static void on_frame(void *ctx, uint8_t cmd, const uint8_t *p, size_t n)
         fr.scheds++;
         uint32_t c = (uint32_t)p[1] | (uint32_t)p[2] << 8 | (uint32_t)p[3] << 16 | (uint32_t)p[4] << 24;
         if (fr.ncounters < 64)
-            fr.counters[fr.ncounters++] = c;
+            fr.controls[fr.ncounters] = p[6], fr.counters[fr.ncounters++] = c;
         fr.sched_data += (p[6] & 0x0F) != RDOF_DT_IDLE;
     }
 }
@@ -548,10 +555,17 @@ static void test_split(bool scheduled)
             odd &= fr.counters[i] & 1;
             rising &= !i || fr.counters[i] > fr.counters[i - 1];
         }
-        CHECK(fr.scheds == 8 && fr.sched_data == 8 && odd && rising && fr.counters[0] == 105,
-              "8 TX_SCHED (header, 6 voice, terminator) on TS2's counters from 105 after 2 warm-up idles: %d, first %lld",
-              fr.scheds, fr.ncounters ? (long long)fr.counters[0] : -1LL);
-        CHECK(!fr.data[0] && !fr.data[1] && o.sched_bursts == 8 && s.sched_sent == 8, "no FIFO frames");
+        /* the call hang time after it: Terminator with LC in each slot (361-1 5.2.1.4) */
+        int hang = 0;
+        for (int i = 8; i < fr.ncounters; i++)
+            hang += fr.controls[i] == (RDOF_SYNC_DATA | RDOF_DT_TERMINATOR_WITH_LC);
+        CHECK(fr.scheds > 8 && fr.sched_data == fr.scheds && odd && rising && fr.counters[0] == 105 &&
+                  hang == fr.scheds - 8,
+              "TX_SCHED (header, 6 voice, terminator, then hang time terminators) on TS2's counters from 105 after 2 "
+              "warm-up idles: %d, %d hang, first %lld",
+              fr.scheds, hang, fr.ncounters ? (long long)fr.counters[0] : -1LL);
+        CHECK(!fr.data[0] && !fr.data[1] && o.sched_bursts == (uint32_t)fr.scheds && s.sched_sent == (uint32_t)fr.scheds,
+              "no FIFO frames");
     } else {
         CHECK(fr.data[0] == 15 && fr.data[1] == 15 && !fr.scheds, "every slot in order: %d + %d", fr.data[0],
               fr.data[1]);
@@ -610,6 +624,90 @@ static void test_lc_options(void)
           "network voice joined late: Broadcast kept (options %02x)", lc9[2]);
 }
 
+/* 361-1 5.2.1.4: in the call hang time the BS keeps the channel busy "by transmitting Terminator with LC (hang time)
+ * messages on the outbound channel (with the source and destination IDs set to reflect the voice call in progress)";
+ * 361-2 5.1.1.3 the same. Until the next talker's voice or the controller's P_CLEAR (361-4 6.6.2.2.7). */
+static bool hang_burst(rdof_t3rf_out_t o, uint8_t control, const uint8_t out[33], uint32_t src, uint32_t dst)
+{
+    rdof_full_lc_t lc;
+    return o == RDOF_T3RF_HANG && control == (RDOF_SYNC_DATA | RDOF_DT_TERMINATOR_WITH_LC) &&
+           rdof_decode_voice_lc(out, RDOF_DT_TERMINATOR_WITH_LC, &lc) && lc.src_id == src && lc.dst_id == dst;
+}
+
+static void test_hang(void)
+{
+    static rdof_t3rf_t t;
+    memset(&rec, 0, sizeof rec);
+    rdof_t3rf_init(&t, &IO, 2, CC, true);
+    const int ch = 2;
+    uint8_t out[33], control;
+    rdof_t3rf_out_t o;
+    rdof_t3rf_open(&t, ch, 3100123, 91, true, 0);
+    int64_t k = ms_call(&t, 1, 1000, 3100777, 91, 1, true, true);
+    int n = 0;
+    while (rdof_t3rf_ch_next(&t, ch, k, &control, out) == RDOF_T3RF_TRAFFIC)
+        n++, k += 2;
+    CHECK(n == 8, "the call: %d", n);
+    int hang = 0;
+    for (int i = 0; i < 20; i++, k += 2)
+        hang += hang_burst(rdof_t3rf_ch_next(&t, ch, k, &control, out), control, out, 3100777, 91);
+    CHECK(hang == 20 && t.ch[ch].hang, "hang time: the call's Terminator with LC in every slot: %d", hang);
+
+    /* the next talker's voice ends it; its own terminator starts the next hang time with its addresses */
+    int64_t k2 = ms_call(&t, 1, k, 3100888, 91, 1, true, true);
+    o = rdof_t3rf_ch_next(&t, ch, k, &control, out);
+    CHECK(o == RDOF_T3RF_TRAFFIC && control == (RDOF_SYNC_DATA | RDOF_DT_VOICE_LC_HEADER), "the next talker");
+    k = k2;
+    while (rdof_t3rf_ch_next(&t, ch, k, &control, out) == RDOF_T3RF_TRAFFIC)
+        k += 2;
+    CHECK(hang_burst(RDOF_T3RF_HANG, control, out, 3100888, 91), "the next talker's hang time");
+
+    /* P_CLEAR goes ahead of it; closed, the channel is idle */
+    const uint8_t clear[10] = {0x80 | 46, 0, 0, 0, 0xFF, 0xFF, 0xD4, 0x00, 0x00, 0x01};
+    rdof_t3rf_control(&t, ch, RDOF_DT_CSBK, clear, 2, true);
+    CHECK(rdof_t3rf_ch_next(&t, ch, k, &control, out) == RDOF_T3RF_CONTROL &&
+              rdof_t3rf_ch_next(&t, ch, k + 2, &control, out) == RDOF_T3RF_CONTROL,
+          "P_CLEAR first");
+    CHECK(rdof_t3rf_ch_next(&t, ch, k + 4, &control, out) == RDOF_T3RF_IDLE && !t.ch[ch].open && !t.ch[ch].hang,
+          "then idle");
+
+    /* a talker that goes without a terminator: the site ends the voice with one (the call's LC), the hang follows */
+    rdof_t3rf_open(&t, ch, 3100123, 91, true, 0);
+    k = ms_call(&t, 1, k + 10, 3100777, 91, 1, true, false);
+    rdof_t3rf_tick(&t, k - 2 + RDOF_T3RF_LOST_K + 1);
+    CHECK(rec.last_what == RDOF_T3RF_LOST, "lost");
+    n = 0;
+    while (rdof_t3rf_ch_next(&t, ch, k, &control, out) == RDOF_T3RF_TRAFFIC)
+        n++, k += 2;
+    o = rdof_t3rf_ch_next(&t, ch, k, &control, out);
+    CHECK(n == 8 && hang_burst(o, control, out, 3100777, 91),
+          "header, 6 voice, the site's terminator, then hang time: %d, %d", n, o);
+    rdof_t3rf_close(&t, ch);
+
+    /* the same for the network's stream */
+    rdof_t3rf_open(&t, ch, 9990001, 91, true, 0);
+    rdof_frame_t f;
+    memset(&f, 0, sizeof f);
+    uint8_t lc9[9];
+    rdof_group_lc(9990001, 91, true, 0, lc9);
+    rdof_lc_burst(lc9, RDOF_DT_VOICE_LC_HEADER, CC, rdof_data_sync(RDOF_BS_VOICE), f.burst);
+    f.dt = RDOF_DT_VOICE_LC_HEADER;
+    rdof_t3rf_net(&t, ch, &f);
+    for (int i = 0; i < 6; i++) {
+        f.dt = i ? RDOF_DT_VOICE : RDOF_DT_VOICE_SYNC, f.n = i;
+        rdof_silence_burst(i, CC, true, NULL, f.burst);
+        rdof_t3rf_net(&t, ch, &f);
+    }
+    rdof_t3rf_net_end(&t, ch);
+    n = 0;
+    while (rdof_t3rf_ch_next(&t, ch, k, &control, out) == RDOF_T3RF_TRAFFIC)
+        n++, k += 2;
+    o = rdof_t3rf_ch_next(&t, ch, k, &control, out);
+    CHECK(n == 8 && hang_burst(o, control, out, 9990001, 91), "network: the site's terminator, then hang time: %d, %d",
+          n, o);
+    rdof_t3rf_close(&t, ch);
+}
+
 int main(void)
 {
     test_layouts();
@@ -617,6 +715,7 @@ int main(void)
     test_cach();
     test_payload();
     test_lc_options();
+    test_hang();
     test_tscc();
     test_rc();
     test_split(true);
