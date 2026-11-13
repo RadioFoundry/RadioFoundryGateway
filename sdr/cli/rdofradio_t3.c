@@ -954,8 +954,12 @@ static void air_out(int c, int64_t k, const uint8_t burst[RDOF_BURST_BYTES], boo
             AM.bad++;
     }
     const bool at = c == 0 && rdof_t3unit_at(T.u, k) > 0;
+    /* a Reverse Channel PDU in slot k is for the talker on the carrier's other slot (361-1 5.1.5) */
+    const int rc = aired ? rdof_t3rf_rc_read(burst) : -1;
     for (int i = 0; i < AM.n; i++) {
         rdof_t3ms_status_t st;
+        if (rc >= 0)
+            rdof_t3ms_rc(AM.ms[i], 2 * c + (int)((k & 1) ^ 1), rc);
         rdof_t3ms_status(AM.ms[i], &st);
         if (st.ch >> 1 == c)
             rdof_t3ms_slc(AM.ms[i], c, rdof_t3unit_slc(T.u, c, k)); /* a composite TSCC's P_SYS_Parms */

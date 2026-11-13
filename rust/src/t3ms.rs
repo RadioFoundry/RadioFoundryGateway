@@ -2011,6 +2011,15 @@ pub unsafe extern "C" fn rdof_t3ms_slc(ms: *mut Ms, carrier: c_int, slc: i64) {
     }
 }
 
+/// A Reverse Channel PDU (its info, 4 bits) heard on the alternate slot of payload channel ch (rdof_t3rf_rc_read on
+/// the carrier's outbound burst of the other slot).
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3ms_rc(ms: *mut Ms, ch: c_int, info: c_int) {
+    if ch >= 0 && (0..16).contains(&info) {
+        (*ms).rc(ch as usize, info as u8);
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn rdof_t3ms_rx(ms: *mut Ms, ch: c_int, k: i64, dt: u8, pdu: *const [u8; 10], at: bool) {
     if ch >= 0 {

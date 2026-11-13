@@ -505,6 +505,9 @@ void rdof_t3ms_rx(rdof_t3ms_t *ms, int ch, int64_t k, uint8_t dt, const uint8_t 
 /* Carrier c's CACH short LC from now on (28 bits; -1 none: ignored): a composite TSCC's P_SYS_Parms keeps an idle MS
  * from hunting while the TSCC carries a call (361-4 5.3.2). */
 void rdof_t3ms_slc(rdof_t3ms_t *ms, int carrier, int64_t slc);
+/* A Reverse Channel PDU's info (rdof_t3rf_rc_read) heard in an outbound burst: for the talker on payload channel ch,
+ * the burst's carrier's other slot (361-1 5.1.5). The MS ceases on RC 0100b (361-4 6.4.15). */
+void rdof_t3ms_rc(rdof_t3ms_t *ms, int ch, int info);
 /* inbound slot k: true when the MS transmits, filling *tx */
 bool rdof_t3ms_tx(rdof_t3ms_t *ms, int64_t k, int64_t now_ms, rdof_t3ms_tx_t *tx);
 void rdof_t3ms_status(const rdof_t3ms_t *ms, rdof_t3ms_status_t *st);
