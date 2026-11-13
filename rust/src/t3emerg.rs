@@ -6,6 +6,9 @@
 //! "cease transmission" command (RC info 0100b, table 6.32) on the alternate slot of its carrier (361-1 5.1.5);
 //! the MS finishes its superframe, sends a terminator and stops (6.4.15). When the inbound stops, P_CLEAR goes out
 //! on the payload channel and the freed channel goes to the emergency call (the queue serves emergencies first).
+//! A talker that doesn't cease in DEKEY_MS (an MS without the RC, 6.4.14.0) gets P_CLEAR over it, but the channel
+//! stays out of use, still sending P_CLEAR, until its inbound stops: the emergency call is connected there only
+//! "following the cessation of inbound PDUs". Meanwhile another call may be pre-empted for it.
 //! A child module of t3site: it works on the site's own state.
 
 use super::*;
@@ -17,6 +20,11 @@ pub const RC_SEND: u8 = 0x10;
 pub(super) const DEKEY_MS: i64 = 3000;
 /// 361-1 5.1.5.1: repeated RC messages no sooner than 360 ms apart.
 const RC_EVERY_MS: i64 = 360;
+/// A held channel's inbound is quiet after this long without voice (the radio layer reports a talker once a
+/// superframe, 360 ms).
+const HELD_QUIET_MS: i64 = 1000;
+/// The longest a channel is held for a talker that won't stop.
+const HELD_MAX_MS: i64 = 60_000;
 
 impl Site {
     /// Whether a request with these service options may pre-empt (and so isn't refused for a full queue).
@@ -61,7 +69,7 @@ impl Site {
         }
         let waiting = self.pend.iter().filter(|p| p.used && p.state == P_QUEUED && p.svc & SO_EMERGENCY != 0).count()
             + self.net.iter().filter(|n| n.used && n.emergency).count();
-        let going = self.chans.iter().filter(|c| c.r#use == USE_CLEAR || (c.preempt && Self::live(c))).count();
+        let going = self.chans.iter().filter(|c| (c.r#use == USE_CLEAR && !c.held) || (c.preempt && Self::live(c))).count();
         if waiting == 0 {
             for c in self.chans.iter_mut().filter(|c| c.preempt && Self::live(c)) {
                 c.preempt = false; // nothing waits any more: the call goes on
@@ -87,12 +95,32 @@ impl Site {
             if !c.talking || c.talking_net || now >= c.preempt_until_ms || c.kind == KIND_DUPLEX {
                 // nobody on RF to de-key, the talker stopped, or it didn't in time (or a duplex call, whose
                 // parties don't listen on the other slot): P_CLEAR now
+                let keyed = c.talking && !c.talking_net;
                 self.clear(ch, CLOSE_PREEMPT);
+                if keyed {
+                    let c = &mut self.chans[ch];
+                    c.held = true;
+                    c.preempt_until_ms = now + HELD_MAX_MS;
+                    self.log(format_args!("channel {} held: its talker didn't cease", ch));
+                }
                 continue;
             }
             rc_on_tscc |= self.send_rc(ch, out);
         }
         rc_on_tscc
+    }
+
+    /// A held channel (cleared over a talker that didn't cease) still hears that talker: P_CLEAR goes on.
+    pub(super) fn still_keyed(&self, ch: usize) -> bool {
+        let c = &self.chans[ch];
+        c.held && self.now - c.last_voice_ms < HELD_QUIET_MS && self.now < c.preempt_until_ms
+    }
+
+    /// Inbound voice on a held channel: the talker is still there, or (terminator, lost) gone.
+    pub(super) fn held_voice(&mut self, ch: usize, what: u8) {
+        let now = self.now;
+        let c = &mut self.chans[ch];
+        c.last_voice_ms = if matches!(what, VOICE_HEADER | VOICE_FRAME) { now } else { i64::MIN / 2 };
     }
 
     /// The RC cease command for channel ch's talker, on its carrier's other slot when that slot is this one and

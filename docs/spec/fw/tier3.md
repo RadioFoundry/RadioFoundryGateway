@@ -298,8 +298,12 @@ clears it:
 2. Its talker on RF gets the Reverse Channel "cease transmission" command (RC info 0100b, table 6.32) on the other
    slot of its carrier, every 360 ms (the least the air interface allows, 361-1 5.1.5.1). The MS finishes its
    superframe, sends a terminator and stops (6.4.15).
-3. Once the inbound stops (or after 3 s regardless), the channel sends P_CLEAR and frees; the queue gives it to the
-   emergency call. A call with nobody talking, or with network voice only, is cleared at once.
+3. Once the inbound stops, the channel sends P_CLEAR and frees; the queue gives it to the emergency call. A call
+   with nobody talking, or with network voice only, is cleared at once. A talker still keyed after 3 s (an MS
+   without the RC, which 6.4.14.0 asks the TS to deal with) gets P_CLEAR too, so the listeners leave, but the
+   channel stays held, sending P_CLEAR, until its inbound has been quiet for 1 s (at most 60 s): 6.4.14.3.1
+   connects the emergency call there only "following the cessation of inbound PDUs". While one is held, another
+   call may be pre-empted for the emergency.
 4. When nothing waits any more (the emergency got another channel, or was cancelled), the pre-emption stops and the
    call goes on.
 
@@ -859,7 +863,7 @@ cleared (P_CLEAR, close reason 7, `CLOSE_INTR`); one that doesn't stop within 3 
 at the time: cleared at once.
 
 Call timer (6.4.14.3.2): with the setting on, a call whose timer runs out while an MS talks on RF gets the RC cease
-first and P_CLEAR once the inbound stops (or after 3 s); off, P_CLEAR at once as before. A network talker, a duplex
+first and P_CLEAR once the inbound stops (after 3 s P_CLEAR regardless, the channel held until the inbound stops); off, P_CLEAR at once as before. A network talker, a duplex
 call or a call being pre-empted is cleared at once.
 
 Each step is an `EV_ACTIVITY` event of kind `ACT_INTR` (8; op 1 accepted, 2 the talker ceased, 3 it didn't, 4 the

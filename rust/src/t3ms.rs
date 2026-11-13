@@ -804,6 +804,11 @@ impl Ms {
                 }
             }
             if dt == DT_CSBK && Clear::decode(pdu).is_some() {
+                if self.rc_deaf && self.talking && !self.dx {
+                    // a real MS hears only the other slot while it transmits (the RC's, 361-1 5.1.5); the
+                    // simulated one hears its own too, except one modeled without the RC
+                    return;
+                }
                 self.clears += 1;
                 let mine = self.mine && self.has_cur;
                 self.mine = false;

@@ -163,6 +163,74 @@ fn preemption_rc_on_the_payload_carrier() {
     assert_eq!((open[3].ch, open[3].dst), (2, 12));
 }
 
+/// A talker that ignores the RC (6.4.14.0: an MS without it): P_CLEAR goes out after the de-key wait, but the
+/// emergency call gets the channel only once the inbound stops (6.4.14.3.1, "following the cessation of inbound
+/// PDUs"), never on top of the talker.
+#[test]
+fn preemption_waits_for_a_talker_that_wont_cease() {
+    let mut s = site_with(|c| c.preempt = 1);
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG], &[1]), ms(1002, &[TG], &[1]), ms(1003, &[11], &[1])], T0);
+    register_all(&mut air, &mut log);
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_GROUP, TG, 9000, 0, now);
+    assert!(air.until(5000, &mut log.f(), |a| a.site.status().ch[1].r#use == USE_CALL));
+    air.ms[0].rc_deaf(true);
+    let now = air.now();
+    air.ms[2].act(t3ms::DO_GROUP, 11, 2000, t3ms::F_EMERGENCY, now);
+    let (mut talker_end, mut cleared, mut granted) = (0, 0, 0);
+    while air.now() < now + 12_000 {
+        air.step(&mut log.f());
+        let t = air.now();
+        if air.inbound[0].is_some() {
+            talker_end = t;
+        }
+        if cleared == 0 && air.site.status().ch[1].r#use == USE_CLEAR {
+            cleared = t;
+        }
+        if granted == 0 && air.ms[2].state() == t3ms::PAYLOAD {
+            granted = t;
+        }
+    }
+    assert!(granted != 0, "the emergency call got the channel");
+    assert_eq!(air.ms[0].ceased(), 0, "deaf to the RC");
+    assert!(cleared != 0 && cleared < talker_end, "P_CLEAR went out over the talker");
+    assert!(granted > talker_end, "the grant only after the talker stopped: granted {granted}, talker until {talker_end}");
+    let opens = log.of(EV_CH_OPEN);
+    assert_eq!(opens.iter().map(|e| (e.ch, e.dst)).collect::<Vec<_>>(), [(1, TG), (1, 11)]);
+}
+
+/// Two carriers, three talkers, the first victim deaf to the RC: its channel is held, and another call is
+/// pre-empted for the emergency in the meantime.
+#[test]
+fn preemption_takes_another_call_while_one_is_held() {
+    let mut s = site_with(|c| {
+        carriers(c, 2);
+        c.preempt = 1;
+    });
+    let mut log = Log::default();
+    let ch = [1u16, 2];
+    let mut air =
+        Air::new(&mut s, [ms(1001, &[9], &ch), ms(1002, &[10], &ch), ms(1003, &[11], &ch), ms(1004, &[12], &ch)], T0);
+    register_all(&mut air, &mut log);
+    let now = air.now();
+    for i in 0..3 {
+        air.ms[i].act(t3ms::DO_GROUP, 9 + i as u32, 30_000, 0, now + 300 * i as i64);
+    }
+    assert!(air.until(8000, &mut log.f(), |a| a.site.status().ch.iter().filter(|c| c.r#use == USE_CALL).count() == 3));
+    air.ms[1].rc_deaf(true); // the first victim (preemption_rc_on_the_payload_carrier)
+    let now = air.now();
+    air.ms[3].act(t3ms::DO_GROUP, 12, 2000, t3ms::F_EMERGENCY, now);
+    assert!(air.until(12_000, &mut log.f(), |a| a.ms[3].state() == t3ms::PAYLOAD));
+    let st = air.site.status();
+    assert_eq!(st.ch[2].r#use, USE_CLEAR, "the deaf talker's channel still held");
+    assert!(air.ms[1].ceased() == 0 && air.inbound[1].is_some(), "it still talks");
+    let open = log.of(EV_CH_OPEN);
+    let em = open.iter().find(|e| e.dst == 12).unwrap();
+    assert_ne!(em.ch, 2, "not on the held channel");
+    assert_eq!(air.ms.iter().map(|m| m.ceased()).sum::<u32>(), 1, "a second talker de-keyed");
+}
+
 /// Off (the default), an emergency waits in the queue as before; an emergency call is never pre-empted.
 #[test]
 fn preemption_off_and_emergency_calls_kept() {

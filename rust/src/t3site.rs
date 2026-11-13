@@ -579,6 +579,7 @@ struct Chan {
     grant_next_ms: i64,
     last_voice_ms: i64,
     preempt: bool, // being cleared for an emergency (t3emerg.rs)
+    held: bool,    // cleared over a talker that didn't cease: out of use until its inbound stops (t3emerg.rs)
     preempt_until_ms: i64,
     rc_next_ms: i64,
     als: bool,       // an Ambient Listening Service call (6.6.2.6): the called MS (dst) transmits
@@ -1411,7 +1412,7 @@ impl Site {
             out.ch[ch].dt = DT_CSBK;
             out.ch[ch].pdu = c.encode();
             self.chans[ch].clear_left = self.chans[ch].clear_left.saturating_sub(1);
-            if self.chans[ch].clear_left == 0 {
+            if self.chans[ch].clear_left == 0 && !self.still_keyed(ch) {
                 self.close(ch);
             }
         }
@@ -2528,6 +2529,10 @@ impl Site {
     }
 
     pub fn rx_voice(&mut self, ch: usize, what: u8, src: u32) {
+        if ch < CHANNELS && self.chans[ch].held {
+            self.held_voice(ch, what);
+            return;
+        }
         if ch >= CHANNELS || !Self::live(&self.chans[ch]) {
             return;
         }
