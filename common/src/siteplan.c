@@ -674,7 +674,8 @@ static bool hotspot(const rdof_site_t *s, int d)
 }
 
 /* A trunked site: the TSCC's in and out on one full-duplex SDR (checked with its caps), its slot clock; every
-   carrier heard on that SDR; another carrier's out on an SDR or a radio as a split's TX half, one carrier a radio. */
+   carrier heard on that SDR; another carrier's out on an SDR or a radio as a split's TX half, one carrier a radio.
+   Or a site of one carrier on a duplex MMDVM modem (docs/spec/fw/tier3-hat.md), an SDR hearing its out and in. */
 static bool check_trunk(plan_t *p, const rdof_unit_t *u, const char *where)
 {
     const rdof_site_t *s = &p->site;
@@ -682,10 +683,19 @@ static bool check_trunk(plan_t *p, const rdof_unit_t *u, const char *where)
     for (int k = 0; k < ap->ncarrier; k++) {
         const rdof_device3_t *rx = &s->dev[p->trx[k]], *tx = &s->dev[p->ttx[k]];
         const char *out = s->freq[ap->carrier[k].out].name, *in = s->freq[ap->carrier[k].in].name;
-        if (!k && tx->kind != RDOF_DEV_SDR)
-            return fail(p, "%s: %s is the TSCC's out, and devices.%s is a modem: the TSCC goes out of a full-duplex "
-                           "SDR (a split's TX half can't time its short LC and AT bit per slot yet)", where, out,
+        const bool on_modem = !k && tx->kind == RDOF_DEV_MODEM && !hotspot(s, p->ttx[0]);
+        if (on_modem && ap->ncarrier > 1)
+            return fail(p, "%s: the TSCC is on devices.%s, a modem: a site on a modem has one carrier", where,
                         tx->name);
+        if (on_modem && rx->kind != RDOF_DEV_SDR)
+            return fail(p, "%s: an SDR hears %s (the modem's slot grid from its out, its in placed on it)", where,
+                        in);
+        if (on_modem)
+            continue;
+        if (!k && tx->kind != RDOF_DEV_SDR)
+            return fail(p, "%s: %s is the TSCC's out, and devices.%s is a %s: the TSCC goes out of a full-duplex "
+                           "SDR or a duplex MMDVM modem (a split's TX half can't time its short LC and AT bit per "
+                           "slot yet)", where, out, tx->name, tx->driver);
         if (!k && p->trx[0] != p->ttx[0])
             return fail(p, "%s: the TSCC's in (%s) on devices.%s and its out (%s) on devices.%s: one SDR does both "
                            "(its slot clock)", where, in, rx->name, out, tx->name);
