@@ -541,6 +541,26 @@ fn registration_with_talkgroup() {
     assert_eq!(r.s.record(A).unwrap().sub_tg, TG);
 }
 
+/// 6.4.4.1.13.1: a talkgroup refused at registration gets "C_ACK(Reason Code = Subscription/Attachment (0110 0101)
+/// and Response_Info = 000 0000)", also from an MS that asks for power save as well (PS_RQ isn't 000b, which the
+/// clause forbids); table 7.41 gives PowerSave_Offset to Reg_Accepted only. Accepted, the offset goes as asked.
+#[test]
+fn registration_talkgroup_refused_with_power_save() {
+    let mut r = Rig::new(|c| c.power_save = 3);
+    let mut p = Policy::default_open();
+    p.tg = IdSet::of(&[(1, 99)]);
+    r.s.policy_set(&p);
+    let ps2 = 0b000_0101; // PS_RQ 010b (1:4), REG_DEREG 1
+    let k = r.send(rand(ps2, 0b0100, spec::SK_REG, 500, A));
+    let (_, (ri, reason, target, source)) = r.ack_to(k, 30, A).unwrap();
+    assert_eq!((reason, ri, target, source), (spec::REG_SUBSCRIPTION, 0, A, spec::REGI));
+    assert_eq!(r.s.power_save_of(A), (0, 0));
+    let k = r.send(rand(ps2, 0b0100, spec::SK_REG, TG, B));
+    let (_, (ri, reason, _, _)) = r.ack_to(k, 30, B).unwrap();
+    assert_eq!(reason, spec::REG_ACCEPTED);
+    assert!((1..4).contains(&ri), "PowerSave_Offset {ri}");
+}
+
 /// 6.4.4.1.13.2 and tier3.md 3.17: a list subscription (TRGT_ADR_CNTS 10b, target TATTSI): the TSCC asks for the
 /// list with a C_AHOY; an MS that never uploads it is registered with every talkgroup refused, Reg_Subscription
 /// (0110 0101b) with an index pattern of 0 (table 6.10). The answer comes from TATTSI, the C_RAND's target: 6.4.4.1.13.2

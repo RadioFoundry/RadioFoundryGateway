@@ -334,7 +334,9 @@ Window 0 cancels a mass re-registration (the pending attempts with it), repeated
 
 Power save (6.4.7), off unless `services.power_save` is set: an MS that asks for 1:2^n (PowerSave_RQ n, 1-7) with n
 up to the setting gets a PowerSave_Offset (1 to 2^n - 1, table 6.13) in Response_Info of its registration's
-C_ACKD; a larger n or none gets 0 (registered, power save not available: the site doesn't refuse it). The offset
+C_ACKD; a larger n or none gets 0 (registered, power save not available: the site doesn't refuse it). Only
+Reg_Accepted carries the offset (table 7.41): a registration whose single talkgroup is refused gets 0110 0101b with
+Response_Info 000 0000b (6.4.4.1.13.1) and no power save, even if it asked (the clause has PS_RQ 000b there). The offset
 comes from the MS's subscribed talkgroup (else its address), so a talkgroup's members share a wake frame. PS_Counter
 is the Common_Slot_Counter's 7 high bits (one power save frame is 4 counts, 480 ms; figure 6.29); the MS wakes when
 PS_Counter masked to n bits equals its offset (table 6.14). A C_AHOY to a sleeping MS (an individual call, a
