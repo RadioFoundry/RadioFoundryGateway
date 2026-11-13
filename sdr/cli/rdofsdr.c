@@ -13,7 +13,7 @@
  * --fft picks the channelizer's FFT: pffft (sdr/pffft/) when it's built in (RDOF_PFFFT, the default), else the
  * built-in one; "builtin" to compare.
  * The input is rtl_sdr's cu8, as rtl_sdr writes
- * it; or, when built with SoapySDR (RDOF_SOAPY), any SoapySDR device live: ARGS as SoapySDRUtil takes them
+ * it, or interleaved float I/Q when its name ends in .cf32 (what rdofradio's --file device sends); or, when built with SoapySDR (RDOF_SOAPY), any SoapySDR device live: ARGS as SoapySDRUtil takes them
  * ("driver=rtlsdr", "driver=airspy,serial=..."), streamed as CF32 at the rate and tuned to the planned center. Output lines: "<id> json <text>", "<id> raw <text>", and with --bursts
  * "<id> burst <pos> <dt> <n> <slot> <family> <cc> <errors> <power> <offset> <deviation> <hex>".
  */
@@ -356,7 +356,13 @@ int main(int argc, char **argv)
     }
     size_t size;
     uint8_t *raw = read_file(input, &size);
-    const int n = (int)(size / 2);
+    const size_t len = strlen(input);
+    const bool cf32 = len > 5 && !strcmp(input + len - 5, ".cf32");
+    const int n = (int)(size / (cf32 ? 8 : 2));
+    if (do_bench && cf32) {
+        fprintf(stderr, "--bench takes cu8\n");
+        return 2;
+    }
     if (do_bench) {
         bench(raw, n, &cfg, ghz, reps < 1 ? 1 : reps);
         free(raw);
@@ -373,7 +379,10 @@ int main(int argc, char **argv)
     rdof_cf_t *iq = malloc(sizeof(rdof_cf_t) * cfg.max_chunk);
     for (int i = 0; i < n; i += cfg.max_chunk) {
         int m = n - i < cfg.max_chunk ? n - i : cfg.max_chunk;
-        rdof_iq_from_cu8(raw + 2 * (size_t)i, (size_t)m, iq);
+        if (cf32)
+            memcpy(iq, raw + 8 * (size_t)i, 8 * (size_t)m);
+        else
+            rdof_iq_from_cu8(raw + 2 * (size_t)i, (size_t)m, iq);
         rdof_sdr_rx_process(&rx, iq, m);
     }
     fprintf(stderr, "center %.0f Hz;", rx.center_hz);
