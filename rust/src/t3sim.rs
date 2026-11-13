@@ -10,6 +10,11 @@ use crate::ffi::{
     rdof_duplex_silence, RDOF_DT_TERMINATOR_WITH_LC, RDOF_DT_VOICE, RDOF_DT_VOICE_LC_HEADER, RDOF_DT_VOICE_SYNC,
 };
 use crate::layer2::{rdof_group_lc, rdof_lc_burst, RDOF_DATA_XOR, RDOF_MS_VOICE};
+use crate::mmdvm::rdof_silence_burst;
+
+extern "C" {
+    fn rdof_embedded_lc_encode(lc9: *const u8, raw128: *mut u8);
+}
 use crate::t3ms::{Ms, MsTx};
 use crate::t3rf::{BURST_BYTES, PDU_BAD, PDU_OK};
 use crate::t3site::{CARRIERS, VOICE_FRAME, VOICE_HEADER, VOICE_TERM};
@@ -117,7 +122,18 @@ fn ms_burst(tx: &MsTx, n: c_int, cc: c_int, b: &mut RdofBurst) -> bool {
         }
         VOICE_FRAME => {
             let n = n.rem_euclid(6);
-            unsafe { rdof_duplex_silence(n, cc, b.burst.as_mut_ptr()) };
+            if (1..=4).contains(&n) {
+                // B-E carry the call's LC embedded (361-1 7.1.4), for a radio entering late
+                let mut lc9 = [0u8; 9];
+                rdof_group_lc(tx.src, tx.dst, tx.group != 0, 0, &mut lc9);
+                let mut raw = [0u8; 128];
+                unsafe {
+                    rdof_embedded_lc_encode(lc9.as_ptr(), raw.as_mut_ptr());
+                    rdof_silence_burst(n, cc, false, raw[(n as usize - 1) * 32..].as_ptr(), &mut b.burst);
+                }
+            } else {
+                unsafe { rdof_duplex_silence(n, cc, b.burst.as_mut_ptr()) };
+            }
             b.dt = if n != 0 { RDOF_DT_VOICE } else { RDOF_DT_VOICE_SYNC };
             b.n = n;
             true

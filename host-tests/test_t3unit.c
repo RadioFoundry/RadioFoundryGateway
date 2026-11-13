@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "rdof/fec.h"
 #include "rdof/t3cfg.h"
 #include "rdof/t3sim.h"
 #include "rdof/t3unit.h"
@@ -442,8 +443,28 @@ static void test_sim_layouts(void)
     CHECK(i == n, "rust lists %zu structs, C %zu", i, n);
 }
 
+/* A simulated MS's voice bursts B-E carry the call's LC embedded (361-1 7.1.4): a radio that hears the call late
+ * still learns who talks to whom. */
+static void test_sim_embedded(void)
+{
+    const rdof_t3ms_tx_t tx = {.ch = 1, .kind = 2, .what = RDOF_T3_VOICE_FRAME, .group = 0, .src = 1000002,
+                               .dst = 1000001};
+    uint8_t raw[128];
+    for (int n = 1; n <= 4; n++) {
+        rdof_burst_t b;
+        CHECK(rdof_t3sim_ms_burst(&tx, n, 2, &b), "voice burst %d", n);
+        rdof_embedded_signalling(b.burst, raw + (n - 1) * 32);
+    }
+    uint8_t lc[9];
+    CHECK(rdof_embedded_lc_decode(raw, lc), "the embedded LC decodes");
+    const uint32_t dst = (uint32_t)lc[3] << 16 | lc[4] << 8 | lc[5], src = (uint32_t)lc[6] << 16 | lc[7] << 8 | lc[8];
+    CHECK(lc[0] == 3 && dst == 1000001 && src == 1000002, "unit to unit LC 1000002 -> 1000001: flco %d, %u -> %u",
+          lc[0] & 0x3f, src, dst);
+}
+
 int main(void)
 {
+    test_sim_embedded();
     test_layouts();
     test_sim_layouts();
     test_memory();
