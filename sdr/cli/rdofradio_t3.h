@@ -88,9 +88,11 @@ typedef struct {
     bool (*write)(const uint8_t *frame, size_t n); /* a whole frame to the modem, from the writer thread */
     double lead_idle_s, lead_busy_s;
     bool mark; /* the host's idle bursts each told apart on air (rdof_duplex_idle_mark): for measuring */
-    /* a lead sweep once placed (sweep_s > 0): both leads from sweep_hi_s down to sweep_lo_s by sweep_step_s, each
-     * sweep_s long, no catch-up; a line per step (where the bursts aired, the AT and short LC heard, the queues) */
-    double sweep_lo_s, sweep_hi_s, sweep_step_s, sweep_s;
+    /* a lead sweep once placed (sweep_s > 0): both leads from sweep_from_s to sweep_to_s (up or down) by
+     * sweep_step_s, each sweep_s long, no catch-up, both queues flushed at each step's start unless sweep_keep; a line
+     * per step (where the bursts aired, the AT and short LC heard, the queues, the flushes) */
+    double sweep_from_s, sweep_to_s, sweep_step_s, sweep_s;
+    bool sweep_keep;
 } rdofradio_t3_hat_t;
 bool rdofradio_t3_start_hat(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o, const rdofradio_t3_dev_t *dev,
                             const rdofradio_t3_hat_t *hat, char *err, size_t cap);

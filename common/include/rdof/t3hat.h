@@ -43,9 +43,9 @@ typedef struct rdof_t3hatsim rdof_t3hatsim_t;
 #define RDOF_T3HAT_LOST 4  /* k, ts: written, never heard */
 #define RDOF_T3HAT_GRID 5  /* m: the grid (re)started; v: position, slot length (48 kS/s samples), host time (NaN) */
 #define RDOF_T3HAT_PLACE 6 /* k, m: trunk slot k is modem slot m from now; v[0]: d, v[1]: the short LC's k % 4 */
-#define RDOF_T3HAT_SKIP 7  /* k, ts: not written (too late for it) */
+#define RDOF_T3HAT_SKIP 7  /* k, ts: not written; v[0]: why (0 too late for it, 1 its timeslot airs early) */
 #define RDOF_T3HAT_REKEY 8 /* the modem's status: unkeyed under the site; placed again on its next key-up */
-#define RDOF_T3HAT_ABORT 9 /* k, ts: DMR_ABORT before slot k's write; v[0]: why (0 late, 1 status, 2 NAK, 3 placed) */
+#define RDOF_T3HAT_ABORT 9 /* k, ts: DMR_ABORT before slot k's write; v[0]: why (0 late, 1 status, 2 NAK, 3 placed, 4 asked) */
 
 typedef struct {
     uint32_t written, matched, on_time, late, early, lost, fills, skipped, grids;
@@ -54,7 +54,8 @@ typedef struct {
     double ppm; /* the modem's slot clock against the receiver's sample clock (+: slots shorter), 0 unknown */
     double delay_min, delay_max, delay_sum; /* air time less write time of the bursts on time, s */
     /* GET_STATUS: replies, in IDLE (its watchdog fired), the transmitter off while placed (each a re-key), an
-     * overflow flag; the most bursts each timeslot's queue held; DMR_ABORTs sent; writes NAKed */
+     * overflow flag; the most bursts each timeslot's queue held (since rdof_t3hat_window); DMR_ABORTs sent; writes
+     * NAKed */
     uint32_t polls, idle, unkeyed, overflows, depth_max[2], aborts, naks;
     /* the modem's own inbound reports: matched to a burst the receiver placed, tagged with its timeslot or the
      * other; none matched; report time less that burst's end, s */
@@ -95,10 +96,12 @@ int64_t rdof_t3hat_modem_rx(rdof_t3hat_t *h, double now, int slot, const uint8_t
 void rdof_t3hat_status(rdof_t3hat_t *h, int state, int flags, int space1, int space2);
 /* A write to timeslot slot NAKed (its queue full). */
 void rdof_t3hat_nak(rdof_t3hat_t *h, int slot);
-/* Start the stats' per-window detail (from e_n on) over. */
+/* Start the stats' per-window detail (from e_n on, and depth_max) over. */
 void rdof_t3hat_window(rdof_t3hat_t *h);
 /* DMR_ABORT when a timeslot runs behind: on by default; off to measure where bursts air at a fixed lead. */
 void rdof_t3hat_set_catchup(rdof_t3hat_t *h, bool on);
+/* Both queues flushed (DMR_ABORT) before each timeslot's next write, catch-up on or not. */
+void rdof_t3hat_flush(rdof_t3hat_t *h);
 /* The short LC (DMR_SHORTLC's 9 bytes) for the modem's cycle whose LCSS 1 CACH comes before trunk slot k; a whole
  * cycle heard, its LCSS 1 CACH before modem slot m (null: the Null short LC), checked against it. */
 void rdof_t3hat_slc_wrote(rdof_t3hat_t *h, int64_t k, const uint8_t s9[9]);

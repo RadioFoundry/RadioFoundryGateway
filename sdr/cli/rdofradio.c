@@ -331,9 +331,9 @@ static rdofradio_cfg_t rcfg;
  * --config's (the receiver's channels, the networks, the bench) */
 static const char *t3_path;
 static rdofradio_cfg_t t3cfg;
-static double hat_lead_ms[2] = {125, 155}; /* inside the modem's AT idle and AT busy windows (tier3-hat.md 3.3) */
+static double hat_lead_ms[2] = {132, 161}; /* the middle of the AT idle and AT busy windows (tier3-hat.md H9, H10) */
 static bool hat_mark;                      /* --hat-mark: the host's idle bursts told apart on air */
-static double hat_sweep_ms[4];             /* --hat-sweep LO,HI,STEP,SECONDS */
+static double hat_sweep_ms[5];             /* --hat-sweep FROM,TO,STEP,SECONDS[,KEEP] */
 static bool hat_on; /* the site has the modem */
 #ifdef RDOF_TIER3
 static bool hat_modem_up(void);
@@ -560,8 +560,8 @@ static void usage(void)
             "                 beside the radios on the air)\n"
             "       rdofradio [DEVICE] --allow-tx --mmdvm PORT|sim-hat --config FILE --tier3 FILE [--hat-lead IDLE_MS,BUSY_MS]\n"
             "                 [--air-ms N ...] (a trunked site's carrier on a stock duplex modem, the SDR hearing it;\n"
-            "                 leads 125,155 ms by default; sim-hat: the modem simulated, no SDR; measuring: --hat-mark\n"
-            "                 (idle bursts told apart on air), --hat-sweep LO_MS,HI_MS,STEP_MS,SECONDS (a lead sweep))\n"
+            "                 leads 132,161 ms by default; sim-hat: the modem simulated, no SDR; measuring: --hat-mark\n"
+            "                 (idle bursts told apart on air), --hat-sweep FROM_MS,TO_MS,STEP_MS,SECONDS[,1: no flush per step] (a lead sweep))\n"
             "       rdofradio --config FILE --sim-air N [--sim-id ID] [--sim-tg TG] [--sim-talk S] [--sim-script FILE]\n"
             "                 [--sim-ext PATH [--sim-fast] [--sim-ext-loss P] [--sim-ext-err P]]\n"
             "                 [--state-dir DIR] [--seconds S] [-v] (a trunked site's air simulated, rdofradio_t3.h)\n"
@@ -6231,7 +6231,7 @@ static bool hat_start(char *err, size_t cap)
     const rdofradio_t3_dev_t td = {hat_channel, hat_now48, now_s, dev ? (uint32_t)R.rate : 48000, NULL, NULL, 0};
     const rdofradio_t3_hat_t hat = {hat_frame_out,          hat_lead_ms[0] / 1e3,  hat_lead_ms[1] / 1e3,
                                     hat_mark,               hat_sweep_ms[0] / 1e3, hat_sweep_ms[1] / 1e3,
-                                    hat_sweep_ms[2] / 1e3, hat_sweep_ms[3]};
+                                    hat_sweep_ms[2] / 1e3, hat_sweep_ms[3],    hat_sweep_ms[4] != 0};
     return rdofradio_t3_start_hat(&t3cfg, &to, &td, &hat, err, cap);
 }
 #endif
@@ -6244,7 +6244,7 @@ static int mmdvm_main(int argc, char **argv, const char *port, int baud, double 
     P.path = port;
 #ifdef RDOF_TIER3
     if (!strcmp(port, "sim-hat")) /* the stock modem simulated (rdofradio_t3.h) */
-        P.fd = rdofradio_t3_hat_sim(3.6, 0.106, err, sizeof err);
+        P.fd = rdofradio_t3_hat_sim(3.6, 0.110, err, sizeof err);
     else
 #endif
         P.fd = rdofradio_serial_open(port, baud, err, sizeof err);
@@ -6673,11 +6673,11 @@ int main(int argc, char **argv)
             hat_mark = true;
         } else if (!strcmp(a, "--hat-sweep")) {
             NEXT();
-            if (sscanf(v, "%lf,%lf,%lf,%lf", &hat_sweep_ms[0], &hat_sweep_ms[1], &hat_sweep_ms[2], &hat_sweep_ms[3]) !=
-                    4 ||
-                hat_sweep_ms[0] <= 20 || hat_sweep_ms[1] < hat_sweep_ms[0] || hat_sweep_ms[2] <= 0 ||
-                hat_sweep_ms[3] < 1) {
-                fprintf(stderr, "--hat-sweep LO_MS,HI_MS,STEP_MS,SECONDS (20 < LO <= HI, STEP > 0, SECONDS >= 1)\n");
+            const int n = sscanf(v, "%lf,%lf,%lf,%lf,%lf", &hat_sweep_ms[0], &hat_sweep_ms[1], &hat_sweep_ms[2],
+                                 &hat_sweep_ms[3], &hat_sweep_ms[4]);
+            if (n < 4 || hat_sweep_ms[0] <= 20 || hat_sweep_ms[1] <= 20 || hat_sweep_ms[2] <= 0 || hat_sweep_ms[3] < 1) {
+                fprintf(stderr, "--hat-sweep FROM_MS,TO_MS,STEP_MS,SECONDS[,KEEP] (FROM, TO > 20, STEP > 0, SECONDS >= 1; "
+                                "KEEP 1: no flush per step)\n");
                 return 2;
             }
         } else if (!strcmp(a, "--air-ms")) {

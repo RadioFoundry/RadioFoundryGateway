@@ -1287,6 +1287,7 @@ static bool b_start(const rdofradio_t3_cfg_t *t, char *err, size_t cap)
 /* ── carrier 1 on a duplex MMDVM modem (--tier3 with --mmdvm; docs/spec/fw/tier3-hat.md) ─────────────────────── */
 
 #define HAT_POLL_S 0.25 /* GET_STATUS this often: the modem's watchdog drops it to IDLE after about 1 s without */
+#define HAT_OFF_LINES 8 /* lines on a timeslot's bursts moving off or back on their slot, per report at most */
 #define HAT_REPORT_S 10.0
 static struct {
     bool on, paused;
@@ -1312,7 +1313,10 @@ static struct {
     struct {                   /* the lead sweep (rdofradio_t3_hat_t) */
         int state;             /* 0 not yet, 1 running, 2 done */
         double lead, t_step, t_win;
+        uint32_t aborts;       /* the flushes at the step's start */
     } sw;
+    int off[2];                /* where each timeslot's last burst aired (slots off), for a line when it changes */
+    int off_lines;             /* those lines since the last report (at most HAT_OFF_LINES) */
 } H = {.out_chan = -1, .in_chan = -1, .state = -1};
 
 static bool hat_frame(uint8_t cmd, const uint8_t *p, size_t n)
@@ -1401,8 +1405,22 @@ static void hat_events(void)
             tsay("carrier 1 (modem): its status says unkeyed: placed again when it keys");
         else if (kind == RDOF_T3HAT_ABORT && T.o.verbose)
             tsay("carrier 1 (modem): TS%d flushed before slot %lld (%s)", ts, (long long)k,
-                 v[0] == 0 ? "aired late" : v[0] == 1 ? "its queue too deep" : v[0] == 2 ? "NAKed" : "placed");
+                 v[0] == 0 ? "aired late" : v[0] == 1 ? "its queue too deep" : v[0] == 2 ? "NAKed" : v[0] == 3 ? "placed" : "asked");
+        else if (kind == RDOF_T3HAT_SKIP && v[0] == 1 && H.off_lines < HAT_OFF_LINES) {
+            H.off_lines++;
+            tsay("carrier 1 (modem): TS%d slot %lld left unwritten, for the modem to fill: it aired early", ts,
+                 (long long)k);
+        }
         else if (kind == RDOF_T3HAT_AIR) {
+            if ((int)v[0] != H.off[ts - 1] && H.off_lines < HAT_OFF_LINES) {
+                H.off_lines++;
+                if (v[0] == 0)
+                    tsay("carrier 1 (modem): TS%d on its slot again from slot %lld", ts, (long long)k);
+                else
+                    tsay("carrier 1 (modem): TS%d airs %+.0f slots off from slot %lld (written %.1f ms ahead)", ts, v[0],
+                         (long long)k, v[2] * 1e3);
+            }
+            H.off[ts - 1] = (int)v[0];
             if (v[0] != 0 && T.o.verbose)
                 tsay("carrier 1 (modem): slot %lld aired %+.0f slots off (written %.1f ms ahead)", (long long)k, v[0],
                      v[2] * 1e3);
@@ -1439,20 +1457,33 @@ static void hat_detail(const rdof_t3hat_stats_t *s, char *out, size_t cap)
              s->slc_on, s->slc_late, s->slc_null, s->slc_other, s->ambiguous);
 }
 
-/* the lead sweep (H.io.sweep_*), once placed: a line per step; T.mu held */
+/* a lead sweep step's start; T.mu held */
+static void hat_sweep_step(double now)
+{
+    rdof_t3hat_set_leads(H.h, H.sw.lead, H.sw.lead, H.sw.lead - 0.01);
+    if (!H.io.sweep_keep)
+        rdof_t3hat_flush(H.h); /* each step from empty queues */
+    rdof_t3hat_stats_t s;
+    rdof_t3hat_stats(H.h, &s);
+    H.sw.aborts = s.aborts;
+    H.sw.t_step = now;
+    H.sw.t_win = now + 0.5; /* the step's first half second settling */
+}
+
+/* the lead sweep (--hat-sweep): a line per step; T.mu held */
 static void hat_sweep(double now)
 {
     if (H.io.sweep_s <= 0 || H.sw.state == 2)
         return;
+    const double dir = H.io.sweep_to_s >= H.io.sweep_from_s ? 1 : -1;
     if (H.sw.state == 0) {
         H.sw.state = 1;
-        H.sw.lead = H.io.sweep_hi_s;
+        H.sw.lead = H.io.sweep_from_s;
         rdof_t3hat_set_catchup(H.h, false);
-        rdof_t3hat_set_leads(H.h, H.sw.lead, H.sw.lead, H.sw.lead - 0.01);
-        H.sw.t_step = now;
-        H.sw.t_win = now + 0.5; /* the step's first half second settling */
-        tsay("carrier 1 (modem): lead sweep %.1f to %.1f ms by %.1f, %.1f s each, no catch-up", H.io.sweep_hi_s * 1e3,
-             H.io.sweep_lo_s * 1e3, H.io.sweep_step_s * 1e3, H.io.sweep_s);
+        hat_sweep_step(now);
+        tsay("carrier 1 (modem): lead sweep %.1f to %.1f ms by %.1f, %.1f s each, no catch-up%s", H.io.sweep_from_s * 1e3,
+             H.io.sweep_to_s * 1e3, H.io.sweep_step_s * 1e3, H.io.sweep_s,
+             H.io.sweep_keep ? ", no flush" : ", both queues flushed each step");
         return;
     }
     if (H.sw.t_win > 0 && now >= H.sw.t_win) {
@@ -1465,19 +1496,18 @@ static void hat_sweep(double now)
     rdof_t3hat_stats(H.h, &s);
     char d[512];
     hat_detail(&s, d, sizeof d);
-    tsay("carrier 1 (modem): lead %.1f ms: %s", H.sw.lead * 1e3, d);
-    H.sw.lead -= H.io.sweep_step_s;
-    if (H.sw.lead < H.io.sweep_lo_s - 1e-6) {
+    tsay("carrier 1 (modem): lead %.1f ms (%u flushed): %s", H.sw.lead * 1e3, s.aborts - H.sw.aborts, d);
+    H.sw.lead += dir * H.io.sweep_step_s;
+    if ((H.sw.lead - H.io.sweep_to_s) * dir > 1e-6) {
         H.sw.state = 2;
         rdof_t3hat_set_leads(H.h, H.io.lead_idle_s, H.io.lead_busy_s, H.io.lead_idle_s - 0.01);
         rdof_t3hat_set_catchup(H.h, true);
+        rdof_t3hat_flush(H.h);
         tsay("carrier 1 (modem): lead sweep done: leads %.1f / %.1f ms again", H.io.lead_idle_s * 1e3,
              H.io.lead_busy_s * 1e3);
         return;
     }
-    rdof_t3hat_set_leads(H.h, H.sw.lead, H.sw.lead, H.sw.lead - 0.01);
-    H.sw.t_step = now;
-    H.sw.t_win = now + 0.5;
+    hat_sweep_step(now);
 }
 
 static void *hat_writer(void *arg)
@@ -1698,6 +1728,7 @@ static void hat_poll(double now)
         tsay("carrier 1 (modem): %s", d);
         rdof_t3hat_window(H.h);
     }
+    H.off_lines = 0;
     const uint32_t grids = H.last.grids;
     H.last = s;
     H.last.grids = grids;
@@ -1745,6 +1776,8 @@ bool rdofradio_t3_start_hat(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t 
     H.sw.state = 0;
     H.cy_n = 0;
     H.key_t = 0;
+    H.off[0] = H.off[1] = 0;
+    H.off_lines = 0;
     rdof_t3hat_set_leads(H.h, hat->lead_idle_s, hat->lead_busy_s, hat->lead_idle_s - 0.01);
     if (!start_common(c, o, err, cap))
         return false;
