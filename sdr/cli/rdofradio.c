@@ -756,10 +756,13 @@ static double txg_full;         /* the gain at level 255 */
 static double tx_max_dbm = NAN; /* --tx-max-dbm: the device's output at its most gain */
 static int tx_rf_level = 255;
 static double gain_dbm(double g) { return tx_max_dbm - (dev->tx_gain_max - g); }
+/* While a bench job has the transmitter: dB under --tx-power its power_dbm asks, in 0.01 dB (0: none) */
+static atomic_int bench_atten_cdb;
 static double keyed_gain(void)
 {
     const rdof_txmap_t m = rdof_txpower_sdr_map(0);
-    const double g = txg_full + rdof_txpower_dbm(&m, tx_rf_level); /* 0 at 255, -0.2 dB a level under it */
+    const double g = txg_full + rdof_txpower_dbm(&m, tx_rf_level) /* 0 at 255, -0.2 dB a level under it */
+                     - atomic_load(&bench_atten_cdb) / 100.0;
     return g < dev->tx_gain_min ? dev->tx_gain_min : g;
 }
 static void io_tx_level(void *ctx, int level)
@@ -2337,6 +2340,22 @@ static int bench_level(rdof_bench_power_t p)
     const int k = rdof_bench_power_level(&lim, p, &bench_map);
     return k > mm_rf_level ? mm_rf_level : k;
 }
+/* A job's power_dbm on the SDR: dB under --tx-power (rdof_bench_sdr_atten_db). An MMDVM modem takes its RF level. */
+static double bench_atten_db(rdof_bench_power_t p)
+{
+    if (R.mmdvm || !dev)
+        return 0;
+    return rdof_bench_sdr_atten_db(&bench_cfg_lim, p, gain_dbm(txg_full), txg_full - dev->tx_gain_min);
+}
+/* A job took the transmitter (its power applies from the next key-up, or at once if keyed), or let it go */
+static void bench_power_on(rdof_bench_power_t p)
+{
+    const double a = bench_atten_db(p);
+    atomic_store(&bench_atten_cdb, (int)lround(100 * a));
+    if (a > 0)
+        say("bench: the job transmits %.1f dB under --tx-power: %.1f dBm\n", a, gain_dbm(txg_full) - a);
+}
+static void bench_power_off(void) { atomic_store(&bench_atten_cdb, 0); }
 /* The settings' gates a job meets before it takes the transmitter: false with why. */
 static bool bench_gates(double seconds, char *why, size_t cap)
 {
@@ -2370,8 +2389,14 @@ static void bench_note(rdof_bench_power_t p, char *why, size_t cap)
                  : bench_has_cfg && bench_level(p) == bench_limit().rf_level && !bench_cfg_lim.has_max_dbm
                      ? " (bench.tx.rf_level)"
                      : "");
-    else if (!isnan(p.dbm) || p.level != 255)
-        snprintf(why, cap, "%s isn't applied: the SDR transmits at %.1f dBm (--tx-power)", asked, gain_dbm(txg_full));
+    else if (!isnan(p.dbm)) {
+        const double a = bench_atten_db(p), d = gain_dbm(txg_full) - a;
+        if (fabs(d - p.dbm) > 0.05)
+            snprintf(why, cap, "%s: the SDR transmits at %.1f dBm (%s)", asked, d,
+                     a == 0 ? "--tx-power, its most" : "its least gain");
+    } else if (p.level != 255)
+        snprintf(why, cap, "%s isn't applied: the SDR transmits at %.1f dBm (--tx-power; power_dbm sets it)", asked,
+                 gain_dbm(txg_full));
 }
 
 static bool bench_tx_listed(double hz)
@@ -2491,6 +2516,7 @@ static struct {
     char why[120];
     uint32_t freq;
     int cc, power;
+    rdof_bench_power_t pw; /* as the job asked */
     double asked;
     rdof_benchtx_item_t in[RDOF_BENCHTX_QUEUE]; /* pushed, not yet in the job's queue */
     int nin, queued;
@@ -2519,7 +2545,7 @@ static bool bl_tx_open(void *ctx, uint32_t freq, int cc, rdof_bench_power_t powe
     else
         bench_note(power, why, cap);
     if (!busy)
-        BT.power = bench_level(power);
+        BT.power = bench_level(power), BT.pw = power;
     return !busy;
 }
 
@@ -2616,6 +2642,7 @@ static struct {
     char why[120];
     uint32_t freq;
     rdof_sig_src_t src;
+    rdof_bench_power_t pw; /* as the job asked */
     double asked;
 } BS = {.mu = PTHREAD_MUTEX_INITIALIZER};
 
@@ -2656,7 +2683,7 @@ static int bl_sig_open(void *ctx, uint32_t freq, rdof_bench_power_t power, doubl
     const bool busy = BS.want || BS.active || BT.want || BT.active || BR.want || BR.active || BO.want || BO.active;
     pthread_mutex_unlock(&BT.mu);
     if (!busy) {
-        BS.want = 1, BS.freq = freq, BS.src = *src, BS.asked = now_s();
+        BS.want = 1, BS.freq = freq, BS.src = *src, BS.pw = power, BS.asked = now_s();
         BS.failed = false, BS.state = 0, BS.why[0] = 0;
     }
     pthread_mutex_unlock(&BS.mu);
@@ -2947,6 +2974,7 @@ static bool bench_ob_poll_mm(double now)
             return true;
         }
         BO.active = true, BO.keyed_at = now, BO.mapped = false;
+        bench_power_on(BO.cfg.power);
         BO.key48 = BO.slot0_48 = mm_now48();
         BO.ch = channel_of(c.freq_hz);
         say("bench: an outbound has the modem: %.4f MHz cc %d, %.1f s\n", c.freq_hz / 1e6, c.cc, c.seconds);
@@ -2968,6 +2996,7 @@ static bool bench_ob_poll_mm(double now)
             rdof_modem_dmr_start(&R.client, false);
         pthread_mutex_lock(&BO.mu);
         BO.active = false, BO.want = 0;
+        bench_power_off();
         pthread_mutex_unlock(&BO.mu);
         owner_resume(true);
         return true;
@@ -3009,6 +3038,7 @@ static bool bench_ob_poll(double now)
             return y == 0;
         }
         BO.want = 0, BO.active = true;
+        bench_power_on(BO.cfg.power);
         const rdof_bl_ob_cfg_t c = BO.cfg;
         pthread_mutex_unlock(&BO.mu);
         const int s = (int)ceil(c.seconds);
@@ -3039,6 +3069,7 @@ static bool bench_ob_poll(double now)
         rdof_sdrmodem_write(&R.m, f, rdof_mmdvm_frame(0xD6, none, sizeof none, f, sizeof f));
         pthread_mutex_lock(&BO.mu);
         BO.active = false, BO.want = 0;
+        bench_power_off();
         pthread_mutex_unlock(&BO.mu);
         owner_resume(true);
         return true;
@@ -3061,6 +3092,7 @@ static bool bench_sig_poll(double now)
         BS.want = 0;
         if (rdof_sdrmodem_signal(&R.m, BS.freq, &BS.src, BS.why, sizeof BS.why)) {
             BS.active = true;
+            bench_power_on(BS.pw);
             say("bench: a signal has the transmitter: %.4f MHz\n", BS.freq / 1e6);
         } else {
             BS.failed = true;
@@ -3072,6 +3104,7 @@ static bool bench_sig_poll(double now)
     if (BS.active && BS.want == 2) {
         rdof_sdrmodem_signal(&R.m, 0, NULL, BS.why, sizeof BS.why);
         BS.want = 0, BS.active = false;
+        bench_power_off();
         pthread_mutex_unlock(&BS.mu);
         owner_resume(false);
         return true;
@@ -3098,6 +3131,7 @@ static bool bench_tx_poll(double now)
             return y == 0;
         }
         BT.want = 0, BT.active = true;
+        bench_power_on(BT.pw);
         const rdof_benchtx_io_t io = {bt_to_modem, bt_to_tool, bt_keying, NULL, NULL};
         bt_ticking = true;
         rdof_benchtx_init(&BT.tx, &io, BT.freq, BT.cc, R.mmdvm ? BT.power : 255, bench_max_key_s, now); /* SDR: --tx-power */
@@ -3120,6 +3154,7 @@ static bool bench_tx_poll(double now)
         rdof_benchtx_stop(&BT.tx, NULL, "closed", now);
         pthread_mutex_lock(&BT.mu);
         BT.active = false, BT.want = 0;
+        bench_power_off();
         pthread_mutex_unlock(&BT.mu);
         owner_resume(true);
         return true;
@@ -3463,6 +3498,7 @@ static bool bench_rpt_poll(double now)
             return y == 0;
         }
         BR.want = 0, BR.active = true;
+        bench_power_on(BR.cfg.power);
         const rdof_bl_rpt_cfg_t cfg = BR.cfg;
         pthread_mutex_unlock(&BR.mu);
         /* the input's channel decodes the job's color code, not the site's: it heard nothing of a job on another */
@@ -3509,6 +3545,7 @@ static bool bench_rpt_poll(double now)
             rdof_sdr_rx_set_cc(&R.rx, BR.rx_ch, CH[BR.rx_ch].cc);
         pthread_mutex_lock(&BR.mu);
         BR.active = false, BR.nev = 0, BR.want = 0;
+        bench_power_off();
         pthread_mutex_unlock(&BR.mu);
         owner_resume(true);
         return true;
@@ -7156,6 +7193,7 @@ int main(int argc, char **argv)
     long long total = 0;
     int overflows = 0, rx_errors = 0, timeouts = 0;
     bool hot = false;
+    int keyed_cdb = 0; /* bench_atten_cdb when the gain was set */
     R.onset = -1;
     R.ring_ref = -1, R.ring_min = INT64_MAX;
     R.lag_min = INFINITY, R.lag_prev = NAN;
@@ -7342,7 +7380,12 @@ int main(int argc, char **argv)
         }
         if (keyed) {
             keyed_until = (double)(txn + ntx) / txrate + 0.3; /* past the device's buffers */
+            if (hot && atomic_load(&bench_atten_cdb) != keyed_cdb) { /* a bench job took or left it while keyed */
+                keyed_cdb = atomic_load(&bench_atten_cdb);
+                tx_gain(keyed_gain());
+            }
             if (!hot) {
+                keyed_cdb = atomic_load(&bench_atten_cdb);
                 tx_gain(keyed_gain());
                 hot = true;
                 /* where the receiver should report the key-up's first burst: its first keyed sample, then the ramp
