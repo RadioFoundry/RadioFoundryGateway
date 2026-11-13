@@ -732,7 +732,9 @@ fn records_reload() {
     assert!(s3.load_record(&Record { exp_ms: T0 + 60_000, ..rec }));
     let mut air = Air::new(&mut s3, [], T0);
     air.run(65_000, &mut log.f());
-    assert!(air.site.record(1001).is_none());
+    assert!(air.site.record(1001).is_some(), "kept while a registration is demanded of it (6.4.5.0)");
+    air.run(30_000, &mut log.f());
+    assert!(air.site.record(1001).is_none(), "no answer: gone");
 }
 
 #[test]
@@ -889,4 +891,51 @@ fn reconfigure_keeps_calls() {
     cfg.tp_ms = 1;
     assert!(!air.site.reconfigure(&cfg, &mut err));
     assert!(std::str::from_utf8(&err).unwrap().starts_with("timers.tp_s"));
+}
+
+#[test]
+fn an_expiring_record_demands_a_registration() {
+    // 6.4.5.0: before the site drops a record it demands a registration of that MS (C_BCAST MassReg, Mask 24, its
+    // address): an MS on the TSCC answers and keeps its record, with its talkgroup; one that's gone loses it
+    let mut s = site_with(|c| c.reg_hold_s = 60);
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG], &[1])], T0);
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_REGISTER, TG, 0, 0, now);
+    assert!(air.until(5000, &mut log.f(), |a| a.site.record(1001).is_some()));
+    let rec = air.site.record(1001).unwrap();
+    assert_eq!(rec.tgs(), &[TG][..]);
+    assert!(air.site.load_record(&Record { id: 1002, ..rec }));
+    air.run(rec.exp_ms - air.now() + 3000, &mut log.f());
+    assert_eq!(air.ms[0].mass_regs(), 1, "the demand reached 1001");
+    let r = air.site.record(1001).unwrap();
+    assert!(r.exp_ms > rec.exp_ms + 55_000, "1001 registered again");
+    assert_eq!(r.tgs(), &[TG][..]);
+    assert!(air.site.record(1002).is_some(), "1002 waits for its answer");
+    air.run(40_000, &mut log.f());
+    assert!(air.site.record(1002).is_none(), "1002 never answered");
+    assert!(air.site.record(1001).is_some());
+}
+
+#[test]
+fn an_ms_told_it_isnt_registered_registers() {
+    // MS_Not_Registered (7.2.6): the MS must register (6.4.4.1.0); the site demands it too (6.4.5.0). Once
+    // registered, its call goes.
+    let mut s = site_with(|_| {});
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG], &[1])], T0);
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_GROUP, TG, 1000, 0, now);
+    assert!(air.until(5000, &mut log.f(), |a| a.ms[0].status().last_reason == R_MS_NOT_REGISTERED));
+    assert!(air.until(5000, &mut log.f(), |a| a.site.record(1001).is_some_and(|r| r.how == HOW_REGISTER)));
+    let regs_of = |log: &Log| {
+        log.of(EV_ACTIVITY).iter().filter(|e| e.kind == ACT_REG && e.op == REG_REGISTER && e.src == 1001).count()
+    };
+    let regs = regs_of(&log);
+    air.run(3000, &mut log.f());
+    let after = regs_of(&log);
+    assert_eq!((regs, after), (1, 1), "one registration answers both");
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_GROUP, TG, 1000, 0, now);
+    assert!(air.until(5000, &mut log.f(), |a| a.ms[0].state() == t3ms::PAYLOAD));
 }

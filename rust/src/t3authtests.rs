@@ -253,8 +253,9 @@ fn no_implicit_registration_past_authentication() {
     assert!(go(&mut air, &mut seen, 10_000, |a| settled(a, 0)));
     assert_eq!(air.ms[0].status().last_reason, R_MS_NOT_REGISTERED);
     assert!(air.site.record(1001).is_none());
-    // registered through the challenge, it calls
-    assert!(register(&mut air, &mut seen, 0));
+    // told it isn't registered, it registers on its own (6.4.4.1.0), through the challenge; then it calls
+    assert!(go(&mut air, &mut seen, 15_000, |a| a.ms[0].status().registered != 0 && a.ms[0].state() == t3ms::IDLE));
+    assert!(air.site.record(1001).is_some());
     let now = air.now();
     air.ms[0].act(t3ms::DO_GROUP, 9, 1000, 0, now);
     assert!(go(&mut air, &mut seen, 10_000, |a| a.ms[0].status().grants > 0));

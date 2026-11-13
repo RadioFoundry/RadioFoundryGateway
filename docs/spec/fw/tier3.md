@@ -180,7 +180,15 @@ Carrier A TS2 when not a payload channel: idle bursts (4.8: the other slot may b
 - De-registration is answered C_ACKD(Reg_Accepted) at once (6.4.6), then the record goes.
 - Implicit registration: a call request from an ID with no record makes one (4.10.2) when the policy allows the ID.
 - With `require_registration` (default true) Reg = 1, and service requests from unregistered IDs get
-  C_NACKD(MS_Not_Registered).
+  C_NACKD(MS_Not_Registered), and a registration demand (MassReg, Mask 24, its address, Reg_Window 1 s; 6.4.5.0)
+  when no mass re-registration is under way: a standard MS needn't re-register on the NACK alone.
+- A record that reaches its expiry isn't dropped at once: the site demands a registration of its MS (as above) and
+  keeps the record 30 s for the answer (5 s more each time while another mass re-registration is under way). An MS
+  that answers keeps its record and its subscription; one that doesn't loses it. An MS idle on the TSCC longer than
+  `reg_hold_s` sends nothing the site hears, so without this its record would go and its next call would be
+  refused. A registration from the MS a demand names stops that demand's repeats.
+- The simulated MS (t3ms) registers by random access when a C_NACKD(MS_Not_Registered) answers it (6.4.4.1.0), and
+  takes a MassReg that comes while that registration is pending as answered by it.
 - List subscription (TRGT_ADR_CNTS 10b, target TATTSI): the registration is checked first, then the list comes in
   a UDT upload and the C_ACK follows it (3.17). The C_ACK, or a refusal's C_NACKD, comes from TATTSI (6.4.4.1.13.2).
 

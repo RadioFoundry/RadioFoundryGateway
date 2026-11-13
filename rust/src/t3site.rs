@@ -386,6 +386,10 @@ pub const ACT_STATUS: u8 = 6;
 pub const REG_REGISTER: u8 = 1;
 pub const REG_DEREGISTER: u8 = 2;
 pub const REG_EXPIRE: u8 = 3;
+/// An expired record whose MS was sent a registration demand: kept this long for its answer
+const DEMAND_GRACE_MS: i64 = 30_000;
+/// An expired record whose demand waits for a mass re-registration under way
+const DEMAND_RETRY_MS: i64 = 5_000;
 pub const REG_DENY: u8 = 4;
 pub const REG_REFUSE: u8 = 5;
 pub const QUEUE_IN: u8 = 1;
@@ -605,6 +609,7 @@ struct Reg {
     ps: u8,        // PowerSave_RQ granted, 0 none
     ps_off: u8,    // PowerSave_Offset
     awake_ms: i64, // awake until (power save)
+    demanded: bool, // expired, and a registration demanded of it (6.4.5.0); deleted if it doesn't answer
 }
 
 #[derive(Clone, Copy, Default)]
@@ -1062,6 +1067,11 @@ impl Site {
     fn refuse(&mut self, reason: u8, target: u32, source: u32) {
         self.ack(reason, target, source);
         self.activity(ACT_REFUSE, 0, target, source, reason);
+        if reason == R_MS_NOT_REGISTERED {
+            // 6.4.5.0: the TSCC may demand a registration from one MS (Mask 24); an MS whose record this site
+            // dropped (reg_hold_s) may not know it must register again
+            self.demand_registration(target);
+        }
     }
 
     fn aloha(&mut self) -> [u8; 10] {
@@ -1499,6 +1509,7 @@ impl Site {
             let r = &mut self.regs[i];
             r.rec.at_ms = self.now;
             r.rec.exp_ms = self.now + hold;
+            r.demanded = false;
             if self.now - r.written_ms >= RECORD_REFRESH_MS {
                 self.write_record(i);
             }
@@ -1555,6 +1566,8 @@ impl Site {
             return;
         };
         let hold = self.cfg.reg_hold_s as i64 * 1000;
+        self.regs[i].demanded = false;
+        self.demand_answered(ms);
         let rec = &mut self.regs[i].rec;
         rec.how = HOW_REGISTER;
         rec.at_ms = self.now;
@@ -1986,7 +1999,16 @@ impl Site {
             let i = self.reg_scan;
             self.reg_scan = (self.reg_scan + 1) % REGS;
             if self.regs[i].used && self.now >= self.regs[i].rec.exp_ms {
-                self.delete_record(i, REG_EXPIRE);
+                // 6.4.5.0: before a record goes, a registration is demanded of its MS; one that answers keeps it
+                let id = self.regs[i].rec.id;
+                if self.regs[i].demanded {
+                    self.delete_record(i, REG_EXPIRE);
+                } else if self.demand_registration(id) {
+                    self.regs[i].demanded = true;
+                    self.regs[i].rec.exp_ms = self.now + DEMAND_GRACE_MS;
+                } else {
+                    self.regs[i].rec.exp_ms = self.now + DEMAND_RETRY_MS; // another under way
+                }
             }
         }
     }

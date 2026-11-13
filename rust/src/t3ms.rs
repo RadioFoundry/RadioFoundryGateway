@@ -781,6 +781,11 @@ impl Ms {
         let at = self.now + i64::from(self.rand()) % (t + 1);
         self.mass_until = self.now + t;
         self.mass_regs += 1;
+        if self.cur.what == DO_REGISTER && self.state != IDLE
+            || self.actions[..self.nact].iter().any(|x| x.what == DO_REGISTER)
+        {
+            return; // a registration on its way answers it (its window still set: the repeats are ignored)
+        }
         self.act(DO_REGISTER, 0, 0, F_MASS, at); // its subscription stays
     }
 
@@ -1087,6 +1092,11 @@ impl Ms {
             _ => {
                 if a.reason == R_MS_NOT_REGISTERED || a.reason == R_REG_DENIED || a.reason == R_REG_REFUSED {
                     self.registered = false;
+                }
+                // 6.4.4.1.0: told it must register (MS_Not_Registered, 7.2.6), it registers by random access
+                let pending = self.actions[..self.nact].iter().any(|x| x.what == DO_REGISTER);
+                if a.reason == R_MS_NOT_REGISTERED && self.cur.what != DO_REGISTER && !pending {
+                    self.act(DO_REGISTER, 0, 0, 0, self.now);
                 }
                 self.done(false);
             }

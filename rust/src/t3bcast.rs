@@ -18,6 +18,8 @@ use super::*;
 const VOTE_BLK: i64 = 4;
 /// Mass registration broadcasts without power save, a second apart (the MS ignores repeats in its window).
 const MASS_SENDS: u16 = 3;
+/// A registration demanded of one MS: within 1 s (table 7.77 Reg_Window 2)
+const DEMAND_WINDOW_S: u32 = 1;
 /// Slots of a power save frame: 4 Common_Slot_Counter steps of 120 ms (figure 6.29).
 const PS_FRAME_K: i64 = 16;
 /// The first slots of a wake frame in which a held C_AHOY is let go: it airs within the frame.
@@ -171,6 +173,22 @@ pub(super) struct BcState {
 }
 
 impl Site {
+    /// 6.4.5.0: demands a registration from one MS (Mask 24, its address) when no mass re-registration is under
+    /// way; false when one is (try again later).
+    pub(super) fn demand_registration(&mut self, ms: u32) -> bool {
+        if self.bc.mass_left > 0 || ms == 0 {
+            return false;
+        }
+        self.mass_registration(DEMAND_WINDOW_S, ms)
+    }
+
+    /// A registration from ms: a demand of it alone is answered, its repeats stop.
+    pub(super) fn demand_answered(&mut self, ms: u32) {
+        if self.bc.mass_left > 0 && self.bc.mass_mask == 24 && self.bc.mass_addr == ms && self.bc.mass_window != 0 {
+            self.bc.mass_left = 0;
+        }
+    }
+
     /// Starts a mass re-registration: every MS (ms 0) or one MS, within secs (0 cancels one under way).
     pub(super) fn mass_registration(&mut self, secs: u32, ms: u32) -> bool {
         if ms > 0xFF_FFFF {
