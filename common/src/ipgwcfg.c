@@ -353,7 +353,7 @@ static bool gateway(ctx_t *c, int o, rdof_ipgw_config_t *cfg)
     if (!boolean(c, o, "ack", "", true, &cfg->ack))
         return false;
     v = cfg->max_bytes;
-    if (!number(c, o, "max_bytes", 68, RDOF_IPGW_MAX_PACKET, true, &v))
+    if (!number(c, o, "max_bytes", 68, RDOF_IPGW_MAX_UP, true, &v))
         return false;
     cfg->max_bytes = (int)v;
     if (!number(c, o, "up_pps", 0, 1000, false, &cfg->up_pps) ||

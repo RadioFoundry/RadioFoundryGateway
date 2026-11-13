@@ -100,7 +100,8 @@ Nothing matched and NAT off: dropped (`no_route`).
   twice that (at least one). Down is the tighter one: every reply is airtime, and a RadioFoundry radio wants
   250 ms or more between separate transmissions to it, which 2 a second keeps on average (two in a burst can come
   closer; the transmitter's own call setup, §11, spaces them further).
-- **Size:** `max_bytes` (default 1500, at most 1520: 127 rate 1/2 blocks) either way.
+- **Size:** `max_bytes` (default 1500) either way: at most 3044 up (127 rate 1 blocks, the longest DMR message:
+  Blocks to Follow is 7 bits) and 1520 down (127 rate 1/2 blocks: the gateway sends rate 1/2).
 - **Flows:** `max_flows` (default 8, at most `CONFIG_RDOF_IPGW_MAX_SOCKETS`); one closes after `idle_s` (default
   120 s) with nothing either way. A full table drops new flows (`flows_full`); nothing is evicted.
 - **Replies:** only from the exact address and port a flow sent to (`down_stranger` otherwise; ICMP: §7). There is

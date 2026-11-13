@@ -464,7 +464,7 @@ The IP gateway: IP packets as DMR data between radios and the network ([ipgw.md]
 | `radio_net` | IPv4 CIDR, prefix 8..30 | `12.0.0.0/8` | the radios' addresses, from their DMR IDs |
 | `tx` | unit name | the first transmitting unit | where its answers go when no pool picks one. With the transmitter pool, the path the radio was last heard on |
 | `ack` | bool | true | answer a confirmed message with an ACK ([ipgw.md](ipgw.md) §10) |
-| `max_bytes` | int, 68..1520 | 1500 | the longest IP packet |
+| `max_bytes` | int, 68..3044 | 1500 | the longest IP packet (down at most 1520: rate 1/2) |
 | `up_pps`, `down_pps` | int, 0..1000 | 10, 2 | datagrams a second each way (a token bucket of twice that) |
 | `idle_s` | int, 5..86400 | 120 | a flow's idle time |
 | `max_flows` | int, 1..16 | 8 | NAT flows; cut to the build's `CONFIG_RDOF_IPGW_MAX_SOCKETS` |
