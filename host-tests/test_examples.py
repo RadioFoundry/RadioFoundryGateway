@@ -105,7 +105,9 @@ class Box:
         return out
 
     def job(self, freq, cmd="csbk", **kw):
-        j = {"tool": "bench_tx", "cmd": cmd, "freq": freq, "cc": 1, "src": 1, "dst": 2, "listen_after": 0, **kw}
+        j = {"tool": "bench_tx", "cmd": cmd, "freq": freq, "cc": 1, "src": 1, "listen_after": 0, **kw}
+        if cmd != "outbound":                  # an outbound has no called party: the gateway refuses a dst there
+            j["dst"] = 2
         return self.ask({"op": "run", "job": j, "wait_max": 15}, 25)
 
     def stop(self):

@@ -670,6 +670,10 @@ by their long names with `_` for `-`:
  "src": 9990301, "dst": 9990199, "private": true, "superframes": 6, "family": "ms", ...}
 ```
 
+A field the gateway doesn't read for that job is refused (`--<field> isn't done by this gateway for this job`) when
+its value asks for something (not null, false, 0 or ""), so a job never runs without an option it was given. The
+tool's own `ambe` (its bytes come as `ambe_hex`), `port` and `verbose` pass.
+
 - `bench_tx` `voice`, `csbk`, `data` go out through the bench's TX path (section 7: the SDR modem, `bench.tx`'s
   frequencies, key time and power) in DMO timing, one burst every 60 ms; `listen` (and `listen_after`) reports what
   the receiver channel at `freq` hears, as the tool's `--json` lines and per-call summaries.

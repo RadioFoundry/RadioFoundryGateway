@@ -3477,6 +3477,33 @@ static void test_ring_scale(void)
     rdof_bl_ring_free(&ring);
 }
 
+/* A job field the gateway doesn't read is refused when it asks for something, not dropped (an offset once went out
+ * at 0 Hz that way); null, false, 0 and "" ask for nothing, and the tool's own ambe, port and verbose mean nothing
+ * here. */
+static void test_unread_field(void)
+{
+    static const struct {
+        const char *json, *refused; /* NULL: it parses */
+    } C[] = {
+        {"{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"dst\":1,\"offset_hz\":1500}", NULL},
+        {"{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"dst\":1,\"frobnicate\":true}", "--frobnicate"},
+        {"{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"dst\":1,\"tx_offset\":300}", "--tx-offset"},
+        {"{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"dst\":1,\"a\":false,\"b\":0,\"c\":\"\",\"d\":null}", NULL},
+        {"{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"dst\":1,\"ambe\":\"x.amb\",\"port\":\"/dev/x\",\"verbose\":true}",
+         NULL},
+        {"{\"tool\":\"bench_repeater\",\"rx\":461.0875,\"tx\":461.4625,\"offset_hz\":700}", "--offset-hz"},
+    };
+    for (size_t i = 0; i < sizeof C / sizeof C[0]; i++) {
+        rdof_bj_job_t j;
+        char e[200];
+        const bool ok = parse_job(C[i].json, &j, e, sizeof e);
+        if (C[i].refused)
+            CHECK(!ok && strstr(e, C[i].refused), "job %zu: refused for %s, got %s", i, C[i].refused, ok ? "OK" : e);
+        else
+            CHECK(ok, "job %zu: %s", i, e);
+    }
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 4 && !strcmp(argv[1], "serve"))
@@ -3505,6 +3532,7 @@ int main(int argc, char **argv)
     test_ring_scale();
     test_modem_station();
     test_dev_scale();
+    test_unread_field();
     test_tcp();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
