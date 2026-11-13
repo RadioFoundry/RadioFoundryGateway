@@ -286,6 +286,11 @@ void rdof_sdrmodem_heard(rdof_sdrmodem_t *m, int channel, const rdof_sdr_burst_t
  * offset tx_tune gave, or the frequency (Hz) and envelope. Returns whether any of them is keyed. */
 bool rdof_sdrmodem_pull_iq(rdof_sdrmodem_t *m, int64_t pos, rdof_cf_t *iq, int n);
 bool rdof_sdrmodem_pull_freq(rdof_sdrmodem_t *m, int64_t pos, float *hz, float *env, int n);
+/* A second carrier in the same transmit stream (a trunked site's two carriers out of one SDR, each at its own
+ * tx_tune offset from the one LO): iq holds the first modem's n samples from pos; m's for the same samples are added
+ * and the sum halved, each carrier at half amplitude, so it can't clip (a modulator's output is at most 1 in
+ * magnitude). scratch: n samples. Returns whether m is keyed there. */
+bool rdof_sdrmodem_pull_mix(rdof_sdrmodem_t *m, int64_t pos, rdof_cf_t *iq, rdof_cf_t *scratch, int n);
 /* A signal mode's transmission (rdof/sigmode.h) in place of DMR, for the bench: the transmitter tuned to hz (tx_tune),
  * then the pulls render src from the next one on. Refused (false, why) while DMR is keyed or queued, in duplex or a
  * split role, or where tx_tune can't reach hz. src NULL ends it (at once) and tunes back to SET_FREQ's frequency. */
