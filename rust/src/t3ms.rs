@@ -200,6 +200,7 @@ pub struct Ms {
     // short data
     sd_out: Blocks,
     sd_fmt: u8,
+    sd_pn: u8, // its Pad_Nibble
     up: [(u8, [u8; 12]); 1 + MAX_BLOCKS],
     up_len: usize,
     up_pos: usize,
@@ -329,9 +330,10 @@ impl Ms {
 
     /// Queues UDT short data (up to 46 octets) to dst, a talkgroup with F_GROUP; false when it doesn't fit.
     pub fn send_sdm(&mut self, dst: u32, flags: u8, format: u8, data: &[u8], at_ms: i64) -> bool {
-        let Some(b) = Blocks::of(data, 0) else { return false };
+        let Some((b, pn)) = Blocks::of_format(data, format) else { return false };
         self.sd_out = b;
         self.sd_fmt = format;
+        self.sd_pn = pn;
         self.act(DO_SDM, dst, 0, flags, at_ms)
     }
 
@@ -381,10 +383,15 @@ impl Ms {
     /// Queues a DGNA transfer to dst (6.6.8): the Address Format (format FMT_ADDRESS, up to 15 talkgroups, ok the
     /// One-key flag) or the Mixed Format (FMT_MIXED: data the appended data as is); false when it doesn't fit.
     pub fn send_dgna(&mut self, dst: u32, format: u8, tgs: &[u32], ok: bool, data: &[u8], at_ms: i64) -> bool {
-        let b = if format == FMT_ADDRESS { AddrList::blocks(ok, tgs) } else { Blocks::of(data, 0) };
-        let Some(b) = b else { return false };
+        let b = if format == FMT_ADDRESS {
+            AddrList::blocks(ok, tgs).map(|b| (b, 0))
+        } else {
+            Blocks::of_format(data, format)
+        };
+        let Some((b, pn)) = b else { return false };
         self.sd_out = b;
         self.sd_fmt = format;
+        self.sd_pn = pn;
         self.act(DO_DGNA, dst, 0, 0, at_ms)
     }
 
@@ -409,6 +416,7 @@ impl Ms {
         let Some(b) = AddrList::blocks(true, &[to]) else { return false };
         self.sd_out = b;
         self.sd_fmt = FMT_ADDRESS;
+        self.sd_pn = 0;
         let gw = if group { GPI } else { MSI };
         self.act(DO_DIVERT, gw, u32::from(DIV_ON | (kinds & 0x0F)), 0, at_ms)
     }
@@ -1124,6 +1132,7 @@ impl Ms {
                         group: self.cur.flags & F_GROUP != 0,
                         response: what == DO_DGNA,
                         format: self.sd_fmt,
+                        pad_nibble: self.sd_pn,
                         target: self.cur.arg,
                         source: self.id,
                         blocks: self.sd_out.n,

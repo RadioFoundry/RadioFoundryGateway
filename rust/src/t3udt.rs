@@ -173,7 +173,29 @@ pub struct Blocks {
     pub b: [[u8; 12]; MAX_BLOCKS],
 }
 
+/// 361-4 annex B (B.3.3-B.3.5, B.3.8, B.3.9): the character formats fill the last block with 1111b nibbles, counted in
+/// Pad_Nibble; the others (binary B.3.1, addresses B.3.2, IP, NMEA) fill with zeros and Pad_Nibble 0.
+pub const fn pads_nibbles(format: u8) -> bool {
+    matches!(format, FMT_BCD | FMT_ISO7 | FMT_ISO8 | FMT_UTF16 | FMT_MIXED)
+}
+
 impl Blocks {
+    /// Blocks for data in format's coding, the fewest that hold it, and the Pad_Nibble (table B.5 for ISO 8-bit: 19
+    /// characters, 2 blocks, 6 pad nibbles); None when it doesn't fit.
+    pub fn of_format(data: &[u8], format: u8) -> Option<(Blocks, u8)> {
+        if !pads_nibbles(format) {
+            return Blocks::of(data, 0).map(|b| (b, 0));
+        }
+        let n = blocks_for(data.len());
+        if n == 0 {
+            return None;
+        }
+        let mut flat = [0xFFu8; MAX_DATA];
+        flat[..data.len()].copy_from_slice(data);
+        let b = Blocks::of(&flat[..user_len(n)], n)?;
+        Some((b, (2 * (user_len(n) - data.len())) as u8))
+    }
+
     /// Blocks for data (at most 46 octets) in n blocks (0: the fewest that hold it); None when it doesn't fit.
     pub fn of(data: &[u8], n: usize) -> Option<Blocks> {
         let n = if n == 0 { blocks_for(data.len()) } else { n };
@@ -307,6 +329,36 @@ mod tests {
         // the DGNA opcodes are UDT headers too
         let h = UdtHead { op: OP_DGNAHU, response: true, format: FMT_ADDRESS, blocks: 2, ..Default::default() };
         assert_eq!(UdtHead::decode(&h.encode()), Some(h));
+    }
+
+    #[test]
+    fn character_padding() {
+        // B.3.5 table B.5 (ISO 8-bit): characters, UAB (blocks less one), Pad_Nibble; the pad nibbles are 1111b
+        const B5: [(usize, u8, u8); 10] = [
+            (1, 0, 18),
+            (9, 0, 2),
+            (10, 0, 0),
+            (11, 1, 22),
+            (19, 1, 6),
+            (22, 1, 0),
+            (23, 2, 22),
+            (34, 2, 0),
+            (35, 3, 22),
+            (46, 3, 0),
+        ];
+        for (chars, uab, pn) in B5 {
+            let text = [b'a'; 46];
+            let (b, got) = Blocks::of_format(&text[..chars], FMT_ISO8).unwrap();
+            assert_eq!((b.n - 1, got), (uab, pn), "{chars} characters");
+            assert!(b.crc_ok());
+            let mut d = [0u8; MAX_DATA];
+            let len = b.data(&mut d);
+            assert!(d[chars..len].iter().all(|&x| x == 0xFF), "{chars}: 1111b pad");
+        }
+        assert!(Blocks::of_format(&[b'a'; 47], FMT_ISO8).is_none());
+        // B.3.1: binary is Pad_Nibble 0
+        let (b, pn) = Blocks::of_format(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], FMT_BINARY).unwrap();
+        assert_eq!((b.n, pn), (2, 0));
     }
 
     #[test]

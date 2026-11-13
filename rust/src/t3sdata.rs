@@ -940,9 +940,11 @@ impl Site {
             ..Default::default()
         };
         if m.what == SD_UDT || dgna {
-            let Some(b) = Blocks::of(m.data(), 0) else { return false };
+            // a character format padded as annex B says; the others as the application gave them
+            let Some((b, pn)) = Blocks::of_format(m.data(), m.value) else { return false };
             d.blocks = b;
-            d.head = UdtHead { blocks: b.n, pad_nibble: m.pad_nibble, format: m.value, ..Default::default() };
+            let pad_nibble = if pads_nibbles(m.value) { pn } else { m.pad_nibble };
+            d.head = UdtHead { blocks: b.n, pad_nibble, format: m.value, ..Default::default() };
         } else if m.what == SD_STATUS && m.value >= STATUS_POLL {
             return false;
         }
