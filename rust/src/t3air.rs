@@ -6,6 +6,7 @@
 //! solicited answer to a block in slot k goes in slot k + 2 at the earliest, as on air.
 
 use crate::t3ms::{Ms, MsTx, TX_PDU, TX_VOICE};
+use crate::t3pdu::{opcode, DT_CSBK};
 use crate::t3site::{Event, Site, SlotOut, CHANNELS, RC_SEND};
 
 pub const SLOT_MS: i64 = 30;
@@ -18,11 +19,33 @@ pub struct Air<'a, const N: usize> {
     pub collisions: u32,
     pub last: SlotOut,
     pub inbound: [Option<MsTx>; N],
+    /// (opcode, n): the next n TSCC blocks (outbound) or MS PDUs (inbound) with that opcode are lost on the air.
+    pub lose_out: (u8, u32),
+    pub lose_in: (u8, u32),
+}
+
+/// Whether pdu is one to lose, counting it.
+fn lose(l: &mut (u8, u32), pdu: &[u8; 10]) -> bool {
+    let hit = l.1 > 0 && opcode(pdu) == l.0;
+    if hit {
+        l.1 -= 1;
+    }
+    hit
 }
 
 impl<'a, const N: usize> Air<'a, N> {
     pub fn new(site: &'a mut Site, ms: [Ms; N], t0: i64) -> Self {
-        Air { site, ms, k: 0, t0, collisions: 0, last: SlotOut::default(), inbound: [None; N] }
+        Air {
+            site,
+            ms,
+            k: 0,
+            t0,
+            collisions: 0,
+            last: SlotOut::default(),
+            inbound: [None; N],
+            lose_out: (0, 0),
+            lose_in: (0, 0),
+        }
     }
 
     pub fn now(&self) -> i64 {
@@ -54,7 +77,9 @@ impl<'a, const N: usize> Air<'a, N> {
                 self.collisions += 1;
                 self.site.rx_bad(ch);
             } else if t.kind == TX_PDU {
-                self.site.rx_pdu(ch, t.dt, &t.pdu);
+                if !lose(&mut self.lose_in, &t.pdu) {
+                    self.site.rx_pdu(ch, t.dt, &t.pdu);
+                }
             } else if t.kind == TX_VOICE {
                 self.site.rx_voice(ch, t.what, t.src);
                 for m in self.ms.iter_mut() {
@@ -66,10 +91,11 @@ impl<'a, const N: usize> Air<'a, N> {
             f(&e);
         }
         let tscc = self.site.tscc_ch();
+        let lost = k & 1 == 0 && out.tscc_dt == DT_CSBK && lose(&mut self.lose_out, &out.tscc_pdu);
         for m in self.ms.iter_mut() {
             let ch = m.ch();
             if ch == tscc && k & 1 == 0 {
-                m.rx(ch, k, out.tscc_dt, &out.tscc_pdu, out.at != 0);
+                m.rx(ch, k, if lost { 0 } else { out.tscc_dt }, &out.tscc_pdu, out.at != 0);
             } else if ch < CHANNELS && ch as i64 & 1 == k & 1 {
                 m.rx(ch, k, out.ch[ch].dt, &out.ch[ch].pdu, false);
             }

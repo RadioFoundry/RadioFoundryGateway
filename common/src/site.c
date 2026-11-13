@@ -129,7 +129,7 @@ static const char *const REPEATER_KEYS[] = {"name", "type", "in", "out", "slots"
 static const char *const PARROT_KEYS[] = {"name", "type", "tg", "pc", NULL};
 static const char *const TIER3_KEYS[] = {"name", "type", "carriers", "system", "registration", "ms",
                                          "require_registration", "refuse_unlisted", "private", "tg", "wide_tg",
-                                         "static_tg", "foacsu", "timers", "broadcast", "services", NULL};
+                                         "static_tg", "foacsu", "timers", "broadcast", "services", "auth", NULL};
 static const char *const CARRIER_KEYS[] = {"out", "in", "chan", "tscc", NULL};
 static const char *const IPGW_KEYS[] = {"name", "type", "tg", "pc", "radio_net", "tx", "ack", "max_bytes",
                                         "up_pps", "down_pps", "idle_s", "max_flows", "routes", "nat", NULL};

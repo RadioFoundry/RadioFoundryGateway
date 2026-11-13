@@ -9,8 +9,8 @@ Status (2026-11-12): round 1 built and run on simulated air only (two sites over
 `tier3-trunk`, on main as of 2026-11-12.
 
 Sources: ETSI TS 102 361-1 (air interface), -2 (voice), -4 (trunking, V1.12.1). Clause numbers below are 361-4's
-unless marked. Clean room: the ETSI text and our own MIT code only. Authentication (361-4 6.4.8, 6.4.9.2, 6.4.10) is
-out of scope and needs the owner's go-ahead before any work.
+unless marked. Clean room: the ETSI text and our own MIT code only. MS authentication (6.4.8, 6.4.4.1.5) is built
+(section 3.10, owner's go-ahead 2026-11-12); authentication of the site by the MS (6.4.9.2) and 6.4.10 are not.
 
 ## 1. Goals and the line for this round
 
@@ -40,6 +40,7 @@ Principles:
 | Group voice | C_RAND, C_WACKD/C_QACKD, TV_GRANT (repeated; Late_Entry grants through the call), BTV_GRANT for ALLMSID calls, quasi-transmission trunking (hang time), P_CLEAR on hang expiry, call timer or P_MAINT DISCON |
 | Individual voice | C_AHOY availability check (OACSU or FOACSU, a setting), C_ACKU/C_NACKU, Call Answer, PV_GRANT, cancel (Service_Kind 1111b) |
 | Queueing | One queue by priority (emergency first, then PRIORTY_SV, then age); C_QACKD; SYSbusy_Refused when full |
+| Authentication | MS authentication (6.4.8): a challenge at registration (6.4.4.1.5) for MSs with a key, or every MS; an authentication poll on command; the 6.4.8 algorithm with the PSN; keys from `cfg/ms` (section 3.10). The MS authenticating the site isn't built |
 | Emergency | Emergency group calls (the emergency call timer, the Emergency flag in grants; an emergency request on an open call upgrades it); pre-emption of a running call when no channel is free (6.4.14.3.1), with the Reverse Channel cease command (6.4.15, table 6.32) to its talker; a setting, off by default (section 3.9) |
 | Refusals | C_NACKD(Not_Supported) for every other Service_Kind; Called_Party_Busy, Called_Group_Not_Allowed, Perm_User_Refused as provisioning says |
 | Network | Wide-area group calls both ways; individual calls across sites with an availability check over the network; Tier II to Tier III and back; registration records; site description; provisioning from the manager, cached at the site |
@@ -51,7 +52,7 @@ Principles:
 Packet data and UDT short data, talkgroup list subscription (UDT upload), power save, mass re-registration,
 Vote Now, C_MOVE and a second TSCC, composite TSCC, TSCCAS, the asynchronous (hibernating) TSCC, DGNA,
 stun/revive/kill, gateways (PSTN, PABX, dispatcher), duplex calls, ambient listening, a standby controller, trunking on the W12 (the LR2021 can't stay keyed: slot-timing.md), two carriers
-out of one SDR, authentication (owner's go-ahead first), encryption beyond pass-through.
+out of one SDR, authentication of the site by the MS (6.4.9.2), encryption beyond pass-through.
 
 Two carriers out of one SDR (tried on the Pluto, 2026-11-06, with fixed test signals, not the site): two DMR BS
 carriers 125 kHz apart, each idle bursts with the CACH on both slots, summed in software and sent on TX1 (2.4 MS/s,
@@ -266,6 +267,51 @@ leaves that slot's block out and the radio sends the RC in an idle burst (a few 
 while a talker is being de-keyed). Choice: the cease command (0100b), not the cease request (0101b): 6.4.14.3.1 is a
 de-key, and a request may be ignored by the MS.
 
+### 3.10 MS authentication
+
+The setting `auth` (section 4): `off` (default), `registration` (an MS with a key is challenged when it registers;
+one without registers as before) or `required` (every MS is challenged; one without a key is refused). Keys come
+from provisioning: `cfg/ms/{id}` `auth_k` (K, 128 bits) and `psn` (24 bits, optional; section 5.7).
+
+The algorithm (6.4.8, figure 6.30): RC4 keyed with the challenge RAND (3 bytes, most significant first) and then K;
+the first 256 bytes of keystream are discarded, the next 3 are the response, XORed with the PSN when the MS has one.
+Checked against 6.4.8's vectors: RAND 7A17C0h, K 0102...10h gives E8CA1Dh; with PSN 010203h, E9C81Eh. The site's
+challenges are in 000000h-FFFCDFh (table 6.17), from a mixer stirred with the platform's random source at start and
+the time of each challenge.
+
+Registration (6.4.4.1.5, figure 6.20): a registration C_RAND that passes the policy checks (section 3.4) is answered
+with a C_AHOY with Service_Kind 1110b, Service_Kind_Flag 0, Service_Options_Mirror = the C_RAND's Service_Options,
+target the MS and source the challenge (table 6.17), with AT set for the answer. The MS answers C_ACKU with reason
+Authentication Response (0100 1000b; tables 6.18, 7.42) and the response in its target address.
+
+- A matching response: the registration goes on as without authentication (Reg_Accepted, the record); activity
+  `auth_ok`.
+- A wrong response: C_NACKD(Reg_Denied), an earlier record removed; activity `auth_fail`, a log line.
+- C_NACKU(MSNot_Supported): under `required`, Reg_Denied as a wrong response; under `registration`, the MS
+  registers; activity `auth_none`.
+- No answer: the C_AHOY is sent `ahoy_tries` times, `ahoy_every_ms` apart (section 3.8); then the site gives up
+  silently (the MS's TNP_Timer ends its attempt, 6.4.4.1.6); activity `auth_none`.
+
+An authentication poll (6.4.8.2, Service_Options_Mirror 0): the command `auth` (section 5.7) challenges a
+registered MS with a key. A wrong response, or MSNot_Supported under `required`, removes its registration (record
+action `auth_fail`, a log line); the site sends it nothing more and the MS registers again on its next access.
+A good answer is `auth_ok`, no answer or MSNot_Supported otherwise `auth_none`.
+
+Choices:
+
+- Up to 8 challenges run at once; with the table full, a registration gets no answer and the MS repeats it after
+  its random access wait.
+- A C_RAND repeated while its challenge runs (the C_AHOY or the answer was lost) gets the same challenge again.
+- An MS that must be challenged can't register implicitly through a call request: it gets MS_Not_Registered.
+- A poll works with `auth` `off` too, for an MS with a key.
+- `auth` is a local setting: the manager's `cfg` doesn't carry it, like `services.emergency_preempt`.
+- K never appears in a log, an activity event, a record or `status`. It is in the retained `cfg/ms` documents and
+  in the node's provisioning cache (rdofradio writes `cfg-cache.json` with mode 0600); see section 5.8.
+
+The MS simulator (section 11) answers SK 1110b C_AHOYs with its key (C_ACKU 0x48) or, without one,
+C_NACKU(MSNot_Supported), and during a registration waits TNP_Timer for the outcome. rdofradio's `--air-ms` MSs take
+their keys from the `cfg/ms` documents, at start and whenever provisioning changes.
+
 ## 4. Settings (config-v3 `tier3` app)
 
 The app takes the place reserved for it in config-v3.md section 6 ("a control frequency and a pool; it assigns its own
@@ -313,6 +359,7 @@ paths").
 | `timers` | object | section 3.8 | |
 | `broadcast` | object | section 3.2 | `adjacent_s`, `chan_freq_s`, `local_time_s` (0 = off) |
 | `services` | object | | `emergency_preempt` (bool, false): clear a running call for a waiting emergency (section 3.9). Local settings only for now; the manager's `cfg` doesn't carry it |
+| `auth` | `off`, `registration`, `required` | `off` | MS authentication (section 3.10): challenge MSs with a key at registration, or every MS. Local settings only; the manager's `cfg` doesn't carry it |
 
 Checks (refusals name the key): exactly one `tscc` carrier; every carrier's `out` on a device that transmits and its
 `in` on a device that receives; the TSCC carrier's `in` and `out` on one full-duplex SDR (a split TX half
@@ -457,7 +504,8 @@ the same MODEL and NET, unless `cfg/node/{node}` gives `neighbors` explicitly.
           "counters": {"aloha": 0, "rand": 0, "collisions": 0, "grants": 0, "refused": 0, "queued": 0}}
 ```
 
-`activity` events added: `reg` (`src`, `action` register/deregister/expire/deny/refuse, `tg`), `grant` (`src`,
+`activity` events added: `reg` (`src`, `action` register/deregister/expire/deny/refuse/auth_ok/auth_fail/auth_none,
+`tg`; section 3.10), `grant` (`src`,
 `dst`, `group`, `chan`, `lcn`, `late`, `source` rf/net), `queue` (`src`, `dst`, `action` in/out/drop, `why`),
 `setup` (`src`, `dst`, `op`, `reason`, `peer`). call_start / call_end on a trunk site carry `chan` and `lcn`.
 
@@ -484,8 +532,10 @@ reported in `cmd/res`.
 "hang_s": 3}`. `ms` limits who may call or join it; `sites` where it may be used.
 
 `cfg/ms/{id}`: `{"rev", "at", "name": "Unit 12", "enabled": true, "private": true, "wide_private": true,
-"priority": 0, "emergency": true, "tg": [91, 3100]}`. `enabled: false` = Reg_Denied at every site, and an existing
-registration is removed. `tg` adds static talkgroups for that MS.
+"priority": 0, "emergency": true, "tg": [91, 3100], "auth_k": "0102030405060708090A0B0C0D0E0F10", "psn": "010203"}`.
+`enabled: false` = Reg_Denied at every site, and an existing registration is removed. `tg` adds static talkgroups
+for that MS. `auth_k` (32 hex digits) is its authentication key K and `psn` (6 hex digits, optional) its PSN
+(section 3.10); a bad value refuses the document without quoting it.
 
 Precedence: `cfg/ms` over `cfg/tg` over `cfg/node` over `cfg/net` over the settings file.
 
@@ -499,6 +549,7 @@ Commands (`node/{node}/cmd`, JSON `{"id": "c-123", "cmd": "...", ...}`; the resu
 | `withdraw` / `restore` | | takes the TSCC off the air / back |
 | `resend_records` | | republishes every registration record |
 | `status` | | publishes `status` now |
+| `auth` | `ms` | an authentication poll of a registered MS with a key (section 3.10); a failure removes its registration |
 
 ### 5.8 Security
 
@@ -508,7 +559,9 @@ Commands (`node/{node}/cmd`, JSON `{"id": "c-123", "cmd": "...", ...}`; the resu
 - A node trusts `cfg` because of the ACL. Signed provisioning (a manager key, verified on the node) is a later step;
   the `rev`/`at` fields leave room for a `sig` field.
 - The dashboard and REST API need a token (manager setting); TLS by a reverse proxy or the manager's own.
-- Tier III authentication is out of scope (owner's rule).
+- MS authentication keys (`auth_k`) travel in the retained `cfg/ms` documents, which every node and the router read:
+  the ACL and TLS are what keep them secret. A node keeps them in its provisioning cache. Per-node key documents
+  (only the sites that serve an MS) are a later step.
 
 ## 6. Failure and isolation
 
@@ -556,7 +609,7 @@ The Rust exports a C API (the repo's convention: the header is the contract; str
 t3 structs aren't in `rust/src/layout.rs` (a legacy-only module): `rdof_t3_layout()` reports their sizes and
 alignments and `host-tests/test_t3.c` compares them with the header's. The exact API is `common/include/rdof/t3.h`;
 the sketch below is the design, which the header extends (`rdof_t3_net_private_end`, `rdof_t3_record`,
-`rdof_t3_subs`, the MS simulator's `rdof_t3ms_*`).
+`rdof_t3_subs`, `rdof_t3_entropy` (the challenges' random source, section 3.10), the MS simulator's `rdof_t3ms_*`).
 
 ```c
 typedef struct rdof_t3_site rdof_t3_site_t;          /* opaque, caller allocates rdof_t3_site_size() bytes */
@@ -760,7 +813,8 @@ In the network services' own repository (with the router, the Python library and
 - registration (and de-registration), with a subscribed talkgroup;
 - group and individual call requests; follows grants to the payload channel; talks for a set time (voice header,
   voice bursts, terminator), P_MAINT DISCON at the end of an individual call; returns on P_CLEAR or TV_Inactive;
-- answers C_AHOY: accept, busy, no answer, or FOACSU alerting then answer, as configured;
+- answers C_AHOY: accept, busy, no answer, or FOACSU alerting then answer, as configured; an authentication
+  challenge with its key and PSN (`rdof_t3ms_key`), or MSNot_Supported without one (section 3.10);
 - emergency and priority options; cancel.
 
 `t3air`: a slot-exact air between one site controller and N MSs: TSCC outbound to every MS on the TSCC; inbound
@@ -821,7 +875,7 @@ apart from the code, found seven deviations; six are fixed (2026-11-12):
   Kept until the code's use of 0 as "no site" is checked.
 
 Out of round 2, unchanged from section 1.2: dedicated multi-carrier sites beyond two, multi-site roaming on air,
-packet data, authentication, the standby controller.
+packet data, the standby controller. MS authentication was added on 2026-11-12 (section 3.10).
 
 ## 14. Open questions for the owner
 

@@ -380,7 +380,7 @@ merge duplicates by `call_key`.
 | `data_fail` | a data call that didn't | `src, dst, reason` |
 | `data_result` | this box finished delivering a data call on RF | `src, dst, from` (the publisher's `{node}`), `from_stream`, `result` (`delivered`, `failed`, `no_response`, `unconfirmed`), `tries` |
 | `tx` | this box starts / stops transmitting a network stream | `action`, `src, dst, from` |
-| `reg` | a trunked site: a radio registers, de-registers, expires, or is denied or refused | `src, action` (`register`, `deregister`, `expire`, `deny`, `refuse`), `tg` (array) |
+| `reg` | a trunked site: a radio registers, de-registers, expires, is denied or refused, or answers an authentication challenge | `src, action` (`register`, `deregister`, `expire`, `deny`, `refuse`, `auth_ok`, `auth_fail`, `auth_none`: tier3.md 3.10), `tg` (array) |
 | `grant` | a trunked site grants a payload channel | `src, dst, group, chan` (logical channel), `lcn` (0 or 1), `late` (a late entry grant); `source` `rf` or `net` (who asked) |
 | `queue` | a trunked site queues a request, serves it, or drops it | `src, dst, group, action` (`in`, `out`, `drop`), `why` (on a drop) |
 | `setup` | a call setup sent or received (§9.4) | `src, dst, op, reason, peer` (the other node) |
@@ -754,9 +754,12 @@ manager and dashboards show it); a site keeps it and doesn't act on it.
 (radios) limit where and by whom the talkgroup may be used, `*` when absent; `wide` carries it on the network;
 `priority` 0-3.
 
-`cfg/ms/{id}`: `{"rev", "at", "name", "enabled", "private", "wide_private", "priority", "emergency", "tg"}`. The
-booleans are true when absent. `enabled: false` denies the radio's registration at every site and removes a
-registration it has. `tg` (at most 8) are talkgroups the radio always gets.
+`cfg/ms/{id}`: `{"rev", "at", "name", "enabled", "private", "wide_private", "priority", "emergency", "tg", "auth_k",
+"psn"}`. The booleans are true when absent. `enabled: false` denies the radio's registration at every site and removes
+a registration it has. `tg` (at most 8) are talkgroups the radio always gets. `auth_k` (32 hex digits) is the radio's
+Tier III authentication key and `psn` (6 hex digits) its PSN, both optional (tier3.md 3.10). The key is secret: a node
+never logs or publishes it, and a bad one is refused without quoting it; every reader of `cfg/ms/+` can see it, so
+the ACL and TLS matter (§11).
 
 ### 17.2 Precedence
 
@@ -775,6 +778,7 @@ with `{"id": "c-123", "ok": true}` or `{"id": "c-123", "ok": false, "error": "..
 | `withdraw`, `restore` | | takes the control channel off the air, and back |
 | `resend_records` | | publishes every registration record again |
 | `status` | | publishes `status` now |
+| `auth` | `ms` | a trunked site: an authentication poll of the radio (tier3.md 3.10); a failure removes its registration |
 
 An unknown command or a missing argument is answered `ok: false`.
 

@@ -456,6 +456,15 @@ impl<'a> Cx<'a> {
                 pol.ms = IdSet::default(); // listed: the list, none until given
             }
         }
+        let au = self.get(obj, c"auth");
+        if au >= 0 {
+            cfg.auth = match self.str_of(au) {
+                Some(b"off") => crate::t3site::AUTH_OFF,
+                Some(b"registration") => crate::t3site::AUTH_REGISTRATION,
+                Some(b"required") => crate::t3site::AUTH_REQUIRED,
+                _ => return self.fail(&[S(path), S(b".auth: off, registration or required")]),
+            };
+        }
         let ru = self.get(obj, c"refuse_unlisted");
         if ru >= 0 {
             pol.refuse_unlisted = match self.str_of(ru) {

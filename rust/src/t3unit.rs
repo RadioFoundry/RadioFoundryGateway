@@ -73,6 +73,7 @@ const MN_CMD_WITHDRAW: c_int = 3;
 const MN_CMD_RESTORE: c_int = 4;
 const MN_CMD_RESEND_RECORDS: c_int = 5;
 const MN_CMD_STATUS: c_int = 6;
+const MN_CMD_AUTH: c_int = 7;
 
 // ── the C structs: rdof/t3unit.h's ─────────────────────────────────────────────
 
@@ -310,6 +311,10 @@ pub struct MnMsCfg {
     pub priority: c_int,
     pub tg: [u32; MN_REC_TG],
     pub ntg: c_int,
+    pub has_key: bool,
+    pub has_psn: bool,
+    pub key: [u8; 16],
+    pub psn: u32,
 }
 
 /// rdof_mn_cfg_t
@@ -852,7 +857,8 @@ unsafe fn setup_out(u: *mut Unit, e: &Event) {
 }
 
 unsafe fn activity_out(u: *mut Unit, e: &Event) {
-    const REG: [&CStr; 6] = [c"?", c"register", c"deregister", c"expire", c"deny", c"refuse"];
+    const REG: [&CStr; 9] =
+        [c"?", c"register", c"deregister", c"expire", c"deny", c"refuse", c"auth_ok", c"auth_fail", c"auth_none"];
     const QUEUE: [&CStr; 4] = [c"?", c"in", c"out", c"drop"];
     let mut j = [0u8; 512];
     let mut why = [0u8; 8];
@@ -864,7 +870,7 @@ unsafe fn activity_out(u: *mut Unit, e: &Event) {
     let n = match e.kind {
         t3::ACT_REG => {
             let mut r = Record::default();
-            let action = REG[if e.op <= 5 { usize::from(e.op) } else { 0 }];
+            let action = REG[if usize::from(e.op) < REG.len() { usize::from(e.op) } else { 0 }];
             let (tg, ntg) = if t3::rdof_t3_record((*u).site, e.src, &mut r) {
                 (r.tg.as_ptr(), c_int::from(r.ntg))
             } else {
@@ -1225,6 +1231,10 @@ unsafe fn ms_policies(u: *mut Unit) {
             emergency_ok: u8::from((*m).emergency),
             priority: (*m).priority as u8,
             ntg: ntg as u8,
+            has_key: u8::from((*m).has_key),
+            has_psn: u8::from((*m).has_psn),
+            psn: (*m).psn & 0xFF_FFFF,
+            key: (*m).key,
             ..Default::default()
         };
         p.tg[..ntg].copy_from_slice(&(&(*m).tg)[..ntg]);
@@ -1466,6 +1476,7 @@ unsafe fn command(u: *mut Unit, json: *const c_char, len: usize) {
             MN_CMD_RESTORE => t3::rdof_t3_command(site, c"restore".as_ptr(), 0, 0),
             MN_CMD_RESEND_RECORDS => t3::rdof_t3_command(site, c"resend_records".as_ptr(), 0, 0),
             MN_CMD_STATUS => true,
+            MN_CMD_AUTH => t3::rdof_t3_command(site, c"auth".as_ptr(), c.ms, 0),
             _ => false,
         };
         if !ok {
@@ -1540,6 +1551,7 @@ pub unsafe extern "C" fn rdof_t3unit_init(
         return false;
     }
     t3::rdof_t3_policy((*u).site, pol);
+    t3::rdof_t3_entropy((*u).site, u64::from(rnd(u)) << 32 | u64::from(rnd(u)));
     let rio = T3rfIo {
         tscc: Some(io_tscc),
         cach: Some(io_cach),

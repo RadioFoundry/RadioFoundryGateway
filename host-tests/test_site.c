@@ -771,6 +771,14 @@ static void test_trunk(const char *dir)
     CHECK(!c.preempt && apply_text("{\"services\": {\"emergency_preempt\": true}}", "x", &c, &pol, err, sizeof err) &&
               c.preempt == 1,
           "services.emergency_preempt: %s", err);
+    CHECK(!c.auth && apply_text("{\"auth\": \"required\"}", "x", &c, &pol, err, sizeof err) &&
+              c.auth == RDOF_T3_AUTH_REQUIRED &&
+              apply_text("{\"auth\": \"registration\"}", "x", &c, &pol, err, sizeof err) &&
+              c.auth == RDOF_T3_AUTH_REGISTRATION,
+          "auth: %s", err);
+    CHECK(!apply_text("{\"auth\": true}", "x", &c, &pol, err, sizeof err) &&
+              !strcmp(err, "x.auth: off, registration or required"),
+          "%s", err);
     CHECK(!apply_text("{\"services\": {\"preempt\": true}}", "x", &c, &pol, err, sizeof err) &&
               !strcmp(err, "x.services.preempt: not a key here"),
           "%s", err);
