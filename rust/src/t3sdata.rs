@@ -500,7 +500,12 @@ impl Site {
         };
         if d.what == SD_UDT || d.what == SD_DGNA {
             let mut buf = [0u8; MAX_DATA];
-            let n = d.blocks.data(&mut buf);
+            let mut n = d.blocks.data(&mut buf);
+            if d.what == SD_UDT && pads_nibbles(d.value) {
+                // the message, not its blocks: the pad octets stay here (the far site pads it again; an odd pad
+                // nibble stays in the last octet and goes as pad_nibble)
+                n -= (usize::from(d.head.pad_nibble) / 2).min(n);
+            }
             m.len = n as u8;
             m.data[..n].copy_from_slice(&buf[..n]);
         }
@@ -953,7 +958,7 @@ impl Site {
             // a character format padded as annex B says; the others as the application gave them
             let Some((b, pn)) = Blocks::of_format(m.data(), m.value) else { return false };
             d.blocks = b;
-            let pad_nibble = if pads_nibbles(m.value) { pn } else { m.pad_nibble };
+            let pad_nibble = if pads_nibbles(m.value) { pn + (m.pad_nibble & 1) } else { m.pad_nibble };
             d.head = UdtHead { blocks: b.n, pad_nibble, format: m.value, ..Default::default() };
         } else if m.what == SD_STATUS && m.value >= STATUS_POLL {
             return false;

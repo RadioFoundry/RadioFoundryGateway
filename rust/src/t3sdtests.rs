@@ -553,6 +553,42 @@ fn network_short_data() {
     assert_eq!(log.sd(EV_NET_SD, SD_RESULT).len(), n, "no result for a talkgroup's or one not here");
 }
 
+/// A padded format goes to the network as the message, not its blocks: a 24-character ISO 8-bit text fills three
+/// blocks with ten pad octets (20 pad nibbles, B.3.14), which stay at the sending site; the far site pads it again.
+/// A BCD number with an odd pad nibble keeps it (the half octet goes in the data, the nibble in pad_nibble).
+#[test]
+fn network_short_data_without_its_pad() {
+    const TEXT24: &[u8] = b"rfoundry short data test";
+    let mut s = site_with(|_| {});
+    s.set_link(true);
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG]), ms(1002, &[TG])], T0);
+    register_all(&mut air, &mut log);
+    let now = air.now();
+    air.ms[0].send_sdm(7777, 0, FMT_ISO8, TEXT24, now);
+    assert!(air.until(5000, &mut log.f(), |a| a.ms[0].status().last_reason == R_WAIT));
+    let out = log.sd(EV_NET_SD, SD_SEND);
+    assert_eq!((out.len(), out[0].data(), out[0].pad_nibble), (1, TEXT24, 20));
+    // in again, at an MS here: three blocks, the 20 pad nibbles back, the text whole
+    let now = air.now();
+    air.site.net_sd_in(&SdMsg { dst: 1002, stream: 400, ..out[0] }, now);
+    assert!(air.until(5000, &mut log.f(), |a| a.ms[1].inbox().is_some()));
+    let (h, d, _) = air.ms[1].inbox().unwrap();
+    assert_eq!((h.blocks, h.pad_nibble), (3, 20));
+    assert_eq!(&d[..user_len(3) - 10], TEXT24);
+    assert!(d[user_len(3) - 10..user_len(3)].iter().all(|&b| b == 0xFF));
+    // BCD from the far site: 11 digits are 6 octets, the last one half pad; one block, 2 * (10 - 6) + 1 pad nibbles
+    let mut m = SdMsg { op: SD_SEND, what: SD_UDT, value: FMT_BCD, src: 7778, dst: 1001, stream: 401, len: 6,
+                        pad_nibble: 9, ..Default::default() };
+    m.data[..6].copy_from_slice(&[0x12, 0x34, 0x56, 0x78, 0x90, 0x1F]);
+    let now = air.now();
+    air.site.net_sd_in(&m, now);
+    assert!(air.until(5000, &mut log.f(), |a| a.ms[0].inbox().is_some_and(|(h, _, _)| h.format == FMT_BCD)));
+    let (h, d, _) = air.ms[0].inbox().unwrap();
+    assert_eq!((h.blocks, h.pad_nibble), (1, 9));
+    assert_eq!(&d[..6], m.data());
+}
+
 #[test]
 fn network_wide_talkgroup_goes_out() {
     let mut s = site_with(|_| {});

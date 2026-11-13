@@ -1179,6 +1179,10 @@ New item type 0x0D, `sdata`, 12 bytes plus the data, the only item of its messag
 | 8-11 | ref u32 (little endian): a result's message's stream ID |
 | 12- | the data, 0-46 octets (UDT short data and DGNA only) |
 
+For a padded UDT format (BCD, ISO 7- and 8-bit, UTF-16, mixed: annex B) the data is the message without its pad
+octets; the receiving site pads it again for its blocks. An odd pad nibble (BCD) stays in the last octet and in
+octet 5. The other formats go as their blocks hold them.
+
 A message to an MS goes on `pc/{dst}/{node}` (the router places it by the newest record, as a setup request); to a
 talkgroup on `tg/{tg}/{node}`, only for a `wide_tg` talkgroup or ALLMSID. The header has the caller as src, the
 called as dst, a fresh stream ID, the group and emergency flags. The site that has the called MS delivers it
