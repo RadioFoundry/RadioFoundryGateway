@@ -837,6 +837,7 @@ impl Ms {
                 if h.dst == self.id && self.pd_wait_ack && (h.class, h.rtype) == (0, 1) {
                     self.pd_wait_ack = false;
                     self.pay_src = h.src;
+                    self.pay_dst = h.dst;
                     self.item_done();
                 }
                 return;

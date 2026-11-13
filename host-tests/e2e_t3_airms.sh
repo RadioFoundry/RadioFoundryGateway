@@ -37,7 +37,7 @@ check "air MS 1000001: idle, registered on ch 0; calls 2 done, 0 failed (reason 
 check "air MS 1000001: idle, registered on ch 0; calls 3 done, 0 failed (reason 0x47)" "1000001's poll answered"
 check "air MS 1000002: idle, registered on ch 0; calls 2 done, 0 failed (reason 0x44)" "1000002's short data delivered"
 check 'air MS 1000002: short data from 1000002\|air MS 1000001: short data from 1000002, format 4, 5 octets: "hello"' "1000001 shows the short data"
-check 'air MS 1000002: packet data from 1000001, UDP 12.15.66.65:5016 to 12.15.66.66:5016, 15 octets: "hello by packet"' "1000002 takes the packet data"
-check 'air MS 1000001: packet data from 1000002, UDP 12.15.66.66:5016 to 12.15.66.65:5016, 13 octets: "confirmed one"' "1000001 takes the confirmed packet data"
-check 'air MS 1000002: packet data from 1000001, UDP 12.15.66.65:5016 to 225.0.0.1:5016, 12 octets: "to the group"' "1000002 takes the talkgroup's packet data"
+check 'air MS 1000002: packet data from 1000001, UDP 12.15.66.65:5016 to 12.15.66.66:5016, 30 octets, UTF-16BE text: "hello by packet"' "1000002 takes the packet data"
+check 'air MS 1000001: packet data from 1000002, UDP 12.15.66.66:5016 to 12.15.66.65:5016, 26 octets, UTF-16BE text: "confirmed one"' "1000001 takes the confirmed packet data"
+check 'air MS 1000002: packet data from 1000001, UDP 12.15.66.65:5016 to 225.0.0.1:5016, 24 octets, UTF-16BE text: "to the group"' "1000002 takes the talkgroup's packet data"
 [ $fail = 0 ] && echo "air MSs: all passed" || { grep "air MS\|tier3" "$D/log" | head -40; exit 1; }

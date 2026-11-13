@@ -358,7 +358,8 @@ typedef struct {
 
 #define ACT_SDM 0xF0       /* rdof_t3ms_sdm (ISO 8-bit text), not an rdof_t3ms_do */
 #define ACT_SETSTATUS 0xF1 /* rdof_t3ms_set_status */
-#define ACT_DATA 0xF2      /* rdof_t3ms_data: the text in a UDP/IPv4 datagram (port 5016 to 5016) */
+#define ACT_DATA 0xF2      /* rdof_t3ms_data: the text, UTF-16BE, in a UDP/IPv4 datagram (port 5016 to 5016) */
+#define AIR_TEXT16 56     /* data's characters at most: 28 + 2 x 56 octets fill 12 rate 1/2 blocks */
 #define ACT_HELP                                                                                                       \
     "ID register [TG] | deregister | group TG [TALK_MS] | private ID [TALK_MS] | status ID N | gstatus TG N | "        \
     "sdm ID TEXT | gsdm TG TEXT | data ID TEXT | cdata ID TEXT | gdata TG TEXT | setstatus N | cancel"
@@ -372,8 +373,9 @@ static int act_cmp(const void *a, const void *b)
 }
 
 /* ACT_HELP (a # starts a comment; status N 0-127, 126 the emergency alarm; sdm up to 46 characters; data, cdata
- * (confirmed) and gdata up to 64, a packet data call carrying them as UDP/IPv4 from 12.x.y.z to 12.x.y.z or, to a
- * talkgroup, 225.x.y.z, port 5016): 1 an action in *x (at_ms 0), 0 a blank line, -1 a bad one. */
+ * (confirmed) and gdata up to 56, a packet data call carrying them as a text message, UTF-16BE on UDP/IPv4 port
+ * 5016 (361-3 5.7.1), from 12.x.y.z to 12.x.y.z or, to a talkgroup, 225.x.y.z): 1 an action in *x (at_ms 0), 0 a
+ * blank line, -1 a bad one. */
 static int act_parse(const char *text, act_t *x)
 {
     char line[256];
@@ -410,7 +412,7 @@ static int act_parse(const char *text, act_t *x)
         t += strspn(t, "0123456789");
         t += strspn(t, " \t");
         size_t n = strcspn(t, "\r\n");
-        if (!n || n > (sdm ? 46 : sizeof x->text))
+        if (!n || n > (sdm ? 46 : AIR_TEXT16))
             return -1;
         memcpy(x->text, t, n);
         x->what = sdm ? ACT_SDM : ACT_DATA, x->arg = (uint32_t)a1, x->len = (uint8_t)n,
@@ -425,6 +427,29 @@ static int act_parse(const char *text, act_t *x)
 }
 
 #define AIR_RADIO_NET 0x0C000000u /* 12.0.0.0/8: a radio's address, its id in the low 24 bits */
+
+/* UTF-8 text (n octets) as UTF-16BE, the BMP only (anything else U+FFFD): the octets written */
+static size_t utf16be(const char *s, size_t n, uint8_t *out, size_t cap)
+{
+    size_t o = 0;
+    for (size_t i = 0; i < n && o + 2 <= cap;) {
+        const uint8_t c = (uint8_t)s[i];
+        uint32_t u = 0xFFFD;
+        int len = 1;
+        if (c < 0x80)
+            u = c;
+        else if ((c & 0xE0) == 0xC0 && i + 1 < n)
+            u = (c & 0x1Fu) << 6 | (s[i + 1] & 0x3Fu), len = 2;
+        else if ((c & 0xF0) == 0xE0 && i + 2 < n)
+            u = (c & 0x0Fu) << 12 | (s[i + 1] & 0x3Fu) << 6 | (s[i + 2] & 0x3Fu), len = 3;
+        else if ((c & 0xF8) == 0xF0)
+            len = 4;
+        i += (size_t)len;
+        out[o++] = (uint8_t)(u >> 8);
+        out[o++] = (uint8_t)u;
+    }
+    return o;
+}
 
 /* An action on MS ms: false when its queue is full. */
 static bool act_run(rdof_t3ms_t *ms, const act_t *a, int64_t now)
@@ -443,9 +468,10 @@ static bool act_run(rdof_t3ms_t *ms, const act_t *a, int64_t now)
         const uint32_t dip = a->flags & RDOF_T3MS_F_GROUP ? RDOF_IPGW_GROUP_NET | (a->arg & 0xFFFFFF)
                                                           : rdof_ipgw_radio_ip(&net, a->arg);
         static uint16_t ip_id;
-        uint8_t d[28 + sizeof a->text];
-        const size_t n = rdof_ipgw_udp_datagram(rdof_ipgw_radio_ip(&net, a->id), 5016, dip, 5016, ++ip_id,
-                                                (const uint8_t *)a->text, a->len, d, sizeof d);
+        uint8_t u16[2 * sizeof a->text], d[28 + sizeof u16];
+        const size_t m = utf16be(a->text, a->len, u16, sizeof u16);
+        const size_t n = rdof_ipgw_udp_datagram(rdof_ipgw_radio_ip(&net, a->id), 5016, dip, 5016, ++ip_id, u16, m, d,
+                                                sizeof d);
         return n && rdof_t3ms_data(ms, a->arg, a->flags, d, n, now);
     }
     return rdof_t3ms_do(ms, a->what, a->arg, a->talk_ms, a->flags, now);
@@ -787,6 +813,22 @@ static void air_inbox(int i)
     AM.pd_sum[i] = sum;
     const size_t m = (size_t)pn < sizeof d ? (size_t)pn : sizeof d;
     if (m >= 28 && d[0] == 0x45 && d[9] == 17) { /* IPv4 with no options, UDP */
+        const size_t u = m - 28;
+        bool text16 = (d[22] << 8 | d[23]) == 5016 && u % 2 == 0; /* a text message, UTF-16BE (361-3 5.7.1) */
+        for (size_t k = 0; text16 && k < u; k += 2)
+            text16 = d[28 + k] == 0 && d[29 + k] >= 32 && d[29 + k] < 127; /* shown as text when it's ASCII */
+        if (text16) {
+            uint8_t a[80];
+            size_t na = 0;
+            for (size_t k = 0; k < u && na < sizeof a; k += 2)
+                a[na++] = d[29 + k];
+            air_text(a, na, t, sizeof t);
+            tsay("air MS %u: packet data from %u, UDP %u.%u.%u.%u:%u to %u.%u.%u.%u:%u, %zu octets, UTF-16BE text: "
+                 "\"%s\"",
+                 (unsigned)AM.id[i], (unsigned)src, d[12], d[13], d[14], d[15], d[20] << 8 | d[21], d[16], d[17],
+                 d[18], d[19], d[22] << 8 | d[23], u, t);
+            return;
+        }
         air_text(d + 28, m - 28, t, sizeof t);
         tsay("air MS %u: packet data from %u, UDP %u.%u.%u.%u:%u to %u.%u.%u.%u:%u, %zu octets: \"%s\"",
              (unsigned)AM.id[i], (unsigned)src, d[12], d[13], d[14], d[15], d[20] << 8 | d[21], d[16], d[17], d[18],
