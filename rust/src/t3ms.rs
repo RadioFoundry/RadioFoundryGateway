@@ -33,6 +33,8 @@ pub const F_GROUP: u8 = 0x02; // DO_SDM, DO_STATUS, DO_DATA: arg is a talkgroup
 pub const DO_DATA: u8 = 9; // a packet data call (send_data): arg the MS, talkgroup or gateway
 pub const F_CONFIRMED: u8 = 0x04; // DO_DATA: confirmed data
 pub const F_MULTI: u8 = 0x08; // DO_DATA: multi-item (P_MAINT after the item)
+pub const F_LIST: u8 = 0x10; // DO_REGISTER: with the talkgroup list set by register_list
+pub const DO_DGNA: u8 = 10; // assign talkgroups to an MS (send_dgna): arg the MS
 
 pub const IDLE: u8 = 0;
 pub const ACCESS: u8 = 1;
@@ -173,6 +175,11 @@ pub struct Ms {
     pd_inbox_n: u32,
     pd_resp: Option<[u8; 10]>,
     pd_leave: bool, // single item: back to the TSCC after the response goes
+    // talkgroup lists
+    reg_list: Blocks, // the subscription list a DO_REGISTER with F_LIST uploads
+    reg_info: u8,     // the Response_Info of the last registration's C_ACK
+    dgna: [u32; 16],  // the talkgroups DGNA gave it (fifteen by address, the sixteenth by alias)
+    dgna_n: u32,
 }
 
 impl Ms {
@@ -268,6 +275,37 @@ impl Ms {
         Some((self.pd_inbox.head, d, n, self.pd_inbox_n))
     }
 
+    /// Queues a registration with a talkgroup subscription/attachment list (6.4.4.1.13.2: 2 to 7 talkgroups,
+    /// ADRNULL removes); false when it doesn't fit.
+    pub fn register_list(&mut self, tgs: &[u32], at_ms: i64) -> bool {
+        if tgs.len() > 7 {
+            return false;
+        }
+        let Some(b) = AddrList::blocks(false, tgs) else { return false };
+        self.reg_list = b;
+        self.act(DO_REGISTER, 0, 0, F_LIST, at_ms)
+    }
+
+    /// The Response_Info of the last registration's acknowledgement (a list's: one bit per talkgroup).
+    pub fn reg_info(&self) -> u8 {
+        self.reg_info
+    }
+
+    /// Queues a DGNA transfer to dst (6.6.8): the Address Format (format FMT_ADDRESS, up to 15 talkgroups, ok the
+    /// One-key flag) or the Mixed Format (FMT_MIXED: data the appended data as is); false when it doesn't fit.
+    pub fn send_dgna(&mut self, dst: u32, format: u8, tgs: &[u32], ok: bool, data: &[u8], at_ms: i64) -> bool {
+        let b = if format == FMT_ADDRESS { AddrList::blocks(ok, tgs) } else { Blocks::of(data, 0) };
+        let Some(b) = b else { return false };
+        self.sd_out = b;
+        self.sd_fmt = format;
+        self.act(DO_DGNA, dst, 0, 0, at_ms)
+    }
+
+    /// The talkgroups DGNA gave it, and how many transfers it took.
+    pub fn dgna_tgs(&self) -> ([u32; 16], u32) {
+        (self.dgna, self.dgna_n)
+    }
+
     /// The status it answers a poll with.
     pub fn set_status(&mut self, status: u8) {
         self.status_reply = status;
@@ -300,7 +338,7 @@ impl Ms {
     }
 
     fn my_tg(&self, tg: u32) -> bool {
-        self.tg[..self.ntg].contains(&tg)
+        self.tg[..self.ntg].contains(&tg) || (tg != 0 && self.dgna.contains(&tg))
     }
 
     fn chan_index(&self, chan: u16, lcn: u8) -> Option<usize> {
@@ -310,6 +348,15 @@ impl Ms {
     fn request_pdu(&self, a: &Action) -> [u8; 10] {
         let emergency = if a.flags & F_EMERGENCY != 0 { SO_EMERGENCY } else { 0 };
         let r = match a.what {
+            // 6.4.4.1.13.2: a list, Trgt_Adr_Cnts 10b to TATTSI with the blocks it needs
+            DO_REGISTER if a.flags & F_LIST != 0 => Rand {
+                service_options: SO_REG,
+                dep: 2 << 2 | (self.reg_list.n.max(1) - 1),
+                service_kind: SK_REG,
+                target: TATTSI,
+                source: self.id,
+                ..Default::default()
+            },
             DO_REGISTER => Rand {
                 service_options: SO_REG,
                 dep: if a.arg != 0 { 1 << 2 } else { 0 },
@@ -360,6 +407,14 @@ impl Ms {
                     ..Default::default()
                 }
             }
+            // 6.6.8.3 table 6.70: to DGNAI, SUPED_VAL the blocks less one
+            DO_DGNA => Rand {
+                dep: (self.sd_out.n.max(1) - 1) << 2,
+                service_kind: SK_SUPPL,
+                target: DGNAI,
+                source: self.id,
+                ..Default::default()
+            },
             // 6.6.3.2.1 table 6.50
             DO_DATA => Rand {
                 service_options: emergency | if a.flags & F_MULTI != 0 { SO_SIMI } else { 0 },
@@ -379,6 +434,8 @@ impl Ms {
         }
         self.cur = a;
         self.has_cur = true;
+        self.up_len = 0;
+        self.up_pos = 0;
         self.pdu = self.request_pdu(&a);
         self.tries = 0;
         self.wait = 1;
@@ -387,7 +444,7 @@ impl Ms {
     }
 
     fn done(&mut self, ok: bool) {
-        if self.has_cur && matches!(self.cur.what, DO_GROUP | DO_PRIVATE | DO_SDM | DO_STATUS | DO_DATA) {
+        if self.has_cur && matches!(self.cur.what, DO_GROUP | DO_PRIVATE | DO_SDM | DO_STATUS | DO_DATA | DO_DGNA) {
             if ok {
                 self.calls_done += 1;
             } else {
@@ -594,7 +651,8 @@ impl Ms {
             p.copy_from_slice(&blk[..10]);
             self.in_on = false;
             if let Some(h) = UdtHead::decode(&p) {
-                if h.op == OP_UDTHD && (h.target == self.id || (h.group && self.my_tg(h.target))) {
+                let dgna = h.op == OP_DGNAHD && h.target == self.id && !h.group;
+                if dgna || (h.op == OP_UDTHD && (h.target == self.id || (h.group && self.my_tg(h.target)))) {
                     self.in_on = true;
                     self.in_head = h;
                     self.in_got = 0;
@@ -629,6 +687,20 @@ impl Ms {
                 return;
             }
         }
+        if h.op == OP_DGNAHD {
+            // 6.6.8.1: the fifteen replaced, or (alias) the sixteenth set unless it's one of them
+            let mut d = [0u8; MAX_DATA];
+            let n = self.in_blocks.data(&mut d);
+            let l = AddrList::of(&d[..n]);
+            if h.format == FMT_ADDRESS {
+                self.dgna = [0; 16];
+                self.dgna[..l.n.min(15)].copy_from_slice(&l.addrs()[..l.n.min(15)]);
+            } else if l.a[0] == ADRNULL || !self.dgna[..15].contains(&l.a[0]) {
+                self.dgna[15] = l.a[0];
+            }
+            self.dgna_n += 1;
+            return;
+        }
         if self.inbox_n > 0 && self.inbox_head == h && self.inbox == self.in_blocks {
             return; // a repeat of the same message
         }
@@ -645,6 +717,12 @@ impl Ms {
         if matches!(self.cur.what, DO_SDM | DO_STATUS) && a.source != self.cur.arg {
             return; // not about this request (a repeat of an earlier one's final acknowledgement)
         }
+        if self.cur.what == DO_DGNA && a.source != self.cur.arg && a.source != DGNAI {
+            return;
+        }
+        if matches!(self.cur.what, DO_SDM | DO_DGNA) && reason_type(a.reason) == 1 && self.up_len == 0 {
+            return; // a final answer before its upload: a repeat of the last one's
+        }
         if a.reason == R_POLL_MS && self.cur.what == DO_STATUS {
             self.poll_result = a.response_info;
         }
@@ -659,6 +737,7 @@ impl Ms {
                     self.wait_until = self.now + WAIT_MS;
                 }
                 R_REG_ACCEPTED | R_REG_SUBSCRIPTION => {
+                    self.reg_info = a.response_info;
                     self.registered = self.cur.what == DO_REGISTER;
                     self.done(true);
                 }
@@ -689,35 +768,61 @@ impl Ms {
             }
             return;
         }
-        if a.source == SDMI && matches!(a.service_kind, SK_IND_UDT | SK_TG_UDT) {
-            // 6.6.4.4 c): send the UDT (6.5.1.3 table 6.35)
-            if !(self.has_cur && self.cur.what == DO_SDM && matches!(self.state, ACCESS | WAITING)) {
+        // an upload asked for: short data (6.6.4.4 c, table 6.35), DGNA (6.6.8.3.3, table 6.71) or a
+        // registration's talkgroup list (6.4.4.1.13.2: to TATTSI, A = 0, SF = 1, the Address Format)
+        let upload = match (a.source, a.service_kind) {
+            (SDMI, SK_IND_UDT | SK_TG_UDT) => Some(DO_SDM),
+            (DGNAI, SK_SUPPL) => Some(DO_DGNA),
+            (TATTSI, SK_REG) if a.service_kind_flag => Some(DO_REGISTER),
+            _ => None,
+        };
+        if let Some(what) = upload {
+            let mine = self.has_cur && self.cur.what == what && matches!(self.state, ACCESS | WAITING);
+            if !mine || (what == DO_REGISTER && self.cur.flags & F_LIST == 0) {
                 let r = Ack {
                     op: OP_ACKU,
                     reason: R_MS_NOT_SUPPORTED,
-                    target: SDMI,
+                    target: a.source,
                     source: self.id,
                     ..Default::default()
                 };
                 self.reply = Some(r.encode());
                 return;
             }
-            let h = UdtHead {
-                op: OP_UDTHU,
-                group: self.cur.flags & F_GROUP != 0,
-                format: self.sd_fmt,
-                target: self.cur.arg,
-                source: self.id,
-                blocks: self.sd_out.n,
-                ..Default::default()
+            let (h, b) = match what {
+                DO_REGISTER => {
+                    let h = UdtHead {
+                        op: OP_UDTHU,
+                        format: FMT_ADDRESS,
+                        target: TATTSI,
+                        source: self.id,
+                        blocks: self.reg_list.n,
+                        sf: true,
+                        ..Default::default()
+                    };
+                    (h, self.reg_list)
+                }
+                _ => {
+                    let h = UdtHead {
+                        op: if what == DO_DGNA { OP_DGNAHU } else { OP_UDTHU },
+                        group: self.cur.flags & F_GROUP != 0,
+                        response: what == DO_DGNA,
+                        format: self.sd_fmt,
+                        target: self.cur.arg,
+                        source: self.id,
+                        blocks: self.sd_out.n,
+                        ..Default::default()
+                    };
+                    (h, self.sd_out)
+                }
             };
             let mut hb = [0u8; 12];
             hb[..10].copy_from_slice(&h.encode());
             self.up[0] = (DT_DATA_HDR, hb);
-            for j in 0..self.sd_out.n as usize {
-                self.up[1 + j] = (DT_RATE12, self.sd_out.b[j]);
+            for j in 0..b.n as usize {
+                self.up[1 + j] = (DT_RATE12, b.b[j]);
             }
-            self.up_len = 1 + self.sd_out.n as usize;
+            self.up_len = 1 + b.n as usize;
             self.up_pos = 0;
             self.state = WAITING;
             self.wait_until = self.now + WAIT_MS;

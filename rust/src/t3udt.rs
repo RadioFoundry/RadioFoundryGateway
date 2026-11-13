@@ -15,6 +15,9 @@ pub const DT_RATE12: u8 = 7;
 // Opcodes (annex B, table B.1)
 pub const OP_UDTHD: u8 = 26;
 pub const OP_UDTHU: u8 = 27;
+// the same header for Dynamic Group Numbering Assignment (6.6.8, tables 6.69 and 6.71)
+pub const OP_DGNAHD: u8 = 36;
+pub const OP_DGNAHU: u8 = 37;
 
 // Gateways and identifiers (annex A.4, table A.8) that the data services use
 pub const LINEI: u32 = 0xFFFEC2;
@@ -120,10 +123,10 @@ impl UdtHead {
         b[9] = (self.sf as u8) << 7 | (self.op & 0x3F);
         b
     }
-    /// A UDT header (DPF and SAP 0000, opcode UDTHD or UDTHU); None otherwise.
+    /// A UDT header (DPF and SAP 0000, opcode UDTHD, UDTHU, DGNAHD or DGNAHU); None otherwise.
     pub fn decode(b: &[u8; 10]) -> Option<UdtHead> {
         let op = b[9] & 0x3F;
-        if b[0] & 0x0F != 0 || b[1] >> 4 != 0 || (op != OP_UDTHD && op != OP_UDTHU) {
+        if b[0] & 0x0F != 0 || b[1] >> 4 != 0 || !matches!(op, OP_UDTHD | OP_UDTHU | OP_DGNAHD | OP_DGNAHU) {
             return None;
         }
         let a24 = |o: usize| u32::from_be_bytes([0, b[o], b[o + 1], b[o + 2]]);
@@ -228,9 +231,79 @@ pub fn rand_suped(r: &Rand) -> bool {
     r.service_options & 0x20 != 0
 }
 
+/// The most addresses an Address Format UDT carries (B.3.2: 3, 7, 11 or 15 in one to four blocks).
+pub const MAX_ADDRS: usize = 15;
+
+/// Appended data in the Address Format (B.3.2, UDT_Format 0001b) or the Mixed Format (B.3.9, 1010b): octet 0
+/// reserved and the One-key flag (OK, its LSB), then 24-bit addresses from octet 1 (the user octets run on across
+/// the blocks; the Mixed Format has one address, then characters).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct AddrList {
+    pub ok: bool,
+    pub n: usize,
+    pub a: [u32; MAX_ADDRS],
+}
+
+impl AddrList {
+    /// The addresses of user data (Blocks::data's octets; len 12 n - 2): 3 per block less one, the first block 3.
+    pub fn of(data: &[u8]) -> AddrList {
+        let mut l = AddrList { ok: data.first().is_some_and(|b| b & 1 != 0), ..Default::default() };
+        let mut o = 1;
+        while o + 3 <= data.len() && l.n < MAX_ADDRS {
+            l.a[l.n] = u32::from_be_bytes([0, data[o], data[o + 1], data[o + 2]]);
+            l.n += 1;
+            o += 3;
+        }
+        l
+    }
+    /// The addresses; the unused ones ADRNULL.
+    pub fn addrs(&self) -> &[u32] {
+        &self.a[..self.n.min(MAX_ADDRS)]
+    }
+    /// The blocks for addrs (at most 15; the rest of the last block ADRNULL).
+    pub fn blocks(ok: bool, addrs: &[u32]) -> Option<Blocks> {
+        if addrs.is_empty() || addrs.len() > MAX_ADDRS {
+            return None;
+        }
+        let n = (addrs.len() + 1).div_ceil(4); // n blocks hold 4 n - 1
+        let mut d = [0u8; MAX_DATA];
+        d[0] = ok as u8;
+        for i in 0..4 * n - 1 {
+            let a = addrs.get(i).copied().unwrap_or(crate::t3pdu::ADRNULL);
+            d[1 + 3 * i..4 + 3 * i].copy_from_slice(&a.to_be_bytes()[1..]);
+        }
+        Blocks::of(&d[..user_len(n)], n)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn address_format() {
+        // B.3.2 figures B.6 to B.9: OK, then the addresses run on from octet 1, 3 / 7 / 11 / 15 in 1 to 4 blocks
+        for (k, n) in [(1usize, 1u8), (3, 1), (4, 2), (7, 2), (8, 3), (11, 3), (12, 4), (15, 4)] {
+            let a: [u32; 15] = core::array::from_fn(|i| 0x10_0000 + i as u32);
+            let b = AddrList::blocks(k == 1, &a[..k]).unwrap();
+            assert_eq!(b.n, n, "{k}");
+            assert!(b.crc_ok());
+            let mut d = [0u8; MAX_DATA];
+            let len = b.data(&mut d);
+            let l = AddrList::of(&d[..len]);
+            assert_eq!(l.n, 4 * n as usize - 1);
+            assert_eq!(l.ok, k == 1);
+            assert_eq!(&l.addrs()[..k], &a[..k]);
+            assert!(l.addrs()[k..].iter().all(|&x| x == 0), "ADRNULL fill");
+        }
+        // ADDRESS4 straddles blocks 1 and 2: octets 10-11 of the first, octet 0 of the second
+        let b = AddrList::blocks(false, &[1, 2, 3, 0xABCDEF]).unwrap();
+        assert_eq!((b.b[0][10], b.b[0][11], b.b[1][0]), (0xAB, 0xCD, 0xEF));
+        assert!(AddrList::blocks(false, &[0; 16]).is_none());
+        // the DGNA opcodes are UDT headers too
+        let h = UdtHead { op: OP_DGNAHU, response: true, format: FMT_ADDRESS, blocks: 2, ..Default::default() };
+        assert_eq!(UdtHead::decode(&h.encode()), Some(h));
+    }
 
     #[test]
     fn header_round_trip() {

@@ -69,8 +69,8 @@ typedef struct {
     uint32_t adjacent_ms, chan_freq_ms, local_time_ms, gen_site_ms; /* 0: not broadcast */
     uint32_t stream_seed; /* first stream ID for setups the site starts */
     /* short data (tier3.md 3.9): downloads to an MS (each waits ahoy_every_ms for C_ACKU), sends to a talkgroup,
-     * and how long a message waits for a busy MS */
-    uint8_t sd_tries, sd_repeats, pad1[2];
+     * and how long a message waits for a busy MS; dgna_ms: MSs may assign talkgroups to others (DGNA, 6.6.8) */
+    uint8_t sd_tries, sd_repeats, dgna_ms, pad1;
     uint32_t sd_store_ms;
     /* packet data (tier3.md 3.10): how long a data channel waits for more after a message (confirmed or
      * multi-item), and the site's own data ID (0: TSI only) */
@@ -293,7 +293,8 @@ bool rdof_t3_tg_policy(rdof_t3_site_t *s, uint32_t tg, const rdof_t3_tg_policy_t
 bool rdof_t3_ms_policy(rdof_t3_site_t *s, uint32_t ms, const rdof_t3_ms_policy_t *p);
 bool rdof_t3_load_record(rdof_t3_site_t *s, const rdof_t3_record_t *r);
 bool rdof_t3_record(const rdof_t3_site_t *s, uint32_t ms, rdof_t3_record_t *r);
-/* the talkgroups the registered MSs need (subscriptions, recent calls, provisioning); static_tg isn't included */
+/* the talkgroups the registered MSs need (subscriptions and lists, DGNA, recent calls, provisioning); static_tg
+ * isn't included */
 size_t rdof_t3_subs(const rdof_t3_site_t *s, uint32_t *tg, size_t cap);
 void rdof_t3_withdraw(rdof_t3_site_t *s, bool off);
 /* "deregister" (arg1 MS), "clear" (arg1 chan, arg2 LCN), "withdraw", "restore", "resend_records", "status" */
@@ -303,6 +304,8 @@ bool rdof_t3_command(rdof_t3_site_t *s, const char *cmd, uint32_t arg1, uint32_t
 #define RDOF_T3_SD_UDT 1
 #define RDOF_T3_SD_STATUS 2
 #define RDOF_T3_SD_POLL 3
+#define RDOF_T3_SD_DGNA 4 /* DGNA to an MS (tier3.md 3.11): value the UDT_Format (1 address, 10 mixed), data the
+                             * appended data; src 0 is DGNAI */
 #define RDOF_T3_SD_SEND 1   /* op: a message */
 #define RDOF_T3_SD_RESULT 2 /* op: its outcome */
 #define RDOF_T3_SD_F_GROUP 0x01

@@ -535,6 +535,7 @@
         "wide_tg": {"$ref": "#/$defs/idset"},
         "static_tg": {"$ref": "#/$defs/idset"},
         "foacsu": {"type": "boolean"},
+        "dgna_from_ms": {"type": "boolean"},
         "data_gateway": {"type": "integer", "minimum": 0, "maximum": 16776415},
         "timers": {"type": "object"},
         "broadcast": {"type": "object"}

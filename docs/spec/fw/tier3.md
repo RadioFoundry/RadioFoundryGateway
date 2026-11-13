@@ -36,12 +36,13 @@ Principles:
 | RF layout | 2 carriers: A (SDR TX + SDR RX) carries the dedicated TSCC on TS1 and a payload channel on TS2; B (split radio TX + SDR RX) carries two payload channels. 1 control slot, 3 payload slots. The code takes N carriers. |
 | Control channel | C_SYS_Parms short LC with a counting Common_Slot_Counter; C_ALOHA; C_BCAST Adjacent_Site (from the network), Chan_Freq (the site's own channel plan), Local_Time (when the clock is good), Gen_Site_Params; CACH AT driven by the controller |
 | Random access | Slotted Aloha, Mask 0, Service Function from load, adaptive Backoff, NRand_Wait from settings; a response to every random access |
-| Registration | Open or listed (ID sets); register, de-register, implicit registration from call requests; single-talkgroup subscription (TRGT_ADR_CNTS 01b); Reg_Accepted / Reg_Refused / Reg_Denied; MS_Not_Registered |
+| Registration | Open or listed (ID sets); register, de-register, implicit registration from call requests; single-talkgroup subscription (TRGT_ADR_CNTS 01b) and a list of up to 7 by UDT upload (10b, 3.11); Reg_Accepted / Reg_Refused / Reg_Denied; MS_Not_Registered |
 | Group voice | C_RAND, C_WACKD/C_QACKD, TV_GRANT (repeated; Late_Entry grants through the call), BTV_GRANT for ALLMSID calls, quasi-transmission trunking (hang time), P_CLEAR on hang expiry, call timer or P_MAINT DISCON |
 | Individual voice | C_AHOY availability check (OACSU or FOACSU, a setting), C_ACKU/C_NACKU, Call Answer, PV_GRANT, cancel (Service_Kind 1111b) |
 | Queueing | One queue by priority (emergency first, then PRIORTY_SV, then age); C_QACKD; SYSbusy_Refused when full |
 | Short data | UDT short data on the TSCC both ways (C_UDTHD/C_UDTHU, 1-4 rate 1/2 blocks, up to 46 octets), stored and forwarded MS to MS, MS to talkgroup, MS to site and site to MS; status messages and status polling; across sites in mqtt-net's `sdata` item (3.9, 5.9) |
 | Packet data | Individual and talkgroup packet data calls (C_RAND 0010b/0011b): the availability check (C_AHOY 0010b), PD_GRANT/TD_GRANT single or multi-item, the payload channel in data mode (each data burst repeated), confirmed and unconfirmed data, data hang time and clearing; MS to MS, MS to talkgroup, MS to the site's IP gateway (TSI, its data ID or IPI) and the gateway's replies down (3.10) |
+| Talkgroup lists | Registration with a talkgroup subscription/attachment list (C_AHOY from TATTSI, the Address Format upload, one Response_Info bit per talkgroup); DGNA from an MS (C_AHOY from DGNAI, C_DGNAHU then C_DGNAHD) or from the site, both modes; the site carries the talkgroups either list holds (3.11) |
 | Refusals | C_NACKD(Not_Supported) for every other Service_Kind; Called_Party_Busy, Called_Group_Not_Allowed, Perm_User_Refused as provisioning says |
 | Network | Wide-area group calls both ways; individual calls across sites with an availability check over the network; Tier II to Tier III and back; registration records; site description; provisioning from the manager, cached at the site |
 | Services | The site controller (Rust, in RFG), the radio layer (C, in RFG), the router's additions, the manager and its dashboard (Python, network services), the MS simulator |
@@ -50,10 +51,10 @@ Principles:
 ### 1.2 Later (the design leaves room; nothing here is built)
 
 Packet data across sites, multi-part packet data (extended addresses through gateways), dual-slot (HI_RATE) data,
-talkgroup list subscription (UDT upload), short data to gateways (extended addresses, supplementary data), power
+short data to gateways (extended addresses, supplementary data), power
 save, mass re-registration,
-Vote Now, C_MOVE and a second TSCC, composite TSCC, TSCCAS, the asynchronous (hibernating) TSCC, DGNA,
-stun/revive/kill, gateways (PSTN, PABX, dispatcher), duplex calls, ambient listening, emergency pre-emption of a
+Vote Now, C_MOVE and a second TSCC, composite TSCC, TSCCAS, the asynchronous (hibernating) TSCC, DGNA across sites
+for the site's records (a roaming MS's dynamic talkgroups), stun/revive/kill, gateways (PSTN, PABX, dispatcher), duplex calls, ambient listening, emergency pre-emption of a
 running call, a standby controller, trunking on the W12 (the LR2021 can't stay keyed: slot-timing.md), two carriers
 out of one SDR, authentication (owner's go-ahead first), encryption beyond pass-through.
 
@@ -161,9 +162,8 @@ Carrier A TS2 when not a payload channel: idle bursts (4.8: the other slot may b
 - Implicit registration: a call request from an ID with no record makes one (4.10.2) when the policy allows the ID.
 - With `require_registration` (default true) Reg = 1, and service requests from unregistered IDs get
   C_NACKD(MS_Not_Registered).
-- List subscription (TRGT_ADR_CNTS 10b) needs a UDT upload, which isn't built: the site answers C_ACKD with reason
-  0110 0101b (registration accepted, group refused, 6.4.4.1.13.1), and the MS's talkgroups come from its calls and
-  the provisioning.
+- List subscription (TRGT_ADR_CNTS 10b, target TATTSI): the registration is checked first, then the list comes in
+  a UDT upload and the C_ACK follows it (3.11). A refused registration's C_NACKD comes from TATTSI.
 
 ### 3.5 Calls
 
@@ -339,6 +339,52 @@ call to an MS on a data channel waits as busy rather than joining it.
 Not built: multi-part calls (extended addresses through PSTNI, PABXI, LINEI, DISPATI, IPI with an upload),
 supplementary data, dual-slot data, packet data across sites, the TS's own P_AHOY radio check and selective clear.
 
+### 3.11 Talkgroup lists: subscription by upload and DGNA (361-4 6.4.4.1.13.2, 6.6.8)
+
+The code is `rust/src/t3tglist.rs` (what the lists leave) on top of the short data transactions of 3.9 (the upload,
+the download, the final acknowledgement); the MS side is in `t3ms`. Both carry the Address Format (B.3.2): octet 0
+reserved and the One-key flag, then 24-bit addresses, 3 in one block, 7 in two, 11 in three, 15 in four, the
+unused ones ADRNULL.
+
+Registration with a list (6.4.4.1.13.2, figure 6.25): C_RAND Registration, TRGT_ADR_CNTS 10b, target TATTSI,
+Appended_UDT_Short_Data the blocks less one.
+
+1. The registration is checked as any (3.4); refused, C_NACKD(Reg_Denied or Reg_Refused) from TATTSI.
+2. Accepted: C_AHOY (table 6.11: Service_Options_Mirror, Service_Kind_Flag 1, ALS 0, G/I 0, Appended_Blocks as
+   asked, Service_Kind 1110b, source TATTSI), then the inbound slots kept for the upload as for short data (C_ALOHA
+   mask 24, AT busy). The MS sends C_UDTHU (target TATTSI, A = 0, SF = 1, UDT_Format 0001b) and the blocks.
+3. Each of ADDRESS1-7 is checked against `tg` (not a gateway or an all-call). C_ACKD once, source TATTSI:
+   Reg_Accepted with Response_Info 1111111b when every one is taken, else 0110 0101b (registration accepted,
+   subscription) with one bit per address, ADDRESS1 the MSB (table 6.10), 1 accepted. ADRNULL and the bits past the
+   addresses sent are 1 ("all accepted is 1111111b whatever the count").
+4. The list replaces the MS's last list and its single subscription; a single subscription (01b) or ADRNULL
+   replaces the list; deregistration or the record's expiry drops it. No upload (`ahoy_tries` asks, `tnp_s` at
+   most) or a refused one: the registration stands, Response_Info 0 (the list refused).
+
+DGNA (6.6.8, figure 6.67), only to an individual MS:
+
+1. From an MS: C_RAND Service_Kind 1101b to DGNAI, SUPED_VAL the blocks less one. Without `dgna_from_ms`,
+   C_NACKD(Not_Supported) from DGNAI. Else C_AHOY from DGNAI (Service_Kind 1101b, 6.6.8.2.1 c), the upload slots,
+   and C_DGNAHU (opcode 37, target the called MS, A = 1, UDT_Format 0001b DGNA_Address or 1010b DGNA_Alias).
+2. Checked: the called party an MS (not a talkgroup, a gateway, the site or the caller: Not_Supported), every
+   address ADRNULL or in `tg` (else Called_Group_Not_Allowed), another format Not_Supported. Then as UDT short data
+   to an MS (3.9): C_WACKD to the caller, stored while the called MS is busy, C_DGNAHD (opcode 36, table 6.69,
+   A = 1, the blocks as they came) repeated up to `sd_tries`, the called MS's C_ACKU mirrored in C_ACKD to the
+   caller (MS_Accepted, 6.6.8.2.3); not registered here, through the network (`sdata`, what 4) or NoregMSaway.
+3. From the site (`rdof_t3_sd_send`, what `RDOF_T3_SD_DGNA`): only the outbound phase (6.6.8.3.1), source DGNAI
+   unless the app names one; the result comes as an EV_SD result.
+4. When the called MS takes it (MS_Accepted), the site keeps what it now holds: DGNA_Address replaces the fifteen,
+   DGNA_Alias sets the sixteenth unless its address is one of the fifteen (6.6.8.1); all ADRNULL clears them.
+
+What the site keeps: a table of 64 MSs (the list's 7 and DGNA's 16 talkgroups each), apart from the registration
+record (its format and the network's records don't change). The site carries every talkgroup a registered MS
+holds in either (its network subscriptions, 5.5). Full table: a new list is refused (Response_Info 0), a DGNA
+result isn't kept (logged). An MS that roams re-registers with its list at the new site; its dynamic talkgroups
+aren't carried with its record (1.2).
+
+Choices where 361-4 leaves them open: the registration is validated before the list is asked for; the final C_ACK's
+source is TATTSI, as the refusal's; the One-key flag and alias text pass through unread.
+
 ## 4. Settings (config-v3 `tier3` app)
 
 The app takes the place reserved for it in config-v3.md section 6 ("a control frequency and a pool; it assigns its own
@@ -383,6 +429,7 @@ paths").
 | `wide_tg` | ID set | `""` | talkgroups carried on the network (wide area); others stay local |
 | `static_tg` | ID set | `""` | talkgroups the site always subscribes to on the network (as a Tier II repeater's `tg`) |
 | `foacsu` | bool | false | full off-air call setup for individual calls |
+| `dgna_from_ms` | bool | false | MSs may assign talkgroups to other MSs (DGNA, 3.11); off: Not_Supported. The site's own DGNA always goes |
 | `data_gateway` | integer | 0 | the site's own data ID besides TSI (1-16776415): packet data to it, to TSI or to IPI goes to the site's IP gateway (3.10) |
 | `timers` | object | section 3.8 | |
 | `broadcast` | object | section 3.2 | `adjacent_s`, `chan_freq_s`, `local_time_s` (0 = off) |
@@ -590,7 +637,7 @@ New item type 0x0D, `sdata`, 12 bytes plus the data, the only item of its messag
 | Octet | Field |
 |---|---|
 | 0 | op: 1 a message, 2 its result |
-| 1 | what: 1 UDT short data, 2 a status, 3 a status poll |
+| 1 | what: 1 UDT short data, 2 a status, 3 a status poll, 4 DGNA (3.11) |
 | 2 | reason: a result's air reason (44h MS_Accepted, 47h a poll's answer, 60h Message_Accepted, or a C_NACKD reason) |
 | 3 | value: UDT_Format, the status, or a poll's result: the polled status |
 | 4 | flags: bit 0 talkgroup, bit 1 emergency |
@@ -598,7 +645,7 @@ New item type 0x0D, `sdata`, 12 bytes plus the data, the only item of its messag
 | 6 | why: a result's setup reason (5.4: not_found, busy, no_answer, refused, timeout) |
 | 7 | 0 |
 | 8-11 | ref u32 (little endian): a result's message's stream ID |
-| 12- | the data, 0-46 octets (UDT short data only) |
+| 12- | the data, 0-46 octets (UDT short data and DGNA only) |
 
 A message to an MS goes on `pc/{dst}/{node}` (the router places it by the newest record, as a setup request); to a
 talkgroup on `tg/{tg}/{node}`, only for a `wide_tg` talkgroup or ALLMSID. The header has the caller as src, the
@@ -849,7 +896,10 @@ In the network services' own repository (with the router, the Python library and
 `t3ms` (Rust, `no_std`): an MS that knows one site (no hunt) and follows 361-4 for what the site supports:
 
 - waits for C_ALOHA; random access with the Aloha's Backoff and NRand_Wait; retries up to NRand_NR (6);
-- registration (and de-registration), with a subscribed talkgroup;
+- registration (and de-registration), with a subscribed talkgroup or a list of up to 7 (`register_list`: the
+  upload when the TSCC asks, the Response_Info bits kept);
+- DGNA (`send_dgna`): sends a transfer (Address or Mixed Format) to an MS; takes one addressed to it, answers
+  MS_Accepted and takes calls to the talkgroups it got;
 - group and individual call requests; follows grants to the payload channel; talks for a set time (voice header,
   voice bursts, terminator), P_MAINT DISCON at the end of an individual call; returns on P_CLEAR or TV_Inactive;
 - answers C_AHOY: accept, busy, no answer, or FOACSU alerting then answer, as configured;
@@ -871,7 +921,11 @@ and against `t3ms` on one air.
 | Level | What | Where |
 |---|---|---|
 | PDU codec | Every PDU the site sends or reads: field packing against the 361-4 tables, round trips, known vectors from a standard site's captures (decoded values, not checks) | Rust unit tests |
-| Controller | Scenarios over `t3air`: registration open/listed/denied, collisions and backoff, group call, queue and grant on release, late entry repeats, hang and P_CLEAR, call timer, individual OACSU and FOACSU, no answer, cancel, busy called party, Not_Supported, network group in and out, network setup both ways, Tier II implicit setup, records reload, provisioning changes, link loss; short data (`t3sdtests.rs`): UDT MS to MS, MS, talkgroup and site, 1 to 4 blocks, refusals, store while busy and its timeout, cancel, the kept upload slots, CRC errors and a missing upload, status to MS, talkgroup and site, polling, the site's own sends, a full table, the network both ways; packet data (`t3pdtests.rs`): MS to MS unconfirmed and confirmed, the availability check, PD/TD_GRANT single and multi-item, data hang and clearing, to a talkgroup, to the site (TSI, data ID, IPI), refusals (NACKU mirrored, no answer, not here, multi-part, itself, talkgroup not allowed, busy), queued and cancelled, the site's own sends | Rust tests (`cargo test`, run by ctest) |
+| Controller | Scenarios over `t3air`: registration open/listed/denied, collisions and backoff, group call, queue and grant on release, late entry repeats, hang and P_CLEAR, call timer, individual OACSU and FOACSU, no answer, cancel, busy called party, Not_Supported, network group in and out, network setup both ways, Tier II implicit setup, records reload, provisioning changes, link loss; short data (`t3sdtests.rs`): UDT MS to MS, MS, talkgroup and site, 1 to 4 blocks, refusals, store while busy and its timeout, cancel, the kept upload slots, CRC errors and a missing upload, status to MS, talkgroup and site, polling, the site's own sends, a full table, the network both ways; packet data (`t3pdtests.rs`): MS to MS unconfirmed and confirmed, the availability check, PD/TD_GRANT single and multi-item, data hang and clearing, to a talkgroup, to the site (TSI, data ID, IPI), refusals (NACKU mirrored, no answer, not here, multi-part, itself, talkgroup not allowed, busy), queued and cancelled, the site's own sends; talkgroup lists (`t3tgtests.rs`): registration with a list (the
+C_AHOY's fields, the Response_Info bits, a talkgroup refused), all accepted, replaced, replaced by a single
+subscription, dropped on deregistration, a refused registration; DGNA MS to MS (address mode, a call on the new
+talkgroup, alias mode, delete all), refusals (off, talkgroup not allowed, itself, the site, not here, the called MS
+refuses), the site's own DGNA | Rust tests (`cargo test`, run by ctest) |
 | C API | Init, a short scenario through the FFI, layouts | C host test `rdof_t3_tests` |
 | Packet data on bursts | MS to MS confirmed data and MS to the site's IP gateway (NAT, the gateway's ACK sent down by the site) over the burst path | `rdof_t3unit_tests` |
 | Radio layer | Burst building (CSBK, MBC, CACH with C_SYS_Parms and AT), parsing back, the slot source in the SDR modem (timing, short LC, AT), payload channel regeneration and P_CLEAR, split output frames | C host tests |

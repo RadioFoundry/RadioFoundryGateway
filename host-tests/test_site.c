@@ -731,7 +731,8 @@ static void test_trunk(const char *dir)
               c.carriers[0].rx_hz == 438250000 && !c.carriers[1].tscc && c.carriers[1].chan == 2 &&
               c.carriers[1].tx_hz == 438600000 && c.carriers[1].enabled,
           "carriers, the TSCC's first");
-    CHECK(c.hang_ms == 3000 && c.tp_ms == 20000 && c.reg_required && !c.foacsu && c.nrand_wait == 6, "timers");
+    CHECK(c.hang_ms == 3000 && c.tp_ms == 20000 && c.reg_required && !c.foacsu && c.nrand_wait == 6 && !c.dgna_ms,
+          "timers");
     CHECK(pol.open && pol.ms.all && pol.tg.all && pol.private_ms.all, "open");
     CHECK(!pol.wide_tg.all && pol.wide_tg.n == 1 && pol.wide_tg.r[0].lo == 1 && pol.wide_tg.r[0].hi == 99999,
           "wide_tg");
@@ -743,11 +744,12 @@ static void test_trunk(const char *dir)
     /* cfg/net over it, then cfg/node */
     CHECK(apply_text("{\"rev\": 12, \"system\": {\"model\": \"large\", \"net\": 9}, \"registration\": \"listed\", "
                      "\"ms\": \"3100000-3199999,!3100500\", \"refuse_unlisted\": \"refused\", \"timers\": "
-                     "{\"hang_s\": 4.5, \"grant_every_s\": 0.6}, \"broadcast\": {\"local_time_s\": 0}}",
+                     "{\"hang_s\": 4.5, \"grant_every_s\": 0.6}, \"broadcast\": {\"local_time_s\": 0}, "
+                     "\"dgna_from_ms\": true}",
                      "cfg/net", &c, &pol, err, sizeof err),
           "cfg/net: %s", err);
     CHECK(c.model == 2 && c.net == 9 && c.area_bits == 8 && c.hang_ms == 4500 && c.grant_every_ms == 600 &&
-              !c.local_time_ms && c.adjacent_ms == 5000,
+              !c.local_time_ms && c.adjacent_ms == 5000 && c.dgna_ms,
           "cfg/net applied");
     CHECK(!pol.open && pol.refuse_unlisted && pol.ms.n == 2 && pol.ms.r[0].hi == 3100499 &&
               pol.ms.r[1].lo == 3100501,

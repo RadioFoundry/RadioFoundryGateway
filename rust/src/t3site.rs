@@ -11,15 +11,20 @@ use core::ffi::{c_char, c_int, CStr};
 use core::fmt::Write;
 
 use crate::t3pdu::*;
-use crate::t3udt::{DT_DATA_HDR, DT_RATE12, SK_IND_PD, SK_IND_UDT, SK_STATUS, SK_TG_PD, SK_TG_UDT};
+use crate::t3udt::{DGNAI, DT_DATA_HDR, DT_RATE12, SK_IND_PD, SK_IND_UDT, SK_STATUS, SK_SUPPL, SK_TG_PD, SK_TG_UDT};
 
 // short data on the TSCC (UDT short data, status, polling): tier3.md 3.9
 #[path = "t3sdata.rs"]
 mod sdata;
 pub use sdata::{
-    rdof_t3_net_sd, rdof_t3_sd_of_event, rdof_t3_sd_send, SdMsg, SD_F_EMERGENCY, SD_F_GROUP, SD_POLL, SD_RESULT,
-    SD_SEND, SD_STATUS, SD_UDT,
+    rdof_t3_net_sd, rdof_t3_sd_of_event, rdof_t3_sd_send, SdMsg, SD_DGNA, SD_F_EMERGENCY, SD_F_GROUP, SD_POLL,
+    SD_RESULT, SD_SEND, SD_STATUS, SD_UDT,
 };
+use sdata::SD_TGLIST;
+// talkgroup lists: registration with a list, DGNA (tier3.md 3.11)
+#[path = "t3tglist.rs"]
+mod tglist;
+pub use tglist::{DGNA_TGS, LIST_TGS, TGLISTS};
 // packet data calls on the payload channels: tier3.md 3.10
 #[path = "t3pdata.rs"]
 mod pdata;
@@ -100,7 +105,8 @@ pub struct Cfg {
     pub stream_seed: u32,
     pub sd_tries: u8,
     pub sd_repeats: u8,
-    pub pad1: [u8; 2],
+    pub dgna_ms: u8,
+    pub pad1: u8,
     pub sd_store_ms: u32,
     pub data_hang_ms: u32,
     pub data_id: u32,
@@ -600,6 +606,7 @@ pub struct Site {
     counters: Counters,
     sd: sdata::SdState,
     pd: pdata::PdState,
+    tgl: tglist::TglState,
 }
 
 /// Text into a fixed buffer, NUL terminated, cut when full (LOG events, errors).
@@ -1340,6 +1347,7 @@ impl Site {
     fn delete_record(&mut self, i: usize, op: u8) {
         let id = self.regs[i].rec.id;
         self.regs[i] = Reg::default();
+        self.tgl_forget(id);
         self.nregs = self.nregs.saturating_sub(1);
         self.subs_dirty = true;
         self.ev(Event { r#type: EV_RECORD, why: 1, src: id, ..Default::default() });
@@ -1400,10 +1408,11 @@ impl Site {
             self.refuse(R_NOT_SUPPORTED, ms, REGI);
             return;
         }
+        let from = if cnts == 2 { TATTSI } else { REGI }; // a list's refusal comes from TATTSI (6.4.4.1.13.2)
         if !self.allowed(ms) {
             let (reason, op) =
                 if self.policy.refuse_unlisted != 0 { (R_REG_REFUSED, REG_REFUSE) } else { (R_REG_DENIED, REG_DENY) };
-            self.ack(reason, ms, REGI);
+            self.ack(reason, ms, from);
             self.activity(ACT_REG, op, ms, 0, reason);
             if let Some(i) = self.reg_index(ms) {
                 self.delete_record(i, op);
@@ -1411,7 +1420,7 @@ impl Site {
             return;
         }
         let Some(i) = self.record_for(ms, HOW_REGISTER) else {
-            self.ack(R_REG_REFUSED, ms, REGI);
+            self.ack(R_REG_REFUSED, ms, from);
             self.activity(ACT_REG, REG_REFUSE, ms, 0, R_REG_REFUSED);
             return;
         };
@@ -1423,7 +1432,9 @@ impl Site {
         let mut reason = R_REG_ACCEPTED;
         match cnts {
             1 if r.target == ADRNULL => {
-                // ADRNULL removes the subscription
+                // ADRNULL removes the subscription, a list's too
+                self.tgl_clear_list(ms);
+                let rec = &mut self.regs[i].rec;
                 let old = rec.sub_tg;
                 rec.sub_tg = 0;
                 if old != 0 {
@@ -1432,6 +1443,7 @@ impl Site {
             }
             1 => {
                 let tg = r.target;
+                self.tgl_clear_list(ms); // a single subscription replaces a list
                 if self.policy.tg.contains(tg) && !is_gateway(tg) && !is_allcall(tg) {
                     let rec = &mut self.regs[i].rec;
                     let old = rec.sub_tg;
@@ -1444,7 +1456,13 @@ impl Site {
                     reason = R_REG_SUBSCRIPTION; // registered, the talkgroup refused
                 }
             }
-            2 => reason = R_REG_SUBSCRIPTION, // a list comes in a UDT upload, not built: registered, no groups
+            2 => {
+                // the list comes in a UDT upload (C_AHOY from TATTSI); the C_ACK follows it (tier3.md 3.11)
+                self.subs_dirty = true;
+                self.write_record(i);
+                self.tgl_register(r);
+                return;
+            }
             _ => {}
         }
         self.subs_dirty = true;
@@ -1462,6 +1480,7 @@ impl Site {
             SK_CALL_ANSWER => self.call_answer(r),
             SK_CANCEL => self.cancel(r.source),
             SK_IND_UDT | SK_TG_UDT | SK_STATUS => self.sd_rand(r),
+            SK_SUPPL if r.target == DGNAI => self.sd_rand(r),
             SK_IND_PD | SK_TG_PD => self.pd_rand(r),
             _ => self.refuse(R_NOT_SUPPORTED, r.source, r.target),
         }
@@ -1827,6 +1846,7 @@ impl Site {
             return true;
         }
         self.regs.iter().any(|r| r.used && (r.rec.tgs().contains(&tg) || self.ms_policy(r.rec.id).tgs().contains(&tg)))
+            || self.tgl_wants(tg)
     }
 
     fn net_group_go(&mut self, stream: u32, src: u32, tg: u32, emergency: bool, ch: Option<usize>) {
@@ -2119,6 +2139,9 @@ impl Site {
                 add(tg, out);
             }
             for &tg in self.ms_policy(r.rec.id).tgs() {
+                add(tg, out);
+            }
+            for tg in self.tgl_of(r.rec.id) {
                 add(tg, out);
             }
         }

@@ -18,6 +18,10 @@ pub const SDS: usize = 8;
 pub const SD_UDT: u8 = 1;
 pub const SD_STATUS: u8 = 2;
 pub const SD_POLL: u8 = 3;
+/// Dynamic Group Numbering Assignment (6.6.8): value the UDT_Format (Address or Mixed), data the appended data
+pub const SD_DGNA: u8 = 4;
+/// A registration's talkgroup list upload (6.4.4.1.13.2): only from an MS here, never an SdMsg
+pub(super) const SD_TGLIST: u8 = 5;
 
 // op (rdof_t3_sd_t.op)
 pub const SD_SEND: u8 = 1;
@@ -143,6 +147,7 @@ struct Sd {
     group: bool,
     emergency: bool,
     ahoy_due: bool, // S_UPLOAD: its C_AHOY is to go
+    so: u8,         // the C_RAND's Service_Options (the upload C_AHOY's Service_Options_Mirror)
     value: u8,      // UDT_Format, or the status
     tries: u8,
     src: u32,
@@ -273,6 +278,7 @@ impl Site {
         let ms = r.source;
         let what = match r.service_kind {
             SK_IND_UDT | SK_TG_UDT => SD_UDT,
+            SK_SUPPL => SD_DGNA,
             _ if rand_status(r) == STATUS_POLL => SD_POLL,
             _ => SD_STATUS,
         };
@@ -292,16 +298,30 @@ impl Site {
         if !self.sd_admit(r) {
             return;
         }
+        if what == SD_DGNA {
+            // 6.6.8.2.1: the called MS comes with the upload; DGNA from MSs only when the site allows it
+            if self.cfg.dgna_ms == 0 {
+                self.refuse(R_NOT_SUPPORTED, ms, DGNAI);
+                return;
+            }
+            let blocks = (r.dep >> 2) + 1; // SUPED_VAL (table 6.70)
+            self.sd_upload_new(SD_DGNA, ms, DGNAI, false, r.service_options, blocks);
+            return;
+        }
         let group = match what {
             SD_UDT => r.service_kind == SK_TG_UDT,
             _ => rand_status_group(r),
         };
         let Some(group) = self.sd_target(ms, r.target, group, what == SD_POLL) else { return };
+        // Supplementary data (SUPED_SV) isn't taken: the call goes on without it (6.6.6.1.2.1.2 a)
+        if what == SD_UDT {
+            self.sd_upload_new(SD_UDT, ms, r.target, group, r.service_options, rand_sdata_blocks(r));
+            return;
+        }
         let Some(i) = self.sd_free() else {
             self.refuse(R_SYSBUSY, ms, r.target);
             return;
         };
-        // Supplementary data (SUPED_SV) isn't taken: the call goes on without it (6.6.6.1.2.1.2 a)
         let mut d = Sd {
             used: true,
             what,
@@ -314,24 +334,77 @@ impl Site {
             next_ack_ms: self.now + ACK_EVERY_MS,
             ..Default::default()
         };
-        if what == SD_UDT {
-            d.state = S_UPLOAD;
-            d.ahoy_due = true;
-            d.head.blocks = rand_sdata_blocks(r);
-            self.sd.sds[i] = d;
-            if self.sd.upload.active {
-                self.ack(R_WAIT, ms, r.target); // another MS is uploading: this one's turn comes
-            }
-            return;
-        }
         d.value = rand_status(r);
         self.sd.sds[i] = d;
         self.sd_route(i);
     }
 
+    /// A transaction that starts with an upload from ms (C_AHOY from SDMI, DGNAI or TATTSI): what SD_UDT,
+    /// SD_DGNA or SD_TGLIST, dst the C_RAND's target, so its Service_Options, blocks the UAB it asked for.
+    pub(super) fn sd_upload_new(&mut self, what: u8, ms: u32, dst: u32, group: bool, so: u8, blocks: u8) {
+        let Some(i) = self.sd_free() else {
+            self.refuse(R_SYSBUSY, ms, dst);
+            return;
+        };
+        let mut d = Sd {
+            used: true,
+            what,
+            origin: O_MS,
+            group,
+            state: S_UPLOAD,
+            ahoy_due: true,
+            so,
+            src: ms,
+            dst,
+            tries: self.cfg.ahoy_tries.max(1),
+            deadline_ms: self.now + self.cfg.tnp_ms as i64,
+            next_ack_ms: self.now + ACK_EVERY_MS,
+            ..Default::default()
+        };
+        d.head.blocks = blocks.clamp(1, MAX_BLOCKS as u8);
+        self.sd.sds[i] = d;
+        if self.sd.upload.active {
+            self.ack(R_WAIT, ms, dst); // another MS is uploading: this one's turn comes
+        }
+    }
+
+    /// A registration's list upload in progress for ms (S_UPLOAD): asks again (the MS repeated its C_RAND).
+    pub(super) fn sd_list_again(&mut self, ms: u32) -> bool {
+        let Some(i) = (0..SDS).find(|&i| {
+            let d = &self.sd.sds[i];
+            d.used && d.what == SD_TGLIST && d.src == ms
+        }) else {
+            return false;
+        };
+        if self.sd.sds[i].state == S_UPLOAD && !(self.sd.upload.active && self.sd.upload.sd == i) {
+            self.sd.sds[i].ahoy_due = true;
+        }
+        true
+    }
+
     /// The message is whole (uploaded, or a status): on to the site, the talkgroup, the MS or the network.
     fn sd_route(&mut self, i: usize) {
         let d = self.sd.sds[i];
+        if d.what == SD_TGLIST {
+            let mut buf = [0u8; MAX_DATA];
+            let n = d.blocks.data(&mut buf);
+            let (reason, info) = self.tgl_apply(d.src, &AddrList::of(&buf[..n]));
+            self.sd_done(i, reason, info, WHY_OK);
+            return;
+        }
+        if d.what == SD_DGNA {
+            // the called MS: an MS (here or elsewhere), and talkgroups this site allows
+            let not_ms = d.dst == ADRNULL || is_gateway(d.dst) || is_allcall(d.dst) || d.head.group;
+            let why = if not_ms || d.dst == TSI || d.dst == d.src {
+                R_NOT_SUPPORTED
+            } else {
+                self.dgna_refusal(d.value, &d.blocks)
+            };
+            if why != 0 {
+                self.sd_done(i, why, 0, WHY_REFUSED);
+                return;
+            }
+        }
         if d.dst == TSI && !d.group {
             let m = self.sd_msg(&d, SD_SEND);
             self.ev(m.event(EV_SD));
@@ -391,7 +464,7 @@ impl Site {
             dst: d.dst,
             ..Default::default()
         };
-        if d.what == SD_UDT {
+        if d.what == SD_UDT || d.what == SD_DGNA {
             let mut buf = [0u8; MAX_DATA];
             let n = d.blocks.data(&mut buf);
             m.len = n as u8;
@@ -409,6 +482,15 @@ impl Site {
             self.sd.upload.active = false;
         }
         let ok = reason_type(reason) == 1;
+        if d.what == SD_TGLIST {
+            // 6.4.4.1.13.2: registered either way; a list that didn't come is a list refused (Response_Info 0)
+            let (reason, ri) = if ok { (reason, info) } else { (R_REG_SUBSCRIPTION, 0) };
+            let a = Ack { op: OP_ACKD, response_info: ri, reason, target: d.src, source: TATTSI };
+            self.push(DT_CSBK, a.encode(), false, None); // once, as a registration's (figure 6.25)
+            let sub = self.reg_index(d.src).map_or(0, |r| self.regs[r].rec.sub_tg);
+            self.activity(ACT_REG, REG_REGISTER, d.src, sub, reason);
+            return;
+        }
         if ok {
             self.sd.delivered += 1;
         } else {
@@ -481,15 +563,24 @@ impl Site {
         if !self.sd.upload.active {
             if let Some(i) = self.sd.sds.iter().position(|d| d.used && d.state == S_UPLOAD && d.ahoy_due) {
                 // 6.6.4.1.1 d): C_AHOY from SDMI to the caller, Service_Kind 0100b whatever the message's target,
-                // Appended_Blocks the C_RAND's Appended_UDT_Short_Data
+                // Appended_Blocks the C_RAND's Appended_UDT_Short_Data; for DGNA from DGNAI, Service_Kind 1101b
+                // (6.6.8.2.1 c); for a registration's talkgroup list from TATTSI, Service_Kind 1110b and
+                // Service_Kind_Flag 1 (6.4.4.1.13.2 table 6.11)
                 let d = &mut self.sd.sds[i];
                 d.ahoy_due = false;
                 let n = d.head.blocks.clamp(1, MAX_BLOCKS as u8);
+                let (service_kind, source) = match d.what {
+                    SD_DGNA => (SK_SUPPL, DGNAI),
+                    SD_TGLIST => (SK_REG, TATTSI),
+                    _ => (SK_IND_UDT, SDMI),
+                };
                 let a = Ahoy {
+                    service_options: d.so,
+                    service_kind_flag: d.what == SD_TGLIST,
                     appended: n - 1,
-                    service_kind: SK_IND_UDT,
+                    service_kind,
                     target: d.src,
-                    source: SDMI,
+                    source,
                     ..Default::default()
                 };
                 self.sd.upload = Upload {
@@ -512,12 +603,12 @@ impl Site {
         s.tries -= 1;
         s.next_ms = now + self.cfg.ahoy_every_ms as i64;
         let solicit = !d.group;
-        if d.what != SD_UDT {
+        if d.what != SD_UDT && d.what != SD_DGNA {
             return Some(self.train_start(&[(DT_CSBK, pdu12(&Self::status_ahoy(&d)))], solicit));
         }
         // 6.6.4.1.4: the header (A = 1 to an MS, 6.5.1.2 table 6.34), then the blocks as they came
         let h = UdtHead {
-            op: OP_UDTHD,
+            op: if d.what == SD_DGNA { OP_DGNAHD } else { OP_UDTHD }, // table 6.69
             group: d.group,
             response: !d.group,
             emergency: d.emergency,
@@ -547,7 +638,7 @@ impl Site {
     /// A UDT header on the TSCC (C_UDTHU).
     pub(super) fn sd_rx_head(&mut self, pdu: &[u8; 10]) {
         let Some(h) = UdtHead::decode(pdu) else { return };
-        if h.op != OP_UDTHU {
+        if h.op != OP_UDTHU && h.op != OP_DGNAHU {
             return;
         }
         self.heard(h.source);
@@ -585,6 +676,9 @@ impl Site {
         d.blocks = u.blocks;
         d.value = u.head.format;
         d.emergency = false;
+        if d.what == SD_DGNA {
+            d.dst = u.head.target; // the called MS comes with the upload (6.6.8.3.1)
+        }
         self.sd_route(i);
     }
 
@@ -602,7 +696,7 @@ impl Site {
     /// C_ACKU / C_NACKU for a transaction: true when it was one's.
     pub(super) fn sd_ack(&mut self, a: &Ack) -> bool {
         // the caller refusing to upload (6.6.4.2: it may answer C_AHOY from SDMI with C_NACKU)
-        if a.target == SDMI {
+        if matches!(a.target, SDMI | DGNAI | TATTSI) {
             if let Some(i) = (0..SDS).find(|&i| {
                 let d = &self.sd.sds[i];
                 d.used && d.state == S_UPLOAD && d.src == a.source
@@ -610,7 +704,7 @@ impl Site {
                 self.sd_done(i, a.reason, 0, WHY_REFUSED);
                 return true;
             }
-            return false;
+            // else the called MS's answer to a download from the gateway (DGNA from the site, source DGNAI)
         }
         let Some(i) = (0..SDS).find(|&i| {
             let d = &self.sd.sds[i];
@@ -622,6 +716,9 @@ impl Site {
         if reason_type(a.reason) == 1 {
             // 6.6.4.1.5, 6.6.6.1.1.4, 6.6.6.2.1.3: the called MS's acknowledgement, mirrored
             let info = if d.what == SD_POLL { a.response_info } else { 0 };
+            if d.what == SD_DGNA {
+                self.tgl_dgna(d.dst, &d.blocks, d.value); // 6.6.8.1.1: the MS now holds these
+            }
             self.sd_done(i, a.reason, info, WHY_OK);
         } else {
             let why = if a.reason == R_EQUIP_BUSY { WHY_BUSY } else { WHY_REFUSED };
@@ -745,8 +842,12 @@ impl Site {
             return false;
         }
         let bad_dst = m.dst == ADRNULL || is_gateway(m.dst) || (!group && is_allcall(m.dst));
-        if bad_dst || (group && m.what == SD_POLL) || !(SD_UDT..=SD_POLL).contains(&m.what) {
+        if bad_dst || (group && m.what == SD_POLL) || !(SD_UDT..=SD_DGNA).contains(&m.what) {
             return false;
+        }
+        let dgna = m.what == SD_DGNA;
+        if dgna && (group || !matches!(m.value, FMT_ADDRESS | FMT_MIXED)) {
+            return false; // 6.6.8.0: to an individual MS only, the Address or Mixed Format
         }
         let Some(i) = self.sd_free() else { return false };
         let mut d = Sd {
@@ -756,13 +857,19 @@ impl Site {
             group,
             emergency: m.flags & SD_F_EMERGENCY != 0,
             value: if m.what == SD_POLL { STATUS_POLL } else { m.value },
-            src: if m.src != 0 { m.src } else { TSI },
+            src: if m.src != 0 {
+                m.src
+            } else if dgna {
+                DGNAI
+            } else {
+                TSI
+            },
             dst: m.dst,
             r#ref: m.r#ref,
             deadline_ms: self.now + self.cfg.tnp_ms as i64,
             ..Default::default()
         };
-        if m.what == SD_UDT {
+        if m.what == SD_UDT || dgna {
             let Some(b) = Blocks::of(m.data(), 0) else { return false };
             d.blocks = b;
             d.head = UdtHead { blocks: b.n, pad_nibble: m.pad_nibble, format: m.value, ..Default::default() };
