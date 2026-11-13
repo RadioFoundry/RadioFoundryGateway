@@ -8,6 +8,7 @@
 use core::ffi::c_int;
 
 use crate::t3auth::{response, R_AUTH_RESPONSE, R_MS_NOT_SUPPORTED};
+use crate::t3pdrate::{self as pdrate, DataAsm, Taken, CLASS_ACK, CLASS_NACK, CLASS_SACK, TYPE_ACK, TYPE_NACK_CRC};
 use crate::t3pdu::*;
 use crate::t3rc::RC_CEASE;
 use crate::t3site::{
@@ -15,6 +16,7 @@ use crate::t3site::{
     DataMsg, DxGrant, CARRIERS, DEP_ALS, DIV_ON, DPF_CONFIRMED, DPF_RESPONSE, DPF_UNCONFIRMED, MSG_BLOCKS, R_DUPLEX_NOT_SUPPORTED,
     SAP_IP, SK_DUPLEX, SO_SIMI, VOICE_FRAME, VOICE_HEADER, VOICE_TERM,
 };
+use crate::t3site::{block_len, BLOCK_MAX, DT_R1, DT_R12, DT_R34, MSG_OCTETS};
 use crate::t3udt::*;
 
 pub const ANSWER_ACCEPT: u8 = 0;
@@ -45,6 +47,8 @@ pub const DO_SD_STATUS: u8 = 10; // a status by the short data path (talk_ms: th
 pub const DO_DATA: u8 = 11; // a packet data call (send_data): arg the MS, talkgroup or gateway
 pub const F_CONFIRMED: u8 = 0x40; // DO_DATA: confirmed data
 pub const F_MULTI: u8 = 0x08; // DO_DATA: multi-item (P_MAINT after the item)
+pub const F_RATE34: u8 = 0x10; // DO_DATA: rate 3/4 blocks (361-1 8.2.2); neither rate flag: rate 1/2
+pub const F_RATE1: u8 = 0x20; // DO_DATA: rate 1 blocks
 pub const F_LIST: u8 = 0x10; // DO_REGISTER: with the talkgroup list set by register_list
 pub const DO_DGNA: u8 = 12; // assign talkgroups to an MS (send_dgna): arg the MS
 pub const DO_DIVERT: u8 = 13; // set or clear a call diversion (divert, divert_clear): arg MSI, GPI, TSI or DIVERTI
@@ -57,7 +61,7 @@ pub const PAYLOAD: u8 = 3;
 
 pub const TX_PDU: u8 = 1;
 pub const TX_VOICE: u8 = 2;
-pub const TX_DATA: u8 = 3; // packet data on a payload channel: dt 6 a header (pdu), dt 7 a rate 1/2 block (pdu, ext)
+pub const TX_DATA: u8 = 3; // packet data on a payload channel: dt 6 a header (pdu), 7, 8 or 10 a block (pdu, ext)
 
 const ACTIONS: usize = 8;
 /// How soon after a final C_ACKD the same one again is taken as its repeat.
@@ -84,7 +88,7 @@ pub struct MsTx {
     pub offset: u8, // offset timing (a duplex call): sent in the other inbound slot of ch's carrier
     pub src: u32,
     pub dst: u32,
-    pub ext: [u8; 2], // dt 7 (rate 1/2 data): the block's octets 10 and 11
+    pub ext: [u8; 14], // a data block (dt 7, 8, 10): its octets 10 on (to 11, 17 or 23)
     pub pad2: [u8; 2],
 }
 
@@ -223,9 +227,12 @@ pub struct Ms {
     pd_wait_ack: bool,
     pd_until: i64,
     pd_multi: bool, // the channel's grant is multi-item
-    pd_in: DataMsg,
-    pd_in_on: bool,
-    pd_in_got: u8,
+    /// A SACK's C_RDATA block, after pd_resp.
+    pd_resp_blk: Option<[u8; 12]>,
+    pd_send: u16,    // the blocks of pd_out this transmission sends (all, or a SACK's)
+    pd_tries: u8,    // its sends so far
+    pd_rdata: bool,  // a SACK's C_RDATA block next
+    pd_asm: DataAsm, // the message it takes
     pd_inbox: DataMsg,
     pd_inbox_n: u32,
     pd_resp: Option<[u8; 10]>,
@@ -337,8 +344,8 @@ impl Ms {
         self.act(DO_SDM, dst, 0, flags, at_ms)
     }
 
-    /// Queues a packet data call with one message (unconfirmed, or confirmed with F_CONFIRMED; SAP 4) to dst;
-    /// false when the data doesn't fit.
+    /// Queues a packet data call with one message (unconfirmed, or confirmed with F_CONFIRMED; SAP 4) to dst, in
+    /// rate 1/2 blocks or, F_RATE34 / F_RATE1, rate 3/4 or rate 1; false when the data doesn't fit.
     pub fn send_data(&mut self, dst: u32, flags: u8, data: &[u8], at_ms: i64) -> bool {
         let head = DataHead {
             dpf: if flags & F_CONFIRMED != 0 { DPF_CONFIRMED } else { DPF_UNCONFIRMED },
@@ -349,17 +356,24 @@ impl Ms {
             src: self.id,
             ..Default::default()
         };
-        let Some(m) = DataMsg::build(head, data) else { return false };
+        let dt = if flags & F_RATE34 != 0 {
+            DT_R34
+        } else if flags & F_RATE1 != 0 {
+            DT_R1
+        } else {
+            DT_R12
+        };
+        let Some(m) = DataMsg::build_rate(head, data, dt) else { return false };
         self.pd_out = m;
         self.act(DO_DATA, dst, 0, flags, at_ms)
     }
 
     /// The last packet data message it took: the header, the data and its length, and how many it took.
-    pub fn data_inbox(&self) -> Option<(DataHead, [u8; 12 * MSG_BLOCKS], usize, u32)> {
+    pub fn data_inbox(&self) -> Option<(DataHead, [u8; MSG_OCTETS], usize, u32)> {
         if self.pd_inbox_n == 0 {
             return None;
         }
-        let mut d = [0u8; 12 * MSG_BLOCKS];
+        let mut d = [0u8; MSG_OCTETS];
         let n = self.pd_inbox.data(&mut d)?;
         Some((self.pd_inbox.head, d, n, self.pd_inbox_n))
     }
@@ -616,21 +630,25 @@ impl Ms {
         self.maint_left = 0;
         self.pd_sending = false;
         self.pd_wait_ack = false;
-        self.pd_in_on = false;
+        self.pd_rdata = false;
+        self.pd_asm = DataAsm::default();
         self.pd_resp = None;
+        self.pd_resp_blk = None;
         self.pd_leave = false;
         self.als_on = false;
     }
 
     /// Outbound slot k on channel ch (a block when dt isn't 0); at: the CACH's AT bit for the next slot.
     pub fn rx(&mut self, ch: usize, k: i64, dt: u8, pdu: &[u8; 10], at: bool) {
-        let mut b = [0u8; 12];
+        let mut b = [0u8; BLOCK_MAX];
         b[..10].copy_from_slice(pdu);
         self.rx_block(ch, k, dt, &b, at);
     }
 
-    /// rx with a whole block (12 octets: a rate 1/2 block's; a PDU's first 10).
-    pub fn rx_block(&mut self, ch: usize, k: i64, dt: u8, blk: &[u8; 12], at: bool) {
+    /// rx with a whole block (a data block's 12, 18 or 24 octets as its data type; a PDU's first 10).
+    pub fn rx_block(&mut self, ch: usize, k: i64, dt: u8, blk: &[u8; BLOCK_MAX], at: bool) {
+        let mut b12 = [0u8; 12];
+        b12.copy_from_slice(&blk[..12]);
         let mut p = [0u8; 10];
         p.copy_from_slice(&blk[..10]);
         let pdu = &p;
@@ -638,7 +656,7 @@ impl Ms {
             return;
         }
         if self.state == PAYLOAD {
-            if dt == DT_DATA_HDR || dt == DT_RATE12 {
+            if dt == DT_DATA_HDR || block_len(dt) > 0 {
                 self.rx_data(ch, dt, blk);
                 return;
             }
@@ -684,7 +702,7 @@ impl Ms {
             return;
         }
         if dt == DT_DATA_HDR || dt == DT_RATE12 {
-            self.on_udt(dt, blk);
+            self.on_udt(dt, &b12);
             return;
         }
         if dt != DT_CSBK {
@@ -809,9 +827,13 @@ impl Ms {
         self.maint_left = 0;
         self.pd_sending = mine;
         self.pd_pos = 0;
+        self.pd_send = (1u16 << self.pd_out.n) - 1;
+        self.pd_tries = 0;
         self.pd_wait_ack = false;
-        self.pd_in_on = false;
+        self.pd_rdata = false;
+        self.pd_asm = DataAsm::default();
         self.pd_resp = None;
+        self.pd_resp_blk = None;
         self.pd_leave = false;
         self.pd_multi = matches!(g.op, crate::t3site::OP_PD_GRANT_MI | crate::t3site::OP_TD_GRANT_MI);
         self.pay_group = g.group();
@@ -819,63 +841,99 @@ impl Ms {
         self.pay_dst = g.target;
     }
 
-    /// A data header or rate 1/2 block on its payload channel (the site's repeat): its own call's response, or a
-    /// message for it or its talkgroup (answered when confirmed: 361-1 9.2.3).
-    pub fn rx_data(&mut self, ch: usize, dt: u8, blk: &[u8; 12]) {
+    /// A data header or block (rate 1/2, 3/4 or 1) on its payload channel (the site's repeat): its own call's
+    /// response, or a message for it or its talkgroup (a confirmed one answered: 361-1 8.2.2.3, 361-3 5.4.2.2).
+    pub fn rx_data(&mut self, ch: usize, dt: u8, blk: &[u8; BLOCK_MAX]) {
         if self.state != PAYLOAD || ch != self.ch {
             return;
         }
         if dt == DT_DATA_HDR {
             let mut p = [0u8; 10];
             p.copy_from_slice(&blk[..10]);
-            self.pd_in_on = false;
+            self.pd_rdata = false;
             let Some(h) = DataHead::decode(&p) else { return };
             if h.src == self.id {
                 return; // its own, repeated
             }
             if h.dpf == DPF_RESPONSE {
-                if h.dst == self.id && self.pd_wait_ack && (h.class, h.rtype) == (0, 1) {
-                    self.pd_wait_ack = false;
+                if h.dst == self.id && self.pd_wait_ack {
                     self.pay_src = h.src;
                     self.pay_dst = h.dst;
-                    self.item_done();
+                    self.on_response(&h);
                 }
                 return;
             }
             if h.dst == self.id || (h.group && self.my_tg(h.dst)) {
-                self.pd_in = DataMsg { head: h, n: h.blocks.min(MSG_BLOCKS as u8), ..Default::default() };
-                self.pd_in_got = 0;
-                self.pd_in_on = h.blocks > 0 && h.blocks as usize <= MSG_BLOCKS;
-                self.pay_src = h.src;
+                if self.pd_asm.header(&h) {
+                    self.pay_src = h.src;
+                }
+            } else {
+                self.pd_asm.left = 0;
             }
             return;
         }
-        if !self.pd_in_on {
+        if self.pd_rdata && dt == DT_R12 {
+            // a SACK's C_RDATA: the blocks to send again (361-3 5.4.1)
+            self.pd_rdata = false;
+            if let Some(retry) = pdrate::rdata_retry(&blk[..12], self.pd_out.n) {
+                self.resend(if retry == 0 { self.pd_all() } else { retry });
+            }
             return;
         }
-        self.pd_in.b[self.pd_in_got as usize] = *blk;
-        self.pd_in_got += 1;
-        if self.pd_in_got < self.pd_in.n {
-            return;
-        }
-        self.pd_in_on = false;
-        let mut d = [0u8; 12 * MSG_BLOCKS];
-        if self.pd_in.data(&mut d).is_none() {
-            return; // confirmed: no response, the sender tries again
-        }
-        let h = self.pd_in.head;
-        if !(self.pd_inbox_n > 0 && self.pd_inbox == self.pd_in) {
-            self.pd_inbox = self.pd_in;
+        let Some(taken) = self.pd_asm.block(dt, blk) else { return };
+        let h = self.pd_asm.m.head;
+        let answer = h.dpf == DPF_CONFIRMED && h.response && !h.group;
+        if taken == Taken::Ok && !(self.pd_inbox_n > 0 && self.pd_inbox == self.pd_asm.m) {
+            self.pd_inbox = self.pd_asm.m;
             self.pd_inbox_n += 1;
         }
-        if h.dpf == DPF_CONFIRMED && h.response && !h.group {
-            let (dpf, sap, dst, src) = (DPF_RESPONSE, h.sap, h.src, self.id);
-            let r = DataHead { dpf, sap, dst, src, rtype: 1, status: h.ns, ..Default::default() };
+        if answer {
+            let (r, rd) = pdrate::response(&h, self.id, taken, self.pd_asm.m.n);
             self.pd_resp = Some(r.encode());
-            self.pd_leave = !self.pd_multi && !self.mine;
-        } else if !self.pd_multi && !self.mine {
+            self.pd_resp_blk = rd;
+            self.pd_leave = taken == Taken::Ok && !self.pd_multi && !self.mine;
+        } else if taken == Taken::Ok && !self.pd_multi && !self.mine {
             self.back_to_tscc(); // 6.6.3.3.2.5 b): a single item taken
         }
+    }
+
+    fn pd_all(&self) -> u16 {
+        (1u16 << self.pd_out.n) - 1
+    }
+
+    /// The response to its confirmed message (361-1 table 8.3): ACK; SACK, its C_RDATA next; NACK for the message's
+    /// CRC, all again; another NACK ends it.
+    fn on_response(&mut self, h: &DataHead) {
+        match (h.class, h.rtype) {
+            (CLASS_ACK, TYPE_ACK) => {
+                self.pd_wait_ack = false;
+                self.item_done();
+            }
+            (CLASS_SACK, _) if h.blocks > 0 => self.pd_rdata = true,
+            (CLASS_NACK, TYPE_NACK_CRC) => self.resend(self.pd_all()),
+            _ => {
+                self.pd_wait_ack = false;
+                self.mine = false;
+                self.done(false);
+                self.back_to_tscc();
+            }
+        }
+    }
+
+    /// Sends the blocks in mask again (all of them: a C_HEAD with F = 1; some: F = 0), up to pdrate::TRIES sends.
+    fn resend(&mut self, mask: u16) {
+        if self.pd_tries + 1 >= pdrate::TRIES {
+            self.pd_wait_ack = false;
+            self.mine = false;
+            self.done(false);
+            self.back_to_tscc();
+            return;
+        }
+        self.pd_tries += 1;
+        self.pd_send = mask & self.pd_all();
+        self.pd_pos = 0;
+        self.pd_wait_ack = false;
+        self.pd_sending = true;
     }
 
     /// Its message went (unconfirmed) or was acknowledged: P_MAINT after a multi-item call, else back to the TSCC
@@ -1359,7 +1417,9 @@ impl Ms {
             self.up_pos += 1;
             let mut pdu = [0u8; 10];
             pdu.copy_from_slice(&b[..10]);
-            return Some(MsTx { ch: self.ch as u8, kind: TX_PDU, dt, pdu, ext: [b[10], b[11]], ..Default::default() });
+            let mut ext = [0u8; 14];
+            ext[..2].copy_from_slice(&b[10..]);
+            return Some(MsTx { ch: self.ch as u8, kind: TX_PDU, dt, pdu, ext, ..Default::default() });
         }
         if let Some(r) = self.reply.take() {
             return Some(pdu_tx(r, self)); // in the slot the AT bit kept for it
@@ -1510,45 +1570,58 @@ impl Ms {
 
     /// Packet data on the payload channel: its message, a response it owes, the wait for its own response.
     fn tx_data(&mut self) -> Option<MsTx> {
-        let data = |dt, b: &[u8; 12], s: &Ms| {
+        let data = |dt, b: &[u8], s: &Ms| {
             let mut pdu = [0u8; 10];
             pdu.copy_from_slice(&b[..10]);
+            let mut ext = [0u8; 14];
+            ext[..b.len() - 10].copy_from_slice(&b[10..]);
             let (src, dst, group) = (s.id, s.pd_out.head.dst, s.pay_group as u8);
-            MsTx { ch: s.ch as u8, kind: TX_DATA, dt, pdu, ext: [b[10], b[11]], group, src, dst, ..Default::default() }
+            MsTx { ch: s.ch as u8, kind: TX_DATA, dt, pdu, ext, group, src, dst, ..Default::default() }
         };
         if let Some(r) = self.pd_resp.take() {
-            let mut b = [0u8; 12];
-            b[..10].copy_from_slice(&r);
-            let mut t = data(DT_DATA_HDR, &b, self);
+            let mut t = data(DT_DATA_HDR, &r, self);
             t.dst = self.pay_src;
             t.group = 0;
-            if self.pd_leave {
+            if self.pd_leave && self.pd_resp_blk.is_none() {
                 self.back_to_tscc(); // 6.6.3.3.2.5 d): it answered a single item
             }
             return Some(t);
         }
+        if let Some(b) = self.pd_resp_blk.take() {
+            let mut t = data(DT_R12, &b, self); // C_RDATA: rate 1/2 (361-3 5.4.1.3)
+            t.dst = self.pay_src;
+            t.group = 0;
+            return Some(t);
+        }
         if self.pd_sending {
+            let n = self.pd_out.n as usize;
             if self.pd_pos == 0 {
+                // C_HEAD: F = 1 with every block, F = 0 with a SACK's (361-3 5.4.1)
                 self.pd_pos = 1;
-                let mut b = [0u8; 12];
-                b[..10].copy_from_slice(&self.pd_out.head.encode());
-                return Some(data(DT_DATA_HDR, &b, self));
+                let (all, count) = (self.pd_send == self.pd_all(), self.pd_send.count_ones() as u8);
+                let h = DataHead { full: all, blocks: count, ..self.pd_out.head };
+                return Some(data(DT_DATA_HDR, &h.encode(), self));
             }
-            let j = (self.pd_pos - 1) as usize;
-            let b = self.pd_out.b[j];
-            self.pd_pos += 1;
-            if self.pd_pos as usize > self.pd_out.n as usize {
+            let mut j = (self.pd_pos - 1) as usize;
+            while j < n && self.pd_send >> j & 1 == 0 {
+                j += 1;
+            }
+            let (dt, len) = (self.pd_out.rate(), block_len(self.pd_out.rate()));
+            let b = self.pd_out.b[j.min(MSG_BLOCKS - 1)];
+            self.pd_pos = j as u8 + 2;
+            let last = (j + 1..n).all(|i| self.pd_send >> i & 1 == 0);
+            if last {
                 self.pd_sending = false;
                 if self.pd_out.head.dpf == DPF_CONFIRMED {
                     self.pd_wait_ack = true;
                     self.pd_until = self.now + DATA_ACK_MS;
                 } else {
-                    let t = data(DT_RATE12, &b, self);
+                    let t = data(dt, &b[..len], self);
                     self.item_done();
                     return Some(t);
                 }
             }
-            return Some(data(DT_RATE12, &b, self));
+            return Some(data(dt, &b[..len], self));
         }
         if self.pd_wait_ack && self.now >= self.pd_until {
             self.pd_wait_ack = false;
@@ -1695,10 +1768,14 @@ pub unsafe extern "C" fn rdof_t3ms_sdm(
 #[no_mangle]
 pub unsafe extern "C" fn rdof_t3ms_rx(ms: *mut Ms, ch: c_int, k: i64, dt: u8, pdu: *const [u8; 10], at: bool) {
     if ch >= 0 {
-        let mut b = [0u8; 12];
+        let mut b = [0u8; BLOCK_MAX];
         if !pdu.is_null() {
-            // a rate 1/2 block: 12 octets; a data header on a payload channel too
-            let n = if dt == DT_RATE12 || (dt == DT_DATA_HDR && ch as usize != (*ms).tscc_ch) { 12 } else { 10 };
+            // a data block: 12, 18 or 24 octets as its rate; a data header on a payload channel 12; a PDU 10
+            let n = match block_len(dt) {
+                0 if dt == DT_DATA_HDR && ch as usize != (*ms).tscc_ch => 12,
+                0 => 10,
+                n => n,
+            };
             core::ptr::copy_nonoverlapping(pdu.cast::<u8>(), b.as_mut_ptr(), n);
         }
         (*ms).rx_block(ch as usize, k, dt, &b, at);

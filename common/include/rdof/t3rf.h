@@ -59,11 +59,13 @@ typedef enum {
 /* A burst read back: its data type and color code from the slot type (*dt, *cc: -1 when unreadable), and the PDU. The
  * sync is checked against the data syncs of every family (BS, MS, TS1, TS2) with up to 4 bits wrong. */
 rdof_trunk_pdu_t rdof_t3rf_burst_pdu(const uint8_t burst[RDOF_BURST_BYTES], int *dt, int *cc, uint8_t pdu[10]);
-/* A block's burst: a control block (as rdof_t3rf_pdu_burst; octets 10 and 11 ignored) or a rate 1/2 data block
- * (RDOF_DT_RATE_12: the 12 octets as given, no CRC of its own: a UDT's last block holds the message's). */
-bool rdof_t3rf_block_burst(int dt, const uint8_t blk[12], int cc, rdof_family_t family, uint8_t out[RDOF_BURST_BYTES]);
-/* rdof_t3rf_burst_pdu, and a rate 1/2 data block too (OK when its BPTC decodes); blk: the 12 octets. */
-rdof_trunk_pdu_t rdof_t3rf_burst_block(const uint8_t burst[RDOF_BURST_BYTES], int *dt, int *cc, uint8_t blk[12]);
+/* A block's burst: a control block (as rdof_t3rf_pdu_burst; octets 10 and 11 ignored) or a data block as given, no
+ * CRC of its own (a message's last block holds the message's): RDOF_DT_RATE_12 12 octets (BPTC), RDOF_DT_RATE_34
+ * 18 (the rate 3/4 trellis), RDOF_DT_RATE_1 24 (uncoded). blk: 12 octets, 18 or 24 for those. */
+bool rdof_t3rf_block_burst(int dt, const uint8_t *blk, int cc, rdof_family_t family, uint8_t out[RDOF_BURST_BYTES]);
+/* rdof_t3rf_burst_pdu, and a data block too: rate 1/2 (OK when its BPTC decodes), rate 3/4 and rate 1 (OK: the
+ * trellis always finds a path; the block's CRCs decide). blk: the block, 12, 18 or 24 octets as *dt. */
+rdof_trunk_pdu_t rdof_t3rf_burst_block(const uint8_t burst[RDOF_BURST_BYTES], int *dt, int *cc, uint8_t blk[24]);
 
 /* The 4 CACH of slots k .. k + 3 (k % 4 == 0) carrying short LC slc28 (SLCO in bits 27-24), TC from each slot's
  * parity, AT at[0..3]: 24 bits each, first on air in the top bit of byte 0. */

@@ -359,12 +359,23 @@ typedef struct {
 #define ACT_SDM 0xF0       /* rdof_t3ms_sdm (ISO 8-bit text), not an rdof_t3ms_do */
 #define ACT_SETSTATUS 0xF1 /* rdof_t3ms_set_status */
 #define ACT_DATA 0xF2      /* rdof_t3ms_data: the text, UTF-16BE, in a UDP/IPv4 datagram (port 5016 to 5016) */
-#define AIR_TEXT16 56     /* data's characters at most: 28 + 2 x 56 octets fill 12 rate 1/2 blocks */
+#define AIR_TEXT16 44     /* rate 1/2 data's characters at most: 28 + 2 x 44 octets fill 12 confirmed blocks */
 #define ACT_HELP                                                                                                       \
     "ID register [TG] | deregister | group TG [TALK_MS] | private ID [TALK_MS] | status ID N | gstatus TG N | "        \
-    "sdm ID TEXT | gsdm TG TEXT | data ID TEXT | cdata ID TEXT | gdata TG TEXT | setstatus N | cancel"
+    "sdm ID TEXT | gsdm TG TEXT | data ID TEXT | cdata ID TEXT | gdata TG TEXT (data34, cdata1 ...: rate 3/4, 1) | "  \
+    "setstatus N | cancel"
 
 #define ACTS 256
+
+/* data, cdata, gdata with a rate after them (none, 34, 1): its RDOF_T3MS_F_RATE* flag (0 rate 1/2); -1 not one */
+static int act_data_rate(const char *what)
+{
+    const char *r = what + (what[0] == 'c' || what[0] == 'g');
+    if (strncmp(r, "data", 4))
+        return -1;
+    r += 4;
+    return !*r ? 0 : !strcmp(r, "34") ? RDOF_T3MS_F_RATE34 : !strcmp(r, "1") ? RDOF_T3MS_F_RATE1 : -1;
+}
 
 static int act_cmp(const void *a, const void *b)
 {
@@ -373,8 +384,9 @@ static int act_cmp(const void *a, const void *b)
 }
 
 /* ACT_HELP (a # starts a comment; status N 0-127, 126 the emergency alarm; sdm up to 46 characters; data, cdata
- * (confirmed) and gdata up to 56, a packet data call carrying them as a text message, UTF-16BE on UDP/IPv4 port
- * 5016 (361-3 5.7.1), from 12.x.y.z to 12.x.y.z or, to a talkgroup, 225.x.y.z): 1 an action in *x (at_ms 0), 0 a
+ * (confirmed) and gdata up to 44 characters (64 at rate 3/4 or 1), a packet data call carrying them as a text message, UTF-16BE on
+ * UDP/IPv4 port 5016 (361-3 5.7.1), from 12.x.y.z to 12.x.y.z or, to a talkgroup, 225.x.y.z, in rate 1/2 blocks;
+ * data34, cdata34, gdata34 in rate 3/4 blocks, data1, cdata1, gdata1 in rate 1): 1 an action in *x (at_ms 0), 0 a
  * blank line, -1 a bad one. */
 static int act_parse(const char *text, act_t *x)
 {
@@ -402,9 +414,7 @@ static int act_parse(const char *text, act_t *x)
     else if ((!strcmp(what, "status") || !strcmp(what, "gstatus")) && got >= 4 && a2 <= 127)
         x->what = RDOF_T3MS_DO_STATUS, x->arg = (uint32_t)a1, x->talk_ms = (uint32_t)a2,
         x->flags = what[0] == 'g' ? RDOF_T3MS_F_TO_GROUP : 0;
-    else if ((!strcmp(what, "sdm") || !strcmp(what, "gsdm") || !strcmp(what, "data") || !strcmp(what, "cdata") ||
-              !strcmp(what, "gdata")) &&
-             got >= 3) {
+    else if ((!strcmp(what, "sdm") || !strcmp(what, "gsdm") || act_data_rate(what) >= 0) && got >= 3) {
         const bool sdm = strstr(what, "sdm") != NULL;
         /* the text: after the destination */
         const char *t = strstr(line, what) + strlen(what);
@@ -412,11 +422,12 @@ static int act_parse(const char *text, act_t *x)
         t += strspn(t, "0123456789");
         t += strspn(t, " \t");
         size_t n = strcspn(t, "\r\n");
-        if (!n || n > (sdm ? 46 : AIR_TEXT16))
+        if (!n || n > (sdm ? 46 : act_data_rate(what) ? sizeof x->text : AIR_TEXT16))
             return -1;
         memcpy(x->text, t, n);
         x->what = sdm ? ACT_SDM : ACT_DATA, x->arg = (uint32_t)a1, x->len = (uint8_t)n,
-        x->flags = (what[0] == 'g' ? RDOF_T3MS_F_GROUP : 0) | (what[0] == 'c' ? RDOF_T3MS_F_CONFIRMED : 0);
+        x->flags = (what[0] == 'g' ? RDOF_T3MS_F_GROUP : 0) | (what[0] == 'c' ? RDOF_T3MS_F_CONFIRMED : 0) |
+                   (sdm ? 0 : (uint8_t)act_data_rate(what));
     } else if (!strcmp(what, "setstatus") && got >= 3 && a1 <= 127)
         x->what = ACT_SETSTATUS, x->arg = (uint32_t)a1;
     else if (!strcmp(what, "cancel"))
@@ -790,7 +801,7 @@ static void air_text(const uint8_t *d, size_t n, char *out, size_t cap)
 /* what MS i took since the last look, said: short data, and packet data (a UDP/IPv4 datagram's payload) */
 static void air_inbox(int i)
 {
-    uint8_t d[160];
+    uint8_t d[300];
     char t[400];
     size_t n = 0;
     uint32_t src = 0;
@@ -871,8 +882,8 @@ static void air_slot(int64_t k, const uint8_t burst[RDOF_BURST_BYTES], bool aire
         sent = true;
         AM.in++;
     }
-    /* the outbound of slot k, as a radio decodes it: a PDU, or a rate 1/2 data block (12 octets: UDT and packet data) */
-    uint8_t pdu[12] = {0};
+    /* the outbound of slot k, as a radio decodes it: a PDU, or a data block (12 octets: UDT and packet data; 18, 24) */
+    uint8_t pdu[24] = {0};
     int dt = -1, rcc = -1;
     uint8_t mdt = 0;
     if (aired) {

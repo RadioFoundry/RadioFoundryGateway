@@ -11,13 +11,14 @@ use core::ptr::null_mut;
 
 use crate::ffi::{
     dmrCachDeinterleave, dmrCachInterleave, dmrCachTactDecode, dmrCachTactEncode, rdof_bptc196_decode,
-    rdof_check_crc16, rdof_crc16_ccitt, rdof_duplex_data, rdof_duplex_lc_burst, rdof_voice_regen_burst,
-    rdof_voice_regen_init,
+    rdof_check_crc16, rdof_crc16_ccitt, rdof_duplex_data, rdof_duplex_lc_burst, rdof_rate1_encode,
+    rdof_rate1_payload, rdof_trellis34_decode, rdof_trellis34_encode, rdof_voice_regen_burst, rdof_voice_regen_init,
     RDOF_DT_CSBK, RDOF_DT_DATA_HEADER, RDOF_DT_MBC_CONTINUATION, RDOF_DT_MBC_HEADER, RDOF_DT_TERMINATOR_WITH_LC,
     RDOF_DT_VOICE, RDOF_DT_VOICE_LC_HEADER, RDOF_DT_VOICE_SYNC, RDOF_MASK_CSBK, RDOF_MASK_DATA_HEADER,
 };
 use crate::layer2::{
-    rdof_data_burst, rdof_decode_slot_type, rdof_detect_sync, rdof_family_voice_sync, rdof_group_lc, RDOF_DATA_XOR,
+    rdof_data_burst, rdof_decode_slot_type, rdof_detect_sync, rdof_family_voice_sync, rdof_group_lc, rdof_info_burst,
+    RDOF_DATA_XOR,
 };
 use crate::mmdvm::{rdof_mmdvm_frame, RDOF_SYNC_DATA};
 use crate::pdu::{rdof_decode_voice_lc, RdofFullLc};
@@ -208,27 +209,58 @@ pub extern "C" fn rdof_t3rf_pdu_burst(dt: c_int, pdu: &[u8; 10], cc: c_int, fami
     true
 }
 
-/// A block's burst: a control block (as rdof_t3rf_pdu_burst, octets 10 and 11 ignored) or a rate 1/2 data block
-/// (12 octets as given: an appended block's CRC is over the whole message).
+/// A block's burst: a control block (as rdof_t3rf_pdu_burst, octets 10 and 11 ignored) or a data block as given
+/// (361-1 8.2.2: rate 1/2 12 octets, BPTC(196,96); rate 3/4 18, the B.2 trellis; rate 1 24, uncoded; its CRCs are
+/// the message's). blk: 12 octets, 18 for rate 3/4, 24 for rate 1.
+///
+/// # Safety
+/// blk holds the octets its data type says.
 #[no_mangle]
-pub extern "C" fn rdof_t3rf_block_burst(dt: c_int, blk: &[u8; 12], cc: c_int, family: u32, out: &mut Burst) -> bool {
+pub unsafe extern "C" fn rdof_t3rf_block_burst(
+    dt: c_int,
+    blk: *const u8,
+    cc: c_int,
+    family: u32,
+    out: &mut Burst,
+) -> bool {
+    let sync = rdof_family_voice_sync(family) ^ RDOF_DATA_XOR;
+    if dt == DT_RATE34 || dt == DT_RATE1 {
+        let mut info = [0u8; 196];
+        if dt == DT_RATE34 {
+            rdof_trellis34_encode(blk, info.as_mut_ptr());
+        } else {
+            rdof_rate1_encode(blk, info.as_mut_ptr());
+        }
+        rdof_info_burst(&info, dt, cc & 0x0F, sync, out);
+        return true;
+    }
+    let b12 = &*blk.cast::<[u8; 12]>();
     if dt == DT_RATE12 {
-        rdof_data_burst(blk, dt, cc & 0x0F, rdof_family_voice_sync(family) ^ RDOF_DATA_XOR, out);
+        rdof_data_burst(b12, dt, cc & 0x0F, sync, out);
         return true;
     }
     let mut pdu = [0u8; 10];
-    pdu.copy_from_slice(&blk[..10]);
+    pdu.copy_from_slice(&b12[..10]);
     rdof_t3rf_pdu_burst(dt, &pdu, cc, family, out)
 }
 
-/// A burst read back as rdof_t3rf_burst_pdu, and a rate 1/2 data block too (PDU_OK when its BPTC decodes; no CRC
-/// of its own). blk: the 12 octets (a control block's last two, its CRC).
+/// A burst read back as rdof_t3rf_burst_pdu, and a data block too: rate 1/2 (PDU_OK when its BPTC decodes), rate 3/4
+/// (the trellis always finds a path) and rate 1 (uncoded): PDU_OK, their CRCs left to the message. blk: the block's
+/// octets (12, 18 or 24; a control block's 12, its CRC the last two).
 #[no_mangle]
-pub extern "C" fn rdof_t3rf_burst_block(burst: &Burst, dt: &mut c_int, cc: &mut c_int, blk: &mut [u8; 12]) -> c_int {
+pub extern "C" fn rdof_t3rf_burst_block(burst: &Burst, dt: &mut c_int, cc: &mut c_int, blk: &mut [u8; 24]) -> c_int {
     let mut pdu = [0u8; 10];
     let r = rdof_t3rf_burst_pdu(burst, dt, cc, &mut pdu);
     if r == NOT_PDU && *dt == DT_RATE12 {
         return if unsafe { rdof_bptc196_decode(burst.as_ptr(), blk.as_mut_ptr()) } { PDU_OK } else { PDU_BAD };
+    }
+    if r == NOT_PDU && *dt == DT_RATE34 {
+        let _ = unsafe { rdof_trellis34_decode(burst.as_ptr(), blk.as_mut_ptr()) };
+        return PDU_OK;
+    }
+    if r == NOT_PDU && *dt == DT_RATE1 {
+        unsafe { rdof_rate1_payload(burst.as_ptr(), blk.as_mut_ptr()) };
+        return PDU_OK;
     }
     if r == PDU_OK {
         let _ = unsafe { rdof_bptc196_decode(burst.as_ptr(), blk.as_mut_ptr()) };
@@ -632,7 +664,7 @@ pub unsafe extern "C" fn rdof_t3rf_rx(t: *mut T3rf, c: c_int, k: i64, b: *const 
     let b = &*b;
     let ch = 2 * c + (k & 1) as c_int;
     if t.tscc && ch == 0 {
-        let (mut dt, mut cc, mut pdu) = (0, 0, [0u8; 12]);
+        let (mut dt, mut cc, mut pdu) = (0, 0, [0u8; 24]);
         match rdof_t3rf_burst_block(&b.burst, &mut dt, &mut cc, &mut pdu) {
             PDU_OK => {
                 if cc != t.cc {
@@ -917,7 +949,7 @@ pub unsafe extern "C" fn rdof_t3rf_slot(
             Some(tscc) => tscc(t.io.ctx, k, &mut dt, pdu.as_mut_ptr()),
             None => false,
         };
-        if got && rdof_t3rf_block_burst(dt, &pdu, t.cc, FAMILY_BS, burst) {
+        if got && dt != DT_RATE34 && dt != DT_RATE1 && rdof_t3rf_block_burst(dt, pdu.as_ptr(), t.cc, FAMILY_BS, burst) {
             ctl = RDOF_SYNC_DATA | dt as u8;
             t.tscc_sent += 1;
         } else {

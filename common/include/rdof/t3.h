@@ -403,6 +403,8 @@ void rdof_t3_status(const rdof_t3_site_t *s, rdof_t3_status_t *st);
 #define RDOF_T3MS_F_BROADCAST 0x04 /* DO_GROUP: a broadcast call (BCAST_SV), one way: BTV_GRANT */
 #define RDOF_T3MS_F_CONFIRMED 0x40 /* rdof_t3ms_data: confirmed data */
 #define RDOF_T3MS_F_MULTI 0x08     /* rdof_t3ms_data: multi-item (P_MAINT after the item) */
+#define RDOF_T3MS_F_RATE34 0x10    /* rdof_t3ms_data: rate 3/4 blocks (neither rate flag: rate 1/2) */
+#define RDOF_T3MS_F_RATE1 0x20     /* rdof_t3ms_data: rate 1 blocks */
 
 #define RDOF_T3MS_IDLE 0     /* on the TSCC, nothing to do */
 #define RDOF_T3MS_ACCESS 1   /* random access in progress */
@@ -412,14 +414,14 @@ void rdof_t3_status(const rdof_t3_site_t *s, rdof_t3_status_t *st);
 /* what an MS sends in inbound slot k */
 typedef struct {
     uint8_t ch;      /* channel index */
-    uint8_t kind;    /* 1 PDU, 2 voice, 3 packet data (dt 6 a data header, 7 a rate 1/2 block; pdu + ext) */
+    uint8_t kind;    /* 1 PDU, 2 voice, 3 packet data (dt 6 a data header; 7, 8, 10 a rate 1/2, 3/4, 1 block) */
     uint8_t dt;      /* PDU, packet data */
     uint8_t what;    /* voice: RDOF_T3_VOICE_* */
     uint8_t pdu[10];
     uint8_t group;
     uint8_t offset;  /* sent in offset timing (a duplex call): in the other inbound slot of ch's carrier */
     uint32_t src, dst;
-    uint8_t ext[2];  /* dt RDOF_DT_RATE_12, a data header: the block's octets 10 and 11 */
+    uint8_t ext[14]; /* a data block (dt 7, 8, 10) or header: its octets 10 on (to 11, 17 or 23) */
     uint8_t pad2[2];
 } rdof_t3ms_tx_t;
 
@@ -446,18 +448,21 @@ bool rdof_t3ms_do(rdof_t3ms_t *ms, uint8_t what, uint32_t arg, uint32_t talk_ms,
 /* UDT short data (up to 46 octets, UDT_Format format) to dst, a talkgroup with RDOF_T3MS_F_GROUP */
 bool rdof_t3ms_sdm(rdof_t3ms_t *ms, uint32_t dst, uint8_t flags, uint8_t format, const uint8_t *data, size_t len,
                    int64_t at_ms);
-/* A packet data call with one message (SAP 4, up to 140 octets unconfirmed, 116 confirmed) to dst: an MS, the site
- * (TSI, its data ID, IPI) or, RDOF_T3MS_F_GROUP, a talkgroup; RDOF_T3MS_F_CONFIRMED, RDOF_T3MS_F_MULTI. */
+/* A packet data call with one message (SAP 4; up to 12 blocks: 140 octets unconfirmed, 116 confirmed at rate 1/2,
+ * 212 / 188 at rate 3/4, 284 / 260 at rate 1) to dst: an MS, the site (TSI, its data ID, IPI) or, RDOF_T3MS_F_GROUP,
+ * a talkgroup; RDOF_T3MS_F_CONFIRMED, RDOF_T3MS_F_MULTI, RDOF_T3MS_F_RATE34 or RDOF_T3MS_F_RATE1. Confirmed: a SACK's
+ * blocks are sent again, a NACK for the CRC-32 all of them, up to 4 sends; no response in 3 s ends it. */
 bool rdof_t3ms_data(rdof_t3ms_t *ms, uint32_t dst, uint8_t flags, const uint8_t *data, size_t len, int64_t at_ms);
-/* The last packet data message it took (CRC good): its length into out (up to cap), its source; -1 none. */
+/* The last packet data message it took (CRC good; any rate, confirmed ones answered ACK, SACK or NACK): its
+ * length, the data into out (up to cap), its source; -1 none. */
 int rdof_t3ms_data_inbox(const rdof_t3ms_t *ms, uint8_t *out, size_t cap, uint32_t *src);
 /* The last UDT short data it took: its octets into out (up to cap, *len; a character format less its pad nibbles),
  * its source and UDT_Format. Returns how many it has taken (0: none, nothing written). */
 uint32_t rdof_t3ms_sd_inbox(const rdof_t3ms_t *ms, uint8_t *out, size_t cap, size_t *len, uint32_t *src,
                             uint8_t *format);
 /* outbound slot k on channel ch: a block (dt 0: voice or idle, nothing to read); at is the CACH's AT bit for the
- * next slot (TSCC carrier). pdu: 10 octets, 12 when dt is RDOF_DT_RATE_12 or RDOF_DT_DATA_HEADER on a payload
- * channel (packet data: the BPTC-decoded block) */
+ * next slot (TSCC carrier). pdu: 10 octets; 12 when dt is RDOF_DT_RATE_12 or RDOF_DT_DATA_HEADER on a payload
+ * channel, 18 for RDOF_DT_RATE_34, 24 for RDOF_DT_RATE_1 (packet data: the decoded block, rdof_t3rf_burst_block) */
 void rdof_t3ms_rx(rdof_t3ms_t *ms, int ch, int64_t k, uint8_t dt, const uint8_t *pdu, bool at);
 /* inbound slot k: true when the MS transmits, filling *tx */
 bool rdof_t3ms_tx(rdof_t3ms_t *ms, int64_t k, int64_t now_ms, rdof_t3ms_tx_t *tx);

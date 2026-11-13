@@ -374,7 +374,7 @@ static void ext_out(void *ctx, int64_t k, const rdof_t3sim_out_t *out, int ncar,
         return;
     const rdof_t3sim_out_t *o = &out[st.ch / 2];
     X.heard += o->pdu_ok;
-    rdof_t3ms_rx(X.ms, st.ch, k, (uint8_t)(o->pdu_ok ? o->dt : 0), o->pdu, st.ch == 0 && at_next > 0);
+    rdof_t3ms_rx(X.ms, st.ch, k, (uint8_t)(o->pdu_ok ? o->dt : 0), o->blk, st.ch == 0 && at_next > 0);
 }
 
 /* ── the Rust's mirrors of the C structs, and its memory ─────────────────── */

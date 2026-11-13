@@ -7,7 +7,7 @@
 
 use crate::t3ms::{Ms, MsTx, TX_DATA, TX_PDU, TX_VOICE};
 use crate::t3pdu::{opcode, DT_CSBK};
-use crate::t3site::{DataRx, Event, Site, SlotOut, CHANNELS, RC_SEND};
+use crate::t3site::{block_len, DataRx, Event, Site, SlotOut, BLOCK_MAX, CHANNELS, RC_SEND};
 use crate::t3udt::{DT_DATA_HDR, DT_RATE12};
 
 pub const SLOT_MS: i64 = 30;
@@ -24,6 +24,8 @@ pub struct Air<'a, const N: usize> {
     /// (opcode, n): the next n TSCC blocks (outbound) or MS PDUs (inbound) with that opcode are lost on the air.
     pub lose_out: (u8, u32),
     pub lose_in: (u8, u32),
+    /// Packet data blocks the MSs hear damaged: bit j, the j-th block from now (a header doesn't count).
+    pub damage: u32,
 }
 
 /// Whether pdu is one to lose, counting it.
@@ -47,6 +49,7 @@ impl<'a, const N: usize> Air<'a, N> {
             inbound: [None; N],
             lose_out: (0, 0),
             lose_in: (0, 0),
+            damage: 0,
             data: Default::default(),
         }
     }
@@ -82,7 +85,7 @@ impl<'a, const N: usize> Air<'a, N> {
             } else if t.kind == TX_PDU && t.dt == DT_RATE12 {
                 let mut b = [0u8; 12];
                 b[..10].copy_from_slice(&t.pdu);
-                b[10..].copy_from_slice(&t.ext);
+                b[10..].copy_from_slice(&t.ext[..2]);
                 self.site.rx_block(ch, t.dt, &b);
             } else if t.kind == TX_PDU {
                 if !lose(&mut self.lose_in, &t.pdu) {
@@ -90,12 +93,16 @@ impl<'a, const N: usize> Air<'a, N> {
                 }
             } else if t.kind == TX_DATA {
                 // the radio layer counts the message for the controller and repeats it on the outbound
-                let mut b = [0u8; 12];
+                let mut b = [0u8; BLOCK_MAX];
                 b[..10].copy_from_slice(&t.pdu);
                 b[10..].copy_from_slice(&t.ext);
                 let what = if t.dt == DT_DATA_HDR {
                     self.data[ch].header(&t.pdu)
                 } else {
+                    if self.damage & 1 != 0 {
+                        b[block_len(t.dt).max(12) - 3] ^= 0x24; // past its FEC: its CRCs fail
+                    }
+                    self.damage >>= 1;
                     self.data[ch].block()
                 };
                 self.site.rx_data(ch, what, t.src);
@@ -118,9 +125,9 @@ impl<'a, const N: usize> Air<'a, N> {
         for m in self.ms.iter_mut() {
             let ch = m.ch();
             if ch == tscc && k & 1 == 0 {
-                let mut b = [0u8; 12];
+                let mut b = [0u8; BLOCK_MAX];
                 b[..10].copy_from_slice(&out.tscc_pdu);
-                b[10..].copy_from_slice(&out.tscc_ext);
+                b[10..12].copy_from_slice(&out.tscc_ext);
                 m.rx_block(ch, k, if lost { 0 } else { out.tscc_dt }, &b, out.at != 0);
             } else if ch < CHANNELS && ch as i64 & 1 == k & 1 {
                 m.rx(ch, k, out.ch[ch].dt, &out.ch[ch].pdu, false);
