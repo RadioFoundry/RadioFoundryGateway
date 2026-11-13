@@ -1188,14 +1188,14 @@ static void test_records(void)
     const char *const svc[] = {"reg", "group", "private", "allcall"};
     const rdof_mn_trunk_info_t ti = {.model = "small", .net = 5, .site = 3, .par = "ab", .area_bits = 5, .tscc = &a,
                                      .ntscc = 1, .carriers = cs, .ncarriers = 2, .services = svc, .nservices = 4,
-                                     .reg = true};
+                                     .reg = true, .priority = 3};
     char tj[1024];
     CHECK(rdof_mn_trunk_info_json(&ti, tj, sizeof tj) > 0);
     CHECK(!strcmp(tj, "{\"system\":{\"model\":\"small\",\"net\":5,\"site\":3,\"par\":\"ab\",\"area_bits\":5},"
                       "\"tscc\":[{\"chan\":1,\"tx_hz\":438750000,\"rx_hz\":438250000,\"cc\":1}],"
                       "\"carriers\":[{\"chan\":1,\"tx_hz\":438750000,\"rx_hz\":438250000},"
                       "{\"chan\":2,\"tx_hz\":438600000,\"rx_hz\":438500000}],"
-                      "\"services\":[\"reg\",\"group\",\"private\",\"allcall\"],\"reg\":true}") ||
+                      "\"services\":[\"reg\",\"group\",\"private\",\"allcall\"],\"reg\":true,\"priority\":3}") ||
           !printf("  %s\n", tj));
     /* in info: the path marked, the object added */
     static rdof_site_t s;

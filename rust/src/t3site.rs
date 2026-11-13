@@ -59,8 +59,9 @@ pub use status::{ahoy_status, status_ahoy, status_of, status_rand, STATUS_CANCEL
 #[path = "t3bcast.rs"]
 mod bcast;
 pub use bcast::{
-    call_timers_of, mass_reg_applies, mass_reg_of, ps_counter, ps_wake, reg_window_ms, reg_window_of,
+    call_timers_of, mass_reg_applies, mass_reg_of, ps_counter, ps_wake, reg_window_ms, reg_window_of, vn_ap_of,
 };
+use bcast::NbChan;
 #[path = "t3tscc.rs"]
 mod tscc;
 #[path = "t3duplex.rs"]
@@ -158,7 +159,9 @@ pub struct Cfg {
     pub divert: u8,
     pub auth: u8, // AUTH_*: MS authentication at registration (361-4 6.4.8; t3authsite.rs)
     pub composite: u8, // 1: the TSCC's slot carries a call when no payload channel is free (361-4 5.3.2)
-    pub pad1: u8,
+    pub vote_blk: u8,  // VOTE_BLK: TDMA frames of blocked random access after a Vote Now Advice (361-4 A.2: 2-10)
+    pub priority: u8,  // the site's priority radiated with its neighbors (361-4 table 6.81: 1 highest, 7 lowest, 0 none)
+    pub pad1: [u8; 3],
 }
 
 #[repr(C)]
@@ -350,15 +353,20 @@ pub struct Setup {
     pub r#ref: u32,
 }
 
+/// An adjacent site: its C_SYScode, its TSCC's logical channel, Active_Connection (when known), its priority
+/// (table 6.81; the confirmed priority radiated with it is the site's own, Cfg.priority), and its TSCC's color code
+/// and frequencies as its own carriers give them (tx_hz its outbound, rx_hz its inbound; 0: not known).
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Neighbor {
     pub syscode: u16,
     pub chan: u16,
     pub active_known: u8,
     pub active: u8,
-    pub prio_confirmed: u8,
     pub prio_adjacent: u8,
+    pub cc: u8,
+    pub tx_hz: u32,
+    pub rx_hz: u32,
 }
 
 pub const EV_CH_OPEN: u8 = 1;
@@ -763,6 +771,7 @@ pub fn cfg_default() -> Cfg {
         sd_store_ms: 30_000,
         data_hang_ms: 3000,
         divert: 1,
+        vote_blk: 6,
         ..Default::default()
     };
     c.carriers[0] = Carrier { tx_hz: 438_750_000, rx_hz: 438_250_000, chan: 1, tscc: 1, enabled: 1 };
@@ -819,6 +828,12 @@ fn check(c: &Cfg, err: &mut Buf) -> bool {
     }
     if c.nrand_wait > 15 {
         no!("timers.nrand_wait: 0 to 15");
+    }
+    if !(2..=10).contains(&c.vote_blk) {
+        no!("broadcast.vote_blk: 2 to 10");
+    }
+    if c.priority > 7 {
+        no!("broadcast.priority: 0 to 7");
     }
     if c.backoff_min == 0 || c.backoff_max > 15 || c.backoff_min > c.backoff_max {
         no!("timers.backoff_min, backoff_max: 1 to 15, min not over max");
@@ -1148,22 +1163,31 @@ impl Site {
         if let Some(b) = self.due_bcast_more(reg, bo, sc) {
             return Some(b);
         }
-        if self.cfg.adjacent_ms > 0 && self.nneighbors > 0 && now >= self.next_adjacent_ms {
-            let n = self.neighbors[self.adjacent_idx % self.nneighbors];
-            self.adjacent_idx = (self.adjacent_idx + 1) % self.nneighbors;
-            self.next_adjacent_ms = now + (self.cfg.adjacent_ms as i64 / self.nneighbors as i64).max(300);
-            let act = if n.active_known != 0 { Some(n.active != 0) } else { None };
-            let b = Bcast::adjacent_site(reg, bo, sc, n.syscode, act, n.prio_confirmed, n.prio_adjacent, n.chan);
-            return Some((b.encode(), DT_CSBK, None));
+        let nn = self.nneighbors;
+        if self.cfg.adjacent_ms > 0 && nn > 0 && now >= self.next_adjacent_ms {
+            self.next_adjacent_ms = now + (self.cfg.adjacent_ms as i64 / nn as i64).max(300);
+            // CH_ADJ has no absolute form (table 7.79): a neighbor whose number names other frequencies here is
+            // left out
+            for _ in 0..nn {
+                let i = self.adjacent_idx % nn;
+                self.adjacent_idx = (i + 1) % nn;
+                if self.nb_chan(i) == NbChan::Clash {
+                    continue;
+                }
+                let n = self.neighbors[i];
+                let act = if n.active_known != 0 { Some(n.active != 0) } else { None };
+                let b = Bcast::adjacent_site(reg, bo, sc, n.syscode, act, self.cfg.priority, n.prio_adjacent, n.chan);
+                return Some((b.encode(), DT_CSBK, None));
+            }
         }
-        let nc = self.cfg.ncarriers as usize;
         if self.cfg.chan_freq_ms > 0 && now >= self.next_chan_freq_ms {
-            let c = self.cfg.carriers[self.chan_freq_idx % nc];
-            self.chan_freq_idx = (self.chan_freq_idx + 1) % nc;
-            self.next_chan_freq_ms = now + (self.cfg.chan_freq_ms as i64 / nc as i64).max(300);
-            let h = Bcast::chan_freq(reg, bo, sc, c.chan);
+            let m = self.chan_freq_count();
+            let (chan, tx_hz, rx_hz) = self.chan_freq_at(self.chan_freq_idx % m);
+            self.chan_freq_idx = (self.chan_freq_idx + 1) % m;
+            self.next_chan_freq_ms = now + (self.cfg.chan_freq_ms as i64 / m as i64).max(300);
+            let h = Bcast::chan_freq(reg, bo, sc, chan);
             // the MS's view: it transmits on the site's receive frequency
-            let ap = BcAp { chan: c.chan, tx_hz: c.rx_hz, rx_hz: c.tx_hz };
+            let ap = BcAp { chan, tx_hz: rx_hz, rx_hz: tx_hz };
             return Some((h.encode(), DT_MBC_HDR, Some(ap.encode())));
         }
         if self.cfg.local_time_ms > 0 && self.cfg.clock_ok != 0 && now >= self.next_local_time_ms {
@@ -2655,10 +2679,12 @@ impl Site {
         self.link(c);
     }
     pub fn set_neighbors(&mut self, n: &[Neighbor]) {
+        let (old, nold) = (self.neighbors, self.nneighbors);
         let count = n.len().min(NEIGHBORS);
         self.neighbors[..count].copy_from_slice(&n[..count]);
         self.nneighbors = count;
         self.adjacent_idx = 0;
+        self.log_clashes(&old[..nold]);
     }
     /// A talkgroup's provisioning; None removes it. False: the table is full.
     pub fn set_tg_policy(&mut self, tg: u32, p: Option<&TgPolicy>) -> bool {

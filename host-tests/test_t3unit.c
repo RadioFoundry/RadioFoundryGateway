@@ -255,6 +255,7 @@ static void site_open(site_t *s, int client, const char *node, int site_no, uint
     rdof_t3_policy_t pol;
     rdof_t3cfg_default(&cfg, &pol);
     cfg.site = (uint16_t)site_no;
+    cfg.priority = (uint8_t)client; /* site-b radiates 1 with its neighbors (361-4 table 6.81) */
     pol.wide_tg.all = 1;
     s->u = calloc(1, rdof_t3unit_size());
     s->mem = aligned_alloc(8, (rdof_t3_site_size() + 7) / 8 * 8);
@@ -933,6 +934,12 @@ int main(void)
     CHECK(npeers >= 1 && !strcmp(pb->node, "site-b") && pb->site == 4 && pb->chan == 1 && pb->online &&
               pb->syscode == rdof_t3_syscode(rdof_t3unit_cfg(A.u)->model, rdof_t3unit_cfg(A.u)->net, 4, rdof_t3unit_cfg(A.u)->par),
           "A's neighbor: %s site %u chan %u syscode 0x%04x", pb->node, pb->site, pb->chan, pb->syscode);
+    /* its TSCC's frequencies and color code from its info's tscc[0], its priority from trunk.priority (tier3.md 5.6) */
+    const rdof_t3_carrier_t *btscc = &rdof_t3unit_cfg(Bs.u)->carriers[0];
+    CHECK(pb->tx_hz == btscc->tx_hz && pb->rx_hz == btscc->rx_hz && pb->tx_hz && pb->cc == rdof_t3unit_cfg(Bs.u)->cc &&
+              pb->priority == 1 && rdof_t3unit_cfg(Bs.u)->priority == 1,
+          "A's neighbor: %lu / %lu Hz, cc %u, priority %u", (unsigned long)pb->tx_hz, (unsigned long)pb->rx_hz, pb->cc,
+          pb->priority);
     broker_publish(1, "DMR/node/site-b/online", "0", 1, true);
     broker_deliver();
     CHECK(!rdof_t3unit_peers(A.u, NULL)[0].online && rdof_t3unit_neighbors(A.u) == 1, "B offline: still listed, inactive");

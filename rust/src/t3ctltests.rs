@@ -487,12 +487,13 @@ fn nb(syscode: u16, chan: u16, active: Option<bool>) -> Neighbor {
         chan,
         active_known: active.is_some() as u8,
         active: active.unwrap_or(false) as u8,
-        prio_confirmed: 0,
-        prio_adjacent: 0,
+        cc: cfg_default().cc,
+        ..Default::default()
     }
 }
 
-/// Vote_Now (6.7.1.3) for each adjacent site, then VOTE_BLK TSCC slots of C_ALOHA that lets no MS in.
+/// Vote_Now (6.7.1.3) for each adjacent site, then VOTE_BLK frames (the default 6) of C_ALOHA that lets no MS in,
+/// one TSCC slot each, and no more.
 #[test]
 fn vote_now_blocks_random_access() {
     let mut s = site_with(|c| {
@@ -502,7 +503,7 @@ fn vote_now_blocks_random_access() {
     s.set_neighbors(&[nb(0x0123, 21, Some(true)), nb(0x0456, 22, None)]);
     let mut air = Air::new(&mut s, [ms(1001, &[TG], &[1])], T0);
     let mut chans = Vec::new();
-    let mut after = 0; // TSCC blocks checked after a Vote_Now
+    let mut after = -1; // TSCC blocks checked after a Vote_Now
     let mut blocked = 0;
     for _ in 0..400 {
         air.step(&mut |_| {});
@@ -510,18 +511,21 @@ fn vote_now_blocks_random_access() {
         if air.k & 1 == 0 {
             continue; // slot k - 1 was odd: no TSCC block
         }
+        let held = Aloha::decode(&o.tscc_pdu).is_some_and(|a| (a.mask, a.addr) == (24, ADRNULL));
         if after > 0 {
-            let a = Aloha::decode(&o.tscc_pdu).expect("only a C_ALOHA in the block");
-            assert_eq!((a.mask, a.addr), (24, ADRNULL));
+            assert!(held, "only a C_ALOHA that lets no MS in");
             after -= 1;
             blocked += 1;
+        } else if after == 0 {
+            assert!(!held, "random access again after VOTE_BLK frames");
+            after = -1;
         } else if let Some(b) = Bcast::decode(&o.tscc_pdu).filter(|b| b.ann == BC_VOTE_NOW) {
             chans.push(b.parms2 & 0xFFF);
-            after = 4;
+            after = 6;
         }
     }
     assert!(chans.len() >= 4 && chans.contains(&21) && chans.contains(&22), "{chans:?}");
-    assert!(blocked >= 16);
+    assert!(blocked >= 24);
 }
 
 /// Ann_WD_TSCC (6.7.1.1): the adjacent TSCCs two to a CSBK; a site known to be off is withdrawn.
