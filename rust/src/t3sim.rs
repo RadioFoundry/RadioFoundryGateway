@@ -13,7 +13,7 @@ use crate::layer2::{rdof_group_lc, rdof_lc_burst, RDOF_DATA_XOR, RDOF_MS_VOICE};
 use crate::ambe::{rdof_ambe_decode_frame, rdof_ambe_encode_frame};
 use crate::bits::{get_field, set_field};
 use crate::mmdvm::rdof_silence_burst;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 
 extern "C" {
     fn rdof_embedded_lc_encode(lc9: *const u8, raw128: *mut u8);
@@ -136,6 +136,40 @@ fn vary_ambe(burst: &mut [u8]) {
     }
 }
 
+/// Recorded voice for the simulated MSs (rdof_t3sim_ambe): raw 9-octet AMBE+2 frames (72 bits each, FEC coded as
+/// on air), played in a loop from the first at each call's header. Null: the near-silence of vary_ambe.
+static AMBE_SRC: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
+static AMBE_N: AtomicUsize = AtomicUsize::new(0);
+static AMBE_AT: AtomicUsize = AtomicUsize::new(0);
+
+/// The simulated MSs' voice from n frames at p (the caller keeps them); n 0: back to near-silence.
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3sim_ambe(p: *const u8, n: usize) {
+    AMBE_N.store(0, Ordering::Relaxed);
+    AMBE_SRC.store(if n > 0 { p.cast_mut() } else { core::ptr::null_mut() }, Ordering::Relaxed);
+    AMBE_AT.store(0, Ordering::Relaxed);
+    AMBE_N.store(n, Ordering::Relaxed);
+}
+
+/// A voice burst's three frames from the recording, when there is one.
+fn recorded_ambe(burst: &mut [u8]) -> bool {
+    let (p, n) = (AMBE_SRC.load(Ordering::Relaxed), AMBE_N.load(Ordering::Relaxed));
+    if p.is_null() || n == 0 {
+        return false;
+    }
+    let mut frames = [0u8; 27];
+    for f in 0..3 {
+        let i = AMBE_AT.fetch_add(1, Ordering::Relaxed) % n;
+        frames[f * 9..f * 9 + 9].copy_from_slice(unsafe { core::slice::from_raw_parts(p.add(i * 9), 9) });
+    }
+    set_field(burst, 0, 64, get_field(&frames, 0, 64));
+    set_field(burst, 64, 44, get_field(&frames, 64, 44));
+    for k in 0..3 {
+        set_field(burst, 156 + 36 * k, 36, get_field(&frames, 108 + 36 * k, 36));
+    }
+    true
+}
+
 fn ms_burst(tx: &MsTx, n: c_int, cc: c_int, b: &mut RdofBurst) -> bool {
     unsafe { core::ptr::write_bytes(b as *mut RdofBurst, 0, 1) };
     b.family = FAMILY_MS;
@@ -158,6 +192,9 @@ fn ms_burst(tx: &MsTx, n: c_int, cc: c_int, b: &mut RdofBurst) -> bool {
             let mut lc9 = [0u8; 9];
             rdof_group_lc(tx.src, tx.dst, tx.group != 0, c_int::from(tx.so), &mut lc9);
             rdof_lc_burst(&lc9, dt, cc, RDOF_MS_VOICE ^ RDOF_DATA_XOR, &mut b.burst);
+            if tx.what == VOICE_HEADER {
+                AMBE_AT.store(0, Ordering::Relaxed);
+            }
             b.dt = dt;
             true
         }
@@ -175,7 +212,9 @@ fn ms_burst(tx: &MsTx, n: c_int, cc: c_int, b: &mut RdofBurst) -> bool {
             } else {
                 unsafe { rdof_duplex_silence(n, cc, b.burst.as_mut_ptr()) };
             }
-            vary_ambe(&mut b.burst);
+            if !recorded_ambe(&mut b.burst) {
+                vary_ambe(&mut b.burst);
+            }
             b.dt = if n != 0 { RDOF_DT_VOICE } else { RDOF_DT_VOICE_SYNC };
             b.n = n;
             true
@@ -422,4 +461,5 @@ static LAYOUTS: [Layout; 4] = [
 pub extern "C" fn rdof_t3sim_layout(i: usize) -> *const Layout {
     LAYOUTS.get(i).map_or(core::ptr::null(), |l| l as *const Layout)
 }
+
 

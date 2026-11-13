@@ -364,11 +364,12 @@ typedef struct {
 #define ACT_SDM 0xF0       /* rdof_t3ms_sdm (ISO 8-bit text), not an rdof_t3ms_do */
 #define ACT_SETSTATUS 0xF1 /* rdof_t3ms_set_status */
 #define ACT_DATA 0xF2      /* rdof_t3ms_data: the text, UTF-16BE, in a UDP/IPv4 datagram (port 5016 to 5016) */
+#define ACT_AMBE 0xF3      /* the MSs' voice from a file of AMBE+2 frames (rdof_t3sim_ambe), "off" the near-silence */
 #define AIR_TEXT16 44     /* rate 1/2 data's characters at most: 28 + 2 x 44 octets fill 12 confirmed blocks */
 #define ACT_HELP                                                                                                       \
     "ID register [TG] | deregister | group TG [TALK_MS] | private ID [TALK_MS] | status ID N | gstatus TG N | "        \
     "sdm ID TEXT | gsdm TG TEXT | data ID TEXT | cdata ID TEXT | gdata TG TEXT (data34, cdata1 ...: rate 3/4, 1) | "  \
-    "setstatus N | cancel"
+    "setstatus N | cancel | ambe FILE|off (any MS: all MSs' voice, raw 9-octet AMBE+2 frames)"
 
 #define ACTS 256
 
@@ -437,7 +438,16 @@ static int act_parse(const char *text, act_t *x)
         x->what = ACT_SETSTATUS, x->arg = (uint32_t)a1;
     else if (!strcmp(what, "cancel"))
         x->what = RDOF_T3MS_DO_CANCEL;
-    else
+    else if (!strcmp(what, "ambe") && got >= 2) {
+        const char *t = strstr(line, what) + strlen(what);
+        t += strspn(t, " \t");
+        const size_t n = strcspn(t, " \t\r\n");
+        if (!n || n >= sizeof x->text)
+            return -1;
+        memcpy(x->text, t, n);
+        x->text[n] = 0;
+        x->what = ACT_AMBE;
+    } else
         return -1;
     return 1;
 }
@@ -468,8 +478,30 @@ static size_t utf16be(const char *s, size_t n, uint8_t *out, size_t cap)
 }
 
 /* An action on MS ms: false when its queue is full. */
+/* ambe FILE: the simulated MSs' voice from the file's frames (a recording to test a radio's decoding of speech) */
+static void act_ambe(const char *path)
+{
+    static uint8_t frames[4096 * 9];
+    if (!strcmp(path, "off")) {
+        rdof_t3sim_ambe(NULL, 0);
+        fprintf(stderr, "tier3: air MSs: near-silence voice\n");
+        return;
+    }
+    rdof_t3sim_ambe(NULL, 0); /* not read while the file overwrites it */
+    FILE *f = fopen(path, "rb");
+    const size_t n = f ? fread(frames, 9, sizeof frames / 9, f) : 0;
+    if (f)
+        fclose(f);
+    rdof_t3sim_ambe(frames, n);
+    fprintf(stderr, "tier3: air MSs: voice from %s, %zu frames%s\n", path, n, n ? "" : " (none: near-silence)");
+}
+
 static bool act_run(rdof_t3ms_t *ms, const act_t *a, int64_t now)
 {
+    if (a->what == ACT_AMBE) {
+        act_ambe(a->text);
+        return true;
+    }
     if (a->what == ACT_SETSTATUS) {
         rdof_t3ms_set_status(ms, (uint8_t)a->arg);
         return true;

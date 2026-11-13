@@ -88,6 +88,10 @@ bool rdof_t3sim_ms_burst(const rdof_t3ms_tx_t *tx, int n, int cc, rdof_burst_t *
 /* The MS with this ID, -1 none. */
 int rdof_t3sim_find(const rdof_t3sim_t *s, uint32_t id);
 
+/* The simulated MSs' voice from n raw 9-octet AMBE+2 frames at p (FEC coded as on air; the caller keeps them),
+ * looped from the first at each call's header; n 0: the near-silence frames again. */
+void rdof_t3sim_ambe(const uint8_t *p, size_t n);
+
 #endif /* RDOF_FEATURE_REPEATER */
 
 #ifdef __cplusplus

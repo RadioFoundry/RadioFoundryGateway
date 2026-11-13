@@ -510,6 +510,36 @@ static void test_sim_embedded(void)
         }
     }
     CHECK(errors == 0 && repeats == 0, "varied voice: %d FEC errors, %d repeated frames", errors, repeats);
+
+    /* a recording (rdof_t3sim_ambe): its frames in order, looped, from the first again at each call's header */
+    uint8_t rec[4][9];
+    for (int i = 0; i < 4; i++) {
+        uint8_t p[49] = {0};
+        p[i] = 1;
+        rdof_ambe_encode_frame(p, rec[i]);
+    }
+    rdof_t3sim_ambe(rec[0], 4);
+    rdof_t3ms_tx_t h = tx;
+    h.what = RDOF_T3_VOICE_HEADER;
+    rdof_burst_t b;
+    rdof_t3sim_ms_burst(&h, 0, 2, &b);
+    int at = 0, wrong = 0;
+    for (int n = 0; n < 3; n++) {
+        if (n == 2) { /* a new call */
+            rdof_t3sim_ms_burst(&h, 0, 2, &b);
+            at = 0;
+        }
+        rdof_t3sim_ms_burst(&tx, n, 2, &b);
+        uint8_t f[3][9];
+        rdof_ambe_frames(b.burst, f);
+        for (int k = 0; k < 3; k++, at++)
+            wrong += memcmp(f[k], rec[at % 4], 9) != 0;
+    }
+    rdof_t3sim_ambe(NULL, 0);
+    rdof_t3sim_ms_burst(&tx, 1, 2, &b);
+    uint8_t f[3][9];
+    rdof_ambe_frames(b.burst, f);
+    CHECK(wrong == 0 && memcmp(f[0], rec[1], 9), "recorded voice: %d frames out of place; off again", wrong);
 }
 
 /* Four carriers (7 payload channels) through the radio layer and the burst path: seven group calls fill every
