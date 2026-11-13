@@ -776,6 +776,7 @@ with `{"id": "c-123", "ok": true}` or `{"id": "c-123", "ok": false, "error": "..
 | `withdraw`, `restore` | | takes the control channel off the air, and back |
 | `resend_records` | | publishes every registration record again |
 | `status` | | publishes `status` now |
+| `mass_reg` | `window_s` (0-200000, 0 cancels), `ms` (optional) | a Tier III site asks its radios (or one) to register again within that time (tier3.md 3.11) |
 
 An unknown command or a missing argument is answered `ok: false`.
 

@@ -404,3 +404,177 @@ fn four_carriers_chan_freq_each() {
     }
     assert_eq!(seen, [false, true, true, true, true]);
 }
+
+// ── C_BCAST announcements, mass re-registration, power save (6.7.1, 6.4.5, 6.4.7) ──
+
+fn regs(log: &Log, from: usize) -> Vec<u32> {
+    log.0[from..].iter().filter(|e| e.r#type == EV_ACTIVITY && e.kind == ACT_REG && e.op == REG_REGISTER).map(|e| e.src).collect()
+}
+
+/// Mass re-registration (6.4.5): every MS re-registers within the window; one MS by its address; a Reg_Window 0
+/// cancels the pending ones.
+#[test]
+fn mass_reregistration() {
+    let mut s = site_with(|_| {});
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG], &[1]), ms(1002, &[TG], &[1]), ms(1003, &[10], &[1]), ms(1004, &[10], &[1])], T0);
+    register_all(&mut air, &mut log);
+    let mark = log.0.len();
+    assert!(air.site.command("mass_reg", 10, 0));
+    air.run(14_000, &mut log.f());
+    let mut r = regs(&log, mark);
+    r.sort();
+    assert_eq!(r, [1001, 1002, 1003, 1004], "each once in the 10 s window");
+    assert!(air.ms.iter().all(|m| m.mass_regs() == 1 && m.status().registered != 0));
+    assert!(air.ms.iter().all(|m| m.bcasts(BC_MASS_REG) >= 2), "repeated, the repeats ignored");
+    // one MS (Mask 24)
+    let mark = log.0.len();
+    assert!(air.site.command("mass_reg", 2, 1003));
+    air.run(5000, &mut log.f());
+    assert_eq!(regs(&log, mark), [1003]);
+    // a long window, then cancelled: nobody registers
+    let mark = log.0.len();
+    assert!(air.site.command("mass_reg", 1000, 0));
+    air.run(4000, &mut log.f());
+    assert!(air.site.command("mass_reg", 0, 0));
+    air.run(5000, &mut log.f());
+    let early = regs(&log, mark).len();
+    air.run(30_000, &mut log.f());
+    assert_eq!(regs(&log, mark).len(), early, "none after the cancel");
+}
+
+/// At start (services.mass_reg_at_start_s): the MSs a restarted site no longer knows register again.
+#[test]
+fn mass_reregistration_at_start() {
+    let mut s = site_with(|c| c.mass_reg_start = reg_window_of(5.0));
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG], &[1]), ms(1002, &[TG], &[1])], T0);
+    // they heard the site before: simply confirmed on it, not registered
+    air.run(8000, &mut log.f());
+    let mut r = regs(&log, 0);
+    r.sort();
+    assert_eq!(r, [1001, 1002]);
+}
+
+/// CallTimer_Parms (6.7.1.2) carries the site's call timers as annex A tokens.
+#[test]
+fn call_timer_parms_broadcast() {
+    let mut s = site_with(|c| c.call_timers_ms = 2000);
+    let mut air = Air::new(&mut s, [ms(1001, &[TG], &[1])], T0);
+    let mut got = None;
+    for _ in 0..200 {
+        air.step(&mut |_| {});
+        let o = air.last;
+        if let Some(b) = (o.tscc_dt == DT_CSBK).then(|| Bcast::decode(&o.tscc_pdu)).flatten() {
+            if b.ann == BC_CALL_TIMERS {
+                got = Some(call_timers_of(&b));
+            }
+        }
+    }
+    assert_eq!(got, Some((Some(300), Some(180))), "emergency 300 s, MS-MS 180 s (the defaults)");
+    assert!(air.ms[0].bcasts(BC_CALL_TIMERS) >= 2);
+}
+
+fn nb(syscode: u16, chan: u16, active: Option<bool>) -> Neighbor {
+    Neighbor {
+        syscode,
+        chan,
+        active_known: active.is_some() as u8,
+        active: active.unwrap_or(false) as u8,
+        prio_confirmed: 0,
+        prio_adjacent: 0,
+    }
+}
+
+/// Vote_Now (6.7.1.3) for each adjacent site, then VOTE_BLK TSCC slots of C_ALOHA that lets no MS in.
+#[test]
+fn vote_now_blocks_random_access() {
+    let mut s = site_with(|c| {
+        c.vote_now_ms = 2000;
+        c.adjacent_ms = 0;
+    });
+    s.set_neighbors(&[nb(0x0123, 21, Some(true)), nb(0x0456, 22, None)]);
+    let mut air = Air::new(&mut s, [ms(1001, &[TG], &[1])], T0);
+    let mut chans = Vec::new();
+    let mut after = 0; // TSCC blocks checked after a Vote_Now
+    let mut blocked = 0;
+    for _ in 0..400 {
+        air.step(&mut |_| {});
+        let o = air.last;
+        if air.k & 1 == 0 {
+            continue; // slot k - 1 was odd: no TSCC block
+        }
+        if after > 0 {
+            let a = Aloha::decode(&o.tscc_pdu).expect("only a C_ALOHA in the block");
+            assert_eq!((a.mask, a.addr), (24, ADRNULL));
+            after -= 1;
+            blocked += 1;
+        } else if let Some(b) = Bcast::decode(&o.tscc_pdu).filter(|b| b.ann == BC_VOTE_NOW) {
+            chans.push(b.parms2 & 0xFFF);
+            after = 4;
+        }
+    }
+    assert!(chans.len() >= 4 && chans.contains(&21) && chans.contains(&22), "{chans:?}");
+    assert!(blocked >= 16);
+}
+
+/// Ann_WD_TSCC (6.7.1.1): the adjacent TSCCs two to a CSBK; a site known to be off is withdrawn.
+#[test]
+fn ann_wd_tscc_broadcast() {
+    let mut s = site_with(|c| c.ann_tscc_ms = 2000);
+    s.set_neighbors(&[nb(0x0123, 21, Some(true)), nb(0x0456, 22, Some(false)), nb(0x0789, 23, None)]);
+    let mut air = Air::new(&mut s, [ms(1001, &[TG], &[1])], T0);
+    let mut seen = Vec::new();
+    for _ in 0..200 {
+        air.step(&mut |_| {});
+        let o = air.last;
+        if let Some(b) = (o.tscc_dt == DT_CSBK).then(|| Bcast::decode(&o.tscc_pdu)).flatten().filter(|b| b.ann == BC_ANN_WD_TSCC) {
+            seen.push((b.parms1, b.parms2));
+        }
+    }
+    let cc = u16::from(cfg_default().cc);
+    assert!(seen.contains(&(cc << 6 | 1, 21 << 12 | 22)), "21 added, 22 withdrawn: {seen:x?}");
+    assert!(seen.contains(&(cc << 6, 23 << 12)), "23 alone, CH_2 CHNULL: {seen:x?}");
+}
+
+/// Power save (6.4.7): the offset in the registration's C_ACKD; C_AHOYs to the sleeping MS only in its wake
+/// frame; a call and a status reach it; a ratio over services.power_save gets offset 0.
+#[test]
+fn power_save_wake_frames() {
+    let mut s = site_with(|c| c.power_save = 3);
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG], &[1]), ms(1002, &[10], &[1]), ms(1003, &[11], &[1])], T0);
+    air.ms[1].set_power_save(2); // 1:4
+    air.ms[2].set_power_save(4); // 1:16: over the site's 1:8
+    register_all(&mut air, &mut log);
+    let (rq, off) = air.ms[1].power_save();
+    assert!(rq == 2 && (1..=3).contains(&off), "{rq} {off}");
+    assert_eq!(air.site.power_save_of(1002), (2, off));
+    assert_eq!(air.ms[2].power_save(), (4, 0), "registered, power save not available");
+    // let it fall asleep, then call it: every C_AHOY to it is in its wake frame
+    air.run(3000, &mut log.f());
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_PRIVATE, 1002, 1000, 0, now);
+    let mut ahoys = 0;
+    for _ in 0..400 {
+        air.step(&mut log.f());
+        let o = air.last;
+        if let Some(a) = (air.k & 1 == 1 && o.tscc_dt == DT_CSBK).then(|| Ahoy::decode(&o.tscc_pdu)).flatten() {
+            if a.target == 1002 && ahoys == 0 {
+                assert!(ps_wake(air.k - 1, rq, off), "the first C_AHOY in the wake frame, slot {}", air.k - 1);
+            }
+            ahoys += (a.target == 1002) as u32;
+        }
+        if air.ms[1].state() == t3ms::PAYLOAD {
+            break;
+        }
+    }
+    assert!(ahoys >= 1 && air.ms[1].state() == t3ms::PAYLOAD, "the called MS woke and joined");
+    assert!(air.until(10_000, &mut log.f(), |a| a.ms[0].status().calls_done == 1));
+    // and a status after it fell asleep again
+    air.run(4000, &mut log.f());
+    let now = air.now();
+    air.ms[0].act_status(9, false, 1002, now);
+    assert!(air.until(8000, &mut log.f(), |a| a.ms[0].status().calls_done == 2));
+    assert_eq!(air.ms[1].statuses(), (1, (1001, 1002, 9)));
+}

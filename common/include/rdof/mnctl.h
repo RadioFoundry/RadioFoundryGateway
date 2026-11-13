@@ -252,6 +252,7 @@ typedef enum {
     RDOF_MN_CMD_RESTORE,
     RDOF_MN_CMD_RESEND_RECORDS,
     RDOF_MN_CMD_STATUS,
+    RDOF_MN_CMD_MASS_REG, /* window_s, ms (0: all) */
 } rdof_mn_cmd_kind_t;
 
 typedef struct {
@@ -260,6 +261,7 @@ typedef struct {
     char name[24];
     uint32_t ms;
     int chan, lcn;
+    uint32_t window_s;
 } rdof_mn_cmd_t;
 
 /* False with err when it can't be carried out (unknown command, a missing argument); c->id is filled whenever the

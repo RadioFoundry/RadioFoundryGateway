@@ -163,6 +163,11 @@ impl Site {
         if self.on_payload(p.called) {
             return; // on a payload channel: it can't hear the TSCC
         }
+        if !self.ps_awake(p.called) {
+            // asleep (power save): held for its wake frame
+            self.stat[i].deadline_ms = p.deadline_ms.max(self.now + self.ps_wait_ms(p.called));
+            return;
+        }
         if p.ahoy_left == 0 {
             self.stat[i].used = false;
             self.refuse(R_MSAWAY, p.caller, p.called);

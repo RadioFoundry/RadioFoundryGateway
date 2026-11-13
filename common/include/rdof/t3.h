@@ -69,7 +69,11 @@ typedef struct {
     uint32_t adjacent_ms, chan_freq_ms, local_time_ms, gen_site_ms; /* 0: not broadcast */
     uint32_t stream_seed; /* first stream ID for setups the site starts */
     uint8_t preempt;      /* 1: an emergency with no channel free clears a non-emergency call (361-4 6.4.14.3.1) */
-    uint8_t pad1[3];
+    uint8_t power_save;     /* the highest PowerSave_RQ granted (1-7: 1:2 to 1:128); 0: not offered (6.4.7) */
+    uint8_t mass_reg_start; /* Reg_Window (table 6.12) of a mass re-registration at start; 0: none (6.4.5) */
+    uint8_t pad1;
+    uint32_t call_timers_ms, vote_now_ms, ann_tscc_ms; /* CallTimer_Parms, Vote_Now, Ann_WD_TSCC; 0: not broadcast */
+    uint32_t awake_ms; /* how long an MS in power save stays awake after a PDU (the site's T_Awake) */
 } rdof_t3_cfg_t;
 
 typedef struct {
@@ -278,7 +282,8 @@ bool rdof_t3_record(const rdof_t3_site_t *s, uint32_t ms, rdof_t3_record_t *r);
 /* the talkgroups the registered MSs need (subscriptions, recent calls, provisioning); static_tg isn't included */
 size_t rdof_t3_subs(const rdof_t3_site_t *s, uint32_t *tg, size_t cap);
 void rdof_t3_withdraw(rdof_t3_site_t *s, bool off);
-/* "deregister" (arg1 MS), "clear" (arg1 chan, arg2 LCN), "withdraw", "restore", "resend_records", "status" */
+/* "deregister" (arg1 MS), "clear" (arg1 chan, arg2 LCN), "withdraw", "restore", "resend_records", "status",
+   "mass_reg" (arg1 the window in s, 0 cancels; arg2 one MS, 0 all) */
 bool rdof_t3_command(rdof_t3_site_t *s, const char *cmd, uint32_t arg1, uint32_t arg2);
 
 /* outputs: drain after each call */

@@ -73,6 +73,7 @@ const MN_CMD_WITHDRAW: c_int = 3;
 const MN_CMD_RESTORE: c_int = 4;
 const MN_CMD_RESEND_RECORDS: c_int = 5;
 const MN_CMD_STATUS: c_int = 6;
+const MN_CMD_MASS_REG: c_int = 7;
 
 // ── the C structs: rdof/t3unit.h's ─────────────────────────────────────────────
 
@@ -336,6 +337,7 @@ pub struct MnCmd {
     pub ms: u32,
     pub chan: c_int,
     pub lcn: c_int,
+    pub window_s: u32,
 }
 
 /// rdof_mn_up_t's head: node to ctx (the hooks). The rest is the C's alone, rdof_mn_up_size() bytes in all.
@@ -1486,6 +1488,7 @@ unsafe fn command(u: *mut Unit, json: *const c_char, len: usize) {
             MN_CMD_RESTORE => t3::rdof_t3_command(site, c"restore".as_ptr(), 0, 0),
             MN_CMD_RESEND_RECORDS => t3::rdof_t3_command(site, c"resend_records".as_ptr(), 0, 0),
             MN_CMD_STATUS => true,
+            MN_CMD_MASS_REG => t3::rdof_t3_command(site, c"mass_reg".as_ptr(), c.window_s, c.ms),
             _ => false,
         };
         if !ok {

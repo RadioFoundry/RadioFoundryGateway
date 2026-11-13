@@ -1386,6 +1386,11 @@ static void test_cmd(void)
         snprintf(out, sizeof out, "{\"id\":\"x\",\"cmd\":\"%s\"}", simple[i]);
         CHECK(rdof_mn_cmd_parse(out, strlen(out), &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_WITHDRAW + i);
     }
+    static const char mass[] = "{\"id\":\"m\",\"cmd\":\"mass_reg\",\"window_s\":300,\"ms\":3100123}";
+    CHECK(rdof_mn_cmd_parse(mass, sizeof mass - 1, &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_MASS_REG &&
+          c.window_s == 300 && c.ms == 3100123);
+    static const char mass_bad[] = "{\"id\":\"m\",\"cmd\":\"mass_reg\"}";
+    CHECK(!rdof_mn_cmd_parse(mass_bad, sizeof mass_bad - 1, &c, err, sizeof err) && strstr(err, "window_s"));
     CHECK(rdof_mn_cmd_result_json("c-123", true, NULL, out, sizeof out) && !strcmp(out, "{\"id\":\"c-123\",\"ok\":true}"));
     CHECK(rdof_mn_cmd_result_json("c-4", false, "unknown command", out, sizeof out) &&
           !strcmp(out, "{\"id\":\"c-4\",\"ok\":false,\"error\":\"unknown command\"}"));

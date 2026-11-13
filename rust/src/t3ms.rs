@@ -9,7 +9,10 @@ use core::ffi::c_int;
 
 use crate::t3pdu::*;
 use crate::t3rc::RC_CEASE;
-use crate::t3site::{ahoy_status, status_rand, CARRIERS, VOICE_FRAME, VOICE_HEADER, VOICE_TERM};
+use crate::t3site::{
+    ahoy_status, mass_reg_applies, mass_reg_of, ps_wake, reg_window_ms, status_rand, CARRIERS, VOICE_FRAME, VOICE_HEADER,
+    VOICE_TERM,
+};
 
 pub const ANSWER_ACCEPT: u8 = 0;
 pub const ANSWER_BUSY: u8 = 1;
@@ -26,6 +29,9 @@ const DO_ANSWER: u8 = 6; // FOACSU Call Answer, queued by the MS itself
 pub const DO_STATUS: u8 = 7; // a status delivery (act_status)
 pub const F_EMERGENCY: u8 = 0x01;
 pub const F_TO_GROUP: u8 = 0x02; // DO_STATUS: the target is a talkgroup
+const F_MASS: u8 = 0x80; // DO_REGISTER: a mass re-registration's (cancelled by a Reg_Window 0)
+/// T_Awake (annex A.1): how long it stays awake after a PDU addressed to it, in power save.
+const T_AWAKE_MS: i64 = 2000;
 
 pub const IDLE: u8 = 0;
 pub const ACCESS: u8 = 1;
@@ -136,6 +142,13 @@ pub struct Ms {
     statuses: u32,          // statuses delivered to it (C_AHOY, Service_Kind Status)
     last_status: (u32, u32, u8), // the last one's source, target and value
     last_status_ms: i64,
+    // power save (6.4.7) and mass re-registration (6.4.5)
+    ps_rq: u8,
+    ps_off: u8, // PowerSave_Offset granted; 0: awake all the time
+    awake_until: i64,
+    mass_until: i64,
+    mass_regs: u32,
+    bcasts: [u32; 8], // C_BCASTs heard, by Announcement_type
 }
 
 impl Ms {
@@ -230,7 +243,7 @@ impl Ms {
         let emergency = if a.flags & F_EMERGENCY != 0 { SO_EMERGENCY } else { 0 };
         let r = match a.what {
             DO_REGISTER => Rand {
-                service_options: SO_REG,
+                service_options: SO_REG | (self.ps_rq & 7) << 1,
                 dep: if a.arg != 0 { 1 << 2 } else { 0 },
                 service_kind: SK_REG,
                 target: if a.arg != 0 { a.arg } else { self.syscode as u32 },
@@ -318,6 +331,9 @@ impl Ms {
         if k & 1 != (self.tscc_ch & 1) as i64 {
             return;
         }
+        if self.asleep(k) {
+            return; // power save: hears nothing outside its wake frame
+        }
         self.at = at;
         match (dt == DT_CSBK).then(|| Aloha::decode(pdu)).flatten() {
             Some(a) => {
@@ -351,10 +367,73 @@ impl Ms {
             }
         } else if let Some(g) = Grant::decode(pdu) {
             self.on_grant(&g);
+        } else if let Some(b) = Bcast::decode(pdu) {
+            self.on_bcast(&b);
         }
     }
 
+    /// Power save: idle, not within T_Awake of a PDU for it, and outside its wake frame.
+    fn asleep(&self, k: i64) -> bool {
+        self.ps_off != 0
+            && self.state == IDLE
+            && !self.has_cur
+            && self.now >= self.awake_until
+            && !ps_wake(k, self.ps_rq, self.ps_off)
+    }
+
+    fn on_bcast(&mut self, b: &Bcast) {
+        self.bcasts[usize::from(b.ann & 7)] += 1;
+        if b.ann != BC_MASS_REG {
+            return;
+        }
+        // 6.4.5.1: a random time within Treg_Window, then a registration; Reg_Window 0 cancels
+        let (w, mask, addr) = mass_reg_of(b);
+        if !mass_reg_applies(mask, addr, self.id) {
+            return;
+        }
+        if w == 0 {
+            self.mass_until = 0;
+            let n = self.nact;
+            for i in (0..n).rev() {
+                if self.actions[i].what == DO_REGISTER && self.actions[i].flags & F_MASS != 0 {
+                    for j in i..self.nact - 1 {
+                        self.actions[j] = self.actions[j + 1];
+                    }
+                    self.nact -= 1;
+                }
+            }
+            return;
+        }
+        if self.now < self.mass_until {
+            return; // e): one in its window is ignored
+        }
+        let t = i64::from(reg_window_ms(w));
+        let at = self.now + i64::from(self.rand()) % (t + 1);
+        self.mass_until = self.now + t;
+        self.mass_regs += 1;
+        self.act(DO_REGISTER, 0, 0, F_MASS, at); // its subscription stays
+    }
+
+    /// Asks for power save 1:2^rq (1-7; 0 none) in its next registrations.
+    pub fn set_power_save(&mut self, rq: u8) {
+        self.ps_rq = rq.min(7);
+    }
+
+    /// PowerSave_RQ asked and the PowerSave_Offset granted (0: none).
+    pub fn power_save(&self) -> (u8, u8) {
+        (self.ps_rq, self.ps_off)
+    }
+
+    /// Mass re-registrations it has taken part in, and the C_BCASTs it heard of one Announcement_type.
+    pub fn mass_regs(&self) -> u32 {
+        self.mass_regs
+    }
+    pub fn bcasts(&self, ann: u8) -> u32 {
+        self.bcasts[usize::from(ann & 7)]
+    }
+
     fn on_ack(&mut self, a: &Ack) {
+        self.awake_until = self.now + T_AWAKE_MS;
         self.last_reason = a.reason;
         if !self.has_cur {
             return; // e.g. the called party told of its own refusal
@@ -371,6 +450,8 @@ impl Ms {
                 }
                 R_REG_ACCEPTED | R_REG_SUBSCRIPTION => {
                     self.registered = self.cur.what == DO_REGISTER;
+                    // 6.4.7.2.1: the offset in Response_Info; 0, power save not available
+                    self.ps_off = if self.registered && self.ps_rq != 0 { a.response_info & 0x7F } else { 0 };
                     self.done(true);
                 }
                 R_CALLBACK => self.done(false),
@@ -386,6 +467,7 @@ impl Ms {
     }
 
     fn on_ahoy(&mut self, a: &Ahoy) {
+        self.awake_until = self.now + T_AWAKE_MS;
         if a.service_kind == SK_CANCEL {
             self.alert_caller = 0;
             let caller = a.source;

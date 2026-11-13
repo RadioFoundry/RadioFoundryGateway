@@ -19,6 +19,11 @@ pub use emerg::RC_SEND;
 #[path = "t3status.rs"]
 mod status;
 pub use status::{ahoy_status, status_ahoy, status_of, status_rand, STATUS_CANCEL_ALARM, STATUS_EMERGENCY_ALARM};
+#[path = "t3bcast.rs"]
+mod bcast;
+pub use bcast::{
+    call_timers_of, mass_reg_applies, mass_reg_of, ps_counter, ps_wake, reg_window_ms, reg_window_of,
+};
 
 pub const CARRIERS: usize = 4;
 pub const CHANNELS: usize = CARRIERS * 2;
@@ -89,7 +94,13 @@ pub struct Cfg {
     pub gen_site_ms: u32,
     pub stream_seed: u32,
     pub preempt: u8, // 1: an emergency with no channel free clears a non-emergency call (361-4 6.4.14.3.1)
-    pub pad1: [u8; 3],
+    pub power_save: u8,     // the highest PowerSave_RQ granted (1-7: 1:2 to 1:128); 0: not offered (6.4.7)
+    pub mass_reg_start: u8, // Reg_Window (table 6.12) of a mass re-registration at start; 0: none (6.4.5)
+    pub pad1: u8,
+    pub call_timers_ms: u32, // CallTimer_Parms every; 0: not broadcast
+    pub vote_now_ms: u32,    // Vote_Now for each adjacent site in this time; 0: not broadcast
+    pub ann_tscc_ms: u32,    // Ann_WD_TSCC for the adjacent sites in this time; 0: not broadcast
+    pub awake_ms: u32,       // how long an MS in power save stays awake after a PDU (the site's T_Awake)
 }
 
 #[repr(C)]
@@ -512,6 +523,9 @@ struct Reg {
     used: bool,
     rec: Record,
     written_ms: i64,
+    ps: u8,        // PowerSave_RQ granted, 0 none
+    ps_off: u8,    // PowerSave_Offset
+    awake_ms: i64, // awake until (power save)
 }
 
 #[derive(Clone, Copy, Default)]
@@ -571,6 +585,7 @@ pub struct Site {
     pend: [Pend; PENDING],
     net: [NetWait; STREAMS],
     stat: [status::StatPend; status::STATUS_PENDING],
+    bc: bcast::BcState,
     // registrations and provisioning
     regs: [Reg; REGS],
     reg_scan: usize,
@@ -648,6 +663,7 @@ pub fn cfg_default() -> Cfg {
         local_time_ms: 6000,
         gen_site_ms: 10_000,
         stream_seed: 1,
+        awake_ms: 1000,
         ..Default::default()
     };
     c.carriers[0] = Carrier { tx_hz: 438_750_000, rx_hz: 438_250_000, chan: 1, tscc: 1, enabled: 1 };
@@ -742,6 +758,9 @@ fn check(c: &Cfg, err: &mut Buf) -> bool {
     }
     if c.start_grace_ms > 10_000 {
         no!("timers.start_grace_s: 0 to 10");
+    }
+    if c.power_save > 7 || c.mass_reg_start > 15 || !(100..=60_000).contains(&c.awake_ms) {
+        no!("services.power_save 0 to 7, power_save_awake_s 0.1 to 60, mass_reg_at_start_s 0 to 200000");
     }
     if !(60..=604_800).contains(&c.reg_hold_s) {
         no!("timers.reg_hold_s: 60 to 604800");
@@ -982,6 +1001,9 @@ impl Site {
     fn due_bcast(&mut self) -> Option<([u8; 10], u8, Option<[u8; 10]>)> {
         let now = self.now;
         let (reg, bo, sc) = (self.reg_bit(), self.backoff(), self.syscode);
+        if let Some(b) = self.due_bcast_more(reg, bo, sc) {
+            return Some(b);
+        }
         if self.cfg.adjacent_ms > 0 && self.nneighbors > 0 && now >= self.next_adjacent_ms {
             let n = self.neighbors[self.adjacent_idx % self.nneighbors];
             self.adjacent_idx = (self.adjacent_idx + 1) % self.nneighbors;
@@ -1021,6 +1043,8 @@ impl Site {
         let (dt, pdu, solicit) = if self.cont_pending {
             self.cont_pending = false;
             (DT_MBC_CONT, self.cont, false)
+        } else if let Some(a) = self.vote_blocked() {
+            (DT_CSBK, a, false)
         } else if self.since_aloha >= 3 {
             (DT_CSBK, self.aloha(), false)
         } else if self.resp_len > 0 {
@@ -1324,6 +1348,7 @@ impl Site {
             used: true,
             rec: Record { id: ms, how, area, at_ms: self.now, exp_ms, ..Default::default() },
             written_ms: i64::MIN / 2,
+            ..Default::default()
         };
         self.nregs += 1;
         self.subs_dirty = true;
@@ -1413,7 +1438,7 @@ impl Site {
             _ => {}
         }
         self.subs_dirty = true;
-        self.ack(reason, ms, REGI);
+        self.reg_ack(i, r, reason); // with PowerSave_Offset
         self.write_record(i);
         let sub = self.regs[i].rec.sub_tg;
         self.activity(ACT_REG, REG_REGISTER, ms, sub, reason);
@@ -1612,6 +1637,11 @@ impl Site {
 
     fn ahoy_tick(&mut self, i: usize) {
         let p = self.pend[i];
+        if !self.ps_awake(p.called) {
+            // asleep (power save): held for its wake frame, the time limit stretched to it
+            self.pend[i].deadline_ms = p.deadline_ms.max(self.now + self.ps_wait_ms(p.called));
+            return;
+        }
         if p.ahoy_left == 0 {
             self.pend[i].used = false;
             self.fail(&p, R_MSAWAY, WHY_NO_ANSWER);
@@ -2334,6 +2364,7 @@ impl Site {
                 true
             }
             "status" => true,
+            "mass_reg" => self.mass_registration(a1, a2),
             _ => false,
         }
     }
