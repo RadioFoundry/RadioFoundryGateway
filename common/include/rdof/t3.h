@@ -263,7 +263,8 @@ typedef struct {
     uint8_t at;      /* the AT bit for the CACH before slot k + 1 on the TSCC carrier */
     uint8_t has_slc; /* k % 4 == 0: a new short LC for the next 4 CACH */
     uint8_t tscc_ext[2]; /* tscc_dt RDOF_DT_RATE_12 (a UDT's appended block): its octets 10 and 11 */
-    uint8_t rev;     /* 1: a composite TSCC's slot carries a call in slot k (its payload path sends it) */
+    uint8_t rev;     /* a composite TSCC's slot in slot k: 1 carries a call (its payload path sends it), 2 still
+                        sends the call's grant but hears the call */
     uint32_t slc_tscc;    /* C_SYS_Parms for the TSCC carrier (P_SYS_Parms, composite, while rev) */
     uint32_t slc_payload; /* P_SYS_Parms for the other carriers */
     rdof_t3_ch_out_t ch[RDOF_T3_CHANNELS]; /* only the channels with k's LCN */

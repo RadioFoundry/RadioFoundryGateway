@@ -794,8 +794,11 @@ as a hotspot modem, gets a second call at once.
 - The MS simulator: an idle MS whose TSCC's CACH says P_SYS_Parms with Payload Channel Type 1 waits for the TSCC
   rather than hunting; C_SYS_Parms ends that (`rdof_t3ms_slc`, fed by the air paths from `rdof_t3unit_slc`).
 - The radio layer: with a TSCC, channel 0 is also a payload channel (`rdof_t3rf_t.composite`), opened only when
-  the controller opens it. Each slot the unit sets `rev` from the controller's `rdof_t3_slot_out_t.rev`: channel 0's
-  outbound then comes from its payload path (warm-up, repeat, P_CLEAR) and its inbound goes to it, not to the TSCC.
+  the controller opens it. Each slot the unit sets `rev` from the controller's `rdof_t3_slot_out_t.rev`: 1, channel
+  0's outbound comes from its payload path (warm-up, repeat, P_CLEAR) and its inbound goes to it, not to the TSCC;
+  2, while the TSCC still sends the grant, the outbound is the TSCC's but the inbound is already the call's. The MS
+  that asked sends its voice header as soon as it reads the first grant: on the hat (2026-11-13) that header went to
+  the TSCC and was lost, and the call aired without one.
 
 Not built: an MS that reads the short LC on air (the simulator's air MSs take it from the unit), and the 5.3.2 note
 that the throughput "shall be assessed" (no metric beyond the log line and the slot counts).

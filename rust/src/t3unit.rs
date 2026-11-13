@@ -28,7 +28,8 @@ use crate::t3rf::{
     WARMUP,
 };
 use crate::t3site::{
-    self as t3, Cfg, Event, IdSet, MsPolicy, Neighbor, Policy, Record, Setup, Site, SlotOut, Status, TgPolicy,
+    self as t3, Cfg, Event, IdSet, MsPolicy, Neighbor, Policy, Record, Setup, Site, SlotOut, Status, TgPolicy, REV_CALL,
+    REV_GRANT,
 };
 use crate::text::{c_bytes, c_out, Out};
 use crate::tracker::{RdofBurst, RdofFrame};
@@ -2003,7 +2004,7 @@ pub unsafe extern "C" fn rdof_t3unit_run(u: *mut Unit, k_upto: i64, now_ms: i64)
         (*r).k = k;
         for c in 0..usize::from((*u).cfg.ncarriers) {
             let ch = 2 * c + (k & 1) as usize;
-            if ch == 0 && (*u).rf_tscc && (*r).o.rev == 0 {
+            if ch == 0 && (*u).rf_tscc && (*r).o.rev != REV_CALL {
                 continue; // the TSCC's RC goes with its slot (io_tscc); a composite TSCC's call: as any channel's
             }
             rdof_t3rf_rc(rf(u), ch as c_int, c_int::from((*r).o.ch[ch].rc));
@@ -2033,7 +2034,7 @@ pub unsafe extern "C" fn rdof_t3unit_slot(
     if (*u).k_next <= k {
         rdof_t3unit_run(u, k, (*u).now_ms);
     }
-    rev_at(u, k);
+    rev_at(u, k, false);
     let ok = rdof_t3rf_slot(rf(u), c, k, &mut *burst.cast(), control, &mut *at, &mut *slc28);
     drain(u);
     ok
@@ -2048,10 +2049,12 @@ pub unsafe extern "C" fn rdof_t3unit_split_pump(u: *mut Unit, o: *mut T3rfSplit,
     drain(u);
 }
 
-/// The radio layer's channel 0 in slot k: the TSCC, or a composite TSCC's call (the controller's word for k).
-unsafe fn rev_at(u: *mut Unit, k: i64) {
+/// The radio layer's channel 0 in slot k: the TSCC, or a composite TSCC's call (the controller's word for k). The
+/// inbound turns to the call while the TSCC still sends its grant (REV_GRANT); the outbound once the grant is out.
+unsafe fn rev_at(u: *mut Unit, k: i64, inbound: bool) {
     let o = held(u, k);
-    (*rf(u)).rev = !o.is_null() && (*o).rev != 0;
+    let rev = if o.is_null() { 0 } else { (*o).rev };
+    (*rf(u)).rev = rev == REV_CALL || inbound && rev == REV_GRANT;
 }
 
 /// Carrier c's CACH short LC from slot k (k % 4 == 0) as the controller set it, or -1: what an MS on that carrier
@@ -2077,7 +2080,7 @@ pub unsafe extern "C" fn rdof_t3unit_at(u: *const Unit, k: i64) -> c_int {
 
 #[no_mangle]
 pub unsafe extern "C" fn rdof_t3unit_rx(u: *mut Unit, c: c_int, k: i64, b: *const RdofBurst, rssi: c_int) {
-    rev_at(u, k);
+    rev_at(u, k, true);
     rdof_t3rf_rx(rf(u), c, k, b, rssi);
     drain(u);
 }

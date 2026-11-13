@@ -14,6 +14,12 @@ use super::*;
 /// The TSCC sends a call's grant this many times on its own slot before the slot turns payload.
 const REV_GRANTS: u8 = 2;
 
+/// SlotOut.rev: the slot carries the call, both ways (its payload path sends the outbound).
+pub const REV_CALL: u8 = 1;
+/// SlotOut.rev: the TSCC still sends the call's grant outbound, but the inbound is already the call's: the MS that
+/// asked sends its voice header as soon as it reads the first grant (an air test lost it to the TSCC).
+pub const REV_GRANT: u8 = 2;
+
 #[derive(Clone, Copy, Default)]
 pub(super) struct RevState {
     grants_left: u8,
@@ -52,16 +58,18 @@ impl Site {
         self.log(format_args!("composite TSCC: the control slot carries a call (5.3.2)"));
     }
 
-    /// The TSCC's slot k while it carries a call: the grant still to go, else nothing from the TSCC (the payload
-    /// path sends the slot). The CACH's AT for the next TS2 slot: TS1's inbound in use.
+    /// The TSCC's slot k while it carries a call: the grant still to go (the inbound already the call's), else
+    /// nothing from the TSCC (the payload path sends the slot). The CACH's AT for the next TS2 slot: TS1's inbound
+    /// in use.
     pub(super) fn rev_slot(&mut self, out: &mut SlotOut) {
         if self.rev.grants_left > 0 {
             self.rev.grants_left -= 1;
             out.tscc_dt = DT_CSBK;
             out.tscc_pdu = self.rev.grant;
+            out.rev = REV_GRANT;
             return;
         }
-        out.rev = 1;
+        out.rev = REV_CALL;
         out.at = (self.chans[self.tscc_carrier * 2].r#use == USE_CALL) as u8;
     }
 

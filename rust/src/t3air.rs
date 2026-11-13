@@ -7,7 +7,7 @@
 
 use crate::t3ms::{Ms, MsTx, TX_DATA, TX_PDU, TX_VOICE};
 use crate::t3pdu::{opcode, DT_CSBK};
-use crate::t3site::{block_len, DataRx, Event, Site, SlotOut, BLOCK_MAX, CHANNELS, RC_SEND};
+use crate::t3site::{block_len, DataRx, Event, Site, SlotOut, BLOCK_MAX, CHANNELS, RC_SEND, REV_CALL};
 use crate::t3udt::{DT_DATA_HDR, DT_RATE12};
 
 pub const SLOT_MS: i64 = 30;
@@ -127,7 +127,7 @@ impl<'a, const N: usize> Air<'a, N> {
                 m.slc(tscc / 2, out.slc_tscc); // the TSCC carrier's CACH
             }
             let ch = m.ch();
-            if ch == tscc && k & 1 == 0 && out.rev == 0 {
+            if ch == tscc && k & 1 == 0 && out.rev != REV_CALL {
                 let mut b = [0u8; BLOCK_MAX];
                 b[..10].copy_from_slice(&out.tscc_pdu);
                 b[10..12].copy_from_slice(&out.tscc_ext);

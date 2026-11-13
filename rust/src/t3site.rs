@@ -68,6 +68,7 @@ mod tscc;
 mod duplex;
 #[path = "t3composite.rs"]
 mod composite;
+pub use composite::{REV_CALL, REV_GRANT};
 use duplex::KIND_DUPLEX;
 pub use duplex::{DxGrant, OPEN_DUPLEX, OP_PV_GRANT_DX, R_DUPLEX_NOT_SUPPORTED, SK_DUPLEX};
 pub use tscc::{bs_dwn_act, bs_dwn_act_of, move_mbc_hdr, move_mbc_of, move_of, move_pdu, mv_ap, mv_ap_of, OP_BS_DWN_ACT};
@@ -492,7 +493,7 @@ pub struct SlotOut {
     pub at: u8,
     pub has_slc: u8,
     pub tscc_ext: [u8; 2],
-    pub rev: u8, // 1: the TSCC's slot carries a call in slot k (a composite TSCC, t3composite.rs)
+    pub rev: u8, // REV_CALL / REV_GRANT: a composite TSCC's slot and its call in slot k (t3composite.rs)
     pub slc_tscc: u32,
     pub slc_payload: u32,
     pub ch: [ChOut; CHANNELS],

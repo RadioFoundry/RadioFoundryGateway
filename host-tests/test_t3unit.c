@@ -16,6 +16,7 @@
 #include "rdof/ambe.h"
 #include "rdof/fec.h"
 #include "rdof/ipgw.h"
+#include "rdof/pdu.h"
 #include "rdof/t3cfg.h"
 #include "rdof/t3sim.h"
 #include "rdof/t3unit.h"
@@ -641,9 +642,19 @@ static void test_carriers4(void)
     free(u);
 }
 
+/* Voice LC headers aired on channel 0 (carrier 0, TS1). */
+static int comp_headers;
+static void comp_out(void *ctx, int64_t k, const rdof_t3sim_out_t *out, int ncar, int at_next,
+                     const rdof_t3sim_in_t *in, int nin)
+{
+    (void)ctx, (void)ncar, (void)at_next, (void)in, (void)nin;
+    comp_headers += (k & 1) == 0 && out[0].aired && out[0].dt == RDOF_DT_VOICE_LC_HEADER;
+}
+
 /* A composite TSCC through the radio layer (361-4 5.3.2; tier3.md 3.19): one carrier, A's call on TS2, then B's call
- * takes the TSCC's own slot. B's voice is repeated on channel 0, a listener follows it there, the CACH says
- * P_SYS_Parms with Payload Channel Type 1, P_CLEAR ends it and the TSCC comes back and answers again. */
+ * takes the TSCC's own slot. B's voice is repeated on channel 0, its header first (B sends it right after the grant,
+ * while the TSCC may still be repeating the grant), a listener follows it there, the CACH says P_SYS_Parms with
+ * Payload Channel Type 1, P_CLEAR ends it and the TSCC comes back and answers again. */
 static void test_composite(void)
 {
     rdof_t3_cfg_t cfg;
@@ -668,6 +679,8 @@ static void test_composite(void)
     }
     static rdof_t3sim_t sim;
     rdof_t3sim_init(&sim, u, N, ms, id);
+    sim.ext_out = comp_out;
+    comp_headers = 0;
     int64_t k = 0;
 #define RUN(msec)                                                                                                  \
     for (int64_t end_ = k + (msec) / 30; k < end_; k++)                                                            \
@@ -691,6 +704,7 @@ static void test_composite(void)
     CHECK(st.state == RDOF_T3MS_PAYLOAD && st.ch == 0, "L follows (state %d ch %d)", st.state, st.ch);
     CHECK(rdof_t3unit_rf(u)->ch[0].open && rdof_t3unit_rf(u)->ch[0].tx_traffic > 20, "channel 0 repeats B's voice (%u)",
           rdof_t3unit_rf(u)->ch[0].tx_traffic);
+    CHECK(comp_headers >= 1, "B's voice header repeated on channel 0 (%d)", comp_headers);
     int64_t slc = -1;
     for (int64_t j = k - 8; j <= k && slc < 0; j++)
         if ((j & 3) == 0)
