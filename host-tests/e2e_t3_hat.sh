@@ -57,12 +57,17 @@ grep -q "AT busy 0 of [1-9]" "$D/log" || { echo "FAIL: an AT busy after a just-i
 # one key-up held all run by the status polls (the watchdog never fired), no Null short LC while written
 grep -q "sim-hat: 1 key-ups, 0 unkeys, 0 watchdog drops, 0 short LC cycles Null" "$D/log" ||
     { echo "FAIL: the modem's key not held (one key-up, no unkey, no watchdog drop)"; fail=1; }
-grep -q "status [1-9][0-9]* (0 IDLE, 0 unkeyed, 0 overflow), its queues 1 / 1 deep at most; 0 flushed, 0 NAKed" "$D/log" ||
+# (2 flushed: both queues emptied as it places, whatever a run before left in them)
+grep -q "status [1-9][0-9]* (0 IDLE, 0 unkeyed, 0 overflow), its queues 1 / 1 deep at most; 2 flushed, 0 NAKed" "$D/log" ||
     { echo "FAIL: the modem's status"; fail=1; }
 # the modem's own reports of the MSs' inbound: each tagged with the timeslot the trunk put it in
 grep "(modem): status .*, 0 NAKed; it heard" "$D/log" | tail -1 |
     grep -q "it heard [1-9][0-9]* inbound: [1-9][0-9]* in the receiver's timeslot, 0 in the other" ||
     { echo "FAIL: the modem's inbound timeslot not the trunk's"; fail=1; }
+# each timeslot's detail: nothing off its slot, the short LC of each cycle as written for it (none a cycle late)
+grep "(modem): TS1 aired" "$D/log" | head -1 |
+    grep -q "TS1 aired -4..+4: 0 0 [1-9][0-9]* 0 0, .*TS2 aired -4..+4: 0 0 [1-9][0-9]* 0 0, .*short LC cycles [1-9][0-9]* as written, 0 a cycle late, [0-9]* Null, 0 else" ||
+    { echo "FAIL: the per-timeslot detail"; fail=1; }
 # the AT heard before each slot of ours is the one the controller set
 grep -o "as the controller's [0-9]* of [0-9]*" "$D/log" | awk '$4 != $6 || $6 < 100 { bad = 1 } END { exit bad }' ||
     { echo "FAIL: an AT not the controller's"; fail=1; }

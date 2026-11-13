@@ -33,17 +33,21 @@ const INBOUND_END_S: f64 = 0.02625; // and ends 26.25 ms after that burst starts
 const FETCH_S: f64 = 0.106; // the modem takes a burst about this long before it airs (expected; the bench measures)
 const SLOT_S: f64 = 0.03;
 const KEEP_S: f64 = 0.5; // unplaced and not keyed: a write to key it at most this often
+                         // a burst airs at least this long after its write (the modem takes it about 106 ms ahead): what was written later is
+                         // no match for it, though alike (the host's idle burst and the modem's own fill are the same)
+const MIN_AIR_S: f64 = 0.08;
+const SLCQ: usize = 8; // the short LCs written per cycle, for the cycles heard to be checked against
 
 // events (rdof_t3hat_event)
 pub const EV_WRITE: c_int = 1; // k, ts; v: written at, lead, air time
 pub const EV_AIR: c_int = 2; // k, m, ts; v: e (slots late), air time less written at, lead, AT of the CACH before it
 pub const EV_FILL: c_int = 3; // m, ts: the modem's own burst (none of ours matched); v: AT before it
 pub const EV_LOST: c_int = 4; // k, ts: written, never heard
-pub const EV_GRID: c_int = 5; // m: the grid (re)started; v: position, slot length (48 kS/s samples)
+pub const EV_GRID: c_int = 5; // m: the grid (re)started; v: position, slot length (48 kS/s samples), its host time (NaN: not known)
 pub const EV_PLACE: c_int = 6; // k, m: trunk slot k is modem slot m from now; v: d, the short LC's cycle start (k % 4)
 pub const EV_SKIP: c_int = 7; // k, ts: not written (too late for it)
 pub const EV_REKEY: c_int = 8; // the modem unkeyed under the site (its status): placed again on its next key-up
-pub const EV_ABORT: c_int = 9; // k, ts: DMR_ABORT before slot k's write (its timeslot ran behind); v[0]: why (0 heard, 1 status, 2 NAK)
+pub const EV_ABORT: c_int = 9; // k, ts: DMR_ABORT before slot k's write; v[0]: why (0 heard late, 1 status, 2 NAK, 3 placed)
 
 /// rdof_t3hat_stats_t
 #[repr(C)]
@@ -79,6 +83,20 @@ pub struct Stats {
     pub rx_unmatched: u32, // the receiver placed none like it
     pub rx_delay_min: f64, // report time less the inbound burst's end (host s), matched ones
     pub rx_delay_max: f64,
+    // since the last window(), per timeslot: the report's detail
+    pub e_n: [[u32; 5]; 2], // bursts matched, by where they aired: -4, -2, 0, +2, +4 slots (beyond: the ends)
+    pub fills_ts: [u32; 2], // the modem's own bursts
+    pub ambiguous: u32,     // matched among alike bursts written (the oldest taken)
+    pub at_n: [[u32; 2]; 2], // the AT heard 0 / 1 in the CACH before each slot heard
+    pub depth_n: [[u32; 4]; 2], // the status's queue depth 0, 1, 2, 3 or more
+    pub space_min: [c_int; 2], // the status's free space as read
+    pub space_max: [c_int; 2],
+    pub ts_delay_min: [f64; 2], // write to air of the bursts on their slot
+    pub ts_delay_max: [f64; 2],
+    pub slc_on: u32,    // short LC cycles heard as written for them
+    pub slc_late: u32,  // as written for the cycle before
+    pub slc_null: u32,  // Null
+    pub slc_other: u32, // anything else
 }
 
 #[derive(Clone, Copy)]
@@ -169,6 +187,10 @@ pub struct Hat {
     // the modem's status
     keyed: i8, // the transmitter, as the last GET_STATUS said: -1 not known
     last_key: f64,
+    catchup: bool, // DMR_ABORT when a timeslot runs behind (off while measuring the edges)
+    slc_k: [i64; SLCQ],
+    slc_v: [[u8; 9]; SLCQ],
+    slc_i: usize,
     // inbound bursts placed by the receiver: trunk slot, burst
     inb_k: [i64; INB],
     inb_b: [[u8; BURST]; INB],
@@ -181,7 +203,7 @@ pub struct Hat {
 
 impl Hat {
     pub fn new(lead_idle: f64, lead_busy: f64) -> Hat {
-        Hat {
+        let mut h = Hat {
             lead: [lead_idle, lead_busy],
             min_lead: lead_idle - 0.01,
             off: 0.0,
@@ -213,6 +235,10 @@ impl Hat {
             abort: [0; 2],
             keyed: -1,
             last_key: f64::NEG_INFINITY,
+            catchup: true,
+            slc_k: [-1; SLCQ],
+            slc_v: [[0; 9]; SLCQ],
+            slc_i: 0,
             inb_k: [-1; INB],
             inb_b: [[0; BURST]; INB],
             inb_i: 0,
@@ -225,6 +251,65 @@ impl Hat {
                 rx_delay_max: f64::NEG_INFINITY,
                 ..Stats::default()
             },
+        };
+        h.window();
+        h
+    }
+
+    /// Start the report's detail over (Stats from e_n on).
+    pub fn window(&mut self) {
+        let s = &mut self.st;
+        s.e_n = [[0; 5]; 2];
+        s.fills_ts = [0; 2];
+        s.ambiguous = 0;
+        s.at_n = [[0; 2]; 2];
+        s.depth_n = [[0; 4]; 2];
+        s.space_min = [c_int::MAX; 2];
+        s.space_max = [c_int::MIN; 2];
+        s.ts_delay_min = [f64::INFINITY; 2];
+        s.ts_delay_max = [f64::NEG_INFINITY; 2];
+        s.slc_on = 0;
+        s.slc_late = 0;
+        s.slc_null = 0;
+        s.slc_other = 0;
+    }
+
+    /// DMR_ABORT when a timeslot runs behind (on by default; off to measure where bursts air at a fixed lead).
+    pub fn set_catchup(&mut self, on: bool) {
+        self.catchup = on;
+        if !on {
+            self.abort = [0; 2];
+        }
+    }
+
+    /// The short LC written for the modem's cycle whose LCSS 1 CACH comes before trunk slot k.
+    pub fn slc_wrote(&mut self, k: i64, s9: &[u8; 9]) {
+        if let Some(i) = (0..SLCQ).find(|&i| self.slc_k[i] == k) {
+            self.slc_v[i] = *s9;
+            return;
+        }
+        self.slc_k[self.slc_i] = k;
+        self.slc_v[self.slc_i] = *s9;
+        self.slc_i = (self.slc_i + 1) % SLCQ;
+    }
+
+    /// A whole short LC cycle heard, its LCSS 1 CACH before modem slot m (null: the Null short LC): against what
+    /// was written for it.
+    pub fn slc_heard(&mut self, m: i64, s9: &[u8; 9], null: bool) {
+        if !self.placed {
+            return;
+        }
+        let k = m + self.d;
+        let find = |kk: i64| (0..SLCQ).find(|&i| self.slc_k[i] == kk);
+        let (now, before) = (find(k), find(k - 4));
+        if now.is_some_and(|i| self.slc_v[i] == *s9) {
+            self.st.slc_on += 1;
+        } else if before.is_some_and(|i| self.slc_v[i] == *s9) {
+            self.st.slc_late += 1;
+        } else if null {
+            self.st.slc_null += 1;
+        } else if now.is_some() {
+            self.st.slc_other += 1;
         }
     }
 
@@ -369,7 +454,8 @@ impl Hat {
         self.lc_phase = -1;
         self.st.grids += 1;
         let per = self.per;
-        self.event(EV_GRID, slot, 0, m, [pos48 as f64, per, 0.0, 0.0]);
+        let t = if self.off_ok { self.host_of(pos48 as f64) } else { f64::NAN };
+        self.event(EV_GRID, slot, 0, m, [pos48 as f64, per, t, 0.0]);
     }
 
     /// An outbound burst the receiver heard on the carrier: its position, timeslot (from the CACH's TC), the CACH's
@@ -422,6 +508,9 @@ impl Hat {
             self.lc_phase = m.rem_euclid(4);
         }
         if self.placed {
+            if at >= 0 {
+                self.st.at_n[(slot - 1) as usize][usize::from(at > 0)] += 1;
+            }
             self.match_heard(m, slot, at, burst);
         }
         Some(m)
@@ -431,16 +520,27 @@ impl Hat {
         let ts = (slot - 1) as usize;
         let air = self.host_of(self.pos_of_m(m));
         let n = if self.np[ts] < 6 { self.np[ts] } else { 6 };
+        // the nearest written early enough, the oldest of those
+        let dist = |p: &Pending| if p.t < air - MIN_AIR_S { bit_distance(&p.burst, burst) } else { u32::MAX };
         let mut hit = None;
+        let mut best = MATCH_BITS + 1;
         for i in 0..n {
-            let p = &self.pend[ts][i];
-            if p.t < air && bit_distance(&p.burst, burst) <= MATCH_BITS {
+            let dd = dist(&self.pend[ts][i]);
+            if dd < best {
                 hit = Some(i);
-                break;
+                best = dd;
+            }
+        }
+        // alike bursts written (a TSCC's repeats, idle bursts unmarked): the oldest, as the modem's queue plays them;
+        // a run of them shifted early (a lead past the fetch before) would read as on its slot
+        if let Some(i) = hit {
+            if (i + 1..n).any(|j| dist(&self.pend[ts][j]) == best) {
+                self.st.ambiguous += 1;
             }
         }
         let Some(i) = hit else {
             self.st.fills += 1;
+            self.st.fills_ts[ts] += 1;
             self.event(EV_FILL, slot, m + self.d, m, [f64::from(at), 0.0, 0.0, 0.0]);
             return;
         };
@@ -456,7 +556,14 @@ impl Hat {
         let e = m + self.d - p.k;
         let delay = air - p.t;
         self.st.matched += 1;
+        self.st.e_n[ts][(e / 2 + 2).clamp(0, 4) as usize] += 1;
         if e == 0 {
+            if delay < self.st.ts_delay_min[ts] {
+                self.st.ts_delay_min[ts] = delay;
+            }
+            if delay > self.st.ts_delay_max[ts] {
+                self.st.ts_delay_max[ts] = delay;
+            }
             self.st.on_time += 1;
             if delay < self.st.delay_min {
                 self.st.delay_min = delay;
@@ -479,7 +586,7 @@ impl Hat {
                 self.slip_n[ts] = 1;
             }
             // two in a row a slot behind: the queue holds one too many; DMR_ABORT before the next write flushes it
-            if e > 0 && self.slip_n[ts] >= 2 && self.abort[ts] == 0 {
+            if e > 0 && self.slip_n[ts] >= 2 && self.abort[ts] == 0 && self.catchup {
                 self.abort[ts] = 1;
                 self.slip_n[ts] = 0;
             }
@@ -563,7 +670,10 @@ impl Hat {
             if depth > self.st.depth_max[ts] {
                 self.st.depth_max[ts] = depth;
             }
-            if self.placed && i64::from(depth) > allowed && self.abort[ts] == 0 {
+            self.st.depth_n[ts][depth.min(3) as usize] += 1;
+            self.st.space_min[ts] = self.st.space_min[ts].min(*sp);
+            self.st.space_max[ts] = self.st.space_max[ts].max(*sp);
+            if self.placed && i64::from(depth) > allowed && self.abort[ts] == 0 && self.catchup {
                 self.abort[ts] = 2;
             }
         }
@@ -579,7 +689,7 @@ impl Hat {
     /// A write to timeslot slot NAKed (its queue full): flushed before its next write.
     pub fn nak(&mut self, slot: c_int) {
         self.st.naks += 1;
-        if (slot == 1 || slot == 2) && self.placed {
+        if (slot == 1 || slot == 2) && self.placed && self.catchup {
             self.abort[(slot - 1) as usize] = 3;
         }
     }
@@ -620,6 +730,10 @@ impl Hat {
             self.st.d = d;
             let c = if self.lc_phase >= 0 { (self.lc_phase + d).rem_euclid(4) as f64 } else { -1.0 };
             self.event(EV_PLACE, 1, m + d, m, [d as f64, c, 0.0, 0.0]);
+            // whatever the queues hold from before (a key-up's writes, a run before this one) goes first
+            if self.catchup {
+                self.abort = [4; 2];
+            }
         }
         loop {
             let k = self.next_k;
@@ -1216,6 +1330,26 @@ pub unsafe extern "C" fn rdof_t3hat_nak(h: *mut Hat, slot: c_int) {
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn rdof_t3hat_window(h: *mut Hat) {
+    (*h).window();
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3hat_set_catchup(h: *mut Hat, on: bool) {
+    (*h).set_catchup(on);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3hat_slc_wrote(h: *mut Hat, k: i64, s9: *const u8) {
+    (*h).slc_wrote(k, &*(s9 as *const [u8; 9]));
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3hat_slc_heard(h: *mut Hat, m: i64, s9: *const u8, null: bool) {
+    (*h).slc_heard(m, &*(s9 as *const [u8; 9]), null);
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn rdof_t3hat_keep(h: *mut Hat, now: f64) -> bool {
     (*h).keep(now)
 }
@@ -1539,6 +1673,39 @@ mod tests {
         }
     }
 
+    /// At a fixed lead with no catch-up, where each timeslot's bursts air (the report's -4..+4 counts) and the AT
+    /// heard before them, over a second.
+    fn at_lead(lead: f64) -> ([[u32; 5]; 2], [[u32; 2]; 2]) {
+        let mut b = Bench::new(0.0, 3);
+        b.strict = false;
+        let mut k_min = 0;
+        b.run(3000, &mut k_min, &|_| 0);
+        b.h.set_catchup(false);
+        b.h.set_leads(lead, lead, lead - 0.01);
+        b.run(1000, &mut k_min, &|_| 0);
+        b.h.window();
+        b.run(1000, &mut k_min, &|_| 0);
+        let st = b.h.stats();
+        (st.e_n, st.at_n)
+    }
+
+    #[test]
+    fn a_lead_sweep_finds_the_edges() {
+        let (e, at) = at_lead(0.125);
+        assert!(e[0][2] >= 15 && e[1][2] >= 15 && e[0][3] + e[1][3] + e[0][1] + e[1][1] == 0, "125: {e:?}");
+        assert!(at[0][1] + at[1][1] == 0, "125: AT {at:?}");
+        let (e, at) = at_lead(0.155);
+        assert!(e[0][2] >= 15 && e[1][2] >= 15 && e[0][1] + e[1][1] == 0, "155: {e:?}");
+        assert!(at[0][0] + at[1][0] == 0, "155: AT {at:?}");
+        // past the fetch: each a slot pair late
+        let (e, _) = at_lead(0.100);
+        assert!(e[0][3] >= 15 && e[1][3] >= 15 && e[0][2] + e[1][2] == 0, "100: {e:?}");
+        // before the fetch of the slot pair before: on its slot while the queue holds two, else a pair early (after
+        // a slot not written, as the jump of the lead makes); never late
+        let (e, _) = at_lead(0.175);
+        assert!(e[0][3] + e[1][3] == 0 && e[0][1] + e[1][1] >= 15, "175: {e:?}");
+    }
+
     #[test]
     fn places_and_keeps_every_burst_on_its_slot() {
         let mut b = Bench::new(3.6, 3); // the short LC's cycle before TS1, as on the bench (H5)
@@ -1555,7 +1722,13 @@ mod tests {
         assert!(b.slc_ok > 100, "short LCs {}", b.slc_ok);
         // one key-up, held all the way by the status polls
         assert_eq!((b.s.keyups, b.s.unkeys, b.s.drops, b.s.nulls), (1, 0, 0, 0));
-        assert!(st.polls > 70 && st.idle == 0 && st.aborts == 0, "polls {} idle {}", st.polls, st.idle);
+        assert!(
+            st.polls > 70 && st.idle == 0 && st.aborts == 2,
+            "polls {} idle {} aborts {}",
+            st.polls,
+            st.idle,
+            st.aborts
+        );
         assert!(st.depth_max[0] <= 1 && st.depth_max[1] <= 1);
         assert!(st.delay_min > 0.11 && st.delay_max < 0.14, "{} {}", st.delay_min, st.delay_max);
     }
@@ -1600,7 +1773,7 @@ mod tests {
         b.run(8000, &mut k_min, &|_| 0);
         let st = b.h.stats();
         assert!(st.late >= 2, "late {}", st.late);
-        assert!(st.aborts >= 1, "aborts {}", st.aborts);
+        assert!(st.aborts >= 3, "aborts {}", st.aborts);
         // caught up: the last second all on time, on the same key-up
         let before = st.on_time;
         b.run(1000, &mut k_min, &|_| 0);

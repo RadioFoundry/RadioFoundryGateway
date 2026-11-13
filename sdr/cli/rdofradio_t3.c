@@ -1304,6 +1304,15 @@ static struct {
     int state, flags;          /* the last GET_STATUS: the modem's state (-1 not known) and flags */
     double next_report;
     rdof_t3hat_stats_t last;
+    double key_t;              /* the last write to key it */
+    int64_t cy_m;              /* the short LC cycle being heard: its LCSS 1 CACH's modem slot, its rows so far */
+    int cy_n;
+    uint32_t cy_rows[4];
+    uint8_t null9[9];          /* the Null short LC */
+    struct {                   /* the lead sweep (rdofradio_t3_hat_t) */
+        int state;             /* 0 not yet, 1 running, 2 done */
+        double lead, t_step, t_win;
+    } sw;
 } H = {.out_chan = -1, .in_chan = -1, .state = -1};
 
 static bool hat_frame(uint8_t cmd, const uint8_t *p, size_t n)
@@ -1341,6 +1350,8 @@ static void hat_write(int64_t k, double now, double lead)
         rdof_duplex_idle(H.cc, burst);
         control = RDOF_SYNC_DATA | 9;
     }
+    if (H.io.mark && (control & 0x4F) == (RDOF_SYNC_DATA | 9)) /* each idle its own: which slot it aired on is heard */
+        rdof_duplex_idle_mark(H.cc, (uint32_t)k * 0x9E3779B1u, burst);
     if (rdof_t3hat_lc_start(H.h, k)) {
         /* the short LC for the modem's 4 CACH from k, latched as it builds the first: before slot k's burst. Its
          * cycle starts before TS1 (k % 4 == 0) or TS2 (k % 4 == 1): the controller's cycle from k & ~3 */
@@ -1350,6 +1361,7 @@ static void hat_write(int64_t k, double now, double lead)
         if (slc >= 0) {
             uint8_t s9[9];
             hat_slc9((uint32_t)slc, s9);
+            rdof_t3hat_slc_wrote(H.h, k, s9);
             if (!H.slc_sent || memcmp(s9, H.slc, 9)) {
                 hat_frame(RDOF_MMDVM_DMR_SHORTLC, s9, 9);
                 memcpy(H.slc, s9, 9);
@@ -1375,8 +1387,13 @@ static void hat_events(void)
     int64_t k, m;
     double v[4];
     while (rdof_t3hat_event(H.h, &kind, &ts, &k, &m, v)) {
-        if (kind == RDOF_T3HAT_GRID)
-            tsay("carrier 1 (modem): its slot grid from what the receiver hears%s", H.last.grids ? " (again: it keyed up anew)" : "");
+        if (kind == RDOF_T3HAT_GRID) {
+            char ku[64] = "";
+            if (!isnan(v[2]) && H.key_t > 0 && v[2] > H.key_t && v[2] - H.key_t < 2.0)
+                snprintf(ku, sizeof ku, "; its first slot aired %.1f ms after the keying write", (v[2] - H.key_t) * 1e3);
+            tsay("carrier 1 (modem): its slot grid from what the receiver hears%s%s",
+                 H.last.grids ? " (again: it keyed up anew)" : "", ku);
+        }
         else if (kind == RDOF_T3HAT_PLACE)
             tsay("carrier 1 (modem): trunk slot %lld is its slot %lld; its short LC cycle from k %% 4 == %.0f", (long long)k,
                  (long long)m, v[1]);
@@ -1384,7 +1401,7 @@ static void hat_events(void)
             tsay("carrier 1 (modem): its status says unkeyed: placed again when it keys");
         else if (kind == RDOF_T3HAT_ABORT && T.o.verbose)
             tsay("carrier 1 (modem): TS%d flushed before slot %lld (%s)", ts, (long long)k,
-                 v[0] == 0 ? "aired late" : v[0] == 1 ? "its queue too deep" : "NAKed");
+                 v[0] == 0 ? "aired late" : v[0] == 1 ? "its queue too deep" : v[0] == 2 ? "NAKed" : "placed");
         else if (kind == RDOF_T3HAT_AIR) {
             if (v[0] != 0 && T.o.verbose)
                 tsay("carrier 1 (modem): slot %lld aired %+.0f slots off (written %.1f ms ahead)", (long long)k, v[0],
@@ -1401,6 +1418,66 @@ static void hat_events(void)
         }
         H.last.grids += kind == RDOF_T3HAT_GRID;
     }
+}
+
+static void hat_detail(const rdof_t3hat_stats_t *s, char *out, size_t cap)
+{
+    size_t n = 0;
+    for (int ts = 0; ts < 2; ts++) {
+        const uint32_t *e = s->e_n[ts], *dq = s->depth_n[ts];
+        char d[32] = "", sp[24] = "";
+        if (e[2])
+            snprintf(d, sizeof d, ", write to air %.1f-%.1f ms", s->ts_delay_min[ts] * 1e3, s->ts_delay_max[ts] * 1e3);
+        if (dq[0] + dq[1] + dq[2] + dq[3])
+            snprintf(sp, sizeof sp, " (space %d-%d)", s->space_min[ts], s->space_max[ts]);
+        n += (size_t)snprintf(out + n, n < cap ? cap - n : 0,
+                              "%sTS%d aired -4..+4: %u %u %u %u %u, its own %u%s; AT 0/1 %u/%u; depth 0..3+ %u %u %u %u%s",
+                              ts ? "; " : "", ts + 1, e[0], e[1], e[2], e[3], e[4], s->fills_ts[ts], d,
+                              s->at_n[ts][0], s->at_n[ts][1], dq[0], dq[1], dq[2], dq[3], sp);
+    }
+    snprintf(out + n, n < cap ? cap - n : 0, "; short LC cycles %u as written, %u a cycle late, %u Null, %u else; %u alike",
+             s->slc_on, s->slc_late, s->slc_null, s->slc_other, s->ambiguous);
+}
+
+/* the lead sweep (H.io.sweep_*), once placed: a line per step; T.mu held */
+static void hat_sweep(double now)
+{
+    if (H.io.sweep_s <= 0 || H.sw.state == 2)
+        return;
+    if (H.sw.state == 0) {
+        H.sw.state = 1;
+        H.sw.lead = H.io.sweep_hi_s;
+        rdof_t3hat_set_catchup(H.h, false);
+        rdof_t3hat_set_leads(H.h, H.sw.lead, H.sw.lead, H.sw.lead - 0.01);
+        H.sw.t_step = now;
+        H.sw.t_win = now + 0.5; /* the step's first half second settling */
+        tsay("carrier 1 (modem): lead sweep %.1f to %.1f ms by %.1f, %.1f s each, no catch-up", H.io.sweep_hi_s * 1e3,
+             H.io.sweep_lo_s * 1e3, H.io.sweep_step_s * 1e3, H.io.sweep_s);
+        return;
+    }
+    if (H.sw.t_win > 0 && now >= H.sw.t_win) {
+        rdof_t3hat_window(H.h);
+        H.sw.t_win = 0;
+    }
+    if (now < H.sw.t_step + H.io.sweep_s)
+        return;
+    rdof_t3hat_stats_t s;
+    rdof_t3hat_stats(H.h, &s);
+    char d[512];
+    hat_detail(&s, d, sizeof d);
+    tsay("carrier 1 (modem): lead %.1f ms: %s", H.sw.lead * 1e3, d);
+    H.sw.lead -= H.io.sweep_step_s;
+    if (H.sw.lead < H.io.sweep_lo_s - 1e-6) {
+        H.sw.state = 2;
+        rdof_t3hat_set_leads(H.h, H.io.lead_idle_s, H.io.lead_busy_s, H.io.lead_idle_s - 0.01);
+        rdof_t3hat_set_catchup(H.h, true);
+        tsay("carrier 1 (modem): lead sweep done: leads %.1f / %.1f ms again", H.io.lead_idle_s * 1e3,
+             H.io.lead_busy_s * 1e3);
+        return;
+    }
+    rdof_t3hat_set_leads(H.h, H.sw.lead, H.sw.lead, H.sw.lead - 0.01);
+    H.sw.t_step = now;
+    H.sw.t_win = now + 0.5;
 }
 
 static void *hat_writer(void *arg)
@@ -1423,6 +1500,8 @@ static void *hat_writer(void *arg)
             if (w > H.k_next)
                 H.k_next = w;
         }
+        if (st.placed)
+            hat_sweep(now);
         if (now >= H.next_poll) { /* the modem's watchdog; its free space per timeslot */
             hat_frame(RDOF_MMDVM_GET_STATUS, NULL, 0);
             H.next_poll = now + HAT_POLL_S;
@@ -1436,6 +1515,7 @@ static void *hat_writer(void *arg)
                 rdof_duplex_idle(H.cc, p + 1);
                 hat_frame(RDOF_MMDVM_DMR_DATA1, p, sizeof p);
                 H.keeps++;
+                H.key_t = now;
             }
         } else {
             /* written early, the slot's burst sets the AT of the CACH after slot k - 2: the controller's */
@@ -1452,19 +1532,55 @@ static void *hat_writer(void *arg)
     return NULL;
 }
 
-/* an outbound burst heard on carrier 1's out; T.mu held */
-static void hat_heard_out(int64_t pos48, int slot, int at, int lcss, const uint8_t burst[RDOF_BURST_BYTES])
+/* a whole short LC cycle heard (its LCSS 1 CACH before modem slot m); T.mu held */
+static void hat_slc_heard(int64_t m, const uint8_t s9[9])
 {
-    rdof_t3hat_heard(H.h, pos48, slot, at, lcss, burst, NULL);
-    H.heard_out++;
+    static const uint8_t zero[9];
+    rdof_t3hat_slc_heard(H.h, m, s9, !memcmp(s9, H.null9, 9) || !memcmp(s9, zero, 9));
 }
 
-void rdofradio_t3_hat_heard(int64_t pos48, int slot, int at, int lcss, const uint8_t burst[RDOF_BURST_BYTES])
+/* an outbound burst heard on carrier 1's out: its CACH's row of the short LC (row: -1 none), or (the simulated modem)
+ * the cycle's short LC and which row; T.mu held */
+static void hat_heard_out(int64_t pos48, int slot, int at, int lcss, int64_t row, const uint8_t *slc9, int frag,
+                          const uint8_t burst[RDOF_BURST_BYTES])
+{
+    int64_t m = INT64_MIN;
+    rdof_t3hat_heard(H.h, pos48, slot, at, lcss, burst, &m);
+    H.heard_out++;
+    if (m == INT64_MIN || lcss < 0)
+        return;
+    if (slc9) {
+        if (frag == 3)
+            hat_slc_heard(m - 3, slc9);
+        return;
+    }
+    if (row < 0)
+        return;
+    const int i = lcss == 1 ? 0 : (int)(m - H.cy_m);
+    const int want = i == 0 ? 1 : i == 3 ? 2 : 3;
+    if (i < 0 || i > 3 || lcss != want || (i > 0 && H.cy_n != i)) {
+        H.cy_n = 0;
+        return;
+    }
+    if (i == 0)
+        H.cy_m = m;
+    H.cy_rows[i] = (uint32_t)row;
+    H.cy_n = i + 1;
+    if (H.cy_n == 4) {
+        uint8_t s9[9];
+        rdof_short_lc_join(H.cy_rows, s9);
+        hat_slc_heard(H.cy_m, s9);
+        H.cy_n = 0;
+    }
+}
+
+void rdofradio_t3_hat_heard(int64_t pos48, int slot, int at, int lcss, const uint8_t burst[RDOF_BURST_BYTES],
+                            const uint8_t slc9[9], int frag)
 {
     if (!H.on)
         return;
     pthread_mutex_lock(&T.mu);
-    hat_heard_out(pos48, slot, at, lcss, burst);
+    hat_heard_out(pos48, slot, at, lcss, -1, slc9, frag, burst);
     pthread_mutex_unlock(&T.mu);
 }
 
@@ -1477,7 +1593,7 @@ static void hat_rx(int c, const rdof_sdr_burst_t *b)
         if (b->has_cach && !rdof_t3rf_cach_read(b->cach, &at, &slot, &lcss, &pl))
             at = -1, slot = b->b.slot, lcss = -1;
         pthread_mutex_lock(&T.mu);
-        hat_heard_out(b->position, slot, at, lcss, b->b.burst);
+        hat_heard_out(b->position, slot, at, lcss, lcss >= 0 ? (int64_t)pl : -1, NULL, 0, b->b.burst);
         pthread_mutex_unlock(&T.mu);
     }
     if (c == H.in_chan) {
@@ -1576,6 +1692,12 @@ static void hat_poll(double now)
          s.on_time > l->on_time ? s.delay_min * 1e3 : 0.0, s.on_time > l->on_time ? s.delay_max * 1e3 : 0.0, s.ppm,
          H.airs_at[1], H.airs_at[0] + H.airs_at[1], H.at_same, H.at_same + H.at_diff);
     hat_report_status(&s, l);
+    if (H.sw.state != 1) { /* the sweep has its own windows */
+        char d[512];
+        hat_detail(&s, d, sizeof d);
+        tsay("carrier 1 (modem): %s", d);
+        rdof_t3hat_window(H.h);
+    }
     const uint32_t grids = H.last.grids;
     H.last = s;
     H.last.grids = grids;
@@ -1619,6 +1741,10 @@ bool rdofradio_t3_start_hat(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t 
         return false;
     }
     rdof_t3hat_init(H.h, hat->lead_idle_s, hat->lead_busy_s);
+    hat_slc9(0, H.null9);
+    H.sw.state = 0;
+    H.cy_n = 0;
+    H.key_t = 0;
     rdof_t3hat_set_leads(H.h, hat->lead_idle_s, hat->lead_busy_s, hat->lead_idle_s - 0.01);
     if (!start_common(c, o, err, cap))
         return false;
@@ -1738,7 +1864,7 @@ static void *hat_sim_thread(void *arg)
             /* a receiver's position wanders by a sample or so: whole samples alone would alias with the slot */
             HS.rng = HS.rng * 1103515245u + 12345u;
             const double dither = (double)(HS.rng >> 8 & 0xffff) / 65536.0 - 0.5;
-            rdofradio_t3_hat_heard((int64_t)llround(t * 48000.0 + dither), slot, at, lcss, burst);
+            rdofradio_t3_hat_heard((int64_t)llround(t * 48000.0 + dither), slot, at, lcss, burst, slc9, frag);
         }
     }
     return NULL;

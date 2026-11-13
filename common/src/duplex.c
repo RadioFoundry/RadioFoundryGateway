@@ -24,6 +24,15 @@ void rdof_duplex_idle(int cc, uint8_t out[RDOF_BURST_BYTES])
     rdof_data_burst(IDLE_INFO, RDOF_DT_IDLE, cc, rdof_data_sync(RDOF_BS_VOICE), out);
 }
 
+void rdof_duplex_idle_mark(int cc, uint32_t mark, uint8_t out[RDOF_BURST_BYTES])
+{
+    uint8_t info[12];
+    memcpy(info, IDLE_INFO, sizeof info);
+    for (int i = 0; i < 4; i++)
+        info[8 + i] ^= (uint8_t)(mark >> (24 - 8 * i));
+    rdof_data_burst(info, RDOF_DT_IDLE, cc, rdof_data_sync(RDOF_BS_VOICE), out);
+}
+
 void rdof_duplex_lc_burst(const uint8_t lc9[9], int dt, int cc, uint8_t out[RDOF_BURST_BYTES])
 {
     rdof_lc_burst(lc9, dt, cc, rdof_data_sync(RDOF_BS_VOICE), out);

@@ -332,6 +332,8 @@ static rdofradio_cfg_t rcfg;
 static const char *t3_path;
 static rdofradio_cfg_t t3cfg;
 static double hat_lead_ms[2] = {125, 155}; /* inside the modem's AT idle and AT busy windows (tier3-hat.md 3.3) */
+static bool hat_mark;                      /* --hat-mark: the host's idle bursts told apart on air */
+static double hat_sweep_ms[4];             /* --hat-sweep LO,HI,STEP,SECONDS */
 static bool hat_on; /* the site has the modem */
 #ifdef RDOF_TIER3
 static bool hat_modem_up(void);
@@ -558,7 +560,8 @@ static void usage(void)
             "                 beside the radios on the air)\n"
             "       rdofradio [DEVICE] --allow-tx --mmdvm PORT|sim-hat --config FILE --tier3 FILE [--hat-lead IDLE_MS,BUSY_MS]\n"
             "                 [--air-ms N ...] (a trunked site's carrier on a stock duplex modem, the SDR hearing it;\n"
-            "                 leads 125,155 ms by default; sim-hat: the modem simulated, no SDR)\n"
+            "                 leads 125,155 ms by default; sim-hat: the modem simulated, no SDR; measuring: --hat-mark\n"
+            "                 (idle bursts told apart on air), --hat-sweep LO_MS,HI_MS,STEP_MS,SECONDS (a lead sweep))\n"
             "       rdofradio --config FILE --sim-air N [--sim-id ID] [--sim-tg TG] [--sim-talk S] [--sim-script FILE]\n"
             "                 [--sim-ext PATH [--sim-fast] [--sim-ext-loss P] [--sim-ext-err P]]\n"
             "                 [--state-dir DIR] [--seconds S] [-v] (a trunked site's air simulated, rdofradio_t3.h)\n"
@@ -6226,7 +6229,9 @@ static bool hat_start(char *err, size_t cap)
                                     .sim_talk_s = t3_opts.sim_talk_s, .sim_script = t3_opts.sim_script,
                                     .state_dir = t3_opts.state_dir, .verbose = R.verbose};
     const rdofradio_t3_dev_t td = {hat_channel, hat_now48, now_s, dev ? (uint32_t)R.rate : 48000, NULL, NULL, 0};
-    const rdofradio_t3_hat_t hat = {hat_frame_out, hat_lead_ms[0] / 1e3, hat_lead_ms[1] / 1e3};
+    const rdofradio_t3_hat_t hat = {hat_frame_out,          hat_lead_ms[0] / 1e3,  hat_lead_ms[1] / 1e3,
+                                    hat_mark,               hat_sweep_ms[0] / 1e3, hat_sweep_ms[1] / 1e3,
+                                    hat_sweep_ms[2] / 1e3, hat_sweep_ms[3]};
     return rdofradio_t3_start_hat(&t3cfg, &to, &td, &hat, err, cap);
 }
 #endif
@@ -6338,9 +6343,17 @@ static int mmdvm_main(int argc, char **argv, const char *port, int baud, double 
         goto out;
     }
     deliver_heard();
+    uint32_t say_rx = R.rx_hz, say_tx = R.tx_hz;
+    int say_cc = R.cc;
+#ifdef RDOF_TIER3
+    if (hat_on) { /* the modem is on the site's carrier (hat_modem_up), not the box's own frequency */
+        say_rx = t3cfg.t.car[0].rx_hz, say_tx = t3cfg.t.car[0].tx_hz;
+        say_cc = t3cfg.t.cfg.cc;
+    }
+#endif
     fprintf(stderr, "%s: %s (%s) on %s, RX %.4f MHz, TX %.4f MHz, cc %d, RF level cap %d%s%s\n",
             hat_on ? "trunked site" : R.full ? "repeater" : "transceiver", R.client.version, rdof_radio_kind_name(R.radio.kind), port,
-            R.rx_hz / 1e6, R.tx_hz / 1e6, R.cc, mm_rf_level, dev ? "; SDR: " : "", dev ? dev->name : "");
+            say_rx / 1e6, say_tx / 1e6, say_cc, mm_rf_level, dev ? "; SDR: " : "", dev ? dev->name : "");
 #ifdef RDOF_HOST_WEB
     if (web_port >= 0) {
         web_settings(argc, argv);
@@ -6654,6 +6667,17 @@ int main(int argc, char **argv)
             if (sscanf(v, "%lf,%lf", &hat_lead_ms[0], &hat_lead_ms[1]) != 2 || hat_lead_ms[0] <= 0 ||
                 hat_lead_ms[1] <= hat_lead_ms[0]) {
                 fprintf(stderr, "--hat-lead IDLE_MS,BUSY_MS (0 < IDLE < BUSY)\n");
+                return 2;
+            }
+        } else if (!strcmp(a, "--hat-mark")) {
+            hat_mark = true;
+        } else if (!strcmp(a, "--hat-sweep")) {
+            NEXT();
+            if (sscanf(v, "%lf,%lf,%lf,%lf", &hat_sweep_ms[0], &hat_sweep_ms[1], &hat_sweep_ms[2], &hat_sweep_ms[3]) !=
+                    4 ||
+                hat_sweep_ms[0] <= 20 || hat_sweep_ms[1] < hat_sweep_ms[0] || hat_sweep_ms[2] <= 0 ||
+                hat_sweep_ms[3] < 1) {
+                fprintf(stderr, "--hat-sweep LO_MS,HI_MS,STEP_MS,SECONDS (20 < LO <= HI, STEP > 0, SECONDS >= 1)\n");
                 return 2;
             }
         } else if (!strcmp(a, "--air-ms")) {
