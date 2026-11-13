@@ -123,8 +123,11 @@ impl<'a, const N: usize> Air<'a, N> {
         let tscc = self.site.tscc_ch();
         let lost = k & 1 == 0 && out.tscc_dt == DT_CSBK && lose(&mut self.lose_out, &out.tscc_pdu);
         for m in self.ms.iter_mut() {
+            if out.has_slc != 0 {
+                m.slc(tscc / 2, out.slc_tscc); // the TSCC carrier's CACH
+            }
             let ch = m.ch();
-            if ch == tscc && k & 1 == 0 {
+            if ch == tscc && k & 1 == 0 && out.rev == 0 {
                 let mut b = [0u8; BLOCK_MAX];
                 b[..10].copy_from_slice(&out.tscc_pdu);
                 b[10..12].copy_from_slice(&out.tscc_ext);

@@ -86,7 +86,9 @@ typedef struct {
     uint32_t data_id;
     uint8_t divert; /* MSs may divert their calls (6.6.7; tier3.md 3.18): 0 refused */
     uint8_t auth; /* RDOF_T3_AUTH_*: MS authentication at registration (361-4 6.4.8; tier3.md 3.14) */
-    uint8_t pad1[2];
+    uint8_t composite; /* 1: the TSCC's slot carries a call when no payload channel is free (361-4 5.3.2; tier3.md
+                          3.19) */
+    uint8_t pad1;
 } rdof_t3_cfg_t;
 
 #define RDOF_T3_AUTH_OFF 0          /* none */
@@ -252,8 +254,8 @@ typedef struct {
     uint8_t at;      /* the AT bit for the CACH before slot k + 1 on the TSCC carrier */
     uint8_t has_slc; /* k % 4 == 0: a new short LC for the next 4 CACH */
     uint8_t tscc_ext[2]; /* tscc_dt RDOF_DT_RATE_12 (a UDT's appended block): its octets 10 and 11 */
-    uint8_t pad;
-    uint32_t slc_tscc;    /* C_SYS_Parms for the TSCC carrier */
+    uint8_t rev;     /* 1: a composite TSCC's slot carries a call in slot k (its payload path sends it) */
+    uint32_t slc_tscc;    /* C_SYS_Parms for the TSCC carrier (P_SYS_Parms, composite, while rev) */
     uint32_t slc_payload; /* P_SYS_Parms for the other carriers */
     rdof_t3_ch_out_t ch[RDOF_T3_CHANNELS]; /* only the channels with k's LCN */
 } rdof_t3_slot_out_t;
@@ -469,6 +471,9 @@ uint32_t rdof_t3ms_sd_inbox(const rdof_t3ms_t *ms, uint8_t *out, size_t cap, siz
  * next slot (TSCC carrier). pdu: 10 octets; 12 when dt is RDOF_DT_RATE_12 or RDOF_DT_DATA_HEADER on a payload
  * channel, 18 for RDOF_DT_RATE_34, 24 for RDOF_DT_RATE_1 (packet data: the decoded block, rdof_t3rf_burst_block) */
 void rdof_t3ms_rx(rdof_t3ms_t *ms, int ch, int64_t k, uint8_t dt, const uint8_t *pdu, bool at);
+/* Carrier c's CACH short LC from now on (28 bits; -1 none: ignored): a composite TSCC's P_SYS_Parms keeps an idle MS
+ * from hunting while the TSCC carries a call (361-4 5.3.2). */
+void rdof_t3ms_slc(rdof_t3ms_t *ms, int carrier, int64_t slc);
 /* inbound slot k: true when the MS transmits, filling *tx */
 bool rdof_t3ms_tx(rdof_t3ms_t *ms, int64_t k, int64_t now_ms, rdof_t3ms_tx_t *tx);
 void rdof_t3ms_status(const rdof_t3ms_t *ms, rdof_t3ms_status_t *st);

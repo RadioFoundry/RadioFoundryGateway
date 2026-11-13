@@ -846,6 +846,118 @@ fn busy_queued() {
     assert!(r.within_nwait(k, ko));
 }
 
+// ════ Composite TSCC (5.3.2) ════
+
+/// A one-carrier site with the composite TSCC on: A's call on TG takes TS2, B's on TG2 then finds no payload
+/// channel free. Returns the rig and the slot B asked in.
+fn composite_busy() -> (Rig, i64) {
+    let mut r = Rig::new(|c| c.composite = 1);
+    r.register(A, Some(TG));
+    r.register(B, Some(TG2));
+    r.register(C, None);
+    let k = r.send(group(TG, A, 0));
+    let (_, o) = r.find(k, 30, tv).expect("TV_GRANT for A");
+    assert_eq!(grant(&o.tscc_pdu).1, 1, "TS2 first: the dedicated payload channel");
+    let k = r.send(group(TG2, B, 0));
+    (r, k)
+}
+
+/// Table 7.34 (P_SYS_Parms): (SLCO, NET + SITE as the syscode's top 14 bits with MODEL, Payload Channel Type).
+fn p_sys(slc: u32) -> (u8, u16, u8) {
+    ((slc >> 24) as u8 & 0xF, ((slc >> 10) & 0x3FFF) as u16, ((slc >> 9) & 1) as u8)
+}
+
+/// 5.3.2: "A composite TSCC may suspend its control channel function and revert to a payload mode ... if all
+/// other payload channels within a particular TS are busy" (5.3.0). B's request gets TV_GRANT naming the TSCC's own
+/// physical channel and LCN 0 (table 7.11), within NWait, not a C_QACKD.
+#[test]
+fn composite_tscc_grants_its_own_slot() {
+    let (mut r, k) = composite_busy();
+    let (k1, o) = r.find(k, 30, |dt, b| tv(dt, b) && tgt(b) == TG2).expect("TV_GRANT for B");
+    assert!(r.within_nwait(k, k1));
+    let (chan, lcn, late, _, _) = grant(&o.tscc_pdu);
+    assert_eq!((chan, lcn, late), (r.cfg.carriers[0].chan, 0, false));
+    assert_eq!(src(&o.tscc_pdu), B);
+    assert!(r.ack_to(k, 30, B).is_none(), "no queueing answer");
+}
+
+/// 5.3.2: while it carries the call the TSCC "shall cease transmitting C_SYS_Parms SLC and transmit the
+/// P_SYS_Parms SLC to broadcast a sub-set of the System Identity Code and the Payload Channel Type", 1 =
+/// "Payload Channel is Composite Control Channel" (7.1.2.2, table 7.34, 7.2.34 table 7.95); 7.1.2.1: C_SYS_Parms
+/// is "never transmitted when neither of the timeslots of the physical channel are a TSCC". The slot sends no
+/// TSCC blocks (no C_ALOHA: the MSs can't access, 5.3.2 b)), and channel 0 is a call.
+#[test]
+fn composite_tscc_p_sys_parms_while_reverted() {
+    let (mut r, k) = composite_busy();
+    let (k1, _) = r.find(k, 30, |dt, b| tv(dt, b) && tgt(b) == TG2).unwrap();
+    r.run(400);
+    // until the call clears at its hang time's end (no voice in it)
+    let end = clears(&r, 0).first().expect("P_CLEAR at hang expiry").0;
+    let after: Vec<&(i64, SlotOut)> = r.hist.iter().filter(|(kk, _)| *kk > k1 + 8 && *kk < end - 4).collect();
+    let slcs: Vec<u32> = after.iter().filter(|(_, o)| o.has_slc != 0).map(|(_, o)| o.slc_tscc).collect();
+    assert!(slcs.len() > 10);
+    for slc in &slcs {
+        let (slco, sc, pct) = p_sys(*slc);
+        assert_eq!(slco, spec::SLCO_P_SYS_PARMS, "P_SYS_Parms, not C_SYS_Parms");
+        assert_eq!(sc, r.sc() >> 2, "MODEL, NET, SITE");
+        assert_eq!(pct, 1, "Payload Channel Type: composite control channel");
+    }
+    for (kk, o) in &after {
+        if kk % 2 == 0 {
+            assert_eq!(o.tscc_dt, 0, "slot {kk}: no TSCC block");
+            assert_eq!(o.rev, 1);
+            assert!(matches!(o.ch[0].r#use, USE_CALL | USE_HANG), "slot {kk}: channel 0 carries the call");
+        }
+        if o.has_slc != 0 {
+            assert_eq!(p_sys(o.slc_payload).2, 0, "other carriers: normal payload channels");
+        }
+    }
+}
+
+/// 5.3.2 b): "the TSCC cannot accept random access requests" while reverted: a C_RAND on its slot isn't answered.
+/// 6.6.2.3.1.6 b): P_MAINT(DISCON) on the slot clears the call there, with P_CLEAR on channel 0 (7.1.1.3.2, back to
+/// the control channel), and the TSCC returns (5.3.2: "When the payload call is completed, the channel returns to
+/// its control channel function") with C_ALOHA and C_SYS_Parms.
+#[test]
+fn composite_tscc_returns_after_the_call() {
+    let (mut r, k) = composite_busy();
+    r.find(k, 30, |dt, b| tv(dt, b) && tgt(b) == TG2).unwrap();
+    r.run(40);
+    let kc = r.k;
+    r.s.rx_pdu(0, spec::DT_CSBK, &private(A, C)); // C's request on the reverted slot
+    r.run(20);
+    r.s.rx_pdu(0, spec::DT_CSBK, &maint(B));
+    let kd = r.k;
+    r.run(80);
+    let c: Vec<_> = clears(&r, 0).into_iter().filter(|(kk, _)| *kk >= kd).collect();
+    assert_eq!(c.len(), r.cfg.clear_repeats as usize, "P_CLEAR on the TSCC's slot");
+    for (kk, b) in &c {
+        assert_eq!(kk % 2, 0, "on TS1");
+        check_clear(b);
+    }
+    let back = c.last().unwrap().0;
+    let (ka, _) = r.find(back + 1, 4, |dt, b| is(dt, b, spec::C_ALOHA)).expect("C_ALOHA again");
+    assert!(ka - back <= 2, "the first TSCC block");
+    let o = r.hist.iter().find(|(kk, o)| *kk > back && o.has_slc != 0).unwrap().1;
+    assert_eq!(p_sys(o.slc_tscc).0, spec::SLCO_C_SYS_PARMS);
+    assert!(r.all(kc, 100, |dt, b| (is(dt, b, spec::C_AHOY) || is(dt, b, spec::C_ACKD)) && (tgt(b) == C || src(b) == C)).is_empty(),
+        "C's request on the reverted slot went unheard");
+}
+
+/// With the setting off (the default) the TSCC is dedicated (5.3.1): it never grants its own slot; B is queued.
+#[test]
+fn dedicated_tscc_never_reverts() {
+    let mut r = Rig::new(|_| {});
+    r.register(A, Some(TG));
+    r.register(B, Some(TG2));
+    let k = r.send(group(TG, A, 0));
+    r.find(k, 30, tv).unwrap();
+    let k = r.send(group(TG2, B, 0));
+    assert_eq!(r.ack_to(k, 30, B).unwrap().1 .1, spec::QUEUED_RESOURCE);
+    assert!(r.all(k, 100, |dt, b| tv(dt, b) && grant(b).1 == 0).is_empty());
+    assert!(r.hist.iter().all(|(_, o)| o.rev == 0));
+}
+
 // ════ Individual calls ════
 
 fn ahoy(dt: u8, b: &[u8; 10]) -> bool {

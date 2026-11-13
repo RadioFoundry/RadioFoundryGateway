@@ -1935,6 +1935,7 @@ pub unsafe extern "C" fn rdof_t3unit_init(
         return false;
     }
     (*u).rf_tscc = tscc;
+    (*rf(u)).composite = tscc; // channel 0 carries a call only when the controller opens it (services.composite_tscc)
     rdof_mn_cfg_init(addr_of_mut!((*u).mc), node(u));
     for c in 0..CARRIERS {
         let x: *mut MnUpHead = u.cast::<u8>().add(up0 + c * stride).cast();
@@ -1978,8 +1979,8 @@ pub unsafe extern "C" fn rdof_t3unit_run(u: *mut Unit, k_upto: i64, now_ms: i64)
         (*r).k = k;
         for c in 0..usize::from((*u).cfg.ncarriers) {
             let ch = 2 * c + (k & 1) as usize;
-            if ch == 0 && (*u).rf_tscc {
-                continue; // the TSCC's RC goes with its slot (io_tscc)
+            if ch == 0 && (*u).rf_tscc && (*r).o.rev == 0 {
+                continue; // the TSCC's RC goes with its slot (io_tscc); a composite TSCC's call: as any channel's
             }
             rdof_t3rf_rc(rf(u), ch as c_int, c_int::from((*r).o.ch[ch].rc));
             let o = addr_of!((*r).o.ch[ch]);
@@ -2008,6 +2009,7 @@ pub unsafe extern "C" fn rdof_t3unit_slot(
     if (*u).k_next <= k {
         rdof_t3unit_run(u, k, (*u).now_ms);
     }
+    rev_at(u, k);
     let ok = rdof_t3rf_slot(rf(u), c, k, &mut *burst.cast(), control, &mut *at, &mut *slc28);
     drain(u);
     ok
@@ -2022,6 +2024,23 @@ pub unsafe extern "C" fn rdof_t3unit_split_pump(u: *mut Unit, o: *mut T3rfSplit,
     drain(u);
 }
 
+/// The radio layer's channel 0 in slot k: the TSCC, or a composite TSCC's call (the controller's word for k).
+unsafe fn rev_at(u: *mut Unit, k: i64) {
+    let o = held(u, k);
+    (*rf(u)).rev = !o.is_null() && (*o).rev != 0;
+}
+
+/// Carrier c's CACH short LC from slot k (k % 4 == 0) as the controller set it, or -1: what an MS on that carrier
+/// reads (C_SYS_Parms; P_SYS_Parms, with Payload Channel Type 1 on a composite TSCC carrying a call).
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3unit_slc(u: *const Unit, c: c_int, k: i64) -> i64 {
+    let o = held(u, k);
+    if o.is_null() || (*o).has_slc == 0 {
+        return -1;
+    }
+    i64::from(if c == 0 && (*u).rf_tscc { (*o).slc_tscc } else { (*o).slc_payload })
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn rdof_t3unit_at(u: *const Unit, k: i64) -> c_int {
     let o = held(u, k);
@@ -2034,6 +2053,7 @@ pub unsafe extern "C" fn rdof_t3unit_at(u: *const Unit, k: i64) -> c_int {
 
 #[no_mangle]
 pub unsafe extern "C" fn rdof_t3unit_rx(u: *mut Unit, c: c_int, k: i64, b: *const RdofBurst, rssi: c_int) {
+    rev_at(u, k);
     rdof_t3rf_rx(rf(u), c, k, b, rssi);
     drain(u);
 }

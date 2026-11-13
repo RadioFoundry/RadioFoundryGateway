@@ -161,6 +161,10 @@ pub struct T3rf {
     pub ncarriers: c_int,
     pub cc: c_int,
     pub tscc: bool,
+    /// A composite TSCC (361-4 5.3.2): channel 0 may carry a call; `rev` says it does in the slot at hand (the
+    /// unit sets it per slot from the controller's SlotOut.rev).
+    pub composite: bool,
+    pub rev: bool,
     pub ch: [T3rfCh; CHANNELS],
     pub tscc_sent: u32,
     pub tscc_idle: u32,
@@ -342,7 +346,12 @@ pub extern "C" fn rdof_t3rf_slc_join(rows: &[u32; 4], slc28: &mut u32) -> bool {
 // ── payload channels ───────────────────────────────────────────────────────────
 
 fn is_payload(t: &T3rf, ch: c_int) -> bool {
-    ch >= 0 && ch < 2 * t.ncarriers && !(t.tscc && ch == 0)
+    ch >= 0 && ch < 2 * t.ncarriers && !(t.tscc && ch == 0 && !t.composite)
+}
+
+/// Channel 0 sends or hears the TSCC in slot k (not a composite TSCC's call).
+fn tscc_slot(t: &T3rf, ch: c_int) -> bool {
+    t.tscc && ch == 0 && !t.rev
 }
 
 fn channel(t: &mut T3rf, ch: c_int) -> Option<&mut T3rfCh> {
@@ -672,7 +681,7 @@ pub unsafe extern "C" fn rdof_t3rf_rx(t: *mut T3rf, c: c_int, k: i64, b: *const 
     }
     let b = &*b;
     let ch = 2 * c + (k & 1) as c_int;
-    if t.tscc && ch == 0 {
+    if tscc_slot(t, ch) {
         let (mut dt, mut cc, mut pdu) = (0, 0, [0u8; 24]);
         match rdof_t3rf_burst_block(&b.burst, &mut dt, &mut cc, &mut pdu) {
             PDU_OK => {
@@ -988,7 +997,7 @@ pub unsafe extern "C" fn rdof_t3rf_slot(
     if k % 4 != 0 {
         *slc28 = -1;
     }
-    if t.tscc && c == 0 && k & 1 == 0 {
+    if c == 0 && k & 1 == 0 && tscc_slot(t, 0) {
         let mut dt = -1;
         let mut pdu = [0u8; 12]; // 12 octets for a rate 1/2 block
         let got = match t.io.tscc {

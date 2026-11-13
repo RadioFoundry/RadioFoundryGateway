@@ -36,7 +36,7 @@ pub const DROPPED: u32 = 2;
 use crate::t3rf::{rdof_t3rf_block_burst, rdof_t3rf_burst_block, rdof_t3rf_cach4, rdof_t3rf_rc_read};
 /// rdof_t3unit_t
 pub use crate::t3unit::Unit as T3unit;
-use crate::t3unit::{rdof_t3unit_at, rdof_t3unit_cfg, rdof_t3unit_run, rdof_t3unit_rx, rdof_t3unit_slot};
+use crate::t3unit::{rdof_t3unit_at, rdof_t3unit_cfg, rdof_t3unit_run, rdof_t3unit_rx, rdof_t3unit_slc, rdof_t3unit_slot};
 
 /// rdof_t3sim_in_t
 #[repr(C)]
@@ -341,6 +341,10 @@ fn slot(s: &mut Sim, k: i64, now_ms: i64) {
         let ch = usize::from(ms.status().ch);
         if ch & 1 != parity || ch / 2 >= ncar {
             continue;
+        }
+        let slc = unsafe { rdof_t3unit_slc(u, (ch / 2) as c_int, k) };
+        if slc >= 0 {
+            ms.slc(ch / 2, slc as u32); // its carrier's CACH (a composite TSCC's P_SYS_Parms)
         }
         ms.rx_block(ch, k, dt[ch / 2], &pdu[ch / 2], ch == 0 && at > 0);
     }

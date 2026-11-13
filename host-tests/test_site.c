@@ -795,6 +795,11 @@ static void test_trunk(const char *dir)
     CHECK(!apply_text("{\"services\": {\"power_save\": 8}}", "x", &c, &pol, err, sizeof err), "power_save 8");
     CHECK(!apply_text("{\"services\": {\"hibernate_s\": 0.5}}", "x", &c, &pol, err, sizeof err), "hibernate_s 0.5");
     rdof_t3cfg_default(&c, &pol);
+    CHECK(c.composite == 0 && apply_text("{\"services\": {\"composite_tscc\": true}}", "x", &c, &pol, err, sizeof err) &&
+              c.composite == 1,
+          "composite_tscc: %s", err);
+    CHECK(!apply_text("{\"services\": {\"composite_tscc\": 1}}", "x", &c, &pol, err, sizeof err), "composite_tscc 1");
+    rdof_t3cfg_default(&c, &pol);
     CHECK(!apply_text("{\"timers\": {\"warmup_cach\": 3}}", "x", &c, &pol, err, sizeof err), "warmup 3");
     CHECK(!apply_text("{\"wide_tg\": \"1,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31,33\"}", "x", &c, &pol, err,
                       sizeof err),

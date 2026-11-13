@@ -45,7 +45,7 @@ Principles:
 | Emergency | Emergency group calls (the emergency call timer, the Emergency flag in grants; an emergency request on an open call upgrades it); pre-emption of a running call when no channel is free (6.4.14.3.1), with the Reverse Channel cease command (6.4.15, table 6.32) to its talker; a setting, off by default (section 3.9). The emergency alarm and its cancel (status 126 and 124, 6.6.6.3) through status delivery |
 | Status and the emergency alarm | The Status Transport Service (6.6.6.1, 6.6.6.2) delivered as short data (section 3.15): to an MS (C_AHOY, its C_ACKU or C_NACKU mirrored), a talkgroup or the TSCC, stored while the called MS is busy, polling; the emergency alarm and its cancel (6.6.6.3) under the MS's emergency provisioning; an `activity` `status` event (section 3.10) |
 | Mass re-registration | MassReg (6.4.5): all MSs or one, on command (`mass_reg`) or at start, repeated inside its Reg_Window (section 3.11) |
-| TSCC modes | C_MOVE on command (all MSs or one, to another TSCC's logical channel); the asynchronous (hibernating) TSCC, woken by BS_Dwn_Act or any good inbound block; a setting, off by default (section 3.12) |
+| TSCC modes | C_MOVE on command (all MSs or one, to another TSCC's logical channel); the asynchronous (hibernating) TSCC, woken by BS_Dwn_Act or any good inbound block; a setting, off by default (section 3.12); the composite TSCC (its slot carries a call when every payload channel is busy, P_SYS_Parms with Payload Channel Type 1 meanwhile; a setting, off by default, section 3.19) |
 | Power save | PowerSave_RQ in registration, PowerSave_Offset in the C_ACKD (6.4.7.2.1); C_AHOYs to a sleeping MS held for its wake frame; a setting, off by default (section 3.11) |
 | Short data | UDT short data on the TSCC both ways (C_UDTHD/C_UDTHU, 1-4 rate 1/2 blocks, up to 46 octets), stored and forwarded MS to MS, MS to talkgroup, MS to site and site to MS; status messages and status polling; across sites in mqtt-net's `sdata` item (3.15, 5.9) |
 | Packet data | Individual and talkgroup packet data calls (C_RAND 0010b/0011b): the availability check (C_AHOY 0010b), PD_GRANT/TD_GRANT single or multi-item, the payload channel in data mode (each data burst repeated), confirmed and unconfirmed data at rate 1/2, 3/4 and 1 (the MS simulator's selective retry: SACK, C_RDATA, F = 0 resends), data hang time and clearing; MS to MS, MS to talkgroup, MS to the site's IP gateway (TSI, its data ID or IPI) and the gateway's replies down (3.16) |
@@ -59,7 +59,7 @@ Principles:
 ### 1.2 Later (the design leaves room; nothing here is built)
 
 Packet data across sites, multi-part packet data (extended addresses through gateways), dual-slot (HI_RATE) data,
-short data to gateways (extended addresses, supplementary data), a second TSCC, composite TSCC, TSCCAS (section 3.12
+short data to gateways (extended addresses, supplementary data), a second TSCC, TSCCAS (section 3.12
 says why), DGNA across sites for the site's records (a roaming MS's dynamic talkgroups), ALS across sites or from
 the site, payload interrupt in an ALS call (the de-key status 123 is refused, 3.18), call
 diversion to gateways or across sites, gateways (PSTN, PABX, dispatcher), duplex calls over the network and duplex
@@ -390,11 +390,9 @@ Not built, and why:
   control channel's state (its response queue, Aloha schedule and load); a second needs a second of each and a
   rule for which MS is served where. Two sites with `par` A and B on separate carriers come close today, each its
   own controller.
-- The composite TSCC (5.3.2): the TSCC slot turning payload when all others are busy. The radio layer and the unit
-  treat carrier A's first slot as the TSCC throughout (its CACH, its short LC, its idle path); the reversion to
-  P_SYS_Parms with the composite Payload Channel Type and back needs that changed. Pre-emption (section 3.9) covers
-  the emergency case.
-- Moving the site's own TSCC to another carrier: the same reason.
+- Moving the site's own TSCC to another carrier: the radio layer and the unit treat carrier A's first slot as the
+  TSCC's home (its CACH, its short LC, its idle path). The composite TSCC (section 3.19) only lends that slot to a
+  call and takes it back.
 - TSCCAS (6.1.1.3): its content is USBD polling, which belongs to the data services (with LIP). C_ALOHA's TSCCAS
   flag stays 0.
 
@@ -723,6 +721,37 @@ Choices where 361-4 leaves them open or contradicts itself (checked against the 
   either case" (6.4.14.3.4.1) but "shall remain on the TSCC" (6.4.14.3.4.3). The site refuses both; the MS's
   choice.
 
+### 3.19 The composite TSCC (361-4 5.3.2)
+
+`services.composite_tscc` (off by default) makes the TSCC composite: "A composite TSCC may suspend its control
+channel function and revert to a payload mode" when "all other payload channels within a particular TS are busy"
+(5.3.0, 5.3.2). It is for a site with few channels: one carrier (TS1 the TSCC, TS2 the only payload channel), such
+as a hotspot modem, gets a second call at once.
+
+- When a call finds no payload channel free (a request, the queue, a call from the network, packet data), the
+  controller gives it the TSCC's own slot, if the TSCC isn't mid-way through an MBC or a short data transfer. The
+  grant (TV_GRANT, PV_GRANT, a data grant) names the TSCC's physical channel and LCN 0. It goes on the TSCC twice,
+  ahead of anything queued; then the slot is the call's. Pre-emption (section 3.9) still applies; a free payload
+  channel is always used first.
+- While the slot carries the call, the TSCC sends nothing: no C_ALOHA, no answers, no broadcasts. Random access,
+  registration and short data wait (5.3.2 a), b)). Blocks heard on the slot go to the call (P_MAINT); a C_RAND there
+  isn't answered. The CACH on the TSCC's carrier sends P_SYS_Parms with Payload Channel Type 1, "Payload Channel is
+  Composite Control Channel" (7.1.2.2, table 7.34; 7.2.34), in place of C_SYS_Parms (7.1.2.1: "never transmitted
+  when neither of the timeslots of the physical channel are a TSCC"). The other carriers keep Payload Channel Type
+  0. The AT bit for TS1 says whether the call's inbound is in use.
+- The call runs and clears as any other: hang time, call timer, P_MAINT DISCON, then P_CLEAR on the slot (channel 0:
+  back to the control channel). Then the TSCC returns ("When the payload call is completed, the channel returns to
+  its control channel function", 5.3.2 b)) with a C_ALOHA first. What it had queued before or during the call
+  (grants for other calls, answers) is dropped as stale; MSs ask again.
+- The MS simulator: an idle MS whose TSCC's CACH says P_SYS_Parms with Payload Channel Type 1 waits for the TSCC
+  rather than hunting; C_SYS_Parms ends that (`rdof_t3ms_slc`, fed by the air paths from `rdof_t3unit_slc`).
+- The radio layer: with a TSCC, channel 0 is also a payload channel (`rdof_t3rf_t.composite`), opened only when
+  the controller opens it. Each slot the unit sets `rev` from the controller's `rdof_t3_slot_out_t.rev`: channel 0's
+  outbound then comes from its payload path (warm-up, repeat, P_CLEAR) and its inbound goes to it, not to the TSCC.
+
+Not built: an MS that reads the short LC on air (the simulator's air MSs take it from the unit), and the 5.3.2 note
+that the throughput "shall be assessed" (no metric beyond the log line and the slot counts).
+
 ## 4. Settings (config-v3 `tier3` app)
 
 The app takes the place reserved for it in config-v3.md section 6 ("a control frequency and a pool; it assigns its own
@@ -773,7 +802,7 @@ paths").
 | `data_gateway` | integer | 0 | the site's own data ID besides TSI (1-16776415): packet data to it, to TSI or to IPI goes to the site's IP gateway (3.16) |
 | `timers` | object | section 3.8 | |
 | `broadcast` | object | section 3.2 | `adjacent_s`, `chan_freq_s`, `local_time_s`, `call_timers_s`, `vote_now_s`, `ann_tscc_s` (0 = off; the last three off by default, section 3.11) |
-| `services` | object | | `emergency_preempt` (bool, false): clear a running call for a waiting emergency (section 3.9); `power_save` (0-7, 0): the largest PowerSave_RQ granted, 0 none; `power_save_awake_s` (0.1-60, 1); `mass_reg_at_start_s` (0-200000, 0): a mass re-registration at start within this time (section 3.11); `hibernate_s` (0 or 1-300, 0): T_BS_Inactive of the asynchronous TSCC, 0 never (section 3.12); `duplex` (bool, false): full-duplex individual calls (section 3.13). Local settings only for now; the manager's `cfg` doesn't carry them |
+| `services` | object | | `emergency_preempt` (bool, false): clear a running call for a waiting emergency (section 3.9); `power_save` (0-7, 0): the largest PowerSave_RQ granted, 0 none; `power_save_awake_s` (0.1-60, 1); `mass_reg_at_start_s` (0-200000, 0): a mass re-registration at start within this time (section 3.11); `hibernate_s` (0 or 1-300, 0): T_BS_Inactive of the asynchronous TSCC, 0 never (section 3.12); `duplex` (bool, false): full-duplex individual calls (section 3.13); `composite_tscc` (bool, false): the TSCC's slot carries a call when no payload channel is free (section 3.19). Local settings only for now; the manager's `cfg` doesn't carry them |
 | `auth` | `off`, `registration`, `required` | `off` | MS authentication (section 3.14): challenge MSs with a key at registration, or every MS. Local settings only; the manager's `cfg` doesn't carry it |
 
 Checks (refusals name the key): exactly one `tscc` carrier; every carrier's `out` on a device that transmits and its

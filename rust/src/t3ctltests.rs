@@ -585,6 +585,53 @@ fn power_save_wake_frames() {
     assert_eq!(air.ms[1].statuses(), (1, (1001, 1002, 9)));
 }
 
+// ── the composite TSCC (361-4 5.3.2) ──
+
+/// Two carriers, three payload channels busy with A, B and C's calls: D's call takes the TSCC's own slot (5.3.2),
+/// D talks there and E, idle on the TSCC, waits through it on P_SYS_Parms (Payload Channel Type 1) rather than
+/// hunting. After D's call the TSCC is back: E's call goes through it.
+#[test]
+fn composite_tscc_carries_the_fourth_call() {
+    let mut s = site_with(|c| {
+        carriers(c, 2);
+        c.composite = 1;
+    });
+    let mut log = Log::default();
+    let ch = [1, 2];
+    let mut air = Air::new(
+        &mut s,
+        [ms(1001, &[9], &ch), ms(1002, &[10], &ch), ms(1003, &[11], &ch), ms(1004, &[12], &ch), ms(1005, &[13], &ch)],
+        T0,
+    );
+    register_all(&mut air, &mut log);
+    let now = air.now();
+    for (i, tg) in [9, 10, 11].into_iter().enumerate() {
+        air.ms[i].act(t3ms::DO_GROUP, tg, 20_000, 0, now + 600 * i as i64);
+    }
+    assert!(
+        air.until(10_000, &mut log.f(), |a| (0..3).all(|i| a.ms[i].state() == t3ms::PAYLOAD)),
+        "three calls on the three payload channels"
+    );
+    let now = air.now();
+    air.ms[3].act(t3ms::DO_GROUP, 12, 10_000, 0, now);
+    assert!(air.until(5000, &mut log.f(), |a| a.ms[3].state() == t3ms::PAYLOAD), "D granted");
+    assert_eq!(air.ms[3].status().ch, 0, "D on the TSCC's slot");
+    assert!(air.until(500, &mut log.f(), |a| a.site.tscc_payload()), "the slot turns payload after its grants");
+    // through D's call (longer than the MS's hunt, 100 TSCC slots): E stays on the TSCC
+    let mut rev_slots = 0;
+    let ok = air.until(15_000, &mut log.f(), |a| {
+        assert_eq!(a.ms[4].status().ch, 0, "E hunted");
+        rev_slots += (a.last.rev != 0) as u32;
+        a.ms[3].status().calls_done == 1
+    });
+    assert!(ok, "D's call done");
+    assert!(rev_slots > 200, "{rev_slots} slots reverted");
+    assert!(air.until(3000, &mut log.f(), |a| !a.site.tscc_payload() && a.ms[3].state() == t3ms::IDLE));
+    let now = air.now();
+    air.ms[4].act(t3ms::DO_GROUP, 13, 2000, 0, now);
+    assert!(air.until(8000, &mut log.f(), |a| a.ms[4].state() == t3ms::PAYLOAD), "the TSCC answers again");
+}
+
 // ── C_MOVE and the asynchronous TSCC (6.3.3.1 e, 6.1.1.2) ──
 
 /// C_MOVE to one MS: it leaves for the named TSCC; the others stay. (No TSCC there: it hunts back later.)

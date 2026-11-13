@@ -162,13 +162,15 @@ typedef struct {
     rdof_t3rf_io_t io;
     int ncarriers, cc;
     bool tscc;         /* channel 0 is the TSCC */
+    bool composite;    /* a composite TSCC (361-4 5.3.2): channel 0 may carry a call */
+    bool rev;          /* it does in the slot at hand: set per slot (the unit, from rdof_t3_slot_out_t.rev) */
     rdof_t3rf_ch_t ch[RDOF_T3RF_CHANNELS];
     uint32_t tscc_sent, tscc_idle, rx_tscc, rx_tscc_bad, rx_ignored;
 } rdof_t3rf_t;
 
 /* ncarriers 1..RDOF_T3RF_CARRIERS; tscc: carrier 0's TS1 is the TSCC. False when ncarriers is out of range. */
 bool rdof_t3rf_init(rdof_t3rf_t *t, const rdof_t3rf_io_t *io, int ncarriers, int cc, bool tscc);
-/* Channel ch's state, NULL for none (or the TSCC). */
+/* Channel ch's state, NULL for none (or the TSCC; a composite TSCC's channel 0 is a payload channel too). */
 rdof_t3rf_ch_t *rdof_t3rf_channel(rdof_t3rf_t *t, int ch);
 
 /* The controller's grant took payload channel ch for a call: open it (a fresh one: warmup idles first; already open:

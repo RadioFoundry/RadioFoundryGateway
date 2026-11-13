@@ -65,6 +65,8 @@ pub use bcast::{
 mod tscc;
 #[path = "t3duplex.rs"]
 mod duplex;
+#[path = "t3composite.rs"]
+mod composite;
 use duplex::KIND_DUPLEX;
 pub use duplex::{DxGrant, OPEN_DUPLEX, OP_PV_GRANT_DX, R_DUPLEX_NOT_SUPPORTED, SK_DUPLEX};
 pub use tscc::{bs_dwn_act, bs_dwn_act_of, move_of, move_pdu, OP_BS_DWN_ACT};
@@ -155,7 +157,8 @@ pub struct Cfg {
     pub data_id: u32,
     pub divert: u8,
     pub auth: u8, // AUTH_*: MS authentication at registration (361-4 6.4.8; t3authsite.rs)
-    pub pad1: [u8; 2],
+    pub composite: u8, // 1: the TSCC's slot carries a call when no payload channel is free (361-4 5.3.2)
+    pub pad1: u8,
 }
 
 #[repr(C)]
@@ -481,7 +484,7 @@ pub struct SlotOut {
     pub at: u8,
     pub has_slc: u8,
     pub tscc_ext: [u8; 2],
-    pub pad: u8,
+    pub rev: u8, // 1: the TSCC's slot carries a call in slot k (a composite TSCC, t3composite.rs)
     pub slc_tscc: u32,
     pub slc_payload: u32,
     pub ch: [ChOut; CHANNELS],
@@ -672,6 +675,7 @@ pub struct Site {
     net: [NetWait; STREAMS],
     bc: bcast::BcState,
     tscc: tscc::TsccState,
+    rev: composite::RevState,
     // registrations and provisioning
     regs: [Reg; REGS],
     reg_scan: usize,
@@ -876,6 +880,9 @@ fn check(c: &Cfg, err: &mut Buf) -> bool {
     if !(60..=604_800).contains(&c.reg_hold_s) {
         no!("timers.reg_hold_s: 60 to 604800");
     }
+    if c.composite > 1 {
+        no!("composite_tscc: true or false");
+    }
     if c.preempt > 1 {
         no!("emergency_preempt: true or false");
     }
@@ -916,7 +923,9 @@ impl Site {
             let exists = carrier < self.cfg.ncarriers as usize && self.cfg.carriers[carrier].enabled != 0;
             let c = &mut self.chans[ch];
             if ch == self.tscc_carrier * 2 {
-                *c = Chan { r#use: USE_TSCC, ..Default::default() };
+                if !matches!(c.r#use, USE_CALL | USE_HANG | USE_CLEAR) {
+                    *c = Chan { r#use: USE_TSCC, ..Default::default() }; // a composite TSCC's call goes on
+                }
             } else if !exists {
                 if c.kind == KIND_NONE {
                     *c = Chan::default();
@@ -1223,7 +1232,10 @@ impl Site {
     /// A free payload channel: an idle one, preferring a carrier already keyed (its other slot in use).
     fn free_channel(&self) -> Option<usize> {
         let keyed = |i: usize| matches!(self.chans[i ^ 1].r#use, USE_CALL | USE_HANG | USE_CLEAR | USE_TSCC);
-        (0..CHANNELS).filter(|&i| self.chans[i].r#use == USE_IDLE).min_by_key(|&i| (!keyed(i), i))
+        (0..CHANNELS)
+            .filter(|&i| self.chans[i].r#use == USE_IDLE)
+            .min_by_key(|&i| (!keyed(i), i))
+            .or_else(|| self.composite_channel())
     }
 
     /// Opens a call on channel ch and queues its grant twice.
@@ -1249,8 +1261,12 @@ impl Site {
             ..Default::default()
         };
         let g = self.grant_pdu(ch, false, src);
-        self.push(DT_CSBK, g, false, None);
-        self.push(DT_CSBK, g, false, None);
+        if ch == self.tscc_carrier * 2 {
+            self.revert(g); // a composite TSCC: the grant on its own slot, then the call
+        } else {
+            self.push(DT_CSBK, g, false, None);
+            self.push(DT_CSBK, g, false, None);
+        }
         self.counters.grants += 1;
         let e = self.chan_ev(ch, EV_CH_OPEN);
         self.ev(e);
@@ -1303,6 +1319,9 @@ impl Site {
         let carrier = ch / 2;
         let on = carrier < self.cfg.ncarriers as usize && self.cfg.carriers[carrier].enabled != 0;
         self.chans[ch] = Chan { r#use: if on { USE_IDLE } else { USE_OFF }, ..Default::default() };
+        if ch == self.tscc_carrier * 2 {
+            self.tscc_back();
+        }
         self.serve_queue();
         self.pd_serve();
     }
@@ -2358,8 +2377,11 @@ impl Site {
         self.reg_timers();
         let mut out = SlotOut::default();
         let rc_on_tscc = self.preempt_tick(&mut out);
-        if !self.withdrawn && !self.hibernate_tick() {
-            if k & 1 == 0 && !rc_on_tscc {
+        let rev = self.reverted();
+        if !self.withdrawn && (rev || !self.hibernate_tick()) {
+            if k & 1 == 0 && rev {
+                self.rev_slot(&mut out);
+            } else if k & 1 == 0 && !rc_on_tscc {
                 self.tscc_slot(&mut out);
             } else {
                 // the CACH before the TSCC carrier's next TS1 slot: TS2's inbound in use
@@ -2368,7 +2390,12 @@ impl Site {
             if k.rem_euclid(4) == 0 {
                 let counter = k.div_euclid(4).rem_euclid(512) as u16;
                 out.has_slc = 1;
-                out.slc_tscc = c_sys_parms(self.syscode, self.reg_bit(), counter);
+                // 7.1.2.1, 7.1.2.2: a composite TSCC carrying a call is a payload channel with Payload Channel Type 1
+                out.slc_tscc = if rev {
+                    p_sys_parms(self.syscode, true, counter)
+                } else {
+                    c_sys_parms(self.syscode, self.reg_bit(), counter)
+                };
                 out.slc_payload = p_sys_parms(self.syscode, false, counter);
             }
         }
@@ -2381,7 +2408,7 @@ impl Site {
         if self.withdrawn || ch >= CHANNELS {
             return;
         }
-        if ch == self.tscc_carrier * 2 {
+        if ch == self.tscc_carrier * 2 && !self.tscc_payload() {
             if dt == DT_DATA_HDR {
                 self.sd_rx_head(pdu);
             }
@@ -2421,13 +2448,13 @@ impl Site {
 
     /// A rate 1/2 data block (12 octets) on the TSCC: a UDT's appended block.
     pub fn rx_block(&mut self, ch: usize, dt: u8, b: &[u8; 12]) {
-        if !self.withdrawn && ch == self.tscc_carrier * 2 && dt == DT_RATE12 {
+        if !self.withdrawn && ch == self.tscc_carrier * 2 && !self.tscc_payload() && dt == DT_RATE12 {
             self.sd_rx_block(b);
         }
     }
 
     pub fn rx_bad(&mut self, ch: usize) {
-        if ch == self.tscc_carrier * 2 && !self.withdrawn {
+        if ch == self.tscc_carrier * 2 && !self.withdrawn && !self.tscc_payload() {
             self.counters.collisions += 1;
             self.count_load();
         }

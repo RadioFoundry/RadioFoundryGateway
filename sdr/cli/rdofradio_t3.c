@@ -908,6 +908,8 @@ static void air_out(int c, int64_t k, const uint8_t burst[RDOF_BURST_BYTES], boo
     for (int i = 0; i < AM.n; i++) {
         rdof_t3ms_status_t st;
         rdof_t3ms_status(AM.ms[i], &st);
+        if (st.ch >> 1 == c)
+            rdof_t3ms_slc(AM.ms[i], c, rdof_t3unit_slc(T.u, c, k)); /* a composite TSCC's P_SYS_Parms */
         if ((st.ch & 1) == (k & 1) && st.ch >> 1 == c)
             rdof_t3ms_rx(AM.ms[i], st.ch, k, mdt, pdu, st.ch == 0 && at);
         rdof_t3ms_status(AM.ms[i], &st);

@@ -610,6 +610,87 @@ static void test_carriers4(void)
     free(u);
 }
 
+/* A composite TSCC through the radio layer (361-4 5.3.2; tier3.md 3.19): one carrier, A's call on TS2, then B's call
+ * takes the TSCC's own slot. B's voice is repeated on channel 0, a listener follows it there, the CACH says
+ * P_SYS_Parms with Payload Channel Type 1, P_CLEAR ends it and the TSCC comes back and answers again. */
+static void test_composite(void)
+{
+    rdof_t3_cfg_t cfg;
+    rdof_t3_policy_t pol;
+    rdof_t3cfg_default(&cfg, &pol);
+    cfg.composite = 1;
+    const rdof_t3unit_io_t io = {quiet_publish, NULL, NULL, NULL, NULL, NULL};
+    rdof_t3unit_t *u = calloc(1, rdof_t3unit_size());
+    void *mem = aligned_alloc(8, (rdof_t3_site_size() + 7) / 8 * 8);
+    char err[120] = "";
+    CHECK(rdof_t3unit_init(u, mem, &cfg, &pol, &io, NULL, NULL, -1, NULL, err, sizeof err), "init: %s", err);
+    enum { N = 4 }; /* A tg 10, B tg 11, L tg 11 (listens), E tg 12 */
+    rdof_t3ms_t *ms[N];
+    uint32_t id[N];
+    const uint16_t chans[1] = {1};
+    const uint32_t tgs[N] = {10, 11, 11, 12};
+    for (int i = 0; i < N; i++) {
+        id[i] = 3100400 + (uint32_t)i;
+        ms[i] = malloc(rdof_t3ms_size());
+        rdof_t3ms_init(ms[i], id[i], &tgs[i], 1, chans, 1, 90 + (uint32_t)i);
+        rdof_t3ms_do(ms[i], RDOF_T3MS_DO_REGISTER, tgs[i], 0, 0, T0 + 300 + 250 * i);
+    }
+    static rdof_t3sim_t sim;
+    rdof_t3sim_init(&sim, u, N, ms, id);
+    int64_t k = 0;
+#define RUN(msec)                                                                                                  \
+    for (int64_t end_ = k + (msec) / 30; k < end_; k++)                                                            \
+    rdof_t3sim_slot(&sim, k, T0 + k * 30)
+    RUN(6000);
+    rdof_t3ms_status_t st;
+    for (int i = 0; i < N; i++) {
+        rdof_t3ms_status(ms[i], &st);
+        CHECK(st.registered, "MS %d registered", i);
+    }
+    rdof_t3ms_do(ms[0], RDOF_T3MS_DO_GROUP, 10, 30000, 0, T0 + k * 30);
+    RUN(3000);
+    rdof_t3ms_status(ms[0], &st);
+    CHECK(st.state == RDOF_T3MS_PAYLOAD && st.ch == 1, "A on TS2 (state %d ch %d)", st.state, st.ch);
+    const uint32_t sent0 = rdof_t3unit_rf(u)->tscc_sent;
+    rdof_t3ms_do(ms[1], RDOF_T3MS_DO_GROUP, 11, 6000, 0, T0 + k * 30);
+    RUN(3000);
+    rdof_t3ms_status(ms[1], &st);
+    CHECK(st.state == RDOF_T3MS_PAYLOAD && st.ch == 0, "B on the TSCC's slot (state %d ch %d)", st.state, st.ch);
+    rdof_t3ms_status(ms[2], &st);
+    CHECK(st.state == RDOF_T3MS_PAYLOAD && st.ch == 0, "L follows (state %d ch %d)", st.state, st.ch);
+    CHECK(rdof_t3unit_rf(u)->ch[0].open && rdof_t3unit_rf(u)->ch[0].tx_traffic > 20, "channel 0 repeats B's voice (%u)",
+          rdof_t3unit_rf(u)->ch[0].tx_traffic);
+    int64_t slc = -1;
+    for (int64_t j = k - 8; j <= k && slc < 0; j++)
+        if ((j & 3) == 0)
+            slc = rdof_t3unit_slc(u, 0, j);
+    CHECK(slc >= 0 && ((slc >> 24) & 0xF) == 3 && ((slc >> 9) & 1) == 1, "P_SYS_Parms, composite: %08llx",
+          (long long)slc);
+    const uint32_t sent1 = rdof_t3unit_rf(u)->tscc_sent;
+    RUN(2000);
+    CHECK(rdof_t3unit_rf(u)->tscc_sent == sent1, "no TSCC blocks while it carries the call");
+    CHECK(sent1 > sent0, "its grant went on the TSCC");
+    RUN(10000);
+    rdof_t3ms_status(ms[1], &st);
+    CHECK(st.calls_done == 1 && st.state == RDOF_T3MS_IDLE && st.ch == 0, "B's call done (%u, state %d)",
+          st.calls_done, st.state);
+    rdof_t3ms_status(ms[2], &st);
+    CHECK(st.clears >= 1 && st.state == RDOF_T3MS_IDLE, "L back on the TSCC");
+    CHECK(!rdof_t3unit_rf(u)->ch[0].open && rdof_t3unit_rf(u)->tscc_sent > sent1 + 50, "the TSCC is back (%u)",
+          rdof_t3unit_rf(u)->tscc_sent - sent1);
+    /* A still holds TS2: E's call takes the TSCC's slot again, through the TSCC that came back */
+    rdof_t3ms_do(ms[3], RDOF_T3MS_DO_GROUP, 12, 2000, 0, T0 + k * 30);
+    RUN(3000);
+    rdof_t3ms_status(ms[3], &st);
+    CHECK(st.state == RDOF_T3MS_PAYLOAD && st.ch == 0, "E granted (state %d ch %d)", st.state, st.ch);
+    CHECK(sim.out_bad == 0, "no bad outbound blocks (%u)", sim.out_bad);
+#undef RUN
+    for (int i = 0; i < N; i++)
+        free(ms[i]);
+    free(mem);
+    free(u);
+}
+
 /* A full-duplex call through the radio layer: carrier 2 in offset timing, each party's inbound repeated on the
  * other's slot (361-4 6.6.9). */
 static void test_duplex(void)
@@ -676,6 +757,7 @@ int main(void)
     test_memory();
     test_carriers4();
     test_duplex();
+    test_composite();
     site_open(&A, 0, "site-a", 3, 3100001, T0);
     site_open(&Bs, 1, "site-b", 4, 3100101, T0);
     run(6000);

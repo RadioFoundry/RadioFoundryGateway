@@ -59,7 +59,7 @@ const SYSTEM_KEYS: &[&[u8]] = &[b"model", b"net", b"site", b"par", b"area_bits"]
 const BROADCAST_KEYS: &[&[u8]] =
     &[b"adjacent_s", b"chan_freq_s", b"local_time_s", b"call_timers_s", b"vote_now_s", b"ann_tscc_s"];
 const SERVICES_KEYS: &[&[u8]] =
-    &[b"emergency_preempt", b"power_save", b"power_save_awake_s", b"mass_reg_at_start_s", b"hibernate_s", b"duplex"];
+    &[b"emergency_preempt", b"power_save", b"power_save_awake_s", b"mass_reg_at_start_s", b"hibernate_s", b"duplex", b"composite_tscc"];
 
 /// Where a timer goes in the settings: a code, ms from seconds, or seconds.
 #[derive(Clone, Copy)]
@@ -512,6 +512,7 @@ impl<'a> Cx<'a> {
             if !self.known(sv, p, SERVICES_KEYS)
                 || !self.bool_of(sv, c"emergency_preempt", p, &mut cfg.preempt)
                 || !self.bool_of(sv, c"duplex", p, &mut cfg.duplex)
+                || !self.bool_of(sv, c"composite_tscc", p, &mut cfg.composite)
                 || !self.u8_in(sv, c"power_save", p, 0, 7, &mut cfg.power_save)
                 || !self.ms_in(sv, c"power_save_awake_s", p, 0.1, 60.0, &mut cfg.awake_ms)
                 || !self.ms_in(sv, c"mass_reg_at_start_s", p, 0.0, 200_000.0, &mut mass_ms)

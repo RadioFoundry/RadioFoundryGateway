@@ -104,6 +104,9 @@ void rdof_t3unit_split_pump(rdof_t3unit_t *u, rdof_t3rf_split_t *o, struct rdof_
 const rdof_t3_cfg_t *rdof_t3unit_cfg(const rdof_t3unit_t *u);
 /* The AT bit of the TSCC carrier's CACH after slot k (before k + 1): 0, 1; -1 not held. */
 int rdof_t3unit_at(const rdof_t3unit_t *u, int64_t k);
+/* Carrier c's CACH short LC from slot k (k % 4 == 0) as the controller set it, or -1: what an MS there reads
+ * (C_SYS_Parms; P_SYS_Parms, Payload Channel Type 1 while a composite TSCC carries a call). */
+int64_t rdof_t3unit_slc(const rdof_t3unit_t *u, int c, int64_t k);
 /* A burst heard on carrier c's inbound under slot k. */
 void rdof_t3unit_rx(rdof_t3unit_t *u, int c, int64_t k, const rdof_burst_t *b, int rssi);
 /* The site sends packet data (tier3.md 3.16): a data header and its n - 1 blocks (control as MMDVM's DMR_DATA, as the

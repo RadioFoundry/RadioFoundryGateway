@@ -194,6 +194,7 @@ pub struct Ms {
     bcasts: [u32; 8], // C_BCASTs heard, by Announcement_type
     // the asynchronous TSCC (6.1.1.2) and C_MOVE (6.3.3.1 e)
     site_hibernates: bool, // Gen_Site_Params said so: no C_ALOHA is no reason to hunt
+    tscc_rev: bool, // its TSCC's CACH says P_SYS_Parms, composite (5.3.2): the TSCC carries a call, it comes back
     next_activation_ms: i64,
     activations: u32,
     moves: u32,
@@ -713,7 +714,7 @@ impl Ms {
             }
             None => self.no_aloha += 1,
         }
-        if self.no_aloha > HUNT_SLOTS && self.state == IDLE && !self.site_hibernates {
+        if self.no_aloha > HUNT_SLOTS && self.state == IDLE && !self.site_hibernates && !self.tscc_rev {
             // no TSCC here: the next carrier
             let c = (self.tscc_ch / 2 + 1) % self.ncarriers;
             self.tscc_ch = c * 2;
@@ -1450,6 +1451,21 @@ impl Ms {
         }
     }
 
+    /// The CACH short LC of carrier c from now on (k % 4 == 0; 361-4 7.1.2). On its TSCC's carrier, P_SYS_Parms with
+    /// Payload Channel Type 1 (table 7.34) says the TSCC has reverted to a payload channel for a while (5.3.2): it
+    /// waits for it rather than hunting. C_SYS_Parms: the TSCC is back.
+    pub fn slc(&mut self, carrier: usize, slc: u32) {
+        if carrier != self.tscc_ch / 2 {
+            return;
+        }
+        let (slco, _, flag, _) = sys_parms_decode(slc);
+        if slco == SLCO_P_SYS_PARMS {
+            self.tscc_rev = flag;
+        } else if slco == SLCO_C_SYS_PARMS {
+            self.tscc_rev = false;
+        }
+    }
+
     /// A Reverse Channel PDU heard on the alternate slot of its payload channel ch (361-1 5.1.5). Cease
     /// transmission (361-4 6.4.15): it finishes its superframe, sends a terminator and stops talking.
     pub fn rc(&mut self, ch: usize, info: u8) {
@@ -1850,13 +1866,20 @@ pub unsafe extern "C" fn rdof_t3ms_sdm(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn rdof_t3ms_slc(ms: *mut Ms, carrier: c_int, slc: i64) {
+    if carrier >= 0 && (0..1i64 << 28).contains(&slc) {
+        (*ms).slc(carrier as usize, slc as u32);
+    }
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn rdof_t3ms_rx(ms: *mut Ms, ch: c_int, k: i64, dt: u8, pdu: *const [u8; 10], at: bool) {
     if ch >= 0 {
         let mut b = [0u8; BLOCK_MAX];
         if !pdu.is_null() {
             // a data block: 12, 18 or 24 octets as its rate; a data header on a payload channel 12; a PDU 10
             let n = match block_len(dt) {
-                0 if dt == DT_DATA_HDR && ch as usize != (*ms).tscc_ch => 12,
+                0 if dt == DT_DATA_HDR && ((*ms).state == PAYLOAD || ch as usize != (*ms).tscc_ch) => 12,
                 0 => 10,
                 n => n,
             };

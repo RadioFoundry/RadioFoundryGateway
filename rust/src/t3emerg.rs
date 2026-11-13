@@ -94,7 +94,7 @@ impl Site {
             if alt & 1 == lcn && now >= c.rc_next_ms {
                 out.ch[alt].rc = RC_SEND | RC_CEASE;
                 self.chans[ch].rc_next_ms = now + RC_EVERY_MS;
-                rc_on_tscc |= alt == tscc;
+                rc_on_tscc |= alt == tscc && !self.tscc_payload(); // a composite TSCC's call: its payload path
             }
         }
         rc_on_tscc
