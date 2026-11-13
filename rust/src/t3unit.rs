@@ -74,6 +74,7 @@ const MN_CMD_RESTORE: c_int = 4;
 const MN_CMD_RESEND_RECORDS: c_int = 5;
 const MN_CMD_STATUS: c_int = 6;
 const MN_CMD_MASS_REG: c_int = 7;
+const MN_CMD_MOVE: c_int = 8;
 
 // ── the C structs: rdof/t3unit.h's ─────────────────────────────────────────────
 
@@ -1489,6 +1490,7 @@ unsafe fn command(u: *mut Unit, json: *const c_char, len: usize) {
             MN_CMD_RESEND_RECORDS => t3::rdof_t3_command(site, c"resend_records".as_ptr(), 0, 0),
             MN_CMD_STATUS => true,
             MN_CMD_MASS_REG => t3::rdof_t3_command(site, c"mass_reg".as_ptr(), c.window_s, c.ms),
+            MN_CMD_MOVE => t3::rdof_t3_command(site, c"move".as_ptr(), c.chan as u32, c.ms),
             _ => false,
         };
         if !ok {

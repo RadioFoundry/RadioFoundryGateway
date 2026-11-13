@@ -74,6 +74,7 @@ typedef struct {
     uint8_t pad1;
     uint32_t call_timers_ms, vote_now_ms, ann_tscc_ms; /* CallTimer_Parms, Vote_Now, Ann_WD_TSCC; 0: not broadcast */
     uint32_t awake_ms; /* how long an MS in power save stays awake after a PDU (the site's T_Awake) */
+    uint32_t hibernate_ms; /* T_BS_Inactive: the TSCC hibernates after this long with no inbound; 0 never */
 } rdof_t3_cfg_t;
 
 typedef struct {
@@ -283,7 +284,8 @@ bool rdof_t3_record(const rdof_t3_site_t *s, uint32_t ms, rdof_t3_record_t *r);
 size_t rdof_t3_subs(const rdof_t3_site_t *s, uint32_t *tg, size_t cap);
 void rdof_t3_withdraw(rdof_t3_site_t *s, bool off);
 /* "deregister" (arg1 MS), "clear" (arg1 chan, arg2 LCN), "withdraw", "restore", "resend_records", "status",
-   "mass_reg" (arg1 the window in s, 0 cancels; arg2 one MS, 0 all) */
+   "mass_reg" (arg1 the window in s, 0 cancels; arg2 one MS, 0 all), "move" (C_MOVE: arg1 the TSCC's chan, arg2 one MS,
+   0 all) */
 bool rdof_t3_command(rdof_t3_site_t *s, const char *cmd, uint32_t arg1, uint32_t arg2);
 
 /* outputs: drain after each call */

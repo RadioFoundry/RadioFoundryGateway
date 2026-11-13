@@ -21,7 +21,7 @@ pub const STATUS_POLL: u8 = 127;
 /// A status on its way to an individual MS: C_AHOY sent, waiting for its C_ACKU or C_NACKU.
 #[derive(Clone, Copy, Default)]
 pub(super) struct StatPend {
-    used: bool,
+    pub(super) used: bool,
     status: u8,
     ahoy_left: u8,
     caller: u32,

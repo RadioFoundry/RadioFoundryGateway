@@ -777,6 +777,7 @@ with `{"id": "c-123", "ok": true}` or `{"id": "c-123", "ok": false, "error": "..
 | `resend_records` | | publishes every registration record again |
 | `status` | | publishes `status` now |
 | `mass_reg` | `window_s` (0-200000, 0 cancels), `ms` (optional) | a Tier III site asks its radios (or one) to register again within that time (tier3.md 3.11) |
+| `move` | `chan` (1-4094), `ms` (optional) | a Tier III site sends its radios (or one) to the control channel on `chan` (tier3.md 3.12) |
 
 An unknown command or a missing argument is answered `ok: false`.
 

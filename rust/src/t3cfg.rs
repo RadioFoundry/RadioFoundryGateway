@@ -59,7 +59,7 @@ const SYSTEM_KEYS: &[&[u8]] = &[b"model", b"net", b"site", b"par", b"area_bits"]
 const BROADCAST_KEYS: &[&[u8]] =
     &[b"adjacent_s", b"chan_freq_s", b"local_time_s", b"call_timers_s", b"vote_now_s", b"ann_tscc_s"];
 const SERVICES_KEYS: &[&[u8]] =
-    &[b"emergency_preempt", b"power_save", b"power_save_awake_s", b"mass_reg_at_start_s"];
+    &[b"emergency_preempt", b"power_save", b"power_save_awake_s", b"mass_reg_at_start_s", b"hibernate_s"];
 
 /// Where a timer goes in the settings: a code, ms from seconds, or seconds.
 #[derive(Clone, Copy)]
@@ -493,8 +493,12 @@ impl<'a> Cx<'a> {
                 || !self.u8_in(sv, c"power_save", p, 0, 7, &mut cfg.power_save)
                 || !self.ms_in(sv, c"power_save_awake_s", p, 0.1, 60.0, &mut cfg.awake_ms)
                 || !self.ms_in(sv, c"mass_reg_at_start_s", p, 0.0, 200_000.0, &mut mass_ms)
+                || !self.ms_in(sv, c"hibernate_s", p, 0.0, 300.0, &mut cfg.hibernate_ms)
             {
                 return false;
+            }
+            if cfg.hibernate_ms != 0 && cfg.hibernate_ms < 1000 {
+                return self.fail(&[S(p), S(b".hibernate_s: 0 (never) or 1 to 300")]);
             }
             // the Reg_Window that covers it (table 6.12)
             cfg.mass_reg_start = crate::t3site::reg_window_of(f64::from(mass_ms) / 1000.0);

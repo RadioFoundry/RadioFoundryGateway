@@ -10,8 +10,8 @@ use core::ffi::c_int;
 use crate::t3pdu::*;
 use crate::t3rc::RC_CEASE;
 use crate::t3site::{
-    ahoy_status, mass_reg_applies, mass_reg_of, ps_wake, reg_window_ms, status_rand, CARRIERS, VOICE_FRAME, VOICE_HEADER,
-    VOICE_TERM,
+    ahoy_status, bs_dwn_act, mass_reg_applies, mass_reg_of, move_of, ps_wake, reg_window_ms, status_rand, CARRIERS,
+    VOICE_FRAME, VOICE_HEADER, VOICE_TERM,
 };
 
 pub const ANSWER_ACCEPT: u8 = 0;
@@ -149,6 +149,11 @@ pub struct Ms {
     mass_until: i64,
     mass_regs: u32,
     bcasts: [u32; 8], // C_BCASTs heard, by Announcement_type
+    // the asynchronous TSCC (6.1.1.2) and C_MOVE (6.3.3.1 e)
+    site_hibernates: bool, // Gen_Site_Params said so: no C_ALOHA is no reason to hunt
+    next_activation_ms: i64,
+    activations: u32,
+    moves: u32,
 }
 
 impl Ms {
@@ -345,7 +350,7 @@ impl Ms {
             }
             None => self.no_aloha += 1,
         }
-        if self.no_aloha > HUNT_SLOTS && self.state == IDLE {
+        if self.no_aloha > HUNT_SLOTS && self.state == IDLE && !self.site_hibernates {
             // no TSCC here: the next carrier
             let c = (self.tscc_ch / 2 + 1) % self.ncarriers;
             self.tscc_ch = c * 2;
@@ -369,6 +374,17 @@ impl Ms {
             self.on_grant(&g);
         } else if let Some(b) = Bcast::decode(pdu) {
             self.on_bcast(&b);
+        } else if let Some((mask, chan, addr)) = move_of(pdu) {
+            // 6.3.3.1 e): leave for the TSCC on chan (one it knows; LCN 0)
+            if self.state == IDLE && mass_reg_applies(mask, addr, self.id) {
+                if let Some(c) = self.chan_index(chan, 0) {
+                    self.moves += 1;
+                    self.tscc_ch = c;
+                    self.ch = c;
+                    self.no_aloha = 0;
+                    self.have_aloha = false;
+                }
+            }
         }
     }
 
@@ -383,6 +399,9 @@ impl Ms {
 
     fn on_bcast(&mut self, b: &Bcast) {
         self.bcasts[usize::from(b.ann & 7)] += 1;
+        if b.ann == BC_GEN_SITE_PARAMS {
+            self.site_hibernates = b.parms2 >> 22 & 1 != 0; // Hibernating_Flag (7.2.40)
+        }
         if b.ann != BC_MASS_REG {
             return;
         }
@@ -430,6 +449,11 @@ impl Ms {
     }
     pub fn bcasts(&self, ann: u8) -> u32 {
         self.bcasts[usize::from(ann & 7)]
+    }
+
+    /// BS_Dwn_Acts sent to a hibernating TSCC, and C_MOVEs followed.
+    pub fn activations(&self) -> (u32, u32) {
+        (self.activations, self.moves)
     }
 
     fn on_ack(&mut self, a: &Ack) {
@@ -604,6 +628,16 @@ impl Ms {
             if let Some(a) = self.take_due(|a| a.what == DO_CANCEL) {
                 self.start(a);
             }
+        }
+        let due = (0..self.nact).any(|i| self.actions[i].at_ms <= now_ms);
+        if self.state == IDLE && due && self.site_hibernates && self.no_aloha > 4 {
+            // the TSCC sleeps: wake it (BS_Dwn_Act), then access once C_ALOHA is back
+            if now_ms >= self.next_activation_ms {
+                self.next_activation_ms = now_ms + 600;
+                self.activations += 1;
+                return Some(pdu_tx(bs_dwn_act(0, self.id), self));
+            }
+            return None;
         }
         if self.state == IDLE && self.have_aloha {
             if let Some(a) = self.take_due(|_| true) {

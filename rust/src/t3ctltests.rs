@@ -578,3 +578,53 @@ fn power_save_wake_frames() {
     assert!(air.until(8000, &mut log.f(), |a| a.ms[0].status().calls_done == 2));
     assert_eq!(air.ms[1].statuses(), (1, (1001, 1002, 9)));
 }
+
+// ── C_MOVE and the asynchronous TSCC (6.3.3.1 e, 6.1.1.2) ──
+
+/// C_MOVE to one MS: it leaves for the named TSCC; the others stay. (No TSCC there: it hunts back later.)
+#[test]
+fn c_move_one_ms() {
+    let mut s = site_with(|c| carriers(c, 2));
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG], &[1, 2]), ms(1002, &[TG], &[1, 2])], T0);
+    register_all(&mut air, &mut log);
+    assert!(air.site.command("move", 2, 1002));
+    assert!(!air.site.command("move", 0, 1002), "CHNULL");
+    assert!(air.until(1000, &mut log.f(), |a| a.ms[1].activations().1 == 1));
+    assert_eq!(air.ms[1].ch(), 2, "on carrier 2's LCN 0");
+    assert_eq!((air.ms[0].activations().1, air.ms[0].ch()), (0, 0));
+    assert!(air.until(15_000, &mut log.f(), |a| a.ms[1].ch() == 0), "nothing there: back to the TSCC");
+}
+
+/// With services.hibernate_s, the idle TSCC says so and goes quiet; an MS with a call to make wakes it with
+/// BS_Dwn_Act and the call goes on.
+#[test]
+fn asynchronous_tscc_hibernates_and_wakes() {
+    let mut s = site_with(|c| c.hibernate_ms = 3000);
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG], &[1]), ms(1002, &[TG], &[1])], T0);
+    register_all(&mut air, &mut log);
+    let mut flagged = false;
+    let mut quiet = 0;
+    for _ in 0..300 {
+        air.step(&mut log.f());
+        let o = air.last;
+        if let Some(b) = (o.tscc_dt == DT_CSBK).then(|| Bcast::decode(&o.tscc_pdu)).flatten() {
+            flagged |= b.ann == BC_GEN_SITE_PARAMS && b.parms2 >> 22 & 1 == 1;
+        }
+        if air.site.hibernation().0 {
+            assert_eq!((o.tscc_dt, o.has_slc), (0, 0), "nothing on the TSCC");
+            quiet += 1;
+        }
+    }
+    assert!(flagged, "Gen_Site_Params with the Hibernating_Flag first");
+    assert!(quiet > 100);
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_GROUP, TG, 1000, 0, now);
+    assert!(air.until(5000, &mut log.f(), |a| a.ms[0].state() == t3ms::PAYLOAD));
+    assert!(air.ms[0].activations().0 >= 1);
+    assert_eq!(air.site.hibernation(), (false, 1));
+    assert_eq!(air.ms[1].state(), t3ms::PAYLOAD, "the talkgroup's other member follows");
+    assert!(air.until(10_000, &mut log.f(), |a| a.ms[0].status().calls_done == 1));
+    assert!(air.until(10_000, &mut log.f(), |a| a.site.hibernation().0), "and back to sleep");
+}

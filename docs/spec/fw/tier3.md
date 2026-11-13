@@ -43,6 +43,7 @@ Principles:
 | Emergency | Emergency group calls (the emergency call timer, the Emergency flag in grants; an emergency request on an open call upgrades it); pre-emption of a running call when no channel is free (6.4.14.3.1), with the Reverse Channel cease command (6.4.15, table 6.32) to its talker; a setting, off by default (section 3.9). The emergency alarm and its cancel (status 126 and 124, 6.6.6.3) through status delivery |
 | Status delivery | Status Transport Service delivery (6.6.6.1): a 7-bit status to an MS (C_AHOY, its C_ACKU or C_NACKU mirrored), a talkgroup (C_AHOY, no answer, C_ACKD to the caller) or the TSCC; stored while the called MS is on a payload channel; an `activity` `status` event (section 3.10) |
 | Mass re-registration | MassReg (6.4.5): all MSs or one, on command (`mass_reg`) or at start, repeated inside its Reg_Window (section 3.11) |
+| TSCC modes | C_MOVE on command (all MSs or one, to another TSCC's logical channel); the asynchronous (hibernating) TSCC, woken by BS_Dwn_Act or any good inbound block; a setting, off by default (section 3.12) |
 | Power save | PowerSave_RQ in registration, PowerSave_Offset in the C_ACKD (6.4.7.2.1); C_AHOYs to a sleeping MS held for its wake frame; a setting, off by default (section 3.11) |
 | Refusals | C_NACKD(Not_Supported) for every other Service_Kind; Called_Party_Busy, Called_Group_Not_Allowed, Perm_User_Refused as provisioning says |
 | Network | Wide-area group calls both ways; individual calls across sites with an availability check over the network; Tier II to Tier III and back; registration records; site description; provisioning from the manager, cached at the site |
@@ -51,7 +52,7 @@ Principles:
 
 ### 1.2 Later (the design leaves room; nothing here is built)
 
-Packet data and UDT short data, talkgroup list subscription (UDT upload), C_MOVE and a second TSCC, composite TSCC, TSCCAS, the asynchronous (hibernating) TSCC, DGNA,
+Packet data and UDT short data, talkgroup list subscription (UDT upload), a second TSCC, composite TSCC, TSCCAS (section 3.12 says why), DGNA,
 stun/revive/kill, gateways (PSTN, PABX, dispatcher), duplex calls, ambient listening, a standby controller, trunking on the W12 (the LR2021 can't stay keyed: slot-timing.md), two carriers
 out of one SDR, authentication (owner's go-ahead first), encryption beyond pass-through.
 
@@ -305,7 +306,7 @@ C_BCAST, each Announcement_type (table 7.68) and what the site does with it:
 | 4 MassReg (6.4.5, table 7.76) | yes | below |
 | 5 Chan_Freq (6.7.1.5, table 7.78) | yes (section 3.2) | each carrier in turn |
 | 6 Adjacent_Site (6.7.1.6) | yes (section 3.2) | from the network |
-| 7 Gen_Site_Params (6.7.1.7) | yes (section 3.2) | the hibernating flag 0 (no asynchronous TSCC); the "Reg and TG Subscription" bit 0 |
+| 7 Gen_Site_Params (6.7.1.7) | yes (section 3.2) | the hibernating flag 1 just before an asynchronous TSCC goes quiet (section 3.12); the "Reg and TG Subscription" bit 0 |
 | 30, 31 manufacturer specific | no | none defined |
 
 Mass re-registration (6.4.5): the `mass_reg` command (mqtt-net, section 5.7; `rdof_t3_command(s, "mass_reg",
@@ -329,6 +330,37 @@ following C_AHOYs and the grant go at once. Not built: a group call's grants are
 frames (they catch a Late_Entry grant repeat that falls in theirs: `grant_every_s` under 0.48 s makes sure), and
 the offset isn't kept in the registration record (a restarted site pages a sleeping MS at any time until it
 registers again: `mass_reg_at_start_s`).
+
+### 3.12 TSCC modes: C_MOVE, the asynchronous TSCC, and what isn't built
+
+C_MOVE (6.3.3.1 e, table 7.17): the `move` command (`rdof_t3_command(s, "move", chan, ms)`, mqtt-net `move`) sends
+C_MOVE three times on the TSCC: Mask 0 for every MS, or Mask 24 and the address for one; the Reg and Backoff of
+C_ALOHA; the target TSCC's logical channel (1-4094; the MBC form with absolute frequencies isn't built). A
+listening MS leaves for that channel; nothing answers. Use: send MSs to a neighbor's TSCC (the TSCC channel of an
+Adjacent_Site entry) before taking this one down, or one MS to another site.
+
+The asynchronous TSCC (5.3.3, 6.1.1.2), off unless `services.hibernate_s` (T_BS_Inactive, 1-300 s) is set: with no
+good inbound block on the TSCC for that long and nothing under way (no call, no request waiting, nothing to send),
+the TSCC sends Gen_Site_Params with the Hibernating_Flag twice, then goes quiet: no C_ALOHA, no C_SYS_Parms in the
+CACH. An MS that heard the flag doesn't hunt for want of C_ALOHA; with something to do it sends BS_Dwn_Act (361-2
+7.1.2.1, table 7.5a; BS address 0: 361-4 doesn't say what a TSCC's is, so the site takes any) on the TSCC's
+inbound. Any good inbound block wakes the TSCC, and so does anything the site has to send (a call from the
+network, a status). The radio layer still keys carrier A while the TSCC is quiet (idle bursts): keying the
+transmitter down and back on the TSCC's slot grid is later work.
+
+Not built, and why:
+
+- A second TSCC (6.1.1.1, 6.3.2.2.1.2-4: two TSCCs split by PAR and control category): the controller keeps one
+  control channel's state (its response queue, Aloha schedule and load); a second needs a second of each and a
+  rule for which MS is served where. Two sites with `par` A and B on separate carriers come close today, each its
+  own controller.
+- The composite TSCC (5.3.2): the TSCC slot turning payload when all others are busy. The radio layer and the unit
+  treat carrier A's first slot as the TSCC throughout (its CACH, its short LC, its idle path); the reversion to
+  P_SYS_Parms with the composite Payload Channel Type and back needs that changed. Pre-emption (section 3.9) covers
+  the emergency case.
+- Moving the site's own TSCC to another carrier: the same reason.
+- TSCCAS (6.1.1.3): its content is USBD polling, which belongs to the data services (with LIP). C_ALOHA's TSCCAS
+  flag stays 0.
 
 ## 4. Settings (config-v3 `tier3` app)
 
@@ -376,7 +408,7 @@ paths").
 | `foacsu` | bool | false | full off-air call setup for individual calls |
 | `timers` | object | section 3.8 | |
 | `broadcast` | object | section 3.2 | `adjacent_s`, `chan_freq_s`, `local_time_s`, `call_timers_s`, `vote_now_s`, `ann_tscc_s` (0 = off; the last three off by default, section 3.11) |
-| `services` | object | | `emergency_preempt` (bool, false): clear a running call for a waiting emergency (section 3.9); `power_save` (0-7, 0): the largest PowerSave_RQ granted, 0 none; `power_save_awake_s` (0.1-60, 1); `mass_reg_at_start_s` (0-200000, 0): a mass re-registration at start within this time (section 3.11). Local settings only for now; the manager's `cfg` doesn't carry them |
+| `services` | object | | `emergency_preempt` (bool, false): clear a running call for a waiting emergency (section 3.9); `power_save` (0-7, 0): the largest PowerSave_RQ granted, 0 none; `power_save_awake_s` (0.1-60, 1); `mass_reg_at_start_s` (0-200000, 0): a mass re-registration at start within this time (section 3.11); `hibernate_s` (0 or 1-300, 0): T_BS_Inactive of the asynchronous TSCC, 0 never (section 3.12). Local settings only for now; the manager's `cfg` doesn't carry them |
 
 Checks (refusals name the key): exactly one `tscc` carrier; every carrier's `out` on a device that transmits and its
 `in` on a device that receives; the TSCC carrier's `in` and `out` on one full-duplex SDR (a split TX half
@@ -564,6 +596,7 @@ Commands (`node/{node}/cmd`, JSON `{"id": "c-123", "cmd": "...", ...}`; the resu
 | `resend_records` | | republishes every registration record |
 | `status` | | publishes `status` now |
 | `mass_reg` | `window_s` (0-200000, 0 cancels), `ms` (optional: one MS) | a mass re-registration (section 3.11) |
+| `move` | `chan` (1-4094), `ms` (optional: one MS) | C_MOVE: the MSs leave for the TSCC on that channel (section 3.12) |
 
 ### 5.8 Security
 
@@ -829,6 +862,8 @@ In the network services' own repository (with the router, the Python library and
 - power save (`set_power_save`): asks for it in its registrations, hears the TSCC only in its wake frame and for
   T_Awake (2 s) after a PDU to it; mass re-registration: registers at a random time in the Reg_Window, ignores
   repeats inside it, a Reg_Window 0 cancels; counts the C_BCASTs it hears by type.
+- C_MOVE: an idle MS it applies to moves to that channel's LCN 0 (one in its list); a TSCC that said it
+  hibernates: no hunting, and BS_Dwn_Act when it has something to do.
 
 `t3air`: a slot-exact air between one site controller and N MSs: TSCC outbound to every MS on the TSCC; inbound
 collisions (two MSs in one inbound slot: neither is heard, and the site gets `rx_bad`); payload channels with their

@@ -253,6 +253,7 @@ typedef enum {
     RDOF_MN_CMD_RESEND_RECORDS,
     RDOF_MN_CMD_STATUS,
     RDOF_MN_CMD_MASS_REG, /* window_s, ms (0: all) */
+    RDOF_MN_CMD_MOVE,     /* chan, ms (0: all) */
 } rdof_mn_cmd_kind_t;
 
 typedef struct {

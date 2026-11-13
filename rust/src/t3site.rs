@@ -24,6 +24,9 @@ mod bcast;
 pub use bcast::{
     call_timers_of, mass_reg_applies, mass_reg_of, ps_counter, ps_wake, reg_window_ms, reg_window_of,
 };
+#[path = "t3tscc.rs"]
+mod tscc;
+pub use tscc::{bs_dwn_act, bs_dwn_act_of, move_of, move_pdu, OP_BS_DWN_ACT};
 
 pub const CARRIERS: usize = 4;
 pub const CHANNELS: usize = CARRIERS * 2;
@@ -101,6 +104,7 @@ pub struct Cfg {
     pub vote_now_ms: u32,    // Vote_Now for each adjacent site in this time; 0: not broadcast
     pub ann_tscc_ms: u32,    // Ann_WD_TSCC for the adjacent sites in this time; 0: not broadcast
     pub awake_ms: u32,       // how long an MS in power save stays awake after a PDU (the site's T_Awake)
+    pub hibernate_ms: u32,   // T_BS_Inactive: the TSCC hibernates after this long with no inbound; 0 never
 }
 
 #[repr(C)]
@@ -586,6 +590,7 @@ pub struct Site {
     net: [NetWait; STREAMS],
     stat: [status::StatPend; status::STATUS_PENDING],
     bc: bcast::BcState,
+    tscc: tscc::TsccState,
     // registrations and provisioning
     regs: [Reg; REGS],
     reg_scan: usize,
@@ -758,6 +763,9 @@ fn check(c: &Cfg, err: &mut Buf) -> bool {
     }
     if c.start_grace_ms > 10_000 {
         no!("timers.start_grace_s: 0 to 10");
+    }
+    if c.hibernate_ms != 0 && !(1000..=300_000).contains(&c.hibernate_ms) {
+        no!("services.hibernate_s: 0 (never) or 1 to 300");
     }
     if c.power_save > 7 || c.mass_reg_start > 15 || !(100..=60_000).contains(&c.awake_ms) {
         no!("services.power_save 0 to 7, power_save_awake_s 0.1 to 60, mass_reg_at_start_s 0 to 200000");
@@ -1031,7 +1039,7 @@ impl Site {
         }
         if self.cfg.gen_site_ms > 0 && now >= self.next_gen_site_ms {
             self.next_gen_site_ms = now + self.cfg.gen_site_ms as i64;
-            let b = Bcast::gen_site_params(reg, bo, sc, false, false);
+            let b = Bcast::gen_site_params(reg, bo, sc, self.about_to_hibernate(), false);
             return Some((b.encode(), DT_CSBK, None));
         }
         None
@@ -2148,7 +2156,7 @@ impl Site {
         self.reg_timers();
         let mut out = SlotOut::default();
         let rc_on_tscc = self.preempt_tick(&mut out);
-        if !self.withdrawn {
+        if !self.withdrawn && !self.hibernate_tick() {
             if k & 1 == 0 && !rc_on_tscc {
                 self.tscc_slot(&mut out);
             } else {
@@ -2175,6 +2183,7 @@ impl Site {
             if dt != DT_CSBK {
                 return; // UDT and MBC uploads: none is asked for
             }
+            self.tscc_heard(); // a BS_Dwn_Act wakes a hibernating TSCC, as any good block does
             if let Some(r) = Rand::decode(pdu) {
                 self.counters.rand += 1;
                 self.count_load();
@@ -2365,6 +2374,7 @@ impl Site {
             }
             "status" => true,
             "mass_reg" => self.mass_registration(a1, a2),
+            "move" => self.move_cmd(a1, a2),
             _ => false,
         }
     }

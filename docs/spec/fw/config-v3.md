@@ -503,7 +503,7 @@ tier3.md section 4 and 3.8; the manager's `cfg` documents override them (tier3.m
 | `foacsu` | bool | false | |
 | `timers` | object | tier3.md 3.8 | |
 | `broadcast` | object | 5, 10, 6, 0, 0, 0 | `adjacent_s`, `chan_freq_s`, `local_time_s`, `call_timers_s`, `vote_now_s`, `ann_tscc_s`: 0 (off) or 1-600 |
-| `services` | object | | `emergency_preempt` (bool, false): clear a running call for a waiting emergency (tier3.md 3.9); `power_save` (0-7, 0), `power_save_awake_s` (0.1-60, 1), `mass_reg_at_start_s` (0-200000, 0) (tier3.md 3.11) |
+| `services` | object | | `emergency_preempt` (bool, false): clear a running call for a waiting emergency (tier3.md 3.9); `power_save` (0-7, 0), `power_save_awake_s` (0.1-60, 1), `mass_reg_at_start_s` (0-200000, 0) (tier3.md 3.11); `hibernate_s` (0 or 1-300, 0) (tier3.md 3.12) |
 
 Its frequencies are its own: no other app, gateway, transceiver or receiver uses them, and every carrier's color
 code is the same (the TSCC's). The unit, named after the app:
