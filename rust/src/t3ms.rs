@@ -7,6 +7,7 @@
 
 use core::ffi::c_int;
 
+use crate::t3auth::{response, R_AUTH_RESPONSE, R_MS_NOT_SUPPORTED};
 use crate::t3pdu::*;
 use crate::t3rc::RC_CEASE;
 use crate::t3site::{CARRIERS, VOICE_FRAME, VOICE_HEADER, VOICE_TERM};
@@ -39,6 +40,7 @@ const TRIES_EMERGENCY: u8 = 10; // NRand_NE
 const WAIT_MS: i64 = 30_000; // after C_WACKD / C_QACKD / MS_Alerting, the longest wait for the outcome
 const HUNT_SLOTS: u32 = 100; // TSCC slots without C_ALOHA before trying the next carrier
 const MAINT_REPEATS: u8 = 4;
+const TNP_MS: i64 = 10_000; // TNP_Timer: after answering a registration's challenge, the wait for the outcome
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -135,6 +137,11 @@ pub struct Ms {
     ahoys: u32,
     clears: u32,
     ceased: u32,
+    // authentication (361-4 6.4.8): its key K and PSN
+    has_key: bool,
+    key: [u8; 16],
+    psn: Option<u32>,
+    challenges: u32,
 }
 
 impl Ms {
@@ -158,6 +165,18 @@ impl Ms {
 
     pub fn state(&self) -> u8 {
         self.state
+    }
+
+    /// Its authentication key and PSN (6.4.8.1); None: no key (it answers a challenge MSNot_Supported).
+    pub fn set_key(&mut self, key: Option<&[u8; 16]>, psn: Option<u32>) {
+        self.has_key = key.is_some();
+        self.key = key.copied().unwrap_or_default();
+        self.psn = psn;
+    }
+
+    /// Authentication challenges it answered.
+    pub fn challenges(&self) -> u32 {
+        self.challenges
     }
 
     pub fn set_answer(&mut self, answer: u8, answer_ms: u32) {
@@ -390,6 +409,10 @@ impl Ms {
             }
             return;
         }
+        if a.service_kind == SK_REG && !a.service_kind_flag {
+            self.on_challenge(a);
+            return;
+        }
         self.ahoys += 1;
         let ack = |reason, s: &Ms| Ack { op: OP_ACKU, response_info: 0, reason, target: a.source, source: s.id }.encode();
         self.reply = match self.answer {
@@ -406,6 +429,23 @@ impl Ms {
             }
             _ => None,
         };
+    }
+
+    /// An authentication challenge (6.4.8.3): C_ACKU(Authentication Response) with the response as its target
+    /// (table 6.18), or C_NACKU(MSNot_Supported) without a key, in the slot the AT bit keeps. During its registration
+    /// it then waits TNP_Timer for the outcome (figure 6.23).
+    fn on_challenge(&mut self, a: &Ahoy) {
+        self.challenges += 1;
+        let (reason, target) = if self.has_key {
+            (R_AUTH_RESPONSE, response(a.source, &self.key, self.psn))
+        } else {
+            (R_MS_NOT_SUPPORTED, a.source)
+        };
+        self.reply = Some(Ack { op: OP_ACKU, response_info: 0, reason, target, source: self.id }.encode());
+        if self.has_cur && self.cur.what == DO_REGISTER && matches!(self.state, ACCESS | WAITING) {
+            self.state = WAITING;
+            self.wait_until = self.now + TNP_MS;
+        }
     }
 
     fn on_grant(&mut self, g: &Grant) {
@@ -641,6 +681,12 @@ pub unsafe extern "C" fn rdof_t3ms_init(
 #[no_mangle]
 pub unsafe extern "C" fn rdof_t3ms_answer(ms: *mut Ms, answer: u8, answer_ms: u32) {
     (*ms).set_answer(answer, answer_ms);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3ms_key(ms: *mut Ms, k: *const [u8; 16], psn: u32, has_psn: bool) {
+    let k = if k.is_null() { None } else { Some(&*k) };
+    (*ms).set_key(k, has_psn.then_some(psn & 0xFF_FFFF));
 }
 
 #[no_mangle]

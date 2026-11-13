@@ -194,6 +194,10 @@ typedef struct {
     int priority;
     uint32_t tg[RDOF_MN_REC_TG]; /* static talkgroups for this radio */
     int ntg;
+    /* authentication (tier3.md 3.10): "auth_k" (32 hex digits) and "psn" (6); secret, kept only in the cache */
+    bool has_key, has_psn;
+    uint8_t key[16];
+    uint32_t psn;
 } rdof_mn_ms_cfg_t;
 
 typedef struct {
@@ -252,6 +256,7 @@ typedef enum {
     RDOF_MN_CMD_RESTORE,
     RDOF_MN_CMD_RESEND_RECORDS,
     RDOF_MN_CMD_STATUS,
+    RDOF_MN_CMD_AUTH, /* ms: an authentication poll */
 } rdof_mn_cmd_kind_t;
 
 typedef struct {

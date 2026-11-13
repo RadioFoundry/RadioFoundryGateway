@@ -69,8 +69,13 @@ typedef struct {
     uint32_t adjacent_ms, chan_freq_ms, local_time_ms, gen_site_ms; /* 0: not broadcast */
     uint32_t stream_seed; /* first stream ID for setups the site starts */
     uint8_t preempt;      /* 1: an emergency with no channel free clears a non-emergency call (361-4 6.4.14.3.1) */
-    uint8_t pad1[3];
+    uint8_t auth;         /* RDOF_T3_AUTH_*: MS authentication at registration (361-4 6.4.8; tier3.md 3.10) */
+    uint8_t pad1[2];
 } rdof_t3_cfg_t;
+
+#define RDOF_T3_AUTH_OFF 0          /* none */
+#define RDOF_T3_AUTH_REGISTRATION 1 /* MSs with a key are challenged at registration; the others register as before */
+#define RDOF_T3_AUTH_REQUIRED 2     /* every MS is challenged; one without a key is refused (Reg_Denied) */
 
 typedef struct {
     uint32_t lo, hi;
@@ -99,6 +104,10 @@ typedef struct {
     uint8_t enabled, private_ok, wide_private, emergency_ok;
     uint8_t priority, ntg, pad[2];
     uint32_t tg[RDOF_T3_REG_TGS]; /* static talkgroups for this MS */
+    /* authentication (361-4 6.4.8.1): the MS's key K and its PSN (24 bits); secret: never logged or published */
+    uint8_t has_key, has_psn, pad2[2];
+    uint32_t psn;
+    uint8_t key[16];
 } rdof_t3_ms_policy_t;
 
 #define RDOF_T3_HOW_REGISTER 1
@@ -160,7 +169,8 @@ typedef struct {
 #define RDOF_T3_CLOSE_WITHDRAW 5 /* the site went off the air */
 #define RDOF_T3_CLOSE_PREEMPT 6  /* cleared for an emergency call (361-4 6.4.14.3.1) */
 
-#define RDOF_T3_ACT_REG 1   /* op: 1 register, 2 deregister, 3 expire, 4 deny, 5 refuse */
+#define RDOF_T3_ACT_REG 1   /* op: 1 register, 2 deregister, 3 expire, 4 deny, 5 refuse, 6 auth_ok, 7 auth_fail,
+                               8 auth_none (no answer to a challenge, or no support where it isn't required) */
 #define RDOF_T3_ACT_GRANT 2 /* flags: group, late, net */
 #define RDOF_T3_ACT_QUEUE 3 /* op: 1 in, 2 out, 3 drop; reason: the C_NACKD reason when dropped */
 #define RDOF_T3_ACT_SETUP 4 /* op, reason: as the setup message */
@@ -277,8 +287,12 @@ bool rdof_t3_record(const rdof_t3_site_t *s, uint32_t ms, rdof_t3_record_t *r);
 /* the talkgroups the registered MSs need (subscriptions, recent calls, provisioning); static_tg isn't included */
 size_t rdof_t3_subs(const rdof_t3_site_t *s, uint32_t *tg, size_t cap);
 void rdof_t3_withdraw(rdof_t3_site_t *s, bool off);
-/* "deregister" (arg1 MS), "clear" (arg1 chan, arg2 LCN), "withdraw", "restore", "resend_records", "status" */
+/* "deregister" (arg1 MS), "clear" (arg1 chan, arg2 LCN), "withdraw", "restore", "resend_records", "status", "auth"
+   (arg1 MS: an authentication poll; false when the MS isn't registered here or has no key) */
 bool rdof_t3_command(rdof_t3_site_t *s, const char *cmd, uint32_t arg1, uint32_t arg2);
+/* Stirs v into the source of authentication challenges: something unpredictable (the platform's random source),
+   at start and now and then. */
+void rdof_t3_entropy(rdof_t3_site_t *s, uint64_t v);
 
 /* outputs: drain after each call */
 bool rdof_t3_event(rdof_t3_site_t *s, rdof_t3_event_t *ev);
@@ -328,6 +342,9 @@ size_t rdof_t3ms_size(void);
 void rdof_t3ms_init(rdof_t3ms_t *ms, uint32_t id, const uint32_t *tg, int ntg, const uint16_t *chans, int ncarriers,
                     uint32_t seed);
 void rdof_t3ms_answer(rdof_t3ms_t *ms, uint8_t answer, uint32_t answer_ms);
+/* Its authentication key K and PSN (361-4 6.4.8.1): it answers a challenge C_ACKU(Authentication Response); k NULL:
+   no key, it answers C_NACKU(MSNot_Supported). */
+void rdof_t3ms_key(rdof_t3ms_t *ms, const uint8_t k[16], uint32_t psn, bool has_psn);
 /* queue an action (up to 8 queued) at or after at_ms */
 bool rdof_t3ms_do(rdof_t3ms_t *ms, uint8_t what, uint32_t arg, uint32_t talk_ms, uint8_t flags, int64_t at_ms);
 /* outbound slot k on channel ch: a block (dt 0: voice or idle, nothing to read); at is the CACH's AT bit for the

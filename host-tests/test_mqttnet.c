@@ -1304,11 +1304,22 @@ static void test_cfg(void)
           !rdof_idset_has(&tg->ms, 3101000));
     CHECK(put(&c, "DMR/cfg/tg/3100", "{\"rev\":1,\"priority\":9}", note) == RDOF_MN_CFG_BAD);
     CHECK(put(&c, "DMR/cfg/ms/3100123", "{\"rev\":4,\"name\":\"Unit 12\",\"enabled\":true,\"private\":false,"
-                                        "\"priority\":1,\"tg\":[91,3100]}",
+                                        "\"priority\":1,\"tg\":[91,3100],"
+                                        "\"auth_k\":\"0102030405060708090a0B0C0D0E0F10\",\"psn\":\"0A0203\"}",
               note) == RDOF_MN_CFG_APPLIED);
     const rdof_mn_ms_cfg_t *ms = rdof_mn_cfg_ms(&c, 3100123);
     CHECK(ms && ms->enabled && !ms->private_ && ms->wide_private && ms->emergency && ms->priority == 1 && ms->ntg == 2 &&
           ms->tg[1] == 3100);
+    /* authentication (tier3.md 3.10): the key and PSN; a bad one is refused without quoting it */
+    CHECK(ms->has_key && ms->key[0] == 1 && ms->key[10] == 11 && ms->key[15] == 16 && ms->has_psn &&
+          ms->psn == 0x0A0203);
+    CHECK(put(&c, "DMR/cfg/ms/3100125", "{\"rev\":1,\"auth_k\":\"0102030405060708090a0b0c0d0e0f1\"}", note) ==
+              RDOF_MN_CFG_BAD &&
+          strstr(note, "auth_k") && !strstr(note, "0102"));
+    CHECK(put(&c, "DMR/cfg/ms/3100125", "{\"rev\":1,\"auth_k\":\"0102030405060708090a0b0c0d0e0fxx\"}", note) ==
+          RDOF_MN_CFG_BAD);
+    CHECK(put(&c, "DMR/cfg/ms/3100125", "{\"rev\":1,\"psn\":66051}", note) == RDOF_MN_CFG_BAD && strstr(note, "psn"));
+    CHECK(!rdof_mn_cfg_ms(&c, 3100125));
     CHECK(put(&c, "DMR/cfg/ms/3100124", "{\"rev\":1,\"enabled\":false}", note) == RDOF_MN_CFG_APPLIED);
     CHECK(!rdof_mn_cfg_ms(&c, 3100124)->enabled);
     CHECK(put(&c, "DMR/cfg/ms/0", "{\"rev\":1}", note) == RDOF_MN_CFG_NOT_CFG);
@@ -1376,6 +1387,11 @@ static void test_cmd(void)
           !strcmp(c.id, "c-4") && !strcmp(c.name, "reboot"));
     static const char noid[] = "{\"cmd\":\"status\"}";
     CHECK(!rdof_mn_cmd_parse(noid, sizeof noid - 1, &c, err, sizeof err) && strstr(err, "id"));
+    static const char auth[] = "{\"id\":\"c-5\",\"cmd\":\"auth\",\"ms\":3100123}";
+    CHECK(rdof_mn_cmd_parse(auth, sizeof auth - 1, &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_AUTH &&
+          c.ms == 3100123);
+    static const char auth_bad[] = "{\"id\":\"c-6\",\"cmd\":\"auth\"}";
+    CHECK(!rdof_mn_cmd_parse(auth_bad, sizeof auth_bad - 1, &c, err, sizeof err) && strstr(err, "ms"));
     static const char *const simple[] = {"withdraw", "restore", "resend_records", "status"};
     for (int i = 0; i < 4; i++) {
         snprintf(out, sizeof out, "{\"id\":\"x\",\"cmd\":\"%s\"}", simple[i]);

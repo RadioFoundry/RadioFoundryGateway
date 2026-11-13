@@ -537,7 +537,8 @@
         "foacsu": {"type": "boolean"},
         "timers": {"type": "object"},
         "broadcast": {"type": "object"},
-        "services": {"type": "object"}
+        "services": {"type": "object"},
+        "auth": {"enum": ["off", "registration", "required"]}
       }
     },
     "app3": {

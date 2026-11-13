@@ -4,6 +4,7 @@
 #include "rdofradio_t3.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <math.h>
 #include <poll.h>
 #include <pthread.h>
@@ -132,8 +133,11 @@ static void io_cache(void *ctx)
     char path[512], tmp[520];
     cache_path(path, sizeof path);
     snprintf(tmp, sizeof tmp, "%s.new", path);
-    FILE *f = fopen(tmp, "w");
+    const int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0600); /* it holds the MSs' authentication keys */
+    FILE *f = fd >= 0 ? fdopen(fd, "w") : NULL;
     if (!f) {
+        if (fd >= 0)
+            close(fd);
         tsay("%s: %s", tmp, strerror(errno));
         return;
     }
@@ -218,6 +222,13 @@ static bool start_common(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o,
     T.c = c;
     T.o = *o;
     T.rng = (uint32_t)wall_ms() ^ ((uint32_t)getpid() << 16);
+    FILE *ur = fopen("/dev/urandom", "rb"); /* the authentication challenges start from it (rdof_t3_entropy) */
+    if (ur) {
+        uint32_t v = 0;
+        if (fread(&v, sizeof v, 1, ur) == 1)
+            T.rng ^= v;
+        fclose(ur);
+    }
     if (!T.rng)
         T.rng = 1;
     const rdofradio_t3_cfg_t *t = &c->t;
@@ -578,6 +589,19 @@ static int air_find(uint32_t id)
     return -1;
 }
 
+/* The air MSs' authentication keys, from the cfg/ms documents (tier3.md 3.10); again when provisioning changes. */
+static uint32_t air_cfg_changes;
+
+static void air_keys(void)
+{
+    const rdof_mn_cfg_t *mc = rdof_t3unit_mc(T.u);
+    air_cfg_changes = mc->changes;
+    for (int i = 0; i < AM.n; i++) {
+        const rdof_mn_ms_cfg_t *m = rdof_mn_cfg_ms(mc, AM.id[i]);
+        rdof_t3ms_key(AM.ms[i], m && m->has_key ? m->key : NULL, m ? m->psn : 0, m && m->has_psn);
+    }
+}
+
 static bool air_start(const rdofradio_t3_opts_t *o, char *err, size_t cap)
 {
     if (o->air_ms <= 0 && !o->sim_script)
@@ -615,6 +639,7 @@ static bool air_start(const rdofradio_t3_opts_t *o, char *err, size_t cap)
     }
     AM.next_talk = o->sim_talk_s > 0 ? t0 + (int64_t)(o->sim_talk_s * 1000) : -1;
     AM.n = n;
+    air_keys();
 #ifdef RDOF_MQTT
     if (T.net)
         rdof_mn_node_topic(air_topic, sizeof air_topic, T.c->t.root, T.node, "air-ms");
@@ -659,6 +684,8 @@ static void air_slot(int64_t k, const uint8_t burst[RDOF_BURST_BYTES], bool aire
 {
     if (!AM.n)
         return;
+    if (rdof_t3unit_mc(T.u)->changes != air_cfg_changes)
+        air_keys();
     const int64_t now = wall_ms();
     for (; AM.ai < AM.nacts && AM.acts[AM.ai].at_ms <= now; AM.ai++)
         air_do(&AM.acts[AM.ai], now);

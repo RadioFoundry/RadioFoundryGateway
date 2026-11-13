@@ -16,6 +16,11 @@ use crate::t3pdu::*;
 #[path = "t3emerg.rs"]
 mod emerg;
 pub use emerg::RC_SEND;
+#[path = "t3authsite.rs"]
+mod authsite;
+pub use authsite::{
+    rdof_t3_entropy, AUTH_OFF, AUTH_REGISTRATION, AUTH_REQUIRED, REG_AUTH_FAIL, REG_AUTH_NONE, REG_AUTH_OK,
+};
 
 pub const CARRIERS: usize = 4;
 pub const CHANNELS: usize = CARRIERS * 2;
@@ -86,7 +91,8 @@ pub struct Cfg {
     pub gen_site_ms: u32,
     pub stream_seed: u32,
     pub preempt: u8, // 1: an emergency with no channel free clears a non-emergency call (361-4 6.4.14.3.1)
-    pub pad1: [u8; 3],
+    pub auth: u8,    // AUTH_*: MS authentication at registration (361-4 6.4.8; t3authsite.rs)
+    pub pad1: [u8; 2],
 }
 
 #[repr(C)]
@@ -163,6 +169,12 @@ pub struct MsPolicy {
     pub ntg: u8,
     pub pad: [u8; 2],
     pub tg: [u32; REG_TGS],
+    // authentication (361-4 6.4.8.1): the MS's key K and PSN; secret, never logged or published
+    pub has_key: u8,
+    pub has_psn: u8,
+    pub pad2: [u8; 2],
+    pub psn: u32,
+    pub key: [u8; 16],
 }
 
 impl MsPolicy {
@@ -172,8 +184,21 @@ impl MsPolicy {
 }
 
 /// An MS with no entry of its own.
-pub const MS_POLICY_DEFAULT: MsPolicy =
-    MsPolicy { enabled: 1, private_ok: 1, wide_private: 1, emergency_ok: 1, priority: 0, ntg: 0, pad: [0; 2], tg: [0; REG_TGS] };
+pub const MS_POLICY_DEFAULT: MsPolicy = MsPolicy {
+    enabled: 1,
+    private_ok: 1,
+    wide_private: 1,
+    emergency_ok: 1,
+    priority: 0,
+    ntg: 0,
+    pad: [0; 2],
+    tg: [0; REG_TGS],
+    has_key: 0,
+    has_psn: 0,
+    pad2: [0; 2],
+    psn: 0,
+    key: [0; 16],
+};
 
 pub const HOW_REGISTER: u8 = 1;
 pub const HOW_CALL: u8 = 2;
@@ -538,6 +563,7 @@ struct Counters {
 }
 
 pub struct Site {
+    auth: authsite::Auth,
     cfg: Cfg,
     policy: Policy,
     syscode: u16,
@@ -744,6 +770,9 @@ fn check(c: &Cfg, err: &mut Buf) -> bool {
     }
     if c.preempt > 1 {
         no!("emergency_preempt: true or false");
+    }
+    if c.auth > AUTH_REQUIRED {
+        no!("auth: off, registration or required");
     }
     true
 }
@@ -1372,6 +1401,16 @@ impl Site {
             }
             return;
         }
+        if self.auth_registration(r) {
+            return; // challenged (t3authsite.rs): register() follows a good answer
+        }
+        self.register(r);
+    }
+
+    /// A registration that passed the checks (and the authentication, if any): the record, the subscription, the
+    /// answer.
+    fn register(&mut self, r: &Rand) {
+        let (ms, cnts) = (r.source, r.trgt_adr_cnts());
         let Some(i) = self.record_for(ms, HOW_REGISTER) else {
             self.ack(R_REG_REFUSED, ms, REGI);
             self.activity(ACT_REG, REG_REFUSE, ms, 0, R_REG_REFUSED);
@@ -1441,7 +1480,7 @@ impl Site {
             return None;
         }
         if self.reg_index(ms).is_none() {
-            if self.reg_bit() {
+            if self.reg_bit() || self.auth_needed(ms) {
                 self.refuse(R_MS_NOT_REGISTERED, ms, r.target);
                 return None;
             }
@@ -2106,6 +2145,7 @@ impl Site {
         self.now = now_ms;
         self.roll_load();
         self.pending_timers();
+        self.auth_timers();
         self.channel_timers();
         self.reg_timers();
         let mut out = SlotOut::default();
@@ -2147,7 +2187,7 @@ impl Site {
                     self.service(&r);
                 }
             } else if let Some(a) = Ack::decode(pdu) {
-                if a.op == OP_ACKU {
+                if a.op == OP_ACKU && !self.auth_answer(&a) {
                     self.ms_ack(&a);
                 }
             }
@@ -2326,6 +2366,7 @@ impl Site {
                 true
             }
             "status" => true,
+            "auth" => self.auth_poll(a1),
             _ => false,
         }
     }

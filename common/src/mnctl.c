@@ -819,6 +819,24 @@ static bool tg_from(const jp_t *p, int root, rdof_mn_tg_cfg_t *o, char *note, si
     return true;
 }
 
+/* n bytes from exactly 2n hex digits */
+static bool hex_bytes(const char *s, uint8_t *out, size_t n)
+{
+    if (strlen(s) != 2 * n)
+        return false;
+    for (size_t i = 0; i < 2 * n; i++) {
+        const char c = s[i];
+        const int v = c >= '0' && c <= '9'   ? c - '0'
+                      : c >= 'a' && c <= 'f' ? c - 'a' + 10
+                      : c >= 'A' && c <= 'F' ? c - 'A' + 10
+                                             : -1;
+        if (v < 0)
+            return false;
+        out[i / 2] = (uint8_t)(i % 2 ? out[i / 2] | v : v << 4);
+    }
+    return true;
+}
+
 static bool ms_from(const jp_t *p, int root, rdof_mn_ms_cfg_t *o, char *note, size_t ncap, char *err, size_t cap)
 {
     const uint32_t id = o->id;
@@ -861,6 +879,21 @@ static bool ms_from(const jp_t *p, int root, rdof_mn_ms_cfg_t *o, char *note, si
                 return false;
             }
             o->priority = (int)v;
+        } else if (!strcmp(n->key, "auth_k")) {
+            /* the error never quotes the value: it is a secret */
+            if (n->type != RDOF_JSTR || !hex_bytes(n->str, o->key, sizeof o->key)) {
+                seterr(err, cap, "auth_k: 32 hex digits");
+                return false;
+            }
+            o->has_key = true;
+        } else if (!strcmp(n->key, "psn")) {
+            uint8_t b[3];
+            if (n->type != RDOF_JSTR || !hex_bytes(n->str, b, sizeof b)) {
+                seterr(err, cap, "psn: 6 hex digits");
+                return false;
+            }
+            o->psn = (uint32_t)b[0] << 16 | (uint32_t)b[1] << 8 | b[2];
+            o->has_psn = true;
         } else if (!strcmp(n->key, "tg")) {
             char ie[64];
             if (!jids(p, k, o->tg, RDOF_MN_REC_TG, &o->ntg, ie, sizeof ie)) {
@@ -1201,6 +1234,17 @@ static size_t ms_json(const rdof_mn_ms_cfg_t *m, char *out, size_t cap)
     rdof_json_bool(&j, "emergency", m->emergency);
     rdof_json_int(&j, "priority", m->priority);
     ids_raw(&j, "tg", m->tg, m->ntg);
+    if (m->has_key) { /* the cache is local: the key has to survive a restart without the network */
+        char h[33];
+        for (size_t i = 0; i < sizeof m->key; i++)
+            snprintf(h + 2 * i, 3, "%02x", m->key[i]);
+        rdof_json_str(&j, "auth_k", h);
+    }
+    if (m->has_psn) {
+        char h[7];
+        snprintf(h, sizeof h, "%06lx", (unsigned long)(m->psn & 0xFFFFFF));
+        rdof_json_str(&j, "psn", h);
+    }
     rdof_json_close(&j);
     return rdof_json_done(&j) ? j.len : 0;
 }
@@ -1255,7 +1299,8 @@ bool rdof_mn_cmd_parse(const char *json, size_t len, rdof_mn_cmd_t *c, char *err
         rdof_mn_cmd_kind_t kind;
     } cmds[] = {{"deregister", RDOF_MN_CMD_DEREGISTER},   {"clear", RDOF_MN_CMD_CLEAR},
                 {"withdraw", RDOF_MN_CMD_WITHDRAW},       {"restore", RDOF_MN_CMD_RESTORE},
-                {"resend_records", RDOF_MN_CMD_RESEND_RECORDS}, {"status", RDOF_MN_CMD_STATUS}};
+                {"resend_records", RDOF_MN_CMD_RESEND_RECORDS}, {"status", RDOF_MN_CMD_STATUS},
+                {"auth", RDOF_MN_CMD_AUTH}};
     memset(c, 0, sizeof *c);
     c->chan = c->lcn = -1;
     const int root = jp_parse(&P, json, len, err, cap);
@@ -1280,6 +1325,7 @@ bool rdof_mn_cmd_parse(const char *json, size_t len, rdof_mn_cmd_t *c, char *err
     switch (c->cmd) {
     case RDOF_MN_CMD_UNKNOWN: seterr(err, cap, "unknown command"); return false;
     case RDOF_MN_CMD_DEREGISTER:
+    case RDOF_MN_CMD_AUTH:
         if (!jint(jget(&P, root, "ms"), 1, RDOF_ID_MAX, &v)) {
             seterr(err, cap, "ms: 1 to 16777215");
             return false;
