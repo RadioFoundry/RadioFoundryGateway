@@ -14,7 +14,7 @@ use crate::t3rc::RC_CEASE;
 /// ChOut.rc: an RC PDU is to be sent (the low 4 bits are the RC info).
 pub const RC_SEND: u8 = 0x10;
 /// The longest wait for a talker told to cease before the channel is cleared over it.
-const DEKEY_MS: i64 = 3000;
+pub(super) const DEKEY_MS: i64 = 3000;
 /// 361-1 5.1.5.1: repeated RC messages no sooner than 360 ms apart.
 const RC_EVERY_MS: i64 = 360;
 
@@ -77,7 +77,7 @@ impl Site {
                 self.log(format_args!("pre-empting the call {} to {} on channel {} for an emergency", src, dst, ch));
             }
         }
-        let (now, lcn, tscc) = (self.now, (self.k & 1) as usize, self.tscc_carrier * 2);
+        let now = self.now;
         let mut rc_on_tscc = false;
         for ch in 0..CHANNELS {
             let c = self.chans[ch];
@@ -90,13 +90,21 @@ impl Site {
                 self.clear(ch, CLOSE_PREEMPT);
                 continue;
             }
-            let alt = ch ^ 1;
-            if alt & 1 == lcn && now >= c.rc_next_ms {
-                out.ch[alt].rc = RC_SEND | RC_CEASE;
-                self.chans[ch].rc_next_ms = now + RC_EVERY_MS;
-                rc_on_tscc |= alt == tscc && !self.tscc_payload(); // a composite TSCC's call: its payload path
-            }
+            rc_on_tscc |= self.send_rc(ch, out);
         }
         rc_on_tscc
+    }
+
+    /// The RC cease command for channel ch's talker, on its carrier's other slot when that slot is this one and
+    /// the last went RC_EVERY_MS ago or more. True when that slot is the TSCC's (its block gives way).
+    pub(super) fn send_rc(&mut self, ch: usize, out: &mut SlotOut) -> bool {
+        let (now, lcn, tscc) = (self.now, (self.k & 1) as usize, self.tscc_carrier * 2);
+        let alt = ch ^ 1;
+        if alt & 1 != lcn || now < self.chans[ch].rc_next_ms {
+            return false;
+        }
+        out.ch[alt].rc = RC_SEND | RC_CEASE;
+        self.chans[ch].rc_next_ms = now + RC_EVERY_MS;
+        alt == tscc && !self.tscc_payload() // a composite TSCC's call: its payload path
     }
 }

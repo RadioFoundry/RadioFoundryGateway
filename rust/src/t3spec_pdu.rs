@@ -512,6 +512,20 @@ fn p_clear_layout_table_7_30() {
     assert_eq!(g.encode(), want);
 }
 
+/// 7.1.1.3.3, table 7.31: P_PROTECT, 12 reserved bits, Protect_Kind (table 7.82: EN_PTT_ONE_MS 011b), G/I, target,
+/// source.
+#[test]
+fn p_protect_layout_table_7_31() {
+    let pr = p::Protect { kind: p::PROTECT_EN_PTT_ONE_MS, group: false, target: 1002, source: spec::TSI };
+    let want = Bits::csbk(true, spec::P_PROTECT).f(12, 0).f(3, 0b011).f(1, 0).f(24, 1002).f(24, spec::TSI as u64).done();
+    assert_eq!(pr.encode(), want);
+    assert_eq!(p::Protect::decode(&want), Some(pr));
+    assert_eq!((p::PROTECT_DIS_PTT, p::PROTECT_EN_PTT, p::PROTECT_ILLEGALLY_PARKED), (0b000, 0b001, 0b010));
+    let g = p::Protect { kind: p::PROTECT_DIS_PTT, group: true, target: 9, source: 1001 };
+    let want = Bits::csbk(true, spec::P_PROTECT).f(12, 0).f(3, 0).f(1, 1).f(24, 9).f(24, 1001).done();
+    assert_eq!(g.encode(), want);
+}
+
 /// 7.1.1.4.3, table 7.32: P_MAINT (Maint_Kind 000b DISCON) to TSI from the MS.
 #[test]
 fn p_maint_layout_table_7_32() {

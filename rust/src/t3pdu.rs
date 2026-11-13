@@ -485,6 +485,39 @@ impl Clear {
     }
 }
 
+/// P_PROTECT (7.1.1.3.3, table 7.31): from the TS on a payload channel only, unsolicited. Protect_Kind is table
+/// 7.82's (PROTECT_*).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct Protect {
+    pub kind: u8,
+    pub group: bool,
+    pub target: u32,
+    pub source: u32,
+}
+
+// Protect_Kind (7.2.21, table 7.82)
+pub const PROTECT_DIS_PTT: u8 = 0b000;
+pub const PROTECT_EN_PTT: u8 = 0b001;
+pub const PROTECT_ILLEGALLY_PARKED: u8 = 0b010;
+pub const PROTECT_EN_PTT_ONE_MS: u8 = 0b011; // the target MS may transmit; every other MS is disabled
+
+impl Protect {
+    pub fn encode(&self) -> [u8; 10] {
+        let mut w = W::head(true, OP_PROTECT);
+        w.put(12, 0).put(3, u32::from(self.kind & 7)).flag(self.group).put(24, self.target).put(24, self.source);
+        w.done()
+    }
+    pub fn decode(b: &[u8; 10]) -> Option<Protect> {
+        if opcode(b) != OP_PROTECT || fid(b) != 0 {
+            return None;
+        }
+        let mut r = reader(b);
+        r.get(12);
+        let kind = r.get(3) as u8;
+        Some(Protect { kind, group: r.flag(), target: r.get(24), source: r.get(24) })
+    }
+}
+
 /// P_MAINT (7.1.1.4.3, table 7.32), from the MS. Maint_Kind 0 is DISCON.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct Maint {

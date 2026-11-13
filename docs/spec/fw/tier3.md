@@ -51,6 +51,7 @@ Principles:
 | Packet data | Individual and talkgroup packet data calls (C_RAND 0010b/0011b): the availability check (C_AHOY 0010b), PD_GRANT/TD_GRANT single or multi-item, the payload channel in data mode (each data burst repeated), confirmed and unconfirmed data at rate 1/2, 3/4 and 1 (the MS simulator's selective retry: SACK, C_RDATA, F = 0 resends), data hang time and clearing; MS to MS, MS to talkgroup, MS to the site's IP gateway (TSI, its data ID or IPI) and the gateway's replies down (3.16) |
 | Talkgroup lists | Registration with a talkgroup subscription/attachment list (C_AHOY from TATTSI, the Address Format upload, one Response_Info bit per talkgroup); DGNA from an MS (C_AHOY from DGNAI, C_DGNAHU then C_DGNAHD) or from the site, both modes; the site carries the talkgroups either list holds (3.17) |
 | Supplementary services | Stun and revive from the site (C_AHOY from STUNI; a stunned MS gets no user services), with or without the MS authenticating the TSCC (C_ACKVIT, C_ACKD Authentication_Response); kill (from KILLI, always authenticated); the Ambient Listening Service between MSs at the site (a setting); call diversion of voice, packet data, short data and status to an MS or a talkgroup, set, cleared and cancelled by the recipient, the caller told the diverted address (3.18) |
+| Transmit interrupt | A listener's payload interrupt of a group or individual call (status 125), the ALS caller's end of the call (status 123) and the call timer de-key (6.4.14.3.2-6.4.14.3.4): C_ACKD or C_NACKD from TSI, the RC cease command to the talker, then P_PROTECT(EN_PTT_ONE_MS) to the interrupter or P_CLEAR; a setting, off by default (section 3.20) |
 | Refusals | C_NACKD(Not_Supported) for every other Service_Kind; Called_Party_Busy, Called_Group_Not_Allowed, Perm_User_Refused as provisioning says |
 | Network | Wide-area group calls both ways; individual calls across sites with an availability check over the network; Tier II to Tier III and back; registration records; site description; provisioning from the manager, cached at the site |
 | Services | The site controller (Rust, in RFG), the radio layer (C, in RFG), the router's additions, the manager and its dashboard (Python, network services), the MS simulator |
@@ -61,7 +62,7 @@ Principles:
 Packet data across sites, multi-part packet data (extended addresses through gateways), dual-slot (HI_RATE) data,
 short data to gateways (extended addresses, supplementary data), a second TSCC, TSCCAS (section 3.12
 says why), DGNA across sites for the site's records (a roaming MS's dynamic talkgroups), ALS across sites or from
-the site, payload interrupt in an ALS call (the de-key status 123 is refused, 3.18), call
+the site, transmit interrupt from a gateway or the network (3.20), call
 diversion to gateways or across sites, gateways (PSTN, PABX, dispatcher), duplex calls over the network and duplex
 packet data, a standby controller, trunking on the W12 (the LR2021 can't stay keyed: slot-timing.md),
 encryption beyond pass-through.
@@ -246,7 +247,8 @@ default 10 s). On expiry the controller abandons the request.
 Every C_RAND Service_Kind other than 0000b, 0001b, 0010b, 0011b (packet data, 3.16), 0100b, 0101b (short data,
 3.15), 0111b (status and polling, 3.15 and 3.10), 1000b (call diversion, 3.18), 1001b (Call Answer), 1010b (duplex,
 3.13), 1101b to DGNAI (3.17), 1110b and 1111b gets C_NACKD(Not_Supported) (4.2). Statuses 123 and 125 (transmit
-interrupt) get C_NACKD(Not_Supported) from TSI (6.4.14.3.3.1, 6.4.14.3.4.2). A stunned MS's requests get
+interrupt) are answered from TSI as section 3.20 says: C_NACKD(Not_Supported) with the setting off (6.4.14.3.3.1,
+6.4.14.3.4.2). A stunned MS's requests get
 Perm_User_Refused, and requests to it MSaway_Refused (3.18). Gateway addresses (PSTNI and the rest) as targets also
 get Not_Supported, TSI excepted for short data, status and packet data, and IPI for packet data with nothing to
 upload. UDT polling (0110b) likewise.
@@ -323,8 +325,8 @@ TSCC; stored while the called MS is busy or asleep; polling). What this section 
 
 - The emergency alarm (126) only from an MS whose provisioning allows emergencies (`emergency`), else
   C_NACKD(Perm_User_Refused): the C_AHOY doesn't carry the voice call's emergency check.
-- Not served (C_NACKD(Not_Supported)): the transmit interrupt statuses (123, 125; 6.6.6.4) and extended addresses
-  (the Proxy Flag). A request for supplementary data is ignored (6.6.6.1.2.1.2 a).
+- Not delivered: the transmit interrupt statuses (123, 125; 6.6.6.0), requests to the site (section 3.20). Not
+  served (C_NACKD(Not_Supported)): extended addresses (the Proxy Flag). A request for supplementary data is ignored (6.6.6.1.2.1.2 a).
 - Each delivered or failed status is an `activity` `status` event (mqtt-net.md section 7) with `alarm` on 126 and
   124, and the alarm goes in the log (`rust/src/t3status.rs`).
 
@@ -555,8 +557,8 @@ bits; 6.6.6.1): as short data with no upload. Delivery is C_AHOY (Service_Kind 0
 the 5 MSBs, Appended_Blocks the 2 LSBs, source the caller). An MS answers C_ACKU(MS_Accepted), mirrored; a talkgroup
 doesn't answer: `sd_repeats` sends, then C_ACKD(Message_Accepted). Status 127 is a poll (6.6.6.2): the polled MS's
 C_ACKU(Accepted for Status Polling, 47h) carries its status in Response_Info; the caller gets C_ACKD(47h) with it.
-A status 124 or 126 from an MS is checked and reported as section 3.10 says; 123 and 125 from an MS are
-Not_Supported.
+A status 124 or 126 from an MS is checked and reported as section 3.10 says; 123 and 125 from an MS go to transmit
+interrupt (section 3.20).
 
 From the site (`rdof_t3_sd_send`, rdof/t3.h): UDT short data, a status or a poll to an MS or talkgroup, source TSI;
 the result comes as an `EV_SD` event with the caller's tag.
@@ -722,10 +724,11 @@ Ambient Listening Service (6.6.2.6), only with `ambient_listening`:
    0, ALS_SERV 1, Service_Kind 0000b, source the caller. C_ACKU(Message_Accepted) goes on to the grant;
    C_NACKU(MSNot_Supported) is mirrored to the caller. The grant carries nothing of ALS (6.6.2.6.2 note).
 3. On the payload channel the called MS transmits for T_ALS (an MS timer) and ends with P_MAINT DISCON; the site
-   clears the call as any. Payload interrupt (6.4.14, 6.4.15) isn't built; the ALS de-key request (6.4.14.3.4) neither:
-   the caller's status 123 to the called MS gets C_NACKD(Not_Supported) from TSI ("If Transmit Interrupt is not
-   available the TSCC shall respond C_NACKD (Source = TSI, Target = Interrupting MS)", 6.4.14.3.4.2), and the call
-   goes on.
+   clears the call as any. The caller may end it sooner with status 123 to the called MS (6.4.14.3.4) when
+   `services.transmit_interrupt` is on (section 3.20); off, it gets C_NACKD(Not_Supported) from TSI ("If Transmit
+   Interrupt is not available the TSCC shall respond C_NACKD (Source = TSI, Target = Interrupting MS)",
+   6.4.14.3.4.2), and the call goes on. The called MS resuming by itself after a payload interrupt (6.6.2.6.6) isn't
+   built.
 
 Call diversion (6.6.7), on unless `call_diversion` is false (then C_NACKD(Not_Supported) from the C_RAND's target):
 
@@ -765,9 +768,9 @@ Choices where 361-4 leaves them open or contradicts itself (checked against the 
   come from the called MS's address (table 7.23: "the request's destination"); before the upload, from DGNAI. The
   text doesn't say which; diversion's final acknowledgement comes from the C_RAND's target (6.6.7.1.1.2).
 - A stunned MS's requests get Perm_User_Refused; requests to it MSaway_Refused; ALS is off by default, diversion on.
-- The transmit interrupt statuses (123, 125): the interrupting MS "shall then return to the payload channel in
-  either case" (6.4.14.3.4.1) but "shall remain on the TSCC" (6.4.14.3.4.3). The site refuses both; the MS's
-  choice.
+- The ALS termination: the interrupting MS "shall then return to the payload channel in either case"
+  (6.4.14.3.4.1) but "shall remain on the TSCC" (6.4.14.3.4.3). The simulated MS stays on the TSCC; the site doesn't
+  care (section 3.20).
 
 ### 3.19 The composite TSCC (361-4 5.3.2)
 
@@ -802,6 +805,86 @@ as a hotspot modem, gets a second call at once.
 
 Not built: an MS that reads the short LC on air (the simulator's air MSs take it from the unit), and the 5.3.2 note
 that the throughput "shall be assessed" (no metric beyond the log line and the slot counts).
+
+### 3.20 Transmit interrupt (361-4 6.4.14, 6.4.15)
+
+`services.transmit_interrupt` (off by default) turns it on. 6.4.14.0: "If a Tier III TS or MS supports this feature,
+the feature shall be implemented as described in this clause and in clause 6.4.15": optional, so off by default, and
+off a request gets C_NACKD(Not_Supported) from TSI as 6.4.14.3.3.1 and 6.4.14.3.4.2 ask. On, the site serves the
+three de-key cases a TS starts besides the emergency pre-emption (3.9, 6.4.14.3.1); the code is
+`rust/src/t3intr.rs`.
+
+What 361-4 asks of the TS, and what is built:
+
+| Clause | The TS | Built |
+|---|---|---|
+| 6.4.14.3.3.1 | Match a payload interrupt (status 125 to a talkgroup, or to an MS ID: "matched with the MS IDs engaged in voice calls on the payload channels") with a call; answer C_ACKD(Message_Accepted) or C_NACKD (Not_Supported, Perm_User_Refused) from TSI to the interrupting MS; de-key the talker | yes |
+| 6.4.14.3.4.2 | ALS termination: status 123 from the ALS caller to the called MS; answer from TSI; de-key the called MS; "Following the cessation of inbound PDUs, the payload channel shall send additional P_Clear PDUs" | yes |
+| 6.4.14.3.2 | Call timer expiration: "If a party is transmitting the TS shall use the Reverse Channel Signalling ... 0100b"; then P_Clear | yes, under the same setting |
+| 6.4.15.1 | The de-key: RC 0100b (command) or 0101b (request, the MS decides); "If the MS continues to transmit the TS shall continue to service the ongoing voice call"; may send P_PROTECT(EN_PTT_ONE_MS) to the interrupter, limited in number | 0100b; the call goes on; P_PROTECT, at most 17 |
+| 6.4.14.3.3, 6.4.14.3.4 | The same, started by a gateway (a line connected party, a dispatcher) | no: no gateways (1.2) |
+| 6.4.14.2 | Power control in a de-key | no: the site sends no power control |
+
+The payload interrupt (6.4.14.3.3):
+
+1. A listening MS leaves the payload channel and sends a status call with status 125 (the Status Transport Service,
+   3.10), G/I 1 to the talkgroup, G/I 0 to an MS: either party of an individual call, or the talker of a group call.
+2. The TSCC finds the voice call: the talkgroup's (a group call, an all-call or a broadcast call), or an individual
+   call the target is a party of (a duplex or data call isn't one), or a group call the target talks in. It answers
+   from TSI:
+   - no such call, a call being cleared or de-keyed for something else, a network talker (the site can't de-key it),
+     or the interrupter itself talking: C_NACKD(Not_Supported);
+   - an all-call or a broadcast call (one way: its parties don't transmit, 6.6.2), an individual call it isn't a
+     party of, a talkgroup outside `tg`, or another MS's interrupt of the call under way: C_NACKD(Perm_User_Refused);
+   - else C_ACKD(Message_Accepted). A repeat request is answered again.
+3. The MS goes back to the payload channel whatever the answer (6.4.14.3.3).
+4. A talker on RF gets the RC cease command (0100b, table 6.32) on the other slot of its carrier every 360 ms, as
+   in 3.9 (the TSCC's block gives way when that slot is the TSCC). The MS finishes its superframe, sends a
+   terminator and stops (6.4.15.2).
+5. Once it stops (or with nobody talking: an interrupt in hang time), the channel sends
+   P_PROTECT(EN_PTT_ONE_MS) (table 7.31: Protect_Kind 011b, G/I 0, target the interrupter, source TSI) in place of
+   every other hang burst of its slot, for up to 2 s (at most 17 PDUs; the hang lasts at least that long). The
+   addressed MS "shall enable the PTT"; the others "shall disable the PTT" (6.6.2.3.1.3). It stops when anyone
+   talks; the interrupter's talk is the call's next talk, under the call's own timer.
+6. A talker that doesn't stop within 3 s keeps the call; the interrupt ends there.
+
+ALS termination (6.4.14.3.4): status 123 to the called MS of an ALS call (3.18), from its caller. A group G/I or no
+such call: Not_Supported; another MS: Perm_User_Refused. Accepted, the called MS is de-keyed as above, then the call is
+cleared (P_CLEAR, close reason 7, `CLOSE_INTR`); one that doesn't stop within 3 s is cleared anyway. Not transmitting
+at the time: cleared at once.
+
+Call timer (6.4.14.3.2): with the setting on, a call whose timer runs out while an MS talks on RF gets the RC cease
+first and P_CLEAR once the inbound stops (or after 3 s); off, P_CLEAR at once as before. A network talker, a duplex
+call or a call being pre-empted is cleared at once.
+
+Each step is an `EV_ACTIVITY` event of kind `ACT_INTR` (8; op 1 accepted, 2 the talker ceased, 3 it didn't, 4 the
+interrupter talks; src the interrupter, dst the call's destination) and a log line. mqtt-net's `activity` doesn't
+carry them yet.
+
+The simulated MS (`RDOF_T3MS_DO_INTERRUPT`, `Ms::interrupt`, `Ms::als_end`; rdofradio scripts `interrupt`,
+`ginterrupt`, `als`, `alsend`): listening on a payload channel when the action is due, it goes to the TSCC, makes the status
+call, takes the answer only from TSI, and goes back to the channel; accepted, it waits up to 6 s for
+P_PROTECT(EN_PTT_ONE_MS) to it and then talks to the talkgroup or the other party (no P_MAINT DISCON after: it isn't
+its call). It counts P_PROTECTs to other MSs (its PTT is disabled meanwhile; it doesn't key there anyway). An ALS
+caller stays on the TSCC.
+
+Choices where 361-4 leaves them open:
+
+- The cease command (0100b), not the request (0101b): the interrupter asked for the channel and the TSCC accepted.
+- P_PROTECT from TSI (table 7.31 doesn't say), only after the talker stopped (the text allows it alongside the RC),
+  and every other burst for 2 s ("limit the number"). The capture of a commercial site at hand has no
+  EN_PTT_ONE_MS, only ILLEGALLY_PARKED.
+- A call that can't be matched gets Not_Supported, a call the MS may not interrupt Perm_User_Refused (6.4.14.3.3.2
+  names both without saying when).
+- Any party may interrupt; nothing is reserved to a priority. An emergency call may be interrupted: the talker's
+  own radio decides by obeying the RC.
+- A network talker isn't interrupted (its site would have to de-key it: not carried over mqtt-net).
+- The call timer de-key goes with the same setting: it is in 6.4.14 and needs the RC as the rest.
+- The ALS termination's MS "shall then return to the payload channel" (6.4.14.3.4.1) but "shall remain on the TSCC"
+  (6.4.14.3.4.3): the site doesn't depend on it.
+
+Not built: the gateway-started forms, power control in a de-key (6.4.14.2), the ALS
+called MS resuming after an interrupt (6.6.2.6.6), interrupts across sites, and mqtt-net events. Not run on a radio.
 
 ## 4. Settings (config-v3 `tier3` app)
 
@@ -853,7 +936,7 @@ paths").
 | `data_gateway` | integer | 0 | the site's own data ID besides TSI (1-16776415): packet data to it, to TSI or to IPI goes to the site's IP gateway (3.16) |
 | `timers` | object | section 3.8 | |
 | `broadcast` | object | section 3.2 | `adjacent_s`, `chan_freq_s`, `local_time_s`, `call_timers_s`, `vote_now_s`, `ann_tscc_s` (0 = off, else 1-600 s; the last three off by default, section 3.11); `vote_blk` (2-10 TDMA frames, 6): VOTE_BLK after a Vote_Now; `priority` (0-7, 0): the site's priority for the Radiated Preference Strategy (table 6.81: 1 highest, 7 lowest, 0 non-preferred), sent as the confirmed priority with each neighbor and in `info` (section 3.11). Local settings: the manager's `cfg` doesn't carry them |
-| `services` | object | | `emergency_preempt` (bool, false): clear a running call for a waiting emergency (section 3.9); `power_save` (0-7, 0): the largest PowerSave_RQ granted, 0 none; `power_save_awake_s` (0.1-60, 1); `mass_reg_at_start_s` (0-200000, 0): a mass re-registration at start within this time (section 3.11); `hibernate_s` (0 or 1-300, 0): T_BS_Inactive of the asynchronous TSCC, 0 never (section 3.12); `duplex` (bool, false): full-duplex individual calls (section 3.13); `composite_tscc` (bool, false): the TSCC's slot carries a call when no payload channel is free (section 3.19). Local settings only for now; the manager's `cfg` doesn't carry them |
+| `services` | object | | `emergency_preempt` (bool, false): clear a running call for a waiting emergency (section 3.9); `power_save` (0-7, 0): the largest PowerSave_RQ granted, 0 none; `power_save_awake_s` (0.1-60, 1); `mass_reg_at_start_s` (0-200000, 0): a mass re-registration at start within this time (section 3.11); `hibernate_s` (0 or 1-300, 0): T_BS_Inactive of the asynchronous TSCC, 0 never (section 3.12); `duplex` (bool, false): full-duplex individual calls (section 3.13); `composite_tscc` (bool, false): the TSCC's slot carries a call when no payload channel is free (section 3.19); `transmit_interrupt` (bool, false): payload interrupt, ALS termination and the call timer de-key (section 3.20). Local settings only for now; the manager's `cfg` doesn't carry them |
 | `auth` | `off`, `registration`, `required` | `off` | MS authentication (section 3.14): challenge MSs with a key at registration, or every MS. Local settings only; the manager's `cfg` doesn't carry it |
 
 Checks (refusals name the key): exactly one `tscc` carrier; every carrier's `out` on a device that transmits and its
@@ -1442,6 +1525,8 @@ In the network services' own repository (with the router, the Python library and
   MSNot_Supported), then transmits on the matching grant for T_ALS (10 s);
 - call diversion (`divert`, `divert_clear`): sets one (the address upload), clears its own or the incoming ones;
   takes a diverted address in answer to its request (`diverted`) and ends the request;
+- transmit interrupt (`RDOF_T3MS_DO_INTERRUPT`, `interrupt`, `als_end`): interrupts the call it listens to and talks
+  on P_PROTECT(EN_PTT_ONE_MS) to it, or ends its ALS call (section 3.20); `rc_deaf` makes it ignore the RC;
 - emergency and priority options; cancel.
 
 `t3air`: a slot-exact air between one site controller and N MSs: TSCC outbound to every MS on the TSCC; inbound
@@ -1471,10 +1556,11 @@ refused; stun and revive with authentication (C_ACKVIT, the C_ACKD's fields and 
 response (Recipient_Refused), a lost final answer (the C_ACKD repeated), no key at the site, no response heard;
 kill (KILLI, the record removed, no answer after), refused, not supported; DGNA to a stunned MS; an ALS call
 (the radio check's fields, the called MS transmits, the caller listens), ALS not supported by the MS, not offered,
-the de-key statuses 123 and 125 refused from TSI; call diversion set, used (voice and short data diverted with the
+the de-key statuses 123 and 125 refused from TSI with transmit interrupt off; call diversion set, used (voice and short data diverted with the
 notice's fields, status not), cleared by TSI and DIVERTI, to a talkgroup, the upload's blocks from the Proxy Flag,
 refusals (off, PSTNI, itself, a talkgroup not allowed), a UDT poll's Div_Cause_Fail | Rust tests (`cargo test`, run by ctest) |
 | Control channel features | Scenarios over `t3air` (`rust/src/t3ctltests.rs`): pre-emption and the RC cease, status delivery and alarms, 3 and 4 carriers, the C_BCASTs, mass re-registration, power save, C_MOVE, the asynchronous TSCC, full-duplex and broadcast calls; through the radio layer and `t3sim`: 4 carriers with pre-emption, a duplex call | Rust tests; C host test `rdof_t3unit_tests` |
+| Transmit interrupt | Scenarios over `t3air` (`rust/src/t3intests.rs`): a group call interrupted (the request and its C_ACKD, the RC in the TSCC's slot, the talker ceasing, P_PROTECT's fields and count, the interrupter talking, the others hearing it), the RC on a payload carrier, an individual call interrupted, in hang time, a talker that won't cease, an ALS call ended by its caller, the refusals (not the caller, G/I, no call, not a party, a broadcast call, the talker itself, a second interrupter), off by default, the call timer de-key on and off; P_PROTECT against table 7.31 (`t3spec_pdu.rs`); through the radio layer and `t3sim`: a group call interrupted, the RC and P_PROTECT read back from the air, the interrupter's voice header | Rust tests; C host test `rdof_t3unit_tests` |
 | C API | Init, a short scenario through the FFI, layouts | C host test `rdof_t3_tests` |
 | Packet data on bursts | MS to MS confirmed data and MS to the site's IP gateway (NAT, the gateway's ACK sent down by the site) over the burst path | `rdof_t3unit_tests` |
 | Radio layer | Burst building (CSBK, MBC, CACH with C_SYS_Parms and AT), parsing back, the slot source in the SDR modem (timing, short LC, AT), payload channel regeneration and P_CLEAR, split output frames | C host tests |
@@ -1521,7 +1607,7 @@ apart from the code, found seven deviations, all fixed (2026-11-12):
 - The settings refused SITE 0, which table 6.5 counts (a Small network's 5-bit SITE gives 32 sites). Nothing used
   0 as "no site" (a peer's info is marked by a nonzero syscode, and PAR is never 0), so 0 is now allowed.
 
-Out of round 2, unchanged from section 1.2: dedicated multi-carrier sites beyond two, packet data, the standby controller. MS authentication was added on 2026-11-12 (section 3.14).
+Out of round 2, unchanged from section 1.2: dedicated multi-carrier sites beyond two, packet data, the standby controller. MS authentication was added on 2026-11-12 (section 3.14), transmit interrupt on 2026-11-13 (section 3.20).
 
 ## 14. Open questions for the owner
 

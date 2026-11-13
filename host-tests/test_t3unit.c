@@ -794,6 +794,91 @@ static void test_duplex(void)
     free(u);
 }
 
+/* Transmit interrupt through the radio layer and the burst path (tier3.md 3.20): A talks on a talkgroup, B
+   interrupts by status 125, A is de-keyed by a Reverse Channel burst read back from the air, P_PROTECT(EN_PTT_ONE_MS)
+   to B airs on the payload channel, and B's voice header follows. */
+static struct {
+    uint32_t b, protects, b_headers;
+} I;
+
+static void intr_out(void *ctx, int64_t k, const rdof_t3sim_out_t *out, int ncar, int at_next,
+                     const rdof_t3sim_in_t *in, int nin)
+{
+    (void)ctx, (void)k, (void)at_next, (void)in, (void)nin;
+    for (int c = 0; c < ncar; c++) {
+        const uint8_t *p = out[c].pdu;
+        /* 361-2 7.1.1: a voice LC header (BPTC; its RS checksum not checked here), the source in octets 6-8 */
+        uint8_t lc[12];
+        if (out[c].aired && out[c].dt == RDOF_DT_VOICE_LC_HEADER && rdof_bptc196_decode(out[c].burst, lc) &&
+            ((uint32_t)lc[6] << 16 | (uint32_t)lc[7] << 8 | lc[8]) == I.b)
+            I.b_headers++;
+        if (!out[c].aired || !out[c].pdu_ok)
+            continue;
+        const uint32_t target = (uint32_t)p[4] << 16 | (uint32_t)p[5] << 8 | p[6];
+        /* 361-4 table 7.31: LB PF 101111b, FID 0, 12 reserved bits, Protect_Kind 011b, G/I 0, Target, Source */
+        if (out[c].dt == RDOF_DT_CSBK && p[0] == 0xAF && p[1] == 0 && p[2] == 0 && p[3] == 0x06 && target == I.b)
+            I.protects++;
+    }
+}
+
+static void test_interrupt(void)
+{
+    rdof_t3_cfg_t cfg;
+    rdof_t3_policy_t pol;
+    rdof_t3cfg_default(&cfg, &pol);
+    cfg.intr = 1;
+    const rdof_t3unit_io_t io = {quiet_publish, NULL, NULL, NULL, NULL, NULL};
+    rdof_t3unit_t *u = calloc(1, rdof_t3unit_size());
+    void *mem = aligned_alloc(8, (rdof_t3_site_size() + 7) / 8 * 8);
+    char err[120] = "";
+    CHECK(rdof_t3unit_init(u, mem, &cfg, &pol, &io, NULL, NULL, -1, NULL, err, sizeof err), "init: %s", err);
+    enum { N = 3 };
+    rdof_t3ms_t *ms[N];
+    uint32_t id[N];
+    const uint16_t chans[1] = {1};
+    const uint32_t tg[1] = {10};
+    for (int i = 0; i < N; i++) {
+        id[i] = 3100300 + (uint32_t)i;
+        ms[i] = malloc(rdof_t3ms_size());
+        rdof_t3ms_init(ms[i], id[i], tg, 1, chans, 1, 70 + (uint32_t)i);
+        rdof_t3ms_do(ms[i], RDOF_T3MS_DO_REGISTER, tg[0], 0, 0, T0 + 300 + 250 * i);
+    }
+    static rdof_t3sim_t sim;
+    rdof_t3sim_init(&sim, u, N, ms, id);
+    I.b = id[1];
+    sim.ext_out = intr_out;
+    int64_t k = 0;
+#define RUN(msec)                                                                                                  \
+    for (int64_t end_ = k + (msec) / 30; k < end_; k++)                                                            \
+    rdof_t3sim_slot(&sim, k, T0 + k * 30)
+    RUN(6000);
+    rdof_t3ms_do(ms[0], RDOF_T3MS_DO_GROUP, tg[0], 40000, 0, T0 + k * 30);
+    RUN(3000);
+    rdof_t3ms_status_t a, b, c;
+    rdof_t3ms_status(ms[1], &b);
+    rdof_t3ms_status(ms[2], &c);
+    CHECK(b.state == RDOF_T3MS_PAYLOAD && c.state == RDOF_T3MS_PAYLOAD && b.ch == 1, "B and C listen: %d %d",
+          b.state, c.state);
+    const uint32_t rc0 = sim.out_rc;
+    rdof_t3ms_do(ms[1], RDOF_T3MS_DO_INTERRUPT, tg[0], 2000, RDOF_T3MS_F_TO_GROUP, T0 + k * 30);
+    RUN(5000);
+    rdof_t3ms_status(ms[0], &a);
+    rdof_t3ms_status(ms[1], &b);
+    CHECK(b.calls_done == 1 && b.last_reason == 0x60 && b.state == RDOF_T3MS_PAYLOAD,
+          "B's request accepted, back on the call: %u 0x%02x %d", b.calls_done, b.last_reason, b.state);
+    CHECK(sim.out_rc > rc0 && rdof_t3unit_rf(u)->ch[0].rc_sent >= 1, "RC to A in the TSCC's slot: %u",
+          sim.out_rc - rc0);
+    CHECK(a.state == RDOF_T3MS_PAYLOAD && a.clears == 0, "A stays in the call");
+    CHECK(I.protects >= 1 && I.protects <= 17, "P_PROTECT(EN_PTT_ONE_MS) to B aired: %u", I.protects);
+    CHECK(I.b_headers >= 1, "B's voice header repeated: %u", I.b_headers);
+    CHECK(sim.out_bad == 0, "no bad outbound blocks (%u)", sim.out_bad);
+#undef RUN
+    for (int i = 0; i < N; i++)
+        free(ms[i]);
+    free(mem);
+    free(u);
+}
+
 int main(void)
 {
     test_sim_embedded();
@@ -803,6 +888,7 @@ int main(void)
     test_carriers4();
     test_duplex();
     test_composite();
+    test_interrupt();
     site_open(&A, 0, "site-a", 3, 3100001, T0);
     site_open(&Bs, 1, "site-b", 4, 3100101, T0);
     run(6000);
