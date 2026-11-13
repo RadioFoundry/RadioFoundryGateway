@@ -97,6 +97,10 @@ pub struct Peer {
     pub syscode: u16,
     pub chan: u16,
     pub site: u16,
+    pub cc: u8,       // its TSCC's color code; 255: not given
+    pub priority: u8, // trunk.priority (361-4 table 6.81), 0 when not given
+    pub tx_hz: u32,   // its TSCC's outbound and inbound; 0: not given
+    pub rx_hz: u32,
 }
 
 /// rdof_t3unit_io_t
@@ -261,6 +265,7 @@ pub struct MnTrunkInfo {
     pub services: *const *const c_char,
     pub nservices: c_int,
     pub reg: bool,
+    pub priority: c_int,
 }
 
 /// rdof_mn_timer_t
@@ -1665,7 +1670,10 @@ unsafe fn neighbors(u: *mut Unit) {
             chan: p.chan,
             active_known: 1,
             active: u8::from(p.online),
-            ..Default::default()
+            prio_adjacent: p.priority,
+            cc: if p.cc <= 15 { p.cc } else { cfg.cc }, // not given: one for the system
+            tx_hz: p.tx_hz,
+            rx_hz: p.rx_hz,
         };
         n += 1;
     }
@@ -1689,7 +1697,8 @@ unsafe fn peer_of(u: *mut Unit, nd: &[u8]) -> Option<usize> {
     Some(i)
 }
 
-/// another node's info: its trunk object's system and TSCC channel (none: not a neighbor)
+/// another node's info: its trunk object's system, TSCC channel (none: not a neighbor), the TSCC's frequencies and
+/// color code, and its priority (those last optional)
 unsafe fn peer_info(u: *mut Unit, nd: &[u8], text: *const c_char, len: usize) {
     const MODEL_NAMES: [&[u8]; 4] = [b"tiny", b"small", b"large", b"huge"];
     let Some(i) = peer_of(u, nd) else { return };
@@ -1734,10 +1743,23 @@ unsafe fn peer_info(u: *mut Unit, nd: &[u8], text: *const c_char, len: usize) {
         return;
     }
     let syscode = t3::rdof_t3_syscode(m as u8, net as u16, site as u16, pv);
+    // a number in [lo, hi], whole, else None
+    let num = |obj: c_int, key: &CStr, lo: f64, hi: f64| match get(obj, key) {
+        Some(n) if n.type_ == RDOF_JNUM && n.num >= lo && n.num <= hi && n.num == (n.num as i64) as f64 => Some(n.num),
+        _ => None,
+    };
+    // CdefParms' range (361-4 table C.7: 50 to 999 MHz and 999.875 kHz)
+    let hz = |key: &CStr| num(tscc, key, 50e6, 999_999_875.0).map_or(0, |v| v as u32);
+    let (tx_hz, rx_hz) = (hz(c"tx_hz"), hz(c"rx_hz"));
+    let both = tx_hz != 0 && rx_hz != 0;
     let p = addr_of_mut!((*u).peers[i]);
     (*p).syscode = syscode;
     (*p).site = site as u16;
     (*p).chan = chan as u16;
+    (*p).tx_hz = if both { tx_hz } else { 0 };
+    (*p).rx_hz = if both { rx_hz } else { 0 };
+    (*p).cc = num(tscc, c"cc", 0.0, 15.0).map_or(255, |v| v as u8);
+    (*p).priority = num(t, c"priority", 0.0, 7.0).map_or(0, |v| v as u8);
     (*p).trunk = syscode != 0;
 }
 
@@ -2254,6 +2276,7 @@ pub unsafe extern "C" fn rdof_t3unit_trunk_json(u: *const Unit, out: *mut c_char
         services: services.as_ptr(),
         nservices: 4,
         reg: c.reg_required != 0,
+        priority: c_int::from(c.priority),
     };
     rdof_mn_trunk_info_json(&t, out, cap)
 }

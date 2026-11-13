@@ -2,9 +2,11 @@
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 //! The TSCC's other C_BCAST announcements and power save (docs/spec/fw/tier3.md section 3.11), ETSI TS 102 361-4:
 //! - CallTimer_Parms (6.7.1.2, table 7.70): the site's call timers as the tokens of annex A tables A.2 and A.4;
-//! - Vote_Now (6.7.1.3, table 7.71): an adjacent site's TSCC to assess, then VOTE_BLK slots of blocked random
-//!   access (C_ALOHA with ADRNULL and Mask 24);
+//! - Vote_Now (6.7.1.3, table 7.71): an adjacent site's TSCC to assess, then VOTE_BLK TDMA frames (one TSCC slot
+//!   each) of blocked random access (C_ALOHA with ADRNULL and Mask 24); the VN_AP form (table 7.72) when its
+//!   logical channel can't be used here;
 //! - Ann_WD_TSCC (6.7.1.1, table 7.69): the adjacent sites' TSCCs for the MSs' hunt lists, two to a CSBK;
+//! - which of the adjacent sites' TSCC channels Chan_Freq announces (6.1.2: broadcasts may add to the MS's plan);
 //! - MassReg (6.4.5, tables 7.76 and 6.12): a mass re-registration, on command or at start, repeated in every
 //!   power save frame while power save is offered (6.4.5.1 f);
 //! - power save (6.4.7): PowerSave_RQ in a registration, the PowerSave_Offset in its C_ACKD's Response_Info, and
@@ -14,8 +16,6 @@
 
 use super::*;
 
-/// A.2: TSCC slots of blocked random access after a Vote Now Advice (2 to 10 TDMA frames).
-const VOTE_BLK: i64 = 4;
 /// Mass registration broadcasts without power save, a second apart (the MS ignores repeats in its window).
 const MASS_SENDS: u16 = 3;
 /// A registration demanded of one MS: within 1 s (table 7.77 Reg_Window 2)
@@ -107,15 +107,48 @@ pub fn call_timers_of(b: &Bcast) -> (Option<u32>, Option<u32>) {
     (e, m)
 }
 
-/// Vote_Now (table 7.71): the adjacent TSCC's 14 syscode bits, its Active_Connection when known, the priorities
-/// (table 6.81) and CH_VOTE, its logical channel (a single CSBK).
-pub fn vote_now(reg: bool, backoff: u8, syscode: u16, n: &Neighbor) -> Bcast {
+/// CH_VOTE's value for "the frequencies follow in a VN_AP block" (7.2.19.3 c).
+pub const CH_ABSOLUTE: u16 = 0xFFF;
+
+/// Vote_Now (table 7.71): the adjacent TSCC's 14 syscode bits, its Active_Connection when known, the confirmed
+/// channel priority (this site's, `prio`) and the adjacent one (the neighbor's; table 6.81), and CH_VOTE: its logical
+/// channel in a single CSBK, or with `absolute` 4095 in the header of an MBC whose VN_AP block (vn_ap) follows.
+pub fn vote_now(reg: bool, backoff: u8, syscode: u16, n: &Neighbor, prio: u8, absolute: bool) -> Bcast {
+    let ch = if absolute { CH_ABSOLUTE } else { n.chan & 0xFFF };
     let p2 = (u32::from(n.active_known != 0) << 23)
         | (u32::from(n.active_known != 0 && n.active != 0) << 22)
-        | (u32::from(n.prio_confirmed & 7) << 19)
+        | (u32::from(prio & 7) << 19)
         | (u32::from(n.prio_adjacent & 7) << 16)
-        | u32::from(n.chan & 0xFFF);
-    Bcast { lb: true, ann: BC_VOTE_NOW, parms1: n.syscode >> 2, reg, backoff, syscode, parms2: p2 }
+        | u32::from(ch);
+    Bcast { lb: !absolute, ann: BC_VOTE_NOW, parms1: n.syscode >> 2, reg, backoff, syscode, parms2: p2 }
+}
+
+/// VN_AP (7.2.19.3.1, table 7.72): the second block of an absolute Vote_Now, the neighbor TSCC's color code and its
+/// CdefParms (7.2.42: its logical number and frequencies, the MS's view as in BC_AP). The layout is BC_AP's with the
+/// color code in the low 4 bits of BC_AP's reserved octet.
+pub fn vn_ap(n: &Neighbor) -> [u8; 10] {
+    let mut b = BcAp { chan: n.chan, tx_hz: n.rx_hz, rx_hz: n.tx_hz }.encode();
+    b[1] = n.cc & 15;
+    b
+}
+
+/// A VN_AP block's color code and CdefParms.
+pub fn vn_ap_of(b: &[u8; 10]) -> Option<(u8, BcAp)> {
+    Some((b[1] & 15, BcAp::decode(b)?))
+}
+
+/// How the site names an adjacent site's TSCC channel (tier3.md 3.11).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum NbChan {
+    /// By its logical number, which Chan_Freq announces: its frequencies are known and no carrier here, nor an
+    /// earlier neighbor, has the number.
+    Announced,
+    /// By its logical number, not announced: its frequencies aren't known, or the number already names the same
+    /// frequencies (a carrier here, or an earlier neighbor's).
+    Logical,
+    /// Only by its frequencies (Vote_Now's VN_AP): the number names other frequencies here (a carrier's, or an
+    /// earlier neighbor's). Chan_Freq, Adjacent_Site and Ann_WD_TSCC leave it out.
+    Clash,
 }
 
 /// Ann_WD_TSCC as a CSBK (table 7.69): up to two TSCCs, each with its color code (0 for a withdrawal) and AW_FLAG
@@ -238,28 +271,86 @@ impl Site {
         }
         let nn = self.nneighbors;
         if self.cfg.vote_now_ms > 0 && nn > 0 && now >= self.bc.next_vote_ms {
-            let n = self.neighbors[self.bc.vote_idx % nn];
-            self.bc.vote_idx = (self.bc.vote_idx + 1) % nn;
+            let i = self.bc.vote_idx % nn;
+            self.bc.vote_idx = (i + 1) % nn;
             self.bc.next_vote_ms = now + (self.cfg.vote_now_ms as i64 / nn as i64).max(1000);
-            self.bc.vote_blk_k = self.k + 2 * (VOTE_BLK + 1); // this block, then VOTE_BLK TSCC slots
-            return Some((vote_now(reg, bo, sc, &n).encode(), DT_CSBK, None));
+            let n = self.neighbors[i];
+            let abs = self.nb_chan(i) == NbChan::Clash;
+            // this block (and VN_AP's), then VOTE_BLK TDMA frames: one TSCC slot each, every other k
+            self.bc.vote_blk_k = self.k + 2 * (i64::from(self.cfg.vote_blk) + 1 + i64::from(abs));
+            let b = vote_now(reg, bo, sc, &n, self.cfg.priority, abs).encode();
+            return Some(if abs { (b, DT_MBC_HDR, Some(vn_ap(&n))) } else { (b, DT_CSBK, None) });
         }
         if self.cfg.ann_tscc_ms > 0 && nn > 0 && now >= self.bc.next_ann_ms {
-            let pairs = nn.div_ceil(2);
-            let i = self.bc.ann_idx % pairs * 2;
-            self.bc.ann_idx = (self.bc.ann_idx + 1) % pairs;
-            self.bc.next_ann_ms = now + (self.cfg.ann_tscc_ms as i64 / pairs as i64).max(1000);
-            let cc = self.cfg.cc; // one color code for the system (the neighbors' isn't known)
-            let one = |n: &Neighbor| (n.chan, cc, n.active_known != 0 && n.active == 0);
-            let a = one(&self.neighbors[i]);
-            let b = if i + 1 < nn { one(&self.neighbors[i + 1]) } else { (0, 0, false) };
-            return Some((ann_wd_tscc(reg, bo, sc, [a, b]).encode(), DT_CSBK, None));
+            // the ones a logical number names rightly (the MBC form with BC_AP isn't built)
+            let mut ix = [0usize; NEIGHBORS];
+            let mut m = 0;
+            for i in (0..nn).filter(|&i| self.nb_chan(i) != NbChan::Clash) {
+                ix[m] = i;
+                m += 1;
+            }
+            self.bc.next_ann_ms = now + (self.cfg.ann_tscc_ms as i64 / m.div_ceil(2).max(1) as i64).max(1000);
+            if m > 0 {
+                let pairs = m.div_ceil(2);
+                let j = self.bc.ann_idx % pairs * 2;
+                self.bc.ann_idx = (self.bc.ann_idx + 1) % pairs;
+                let one = |n: &Neighbor| (n.chan, n.cc, n.active_known != 0 && n.active == 0);
+                let a = one(&self.neighbors[ix[j]]);
+                let b = if j + 1 < m { one(&self.neighbors[ix[j + 1]]) } else { (0, 0, false) };
+                return Some((ann_wd_tscc(reg, bo, sc, [a, b]).encode(), DT_CSBK, None));
+            }
         }
         None
     }
 
-    /// The TSCC's block in the VOTE_BLK slots after a Vote Now Advice: a C_ALOHA that lets no MS in (ADRNULL,
-    /// Mask 24), so a voting MS misses nothing addressed to it.
+    /// How the site names neighbor i's TSCC channel.
+    pub(super) fn nb_chan(&self, i: usize) -> NbChan {
+        let n = &self.neighbors[i];
+        if n.tx_hz == 0 || n.rx_hz == 0 || n.chan == 0 || n.chan > 4094 {
+            return NbChan::Logical;
+        }
+        let same = |tx: u32, rx: u32| if tx == n.tx_hz && rx == n.rx_hz { NbChan::Logical } else { NbChan::Clash };
+        let ours = &self.cfg.carriers[..usize::from(self.cfg.ncarriers).min(CARRIERS)];
+        if let Some(c) = ours.iter().find(|c| c.chan == n.chan) {
+            return same(c.tx_hz, c.rx_hz);
+        }
+        match self.neighbors[..i].iter().find(|m| m.chan == n.chan && m.tx_hz != 0 && m.rx_hz != 0) {
+            Some(m) => same(m.tx_hz, m.rx_hz),
+            None => NbChan::Announced,
+        }
+    }
+
+    /// Chan_Freq's rotation: the site's carriers, then the neighbors' TSCC channels it announces.
+    pub(super) fn chan_freq_count(&self) -> usize {
+        let nc = usize::from(self.cfg.ncarriers).min(CARRIERS);
+        nc + (0..self.nneighbors).filter(|&i| self.nb_chan(i) == NbChan::Announced).count()
+    }
+
+    /// Entry j of the rotation: a logical channel and its frequencies as the site gives them (tx_hz outbound).
+    pub(super) fn chan_freq_at(&self, j: usize) -> (u16, u32, u32) {
+        let nc = usize::from(self.cfg.ncarriers).min(CARRIERS);
+        if j < nc {
+            let c = &self.cfg.carriers[j];
+            return (c.chan, c.tx_hz, c.rx_hz);
+        }
+        let i = (0..self.nneighbors).filter(|&i| self.nb_chan(i) == NbChan::Announced).nth(j - nc).unwrap_or(0);
+        let n = &self.neighbors[i];
+        (n.chan, n.tx_hz, n.rx_hz)
+    }
+
+    /// Logs each neighbor whose channel clashes, unless it was in the list before (old) as it is.
+    pub(super) fn log_clashes(&mut self, old: &[Neighbor]) {
+        for i in 0..self.nneighbors {
+            let n = self.neighbors[i];
+            if self.nb_chan(i) == NbChan::Clash && !old.contains(&n) {
+                // the text holds 63 characters
+                self.log(format_args!("neighbor {:04x}: chan {} taken here: only Vote_Now names it", n.syscode, n.chan));
+            }
+        }
+    }
+
+    /// The TSCC's block in the VOTE_BLK TDMA frames after a Vote Now Advice: a C_ALOHA that lets no MS in (ADRNULL,
+    /// Mask 24), so a voting MS misses nothing addressed to it (6.7.1.3 allows that and C_WACKD only).
     pub(super) fn vote_blocked(&mut self) -> Option<[u8; 10]> {
         if self.k >= self.bc.vote_blk_k {
             return None;
@@ -369,15 +460,47 @@ mod tests {
 
     #[test]
     fn vote_now_and_ann_wd_fields() {
-        let n = Neighbor { syscode: 0x2A5D, chan: 77, active_known: 1, active: 1, prio_confirmed: 2, prio_adjacent: 5 };
-        let b = Bcast::decode(&vote_now(true, 1, 0x1111, &n).encode()).unwrap();
-        assert_eq!((b.ann, b.parms1), (BC_VOTE_NOW, 0x2A5D >> 2));
-        assert_eq!(b.parms2, 1 << 23 | 1 << 22 | 2 << 19 | 5 << 16 | 77);
+        let n = Neighbor { syscode: 0x2A5D, chan: 77, active_known: 1, active: 1, prio_adjacent: 5, cc: 9, tx_hz: 0, rx_hz: 0 };
+        let b = Bcast::decode(&vote_now(true, 1, 0x1111, &n, 2, false).encode()).unwrap();
+        assert_eq!((b.ann, b.parms1, b.lb), (BC_VOTE_NOW, 0x2A5D >> 2, true));
+        assert_eq!(b.parms2, 1 << 23 | 1 << 22 | 2 << 19 | 5 << 16 | 77, "confirmed 2 (ours), adjacent 5 (its)");
         let b = Bcast::decode(&ann_wd_tscc(true, 1, 0x1111, [(77, 3, false), (0, 0, false)]).encode()).unwrap();
         assert_eq!((b.ann, b.parms1, b.parms2), (BC_ANN_WD_TSCC, 3 << 6, 77 << 12));
         let b = Bcast::decode(&ann_wd_tscc(true, 1, 0x1111, [(77, 3, true), (78, 3, false)]).encode()).unwrap();
         assert_eq!((b.parms1, b.parms2), (3 << 2 | 1 << 1, 77 << 12 | 78), "a withdrawal has color code 0");
         assert_eq!(b.parms1 >> 10, 0, "4 reserved bits");
+    }
+
+    /// 7.2.19.3 c and table 7.72: CH_VOTE 4095 in an MBC header, then VN_AP: LB 1, C_BCAST's opcode, 4 reserved
+    /// bits, the color code, Cdeftype 0, 2 reserved bits, CdefParms (CHAN, TXMHz, TXKHz, RXMHz, RXKHz; table 7.103).
+    #[test]
+    fn vote_now_absolute_fields() {
+        let n = Neighbor {
+            syscode: 0x2A5D,
+            chan: 3,
+            active_known: 0,
+            active: 1,
+            prio_adjacent: 3,
+            cc: 9,
+            tx_hz: 461_287_500,
+            rx_hz: 461_137_500,
+        };
+        let h = vote_now(false, 1, 0x1111, &n, 0, true);
+        let b = Bcast::decode(&h.encode()).unwrap();
+        assert!(!b.lb, "an MBC header");
+        assert_eq!(b.parms2, 3 << 16 | 0xFFF, "no Active_Connection information; confirmed 0, adjacent 3; 4095");
+        let c = vn_ap(&n);
+        assert_eq!(c[0], 0x80 | OP_BCAST, "LB 1, PF 0, the header's CSBKO");
+        assert_eq!(c[1], 9, "4 reserved bits, then the color code");
+        let bit = |i: usize| u32::from(c[i / 8] >> (7 - i % 8) & 1);
+        let field = |at: usize, len: usize| (at..at + len).fold(0, |v, i| v << 1 | bit(i));
+        assert_eq!((field(16, 4), field(20, 2)), (0, 0), "Cdeftype 0000b, reserved");
+        assert_eq!(field(22, 12), 3, "CHAN");
+        // the MS's view: it transmits on the neighbor's inbound
+        assert_eq!((field(34, 10), field(44, 13) * 125), (461, 137_500), "TXMHz, TXKHz");
+        assert_eq!((field(57, 10), field(67, 13) * 125), (461, 287_500), "RXMHz, RXKHz");
+        let (cc, ap) = vn_ap_of(&c).unwrap();
+        assert_eq!((cc, ap), (9, BcAp { chan: 3, tx_hz: 461_137_500, rx_hz: 461_287_500 }));
     }
 
     #[test]

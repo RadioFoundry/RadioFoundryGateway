@@ -435,12 +435,16 @@ fn chan_freq_mbc_and_bc_ap() {
     assert!(seen[1] && seen[2], "both channels announced");
 }
 
-/// 7.2.19.7, table 7.79: Adjacent_Site from the neighbor list.
+/// 7.2.19.7, table 7.79: Adjacent_Site from the neighbor list. The priorities as 6.7.1.3 gives them for Vote_Now
+/// (the same fields): the confirmed channel priority is this site's, the adjacent one the named site's.
 #[test]
 fn adjacent_site_broadcast() {
-    let mut r = Rig::new(|c| c.adjacent_ms = 1000);
+    let mut r = Rig::new(|c| {
+        c.adjacent_ms = 1000;
+        c.priority = 6;
+    });
     let n = spec::syscode(1, 1, 9, 3);
-    r.s.set_neighbors(&[Neighbor { syscode: n, chan: 0x2C5, active_known: 1, active: 1, prio_confirmed: 6, prio_adjacent: 2 }]);
+    r.s.set_neighbors(&[Neighbor { syscode: n, chan: 0x2C5, active_known: 1, active: 1, prio_adjacent: 2, ..Default::default() }]);
     let (_, o) = r.find(0, 200, |dt, b| is(dt, b, spec::C_BCAST) && field(b, 16, 5) as u8 == spec::ADJACENT_SITE).expect("sent");
     let (_, p1, reg, _, sc, p2) = bcast(&o.tscc_pdu);
     assert_eq!(p1, n >> 2, "the neighbor's 14 syscode MSBs");
@@ -452,6 +456,203 @@ fn adjacent_site_broadcast() {
     assert_eq!((p2 >> 16) & 7, 2, "adjacent priority");
     assert_eq!((p2 >> 12) & 0xF, 0, "reserved");
     assert_eq!(p2 & 0xFFF, 0x2C5, "CH_ADJ");
+}
+
+// ── two sites on one network (tier3.md 3.11): pluto-t3 with hat-t3 as its neighbor ──
+
+/// pluto-t3: model small, net 5, site 1; chan 1 the TSCC (461.4625 out, 461.0875 in), chan 2 a payload carrier.
+fn pluto_t3(c: &mut Cfg) {
+    c.model = 1;
+    c.net = 5;
+    c.site = 1;
+    c.par = 3;
+    c.area_bits = 5;
+    c.ncarriers = 2;
+    c.carriers[0] = Carrier { tx_hz: 461_462_500, rx_hz: 461_087_500, chan: 1, tscc: 1, enabled: 1 };
+    c.carriers[1] = Carrier { tx_hz: 461_337_500, rx_hz: 461_237_500, chan: 2, tscc: 0, enabled: 1 };
+}
+
+/// hat-t3 as pluto-t3 learns it from its info: site 2, chan 3 the TSCC (461.2875 out, 461.1375 in), priority 3.
+fn hat_t3() -> Neighbor {
+    Neighbor {
+        syscode: spec::syscode(1, 5, 2, 3),
+        chan: 3,
+        active_known: 1,
+        active: 1,
+        prio_adjacent: 3,
+        cc: 1,
+        tx_hz: 461_287_500,
+        rx_hz: 461_137_500,
+    }
+}
+
+/// A Chan_Freq's (CH_ADJ, MS TX Hz, MS RX Hz) from its header and the BC_AP after it (tables 7.78, 7.21, 7.103).
+fn chan_freqs(r: &mut Rig, frames: i64) -> Vec<(u16, u32, u32)> {
+    let hdrs = r.all(0, frames, |dt, b| dt == spec::DT_MBC_HEADER && csbko(b) == spec::C_BCAST && field(b, 16, 5) as u8 == spec::CHAN_FREQ);
+    let mut out = Vec::new();
+    for (k, o) in hdrs {
+        let ch = field(&o.tscc_pdu, 68, 12) as u16;
+        let Some((_, cont)) = r.hist.iter().find(|(kk, _)| *kk == k + 2).copied() else { continue };
+        assert_eq!(cont.tscc_dt, spec::DT_MBC_CONT);
+        let c = cont.tscc_pdu;
+        assert_eq!(field(&c, 22, 12) as u16, ch, "CdefParms' CHAN is the header's CH_ADJ");
+        let hz = |m: usize, k: usize| field(&c, m, 10) as u32 * 1_000_000 + field(&c, k, 13) as u32 * 125;
+        out.push((ch, hz(34, 44), hz(57, 67)));
+    }
+    out
+}
+
+/// 6.1.2: "new physical/logical relationships that adds to or modifies the existing channel plan stored in MS may be
+/// broadcast on the TSCC". The site announces its neighbor's TSCC channel in Chan_Freq with its own carriers, as the
+/// MS uses it (TX on the neighbor's inbound), so an MS without a programmed plan can resolve CH_ADJ and CH_VOTE.
+#[test]
+fn neighbor_tscc_in_chan_freq() {
+    let mut r = Rig::new(|c| {
+        pluto_t3(c);
+        c.chan_freq_ms = 3000;
+        c.adjacent_ms = 0;
+    });
+    r.s.set_neighbors(&[hat_t3()]);
+    let got = chan_freqs(&mut r, 400);
+    for want in [(1, 461_087_500, 461_462_500), (2, 461_237_500, 461_337_500), (3, 461_137_500, 461_287_500)] {
+        assert!(got.contains(&want), "{want:?} in {got:?}");
+    }
+    assert!(got.iter().all(|&(ch, ..)| (1..=3).contains(&ch)));
+    // each of the three about once in chan_freq_s (3 s = 50 frames): 400 frames give 8
+    let threes = got.iter().filter(|g| g.0 == 3).count();
+    assert!((7..=9).contains(&threes), "{threes}");
+}
+
+/// A neighbor whose frequencies aren't known (an older info) isn't announced: its CH_ADJ needs the MS's own plan.
+#[test]
+fn neighbor_without_frequencies_not_in_chan_freq() {
+    let mut r = Rig::new(|c| {
+        pluto_t3(c);
+        c.chan_freq_ms = 2000;
+    });
+    r.s.set_neighbors(&[Neighbor { tx_hz: 0, rx_hz: 0, ..hat_t3() }]);
+    let got = chan_freqs(&mut r, 300);
+    assert!(!got.is_empty() && got.iter().all(|&(ch, ..)| ch == 1 || ch == 2), "{got:?}");
+}
+
+/// A neighbor's TSCC channel number that is one of the site's carriers at other frequencies: a Chan_Freq for it
+/// would change the MS's plan for the site's own channel, and CH_ADJ (1 to 4094 only, table 7.79) would name the
+/// wrong frequencies. The site logs it, leaves it out of Chan_Freq and Adjacent_Site, and Vote_Now names it by its
+/// frequencies: CH_VOTE 4095 and a VN_AP block (7.2.19.3 c, table 7.72).
+#[test]
+fn neighbor_channel_clash() {
+    let mut r = Rig::new(|c| {
+        pluto_t3(c);
+        c.chan_freq_ms = 2000;
+        c.adjacent_ms = 1000;
+        c.vote_now_ms = 2000;
+    });
+    let n = Neighbor { chan: 2, ..hat_t3() };
+    r.s.set_neighbors(&[n]);
+    let mut logged = false;
+    while let Some(e) = r.s.next_event() {
+        logged |= e.r#type == EV_LOG;
+    }
+    assert!(logged, "the clash is logged");
+    let got = chan_freqs(&mut r, 400);
+    assert!(got.iter().all(|&g| g == (1, 461_087_500, 461_462_500) || g == (2, 461_237_500, 461_337_500)), "{got:?}");
+    let adj = r.all(0, 400, |dt, b| is(dt, b, spec::C_BCAST) && field(b, 16, 5) as u8 == spec::ADJACENT_SITE);
+    assert!(adj.is_empty(), "no Adjacent_Site");
+    let votes = r.all(0, 400, |dt, b| dt == spec::DT_MBC_HEADER && csbko(b) == spec::C_BCAST && field(b, 16, 5) as u8 == spec::VOTE_NOW);
+    assert!(votes.len() >= 2, "Vote_Now as an MBC");
+    let (k, o) = votes[0];
+    let (_, p1, _, _, _, p2) = bcast(&o.tscc_pdu);
+    assert_eq!(p1, n.syscode >> 2);
+    assert_eq!(p2 & 0xFFF, 0xFFF, "CH_VOTE 4095");
+    let (_, cont) = *r.hist.iter().find(|(kk, _)| *kk == k + 2).unwrap();
+    assert_eq!(cont.tscc_dt, spec::DT_MBC_CONT, "VN_AP follows at once");
+    let c = cont.tscc_pdu;
+    assert!(lb(&c));
+    assert_eq!(csbko(&c), spec::C_BCAST, "the header's CSBKO");
+    assert_eq!(field(&c, 8, 4), 0, "reserved");
+    assert_eq!(field(&c, 12, 4), 1, "the neighbor's color code");
+    assert_eq!((field(&c, 16, 4), field(&c, 20, 2)), (0, 0), "Cdeftype 0000b, reserved");
+    assert_eq!(field(&c, 22, 12), 2, "CHAN");
+    let hz = |m: usize, k: usize| field(&c, m, 10) as u32 * 1_000_000 + field(&c, k, 13) as u32 * 125;
+    assert_eq!((hz(34, 44), hz(57, 67)), (461_137_500, 461_287_500), "the MS's TX and RX on the neighbor");
+    // VOTE_BLK frames blocked after the two blocks
+    for j in 0..6 {
+        let (_, o) = *r.hist.iter().find(|(kk, _)| *kk == k + 4 + 2 * j).unwrap();
+        let a = aloha(&o.tscc_pdu);
+        assert!(is(o.tscc_dt, &o.tscc_pdu, spec::C_ALOHA) && a.mask == 24 && a.addr == spec::ADRNULL, "frame {j}");
+    }
+}
+
+/// Two neighbors with one channel number: the first one's frequencies hold; a later one with other frequencies is a
+/// clash (left out of Chan_Freq and Adjacent_Site), one with the same frequencies is announced once.
+#[test]
+fn neighbors_sharing_a_channel_number() {
+    let mut r = Rig::new(|c| {
+        pluto_t3(c);
+        c.chan_freq_ms = 2000;
+        c.adjacent_ms = 2000;
+    });
+    let other = Neighbor { syscode: spec::syscode(1, 5, 3, 3), tx_hz: 461_587_500, rx_hz: 461_187_500, ..hat_t3() };
+    let same = Neighbor { syscode: spec::syscode(1, 5, 4, 3), ..hat_t3() };
+    r.s.set_neighbors(&[hat_t3(), other, same]);
+    let got = chan_freqs(&mut r, 400);
+    assert!(got.contains(&(3, 461_137_500, 461_287_500)));
+    assert!(got.iter().all(|&(ch, tx, _)| ch != 3 || tx == 461_137_500), "{got:?}");
+    let adj: Vec<u16> = r
+        .all(0, 400, |dt, b| is(dt, b, spec::C_BCAST) && field(b, 16, 5) as u8 == spec::ADJACENT_SITE)
+        .iter()
+        .map(|(_, o)| bcast(&o.tscc_pdu).1)
+        .collect();
+    assert!(adj.contains(&(hat_t3().syscode >> 2)) && adj.contains(&(same.syscode >> 2)));
+    assert!(!adj.contains(&(other.syscode >> 2)), "the clashing one left out");
+}
+
+/// 6.7.1.3, table 7.71: Vote_Now names the adjacent site (its 14 syscode MSBs and CH_VOTE), Active_Connection, the
+/// confirmed channel priority ("the priority of the current (confirmed) site": this one's) and the adjacent channel
+/// priority ("the adjacent site to be sampled"). Then "the TSCC shall therefore not use the next VOTE_BLK TDMA
+/// frames": broadcast.vote_blk (A.2: 2 to 10) TSCC slots, one a frame, carry only C_ALOHA with ADRNULL and Mask 24.
+#[test]
+fn vote_now_fields_and_vote_blk_frames() {
+    for (blk, prio) in [(6u8, 0u8), (2, 5), (10, 7)] {
+        let mut r = Rig::new(|c| {
+            pluto_t3(c);
+            c.vote_now_ms = 2000;
+            c.vote_blk = blk;
+            c.priority = prio;
+        });
+        let n = hat_t3();
+        r.s.set_neighbors(&[n]);
+        let votes = r.all(0, 300, |dt, b| is(dt, b, spec::C_BCAST) && field(b, 16, 5) as u8 == spec::VOTE_NOW);
+        assert!(votes.len() >= 3, "every vote_now_s");
+        for &(k, o) in &votes {
+            assert!(lb(&o.tscc_pdu), "a single CSBK");
+            let (_, p1, _, _, sc, p2) = bcast(&o.tscc_pdu);
+            assert_eq!(p1, n.syscode >> 2, "hat-t3's 14 syscode MSBs");
+            assert_eq!(sc, r.sc());
+            assert_eq!(p2 >> 22, 0b11, "Active_Connection known, connected");
+            assert_eq!((p2 >> 19) & 7, u32::from(prio), "confirmed: this site's priority");
+            assert_eq!((p2 >> 16) & 7, 3, "adjacent: hat-t3's");
+            assert_eq!((p2 >> 12) & 0xF, 0, "reserved");
+            assert_eq!(p2 & 0xFFF, 3, "CH_VOTE");
+            let tscc = |j: i64| r.hist.iter().find(|(kk, _)| *kk == k + 2 * j).map(|(_, o)| *o);
+            for j in 1..=i64::from(blk) {
+                let Some(o) = tscc(j) else { break };
+                let a = aloha(&o.tscc_pdu);
+                assert!(is(o.tscc_dt, &o.tscc_pdu, spec::C_ALOHA) && (a.mask, a.addr) == (24, spec::ADRNULL), "vote_blk {blk}, frame {j}");
+            }
+            if let Some(o) = tscc(i64::from(blk) + 1) {
+                let blocked = is(o.tscc_dt, &o.tscc_pdu, spec::C_ALOHA) && aloha(&o.tscc_pdu).mask == 24;
+                assert!(!blocked, "vote_blk {blk}: random access again after {blk} frames");
+            }
+        }
+    }
+}
+
+/// The default VOTE_BLK is 6 frames (360 ms): a MS that samples the named TSCC for that long misses nothing.
+#[test]
+fn vote_blk_default_six() {
+    assert_eq!(cfg_default().vote_blk, 6);
+    assert_eq!(cfg_default().priority, 0);
 }
 
 /// 7.2.19.4, tables 7.73 to 7.75: Local_Time carries the local date and time, the UTC offset and the day of week.

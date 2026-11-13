@@ -816,7 +816,7 @@ fn broadcasts() {
         c.utc_offset_min = -360;
     });
     let n = SysCode { model: MODEL_SMALL, net: 1, site: 2, par: 3 }.encode();
-    s.set_neighbors(&[Neighbor { syscode: n, chan: 7, active_known: 1, active: 1, prio_confirmed: 0, prio_adjacent: 0 }]);
+    s.set_neighbors(&[Neighbor { syscode: n, chan: 7, active_known: 1, active: 1, ..Default::default() }]);
     let (mut adj, mut freq, mut time, mut gen) = (None, Vec::new(), None, false);
     let mut prev_hdr = false;
     for k in 0..2000i64 {

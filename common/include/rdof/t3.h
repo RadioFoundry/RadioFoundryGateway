@@ -88,7 +88,10 @@ typedef struct {
     uint8_t auth; /* RDOF_T3_AUTH_*: MS authentication at registration (361-4 6.4.8; tier3.md 3.14) */
     uint8_t composite; /* 1: the TSCC's slot carries a call when no payload channel is free (361-4 5.3.2; tier3.md
                           3.19) */
-    uint8_t pad1;
+    uint8_t vote_blk;  /* VOTE_BLK: TDMA frames of blocked random access after a Vote Now Advice (361-4 A.2: 2-10) */
+    uint8_t priority;  /* the site's priority radiated with its neighbors (361-4 table 6.81: 1 highest .. 7 lowest,
+                          0 non-preferred) */
+    uint8_t pad1[3];
 } rdof_t3_cfg_t;
 
 #define RDOF_T3_AUTH_OFF 0          /* none */
@@ -164,9 +167,15 @@ typedef struct {
     uint32_t ref;    /* the request's stream ID this answers (0 in a request) */
 } rdof_t3_setup_t;
 
+/* an adjacent site (tier3.md 3.11): its C_SYScode and TSCC channel, Active_Connection, its priority (361-4 table
+ * 6.81; the confirmed priority radiated with it is cfg.priority), and its TSCC's color code and frequencies as its
+ * carriers give them (tx_hz outbound, rx_hz inbound; 0: not known). With the frequencies, Chan_Freq announces the
+ * channel, unless one of the site's carriers (or an earlier neighbor) has the number at other frequencies: then only
+ * Vote_Now names it, by its frequencies. */
 typedef struct {
-    uint16_t syscode, chan; /* the neighbor's C_SYScode and TSCC channel */
-    uint8_t active_known, active, prio_confirmed, prio_adjacent;
+    uint16_t syscode, chan;
+    uint8_t active_known, active, prio_adjacent, cc;
+    uint32_t tx_hz, rx_hz;
 } rdof_t3_neighbor_t;
 
 /* events */

@@ -53,6 +53,9 @@ typedef struct {
     char node[RDOF_MN_NODE_MAX + 1];
     bool trunk, online;            /* trunk: its info has a trunk object with a valid system */
     uint16_t syscode, chan, site;  /* its C_SYScode, TSCC channel, SITE */
+    uint8_t cc;                    /* its TSCC's color code; 255: not given */
+    uint8_t priority;              /* its trunk.priority (361-4 table 6.81); 0 when not given */
+    uint32_t tx_hz, rx_hz;         /* its TSCC's outbound and inbound; 0: not given */
 } rdof_t3unit_peer_t;
 
 typedef struct {

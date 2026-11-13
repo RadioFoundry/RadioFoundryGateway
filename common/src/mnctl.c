@@ -481,6 +481,7 @@ size_t rdof_mn_trunk_info_json(const rdof_mn_trunk_info_t *t, char *out, size_t 
     s[k] = 0;
     rdof_json_raw(&j, "services", s);
     rdof_json_bool(&j, "reg", t->reg);
+    rdof_json_int(&j, "priority", t->priority);
     rdof_json_close(&j);
     return rdof_json_done(&j) ? j.len : 0;
 }

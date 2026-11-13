@@ -56,8 +56,16 @@ fn model_bits(model: c_int) -> (c_int, c_int) {
 
 const MODELS: [&[u8]; 4] = [b"tiny", b"small", b"large", b"huge"];
 const SYSTEM_KEYS: &[&[u8]] = &[b"model", b"net", b"site", b"par", b"area_bits"];
-const BROADCAST_KEYS: &[&[u8]] =
-    &[b"adjacent_s", b"chan_freq_s", b"local_time_s", b"call_timers_s", b"vote_now_s", b"ann_tscc_s"];
+const BROADCAST_KEYS: &[&[u8]] = &[
+    b"adjacent_s",
+    b"chan_freq_s",
+    b"local_time_s",
+    b"call_timers_s",
+    b"vote_now_s",
+    b"ann_tscc_s",
+    b"vote_blk",
+    b"priority",
+];
 const SERVICES_KEYS: &[&[u8]] =
     &[b"emergency_preempt", b"power_save", b"power_save_awake_s", b"mass_reg_at_start_s", b"hibernate_s", b"duplex", b"composite_tscc"];
 
@@ -537,6 +545,8 @@ impl<'a> Cx<'a> {
                 || !self.ms_in(b, c"call_timers_s", p, 0.0, 600.0, &mut cfg.call_timers_ms)
                 || !self.ms_in(b, c"vote_now_s", p, 0.0, 600.0, &mut cfg.vote_now_ms)
                 || !self.ms_in(b, c"ann_tscc_s", p, 0.0, 600.0, &mut cfg.ann_tscc_ms)
+                || !self.u8_in(b, c"vote_blk", p, 2, 10, &mut cfg.vote_blk)
+                || !self.u8_in(b, c"priority", p, 0, 7, &mut cfg.priority)
             {
                 return false;
             }

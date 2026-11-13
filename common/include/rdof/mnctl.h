@@ -113,7 +113,8 @@ typedef struct {
     int ncarriers;
     const char *const *services;
     int nservices;
-    bool reg; /* registration required */
+    bool reg;     /* registration required */
+    int priority; /* the site's priority with its neighbors (361-4 table 6.81: 1-7, 0 non-preferred) */
 } rdof_mn_trunk_info_t;
 
 /* The object for info's "trunk" (rdof_mn_info_t.trunk). */

@@ -793,6 +793,20 @@ static void test_trunk(const char *dir)
               c.vote_now_ms == 20000 && c.ann_tscc_ms == 40000 && c.hibernate_ms == 20000 && c.duplex == 1,
           "power save, mass registration, broadcasts: %s", err);
     CHECK(!apply_text("{\"services\": {\"power_save\": 8}}", "x", &c, &pol, err, sizeof err), "power_save 8");
+    /* VOTE_BLK (361-4 A.2: 2 to 10 frames, default 6) and the site's priority (table 6.81: 0 to 7, default 0) */
+    rdof_t3cfg_default(&c, &pol);
+    CHECK(c.vote_blk == 6 && c.priority == 0 &&
+              apply_text("{\"broadcast\": {\"vote_now_s\": 30, \"vote_blk\": 8, \"priority\": 3}}", "x", &c, &pol, err,
+                         sizeof err) &&
+              c.vote_now_ms == 30000 && c.vote_blk == 8 && c.priority == 3,
+          "vote_blk, priority: %s", err);
+    CHECK(!apply_text("{\"broadcast\": {\"vote_blk\": 1}}", "x", &c, &pol, err, sizeof err) &&
+              !strcmp(err, "x.broadcast.vote_blk: 2 to 10"),
+          "%s", err);
+    CHECK(!apply_text("{\"broadcast\": {\"vote_blk\": 11}}", "x", &c, &pol, err, sizeof err), "vote_blk 11");
+    CHECK(!apply_text("{\"broadcast\": {\"priority\": 8}}", "x", &c, &pol, err, sizeof err) &&
+              !strcmp(err, "x.broadcast.priority: 0 to 7"),
+          "%s", err);
     CHECK(!apply_text("{\"services\": {\"hibernate_s\": 0.5}}", "x", &c, &pol, err, sizeof err), "hibernate_s 0.5");
     rdof_t3cfg_default(&c, &pol);
     CHECK(c.composite == 0 && apply_text("{\"services\": {\"composite_tscc\": true}}", "x", &c, &pol, err, sizeof err) &&
