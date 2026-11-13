@@ -5,7 +5,7 @@
 # beside the air (--air-ms): both register, one calls the talkgroup and the other follows, then an individual call
 # with the availability check, a status to an MS, UDT short data to an MS (the outbound's rate 1/2 blocks), a status poll, and packet data: unconfirmed
 # and confirmed to an MS, and to the talkgroup, each a UDP datagram on the payload channel; then confirmed at rate 3/4
-# and unconfirmed at rate 1.
+# and unconfirmed at rate 1; last a 600-character confirmed message (124 rate 1/2 blocks).
 #
 #   sh host-tests/e2e_t3_airms.sh <dir with rdofradio>
 set -u
@@ -20,10 +20,10 @@ cat > "$D/site.json" <<'J'
            "carriers": [{"out": "OUT", "in": "IN", "chan": 1, "tscc": true}],
            "registration": "open", "wide_tg": "1-99999", "timers": {"hang_s": 2}}]}
 J
-printf '6 1000001 group 1 1500\n10 1000002 private 1000001 1500\n14 1000001 status 1000002 5\n17 1000002 sdm 1000001 hello\n19 1000002 setstatus 12\n20 1000001 status 1000002 127\n23 1000001 data 1000002 hello by packet\n28 1000002 cdata 1000001 confirmed one\n33 1000001 gdata 1 to the group\n37 1000001 cdata34 1000002 confirmed at rate three quarters, in sixteens\n42 1000002 data1 1000001 rate one\n' \
+printf '6 1000001 group 1 1500\n10 1000002 private 1000001 1500\n14 1000001 status 1000002 5\n17 1000002 sdm 1000001 hello\n19 1000002 setstatus 12\n20 1000001 status 1000002 127\n23 1000001 data 1000002 hello by packet\n28 1000002 cdata 1000001 confirmed one\n33 1000001 gdata 1 to the group\n37 1000001 cdata34 1000002 confirmed at rate three quarters, in sixteens\n42 1000002 data1 1000001 rate one\n46 1000001 cdata 1000002 *600\n' \
     > "$D/script"
 "$BIN/rdofradio" --file /dev/zero,/dev/null --allow-tx --config "$D/site.json" --air-ms 2 --sim-tg 1 \
-    --sim-script "$D/script" --seconds 47 > "$D/log" 2>&1
+    --sim-script "$D/script" --seconds 60 > "$D/log" 2>&1
 fail=0
 check() {
     grep -q "$1" "$D/log" || { echo "FAIL: $2"; fail=1; }
@@ -44,4 +44,6 @@ check 'air MS 1000002: packet data from 1000001, UDP 12.15.66.65:5016 to 225.0.0
 check 'air MS 1000002: packet data from 1000001, UDP 12.15.66.65:5016 to 12.15.66.66:5016, 90 octets, UTF-16BE text: "confirmed at rate three quarters, in sixteens"' "1000002 takes the rate 3/4 confirmed packet data"
 check "air MS 1000001: idle, registered on ch 0; calls 6 done" "1000001's rate 3/4 data acknowledged"
 check 'air MS 1000001: packet data from 1000002, UDP 12.15.66.66:5016 to 12.15.66.65:5016, 16 octets, UTF-16BE text: "rate one"' "1000001 takes the rate 1 packet data"
+check 'air MS 1000002: packet data from 1000001, UDP 12.15.66.65:5016 to 12.15.66.66:5016, 1200 octets, UTF-16BE text: "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ0123.*" (the first 80; all of it the \*N pattern)' "1000002 takes a 124-block confirmed message whole"
+check "air MS 1000001: idle, registered on ch 0; calls 7 done" "1000001's long message acknowledged"
 [ $fail = 0 ] && echo "air MSs: all passed" || { grep "air MS\|tier3" "$D/log" | head -40; exit 1; }

@@ -155,7 +155,33 @@ pub fn crc9(d: &[u8], dbsn: u8, mask: u16) -> u16 {
 pub const CRC9_RATE12: u16 = 0x0F0;
 pub const CRC9_RATE34: u16 = 0x1FF;
 pub const CRC9_RATE1: u16 = 0x10F;
-pub const MSG_BLOCKS: usize = 12;
+/// Blocks a message at most: Blocks to Follow's 7 bits (361-1 9.3.21). A SACK for more than 64 takes two C_RDATA
+/// blocks (8.2.2.3). Rate 1/2 confirmed 1266 octets, rate 1 unconfirmed 3044.
+pub const MSG_BLOCKS: usize = 127;
+
+/// A bit a block, 128 bits kept as two u64: a u128 field would make the structs that hold it 16-aligned, and the C
+/// callers give the site's, the unit's and the MSs' memory 8-aligned.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Mask([u64; 2]);
+
+impl Mask {
+    pub const fn get(self) -> u128 {
+        self.0[0] as u128 | (self.0[1] as u128) << 64
+    }
+
+    pub const fn of(v: u128) -> Mask {
+        Mask([v as u64, (v >> 64) as u64])
+    }
+}
+
+/// The bit mask of a message's n blocks (n up to 127).
+pub const fn blocks_mask(n: u8) -> u128 {
+    if n >= 128 {
+        u128::MAX
+    } else {
+        (1u128 << n) - 1
+    }
+}
 /// A block's octets at most (rate 1).
 pub const BLOCK_MAX: usize = 24;
 /// A message's octets at most (MSG_BLOCKS rate 1 blocks).
@@ -188,12 +214,18 @@ pub fn crc9_mask(dt: u8) -> u16 {
 /// A packet data message in blocks of one rate (361-1 8.2.2.1, 8.2.2.2, 9.2.6, 9.2.7): unconfirmed the whole block is
 /// user data (rate 1/2 12 octets, rate 3/4 18, rate 1 24), confirmed the block's octets 2 on (10, 16, 22) after the
 /// 7-bit serial number and the CRC-9; the CRC-32 ends the last block.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DataMsg {
     pub head: DataHead,
     pub n: u8,
     pub dt: u8, // the blocks' data type, DT_R12 (0 reads as it), DT_R34 or DT_R1
     pub b: [[u8; BLOCK_MAX]; MSG_BLOCKS],
+}
+
+impl Default for DataMsg {
+    fn default() -> Self {
+        DataMsg { head: DataHead::default(), n: 0, dt: 0, b: [[0; BLOCK_MAX]; MSG_BLOCKS] }
+    }
 }
 
 impl DataMsg {

@@ -11,11 +11,11 @@
 //! Blocks here are octets (a header's 10, a block's 12, 18 or 24); the caller makes bursts of them (the unit, with
 //! the radio layer) or hands them to MSs (the simulated air). No allocation, no I/O.
 
-use crate::t3pdrate::{rdata_retry, response, DataAsm, Taken, CLASS_ACK, CLASS_NACK, CLASS_SACK, TRIES, TYPE_ACK};
+use crate::t3pdrate::{response, DataAsm, RdataIn, RdataOut, Taken, CLASS_ACK, CLASS_NACK, CLASS_SACK, TRIES, TYPE_ACK};
 use crate::t3pdrate::TYPE_NACK_CRC;
 use crate::t3site::{
-    crc32, DataHead, DataMsg, Event, BLOCK_MAX, CHANNELS, DPF_CONFIRMED, DPF_RESPONSE, DT_R1, DT_R12, DT_R34,
-    EV_CH_CLOSE, EV_PD, F_GROUP, MSG_OCTETS, PARTY_NET, PD_FAILED, PD_OPEN,
+    blocks_mask, crc32, DataHead, DataMsg, Event, Mask, BLOCK_MAX, CHANNELS, DPF_CONFIRMED, DPF_RESPONSE, DT_R1, DT_R12,
+    DT_R34, EV_CH_CLOSE, EV_PD, F_GROUP, MSG_OCTETS, PARTY_NET, PD_FAILED, PD_OPEN,
 };
 use crate::t3udt::DT_DATA_HDR;
 
@@ -94,15 +94,15 @@ pub struct Relay {
     taking: bool,
     last: Option<(u32, u8, u32)>, // the last confirmed message passed on: source, N(S), CRC-32 of its data
     resp: Option<[u8; 10]>,       // a response it owes the MS, and a SACK's C_RDATA
-    resp_blk: Option<[u8; 12]>,
+    resp_blk: Option<RdataOut>,
     // its message to the MS
     out: DataMsg,
     sending: bool,
     pos: u8,
-    send: u16,
+    send: Mask,
     pub tries: u8,
     waiting: bool,
-    rdata_next: bool,
+    rdata: RdataIn, // a SACK's C_RDATA blocks being taken
     until_ms: i64,
     pub from: u32, // the network stream it came in (for its result)
     result: Option<u8>,
@@ -128,8 +128,8 @@ impl Relay {
         self.sending || self.waiting
     }
 
-    fn all(&self) -> u16 {
-        (1u16 << self.out.n) - 1
+    fn all(&self) -> u128 {
+        blocks_mask(self.out.n)
     }
 
     /// A header or block an MS sent on the channel. Some: a whole message for the far party.
@@ -137,7 +137,7 @@ impl Relay {
         if dt == DT_DATA_HDR {
             let mut p = [0u8; 10];
             p.copy_from_slice(&blk[..10]);
-            self.rdata_next = false;
+            self.rdata.stop();
             self.taking = false;
             let h = DataHead::decode(&p)?;
             if h.dpf == DPF_RESPONSE {
@@ -149,11 +149,12 @@ impl Relay {
             self.taking = self.ours(&h) && self.asm.header(&h);
             return None;
         }
-        if self.rdata_next && dt == DT_R12 {
-            // a SACK's C_RDATA: the blocks to send again (361-3 5.4.1)
-            self.rdata_next = false;
-            if let Some(retry) = rdata_retry(&blk[..12], self.out.n) {
-                self.resend(if retry == 0 { self.all() } else { retry }, RESULT_FAILED);
+        if self.rdata.on() && dt == DT_R12 {
+            // a SACK's C_RDATA (one or two): the blocks to send again (361-3 5.4.1)
+            match self.rdata.block(&blk[..12], self.out.n) {
+                Some(0) => self.rdata.stop(),
+                Some(retry) => self.resend(retry, RESULT_FAILED),
+                None => {}
             }
             return None;
         }
@@ -190,10 +191,10 @@ impl Relay {
         self.out = m;
         self.sending = true;
         self.pos = 0;
-        self.send = self.all();
+        self.send = Mask::of(self.all());
         self.tries = 1;
         self.waiting = false;
-        self.rdata_next = false;
+        self.rdata.stop();
         self.from = from;
         self.result = None;
         true
@@ -206,7 +207,10 @@ impl Relay {
             b[..10].copy_from_slice(&r);
             return Some((DT_DATA_HDR, b));
         }
-        if let Some(r) = self.resp_blk.take() {
+        if let Some(r) = self.resp_blk.as_mut().and_then(|o| o.take()) {
+            if !self.resp_blk.is_some_and(|o| o.left()) {
+                self.resp_blk = None;
+            }
             b[..12].copy_from_slice(&r);
             return Some((DT_R12, b)); // C_RDATA: rate 1/2 (361-3 5.4.1.3)
         }
@@ -217,12 +221,13 @@ impl Relay {
         if self.pos == 0 {
             // C_HEAD: F = 1 with every block, F = 0 with a SACK's (361-3 5.4.1)
             self.pos = 1;
-            let h = DataHead { full: self.send == self.all(), blocks: self.send.count_ones() as u8, ..self.out.head };
+            let send = self.send.get();
+            let h = DataHead { full: send == self.all(), blocks: send.count_ones() as u8, ..self.out.head };
             b[..10].copy_from_slice(&h.encode());
             return Some((DT_DATA_HDR, b));
         }
         let mut j = (self.pos - 1) as usize;
-        while j < n && self.send >> j & 1 == 0 {
+        while j < n && self.send.get() >> j & 1 == 0 {
             j += 1;
         }
         if j >= n {
@@ -230,7 +235,7 @@ impl Relay {
             return None;
         }
         self.pos = j as u8 + 2;
-        if (j + 1..n).all(|i| self.send >> i & 1 == 0) {
+        if (j + 1..n).all(|i| self.send.get() >> i & 1 == 0) {
             self.sending = false;
             if self.out.head.dpf == DPF_CONFIRMED && self.out.head.response && !self.out.head.group {
                 self.waiting = true;
@@ -250,7 +255,7 @@ impl Relay {
             (CLASS_ACK, TYPE_ACK) => self.result = Some(RESULT_DELIVERED),
             (CLASS_SACK, _) if h.blocks > 0 => {
                 self.waiting = true;
-                self.rdata_next = true;
+                self.rdata.start(h.blocks);
                 self.until_ms = self.until_ms.max(now + 1000);
             }
             (CLASS_NACK, TYPE_NACK_CRC) => self.resend(self.all(), RESULT_FAILED),
@@ -259,14 +264,14 @@ impl Relay {
     }
 
     /// The blocks in mask again (all: a C_HEAD with F = 1; some: F = 0), up to TRIES sends; then the result.
-    fn resend(&mut self, mask: u16, last: u8) {
+    fn resend(&mut self, mask: u128, last: u8) {
         self.waiting = false;
         if self.tries >= TRIES {
             self.result = Some(last);
             return;
         }
         self.tries += 1;
-        self.send = mask & self.all();
+        self.send = Mask::of(mask & self.all());
         self.pos = 0;
         self.sending = true;
     }
@@ -446,7 +451,7 @@ impl PdNet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::t3pdrate::rdata;
+    use crate::t3pdrate::{rdata, rdata_retry};
     use crate::t3site::{DPF_UNCONFIRMED, SAP_IP};
 
     const A: u32 = 3100001;

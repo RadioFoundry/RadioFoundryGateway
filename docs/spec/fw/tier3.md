@@ -617,19 +617,24 @@ delivers it.
 The MS simulator's side of the data (`rust/src/t3pdrate.rs`, 361-1 8.2.2, 9.2; 361-3 5.3.1, 5.4): a message in
 blocks of one rate, rate 1/2 (data type 7: 12 octets a block, BPTC), rate 3/4 (8: 18, the B.2 trellis) or rate 1
 (10: 24, uncoded); unconfirmed the block is all user data, confirmed its first two octets are the 7-bit serial
-number and the CRC-9 (B.3.10, the rate's mask of table B.21: 0F0h, 1FFh, 10Fh), the rest data (10, 16, 22
-octets); the last block ends with the message's CRC-32 (B.3.9). The header's Blocks to Follow, pad octet count and
-F as 9.2.1 / 9.2.2. Up to 12 blocks a message (140 / 116 octets at rate 1/2, 212 / 188 at rate 3/4, 284 / 260 at
-rate 1, unconfirmed / confirmed). Taking a confirmed message with A set (361-3 5.4.2.2), the MS answers C_RHEAD,
-NI its N(S) (stop and wait): ACK (class 00b, type 001b) when every block's CRC-9 and the CRC-32 hold; NACK (01b,
-001b) when the blocks hold and the CRC-32 doesn't; SACK (10b) with one C_RDATA block (rate 1/2: 8 octets of retry
-flags, block j in octet j / 8 bit j % 8, 0 to retry, then a CRC-32; 9.2.5, figure 8.17) when a block is bad or
-missing, and stays on the channel. The sender sends a SACK's blocks again after a C_HEAD with F = 0, Blocks to
-Follow their count and the same N(S), and all of them (F = 1) after the NACK; the receiver places each block by its
-serial number. Choices: N_RtryLmt (no value in 361-3) is 4 sends; with no response in 3 s (T_RspnsWait) the sender
-gives up rather than sending again; a C_RDATA whose CRC fails is ignored (the sender then times out); another NACK
-ends the call. The site repeats every rate alike (data types 7, 8, 10 regenerated); its own IP gateway's handling
-of the rates is [ipgw.md](ipgw.md)'s.
+number and the CRC-9 (B.3.10, the rate's mask of table B.21: 0F0h, 1FFh, 10Fh), the rest data (10, 16, 22 octets);
+the last block ends with the message's CRC-32 (B.3.9). The header's Blocks to Follow, pad octet count and F as 9.2.1
+/ 9.2.2. Up to 127 blocks a message, the most Blocks to Follow's 7 bits allow (9.3.21): 1520 / 1266 octets at rate
+1/2, 2282 / 2028 at rate 3/4, 3044 / 2790 at rate 1, unconfirmed / confirmed. Taking a confirmed message with A set
+(361-3 5.4.2.2), the MS answers C_RHEAD, NI its N(S) (stop and wait): ACK (class 00b, type 001b) when every block's
+CRC-9 and the CRC-32 hold; NACK (01b, 001b) when the blocks hold and the CRC-32 doesn't; SACK (10b) with C_RDATA
+blocks (rate 1/2: 8 octets of retry flags, block j in octet j / 8 bit j % 8, 0 to retry, then a CRC-32; 9.2.5,
+figure 8.17) when a block is bad or missing, and stays on the channel. A SACK has one C_RDATA for a message of up to
+64 blocks, two for more (8.2.2.3: "flags for up to 127 blocks"), its header's Blocks to Follow 1 or 2; the sender
+takes both before it sends again. 361-1 doesn't say how two split the flags or what the second's CRC covers. Choice:
+the second holds blocks 64 to 126, each its own CRC-32 over its 8 flag octets (table 9.14 gives every C_RDATA a
+CRC); a second whose CRC covers both blocks' 16 flag octets is taken too. The masks are two u64 (a u128 field would
+make the site's, the unit's and the MSs' structs 16-aligned; their C callers give 8). The sender sends a SACK's
+blocks again after a C_HEAD with F = 0, Blocks to Follow their count and the same N(S), and all of them (F = 1)
+after the NACK; the receiver places each block by its serial number. Choices: N_RtryLmt (no value in 361-3) is 4
+sends; with no response in 3 s (T_RspnsWait) the sender gives up rather than sending again; a C_RDATA whose CRC
+fails is ignored (the sender then times out); another NACK ends the call. The site repeats every rate alike (data
+types 7, 8, 10 regenerated); its own IP gateway's handling of the rates is [ipgw.md](ipgw.md)'s.
 
 Choices where 361-4 leaves them open: the TS doesn't poll MSs on the channel (P_AHOY radio check, 6.6.3.3.1.1) and
 doesn't share a data channel between calls; supplementary data (SUPED_SV) is abandoned (6.6.3.2.2 a); a new data
@@ -1256,8 +1261,10 @@ Rules:
 - The site's IP gateway (3.16) answers an MS at another site: `rdof_t3unit_data_tx` finds no record here and
   publishes the packet, from the gateway's source, as a `data_pdu` on `pc/{dst}/{node}`, with no setup.
 
-Not built: messages in parts (`data_pdu` part above 0 or the more bit; a message here is at most 284 octets, so
-parts aren't needed for a single item), multi-item calls across sites (not tested: each item would cross as its own
+A message crosses whole, up to 127 blocks (3044 octets at rate 1): `data_pdu`'s length field takes 65535 octets.
+
+Not built: messages in parts (`data_pdu` part above 0 or the more bit: a data call's single item is one message, so
+parts aren't needed for it), multi-item calls across sites (not tested: each item would cross as its own
 message), talkgroup data from the site's own gateway to other sites, and a result back to the calling site (end to
 end delivery is the application's: 361-3 5.2).
 
@@ -1509,7 +1516,9 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
   without its time (`1000001 private 3105738 5000`, `1000001 group 1 3000`, `1000002 register 1`, `1000001 status
   3105738 5`, `1000001 gstatus 1 5`, `1000001 sdm 3105738 hello`, `1000002 gsdm 1 hello all`: a status 0-127, short
   data as ISO 8-bit text up to 46 characters; `1000001 data 3105738 hello`, `cdata` (confirmed), `1000001 gdata 1
-  hello all`: a packet data call whose one message is a text message (361-3 5.7.1: UTF-16BE, up to 44 characters at rate 1/2, 64 at rate 3/4 or 1)
+  hello all`: a packet data call whose one message is a text message (361-3 5.7.1: UTF-16BE, up to 64 characters,
+  or `*N` for N generated ones, up to 746: one 1520-octet datagram; the receiving MS logs the first 80 and whether
+  all of it is the pattern)
   in a UDP/IPv4 datagram from port 5016 to 5016, 12.x.y.z the MS's address (its ID in the low 24 bits) and 225.x.y.z
   a talkgroup's, sent as rate 1/2 blocks; `data34`, `cdata34`, `gdata34` the same in rate 3/4 blocks, `data1`,
   `cdata1`, `gdata1` in rate 1; `1000001 setstatus 12`: the status it answers a poll with, else the last it sent, 0

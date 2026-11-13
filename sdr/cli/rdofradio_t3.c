@@ -358,6 +358,7 @@ typedef struct {
     int64_t at_ms;
     uint32_t id, arg, talk_ms;
     uint8_t what, flags, len;
+    uint16_t fill; /* data: this many generated characters in place of the text (*N) */
     char text[64]; /* sdm: the message (a UDT carries up to 46 octets); data: the UDP payload */
 } act_t;
 
@@ -365,10 +366,11 @@ typedef struct {
 #define ACT_SETSTATUS 0xF1 /* rdof_t3ms_set_status */
 #define ACT_DATA 0xF2      /* rdof_t3ms_data: the text, UTF-16BE, in a UDP/IPv4 datagram (port 5016 to 5016) */
 #define ACT_AMBE 0xF3      /* the MSs' voice from a file of AMBE+2 frames (rdof_t3sim_ambe), "off" the near-silence */
-#define AIR_TEXT16 44     /* rate 1/2 data's characters at most: 28 + 2 x 44 octets fill 12 confirmed blocks */
+#define AIR_FILL_MAX ((RDOF_IPGW_MAX_PACKET - 28) / 2) /* data *N: characters at most, one UDP/IPv4 datagram */
 #define ACT_HELP                                                                                                       \
     "ID register [TG] | deregister | group TG [TALK_MS] | private ID [TALK_MS] | status ID N | gstatus TG N | "        \
-    "sdm ID TEXT | gsdm TG TEXT | data ID TEXT | cdata ID TEXT | gdata TG TEXT (data34, cdata1 ...: rate 3/4, 1) | "  \
+    "sdm ID TEXT | gsdm TG TEXT | data ID TEXT | cdata ID TEXT | gdata TG TEXT (data34, cdata1 ...: rate 3/4, 1; "   \
+    "TEXT *N: N generated characters) | "                                                                             \
     "interrupt ID [TALK_MS] | ginterrupt TG [TALK_MS] | als ID | alsend ID | "                                        \
     "setstatus N | cancel | ambe FILE|off (any MS: all MSs' voice, raw 9-octet AMBE+2 frames)"
 
@@ -391,7 +393,8 @@ static int act_cmp(const void *a, const void *b)
 }
 
 /* ACT_HELP (a # starts a comment; status N 0-127, 126 the emergency alarm; sdm up to 46 characters; data, cdata
- * (confirmed) and gdata up to 44 characters (64 at rate 3/4 or 1), a packet data call carrying them as a text message, UTF-16BE on
+ * (confirmed) and gdata up to 64 characters, or *N for N generated ones (up to AIR_FILL_MAX: a message of up to 127
+ * blocks), a packet data call carrying them as a text message, UTF-16BE on
  * UDP/IPv4 port 5016 (361-3 5.7.1), from 12.x.y.z to 12.x.y.z or, to a talkgroup, 225.x.y.z, in rate 1/2 blocks;
  * data34, cdata34, gdata34 in rate 3/4 blocks, data1, cdata1, gdata1 in rate 1): 1 an action in *x (at_ms 0), 0 a
  * blank line, -1 a bad one. */
@@ -436,7 +439,12 @@ static int act_parse(const char *text, act_t *x)
         t += strspn(t, "0123456789");
         t += strspn(t, " \t");
         size_t n = strcspn(t, "\r\n");
-        if (!n || n > (sdm ? 46 : act_data_rate(what) ? sizeof x->text : AIR_TEXT16))
+        if (!sdm && t[0] == '*') {
+            const unsigned long f = strtoul(t + 1, NULL, 10);
+            if (f < 1 || f > AIR_FILL_MAX)
+                return -1;
+            x->fill = (uint16_t)f, n = 0;
+        } else if (!n || n > (sdm ? 46 : sizeof x->text))
             return -1;
         memcpy(x->text, t, n);
         x->what = sdm ? ACT_SDM : ACT_DATA, x->arg = (uint32_t)a1, x->len = (uint8_t)n,
@@ -524,8 +532,11 @@ static bool act_run(rdof_t3ms_t *ms, const act_t *a, int64_t now)
         const uint32_t dip = a->flags & RDOF_T3MS_F_GROUP ? RDOF_IPGW_GROUP_NET | (a->arg & 0xFFFFFF)
                                                           : rdof_ipgw_radio_ip(&net, a->arg);
         static uint16_t ip_id;
-        uint8_t u16[2 * sizeof a->text], d[28 + sizeof u16];
-        const size_t m = utf16be(a->text, a->len, u16, sizeof u16);
+        static char fill[AIR_FILL_MAX];
+        static uint8_t u16[2 * AIR_FILL_MAX], d[28 + sizeof u16];
+        for (size_t k = 0; k < a->fill; k++)
+            fill[k] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"[k % 36];
+        const size_t m = a->fill ? utf16be(fill, a->fill, u16, sizeof u16) : utf16be(a->text, a->len, u16, sizeof u16);
         const size_t n = rdof_ipgw_udp_datagram(rdof_ipgw_radio_ip(&net, a->id), 5016, dip, 5016, ++ip_id, u16, m, d,
                                                 sizeof d);
         return n && rdof_t3ms_data(ms, a->arg, a->flags, d, n, now);
@@ -849,7 +860,7 @@ static void air_text(const uint8_t *d, size_t n, char *out, size_t cap)
 /* what MS i took since the last look, said: short data, and packet data (a UDP/IPv4 datagram's payload) */
 static void air_inbox(int i)
 {
-    uint8_t d[300];
+    static uint8_t d[RDOF_IPGW_MAX_BURSTS * 24]; /* a message of up to 127 rate 1 blocks */
     char t[400];
     size_t n = 0;
     uint32_t src = 0;
@@ -882,10 +893,15 @@ static void air_inbox(int i)
             for (size_t k = 0; k < u && na < sizeof a; k += 2)
                 a[na++] = d[29 + k];
             air_text(a, na, t, sizeof t);
+            /* a long one: whether it is the *N pattern, whole */
+            bool pat = u / 2 > sizeof a;
+            for (size_t k = 0; pat && k < u / 2; k++)
+                pat = d[29 + 2 * k] == "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"[k % 36];
             tsay("air MS %u: packet data from %u, UDP %u.%u.%u.%u:%u to %u.%u.%u.%u:%u, %zu octets, UTF-16BE text: "
-                 "\"%s\"",
+                 "\"%s\"%s",
                  (unsigned)AM.id[i], (unsigned)src, d[12], d[13], d[14], d[15], d[20] << 8 | d[21], d[16], d[17],
-                 d[18], d[19], d[22] << 8 | d[23], u, t);
+                 d[18], d[19], d[22] << 8 | d[23], u, t,
+                 u / 2 > sizeof a ? pat ? " (the first 80; all of it the *N pattern)" : " (the first 80)" : "");
             return;
         }
         air_text(d + 28, m - 28, t, sizeof t);

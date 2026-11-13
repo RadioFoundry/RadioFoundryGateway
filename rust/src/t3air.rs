@@ -29,7 +29,7 @@ pub struct Air<'a, const N: usize> {
     pub lose_out: (u8, u32),
     pub lose_in: (u8, u32),
     /// Packet data blocks the MSs hear damaged: bit j, the j-th block from now (a header doesn't count).
-    pub damage: u32,
+    pub damage: u128,
     /// The site's relays (tier3.md 5.10) and what they took for the network, oldest first.
     pub net: PdNet,
     pub published: [Option<NetData>; 4],

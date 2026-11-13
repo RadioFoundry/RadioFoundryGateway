@@ -16,7 +16,7 @@ use crate::t3site::{
     DataMsg, DxGrant, CARRIERS, DEP_ALS, DIV_ON, DPF_CONFIRMED, DPF_RESPONSE, DPF_UNCONFIRMED, MSG_BLOCKS, R_DUPLEX_NOT_SUPPORTED,
     SAP_IP, SK_DUPLEX, SO_SIMI, STATUS_ALS_END, STATUS_INTERRUPT, VOICE_FRAME, VOICE_HEADER, VOICE_TERM,
 };
-use crate::t3site::{block_len, BLOCK_MAX, DT_R1, DT_R12, DT_R34, MSG_OCTETS};
+use crate::t3site::{block_len, Mask, BLOCK_MAX, DT_R1, DT_R12, DT_R34, MSG_OCTETS};
 use crate::t3udt::*;
 
 pub const ANSWER_ACCEPT: u8 = 0;
@@ -235,10 +235,10 @@ pub struct Ms {
     pd_until: i64,
     pd_multi: bool, // the channel's grant is multi-item
     /// A SACK's C_RDATA block, after pd_resp.
-    pd_resp_blk: Option<[u8; 12]>,
-    pd_send: u16,    // the blocks of pd_out this transmission sends (all, or a SACK's)
+    pd_resp_blk: Option<pdrate::RdataOut>,
+    pd_send: Mask,    // the blocks of pd_out this transmission sends (all, or a SACK's)
     pd_tries: u8,    // its sends so far
-    pd_rdata: bool,  // a SACK's C_RDATA block next
+    pd_rdata: pdrate::RdataIn, // a SACK's C_RDATA blocks being taken
     pd_asm: DataAsm, // the message it takes
     pd_inbox: DataMsg,
     pd_inbox_n: u32,
@@ -762,7 +762,7 @@ impl Ms {
         self.maint_left = 0;
         self.pd_sending = false;
         self.pd_wait_ack = false;
-        self.pd_rdata = false;
+        self.pd_rdata.stop();
         self.pd_asm = DataAsm::default();
         self.pd_resp = None;
         self.pd_resp_blk = None;
@@ -982,10 +982,10 @@ impl Ms {
         self.maint_left = 0;
         self.pd_sending = mine;
         self.pd_pos = 0;
-        self.pd_send = (1u16 << self.pd_out.n) - 1;
+        self.pd_send = Mask::of(self.pd_all());
         self.pd_tries = 0;
         self.pd_wait_ack = false;
-        self.pd_rdata = false;
+        self.pd_rdata.stop();
         self.pd_asm = DataAsm::default();
         self.pd_resp = None;
         self.pd_resp_blk = None;
@@ -1005,7 +1005,7 @@ impl Ms {
         if dt == DT_DATA_HDR {
             let mut p = [0u8; 10];
             p.copy_from_slice(&blk[..10]);
-            self.pd_rdata = false;
+            self.pd_rdata.stop();
             let Some(h) = DataHead::decode(&p) else { return };
             if h.src == self.id {
                 return; // its own, repeated
@@ -1027,11 +1027,12 @@ impl Ms {
             }
             return;
         }
-        if self.pd_rdata && dt == DT_R12 {
-            // a SACK's C_RDATA: the blocks to send again (361-3 5.4.1)
-            self.pd_rdata = false;
-            if let Some(retry) = pdrate::rdata_retry(&blk[..12], self.pd_out.n) {
-                self.resend(if retry == 0 { self.pd_all() } else { retry });
+        if self.pd_rdata.on() && dt == DT_R12 {
+            // a SACK's C_RDATA (one or two): the blocks to send again (361-3 5.4.1)
+            match self.pd_rdata.block(&blk[..12], self.pd_out.n) {
+                Some(0) => self.pd_rdata.stop(),
+                Some(retry) => self.resend(retry),
+                None => {}
             }
             return;
         }
@@ -1052,8 +1053,8 @@ impl Ms {
         }
     }
 
-    fn pd_all(&self) -> u16 {
-        (1u16 << self.pd_out.n) - 1
+    fn pd_all(&self) -> u128 {
+        crate::t3site::blocks_mask(self.pd_out.n)
     }
 
     /// The response to its confirmed message (361-1 table 8.3): ACK; SACK, its C_RDATA next; NACK for the message's
@@ -1064,7 +1065,7 @@ impl Ms {
                 self.pd_wait_ack = false;
                 self.item_done();
             }
-            (CLASS_SACK, _) if h.blocks > 0 => self.pd_rdata = true,
+            (CLASS_SACK, _) if h.blocks > 0 => self.pd_rdata.start(h.blocks),
             (CLASS_NACK, TYPE_NACK_CRC) => self.resend(self.pd_all()),
             _ => {
                 self.pd_wait_ack = false;
@@ -1076,7 +1077,7 @@ impl Ms {
     }
 
     /// Sends the blocks in mask again (all of them: a C_HEAD with F = 1; some: F = 0), up to pdrate::TRIES sends.
-    fn resend(&mut self, mask: u16) {
+    fn resend(&mut self, mask: u128) {
         if self.pd_tries + 1 >= pdrate::TRIES {
             self.pd_wait_ack = false;
             self.mine = false;
@@ -1085,7 +1086,7 @@ impl Ms {
             return;
         }
         self.pd_tries += 1;
-        self.pd_send = mask & self.pd_all();
+        self.pd_send = Mask::of(mask & self.pd_all());
         self.pd_pos = 0;
         self.pd_wait_ack = false;
         self.pd_sending = true;
@@ -1831,7 +1832,10 @@ impl Ms {
             }
             return Some(t);
         }
-        if let Some(b) = self.pd_resp_blk.take() {
+        if let Some(b) = self.pd_resp_blk.as_mut().and_then(|o| o.take()) {
+            if !self.pd_resp_blk.is_some_and(|o| o.left()) {
+                self.pd_resp_blk = None;
+            }
             let mut t = data(DT_R12, &b, self); // C_RDATA: rate 1/2 (361-3 5.4.1.3)
             t.dst = self.pay_src;
             t.group = 0;
@@ -1842,18 +1846,19 @@ impl Ms {
             if self.pd_pos == 0 {
                 // C_HEAD: F = 1 with every block, F = 0 with a SACK's (361-3 5.4.1)
                 self.pd_pos = 1;
-                let (all, count) = (self.pd_send == self.pd_all(), self.pd_send.count_ones() as u8);
+                let send = self.pd_send.get();
+                let (all, count) = (send == self.pd_all(), send.count_ones() as u8);
                 let h = DataHead { full: all, blocks: count, ..self.pd_out.head };
                 return Some(data(DT_DATA_HDR, &h.encode(), self));
             }
             let mut j = (self.pd_pos - 1) as usize;
-            while j < n && self.pd_send >> j & 1 == 0 {
+            while j < n && self.pd_send.get() >> j & 1 == 0 {
                 j += 1;
             }
             let (dt, len) = (self.pd_out.rate(), block_len(self.pd_out.rate()));
             let b = self.pd_out.b[j.min(MSG_BLOCKS - 1)];
             self.pd_pos = j as u8 + 2;
-            let last = (j + 1..n).all(|i| self.pd_send >> i & 1 == 0);
+            let last = (j + 1..n).all(|i| self.pd_send.get() >> i & 1 == 0);
             if last {
                 self.pd_sending = false;
                 if self.pd_out.head.dpf == DPF_CONFIRMED {

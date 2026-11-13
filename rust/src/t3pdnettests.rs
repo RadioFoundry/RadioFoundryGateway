@@ -297,3 +297,46 @@ fn data_with_no_setup_is_checked_first() {
     assert!(n.sb.results.iter().any(|r| r.2 == 57 && r.3 == crate::t3pdnet::RESULT_FAILED));
     assert!(n.b.ms[1].data_inbox().is_none());
 }
+
+#[test]
+fn the_largest_message_across_sites() {
+    // 127 blocks, Blocks to Follow's most (361-1 9.3.21): rate 1/2 confirmed, 1266 octets. Blocks lost past 64 on
+    // each air: a SACK in two C_RDATA blocks (361-1 8.2.2.3), each way
+    let big: Vec<u8> = (0..1266u32).map(|i| (i * 7 + i / 255) as u8).collect();
+    let (mut sa, mut sb) = (site(), site());
+    let mut n = Net::new(&mut sa, &mut sb, [ms(1001, &[TG]), ms(1002, &[TG])], [ms(2001, &[TG]), ms(2002, &[TG])]);
+    let now = n.a.now();
+    assert!(!n.a.ms[0].send_data(2001, t3ms::F_CONFIRMED, &[0; 1267], now), "one octet too many");
+    assert!(n.a.ms[0].send_data(2001, t3ms::F_CONFIRMED, &big, now));
+    n.a.damage = 1 << 5 | 1 << 70 | 1 << 126;
+    assert!(n.until(30_000, done(0, 0)), "the caller's call ends");
+    assert_eq!(n.a.ms[0].status().calls_done, 1, "acknowledged by its own site");
+    // the site's SACK in two C_RDATA blocks: the caller sends the three blocks again, two of them listed in the second
+    let retry = n.sa.heads.iter().find(|(_, h)| h.dpf == DPF_CONFIRMED && !h.full).expect("a selective retry");
+    assert_eq!(retry.1.blocks, 3, "blocks 5, 70 and 126 again");
+    assert_eq!(n.wire.len(), 1);
+    assert_eq!((n.wire[0].len, &n.wire[0].data[..n.wire[0].len]), (1266, &big[..]));
+
+    n.b.damage = 1 << 3 | 1 << 100;
+    assert!(n.until(30_000, |n| n.b.ms[0].data_inbox().is_some()), "delivered");
+    let (h, d, len, count) = n.b.ms[0].data_inbox().unwrap();
+    assert_eq!((h.src, h.dst, h.dpf, h.blocks, &d[..len], count), (1001, 2001, DPF_CONFIRMED, 127, &big[..], 1));
+    let sack = n.sb.heads.iter().find(|(_, h)| h.dpf == DPF_RESPONSE && h.class == CLASS_SACK).expect("a SACK");
+    assert_eq!(sack.1.blocks, 2);
+    n.run(3000);
+    assert_eq!(n.sb.results, [(1001, 2001, 101, RESULT_DELIVERED, 2)]);
+}
+
+#[test]
+fn the_largest_unconfirmed_message_at_rate_1() {
+    // 127 rate 1 blocks: 3044 octets, the most a DMR data message holds
+    let big: Vec<u8> = (0..3044u32).map(|i| (i ^ i >> 8) as u8).collect();
+    let (mut sa, mut sb) = (site(), site());
+    let mut n = Net::new(&mut sa, &mut sb, [ms(1001, &[TG]), ms(1002, &[TG])], [ms(2001, &[TG]), ms(2002, &[TG])]);
+    let now = n.a.now();
+    assert!(n.a.ms[0].send_data(2002, t3ms::F_RATE1, &big, now));
+    assert!(n.until(30_000, |n| n.b.ms[1].data_inbox().is_some()), "delivered");
+    let (h, d, len, _) = n.b.ms[1].data_inbox().unwrap();
+    assert_eq!((h.dpf, h.blocks, &d[..len]), (DPF_UNCONFIRMED, 127, &big[..]));
+    assert_eq!(n.wire[0].dt, DT_R1);
+}
