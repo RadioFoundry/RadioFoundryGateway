@@ -3729,6 +3729,18 @@ static void main_clock(double t, long long total)
         MC.win_start = t, MC.win_min = INFINITY;
     }
 }
+/* The receiver's UTC of sample 0, so the bursts' and calls' times are the air's: from slot timing's map when on the
+ * grid, else from the earliest arrivals (main_clock). time(NULL) at start, which this replaces, ran up to 2 s early:
+ * a whole second, and the stream starts after it. */
+static void rx_time_base(double now)
+{
+    int64_t i0 = 0, t0 = 0;
+    double rate = 0;
+    if (rdofradio_utc_map48(&i0, &t0, &rate))
+        R.rx.t0 = (double)t0 / 1e9 - (double)i0 / RDOF_DEMOD_FS;
+    else if (MC.on && isfinite(MC.floor))
+        R.rx.t0 = wall_s() - now + MC.t0 + MC.floor / R.rate;
+}
 static int64_t main_now48(void)
 {
     if (!MC.on)
@@ -7453,6 +7465,7 @@ int main(int argc, char **argv)
         WS.n += n;
         main_clock(now, total + n);
         rdofradio_utc_arrived(total + n, now);
+        rx_time_base(now);
         const double t_poll = now;
         if (now - last_poll >= POLL_S) {
             last_poll = now;
