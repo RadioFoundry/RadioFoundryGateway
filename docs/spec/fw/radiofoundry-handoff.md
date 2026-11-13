@@ -175,3 +175,40 @@ spec for both; this lists only the gateway's choices and limits. The full design
 - Packet data availability check: the MS answers C_ACKU(Message_Accepted) (6.6.3.2.6; MS_Accepted works too) or
   C_NACKU when its data terminal isn't ready. CallBack is mirrored to the caller; MS_Alerting isn't an answer to a
   data check.
+
+### 2.6 Supplementary services, checked against 361-4 (2026-11-13)
+
+Each value below was settled from the 361-4 text, not from either implementation (tier3.md 3.17, 3.18 have the
+choices where the text is open).
+
+- Stun / revive / kill: C_AHOY, Service_Options_Mirror 0, Service_Kind_Flag 0 stun or kill / 1 revive, ALS 0, G/I 0,
+  UAB 00, Service_Kind 1101b, target the MS, source STUNI FFFECCh or KILLI FFFECFh (tables 6.19, 6.23); up to 3
+  times, 1 s apart, AT set.
+- An MS that authenticates the site answers C_ACKVIT (opcode 30): Service_Options_Mirror 0, the C_AHOY's
+  Service_Kind_Flag (0 for a kill), reserved 00, UAB 00, Service_Kind 1101b, target its challenge (000000h-FFFCDFh),
+  source itself (tables 6.21, 6.25, 7.26). The site then sends C_ACKD: Response_Info G/I 0 + Response_Check, reason
+  0x64 (Authentication_Response), target the MS, source the response, AT set (tables 6.20, 6.24). The response is
+  6.4.8's algorithm with the MS's K from the site's provisioning (`cfg/ms/{id}` `auth_k`), XORed with its `psn` when
+  one is provisioned: leave `psn` unset for an MS that doesn't use one. The site repeats that C_ACKD up to 3 times
+  while no final answer comes; a repeated C_ACKVIT gets the response again.
+- The final answer: C_ACKU to STUNI / KILLI, source the MS. The site takes any ACK reason, MS_Accepted 0x44 (tables
+  6.22, 6.26) or Message_Accepted 0x60 (the figure text). C_NACKU(Recipient_Refused 0x14) after a wrong response;
+  C_NACKU(MSNot_Supported 0x00) for a service it doesn't support.
+- Kill is always authenticated: the site sends it only for an MS it has a key for. After the final C_ACKU the site
+  removes the MS's registration. If the site has no key for an MS that sends C_ACKVIT to a stun, it sends nothing
+  more (the MS's own timer ends it).
+- DGNA (from the site, MQTT `dgna`): C_DGNAHD (opcode 36), G/I 0, A 1, DPF 0, SAP 0, UDT_Format 0001b, target the
+  MS, source DGNAI FFFED6h, UAB the blocks less one, SF 0, then the Address Format blocks (OK 0); the MS answers
+  C_ACKU(MS_Accepted), target DGNAI. Up to `sd_tries` times. From an MS (only with `dgna_from_ms`): C_AHOY from
+  DGNAI asks for the upload (C_DGNAHU, opcode 37, UAB from the C_RAND's SUPED_VAL); the acknowledgements after the
+  upload come from the called MS's ID, not DGNAI (the text doesn't say which: an MS should take either).
+- Call diversion: the C_AHOY from DIVERTI asking for the address has UAB 00 (01 only with the C_RAND's Proxy Flag
+  set, 6.6.7.1.1.1), whatever SDATA_VAL says. The diversion notice (C_UDTHD, SF 1, A 0) comes from MSI or GPI
+  (table 6.65), not DIVERTI as the call procedures say; its block's One Key flag is 0.
+- ALS: the called MS gets the radio check C_AHOY (Service_Options_Mirror 0, Service_Kind_Flag 0, ALS 1, Service_Kind
+  0000b, source the caller) and answers C_ACKU (0x60 or 0x44) or C_NACKU(MSNot_Supported). Then PV_GRANT, target
+  the called MS, source the caller, as an OACSU call: the called MS transmits. Status 123 (end the ALS call) and 125
+  (transmit interrupt) get C_NACKD(Not_Supported) from TSI: the site has no transmit interrupt yet.
+- Packet data payload channel: the site never sends a P_AHOY there (no radio check, selective clear or payload
+  authentication), so a P_ACKU (opcode 35) can't be asked for; one sent anyway is ignored. If that check is built,
+  the site will take P_ACKU with Message_Accepted or MS_Accepted.
