@@ -353,14 +353,15 @@ typedef struct {
     int64_t at_ms;
     uint32_t id, arg, talk_ms;
     uint8_t what, flags, len;
-    char text[46]; /* sdm: the message (a UDT carries up to 46 octets) */
+    char text[64]; /* sdm: the message (a UDT carries up to 46 octets); data: the UDP payload */
 } act_t;
 
 #define ACT_SDM 0xF0       /* rdof_t3ms_sdm (ISO 8-bit text), not an rdof_t3ms_do */
 #define ACT_SETSTATUS 0xF1 /* rdof_t3ms_set_status */
+#define ACT_DATA 0xF2      /* rdof_t3ms_data: the text in a UDP/IPv4 datagram (port 5016 to 5016) */
 #define ACT_HELP                                                                                                       \
     "ID register [TG] | deregister | group TG [TALK_MS] | private ID [TALK_MS] | status ID N | gstatus TG N | "        \
-    "sdm ID TEXT | gsdm TG TEXT | setstatus N | cancel"
+    "sdm ID TEXT | gsdm TG TEXT | data ID TEXT | cdata ID TEXT | gdata TG TEXT | setstatus N | cancel"
 
 #define ACTS 256
 
@@ -370,8 +371,9 @@ static int act_cmp(const void *a, const void *b)
     return x < y ? -1 : x > y;
 }
 
-/* ACT_HELP (a # starts a comment; status N 0-127, 126 the emergency alarm; sdm up to 46 characters): 1 an action in
- * *x (at_ms 0), 0 a blank line, -1 a bad one. */
+/* ACT_HELP (a # starts a comment; status N 0-127, 126 the emergency alarm; sdm up to 46 characters; data, cdata
+ * (confirmed) and gdata up to 64, a packet data call carrying them as UDP/IPv4 from 12.x.y.z to 12.x.y.z or, to a
+ * talkgroup, 225.x.y.z, port 5016): 1 an action in *x (at_ms 0), 0 a blank line, -1 a bad one. */
 static int act_parse(const char *text, act_t *x)
 {
     char line[256];
@@ -398,18 +400,21 @@ static int act_parse(const char *text, act_t *x)
     else if ((!strcmp(what, "status") || !strcmp(what, "gstatus")) && got >= 4 && a2 <= 127)
         x->what = RDOF_T3MS_DO_STATUS, x->arg = (uint32_t)a1, x->talk_ms = (uint32_t)a2,
         x->flags = what[0] == 'g' ? RDOF_T3MS_F_TO_GROUP : 0;
-    else if ((!strcmp(what, "sdm") || !strcmp(what, "gsdm")) && got >= 3) {
+    else if ((!strcmp(what, "sdm") || !strcmp(what, "gsdm") || !strcmp(what, "data") || !strcmp(what, "cdata") ||
+              !strcmp(what, "gdata")) &&
+             got >= 3) {
+        const bool sdm = strstr(what, "sdm") != NULL;
         /* the text: after the destination */
         const char *t = strstr(line, what) + strlen(what);
         t += strspn(t, " \t");
         t += strspn(t, "0123456789");
         t += strspn(t, " \t");
         size_t n = strcspn(t, "\r\n");
-        if (!n || n > sizeof x->text)
+        if (!n || n > (sdm ? 46 : sizeof x->text))
             return -1;
         memcpy(x->text, t, n);
-        x->what = ACT_SDM, x->arg = (uint32_t)a1, x->len = (uint8_t)n,
-        x->flags = what[0] == 'g' ? RDOF_T3MS_F_GROUP : 0;
+        x->what = sdm ? ACT_SDM : ACT_DATA, x->arg = (uint32_t)a1, x->len = (uint8_t)n,
+        x->flags = (what[0] == 'g' ? RDOF_T3MS_F_GROUP : 0) | (what[0] == 'c' ? RDOF_T3MS_F_CONFIRMED : 0);
     } else if (!strcmp(what, "setstatus") && got >= 3 && a1 <= 127)
         x->what = ACT_SETSTATUS, x->arg = (uint32_t)a1;
     else if (!strcmp(what, "cancel"))
@@ -418,6 +423,8 @@ static int act_parse(const char *text, act_t *x)
         return -1;
     return 1;
 }
+
+#define AIR_RADIO_NET 0x0C000000u /* 12.0.0.0/8: a radio's address, its id in the low 24 bits */
 
 /* An action on MS ms: false when its queue is full. */
 static bool act_run(rdof_t3ms_t *ms, const act_t *a, int64_t now)
@@ -431,6 +438,16 @@ static bool act_run(rdof_t3ms_t *ms, const act_t *a, int64_t now)
         rdof_t3ms_set_status(ms, (uint8_t)a->talk_ms);
     if (a->what == ACT_SDM)
         return rdof_t3ms_sdm(ms, a->arg, a->flags, 4 /* ISO 8-bit */, (const uint8_t *)a->text, a->len, now);
+    if (a->what == ACT_DATA) {
+        const rdof_ipgw_net_t net = {AIR_RADIO_NET, 0xFF000000u};
+        const uint32_t dip = a->flags & RDOF_T3MS_F_GROUP ? RDOF_IPGW_GROUP_NET | (a->arg & 0xFFFFFF)
+                                                          : rdof_ipgw_radio_ip(&net, a->arg);
+        static uint16_t ip_id;
+        uint8_t d[28 + sizeof a->text];
+        const size_t n = rdof_ipgw_udp_datagram(rdof_ipgw_radio_ip(&net, a->id), 5016, dip, 5016, ++ip_id,
+                                                (const uint8_t *)a->text, a->len, d, sizeof d);
+        return n && rdof_t3ms_data(ms, a->arg, a->flags, d, n, now);
+    }
     return rdof_t3ms_do(ms, a->what, a->arg, a->talk_ms, a->flags, now);
 }
 
@@ -631,6 +648,7 @@ static struct {
     uint32_t id[RDOF_T3SIM_MS];
     int voice_n[RDOF_T3SIM_MS];
     rdof_t3ms_status_t last[RDOF_T3SIM_MS];
+    uint32_t sd_seen[RDOF_T3SIM_MS], pd_sum[RDOF_T3SIM_MS]; /* what air_inbox said last */
     act_t acts[ACTS];
     int nacts, ai, talker;
     int64_t next_talk;
@@ -734,6 +752,51 @@ static bool air_command(const char *topic, const void *data, size_t len)
 
 static const char *const air_state[] = {"idle", "access", "waiting", "payload"};
 
+/* n octets as text, the unprintable ones as \xHH */
+static void air_text(const uint8_t *d, size_t n, char *out, size_t cap)
+{
+    size_t o = 0;
+    for (size_t i = 0; i < n && o + 5 < cap; i++)
+        o += (size_t)snprintf(out + o, cap - o, d[i] >= 32 && d[i] < 127 && d[i] != '\\' ? "%c" : "\\x%02x", d[i]);
+    out[o] = 0;
+}
+
+/* what MS i took since the last look, said: short data, and packet data (a UDP/IPv4 datagram's payload) */
+static void air_inbox(int i)
+{
+    uint8_t d[160];
+    char t[400];
+    size_t n = 0;
+    uint32_t src = 0;
+    uint8_t fmt = 0;
+    const uint32_t count = rdof_t3ms_sd_inbox(AM.ms[i], d, sizeof d, &n, &src, &fmt);
+    if (count != AM.sd_seen[i]) {
+        AM.sd_seen[i] = count;
+        air_text(d, n, t, sizeof t);
+        tsay("air MS %u: short data from %u, format %u, %zu octets: \"%s\"", (unsigned)AM.id[i], (unsigned)src,
+             fmt, n, t);
+    }
+    const int pn = rdof_t3ms_data_inbox(AM.ms[i], d, sizeof d, &src);
+    if (pn < 0)
+        return;
+    uint32_t sum = 2166136261u ^ src; /* FNV-1a: a new message (one identical to the last goes unsaid) */
+    for (int k = 0; k < pn && k < (int)sizeof d; k++)
+        sum = (sum ^ d[k]) * 16777619u;
+    if (sum == AM.pd_sum[i])
+        return;
+    AM.pd_sum[i] = sum;
+    const size_t m = (size_t)pn < sizeof d ? (size_t)pn : sizeof d;
+    if (m >= 28 && d[0] == 0x45 && d[9] == 17) { /* IPv4 with no options, UDP */
+        air_text(d + 28, m - 28, t, sizeof t);
+        tsay("air MS %u: packet data from %u, UDP %u.%u.%u.%u:%u to %u.%u.%u.%u:%u, %zu octets: \"%s\"",
+             (unsigned)AM.id[i], (unsigned)src, d[12], d[13], d[14], d[15], d[20] << 8 | d[21], d[16], d[17], d[18],
+             d[19], d[22] << 8 | d[23], m - 28, t);
+    } else {
+        air_text(d, m, t, sizeof t);
+        tsay("air MS %u: packet data from %u, %d octets: \"%s\"", (unsigned)AM.id[i], (unsigned)src, pn, t);
+    }
+}
+
 /* trunk slot k of carrier 1: its outbound burst (aired: one was sent). T.mu held. */
 static void air_slot(int64_t k, const uint8_t burst[RDOF_BURST_BYTES], bool aired)
 {
@@ -792,6 +855,7 @@ static void air_slot(int64_t k, const uint8_t burst[RDOF_BURST_BYTES], bool aire
                  (unsigned)st.calls_done, (unsigned)st.calls_failed, st.last_reason, (unsigned)st.heard_src,
                  (unsigned)st.heard_dst);
         *l = st;
+        air_inbox(i);
     }
 }
 

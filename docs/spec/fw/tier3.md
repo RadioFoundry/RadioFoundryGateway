@@ -1120,8 +1120,13 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
   check included) and calls them. With mqtt-net they also take commands on `ROOT/node/NODE/air-ms`, a script line
   without its time (`1000001 private 3105738 5000`, `1000001 group 1 3000`, `1000002 register 1`, `1000001 status
   3105738 5`, `1000001 gstatus 1 5`, `1000001 sdm 3105738 hello`, `1000002 gsdm 1 hello all`: a status 0-127, short
-  data as ISO 8-bit text up to 46 characters; `1000001 setstatus 12`: the status it answers a poll with, else the
-  last it sent, 0 at start). Their state changes go to the log (`air MS ID: ...`). Test:
+  data as ISO 8-bit text up to 46 characters; `1000001 data 3105738 hello`, `cdata` (confirmed), `1000001 gdata 1
+  hello all`: a packet data call whose one message is the text, up to 64 octets, in a UDP/IPv4 datagram from port
+  5016 to 5016, 12.x.y.z the MS's address (its ID in the low 24 bits) and 225.x.y.z a talkgroup's, sent as rate 1/2
+  blocks; `1000001 setstatus 12`: the status it answers a poll with, else the last it sent, 0 at start). Their state
+  changes go to the log (`air MS ID: ...`), and so does the short data and packet data they take (the text; a UDP
+  datagram's addresses and payload). They decode rate 1/2 data only. A real radio's rate 3/4 or rate 1 data is
+  repeated by the site but goes untaken by them. Test:
   `rdofradio_e2e_t3_airms`.
 - `--sim-ext PATH`: external MSs (other programs, such as a radio's MS engine built for the host) on the simulated
   air, through a unix socket, beside the N simulated ones (N may be 0). JSON lines in lockstep with the slots: after

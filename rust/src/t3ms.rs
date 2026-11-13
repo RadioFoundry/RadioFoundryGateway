@@ -1632,6 +1632,38 @@ pub unsafe extern "C" fn rdof_t3ms_data_inbox(ms: *const Ms, out: *mut u8, cap: 
     n as c_int
 }
 
+/// The last UDT short data it took: its octets into out (up to cap; character formats less their pad nibbles),
+/// the source and the format; the count taken so far (0: none, nothing written).
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3ms_sd_inbox(
+    ms: *const Ms,
+    out: *mut u8,
+    cap: usize,
+    len: *mut usize,
+    src: *mut u32,
+    format: *mut u8,
+) -> u32 {
+    let Some((h, d, count)) = (*ms).inbox() else { return 0 };
+    let mut n = (*ms).inbox.data(&mut [0u8; MAX_DATA]);
+    if crate::t3udt::pads_nibbles(h.format) {
+        n = n.saturating_sub(h.pad_nibble as usize / 2);
+    }
+    let n = n.min(cap);
+    if !out.is_null() {
+        core::ptr::copy_nonoverlapping(d.as_ptr(), out, n);
+    }
+    if !len.is_null() {
+        *len = n;
+    }
+    if !src.is_null() {
+        *src = h.source;
+    }
+    if !format.is_null() {
+        *format = h.format;
+    }
+    count
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn rdof_t3ms_data(
     ms: *mut Ms,

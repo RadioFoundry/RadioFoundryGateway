@@ -451,6 +451,10 @@ bool rdof_t3ms_sdm(rdof_t3ms_t *ms, uint32_t dst, uint8_t flags, uint8_t format,
 bool rdof_t3ms_data(rdof_t3ms_t *ms, uint32_t dst, uint8_t flags, const uint8_t *data, size_t len, int64_t at_ms);
 /* The last packet data message it took (CRC good): its length into out (up to cap), its source; -1 none. */
 int rdof_t3ms_data_inbox(const rdof_t3ms_t *ms, uint8_t *out, size_t cap, uint32_t *src);
+/* The last UDT short data it took: its octets into out (up to cap, *len; a character format less its pad nibbles),
+ * its source and UDT_Format. Returns how many it has taken (0: none, nothing written). */
+uint32_t rdof_t3ms_sd_inbox(const rdof_t3ms_t *ms, uint8_t *out, size_t cap, size_t *len, uint32_t *src,
+                            uint8_t *format);
 /* outbound slot k on channel ch: a block (dt 0: voice or idle, nothing to read); at is the CACH's AT bit for the
  * next slot (TSCC carrier). pdu: 10 octets, 12 when dt is RDOF_DT_RATE_12 or RDOF_DT_DATA_HEADER on a payload
  * channel (packet data: the BPTC-decoded block) */
