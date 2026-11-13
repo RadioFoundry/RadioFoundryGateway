@@ -352,8 +352,14 @@ static void stop_common(void)
 typedef struct {
     int64_t at_ms;
     uint32_t id, arg, talk_ms;
-    uint8_t what;
+    uint8_t what, flags, len;
+    char text[46]; /* sdm: the message (a UDT carries up to 46 octets) */
 } act_t;
+
+#define ACT_SDM 0xF0 /* rdof_t3ms_sdm (ISO 8-bit text), not an rdof_t3ms_do */
+#define ACT_HELP                                                                                                       \
+    "ID register [TG] | deregister | group TG [TALK_MS] | private ID [TALK_MS] | status ID N | gstatus TG N | "        \
+    "sdm ID TEXT | gsdm TG TEXT | cancel"
 
 #define ACTS 256
 
@@ -363,8 +369,8 @@ static int act_cmp(const void *a, const void *b)
     return x < y ? -1 : x > y;
 }
 
-/* "ID register [TG] | deregister | group TG [TALK_MS] | private ID [TALK_MS] | cancel" (a # starts a comment): 1 an
- * action in *x (at_ms 0), 0 a blank line, -1 a bad one. */
+/* ACT_HELP (a # starts a comment; status N 0-127, 126 the emergency alarm; sdm up to 46 characters): 1 an action in
+ * *x (at_ms 0), 0 a blank line, -1 a bad one. */
 static int act_parse(const char *text, act_t *x)
 {
     char line[256];
@@ -388,11 +394,34 @@ static int act_parse(const char *text, act_t *x)
         x->what = RDOF_T3MS_DO_GROUP, x->arg = (uint32_t)a1, x->talk_ms = got >= 4 ? (uint32_t)a2 : 2000;
     else if (!strcmp(what, "private") && got >= 3)
         x->what = RDOF_T3MS_DO_PRIVATE, x->arg = (uint32_t)a1, x->talk_ms = got >= 4 ? (uint32_t)a2 : 2000;
-    else if (!strcmp(what, "cancel"))
+    else if ((!strcmp(what, "status") || !strcmp(what, "gstatus")) && got >= 4 && a2 <= 127)
+        x->what = RDOF_T3MS_DO_STATUS, x->arg = (uint32_t)a1, x->talk_ms = (uint32_t)a2,
+        x->flags = what[0] == 'g' ? RDOF_T3MS_F_TO_GROUP : 0;
+    else if ((!strcmp(what, "sdm") || !strcmp(what, "gsdm")) && got >= 3) {
+        /* the text: after the destination */
+        const char *t = strstr(line, what) + strlen(what);
+        t += strspn(t, " \t");
+        t += strspn(t, "0123456789");
+        t += strspn(t, " \t");
+        size_t n = strcspn(t, "\r\n");
+        if (!n || n > sizeof x->text)
+            return -1;
+        memcpy(x->text, t, n);
+        x->what = ACT_SDM, x->arg = (uint32_t)a1, x->len = (uint8_t)n,
+        x->flags = what[0] == 'g' ? RDOF_T3MS_F_GROUP : 0;
+    } else if (!strcmp(what, "cancel"))
         x->what = RDOF_T3MS_DO_CANCEL;
     else
         return -1;
     return 1;
+}
+
+/* An action on MS ms: false when its queue is full. */
+static bool act_run(rdof_t3ms_t *ms, const act_t *a, int64_t now)
+{
+    if (a->what == ACT_SDM)
+        return rdof_t3ms_sdm(ms, a->arg, a->flags, 4 /* ISO 8-bit */, (const uint8_t *)a->text, a->len, now);
+    return rdof_t3ms_do(ms, a->what, a->arg, a->talk_ms, a->flags, now);
 }
 
 /* The script's lines into acts (times from t0). Returns how many, -1 a bad line (said). */
@@ -432,7 +461,7 @@ static int script_read(const char *path, int64_t t0, act_t *acts, int max)
         acts[n++] = x;
         continue;
     bad:
-        tsay("%s:%d: AT_S ID register [TG] | deregister | group TG [TALK_MS] | private ID [TALK_MS] | cancel", path, ln);
+        tsay("%s:%d: AT_S " ACT_HELP, path, ln);
         fclose(f);
         return -1;
     }
@@ -521,7 +550,7 @@ int rdofradio_t3_sim(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o, vol
         for (; ai < nacts && acts[ai].at_ms <= now; ai++) {
             const int i = rdof_t3sim_find(&sim, acts[ai].id);
             if (i >= 0)
-                rdof_t3ms_do(ms[i], acts[ai].what, acts[ai].arg, acts[ai].talk_ms, 0, now);
+                act_run(ms[i], &acts[ai], now);
         }
         if (next_talk >= 0 && now >= next_talk && o->sim_n > 0) {
             rdof_t3ms_do(ms[talker], RDOF_T3MS_DO_GROUP, o->sim_tg, 2000, 0, now);
@@ -673,7 +702,7 @@ static void air_do(const act_t *a, int64_t now)
         tsay("air MSs: no %u here", (unsigned)a->id);
         return;
     }
-    if (!rdof_t3ms_do(AM.ms[i], a->what, a->arg, a->talk_ms, 0, now))
+    if (!act_run(AM.ms[i], a, now))
         tsay("air MS %u: its queue is full", (unsigned)a->id);
 }
 
@@ -689,8 +718,7 @@ static bool air_command(const char *topic, const void *data, size_t len)
     if (r > 0)
         air_do(&a, wall_ms());
     else if (r < 0)
-        tsay("air MSs: \"%s\": ID register [TG] | deregister | group TG [TALK_MS] | private ID [TALK_MS] | cancel",
-             line);
+        tsay("air MSs: \"%s\": " ACT_HELP, line);
     return true;
 }
 
@@ -728,12 +756,12 @@ static void air_slot(int64_t k, const uint8_t burst[RDOF_BURST_BYTES], bool aire
         sent = true;
         AM.in++;
     }
-    /* the outbound of slot k, as a radio decodes it */
-    uint8_t pdu[10] = {0};
+    /* the outbound of slot k, as a radio decodes it: a PDU, or a rate 1/2 data block (12 octets: UDT and packet data) */
+    uint8_t pdu[12] = {0};
     int dt = -1, rcc = -1;
     uint8_t mdt = 0;
     if (aired) {
-        const rdof_trunk_pdu_t r = rdof_t3rf_burst_pdu(burst, &dt, &rcc, pdu);
+        const rdof_trunk_pdu_t r = rdof_t3rf_burst_block(burst, &dt, &rcc, pdu);
         if (r == RDOF_T3RF_PDU_OK)
             mdt = (uint8_t)dt, AM.out++;
         else if (r == RDOF_T3RF_PDU_BAD)
