@@ -7292,6 +7292,12 @@ int main(int argc, char **argv)
         R.r.on_sent = on_sent;
         R.r.on_key = on_key;
         R.r.ctx = &R;
+#ifdef RDOF_TIER3
+        /* a trunked site repeats nothing itself: the Tier III unit sends every slot of carrier 1, and a burst the
+         * repeater queued (the inbound repeated, a network call) would go out on any slot the unit leaves empty */
+        if (rcfg.tier3)
+            R.r.enabled[1] = R.r.enabled[2] = false;
+#endif
         ok = rdof_repeater_start(&R.r);
 #ifdef RDOF_TIER3
         /* a trunked site: the repeater keeps the modem set up; the site's slot source sends every slot */
