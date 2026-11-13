@@ -889,8 +889,8 @@ first and P_CLEAR once the inbound stops (after 3 s P_CLEAR regardless, the chan
 call or a call being pre-empted is cleared at once.
 
 Each step is an `EV_ACTIVITY` event of kind `ACT_INTR` (8; op 1 accepted, 2 the talker ceased, 3 it didn't, 4 the
-interrupter talks; src the interrupter, dst the call's destination) and a log line. mqtt-net's `activity` doesn't
-carry them yet.
+interrupter talks; src the interrupter, dst the call's destination, ref the talker) and a log line, and an mqtt-net
+`activity` event `interrupt` (mqtt-net.md §7).
 
 The simulated MS (`RDOF_T3MS_DO_INTERRUPT`, `Ms::interrupt`, `Ms::als_end`; rdofradio scripts `interrupt`,
 `ginterrupt`, `als`, `alsend`): listening on a payload channel when the action is due, it goes to the TSCC, makes the status
@@ -918,7 +918,7 @@ Choices where 361-4 leaves them open:
 
 Not built: the gateway-started forms, power control in a de-key (6.4.14.2), the ALS
 called MS resuming after an interrupt (6.6.2.6.6), ALS termination across sites (its called MS at another site:
-Not_Supported), and mqtt-net events. Not run on a radio.
+Not_Supported). Not run on a radio.
 
 ## 4. Settings (config-v3 `tier3` app)
 

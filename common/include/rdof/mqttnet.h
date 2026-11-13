@@ -487,6 +487,10 @@ size_t rdof_mn_queue_event(const rdof_mn_ev_t *e, uint32_t src, uint32_t dst, bo
    (124) beside it; result "delivered", "refused", "away", "busy", else "failed" */
 size_t rdof_mn_status_event(const rdof_mn_ev_t *e, uint32_t src, uint32_t dst, bool group, int status,
                             const char *result, char *out, size_t cap);
+/* {"ev":"interrupt",...}: a transmit interrupt's progress (tier3.md 3.20); src the interrupting MS, dst the call's
+   destination; action "accepted", "ceased", "gave_up", "talks"; talker the MS de-keyed, 0: none (left out) */
+size_t rdof_mn_intr_event(const rdof_mn_ev_t *e, uint32_t src, uint32_t dst, bool group, const char *action,
+                          uint32_t talker, char *out, size_t cap);
 /* {"ev":"setup",...}: a call setup sent or received; peer the other node, NULL: none */
 size_t rdof_mn_setup_event(const rdof_mn_ev_t *e, uint32_t src, uint32_t dst, int op, int reason, const char *peer,
                            char *out, size_t cap);

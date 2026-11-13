@@ -33,7 +33,7 @@ pub const STATUS_ALS_END: u8 = 123;
 pub const STATUS_INTERRUPT: u8 = 125;
 
 /// EV_ACTIVITY kind: a transmit interrupt's progress. op INTR_*, src the interrupting MS, dst the call's
-/// destination, ch its channel; reason Message_Accepted with INTR_ACCEPTED.
+/// destination, ch its channel, ref the talker de-keyed (0: none); reason Message_Accepted with INTR_ACCEPTED.
 pub const ACT_INTR: u8 = 8;
 pub const INTR_ACCEPTED: u8 = 1; // C_ACKD to the interrupter
 pub const INTR_CEASED: u8 = 2; // the talker stopped
@@ -351,6 +351,8 @@ impl Site {
         e.kind = ACT_INTR;
         e.op = op;
         e.src = ms;
+        let talker = self.chans[ch].talker;
+        e.r#ref = if talker != ms { talker } else { 0 };
         if op == INTR_ACCEPTED {
             e.reason = R_MESSAGE_ACCEPTED;
         }

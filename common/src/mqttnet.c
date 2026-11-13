@@ -527,6 +527,20 @@ size_t rdof_mn_status_event(const rdof_mn_ev_t *e, uint32_t src, uint32_t dst, b
     return ev_done(&j);
 }
 
+size_t rdof_mn_intr_event(const rdof_mn_ev_t *e, uint32_t src, uint32_t dst, bool group, const char *action,
+                          uint32_t talker, char *out, size_t cap)
+{
+    rdof_json_t j;
+    ev_common(&j, out, cap, "interrupt", e);
+    rdof_json_int(&j, "src", src);
+    rdof_json_int(&j, "dst", dst);
+    rdof_json_bool(&j, "group", group);
+    rdof_json_str(&j, "action", action);
+    if (talker)
+        rdof_json_int(&j, "talker", talker);
+    return ev_done(&j);
+}
+
 size_t rdof_mn_setup_event(const rdof_mn_ev_t *e, uint32_t src, uint32_t dst, int op, int reason, const char *peer,
                            char *out, size_t cap)
 {

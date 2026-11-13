@@ -490,6 +490,16 @@ extern "C" {
         out: *mut c_char,
         cap: usize,
     ) -> usize;
+    fn rdof_mn_intr_event(
+        e: *const MnEv,
+        src: u32,
+        dst: u32,
+        group: bool,
+        action: *const c_char,
+        talker: u32,
+        out: *mut c_char,
+        cap: usize,
+    ) -> usize;
     fn rdof_mn_setup_event(
         e: *const MnEv,
         src: u32,
@@ -1088,6 +1098,11 @@ unsafe fn activity_out(u: *mut Unit, e: &Event) {
         }
         t3::ACT_SETUP => {
             rdof_mn_setup_event(&ev, e.src, e.dst, c_int::from(e.op), c_int::from(e.reason), null(), jp, jn)
+        }
+        t3::ACT_INTR => {
+            const INTR: [&CStr; 5] = [c"?", c"accepted", c"ceased", c"gave_up", c"talks"];
+            let action = INTR[if usize::from(e.op) < INTR.len() { usize::from(e.op) } else { 0 }];
+            rdof_mn_intr_event(&ev, e.src, e.dst, group, action.as_ptr(), e.r#ref, jp, jn)
         }
         t3::ACT_REFUSE => rdof_mn_queue_event(&ev, e.src, e.dst, group, c"refuse".as_ptr(), cp(&why), jp, jn),
         t3::ACT_STATUS => {

@@ -1109,6 +1109,11 @@ static void test_setup(void)
           strstr(ev, "\"src\":3100123,\"dst\":91,\"group\":true,\"status\":126,\"alarm\":\"emergency\",\"result\":\"delivered\""));
     rdof_mn_status_event(&e2, 1, 2, false, 42, "away", ev, sizeof ev);
     CHECK(strstr(ev, "\"status\":42,\"result\":\"away\"") != NULL);
+    rdof_mn_intr_event(&e2, 1002, 9, true, "accepted", 2001, ev, sizeof ev);
+    CHECK(strstr(ev, "\"ev\":\"interrupt\"") &&
+          strstr(ev, "\"src\":1002,\"dst\":9,\"group\":true,\"action\":\"accepted\",\"talker\":2001"));
+    rdof_mn_intr_event(&e2, 1002, 9, true, "talks", 0, ev, sizeof ev);
+    CHECK(strstr(ev, "\"action\":\"talks\"") && !strstr(ev, "talker"));
 }
 
 /* ── registration records, where, status, the trunk object ── */

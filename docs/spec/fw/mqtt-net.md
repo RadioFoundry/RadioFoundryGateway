@@ -387,6 +387,7 @@ merge duplicates by `call_key`.
 | `reg` | a trunked site: a radio registers, de-registers, expires, is denied or refused, or answers an authentication challenge | `src, action` (`register`, `deregister`, `expire`, `deny`, `refuse`, `auth_ok`, `auth_fail`, `auth_none`: tier3.md 3.14), `tg` (array) |
 | `grant` | a trunked site grants a payload channel | `src, dst, group, chan` (logical channel), `lcn` (0 or 1), `late` (a late entry grant); `source` `rf` or `net` (who asked) |
 | `queue` | a trunked site queues a request, serves it, or drops it | `src, dst, group, action` (`in`, `out`, `drop`), `why` (on a drop) |
+| `interrupt` | a trunked site's transmit interrupt (tier3.md 3.20) | `src` (the interrupting MS), `dst` (the call's destination), `group`, `action` (`accepted`, `ceased`: the talker stopped, `gave_up`: it didn't or its site refused, `talks`: the interrupter talks), `talker` (the MS de-keyed; absent: none) |
 | `setup` | a call setup sent or received (§9.4) | `src, dst, op, reason, peer` (the other node) |
 | `status` | a trunked site delivered a status, or couldn't (tier3.md 3.10) | `src, dst, group, status` (0-126), `alarm` (`emergency` for 126, `cancel` for 124), `result` (`delivered`, `refused`, `away`, `busy`, `failed`) |
 
