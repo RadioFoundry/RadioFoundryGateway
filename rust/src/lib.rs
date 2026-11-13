@@ -81,6 +81,8 @@ mod t3sdtests;
 mod t3pdtests;
 #[cfg(all(test, feature = "t3"))]
 mod t3tgtests;
+#[cfg(all(test, feature = "t3"))]
+mod t3sutests;
 
 // The Tier III site around the controller (the tier3 feature; docs/spec/fw/tier3.md 9). Their C headers are the
 // contract: rdof/t3rf.h, rdof/t3cfg.h, rdof/t3unit.h, rdof/t3sim.h, rdof/sdr/t3split.h.

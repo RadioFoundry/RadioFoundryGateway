@@ -69,13 +69,16 @@ typedef struct {
     uint32_t adjacent_ms, chan_freq_ms, local_time_ms, gen_site_ms; /* 0: not broadcast */
     uint32_t stream_seed; /* first stream ID for setups the site starts */
     /* short data (tier3.md 3.9): downloads to an MS (each waits ahoy_every_ms for C_ACKU), sends to a talkgroup,
-     * and how long a message waits for a busy MS; dgna_ms: MSs may assign talkgroups to others (DGNA, 6.6.8) */
-    uint8_t sd_tries, sd_repeats, dgna_ms, pad1;
+     * and how long a message waits for a busy MS; dgna_ms: MSs may assign talkgroups to others (DGNA, 6.6.8);
+     * als: MSs may ask for the Ambient Listening Service (6.6.2.6; tier3.md 3.12) */
+    uint8_t sd_tries, sd_repeats, dgna_ms, als;
     uint32_t sd_store_ms;
     /* packet data (tier3.md 3.10): how long a data channel waits for more after a message (confirmed or
      * multi-item), and the site's own data ID (0: TSI only) */
     uint32_t data_hang_ms;
     uint32_t data_id;
+    uint8_t divert; /* MSs may divert their calls (6.6.7; tier3.md 3.12): 0 refused */
+    uint8_t pad1[3];
 } rdof_t3_cfg_t;
 
 typedef struct {
@@ -173,6 +176,13 @@ typedef struct {
 #define RDOF_T3_ACT_QUEUE 3 /* op: 1 in, 2 out, 3 drop; reason: the C_NACKD reason when dropped */
 #define RDOF_T3_ACT_SETUP 4 /* op, reason: as the setup message */
 #define RDOF_T3_ACT_REFUSE 5 /* reason: the C_NACKD reason */
+/* a supplementary service's result (tier3.md 3.12): op RDOF_T3_SUPP_*, src the MS, dst STUNI or the diverted
+ * address (TSI or DIVERTI when cleared), reason the air reason (0x60 done) */
+#define RDOF_T3_ACT_SUPP 6
+#define RDOF_T3_SUPP_STUN 1
+#define RDOF_T3_SUPP_REVIVE 2
+#define RDOF_T3_SUPP_DIVERT 3
+#define RDOF_T3_SUPP_DIVERT_CLEAR 4
 
 #define RDOF_T3_F_GROUP 0x01
 #define RDOF_T3_F_EMERGENCY 0x02
@@ -297,7 +307,8 @@ bool rdof_t3_record(const rdof_t3_site_t *s, uint32_t ms, rdof_t3_record_t *r);
  * isn't included */
 size_t rdof_t3_subs(const rdof_t3_site_t *s, uint32_t *tg, size_t cap);
 void rdof_t3_withdraw(rdof_t3_site_t *s, bool off);
-/* "deregister" (arg1 MS), "clear" (arg1 chan, arg2 LCN), "withdraw", "restore", "resend_records", "status" */
+/* "deregister" (arg1 MS), "clear" (arg1 chan, arg2 LCN), "withdraw", "restore", "resend_records", "status",
+ * "stun" / "revive" (arg1 MS; 361-4 6.4.9.1, the result an RDOF_T3_ACT_SUPP activity) */
 bool rdof_t3_command(rdof_t3_site_t *s, const char *cmd, uint32_t arg1, uint32_t arg2);
 
 /* short data (tier3.md 3.9): UDT short data, a status, or a status poll */

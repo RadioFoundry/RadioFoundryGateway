@@ -22,6 +22,10 @@ pub const SD_POLL: u8 = 3;
 pub const SD_DGNA: u8 = 4;
 /// A registration's talkgroup list upload (6.4.4.1.13.2): only from an MS here, never an SdMsg
 pub(super) const SD_TGLIST: u8 = 5;
+/// A call diversion's address upload (6.6.7.1): only from an MS
+pub(super) const SD_DIVERT: u8 = 6;
+/// The diverted address to a caller (6.6.7.2): a UDT header with SF 1 and no answer, sent FINAL_REPEATS times
+pub(super) const SD_NOTICE: u8 = 7;
 
 // op (rdof_t3_sd_t.op)
 pub const SD_SEND: u8 = 1;
@@ -368,11 +372,12 @@ impl Site {
         }
     }
 
-    /// A registration's list upload in progress for ms (S_UPLOAD): asks again (the MS repeated its C_RAND).
-    pub(super) fn sd_list_again(&mut self, ms: u32) -> bool {
+    /// An upload of kind what (SD_TGLIST, SD_DIVERT) in progress for ms: asks again when it waits for it (the MS
+    /// repeated its C_RAND); true when there is one.
+    pub(super) fn sd_again(&mut self, what: u8, ms: u32) -> bool {
         let Some(i) = (0..SDS).find(|&i| {
             let d = &self.sd.sds[i];
-            d.used && d.what == SD_TGLIST && d.src == ms
+            d.used && d.what == what && d.src == ms
         }) else {
             return false;
         };
@@ -390,6 +395,12 @@ impl Site {
             let n = d.blocks.data(&mut buf);
             let (reason, info) = self.tgl_apply(d.src, &AddrList::of(&buf[..n]));
             self.sd_done(i, reason, info, WHY_OK);
+            return;
+        }
+        if d.what == SD_DIVERT {
+            let reason = self.div_set(d.src, d.dst, d.so, d.value, &d.blocks);
+            let why = if reason == R_MESSAGE_ACCEPTED { WHY_OK } else { WHY_REFUSED };
+            self.sd_done(i, reason, 0, why); // C_ACKD from MSI or GPI (6.6.7.1.1.2)
             return;
         }
         if d.what == SD_DGNA {
@@ -482,6 +493,9 @@ impl Site {
             self.sd.upload.active = false;
         }
         let ok = reason_type(reason) == 1;
+        if d.what == SD_NOTICE {
+            return;
+        }
         if d.what == SD_TGLIST {
             // 6.4.4.1.13.2: registered either way; a list that didn't come is a list refused (Response_Info 0)
             let (reason, ri) = if ok { (reason, info) } else { (R_REG_SUBSCRIPTION, 0) };
@@ -491,10 +505,12 @@ impl Site {
             self.activity(ACT_REG, REG_REGISTER, d.src, sub, reason);
             return;
         }
-        if ok {
-            self.sd.delivered += 1;
-        } else {
-            self.sd.failed += 1;
+        if d.what != SD_DIVERT {
+            if ok {
+                self.sd.delivered += 1;
+            } else {
+                self.sd.failed += 1;
+            }
         }
         match d.origin {
             O_MS => {
@@ -572,6 +588,7 @@ impl Site {
                 let (service_kind, source) = match d.what {
                     SD_DGNA => (SK_SUPPL, DGNAI),
                     SD_TGLIST => (SK_REG, TATTSI),
+                    SD_DIVERT => (SK_DIVERT, DIVERTI), // 6.6.7.1.1.1 b)
                     _ => (SK_IND_UDT, SDMI),
                 };
                 let a = Ahoy {
@@ -602,21 +619,23 @@ impl Site {
         let s = &mut self.sd.sds[i];
         s.tries -= 1;
         s.next_ms = now + self.cfg.ahoy_every_ms as i64;
-        let solicit = !d.group;
-        if d.what != SD_UDT && d.what != SD_DGNA {
+        let notice = d.what == SD_NOTICE;
+        let solicit = !d.group && !notice;
+        if !matches!(d.what, SD_UDT | SD_DGNA | SD_NOTICE) {
             return Some(self.train_start(&[(DT_CSBK, pdu12(&Self::status_ahoy(&d)))], solicit));
         }
         // 6.6.4.1.4: the header (A = 1 to an MS, 6.5.1.2 table 6.34), then the blocks as they came
         let h = UdtHead {
             op: if d.what == SD_DGNA { OP_DGNAHD } else { OP_UDTHD }, // table 6.69
             group: d.group,
-            response: !d.group,
+            response: solicit,
             emergency: d.emergency,
             format: d.value,
             target: d.dst,
             source: d.src,
             pad_nibble: d.head.pad_nibble,
             blocks: d.blocks.n,
+            sf: notice, // 6.6.7.2: Supplementary_Flag 1, UDT Response 0
             ..Default::default()
         };
         let mut t = [(0u8, [0u8; 12]); TRAIN];
@@ -696,7 +715,7 @@ impl Site {
     /// C_ACKU / C_NACKU for a transaction: true when it was one's.
     pub(super) fn sd_ack(&mut self, a: &Ack) -> bool {
         // the caller refusing to upload (6.6.4.2: it may answer C_AHOY from SDMI with C_NACKU)
-        if matches!(a.target, SDMI | DGNAI | TATTSI) {
+        if matches!(a.target, SDMI | DGNAI | TATTSI | DIVERTI) {
             if let Some(i) = (0..SDS).find(|&i| {
                 let d = &self.sd.sds[i];
                 d.used && d.state == S_UPLOAD && d.src == a.source
@@ -795,6 +814,26 @@ impl Site {
                 self.sd.sds[i].next_ack_ms = now + ACK_EVERY_MS;
             }
         }
+    }
+
+    /// A diverted address to a caller (SD_NOTICE): source MSI or GPI, blocks the Address Format. False when
+    /// no transaction is free.
+    pub(super) fn sd_notice(&mut self, caller: u32, source: u32, blocks: &Blocks) -> bool {
+        let Some(i) = self.sd_free() else { return false };
+        self.sd.sds[i] = Sd {
+            used: true,
+            what: SD_NOTICE,
+            state: S_GROUP,
+            value: FMT_ADDRESS,
+            tries: FINAL_REPEATS as u8,
+            src: source,
+            dst: caller,
+            blocks: *blocks,
+            head: UdtHead { blocks: blocks.n, ..Default::default() },
+            next_ms: self.now,
+            ..Default::default()
+        };
+        true
     }
 
     // ── the application and the network ──

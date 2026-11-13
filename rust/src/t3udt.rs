@@ -21,14 +21,17 @@ pub const OP_DGNAHU: u8 = 37;
 
 // Gateways and identifiers (annex A.4, table A.8) that the data services use
 pub const LINEI: u32 = 0xFFFEC2;
+pub const PABXI: u32 = 0xFFFEC1;
 pub const IPI: u32 = 0xFFFEC3;
 pub const SUPLI: u32 = 0xFFFEC4;
 pub const SDMI: u32 = 0xFFFEC5;
+pub const MSI: u32 = 0xFFFEC7; // call diversion to an MS
 pub const DIVERTI: u32 = 0xFFFEC9;
 pub const DISPATI: u32 = 0xFFFECB;
 pub const STUNI: u32 = 0xFFFECC;
 pub const AUTHI: u32 = 0xFFFECD;
 pub const KILLI: u32 = 0xFFFECF;
+pub const GPI: u32 = 0xFFFECE; // call diversion to a talkgroup
 pub const DGNAI: u32 = 0xFFFED6;
 
 // Service_Kind (7.2.12, table 7.49)
@@ -46,6 +49,7 @@ pub const R_STORE_FORWARD: u8 = 0x61;
 pub const R_POLL_TS: u8 = 0x63; // Accepted for the Status Polling Service, by the TS
 pub const R_POLL_MS: u8 = 0x47; // the same by the MS (mirrored by the TS)
 pub const R_TEMP_USER_REFUSED: u8 = 0x22;
+pub const R_TRANSIENT_SYS_REFUSED: u8 = 0x23;
 pub const R_DIV_CAUSE_FAIL: u8 = 0x26;
 pub const R_UDT_CRC: u8 = 0x30; // CRC error in the UDT upload phase
 pub const R_MS_NOT_SUPPORTED: u8 = 0x00;

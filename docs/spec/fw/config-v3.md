@@ -502,6 +502,8 @@ tier3.md section 4 and 3.8; the manager's `cfg` documents override them (tier3.m
 | `refuse_unlisted` | `denied`, `refused` | `denied` | |
 | `foacsu` | bool | false | |
 | `dgna_from_ms` | bool | false | MSs may assign talkgroups to other MSs (DGNA, tier3.md 3.11); the site's own DGNA needs no setting |
+| `ambient_listening` | bool | false | MSs may ask for the Ambient Listening Service (an individual call the called MS answers by transmitting, tier3.md 3.12) |
+| `call_diversion` | bool | true | MSs may divert their calls to another MS or a talkgroup (tier3.md 3.12) |
 | `data_gateway` | integer | 0 | the site's own data ID besides TSI: packet data to it goes to the site's IP gateway (tier3.md 3.10); 0 none |
 | `timers` | object | tier3.md 3.8 | |
 | `broadcast` | object | 5, 10, 6 | `adjacent_s`, `chan_freq_s`, `local_time_s`: 0 (off) or 1-600 |

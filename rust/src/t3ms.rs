@@ -9,7 +9,7 @@ use core::ffi::c_int;
 
 use crate::t3pdu::*;
 use crate::t3site::{
-    DataGrant, DataHead, DataMsg, CARRIERS, DPF_CONFIRMED, DPF_RESPONSE, DPF_UNCONFIRMED, MSG_BLOCKS, SAP_IP, SO_SIMI,
+    DataGrant, DataHead, DataMsg, CARRIERS, DEP_ALS, DIV_ON, DPF_CONFIRMED, DPF_RESPONSE, DPF_UNCONFIRMED, MSG_BLOCKS, SAP_IP, SO_SIMI,
     VOICE_FRAME, VOICE_HEADER, VOICE_TERM,
 };
 use crate::t3udt::*;
@@ -35,6 +35,8 @@ pub const F_CONFIRMED: u8 = 0x04; // DO_DATA: confirmed data
 pub const F_MULTI: u8 = 0x08; // DO_DATA: multi-item (P_MAINT after the item)
 pub const F_LIST: u8 = 0x10; // DO_REGISTER: with the talkgroup list set by register_list
 pub const DO_DGNA: u8 = 10; // assign talkgroups to an MS (send_dgna): arg the MS
+pub const DO_DIVERT: u8 = 11; // set or clear a call diversion (divert, divert_clear): arg MSI, GPI, TSI or DIVERTI
+pub const F_ALS: u8 = 0x20; // DO_PRIVATE: an Ambient Listening Service call (it listens, the called MS talks)
 
 pub const IDLE: u8 = 0;
 pub const ACCESS: u8 = 1;
@@ -51,6 +53,8 @@ const WAIT_MS: i64 = 30_000; // after C_WACKD / C_QACKD / MS_Alerting, the longe
 const HUNT_SLOTS: u32 = 100; // TSCC slots without C_ALOHA before trying the next carrier
 const MAINT_REPEATS: u8 = 4;
 const DATA_ACK_MS: i64 = 3000; // confirmed data: the longest wait for the response
+const ALS_LIFE_MS: i64 = 10_000; // T_ALS_REQUEST_LIFE_SPAN (table A.1: 1 s to 10 s)
+const ALS_MS: i64 = 10_000; // T_ALS, how long an ALS call's called MS transmits (table A.1: 10 s to 300 s)
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -180,6 +184,16 @@ pub struct Ms {
     reg_info: u8,     // the Response_Info of the last registration's C_ACK
     dgna: [u32; 16],  // the talkgroups DGNA gave it (fifteen by address, the sixteenth by alias)
     dgna_n: u32,
+    // supplementary services
+    stunned: bool,
+    no_stun: bool, // answers stun/revive MSNot_Supported
+    no_als: bool,  // answers an ALS radio check MSNot_Supported
+    als_from: u32, // the caller of an ALS radio check it accepted
+    als_until: i64,
+    als_on: bool,       // on the payload channel of an ALS call, transmitting for the caller
+    diverted: u32,      // the last diverted address a request of its own got (6.6.7.2)
+    diverted_src: u32,  // MSI or GPI
+    diverted_n: u32,
 }
 
 impl Ms {
@@ -306,6 +320,36 @@ impl Ms {
         (self.dgna, self.dgna_n)
     }
 
+    /// Which supplementary services it doesn't support (it answers C_NACKU MSNot_Supported): stun/revive, ALS.
+    pub fn refuse_supp(&mut self, stun: bool, als: bool) {
+        self.no_stun = stun;
+        self.no_als = als;
+    }
+
+    /// Stunned by the site (6.4.9): no user services until revived.
+    pub fn stunned(&self) -> bool {
+        self.stunned
+    }
+
+    /// Queues a call diversion of the kinds (DIV_* bits) to an MS, or a talkgroup with group (6.6.7.1).
+    pub fn divert(&mut self, to: u32, group: bool, kinds: u8, at_ms: i64) -> bool {
+        let Some(b) = AddrList::blocks(true, &[to]) else { return false };
+        self.sd_out = b;
+        self.sd_fmt = FMT_ADDRESS;
+        let gw = if group { GPI } else { MSI };
+        self.act(DO_DIVERT, gw, u32::from(DIV_ON | (kinds & 0x0F)), 0, at_ms)
+    }
+
+    /// Queues clearing its own diversions of the kinds, or (incoming) the ones that point at it (6.6.7.1.2).
+    pub fn divert_clear(&mut self, incoming: bool, kinds: u8, at_ms: i64) -> bool {
+        self.act(DO_DIVERT, if incoming { DIVERTI } else { TSI }, u32::from(kinds & 0x0F), 0, at_ms)
+    }
+
+    /// The last diverted address its requests got: (MSI or GPI, the address, how many).
+    pub fn diverted(&self) -> (u32, u32, u32) {
+        (self.diverted_src, self.diverted, self.diverted_n)
+    }
+
     /// The status it answers a poll with.
     pub fn set_status(&mut self, status: u8) {
         self.status_reply = status;
@@ -381,6 +425,7 @@ impl Ms {
             },
             DO_PRIVATE => Rand {
                 service_options: emergency,
+                dep: if a.flags & F_ALS != 0 { DEP_ALS } else { 0 }, // table 6.40: ALS_SERV
                 service_kind: SK_IND_VOICE,
                 target: a.arg,
                 source: self.id,
@@ -415,6 +460,19 @@ impl Ms {
                 source: self.id,
                 ..Default::default()
             },
+            // 6.6.7.1.2 tables 6.61, 6.64: Service_Options DIVONOFF and the kinds; SDATA_VAL the blocks less one
+            DO_DIVERT => {
+                let so = a.talk_ms as u8;
+                let set = so & DIV_ON != 0;
+                Rand {
+                    service_options: so,
+                    dep: if set { self.sd_out.n.max(1) - 1 } else { 0 },
+                    service_kind: SK_DIVERT,
+                    target: a.arg,
+                    source: self.id,
+                    ..Default::default()
+                }
+            }
             // 6.6.3.2.1 table 6.50
             DO_DATA => Rand {
                 service_options: emergency | if a.flags & F_MULTI != 0 { SO_SIMI } else { 0 },
@@ -429,6 +487,10 @@ impl Ms {
     }
 
     fn start(&mut self, a: Action) {
+        if self.stunned && !matches!(a.what, DO_REGISTER | DO_DEREGISTER) {
+            self.calls_failed += 1; // 6.4.9: no user services while stunned
+            return;
+        }
         if self.has_cur && a.what == DO_CANCEL {
             self.calls_failed += 1; // the call it cancels
         }
@@ -444,7 +506,7 @@ impl Ms {
     }
 
     fn done(&mut self, ok: bool) {
-        if self.has_cur && matches!(self.cur.what, DO_GROUP | DO_PRIVATE | DO_SDM | DO_STATUS | DO_DATA | DO_DGNA) {
+        if self.has_cur && matches!(self.cur.what, DO_GROUP | DO_PRIVATE | DO_SDM | DO_STATUS | DO_DATA | DO_DGNA | DO_DIVERT) {
             if ok {
                 self.calls_done += 1;
             } else {
@@ -466,6 +528,7 @@ impl Ms {
         self.pd_in_on = false;
         self.pd_resp = None;
         self.pd_leave = false;
+        self.als_on = false;
     }
 
     /// Outbound slot k on channel ch (a block when dt isn't 0); at: the CACH's AT bit for the next slot.
@@ -547,6 +610,9 @@ impl Ms {
 
     /// A data channel grant (6.6.3.2.7): its own call, a call to it, or (idle) one to its talkgroup.
     fn on_data_grant(&mut self, g: &DataGrant) {
+        if self.stunned {
+            return;
+        }
         let asked = self.has_cur && matches!(self.state, ACCESS | WAITING);
         let mine = asked && self.cur.what == DO_DATA && g.source == self.id && g.target == self.cur.arg;
         let to_me = if g.group() { self.my_tg(g.target) } else { g.target == self.id };
@@ -646,6 +712,9 @@ impl Ms {
     /// A UDT header or appended block on the TSCC (6.6.4.7): data for it or its talkgroup is taken, and an
     /// individual one with A set answered.
     fn on_udt(&mut self, dt: u8, blk: &[u8; 12]) {
+        if self.stunned {
+            return;
+        }
         if dt == DT_DATA_HDR {
             let mut p = [0u8; 10];
             p.copy_from_slice(&blk[..10]);
@@ -674,6 +743,19 @@ impl Ms {
             return; // no answer: the TSCC sends it again
         }
         let h = self.in_head;
+        if h.sf && !h.group && h.op == OP_UDTHD && matches!(h.source, MSI | GPI) {
+            // 6.6.7.2: the called MS diverted what it asked for; the request ends
+            let mut d = [0u8; MAX_DATA];
+            let n = self.in_blocks.data(&mut d);
+            let asked = self.has_cur && matches!(self.state, ACCESS | WAITING);
+            if asked && matches!(self.cur.what, DO_PRIVATE | DO_SDM | DO_STATUS | DO_DATA) {
+                self.diverted = AddrList::of(&d[..n]).a[0];
+                self.diverted_src = h.source;
+                self.diverted_n += 1;
+                self.done(false);
+            }
+            return;
+        }
         if !h.group && h.response {
             let reason = match self.answer {
                 ANSWER_SILENT => return,
@@ -720,7 +802,12 @@ impl Ms {
         if self.cur.what == DO_DGNA && a.source != self.cur.arg && a.source != DGNAI {
             return;
         }
-        if matches!(self.cur.what, DO_SDM | DO_DGNA) && reason_type(a.reason) == 1 && self.up_len == 0 {
+        if self.cur.what == DO_DIVERT && a.source != self.cur.arg {
+            return; // C_ACKD comes from the C_RAND's target (6.6.7.1.1.2)
+        }
+        let upload = matches!(self.cur.what, DO_SDM | DO_DGNA)
+            || (self.cur.what == DO_DIVERT && self.cur.talk_ms as u8 & DIV_ON != 0);
+        if upload && reason_type(a.reason) == 1 && self.up_len == 0 {
             return; // a final answer before its upload: a repeat of the last one's
         }
         if a.reason == R_POLL_MS && self.cur.what == DO_STATUS {
@@ -754,6 +841,31 @@ impl Ms {
     }
 
     fn on_ahoy(&mut self, a: &Ahoy) {
+        if a.source == STUNI && a.service_kind == SK_SUPPL {
+            // 6.4.9.1 table 6.19: Service_Kind_Flag 0 stun, 1 revive; Message_Accepted, or MSNot_Supported
+            let reason = if self.no_stun { R_MS_NOT_SUPPORTED } else { R_MESSAGE_ACCEPTED };
+            if !self.no_stun {
+                self.stunned = !a.service_kind_flag;
+            }
+            let r = Ack { op: OP_ACKU, reason, target: STUNI, source: self.id, ..Default::default() };
+            self.reply = Some(r.encode());
+            return;
+        }
+        if self.stunned {
+            return; // it takes no user services (6.4.9)
+        }
+        if a.als && a.service_kind == SK_IND_VOICE && !a.group {
+            // 6.6.2.6.2 table 6.47: an ALS radio check; accepted, it transmits on a matching grant in time
+            let reason = if self.no_als { R_MS_NOT_SUPPORTED } else { R_MESSAGE_ACCEPTED };
+            if !self.no_als {
+                self.als_from = a.source;
+                self.als_until = self.now + ALS_LIFE_MS;
+            }
+            self.ahoys += 1;
+            let r = Ack { op: OP_ACKU, reason, target: a.source, source: self.id, ..Default::default() };
+            self.reply = Some(r.encode());
+            return;
+        }
         if a.service_kind == SK_CANCEL {
             self.alert_caller = 0;
             let caller = a.source;
@@ -774,6 +886,7 @@ impl Ms {
             (SDMI, SK_IND_UDT | SK_TG_UDT) => Some(DO_SDM),
             (DGNAI, SK_SUPPL) => Some(DO_DGNA),
             (TATTSI, SK_REG) if a.service_kind_flag => Some(DO_REGISTER),
+            (DIVERTI, SK_DIVERT) => Some(DO_DIVERT),
             _ => None,
         };
         if let Some(what) = upload {
@@ -801,6 +914,19 @@ impl Ms {
                         ..Default::default()
                     };
                     (h, self.reg_list)
+                }
+                DO_DIVERT => {
+                    // table 6.63: to MSI or GPI, the Address Format, A 0, SF 0, UDT_DIV 1
+                    let h = UdtHead {
+                        op: OP_UDTHU,
+                        option: true,
+                        format: FMT_ADDRESS,
+                        target: self.cur.arg,
+                        source: self.id,
+                        blocks: self.sd_out.n,
+                        ..Default::default()
+                    };
+                    (h, self.sd_out)
                 }
                 _ => {
                     let h = UdtHead {
@@ -867,6 +993,9 @@ impl Ms {
     }
 
     fn on_grant(&mut self, g: &Grant) {
+        if self.stunned {
+            return;
+        }
         let asked = self.has_cur && matches!(self.state, ACCESS | WAITING);
         let (mine, follow) = match g.op {
             OP_PV_GRANT => {
@@ -906,6 +1035,16 @@ impl Ms {
         self.pay_group = g.op != OP_PV_GRANT;
         self.pay_src = g.source;
         self.pay_dst = g.target;
+        if mine && self.cur.flags & F_ALS != 0 {
+            self.talking = false; // it listens
+        }
+        // 6.6.2.6.2: the grant that follows an accepted ALS radio check, in time: it transmits (as OACSU)
+        let als = g.op == OP_PV_GRANT && g.target == self.id && g.source == self.als_from && self.now < self.als_until;
+        if als && !mine {
+            self.als_from = 0;
+            self.als_on = true;
+            self.talking = true;
+        }
     }
 
     /// A voice burst heard on its payload channel (from the air's repeat of another MS).
@@ -989,12 +1128,18 @@ impl Ms {
             return Some(t);
         }
         let group = self.pay_group as u8;
-        let dst = if self.mine { self.cur.arg } else { self.pay_dst };
+        let dst = if self.mine {
+            self.cur.arg
+        } else if self.als_on {
+            self.pay_src
+        } else {
+            self.pay_dst
+        };
         let voice = |what, s: &Ms| MsTx { ch: s.ch as u8, kind: TX_VOICE, what, group, src: s.id, dst, ..Default::default() };
         if self.talking {
             if !self.header_sent {
                 self.header_sent = true;
-                self.talk_end = self.now + self.cur.talk_ms as i64;
+                self.talk_end = self.now + if self.als_on { ALS_MS } else { self.cur.talk_ms as i64 };
                 return Some(voice(VOICE_HEADER, self));
             }
             if self.now >= self.talk_end {

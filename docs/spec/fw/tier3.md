@@ -43,6 +43,7 @@ Principles:
 | Short data | UDT short data on the TSCC both ways (C_UDTHD/C_UDTHU, 1-4 rate 1/2 blocks, up to 46 octets), stored and forwarded MS to MS, MS to talkgroup, MS to site and site to MS; status messages and status polling; across sites in mqtt-net's `sdata` item (3.9, 5.9) |
 | Packet data | Individual and talkgroup packet data calls (C_RAND 0010b/0011b): the availability check (C_AHOY 0010b), PD_GRANT/TD_GRANT single or multi-item, the payload channel in data mode (each data burst repeated), confirmed and unconfirmed data, data hang time and clearing; MS to MS, MS to talkgroup, MS to the site's IP gateway (TSI, its data ID or IPI) and the gateway's replies down (3.10) |
 | Talkgroup lists | Registration with a talkgroup subscription/attachment list (C_AHOY from TATTSI, the Address Format upload, one Response_Info bit per talkgroup); DGNA from an MS (C_AHOY from DGNAI, C_DGNAHU then C_DGNAHD) or from the site, both modes; the site carries the talkgroups either list holds (3.11) |
+| Supplementary services | Stun and revive without authentication from the site (C_AHOY from STUNI; a stunned MS gets no user services); the Ambient Listening Service between MSs at the site (a setting); call diversion of voice, packet data, short data and status to an MS or a talkgroup, set, cleared and cancelled by the recipient, the caller told the diverted address (3.12) |
 | Refusals | C_NACKD(Not_Supported) for every other Service_Kind; Called_Party_Busy, Called_Group_Not_Allowed, Perm_User_Refused as provisioning says |
 | Network | Wide-area group calls both ways; individual calls across sites with an availability check over the network; Tier II to Tier III and back; registration records; site description; provisioning from the manager, cached at the site |
 | Services | The site controller (Rust, in RFG), the radio layer (C, in RFG), the router's additions, the manager and its dashboard (Python, network services), the MS simulator |
@@ -54,7 +55,9 @@ Packet data across sites, multi-part packet data (extended addresses through gat
 short data to gateways (extended addresses, supplementary data), power
 save, mass re-registration,
 Vote Now, C_MOVE and a second TSCC, composite TSCC, TSCCAS, the asynchronous (hibernating) TSCC, DGNA across sites
-for the site's records (a roaming MS's dynamic talkgroups), stun/revive/kill, gateways (PSTN, PABX, dispatcher), duplex calls, ambient listening, emergency pre-emption of a
+for the site's records (a roaming MS's dynamic talkgroups), stun/revive with authentication and kill (6.4.9.2,
+6.4.10), ALS across sites or from the site, payload interrupt in an ALS call, call diversion to gateways or across
+sites, gateways (PSTN, PABX, dispatcher), duplex calls, emergency pre-emption of a
 running call, a standby controller, trunking on the W12 (the LR2021 can't stay keyed: slot-timing.md), two carriers
 out of one SDR, authentication (owner's go-ahead first), encryption beyond pass-through.
 
@@ -212,8 +215,9 @@ default 10 s). On expiry the controller abandons the request.
 ### 3.7 Refusals
 
 Every C_RAND Service_Kind other than 0000b, 0001b, 0010b, 0011b (packet data, 3.10), 0100b, 0101b, 0111b (short
-data and status, 3.9), 1001b (Call Answer), 1110b and 1111b gets C_NACKD(Not_Supported) (4.2). Gateway addresses
-(PSTNI and the rest) as targets also get Not_Supported, TSI excepted for short data, status and packet data, and IPI
+data and status, 3.9), 1000b (call diversion, 3.12), 1001b (Call Answer), 1101b to DGNAI (3.11), 1110b and 1111b
+gets C_NACKD(Not_Supported) (4.2). A stunned MS's requests get Perm_User_Refused, and requests to it MSaway_Refused
+(3.12). Gateway addresses (PSTNI and the rest) as targets also get Not_Supported, TSI excepted for short data, status and packet data, and IPI
 for packet data with nothing to upload. UDT polling (0110b) likewise.
 
 ### 3.8 Timers and constants (settings, under the app's `timers`)
@@ -294,8 +298,8 @@ From the site (`rdof_t3_sd_send`, rdof/t3.h): UDT short data, a status or a poll
 the result comes as an `EV_SD` event with the caller's tag.
 
 Not built: short data to gateways and extended addresses (the multi-part addressing), supplementary data, UDT
-polling (0110b: Not_Supported), the optional availability check before an individual download, call diversion of
-short data.
+polling (0110b: Not_Supported; Div_Cause_Fail when the polled MS diverted its short data, 3.12), the optional
+availability check before an individual download.
 
 ### 3.10 Packet data calls (361-4 6.6.3)
 
@@ -385,6 +389,60 @@ aren't carried with its record (1.2).
 Choices where 361-4 leaves them open: the registration is validated before the list is asked for; the final C_ACK's
 source is TATTSI, as the refusal's; the One-key flag and alias text pass through unread.
 
+### 3.12 Supplementary services: stun/revive, ambient listening, call diversion (361-4 6.4.9, 6.6.2.6, 6.6.7)
+
+The code is `rust/src/t3supp.rs` (a child of t3site; the diversion upload and the notice go through the short data
+transactions of 3.9); the MS side is in `t3ms`. Results come as `EV_ACTIVITY` kind `ACT_SUPP` (6): op 1 stun,
+2 revive, 3 divert, 4 divert cleared; src the MS, dst STUNI or the address, reason the air reason (0x60 done).
+
+Stun and revive without authentication (6.4.9.1), from the site only (the `stun` / `revive` commands,
+`rdof_t3_command`; in 361-4 only the TSCC's gateway STUNI does it):
+
+1. C_AHOY (table 6.19): Service_Options_Mirror 0, Service_Kind_Flag 0 stun / 1 revive, ALS 0, G/I 0, no blocks,
+   Service_Kind 1101b, target the MS, source STUNI; sent every `ahoy_every_ms` up to `ahoy_tries` times.
+2. C_ACKU(Message_Accepted) to STUNI: done; the site keeps the MS stunned (32 at most) or forgets it. C_NACKU
+   (MSNot_Supported, or any refusal): reported, nothing kept. No answer: reported as MSaway_Refused.
+3. A stunned MS "may not request nor receive any user initiated services" (6.4.9): its requests get
+   C_NACKD(Perm_User_Refused), cancel excepted; individual calls, short data, statuses and packet data to it get
+   MSaway_Refused at once (it wouldn't answer the check). Registration stays. The state is in RAM only: a restart
+   forgets it (the MS stays stunned until revived).
+4. With authentication (6.4.9.2, 6.4.10) the MS answers the same C_AHOY with C_ACVIT (its challenge) and the TSCC
+   answers C_ACKD(Authentication_Response). Not built: such an MS doesn't answer C_ACKU and the job ends with no
+   answer. The hook is `stun_answer` in t3supp.rs, for the authentication module. Kill (6.4.10, KILLI) needs
+   authentication and isn't offered (`kill`: refused).
+
+Ambient Listening Service (6.6.2.6), only with `ambient_listening`:
+
+1. C_RAND individual voice with ALS_SERV 1 (table 6.40: the dependent bits are SUPED_VAL, ALS_SERV, reserved).
+   Without the setting, C_NACKD(Not_Supported). The called MS not at this site: Not_Supported (not carried across).
+2. As an OACSU individual call (3.5), but the radio check is table 6.46: Service_Options_Mirror 0, Service_Kind_Flag
+   0, ALS_SERV 1, Service_Kind 0000b, source the caller. C_ACKU(Message_Accepted) goes on to the grant;
+   C_NACKU(MSNot_Supported) is mirrored to the caller. The grant carries nothing of ALS (6.6.2.6.2 note).
+3. On the payload channel the called MS transmits for T_ALS (an MS timer) and ends with P_MAINT DISCON; the site
+   clears the call as any. Payload interrupt (6.4.14, 6.4.15) isn't built; the ALS de-key request (6.4.14.3.4) neither.
+
+Call diversion (6.6.7), on unless `call_diversion` is false (then C_NACKD(Not_Supported) from the C_RAND's target):
+
+1. Set (DIVONOFF 1, table 6.61): C_RAND 1000b to MSI (to an MS) or GPI (to a talkgroup), Divert Kind the services
+   (voice, packet data, UDT short data, status), SDATA_VAL the blocks less one. C_AHOY from DIVERTI (Service_Kind
+   1000b, Appended_Blocks as asked), the upload slots, C_UDTHU (table 6.63: target MSI or GPI, the Address Format,
+   A 0, SF 0), then C_ACKD from the C_RAND's target (table 6.60): Message_Accepted, or Transient_Sys_Refused for
+   an address that can't be (the MS itself, a gateway, an all-call, a talkgroup outside `tg`, another format).
+   PSTNI, PABXI, LINEI, DISPATI and IPI get Transient_Sys_Refused at once: no such gateway here.
+2. Clear (DIVONOFF 0, single part): to TSI clears the MS's own diversions of the kinds given; to DIVERTI clears the
+   other MSs' diversions to this MS (table 6.64; talkgroup diversions only their MS clears). C_ACKD(Message_Accepted)
+   from TSI or DIVERTI.
+3. Diverting (6.6.7.2): an individual voice call (not ALS), packet data, UDT short data or status request to a
+   diverted MS gets a UDT header instead (C_UDTHD: SF 1, A 0, target the caller, source MSI or GPI by table 6.65,
+   the Address Format with the diverted address), sent twice; the request ends there. A UDT poll gets
+   C_NACKD(Div_Cause_Fail) (6.6.5.1.1). A caller that is the diverted address gets the call as usual.
+4. The site keeps 32 MSs' diversions, one address per kind, in RAM, apart from registration: they last until
+   cleared (or a restart), registered or not. Requests from the network to a diverted MS aren't diverted.
+
+Choices where 361-4 leaves them open: the diversion notice's source is MSI or GPI (table 6.65), though the call
+procedures say DIVERTI (6.6.2.2.5 and others); a stunned MS's requests get Perm_User_Refused; requests to it
+MSaway_Refused; ALS is off by default, diversion on.
+
 ## 4. Settings (config-v3 `tier3` app)
 
 The app takes the place reserved for it in config-v3.md section 6 ("a control frequency and a pool; it assigns its own
@@ -430,6 +488,8 @@ paths").
 | `static_tg` | ID set | `""` | talkgroups the site always subscribes to on the network (as a Tier II repeater's `tg`) |
 | `foacsu` | bool | false | full off-air call setup for individual calls |
 | `dgna_from_ms` | bool | false | MSs may assign talkgroups to other MSs (DGNA, 3.11); off: Not_Supported. The site's own DGNA always goes |
+| `ambient_listening` | bool | false | MSs may ask for the Ambient Listening Service (3.12); off: Not_Supported |
+| `call_diversion` | bool | true | MSs may divert their calls to an MS or a talkgroup (3.12); off: Not_Supported |
 | `data_gateway` | integer | 0 | the site's own data ID besides TSI (1-16776415): packet data to it, to TSI or to IPI goes to the site's IP gateway (3.10) |
 | `timers` | object | section 3.8 | |
 | `broadcast` | object | section 3.2 | `adjacent_s`, `chan_freq_s`, `local_time_s` (0 = off) |
@@ -734,7 +794,7 @@ void   rdof_t3_policy(rdof_t3_site_t *s, const rdof_t3_policy_t *p);   /* ID set
 void   rdof_t3_ms_policy(rdof_t3_site_t *s, uint32_t ms, const rdof_t3_ms_policy_t *p);
 bool   rdof_t3_load_record(rdof_t3_site_t *s, const rdof_t3_record_t *r);
 void   rdof_t3_withdraw(rdof_t3_site_t *s, bool off);
-bool   rdof_t3_command(rdof_t3_site_t *s, const char *cmd, uint32_t arg1, uint32_t arg2);
+bool   rdof_t3_command(rdof_t3_site_t *s, const char *cmd, uint32_t arg1, uint32_t arg2); /* also stun, revive */
 
 /* outputs: drained after each call */
 bool   rdof_t3_event(rdof_t3_site_t *s, rdof_t3_event_t *ev);
@@ -747,7 +807,8 @@ send instead of voice or idle (P_CLEAR, P_GRANT) if any.
 
 Events (`rdof_t3_event_t`, a tagged struct): `CH_OPEN` (ch, call: src, dst, group, kind, emergency, source rf/net,
 stream), `CH_CLOSE` (ch, why), `NET_PUBLISH_SETUP` (setup message), `NET_SUBS` (the talkgroup set changed),
-`RECORD` (write or delete a registration record), `ACTIVITY` (reg/grant/queue/setup event fields), `NET_DROP` (a
+`RECORD` (write or delete a registration record), `ACTIVITY` (reg/grant/queue/setup event fields; `ACT_SUPP`, a
+supplementary service's result, 3.12), `NET_DROP` (a
 network stream won't be carried), `LOG` (a short text line).
 
 Capacities (compile-time constants, `rdof_t3_limits`): 1024 registration records, 8 talkgroups each, 8 payload
@@ -906,6 +967,12 @@ In the network services' own repository (with the router, the Python library and
 - packet data (`send_data`, `rdof_t3ms_data`): one message (SAP 4, confirmed or not, single or multi-item) to an MS,
   a talkgroup or the site; it takes messages addressed to it or its talkgroup (CRCs checked), answers confirmed ones
   with an ACK and leaves the channel as 6.6.3.3.2.5 says;
+- stun and revive: answers C_AHOY from STUNI with Message_Accepted (or MSNot_Supported, `refuse_supp`) and,
+  stunned, makes no requests and answers no checks, grants or downloads;
+- ALS (`F_ALS`): asks for an ALS call and listens; called, answers the ALS radio check Message_Accepted (or
+  MSNot_Supported), then transmits on the matching grant for T_ALS (10 s);
+- call diversion (`divert`, `divert_clear`): sets one (the address upload), clears its own or the incoming ones;
+  takes a diverted address in answer to its request (`diverted`) and ends the request;
 - emergency and priority options; cancel.
 
 `t3air`: a slot-exact air between one site controller and N MSs: TSCC outbound to every MS on the TSCC; inbound
@@ -925,7 +992,11 @@ and against `t3ms` on one air.
 C_AHOY's fields, the Response_Info bits, a talkgroup refused), all accepted, replaced, replaced by a single
 subscription, dropped on deregistration, a refused registration; DGNA MS to MS (address mode, a call on the new
 talkgroup, alias mode, delete all), refusals (off, talkgroup not allowed, itself, the site, not here, the called MS
-refuses), the site's own DGNA | Rust tests (`cargo test`, run by ctest) |
+refuses), the site's own DGNA; supplementary services (`t3sutests.rs`): stun (the C_AHOY's fields, requests from
+and to a stunned MS refused, registration kept) and revive, stun not supported, no answer, kill refused; an ALS call
+(the radio check's fields, the called MS transmits, the caller listens), ALS not supported by the MS, not offered;
+call diversion set, used (voice and short data diverted with the notice's fields, status not), cleared by TSI and
+DIVERTI, to a talkgroup, refusals (off, PSTNI, itself, a talkgroup not allowed), a UDT poll's Div_Cause_Fail | Rust tests (`cargo test`, run by ctest) |
 | C API | Init, a short scenario through the FFI, layouts | C host test `rdof_t3_tests` |
 | Packet data on bursts | MS to MS confirmed data and MS to the site's IP gateway (NAT, the gateway's ACK sent down by the site) over the burst path | `rdof_t3unit_tests` |
 | Radio layer | Burst building (CSBK, MBC, CACH with C_SYS_Parms and AT), parsing back, the slot source in the SDR modem (timing, short LC, AT), payload channel regeneration and P_CLEAR, split output frames | C host tests |

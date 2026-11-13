@@ -61,7 +61,7 @@ impl Site {
     }
 
     /// A talkgroup an MS may hold here: one the site's policy allows, not a gateway or an all-call.
-    fn tgl_allowed(&self, tg: u32) -> bool {
+    pub(super) fn tgl_allowed(&self, tg: u32) -> bool {
         self.policy.tg.contains(tg) && !is_gateway(tg) && !is_allcall(tg)
     }
 
@@ -70,7 +70,7 @@ impl Site {
     /// C_RAND Registration with Trgt_Adr_Cnts 10b (target TATTSI), the registration accepted: C_AHOY from TATTSI
     /// for the list (table 6.11), Appended_Blocks the C_RAND's Appended_UDT_Short_Data. The answer comes after it.
     pub(super) fn tgl_register(&mut self, r: &Rand) {
-        if !self.sd_list_again(r.source) {
+        if !self.sd_again(SD_TGLIST, r.source) {
             self.sd_upload_new(SD_TGLIST, r.source, TATTSI, false, r.service_options, (r.dep & 3) + 1);
         }
     }

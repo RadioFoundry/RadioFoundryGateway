@@ -20,11 +20,18 @@ pub use sdata::{
     rdof_t3_net_sd, rdof_t3_sd_of_event, rdof_t3_sd_send, SdMsg, SD_DGNA, SD_F_EMERGENCY, SD_F_GROUP, SD_POLL,
     SD_RESULT, SD_SEND, SD_STATUS, SD_UDT,
 };
-use sdata::SD_TGLIST;
+use sdata::{SD_DIVERT, SD_TGLIST};
 // talkgroup lists: registration with a list, DGNA (tier3.md 3.11)
 #[path = "t3tglist.rs"]
 mod tglist;
 pub use tglist::{DGNA_TGS, LIST_TGS, TGLISTS};
+// supplementary services: stun/revive, ambient listening, call diversion (tier3.md 3.12)
+#[path = "t3supp.rs"]
+mod supp;
+pub use supp::{
+    ACT_SUPP, DEP_ALS, DIVERSIONS, DIV_KINDS, DIV_ON, DIV_PD, DIV_SD, DIV_STATUS, DIV_VOICE, STUNNED, STUN_JOBS,
+    SUPP_DIVERT, SUPP_DIVERT_CLEAR, SUPP_REVIVE, SUPP_STUN,
+};
 // packet data calls on the payload channels: tier3.md 3.10
 #[path = "t3pdata.rs"]
 mod pdata;
@@ -106,10 +113,12 @@ pub struct Cfg {
     pub sd_tries: u8,
     pub sd_repeats: u8,
     pub dgna_ms: u8,
-    pub pad1: u8,
+    pub als: u8,
     pub sd_store_ms: u32,
     pub data_hang_ms: u32,
     pub data_id: u32,
+    pub divert: u8,
+    pub pad1: [u8; 3],
 }
 
 #[repr(C)]
@@ -513,6 +522,7 @@ struct Pend {
     deadline_ms: i64,
     next_ahoy_ms: i64,
     next_ack_ms: i64,
+    als: bool, // an Ambient Listening Service call (6.6.2.6)
 }
 
 #[derive(Clone, Copy, Default)]
@@ -607,6 +617,7 @@ pub struct Site {
     sd: sdata::SdState,
     pd: pdata::PdState,
     tgl: tglist::TglState,
+    supp: supp::SuppState,
 }
 
 /// Text into a fixed buffer, NUL terminated, cut when full (LOG events, errors).
@@ -673,6 +684,7 @@ pub fn cfg_default() -> Cfg {
         sd_repeats: 2,
         sd_store_ms: 30_000,
         data_hang_ms: 3000,
+        divert: 1,
         ..Default::default()
     };
     c.carriers[0] = Carrier { tx_hz: 438_750_000, rx_hz: 438_250_000, chan: 1, tscc: 1, enabled: 1 };
@@ -1475,6 +1487,9 @@ impl Site {
     // ── service requests ──
 
     fn service(&mut self, r: &Rand) {
+        if self.supp_gate(r) {
+            return; // stunned, diverted, or a diversion request
+        }
         match r.service_kind {
             SK_IND_VOICE | SK_TG_VOICE => self.call_request(r),
             SK_CALL_ANSWER => self.call_answer(r),
@@ -1593,6 +1608,7 @@ impl Site {
             called: dst,
             since_ms: self.now,
             next_ack_ms: self.now + WACK_EVERY_MS,
+            als: r.dep & DEP_ALS != 0,
             ..Default::default()
         };
         if self.reg_index(dst).is_some() {
@@ -1604,6 +1620,8 @@ impl Site {
             self.ack(R_WAIT, ms, dst);
             self.pend[i] = p;
             self.ahoy_tick(i);
+        } else if p.als {
+            self.refuse(R_NOT_SUPPORTED, ms, dst); // ALS isn't carried across sites
         } else if self.connected && self.ms_policy(ms).wide_private != 0 {
             p.state = P_NET;
             p.stream = self.new_stream();
@@ -1671,10 +1689,11 @@ impl Site {
             self.fail(&p, R_MSAWAY, WHY_NO_ANSWER);
             return;
         }
+        // an ALS radio check (table 6.46): Service_Options_Mirror 0, Service_Kind_Flag 0, ALS_SERV 1
         let a = Ahoy {
-            service_options: p.svc,
-            service_kind_flag: self.cfg.foacsu != 0,
-            als: false,
+            service_options: if p.als { 0 } else { p.svc },
+            service_kind_flag: self.cfg.foacsu != 0 && !p.als,
+            als: p.als,
             group: false,
             appended: 0,
             service_kind: SK_IND_VOICE,
@@ -1690,7 +1709,7 @@ impl Site {
     /// C_ACKU or C_NACKU from a called MS: its source is the AHOY's target.
     fn ms_ack(&mut self, a: &Ack) {
         self.heard(a.source);
-        if self.sd_ack(a) || self.pd_ack(a) {
+        if self.sd_ack(a) || self.pd_ack(a) || self.supp_ack(a) {
             return;
         }
         let Some(i) =
@@ -2176,6 +2195,7 @@ impl Site {
         self.pending_timers();
         self.sd_timers();
         self.pd_timers();
+        self.supp_timers();
         self.channel_timers();
         self.reg_timers();
         let mut out = SlotOut::default();
@@ -2405,6 +2425,7 @@ impl Site {
                 true
             }
             "status" => true,
+            "stun" | "revive" => self.stun(a1, cmd == "revive"), // 6.4.9.1; "kill" (6.4.10) needs authentication
             _ => false,
         }
     }

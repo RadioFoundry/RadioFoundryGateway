@@ -478,6 +478,8 @@ impl<'a> Cx<'a> {
         if !self.bool_of(obj, c"require_registration", path, &mut cfg.reg_required)
             || !self.bool_of(obj, c"foacsu", path, &mut cfg.foacsu)
             || !self.bool_of(obj, c"dgna_from_ms", path, &mut cfg.dgna_ms)
+            || !self.bool_of(obj, c"ambient_listening", path, &mut cfg.als)
+            || !self.bool_of(obj, c"call_diversion", path, &mut cfg.divert)
         {
             return false;
         }
