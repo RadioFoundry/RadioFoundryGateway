@@ -48,7 +48,7 @@ Principles:
 | TSCC modes | C_MOVE on command (all MSs or one, to another TSCC's logical channel); the asynchronous (hibernating) TSCC, woken by BS_Dwn_Act or any good inbound block; a setting, off by default (section 3.12) |
 | Power save | PowerSave_RQ in registration, PowerSave_Offset in the C_ACKD (6.4.7.2.1); C_AHOYs to a sleeping MS held for its wake frame; a setting, off by default (section 3.11) |
 | Short data | UDT short data on the TSCC both ways (C_UDTHD/C_UDTHU, 1-4 rate 1/2 blocks, up to 46 octets), stored and forwarded MS to MS, MS to talkgroup, MS to site and site to MS; status messages and status polling; across sites in mqtt-net's `sdata` item (3.15, 5.9) |
-| Packet data | Individual and talkgroup packet data calls (C_RAND 0010b/0011b): the availability check (C_AHOY 0010b), PD_GRANT/TD_GRANT single or multi-item, the payload channel in data mode (each data burst repeated), confirmed and unconfirmed data, data hang time and clearing; MS to MS, MS to talkgroup, MS to the site's IP gateway (TSI, its data ID or IPI) and the gateway's replies down (3.16) |
+| Packet data | Individual and talkgroup packet data calls (C_RAND 0010b/0011b): the availability check (C_AHOY 0010b), PD_GRANT/TD_GRANT single or multi-item, the payload channel in data mode (each data burst repeated), confirmed and unconfirmed data at rate 1/2, 3/4 and 1 (the MS simulator's selective retry: SACK, C_RDATA, F = 0 resends), data hang time and clearing; MS to MS, MS to talkgroup, MS to the site's IP gateway (TSI, its data ID or IPI) and the gateway's replies down (3.16) |
 | Talkgroup lists | Registration with a talkgroup subscription/attachment list (C_AHOY from TATTSI, the Address Format upload, one Response_Info bit per talkgroup); DGNA from an MS (C_AHOY from DGNAI, C_DGNAHU then C_DGNAHD) or from the site, both modes; the site carries the talkgroups either list holds (3.17) |
 | Supplementary services | Stun and revive without authentication from the site (C_AHOY from STUNI; a stunned MS gets no user services); the Ambient Listening Service between MSs at the site (a setting); call diversion of voice, packet data, short data and status to an MS or a talkgroup, set, cleared and cancelled by the recipient, the caller told the diverted address (3.18) |
 | Refusals | C_NACKD(Not_Supported) for every other Service_Kind; Called_Party_Busy, Called_Group_Not_Allowed, Perm_User_Refused as provisioning says |
@@ -530,6 +530,23 @@ the IP gateway app, when the document has one: [ipgw.md](ipgw.md)). What the gat
 sends (its replies, the ACK of a confirmed message) goes down through `rdof_t3unit_data_tx`: on the open channel at
 once, else the site asks for one (`rdof_t3_pd_send`: the availability check to an MS, or TD_GRANT for a talkgroup)
 and sends it when granted, source the site's ID; 30 s at most, one packet at a time.
+
+The MS simulator's side of the data (`rust/src/t3pdrate.rs`, 361-1 8.2.2, 9.2; 361-3 5.3.1, 5.4): a message in
+blocks of one rate, rate 1/2 (data type 7: 12 octets a block, BPTC), rate 3/4 (8: 18, the B.2 trellis) or rate 1
+(10: 24, uncoded); unconfirmed the block is all user data, confirmed its first two octets are the 7-bit serial
+number and the CRC-9 (B.3.10, the rate's mask of table B.21: 0F0h, 1FFh, 10Fh), the rest data (10, 16, 22
+octets); the last block ends with the message's CRC-32 (B.3.9). The header's Blocks to Follow, pad octet count and
+F as 9.2.1 / 9.2.2. Up to 12 blocks a message (140 / 116 octets at rate 1/2, 212 / 188 at rate 3/4, 284 / 260 at
+rate 1, unconfirmed / confirmed). Taking a confirmed message with A set (361-3 5.4.2.2), the MS answers C_RHEAD,
+NI its N(S) (stop and wait): ACK (class 00b, type 001b) when every block's CRC-9 and the CRC-32 hold; NACK (01b,
+001b) when the blocks hold and the CRC-32 doesn't; SACK (10b) with one C_RDATA block (rate 1/2: 8 octets of retry
+flags, block j in octet j / 8 bit j % 8, 0 to retry, then a CRC-32; 9.2.5, figure 8.17) when a block is bad or
+missing, and stays on the channel. The sender sends a SACK's blocks again after a C_HEAD with F = 0, Blocks to
+Follow their count and the same N(S), and all of them (F = 1) after the NACK; the receiver places each block by its
+serial number. Choices: N_RtryLmt (no value in 361-3) is 4 sends; with no response in 3 s (T_RspnsWait) the sender
+gives up rather than sending again; a C_RDATA whose CRC fails is ignored (the sender then times out); another NACK
+ends the call. The site repeats every rate alike (data types 7, 8, 10 regenerated); its own IP gateway's handling
+of the rates is [ipgw.md](ipgw.md)'s.
 
 Choices where 361-4 leaves them open: the TS doesn't poll MSs on the channel (P_AHOY radio check, 6.6.3.3.1.1) and
 doesn't share a data channel between calls; supplementary data (SUPED_SV) is abandoned (6.6.3.2.2 a); a new data
@@ -1125,10 +1142,12 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
   data as ISO 8-bit text up to 46 characters; `1000001 data 3105738 hello`, `cdata` (confirmed), `1000001 gdata 1
   hello all`: a packet data call whose one message is the text, up to 64 octets, in a UDP/IPv4 datagram from port
   5016 to 5016, 12.x.y.z the MS's address (its ID in the low 24 bits) and 225.x.y.z a talkgroup's, sent as rate 1/2
-  blocks; `1000001 setstatus 12`: the status it answers a poll with, else the last it sent, 0 at start). Their state
+  blocks; `data34`, `cdata34`, `gdata34` the same in rate 3/4 blocks, `data1`, `cdata1`, `gdata1` in rate 1;
+  `1000001 setstatus 12`: the status it answers a poll with, else the last it sent, 0 at start). Their state
   changes go to the log (`air MS ID: ...`), and so does the short data and packet data they take (the text; a UDP
-  datagram's addresses and payload). They decode rate 1/2 data only. A real radio's rate 3/4 or rate 1 data is
-  repeated by the site but goes untaken by them. Test:
+  datagram's addresses and payload). They take data at any rate, as a radio sends it (a real radio's confirmed IP
+  data is often rate 3/4): the outbound's data blocks decoded (BPTC, the trellis, or as is at rate 1), the CRCs
+  checked, a confirmed message answered with an ACK, a NACK or a SACK and its retry taken (3.16). Test:
   `rdofradio_e2e_t3_airms`.
 - `--sim-ext PATH`: external MSs (other programs, such as a radio's MS engine built for the host) on the simulated
   air, through a unix socket, beside the N simulated ones (N may be 0). JSON lines in lockstep with the slots: after
@@ -1206,9 +1225,10 @@ In the network services' own repository (with the router, the Python library and
   (`rdof_t3ms_tx_t.offset`), both parties talk (the called MS 2 s), the caller disconnects; `set_no_duplex` answers
   the radio check C_NACKU(MS_Duplex_Not_Supported). `RDOF_T3MS_F_BROADCAST` makes a group call a broadcast call;
   a BTV_GRANT is followed by the talkgroup's members (any MS for an all-call).
-- packet data (`send_data`, `rdof_t3ms_data`): one message (SAP 4, confirmed or not, single or multi-item) to an MS,
-  a talkgroup or the site; it takes messages addressed to it or its talkgroup (CRCs checked), answers confirmed ones
-  with an ACK and leaves the channel as 6.6.3.3.2.5 says;
+- packet data (`send_data`, `rdof_t3ms_data`): one message (SAP 4, confirmed or not, single or multi-item, rate 1/2
+  or with `RDOF_T3MS_F_RATE34` / `RDOF_T3MS_F_RATE1` rate 3/4 or 1) to an MS, a talkgroup or the site; it takes
+  messages at any rate addressed to it or its talkgroup (CRCs checked), answers confirmed ones with an ACK, NACK or
+  SACK, sends a SACK's blocks again (3.16) and leaves the channel as 6.6.3.3.2.5 says;
 - stun and revive: answers C_AHOY from STUNI with Message_Accepted (or MSNot_Supported, `refuse_supp`) and,
   stunned, makes no requests and answers no checks, grants or downloads;
 - ALS (`RDOF_T3MS_F_ALS`): asks for an ALS call and listens; called, answers the ALS radio check Message_Accepted (or
@@ -1234,7 +1254,7 @@ and against `t3ms` on one air.
 | Level | What | Where |
 |---|---|---|
 | PDU codec | Every PDU the site sends or reads: field packing against the 361-4 tables, round trips, known vectors from a standard site's captures (decoded values, not checks) | Rust unit tests |
-| Controller | Scenarios over `t3air`: registration open/listed/denied, collisions and backoff, group call, queue and grant on release, late entry repeats, hang and P_CLEAR, call timer, individual OACSU and FOACSU, no answer, cancel, busy called party, Not_Supported, network group in and out, network setup both ways, Tier II implicit setup, records reload, provisioning changes, link loss; short data (`t3sdtests.rs`): UDT MS to MS, MS, talkgroup and site, 1 to 4 blocks, refusals, store while busy and its timeout, cancel, the kept upload slots, CRC errors and a missing upload, status to MS, talkgroup and site, polling, the site's own sends, a full table, the network both ways; packet data (`t3pdtests.rs`): MS to MS unconfirmed and confirmed, the availability check, PD/TD_GRANT single and multi-item, data hang and clearing, to a talkgroup, to the site (TSI, data ID, IPI), refusals (NACKU mirrored, no answer, not here, multi-part, itself, talkgroup not allowed, busy), queued and cancelled, the site's own sends; talkgroup lists (`t3tgtests.rs`): registration with a list (the
+| Controller | Scenarios over `t3air`: registration open/listed/denied, collisions and backoff, group call, queue and grant on release, late entry repeats, hang and P_CLEAR, call timer, individual OACSU and FOACSU, no answer, cancel, busy called party, Not_Supported, network group in and out, network setup both ways, Tier II implicit setup, records reload, provisioning changes, link loss; short data (`t3sdtests.rs`): UDT MS to MS, MS, talkgroup and site, 1 to 4 blocks, refusals, store while busy and its timeout, cancel, the kept upload slots, CRC errors and a missing upload, status to MS, talkgroup and site, polling, the site's own sends, a full table, the network both ways; packet data (`t3pdtests.rs`): MS to MS unconfirmed and confirmed, rate 3/4 and rate 1 (unconfirmed to an MS and a talkgroup, a damaged block lost; confirmed with a damaged block: SACK, C_RDATA, the F = 0 retry, the ACK; retries to N_RtryLmt; `t3pdrate.rs`: the blocks at each rate, CRC-9 and CRC-32 against the B.3.9 / B.3.10 formulas), the availability check, PD/TD_GRANT single and multi-item, data hang and clearing, to a talkgroup, to the site (TSI, data ID, IPI), refusals (NACKU mirrored, no answer, not here, multi-part, itself, talkgroup not allowed, busy), queued and cancelled, the site's own sends; talkgroup lists (`t3tgtests.rs`): registration with a list (the
 C_AHOY's fields, the Response_Info bits, a talkgroup refused), all accepted, replaced, replaced by a single
 subscription, dropped on deregistration, a refused registration; DGNA MS to MS (address mode, a call on the new
 talkgroup, alias mode, delete all), refusals (off, talkgroup not allowed, itself, the site, not here, the called MS
