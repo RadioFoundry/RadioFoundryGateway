@@ -212,7 +212,24 @@ choices where the text is open).
 - ALS: the called MS gets the radio check C_AHOY (Service_Options_Mirror 0, Service_Kind_Flag 0, ALS 1, Service_Kind
   0000b, source the caller) and answers C_ACKU (0x60 or 0x44) or C_NACKU(MSNot_Supported). Then PV_GRANT, target
   the called MS, source the caller, as an OACSU call: the called MS transmits. Status 123 (end the ALS call) and 125
-  (transmit interrupt) get C_NACKD(Not_Supported) from TSI: the site has no transmit interrupt yet.
+  (transmit interrupt): see 2.7.
 - Packet data payload channel: the site never sends a P_AHOY there (no radio check, selective clear or payload
   authentication), so a P_ACKU (opcode 35) can't be asked for; one sent anyway is ignored. If that check is built,
   the site will take P_ACKU with Message_Accepted or MS_Accepted.
+
+### 2.7 Transmit interrupt, power save, large data (2026-11-13)
+
+- Transmit interrupt (tier3.md 3.20), with `services.transmit_interrupt` on (off: C_NACKD(Not_Supported) from TSI):
+  status 125 to the talkgroup (G/I 1) or to the talker or the other party (G/I 0), status 123 from an ALS caller to
+  the called MS. Every answer comes from TSI: C_ACKD(Message_Accepted), C_NACKD(Not_Supported) or
+  C_NACKD(Perm_User_Refused). The talker gets the RC cease command (0100b) on the other slot of its carrier every
+  360 ms; once it stops, the channel sends P_PROTECT(EN_PTT_ONE_MS), source TSI, target the interrupter, in every
+  other hang burst for up to 2 s. An MS should obey the cease (finish the superframe, terminator, stop) and keep
+  its PTT disabled while P_PROTECTs for another MS come. A talker at another site is de-keyed by its own site the
+  same way: an MS sees no difference.
+- Power save (6.4.7): PowerSave_Offset comes from the MS's subscribed talkgroup (else its ID), so a talkgroup's
+  members with one PowerSave_RQ share a wake frame. A group call to members asleep waits (C_WACKD to the caller,
+  up to 2 s) for that frame; else its Late_Entry grant repeat goes out early in each sleeper's frame. A sleeping
+  MS needs only to wake in its frame.
+- Packet data up to 127 blocks (Blocks to Follow's limit), at each rate; a confirmed message's SACK takes two
+  C_RDATA blocks past 64 (each with its own CRC-32). Across sites the message crosses whole.
