@@ -317,9 +317,15 @@ impl Site {
             _ => rand_status_group(r),
         };
         if what == SD_STATUS {
-            // not served: the transmit interrupt statuses (123, 125; 6.6.6.4) and extended addresses (the Proxy Flag)
+            // not served: the transmit interrupt statuses (123, 125; 6.6.6.4), refused from TSI as 6.4.14.3.3.1 and
+            // 6.4.14.3.4.2 ask ("If Transmit Interrupt is not available the TSCC shall respond C_NACKD (Source = TSI,
+            // Target = Interrupting MS)"), and extended addresses (the Proxy Flag)
             let st = rand_status(r);
-            if matches!(st, 123 | 125) || r.proxy {
+            if matches!(st, 123 | 125) {
+                self.refuse(R_NOT_SUPPORTED, ms, TSI);
+                return;
+            }
+            if r.proxy {
                 self.refuse(R_NOT_SUPPORTED, ms, r.target);
                 return;
             }

@@ -382,6 +382,26 @@ fn ambient_listening_call() {
 }
 
 #[test]
+fn ambient_listening_termination_not_available() {
+    // 6.4.14.3.4.2: status 123 from the ALS caller to the called MS is a Transmit Interrupt request; without
+    // Transmit Interrupt "the TSCC shall respond C_NACKD (Source = TSI, Target = Interrupting MS)" (Not_Supported,
+    // 6.4.14.3.4.3), and the call goes on. 125 (6.4.14.3.3.1) the same.
+    let mut s = site_with(|c| c.als = 1);
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001), ms(1002)], T0);
+    register_all(&mut air, &mut log);
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_PRIVATE, 1002, 0, t3ms::F_ALS, now);
+    assert!(air.until(5000, &mut log.f(), |a| a.inbound[1].is_some_and(|t| t.kind == TX_VOICE)));
+    for st in [123, 125] {
+        let out = inject(&mut air, &mut log, status_rand(st, false, 1002, 1001));
+        let k: Vec<_> = acks(&out, 1001).into_iter().filter(|a| a.op == OP_ACKD).collect();
+        assert!(!k.is_empty() && k.iter().all(|a| (a.reason, a.source) == (R_NOT_SUPPORTED, TSI)));
+    }
+    assert!(air.until(1000, &mut log.f(), |a| a.inbound[1].is_some_and(|t| t.kind == TX_VOICE)));
+}
+
+#[test]
 fn ambient_listening_not_offered() {
     let mut s = site_with(|_| {});
     let mut log = Log::default();
