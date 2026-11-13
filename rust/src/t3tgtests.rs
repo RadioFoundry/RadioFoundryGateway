@@ -230,6 +230,9 @@ fn dgna_ms_to_ms() {
     assert!(air.ms[0].send_dgna(1002, FMT_ADDRESS, &[ADRNULL], false, &[], now));
     assert!(air.until(6000, &mut log.f(), |a| a.ms[0].status().calls_done == 3 && a.ms[0].state() == t3ms::IDLE));
     assert_eq!(&air.ms[1].dgna_tgs().0[..15], &[0; 15]);
+    // 6.6.8.1.1 deletes "all fifteen previous DGNA addresses": the sixteenth (6.6.8.1.2) stays
+    assert_eq!(air.ms[1].dgna_tgs().0[15], 44);
+    assert_eq!(air.site.tg_lists(1002).1[15], 44);
     assert!(!subs(air.site).contains(&22));
 }
 

@@ -317,9 +317,15 @@ impl Site {
             _ => rand_status_group(r),
         };
         if what == SD_STATUS {
-            // not served: the transmit interrupt statuses (123, 125; 6.6.6.4) and extended addresses (the Proxy Flag)
+            // not served: the transmit interrupt statuses (123, 125; 6.6.6.4), refused from TSI as 6.4.14.3.3.1 and
+            // 6.4.14.3.4.2 ask ("If Transmit Interrupt is not available the TSCC shall respond C_NACKD (Source = TSI,
+            // Target = Interrupting MS)"), and extended addresses (the Proxy Flag)
             let st = rand_status(r);
-            if matches!(st, 123 | 125) || r.proxy {
+            if matches!(st, 123 | 125) {
+                self.refuse(R_NOT_SUPPORTED, ms, TSI);
+                return;
+            }
+            if r.proxy {
                 self.refuse(R_NOT_SUPPORTED, ms, r.target);
                 return;
             }
@@ -426,6 +432,11 @@ impl Site {
             };
             if why != 0 {
                 self.sd_done(i, why, 0, WHY_REFUSED);
+                return;
+            }
+            // 6.4.9.0: a stunned MS may not "receive any user initiated services" (as supp_gate for the others)
+            if d.origin == O_MS && self.stunned(d.dst) {
+                self.sd_done(i, R_MSAWAY, 0, WHY_REFUSED);
                 return;
             }
         }

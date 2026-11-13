@@ -1414,6 +1414,8 @@ static void test_cmd(void)
     CHECK(rdof_mn_cmd_parse(stun, sizeof stun - 1, &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_STUN && c.ms == 3100123);
     static const char revive[] = "{\"id\":\"r\",\"cmd\":\"revive\",\"ms\":3100123}";
     CHECK(rdof_mn_cmd_parse(revive, sizeof revive - 1, &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_REVIVE);
+    static const char kill[] = "{\"id\":\"k\",\"cmd\":\"kill\",\"ms\":3100123}";
+    CHECK(rdof_mn_cmd_parse(kill, sizeof kill - 1, &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_KILL && c.ms == 3100123);
     static const char stun_bad[] = "{\"id\":\"s\",\"cmd\":\"stun\"}";
     CHECK(!rdof_mn_cmd_parse(stun_bad, sizeof stun_bad - 1, &c, err, sizeof err) && strstr(err, "ms"));
     static const char dgna[] = "{\"id\":\"d\",\"cmd\":\"dgna\",\"ms\":3100123,\"tg\":[5,6,700]}";

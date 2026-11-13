@@ -196,13 +196,15 @@ typedef struct {
 #define RDOF_T3_ACT_SETUP 4 /* op, reason: as the setup message */
 #define RDOF_T3_ACT_REFUSE 5 /* reason: the C_NACKD reason */
 #define RDOF_T3_ACT_STATUS 6 /* a status delivered or not (361-4 6.6.6): op the status, flags group, reason the caller's ack */
-/* a supplementary service's result (tier3.md 3.18): op RDOF_T3_SUPP_*, src the MS, dst STUNI or the diverted
- * address (TSI or DIVERTI when cleared), reason the air reason (0x60 done) */
+/* a supplementary service's result (tier3.md 3.18): op RDOF_T3_SUPP_*, src the MS, dst STUNI, KILLI or the diverted
+ * address (TSI or DIVERTI when cleared), reason the air reason (an ACK reason, 0x60 or 0x44, done; 0x14 the MS
+ * refused the site's authentication response; 0x20 no key to answer the MS's challenge; 0x25 no answer) */
 #define RDOF_T3_ACT_SUPP 7
 #define RDOF_T3_SUPP_STUN 1
 #define RDOF_T3_SUPP_REVIVE 2
 #define RDOF_T3_SUPP_DIVERT 3
 #define RDOF_T3_SUPP_DIVERT_CLEAR 4
+#define RDOF_T3_SUPP_KILL 5
 
 #define RDOF_T3_F_GROUP 0x01
 #define RDOF_T3_F_EMERGENCY 0x02
@@ -338,7 +340,8 @@ void rdof_t3_withdraw(rdof_t3_site_t *s, bool off);
 /* "deregister" (arg1 MS), "clear" (arg1 chan, arg2 LCN), "withdraw", "restore", "resend_records", "status",
    "mass_reg" (arg1 the window in s, 0 cancels; arg2 one MS, 0 all), "move" (C_MOVE: arg1 the TSCC's chan, arg2 one MS,
    0 all), "auth" (arg1 MS: an authentication poll; false when the MS isn't registered here or has no key),
-   "stun" / "revive" (arg1 MS; 361-4 6.4.9.1, the result an RDOF_T3_ACT_SUPP activity) */
+   "stun" / "revive" (arg1 MS; 361-4 6.4.9, with authentication when the MS asks for it), "kill" (arg1 MS; 6.4.10,
+   always authenticated: false when the site has no key for the MS); the result an RDOF_T3_ACT_SUPP activity */
 bool rdof_t3_command(rdof_t3_site_t *s, const char *cmd, uint32_t arg1, uint32_t arg2);
 /* Stirs v into the source of authentication challenges: something unpredictable (the platform's random source),
    at start and now and then. */
