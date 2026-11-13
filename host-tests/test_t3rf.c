@@ -221,8 +221,8 @@ static void test_payload(void)
               rdof_t3rf_ch_next(&t, ch, k + 2, &control, out) == RDOF_T3RF_IDLE,
           "two warm-up idles");
     k = ms_call(&t, 1, 1000, 3100777, 91, 2, true, true);
-    CHECK(rec.acts == 2 && rec.last_what == RDOF_T3RF_TERM && rec.src == 3100777 && rec.dst == 91 && rec.group,
-          "header then terminator reported: %d, src %u", rec.acts, (unsigned)rec.src);
+    CHECK(rec.acts == 4 && rec.last_what == RDOF_T3RF_TERM && rec.src == 3100777 && rec.dst == 91 && rec.group,
+          "header, a voice a superframe, terminator reported: %d, src %u", rec.acts, (unsigned)rec.src);
     CHECK(rec.ups == 14, "14 bursts up: %d", rec.ups);
     int traffic = 0, voice_sync = 0, lc_ok = 0;
     rdof_t3rf_out_t o;

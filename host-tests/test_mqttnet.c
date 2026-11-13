@@ -1104,6 +1104,11 @@ static void test_setup(void)
     const rdof_mn_ev_t e2 = {.node = "site-a", .wall = 0, .path = -1, .slot = 1};
     rdof_mn_queue_event(&e2, 1, 2, false, "in", NULL, ev, sizeof ev);
     CHECK(strstr(ev, "\"path\":null") && strstr(ev, "\"source\":\"rf\"") && !strstr(ev, "why"));
+    rdof_mn_status_event(&e2, 3100123, 91, true, 126, "delivered", ev, sizeof ev);
+    CHECK(strstr(ev, "\"ev\":\"status\"") &&
+          strstr(ev, "\"src\":3100123,\"dst\":91,\"group\":true,\"status\":126,\"alarm\":\"emergency\",\"result\":\"delivered\""));
+    rdof_mn_status_event(&e2, 1, 2, false, 42, "away", ev, sizeof ev);
+    CHECK(strstr(ev, "\"status\":42,\"result\":\"away\"") != NULL);
 }
 
 /* ── registration records, where, status, the trunk object ── */
@@ -1397,6 +1402,14 @@ static void test_cmd(void)
         snprintf(out, sizeof out, "{\"id\":\"x\",\"cmd\":\"%s\"}", simple[i]);
         CHECK(rdof_mn_cmd_parse(out, strlen(out), &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_WITHDRAW + i);
     }
+    static const char mass[] = "{\"id\":\"m\",\"cmd\":\"mass_reg\",\"window_s\":300,\"ms\":3100123}";
+    CHECK(rdof_mn_cmd_parse(mass, sizeof mass - 1, &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_MASS_REG &&
+          c.window_s == 300 && c.ms == 3100123);
+    static const char mass_bad[] = "{\"id\":\"m\",\"cmd\":\"mass_reg\"}";
+    CHECK(!rdof_mn_cmd_parse(mass_bad, sizeof mass_bad - 1, &c, err, sizeof err) && strstr(err, "window_s"));
+    static const char move[] = "{\"id\":\"v\",\"cmd\":\"move\",\"chan\":7}";
+    CHECK(rdof_mn_cmd_parse(move, sizeof move - 1, &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_MOVE && c.chan == 7 &&
+          c.ms == 0);
     CHECK(rdof_mn_cmd_result_json("c-123", true, NULL, out, sizeof out) && !strcmp(out, "{\"id\":\"c-123\",\"ok\":true}"));
     CHECK(rdof_mn_cmd_result_json("c-4", false, "unknown command", out, sizeof out) &&
           !strcmp(out, "{\"id\":\"c-4\",\"ok\":false,\"error\":\"unknown command\"}"));

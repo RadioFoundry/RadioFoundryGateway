@@ -782,6 +782,16 @@ static void test_trunk(const char *dir)
     CHECK(!apply_text("{\"services\": {\"preempt\": true}}", "x", &c, &pol, err, sizeof err) &&
               !strcmp(err, "x.services.preempt: not a key here"),
           "%s", err);
+    CHECK(c.awake_ms == 1000 &&
+              apply_text("{\"services\": {\"power_save\": 3, \"power_save_awake_s\": 2.5, \"mass_reg_at_start_s\": 60,"
+                         " \"hibernate_s\": 20, \"duplex\": true}, \"broadcast\": {\"call_timers_s\": 30, \"vote_now_s\": 20, \"ann_tscc_s\": 40}}",
+                         "x", &c, &pol, err, sizeof err) &&
+              c.power_save == 3 && c.awake_ms == 2500 && c.mass_reg_start == 8 && c.call_timers_ms == 30000 &&
+              c.vote_now_ms == 20000 && c.ann_tscc_ms == 40000 && c.hibernate_ms == 20000 && c.duplex == 1,
+          "power save, mass registration, broadcasts: %s", err);
+    CHECK(!apply_text("{\"services\": {\"power_save\": 8}}", "x", &c, &pol, err, sizeof err), "power_save 8");
+    CHECK(!apply_text("{\"services\": {\"hibernate_s\": 0.5}}", "x", &c, &pol, err, sizeof err), "hibernate_s 0.5");
+    rdof_t3cfg_default(&c, &pol);
     CHECK(!apply_text("{\"timers\": {\"warmup_cach\": 3}}", "x", &c, &pol, err, sizeof err), "warmup 3");
     CHECK(!apply_text("{\"wide_tg\": \"1,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31,33\"}", "x", &c, &pol, err,
                       sizeof err),

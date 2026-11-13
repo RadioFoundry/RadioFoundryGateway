@@ -21,6 +21,21 @@ mod authsite;
 pub use authsite::{
     rdof_t3_entropy, AUTH_OFF, AUTH_REGISTRATION, AUTH_REQUIRED, REG_AUTH_FAIL, REG_AUTH_NONE, REG_AUTH_OK,
 };
+#[path = "t3status.rs"]
+mod status;
+pub use status::{ahoy_status, status_ahoy, status_of, status_rand, STATUS_CANCEL_ALARM, STATUS_EMERGENCY_ALARM};
+#[path = "t3bcast.rs"]
+mod bcast;
+pub use bcast::{
+    call_timers_of, mass_reg_applies, mass_reg_of, ps_counter, ps_wake, reg_window_ms, reg_window_of,
+};
+#[path = "t3tscc.rs"]
+mod tscc;
+#[path = "t3duplex.rs"]
+mod duplex;
+use duplex::KIND_DUPLEX;
+pub use duplex::{DxGrant, F_DUPLEX, OP_PV_GRANT_DX, R_DUPLEX_NOT_SUPPORTED, SK_DUPLEX};
+pub use tscc::{bs_dwn_act, bs_dwn_act_of, move_of, move_pdu, OP_BS_DWN_ACT};
 
 pub const CARRIERS: usize = 4;
 pub const CHANNELS: usize = CARRIERS * 2;
@@ -91,8 +106,16 @@ pub struct Cfg {
     pub gen_site_ms: u32,
     pub stream_seed: u32,
     pub preempt: u8, // 1: an emergency with no channel free clears a non-emergency call (361-4 6.4.14.3.1)
-    pub auth: u8,    // AUTH_*: MS authentication at registration (361-4 6.4.8; t3authsite.rs)
-    pub pad1: [u8; 2],
+    pub power_save: u8,     // the highest PowerSave_RQ granted (1-7: 1:2 to 1:128); 0: not offered (6.4.7)
+    pub mass_reg_start: u8, // Reg_Window (table 6.12) of a mass re-registration at start; 0: none (6.4.5)
+    pub duplex: u8, // full-duplex MS to MS calls (section 3.13): 0 refused
+    pub call_timers_ms: u32, // CallTimer_Parms every; 0: not broadcast
+    pub vote_now_ms: u32,    // Vote_Now for each adjacent site in this time; 0: not broadcast
+    pub ann_tscc_ms: u32,    // Ann_WD_TSCC for the adjacent sites in this time; 0: not broadcast
+    pub awake_ms: u32,       // how long an MS in power save stays awake after a PDU (the site's T_Awake)
+    pub hibernate_ms: u32,   // T_BS_Inactive: the TSCC hibernates after this long with no inbound; 0 never
+    pub auth: u8, // AUTH_*: MS authentication at registration (361-4 6.4.8; t3authsite.rs)
+    pub pad1: [u8; 3],
 }
 
 #[repr(C)]
@@ -317,6 +340,7 @@ pub const ACT_GRANT: u8 = 2;
 pub const ACT_QUEUE: u8 = 3;
 pub const ACT_SETUP: u8 = 4;
 pub const ACT_REFUSE: u8 = 5;
+pub const ACT_STATUS: u8 = 6;
 pub const REG_REGISTER: u8 = 1;
 pub const REG_DEREGISTER: u8 = 2;
 pub const REG_EXPIRE: u8 = 3;
@@ -533,6 +557,9 @@ struct Reg {
     used: bool,
     rec: Record,
     written_ms: i64,
+    ps: u8,        // PowerSave_RQ granted, 0 none
+    ps_off: u8,    // PowerSave_Offset
+    awake_ms: i64, // awake until (power save)
 }
 
 #[derive(Clone, Copy, Default)]
@@ -592,6 +619,9 @@ pub struct Site {
     chans: [Chan; CHANNELS],
     pend: [Pend; PENDING],
     net: [NetWait; STREAMS],
+    stat: [status::StatPend; status::STATUS_PENDING],
+    bc: bcast::BcState,
+    tscc: tscc::TsccState,
     // registrations and provisioning
     regs: [Reg; REGS],
     reg_scan: usize,
@@ -669,6 +699,7 @@ pub fn cfg_default() -> Cfg {
         local_time_ms: 6000,
         gen_site_ms: 10_000,
         stream_seed: 1,
+        awake_ms: 1000,
         ..Default::default()
     };
     c.carriers[0] = Carrier { tx_hz: 438_750_000, rx_hz: 438_250_000, chan: 1, tscc: 1, enabled: 1 };
@@ -764,6 +795,15 @@ fn check(c: &Cfg, err: &mut Buf) -> bool {
     }
     if c.start_grace_ms > 10_000 {
         no!("timers.start_grace_s: 0 to 10");
+    }
+    if c.duplex > 1 {
+        no!("services.duplex: a bool");
+    }
+    if c.hibernate_ms != 0 && !(1000..=300_000).contains(&c.hibernate_ms) {
+        no!("services.hibernate_s: 0 (never) or 1 to 300");
+    }
+    if c.power_save > 7 || c.mass_reg_start > 15 || !(100..=60_000).contains(&c.awake_ms) {
+        no!("services.power_save 0 to 7, power_save_awake_s 0.1 to 60, mass_reg_at_start_s 0 to 200000");
     }
     if !(60..=604_800).contains(&c.reg_hold_s) {
         no!("timers.reg_hold_s: 60 to 604800");
@@ -974,6 +1014,9 @@ impl Site {
 
     fn grant_pdu(&self, ch: usize, late: bool, source: u32) -> [u8; 10] {
         let c = &self.chans[ch];
+        if c.kind == KIND_DUPLEX {
+            return self.duplex_grant(ch);
+        }
         let op = match c.kind {
             KIND_PRIVATE => OP_PV_GRANT,
             KIND_ALLCALL => OP_BTV_GRANT,
@@ -996,7 +1039,7 @@ impl Site {
     fn due_grant(&mut self) -> Option<[u8; 10]> {
         let now = self.now;
         let ch = (0..CHANNELS)
-            .filter(|&i| Self::live(&self.chans[i]) && self.chans[i].kind != KIND_PRIVATE && now >= self.chans[i].grant_next_ms)
+            .filter(|&i| Self::live(&self.chans[i]) && !matches!(self.chans[i].kind, KIND_PRIVATE | KIND_DUPLEX) && now >= self.chans[i].grant_next_ms)
             .min_by_key(|&i| self.chans[i].grant_next_ms)?;
         self.chans[ch].grant_next_ms = now + self.cfg.grant_every_ms as i64;
         let c = self.chans[ch];
@@ -1007,6 +1050,9 @@ impl Site {
     fn due_bcast(&mut self) -> Option<([u8; 10], u8, Option<[u8; 10]>)> {
         let now = self.now;
         let (reg, bo, sc) = (self.reg_bit(), self.backoff(), self.syscode);
+        if let Some(b) = self.due_bcast_more(reg, bo, sc) {
+            return Some(b);
+        }
         if self.cfg.adjacent_ms > 0 && self.nneighbors > 0 && now >= self.next_adjacent_ms {
             let n = self.neighbors[self.adjacent_idx % self.nneighbors];
             self.adjacent_idx = (self.adjacent_idx + 1) % self.nneighbors;
@@ -1034,7 +1080,7 @@ impl Site {
         }
         if self.cfg.gen_site_ms > 0 && now >= self.next_gen_site_ms {
             self.next_gen_site_ms = now + self.cfg.gen_site_ms as i64;
-            let b = Bcast::gen_site_params(reg, bo, sc, false, false);
+            let b = Bcast::gen_site_params(reg, bo, sc, self.about_to_hibernate(), false);
             return Some((b.encode(), DT_CSBK, None));
         }
         None
@@ -1046,6 +1092,8 @@ impl Site {
         let (dt, pdu, solicit) = if self.cont_pending {
             self.cont_pending = false;
             (DT_MBC_CONT, self.cont, false)
+        } else if let Some(a) = self.vote_blocked() {
+            (DT_CSBK, a, false)
         } else if self.since_aloha >= 3 || (self.since_aloha == 2 && self.resp_len > 0 && self.resp[self.resp_head].has_cont) {
             // an MBC's two blocks must end before the Aloha that's due: it waits a slot
             (DT_CSBK, self.aloha(), false)
@@ -1154,6 +1202,7 @@ impl Site {
         if net && stream != 0 {
             self.drop_stream(stream, WHY_CONGESTION);
         }
+        self.duplex_clear(ch, why);
     }
 
     fn close(&mut self, ch: usize) {
@@ -1183,8 +1232,9 @@ impl Site {
 
     /// Whether an MS is in an individual call, or a party of one being set up.
     fn ms_busy(&self, ms: u32) -> bool {
-        self.chans.iter().any(|c| Self::live(c) && c.kind == KIND_PRIVATE && (c.src == ms || c.dst == ms))
-            || self.pend.iter().any(|p| p.used && p.kind == KIND_PRIVATE && (p.called == ms || p.caller == ms))
+        let ind = |kind| kind == KIND_PRIVATE || kind == KIND_DUPLEX;
+        self.chans.iter().any(|c| Self::live(c) && ind(c.kind) && (c.src == ms || c.dst == ms))
+            || self.pend.iter().any(|p| p.used && ind(p.kind) && (p.called == ms || p.caller == ms))
     }
 
     fn payload_slot(&mut self, out: &mut SlotOut) {
@@ -1223,7 +1273,7 @@ impl Site {
                 c.idle_until_ms = now + hang;
             }
             let c = self.chans[ch];
-            if !c.talking && now >= c.idle_until_ms {
+            if !c.talking && now >= c.idle_until_ms && !self.duplex_held(ch) {
                 self.clear(ch, CLOSE_HANG);
             }
         }
@@ -1350,6 +1400,7 @@ impl Site {
             used: true,
             rec: Record { id: ms, how, area, at_ms: self.now, exp_ms, ..Default::default() },
             written_ms: i64::MIN / 2,
+            ..Default::default()
         };
         self.nregs += 1;
         self.subs_dirty = true;
@@ -1449,7 +1500,7 @@ impl Site {
             _ => {}
         }
         self.subs_dirty = true;
-        self.ack(reason, ms, REGI);
+        self.reg_ack(i, r, reason); // with PowerSave_Offset
         self.write_record(i);
         let sub = self.regs[i].rec.sub_tg;
         self.activity(ACT_REG, REG_REGISTER, ms, sub, reason);
@@ -1462,6 +1513,8 @@ impl Site {
             SK_IND_VOICE | SK_TG_VOICE => self.call_request(r),
             SK_CALL_ANSWER => self.call_answer(r),
             SK_CANCEL => self.cancel(r.source),
+            SK_STATUS => self.status_request(r),
+            SK_DUPLEX => self.duplex_request(r),
             _ => self.refuse(R_NOT_SUPPORTED, r.source, r.target),
         }
     }
@@ -1607,13 +1660,15 @@ impl Site {
         let kind = if is_allcall(tg) {
             flags |= F_ALLCALL;
             KIND_ALLCALL
+        } else if svc & SO_BROADCAST != 0 {
+            KIND_ALLCALL // a broadcast call to a talkgroup (BCAST_SV, 6.6.2): BTV_GRANT, one way
         } else {
             KIND_GROUP
         };
         if svc & SO_EMERGENCY != 0 {
             flags |= F_EMERGENCY;
         }
-        if tg == ALLMSID || (kind == KIND_GROUP && self.policy.wide_tg.contains(tg)) {
+        if tg == ALLMSID || (!is_allcall(tg) && self.policy.wide_tg.contains(tg)) {
             flags |= F_WIDE;
         }
         self.open(ch, kind, src, tg, flags, 0, false);
@@ -1639,6 +1694,10 @@ impl Site {
     fn private_ready(&mut self, i: usize) {
         let p = self.pend[i];
         self.pend[i].used = false;
+        if p.kind == KIND_DUPLEX {
+            self.duplex_ready(&p);
+            return;
+        }
         match self.free_channel() {
             Some(ch) => self.private_go(&p, ch),
             None => self.enqueue(p),
@@ -1647,6 +1706,11 @@ impl Site {
 
     fn ahoy_tick(&mut self, i: usize) {
         let p = self.pend[i];
+        if !self.ps_awake(p.called) {
+            // asleep (power save): held for its wake frame, the time limit stretched to it
+            self.pend[i].deadline_ms = p.deadline_ms.max(self.now + self.ps_wait_ms(p.called));
+            return;
+        }
         if p.ahoy_left == 0 {
             self.pend[i].used = false;
             self.fail(&p, R_MSAWAY, WHY_NO_ANSWER);
@@ -1658,7 +1722,7 @@ impl Site {
             als: false,
             group: false,
             appended: 0,
-            service_kind: SK_IND_VOICE,
+            service_kind: if p.kind == KIND_DUPLEX { SK_DUPLEX } else { SK_IND_VOICE },
             target: p.called,
             source: p.caller,
         };
@@ -1671,6 +1735,9 @@ impl Site {
     /// C_ACKU or C_NACKU from a called MS: its source is the AHOY's target.
     fn ms_ack(&mut self, a: &Ack) {
         self.heard(a.source);
+        if self.status_ack(a) {
+            return;
+        }
         let Some(i) =
             self.pend.iter().position(|p| p.used && p.state == P_AHOY && p.called == a.source && p.caller == a.target)
         else {
@@ -2146,11 +2213,12 @@ impl Site {
         self.roll_load();
         self.pending_timers();
         self.auth_timers();
+        self.status_timers();
         self.channel_timers();
         self.reg_timers();
         let mut out = SlotOut::default();
         let rc_on_tscc = self.preempt_tick(&mut out);
-        if !self.withdrawn {
+        if !self.withdrawn && !self.hibernate_tick() {
             if k & 1 == 0 && !rc_on_tscc {
                 self.tscc_slot(&mut out);
             } else {
@@ -2177,6 +2245,7 @@ impl Site {
             if dt != DT_CSBK {
                 return; // UDT and MBC uploads: none is asked for
             }
+            self.tscc_heard(); // a BS_Dwn_Act wakes a hibernating TSCC, as any good block does
             if let Some(r) = Rand::decode(pdu) {
                 self.counters.rand += 1;
                 self.count_load();
@@ -2366,6 +2435,8 @@ impl Site {
                 true
             }
             "status" => true,
+            "mass_reg" => self.mass_registration(a1, a2),
+            "move" => self.move_cmd(a1, a2),
             "auth" => self.auth_poll(a1),
             _ => false,
         }

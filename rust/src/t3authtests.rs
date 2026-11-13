@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
-//! MS authentication (ETSI TS 102 361-4 6.4.4.1.5, 6.4.8; docs/spec/fw/tier3.md 3.10): the site and simulated MSs
+//! MS authentication (ETSI TS 102 361-4 6.4.4.1.5, 6.4.8; docs/spec/fw/tier3.md 3.14): the site and simulated MSs
 //! on the slot-exact air, step by step as the clauses read.
 
 use std::boxed::Box;

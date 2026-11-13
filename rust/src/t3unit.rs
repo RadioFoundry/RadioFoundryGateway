@@ -23,7 +23,7 @@ use crate::plan::RdofIdset;
 use crate::t3cfg::{rdof_t3cfg_check, rdof_t3cfg_site};
 use crate::t3rf::{
     rdof_t3rf_channel, rdof_t3rf_close, rdof_t3rf_control, rdof_t3rf_init, rdof_t3rf_net, rdof_t3rf_net_end,
-    rdof_t3rf_open, rdof_t3rf_rc, rdof_t3rf_rx, rdof_t3rf_slot, rdof_t3rf_split_pump, rdof_t3rf_tick, T3rf, T3rfIo, T3rfSplit,
+    rdof_t3rf_duplex, rdof_t3rf_open, rdof_t3rf_rc, rdof_t3rf_rx, rdof_t3rf_slot, rdof_t3rf_split_pump, rdof_t3rf_tick, T3rf, T3rfIo, T3rfSplit,
     WARMUP,
 };
 use crate::t3site::{
@@ -73,7 +73,9 @@ const MN_CMD_WITHDRAW: c_int = 3;
 const MN_CMD_RESTORE: c_int = 4;
 const MN_CMD_RESEND_RECORDS: c_int = 5;
 const MN_CMD_STATUS: c_int = 6;
-const MN_CMD_AUTH: c_int = 7;
+const MN_CMD_MASS_REG: c_int = 7;
+const MN_CMD_MOVE: c_int = 8;
+const MN_CMD_AUTH: c_int = 9;
 
 // ── the C structs: rdof/t3unit.h's ─────────────────────────────────────────────
 
@@ -341,6 +343,7 @@ pub struct MnCmd {
     pub ms: u32,
     pub chan: c_int,
     pub lcn: c_int,
+    pub window_s: u32,
 }
 
 /// rdof_mn_up_t's head: node to ctx (the hooks). The rest is the C's alone, rdof_mn_up_size() bytes in all.
@@ -446,6 +449,16 @@ extern "C" {
         group: bool,
         action: *const c_char,
         why: *const c_char,
+        out: *mut c_char,
+        cap: usize,
+    ) -> usize;
+    fn rdof_mn_status_event(
+        e: *const MnEv,
+        src: u32,
+        dst: u32,
+        group: bool,
+        status: c_int,
+        result: *const c_char,
         out: *mut c_char,
         cap: usize,
     ) -> usize;
@@ -891,6 +904,16 @@ unsafe fn activity_out(u: *mut Unit, e: &Event) {
             rdof_mn_setup_event(&ev, e.src, e.dst, c_int::from(e.op), c_int::from(e.reason), null(), jp, jn)
         }
         t3::ACT_REFUSE => rdof_mn_queue_event(&ev, e.src, e.dst, group, c"refuse".as_ptr(), cp(&why), jp, jn),
+        t3::ACT_STATUS => {
+            let result = match e.reason {
+                crate::t3pdu::R_MS_ACCEPTED | crate::t3pdu::R_MESSAGE_ACCEPTED => c"delivered",
+                crate::t3pdu::R_MSAWAY => c"away",
+                crate::t3pdu::R_EQUIP_BUSY => c"busy",
+                crate::t3pdu::R_RECIPIENT_REFUSED => c"refused",
+                _ => c"failed",
+            };
+            rdof_mn_status_event(&ev, e.src, e.dst, group, c_int::from(e.op), result.as_ptr(), jp, jn)
+        }
         _ => 0,
     };
     if n != 0 {
@@ -964,6 +987,7 @@ unsafe fn drain(u: *mut Unit) {
                 if ch < CHANNELS {
                     (*u).ch_flags[ch] = e.flags; // the call's, for the uplink
                     rdof_t3rf_open(rf(u), ch as c_int, e.src, e.dst, e.flags & t3::F_GROUP != 0, WARMUP);
+                    rdof_t3rf_duplex(rf(u), ch as c_int, e.flags & t3::F_DUPLEX != 0);
                     if e.stream != 0 {
                         stream_map(u, e.stream, ch as c_int);
                     }
@@ -1476,6 +1500,8 @@ unsafe fn command(u: *mut Unit, json: *const c_char, len: usize) {
             MN_CMD_RESTORE => t3::rdof_t3_command(site, c"restore".as_ptr(), 0, 0),
             MN_CMD_RESEND_RECORDS => t3::rdof_t3_command(site, c"resend_records".as_ptr(), 0, 0),
             MN_CMD_STATUS => true,
+            MN_CMD_MASS_REG => t3::rdof_t3_command(site, c"mass_reg".as_ptr(), c.window_s, c.ms),
+            MN_CMD_MOVE => t3::rdof_t3_command(site, c"move".as_ptr(), c.chan as u32, c.ms),
             MN_CMD_AUTH => t3::rdof_t3_command(site, c"auth".as_ptr(), c.ms, 0),
             _ => false,
         };

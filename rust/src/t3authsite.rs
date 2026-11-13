@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
-//! MS authentication at the site (docs/spec/fw/tier3.md 3.10): ETSI TS 102 361-4 6.4.4.1.5 (figure 6.20) and
+//! MS authentication at the site (docs/spec/fw/tier3.md 3.14): ETSI TS 102 361-4 6.4.4.1.5 (figure 6.20) and
 //! 6.4.8. On a registration C_RAND from an MS that must be challenged, the TSCC answers with a C_AHOY (Service_Kind
 //! 1110b, Service_Kind_Flag 0, Service_Options_Mirror = the C_RAND's Service_Options, source = the challenge; table
 //! 6.17) and keeps the next inbound slot for the answer (AT). The MS answers C_ACKU(Authentication Response,

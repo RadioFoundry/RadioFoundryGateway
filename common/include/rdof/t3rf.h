@@ -74,7 +74,8 @@ bool rdof_t3rf_slc_join(const uint32_t rows[4], uint32_t *slc28);
 /* What rdof_t3rf_io_t's activity reports. */
 enum {
     RDOF_T3RF_HEADER = 1, /* a voice LC header (the addresses its LC gives) */
-    RDOF_T3RF_VOICE,      /* voice with no header first (late entry; the channel's addresses) */
+    RDOF_T3RF_VOICE,      /* voice with no header first (late entry; the channel's addresses), then each voice sync
+                             burst (once a superframe: the talker is still there) */
     RDOF_T3RF_TERM,       /* a terminator with LC */
     RDOF_T3RF_LOST,       /* RF voice stopped without a terminator */
 };
@@ -120,6 +121,7 @@ typedef struct {
     bool after_term;   /* the last burst out was a terminator: no RC in the next */
     int64_t rc_k;      /* the slot of the last RC sent (360 ms apart) */
     uint32_t rc_sent;
+    bool duplex;       /* a full-duplex call's party (rdof_t3rf_duplex) */
 } rdof_t3rf_ch_t;
 
 /* ── the site ─────────────────────────────────────────────────────────────── */
@@ -157,6 +159,10 @@ rdof_t3rf_ch_t *rdof_t3rf_channel(rdof_t3rf_t *t, int ch);
 /* The controller's grant took payload channel ch for a call: open it (a fresh one: warmup idles first; already open:
  * the new call's addresses, the channel carries on). */
 bool rdof_t3rf_open(rdof_t3rf_t *t, int ch, uint32_t src, uint32_t dst, bool group, int warmup);
+/* Payload channel ch is a party's of a full-duplex call (361-4 6.6.9.4): its carrier in offset timing (the
+ * inbound in the carrier's other inbound slot), its inbound repeated on the other channel's outbound. Closing the
+ * channel ends it. */
+bool rdof_t3rf_duplex(rdof_t3rf_t *t, int ch, bool on);
 /* Closed at once: what's queued is dropped, the channel goes idle. */
 void rdof_t3rf_close(rdof_t3rf_t *t, int ch);
 /* The controller's PDU (dt, 10 octets) on channel ch's outbound, ahead of any voice, repeats times (P_CLEAR: 4);
@@ -169,7 +175,7 @@ bool rdof_t3rf_control(rdof_t3rf_t *t, int ch, int dt, const uint8_t pdu[10], in
  * in a header or a control block, not right after a terminator, 360 ms apart (361-1 5.1.5.1, 6.4.2). Channel 0 may
  * be the TSCC: its RC goes in a slot the controller left without a block (an idle burst). */
 void rdof_t3rf_rc(rdof_t3rf_t *t, int ch, int rc);
-/* The RC info in a burst's embedded field (an outbound RC burst), or -1. */
+/* The RC info in a burst's embedded field (an outbound RC burst: EMB PI = 1, LCSS single fragment), or -1. */
 int rdof_t3rf_rc_read(const uint8_t burst[RDOF_BURST_BYTES]);
 
 /* A burst heard on carrier c under outbound slot k (TS1 even): the TSCC's inbound to pdu / bad, a payload channel's

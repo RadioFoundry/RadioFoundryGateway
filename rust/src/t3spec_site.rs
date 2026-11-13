@@ -1008,10 +1008,11 @@ fn cancel_after_answer_ahoy() {
     assert_eq!((tgt(&b), src(&b)), (B, A));
 }
 
-/// tier3.md 3.7 (4.2): a Service_Kind the site doesn't offer gets C_NACKD(Not_Supported).
+/// tier3.md 3.7 (4.2): a Service_Kind the site doesn't offer gets C_NACKD(Not_Supported). Status delivery is
+/// offered (tier3.md 3.10); duplex calls are off by default (`services.duplex`).
 #[test]
 fn unsupported_service_not_supported() {
-    for sk in [spec::SK_IND_PACKET, spec::SK_TG_PACKET, spec::SK_UDT_OUT, spec::SK_STATUS, spec::SK_DUPLEX_IND] {
+    for sk in [spec::SK_IND_PACKET, spec::SK_TG_PACKET, spec::SK_UDT_OUT, spec::SK_DUPLEX_IND] {
         let mut r = two(false);
         let k = r.send(rand(0, 0, sk, B, A));
         let (ko, (_, reason, target, _)) = r.ack_to(k, 30, A).expect("answered");

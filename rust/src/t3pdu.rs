@@ -48,6 +48,7 @@ pub fn is_allcall(a: u32) -> bool {
 // Service_Kind (7.2.12, table 7.49)
 pub const SK_IND_VOICE: u8 = 0b0000;
 pub const SK_TG_VOICE: u8 = 0b0001;
+pub const SK_STATUS: u8 = 0b0111;
 pub const SK_CALL_ANSWER: u8 = 0b1001;
 pub const SK_REG: u8 = 0b1110;
 pub const SK_CANCEL: u8 = 0b1111;

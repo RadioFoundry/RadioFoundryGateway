@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
-//! Tier III MS authentication, the algorithm (ETSI TS 102 361-4 6.4.8, figure 6.30; docs/spec/fw/tier3.md 3.10):
+//! Tier III MS authentication, the algorithm (ETSI TS 102 361-4 6.4.8, figure 6.30; docs/spec/fw/tier3.md 3.14):
 //! the RC4 keystream generator keyed with the challenge (RAND, 3 bytes, most significant first) followed by the
 //! MS's key K (16 bytes) makes 259 bytes; the first 256 are discarded and the last 3 are the 24-bit response,
 //! XORed with the MS's PSN (3 bytes) when one is used (6.4.8.1.2). The site's procedure is in t3authsite.rs, the

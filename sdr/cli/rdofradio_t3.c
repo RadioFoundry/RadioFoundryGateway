@@ -589,7 +589,7 @@ static int air_find(uint32_t id)
     return -1;
 }
 
-/* The air MSs' authentication keys, from the cfg/ms documents (tier3.md 3.10); again when provisioning changes. */
+/* The air MSs' authentication keys, from the cfg/ms documents (tier3.md 3.14); again when provisioning changes. */
 static uint32_t air_cfg_changes;
 
 static void air_keys(void)

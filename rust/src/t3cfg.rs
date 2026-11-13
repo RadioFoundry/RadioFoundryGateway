@@ -56,8 +56,10 @@ fn model_bits(model: c_int) -> (c_int, c_int) {
 
 const MODELS: [&[u8]; 4] = [b"tiny", b"small", b"large", b"huge"];
 const SYSTEM_KEYS: &[&[u8]] = &[b"model", b"net", b"site", b"par", b"area_bits"];
-const BROADCAST_KEYS: &[&[u8]] = &[b"adjacent_s", b"chan_freq_s", b"local_time_s"];
-const SERVICES_KEYS: &[&[u8]] = &[b"emergency_preempt"];
+const BROADCAST_KEYS: &[&[u8]] =
+    &[b"adjacent_s", b"chan_freq_s", b"local_time_s", b"call_timers_s", b"vote_now_s", b"ann_tscc_s"];
+const SERVICES_KEYS: &[&[u8]] =
+    &[b"emergency_preempt", b"power_save", b"power_save_awake_s", b"mass_reg_at_start_s", b"hibernate_s", b"duplex"];
 
 /// Where a timer goes in the settings: a code, ms from seconds, or seconds.
 #[derive(Clone, Copy)]
@@ -494,9 +496,22 @@ impl<'a> Cx<'a> {
         if sv >= 0 {
             let mut pb = [0u8; 96];
             let p = join(&mut pb, path, b".services");
-            if !self.known(sv, p, SERVICES_KEYS) || !self.bool_of(sv, c"emergency_preempt", p, &mut cfg.preempt) {
+            let mut mass_ms = crate::t3site::reg_window_ms(cfg.mass_reg_start);
+            if !self.known(sv, p, SERVICES_KEYS)
+                || !self.bool_of(sv, c"emergency_preempt", p, &mut cfg.preempt)
+                || !self.bool_of(sv, c"duplex", p, &mut cfg.duplex)
+                || !self.u8_in(sv, c"power_save", p, 0, 7, &mut cfg.power_save)
+                || !self.ms_in(sv, c"power_save_awake_s", p, 0.1, 60.0, &mut cfg.awake_ms)
+                || !self.ms_in(sv, c"mass_reg_at_start_s", p, 0.0, 200_000.0, &mut mass_ms)
+                || !self.ms_in(sv, c"hibernate_s", p, 0.0, 300.0, &mut cfg.hibernate_ms)
+            {
                 return false;
             }
+            if cfg.hibernate_ms != 0 && cfg.hibernate_ms < 1000 {
+                return self.fail(&[S(p), S(b".hibernate_s: 0 (never) or 1 to 300")]);
+            }
+            // the Reg_Window that covers it (table 6.12)
+            cfg.mass_reg_start = crate::t3site::reg_window_of(f64::from(mass_ms) / 1000.0);
         }
         let b = self.get(obj, c"broadcast");
         if b >= 0 {
@@ -506,11 +521,15 @@ impl<'a> Cx<'a> {
                 || !self.ms_in(b, c"adjacent_s", p, 0.0, 600.0, &mut cfg.adjacent_ms)
                 || !self.ms_in(b, c"chan_freq_s", p, 0.0, 600.0, &mut cfg.chan_freq_ms)
                 || !self.ms_in(b, c"local_time_s", p, 0.0, 600.0, &mut cfg.local_time_ms)
+                || !self.ms_in(b, c"call_timers_s", p, 0.0, 600.0, &mut cfg.call_timers_ms)
+                || !self.ms_in(b, c"vote_now_s", p, 0.0, 600.0, &mut cfg.vote_now_ms)
+                || !self.ms_in(b, c"ann_tscc_s", p, 0.0, 600.0, &mut cfg.ann_tscc_ms)
             {
                 return false;
             }
             // 0 is off; anything else at least every TSCC slot pair
-            if [cfg.adjacent_ms, cfg.chan_freq_ms, cfg.local_time_ms].iter().any(|&ms| ms != 0 && ms < 1000) {
+            let each = [cfg.adjacent_ms, cfg.chan_freq_ms, cfg.local_time_ms, cfg.call_timers_ms, cfg.vote_now_ms, cfg.ann_tscc_ms];
+            if each.iter().any(|&ms| ms != 0 && ms < 1000) {
                 return self.fail(&[S(p), S(b": each 0 (off) or 1 to 600 s")]);
             }
         }

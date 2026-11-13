@@ -1300,6 +1300,7 @@ bool rdof_mn_cmd_parse(const char *json, size_t len, rdof_mn_cmd_t *c, char *err
     } cmds[] = {{"deregister", RDOF_MN_CMD_DEREGISTER},   {"clear", RDOF_MN_CMD_CLEAR},
                 {"withdraw", RDOF_MN_CMD_WITHDRAW},       {"restore", RDOF_MN_CMD_RESTORE},
                 {"resend_records", RDOF_MN_CMD_RESEND_RECORDS}, {"status", RDOF_MN_CMD_STATUS},
+                {"mass_reg", RDOF_MN_CMD_MASS_REG}, {"move", RDOF_MN_CMD_MOVE},
                 {"auth", RDOF_MN_CMD_AUTH}};
     memset(c, 0, sizeof *c);
     c->chan = c->lcn = -1;
@@ -1344,7 +1345,29 @@ bool rdof_mn_cmd_parse(const char *json, size_t len, rdof_mn_cmd_t *c, char *err
         }
         c->lcn = (int)v;
         break;
+    case RDOF_MN_CMD_MASS_REG:
+        if (!jint(jget(&P, root, "window_s"), 0, 200000, &v)) {
+            seterr(err, cap, "window_s: 0 to 200000");
+            return false;
+        }
+        c->window_s = (uint32_t)v;
+        break;
+    case RDOF_MN_CMD_MOVE:
+        if (!jint(jget(&P, root, "chan"), 1, 4094, &v)) {
+            seterr(err, cap, "chan: 1 to 4094");
+            return false;
+        }
+        c->chan = (int)v;
+        break;
     default: break;
+    }
+    /* mass_reg and move: one MS, or all without it */
+    if ((c->cmd == RDOF_MN_CMD_MASS_REG || c->cmd == RDOF_MN_CMD_MOVE) && jget(&P, root, "ms")) {
+        if (!jint(jget(&P, root, "ms"), 1, RDOF_ID_MAX, &v)) {
+            seterr(err, cap, "ms: 1 to 16777215");
+            return false;
+        }
+        c->ms = (uint32_t)v;
     }
     return true;
 }

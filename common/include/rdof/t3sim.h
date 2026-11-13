@@ -73,6 +73,7 @@ typedef struct {
     int32_t slc[RDOF_T3_CARRIERS]; /* the short LC on air on each carrier, -1 none yet */
     /* counters */
     uint32_t out_pdus, out_bad, in_pdus, in_voice, collisions, ext_in_n, ext_drop;
+    uint32_t out_rc; /* Reverse Channel bursts read on the outbound (each to the MSs on the other slot) */
 } rdof_t3sim_t;
 
 /* n MSs (up to RDOF_T3SIM_MS), each initialized by the caller (rdof_t3ms_init) with id[i]. */

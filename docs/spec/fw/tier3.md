@@ -10,7 +10,7 @@ Status (2026-11-12): round 1 built and run on simulated air only (two sites over
 
 Sources: ETSI TS 102 361-1 (air interface), -2 (voice), -4 (trunking, V1.12.1). Clause numbers below are 361-4's
 unless marked. Clean room: the ETSI text and our own MIT code only. MS authentication (6.4.8, 6.4.4.1.5) is built
-(section 3.10, owner's go-ahead 2026-11-12); authentication of the site by the MS (6.4.9.2) and 6.4.10 are not.
+(section 3.14, owner's go-ahead 2026-11-12); authentication of the site by the MS (6.4.9.2) and 6.4.10 are not.
 
 ## 1. Goals and the line for this round
 
@@ -33,15 +33,20 @@ Principles:
 
 | Area | Built |
 |---|---|
-| RF layout | 2 carriers: A (SDR TX + SDR RX) carries the dedicated TSCC on TS1 and a payload channel on TS2; B (split radio TX + SDR RX) carries two payload channels. 1 control slot, 3 payload slots. The code takes N carriers. |
-| Control channel | C_SYS_Parms short LC with a counting Common_Slot_Counter; C_ALOHA; C_BCAST Adjacent_Site (from the network), Chan_Freq (the site's own channel plan), Local_Time (when the clock is good), Gen_Site_Params; CACH AT driven by the controller |
+| RF layout | 2 carriers: A (SDR TX + SDR RX) carries the dedicated TSCC on TS1 and a payload channel on TS2; B (split radio TX + SDR RX) carries two payload channels. 1 control slot, 3 payload slots. The controller, the radio layer, the unit and the simulator take 1-4 carriers (up to 7 payload channels), the TSCC on the first; tested with 3 and 4 on simulated air. rdofradio drives 2 at most (hardware) |
+| Control channel | C_SYS_Parms short LC with a counting Common_Slot_Counter; C_ALOHA; C_BCAST Adjacent_Site (from the network), Chan_Freq (the site's own channel plan), Local_Time (when the clock is good), Gen_Site_Params, CallTimer_Parms, Vote_Now (with the VOTE_BLK block), Ann_WD_TSCC, MassReg (section 3.11); CACH AT driven by the controller |
 | Random access | Slotted Aloha, Mask 0, Service Function from load, adaptive Backoff, NRand_Wait from settings; a response to every random access |
 | Registration | Open or listed (ID sets); register, de-register, implicit registration from call requests; single-talkgroup subscription (TRGT_ADR_CNTS 01b); Reg_Accepted / Reg_Refused / Reg_Denied; MS_Not_Registered |
-| Group voice | C_RAND, C_WACKD/C_QACKD, TV_GRANT (repeated; Late_Entry grants through the call), BTV_GRANT for ALLMSID calls, quasi-transmission trunking (hang time), P_CLEAR on hang expiry, call timer or P_MAINT DISCON |
+| Group voice | C_RAND, C_WACKD/C_QACKD, TV_GRANT (repeated; Late_Entry grants through the call), BTV_GRANT for all-calls (ALLMSID, ALLMSIDL, ALLMSIDZ) and broadcast calls to a talkgroup (BCAST_SV), quasi-transmission trunking (hang time), P_CLEAR on hang expiry, call timer or P_MAINT DISCON |
 | Individual voice | C_AHOY availability check (OACSU or FOACSU, a setting), C_ACKU/C_NACKU, Call Answer, PV_GRANT, cancel (Service_Kind 1111b) |
+| Full-duplex individual voice | Service_Kind 1010b (6.6.9): radio check, a whole carrier in offset timing, a PV_GRANT_DX to each party, each party's inbound repeated on the other's slot; local calls; a setting, off by default (section 3.13) |
 | Queueing | One queue by priority (emergency first, then PRIORTY_SV, then age); C_QACKD; SYSbusy_Refused when full |
-| Authentication | MS authentication (6.4.8): a challenge at registration (6.4.4.1.5) for MSs with a key, or every MS; an authentication poll on command; the 6.4.8 algorithm with the PSN; keys from `cfg/ms` (section 3.10). The MS authenticating the site isn't built |
-| Emergency | Emergency group calls (the emergency call timer, the Emergency flag in grants; an emergency request on an open call upgrades it); pre-emption of a running call when no channel is free (6.4.14.3.1), with the Reverse Channel cease command (6.4.15, table 6.32) to its talker; a setting, off by default (section 3.9) |
+| Authentication | MS authentication (6.4.8): a challenge at registration (6.4.4.1.5) for MSs with a key, or every MS; an authentication poll on command; the 6.4.8 algorithm with the PSN; keys from `cfg/ms` (section 3.14). The MS authenticating the site isn't built |
+| Emergency | Emergency group calls (the emergency call timer, the Emergency flag in grants; an emergency request on an open call upgrades it); pre-emption of a running call when no channel is free (6.4.14.3.1), with the Reverse Channel cease command (6.4.15, table 6.32) to its talker; a setting, off by default (section 3.9). The emergency alarm and its cancel (status 126 and 124, 6.6.6.3) through status delivery |
+| Status delivery | Status Transport Service delivery (6.6.6.1): a 7-bit status to an MS (C_AHOY, its C_ACKU or C_NACKU mirrored), a talkgroup (C_AHOY, no answer, C_ACKD to the caller) or the TSCC; stored while the called MS is on a payload channel; an `activity` `status` event (section 3.10) |
+| Mass re-registration | MassReg (6.4.5): all MSs or one, on command (`mass_reg`) or at start, repeated inside its Reg_Window (section 3.11) |
+| TSCC modes | C_MOVE on command (all MSs or one, to another TSCC's logical channel); the asynchronous (hibernating) TSCC, woken by BS_Dwn_Act or any good inbound block; a setting, off by default (section 3.12) |
+| Power save | PowerSave_RQ in registration, PowerSave_Offset in the C_ACKD (6.4.7.2.1); C_AHOYs to a sleeping MS held for its wake frame; a setting, off by default (section 3.11) |
 | Refusals | C_NACKD(Not_Supported) for every other Service_Kind; Called_Party_Busy, Called_Group_Not_Allowed, Perm_User_Refused as provisioning says |
 | Network | Wide-area group calls both ways; individual calls across sites with an availability check over the network; Tier II to Tier III and back; registration records; site description; provisioning from the manager, cached at the site |
 | Services | The site controller (Rust, in RFG), the radio layer (C, in RFG), the router's additions, the manager and its dashboard (Python, network services), the MS simulator |
@@ -49,9 +54,8 @@ Principles:
 
 ### 1.2 Later (the design leaves room; nothing here is built)
 
-Packet data and UDT short data, talkgroup list subscription (UDT upload), power save, mass re-registration,
-Vote Now, C_MOVE and a second TSCC, composite TSCC, TSCCAS, the asynchronous (hibernating) TSCC, DGNA,
-stun/revive/kill, gateways (PSTN, PABX, dispatcher), duplex calls, ambient listening, a standby controller, trunking on the W12 (the LR2021 can't stay keyed: slot-timing.md), two carriers
+Packet data and UDT short data, talkgroup list subscription (UDT upload), a second TSCC, composite TSCC, TSCCAS (section 3.12 says why), DGNA,
+stun/revive/kill, gateways (PSTN, PABX, dispatcher), duplex calls over the network and duplex packet data, ambient listening, a standby controller, trunking on the W12 (the LR2021 can't stay keyed: slot-timing.md), two carriers
 out of one SDR, authentication of the site by the MS (6.4.9.2), encryption beyond pass-through.
 
 Two carriers out of one SDR (tried on the Pluto, 2026-11-06, with fixed test signals, not the site): two DMR BS
@@ -121,9 +125,10 @@ Carrier A TS1 sends a CSBK or MBC block every slot (every 60 ms). The controller
 2. The continuation block of an MBC already started.
 3. A grant repeat that is due: every `grant_every_s` (default 1.2 s) per active call, with Late_Entry = 1, through the
    call and its hang time (as the RadioMax reference does).
-4. A broadcast that is due: Adjacent_Site per neighbor every `adjacent_s` (default 5 s), Chan_Freq every
-   `chan_freq_s`, Local_Time every `local_time_s` (default 6 s) when the clock is synchronized, Gen_Site_Params
-   every 10 s.
+4. A broadcast that is due: MassReg while one runs, CallTimer_Parms every `call_timers_s`, Vote_Now per neighbor
+   every `vote_now_s`, Ann_WD_TSCC every `ann_tscc_s` (section 3.11; all off by default), Adjacent_Site per neighbor
+   every `adjacent_s` (default 5 s), Chan_Freq every `chan_freq_s`, Local_Time every `local_time_s` (default 6 s)
+   when the clock is synchronized, Gen_Site_Params every 10 s.
 5. C_ALOHA, Mask 0, address ADRNULL.
 
 At least one C_ALOHA goes out every 4 TSCC slots whatever else is due (an MS waits for an Aloha before it accesses,
@@ -168,7 +173,8 @@ Group call (talkgroup, ALLMSID):
 
 1. C_RAND (Service_Kind 0001b). Checks: registered (if required), allowed on this talkgroup (provisioning), the
    talkgroup allowed at this site.
-2. A free payload slot: TV_GRANT (BTV_GRANT for ALLMSID/ALLMSIDL/ALLMSIDZ) twice, then repeats. None free: C_QACKD and
+2. A free payload slot: TV_GRANT (BTV_GRANT for ALLMSID/ALLMSIDL/ALLMSIDZ, and for a broadcast call, BCAST_SV
+   in the request: one way, 6.6.2) twice, then repeats. None free: C_QACKD and
    into the queue; queue full: C_NACKD(SYSbusy_Refused).
 3. The payload channel starts sending idles at once, then repeats the inbound voice of whoever talks, and plays
    network voice for the talkgroup.
@@ -208,9 +214,9 @@ default 10 s). On expiry the controller abandons the request.
 
 ### 3.7 Refusals
 
-Every C_RAND Service_Kind other than 0000b, 0001b, 1001b (Call Answer), 1110b and 1111b gets
-C_NACKD(Not_Supported) (4.2). Gateway addresses (PSTNI and the rest) as targets also get Not_Supported. Data,
-status and UDT requests likewise.
+Every C_RAND Service_Kind other than 0000b, 0001b, 0111b (status delivery, section 3.10), 1001b (Call Answer),
+1110b and 1111b gets C_NACKD(Not_Supported) (4.2). Gateway addresses (PSTNI and the rest) as targets also get
+Not_Supported. Data, status polling and UDT requests likewise.
 
 ### 3.8 Timers and constants (settings, under the app's `timers`)
 
@@ -267,7 +273,120 @@ leaves that slot's block out and the radio sends the RC in an idle burst (a few 
 while a talker is being de-keyed). Choice: the cease command (0100b), not the cease request (0101b): 6.4.14.3.1 is a
 de-key, and a request may be ignored by the MS.
 
-### 3.10 MS authentication
+### 3.10 Status delivery and the emergency alarm
+
+The Status Transport Service (Service_Kind 0111b, 6.6.6.1) carries a 7-bit status on the control channel. The
+C_RAND has it in Service_Options (G/I, SUPED_SV, the high 5 bits) and the two bits before the Service_Kind (table
+6.57); the C_AHOY to the called party has it in Service_Options_Mirror and Appended_Blocks (table 7.22, note 2).
+Status 126 is the emergency alarm and 124 its cancel (6.6.6.3): an emergency without a voice call.
+
+- To an MS registered here: C_AHOY to it (AT set), repeated as for an individual call (`ahoy_tries`,
+  `ahoy_every_s`). Its C_ACKU(MS_Accepted) goes to the caller as C_ACKD with the same reason; a C_NACKU's reason
+  goes back mirrored in C_NACKD. No answer: C_NACKD(MSaway_Refused). The C_AHOY doesn't carry the voice call's
+  emergency check: an MS may send the alarm only if its provisioning allows emergencies (`emergency`).
+- The called MS is on a payload channel (an individual call, or it set up or last talked in a group call): the
+  caller gets C_QACKD(Queued_for_Busy) and the status waits, up to `tp_s` (6.6.6.1.1.5), until the MS is back.
+- To a talkgroup: C_AHOY to the talkgroup twice, no answer expected; then C_ACKD(Message_Accepted) to the caller
+  (6.6.6.1.1.4). Local only for now: the status doesn't go to the talkgroup's other sites.
+- To the TSCC (target TSI): a system message, taken here, C_ACKD(Message_Accepted).
+- Not served (C_NACKD(Not_Supported)): polling (127, the data services'), the transmit interrupt statuses (123,
+  125), gateway targets and extended addresses (the Proxy Flag). An MS not registered here: C_NACKD(MSaway_Refused);
+  delivery across sites is a later item. A request for supplementary data is ignored (6.6.6.1.2.1.2 a).
+
+Each delivered or failed status is an `activity` `status` event (mqtt-net.md section 7) with `alarm` on 126 and
+124, and the alarm goes in the log.
+
+### 3.11 Announcements, mass re-registration and power save
+
+C_BCAST, each Announcement_type (table 7.68) and what the site does with it:
+
+| Type | Built | How |
+|---|---|---|
+| 0 Ann_WD_TSCC (6.7.1.1, table 7.69) | yes, off by default | the adjacent sites' TSCC channels for the MSs' hunt lists, two to a CSBK (CHNULL in the second when odd), every `ann_tscc_s` over them all; a neighbor known to be off line is withdrawn (AW_FLAG 1, color code 0). The color code is the site's own (one for the system: the neighbors' isn't carried). The MBC form with absolute frequencies isn't built (the neighbors' frequencies aren't known; Adjacent_Site has the same gap) |
+| 1 CallTimer_Parms (6.7.1.2, table 7.70) | yes, off by default | `emergency_call_s` and `call_s` as the tokens of annex A tables A.2 and A.4, the largest that doesn't pass the site's timer (so the MS's ends first); the packet and line timers 0 (the MS's own: the site has neither) |
+| 2 Vote_Now (6.7.1.3, table 7.71) | yes, off by default | each neighbor in turn within `vote_now_s`: its 14 syscode bits, Active_Connection when known, the priorities, CH_VOTE its TSCC's logical channel. Then VOTE_BLK (4) TSCC slots of C_ALOHA with ADRNULL and Mask 24, which lets no MS in, so a voting MS misses nothing. The VN_AP MBC (CH_VOTE 4095) isn't built (as Ann_WD_TSCC) |
+| 3 Local_Time (6.7.1.4) | yes (section 3.2) | |
+| 4 MassReg (6.4.5, table 7.76) | yes | below |
+| 5 Chan_Freq (6.7.1.5, table 7.78) | yes (section 3.2) | each carrier in turn |
+| 6 Adjacent_Site (6.7.1.6) | yes (section 3.2) | from the network |
+| 7 Gen_Site_Params (6.7.1.7) | yes (section 3.2) | the hibernating flag 1 just before an asynchronous TSCC goes quiet (section 3.12); the "Reg and TG Subscription" bit 0 |
+| 30, 31 manufacturer specific | no | none defined |
+
+Mass re-registration (6.4.5): the `mass_reg` command (mqtt-net, section 5.7; `rdof_t3_command(s, "mass_reg",
+window_s, ms)`) or `services.mass_reg_at_start_s` (a restarted site has lost the records it didn't load). MassReg
+with Mask 0 for all MSs, or Mask 24 and the MS's address for one, and the smallest Reg_Window (table 6.12) that
+covers the time asked. Each MS registers by random access at a random time within it (the C_RAND isn't marked: an
+ordinary registration). The site repeats the broadcast inside the window, so an MS that heard one ignores the
+others (6.4.5.1 e): 3 times without power save; with power save once in each power save frame for the longest
+cycle offered, and the window at least that long, so every sleeping MS hears one in its wake frame (6.4.5.1 f).
+Window 0 cancels a mass re-registration (the pending attempts with it), repeated the same way.
+
+Power save (6.4.7), off unless `services.power_save` is set: an MS that asks for 1:2^n (PowerSave_RQ n, 1-7) with n
+up to the setting gets a PowerSave_Offset (1 to 2^n - 1, table 6.13) in Response_Info of its registration's
+C_ACKD; a larger n or none gets 0 (registered, power save not available: the site doesn't refuse it). The offset
+comes from the MS's subscribed talkgroup (else its address), so a talkgroup's members share a wake frame. PS_Counter
+is the Common_Slot_Counter's 7 high bits (one power save frame is 4 counts, 480 ms; figure 6.29); the MS wakes when
+PS_Counter masked to n bits equals its offset (table 6.14). A C_AHOY to a sleeping MS (an individual call, a
+status) waits for the first 8 slots of its wake frame, and the call's set-up time limit stretches by one cycle; the
+MS is taken as awake for `services.power_save_awake_s` (the site's T_Awake, 1 s) after a PDU to or from it, so the
+following C_AHOYs and the grant go at once. Not built: a group call's grants aren't held for its members' wake
+frames (they catch a Late_Entry grant repeat that falls in theirs: `grant_every_s` under 0.48 s makes sure), and
+the offset isn't kept in the registration record (a restarted site pages a sleeping MS at any time until it
+registers again: `mass_reg_at_start_s`).
+
+### 3.12 TSCC modes: C_MOVE, the asynchronous TSCC, and what isn't built
+
+C_MOVE (6.3.3.1 e, table 7.17): the `move` command (`rdof_t3_command(s, "move", chan, ms)`, mqtt-net `move`) sends
+C_MOVE three times on the TSCC: Mask 0 for every MS, or Mask 24 and the address for one; the Reg and Backoff of
+C_ALOHA; the target TSCC's logical channel (1-4094; the MBC form with absolute frequencies isn't built). A
+listening MS leaves for that channel; nothing answers. Use: send MSs to a neighbor's TSCC (the TSCC channel of an
+Adjacent_Site entry) before taking this one down, or one MS to another site.
+
+The asynchronous TSCC (5.3.3, 6.1.1.2), off unless `services.hibernate_s` (T_BS_Inactive, 1-300 s) is set: with no
+good inbound block on the TSCC for that long and nothing under way (no call, no request waiting, nothing to send),
+the TSCC sends Gen_Site_Params with the Hibernating_Flag twice, then goes quiet: no C_ALOHA, no C_SYS_Parms in the
+CACH. An MS that heard the flag doesn't hunt for want of C_ALOHA; with something to do it sends BS_Dwn_Act (361-2
+7.1.2.1, table 7.5a; BS address 0: 361-4 doesn't say what a TSCC's is, so the site takes any) on the TSCC's
+inbound. Any good inbound block wakes the TSCC, and so does anything the site has to send (a call from the
+network, a status). The radio layer still keys carrier A while the TSCC is quiet (idle bursts): keying the
+transmitter down and back on the TSCC's slot grid is later work.
+
+Not built, and why:
+
+- A second TSCC (6.1.1.1, 6.3.2.2.1.2-4: two TSCCs split by PAR and control category): the controller keeps one
+  control channel's state (its response queue, Aloha schedule and load); a second needs a second of each and a
+  rule for which MS is served where. Two sites with `par` A and B on separate carriers come close today, each its
+  own controller.
+- The composite TSCC (5.3.2): the TSCC slot turning payload when all others are busy. The radio layer and the unit
+  treat carrier A's first slot as the TSCC throughout (its CACH, its short LC, its idle path); the reversion to
+  P_SYS_Parms with the composite Payload Channel Type and back needs that changed. Pre-emption (section 3.9) covers
+  the emergency case.
+- Moving the site's own TSCC to another carrier: the same reason.
+- TSCCAS (6.1.1.3): its content is USBD polling, which belongs to the data services (with LIP). C_ALOHA's TSCCAS
+  flag stays 0.
+
+### 3.13 Full-duplex individual calls
+
+6.6.9, off unless `services.duplex` is true (off: C_NACKD(Not_Supported), as before). An MS asks with C_RAND,
+Service_Kind 1010b (table 6.73), to another MS registered at this site:
+
+1. The checks of an individual call (section 3.5); the called party must be local (a duplex call over mqtt-net
+   would need a stream each way: not built; C_NACKD(NoReg_MSaway)), not busy, and not asked by proxy.
+2. C_WACKD to the caller, then the radio check: C_AHOY with Service_Kind 1010b (6.6.9.1.4; FOACSU as set). The
+   called MS's C_NACKU is mirrored, MS_Duplex_Not_Supported (0x16) among them (the caller may then try an
+   ordinary individual call); C_ACKU(CallBack) gives the caller C_ACKD(CallBack).
+3. Accepted: the call needs a whole carrier, both slots free, so never the TSCC's. None free: C_NACKD(SYSbusy):
+   duplex requests aren't queued, and a duplex emergency doesn't pre-empt.
+4. A PV_GRANT_DX (table 7.10) to each party, twice: LCN 1 to the caller (Call Direction 1), LCN 2 to the called
+   MS, the partner as source. The carrier runs offset timing (361-1 5.1.1.2, table 5.1): an MS on LCN n
+   transmits in inbound slot n, which is the other slot to the one it hears, so it talks and listens at once. The
+   radio layer (`rdof_t3rf_duplex`, set on both channels from the channel's `RDOF_T3_F_DUPLEX` open event) reads
+   the carrier's inbound slots the other way round and repeats each party's inbound on the other's outbound.
+5. Each channel keeps its own talker and hang time; the call ends when both are quiet past hang time, on the
+   call timer, or on either party's P_MAINT DISCON: both slots send P_CLEAR. A duplex call that pre-emption
+   picks is cleared at once (its parties don't listen on the other slot, where the RC would go).
+
+### 3.14 MS authentication
 
 The setting `auth` (section 4): `off` (default), `registration` (an MS with a key is challenged when it registers;
 one without registers as before) or `required` (every MS is challenged; one without a key is refused). Keys come
@@ -357,9 +476,9 @@ paths").
 | `static_tg` | ID set | `""` | talkgroups the site always subscribes to on the network (as a Tier II repeater's `tg`) |
 | `foacsu` | bool | false | full off-air call setup for individual calls |
 | `timers` | object | section 3.8 | |
-| `broadcast` | object | section 3.2 | `adjacent_s`, `chan_freq_s`, `local_time_s` (0 = off) |
-| `services` | object | | `emergency_preempt` (bool, false): clear a running call for a waiting emergency (section 3.9). Local settings only for now; the manager's `cfg` doesn't carry it |
-| `auth` | `off`, `registration`, `required` | `off` | MS authentication (section 3.10): challenge MSs with a key at registration, or every MS. Local settings only; the manager's `cfg` doesn't carry it |
+| `broadcast` | object | section 3.2 | `adjacent_s`, `chan_freq_s`, `local_time_s`, `call_timers_s`, `vote_now_s`, `ann_tscc_s` (0 = off; the last three off by default, section 3.11) |
+| `services` | object | | `emergency_preempt` (bool, false): clear a running call for a waiting emergency (section 3.9); `power_save` (0-7, 0): the largest PowerSave_RQ granted, 0 none; `power_save_awake_s` (0.1-60, 1); `mass_reg_at_start_s` (0-200000, 0): a mass re-registration at start within this time (section 3.11); `hibernate_s` (0 or 1-300, 0): T_BS_Inactive of the asynchronous TSCC, 0 never (section 3.12); `duplex` (bool, false): full-duplex individual calls (section 3.13). Local settings only for now; the manager's `cfg` doesn't carry them |
+| `auth` | `off`, `registration`, `required` | `off` | MS authentication (section 3.14): challenge MSs with a key at registration, or every MS. Local settings only; the manager's `cfg` doesn't carry it |
 
 Checks (refusals name the key): exactly one `tscc` carrier; every carrier's `out` on a device that transmits and its
 `in` on a device that receives; the TSCC carrier's `in` and `out` on one full-duplex SDR (a split TX half
@@ -505,7 +624,7 @@ the same MODEL and NET, unless `cfg/node/{node}` gives `neighbors` explicitly.
 ```
 
 `activity` events added: `reg` (`src`, `action` register/deregister/expire/deny/refuse/auth_ok/auth_fail/auth_none,
-`tg`; section 3.10), `grant` (`src`,
+`tg`; section 3.14), `grant` (`src`,
 `dst`, `group`, `chan`, `lcn`, `late`, `source` rf/net), `queue` (`src`, `dst`, `action` in/out/drop, `why`),
 `setup` (`src`, `dst`, `op`, `reason`, `peer`). call_start / call_end on a trunk site carry `chan` and `lcn`.
 
@@ -535,7 +654,7 @@ reported in `cmd/res`.
 "priority": 0, "emergency": true, "tg": [91, 3100], "auth_k": "0102030405060708090A0B0C0D0E0F10", "psn": "010203"}`.
 `enabled: false` = Reg_Denied at every site, and an existing registration is removed. `tg` adds static talkgroups
 for that MS. `auth_k` (32 hex digits) is its authentication key K and `psn` (6 hex digits, optional) its PSN
-(section 3.10); a bad value refuses the document without quoting it.
+(section 3.14); a bad value refuses the document without quoting it.
 
 Precedence: `cfg/ms` over `cfg/tg` over `cfg/node` over `cfg/net` over the settings file.
 
@@ -549,7 +668,9 @@ Commands (`node/{node}/cmd`, JSON `{"id": "c-123", "cmd": "...", ...}`; the resu
 | `withdraw` / `restore` | | takes the TSCC off the air / back |
 | `resend_records` | | republishes every registration record |
 | `status` | | publishes `status` now |
-| `auth` | `ms` | an authentication poll of a registered MS with a key (section 3.10); a failure removes its registration |
+| `mass_reg` | `window_s` (0-200000, 0 cancels), `ms` (optional: one MS) | a mass re-registration (section 3.11) |
+| `move` | `chan` (1-4094), `ms` (optional: one MS) | C_MOVE: the MSs leave for the TSCC on that channel (section 3.12) |
+| `auth` | `ms` | an authentication poll of a registered MS with a key (section 3.14); a failure removes its registration |
 
 ### 5.8 Security
 
@@ -609,7 +730,7 @@ The Rust exports a C API (the repo's convention: the header is the contract; str
 t3 structs aren't in `rust/src/layout.rs` (a legacy-only module): `rdof_t3_layout()` reports their sizes and
 alignments and `host-tests/test_t3.c` compares them with the header's. The exact API is `common/include/rdof/t3.h`;
 the sketch below is the design, which the header extends (`rdof_t3_net_private_end`, `rdof_t3_record`,
-`rdof_t3_subs`, `rdof_t3_entropy` (the challenges' random source, section 3.10), the MS simulator's `rdof_t3ms_*`).
+`rdof_t3_subs`, `rdof_t3_entropy` (the challenges' random source, section 3.14), the MS simulator's `rdof_t3ms_*`).
 
 ```c
 typedef struct rdof_t3_site rdof_t3_site_t;          /* opaque, caller allocates rdof_t3_site_size() bytes */
@@ -696,8 +817,12 @@ called about one slot plus the TX lead ahead of air: the controller decides a sl
   unless RF holds the channel;
 - the controller's payload PDUs (P_CLEAR) take precedence over voice;
 - idle bursts fill;
+- voice activity to the controller: the header, each voice sync burst (once a superframe, so a long call isn't taken
+  for a lost one), the terminator, or lost;
 - a Reverse Channel PDU for the other slot's talker (`rdof_t3rf_rc`, from `rdof_t3_ch_out_t.rc`) goes once into the
-  next voice burst F or idle burst, 360 ms apart, not right after a terminator (section 3.9).
+  next voice burst F or idle burst, 360 ms apart, not right after a terminator (section 3.9);
+- a full-duplex call's channels (`rdof_t3rf_duplex`, section 3.13): the carrier's inbound slots read in offset
+  timing, each channel's regenerated inbound queued on the other's outbound.
 
 Outbound sinks: carrier A's channels are read by the slot source (9.1); carrier B's go to the split radio's TX half
 (`rdof_split_t`) in the scheduled stream (SET_ROLE stream 1, TX_SCHED): each burst tagged with its slot counter,
@@ -777,7 +902,8 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
 - Tests: `rdof_t3split_tests` (a two-carrier site, carrier B on a fake split TX half: bring-up, UTC alignment,
   a call on carrier B as `TX_SCHED` on the UTC slots followed by a simulated MS from what the half airs, a heard burst
   labeled by slot, unkeyed after the hang); `rdof_t3unit_tests` (two sites over a broker, `cfg/tg` hang, the
-  neighbor list).
+  neighbor list; a four-carrier site on the burst path: every payload channel in use, a pre-emption with the RC read
+  back from the air, an emergency alarm).
 - Carrier timing: both carriers count the host's UTC slots. Carrier B's split half follows the host's clock
   (`rdof_t3split_utc`, measured each minute). Carrier A's modem sits on the same grid through rdofradio's slot timing
   (`sdr/cli/rdofradio_utc.c`): each read of the receive stream stamped with its arrival on the host's clock, the
@@ -814,12 +940,25 @@ In the network services' own repository (with the router, the Python library and
 - group and individual call requests; follows grants to the payload channel; talks for a set time (voice header,
   voice bursts, terminator), P_MAINT DISCON at the end of an individual call; returns on P_CLEAR or TV_Inactive;
 - answers C_AHOY: accept, busy, no answer, or FOACSU alerting then answer, as configured; an authentication
-  challenge with its key and PSN (`rdof_t3ms_key`), or MSNot_Supported without one (section 3.10);
-- emergency and priority options; cancel.
+  challenge with its key and PSN (`rdof_t3ms_key`), or MSNot_Supported without one (section 3.14);
+- emergency and priority options; cancel;
+- the Reverse Channel cease command: finishes its superframe, sends a terminator and stops talking (6.4.15);
+- status delivery (`RDOF_T3MS_DO_STATUS`, the status in `talk_ms`): sends one to an MS, a talkgroup or TSI; stores
+  the ones delivered to it or its talkgroup and answers an individual one as configured.
+- power save (`set_power_save`): asks for it in its registrations, hears the TSCC only in its wake frame and for
+  T_Awake (2 s) after a PDU to it; mass re-registration: registers at a random time in the Reg_Window, ignores
+  repeats inside it, a Reg_Window 0 cancels; counts the C_BCASTs it hears by type.
+- C_MOVE: an idle MS it applies to moves to that channel's LCN 0 (one in its list); a TSCC that said it
+  hibernates: no hunting, and BS_Dwn_Act when it has something to do.
+- full-duplex calls (`RDOF_T3MS_DO_DUPLEX`): follows a PV_GRANT_DX to it, transmits in offset timing
+  (`rdof_t3ms_tx_t.offset`), both parties talk (the called MS 2 s), the caller disconnects; `set_no_duplex` answers
+  the radio check C_NACKU(MS_Duplex_Not_Supported). `RDOF_T3MS_F_BROADCAST` makes a group call a broadcast call;
+  a BTV_GRANT is followed by the talkgroup's members (any MS for an all-call).
 
 `t3air`: a slot-exact air between one site controller and N MSs: TSCC outbound to every MS on the TSCC; inbound
 collisions (two MSs in one inbound slot: neither is heard, and the site gets `rx_bad`); payload channels with their
-members; optional loss rate and delay. Scenarios script MS actions by time and check outcomes.
+members; the Reverse Channel to the MSs on the other slot; optional loss rate and delay. Scenarios script MS actions
+by time and check outcomes. The burst-path simulator (`t3sim`) reads the RC out of the aired bursts the same way.
 
 Used by: `cargo test` (scenarios), the C host tests (through the C API), rdofradio `--sim-air`. External MSs join
 the same air through `--sim-ext` (section 9.4), so another MS implementation can be checked against the site
@@ -831,6 +970,7 @@ and against `t3ms` on one air.
 |---|---|---|
 | PDU codec | Every PDU the site sends or reads: field packing against the 361-4 tables, round trips, known vectors from a standard site's captures (decoded values, not checks) | Rust unit tests |
 | Controller | Scenarios over `t3air`: registration open/listed/denied, collisions and backoff, group call, queue and grant on release, late entry repeats, hang and P_CLEAR, call timer, individual OACSU and FOACSU, no answer, cancel, busy called party, Not_Supported, network group in and out, network setup both ways, Tier II implicit setup, records reload, provisioning changes, link loss | Rust tests (`cargo test`, run by ctest) |
+| Control channel features | Scenarios over `t3air` (`rust/src/t3ctltests.rs`): pre-emption and the RC cease, status delivery and alarms, 3 and 4 carriers, the C_BCASTs, mass re-registration, power save, C_MOVE, the asynchronous TSCC, full-duplex and broadcast calls; through the radio layer and `t3sim`: 4 carriers with pre-emption, a duplex call | Rust tests; C host test `rdof_t3unit_tests` |
 | C API | Init, a short scenario through the FFI, layouts | C host test `rdof_t3_tests` |
 | Radio layer | Burst building (CSBK, MBC, CACH with C_SYS_Parms and AT), parsing back, the slot source in the SDR modem (timing, short LC, AT), payload channel regeneration and P_CLEAR, split output frames | C host tests |
 | Settings | the `tier3` app: good and bad files, schema | C host tests, `test_schema.js` |
@@ -875,7 +1015,7 @@ apart from the code, found seven deviations, all fixed (2026-11-12):
   0 as "no site" (a peer's info is marked by a nonzero syscode, and PAR is never 0), so 0 is now allowed.
 
 Out of round 2, unchanged from section 1.2: dedicated multi-carrier sites beyond two, multi-site roaming on air,
-packet data, the standby controller. MS authentication was added on 2026-11-12 (section 3.10).
+packet data, the standby controller. MS authentication was added on 2026-11-12 (section 3.14).
 
 ## 14. Open questions for the owner
 

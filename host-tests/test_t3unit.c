@@ -462,12 +462,170 @@ static void test_sim_embedded(void)
           lc[0] & 0x3f, src, dst);
 }
 
+/* Four carriers (7 payload channels) through the radio layer and the burst path: seven group calls fill every
+   payload channel; an emergency then pre-empts one, its talker de-keyed by a Reverse Channel burst on the other
+   slot of its carrier, read back from the air; and a status to a talkgroup. */
+static void test_carriers4(void)
+{
+    rdof_t3_cfg_t cfg;
+    rdof_t3_policy_t pol;
+    rdof_t3cfg_default(&cfg, &pol);
+    cfg.ncarriers = 4;
+    for (int c = 1; c < 4; c++)
+        cfg.carriers[c] = (rdof_t3_carrier_t){438600000u + 25000u * (uint32_t)c, 431000000u + 25000u * (uint32_t)c,
+                                              (uint16_t)(c + 1), 0, 1};
+    cfg.preempt = 1;
+    const rdof_t3unit_io_t io = {quiet_publish, NULL, NULL, NULL, NULL, NULL};
+    rdof_t3unit_t *u = calloc(1, rdof_t3unit_size());
+    void *mem = aligned_alloc(8, (rdof_t3_site_size() + 7) / 8 * 8);
+    char err[120] = "";
+    CHECK(rdof_t3unit_init(u, mem, &cfg, &pol, &io, NULL, NULL, -1, NULL, err, sizeof err), "init: %s", err);
+    CHECK(rdof_t3unit_rf(u)->ncarriers == 4, "4 carriers in the radio layer");
+    enum { N = 9 };
+    rdof_t3ms_t *ms[N];
+    uint32_t id[N];
+    const uint16_t chans[4] = {1, 2, 3, 4};
+    for (int i = 0; i < N; i++) {
+        const uint32_t tg[1] = {i == 8 ? 11u : 10u + (uint32_t)i};
+        id[i] = 3100200 + (uint32_t)i;
+        ms[i] = malloc(rdof_t3ms_size());
+        rdof_t3ms_init(ms[i], id[i], tg, 1, chans, 4, 50 + (uint32_t)i);
+        rdof_t3ms_do(ms[i], RDOF_T3MS_DO_REGISTER, tg[0], 0, 0, T0 + 300 + 250 * i);
+    }
+    static rdof_t3sim_t sim;
+    rdof_t3sim_init(&sim, u, N, ms, id);
+    int64_t k = 0;
+#define RUN(msec)                                                                                                  \
+    for (int64_t end_ = k + (msec) / 30; k < end_; k++)                                                            \
+    rdof_t3sim_slot(&sim, k, T0 + k * 30)
+    RUN(8000);
+    rdof_t3ms_status_t st;
+    int regs = 0;
+    for (int i = 0; i < N; i++)
+        rdof_t3ms_status(ms[i], &st), regs += st.registered;
+    CHECK(regs == N, "all registered (%d)", regs);
+    /* seven group calls, on seven talkgroups: every payload channel, one each */
+    for (int i = 0; i < 7; i++)
+        rdof_t3ms_do(ms[i], RDOF_T3MS_DO_GROUP, 10 + (uint32_t)i, 40000, 0, T0 + k * 30 + 200 * i);
+    RUN(6000);
+    unsigned used = 0;
+    int before[7];
+    for (int i = 0; i < 7; i++) {
+        rdof_t3ms_status(ms[i], &st);
+        before[i] = st.ch;
+        if (st.state == RDOF_T3MS_PAYLOAD)
+            used |= 1u << st.ch;
+    }
+    CHECK(used == 0xFE, "channels 1-7 in use: 0x%02x", used);
+    for (int c = 1; c < 4; c++)
+        CHECK(rdof_t3unit_rf(u)->ch[2 * c].tx_traffic > 0 && rdof_t3unit_rf(u)->ch[2 * c + 1].tx_traffic > 0,
+              "carrier %d repeats on both slots", c);
+    rdof_t3ms_status(ms[8], &st);
+    CHECK(st.state == RDOF_T3MS_PAYLOAD && st.ch == before[1], "MS 8 follows talkgroup 11 (ch %d)", st.ch);
+    /* the emergency: no channel free, the call on a payload carrier's channel cleared, its talker told by RC */
+    rdof_t3ms_do(ms[7], RDOF_T3MS_DO_GROUP, 99, 2000, RDOF_T3MS_F_EMERGENCY, T0 + k * 30);
+    int waited = 0;
+    do {
+        RUN(30);
+        waited += 30;
+        rdof_t3ms_status(ms[7], &st);
+    } while (st.state != RDOF_T3MS_PAYLOAD && waited < 10000);
+    CHECK(st.state == RDOF_T3MS_PAYLOAD, "the emergency call got a channel (%d ms)", waited);
+    int cleared = -1, ceased_ch = st.ch;
+    for (int i = 0; i < 7; i++) {
+        rdof_t3ms_status(ms[i], &st);
+        if (st.clears)
+            cleared = i;
+    }
+    /* the first call granted went on the TSCC carrier's LCN 1 (a keyed carrier first); the oldest after it goes */
+    CHECK(before[0] == 1 && cleared == 1 && ceased_ch == before[1], "MS %d pre-empted, its channel %d to the emergency",
+          cleared, ceased_ch);
+    CHECK(sim.out_rc >= 1 && rdof_t3unit_rf(u)->ch[before[1] ^ 1].rc_sent >= 1, "RC on the other slot: %u %u",
+          sim.out_rc, rdof_t3unit_rf(u)->ch[before[1] ^ 1].rc_sent);
+    CHECK(sim.out_bad == 0, "no bad outbound blocks (%u)", sim.out_bad);
+    rdof_t3ms_status(ms[8], &st);
+    CHECK(st.clears == 1, "MS 8, a listener, back on the TSCC too");
+    /* an emergency alarm to talkgroup 11, whose members are back on the TSCC */
+    rdof_t3ms_status(ms[1], &st);
+    const uint32_t done0 = st.calls_done;
+    rdof_t3ms_do(ms[1], RDOF_T3MS_DO_STATUS, 11, 126, RDOF_T3MS_F_TO_GROUP, T0 + k * 30);
+    RUN(2000);
+    rdof_t3ms_status(ms[1], &st);
+    CHECK(st.calls_done == done0 + 1 && st.last_reason == 0x60, "the alarm taken: done %u, reason 0x%02x", st.calls_done,
+          st.last_reason);
+#undef RUN
+    for (int i = 0; i < N; i++)
+        free(ms[i]);
+    free(mem);
+    free(u);
+}
+
+/* A full-duplex call through the radio layer: carrier 2 in offset timing, each party's inbound repeated on the
+ * other's slot (361-4 6.6.9). */
+static void test_duplex(void)
+{
+    rdof_t3_cfg_t cfg;
+    rdof_t3_policy_t pol;
+    rdof_t3cfg_default(&cfg, &pol);
+    cfg.ncarriers = 2;
+    cfg.carriers[1] = (rdof_t3_carrier_t){438625000u, 431025000u, 2, 0, 1};
+    cfg.duplex = 1;
+    const rdof_t3unit_io_t io = {quiet_publish, NULL, NULL, NULL, NULL, NULL};
+    rdof_t3unit_t *u = calloc(1, rdof_t3unit_size());
+    void *mem = aligned_alloc(8, (rdof_t3_site_size() + 7) / 8 * 8);
+    char err[120] = "";
+    CHECK(rdof_t3unit_init(u, mem, &cfg, &pol, &io, NULL, NULL, -1, NULL, err, sizeof err), "init: %s", err);
+    rdof_t3ms_t *ms[2];
+    uint32_t id[2] = {3100301, 3100302};
+    const uint16_t chans[2] = {1, 2};
+    const uint32_t tg[1] = {10};
+    for (int i = 0; i < 2; i++) {
+        ms[i] = malloc(rdof_t3ms_size());
+        rdof_t3ms_init(ms[i], id[i], tg, 1, chans, 2, 70 + (uint32_t)i);
+        rdof_t3ms_do(ms[i], RDOF_T3MS_DO_REGISTER, 10, 0, 0, T0 + 300 + 250 * i);
+    }
+    static rdof_t3sim_t sim;
+    rdof_t3sim_init(&sim, u, 2, ms, id);
+    int64_t k = 0;
+#define RUN(msec)                                                                                                  \
+    for (int64_t end_ = k + (msec) / 30; k < end_; k++)                                                            \
+    rdof_t3sim_slot(&sim, k, T0 + k * 30)
+    RUN(5000);
+    rdof_t3ms_do(ms[0], RDOF_T3MS_DO_DUPLEX, id[1], 3000, 0, T0 + k * 30);
+    RUN(3000);
+    rdof_t3ms_status_t a, b;
+    rdof_t3ms_status(ms[0], &a);
+    rdof_t3ms_status(ms[1], &b);
+    CHECK(a.state == RDOF_T3MS_PAYLOAD && b.state == RDOF_T3MS_PAYLOAD && a.ch == 2 && b.ch == 3,
+          "both on carrier 2: %d/%d %d/%d", a.state, a.ch, b.state, b.ch);
+    const rdof_t3rf_t *rf = rdof_t3unit_rf(u);
+    CHECK(rf->ch[2].duplex && rf->ch[3].duplex, "offset timing on carrier 2");
+    CHECK(rf->ch[2].rx_bursts > 20 && rf->ch[3].rx_bursts > 20, "each party heard on its own channel: %u %u",
+          rf->ch[2].rx_bursts, rf->ch[3].rx_bursts);
+    CHECK(rf->ch[2].tx_traffic > 20 && rf->ch[3].tx_traffic > 20, "each repeated on the other's slot: %u %u",
+          rf->ch[2].tx_traffic, rf->ch[3].tx_traffic);
+    RUN(5000);
+    rdof_t3ms_status(ms[0], &a);
+    rdof_t3ms_status(ms[1], &b);
+    CHECK(a.calls_done == 1 && a.state == RDOF_T3MS_IDLE && b.state == RDOF_T3MS_IDLE, "cleared: %u %d %d",
+          a.calls_done, a.state, b.state);
+    CHECK(!rf->ch[2].open && !rf->ch[3].open && !rf->ch[2].duplex && !rf->ch[3].duplex, "both closed");
+    CHECK(sim.out_bad == 0, "no bad outbound blocks (%u)", sim.out_bad);
+#undef RUN
+    for (int i = 0; i < 2; i++)
+        free(ms[i]);
+    free(mem);
+    free(u);
+}
+
 int main(void)
 {
     test_sim_embedded();
     test_layouts();
     test_sim_layouts();
     test_memory();
+    test_carriers4();
+    test_duplex();
     site_open(&A, 0, "site-a", 3, 3100001, T0);
     site_open(&Bs, 1, "site-b", 4, 3100101, T0);
     run(6000);
