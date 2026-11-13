@@ -6634,6 +6634,11 @@ int main(int argc, char **argv)
         } else if (!strcmp(a, "--ota")) {
             NEXT();
             web_ota(v);
+#else
+        } else if (!strcmp(a, "--web") || !strcmp(a, "--last-exit") || !strcmp(a, "--ota")) {
+            /* built without the web page: taken and ignored, so a Pluto's run.sh and flags work with either build */
+            NEXT();
+            (void)v;
 #endif
         } else if (!strcmp(a, "--fpga-bit")) {
             NEXT();

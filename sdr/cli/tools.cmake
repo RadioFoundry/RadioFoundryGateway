@@ -164,6 +164,10 @@ if(TARGET rdofradio AND IIO_INCLUDE_DIR AND IIO_LIBRARY)
     set_tests_properties(rdofradio_listen_refuses_tx PROPERTIES PASS_REGULAR_EXPRESSION "--listen receives only")
     add_test(NAME rdofradio_listen_refuses_tx_flags COMMAND rdofradio --iio ip:192.0.2.1 --listen --rx 446 --tx-gain 10)
     set_tests_properties(rdofradio_listen_refuses_tx_flags PROPERTIES PASS_REGULAR_EXPRESSION "--listen receives only")
+    # a Pluto's run.sh passes --last-exit and --ota, and its flags may hold --web: taken with or without the web page
+    add_test(NAME rdofradio_web_flags_taken COMMAND rdofradio --iio ip:192.0.2.1 --web 0.0.0.0:8080 --last-exit
+             /nonexistent/last_exit --ota /nonexistent/rdofradio.ota --listen --allow-tx --rx 446)
+    set_tests_properties(rdofradio_web_flags_taken PROPERTIES PASS_REGULAR_EXPRESSION "--listen receives only")
     add_test(NAME rdofradio_needs_allow_tx COMMAND rdofradio --iio ip:192.0.2.1 --rx 446)
     set_tests_properties(rdofradio_needs_allow_tx PROPERTIES PASS_REGULAR_EXPRESSION "pass --allow-tx \\(or --listen")
 endif()
