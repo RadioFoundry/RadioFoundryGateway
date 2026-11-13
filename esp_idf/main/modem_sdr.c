@@ -109,6 +109,10 @@ static bool pull_iq(void *ctx, int64_t pos, rdof_cf_t *iq, int n)
     return r;
 }
 
+/* The carrier offset of the samples the last pull_freq gave (the reader alone pulls) */
+static float pulled_off;
+static float carrier_off(void *ctx) { return pulled_off; }
+
 static bool pull_freq(void *ctx, int64_t pos, float *hz, float *env, int n)
 {
     TAKE();
@@ -116,6 +120,7 @@ static bool pull_freq(void *ctx, int64_t pos, float *hz, float *env, int n)
         slot_timing_apply(mdm);
     MS_POLL();
     bool r = mdm && rdof_sdrmodem_pull_freq(mdm, pos, hz, env, n);
+    pulled_off = mdm ? rdof_sdrmodem_pulled_off(mdm) : 0.0f;
     GIVE();
     return r;
 }
@@ -128,6 +133,7 @@ static int try_pull_freq(void *ctx, int64_t pos, float *hz, float *env, int n)
         slot_timing_apply(mdm);
     MS_POLL();
     bool r = mdm && rdof_sdrmodem_pull_freq(mdm, pos, hz, env, n);
+    pulled_off = mdm ? rdof_sdrmodem_pulled_off(mdm) : 0.0f;
     GIVE();
     return r;
 }
@@ -147,7 +153,7 @@ static int try_pull_iq(void *ctx, int64_t pos, rdof_cf_t *iq, int n)
 static volatile bool sig_iq;
 static bool iq_now(void *ctx) { return sig_iq; }
 
-static const rdof_fe_tx_source_t source = {pull_iq, pull_freq, NULL, try_pull_freq, iq_now, try_pull_iq};
+static const rdof_fe_tx_source_t source = {pull_iq, pull_freq, NULL, try_pull_freq, iq_now, try_pull_iq, carrier_off};
 
 /* A frequency no receive channel hears is still one the modem may transmit on (a bench job's, a bench.tx band's):
  * it hears nothing there. A -1 would NAK the SET_FREQ ("isn't one of the SDR's channels"). */
@@ -365,6 +371,14 @@ int sdr_modem_bench_signal_state(void)
     const int s = mdm && bench_reply ? rdof_sdrmodem_signal_state(mdm) : -1;
     GIVE();
     return s;
+}
+
+bool sdr_modem_bench_offset(uint32_t from, double hz)
+{
+    TAKE();
+    const bool ok = mdm && bench_reply && rdof_sdrmodem_offset_from(mdm, from, hz);
+    GIVE();
+    return ok;
 }
 
 void sdr_modem_bench_write(const uint8_t *data, size_t len)

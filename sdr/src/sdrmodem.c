@@ -839,7 +839,14 @@ static void on_frame(void *ctx, uint8_t cmd, const uint8_t *p, size_t len)
         }
         if (!m->qn[s])
             m->wait48[s] = m->now48;
-        memcpy(m->q[s][(m->qh[s] + m->qn[s]) % RDOF_SDRMODEM_QUEUE].b, p + 1, RDOF_BURST_BYTES);
+        while (m->off_n > 0 && m->off_q[0].from <= m->data_in) { /* the sweep's next step starts here */
+            m->off_now = m->off_q[0].hz;
+            memmove(m->off_q, m->off_q + 1, sizeof m->off_q[0] * (size_t)--m->off_n);
+        }
+        m->data_in++;
+        rdof_sdrmodem_burst_t *q = &m->q[s][(m->qh[s] + m->qn[s]) % RDOF_SDRMODEM_QUEUE];
+        memcpy(q->b, p + 1, RDOF_BURST_BYTES);
+        q->off_hz = m->off_now;
         m->qn[s]++;
         break;
     }
@@ -1085,7 +1092,10 @@ static void queue_simplex(rdof_sdrmodem_t *m, int64_t pos, int n)
         if (start > pos + n + two)
             break; /* not due yet */
         const uint8_t *b = m->q[1][m->qh[1]].b;
-        if (rdof_mod_queue_burst(&m->mod, start, b, NULL, RDOF_MOD_RAMPS) != 0)
+        m->mod.next_off_hz = m->q[1][m->qh[1]].off_hz;
+        const int r = rdof_mod_queue_burst(&m->mod, start, b, NULL, RDOF_MOD_RAMPS);
+        m->mod.next_off_hz = 0.0f;
+        if (r != 0)
             break; /* the modulator's queue is full */
         m->qh[1] = (m->qh[1] + 1) % RDOF_SDRMODEM_QUEUE;
         m->qn[1]--;
@@ -1125,7 +1135,10 @@ static void queue_dcdm(rdof_sdrmodem_t *m, int64_t pos, int n)
         if (best < 0 || at > pos + n + slot)
             break; /* nothing queued, or not due yet */
         const uint8_t *b = m->q[best][m->qh[best]].b;
-        if (rdof_mod_queue_burst(&m->mod, at, b, NULL, RDOF_MOD_RAMPS) != 0)
+        m->mod.next_off_hz = m->q[best][m->qh[best]].off_hz;
+        const int r = rdof_mod_queue_burst(&m->mod, at, b, NULL, RDOF_MOD_RAMPS);
+        m->mod.next_off_hz = 0.0f;
+        if (r != 0)
             break; /* the modulator's queue is full */
         m->qh[best] = (m->qh[best] + 1) % RDOF_SDRMODEM_QUEUE;
         m->qn[best]--;
@@ -1340,7 +1353,10 @@ static void queue_duplex(rdof_sdrmodem_t *m, int64_t pos, int n)
         m->tx_active[s] = !idle;
         rdof_sdrmodem_cach(m, m->slot_k, c3);
         unsigned flags = (m->ramp_up ? RDOF_MOD_RAMP_UP : 0) | (m->unkey ? RDOF_MOD_RAMP_DOWN : 0);
-        if (rdof_mod_queue_burst(&m->mod, at + cach, burst, c3, flags) != 0)
+        m->mod.next_off_hz = idle ? m->off_now : m->q[s][m->qh[s]].off_hz; /* idle fill: the offset in force */
+        const int r = rdof_mod_queue_burst(&m->mod, at + cach, burst, c3, flags);
+        m->mod.next_off_hz = 0.0f;
+        if (r != 0)
             break;
         if (m->key_k < 0)
             m->key_k = m->slot_k;
@@ -1543,6 +1559,21 @@ bool rdof_sdrmodem_pull_iq(rdof_sdrmodem_t *m, int64_t pos, rdof_cf_t *iq, int n
     rdof_mod_iq(&m->mod, iq, n);
     m->pos = m->mod.pos;
     return !idle && keyed_in(m, NULL, iq, n);
+}
+
+float rdof_sdrmodem_pulled_off(const rdof_sdrmodem_t *m) { return m->mod_ok && !m->sig_on ? m->mod.pulled_off_hz : 0.0f; }
+
+bool rdof_sdrmodem_offset_from(rdof_sdrmodem_t *m, uint32_t from, double hz)
+{
+    if (m->off_n == RDOF_SDRMODEM_OFFSETS)
+        return false;
+    if (from <= m->data_in && !m->off_n) {
+        m->off_now = (float)hz;
+        return true;
+    }
+    m->off_q[m->off_n].from = from;
+    m->off_q[m->off_n++].hz = (float)hz;
+    return true;
 }
 
 bool rdof_sdrmodem_pull_freq(rdof_sdrmodem_t *m, int64_t pos, float *hz, float *env, int n)
