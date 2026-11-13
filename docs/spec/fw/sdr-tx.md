@@ -9,7 +9,8 @@ Related: [sdr.md](sdr.md), [sdr-rx.md](sdr-rx.md), [sdr-frontends.md](sdr-fronte
 | Constant | Value | Symbol (`mod.h`) |
 |---|---|---|
 | symbol rate | 4800 | `RDOF_MOD_SYMBOL_RATE` |
-| deviation per level unit | 648 Hz (so ±1944 Hz at ±3) | `RDOF_MOD_DEVIATION_HZ` |
+| deviation per level unit | 648 Hz (so ±1944 Hz at ±3); `rdof_mod_set_dev_scale` scales it (a bench job's `--dev-scale`; 1.0 the same output bit for bit) | `RDOF_MOD_DEVIATION_HZ` |
+| peak swing | about 3690 Hz at 1.0 (±3 through the pulse's largest tap sum; random symbols about 3200) | `rdof_mod_peak_hz` |
 | pulse taps per output sample | 9 (8-symbol RRC, α = 0.2) | `RDOF_MOD_TAPS` |
 | polyphase phases | ≤ 1024 | `RDOF_MOD_MAX_PHASES` |
 | ramp | ≤ 6 symbols (default 4, 0.83 ms) | `RDOF_MOD_MAX_RAMP` |
@@ -111,4 +112,8 @@ It checks:
 - Power: dBm at the antenna. A job asks `power_dbm` (or `power`, 0-255 on the front end's
   `tx_power_min`..`tx_power_max`) and sends at the lower of it and `bench.tx.max_dbm` (or `rf_level` on that range):
   `rdof_bench_power_dbm`.
+- Deviation: a line protocol job's `dev_scale` (0.5-1.5, bench-api.md §14.3) goes to the job's own modem
+  (`sdr_modem_bench_dev_scale`, `rdof_mod_set_dev_scale`); the modem is freed after the job, so the roamer's is never
+  touched. The LR2021's frequency samples stop at +-4064 Hz (`tx_dev_max_hz`): past about 1.1 the shaped signal's
+  overshoots can clip, and the job's note says so.
 - Binary (raw I/Q) frames are not supported. A keying log of 8 entries is kept.

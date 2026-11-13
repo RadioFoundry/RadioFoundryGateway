@@ -683,6 +683,7 @@ EXT_RAM_BSS_ATTR static struct {
     int8_t s[TX_STAGE];  /* frequency samples (lr2021_raw_freq_sample) */
     int8_t iq[2 * TX_STAGE]; /* or polar I/Q samples (K_IQ) */
     uint8_t k[TX_STAGE]; /* K_* */
+    int16_t off[TX_STAGE]; /* the carrier offset taken out of s (Hz, the source's carrier_off): its run's carrier moves */
 } stage;
 
 static struct {
@@ -741,6 +742,7 @@ static void tx_fill(int64_t upto, int blocks, bool wait)
                 stage.iq[2 * at] = k ? q[2 * i] : 0; /* zeros: the PA off (R3.22) */
                 stage.iq[2 * at + 1] = k ? q[2 * i + 1] : 0;
                 stage.k[at] = k ? K_KEYED | K_IQ : 0;
+                stage.off[at] = 0;
                 if (k && tx.key < 0)
                     tx.key = p;
             }
@@ -761,13 +763,19 @@ static void tx_fill(int64_t upto, int blocks, bool wait)
             const size_t at = (size_t)(tx.pos & (TX_STAGE - 1));
             memset(&stage.s[at], (uint8_t)c, sizeof stage.s[0] * TX_BLOCK);
             memset(&stage.k[at], 0, sizeof stage.k[0] * TX_BLOCK);
+            memset(&stage.off[at], 0, sizeof stage.off[0] * TX_BLOCK);
             tx.pos += TX_BLOCK;
             continue;
         }
+        /* a sweep's carrier offset moves the run's carrier rather than spend the samples' +-4064 Hz (a DMR burst
+         * peaks near 3.7 kHz) */
+        const float co = src->carrier_off ? src->carrier_off(src->ctx) : 0.0f;
+        const int16_t coi = (int16_t)lrintf(co);
         for (int i = 0; i < TX_BLOCK; i++) {
             const int64_t p = tx.pos + i;
             const bool k = keyed && env[i] > 0;
-            stage.s[p & (TX_STAGE - 1)] = lr2021_raw_freq_sample(hz[i], TX_FDEV);
+            stage.s[p & (TX_STAGE - 1)] = lr2021_raw_freq_sample(hz[i] - (float)coi, TX_FDEV);
+            stage.off[p & (TX_STAGE - 1)] = coi;
             stage.k[p & (TX_STAGE - 1)] = k ? K_KEYED : 0;
             if (k && tx.key < 0)
                 tx.key = p;
@@ -840,7 +848,7 @@ static void tx_run(int64_t k0, int n, int64_t t_key)
     const rdof_txpower_path_t path = tx_path();
     const lr2021_iq_tx_t t = {
         .mode = polar ? LR2021_TX_IQ_POLAR : LR2021_TX_FREQ,
-        .center_hz = tx.hz,
+        .center_hz = tx.hz + (polar ? 0 : stage.off[k0 & (TX_STAGE - 1)]),
         .ppm = carrier_ppm(),
         .rate = TX_RATE,
         .fdev_hz = TX_FDEV,
@@ -895,6 +903,7 @@ struct long_span {
     int64_t sent;     /* samples sent */
     int64_t run;      /* a run's samples: TX_LONG_RUN, or TX_LONG_RUN_IQ */
     bool iq;
+    int16_t off;      /* the carrier's offset (stage.off): a keyed sample at another ends the transmission */
     double skip;      /* samples owed to the seams, not yet skipped */
     int seam_us;
     unsigned seams;
@@ -932,8 +941,10 @@ static size_t long_pull(void *ctx, uint8_t *buf, size_t max)
         int64_t g = p->end;
         while (g < tx.pos && !stage.k[g & (TX_STAGE - 1)])
             g++;
+        if (g < tx.pos && stage.off[g & (TX_STAGE - 1)] != p->off)
+            break; /* a sweep's next step: the carrier moves, a transmission of its own */
         if (g < tx.pos) {
-            while (g < tx.pos && stage.k[g & (TX_STAGE - 1)])
+            while (g < tx.pos && stage.k[g & (TX_STAGE - 1)] && stage.off[g & (TX_STAGE - 1)] == p->off)
                 g++;
             p->end = g;
             continue;
@@ -968,7 +979,7 @@ static int64_t tx_run_long(int64_t k0, int64_t k1, int64_t t_key)
     const rdof_txpower_path_t path = tx_path();
     const lr2021_iq_tx_t t = {
         .mode = mode,
-        .center_hz = tx.hz,
+        .center_hz = tx.hz + stage.off[k0 & (TX_STAGE - 1)],
         .ppm = carrier_ppm(),
         .rate = TX_RATE,
         .fdev_hz = TX_FDEV,
@@ -983,7 +994,7 @@ static int64_t tx_run_long(int64_t k0, int64_t k1, int64_t t_key)
     /* static: this runs deep in the reader's stack (the modem's pull inside the stream's), the reader alone */
     EXT_RAM_BSS_ATTR static lr2021_tx_stream_stats_t s;
     EXT_RAM_BSS_ATTR static struct long_span span;
-    span = (struct long_span){.at = k0, .end = k1, .run = run, .iq = polar,
+    span = (struct long_span){.at = k0, .end = k1, .run = run, .iq = polar, .off = stage.off[k0 & (TX_STAGE - 1)],
                               .seam_us = learned > 0 ? learned : TX_SEAM_US, .st = &s};
     if (lr2021_iq_tx_calibrates(&iq, &t))
         tx.calibrated++;
@@ -1099,10 +1110,13 @@ static bool tx_service(void)
         return false;
     /* the span: keyed samples, through gaps under TX_MERGE, pulling on where it reaches the stage's end */
     const int64_t k0 = tx.key;
+    const int16_t off0 = stage.off[k0 & (TX_STAGE - 1)]; /* the span's carrier offset: one at another is a span apart */
     int64_t k1 = k0;
     while (tx.src && k1 - k0 < TX_MAX_RUN) {
-        while (k1 < tx.pos && stage.k[k1 & (TX_STAGE - 1)])
+        while (k1 < tx.pos && stage.k[k1 & (TX_STAGE - 1)] && stage.off[k1 & (TX_STAGE - 1)] == off0)
             k1++;
+        if (k1 < tx.pos && stage.k[k1 & (TX_STAGE - 1)])
+            break; /* the carrier moves here */
         if (k1 >= tx.pos) {
             tx_fill(tx.pos + TX_BLOCK, 1, true);
             continue;
@@ -1112,6 +1126,8 @@ static bool tx_service(void)
             g++;
         if (g >= k1 + TX_MERGE)
             break; /* a real gap: the span ends at k1 */
+        if (g < tx.pos && stage.off[g & (TX_STAGE - 1)] != off0)
+            break; /* keyed again, the carrier elsewhere */
         if (g >= tx.pos) {
             tx_fill(tx.pos + TX_BLOCK, 1, true);
             continue;

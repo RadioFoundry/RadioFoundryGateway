@@ -54,6 +54,7 @@ typedef struct {
     int64_t lo, hi;                 /* the samples it touches: [lo, hi) */
     int16_t first, count;           /* sym[0] is symbol first (-12 with a CACH in front) */
     uint8_t flags;                  /* RDOF_MOD_RAMP_* */
+    float off_hz;                   /* its carrier offset on top of the modulator's (rdof_mod_t next_off_hz) */
     float sym[RDOF_MOD_PAD + RDOF_MOD_MAX_SYMBOLS + RDOF_MOD_PAD]; /* as floats: no conversions per tap */
 } rdof_mod_seg_t;
 
@@ -65,12 +66,15 @@ typedef struct {
     float inv_ramp, inv_p;
     float amplitude;
     float dev_inc;                  /* one unit of deviation in phase-accumulator steps per sample */
+    float dev_hz;                   /* one unit of deviation in Hz (RDOF_MOD_DEVIATION_HZ times the scale) */
     double offset_hz;
     uint32_t base_inc;              /* the offset, in the same */
     uint32_t phase;
     int64_t pos;                    /* sample index of the next output sample */
     rdof_mod_seg_t *q;                /* ring of queued segments, in start order */
     int qcap, qhead, qn;
+    float next_off_hz;              /* a carrier offset (Hz) for segments queued from now on, on top of offset_hz */
+    float pulled_off_hz;            /* the segment offset of the last rdof_mod_iq / _freq call's samples (0: none) */
 } rdof_mod_t;
 
 #define RDOF_MOD_LUT_BITS 8
@@ -95,6 +99,13 @@ int rdof_mod_init(rdof_mod_t *m, uint32_t fs, double freq_offset_hz, double ramp
 void rdof_mod_free(rdof_mod_t *m);
 /* Where the channel sits from the front end's center; from the next sample on. */
 void rdof_mod_set_offset(rdof_mod_t *m, double hz);
+/* The deviation as a fraction of the nominal 648 Hz a unit (1.0 after init, and the same output bit for bit); from
+ * the next sample on. A bench job's --dev-scale (0.5-1.5) tests a receiver against a transmitter off nominal. */
+void rdof_mod_set_dev_scale(rdof_mod_t *m, double scale);
+/* The most the frequency can swing from the offset at the deviation set, Hz: +-3 through the pulse's largest sum of
+ * tap magnitudes (about 3690 Hz at 1.0; random symbols reach about 3200). A front end with a frequency limit (the W12's
+ * int8 samples, 4064 Hz) clips the overshoots past it. */
+double rdof_mod_peak_hz(const rdof_mod_t *m);
 
 /* count symbols (+-1, +-3) whose symbol first peaks at start + first * fs / 4800. Returns 0; -1 if it is too long,
  * the queue is full, it's before the last one queued, or it would touch a sample already pulled (late). */
@@ -117,7 +128,9 @@ void rdof_mod_skip(rdof_mod_t *m, int64_t pos);
 /* The next n samples of complex baseband: |x| = amplitude while keyed. */
 void rdof_mod_iq(rdof_mod_t *m, rdof_cf_t *out, int n);
 /* Or the next n samples' instantaneous frequency (Hz, offset included) and envelope (0..1, may be NULL), for a chip
- * with its own FM modulator. Either advances the position and the phase. */
+ * with its own FM modulator. Either advances the position and the phase. A segment's own offset (next_off_hz when it
+ * was queued) applies to the 64-sample blocks it touches; pulled_off_hz says which one the call's samples had, so a
+ * front end that tunes its carrier per key-up can move the carrier by it and take it out of the samples. */
 void rdof_mod_freq(rdof_mod_t *m, float *hz, float *env, int n);
 
 #ifdef __cplusplus

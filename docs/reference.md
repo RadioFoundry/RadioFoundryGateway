@@ -290,6 +290,7 @@ From `idf.py size`. Run it after a change that adds code or RAM, and update this
 
 | Build | Date | App image | Free in its slot | DIRAM used (of 334 KB) |
 |---|---|---|---|---|
+| `16mb` + `w12` (the Rust modules) | 2026-11-13 | 2499 KB | 1.6 MB of 4 MB | 187 KB |
 | `16mb` + `w12` (the Rust modules) | 2026-11-11 | 2492 KB | 1.6 MB of 4 MB | 187 KB |
 | `16mb` + `w12` (the Rust modules) | 2026-11-10 | 2477 KB | 1.6 MB of 4 MB | |
 | `16mb` + `w12`, `CONFIG_RDOF_RUST=n` | 2026-11-10 | 2411 KB | 1.6 MB of 4 MB | |
@@ -1101,7 +1102,8 @@ private test network. Code: `bench_api.c`, `bench_radio.c`, `bench_tx.c`; the sp
 - the receiver channels' bursts, cs8 captures and level triggers from a 2 s wideband history (kept only while a
   capture or I/Q stream used it in the last ten minutes, so a first capture has no pre-roll);
 - `bench_tx` jobs through the SDR modem under `bench.tx`'s gates, in WS /tx's one job slot, `--power-dbm` (or
-  `--power`) capped at `bench.tx.max_dbm` or `rf_level`. A roamer keeps its SDR modem, so a W12 running one refuses transmit jobs;
+  `--power`) capped at `bench.tx.max_dbm` or `rf_level`, and `--dev-scale` (0.5-1.5) on the job's modulator: the
+  LR2021's frequency samples clip at +-4064 Hz, so past 1.1 the overshoots between symbols can clip (spec §14.3). A roamer keeps its SDR modem, so a W12 running one refuses transmit jobs;
 - the `tune` op moves the receiver's window for a session (`PUT /sdr`'s retune) until it ends or releases it; a
   `trigger` or `rx` outside the window tunes for itself;
 - analog `tx` and `rx` with a `mode`: FM, and AM for airband (`rfgbench.py tx am` / `rx am`: 1 kHz at 30% by
@@ -1372,8 +1374,9 @@ bursts, wideband cs8 captures from a 2.5 s history, level-triggered channel capt
 frequencies) or bands, and the half duplex transceiver: it takes the SDR modem for its length, at `--tx-power`, or
 at a job's `power_dbm` (bench_tx's `--power-dbm`) when that's lower: the gain turns down by the difference for the
 job, to the device's least at most (a sweep of a receiver's RSSI steps it), whatever RF level the transceiver left. A
-job's `power` 0-255 isn't applied on the SDR. On `--mmdvm` a job's power goes to an RF level on the modem's `tx` map
-under `--rf-level`. `tune` and a `trigger` or `rx` outside the window move the receiver for the job (bench-api.md
+job's `power` 0-255 isn't applied on the SDR. A job's `dev_scale` (bench_tx's `--dev-scale`, 0.5-1.5) scales the
+modulator's deviation for the job. On `--mmdvm` a job's power goes to an RF level on the modem's `tx` map under
+`--rf-level`, and a `dev_scale` off 1.0 is refused (the modem keeps its own deviation). `tune` and a `trigger` or `rx` outside the window move the receiver for the job (bench-api.md
 §14.2). With the FPGA channelizer there's no wideband I/Q: capture, trigger, track and rx take the
 receiver's channels (2.5 s of each kept). When the bench line and the page listen past loopback, rdofradio lists them
 over DNS-SD (`_rfgbench._tcp` with TXT `kind` and `ver`, `_http._tcp`) through the host's responder, by running

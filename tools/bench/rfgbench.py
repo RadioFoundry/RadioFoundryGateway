@@ -1151,6 +1151,7 @@ def bench_tx_parser() -> argparse.ArgumentParser:
     ap.add_argument("--cc", type=int, default=2)
     ap.add_argument("--power", type=int, default=255)        # the older form: 0-255 on the transmitter's range
     ap.add_argument("--power-dbm", type=float)                # dBm at the antenna; the gateway takes it over --power
+    ap.add_argument("--dev-scale", type=float)                # the DMR deviation, a fraction of nominal: 0.5-1.5
     ap.add_argument("--rx-offset", type=int)
     ap.add_argument("--tx-offset", type=int)
     ap.add_argument("-v", "--verbose", action="store_true")
@@ -1163,10 +1164,13 @@ def bench_tx_parser() -> argparse.ArgumentParser:
         p.add_argument("--dst", type=int, default=dst)
         p.add_argument("--family", choices=("ms", "bs", "ts1", "ts2"), default="ms")
         p.add_argument("--burst-cc", type=int)
+        p.add_argument("--offset-hz", type=float)           # the carrier this far from --freq (bench-api.md 14.3)
     v = sub.add_parser("voice", add_help=False)
     common(v, 215)
     v.add_argument("--private", action="store_true")
-    v.add_argument("--superframes", type=int, default=3)
+    v.add_argument("--superframes", type=int)               # 3, or a sweep's steps x --superframes-per-step
+    v.add_argument("--offset-sweep")                        # FROM:TO:STEP in Hz: one call through the offsets
+    v.add_argument("--superframes-per-step", type=int)
     v.add_argument("--headers", type=int)
     v.add_argument("--terminators", type=int)
     v.add_argument("--late", type=int)
@@ -1215,6 +1219,7 @@ def bench_repeater_parser() -> argparse.ArgumentParser:
     ap.add_argument("--cc", type=int, default=2)
     ap.add_argument("--power", type=int, default=255)
     ap.add_argument("--power-dbm", type=float)
+    ap.add_argument("--dev-scale", type=float)
     ap.add_argument("--seconds", type=float, default=60)
     ap.add_argument("--slots", default="1,2")
     ap.add_argument("--hang", type=float, default=4.0)
@@ -1237,8 +1242,13 @@ def job_of(argv) -> Tuple[Optional[dict], str]:
                       + shlex.join(argv))
     tool = os.path.basename(argv[i])[:-3]
     p = bench_tx_parser() if tool == "bench_tx" else bench_repeater_parser()
+    args = list(argv[i + 1:])
+    for k in range(len(args) - 1):                       # a sweep from a negative offset reads as an option
+        if args[k] == "--offset-sweep":
+            args[k:k + 2] = ["--offset-sweep=" + args[k + 1], ""]
+    args = [x for x in args if x != ""]
     try:
-        ns, extra = p.parse_known_args(argv[i + 1:])
+        ns, extra = p.parse_known_args(args)
     except SystemExit:
         return None, f"{tool}: can't read its options: {shlex.join(argv[i + 1:])}"
     if extra:
@@ -1268,6 +1278,15 @@ def cmd_run(a) -> int:
         check_reach(a, job.get("rx"), tx=False)
     elif job.get("cmd") in ("voice", "csbk", "data", "outbound"):
         check_reach(a, job.get("freq"), tx=True)
+    if job.get("dev_scale", 1.0) != 1.0 and job.get("cmd") != "listen":
+        try:                                              # a gateway that predates it would send at nominal
+            d = request(a.where, {"op": "info"})
+        except OSError:
+            d = {"error": "unreachable"}                  # the run says why
+        if "error" not in d and not d.get("features", {}).get("dev_scale"):
+            print(f"{NOTE} this gateway doesn't apply --dev-scale (an older build, or a transmitter that keeps its own "
+                  f"deviation): not sent", file=sys.stderr)
+            return EX_UNAVAILABLE
     files = {}
 
     def on(d, data):

@@ -267,6 +267,139 @@ static void test_skip(void)
     rdof_mod_free(&b);
 }
 
+/* rdof_mod_set_dev_scale (a bench job's --dev-scale): 1.0 is init's output bit for bit; 0.9 and 1.1 scale the
+ * frequency, its peak with it, on both outputs (the Pluto's I/Q, the W12's frequency). The most a 1.5 can swing, from
+ * the pulse's taps, against the W12's int8 frequency samples (32 Hz a count: 4064 Hz). */
+static void test_dev_scale(void)
+{
+    enum { FS = 48000, N = 4800, AT = 600 };
+    static const double SC[] = {1.0, 1.0, 0.9, 1.1, 0.5, 1.5};
+    enum { K = sizeof SC / sizeof SC[0] };
+    static float hz[K][N], env[N];
+    static rdof_cf_t iq[K][N];
+    double peak[K];
+    for (int k = 0; k < K; k++) {
+        for (int w = 0; w < 2; w++) {
+            rdof_mod_t m;
+            CHECK(rdof_mod_init(&m, FS, 0.0, 4.0, 1.0f, 4, 0) == 0, "init");
+            if (k) /* 0: as init leaves it */
+                rdof_mod_set_dev_scale(&m, SC[k]);
+            for (int i = 0; i < 2; i++) {
+                const struct v_mod_seg *g = &v_mod_segs[i];
+                CHECK(rdof_mod_queue(&m, AT + i * 1440, g->sym, g->first, g->count, (unsigned)g->flags) == 0,
+                      "queue %d", i);
+            }
+            if (w)
+                rdof_mod_iq(&m, iq[k], N);
+            else
+                rdof_mod_freq(&m, hz[k], env, N);
+            rdof_mod_free(&m);
+        }
+        peak[k] = 0;
+        for (int i = 0; i < N; i++)
+            peak[k] = fmax(peak[k], fabs(hz[k][i]));
+    }
+    CHECK(!memcmp(hz[0], hz[1], sizeof hz[0]) && !memcmp(iq[0], iq[1], sizeof iq[0]),
+          "a scale of 1.0 changes the output");
+    for (int k = 2; k < K; k++) {
+        double e = 0, eiq = 0;
+        for (int i = 0; i < N; i++) {
+            e = fmax(e, fabs(hz[k][i] - SC[k] * hz[0][i]));
+            /* the I/Q's frequency: its phase step a sample, where it's keyed */
+            const rdof_cf_t a = iq[k][i], b = i ? iq[k][i - 1] : (rdof_cf_t){0, 0};
+            if (hypotf(a.re, a.im) > 0.5f && hypotf(b.re, b.im) > 0.5f) {
+                const double f =
+                    atan2(a.im * b.re - a.re * b.im, a.re * b.re + a.im * b.im) * FS / (2 * 3.14159265358979);
+                eiq = fmax(eiq, fabs(f - SC[k] * hz[0][i]));
+            }
+        }
+        printf("mod dev scale %.1f: peak %.1f Hz (%.4f of 1.0's %.1f), frequency within %.4f Hz, I/Q's within %.3f "
+               "Hz\n", SC[k], peak[k], peak[k] / peak[0], peak[0], e, eiq);
+        CHECK(fabs(peak[k] / peak[0] - SC[k]) < 1e-4, "scale %.1f: peak %.1f Hz against %.1f", SC[k], peak[k], peak[0]);
+        CHECK(e < 0.01 && eiq < 0.5, "scale %.1f: frequency off by %g Hz, the I/Q's by %g Hz", SC[k], e, eiq);
+    }
+    /* the most it can swing, at the rates the boards run: over what these symbols reached, and on the W12 (int8
+       frequency samples, 4064 Hz at most, no offset) clear to 1.1; past that its overshoots can clip */
+    static const uint32_t RATES[] = {FS, 125000, 288000};
+    for (int r = 0; r < 3; r++) {
+        rdof_mod_t m;
+        rdof_mod_init(&m, RATES[r], 0.0, 4.0, 1.0f, 4, 0);
+        const double most = rdof_mod_peak_hz(&m);
+        rdof_mod_set_dev_scale(&m, 1.1);
+        const double at11 = rdof_mod_peak_hz(&m);
+        rdof_mod_set_dev_scale(&m, 1.5);
+        const double at15 = rdof_mod_peak_hz(&m);
+        rdof_mod_free(&m);
+        printf("mod dev scale at %u S/s: the frequency swings %.0f Hz at most (1.1: %.0f, 1.5: %.0f)\n", RATES[r],
+               most, at11, at15);
+        CHECK(most >= peak[0] && most < 3800 && fabs(at15 / most - 1.5) < 1e-6, "%u S/s: at most %.0f Hz (%.0f seen)",
+              RATES[r], most, peak[0]);
+        CHECK(at11 < 4064, "%u S/s: 1.1 swings to %.0f Hz, past the W12's 4064", RATES[r], at11);
+    }
+}
+
+/* A segment queued with next_off_hz: its samples hz higher (rdof_mod_freq) and turning that much faster
+ * (rdof_mod_iq), pulled_off_hz says so; a segment after it without one is back on the channel. */
+static void test_carrier_offset(void)
+{
+    enum { N = 16384, AT = 1000, AT2 = 9000 };
+    int8_t sym[132];
+    for (int i = 0; i < 132; i++)
+        sym[i] = (int8_t)((i * 7) % 4 * 2 - 3);
+    rdof_mod_t a, b;
+    static float ha[N], hb[N], ea[N], eb[N];
+    static rdof_cf_t qa[N], qb[N];
+    for (int iq = 0; iq < 2; iq++) {
+        rdof_mod_init(&a, 48000, 500.0, 4.0, 1.0f, 4, 0);
+        rdof_mod_init(&b, 48000, 500.0, 4.0, 1.0f, 4, 0);
+        rdof_mod_queue(&a, AT, sym, 0, 132, RDOF_MOD_RAMPS);
+        rdof_mod_queue(&a, AT2, sym, 0, 132, RDOF_MOD_RAMPS);
+        b.next_off_hz = -1500.0f;
+        rdof_mod_queue(&b, AT, sym, 0, 132, RDOF_MOD_RAMPS);
+        b.next_off_hz = 0.0f;
+        rdof_mod_queue(&b, AT2, sym, 0, 132, RDOF_MOD_RAMPS);
+        float pulled = 0;
+        for (int done = 0; done < N; done += 256) {
+            if (iq) {
+                rdof_mod_iq(&a, qa + done, 256);
+                rdof_mod_iq(&b, qb + done, 256);
+            } else {
+                rdof_mod_freq(&a, ha + done, ea + done, 256);
+                rdof_mod_freq(&b, hb + done, eb + done, 256);
+            }
+            if (done < AT2 - 2000 && b.pulled_off_hz != 0)
+                pulled = b.pulled_off_hz;
+            if (done >= AT2 - 1000)
+                CHECK(b.pulled_off_hz == 0, "pulled_off_hz %g after the second segment's start", b.pulled_off_hz);
+        }
+        CHECK(pulled == -1500.0f, "pulled_off_hz %g in the first segment", pulled);
+        int bad = 0, keyed = 0;
+        const double w = -2 * M_PI * 1500.0 / 48000;
+        for (int i = AT; i < AT + 1400; i++) {
+            if (iq ? hypotf(qa[i].re, qa[i].im) < 0.5f || hypotf(qa[i - 1].re, qa[i - 1].im) < 0.5f : ea[i] <= 0)
+                continue;
+            keyed++;
+            if (iq) {
+                /* b against a: a phase turning -1500 Hz a sample, at a's magnitude */
+                const double r = atan2(qb[i].im, qb[i].re) - atan2(qa[i].im, qa[i].re);
+                const double r1 = atan2(qb[i - 1].im, qb[i - 1].re) - atan2(qa[i - 1].im, qa[i - 1].re);
+                const double d = remainder(r - r1 - w, 2 * M_PI);
+                bad += fabs(d) > 1e-3 || fabsf(hypotf(qb[i].re, qb[i].im) - hypotf(qa[i].re, qa[i].im)) > 1e-4f;
+            } else {
+                bad += fabsf(hb[i] - ha[i] + 1500.0f) > 0.01f || eb[i] != ea[i];
+            }
+        }
+        CHECK(!bad && keyed > 1000, "%s: %d samples not 1500 Hz lower (%d keyed)", iq ? "iq" : "freq", bad, keyed);
+        bad = 0;
+        for (int i = AT2; i < AT2 + 1400; i++)
+            bad += iq ? fabsf(hypotf(qb[i].re, qb[i].im) - hypotf(qa[i].re, qa[i].im)) > 1e-4f
+                      : fabsf(hb[i] - ha[i]) > 0.01f;
+        CHECK(!bad, "%s: the second segment off its channel in %d samples", iq ? "iq" : "freq", bad);
+        rdof_mod_free(&a);
+        rdof_mod_free(&b);
+    }
+}
+
 /* A repeater's continuous downlink at 288 kS/s: time per second of I/Q (rough, on the host). */
 static void bench(void)
 {
@@ -304,6 +437,8 @@ int main(void)
         }
     test_just_in_time();
     test_skip();
+    test_dev_scale();
+    test_carrier_offset();
     bench();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

@@ -48,6 +48,8 @@ typedef struct {
     uint8_t ambe[RDOF_BL_LINE_MAX / 2];
     rdof_bj_burst_t *b;       /* the key-up's bursts */
     int nb, bi, maxb, part, nparts;
+    int step;                 /* the carrier offset's step set for the key-up (-1: none yet) */
+    double key_t;             /* UTC the key-up's first burst was handed over (a step's modeled time) */
     int state;
     double until, started, max_s;
     bool tx_open, listening;
@@ -1001,10 +1003,11 @@ static void op_info(rdof_bl_t *bl, conn_t *c, double now)
                               "\"bands\":[],\"held_by\":%s,\"waiting\":%s}],"
                               "\"modem\":{\"held_by\":%s,\"waiting\":%s,\"next_job_eta\":{\"eta_s\":%.1f,"
                               "\"worst_s\":%.1f}},\"signal_modes\":{\"tx\":%s,\"rx\":%s},\"jobs\":%s,"
-                              "\"features\":{\"bursts_cach\":true,\"bursts_lost\":true,\"bursts_envelope\":true,\"bursts_ramp\":true,\"capture_raw\":%s,\"bursts_raw\":%s},\"default_caps\":[]}",
+                              "\"features\":{\"bursts_cach\":true,\"bursts_lost\":true,\"bursts_envelope\":true,\"bursts_ramp\":true,\"capture_raw\":%s,\"bursts_raw\":%s,\"dev_scale\":%s},\"default_caps\":[]}",
                               bands, st_kind ? st_kind : "sdrmodem", qmodel, notx ? "false" : "true",
                               notx ? "false" : "true", why, held, wq, held, wq, eta, eta, stx, srx, jobs, bl->p.raw_start ? "true" : "false",
-                              bl->p.raw_start && bl->p.raw_demod ? "true" : "false");
+                              bl->p.raw_start && bl->p.raw_demod ? "true" : "false",
+                              cannot(bl, "dev_scale") ? "false" : "true");
     if (k >= line_cap) {
         fail(bl, c, "internal", "info doesn't fit");
         return;
@@ -2020,6 +2023,14 @@ static void run_log(rdof_bl_t *bl, conn_t *c, double now, const char *fmt, ...)
     emit(bl, c, "{\"err\":%s}", c->job->esc);
 }
 
+/* A job off the nominal deviation says so in its log, once it has the transmitter. */
+static void dev_note(rdof_bl_t *bl, conn_t *c, double now, const rdof_bj_job_t *j)
+{
+    if (j->dev_scale != 1.0)
+        run_log(bl, c, now, "--dev-scale %.2f: the DMR deviation is %.2f of nominal (+-%.0f / +-%.0f Hz)",
+                j->dev_scale, j->dev_scale, 1944 * j->dev_scale, 648 * j->dev_scale);
+}
+
 static void run_exit(rdof_bl_t *bl, conn_t *c, int code, const char *killed)
 {
     if (killed) {
@@ -2241,7 +2252,7 @@ static bool as_built(const rdof_bj_job_t *j)
 {
     if (j->cmd != RDOF_BJ_VOICE && j->cmd != RDOF_BJ_CSBK && j->cmd != RDOF_BJ_DATA)
         return false;
-    return j->family != RDOF_FAMILY_MS ||
+    return j->family != RDOF_FAMILY_MS || rdof_bj_offsets(j) || /* the carrier moved: the raw modem's */
            (j->cmd == RDOF_BJ_VOICE && (j->headers >= 0 || j->terminators >= 0 || j->late >= 0));
 }
 
@@ -2277,6 +2288,11 @@ static void op_run(rdof_bl_t *bl, conn_t *c, int ci, int root, double now)
         return;
     }
     const rdof_bj_job_t *j = &J->job;
+    if (j->dev_scale != 1.0 && j->cmd != RDOF_BJ_LISTEN && cannot(bl, "dev_scale")) {
+        free(J);
+        fail(bl, c, "unsupported", "--dev-scale: %s", cannot(bl, "dev_scale"));
+        return;
+    }
     if (j->cmd == RDOF_BJ_REPEATER) {
         rpt_run(bl, c, J, root, now);
         return;
@@ -2314,6 +2330,11 @@ static void op_run(rdof_bl_t *bl, conn_t *c, int ci, int root, double now)
         if (!tx_ok(bl, mhz)) {
             free(J);
             fail(bl, c, "refused", "%.4f MHz isn't a transmit frequency of this bench", mhz);
+            return;
+        }
+        if (rdof_bj_offsets(j) && !bl->p.tx_offset) {
+            free(J);
+            fail(bl, c, "unsupported", "--offset-hz, --offset-sweep: this bench can't move its carrier");
             return;
         }
         J->maxb = rdof_bj_max_bursts(j);
@@ -2376,7 +2397,46 @@ static bool run_build(rdof_bl_t *bl, conn_t *c, double now)
     if (J->note[0])
         run_log(bl, c, now, "%s", J->note);
     J->bi = 0;
+    J->step = -1;
     J->state = J_SEND;
+    return true;
+}
+
+/* Before burst J->bi goes: the carrier offset of its step (bench-api.md 14.3), a sweep's step record when it starts
+ * one. false: the platform refused it (the job is over). */
+static bool run_step(rdof_bl_t *bl, conn_t *c, double now)
+{
+    job_t *J = c->job;
+    const rdof_bj_job_t *j = &J->job;
+    if (J->bi == 0)
+        J->key_t = utc_now(bl, now);
+    if (!rdof_bj_offsets(j))
+        return true;
+    const int k = rdof_bj_step_of(j, J->bi);
+    if (k == J->step)
+        return true;
+    const double hz = rdof_bj_step_hz(j, k);
+    const char *no = bl->p.tx_offset(bl->p.ctx, hz);
+    if (no) {
+        run_log(bl, c, now, "can't move the carrier: %s", no);
+        run_exit(bl, c, 1, NULL);
+        return false;
+    }
+    J->step = k;
+    if (j->steps <= 0) {
+        run_log(bl, c, now, "the carrier %+.0f Hz from %.4f MHz", hz, j->freq_mhz);
+        return true;
+    }
+    int last = J->bi;
+    while (last + 1 < J->nb && rdof_bj_step_of(j, last + 1) == k)
+        last++;
+    char line[200];
+    snprintf(line, sizeof line,
+             "{\"type\":\"step\",\"step\":%d,\"steps\":%d,\"offset_hz\":%.1f,\"t\":%.3f,\"superframes\":[%d,%d],"
+             "\"bursts\":[%d,%d]}",
+             k, j->steps, hz, J->key_t + J->bi * 0.06, k * j->sf_per_step, (k + 1) * j->sf_per_step - 1, J->bi, last);
+    run_ctx_t r = {bl, c};
+    run_out(&r, line);
     return true;
 }
 
@@ -2399,7 +2459,7 @@ static void tick_rpt(rdof_bl_t *bl, conn_t *c, double now)
     switch (J->state) {
     case J_OPEN: {
         const rdof_bl_rpt_cfg_t cfg = {(uint32_t)lround(j->rx_mhz * 1e6), (uint32_t)lround(j->tx_mhz * 1e6), j->cc,
-                                       {j->power_dbm, j->power}, j->hang, j->call_hang, j->slots};
+                                       {j->power_dbm, j->power, j->dev_scale}, j->hang, j->call_hang, j->slots};
         if (!bl->p.rpt_open(bl->p.ctx, &cfg, why, sizeof why)) {
             run_log(bl, c, now, "can't run the repeater: %s", why[0] ? why : "the transmitter is busy");
             run_exit(bl, c, 1, NULL);
@@ -2408,6 +2468,7 @@ static void tick_rpt(rdof_bl_t *bl, conn_t *c, double now)
         J->rpt_open = true;
         if (why[0])
             run_log(bl, c, now, "%s", why);
+        dev_note(bl, c, now, j);
         J->until = now + 15.0;
         J->state = J_RPT_SETUP;
         break;
@@ -2642,8 +2703,8 @@ static void tick_ob(rdof_bl_t *bl, conn_t *c, double now)
     run_ctx_t rc = {bl, c};
     char why[200] = "", line[512];
     if (J->state == J_OPEN) {
-        const rdof_bl_ob_cfg_t cfg = {(uint32_t)lround(j->freq_mhz * 1e6), j->cc, {j->power_dbm, j->power},
-                                      j->seconds};
+        const rdof_bl_ob_cfg_t cfg = {(uint32_t)lround(j->freq_mhz * 1e6), j->cc,
+                                      {j->power_dbm, j->power, j->dev_scale}, j->seconds};
         if (!bl->p.ob_open(bl->p.ctx, &cfg, why, sizeof why)) {
             run_log(bl, c, now, "can't transmit: %s", why[0] ? why : "the transmitter is busy");
             run_exit(bl, c, 1, NULL);
@@ -2652,6 +2713,7 @@ static void tick_ob(rdof_bl_t *bl, conn_t *c, double now)
         J->ob_open = true;
         if (why[0])
             run_log(bl, c, now, "%s", why);
+        dev_note(bl, c, now, j);
         J->until = now + OB_SETUP_S;
         J->state = J_OB_SETUP;
         return;
@@ -2760,7 +2822,7 @@ static void tick_run(rdof_bl_t *bl, conn_t *c, int ci, double now)
             run_exit(bl, c, 1, NULL);
             return;
         }
-        const rdof_bench_power_t pw = {j->power_dbm, j->power};
+        const rdof_bench_power_t pw = {j->power_dbm, j->power, j->dev_scale};
         if (!bl->p.tx_open(bl->p.ctx, (uint32_t)lround(j->freq_mhz * 1e6), j->cc, pw, as_built(j), why, sizeof why)) {
             run_log(bl, c, now, "can't transmit: %s", why[0] ? why : "the transmitter is busy");
             run_exit(bl, c, 1, NULL);
@@ -2769,6 +2831,7 @@ static void tick_run(rdof_bl_t *bl, conn_t *c, int ci, double now)
         J->tx_open = true;
         if (why[0])
             run_log(bl, c, now, "%s", why);
+        dev_note(bl, c, now, j);
         run_log(bl, c, now, "%s on %.4f MHz cc %d", CMDS[j->cmd], j->freq_mhz, j->cc);
         J->part = 0;
         run_build(bl, c, now);
@@ -2782,8 +2845,11 @@ static void tick_run(rdof_bl_t *bl, conn_t *c, int ci, double now)
             run_exit(bl, c, 1, NULL);
             return;
         }
-        for (; n > 0 && J->bi < J->nb; n--, J->bi++)
+        for (; n > 0 && J->bi < J->nb; n--, J->bi++) {
+            if (!run_step(bl, c, now))
+                return;
             bl->p.tx_push(bl->p.ctx, J->b[J->bi].control, J->b[J->bi].burst);
+        }
         if (J->bi == J->nb) {
             bl->p.tx_unkey(bl->p.ctx);
             J->state = J_DRAIN;
@@ -3107,7 +3173,7 @@ static void op_tx(rdof_bl_t *bl, conn_t *c, int root, double now)
     t->src = m->tx_src(t->tx);
     t->src.rate = fs;
     t->freq_hz = (uint32_t)lround(mhz * 1e6);
-    t->power = (rdof_bench_power_t){jnum(bl, root, "power_dbm", NAN), (int)jnum(bl, root, "power", 0)};
+    t->power = (rdof_bench_power_t){jnum(bl, root, "power_dbm", NAN), (int)jnum(bl, root, "power", 0), 1.0};
     t->max_s = jnum(bl, root, "max_s", t->seconds + STX_TAIL_S);
     t->id = ++bl->next_seq;
     c->stx = t;
@@ -3499,7 +3565,7 @@ static void op_mssim(rdof_bl_t *bl, conn_t *c, int root, double now)
         fail(bl, c, "bad_request", "action is arm, disarm or status");
         return;
     }
-    const rdof_bench_power_t power = {jnum(bl, root, "power_dbm", NAN), (int)jnum(bl, root, "power", 0)};
+    const rdof_bench_power_t power = {jnum(bl, root, "power_dbm", NAN), (int)jnum(bl, root, "power", 0), 1.0};
     const double seconds = jnum(bl, root, "seconds", 300.0);
     /* a responder where no channel decodes DMR (or past the transmitter's reach): a tune there, held while armed */
     if (!strcmp(action, "arm") && reach_tune(bl, c, root, mhz, true, true, now))
