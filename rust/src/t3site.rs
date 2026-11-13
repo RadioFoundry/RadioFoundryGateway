@@ -1063,8 +1063,13 @@ impl Site {
         pols.iter().find(|t| t.tg == tg)
     }
 
-    /// A channel's hang time: its talkgroup's (cfg/tg) for a group call, else the site's.
+    /// A channel's hang time: none for a broadcast or an all-call (361-2 5.3.3.0, 5.3.3.1: "no call hangtime is
+    /// to be generated"; 361-4 6.6.1.7 treats all-calls as broadcasts), its talkgroup's (cfg/tg) for a group call,
+    /// else the site's.
     fn hang_of(pols: &[TgPolicy], dflt: u32, kind: u8, dst: u32) -> i64 {
+        if kind == KIND_ALLCALL {
+            return 0;
+        }
         let t = if kind == KIND_GROUP { Self::tg_policy(pols, dst) } else { None };
         t.filter(|t| t.hang_ms > 0).map_or(dflt, |t| t.hang_ms) as i64
     }

@@ -37,7 +37,7 @@ Principles:
 | Control channel | C_SYS_Parms short LC with a counting Common_Slot_Counter; C_ALOHA; C_BCAST Adjacent_Site (from the network), Chan_Freq (the site's own channels and its neighbors' TSCCs), Local_Time (when the clock is good), Gen_Site_Params, CallTimer_Parms, Vote_Now (with the VOTE_BLK block), Ann_WD_TSCC, MassReg (section 3.11); CACH AT driven by the controller |
 | Random access | Slotted Aloha, Mask 0, Service Function from load, adaptive Backoff, NRand_Wait from settings; a response to every random access |
 | Registration | Open or listed (ID sets); register, de-register, implicit registration from call requests; single-talkgroup subscription (TRGT_ADR_CNTS 01b) and a list of up to 7 by UDT upload (10b, 3.17); Reg_Accepted / Reg_Refused / Reg_Denied; MS_Not_Registered |
-| Group voice | C_RAND, C_WACKD/C_QACKD, TV_GRANT (repeated; Late_Entry grants through the call and its hang time), BTV_GRANT for all-calls (ALLMSID, ALLMSIDL, ALLMSIDZ) and broadcast calls to a talkgroup (BCAST_SV), quasi-transmission trunking (hang time), P_CLEAR on hang expiry, call timer or P_MAINT DISCON |
+| Group voice | C_RAND, C_WACKD/C_QACKD, TV_GRANT (repeated; Late_Entry grants through the call and its hang time), BTV_GRANT for all-calls (ALLMSID, ALLMSIDL, ALLMSIDZ) and broadcast calls to a talkgroup (BCAST_SV), quasi-transmission trunking (hang time; none for broadcasts and all-calls), P_CLEAR on hang expiry, call timer or P_MAINT DISCON |
 | Individual voice | C_AHOY availability check (OACSU or FOACSU, a setting), C_ACKU/C_NACKU, Call Answer, PV_GRANT, cancel (Service_Kind 1111b) |
 | Full-duplex individual voice | Service_Kind 1010b (6.6.9): radio check, a whole carrier in offset timing, a PV_GRANT_DX to each party, each party's inbound repeated on the other's slot; local calls; a setting, off by default (section 3.13) |
 | Queueing | One queue by priority (emergency first, then PRIORTY_SV, then age); C_QACKD; SYSbusy_Refused when full |
@@ -208,7 +208,9 @@ Group call (talkgroup, ALLMSID):
 4. Hang (`hang_s`, default 3 s, TV_Hangtime) after each item; any member may talk again during it. The payload
    channel keeps sending the item's Terminator with LC (its source and destination) in every slot of the hang, AT
    busy (361-1 5.2.1.4, 361-2 5.1.1.3; the captured site sends them too); a talker that went without a terminator
-   gets one from the site first. The call ends on
+   gets one from the site first. A broadcast call and an all-call have no hang: P_CLEAR follows the talker's
+   terminator (361-2 5.3.3.0, 5.3.3.1 "no call hangtime is to be generated"; 361-4 6.6.1.7 makes all-calls
+   broadcasts). The call ends on
    hang expiry, the call timer (`call_s`, default 180 s, T_MS-MS_TIMER), or P_MAINT DISCON from the initiator: the
    payload channel sends P_CLEAR (target ALLMSI, source TSI, channel 0 = back to the TSCC) 4 times, then frees.
 5. A new request for a talkgroup that already has a call in progress or in hang gets the same channel (a fresh

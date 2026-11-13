@@ -772,3 +772,26 @@ fn broadcast_call_to_a_talkgroup() {
     let opens = log.of(EV_CH_OPEN);
     assert_eq!(opens.iter().map(|e| (e.dst, e.svc)).collect::<Vec<_>>(), [(TG, 0x08), (ALLMSIDL, 0x08)]);
 }
+
+/// 361-2 5.3.3.0, 5.3.3.1: a broadcast call has no hang time, so P_CLEAR follows the caller's terminator. A
+/// normal group call on the same site keeps its hang (3 s here).
+#[test]
+fn broadcast_call_has_no_hang() {
+    let mut s = site_with(|c| carriers(c, 2));
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG], &[1, 2]), ms(1002, &[TG], &[1, 2])], T0);
+    register_all(&mut air, &mut log);
+    for (flags, done, hang) in [(t3ms::F_BROADCAST, 1, false), (0, 2, true)] {
+        let now = air.now();
+        air.ms[0].act(t3ms::DO_GROUP, TG, 1000, flags, now);
+        assert!(air.until(5000, &mut log.f(), |a| a.ms[1].state() == t3ms::PAYLOAD));
+        assert!(air.until(5000, &mut log.f(), |a| a.site.status().ch.iter().any(|c| c.r#use == USE_CALL)));
+        assert!(air.until(5000, &mut log.f(), |a| a.site.status().ch.iter().all(|c| c.r#use != USE_CALL)));
+        let ended = air.now(); // the talker's terminator
+        assert!(air.until(5000, &mut log.f(), |a| a.site.status().ch.iter().all(|c| c.r#use != USE_HANG)));
+        let held = air.now() - ended;
+        assert_eq!(held > 2000, hang, "held {held} ms after the talker stopped (broadcast: {})", flags != 0);
+        assert!(air.until(4000, &mut log.f(), |a| a.ms.iter().all(|m| m.state() == t3ms::IDLE)));
+        assert_eq!(air.ms[0].status().calls_done, done);
+    }
+}
