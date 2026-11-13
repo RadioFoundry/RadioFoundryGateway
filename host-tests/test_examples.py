@@ -214,7 +214,9 @@ for name in ("standalone-pluto-simplex.json", "standalone-pluto-duplex.json"):
     empty = os.path.join(d, "rx.cf32")
     open(empty, "w").close()
     # the least rate the examples' LOs take: a sanitizer build at 960 kS/s falls behind real time while it transmits
-    b = Box(name, sdr=("--file", empty + ",/dev/null", "-r", "288000"))
+    # its transmitter at 0 dBm, so a job's power_dbm has room under it
+    b = Box(name, sdr=("--file", empty + ",/dev/null", "-r", "288000"),
+            edit=lambda t: t.replace('"tx": {}', '"tx": {"power_dbm": 0}'))
     try:
         info = common(b, True, name)
         check(info["jobs"]["signal_tx"] is None, f"{name}: signal_tx {info['jobs']['signal_tx']}")
@@ -223,6 +225,10 @@ for name in ("standalone-pluto-simplex.json", "standalone-pluto-duplex.json"):
         check(out and "max_key_s 10.0" in out[-1].get("error", ""), f"{name}: a 12 s FM tone: {out[-2:]}")
         out = b.ask(tone(0.5))
         check(out and "done" in out[-1], f"{name}: a 0.5 s FM tone: {out[-2:]}")
+        check("job transmits" not in read(b.err), f"{name}: a job naming no power_dbm turned the SDR down")
+        out = b.ask(dict(tone(0.5), power_dbm=-40))   # the job's power_dbm turns the SDR's gain down for it
+        check(out and "done" in out[-1] and re.search(r"job transmits [\d.]+ dB under --tx-power: -40\.0 dBm", read(b.err)),
+              f"{name}: a 0.5 s FM tone at -40 dBm: {out[-2:]} {read(b.err)[-400:]}")
         if "simplex" in name:  # duplex runs two chains: a sanitizer build falls behind, and the modem's queue fills
             out = b.job(146.52, "voice", superframes=2)
             check(exited(out) and "sent 23 bursts" in json.dumps(out), f"{name}: a voice call on 2 m: {out[-3:]}")

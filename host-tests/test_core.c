@@ -3476,6 +3476,16 @@ static void t_txpower(void)
               rdof_bench_power_level(&by_dbm, (rdof_bench_power_t){NAN, 200}, NULL) == 0,
           "levels: %d %d", rdof_bench_power_level(&by_0, (rdof_bench_power_t){NAN, 255}, &m),
           rdof_bench_power_level(&by_0, (rdof_bench_power_t){-5, 255}, &m));
+    /* on an SDR sending 7 dBm at its set power, 89 dB of gain under it: power_dbm turns it down; power 0-255 doesn't */
+    CHECK(rdof_bench_sdr_atten_db(&by_level, (rdof_bench_power_t){-40.5, 0}, 7, 89) == 47.5 &&
+              rdof_bench_sdr_atten_db(&by_level, (rdof_bench_power_t){NAN, 0}, 7, 89) == 0 &&
+              rdof_bench_sdr_atten_db(&by_level, (rdof_bench_power_t){NAN, 100}, 7, 89) == 0 &&
+              rdof_bench_sdr_atten_db(&by_level, (rdof_bench_power_t){10, 0}, 7, 89) == 0 &&
+              rdof_bench_sdr_atten_db(&by_level, (rdof_bench_power_t){-120, 0}, 7, 89) == 89 &&
+              rdof_bench_sdr_atten_db(&by_dbm, (rdof_bench_power_t){-10, 0}, 7, 89) == 27 &&
+              rdof_bench_sdr_atten_db(&by_dbm, (rdof_bench_power_t){-30, 0}, 7, 89) == 37,
+          "SDR attenuation: %.1f %.1f", rdof_bench_sdr_atten_db(&by_level, (rdof_bench_power_t){-40.5, 0}, 7, 89),
+          rdof_bench_sdr_atten_db(&by_dbm, (rdof_bench_power_t){-10, 0}, 7, 89));
 }
 
 /* mode dcdm: one frequency, both slots unless active_slots, a repeater's settings; on the SDR, half or full. */
