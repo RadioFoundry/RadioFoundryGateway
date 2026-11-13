@@ -49,7 +49,7 @@ pub(super) struct Auth {
 
 impl Site {
     /// The MS's key and PSN, when it has a key.
-    fn ms_key(&self, ms: u32) -> Option<([u8; 16], Option<u32>)> {
+    pub(super) fn ms_key(&self, ms: u32) -> Option<([u8; 16], Option<u32>)> {
         let p = self.ms_policy(ms);
         (p.has_key != 0).then_some((p.key, (p.has_psn != 0).then_some(p.psn)))
     }

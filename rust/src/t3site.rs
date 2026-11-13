@@ -32,6 +32,7 @@ pub use supp::{
     ACT_SUPP, DEP_ALS, DIVERSIONS, DIV_KINDS, DIV_ON, DIV_PD, DIV_SD, DIV_STATUS, DIV_VOICE, STUNNED, STUN_JOBS,
     SUPP_DIVERT, SUPP_DIVERT_CLEAR, SUPP_REVIVE, SUPP_STUN,
 };
+pub use supp::{Ackvit, OP_ACKVIT, R_AUTH_RESPONSE_TS, SUPP_KILL};
 // packet data calls on the payload channels: tier3.md 3.16
 #[path = "t3pdata.rs"]
 mod pdata;
@@ -2379,6 +2380,9 @@ impl Site {
                 if a.op == OP_ACKU && !self.auth_answer(&a) {
                     self.ms_ack(&a);
                 }
+            } else if let Some(v) = Ackvit::decode(pdu) {
+                self.heard(v.source);
+                self.supp_ackvit(&v); // 6.4.9.2, 6.4.10: an MS challenges the TSCC
             }
         } else if let Some(m) = Maint::decode(pdu) {
             let c = self.chans[ch];
@@ -2565,7 +2569,8 @@ impl Site {
             "mass_reg" => self.mass_registration(a1, a2),
             "move" => self.move_cmd(a1, a2),
             "auth" => self.auth_poll(a1),
-            "stun" | "revive" => self.stun(a1, cmd == "revive"), // 6.4.9.1; "kill" (6.4.10) needs authentication
+            "stun" | "revive" => self.stun(a1, cmd == "revive"), // 6.4.9
+            "kill" => self.kill(a1),                               // 6.4.10: only an MS with a key
             _ => false,
         }
     }

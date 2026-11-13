@@ -428,6 +428,11 @@ impl Site {
                 self.sd_done(i, why, 0, WHY_REFUSED);
                 return;
             }
+            // 6.4.9.0: a stunned MS may not "receive any user initiated services" (as supp_gate for the others)
+            if d.origin == O_MS && self.stunned(d.dst) {
+                self.sd_done(i, R_MSAWAY, 0, WHY_REFUSED);
+                return;
+            }
         }
         if d.dst == TSI && !d.group {
             let m = self.sd_msg(&d, SD_SEND);

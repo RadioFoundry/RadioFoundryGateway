@@ -83,6 +83,7 @@ const MN_CMD_AUTH: c_int = 9;
 const MN_CMD_STUN: c_int = 10;
 const MN_CMD_REVIVE: c_int = 11;
 const MN_CMD_DGNA: c_int = 12;
+const MN_CMD_KILL: c_int = 13;
 
 // ── the C structs: rdof/t3unit.h's ─────────────────────────────────────────────
 
@@ -1838,6 +1839,7 @@ unsafe fn command(u: *mut Unit, json: *const c_char, len: usize) {
             MN_CMD_STUN => t3::rdof_t3_command(site, c"stun".as_ptr(), c.ms, 0),
             MN_CMD_REVIVE => t3::rdof_t3_command(site, c"revive".as_ptr(), c.ms, 0),
             MN_CMD_DGNA => dgna_cmd(u, &c),
+            MN_CMD_KILL => t3::rdof_t3_command(site, c"kill".as_ptr(), c.ms, 0),
             _ => false,
         };
         if !ok {

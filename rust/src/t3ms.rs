@@ -7,12 +7,12 @@
 
 use core::ffi::c_int;
 
-use crate::t3auth::{response, R_AUTH_RESPONSE, R_MS_NOT_SUPPORTED};
+use crate::t3auth::{response, CHALLENGE_MAX, R_AUTH_RESPONSE, R_MS_NOT_SUPPORTED};
 use crate::t3pdrate::{self as pdrate, DataAsm, Taken, CLASS_ACK, CLASS_NACK, CLASS_SACK, TYPE_ACK, TYPE_NACK_CRC};
 use crate::t3pdu::*;
 use crate::t3rc::RC_CEASE;
 use crate::t3site::{
-    ahoy_status, bs_dwn_act, mass_reg_applies, mass_reg_of, move_of, ps_wake, reg_window_ms, status_rand, DataGrant, DataHead,
+    ahoy_status, bs_dwn_act, mass_reg_applies, Ackvit, R_AUTH_RESPONSE_TS, mass_reg_of, move_of, ps_wake, reg_window_ms, status_rand, DataGrant, DataHead,
     DataMsg, DxGrant, CARRIERS, DEP_ALS, DIV_ON, DPF_CONFIRMED, DPF_RESPONSE, DPF_UNCONFIRMED, MSG_BLOCKS, R_DUPLEX_NOT_SUPPORTED,
     SAP_IP, SK_DUPLEX, SO_SIMI, VOICE_FRAME, VOICE_HEADER, VOICE_TERM,
 };
@@ -246,6 +246,11 @@ pub struct Ms {
     // supplementary services
     stunned: bool,
     no_stun: bool, // answers stun/revive MSNot_Supported
+    stun_auth: bool, // authenticates the TSCC before a stun or revive (6.4.9.2); kill always does (6.4.10)
+    vit: u8,         // the C_ACKVIT it sent: 0 none, 1 stun, 2 revive, 3 kill
+    vit_rand: u32,   // its challenge
+    vits: u32,       // C_ACKVITs sent
+    killed: bool,    // 6.4.10: no DMR functionality at all
     no_als: bool,  // answers an ALS radio check MSNot_Supported
     als_from: u32, // the caller of an ALS radio check it accepted
     als_until: i64,
@@ -426,9 +431,24 @@ impl Ms {
         self.stunned
     }
 
+    /// Whether it authenticates the TSCC before a stun or revive (6.4.9.2; needs a key). Kill always does.
+    pub fn set_stun_auth(&mut self, on: bool) {
+        self.stun_auth = on;
+    }
+
+    /// Killed by the site (6.4.10): it hears and sends nothing more.
+    pub fn killed(&self) -> bool {
+        self.killed
+    }
+
+    /// C_ACKVITs it sent (its challenges to the TSCC).
+    pub fn ackvits(&self) -> u32 {
+        self.vits
+    }
+
     /// Queues a call diversion of the kinds (DIV_* bits) to an MS, or a talkgroup with group (6.6.7.1).
     pub fn divert(&mut self, to: u32, group: bool, kinds: u8, at_ms: i64) -> bool {
-        let Some(b) = AddrList::blocks(true, &[to]) else { return false };
+        let Some(b) = AddrList::blocks(false, &[to]) else { return false }; // OK 0: DGNA only (7.2.36)
         self.sd_out = b;
         self.sd_fmt = FMT_ADDRESS;
         self.sd_pn = 0;
@@ -653,7 +673,7 @@ impl Ms {
         let mut p = [0u8; 10];
         p.copy_from_slice(&blk[..10]);
         let pdu = &p;
-        if ch != self.ch {
+        if ch != self.ch || self.killed {
             return;
         }
         if self.state == PAYLOAD {
@@ -710,7 +730,9 @@ impl Ms {
             return;
         }
         if let Some(a) = Ack::decode(pdu) {
-            if a.op == OP_ACKD && a.target == self.id {
+            if a.op == OP_ACKD && a.target == self.id && a.reason == R_AUTH_RESPONSE_TS && self.vit != 0 {
+                self.on_vit_response(&a);
+            } else if a.op == OP_ACKD && a.target == self.id {
                 self.on_ack(&a);
             }
         } else if let Some(a) = Ahoy::decode(pdu) {
@@ -1015,7 +1037,7 @@ impl Ms {
             let n = self.in_blocks.data(&mut d);
             let l = AddrList::of(&d[..n]);
             if h.format == FMT_ADDRESS {
-                self.dgna = [0; 16];
+                self.dgna[..15].fill(0); // 6.6.8.1.1: the fifteen; the sixteenth (6.6.8.1.2) stays
                 self.dgna[..l.n.min(15)].copy_from_slice(&l.addrs()[..l.n.min(15)]);
             } else if l.a[0] == ADRNULL || !self.dgna[..15].contains(&l.a[0]) {
                 self.dgna[15] = l.a[0];
@@ -1095,13 +1117,26 @@ impl Ms {
 
     fn on_ahoy(&mut self, a: &Ahoy) {
         self.awake_until = self.now + T_AWAKE_MS;
-        if a.source == STUNI && a.service_kind == SK_SUPPL {
-            // 6.4.9.1 table 6.19: Service_Kind_Flag 0 stun, 1 revive; Message_Accepted, or MSNot_Supported
-            let reason = if self.no_stun { R_MS_NOT_SUPPORTED } else { R_MESSAGE_ACCEPTED };
-            if !self.no_stun {
+        if (a.source == STUNI || a.source == KILLI) && a.service_kind == SK_SUPPL {
+            let kill = a.source == KILLI;
+            if !self.no_stun && self.has_key && (kill || self.stun_auth) {
+                // 6.4.9.2.2 table 6.21, 6.4.10.2 table 6.25: it challenges the TSCC with C_ACKVIT
+                let rand = self.rand() % (CHALLENGE_MAX + 1);
+                self.vit = if kill { 3 } else if a.service_kind_flag { 2 } else { 1 };
+                self.vit_rand = rand;
+                self.vits += 1;
+                let flag = a.service_kind_flag && !kill;
+                let v = Ackvit { service_kind_flag: flag, service_kind: SK_SUPPL, target: rand, source: self.id, ..Default::default() };
+                self.reply = Some(v.encode());
+                return;
+            }
+            // 6.4.9.1 table 6.19: Service_Kind_Flag 0 stun, 1 revive; Message_Accepted, or MSNot_Supported (a kill
+            // it can't authenticate too: 6.4.10.2)
+            let reason = if self.no_stun || kill { R_MS_NOT_SUPPORTED } else { R_MESSAGE_ACCEPTED };
+            if reason == R_MESSAGE_ACCEPTED {
                 self.stunned = !a.service_kind_flag;
             }
-            let r = Ack { op: OP_ACKU, reason, target: STUNI, source: self.id, ..Default::default() };
+            let r = Ack { op: OP_ACKU, reason, target: a.source, source: self.id, ..Default::default() };
             self.reply = Some(r.encode());
             return;
         }
@@ -1266,6 +1301,23 @@ impl Ms {
         };
     }
 
+    /// The TSCC's answer to its C_ACKVIT (tables 6.20, 6.24): checked with its key; the final acknowledgement to
+    /// STUNI or KILLI is C_ACKU(MS_Accepted) or C_NACKU(Recipient_Refused) (tables 6.22, 6.26), and on a good one
+    /// it stuns, revives or dies. A repeated C_ACKD gets the same answer again.
+    fn on_vit_response(&mut self, a: &Ack) {
+        let ok = a.source & 0xFF_FFFF == response(self.vit_rand, &self.key, self.psn);
+        let target = if self.vit == 3 { KILLI } else { STUNI };
+        let reason = if ok { R_MS_ACCEPTED } else { R_RECIPIENT_REFUSED };
+        self.reply = Some(Ack { op: OP_ACKU, response_info: 0, reason, target, source: self.id }.encode());
+        if ok {
+            match self.vit {
+                1 => self.stunned = true,
+                2 => self.stunned = false,
+                _ => self.killed = true, // after this answer goes (6.4.10.0 d)
+            }
+        }
+    }
+
     /// An authentication challenge (6.4.8.3): C_ACKU(Authentication Response) with the response as its target
     /// (table 6.18), or C_NACKU(MSNot_Supported) without a key, in the slot the AT bit keeps. During its registration
     /// it then waits TNP_Timer for the outcome (figure 6.23).
@@ -1424,6 +1476,9 @@ impl Ms {
         }
         if let Some(r) = self.reply.take() {
             return Some(pdu_tx(r, self)); // in the slot the AT bit kept for it
+        }
+        if self.killed {
+            return None;
         }
         if self.state == WAITING && now_ms >= self.wait_until {
             self.last_reason = 0;
