@@ -753,6 +753,13 @@ static void test_roles(void)
 #define MODEM_AT(port) "{\"name\":\"M\",\"kind\":\"modem\",\"type\":\"mmdvm_hs\",\"port\":" port "}"
 #define UART "{\"uart\":1,\"tx\":17,\"rx\":18}"
 #define ONE_FREQ "\"frequencies\":[{\"freq\":438.0625,\"name\":\"A\"}]}"
+/* a trunked site on one SDR, both carriers out of it */
+#define T3_TWO                                                                                                     \
+    "\"frequencies\":[{\"freq\":438.75,\"name\":\"AO\"},{\"freq\":438.25,\"name\":\"AI\",\"tx\":false},"          \
+    "{\"freq\":438.625,\"name\":\"BO\"},{\"freq\":438.375,\"name\":\"BI\",\"tx\":false}],\"apps\":[{\"name\":"    \
+    "\"S\",\"type\":\"tier3\",\"system\":{\"model\":\"small\",\"net\":5,\"site\":1,\"par\":\"ab\"},"          \
+    "\"carriers\":[{\"out\":\"AO\",\"in\":\"AI\",\"chan\":1,\"tscc\":true},{\"out\":\"BO\",\"in\":\"BI\","     \
+    "\"chan\":2}],\"registration\":\"open\",\"wide_tg\":\"1-99999\"}]}"
 #define REP_APP                                                                                                    \
     "\"frequencies\":[{\"freq\":438.1125,\"name\":\"in\"},{\"freq\":438.75,\"name\":\"out\"}],\"apps\":"        \
     "[{\"name\":\"R\",\"type\":\"repeater\",\"in\":\"in\",\"out\":\"out\"}]}"
@@ -808,6 +815,16 @@ static void test_plan_checks(void)
          ONE_FREQ, 0, "devices.T.tx.carriers: 2, and the lr2021 sends 1 (one carrier a transmitter for now)"},
         {"{" V3_HEAD "\"devices\":[{\"name\":\"T\",\"kind\":\"sdr\",\"driver\":\"lr2021\",\"tx\":{\"carriers\":1}}],"
          ONE_FREQ, 0, NULL},
+        /* a host's I/Q SDR: a trunked site's two carriers when it sends nothing else */
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"T\",\"kind\":\"sdr\",\"driver\":\"iio\",\"tx\":{\"carriers\":2}}],"
+         ONE_FREQ, 0, "devices.T.tx.carriers: 2, and the iio sends 1 (one carrier a transmitter for now; a trunked site's "
+         "2 when it sends nothing else)"},
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"T\",\"kind\":\"sdr\",\"driver\":\"iio\",\"tx\":{\"carriers\":2}}]," T3_TWO,
+         0, NULL},
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"T\",\"kind\":\"sdr\",\"driver\":\"iio\",\"tx\":{}}]," T3_TWO, 0,
+         "devices.T: carrier 2 of 1 (S sends 2 carriers on it)"},
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"T\",\"kind\":\"sdr\",\"driver\":\"sx1255\",\"tx\":{\"carriers\":2}}],"
+         T3_TWO, 0, "devices.T.tx.carriers: 2, and the sx1255 sends 1 (one carrier a transmitter for now)"},
         {"{" V3_HEAD "\"devices\":[{\"name\":\"S\",\"kind\":\"sdr\",\"tx\":{}}]," ONE_FREQ, 0,
          "devices.S: the rtlsdr can't transmit"},
         {"{" V3_HEAD "\"devices\":[{\"name\":\"T\",\"kind\":\"sdr\",\"driver\":\"sx1255\"}],\"frequencies\":[{\"freq\":"

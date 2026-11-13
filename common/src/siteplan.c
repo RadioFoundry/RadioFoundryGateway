@@ -854,10 +854,11 @@ static bool make_extras(plan_t *p)
 #define SDR_RATE 1.536e6
 
 /* What an SDR's driver gives: the rtlsdr receives 24 to 1766 MHz at up to 3.2 MS/s; the rest transmit one carrier
-   each until more are tried on the air, and the LR2021 is half duplex (one chain, switched). */
+   each until more are tried on the air, and the LR2021 is half duplex (one chain, switched). A host's I/Q SDR (iio,
+   soapy, sim) sends a trunked site's two carriers, summed in one stream by rdofradio, when the site is all it sends. */
 typedef struct {
     bool tx, full_duplex;
-    int carriers;
+    int carriers, trunk_carriers;
     double rate_max;             /* 0: not known */
     uint32_t freq_min, freq_max; /* 0, 0: not known */
 } sdr_caps_t;
@@ -866,7 +867,28 @@ static sdr_caps_t sdr_caps(const char *driver)
 {
     if (!strcmp(driver, "rtlsdr"))
         return (sdr_caps_t){.rate_max = 3.2e6, .freq_min = 24000000, .freq_max = 1766000000};
-    return (sdr_caps_t){.tx = true, .full_duplex = strcmp(driver, "lr2021") != 0, .carriers = 1};
+    const bool host_iq = !strcmp(driver, "iio") || !strcmp(driver, "soapy") || !strcmp(driver, "sim");
+    return (sdr_caps_t){.tx = true, .full_duplex = strcmp(driver, "lr2021") != 0, .carriers = 1,
+                        .trunk_carriers = host_iq ? 2 : 1};
+}
+
+/* Device d sends a trunked site's carriers and nothing else. */
+static bool trunk_only(const plan_t *p, int d)
+{
+    bool trunk = false;
+    for (int k = 0; k < p->nunit; k++) {
+        const rdof_unit_t *u = &p->unit[k];
+        if (u->kind == RDOF_UNIT_RECEIVER)
+            continue;
+        if (u->kind != RDOF_UNIT_TIER3) {
+            if (u->tx == d)
+                return false;
+            continue;
+        }
+        for (int c = 0; c < p->site.app[u->app].ncarrier; c++)
+            trunk |= p->ttx[c] == d;
+    }
+    return trunk;
 }
 
 /* The frequencies an SDR hears for unit u on it (bit per frequency). */
@@ -941,7 +963,12 @@ static bool sdr_sends(plan_t *p, int d, const sdr_caps_t *c)
         return true;
     if (!c->tx)
         return fail(p, "devices.%s: the %s can't transmit", dv->name, dv->driver);
-    if (pd->tx_carriers > c->carriers)
+    const int most = trunk_only(p, d) ? c->trunk_carriers : c->carriers;
+    if (pd->tx_carriers > most && c->trunk_carriers > c->carriers)
+        return fail(p, "devices.%s.tx.carriers: %d, and the %s sends %d (one carrier a transmitter for now; a trunked "
+                       "site's %d when it sends nothing else)", dv->name, pd->tx_carriers, dv->driver, most,
+                    c->trunk_carriers);
+    if (pd->tx_carriers > most)
         return fail(p, "devices.%s.tx.carriers: %d, and the %s sends %d (one carrier a transmitter for now)",
                     dv->name, pd->tx_carriers, dv->driver, c->carriers);
     int carriers = pd->tx_carriers, used = 0;
