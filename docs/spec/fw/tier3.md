@@ -854,8 +854,8 @@ The payload interrupt (6.4.14.3.3):
 2. The TSCC finds the voice call: the talkgroup's (a group call, an all-call or a broadcast call), or an individual
    call the target is a party of (a duplex or data call isn't one), or a group call the target talks in. It answers
    from TSI:
-   - no such call, a call being cleared or de-keyed for something else, a network talker (the site can't de-key it),
-     or the interrupter itself talking: C_NACKD(Not_Supported);
+   - no such call, a call being cleared or de-keyed for something else, a network talker while the network link is
+     down, or the interrupter itself talking: C_NACKD(Not_Supported);
    - an all-call or a broadcast call (one way: its parties don't transmit, 6.6.2), an individual call it isn't a
      party of, a talkgroup outside `tg`, or another MS's interrupt of the call under way: C_NACKD(Perm_User_Refused);
    - else C_ACKD(Message_Accepted). A repeat request is answered again.
@@ -870,6 +870,15 @@ The payload interrupt (6.4.14.3.3):
    talks; the interrupter's talk is the call's next talk, under the call's own timer.
 6. A talker that doesn't stop within 3 s keeps the call; the interrupt ends there.
 
+A talker at another site (the call's voice comes from the network): the site accepts as above, sends no RC, and
+asks the talker's site with an `sdata` interrupt message (5.9) to the talker. That site finds the talker in a call
+with that destination on one of its channels, talking on RF, and de-keys it as in step 4 (the setting on there too),
+then sends P_PROTECT to the interrupter on its channel as in step 5, so its own MSs keep off; it answers
+Message_Accepted, or Not_Supported (the setting off, the talker not talking in that call) or Perm_User_Refused
+(being cleared, or another interrupt under way). Here, once the stream ends the channel sends P_PROTECT to the
+interrupter (step 5), and the interrupter's talk goes to the other site as any talk. A refusal, or a stream that
+goes on for 4.5 s (3 s plus the network's trips), ends the interrupt: the call goes on. With the link down a network
+talker can't be reached: Not_Supported. Not a duplex call's (one isn't across sites).
 ALS termination (6.4.14.3.4): status 123 to the called MS of an ALS call (3.18), from its caller. A group G/I or no
 such call: Not_Supported; another MS: Perm_User_Refused. Accepted, the called MS is de-keyed as above, then the call is
 cleared (P_CLEAR, close reason 7, `CLOSE_INTR`); one that doesn't stop within 3 s is cleared anyway. Not transmitting
@@ -900,13 +909,16 @@ Choices where 361-4 leaves them open:
   names both without saying when).
 - Any party may interrupt; nothing is reserved to a priority. An emergency call may be interrupted: the talker's
   own radio decides by obeying the RC.
-- A network talker isn't interrupted (its site would have to de-key it: not carried over mqtt-net).
+- A network talker is de-keyed by its own site, which the interrupter's site asks over mqtt-net: the site that
+  sends the RC must be the one the talker hears. The interrupter's site answers C_ACKD at once, as for a local
+  talker, rather than holding the MS for the other site's answer: a de-key isn't sure either way (6.4.15.1).
 - The call timer de-key goes with the same setting: it is in 6.4.14 and needs the RC as the rest.
 - The ALS termination's MS "shall then return to the payload channel" (6.4.14.3.4.1) but "shall remain on the TSCC"
   (6.4.14.3.4.3): the site doesn't depend on it.
 
 Not built: the gateway-started forms, power control in a de-key (6.4.14.2), the ALS
-called MS resuming after an interrupt (6.6.2.6.6), interrupts across sites, and mqtt-net events. Not run on a radio.
+called MS resuming after an interrupt (6.6.2.6.6), ALS termination across sites (its called MS at another site:
+Not_Supported), and mqtt-net events. Not run on a radio.
 
 ## 4. Settings (config-v3 `tier3` app)
 
@@ -1182,7 +1194,7 @@ New item type 0x0D, `sdata`, 12 bytes plus the data, the only item of its messag
 | Octet | Field |
 |---|---|
 | 0 | op: 1 a message, 2 its result |
-| 1 | what: 1 UDT short data, 2 a status, 3 a status poll, 4 DGNA (3.17) |
+| 1 | what: 1 UDT short data, 2 a status, 3 a status poll, 4 DGNA (3.17), 5 a transmit interrupt (3.20) |
 | 2 | reason: a result's air reason (44h MS_Accepted, 47h a poll's answer, 60h Message_Accepted, or a C_NACKD reason) |
 | 3 | value: UDT_Format, the status, or a poll's result: the polled status |
 | 4 | flags: bit 0 talkgroup, bit 1 emergency |
@@ -1202,6 +1214,12 @@ called as dst, a fresh stream ID, the group and emergency flags. The site that h
 (3.15) and answers with a result on `pc/{caller}/{node}`: src and dst swapped, as a setup answer, ref the
 message's stream. A talkgroup's message gets no result. A message for an MS not registered at the site is ignored
 (another site may have it). Nodes without Tier III drop the item (never a stream).
+
+A transmit interrupt (what 5, section 3.20) goes from the interrupter's site to the talker's on `pc/{talker}/{node}`:
+src the interrupting MS, dst the talker, value the status (125), flags 0, data 4 octets: the call's destination
+(u24 big endian: the talkgroup, or the individual call's other party) and 1 for a talkgroup call, 0 for an
+individual call. The talker's site answers with a result (reason Message_Accepted, Not_Supported or
+Perm_User_Refused), src and dst as in the message, ref its stream. The application can't send one.
 
 ### 5.10 Packet data across sites (the `data_pdu` item)
 

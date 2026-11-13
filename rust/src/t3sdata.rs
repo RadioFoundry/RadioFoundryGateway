@@ -20,12 +20,16 @@ pub const SD_STATUS: u8 = 2;
 pub const SD_POLL: u8 = 3;
 /// Dynamic Group Numbering Assignment (6.6.8): value the UDT_Format (Address or Mixed), data the appended data
 pub const SD_DGNA: u8 = 4;
+/// A transmit interrupt across sites (tier3.md 3.20): src the interrupting MS, dst the talker to de-key, value the
+/// status (125), data the call's destination (3 octets) and 1 for a talkgroup call (0 an individual call). Only
+/// between sites (never from the application); its result's reason is Message_Accepted or a C_NACKD reason.
+pub const SD_INTR: u8 = 5;
 /// A registration's talkgroup list upload (6.4.4.1.13.2): only from an MS here, never an SdMsg
-pub(super) const SD_TGLIST: u8 = 5;
+pub(super) const SD_TGLIST: u8 = 0x41;
 /// A call diversion's address upload (6.6.7.1): only from an MS
-pub(super) const SD_DIVERT: u8 = 6;
+pub(super) const SD_DIVERT: u8 = 0x42;
 /// The diverted address to a caller (6.6.7.2): a UDT header with SF 1 and no answer, sent FINAL_REPEATS times
-pub(super) const SD_NOTICE: u8 = 7;
+pub(super) const SD_NOTICE: u8 = 0x43;
 
 // op (rdof_t3_sd_t.op)
 pub const SD_SEND: u8 = 1;
@@ -894,6 +898,10 @@ impl Site {
     /// A message or a result from the network (mqtt-net `sdata`).
     pub fn net_sd_in(&mut self, m: &SdMsg, now_ms: i64) {
         self.now = self.now.max(now_ms);
+        if m.what == SD_INTR {
+            self.net_intr_in(m);
+            return;
+        }
         if m.op == SD_RESULT {
             let Some(i) = (0..SDS).find(|&i| {
                 let d = &self.sd.sds[i];

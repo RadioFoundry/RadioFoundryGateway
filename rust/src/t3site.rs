@@ -18,7 +18,7 @@ use crate::t3udt::{DGNAI, DT_DATA_HDR, DT_RATE12, SK_IND_PD, SK_IND_UDT, SK_STAT
 mod sdata;
 pub use sdata::{
     rdof_t3_net_sd, rdof_t3_sd_of_event, rdof_t3_sd_send, SdMsg, SD_DGNA, SD_F_EMERGENCY, SD_F_GROUP, SD_POLL,
-    SD_RESULT, SD_SEND, SD_STATUS, SD_UDT,
+    SD_INTR, SD_RESULT, SD_SEND, SD_STATUS, SD_UDT,
 };
 use sdata::{SD_DIVERT, SD_TGLIST};
 // talkgroup lists: registration with a list, DGNA (tier3.md 3.17)
@@ -591,6 +591,7 @@ struct Chan {
     dekey: u8,       // a transmit interrupt de-keys its talker (t3intr.rs DK_*)
     dekey_until_ms: i64,
     intr_ms: u32,    // the interrupting MS
+    intr_stream: u32, // the interrupt sent to the talker's site (DK_NET): its stream, a result's ref
     protect_ms: u32, // P_PROTECT(EN_PTT_ONE_MS) to this MS while the channel waits for it (t3intr.rs)
     protect_until_ms: i64,
 }

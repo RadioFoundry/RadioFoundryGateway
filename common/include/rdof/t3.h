@@ -387,6 +387,9 @@ void rdof_t3_entropy(rdof_t3_site_t *s, uint64_t v);
 #define RDOF_T3_SD_POLL 3
 #define RDOF_T3_SD_DGNA 4 /* DGNA to an MS (tier3.md 3.17): value the UDT_Format (1 address, 10 mixed), data the
                              * appended data; src 0 is DGNAI */
+#define RDOF_T3_SD_INTR 5 /* a transmit interrupt between sites (tier3.md 3.20): dst the talker to de-key, value the
+                           * status (125), data the call's destination (3 octets) and 1 for a talkgroup; never from the
+                           * application (rdof_t3_sd_send refuses it) */
 #define RDOF_T3_SD_SEND 1   /* op: a message */
 #define RDOF_T3_SD_RESULT 2 /* op: its outcome */
 #define RDOF_T3_SD_F_GROUP 0x01

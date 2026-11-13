@@ -390,6 +390,150 @@ fn interrupt_refusals() {
     assert_eq!(air.ms[2].ceased(), 0, "the broadcast call goes on");
 }
 
+// ── across sites (SD_INTR) ──
+
+fn wide_site(intr: u8) -> Box<Site> {
+    let mut s = site_with(|c| c.intr = intr);
+    let mut p = Policy::default_open();
+    p.wide_tg = IdSet::of(&[(TG, TG)]);
+    s.policy_set(&p);
+    s.set_link(true);
+    s
+}
+
+/// Every MS registers subscribed to TG (a site then wants the talkgroup's network calls).
+fn register_tg<const N: usize>(air: &mut Air<N>, log: &mut Log) {
+    let now = air.now();
+    for (i, m) in air.ms.iter_mut().enumerate() {
+        m.act(t3ms::DO_REGISTER, TG, 0, 0, now + 100 * i as i64);
+    }
+    assert!(air.until(20_000, &mut log.f(), |a| a.ms.iter().all(|m| m.status().registered != 0)), "registration");
+}
+
+/// Two sites run slot by slot: the talkgroup call of B's MS 2001 reaches A as a network stream (77) while 2001
+/// talks, and SD_INTR messages go each way as the network would carry them. Returns A's output; `stop` ends it.
+fn two_sites(
+    a: &mut Air<2>,
+    b: &mut Air<1>,
+    la: &mut Log,
+    lb: &mut Log,
+    ms: i64,
+    mut stop: impl FnMut(&Air<2>, &Air<1>) -> bool,
+) -> Out {
+    let mut o = Out::default();
+    let end = a.now() + ms;
+    let mut heard = i64::MIN / 2; // B's talker's last voice burst (on its slot: every other one)
+    let mut streaming = false;
+    while a.now() < end && !stop(a, b) {
+        let (na, nb) = (la.0.len(), lb.0.len());
+        let one = watch(a, la, 30, |_| false);
+        o.tscc.extend(one.tscc);
+        o.pay.extend(one.pay);
+        o.rc.extend(one.rc);
+        b.step(&mut lb.f());
+        let now = a.now();
+        if b.inbound[0].is_some_and(|t| t.kind == TX_VOICE) {
+            heard = now;
+        }
+        let talking = now - heard < 200;
+        if talking && !streaming {
+            a.site.net_group_in(77, 2001, TG, 0, now);
+        } else if !talking && streaming {
+            a.site.net_end_in(77);
+        }
+        streaming = talking;
+        let sd = |l: &Log, n: usize| -> Vec<SdMsg> {
+            l.0[n..].iter().filter(|e| e.r#type == EV_NET_SD).map(SdMsg::of_event).collect()
+        };
+        for m in sd(la, na) {
+            b.site.net_sd_in(&m, now);
+        }
+        for m in sd(lb, nb) {
+            a.site.net_sd_in(&m, now);
+        }
+    }
+    o
+}
+
+/// The talker is at another site: A's site sends SD_INTR, B's site de-keys its MS with the RC and answers
+/// Message_Accepted; once the stream ends, A sends P_PROTECT(EN_PTT_ONE_MS) to the interrupter, which talks. B's
+/// channel sends P_PROTECT to it too, so B's MSs stay off the channel meanwhile.
+#[test]
+fn interrupt_a_talker_at_another_site() {
+    let (mut sa, mut sb) = (wide_site(1), wide_site(1));
+    let (mut la, mut lb) = (Log::default(), Log::default());
+    let mut a = Air::new(&mut sa, [ms(1001), ms(1002)], T0);
+    let mut b = Air::new(&mut sb, [ms(2001)], T0);
+    register_tg(&mut a, &mut la);
+    register_all(&mut b, &mut lb);
+    while b.now() < a.now() {
+        b.step(&mut lb.f());
+    }
+    let now = b.now();
+    b.ms[0].act(t3ms::DO_GROUP, TG, 30_000, 0, now);
+    two_sites(&mut a, &mut b, &mut la, &mut lb, 5000, |a, _| a.ms.iter().all(|m| m.state() == t3ms::PAYLOAD));
+    assert!(a.ms[1].state() == t3ms::PAYLOAD, "A's MSs listen to the call from B");
+    let now = a.now();
+    assert!(a.ms[1].interrupt(TG, true, 2000, now + 500));
+    let o = two_sites(&mut a, &mut b, &mut la, &mut lb, 10_000, |a, _| talks(1, 1002, TG)(a));
+    assert!(talks(1, 1002, TG)(&a), "the interrupter talks");
+    let ack = acks(&o, 1002);
+    assert!(!ack.is_empty() && ack.iter().all(|x| (x.reason, x.source) == (R_MESSAGE_ACCEPTED, TSI)));
+    assert!(o.rc.is_empty(), "A sends no RC: its talker is B's");
+    assert_eq!(b.ms[0].ceased(), 1, "B de-keyed its talker");
+    let p = protects(&o);
+    assert!(!p.is_empty() && p.iter().all(|(_, x)| x.target == 1002 && x.kind == PROTECT_EN_PTT_ONE_MS), "{p:?}");
+    let ch = la.of(EV_CH_OPEN)[0].ch;
+    assert_eq!(la.intr(), [(INTR_ACCEPTED, 1002, TG, ch), (INTR_CEASED, 1002, TG, ch)]);
+    let chb = lb.of(EV_CH_OPEN)[0].ch;
+    assert_eq!(lb.intr(), [(INTR_ACCEPTED, 1002, TG, chb), (INTR_CEASED, 1002, TG, chb)]);
+    // B's result went back: Message_Accepted, ref A's message
+    let sent = la.of(EV_NET_SD).iter().map(SdMsg::of_event).find(|m| m.what == SD_INTR).unwrap();
+    assert_eq!((sent.src, sent.dst, sent.value, sent.data()), (1002, 2001, 125, &[0, 0, TG as u8, 1][..]));
+    let res = lb.of(EV_NET_SD).iter().map(SdMsg::of_event).find(|m| m.what == SD_INTR).unwrap();
+    assert_eq!((res.op, res.reason, res.r#ref), (SD_RESULT, R_MESSAGE_ACCEPTED, sent.stream));
+}
+
+/// Across sites, refused: the link down (Not_Supported at once), or the talker's site without the setting (its
+/// Not_Supported result ends A's wait: the call goes on).
+#[test]
+fn interrupt_across_sites_refused() {
+    for link in [false, true] {
+        let (mut sa, mut sb) = (wide_site(1), wide_site(0));
+        let (mut la, mut lb) = (Log::default(), Log::default());
+        let mut a = Air::new(&mut sa, [ms(1001), ms(1002)], T0);
+        let mut b = Air::new(&mut sb, [ms(2001)], T0);
+        register_tg(&mut a, &mut la);
+        register_all(&mut b, &mut lb);
+        while b.now() < a.now() {
+            b.step(&mut lb.f());
+        }
+        let now = b.now();
+        b.ms[0].act(t3ms::DO_GROUP, TG, 30_000, 0, now);
+        two_sites(&mut a, &mut b, &mut la, &mut lb, 5000, |a, _| a.ms.iter().all(|m| m.state() == t3ms::PAYLOAD));
+        if !link {
+            a.site.set_link(false);
+            let now = a.now();
+            a.site.net_group_in(77, 2001, TG, 0, now); // the stream is gone with the link: as if it went on
+        }
+        let now = a.now();
+        assert!(a.ms[1].interrupt(TG, true, 2000, now + 500));
+        let o = two_sites(&mut a, &mut b, &mut la, &mut lb, 3000, |_, _| false);
+        let ack = acks(&o, 1002);
+        let want = if link { R_MESSAGE_ACCEPTED } else { R_NOT_SUPPORTED };
+        assert!(!ack.is_empty() && ack.iter().all(|x| x.reason == want), "link {link}: {ack:?}");
+        assert_eq!(b.ms[0].ceased(), 0, "link {link}");
+        if link {
+            let ch = la.of(EV_CH_OPEN)[0].ch;
+            assert_eq!(la.intr(), [(INTR_ACCEPTED, 1002, TG, ch), (INTR_GAVE_UP, 1002, TG, ch)]);
+            let res = lb.of(EV_NET_SD).iter().map(SdMsg::of_event).find(|m| m.what == SD_INTR).unwrap();
+            assert_eq!((res.op, res.reason), (SD_RESULT, R_NOT_SUPPORTED));
+        } else {
+            assert!(la.of(EV_NET_SD).is_empty());
+        }
+    }
+}
+
 // ── call timer expiration de-key (6.4.14.3.2) ──
 
 /// The call timer runs out while A talks: on, the RC cease command first and P_CLEAR once A stops; off, P_CLEAR

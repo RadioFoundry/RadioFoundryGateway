@@ -15,6 +15,10 @@
 //! - Call timer expiration de-key (6.4.14.3.2): when a call's timer runs out while an MS talks on RF, the RC cease
 //!   command first, then P_CLEAR once the inbound stops.
 //!
+//! - Across sites: a payload interrupt of a call whose talker is at another site goes to that site as an mqtt-net
+//!   `sdata` message (SD_INTR, tier3.md 3.20), which de-keys its talker as above; this site waits for the network
+//!   stream to end, then sends P_PROTECT to the interrupter.
+//!
 //! The RC itself is the pre-emption's (t3emerg.rs, `send_rc`). A child module of t3site: it works on the site's
 //! own state.
 
@@ -41,6 +45,11 @@ const DK_NONE: u8 = 0;
 const DK_INTR: u8 = 1; // payload interrupt: then P_PROTECT for the interrupter
 const DK_ALS: u8 = 2; // ALS termination: then P_CLEAR
 const DK_TIMER: u8 = 3; // the call timer ran out: then P_CLEAR
+const DK_NET: u8 = 4; // payload interrupt of a talker at another site: its site de-keys it, then P_PROTECT here
+
+/// How much longer than DEKEY_MS this site waits for a talker at another site to stop: the message's and the
+/// stream's trips over the network.
+const NET_DEKEY_MS: i64 = 1500;
 
 /// How long the channel waits for the interrupter after the talker stops, sending P_PROTECT(EN_PTT_ONE_MS) in every
 /// other burst of its slot (at most 17): "The TS shall limit the number of P_Protect PDUs so that MS occupying the
@@ -76,6 +85,10 @@ impl Site {
         self.intr_ev(ch, INTR_ACCEPTED, ms);
         self.log(format_args!("transmit interrupt from {} for the call to {} on channel {}", ms, c.dst, ch));
         let rf = c.talking && !c.talking_net;
+        if c.talking && c.talking_net {
+            self.intr_net_send(ch, ms); // intr_call let it through: a payload interrupt, the link up
+            return;
+        }
         match (st == STATUS_ALS_END, rf) {
             (true, false) => self.clear(ch, CLOSE_INTR), // the called MS isn't transmitting: P_CLEAR now
             (true, true) => self.dekey_start(ch, DK_ALS, ms),
@@ -95,7 +108,7 @@ impl Site {
             (0..CHANNELS).find(|&i| {
                 let c = &self.chans[i];
                 let party = c.kind == KIND_PRIVATE && (c.src == target || c.dst == target);
-                let talker = c.kind == KIND_GROUP && c.talking && !c.talking_net && c.talker == target;
+                let talker = c.kind == KIND_GROUP && c.talking && c.talker == target;
                 Self::live(c) && c.flags & F_DATA == 0 && (party || talker)
             })
         };
@@ -106,13 +119,16 @@ impl Site {
             KIND_GROUP => self.policy.tg.contains(c.dst),
             _ => false, // an all-call or a broadcast call: one way, the called parties don't transmit (6.6.2)
         };
-        let theirs = (c.dekey == DK_INTR && c.intr_ms != ms) || (c.protect_ms != 0 && c.protect_ms != ms);
+        let intr = matches!(c.dekey, DK_INTR | DK_NET);
+        let theirs = (intr && c.intr_ms != ms) || (c.protect_ms != 0 && c.protect_ms != ms);
         if !party || theirs {
             return Err(R_PERM_USER_REFUSED);
         }
-        let ours = c.dekey == DK_INTR || c.protect_ms == ms;
-        if !ours && (c.preempt || c.dekey != DK_NONE || (c.talking && (c.talking_net || c.talker == ms))) {
-            // being cleared, a network talker (the site can't de-key it), or the MS itself talking
+        let ours = intr || c.protect_ms == ms;
+        // a network talker is de-keyed by its own site (SD_INTR), so only with the link up; not a duplex call's
+        let net_ok = self.connected && c.kind != KIND_DUPLEX;
+        if !ours && (c.preempt || c.dekey != DK_NONE || (c.talking && ((c.talking_net && !net_ok) || c.talker == ms))) {
+            // being cleared, a network talker the site can't reach, or the MS itself talking
             return Err(R_NOT_SUPPORTED);
         }
         Ok(ch)
@@ -176,6 +192,20 @@ impl Site {
                 continue;
             }
             let rf = c.talking && !c.talking_net;
+            if c.dekey == DK_NET {
+                let net = c.talking && c.talking_net;
+                if net && now < c.dekey_until_ms {
+                    continue; // its site sends the RC
+                }
+                self.chans[ch].dekey = DK_NONE;
+                self.intr_ev(ch, if net { INTR_GAVE_UP } else { INTR_CEASED }, c.intr_ms);
+                if net {
+                    self.log(format_args!("transmit interrupt: {} at another site didn't cease", c.talker));
+                } else if !c.talking {
+                    self.protect_start(ch, c.intr_ms);
+                }
+                continue;
+            }
             if rf && now < c.dekey_until_ms {
                 rc_on_tscc |= self.send_rc(ch, out);
                 continue;
@@ -235,6 +265,85 @@ impl Site {
             out.dt = DT_CSBK;
             out.pdu = p.encode();
         }
+    }
+
+    /// A payload interrupt of channel ch's network talker: SD_INTR to the talker's site (on pc/{talker}: the router
+    /// places it by the talker's registration), which de-keys it; this site waits for the stream to end.
+    fn intr_net_send(&mut self, ch: usize, ms: u32) {
+        let c = self.chans[ch];
+        let stream = self.new_stream();
+        let mut m = SdMsg {
+            op: SD_SEND,
+            what: SD_INTR,
+            value: STATUS_INTERRUPT,
+            src: ms,
+            dst: c.talker,
+            stream,
+            len: 4,
+            ..Default::default()
+        };
+        m.data[..3].copy_from_slice(&c.dst.to_be_bytes()[1..]);
+        m.data[3] = (c.kind == KIND_GROUP) as u8;
+        self.ev(m.event(EV_NET_SD));
+        self.dekey_start(ch, DK_NET, ms);
+        let ch_ = &mut self.chans[ch];
+        ch_.dekey_until_ms += NET_DEKEY_MS;
+        ch_.intr_stream = stream;
+        self.log(format_args!("transmit interrupt: asking the site of {} to de-key it", c.talker));
+    }
+
+    /// An SD_INTR message from another site (tier3.md 3.20): de-key the talker here, and answer; or its result.
+    pub(super) fn net_intr_in(&mut self, m: &SdMsg) {
+        if m.op == SD_RESULT {
+            let Some(ch) = (0..CHANNELS).find(|&i| {
+                let c = &self.chans[i];
+                Self::live(c) && c.dekey == DK_NET && c.intr_stream == m.r#ref
+            }) else {
+                return;
+            };
+            if m.reason != R_MESSAGE_ACCEPTED {
+                // the talker's site can't: the call goes on (6.4.15.1)
+                self.chans[ch].dekey = DK_NONE;
+                self.intr_ev(ch, INTR_GAVE_UP, m.src);
+                self.log(format_args!("transmit interrupt: {}'s site refused (reason {:#x})", m.dst, m.reason));
+            }
+            return;
+        }
+        if m.op != SD_SEND || m.len < 4 || self.reg_index(m.dst).is_none() {
+            return; // not here: another site may have the talker
+        }
+        let (ms, talker) = (m.src, m.dst);
+        let call = u32::from_be_bytes([0, m.data[0], m.data[1], m.data[2]]);
+        let group = m.data[3] & 1 != 0;
+        let ch = (0..CHANNELS).find(|&i| {
+            let c = &self.chans[i];
+            let theirs = if group {
+                c.kind == KIND_GROUP && c.dst == call
+            } else {
+                c.kind == KIND_PRIVATE && (c.src == ms || c.dst == ms)
+            };
+            Self::live(c) && c.talking && !c.talking_net && c.talker == talker && theirs
+        });
+        let reason = match ch {
+            _ if self.cfg.intr == 0 || m.value != STATUS_INTERRUPT => R_NOT_SUPPORTED,
+            None => R_NOT_SUPPORTED, // not talking (any more), or in another call
+            Some(ch) => {
+                let c = self.chans[ch];
+                if c.dekey == DK_INTR && c.intr_ms == ms {
+                    R_MESSAGE_ACCEPTED // a repeat
+                } else if c.preempt || c.dekey != DK_NONE || c.protect_ms != 0 {
+                    R_PERM_USER_REFUSED
+                } else {
+                    self.intr_ev(ch, INTR_ACCEPTED, ms);
+                    self.log(format_args!("transmit interrupt from {} at another site: de-keying {}", ms, talker));
+                    self.dekey_start(ch, DK_INTR, ms);
+                    R_MESSAGE_ACCEPTED
+                }
+            }
+        };
+        let stream = self.new_stream();
+        let r = SdMsg { op: SD_RESULT, reason, stream, r#ref: m.stream, len: 0, data: [0; 48], ..*m };
+        self.ev(r.event(EV_NET_SD));
     }
 
     fn intr_ev(&mut self, ch: usize, op: u8, ms: u32) {
