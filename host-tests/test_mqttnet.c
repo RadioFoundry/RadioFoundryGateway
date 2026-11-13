@@ -1409,7 +1409,12 @@ static void test_cmd(void)
     CHECK(!rdof_mn_cmd_parse(mass_bad, sizeof mass_bad - 1, &c, err, sizeof err) && strstr(err, "window_s"));
     static const char move[] = "{\"id\":\"v\",\"cmd\":\"move\",\"chan\":7}";
     CHECK(rdof_mn_cmd_parse(move, sizeof move - 1, &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_MOVE && c.chan == 7 &&
-          c.ms == 0);
+          c.ms == 0 && c.syscode == 0);
+    static const char move_site[] = "{\"id\":\"v\",\"cmd\":\"move\",\"site\":17035,\"ms\":3100123}";
+    CHECK(rdof_mn_cmd_parse(move_site, sizeof move_site - 1, &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_MOVE &&
+          c.syscode == 17035 && c.ms == 3100123);
+    static const char move_bad[] = "{\"id\":\"v\",\"cmd\":\"move\",\"site\":70000}";
+    CHECK(!rdof_mn_cmd_parse(move_bad, sizeof move_bad - 1, &c, err, sizeof err) && strstr(err, "site"));
     static const char stun[] = "{\"id\":\"s\",\"cmd\":\"stun\",\"ms\":3100123}";
     CHECK(rdof_mn_cmd_parse(stun, sizeof stun - 1, &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_STUN && c.ms == 3100123);
     static const char revive[] = "{\"id\":\"r\",\"cmd\":\"revive\",\"ms\":3100123}";

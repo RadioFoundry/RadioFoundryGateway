@@ -45,7 +45,7 @@ Principles:
 | Emergency | Emergency group calls (the emergency call timer, the Emergency flag in grants; an emergency request on an open call upgrades it); pre-emption of a running call when no channel is free (6.4.14.3.1), with the Reverse Channel cease command (6.4.15, table 6.32) to its talker; a setting, off by default (section 3.9). The emergency alarm and its cancel (status 126 and 124, 6.6.6.3) through status delivery |
 | Status and the emergency alarm | The Status Transport Service (6.6.6.1, 6.6.6.2) delivered as short data (section 3.15): to an MS (C_AHOY, its C_ACKU or C_NACKU mirrored), a talkgroup or the TSCC, stored while the called MS is busy, polling; the emergency alarm and its cancel (6.6.6.3) under the MS's emergency provisioning; an `activity` `status` event (section 3.10) |
 | Mass re-registration | MassReg (6.4.5): all MSs or one, on command (`mass_reg`) or at start, repeated inside its Reg_Window (section 3.11) |
-| TSCC modes | C_MOVE on command (all MSs or one, to another TSCC's logical channel); the asynchronous (hibernating) TSCC, woken by BS_Dwn_Act or any good inbound block; a setting, off by default (section 3.12); the composite TSCC (its slot carries a call when every payload channel is busy, P_SYS_Parms with Payload Channel Type 1 meanwhile; a setting, off by default, section 3.19) |
+| TSCC modes | C_MOVE on command (all MSs or one, to another TSCC's logical channel, or to an adjacent site's TSCC by its frequencies in the MBC form); the asynchronous (hibernating) TSCC, woken by BS_Dwn_Act or any good inbound block; a setting, off by default (section 3.12); the composite TSCC (its slot carries a call when every payload channel is busy, P_SYS_Parms with Payload Channel Type 1 meanwhile; a setting, off by default, section 3.19) |
 | Power save | PowerSave_RQ in registration, PowerSave_Offset in the C_ACKD (6.4.7.2.1); C_AHOYs to a sleeping MS held for its wake frame; a setting, off by default (section 3.11) |
 | Short data | UDT short data on the TSCC both ways (C_UDTHD/C_UDTHU, 1-4 rate 1/2 blocks, up to 46 octets), stored and forwarded MS to MS, MS to talkgroup, MS to site and site to MS; status messages and status polling; across sites in mqtt-net's `sdata` item (3.15, 5.9) |
 | Packet data | Individual and talkgroup packet data calls (C_RAND 0010b/0011b): the availability check (C_AHOY 0010b), PD_GRANT/TD_GRANT single or multi-item, the payload channel in data mode (each data burst repeated), confirmed and unconfirmed data at rate 1/2, 3/4 and 1 (the MS simulator's selective retry: SACK, C_RDATA, F = 0 resends), data hang time and clearing; MS to MS, MS to talkgroup, MS to the site's IP gateway (TSI, its data ID or IPI) and the gateway's replies down (3.16) |
@@ -412,9 +412,16 @@ registers again: `mass_reg_at_start_s`).
 
 C_MOVE (6.3.3.1 e, table 7.17): the `move` command (`rdof_t3_command(s, "move", chan, ms)`, mqtt-net `move`) sends
 C_MOVE three times on the TSCC: Mask 0 for every MS, or Mask 24 and the address for one; the Reg and Backoff of
-C_ALOHA; the target TSCC's logical channel (1-4094; the MBC form with absolute frequencies isn't built). A
-listening MS leaves for that channel; nothing answers. Use: send MSs to a neighbor's TSCC (the TSCC channel of an
-Adjacent_Site entry) before taking this one down, or one MS to another site.
+C_ALOHA; the target TSCC's logical channel (1-4094). A listening MS leaves for that channel; nothing answers. Use:
+send MSs to a neighbor's TSCC before taking this one down, or one MS to another site.
+
+To an adjacent site by its C_SYScode (`rdof_t3_command(s, "move_site", syscode, ms)`, mqtt-net `move` with `site`):
+the neighbor's TSCC by its logical channel when that number names it here (section 3.11: announced in Chan_Freq,
+or not a clash); by its frequencies when the number names other frequencies here, or when the neighbor has
+frequencies but no number: the MBC form (7.1.1.1.3 c), Physical Channel Number 4095 in the header and the MV_AP
+block (7.1.1.1.3.1, table 7.18) with the neighbor's color code and CdefParms (the MS's transmit and receive
+frequencies, as in VN_AP). Both blocks go together, three times, never split by a due C_ALOHA. Not a neighbor, or
+neither number nor frequencies known: refused.
 
 The asynchronous TSCC (5.3.3, 6.1.1.2), off unless `services.hibernate_s` (T_BS_Inactive, 1-300 s) is set: with no
 good inbound block on the TSCC for that long and nothing under way (no call, no request waiting, nothing to send),
@@ -1042,7 +1049,7 @@ Commands (`node/{node}/cmd`, JSON `{"id": "c-123", "cmd": "...", ...}`; the resu
 | `resend_records` | | republishes every registration record |
 | `status` | | publishes `status` now |
 | `mass_reg` | `window_s` (0-200000, 0 cancels), `ms` (optional: one MS) | a mass re-registration (section 3.11) |
-| `move` | `chan` (1-4094), `ms` (optional: one MS) | C_MOVE: the MSs leave for the TSCC on that channel (section 3.12) |
+| `move` | `chan` (1-4094) or `site` (an adjacent site's C_SYScode), `ms` (optional: one MS) | C_MOVE: the MSs leave for the TSCC on that channel, or for that adjacent site's TSCC (section 3.12) |
 | `auth` | `ms` | an authentication poll of a registered MS with a key (section 3.14); a failure removes its registration |
 | `stun` / `revive` | `ms` | stun or revive an MS from the site; authenticated when the MS challenges the site (section 3.18) |
 | `kill` | `ms` | kill an MS (always authenticated: refused without a key for it; section 3.18) |

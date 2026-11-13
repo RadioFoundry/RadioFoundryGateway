@@ -258,7 +258,7 @@ typedef enum {
     RDOF_MN_CMD_RESEND_RECORDS,
     RDOF_MN_CMD_STATUS,
     RDOF_MN_CMD_MASS_REG, /* window_s, ms (0: all) */
-    RDOF_MN_CMD_MOVE,     /* chan, ms (0: all) */
+    RDOF_MN_CMD_MOVE,     /* chan or syscode (an adjacent site's), ms (0: all) */
     RDOF_MN_CMD_AUTH, /* ms: an authentication poll */
     RDOF_MN_CMD_STUN,   /* ms */
     RDOF_MN_CMD_REVIVE, /* ms */
@@ -275,6 +275,7 @@ typedef struct {
     uint32_t window_s;
     uint32_t tg[15]; /* dgna */
     int ntg;
+    uint32_t syscode; /* move: an adjacent site's C_SYScode (0: by chan) */
 } rdof_mn_cmd_t;
 
 /* False with err when it can't be carried out (unknown command, a missing argument); c->id is filled whenever the

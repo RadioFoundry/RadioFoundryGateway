@@ -1367,9 +1367,17 @@ bool rdof_mn_cmd_parse(const char *json, size_t len, rdof_mn_cmd_t *c, char *err
         }
         c->window_s = (uint32_t)v;
         break;
-    case RDOF_MN_CMD_MOVE:
+    case RDOF_MN_CMD_MOVE: /* to a TSCC by its chan, or to an adjacent site's by its C_SYScode */
+        if (jget(&P, root, "site")) {
+            if (!jint(jget(&P, root, "site"), 1, 0xFFFF, &v)) {
+                seterr(err, cap, "site: an adjacent site's C_SYScode, 1 to 65535");
+                return false;
+            }
+            c->syscode = (uint32_t)v;
+            break;
+        }
         if (!jint(jget(&P, root, "chan"), 1, 4094, &v)) {
-            seterr(err, cap, "chan: 1 to 4094");
+            seterr(err, cap, "chan: 1 to 4094, or site");
             return false;
         }
         c->chan = (int)v;

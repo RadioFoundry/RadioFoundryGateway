@@ -783,7 +783,7 @@ with `{"id": "c-123", "ok": true}` or `{"id": "c-123", "ok": false, "error": "..
 | `resend_records` | | publishes every registration record again |
 | `status` | | publishes `status` now |
 | `mass_reg` | `window_s` (0-200000, 0 cancels), `ms` (optional) | a Tier III site asks its radios (or one) to register again within that time (tier3.md 3.11) |
-| `move` | `chan` (1-4094), `ms` (optional) | a Tier III site sends its radios (or one) to the control channel on `chan` (tier3.md 3.12) |
+| `move` | `chan` (1-4094) or `site` (an adjacent site's C_SYScode), `ms` (optional) | a Tier III site sends its radios (or one) to the control channel on `chan`, or to that adjacent site's (tier3.md 3.12) |
 | `auth` | `ms` | a trunked site: an authentication poll of the radio (tier3.md 3.14); a failure removes its registration |
 
 An unknown command or a missing argument is answered `ok: false`.

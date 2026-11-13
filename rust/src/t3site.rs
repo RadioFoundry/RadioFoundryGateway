@@ -70,7 +70,7 @@ mod duplex;
 mod composite;
 use duplex::KIND_DUPLEX;
 pub use duplex::{DxGrant, OPEN_DUPLEX, OP_PV_GRANT_DX, R_DUPLEX_NOT_SUPPORTED, SK_DUPLEX};
-pub use tscc::{bs_dwn_act, bs_dwn_act_of, move_of, move_pdu, OP_BS_DWN_ACT};
+pub use tscc::{bs_dwn_act, bs_dwn_act_of, move_mbc_hdr, move_mbc_of, move_of, move_pdu, mv_ap, mv_ap_of, OP_BS_DWN_ACT};
 
 pub const CARRIERS: usize = 4;
 pub const CHANNELS: usize = CARRIERS * 2;
@@ -2641,6 +2641,7 @@ impl Site {
             "status" => true,
             "mass_reg" => self.mass_registration(a1, a2),
             "move" => self.move_cmd(a1, a2),
+            "move_site" => self.move_to_site(a1, a2), // C_MOVE to an adjacent site's TSCC, absolute when needed
             "auth" => self.auth_poll(a1),
             "stun" | "revive" => self.stun(a1, cmd == "revive"), // 6.4.9
             "kill" => self.kill(a1),                               // 6.4.10: only an MS with a key

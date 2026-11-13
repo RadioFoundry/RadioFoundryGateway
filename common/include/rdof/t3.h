@@ -350,7 +350,8 @@ size_t rdof_t3_subs(const rdof_t3_site_t *s, uint32_t *tg, size_t cap);
 void rdof_t3_withdraw(rdof_t3_site_t *s, bool off);
 /* "deregister" (arg1 MS), "clear" (arg1 chan, arg2 LCN), "withdraw", "restore", "resend_records", "status",
    "mass_reg" (arg1 the window in s, 0 cancels; arg2 one MS, 0 all), "move" (C_MOVE: arg1 the TSCC's chan, arg2 one MS,
-   0 all), "auth" (arg1 MS: an authentication poll; false when the MS isn't registered here or has no key),
+   0 all), "move_site" (C_MOVE to an adjacent site's TSCC: arg1 its C_SYScode, arg2 one MS, 0 all; by its frequencies,
+   the MBC form, when its channel number names other frequencies here), "auth" (arg1 MS: an authentication poll; false when the MS isn't registered here or has no key),
    "stun" / "revive" (arg1 MS; 361-4 6.4.9, with authentication when the MS asks for it), "kill" (arg1 MS; 6.4.10,
    always authenticated: false when the site has no key for the MS); the result an RDOF_T3_ACT_SUPP activity */
 bool rdof_t3_command(rdof_t3_site_t *s, const char *cmd, uint32_t arg1, uint32_t arg2);

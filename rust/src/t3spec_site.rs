@@ -583,6 +583,49 @@ fn neighbor_channel_clash() {
     }
 }
 
+/// C_MOVE to an adjacent site's TSCC (6.3.3.1 e, 7.1.1.1.3): by its logical channel in a single CSBK when the number
+/// names it here (table 7.17 b), else Physical Channel Number 4095 in an MBC header and the MV_AP block with its
+/// color code and frequencies (7.1.1.1.3 c, 7.1.1.1.3.1, table 7.18).
+#[test]
+fn move_to_adjacent_site() {
+    let mut r = Rig::new(pluto_t3);
+    r.s.set_neighbors(&[hat_t3()]);
+    assert!(r.s.command("move_site", u32::from(hat_t3().syscode), 1_000_123));
+    assert!(!r.s.command("move_site", 0x1234, 0), "no such neighbor");
+    let k0 = r.k;
+    let one = r.all(k0, 20, |dt, b| is(dt, b, spec::C_MOVE));
+    assert!(!one.is_empty());
+    let b = one[0].1.tscc_pdu;
+    assert!(lb(&b) && one[0].1.tscc_dt == spec::DT_CSBK, "a single block");
+    assert_eq!((field(&b, 25, 5), field(&b, 44, 12), field(&b, 56, 24)), (24, 3, 1_000_123), "Mask, chan, MS");
+
+    // the same neighbor on chan 2, which is a carrier here at other frequencies: by its frequencies
+    let mut r = Rig::new(pluto_t3);
+    let n = Neighbor { chan: 2, ..hat_t3() };
+    r.s.set_neighbors(&[n]);
+    while r.s.next_event().is_some() {}
+    assert!(r.s.command("move_site", u32::from(n.syscode), 0));
+    let k0 = r.k;
+    let hdrs = r.all(k0, 40, |dt, b| dt == spec::DT_MBC_HEADER && csbko(b) == spec::C_MOVE);
+    assert!(hdrs.len() >= 3, "sent three times: {}", hdrs.len());
+    let (k, o) = hdrs[0];
+    let h = o.tscc_pdu;
+    assert!(!lb(&h), "an MBC header");
+    assert_eq!(field(&h, 8, 8), 0, "FID");
+    assert_eq!((field(&h, 16, 9), field(&h, 30, 5), field(&h, 40, 4)), (0, 0, 0), "reserved");
+    assert_eq!((field(&h, 25, 5), field(&h, 44, 12), field(&h, 56, 24)), (0, 0xFFF, 0), "Mask 0, 4095, all");
+    let (_, cont) = *r.hist.iter().find(|(kk, _)| *kk == k + 2).unwrap();
+    assert_eq!(cont.tscc_dt, spec::DT_MBC_CONT, "MV_AP follows at once");
+    let c = cont.tscc_pdu;
+    assert!(lb(&c));
+    assert_eq!(csbko(&c), spec::C_MOVE, "the header's CSBKO");
+    assert_eq!((field(&c, 8, 4), field(&c, 12, 4)), (0, 1), "reserved, the destination's color code");
+    assert_eq!((field(&c, 16, 4), field(&c, 20, 2)), (0, 0), "Cdeftype 0000b, reserved");
+    assert_eq!(field(&c, 22, 12), 2, "CHAN");
+    let hz = |m: usize, k: usize| field(&c, m, 10) as u32 * 1_000_000 + field(&c, k, 13) as u32 * 125;
+    assert_eq!((hz(34, 44), hz(57, 67)), (461_137_500, 461_287_500), "the MS's TX and RX on the neighbor");
+}
+
 /// Two neighbors with one channel number: the first one's frequencies hold; a later one with other frequencies is a
 /// clash (left out of Chan_Freq and Adjacent_Site), one with the same frequencies is announced once.
 #[test]

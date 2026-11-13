@@ -363,6 +363,7 @@ pub struct MnCmd {
     pub window_s: u32,
     pub tg: [u32; 15],
     pub ntg: c_int,
+    pub syscode: u32,
 }
 
 /// rdof_mn_up_t's head: node to ctx (the hooks). The rest is the C's alone, rdof_mn_up_size() bytes in all.
@@ -1856,6 +1857,7 @@ unsafe fn command(u: *mut Unit, json: *const c_char, len: usize) {
             MN_CMD_RESEND_RECORDS => t3::rdof_t3_command(site, c"resend_records".as_ptr(), 0, 0),
             MN_CMD_STATUS => true,
             MN_CMD_MASS_REG => t3::rdof_t3_command(site, c"mass_reg".as_ptr(), c.window_s, c.ms),
+            MN_CMD_MOVE if c.syscode != 0 => t3::rdof_t3_command(site, c"move_site".as_ptr(), c.syscode, c.ms),
             MN_CMD_MOVE => t3::rdof_t3_command(site, c"move".as_ptr(), c.chan as u32, c.ms),
             MN_CMD_AUTH => t3::rdof_t3_command(site, c"auth".as_ptr(), c.ms, 0),
             MN_CMD_STUN => t3::rdof_t3_command(site, c"stun".as_ptr(), c.ms, 0),
