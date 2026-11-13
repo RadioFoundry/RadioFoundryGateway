@@ -34,7 +34,7 @@ Principles:
 | Area | Built |
 |---|---|
 | RF layout | 2 carriers: A (SDR TX + SDR RX) carries the dedicated TSCC on TS1 and a payload channel on TS2; B (TX from the same SDR, summed into its transmit stream with each carrier at half amplitude, or from a split radio; SDR RX) carries two payload channels. 1 control slot, 3 payload slots. The controller, the radio layer, the unit and the simulator take 1-4 carriers (up to 7 payload channels), the TSCC on the first; tested with 3 and 4 on simulated air. rdofradio drives 2 at most (hardware) |
-| Control channel | C_SYS_Parms short LC with a counting Common_Slot_Counter; C_ALOHA; C_BCAST Adjacent_Site (from the network), Chan_Freq (the site's own channel plan), Local_Time (when the clock is good), Gen_Site_Params, CallTimer_Parms, Vote_Now (with the VOTE_BLK block), Ann_WD_TSCC, MassReg (section 3.11); CACH AT driven by the controller |
+| Control channel | C_SYS_Parms short LC with a counting Common_Slot_Counter; C_ALOHA; C_BCAST Adjacent_Site (from the network), Chan_Freq (the site's own channels and its neighbors' TSCCs), Local_Time (when the clock is good), Gen_Site_Params, CallTimer_Parms, Vote_Now (with the VOTE_BLK block), Ann_WD_TSCC, MassReg (section 3.11); CACH AT driven by the controller |
 | Random access | Slotted Aloha, Mask 0, Service Function from load, adaptive Backoff, NRand_Wait from settings; a response to every random access |
 | Registration | Open or listed (ID sets); register, de-register, implicit registration from call requests; single-talkgroup subscription (TRGT_ADR_CNTS 01b) and a list of up to 7 by UDT upload (10b, 3.17); Reg_Accepted / Reg_Refused / Reg_Denied; MS_Not_Registered |
 | Group voice | C_RAND, C_WACKD/C_QACKD, TV_GRANT (repeated; Late_Entry grants through the call and its hang time), BTV_GRANT for all-calls (ALLMSID, ALLMSIDL, ALLMSIDZ) and broadcast calls to a talkgroup (BCAST_SV), quasi-transmission trunking (hang time), P_CLEAR on hang expiry, call timer or P_MAINT DISCON |
@@ -119,7 +119,7 @@ the Rust has no C dependencies and its tests run with `cargo test`.
 | C_SYScode | MODEL, NET, SITE, PAR from the provisioning (manager, else settings). One network = one MODEL + NET; each site its SITE. PAR 11b (A and B) by default |
 | DMRLA / SYS_AREA | Setting `area_bits` (default: all SITE bits, so every site is its own registration area) |
 | Logical channel numbers | Each carrier's `chan` (1..4094) in the settings; grants use single-block CSBKs with that number. LCN 0 = TS1, 1 = TS2 |
-| Channel plan | The MS must know it: programmed in the radio, or learned from the C_BCAST Chan_Freq broadcasts (MBC + BC_AP with absolute Tx/Rx per channel), sent for each of the site's carriers every `chan_freq_s` (default 10 s) |
+| Channel plan | One plan for the network: each logical number names one frequency pair at every site. The MS must know it: programmed in the radio, or learned from the C_BCAST Chan_Freq broadcasts (MBC + BC_AP with absolute Tx/Rx per channel), sent every `chan_freq_s` (default 10 s) for each of the site's carriers and each neighbor's TSCC channel (section 3.11) |
 | Colour code | One CC for the site (strategy (c), 6.2.1.3: payload channels use the TSCC's CC). Inbound payload PDUs with another CC are dropped |
 | Timing | Aligned TSCC (Offset 0). Site Timeslot Synchronization 0: carrier B's split radio is aligned only to 1-2 ms, so payload channels send idles for 4 CACH before the MS's first sync opportunity (6.6.1.6.2.2) |
 | Version | 100b (1.11.1, the latest code; V1.12.1 has none of its own) |
@@ -140,7 +140,8 @@ Carrier A TS1 sends a CSBK or MBC block every slot (every 60 ms). The controller
    air). The hang now carries terminators (3.5), and an MS that counts them as activity stays to P_CLEAR.
 4. A broadcast that is due: MassReg while one runs, CallTimer_Parms every `call_timers_s`, Vote_Now per neighbor
    every `vote_now_s`, Ann_WD_TSCC every `ann_tscc_s` (section 3.11; all off by default), Adjacent_Site per neighbor
-   every `adjacent_s` (default 5 s), Chan_Freq every `chan_freq_s`, Local_Time every `local_time_s` (default 6 s)
+   every `adjacent_s` (default 5 s), Chan_Freq every `chan_freq_s` (the site's carriers and the neighbors' TSCC
+   channels in one rotation), Local_Time every `local_time_s` (default 6 s)
    when the clock is synchronized, Gen_Site_Params every 10 s.
 5. C_ALOHA, Mask 0, address ADRNULL.
 
@@ -333,15 +334,55 @@ C_BCAST, each Announcement_type (table 7.68) and what the site does with it:
 
 | Type | Built | How |
 |---|---|---|
-| 0 Ann_WD_TSCC (6.7.1.1, table 7.69) | yes, off by default | the adjacent sites' TSCC channels for the MSs' hunt lists, two to a CSBK (CHNULL in the second when odd), every `ann_tscc_s` over them all; a neighbor known to be off line is withdrawn (AW_FLAG 1, color code 0). The color code is the site's own (one for the system: the neighbors' isn't carried). The MBC form with absolute frequencies isn't built (the neighbors' frequencies aren't known; Adjacent_Site has the same gap) |
+| 0 Ann_WD_TSCC (6.7.1.1, table 7.69) | yes, off by default | the adjacent sites' TSCC channels for the MSs' hunt lists, two to a CSBK (CHNULL in the second when odd), every `ann_tscc_s` over them all; a neighbor known to be off line is withdrawn (AW_FLAG 1, color code 0). The color code is the neighbor's (its `info`'s `tscc[0].cc`; the site's own when not given). A neighbor whose channel clashes (below) is left out: the MBC form with BC_AP isn't built |
 | 1 CallTimer_Parms (6.7.1.2, table 7.70) | yes, off by default | `emergency_call_s` and `call_s` as the tokens of annex A tables A.2 and A.4, the largest that doesn't pass the site's timer (so the MS's ends first); the packet and line timers 0 (the MS's own: the site has neither) |
-| 2 Vote_Now (6.7.1.3, table 7.71) | yes, off by default | each neighbor in turn within `vote_now_s`: its 14 syscode bits, Active_Connection when known, the priorities, CH_VOTE its TSCC's logical channel. Then VOTE_BLK (4) TSCC slots of C_ALOHA with ADRNULL and Mask 24, which lets no MS in, so a voting MS misses nothing. The VN_AP MBC (CH_VOTE 4095) isn't built (as Ann_WD_TSCC) |
+| 2 Vote_Now (6.7.1.3, table 7.71) | yes, off by default | each neighbor in turn within `vote_now_s`: its 14 syscode bits, Active_Connection when known, the priorities (below), CH_VOTE its TSCC's logical channel. A neighbor whose channel clashes goes as the MBC: CH_VOTE 4095 and a VN_AP block (7.2.19.3.1, table 7.72) with its color code and CdefParms (its number and frequencies, the MS's view). Then `broadcast.vote_blk` (default 6) TDMA frames, one TSCC slot each, of C_ALOHA with ADRNULL and Mask 24, which lets no MS in, so a voting MS misses nothing |
 | 3 Local_Time (6.7.1.4) | yes (section 3.2) | |
 | 4 MassReg (6.4.5, table 7.76) | yes | below |
-| 5 Chan_Freq (6.7.1.5, table 7.78) | yes (section 3.2) | each carrier in turn |
-| 6 Adjacent_Site (6.7.1.6) | yes (section 3.2) | from the network |
-| 7 Gen_Site_Params (6.7.1.7) | yes (section 3.2) | the hibernating flag 1 just before an asynchronous TSCC goes quiet (section 3.12); the "Reg and TG Subscription" bit 0 |
+| 5 Chan_Freq (6.7.1.6, table 7.78) | yes (section 3.2) | each carrier, then each neighbor's TSCC channel, in turn (below) |
+| 6 Adjacent_Site (6.7.1.7, table 7.79) | yes (section 3.2) | from the network, with the priorities (below); a neighbor whose channel clashes is left out (CH_ADJ has no absolute form) |
+| 7 Gen_Site_Params (6.7.1.8) | yes (section 3.2) | the hibernating flag 1 just before an asynchronous TSCC goes quiet (section 3.12); the "Reg and TG Subscription" bit 0 |
 | 30, 31 manufacturer specific | no | none defined |
+
+Neighbors' channels. An MS resolves a logical channel through its programmed plan or the Chan_Freq it has heard.
+361-4 6.1.2 allows a plan that grows over the air: "new physical/logical relationships that adds to or modifies the
+existing channel plan stored in MS may be broadcast on the TSCC", and 4.7.1 and annex C.1.1.1 give one plan of up to
+4094 numbers. Nothing ties Chan_Freq to the sending site's own carriers (table 7.78: "Physical Channel Number of the
+Channel being Announced"). So the site sends Chan_Freq for each neighbor's TSCC channel too, from the neighbor's
+`info` (`tscc[0]`: `chan`, `tx_hz`, `rx_hz`), as the MS uses it (TX on the neighbor's inbound), and the MS can resolve
+CH_ADJ and CH_VOTE with no plan programmed. The other way, absolute frequencies in the PDU itself (6.1.2 b), exists
+for Vote_Now (CH_VOTE 4095 with VN_AP, 7.2.19.3 c) and Ann_WD_TSCC (MBC with BC_AP, 7.2.19.1), not for Adjacent_Site
+(table 7.79 defines no appended block; table 7.1 lists it as a CSBK only). The site uses both, by case:
+
+| Neighbor's TSCC channel | Chan_Freq | Adjacent_Site, Ann_WD_TSCC | Vote_Now |
+|---|---|---|---|
+| frequencies known, number free here | announced | logical | logical |
+| frequencies not in its `info` | not announced (the MS's plan) | logical | logical |
+| the number is a carrier here, or an earlier neighbor's, at the same frequencies | not announced again | logical | logical |
+| clash: the number is a carrier here, or an earlier neighbor's, at other frequencies | not announced (it would change the MS's plan for the other channel); logged | left out | CH_VOTE 4095 + VN_AP |
+
+A clash means the network's numbering isn't one plan; give each site's carriers numbers no other site uses.
+
+Priorities (the Radiated Preference Strategy, 6.7.1.3): Vote_Now and Adjacent_Site carry a confirmed channel
+priority and an adjacent channel priority. 6.7.1.3: "These fields convey the priority of the current (confirmed)
+site and the priority of the adjacent site to be sampled", values per table 6.81: 1 the highest, 7 the lowest,
+0 "Non-Preferred Site" (0 in both is the "No Radiated Preference Strategy"). Table 7.79 has the same two fields for
+Adjacent_Site; 6.7.1.7 doesn't describe them, so the site gives them the same meaning. Confirmed: the sending site's
+`broadcast.priority`; adjacent: the neighbor's, from its `info` (`trunk.priority`, 0 when not given). 6.7.1.3: "a TS
+will either radiate all Vote Now Advice broadcasts with preference priorities or it shall radiate all [...] with no
+preference priority": give every site of a network 1-7, or leave all at 0. Example, pluto-t3 (site 1, chan 1 TSCC at
+461.4625 / 461.0875, `priority` 0) and hat-t3 (site 2, chan 3 TSCC at 461.2875 / 461.1375, `priority` 3):
+
+| Sent by | Chan_Freq (CH_ADJ: MS TX / RX MHz) | Adjacent_Site and Vote_Now: syscode MSBs, confirmed, adjacent, CH |
+|---|---|---|
+| pluto-t3 | 1: 461.0875 / 461.4625; 2: 461.2375 / 461.3375; 3: 461.1375 / 461.2875 | hat-t3's, 0, 3, 3 |
+| hat-t3 | 3: 461.1375 / 461.2875; 1: 461.0875 / 461.4625 | pluto-t3's, 3, 0, 1 |
+
+VOTE_BLK (annex A.2: "Number of TDMA frames that the TSCC withdraws random access activity after a Vote Now
+Advice", 2 to 10): `broadcast.vote_blk`, default 6. A TDMA frame is 60 ms, two slots, and the TSCC has one slot of
+it, so the site counts TSCC slots: 6 frames are 360 ms, as long as an MS that samples the named TSCC for 360 ms is
+away. 6.7.1.3 lets only "An Aloha PDU with MS Address = ADRNULL and Mask = 24" and C_WACKD go in those slots; the site
+sends the Aloha. After an MBC Vote_Now the frames start after the VN_AP block.
 
 Mass re-registration (6.4.5): the `mass_reg` command (mqtt-net, section 5.7; `rdof_t3_command(s, "mass_reg",
 window_s, ms)`) or `services.mass_reg_at_start_s` (a restarted site has lost the records it didn't load). MassReg
@@ -801,7 +842,7 @@ paths").
 | `call_diversion` | bool | true | MSs may divert their calls to an MS or a talkgroup (3.18); off: Not_Supported |
 | `data_gateway` | integer | 0 | the site's own data ID besides TSI (1-16776415): packet data to it, to TSI or to IPI goes to the site's IP gateway (3.16) |
 | `timers` | object | section 3.8 | |
-| `broadcast` | object | section 3.2 | `adjacent_s`, `chan_freq_s`, `local_time_s`, `call_timers_s`, `vote_now_s`, `ann_tscc_s` (0 = off; the last three off by default, section 3.11) |
+| `broadcast` | object | section 3.2 | `adjacent_s`, `chan_freq_s`, `local_time_s`, `call_timers_s`, `vote_now_s`, `ann_tscc_s` (0 = off, else 1-600 s; the last three off by default, section 3.11); `vote_blk` (2-10 TDMA frames, 6): VOTE_BLK after a Vote_Now; `priority` (0-7, 0): the site's priority for the Radiated Preference Strategy (table 6.81: 1 highest, 7 lowest, 0 non-preferred), sent as the confirmed priority with each neighbor and in `info` (section 3.11). Local settings: the manager's `cfg` doesn't carry them |
 | `services` | object | | `emergency_preempt` (bool, false): clear a running call for a waiting emergency (section 3.9); `power_save` (0-7, 0): the largest PowerSave_RQ granted, 0 none; `power_save_awake_s` (0.1-60, 1); `mass_reg_at_start_s` (0-200000, 0): a mass re-registration at start within this time (section 3.11); `hibernate_s` (0 or 1-300, 0): T_BS_Inactive of the asynchronous TSCC, 0 never (section 3.12); `duplex` (bool, false): full-duplex individual calls (section 3.13); `composite_tscc` (bool, false): the TSCC's slot carries a call when no payload channel is free (section 3.19). Local settings only for now; the manager's `cfg` doesn't carry them |
 | `auth` | `off`, `registration`, `required` | `off` | MS authentication (section 3.14): challenge MSs with a key at registration, or every MS. Local settings only; the manager's `cfg` doesn't carry it |
 
@@ -934,11 +975,16 @@ part unchanged.
           "tscc": [{"chan": 1, "tx_hz": 438750000, "rx_hz": 438250000, "cc": 1}],
           "carriers": [{"chan": 1, "tx_hz": 438750000, "rx_hz": 438250000},
                        {"chan": 2, "tx_hz": 438600000, "rx_hz": 438500000}],
-          "services": ["reg", "group", "private", "allcall"], "reg": true}
+          "services": ["reg", "group", "private", "allcall"], "reg": true, "priority": 0}
 ```
 
+`priority`: the site's `broadcast.priority` (0-7, table 6.81).
+
 Neighbors: each site builds its Adjacent_Site list from the `info` of the other online nodes with a `trunk` object of
-the same MODEL and NET, unless `cfg/node/{node}` gives `neighbors` explicitly.
+the same MODEL and NET, unless `cfg/node/{node}` gives `neighbors` explicitly. From each it takes the C_SYScode
+(`system`), the TSCC (`tscc[0]`: `chan`; `tx_hz` and `rx_hz`, 50-999.999875 MHz, for Chan_Freq and VN_AP; `cc`) and
+`priority` (the adjacent priority it radiates). Older `info` without them: no Chan_Freq for that neighbor, its color
+code taken as the site's, priority 0 (section 3.11).
 
 `status` (retained, every 10 s and on change), for all nodes; a trunk site adds:
 
@@ -1067,7 +1113,7 @@ Built this round: everything a second site needs, because each record, topic and
 
 | Step | What 361-4 provides | Where it lives |
 |---|---|---|
-| A radio finds a neighbor | Adjacent_Site broadcasts | each site, from the others' `info` |
+| A radio finds a neighbor | Adjacent_Site and Vote_Now broadcasts, Chan_Freq for the neighbor's TSCC channel, the sites' priorities (section 3.11) | each site, from the others' `info` |
 | A radio moves | it registers at the new site (new SYS_AREA) | the new site writes `node/{new}/ms/{id}`; the router's `where/{id}` moves; the old site sees `where` and deletes its record |
 | A group call reaches the new site | the record's talkgroups | the new site subscribes; the broker delivers |
 | A private call reaches the moved radio | the setup request | the router places it by the newest record |
@@ -1076,7 +1122,7 @@ Built this round: everything a second site needs, because each record, topic and
 
 Later steps, none needing a redesign: registration areas spanning several sites (`area_bits` smaller than SITE), a
 home registry and per-radio permissions checked across sites (the manager already holds them), C_MOVE for load
-sharing, Vote Now with priorities from the manager.
+sharing, the priorities from the manager (`broadcast.priority` is a local setting now).
 
 ## 8. Site controller API (`rdof/t3.h`)
 
@@ -1308,8 +1354,9 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
   (`rdof_t3_tg_policy`, 64 talkgroups): a group call's channel hangs for its talkgroup's time, and a group request's
   priority is the most of its own, the MS's and the talkgroup's. A deleted document's entry goes.
 - Neighbors: the unit subscribes `node/+/info` and `node/+/online`. Another node whose `info` has a `trunk` object of
-  the same MODEL and NET is an adjacent site (its C_SYScode from its system, `rdof_t3_syscode`, and its TSCC channel),
-  active while its `online` is `1`; `cfg/node`'s `neighbors`, when given, keeps only the sites it lists.
+  the same MODEL and NET is an adjacent site (its C_SYScode from its system, `rdof_t3_syscode`, its TSCC channel,
+  frequencies and color code, and its `priority`), active while its `online` is `1`; `cfg/node`'s `neighbors`, when
+  given, keeps only the sites it lists.
 - Tests: `rdof_t3split_tests` (a two-carrier site, carrier B on a fake split TX half: bring-up, UTC alignment,
   a call on carrier B as `TX_SCHED` on the UTC slots followed by a simulated MS from what the half airs, a heard burst
   labeled by slot, unkeyed after the hang); `rdof_t3unit_tests` (two sites over a broker, `cfg/tg` hang, the

@@ -357,11 +357,13 @@ place a call comes in or goes out, so the slot is part of the path where the slo
           "tscc": [{"chan": 1, "tx_hz": 438750000, "rx_hz": 438250000, "cc": 1}],
           "carriers": [{"chan": 1, "tx_hz": 438750000, "rx_hz": 438250000},
                        {"chan": 2, "tx_hz": 438600000, "rx_hz": 438500000}],
-          "services": ["reg", "group", "private", "allcall"], "reg": true}
+          "services": ["reg", "group", "private", "allcall"], "reg": true, "priority": 0}
 ```
 
-A trunked site builds its neighbor list (Adjacent_Site broadcasts) from the `trunk` objects of the other online
-nodes with the same `model` and `net`, unless its `cfg/node` document lists `neighbors`.
+`priority` is the site's priority for the Radiated Preference Strategy (0-7, 361-4 table 6.81). A trunked site builds
+its neighbor list (Adjacent_Site and Vote_Now broadcasts, Chan_Freq for each neighbor's TSCC channel from `tscc[0]`,
+the neighbor's `priority`) from the `trunk` objects of the other online nodes with the same `model` and `net`, unless
+its `cfg/node` document lists `neighbors` ([tier3.md](tier3.md) 3.11).
 
 ## 7. `activity` events
 

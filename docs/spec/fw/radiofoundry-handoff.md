@@ -94,7 +94,8 @@ spec for both; this lists only the gateway's choices and limits. The full design
   - emergency and priority as queue order only (no pre-emption).
 - Every other service gets C_NACKD(Not_Supported): data, UDT short data, status, PSTN / PABX / dispatcher gateways,
   duplex calls, ambient listening, stun / revive / kill, DGNA.
-- No authentication. No power save (no MS_Sleep handling), no mass re-registration, no Vote Now.
+- No authentication. No power save (no MS_Sleep handling), no mass re-registration. (The current site has all three
+  and Vote Now: tier3.md 3.11, 3.14.)
 - Talkgroup subscription: one talkgroup in the registration (TRGT_ADR_CNTS 01b). A list subscription (10b, needs a UDT
   upload) is answered "registration accepted, group refused" (reason 0x65); the site then learns the MS's talkgroups
   from its calls.
@@ -119,8 +120,10 @@ spec for both; this lists only the gateway's choices and limits. The full design
 | Payload warm-up | 4 CACH of idles before the first sync opportunity (the site isn't slot-synchronized across carriers: Site Timeslot Synchronization 0) |
 | Colour code | the TSCC's CC on every payload channel |
 | Logical channels | numbered 1-4094 by the site's settings; LCN 0 = TS1, 1 = TS2 |
-| Channel plan | C_BCAST Chan_Freq (MBC, absolute Tx / Rx per channel) for each carrier every 10 s, so an MS can learn it over the air; a programmed plan works too |
-| Other broadcasts | Adjacent_Site every 5 s per neighbor (from the network), Local_Time every 6 s when the site's clock is good, Gen_Site_Params every 10 s |
+| Channel plan | C_BCAST Chan_Freq (MBC, absolute Tx / Rx per channel, the MS's view) every 10 s for each carrier and each neighbor's TSCC channel, so an MS can learn it over the air and resolve CH_ADJ / CH_VOTE; a programmed plan works too. A neighbor channel whose number clashes with one of the site's carriers isn't announced; Vote_Now names it with CH_VOTE 4095 and a VN_AP block (tier3.md 3.11) |
+| Other broadcasts | Adjacent_Site every 5 s per neighbor (from the network), Local_Time every 6 s when the site's clock is good, Gen_Site_Params every 10 s; Vote_Now per neighbor every `vote_now_s` when set (off by default) |
+| Site priorities | Adjacent_Site and Vote_Now Parms2 bits 21-19 = the sending site's `broadcast.priority`, bits 18-16 = the named neighbor's (table 6.81: 1 highest, 7 lowest, 0 non-preferred; default 0 at every site) |
+| VOTE_BLK | `broadcast.vote_blk` TDMA frames after a Vote_Now (default 6 = 360 ms), one TSCC slot each, only C_ALOHA ADRNULL Mask 24 |
 | C_ALOHA | at least one in every 4 TSCC slots |
 | Active_Connection | 1 while the site is on the network; 0 alone (local calls still work) |
 | Version | 100b (1.11.1) |
@@ -152,7 +155,8 @@ spec for both; this lists only the gateway's choices and limits. The full design
   carrier A's TS2; a second at the same time goes to carrier B. Carrier B's half counts UTC slots (aligned from the
   host's clock); carrier A's slots follow the SDR's own clock, so the two carriers aren't slot-synchronized
   (`site_sync` 0): a radio moving to carrier B must find its slot timing there (the payload warm-up).
-- Adjacent_Site broadcasts list the other trunked sites on the network (from their `info`), active while online.
+- Adjacent_Site broadcasts list the other trunked sites on the network (from their `info`), active while online,
+  with Chan_Freq for each one's TSCC channel and the sites' priorities (tier3.md 3.11).
 - Inbound timing: the site gives an inbound burst the slot by its timing against the outbound (aligned timing,
   1.25 ms after the slot's start); a radio that sends late or early by more than half a slot lands in the wrong one.
 - The simulator is a second implementation of the MS procedures the site needs: when the radio and the site
