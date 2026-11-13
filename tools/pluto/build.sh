@@ -14,7 +14,8 @@
 #   cd /tmp && gunzip -c rdof-pluto.tar.gz | tar -xf - && ./rdofradio --iio local: --allow-tx ... --web 0.0.0.0:8080
 # It also writes the install bundle, build/pluto/rdof-pluto-bundle-VERSION.tar.gz: rdofradio with an install script
 # that sets it up to start at boot and again when it exits (tools/pluto/bundle/README.md). VERSION is
-# $RDOF_VERSION, else git describe, else "dev".
+# $RDOF_VERSION, else git describe, else "dev". RDOF_PLUTO_WEB=OFF leaves the web page out (--web is then
+# accepted and ignored): it saves flash room for a bigger program, such as the trunked site's.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 OUT=$ROOT/build/pluto
@@ -49,7 +50,7 @@ if [ ! -f "$OUT/libs/usr/include/iio.h" ]; then
 fi
 
 VERSION=${RDOF_VERSION:-$(git -C "$ROOT" describe --always --dirty 2>/dev/null || echo dev)}
-docker run --rm -v "$ROOT":/src:ro -v "$OUT":/out -e RDOF_PLUTO_LIBS=/out/libs -e RDOF_VERSION="$VERSION" \
+docker run --rm -v "$ROOT":/src:ro -v "$OUT":/out -e RDOF_PLUTO_LIBS=/out/libs -e RDOF_VERSION="$VERSION" -e RDOF_PLUTO_WEB="${RDOF_PLUTO_WEB:-ON}" \
     -e RUST_TARGET="$RUST_TARGET" -e RUSTUP_HOME=/out/rust/rustup -e CARGO_HOME=/out/rust/cargo debian:stretch bash -euo pipefail -c '
 echo "deb http://archive.debian.org/debian stretch main" > /etc/apt/sources.list
 apt-get -qq -o Acquire::Check-Valid-Until=false update
@@ -88,7 +89,7 @@ if [ ! -f /out/libs/usr/lib/libmosquitto_static.a ]; then
     rm -rf $T
 fi
 cmake -S /src -B /out/build -DCMAKE_TOOLCHAIN_FILE=/src/tools/pluto/armhf.cmake -DCMAKE_BUILD_TYPE=Release \
-    -DRDOF_BUILD_TESTS=OFF -DRDOF_HOST_WEB=ON -DRDOF_PFFFT=ON -DRDOF_VERSION="$RDOF_VERSION" \
+    -DRDOF_BUILD_TESTS=OFF -DRDOF_HOST_WEB=$RDOF_PLUTO_WEB -DRDOF_PFFFT=ON -DRDOF_VERSION="$RDOF_VERSION" \
     -DRDOF_RUST_TARGET="$RUST_TARGET"
 cmake --build /out/build --target rdofradio rdofsdr rdofchz -j"$(nproc)"
 cd /out
