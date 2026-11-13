@@ -687,7 +687,6 @@ the ESP32-C6 for Wi-Fi (esp-hosted over SDIO). Don't take code from `esp-rtl-sdr
 ### SDR: not done
 
 - Calibration, gain scans and recording on the board (the board learns its ppm instead).
-- cf32 recordings in `rdofsdr` (live SoapySDR streams are CF32).
 - The P4 firmware (no board).
 
 ## The SDR role
@@ -1137,8 +1136,8 @@ Built by the top-level CMake ("Host build and system tests"); SoapySDR (Debian /
 
 ### rdofsdr
 
-A receiver: a cu8 recording, or with SoapySDR a live device, in; bursts and tracker JSON out; `--bench` times each
-stage.
+A receiver: a cu8 recording (cf32 when the name ends in `.cf32`, as rdofradio's `--file` device writes what it
+transmits), or with SoapySDR a live device, in; bursts and tracker JSON out; `--bench` (cu8) times each stage.
 
 ```sh
 rdofsdr --soapy driver=rtlsdr -r 1536000 --ch C1:438.4875 ... [--gain DB] [--setting biastee=true] [--seconds S]
@@ -1175,9 +1174,11 @@ rdofradio --soapy driver=plutosdr -r 2400000 --allow-tx --rx 438.25 --tx 438.75 
 
 A trunked site ([tier3.md](spec/fw/tier3.md) 9.4, `sdr/cli/rdofradio_t3.c`): `--config` with a `tier3` app runs
 the site, on the mqtt network as the box's node (the provisioning cached in `--state-dir DIR`'s `cfg-cache.json`).
-On a device the SDR sends carrier A (the TSCC's) full duplex; a second carrier is a split TX half on its radio's
-port, aligned to UTC from the host's clock and fed by the scheduled stream, the SDR's receiver its RX half (two
-carriers at most; tier3.md 9.4). Not yet run on a device.
+On a device the SDR sends carrier A (the TSCC's) full duplex. A second carrier is sent by the same SDR (its `out`
+among the SDR's `transmits`, `tx.carriers` 2: a second SDR modem on the same slot grid, summed into the transmit
+stream with each carrier at half amplitude, the TX LO halfway between the outs; with `--fpga-duc` the stream is
+384 kS/s) or by a split TX half on its radio's port, aligned to UTC from the host's clock and fed by the scheduled
+stream, the SDR's receiver its RX half (two carriers at most; tier3.md 9.4). Not yet run on a device.
 Built with `RDOF_TIER3` (on by default; needs cargo: the controller is rust's `t3` feature, linked alone, for
 `RDOF_RUST_TARGET` when cross building); without it such a file is refused with the reason. `--sim-air N` needs no
 device: N simulated MSs (IDs from `--sim-id`, default 1000001) register with `--sim-tg` (default 9) and run through
@@ -1193,8 +1194,8 @@ rdofradio --config site-a.json --sim-air 3 --sim-id 3100001 --sim-script calls.t
 ```
 
 On a device the SDR sends carrier 1 (the TSCC's) as the SDR modem's slot source, keyed with no end, and what it hears
-on that carrier's `in` goes to the controller with the slot its timing gives (`rdof_sdrmodem_inbound_k`). Limits: one
-carrier (a second carrier on a split's TX half is refused: not wired), 64 simulated MSs, 256 script actions, 20
+on that carrier's `in` goes to the controller with the slot its timing gives (`rdof_sdrmodem_inbound_k`); so does a
+second carrier the SDR sends, by its own modem. Limits: two carriers, 64 simulated MSs, 256 script actions, 20
 talkgroups subscribed one by one (more: `tg/+/+`, filtered). Not yet run on a device.
 
 Transmit power: `--tx-power DBM` at the antenna, from `--tx-max-dbm` (the device's output at its most gain, +7 dBm
@@ -1515,6 +1516,12 @@ stream at 192 kS/s, or 96 kS/s when the rate isn't a multiple of 192 kS/s, and t
 - 48 kS/s is refused: its first images, 56 dB down, land on the next channels of a 50 kHz grid. At 96 kS/s they are
   76 dB down, at 192 kS/s 94 dB.
 - The TX LO sits 62.5 kHz above the carrier at 192 kS/s and 18.75 kHz at 96 kS/s (`--tx-lo` unless given). Only TX1.
+  The images above are a carrier's near the LO: the CIC has no compensation, so one f off the LO has its first image
+  (at f less the stream's rate) only about 19 dB under it at 192 kS/s and 62.5 kHz, 37 dB at 96 kS/s and 18.75 kHz
+  (tier3.md 9.4); not yet measured.
+- A trunked site with both carriers on the SDR takes a 384 kS/s stream (a device rate that's a multiple of it, R 17
+  at least: 6.528 MS/s or more), the LO between the carriers and each within 64 kHz of it: 62.5 kHz off, the image is
+  43 dB under the carrier.
 - The TX buffers are about 5 ms (512 samples at 96 kS/s), so the queue stays inside the stream's 50 ms lead.
 - With `--split-tx` or `--mmdvm` the SDR doesn't transmit, and it's left unused.
 - Without the block nothing answers at ADDR, and a read there is a bus error: both options need the bitstream.

@@ -196,6 +196,10 @@ if(TARGET rdofradio AND TARGET fakemodem AND UNIX)
         add_test(NAME rdofradio_e2e_t3_airms COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_t3_airms.sh
                  $<TARGET_FILE_DIR:rdofradio>)
         set_tests_properties(rdofradio_e2e_t3_airms PROPERTIES TIMEOUT 90)
+        # no RF: a two-carrier site, both out of the SDR; rdofsdr decodes the transmit file at both outs
+        add_test(NAME rdofradio_e2e_t3_car2 COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_t3_car2.sh
+                 $<TARGET_FILE_DIR:rdofradio>)
+        set_tests_properties(rdofradio_e2e_t3_car2 PROPERTIES TIMEOUT 90)
     endif()
     # no RF: two boxes, each on a fakemodem, joined by the MQTT network (format v3) through a broker on this host
     find_program(MOSQUITTO_BROKER mosquitto HINTS /usr/sbin /usr/local/sbin /opt/homebrew/sbin)

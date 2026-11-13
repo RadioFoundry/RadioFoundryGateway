@@ -327,6 +327,7 @@ static struct {
     bool sim_fast;
 } t3_opts = {.sim_id = 1000001, .sim_tg = 9};
 static rdofradio_cfg_t rcfg;
+static bool t3_sdr2; /* a trunked site's carrier 2 sent by the SDR too: the TX LO between the two, fixed */
 #ifdef RDOF_HOST_WEB
 static char held[300]; /* hold (below): why the settings don't run, "" when they do */
 #endif
@@ -705,7 +706,8 @@ static struct {
     unsigned long addr;
     void *regs;
     rdof_chzhw_duc_t d;
-} DX = {.addr = DX_ADDR};
+    long in_hi, in_lo; /* the transmit stream's rates it takes: 192 kS/s, else 96; 384 only for two carriers */
+} DX = {.addr = DX_ADDR, .in_hi = 192000, .in_lo = 96000};
 static long dx_r(double rate);
 static double plan_rate(const rdof_sdr_channel_t *c, int n, char *why, size_t cap)
 {
@@ -3736,6 +3738,18 @@ static int64_t main_now48(void)
 }
 #ifdef RDOF_TIER3
 static int trunk_channel(uint32_t hz) { return channel_of(hz); }
+/* A trunked site's carriers on the SDR: hz's place from the TX LO, which stays put. The reach is io_tune's (0.4 of
+ * the stream's rate, less 12.5 kHz); with the interpolator a sixth of its rate at most, where the CIC's first image
+ * (of a carrier f off the LO, at f less the rate) is 42 dB under the carrier. */
+static bool trunk_tx_offset(uint32_t hz, double *off, double *reach)
+{
+    *reach = R.tx_rate * 0.4 - 12.5e3;
+    if (DX.started && *reach > R.tx_rate / 6)
+        *reach = R.tx_rate / 6;
+    *off = (double)hz - R.tx_lo;
+    return fabs(*off) <= *reach;
+}
+static double trunk_tx_lo(void) { return R.tx_lo; }
 #endif
 
 static void on_burst(void *ctx, int c, const rdof_sdr_burst_t *b, double t)
@@ -4439,6 +4453,21 @@ static void web_publish(double rx, double tx, int cc)
     w.extra[0].value = R.m.tx_late48 * 1000 / 48;
     snprintf(w.extra[1].name, sizeof w.extra[1].name, "inbound off (%%)");
     w.extra[1].value = (int64_t)llround(R.m.inbound_off * 100);
+#ifdef RDOF_TIER3
+    if (rdofradio_t3_on()) { /* a trunked site's carrier 2: what sends it, and on the SDR its counts */
+        char c2[112];
+        uint32_t sent, heard;
+        rdofradio_t3_carrier2(c2, sizeof c2, &sent, &heard);
+        if (c2[0])
+            snprintf(w.modem, sizeof w.modem, "SDR modem; Tier III %.100s", c2);
+        if (c2[0] && !strncmp(c2, "carrier 2 by the SDR", 20) && w.nextra + 2 <= 8) {
+            snprintf(w.extra[w.nextra].name, sizeof w.extra[0].name, "carrier 2 sent");
+            w.extra[w.nextra++].value = sent;
+            snprintf(w.extra[w.nextra].name, sizeof w.extra[0].name, "carrier 2 heard");
+            w.extra[w.nextra++].value = heard;
+        }
+    }
+#endif
     if (SR.router.site && rcfg.site.napp)
         rdof_router_apps_json(&SR.router, now_s(), web_app_extra, NULL, w.apps, sizeof w.apps);
     rdofgw_status_text(w.ip_gateway, sizeof w.ip_gateway);
@@ -4774,11 +4803,11 @@ static int dx_probe(char *err, size_t cap)
     DX.probed = true;
     return 0;
 }
-/* The interpolation for the device's rate (from 192 kS/s, else 96), or 0: none */
+/* The interpolation for the device's rate (from 192 kS/s, else 96; DX.in_hi, DX.in_lo), or 0: none */
 static long dx_r(double rate)
 {
     const long fs = lround(rate), lo = rdof_chzhw_duc_min_r(&DX.d), hi = rdof_chzhw_duc_max_r(&DX.d);
-    for (long in = 192000; in >= 96000; in /= 2)
+    for (long in = DX.in_hi; in >= DX.in_lo; in /= 2)
         if (fs % in == 0 && fs / in >= lo && fs / in <= hi)
             return fs / in;
     return 0;
@@ -4788,8 +4817,8 @@ static int dx_start(double rate, char *err, size_t cap)
     const long lo = rdof_chzhw_duc_min_r(&DX.d), hi = rdof_chzhw_duc_max_r(&DX.d), r = dx_r(rate);
     char e[160];
     if (!r) {
-        snprintf(err, cap, "the TX interpolator can't make %.0f S/s from 192 or 96 kS/s (R %ld to %ld): a rate that's "
-                           "a multiple of 96 kS/s", rate, lo, hi);
+        snprintf(err, cap, "the TX interpolator can't make %.0f S/s from %ld to %ld kS/s (R %ld to %ld): a rate that's "
+                           "a multiple of %ld kS/s", rate, DX.in_lo / 1000, DX.in_hi / 1000, lo, hi, DX.in_lo / 1000);
         return -1;
     }
     if (rdof_chzhw_duc_start(&DX.d, (int)r, e, sizeof e)) {
@@ -6721,6 +6750,14 @@ int main(int argc, char **argv)
 #endif
         }
         rx = rcfg.rx_hz, tx = rcfg.tx_hz, cc = rcfg.cc, rx_slot = rcfg.rx_slot;
+#ifdef RDOF_TIER3
+        /* With --fpga-duc its stream at 384 kS/s: the CIC's first image of a carrier 62.5 kHz off the LO is 43 dB under
+           it there, 19 dB at 192 kS/s (docs/spec/fw/tier3.md 9.4) */
+        if (rcfg.tier3 && rcfg.t.ncar == 2 && rcfg.t.car[1].tx_sdr) {
+            t3_sdr2 = true;
+            DX.in_hi = DX.in_lo = 384000;
+        }
+#endif
         if (rcfg.has_bench_tx) { /* bench.tx: its frequencies and bands beside --bench-tx's, its key time and power */
             const rdof_benchtx_policy_t *bp = &rcfg.bench_tx;
             char why[300] = "";
@@ -6900,6 +6937,8 @@ int main(int argc, char **argv)
     if (!tx)
         tx = rx;
     const bool tx_lo_given = tx_lo != 0;
+    if (!tx_lo && t3_sdr2) /* halfway between the carriers' outs */
+        tx_lo = (double)llround(((double)rcfg.t.car[0].tx_hz + (double)rcfg.t.car[1].tx_hz) / 2);
     if (!tx_lo)
         tx_lo = tx + 100e3;
     R.txr = 1, R.lo_off = 100e3;
@@ -7071,11 +7110,28 @@ int main(int argc, char **argv)
             fprintf(stderr, "--fpga-duc: %s\n", derr);
             return 1;
         }
-        if (!tx_lo_given)
+        if (!tx_lo_given && !t3_sdr2)
             tx_lo = tx + R.lo_off, R.tx_lo = tx_lo;
-        fprintf(stderr, "--fpga-duc: transmit at %.0f S/s, R %d to %.0f S/s, the TX LO %.0f kHz above\n", R.tx_rate,
-                R.txr, rate, (tx_lo - tx) / 1e3);
+        fprintf(stderr, "--fpga-duc: transmit at %.0f S/s, R %d to %.0f S/s, the TX LO %.0f kHz above%s\n", R.tx_rate,
+                R.txr, rate, (tx_lo - tx) / 1e3, t3_sdr2 ? " carrier 1's out (between the two carriers)" : "");
     }
+#ifdef RDOF_TIER3
+    if (t3_sdr2) /* both carriers' outs within the stream's reach of the one TX LO */
+        for (int c = 0; c < 2; c++) {
+            double off, reach;
+            if (trunk_tx_offset(rcfg.t.car[c].tx_hz, &off, &reach))
+                continue;
+            fprintf(stderr, "%s: carriers 1 and 2 out on %.5f and %.5f MHz, %.1f kHz apart: the TX LO on %.5f MHz "
+                            "reaches %.1f kHz either side at %.0f kS/s (the transmit stream's rate%s), carrier %d is "
+                            "%.1f kHz off it: %s\n",
+                    rcfg.t.name, rcfg.t.car[0].tx_hz / 1e6, rcfg.t.car[1].tx_hz / 1e6,
+                    fabs((double)rcfg.t.car[0].tx_hz - (double)rcfg.t.car[1].tx_hz) / 1e3, R.tx_lo / 1e6, reach / 1e3,
+                    R.tx_rate / 1e3, DX.started ? ", a sixth of it with --fpga-duc" : "", c + 1, fabs(off) / 1e3,
+                    DX.started ? "carriers closer together (--fpga-duc's stream is 384 kS/s at any -r)"
+                               : "a wider -r, or carriers closer together");
+            return 1;
+        }
+#endif
     const rdofradio_dev_setup_t su = {rate, R.rx.center_hz, tx_lo, gain, bw, stream_args, R.split || R.mmdvm || listen_only,
                                       FX.on ? 48000.0 * (double)rdof_chzfx_frame_words(FX.C) : 0, R.txr, settings,
                                       n_settings};
@@ -7194,7 +7250,9 @@ int main(int argc, char **argv)
                                                .sim_script = t3_opts.sim_script, .state_dir = t3_opts.state_dir,
                                                .seconds = seconds, .verbose = verbose != 0};
             char terr[200];
-            const rdofradio_t3_dev_t td = {trunk_channel, main_now48, now_s, (uint32_t)R.rate};
+            const rdofradio_t3_dev_t td = {trunk_channel, main_now48,       now_s,
+                                              (uint32_t)R.rate, trunk_tx_offset, trunk_tx_lo,
+                                              (uint32_t)llround(R.tx_rate)};
             /* the site's slots on the host's clock (UTC when it's synced): carrier 1's from the SDR's sample clock as
              * timed against it, carrier 2's split half from it, so both carriers share one clock */
             rdof_slot_timing_t st;
@@ -7415,7 +7473,10 @@ int main(int argc, char **argv)
         const double t_mod = now_s();
         ms_poll(now);
         rdofradio_utc_apply(&R.m);
-        const bool keyed = rdof_sdrmodem_pull_iq(&R.m, txn - lead + offset, out, ntx);
+        bool keyed = rdof_sdrmodem_pull_iq(&R.m, txn - lead + offset, out, ntx);
+#ifdef RDOF_TIER3
+        keyed |= rdofradio_t3_mix(txn - lead + offset, out, ntx); /* a trunked site's carrier 2, when the SDR sends it */
+#endif
         WS.mod += now_s() - t_mod;
         const double d_poll = t_mod - t_poll, d_mod = now_s() - t_mod;
         /* Samples the receiver lost (a stall longer than the device's buffers: the stream falls behind the wall

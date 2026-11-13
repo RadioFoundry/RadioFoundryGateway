@@ -33,7 +33,7 @@ Principles:
 
 | Area | Built |
 |---|---|
-| RF layout | 2 carriers: A (SDR TX + SDR RX) carries the dedicated TSCC on TS1 and a payload channel on TS2; B (split radio TX + SDR RX) carries two payload channels. 1 control slot, 3 payload slots. The controller, the radio layer, the unit and the simulator take 1-4 carriers (up to 7 payload channels), the TSCC on the first; tested with 3 and 4 on simulated air. rdofradio drives 2 at most (hardware) |
+| RF layout | 2 carriers: A (SDR TX + SDR RX) carries the dedicated TSCC on TS1 and a payload channel on TS2; B (TX from the same SDR, summed into its transmit stream with each carrier at half amplitude, or from a split radio; SDR RX) carries two payload channels. 1 control slot, 3 payload slots. The controller, the radio layer, the unit and the simulator take 1-4 carriers (up to 7 payload channels), the TSCC on the first; tested with 3 and 4 on simulated air. rdofradio drives 2 at most (hardware) |
 | Control channel | C_SYS_Parms short LC with a counting Common_Slot_Counter; C_ALOHA; C_BCAST Adjacent_Site (from the network), Chan_Freq (the site's own channel plan), Local_Time (when the clock is good), Gen_Site_Params, CallTimer_Parms, Vote_Now (with the VOTE_BLK block), Ann_WD_TSCC, MassReg (section 3.11); CACH AT driven by the controller |
 | Random access | Slotted Aloha, Mask 0, Service Function from load, adaptive Backoff, NRand_Wait from settings; a response to every random access |
 | Registration | Open or listed (ID sets); register, de-register, implicit registration from call requests; single-talkgroup subscription (TRGT_ADR_CNTS 01b) and a list of up to 7 by UDT upload (10b, 3.17); Reg_Accepted / Reg_Refused / Reg_Denied; MS_Not_Registered |
@@ -63,16 +63,17 @@ short data to gateways (extended addresses, supplementary data), a second TSCC, 
 says why), DGNA across sites for the site's records (a roaming MS's dynamic talkgroups), stun/revive with
 authentication and kill (6.4.9.2, 6.4.10), ALS across sites or from the site, payload interrupt in an ALS call, call
 diversion to gateways or across sites, gateways (PSTN, PABX, dispatcher), duplex calls over the network and duplex
-packet data, a standby controller, trunking on the W12 (the LR2021 can't stay keyed: slot-timing.md), two carriers
-out of one SDR, authentication of the site by the MS (6.4.9.2), encryption beyond pass-through.
+packet data, a standby controller, trunking on the W12 (the LR2021 can't stay keyed: slot-timing.md),
+authentication of the site by the MS (6.4.9.2), encryption beyond pass-through.
 
-Two carriers out of one SDR (tried on the Pluto, 2026-11-06, with fixed test signals, not the site): two DMR BS
+Two carriers out of one SDR, now built (9.4), were tried first on the Pluto (2026-11-06, with fixed test signals, not
+the site): two DMR BS
 carriers 125 kHz apart, each idle bursts with the CACH on both slots, summed in software and sent on TX1 (2.4 MS/s,
 the LO between them, each at half amplitude), both decoded on the SDR bench with no bit errors beyond the single
 carrier's, 6 dB down each; intermodulation stayed under the bench receiver's floor, about 22 dB below the carriers,
 so the true level is unmeasured. The AD9363's second chain (TX2, same LO) took its own stream (DMA channels 2 and 3)
-in 2R2T mode, but its port isn't cabled to the bench, so it wasn't heard. Either way works for a later two-carrier
-site: one chain is simplest; two chains keep each carrier on its own amplifier.
+in 2R2T mode, but its port isn't cabled to the bench, so it wasn't heard. Either way works for a two-carrier site:
+rdofradio uses one chain, the simplest; two chains would keep each carrier on its own amplifier.
 
 ## 2. Architecture
 
@@ -711,7 +712,9 @@ paths").
 Checks (refusals name the key): exactly one `tscc` carrier; every carrier's `out` on a device that transmits and its
 `in` on a device that receives; the TSCC carrier's `in` and `out` on one full-duplex SDR (a split TX half
 can't carry the TSCC yet: radiofoundry-handoff.md 1.4); every carrier's `in` on that SDR; another carrier's `out` on
-an SDR or a split TX half (one carrier a radio); `chan` unique; the `system` numbers inside the model's ranges; at most 4 carriers;
+an SDR or a split TX half (one carrier a radio). Carrier B out of the TSCC's SDR needs its `tx.carriers` at 2, which a
+host's I/Q driver (`iio`, `soapy`, `sim`) takes when the site is all that SDR sends (the board's drivers send one);
+rdofradio then wants both outs within its transmit stream's reach of one TX LO (9.4); `chan` unique; the `system` numbers inside the model's ranges; at most 4 carriers;
 a frequency used by a `tier3` app can't be used by another app or a talk path.
 
 Paths: the app offers one talk path, named after the app, with `trunk: true` in `info`. The slots are internal: the
@@ -1083,7 +1086,8 @@ called about one slot plus the TX lead ahead of air: the controller decides a sl
 - a full-duplex call's channels (`rdof_t3rf_duplex`, section 3.13): the carrier's inbound slots read in offset
   timing, each channel's regenerated inbound queued on the other's outbound.
 
-Outbound sinks: carrier A's channels are read by the slot source (9.1); carrier B's go to the split radio's TX half
+Outbound sinks: carrier A's channels are read by the slot source (9.1); carrier B's by its own modem's slot source
+when the SDR sends it (9.4), else they go to the split radio's TX half
 (`rdof_split_t`) in the scheduled stream (SET_ROLE stream 1, TX_SCHED): each burst tagged with its slot counter,
 sent at least the half's guard (INFO 12, 55 ms on an HR_C7000) before air, so there is no FIFO prebuffer and the
 repeat delay is the same as carrier A's; DMR_SHORTLC with P_SYS_Parms. A half without the scheduled stream (INFO
@@ -1098,7 +1102,8 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
   bad CRC to `rdof_t3_rx_bad`.
 - A-in TS2, B-in TS1/TS2: to their payload channel (9.2).
 - The slot of a carrier A inbound burst comes from the modem's own outbound timing (inbound slot n is under outbound
-  slot n, aligned timing); carrier B's from the split radio's epoch, as the split repeater does.
+  slot n, aligned timing); carrier B's from its own modem's outbound timing when the SDR sends it, else from the
+  split radio's epoch, as the split repeater does.
 
 ### 9.4 rdofradio
 
@@ -1125,7 +1130,32 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
   carrier has a call, `TX_SCHED` for each traffic or control burst on its UTC slot, the short LC when it changes. The
   receiver gets a channel on carrier B's `in` when the settings have none; its bursts go to the split's RX half, which
   labels each with its slot, and come up with the UTC slot of that parity nearest the burst's position. Three
-  carriers or more, or carrier B on the SDR, are refused.
+  carriers or more are refused, and so is carrier B's `out` on another SDR.
+- Carrier B on the SDR (its `out` among the SDR's `transmits`, `tx.carriers` 2): a second duplex `rdof_sdrmodem_t`,
+  set up as the repeater sets carrier A's (`SET_CONFIG`, `SET_FREQ`, `SET_MODE`, no role) with the unit's carrier 2
+  (`rdof_t3unit_slot(u, 1, k, ...)`) as its slot source. It gets the same slot grid as carrier A before each pull
+  (`rdofradio_utc_apply`), carrier A's TX delay and ppm, and is keyed with it, so both modems' slot k is the same UTC
+  slot (off the grid both take the same offset, being keyed on the same sample). Its I/Q for the same positions is
+  added to carrier A's and the sum halved (`rdof_sdrmodem_pull_mix`): each carrier at half amplitude, 6 dB under one
+  alone, and the sum can't pass full scale (each modulator's output is at most 1). The TX LO sits halfway between the
+  two outs (`--tx-lo` unless given), fixed for the run; carrier B's tune never moves it. Both outs must lie within
+  0.4 of the stream's rate less 12.5 kHz of it, else the start is refused with the span, the LO, the reach and the
+  rate. A bench job that moves the LO silences carrier B until it's back. What the receiver hears on carrier B's
+  `in` goes to the unit's carrier 2 with the slot carrier B's modem's timing gives (`rdof_sdrmodem_inbound_k`); the
+  modem hears it too (its AT). The status page names carrier 2's sender and frequencies and counts its bursts; the
+  stop line gives its pull time.
+- With `--fpga-duc` and carrier B on the SDR the transmit stream is 384 kS/s (the device's rate a multiple of it, R 17
+  at least: 6.528 MS/s or more), and the outs within a sixth of it (64 kHz) of the LO. The interpolator is a plain
+  order-3 CIC (no compensation): a carrier f off the LO comes out down by about 3 · 20 log10 |sinc(f / fs)| (fs the
+  stream's rate) and its first image, at f less fs, by the same at that offset. At 384 kS/s, 62.5 kHz off: the carrier
+  1.1 dB down (0.9 to 1.4 across a DMR signal's ±6 kHz), the image 43 dB under it (40 to 46). At 192 kS/s the carrier
+  would be 4.7 dB down and the image only 19 dB under it (15 at the far edge), 129.5 kHz from the LO on the other
+  side: so not 192. The droop is the same for both
+  carriers (equal offsets), so they stay level with each other. Without the interpolator the ARM's stream runs at the
+  device's rate and the reach is the wider 0.4 rule.
+- CPU on the host (an Apple M-series, `test_two_carriers`, 4096-sample pulls): at 192 kS/s about 0.5 ms a pull for
+  carrier A's modem and 0.6 ms for carrier B's with the sum, 2.4 and 2.9% of real time; at 384 kS/s 0.46 and 0.57 ms,
+  4.3 and 5.4%. A Zynq-7010's A9 at 667 MHz is several times slower; not yet measured there.
 - `--state-dir DIR`: the `cfg` cache (`cfg-cache.json`, one document a line, rewritten on each change).
 - `--sim-air N`: no SDR, no split radio: the Tier III unit runs against the MS simulator (`rdof/t3sim.h`, in Rust
   `rust/src/t3sim.rs`: N radios, `--sim-id`, `--sim-tg`, `--sim-talk S`, timed actions from `--sim-script FILE`),
@@ -1183,7 +1213,13 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
   reference even when nothing disciplines it ("own time": a PlutoSDR runs no NTP client); one site needs its carriers
   on one clock, not on UTC. A step in the host's clock moves both carriers' grids; carrier A steers there at 21 us a
   slot, carrier B jumps at its next measurement.
-- Not done: run on a device (carrier A on the Pluto, carrier B's half on air); the carriers' timing checked on air.
+- Tests: `rdofradio_e2e_t3_car2` (both carriers out of a file device: calls granted on carrier B with air MSs on
+  both carriers; rdofsdr decodes the transmit file at both outs: the same slots at the same sample, CC, carrier B's
+  voice, equal levels); `test_two_carriers` in `rdof_sdrmodem_tests` (the sum within full scale, each carrier 6 dB under
+  one alone, an inbound burst on the same k under either modem). An RF inbound burst on carrier B's `in` is checked
+  through that k mapping, not end to end (the air MSs' inbound to carrier 2 is).
+- Not done: run on a device (carrier A on the Pluto, carrier B's half on air; carrier B on the SDR); the carriers'
+  timing checked on air; the second modulator's CPU on the Pluto.
 
 ## 10. Network services
 

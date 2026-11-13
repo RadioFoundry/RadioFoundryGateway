@@ -55,6 +55,7 @@ typedef struct {
     struct {
         uint32_t rx_hz, tx_hz;
         bool tx_sdr;    /* the SDR sends it; else a radio (a split's TX half) on port */
+        int tx_dev;     /* the device that sends it (the settings' index), -1 none */
         char port[64];
         long baud;
     } car[RDOF_T3_CARRIERS];

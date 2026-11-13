@@ -678,7 +678,7 @@ int rdofradio_t3_sim(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o, vol
  * decoded as a radio would) and what they send goes to the site as if heard on carrier 1's inbound, beside the real
  * radios on the air: a radio can register next to them, call them, hear their calls on the payload channel. Driven by
  * --sim-script and --sim-talk as --sim-air, and by MQTT: ROOT/node/NODE/air-ms, a script line without its time ("ID
- * private 3105738 5000"). Carrier 1 only. */
+ * private 3105738 5000"). Carrier 2 too when the SDR sends it (its outbound heard, its inbound sent; not a split's). */
 static struct {
     int n;
     rdof_t3ms_t *ms[RDOF_T3SIM_MS];
@@ -690,7 +690,9 @@ static struct {
     int nacts, ai, talker;
     int64_t next_talk;
     uint32_t in, out, bad;
+    int ncar; /* the carriers they're on: 1, 2 when the SDR sends carrier 2 */
 } AM;
+static bool c2_sdr; /* carrier 2 is sent by the SDR (C2) */
 
 static int air_find(uint32_t id)
 {
@@ -737,13 +739,14 @@ static bool air_start(const rdofradio_t3_opts_t *o, char *err, size_t cap)
     for (int k = 0; k < cfg->ncarriers; k++)
         chans[k] = cfg->carriers[k].chan;
     const uint32_t tg[1] = {o->sim_tg};
+    AM.ncar = c2_sdr ? 2 : 1;
     for (int i = 0; i < n; i++) {
         AM.ms[i] = malloc(rdof_t3ms_size());
         if (!AM.ms[i]) {
             snprintf(err, cap, "no memory");
             return false;
         }
-        rdof_t3ms_init(AM.ms[i], AM.id[i], tg, 1, chans, 1, T.rng ^ (AM.id[i] * 2654435761u));
+        rdof_t3ms_init(AM.ms[i], AM.id[i], tg, 1, chans, AM.ncar, T.rng ^ (AM.id[i] * 2654435761u));
         if (i < o->air_ms)
             rdof_t3ms_do(AM.ms[i], RDOF_T3MS_DO_REGISTER, o->sim_tg, 0, 0, t0 + 3000 + 700 * i);
         rdof_t3ms_status(AM.ms[i], &AM.last[i]);
@@ -755,8 +758,8 @@ static bool air_start(const rdofradio_t3_opts_t *o, char *err, size_t cap)
     if (T.net)
         rdof_mn_node_topic(air_topic, sizeof air_topic, T.c->t.root, T.node, "air-ms");
 #endif
-    tsay("air MSs: %d (%u..%u), talkgroup %u, on carrier 1%s%s", n, (unsigned)AM.id[0], (unsigned)AM.id[n - 1],
-         (unsigned)o->sim_tg, air_topic[0] ? "; commands on " : "", air_topic);
+    tsay("air MSs: %d (%u..%u), talkgroup %u, on carrier%s%s%s", n, (unsigned)AM.id[0], (unsigned)AM.id[n - 1],
+         (unsigned)o->sim_tg, AM.ncar > 1 ? "s 1 and 2" : " 1", air_topic[0] ? "; commands on " : "", air_topic);
     return true;
 }
 
@@ -850,8 +853,9 @@ static void air_inbox(int i)
     }
 }
 
-/* trunk slot k of carrier 1: its outbound burst (aired: one was sent). T.mu held. */
-static void air_slot(int64_t k, const uint8_t burst[RDOF_BURST_BYTES], bool aired)
+/* trunk slot k's inbound: each MS's burst for it, the first on each carrier heard (the others collide with it); on
+ * carrier 1, and carrier 2 when the SDR sends it. Once a slot, with carrier 1's. T.mu held. */
+static void air_in(int64_t k)
 {
     if (!AM.n)
         return;
@@ -866,8 +870,7 @@ static void air_slot(int64_t k, const uint8_t burst[RDOF_BURST_BYTES], bool aire
         AM.next_talk = now + (int64_t)(T.o.sim_talk_s * 1000);
     }
     const int cc = rdof_t3unit_cfg(T.u)->cc;
-    /* the inbound of slot k: one burst heard, the first MS's (the others collide with it, unheard) */
-    bool sent = false;
+    bool sent[2] = {false, false};
     for (int i = 0; i < AM.n; i++) {
         rdof_t3ms_tx_t tx;
         if (!rdof_t3ms_tx(AM.ms[i], k, now, &tx))
@@ -875,14 +878,22 @@ static void air_slot(int64_t k, const uint8_t burst[RDOF_BURST_BYTES], bool aire
         rdof_burst_t b;
         const int n = AM.voice_n[i];
         AM.voice_n[i] = tx.kind != 1 && tx.what == RDOF_T3_VOICE_FRAME ? (n + 1) % 6 : 0;
-        if (tx.ch > 1 || sent || !rdof_t3sim_ms_burst(&tx, n, cc, &b))
+        const int c = tx.ch >> 1;
+        if (c >= AM.ncar || sent[c] || !rdof_t3sim_ms_burst(&tx, n, cc, &b))
             continue;
         b.slot = (tx.ch & 1) + 1;
-        rdof_t3unit_rx(T.u, 0, k, &b, -60);
-        sent = true;
+        rdof_t3unit_rx(T.u, c, k, &b, -60);
+        sent[c] = true;
         AM.in++;
     }
-    /* the outbound of slot k, as a radio decodes it: a PDU, or a data block (12 octets: UDT and packet data; 18, 24) */
+}
+
+/* trunk slot k of carrier c: its outbound burst (aired: one was sent), heard by the MSs on its channels. T.mu held. */
+static void air_out(int c, int64_t k, const uint8_t burst[RDOF_BURST_BYTES], bool aired)
+{
+    if (!AM.n || c >= AM.ncar)
+        return;
+    /* as a radio decodes it: a PDU, or a data block (12 octets: UDT and packet data; 18, 24) */
     uint8_t pdu[24] = {0};
     int dt = -1, rcc = -1;
     uint8_t mdt = 0;
@@ -893,11 +904,11 @@ static void air_slot(int64_t k, const uint8_t burst[RDOF_BURST_BYTES], bool aire
         else if (r == RDOF_T3RF_PDU_BAD)
             AM.bad++;
     }
-    const bool at = rdof_t3unit_at(T.u, k) > 0;
+    const bool at = c == 0 && rdof_t3unit_at(T.u, k) > 0;
     for (int i = 0; i < AM.n; i++) {
         rdof_t3ms_status_t st;
         rdof_t3ms_status(AM.ms[i], &st);
-        if ((st.ch & 1) == (k & 1) && st.ch < 2)
+        if ((st.ch & 1) == (k & 1) && st.ch >> 1 == c)
             rdof_t3ms_rx(AM.ms[i], st.ch, k, mdt, pdu, st.ch == 0 && at);
         rdof_t3ms_status(AM.ms[i], &st);
         rdof_t3ms_status_t *l = &AM.last[i];
@@ -923,19 +934,182 @@ static void air_stop(void)
 static rdof_sdrmodem_t *M;
 static rdofradio_t3_dev_t DEV;
 
-/* carrier 1: the modem's slots on the trunk's (UTC) slots. On the host's slot grid (rdofradio_utc.h) the modem's
- * slot k is the UTC slot itself, the one carrier 2 counts too; off it (no map within GRID_WAIT_S) the modem's own
- * count, placed once against the host's clock, which its sample clock then drifts from. */
+/* A modem's slots on the trunk's (UTC) slots. On the host's slot grid (rdofradio_utc.h) the modem's slot k is the UTC
+ * slot itself; off it (no map within GRID_WAIT_S) the modem's own count moved by an even d, placed once against the
+ * host's clock (which its sample clock then drifts from), again when the modem starts over. */
 #define GRID_WAIT_S 10.0
 #define CLOCK_WAIT_S 30.0 /* for the host's clock to settle (rdofradio_utc_clock_settled) */
-static struct {
+typedef struct {
     bool placed, on_grid;
-    int64_t d;        /* trunk k = modem k + d (even: the modem's TS1 is the trunk's LCN 0) */
-    int64_t last_k;   /* the modem's last slot asked */
+    int64_t d;      /* trunk k = modem k + d (even: the modem's TS1 is the trunk's LCN 0) */
+    int64_t last_k; /* the modem's last slot asked */
+} slotmap_t;
+
+/* carrier 1 */
+static struct {
+    slotmap_t s;
     int chan;         /* the receiver's channel on carrier 1's inbound */
     bool keyed;       /* the key-up held */
     double key_by;    /* hold the key-up by then, on the grid or not */
 } A = {.chan = -1};
+
+/* carrier 2 when the SDR sends it: its own modem, summed into the transmit stream (rdofradio_t3_mix) */
+#define MIX_N 2048 /* samples a pull */
+static struct {
+    rdof_sdrmodem_t m;
+    bool on;
+    slotmap_t s;
+    int chan;            /* the receiver's channel on its inbound */
+    double lo;           /* the TX LO it was tuned against */
+    bool lo_moved;       /* a bench job has the LO elsewhere: unsent */
+    uint32_t heard;      /* bursts heard on its inbound, given to the site */
+    double pull_s;       /* time in its pulls and the sum */
+    uint64_t pulls, samples;
+    rdof_cf_t scratch[MIX_N];
+} C2 = {.chan = -1};
+
+/* Modem m's slot k (the source's k) on the trunk's slots, for carrier c (1, 2). Off the grid carrier 2 takes carrier
+ * 1's d when the two modems' slots start on the same sample (keyed together), so both count alike. */
+static int64_t trunk_k(slotmap_t *p, const rdof_sdrmodem_t *m, int64_t k, int c)
+{
+    const bool on_grid = m->grid_placed;
+    if (on_grid) {
+        if (!p->placed || !p->on_grid)
+            tsay("carrier %d: on the slot grid (modem slot %lld is the UTC slot)", c, (long long)k);
+        p->d = 0;
+        p->placed = true;
+    } else if (!p->placed || p->on_grid || k < p->last_k) { /* the first, off the grid, or the modem started again */
+        if (c == 2 && A.s.placed && !A.s.on_grid && M && m->base == M->base) {
+            p->d = A.s.d;
+        } else {
+            const int64_t want = wall_ms() / 30 + 2;
+            p->d = want - k;
+            p->d += p->d & 1;
+        }
+        p->placed = true;
+        tsay("carrier %d: off the slot grid: modem slot %lld is trunk slot %lld (the SDR's clock drifts from it)", c,
+             (long long)k, (long long)(k + p->d));
+    }
+    p->on_grid = on_grid;
+    p->last_k = k;
+    return k + p->d;
+}
+
+static bool source_slot(void *ctx, int64_t k, uint8_t burst[RDOF_BURST_BYTES], int *at, int32_t *slc28)
+{
+    uint8_t control;
+    pthread_mutex_lock(&T.mu);
+    rdof_t3unit_set_now(T.u, wall_ms());
+    const int64_t tk = trunk_k(&A.s, M, k, 1);
+    const bool ok = rdof_t3unit_slot(T.u, 0, tk, burst, &control, at, slc28);
+    air_in(tk);
+    air_out(0, tk, burst, ok);
+    pthread_mutex_unlock(&T.mu);
+    return ok;
+}
+
+/* carrier 2's slot source: the controller's carrier 2 (its two payload channels) */
+static bool source_slot2(void *ctx, int64_t k, uint8_t burst[RDOF_BURST_BYTES], int *at, int32_t *slc28)
+{
+    uint8_t control;
+    pthread_mutex_lock(&T.mu);
+    rdof_t3unit_set_now(T.u, wall_ms());
+    const int64_t tk = trunk_k(&C2.s, &C2.m, k, 2);
+    const bool ok = rdof_t3unit_slot(T.u, 1, tk, burst, &control, at, slc28);
+    air_out(1, tk, burst, ok);
+    pthread_mutex_unlock(&T.mu);
+    return ok;
+}
+
+static void c2_reply(void *ctx, const uint8_t *frame, size_t len) { (void)ctx, (void)frame, (void)len; }
+static int c2_channel(void *ctx, uint32_t hz)
+{
+    const int c = DEV.channel(hz);
+    return c >= 0 ? c : RDOF_SDRMODEM_NOT_HEARD;
+}
+static bool c2_tune(void *ctx, uint32_t hz, double *off)
+{
+    double reach;
+    return DEV.tx_offset(hz, off, &reach);
+}
+
+static void c2_stop(void)
+{
+    if (!C2.on)
+        return;
+    rdof_sdrmodem_set_source(&C2.m, NULL);
+    rdof_sdrmodem_free(&C2.m);
+    C2.on = c2_sdr = false;
+}
+
+/* Both carriers' outs within the transmit stream's reach of the one TX LO (rdofradio puts it between them) */
+static bool c2_fits(const rdofradio_t3_cfg_t *t, char *err, size_t cap)
+{
+    const double lo = DEV.tx_lo();
+    for (int c = 0; c < 2; c++) {
+        double off, reach;
+        if (DEV.tx_offset(t->car[c].tx_hz, &off, &reach))
+            continue;
+        snprintf(err, cap, "carriers 1 and 2 out on %.5f and %.5f MHz, %.1f kHz apart: the TX LO on %.5f MHz reaches "
+                           "%.1f kHz either side at %.0f kS/s (the transmit stream's rate), carrier %d is %.1f kHz off it",
+                 t->car[0].tx_hz / 1e6, t->car[1].tx_hz / 1e6,
+                 fabs((double)t->car[0].tx_hz - (double)t->car[1].tx_hz) / 1e3, lo / 1e6, reach / 1e3,
+                 DEV.tx_fs / 1e3, c + 1, fabs(off) / 1e3);
+        return false;
+    }
+    return true;
+}
+
+/* carrier 2's modem: duplex, tuned (in and out), DMR, its slot source; keyed with carrier 1 (key_carriers) */
+static bool c2_start(const rdofradio_t3_cfg_t *t, const rdof_sdrmodem_t *m1, char *err, size_t cap)
+{
+    if (!DEV.tx_offset || !DEV.tx_lo || !DEV.tx_fs) {
+        snprintf(err, cap, "carrier 2: this device can't send a second carrier");
+        return false;
+    }
+    if (!c2_fits(t, err, cap))
+        return false;
+    const uint32_t rx = t->car[1].rx_hz, tx = t->car[1].tx_hz;
+    C2.chan = DEV.channel(rx);
+    if (C2.chan < 0) {
+        snprintf(err, cap, "carrier 2: the receiver has no channel on its inbound %.5f MHz", rx / 1e6);
+        return false;
+    }
+    const rdof_sdrmodem_io_t io = {c2_reply, c2_channel, c2_tune, NULL, NULL, NULL};
+    if (rdof_sdrmodem_init(&C2.m, &io, DEV.rx_fs, DEV.tx_fs, true)) {
+        snprintf(err, cap, "carrier 2: modem: %s", C2.m.error);
+        return false;
+    }
+    rdof_sdrmodem_carrier_ppm(&C2.m, m1->carrier_ppm);
+    /* as the repeater sets carrier 1's: duplex (SET_CONFIG without the simplex flag) on the site's CC, both
+       frequencies, DMR */
+    uint8_t config[23] = {0}, freq[14], f[64];
+    config[1] = RDOF_DMR_ENABLED;
+    config[3] = RDOF_MODE_DMR;
+    config[6] = (uint8_t)(t->cfg.cc & 0x0F);
+    const uint8_t mode = RDOF_MODE_DMR;
+    rdof_sdrmodem_write(&C2.m, f, rdof_mmdvm_frame(RDOF_MMDVM_SET_CONFIG, config, sizeof config, f, sizeof f));
+    rdof_sdrmodem_write(&C2.m, f,
+                        rdof_mmdvm_frame(RDOF_MMDVM_SET_FREQ, freq, rdof_mmdvm_set_freq_payload(rx, tx, 255, freq), f,
+                                         sizeof f));
+    rdof_sdrmodem_write(&C2.m, f, rdof_mmdvm_frame(RDOF_MMDVM_SET_MODE, &mode, 1, f, sizeof f));
+    if (!C2.m.duplex || !C2.m.tuned || C2.m.mode != RDOF_MODE_DMR) {
+        snprintf(err, cap, "carrier 2: its modem refused the settings%s%s", C2.m.error[0] ? ": " : "", C2.m.error);
+        rdof_sdrmodem_free(&C2.m);
+        return false;
+    }
+    const rdof_sdrmodem_source_t src = {source_slot2, NULL};
+    rdof_sdrmodem_set_source(&C2.m, &src);
+    C2.lo = DEV.tx_lo();
+    C2.s = (slotmap_t){0};
+    C2.on = c2_sdr = true;
+    double off, reach;
+    DEV.tx_offset(tx, &off, &reach);
+    tsay("carrier 2: sent by the SDR (tx %.5f, rx %.5f MHz), %+.1f kHz from the TX LO %.5f MHz, %.0f kS/s; each "
+         "carrier at half amplitude",
+         tx / 1e6, rx / 1e6, off / 1e3, C2.lo / 1e6, DEV.tx_fs / 1e3);
+    return true;
+}
 
 /* carrier 2: its split TX half */
 #define BQ 64
@@ -968,32 +1142,6 @@ static double utc_minus_host_us(void)
 
 static int64_t utc_slot_now(void) { return (int64_t)floor((DEV.now() * 1e6 + BC.utc_minus_host_us) / 30000.0); }
 
-static bool source_slot(void *ctx, int64_t k, uint8_t burst[RDOF_BURST_BYTES], int *at, int32_t *slc28)
-{
-    uint8_t control;
-    pthread_mutex_lock(&T.mu);
-    rdof_t3unit_set_now(T.u, wall_ms());
-    const bool on_grid = M && M->grid_placed;
-    if (on_grid) {
-        if (!A.placed || !A.on_grid)
-            tsay("carrier 1: on the slot grid (modem slot %lld is the UTC slot)", (long long)k);
-        A.d = 0;
-        A.placed = true;
-    } else if (!A.placed || A.on_grid || k < A.last_k) { /* the first, off the grid, or the modem started again */
-        const int64_t want = wall_ms() / 30 + 2;
-        A.d = want - k;
-        A.d += A.d & 1;
-        A.placed = true;
-        tsay("carrier 1: off the slot grid: modem slot %lld is trunk slot %lld (the SDR's clock drifts from it)",
-             (long long)k, (long long)(k + A.d));
-    }
-    A.on_grid = on_grid;
-    A.last_k = k;
-    const bool ok = rdof_t3unit_slot(T.u, 0, k + A.d, burst, &control, at, slc28);
-    air_slot(k + A.d, burst, ok);
-    pthread_mutex_unlock(&T.mu);
-    return ok;
-}
 
 static void *b_reader(void *arg)
 {
@@ -1130,28 +1278,38 @@ bool rdofradio_t3_start(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o, 
 {
     const rdofradio_t3_cfg_t *t = &c->t;
     if (t->ncar > 2) {
-        snprintf(err, cap, "%s: %d carriers: rdofradio runs two (the SDR's and one split TX half)", t->name, t->ncar);
+        snprintf(err, cap, "%s: %d carriers: rdofradio runs two (the SDR's, and one more the SDR or a split TX half "
+                           "sends)", t->name, t->ncar);
         return false;
     }
     if (!t->car[0].tx_sdr) {
         snprintf(err, cap, "%s: the TSCC's carrier is sent by the SDR here", t->name);
         return false;
     }
-    if (t->ncar == 2 && (t->car[1].tx_sdr || !t->car[1].port[0])) {
-        snprintf(err, cap, "%s: carrier 2 is a split TX half here: a radio with a port path (port: {\"path\": ...})",
+    if (t->ncar == 2 && t->car[1].tx_sdr && t->car[1].tx_dev != t->car[0].tx_dev) {
+        snprintf(err, cap, "%s: carrier 2's out is on another SDR: rdofradio sends both carriers from the one it runs",
                  t->name);
+        return false;
+    }
+    if (t->ncar == 2 && !t->car[1].tx_sdr && !t->car[1].port[0]) {
+        snprintf(err, cap, "%s: carrier 2 is the SDR's (its out among the SDR's transmits) or a split TX half: a radio "
+                           "with a port path (port: {\"path\": ...})", t->name);
         return false;
     }
     DEV = *dev;
     A.chan = DEV.channel(t->car[0].rx_hz);
-    if (t->ncar == 2 && !b_start(t, err, cap))
+    if (t->ncar == 2 && t->car[1].tx_sdr && !c2_start(t, m, err, cap))
+        return false;
+    if (t->ncar == 2 && !t->car[1].tx_sdr && !b_start(t, err, cap))
         return false;
     if (!start_common(c, o, err, cap)) {
         b_stop();
+        c2_stop();
         return false;
     }
     if (!air_start(o, err, cap)) {
         b_stop();
+        c2_stop();
         stop_common();
         return false;
     }
@@ -1165,7 +1323,7 @@ bool rdofradio_t3_start(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o, 
     return true;
 }
 
-/* the main loop's, before the modem's pull */
+/* the main loop's, before the modem's pull; carrier 2's modem with it, so both snap to the grid at one key-up */
 static bool key_carrier1(void)
 {
     if (A.keyed || !M)
@@ -1186,6 +1344,8 @@ static bool key_carrier1(void)
         tsay("carrier 1: no slot grid after %.0f s (%s): keyed on the SDR's own clock", GRID_WAIT_S, why);
     }
     A.keyed = true;
+    if (C2.on && !rdof_sdrmodem_hold_key(&C2.m, true))
+        tsay("carrier 2: the modem won't hold its key");
     return rdof_sdrmodem_hold_key(M, true);
 }
 
@@ -1198,8 +1358,21 @@ void rdofradio_t3_heard(int c, const rdof_sdr_burst_t *b)
     if (c == A.chan) {
         const int64_t k = M ? rdof_sdrmodem_inbound_k(M, b) : -1;
         pthread_mutex_lock(&T.mu);
-        if (k >= 0 && A.placed)
-            rdof_t3unit_rx(T.u, 0, k + A.d, &b->b, 0);
+        if (k >= 0 && A.s.placed)
+            rdof_t3unit_rx(T.u, 0, k + A.s.d, &b->b, 0);
+        pthread_mutex_unlock(&T.mu);
+    }
+    if (C2.on && c == C2.chan) {
+        rdof_sdrmodem_heard(&C2.m, c, b); /* its inbound's busy state: the AT in carrier 2's CACH */
+        const int64_t k = rdof_sdrmodem_inbound_k(&C2.m, b);
+        pthread_mutex_lock(&T.mu);
+        if (k >= 0 && C2.s.placed) {
+            rdof_t3unit_rx(T.u, 1, k + C2.s.d, &b->b, 0);
+            C2.heard++;
+            if (T.o.verbose)
+                tsay("carrier 2: heard %s dt %d on TS%d, trunk slot %lld", rdof_family_name(b->b.family), b->b.dt,
+                     b->b.slot, (long long)(k + C2.s.d));
+        }
         pthread_mutex_unlock(&T.mu);
     }
     if (BC.up && c == BC.chan) {
@@ -1242,6 +1415,50 @@ void rdofradio_t3_poll(void)
     pthread_mutex_unlock(&T.mu);
 }
 
+bool rdofradio_t3_mix(int64_t pos, rdof_cf_t *iq, int n)
+{
+    if (!C2.on || !T.on || !M)
+        return false;
+    const bool moved = DEV.tx_lo() != C2.lo;
+    if (moved != C2.lo_moved)
+        tsay("carrier 2: %s", moved ? "the TX LO moved (a bench job): unsent until it's back" : "the TX LO is back: sent");
+    C2.lo_moved = moved;
+    C2.m.tx_late48 = M->tx_late48; /* the transmit path's delay is the stream's: carrier 1's measure */
+    if (C2.m.carrier_ppm != M->carrier_ppm)
+        rdof_sdrmodem_carrier_ppm(&C2.m, M->carrier_ppm);
+    rdofradio_utc_apply(&C2.m);
+    const double t0 = DEV.now();
+    bool keyed = false;
+    for (int i = 0; i < n; i += MIX_N) {
+        const int k = n - i < MIX_N ? n - i : MIX_N;
+        if (moved)
+            rdof_sdrmodem_pull_iq(&C2.m, pos + i, C2.scratch, k); /* its clock runs on */
+        else
+            keyed |= rdof_sdrmodem_pull_mix(&C2.m, pos + i, iq + i, C2.scratch, k);
+    }
+    C2.pull_s += DEV.now() - t0;
+    C2.pulls++;
+    C2.samples += (uint64_t)n;
+    return keyed;
+}
+
+void rdofradio_t3_carrier2(char *out, size_t cap, uint32_t *sent, uint32_t *heard)
+{
+    const rdofradio_t3_cfg_t *t = T.c ? &T.c->t : NULL;
+    *sent = *heard = 0;
+    if (!T.on || !t || t->ncar < 2) {
+        snprintf(out, cap, "%s", "");
+        return;
+    }
+    if (C2.on) {
+        snprintf(out, cap, "carrier 2 by the SDR: out %.5f, in %.5f MHz", t->car[1].tx_hz / 1e6, t->car[1].rx_hz / 1e6);
+        *sent = C2.m.src_bursts, *heard = C2.heard;
+    } else {
+        snprintf(out, cap, "carrier 2 by a split TX half on %s: out %.5f, in %.5f MHz%s", t->car[1].port,
+                 t->car[1].tx_hz / 1e6, t->car[1].rx_hz / 1e6, BC.up ? "" : " (down)");
+    }
+}
+
 void rdofradio_t3_stop(void)
 {
     if (!T.on)
@@ -1249,6 +1466,14 @@ void rdofradio_t3_stop(void)
     if (M) {
         rdof_sdrmodem_set_source(M, NULL);
         rdof_sdrmodem_hold_key(M, false);
+    }
+    if (C2.on) {
+        tsay("carrier 2: %u bursts from the site, %u idle, %u heard; its pulls %.1f us a ms of stream (%.0f us each, "
+             "%llu)", (unsigned)C2.m.src_bursts, (unsigned)C2.m.idle_bursts, (unsigned)C2.heard,
+             C2.samples ? 1e6 * C2.pull_s / ((double)C2.samples / DEV.tx_fs * 1e3) : 0.0,
+             C2.pulls ? 1e6 * C2.pull_s / (double)C2.pulls : 0.0, (unsigned long long)C2.pulls);
+        rdof_sdrmodem_hold_key(&C2.m, false);
+        c2_stop();
     }
     b_stop();
     stop_common();

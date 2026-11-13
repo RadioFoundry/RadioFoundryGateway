@@ -148,6 +148,7 @@ static bool from_trunk(const rdof_plan_t *p, int unit, rdofradio_cfg_t *o, char 
         }
         t->car[k].rx_hz = t->cfg.carriers[k].rx_hz, t->car[k].tx_hz = t->cfg.carriers[k].tx_hz;
         t->car[k].tx_sdr = tx >= 0 && s->dev[tx].kind == 1;
+        t->car[k].tx_dev = tx;
         const rdof_plan_dev_t *d = tx >= 0 ? rdof_plan_dev(p, tx) : NULL;
         if (d && d->port.kind == RDOF_PORT_PATH) {
             snprintf(t->car[k].port, sizeof t->car[k].port, "%s", d->port.path);
