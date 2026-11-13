@@ -1118,7 +1118,6 @@ fn net_site_widths_table_6_5() {
 
 /// Table 6.5 gives 8, 32, 256 and 1024 sites per network: SITE 0 is one of them.
 #[test]
-#[ignore = "spec finding 1: the settings refuse SITE 0, which table 6.5 counts as a site"]
 fn site_zero_allowed() {
     assert!(accepts(|c| c.site = 0));
 }

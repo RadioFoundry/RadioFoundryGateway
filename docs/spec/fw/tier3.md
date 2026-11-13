@@ -811,14 +811,14 @@ type `tier3` (was `trunk`), the build option `RDOF_TIER3`, the modules `t3*`.
 | 9 | Merge into main | the owner's go |
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
-apart from the code, found seven deviations; six are fixed (2026-11-12):
+apart from the code, found seven deviations, all fixed (2026-11-12):
 - An MBC last block's CRC had the header's mask 0xAAAA; it takes none (361-1 7.4.0, B.3.12). A standard radio would
   have dropped every Chan_Freq broadcast.
 - An MBC could start in the slot before a due C_ALOHA and push it to the fifth slot (this document's 3.2).
 - The simulated MS ignored the Aloha's Mask and Service Function (6.2.1.1.1, 6.2.1.1.2), made 6 attempts for an
   emergency request instead of NRand_NE (10), and sent P_MAINT to the called MS instead of TSI (table 7.32).
-- Open: the settings refuse SITE 0, which table 6.5 seems to count (a Small network's 5-bit SITE gives 32 sites).
-  Kept until the code's use of 0 as "no site" is checked.
+- The settings refused SITE 0, which table 6.5 counts (a Small network's 5-bit SITE gives 32 sites). Nothing used
+  0 as "no site" (a peer's info is marked by a nonzero syscode, and PAR is never 0), so 0 is now allowed.
 
 Out of round 2, unchanged from section 1.2: dedicated multi-carrier sites beyond two, multi-site roaming on air,
 packet data, authentication, the standby controller.

@@ -1385,7 +1385,7 @@ unsafe fn peer_info(u: *mut Unit, nd: &[u8], text: *const c_char, len: usize) {
     };
     let Some(m) = m else { return };
     let (net, site, chan) = (net.num, site.num, chan.num);
-    if net < 0.0 || net > 65535.0 || site < 1.0 || site > 65535.0 || chan < 1.0 || chan > 4094.0 {
+    if net < 0.0 || net > 65535.0 || site < 0.0 || site > 65535.0 || chan < 1.0 || chan > 4094.0 {
         return;
     }
     let syscode = t3::rdof_t3_syscode(m as u8, net as u16, site as u16, pv);

@@ -526,8 +526,8 @@ impl<'a> Cx<'a> {
         if c_int::from(cfg.net) >= 1 << nb {
             return self.fail(&[S(b"system.net: 0 to "), I(((1 << nb) - 1).into()), S(b" for model "), S(model)]);
         }
-        if cfg.site == 0 || c_int::from(cfg.site) >= 1 << sb {
-            return self.fail(&[S(b"system.site: 1 to "), I(((1 << sb) - 1).into()), S(b" for model "), S(model)]);
+        if c_int::from(cfg.site) >= 1 << sb {
+            return self.fail(&[S(b"system.site: 0 to "), I(((1 << sb) - 1).into()), S(b" for model "), S(model)]);
         }
         if cfg.area_bits == 0 || c_int::from(cfg.area_bits) > sb {
             return self.fail(&[S(b"system.area_bits: 1 to "), I(sb.into()), S(b" for model "), S(model)]);

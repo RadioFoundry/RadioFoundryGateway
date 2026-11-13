@@ -661,8 +661,9 @@ fn check(c: &Cfg, err: &mut Buf) -> bool {
     if c.net as u32 >= 1 << nb {
         no!("system.net: 0 to {} for this model", (1u32 << nb) - 1);
     }
-    if c.site == 0 || c.site as u32 >= 1 << sb {
-        no!("system.site: 1 to {} for this model", (1u32 << sb) - 1);
+    // SITE 0 is a site: table 6.5 counts 2^n sites for an n-bit SITE
+    if c.site as u32 >= 1 << sb {
+        no!("system.site: 0 to {} for this model", (1u32 << sb) - 1);
     }
     if !(1..=3).contains(&c.par) {
         no!("system.par: a, b or ab");
@@ -2732,7 +2733,9 @@ mod tests {
         let mut c = cfg_default();
         let mut tmp = [0u8; 128];
         assert!(check(&c, &mut Buf { b: &mut tmp, n: 0 }));
-        c.site = 0;
+        c.site = 0; // a site (table 6.5)
+        assert!(check(&c, &mut Buf { b: &mut tmp, n: 0 }));
+        c.site = 1 << model_bits(c.model).1;
         assert!(err_of(&c).starts_with("system.site"));
         c = cfg_default();
         c.ncarriers = 2;
