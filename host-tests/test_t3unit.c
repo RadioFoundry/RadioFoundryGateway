@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "rdof/ambe.h"
 #include "rdof/fec.h"
 #include "rdof/ipgw.h"
 #include "rdof/t3cfg.h"
@@ -492,6 +493,23 @@ static void test_sim_embedded(void)
     const uint32_t dst = (uint32_t)lc[3] << 16 | lc[4] << 8 | lc[5], src = (uint32_t)lc[6] << 16 | lc[7] << 8 | lc[8];
     CHECK(lc[0] == 3 && dst == 1000001 && src == 1000002, "unit to unit LC 1000002 -> 1000001: flco %d, %u -> %u",
           lc[0] & 0x3f, src, dst);
+
+    /* the voice: valid AMBE+2 frames (no FEC errors), never one equal to the one before (a radio takes a repeated
+       frame for a stale read) */
+    uint8_t last[9] = {0};
+    int repeats = 0, errors = 0;
+    for (int n = 0; n < 12; n++) {
+        rdof_burst_t b;
+        rdof_t3sim_ms_burst(&tx, n % 6, 2, &b);
+        uint8_t f[3][9];
+        rdof_ambe_frames(b.burst, f);
+        for (int k = 0; k < 3; k++) {
+            errors += rdof_ambe_decode_frame(f[k], NULL);
+            repeats += !memcmp(f[k], last, 9);
+            memcpy(last, f[k], 9);
+        }
+    }
+    CHECK(errors == 0 && repeats == 0, "varied voice: %d FEC errors, %d repeated frames", errors, repeats);
 }
 
 /* Four carriers (7 payload channels) through the radio layer and the burst path: seven group calls fill every

@@ -1210,6 +1210,9 @@ In the network services' own repository (with the router, the Python library and
 collisions (two MSs in one inbound slot: neither is heard, and the site gets `rx_bad`); payload channels with their
 members; the Reverse Channel to the MSs on the other slot; optional loss rate and delay. Scenarios script MS actions
 by time and check outcomes. The burst-path simulator (`t3sim`) reads the RC out of the aired bursts the same way.
+Its MSs' voice is near-silence that never repeats a frame (the silence frame's parameters with a counter in the 8
+lowest of the 49 bits, FEC coded again), each burst B-E with the call's LC embedded: a radio may take a frame equal to
+the one before for a stale read and drop the call (seen on a radio on the bench, 2026-11-13).
 
 Used by: `cargo test` (scenarios), the C host tests (through the C API), rdofradio `--sim-air`. External MSs join
 the same air through `--sim-ext` (section 9.4), so another MS implementation can be checked against the site
