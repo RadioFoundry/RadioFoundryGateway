@@ -716,6 +716,19 @@ by their long names with `_` for `-`:
 - An option the gateway can't honor is `unsupported` with the option named, before anything keys. `power_dbm`
   (dBm at the antenna; `power`, 0-255, the older form) is clamped to `bench.tx.max_dbm` or `rf_level`, and the
   refusal or note says the dBm (rdofradio: see 14.4).
+- `dev_scale` (`--dev-scale`, a number, default 1.0) sets a transmitting job's DMR 4FSK deviation as a fraction of
+  nominal (ETSI's +-1944 / +-648 Hz): 0.9 sends +-1750 / +-583 Hz, to check a receiver against a transmitter off
+  nominal. It applies to `voice`, `csbk`, `data` and `outbound` (its voice calls and idle bursts) and to
+  `bench_repeater`'s transmitter, for the job only; `listen` ignores it. Outside 0.5-1.5, or not a number, the run is
+  `unsupported` naming `--dev-scale`, before anything keys. 1.0 is the same output as a job that doesn't name it,
+  sample for sample. A job off 1.0 says so in its log (`--dev-scale 0.90: the DMR deviation is 0.90 of nominal`). It
+  scales the SDR's own modulator (`rdof_mod_set_dev_scale`): the shaped frequency before it becomes I/Q (rdofradio, a
+  PlutoSDR) or the frequency samples (the W12's LR2021, 32 Hz a count). The W12's samples stop at +-4064 Hz: the
+  shaped signal swings up to about 3690 Hz at 1.0 (random symbols reach about 3200), so up to 1.1 nothing clips; past
+  that the overshoots between symbols can (at 1.5, to about 5540 Hz; the symbol points, +-2916 Hz, never do), and
+  the job's log says so. An MMDVM modem (`--mmdvm`) keeps its own deviation: a job off 1.0 is `unsupported` there.
+  `info`'s `features` says `dev_scale` (false where it's refused); `rfgbench.py run` doesn't send a job off 1.0 to a
+  gateway whose `info` doesn't say it (an older one sends at nominal).
 - The tool's log lines (Python logging's `asctime message`, UTC) come as `err`, its records as `out`; the exit code
   is 0, 1 when the transmitter failed, or -9 with `killed` when the job ran past `max_s`. A TX job's `started`
   comes when it has the modem; `listen` starts at once.
@@ -753,7 +766,8 @@ one is heard). A simplex hotspot has one transceiver and no CACH: an `outbound` 
 `unsupported`, naming that. The frequencies are `--bench-tx`'s. On an SDR the job transmits at `--tx-power`, or
 lower when it asks a `power_dbm` under that (and under `bench.tx.max_dbm`): the SDR's gain turns down by the
 difference for the job, down to the device's least gain, and the log says the dBm. A `power` 0-255 isn't applied on
-an SDR (a job naming no power asks 0), and the note says so. The ESP32 boards run no repeater jobs (`unsupported`).
+an SDR (a job naming no power asks 0), and the note says so. A job's `dev_scale` sets the modulator's deviation
+when the job takes the transmitter, and it goes back to 1.0 once what the job queued has gone out. The ESP32 boards run no repeater jobs (`unsupported`).
 
 ### 14.5 The client
 
