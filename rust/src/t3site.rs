@@ -947,6 +947,7 @@ impl Site {
             ch: ch as u8,
             why: if ty == EV_CH_OPEN && c.kind == KIND_DUPLEX { OPEN_DUPLEX } else { 0 },
             flags: c.flags,
+            svc: Self::lc_options(c),
             chan: self.cfg.carriers[ch / 2].chan,
             lcn: (ch % 2) as u8,
             src: c.src,
@@ -954,6 +955,14 @@ impl Site {
             stream: c.stream,
             ..Default::default()
         }
+    }
+
+    /// The Service Options of a voice LC the site makes for channel c's call (361-2 table 7.11): Emergency (1000
+    /// 0000b) for an emergency call, Broadcast (0000 1000b) for an all-call or a broadcast call (361-2 5.3.2.1 and
+    /// 5.3.3.1: "the Service Options Broadcast Field of the Grp_V_Ch_Usr PDU shall be set to 1").
+    fn lc_options(c: &Chan) -> u8 {
+        let e = if c.flags & F_EMERGENCY != 0 { 0x80 } else { 0 };
+        e | if c.kind == KIND_ALLCALL { 0x08 } else { 0 }
     }
 
     fn activity(&mut self, kind: u8, op: u8, src: u32, dst: u32, reason: u8) {

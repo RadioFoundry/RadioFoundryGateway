@@ -89,7 +89,8 @@ pub struct MsTx {
     pub src: u32,
     pub dst: u32,
     pub ext: [u8; 14], // a data block (dt 7, 8, 10): its octets 10 on (to 11, 17 or 23)
-    pub pad2: [u8; 2],
+    pub so: u8,        // voice: the LC's Service Options (361-2 table 7.11)
+    pub pad2: u8,
 }
 
 #[repr(C)]
@@ -1525,8 +1526,26 @@ impl Ms {
             self.pay_dst
         };
         let offset = u8::from(self.dx);
-        let voice =
-            |what, s: &Ms| MsTx { ch: s.ch as u8, kind: TX_VOICE, what, group, offset, src: s.id, dst, ..Default::default() };
+        // 361-2 table 7.11: Emergency in its own emergency call; Broadcast in its all-call or broadcast call
+        // (5.3.2.1, 5.3.3.1)
+        let so = if self.mine && !self.dx {
+            let e = if self.cur.flags & F_EMERGENCY != 0 { 0x80 } else { 0 };
+            let b = self.pay_group && (is_allcall(dst) || self.cur.flags & F_BROADCAST != 0);
+            e | if b { 0x08 } else { 0 }
+        } else {
+            0
+        };
+        let voice = |what, s: &Ms| MsTx {
+            ch: s.ch as u8,
+            kind: TX_VOICE,
+            what,
+            group,
+            offset,
+            src: s.id,
+            dst,
+            so,
+            ..Default::default()
+        };
         if self.talking {
             if !self.header_sent {
                 self.header_sent = true;

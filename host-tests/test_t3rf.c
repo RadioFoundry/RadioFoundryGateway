@@ -564,12 +564,59 @@ static void test_split(bool scheduled)
            fr.data[1]);
 }
 
+/* The embedded LC of the next superframe out of channel ch from k (bursts B-E); false when none decodes. */
+static bool out_embedded_lc(rdof_t3rf_t *t, int ch, int64_t k, uint8_t lc9[9])
+{
+    uint8_t raw[128], out[33], control;
+    int got = 0;
+    for (int i = 0; i < 12 && got < 4; i++) {
+        if (rdof_t3rf_ch_next(t, ch, k + 2 * i, &control, out) != RDOF_T3RF_TRAFFIC)
+            continue;
+        if (control >= 1 && control <= 4 && control == got + 1)
+            rdof_embedded_signalling(out, raw + 32 * got++);
+    }
+    return got == 4 && rdof_embedded_lc_decode(raw, lc9);
+}
+
+/* 361-2 5.3.2.1, 5.3.3.1 and table 7.11: an LC the layer makes for a call it joins late, from RF or the network,
+ * keeps the call's Service Options (Emergency, Broadcast) that the owner set in rdof_t3rf_ch_t.so. */
+static void test_lc_options(void)
+{
+    static rdof_t3rf_t t;
+    memset(&rec, 0, sizeof rec);
+    rdof_t3rf_init(&t, &IO, 2, CC, true);
+    const int ch = 2;
+    rdof_t3rf_open(&t, ch, 3100123, 91, true, 0);
+    t.ch[ch].so = 0x80;
+    int64_t k = ms_call(&t, 1, 1000, 0, 0, 1, false, false); /* no header: late entry */
+    uint8_t lc9[9];
+    CHECK(out_embedded_lc(&t, ch, k, lc9) && lc9[2] == 0x80 && lc9[5] == 91,
+          "late entry from RF: Emergency kept (options %02x)", lc9[2]);
+    rdof_t3rf_close(&t, ch);
+    CHECK(t.ch[ch].so == 0, "closing clears the options");
+
+    rdof_t3rf_open(&t, ch, 9990001, 0xFFFFFF, true, 0);
+    t.ch[ch].so = 0x08;
+    rdof_frame_t f;
+    memset(&f, 0, sizeof f);
+    f.has_addr = true, f.src = 9990001, f.dst = 0xFFFFFF, f.group = true;
+    for (int i = 0; i < 12; i++) {
+        f.dt = i % 6 ? RDOF_DT_VOICE : RDOF_DT_VOICE_SYNC, f.n = i % 6;
+        rdof_silence_burst(i % 6, 7, true, NULL, f.burst);
+        rdof_t3rf_net(&t, ch, &f);
+    }
+    memset(lc9, 0, sizeof lc9);
+    CHECK(out_embedded_lc(&t, ch, k, lc9) && lc9[2] == 0x08 && lc9[5] == 0xFF,
+          "network voice joined late: Broadcast kept (options %02x)", lc9[2]);
+}
+
 int main(void)
 {
     test_layouts();
     test_blocks();
     test_cach();
     test_payload();
+    test_lc_options();
     test_tscc();
     test_rc();
     test_split(true);

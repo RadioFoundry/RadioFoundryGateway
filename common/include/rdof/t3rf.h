@@ -130,6 +130,8 @@ typedef struct {
     int64_t rc_k;      /* the slot of the last RC sent (360 ms apart) */
     uint32_t rc_sent;
     bool duplex;       /* a full-duplex call's party (rdof_t3rf_duplex) */
+    uint8_t so;        /* the call's Service Options for an LC the layer makes (late entry, network voice without
+                          one): 361-2 table 7.11, Emergency 80h, Broadcast 08h; the owner sets it, closing clears it */
 } rdof_t3rf_ch_t;
 
 /* ── the site ─────────────────────────────────────────────────────────────── */

@@ -88,6 +88,7 @@ fn preemption_dekeys_the_talker_on_the_tscc_carrier() {
     let opens = log.of(EV_CH_OPEN);
     assert_eq!(opens.iter().map(|e| (e.ch, e.dst)).collect::<Vec<_>>(), [(1, TG), (1, 11)]);
     assert!(opens[1].flags & F_EMERGENCY != 0);
+    assert_eq!((opens[0].svc, opens[1].svc), (0, 0x80), "361-2 table 7.11: the LC's Emergency option");
     // the pre-empted parties went back to the TSCC on P_CLEAR
     assert!(air.ms[..2].iter().all(|m| m.status().clears == 1));
 }
@@ -205,6 +206,10 @@ fn emergency_upgrades_an_open_group_call() {
     air.run(12_000, &mut log.f());
     let grants: Vec<_> = log.of(EV_ACTIVITY).into_iter().filter(|e| e.kind == ACT_GRANT).collect();
     assert!(grants.iter().any(|e| e.src == 1002 && e.flags & (F_LATE | F_EMERGENCY) == F_LATE | F_EMERGENCY));
+    // 361-2 table 7.11: an LC the site makes for the call from then on carries Emergency (the radio layer takes it
+    // from the grant's svc)
+    assert_eq!(log.of(EV_CH_OPEN)[0].svc, 0, "a normal call at first");
+    assert!(grants.iter().any(|e| e.src == 1002 && e.svc == 0x80));
     let close = log.of(EV_CH_CLOSE);
     assert_eq!((close.len(), close[0].why), (1, CLOSE_HANG), "the normal call timer (4 s) no longer applies");
 }
@@ -712,4 +717,7 @@ fn broadcast_call_to_a_talkgroup() {
     let now = air.now();
     air.ms[0].act(t3ms::DO_GROUP, ALLMSIDL, 1000, 0, now);
     assert!(air.until(5000, &mut log.f(), |a| a.ms.iter().all(|m| m.state() == t3ms::PAYLOAD)), "an all-call: everyone");
+    // 361-2 5.3.2.1, 5.3.3.1: the Broadcast Service Option in an LC the site makes for either call
+    let opens = log.of(EV_CH_OPEN);
+    assert_eq!(opens.iter().map(|e| (e.dst, e.svc)).collect::<Vec<_>>(), [(TG, 0x08), (ALLMSIDL, 0x08)]);
 }

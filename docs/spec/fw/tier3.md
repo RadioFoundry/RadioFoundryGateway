@@ -1085,6 +1085,11 @@ called about one slot plus the TX lead ahead of air: the controller decides a sl
   site's own data goes on the queue with `rdof_t3rf_data` (`rdof_t3rf_room` says how much fits);
 - network bursts for the channel's call (from the mqtt-net downlink, after a 240 ms prebuffer) queued the same way,
   unless RF holds the channel;
+- an LC the layer makes itself (voice joined late from RF, with no header heard; network voice without an LC) has
+  the call's addresses and its Service Options from `rdof_t3rf_ch_t.so`: Emergency (80h) for an emergency call,
+  Broadcast (08h) for an all-call or a broadcast call (361-2 5.3.2.1, 5.3.3.1, table 7.11). The unit sets `so` from
+  the controller's EV_CH_OPEN `svc`, and again from a grant's activity event (an emergency request makes an open call
+  an emergency call, 3.9). An LC heard from the talker goes out as heard;
 - the controller's payload PDUs (P_CLEAR) take precedence over voice;
 - idle bursts fill;
 - voice activity to the controller: the header, each voice sync burst (once a superframe, so a long call isn't taken

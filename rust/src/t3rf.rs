@@ -134,6 +134,7 @@ pub struct T3rfCh {
     pub rc_k: i64,
     pub rc_sent: u32,
     pub duplex: bool,
+    pub so: u8,
 }
 
 /// rdof_t3rf_io_t
@@ -431,6 +432,7 @@ fn close(t: &mut T3rf, ch: c_int) {
     let Some(c) = channel(t, ch) else { return };
     flush(c);
     c.duplex = false;
+    c.so = 0;
     c.open = false;
     c.rf = false;
     c.rf_regen_on = false;
@@ -479,9 +481,11 @@ pub unsafe extern "C" fn rdof_t3rf_control(
     true
 }
 
-fn lc_of(src: u32, dst: u32, group: bool) -> [u8; 9] {
+/// The LC the site makes for a call it joins without one (late entry, network voice): the call's Service Options
+/// kept (361-2 5.3.2.1, 5.3.3.1, table 7.11: Emergency, Broadcast).
+fn lc_of(src: u32, dst: u32, group: bool, so: u8) -> [u8; 9] {
     let mut lc9 = [0u8; 9];
-    rdof_group_lc(src, dst, group, 0, &mut lc9);
+    rdof_group_lc(src, dst, group, c_int::from(so), &mut lc9);
     lc9
 }
 
@@ -638,7 +642,7 @@ unsafe fn payload_rx(io: &T3rfIo, c: &mut T3rfCh, k: i64, b: &RdofBurst, rssi: c
         c.rf_src = c.src;
         c.rf_dst = c.dst;
         c.rf_group = c.group;
-        let lc9 = lc_of(c.src, c.dst, c.group);
+        let lc9 = lc_of(c.src, c.dst, c.group, c.so);
         rdof_voice_regen_init(&mut c.rf_regen, lc9.as_ptr(), c.cc);
         c.rf_regen_on = true;
         c.rf = true;
@@ -721,9 +725,9 @@ pub unsafe extern "C" fn rdof_t3rf_net(t: *mut T3rf, ch: c_int, f: *const RdofFr
         let lc9 = if rdof_decode_voice_lc(&f.burst, f.dt, &mut lc) {
             lc.raw
         } else if f.has_addr {
-            lc_of(f.src, f.dst, f.group)
+            lc_of(f.src, f.dst, f.group, c.so)
         } else {
-            lc_of(c.src, c.dst, c.group)
+            lc_of(c.src, c.dst, c.group, c.so)
         };
         if f.dt == RDOF_DT_VOICE_LC_HEADER {
             if !c.net {
@@ -742,7 +746,7 @@ pub unsafe extern "C" fn rdof_t3rf_net(t: *mut T3rf, ch: c_int, f: *const RdofFr
     } else if is_voice(f.dt) {
         if !c.net_regen_on {
             // joined late: the addresses it gives, else the channel's
-            let lc9 = if f.has_addr { lc_of(f.src, f.dst, f.group) } else { lc_of(c.src, c.dst, c.group) };
+            let lc9 = if f.has_addr { lc_of(f.src, f.dst, f.group, c.so) } else { lc_of(c.src, c.dst, c.group, c.so) };
             rdof_voice_regen_init(&mut c.net_regen, lc9.as_ptr(), c.cc);
             c.net_regen_on = true;
             c.net = true;
