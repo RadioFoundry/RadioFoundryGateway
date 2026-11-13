@@ -1109,16 +1109,12 @@ impl Site {
         .encode()
     }
 
-    /// A grant repeat that is due (Late_Entry, for MSs that missed the start): the oldest one. Only while someone talks
-    /// or before the first voice; none in the hang time after a talker: an MS on the TSCC would follow it to a quiet
-    /// channel. They start again with the next talker's voice.
+    /// A grant repeat that is due (Late_Entry, for MSs that missed the start): the oldest one. Through the call and
+    /// its hang time, until P_CLEAR (6.6.2.4.1, "while a call is active"; the captured site does the same).
     fn due_grant(&mut self) -> Option<[u8; 10]> {
         let now = self.now;
         let ch = (0..CHANNELS)
-            .filter(|&i| {
-                let c = &self.chans[i];
-                Self::live(c) && (c.talking || c.talker == 0) && !matches!(c.kind, KIND_PRIVATE | KIND_DUPLEX) && now >= c.grant_next_ms
-            })
+            .filter(|&i| Self::live(&self.chans[i]) && !matches!(self.chans[i].kind, KIND_PRIVATE | KIND_DUPLEX) && now >= self.chans[i].grant_next_ms)
             .min_by_key(|&i| self.chans[i].grant_next_ms)?;
         self.chans[ch].grant_next_ms = now + self.cfg.grant_every_ms as i64;
         let c = self.chans[ch];

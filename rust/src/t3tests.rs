@@ -357,10 +357,12 @@ fn late_entry_grant_repeats() {
     assert!((3..=4).contains(&late), "{late}");
 }
 
-/// tier3.md 3.5: no Late_Entry repeats in hang time (an MS would follow one to a quiet channel); they start again
-/// with the next talker.
+/// 6.6.2.4.1: the TSCC may send Late_Entry grants "at intervals while the call is active"; the call holds its payload
+/// channel through TV_Hangtime (6.6.2, quasi-transmission trunking), so the repeats go on in the hang time (the
+/// captured site sends them up to P_CLEAR). None once the call is cleared. A member talking in the hang time is the
+/// same call.
 #[test]
-fn no_grant_repeats_in_hang_time() {
+fn grant_repeats_through_hang_time() {
     let mut s = site_with(|c| c.hang_ms = 6000);
     let mut log = Log::default();
     let mut air = Air::new(&mut s, [ms(1001, &[TG], &[1]), ms(1002, &[TG], &[1]), ms(1003, &[11], &[1])], T0);
@@ -369,29 +371,36 @@ fn no_grant_repeats_in_hang_time() {
     air.ms[0].act(t3ms::DO_GROUP, TG, 2000, 0, now);
     assert!(air.until(3000, &mut log.f(), |a| a.site.status().ch[1].r#use == USE_CALL), "A talks");
     assert!(air.until(4000, &mut log.f(), |a| a.site.status().ch[1].r#use == USE_HANG), "hang time");
+    let late_entry = |a: &Air<3>| {
+        a.last.tscc_dt == DT_CSBK && Grant::decode(&a.last.tscc_pdu).is_some_and(|g| g.late_entry && g.target == TG)
+    };
     let mut late = 0;
     air.until(3000, &mut log.f(), |a| {
-        if a.last.tscc_dt == DT_CSBK && Grant::decode(&a.last.tscc_pdu).is_some_and(|g| g.late_entry && g.target == TG) {
-            late += 1;
-        }
+        late += late_entry(a) as u32;
         false
     });
     assert_eq!(air.site.status().ch[1].r#use, USE_HANG, "still in hang time");
-    assert_eq!(late, 0, "Late_Entry repeats in hang time");
-    // C (on the TSCC, the talkgroup not in its list) talks to it in hang time: the same call, the repeats start again
+    assert!(late >= 2, "Late_Entry repeats in hang time (every 1.2 s): {late}");
+    // C (on the TSCC, the talkgroup not in its list) talks to it in hang time: the same call, the repeats go on
     let now = air.now();
     air.ms[2].act(t3ms::DO_GROUP, TG, 4000, 0, now);
     let mut late = 0;
     let mut hang_held = true;
     air.until(4000, &mut log.f(), |a| {
         hang_held &= a.site.status().ch[1].r#use != USE_CLEAR;
-        if a.last.tscc_dt == DT_CSBK && Grant::decode(&a.last.tscc_pdu).is_some_and(|g| g.late_entry && g.target == TG) {
-            late += 1;
-        }
+        late += late_entry(a) as u32;
         false
     });
     assert!(hang_held, "C talked in A's hang time, the same call");
     assert!(late >= 2, "repeats with the next talker: {late}");
+    // the hang runs out: P_CLEAR, and no repeat after it
+    assert!(air.until(15_000, &mut log.f(), |a| a.site.status().ch[1].r#use == USE_CLEAR), "cleared");
+    let mut late = 0;
+    air.until(3000, &mut log.f(), |a| {
+        late += late_entry(a) as u32;
+        false
+    });
+    assert_eq!(late, 0, "no Late_Entry grant after P_CLEAR");
 }
 
 #[test]

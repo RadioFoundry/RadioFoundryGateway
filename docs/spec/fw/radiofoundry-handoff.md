@@ -109,7 +109,7 @@ spec for both; this lists only the gateway's choices and limits. The full design
 | NRand_Wait | 6 (360 ms) |
 | Backoff | 3 when quiet, up to 9 under load |
 | Service Function | 00 normally; 11 (registration only) while the queue is full |
-| Grant repetition | each grant twice in consecutive TSCC slots, then every 1.2 s with Late_Entry = 1 while someone talks; none in the hang for now (tier3.md 3.2). The standard's intent (6.6.2.4.1, "while a call is active") and the captured site have them through the hang up to P_CLEAR, and the site will send them again once the MS counts the hang as activity (2.5) |
+| Grant repetition | each grant twice in consecutive TSCC slots, then every 1.2 s with Late_Entry = 1 through the call and its hang, up to P_CLEAR (6.6.2.4.1, "while a call is active"; the captured site does the same). The MS should count the hang as activity (2.5) |
 | Hang (TV_Hangtime) | 3 s |
 | Call end | P_CLEAR to ALLMSI, 4 times, channel 0 (back to the TSCC) |
 | Individual call timer | 180 s (emergency 300 s) |
@@ -163,8 +163,8 @@ spec for both; this lists only the gateway's choices and limits. The full design
 
 - Hang time: the payload channel sends the last item's Terminator with LC in every slot of the hang (361-1 5.2.1.4,
   361-2 5.1.1.3; the captured site does too), not idle bursts. An MS should count any burst with a good sync on its
-  slot as call activity (idles too), so it stays to P_CLEAR. Then Late_Entry grants come back in the hang: an MS
-  that has just left a call may discard Late_Entry = 1 grants for it (6.6.2.4.1), but not a Late_Entry = 0 grant.
+  slot as call activity (idles too), so it stays to P_CLEAR. Late_Entry grants go out in the hang too: an MS that
+  has just left a call may discard Late_Entry = 1 grants for it (6.6.2.4.1), but not a Late_Entry = 0 grant.
 - The LC the site makes (late entry, network voice) carries the call's Service Options: Emergency 80h, Broadcast
   08h for all-calls and broadcast calls (361-2 5.3.2.1, 5.3.3.1, table 7.11).
 - Talkgroup list registration (6.4.4.1.13.2, table 6.10): all accepted, C_ACKD(Reg_Accepted) with Response_Info
