@@ -1120,7 +1120,8 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
   check included) and calls them. With mqtt-net they also take commands on `ROOT/node/NODE/air-ms`, a script line
   without its time (`1000001 private 3105738 5000`, `1000001 group 1 3000`, `1000002 register 1`, `1000001 status
   3105738 5`, `1000001 gstatus 1 5`, `1000001 sdm 3105738 hello`, `1000002 gsdm 1 hello all`: a status 0-127, short
-  data as ISO 8-bit text up to 46 characters). Their state changes go to the log (`air MS ID: ...`). Test:
+  data as ISO 8-bit text up to 46 characters; `1000001 setstatus 12`: the status it answers a poll with, else the
+  last it sent, 0 at start). Their state changes go to the log (`air MS ID: ...`). Test:
   `rdofradio_e2e_t3_airms`.
 - `--sim-ext PATH`: external MSs (other programs, such as a radio's MS engine built for the host) on the simulated
   air, through a unix socket, beside the N simulated ones (N may be 0). JSON lines in lockstep with the slots: after

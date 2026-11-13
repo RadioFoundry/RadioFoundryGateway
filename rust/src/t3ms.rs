@@ -1596,6 +1596,11 @@ pub unsafe extern "C" fn rdof_t3ms_answer(ms: *mut Ms, answer: u8, answer_ms: u3
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn rdof_t3ms_set_status(ms: *mut Ms, status: u8) {
+    (*ms).set_status(status & 0x7F);
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn rdof_t3ms_key(ms: *mut Ms, k: *const [u8; 16], psn: u32, has_psn: bool) {
     let k = if k.is_null() { None } else { Some(&*k) };
     (*ms).set_key(k, has_psn.then_some(psn & 0xFF_FFFF));

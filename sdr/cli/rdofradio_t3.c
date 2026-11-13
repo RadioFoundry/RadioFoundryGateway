@@ -356,10 +356,11 @@ typedef struct {
     char text[46]; /* sdm: the message (a UDT carries up to 46 octets) */
 } act_t;
 
-#define ACT_SDM 0xF0 /* rdof_t3ms_sdm (ISO 8-bit text), not an rdof_t3ms_do */
+#define ACT_SDM 0xF0       /* rdof_t3ms_sdm (ISO 8-bit text), not an rdof_t3ms_do */
+#define ACT_SETSTATUS 0xF1 /* rdof_t3ms_set_status */
 #define ACT_HELP                                                                                                       \
     "ID register [TG] | deregister | group TG [TALK_MS] | private ID [TALK_MS] | status ID N | gstatus TG N | "        \
-    "sdm ID TEXT | gsdm TG TEXT | cancel"
+    "sdm ID TEXT | gsdm TG TEXT | setstatus N | cancel"
 
 #define ACTS 256
 
@@ -409,7 +410,9 @@ static int act_parse(const char *text, act_t *x)
         memcpy(x->text, t, n);
         x->what = ACT_SDM, x->arg = (uint32_t)a1, x->len = (uint8_t)n,
         x->flags = what[0] == 'g' ? RDOF_T3MS_F_GROUP : 0;
-    } else if (!strcmp(what, "cancel"))
+    } else if (!strcmp(what, "setstatus") && got >= 3 && a1 <= 127)
+        x->what = ACT_SETSTATUS, x->arg = (uint32_t)a1;
+    else if (!strcmp(what, "cancel"))
         x->what = RDOF_T3MS_DO_CANCEL;
     else
         return -1;
@@ -419,6 +422,13 @@ static int act_parse(const char *text, act_t *x)
 /* An action on MS ms: false when its queue is full. */
 static bool act_run(rdof_t3ms_t *ms, const act_t *a, int64_t now)
 {
+    if (a->what == ACT_SETSTATUS) {
+        rdof_t3ms_set_status(ms, (uint8_t)a->arg);
+        return true;
+    }
+    /* a status sent is the one it answers a poll with after (as a radio does) */
+    if (a->what == RDOF_T3MS_DO_STATUS && a->talk_ms < 127)
+        rdof_t3ms_set_status(ms, (uint8_t)a->talk_ms);
     if (a->what == ACT_SDM)
         return rdof_t3ms_sdm(ms, a->arg, a->flags, 4 /* ISO 8-bit */, (const uint8_t *)a->text, a->len, now);
     return rdof_t3ms_do(ms, a->what, a->arg, a->talk_ms, a->flags, now);
