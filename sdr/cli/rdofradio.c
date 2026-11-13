@@ -756,13 +756,15 @@ static double txg_full;         /* the gain at level 255 */
 static double tx_max_dbm = NAN; /* --tx-max-dbm: the device's output at its most gain */
 static int tx_rf_level = 255;
 static double gain_dbm(double g) { return tx_max_dbm - (dev->tx_gain_max - g); }
-/* While a bench job has the transmitter: dB under --tx-power its power_dbm asks, in 0.01 dB (0: none) */
-static atomic_int bench_atten_cdb;
+/* While a bench job has the transmitter: dB under --tx-power its power_dbm asks, in 0.01 dB (0: none); -1: no job */
+static atomic_int bench_atten_cdb = -1;
 static double keyed_gain(void)
 {
+    const int a = atomic_load(&bench_atten_cdb);
     const rdof_txmap_t m = rdof_txpower_sdr_map(0);
-    const double g = txg_full + rdof_txpower_dbm(&m, tx_rf_level) /* 0 at 255, -0.2 dB a level under it */
-                     - atomic_load(&bench_atten_cdb) / 100.0;
+    /* a bench job sends at --tx-power less its power_dbm, not at the RF level the transceiver left (a signal job
+       sets none); else 0 at 255, -0.2 dB a level under it */
+    const double g = a >= 0 ? txg_full - a / 100.0 : txg_full + rdof_txpower_dbm(&m, tx_rf_level);
     return g < dev->tx_gain_min ? dev->tx_gain_min : g;
 }
 static void io_tx_level(void *ctx, int level)
@@ -2355,7 +2357,7 @@ static void bench_power_on(rdof_bench_power_t p)
     if (a > 0)
         say("bench: the job transmits %.1f dB under --tx-power: %.1f dBm\n", a, gain_dbm(txg_full) - a);
 }
-static void bench_power_off(void) { atomic_store(&bench_atten_cdb, 0); }
+static void bench_power_off(void) { atomic_store(&bench_atten_cdb, -1); }
 /* The settings' gates a job meets before it takes the transmitter: false with why. */
 static bool bench_gates(double seconds, char *why, size_t cap)
 {
@@ -2393,7 +2395,7 @@ static void bench_note(rdof_bench_power_t p, char *why, size_t cap)
         const double a = bench_atten_db(p), d = gain_dbm(txg_full) - a;
         if (fabs(d - p.dbm) > 0.05)
             snprintf(why, cap, "%s: the SDR transmits at %.1f dBm (%s)", asked, d,
-                     a == 0 ? "--tx-power, its most" : "its least gain");
+                     d > p.dbm ? "its least gain" : "--tx-power, its most");
     } else if (p.level != 255)
         snprintf(why, cap, "%s isn't applied: the SDR transmits at %.1f dBm (--tx-power; power_dbm sets it)", asked,
                  gain_dbm(txg_full));
@@ -7193,7 +7195,7 @@ int main(int argc, char **argv)
     long long total = 0;
     int overflows = 0, rx_errors = 0, timeouts = 0;
     bool hot = false;
-    int keyed_cdb = 0; /* bench_atten_cdb when the gain was set */
+    int keyed_cdb = -1; /* bench_atten_cdb when the gain was set; -2: the calibration set it */
     R.onset = -1;
     R.ring_ref = -1, R.ring_min = INT64_MAX;
     R.lag_min = INFINITY, R.lag_prev = NAN;
@@ -7374,18 +7376,20 @@ int main(int argc, char **argv)
                 out[i].re = (float)(0.7 * cos(ph)), out[i].im = (float)(0.7 * sin(ph));
             }
             hot = true;
+            keyed_cdb = -2; /* the tone is at txg: a key-up while it's hot sets the keyed gain */
             keyed_until = (double)(txn + ntx) / txrate + 0.3;
             R.onset = (txn - lead + offset) * txr;
             R.cal = 2;
         }
         if (keyed) {
             keyed_until = (double)(txn + ntx) / txrate + 0.3; /* past the device's buffers */
-            if (hot && atomic_load(&bench_atten_cdb) != keyed_cdb) { /* a bench job took or left it while keyed */
-                keyed_cdb = atomic_load(&bench_atten_cdb);
+            const int cdb = atomic_load(&bench_atten_cdb);
+            if (hot && cdb != keyed_cdb) { /* a bench job took or left it while keyed */
+                keyed_cdb = cdb;
                 tx_gain(keyed_gain());
             }
             if (!hot) {
-                keyed_cdb = atomic_load(&bench_atten_cdb);
+                keyed_cdb = cdb;
                 tx_gain(keyed_gain());
                 hot = true;
                 /* where the receiver should report the key-up's first burst: its first keyed sample, then the ramp

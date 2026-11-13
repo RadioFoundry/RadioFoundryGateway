@@ -1339,8 +1339,9 @@ bursts, wideband cs8 captures from a 2.5 s history, level-triggered channel capt
 `csbk`, `data`, `listen`) and `bench_repeater` jobs. A transmit job needs `--bench-tx MHZ[,MHZ...]` (up to 32
 frequencies) or bands, and the half duplex transceiver: it takes the SDR modem for its length, at `--tx-power`, or
 at a job's `power_dbm` (bench_tx's `--power-dbm`) when that's lower: the gain turns down by the difference for the
-job, to the device's least at most (a sweep of a receiver's RSSI steps it). A job's `power` 0-255 isn't applied on the
-SDR. On `--mmdvm` a job's power goes to an RF level on the modem's `tx` map under `--rf-level`. `tune` and a `trigger` or `rx` outside the window move the receiver for the job (bench-api.md
+job, to the device's least at most (a sweep of a receiver's RSSI steps it), whatever RF level the transceiver left. A
+job's `power` 0-255 isn't applied on the SDR. On `--mmdvm` a job's power goes to an RF level on the modem's `tx` map
+under `--rf-level`. `tune` and a `trigger` or `rx` outside the window move the receiver for the job (bench-api.md
 §14.2). With the FPGA channelizer there's no wideband I/Q: capture, trigger, track and rx take the
 receiver's channels (2.5 s of each kept). When the bench line and the page listen past loopback, rdofradio lists them
 over DNS-SD (`_rfgbench._tcp` with TXT `kind` and `ver`, `_http._tcp`) through the host's responder, by running
