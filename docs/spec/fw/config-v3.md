@@ -517,8 +517,9 @@ code is the same (the TSCC's). The unit, named after the app:
   yet (it can't time the short LC and the AT bit per slot).
 - Every carrier's `in` heard on that SDR: each is an extra channel of it, `<name>-<n>` in the carriers' order (the
   TSCC's first).
-- Another carrier's `out` on an SDR (a carrier of its `tx.carriers`) or on a radio in hotspot mode with the split
-  duplex extension (a split's TX half, one carrier a radio).
+- Another carrier's `out` on an SDR (a carrier of its `tx.carriers`: the TSCC's SDR, summed into its stream by
+  rdofradio, tier3.md 9.4) or on a radio in hotspot mode with the split duplex extension (a split's TX half, one
+  carrier a radio).
 
 ## 7. Networks
 
@@ -1042,7 +1043,7 @@ The open (`rdof_plan_open`) refuses, with the place and the rule:
 |---|---|
 | units | an SFR on an SDR; an SFR or DCDM without a hotspot-mode modem (`radio_hotspot` or `auto`); `duplex: full` on a modem; a split whose transmit half is an SDR, or whose halves aren't hotspot-mode modems; a duplex repeater on a `radio_hotspot`; one modem or radio for two units ("a modem serves one"); two units with one name |
 | an SDR's driver (`check_caps`) | a rate over the driver's (`rtlsdr` 3.2 MS/s); a heard frequency outside its tuning range (`rtlsdr` 24 to 1766 MHz) or outside the window when `center_hz` is set; more than 16 receive channels |
-| an SDR that transmits | a driver that can't (`rtlsdr`); `tx.carriers` over the driver's (1 for every driver for now); more transmitting units than carriers; a duplex repeater, or a DCDM with `duplex: full`, on a half-duplex SDR (the LR2021) |
+| an SDR that transmits | a driver that can't (`rtlsdr`); `tx.carriers` over the driver's (1 for every driver for now; 2 on `iio`, `soapy` and `sim` when a trunked site's carriers are all it sends); more transmitting units than carriers; a duplex repeater, or a DCDM with `duplex: full`, on a half-duplex SDR (the LR2021) |
 | the bench | a bench modem that a frequency's `devices` pins to a unit (listed in `bench.devices`, it makes no unit otherwise); an SDR with both `bench` and `tx.bench` |
 | a transceiver | more than 32 frequencies to transmit on (`RDOF_PLAN_MAX_FREQS`, `RDOF_CFG_CHANNELS`) |
 
