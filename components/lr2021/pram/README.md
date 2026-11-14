@@ -6,8 +6,14 @@ values back over ours. MIT, written here. It calls ROM functions at fixed addres
 ROM or from Semtech's image. Without Semtech's patch, its fixes (DCDC retune for sub-GHz RX, RTToF, BLE, FLRC,
 WM-Bus N, Z-Wave, O-QPSK) are gone.
 
-Status: v2.0 (version word `0x52440200`). It builds and the host tests pass against a model of the chip. It
-hasn't run on a chip yet.
+Status: v2.0 (version word `0x52440200`). It builds, the host tests pass against a model of the chip, and it loads
+and runs on the W12 (2026-10-24: [Confirmed and inferred](#confirmed-and-inferred)).
+
+```c
+lr2021_rdof_report_t rep;
+lr2021_patch_load_rdof(dev, &rep);            /* in standby, after the chip's setup */
+lr2021_rdof_set(dev, entries, n, true);       /* the override table: up to 32 (address, mask, value) */
+```
 
 ## Why bank 1 only
 
@@ -116,9 +122,9 @@ RDOF_ARC_BIN=/path/to/arc-binutils/bin components/lr2021/pram/build.sh
 ```
 
 It assembles for `-mcpu=em4_dmips -mcode-density`, links at 0x101000, checks the header is the first word and that
-the code ends below 0x1018C0 and uses only registers the core has, and writes `src/lr2021_rdof_pram_image.c` (committed, with the source's SHA-256 in its
-header). The ELF, binary and a disassembly listing go to `build/pram/`. Read the listing after a change: ROM calls
-must be `jl [r12]` (an absolute address), never a `bl`.
+the code ends below 0x1018C0 and uses only registers the core has, and writes `src/lr2021_rdof_pram_image.c`
+(committed, with the source's SHA-256 in its header). The ELF, binary and a disassembly listing go to `build/pram/`.
+Read the listing after a change: ROM calls must be `jl [r12]` (an absolute address), never a `bl`.
 
 ## Room for more
 
