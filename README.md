@@ -112,7 +112,7 @@ A powered USB hub runs two USB radios at once. An optional SSD1306 OLED shows th
 
 **Disciplined time**
 
-The board doesn't just set its clock, it disciplines it, chrony style:
+The board disciplines its clock, chrony style:
 
 - **Sources, best first:** GNSS PPS (the W12's L76K header), NTP (up to 6 servers), GNSS NMEA alone, the browser
 - **NTP selection:** Marzullo's algorithm picks the servers that agree and drops falsetickers and outliers
@@ -139,7 +139,7 @@ The board doesn't just set its clock, it disciplines it, chrony style:
 | `16mb` | ESP32-S3 N16R8 | 16 MB flash, 8 MB PSRAM |
 | `16mb` + `w12` | Meshnology W12 | LR2021, OLED, L76K GNSS header. Best at 902–928 MHz; at UHF its filter costs about 46 dB, so it hears only nearby transmitters |
 | Linux / macOS | PC, Raspberry Pi | `rdofsdr`, live from SoapySDR or from a recording; `rdofradio` |
-| PlutoSDR | its Zynq's ARM | `rdofradio --iio`, built by `tools/pluto/build.sh`; installed and run at boot by the bundle ([reference](docs/reference.md), "PlutoSDR") |
+| PlutoSDR | its Zynq's ARM | `rdofradio --iio`, built by `tools/pluto/build.sh`; installed and run at boot by the bundle ([plutosdr.md](docs/plutosdr.md)) |
 
 ## Protocol additions
 
@@ -150,28 +150,23 @@ A few additions to the standard protocols, which we aim to upstream:
 
 ## Quick start
 
+| You have | Start here |
+|---|---|
+| A Meshnology W12, an ESP32-S3 N16R8 or a SuperMini | [docs/esp32-boards.md](docs/esp32-boards.md): build, flash, Wi-Fi, updates |
+| A Raspberry Pi with an MMDVM_HS hat | [docs/raspberry-pi.md](docs/raspberry-pi.md): a hotspot, a repeater or a bench line, as a service |
+| Linux or macOS with an SDR or a modem | [docs/linux-macos.md](docs/linux-macos.md): `rdofsdr`, `rdofradio`, the web page, the bench line |
+| A PlutoSDR | [docs/plutosdr.md](docs/plutosdr.md): `rdofradio` on its own ARM, installed to start at boot |
+
+Then the settings: [docs/settings.md](docs/settings.md).
+
 Host tests (CMake, a C compiler and cargo):
 
 ```sh
 cmake -S host-tests -B build/host && cmake --build build/host && ctest --test-dir build/host
 ```
 
-Firmware (ESP-IDF v5.5, from `esp_idf/`), shown for the W12; use `16mb` or `4mb` for the others:
-
-```sh
-idf.py -B ../build/w12 -D SDKCONFIG=../build/w12/sdkconfig \
-  -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.16mb;sdkconfig.defaults.w12" build
-idf.py -B ../build/w12 -D SDKCONFIG=../build/w12/sdkconfig -p <port> flash   # first time
-curl -X POST --data-binary @../build/w12/radiofoundry_gateway.bin http://<board>/api/ota   # after that
-```
-
-Overlays: `.roamer` / `.sdr` (one role only), `.c` (no Rust toolchain), `.hub`, `.dspfast`.
-
-A Raspberry Pi with an MMDVM_HS hat, with or without an RTL-SDR: [docs/raspberry-pi.md](docs/raspberry-pi.md) sets it
-up as a hotspot, a repeater or a bench line, from the OS to a systemd service.
-
 <details>
-<summary>Linux / macOS build and system tests</summary>
+<summary>System tests and hardware-in-the-loop tests</summary>
 
 The system tests need a [RadioFoundry](https://github.com/RadioFoundry/RadioFoundry) checkout at the commit in
 `systest/radiofoundry.ref`; without it they're skipped.
@@ -195,12 +190,16 @@ See [docs/reference.md](docs/reference.md) for what's been measured and what's l
 
 ## Docs
 
-- [docs/raspberry-pi.md](docs/raspberry-pi.md): a Raspberry Pi with an MMDVM_HS hat (and an RTL-SDR), step by step
+[docs/README.md](docs/README.md) is the index. In short:
+
+- Guides: [ESP32 boards](docs/esp32-boards.md), [Raspberry Pi](docs/raspberry-pi.md),
+  [Linux and macOS](docs/linux-macos.md), [PlutoSDR](docs/plutosdr.md), [settings](docs/settings.md)
 - [docs/reference.md](docs/reference.md): building and testing, the firmware, the SDR, the host tools and the PlutoSDR
 - [docs/spec/](docs/spec/): how each part works, starting with [overview.md](docs/spec/fw/overview.md)
+- [config/examples/](config/examples/README.md): complete settings files
 - `components/*/README.md`: standalone ESP-IDF components (netclock, wifilist, tinysctp, lr2021, gnss)
 - [rust/README.md](rust/README.md): the Rust modules
-- [tools/pluto/bundle/README.md](tools/pluto/bundle/README.md): installing on a PlutoSDR
+- [tools/pluto/bundle/README.md](tools/pluto/bundle/README.md): the PlutoSDR installer
 
 ## Contributing
 
