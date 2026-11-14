@@ -477,3 +477,25 @@ fn supplementary_data_across_sites() {
     assert!(n.until(10_000, |n| to_tg(&n.a.ms[1]) && to_tg(&n.b.ms[0]) && to_tg(&n.b.ms[1])), "every member has it");
     assert!(n.until(5000, |n| said(&n.sa, "supplementary data from 1001 to 9: delivered")), "after its repeats");
 }
+
+/// Supplementary user data on a data call across sites: once the far site accepts, the caller uploads it, the far
+/// site downloads it from SUPLI, its result comes back, then the caller's grant and the data.
+#[test]
+fn data_with_supplementary_data_across_sites() {
+    let (mut sa, mut sb) = (site(), site());
+    let mut n = Net::new(&mut sa, &mut sb, [ms(1001, &[TG]), ms(1002, &[TG])], [ms(2001, &[TG]), ms(2002, &[TG])]);
+    let said = |s: &Side, t: &str| s.of(EV_LOG).iter().any(|e| e.text().contains(t));
+    assert!(n.a.ms[0].set_supp(Some(b"33.5994N 086.6847W")));
+    let now = n.a.now();
+    assert!(n.a.ms[0].send_data(2001, t3ms::F_CONFIRMED, TEXT, now));
+    assert!(n.until(15_000, done(0, 0)), "the caller's call ends");
+    assert_eq!(n.a.ms[0].status().calls_done, 1);
+    let (got, count, _) = n.b.ms[0].supp();
+    let (d, len) = got.expect("the far MS took it");
+    assert!(d[..len].starts_with(b"33.5994N 086.6847W") && count == 1);
+    assert!(said(&n.sb, "supplementary data from 1001 to 2001: delivered"));
+    assert!(said(&n.sa, "supplementary data from 1001 to 2001: delivered"), "the result came back");
+    assert!(n.until(10_000, |n| n.b.ms[0].data_inbox().is_some()), "then the data");
+    let (h, d, len, _) = n.b.ms[0].data_inbox().unwrap();
+    assert_eq!((h.src, &d[..len]), (1001, TEXT));
+}

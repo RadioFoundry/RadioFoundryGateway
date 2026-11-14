@@ -1022,7 +1022,7 @@ Choices where 361-4 leaves them open:
 Not built: the gateway-started forms, power control in a de-key (6.4.14.2), the ALS
 called MS resuming after an interrupt (6.6.2.6.6). Not run on a radio.
 
-### 3.21 Supplementary user data on voice calls (361-4 6.4.13)
+### 3.21 Supplementary user data on voice and packet data calls (361-4 6.4.13)
 
 A voice call's C_RAND may carry up to 4 UDTs of user data for the called party, sent before the grant (6.4.13.0):
 SUPED_SV 1 (Service_Options bit 4, table 6.40) and SUPED_VAL, the UDTs less one, in bits 3-2 of the 4 dependent
@@ -1053,7 +1053,14 @@ caller's site then grants. A cancel in the meantime goes on as a setup cancel. A
 every site, which downloads it to its members (repeated, no result); the caller's site grants after its own repeats,
 so a far site's last repeats may overlap its grant.
 
-Not built: supplementary data on packet data and short data (6.6.3.2.2 a, 6.6.6.1.2.1.2 a: still abandoned).
+A packet data call's C_RAND carries it the same way (table 6.50: SUPED_SV, SUPED_VAL in dependent bits 3-2; t3pdata.rs
+`PD_SUPP`): after the availability check for an MS here, at once for a talkgroup, after the far site's accept for
+an MS at another site (whose site downloads it while it holds the call for its data). The C_AHOY from SUPLI has
+Service_Kind 0010b or 0011b. Then the grant (or the queue), whatever happened. To the site itself (TSI, its data
+ID, IPI) there's nobody to give it to: the log says "not taken" and the call goes on (6.4.13.0 a). The simulated MS
+sends SUPED_SV on its data calls too, except to IPI.
+
+Not built: supplementary data on UDT short data and status messages (6.6.4, 6.6.6.1.2.1.2 a: still abandoned).
 
 ## 4. Settings (config-v3 `tier3` app)
 
@@ -1730,7 +1737,7 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
   in a UDP/IPv4 datagram from port 5016 to 5016, 12.x.y.z the MS's address (its ID in the low 24 bits) and 225.x.y.z
   a talkgroup's, sent as rate 1/2 blocks; `data34`, `cdata34`, `gdata34` the same in rate 3/4 blocks, `data1`,
   `cdata1`, `gdata1` in rate 1; `1000001 setstatus 12`: the status it answers a poll with, else the last it sent, 0
-  at start; `1000001 setsupp TEXT`: supplementary user data its voice calls carry from now on, up to 46 octets,
+  at start; `1000001 setsupp TEXT`: supplementary user data its voice and packet data calls carry from now on, up to 46 octets,
   none without TEXT, 3.21). Their state changes go to the log (`air MS ID: ...`), and so does the short data,
   supplementary data and packet data they take (the text; a UDP datagram's addresses and payload, decoded when it's
   a text message on port 5016). They take data at any rate, as a radio sends it (a real radio's confirmed IP data is
@@ -1958,6 +1965,10 @@ Built since step 8e, host-tested (the bench steps above note what has run on air
 | 16a996f7 | The far site grants single-item: its channel closes after the item (5.10) |
 | 2446e12e | The simulated MS uploads in a character format, strips the pad, and counts the same data again on a later call |
 | a0f54be6 | A voice call's supplementary user data to an MS or a wide talkgroup at another site (3.21, 5.9 what 7) |
+| 69483bd1 | A Tier III site starts its `ipgw` app: packet data to IPI reached no gateway before |
+| 85f794f4 | The site logs each MS's C_ACKU and C_NACKU on the TSCC |
+| 2f701fb2 | IP gateway counters for headers, header CRC failures and blocks; a log line for data handed to the site's gateway |
+| (next) | Supplementary user data on packet data calls, here and across sites (3.21) |
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
 apart from the code, found seven deviations, all fixed (2026-11-12):
@@ -2002,6 +2013,7 @@ One site (the SDR site, two carriers):
 | Power save | yes | yes: registration, a status, short data and a poll to the sleeping radio (13.2 step 8f); a call and packet data to it not yet |
 | Full-duplex individual calls | yes (off by default) | no |
 | Supplementary user data on voice calls (3.21) | yes | yes: both ways, to an MS and a talkgroup |
+| Supplementary user data on packet data calls (3.21) | yes | no |
 | Transmit interrupt | yes | air MSs only, on the modem site |
 | Composite TSCC | yes | air MSs only, on the modem site |
 | Three or four SDR carriers | yes | no: the SDR site runs two |
@@ -2029,7 +2041,7 @@ Hardware setups:
 | One split TX half and one split RX half, no SDR | yes, end to end | no |
 
 Not built: the standby controller; calls through PSTN, PABX or dispatcher gateways (dialled digits); IPv6;
-supplementary data on packet data and short data; across sites, duplex calls; talkgroup data from the IP side
+supplementary data on short data and status messages; across sites, duplex calls; talkgroup data from the IP side
 (225.x.y.z) to a talkgroup.
 
 Not planned: dual-slot (HI_RATE) packet data. A grant's HI_RATE 0 is allowed (the grant says what the channel does),

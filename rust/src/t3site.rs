@@ -2153,8 +2153,17 @@ impl Site {
             let p = &self.pend[i];
             p.used && p.state == P_SUPP && p.caller == ms && p.called == dst
         }) else {
+            // a data call's (t3pdata PD_SUPP), or a far site's that holds no setup for it (a data call there waits
+            // for its data anyway)
+            self.supp_log(ms, dst, ok, upload, reason);
+            self.pd_supp_done(ms, dst);
             return;
         };
+        self.supp_log(ms, dst, ok, upload, reason);
+        self.supp_go(i);
+    }
+
+    fn supp_log(&mut self, ms: u32, dst: u32, ok: bool, upload: bool, reason: u8) {
         match (ok, upload) {
             (true, _) => self.log(format_args!("supplementary data from {ms} to {dst}: delivered")),
             (false, true) => self.log(format_args!("supplementary data from {ms}: not uploaded ({reason:#04x})")),
@@ -2162,7 +2171,6 @@ impl Site {
                 self.log(format_args!("supplementary data from {ms} to {dst}: not taken ({reason:#04x})"))
             }
         }
-        self.supp_go(i);
     }
 
     /// Call setup i past its supplementary data: the grant (or the queue).

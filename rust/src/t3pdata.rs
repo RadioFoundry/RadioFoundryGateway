@@ -432,6 +432,7 @@ const PD_NET: u8 = 3; // the calling site's: waiting for the far site's answer t
 const PD_HELD: u8 = 4; // the far site's: the call accepted, waiting for its data
 const PD_GO: u8 = 5; // answered across the network: a channel next, or the queue
 const PD_ADDR: u8 = 6; // to IPI: the caller uploads the IP address first (t3sdata SD_IPADDR)
+const PD_SUPP: u8 = 7; // the caller's supplementary user data going up and down first (6.4.13, t3sdata SD_SUPP)
 /// How long the far site keeps an accepted call for its data (the calling site may queue it first).
 const PD_HOLD_MS: i64 = 30_000;
 
@@ -454,6 +455,7 @@ struct Pd {
     next_ahoy_ms: i64,
     next_ack_ms: i64,
     ip: u32, // to IPI with ip_address_upload: the address the caller uploaded (IPv4)
+    supp: u8, // SUPED_SV: the supplementary user data's UDTs (SUPED_VAL plus 1), 0 none or done
 }
 
 #[derive(Clone, Copy, Default)]
@@ -510,6 +512,9 @@ impl Site {
                 self.sd_again(SD_IPADDR, ms); // it missed the C_AHOY from IPI: again
                 return;
             }
+            if self.pd.pds[i].state == PD_SUPP && self.sd_again(SD_SUPP, ms) {
+                return; // it missed the C_AHOY from SUPLI: again
+            }
             let reason = if self.pd.pds[i].state == PD_QUEUED { R_QUEUED } else { R_WAIT };
             self.ack(reason, ms, dst); // a repeat: the same answer
             return;
@@ -547,8 +552,14 @@ impl Site {
             caller: ms,
             called: dst,
             since_ms: self.now,
+            supp: if r.service_options & SO_SUPED != 0 { (r.dep >> 2 & 3) + 1 } else { 0 },
             ..Default::default()
         };
+        if site && self.pd.pds[i].supp != 0 {
+            // to the site or its gateway: nobody to download it to; the call goes on (6.4.13.0 a)
+            self.pd.pds[i].supp = 0;
+            self.log(format_args!("supplementary data from {ms} to {dst}: not taken"));
+        }
         if site && dst == IPI && self.cfg.ip_upload != 0 && !r.proxy {
             // 6.6.3.2.4 b) 2): the IP address first, one UDT (IPv4, UAB 0)
             let p = &mut self.pd.pds[i];
@@ -652,8 +663,12 @@ impl Site {
         q.next_ahoy_ms = self.now + self.cfg.ahoy_every_ms as i64;
     }
 
-    /// Ready for a channel: one now, or the queue (C_QACKD Queued_for_Resource).
+    /// Ready for a channel: the caller's supplementary data first (when asked, after the availability check and
+    /// before the channel, 6.4.13.1); then one now, or the queue (C_QACKD Queued_for_Resource).
     fn pd_ready(&mut self, i: usize) {
+        if self.pd.pds[i].supp != 0 && Self::pd_local(&self.pd.pds[i]) && self.pd_supp_start(i) {
+            return;
+        }
         if let Some(ch) = self.free_channel() {
             self.pd_go(i, ch);
             return;
@@ -675,6 +690,36 @@ impl Site {
         }
         self.counters.queued += 1;
         self.activity(ACT_QUEUE, QUEUE_IN, p.caller, p.called, 0);
+    }
+
+    /// Call i's supplementary data exchange (t3sdata SD_SUPP): started (true), or no room for it and the call goes on
+    /// without it (6.4.13.0 a).
+    fn pd_supp_start(&mut self, i: usize) -> bool {
+        let p = self.pd.pds[i];
+        self.pd.pds[i].supp = 0;
+        let sk = if p.group { SK_TG_PD } else { SK_IND_PD };
+        if !self.sd_supp_new(p.caller, p.called, p.group, sk, p.supp) {
+            self.log(format_args!("supplementary data from {}: no room, the call goes on", p.caller));
+            return false;
+        }
+        let now = self.now;
+        let q = &mut self.pd.pds[i];
+        q.state = PD_SUPP;
+        q.deadline_ms = now + 3 * self.cfg.tnp_ms as i64;
+        true
+    }
+
+    /// The supplementary data of a data call from ms to dst went or didn't (t3site supp_data_done logs it): the call
+    /// goes on either way. False when no data call waits for it.
+    pub(super) fn pd_supp_done(&mut self, ms: u32, dst: u32) -> bool {
+        let Some(i) = (0..PDS).find(|&i| {
+            let p = &self.pd.pds[i];
+            p.used && p.state == PD_SUPP && p.caller == ms && p.called == dst
+        }) else {
+            return false;
+        };
+        self.pd_ready(i);
+        true
     }
 
     fn pd_queued(&self) -> usize {
@@ -835,6 +880,9 @@ impl Site {
         if p.state == PD_QUEUED {
             self.activity(ACT_QUEUE, QUEUE_DROP, p.caller, p.called, 0);
         }
+        if p.state == PD_SUPP {
+            self.sd_supp_drop(ms);
+        }
         true
     }
 
@@ -843,6 +891,11 @@ impl Site {
         for i in 0..PDS {
             let p = self.pd.pds[i];
             if !p.used {
+                continue;
+            }
+            if p.state == PD_SUPP && now >= p.deadline_ms {
+                self.sd_supp_drop(p.caller); // stuck: the call goes on without it
+                self.pd_ready(i);
                 continue;
             }
             if now >= p.deadline_ms {

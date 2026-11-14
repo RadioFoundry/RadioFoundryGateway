@@ -488,7 +488,7 @@ impl Ms {
         (self.dgna, self.dgna_n)
     }
 
-    /// Supplementary user data (6.4.13) for its voice calls from now on (None: none): SUPED_SV 1, SUPED_VAL the
+    /// Supplementary user data (6.4.13) for its voice and packet data calls from now on (None: none): SUPED_SV 1, SUPED_VAL the
     /// blocks less one; it uploads the data when the C_AHOY from SUPLI asks. False when it's over 4 blocks (46
     /// octets).
     pub fn set_supp(&mut self, data: Option<&[u8]>) -> bool {
@@ -764,9 +764,12 @@ impl Ms {
                     ..Default::default()
                 }
             }
-            // 6.6.3.2.1 table 6.50
+            // 6.6.3.2.1 table 6.50: SUPED_VAL as for voice; none to IPI (its upload is the IP address)
             DO_DATA => Rand {
-                service_options: emergency | if a.flags & F_MULTI != 0 { SO_SIMI } else { 0 },
+                service_options: emergency
+                    | if a.flags & F_MULTI != 0 { SO_SIMI } else { 0 }
+                    | if a.arg != IPI { suped } else { 0 },
+                dep: if a.arg != IPI { suped_val } else { 0 },
                 service_kind: if a.flags & F_GROUP != 0 { SK_TG_PD } else { SK_IND_PD },
                 target: a.arg,
                 source: self.id,
@@ -1578,11 +1581,12 @@ impl Ms {
             (IPI, SK_IND_PD) => Some(DO_DATA), // 6.6.3.2.4 b) 2): a data call's IP address
             (SUPLI, SK_IND_VOICE) => Some(DO_PRIVATE), // 6.4.13.1: its call's supplementary data
             (SUPLI, SK_TG_VOICE) => Some(DO_GROUP),
+            (SUPLI, SK_IND_PD | SK_TG_PD) => Some(DO_DATA), // a data call's (6.4.13.0: voice or data)
             _ => None,
         };
         if let Some(what) = upload {
             let mine = self.has_cur && self.cur.what == what && matches!(self.state, ACCESS | WAITING);
-            let not_ip = what == DO_DATA && (self.cur.arg != IPI || self.no_ip_upload || self.ip_dst == 0);
+            let not_ip = what == DO_DATA && a.source == IPI && (self.cur.arg != IPI || self.no_ip_upload || self.ip_dst == 0);
             let not_supp = a.source == SUPLI && self.supp_out.n == 0;
             if !mine || (what == DO_REGISTER && self.cur.flags & (F_LIST | F_IPADV) == 0) || not_ip || not_supp {
                 let r = Ack {
@@ -1599,7 +1603,7 @@ impl Ms {
                 self.registered = true; // 6.4.11.1.0 e): the C_AHOY from IPI means it is registered
             }
             let (h, b) = match what {
-                _ if ipadv || what == DO_DATA => {
+                _ if ipadv || (what == DO_DATA && a.source == IPI) => {
                     // 6.4.11.1.3, B.3.7: UDT_Format IP, UAB 0 (IPv4), SF 1, A 0, the address then 48 bits reserved
                     let h = UdtHead {
                         op: OP_UDTHU,
@@ -1614,12 +1618,12 @@ impl Ms {
                     d[..4].copy_from_slice(&if ipadv { self.adv_ip } else { self.ip_dst }.to_be_bytes());
                     (h, Blocks::of(&d, 1).unwrap_or_default())
                 }
-                DO_PRIVATE | DO_GROUP => {
+                DO_PRIVATE | DO_GROUP | DO_DATA => {
                     // 6.4.13.1 table 6.30: to SUPLI, SF 1, A 0, G/I the call's; the format prearranged
                     self.supp_sent += 1;
                     let h = UdtHead {
                         op: OP_UDTHU,
-                        group: what == DO_GROUP,
+                        group: what == DO_GROUP || (what == DO_DATA && self.cur.flags & F_GROUP != 0),
                         format: self.supp_fmt.0,
                         pad_nibble: self.supp_fmt.1,
                         target: SUPLI,

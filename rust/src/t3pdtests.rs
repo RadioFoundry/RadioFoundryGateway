@@ -623,3 +623,57 @@ fn packet_data_radio_check_and_selective_clear() {
     assert!(ahoys.contains(&check(SK_CANCEL, false, 1002)), "table 6.53");
     assert_eq!(ahoys.last().copied(), Some(check(SK_TG_PD, true, TG)), "table 6.52");
 }
+
+// ── supplementary user data on a packet data call (6.4.13, table 6.50 SUPED_SV / SUPED_VAL) ──
+
+/// SUPED_SV on a data call: after the availability check, the C_AHOY from SUPLI with the call's Service_Kind
+/// (0010b, table 6.29), the upload, the download to the called MS from SUPLI; then the grant and the data. To a
+/// talkgroup: the members take it (repeated), then TD_GRANT. To the site: nobody to give it to, the call goes on.
+#[test]
+fn packet_data_with_supplementary_data() {
+    let mut s = site_with(|_| {});
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG]), ms(1002, &[TG]), ms(1003, &[TG])], T0);
+    register_all(&mut air, &mut log);
+    const GPS: &[u8] = b"33.5994N 086.6847W 12m";
+    assert!(air.ms[0].set_supp(Some(GPS)));
+    let now = air.now();
+    assert!(air.ms[0].send_data(1002, t3ms::F_CONFIRMED, DATA, now));
+    let blocks = tscc_blocks(&mut air, &mut log, 4000);
+    let ahoys: Vec<Ahoy> = blocks.iter().filter_map(Ahoy::decode).collect();
+    let check = ahoys.iter().position(|a| a.source == 1001 && a.service_kind == SK_IND_PD).expect("availability check");
+    let up = ahoys.iter().position(|a| a.source == crate::t3udt::SUPLI).expect("C_AHOY from SUPLI");
+    assert!(check < up, "after the availability check (6.4.13.1)");
+    assert_eq!((ahoys[up].service_kind, ahoys[up].target, ahoys[up].appended), (SK_IND_PD, 1001, 1));
+    assert!(air.until(8000, &mut log.f(), settled(0, 0)));
+    assert_eq!(air.ms[0].status().calls_done, 1);
+    let (got, n, _) = air.ms[1].supp();
+    let (d, len) = got.expect("the called MS took it");
+    assert_eq!((&d[..len], n), (GPS, 1));
+    assert_eq!(air.ms[0].supp().2, 1, "uploaded once");
+    let (_, d, n, _) = air.ms[1].data_inbox().expect("then the data");
+    assert_eq!(&d[..n], DATA);
+    let said = |log: &Log, t: &str| log.of(EV_LOG).iter().any(|e| e.text().contains(t));
+    assert!(said(&log, "supplementary data from 1001 to 1002: delivered"));
+    air.run(3000, &mut log.f());
+
+    // to a talkgroup
+    assert!(air.ms[0].set_supp(Some(b"to the talkgroup")));
+    let now = air.now();
+    assert!(air.ms[0].send_data(TG, t3ms::F_GROUP, DATA, now));
+    let blocks = tscc_blocks(&mut air, &mut log, 4000);
+    let up = blocks.iter().filter_map(Ahoy::decode).find(|a| a.source == crate::t3udt::SUPLI).expect("SUPLI");
+    assert_eq!((up.service_kind, up.target), (SK_TG_PD, 1001));
+    assert!(air.until(5000, &mut log.f(), settled(0, 1)));
+    let took = |m: &Ms| m.supp().0.is_some_and(|(d, len)| d[..len].starts_with(b"to the talkgroup"));
+    assert!(air.ms[1..].iter().all(took));
+    assert!(air.ms[1..].iter().all(|m| m.data_inbox().is_some_and(|(h, ..)| h.group)));
+    air.run(3000, &mut log.f());
+
+    // to the site: not taken, the data goes
+    let now = air.now();
+    assert!(air.ms[0].send_data(TSI, 0, DATA, now));
+    assert!(air.until(5000, &mut log.f(), settled(0, 2)));
+    assert_eq!(air.ms[0].status().calls_done, 3);
+    assert!(said(&log, &std::format!("supplementary data from 1001 to {TSI}: not taken")));
+}
