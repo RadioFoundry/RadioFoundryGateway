@@ -210,6 +210,22 @@ int rdof_trellis34_decode(const uint8_t burst[RDOF_BURST_BYTES], uint8_t out18[1
     return dmrTrellisDecode(burst, out18);
 }
 
+int rdof_trellis34_decode_block(const uint8_t burst[RDOF_BURST_BYTES], uint8_t out18[18])
+{
+    int errors = dmrTrellisDecode(burst, out18);
+    int dbsn = out18[0] >> 1, crc9 = ((out18[0] & 1) << 8) | out18[1];
+    if (rdof_check_crc9(out18 + 2, 16, dbsn, crc9, RDOF_MASK_CRC9_RATE34))
+        return errors;
+    uint8_t any[18];
+    int e = dmrTrellisDecodeAnyStart(burst, any);
+    dbsn = any[0] >> 1;
+    crc9 = ((any[0] & 1) << 8) | any[1];
+    if (!rdof_check_crc9(any + 2, 16, dbsn, crc9, RDOF_MASK_CRC9_RATE34))
+        return errors;
+    memcpy(out18, any, 18);
+    return e;
+}
+
 void rdof_trellis34_encode(const uint8_t payload18[18], uint8_t info196[196])
 {
     uint8_t burst[RDOF_BURST_BYTES] = {0};

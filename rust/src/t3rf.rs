@@ -12,7 +12,7 @@ use core::ptr::null_mut;
 use crate::ffi::{
     dmrCachDeinterleave, dmrCachInterleave, dmrCachTactDecode, dmrCachTactEncode, rdof_bptc196_decode,
     rdof_check_crc16, rdof_crc16_ccitt, rdof_duplex_data, rdof_duplex_lc_burst, rdof_rate1_encode,
-    rdof_rate1_payload, rdof_trellis34_decode, rdof_trellis34_encode, rdof_voice_regen_burst, rdof_voice_regen_init,
+    rdof_rate1_payload, rdof_trellis34_decode_block, rdof_trellis34_encode, rdof_voice_regen_burst, rdof_voice_regen_init,
     RDOF_DT_CSBK, RDOF_DT_DATA_HEADER, RDOF_DT_MBC_CONTINUATION, RDOF_DT_MBC_HEADER, RDOF_DT_TERMINATOR_WITH_LC,
     RDOF_DT_VOICE, RDOF_DT_VOICE_LC_HEADER, RDOF_DT_VOICE_SYNC, RDOF_MASK_CSBK, RDOF_MASK_DATA_HEADER,
 };
@@ -294,7 +294,7 @@ pub extern "C" fn rdof_t3rf_burst_block(burst: &Burst, dt: &mut c_int, cc: &mut 
         return if unsafe { rdof_bptc196_decode(burst.as_ptr(), blk.as_mut_ptr()) } { PDU_OK } else { PDU_BAD };
     }
     if r == NOT_PDU && *dt == DT_RATE34 {
-        let _ = unsafe { rdof_trellis34_decode(burst.as_ptr(), blk.as_mut_ptr()) };
+        let _ = unsafe { rdof_trellis34_decode_block(burst.as_ptr(), blk.as_mut_ptr()) };
         return PDU_OK;
     }
     if r == NOT_PDU && *dt == DT_RATE1 {

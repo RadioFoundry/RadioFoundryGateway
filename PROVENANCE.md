@@ -122,7 +122,7 @@ Origin values:
 | common/src/radiofoundry/dmrFec.c, dmrFec.h | radiofoundry | core/dmr/fec/dmrFec.{c,h} at 1ce780d1, MIT | include paths flattened, otherwise unchanged; the copyright line now reads RadioFoundry, as upstream's does |
 | common/src/radiofoundry/dmrCach.c, dmrCach.h | radiofoundry | core/dmr/fec/dmrCach.{c,h} at 1ce780d1, MIT | include paths flattened; upstream's PROVENANCE.md had no row for these at that commit (the header cites ETSI TS 102 361-1 6.3, 7.1.4, 9.1.4, B.2.3, B.3.3, B.3.5, B.3.7, B.4.1) |
 | common/src/radiofoundry/dmr_lc.c, dmr_lc.h | radiofoundry | core/dmr/call/dmr_lc.{c,h} at 1ce780d1, MIT | include paths flattened |
-| common/src/radiofoundry/dmrTrellis.c, dmrTrellis.h | radiofoundry | core/hotspot/dmrDataFrame.c at 1ce780d1, MIT | an extract: the trellis and rate 1 functions, made public and renamed |
+| common/src/radiofoundry/dmrTrellis.c, dmrTrellis.h | radiofoundry | core/hotspot/dmrDataFrame.c at 1ce780d1, MIT | an extract: the trellis and rate 1 functions, made public and renamed; a decoder from any start state added |
 | common/src/radiofoundry/dmrDataCrc.c, dmrDataCrc.h | radiofoundry | core/dmr/dmrData.{c,h} at 1ce780d1, MIT | an extract: dmrDataCRC32, dmrDataCRC9 and the CRC-9 masks, unchanged |
 | LICENSES/MIT.txt | radiofoundry | RadioFoundry LICENSE | the license of the files above |
 | common/src/fec.c, common/include/rdof/fec.h | clean | ETSI TS 102 361-1 9.1, B.3.4, B.3.8, B.3.10 | the rdof_* API as thin wrappers over src/radiofoundry; Hamming(16,11,4) as (15,11,3) plus overall parity |

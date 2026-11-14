@@ -131,6 +131,19 @@ static void test_fec(void)
         CHECK(hex_eq(out, 18, v_trellis_dec[i].out) && metric == v_trellis_dec[i].metric, "trellis decode %zu (%d)",
               i, metric);
     }
+    {
+        /* A rate 3/4 block heard on air from a radio whose trellis encoder started in state 4, not 0 (2026-11-14):
+           the spec decode (from state 0) gets octets 0-1 wrong; the block decode tries any start once the CRC-9 fails. */
+        static const char heard[] = "b432f22f7d08a2c2222226b8ca2dff57d75df5dc2d1327222eada4a82a2275dbe7";
+        static const char sent[] = "01e745000024000000004011481e0c2f63ca";
+        uint8_t want[18];
+        unhex(heard, in);
+        unhex(sent, want);
+        int metric = rdof_trellis34_decode(in, out);
+        CHECK(memcmp(out, want, 2) && !memcmp(out + 2, want + 2, 16) && metric == 2, "trellis from 0: first octets off");
+        metric = rdof_trellis34_decode_block(in, out);
+        CHECK(!memcmp(out, want, 18) && metric == 0, "trellis block from start state 4 (%d)", metric);
+    }
     for (size_t i = 0; i < V_RATE1_N; i++) {
         unhex(v_rate1[i].burst, in);
         rdof_rate1_payload(in, out);

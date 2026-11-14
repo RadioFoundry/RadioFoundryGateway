@@ -56,6 +56,10 @@ int rdof_five_bit_checksum(const uint8_t lc9[9]);
 #if RDOF_FEATURE_DATA_BLOCKS
 /* Rate 3/4 trellis: returns the Viterbi path metric (0 = clean). */
 int rdof_trellis34_decode(const uint8_t burst[RDOF_BURST_BYTES], uint8_t out18[18]);
+/* A rate 3/4 data block: rdof_trellis34_decode, and when its octets 0-1 aren't a good DBSN and CRC-9 for the rest
+   (a confirmed block's, mask RDOF_MASK_CRC9_RATE34), the decode with the path starting in any trellis state, if
+   that one's are: a radio whose encoder doesn't start in state 0 (361-1 B.2.2) sends a wrong first point. */
+int rdof_trellis34_decode_block(const uint8_t burst[RDOF_BURST_BYTES], uint8_t out18[18]);
 void rdof_trellis34_encode(const uint8_t payload18[18], uint8_t info196[196]);
 
 void rdof_rate1_payload(const uint8_t burst[RDOF_BURST_BYTES], uint8_t out24[24]);
