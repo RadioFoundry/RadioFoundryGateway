@@ -2101,10 +2101,10 @@ Two sites (the SDR site and the modem site, over mqtt-net):
 | Group calls, individual calls, short data across sites | yes | yes |
 | Packet data across sites | yes | yes: air MSs, and the radio's IP text |
 | Composite TSCC on both sites | yes | yes: a group call each way, on the lent TSCC slot at both sites (2026-11-14 19:21 UTC) |
-| UDT polls across sites | yes | no |
+| UDT polls across sites | yes | yes: an air MS on site 1 polling the radio on site 2, and the radio polling it (2026-11-14 19:25 UTC) |
 | Transmit interrupt across sites | yes (off by default) | no |
 | ALS calls and their termination across sites | yes (off by default) | no |
-| Supplementary user data across sites | yes | no |
+| Supplementary user data across sites | yes | yes: on UDT short data, packet data and voice both ways, and on a status from site 1 (2026-11-14 19:25 UTC); a status with it from the radio not yet |
 
 Hardware setups:
 
