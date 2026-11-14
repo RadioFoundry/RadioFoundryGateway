@@ -1801,7 +1801,8 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
   a text message on port 5016). They take data at any rate, as a radio sends it (a real radio's confirmed IP data is
   often rate 3/4): the outbound's data blocks decoded (BPTC, the trellis, or as is at rate 1), the CRCs checked, a
   confirmed message answered with an ACK, a NACK or a SACK and its retry taken (3.16). `egroup TG [TALK_MS]` is a
-  group call with the Emergency service option (3.9). Tests: `rdofradio_e2e_t3_airms`; `rdofradio_e2e_t3_preempt`
+  group call with the Emergency service option (3.9); an MS listening to a call when it's due leaves that call for
+  the TSCC, as a radio's emergency key does. Tests: `rdofradio_e2e_t3_airms`; `rdofradio_e2e_t3_preempt`
   (pre-emption on a one-carrier site: the talker ceases on the RC, the emergency call gets TS2).
 - `--sim-ext PATH`: external MSs (other programs, such as a radio's MS engine built for the host) on the simulated
   air, through a unix socket, beside the N simulated ones (N may be 0). JSON lines in lockstep with the slots: after

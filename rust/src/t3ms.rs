@@ -872,7 +872,7 @@ impl Ms {
     }
 
     /// In a call on a payload channel, listening: an interrupt request that is due takes it to the TSCC
-    /// (6.4.14.3.3.2: "The interrupting MS shall return to the TSCC").
+    /// (6.4.14.3.3.2: "The interrupting MS shall return to the TSCC"), and so does an emergency call.
     fn intr_leave(&mut self) {
         if self.intr_wait && self.now >= self.intr_until {
             // no leave to talk: the talker kept the channel (6.4.15.1), or the call ended while it was away
@@ -887,14 +887,16 @@ impl Ms {
         if !listening || self.intr_wait || self.stunned {
             return;
         }
-        let Some(a) = self.take_due(|a| a.what == DO_INTERRUPT) else { return };
+        // an emergency call goes too, as a radio's emergency key does: it leaves the call for the TSCC for good
+        let emerg = |a: &Action| a.flags & F_EMERGENCY != 0 && matches!(a.what, DO_GROUP | DO_PRIVATE);
+        let Some(a) = self.take_due(|a| a.what == DO_INTERRUPT || emerg(a)) else { return };
         if self.mine && self.has_cur {
             self.calls_done += 1; // its own call went; it now asks as a listener
         }
         self.mine = false;
         self.has_cur = false;
         self.intr_ch = self.ch;
-        self.intr_away = true;
+        self.intr_away = a.what == DO_INTERRUPT;
         self.state = IDLE;
         self.ch = self.tscc_ch;
         self.start(a);
