@@ -38,6 +38,9 @@ pub(super) const SD_UPOLL: u8 = 0x44;
 /// the caller uploads C_UDTHU, UDT_Format IP; the data call (t3pdata, PD_ADDR) goes on with it. r#ref: the IPv4
 /// address once uploaded.
 pub(super) const SD_IPADDR: u8 = 0x45;
+/// IP connection advice (6.4.11): a registration with IP_Inform 1 (so: its Service_Options, Reg_Dereg 1 adding the
+/// address, 0 deleting it); the C_AHOY from IPI asks for the address as SD_IPADDR does. r#ref: the IPv4 address.
+pub(super) const SD_IPADV: u8 = 0x46;
 
 // op (rdof_t3_sd_t.op)
 pub const SD_SEND: u8 = 1;
@@ -478,7 +481,7 @@ impl Site {
             s.deadline_ms = self.now + self.cfg.tnp_ms as i64;
             return;
         }
-        if d.what == SD_IPADDR {
+        if d.what == SD_IPADDR || d.what == SD_IPADV {
             // B.3.7: IPv4 in octets 0-3 of one block (UAB 0); IPv6 in two (UAB 1), not used by the IP gateway
             let mut buf = [0u8; MAX_DATA];
             let n = d.blocks.data(&mut buf);
@@ -606,6 +609,10 @@ impl Site {
         }
         if d.what == SD_IPADDR {
             self.pd_addr(d.src, ok.then_some(d.r#ref), reason); // the data call's to answer
+            return;
+        }
+        if d.what == SD_IPADV {
+            self.ip_advice_done(d.src, d.so, ok.then_some(d.r#ref)); // the registration's to answer
             return;
         }
         if d.what == SD_TGLIST {
@@ -737,6 +744,9 @@ impl Site {
                     SD_DIVERT => (SK_DIVERT, DIVERTI, d.src), // 6.6.7.1.1.1 b)
                     SD_UPOLL => (SK_UDT_POLL, d.src, d.dst),
                     SD_IPADDR => (SK_IND_PD, IPI, d.src), // 6.6.3.1.2 b): Service_Kind 0010b
+                    // 6.4.11.2.1 c) gives no Service_Kind: 0100b, as for a gateway's UDT upload (6.6.1.1 d), table
+                    // 6.54); 1110b with flag 0 would read as an authentication challenge
+                    SD_IPADV => (SK_IND_UDT, IPI, d.src),
                     _ => (SK_IND_UDT, SDMI, d.src),
                 };
                 let a = Ahoy {
@@ -823,7 +833,7 @@ impl Site {
         self.heard(h.source);
         let u = &mut self.sd.upload;
         // an IP address: figure 6.34 has source the MS, target IPI; 6.4.11.1.3 the two the other way round
-        let ip = u.active && self.sd.sds[u.sd].what == SD_IPADDR;
+        let ip = u.active && matches!(self.sd.sds[u.sd].what, SD_IPADDR | SD_IPADV);
         let from = if ip && h.source == IPI { h.target } else { h.source };
         if !u.active || from != u.from || (ip && h.source != IPI && h.target != IPI) {
             return; // not asked for (an upload this site didn't ask for): ignored

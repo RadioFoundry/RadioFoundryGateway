@@ -10,7 +10,7 @@ use crate::t3air::Air;
 use crate::t3ms::{self, Ms};
 use crate::t3pdu::*;
 use crate::t3site::*;
-use crate::t3udt::{IPI, R_MS_NOT_SUPPORTED, SK_IND_PD};
+use crate::t3udt::{IPI, R_MS_NOT_SUPPORTED, SK_IND_PD, SK_IND_UDT};
 
 const T0: i64 = 1_793_912_651_000;
 const TG: u32 = 9;
@@ -246,6 +246,85 @@ fn packet_data_to_ipi_uploads_the_address() {
             assert_eq!(air.ms[0].status().calls_done, 1);
         }
     }
+}
+
+/// Runs until ms i settles, returning the TSCC's C_AHOYs and acknowledgements to it.
+fn advice_run<const N: usize>(air: &mut Air<N>, log: &mut Log, i: usize) -> (Vec<Ahoy>, Vec<Ack>) {
+    let id = air.ms[i].id();
+    let (mut ahoys, mut acks) = (Vec::new(), Vec::new());
+    let end = air.now() + 8000;
+    while air.now() < end && !(air.ms[i].state() == t3ms::IDLE && !acks.is_empty()) {
+        air.step(&mut log.f());
+        if (air.k - 1) & 1 == 0 && air.last.tscc_dt == 3 {
+            let pdu = air.last.tscc_pdu;
+            ahoys.extend(Ahoy::decode(&pdu).filter(|a| a.target == id));
+            acks.extend(Ack::decode(&pdu).filter(|a| a.target == id && reason_type(a.reason) < 2));
+        }
+    }
+    (ahoys, acks)
+}
+
+#[test]
+fn ip_connection_advice() {
+    // 6.4.11: registration with IP_Inform 1; C_AHOY from IPI; the address uploaded; the final answer from IPI
+    let ip = u32::from_be_bytes([10, 9, 8, 7]);
+    let mut s = site_with(|c| {
+        c.ip_upload = 1;
+        c.power_save = 3;
+    });
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG]), ms(1002, &[TG])], T0);
+    register_all(&mut air, &mut log);
+    air.ms[0].set_power_save(2);
+    let now = air.now();
+    assert!(air.ms[0].ip_advice(ip, true, now));
+    let (ahoys, acks) = advice_run(&mut air, &mut log, 0);
+    let a = ahoys.first().expect("C_AHOY from IPI");
+    assert_eq!((a.source, a.service_kind, a.appended, a.service_kind_flag), (IPI, SK_IND_UDT, 0, false));
+    assert_eq!(a.service_options & SO_IP_INFORM, SO_IP_INFORM, "Service_Options mirrored");
+    let f = acks.last().expect("the final answer");
+    assert_eq!((f.op, f.reason, f.source), (OP_ACKD, R_REG_ACCEPTED, IPI));
+    assert_ne!(f.response_info, 0, "PowerSave_Offset granted, as for a registration");
+    assert!(acks.iter().all(|a| a.source != REGI), "no Reg_Accepted from REGI as well");
+    assert_eq!(air.site.ip_owner(ip), Some(1001));
+    assert!(air.ms[0].status().registered != 0 && air.ms[0].power_save().1 != 0);
+    assert!(log.of(EV_LOG).iter().any(|e| e.text().contains("IP connection advice from 1001: 10.9.8.7 added")));
+
+    // the same address from another MS: IP_Connection_failed from IPI, still registered (6.4.11.1.4)
+    let now = air.now();
+    assert!(air.ms[1].ip_advice(ip, true, now));
+    let (_, acks) = advice_run(&mut air, &mut log, 1);
+    let f = acks.last().expect("the final answer");
+    assert_eq!((f.op, f.reason, f.source), (OP_ACKD, R_IP_CONN_FAILED, IPI));
+    assert!(air.ms[1].status().registered != 0);
+    assert_eq!(air.site.ip_owner(ip), Some(1001));
+
+    // deleting it: Reg_Dereg 0 with IP_Inform 1 keeps the MS registered (6.4.11.0 b)
+    let now = air.now();
+    assert!(air.ms[0].ip_advice(ip, false, now));
+    let (ahoys, acks) = advice_run(&mut air, &mut log, 0);
+    assert!(ahoys.iter().any(|a| a.source == IPI));
+    let f = acks.last().expect("the final answer");
+    assert_eq!((f.op, f.reason, f.source), (OP_ACKD, R_REG_ACCEPTED, IPI));
+    assert_eq!(air.site.ip_owner(ip), None);
+    assert!(air.ms[0].status().registered != 0, "still registered");
+    assert!(air.site.record(1001).is_some());
+    // deleting one it doesn't hold: IP_Connection_failed
+    let now = air.now();
+    assert!(air.ms[0].ip_advice(ip, false, now));
+    let (_, acks) = advice_run(&mut air, &mut log, 0);
+    assert_eq!(acks.last().map(|a| (a.reason, a.source)), Some((R_IP_CONN_FAILED, IPI)));
+
+    // no IP bearer service (ip_address_upload off): IP_Connection_failed from IPI at once, registered (6.4.11.2.2 c)
+    let mut s = site_with(|_| {});
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG])], T0);
+    let now = air.now();
+    assert!(air.ms[0].ip_advice(ip, true, now));
+    let (ahoys, acks) = advice_run(&mut air, &mut log, 0);
+    assert!(ahoys.is_empty());
+    assert_eq!(acks.last().map(|a| (a.op, a.reason, a.source)), Some((OP_ACKD, R_IP_CONN_FAILED, IPI)));
+    assert!(air.ms[0].status().registered != 0 && air.site.record(1001).is_some());
 }
 
 #[test]

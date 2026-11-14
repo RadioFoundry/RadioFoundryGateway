@@ -1450,6 +1450,45 @@ fn ipi_address_upload() {
     }
 }
 
+/// 6.4.11: a registration with IP_Inform 1 (Service_Options bit 4, table 6.9) is answered within NRand_Wait by a
+/// C_AHOY from IPI to the MS (Service_Options mirrored, Appended_Blocks 0); the MS uploads its IPv4 address
+/// (C_UDTHU, UDT_Format 0110b, either address order) and the final answer is C_ACKD(Reg_Accepted) from IPI
+/// (6.4.11.2.3 a). Without the IP service: C_NACKD(IP_Connection_failed) from IPI (6.4.11.2.2 c).
+#[test]
+fn ip_connection_advice() {
+    use crate::t3udt::{Blocks, UdtHead, DT_DATA_HDR, DT_RATE12, OP_UDTHU};
+    let so = 0b001_0001; // IP_Inform 1, Reg_Dereg 1
+    for swapped in [false, true] {
+        let mut r = Rig::new(|c| c.ip_upload = 1);
+        let sc = r.sc() as u32;
+        let k = r.send(rand(so, 0, spec::SK_REG, sc, A));
+        let (ko, o) = r.find(k, 30, ahoy).expect("C_AHOY");
+        let b = o.tscc_pdu;
+        let (so_m, _, _, gi, ab, _) = ahoy_f(&b);
+        assert_eq!((so_m, gi, ab), (so, 0, 0));
+        assert_eq!((tgt(&b), src(&b)), (A, spec::IPI));
+        assert!(r.within_nwait(k, ko));
+        let (target, source) = if swapped { (A, spec::IPI) } else { (spec::IPI, A) };
+        let h = UdtHead { op: OP_UDTHU, format: 0b0110, target, source, blocks: 1, sf: true, ..Default::default() };
+        let blk = Blocks::of(&[192, 168, 7, 9, 0, 0, 0, 0, 0, 0], 1).unwrap();
+        r.run(4);
+        let ch = r.s.tscc_ch();
+        r.s.rx_pdu(ch, DT_DATA_HDR, &h.encode());
+        r.step();
+        r.step();
+        r.s.rx_block(ch, DT_RATE12, &blk.b[0]);
+        let k2 = r.k;
+        let (_, (_, reason, _, from)) = r.ack_to(k2, 40, A).expect("the final answer");
+        assert_eq!((reason, from), (spec::REG_ACCEPTED, spec::IPI), "swapped {swapped}");
+    }
+    let mut r = Rig::new(|_| {});
+    let sc = r.sc() as u32;
+    let k = r.send(rand(so, 0, spec::SK_REG, sc, A));
+    let (ko, (_, reason, _, from)) = r.ack_to(k, 30, A).expect("answered");
+    assert_eq!((reason, from), (spec::IP_CONNECTION_FAILED, spec::IPI));
+    assert!(r.within_nwait(k, ko));
+}
+
 /// 6.6.5.1.1 b), 6.6.5.2 table 6.56, 7.2.14: a UDT short data poll of an MS here is answered within NRand_Wait by a
 /// C_AHOY from the caller to the polled MS: Service_Kind 0110b, Service_Options the C_RAND's (the Polling Format
 /// in its four LSBs), G/I 0, Appended_Blocks the C_RAND's Appended_Short_Data.

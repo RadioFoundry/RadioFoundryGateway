@@ -6,7 +6,8 @@
 # modem clock. Simulated MSs beside the air (--air-ms) hear each slot as the TX half's pump sent it; what they send
 # goes to the simulated RX half, which reports each burst after its slot as a radio does. Run twice: the RX half with
 # RX_META (each burst's slot from its slot number) and without (its label's parity, "sim-split-rx-nometa"). The MSs
-# register on the TSCC, 1000003 polls 1000002's short data and 1000001 calls 1000002 on the payload slot.
+# register on the TSCC, 1000003 polls 1000002's short data, 1000001 calls 1000002 on the payload slot and 1000002
+# advises its IP address.
 #
 #   sh host-tests/e2e_t3_radios.sh <dir with rdofradio>
 set -u
@@ -24,9 +25,10 @@ run() { # $1: the RX half's port; $2: how its bursts are placed
  "frequencies": [{"name": "A-OUT", "freq": 438.75}, {"name": "A-IN", "freq": 438.25, "tx": false}],
  "apps": [{"name": "SITE", "type": "tier3", "system": {"model": "small", "net": 5, "site": 1, "par": "ab"},
            "carriers": [{"out": "A-OUT", "in": "A-IN", "chan": 1, "tscc": true}],
-           "registration": "open", "wide_tg": "1-99999", "timers": {"hang_s": 2}}]}
+           "registration": "open", "wide_tg": "1-99999", "timers": {"hang_s": 2},
+           "services": {"ip_address_upload": true}}]}
 J
-    printf '7 1000001 private 1000002 4000\n12 1000003 upoll 1000002 2\n' > "$D/script"
+    printf '7 1000001 private 1000002 4000\n12 1000003 upoll 1000002 2\n15 1000002 ipadv\n' > "$D/script"
     "$BIN/rdofradio" --allow-tx --config "$D/site.json" --air-ms 3 --sim-tg 1 --sim-script "$D/script" \
         --seconds 20 -v > "$D/log" 2>&1
     bad=0
@@ -45,6 +47,8 @@ J
     # a UDT short data poll (6.6.5): 1000002's default answer, its ID, down to 1000003
     check 'air MS 1000003: short data from 1000002, format 4, 14 octets: "air MS 1000002"' "$1" \
         "1000003's poll answered"
+    # IP connection advice (6.4.11): 1000002's own address, 12.15.66.66, through the C_AHOY from IPI
+    check "IP connection advice from 1000002: 12.15.66.66 added" "$1" "1000002's IP connection advice"
     check "carrier 1: split: [1-9][0-9]* scheduled ([1-9][0-9]* with the CACH)" "$1" "bursts scheduled with the CACH"
     case $2 in
     from*) check "its RX half's bursts [1-9][0-9]* by RX_META's slot, 0 by parity" "$1" "every burst by RX_META" ;;

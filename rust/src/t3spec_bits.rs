@@ -140,6 +140,7 @@ pub mod spec {
     pub const CALL_CANCEL_REFUSED: u8 = 0b0010_1001;
     pub const REG_REFUSED: u8 = 0b0010_1010;
     pub const REG_DENIED: u8 = 0b0010_1011;
+    pub const IP_CONNECTION_FAILED: u8 = 0b0010_1100;
     pub const MS_NOT_REGISTERED: u8 = 0b0010_1101;
     pub const CALLED_PARTY_BUSY: u8 = 0b0010_1110;
     pub const GROUP_NOT_ALLOWED: u8 = 0b0010_1111;

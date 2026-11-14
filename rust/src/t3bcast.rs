@@ -368,6 +368,11 @@ impl Site {
     /// Only Reg_Accepted carries it (table 7.41): a talkgroup refused (Reg_Subscription/Attachment) gets
     /// Response_Info 000 0000 (6.4.4.1.13.1) and no power save (the MS may not ask for both: PS_RQ 000b there).
     pub(super) fn reg_ack(&mut self, i: usize, r: &Rand, reason: u8) {
+        self.reg_ack_from(i, r, reason, REGI);
+    }
+
+    /// reg_ack from source: REGI, or IPI ending an IP connection advice (6.4.11.2.3 a).
+    pub(super) fn reg_ack_from(&mut self, i: usize, r: &Rand, reason: u8, source: u32) {
         let rq = (r.service_options & SO_PS_RQ) >> 1;
         let off = if reason == R_REG_ACCEPTED && rq != 0 && rq <= self.cfg.power_save {
             let key = if self.regs[i].rec.sub_tg != 0 { self.regs[i].rec.sub_tg } else { self.regs[i].rec.id };
@@ -379,7 +384,7 @@ impl Site {
         let g = &mut self.regs[i];
         (g.rec.ps_rq, g.rec.ps_off) = if off != 0 { (rq, off) } else { (0, 0) };
         g.awake_ms = self.now + self.cfg.awake_ms as i64;
-        let a = Ack { op: OP_ACKD, response_info: off, reason, target: r.source, source: REGI };
+        let a = Ack { op: OP_ACKD, response_info: off, reason, target: r.source, source };
         self.push(DT_CSBK, a.encode(), false, None);
     }
 

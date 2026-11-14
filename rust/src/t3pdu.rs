@@ -68,6 +68,7 @@ pub const R_SYSBUSY: u8 = 0x27;
 pub const R_CALL_CANCEL_REFUSED: u8 = 0x29;
 pub const R_REG_REFUSED: u8 = 0x2A;
 pub const R_REG_DENIED: u8 = 0x2B;
+pub const R_IP_CONN_FAILED: u8 = 0x2C; // IP_Connection_failed: the IP connection advice failed (6.4.11)
 pub const R_MS_NOT_REGISTERED: u8 = 0x2D;
 pub const R_CALLED_PARTY_BUSY: u8 = 0x2E;
 pub const R_GROUP_NOT_ALLOWED: u8 = 0x2F;

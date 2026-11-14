@@ -374,10 +374,13 @@ typedef struct {
 #define ACT_AMBE 0xF3      /* the MSs' voice from a file of AMBE+2 frames (rdof_t3sim_ambe), "off" the near-silence */
 #define ACT_UPOLL 0xF4     /* rdof_t3ms_upoll (ISO 8-bit), arg the MS, len the blocks */
 #define ACT_SETPOLL 0xF5   /* rdof_t3ms_set_poll (ISO 8-bit text) */
+#define ACT_IPADV 0xF6     /* rdof_t3ms_ip_advice: arg the address, flags 1 deleting it */
+#define AIR_RADIO_NET 0x0C000000u /* 12.0.0.0/8: a radio's address, its id in the low 24 bits */
 #define AIR_FILL_MAX ((RDOF_IPGW_MAX_PACKET - 28) / 2) /* data *N: characters at most, one UDP/IPv4 datagram */
 #define ACT_HELP                                                                                                       \
     "ID register [TG] | deregister | group TG [TALK_MS] | private ID [TALK_MS] | status ID N | gstatus TG N | "        \
-    "sdm ID TEXT | gsdm TG TEXT | upoll ID [BLOCKS] | setpoll TEXT | data ID TEXT | cdata ID TEXT | gdata TG TEXT "  \
+    "sdm ID TEXT | gsdm TG TEXT | upoll ID [BLOCKS] | setpoll TEXT | ipadv [A.B.C.D] [del] | data ID TEXT | "      \
+    "cdata ID TEXT | gdata TG TEXT "                                                                                  \
     "(data34, cdata1 ...: rate 3/4, 1; "                                                                              \
     "TEXT *N: N generated characters) | "                                                                             \
     "interrupt ID [TALK_MS] | ginterrupt TG [TALK_MS] | als ID | alsend ID | "                                        \
@@ -469,6 +472,24 @@ static int act_parse(const char *text, act_t *x)
             return -1;
         memcpy(x->text, t, n);
         x->what = ACT_SETPOLL, x->len = (uint8_t)n;
+    } else if (!strcmp(what, "ipadv")) {
+        /* the address (default the MS's own, 12.x.y.z), "del" deleting it */
+        const char *t = strstr(line, what) + strlen(what);
+        unsigned b[4];
+        int used = 0;
+        x->what = ACT_IPADV;
+        if (sscanf(t, " %u.%u.%u.%u%n", &b[0], &b[1], &b[2], &b[3], &used) == 4) {
+            if (b[0] > 255 || b[1] > 255 || b[2] > 255 || b[3] > 255)
+                return -1;
+            x->arg = b[0] << 24 | b[1] << 16 | b[2] << 8 | b[3];
+            t += used;
+        } else
+            x->arg = AIR_RADIO_NET | (x->id & 0xFFFFFF);
+        t += strspn(t, " \t");
+        if (!strncmp(t, "del", 3))
+            x->flags = 1;
+        else if (*t && *t != '\r' && *t != '\n')
+            return -1;
     } else if (!strcmp(what, "setstatus") && got >= 3 && a1 <= 127)
         x->what = ACT_SETSTATUS, x->arg = (uint32_t)a1;
     else if (!strcmp(what, "cancel"))
@@ -487,7 +508,6 @@ static int act_parse(const char *text, act_t *x)
     return 1;
 }
 
-#define AIR_RADIO_NET 0x0C000000u /* 12.0.0.0/8: a radio's address, its id in the low 24 bits */
 
 /* UTF-8 text (n octets) as UTF-16BE, the BMP only (anything else U+FFFD): the octets written */
 static size_t utf16be(const char *s, size_t n, uint8_t *out, size_t cap)
@@ -545,6 +565,8 @@ static bool act_run(rdof_t3ms_t *ms, const act_t *a, int64_t now)
         return rdof_t3ms_set_poll(ms, 4 /* ISO 8-bit */, (const uint8_t *)a->text, a->len);
     if (a->what == ACT_UPOLL)
         return rdof_t3ms_upoll(ms, a->arg, 4, a->len, now);
+    if (a->what == ACT_IPADV)
+        return rdof_t3ms_ip_advice(ms, a->arg, !(a->flags & 1), now);
     /* a status sent is the one it answers a poll with after (as a radio does) */
     if (a->what == RDOF_T3MS_DO_STATUS && a->talk_ms < 127)
         rdof_t3ms_set_status(ms, (uint8_t)a->talk_ms);

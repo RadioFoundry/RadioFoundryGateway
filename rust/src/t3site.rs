@@ -11,7 +11,7 @@ use core::ffi::{c_char, c_int, CStr};
 use core::fmt::Write;
 
 use crate::t3pdu::*;
-use crate::t3udt::{DGNAI, DT_DATA_HDR, DT_RATE12, SK_IND_PD, SK_IND_UDT, SK_STATUS, SK_SUPPL, SK_TG_PD, SK_TG_UDT};
+use crate::t3udt::{DGNAI, DT_DATA_HDR, DT_RATE12, IPI, SK_IND_PD, SK_IND_UDT, SK_STATUS, SK_SUPPL, SK_TG_PD, SK_TG_UDT};
 
 // short data on the TSCC (UDT short data, status, polling): tier3.md 3.15
 #[path = "t3sdata.rs"]
@@ -20,7 +20,7 @@ pub use sdata::{
     rdof_t3_net_sd, rdof_t3_sd_of_event, rdof_t3_sd_send, SdMsg, SD_DGNA, SD_F_EMERGENCY, SD_F_GROUP, SD_POLL,
     SD_INTR, SD_RESULT, SD_SEND, SD_STATUS, SD_UDT,
 };
-use sdata::{SD_DIVERT, SD_IPADDR, SD_TGLIST};
+use sdata::{SD_DIVERT, SD_IPADDR, SD_IPADV, SD_TGLIST};
 // talkgroup lists: registration with a list, DGNA (tier3.md 3.17)
 #[path = "t3tglist.rs"]
 mod tglist;
@@ -643,7 +643,11 @@ struct Reg {
     written_ms: i64,
     awake_ms: i64, // awake until (power save; what was granted is in the record)
     demanded: bool, // expired, and a registration demanded of it (6.4.5.0); deleted if it doesn't answer
+    ips: [u32; IPS_PER_MS], // IP connection advice (6.4.11): its IPv4 addresses, 0 unused; not kept in the records
 }
+
+/// The IP addresses an MS may advise (6.4.11.0 a): more get IP_Connection_failed.
+const IPS_PER_MS: usize = 2;
 
 #[derive(Clone, Copy, Default)]
 struct MsPol {
@@ -1636,6 +1640,10 @@ impl Site {
 
     fn registration(&mut self, r: &Rand) {
         let ms = r.source;
+        if r.service_options & SO_REG == 0 && r.service_options & SO_IP_INFORM != 0 {
+            self.ip_advice(r); // 6.4.11.0 b): deleting an IP connection; it stays registered
+            return;
+        }
         if r.service_options & SO_REG == 0 {
             // deregistration: the only answer is Reg_Accepted
             self.ack(R_REG_ACCEPTED, ms, REGI);
@@ -1723,10 +1731,110 @@ impl Site {
             _ => {}
         }
         self.subs_dirty = true;
-        self.reg_ack(i, r, reason); // with PowerSave_Offset
+        if r.service_options & SO_IP_INFORM != 0 && reason == R_REG_ACCEPTED {
+            self.ip_advice(r); // 6.4.11.2: the C_AHOY from IPI answers it, the final C_ACKD comes from IPI
+        } else {
+            self.reg_ack(i, r, reason); // with PowerSave_Offset
+        }
         self.write_record(i);
         let sub = self.regs[i].rec.sub_tg;
         self.activity(ACT_REG, REG_REGISTER, ms, sub, reason);
+    }
+
+    // ── IP connection advice (6.4.11) ──
+
+    /// A registration with IP_Inform 1, accepted (Reg_Dereg 1, adding an address), or Reg_Dereg 0 (deleting one:
+    /// not a deregistration, 6.4.11.0 b). With services.ip_address_upload, the C_AHOY from IPI asks for the address
+    /// (6.4.11.2.1 c): the registration is then taken as done. Without it, or for an MS not registered here when it
+    /// deletes, C_NACKD(IP_Connection_failed) from IPI (6.4.11.2.2 c): registered, no IP service.
+    fn ip_advice(&mut self, r: &Rand) {
+        let ms = r.source;
+        if self.sd_again(SD_IPADV, ms) {
+            return; // it missed the C_AHOY: again
+        }
+        let Some(i) = self.reg_index(ms) else {
+            self.refuse(R_IP_CONN_FAILED, ms, IPI);
+            return;
+        };
+        if self.cfg.ip_upload == 0 || !self.sd_upload_new(SD_IPADV, ms, IPI, false, r.service_options, 1) {
+            if r.service_options & SO_REG != 0 {
+                self.ip_no_ps(i); // no Reg_Accepted: no PowerSave_Offset granted
+            }
+            if self.cfg.ip_upload == 0 {
+                self.refuse(R_IP_CONN_FAILED, ms, IPI);
+            }
+        }
+    }
+
+    fn ip_no_ps(&mut self, i: usize) {
+        let g = &mut self.regs[i];
+        (g.rec.ps_rq, g.rec.ps_off) = (0, 0);
+        g.awake_ms = self.now + self.cfg.awake_ms as i64;
+    }
+
+    /// An IP connection advice's upload ended (so the C_RAND's Service_Options; ip None when it failed): the final
+    /// answer from IPI (6.4.11.2.3). Added: C_ACKD(Reg_Accepted) with PowerSave_Offset, as a registration's; an
+    /// address another MS holds, or no room for it, IP_Connection_failed ("the IP address is already in use by
+    /// another MS", 6.4.11.1.4). Deleted: C_ACKD(Reg_Accepted) with the offset it has; an address it doesn't hold,
+    /// IP_Connection_failed.
+    pub(super) fn ip_advice_done(&mut self, ms: u32, so: u8, ip: Option<u32>) {
+        let Some(i) = self.reg_index(ms) else { return }; // deregistered meanwhile: nothing to answer
+        let add = so & SO_REG != 0;
+        let ok = match ip {
+            Some(ip) if add => {
+                let other = (0..REGS).any(|j| j != i && self.regs[j].used && self.regs[j].ips.contains(&ip));
+                let ips = &mut self.regs[i].ips;
+                if other {
+                    false
+                } else if ips.contains(&ip) {
+                    true
+                } else if let Some(s) = ips.iter_mut().find(|a| **a == 0) {
+                    *s = ip;
+                    true
+                } else {
+                    false
+                }
+            }
+            Some(ip) => match self.regs[i].ips.iter_mut().find(|a| **a == ip) {
+                Some(s) => {
+                    *s = 0;
+                    true
+                }
+                None => false,
+            },
+            None => false,
+        };
+        let [a, b, c, d] = ip.unwrap_or(0).to_be_bytes();
+        let what = match (ok, add) {
+            (true, true) => "added",
+            (true, false) => "deleted",
+            _ => "refused",
+        };
+        self.log(format_args!("IP connection advice from {ms}: {a}.{b}.{c}.{d} {what}"));
+        if !ok {
+            if add {
+                self.ip_no_ps(i);
+            }
+            self.refuse(R_IP_CONN_FAILED, ms, IPI);
+            return;
+        }
+        if add {
+            let r = Rand { service_options: so, source: ms, ..Default::default() };
+            self.reg_ack_from(i, &r, R_REG_ACCEPTED, IPI);
+        } else {
+            let off = self.regs[i].rec.ps_off;
+            let a = Ack { op: OP_ACKD, response_info: off, reason: R_REG_ACCEPTED, target: ms, source: IPI };
+            self.push(DT_CSBK, a.encode(), false, None);
+        }
+    }
+
+    /// The MS that advised IPv4 address ip here (6.4.11.0: "cross reference the IP address with the MS individual
+    /// address").
+    pub fn ip_owner(&self, ip: u32) -> Option<u32> {
+        if ip == 0 {
+            return None;
+        }
+        (0..REGS).find(|&j| self.regs[j].used && self.regs[j].ips.contains(&ip)).map(|j| self.regs[j].rec.id)
     }
 
     // ── service requests ──

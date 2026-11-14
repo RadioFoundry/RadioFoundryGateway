@@ -50,6 +50,7 @@ pub const F_MULTI: u8 = 0x08; // DO_DATA: multi-item (P_MAINT after the item)
 pub const F_RATE34: u8 = 0x10; // DO_DATA: rate 3/4 blocks (361-1 8.2.2); neither rate flag: rate 1/2
 pub const F_RATE1: u8 = 0x20; // DO_DATA: rate 1 blocks
 pub const F_LIST: u8 = 0x10; // DO_REGISTER: with the talkgroup list set by register_list
+pub const F_IPADV: u8 = 0x20; // DO_REGISTER / DO_DEREGISTER: IP connection advice (ip_advice), adding / deleting
 pub const DO_DGNA: u8 = 12; // assign talkgroups to an MS (send_dgna): arg the MS
 pub const DO_DIVERT: u8 = 13; // set or clear a call diversion (divert, divert_clear): arg MSI, GPI, TSI or DIVERTI
 pub const F_ALS: u8 = 0x20; // DO_PRIVATE: an Ambient Listening Service call (it listens, the called MS talks)
@@ -268,6 +269,7 @@ pub struct Ms {
     no_als: bool,  // answers an ALS radio check MSNot_Supported
     no_ip_upload: bool, // answers the C_AHOY from IPI (the IP address upload) MSNot_Supported
     ip_dst: u32,        // the packet data call's IPv4 destination (its datagram's), for that upload
+    adv_ip: u32,        // the address an IP connection advice (F_IPADV) sends
     als_from: u32, // the caller of an ALS radio check it accepted
     als_until: i64,
     als_on: bool,       // on the payload channel of an ALS call, transmitting for the caller
@@ -478,6 +480,13 @@ impl Ms {
         self.no_ip_upload = refuse;
     }
 
+    /// Queues an IP connection advice (6.4.11): a registration with IP_Inform 1 that adds IPv4 address ip, or
+    /// (add false) Reg_Dereg 0 with IP_Inform 1, which deletes it and leaves the MS registered (6.4.11.0 b).
+    pub fn ip_advice(&mut self, ip: u32, add: bool, at_ms: i64) -> bool {
+        self.adv_ip = ip;
+        self.act(if add { DO_REGISTER } else { DO_DEREGISTER }, 0, 0, F_IPADV, at_ms)
+    }
+
     /// Stunned by the site (6.4.9): no user services until revived.
     pub fn stunned(&self) -> bool {
         self.stunned
@@ -584,6 +593,7 @@ impl Ms {
 
     fn request_pdu(&self, a: &Action) -> [u8; 10] {
         let emergency = if a.flags & F_EMERGENCY != 0 { SO_EMERGENCY } else { 0 };
+        let ip_inform = if a.flags & F_IPADV != 0 { SO_IP_INFORM } else { 0 };
         let r = match a.what {
             // 6.4.4.1.13.2: a list, Trgt_Adr_Cnts 10b to TATTSI with the blocks it needs
             DO_REGISTER if a.flags & F_LIST != 0 => Rand {
@@ -595,7 +605,7 @@ impl Ms {
                 ..Default::default()
             },
             DO_REGISTER => Rand {
-                service_options: SO_REG | (self.ps_rq & 7) << 1,
+                service_options: SO_REG | (self.ps_rq & 7) << 1 | ip_inform,
                 dep: if a.arg != 0 { 1 << 2 } else { 0 },
                 service_kind: SK_REG,
                 target: if a.arg != 0 { a.arg } else { self.syscode as u32 },
@@ -603,7 +613,7 @@ impl Ms {
                 ..Default::default()
             },
             DO_DEREGISTER => Rand {
-                service_options: 0,
+                service_options: ip_inform,
                 service_kind: SK_REG,
                 target: self.syscode as u32,
                 source: self.id,
@@ -1307,7 +1317,9 @@ impl Ms {
                 }
                 R_REG_ACCEPTED | R_REG_SUBSCRIPTION => {
                     self.reg_info = a.response_info;
-                    self.registered = self.cur.what == DO_REGISTER;
+                    // deleting an IP address leaves it registered (6.4.11.0 b)
+                    let ipdel = self.cur.what == DO_DEREGISTER && self.cur.flags & F_IPADV != 0;
+                    self.registered = self.cur.what == DO_REGISTER || (ipdel && self.registered);
                     // 6.4.7.2.1: the offset in Response_Info; 0, power save not available
                     self.ps_off = if self.registered && self.ps_rq != 0 { a.response_info & 0x7F } else { 0 };
                     self.done(true);
@@ -1318,6 +1330,10 @@ impl Ms {
             _ => {
                 if a.reason == R_MS_NOT_REGISTERED || a.reason == R_REG_DENIED || a.reason == R_REG_REFUSED {
                     self.registered = false;
+                }
+                if a.reason == R_IP_CONN_FAILED && self.cur.what == DO_REGISTER {
+                    self.registered = true; // 6.4.11.1.0 f): registered, without the IP service
+                    self.ps_off = 0;
                 }
                 // 6.4.4.1.0: told it must register (MS_Not_Registered, 7.2.6), it registers by random access
                 let pending = self.actions[..self.nact].iter().any(|x| x.what == DO_REGISTER);
@@ -1383,7 +1399,7 @@ impl Ms {
             }
             return;
         }
-        if a.service_kind == SK_REG && !a.service_kind_flag {
+        if a.service_kind == SK_REG && !a.service_kind_flag && a.source != IPI {
             self.on_challenge(a);
             return;
         }
@@ -1426,7 +1442,14 @@ impl Ms {
         }
         // an upload asked for: short data (6.6.4.4 c, table 6.35), DGNA (6.6.8.3.3, table 6.71) or a
         // registration's talkgroup list (6.4.4.1.13.2: to TATTSI, A = 0, SF = 1, the Address Format)
+        // an IP connection advice's address: C_AHOY from IPI (6.4.11.1.0 e), Service_Kind 0100b or 1110b
+        let ipadv = a.source == IPI
+            && matches!(a.service_kind, SK_IND_UDT | SK_REG)
+            && self.has_cur
+            && self.cur.flags & F_IPADV != 0
+            && matches!(self.cur.what, DO_REGISTER | DO_DEREGISTER);
         let upload = match (a.source, a.service_kind) {
+            _ if ipadv => Some(self.cur.what),
             (SDMI, SK_IND_UDT | SK_TG_UDT) => Some(DO_SDM),
             (DGNAI, SK_SUPPL) => Some(DO_DGNA),
             (TATTSI, SK_REG) if a.service_kind_flag => Some(DO_REGISTER),
@@ -1437,7 +1460,7 @@ impl Ms {
         if let Some(what) = upload {
             let mine = self.has_cur && self.cur.what == what && matches!(self.state, ACCESS | WAITING);
             let not_ip = what == DO_DATA && (self.cur.arg != IPI || self.no_ip_upload || self.ip_dst == 0);
-            if !mine || (what == DO_REGISTER && self.cur.flags & F_LIST == 0) || not_ip {
+            if !mine || (what == DO_REGISTER && self.cur.flags & (F_LIST | F_IPADV) == 0) || not_ip {
                 let r = Ack {
                     op: OP_ACKU,
                     reason: R_MS_NOT_SUPPORTED,
@@ -1448,20 +1471,11 @@ impl Ms {
                 self.reply = Some(r.encode());
                 return;
             }
+            if ipadv && what == DO_REGISTER {
+                self.registered = true; // 6.4.11.1.0 e): the C_AHOY from IPI means it is registered
+            }
             let (h, b) = match what {
-                DO_REGISTER => {
-                    let h = UdtHead {
-                        op: OP_UDTHU,
-                        format: FMT_ADDRESS,
-                        target: TATTSI,
-                        source: self.id,
-                        blocks: self.reg_list.n,
-                        sf: true,
-                        ..Default::default()
-                    };
-                    (h, self.reg_list)
-                }
-                DO_DATA => {
+                _ if ipadv || what == DO_DATA => {
                     // 6.4.11.1.3, B.3.7: UDT_Format IP, UAB 0 (IPv4), SF 1, A 0, the address then 48 bits reserved
                     let h = UdtHead {
                         op: OP_UDTHU,
@@ -1473,8 +1487,20 @@ impl Ms {
                         ..Default::default()
                     };
                     let mut d = [0u8; 10];
-                    d[..4].copy_from_slice(&self.ip_dst.to_be_bytes());
+                    d[..4].copy_from_slice(&if ipadv { self.adv_ip } else { self.ip_dst }.to_be_bytes());
                     (h, Blocks::of(&d, 1).unwrap_or_default())
+                }
+                DO_REGISTER => {
+                    let h = UdtHead {
+                        op: OP_UDTHU,
+                        format: FMT_ADDRESS,
+                        target: TATTSI,
+                        source: self.id,
+                        blocks: self.reg_list.n,
+                        sf: true,
+                        ..Default::default()
+                    };
+                    (h, self.reg_list)
                 }
                 DO_DIVERT => {
                     // table 6.63: to MSI or GPI, the Address Format, A 0, SF 0, UDT_DIV 1
@@ -2131,6 +2157,11 @@ pub unsafe extern "C" fn rdof_t3ms_data(
 pub unsafe extern "C" fn rdof_t3ms_set_poll(ms: *mut Ms, format: u8, data: *const u8, len: usize) -> bool {
     let d = if data.is_null() || len == 0 { &[][..] } else { core::slice::from_raw_parts(data, len) };
     (*ms).set_poll_reply(format, d)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3ms_ip_advice(ms: *mut Ms, ip: u32, add: bool, at_ms: i64) -> bool {
+    (*ms).ip_advice(ip, add, at_ms)
 }
 
 #[no_mangle]
