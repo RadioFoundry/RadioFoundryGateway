@@ -55,19 +55,18 @@ cmake -S host-tests -B build/host && cmake --build build/host && ctest --test-di
 Needs CMake, a C compiler and cargo (stable Rust, `rustup` minimal profile). Optional, each adding tests:
 
 - SoapySDR or libiio: `rdofradio` is built, and with it the `rdofradio_e2e_*` tests ([Host tools](#host-tools));
-- Python 3: the end-to-end runs on `fakemodem` that are scripts;
+- Python 3: `rdofradio_e2e_ipgw`, `rdofradio_e2e_examples`, `mmdvm_bench_tests`;
 - Node: the settings schema, a syntax check of the page's scripts;
 - a `mosquitto` broker and libmosquitto: the MQTT network end to end.
 
-Offline. Most tests take under a second; the end-to-end ones
-take 15 to 100 s, about 2 minutes for the whole run at `ctest -j8` on an M1 Pro (2026-11-14).
-`ctest --test-dir build/host -j8 -E 'e2e|mmdvm_bench'` leaves those out.
+Offline. Most tests take under a second; the end-to-end ones take 15 to 100 s, about 2 minutes for the whole run at
+`ctest -j8` on an M1 Pro (2026-11-14). `ctest --test-dir build/host -j8 -E 'e2e|mmdvm_bench'` leaves those out.
 
 What runs:
 
 - **The Rust, by default.** `rdof_common` is built with the modules in `rust/` in place of their C
-  ([rust/README.md](../rust/README.md)), so every test and tool runs the Rust. The build shows it: `cargo: rust for
-  rdof_rust`, and the library is `build/host/common/rdof_rust-cargo/release/librdof_rust.a`. Without cargo the
+  ([rust/README.md](../rust/README.md)), so every test and tool runs the Rust. The build shows it
+  (`cargo: rust for rdof_rust`), and the library is `build/host/common/rdof_rust-cargo/release/librdof_rust.a`. Without cargo the
   configure step stops and lists what's missing. `-DRDOF_RUST=OFF` builds the C modules instead (the configure step
   says `rdof_common: the C modules (RDOF_RUST off)`).
 - **The C twin.** `rdof_tests_c` runs the core tests on the C files the Rust replaces, while they're kept. Only in a
