@@ -2038,7 +2038,7 @@ Built since step 8e, host-tested (the bench steps above note what has run on air
 | 446851f8 | The site's own log lines print without `-v` (the modem site's journal had no C_MOVE line for a move command) |
 | 5ccdea85 | Composite TSCC tests: individual call, confirmed data, emergency, a sleeping member, a network call on the lent slot; the modem e2e with composite on |
 | 5ddec72e | A C_RAND whose group call gets the lent slot logs that, not "no answer queued" |
-| (next) | Composite: no lend while a payload channel clears; a queued call takes the slot once the TSCC's MBC is out; the sim MS holds random access while lent; a split half's composite outbound per slot; the split e2e with composite on |
+| 7d5bee67 | Composite: no lend while a payload channel clears; a queued call takes the slot once the TSCC's MBC is out; the sim MS holds random access while lent; a split half's composite outbound per slot; the split e2e with composite on |
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
 apart from the code, found seven deviations, all fixed (2026-11-12):
