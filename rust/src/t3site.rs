@@ -2157,6 +2157,7 @@ impl Site {
             // for its data anyway)
             self.supp_log(ms, dst, ok, upload, reason);
             self.pd_supp_done(ms, dst);
+            self.sd_supp_after(ms, dst); // UDT short data's
             return;
         };
         self.supp_log(ms, dst, ok, upload, reason);

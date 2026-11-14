@@ -163,6 +163,7 @@ const S_HOLD: u8 = 2; // stored: the called MS is busy
 const S_DOWN: u8 = 3; // to an MS here: the download or the status C_AHOY, its answer awaited
 const S_GROUP: u8 = 4; // to a talkgroup: repeats left
 const S_NET: u8 = 5; // sent to the network: its result awaited
+const S_AFTER: u8 = 6; // UDT short data whose caller's supplementary data goes first (SD_SUPP; 6.6.4.1.2, 6.6.4.5)
 
 // where it came from
 const O_MS: u8 = 1; // an MS here: answered on the TSCC
@@ -359,6 +360,8 @@ impl Site {
             let d = self.sd.sds[i];
             if d.state == S_UPLOAD && !(self.sd.upload.active && self.sd.upload.sd == i) {
                 self.sd.sds[i].ahoy_due = true;
+            } else if d.state == S_AFTER && self.sd_again(SD_SUPP, ms) {
+                // it missed the C_AHOY from SUPLI: again
             } else if d.state == S_HOLD {
                 self.ack(R_QUEUED_BUSY, ms, d.dst);
             } else {
@@ -406,9 +409,13 @@ impl Site {
             }
         }
         let Some(group) = self.sd_target(ms, r.target, group, what == SD_POLL) else { return };
-        // Supplementary data (SUPED_SV) isn't taken: the call goes on without it (6.6.6.1.2.1.2 a)
+        // a status's supplementary data (SUPED_SV) isn't taken: it goes on without it (6.6.6.1.2.1.2 a)
         if what == SD_UDT {
-            self.sd_upload_new(SD_UDT, ms, r.target, group, r.service_options, rand_sdata_blocks(r));
+            if self.sd_upload_new(SD_UDT, ms, r.target, group, r.service_options, rand_sdata_blocks(r))
+                && r.service_options & SO_SUPED != 0
+            {
+                self.sd_supp_first(ms, r, group);
+            }
             return;
         }
         let Some(i) = self.sd_free() else {
@@ -552,6 +559,41 @@ impl Site {
         d.head.blocks = blocks.clamp(1, MAX_BLOCKS as u8);
         self.sd.sds[i] = d;
         true
+    }
+
+    /// UDT short data with SUPED_SV (table 6.55): the caller's supplementary data first, its C_AHOY from SUPLI
+    /// before SDMI's (6.6.4.1.2, 6.6.4.5), and downloaded first (6.6.4.1.3 b); the short data's upload waits for
+    /// it (S_AFTER, released by sd_supp_after). No room: the short data goes on without it (6.4.13.0 a).
+    fn sd_supp_first(&mut self, ms: u32, r: &Rand, group: bool) {
+        let Some(i) = (0..SDS).find(|&i| {
+            let d = &self.sd.sds[i];
+            d.used && d.what == SD_UDT && d.origin == O_MS && d.src == ms && d.dst == r.target && d.state == S_UPLOAD
+        }) else {
+            return;
+        };
+        if !self.sd_supp_new(ms, r.target, group, r.service_kind, (r.dep >> 2 & 3) + 1) {
+            self.log(format_args!("supplementary data from {ms}: no room, the call goes on"));
+            return;
+        }
+        let now = self.now;
+        let s = &mut self.sd.sds[i];
+        s.state = S_AFTER;
+        s.ahoy_due = false;
+        s.deadline_ms = now + 4 * self.cfg.tnp_ms as i64;
+    }
+
+    /// The supplementary data of ms's call to dst ended (t3site supp_data_done): UDT short data held for it
+    /// (S_AFTER) goes on with its upload.
+    pub(super) fn sd_supp_after(&mut self, ms: u32, dst: u32) {
+        let now = self.now;
+        let tnp = self.cfg.tnp_ms as i64;
+        for d in self.sd.sds.iter_mut() {
+            if d.used && d.state == S_AFTER && d.src == ms && d.dst == dst {
+                d.state = S_UPLOAD;
+                d.ahoy_due = true;
+                d.deadline_ms = now + tnp;
+            }
+        }
     }
 
     /// The supplementary data transaction of a call from ms, dropped (the call cancelled or gone).
@@ -1222,10 +1264,10 @@ impl Site {
                         s.next_ms = now;
                     }
                 }
-                S_HOLD | S_NET | S_UPLOAD if now >= d.deadline_ms => {
+                S_HOLD | S_NET | S_UPLOAD | S_AFTER if now >= d.deadline_ms => {
                     let (reason, why) = match d.state {
                         S_HOLD => (R_CALLED_PARTY_BUSY, WHY_BUSY),
-                        S_NET => (R_MSAWAY, WHY_TIMEOUT),
+                        S_NET | S_AFTER => (R_MSAWAY, WHY_TIMEOUT),
                         _ if d.what == SD_UPOLL => (R_MSAWAY, WHY_TIMEOUT),
                         _ => (R_UDT_CRC, WHY_TIMEOUT),
                     };
@@ -1235,7 +1277,7 @@ impl Site {
                 _ => {}
             }
             let d = self.sd.sds[i];
-            let progress = matches!(d.state, S_HOLD | S_NET)
+            let progress = matches!(d.state, S_HOLD | S_NET | S_AFTER)
                 || (d.state == S_DOWN && d.what != SD_UPOLL)
                 || (d.state == S_UPLOAD && d.ps_held && d.ahoy_due);
             if d.origin == O_MS && progress && now >= d.next_ack_ms {

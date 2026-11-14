@@ -1027,7 +1027,7 @@ Choices where 361-4 leaves them open:
 Not built: the gateway-started forms, power control in a de-key (6.4.14.2), the ALS
 called MS resuming after an interrupt (6.6.2.6.6). Not run on a radio.
 
-### 3.21 Supplementary user data on voice and packet data calls (361-4 6.4.13)
+### 3.21 Supplementary user data on voice, packet data and short data calls (361-4 6.4.13)
 
 A voice call's C_RAND may carry up to 4 UDTs of user data for the called party, sent before the grant (6.4.13.0):
 SUPED_SV 1 (Service_Options bit 4, table 6.40) and SUPED_VAL, the UDTs less one, in bits 3-2 of the 4 dependent
@@ -1065,7 +1065,12 @@ Service_Kind 0010b or 0011b. Then the grant (or the queue), whatever happened. T
 ID, IPI) there's nobody to give it to: the log says "not taken" and the call goes on (6.4.13.0 a). The simulated MS
 sends SUPED_SV on its data calls too, except to IPI.
 
-Not built: supplementary data on UDT short data and status messages (6.6.4, 6.6.6.1.2.1.2 a: still abandoned).
+UDT short data (table 6.55: SUPED_SV, SUPED_VAL in bits 3-2 beside SDATA_VAL in 1-0; t3sdata.rs `S_AFTER`): the
+C_AHOY from SUPLI (Service_Kind 0100b or 0101b) comes before SDMI's (6.6.4.1.2, 6.6.4.5: the MS's order), and the
+supplementary data goes down first (6.6.4.1.3 b); the short data's upload waits for it, 4 Tnp at most. Sim-tested
+here; across sites the parts go as for voice and short data, not tested together.
+
+Not built: supplementary data on status messages (6.6.6.1.2.1.2 a: still abandoned).
 
 ## 4. Settings (config-v3 `tier3` app)
 
@@ -1742,7 +1747,7 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
   in a UDP/IPv4 datagram from port 5016 to 5016, 12.x.y.z the MS's address (its ID in the low 24 bits) and 225.x.y.z
   a talkgroup's, sent as rate 1/2 blocks; `data34`, `cdata34`, `gdata34` the same in rate 3/4 blocks, `data1`,
   `cdata1`, `gdata1` in rate 1; `1000001 setstatus 12`: the status it answers a poll with, else the last it sent, 0
-  at start; `1000001 setsupp TEXT`: supplementary user data its voice and packet data calls carry from now on, up to 46 octets,
+  at start; `1000001 setsupp TEXT`: supplementary user data its voice, packet data and short data calls carry from now on, up to 46 octets,
   none without TEXT, 3.21). Their state changes go to the log (`air MS ID: ...`), and so does the short data,
   supplementary data and packet data they take (the text; a UDP datagram's addresses and payload, decoded when it's
   a text message on port 5016). They take data at any rate, as a radio sends it (a real radio's confirmed IP data is
@@ -1975,6 +1980,7 @@ Built since step 8e, host-tested (the bench steps above note what has run on air
 | 2f701fb2 | IP gateway counters for headers, header CRC failures and blocks; a log line for data handed to the site's gateway |
 | 08a562b6 | Supplementary user data on packet data calls, here and across sites (3.21) |
 | 5c1f0770 | The site's reply to an MS that just sent it data: on its open data channel, or after its call (3.16) |
+| (next) | Supplementary user data on UDT short data, SUPLI before SDMI (3.21) |
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
 apart from the code, found seven deviations, all fixed (2026-11-12):
@@ -2020,7 +2026,7 @@ One site (the SDR site, two carriers):
 | Power save | yes | yes: registration, a status, short data and a poll to the sleeping radio (13.2 step 8f); a call and packet data to it not yet |
 | Full-duplex individual calls | yes (off by default) | no |
 | Supplementary user data on voice calls (3.21) | yes | yes: both ways, to an MS and a talkgroup |
-| Supplementary user data on packet data calls (3.21) | yes | no |
+| Supplementary user data on packet data and UDT short data (3.21) | yes | no |
 | Transmit interrupt | yes | air MSs only, on the modem site |
 | Composite TSCC | yes | air MSs only, on the modem site |
 | Three or four SDR carriers | yes | no: the SDR site runs two |
@@ -2048,7 +2054,7 @@ Hardware setups:
 | One split TX half and one split RX half, no SDR | yes, end to end | no |
 
 Not built: the standby controller; calls through PSTN, PABX or dispatcher gateways (dialled digits); IPv6;
-supplementary data on short data and status messages; across sites, duplex calls; talkgroup data from the IP side
+supplementary data on status messages; across sites, duplex calls; talkgroup data from the IP side
 (225.x.y.z) to a talkgroup.
 
 Not planned: dual-slot (HI_RATE) packet data. A grant's HI_RATE 0 is allowed (the grant says what the channel does),

@@ -488,7 +488,7 @@ impl Ms {
         (self.dgna, self.dgna_n)
     }
 
-    /// Supplementary user data (6.4.13) for its voice and packet data calls from now on (None: none): SUPED_SV 1, SUPED_VAL the
+    /// Supplementary user data (6.4.13) for its voice, packet data and UDT short data calls from now on (None: none): SUPED_SV 1, SUPED_VAL the
     /// blocks less one; it uploads the data when the C_AHOY from SUPLI asks. False when it's over 4 blocks (46
     /// octets).
     pub fn set_supp(&mut self, data: Option<&[u8]>) -> bool {
@@ -714,8 +714,10 @@ impl Ms {
                 status_rand(st, a.flags & F_TO_GROUP != 0, a.arg, self.id)
             }
             // 6.6.4.2 table 6.55: Appended_UDT_Short_Data the blocks less one
+            // table 6.55: SUPED_SV; SUPED_VAL in dependent bits 3-2, SDATA_VAL (the UDTs less one) in 1-0
             DO_SDM => Rand {
-                dep: self.sd_out.n.max(1) - 1,
+                service_options: suped,
+                dep: suped_val | (self.sd_out.n.max(1) - 1),
                 service_kind: if a.flags & F_GROUP != 0 { SK_TG_UDT } else { SK_IND_UDT },
                 target: a.arg,
                 source: self.id,
@@ -1582,6 +1584,7 @@ impl Ms {
             (SUPLI, SK_IND_VOICE) => Some(DO_PRIVATE), // 6.4.13.1: its call's supplementary data
             (SUPLI, SK_TG_VOICE) => Some(DO_GROUP),
             (SUPLI, SK_IND_PD | SK_TG_PD) => Some(DO_DATA), // a data call's (6.4.13.0: voice or data)
+            (SUPLI, SK_IND_UDT | SK_TG_UDT) => Some(DO_SDM), // short data's, before SDMI's (6.6.4.5)
             _ => None,
         };
         if let Some(what) = upload {
@@ -1618,12 +1621,12 @@ impl Ms {
                     d[..4].copy_from_slice(&if ipadv { self.adv_ip } else { self.ip_dst }.to_be_bytes());
                     (h, Blocks::of(&d, 1).unwrap_or_default())
                 }
-                DO_PRIVATE | DO_GROUP | DO_DATA => {
+                _ if a.source == SUPLI => {
                     // 6.4.13.1 table 6.30: to SUPLI, SF 1, A 0, G/I the call's; the format prearranged
                     self.supp_sent += 1;
                     let h = UdtHead {
                         op: OP_UDTHU,
-                        group: what == DO_GROUP || (what == DO_DATA && self.cur.flags & F_GROUP != 0),
+                        group: what == DO_GROUP || (matches!(what, DO_DATA | DO_SDM) && self.cur.flags & F_GROUP != 0),
                         format: self.supp_fmt.0,
                         pad_nibble: self.supp_fmt.1,
                         target: SUPLI,

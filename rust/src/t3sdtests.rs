@@ -862,3 +862,42 @@ fn network_wide_talkgroup_goes_out() {
     let out = log.sd(EV_NET_SD, SD_SEND);
     assert_eq!((out.len(), out[0].flags & SD_F_GROUP, out[0].value), (1, SD_F_GROUP, 8));
 }
+
+/// UDT short data with SUPED_SV (table 6.55): the C_AHOY from SUPLI comes before SDMI's (6.6.4.1.2, 6.6.4.5), Service_Kind
+/// the request's; the supplementary data goes down first (6.6.4.1.3 b), then the short data. To a talkgroup the same,
+/// repeated.
+#[test]
+fn udt_with_supplementary_data() {
+    let mut s = site_with(|_| {});
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG]), ms(1002, &[TG]), ms(1003, &[TG])], T0);
+    register_all(&mut air, &mut log);
+    const GPS: &[u8] = b"33.5994N 086.6847W";
+    assert!(air.ms[0].set_supp(Some(GPS)));
+    let now = air.now();
+    assert!(air.ms[0].send_sdm(1002, 0, FMT_ISO8, TEXT, now));
+    let blocks = tscc_blocks(&mut air, &mut log, 8000);
+    let ahoys: Vec<Ahoy> = blocks.iter().filter(|b| b.0 == 3).filter_map(|b| Ahoy::decode(&b.1)).collect();
+    let supl = ahoys.iter().position(|a| a.source == SUPLI && a.target == 1001).expect("C_AHOY from SUPLI");
+    let sdmi = ahoys.iter().position(|a| a.source == SDMI && a.target == 1001).expect("C_AHOY from SDMI");
+    assert!(supl < sdmi, "SUPLI first (6.6.4.1.2)");
+    assert_eq!((ahoys[supl].service_kind, ahoys[supl].appended), (SK_IND_UDT, 1));
+    let heads: Vec<UdtHead> = blocks.iter().filter(|b| b.0 == 6).filter_map(|b| UdtHead::decode(&b.1)).collect();
+    let down = |src: u32| heads.iter().position(|h| h.op == OP_UDTHD && h.source == src && h.target == 1002);
+    assert!(down(SUPLI).expect("supplementary down") < down(1001).expect("short data down"), "6.6.4.1.3 b");
+    assert_eq!(air.ms[0].status().calls_done, 1);
+    assert_eq!(air.ms[0].status().last_reason, R_MS_ACCEPTED);
+    let (got, n, _) = air.ms[1].supp();
+    let (d, len) = got.expect("supplementary data taken");
+    assert!(d[..len].starts_with(GPS) && n == 1, "binary: the two UDTs' 22 octets, the data first");
+    let (h, d, _) = air.ms[1].inbox().expect("short data taken");
+    assert_eq!((h.source, &d[..TEXT.len()]), (1001, TEXT));
+
+    // to a talkgroup
+    assert!(air.ms[0].set_supp(Some(b"to the talkgroup")));
+    let now = air.now();
+    assert!(air.ms[0].send_sdm(TG, t3ms::F_GROUP, FMT_ISO8, TEXT, now));
+    assert!(air.until(10_000, &mut log.f(), |a| a.ms[0].state() == t3ms::IDLE && a.ms[0].status().calls_done == 2));
+    let took = |m: &Ms| m.supp().0.is_some_and(|(d, len)| d[..len].starts_with(b"to the talkgroup"));
+    assert!(air.ms[1..].iter().all(|m| took(m) && m.inbox().is_some_and(|(h, ..)| h.group)));
+}
