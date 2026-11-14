@@ -295,6 +295,37 @@ fn als_call_ended_across_sites() {
     assert_eq!(n.a.ms[0].state(), t3ms::IDLE, "the caller stays on the TSCC");
 }
 
+/// An ALS call ended by its caller while its voice comes from the other site, whose MS keeps talking: the stream
+/// breaks and resumes (on air, 2026-11-14: a terminator, then the same stream again half a second later). The
+/// caller's site carries none of the rest; it opens no new call to the caller.
+#[test]
+fn als_call_ended_stream_resumes() {
+    let on = |c: &mut Cfg| {
+        c.als = 1;
+        c.intr = 1;
+    };
+    let (mut sa, mut sb) = (site_with(on), site_with(on));
+    let mut n = Net::new(&mut sa, &mut sb, [ms(1001, &[TG]), ms(1002, &[TG])], [ms(2001, &[TG]), ms(2002, &[TG])]);
+    let now = n.a.now();
+    n.a.ms[0].act(t3ms::DO_PRIVATE, 2001, 0, t3ms::F_ALS, now);
+    assert!(n.until(8000, |n| n.b.inbound[0].is_some_and(|t| t.kind == t3ms::TX_VOICE && t.src == 2001)));
+    const VOICE: u32 = 0x5150_0001;
+    let now = n.a.now();
+    n.a.site.net_private_in(VOICE, 2001, 1001, now); // B's talker's voice reaches A
+    n.until(500, |_| false);
+    let now = n.a.now();
+    assert!(n.a.ms[0].als_end(2001, now + 500));
+    assert!(n.until(1500, |n| n.sa.of(EV_NET_SD).iter().any(|e| SdMsg::of_event(e).what == SD_INTR)));
+    n.a.site.net_end_in(VOICE); // a break in the stream
+    assert!(n.until(3000, |n| n.sa.of(EV_CH_CLOSE).len() == 1));
+    let now = n.a.now();
+    n.a.site.net_private_in(VOICE, 2001, 1001, now); // and it resumes
+    n.until(3000, |_| false);
+    assert_eq!(n.sa.of(EV_CH_OPEN).len(), 1, "no new call to the caller");
+    assert!(n.sa.of(EV_NET_DROP).iter().any(|e| e.stream == VOICE && e.why == WHY_REFUSED));
+    assert_eq!(n.a.ms[0].state(), t3ms::IDLE);
+}
+
 /// The called MS's site without ALS refuses the request.
 #[test]
 fn als_call_across_sites_refused() {

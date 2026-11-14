@@ -1032,7 +1032,8 @@ accepts as above and sends the `sdata` interrupt message with status 123 to the 
 finds its ALS call from that caller and ends it the same way (de-key then P_CLEAR, or P_CLEAR at once), and answers
 Message_Accepted, or Not_Supported (the setting off there, no such call, being cleared). The caller's site clears its
 channel once the stream stops, or on a refusal (the caller has left; the other site's call then runs until its MS
-ends it).
+ends it). It carries none of the rest of that stream: an MS that keeps talking, or re-keys into the same stream
+after a break, opens no new call to the caller (the site keeps the last four such streams).
 
 Call timer (6.4.14.3.2): with the setting on, a call whose timer runs out while an MS talks on RF gets the RC cease
 first and P_CLEAR once the inbound stops (after 3 s P_CLEAR regardless, the channel held until the inbound stops); off, P_CLEAR at once as before. A network talker, a duplex
@@ -2103,7 +2104,7 @@ Two sites (the SDR site and the modem site, over mqtt-net):
 | Composite TSCC on both sites | yes | yes: a group call each way, on the lent TSCC slot at both sites (2026-11-14 19:21 UTC) |
 | UDT polls across sites | yes | yes: an air MS on site 1 polling the radio on site 2, and the radio polling it (2026-11-14 19:25 UTC) |
 | Transmit interrupt across sites | yes (off by default) | yes: the radio on site 2 interrupting an air MS's TG 1 call from site 1 with a status; the talker de-keyed and ceased at both sites (2026-11-14 20:43 UTC) |
-| ALS calls and their termination across sites | yes (off by default) | no |
+| ALS calls and their termination across sites | yes (off by default) | yes: each way, and the caller's status 123 ending it, from the radio on site 2 and from an air MS on site 1 (2026-11-14 20:53 UTC). A called radio that can't hear the RC keeps talking past the P_CLEAR |
 | Supplementary user data across sites | yes | yes: on UDT short data, a status, packet data and voice, both ways (2026-11-14 19:25 and 20:43 UTC) |
 
 Hardware setups:

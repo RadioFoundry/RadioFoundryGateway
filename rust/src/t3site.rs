@@ -598,6 +598,7 @@ struct Chan {
     dekey_until_ms: i64,
     intr_ms: u32,    // the interrupting MS
     intr_stream: u32, // the interrupt sent to the talker's site (DK_NET): its stream, a result's ref
+    intr_voice: u32,  // the call's network voice stream then (DK_NET)
     protect_ms: u32, // P_PROTECT(EN_PTT_ONE_MS) to this MS while the channel waits for it (t3intr.rs)
     protect_until_ms: i64,
     pa: PaCheck, // a P_AHOY radio check or selective clear on the channel (t3pcheck.rs)
@@ -708,6 +709,8 @@ pub struct Site {
     connected: bool,
     withdrawn: bool,
     next_stream: u32,
+    ended: [u32; 4], // network voice streams of ALS calls ended here (t3intr.rs): the rest of one isn't carried
+    ended_n: usize,
     // the TSCC
     resp: [Resp; RESP],
     resp_head: usize,
@@ -2676,6 +2679,10 @@ impl Site {
     }
 
     fn net_private(&mut self, stream: u32, src: u32, dst: u32) {
+        if self.ended.contains(&stream) {
+            self.drop_stream(stream, WHY_REFUSED); // an ALS call its caller ended; the called MS still talks
+            return;
+        }
         if let Some(ch) = self.private_channel(src, dst) {
             if self.chans[ch].stream != stream {
                 if self.chans[ch].talking && !self.chans[ch].talking_net {

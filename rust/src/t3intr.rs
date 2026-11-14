@@ -205,6 +205,7 @@ impl Site {
                 self.chans[ch].dekey = DK_NONE;
                 self.intr_ev(ch, if net { INTR_GAVE_UP } else { INTR_CEASED }, c.intr_ms);
                 if c.als {
+                    self.als_ended(ch);
                     self.clear(ch, CLOSE_INTR); // an ALS call: ended here either way (its caller has left)
                 } else if net {
                     self.log(format_args!("transmit interrupt: {} at another site didn't cease", c.talker));
@@ -289,6 +290,7 @@ impl Site {
         let ch_ = &mut self.chans[ch];
         ch_.dekey_until_ms += NET_DEKEY_MS;
         ch_.intr_stream = stream;
+        ch_.intr_voice = c.stream;
         self.log(format_args!("transmit interrupt: asking the site of {talker} to de-key it"));
     }
 
@@ -308,6 +310,7 @@ impl Site {
                 self.intr_ev(ch, INTR_GAVE_UP, m.src);
                 self.log(format_args!("transmit interrupt: {}'s site refused (reason {:#x})", m.dst, m.reason));
                 if self.chans[ch].als {
+                    self.als_ended(ch);
                     self.clear(ch, CLOSE_INTR);
                 }
             }
@@ -387,6 +390,17 @@ impl Site {
         let stream = self.new_stream();
         let r = SdMsg { op: SD_RESULT, reason, stream, r#ref: m.stream, len: 0, data: [0; 48], ..*m };
         self.ev(r.event(EV_NET_SD));
+    }
+
+    /// An ALS call ended by its caller here while its voice came from the other site: the rest of that stream (its MS
+    /// may still talk, or re-key into the same stream after a break) opens no new call to the caller.
+    fn als_ended(&mut self, ch: usize) {
+        let c = self.chans[ch];
+        let s = if c.stream != 0 { c.stream } else { c.intr_voice };
+        if s != 0 && !self.ended.contains(&s) {
+            self.ended[self.ended_n % self.ended.len()] = s;
+            self.ended_n += 1;
+        }
     }
 
     fn intr_ev(&mut self, ch: usize, op: u8, ms: u32) {
