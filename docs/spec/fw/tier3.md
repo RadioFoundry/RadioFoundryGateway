@@ -685,9 +685,9 @@ SUPED_SV, HI_RATE, SIMI, priority):
    answer; C_NACKU is mirrored; no answer, MSaway.
 3. A channel: PD_GRANT (individual) or TD_GRANT (talkgroup), opcodes 51/52, or 55/56 when SIMI asked for a
    multi-item call (7.1.1.1.1.4, 7.1.1.1.1.5), sent twice like the voice grants; HI_RATE is always 0 (single slot:
-   dual-slot data isn't built, a HI_RATE request gets a single-slot grant). None free: C_QACKD(Queued_for_Resource)
-   every 4 s; queued data calls take the channels queued voice leaves (voice first), `queue_s` at most, then
-   SYSbusy. A channel already open between the same parties is granted again.
+   dual-slot data is not planned, 13.3; a HI_RATE request gets a single-slot grant). None free:
+   C_QACKD(Queued_for_Resource) every 4 s; queued data calls take the channels queued voice leaves (voice first),
+   `queue_s` at most, then SYSbusy. A channel already open between the same parties is granted again.
 4. On the channel (361-1 9.2, 361-3): the site repeats every data header and block (data types 6, 7, 8, 10),
    regenerated with the BS sync; voice LC and late entry don't apply. The radio layer counts each message (its
    header says how many blocks follow) for the controller, which holds the channel `data_hang_s` after any burst.
@@ -1448,8 +1448,9 @@ the call (6.6.3.3.2.5) stays at the caller's site, and the far site would otherw
 hang time. A later item grants it again.
 
 Not built: messages in parts (`data_pdu` part above 0 or the more bit: a data call's single item is one message, so
-parts aren't needed for it), talkgroup data from the site's own gateway to other sites, and a result back to the
-calling site (end to end delivery is the application's: 361-3 5.2).
+parts aren't needed for it), and a result back to the calling site (end to end delivery is the application's: 361-3
+5.2). The site's own gateway sends no talkgroup data (the IP gateway answers MSs only; a datagram to 225.x.y.z from
+the IP side isn't sent down to the talkgroup), so none crosses the network from it.
 
 Network services: the router forwards the setup and `data_pdu` messages as raw bytes, so routing needs no change.
 Their setup codecs read only flags bits 0-1 and refuse to encode bit 2; a service that decodes a setup and encodes
@@ -2026,8 +2027,13 @@ Hardware setups:
 | One split TX half and one split RX half, no SDR | yes, end to end | no |
 
 Not built: the standby controller; calls through PSTN, PABX or dispatcher gateways (dialled digits); IPv6;
-supplementary data on packet data and short data; dual-slot data; across sites, duplex calls
-and talkgroup data from the site's own gateway.
+supplementary data on packet data and short data; across sites, duplex calls; talkgroup data from the IP side
+(225.x.y.z) to a talkgroup.
+
+Not planned: dual-slot (HI_RATE) packet data. A grant's HI_RATE 0 is allowed (the grant says what the channel does),
+and RadioFoundry's MS can't use it: sending on both slots means keying without a gap to hear the outbound (the CACH,
+the AT bits), and an MS that can only answer on one slot gains little from receiving on both. The optional
+availability check before a short data download or poll (3.15).
 
 ## 14. Open questions for the owner
 
