@@ -1940,7 +1940,7 @@ Built since step 8e, host-tested (the bench steps above note what has run on air
 | 1c21e8cc | Supplementary user data on voice calls at the site (6.4.13, 3.21) |
 | f530d840 | `setsupp TEXT` for the air MSs, and a log line for what they take |
 | 16a996f7 | The far site grants single-item: its channel closes after the item (5.10) |
-| "MS: supplementary data formats and repeats" | The simulated MS uploads in a character format, strips the pad, and counts the same data again on a later call |
+| 2446e12e | The simulated MS uploads in a character format, strips the pad, and counts the same data again on a later call |
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
 apart from the code, found seven deviations, all fixed (2026-11-12):
