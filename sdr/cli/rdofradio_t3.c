@@ -117,11 +117,8 @@ static void io_subscribe(void *ctx, const char *const *f, int n)
 #endif
 }
 
-static void io_log(void *ctx, const char *text)
-{
-    if (T.o.verbose)
-        tsay("%s", strncmp(text, "tier3: ", 7) ? text : text + 7);
-}
+/* the site's own lines (C_RAND timing, C_MOVE, commands, data): a few a minute, so always; -v adds the bursts */
+static void io_log(void *ctx, const char *text) { tsay("%s", strncmp(text, "tier3: ", 7) ? text : text + 7); }
 
 static uint32_t io_rand(void *ctx)
 {
