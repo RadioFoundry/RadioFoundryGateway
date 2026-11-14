@@ -36,7 +36,7 @@ Principles:
 | RF layout | 2 carriers: A (SDR TX + SDR RX) carries the dedicated TSCC on TS1 and a payload channel on TS2; B (TX from the same SDR, summed into its transmit stream with each carrier at half amplitude, or from a split radio; SDR RX) carries two payload channels. 1 control slot, 3 payload slots. The controller, the radio layer, the unit and the simulator take 1-4 carriers (up to 7 payload channels), the TSCC on the first; tested with 3 and 4 on simulated air. rdofradio sends up to 4 out of one SDR (each at 1/N amplitude), or 2 with carrier B on a split half, or up to 4 each on its own split TX half (the TSCC's too) with the SDR receiving only, or up to 4 each on two radios (a split TX half and a split RX half), no SDR |
 | Control channel | C_SYS_Parms short LC with a counting Common_Slot_Counter; C_ALOHA; C_BCAST Adjacent_Site (from the network), Chan_Freq (the site's own channels and its neighbors' TSCCs), Local_Time (when the clock is good), Gen_Site_Params, CallTimer_Parms, Vote_Now (with the VOTE_BLK block), Ann_WD_TSCC, MassReg (section 3.11); CACH AT driven by the controller |
 | Random access | Slotted Aloha, Mask 0, Service Function from load, adaptive Backoff, NRand_Wait from settings; a response to every random access |
-| Registration | Open or listed (ID sets); register, de-register, implicit registration from call requests; single-talkgroup subscription (TRGT_ADR_CNTS 01b) and a list of up to 7 by UDT upload (10b, 3.17); Reg_Accepted / Reg_Refused / Reg_Denied; MS_Not_Registered |
+| Registration | Open or listed (ID sets); register, de-register, implicit registration from call requests; single-talkgroup subscription (TRGT_ADR_CNTS 01b) and a list of up to 7 by UDT upload (10b, 3.17); Reg_Accepted / Reg_Refused / Reg_Denied; MS_Not_Registered; IP connection advice (6.4.11: the MS's IPv4 address added or deleted through IPI, a setting) |
 | Group voice | C_RAND, C_WACKD/C_QACKD, TV_GRANT (repeated; Late_Entry grants through the call and its hang time), BTV_GRANT for all-calls (ALLMSID, ALLMSIDL, ALLMSIDZ) and broadcast calls to a talkgroup (BCAST_SV), quasi-transmission trunking (hang time; none for broadcasts and all-calls), P_CLEAR on hang expiry, call timer or P_MAINT DISCON |
 | Individual voice | C_AHOY availability check (OACSU or FOACSU, a setting), C_ACKU/C_NACKU, Call Answer, PV_GRANT, cancel (Service_Kind 1111b) |
 | Full-duplex individual voice | Service_Kind 1010b (6.6.9): radio check, a whole carrier in offset timing, a PV_GRANT_DX to each party, each party's inbound repeated on the other's slot; local calls; a setting, off by default (section 3.13) |
@@ -46,9 +46,9 @@ Principles:
 | Status and the emergency alarm | The Status Transport Service (6.6.6.1, 6.6.6.2) delivered as short data (section 3.15): to an MS (C_AHOY, its C_ACKU or C_NACKU mirrored), a talkgroup or the TSCC, stored while the called MS is busy, polling; the emergency alarm and its cancel (6.6.6.3) under the MS's emergency provisioning; an `activity` `status` event (section 3.10) |
 | Mass re-registration | MassReg (6.4.5): all MSs or one, on command (`mass_reg`) or at start, repeated inside its Reg_Window (section 3.11) |
 | TSCC modes | C_MOVE on command (all MSs or one, to another TSCC's logical channel, or to an adjacent site's TSCC by its frequencies in the MBC form); the asynchronous (hibernating) TSCC, woken by BS_Dwn_Act or any good inbound block; a setting, off by default (section 3.12); the composite TSCC (its slot carries a call when every payload channel is busy, P_SYS_Parms with Payload Channel Type 1 meanwhile; a setting, off by default, section 3.19) |
-| Power save | PowerSave_RQ in registration, PowerSave_Offset in the C_ACKD (6.4.7.2.1); C_AHOYs and UDT downloads to a sleeping MS held for its wake frame; a setting, off by default (section 3.11) |
-| Short data | UDT short data on the TSCC both ways (C_UDTHD/C_UDTHU, 1-4 rate 1/2 blocks, up to 46 octets), stored and forwarded MS to MS, MS to talkgroup, MS to site and site to MS; status messages, status polling and UDT short data polling; across sites in mqtt-net's `sdata` item (3.15, 5.9) |
-| Packet data | Individual and talkgroup packet data calls (C_RAND 0010b/0011b): the availability check (C_AHOY 0010b), PD_GRANT/TD_GRANT single or multi-item, the payload channel in data mode (each data burst repeated), confirmed and unconfirmed data at rate 1/2, 3/4 and 1 (the MS simulator's selective retry: SACK, C_RDATA, F = 0 resends), data hang time and clearing; MS to MS, MS to talkgroup, MS to the site's IP gateway (TSI, its data ID or IPI) and the gateway's replies down (3.16); across sites over mqtt-net to an MS registered at another site (the check there through the setup) and to the sites that carry a `wide_tg` talkgroup, a whole message at a time, and the gateway's replies to an MS at another site (5.10) |
+| Power save | PowerSave_RQ in registration, PowerSave_Offset in the C_ACKD (6.4.7.2.1); C_AHOYs, packet data checks, group grants and UDT downloads to a sleeping MS held for its wake frame (the caller of a held poll gets C_WACKD); a setting, off by default (section 3.11) |
+| Short data | UDT short data on the TSCC both ways (C_UDTHD/C_UDTHU, 1-4 rate 1/2 blocks, up to 46 octets), stored and forwarded MS to MS, MS to talkgroup, MS to site and site to MS; status messages, status polling and UDT short data polling; across sites in mqtt-net's `sdata` item, UDT polls included (3.15, 5.9) |
+| Packet data | Individual and talkgroup packet data calls (C_RAND 0010b/0011b): the availability check (C_AHOY 0010b), PD_GRANT/TD_GRANT single or multi-item, the payload channel in data mode (each data burst repeated), confirmed and unconfirmed data at rate 1/2, 3/4 and 1 (the MS simulator's selective retry: SACK, C_RDATA, F = 0 resends), data hang time and clearing; MS to MS, MS to talkgroup, MS to the site's IP gateway (TSI, its data ID or IPI, with the IP address upload to IPI: 6.6.3.2.4) and the gateway's replies down (3.16); across sites over mqtt-net to an MS registered at another site (the check there through the setup) and to the sites that carry a `wide_tg` talkgroup, a whole message at a time, and the gateway's replies to an MS at another site (5.10) |
 | Talkgroup lists | Registration with a talkgroup subscription/attachment list (C_AHOY from TATTSI, the Address Format upload, one Response_Info bit per talkgroup); DGNA from an MS (C_AHOY from DGNAI, C_DGNAHU then C_DGNAHD) or from the site, both modes; the site carries the talkgroups either list holds (3.17) |
 | Supplementary services | Stun and revive from the site (C_AHOY from STUNI; a stunned MS gets no user services), with or without the MS authenticating the TSCC (C_ACKVIT, C_ACKD Authentication_Response); kill (from KILLI, always authenticated); the Ambient Listening Service between MSs at the site (a setting); call diversion of voice, packet data, short data and status to an MS or a talkgroup, set, cleared and cancelled by the recipient, the caller told the diverted address (3.18) |
 | Transmit interrupt | A listener's payload interrupt of a group or individual call (status 125), the ALS caller's end of the call (status 123) and the call timer de-key (6.4.14.3.2-6.4.14.3.4): C_ACKD or C_NACKD from TSI, the RC cease command to the talker, then P_PROTECT(EN_PTT_ONE_MS) to the interrupter or P_CLEAR; a setting, off by default (section 3.20) |
@@ -596,13 +596,17 @@ UDT short data polling (C_RAND Service_Kind 0110b, 6.6.5; Service_Options the Po
 Appended_Short_Data the UDTs asked for less one):
 
 1. The polled MS must be an individual MS registered here: a talkgroup, a gateway, itself or the Proxy Flag get
-   Not_Supported, an MS not here NoregMSaway (polls across sites aren't built), a stunned one MSaway_Refused, one
-   that diverted its short data Div_Cause_Fail (3.18). 8 in progress: SYSbusy.
+   Not_Supported, a stunned one MSaway_Refused, one that diverted its short data Div_Cause_Fail (3.18). 8 in
+   progress: SYSbusy. An MS not here: NoregMSaway with no network; else the poll goes to the network (5.9, what 6),
+   the caller gets C_WACKD, and the site that has the MS runs steps 2 and 3 with the caller as source. Its result
+   carries the polled data back, and this site downloads it (step 4); a refusal comes back as its reason, mirrored in
+   C_NACKD. No site answers within twice TNP_Timer: MSaway.
 2. The site sends C_AHOY to the polled MS, source the caller (6.6.5.1.1 b): Service_Kind 0110b, Service_Options
    the C_RAND's, Appended_Blocks the C_RAND's Appended_Short_Data, AT busy, then the kept upload slots as for short
    data. One upload at a time; another in progress: C_WACKD to the caller first. A polled MS in a call: C_QACKD
    (Queued_busy) and the poll waits up to `sd_store_s`. A polled MS in power save: the C_AHOY waits for its wake
-   frame.
+   frame, and the caller gets C_WACKD at once and every 2 s (it would give up on its random access otherwise: an
+   air MS did, 2026-11-14). Each short data C_AHOY is logged ("short data: C_AHOY ...").
 3. The polled MS answers with C_UDTHU (target the caller, its own UDT_Format) and its blocks, or C_NACKU, which goes
    to the caller mirrored in C_NACKD (6.6.5.1.2 a), twice. A CRC failure or no upload: C_AHOY again (`ahoy_tries`
    in all), then C_NACKD(MSaway).
@@ -617,7 +621,7 @@ From the site (`rdof_t3_sd_send`, rdof/t3.h): UDT short data, a status or a poll
 the result comes as an `EV_SD` event with the caller's tag.
 
 Not built: short data to gateways and extended addresses (the multi-part addressing), supplementary data, UDT polls
-across sites and from the site or a gateway (C_AHOY from SDMI, 6.6.5.4), the optional availability check before an
+from the site or a gateway (C_AHOY from SDMI, 6.6.5.4), the optional availability check before an
 individual download or a poll.
 
 ### 3.16 Packet data calls (361-4 6.6.3)
@@ -875,8 +879,9 @@ as a hotspot modem, gets a second call at once.
   that asked sends its voice header as soon as it reads the first grant: on the hat (2026-11-13) that header went to
   the TSCC and was lost, and the call aired without one.
 
-Not built: an MS that reads the short LC on air (the simulator's air MSs take it from the unit), and the 5.3.2 note
-that the throughput "shall be assessed" (no metric beyond the log line and the slot counts).
+Not built: an air MS that reads the short LC on air (the simulator's air MSs take it from the unit; RadioFoundry's MS
+engine reads it, its counter checked on air against site 1 on 2026-11-14, not yet on a composite site), and the
+5.3.2 note that the throughput "shall be assessed" (no metric beyond the log line and the slot counts).
 
 ### 3.20 Transmit interrupt (361-4 6.4.14, 6.4.15)
 
@@ -1247,15 +1252,15 @@ New item type 0x0D, `sdata`, 12 bytes plus the data, the only item of its messag
 | Octet | Field |
 |---|---|
 | 0 | op: 1 a message, 2 its result |
-| 1 | what: 1 UDT short data, 2 a status, 3 a status poll, 4 DGNA (3.17), 5 a transmit interrupt (3.20) |
+| 1 | what: 1 UDT short data, 2 a status, 3 a status poll, 4 DGNA (3.17), 5 a transmit interrupt (3.20), 6 a UDT short data poll (3.15) |
 | 2 | reason: a result's air reason (44h MS_Accepted, 47h a poll's answer, 60h Message_Accepted, or a C_NACKD reason) |
-| 3 | value: UDT_Format, the status, or a poll's result: the polled status |
+| 3 | value: UDT_Format, the status, or a poll's result: the polled status; a UDT poll: its C_RAND's Service_Options (the Polling Format), its result the polled data's UDT_Format |
 | 4 | flags: bit 0 talkgroup, bit 1 emergency |
 | 5 | the UDT's Pad Nibble |
 | 6 | why: a result's setup reason (5.4: not_found, busy, no_answer, refused, timeout) |
 | 7 | 0 |
 | 8-11 | ref u32 (little endian): a result's message's stream ID |
-| 12- | the data, 0-46 octets (UDT short data and DGNA only) |
+| 12- | the data, 0-46 octets (UDT short data, DGNA, a UDT poll's result); a UDT poll: 1 octet, the UDTs asked for (1-4) |
 
 For a padded UDT format (BCD, ISO 7- and 8-bit, UTF-16, mixed: annex B) the data is the message without its pad
 octets; the receiving site pads it again for its blocks. An odd pad nibble (BCD) stays in the last octet and in
@@ -1273,6 +1278,13 @@ src the interrupting MS, dst the talker, value the status (125), flags 0, data 4
 (u24 big endian: the talkgroup, or the individual call's other party) and 1 for a talkgroup call, 0 for an
 individual call. The talker's site answers with a result (reason Message_Accepted, Not_Supported or
 Perm_User_Refused), src and dst as in the message, ref its stream. The application can't send one.
+
+A UDT short data poll (what 6, section 3.15) goes from the caller's site on `pc/{polled}/{node}` as a message: src
+the caller, dst the polled MS, value the Polling Format (the C_RAND's Service_Options), data one octet, the UDTs
+asked for. The site that has the polled MS sends its C_AHOY (source the caller) and takes the upload; its result
+(reason Message_Accepted) carries the polled data as UDT short data does, value its UDT_Format, pad as above. A
+refusal (the polled MS's C_NACKU, MSaway, Queued_busy timing out) comes back as its reason with no data. The caller's
+site downloads the data to the caller. The application can't send one.
 
 ### 5.10 Packet data across sites (the `data_pdu` item)
 
@@ -1770,7 +1782,7 @@ and against `t3ms` on one air.
 | Level | What | Where |
 |---|---|---|
 | PDU codec | Every PDU the site sends or reads: field packing against the 361-4 tables, round trips, known vectors from a standard site's captures (decoded values, not checks) | Rust unit tests |
-| Controller | Scenarios over `t3air`: registration open/listed/denied, collisions and backoff, group call, queue and grant on release, late entry repeats (through the hang time), hang and P_CLEAR, call timer, individual OACSU and FOACSU, no answer, cancel, busy called party, Not_Supported, network group in and out, network setup both ways, Tier II implicit setup, records reload, provisioning changes, link loss; short data (`t3sdtests.rs`): UDT MS to MS, MS, talkgroup and site, 1 to 4 blocks, refusals, store while busy and its timeout, cancel, the kept upload slots, CRC errors and a missing upload, status to MS, talkgroup and site, polling, UDT short data polling (the C_AHOY's fields, the polled MS's upload and the download to the caller, its refusal mirrored, not here, itself, a gateway), the site's own sends, a full table, the network both ways; packet data (`t3pdtests.rs`): MS to MS unconfirmed and confirmed, rate 3/4 and rate 1 (unconfirmed to an MS and a talkgroup, a damaged block lost; confirmed with a damaged block: SACK, C_RDATA, the F = 0 retry, the ACK; retries to N_RtryLmt; `t3pdrate.rs`: the blocks at each rate, CRC-9 and CRC-32 against the B.3.9 / B.3.10 formulas), the availability check, PD/TD_GRANT single and multi-item, data hang and clearing, to a talkgroup, to the site (TSI, data ID, IPI), the IP address upload to IPI (its C_AHOY, the address taken either way round, the upload refused, off), IP connection advice (added with the power save offset, an address another MS holds, deleted and still registered, one not held, no IP service), refusals (NACKU mirrored, no answer, not here, multi-part, itself, talkgroup not allowed, busy), queued and cancelled, the site's own sends; packet data across sites (`t3pdnettests.rs`, two sites; `t3pdnet.rs`): confirmed MS to MS with a damaged block on each air link (SACK at both), unconfirmed at rate 3/4, refusals (not found, no answer, a lost setup, the link down), talkgroup data to the site that carries it, data with no setup checked first, the network form at each rate, the relay's retries and results; talkgroup lists (`t3tgtests.rs`): registration with a list (the
+| Controller | Scenarios over `t3air`: registration open/listed/denied, collisions and backoff, group call, queue and grant on release, late entry repeats (through the hang time), hang and P_CLEAR, call timer, individual OACSU and FOACSU, no answer, cancel, busy called party, Not_Supported, network group in and out, network setup both ways, Tier II implicit setup, records reload, provisioning changes, link loss; short data (`t3sdtests.rs`): UDT MS to MS, MS, talkgroup and site, 1 to 4 blocks, refusals, store while busy and its timeout, cancel, the kept upload slots, CRC errors and a missing upload, status to MS, talkgroup and site, polling, UDT short data polling (the C_AHOY's fields, the polled MS's upload and the download to the caller, its refusal mirrored, not here, itself, a gateway; across two sites: the data back in the result, a refusal, no site with the MS), the site's own sends, a full table, the network both ways; packet data (`t3pdtests.rs`): MS to MS unconfirmed and confirmed, rate 3/4 and rate 1 (unconfirmed to an MS and a talkgroup, a damaged block lost; confirmed with a damaged block: SACK, C_RDATA, the F = 0 retry, the ACK; retries to N_RtryLmt; `t3pdrate.rs`: the blocks at each rate, CRC-9 and CRC-32 against the B.3.9 / B.3.10 formulas), the availability check, PD/TD_GRANT single and multi-item, data hang and clearing, to a talkgroup, to the site (TSI, data ID, IPI), the IP address upload to IPI (its C_AHOY, the address taken either way round, the upload refused, off), IP connection advice (added with the power save offset, an address another MS holds, deleted and still registered, one not held, no IP service), refusals (NACKU mirrored, no answer, not here, multi-part, itself, talkgroup not allowed, busy), queued and cancelled, the site's own sends; packet data across sites (`t3pdnettests.rs`, two sites; `t3pdnet.rs`): confirmed MS to MS with a damaged block on each air link (SACK at both), unconfirmed at rate 3/4, refusals (not found, no answer, a lost setup, the link down), talkgroup data to the site that carries it, data with no setup checked first, the network form at each rate, the relay's retries and results; talkgroup lists (`t3tgtests.rs`): registration with a list (the
 C_AHOY's fields, the Response_Info bits, a talkgroup refused), all accepted, replaced, replaced by a single
 subscription, dropped on deregistration, a refused registration; DGNA MS to MS (address mode, a call on the new
 talkgroup, alias mode, delete all), refusals (off, talkgroup not allowed, itself, the site, not here, the called MS
@@ -1783,7 +1795,7 @@ kill (KILLI, the record removed, no answer after), refused, not supported; DGNA 
 the de-key statuses 123 and 125 refused from TSI with transmit interrupt off; call diversion set, used (voice and short data diverted with the
 notice's fields, status not), cleared by TSI and DIVERTI, to a talkgroup, the upload's blocks from the Proxy Flag,
 refusals (off, PSTNI, itself, a talkgroup not allowed), a UDT poll's Div_Cause_Fail | Rust tests (`cargo test`, run by ctest) |
-| Control channel features | Scenarios over `t3air` (`rust/src/t3ctltests.rs`): pre-emption and the RC cease, status delivery and alarms, 3 and 4 carriers, the C_BCASTs, mass re-registration, power save, C_MOVE, the asynchronous TSCC, full-duplex and broadcast calls; through the radio layer and `t3sim`: 4 carriers with pre-emption, a duplex call | Rust tests; C host test `rdof_t3unit_tests` |
+| Control channel features | Scenarios over `t3air` (`rust/src/t3ctltests.rs`): pre-emption and the RC cease, status delivery and alarms, 3 and 4 carriers, the C_BCASTs, mass re-registration, power save (a call, a status, packet data, short data and a poll to a sleeping MS in its wake frame; the poll's caller told to wait), C_MOVE, the asynchronous TSCC, full-duplex and broadcast calls; through the radio layer and `t3sim`: 4 carriers with pre-emption, a duplex call | Rust tests; C host test `rdof_t3unit_tests` |
 | Transmit interrupt | Scenarios over `t3air` (`rust/src/t3intests.rs`): a group call interrupted (the request and its C_ACKD, the RC in the TSCC's slot, the talker ceasing, P_PROTECT's fields and count, the interrupter talking, the others hearing it), the RC on a payload carrier, an individual call interrupted, in hang time, a talker that won't cease, an ALS call ended by its caller, the refusals (not the caller, G/I, no call, not a party, a broadcast call, the talker itself, a second interrupter), off by default, the call timer de-key on and off; P_PROTECT against table 7.31 (`t3spec_pdu.rs`); through the radio layer and `t3sim`: a group call interrupted, the RC and P_PROTECT read back from the air, the interrupter's voice header | Rust tests; C host test `rdof_t3unit_tests` |
 | C API | Init, a short scenario through the FFI, layouts | C host test `rdof_t3_tests` |
 | Packet data on bursts | MS to MS confirmed data and MS to the site's IP gateway (NAT, the gateway's ACK sent down by the site) over the burst path; across the two sites through the broker: confirmed MS to MS (the setup request with its data flag and the `data_pdu` message checked byte for byte but the stream ID), and the gateway's reply to an MS at the other site | `rdof_t3unit_tests` |
@@ -1822,7 +1834,22 @@ type `tier3` (was `trunk`), the build option `RDOF_TIER3`, the modules `t3*`.
 | 8c | Bench: transmit interrupt (3.20) on the one-carrier modem site, the site's air MSs, a bench receiver on its outbound | done 2026-11-13. A talker on TS2, an MS in the call sent status 125 to the talkgroup: the RC cease command took one TSCC slot, C_ACKD followed, the talker ended its superframe with a terminator 0.3 s later, P_PROTECT(EN_PTT_ONE_MS) went out on TS2 and the interrupter's voice header followed 120 ms after it; then its voice, the hang and P_CLEAR. The first run found rdofradio's air MSs didn't read the RC (fixed); the site gave up after 3 s and kept the call, as 6.4.15.1 asks |
 | 8d | Bench: packet data across sites (5.10), the SDR site (site 1) and the modem site (site 2) on one mqtt-net, air MSs on both | done 2026-11-13. Confirmed individual data, site 2 to site 1: the far site checked the MS, granted a payload channel, delivered and the caller's call ended done; then site 1 to site 2 the same way. Unconfirmed group data, site 2 to talkgroup 1: every air MS on both sites got the text. The first try failed with MSaway (0x25): no private-call router ran on the broker, so the request on `pc/{dst}/{node}` reached nobody. With the router, the network services' flags fix (bit 2 kept) and a voice individual call checked first, all passed |
 | 8e | Bench: the real radio (a commercial portable with RadioFoundry's MS engine, 50 mW) against both sites, the bench offset image merged in (1e2549fe) | done 2026-11-13. Site 1: registration by syscode, by talkgroup and with a list, group and individual calls, status, poll and short data to an air MS (12 of 12); a broadcast and an all-call cleared right after the terminator (radio back on the TSCC 0.5 and 0.7 s after release), a group call after its 3 s hang; IP text messages (UDP 5016) unconfirmed and confirmed. Site 2: the same calls to an air MS on site 1 through the private-call router, and the text messages across sites. Found: UDT short data crossed sites with its pad octets (24 characters arrived as 34 octets), fixed in 12379fa8. Open: on site 2 the radio sends each registration twice although the site answers the first within 180 ms; the radio decodes few of the stock modem's CSBKs (1.4 a second against 8 on site 1) with no CRC errors |
+| 8f | Bench: power save (6.4.7) with the real radio (50 mW, PowerSave_RQ 2) on site 1, an air MS calling it | 2026-11-14 UTC, open. Registered with offset 2; the radio slept 56-60% of the time with no hunts (after two fixes on its side). A status reached it in 1.79 s and UDT short data in 1.64 s, both in its wake frame. A UDT poll of it got no answer: the air MS that polled gave up after 2 s because the site sent no C_WACKD while the C_AHOY waited for the wake frame (fixed). Whether the radio got the C_AHOY is open: the site didn't log short data C_AHOYs then (it does now) |
 | 9 | Merge into main | the owner's go |
+
+Built since step 8e, host-tested (the bench steps above note what has run on air):
+
+| Commit | What |
+|---|---|
+| 2644bcf7 | rdofradio: up to four SDR carriers out of one SDR (each at 1/N amplitude) |
+| 7a0f2897, b509d4e6 | The TSCC's carrier and every carrier on a split radio's TX half (the CACH op in TX_SCHED), the SDR receiving only (9.4) |
+| d416216b, 2b660557 | A carrier on two split radios (a TX half and an RX half), no SDR; RX_META's slot number places each inbound burst (9.4) |
+| 71f92762 | A log line for each C_RAND's answer delay |
+| 523ec457 | UDT short data polling (6.6.5) |
+| 5f5a1b39 | Packet data's availability check waits for a sleeping MS's wake frame |
+| 77136033 | The IP address upload for data to IPI (6.6.3.2.4 b 2) |
+| d39ca8d4 | IP connection advice at registration (6.4.11) |
+| "Site: UDT polls across sites" | UDT polls across sites (5.9 what 6); C_WACKD to the caller of a poll held for a wake frame; a log line per short data C_AHOY |
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
 apart from the code, found seven deviations, all fixed (2026-11-12):
@@ -1834,7 +1861,9 @@ apart from the code, found seven deviations, all fixed (2026-11-12):
 - The settings refused SITE 0, which table 6.5 counts (a Small network's 5-bit SITE gives 32 sites). Nothing used
   0 as "no site" (a peer's info is marked by a nonzero syscode, and PAR is never 0), so 0 is now allowed.
 
-Out of round 2, unchanged from section 1.2: dedicated multi-carrier sites beyond two, the standby controller. MS authentication was added on 2026-11-12 (section 3.14), transmit interrupt and packet data across sites on 2026-11-13 (sections 3.20, 5.10).
+Out of round 2, unchanged from section 1.2: dedicated multi-carrier sites beyond two, the standby controller. MS
+authentication was added on 2026-11-12 (section 3.14), transmit interrupt and packet data across sites on
+2026-11-13 (sections 3.20, 5.10), UDT polls across sites on 2026-11-14 (5.9).
 
 ## 14. Open questions for the owner
 

@@ -18,7 +18,7 @@ use crate::t3udt::{DGNAI, DT_DATA_HDR, DT_RATE12, IPI, SK_IND_PD, SK_IND_UDT, SK
 mod sdata;
 pub use sdata::{
     rdof_t3_net_sd, rdof_t3_sd_of_event, rdof_t3_sd_send, SdMsg, SD_DGNA, SD_F_EMERGENCY, SD_F_GROUP, SD_POLL,
-    SD_INTR, SD_RESULT, SD_SEND, SD_STATUS, SD_UDT,
+    SD_INTR, SD_RESULT, SD_SEND, SD_STATUS, SD_UDT, SD_UDT_POLL,
 };
 use sdata::{SD_DIVERT, SD_IPADDR, SD_IPADV, SD_TGLIST};
 // talkgroup lists: registration with a list, DGNA (tier3.md 3.17)

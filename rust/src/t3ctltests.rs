@@ -674,6 +674,7 @@ fn power_save_wake_frames() {
             _ => assert!(air.ms[0].send_upoll(1002, 4, 1, now)),
         }
         let mut first = None;
+        let mut waited = false; // a poll: C_WACKD to the caller while its C_AHOY waits for the wake frame
         let end = air.now() + 12_000;
         while air.now() < end && air.ms[0].status().calls_done < n {
             air.step(&mut log.f());
@@ -687,11 +688,14 @@ fn power_save_wake_frames() {
                 if to == Some(1002) {
                     first = Some(air.k - 1);
                 }
+                let ack = (o.tscc_dt == DT_CSBK).then(|| Ack::decode(&o.tscc_pdu)).flatten();
+                waited |= ack.is_some_and(|a| a.target == 1001 && a.reason == R_WAIT);
             }
         }
         assert_eq!(air.ms[0].status().calls_done, n, "{what} done");
         let k = first.unwrap_or_else(|| panic!("{what}: nothing to it"));
         assert!(ps_wake(k, rq, off), "{what}: the first PDU to it in its wake frame, slot {k}");
+        assert!(n != 5 || waited, "{what}: C_WACKD to the caller before the C_AHOY");
     }
     assert_eq!(air.ms[1].inbox().map(|(h, _, _)| h.source), Some(1001));
     assert_eq!(air.ms[0].inbox().map(|(h, _, _)| h.source), Some(1002), "the poll's answer");

@@ -24,6 +24,11 @@ pub const SD_DGNA: u8 = 4;
 /// status (125), data the call's destination (3 octets) and 1 for a talkgroup call (0 an individual call). Only
 /// between sites (never from the application); its result's reason is Message_Accepted or a C_NACKD reason.
 pub const SD_INTR: u8 = 5;
+/// A UDT short data poll across sites (tier3.md 5.9): src the caller, dst the polled MS, value the C_RAND's
+/// Service_Options (the Polling Format in its four LSBs), data one octet: the UDTs asked for (1-4). Its result
+/// carries the polled MS's data (value its UDT_Format) or the refusal. Only between sites (never from the
+/// application).
+pub const SD_UDT_POLL: u8 = 6;
 /// A registration's talkgroup list upload (6.4.4.1.13.2): only from an MS here, never an SdMsg
 pub(super) const SD_TGLIST: u8 = 0x41;
 /// A call diversion's address upload (6.6.7.1): only from an MS
@@ -166,6 +171,7 @@ struct Sd {
     group: bool,
     emergency: bool,
     ahoy_due: bool, // S_UPLOAD: its C_AHOY is to go
+    ps_held: bool,  // S_UPLOAD: a poll's C_AHOY held for the polled MS's wake frame (the caller told to wait)
     so: u8,         // the C_RAND's Service_Options (the upload C_AHOY's Service_Options_Mirror)
     value: u8,      // UDT_Format, or the status
     tries: u8,
@@ -391,7 +397,7 @@ impl Site {
             self.refuse(R_NOT_SUPPORTED, ms, dst);
             return;
         }
-        if self.reg_index(dst).is_none() {
+        if self.reg_index(dst).is_none() && !self.connected {
             self.refuse(R_NOREG_MSAWAY, ms, dst);
             return;
         }
@@ -399,6 +405,31 @@ impl Site {
             self.refuse(R_SYSBUSY, ms, dst);
             return;
         };
+        if self.reg_index(dst).is_none() {
+            // another site may have it: the poll goes there (5.9), the caller waits; its answer comes back as
+            // the result's data and is downloaded here
+            let stream = self.new_stream();
+            let mut d = Sd {
+                used: true,
+                what: SD_UPOLL,
+                origin: O_MS,
+                state: S_NET,
+                so: r.service_options,
+                src: ms,
+                dst,
+                stream,
+                // the far site's own C_AHOYs and upload come first
+                deadline_ms: self.now + 2 * self.cfg.tnp_ms as i64,
+                next_ack_ms: self.now + ACK_EVERY_MS,
+                ..Default::default()
+            };
+            d.head.blocks = rand_sdata_blocks(r);
+            self.sd.sds[i] = d;
+            let m = self.sd_msg(&d, SD_SEND);
+            self.ev(SdMsg { stream, ..m }.event(EV_NET_SD));
+            self.ack(R_WAIT, ms, dst);
+            return;
+        }
         let busy = self.sd_busy(dst);
         let mut d = Sd {
             used: true,
@@ -472,6 +503,10 @@ impl Site {
     /// The message is whole (uploaded, or a status): on to the site, the talkgroup, the MS or the network.
     fn sd_route(&mut self, i: usize) {
         let d = self.sd.sds[i];
+        if d.what == SD_UPOLL && d.origin == O_NET {
+            self.sd_done(i, R_MESSAGE_ACCEPTED, 0, WHY_OK); // the data back to the caller's site
+            return;
+        }
         if d.what == SD_UPOLL {
             // 6.6.5.1.3: the polled data down to the caller
             let s = &mut self.sd.sds[i];
@@ -581,10 +616,21 @@ impl Site {
             dst: d.dst,
             ..Default::default()
         };
-        if d.what == SD_UDT || d.what == SD_DGNA {
+        if d.what == SD_UPOLL {
+            // a request: the C_RAND's Service_Options and the UDTs asked for; a result: the polled data, as UDT
+            // short data
+            m.what = SD_UDT_POLL;
+            if op == SD_SEND {
+                m.value = d.so;
+                m.len = 1;
+                m.data[0] = d.head.blocks.clamp(1, MAX_BLOCKS as u8);
+                return m;
+            }
+        }
+        if d.what == SD_UDT || d.what == SD_DGNA || (d.what == SD_UPOLL && d.blocks.n > 0) {
             let mut buf = [0u8; MAX_DATA];
             let mut n = d.blocks.data(&mut buf);
-            if d.what == SD_UDT && pads_nibbles(d.value) {
+            if d.what != SD_DGNA && pads_nibbles(d.value) {
                 // the message, not its blocks: the pad octets stay here (the far site pads it again; an odd pad
                 // nibble stays in the last octet and goes as pad_nibble)
                 n -= (usize::from(d.head.pad_nibble) / 2).min(n);
@@ -662,6 +708,13 @@ impl Site {
                 let m = SdMsg { op: SD_RESULT, reason, why, value: info, r#ref: d.r#ref, ..self.sd_msg(&d, SD_RESULT) };
                 self.ev(SdMsg { len: 0, data: [0; 48], ..m }.event(EV_SD));
             }
+            O_NET if d.what == SD_UPOLL => {
+                // the polled data (value its UDT_Format), or the refusal
+                let stream = self.new_stream();
+                let m = SdMsg { stream, ..self.sd_msg(&d, SD_RESULT) };
+                let m = if ok { m } else { SdMsg { value: 0, len: 0, data: [0; 48], ..m } };
+                self.ev(SdMsg { reason, why, r#ref: d.r#ref, ..m }.event(EV_NET_SD));
+            }
             O_NET if !d.group => {
                 let stream = self.new_stream();
                 let m = SdMsg { stream, ..self.sd_msg(&d, SD_RESULT) };
@@ -725,6 +778,13 @@ impl Site {
                 let wait = self.ps_wait_ms(d.dst);
                 let s = &mut self.sd.sds[i];
                 s.deadline_ms = s.deadline_ms.max(now + wait);
+                if d.origin == O_MS && !d.ps_held {
+                    // the caller waits for up to a power save cycle: C_WACKD, else it gives up on its random
+                    // access (6.6.5.1.1: the TSCC may answer with C_WACKD); again every ACK_EVERY_MS (sd_timers)
+                    s.ps_held = true;
+                    s.next_ack_ms = now + ACK_EVERY_MS;
+                    self.ack(R_WAIT, d.src, d.dst);
+                }
             }
         }
         if !self.sd.upload.active {
@@ -766,6 +826,8 @@ impl Site {
                     ..Default::default()
                 };
                 self.sd.keep = n;
+                let (k, kind) = (self.k, a.service_kind);
+                self.log(format_args!("short data: C_AHOY {source} -> {target}, kind {kind}, {n} UDTs, slot {k}"));
                 return Some(self.train_start(&[(DT_CSBK, pdu12(&a.encode()))], true));
             }
         }
@@ -1011,7 +1073,9 @@ impl Site {
                 _ => {}
             }
             let d = self.sd.sds[i];
-            let progress = matches!(d.state, S_HOLD | S_NET) || (d.state == S_DOWN && d.what != SD_UPOLL);
+            let progress = matches!(d.state, S_HOLD | S_NET)
+                || (d.state == S_DOWN && d.what != SD_UPOLL)
+                || (d.state == S_UPLOAD && d.ps_held && d.ahoy_due);
             if d.origin == O_MS && progress && now >= d.next_ack_ms {
                 let reason = if d.state == S_HOLD { R_QUEUED_BUSY } else { R_WAIT };
                 self.ack(reason, d.src, d.dst);
@@ -1063,6 +1127,10 @@ impl Site {
             }) else {
                 return;
             };
+            if self.sd.sds[i].what == SD_UPOLL && reason_type(m.reason) == 1 {
+                self.upoll_net_answer(i, m);
+                return;
+            }
             let why = if reason_type(m.reason) == 1 {
                 WHY_OK
             } else if m.why != 0 {
@@ -1073,6 +1141,10 @@ impl Site {
             self.sd_done(i, m.reason, m.value, why);
             return;
         }
+        if m.what == SD_UDT_POLL {
+            self.upoll_net_in(m);
+            return;
+        }
         let group = m.flags & SD_F_GROUP != 0;
         if group && !self.wants_tg(m.dst) && !is_allcall(m.dst) {
             return;
@@ -1081,6 +1153,60 @@ impl Site {
             return; // not here: another site may have it
         }
         self.sd_new(&SdMsg { r#ref: m.stream, ..*m }, O_NET);
+    }
+
+    /// A poll from another site of an MS here (5.9): the C_AHOY from the caller and the upload as for a poll on
+    /// this site; the data goes back in the result (sd_route), a refusal as the reason.
+    fn upoll_net_in(&mut self, m: &SdMsg) {
+        if m.flags & SD_F_GROUP != 0 || self.reg_index(m.dst).is_none() {
+            return; // not here: another site may have it
+        }
+        if (0..SDS).any(|i| {
+            let d = &self.sd.sds[i];
+            d.used && d.what == SD_UPOLL && d.origin == O_NET && d.r#ref == m.stream
+        }) {
+            return; // a repeat
+        }
+        let Some(i) = self.sd_free() else {
+            let stream = self.new_stream();
+            let r = SdMsg { op: SD_RESULT, reason: R_SYSBUSY, why: WHY_REFUSED, r#ref: m.stream, stream, ..*m };
+            self.ev(SdMsg { len: 0, value: 0, ..r }.event(EV_NET_SD));
+            return;
+        };
+        let busy = self.sd_busy(m.dst);
+        let mut d = Sd {
+            used: true,
+            what: SD_UPOLL,
+            origin: O_NET,
+            state: if busy { S_HOLD } else { S_UPLOAD },
+            ahoy_due: !busy,
+            so: m.value & 0x7F,
+            src: m.src,
+            dst: m.dst,
+            r#ref: m.stream,
+            tries: self.cfg.ahoy_tries.max(1),
+            deadline_ms: self.now + if busy { self.cfg.sd_store_ms } else { self.cfg.tnp_ms } as i64,
+            ..Default::default()
+        };
+        d.head.blocks = m.data().first().copied().unwrap_or(MAX_BLOCKS as u8).clamp(1, MAX_BLOCKS as u8);
+        self.sd.sds[i] = d;
+    }
+
+    /// The polled MS's data came back from its site: down to the caller, as a poll's here (6.6.5.1.3).
+    fn upoll_net_answer(&mut self, i: usize, m: &SdMsg) {
+        let Some((b, pn)) = Blocks::of_format(m.data(), m.value) else {
+            self.sd_done(i, R_NOT_SUPPORTED, 0, WHY_REFUSED);
+            return;
+        };
+        let pad_nibble = if pads_nibbles(m.value) { pn + (m.pad_nibble & 1) } else { m.pad_nibble };
+        let s = &mut self.sd.sds[i];
+        s.blocks = b;
+        s.value = m.value;
+        s.head = UdtHead { blocks: b.n, pad_nibble, format: m.value, ..Default::default() };
+        s.state = S_DOWN;
+        s.next_ms = self.now;
+        s.tries = self.cfg.sd_tries.max(1);
+        s.deadline_ms = self.now + self.cfg.tnp_ms as i64;
     }
 
     fn sd_new(&mut self, m: &SdMsg, origin: u8) -> bool {

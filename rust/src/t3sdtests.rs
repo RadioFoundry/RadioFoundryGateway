@@ -491,6 +491,84 @@ fn upoll_refusals() {
     assert!(!air.site.sd_pending());
 }
 
+/// Two sites a slot at a time, the sdata messages carried between them as the network would.
+fn two_sites_sd<const N: usize, const M: usize>(
+    a: &mut Air<N>,
+    b: &mut Air<M>,
+    la: &mut Log,
+    lb: &mut Log,
+    ms: i64,
+    mut stop: impl FnMut(&Air<N>) -> bool,
+) -> Vec<SdMsg> {
+    let mut sent = Vec::new();
+    let end = a.now() + ms;
+    while a.now() < end && !stop(a) {
+        let (na, nb) = (la.0.len(), lb.0.len());
+        a.step(&mut la.f());
+        b.step(&mut lb.f());
+        let now = a.now();
+        let sd = |l: &Log, n: usize| -> Vec<SdMsg> {
+            l.0[n..].iter().filter(|e| e.r#type == EV_NET_SD).map(SdMsg::of_event).collect()
+        };
+        for m in sd(la, na) {
+            b.site.net_sd_in(&m, now);
+            sent.push(m);
+        }
+        for m in sd(lb, nb) {
+            a.site.net_sd_in(&m, now);
+            sent.push(m);
+        }
+    }
+    sent
+}
+
+#[test]
+fn upoll_across_sites() {
+    // tier3.md 5.9: the poll of an MS at another site goes there (what 6); that site sends the C_AHOY from the
+    // caller and takes the upload; its result carries the data back, and the caller's site downloads it
+    const POS: &[u8] = b"33.6 N 86.6 W";
+    let (mut sa, mut sb) = (site_with(|_| {}), site_with(|_| {}));
+    sa.set_link(true);
+    sb.set_link(true);
+    let (mut la, mut lb) = (Log::default(), Log::default());
+    let mut a = Air::new(&mut sa, [ms(1001, &[TG])], T0);
+    let mut b = Air::new(&mut sb, [ms(2002, &[TG]), ms(2003, &[TG])], T0);
+    assert!(b.ms[0].set_poll_reply(FMT_ISO8, POS));
+    register_all(&mut a, &mut la);
+    register_all(&mut b, &mut lb);
+    while b.now() < a.now() {
+        b.step(&mut lb.f());
+    }
+    let now = a.now();
+    assert!(a.ms[0].send_upoll(2002, FMT_ISO8, 2, now));
+    let sent = two_sites_sd(&mut a, &mut b, &mut la, &mut lb, 15_000, done::<1>(0));
+    assert!(done::<1>(0)(&a), "the poll ends");
+    assert_eq!((a.ms[0].status().calls_done, b.ms[0].polled()), (1, 1));
+    let q = sent.iter().find(|m| m.op == SD_SEND).expect("the poll out");
+    assert_eq!((q.what, q.src, q.dst, q.value, q.data()), (SD_UDT_POLL, 1001, 2002, FMT_ISO8, &[2u8][..]));
+    let r = sent.iter().find(|m| m.op == SD_RESULT).expect("its result");
+    let got = (r.what, r.reason, r.r#ref, r.value, r.data());
+    assert_eq!(got, (SD_UDT_POLL, R_MESSAGE_ACCEPTED, q.stream, FMT_ISO8, POS));
+    let (h, d, _) = a.ms[0].inbox().expect("the polled data");
+    assert_eq!((h.source, h.target, h.format), (2002, 1001, FMT_ISO8));
+    assert_eq!(&d[..POS.len()], POS);
+    let _ = two_sites_sd(&mut a, &mut b, &mut la, &mut lb, 2000, |_| false);
+    assert!(!a.site.sd_pending() && !b.site.sd_pending());
+
+    // the polled MS refuses: its reason back in the result, mirrored to the caller in C_NACKD
+    let now = a.now();
+    assert!(a.ms[0].send_upoll(2003, FMT_ISO8, 1, now));
+    let _ = two_sites_sd(&mut a, &mut b, &mut la, &mut lb, 15_000, |a| a.ms[0].status().calls_failed == 1);
+    assert_eq!(a.ms[0].status().last_reason, R_RECIPIENT_REFUSED);
+    // no site has it: MSaway once the caller's site gives up
+    let now = a.now();
+    assert!(a.ms[0].send_upoll(5555, FMT_ISO8, 1, now));
+    let _ = two_sites_sd(&mut a, &mut b, &mut la, &mut lb, 40_000, |a| a.ms[0].status().calls_failed == 2);
+    assert_eq!(a.ms[0].status().last_reason, R_MSAWAY);
+    let _ = two_sites_sd(&mut a, &mut b, &mut la, &mut lb, 2000, |_| false);
+    assert!(!a.site.sd_pending() && !b.site.sd_pending());
+}
+
 // ── from the site's application ──
 
 #[test]
