@@ -244,13 +244,16 @@ static void io_data(void *ctx, int ch, int dt, const uint8_t *burst, uint32_t sr
     }
     rdofgw_heard(0, (ch & 1) + 1, 0, -1, dt, burst, (double)wall_ms() / 1000.0);
 }
-/* The gateway's packets go down one at a time (an ACK and then the reply to it come at once): the rest wait here,
- * in order, for the one going down. */
+/* The gateway's packets go down one at a time (a reply can come while the one before waits for its MS): the rest
+ * wait here, in order, for the one going down. Its ACKs don't wait: they go on the open channel they answer. */
 #define GW_QUEUE 8
 static rdof_ipgw_dmr_t gw_q[GW_QUEUE];
 static int gw_qn;
 static bool t3_gw_send(void *ctx, const rdof_ipgw_dmr_t *p)
 {
+    /* an ACK goes now, on the channel it answers: a packet waiting for the MS's return mustn't hold it */
+    if (p->response)
+        return rdof_t3unit_data_tx(T.u, p->src, p->dst, false, true, p->nbursts, p->control, &p->bursts[0][0]);
     if (!gw_qn && !rdof_t3unit_data_busy(T.u))
         return rdof_t3unit_data_tx(T.u, p->src, p->dst, false, p->response, p->nbursts, p->control, &p->bursts[0][0]);
     if (gw_qn == GW_QUEUE) {
@@ -406,6 +409,7 @@ typedef struct {
 #define ACT_SETPOLL 0xF5   /* rdof_t3ms_set_poll (ISO 8-bit text) */
 #define ACT_IPADV 0xF6     /* rdof_t3ms_ip_advice: arg the address, flags 1 deleting it */
 #define ACT_SETSUPP 0xF7   /* rdof_t3ms_set_supp (text, binary format) */
+#define ACT_MISSACK 0xF8   /* rdof_t3ms_miss_acks: arg how many */
 #define AIR_RADIO_NET 0x0C000000u /* 12.0.0.0/8: a radio's address, its id in the low 24 bits */
 #define AIR_FILL_MAX ((RDOF_IPGW_MAX_PACKET - 28) / 2) /* data *N: characters at most, one UDP/IPv4 datagram */
 #define ACT_HELP                                                                                                       \
@@ -416,7 +420,7 @@ typedef struct {
     "(data34, cdata1 ...: rate 3/4, 1; "                                                                              \
     "TEXT *N: N generated characters) | "                                                                             \
     "interrupt ID [TALK_MS] | ginterrupt TG [TALK_MS] | als ID | alsend ID | "                                        \
-    "setstatus N | cancel | ambe FILE|off (any MS: all MSs' voice, raw 9-octet AMBE+2 frames)"
+    "setstatus N | missack N | cancel | ambe FILE|off (any MS: all MSs' voice, raw 9-octet AMBE+2 frames)"
 
 #define ACTS 256
 
@@ -504,7 +508,9 @@ static int act_parse(const char *text, act_t *x)
         x->what = sdm ? ACT_SDM : ACT_DATA, x->arg = (uint32_t)a1, x->len = (uint8_t)n,
         x->flags = (what[0] == 'g' ? RDOF_T3MS_F_GROUP : 0) | (what[0] == 'c' ? RDOF_T3MS_F_CONFIRMED : 0) |
                    (sdm ? 0 : (uint8_t)act_data_rate(what));
-    } else if (!strcmp(what, "upoll") && got >= 3 && (got < 4 || (a2 >= 1 && a2 <= 4)))
+    } else if (!strcmp(what, "missack") && got >= 3 && a1 <= 255)
+        x->what = ACT_MISSACK, x->arg = (uint32_t)a1;
+    else if (!strcmp(what, "upoll") && got >= 3 && (got < 4 || (a2 >= 1 && a2 <= 4)))
         x->what = ACT_UPOLL, x->arg = (uint32_t)a1, x->len = got >= 4 ? (uint8_t)a2 : 4;
     else if ((!strcmp(what, "setpoll") || !strcmp(what, "setsupp")) && got >= 2) {
         const char *t = strstr(line, what) + strlen(what);
@@ -607,6 +613,10 @@ static bool act_run(rdof_t3ms_t *ms, const act_t *a, int64_t now)
         return rdof_t3ms_set_poll(ms, 4 /* ISO 8-bit */, (const uint8_t *)a->text, a->len);
     if (a->what == ACT_SETSUPP)
         return rdof_t3ms_set_supp(ms, (const uint8_t *)a->text, a->len);
+    if (a->what == ACT_MISSACK) {
+        rdof_t3ms_miss_acks(ms, (uint8_t)a->arg);
+        return true;
+    }
     if (a->what == ACT_UPOLL)
         return rdof_t3ms_upoll(ms, a->arg, 4, a->len, now);
     if (a->what == ACT_IPADV)

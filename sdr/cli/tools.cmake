@@ -199,7 +199,7 @@ if(TARGET rdofradio AND TARGET fakemodem AND UNIX)
         # no RF: a Tier III site's IP gateway: an MS's data to IPI goes out to a host and the reply comes back down
         add_test(NAME rdofradio_e2e_t3_ipgw COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_t3_ipgw.sh
                  $<TARGET_FILE_DIR:rdofradio> 47013)
-        set_tests_properties(rdofradio_e2e_t3_ipgw PROPERTIES TIMEOUT 90)
+        set_tests_properties(rdofradio_e2e_t3_ipgw PROPERTIES TIMEOUT 120)
         # no RF: a two-carrier site, both out of the SDR; rdofsdr decodes the transmit file at both outs
         add_test(NAME rdofradio_e2e_t3_car2 COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_t3_car2.sh
                  $<TARGET_FILE_DIR:rdofradio>)

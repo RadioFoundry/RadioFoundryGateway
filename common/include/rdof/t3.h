@@ -496,6 +496,8 @@ void rdof_t3ms_init(rdof_t3ms_t *ms, uint32_t id, const uint32_t *tg, int ntg, c
 void rdof_t3ms_answer(rdof_t3ms_t *ms, uint8_t answer, uint32_t answer_ms);
 /* the status (0-127) it answers a status poll with (6.6.6.2.2.1.5; 0 at start) */
 void rdof_t3ms_set_status(rdof_t3ms_t *ms, uint8_t status);
+/* a test's: its next n ACKs to its confirmed data go unheard, so it sends the message again */
+void rdof_t3ms_miss_acks(rdof_t3ms_t *ms, uint8_t n);
 /* Its authentication key K and PSN (361-4 6.4.8.1): it answers a challenge C_ACKU(Authentication Response); k NULL:
    no key, it answers C_NACKU(MSNot_Supported). */
 void rdof_t3ms_key(rdof_t3ms_t *ms, const uint8_t k[16], uint32_t psn, bool has_psn);

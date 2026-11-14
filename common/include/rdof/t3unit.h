@@ -117,11 +117,14 @@ void rdof_t3unit_rx(rdof_t3unit_t *u, int c, int64_t k, const rdof_burst_t *b, i
 /* The site sends packet data (tier3.md 3.16): a data header and its n - 1 blocks (control as MMDVM's DMR_DATA, as the
  * IP gateway builds them; up to RDOF_T3UNIT_DATA_BURSTS) from src (the site's data ID or TSI) to an MS or, group, a
  * talkgroup. The controller asks for a channel (an MS's availability check first) and the packet goes once it is open.
- * A response (an ACK) goes only on the data channel it answers. One at a time; false: one is waiting, it doesn't fit, or the controller can't (not registered here, busy). */
+ * A response (an ACK, up to 4 bursts) goes at once and only on the open data channel it answers, beside a packet
+ * waiting for its own. One of each at a time; false: one is waiting, it doesn't fit, or the controller can't (not
+ * registered here, busy, no channel for a response). */
 bool rdof_t3unit_data_tx(rdof_t3unit_t *u, uint32_t src, uint32_t dst, bool group, bool response, int n,
                          const uint8_t *control, const uint8_t *bursts);
 #define RDOF_T3UNIT_DATA_BURSTS 128
-/* True while the site's packet (rdof_t3unit_data_tx) waits for its channel or goes down: the next one waits. */
+/* True while the site's packet (rdof_t3unit_data_tx) waits for its channel or goes down: the next one waits. A
+ * response doesn't count. */
 bool rdof_t3unit_data_busy(const rdof_t3unit_t *u);
 
 /* An MQTT message (any topic the subscriptions bring). */

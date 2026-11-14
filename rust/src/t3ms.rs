@@ -254,6 +254,7 @@ pub struct Ms {
     pd_pos: u8, // 0: the header next, then the blocks
     pd_sending: bool,
     pd_wait_ack: bool,
+    miss_acks: u8, // a test's: ACKs to its confirmed data it doesn't hear (a radio still turning around)
     pd_until: i64,
     pd_multi: bool, // the channel's grant is multi-item
     /// A SACK's C_RDATA block, after pd_resp.
@@ -584,6 +585,11 @@ impl Ms {
     /// The last diverted address its requests got: (MSI or GPI, the address, how many).
     pub fn diverted(&self) -> (u32, u32, u32) {
         (self.diverted_src, self.diverted, self.diverted_n)
+    }
+
+    /// Its next n ACKs to its confirmed data go unheard (a test's: the radio sends the message again).
+    pub fn miss_acks(&mut self, n: u8) {
+        self.miss_acks = n;
     }
 
     /// The status it answers a poll with.
@@ -1251,6 +1257,7 @@ impl Ms {
     /// CRC, all again; another NACK ends it.
     fn on_response(&mut self, h: &DataHead) {
         match (h.class, h.rtype) {
+            (CLASS_ACK, TYPE_ACK) if self.miss_acks > 0 => self.miss_acks -= 1, // sent again after DATA_ACK_MS
             (CLASS_ACK, TYPE_ACK) => {
                 self.pd_wait_ack = false;
                 self.item_done();
@@ -2267,6 +2274,11 @@ pub unsafe extern "C" fn rdof_t3ms_init(
 #[no_mangle]
 pub unsafe extern "C" fn rdof_t3ms_answer(ms: *mut Ms, answer: u8, answer_ms: u32) {
     (*ms).set_answer(answer, answer_ms);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3ms_miss_acks(ms: *mut Ms, n: u8) {
+    (*ms).miss_acks(n);
 }
 
 #[no_mangle]

@@ -699,11 +699,13 @@ SUPED_SV, HI_RATE, SIMI, priority):
 
 The site as a party: data to TSI, the data ID or IPI goes, burst by burst, to the unit's `data` hook (rdofradio:
 the IP gateway app, when the document has one: [ipgw.md](ipgw.md); a trunked site's gateway is the unit's, never the
-repeater's). What the gateway sends goes down through `rdof_t3unit_data_tx`, source the site's ID, one packet at a
-time (rdofradio queues up to 8 behind it, in order: an ACK and the reply to it come together):
+repeater's). What the gateway sends goes down through `rdof_t3unit_data_tx`, source the site's ID: a response at
+once, new data one packet at a time (rdofradio queues up to 8 behind it, in order):
 
-- A response (the ACK of the MS's confirmed message) goes on the data channel it answers, which a confirmed item
-  holds 6 s for it; with no such channel it is dropped.
+- A response (the ACK of the MS's confirmed message, up to 4 bursts) goes at once on the data channel it answers,
+  which a confirmed item holds 6 s for it, beside a packet that waits for a channel of its own; with no such channel
+  it is dropped. It doesn't restart the channel's hang time (that runs from a received message, 6.6.3.3.1.6 b 1): an
+  MS that missed it sends its message again on the channel within the hold, and the gateway answers that again.
 - New data (the gateway's reply) goes on the MS's open data channel with the site only in a multi-item call. After a
   single item the MS may leave the channel at once (6.6.3.3.2.5 a to e: after its unconfirmed data, after its ACK),
   so the site asks for a channel (`rdof_t3_pd_send`: the availability check to the MS, or TD_GRANT for a talkgroup).
@@ -711,7 +713,9 @@ time (rdofradio queues up to 8 behind it, in order: an ACK and the reply to it c
   The data starts GRANT_LEAD_MS (360 ms) after the grant, once the MS is on the channel; 30 s at most in all.
 
 (On air, 2026-11-14: the IP gateway's answers never went down. The repeater's IP gateway had started in the site's
-place, and each answer failed in it; an answer that the site did put on the MS's draining channel was lost.) A packet
+place, and each answer failed in it; an answer that the site did put on the MS's draining channel was lost. Then a
+radio missed the site's one ACK: the ACK had cut the hold to the 3 s hang, so its retry met the channel's clear, and
+the ACKs to its retries waited behind the reply, which waited for the MS.) A packet
 to an MS not registered here goes to the network as a `data_pdu` (5.10) when the site is connected; the site that has
 the MS delivers it.
 
@@ -1754,7 +1758,8 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
   hello all`: a packet data call whose one message is a text message (361-3 5.7.1: UTF-16BE, up to 64 characters,
   or `*N` for N generated ones, up to 746: one 1520-octet datagram; the receiving MS logs the first 80 and whether
   all of it is the pattern; `1000001 cdata 16776899 @192.168.2.10 ping` sends to that address, a host through the
-  site's IP gateway, in place of the ID's)
+  site's IP gateway, in place of the ID's; `1000001 missack 1`: it doesn't hear the next ACK to its confirmed data,
+  and sends the message again)
   in a UDP/IPv4 datagram from port 5016 to 5016, 12.x.y.z the MS's address (its ID in the low 24 bits) and 225.x.y.z
   a talkgroup's, sent as rate 1/2 blocks; `data34`, `cdata34`, `gdata34` the same in rate 3/4 blocks, `data1`,
   `cdata1`, `gdata1` in rate 1; `1000001 setstatus 12`: the status it answers a poll with, else the last it sent, 0
@@ -1997,6 +2002,8 @@ Built since step 8e, host-tested (the bench steps above note what has run on air
 | 29495f9d | A confirmed item's channel held 6 s for the sender's retry; the sim MS sends again on no response |
 | 971e7cb8 | The IP gateway's answers go down: the repeater's gateway no longer starts in a trunked site's place; responses only on the channel they answer, new data through the TSCC after a single item; a channel granted again while its P_CLEARs go out stays open; the site's data waits for the grant's lead; the sim MS takes the site's data from IPI. `rdofradio_e2e_t3_ipgw` |
 | f2bf1728 | Air MS data to a host's address (`@A.B.C.D`); the sim MS takes a poll's answer the same as an earlier one's as a new message (a repeat only within 10 s) |
+| 19df4357 | The IP gateway's failed blocks counted by cause (`rx_block_fec`, `rx_block_crc`); with `-v` the site logs each burst it gives the gateway in hex (on air it showed a radio's rate 3/4 blocks with octets 0-1 wrong) |
+| next | The site's ACK goes at once beside a reply waiting for its MS, and doesn't cut the confirmed item's 6 s hold: a radio that missed it is answered on its retry (`missack` in `rdofradio_e2e_t3_ipgw`) |
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
 apart from the code, found seven deviations, all fixed (2026-11-12):

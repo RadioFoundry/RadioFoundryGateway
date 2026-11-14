@@ -4,7 +4,8 @@
 # No RF: a one-carrier Tier III site on a file device with its IP gateway app and two simulated MSs (--air-ms). An MS
 # sends confirmed UDP text to IPI (tier3.md 3.16); the gateway sends it to a listener on this host, which sends it
 # back. The MS gets its ACK and then the reply, both as the site's own data on air. Unconfirmed text follows, and
-# its reply comes back the same way (sent to the host's address: @A.B.C.D).
+# its reply comes back the same way (sent to the host's address: @A.B.C.D). Then confirmed text whose first ACK the MS
+# misses: it sends again on the channel, and the site, still listening, answers again.
 #
 #   sh host-tests/e2e_t3_ipgw.sh <dir with rdofradio> <udp port>
 set -u
@@ -31,9 +32,9 @@ cat > "$D/site.json" <<J
            "registration": "open", "wide_tg": "1-99999", "timers": {"hang_s": 3}},
           {"type": "ipgw", "pc": "9991", "routes": [{"all": true, "to": "127.0.0.1:$PORT"}]}]}
 J
-printf '6 1000001 cdata 16776899 ping confirmed\n20 1000001 data 16776899 @127.0.0.1 ping plain\n' > "$D/script"
+printf '6 1000001 cdata 16776899 ping confirmed\n20 1000001 data 16776899 @127.0.0.1 ping plain\n34 1000001 missack 1\n35 1000001 cdata 16776899 @127.0.0.1 ping again\n' > "$D/script"
 "$BIN/rdofradio" --file /dev/zero,/dev/null --allow-tx -v --config "$D/site.json" --air-ms 2 --sim-tg 1 \
-    --sim-script "$D/script" --seconds 36 > "$D/log" 2>&1
+    --sim-script "$D/script" --seconds 56 > "$D/log" 2>&1
 fail=0
 check() {
     [ "$(grep -c "$1" "$D/log")" -ge "${3:-1}" ] || { echo "FAIL: $2"; fail=1; }
@@ -43,7 +44,9 @@ check "tier3: site data .* -> 1000001, [0-9]* bursts" "the site sends the gatewa
 check 'air MS 1000001: packet data from .*UTF-16BE text: "ping confirmed"' "the confirmed text comes back to the MS"
 check 'air MS 1000001: packet data from .*UTF-16BE text: "ping plain"' "the unconfirmed text comes back to the MS"
 check "air MS 1000001: idle, registered on ch 0; calls 1 done, 0 failed" "the confirmed data is acknowledged"
+check 'air MS 1000001: packet data from .*UTF-16BE text: "ping again"' "a missed ACK: the text comes back"
+check "air MS 1000001: idle, registered on ch 0; calls 3 done, 0 failed" "a missed ACK: answered again on the retry"
 grep -q "not sent" "$D/log" && { echo "FAIL: the site refused the gateway's data"; fail=1; }
-[ "$(grep -c got "$D/udp.log" 2>/dev/null)" = 2 ] || { echo "FAIL: the listener didn't get both datagrams"; fail=1; }
+[ "$(grep -c got "$D/udp.log" 2>/dev/null)" = 3 ] || { echo "FAIL: the listener didn't get the three datagrams once each"; fail=1; }
 [ $fail = 0 ] && echo "ok: a Tier III site's IP gateway: out to a host and back to the MS, confirmed and not" ||
-    { grep "air MS 1000001\|tier3: site data\|packet data\|ip gateway" "$D/log" | head -40; exit 1; }
+    { grep "air MS 1000001\|tier3: site data\|packet data\|ip gateway" "$D/log" | tail -40; exit 1; }

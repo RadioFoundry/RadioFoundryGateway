@@ -641,6 +641,8 @@ pub struct Unit {
     data_rx: [t3::DataRx; CHANNELS],
     site_party: [bool; CHANNELS], // the site is a party to the data call on the channel
     dl: DataDown,
+    rl: RespDown,
+    rl_asking: bool, // rdof_t3unit_data_tx is asking the controller for a response's channel: its EV_PD is rl's
     // packet data across sites (tier3.md 5.10): the relays, their own blocks counted, who sent what they hold
     pdnet: PdNet,
     relay_rx: [t3::DataRx; CHANNELS],
@@ -664,6 +666,20 @@ struct DataDown {
     bursts: [[u8; 33]; DATA_BURSTS],
 }
 
+/// A response the site sends (its IP gateway's ACK): it goes at once on the open channel it answers, beside a packet
+/// that waits in dl for its own channel (the MS's next data comes there after its retry, 361-3 5.4.1).
+#[derive(Clone, Copy)]
+struct RespDown {
+    on: bool,
+    ch: c_int,
+    src: u32,
+    n: usize,
+    pos: usize,
+    control: [u8; RESP_BURSTS],
+    bursts: [[u8; 33]; RESP_BURSTS],
+}
+
+const RESP_BURSTS: usize = 4; // a response: its header (and a SACK's block)
 pub const DATA_BURSTS: usize = 128; // RDOF_IPGW_MAX_BURSTS
 const DATA_WAIT_MS: i64 = 30_000; // a packet waits this long for its channel
 
@@ -1213,6 +1229,9 @@ unsafe fn drain(u: *mut Unit) {
                 if (*u).dl.on && (*u).dl.ch == ch {
                     (*u).dl.on = false; // its channel went before it all did
                 }
+                if (*u).rl.on && (*u).rl.ch == ch {
+                    (*u).rl.on = false;
+                }
                 let c = rdof_t3rf_channel(rf(u), ch);
                 if !c.is_null() && (*c).ctl_left > 0 {
                     (*c).close_after = true; // after its last P_CLEAR
@@ -1363,6 +1382,10 @@ unsafe extern "C" fn io_uplink(ctx: *mut c_void, ch: c_int, f: *const RdofFrame)
 unsafe fn data_event(u: *mut Unit, e: &Event) {
     let ch = usize::from(e.ch);
     let d = addr_of_mut!((*u).dl);
+    if (*u).rl_asking && e.op == t3::PD_OPEN && ch < CHANNELS {
+        (*u).rl.ch = ch as c_int; // the response's: not the packet waiting for its own channel
+        return;
+    }
     if e.op == t3::PD_OPEN && ch < CHANNELS {
         (*u).site_party[ch] = e.kind == t3::PARTY_SITE || ((*d).on && (*d).group && e.dst == (*d).dst);
         if (*u).site_party[ch] {
@@ -1395,6 +1418,24 @@ unsafe fn data_event(u: *mut Unit, e: &Event) {
 /// Feeds the held packet to its channel's queue as room allows; the controller counts it as it goes.
 unsafe fn data_feed(u: *mut Unit, k: i64) {
     relay_feed(u, k);
+    let r = addr_of_mut!((*u).rl);
+    if (*r).on {
+        let ch = (*r).ch;
+        let mut room = rdof_t3rf_room(rf(u), ch) - 2;
+        // not told to the controller as heard data: the hang time runs from a received message (6.6.3.3.1.6 b 1),
+        // and the MS's confirmed item holds the channel for its retry (CONFIRMED_HOLD_MS) should this go unheard
+        while room > 0 && (*r).pos < (*r).n {
+            let i = (*r).pos;
+            if !rdof_t3rf_data(rf(u), ch, (*r).control[i], (*r).bursts[i].as_ptr()) {
+                break;
+            }
+            (*r).pos += 1;
+            room -= 1;
+        }
+        if (*r).pos >= (*r).n {
+            (*r).on = false;
+        }
+    }
     let d = addr_of_mut!((*u).dl);
     if !(*d).on {
         return;
@@ -1441,6 +1482,7 @@ unsafe fn data_feed(u: *mut Unit, k: i64) {
 }
 
 /// True while a packet the site sends (rdof_t3unit_data_tx) waits for its channel or goes down: the next one waits.
+/// A response doesn't count: it has a slot of its own and goes at once.
 #[no_mangle]
 pub unsafe extern "C" fn rdof_t3unit_data_busy(u: *const Unit) -> bool {
     !u.is_null() && (*u).dl.on
@@ -1448,8 +1490,9 @@ pub unsafe extern "C" fn rdof_t3unit_data_busy(u: *const Unit) -> bool {
 
 /// The site sends a packet (a data header and its blocks, as the IP gateway builds them: control as MMDVM's
 /// DMR_DATA) from src to dst (an MS or, group, a talkgroup): a channel is asked for and the packet goes once it is
-/// open. A response (an ACK) goes only on the data channel it answers. One at a time; false: one is waiting, too
-/// long, or the controller can't (not here, busy, no channel for a response).
+/// open. A response (an ACK, up to RESP_BURSTS) goes at once and only on the open data channel it answers, beside a
+/// packet waiting for its own. One of each at a time; false: one is waiting, too long, or the controller can't (not
+/// here, busy, no channel for a response).
 #[no_mangle]
 pub unsafe extern "C" fn rdof_t3unit_data_tx(
     u: *mut Unit,
@@ -1463,7 +1506,7 @@ pub unsafe extern "C" fn rdof_t3unit_data_tx(
 ) -> bool {
     let d = addr_of_mut!((*u).dl);
     // "tier3: site data 16776899 -> 3101276 not sent: one waiting"
-    let refused = |why: &[u8]| {
+    let refused = move |why: &[u8]| {
         log(u, |o| {
             o.bytes(b"tier3: site data ");
             o.int(i64::from(src), 0);
@@ -1474,14 +1517,51 @@ pub unsafe extern "C" fn rdof_t3unit_data_tx(
         });
         false
     };
-    if (*d).on {
-        return refused(b"one waiting");
-    }
     if n < 1 || n as usize > DATA_BURSTS || control.is_null() || bursts.is_null() {
         return refused(b"bad size");
     }
     if control.read() & 0x0F != crate::t3udt::DT_DATA_HDR {
         return refused(b"no header");
+    }
+    if response {
+        // on the open channel it answers, now, whatever waits in dl
+        let r = addr_of_mut!((*u).rl);
+        if (*r).on {
+            return refused(b"one waiting");
+        }
+        if n as usize > RESP_BURSTS {
+            return refused(b"bad size");
+        }
+        let n = n as usize;
+        (*r).ch = -1;
+        (*u).rl_asking = true;
+        let ok = t3::rdof_t3_pd_send((*u).site, src, dst, group, true, (*u).now_ms);
+        drain(u);
+        (*u).rl_asking = false;
+        if !ok || (*r).ch < 0 {
+            return refused(b"the site refused");
+        }
+        (*r).on = true;
+        (*r).src = src;
+        (*r).n = n;
+        (*r).pos = 0;
+        ptr::copy_nonoverlapping(control, (*r).control.as_mut_ptr(), n);
+        ptr::copy_nonoverlapping(bursts, (*r).bursts.as_mut_ptr().cast::<u8>(), n * 33);
+        let ch = (*r).ch;
+        log(u, |o| {
+            o.bytes(b"tier3: site data ");
+            o.int(i64::from(src), 0);
+            o.bytes(b" -> ");
+            o.int(i64::from(dst), 0);
+            o.bytes(b", ");
+            o.int(n as i64, 0);
+            o.bytes(b" bursts on ch ");
+            o.int(i64::from(ch), 0);
+        });
+        return true;
+    }
+    if (*d).on {
+        return refused(b"one waiting");
     }
     let n = n as usize;
     (*d).on = true;
