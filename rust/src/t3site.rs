@@ -20,7 +20,7 @@ pub use sdata::{
     rdof_t3_net_sd, rdof_t3_sd_of_event, rdof_t3_sd_send, SdMsg, SD_DGNA, SD_F_EMERGENCY, SD_F_GROUP, SD_POLL,
     SD_INTR, SD_RESULT, SD_SEND, SD_STATUS, SD_UDT, SD_UDT_POLL,
 };
-use sdata::{SD_DIVERT, SD_IPADDR, SD_IPADV, SD_TGLIST};
+use sdata::{SD_DIVERT, SD_IPADDR, SD_IPADV, SD_SUPP, SD_TGLIST};
 // talkgroup lists: registration with a list, DGNA (tier3.md 3.17)
 #[path = "t3tglist.rs"]
 mod tglist;
@@ -608,6 +608,7 @@ const P_ALERTING: u8 = 2; // FOACSU: the called party alerts; waiting for Call A
 const P_NET: u8 = 3; // waiting for the network's answer to our setup request
 const P_QUEUED: u8 = 4; // both parties ready (or a group call): waiting for a payload channel
 const P_WAKE: u8 = 5; // a group call waiting for its members' power save wake frame (6.4.7.1)
+const P_SUPP: u8 = 6; // the caller's supplementary user data going up and down first (6.4.13, t3sdata SD_SUPP)
 
 #[derive(Clone, Copy, Default)]
 struct Pend {
@@ -629,6 +630,7 @@ struct Pend {
     next_ahoy_ms: i64,
     next_ack_ms: i64,
     als: bool, // an Ambient Listening Service call (6.6.2.6)
+    supp: u8,  // SUPED_SV: the supplementary user data's UDTs (SUPED_VAL plus 1), 0 none or done
 }
 
 #[derive(Clone, Copy, Default)]
@@ -1917,9 +1919,11 @@ impl Site {
         let group = r.service_kind == SK_TG_VOICE;
         // a repeat of a request in progress: answer it again
         if let Some(i) = self.pend.iter().position(|p| p.used && p.caller_local && p.caller == ms && p.called == dst) {
-            match self.pend[i].state {
+            let state = self.pend[i].state;
+            match state {
                 P_QUEUED => self.ack(R_QUEUED, ms, dst),
                 P_ALERTING => self.ack(R_MS_ALERTING, ms, dst),
+                P_SUPP if self.sd_again(SD_SUPP, ms) => {} // it missed the C_AHOY from SUPLI: again
                 _ => self.ack(R_WAIT, ms, dst),
             }
             return;
@@ -1935,6 +1939,30 @@ impl Site {
                 }
             }
             let svc = r.service_options;
+            if svc & SO_SUPED != 0 && self.group_channel(dst).is_none() {
+                if let Some(i) = self.free_pend() {
+                    // 6.4.13: the caller's supplementary data to the members first, then the grant
+                    self.pend[i] = Pend {
+                        used: true,
+                        kind: KIND_GROUP,
+                        svc,
+                        prio,
+                        caller_local: true,
+                        called_local: true,
+                        caller: ms,
+                        called: dst,
+                        since_ms: self.now,
+                        next_ack_ms: self.now + WACK_EVERY_MS,
+                        supp: (r.dep >> 2 & 3) + 1,
+                        ..Default::default()
+                    };
+                    if self.supp_start(i) {
+                        self.ack(R_WAIT, ms, dst);
+                        return;
+                    }
+                    self.pend[i].used = false;
+                }
+            }
             if self.group_channel(dst).is_none() && svc & SO_EMERGENCY == 0 {
                 if let (Some(d @ 1..), Some(i)) = (self.ps_group_wait(dst), self.free_pend()) {
                     // members asleep: the grant waits for their wake frame (6.4.7.1), C_WACKD meanwhile
@@ -1991,6 +2019,9 @@ impl Site {
         if self.reg_index(dst).is_some() {
             p.called_local = true;
             p.state = P_AHOY;
+            if p.svc & SO_SUPED != 0 {
+                p.supp = (r.dep >> 2 & 3) + 1; // after the called MS answers (6.4.13.1)
+            }
             p.deadline_ms = self.now + self.cfg.tp_ms as i64;
             p.ahoy_left = self.cfg.ahoy_tries;
             p.next_ahoy_ms = self.now;
@@ -2081,6 +2112,9 @@ impl Site {
     /// Both parties ready: a channel now, or the queue.
     fn private_ready(&mut self, i: usize) {
         let p = self.pend[i];
+        if p.supp != 0 && p.kind == KIND_PRIVATE && self.supp_start(i) {
+            return;
+        }
         self.pend[i].used = false;
         if p.kind == KIND_DUPLEX {
             self.duplex_ready(&p);
@@ -2089,6 +2123,53 @@ impl Site {
         match self.free_channel() {
             Some(ch) => self.private_go(&p, ch),
             None => self.enqueue(p),
+        }
+    }
+
+    /// Call setup i asked for supplementary user data (6.4.13): its exchange starts (true), or there's no room for it
+    /// and the call goes on without it (6.4.13.0 a).
+    fn supp_start(&mut self, i: usize) -> bool {
+        let p = self.pend[i];
+        self.pend[i].supp = 0;
+        let group = p.kind == KIND_GROUP;
+        let sk = if group { SK_TG_VOICE } else { SK_IND_VOICE };
+        if !self.sd_supp_new(p.caller, p.called, group, sk, p.supp) {
+            self.log(format_args!("supplementary data from {}: no room, the call goes on without it", p.caller));
+            return false;
+        }
+        let q = &mut self.pend[i];
+        q.state = P_SUPP;
+        q.deadline_ms = self.now + 3 * self.cfg.tnp_ms as i64;
+        true
+    }
+
+    /// The supplementary user data of the call from ms to dst went (ok), or didn't (upload: the caller's part; reason
+    /// the answer): the call goes on either way (6.4.13.0 a).
+    pub(super) fn supp_data_done(&mut self, ms: u32, dst: u32, ok: bool, upload: bool, reason: u8) {
+        let Some(i) = (0..PENDING).find(|&i| {
+            let p = &self.pend[i];
+            p.used && p.state == P_SUPP && p.caller == ms && p.called == dst
+        }) else {
+            return;
+        };
+        match (ok, upload) {
+            (true, _) => self.log(format_args!("supplementary data from {ms} to {dst}: delivered")),
+            (false, true) => self.log(format_args!("supplementary data from {ms}: not uploaded ({reason:#04x})")),
+            (false, false) => {
+                self.log(format_args!("supplementary data from {ms} to {dst}: not taken ({reason:#04x})"))
+            }
+        }
+        self.supp_go(i);
+    }
+
+    /// Call setup i past its supplementary data: the grant (or the queue).
+    fn supp_go(&mut self, i: usize) {
+        let p = self.pend[i];
+        if p.kind == KIND_GROUP {
+            self.pend[i].used = false;
+            self.group_start(p.caller, p.called, p.svc, p.prio);
+        } else {
+            self.private_ready(i);
         }
     }
 
@@ -2213,6 +2294,9 @@ impl Site {
             if p.state == P_QUEUED {
                 self.activity(ACT_QUEUE, QUEUE_DROP, p.caller, p.called, 0);
             }
+            if p.state == P_SUPP {
+                self.sd_supp_drop(ms);
+            }
             return;
         }
         if self.chans.iter().any(|c| Self::live(c) && c.src == ms) {
@@ -2232,6 +2316,11 @@ impl Site {
             if p.state == P_WAKE && (now >= p.deadline_ms || self.ps_group_wait(p.called) == Some(0)) {
                 self.pend[i].used = false; // the members' wake frame: the grant now
                 self.group_start(p.caller, p.called, p.svc, p.prio);
+                continue;
+            }
+            if p.state == P_SUPP && now >= p.deadline_ms {
+                self.sd_supp_drop(p.caller); // stuck: the call goes on without it
+                self.supp_go(i);
                 continue;
             }
             if now >= p.deadline_ms {

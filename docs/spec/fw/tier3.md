@@ -38,7 +38,7 @@ Principles:
 | Random access | Slotted Aloha, Mask 0, Service Function from load, adaptive Backoff, NRand_Wait from settings; a response to every random access |
 | Registration | Open or listed (ID sets); register, de-register, implicit registration from call requests; single-talkgroup subscription (TRGT_ADR_CNTS 01b) and a list of up to 7 by UDT upload (10b, 3.17); Reg_Accepted / Reg_Refused / Reg_Denied; MS_Not_Registered; IP connection advice (6.4.11: the MS's IPv4 address added or deleted through IPI, a setting) |
 | Group voice | C_RAND, C_WACKD/C_QACKD, TV_GRANT (repeated; Late_Entry grants through the call and its hang time), BTV_GRANT for all-calls (ALLMSID, ALLMSIDL, ALLMSIDZ) and broadcast calls to a talkgroup (BCAST_SV), quasi-transmission trunking (hang time; none for broadcasts and all-calls), P_CLEAR on hang expiry, call timer or P_MAINT DISCON |
-| Individual voice | C_AHOY availability check (OACSU or FOACSU, a setting), C_ACKU/C_NACKU, Call Answer, PV_GRANT, cancel (Service_Kind 1111b) |
+| Individual voice | C_AHOY availability check (OACSU or FOACSU, a setting), C_ACKU/C_NACKU, Call Answer, PV_GRANT, cancel (Service_Kind 1111b); supplementary user data for this and group calls at the site (3.21) |
 | Full-duplex individual voice | Service_Kind 1010b (6.6.9): radio check, a whole carrier in offset timing, a PV_GRANT_DX to each party, each party's inbound repeated on the other's slot; local calls; a setting, off by default (section 3.13) |
 | Queueing | One queue by priority (emergency first, then PRIORTY_SV, then age); C_QACKD; SYSbusy_Refused when full |
 | Authentication | MS authentication (6.4.8): a challenge at registration (6.4.4.1.5) for MSs with a key, or every MS; an authentication poll on command; the 6.4.8 algorithm with the PSN; keys from `cfg/ms` (section 3.14). The MS authenticating the site isn't built |
@@ -645,12 +645,13 @@ of a group call), or the talkgroup has a call open, `radio_check` sends P_AHOY t
 MS) or 6.45 (flag 1, a talkgroup). The P_AHOY goes on the channel's own slot only while nobody talks (the hang
 time, as P_PROTECT, 3.20), `sd_tries` times 360 ms apart; one at a time a channel. The MS answers P_ACKU
 (MS_Accepted) to TSI on the inbound (6.6.2.3.2.1, 6.6.2.3.2.7): opcode 10 0011b (table 7.4), not C_ACKU's 10 0001b,
-and the site takes only P_ACKU there (a first on-air run lost every answer to that); a selective clear then sends it back to the TSCC,
-and the call goes on for the others. The members' answers to a talkgroup collide: an inbound burst that doesn't
-decode counts as answered (6.6.2.3.1.1: "the TS may use the presence of the burst"); a talkgroup's selective clear
-then clears the call (P_CLEAR) for any member that missed it. The log says "radio check of X on payload: answered"
-("answered by MS", "answers collided"), "no answer" or "the call ended". The site knows a group call's caller and
-talker, not its listeners: a listener's radio check goes on the TSCC, where it isn't heard (MSaway).
+and the site takes only P_ACKU there (a first on-air run lost every answer to that); a selective clear then sends
+it back to the TSCC, and the call goes on for the others. The members' answers to a talkgroup collide: an inbound
+burst that doesn't decode counts as answered (6.6.2.3.1.1: "the TS may use the presence of the burst"); a
+talkgroup's selective clear then clears the call (P_CLEAR) for any member that missed it. The log says "radio check
+of X on payload: answered" ("answered by MS", "answers collided"), "no answer" or "the call ended". The site knows a
+group call's caller and talker, not its listeners: a listener's radio check goes on the TSCC, where it isn't heard
+(MSaway).
 
 On a packet data channel (6.6.3.3.1.1, 6.6.3.3.1.6) the same, in the data hang time: table 6.51 (Individual Packet
 Call 0010b) or 6.52 (Talkgroup Packet Call 0011b), and table 6.53 (as 6.44) for the selective clear of an MS. 361-4
@@ -1017,6 +1018,30 @@ Choices where 361-4 leaves them open:
 
 Not built: the gateway-started forms, power control in a de-key (6.4.14.2), the ALS
 called MS resuming after an interrupt (6.6.2.6.6). Not run on a radio.
+
+### 3.21 Supplementary user data on voice calls (361-4 6.4.13)
+
+A voice call's C_RAND may carry up to 4 UDTs of user data for the called party, sent before the grant (6.4.13.0):
+SUPED_SV 1 (Service_Options bit 4, table 6.40) and SUPED_VAL, the UDTs less one, in bits 3-2 of the 4 dependent
+bits. The site (t3sdata.rs `SD_SUPP`):
+
+1. Individual call: after the availability check's answer (OACSU's C_ACKU, or FOACSU's Call Answer), so the data
+   goes only to an MS that took the call (6.4.13.1). Talkgroup call: at once, with C_WACKD to the caller.
+2. Inbound: C_AHOY from SUPLI to the caller (table 6.29): Service_Options_Mirror 0, G/I 0, Appended_Blocks the
+   UDTs less one, Service_Kind the request's (0000b or 0001b). The caller uploads C_UDTHU to SUPLI with SF 1 (table
+   6.30); a C_NACKU ends this part. A caller that asks again while the C_AHOY is out gets it again.
+3. Outbound: C_UDTHD from SUPLI to the called MS or talkgroup, SF 1, the blocks as they came (table 6.31). An MS
+   answers C_ACKU (Message_Accepted) to SUPLI, the download repeated `sd_tries` times until it does; a talkgroup's
+   goes `sd_repeats` times with no answer.
+4. Then the grant (or the queue), whatever happened: 6.4.13.0 leaves the TSCC the choice of going on without the
+   data (a) or C_NACKD (b); the site goes on. No room for the transfer, or 3 TNP times without an end, also go on.
+   The log says "supplementary data from A to B: delivered", "not uploaded" or "not taken".
+
+The simulated MS (`Ms::set_supp`) sends SUPED_SV on its voice calls, uploads on the C_AHOY from SUPLI, and takes a
+download from SUPLI (answering an individual one), held for the call (`Ms::supp`).
+
+Not built: supplementary data on packet data and short data (6.6.3.2.2 a, 6.6.6.1.2.1.2 a: still abandoned), on
+calls across sites (the network setup carries none: the call goes on without it), the format beyond binary.
 
 ## 4. Settings (config-v3 `tier3` app)
 
@@ -1901,8 +1926,10 @@ Built since step 8e, host-tested (the bench steps above note what has run on air
 | fe0e180c | The unsolicited radio check (6.4.12) of an MS or a talkgroup, the `radio_check` command; the MS engine answers it |
 | 53b11591 | The site's application polls an MS at another site |
 | 7e3f4787 | P_AHOY on a voice payload channel: the radio check and the selective clear (`clear_ms`); payload collisions in `t3air` |
-| "Site: radio check on a data channel" | The same on a packet data channel (tables 6.51–6.53); `Ms::pd_hold` for a multi-item session that stays up |
-| "Site: ALS calls across sites" | ALS calls to an MS at another site (`SETUP_F_ALS`), and their termination there (status 123 by SD_INTR) |
+| dc77b752 | The same on a packet data channel (tables 6.51–6.53); `Ms::pd_hold` for a multi-item session that stays up |
+| 0555693a | ALS calls to an MS at another site (`SETUP_F_ALS`), and their termination there (status 123 by SD_INTR) |
+| 4f47a52c | P_ACKU (table 7.4) on the payload inbound: the site took C_ACKU there, so a real radio's answers were dropped |
+| "Site: supplementary user data" | Supplementary user data on voice calls at the site (6.4.13, 3.21) |
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
 apart from the code, found seven deviations, all fixed (2026-11-12):
@@ -1945,6 +1972,7 @@ One site (the SDR site, two carriers):
 | UDT polls from the site, the radio check (TSCC and payload), the selective clear | yes | no |
 | Power save | yes | yes: registration, a status, short data and a poll to the sleeping radio (13.2 step 8f); a call and packet data to it not yet |
 | Full-duplex individual calls | yes (off by default) | no |
+| Supplementary user data on voice calls (3.21) | yes | no: the radio side host-tested only |
 | Transmit interrupt | yes | air MSs only, on the modem site |
 | Composite TSCC | yes | air MSs only, on the modem site |
 | Three or four SDR carriers | yes | no: the SDR site runs two |
@@ -1960,6 +1988,7 @@ Two sites (the SDR site and the modem site, over mqtt-net):
 | UDT polls across sites | yes | no |
 | Transmit interrupt across sites | yes (off by default) | no |
 | ALS calls and their termination across sites | yes (off by default) | no |
+| Supplementary user data across sites | no | no |
 
 Hardware setups:
 
@@ -1971,7 +2000,7 @@ Hardware setups:
 | One split TX half and one split RX half, no SDR | yes, end to end | no |
 
 Not built: the standby controller; calls through PSTN, PABX or dispatcher gateways (dialled digits); IPv6;
-supplementary data and dual-slot data; across sites, duplex calls
+supplementary data on packet data, short data and across sites; dual-slot data; across sites, duplex calls
 and talkgroup and multi-item data.
 
 ## 14. Open questions for the owner

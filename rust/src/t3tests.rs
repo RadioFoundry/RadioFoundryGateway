@@ -989,3 +989,70 @@ fn an_ms_told_it_isnt_registered_registers() {
     air.ms[0].act(t3ms::DO_GROUP, TG, 1000, 0, now);
     assert!(air.until(5000, &mut log.f(), |a| a.ms[0].state() == t3ms::PAYLOAD));
 }
+
+/// Supplementary user data (6.4.13) on a voice call: SUPED_SV in the C_RAND; after the availability check the C_AHOY
+/// from SUPLI (table 6.29) asks the caller for it, the caller uploads C_UDTHU (SF 1) to SUPLI, the site sends it from
+/// SUPLI to the called MS (table 6.31), which answers C_ACKU to SUPLI; then the grant. To a talkgroup: the same
+/// download to the members, repeated, no answer.
+#[test]
+fn supplementary_user_data() {
+    use crate::t3udt::{UdtHead, OP_UDTHD, SUPLI};
+    let mut s = site_with(|_| {});
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG], &[1]), ms(1002, &[TG], &[1]), ms(1003, &[TG], &[1])], T0);
+    register_all(&mut air, &mut log);
+    const GPS: &[u8] = b"33.5994N 086.6847W 12m"; // 22 octets: 2 UDTs (2 x 12 less the CRC)
+    assert!(air.ms[0].set_supp(Some(GPS)));
+    let tscc = core::cell::RefCell::new(Vec::new());
+    let run = |air: &mut Air<3>, log: &mut Log, ms: i64, until: &dyn Fn(&Air<3>) -> bool| {
+        let end = air.now() + ms;
+        while air.now() < end {
+            air.step(&mut log.f());
+            if (air.k - 1) & 1 == 0 && matches!(air.last.tscc_dt, DT_CSBK | 6) {
+                tscc.borrow_mut().push((air.last.tscc_dt, air.last.tscc_pdu));
+            }
+            if until(air) {
+                return true;
+            }
+        }
+        false
+    };
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_PRIVATE, 1002, 1500, 0, now);
+    assert!(run(&mut air, &mut log, 6000, &|a| a.ms[0].state() == t3ms::PAYLOAD && a.ms[1].state() == t3ms::PAYLOAD));
+    let (got, n, _) = air.ms[1].supp();
+    let (d, len) = got.expect("the called MS took it");
+    assert_eq!((&d[..len], n), (GPS, 1));
+    assert_eq!(air.ms[0].supp().2, 1, "uploaded once");
+    let ahoys: Vec<Ahoy> = tscc.borrow().iter().filter(|b| b.0 == DT_CSBK).filter_map(|b| Ahoy::decode(&b.1)).collect();
+    let check = ahoys.iter().position(|a| a.source == 1001 && a.target == 1002).expect("availability check");
+    let up = ahoys.iter().position(|a| a.source == SUPLI).expect("C_AHOY from SUPLI");
+    assert!(check < up, "after the availability check (6.4.13.1)");
+    let want = Ahoy { appended: 1, service_kind: SK_IND_VOICE, target: 1001, source: SUPLI, ..Default::default() };
+    assert_eq!(ahoys[up], want, "table 6.29");
+    let heads: Vec<UdtHead> = tscc.borrow().iter().filter(|b| b.0 == 6).filter_map(|b| UdtHead::decode(&b.1)).collect();
+    let h = heads.iter().find(|h| h.op == OP_UDTHD).expect("the download");
+    assert_eq!((h.source, h.target, h.sf, h.response, h.group, h.blocks), (SUPLI, 1002, true, true, false, 2));
+    assert!(log.of(EV_LOG).iter().any(|e| e.text().contains("supplementary data from 1001 to 1002: delivered")));
+    assert!(run(&mut air, &mut log, 8000, &|a| all_idle(a)));
+
+    // to a talkgroup: both members take it, then the call
+    let now = air.now();
+    assert!(air.ms[0].set_supp(Some(b"to the talkgroup")));
+    air.ms[0].act(t3ms::DO_GROUP, TG, 1500, 0, now);
+    assert!(run(&mut air, &mut log, 8000, &|a| all_payload(a)));
+    let took = |m: &Ms| m.supp().0.is_some_and(|(d, _)| d.starts_with(b"to the talkgroup"));
+    assert!(air.ms[1..].iter().all(took));
+    let h = tscc.borrow().iter().filter(|b| b.0 == 6).filter_map(|b| UdtHead::decode(&b.1)).last();
+    let h = h.expect("the download");
+    assert_eq!((h.source, h.target, h.group, h.response, h.sf), (SUPLI, TG, true, false, true));
+    assert!(run(&mut air, &mut log, 8000, &|a| all_idle(a)));
+
+    // without SUPED_SV, no C_AHOY from SUPLI
+    assert!(air.ms[0].set_supp(None));
+    let before = tscc.borrow().len();
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_PRIVATE, 1002, 1000, 0, now);
+    assert!(run(&mut air, &mut log, 6000, &|a| a.ms[1].state() == t3ms::PAYLOAD));
+    assert!(tscc.borrow()[before..].iter().filter_map(|b| Ahoy::decode(&b.1)).all(|a| a.source != SUPLI));
+}

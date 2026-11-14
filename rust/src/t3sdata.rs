@@ -49,6 +49,10 @@ pub(super) const SD_IPADV: u8 = 0x46;
 /// An unsolicited radio check (6.4.12) from the site (the `radio_check` command): C_AHOY from TSI, Service_Kind
 /// 1110b, to an MS or a talkgroup; C_ACKU(Message_Accepted) from the MS (for a talkgroup, any member) ends it.
 pub(super) const SD_RCHECK: u8 = 0x47;
+/// Supplementary user data of a voice call (6.4.13): the C_AHOY from SUPLI (Service_Kind the call's) asks the caller
+/// for it (S_UPLOAD, C_UDTHU with SF 1), then the download from SUPLI to the called MS (C_ACKU ends it) or the
+/// talkgroup (repeated, no answer); the call setup (t3site P_SUPP) goes on either way.
+pub(super) const SD_SUPP: u8 = 0x48;
 
 // op (rdof_t3_sd_t.op)
 pub const SD_SEND: u8 = 1;
@@ -176,6 +180,7 @@ struct Sd {
     ahoy_due: bool, // S_UPLOAD: its C_AHOY is to go
     ps_held: bool,  // S_UPLOAD: a poll's C_AHOY held for the polled MS's wake frame (the caller told to wait)
     so: u8,         // the C_RAND's Service_Options (the upload C_AHOY's Service_Options_Mirror)
+    sk: u8,         // SD_SUPP: the call's Service_Kind (its C_AHOY's)
     value: u8,      // UDT_Format, or the status
     tries: u8,
     src: u32,
@@ -521,6 +526,43 @@ impl Site {
         true
     }
 
+    /// The supplementary user data of a call from ms to dst (6.4.13): blocks the UDTs asked for (SUPED_VAL plus 1),
+    /// sk the call's Service_Kind. False when there's no room (the call goes on without it).
+    pub(super) fn sd_supp_new(&mut self, ms: u32, dst: u32, group: bool, sk: u8, blocks: u8) -> bool {
+        let Some(i) = self.sd_free() else { return false };
+        let mut d = Sd {
+            used: true,
+            what: SD_SUPP,
+            origin: O_MS,
+            group,
+            state: S_UPLOAD,
+            ahoy_due: true,
+            sk,
+            src: ms,
+            dst,
+            tries: self.cfg.ahoy_tries.max(1),
+            deadline_ms: self.now + self.cfg.tnp_ms as i64,
+            next_ack_ms: i64::MAX, // the call setup sends the C_WACKDs
+            ..Default::default()
+        };
+        d.head.blocks = blocks.clamp(1, MAX_BLOCKS as u8);
+        self.sd.sds[i] = d;
+        true
+    }
+
+    /// The supplementary data transaction of a call from ms, dropped (the call cancelled or gone).
+    pub(super) fn sd_supp_drop(&mut self, ms: u32) {
+        for i in 0..SDS {
+            let d = self.sd.sds[i];
+            if d.used && d.what == SD_SUPP && d.src == ms {
+                self.sd.sds[i].used = false;
+                if self.sd.upload.active && self.sd.upload.sd == i {
+                    self.sd.upload.active = false;
+                }
+            }
+        }
+    }
+
     /// An upload of kind what (SD_TGLIST, SD_DIVERT) in progress for ms: asks again when it waits for it (the MS
     /// repeated its C_RAND); true when there is one.
     pub(super) fn sd_again(&mut self, what: u8, ms: u32) -> bool {
@@ -560,6 +602,15 @@ impl Site {
             self.sd.sds[i].r#ref = if ok { u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) } else { 0 };
             let reason = if ok { R_MESSAGE_ACCEPTED } else { R_NOT_SUPPORTED };
             self.sd_done(i, reason, 0, if ok { WHY_OK } else { WHY_REFUSED });
+            return;
+        }
+        if d.what == SD_SUPP {
+            // 6.4.13.2: the same blocks down to the called MS or the talkgroup, from SUPLI
+            let s = &mut self.sd.sds[i];
+            s.state = if d.group { S_GROUP } else { S_DOWN };
+            s.next_ms = self.now;
+            s.tries = if d.group { self.cfg.sd_repeats.max(1) } else { self.cfg.sd_tries.max(1) };
+            s.deadline_ms = self.now + self.cfg.tnp_ms as i64;
             return;
         }
         if d.what == SD_TGLIST {
@@ -704,6 +755,10 @@ impl Site {
         }
         if d.what == SD_IPADDR {
             self.pd_addr(d.src, ok.then_some(d.r#ref), reason); // the data call's to answer
+            return;
+        }
+        if d.what == SD_SUPP {
+            self.supp_data_done(d.src, d.dst, ok, d.state == S_UPLOAD, reason);
             return;
         }
         if d.what == SD_IPADV {
@@ -862,10 +917,11 @@ impl Site {
                     // 6.4.11.2.1 c) gives no Service_Kind: 0100b, as for a gateway's UDT upload (6.6.1.1 d), table
                     // 6.54); 1110b with flag 0 would read as an authentication challenge
                     SD_IPADV => (SK_IND_UDT, IPI, d.src),
+                    SD_SUPP => (d.sk, SUPLI, d.src), // 6.4.13.1 table 6.29: the call's Service_Kind
                     _ => (SK_IND_UDT, SDMI, d.src),
                 };
                 let a = Ahoy {
-                    service_options: d.so,
+                    service_options: if d.what == SD_SUPP { 0 } else { d.so },
                     service_kind_flag: d.what == SD_TGLIST,
                     appended: n - 1,
                     service_kind,
@@ -910,7 +966,8 @@ impl Site {
             return Some(self.train_start(&[(DT_CSBK, pdu12(&Self::rcheck_ahoy(&d)))], true));
         }
         let solicit = !d.group && !notice;
-        if !matches!(d.what, SD_UDT | SD_DGNA | SD_NOTICE | SD_UPOLL) {
+        let supp = d.what == SD_SUPP;
+        if !matches!(d.what, SD_UDT | SD_DGNA | SD_NOTICE | SD_UPOLL | SD_SUPP) {
             return Some(self.train_start(&[(DT_CSBK, pdu12(&Self::status_ahoy(&d)))], solicit));
         }
         // 6.6.4.1.4: the header (A = 1 to an MS, 6.5.1.2 table 6.34), then the blocks as they came
@@ -922,10 +979,16 @@ impl Site {
             emergency: d.emergency,
             format: d.value,
             target: if poll { d.src } else { d.dst },
-            source: if poll { d.dst } else { d.src },
+            source: if supp {
+                SUPLI // 6.4.13.2 table 6.31: the called party learns the caller from the grant
+            } else if poll {
+                d.dst
+            } else {
+                d.src
+            },
             pad_nibble: d.head.pad_nibble,
             blocks: d.blocks.n,
-            sf: notice, // 6.6.7.2: Supplementary_Flag 1, UDT Response 0
+            sf: notice || supp, // 6.6.7.2: Supplementary_Flag 1, UDT Response 0; 6.4.13.2: SF 1
             ..Default::default()
         };
         let mut t = [(0u8, [0u8; 12]); TRAIN];
@@ -1015,7 +1078,7 @@ impl Site {
     /// C_ACKU / C_NACKU for a transaction: true when it was one's.
     pub(super) fn sd_ack(&mut self, a: &Ack) -> bool {
         // the caller refusing to upload (6.6.4.2: it may answer C_AHOY from SDMI with C_NACKU)
-        if matches!(a.target, SDMI | DGNAI | TATTSI | DIVERTI | IPI) {
+        if matches!(a.target, SDMI | DGNAI | TATTSI | DIVERTI | IPI | SUPLI) {
             if let Some(i) = (0..SDS).find(|&i| {
                 let d = &self.sd.sds[i];
                 d.used && d.state == S_UPLOAD && d.src == a.source
@@ -1057,7 +1120,8 @@ impl Site {
         }
         let Some(i) = (0..SDS).find(|&i| {
             let d = &self.sd.sds[i];
-            d.used && d.state == S_DOWN && d.what != SD_UPOLL && d.dst == a.source && d.src == a.target
+            let from = if d.what == SD_SUPP { SUPLI } else { d.src };
+            d.used && d.state == S_DOWN && d.what != SD_UPOLL && d.dst == a.source && from == a.target
         }) else {
             return false;
         };
@@ -1078,9 +1142,10 @@ impl Site {
 
     /// Cancel from the caller (6.4.6): true when it was a transaction's.
     pub(super) fn sd_cancel(&mut self, ms: u32) -> bool {
-        let Some(i) =
-            (0..SDS).find(|&i| self.sd.sds[i].used && self.sd.sds[i].origin == O_MS && self.sd.sds[i].src == ms)
-        else {
+        let Some(i) = (0..SDS).find(|&i| {
+            let d = &self.sd.sds[i];
+            d.used && d.origin == O_MS && d.src == ms && d.what != SD_SUPP // a call's: the call setup's to cancel
+        }) else {
             return false;
         };
         let d = self.sd.sds[i];

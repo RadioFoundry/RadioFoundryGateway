@@ -173,6 +173,10 @@ pub struct Ms {
     talk_end: i64,
     maint_left: u8,
     maint_at: i64,   // a multi-item caller's P_MAINT waits until then (pd_hold)
+    supp_out: Blocks, // supplementary user data its voice calls carry (6.4.13; n 0: none)
+    supp_in: Blocks,  // the last supplementary user data it took (from SUPLI)
+    supp_n: u32,      // how many it took
+    supp_sent: u32,   // how many it uploaded
     pd_hold_ms: i64, // a multi-item caller holds the channel this long after its item
     pay_group: bool,
     pay_src: u32,
@@ -481,6 +485,28 @@ impl Ms {
         (self.dgna, self.dgna_n)
     }
 
+    /// Supplementary user data (6.4.13) for its voice calls from now on (None: none): SUPED_SV 1, SUPED_VAL the
+    /// blocks less one; it uploads the data when the C_AHOY from SUPLI asks. False when it's over 4 blocks (46
+    /// octets).
+    pub fn set_supp(&mut self, data: Option<&[u8]>) -> bool {
+        match data.map(|d| Blocks::of(d, 0)) {
+            None => self.supp_out = Blocks::default(),
+            Some(Some(b)) => self.supp_out = b,
+            Some(None) => return false,
+        }
+        true
+    }
+
+    /// The last supplementary user data it took, and how many (taken, uploaded).
+    pub fn supp(&self) -> (Option<([u8; MAX_DATA], usize)>, u32, u32) {
+        let mut d = [0u8; MAX_DATA];
+        let last = (self.supp_n > 0).then(|| {
+            let n = self.supp_in.data(&mut d);
+            (d, n)
+        });
+        (last, self.supp_n, self.supp_sent)
+    }
+
     /// A multi-item call it makes holds the channel ms after its item before the P_MAINT that ends it (0: at once),
     /// as a session that sends more would.
     pub fn pd_hold(&mut self, ms: i64) {
@@ -616,6 +642,9 @@ impl Ms {
 
     fn request_pdu(&self, a: &Action) -> [u8; 10] {
         let emergency = if a.flags & F_EMERGENCY != 0 { SO_EMERGENCY } else { 0 };
+        // 6.4.13, table 6.40: SUPED_SV, and SUPED_VAL (the UDTs less one) in the dependent bits 3-2
+        let n = self.supp_out.n;
+        let (suped, suped_val) = if n > 0 { (crate::t3site::SO_SUPED, (n - 1) << 2) } else { (0, 0) };
         let ip_inform = if a.flags & F_IPADV != 0 { SO_IP_INFORM } else { 0 };
         let r = match a.what {
             // 6.4.4.1.13.2: a list, Trgt_Adr_Cnts 10b to TATTSI with the blocks it needs
@@ -643,15 +672,16 @@ impl Ms {
                 ..Default::default()
             },
             DO_GROUP => Rand {
-                service_options: emergency | if a.flags & F_BROADCAST != 0 { SO_BROADCAST } else { 0 },
+                service_options: emergency | if a.flags & F_BROADCAST != 0 { SO_BROADCAST } else { 0 } | suped,
+                dep: suped_val,
                 service_kind: SK_TG_VOICE,
                 target: a.arg,
                 source: self.id,
                 ..Default::default()
             },
             DO_PRIVATE => Rand {
-                service_options: emergency,
-                dep: if a.flags & F_ALS != 0 { DEP_ALS } else { 0 }, // table 6.40: ALS_SERV
+                service_options: emergency | suped,
+                dep: if a.flags & F_ALS != 0 { DEP_ALS } else { 0 } | suped_val, // table 6.40: ALS_SERV, SUPED_VAL
                 service_kind: SK_IND_VOICE,
                 target: a.arg,
                 source: self.id,
@@ -1269,6 +1299,20 @@ impl Ms {
             return; // no answer: the TSCC sends it again
         }
         let h = self.in_head;
+        if h.sf && h.op == OP_UDTHD && h.source == SUPLI {
+            // 6.4.13.2: supplementary data ahead of a call, held until the call names its sender; C_ACKU
+            // (Message_Accepted) to SUPLI when asked
+            if !h.group && h.response {
+                let reason = R_MESSAGE_ACCEPTED;
+                let a = Ack { op: OP_ACKU, reason, target: SUPLI, source: self.id, ..Default::default() };
+                self.reply = Some(a.encode());
+            }
+            if self.supp_n == 0 || self.supp_in != self.in_blocks {
+                self.supp_n += 1; // a repeat of the same isn't counted
+            }
+            self.supp_in = self.in_blocks;
+            return;
+        }
         if h.sf && !h.group && h.op == OP_UDTHD && matches!(h.source, MSI | GPI) {
             // 6.6.7.2: the called MS diverted what it asked for; the request ends
             let mut d = [0u8; MAX_DATA];
@@ -1516,12 +1560,15 @@ impl Ms {
             (TATTSI, SK_REG) if a.service_kind_flag => Some(DO_REGISTER),
             (DIVERTI, SK_DIVERT) => Some(DO_DIVERT),
             (IPI, SK_IND_PD) => Some(DO_DATA), // 6.6.3.2.4 b) 2): a data call's IP address
+            (SUPLI, SK_IND_VOICE) => Some(DO_PRIVATE), // 6.4.13.1: its call's supplementary data
+            (SUPLI, SK_TG_VOICE) => Some(DO_GROUP),
             _ => None,
         };
         if let Some(what) = upload {
             let mine = self.has_cur && self.cur.what == what && matches!(self.state, ACCESS | WAITING);
             let not_ip = what == DO_DATA && (self.cur.arg != IPI || self.no_ip_upload || self.ip_dst == 0);
-            if !mine || (what == DO_REGISTER && self.cur.flags & (F_LIST | F_IPADV) == 0) || not_ip {
+            let not_supp = a.source == SUPLI && self.supp_out.n == 0;
+            if !mine || (what == DO_REGISTER && self.cur.flags & (F_LIST | F_IPADV) == 0) || not_ip || not_supp {
                 let r = Ack {
                     op: OP_ACKU,
                     reason: R_MS_NOT_SUPPORTED,
@@ -1550,6 +1597,21 @@ impl Ms {
                     let mut d = [0u8; 10];
                     d[..4].copy_from_slice(&if ipadv { self.adv_ip } else { self.ip_dst }.to_be_bytes());
                     (h, Blocks::of(&d, 1).unwrap_or_default())
+                }
+                DO_PRIVATE | DO_GROUP => {
+                    // 6.4.13.1 table 6.30: to SUPLI, SF 1, A 0, G/I the call's; the format prearranged (binary here)
+                    self.supp_sent += 1;
+                    let h = UdtHead {
+                        op: OP_UDTHU,
+                        group: what == DO_GROUP,
+                        format: FMT_BINARY,
+                        target: SUPLI,
+                        source: self.id,
+                        blocks: self.supp_out.n,
+                        sf: true,
+                        ..Default::default()
+                    };
+                    (h, self.supp_out)
                 }
                 DO_REGISTER => {
                     let h = UdtHead {
