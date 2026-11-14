@@ -280,16 +280,8 @@ impl Site {
         let c = self.chans[ch];
         let stream = self.new_stream();
         let talker = if st == STATUS_ALS_END { c.dst } else { c.talker }; // the ALS call's called MS
-        let mut m = SdMsg {
-            op: SD_SEND,
-            what: SD_INTR,
-            value: st,
-            src: ms,
-            dst: talker,
-            stream,
-            len: 4,
-            ..Default::default()
-        };
+        let mut m =
+            SdMsg { op: SD_SEND, what: SD_INTR, value: st, src: ms, dst: talker, stream, len: 4, ..Default::default() };
         m.data[..3].copy_from_slice(&c.dst.to_be_bytes()[1..]);
         m.data[3] = (c.kind == KIND_GROUP) as u8;
         self.ev(m.event(EV_NET_SD));

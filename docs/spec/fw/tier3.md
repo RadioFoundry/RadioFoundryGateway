@@ -649,8 +649,14 @@ and the call goes on for the others. The members' answers to a talkgroup collide
 decode counts as answered (6.6.2.3.1.1: "the TS may use the presence of the burst"); a talkgroup's selective clear
 then clears the call (P_CLEAR) for any member that missed it. The log says "radio check of X on payload: answered"
 ("answered by MS", "answers collided"), "no answer" or "the call ended". The site knows a group call's caller and
-talker, not its listeners: a listener's radio check goes on the TSCC, where it isn't heard (MSaway). Not built: the
-same on a packet data channel (tables 6.51, 6.52, 6.6.3.3.1.6).
+talker, not its listeners: a listener's radio check goes on the TSCC, where it isn't heard (MSaway).
+
+On a packet data channel (6.6.3.3.1.1, 6.6.3.3.1.6) the same, in the data hang time: table 6.51 (Individual Packet
+Call 0010b) or 6.52 (Talkgroup Packet Call 0011b), and table 6.53 (as 6.44) for the selective clear of an MS. 361-4
+has no talkgroup clear on a data channel: `clear_ms` with `tg` is refused there. A voice call is chosen before a
+data call to the same talkgroup. Only a multi-item call keeps its parties on the channel after an item (6.6.3.3.2.5);
+a single item's have left. The site takes any accepting reason in the P_ACKU: the tables say Message_Accepted, the
+MS clauses MS_Accepted.
 
 ### 3.16 Packet data calls (361-4 6.6.3)
 
@@ -726,8 +732,8 @@ addresses differ in the text: figure 6.34 has source the MS and target IPI, 6.4.
 taken. Off, data to IPI is granted at once (as before; 6.6.3.1.2 ties the upload to the Proxy Flag, so a radio that
 sends Proxy 0 may not expect it).
 
-Choices where 361-4 leaves them open: the TS doesn't poll MSs on a data channel (P_AHOY radio check, 6.6.3.3.1.1;
-it does on a voice channel, 3.15) and doesn't share a data channel between calls; supplementary data (SUPED_SV) is
+Choices where 361-4 leaves them open: the TS polls MSs on a data channel (P_AHOY radio check, 6.6.3.3.1.1) only
+when asked (`radio_check`, 3.15), and doesn't share a data channel between calls; supplementary data (SUPED_SV) is
 abandoned (6.6.3.2.2 a); a new data call to an MS on a data channel waits as busy rather than joining it.
 
 Not built: multi-part calls through PSTNI, PABXI, LINEI and DISPATI (dialled digits), IPv6 addresses (here and in IP
@@ -1268,8 +1274,8 @@ Commands (`node/{node}/cmd`, JSON `{"id": "c-123", "cmd": "...", ...}`; the resu
 | `stun` / `revive` | `ms` | stun or revive an MS from the site; authenticated when the MS challenges the site (section 3.18) |
 | `kill` | `ms` | kill an MS (always authenticated: refused without a key for it; section 3.18) |
 | `dgna` | `ms`, `tg` (a list of 0-15 talkgroups) | DGNA_Address from DGNAI to the MS (section 3.17); `[]` sends ADRNULL, which clears what DGNA gave it |
-| `radio_check` | `ms`, or `tg` (one talkgroup) | an unsolicited radio check (section 3.15): is the MS, or a member of the talkgroup, listening; on its voice payload channel when it's on one, else the TSCC; refused when no MS here has it; the outcome is logged |
-| `clear_ms` | `ms`, or `tg` (one talkgroup) | a selective clear (section 3.15): P_AHOY sends the MS (or the talkgroup's members) from its voice payload channel back to the TSCC; refused when it's on none |
+| `radio_check` | `ms`, or `tg` (one talkgroup) | an unsolicited radio check (section 3.15): is the MS, or a member of the talkgroup, listening; on its payload channel (voice or data) when it's on one, else the TSCC; refused when no MS here has it; the outcome is logged |
+| `clear_ms` | `ms`, or `tg` (one talkgroup) | a selective clear (section 3.15): P_AHOY sends the MS (or the talkgroup's members; not on a data channel) from its payload channel back to the TSCC; refused when it's on none |
 
 ### 5.8 Security
 
@@ -1894,6 +1900,7 @@ Built since step 8e, host-tested (the bench steps above note what has run on air
 | fe0e180c | The unsolicited radio check (6.4.12) of an MS or a talkgroup, the `radio_check` command; the MS engine answers it |
 | 53b11591 | The site's application polls an MS at another site |
 | 7e3f4787 | P_AHOY on a voice payload channel: the radio check and the selective clear (`clear_ms`); payload collisions in `t3air` |
+| "Site: radio check on a data channel" | The same on a packet data channel (tables 6.51–6.53); `Ms::pd_hold` for a multi-item session that stays up |
 | "Site: ALS calls across sites" | ALS calls to an MS at another site (`SETUP_F_ALS`), and their termination there (status 123 by SD_INTR) |
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
@@ -1963,7 +1970,7 @@ Hardware setups:
 | One split TX half and one split RX half, no SDR | yes, end to end | no |
 
 Not built: the standby controller; calls through PSTN, PABX or dispatcher gateways (dialled digits); IPv6;
-supplementary data and dual-slot data; the radio check and selective clear on a data channel; across sites, duplex calls
+supplementary data and dual-slot data; across sites, duplex calls
 and talkgroup and multi-item data.
 
 ## 14. Open questions for the owner

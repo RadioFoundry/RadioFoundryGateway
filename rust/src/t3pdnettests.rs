@@ -14,7 +14,7 @@ use crate::t3pdnet::{NetData, NetResult, RESULT_DELIVERED, RESULT_UNCONFIRMED};
 use crate::t3pdrate::CLASS_SACK;
 use crate::t3pdu::*;
 use crate::t3site::*;
-use crate::t3udt::{SK_IND_PD, DT_DATA_HDR};
+use crate::t3udt::{DT_DATA_HDR, SK_IND_PD};
 
 const T0: i64 = 1_793_912_651_000;
 const TG: u32 = 9;

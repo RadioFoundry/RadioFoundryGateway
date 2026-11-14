@@ -172,6 +172,8 @@ pub struct Ms {
     header_sent: bool,
     talk_end: i64,
     maint_left: u8,
+    maint_at: i64,   // a multi-item caller's P_MAINT waits until then (pd_hold)
+    pd_hold_ms: i64, // a multi-item caller holds the channel this long after its item
     pay_group: bool,
     pay_src: u32,
     pay_dst: u32,
@@ -477,6 +479,12 @@ impl Ms {
     /// The talkgroups DGNA gave it, and how many transfers it took.
     pub fn dgna_tgs(&self) -> ([u32; 16], u32) {
         (self.dgna, self.dgna_n)
+    }
+
+    /// A multi-item call it makes holds the channel ms after its item before the P_MAINT that ends it (0: at once),
+    /// as a session that sends more would.
+    pub fn pd_hold(&mut self, ms: i64) {
+        self.pd_hold_ms = ms;
     }
 
     /// Which supplementary services it doesn't support (it answers C_NACKU MSNot_Supported): stun/revive, ALS.
@@ -854,6 +862,7 @@ impl Ms {
         let to_me = if a.group { self.pay_group && a.target == self.pay_dst } else { a.target == self.id };
         let check = match (a.service_kind, a.group) {
             (SK_IND_VOICE, false) | (SK_TG_VOICE, true) => !a.service_kind_flag,
+            (SK_IND_PD, false) | (SK_TG_PD, true) => !a.service_kind_flag, // on a data channel (6.6.3.3.2.1)
             (SK_REG, _) => !a.service_kind_flag,
             _ => false,
         };
@@ -1218,6 +1227,7 @@ impl Ms {
     fn item_done(&mut self) {
         if self.pd_multi {
             self.maint_left = MAINT_REPEATS;
+            self.maint_at = self.now + self.pd_hold_ms;
             return;
         }
         self.mine = false;
@@ -2030,7 +2040,7 @@ impl Ms {
             }
             return Some(voice(VOICE_FRAME, self));
         }
-        if self.maint_left > 0 {
+        if self.maint_left > 0 && self.now >= self.maint_at {
             self.maint_left -= 1;
             let m = Maint { kind: MAINT_DISCON, target: TSI, source: self.id }; // table 7.32
             return Some(MsTx { ch: self.ch as u8, kind: TX_PDU, dt: DT_CSBK, pdu: m.encode(), offset, ..Default::default() });

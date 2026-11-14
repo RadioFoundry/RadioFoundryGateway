@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
-//! P_AHOY on a voice payload channel (docs/spec/fw/tier3.md section 3.15): ETSI TS 102 361-4 6.6.2.3.1.1, the MS
-//! radio check, and 6.6.2.3.1.8, the selective clear. Both are a P_AHOY from TSI on the channel's own slot while
-//! nobody talks (the hang time, as P_PROTECT, t3intr.rs), answered with P_ACKU(MS_Accepted) to TSI on the inbound
-//! (6.6.2.3.2.1, 6.6.2.3.2.7).
+//! P_AHOY on a payload channel (docs/spec/fw/tier3.md section 3.15): ETSI TS 102 361-4 6.6.2.3.1.1, the MS
+//! radio check, and 6.6.2.3.1.8, the selective clear, on a voice channel; 6.6.3.3.1.1 and 6.6.3.3.1.6 on a packet
+//! data channel. Each is a P_AHOY from TSI on the channel's own slot while nobody transmits (the hang time, as
+//! P_PROTECT, t3intr.rs; a data channel's data hang time), answered with P_ACKU to TSI on the inbound (6.6.2.3.2.1,
+//! 6.6.2.3.2.7, 6.6.3.3.2.1): the site takes any accepting reason (MS_Accepted, Message_Accepted).
 //!
 //! - Radio check: table 6.42 (an MS, Service_Kind Individual Call 0000b) or 6.43 (a talkgroup, Talkgroup Call
 //!   0001b), Service_Options_Mirror 0, Service_Kind_Flag 0, Appended_Blocks 0. For a talkgroup, the first answer
@@ -13,10 +14,12 @@
 //!   The MS answers and leaves for the TSCC; the call goes on for the others. For a talkgroup (the answers, or
 //!   their colliding burst) the site then clears the call (P_CLEAR), as the `clear` command does, for members
 //!   that missed it.
+//! - On a data channel: the radio check is table 6.51 (Individual Packet Call 0010b) or 6.52 (Talkgroup Packet Call
+//!   0011b), the selective clear table 6.53 (as 6.44). 361-4 has no talkgroup clear there: refused.
 //!
 //! The site's `radio_check` command sends this when the MS is a party of an individual call on a payload channel,
-//! or the talkgroup has a call open; else the C_AHOY on the TSCC (6.4.12, t3sdata.rs). `clear_ms` is the selective
-//! clear. A child module of t3site: it works on the site's own state.
+//! or the talkgroup has a call open (a voice call before a data call); else the C_AHOY on the TSCC (6.4.12,
+//! t3sdata.rs). `clear_ms` is the selective clear. A child module of t3site: it works on the site's own state.
 
 use super::*;
 
@@ -32,6 +35,7 @@ pub(super) struct PaCheck {
     target: u32, // 0: none
     group: bool,
     clear: bool,
+    data: bool, // a packet data channel
     left: u8,
     sent: bool,
     next_ms: i64,
@@ -42,9 +46,9 @@ impl Site {
     /// The voice payload channel the MS is on as a party of an individual call (or the talker of a group call),
     /// or the talkgroup's open call.
     fn pa_channel(&self, target: u32, group: bool) -> Option<usize> {
-        (0..CHANNELS).find(|&i| {
+        let on = |i: usize, data: bool| {
             let c = &self.chans[i];
-            if !Self::live(c) || c.flags & F_DATA != 0 || c.kind == KIND_DUPLEX {
+            if !Self::live(c) || (c.flags & F_DATA != 0) != data || c.kind == KIND_DUPLEX {
                 return false;
             }
             if group {
@@ -53,14 +57,16 @@ impl Site {
                 (c.kind == KIND_PRIVATE && (c.src == target || c.dst == target))
                     || (c.kind != KIND_PRIVATE && (c.src == target || c.talker == target))
             }
-        })
+        };
+        (0..CHANNELS).find(|&i| on(i, false)).or_else(|| (0..CHANNELS).find(|&i| on(i, true)))
     }
 
     /// A radio check (clear false) or a selective clear of target on its payload channel. False when it's on
     /// none, or the channel has one going.
     pub(super) fn pa_start(&mut self, target: u32, group: bool, clear: bool) -> bool {
         let Some(ch) = self.pa_channel(target, group) else { return false };
-        if self.chans[ch].pa.target != 0 {
+        let data = self.chans[ch].flags & F_DATA != 0;
+        if self.chans[ch].pa.target != 0 || (data && clear && group) {
             return false;
         }
         let now = self.now;
@@ -68,6 +74,7 @@ impl Site {
             target,
             group,
             clear,
+            data,
             left: self.cfg.sd_tries.max(1),
             next_ms: now,
             until_ms: now + PA_WAIT_MS,
@@ -82,10 +89,12 @@ impl Site {
     }
 
     fn pa_pdu(p: &PaCheck) -> [u8; 10] {
-        let service_kind = match (p.clear, p.group) {
-            (true, _) => SK_CANCEL,
-            (false, false) => SK_IND_VOICE,
-            (false, true) => SK_TG_VOICE,
+        let service_kind = match (p.clear, p.group, p.data) {
+            (true, _, _) => SK_CANCEL,
+            (false, false, false) => SK_IND_VOICE,
+            (false, true, false) => SK_TG_VOICE,
+            (false, false, true) => SK_IND_PD,
+            (false, true, true) => SK_TG_PD,
         };
         let (group, flag, target) = (p.group, p.clear && p.group, p.target);
         Ahoy { group, service_kind, service_kind_flag: flag, target, source: TSI, ..Default::default() }.encode()

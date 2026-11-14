@@ -10,7 +10,7 @@ use crate::t3air::Air;
 use crate::t3ms::{self, Ms};
 use crate::t3pdu::*;
 use crate::t3site::*;
-use crate::t3udt::{IPI, R_MS_NOT_SUPPORTED, SK_IND_PD, SK_IND_UDT};
+use crate::t3udt::{IPI, R_MS_NOT_SUPPORTED, SK_IND_PD, SK_IND_UDT, SK_TG_PD};
 
 const T0: i64 = 1_793_912_651_000;
 const TG: u32 = 9;
@@ -569,4 +569,57 @@ fn packet_data_rate1_confirmed_retries_end() {
     assert!(air.until(10_000, &mut log.f(), settled(0, 1)));
     assert_eq!(air.ms[0].status().calls_done, 1);
     assert_eq!(&air.ms[1].data_inbox().unwrap().1[..LONG.len()], LONG);
+}
+
+/// P_AHOY on a packet data channel (6.6.3.3.1.1, 6.6.3.3.1.6): in a multi-item call's data hang time (single
+/// item parties leave after their item, 6.6.3.3.2.5), the radio check of a called MS (table 6.51), of the talkgroup
+/// (6.52), the selective clear of an MS (6.53); no talkgroup clear there.
+#[test]
+fn packet_data_radio_check_and_selective_clear() {
+    let mut s = site_with(|c| c.data_hang_ms = 10_000);
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG]), ms(1002, &[TG]), ms(1003, &[TG])], T0);
+    register_all(&mut air, &mut log);
+    air.ms[0].pd_hold(8000);
+    let said = |log: &Log, t: &str| log.of(EV_LOG).iter().any(|e| e.text().contains(t));
+    let mut ahoys = Vec::new();
+    let mut wait = |air: &mut Air<3>, log: &mut Log, t: &str| {
+        for _ in 0..8000 {
+            air.step(&mut log.f());
+            let (lcn, o) = (((air.k - 1) & 1) as usize, air.last.ch);
+            let csbk = |&c: &usize| o[c].dt == DT_CSBK;
+            ahoys.extend((lcn..CHANNELS).step_by(2).filter(csbk).filter_map(|c| Ahoy::decode(&o[c].pdu)));
+            if said(log, t) {
+                return;
+            }
+        }
+        panic!("no \"{t}\"");
+    };
+    let now = air.now();
+    assert!(air.ms[0].send_data(1002, t3ms::F_CONFIRMED | t3ms::F_MULTI, DATA, now));
+    assert!(air.until(8000, &mut log.f(), |a| a.ms[1].data_inbox().is_some()));
+    let ch = log.of(EV_CH_OPEN)[0].ch as usize;
+    assert!(air.site.command("radio_check", 1002, 0), "the called MS, on the data channel");
+    wait(&mut air, &mut log, "radio check of 1002 on payload: answered");
+    assert_eq!(air.site.status().ch[ch].r#use, USE_HANG, "in the data hang time");
+    assert_eq!(air.ms[1].payload_ahoys(), (1, 0));
+    assert!(air.site.command("clear_ms", 1002, 0));
+    wait(&mut air, &mut log, "selective clear of 1002 on payload: answered");
+    air.run(200, &mut log.f());
+    assert_eq!((air.ms[1].state(), air.ms[1].payload_ahoys().1), (t3ms::IDLE, 1));
+    assert_eq!(air.ms[0].state(), t3ms::PAYLOAD, "the caller stays");
+    assert!(air.until(15_000, &mut log.f(), |a| a.site.status().ch[ch].r#use == USE_IDLE));
+
+    // a talkgroup's data: the radio check (6.52); a talkgroup clear isn't in 361-4 for a data channel
+    let now = air.now();
+    assert!(air.ms[0].send_data(TG, t3ms::F_GROUP | t3ms::F_MULTI, DATA, now));
+    let ch = |a: &Air<3>| a.site.status().ch.iter().position(|c| c.r#use == USE_HANG);
+    assert!(air.until(8000, &mut log.f(), |a| a.ms[2].data_inbox().is_some() && ch(a).is_some()));
+    assert!(!air.site.command("clear_ms", TG, 1), "no table for it");
+    assert!(air.site.command("radio_check", TG, 1));
+    wait(&mut air, &mut log, &format!("radio check of TG {TG} on payload: "));
+    let check = |sk, group, target| Ahoy { group, service_kind: sk, target, source: TSI, ..Default::default() };
+    assert_eq!(ahoys[0], check(SK_IND_PD, false, 1002), "table 6.51");
+    assert!(ahoys.contains(&check(SK_CANCEL, false, 1002)), "table 6.53");
+    assert_eq!(ahoys.last().copied(), Some(check(SK_TG_PD, true, TG)), "table 6.52");
 }
