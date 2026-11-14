@@ -869,6 +869,51 @@ fn composite_tscc_access_waits_for_the_tscc() {
     assert_eq!(air.ms[4].status().ch, 0);
 }
 
+/// Late entry on a lent composite slot (`services.composite_late_entry`, 6.6.2.5.2). D (TG 9) is off while A's
+/// call on TG 9 is set up on TS2 and still off when C's call on TG 10 takes the TSCC's slot, so it missed every
+/// grant. Switched on, it waits on that slot (P_SYS_Parms, Payload Channel Type 1). With the setting, a P_GRANT
+/// (Late_Entry) for A's call goes out there in C's hang time and D follows it to TS2; without, D joins only once
+/// the TSCC is back. Returns whether D was on TS2 before the TSCC came back, and the P_GRANTs on the lent slot.
+fn composite_late_entry(le: bool) -> (bool, u32) {
+    let mut s = site_with(|c| {
+        c.composite = 1;
+        c.composite_le = le as u8;
+    });
+    let mut log = Log::default();
+    let ch = [1];
+    let mss = [ms(1001, &[9], &ch), ms(1002, &[10], &ch), ms(1003, &[], &ch), ms(1004, &[9], &ch)];
+    let mut air = Air::new(&mut s, mss, T0);
+    register_all(&mut air, &mut log);
+    air.off = 1 << 3;
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_GROUP, 9, 30_000, 0, now);
+    assert!(air.until(5000, &mut log.f(), |a| a.ms[0].state() == t3ms::PAYLOAD), "A on TS2");
+    air.run(3000, &mut log.f()); // A's Late_Entry grants on the TSCC: D misses them
+    let now = air.now();
+    air.ms[2].act(t3ms::DO_GROUP, 10, 2000, 0, now);
+    assert!(air.until(5000, &mut log.f(), |a| a.site.tscc_payload() && a.ms[2].state() == t3ms::PAYLOAD), "C lent");
+    air.off = 0;
+    let (mut early, mut grants) = (false, 0);
+    let back = air.until(15_000, &mut log.f(), |a| {
+        let o = &a.last.ch[0];
+        grants += (a.last.rev == REV_CALL && o.dt == DT_CSBK && Grant::decode(&o.pdu).is_some()) as u32;
+        early |= a.site.tscc_payload() && a.ms[3].state() == t3ms::PAYLOAD && a.ms[3].status().ch == 1;
+        !a.site.tscc_payload()
+    });
+    assert!(back, "the TSCC back after C's call");
+    assert!(air.until(5000, &mut log.f(), |a| a.ms[3].status().heard_src == 1001), "D in A's call, hearing A");
+    (early, grants)
+}
+
+#[test]
+fn composite_late_entry_on_the_lent_slot() {
+    let (early, grants) = composite_late_entry(true);
+    assert!(early, "D followed a P_GRANT on the lent slot into A's call");
+    assert!(grants >= 2, "{grants} P_GRANTs in C's hang time");
+    let (early, grants) = composite_late_entry(false);
+    assert!(!early && grants == 0, "off by default: nothing on the lent slot ({grants}); D waits for the TSCC");
+}
+
 /// 5.3.2 with packet data: TS2 busy, C sends confirmed data to D. The data grant names the TSCC's slot; the blocks,
 /// the site's ACK and the download to D all go there; D takes the message.
 #[test]

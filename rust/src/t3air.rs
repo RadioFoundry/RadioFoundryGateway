@@ -30,6 +30,8 @@ pub struct Air<'a, const N: usize> {
     pub lose_in: (u8, u32),
     /// Packet data blocks the MSs hear damaged: bit j, the j-th block from now (a header doesn't count).
     pub damage: u128,
+    /// MSs switched off: bit i, ms[i] neither hears nor sends (it misses what goes out meanwhile).
+    pub off: u64,
     /// The site's relays (tier3.md 5.10) and what they took for the network, oldest first.
     pub net: PdNet,
     pub published: [Option<NetData>; 4],
@@ -58,6 +60,7 @@ impl<'a, const N: usize> Air<'a, N> {
             lose_out: (0, 0),
             lose_in: (0, 0),
             damage: 0,
+            off: 0,
             data: Default::default(),
             net: PdNet::default(),
             published: [None; 4],
@@ -108,7 +111,7 @@ impl<'a, const N: usize> Air<'a, N> {
         }
         self.net.tick(now);
         for i in 0..N {
-            self.inbound[i] = self.ms[i].tx(k, now);
+            self.inbound[i] = if self.off >> i & 1 != 0 { None } else { self.ms[i].tx(k, now) };
         }
         for ch in 0..CHANNELS {
             let mut pdus = 0;
@@ -158,8 +161,10 @@ impl<'a, const N: usize> Air<'a, N> {
             } else if t.kind == TX_VOICE {
                 self.site.rx_voice(ch, t.what, t.src);
                 let out_ch = self.site.repeat_channel(ch); // a duplex call: the other party's slot
-                for m in self.ms.iter_mut() {
-                    m.hear(out_ch, t.src, t.dst);
+                for (i, m) in self.ms.iter_mut().enumerate() {
+                    if self.off >> i & 1 == 0 {
+                        m.hear(out_ch, t.src, t.dst);
+                    }
                 }
             }
         }
@@ -192,7 +197,10 @@ impl<'a, const N: usize> Air<'a, N> {
         }
         let tscc = self.site.tscc_ch();
         let lost = k & 1 == 0 && out.tscc_dt == DT_CSBK && lose(&mut self.lose_out, &out.tscc_pdu);
-        for m in self.ms.iter_mut() {
+        for (i, m) in self.ms.iter_mut().enumerate() {
+            if self.off >> i & 1 != 0 {
+                continue;
+            }
             if out.has_slc != 0 {
                 m.slc(tscc / 2, out.slc_tscc); // the TSCC carrier's CACH
             }

@@ -823,6 +823,11 @@ static void test_trunk(const char *dir)
           "composite_tscc: %s", err);
     CHECK(!apply_text("{\"services\": {\"composite_tscc\": 1}}", "x", &c, &pol, err, sizeof err), "composite_tscc 1");
     rdof_t3cfg_default(&c, &pol);
+    CHECK(c.composite_le == 0 &&
+              apply_text("{\"services\": {\"composite_late_entry\": true}}", "x", &c, &pol, err, sizeof err) &&
+              c.composite_le == 1,
+          "composite_late_entry: %s", err);
+    rdof_t3cfg_default(&c, &pol);
     CHECK(c.intr == 0 && apply_text("{\"services\": {\"transmit_interrupt\": true}}", "x", &c, &pol, err, sizeof err) &&
               c.intr == 1,
           "transmit_interrupt: %s", err);

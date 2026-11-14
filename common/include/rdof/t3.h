@@ -94,7 +94,7 @@ typedef struct {
     uint8_t intr;      /* 1: transmit interrupt, the payload interrupt and ALS termination de-key and the call timer
                           de-key (361-4 6.4.14.3.2-6.4.14.3.4, 6.4.15; tier3.md 3.20) */
     uint8_t ip_upload; /* 1: packet data to IPI asks the caller for the IP address first (361-4 6.6.3.2.4 b 2) */
-    uint8_t pad1[1];
+    uint8_t composite_le; /* 1: Late_Entry grants on a lent composite TSCC slot in hang time (tier3.md 3.19) */
     /* a group call to a talkgroup with members in power save waits up to this long for a frame they're all awake
      * in (361-4 6.4.7.1); 0: never waits */
     uint32_t ps_hold_ms;

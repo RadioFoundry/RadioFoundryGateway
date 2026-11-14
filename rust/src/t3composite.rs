@@ -73,6 +73,24 @@ impl Site {
         out.at = (self.chans[self.tscc_carrier * 2].r#use == USE_CALL) as u8;
     }
 
+    /// Channel ch's outbound in slot k (`services.composite_late_entry`): while the TSCC's slot is lent and its call
+    /// hangs, the Late_Entry grant repeats that are due go there as P_GRANTs (6.6.2.5.2), the other slot's call's
+    /// and its own. An MS that lost the control channel waits on that slot (5.3.2); it can follow one into a call
+    /// that started meanwhile. What else the slot sends first (P_PROTECT, a presence check) goes first.
+    pub(super) fn le_slot(&mut self, ch: usize, out: &mut ChOut) {
+        let c = self.chans[ch];
+        if self.cfg.composite_le == 0 || ch != self.tscc_carrier * 2 || !self.tscc_payload() || out.dt != 0 {
+            return;
+        }
+        if c.r#use != USE_HANG || c.protect_ms != 0 {
+            return;
+        }
+        if let Some(g) = self.due_grant() {
+            out.dt = DT_CSBK;
+            out.pdu = g;
+        }
+    }
+
     /// close() on the TSCC's channel: the TSCC again. What the TSCC had queued before or during the call is stale
     /// (grants, answers): the MSs ask again. A C_ALOHA first.
     pub(super) fn tscc_back(&mut self) {

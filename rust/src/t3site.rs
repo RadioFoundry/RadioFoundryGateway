@@ -173,7 +173,7 @@ pub struct Cfg {
     pub priority: u8,  // the site's priority radiated with its neighbors (361-4 table 6.81: 1 highest, 7 lowest, 0 none)
     pub intr: u8,      // 1: transmit interrupt (361-4 6.4.14.3.2-6.4.14.3.4, 6.4.15; t3intr.rs)
     pub ip_upload: u8, // 1: packet data to IPI asks the caller for the IP address first (6.6.3.2.4 b 2)
-    pub pad1: [u8; 1],
+    pub composite_le: u8, // 1: Late_Entry grants on a lent composite TSCC slot in hang time (6.6.2.5.2)
     pub ps_hold_ms: u32, // a group call waits up to this long for its sleeping members' wake frame (6.4.7.1); 0 never
 }
 
@@ -954,6 +954,9 @@ fn check(c: &Cfg, err: &mut Buf) -> bool {
     if c.intr > 1 {
         no!("transmit_interrupt: true or false");
     }
+    if c.composite_le > 1 {
+        no!("composite_late_entry: true or false");
+    }
     if c.ip_upload > 1 {
         no!("ip_address_upload: true or false");
     }
@@ -1516,6 +1519,7 @@ impl Site {
             }
             if ch % 2 == lcn {
                 self.pa_slot(ch, &mut out.ch[ch]);
+                self.le_slot(ch, &mut out.ch[ch]);
             }
             if ch % 2 != lcn || self.chans[ch].r#use != USE_CLEAR {
                 continue;

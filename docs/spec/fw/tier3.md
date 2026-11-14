@@ -946,10 +946,20 @@ as a hotspot modem, gets a second call at once.
   its control channel function", 5.3.2 b)) with a C_ALOHA first. What it had queued before or during the call
   (grants for other calls, answers) is dropped as stale; MSs ask again.
 - No Late_Entry grants while the slot is lent: they go on the TSCC (6.6.2.4.1), and an idle MS "loses the control
-  channel" meanwhile (5.3.2). A member that misses the grant misses the call; a standard MS follows grants, not a
+  channel" meanwhile (5.3.2). A member that misses the grant misses the call (but see the next item for RadioFoundry
+  radios); a standard MS follows grants, not a
   voice LC heard on its TSCC's slot. So a group grant that will lend the slot waits for the sleeping members' wake
   frame like any other (section 3.11, `power_save_group_hold_s`; C_WACKD to the caller meanwhile), and the grant
   goes out twice. RadioFoundry's MS engine does the same (no joining on the voice LC; rf-t3 31f7eaa0).
+- Late entry on the lent slot (`services.composite_late_entry`, off by default): while the slot is lent and its
+  call hangs (no talker), the Late_Entry grant repeats that fall due (`grant_every_s`, per call) go on the slot as
+  P_GRANTs, the TV_GRANT's format with Late_Entry 1: the other slot's call's and its own (6.6.2.5.2: "The TS may
+  announce a new call on a payload channel using a P_GRANT"; manufacturer specific). An MS that lost the control
+  channel waits on this slot (5.3.2), so it can follow one into a call it missed the start of. MSs in the lent
+  call ignore them unless they're idle. P_PROTECT and a presence check go first. Other makers' radios most likely
+  ignore a P_GRANT on a payload channel; RadioFoundry's MS engine follows one when idle (rf-t3). Test:
+  `composite_late_entry_on_the_lent_slot` (rust t3ctltests: an MS switched off through a call's grants and the
+  lend joins the call from the lent slot's hang time; without the setting, only once the TSCC is back).
 - Covered in the simulator (rust t3ctltests, t3tests): a group call, an individual call, confirmed packet data and
   an emergency call each on the lent slot while TS2 is busy; a sleeping member joining after its wake frame; a call
   from the network opening there; and on the simulated modem (host-tests/e2e_t3_hat.sh, its second run), an
@@ -1168,7 +1178,7 @@ paths").
 | `data_gateway` | integer | 0 | the site's own data ID besides TSI (1-16776415): packet data to it, to TSI or to IPI goes to the site's IP gateway (3.16) |
 | `timers` | object | section 3.8 | |
 | `broadcast` | object | section 3.2 | `adjacent_s`, `chan_freq_s`, `local_time_s`, `call_timers_s`, `vote_now_s`, `ann_tscc_s` (0 = off, else 1-600 s; the last three off by default, section 3.11); `vote_blk` (2-10 TDMA frames, 6): VOTE_BLK after a Vote_Now; `priority` (0-7, 0): the site's priority for the Radiated Preference Strategy (table 6.81: 1 highest, 7 lowest, 0 non-preferred), sent as the confirmed priority with each neighbor and in `info` (section 3.11). Local settings: the manager's `cfg` doesn't carry them |
-| `services` | object | | `emergency_preempt` (bool, false): clear a running call for a waiting emergency (section 3.9); `power_save` (0-7, 0): the largest PowerSave_RQ granted, 0 none; `power_save_awake_s` (0.1-60, 1); `power_save_group_hold_s` (0-10, 2): how long a group call waits for its sleeping members' wake frame (section 3.11); `mass_reg_at_start_s` (0-200000, 0): a mass re-registration at start within this time (section 3.11); `hibernate_s` (0 or 1-300, 0): T_BS_Inactive of the asynchronous TSCC, 0 never (section 3.12); `duplex` (bool, false): full-duplex individual calls (section 3.13); `composite_tscc` (bool, false): the TSCC's slot carries a call when no payload channel is free (section 3.19); `transmit_interrupt` (bool, false): payload interrupt, ALS termination and the call timer de-key (section 3.20); `ip_address_upload` (bool, false): packet data to IPI uploads the IP address first (section 3.16), and IP connection advice at registration is offered (section 3.4; off, it gets IP_Connection_failed). Local settings only for now; the manager's `cfg` doesn't carry them |
+| `services` | object | | `emergency_preempt` (bool, false): clear a running call for a waiting emergency (section 3.9); `power_save` (0-7, 0): the largest PowerSave_RQ granted, 0 none; `power_save_awake_s` (0.1-60, 1); `power_save_group_hold_s` (0-10, 2): how long a group call waits for its sleeping members' wake frame (section 3.11); `mass_reg_at_start_s` (0-200000, 0): a mass re-registration at start within this time (section 3.11); `hibernate_s` (0 or 1-300, 0): T_BS_Inactive of the asynchronous TSCC, 0 never (section 3.12); `duplex` (bool, false): full-duplex individual calls (section 3.13); `composite_tscc` (bool, false): the TSCC's slot carries a call when no payload channel is free (section 3.19); `composite_late_entry` (bool, false): while that slot is lent, Late_Entry grants as P_GRANTs on it in its call's hang time (section 3.19); `transmit_interrupt` (bool, false): payload interrupt, ALS termination and the call timer de-key (section 3.20); `ip_address_upload` (bool, false): packet data to IPI uploads the IP address first (section 3.16), and IP connection advice at registration is offered (section 3.4; off, it gets IP_Connection_failed). Local settings only for now; the manager's `cfg` doesn't carry them |
 | `auth` | `off`, `registration`, `required` | `off` | MS authentication (section 3.14): challenge MSs with a key at registration, or every MS. Local settings only; the manager's `cfg` doesn't carry it |
 
 Checks (refusals name the key): exactly one `tscc` carrier; every carrier's `out` on a device that transmits and its
