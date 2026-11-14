@@ -440,9 +440,9 @@ const PD_SUPP: u8 = 7; // the caller's supplementary user data going up and down
 const PD_WAIT: u8 = 8; // the site's own data: the called MS is on another call; its availability check once it's back
 /// How long the site's own data waits for a busy MS (within the unit's own wait for a channel, t3unit DATA_WAIT_MS).
 const PD_WAIT_MS: i64 = 20_000;
-/// The site's reply goes on the MS's open data channel only this soon after the channel's last data burst (an MS
-/// whose call ended, no answer to its confirmed data say, may be back on the TSCC while the site still holds it), and
-/// with this much of its hang time left (an unconfirmed single item's channel drains at once: DRAIN_MS).
+/// The site's response or multi-item data goes on the MS's open data channel only this soon after the channel's
+/// last data burst (an MS whose call ended, no answer to its confirmed data say, may be back on the TSCC while the
+/// site still holds it), and with this much of its hang time left (an unconfirmed single item's drains at once).
 const PD_REPLY_MS: i64 = 1500;
 const PD_REPLY_ROOM_MS: i64 = 1000;
 /// How long the far site keeps an accepted call for its data (the calling site may queue it first).
@@ -984,15 +984,25 @@ impl Site {
     }
 
     /// The site's own data to an MS or a talkgroup (its IP gateway's): a channel to put it on. src is the ID it
-    /// comes from (the site's data ID or TSI). An MS gets the availability check first. false: not here or busy.
-    pub fn pd_send(&mut self, src: u32, dst: u32, group: bool, now_ms: i64) -> bool {
+    /// comes from (the site's data ID or TSI). An MS gets the availability check first. A response (the ACK of
+    /// the MS's confirmed data) goes only on the channel it answers. false: not here, busy, or a response with no
+    /// channel.
+    pub fn pd_send(&mut self, src: u32, dst: u32, group: bool, response: bool, now_ms: i64) -> bool {
         self.now = now_ms;
         if self.withdrawn {
             return false;
         }
-        // the pair's data channel, or (an MS) its data channel with the site: a reply to what it sent goes there in
-        // the data hang time, as the MS still listens on it (6.6.3.3.2)
-        let open = self.pd_channel(group, src, dst).or_else(|| if group { None } else { self.pd_site_channel(dst) });
+        // The pair's data channel, or (an MS) its data channel with the site. A response goes there. New data goes
+        // there only in a multi-item call: after a single item the MS may leave at once (6.6.3.3.2.5 a to e), even
+        // as its ACK arrives, so the site calls it on the TSCC. A channel about to clear isn't one either.
+        let open = self
+            .pd_channel(group, src, dst)
+            .or_else(|| if group { None } else { self.pd_site_channel(dst) })
+            .filter(|&ch| self.chans[ch].idle_until_ms - now_ms >= PD_REPLY_ROOM_MS)
+            .filter(|&ch| response || self.pd.multi[ch]);
+        if response && open.is_none() {
+            return false;
+        }
         if let Some(ch) = open {
             let hang = self.pd_hang();
             let c = &mut self.chans[ch];
@@ -1196,8 +1206,15 @@ pub unsafe extern "C" fn rdof_t3_pd_net_in(s: *mut Site, src: u32, dst: u32, gro
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rdof_t3_pd_send(s: *mut Site, src: u32, dst: u32, group: bool, now_ms: i64) -> bool {
-    (*s).pd_send(src, dst, group, now_ms)
+pub unsafe extern "C" fn rdof_t3_pd_send(
+    s: *mut Site,
+    src: u32,
+    dst: u32,
+    group: bool,
+    response: bool,
+    now_ms: i64,
+) -> bool {
+    (*s).pd_send(src, dst, group, response, now_ms)
 }
 
 #[cfg(test)]

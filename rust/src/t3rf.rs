@@ -456,7 +456,9 @@ pub unsafe extern "C" fn rdof_t3rf_open(
     warmup: c_int,
 ) -> bool {
     let Some(c) = channel(&mut *t, ch) else { return false };
-    if !c.open {
+    // a channel still sending its last call's P_CLEARs (close_after) is granted again: a fresh start, or the
+    // close would come under the new call
+    if !c.open || c.close_after {
         flush(c);
         c.rf = false;
         c.rf_regen_on = false;

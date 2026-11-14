@@ -698,17 +698,22 @@ SUPED_SV, HI_RATE, SIMI, priority):
    at `call_s` (T_PACKET_TIMER).
 
 The site as a party: data to TSI, the data ID or IPI goes, burst by burst, to the unit's `data` hook (rdofradio:
-the IP gateway app, when the document has one: [ipgw.md](ipgw.md)). What the gateway
-sends (its replies, the ACK of a confirmed message) goes down through `rdof_t3unit_data_tx`: on the open channel at
-once, else the site asks for one (`rdof_t3_pd_send`: the availability check to an MS, or TD_GRANT for a talkgroup)
-and sends it when granted, source the site's ID; 30 s at most, one packet at a time. A reply to an MS that just sent
-the site data goes on that MS's data channel with the site (to TSI, the data ID or IPI) while its data hang time
-lasts: data on it within the last 1.5 s and 1 s of hang left, which the reply extends. An unconfirmed single item's
-channel drains at once, and an MS on another call is busy: the reply waits, up to 20 s, until the MS is back on the
-TSCC, then has its availability check and a channel of its own. (On air, 2026-11-14: the IP gateway's answer to an
-unconfirmed datagram came back in 0.1 s, found the MS still on its draining channel, and was dropped.) A packet to an MS not
-registered here goes to the network as a `data_pdu` (5.10) when the site is connected; the site that has the MS
-delivers it.
+the IP gateway app, when the document has one: [ipgw.md](ipgw.md); a trunked site's gateway is the unit's, never the
+repeater's). What the gateway sends goes down through `rdof_t3unit_data_tx`, source the site's ID, one packet at a
+time (rdofradio queues up to 8 behind it, in order: an ACK and the reply to it come together):
+
+- A response (the ACK of the MS's confirmed message) goes on the data channel it answers, which a confirmed item
+  holds 6 s for it; with no such channel it is dropped.
+- New data (the gateway's reply) goes on the MS's open data channel with the site only in a multi-item call. After a
+  single item the MS may leave the channel at once (6.6.3.3.2.5 a to e: after its unconfirmed data, after its ACK),
+  so the site asks for a channel (`rdof_t3_pd_send`: the availability check to the MS, or TD_GRANT for a talkgroup).
+  While the MS is still on its channel, or on another call, the data waits, up to 20 s, until it is back on the TSCC.
+  The data starts GRANT_LEAD_MS (360 ms) after the grant, once the MS is on the channel; 30 s at most in all.
+
+(On air, 2026-11-14: the IP gateway's answers never went down. The repeater's IP gateway had started in the site's
+place, and each answer failed in it; an answer that the site did put on the MS's draining channel was lost.) A packet
+to an MS not registered here goes to the network as a `data_pdu` (5.10) when the site is connected; the site that has
+the MS delivers it.
 
 The MS simulator's side of the data (`rust/src/t3pdrate.rs`, 361-1 8.2.2, 9.2; 361-3 5.3.1, 5.4): a message in
 blocks of one rate, rate 1/2 (data type 7: 12 octets a block, BPTC), rate 3/4 (8: 18, the B.2 trellis) or rate 1
@@ -1989,6 +1994,7 @@ Built since step 8e, host-tested (the bench steps above note what has run on air
 | 5455d696 | Supplementary user data on statuses (3.21) |
 | 7a0f0257 | Packet data to IPI with SUPED_VAL set is taken (table 6.50: only Appended_UDT must be 00); logs of the site's own data sends |
 | 29495f9d | A confirmed item's channel held 6 s for the sender's retry; the sim MS sends again on no response |
+| next | The IP gateway's answers go down: the repeater's gateway no longer starts in a trunked site's place; responses only on the channel they answer, new data through the TSCC after a single item; a channel granted again while its P_CLEARs go out stays open; the site's data waits for the grant's lead; the sim MS takes the site's data from IPI. `rdofradio_e2e_t3_ipgw` |
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
 apart from the code, found seven deviations, all fixed (2026-11-12):
@@ -2025,7 +2031,7 @@ One site (the SDR site, two carriers):
 | Status, status polls, UDT short data | yes | yes |
 | UDT short data polling | yes | yes: the radio polling an air MS, and an air MS polling the radio, asleep or not (13.2 step 8f) |
 | Packet data at rate 1/2, 3/4 and 1, up to 127 blocks | yes | partly: IP text messages, confirmed and unconfirmed, at rate 1/2 |
-| IP address upload to IPI, IP connection advice | yes | IP connection advice yes, with and without power save (13.2 step 8g); the upload before a data call to IPI and the datagram through the IP gateway to a host, yes; the host's reply back to the radio not yet (step 8h) |
+| IP address upload to IPI, IP connection advice | yes | IP connection advice yes, with and without power save (13.2 step 8g); the upload before a data call to IPI and the datagram through the IP gateway to a host, yes; the host's reply back to the radio: on the simulated air (`rdofradio_e2e_t3_ipgw`), not yet on air (step 8h) |
 | Stun, revive, mass re-registration | yes | yes (PTT refused while stunned) |
 | DGNA, call diversion, ALS | yes | yes (13.2 step 8h) |
 | C_MOVE | yes | to a channel with no TSCC: the radio moved, hunted and came back (2026-11-14); to a second TSCC not yet |

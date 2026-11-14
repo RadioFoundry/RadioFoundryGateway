@@ -1589,7 +1589,10 @@ impl Ms {
             (DGNAI, SK_SUPPL) => Some(DO_DGNA),
             (TATTSI, SK_REG) if a.service_kind_flag => Some(DO_REGISTER),
             (DIVERTI, SK_DIVERT) => Some(DO_DIVERT),
-            (IPI, SK_IND_PD) => Some(DO_DATA), // 6.6.3.2.4 b) 2): a data call's IP address
+            // 6.6.3.2.4 b) 2): its data call's IP address. Not asking: the site's own data from IPI, a call to it.
+            (IPI, SK_IND_PD) if self.has_cur && self.cur.what == DO_DATA && matches!(self.state, ACCESS | WAITING) => {
+                Some(DO_DATA)
+            }
             (SUPLI, SK_IND_VOICE) => Some(DO_PRIVATE), // 6.4.13.1: its call's supplementary data
             (SUPLI, SK_TG_VOICE) => Some(DO_GROUP),
             (SUPLI, SK_IND_PD | SK_TG_PD) => Some(DO_DATA), // a data call's (6.4.13.0: voice or data)

@@ -435,7 +435,7 @@ fn site_sends_packet_data() {
     let mut air = Air::new(&mut s, [ms(1001, &[TG]), ms(1002, &[TG])], T0);
     register_all(&mut air, &mut log);
     let now = air.now();
-    assert!(air.site.pd_send(GW, 1001, false, now));
+    assert!(air.site.pd_send(GW, 1001, false, false, now));
     let blocks = tscc_blocks(&mut air, &mut log, 3000);
     let ahoy = blocks.iter().filter_map(Ahoy::decode).find(|a| a.service_kind == SK_IND_PD).expect("C_AHOY");
     assert_eq!((ahoy.target, ahoy.source), (1001, GW));
@@ -446,14 +446,14 @@ fn site_sends_packet_data() {
     assert_eq!(air.ms[0].state(), t3ms::PAYLOAD);
     // to a talkgroup: TD_GRANT at once
     let now = air.now();
-    assert!(air.site.pd_send(GW, TG, true, now));
+    assert!(air.site.pd_send(GW, TG, true, false, now));
     air.run(500, &mut log.f());
     assert!(log.of(EV_PD).iter().any(|e| e.op == PD_OPEN && e.dst == TG && e.kind == 0));
     // not here, or no answer
     let now = air.now();
-    assert!(!air.site.pd_send(GW, 4242, false, now));
+    assert!(!air.site.pd_send(GW, 4242, false, false, now));
     air.ms[1].set_answer(t3ms::ANSWER_SILENT, 0);
-    assert!(air.site.pd_send(GW, 1002, false, now));
+    assert!(air.site.pd_send(GW, 1002, false, false, now));
     air.run(8000, &mut log.f());
     let f: Vec<Event> = log.of(EV_PD).into_iter().filter(|e| e.op == PD_FAILED).collect();
     assert_eq!((f.len(), f[0].reason, f[0].dst), (1, R_MSAWAY, 1002));
@@ -687,9 +687,10 @@ fn packet_data_with_supplementary_data() {
     assert!(said(&log, &std::format!("supplementary data from 1001 to {IPI}: not taken")));
 }
 
-/// The site's reply to an MS that sent it data (its IP gateway's answer, within ~0.1 s): on the MS's data channel
-/// with the site while it's open, with no availability check. An MS on a voice call: held until it's back, then the
-/// availability check and the channel.
+/// The site's data to an MS that sent it a single item: the response (the gateway's ACK) on the MS's open data
+/// channel, with no availability check; a new message (the gateway's reply) held until the MS is back on the TSCC,
+/// as it may leave the channel once the item ends (6.6.3.3.2.5), then the check and a channel. An MS on a voice
+/// call: the same.
 #[test]
 fn site_reply_on_the_open_channel_or_after_the_call() {
     let mut s = site_with(|c| {
@@ -705,12 +706,22 @@ fn site_reply_on_the_open_channel_or_after_the_call() {
     let open = log.of(EV_PD).into_iter().find(|e| e.op == PD_OPEN && e.dst == IPI).expect("the uplink's channel");
     assert!(matches!(air.site.status().ch[open.ch as usize].r#use, USE_CALL | USE_HANG), "still open");
     let now = air.now();
-    assert!(air.site.pd_send(GW, 1001, false, now));
+    let n = log.of(EV_PD).len();
+    assert!(air.site.pd_send(GW, 1001, false, true, now), "the ACK");
+    assert!(air.site.pd_send(GW, 1001, false, false, now), "the reply: held, not refused");
     let blocks = tscc_blocks(&mut air, &mut log, 300);
-    let reply = log.of(EV_PD).into_iter().find(|e| e.op == PD_OPEN && e.src == GW && e.dst == 1001);
-    assert_eq!(reply.expect("the reply's channel").ch, open.ch, "the MS's open channel");
-    assert!(blocks.iter().filter_map(Ahoy::decode).all(|a| a.target != 1001), "no availability check");
+    let opens = |log: &Log| log.of(EV_PD)[n..].iter().filter(|e| e.op == PD_OPEN && e.src == GW && e.dst == 1001).count();
+    let ack = log.of(EV_PD)[n..].iter().find(|e| e.op == PD_OPEN && e.src == GW && e.dst == 1001).copied();
+    assert_eq!(ack.expect("the ACK's channel").ch, open.ch, "the MS's open channel");
+    assert_eq!(opens(&log), 1, "only the ACK there");
+    assert!(blocks.iter().filter_map(Ahoy::decode).all(|a| a.target != 1001), "no availability check yet");
+    let blocks = tscc_blocks(&mut air, &mut log, 20_000);
+    let ahoy = blocks.iter().filter_map(Ahoy::decode).find(|a| a.source == GW).expect("the check once it's back");
+    assert_eq!((ahoy.target, ahoy.service_kind), (1001, SK_IND_PD));
+    assert_eq!(opens(&log), 2, "then the reply's channel");
     assert!(air.until(15_000, &mut log.f(), |a| a.ms.iter().all(|m| m.state() == t3ms::IDLE)));
+    tscc_blocks(&mut air, &mut log, 8000);
+    assert!(!air.site.pd_send(GW, 1001, false, true, air.now()), "a response with no channel: dropped");
 
     // on a voice call: held, then the check and its own channel
     let now = air.now();
@@ -718,7 +729,7 @@ fn site_reply_on_the_open_channel_or_after_the_call() {
     assert!(air.until(5000, &mut log.f(), |a| a.ms[0].state() == t3ms::PAYLOAD));
     let n = log.of(EV_PD).len();
     let now = air.now();
-    assert!(air.site.pd_send(GW, 1001, false, now), "held, not refused");
+    assert!(air.site.pd_send(GW, 1001, false, false, now), "held, not refused");
     let blocks = tscc_blocks(&mut air, &mut log, 2000);
     assert!(blocks.iter().filter_map(Ahoy::decode).all(|a| a.source != GW), "no check while it talks");
     assert!(air.until(15_000, &mut log.f(), |a| a.ms[0].state() == t3ms::IDLE));
@@ -737,7 +748,7 @@ fn site_reply_on_the_open_channel_or_after_the_call() {
     assert!(air.until(3000, &mut log.f(), |a| a.ms[0].status().calls_done > before), "item sent");
     assert!(log.of(EV_PD)[n..].iter().any(|e| e.op == PD_OPEN && e.dst == IPI), "the uplink");
     let now = air.now();
-    assert!(air.site.pd_send(GW, 1001, false, now));
+    assert!(air.site.pd_send(GW, 1001, false, false, now));
     let blocks = tscc_blocks(&mut air, &mut log, 6000);
     assert!(blocks.iter().filter_map(Ahoy::decode).any(|a| a.source == GW && a.target == 1001), "the check");
     let reply: Vec<Event> =

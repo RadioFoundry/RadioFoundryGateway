@@ -311,6 +311,16 @@ static void test_payload(void)
     }
     CHECK(ctl == 4 && !t.ch[ch].open && !rdof_t3rf_carrier_busy(&t, 1), "4 P_CLEARs, then closed: %d", ctl);
 
+    /* granted again while its P_CLEARs go out: the new call keeps the channel, the old call's last P_CLEARs dropped */
+    CHECK(rdof_t3rf_open(&t, ch, 3100123, 16776899, false, 0), "open");
+    CHECK(rdof_t3rf_control(&t, ch, RDOF_DT_CSBK, clear, 4, true), "P_CLEAR");
+    CHECK(rdof_t3rf_ch_next(&t, ch, k + 20, &control, out) == RDOF_T3RF_CONTROL, "one P_CLEAR out");
+    CHECK(rdof_t3rf_open(&t, ch, 16776899, 3100123, false, 0), "granted again");
+    for (int i = 0; i < 6; i++)
+        CHECK(rdof_t3rf_ch_next(&t, ch, k + 22 + 2 * i, &control, out) != RDOF_T3RF_CONTROL, "no P_CLEAR after");
+    CHECK(t.ch[ch].open && rdof_t3rf_room(&t, ch) > 0, "still open, room for the new call's data");
+    rdof_t3rf_close(&t, ch);
+
     /* the network: held for the prebuffer, then plays; RF takes the channel from it */
     CHECK(rdof_t3rf_open(&t, ch, 9990001, 91, true, 0), "open for the network");
     rdof_frame_t f;

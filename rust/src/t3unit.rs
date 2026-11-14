@@ -658,6 +658,7 @@ struct DataDown {
     n: usize,
     pos: usize,
     until_ms: i64,
+    start_ms: i64, // not before: a fresh grant's MS comes to the channel first (t3pdnet::GRANT_LEAD_MS)
     rx: t3::DataRx,
     control: [u8; DATA_BURSTS],
     bursts: [[u8; 33]; DATA_BURSTS],
@@ -1378,6 +1379,7 @@ unsafe fn data_event(u: *mut Unit, e: &Event) {
         }
         if (*d).on && (*d).ch < 0 && e.dst == (*d).dst {
             (*d).ch = ch as c_int;
+            (*d).start_ms = (*u).now_ms + crate::t3pdnet::GRANT_LEAD_MS; // rdof_t3unit_data_tx: none on an open one
         }
     } else if e.op == t3::PD_FAILED && (*d).on && (*d).ch < 0 && e.dst == (*d).dst {
         (*d).on = false;
@@ -1409,6 +1411,9 @@ unsafe fn data_feed(u: *mut Unit, k: i64) {
         }
         return;
     }
+    if (*u).now_ms < (*d).start_ms {
+        return;
+    }
     let ch = (*d).ch;
     let mut room = rdof_t3rf_room(rf(u), ch) - 2; // a little left for the controller's own
     while room > 0 && (*d).pos < (*d).n {
@@ -1435,15 +1440,23 @@ unsafe fn data_feed(u: *mut Unit, k: i64) {
     }
 }
 
+/// True while a packet the site sends (rdof_t3unit_data_tx) waits for its channel or goes down: the next one waits.
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3unit_data_busy(u: *const Unit) -> bool {
+    !u.is_null() && (*u).dl.on
+}
+
 /// The site sends a packet (a data header and its blocks, as the IP gateway builds them: control as MMDVM's
 /// DMR_DATA) from src to dst (an MS or, group, a talkgroup): a channel is asked for and the packet goes once it is
-/// open. One at a time; false: one is waiting, too long, or the controller can't (not here, busy).
+/// open. A response (an ACK) goes only on the data channel it answers. One at a time; false: one is waiting, too
+/// long, or the controller can't (not here, busy, no channel for a response).
 #[no_mangle]
 pub unsafe extern "C" fn rdof_t3unit_data_tx(
     u: *mut Unit,
     src: u32,
     dst: u32,
     group: bool,
+    response: bool,
     n: c_int,
     control: *const u8,
     bursts: *const u8,
@@ -1482,16 +1495,19 @@ pub unsafe extern "C" fn rdof_t3unit_data_tx(
     (*d).rx = t3::DataRx::default();
     ptr::copy_nonoverlapping(control, (*d).control.as_mut_ptr(), n);
     ptr::copy_nonoverlapping(bursts, (*d).bursts.as_mut_ptr().cast::<u8>(), n * 33);
-    if !t3::rdof_t3_pd_send((*u).site, src, dst, group, (*u).now_ms) {
+    if !t3::rdof_t3_pd_send((*u).site, src, dst, group, response, (*u).now_ms) {
         (*d).on = false;
         let mut r = Record::default();
-        if !group && (*u).net && (*u).connected && !t3::rdof_t3_record((*u).site, dst, &mut r) {
+        if !group && !response && (*u).net && (*u).connected && !t3::rdof_t3_record((*u).site, dst, &mut r) {
             return data_tx_net(u, n, control, bursts); // an MS at another site: over the network (tier3.md 5.10)
         }
         return refused(b"the site refused");
     }
     drain(u);
     let ch = (*d).ch;
+    if ch >= 0 {
+        (*d).start_ms = (*u).now_ms; // the channel was open: its MS is there
+    }
     log(u, |o| {
         o.bytes(b"tier3: site data ");
         o.int(i64::from(src), 0);

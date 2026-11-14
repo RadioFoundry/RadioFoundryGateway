@@ -340,8 +340,9 @@ void rdof_t3_rx_voice(rdof_t3_site_t *s, int ch, int64_t k, uint8_t what, uint32
 /* payload packet data: what RDOF_T3_DATA_*, src the message's (0: unknown) */
 void rdof_t3_rx_data(rdof_t3_site_t *s, int ch, int64_t k, uint8_t what, uint32_t src);
 /* The site's own packet data from src (its data ID or TSI) to an MS or a talkgroup: a channel is asked for (an MS's
- * availability check first); RDOF_T3_EV_PD PD_OPEN names it, or PD_FAILED. False: not registered here, busy, no room. */
-bool rdof_t3_pd_send(rdof_t3_site_t *s, uint32_t src, uint32_t dst, bool group, int64_t now_ms);
+ * availability check first); RDOF_T3_EV_PD PD_OPEN names it, or PD_FAILED. A response (an ACK) goes only on the data
+ * channel it answers. False: not registered here, busy, no room, or a response with no channel. */
+bool rdof_t3_pd_send(rdof_t3_site_t *s, uint32_t src, uint32_t dst, bool group, bool response, int64_t now_ms);
 /* Packet data from the network (tier3.md 5.10) from src to an MS or a talkgroup here: a channel is asked for (after a
  * setup the far site answered, at once; else the MS's availability check first); PD_OPEN (kind PARTY_NET) names it,
  * or PD_FAILED. False: not here, busy, no room. */

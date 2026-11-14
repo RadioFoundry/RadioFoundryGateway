@@ -249,7 +249,7 @@ static bool gw_send_dmr(void *ctx, const rdof_ipgw_dmr_t *p)
         gw_fail_next--;
         return false;
     }
-    return rdof_t3unit_data_tx(s->u, p->src, p->dst, false, p->nbursts, p->control, &p->bursts[0][0]);
+    return rdof_t3unit_data_tx(s->u, p->src, p->dst, false, p->response, p->nbursts, p->control, &p->bursts[0][0]);
 }
 
 static bool gw_open(void *ctx, int flow) { return true; }
@@ -1088,7 +1088,7 @@ int main(void)
     static const uint8_t back[] = "reply";
     CHECK(rdof_ipgw_build_dmr(9999, 3100101, 4, back, sizeof back - 1, 1, 0xDFF57D75DF5DULL, &reply), "reply built");
     const int npc = B.npc;
-    CHECK(rdof_t3unit_data_tx(A.u, 9999, 3100101, false, reply.nbursts, reply.control, &reply.bursts[0][0]),
+    CHECK(rdof_t3unit_data_tx(A.u, 9999, 3100101, false, false, reply.nbursts, reply.control, &reply.bursts[0][0]),
           "the gateway's packet taken for the network");
     run(6000);
     n = rdof_t3ms_data_inbox(Bs.ms[0], got, sizeof got, &from);

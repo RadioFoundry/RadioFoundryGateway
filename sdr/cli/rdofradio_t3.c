@@ -237,9 +237,30 @@ static void io_data(void *ctx, int ch, int dt, const uint8_t *burst, uint32_t sr
     if (rdofgw_on())
         rdofgw_heard(0, (ch & 1) + 1, 0, -1, dt, burst, (double)wall_ms() / 1000.0);
 }
+/* The gateway's packets go down one at a time (an ACK and then the reply to it come at once): the rest wait here,
+ * in order, for the one going down. */
+#define GW_QUEUE 8
+static rdof_ipgw_dmr_t gw_q[GW_QUEUE];
+static int gw_qn;
 static bool t3_gw_send(void *ctx, const rdof_ipgw_dmr_t *p)
 {
-    return rdof_t3unit_data_tx(T.u, p->src, p->dst, false, p->nbursts, p->control, &p->bursts[0][0]);
+    if (!gw_qn && !rdof_t3unit_data_busy(T.u))
+        return rdof_t3unit_data_tx(T.u, p->src, p->dst, false, p->response, p->nbursts, p->control, &p->bursts[0][0]);
+    if (gw_qn == GW_QUEUE) {
+        tsay("ip gateway: %d packets waiting: %u -> %u dropped", GW_QUEUE, (unsigned)p->src, (unsigned)p->dst);
+        return false;
+    }
+    gw_q[gw_qn++] = *p;
+    return true;
+}
+static void gw_drain(void)
+{
+    while (gw_qn && !rdof_t3unit_data_busy(T.u)) {
+        const rdof_ipgw_dmr_t *p = &gw_q[0];
+        /* a refusal is logged */
+        rdof_t3unit_data_tx(T.u, p->src, p->dst, false, p->response, p->nbursts, p->control, &p->bursts[0][0]);
+        memmove(&gw_q[0], &gw_q[1], (size_t)--gw_qn * sizeof gw_q[0]);
+    }
 }
 
 static bool start_common(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o, char *err, size_t cap)
@@ -345,6 +366,7 @@ static void poll_locked(int64_t now_ms)
     }
 #endif
     rdof_t3unit_tick(T.u, now_ms);
+    gw_drain();
 }
 
 static void stop_common(void)

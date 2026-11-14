@@ -5693,7 +5693,9 @@ static bool gw_send(void *ctx, const rdof_ipgw_dmr_t *p)
 }
 static void gw_start(void)
 {
-    if (!rcfg.has_ipgw || !sr_on || listen_only)
+    /* a trunked site's gateway is the Tier III unit's (rdofradio_t3.c): its packets go down as the site's own data,
+     * not into a repeater. The gateway is one per process, so starting it here would take the site's place. */
+    if (!rcfg.has_ipgw || !sr_on || listen_only || rcfg.tier3 || t3_path)
         return;
     sr_ipgw = rdof_site_app_of(&rcfg.site, RDOF_APP_IPGW);
     if (sr_ipgw < 0)
