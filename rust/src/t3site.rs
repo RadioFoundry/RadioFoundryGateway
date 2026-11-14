@@ -1343,6 +1343,11 @@ impl Site {
         out.tscc_pdu = pdu;
         out.tscc_ext = self.sd_ext();
         out.at = solicit as u8;
+        if self.cfg.composite != 0 && !self.reverted() && self.queue_len() > 0 && self.composite_channel().is_some() {
+            // a call queued while the TSCC couldn't go (an MBC's second block due, a short data transfer): it may
+            // now, rather than wait for a payload channel to close (3.19)
+            self.serve_queue();
+        }
     }
 
     /// In a Vote_Now block (6.7.1.3: only the blocking Aloha and C_WACKD go there): a C_WACKD(Wait) for a queued
@@ -1371,7 +1376,12 @@ impl Site {
         (0..CHANNELS)
             .filter(|&i| self.chans[i].r#use == USE_IDLE)
             .min_by_key(|&i| (!keyed(i), i))
-            .or_else(|| self.composite_channel())
+            .or_else(|| {
+                // a payload channel sending its P_CLEAR is free in a few slots (clear_repeats): the call waits in
+                // the queue for it rather than taking the TSCC away for a whole call (seen on air, 2026-11-14)
+                let clearing = (0..CHANNELS).any(|i| self.chans[i].r#use == USE_CLEAR && i != self.tscc_carrier * 2);
+                if clearing { None } else { self.composite_channel() }
+            })
     }
 
     /// Opens a call on channel ch and queues its grant twice.

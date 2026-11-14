@@ -1222,6 +1222,28 @@ fn composite_tscc_returns_after_the_call() {
         "C's request on the reverted slot went unheard");
 }
 
+/// A payload channel sending its P_CLEAR is free in a few slots: a request then waits for it (C_QACKD, then
+/// TV_GRANT on TS2) and the TSCC isn't lent for the whole call (on air, 2026-11-14: a group call asked during TS2's
+/// P_CLEAR took the TSCC for 6 s).
+#[test]
+fn composite_tscc_not_lent_for_a_clearing_channel() {
+    let mut r = Rig::new(|c| c.composite = 1);
+    r.register(A, Some(TG));
+    r.register(B, Some(TG2));
+    let k = r.send(group(TG, A, 0));
+    r.find(k, 30, tv).expect("TV_GRANT for A");
+    r.run(20);
+    r.s.rx_pdu(1, spec::DT_CSBK, &maint(A)); // A's call ends: P_CLEAR on TS2
+    let kd = r.k;
+    r.run(1);
+    let k = r.send(group(TG2, B, 0));
+    let (kg, o) = r.find(k, 40, |dt, b| tv(dt, b) && tgt(b) == TG2).expect("TV_GRANT for B");
+    assert_eq!(grant(&o.tscc_pdu).1, 1, "on TS2, once cleared");
+    assert!(!clears(&r, 1).into_iter().filter(|(kk, _)| *kk >= kd && *kk < kg).collect::<Vec<_>>().is_empty(),
+        "TS2 was clearing");
+    assert!(r.hist.iter().all(|(_, o)| o.rev == 0), "the TSCC never lent");
+}
+
 /// With the setting off (the default) the TSCC is dedicated (5.3.1): it never grants its own slot; B is queued.
 #[test]
 fn dedicated_tscc_never_reverts() {

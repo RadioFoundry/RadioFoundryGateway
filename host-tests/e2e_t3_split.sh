@@ -6,7 +6,8 @@
 # takes the CACH with each burst (the TSCC's AT and short LC slot by slot). Simulated MSs beside the air (--air-ms)
 # hear each slot as the pumps sent it: they register on the TSCC, 1000001 calls 1000002 on carrier 1's payload slot,
 # so 1000003's call to 1000004 goes on carrier 2. The SDR's modem sends nothing. Both simulated halves take the
-# CACH (RadioFoundry's do), so carrier 2's slots go with theirs too while it carries a call.
+# CACH (RadioFoundry's do), so carrier 2's slots go with theirs too while it carries a call. Then one carrier, one
+# half, with the composite TSCC on (3.19).
 #
 #   sh host-tests/e2e_t3_split.sh <dir with rdofradio>
 set -u
@@ -47,4 +48,31 @@ check "air MS 1000003: idle, registered on ch 0; calls 1 done" "1000003's call e
 check "carrier 1: split: [1-9][0-9]* scheduled ([1-9][0-9]* with the CACH)" "carrier 1's bursts scheduled with the CACH"
 check "carrier 2: split: [1-9][0-9]* scheduled ([1-9][0-9]* with the CACH)" "carrier 2's bursts scheduled"
 check "modem: 0 bursts sent, 0 idle" "the SDR's modem sent nothing"
-[ $fail = 0 ] && echo "split carriers: all passed" || { grep "air MS\|tier3\|carrier\|split" "$D/log" | head -60; exit 1; }
+[ $fail = 0 ] || { grep "air MS\|tier3\|carrier\|split" "$D/log" | head -60; exit 1; }
+
+# The composite TSCC (tier3.md 3.19) on one carrier, its half alone: 1000001's call holds TS2, so 1000003's goes on
+# the TSCC's own slot, both at once through the one split half, and the TSCC comes back.
+python3 - "$D/site.json" "$D/site2.json" <<'PY'
+import json, sys
+c = json.load(open(sys.argv[1]))
+c["devices"] = [d for d in c["devices"] if d["name"] != "txb"]
+c["frequencies"] = [f for f in c["frequencies"] if not f["name"].startswith("B-")]
+a = c["apps"][0]
+a["carriers"] = a["carriers"][:1]
+a["services"] = {"composite_tscc": True}
+json.dump(c, open(sys.argv[2], "w"))
+PY
+"$BIN/rdofradio" --file /dev/zero,/dev/null -r 240000 --tx-lo 438.7 --allow-tx --config "$D/site2.json" --air-ms 4 \
+    --sim-tg 1 --sim-script "$D/script" --seconds 20 > "$D/log2" 2>&1
+check2() {
+    grep -q "$1" "$D/log2" || { echo "FAIL: composite: $2"; fail=1; }
+}
+check2 "air MS 1000002: payload, registered on ch 1; .* heard 1000001 -> 1000002$" "1000001's call on TS2"
+check2 "composite TSCC: the control slot carries a call" "the TSCC's slot lent"
+check2 "air MS 1000004: payload, registered on ch 0; .* heard 1000003 -> 1000004$" "1000003's call on the TSCC's slot"
+check2 "composite TSCC: the control channel again" "the TSCC back"
+check2 "air MS 1000003: idle, registered on ch 0; calls 1 done" "1000003's call done"
+check2 "air MS 1000001: idle, registered on ch 0; calls 1 done" "1000001's call done"
+check2 "carrier 1: split: [1-9][0-9]* scheduled ([1-9][0-9]* with the CACH)" "the half's bursts scheduled with the CACH"
+[ $fail = 0 ] && echo "split carriers: all passed; composite TSCC on one half passed" ||
+    { grep "air MS\|tier3\|carrier\|split\|composite" "$D/log2" | head -60; exit 1; }

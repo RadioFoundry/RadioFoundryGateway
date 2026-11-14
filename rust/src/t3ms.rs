@@ -2001,6 +2001,11 @@ impl Ms {
             }
             return None;
         }
+        if self.tscc_rev && matches!(self.state, IDLE | ACCESS) {
+            // its TSCC carries a call (P_SYS_Parms, composite): random access waits for it (5.3.2 a)), the tries
+            // not counted; the request goes when the TSCC is back
+            return None;
+        }
         if self.state == IDLE && self.have_aloha {
             if let Some(a) = self.take_due(|_| true) {
                 self.start(a);

@@ -844,6 +844,31 @@ fn composite_tscc_individual_call() {
     assert!(air.until(8000, &mut log.f(), |a| a.ms[3].state() == t3ms::PAYLOAD), "the TSCC answers again");
 }
 
+/// 5.3.2 a): random access waits while the TSCC's slot carries a call. E asks for a group call while C's group call
+/// has the lent slot (its hang time: the inbound free); it sends nothing until the TSCC is back (its CACH says P_SYS_Parms, composite), then gets its call,
+/// no tries lost (on air, 2026-11-14, an air MS gave up during a 6 s lend).
+#[test]
+fn composite_tscc_access_waits_for_the_tscc() {
+    let mut s = site_with(|c| {
+        c.composite = 1;
+        c.hang_ms = 6000; // the lent slot idle long enough for the MS to give up, as on air
+    });
+    let mut log = Log::default();
+    let mut air = one_carrier_busy(&mut log, &mut s, 30_000);
+    let now = air.now();
+    air.ms[2].act(t3ms::DO_GROUP, 10, 3000, 0, now);
+    assert!(air.until(8000, &mut log.f(), |a| a.site.tscc_payload() && a.ms[2].state() == t3ms::PAYLOAD));
+    air.run(500, &mut log.f());
+    let now = air.now();
+    air.ms[4].act(t3ms::DO_GROUP, 77, 1000, 0, now);
+    let rands = air.site.status().rand;
+    assert!(air.until(15_000, &mut log.f(), |a| !a.site.tscc_payload()), "TSCC back");
+    assert_eq!(air.ms[4].status().calls_failed, 0, "E waited");
+    assert_eq!(air.site.status().rand, rands, "no C_RAND while the TSCC was lent");
+    assert!(air.until(8000, &mut log.f(), |a| a.ms[4].state() == t3ms::PAYLOAD), "E's call after, the slot lent again");
+    assert_eq!(air.ms[4].status().ch, 0);
+}
+
 /// 5.3.2 with packet data: TS2 busy, C sends confirmed data to D. The data grant names the TSCC's slot; the blocks,
 /// the site's ACK and the download to D all go there; D takes the message.
 #[test]

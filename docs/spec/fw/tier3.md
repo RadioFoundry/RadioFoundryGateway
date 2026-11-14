@@ -930,7 +930,11 @@ as a hotspot modem, gets a second call at once.
   controller gives it the TSCC's own slot, if the TSCC isn't mid-way through an MBC or a short data transfer. The
   grant (TV_GRANT, PV_GRANT, a data grant) names the TSCC's physical channel and LCN 0. It goes on the TSCC twice,
   ahead of anything queued; then the slot is the call's. Pre-emption (section 3.9) still applies; a free payload
-  channel is always used first.
+  channel is always used first. A
+  payload channel sending its P_CLEAR counts as free: the call queues for it (C_QACKD, a few slots) rather than
+  taking the TSCC for a whole call (on air, 2026-11-14, a call asked during TS2's P_CLEAR held the TSCC 6 s). A call
+  queued while the TSCC couldn't go (its MBC's second block due) gets the slot as soon as it can, not when a payload
+  channel closes.
 - While the slot carries the call, the TSCC sends nothing: no C_ALOHA, no answers, no broadcasts. Random access,
   registration and short data wait (5.3.2 a), b)). Blocks heard on the slot go to the call (P_MAINT); a C_RAND there
   isn't answered. The CACH on the TSCC's carrier sends P_SYS_Parms with Payload Channel Type 1, "Payload Channel is
@@ -951,11 +955,14 @@ as a hotspot modem, gets a second call at once.
   from the network opening there; and on the simulated modem (host-tests/e2e_t3_hat.sh, its second run), an
   individual call on TS2 with another on the TSCC's slot, the key held, every burst on its slot.
 - The MS simulator: an idle MS whose TSCC's CACH says P_SYS_Parms with Payload Channel Type 1 waits for the TSCC
-  rather than hunting; C_SYS_Parms ends that (`rdof_t3ms_slc`, fed by the air paths from `rdof_t3unit_slc`).
+  rather than hunting, and holds its random access (5.3.2 a): a request made meanwhile goes when the TSCC is back,
+  no tries lost); C_SYS_Parms ends that (`rdof_t3ms_slc`, fed by the air paths from `rdof_t3unit_slc`).
 - The radio layer: with a TSCC, channel 0 is also a payload channel (`rdof_t3rf_t.composite`), opened only when
   the controller opens it. Each slot the unit sets `rev` from the controller's `rdof_t3_slot_out_t.rev`: 1, channel
   0's outbound comes from its payload path (warm-up, repeat, P_CLEAR) and its inbound goes to it, not to the TSCC;
-  2, while the TSCC still sends the grant, the outbound is the TSCC's but the inbound is already the call's. The MS
+  2, while the TSCC still sends the grant, the outbound is the TSCC's but the inbound is already the call's. The
+  unit sets it for each outbound slot when the radio layer asks for that slot's CACH, so a split half's pump, which
+  sends slots ahead, gets it too (before, its composite call's P_CLEAR went out as TSCC blocks). The MS
   that asked sends its voice header as soon as it reads the first grant: on the hat (2026-11-13) that header went to
   the TSCC and was lost, and the call aired without one.
 
@@ -2029,6 +2036,9 @@ Built since step 8e, host-tested (the bench steps above note what has run on air
 | 991860dd | Rate 3/4 data blocks decoded again from any trellis start state when octets 0-1 fail the CRC-9 (`rdof_trellis34_decode_block`): an HR_C7000 radio's encoder started in state 4 or 7 |
 | d99eab09 | C_WACKD(Wait) in a Vote_Now block for a C_RAND the block would hold to the last frame NWait allows or past it (section 3.11; on air one waited 14 slots and the radio sent again) |
 | 446851f8 | The site's own log lines print without `-v` (the modem site's journal had no C_MOVE line for a move command) |
+| 5ccdea85 | Composite TSCC tests: individual call, confirmed data, emergency, a sleeping member, a network call on the lent slot; the modem e2e with composite on |
+| 5ddec72e | A C_RAND whose group call gets the lent slot logs that, not "no answer queued" |
+| (next) | Composite: no lend while a payload channel clears; a queued call takes the slot once the TSCC's MBC is out; the sim MS holds random access while lent; a split half's composite outbound per slot; the split e2e with composite on |
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
 apart from the code, found seven deviations, all fixed (2026-11-12):

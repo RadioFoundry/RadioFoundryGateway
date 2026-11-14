@@ -1314,6 +1314,12 @@ unsafe extern "C" fn io_tscc(ctx: *mut c_void, k: i64, dt: *mut c_int, pdu: *mut
 
 unsafe extern "C" fn io_cach(ctx: *mut c_void, carrier: c_int, k: i64, at: *mut c_int, slc28: *mut i32) {
     let u: *mut Unit = ctx.cast();
+    if carrier == 0 {
+        // the radio layer asks this first for each outbound slot: channel 0's use in slot k, also for the slots a
+        // split half's pump sends ahead (it never passes rdof_t3unit_slot; without this its composite call's
+        // outbound, P_CLEAR included, went out as the TSCC's)
+        rev_at(u, k, false);
+    }
     let (o, prev) = (held(u, k), held(u, k - 1));
     let tscc = carrier == 0 && (*u).rf_tscc;
     if tscc && !prev.is_null() {
