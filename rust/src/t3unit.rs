@@ -1364,6 +1364,18 @@ unsafe fn data_event(u: *mut Unit, e: &Event) {
     let d = addr_of_mut!((*u).dl);
     if e.op == t3::PD_OPEN && ch < CHANNELS {
         (*u).site_party[ch] = e.kind == t3::PARTY_SITE || ((*d).on && (*d).group && e.dst == (*d).dst);
+        if (*u).site_party[ch] {
+            // "tier3: packet data on ch 3: 3101276 -> 16776899, to the site's gateway"
+            log(u, |o| {
+                o.bytes(b"tier3: packet data on ch ");
+                o.int(ch as i64, 0);
+                o.bytes(b": ");
+                o.int(i64::from(e.src), 0);
+                o.bytes(b" -> ");
+                o.int(i64::from(e.dst), 0);
+                o.bytes(b", to the site's gateway");
+            });
+        }
         if (*d).on && (*d).ch < 0 && e.dst == (*d).dst {
             (*d).ch = ch as c_int;
         }

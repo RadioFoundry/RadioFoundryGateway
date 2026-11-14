@@ -253,6 +253,8 @@ static bool gw_send_udp(void *ctx, int flow, uint32_t ip, uint16_t port, const u
     return true;
 }
 
+static int site_ip_upload; /* the next site_open's ip_upload */
+
 static void site_open(site_t *s, int client, const char *node, int site_no, uint32_t id0, int64_t at_ms)
 {
     memset(s, 0, sizeof *s);
@@ -262,6 +264,7 @@ static void site_open(site_t *s, int client, const char *node, int site_no, uint
     rdof_t3cfg_default(&cfg, &pol);
     cfg.site = (uint16_t)site_no;
     cfg.priority = (uint8_t)client; /* site-b radiates 1 with its neighbors (361-4 table 6.81) */
+    cfg.ip_upload = (uint8_t)site_ip_upload;
     pol.wide_tg.all = 1;
     s->u = calloc(1, rdof_t3unit_size());
     s->mem = aligned_alloc(8, (rdof_t3_site_size() + 7) / 8 * 8);
@@ -894,7 +897,9 @@ int main(void)
     test_duplex();
     test_composite();
     test_interrupt();
+    site_ip_upload = 1; /* the data to IPI below uploads the IP address first (6.6.3.2.4 b 2) */
     site_open(&A, 0, "site-a", 3, 3100001, T0);
+    site_ip_upload = 0;
     site_open(&Bs, 1, "site-b", 4, 3100101, T0);
     run(6000);
 
@@ -996,6 +1001,16 @@ int main(void)
     rdof_t3ms_status_t pd0 = ms_status(&A, 0);
     CHECK(pd0.calls_done == done0 + 1 && pd0.state == RDOF_T3MS_IDLE,
           "the site's ACK reached the MS (done %u, failed %u)", pd0.calls_done, pd0.calls_failed);
+    run(4000);
+    /* the same to IPI (6.6.3.2.4: the destination is the datagram's), at rate 3/4 as radios send confirmed data */
+    const uint32_t ipi0 = GW.g->n.rx_messages;
+    CHECK(rdof_t3ms_data(A.ms[0], 0xFFFEC3, RDOF_T3MS_F_CONFIRMED | RDOF_T3MS_F_RATE34, dg, dlen, T0 + K * 30),
+          "data to IPI queued");
+    run(6000);
+    CHECK(GW.g->n.rx_messages == ipi0 + 1, "the IP gateway took the data to IPI (bursts %d, messages %u, bad %u)",
+          GW.bursts, GW.g->n.rx_messages, GW.g->n.rx_bad);
+    CHECK(GW.g->n.rx_headers == GW.g->n.rx_messages && GW.g->n.rx_blocks > 0 && !GW.g->n.rx_header_crc,
+          "the gateway's header and block counts (headers %u, blocks %u)", GW.g->n.rx_headers, GW.g->n.rx_blocks);
     run(4000);
     GW.site = NULL;
     free(GW.g);

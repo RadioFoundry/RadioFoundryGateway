@@ -201,6 +201,9 @@ typedef struct {
     uint32_t icmp_unmatched; /* echo replies and errors that are no flow's */
     uint32_t down_own_source; /* down packets from the radio's own address (it would drop them): not sent */
     uint32_t tx_busy;         /* down packets dropped: the repeater's slot stayed busy (the platform's, rdof/ipgwtx.h) */
+    uint32_t rx_headers;      /* data headers (CRC good) that start a message: what came before rx_incomplete */
+    uint32_t rx_header_crc;   /* data headers whose CRC failed */
+    uint32_t rx_blocks;       /* data blocks taken into a message */
 } rdof_ipgw_counters_t;
 
 typedef struct {

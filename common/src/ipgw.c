@@ -573,8 +573,10 @@ void rdof_ipgw_burst(rdof_ipgw_t *g, const rdof_ipgw_where_t *w, int dt, const u
     if (dt == RDOF_DT_DATA_HEADER) {
         rdof_data_header_t h;
         rdof_decode_data_header(burst, &h);
-        if (!h.crc_ok)
+        if (!h.crc_ok) {
+            g->n.rx_header_crc++;
             return;
+        }
         if (h.dpf == RDOF_DPF_PROPRIETARY) { /* a second header: one of the blocks announced */
             if (a && ++a->got >= a->expect)
                 finish(g, a, now);
@@ -588,6 +590,7 @@ void rdof_ipgw_burst(rdof_ipgw_t *g, const rdof_ipgw_where_t *w, int dt, const u
         }
         if ((h.dpf != RDOF_DPF_UNCONFIRMED && h.dpf != RDOF_DPF_CONFIRMED) || h.blocks <= 0)
             return; /* responses, short data, UDT: not IP */
+        g->n.rx_headers++;
         int k = 0;
         for (int i = 0; i < RDOF_IPGW_MAX_ASM; i++) {
             if (!g->asms[i].used) {
@@ -625,6 +628,7 @@ void rdof_ipgw_burst(rdof_ipgw_t *g, const rdof_ipgw_where_t *w, int dt, const u
         return;
     rdof_data_block_t b;
     rdof_decode_data_block(burst, dt, &b);
+    g->n.rx_blocks++;
     if (!b.fec_ok)
         a->bad = true;
     if (a->confirmed) {
@@ -905,6 +909,7 @@ void rdof_ipgw_status_json(const rdof_ipgw_t *g, rdof_json_t *j)
         {"icmp_up", n->icmp_up},         {"icmp_down", n->icmp_down},   {"icmp_errors", n->icmp_errors},
         {"icmp_unmatched", n->icmp_unmatched},
         {"down_own_source", n->down_own_source}, {"tx_busy", n->tx_busy},
+        {"rx_headers", n->rx_headers},   {"rx_header_crc", n->rx_header_crc}, {"rx_blocks", n->rx_blocks},
     };
     for (size_t i = 0; i < sizeof c / sizeof c[0]; i++)
         rdof_json_int(j, c[i].key, c[i].v);
