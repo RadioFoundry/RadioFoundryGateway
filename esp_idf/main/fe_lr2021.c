@@ -49,6 +49,7 @@
 #include "rdof/txpower.h"
 #include "rtlsdr/gaps.h"
 #include "sdr_fe.h"
+#include "tx_seam_core.h"
 
 #if CONFIG_RDOF_SDR_LR2021
 
@@ -707,9 +708,16 @@ static struct {
     int64_t caught_up_samples;      /* the samples skipped for them */
     int64_t long_skipped;           /* samples skipped at the seams */
     int long_seam_us;
+    int64_t long_run;               /* the last long key-up's run length */
+    int long_seam_at;               /* where its seams fell: samples after the slot's start (-1: not placed) */
+    unsigned seam_moved;            /* long key-ups started later to place their seams */
+    int64_t seam_moved_samples;     /* the samples skipped for them */
+    int64_t slot_ref;               /* a slot's start in the stream, from the last key-on (-1: none yet) */
+    int seam_gap[RDOF_SEAM_FIRST];  /* the first seams' restarts, us, learned (-1: not yet; tx_seam_core.h) */
+    int seam_first_us[RDOF_SEAM_FIRST]; /* the skips the last long key-up's first seams took */
     double long_s;                  /* seconds sent in long key-ups */
     unsigned polar;                 /* runs sent as polar I/Q */
-} tx = {.key = -1};
+} tx = {.key = -1, .slot_ref = -1, .seam_gap = {-1, -1}};
 
 static int64_t tx_now48(int64_t us) { return tx.a_pos + (us - tx.a_us) * TX_RATE / 1000000; }
 static int64_t tx_at_us(int64_t pos) { return tx.a_us + (pos - tx.a_pos) * 1000000 / TX_RATE; }
@@ -889,19 +897,33 @@ static void tx_run(int64_t k0, int n, int64_t t_key)
 }
 
 /* A key-up longer than TX_MAX_RUN (a repeater's downlink, bench_tx outbound): one streamed transmission in runs of
- * TX_LONG_RUN samples, fed from the stage and then from the source as the FIFO takes them, until the source stays
+ * about 1.35 s, fed from the stage and then from the source as the FIFO takes them, until the source stays
  * unkeyed for TX_MERGE samples. Each run after the first starts its TX_DONE delay late (R3.49: 161-180 us for
  * freq once settled, the first few seams up to 230), so that much is skipped at each seam and the stream's later samples keep the anchor's time. The receiver
- * is off throughout: its stream is filled with zeros up to real time as it goes. */
-#define TX_LONG_RUN 64800 /* 1.35 s, 45 slots: the runs' 16-bit count (R3.43) */
+ * is off throughout: its stream is filled with zeros up to real time as it goes.
+ * A freq run is 45 slots less the seam's skip (about 8 samples, tx_seam_core.h), so a run and its seam span 45 slots
+ * and every seam falls at one place in the slot: TX_SEAM_AT, away from the sync. Runs of exactly 45 slots put each
+ * seam 0.8 of a symbol later in the slot than the one before, and about 2 minutes into a key-up the seams reached
+ * the sync. The slot's start comes from the key-on: the DMR modulator's first keyed sample is TX_KEY_LEAD samples
+ * ahead of its slot's (its 4-symbol ramp and half a symbol, at 10 samples a symbol). */
+#define TX_LONG_RUN_MAX 65535 /* a freq run's 16-bit count (R3.43) */
 #define TX_LONG_RUN_IQ 32400 /* 0.675 s: an I/Q run's bytes are the 16-bit count (R3.43) */
 #define TX_SEAM_US 171    /* the seam's delay when none is learned yet (R3.49) */
+#define TX_SEAM1_US 210   /* the first seams' delay when none is learned yet (R3.49: 190-230) */
+#define TX_SLOT 1440      /* a DMR slot at TX_RATE: 30 ms */
+#define TX_KEY_LEAD 44    /* a key-up's first keyed sample, before its slot's start (rdof_mod_key_on, ramp 4) */
+#ifdef CONFIG_RDOF_LR2021_SEAM_AT
+#define TX_SEAM_AT CONFIG_RDOF_LR2021_SEAM_AT
+#else
+#define TX_SEAM_AT 1388   /* the seams' place, samples after the slot's start: the last 5 symbols of the burst before */
+#endif
+#define TX_SEAM_TOL 40    /* seams within this of TX_SEAM_AT stay where a key-up from its key-on puts them */
 
 struct long_span {
     int64_t at;       /* the next sample to send */
     int64_t end;      /* past the last keyed sample found */
     int64_t sent;     /* samples sent */
-    int64_t run;      /* a run's samples: TX_LONG_RUN, or TX_LONG_RUN_IQ */
+    int64_t run;      /* a run's samples (rdof_seam_run, or TX_LONG_RUN_IQ) */
     bool iq;
     int16_t off;      /* the carrier's offset (stage.off): a keyed sample at another ends the transmission */
     double skip;      /* samples owed to the seams, not yet skipped */
@@ -926,7 +948,11 @@ static size_t long_pull(void *ctx, uint8_t *buf, size_t max)
         tx_zero_fill(gap);
     if (p->sent && p->sent % p->run == 0 && p->seams < p->sent / p->run) { /* a seam: skip its delay */
         p->seams++;
-        p->skip += p->seam_us * (TX_RATE / 1e6);
+        hang_watch_feed(); /* a key-up past the watchdog's 30 s never gets back to the reader's loop */
+        const int us = p->iq ? p->seam_us : rdof_seam_skip_us(tx.seam_gap, (int)p->seams, TX_SEAM1_US, p->seam_us);
+        if (p->seams <= RDOF_SEAM_FIRST)
+            tx.seam_first_us[p->seams - 1] = us;
+        p->skip += us * (TX_RATE / 1e6);
         const int64_t k = (int64_t)p->skip;
         p->skip -= (double)k;
         p->at += k;
@@ -968,13 +994,41 @@ static size_t long_pull(void *ctx, uint8_t *buf, size_t max)
     return k * sb;
 }
 
-/* The long transmission from k0, keyed up at esp_timer t_key. Returns where it stopped (the first sample not sent).
- * The caller holds the lock, in a session. */
-static int64_t tx_run_long(int64_t k0, int64_t k1, int64_t t_key)
+/* The long transmission from k0 (the key-up's first sample sent; key, its first keyed sample), keyed up at esp_timer
+ * t_key. Returns where it stopped (the first sample not sent). The caller holds the lock, in a session. */
+static int64_t tx_run_long(int64_t key, int64_t k0, int64_t k1, int64_t t_key)
 {
     const bool polar = stage.k[k0 & (TX_STAGE - 1)] & K_IQ;
     const lr2021_tx_mode_t mode = polar ? LR2021_TX_IQ_POLAR : LR2021_TX_FREQ;
-    const int64_t run = polar ? TX_LONG_RUN_IQ : TX_LONG_RUN;
+    const bool same = iq.tx_learned_for == ((uint32_t)mode << 24 ^ TX_RATE);
+    const int learned = !same ? -1 : iq.tx_learned[1] >= 0 ? iq.tx_learned[1] : iq.tx_learned[0];
+    /* TX_DONE is timed on esp_timer, the run's samples on the chip's crystal: a run lasts its ppm longer (-28 ppm: 38
+     * us in 1.35 s), which read as seam (R3.61) */
+    const double slow_us = -carrier_ppm() * 1e-6 * (TX_LONG_RUN_MAX * 1e6 / TX_RATE);
+    const int seam_us = learned > 0 ? (int)fmax(0.0, lround(learned - (polar ? 0.0 : slow_us))) : TX_SEAM_US;
+    int64_t run = TX_LONG_RUN_IQ;
+    tx.long_seam_at = -1;
+    if (!polar) {
+        run = rdof_seam_run(seam_us * (TX_RATE / 1e6), TX_LONG_RUN_MAX, TX_SLOT);
+        /* a key-on (unkeyed just before): its slot's start; a key-up straight on from a run keeps the last one */
+        if (key > 0 && !stage.k[(key - 1) & (TX_STAGE - 1)])
+            tx.slot_ref = key + TX_KEY_LEAD;
+        if (tx.slot_ref >= 0) {
+            const int64_t s = rdof_seam_start(k0, run, TX_SLOT, tx.slot_ref, TX_SEAM_AT, TX_SEAM_TOL);
+            if (s > k0) { /* later, the samples before skipped: at most a slot */
+                tx.seam_moved++;
+                tx.seam_moved_samples += s - k0;
+                k0 = s;
+                t_key = tx_at_us(s);
+                while (tx.src && tx.pos <= s) /* staged: its carrier offset is read below */
+                    tx_fill(tx.pos + TX_BLOCK, 1, true);
+                if (k1 < k0)
+                    k1 = k0;
+            }
+            tx.long_seam_at = (int)rdof_seam_phase(k0, run, TX_SLOT, tx.slot_ref);
+        }
+    }
+    tx.long_run = run;
     tx.polar += polar;
     const rdof_txpower_path_t path = tx_path();
     const lr2021_iq_tx_t t = {
@@ -989,13 +1043,11 @@ static int64_t tx_run_long(int64_t k0, int64_t k1, int64_t t_key)
         .streamed = true,
         .at_us = t_key,
     };
-    const bool same = iq.tx_learned_for == ((uint32_t)mode << 24 ^ TX_RATE);
-    const int learned = !same ? -1 : iq.tx_learned[1] >= 0 ? iq.tx_learned[1] : iq.tx_learned[0];
     /* static: this runs deep in the reader's stack (the modem's pull inside the stream's), the reader alone */
     EXT_RAM_BSS_ATTR static lr2021_tx_stream_stats_t s;
     EXT_RAM_BSS_ATTR static struct long_span span;
     span = (struct long_span){.at = k0, .end = k1, .run = run, .iq = polar, .off = stage.off[k0 & (TX_STAGE - 1)],
-                              .seam_us = learned > 0 ? learned : TX_SEAM_US, .st = &s};
+                              .seam_us = seam_us, .st = &s};
     if (lr2021_iq_tx_calibrates(&iq, &t))
         tx.calibrated++;
     const lr2021_err_t e = lr2021_iq_transmit(&iq, &t, long_pull, &span, &s);
@@ -1027,6 +1079,10 @@ static int64_t tx_run_long(int64_t k0, int64_t k1, int64_t t_key)
                           (int)(span.done_us[i] - (i ? span.done_us[i - 1] : s.key_us) - run * 1000000LL / TX_RATE));
         say("%s", line); /* the log from the timer's task, not the reader's stack */
     }
+    if (!polar) { /* the freq runs' first seams (the stream's learned delays are per mode as well) */
+        const int n = span.runs_seen < 16 ? span.runs_seen : 16;
+        rdof_seam_learn(tx.seam_gap, span.done_us, n, run * 1e6 / TX_RATE * (1.0 - carrier_ppm() * 1e-6));
+    }
     tx.long_runs++;
     tx.long_seams += span.seams;
     tx.long_skipped += span.skipped;
@@ -1052,12 +1108,17 @@ static void tx_said(void)
     tx.polar = 0;
     if (tx.long_runs)
         say("TX: %u long key-ups, %.2f s, %u seams, %lld samples skipped (%d us a seam); %u started late, %lld "
-            "samples skipped for them; TX_DONE learned %d/%d/%d us", tx.long_runs, tx.long_s, tx.long_seams,
+            "samples skipped for them; runs of %lld, seams at slot sample %d, %u moved there (%lld samples skipped); "
+            "first seams %d/%d us (learned %d/%d); TX_DONE learned %d/%d/%d us", tx.long_runs, tx.long_s, tx.long_seams,
             (long long)tx.long_skipped, tx.long_seam_us, tx.caught_up, (long long)tx.caught_up_samples,
+            (long long)tx.long_run, tx.long_seam_at, tx.seam_moved, (long long)tx.seam_moved_samples,
+            tx.seam_first_us[0], tx.seam_first_us[1], tx.seam_gap[0], tx.seam_gap[1],
             iq.tx_learned[0], iq.tx_learned[1], iq.tx_learned[2]);
     tx.long_runs = tx.long_seams = tx.caught_up = 0;
     tx.caught_up_samples = 0;
     tx.long_skipped = 0;
+    tx.seam_moved = 0;
+    tx.seam_moved_samples = 0;
     tx.long_s = 0;
     tx.runs =tx.late = tx.early = tx.failed = tx.cut = tx.underflows = tx.calibrated = 0;
     tx.err_min = tx.err_max = 0;
@@ -1151,7 +1212,7 @@ static bool tx_service(void)
         lock();
         if (iq.in_session && !st.held) {
             if (longer)
-                k1 = tx_run_long(k_go, k1 > k_go ? k1 : k_go, t_go);
+                k1 = tx_run_long(k0, k_go, k1 > k_go ? k1 : k_go, t_go);
             else
                 tx_run(k0, (int)(k1 - k0), t_key);
             ran = true;

@@ -682,7 +682,9 @@ by their long names with `_` for `-`:
   plus `sync_off`, 775 at 48 kS/s), then `summary` (`slots`, `ts1`, `ts2`, `skips`, `seconds`). It doesn't go
   through the router: on a roamer it takes the raw SDR modem (the roamer pauses, a call it was sending cut) and gives
   it back after. On the W12 a key-up this long is one streamed transmission in 1.35 s
-  runs; their seams are in lr2021-iq.md R3.49.
+  runs; their seams are in lr2021-iq.md R3.49. A run is 45 slots less the seam's skip, so every seam falls at one
+  place in the slot (`CONFIG_RDOF_LR2021_SEAM_AT`, by default the burst's last 5 symbols before the CACH), off
+  the sync; the log's `TX: ... long key-ups` line gives the run length and that place.
 - An `outbound` with `voice` also carries voice calls in its slots, as a repeater's downlink does: a list of up to
   8 calls, each `{"slot": 1|2, "src", "dst", "group" (true), "start_s" (0), "superframes" (3), "headers" (3),
   "late" (-1), "terminators" (3), "pi", "ambe_hex"}`. A call is BS bursts on its slot, one every 60 ms: its voice
