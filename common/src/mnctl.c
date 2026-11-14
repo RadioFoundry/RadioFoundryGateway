@@ -1310,7 +1310,8 @@ bool rdof_mn_cmd_parse(const char *json, size_t len, rdof_mn_cmd_t *c, char *err
                 {"resend_records", RDOF_MN_CMD_RESEND_RECORDS}, {"status", RDOF_MN_CMD_STATUS},
                 {"mass_reg", RDOF_MN_CMD_MASS_REG}, {"move", RDOF_MN_CMD_MOVE},
                 {"auth", RDOF_MN_CMD_AUTH}, {"stun", RDOF_MN_CMD_STUN}, {"revive", RDOF_MN_CMD_REVIVE},
-                {"dgna", RDOF_MN_CMD_DGNA}, {"kill", RDOF_MN_CMD_KILL}, {"radio_check", RDOF_MN_CMD_RADIO_CHECK}};
+                {"dgna", RDOF_MN_CMD_DGNA}, {"kill", RDOF_MN_CMD_KILL}, {"radio_check", RDOF_MN_CMD_RADIO_CHECK},
+                {"clear_ms", RDOF_MN_CMD_CLEAR_MS}};
     memset(c, 0, sizeof *c);
     c->chan = c->lcn = -1;
     const int root = jp_parse(&P, json, len, err, cap);
@@ -1356,6 +1357,7 @@ bool rdof_mn_cmd_parse(const char *json, size_t len, rdof_mn_cmd_t *c, char *err
         }
         break;
     case RDOF_MN_CMD_RADIO_CHECK: /* an MS, or a talkgroup */
+    case RDOF_MN_CMD_CLEAR_MS:
         if (jget(&P, root, "tg")) {
             if (!jint(jget(&P, root, "tg"), 1, RDOF_ID_MAX, &v)) {
                 seterr(err, cap, "tg: 1 to 16777215");

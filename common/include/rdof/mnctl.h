@@ -265,7 +265,8 @@ typedef enum {
     RDOF_MN_CMD_REVIVE, /* ms */
     RDOF_MN_CMD_DGNA,   /* ms, tg[ntg] (0-15; none clears) */
     RDOF_MN_CMD_KILL,   /* ms (361-4 6.4.10: authenticated, only an MS with a key) */
-    RDOF_MN_CMD_RADIO_CHECK, /* ms, or tg[0] (ntg 1): an unsolicited radio check (361-4 6.4.12) */
+    RDOF_MN_CMD_RADIO_CHECK, /* ms, or tg[0] (ntg 1): a radio check (361-4 6.4.12; on payload 6.6.2.3.1.1) */
+    RDOF_MN_CMD_CLEAR_MS,    /* ms, or tg[0] (ntg 1): a selective clear from a payload channel (361-4 6.6.2.3.1.8) */
 } rdof_mn_cmd_kind_t;
 
 typedef struct {

@@ -377,7 +377,9 @@ void rdof_t3_withdraw(rdof_t3_site_t *s, bool off);
    the MBC form, when its channel number names other frequencies here), "auth" (arg1 MS: an authentication poll; false when the MS isn't registered here or has no key),
    "stun" / "revive" (arg1 MS; 361-4 6.4.9, with authentication when the MS asks for it), "kill" (arg1 MS; 6.4.10,
    always authenticated: false when the site has no key for the MS); the result an RDOF_T3_ACT_SUPP activity;
-   "radio_check" (arg1 an MS, or with arg2 1 a talkgroup; 6.4.12: false when no MS here has it; the outcome logged) */
+   "radio_check" (arg1 an MS, or with arg2 1 a talkgroup; on its voice payload channel when it's on one, 6.6.2.3.1.1,
+   else the TSCC, 6.4.12; false when no MS here has it; the outcome logged), "clear_ms" (arg1 an MS, or with arg2 1 a
+   talkgroup: a selective clear from its voice payload channel, 6.6.2.3.1.8; false when it's on none) */
 bool rdof_t3_command(rdof_t3_site_t *s, const char *cmd, uint32_t arg1, uint32_t arg2);
 /* Stirs v into the source of authentication challenges: something unpredictable (the platform's random source),
    at start and now and then. */

@@ -438,6 +438,56 @@ fn two_carriers_three_calls() {
 
 // ── individual calls ──
 
+/// P_AHOY on a voice payload channel in the hang time (t3pcheck.rs): the radio check of a party (6.6.2.3.1.1,
+/// table 6.42) and of the talkgroup (table 6.43: the members' P_ACKUs collide, the burst counts), the selective clear
+/// of one MS (6.6.2.3.1.8, table 6.44: it answers and leaves, the call goes on) and of the talkgroup (table 6.45:
+/// they leave, the call clears).
+#[test]
+fn payload_radio_check_and_selective_clear() {
+    let mut s = site_with(|c| c.hang_ms = 10_000);
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG], &[1]), ms(1002, &[TG], &[1]), ms(1003, &[TG], &[1])], T0);
+    register_all(&mut air, &mut log);
+    let said = |log: &Log, t: &str| log.of(EV_LOG).iter().any(|e| e.text().contains(t));
+    let wait = |air: &mut Air<3>, log: &mut Log, t: &str| {
+        for _ in 0..80 {
+            if said(log, t) {
+                return;
+            }
+            air.run(100, &mut log.f());
+        }
+        panic!("no \"{t}\"");
+    };
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_GROUP, TG, 1500, 0, now);
+    assert!(air.until(5000, &mut log.f(), all_payload));
+    assert!(air.site.command("radio_check", 1001, 0), "the caller, on the payload channel");
+    assert!(!air.site.command("radio_check", TG, 1), "one at a time");
+    wait(&mut air, &mut log, "radio check of 1001 on payload: answered");
+    assert_eq!(air.ms[0].payload_ahoys(), (1, 0));
+    assert_eq!(air.site.status().ch[1].r#use, USE_HANG, "sent in the hang time, not over the talker");
+    assert!(air.site.command("radio_check", TG, 1));
+    wait(&mut air, &mut log, &format!("radio check of TG {TG} on payload: answers collided"));
+    assert!(air.ms.iter().all(|m| m.payload_ahoys().0 >= 1));
+    assert!(air.site.command("clear_ms", 1001, 0));
+    wait(&mut air, &mut log, "selective clear of 1001 on payload: answered");
+    air.run(200, &mut log.f());
+    assert_eq!((air.ms[0].state(), air.ms[0].payload_ahoys().1), (t3ms::IDLE, 1));
+    assert!(air.ms[1..].iter().all(|m| m.state() == t3ms::PAYLOAD), "the call goes on for the others");
+    assert!(log.of(EV_CH_CLOSE).is_empty());
+    assert!(air.site.command("clear_ms", TG, 1));
+    wait(&mut air, &mut log, &format!("selective clear of TG {TG} on payload: answers collided"));
+    assert!(air.until(3000, &mut log.f(), all_idle));
+    air.run(300, &mut log.f());
+    assert!(air.ms.iter().all(|m| m.payload_ahoys().1 == 1));
+    assert_eq!(log.of(EV_CH_CLOSE)[0].why, CLOSE_CMD);
+    // no call: a selective clear is refused, a radio check goes on the TSCC (6.4.12)
+    assert!(!air.site.command("clear_ms", 1002, 0));
+    assert!(air.site.command("radio_check", 1002, 0));
+    wait(&mut air, &mut log, "radio check of 1002: answered");
+    assert_eq!(air.ms[1].radio_checks(), 1);
+}
+
 #[test]
 fn individual_oacsu() {
     let mut s = site_with(|_| {});

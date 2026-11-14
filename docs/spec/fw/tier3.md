@@ -637,7 +637,20 @@ C_ACKU(Message_Accepted) to TSI from its own address, whether polled by its addr
 a talkgroup the first member's answer ends it. The log says "radio check of X: answered" (a talkgroup: "answered
 by MS"), "refused" (a C_NACKU) or "no answer". The MS engine tells it from an authentication challenge (also
 Service_Kind 1110b, flag 0) by its source: TSI, where a challenge's is the challenge value, below the gateways.
-On the payload channel (P_AHOY) it isn't sent.
+
+On a voice payload channel (`t3pcheck.rs`): when the MS is a party of an individual call (or the caller or talker
+of a group call), or the talkgroup has a call open, `radio_check` sends P_AHOY there instead (6.6.2.3.1.1): table
+6.42 (Service_Kind Individual Call 0000b) or 6.43 (Talkgroup Call 0001b), the other fields as table 6.27. The
+`clear_ms` command is the selective clear (6.6.2.3.1.8): table 6.44 (Cancel Call 1111b, Service_Kind_Flag 0, an
+MS) or 6.45 (flag 1, a talkgroup). The P_AHOY goes on the channel's own slot only while nobody talks (the hang
+time, as P_PROTECT, 3.20), `sd_tries` times 360 ms apart; one at a time a channel. The MS answers P_ACKU
+(MS_Accepted) to TSI on the inbound (6.6.2.3.2.1, 6.6.2.3.2.7); a selective clear then sends it back to the TSCC,
+and the call goes on for the others. The members' answers to a talkgroup collide: an inbound burst that doesn't
+decode counts as answered (6.6.2.3.1.1: "the TS may use the presence of the burst"); a talkgroup's selective clear
+then clears the call (P_CLEAR) for any member that missed it. The log says "radio check of X on payload: answered"
+("answered by MS", "answers collided"), "no answer" or "the call ended". The site knows a group call's caller and
+talker, not its listeners: a listener's radio check goes on the TSCC, where it isn't heard (MSaway). Not built: the
+same on a packet data channel (tables 6.51, 6.52, 6.6.3.3.1.6).
 
 ### 3.16 Packet data calls (361-4 6.6.3)
 
@@ -713,12 +726,13 @@ addresses differ in the text: figure 6.34 has source the MS and target IPI, 6.4.
 taken. Off, data to IPI is granted at once (as before; 6.6.3.1.2 ties the upload to the Proxy Flag, so a radio that
 sends Proxy 0 may not expect it).
 
-Choices where 361-4 leaves them open: the TS doesn't poll MSs on the channel (P_AHOY radio check, 6.6.3.3.1.1) and
-doesn't share a data channel between calls; supplementary data (SUPED_SV) is abandoned (6.6.3.2.2 a); a new data
-call to an MS on a data channel waits as busy rather than joining it.
+Choices where 361-4 leaves them open: the TS doesn't poll MSs on a data channel (P_AHOY radio check, 6.6.3.3.1.1;
+it does on a voice channel, 3.15) and doesn't share a data channel between calls; supplementary data (SUPED_SV) is
+abandoned (6.6.3.2.2 a); a new data call to an MS on a data channel waits as busy rather than joining it.
 
 Not built: multi-part calls through PSTNI, PABXI, LINEI and DISPATI (dialled digits), IPv6 addresses (here and in IP
-connection advice, 3.4), supplementary data, dual-slot data, the TS's own P_AHOY radio check and selective clear.
+connection advice, 3.4), supplementary data, dual-slot data, the P_AHOY radio check and selective clear on a data
+channel.
 
 ### 3.17 Talkgroup lists: subscription by upload and DGNA (361-4 6.4.4.1.13.2, 6.6.8)
 
@@ -1247,7 +1261,8 @@ Commands (`node/{node}/cmd`, JSON `{"id": "c-123", "cmd": "...", ...}`; the resu
 | `stun` / `revive` | `ms` | stun or revive an MS from the site; authenticated when the MS challenges the site (section 3.18) |
 | `kill` | `ms` | kill an MS (always authenticated: refused without a key for it; section 3.18) |
 | `dgna` | `ms`, `tg` (a list of 0-15 talkgroups) | DGNA_Address from DGNAI to the MS (section 3.17); `[]` sends ADRNULL, which clears what DGNA gave it |
-| `radio_check` | `ms`, or `tg` (one talkgroup) | an unsolicited radio check (section 3.15): is the MS, or a member of the talkgroup, listening; refused when no MS here has it; the outcome is logged |
+| `radio_check` | `ms`, or `tg` (one talkgroup) | an unsolicited radio check (section 3.15): is the MS, or a member of the talkgroup, listening; on its voice payload channel when it's on one, else the TSCC; refused when no MS here has it; the outcome is logged |
+| `clear_ms` | `ms`, or `tg` (one talkgroup) | a selective clear (section 3.15): P_AHOY sends the MS (or the talkgroup's members) from its voice payload channel back to the TSCC; refused when it's on none |
 
 ### 5.8 Security
 
@@ -1798,7 +1813,7 @@ and against `t3ms` on one air.
 | Level | What | Where |
 |---|---|---|
 | PDU codec | Every PDU the site sends or reads: field packing against the 361-4 tables, round trips, known vectors from a standard site's captures (decoded values, not checks) | Rust unit tests |
-| Controller | Scenarios over `t3air`: registration open/listed/denied, collisions and backoff, group call, queue and grant on release, late entry repeats (through the hang time), hang and P_CLEAR, call timer, individual OACSU and FOACSU, no answer, cancel, busy called party, Not_Supported, network group in and out, network setup both ways, Tier II implicit setup, records reload, provisioning changes, link loss; short data (`t3sdtests.rs`): UDT MS to MS, MS, talkgroup and site, 1 to 4 blocks, refusals, store while busy and its timeout, cancel, the kept upload slots, CRC errors and a missing upload, status to MS, talkgroup and site, polling, UDT short data polling (the C_AHOY's fields, the polled MS's upload and the download to the caller, its refusal mirrored, not here, itself, a gateway; across two sites: the data back in the result, a refusal, no site with the MS, the application's poll), the site's own sends (a UDT poll from SDMI too), the unsolicited radio check (an MS, a talkgroup, no answer), a full table, the network both ways; packet data (`t3pdtests.rs`): MS to MS unconfirmed and confirmed, rate 3/4 and rate 1 (unconfirmed to an MS and a talkgroup, a damaged block lost; confirmed with a damaged block: SACK, C_RDATA, the F = 0 retry, the ACK; retries to N_RtryLmt; `t3pdrate.rs`: the blocks at each rate, CRC-9 and CRC-32 against the B.3.9 / B.3.10 formulas), the availability check, PD/TD_GRANT single and multi-item, data hang and clearing, to a talkgroup, to the site (TSI, data ID, IPI), the IP address upload to IPI (its C_AHOY, the address taken either way round, the upload refused, off), IP connection advice (added with the power save offset, an address another MS holds, deleted and still registered, one not held, no IP service), refusals (NACKU mirrored, no answer, not here, multi-part, itself, talkgroup not allowed, busy), queued and cancelled, the site's own sends; packet data across sites (`t3pdnettests.rs`, two sites; `t3pdnet.rs`): confirmed MS to MS with a damaged block on each air link (SACK at both), unconfirmed at rate 3/4, refusals (not found, no answer, a lost setup, the link down), talkgroup data to the site that carries it, data with no setup checked first, the network form at each rate, the relay's retries and results; talkgroup lists (`t3tgtests.rs`): registration with a list (the
+| Controller | Scenarios over `t3air`: registration open/listed/denied, collisions and backoff, group call, queue and grant on release, late entry repeats (through the hang time), hang and P_CLEAR, call timer, individual OACSU and FOACSU, no answer, cancel, busy called party, Not_Supported, network group in and out, network setup both ways, Tier II implicit setup, records reload, provisioning changes, link loss, the radio check and selective clear on a voice payload channel (an MS, a talkgroup's colliding answers); short data (`t3sdtests.rs`): UDT MS to MS, MS, talkgroup and site, 1 to 4 blocks, refusals, store while busy and its timeout, cancel, the kept upload slots, CRC errors and a missing upload, status to MS, talkgroup and site, polling, UDT short data polling (the C_AHOY's fields, the polled MS's upload and the download to the caller, its refusal mirrored, not here, itself, a gateway; across two sites: the data back in the result, a refusal, no site with the MS, the application's poll), the site's own sends (a UDT poll from SDMI too), the unsolicited radio check (an MS, a talkgroup, no answer), a full table, the network both ways; packet data (`t3pdtests.rs`): MS to MS unconfirmed and confirmed, rate 3/4 and rate 1 (unconfirmed to an MS and a talkgroup, a damaged block lost; confirmed with a damaged block: SACK, C_RDATA, the F = 0 retry, the ACK; retries to N_RtryLmt; `t3pdrate.rs`: the blocks at each rate, CRC-9 and CRC-32 against the B.3.9 / B.3.10 formulas), the availability check, PD/TD_GRANT single and multi-item, data hang and clearing, to a talkgroup, to the site (TSI, data ID, IPI), the IP address upload to IPI (its C_AHOY, the address taken either way round, the upload refused, off), IP connection advice (added with the power save offset, an address another MS holds, deleted and still registered, one not held, no IP service), refusals (NACKU mirrored, no answer, not here, multi-part, itself, talkgroup not allowed, busy), queued and cancelled, the site's own sends; packet data across sites (`t3pdnettests.rs`, two sites; `t3pdnet.rs`): confirmed MS to MS with a damaged block on each air link (SACK at both), unconfirmed at rate 3/4, refusals (not found, no answer, a lost setup, the link down), talkgroup data to the site that carries it, data with no setup checked first, the network form at each rate, the relay's retries and results; talkgroup lists (`t3tgtests.rs`): registration with a list (the
 C_AHOY's fields, the Response_Info bits, a talkgroup refused), all accepted, replaced, replaced by a single
 subscription, dropped on deregistration, a refused registration; DGNA MS to MS (address mode, a call on the new
 talkgroup, alias mode, delete all), refusals (off, talkgroup not allowed, itself, the site, not here, the called MS
@@ -1867,8 +1882,9 @@ Built since step 8e, host-tested (the bench steps above note what has run on air
 | d39ca8d4 | IP connection advice at registration (6.4.11) |
 | d3088e17 | UDT polls across sites (5.9 what 6); C_WACKD to the caller of a poll held for a wake frame; a log line per short data C_AHOY |
 | 6b48f42b | UDT polls from the site's application (C_AHOY from SDMI, 6.6.5.1.5) |
-| "Site: application polls across sites" | The site's application polls an MS at another site |
 | fe0e180c | The unsolicited radio check (6.4.12) of an MS or a talkgroup, the `radio_check` command; the MS engine answers it |
+| 53b11591 | The site's application polls an MS at another site |
+| "Site: radio check, clear on payload" | P_AHOY on a voice payload channel: the radio check and the selective clear (`clear_ms`); payload collisions in `t3air` |
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
 apart from the code, found seven deviations, all fixed (2026-11-12):
@@ -1908,7 +1924,7 @@ One site (the SDR site, two carriers):
 | IP address upload to IPI, IP connection advice | yes | no: on the SDR site, the radio side host-tested only |
 | Stun, revive, mass re-registration | yes | yes (PTT refused while stunned) |
 | Kill, DGNA, call diversion, ALS, C_MOVE | yes | no: the radio side host-tested only |
-| UDT polls from the site, the unsolicited radio check | yes | no |
+| UDT polls from the site, the radio check (TSCC and payload), the selective clear | yes | no |
 | Power save | yes | yes: registration, a status, short data and a poll to the sleeping radio (13.2 step 8f); a call and packet data to it not yet |
 | Full-duplex individual calls | yes (off by default) | no |
 | Transmit interrupt | yes | air MSs only, on the modem site |

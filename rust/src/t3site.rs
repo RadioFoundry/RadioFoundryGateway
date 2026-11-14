@@ -73,6 +73,10 @@ pub use composite::{REV_CALL, REV_GRANT};
 // transmit interrupt: payload interrupt, ALS termination and call timer de-key (tier3.md 3.20)
 #[path = "t3intr.rs"]
 mod intr;
+// P_AHOY on a voice payload channel: radio check and selective clear (tier3.md 3.15)
+#[path = "t3pcheck.rs"]
+mod pcheck;
+use pcheck::PaCheck;
 pub use intr::{ACT_INTR, INTR_ACCEPTED, INTR_CEASED, INTR_GAVE_UP, INTR_TALKS, STATUS_ALS_END, STATUS_INTERRUPT};
 use duplex::KIND_DUPLEX;
 pub use duplex::{DxGrant, OPEN_DUPLEX, OP_PV_GRANT_DX, R_DUPLEX_NOT_SUPPORTED, SK_DUPLEX};
@@ -595,6 +599,7 @@ struct Chan {
     intr_stream: u32, // the interrupt sent to the talker's site (DK_NET): its stream, a result's ref
     protect_ms: u32, // P_PROTECT(EN_PTT_ONE_MS) to this MS while the channel waits for it (t3intr.rs)
     protect_until_ms: i64,
+    pa: PaCheck, // a P_AHOY radio check or selective clear on the channel (t3pcheck.rs)
 }
 
 const P_AHOY: u8 = 1; // waiting for the called MS's answer to C_AHOY
@@ -1406,6 +1411,7 @@ impl Site {
     }
 
     fn close(&mut self, ch: usize) {
+        self.pa_closed(ch);
         let mut e = self.chan_ev(ch, EV_CH_CLOSE);
         e.why = self.chans[ch].close_why;
         self.ev(e);
@@ -1450,6 +1456,9 @@ impl Site {
             out.ch[ch].r#use = self.chans[ch].r#use;
             if ch % 2 == lcn && self.chans[ch].protect_ms != 0 {
                 self.protect_slot(ch, &mut out.ch[ch]);
+            }
+            if ch % 2 == lcn {
+                self.pa_slot(ch, &mut out.ch[ch]);
             }
             if ch % 2 != lcn || self.chans[ch].r#use != USE_CLEAR {
                 continue;
@@ -2689,6 +2698,8 @@ impl Site {
                 self.heard(v.source);
                 self.supp_ackvit(&v); // 6.4.9.2, 6.4.10: an MS challenges the TSCC
             }
+        } else if let Some(a) = Ack::decode(pdu).filter(|a| a.op == OP_ACKU) {
+            self.pa_answer(ch, &a); // P_ACKU to a radio check or a selective clear (t3pcheck.rs)
         } else if let Some(m) = Maint::decode(pdu) {
             let c = self.chans[ch];
             if m.kind == MAINT_DISCON
@@ -2713,6 +2724,8 @@ impl Site {
         if ch == self.tscc_carrier * 2 && !self.withdrawn && !self.tscc_payload() {
             self.counters.collisions += 1;
             self.count_load();
+        } else if ch < CHANNELS && !self.withdrawn {
+            self.pa_burst(ch); // a talkgroup radio check's answers colliding (t3pcheck.rs)
         }
     }
 
@@ -2879,7 +2892,10 @@ impl Site {
             "move" => self.move_cmd(a1, a2),
             "move_site" => self.move_to_site(a1, a2), // C_MOVE to an adjacent site's TSCC, absolute when needed
             "auth" => self.auth_poll(a1),
-            "radio_check" => self.radio_check(a1, a2 != 0), // 6.4.12: a2 1 for a talkgroup
+            // a2 1 for a talkgroup; on its payload channel when it's on one (6.6.2.3.1.1), else the TSCC (6.4.12)
+            "radio_check" if self.pa_applies(a1, a2 != 0) => self.pa_start(a1, a2 != 0, false),
+            "radio_check" => self.radio_check(a1, a2 != 0),
+            "clear_ms" => self.pa_start(a1, a2 != 0, true), // 6.6.2.3.1.8: a2 1 for a talkgroup
             "stun" | "revive" => self.stun(a1, cmd == "revive"), // 6.4.9
             "kill" => self.kill(a1),                               // 6.4.10: only an MS with a key
             _ => false,

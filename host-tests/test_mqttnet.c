@@ -1441,6 +1441,9 @@ static void test_cmd(void)
     static const char rc_tg[] = "{\"id\":\"r\",\"cmd\":\"radio_check\",\"tg\":9}";
     CHECK(rdof_mn_cmd_parse(rc_tg, sizeof rc_tg - 1, &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_RADIO_CHECK &&
           c.ntg == 1 && c.tg[0] == 9);
+    static const char cm_tg[] = "{\"id\":\"c\",\"cmd\":\"clear_ms\",\"tg\":9}";
+    CHECK(rdof_mn_cmd_parse(cm_tg, sizeof cm_tg - 1, &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_CLEAR_MS &&
+          c.ntg == 1 && c.tg[0] == 9);
     static const char rc_bad[] = "{\"id\":\"r\",\"cmd\":\"radio_check\"}";
     CHECK(!rdof_mn_cmd_parse(rc_bad, sizeof rc_bad - 1, &c, err, sizeof err) && strstr(err, "ms or tg"));
     static const char stun_bad[] = "{\"id\":\"s\",\"cmd\":\"stun\"}";

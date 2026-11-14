@@ -290,6 +290,10 @@ pub struct Ms {
     protects: u32,      // P_PROTECTs heard on its payload channel
     protects_other: u32, // of them EN_PTT_ONE_MS to another MS: its PTT disabled meanwhile (6.6.2.3.2.3)
     rc_deaf: bool,
+    pay_reply: Option<[u8; 10]>, // a P_ACKU to send on the payload channel's inbound
+    pay_leave: bool,             // then back to the TSCC (a selective clear)
+    pay_checks: u32,             // P_AHOY radio checks it answered (sent the P_ACKU) on a payload channel
+    sel_clears: u32,             // selective clears it obeyed (6.6.2.3.2.7)
 }
 
 impl Ms {
@@ -371,6 +375,11 @@ impl Ms {
     /// Payload interrupts: (got the channel, accepted but didn't), and the P_PROTECTs heard (all, to another MS).
     pub fn interrupts(&self) -> (u32, u32, u32, u32) {
         (self.intr_ok, self.intr_lost, self.protects, self.protects_other)
+    }
+
+    /// On a payload channel: the P_AHOY radio checks it answered, and the selective clears it obeyed.
+    pub fn payload_ahoys(&self) -> (u32, u32) {
+        (self.pay_checks, self.sel_clears)
     }
 
     /// Statuses delivered to it, and the last one (source, target, value).
@@ -838,7 +847,28 @@ impl Ms {
         }
     }
 
+    /// P_AHOY from TSI on its payload channel: a radio check (6.6.2.3.2.1: tables 6.42 and 6.43; or 6.27's form,
+    /// 6.4.12 NOTE) or a selective clear (6.6.2.3.2.7: tables 6.44 and 6.45), to it or to the talkgroup of the
+    /// grant that brought it here. Either way P_ACKU(MS_Accepted) to TSI; a clear then sends it back to the TSCC.
+    fn on_payload_ahoy(&mut self, a: &Ahoy) {
+        let to_me = if a.group { self.pay_group && a.target == self.pay_dst } else { a.target == self.id };
+        let check = match (a.service_kind, a.group) {
+            (SK_IND_VOICE, false) | (SK_TG_VOICE, true) => !a.service_kind_flag,
+            (SK_REG, _) => !a.service_kind_flag,
+            _ => false,
+        };
+        let clear = a.service_kind == SK_CANCEL && a.service_kind_flag == a.group;
+        if !to_me || !(check || clear) || self.pay_reply.is_some() {
+            return;
+        }
+        let r = Ack { op: OP_ACKU, response_info: 0, reason: R_MS_ACCEPTED, target: TSI, source: self.id };
+        self.pay_reply = Some(r.encode());
+        self.pay_leave = clear;
+    }
+
     fn back_to_tscc(&mut self) {
+        self.pay_reply = None;
+        self.pay_leave = false;
         self.dx = false;
         self.state = IDLE;
         self.ch = self.tscc_ch;
@@ -884,6 +914,10 @@ impl Ms {
             if dt == DT_CSBK {
                 if let Some(p) = Protect::decode(pdu) {
                     self.on_protect(&p);
+                    return;
+                }
+                if let Some(a) = Ahoy::decode(pdu).filter(|a| a.source == TSI) {
+                    self.on_payload_ahoy(&a);
                     return;
                 }
             }
@@ -1903,6 +1937,27 @@ impl Ms {
         // offset timing in a duplex call: its inbound is the carrier's other slot (361-1 5.1.1.2)
         if k & 1 != ((self.ch & 1) ^ usize::from(self.dx)) as i64 {
             return None;
+        }
+        if self.talking {
+            self.pay_reply = None; // it keyed first: the site repeats the P_AHOY in the next quiet slot
+        }
+        if let Some(r) = self.pay_reply.take() {
+            let t = MsTx { ch: self.ch as u8, kind: TX_PDU, dt: DT_CSBK, pdu: r, ..Default::default() };
+            if self.pay_leave {
+                self.sel_clears += 1;
+            } else {
+                self.pay_checks += 1;
+            }
+            if self.pay_leave {
+                // a selective clear: it leaves the call (its own ends as a P_CLEAR'd one would)
+                let mine = self.mine && self.has_cur;
+                self.mine = false;
+                if mine {
+                    self.done(true);
+                }
+                self.back_to_tscc();
+            }
+            return Some(t);
         }
         if let Some(t) = self.tx_data() {
             return Some(t);

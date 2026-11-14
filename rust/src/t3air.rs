@@ -120,7 +120,7 @@ impl<'a, const N: usize> Air<'a, N> {
                 first.get_or_insert(*t);
             }
             let Some(t) = first else { continue };
-            if pdus > 1 && ch == self.site.tscc_ch() {
+            if pdus > 1 {
                 self.collisions += 1;
                 self.site.rx_bad(ch);
             } else if t.kind == TX_PDU && t.dt == DT_RATE12 {
