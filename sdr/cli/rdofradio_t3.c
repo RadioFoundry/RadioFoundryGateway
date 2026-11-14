@@ -410,7 +410,7 @@ typedef struct {
 #define AIR_RADIO_NET 0x0C000000u /* 12.0.0.0/8: a radio's address, its id in the low 24 bits */
 #define AIR_FILL_MAX ((RDOF_IPGW_MAX_PACKET - 28) / 2) /* data *N: characters at most, one UDP/IPv4 datagram */
 #define ACT_HELP                                                                                                       \
-    "ID register [TG] | deregister | group TG [TALK_MS] | private ID [TALK_MS] | status ID N | gstatus TG N | "        \
+    "ID register [TG] | deregister | group TG [TALK_MS] | egroup TG [TALK_MS] | private ID [TALK_MS] | status ID N | gstatus TG N | "        \
     "sdm ID TEXT | gsdm TG TEXT | upoll ID [BLOCKS] | setpoll TEXT | setsupp [TEXT] | "                               \
     "ipadv [A.B.C.D] [del] | data ID [@A.B.C.D] TEXT | "                                                                         \
     "cdata ID TEXT | gdata TG TEXT "                                                                                  \
@@ -462,8 +462,9 @@ static int act_parse(const char *text, act_t *x)
         x->what = RDOF_T3MS_DO_REGISTER, x->arg = (uint32_t)a1;
     else if (!strcmp(what, "deregister"))
         x->what = RDOF_T3MS_DO_DEREGISTER;
-    else if (!strcmp(what, "group") && got >= 3)
-        x->what = RDOF_T3MS_DO_GROUP, x->arg = (uint32_t)a1, x->talk_ms = got >= 4 ? (uint32_t)a2 : 2000;
+    else if ((!strcmp(what, "group") || !strcmp(what, "egroup")) && got >= 3)
+        x->what = RDOF_T3MS_DO_GROUP, x->arg = (uint32_t)a1, x->talk_ms = got >= 4 ? (uint32_t)a2 : 2000,
+        x->flags = what[0] == 'e' ? RDOF_T3MS_F_EMERGENCY : 0;
     else if (!strcmp(what, "private") && got >= 3)
         x->what = RDOF_T3MS_DO_PRIVATE, x->arg = (uint32_t)a1, x->talk_ms = got >= 4 ? (uint32_t)a2 : 2000;
     else if (!strcmp(what, "als") && got >= 3)

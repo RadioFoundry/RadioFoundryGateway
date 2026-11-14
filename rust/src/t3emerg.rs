@@ -82,7 +82,7 @@ impl Site {
                 c.preempt_until_ms = now + DEKEY_MS;
                 c.rc_next_ms = now;
                 let (src, dst) = (c.src, c.dst);
-                self.log(format_args!("pre-empting the call {} to {} on channel {} for an emergency", src, dst, ch));
+                self.log(format_args!("pre-empting {} -> {} on channel {}: an emergency waits", src, dst, ch));
             }
         }
         let now = self.now;
