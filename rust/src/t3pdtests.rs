@@ -676,6 +676,14 @@ fn packet_data_with_supplementary_data() {
     assert!(air.until(5000, &mut log.f(), settled(0, 2)));
     assert_eq!(air.ms[0].status().calls_done, 3);
     assert!(said(&log, &std::format!("supplementary data from 1001 to {TSI}: not taken")));
+    air.run(3000, &mut log.f());
+
+    // to IPI the same: SUPED_VAL in the dependent bits isn't an Appended_UDT (table 6.50; refused on air before)
+    let now = air.now();
+    assert!(air.ms[0].send_data(IPI, 0, DATA, now));
+    assert!(air.until(5000, &mut log.f(), settled(0, 3)));
+    assert_eq!(air.ms[0].status().calls_done, 4);
+    assert!(said(&log, &std::format!("supplementary data from 1001 to {IPI}: not taken")));
 }
 
 /// The site's reply to an MS that sent it data (its IP gateway's answer, within ~0.1 s): on the MS's data channel

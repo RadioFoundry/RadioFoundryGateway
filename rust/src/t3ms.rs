@@ -779,8 +779,8 @@ impl Ms {
             DO_DATA => Rand {
                 service_options: emergency
                     | if a.flags & F_MULTI != 0 { SO_SIMI } else { 0 }
-                    | if a.arg != IPI { suped } else { 0 },
-                dep: if a.arg != IPI { suped_val } else { 0 },
+                    | suped,
+                dep: suped_val,
                 service_kind: if a.flags & F_GROUP != 0 { SK_TG_PD } else { SK_IND_PD },
                 target: a.arg,
                 source: self.id,

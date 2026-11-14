@@ -493,7 +493,8 @@ impl Site {
     /// A request's called party is the site: TSI or its data ID, or IPI with no extended address to upload (the
     /// destination is the datagram's, 6.6.3.3: derived from the DLL address).
     pub(super) fn pd_to_site(&self, r: &Rand) -> bool {
-        r.service_kind == SK_IND_PD && (self.pd_site(r.target) || (r.target == IPI && !r.proxy && r.dep == 0))
+        // table 6.50: Appended_UDT (dependent bits 1-0) 00; SUPED_VAL above it may be anything
+        r.service_kind == SK_IND_PD && (self.pd_site(r.target) || (r.target == IPI && !r.proxy && r.dep & 3 == 0))
     }
 
     /// A data channel open for these parties (either way round for an individual call).
