@@ -605,8 +605,9 @@ Appended_Short_Data the UDTs asked for less one):
    the C_RAND's, Appended_Blocks the C_RAND's Appended_Short_Data, AT busy, then the kept upload slots as for short
    data. One upload at a time; another in progress: C_WACKD to the caller first. A polled MS in a call: C_QACKD
    (Queued_busy) and the poll waits up to `sd_store_s`. A polled MS in power save: the C_AHOY waits for its wake
-   frame, and the caller gets C_WACKD at once and every 2 s (it would give up on its random access otherwise: an
-   air MS did, 2026-11-14). Each short data C_AHOY is logged ("short data: C_AHOY ...").
+   frame, and the caller gets C_WACKD at once and every 2 s. Without it the caller repeats its C_RAND while it
+   waits (an air MS sent three in a 1:4 cycle on air, 2026-11-14), and a longer cycle would use up its tries. Each
+   short data C_AHOY is logged ("short data: C_AHOY ...").
 3. The polled MS answers with C_UDTHU (target the caller, its own UDT_Format) and its blocks, or C_NACKU, which goes
    to the caller mirrored in C_NACKD (6.6.5.1.2 a), twice. A CRC failure or no upload: C_AHOY again (`ahoy_tries`
    in all), then C_NACKD(MSaway).
@@ -1834,7 +1835,7 @@ type `tier3` (was `trunk`), the build option `RDOF_TIER3`, the modules `t3*`.
 | 8c | Bench: transmit interrupt (3.20) on the one-carrier modem site, the site's air MSs, a bench receiver on its outbound | done 2026-11-13. A talker on TS2, an MS in the call sent status 125 to the talkgroup: the RC cease command took one TSCC slot, C_ACKD followed, the talker ended its superframe with a terminator 0.3 s later, P_PROTECT(EN_PTT_ONE_MS) went out on TS2 and the interrupter's voice header followed 120 ms after it; then its voice, the hang and P_CLEAR. The first run found rdofradio's air MSs didn't read the RC (fixed); the site gave up after 3 s and kept the call, as 6.4.15.1 asks |
 | 8d | Bench: packet data across sites (5.10), the SDR site (site 1) and the modem site (site 2) on one mqtt-net, air MSs on both | done 2026-11-13. Confirmed individual data, site 2 to site 1: the far site checked the MS, granted a payload channel, delivered and the caller's call ended done; then site 1 to site 2 the same way. Unconfirmed group data, site 2 to talkgroup 1: every air MS on both sites got the text. The first try failed with MSaway (0x25): no private-call router ran on the broker, so the request on `pc/{dst}/{node}` reached nobody. With the router, the network services' flags fix (bit 2 kept) and a voice individual call checked first, all passed |
 | 8e | Bench: the real radio (a commercial portable with RadioFoundry's MS engine, 50 mW) against both sites, the bench offset image merged in (1e2549fe) | done 2026-11-13. Site 1: registration by syscode, by talkgroup and with a list, group and individual calls, status, poll and short data to an air MS (12 of 12); a broadcast and an all-call cleared right after the terminator (radio back on the TSCC 0.5 and 0.7 s after release), a group call after its 3 s hang; IP text messages (UDP 5016) unconfirmed and confirmed. Site 2: the same calls to an air MS on site 1 through the private-call router, and the text messages across sites. Found: UDT short data crossed sites with its pad octets (24 characters arrived as 34 octets), fixed in 12379fa8. Open: on site 2 the radio sends each registration twice although the site answers the first within 180 ms; the radio decodes few of the stock modem's CSBKs (1.4 a second against 8 on site 1) with no CRC errors |
-| 8f | Bench: power save (6.4.7) with the real radio (50 mW, PowerSave_RQ 2) on site 1, an air MS calling it | 2026-11-14 UTC, open. Registered with offset 2; the radio slept 56-60% of the time with no hunts (after two fixes on its side). A status reached it in 1.79 s and UDT short data in 1.64 s, both in its wake frame. A UDT poll of it got no answer: the air MS that polled gave up after 2 s because the site sent no C_WACKD while the C_AHOY waited for the wake frame (fixed). Whether the radio got the C_AHOY is open: the site didn't log short data C_AHOYs then (it does now) |
+| 8f | Bench: power save (6.4.7) with the real radio (50 mW, PowerSave_RQ 2) on site 1, an air MS calling it | done 2026-11-14 UTC. Registered with offset 2; the radio's receiver was off 55-60% of the time with no hunts (after two fixes on its side). Everything to the sleeping radio arrived within one 1.92 s cycle: a status in 1.50 s, UDT short data in 1.51 s, a UDT poll's C_AHOY in 1.33 s (0.26 s with power save off). The radio answered each poll: C_NACKU MS_Not_Supported with no reply set, mirrored to the caller; with one, its C_UDTHU, and the air MS got "rfoundry 3101276 aslee" (22 octets: two UDTs asked). The caller repeated its C_RAND while the C_AHOY waited for the wake frame; the site now sends it C_WACKD |
 | 9 | Merge into main | the owner's go |
 
 Built since step 8e, host-tested (the bench steps above note what has run on air):
@@ -1864,6 +1865,60 @@ apart from the code, found seven deviations, all fixed (2026-11-12):
 Out of round 2, unchanged from section 1.2: dedicated multi-carrier sites beyond two, the standby controller. MS
 authentication was added on 2026-11-12 (section 3.14), transmit interrupt and packet data across sites on
 2026-11-13 (sections 3.20, 5.10), UDT polls across sites on 2026-11-14 (5.9).
+
+### 13.3 Support status (2026-11-14)
+
+"Sim": the host tests (cargo, the ETSI conformance suite, rdofradio's end-to-end runs). "On air": tested on air
+against two commercial portables running RadioFoundry's MS engine, and the air MSs (the site's simulated MSs, sent
+on air by the SDR). No standard Tier III radio from another maker has been tried: both ends follow our reading of
+the standard, so none of this shows a commercial Tier III radio works.
+
+One site (the SDR site, two carriers):
+
+| Feature | Sim | On air |
+|---|---|---|
+| TSCC: C_SYS_Parms and its counter, C_ALOHA, the C_BCASTs, the CACH | yes | yes: 12 min decoded clean; the radio's counter checked against the short LC |
+| Registration: by syscode, talkgroup or list; refusals | yes | yes |
+| Authentication at registration | yes | yes: the right key accepted, a wrong one denied |
+| Group and individual voice, the availability check | yes | yes, on both carriers |
+| Broadcast calls and all-calls | yes | yes: cleared right after the terminator |
+| Emergency alarm, emergency call, cancel | yes | yes |
+| Emergency pre-emption | yes | no: the radio can't yet act on the RC cease as the talker |
+| Status, status polls, UDT short data | yes | yes |
+| UDT short data polling | yes | yes: the radio polling an air MS, and an air MS polling the radio, asleep or not (13.2 step 8f) |
+| Packet data at rate 1/2, 3/4 and 1, up to 127 blocks | yes | partly: IP text messages, confirmed and unconfirmed, at rate 1/2 |
+| IP address upload to IPI, IP connection advice | yes | no: on the SDR site, the radio side host-tested only |
+| Stun, revive, mass re-registration | yes | yes (PTT refused while stunned) |
+| Kill, DGNA, call diversion, ALS, C_MOVE | yes | no: the radio side host-tested only |
+| Power save | yes | yes: registration, a status, short data and a poll to the sleeping radio (13.2 step 8f); a call and packet data to it not yet |
+| Full-duplex individual calls | yes (off by default) | no |
+| Transmit interrupt | yes | air MSs only, on the modem site |
+| Composite TSCC | yes | air MSs only, on the modem site |
+| Three or four SDR carriers | yes | no: the SDR site runs two |
+
+Two sites (the SDR site and the modem site, over mqtt-net):
+
+| Feature | Sim | On air |
+|---|---|---|
+| Adjacent_Site, Vote_Now, priorities | yes | yes |
+| Roaming: a move on priority, re-registration at the new site | yes | yes |
+| Group calls, individual calls, short data across sites | yes | yes |
+| Packet data across sites | yes | yes: air MSs, and the radio's IP text |
+| UDT polls across sites | yes | no |
+| Transmit interrupt across sites | yes (off by default) | no |
+
+Hardware setups:
+
+| Setup | Sim | Hardware |
+|---|---|---|
+| The SDR site | yes | yes |
+| A stock duplex modem as a one-carrier site (tier3-hat.md) | yes | yes, with limits: the radio decodes 1.4 TSCC blocks a second there (8 on the SDR site) and sends each registration twice |
+| Two split TX halves for the two carriers, the SDR receiving | yes, end to end | no |
+| One split TX half and one split RX half, no SDR | yes, end to end | no |
+
+Not built: the standby controller; calls through PSTN, PABX or dispatcher gateways (dialled digits); IPv6;
+supplementary data and dual-slot data; the site's own UDT polls and the radio check; across sites, duplex calls,
+talkgroup and multi-item data, and ALS termination.
 
 ## 14. Open questions for the owner
 
