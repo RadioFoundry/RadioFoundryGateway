@@ -691,6 +691,40 @@ fn vote_now_fields_and_vote_blk_frames() {
     }
 }
 
+/// 6.7.1.3 lets C_WACKD into the VOTE_BLK frames, and C_WACKD(Wait) restarts the MS's TNP_Timer (6.4.4.1.1). A
+/// C_RAND heard as a Vote_Now goes out would be answered after the block: with VOTE_BLK 6, 14 slots, the last frame
+/// NWait 6 allows (6.2.1.1.5: the frame after the access plus NWait; seen on air, 2026-11-14), with 10 past it. The
+/// site sends C_WACKD in the block, then the answer. A block short enough to leave margin gets no C_WACKD.
+#[test]
+fn rand_held_by_vote_blk_gets_wackd() {
+    for (blk, wack) in [(6u8, true), (10, true), (2, false)] {
+        let mut r = Rig::new(|c| {
+            pluto_t3(c);
+            c.vote_now_ms = 2000;
+            c.vote_blk = blk;
+        });
+        r.s.set_neighbors(&[hat_t3()]);
+        let vote = |dt: u8, b: &[u8; 10]| is(dt, b, spec::C_BCAST) && field(b, 16, 5) as u8 == spec::VOTE_NOW;
+        let (kv, _) = r.find(0, 200, vote).expect("a Vote_Now");
+        assert_eq!(r.k, kv + 1);
+        let ch = r.s.tscc_ch();
+        r.s.rx_pdu(ch, spec::DT_CSBK, &reg(r.sc(), 1001)); // heard in the Vote_Now's slot
+        let (k1, (_, reason, _, src)) = r.ack_to(kv, 30, 1001).expect("an answer");
+        assert!(r.within_nwait(kv, k1), "vote_blk {blk}: answered +{} slots", k1 - kv);
+        if wack {
+            assert_eq!((reason, src), (spec::WAIT, spec::REGI), "vote_blk {blk}: C_WACKD(Wait) from REGI");
+            r.run(4);
+            let a = aloha(&r.hist.iter().find(|(k, _)| *k == k1 + 2).unwrap().1.tscc_pdu);
+            assert!(k1 < kv + 2 * (i64::from(blk) + 1) && (a.mask, a.addr) == (24, spec::ADRNULL), "inside the block");
+            let (k2, (_, reason, _, _)) = r.ack_with(k1 + 1, 30, 1001, spec::REG_ACCEPTED).expect("then the answer");
+            assert_eq!(reason, spec::REG_ACCEPTED);
+            assert_eq!(k2, kv + 2 * (i64::from(blk) + 1), "the first slot after the block");
+        } else {
+            assert_eq!(reason, spec::REG_ACCEPTED, "vote_blk {blk}: answered in time, no C_WACKD");
+        }
+    }
+}
+
 /// The default VOTE_BLK is 6 frames (360 ms): a MS that samples the named TSCC for that long misses nothing.
 #[test]
 fn vote_blk_default_six() {

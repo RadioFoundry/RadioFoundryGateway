@@ -352,6 +352,11 @@ impl Site {
 
     /// The TSCC's block in the VOTE_BLK TDMA frames after a Vote Now Advice: a C_ALOHA that lets no MS in (ADRNULL,
     /// Mask 24), so a voting MS misses nothing addressed to it (6.7.1.3 allows that and C_WACKD only).
+    /// The slot the Vote_Now block ends (k), the current one or earlier when none is on.
+    pub(super) fn bc_vote_blk_k(&self) -> i64 {
+        self.bc.vote_blk_k
+    }
+
     pub(super) fn vote_blocked(&mut self) -> Option<[u8; 10]> {
         if self.k >= self.bc.vote_blk_k {
             return None;

@@ -675,6 +675,12 @@ struct Resp {
     rand: bool,
     rand_k: i64,
     rand_src: u32,
+    /// the answer to a C_RAND from wait_ms (0: none) heard in slot wait_k: a C_WACKD(Wait) about wait_src goes
+    /// first when a Vote_Now block would hold it to the last frame the MS waits or later (6.4.4.1.1, 6.7.1.3)
+    wait_ms: u32,
+    wait_src: u32,
+    wait_k: i64,
+    waited: bool,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -1133,6 +1139,12 @@ impl Site {
     /// queued (an answer later, or none), said now. Each line has the inbound slot it was heard in, for timing
     /// random access (6.4.4.1: the MS waits NRand_Wait TSCC slots for an answer before it tries again).
     fn rand_said(&mut self, r: &Rand, before: usize, queued: usize) {
+        if self.resp_len > queued {
+            let a = &mut self.resp[before];
+            a.wait_ms = r.source;
+            a.wait_src = if r.service_kind == SK_REG { REGI } else { r.target };
+            a.wait_k = if self.rx_k_ok { self.rx_k } else { self.k };
+        }
         if !self.rx_k_ok {
             return;
         }
@@ -1284,7 +1296,7 @@ impl Site {
             self.cont_pending = false;
             (DT_MBC_CONT, self.cont, false)
         } else if let Some(a) = self.vote_blocked() {
-            (DT_CSBK, a, false)
+            (DT_CSBK, self.vote_wait().unwrap_or(a), false)
         } else if let Some(b) = self.sd_cont() {
             b // a UDT's next block, or a slot kept for an upload
         } else if self.since_aloha >= 3 || (self.since_aloha == 2 && self.resp_len > 0 && self.resp[self.resp_head].has_cont) {
@@ -1326,6 +1338,24 @@ impl Site {
         out.tscc_pdu = pdu;
         out.tscc_ext = self.sd_ext();
         out.at = solicit as u8;
+    }
+
+    /// In a Vote_Now block (6.7.1.3: only the blocking Aloha and C_WACKD go there): a C_WACKD(Wait) for a queued
+    /// answer to a C_RAND that the block would hold to the last frame the MS waits (the frame after its access plus
+    /// NWait, 6.2.1.1.5) or later. The MS then waits TNP_Timer (6.4.4.1.1) rather than sending again. One a C_RAND,
+    /// in the block's first free slot.
+    fn vote_wait(&mut self) -> Option<[u8; 10]> {
+        // the answer, at vote_blk_k, at least NWait frames (table 6.2) after the access: no margin left
+        let late = self.bc_vote_blk_k() - 2 * i64::from(nwait_frames(self.cfg.nrand_wait)) + 1;
+        let i = (0..self.resp_len)
+            .map(|j| (self.resp_head + j) % RESP)
+            .find(|&i| self.resp[i].wait_ms != 0 && !self.resp[i].waited && self.resp[i].wait_k < late)?;
+        self.resp[i].waited = true;
+        let (ms, src, k) = (self.resp[i].wait_ms, self.resp[i].wait_src, self.resp[i].wait_k);
+        let n = self.k - k;
+        self.log(format_args!("C_RAND from {ms} in slot {}: C_WACKD +{n} (Vote_Now block)", k.rem_euclid(1_000_000)));
+        let ri = SysCode::decode(self.syscode).response_check();
+        Some(Ack { op: OP_ACKD, response_info: ri, reason: R_WAIT, target: ms, source: src }.encode())
     }
 
     // ── payload channels ──

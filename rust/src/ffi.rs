@@ -56,7 +56,6 @@ extern "C" {
     pub fn rdof_bptc196_decode(burst: *const u8, out12: *mut u8) -> bool;
     pub fn rdof_check_rs129(lc12: *const u8, mask: u32) -> bool;
     pub fn rdof_check_crc16(block12: *const u8, mask: u16) -> bool;
-    pub fn rdof_trellis34_decode(burst: *const u8, out18: *mut u8) -> c_int;
     pub fn rdof_trellis34_decode_block(burst: *const u8, out18: *mut u8) -> c_int;
     pub fn rdof_rate1_payload(burst: *const u8, out24: *mut u8);
     pub fn rdof_trellis34_encode(payload18: *const u8, info196: *mut u8);

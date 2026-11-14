@@ -409,6 +409,12 @@ it, so the site counts TSCC slots: 6 frames are 360 ms, as long as an MS that sa
 away. 6.7.1.3 lets only "An Aloha PDU with MS Address = ADRNULL and Mask = 24" and C_WACKD go in those slots; the site
 sends the Aloha. After an MBC Vote_Now the frames start after the VN_AP block.
 
+A C_RAND heard as a Vote_Now goes out (the MS answered an earlier Aloha) waits for the block's end. With VOTE_BLK 6
+its answer comes 14 slots later: the last frame NWait 6 allows (6.2.1.1.5: the frame after the access plus NWait).
+With VOTE_BLK 7 to 10 it would come too late. So when the block would hold an answer to that last frame or past it,
+the site sends C_WACKD(Wait) for it in the block's first slot. The MS waits TNP_Timer (6.4.4.1.1) and doesn't send
+again. The log says "C_RAND from MS in slot K: C_WACKD +N (Vote_Now block)".
+
 Mass re-registration (6.4.5): the `mass_reg` command (mqtt-net, section 5.7; `rdof_t3_command(s, "mass_reg",
 window_s, ms)`) or `services.mass_reg_at_start_s` (a restarted site has lost the records it didn't load). MassReg
 with Mask 0 for all MSs, or Mask 24 and the MS's address for one, and the smallest Reg_Window (table 6.12) that
