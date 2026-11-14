@@ -182,6 +182,13 @@ static bool from_trunk(const rdof_plan_t *p, int unit, rdofradio_cfg_t *o, char 
         }
         t->tls = (ti >= 0 && rdof_jnode(d, ti)->type == RDOF_JBOOL && rdof_jnode(d, ti)->b) || s->net[t->net].transport == RDOF_MQTT_TLS;
     }
+    /* the IP gateway app beside the site: the site's packet data goes to it (tier3.md 3.16) */
+    o->has_ipgw = false;
+    if (rdof_site_app_of(s, RDOF_APP_IPGW) >= 0) {
+        if (!rdof_plan_ipgw(p, &o->ipgw, err, cap))
+            return false;
+        o->has_ipgw = o->ipgw.on;
+    }
     o->rx_hz = t->car[0].rx_hz, o->tx_hz = t->car[0].tx_hz, o->cc = t->cfg.cc;
     o->full = true;
     o->rx_slot = 1;

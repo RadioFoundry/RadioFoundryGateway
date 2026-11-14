@@ -68,6 +68,25 @@ int main(void)
         CHECK(C.has_hblink && C.unit_hblink && C.peer_id == 9990111);
     }
 
+#ifdef RDOF_TIER3
+    /* a trunked site with the IP gateway app beside it: the site's packet data goes to the gateway */
+    {
+        const char *fmt = "{\"version\": 3, \"name\": \"t3\", \"id\": 9990120, \"defaults\": {\"cc\": 2},"
+                          "\"devices\": [{\"name\": \"p\", \"kind\": \"sdr\", \"driver\": \"iio\", \"transmits\": [\"o\"]}],"
+                          "\"frequencies\": [{\"name\": \"o\", \"freq\": 438.75}, {\"name\": \"i\", \"freq\": 431.15, "
+                          "\"tx\": false}], \"apps\": [{\"name\": \"S\", \"type\": \"tier3\", \"system\": {\"model\": "
+                          "\"small\", \"net\": 5, \"site\": 1}, \"carriers\": [{\"out\": \"o\", \"in\": \"i\", \"chan\": 1, "
+                          "\"tscc\": true}]}%s]}";
+        char doc[1000];
+        snprintf(doc, sizeof doc, fmt, ", {\"type\": \"ipgw\", \"pc\": \"9991\", \"nat\": true}");
+        CHECK(parse(doc) || !printf("  %s\n", err));
+        CHECK(C.tier3 && C.has_ipgw && C.ipgw.on);
+        snprintf(doc, sizeof doc, fmt, "");
+        CHECK(parse(doc) || !printf("  %s\n", err));
+        CHECK(C.tier3 && !C.has_ipgw);
+    }
+#endif
+
     /* the repeater's own settings, applied as the firmware does */
     static rdof_repeater_t r;
     rdof_repeater_init(&r, NULL, C.peer_id, C.rx_hz, C.tx_hz, C.cc);
