@@ -2044,7 +2044,7 @@ One site (the SDR site, two carriers):
 | IP address upload to IPI, IP connection advice | yes | IP connection advice yes, with and without power save (13.2 step 8g); the upload before a data call to IPI and the datagram through the IP gateway to a host, yes; the host's reply back down: on the Pluto's site with its air MSs (2026-11-14 13:16 UTC: the ACK on the payload channel, rfn-ipsvc's pong on a grant of its own, confirmed and unconfirmed); to a real radio (an HR_C7000 portable, 2026-11-14): unconfirmed at 13:26, confirmed rate 1/2 at 15:30 and 15:46 (the ACK, then the pong). Its rate 3/4 blocks failed the CRC-9 (its trellis encoder doesn't start in state 0; the radio now sends confirmed IP at 1/2, and the site decodes such blocks since 991860dd) |
 | Stun, revive, mass re-registration | yes | yes (PTT refused while stunned) |
 | DGNA, call diversion, ALS | yes | yes (13.2 step 8h) |
-| C_MOVE | yes | to a channel with no TSCC: the radio moved, hunted and came back (2026-11-14); to a second TSCC not yet |
+| C_MOVE | yes | to a channel with no TSCC: the radio moved, hunted and came back (2026-11-14); between two sites' TSCCs, both ways (2026-11-14 15:59 UTC, the Pluto's site 1 and the hat's site 2): on site 2 and registered 0.65 s after the command, back on site 1 1.6 s after it (its first try's answer missed by the radio) |
 | Kill | yes | no: not run on the one radio (it would take it off DMR) |
 | UDT polls from the site, the radio check (TSCC and payload), the selective clear | yes | the payload radio check and the selective clear, yes |
 | Power save | yes | yes: registration, a status, short data and a poll to the sleeping radio (13.2 step 8f); a call and packet data to it not yet |
