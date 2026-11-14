@@ -627,8 +627,11 @@ network as an MS's poll does (5.9 what 6, source SDMI): the site that has it sen
 data comes back in the network result. With no network, NoregMSaway; with no site answering, MSaway.
 
 Not built: short data to gateways and extended addresses (the multi-part addressing), supplementary data, UDT polls
-from a gateway other than the site's application, the optional availability
-check before an individual download or a poll.
+from a gateway other than the site's application.
+
+Not planned: the optional availability check before an individual download or a poll (6.6.4.1.3, 6.6.5.1.2: "the
+TSCC may"). A download is at most five bursts and its own repeats find an absent MS as well; a poll's C_AHOY already
+asks the polled MS.
 
 The unsolicited radio check (6.4.12; the `radio_check` command, 5.7): C_AHOY from TSI, Service_Kind 1110b,
 Service_Options_Mirror 0, Service_Kind_Flag 0, Appended_Blocks 0 (table 6.27), to an MS registered here or a
@@ -1992,7 +1995,7 @@ One site (the SDR site, two carriers):
 | IP address upload to IPI, IP connection advice | yes | IP connection advice yes, with and without power save (13.2 step 8g); the upload before a data call to IPI not yet |
 | Stun, revive, mass re-registration | yes | yes (PTT refused while stunned) |
 | Kill, DGNA, call diversion, ALS, C_MOVE | yes | no: the radio side host-tested only |
-| UDT polls from the site, the radio check (TSCC and payload), the selective clear | yes | the payload radio check yes (an MS and a talkgroup); the selective clear not yet: the radio's answer is lost as it leaves (its side) |
+| UDT polls from the site, the radio check (TSCC and payload), the selective clear | yes | the payload radio check and the selective clear, yes |
 | Power save | yes | yes: registration, a status, short data and a poll to the sleeping radio (13.2 step 8f); a call and packet data to it not yet |
 | Full-duplex individual calls | yes (off by default) | no |
 | Supplementary user data on voice calls (3.21) | yes | yes: both ways, to an MS and a talkgroup |
