@@ -2033,7 +2033,7 @@ One site (the SDR site, two carriers):
 | Status, status polls, UDT short data | yes | yes |
 | UDT short data polling | yes | yes: the radio polling an air MS, and an air MS polling the radio, asleep or not (13.2 step 8f) |
 | Packet data at rate 1/2, 3/4 and 1, up to 127 blocks | yes | partly: IP text messages, confirmed and unconfirmed, at rate 1/2 |
-| IP address upload to IPI, IP connection advice | yes | IP connection advice yes, with and without power save (13.2 step 8g); the upload before a data call to IPI and the datagram through the IP gateway to a host, yes; the host's reply back to the radio: on the simulated air (`rdofradio_e2e_t3_ipgw`), not yet on air (step 8h) |
+| IP address upload to IPI, IP connection advice | yes | IP connection advice yes, with and without power save (13.2 step 8g); the upload before a data call to IPI and the datagram through the IP gateway to a host, yes; the host's reply back down: on the Pluto's site with its air MSs (2026-11-14 13:16 UTC: the ACK on the payload channel, rfn-ipsvc's pong on a grant of its own, confirmed and unconfirmed), not yet to a real radio (step 8h) |
 | Stun, revive, mass re-registration | yes | yes (PTT refused while stunned) |
 | DGNA, call diversion, ALS | yes | yes (13.2 step 8h) |
 | C_MOVE | yes | to a channel with no TSCC: the radio moved, hunted and came back (2026-11-14); to a second TSCC not yet |
