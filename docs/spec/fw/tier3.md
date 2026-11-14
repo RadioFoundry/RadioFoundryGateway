@@ -1984,7 +1984,7 @@ Built since step 8e, host-tested (the bench steps above note what has run on air
 | 08a562b6 | Supplementary user data on packet data calls, here and across sites (3.21) |
 | 5c1f0770 | The site's reply to an MS that just sent it data: on its open data channel, or after its call (3.16) |
 | d18264e3 | Supplementary user data on UDT short data, SUPLI before SDMI (3.21) |
-| (next) | Supplementary user data on statuses (3.21) |
+| 5455d696 | Supplementary user data on statuses (3.21) |
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
 apart from the code, found seven deviations, all fixed (2026-11-12):
