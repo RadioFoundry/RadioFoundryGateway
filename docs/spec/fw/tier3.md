@@ -966,9 +966,11 @@ as a hotspot modem, gets a second call at once.
   that asked sends its voice header as soon as it reads the first grant: on the hat (2026-11-13) that header went to
   the TSCC and was lost, and the call aired without one.
 
-Not built: an air MS that reads the short LC on air (the simulator's air MSs take it from the unit; RadioFoundry's MS
-engine reads it, its counter checked on air against site 1 on 2026-11-14; it holds random access on Payload Channel
-Type 1 since rf-t3 31f7eaa0, not yet on air), and the
+On air (2026-11-14, the Pluto as one carrier, a RadioFoundry radio): all of the above, both ways. The CACH says
+Payload Channel Type 1 for the rest of the short LC cycle after the P_CLEAR (the cycle is 4 slots); the radio sees
+one more and the C_ALOHA right after ends its hold.
+
+Not built: an air MS that reads the short LC on air (the simulator's air MSs take it from the unit), and the
 5.3.2 note that the throughput "shall be assessed" (no metric beyond the log line and the slot counts).
 
 ### 3.20 Transmit interrupt (361-4 6.4.14, 6.4.15)
@@ -2087,7 +2089,7 @@ One site (the SDR site, two carriers):
 | Supplementary user data on voice calls (3.21) | yes | yes: both ways, to an MS and a talkgroup |
 | Supplementary user data on packet data, UDT short data and statuses (3.21) | yes | no |
 | Transmit interrupt | yes | air MSs only, on the modem site |
-| Composite TSCC | yes (group, individual, data, emergency, network calls, a sleeping member; 3.19) | air MSs only, on the modem site; a radio on a one-carrier composite site is next (2026-11-14) |
+| Composite TSCC | yes (group, individual, data, emergency, network calls, a sleeping member; 3.19) | yes, on the Pluto as one carrier (2026-11-14 18:20 UTC, t3-fa58d1a8): the radio's call on the lent TS1 while TS2 carried another; an air MS's call on TS1 during the radio's on TS2; the idle radio camped through a 9 s lend, no hunt; its access held until the Aloha, then granted TS1 again |
 | Three or four SDR carriers | yes | no: the SDR site runs two |
 
 Two sites (the SDR site and the modem site, over mqtt-net):
