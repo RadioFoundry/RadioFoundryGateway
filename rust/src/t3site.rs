@@ -2029,6 +2029,9 @@ impl Site {
             self.pend[i] = p;
             self.ahoy_tick(i);
         } else if self.connected && self.ms_policy(ms).wide_private != 0 {
+            if p.svc & SO_SUPED != 0 {
+                p.supp = (r.dep >> 2 & 3) + 1; // after the called MS's site answers (tier3.md 3.21)
+            }
             p.state = P_NET;
             p.stream = self.new_stream();
             p.deadline_ms = self.now + self.cfg.setup_ms as i64;
@@ -2163,6 +2166,19 @@ impl Site {
     }
 
     /// Call setup i past its supplementary data: the grant (or the queue).
+    /// The called MS answered a call from another site: a call with supplementary user data waits for it (it comes
+    /// as SD_SUPP_NET once the caller's site has it) or for the call's stream; any other goes on (tier3.md 3.21).
+    fn supp_hold_or_ready(&mut self, i: usize) {
+        let p = self.pend[i];
+        if p.caller_local || p.kind != KIND_PRIVATE || p.svc & SO_SUPED == 0 {
+            self.private_ready(i);
+            return;
+        }
+        let q = &mut self.pend[i];
+        q.state = P_SUPP;
+        q.deadline_ms = self.now + 3 * self.cfg.tnp_ms as i64;
+    }
+
     fn supp_go(&mut self, i: usize) {
         let p = self.pend[i];
         if p.kind == KIND_GROUP {
@@ -2239,7 +2255,7 @@ impl Site {
                 if !p.caller_local && p.stream != 0 {
                     self.setup_out(SETUP_ACCEPT, WHY_OK, 0, p.svc, p.caller, p.called, p.stream);
                 }
-                self.private_ready(i);
+                self.supp_hold_or_ready(i);
             }
             _ => {
                 self.pend[i].used = false;
@@ -2267,7 +2283,7 @@ impl Site {
             if !p.caller_local && p.stream != 0 {
                 self.setup_out(SETUP_ANSWERED, WHY_OK, 0, p.svc, p.caller, p.called, p.stream);
             }
-            self.private_ready(i);
+            self.supp_hold_or_ready(i);
         } else {
             self.pend[i].used = false;
             self.ack(R_MESSAGE_ACCEPTED, called, p.caller);
@@ -2288,7 +2304,7 @@ impl Site {
                 let a = Ahoy { service_kind: SK_CANCEL, target: p.called, source: p.caller, ..Default::default() };
                 self.push(DT_CSBK, a.encode(), false, None);
             }
-            if !p.called_local && matches!(p.state, P_NET | P_ALERTING) {
+            if !p.called_local && matches!(p.state, P_NET | P_ALERTING | P_SUPP) {
                 self.setup_out(SETUP_CANCEL, WHY_OK, 0, p.svc, p.caller, p.called, p.stream);
             }
             if p.state == P_QUEUED {
@@ -2527,6 +2543,9 @@ impl Site {
                 if let Some(i) = self.pend.iter().position(|p| p.used && !p.caller_local && p.stream == m.r#ref) {
                     let p = self.pend[i];
                     self.pend[i].used = false;
+                    if p.state == P_SUPP {
+                        self.sd_supp_drop(p.caller);
+                    }
                     if p.answered {
                         let a = Ahoy { service_kind: SK_CANCEL, target: p.called, source: p.caller, ..Default::default() };
                         self.push(DT_CSBK, a.encode(), false, None);
@@ -2615,6 +2634,9 @@ impl Site {
         }
         if let Some(i) = self.pend.iter().position(|p| p.used && p.caller == src && p.called == dst) {
             self.pend[i].net_stream = stream; // carried on the channel once granted
+            if self.pend[i].state == P_SUPP && !self.pend[i].caller_local {
+                self.supp_go(i); // the caller's site went on without supplementary data
+            }
             return;
         }
         if self.reg_index(dst).is_none() {

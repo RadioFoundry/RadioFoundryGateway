@@ -447,3 +447,33 @@ fn multi_item_data_across_sites() {
     assert!(n.sb.grants().iter().all(|g| (g.op, g.target, g.source) == (OP_PD_GRANT, 2001, 1001)));
     assert!(n.a.ms.iter().chain(n.b.ms.iter()).all(|m| m.state() == t3ms::IDLE), "all back on the TSCC");
 }
+
+/// Supplementary user data on a voice call across sites (tier3.md 3.21): the caller's site takes the upload and sends
+/// it to the called MS's site, which downloads it from SUPLI before its grant; a wide talkgroup's goes to every site.
+#[test]
+fn supplementary_data_across_sites() {
+    let (mut sa, mut sb) = (site(), site());
+    let mut n = Net::new(&mut sa, &mut sb, [ms(1001, &[TG]), ms(1002, &[TG])], [ms(2001, &[TG]), ms(2002, &[TG])]);
+    let said = |s: &Side, t: &str| s.of(EV_LOG).iter().any(|e| e.text().contains(t));
+    assert!(n.a.ms[0].set_supp_as(crate::t3udt::FMT_ISO8, Some(b"meet at the corner")));
+    let now = n.a.now();
+    n.a.ms[0].act(t3ms::DO_PRIVATE, 2001, 1000, 0, now);
+    assert!(n.until(10_000, |n| n.b.ms[0].state() == t3ms::PAYLOAD), "the called MS is granted");
+    // on the TSCC before its grant: it has the data now
+    let (got, count, _) = n.b.ms[0].supp();
+    let (d, len) = got.expect("the data before the grant");
+    assert_eq!((&d[..len], count), (&b"meet at the corner"[..], 1));
+    assert!(said(&n.sb, "supplementary data from 1001 to 2001: delivered"));
+    assert!(n.until(5000, |n| said(&n.sa, "supplementary data from 1001 to 2001: delivered")), "the result came back");
+    assert!(n.until(10_000, |n| n.a.ms[0].state() == t3ms::PAYLOAD), "the caller is granted");
+    assert!(n.until(30_000, |n| n.a.ms.iter().chain(n.b.ms.iter()).all(|m| m.state() == t3ms::IDLE)));
+
+    // a wide talkgroup: both sites download it to their members
+    assert!(n.a.ms[0].set_supp(Some(b"to the talkgroup")));
+    let now = n.a.now();
+    n.a.ms[0].act(t3ms::DO_GROUP, TG, 1000, 0, now);
+    // binary: the two UDTs' 22 octets, the data first
+    let to_tg = |m: &Ms| m.supp().0.is_some_and(|(d, len)| d[..len].starts_with(b"to the talkgroup"));
+    assert!(n.until(10_000, |n| to_tg(&n.a.ms[1]) && to_tg(&n.b.ms[0]) && to_tg(&n.b.ms[1])), "every member has it");
+    assert!(n.until(5000, |n| said(&n.sa, "supplementary data from 1001 to 9: delivered")), "after its repeats");
+}

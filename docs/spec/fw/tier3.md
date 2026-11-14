@@ -1043,8 +1043,14 @@ on the C_AHOY from SUPLI, and takes a download from SUPLI (answering an individu
 both ways with a commercial portable running RadioFoundry's MS engine: an air MS's data to it on an individual call,
 and its ISO 8-bit data to a talkgroup and to an air MS.
 
-Not built: supplementary data on packet data and short data (6.6.3.2.2 a, 6.6.6.1.2.1.2 a: still abandoned), on
-calls across sites (the network setup carries none: the call goes on without it), the format beyond binary.
+Across sites, the caller's site sends the data once uploaded (5.9, what 7). For an individual call that's after the
+called MS's site accepted the setup. That site holds its grant (P_SUPP) until it has downloaded the data from SUPLI,
+the call's stream arrives (the caller's site went on without it), or 3 Tnp pass; its result goes back and the
+caller's site then grants. A cancel in the meantime goes on as a setup cancel. A `wide_tg` talkgroup's data goes to
+every site, which downloads it to its members (repeated, no result); the caller's site grants after its own repeats,
+so a far site's last repeats may overlap its grant.
+
+Not built: supplementary data on packet data and short data (6.6.3.2.2 a, 6.6.6.1.2.1.2 a: still abandoned).
 
 ## 4. Settings (config-v3 `tier3` app)
 
@@ -1325,7 +1331,7 @@ New item type 0x0D, `sdata`, 12 bytes plus the data, the only item of its messag
 | Octet | Field |
 |---|---|
 | 0 | op: 1 a message, 2 its result |
-| 1 | what: 1 UDT short data, 2 a status, 3 a status poll, 4 DGNA (3.17), 5 a transmit interrupt (3.20), 6 a UDT short data poll (3.15) |
+| 1 | what: 1 UDT short data, 2 a status, 3 a status poll, 4 DGNA (3.17), 5 a transmit interrupt (3.20), 6 a UDT short data poll (3.15), 7 a voice call's supplementary user data (3.21) |
 | 2 | reason: a result's air reason (44h MS_Accepted, 47h a poll's answer, 60h Message_Accepted, or a C_NACKD reason) |
 | 3 | value: UDT_Format, the status, or a poll's result: the polled status; a UDT poll: its C_RAND's Service_Options (the Polling Format), its result the polled data's UDT_Format |
 | 4 | flags: bit 0 talkgroup, bit 1 emergency |
@@ -1359,6 +1365,11 @@ asked for. The site that has the polled MS sends its C_AHOY (source the caller) 
 (reason Message_Accepted) carries the polled data as UDT short data does, value its UDT_Format, pad as above. A
 refusal (the polled MS's C_NACKU, MSaway, Queued_busy timing out) comes back as its reason with no data. The caller's
 site downloads the data to the caller. The application can't send one.
+
+A voice call's supplementary user data (what 7, section 3.21) goes from the caller's site once it has the upload: on
+`pc/{called}/{node}` for an individual call, as UDT short data (value its UDT_Format, pad as above), or on
+`tg/{tg}/{node}` for a `wide_tg` talkgroup. The called MS's site downloads it from SUPLI and answers with a result as
+for UDT short data; a talkgroup's gets none. The application can't send one.
 
 ### 5.10 Packet data across sites (the `data_pdu` item)
 
@@ -1941,6 +1952,7 @@ Built since step 8e, host-tested (the bench steps above note what has run on air
 | f530d840 | `setsupp TEXT` for the air MSs, and a log line for what they take |
 | 16a996f7 | The far site grants single-item: its channel closes after the item (5.10) |
 | 2446e12e | The simulated MS uploads in a character format, strips the pad, and counts the same data again on a later call |
+| "Site: supplementary data across sites" | A voice call's supplementary user data to an MS or a wide talkgroup at another site (3.21, 5.9 what 7) |
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
 apart from the code, found seven deviations, all fixed (2026-11-12):
@@ -1999,7 +2011,7 @@ Two sites (the SDR site and the modem site, over mqtt-net):
 | UDT polls across sites | yes | no |
 | Transmit interrupt across sites | yes (off by default) | no |
 | ALS calls and their termination across sites | yes (off by default) | no |
-| Supplementary user data across sites | no | no |
+| Supplementary user data across sites | yes | no |
 
 Hardware setups:
 
@@ -2011,7 +2023,7 @@ Hardware setups:
 | One split TX half and one split RX half, no SDR | yes, end to end | no |
 
 Not built: the standby controller; calls through PSTN, PABX or dispatcher gateways (dialled digits); IPv6;
-supplementary data on packet data, short data and across sites; dual-slot data; across sites, duplex calls
+supplementary data on packet data and short data; dual-slot data; across sites, duplex calls
 and talkgroup data from the site's own gateway.
 
 ## 14. Open questions for the owner

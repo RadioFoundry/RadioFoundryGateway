@@ -29,6 +29,10 @@ pub const SD_INTR: u8 = 5;
 /// carries the polled MS's data (value its UDT_Format) or the refusal. From the application: a poll from SDMI
 /// (6.6.5.1.5) of an MS registered here, value the Polling Format, data the UDTs asked for (none: 4).
 pub const SD_UDT_POLL: u8 = 6;
+/// A voice call's supplementary user data across sites (tier3.md 3.21, 5.9): src the caller, dst the called MS or
+/// the talkgroup, value its UDT_Format, data as UDT short data's. The called MS's site downloads it from SUPLI and
+/// answers with a result; a talkgroup's gets none. Only between sites (never from the application).
+pub const SD_SUPP_NET: u8 = 7;
 /// A registration's talkgroup list upload (6.4.4.1.13.2): only from an MS here, never an SdMsg
 pub(super) const SD_TGLIST: u8 = 0x41;
 /// A call diversion's address upload (6.6.7.1): only from an MS
@@ -605,7 +609,21 @@ impl Site {
             return;
         }
         if d.what == SD_SUPP {
-            // 6.4.13.2: the same blocks down to the called MS or the talkgroup, from SUPLI
+            // 6.4.13.2: the same blocks down to the called MS or the talkgroup, from SUPLI; to the called MS's site
+            // (its result ends it) or, for a wide talkgroup, to the other sites as well (tier3.md 3.21)
+            let wide = d.dst == ALLMSID || self.policy.wide_tg.contains(d.dst);
+            if d.origin == O_MS && self.connected && (if d.group { wide } else { self.reg_index(d.dst).is_none() }) {
+                let stream = self.new_stream();
+                let m = self.sd_msg(&d, SD_SEND);
+                self.ev(SdMsg { stream, ..m }.event(EV_NET_SD));
+                if !d.group {
+                    let s = &mut self.sd.sds[i];
+                    s.state = S_NET;
+                    s.stream = stream;
+                    s.deadline_ms = self.now + 2 * self.cfg.tnp_ms as i64;
+                    return;
+                }
+            }
             let s = &mut self.sd.sds[i];
             s.state = if d.group { S_GROUP } else { S_DOWN };
             s.next_ms = self.now;
@@ -714,7 +732,10 @@ impl Site {
                 return m;
             }
         }
-        if d.what == SD_UDT || d.what == SD_DGNA || (d.what == SD_UPOLL && d.blocks.n > 0) {
+        if d.what == SD_SUPP {
+            m.what = SD_SUPP_NET;
+        }
+        if matches!(d.what, SD_UDT | SD_DGNA | SD_SUPP) || (d.what == SD_UPOLL && d.blocks.n > 0) {
             let mut buf = [0u8; MAX_DATA];
             let mut n = d.blocks.data(&mut buf);
             if d.what != SD_DGNA && pads_nibbles(d.value) {
@@ -757,9 +778,13 @@ impl Site {
             self.pd_addr(d.src, ok.then_some(d.r#ref), reason); // the data call's to answer
             return;
         }
-        if d.what == SD_SUPP {
+        if d.what == SD_SUPP && d.origin == O_MS {
             self.supp_data_done(d.src, d.dst, ok, d.state == S_UPLOAD, reason);
             return;
+        }
+        if d.what == SD_SUPP && !d.group {
+            // another site's call, held here for it (t3site supp_hold); its result goes back below
+            self.supp_data_done(d.src, d.dst, ok, false, reason);
         }
         if d.what == SD_IPADV {
             self.ip_advice_done(d.src, d.so, ok.then_some(d.r#ref)); // the registration's to answer
@@ -1331,6 +1356,10 @@ impl Site {
             self.upoll_net_in(m);
             return;
         }
+        if m.what == SD_SUPP_NET {
+            self.supp_net_in(m);
+            return;
+        }
         let group = m.flags & SD_F_GROUP != 0;
         if group && !self.wants_tg(m.dst) && !is_allcall(m.dst) {
             return;
@@ -1376,6 +1405,49 @@ impl Site {
         };
         d.head.blocks = m.data().first().copied().unwrap_or(MAX_BLOCKS as u8).clamp(1, MAX_BLOCKS as u8);
         self.sd.sds[i] = d;
+    }
+
+    /// A call's supplementary user data from the caller's site (tier3.md 3.21): down from SUPLI to the called MS, if
+    /// it's here, or to the talkgroup, as on the caller's site (6.4.13.2).
+    fn supp_net_in(&mut self, m: &SdMsg) {
+        let group = m.flags & SD_F_GROUP != 0;
+        if if group { !self.wants_tg(m.dst) && !is_allcall(m.dst) } else { self.reg_index(m.dst).is_none() } {
+            return; // not here: another site may have it
+        }
+        if (0..SDS).any(|i| {
+            let d = &self.sd.sds[i];
+            d.used && d.what == SD_SUPP && d.origin == O_NET && d.r#ref == m.stream
+        }) {
+            return; // a repeat
+        }
+        let (Some(i), Some((b, pn))) = (self.sd_free(), Blocks::of_format(m.data(), m.value)) else {
+            if !group {
+                let stream = self.new_stream();
+                let r = SdMsg { op: SD_RESULT, reason: R_SYSBUSY, why: WHY_REFUSED, r#ref: m.stream, stream, ..*m };
+                self.ev(SdMsg { len: 0, value: 0, ..r }.event(EV_NET_SD));
+            }
+            return;
+        };
+        let pad_nibble = if pads_nibbles(m.value) { pn + (m.pad_nibble & 1) } else { m.pad_nibble };
+        let tries = if group { self.cfg.sd_repeats } else { self.cfg.sd_tries };
+        self.sd.sds[i] = Sd {
+            used: true,
+            what: SD_SUPP,
+            origin: O_NET,
+            group,
+            state: if group { S_GROUP } else { S_DOWN },
+            sk: if group { SK_TG_VOICE } else { SK_IND_VOICE },
+            value: m.value,
+            src: m.src,
+            dst: m.dst,
+            r#ref: m.stream,
+            blocks: b,
+            head: UdtHead { blocks: b.n, pad_nibble, format: m.value, ..Default::default() },
+            next_ms: self.now,
+            tries: tries.max(1),
+            deadline_ms: self.now + self.cfg.tnp_ms as i64,
+            ..Default::default()
+        };
     }
 
     /// The polled MS's data came back from its site: down to the caller, as a poll's here (6.6.5.1.3).

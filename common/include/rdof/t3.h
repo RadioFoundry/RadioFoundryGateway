@@ -398,6 +398,8 @@ void rdof_t3_entropy(rdof_t3_site_t *s, uint64_t v);
 #define RDOF_T3_SD_UPOLL 6 /* a UDT short data poll (tier3.md 3.15, 5.9): from the application, a poll from SDMI of an
                             * MS here, value the Polling Format, data[0] the UDTs asked for (len 0: 4); its result's
                             * data is the polled MS's (value its UDT_Format). Also between sites */
+#define RDOF_T3_SD_SUPP 7 /* a voice call's supplementary user data between sites (tier3.md 3.21, 5.9): value the
+                           * UDT_Format, data as UDT short data's; never from the application */
 #define RDOF_T3_SD_SEND 1   /* op: a message */
 #define RDOF_T3_SD_RESULT 2 /* op: its outcome */
 #define RDOF_T3_SD_F_GROUP 0x01
