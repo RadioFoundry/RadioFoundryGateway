@@ -677,3 +677,61 @@ fn packet_data_with_supplementary_data() {
     assert_eq!(air.ms[0].status().calls_done, 3);
     assert!(said(&log, &std::format!("supplementary data from 1001 to {TSI}: not taken")));
 }
+
+/// The site's reply to an MS that sent it data (its IP gateway's answer, within ~0.1 s): on the MS's data channel
+/// with the site while it's open, with no availability check. An MS on a voice call: held until it's back, then the
+/// availability check and the channel.
+#[test]
+fn site_reply_on_the_open_channel_or_after_the_call() {
+    let mut s = site_with(|c| {
+        c.data_id = GW;
+        c.data_hang_ms = 4000;
+    });
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG]), ms(1002, &[TG])], T0);
+    register_all(&mut air, &mut log);
+    let now = air.now();
+    assert!(air.ms[0].send_data(IPI, t3ms::F_CONFIRMED, DATA, now));
+    assert!(air.until(3000, &mut log.f(), |a| a.ms[0].state() == t3ms::PAYLOAD));
+    let open = log.of(EV_PD).into_iter().find(|e| e.op == PD_OPEN && e.dst == IPI).expect("the uplink's channel");
+    assert!(matches!(air.site.status().ch[open.ch as usize].r#use, USE_CALL | USE_HANG), "still open");
+    let now = air.now();
+    assert!(air.site.pd_send(GW, 1001, false, now));
+    let blocks = tscc_blocks(&mut air, &mut log, 300);
+    let reply = log.of(EV_PD).into_iter().find(|e| e.op == PD_OPEN && e.src == GW && e.dst == 1001);
+    assert_eq!(reply.expect("the reply's channel").ch, open.ch, "the MS's open channel");
+    assert!(blocks.iter().filter_map(Ahoy::decode).all(|a| a.target != 1001), "no availability check");
+    assert!(air.until(15_000, &mut log.f(), |a| a.ms.iter().all(|m| m.state() == t3ms::IDLE)));
+
+    // on a voice call: held, then the check and its own channel
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_PRIVATE, 1002, 3000, 0, now);
+    assert!(air.until(5000, &mut log.f(), |a| a.ms[0].state() == t3ms::PAYLOAD));
+    let n = log.of(EV_PD).len();
+    let now = air.now();
+    assert!(air.site.pd_send(GW, 1001, false, now), "held, not refused");
+    let blocks = tscc_blocks(&mut air, &mut log, 2000);
+    assert!(blocks.iter().filter_map(Ahoy::decode).all(|a| a.source != GW), "no check while it talks");
+    assert!(air.until(15_000, &mut log.f(), |a| a.ms[0].state() == t3ms::IDLE));
+    let blocks = tscc_blocks(&mut air, &mut log, 8000);
+    let ahoy = blocks.iter().filter_map(Ahoy::decode).find(|a| a.source == GW).expect("the check once it's back");
+    assert_eq!((ahoy.target, ahoy.service_kind), (1001, SK_IND_PD));
+    assert!(log.of(EV_PD)[n..].iter().any(|e| e.op == PD_OPEN && e.src == GW && e.dst == 1001), "then the channel");
+    assert!(air.until(15_000, &mut log.f(), |a| a.ms.iter().all(|m| m.state() == t3ms::IDLE)));
+
+    // an unconfirmed single item (the on-air case, 2026-11-14 05:59): its channel drains at once, so the reply
+    // doesn't go there; it waits for the clear, then the check and a channel of its own
+    let now = air.now();
+    let before = air.ms[0].status().calls_done;
+    assert!(air.ms[0].send_data(IPI, 0, DATA, now));
+    let n = log.of(EV_PD).len();
+    assert!(air.until(3000, &mut log.f(), |a| a.ms[0].status().calls_done > before), "item sent");
+    assert!(log.of(EV_PD)[n..].iter().any(|e| e.op == PD_OPEN && e.dst == IPI), "the uplink");
+    let now = air.now();
+    assert!(air.site.pd_send(GW, 1001, false, now));
+    let blocks = tscc_blocks(&mut air, &mut log, 6000);
+    assert!(blocks.iter().filter_map(Ahoy::decode).any(|a| a.source == GW && a.target == 1001), "the check");
+    let reply: Vec<Event> =
+        log.of(EV_PD)[n..].iter().filter(|e| e.op == PD_OPEN && e.src == GW && e.dst == 1001).copied().collect();
+    assert_eq!(reply.len(), 1, "one channel for the reply");
+}

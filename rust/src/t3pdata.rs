@@ -433,6 +433,14 @@ const PD_HELD: u8 = 4; // the far site's: the call accepted, waiting for its dat
 const PD_GO: u8 = 5; // answered across the network: a channel next, or the queue
 const PD_ADDR: u8 = 6; // to IPI: the caller uploads the IP address first (t3sdata SD_IPADDR)
 const PD_SUPP: u8 = 7; // the caller's supplementary user data going up and down first (6.4.13, t3sdata SD_SUPP)
+const PD_WAIT: u8 = 8; // the site's own data: the called MS is on another call; its availability check once it's back
+/// How long the site's own data waits for a busy MS (within the unit's own wait for a channel, t3unit DATA_WAIT_MS).
+const PD_WAIT_MS: i64 = 20_000;
+/// The site's reply goes on the MS's open data channel only this soon after the channel's last data burst (an MS
+/// whose call ended, no answer to its confirmed data say, may be back on the TSCC while the site still holds it), and
+/// with this much of its hang time left (an unconfirmed single item's channel drains at once: DRAIN_MS).
+const PD_REPLY_MS: i64 = 1500;
+const PD_REPLY_ROOM_MS: i64 = 1000;
 /// How long the far site keeps an accepted call for its data (the calling site may queue it first).
 const PD_HOLD_MS: i64 = 30_000;
 
@@ -907,6 +915,16 @@ impl Site {
                 self.pd_fail(&p, reason);
                 continue;
             }
+            if p.state == PD_WAIT {
+                let other = (0..PDS).any(|j| {
+                    let q = &self.pd.pds[j];
+                    j != i && q.used && !q.group && (q.caller == p.called || q.called == p.called)
+                });
+                if !self.ms_busy(p.called) && !other {
+                    self.pd_check(i); // back: its availability check now
+                }
+                continue;
+            }
             if p.state == PD_AHOY && now >= p.next_ahoy_ms {
                 self.pd_ahoy(i);
                 if !self.pd.pds[i].used {
@@ -962,7 +980,13 @@ impl Site {
         if self.withdrawn {
             return false;
         }
-        if let Some(ch) = self.pd_channel(group, src, dst) {
+        // the pair's data channel, or (an MS) its data channel with the site: a reply to what it sent goes there in
+        // the data hang time, as the MS still listens on it (6.6.3.3.2)
+        let open = self.pd_channel(group, src, dst).or_else(|| if group { None } else { self.pd_site_channel(dst) });
+        if let Some(ch) = open {
+            let hang = self.pd_hang();
+            let c = &mut self.chans[ch];
+            c.idle_until_ms = c.idle_until_ms.max(now_ms + hang); // held for the data going down
             let mut e = self.chan_ev(ch, EV_PD);
             e.op = PD_OPEN;
             e.kind = (!group) as u8;
@@ -976,18 +1000,39 @@ impl Site {
         if group && !is_allcall(dst) && !self.policy.tg.contains(dst) {
             return false;
         }
-        if !group && (self.reg_index(dst).is_none() || self.ms_busy(dst) || self.pd_busy(dst)) {
+        if !group && self.reg_index(dst).is_none() {
             return false;
         }
+        let busy = !group && (self.ms_busy(dst) || self.pd_busy(dst));
         let Some(i) = self.pd_free() else { return false };
         self.pd.pds[i] =
             Pd { used: true, group, from_site: true, caller: src, called: dst, since_ms: now_ms, ..Default::default() };
         if group {
             self.pd_ready(i);
+        } else if busy {
+            // on a call (or ending one): held until it's back on the TSCC
+            let p = &mut self.pd.pds[i];
+            p.state = PD_WAIT;
+            p.deadline_ms = now_ms + PD_WAIT_MS;
         } else {
             self.pd_check(i);
         }
         true
+    }
+
+    /// The live data channel of an individual call between ms and the site (TSI, the data ID or IPI), data on it
+    /// within PD_REPLY_MS.
+    fn pd_site_channel(&self, ms: u32) -> Option<usize> {
+        (0..CHANNELS).find(|&i| {
+            let c = &self.chans[i];
+            let site = |a: u32| self.pd_site(a) || a == IPI;
+            Self::live(c)
+                && c.flags & F_DATA != 0
+                && c.kind == KIND_PRIVATE
+                && self.now - c.last_voice_ms <= PD_REPLY_MS
+                && c.idle_until_ms - self.now >= PD_REPLY_ROOM_MS
+                && ((c.src == ms && site(c.dst)) || (c.dst == ms && site(c.src)))
+        })
     }
 }
 

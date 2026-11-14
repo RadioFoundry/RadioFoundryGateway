@@ -700,7 +700,12 @@ The site as a party: data to TSI, the data ID or IPI goes, burst by burst, to th
 the IP gateway app, when the document has one: [ipgw.md](ipgw.md)). What the gateway
 sends (its replies, the ACK of a confirmed message) goes down through `rdof_t3unit_data_tx`: on the open channel at
 once, else the site asks for one (`rdof_t3_pd_send`: the availability check to an MS, or TD_GRANT for a talkgroup)
-and sends it when granted, source the site's ID; 30 s at most, one packet at a time. A packet to an MS not
+and sends it when granted, source the site's ID; 30 s at most, one packet at a time. A reply to an MS that just sent
+the site data goes on that MS's data channel with the site (to TSI, the data ID or IPI) while its data hang time
+lasts: data on it within the last 1.5 s and 1 s of hang left, which the reply extends. An unconfirmed single item's
+channel drains at once, and an MS on another call is busy: the reply waits, up to 20 s, until the MS is back on the
+TSCC, then has its availability check and a channel of its own. (On air, 2026-11-14: the IP gateway's answer to an
+unconfirmed datagram came back in 0.1 s, found the MS still on its draining channel, and was dropped.) A packet to an MS not
 registered here goes to the network as a `data_pdu` (5.10) when the site is connected; the site that has the MS
 delivers it.
 
@@ -1937,7 +1942,7 @@ type `tier3` (was `trunk`), the build option `RDOF_TIER3`, the modules `t3*`.
 | 8e | Bench: the real radio (a commercial portable with RadioFoundry's MS engine, 50 mW) against both sites, the bench offset image merged in (1e2549fe) | done 2026-11-13. Site 1: registration by syscode, by talkgroup and with a list, group and individual calls, status, poll and short data to an air MS (12 of 12); a broadcast and an all-call cleared right after the terminator (radio back on the TSCC 0.5 and 0.7 s after release), a group call after its 3 s hang; IP text messages (UDP 5016) unconfirmed and confirmed. Site 2: the same calls to an air MS on site 1 through the private-call router, and the text messages across sites. Found: UDT short data crossed sites with its pad octets (24 characters arrived as 34 octets), fixed in 12379fa8. Open: on site 2 the radio sends each registration twice although the site answers the first within 180 ms; the radio decodes few of the stock modem's CSBKs (1.4 a second against 8 on site 1) with no CRC errors |
 | 8f | Bench: power save (6.4.7) with the real radio (50 mW, PowerSave_RQ 2) on site 1, an air MS calling it | done 2026-11-14 UTC. Registered with offset 2; the radio's receiver was off 55-60% of the time with no hunts (after two fixes on its side). Everything to the sleeping radio arrived within one 1.92 s cycle: a status in 1.50 s, UDT short data in 1.51 s, a UDT poll's C_AHOY in 1.33 s (0.26 s with power save off). The radio answered each poll: C_NACKU MS_Not_Supported with no reply set, mirrored to the caller; with one, its C_UDTHU, and the air MS got "rfoundry 3101276 aslee" (22 octets: two UDTs asked). The caller repeated its C_RAND while the C_AHOY waited for the wake frame; the site now sends it C_WACKD |
 | 8g | Bench: IP connection advice (6.4.11) with the real radio (50 mW) on site 1 | done 2026-11-14 UTC. Registered with IP_Inform, PowerSave_RQ 2: C_AHOY from IPI (Service_Kind 0100b) 0.23 s after the C_RAND, the radio's C_UDTHU (12.47.82.92) at 0.31 s, C_ACKD 62h from IPI at 0.55 s, offset 2 granted; the site logged the address added. Again from a fresh start with no power save: 0.40 s and 0.64 s; the same address, held by the same MS, added again |
-| 8h | Bench: DGNA, call diversion, ALS and the IP address upload with the real radio (50 mW) on site 1 | done 2026-11-14 UTC. DGNA of TGs 11 and 12 from the site: the radio answered MS_Accepted (0x44) and followed air MS calls to both. Diversion to an air MS: the upload taken, a call to the radio diverted, the clear taken, then the call put through (C_ACKU 0x44). ALS from an air MS: C_ACKU 0x60, the radio sent for its 30 s and ended with P_MAINT. The upload before data to IPI: the address taken and PD_GRANT, but the datagram never reached the IP gateway (on the site since 69483bd1; counters to find where in 2f701fb2) |
+| 8h | Bench: DGNA, call diversion, ALS and the IP address upload with the real radio (50 mW) on site 1 | done 2026-11-14 UTC. DGNA of TGs 11 and 12 from the site: the radio answered MS_Accepted (0x44) and followed air MS calls to both. Diversion to an air MS: the upload taken, a call to the radio diverted, the clear taken, then the call put through (C_ACKU 0x44). ALS from an air MS: C_ACKU 0x60, the radio sent for its 30 s and ended with P_MAINT. The upload before data to IPI: the address taken and PD_GRANT, but the datagram never reached the IP gateway: the site didn't start its `ipgw` app (fixed in 69483bd1). Rerun at 05:59: the datagram reached a host (rfn-ipsvc on radiodesk), whose reply was dropped at the site (fixed after 08a562b6). C_MOVE to channel 2, no TSCC there: the radio moved, hunted in 5 s and camped back on the TSCC, registration kept |
 | 9 | Merge into main | the owner's go |
 
 Built since step 8e, host-tested (the bench steps above note what has run on air):
@@ -1969,6 +1974,7 @@ Built since step 8e, host-tested (the bench steps above note what has run on air
 | 85f794f4 | The site logs each MS's C_ACKU and C_NACKU on the TSCC |
 | 2f701fb2 | IP gateway counters for headers, header CRC failures and blocks; a log line for data handed to the site's gateway |
 | 08a562b6 | Supplementary user data on packet data calls, here and across sites (3.21) |
+| (next) | The site's reply to an MS that just sent it data: on its open data channel, or after its call (3.16) |
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
 apart from the code, found seven deviations, all fixed (2026-11-12):
@@ -2005,10 +2011,11 @@ One site (the SDR site, two carriers):
 | Status, status polls, UDT short data | yes | yes |
 | UDT short data polling | yes | yes: the radio polling an air MS, and an air MS polling the radio, asleep or not (13.2 step 8f) |
 | Packet data at rate 1/2, 3/4 and 1, up to 127 blocks | yes | partly: IP text messages, confirmed and unconfirmed, at rate 1/2 |
-| IP address upload to IPI, IP connection advice | yes | IP connection advice yes, with and without power save (13.2 step 8g); the upload before a data call to IPI yes, but its datagram didn't reach the IP gateway (step 8h) |
+| IP address upload to IPI, IP connection advice | yes | IP connection advice yes, with and without power save (13.2 step 8g); the upload before a data call to IPI and the datagram through the IP gateway to a host, yes; the host's reply back to the radio not yet (step 8h) |
 | Stun, revive, mass re-registration | yes | yes (PTT refused while stunned) |
 | DGNA, call diversion, ALS | yes | yes (13.2 step 8h) |
-| Kill, C_MOVE | yes | no: kill isn't run on the one radio (it would take it off DMR); C_MOVE has no second TSCC to go to |
+| C_MOVE | yes | to a channel with no TSCC: the radio moved, hunted and came back (2026-11-14); to a second TSCC not yet |
+| Kill | yes | no: not run on the one radio (it would take it off DMR) |
 | UDT polls from the site, the radio check (TSCC and payload), the selective clear | yes | the payload radio check and the selective clear, yes |
 | Power save | yes | yes: registration, a status, short data and a poll to the sleeping radio (13.2 step 8f); a call and packet data to it not yet |
 | Full-duplex individual calls | yes (off by default) | no |
