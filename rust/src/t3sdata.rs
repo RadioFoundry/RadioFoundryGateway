@@ -163,7 +163,7 @@ const S_HOLD: u8 = 2; // stored: the called MS is busy
 const S_DOWN: u8 = 3; // to an MS here: the download or the status C_AHOY, its answer awaited
 const S_GROUP: u8 = 4; // to a talkgroup: repeats left
 const S_NET: u8 = 5; // sent to the network: its result awaited
-const S_AFTER: u8 = 6; // UDT short data whose caller's supplementary data goes first (SD_SUPP; 6.6.4.1.2, 6.6.4.5)
+const S_AFTER: u8 = 6; // short data or a status whose caller's supplementary data goes first (SD_SUPP; 6.6.4.5)
 
 // where it came from
 const O_MS: u8 = 1; // an MS here: answered on the TSCC
@@ -409,7 +409,6 @@ impl Site {
             }
         }
         let Some(group) = self.sd_target(ms, r.target, group, what == SD_POLL) else { return };
-        // a status's supplementary data (SUPED_SV) isn't taken: it goes on without it (6.6.6.1.2.1.2 a)
         if what == SD_UDT {
             if self.sd_upload_new(SD_UDT, ms, r.target, group, r.service_options, rand_sdata_blocks(r))
                 && r.service_options & SO_SUPED != 0
@@ -436,6 +435,18 @@ impl Site {
         };
         d.value = rand_status(r);
         self.sd.sds[i] = d;
+        // table 6.57: SUPED_SV (Service_Options bit 5), SUPED_VAL in dependent bits 3-2. As for short data, the
+        // supplementary data first (6.4.13, 6.6.6.1.2.1.2 e), then the status's C_AHOY (S_AFTER until then); no
+        // room: the status goes on without it (6.6.6.1.2.1.2 a)
+        if what == SD_STATUS && rand_suped(r) {
+            if self.sd_supp_new(ms, r.target, group, SK_STATUS, (r.dep >> 2 & 3) + 1) {
+                let s = &mut self.sd.sds[i];
+                s.state = S_AFTER;
+                s.deadline_ms = self.now + 4 * self.cfg.tnp_ms as i64;
+                return;
+            }
+            self.log(format_args!("supplementary data from {ms}: no room, the call goes on"));
+        }
         self.sd_route(i);
     }
 
@@ -582,16 +593,23 @@ impl Site {
         s.deadline_ms = now + 4 * self.cfg.tnp_ms as i64;
     }
 
-    /// The supplementary data of ms's call to dst ended (t3site supp_data_done): UDT short data held for it
-    /// (S_AFTER) goes on with its upload.
+    /// The supplementary data of ms's call to dst ended (t3site supp_data_done): short data held for it (S_AFTER)
+    /// goes on with its upload, a status with its delivery.
     pub(super) fn sd_supp_after(&mut self, ms: u32, dst: u32) {
-        let now = self.now;
         let tnp = self.cfg.tnp_ms as i64;
-        for d in self.sd.sds.iter_mut() {
-            if d.used && d.state == S_AFTER && d.src == ms && d.dst == dst {
-                d.state = S_UPLOAD;
-                d.ahoy_due = true;
-                d.deadline_ms = now + tnp;
+        for i in 0..SDS {
+            let d = self.sd.sds[i];
+            if !(d.used && d.state == S_AFTER && d.src == ms && d.dst == dst) {
+                continue;
+            }
+            let s = &mut self.sd.sds[i];
+            s.deadline_ms = self.now + tnp;
+            if d.what == SD_STATUS {
+                s.state = 0;
+                self.sd_route(i);
+            } else {
+                s.state = S_UPLOAD;
+                s.ahoy_due = true;
             }
         }
     }

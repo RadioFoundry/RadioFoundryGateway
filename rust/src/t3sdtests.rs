@@ -901,3 +901,42 @@ fn udt_with_supplementary_data() {
     let took = |m: &Ms| m.supp().0.is_some_and(|(d, len)| d[..len].starts_with(b"to the talkgroup"));
     assert!(air.ms[1..].iter().all(|m| took(m) && m.inbox().is_some_and(|(h, ..)| h.group)));
 }
+
+/// A status with SUPED_SV (table 6.57: Service_Options bit 5, SUPED_VAL in dependent bits 3-2): the C_AHOY from SUPLI
+/// (Service_Kind 0111b) and the upload first, the supplementary data down to the called MS, then the status's C_AHOY
+/// (6.6.6.1.2.1.2 e). To a talkgroup the same.
+#[test]
+fn status_with_supplementary_data() {
+    let mut s = site_with(|_| {});
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG]), ms(1002, &[TG]), ms(1003, &[TG])], T0);
+    register_all(&mut air, &mut log);
+    assert!(air.ms[0].set_supp(Some(b"33.5994N 086.6847W")));
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_STATUS, 1002, 42, 0, now);
+    let blocks = tscc_blocks(&mut air, &mut log, 6000);
+    let ahoys: Vec<(usize, Ahoy)> =
+        blocks.iter().enumerate().filter(|b| b.1 .0 == 3).filter_map(|(i, b)| Ahoy::decode(&b.1).map(|a| (i, a))).collect();
+    let supl = ahoys.iter().find(|a| a.1.source == SUPLI && a.1.target == 1001).expect("C_AHOY from SUPLI");
+    assert_eq!((supl.1.service_kind, supl.1.appended), (SK_STATUS, 1));
+    let status = ahoys.iter().find(|a| a.1.service_kind == SK_STATUS && a.1.target == 1002).expect("the status");
+    let down = blocks.iter().position(|b| {
+        b.0 == 6 && UdtHead::decode(&b.1).is_some_and(|h| h.op == OP_UDTHD && h.source == SUPLI && h.target == 1002)
+    });
+    assert!(supl.0 < down.expect("supplementary down") && down.unwrap() < status.0, "SUPLI, its download, the status");
+    assert_eq!(air.ms[0].status().last_reason, R_MS_ACCEPTED);
+    assert_eq!(air.ms[1].sd_statuses(), (1001, 42, 1, 0));
+    let (got, n, _) = air.ms[1].supp();
+    assert!(got.is_some_and(|(d, len)| d[..len].starts_with(b"33.5994N")) && n == 1);
+
+    // to a talkgroup
+    assert!(air.ms[0].set_supp(Some(b"to the talkgroup")));
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_STATUS, TG, 99, t3ms::F_GROUP, now);
+    assert!(air.until(8000, &mut log.f(), |a| a.ms[0].status().calls_done == 2 && a.ms[0].state() == t3ms::IDLE));
+    assert_eq!(air.ms[0].status().last_reason, R_MESSAGE_ACCEPTED);
+    for m in &air.ms[1..] {
+        assert_eq!(m.sd_statuses().1, 99);
+        assert!(m.supp().0.is_some_and(|(d, len)| d[..len].starts_with(b"to the talkgroup")));
+    }
+}

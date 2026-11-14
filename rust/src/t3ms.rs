@@ -488,7 +488,7 @@ impl Ms {
         (self.dgna, self.dgna_n)
     }
 
-    /// Supplementary user data (6.4.13) for its voice, packet data and UDT short data calls from now on (None: none): SUPED_SV 1, SUPED_VAL the
+    /// Supplementary user data (6.4.13) for its voice, packet data, UDT short data and status calls from now on (None: none): SUPED_SV 1, SUPED_VAL the
     /// blocks less one; it uploads the data when the C_AHOY from SUPLI asks. False when it's over 4 blocks (46
     /// octets).
     pub fn set_supp(&mut self, data: Option<&[u8]>) -> bool {
@@ -707,7 +707,16 @@ impl Ms {
                 ..Default::default()
             },
             DO_ANSWER => Rand { service_kind: SK_CALL_ANSWER, target: a.arg, source: self.id, ..Default::default() },
-            DO_STATUS => status_rand(a.talk_ms as u8, a.flags & F_TO_GROUP != 0, a.arg, self.id),
+            // table 6.57: SUPED_SV in Service_Options bit 5 (the status's five MSBs below it), SUPED_VAL in
+            // dependent bits 3-2
+            DO_STATUS => {
+                let mut r = status_rand(a.talk_ms as u8, a.flags & F_TO_GROUP != 0, a.arg, self.id);
+                if suped != 0 {
+                    r.service_options |= 0x20;
+                    r.dep |= suped_val;
+                }
+                r
+            }
             // 6.4.14.3.3.2, 6.4.14.3.4.3: a status call, 125 (payload interrupt) or 123 (ALS termination)
             DO_INTERRUPT => {
                 let st = if a.flags & F_ALS != 0 { STATUS_ALS_END } else { STATUS_INTERRUPT };
@@ -1585,6 +1594,7 @@ impl Ms {
             (SUPLI, SK_TG_VOICE) => Some(DO_GROUP),
             (SUPLI, SK_IND_PD | SK_TG_PD) => Some(DO_DATA), // a data call's (6.4.13.0: voice or data)
             (SUPLI, SK_IND_UDT | SK_TG_UDT) => Some(DO_SDM), // short data's, before SDMI's (6.6.4.5)
+            (SUPLI, SK_STATUS) => Some(DO_STATUS), // a status's, before its delivery (6.6.6.1.2.1.2 e)
             _ => None,
         };
         if let Some(what) = upload {
@@ -1626,7 +1636,9 @@ impl Ms {
                     self.supp_sent += 1;
                     let h = UdtHead {
                         op: OP_UDTHU,
-                        group: what == DO_GROUP || (matches!(what, DO_DATA | DO_SDM) && self.cur.flags & F_GROUP != 0),
+                        group: what == DO_GROUP
+                            || (matches!(what, DO_DATA | DO_SDM) && self.cur.flags & F_GROUP != 0)
+                            || (what == DO_STATUS && self.cur.flags & F_TO_GROUP != 0),
                         format: self.supp_fmt.0,
                         pad_nibble: self.supp_fmt.1,
                         target: SUPLI,
