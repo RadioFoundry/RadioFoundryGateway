@@ -200,6 +200,10 @@ if(TARGET rdofradio AND TARGET fakemodem AND UNIX)
         add_test(NAME rdofradio_e2e_t3_preempt COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_t3_preempt.sh
                  $<TARGET_FILE_DIR:rdofradio>)
         set_tests_properties(rdofradio_e2e_t3_preempt PROPERTIES TIMEOUT 60)
+        # no RF: late entry on a lent composite TSCC slot: an MS that missed a call joins it from the slot's hang time
+        add_test(NAME rdofradio_e2e_t3_late COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_t3_late.sh
+                 $<TARGET_FILE_DIR:rdofradio>)
+        set_tests_properties(rdofradio_e2e_t3_late PROPERTIES TIMEOUT 90)
         # no RF: a Tier III site's IP gateway: an MS's data to IPI goes out to a host and the reply comes back down
         add_test(NAME rdofradio_e2e_t3_ipgw COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_t3_ipgw.sh
                  $<TARGET_FILE_DIR:rdofradio> 47013)

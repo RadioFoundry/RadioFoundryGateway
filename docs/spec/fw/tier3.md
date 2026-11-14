@@ -959,7 +959,8 @@ as a hotspot modem, gets a second call at once.
   call ignore them unless they're idle. P_PROTECT and a presence check go first. Other makers' radios most likely
   ignore a P_GRANT on a payload channel; RadioFoundry's MS engine follows one when idle (rf-t3). Test:
   `composite_late_entry_on_the_lent_slot` (rust t3ctltests: an MS switched off through a call's grants and the
-  lend joins the call from the lent slot's hang time; without the setting, only once the TSCC is back).
+  lend joins the call from the lent slot's hang time; without the setting, only once the TSCC is back) and
+  `rdofradio_e2e_t3_late` (the same with air MSs: `1000003 off`, then `on` while the slot is lent).
 - Covered in the simulator (rust t3ctltests, t3tests): a group call, an individual call, confirmed packet data and
   an emergency call each on the lent slot while TS2 is busy; a sleeping member joining after its wake frame; a call
   from the network opening there; and on the simulated modem (host-tests/e2e_t3_hat.sh, its second run), an
@@ -1812,8 +1813,10 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
   often rate 3/4): the outbound's data blocks decoded (BPTC, the trellis, or as is at rate 1), the CRCs checked, a
   confirmed message answered with an ACK, a NACK or a SACK and its retry taken (3.16). `egroup TG [TALK_MS]` is a
   group call with the Emergency service option (3.9); an MS listening to a call when it's due leaves that call for
-  the TSCC, as a radio's emergency key does. Tests: `rdofradio_e2e_t3_airms`; `rdofradio_e2e_t3_preempt`
-  (pre-emption on a one-carrier site: the talker ceases on the RC, the emergency call gets TS2).
+  the TSCC, as a radio's emergency key does. `ID off`, `ID on`: the MS switched off (it neither hears nor sends, so
+  it misses grants) and on again, where it was. Tests: `rdofradio_e2e_t3_airms`; `rdofradio_e2e_t3_preempt`
+  (pre-emption on a one-carrier site: the talker ceases on the RC, the emergency call gets TS2);
+  `rdofradio_e2e_t3_late` (late entry on a lent composite slot, 3.19).
 - `--sim-ext PATH`: external MSs (other programs, such as a radio's MS engine built for the host) on the simulated
   air, through a unix socket, beside the N simulated ones (N may be 0). JSON lines in lockstep with the slots: after
   slot k each client gets what every carrier aired (the burst, its data type and CC, the PDU when its CRC passed, the

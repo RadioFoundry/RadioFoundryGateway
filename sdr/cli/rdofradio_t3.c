@@ -407,6 +407,7 @@ typedef struct {
 #define ACT_IPADV 0xF6     /* rdof_t3ms_ip_advice: arg the address, flags 1 deleting it */
 #define ACT_SETSUPP 0xF7   /* rdof_t3ms_set_supp (text, binary format) */
 #define ACT_MISSACK 0xF8   /* rdof_t3ms_miss_acks: arg how many */
+#define ACT_POWER 0xF9     /* an air MS switched off (arg 0: it neither hears nor sends) or on (1) */
 #define AIR_RADIO_NET 0x0C000000u /* 12.0.0.0/8: a radio's address, its id in the low 24 bits */
 #define AIR_FILL_MAX ((RDOF_IPGW_MAX_PACKET - 28) / 2) /* data *N: characters at most, one UDP/IPv4 datagram */
 #define ACT_HELP                                                                                                       \
@@ -417,7 +418,7 @@ typedef struct {
     "(data34, cdata1 ...: rate 3/4, 1; "                                                                              \
     "TEXT *N: N generated characters) | "                                                                             \
     "interrupt ID [TALK_MS] | ginterrupt TG [TALK_MS] | als ID | alsend ID | "                                        \
-    "setstatus N | missack N | cancel | ambe FILE|off (any MS: all MSs' voice, raw 9-octet AMBE+2 frames)"
+    "setstatus N | missack N | off | on | cancel | ambe FILE|off (any MS: all MSs' voice, raw 9-octet AMBE+2 frames)"
 
 #define ACTS 256
 
@@ -540,6 +541,8 @@ static int act_parse(const char *text, act_t *x)
         x->what = ACT_SETSTATUS, x->arg = (uint32_t)a1;
     else if (!strcmp(what, "cancel"))
         x->what = RDOF_T3MS_DO_CANCEL;
+    else if (!strcmp(what, "off") || !strcmp(what, "on"))
+        x->what = ACT_POWER, x->arg = what[1] == 'n';
     else if (!strcmp(what, "ambe") && got >= 2) {
         const char *t = strstr(line, what) + strlen(what);
         t += strspn(t, " \t");
@@ -613,6 +616,10 @@ static bool act_run(rdof_t3ms_t *ms, const act_t *a, int64_t now)
         return rdof_t3ms_set_supp(ms, (const uint8_t *)a->text, a->len);
     if (a->what == ACT_MISSACK) {
         rdof_t3ms_miss_acks(ms, (uint8_t)a->arg);
+        return true;
+    }
+    if (a->what == ACT_POWER) {
+        tsay("%u %s: --air-ms only", (unsigned)a->id, a->arg ? "on" : "off");
         return true;
     }
     if (a->what == ACT_UPOLL)
@@ -845,6 +852,7 @@ static struct {
     int nacts, ai, talker;
     int64_t next_talk;
     uint32_t in, out, bad;
+    uint64_t off; /* bit i: ms[i] switched off ("ID off"): it misses what goes out meanwhile */
     int ncar; /* the carriers they're on: 1, and those the SDR sends; every carrier when all are splits */
 } AM;
 static int nsdr; /* the carriers after carrier 1 the SDR sends (CX[0..nsdr-1]: carriers 2 to nsdr + 1) */
@@ -927,6 +935,11 @@ static void air_do(const act_t *a, int64_t now)
     const int i = air_find(a->id);
     if (i < 0) {
         tsay("air MSs: no %u here", (unsigned)a->id);
+        return;
+    }
+    if (a->what == ACT_POWER) { /* off, it misses what goes out meanwhile; on, it carries on where it was */
+        AM.off = a->arg ? AM.off & ~(1ull << i) : AM.off | 1ull << i;
+        tsay("air MS %u: switched %s", (unsigned)a->id, a->arg ? "on" : "off");
         return;
     }
     if (!act_run(AM.ms[i], a, now))
@@ -1048,7 +1061,7 @@ static void air_in(int64_t k)
     bool sent[RDOF_T3_CARRIERS] = {false};
     for (int i = 0; i < AM.n; i++) {
         rdof_t3ms_tx_t tx;
-        if (!rdof_t3ms_tx(AM.ms[i], k, now, &tx))
+        if (AM.off >> i & 1 || !rdof_t3ms_tx(AM.ms[i], k, now, &tx))
             continue;
         rdof_burst_t b;
         const int n = AM.voice_n[i];
@@ -1087,6 +1100,8 @@ static void air_out(int c, int64_t k, const uint8_t burst[RDOF_BURST_BYTES], boo
     const int rc = aired ? rdof_t3rf_rc_read(burst) : -1;
     for (int i = 0; i < AM.n; i++) {
         rdof_t3ms_status_t st;
+        if (AM.off >> i & 1)
+            continue;
         if (rc >= 0)
             rdof_t3ms_rc(AM.ms[i], 2 * c + (int)((k & 1) ^ 1), rc);
         rdof_t3ms_status(AM.ms[i], &st);
