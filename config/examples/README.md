@@ -64,6 +64,9 @@ rdofradio --iio local: --allow-tx --config standalone-pluto-duplex.json --web 0.
 rdofradio --allow-tx --mmdvm /dev/ttyAMA0 --config brandmeister-mmdvm-duplex.json --web 8080
 ```
 
+On a Raspberry Pi with an MMDVM_HS hat, [docs/raspberry-pi.md](../../docs/raspberry-pi.md) goes through the whole setup,
+including the hat's calibration from MMDVM.ini and running as a service.
+
 `--bench` listens on every interface unless given an address (`--bench 127.0.0.1:7373`): anyone who reaches the
 port can key the transmitter within `bench.tx`.
 

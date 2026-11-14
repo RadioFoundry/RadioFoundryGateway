@@ -167,6 +167,9 @@ curl -X POST --data-binary @../build/w12/radiofoundry_gateway.bin http://<board>
 
 Overlays: `.roamer` / `.sdr` (one role only), `.c` (no Rust toolchain), `.hub`, `.dspfast`.
 
+A Raspberry Pi with an MMDVM_HS hat, with or without an RTL-SDR: [docs/raspberry-pi.md](docs/raspberry-pi.md) sets it
+up as a hotspot, a repeater or a bench line, from the OS to a systemd service.
+
 <details>
 <summary>Linux / macOS build and system tests</summary>
 
@@ -192,6 +195,7 @@ See [docs/reference.md](docs/reference.md) for what's been measured and what's l
 
 ## Docs
 
+- [docs/raspberry-pi.md](docs/raspberry-pi.md): a Raspberry Pi with an MMDVM_HS hat (and an RTL-SDR), step by step
 - [docs/reference.md](docs/reference.md): building and testing, the firmware, the SDR, the host tools and the PlutoSDR
 - [docs/spec/](docs/spec/): how each part works, starting with [overview.md](docs/spec/fw/overview.md)
 - `components/*/README.md`: standalone ESP-IDF components (netclock, wifilist, tinysctp, lr2021, gnss)

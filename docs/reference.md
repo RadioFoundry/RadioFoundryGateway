@@ -1302,6 +1302,9 @@ The web page and MQTT status show the first repeater only.
 
 #### An MMDVM modem on a serial port
 
+A Raspberry Pi with an MMDVM_HS hat, step by step (OS, serial port, build, settings, service):
+[raspberry-pi.md](raspberry-pi.md).
+
 `rdofradio --allow-tx --mmdvm PORT --rx MHZ [--tx MHZ]`: the repeater (`--duplex full`, the default) or the roaming
 transceiver (`--duplex half`) on an MMDVM modem: an MMDVM_HS hat on a UART (`/dev/ttyS0`), a hotspot or an MMDVM
 board on USB. A duplex modem runs the repeater, any modem the transceiver; the radio's type comes from its
