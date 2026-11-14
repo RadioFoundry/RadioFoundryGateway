@@ -2100,6 +2100,7 @@ Two sites (the SDR site and the modem site, over mqtt-net):
 | Roaming: a move on priority, re-registration at the new site | yes | yes |
 | Group calls, individual calls, short data across sites | yes | yes |
 | Packet data across sites | yes | yes: air MSs, and the radio's IP text |
+| Composite TSCC on both sites | yes | yes: a group call each way, on the lent TSCC slot at both sites (2026-11-14 19:21 UTC) |
 | UDT polls across sites | yes | no |
 | Transmit interrupt across sites | yes (off by default) | no |
 | ALS calls and their termination across sites | yes (off by default) | no |
