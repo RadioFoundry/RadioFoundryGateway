@@ -2004,6 +2004,7 @@ Built since step 8e, host-tested (the bench steps above note what has run on air
 | f2bf1728 | Air MS data to a host's address (`@A.B.C.D`); the sim MS takes a poll's answer the same as an earlier one's as a new message (a repeat only within 10 s) |
 | 19df4357 | The IP gateway's failed blocks counted by cause (`rx_block_fec`, `rx_block_crc`); with `-v` the site logs each burst it gives the gateway in hex (on air it showed a radio's rate 3/4 blocks with octets 0-1 wrong) |
 | 54ae8191 | The site's ACK goes at once beside a reply waiting for its MS, and doesn't cut the confirmed item's 6 s hold: a radio that missed it is answered on its retry (`missack` in `rdofradio_e2e_t3_ipgw`) |
+| 991860dd | Rate 3/4 data blocks decoded again from any trellis start state when octets 0-1 fail the CRC-9 (`rdof_trellis34_decode_block`): an HR_C7000 radio's encoder started in state 4 or 7 |
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
 apart from the code, found seven deviations, all fixed (2026-11-12):
@@ -2040,7 +2041,7 @@ One site (the SDR site, two carriers):
 | Status, status polls, UDT short data | yes | yes |
 | UDT short data polling | yes | yes: the radio polling an air MS, and an air MS polling the radio, asleep or not (13.2 step 8f) |
 | Packet data at rate 1/2, 3/4 and 1, up to 127 blocks | yes | partly: IP text messages, confirmed and unconfirmed, at rate 1/2 |
-| IP address upload to IPI, IP connection advice | yes | IP connection advice yes, with and without power save (13.2 step 8g); the upload before a data call to IPI and the datagram through the IP gateway to a host, yes; the host's reply back down: on the Pluto's site with its air MSs (2026-11-14 13:16 UTC: the ACK on the payload channel, rfn-ipsvc's pong on a grant of its own, confirmed and unconfirmed), not yet to a real radio (step 8h) |
+| IP address upload to IPI, IP connection advice | yes | IP connection advice yes, with and without power save (13.2 step 8g); the upload before a data call to IPI and the datagram through the IP gateway to a host, yes; the host's reply back down: on the Pluto's site with its air MSs (2026-11-14 13:16 UTC: the ACK on the payload channel, rfn-ipsvc's pong on a grant of its own, confirmed and unconfirmed); to a real radio (an HR_C7000 portable, 2026-11-14): unconfirmed at 13:26, confirmed rate 1/2 at 15:30 and 15:46 (the ACK, then the pong). Its rate 3/4 blocks failed the CRC-9 (its trellis encoder doesn't start in state 0; the radio now sends confirmed IP at 1/2, and the site decodes such blocks since 991860dd) |
 | Stun, revive, mass re-registration | yes | yes (PTT refused while stunned) |
 | DGNA, call diversion, ALS | yes | yes (13.2 step 8h) |
 | C_MOVE | yes | to a channel with no TSCC: the radio moved, hunted and came back (2026-11-14); to a second TSCC not yet |
