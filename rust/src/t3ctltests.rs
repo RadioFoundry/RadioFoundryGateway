@@ -808,6 +808,116 @@ fn composite_tscc_carries_the_fourth_call() {
     assert!(air.until(8000, &mut log.f(), |a| a.ms[4].state() == t3ms::PAYLOAD), "the TSCC answers again");
 }
 
+/// A one-carrier site with the composite TSCC on, as on day 1 (TS1 the TSCC, TS2 the only payload channel), five
+/// MSs registered (A on TG 9, B on TG 10, C, D, E with none), and A's call on TG 9 holding TS2 for `talk_ms`.
+fn one_carrier_busy<'a>(log: &mut Log, s: &'a mut Site, talk_ms: u32) -> Air<'a, 5> {
+    let ch = [1];
+    let mut air = Air::new(s, [ms(1001, &[9], &ch), ms(1002, &[10], &ch), ms(1003, &[], &ch), ms(1004, &[], &ch), ms(1005, &[], &ch)], T0);
+    register_all(&mut air, log);
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_GROUP, 9, talk_ms, 0, now);
+    assert!(air.until(5000, &mut log.f(), |a| a.ms[0].state() == t3ms::PAYLOAD), "A on TS2");
+    assert_eq!(air.ms[0].status().ch, 1, "TS2: the dedicated payload channel first");
+    air
+}
+
+/// 5.3.2 with an individual call: TS2 busy, C calls D. The availability check (C_AHOY to D) goes on the TSCC, then
+/// PV_GRANT to both names the TSCC's own slot; C talks to D there; the call clears and the TSCC returns, and D can
+/// then make a call of its own.
+#[test]
+fn composite_tscc_individual_call() {
+    let mut s = site_with(|c| c.composite = 1);
+    let mut log = Log::default();
+    let mut air = one_carrier_busy(&mut log, &mut s, 20_000);
+    let now = air.now();
+    air.ms[2].act(t3ms::DO_PRIVATE, 1004, 3000, 0, now);
+    assert!(
+        air.until(8000, &mut log.f(), |a| a.ms[2].state() == t3ms::PAYLOAD && a.ms[3].state() == t3ms::PAYLOAD),
+        "both parties granted"
+    );
+    assert_eq!((air.ms[2].status().ch, air.ms[3].status().ch), (0, 0), "on the TSCC's slot");
+    assert!(air.until(6000, &mut log.f(), |a| a.ms[3].status().heard_src == 1003), "D hears C");
+    assert!(air.until(20_000, &mut log.f(), |a| a.ms[2].status().calls_done == 1), "C's call done");
+    assert!(air.until(5000, &mut log.f(), |a| !a.site.tscc_payload() && a.ms[3].state() == t3ms::IDLE), "TSCC back");
+    let now = air.now();
+    air.ms[3].act(t3ms::DO_PRIVATE, 1005, 1000, 0, now);
+    assert!(air.until(8000, &mut log.f(), |a| a.ms[3].state() == t3ms::PAYLOAD), "the TSCC answers again");
+}
+
+/// 5.3.2 with packet data: TS2 busy, C sends confirmed data to D. The data grant names the TSCC's slot; the blocks,
+/// the site's ACK and the download to D all go there; D takes the message.
+#[test]
+fn composite_tscc_confirmed_data() {
+    let mut s = site_with(|c| c.composite = 1);
+    let mut log = Log::default();
+    let mut air = one_carrier_busy(&mut log, &mut s, 20_000);
+    let now = air.now();
+    let text = b"data on the composite TSCC's slot";
+    assert!(air.ms[2].send_data(1004, t3ms::F_CONFIRMED, text, now));
+    assert!(air.until(8000, &mut log.f(), |a| a.site.tscc_payload()), "the TSCC's slot lent to the data call");
+    assert!(air.until(15_000, &mut log.f(), |a| a.ms[3].data_inbox().is_some()), "D takes the message");
+    let (h, d, n, _) = air.ms[3].data_inbox().unwrap();
+    assert_eq!((h.src, &d[..n]), (1003, &text[..]));
+    assert!(air.until(10_000, &mut log.f(), |a| a.ms[2].status().calls_done == 1), "C's data acknowledged");
+    assert!(air.until(15_000, &mut log.f(), |a| !a.site.tscc_payload()), "TSCC back");
+    assert!(air.ms[0].status().calls_failed == 0, "A's call on TS2 untouched");
+}
+
+/// An emergency call with TS2 busy: a free payload channel is always used first, and the composite slot counts as
+/// one (3.19), so the emergency takes the TSCC's slot and A's call on TS2 isn't pre-empted.
+#[test]
+fn composite_tscc_emergency_before_preemption() {
+    let mut s = site_with(|c| {
+        c.composite = 1;
+        c.preempt = 1;
+    });
+    let mut log = Log::default();
+    let mut air = one_carrier_busy(&mut log, &mut s, 20_000);
+    let now = air.now();
+    air.ms[1].act(t3ms::DO_GROUP, 10, 2000, t3ms::F_EMERGENCY, now);
+    assert!(air.until(8000, &mut log.f(), |a| a.ms[1].state() == t3ms::PAYLOAD), "B's emergency granted");
+    assert_eq!(air.ms[1].status().ch, 0, "on the TSCC's slot");
+    assert_eq!(air.ms[0].state(), t3ms::PAYLOAD, "A still on TS2");
+    assert_eq!(air.ms[0].ceased(), 0, "A not pre-empted");
+}
+
+/// A sleeping member and the composite slot: B (TG 10, registered with it) sleeps 1:4. With TS2 busy, C's call on TG
+/// 10 takes the TSCC's slot, and once the slot is lent the TSCC sends nothing, so no Late_Entry grant (6.6.2.4) can
+/// reach B later. So the composite grant, like any group call's, waits for B's wake frame (6.4.7.1; C_WACKD to C
+/// meanwhile), and B joins.
+#[test]
+fn composite_tscc_sleeping_member_joins() {
+    let mut s = site_with(|c| {
+        c.composite = 1;
+        c.power_save = 3;
+    });
+    let mut log = Log::default();
+    let ch = [1];
+    let mut air = Air::new(&mut s, [ms(1001, &[9], &ch), ms(1002, &[10], &ch), ms(1003, &[10], &ch)], T0);
+    air.ms[1].set_power_save(2);
+    let now = air.now();
+    for (i, tg) in [9, 10, 10].into_iter().enumerate() {
+        air.ms[i].act(t3ms::DO_REGISTER, tg, 0, 0, now + 100 * i as i64); // with its talkgroup: the site knows B is a member
+    }
+    assert!(air.until(30_000, &mut log.f(), |a| a.ms.iter().all(|m| m.status().registered != 0)));
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_GROUP, 9, 20_000, 0, now);
+    assert!(air.until(5000, &mut log.f(), |a| a.ms[0].state() == t3ms::PAYLOAD), "A on TS2");
+    // C asks when B has just gone to sleep: B's next wake is a few frames away
+    let mut waited = 0;
+    while waited < 3000 && !air.ms[1].sleeps(air.k) {
+        air.run(30, &mut log.f());
+        waited += 30;
+    }
+    assert!(air.ms[1].sleeps(air.k), "B asleep");
+    let now = air.now();
+    air.ms[2].act(t3ms::DO_GROUP, 10, 6000, 0, now);
+    assert!(air.until(5000, &mut log.f(), |a| a.ms[2].state() == t3ms::PAYLOAD), "C granted");
+    assert_eq!(air.ms[2].status().ch, 0, "on the TSCC's slot");
+    assert!(air.until(8000, &mut log.f(), |a| a.ms[1].status().heard_src == 1003), "B joins C's call");
+    assert_eq!(air.ms[1].status().ch, 0, "B on the TSCC's slot");
+}
+
 // ── C_MOVE and the asynchronous TSCC (6.3.3.1 e, 6.1.1.2) ──
 
 /// C_MOVE to one MS: it leaves for the named TSCC; the others stay. (No TSCC there: it hunts back later.)

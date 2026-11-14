@@ -941,6 +941,15 @@ as a hotspot modem, gets a second call at once.
   back to the control channel). Then the TSCC returns ("When the payload call is completed, the channel returns to
   its control channel function", 5.3.2 b)) with a C_ALOHA first. What it had queued before or during the call
   (grants for other calls, answers) is dropped as stale; MSs ask again.
+- No Late_Entry grants while the slot is lent: they go on the TSCC (6.6.2.4.1), and an idle MS "loses the control
+  channel" meanwhile (5.3.2). A member that misses the grant misses the call; a standard MS follows grants, not a
+  voice LC heard on its TSCC's slot. So a group grant that will lend the slot waits for the sleeping members' wake
+  frame like any other (section 3.11, `power_save_group_hold_s`; C_WACKD to the caller meanwhile), and the grant
+  goes out twice. RadioFoundry's MS engine does the same (no joining on the voice LC; rf-t3 31f7eaa0).
+- Covered in the simulator (rust t3ctltests, t3tests): a group call, an individual call, confirmed packet data and
+  an emergency call each on the lent slot while TS2 is busy; a sleeping member joining after its wake frame; a call
+  from the network opening there; and on the simulated modem (host-tests/e2e_t3_hat.sh, its second run), an
+  individual call on TS2 with another on the TSCC's slot, the key held, every burst on its slot.
 - The MS simulator: an idle MS whose TSCC's CACH says P_SYS_Parms with Payload Channel Type 1 waits for the TSCC
   rather than hunting; C_SYS_Parms ends that (`rdof_t3ms_slc`, fed by the air paths from `rdof_t3unit_slc`).
 - The radio layer: with a TSCC, channel 0 is also a payload channel (`rdof_t3rf_t.composite`), opened only when
@@ -951,7 +960,8 @@ as a hotspot modem, gets a second call at once.
   the TSCC and was lost, and the call aired without one.
 
 Not built: an air MS that reads the short LC on air (the simulator's air MSs take it from the unit; RadioFoundry's MS
-engine reads it, its counter checked on air against site 1 on 2026-11-14, not yet on a composite site), and the
+engine reads it, its counter checked on air against site 1 on 2026-11-14; it holds random access on Payload Channel
+Type 1 since rf-t3 31f7eaa0, not yet on air), and the
 5.3.2 note that the throughput "shall be assessed" (no metric beyond the log line and the slot counts).
 
 ### 3.20 Transmit interrupt (361-4 6.4.14, 6.4.15)
@@ -2067,7 +2077,7 @@ One site (the SDR site, two carriers):
 | Supplementary user data on voice calls (3.21) | yes | yes: both ways, to an MS and a talkgroup |
 | Supplementary user data on packet data, UDT short data and statuses (3.21) | yes | no |
 | Transmit interrupt | yes | air MSs only, on the modem site |
-| Composite TSCC | yes | air MSs only, on the modem site |
+| Composite TSCC | yes (group, individual, data, emergency, network calls, a sleeping member; 3.19) | air MSs only, on the modem site; a radio on a one-carrier composite site is next (2026-11-14) |
 | Three or four SDR carriers | yes | no: the SDR site runs two |
 
 Two sites (the SDR site and the modem site, over mqtt-net):

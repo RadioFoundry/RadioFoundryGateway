@@ -1084,6 +1084,11 @@ impl Ms {
         }
     }
 
+    /// Whether it sleeps in slot k (power save; tests).
+    pub fn sleeps(&self, k: i64) -> bool {
+        self.asleep(k)
+    }
+
     /// Power save: idle, not within T_Awake of a PDU for it, and outside its wake frame.
     fn asleep(&self, k: i64) -> bool {
         self.ps_off != 0

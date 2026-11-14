@@ -6,7 +6,7 @@
 # two simulated MSs beside the air (--air-ms). The box's own settings are a modem's (--config); the site's are
 # --tier3's. Both MSs register, one calls the talkgroup and the other follows, then an individual call. Every burst
 # written must air on its own slot, the AT as the controller's, the key held all run on one key-up, and the modem's
-# own reports of the inbound in the trunk's timeslots.
+# own reports of the inbound in the trunk's timeslots. Then the same with the composite TSCC on (3.19).
 #
 #   sh host-tests/e2e_t3_hat.sh <dir with rdofradio>
 set -u
@@ -71,4 +71,31 @@ grep "(modem): TS1 aired" "$D/log" | head -1 |
 # the AT heard before each slot of ours is the one the controller set
 grep -o "as the controller's [0-9]* of [0-9]*" "$D/log" | awk '$4 != $6 || $6 < 100 { bad = 1 } END { exit bad }' ||
     { echo "FAIL: an AT not the controller's"; fail=1; }
-[ $fail = 0 ] && echo "site on a modem: all passed ($line)" || { grep "air MS\|tier3\|modem" "$D/log" | head -40; exit 1; }
+[ $fail = 0 ] || { grep "air MS\|tier3\|modem" "$D/log" | head -40; exit 1; }
+
+# The composite TSCC (tier3.md 3.19), as on a day-1 one-carrier site: 1000001's individual call holds TS2, then
+# 1000003's finds no payload channel free and takes the TSCC's own slot. Both calls end done, the TSCC comes back,
+# and the modem's slots and key are as above.
+sed 's/"timers": {"hang_s": 2}/"timers": {"hang_s": 2}, "services": {"composite_tscc": true}/' "$D/site.json" > "$D/site2.json"
+grep -q composite_tscc "$D/site2.json" || { echo "FAIL: site2.json"; exit 1; }
+printf '6 1000001 private 1000002 6000\n8 1000003 private 1000004 2000\n' > "$D/script2"
+"$BIN/rdofradio" --allow-tx --mmdvm sim-hat --config "$D/box.json" --tier3 "$D/site2.json" --air-ms 4 --sim-tg 1 \
+    --sim-script "$D/script2" --seconds 20 > "$D/log2" 2>&1
+rc=$?
+[ $rc = 0 ] || { echo "FAIL: rdofradio (composite) exited $rc"; fail=1; }
+check2() {
+    grep -q "$1" "$D/log2" || { echo "FAIL: composite: $2"; fail=1; }
+}
+check2 "air MS 1000002: payload, registered on ch 1; .* heard 1000001 -> 1000002" "1000001's call on TS2"
+check2 "composite TSCC: the control slot carries a call" "the TSCC's slot lent"
+check2 "air MS 1000004: payload, registered on ch 0; .* heard 1000003 -> 1000004" "1000003's call on the TSCC's slot"
+check2 "composite TSCC: the control channel again" "the TSCC back"
+check2 "air MS 1000003: idle, registered on ch 0; calls 1 done" "1000003's call done"
+check2 "air MS 1000001: idle, registered on ch 0; calls 1 done" "1000001's call done"
+grep -q "sim-hat: 1 key-ups, 0 unkeys, 0 watchdog drops" "$D/log2" || { echo "FAIL: composite: the key not held"; fail=1; }
+grep "carrier 1 (modem): [0-9]* written, .* grids" "$D/log2" | sed 's/.*(modem): //' |
+    awk '{ if ($7 + $9 + $11 > 0) { print "FAIL: composite: late " $7 ", early " $9 ", lost " $11; exit 1 } }' || fail=1
+grep -o "as the controller's [0-9]* of [0-9]*" "$D/log2" | awk '$4 != $6 || $6 < 100 { bad = 1 } END { exit bad }' ||
+    { echo "FAIL: composite: an AT not the controller's"; fail=1; }
+[ $fail = 0 ] && echo "site on a modem: all passed ($line); composite TSCC passed" ||
+    { grep "air MS\|tier3\|composite\|modem" "$D/log2" | head -60; exit 1; }

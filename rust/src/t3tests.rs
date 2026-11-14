@@ -644,6 +644,35 @@ fn network_group_in_and_out() {
     assert!(log.take(&mut air).of(EV_CH_STREAM).iter().any(|e| e.stream == 80 && e.src == 5556));
 }
 
+/// The composite TSCC with a call from the network (one carrier, as on day 1): TS2 busy with a local call on TG 8,
+/// a stream for TG arrives. It opens on the TSCC's own slot (3.19: any call that finds no payload channel free),
+/// B, a member, follows it there, and when the stream ends and the call clears the TSCC is back.
+#[test]
+fn network_group_on_composite_tscc() {
+    let mut s = site_with(|c| c.composite = 1);
+    let mut p = Policy::default_open();
+    p.wide_tg = IdSet::of(&[(TG, TG)]);
+    s.policy_set(&p);
+    s.set_link(true);
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[8], &[1]), ms(1002, &[TG], &[1])], T0);
+    register_all(&mut air, &mut log);
+    reg_tg(&mut air, &mut log, 1, TG);
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_GROUP, 8, 20_000, 0, now);
+    assert!(air.until(5000, &mut log.f(), |a| a.ms[0].state() == t3ms::PAYLOAD && a.ms[0].status().ch == 1));
+    let now = air.now();
+    air.site.net_group_in(77, 5555, TG, 0, now);
+    assert!(air.until(3000, &mut log.f(), |a| a.ms[1].state() == t3ms::PAYLOAD), "B follows the network call");
+    assert_eq!(air.ms[1].status().ch, 0, "on the TSCC's slot");
+    let open = *log.of(EV_CH_OPEN).iter().find(|e| e.stream == 77).expect("opened");
+    assert_eq!((open.ch, open.src, open.dst), (0, 5555, TG));
+    assert!(air.until(1000, &mut log.f(), |a| a.site.tscc_payload()));
+    air.site.net_end_in(77);
+    assert!(air.until(8000, &mut log.f(), |a| !a.site.tscc_payload() && a.ms[1].state() == t3ms::IDLE), "TSCC back");
+    assert_eq!(air.ms[0].state(), t3ms::PAYLOAD, "A's call on TS2 goes on");
+}
+
 #[test]
 fn network_setup_out() {
     let mut s = site_with(|_| {});
