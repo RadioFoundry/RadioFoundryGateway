@@ -1968,7 +1968,7 @@ Built since step 8e, host-tested (the bench steps above note what has run on air
 | 69483bd1 | A Tier III site starts its `ipgw` app: packet data to IPI reached no gateway before |
 | 85f794f4 | The site logs each MS's C_ACKU and C_NACKU on the TSCC |
 | 2f701fb2 | IP gateway counters for headers, header CRC failures and blocks; a log line for data handed to the site's gateway |
-| (next) | Supplementary user data on packet data calls, here and across sites (3.21) |
+| 08a562b6 | Supplementary user data on packet data calls, here and across sites (3.21) |
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
 apart from the code, found seven deviations, all fixed (2026-11-12):
