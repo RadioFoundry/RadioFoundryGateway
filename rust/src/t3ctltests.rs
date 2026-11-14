@@ -681,7 +681,7 @@ fn power_save_wake_frames() {
             if first.is_none() && air.k & 1 == 1 {
                 let to = match o.tscc_dt {
                     DT_CSBK => Ahoy::decode(&o.tscc_pdu).map(|a| a.target),
-                    DT_DATA_HDR => crate::t3udt::UdtHead::decode(&o.tscc_pdu).map(|h| h.target),
+                    crate::t3udt::DT_DATA_HDR => crate::t3udt::UdtHead::decode(&o.tscc_pdu).map(|h| h.target),
                     _ => None,
                 };
                 if to == Some(1002) {

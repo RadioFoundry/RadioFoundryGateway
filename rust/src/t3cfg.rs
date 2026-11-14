@@ -76,6 +76,7 @@ const SERVICES_KEYS: &[&[u8]] = &[
     b"duplex",
     b"composite_tscc",
     b"transmit_interrupt",
+    b"ip_address_upload",
 ];
 
 /// Where a timer goes in the settings: a code, ms from seconds, or seconds.
@@ -531,6 +532,7 @@ impl<'a> Cx<'a> {
                 || !self.bool_of(sv, c"duplex", p, &mut cfg.duplex)
                 || !self.bool_of(sv, c"composite_tscc", p, &mut cfg.composite)
                 || !self.bool_of(sv, c"transmit_interrupt", p, &mut cfg.intr)
+                || !self.bool_of(sv, c"ip_address_upload", p, &mut cfg.ip_upload)
                 || !self.u8_in(sv, c"power_save", p, 0, 7, &mut cfg.power_save)
                 || !self.ms_in(sv, c"power_save_awake_s", p, 0.1, 60.0, &mut cfg.awake_ms)
                 || !self.ms_in(sv, c"power_save_group_hold_s", p, 0.0, 10.0, &mut cfg.ps_hold_ms)

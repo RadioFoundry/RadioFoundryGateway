@@ -1418,6 +1418,38 @@ fn cancel_after_answer_ahoy() {
     assert_eq!((tgt(&b), src(&b)), (B, A));
 }
 
+/// 6.6.3.2.4 b) 2), 6.6.3.1.2 b), B.3.7, with services.ip_address_upload: packet data to IPI is answered by a
+/// C_AHOY from IPI to the caller (Service_Kind 0010b, Appended_Blocks 0, Service_Options mirrored); the caller's
+/// C_UDTHU (UDT_Format 0110b, one block, the IPv4 address) is taken with its addresses either way round (figure
+/// 6.34: source the MS, target IPI; 6.4.11.1.3: target the MS, source IPI), then comes the grant to IPI.
+#[test]
+fn ipi_address_upload() {
+    use crate::t3udt::{Blocks, UdtHead, DT_DATA_HDR, DT_RATE12, OP_UDTHU};
+    for swapped in [false, true] {
+        let mut r = Rig::new(|c| c.ip_upload = 1);
+        r.register(A, None);
+        let k = r.send(rand(0x00, 0, spec::SK_IND_PACKET, spec::IPI, A));
+        let (ko, o) = r.find(k, 30, ahoy).expect("C_AHOY");
+        let b = o.tscc_pdu;
+        let (so, _, _, gi, ab, sk) = ahoy_f(&b);
+        assert_eq!((so, gi, ab, sk), (0, 0, 0, spec::SK_IND_PACKET));
+        assert_eq!((tgt(&b), src(&b)), (A, spec::IPI));
+        assert!(r.within_nwait(k, ko));
+        let (target, source) = if swapped { (A, spec::IPI) } else { (spec::IPI, A) };
+        let h = UdtHead { op: OP_UDTHU, format: 0b0110, target, source, blocks: 1, sf: true, ..Default::default() };
+        let blk = Blocks::of(&[192, 168, 7, 9, 0, 0, 0, 0, 0, 0], 1).unwrap();
+        r.run(4);
+        let ch = r.s.tscc_ch();
+        r.s.rx_pdu(ch, DT_DATA_HDR, &h.encode());
+        r.step();
+        r.step();
+        r.s.rx_block(ch, DT_RATE12, &blk.b[0]);
+        let k2 = r.k;
+        let g = r.find(k2, 40, |dt, b| is(dt, b, spec::PD_GRANT) && tgt(b) == spec::IPI);
+        assert!(g.is_some(), "the grant after the upload (swapped {swapped})");
+    }
+}
+
 /// 6.6.5.1.1 b), 6.6.5.2 table 6.56, 7.2.14: a UDT short data poll of an MS here is answered within NRand_Wait by a
 /// C_AHOY from the caller to the polled MS: Service_Kind 0110b, Service_Options the C_RAND's (the Polling Format
 /// in its four LSBs), G/I 0, Appended_Blocks the C_RAND's Appended_Short_Data.

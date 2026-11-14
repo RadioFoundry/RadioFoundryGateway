@@ -431,6 +431,7 @@ const PD_QUEUED: u8 = 2; // waiting for a payload channel
 const PD_NET: u8 = 3; // the calling site's: waiting for the far site's answer to its setup request
 const PD_HELD: u8 = 4; // the far site's: the call accepted, waiting for its data
 const PD_GO: u8 = 5; // answered across the network: a channel next, or the queue
+const PD_ADDR: u8 = 6; // to IPI: the caller uploads the IP address first (t3sdata SD_IPADDR)
 /// How long the far site keeps an accepted call for its data (the calling site may queue it first).
 const PD_HOLD_MS: i64 = 30_000;
 
@@ -452,6 +453,7 @@ struct Pd {
     deadline_ms: i64,
     next_ahoy_ms: i64,
     next_ack_ms: i64,
+    ip: u32, // to IPI with ip_address_upload: the address the caller uploaded (IPv4)
 }
 
 #[derive(Clone, Copy, Default)]
@@ -504,6 +506,10 @@ impl Site {
         let (ms, dst) = (r.source, r.target);
         let group = r.service_kind == SK_TG_PD;
         if let Some(i) = self.pd.pds.iter().position(|p| p.used && Self::pd_local(p) && p.caller == ms && p.called == dst) {
+            if self.pd.pds[i].state == PD_ADDR {
+                self.sd_again(SD_IPADDR, ms); // it missed the C_AHOY from IPI: again
+                return;
+            }
             let reason = if self.pd.pds[i].state == PD_QUEUED { R_QUEUED } else { R_WAIT };
             self.ack(reason, ms, dst); // a repeat: the same answer
             return;
@@ -543,7 +549,16 @@ impl Site {
             since_ms: self.now,
             ..Default::default()
         };
-        if group || site {
+        if site && dst == IPI && self.cfg.ip_upload != 0 && !r.proxy {
+            // 6.6.3.2.4 b) 2): the IP address first, one UDT (IPv4, UAB 0)
+            let p = &mut self.pd.pds[i];
+            p.state = PD_ADDR;
+            p.deadline_ms = self.now + self.cfg.setup_ms as i64;
+            p.next_ack_ms = i64::MAX;
+            if !self.sd_upload_new(SD_IPADDR, ms, IPI, false, r.service_options, 1) {
+                self.pd.pds[i].used = false;
+            }
+        } else if group || site {
             self.pd_ready(i);
         } else if far {
             self.pd_ask(i);
@@ -552,6 +567,28 @@ impl Site {
             self.pd_check(i);
             self.ack(R_WAIT, ms, dst);
         }
+    }
+
+    /// The IP address upload of a call to IPI ended: ip the address (IPv4), None when it failed (reason: the MS's
+    /// C_NACKU mirrored, or no upload); then the call goes on, or C_NACKD.
+    pub(super) fn pd_addr(&mut self, ms: u32, ip: Option<u32>, reason: u8) {
+        let Some(i) = (0..PDS).find(|&i| {
+            let p = &self.pd.pds[i];
+            p.used && p.state == PD_ADDR && p.caller == ms
+        }) else {
+            return;
+        };
+        let p = self.pd.pds[i];
+        let Some(ip) = ip else {
+            self.pd.pds[i].used = false;
+            self.pd_fail(&p, reason);
+            return;
+        };
+        let [a, b, c, d] = ip.to_be_bytes();
+        self.log(format_args!("packet data from {ms} to IPI: IP address {a}.{b}.{c}.{d}"));
+        self.pd.pds[i].ip = ip;
+        self.pd.pds[i].next_ack_ms = self.now + WACK_EVERY_MS;
+        self.pd_ready(i);
     }
 
     /// A call whose caller is an MS here (on the TSCC).

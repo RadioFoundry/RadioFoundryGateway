@@ -34,6 +34,10 @@ pub(super) const SD_NOTICE: u8 = 0x43;
 /// asks the polled MS to upload its data (S_UPLOAD, the upload from dst); then the download to the caller (S_DOWN,
 /// from dst to src), whose C_ACKU ends it.
 pub(super) const SD_UPOLL: u8 = 0x44;
+/// The IP address of a packet data call to IPI (6.6.3.2.4 b 2, B.3.7): the C_AHOY from IPI asks the caller for it,
+/// the caller uploads C_UDTHU, UDT_Format IP; the data call (t3pdata, PD_ADDR) goes on with it. r#ref: the IPv4
+/// address once uploaded.
+pub(super) const SD_IPADDR: u8 = 0x45;
 
 // op (rdof_t3_sd_t.op)
 pub const SD_SEND: u8 = 1;
@@ -418,10 +422,11 @@ impl Site {
 
     /// A transaction that starts with an upload from ms (C_AHOY from SDMI, DGNAI or TATTSI): what SD_UDT,
     /// SD_DGNA or SD_TGLIST, dst the C_RAND's target, so its Service_Options, blocks the UAB it asked for.
-    pub(super) fn sd_upload_new(&mut self, what: u8, ms: u32, dst: u32, group: bool, so: u8, blocks: u8) {
+    /// False: none free (SYSbusy sent).
+    pub(super) fn sd_upload_new(&mut self, what: u8, ms: u32, dst: u32, group: bool, so: u8, blocks: u8) -> bool {
         let Some(i) = self.sd_free() else {
             self.refuse(R_SYSBUSY, ms, dst);
-            return;
+            return false;
         };
         let mut d = Sd {
             used: true,
@@ -443,6 +448,7 @@ impl Site {
         if self.sd.upload.active {
             self.ack(R_WAIT, ms, dst); // another MS is uploading: this one's turn comes
         }
+        true
     }
 
     /// An upload of kind what (SD_TGLIST, SD_DIVERT) in progress for ms: asks again when it waits for it (the MS
@@ -470,6 +476,16 @@ impl Site {
             s.next_ms = self.now;
             s.tries = self.cfg.sd_tries.max(1);
             s.deadline_ms = self.now + self.cfg.tnp_ms as i64;
+            return;
+        }
+        if d.what == SD_IPADDR {
+            // B.3.7: IPv4 in octets 0-3 of one block (UAB 0); IPv6 in two (UAB 1), not used by the IP gateway
+            let mut buf = [0u8; MAX_DATA];
+            let n = d.blocks.data(&mut buf);
+            let ok = d.value == FMT_IP && d.head.blocks == 1 && n >= 4;
+            self.sd.sds[i].r#ref = if ok { u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) } else { 0 };
+            let reason = if ok { R_MESSAGE_ACCEPTED } else { R_NOT_SUPPORTED };
+            self.sd_done(i, reason, 0, if ok { WHY_OK } else { WHY_REFUSED });
             return;
         }
         if d.what == SD_TGLIST {
@@ -586,6 +602,10 @@ impl Site {
         }
         let ok = reason_type(reason) == 1;
         if d.what == SD_NOTICE {
+            return;
+        }
+        if d.what == SD_IPADDR {
+            self.pd_addr(d.src, ok.then_some(d.r#ref), reason); // the data call's to answer
             return;
         }
         if d.what == SD_TGLIST {
@@ -716,6 +736,7 @@ impl Site {
                     SD_TGLIST => (SK_REG, TATTSI, d.src),
                     SD_DIVERT => (SK_DIVERT, DIVERTI, d.src), // 6.6.7.1.1.1 b)
                     SD_UPOLL => (SK_UDT_POLL, d.src, d.dst),
+                    SD_IPADDR => (SK_IND_PD, IPI, d.src), // 6.6.3.1.2 b): Service_Kind 0010b
                     _ => (SK_IND_UDT, SDMI, d.src),
                 };
                 let a = Ahoy {
@@ -801,7 +822,10 @@ impl Site {
         }
         self.heard(h.source);
         let u = &mut self.sd.upload;
-        if !u.active || h.source != u.from {
+        // an IP address: figure 6.34 has source the MS, target IPI; 6.4.11.1.3 the two the other way round
+        let ip = u.active && self.sd.sds[u.sd].what == SD_IPADDR;
+        let from = if ip && h.source == IPI { h.target } else { h.source };
+        if !u.active || from != u.from || (ip && h.source != IPI && h.target != IPI) {
             return; // not asked for (an upload this site didn't ask for): ignored
         }
         let d = &self.sd.sds[u.sd];
@@ -861,7 +885,7 @@ impl Site {
     /// C_ACKU / C_NACKU for a transaction: true when it was one's.
     pub(super) fn sd_ack(&mut self, a: &Ack) -> bool {
         // the caller refusing to upload (6.6.4.2: it may answer C_AHOY from SDMI with C_NACKU)
-        if matches!(a.target, SDMI | DGNAI | TATTSI | DIVERTI) {
+        if matches!(a.target, SDMI | DGNAI | TATTSI | DIVERTI | IPI) {
             if let Some(i) = (0..SDS).find(|&i| {
                 let d = &self.sd.sds[i];
                 d.used && d.state == S_UPLOAD && d.src == a.source

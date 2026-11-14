@@ -10,7 +10,7 @@ use crate::t3air::Air;
 use crate::t3ms::{self, Ms};
 use crate::t3pdu::*;
 use crate::t3site::*;
-use crate::t3udt::{IPI, SK_IND_PD};
+use crate::t3udt::{IPI, R_MS_NOT_SUPPORTED, SK_IND_PD};
 
 const T0: i64 = 1_793_912_651_000;
 const TG: u32 = 9;
@@ -183,6 +183,69 @@ fn packet_data_to_the_site() {
     assert!(air.ms[0].send_data(GW, 0, DATA, now));
     assert!(air.until(5000, &mut log.f(), settled(0, 0)));
     assert_eq!(air.ms[0].status().last_reason, R_NOREG_MSAWAY);
+}
+
+/// A UDP/IPv4 datagram to 10.1.2.3 (port 5016 to 5016) carrying text.
+fn datagram() -> Vec<u8> {
+    let text = b"to the IP gateway";
+    let n = 28 + text.len();
+    let mut d = std::vec![0x45, 0, 0, n as u8, 0, 1, 0, 0, 64, 17, 0, 0, 10, 0, 0, 1, 10, 1, 2, 3];
+    d.extend_from_slice(&[0x13, 0x98, 0x13, 0x98, 0, (8 + text.len()) as u8, 0, 0]);
+    d.extend_from_slice(text);
+    d
+}
+
+/// services.ip_address_upload (6.6.3.2.4 b 2, 6.6.3.1.2 b, B.3.7): packet data to IPI first gets C_AHOY from IPI
+/// (target the caller, Service_Kind 0010b, Appended_Blocks 0, Service_Options mirrored); the caller uploads C_UDTHU
+/// with UDT_Format IP and the IPv4 address; then the grant. The upload refused: C_NACKD, the reason mirrored. Off
+/// (the default): the grant at once.
+#[test]
+fn packet_data_to_ipi_uploads_the_address() {
+    for (on, refuse) in [(true, false), (true, true), (false, false)] {
+        let mut s = site_with(|c| c.ip_upload = on as u8);
+        let mut log = Log::default();
+        let mut air = Air::new(&mut s, [ms(1001, &[TG])], T0);
+        register_all(&mut air, &mut log);
+        air.ms[0].refuse_ip_upload(refuse);
+        let now = air.now();
+        assert!(air.ms[0].send_data(IPI, 0, &datagram(), now));
+        let mut ahoy = None;
+        let mut nack = None;
+        let mut granted = false;
+        let end = air.now() + 6000;
+        while air.now() < end && !granted && nack.is_none() {
+            air.step(&mut log.f());
+            let o = air.last;
+            if air.k & 1 == 1 && o.tscc_dt == DT_CSBK {
+                if let Some(a) = Ahoy::decode(&o.tscc_pdu) {
+                    ahoy = ahoy.or(Some(a));
+                }
+                if let Some(a) = Ack::decode(&o.tscc_pdu) {
+                    if reason_type(a.reason) == 0 && a.target == 1001 {
+                        nack = Some(a);
+                    }
+                }
+                granted |= DataGrant::decode(&o.tscc_pdu).is_some_and(|g| g.op == OP_PD_GRANT && g.target == IPI);
+            }
+        }
+        let logged = log.of(EV_LOG).iter().any(|e| e.text().contains("from 1001 to IPI: IP address 10.1.2.3"));
+        if !on {
+            assert!(granted && ahoy.is_none() && !logged, "off: the grant at once");
+            continue;
+        }
+        let a = ahoy.expect("C_AHOY from IPI");
+        assert_eq!((a.source, a.target, a.service_kind, a.appended, a.group), (IPI, 1001, SK_IND_PD, 0, false));
+        if refuse {
+            let n = nack.expect("C_NACKD");
+            assert_eq!((n.reason, granted), (R_MS_NOT_SUPPORTED, false), "the MS's reason mirrored, no grant");
+            assert!(air.until(5000, &mut log.f(), settled(0, 0)));
+            assert_eq!(air.ms[0].status().last_reason, R_MS_NOT_SUPPORTED);
+        } else {
+            assert!(granted && logged, "the address taken, then the grant");
+            assert!(air.until(8000, &mut log.f(), settled(0, 0)));
+            assert_eq!(air.ms[0].status().calls_done, 1);
+        }
+    }
 }
 
 #[test]

@@ -255,8 +255,8 @@ Answer), 1010b (duplex, 3.13), 1101b to DGNAI (3.17), 1110b and 1111b gets C_NAC
 interrupt) are answered from TSI as section 3.20 says: C_NACKD(Not_Supported) with the setting off (6.4.14.3.3.1,
 6.4.14.3.4.2). A stunned MS's requests get
 Perm_User_Refused, and requests to it MSaway_Refused (3.18). Gateway addresses (PSTNI and the rest) as targets also
-get Not_Supported, TSI excepted for short data, status and packet data, and IPI for packet data with nothing to
-upload.
+get Not_Supported, TSI excepted for short data, status and packet data, and IPI for packet data (its IP address
+upload: 3.16).
 
 ### 3.8 Timers and constants (settings, under the app's `timers`)
 
@@ -615,11 +615,11 @@ Request (C_RAND Service_Kind 0010b individual, 0011b talkgroup; Service_Options 
 SUPED_SV, HI_RATE, SIMI, priority):
 
 1. Checks as a call (registered or an implicit record, `ms`, `tg`). The called party: an MS, a talkgroup, or the
-   site: TSI, the `data_gateway` ID, or IPI with no extended address to upload (the IP destination is the datagram's:
-   6.6.3.3, "derived from the DLL address"). Other gateways (multi-part addressing, 6.6.3.2.3) get Not_Supported;
-   an MS not registered here goes to the network (5.10) when the site is connected and the caller's `wide_private`
-   allows, else NoregMSaway; one in a call or a data call,
-   Called_Party_Busy; itself, Not_Supported. A repeat of a request being set up gets the same answer again.
+   site: TSI, the `data_gateway` ID, or IPI (the IP destination is the datagram's: 6.6.3.3, "derived from the DLL
+   address"; its upload, with `ip_address_upload`, below). Other gateways (multi-part addressing, 6.6.3.2.3) get
+   Not_Supported; an MS not registered here goes to the network (5.10) when the site is connected and the caller's
+   `wide_private` allows, else NoregMSaway; one in a call or a data call, Called_Party_Busy; itself, Not_Supported. A
+   repeat of a request being set up gets the same answer again.
 2. An individual call to an MS: the availability check (6.6.3.1.4), C_AHOY (Service_Options_Mirror, Service_Kind
    0010b, source the caller, target the called), repeated every `ahoy_every_s` up to `ahoy_tries`; the caller hears
    C_WACKD every 2 s. C_ACKU(Message_Accepted) leads on (6.6.3.1.4, 6.6.3.2.6), and so does MS_Accepted (the same
@@ -669,12 +669,24 @@ sends; with no response in 3 s (T_RspnsWait) the sender gives up rather than sen
 fails is ignored (the sender then times out); another NACK ends the call. The site repeats every rate alike (data
 types 7, 8, 10 regenerated); its own IP gateway's handling of the rates is [ipgw.md](ipgw.md)'s.
 
+The IP address (6.6.3.2.4 b 2; `services.ip_address_upload`, off by default): data to IPI with the Proxy Flag 0
+first gets C_AHOY from IPI to the caller (6.6.3.1.2 b: Service_Kind 0010b, Service_Options_Mirror, Appended_Blocks
+0), then the kept upload slots as for short data (3.15). The caller sends C_UDTHU, UDT_Format 0110b (IP), one block:
+the IPv4 address in octets 0-3, 48 bits reserved (B.3.7). The site logs the address and goes on to the grant (the
+datagrams carry their own addresses; the IP gateway routes by them). A C_NACKU to the C_AHOY ends the call with
+C_NACKD, the reason mirrored; a damaged or missing upload gets the C_AHOY again (`ahoy_tries`), then C_NACKD(CRC
+error). An upload that isn't UDT_Format IP in one block (an IPv6 address takes two): Not_Supported. The upload's
+addresses differ in the text: figure 6.34 has source the MS and target IPI, 6.4.11.1.3 the other way round; both are
+taken. Off, data to IPI is granted at once (as before; 6.6.3.1.2 ties the upload to the Proxy Flag, so a radio that
+sends Proxy 0 may not expect it).
+
 Choices where 361-4 leaves them open: the TS doesn't poll MSs on the channel (P_AHOY radio check, 6.6.3.3.1.1) and
 doesn't share a data channel between calls; supplementary data (SUPED_SV) is abandoned (6.6.3.2.2 a); a new data
 call to an MS on a data channel waits as busy rather than joining it.
 
-Not built: multi-part calls (extended addresses through PSTNI, PABXI, LINEI, DISPATI, IPI with an upload),
-supplementary data, dual-slot data, the TS's own P_AHOY radio check and selective clear.
+Not built: multi-part calls through PSTNI, PABXI, LINEI and DISPATI (dialled digits), IPv6 addresses, IP Connection
+Advice at registration (6.4.11, IP_Inform), supplementary data, dual-slot data, the TS's own P_AHOY radio check and
+selective clear.
 
 ### 3.17 Talkgroup lists: subscription by upload and DGNA (361-4 6.4.4.1.13.2, 6.6.8)
 
@@ -995,7 +1007,7 @@ paths").
 | `data_gateway` | integer | 0 | the site's own data ID besides TSI (1-16776415): packet data to it, to TSI or to IPI goes to the site's IP gateway (3.16) |
 | `timers` | object | section 3.8 | |
 | `broadcast` | object | section 3.2 | `adjacent_s`, `chan_freq_s`, `local_time_s`, `call_timers_s`, `vote_now_s`, `ann_tscc_s` (0 = off, else 1-600 s; the last three off by default, section 3.11); `vote_blk` (2-10 TDMA frames, 6): VOTE_BLK after a Vote_Now; `priority` (0-7, 0): the site's priority for the Radiated Preference Strategy (table 6.81: 1 highest, 7 lowest, 0 non-preferred), sent as the confirmed priority with each neighbor and in `info` (section 3.11). Local settings: the manager's `cfg` doesn't carry them |
-| `services` | object | | `emergency_preempt` (bool, false): clear a running call for a waiting emergency (section 3.9); `power_save` (0-7, 0): the largest PowerSave_RQ granted, 0 none; `power_save_awake_s` (0.1-60, 1); `power_save_group_hold_s` (0-10, 2): how long a group call waits for its sleeping members' wake frame (section 3.11); `mass_reg_at_start_s` (0-200000, 0): a mass re-registration at start within this time (section 3.11); `hibernate_s` (0 or 1-300, 0): T_BS_Inactive of the asynchronous TSCC, 0 never (section 3.12); `duplex` (bool, false): full-duplex individual calls (section 3.13); `composite_tscc` (bool, false): the TSCC's slot carries a call when no payload channel is free (section 3.19); `transmit_interrupt` (bool, false): payload interrupt, ALS termination and the call timer de-key (section 3.20). Local settings only for now; the manager's `cfg` doesn't carry them |
+| `services` | object | | `emergency_preempt` (bool, false): clear a running call for a waiting emergency (section 3.9); `power_save` (0-7, 0): the largest PowerSave_RQ granted, 0 none; `power_save_awake_s` (0.1-60, 1); `power_save_group_hold_s` (0-10, 2): how long a group call waits for its sleeping members' wake frame (section 3.11); `mass_reg_at_start_s` (0-200000, 0): a mass re-registration at start within this time (section 3.11); `hibernate_s` (0 or 1-300, 0): T_BS_Inactive of the asynchronous TSCC, 0 never (section 3.12); `duplex` (bool, false): full-duplex individual calls (section 3.13); `composite_tscc` (bool, false): the TSCC's slot carries a call when no payload channel is free (section 3.19); `transmit_interrupt` (bool, false): payload interrupt, ALS termination and the call timer de-key (section 3.20); `ip_address_upload` (bool, false): packet data to IPI uploads the IP address first (section 3.16). Local settings only for now; the manager's `cfg` doesn't carry them |
 | `auth` | `off`, `registration`, `required` | `off` | MS authentication (section 3.14): challenge MSs with a key at registration, or every MS. Local settings only; the manager's `cfg` doesn't carry it |
 
 Checks (refusals name the key): exactly one `tscc` carrier; every carrier's `out` on a device that transmits and its
@@ -1745,7 +1757,7 @@ and against `t3ms` on one air.
 | Level | What | Where |
 |---|---|---|
 | PDU codec | Every PDU the site sends or reads: field packing against the 361-4 tables, round trips, known vectors from a standard site's captures (decoded values, not checks) | Rust unit tests |
-| Controller | Scenarios over `t3air`: registration open/listed/denied, collisions and backoff, group call, queue and grant on release, late entry repeats (through the hang time), hang and P_CLEAR, call timer, individual OACSU and FOACSU, no answer, cancel, busy called party, Not_Supported, network group in and out, network setup both ways, Tier II implicit setup, records reload, provisioning changes, link loss; short data (`t3sdtests.rs`): UDT MS to MS, MS, talkgroup and site, 1 to 4 blocks, refusals, store while busy and its timeout, cancel, the kept upload slots, CRC errors and a missing upload, status to MS, talkgroup and site, polling, UDT short data polling (the C_AHOY's fields, the polled MS's upload and the download to the caller, its refusal mirrored, not here, itself, a gateway), the site's own sends, a full table, the network both ways; packet data (`t3pdtests.rs`): MS to MS unconfirmed and confirmed, rate 3/4 and rate 1 (unconfirmed to an MS and a talkgroup, a damaged block lost; confirmed with a damaged block: SACK, C_RDATA, the F = 0 retry, the ACK; retries to N_RtryLmt; `t3pdrate.rs`: the blocks at each rate, CRC-9 and CRC-32 against the B.3.9 / B.3.10 formulas), the availability check, PD/TD_GRANT single and multi-item, data hang and clearing, to a talkgroup, to the site (TSI, data ID, IPI), refusals (NACKU mirrored, no answer, not here, multi-part, itself, talkgroup not allowed, busy), queued and cancelled, the site's own sends; packet data across sites (`t3pdnettests.rs`, two sites; `t3pdnet.rs`): confirmed MS to MS with a damaged block on each air link (SACK at both), unconfirmed at rate 3/4, refusals (not found, no answer, a lost setup, the link down), talkgroup data to the site that carries it, data with no setup checked first, the network form at each rate, the relay's retries and results; talkgroup lists (`t3tgtests.rs`): registration with a list (the
+| Controller | Scenarios over `t3air`: registration open/listed/denied, collisions and backoff, group call, queue and grant on release, late entry repeats (through the hang time), hang and P_CLEAR, call timer, individual OACSU and FOACSU, no answer, cancel, busy called party, Not_Supported, network group in and out, network setup both ways, Tier II implicit setup, records reload, provisioning changes, link loss; short data (`t3sdtests.rs`): UDT MS to MS, MS, talkgroup and site, 1 to 4 blocks, refusals, store while busy and its timeout, cancel, the kept upload slots, CRC errors and a missing upload, status to MS, talkgroup and site, polling, UDT short data polling (the C_AHOY's fields, the polled MS's upload and the download to the caller, its refusal mirrored, not here, itself, a gateway), the site's own sends, a full table, the network both ways; packet data (`t3pdtests.rs`): MS to MS unconfirmed and confirmed, rate 3/4 and rate 1 (unconfirmed to an MS and a talkgroup, a damaged block lost; confirmed with a damaged block: SACK, C_RDATA, the F = 0 retry, the ACK; retries to N_RtryLmt; `t3pdrate.rs`: the blocks at each rate, CRC-9 and CRC-32 against the B.3.9 / B.3.10 formulas), the availability check, PD/TD_GRANT single and multi-item, data hang and clearing, to a talkgroup, to the site (TSI, data ID, IPI), the IP address upload to IPI (its C_AHOY, the address taken either way round, the upload refused, off), refusals (NACKU mirrored, no answer, not here, multi-part, itself, talkgroup not allowed, busy), queued and cancelled, the site's own sends; packet data across sites (`t3pdnettests.rs`, two sites; `t3pdnet.rs`): confirmed MS to MS with a damaged block on each air link (SACK at both), unconfirmed at rate 3/4, refusals (not found, no answer, a lost setup, the link down), talkgroup data to the site that carries it, data with no setup checked first, the network form at each rate, the relay's retries and results; talkgroup lists (`t3tgtests.rs`): registration with a list (the
 C_AHOY's fields, the Response_Info bits, a talkgroup refused), all accepted, replaced, replaced by a single
 subscription, dropped on deregistration, a refused registration; DGNA MS to MS (address mode, a call on the new
 talkgroup, alias mode, delete all), refusals (off, talkgroup not allowed, itself, the site, not here, the called MS

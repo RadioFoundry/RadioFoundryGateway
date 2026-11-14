@@ -20,7 +20,7 @@ pub use sdata::{
     rdof_t3_net_sd, rdof_t3_sd_of_event, rdof_t3_sd_send, SdMsg, SD_DGNA, SD_F_EMERGENCY, SD_F_GROUP, SD_POLL,
     SD_INTR, SD_RESULT, SD_SEND, SD_STATUS, SD_UDT,
 };
-use sdata::{SD_DIVERT, SD_TGLIST};
+use sdata::{SD_DIVERT, SD_IPADDR, SD_TGLIST};
 // talkgroup lists: registration with a list, DGNA (tier3.md 3.17)
 #[path = "t3tglist.rs"]
 mod tglist;
@@ -168,7 +168,8 @@ pub struct Cfg {
     pub vote_blk: u8,  // VOTE_BLK: TDMA frames of blocked random access after a Vote Now Advice (361-4 A.2: 2-10)
     pub priority: u8,  // the site's priority radiated with its neighbors (361-4 table 6.81: 1 highest, 7 lowest, 0 none)
     pub intr: u8,      // 1: transmit interrupt (361-4 6.4.14.3.2-6.4.14.3.4, 6.4.15; t3intr.rs)
-    pub pad1: [u8; 2],
+    pub ip_upload: u8, // 1: packet data to IPI asks the caller for the IP address first (6.6.3.2.4 b 2)
+    pub pad1: [u8; 1],
     pub ps_hold_ms: u32, // a group call waits up to this long for its sleeping members' wake frame (6.4.7.1); 0 never
 }
 
@@ -931,6 +932,9 @@ fn check(c: &Cfg, err: &mut Buf) -> bool {
     }
     if c.intr > 1 {
         no!("transmit_interrupt: true or false");
+    }
+    if c.ip_upload > 1 {
+        no!("ip_address_upload: true or false");
     }
     if c.auth > AUTH_REQUIRED {
         no!("auth: off, registration or required");

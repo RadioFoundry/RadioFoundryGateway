@@ -266,6 +266,8 @@ pub struct Ms {
     vits: u32,       // C_ACKVITs sent
     killed: bool,    // 6.4.10: no DMR functionality at all
     no_als: bool,  // answers an ALS radio check MSNot_Supported
+    no_ip_upload: bool, // answers the C_AHOY from IPI (the IP address upload) MSNot_Supported
+    ip_dst: u32,        // the packet data call's IPv4 destination (its datagram's), for that upload
     als_from: u32, // the caller of an ALS radio check it accepted
     als_until: i64,
     als_on: bool,       // on the payload channel of an ALS call, transmitting for the caller
@@ -414,6 +416,8 @@ impl Ms {
         };
         let Some(m) = DataMsg::build_rate(head, data, dt) else { return false };
         self.pd_out = m;
+        let v4 = data.len() >= 20 && data[0] >> 4 == 4;
+        self.ip_dst = if v4 { u32::from_be_bytes([data[16], data[17], data[18], data[19]]) } else { 0 };
         self.act(DO_DATA, dst, 0, flags, at_ms)
     }
 
@@ -467,6 +471,11 @@ impl Ms {
     pub fn refuse_supp(&mut self, stun: bool, als: bool) {
         self.no_stun = stun;
         self.no_als = als;
+    }
+
+    /// It answers the C_AHOY from IPI that asks for a data call's IP address with C_NACKU(MSNot_Supported).
+    pub fn refuse_ip_upload(&mut self, refuse: bool) {
+        self.no_ip_upload = refuse;
     }
 
     /// Stunned by the site (6.4.9): no user services until revived.
@@ -1422,11 +1431,13 @@ impl Ms {
             (DGNAI, SK_SUPPL) => Some(DO_DGNA),
             (TATTSI, SK_REG) if a.service_kind_flag => Some(DO_REGISTER),
             (DIVERTI, SK_DIVERT) => Some(DO_DIVERT),
+            (IPI, SK_IND_PD) => Some(DO_DATA), // 6.6.3.2.4 b) 2): a data call's IP address
             _ => None,
         };
         if let Some(what) = upload {
             let mine = self.has_cur && self.cur.what == what && matches!(self.state, ACCESS | WAITING);
-            if !mine || (what == DO_REGISTER && self.cur.flags & F_LIST == 0) {
+            let not_ip = what == DO_DATA && (self.cur.arg != IPI || self.no_ip_upload || self.ip_dst == 0);
+            if !mine || (what == DO_REGISTER && self.cur.flags & F_LIST == 0) || not_ip {
                 let r = Ack {
                     op: OP_ACKU,
                     reason: R_MS_NOT_SUPPORTED,
@@ -1449,6 +1460,21 @@ impl Ms {
                         ..Default::default()
                     };
                     (h, self.reg_list)
+                }
+                DO_DATA => {
+                    // 6.4.11.1.3, B.3.7: UDT_Format IP, UAB 0 (IPv4), SF 1, A 0, the address then 48 bits reserved
+                    let h = UdtHead {
+                        op: OP_UDTHU,
+                        format: FMT_IP,
+                        target: IPI,
+                        source: self.id,
+                        blocks: 1,
+                        sf: true,
+                        ..Default::default()
+                    };
+                    let mut d = [0u8; 10];
+                    d[..4].copy_from_slice(&self.ip_dst.to_be_bytes());
+                    (h, Blocks::of(&d, 1).unwrap_or_default())
                 }
                 DO_DIVERT => {
                     // table 6.63: to MSI or GPI, the Address Format, A 0, SF 0, UDT_DIV 1
