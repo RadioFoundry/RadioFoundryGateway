@@ -908,6 +908,25 @@ fn udt_with_supplementary_data() {
     assert!(air.ms[1..].iter().all(|m| took(m) && m.inbox().is_some_and(|(h, ..)| h.group)));
 }
 
+/// The same supplementary data ahead of two short data messages a few seconds apart (as a radio's fixed text does) is
+/// taken twice: the first message ended what the first copy was held for, so the second isn't the site's repeat.
+#[test]
+fn same_supplementary_data_twice() {
+    let mut s = site_with(|_| {});
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG]), ms(1002, &[TG])], T0);
+    register_all(&mut air, &mut log);
+    assert!(air.ms[0].set_supp(Some(b"site2-supl")));
+    for (i, text) in [&b"first"[..], &b"second"[..]].into_iter().enumerate() {
+        let now = air.now();
+        assert!(air.ms[0].send_sdm(1002, 0, FMT_ISO8, text, now));
+        let n = i as u32 + 1;
+        assert!(air.until(8000, &mut log.f(), |a| a.ms[0].state() == t3ms::IDLE && a.ms[0].status().calls_done == n));
+        assert_eq!(air.ms[1].inbox().map(|(_, d, _)| d[..text.len()] == *text), Some(true));
+    }
+    assert_eq!(air.ms[1].supp().1, 2, "two messages, two supplementary data");
+}
+
 /// A status with SUPED_SV (table 6.57: Service_Options bit 5, SUPED_VAL in dependent bits 3-2): the C_AHOY from SUPLI
 /// (Service_Kind 0111b) and the upload first, the supplementary data down to the called MS, then the status's C_AHOY
 /// (6.6.6.1.2.1.2 e). To a talkgroup the same.

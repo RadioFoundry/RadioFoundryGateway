@@ -1409,6 +1409,7 @@ impl Ms {
         self.inbox = self.in_blocks;
         self.inbox_head = h;
         self.inbox_n += 1;
+        self.supp_held = false; // the short data it came ahead of is here: the same again is for a later one
         if self.has_cur && self.cur.what == DO_UPOLL && h.source == self.cur.arg && !h.group {
             self.done(true); // 6.6.5.5: its C_ACKU (above) ends the poll
         }
@@ -1738,6 +1739,7 @@ impl Ms {
             if st != self.last_status || self.now - self.last_status_ms > 2000 {
                 self.statuses += 1; // not the same one repeated
                 self.sd_statuses += 1;
+                self.supp_held = false; // as for short data
             }
             self.last_status = st;
             self.sd_status = st.2;
