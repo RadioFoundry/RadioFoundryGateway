@@ -2303,6 +2303,29 @@ pub unsafe extern "C" fn rdof_t3ms_set_poll(ms: *mut Ms, format: u8, data: *cons
     (*ms).set_poll_reply(format, d)
 }
 
+/// Supplementary user data for its voice calls (6.4.13; len 0: none). False when it's over 46 octets.
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3ms_set_supp(ms: *mut Ms, data: *const u8, len: usize) -> bool {
+    let d = (!data.is_null() && len > 0).then(|| core::slice::from_raw_parts(data, len));
+    (*ms).set_supp(d)
+}
+
+/// The last supplementary user data it took: its octets into out (up to cap, *len; the blocks' user data, trailing
+/// zero padding included). Returns how many it has taken (0: none, nothing written).
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3ms_supp_inbox(ms: *const Ms, out: *mut u8, cap: usize, len: *mut usize) -> u32 {
+    let (last, n, _) = (*ms).supp();
+    let Some((d, dn)) = last else { return 0 };
+    let dn = dn.min(cap);
+    if !out.is_null() {
+        core::ptr::copy_nonoverlapping(d.as_ptr(), out, dn);
+    }
+    if !len.is_null() {
+        *len = dn;
+    }
+    n
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn rdof_t3ms_ip_advice(ms: *mut Ms, ip: u32, add: bool, at_ms: i64) -> bool {
     (*ms).ip_advice(ip, add, at_ms)

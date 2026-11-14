@@ -375,11 +375,13 @@ typedef struct {
 #define ACT_UPOLL 0xF4     /* rdof_t3ms_upoll (ISO 8-bit), arg the MS, len the blocks */
 #define ACT_SETPOLL 0xF5   /* rdof_t3ms_set_poll (ISO 8-bit text) */
 #define ACT_IPADV 0xF6     /* rdof_t3ms_ip_advice: arg the address, flags 1 deleting it */
+#define ACT_SETSUPP 0xF7   /* rdof_t3ms_set_supp (text, binary format) */
 #define AIR_RADIO_NET 0x0C000000u /* 12.0.0.0/8: a radio's address, its id in the low 24 bits */
 #define AIR_FILL_MAX ((RDOF_IPGW_MAX_PACKET - 28) / 2) /* data *N: characters at most, one UDP/IPv4 datagram */
 #define ACT_HELP                                                                                                       \
     "ID register [TG] | deregister | group TG [TALK_MS] | private ID [TALK_MS] | status ID N | gstatus TG N | "        \
-    "sdm ID TEXT | gsdm TG TEXT | upoll ID [BLOCKS] | setpoll TEXT | ipadv [A.B.C.D] [del] | data ID TEXT | "      \
+    "sdm ID TEXT | gsdm TG TEXT | upoll ID [BLOCKS] | setpoll TEXT | setsupp [TEXT] | "                               \
+    "ipadv [A.B.C.D] [del] | data ID TEXT | "                                                                         \
     "cdata ID TEXT | gdata TG TEXT "                                                                                  \
     "(data34, cdata1 ...: rate 3/4, 1; "                                                                              \
     "TEXT *N: N generated characters) | "                                                                             \
@@ -464,14 +466,14 @@ static int act_parse(const char *text, act_t *x)
                    (sdm ? 0 : (uint8_t)act_data_rate(what));
     } else if (!strcmp(what, "upoll") && got >= 3 && (got < 4 || (a2 >= 1 && a2 <= 4)))
         x->what = ACT_UPOLL, x->arg = (uint32_t)a1, x->len = got >= 4 ? (uint8_t)a2 : 4;
-    else if (!strcmp(what, "setpoll") && got >= 2) {
+    else if ((!strcmp(what, "setpoll") || !strcmp(what, "setsupp")) && got >= 2) {
         const char *t = strstr(line, what) + strlen(what);
         t += strspn(t, " \t");
         const size_t n = strcspn(t, "\r\n");
         if (n > 46)
             return -1;
         memcpy(x->text, t, n);
-        x->what = ACT_SETPOLL, x->len = (uint8_t)n;
+        x->what = what[3] == 'p' ? ACT_SETPOLL : ACT_SETSUPP, x->len = (uint8_t)n;
     } else if (!strcmp(what, "ipadv")) {
         /* the address (default the MS's own, 12.x.y.z), "del" deleting it */
         const char *t = strstr(line, what) + strlen(what);
@@ -563,6 +565,8 @@ static bool act_run(rdof_t3ms_t *ms, const act_t *a, int64_t now)
     }
     if (a->what == ACT_SETPOLL)
         return rdof_t3ms_set_poll(ms, 4 /* ISO 8-bit */, (const uint8_t *)a->text, a->len);
+    if (a->what == ACT_SETSUPP)
+        return rdof_t3ms_set_supp(ms, (const uint8_t *)a->text, a->len);
     if (a->what == ACT_UPOLL)
         return rdof_t3ms_upoll(ms, a->arg, 4, a->len, now);
     if (a->what == ACT_IPADV)
@@ -787,7 +791,7 @@ static struct {
     uint32_t id[RDOF_T3SIM_MS];
     int voice_n[RDOF_T3SIM_MS];
     rdof_t3ms_status_t last[RDOF_T3SIM_MS];
-    uint32_t sd_seen[RDOF_T3SIM_MS], pd_sum[RDOF_T3SIM_MS]; /* what air_inbox said last */
+    uint32_t sd_seen[RDOF_T3SIM_MS], pd_sum[RDOF_T3SIM_MS], supp_seen[RDOF_T3SIM_MS]; /* what air_inbox said */
     act_t acts[ACTS];
     int nacts, ai, talker;
     int64_t next_talk;
@@ -921,6 +925,14 @@ static void air_inbox(int i)
         air_text(d, n, t, sizeof t);
         tsay("air MS %u: short data from %u, format %u, %zu octets: \"%s\"", (unsigned)AM.id[i], (unsigned)src,
              fmt, n, t);
+    }
+    const uint32_t sn = rdof_t3ms_supp_inbox(AM.ms[i], d, sizeof d, &n);
+    if (sn != AM.supp_seen[i]) {
+        AM.supp_seen[i] = sn;
+        while (n > 0 && d[n - 1] == 0)
+            n--; /* the blocks' zero padding */
+        air_text(d, n, t, sizeof t);
+        tsay("air MS %u: supplementary data, %zu octets: \"%s\"", (unsigned)AM.id[i], n, t);
     }
     const int pn = rdof_t3ms_data_inbox(AM.ms[i], d, sizeof d, &src);
     if (pn < 0)

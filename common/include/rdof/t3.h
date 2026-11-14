@@ -503,6 +503,11 @@ bool rdof_t3ms_do(rdof_t3ms_t *ms, uint8_t what, uint32_t arg, uint32_t talk_ms,
 bool rdof_t3ms_set_poll(rdof_t3ms_t *ms, uint8_t format, const uint8_t *data, size_t len);
 /* a UDT short data poll of MS dst (6.6.5): the data in format, in blocks UDTs (1-4); it comes as short data */
 bool rdof_t3ms_upoll(rdof_t3ms_t *ms, uint32_t dst, uint8_t format, uint8_t blocks, int64_t at_ms);
+/* supplementary user data its voice calls carry from now on (6.4.13: SUPED_SV; up to 46 octets, len 0 none) */
+bool rdof_t3ms_set_supp(rdof_t3ms_t *ms, const uint8_t *data, size_t len);
+/* the last supplementary user data it took (from SUPLI): its octets into out (up to cap, *len; trailing zero padding
+ * included). Returns how many it has taken (0: none, nothing written). */
+uint32_t rdof_t3ms_supp_inbox(const rdof_t3ms_t *ms, uint8_t *out, size_t cap, size_t *len);
 /* IP connection advice (6.4.11): a registration with IP_Inform 1 adding IPv4 address ip (host order), or (add false)
    deleting it; it stays registered either way */
 bool rdof_t3ms_ip_advice(rdof_t3ms_t *ms, uint32_t ip, bool add, int64_t at_ms);

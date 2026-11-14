@@ -1708,11 +1708,12 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
   in a UDP/IPv4 datagram from port 5016 to 5016, 12.x.y.z the MS's address (its ID in the low 24 bits) and 225.x.y.z
   a talkgroup's, sent as rate 1/2 blocks; `data34`, `cdata34`, `gdata34` the same in rate 3/4 blocks, `data1`,
   `cdata1`, `gdata1` in rate 1; `1000001 setstatus 12`: the status it answers a poll with, else the last it sent, 0
-  at start). Their state changes go to the log (`air MS ID: ...`), and so does the short data and packet data they
-  take (the text; a UDP datagram's addresses and payload, decoded when it's a text message on port 5016). They take
-  data at any rate, as a radio sends it (a real radio's confirmed IP data is often rate 3/4): the outbound's data
-  blocks decoded (BPTC, the trellis, or as is at rate 1), the CRCs checked, a confirmed message answered with an
-  ACK, a NACK or a SACK and its retry taken (3.16). Test:
+  at start; `1000001 setsupp TEXT`: supplementary user data its voice calls carry from now on, up to 46 octets,
+  none without TEXT, 3.21). Their state changes go to the log (`air MS ID: ...`), and so does the short data,
+  supplementary data and packet data they take (the text; a UDP datagram's addresses and payload, decoded when it's
+  a text message on port 5016). They take data at any rate, as a radio sends it (a real radio's confirmed IP data is
+  often rate 3/4): the outbound's data blocks decoded (BPTC, the trellis, or as is at rate 1), the CRCs checked, a
+  confirmed message answered with an ACK, a NACK or a SACK and its retry taken (3.16). Test:
   `rdofradio_e2e_t3_airms`.
 - `--sim-ext PATH`: external MSs (other programs, such as a radio's MS engine built for the host) on the simulated
   air, through a unix socket, beside the N simulated ones (N may be 0). JSON lines in lockstep with the slots: after
@@ -1929,7 +1930,8 @@ Built since step 8e, host-tested (the bench steps above note what has run on air
 | dc77b752 | The same on a packet data channel (tables 6.51–6.53); `Ms::pd_hold` for a multi-item session that stays up |
 | 0555693a | ALS calls to an MS at another site (`SETUP_F_ALS`), and their termination there (status 123 by SD_INTR) |
 | 4f47a52c | P_ACKU (table 7.4) on the payload inbound: the site took C_ACKU there, so a real radio's answers were dropped |
-| "Site: supplementary user data" | Supplementary user data on voice calls at the site (6.4.13, 3.21) |
+| 1c21e8cc | Supplementary user data on voice calls at the site (6.4.13, 3.21) |
+| "rdofradio: air MS supplementary data" | `setsupp TEXT` for the air MSs, and a log line for what they take |
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
 apart from the code, found seven deviations, all fixed (2026-11-12):
