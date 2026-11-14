@@ -43,7 +43,7 @@ int64_t rdof_n_of_counter(uint32_t c, int64_t near_n);
 #define RDOF_OPS_SCHEDULE 0x0001
 #define RDOF_OPS_ALIGN 0x0002
 #define RDOF_OPS_SLEW 0x0004    /* reserved: not built */
-#define RDOF_OPS_RX_META 0x0008 /* reserved: not built */
+#define RDOF_OPS_RX_META 0x0008 /* the RX half's RX_META events (sub 0x89), SET_ROLE byte 7 bit 0 */
 #define RDOF_OPS_TRIM 0x0010    /* reserved: not built */
 #define RDOF_OPS_PPS 0x0020     /* reserved: not built */
 /* Proposed (2026-11-13, for a TSCC on a TX half; not in a radio yet): TX_SCHED may carry 3 more octets after the
@@ -52,6 +52,10 @@ int64_t rdof_n_of_counter(uint32_t c, int64_t near_n);
  * is sent, not a clear. Without them, or without the bit, as before. */
 #define RDOF_OPS_CACH 0x0040
 #define RDOF_OPS_BUILT 0x0003
+#define RDOF_OPS_ROLE_OPTIONS_AT 7 /* SET_ROLE's body: options, bit 0 RX_META */
+#define RDOF_OPS_SUB_RX_META 0x89
+#define RDOF_OPS_RX_META_LEN 16 /* the event's block */
+#define RDOF_OPS_META_SLOT_N 0x80 /* its flags (byte 9): bytes 14-15 the slot number from the SET_EPOCH E */
 #define RDOF_OPS_GUARD_MS 40 /* only when INFO is too short to say */
 #define RDOF_OPS_HORIZON_SLOTS 32
 #define RDOF_OPS_STREAM_MODE_AT 6 /* SET_ROLE's body (the role at 0) */

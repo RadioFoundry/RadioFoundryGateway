@@ -67,13 +67,24 @@ DMR_SHORTLC for P_SYS_Parms, SET_AT. A split radio carrying the control channel 
   sent just before slot n's burst (TACT and payload, air order, the first bit in bit 7 of octet 0). The half sends
   them as given in place of its own AT, TC and short LC fragment. An idle burst with a CACH is sent, not a clear,
   so the gateway schedules every slot of the TSCC's carrier. Without the bit the gateway sends TX_SCHED as before.
-  Tested against the host's fake half (`rdof_t3split2_tests`); proposed to the radio session, not answered yet. If
-  the radio would rather take AT plus a scheduled short LC, the gateway can switch to that.
+  Tested against the host's fake half (`rdof_t3split2_tests`). The radio built the same op (its tier3-radio branch,
+  host-tested only, 2026-11-13).
 - Before the half is on the UTC grid, the gateway doesn't key it. A TSCC's half that is held keyed off the grid (a
   step in the host's clock) is unkeyed so it can snap back.
 - Every slot filled: a TSCC sends a block in every TS1 slot. With TX_SCHED, an empty TS1 slot in a TSCC is a fault;
   the gateway fills every slot, so the TX half's idle fill only covers a late burst. Request: count late bursts per
   key-up (STATUS 34 does) and say so in the reply, as now.
+
+### 1.4a The radio as a trunked site's RX half
+
+A carrier on two radios and no SDR (a split transmitter and a split receiver): the gateway asks the RX half for
+RX_META (SET_ROLE byte 7 bit 0) when its INFO offers capability bit 3, and takes each burst's UTC slot from the
+event's slot number (bytes 14-15, flag 80) and the TX half's counter at the SET_EPOCH E it sent (GET_EPOCH's counter,
+plus one when that slot was TS2). It reads the number as signed: a burst from the slot just before a new E, reported
+after the radio took the new SET_EPOCH, comes as -1 (65535). Say if the radio does anything else there (0, or the
+number from the old E). Without RX_META the gateway takes the slot of the label's parity just over when the burst
+comes, so a report later than one slot after its slot ends lands two slots off. Tested against the host's fake
+halves (`rdof_t3split3_tests`, both ways).
 
 ### 1.5 MMDVM protocol (the TX half's standard commands)
 

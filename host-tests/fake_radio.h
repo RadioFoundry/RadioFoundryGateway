@@ -46,6 +46,9 @@ typedef struct {
     int epoch_refused;
     double epoch_at; /* the host time of the last GET_EPOCH answered: an outbound TS1 started then */
     bool silent; /* answers nothing (a half gone) */
+    bool rx_meta;      /* the RX half's RX_META events (SET_ROLE option bit 0; split_caps needs RDOF_OPS_RX_META) */
+    uint16_t meta_seq;
+    int metas;
     /* The TX role's slot clock (modem µs, unwrapped), and RadioFoundry's UTC additions (rdof/splitops.h's RDOF_OPS_*):
      * capabilities, guard, horizon and air delay; ALIGN (unkeyed a snap done snap_slots later, keyed the counter
      * only or flag 10), the snap back after a retune, the stream mode, TX_SCHED (keying up ~150 ms ahead, down 1 s
@@ -96,6 +99,9 @@ typedef struct {
 void fake_init(fake_radio_t *f, const char *kind);
 void fake_write(fake_radio_t *f, const uint8_t *data, size_t len);
 void fake_hear(fake_radio_t *f, uint8_t control, const uint8_t *burst, int rssi, int slot);
+/* The RX half hearing a burst whose slot starts at host time start: labeled by its epoch (TS1 an even number of
+ * slots from E), its RX_META event first when SET_ROLE asked for them. */
+void fake_hear_at(fake_radio_t *f, uint8_t control, const uint8_t *burst, int rssi, double start);
 void fake_lose(fake_radio_t *f, int slot);
 void fake_drain(fake_radio_t *f);
 /* odr_split's TX slot clock: its modem time (µs, unwrapped), the slot clock's origin with any slew applied, and the

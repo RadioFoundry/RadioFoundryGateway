@@ -201,7 +201,16 @@ typedef struct {
     double max_key_s;
     int stream_mode; /* the TX half's stream: RDOF_OPS_STREAM_FIFO (0, upstream's DMR_DATA) or RDOF_OPS_STREAM_SCHEDULED
                       * (TX_SCHED, rdof_split_sched: FIFO when the TX half lacks it) */
+    int rx_meta;     /* 1: the RX half's RX_META events, when it has them, go upstream with the TX half's slot
+                      * counter of each burst (rdof_split_meta_t); 0 (the default): none (a repeater upstream) */
 } rdof_split_params_t;
+
+/* What the split sends upstream before an RX half's burst with rx_meta: `E0 len D6 89 00` and this, little endian.
+ * counter is the TX half's slot counter of the burst's slot (the UTC slot's low 32 bits once the half is aligned:
+ * flag RDOF_SPLIT_META_UTC), valid with flag RDOF_SPLIT_META_COUNTER; block the RX half's event as it came. */
+#define RDOF_SPLIT_META_COUNTER 0x01
+#define RDOF_SPLIT_META_UTC 0x02
+#define RDOF_SPLIT_META_LEN (RDOF_OPS_RX_META_LEN + 5)
 
 typedef struct rdof_split {
     rdof_split_half_t halves[2];
@@ -248,6 +257,10 @@ typedef struct rdof_split {
     int snap_polls;
     int stream_mode;      /* the TX half's (RDOF_OPS_STREAM_FIFO: upstream's DMR_DATA) */
     uint32_t sched_sent, sched_outcomes[5]; /* TX_SCHED: bursts sent, and the replies by outcome (RDOF_SCHED_*) */
+    /* RX_META (rdof_split_params_t rx_meta): asked of the RX half, the TX half's counter at the SET_EPOCH E sent and
+     * at the one in force, whether that counter was on the UTC grid, the events seen and sent up with a counter */
+    bool rx_meta, rx_meta_on, has_pending_counter, pending_utc, has_epoch_counter, epoch_utc;
+    uint32_t pending_counter, epoch_counter, meta_events, meta_counted;
     /* optional: the log */
     void (*log)(void *ctx, const char *msg);
     void *log_ctx;

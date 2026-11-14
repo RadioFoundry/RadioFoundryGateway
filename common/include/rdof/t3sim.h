@@ -64,6 +64,11 @@ typedef struct {
     uint32_t outside;
     bool (*outbound)(void *ctx, int c, int64_t k, uint8_t burst[RDOF_BURST_BYTES]);
     void *outbound_ctx;
+    /* Carriers whose inbound something else hears (bit c), a split RX half, say: inbound gets the burst slot k carried
+     * on carrier c (a collision's unreadable), in place of the unit's rdof_t3unit_rx; the caller hands it on. */
+    uint32_t outside_in;
+    void (*inbound)(void *ctx, int c, int64_t k, const rdof_burst_t *b);
+    void *inbound_ctx;
     /* External MSs (rdofradio --sim-ext). ext_in gives slot k's bursts (up to max), asked after the internal MSs
      * decided theirs: each joins its channel's collision count; a burst on a channel not on air in slot k (the wrong
      * slot, no such carrier) is dropped. ext_out gets what each carrier aired in slot k, after the internal MSs heard

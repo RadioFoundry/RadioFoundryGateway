@@ -28,6 +28,10 @@ const SET_FREQ: u8 = 0x04;
 const DMR_DATA1: u8 = 0x18;
 const DMR_DATA2: u8 = 0x1A;
 const ACK: u8 = 0x70;
+const ODR_SPLIT: u8 = 0xD6;
+const SUB_RX_META: u8 = 0x89;
+/// rdof/split.h RDOF_SPLIT_META_LEN: the RX half's block (16), the counter (4), the flags
+const META_LEN: usize = 21;
 const NAK: u8 = 0x7F;
 const MODE_DMR: u8 = 2;
 const SYNC_AUDIO: u8 = 0x20;
@@ -44,7 +48,11 @@ pub struct T3splitIo {
     pub rx_channel: Option<unsafe extern "C" fn(ctx: *mut c_void, hz: u32) -> c_int>,
     pub now48: Option<unsafe extern "C" fn(ctx: *mut c_void) -> i64>,
     pub ctx: *mut c_void,
+    pub to_rx_radio: Option<unsafe extern "C" fn(ctx: *mut c_void, d: *const u8, n: usize)>,
 }
+
+/// The ops' radio index for the RX half's radio (rdof_t3split_init_radios: both halves radios).
+const RX_RADIO: c_int = 1;
 
 /// rdof_sdrsplits_io_t (rdof/sdr/sdrsplit.h)
 #[repr(C)]
@@ -78,6 +86,7 @@ pub struct SplitParams {
     pub cooldown_s: c_int,
     pub max_key_s: f64,
     pub stream_mode: c_int,
+    pub rx_meta: c_int,
 }
 
 type Set = *mut Sdrsplits;
@@ -102,7 +111,9 @@ pub struct Ops {
 pub struct Heard {
     pub slot: u8,
     pub control: u8,
+    pub meta: u8,
     pub rssi: c_int,
+    pub counter: u32,
     pub burst: [u8; BURST_BYTES],
 }
 
@@ -127,6 +138,10 @@ pub struct T3split {
     pub heard: u32,
     pub dropped: u32,
     pub naks: u32,
+    pub next_meta: u8,
+    pub next_rssi: c_int,
+    pub next_counter: u32,
+    pub metas: u32,
 }
 
 extern "C" {
@@ -154,9 +169,10 @@ unsafe fn ops<'a>(t: *const T3split) -> &'a Ops {
     &*(*t).ops
 }
 
-unsafe extern "C" fn ts_to_radio(ctx: *mut c_void, _i: c_int, d: *const u8, n: usize) {
+unsafe extern "C" fn ts_to_radio(ctx: *mut c_void, i: c_int, d: *const u8, n: usize) {
     let t = ctx.cast::<T3split>();
-    if let Some(f) = (*t).io.to_radio {
+    let f = if i == RX_RADIO { (*t).io.to_rx_radio } else { (*t).io.to_radio };
+    if let Some(f) = f {
         f((*t).io.ctx, d, n);
     }
 }
@@ -188,6 +204,15 @@ unsafe extern "C" fn on_up(ctx: *mut c_void, cmd: u8, d: *const u8, n: usize) {
         (*t).setup_at = -1.0; // the next goes out on the next tick
         return;
     }
+    if cmd == ODR_SPLIT && n >= 2 + META_LEN && d[0] == SUB_RX_META {
+        // the RX half's event for the burst that follows: its counter, flags and RSSI (rdof_split's frame)
+        let b = &d[2..2 + META_LEN];
+        (*t).metas += 1;
+        (*t).next_counter = u32::from_le_bytes([b[16], b[17], b[18], b[19]]);
+        (*t).next_meta = b[20];
+        (*t).next_rssi = i16::from_le_bytes([b[10], b[11]]).into();
+        return;
+    }
     if (cmd == DMR_DATA1 || cmd == DMR_DATA2) && n > BURST_BYTES {
         let next = ((*t).qhead + 1) % Q as c_int;
         if next == (*t).qtail {
@@ -197,7 +222,11 @@ unsafe extern "C" fn on_up(ctx: *mut c_void, cmd: u8, d: *const u8, n: usize) {
         let q = &mut (*t).q[(*t).qhead as usize];
         q.slot = if cmd == DMR_DATA2 { 2 } else { 1 };
         q.control = d[0];
-        q.rssi = 0;
+        q.rssi = (*t).next_rssi;
+        q.meta = (*t).next_meta;
+        q.counter = (*t).next_counter;
+        (*t).next_meta = 0;
+        (*t).next_rssi = 0;
         q.burst.copy_from_slice(&d[1..1 + BURST_BYTES]);
         (*t).qhead = next;
         (*t).heard += 1;
@@ -258,6 +287,7 @@ pub unsafe extern "C" fn rdof_t3split_start(
     let mut p: SplitParams = core::mem::zeroed();
     rdof_split_params_default(&mut p);
     p.stream_mode = STREAM_SCHEDULED;
+    p.rx_meta = 1; // each heard burst's slot from the RX half, when it can say
     if ((*ops).add)(set, &p, now) < 0 {
         let why = c_bytes((*set).error.as_ptr());
         set_error(t, |o| o.bytes(why));
@@ -275,6 +305,12 @@ pub unsafe extern "C" fn rdof_t3split_free(t: *mut T3split) {
 #[no_mangle]
 pub unsafe extern "C" fn rdof_t3split_from_radio(t: *mut T3split, d: *const u8, n: usize, now: f64) {
     (ops(t).from_radio)(addr_of_mut!((*t).set), 0, d, n, now);
+}
+
+/// Bytes from the RX half's radio (rdof_t3split_init_radios).
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3split_from_rx_radio(t: *mut T3split, d: *const u8, n: usize, now: f64) {
+    (ops(t).from_radio)(addr_of_mut!((*t).set), RX_RADIO, d, n, now);
 }
 
 #[no_mangle]
@@ -374,6 +410,26 @@ pub unsafe extern "C" fn rdof_t3split_take(
     *burst = q.burst;
     t.qtail = (t.qtail + 1) % Q as c_int;
     true
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3split_take_at(
+    t: *mut T3split,
+    slot: &mut c_int,
+    control: &mut u8,
+    burst: &mut [u8; BURST_BYTES],
+    rssi: *mut c_int,
+    meta: &mut c_int,
+    counter: &mut u32,
+) -> bool {
+    let tt = &*t;
+    if tt.qtail == tt.qhead {
+        return false;
+    }
+    let q = &tt.q[tt.qtail as usize];
+    *meta = q.meta.into();
+    *counter = q.counter;
+    rdof_t3split_take(t, slot, control, burst, rssi)
 }
 
 #[no_mangle]

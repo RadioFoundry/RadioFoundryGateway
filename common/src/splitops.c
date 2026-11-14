@@ -14,7 +14,7 @@ uint16_t rdof_ops_caps(const uint8_t *info, size_t len)
 {
     if (len < RDOF_OPS_CAPS_AT + 2)
         return 0;
-    return (uint16_t)((info[RDOF_OPS_CAPS_AT] | info[RDOF_OPS_CAPS_AT + 1] << 8) & (RDOF_OPS_BUILT | RDOF_OPS_CACH));
+    return (uint16_t)((info[RDOF_OPS_CAPS_AT] | info[RDOF_OPS_CAPS_AT + 1] << 8) & (RDOF_OPS_BUILT | RDOF_OPS_CACH | RDOF_OPS_RX_META));
 }
 
 int rdof_ops_guard_ms(const uint8_t *info, size_t len)

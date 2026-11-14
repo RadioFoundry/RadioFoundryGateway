@@ -23,6 +23,7 @@ set(RDOF_SDR_SRCS
     src/mod.c
     src/sdrmodem.c
     src/sdrsplit.c
+    src/radiosplit.c
     src/loopback.c
     src/txguard.c
     src/filters.c

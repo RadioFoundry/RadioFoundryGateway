@@ -74,6 +74,9 @@ pub struct Sim {
     pub outside: u32,
     pub outbound: Option<unsafe extern "C" fn(ctx: *mut c_void, c: c_int, k: i64, burst: *mut u8) -> bool>,
     pub outbound_ctx: *mut c_void,
+    pub outside_in: u32,
+    pub inbound: Option<unsafe extern "C" fn(ctx: *mut c_void, c: c_int, k: i64, b: *const RdofBurst)>,
+    pub inbound_ctx: *mut c_void,
     pub ext_in: Option<unsafe extern "C" fn(ctx: *mut c_void, k: i64, inp: *mut SimIn, max: c_int) -> c_int>,
     pub ext_out: Option<
         unsafe extern "C" fn(
@@ -370,7 +373,11 @@ fn slot(s: &mut Sim, k: i64, now_ms: i64) {
         } else {
             s.in_pdus += 1;
         }
-        unsafe { rdof_t3unit_rx(u, chi / 2, k, &b, -60) };
+        let c = chi / 2;
+        match s.inbound {
+            Some(f) if s.outside_in >> c & 1 != 0 => unsafe { f(s.inbound_ctx, c, k, &b) },
+            _ => unsafe { rdof_t3unit_rx(u, c, k, &b, -60) },
+        }
     }
 
     // the MSs hear slot k on the channel each is on
