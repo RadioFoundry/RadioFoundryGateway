@@ -84,7 +84,10 @@ of an active BS is **repeating**, in **call hang**, or in **channel hang**.
 
 R3.1. **Wakeup.** While hibernating the BS listens for the BS outbound activation CSBK (BS_Dwn_Act, CSBKO 111000,
 -2 table 5.1, 7.1.2) with our color code and a good CRC. On one it keys, starts T_MSInactiv, and both slots go to
-channel hang. The wakeup itself is not repeated. *Basis: ETSI -2 5.1.1.1.1, 5.1.1.1.3. The minimum ETSI check is
+channel hang. The wakeup itself is not repeated. One heard by the slots' receiver wakes the BS too: keyed, it
+restarts T_MSInactiv; just unkeyed, while the modem still sends its last bursts and so isn't back on its idle
+receiver, it keys again. A radio sends the wakeup when it hears no outbound, which can be while the BS still sends
+its last bursts: dropped there, a radio keying just as the hang ended found the BS down. *Basis: ETSI -2 5.1.1.1.1, 5.1.1.1.3. The minimum ETSI check is
 color code plus CSBK; checking the CSBKO and CRC as well is allowed ("manufacturers may also validate ... CSBKO").*
 
 R3.2. **Network activation.** A network stream admitted for an enabled slot (R7.1) also keys the BS. *Basis: Design:

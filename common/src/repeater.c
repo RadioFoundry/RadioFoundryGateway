@@ -792,7 +792,7 @@ static int repeat(rdof_repeater_t *r, rdof_rpt_slot_t *s, uint8_t control, const
         if (dt == RDOF_DT_CSBK) {
             rdof_csbk_t c;
             rdof_decode_csbk(burst, &c);
-            if (!c.crc_ok || c.opcode == RDOF_CSBK_BS_DWN_ACT)
+            if (!c.crc_ok) /* BS_Dwn_Act never gets here (rf) */
                 return 0;
             if (c.src_id != RDOF_NONE) {
                 s->has_last_rf = true;
@@ -887,20 +887,23 @@ static bool rf(rdof_repeater_t *r, const rdof_rpt_rf_in_t *in, double now)
         return true;
     }
     uint8_t control = in->control;
-    if (control & RDOF_CONTROL_IDLE) {
-        /* The idle receiver (transmitter off) only passes data sync: BS_Dwn_Act wakes us (R3.1). */
-        if ((control & RDOF_SYNC_DATA) && (control & 0x0F) == RDOF_DT_CSBK) {
-            rdof_csbk_t c;
-            rdof_decode_csbk(in->burst, &c);
-            if (c.crc_ok && c.opcode == RDOF_CSBK_BS_DWN_ACT) {
-                if (!key(r))
-                    return false;
-                restart(r, now);
-            }
+    bool idle = (control & RDOF_CONTROL_IDLE) != 0; /* the idle receiver (transmitter off): data sync only */
+    if (!idle)
+        hear(r, in->slot, control, in->burst, in->rssi);
+    if ((control & RDOF_SYNC_DATA) && (control & 0x0F) == RDOF_DT_CSBK) {
+        /* BS_Dwn_Act wakes us (R3.1), from either receiver: the slots' one too, while the modem still sends after an
+           unkey, or keyed at the end of T_MSInactiv. A radio sends it when it hears no outbound. Never repeated. */
+        rdof_csbk_t c;
+        rdof_decode_csbk(in->burst, &c);
+        if (c.crc_ok && c.opcode == RDOF_CSBK_BS_DWN_ACT) {
+            if (!key(r))
+                return false;
+            restart(r, now);
+            return true;
         }
-        return true;
     }
-    hear(r, in->slot, control, in->burst, in->rssi);
+    if (idle)
+        return true;
     if (r->enabled[in->slot]) {
         int q = repeat(r, s, control, in->burst, now);
         if (q < 0)

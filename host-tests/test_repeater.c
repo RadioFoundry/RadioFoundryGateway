@@ -736,8 +736,8 @@ static void ed_rf_csbk(void)
     b_csbk(RDOF_CSBK_PREAMBLE, 5, 6, false, b);
     heard(e, 1, C_CSBK, b);
     b_csbk(0x38, 5, 6, true, b);
-    heard(e, 1, C_CSBK, b); /* BS_Dwn_Act with the transmitter on */
-    CHECK(poll_at(e, 0) && !s->count && !s->has_last_rf, "neither");
+    heard(e, 1, C_CSBK, b); /* BS_Dwn_Act from the slots' receiver: it keys (R3.1), and isn't repeated */
+    CHECK(poll_at(e, 0) && !s->count && !s->has_last_rf && r->keyed, "neither");
     b_csbk(0x01, 5, 6, true, b);
     heard(e, 1, C_CSBK, b); /* unaddressed */
     CHECK(poll_at(e, 0) && !s->has_last_rf, "unaddressed");
@@ -800,6 +800,47 @@ static void ed_wakeup(void)
     heard(e, 1, RDOF_CONTROL_IDLE | C_CSBK, b);
     CHECK(!poll_at(e, 0) && !r->ready, "a fault");
     LOG_IS(e, "mode2 x1d");
+}
+
+/* BS_Dwn_Act from the slots' receiver (no idle flag) wakes us too (R3.1): keyed at the end of T_MSInactiv, or unkeyed
+ * while the modem still sends its last bursts. A repeater that ignored it there stayed down for a radio that keyed
+ * just as it dropped. */
+static void ed_wakeup_slots(void)
+{
+    ed_t *e = ed_new("mmdvm_hs");
+    rdof_repeater_t *r = &e->r;
+    CHECK(ed_start(e), "start");
+    uint8_t b[RDOF_BURST_BYTES];
+    b_csbk(0x38, 5, 6, true, b);
+    heard(e, 1, RDOF_CONTROL_IDLE | C_CSBK, b);
+    CHECK(poll_at(e, 0) && r->keyed, "woken");
+    LOG_IS(e, "mode2 key1 K1 st");
+    /* keyed, 10 ms before T_MSInactiv ends: restarted, not repeated */
+    heard(e, 2, C_CSBK, b);
+    CHECK(poll_at(e, 4.99) && r->keyed && r->tx_until == e->clock + 5.0, "restarted: %g", r->tx_until - e->clock);
+    CHECK(!r->slots[2].count && !r->slots[2].has_last_rf, "not repeated");
+    CHECK(poll_at(e, 4.99) && r->keyed, "still keyed");
+    CHECK(poll_at(e, 0.01) && !r->keyed, "unkeyed");
+    e->log[0] = 0;
+    /* unkeyed, the modem still sending: one with a bad CRC doesn't wake us, a good one does */
+    b_csbk(0x38, 5, 6, false, b);
+    heard(e, 1, C_CSBK, b);
+    CHECK(poll_at(e, 0.05) && !r->keyed, "a bad CRC");
+    b_csbk(0x38, 5, 6, true, b);
+    heard(e, 1, C_CSBK, b);
+    CHECK(poll_at(e, 0.05) && r->keyed && r->tx_until == e->clock + 5.0, "woken again: %g", r->tx_until - e->clock);
+    CHECK(!r->slots[1].count && !r->slots[1].has_last_rf, "not repeated");
+    LOG_IS(e, "mode2 key1 K1");
+    /* a slot not enabled for repeating still wakes us */
+    CHECK(poll_at(e, 5) && !r->keyed, "unkeyed");
+    r->enabled[1] = false;
+    heard(e, 1, C_CSBK, b);
+    CHECK(poll_at(e, 0.05) && r->keyed, "disabled slot");
+    /* the modem refuses the key: a fault, as from the idle receiver */
+    CHECK(poll_at(e, 5) && !r->keyed, "unkeyed");
+    e->fail_cmd = RDOF_MMDVM_DMR_START;
+    heard(e, 1, C_CSBK, b);
+    CHECK(!poll_at(e, 0) && !r->ready, "a fault");
 }
 
 /* Keyed with nothing to send (a beacon): idle bursts stay queued on both slots, so the modem keeps its carrier and
@@ -2094,6 +2135,7 @@ void test_repeater_edges(void)
     ed_rf_data();
     ed_rf_csbk();
     ed_wakeup();
+    ed_wakeup_slots();
     ed_keep_up();
 }
 
