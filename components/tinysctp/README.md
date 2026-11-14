@@ -171,12 +171,12 @@ cmake -S components/tinysctp/test -B build/tinysctp && cmake --build build/tinys
 sh components/tinysctp/test/interop.sh     # against usrsctp (libusrsctp and an HBlink4 checkout)
 ```
 
-Also built by `host-tests`. AddressSanitizer and UBSan on (`TINYSCTP_SANITIZE`). 11808 checks in `test_sctp.c`, 69 in `test_udp.c`, 219 in `test_edges.c`.
-Line coverage of `src/` on the host (clang, all three): `sctp.c` 99.4%, `udp.c` 99.0%, `crc32c.c` 100%. The lines left are
-unreachable: pk_chunk, add_sack and add_fwd checking room that is always there (a control queue of 256 bytes, a SACK of
-112 and a FORWARD TSN of 72 fit the smallest packet, 512), a stream table that can't overflow, the `snprintf` failure
-of `tsctp_status_json`; and in `udp.c` the check for an address that doesn't fit 28 bytes. `src/esp.c` needs FreeRTOS
-and is not built on the host.
+Also built by `host-tests`. AddressSanitizer and UBSan on (`TINYSCTP_SANITIZE`). 11808 checks in `test_sctp.c`, 69
+in `test_udp.c`, 219 in `test_edges.c`. Line coverage of `src/` on the host (clang, all three): `sctp.c` 99.4%,
+`udp.c` 99.0%, `crc32c.c` 100%. The lines left are unreachable: pk_chunk, add_sack and add_fwd checking room that is
+always there (a control queue of 256 bytes, a SACK of 112 and a FORWARD TSN of 72 fit the smallest packet, 512), a
+stream table that can't overflow, the `snprintf` failure of `tsctp_status_json`; and in `udp.c` the check for an
+address that doesn't fit 28 bytes. `src/esp.c` needs FreeRTOS and is not built on the host.
 
 `test/test_sctp.c` runs two instances over a simulated link (10 ms one way; RTO 300 / 100 / 2000 ms, heartbeat
 2 s, SACK delay 50 ms unless a test changes them) with tunable loss, duplication, reordering, jitter, outages
