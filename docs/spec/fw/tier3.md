@@ -477,6 +477,9 @@ Not built, and why:
   call and takes it back.
 - TSCCAS (6.1.1.3): its content is USBD polling, which belongs to the data services (with LIP). C_ALOHA's TSCCAS
   flag stays 0.
+- A withdraw that drops the carrier: `withdraw` stops the TSCC's PDUs and short LC but keys idle bursts (each TX
+  path, SDR, modem and split half, takes the TSCC carrier as always on). An MS hunting then dwells on a carrier with
+  no TSCC, as on air on 2026-11-14 (it moved on after a dwell), where a failed site would leave nothing.
 
 ### 3.13 Full-duplex individual calls
 
