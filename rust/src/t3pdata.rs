@@ -708,7 +708,9 @@ impl Site {
         if p.group && !p.net && (tg == ALLMSID || (!is_allcall(tg) && self.policy.wide_tg.contains(tg))) {
             flags |= F_WIDE; // a wide talkgroup's data goes to the network too (tier3.md 5.10)
         }
-        self.pd.multi[ch] = p.svc & SO_SIMI != 0;
+        // from the network, single-item: each item crosses as its own message, and the caller's P_MAINT (the end
+        // of a multi-item call, 6.6.3.3.2.5) stays at its site; a later item grants the called MS again
+        self.pd.multi[ch] = p.svc & SO_SIMI != 0 && !p.net;
         self.open(ch, kind, p.caller, p.called, flags, 0, false);
         self.chans[ch].idle_until_ms = self.now + self.cfg.start_grace_ms as i64 + self.pd_hang();
         self.pd.calls += 1;

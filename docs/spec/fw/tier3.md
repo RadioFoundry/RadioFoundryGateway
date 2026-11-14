@@ -1425,10 +1425,14 @@ Rules:
 
 A message crosses whole, up to 127 blocks (3044 octets at rate 1): `data_pdu`'s length field takes 65535 octets.
 
+A multi-item call (PD_GRANT_MI) to an MS at another site: each item crosses as its own message, and the far site
+grants the called MS single-item (PD_GRANT), so it returns to the TSCC after the item: the caller's P_MAINT that ends
+the call (6.6.3.3.2.5) stays at the caller's site, and the far site would otherwise hold its channel for the data
+hang time. A later item grants it again.
+
 Not built: messages in parts (`data_pdu` part above 0 or the more bit: a data call's single item is one message, so
-parts aren't needed for it), multi-item calls across sites (not tested: each item would cross as its own
-message), talkgroup data from the site's own gateway to other sites, and a result back to the calling site (end to
-end delivery is the application's: 361-3 5.2).
+parts aren't needed for it), talkgroup data from the site's own gateway to other sites, and a result back to the
+calling site (end to end delivery is the application's: 361-3 5.2).
 
 Network services: the router forwards the setup and `data_pdu` messages as raw bytes, so routing needs no change.
 Their setup codecs read only flags bits 0-1 and refuse to encode bit 2; a service that decodes a setup and encodes
@@ -1854,7 +1858,7 @@ and against `t3ms` on one air.
 | Level | What | Where |
 |---|---|---|
 | PDU codec | Every PDU the site sends or reads: field packing against the 361-4 tables, round trips, known vectors from a standard site's captures (decoded values, not checks) | Rust unit tests |
-| Controller | Scenarios over `t3air`: registration open/listed/denied, collisions and backoff, group call, queue and grant on release, late entry repeats (through the hang time), hang and P_CLEAR, call timer, individual OACSU and FOACSU, no answer, cancel, busy called party, Not_Supported, network group in and out, network setup both ways, Tier II implicit setup, records reload, provisioning changes, link loss, the radio check and selective clear on a voice payload channel (an MS, a talkgroup's colliding answers); short data (`t3sdtests.rs`): UDT MS to MS, MS, talkgroup and site, 1 to 4 blocks, refusals, store while busy and its timeout, cancel, the kept upload slots, CRC errors and a missing upload, status to MS, talkgroup and site, polling, UDT short data polling (the C_AHOY's fields, the polled MS's upload and the download to the caller, its refusal mirrored, not here, itself, a gateway; across two sites: the data back in the result, a refusal, no site with the MS, the application's poll), the site's own sends (a UDT poll from SDMI too), the unsolicited radio check (an MS, a talkgroup, no answer), a full table, the network both ways; packet data (`t3pdtests.rs`): MS to MS unconfirmed and confirmed, rate 3/4 and rate 1 (unconfirmed to an MS and a talkgroup, a damaged block lost; confirmed with a damaged block: SACK, C_RDATA, the F = 0 retry, the ACK; retries to N_RtryLmt; `t3pdrate.rs`: the blocks at each rate, CRC-9 and CRC-32 against the B.3.9 / B.3.10 formulas), the availability check, PD/TD_GRANT single and multi-item, data hang and clearing, to a talkgroup, to the site (TSI, data ID, IPI), the IP address upload to IPI (its C_AHOY, the address taken either way round, the upload refused, off), IP connection advice (added with the power save offset, an address another MS holds, deleted and still registered, one not held, no IP service), refusals (NACKU mirrored, no answer, not here, multi-part, itself, talkgroup not allowed, busy), queued and cancelled, the site's own sends; packet data across sites (`t3pdnettests.rs`, two sites; `t3pdnet.rs`): confirmed MS to MS with a damaged block on each air link (SACK at both), unconfirmed at rate 3/4, refusals (not found, no answer, a lost setup, the link down), talkgroup data to the site that carries it, data with no setup checked first, the network form at each rate, the relay's retries and results, an ALS call across sites (the setup's flag, table 6.46 there, refusals) and its termination by SD_INTR; talkgroup lists (`t3tgtests.rs`): registration with a list (the
+| Controller | Scenarios over `t3air`: registration open/listed/denied, collisions and backoff, group call, queue and grant on release, late entry repeats (through the hang time), hang and P_CLEAR, call timer, individual OACSU and FOACSU, no answer, cancel, busy called party, Not_Supported, network group in and out, network setup both ways, Tier II implicit setup, records reload, provisioning changes, link loss, the radio check and selective clear on a voice payload channel (an MS, a talkgroup's colliding answers); short data (`t3sdtests.rs`): UDT MS to MS, MS, talkgroup and site, 1 to 4 blocks, refusals, store while busy and its timeout, cancel, the kept upload slots, CRC errors and a missing upload, status to MS, talkgroup and site, polling, UDT short data polling (the C_AHOY's fields, the polled MS's upload and the download to the caller, its refusal mirrored, not here, itself, a gateway; across two sites: the data back in the result, a refusal, no site with the MS, the application's poll), the site's own sends (a UDT poll from SDMI too), the unsolicited radio check (an MS, a talkgroup, no answer), a full table, the network both ways; packet data (`t3pdtests.rs`): MS to MS unconfirmed and confirmed, rate 3/4 and rate 1 (unconfirmed to an MS and a talkgroup, a damaged block lost; confirmed with a damaged block: SACK, C_RDATA, the F = 0 retry, the ACK; retries to N_RtryLmt; `t3pdrate.rs`: the blocks at each rate, CRC-9 and CRC-32 against the B.3.9 / B.3.10 formulas), the availability check, PD/TD_GRANT single and multi-item, data hang and clearing, to a talkgroup, to the site (TSI, data ID, IPI), the IP address upload to IPI (its C_AHOY, the address taken either way round, the upload refused, off), IP connection advice (added with the power save offset, an address another MS holds, deleted and still registered, one not held, no IP service), refusals (NACKU mirrored, no answer, not here, multi-part, itself, talkgroup not allowed, busy), queued and cancelled, the site's own sends; packet data across sites (`t3pdnettests.rs`, two sites; `t3pdnet.rs`): confirmed MS to MS with a damaged block on each air link (SACK at both), unconfirmed at rate 3/4, refusals (not found, no answer, a lost setup, the link down), talkgroup data to the site that carries it, data with no setup checked first, the network form at each rate, the relay's retries and results, a multi-item call (granted single-item at the far site), an ALS call across sites (the setup's flag, table 6.46 there, refusals) and its termination by SD_INTR; talkgroup lists (`t3tgtests.rs`): registration with a list (the
 C_AHOY's fields, the Response_Info bits, a talkgroup refused), all accepted, replaced, replaced by a single
 subscription, dropped on deregistration, a refused registration; DGNA MS to MS (address mode, a call on the new
 talkgroup, alias mode, delete all), refusals (off, talkgroup not allowed, itself, the site, not here, the called MS
@@ -1931,7 +1935,8 @@ Built since step 8e, host-tested (the bench steps above note what has run on air
 | 0555693a | ALS calls to an MS at another site (`SETUP_F_ALS`), and their termination there (status 123 by SD_INTR) |
 | 4f47a52c | P_ACKU (table 7.4) on the payload inbound: the site took C_ACKU there, so a real radio's answers were dropped |
 | 1c21e8cc | Supplementary user data on voice calls at the site (6.4.13, 3.21) |
-| "rdofradio: air MS supplementary data" | `setsupp TEXT` for the air MSs, and a log line for what they take |
+| f530d840 | `setsupp TEXT` for the air MSs, and a log line for what they take |
+| "Site: multi-item data across sites" | The far site grants single-item: its channel closes after the item (5.10) |
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
 apart from the code, found seven deviations, all fixed (2026-11-12):
@@ -2003,7 +2008,7 @@ Hardware setups:
 
 Not built: the standby controller; calls through PSTN, PABX or dispatcher gateways (dialled digits); IPv6;
 supplementary data on packet data, short data and across sites; dual-slot data; across sites, duplex calls
-and talkgroup and multi-item data.
+and talkgroup data from the site's own gateway.
 
 ## 14. Open questions for the owner
 

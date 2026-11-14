@@ -424,3 +424,26 @@ fn the_largest_unconfirmed_message_at_rate_1() {
     assert_eq!((h.dpf, h.blocks, &d[..len]), (DPF_UNCONFIRMED, 127, &big[..]));
     assert_eq!(n.wire[0].dt, DT_R1);
 }
+
+/// A multi-item call (PD_GRANT_MI, 6.6.3.3.2.5) to an MS at another site: the caller's item crosses as one message
+/// and the far site delivers it in a single-item call (the caller's P_MAINT ends only its own channel).
+#[test]
+fn multi_item_data_across_sites() {
+    let (mut sa, mut sb) = (site(), site());
+    let mut n = Net::new(&mut sa, &mut sb, [ms(1001, &[TG]), ms(1002, &[TG])], [ms(2001, &[TG]), ms(2002, &[TG])]);
+    let now = n.a.now();
+    assert!(n.a.ms[0].send_data(2001, t3ms::F_CONFIRMED | t3ms::F_MULTI, TEXT, now));
+    assert!(n.until(10_000, done(0, 0)), "the caller's call ends");
+    assert_eq!(n.a.ms[0].status().calls_done, 1);
+    let g = n.sa.grants();
+    assert_eq!((g[0].op, g[0].target, g[0].source), (OP_PD_GRANT_MI, 2001, 1001));
+    assert!(n.until(10_000, |n| n.b.ms[0].data_inbox().is_some()), "delivered");
+    let (h, d, len, count) = n.b.ms[0].data_inbox().unwrap();
+    assert_eq!((h.src, &d[..len], count), (1001, TEXT, 1));
+    n.run(3000);
+    assert_eq!(n.wire.len(), 1);
+    assert_eq!(n.sb.results.last().map(|r| r.3), Some(RESULT_DELIVERED));
+    // the far site grants single-item (PD_GRANT): the called MS leaves after the item
+    assert!(n.sb.grants().iter().all(|g| (g.op, g.target, g.source) == (OP_PD_GRANT, 2001, 1001)));
+    assert!(n.a.ms.iter().chain(n.b.ms.iter()).all(|m| m.state() == t3ms::IDLE), "all back on the TSCC");
+}
