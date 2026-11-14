@@ -518,7 +518,7 @@ options' emergency bit (bit 7), in the request and in every answer to it.
 |---|---|---|
 | 0 | op | 1 `request`, 2 `accept`, 3 `reject`, 4 `alerting`, 5 `cancel`, 6 `answered` |
 | 1 | reason | 0 ok, 1 `not_found`, 2 `busy`, 3 `no_answer`, 4 `refused` (by the radio or policy), 5 `not_supported`, 6 `congestion` (no channel), 7 `timeout` |
-| 2 | flags | bit 0 `foacsu` (the called radio is alerted first), bit 1 `unconfirmed` (the answerer couldn't ask the radio: a Tier II box), bit 2 `data` (a packet data call: [tier3.md](tier3.md) 5.10; set in every message of its setup); bits 3–7 zero |
+| 2 | flags | bit 0 `foacsu` (the called radio is alerted first), bit 1 `unconfirmed` (the answerer couldn't ask the radio: a Tier II box), bit 2 `data` (a packet data call: [tier3.md](tier3.md) 5.10; set in every message of its setup), bit 3 `als` (an Ambient Listening Service call: the called radio transmits, [tier3.md](tier3.md) 3.18; in the request); bits 4–7 zero |
 | 3 | service options | as the trunking random access's: bit 7 emergency, bit 6 privacy, bits 1–0 priority |
 | 4 | ref | u32 little endian: the stream ID of the `request` this message answers; 0 in a request |
 

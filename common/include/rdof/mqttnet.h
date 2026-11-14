@@ -159,6 +159,7 @@ enum {
 #define RDOF_MN_SETUP_FOACSU 0x01      /* flags: full off-air call setup (the called radio is alerted first) */
 #define RDOF_MN_SETUP_UNCONFIRMED 0x02 /* flags: the answerer couldn't ask the radio (a Tier II box) */
 #define RDOF_MN_SETUP_DATA 0x04        /* flags: a packet data call (tier3.md 5.10) */
+#define RDOF_MN_SETUP_ALS 0x08         /* flags: an Ambient Listening Service call (the called radio transmits) */
 #define RDOF_MN_SETUP_LEN 8
 
 typedef struct {

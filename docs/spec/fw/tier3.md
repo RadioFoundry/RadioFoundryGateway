@@ -61,8 +61,8 @@ Principles:
 
 Multi-part packet data (extended addresses through gateways), dual-slot (HI_RATE) data,
 short data to gateways (extended addresses, supplementary data), a second TSCC, TSCCAS (section 3.12
-says why), DGNA across sites for the site's records (a roaming MS's dynamic talkgroups), ALS across sites or from
-the site, transmit interrupt from a gateway or the network (3.20), call
+says why), DGNA across sites for the site's records (a roaming MS's dynamic talkgroups), ALS from the site,
+transmit interrupt from a gateway or the network (3.20), call
 diversion to gateways or across sites, gateways (PSTN, PABX, dispatcher), duplex calls over the network and duplex
 packet data, a standby controller, trunking on the W12 (the LR2021 can't stay keyed: slot-timing.md),
 encryption beyond pass-through.
@@ -824,7 +824,10 @@ the TSCC's gateways STUNI and KILLI do it):
 Ambient Listening Service (6.6.2.6), only with `ambient_listening`:
 
 1. C_RAND individual voice with ALS_SERV 1 (table 6.40: the dependent bits are SUPED_VAL, ALS_SERV, reserved).
-   Without the setting, C_NACKD(Not_Supported). The called MS not at this site: Not_Supported (not carried across).
+   Without the setting, C_NACKD(Not_Supported). The called MS at another site: the network setup request carries
+   the `als` flag (mqtt-net.md 9.4, `SETUP_F_ALS`; never with `foacsu`). That site refuses it (Not_Supported) without
+   the setting, else sends table 6.46's radio check (step 2) and grants it; its MS's C_NACKU(MSNot_Supported) comes
+   back as Not_Supported. Both sites mark their channel ALS, so the termination works from either (3.20).
 2. As an OACSU individual call (3.5), but the radio check is table 6.46: Service_Options_Mirror 0, Service_Kind_Flag
    0, ALS_SERV 1, Service_Kind 0000b, source the caller. C_ACKU(Message_Accepted) goes on to the grant;
    C_NACKU(MSNot_Supported) is mirrored to the caller. The grant carries nothing of ALS (6.6.2.6.2 note).
@@ -966,7 +969,12 @@ talker can't be reached: Not_Supported. Not a duplex call's (one isn't across si
 ALS termination (6.4.14.3.4): status 123 to the called MS of an ALS call (3.18), from its caller. A group G/I or no
 such call: Not_Supported; another MS: Perm_User_Refused. Accepted, the called MS is de-keyed as above, then the call is
 cleared (P_CLEAR, close reason 7, `CLOSE_INTR`); one that doesn't stop within 3 s is cleared anyway. Not transmitting
-at the time: cleared at once.
+at the time: cleared at once. The called MS at another site (an ALS call across sites, 3.18): the caller's site
+accepts as above and sends the `sdata` interrupt message with status 123 to the called MS, talking or not. That site
+finds its ALS call from that caller and ends it the same way (de-key then P_CLEAR, or P_CLEAR at once), and answers
+Message_Accepted, or Not_Supported (the setting off there, no such call, being cleared). The caller's site clears its
+channel once the stream stops, or on a refusal (the caller has left; the other site's call then runs until its MS
+ends it).
 
 Call timer (6.4.14.3.2): with the setting on, a call whose timer runs out while an MS talks on RF gets the RC cease
 first and P_CLEAR once the inbound stops (after 3 s P_CLEAR regardless, the channel held until the inbound stops); off, P_CLEAR at once as before. A network talker, a duplex
@@ -1001,8 +1009,7 @@ Choices where 361-4 leaves them open:
   (6.4.14.3.4.3): the site doesn't depend on it.
 
 Not built: the gateway-started forms, power control in a de-key (6.4.14.2), the ALS
-called MS resuming after an interrupt (6.6.2.6.6), ALS termination across sites (its called MS at another site:
-Not_Supported). Not run on a radio.
+called MS resuming after an interrupt (6.6.2.6.6). Not run on a radio.
 
 ## 4. Settings (config-v3 `tier3` app)
 
@@ -1305,7 +1312,8 @@ message's stream. A talkgroup's message gets no result. A message for an MS not 
 (another site may have it). Nodes without Tier III drop the item (never a stream).
 
 A transmit interrupt (what 5, section 3.20) goes from the interrupter's site to the talker's on `pc/{talker}/{node}`:
-src the interrupting MS, dst the talker, value the status (125), flags 0, data 4 octets: the call's destination
+src the interrupting MS, dst the talker (for status 123, an ALS call's called MS), value the status (125, or 123 to
+end an ALS call), flags 0, data 4 octets: the call's destination
 (u24 big endian: the talkgroup, or the individual call's other party) and 1 for a talkgroup call, 0 for an
 individual call. The talker's site answers with a result (reason Message_Accepted, Not_Supported or
 Perm_User_Refused), src and dst as in the message, ref its stream. The application can't send one.
@@ -1813,7 +1821,7 @@ and against `t3ms` on one air.
 | Level | What | Where |
 |---|---|---|
 | PDU codec | Every PDU the site sends or reads: field packing against the 361-4 tables, round trips, known vectors from a standard site's captures (decoded values, not checks) | Rust unit tests |
-| Controller | Scenarios over `t3air`: registration open/listed/denied, collisions and backoff, group call, queue and grant on release, late entry repeats (through the hang time), hang and P_CLEAR, call timer, individual OACSU and FOACSU, no answer, cancel, busy called party, Not_Supported, network group in and out, network setup both ways, Tier II implicit setup, records reload, provisioning changes, link loss, the radio check and selective clear on a voice payload channel (an MS, a talkgroup's colliding answers); short data (`t3sdtests.rs`): UDT MS to MS, MS, talkgroup and site, 1 to 4 blocks, refusals, store while busy and its timeout, cancel, the kept upload slots, CRC errors and a missing upload, status to MS, talkgroup and site, polling, UDT short data polling (the C_AHOY's fields, the polled MS's upload and the download to the caller, its refusal mirrored, not here, itself, a gateway; across two sites: the data back in the result, a refusal, no site with the MS, the application's poll), the site's own sends (a UDT poll from SDMI too), the unsolicited radio check (an MS, a talkgroup, no answer), a full table, the network both ways; packet data (`t3pdtests.rs`): MS to MS unconfirmed and confirmed, rate 3/4 and rate 1 (unconfirmed to an MS and a talkgroup, a damaged block lost; confirmed with a damaged block: SACK, C_RDATA, the F = 0 retry, the ACK; retries to N_RtryLmt; `t3pdrate.rs`: the blocks at each rate, CRC-9 and CRC-32 against the B.3.9 / B.3.10 formulas), the availability check, PD/TD_GRANT single and multi-item, data hang and clearing, to a talkgroup, to the site (TSI, data ID, IPI), the IP address upload to IPI (its C_AHOY, the address taken either way round, the upload refused, off), IP connection advice (added with the power save offset, an address another MS holds, deleted and still registered, one not held, no IP service), refusals (NACKU mirrored, no answer, not here, multi-part, itself, talkgroup not allowed, busy), queued and cancelled, the site's own sends; packet data across sites (`t3pdnettests.rs`, two sites; `t3pdnet.rs`): confirmed MS to MS with a damaged block on each air link (SACK at both), unconfirmed at rate 3/4, refusals (not found, no answer, a lost setup, the link down), talkgroup data to the site that carries it, data with no setup checked first, the network form at each rate, the relay's retries and results; talkgroup lists (`t3tgtests.rs`): registration with a list (the
+| Controller | Scenarios over `t3air`: registration open/listed/denied, collisions and backoff, group call, queue and grant on release, late entry repeats (through the hang time), hang and P_CLEAR, call timer, individual OACSU and FOACSU, no answer, cancel, busy called party, Not_Supported, network group in and out, network setup both ways, Tier II implicit setup, records reload, provisioning changes, link loss, the radio check and selective clear on a voice payload channel (an MS, a talkgroup's colliding answers); short data (`t3sdtests.rs`): UDT MS to MS, MS, talkgroup and site, 1 to 4 blocks, refusals, store while busy and its timeout, cancel, the kept upload slots, CRC errors and a missing upload, status to MS, talkgroup and site, polling, UDT short data polling (the C_AHOY's fields, the polled MS's upload and the download to the caller, its refusal mirrored, not here, itself, a gateway; across two sites: the data back in the result, a refusal, no site with the MS, the application's poll), the site's own sends (a UDT poll from SDMI too), the unsolicited radio check (an MS, a talkgroup, no answer), a full table, the network both ways; packet data (`t3pdtests.rs`): MS to MS unconfirmed and confirmed, rate 3/4 and rate 1 (unconfirmed to an MS and a talkgroup, a damaged block lost; confirmed with a damaged block: SACK, C_RDATA, the F = 0 retry, the ACK; retries to N_RtryLmt; `t3pdrate.rs`: the blocks at each rate, CRC-9 and CRC-32 against the B.3.9 / B.3.10 formulas), the availability check, PD/TD_GRANT single and multi-item, data hang and clearing, to a talkgroup, to the site (TSI, data ID, IPI), the IP address upload to IPI (its C_AHOY, the address taken either way round, the upload refused, off), IP connection advice (added with the power save offset, an address another MS holds, deleted and still registered, one not held, no IP service), refusals (NACKU mirrored, no answer, not here, multi-part, itself, talkgroup not allowed, busy), queued and cancelled, the site's own sends; packet data across sites (`t3pdnettests.rs`, two sites; `t3pdnet.rs`): confirmed MS to MS with a damaged block on each air link (SACK at both), unconfirmed at rate 3/4, refusals (not found, no answer, a lost setup, the link down), talkgroup data to the site that carries it, data with no setup checked first, the network form at each rate, the relay's retries and results, an ALS call across sites (the setup's flag, table 6.46 there, refusals) and its termination by SD_INTR; talkgroup lists (`t3tgtests.rs`): registration with a list (the
 C_AHOY's fields, the Response_Info bits, a talkgroup refused), all accepted, replaced, replaced by a single
 subscription, dropped on deregistration, a refused registration; DGNA MS to MS (address mode, a call on the new
 talkgroup, alias mode, delete all), refusals (off, talkgroup not allowed, itself, the site, not here, the called MS
@@ -1885,7 +1893,8 @@ Built since step 8e, host-tested (the bench steps above note what has run on air
 | 6b48f42b | UDT polls from the site's application (C_AHOY from SDMI, 6.6.5.1.5) |
 | fe0e180c | The unsolicited radio check (6.4.12) of an MS or a talkgroup, the `radio_check` command; the MS engine answers it |
 | 53b11591 | The site's application polls an MS at another site |
-| "Site: radio check, clear on payload" | P_AHOY on a voice payload channel: the radio check and the selective clear (`clear_ms`); payload collisions in `t3air` |
+| 7e3f4787 | P_AHOY on a voice payload channel: the radio check and the selective clear (`clear_ms`); payload collisions in `t3air` |
+| "Site: ALS calls across sites" | ALS calls to an MS at another site (`SETUP_F_ALS`), and their termination there (status 123 by SD_INTR) |
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
 apart from the code, found seven deviations, all fixed (2026-11-12):
@@ -1942,6 +1951,7 @@ Two sites (the SDR site and the modem site, over mqtt-net):
 | Packet data across sites | yes | yes: air MSs, and the radio's IP text |
 | UDT polls across sites | yes | no |
 | Transmit interrupt across sites | yes (off by default) | no |
+| ALS calls and their termination across sites | yes (off by default) | no |
 
 Hardware setups:
 
@@ -1953,8 +1963,8 @@ Hardware setups:
 | One split TX half and one split RX half, no SDR | yes, end to end | no |
 
 Not built: the standby controller; calls through PSTN, PABX or dispatcher gateways (dialled digits); IPv6;
-supplementary data and dual-slot data; the radio check on a payload channel (P_AHOY); across sites, duplex calls,
-talkgroup and multi-item data, and ALS termination.
+supplementary data and dual-slot data; the radio check and selective clear on a data channel; across sites, duplex calls
+and talkgroup and multi-item data.
 
 ## 14. Open questions for the owner
 

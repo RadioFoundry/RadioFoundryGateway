@@ -85,8 +85,13 @@ impl Site {
         self.intr_ev(ch, INTR_ACCEPTED, ms);
         self.log(format_args!("transmit interrupt from {} for the call to {} on channel {}", ms, c.dst, ch));
         let rf = c.talking && !c.talking_net;
+        if st == STATUS_ALS_END && self.reg_index(c.dst).is_none() && c.flags & F_PRIVATE_NET != 0 {
+            // the called MS is at another site: its site de-keys it and clears its channel, talking or not
+            self.intr_net_send(ch, ms, STATUS_ALS_END);
+            return;
+        }
         if c.talking && c.talking_net {
-            self.intr_net_send(ch, ms); // intr_call let it through: a payload interrupt, the link up
+            self.intr_net_send(ch, ms, STATUS_INTERRUPT); // intr_call let it through: the link up
             return;
         }
         match (st == STATUS_ALS_END, rf) {
@@ -199,7 +204,9 @@ impl Site {
                 }
                 self.chans[ch].dekey = DK_NONE;
                 self.intr_ev(ch, if net { INTR_GAVE_UP } else { INTR_CEASED }, c.intr_ms);
-                if net {
+                if c.als {
+                    self.clear(ch, CLOSE_INTR); // an ALS call: ended here either way (its caller has left)
+                } else if net {
                     self.log(format_args!("transmit interrupt: {} at another site didn't cease", c.talker));
                 } else if !c.talking {
                     self.protect_start(ch, c.intr_ms);
@@ -269,15 +276,16 @@ impl Site {
 
     /// A payload interrupt of channel ch's network talker: SD_INTR to the talker's site (on pc/{talker}: the router
     /// places it by the talker's registration), which de-keys it; this site waits for the stream to end.
-    fn intr_net_send(&mut self, ch: usize, ms: u32) {
+    fn intr_net_send(&mut self, ch: usize, ms: u32, st: u8) {
         let c = self.chans[ch];
         let stream = self.new_stream();
+        let talker = if st == STATUS_ALS_END { c.dst } else { c.talker }; // the ALS call's called MS
         let mut m = SdMsg {
             op: SD_SEND,
             what: SD_INTR,
-            value: STATUS_INTERRUPT,
+            value: st,
             src: ms,
-            dst: c.talker,
+            dst: talker,
             stream,
             len: 4,
             ..Default::default()
@@ -289,7 +297,7 @@ impl Site {
         let ch_ = &mut self.chans[ch];
         ch_.dekey_until_ms += NET_DEKEY_MS;
         ch_.intr_stream = stream;
-        self.log(format_args!("transmit interrupt: asking the site of {} to de-key it", c.talker));
+        self.log(format_args!("transmit interrupt: asking the site of {talker} to de-key it"));
     }
 
     /// An SD_INTR message from another site (tier3.md 3.20): de-key the talker here, and answer; or its result.
@@ -302,15 +310,23 @@ impl Site {
                 return;
             };
             if m.reason != R_MESSAGE_ACCEPTED {
-                // the talker's site can't: the call goes on (6.4.15.1)
+                // the talker's site can't: the call goes on (6.4.15.1); an ALS call's caller has left, so its
+                // channel here clears (the other site's goes on until its MS ends it)
                 self.chans[ch].dekey = DK_NONE;
                 self.intr_ev(ch, INTR_GAVE_UP, m.src);
                 self.log(format_args!("transmit interrupt: {}'s site refused (reason {:#x})", m.dst, m.reason));
+                if self.chans[ch].als {
+                    self.clear(ch, CLOSE_INTR);
+                }
             }
             return;
         }
         if m.op != SD_SEND || m.len < 4 || self.reg_index(m.dst).is_none() {
             return; // not here: another site may have the talker
+        }
+        if m.value == STATUS_ALS_END {
+            self.net_als_end(m);
+            return;
         }
         let (ms, talker) = (m.src, m.dst);
         let call = u32::from_be_bytes([0, m.data[0], m.data[1], m.data[2]]);
@@ -337,6 +353,41 @@ impl Site {
                     self.intr_ev(ch, INTR_ACCEPTED, ms);
                     self.log(format_args!("transmit interrupt from {} at another site: de-keying {}", ms, talker));
                     self.dekey_start(ch, DK_INTR, ms);
+                    R_MESSAGE_ACCEPTED
+                }
+            }
+        };
+        let stream = self.new_stream();
+        let r = SdMsg { op: SD_RESULT, reason, stream, r#ref: m.stream, len: 0, data: [0; 48], ..*m };
+        self.ev(r.event(EV_NET_SD));
+    }
+
+    /// The ALS termination of an ALS call to an MS here from a caller at another site (status 123 by SD_INTR):
+    /// its talker de-keyed as a local caller's would be (DK_ALS: then P_CLEAR), or the call cleared now when it
+    /// isn't transmitting.
+    fn net_als_end(&mut self, m: &SdMsg) {
+        let (ms, called) = (m.src, m.dst);
+        let ch = (0..CHANNELS).find(|&i| {
+            let c = &self.chans[i];
+            Self::live(c) && c.als && c.dst == called && c.src == ms
+        });
+        let reason = match ch {
+            _ if self.cfg.intr == 0 => R_NOT_SUPPORTED,
+            None => R_NOT_SUPPORTED,
+            Some(ch) => {
+                let c = self.chans[ch];
+                if c.dekey == DK_ALS {
+                    R_MESSAGE_ACCEPTED // a repeat
+                } else if c.preempt || c.dekey != DK_NONE {
+                    R_NOT_SUPPORTED // being cleared already
+                } else {
+                    self.intr_ev(ch, INTR_ACCEPTED, ms);
+                    self.log(format_args!("ALS termination from {ms} at another site: the call to {called} ends"));
+                    if c.talking && !c.talking_net {
+                        self.dekey_start(ch, DK_ALS, ms);
+                    } else {
+                        self.clear(ch, CLOSE_INTR);
+                    }
                     R_MESSAGE_ACCEPTED
                 }
             }

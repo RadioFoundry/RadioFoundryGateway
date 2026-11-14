@@ -356,6 +356,7 @@ pub const WHY_TIMEOUT: u8 = 7;
 pub const SETUP_F_FOACSU: u8 = 0x01;
 pub const SETUP_F_UNCONFIRMED: u8 = 0x02;
 pub const SETUP_F_DATA: u8 = 0x04; // a packet data call (tier3.md 5.10)
+pub const SETUP_F_ALS: u8 = 0x08; // an Ambient Listening Service call (361-4 6.6.2.6): the called MS transmits
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1996,14 +1997,19 @@ impl Site {
             self.ack(R_WAIT, ms, dst);
             self.pend[i] = p;
             self.ahoy_tick(i);
-        } else if p.als {
-            self.refuse(R_NOT_SUPPORTED, ms, dst); // ALS isn't carried across sites
         } else if self.connected && self.ms_policy(ms).wide_private != 0 {
             p.state = P_NET;
             p.stream = self.new_stream();
             p.deadline_ms = self.now + self.cfg.setup_ms as i64;
             self.ack(R_WAIT, ms, dst);
-            let flags = if self.cfg.foacsu != 0 { SETUP_F_FOACSU } else { 0 };
+            // an ALS call's radio check is OACSU's (table 6.46): no FOACSU
+            let flags = if p.als {
+                SETUP_F_ALS
+            } else if self.cfg.foacsu != 0 {
+                SETUP_F_FOACSU
+            } else {
+                0
+            };
             self.pend[i] = p;
             self.setup_out(SETUP_REQUEST, WHY_OK, flags, p.svc, ms, dst, p.stream);
         } else {
@@ -2156,7 +2162,11 @@ impl Site {
             }
             _ => {
                 self.pend[i].used = false;
-                let why = if a.reason == R_EQUIP_BUSY { WHY_BUSY } else { WHY_REFUSED };
+                let why = match a.reason {
+                    R_EQUIP_BUSY => WHY_BUSY,
+                    crate::t3udt::R_MS_NOT_SUPPORTED => WHY_NOT_SUPPORTED, // an ALS call to an MS without it
+                    _ => WHY_REFUSED,
+                };
                 self.fail(&p, a.reason, why); // the called MS's reason, mirrored
             }
         }
@@ -2474,6 +2484,11 @@ impl Site {
             self.setup_out(SETUP_REJECT, WHY_BUSY, 0, m.svc, m.src, m.dst, m.stream);
             return;
         }
+        let als = m.flags & SETUP_F_ALS != 0;
+        if als && self.cfg.als == 0 {
+            self.setup_out(SETUP_REJECT, WHY_NOT_SUPPORTED, 0, m.svc, m.src, m.dst, m.stream);
+            return;
+        }
         let Some(i) = self.free_pend() else {
             self.setup_out(SETUP_REJECT, WHY_CONGESTION, 0, m.svc, m.src, m.dst, m.stream);
             return;
@@ -2482,6 +2497,7 @@ impl Site {
             used: true,
             kind: KIND_PRIVATE,
             state: P_AHOY,
+            als,
             svc: m.svc,
             prio: m.svc & SO_PRIORITY,
             ahoy_left: self.cfg.ahoy_tries,

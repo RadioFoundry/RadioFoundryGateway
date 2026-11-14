@@ -167,6 +167,7 @@ typedef struct {
 #define RDOF_T3_SETUP_F_FOACSU 0x01
 #define RDOF_T3_SETUP_F_UNCONFIRMED 0x02
 #define RDOF_T3_SETUP_F_DATA 0x04 /* a packet data call (tier3.md 5.10) */
+#define RDOF_T3_SETUP_F_ALS 0x08  /* an Ambient Listening Service call (361-4 6.6.2.6) */
 
 typedef struct {
     uint8_t op, reason, flags, svc; /* svc: C_RAND's service options */

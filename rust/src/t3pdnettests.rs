@@ -2,7 +2,8 @@
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 //! Scenario tests for packet data across sites (docs/spec/fw/tier3.md 3.16, 5.10): two sites, each on its own
 //! slot-exact air, joined by a stand-in network that carries their setup messages (mqtt-net.md 9.4) and the
-//! messages their relays take (the data_pdu item, mqtt-net.md 4.4) from one to the other.
+//! messages their relays take (the data_pdu item, mqtt-net.md 4.4) from one to the other. The ALS call across sites
+//! (3.18) too, on the same stand-in network.
 
 use std::boxed::Box;
 use std::vec::Vec;
@@ -20,7 +21,16 @@ const TG: u32 = 9;
 const TEXT: &[u8] = b"packet data from one site to an MS at the other, by way of the network";
 
 fn site() -> Box<Site> {
+    site_with(|_| {})
+}
+
+fn site_als(als: bool) -> Box<Site> {
+    site_with(|c| c.als = als as u8)
+}
+
+fn site_with(f: impl FnOnce(&mut Cfg)) -> Box<Site> {
     let mut c = cfg_default();
+    f(&mut c);
     c.ncarriers = 2;
     c.carriers[1] = Carrier { tx_hz: 438_600_000, rx_hz: 431_000_000, chan: 2, tscc: 0, enabled: 1 };
     let mut s = new_site(&c);
@@ -103,10 +113,13 @@ impl<'a> Net<'a> {
                 side.results.push(r);
             }
         }
-        // setups: each to the other site, as the router would (both ways named caller and called)
+        // setups: each to the other site, as the router would (both ways named caller and called); sdata too
         let now = self.a.now();
         for from_a in [true, false] {
             let (side, to) = if from_a { (&mut self.sa, &mut self.b) } else { (&mut self.sb, &mut self.a) };
+            for e in side.ev[side.seen..].iter().filter(|e| e.r#type == EV_NET_SD) {
+                to.site.net_sd_in(&SdMsg::of_event(e), now);
+            }
             for e in side.ev[side.seen..].iter().filter(|e| e.r#type == EV_NET_SETUP) {
                 if self.drop_setups > 0 {
                     self.drop_setups -= 1;
@@ -221,6 +234,77 @@ fn unconfirmed_rate34_data_across() {
     n.run(1000);
     assert_eq!(n.sb.results[0].3, RESULT_UNCONFIRMED);
     assert!(n.a.ms[0].status().calls_done == 1);
+}
+
+/// An ALS call across sites (tier3.md 3.18, 6.6.2.6): the request carries SETUP_F_ALS; the called MS's site
+/// sends table 6.46's radio check and grants it; the called MS transmits to the caller, who listens. Refused: the
+/// called site without ALS (Not_Supported), an MS there without it (its MSNot_Supported, as Not_Supported).
+#[test]
+fn als_call_across_sites() {
+    let (mut sa, mut sb) = (site_als(true), site_als(true));
+    let mut n = Net::new(&mut sa, &mut sb, [ms(1001, &[TG]), ms(1002, &[TG])], [ms(2001, &[TG]), ms(2002, &[TG])]);
+    let now = n.a.now();
+    n.a.ms[0].act(t3ms::DO_PRIVATE, 2001, 0, t3ms::F_ALS, now);
+    let called_talks =
+        |n: &Net| n.b.inbound[0].is_some_and(|t| t.kind == t3ms::TX_VOICE && t.src == 2001 && t.dst == 1001);
+    assert!(n.until(8000, |n| called_talks(n) && n.a.ms[0].state() == t3ms::PAYLOAD));
+    let rq = n.sa.setups(SETUP_REQUEST);
+    assert_eq!((rq.len(), rq[0].flags, rq[0].dst), (1, SETUP_F_ALS, 2001));
+    let a = n.sb.tscc.iter().filter_map(Ahoy::decode).find(|a| a.target == 2001).expect("ALS radio check");
+    let want = Ahoy { als: true, service_kind: SK_IND_VOICE, target: 2001, source: 1001, ..Default::default() };
+    assert_eq!(a, want, "table 6.46");
+    assert_eq!(n.sa.of(EV_CH_OPEN)[0].flags & F_PRIVATE_NET, F_PRIVATE_NET);
+    assert!(!n.until(2000, |n| n.a.inbound[0].is_some_and(|t| t.kind == t3ms::TX_VOICE)), "the caller listens");
+    assert!(n.until(15_000, |n| n.a.ms[0].state() == t3ms::IDLE && n.b.ms[0].state() == t3ms::IDLE));
+
+    // the called MS without ALS: its MSNot_Supported comes back as Not_Supported
+    n.b.ms[1].refuse_supp(false, true);
+    let (before, now) = (n.a.ms[0].status().calls_failed, n.a.now());
+    n.a.ms[0].act(t3ms::DO_PRIVATE, 2002, 0, t3ms::F_ALS, now);
+    assert!(n.until(10_000, |n| n.a.ms[0].status().calls_failed > before));
+    assert_eq!(n.a.ms[0].status().last_reason, R_NOT_SUPPORTED);
+    let rj = n.sb.setups(SETUP_REJECT);
+    assert_eq!(rj.last().map(|e| e.reason), Some(WHY_NOT_SUPPORTED));
+}
+
+/// The ALS caller ends the call (status 123) while the called MS talks at the other site (tier3.md 3.20): its site
+/// answers Message_Accepted and sends SD_INTR; the called MS's site de-keys it with the RC and clears its channel;
+/// the caller's site clears its own.
+#[test]
+fn als_call_ended_across_sites() {
+    let on = |c: &mut Cfg| {
+        c.als = 1;
+        c.intr = 1;
+    };
+    let (mut sa, mut sb) = (site_with(on), site_with(on));
+    let mut n = Net::new(&mut sa, &mut sb, [ms(1001, &[TG]), ms(1002, &[TG])], [ms(2001, &[TG]), ms(2002, &[TG])]);
+    let now = n.a.now();
+    n.a.ms[0].act(t3ms::DO_PRIVATE, 2001, 0, t3ms::F_ALS, now);
+    let called_talks = |n: &Net| n.b.inbound[0].is_some_and(|t| t.kind == t3ms::TX_VOICE && t.src == 2001);
+    assert!(n.until(8000, called_talks));
+    let now = n.a.now();
+    assert!(n.a.ms[0].als_end(2001, now + 500));
+    assert!(n.until(6000, |n| n.sa.of(EV_CH_CLOSE).len() == 1 && n.sb.of(EV_CH_CLOSE).len() == 1));
+    assert_eq!(n.b.ms[0].state(), t3ms::IDLE);
+    assert_eq!(n.b.ms[0].ceased(), 1, "B de-keyed its talker");
+    assert_eq!((n.sa.of(EV_CH_CLOSE)[0].why, n.sb.of(EV_CH_CLOSE)[0].why), (CLOSE_INTR, CLOSE_INTR));
+    let sent = n.sa.of(EV_NET_SD).iter().map(SdMsg::of_event).find(|m| m.what == SD_INTR).expect("SD_INTR");
+    assert_eq!((sent.src, sent.dst, sent.value), (1001, 2001, STATUS_ALS_END));
+    let res = n.sb.of(EV_NET_SD).iter().map(SdMsg::of_event).find(|m| m.what == SD_INTR).expect("its result");
+    assert_eq!((res.op, res.reason, res.r#ref), (SD_RESULT, R_MESSAGE_ACCEPTED, sent.stream));
+    assert_eq!(n.a.ms[0].state(), t3ms::IDLE, "the caller stays on the TSCC");
+}
+
+/// The called MS's site without ALS refuses the request.
+#[test]
+fn als_call_across_sites_refused() {
+    let (mut sa, mut sb) = (site_als(true), site_als(false));
+    let mut n = Net::new(&mut sa, &mut sb, [ms(1001, &[TG]), ms(1002, &[TG])], [ms(2001, &[TG]), ms(2002, &[TG])]);
+    let now = n.a.now();
+    n.a.ms[0].act(t3ms::DO_PRIVATE, 2001, 0, t3ms::F_ALS, now);
+    assert!(n.until(8000, done(0, 0)));
+    assert_eq!(n.a.ms[0].status().last_reason, R_NOT_SUPPORTED);
+    assert_eq!(n.b.ms[0].status().ahoys, 0);
 }
 
 #[test]
