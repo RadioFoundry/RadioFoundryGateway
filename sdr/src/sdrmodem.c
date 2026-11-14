@@ -1653,12 +1653,18 @@ bool rdof_sdrmodem_pull_freq(rdof_sdrmodem_t *m, int64_t pos, float *hz, float *
     return keyed_in(m, env, NULL, n);
 }
 
-bool rdof_sdrmodem_pull_mix(rdof_sdrmodem_t *m, int64_t pos, rdof_cf_t *iq, rdof_cf_t *scratch, int n)
+bool rdof_sdrmodem_pull_mixw(rdof_sdrmodem_t *m, int64_t pos, rdof_cf_t *iq, rdof_cf_t *scratch, int n, float w)
 {
     const bool keyed = rdof_sdrmodem_pull_iq(m, pos, scratch, n);
+    const float v = 1.0f - w;
     for (int i = 0; i < n; i++)
-        iq[i].re = 0.5f * (iq[i].re + scratch[i].re), iq[i].im = 0.5f * (iq[i].im + scratch[i].im);
+        iq[i].re = v * iq[i].re + w * scratch[i].re, iq[i].im = v * iq[i].im + w * scratch[i].im;
     return keyed;
+}
+
+bool rdof_sdrmodem_pull_mix(rdof_sdrmodem_t *m, int64_t pos, rdof_cf_t *iq, rdof_cf_t *scratch, int n)
+{
+    return rdof_sdrmodem_pull_mixw(m, pos, iq, scratch, n, 0.5f);
 }
 
 #endif /* RDOF_FEATURE_SDR */

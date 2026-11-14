@@ -340,7 +340,7 @@ static bool hat_modem_up(void);
 static rdof_mmdvm_reader_t hat_rd; /* the port's frames while the site has the modem: its status replies */
 static void hat_frame_in(void *ctx, uint8_t cmd, const uint8_t *p, size_t len);
 #endif
-static bool t3_sdr2; /* a trunked site's carrier 2 sent by the SDR too: the TX LO between the two, fixed */
+static bool t3_sdr2; /* a trunked site's carriers 2 to 4 sent by the SDR too: the TX LO mid-way between them, fixed */
 #ifdef RDOF_HOST_WEB
 static char held[300]; /* hold (below): why the settings don't run, "" when they do */
 #endif
@@ -4602,16 +4602,17 @@ static void web_publish(double rx, double tx, int cc)
     snprintf(w.extra[1].name, sizeof w.extra[1].name, "inbound off (%%)");
     w.extra[1].value = (int64_t)llround(R.m.inbound_off * 100);
 #ifdef RDOF_TIER3
-    if (rdofradio_t3_on()) { /* a trunked site's carrier 2: what sends it, and on the SDR its counts */
+    if (rdofradio_t3_on()) { /* a trunked site's carriers 2 to 4: what sends them, and on the SDR their counts */
         char c2[112];
         uint32_t sent, heard;
         rdofradio_t3_carrier2(c2, sizeof c2, &sent, &heard);
         if (c2[0])
             snprintf(w.modem, sizeof w.modem, "SDR modem; Tier III %.100s", c2);
-        if (c2[0] && !strncmp(c2, "carrier 2 by the SDR", 20) && w.nextra + 2 <= 8) {
-            snprintf(w.extra[w.nextra].name, sizeof w.extra[0].name, "carrier 2 sent");
+        const bool many = !strncmp(c2, "carriers", 8);
+        if (c2[0] && strstr(c2, "by the SDR") && w.nextra + 2 <= 8) {
+            snprintf(w.extra[w.nextra].name, sizeof w.extra[0].name, many ? "carriers 2+ sent" : "carrier 2 sent");
             w.extra[w.nextra++].value = sent;
-            snprintf(w.extra[w.nextra].name, sizeof w.extra[0].name, "carrier 2 heard");
+            snprintf(w.extra[w.nextra].name, sizeof w.extra[0].name, many ? "carriers 2+ heard" : "carrier 2 heard");
             w.extra[w.nextra++].value = heard;
         }
     }
@@ -7006,7 +7007,7 @@ int main(int argc, char **argv)
 #ifdef RDOF_TIER3
         /* With --fpga-duc its stream at 384 kS/s: the CIC's first image of a carrier 62.5 kHz off the LO is 43 dB under
            it there, 19 dB at 192 kS/s (docs/spec/fw/tier3.md 9.4) */
-        if (rcfg.tier3 && rcfg.t.ncar == 2 && rcfg.t.car[1].tx_sdr) {
+        if (rcfg.tier3 && rcfg.t.ncar >= 2 && rcfg.t.car[1].tx_sdr) {
             t3_sdr2 = true;
             DX.in_hi = DX.in_lo = 384000;
         }
@@ -7190,8 +7191,16 @@ int main(int argc, char **argv)
     if (!tx)
         tx = rx;
     const bool tx_lo_given = tx_lo != 0;
-    if (!tx_lo && t3_sdr2) /* halfway between the carriers' outs */
-        tx_lo = (double)llround(((double)rcfg.t.car[0].tx_hz + (double)rcfg.t.car[1].tx_hz) / 2);
+    double t3_lo_hz = 0, t3_hi_hz = 0; /* the lowest and highest out of the SDR's carriers */
+#ifdef RDOF_TIER3
+    if (t3_sdr2) {
+        t3_lo_hz = t3_hi_hz = rcfg.t.car[0].tx_hz;
+        for (int c = 1; c < rcfg.t.ncar; c++)
+            t3_lo_hz = fmin(t3_lo_hz, rcfg.t.car[c].tx_hz), t3_hi_hz = fmax(t3_hi_hz, rcfg.t.car[c].tx_hz);
+    }
+#endif
+    if (!tx_lo && t3_sdr2) /* mid-way between the carriers' outs */
+        tx_lo = (double)llround((t3_lo_hz + t3_hi_hz) / 2);
     if (!tx_lo)
         tx_lo = tx + 100e3;
     R.txr = 1, R.lo_off = 100e3;
@@ -7258,7 +7267,7 @@ int main(int argc, char **argv)
        them. Without the FPGA's bitstream, the ones that fit the ARM's window, the unit's kept. */
     int unfit = 0, nlisted = 0;
     {
-        rdof_sdr_channel_t own[5];
+        rdof_sdr_channel_t own[8];
         int nown = 0;
 #ifdef RDOF_TIER3
         /* --tier3: the site's carrier, its out (the modem's slot grid from it) and its in */
@@ -7268,9 +7277,11 @@ int main(int argc, char **argv)
             own[nown++] = (rdof_sdr_channel_t){"site-in", t3cfg.t.car[0].rx_hz, t3cfg.t.cfg.cc, 1};
 #endif
 #ifdef RDOF_TIER3
-        /* a trunked site's carrier 2: its split's RX half hears its inbound here */
-        if (rcfg.tier3 && rcfg.t.ncar > 1 && rdofradio_cfg_channel_at(&rcfg, rcfg.t.car[1].rx_hz) < 0)
-            own[nown++] = (rdof_sdr_channel_t){"carrier-2", rcfg.t.car[1].rx_hz, rcfg.t.cfg.cc, 1};
+        /* a trunked site's carriers 2 to 4: their inbounds heard here (carrier 2's when a split's RX half sends it) */
+        static const char *const car_in[] = {"carrier-2", "carrier-3", "carrier-4"};
+        for (int c = 1; rcfg.tier3 && c < rcfg.t.ncar && c <= 3; c++)
+            if (rdofradio_cfg_channel_at(&rcfg, rcfg.t.car[c].rx_hz) < 0)
+                own[nown++] = (rdof_sdr_channel_t){car_in[c - 1], rcfg.t.car[c].rx_hz, rcfg.t.cfg.cc, 1};
 #endif
         if (R.mmdvm && rdofradio_cfg_channel_at(&rcfg, R.rx_hz) < 0)
             own[nown++] = (rdof_sdr_channel_t){"modem-rx", rx, cc, rx_slot};
@@ -7393,19 +7404,19 @@ int main(int argc, char **argv)
         if (!tx_lo_given && !t3_sdr2)
             tx_lo = tx + R.lo_off, R.tx_lo = tx_lo;
         fprintf(stderr, "--fpga-duc: transmit at %.0f S/s, R %d to %.0f S/s, the TX LO %.0f kHz above%s\n", R.tx_rate,
-                R.txr, rate, (tx_lo - tx) / 1e3, t3_sdr2 ? " carrier 1's out (between the two carriers)" : "");
+                R.txr, rate, (tx_lo - tx) / 1e3, t3_sdr2 ? " carrier 1's out (mid-way between the carriers)" : "");
     }
 #ifdef RDOF_TIER3
-    if (t3_sdr2) /* both carriers' outs within the stream's reach of the one TX LO */
-        for (int c = 0; c < 2; c++) {
+    if (t3_sdr2) /* every carrier's out within the stream's reach of the one TX LO */
+        for (int c = 0; c < rcfg.t.ncar; c++) {
             double off, reach;
             if (trunk_tx_offset(rcfg.t.car[c].tx_hz, &off, &reach))
                 continue;
-            fprintf(stderr, "%s: carriers 1 and 2 out on %.5f and %.5f MHz, %.1f kHz apart: the TX LO on %.5f MHz "
+            fprintf(stderr, "%s: %d carriers out from %.5f to %.5f MHz, %.1f kHz: the TX LO on %.5f MHz "
                             "reaches %.1f kHz either side at %.0f kS/s (the transmit stream's rate%s), carrier %d is "
                             "%.1f kHz off it: %s\n",
-                    rcfg.t.name, rcfg.t.car[0].tx_hz / 1e6, rcfg.t.car[1].tx_hz / 1e6,
-                    fabs((double)rcfg.t.car[0].tx_hz - (double)rcfg.t.car[1].tx_hz) / 1e3, R.tx_lo / 1e6, reach / 1e3,
+                    rcfg.t.name, rcfg.t.ncar, t3_lo_hz / 1e6, t3_hi_hz / 1e6, (t3_hi_hz - t3_lo_hz) / 1e3,
+                    R.tx_lo / 1e6, reach / 1e3,
                     R.tx_rate / 1e3, DX.started ? ", a sixth of it with --fpga-duc" : "", c + 1, fabs(off) / 1e3,
                     DX.started ? "carriers closer together (--fpga-duc's stream is 384 kS/s at any -r)"
                                : "a wider -r, or carriers closer together");

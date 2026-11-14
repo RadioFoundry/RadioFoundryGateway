@@ -15,15 +15,16 @@
  * With it N may be 0.
  *
  * On a device: the SDR is carrier 1 (the TSCC's): rdof_sdrmodem's slot source, keyed with no end (hold_key), what it
- * hears on carrier 1's inbound given its slot by timing (rdof_sdrmodem_inbound_k). A second carrier is either sent
- * by the same SDR or a split TX half on its radio's port. On the SDR: a second rdof_sdrmodem with its own slot
- * source, on the same UTC slot grid and keyed with carrier 1, its I/Q summed into the one transmit stream
- * (rdofradio_t3_mix: each carrier at half amplitude) at its own offset from the TX LO, which sits between the two,
- * fixed for the run; what the receiver hears on its inbound placed by that modem's timing. A split TX half
+ * hears on carrier 1's inbound given its slot by timing (rdof_sdrmodem_inbound_k). Carriers 2 to 4 are sent by
+ * the same SDR, or carrier 2 of two by a split TX half on its radio's port. On the SDR: an rdof_sdrmodem each with
+ * its own slot source, on the same UTC slot grid and keyed with carrier 1, its I/Q summed into the one transmit stream
+ * (rdofradio_t3_mix: each carrier at 1/N amplitude) at its own offset from the TX LO, which sits mid-way between the
+ * outs, fixed for the run; what the receiver hears on its inbound placed by that modem's timing. A split TX half
  * (rdof/sdr/t3split.h): its slot counter aligned to UTC from the host's clock, the scheduled stream (TX_SCHED for
  * each slot), the SDR's receiver its RX half on carrier 2's inbound. The trunk's slot k is the UTC slot number
  * (floor(UTC ms / 30)); off the grid each modem's slots are moved onto it by an even offset taken at its first slot
- * (the carriers aren't slot-synchronized: site_sync 0, the payload warm-up). Two carriers at most.
+ * (the carriers aren't slot-synchronized: site_sync 0, the payload warm-up). Up to four carriers out of the SDR, or
+ * two with carrier 2 on a split TX half.
  *
  * --state-dir DIR keeps the provisioning (cfg-cache.json) across restarts.
  */
@@ -121,12 +122,12 @@ void rdofradio_t3_heard(int c, const rdof_sdr_burst_t *b);
 /* The main loop's: messages in, timers, the link. */
 void rdofradio_t3_poll(void);
 /* The main loop's, after carrier 1's pull (rdof_sdrmodem_pull_iq of the modem given to start, n samples from pos into
- * iq): carrier 2's samples for the same positions added and the sum halved (rdof_sdrmodem_pull_mix), when the SDR
- * sends it; nothing otherwise, or while a bench job has moved the TX LO (carrier 2's clock runs on, unsent). Returns
- * whether carrier 2 is keyed there. */
+ * iq): the other carriers' samples for the same positions summed in, each carrier at 1/N amplitude of N
+ * (rdof_sdrmodem_pull_mixw), when the SDR sends them; nothing otherwise, or while a bench job has moved the TX LO
+ * (their clocks run on, unsent). Returns whether one of them is keyed there. */
 bool rdofradio_t3_mix(int64_t pos, rdof_cf_t *iq, int n);
-/* Carrier 2 for the status page: what sends it and its frequencies into out (empty: one carrier), its bursts sent
- * (traffic and control, not idle) and heard. */
+/* Carriers 2 to 4 for the status page: what sends them and their frequencies into out (empty: one carrier), their
+ * bursts sent (traffic and control, not idle) and heard. */
 void rdofradio_t3_carrier2(char *out, size_t cap, uint32_t *sent, uint32_t *heard);
 void rdofradio_t3_stop(void);
 

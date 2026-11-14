@@ -865,7 +865,8 @@ static bool make_extras(plan_t *p)
 
 /* What an SDR's driver gives: the rtlsdr receives 24 to 1766 MHz at up to 3.2 MS/s; the rest transmit one carrier
    each until more are tried on the air, and the LR2021 is half duplex (one chain, switched). A host's I/Q SDR (iio,
-   soapy, sim) sends a trunked site's two carriers, summed in one stream by rdofradio, when the site is all it sends. */
+   soapy, sim) sends a trunked site's carriers (up to four), summed in one stream by rdofradio, when the site is all it
+   sends. */
 typedef struct {
     bool tx, full_duplex;
     int carriers, trunk_carriers;
@@ -879,7 +880,7 @@ static sdr_caps_t sdr_caps(const char *driver)
         return (sdr_caps_t){.rate_max = 3.2e6, .freq_min = 24000000, .freq_max = 1766000000};
     const bool host_iq = !strcmp(driver, "iio") || !strcmp(driver, "soapy") || !strcmp(driver, "sim");
     return (sdr_caps_t){.tx = true, .full_duplex = strcmp(driver, "lr2021") != 0, .carriers = 1,
-                        .trunk_carriers = host_iq ? 2 : 1};
+                        .trunk_carriers = host_iq ? MAX_CARRIERS : 1};
 }
 
 /* Device d sends a trunked site's carriers and nothing else. */

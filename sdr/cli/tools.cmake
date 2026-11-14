@@ -200,6 +200,10 @@ if(TARGET rdofradio AND TARGET fakemodem AND UNIX)
         add_test(NAME rdofradio_e2e_t3_car2 COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_t3_car2.sh
                  $<TARGET_FILE_DIR:rdofradio>)
         set_tests_properties(rdofradio_e2e_t3_car2 PROPERTIES TIMEOUT 90)
+        # no RF: a four-carrier site, all out of the SDR; rdofsdr decodes the transmit file at every out
+        add_test(NAME rdofradio_e2e_t3_car4 COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_t3_car4.sh
+                 $<TARGET_FILE_DIR:rdofradio>)
+        set_tests_properties(rdofradio_e2e_t3_car4 PROPERTIES TIMEOUT 120)
         # no RF: a site on a stock duplex MMDVM modem, simulated (--mmdvm sim-hat), its bursts each on their slot
         add_test(NAME rdofradio_e2e_t3_hat COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_t3_hat.sh
                  $<TARGET_FILE_DIR:rdofradio>)

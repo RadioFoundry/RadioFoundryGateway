@@ -815,10 +815,10 @@ static void test_plan_checks(void)
          ONE_FREQ, 0, "devices.T.tx.carriers: 2, and the lr2021 sends 1 (one carrier a transmitter for now)"},
         {"{" V3_HEAD "\"devices\":[{\"name\":\"T\",\"kind\":\"sdr\",\"driver\":\"lr2021\",\"tx\":{\"carriers\":1}}],"
          ONE_FREQ, 0, NULL},
-        /* a host's I/Q SDR: a trunked site's two carriers when it sends nothing else */
+        /* a host's I/Q SDR: a trunked site's carriers (up to four) when it sends nothing else */
         {"{" V3_HEAD "\"devices\":[{\"name\":\"T\",\"kind\":\"sdr\",\"driver\":\"iio\",\"tx\":{\"carriers\":2}}],"
          ONE_FREQ, 0, "devices.T.tx.carriers: 2, and the iio sends 1 (one carrier a transmitter for now; a trunked site's "
-         "2 when it sends nothing else)"},
+         "4 when it sends nothing else)"},
         {"{" V3_HEAD "\"devices\":[{\"name\":\"T\",\"kind\":\"sdr\",\"driver\":\"iio\",\"tx\":{\"carriers\":2}}]," T3_TWO,
          0, NULL},
         {"{" V3_HEAD "\"devices\":[{\"name\":\"T\",\"kind\":\"sdr\",\"driver\":\"iio\",\"tx\":{}}]," T3_TWO, 0,

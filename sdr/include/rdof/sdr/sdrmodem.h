@@ -301,6 +301,9 @@ bool rdof_sdrmodem_pull_freq(rdof_sdrmodem_t *m, int64_t pos, float *hz, float *
  * and the sum halved, each carrier at half amplitude, so it can't clip (a modulator's output is at most 1 in
  * magnitude). scratch: n samples. Returns whether m is keyed there. */
 bool rdof_sdrmodem_pull_mix(rdof_sdrmodem_t *m, int64_t pos, rdof_cf_t *iq, rdof_cf_t *scratch, int n);
+/* The same with a weight: iq = (1 - w) iq + w m's. Carrier j + 1 of a sum (j already in iq at 1/j each) with w = 1 /
+ * (j + 1) leaves every carrier at 1/(j + 1): pull_mix is w 0.5. */
+bool rdof_sdrmodem_pull_mixw(rdof_sdrmodem_t *m, int64_t pos, rdof_cf_t *iq, rdof_cf_t *scratch, int n, float w);
 /* The carrier offset (Hz) of the keyed samples the last pull gave, included in them (0: none): a front end that tunes
  * its carrier per key-up may move the carrier by it and take it out of the samples. */
 float rdof_sdrmodem_pulled_off(const rdof_sdrmodem_t *m);

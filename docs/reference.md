@@ -1176,11 +1176,12 @@ rdofradio --soapy driver=plutosdr -r 2400000 --allow-tx --rx 438.25 --tx 438.75 
 
 A trunked site ([tier3.md](spec/fw/tier3.md) 9.4, `sdr/cli/rdofradio_t3.c`): `--config` with a `tier3` app runs
 the site, on the mqtt network as the box's node (the provisioning cached in `--state-dir DIR`'s `cfg-cache.json`).
-On a device the SDR sends carrier A (the TSCC's) full duplex. A second carrier is sent by the same SDR (its `out`
-among the SDR's `transmits`, `tx.carriers` 2: a second SDR modem on the same slot grid, summed into the transmit
-stream with each carrier at half amplitude, the TX LO halfway between the outs; with `--fpga-duc` the stream is
-384 kS/s) or by a split TX half on its radio's port, aligned to UTC from the host's clock and fed by the scheduled
-stream, the SDR's receiver its RX half (two carriers at most; tier3.md 9.4). Not yet run on a device.
+On a device the SDR sends carrier A (the TSCC's) full duplex. Carriers 2 to 4 are sent by the same SDR (their `out`s
+among the SDR's `transmits`, `tx.carriers` 2 to 4: an SDR modem each on the same slot grid, summed into the transmit
+stream with each carrier at 1/N amplitude, the TX LO mid-way between the lowest and highest outs; with `--fpga-duc`
+the stream is 384 kS/s), or a second carrier by a split TX half on its radio's port, aligned to UTC from the host's
+clock and fed by the scheduled stream, the SDR's receiver its RX half (tier3.md 9.4). Two carriers out of the SDR run
+on the Pluto; three and four only on a file device so far.
 A one-carrier site can instead go out of a stock duplex MMDVM modem, an SDR receiver beside it hearing its out
 and in: `--mmdvm PORT --config BOX.json --tier3 SITE.json [--hat-lead IDLE_MS,BUSY_MS]`, each burst written a lead
 before its slot on the modem's own slot clock as the receiver hears it (132 ms where the CACH's AT should say idle,
@@ -1202,9 +1203,9 @@ rdofradio --config site-a.json --sim-air 3 --sim-id 3100001 --sim-script calls.t
 ```
 
 On a device the SDR sends carrier 1 (the TSCC's) as the SDR modem's slot source, keyed with no end, and what it hears
-on that carrier's `in` goes to the controller with the slot its timing gives (`rdof_sdrmodem_inbound_k`); so does a
-second carrier the SDR sends, by its own modem. Limits: two carriers, 64 simulated MSs, 256 script actions, 20
-talkgroups subscribed one by one (more: `tg/+/+`, filtered). Not yet run on a device.
+on that carrier's `in` goes to the controller with the slot its timing gives (`rdof_sdrmodem_inbound_k`); so does
+each other carrier the SDR sends, by its own modem. Limits: four carriers, 64 simulated MSs, 256 script actions, 20
+talkgroups subscribed one by one (more: `tg/+/+`, filtered).
 
 Transmit power: `--tx-power DBM` at the antenna, from `--tx-max-dbm` (the device's output at its most gain, +7 dBm
 by default: a Pluto's nominal, not measured), so the gain is the most less the difference, held to the device's range
@@ -1530,9 +1531,9 @@ stream at 192 kS/s, or 96 kS/s when the rate isn't a multiple of 192 kS/s, and t
   The images above are a carrier's near the LO: the CIC has no compensation, so one f off the LO has its first image
   (at f less the stream's rate) only about 19 dB under it at 192 kS/s and 62.5 kHz, 37 dB at 96 kS/s and 18.75 kHz
   (tier3.md 9.4); not yet measured.
-- A trunked site with both carriers on the SDR takes a 384 kS/s stream (a device rate that's a multiple of it, R 17
-  at least: 6.528 MS/s or more), the LO between the carriers and each within 64 kHz of it: 62.5 kHz off, the image is
-  43 dB under the carrier.
+- A trunked site with two to four carriers on the SDR takes a 384 kS/s stream (a device rate that's a multiple of it, R
+  17 at least: 6.528 MS/s or more), the LO mid-way between the outest carriers and each within 64 kHz of it: 62.5 kHz
+  off, the image is 43 dB under the carrier.
 - The TX buffers are about 5 ms (512 samples at 96 kS/s), so the queue stays inside the stream's 50 ms lead.
 - With `--split-tx` or `--mmdvm` the SDR doesn't transmit, and it's left unused.
 - Without the block nothing answers at ADDR, and a read there is a bus error: both options need the bitstream.
