@@ -2046,6 +2046,7 @@ One site (the SDR site, two carriers):
 | Feature | Sim | On air |
 |---|---|---|
 | TSCC: C_SYS_Parms and its counter, C_ALOHA, the C_BCASTs, the CACH | yes | yes: 12 min decoded clean; the radio's counter checked against the short LC |
+| Random access: answers within NWait, C_WACKD in a Vote_Now block (3.3, 3.11) | yes | answers mostly 3 frames after the access; one held 14 slots by a Vote_Now block (2026-11-14), the C_WACKD for it not on air yet |
 | Registration: by syscode, talkgroup or list; refusals | yes | yes |
 | Authentication at registration | yes | yes: the right key accepted, a wrong one denied |
 | Group and individual voice, the availability check | yes | yes, on both carriers |
