@@ -41,7 +41,7 @@ cmake -S . -B build/linux -DRADIOFOUNDRY_DIR=/path/to/radiofoundry && cmake --bu
 RDOF_BOARD=<board ip> python -m pytest -q hil-tests        # against a running board; RDOF_BOARD_MUTATE=1 adds the refused-POST checks
 ```
 
-The host tests are offline and take seconds. The golden fixtures in `host-tests/` (`vectors.h`, `scenarios.h`,
+The host tests are offline and take about 2 minutes (`-E 'e2e|mmdvm_bench'` leaves out the slow end-to-end ones). The golden fixtures in `host-tests/` (`vectors.h`, `scenarios.h`,
 `fixtures/`) are committed; the C must reproduce them byte for byte. New behavior gets a host test; driver code gets
 a test against the shims in its component's `test/`.
 

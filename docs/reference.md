@@ -595,7 +595,7 @@ curl -X DELETE http://<board>/api/coredump                                      
   `crash_test`, and after the reboot `crash` says `StoreProhibited` at `0x00000000`; `POST /api/crash?how=hang` tests
   the watchdog. The HIL suite does the first with `RDOF_BOARD_MUTATE=1`.
 - **Flash wear.** `/api/status` `flash` counts every program and erase since boot. At rest and while streaming a W12
-  writes nothing (W12 #3, 2026-11-11: 0 writes over HIL and the stress run); a settings save with nothing changed
+  writes nothing (a W12, 2026-11-11: 0 writes over HIL and the stress run); a settings save with nothing changed
   writes nothing; erasing the core dump partition is one 128 KB erase. The stress test fails on a write during a
   stream.
 
@@ -1085,7 +1085,7 @@ Memory and throughput:
 - A wideband capture needs 2 bytes a sample (768 KB/s at 384 kS/s), more than one TCP stream from the W12 carries
   (lwIP's 5.76 KB send buffer): a 4 s capture got 14% of its samples, the rest reported as `gap_samples`
   (2026-10-29).
-- A trigger's channel (cs16 at 48 kS/s, 192 KB/s) is buffered up to 10.9 s ahead of the link. W12 #1 at 384 kS/s sent
+- A trigger's channel (cs16 at 48 kS/s, 192 KB/s) is buffered up to 10.9 s ahead of the link. A W12 at 384 kS/s sent
   it at 40-150 KB/s (2026-11-06), so a trigger longer than about 12 s can still lose its end on a slow link
   (`gap_samples`); at 1 MB a 15 s trigger lost 1.5-3 s of each.
 

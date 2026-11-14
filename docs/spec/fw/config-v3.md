@@ -877,7 +877,8 @@ the parrot, the IP gateway, HBlink, MQTT and the bench. The address is a placeho
 - 240 kS/s centered on 438.1 MHz holds 438.075 to 438.125.
 - The parrot answers on the frequency the call was heard on; the IP gateway answers on the path the radio was last
   heard on.
-- No policies: every TG and private call both ways, on HBlink (the first network); MQTT reports.
+- No policies: private calls both ways, on HBlink (the first network), and no talkgroups (§8: `tg` is none by
+  default; `"tg": "*"` in `defaults` carries every one); MQTT reports.
 - The bench may key the LR2021 on 438.1 MHz for at most 10 s ([../bench-api.md](../bench-api.md)).
 
 ## 11. The resolved view
