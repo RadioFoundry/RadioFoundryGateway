@@ -1055,6 +1055,12 @@ impl Site {
         self.ev(Event { r#type: EV_ACTIVITY, kind, op, src, dst, reason, ..Default::default() });
     }
 
+    /// A queue activity event (ACT_QUEUE): group when dst is a talkgroup.
+    fn queue_act(&mut self, op: u8, src: u32, dst: u32, group: bool, reason: u8) {
+        let flags = if group { F_GROUP } else { 0 };
+        self.ev(Event { r#type: EV_ACTIVITY, kind: ACT_QUEUE, op, src, dst, reason, flags, ..Default::default() });
+    }
+
     fn drop_stream(&mut self, stream: u32, why: u8) {
         self.ev(Event { r#type: EV_NET_DROP, stream, why, ..Default::default() });
     }
@@ -1574,12 +1580,12 @@ impl Site {
             if is_net {
                 let n = self.net[i];
                 self.net[i].used = false;
-                self.activity(ACT_QUEUE, QUEUE_OUT, n.src, n.tg, 0);
+                self.queue_act(QUEUE_OUT, n.src, n.tg, true, 0);
                 self.net_group_go(n.stream, n.src, n.tg, n.emergency, Some(ch));
             } else {
                 let p = self.pend[i];
                 self.pend[i].used = false;
-                self.activity(ACT_QUEUE, QUEUE_OUT, p.caller, p.called, 0);
+                self.queue_act(QUEUE_OUT, p.caller, p.called, matches!(p.kind, KIND_GROUP | KIND_ALLCALL), 0);
                 if p.kind == KIND_PRIVATE {
                     self.private_go(&p, ch);
                 } else {
@@ -1607,11 +1613,11 @@ impl Site {
                 }
                 self.pend[i] = p;
                 self.counters.queued += 1;
-                self.activity(ACT_QUEUE, QUEUE_IN, p.caller, p.called, 0);
+                self.queue_act(QUEUE_IN, p.caller, p.called, matches!(p.kind, KIND_GROUP | KIND_ALLCALL), 0);
             }
             _ => {
                 self.fail(&p, R_SYSBUSY, WHY_CONGESTION);
-                self.activity(ACT_QUEUE, QUEUE_DROP, p.caller, p.called, R_SYSBUSY);
+                self.queue_act(QUEUE_DROP, p.caller, p.called, matches!(p.kind, KIND_GROUP | KIND_ALLCALL), R_SYSBUSY);
             }
         }
     }
@@ -2365,7 +2371,7 @@ impl Site {
                 self.setup_out(SETUP_CANCEL, WHY_OK, 0, p.svc, p.caller, p.called, p.stream);
             }
             if p.state == P_QUEUED {
-                self.activity(ACT_QUEUE, QUEUE_DROP, p.caller, p.called, 0);
+                self.queue_act(QUEUE_DROP, p.caller, p.called, matches!(p.kind, KIND_GROUP | KIND_ALLCALL), 0);
             }
             if p.state == P_SUPP {
                 self.sd_supp_drop(ms);
@@ -2400,7 +2406,8 @@ impl Site {
                 self.pend[i].used = false;
                 if p.state == P_QUEUED {
                     self.fail(&p, R_SYSBUSY, WHY_CONGESTION);
-                    self.activity(ACT_QUEUE, QUEUE_DROP, p.caller, p.called, R_SYSBUSY);
+                    let group = matches!(p.kind, KIND_GROUP | KIND_ALLCALL);
+                    self.queue_act(QUEUE_DROP, p.caller, p.called, group, R_SYSBUSY);
                 } else {
                     self.fail(&p, R_MSAWAY, WHY_TIMEOUT); // no answer within TP or setup_s: abandon
                 }
@@ -2427,7 +2434,7 @@ impl Site {
             if n.used && now >= n.deadline_ms {
                 self.net[i].used = false;
                 self.drop_stream(n.stream, WHY_CONGESTION);
-                self.activity(ACT_QUEUE, QUEUE_DROP, n.src, n.tg, R_SYSBUSY);
+                self.queue_act(QUEUE_DROP, n.src, n.tg, true, R_SYSBUSY);
             }
         }
     }
@@ -2476,7 +2483,7 @@ impl Site {
                         since_ms: self.now,
                         deadline_ms: self.now + self.cfg.net_queue_ms as i64,
                     };
-                    self.activity(ACT_QUEUE, QUEUE_IN, src, tg, 0);
+                    self.queue_act(QUEUE_IN, src, tg, true, 0);
                 }
                 _ => self.drop_stream(stream, WHY_CONGESTION),
             }

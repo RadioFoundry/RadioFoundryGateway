@@ -253,7 +253,10 @@ fn group_queue_and_grant_on_release() {
     assert!(air.until(10_000, &mut log.f(), |a| a.ms[1].state() == t3ms::PAYLOAD));
     let opens = log.of(EV_CH_OPEN);
     assert_eq!(opens.iter().map(|e| e.dst).collect::<Vec<_>>(), [TG, 10]);
-    assert!(log.of(EV_ACTIVITY).iter().any(|e| e.kind == ACT_QUEUE && e.op == QUEUE_OUT && e.src == 1002));
+    let q = log.of(EV_ACTIVITY).into_iter().filter(|e| e.kind == ACT_QUEUE && e.src == 1002).collect::<Vec<_>>();
+    // in, then out, both naming a talkgroup (mqtt-net's "group": true)
+    let got = q.iter().map(|e| (e.op, e.dst, e.flags & F_GROUP)).collect::<Vec<_>>();
+    assert_eq!(got, [(QUEUE_IN, 10, F_GROUP), (QUEUE_OUT, 10, F_GROUP)]);
     assert_eq!(air.site.status().queued, 1);
 }
 

@@ -702,7 +702,7 @@ impl Site {
             self.ack(R_QUEUED, p.caller, p.called);
         }
         self.counters.queued += 1;
-        self.activity(ACT_QUEUE, QUEUE_IN, p.caller, p.called, 0);
+        self.queue_act(QUEUE_IN, p.caller, p.called, p.group, 0);
     }
 
     /// Call i's supplementary data exchange (t3sdata SD_SUPP): started (true), or no room for it and the call goes on
@@ -836,7 +836,7 @@ impl Site {
                 });
             let Some(i) = best else { return };
             let p = self.pd.pds[i];
-            self.activity(ACT_QUEUE, QUEUE_OUT, p.caller, p.called, 0);
+            self.queue_act(QUEUE_OUT, p.caller, p.called, p.group, 0);
             self.pd_go(i, ch);
         }
     }
@@ -891,7 +891,7 @@ impl Site {
             self.setup_out(SETUP_CANCEL, WHY_OK, SETUP_F_DATA, p.svc, p.caller, p.called, p.stream);
         }
         if p.state == PD_QUEUED {
-            self.activity(ACT_QUEUE, QUEUE_DROP, p.caller, p.called, 0);
+            self.queue_act(QUEUE_DROP, p.caller, p.called, p.group, 0);
         }
         if p.state == PD_SUPP {
             self.sd_supp_drop(ms);
@@ -915,7 +915,7 @@ impl Site {
                 self.pd.pds[i].used = false;
                 let reason = if p.state == PD_QUEUED { R_SYSBUSY } else { R_MSAWAY };
                 if p.state == PD_QUEUED {
-                    self.activity(ACT_QUEUE, QUEUE_DROP, p.caller, p.called, reason);
+                    self.queue_act(QUEUE_DROP, p.caller, p.called, p.group, reason);
                 }
                 self.pd_fail(&p, reason);
                 continue;
