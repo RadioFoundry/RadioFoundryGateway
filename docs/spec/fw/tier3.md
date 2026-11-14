@@ -693,7 +693,8 @@ SUPED_SV, HI_RATE, SIMI, priority):
    header says how many blocks follow) for the controller, which holds the channel `data_hang_s` after any burst.
 5. Clearing (6.6.3.3.1.6 b): an unconfirmed single-item message ends the call once repeated (P_CLEAR about 0.5 s
    after its last block); a confirmed one, `data_hang_s` after the response (the called MS's ACK goes back through
-   the repeat); a multi-item call, `data_hang_s` after its last burst, or at once on P_MAINT DISCON; any data call
+   the repeat), and until a response comes at least 6 s after the message, whatever `data_hang_s`, so the sender's
+   retry finds the channel (on air: a 3 s hang lost a radio's retries after a lost ACK); a multi-item call, `data_hang_s` after its last burst, or at once on P_MAINT DISCON; any data call
    at `call_s` (T_PACKET_TIMER).
 
 The site as a party: data to TSI, the data ID or IPI goes, burst by burst, to the unit's `data` hook (rdofradio:
@@ -727,7 +728,8 @@ CRC); a second whose CRC covers both blocks' 16 flag octets is taken too. The ma
 make the site's, the unit's and the MSs' structs 16-aligned; their C callers give 8). The sender sends a SACK's
 blocks again after a C_HEAD with F = 0, Blocks to Follow their count and the same N(S), and all of them (F = 1)
 after the NACK; the receiver places each block by its serial number. Choices: N_RtryLmt (no value in 361-3) is 4
-sends; with no response in 3 s (T_RspnsWait) the sender gives up rather than sending again; a C_RDATA whose CRC
+sends; with no response in 3 s (T_RspnsWait) the sender sends the whole message again (F = 1), as radios do (on air
+every 3-4 s), and gives up after the fourth; a C_RDATA whose CRC
 fails is ignored (the sender then times out); another NACK ends the call. The site repeats every rate alike (data
 types 7, 8, 10 regenerated); its own IP gateway's handling of the rates is [ipgw.md](ipgw.md)'s.
 
@@ -1986,6 +1988,7 @@ Built since step 8e, host-tested (the bench steps above note what has run on air
 | d18264e3 | Supplementary user data on UDT short data, SUPLI before SDMI (3.21) |
 | 5455d696 | Supplementary user data on statuses (3.21) |
 | 7a0f0257 | Packet data to IPI with SUPED_VAL set is taken (table 6.50: only Appended_UDT must be 00); logs of the site's own data sends |
+| (next) | A confirmed item's channel held 6 s for the sender's retry; the sim MS sends again on no response |
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
 apart from the code, found seven deviations, all fixed (2026-11-12):

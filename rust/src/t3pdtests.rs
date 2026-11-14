@@ -170,8 +170,9 @@ fn packet_data_to_the_site() {
         assert_eq!((g[0].op, g[0].target, g[0].source), (OP_PD_GRANT, target, 1001), "the gateway as the called party");
         let pd = log.of(EV_PD);
         assert_eq!((pd[0].op, pd[0].kind, pd[0].dst), (PD_OPEN, 1, target), "the site is a party");
-        // the site's IP gateway answers confirmed data; nobody here does: the MS gives up
-        assert!(air.until(8000, &mut log.f(), settled(0, 0)));
+        // the site's IP gateway answers confirmed data; nobody here does: the MS sends it again (the channel held
+        // for it, CONFIRMED_HOLD_MS) and gives up after its last try
+        assert!(air.until(20_000, &mut log.f(), settled(0, 0)));
         assert_eq!(air.ms[0].status().calls_failed, 1);
     }
     // without a data ID, that ID is just an MS that isn't here

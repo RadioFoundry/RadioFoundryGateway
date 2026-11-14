@@ -235,14 +235,20 @@ static void io_data(void *ctx, int ch, int dt, const uint8_t *burst, uint32_t sr
     if (!GW.g || s != GW.site)
         return;
     GW.bursts++;
+    extern int64_t rdof_test_k;
     const rdof_ipgw_where_t w = {.source = 0, .slot = (ch & 1) + 1, .freq = 0, .cc = 1};
-    rdof_ipgw_burst(GW.g, &w, dt, burst, 1.0);
+    rdof_ipgw_burst(GW.g, &w, dt, burst, 1.0 + (double)rdof_test_k * 0.03); /* the slot clock, in s */
 }
 
+static int gw_fail_next; /* the next sends that fail (an ACK lost on its way) */
 static bool gw_send_dmr(void *ctx, const rdof_ipgw_dmr_t *p)
 {
     site_t *s = ctx;
     GW.sent++;
+    if (gw_fail_next > 0) {
+        gw_fail_next--;
+        return false;
+    }
     return rdof_t3unit_data_tx(s->u, p->src, p->dst, false, p->nbursts, p->control, &p->bursts[0][0]);
 }
 
@@ -296,7 +302,8 @@ static void site_close(site_t *s)
 }
 
 static site_t A, Bs;
-static int64_t K;
+int64_t rdof_test_k; /* the slot number (io_data's clock) */
+#define K rdof_test_k
 
 static void run(int ms)
 {
@@ -1004,17 +1011,21 @@ int main(void)
     run(4000);
     /* the same to IPI (6.6.3.2.4: the destination is the datagram's), at rate 3/4 as radios send confirmed data */
     const uint32_t ipi0 = GW.g->n.rx_messages;
+    gw_fail_next = 1; /* its first ACK lost, as on air: the MS sends it again in the channel's hold and is answered */
     CHECK(rdof_t3ms_data(A.ms[0], 0xFFFEC3, RDOF_T3MS_F_CONFIRMED | RDOF_T3MS_F_RATE34, dg, dlen, T0 + K * 30),
           "data to IPI queued");
     run(6000);
     CHECK(GW.g->n.rx_messages == ipi0 + 1, "the IP gateway took the data to IPI (bursts %d, messages %u, bad %u)",
           GW.bursts, GW.g->n.rx_messages, GW.g->n.rx_bad);
-    CHECK(GW.g->n.rx_headers == GW.g->n.rx_messages && GW.g->n.rx_blocks > 0 && !GW.g->n.rx_header_crc,
-          "the gateway's header and block counts (headers %u, blocks %u)", GW.g->n.rx_headers, GW.g->n.rx_blocks);
+    CHECK(GW.g->n.rx_headers == GW.g->n.rx_messages + GW.g->n.rx_dup && GW.g->n.rx_dup == 1 && GW.g->n.rx_blocks > 0 &&
+              !GW.g->n.rx_header_crc,
+          "the gateway's header and block counts, the retry one (headers %u, dup %u, blocks %u)", GW.g->n.rx_headers,
+          GW.g->n.rx_dup, GW.g->n.rx_blocks);
     pd0 = ms_status(&A, 0);
-    CHECK(GW.g->n.acks == 2 && GW.g->n.no_tx == 0 && pd0.calls_done == done0 + 2 && pd0.state == RDOF_T3MS_IDLE,
-          "the site's ACK of the data to IPI reached the MS (acks %u, no_tx %u, done %u, failed %u)", GW.g->n.acks,
-          GW.g->n.no_tx, pd0.calls_done, pd0.calls_failed);
+    CHECK(GW.g->n.acks == 3 && GW.g->n.no_tx == 1 && pd0.calls_done == done0 + 2 && pd0.calls_failed == 0 &&
+              pd0.state == RDOF_T3MS_IDLE,
+          "the retry's ACK reached the MS (acks %u, no_tx %u, done %u, failed %u)", GW.g->n.acks, GW.g->n.no_tx,
+          pd0.calls_done, pd0.calls_failed);
     run(4000);
     GW.site = NULL;
     free(GW.g);

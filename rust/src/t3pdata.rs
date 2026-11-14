@@ -49,6 +49,10 @@ pub const SAP_IP: u8 = 4;
 
 /// The last block of an unconfirmed single item is repeated within this long; then the channel clears.
 const DRAIN_MS: i64 = 500;
+/// A confirmed item not answered yet holds its channel at least this long past its end, whatever the data hang
+/// time: the sender sends it again if its response doesn't come (361-3 5.4.1; a radio on air every 3-4 s), and a
+/// channel cleared by then loses the retry (6.6.3.3.1.6 b 1: the hang time runs from the received message).
+const CONFIRMED_HOLD_MS: i64 = 6000;
 
 // ── the data header (361-1 9.2.1 unconfirmed, 9.2.2 confirmed, 9.2.3 response): 10 octets, the CRC the radio
 // layer's (mask CCCCh) ──
@@ -965,7 +969,12 @@ impl Site {
             }
             DATA_END | DATA_END_CONFIRMED | DATA_RESPONSE => {
                 c.r#use = USE_HANG;
-                c.idle_until_ms = now + if what == DATA_END && !multi { DRAIN_MS } else { hang };
+                c.idle_until_ms = now
+                    + match what {
+                        DATA_END if !multi => DRAIN_MS,
+                        DATA_END_CONFIRMED => hang.max(CONFIRMED_HOLD_MS),
+                        _ => hang,
+                    };
                 if what != DATA_RESPONSE {
                     self.pd.items += 1;
                 }

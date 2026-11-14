@@ -2206,10 +2206,8 @@ impl Ms {
             return Some(data(dt, &b[..len], self));
         }
         if self.pd_wait_ack && self.now >= self.pd_until {
-            self.pd_wait_ack = false;
-            self.mine = false;
-            self.done(false);
-            self.back_to_tscc();
+            // no response: the whole message again (361-3 5.4.1 a; up to pdrate::TRIES sends), as radios do
+            self.resend(self.pd_all());
         }
         None
     }
