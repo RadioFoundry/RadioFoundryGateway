@@ -2,7 +2,12 @@
 
 DMR gateway firmware for the ESP32-S3 (`esp_idf/`) and host tools for Linux, macOS and the PlutoSDR (`sdr/cli/`).
 One build runs what its settings ([config-v3.md](spec/fw/config-v3.md)) make: SDR receivers, roaming transceivers,
-repeaters, the IP gateway. The core (`common/`, `sdr/`) is portable C11 and is shared by every target.
+repeaters, the IP gateway. The core (`common/`, `sdr/`) is portable C11, shared by every target; the modules in
+`rust/` run in place of their C by default.
+
+This file is the reference: how it's built and tested, where things are, how each part behaves, what's been measured
+and what's left. To set up and run it, start from the guides ([docs/README.md](README.md)). The specs are in
+[spec/](spec/), starting with [overview.md](spec/fw/overview.md); each component in `components/` has its own README.
 
 Outputs:
 
@@ -10,21 +15,36 @@ Outputs:
   retained status and `Receiver` message per radio ([mqtt.md](spec/fw/mqtt.md)).
 - **HBlink4**: a peer per radio, or per SDR channel; DMRC, DMRD both ways, DMRT / DMRK call routing; UDP, or SCTP
   over UDP for the roamer ([hblink.md](spec/fw/hblink.md)).
-- **BrandMeister**: the same peer with the homebrew login (RPTL, RPTK, RPTC, a ping; the 2015 specification's dialect on port 62030), as a simplex hotspot or a
-  repeater, one login per path ([brandmeister.md](spec/fw/brandmeister.md)). The same login to any other Homebrew
-  master (a stock HBlink, TGIF) is network type `homebrew` (config-v3.md §7.4).
+- **BrandMeister**: the same peer with the homebrew login (RPTL, RPTK, RPTC, a ping; the 2015 specification's dialect
+  on port 62030), as a simplex hotspot or a repeater, one login per path ([brandmeister.md](spec/fw/brandmeister.md)).
+  The same login to any other Homebrew master (a stock HBlink, TGIF) is network type `homebrew` (config-v3.md §7.4).
 - **HTTP**: the web page, a JSON API and the bench API ([interfaces-http.md](spec/fw/interfaces-http.md),
   [bench-api.md](spec/bench-api.md)).
 
-The specs are in [docs/spec/](spec/), starting with [overview.md](spec/fw/overview.md). Each component in
-`components/` has its own README.
-
 **Status (2026-11-04).** Running on hardware: the SDR receiver on the SuperMini, the N16R8 and the W12 (RTL-SDR and
 LR2021); the W12 transmitting as a roamer, on the bench and as the IP gateway; `rdofradio` as a full or half duplex
-repeater on a PlutoSDR, over USB and on the Pluto's own ARM, with the FPGA channelizer and TX interpolator. Host
-tested only: a split repeater on a board, a USB hub with two radios, `rdofradio --split-tx` with a real radio.
+repeater on a PlutoSDR, over USB and on the Pluto's own ARM, with the FPGA channelizer and TX interpolator. Later
+results are dated where they appear. What's only host-tested, and what's left: [Not done](#not-done).
+
+## Contents
+
+- [Build and test](#build-and-test): the three test levels, firmware builds
+- [Layout](#layout): folders and modules
+- [Firmware](#firmware): roles, options, size, boards, settings, networks, crashes, bring-up
+- [SDR](#sdr): the receive core, front ends, the LR2021, transmit, settings, bring-up, the bench API
+- [Host tools](#host-tools): `rdofsdr`, `rdofradio`, the web page
+- [PlutoSDR](#plutosdr): build, install, the FPGA channelizer and bitstream
+- [Measured and not done](#measured-and-not-done): CPU budgets, scope, what's left
 
 ## Build and test
+
+Three levels of tests, from offline to a running board, and the firmware builds. Builds go under `build/`.
+
+| Level | Needs | Command |
+|---|---|---|
+| Host tests | CMake, a C compiler, cargo | `cmake -S host-tests -B build/host && cmake --build build/host && ctest --test-dir build/host` |
+| System tests | a [RadioFoundry](https://github.com/RadioFoundry/RadioFoundry) checkout | `cmake -S . -B build/linux -DRADIOFOUNDRY_DIR=/path/to/radiofoundry && cmake --build build/linux && ctest --test-dir build/linux` |
+| Hardware in the loop | a running board | `RDOF_BOARD=<board ip> python -m pytest -q hil-tests` |
 
 ### Host tests
 
@@ -32,25 +52,66 @@ tested only: a split repeater on a board, a USB hub with two radios, `rdofradio 
 cmake -S host-tests -B build/host && cmake --build build/host && ctest --test-dir build/host
 ```
 
-CMake, a C compiler and cargo (`-DRDOF_RUST=OFF` builds without it, on the C modules); Node for the settings schema and the page's scripts.
-Offline, a few seconds, under AddressSanitizer and UBSan (`-DRDOF_SANITIZE=OFF` turns them off). The golden fixtures
-are committed (`host-tests/vectors.h`, `scenarios.h`, `fixtures/`) and the C must reproduce them byte for byte.
+Needs CMake, a C compiler and cargo (stable Rust, `rustup` minimal profile). Optional, each adding tests:
+
+- SoapySDR or libiio: `rdofradio` is built, and with it the `rdofradio_e2e_*` tests ([Host tools](#host-tools));
+- Python 3: the end-to-end runs on `fakemodem` that are scripts;
+- Node: the settings schema, a syntax check of the page's scripts;
+- a `mosquitto` broker and libmosquitto: the MQTT network end to end.
+
+Offline. Most tests take under a second; the end-to-end ones
+take 15 to 100 s, about 2 minutes for the whole run at `ctest -j8` on an M1 Pro (2026-11-14).
+`ctest --test-dir build/host -j8 -E 'e2e|mmdvm_bench'` leaves those out.
+
+What runs:
+
+- **The Rust, by default.** `rdof_common` is built with the modules in `rust/` in place of their C
+  ([rust/README.md](../rust/README.md)), so every test and tool runs the Rust. The build shows it: `cargo: rust for
+  rdof_rust`, and the library is `build/host/common/rdof_rust-cargo/release/librdof_rust.a`. Without cargo the
+  configure step stops and lists what's missing. `-DRDOF_RUST=OFF` builds the C modules instead (the configure step
+  says `rdof_common: the C modules (RDOF_RUST off)`).
+- **The C twin.** `rdof_tests_c` runs the core tests on the C files the Rust replaces, while they're kept. Only in a
+  Rust build.
+- **Every feature off.** `rdof_tests_min` and `rdof_sdr_tests_min` build with every `RDOF_FEATURE_*` off, on the C
+  (the Rust needs every feature on), with no sanitizers.
+- **The struct layouts.** `rdof_tests` checks each Rust mirror of a C struct against the C headers before its tests,
+  and stops on a mismatch ([rust/README.md](../rust/README.md), "Structs shared with C").
+- **Sanitizers on.** AddressSanitizer and UBSan (`RDOF_SANITIZE`, on by default; tinysctp's tests have
+  `TINYSCTP_SANITIZE`), so a memory error fails the test where it happens. That makes this a test build: slower,
+  larger, and not one to run in service. `-DRDOF_SANITIZE=OFF -DTINYSCTP_SANITIZE=OFF` turns them off.
+- **The golden fixtures** are committed (`host-tests/vectors.h`, `scenarios.h`, `fixtures/`), and the C must
+  reproduce them byte for byte.
+
+| Build | Command | What |
+|---|---|---|
+| Tests | `cmake -S host-tests -B build/host` | every host test, sanitized |
+| Tools and tests | `cmake -S . -B build/linux` | the tools and the host tests; the tools are sanitized too (they link the tests' libraries) |
+| Release | `cmake -S . -B build/rel -DRDOF_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release` | the libraries and tools only, no sanitizers: what to install or run on a Pi |
+| Timing | `cmake -S host-tests -B build/bench -DRDOF_SANITIZE=OFF -DCMAKE_BUILD_TYPE=Release` | `rdofsdr --bench` ([CPU budget](#cpu-budget)) |
 
 | Test | What |
 |---|---|
-| `rdof_tests`, `rdof_tests_min` | `common/` with every feature on, and with every `RDOF_FEATURE_*` off: FEC, layer 2, PDUs, AMBE, MMDVM, HBlink4 and the OLED frame against golden vectors; the tracker, the roaming transceiver and the repeater (duplex, SFR, DCDM) against golden scenarios; split duplex; the jitter buffer; settings; two radios a board |
-| `rdof_tests_c` | the core tests on the C that `rust/`'s modules replace: with cargo installed, every other test runs the Rust |
+| `rdof_tests`, `rdof_tests_min`, `rdof_tests_c` | `common/` with every feature on, with every `RDOF_FEATURE_*` off, and on the C: FEC, layer 2, PDUs, AMBE, MMDVM, HBlink4 and the OLED frame against golden vectors; the tracker, the roaming transceiver and the repeater (duplex, SFR, DCDM) against golden scenarios; split duplex; the jitter buffer; settings; two radios a board |
+| `rdof_site_tests`, `rdof_plan_tests`, `rdof_schema_tests`, `rdof_combos_tests` | settings version 3: the parser, router and pool; the plan and its units; the JSON schema (Node) over `fixtures/config/v3/` and `config/examples/`; which hardware mixes the board and rdofradio take |
+| `rdof_bm_tests`, `rdof_rdofnet_tests`, `rdof_mqttnet_tests` | the BrandMeister login against a fake master; rdofradio's HBlink4 peer on the loopback; the MQTT network's messages |
 | `rdofradio_e2e_brandmeister`, `rdofradio_e2e_homebrew` | no RF, three processes (`host-tests/e2e_login.sh`): rdofradio on `fakemodem` logs in to `fakebm`, a radio's private call goes up, the parrot's echo goes out on air, RPTCL at exit |
-| `rdofradio_e2e_ipgw` | no RF, no network (`host-tests/e2e_ipgw.sh`): `config/examples`' standalone MMDVM settings, simplex then duplex, on `fakemodem`: a radio's confirmed UDP text goes out through the IP gateway to a listener, its ACK and the listener's reply go out on air |
-| `rdof_site_tests`, `rdof_plan_tests`, `rdof_schema_tests` | settings version 3: the parser, router and pool; the plan and its units; the JSON schema (Node) over the fixtures in `fixtures/config/v3/` and `config/examples/` |
-| `rdof_sdr_tests`, `rdof_sdr_tests_min`, `rdof_sdr_edge_tests` | the SDR receive path against golden vectors; the corners they don't reach ("SDR core" below) |
-| `rdof_mod_tests`, `sdrmodem_tests`, `rdof_loopback_edge_tests` | the modulator, the SDR modem, its loopbacks |
+| `rdofradio_e2e_ipgw` | no RF, no network (`host-tests/e2e_ipgw.sh`): `config/examples`' standalone MMDVM settings, simplex then duplex: a radio's confirmed UDP text goes out through the IP gateway to a listener, its ACK and the listener's reply go out on air |
+| `rdofradio_e2e_examples` | each file in `config/examples` as written, on simulated hardware, with its clock, bench and network (`host-tests/test_examples.py`) |
+| `rdofradio_e2e_mqttnet` | two boxes on `fakemodem`s joined by the MQTT network through a local broker (`host-tests/e2e_mqttnet.sh`) |
+| `mmdvm_bench_tests` | the whole bench line on `fakemodem` (`host-tests/test_mmdvm_bench.py`) |
+| `rdof_sdr_tests`, `rdof_sdr_tests_min`, `rdof_sdr_edge_tests` | the SDR receive path against golden vectors; the corners they don't reach ([SDR tests](#sdr-tests)) |
+| `rdof_mod_tests`, `sdrmodem_tests`, `rdof_loopback_edge_tests`, `ipgw_sdr_tests` | the modulator, the SDR modem, its loopbacks, the IP gateway on the SDR modem |
 | `rdof_chzfx_tests`, `rdof_chzhw_tests`, `rdof_chzrx_tests`, `rdof_plutofpga_tests` | the PlutoSDR FPGA channelizer's model, its driver, the receiver on its frames, the board and bitstream checks |
-| `rtlsdr_tests`, `rtlsdr_gaps_tests` | the RTL-SDR driver against a fake dongle, and its USB gap filler |
-| `sdr_selftest_tests` | the firmware's self-test check, on the host |
+| `rtlsdr_tests`, `rtlsdr_gaps_tests`, `rdof_soapy_tests` | the RTL-SDR driver against a fake dongle, its USB gap filler; rdofradio's SoapySDR device against a fake SoapySDR |
+| `sdr_selftest_tests`, `rdof_power_tests`, `rdof_txseam_tests` | the firmware's self-test check, its power key and battery numbers, where a long key-up's seams fall on the LR2021 |
 | `rdof_hostweb_tests`, `rdof_webapi_tests`, `rdof_radiocfg_tests` | the host web server, the shared web API (byte for byte against the firmware's status), `rdofradio --config` |
-| `rdof_benchline_tests`, `benchsig`, `rdof_fm_tests`, `rdof_am_tests` | the bench line protocol, signal modes, the FM and AM generators and receivers |
-| the rest | `rdof_memplan_tests`, `rdof_parrot_tests`, `rdof_mssim_tests`, `rdof_power_tests`, `rdof_lastheard_tests`, `rdof_rdofnet_tests`, `rdof_pffft_tests`, `ipgw_sdr_tests`, and the components' own (`test_netclock`, `test_netclock_posix`, `test_wifilist`, `lr2021`, `tinysctp_tests`) |
+| `rdof_benchline_tests`, `benchsig`, `benchenv`, `benchramp`, `rdof_fm_tests`, `rdof_am_tests` | the bench line protocol, signal modes, the carrier envelope, PA ramps, the FM and AM generators and receivers |
+| `rdof_memplan_tests`, `rdof_parrot_tests`, `rdof_mssim_tests`, `rdof_lastheard_tests`, `rdof_pffft_tests` | the memory plan, the parrot, the confirmed-data responder, Last heard, pffft against the built-in FFT |
+| `js_netclock`, `js_wifilist` | the page scripts parse (Node) |
+| `netclock`, `netclock_posix`, `wifilist`, `gnss`, `tinysctp_*`, `lr2021*` | the components' own ([components/](../components/)) |
+
+With libiio, three more check rdofradio's refusals before it opens a device (`rdofradio_listen_refuses_tx`,
+`rdofradio_listen_refuses_tx_flags`, `rdofradio_needs_allow_tx`).
 
 Coverage: `sh host-tests/coverage.sh [build dir] [file regex]` (clang; default `build/cov`) prints lines and branches
 per file and writes an HTML report to `<build dir>/html`.
@@ -66,18 +127,19 @@ cmake -S . -B build/linux -DRADIOFOUNDRY_DIR=/path/to/radiofoundry && cmake --bu
 ```
 
 The top-level build builds the libraries, the host tools (`rdofsdr`, `rdofradio`, `rdofchz`) and the host tests.
-`-DRDOF_BUILD_TESTS=OFF` builds the libraries and tools only; `cmake --install` puts the tools in `bin/`.
-`-DRDOF_HOST_WEB=ON` adds the web page to `rdofradio` ("Host web page").
+`-DRDOF_BUILD_TESTS=OFF` builds the libraries and tools only, unsanitized; `cmake --install` puts the tools in `bin/`.
+`-DRDOF_HOST_WEB=ON` adds the web page to `rdofradio` ([Host web page](#host-web-page)). Running the tools on Linux
+or macOS: [linux-macos.md](linux-macos.md).
 
 The system tests ([system-tests.md](spec/system-tests.md)) run the gateway against RadioFoundry's own MMDVM and
-hotspot core (`radiosim`), built from a [RadioFoundry](https://github.com/RadioFoundry/RadioFoundry) checkout at the
-commit in `systest/radiofoundry.ref`. Without `RADIOFOUNDRY_DIR` (a CMake option or the environment) they're left
-out.
+hotspot core (`radiosim`), built from a RadioFoundry checkout at the commit in `systest/radiofoundry.ref`. Without
+`RADIOFOUNDRY_DIR` (a CMake option or the environment) they're left out.
 
-tinysctp against usrsctp and HBlink4 (on macOS `brew install libusrsctp`, and an HBlink4 checkout with its
-`.venv`): `sh components/tinysctp/test/interop.sh` (an echo server on HBlink4's usrsctp transport: clean, then 15%
-loss with duplicates, reordering and a 3 s outage, then with a 300 ms lifetime) and
-`sh tools/hblink4_sctp_check.sh [--lossy]` (a roamer's DMRC into HBlink4 with SCTP on, DMRP back).
+tinysctp against usrsctp and HBlink4 (on macOS `brew install libusrsctp`, and an HBlink4 checkout with its `.venv`):
+
+- `sh components/tinysctp/test/interop.sh`: an echo server on HBlink4's usrsctp transport, clean, then 15% loss with
+  duplicates, reordering and a 3 s outage, then with a 300 ms lifetime.
+- `sh tools/hblink4_sctp_check.sh [--lossy]`: a roamer's DMRC into HBlink4 with SCTP on, DMRP back.
 
 ### Hardware-in-the-loop tests
 
@@ -87,10 +149,15 @@ RDOF_BOARD=<board ip> python -m pytest -q hil-tests
 
 Against a running board (pytest and websockets; paho-mqtt for the MQTT burst fallback), for the ESP glue the host
 can't run (`web.c`, the bench API, `sdr_task.c`, netclock's and wifilist's handlers), checked against
-[interfaces-http.md](spec/fw/interfaces-http.md) and [bench-api.md](spec/bench-api.md). They read status, settings,
-the clock, Wi-Fi and the spectrum, open and end bench sessions and a receive lease, and run short spectrum, burst
-and I/Q streams. Nothing transmits or changes settings. `RDOF_BOARD_MUTATE=1` adds bad requests to the endpoints
-that store settings: each must be refused, with nothing stored and no restart. Skipped without `RDOF_BOARD`.
+[interfaces-http.md](spec/fw/interfaces-http.md) and [bench-api.md](spec/bench-api.md).
+
+- They read status, settings, the clock, Wi-Fi and the spectrum, open and end bench sessions and a receive lease, and
+  run short spectrum, burst and I/Q streams. Nothing transmits or changes settings.
+- `RDOF_BOARD_MUTATE=1` adds bad requests to the endpoints that store settings: each must be refused, with nothing
+  stored and no restart. With `CONFIG_RDOF_CRASH_TEST` it also checks the core dump round trip ([Crashes](#crashes)).
+- `RDOF_BOARD_STRESS=1` runs `test_stress.py` too (about two minutes): long and parallel I/Q streams, status and log
+  polling, a client that stops reading, each checked against the board's stall, flash and sample-loss counters.
+- Skipped without `RDOF_BOARD`.
 
 ### Firmware builds
 
@@ -112,6 +179,8 @@ idf.py -B ../build/16mb -D SDKCONFIG=../build/16mb/sdkconfig size
 curl -X POST --data-binary @../build/16mb/radiofoundry_gateway.bin http://<board>/api/ota
 ```
 
+Flashing each board for the first time: [esp32-boards.md](esp32-boards.md).
+
 | Profile | Board | Partitions | Features |
 |---|---|---|---|
 | `4mb` | ESP32-S3 SuperMini (ESP32-S3FH4R2: 4 MB flash, 2 MB quad PSRAM) | `partitions-4mb.csv`: two 1.875 MB OTA slots, a 128 KB core dump | no SDR (`CONFIG_RDOF_SDR=n`, since 2026-11-01): a roamer or repeater on a modem or radio; no MQTT TLS; 16 KB log ring; Wi-Fi at 10 dBm at most (at 15 or more the SuperMini can brown out) |
@@ -125,36 +194,38 @@ curl -X POST --data-binary @../build/16mb/radiofoundry_gateway.bin http://<board
 | `sdkconfig.defaults.hub` | `4mb` | USB hub support (`16mb` has it) |
 | `sdkconfig.defaults.dspfast` | `16mb` | experiment: the receive path's hot code in IRAM (`CONFIG_RDOF_SDR_DSP_IRAM`, about 33 KB of internal RAM) and the 64 KB data cache |
 
-The USB host CDC-ACM driver (`espressif/usb_host_cdc_acm`), esp-dsp (`espressif/esp-dsp`) and mDNS
-(`espressif/mdns`) are fetched on the first build and pinned in `dependencies.lock`; all are fetched for every build,
-and a role that's off leaves its library unlinked. The image builds `-Os`; with `CONFIG_RDOF_SDR_FAST`, `sdr/`, esp-dsp and the DSP task's files
-build `-O2`. `idf.py menuconfig` has the menus "RadioFoundry Gateway", "RadioFoundry Gateway common (common)" and
-"RadioFoundry Gateway SDR (sdr)".
+- The Rust modules need Espressif's Rust toolchain for Xtensa ([rust/README.md](../rust/README.md), "How it builds").
+- The USB host CDC-ACM driver (`espressif/usb_host_cdc_acm`), esp-dsp (`espressif/esp-dsp`) and mDNS
+  (`espressif/mdns`) are fetched on the first build and pinned in `dependencies.lock`. All are fetched for every
+  build; a role that's off leaves its library unlinked.
+- The image builds `-Os`; with `CONFIG_RDOF_SDR_FAST`, `sdr/`, esp-dsp and the DSP task's files build `-O2`.
+- `idf.py menuconfig` has the menus "RadioFoundry Gateway", "RadioFoundry Gateway common (common)" and "RadioFoundry
+  Gateway SDR (sdr)".
 
 ## Layout
 
 | Path | What |
 |---|---|
 | `common/` | `rdof_common`: portable C11, libc and libm only. An ESP-IDF component under `ESP_PLATFORM`, a static library otherwise. Headers in `include/rdof/`; `src/radiofoundry/` holds RadioFoundry's FEC, CACH, LC and CRC code (MIT) |
+| `rust/` | `rdof_rust`: modules of `common/` in Rust, linked in place of their C (`CONFIG_RDOF_RUST` and `RDOF_RUST`, on by default; [rust/README.md](../rust/README.md)) |
 | `sdr/` | `rdof_sdr`: the SDR receive and transmit path on top of `common/`, and the host tools in `cli/` |
 | `rtlsdr/` | the RTL2832U + R820T / R828D driver: portable register logic, and `esp/rtl_usb.c`, the ESP-IDF USB host glue |
 | `hostweb/` | the firmware's web page served from a host tool ([hostweb/README.md](../hostweb/README.md)) |
-| `components/` | ESP-IDF components with nothing of the gateway in them: `netclock` (a disciplined UTC clock), `wifilist` (a prioritized Wi-Fi list with a setup access point), `tinysctp` (SCTP over UDP), `lr2021` (the Semtech LR2021), `gnss` (NMEA). Each has its own README and keeps its logic in plain C the host tests build |
-| `rust/` | `rdof_rust`: modules of `common/` in Rust, linked in place of their C (`CONFIG_RDOF_RUST`, on by default; [rust/README.md](../rust/README.md)) |
+| `components/` | ESP-IDF components with nothing of the gateway in them, each with its own README and its logic in plain C the host tests build: [netclock](../components/netclock/README.md) (a disciplined UTC clock), [wifilist](../components/wifilist/README.md) (a prioritized Wi-Fi list with a setup access point), [tinysctp](../components/tinysctp/README.md) (SCTP over UDP), [lr2021](../components/lr2021/README.md) (the Semtech LR2021), [gnss](../components/gnss/README.md) (NMEA) |
 | `esp_idf/` | the ESP-IDF project (`radiofoundry_gateway`) |
 | `host-tests/` | the host build of `common/`, `sdr/`, `rtlsdr/` and the components' portable parts, the tests, the golden fixtures, the fake radios (`fake_radio.c`) |
 | `systest/` | the system tests: `radiosim`, `radiolink.c`, `test_radiosim.c` |
 | `hil-tests/` | hardware-in-the-loop tests (pytest) |
-| `tools/` | `bench/` (bench API clients: `benchapi.py`, `rfgbench.py`), `pluto/` (the PlutoSDR build, bundle and bitstream), `linux-arm64/` (rdofradio cross-built for a Debian 13 arm64 box with the Rust modules, its run script and systemd unit), `config_check.py`, `hblink4_sctp_check.sh`, `rtl_fir_design.py` |
+| `tools/` | `bench/` (bench API clients: `benchapi.py`, `rfgbench.py`, `burstramp.py`), `pluto/` (the PlutoSDR build, bundle and bitstream), `linux-arm64/` (rdofradio cross-built for a Debian 13 arm64 box with the Rust modules, its run script and systemd unit), `rtl_probe/` (the RTL-SDR driver on a Linux host over usbfs, for bench checks), `config_check.py`, `hblink4_sctp_check.sh`, `lr2021_lab.py` (LR2021 experiments over a board's `/api/lr2021/*`), `rtl_fir_design.py` |
 | `config/` | the settings' JSON schema (`rdof-config.schema.json`); `examples/`: settings to start from ([README](../config/examples/README.md)) |
-| `docs/spec/` | the specs |
+| `docs/` | the guides ([README](README.md)), this reference, the specs (`spec/`) |
 | `LICENSES/`, `PROVENANCE.md` | third-party license texts, and where each piece of copied or ported code came from |
 
 Nothing in `common/` blocks or makes threads: the platform gives the modem client a port (write, wait for a reply,
 a clock) and calls the transceiver's or repeater's `poll` every 20 ms. Platform code (USB, UART, I2C, Wi-Fi,
 sockets, NVS, HTTP, MQTT) stays in each target.
 
-`common/` modules:
+`common/` modules ("C only": no Rust twin; the rest, see [rust/README.md](../rust/README.md)):
 
 | Module | What |
 |---|---|
@@ -179,7 +250,7 @@ sockets, NVS, HTTP, MQTT) stays in each target.
 | `oled`, `oled_sdr` | the frame, font and panel commands; the roamer's and the SDR's screens |
 | `ipgw`, `ipgwcfg` | the IP gateway and its settings (C only) |
 | `parrot` | the parrot: a call recorded and sent back |
-| `mssim` | a timed confirmed-data responder for the bench (ACK, NACK, SACK, none, ACK twice, N slots after a packet; the `mssim` bench op of rdofradio and of a board with an SDR modem, there placed from the front end's pulls, with no echo calibration: the LR2021 doesn't hear itself) |
+| `mssim` | a timed confirmed-data responder for the bench (ACK, NACK, SACK, none, ACK twice, N slots after a packet): the `mssim` bench op of rdofradio and of a board with an SDR modem. On a board it's placed from the front end's pulls, with no echo calibration: the LR2021 doesn't hear itself |
 | `json` | a compact JSON writer, byte for byte stable for the golden tests |
 | `webapi` | the web API shared by the firmware and the host tools: `/api/status`'s shared parts and `caps`, the settings, `/api/log`, `/api/lastheard`, `/api/restart` |
 | `jitter`, `lastheard`, `memplan` | the network jitter buffer; Last heard; the board's memory plan ([memory.md](spec/fw/memory.md)) |
@@ -197,7 +268,7 @@ sockets, NVS, HTTP, MQTT) stays in each target.
 | `fm` | RRC taps, discriminator (a polynomial atan2), the 81-tap matched filter, power |
 | `demod` | squelch, sync search over the four families, 4FSK slicing, CACH, voice flywheel with EMB checks |
 | `agc` | clip measurement, the gain law, level stats |
-| `mod` | the DMR 4FSK modulator ("Modulator") |
+| `mod` | the DMR 4FSK modulator ([Modulator](#modulator)) |
 | `sdrmodem`, `loopback` | the SDR as an MMDVM modem, and its end-to-end check |
 | `receiver` | one tuner: channelizer, a demod and a call tracker per channel, AFC |
 | `resample` | a rational polyphase resampler |
@@ -205,15 +276,15 @@ sockets, NVS, HTTP, MQTT) stays in each target.
 | `txguard` | the transmit stream's timekeeper for a host device |
 | `spectrum`, `bench` | the page's spectrum; the bench's wideband history and taps |
 | `modes`, `mode_fm`, `mode_am`, `fmgen`, `fmrx`, `amrx` | signal modes besides DMR: analog FM and AM, their generators and measuring receivers |
-| `cli/` | `rdofsdr`, `rdofradio`, `rdofchz` and their device, serial, network and FPGA glue; `tools.cmake` (SoapySDR, libiio and libad9361 found, pffft and the web page linked) |
+| `cli/` | `rdofsdr`, `rdofradio`, `rdofchz` and their device, serial, network and FPGA glue; `tools.cmake` (SoapySDR, libiio, libad9361 and libmosquitto found, pffft and the web page linked) |
 | `pffft/` | pffft (FFTPACK license) unchanged, and `rdof_pffft.c`: the host tools' FFT (`--fft builtin` turns it off); 2.6 to 2.9 times the built-in FFT on a Cortex-A9 |
 
 ## Firmware
 
 One ESP-IDF app with two roles, started from the settings: the **SDR** (an RTL-SDR on USB or the W12's LR2021, the
-SDR core on several channels: "The SDR role") and the **roamer or repeater** (an MMDVM modem: a RadioFoundry or
-OpenGD77 radio in hotspot mode on USB or a UART, an MMDVM_HS on a UART; or the SDR's own transmitter). One image,
-one settings document, one page.
+SDR core on several channels: [The SDR role](#the-sdr-role)) and the **roamer or repeater** (an MMDVM
+modem: a RadioFoundry or OpenGD77 radio in hotspot mode on USB or a UART, an MMDVM_HS on a UART; or the SDR's own
+transmitter). One image, one settings document, one page.
 
 ### Roles
 
@@ -236,7 +307,7 @@ one settings document, one page.
   never wait on the network (esp-mqtt holds its lock through a connect attempt of up to 10 s). QoS 0 messages while
   disconnected are dropped and counted (`mqtt_dropped`).
 
-| File | Part |
+| File (`esp_idf/main/`) | Part |
 |---|---|
 | `main.c`, `settings.c`, `site_run.c`, `mem.c`, `wifi.c`, `web.c`, `net.c`, `usb_host.c`, `logring.c`, `crash.c`, `heard.c`, `slot_timing.c`, `status_led.c`, `oled_task.c`, `power.c`, `power_core.c` | the board |
 | `ipgw_task.c` | the IP gateway |
@@ -252,7 +323,7 @@ one settings document, one page.
 | Option | Default | What |
 |---|---|---|
 | `CONFIG_RDOF_ROAMER` | y | the roamer and repeater: modem drivers, transceiver, repeater, SCTP |
-| `CONFIG_RDOF_SDR` | y (n in `4mb`) | the SDR: `sdr/`, the RTL-SDR driver, esp-dsp, the self-test. Its options are under "The SDR role" |
+| `CONFIG_RDOF_SDR` | y (n in `4mb`) | the SDR: `sdr/`, the RTL-SDR driver, esp-dsp, the self-test. Its options: [SDR settings](#sdr-settings) |
 | `CONFIG_RDOF_MQTT`, `_RAW`, `_TLS` | y, y, n (y in `16mb`) | esp-mqtt; raw bursts on `.../raw`; TLS with the CA bundle |
 | `CONFIG_MQTT_PROTOCOL_5` (esp-mqtt's) | y | MQTT 5 and topic aliases, falling back to 3.1.1 |
 | `CONFIG_RDOF_WEB_FULL` | y | the full page; off: a settings form only. Both carry the Wi-Fi and clock sections |
@@ -262,7 +333,7 @@ one settings document, one page.
 | `CONFIG_GNSS_UART_RX_GPIO`, `_TX_GPIO`, `_NUM`, `CONFIG_GNSS_BAUD` | -1 (39, 38, 1, 9600 in `w12`) | the receiver's NMEA ([components/gnss](../components/gnss/README.md)): fix and position in the status, each second's time to netclock. Not started when a modem uses that UART |
 | `CONFIG_RDOF_STATUS_LED_GPIO` | -1 (48 in `4mb` and `16mb`, 46 in `w12`) | the WS2812 status LED: red without Wi-Fi; orange while a configured device isn't working; else green |
 | `CONFIG_RDOF_LOG_RING_KB` | 16 (256 in `16mb`) | the log kept for the page, in PSRAM when there is some; 0 = off |
-| `CONFIG_RDOF_CRASH_TEST` | n | `POST /api/crash` crashes the board on purpose ("Crashes"); never in service |
+| `CONFIG_RDOF_CRASH_TEST` | n | `POST /api/crash` crashes the board on purpose ([Crashes](#crashes)); never in service |
 | `CONFIG_RDOF_MODEM_USB` | y | the CDC-ACM driver for a radio on USB (VID / PID / interface settable) |
 | `CONFIG_RDOF_MODEM_UART` | y | an MMDVM_HS or MMDVM board on UART1 or UART2 |
 | `CONFIG_RDOF_HBLINK_SCTP` | y | the roamer's HBlink4 link over SCTP in UDP (tinysctp); off: UDP only |
@@ -316,6 +387,8 @@ From `idf.py size`. Run it after a change that adds code or RAM, and update this
 
 ### Boards
 
+How to flash each for the first time and wire it up: [esp32-boards.md](esp32-boards.md).
+
 **ESP32-S3 SuperMini (`4mb`).**
 
 - One USB-C, on the native USB (GPIO19 / 20), no UART bridge. The firmware runs it as the USB host, so the console
@@ -324,23 +397,15 @@ From `idf.py size`. Run it after a change that adds code or RAM, and update this
   5 V at the device end before plugging in.
 - PSRAM is quad SPI in the package: the boot log says `Found 2MB PSRAM device`.
 - Default pins: an MMDVM_HS on UART1 at TX GPIO5 / RX GPIO6, the OLED on SDA GPIO8 / SCL GPIO9.
-
-Flashing:
-
-1. Plug the USB-C into the computer (no OTG adapter).
-2. Hold BOOT, tap RST, release BOOT: the ROM's download mode, `/dev/cu.usbmodem*` on macOS (`/dev/ttyACM*` on Linux).
-3. `idf.py -B ../build/4mb -D SDKCONFIG=../build/4mb/sdkconfig -p <port> flash`. The first flash writes the
-   partition table and OTA data too.
-4. Tap RST if it stays in download mode, then put the OTG adapter and the radio on the USB-C.
-5. Console: `idf.py -p /dev/cu.usbserial-XXXX monitor` through the serial adapter.
-
-Later updates go over Wi-Fi (the page's Firmware update, or `POST /api/ota`). The settings carry over.
+- Flashing over USB needs the ROM's download mode (hold BOOT, tap RST, release BOOT); later updates go over Wi-Fi
+  and keep the settings.
 
 **N16R8 boards (`16mb`).** The USB-UART port flashes and carries the console (the bridge resets the board into
 download mode); the OTG port is the device's. Many of these boards power VBUS on the OTG port only when a solder
 jumper (often `USB-OTG`) is bridged.
 
-**Meshnology W12 (`16mb` + `w12`).** The LR2021 front end is under "Front ends". The rest of the board:
+**Meshnology W12 (`16mb` + `w12`).** The LR2021 front end: [LR2021 and the Meshnology W12](#lr2021-and-the-meshnology-w12).
+The rest of the board:
 
 - ESP32-S3R8 (8 MB octal PSRAM, so GPIO33 to 37 are taken), 16 MB flash, a 32 MHz crystal for the LR2021 (no TCXO),
   native USB only.
@@ -354,13 +419,14 @@ jumper (often `USB-OTG`) is bridged.
   off and unpowered. It shows the SDR's screen ([device.md](spec/fw/device.md), "The SDR's screen"), redrawn every
   0.5 s at most in one I2C write from core 0, taking no lock the DSP holds.
 - **Power key and battery** (the enclosure version): the top button is the USER key (GPIO0), the bottom one RST.
-  Nothing cuts the 3.3 V while a battery is in, so "off" is deep sleep ([device.md](spec/fw/device.md) §6): held
-  2 s, the board stops the radios, sleeps the LR2021, turns off the front end's, OLED's and GNSS's supplies and
-  sleeps; held 1 s it wakes (a tap goes back to sleep). The battery is read every 2 s through the switched divider
-  (GPIO2 enables, GPIO1 reads, 390k over 100k): `/api/status` `power`. Under 3.3 V for 30 s the board turns off, if the battery
-  has read 3.3 V or more since the boot; a board with no battery (it reads the charger's output, 1.8 to 3 V) never
-  does: one reading under 2.5 V and it's wall-powered, battery "none", until the next boot.
-  `POST /api/power_off` does the same as the key.
+  Nothing cuts the 3.3 V while a battery is in, so "off" is deep sleep ([device.md](spec/fw/device.md) §6).
+  - Held 2 s, the board stops the radios, sleeps the LR2021, turns off the front end's, OLED's and GNSS's supplies
+    and sleeps; held 1 s it wakes (a tap goes back to sleep). `POST /api/power_off` does the same as the key.
+  - The battery is read every 2 s through the switched divider (GPIO2 enables, GPIO1 reads, 390k over 100k):
+    `/api/status` `power`.
+  - Under 3.3 V for 30 s the board turns off, if the battery has read 3.3 V or more since the boot. A board with no
+    battery (it reads the charger's output, 1.8 to 3 V) never does: one reading under 2.5 V and it's wall-powered,
+    battery "none", until the next boot.
 
 ### More than one radio
 
@@ -395,9 +461,9 @@ peer and MQTT connection. The OLED shows the first (with an SDR, the SDR's scree
 ### Settings
 
 One JSON document, version 3 (comments allowed), stored in NVS and edited on the page (edit, Save and restart,
-Export, Import). Every key, the checks and the schema: [config-v3.md](spec/fw/config-v3.md). It's opened and
-checked in full before it's saved; `/api/resolved` shows it as resolved. A document without `"version": 3` is
-refused.
+Export, Import). Every key, the checks and the schema: [config-v3.md](spec/fw/config-v3.md); a guide:
+[settings.md](settings.md). It's opened and checked in full before it's saved; `/api/resolved` shows it as resolved.
+A document without `"version": 3` is refused.
 
 Board keys besides the sections:
 
@@ -407,7 +473,7 @@ Board keys besides the sections:
 | `usb_hub` | `true` when the USB port has a hub |
 | `wifi` | `{"networks": [{"ssid", "priority", "hidden", "password", "was"}]}`: wifilist's list |
 | `ntp` | `{"servers": "pool.ntp.org", "poll_s": 300}`: netclock's |
-| on the SDR device | `usb {transfers, transfer_kb}`, `dsp_cores`, `selftest`, `spike`, `sim`, `sim_ppm`, `idle_gate`, `learn_ppm` ("The SDR role") |
+| on the SDR device | `usb {transfers, transfer_kb}`, `dsp_cores`, `selftest`, `spike`, `sim`, `sim_ppm`, `idle_gate`, `learn_ppm` ([SDR settings](#sdr-settings)) |
 
 - `wifi` and `ntp` live in their components' NVS namespaces, not in the stored document: Export adds them, Save and
   Import hand them to the components. **Passwords never leave the board:** the exported `wifi` has none, and a
@@ -456,17 +522,16 @@ Keys: [config-v3.md](spec/fw/config-v3.md) §6.3; how it works and what's left: 
 
 An `mqtt` network with `"calls": true, "format": "v3"` carries calls as the MQTT network's messages
 ([mqtt-net.md](spec/fw/mqtt-net.md)) in place of DMRD packets. The board opens a second connection for it
-(`mqttnet_task.c`, client ID `rdof-net-{name}-{hw}`, the box's `name` as its node), with the network's broker, user, root
-and TLS.
+(`mqttnet_task.c`, client ID `rdof-net-{name}-{hw}`, the box's `name` as its node), with the network's broker, user,
+root and TLS.
 
 - **Up:** every receiver (the SDR's channels, each roamer's or repeater's radio) sends the calls the router gives this
   network on `{root}/tg/{tg}/{node}` or `{root}/pc/{dst}/{node}`.
 - **Down:** the box subscribes to `{root}/dl/{node}` and the TGs its transmitting paths carry; the router's
   transmitters send what comes in. Confirmed data heard here is ACKed on RF.
 - **Status:** `GET /api/status` has the counters under `mqtt_net`.
-- **Not done:** phase 1 only, and not yet run on a board (rdofradio runs the same code against a broker). `bundle`
-  above 1, confirmed data retries and NAKs, the voter, MQTT-SN and the other transports come later; so do the
-  private-call router and the apps (mqtt-net.md §14).
+- Phase 1 only, and not yet run on a board (rdofradio runs the same code against a broker); the rest is under
+  [Not done](#not-done).
 
 ### Wi-Fi, the clock and MQTT
 
@@ -480,22 +545,22 @@ and TLS.
   the last 32 references and a residual plot. JSON timestamps are wrong until a source has set the clock.
 - **MQTT topics** ([mqtt.md](spec/fw/mqtt.md)): the roamer or repeater publishes `{root}/{name}/{app}/json` (calls,
   network calls, the retained Receiver), `.../raw`, `.../tx`, and the retained `{root}/_sdr/{name}/status` with
-  `{"state": "offline"}` as the last will; `app` is `roaming` or `repeater`. The SDR's are under "The SDR role".
+  `{"state": "offline"}` as the last will; `app` is `roaming` or `repeater`. The SDR's: [Bring-up: the
+  SDR](#bring-up-the-sdr).
 - **Raw bursts:** `.../raw` carries each burst as 49 bytes (`rdof/rawburst.h`; [mqtt.md](spec/fw/mqtt.md), "Raw
   bursts"), as MMDVMHost's MQTTRaw does. An SDR with `slot_timing` utc sends version 2 (62 bytes, with the burst's
   UTC start and grid slot) while its clock is on the grid.
-- **MQTT 5 and topic aliases** (`net.c`): a connection asks for MQTT 5 and falls back to 3.1.1 when refused. On each
-  connect, aliases go to every channel's `raw` topic, then their `json`, up to the broker's Topic Alias Maximum,
-  which the queue's task finds by trying (esp-mqtt doesn't report it). Only QoS 0 uses them: esp-mqtt resends QoS 1
-  from its outbox as first built, so the `json` topics (QoS 1) don't. Aliases start over at every connect. A publish
-  built just as the connection drops can reach the next connection with an alias it doesn't know; the broker then
-  disconnects and the next connection starts over. With the SDR's 17-byte topic a burst is 70 bytes on the wire, 57
-  with its alias.
+- **MQTT 5 and topic aliases** (`net.c`): a connection asks for MQTT 5 and falls back to 3.1.1 when refused.
+  - On each connect, aliases go to every channel's `raw` topic, then their `json`, up to the broker's Topic Alias
+    Maximum, which the queue's task finds by trying (esp-mqtt doesn't report it). Aliases start over at every connect.
+  - Only QoS 0 uses them: esp-mqtt resends QoS 1 from its outbox as first built, so the `json` topics (QoS 1) don't.
+  - A publish built just as the connection drops can reach the next connection with an alias it doesn't know; the
+    broker then disconnects and the next connection starts over.
+  - With the SDR's 17-byte topic a burst is 70 bytes on the wire, 57 with its alias.
 - **mDNS and DNS-SD** (`dnssd.c`, espressif/mdns): the board answers as `BOX-XXXX.local`: the box's name as a host name
   and the base MAC's last two bytes (a box `w12`: `w12-c3d4.local`; `radiofoundry-XXXX` with no name), which is its
-  DHCP host name too and lists `_http._tcp` (the page) and,
-  when the bench line runs, `_rfgbench._tcp` with TXT `kind`, `ver` and `mac`. `rfgbench.py find` lists the boards
-  from it, whatever address DHCP gave them.
+  DHCP host name too. It lists `_http._tcp` (the page) and, when the bench line runs, `_rfgbench._tcp` with TXT
+  `kind`, `ver` and `mac`. `rfgbench.py find` lists the boards from it, whatever address DHCP gave them.
 - **`/api/status`**: `name`, `version` (`git describe --always --tags --dirty` at the last CMake configure;
   `idf.py reconfigure` refreshes `-dirty`), `idf`, Wi-Fi, clock, memory, the SDR's test results, then `roamer` and
   `sdr` for what runs. Every field: [device.md](spec/fw/device.md).
@@ -521,21 +586,19 @@ esp-coredump --chip esp32s3 info_corefile -t raw -c dump.bin build/ota-elfs/<com
 curl -X DELETE http://<board>/api/coredump                                                     # 404 after
 ```
 
-A task in the dump takes about 1.8 KB (TCB, the used stack, a register note), so 128 KB holds about 70. A dump that
-doesn't fit isn't written and the old one stays (the console says `Not enough space to save core dump!`): check
-`this_image`. A board updated over the air keeps its old partition table until it's flashed over USB. To test the
-round trip, build with `CONFIG_RDOF_CRASH_TEST=y`: `POST /api/crash` stores to address 0 from a task `crash_test`,
-and after the reboot `crash` says `StoreProhibited` at `0x00000000`. The HIL suite does that with
-`RDOF_BOARD_MUTATE=1`.
-
-Flash wear: `/api/status` `flash` counts every program and erase since boot. At rest and while streaming a W12
-writes nothing (W12 #3, 2026-11-11: 0 writes over HIL and the stress run); a settings save with nothing changed
-writes nothing; erasing the core dump partition is one 128 KB erase. The stress test fails on a write during a
-stream.
-
-A task that hangs is a crash too: the task watchdog panics when a core's canary task or the receiver's tasks go
-30 s unfed (`watch.c`), so the board saves a dump and restarts, with `reset` `task watchdog`. `POST
-/api/crash?how=hang` on the same build tests it.
+- **Size.** A task in the dump takes about 1.8 KB (TCB, the used stack, a register note), so 128 KB holds about 70.
+  A dump that doesn't fit isn't written and the old one stays (the console says `Not enough space to save core
+  dump!`): check `this_image`. A board updated over the air keeps its old partition table until it's flashed over
+  USB.
+- **Hangs.** The task watchdog panics when a core's canary task or the receiver's tasks go 30 s unfed (`watch.c`), so
+  a hang saves a dump and restarts too, with `reset` `task watchdog`.
+- **Testing it.** Build with `CONFIG_RDOF_CRASH_TEST=y`: `POST /api/crash` stores to address 0 from a task
+  `crash_test`, and after the reboot `crash` says `StoreProhibited` at `0x00000000`; `POST /api/crash?how=hang` tests
+  the watchdog. The HIL suite does the first with `RDOF_BOARD_MUTATE=1`.
+- **Flash wear.** `/api/status` `flash` counts every program and erase since boot. At rest and while streaming a W12
+  writes nothing (W12 #3, 2026-11-11: 0 writes over HIL and the stress run); a settings save with nothing changed
+  writes nothing; erasing the core dump partition is one 128 KB erase. The stress test fails on a write during a
+  stream.
 
 ### Bring-up: a roamer or repeater
 
@@ -550,40 +613,15 @@ A task that hangs is a crash too: the task watchdog panics when a core's canary 
    "without a reply" in the status (missed status replies at key-up).
 6. A radio check from another peer: two preamble CSBKs, the check, and the 0.75 s answer window.
 7. SCTP (`hblink.transport: "sctp"`): HBlink4 needs `sctp_enabled` and its usrsctp backend with UDP encapsulation.
-   The log says `SCTP association with ... up`; walk the board to the edge of Wi-Fi during a call: bursts arrive
+   The log says `SCTP association with ... up`. Walk the board to the edge of Wi-Fi during a call: bursts arrive
    late rather than not at all, or are given up after `sctp_ttl_ms`; a long dropout ends in `peer lost` and a
    reconnect within 10 s of Wi-Fi coming back.
 8. Both roles: an MMDVM_HS HAT on the UART and the dongle on USB; key the HAT's idle channel and an SDR channel at
    once, and watch the SDR's DSP load, `droppedChunks`, "without a reply" and internal RAM free.
 
-### Scope
+## SDR
 
-| Part | Status |
-|---|---|
-| DMR FEC, PDUs, AMBE frames, layer 2 | in; talker alias text, LRRP / GPS and packet data decoding aren't (a server on the raw bursts can do those) |
-| MMDVM protocol: requests, config v1 / v2, SET_FREQ, CW ID, duplex | in |
-| MMDVM over UDP (an OpenGD77 as a USB network adapter) | not supported: needs USB CDC-NCM host; refused in the settings |
-| Radios: detection, SFR detection, profiles, RSSI maps, modem and fixed tuners, settle time | in |
-| rigctld and command tuners | not supported: they need a computer; refused in the settings |
-| The roaming transceiver: DMRT / DMRK, listen-before-talk, the jitter buffer ([roamer.md](spec/fw/roamer.md) 3.9), header / terminator repeats, orphans, CSBK lead-in, the answer window, TMS / confirmed data replies, CW ID, the transmit tail, the 2 s idle status | in; queues bounded (256 bursts a call, 4 early streams of 16 bursts) |
-| Scan | in, `CONFIG_RDOF_SCAN` |
-| The repeater: duplex, network per slot, RF priority, echo drop, hang, CW ID, short LC; SFR; DCDM (two simplex calls at once on one frequency, on the SDR modem; no stock MMDVM or OpenGD77 firmware does DCDM) | in; queues bounded (192 bursts a slot, 6 streams) |
-| UTC slot timing | in (`slotgrid.c`); the gate on the board from netclock |
-| Split duplex | in (`split.c`; on the board `split_port.c`). The board's SDR modem as a half: host-tested only. `rdofradio --split-tx`: run against a simulated radio, not a real one; several splits on one SDR (`--config`): host-tested only |
-| Network calls, `tx`, status every 10 s and on change, Receiver, restart with backoff | in |
-| Settings | version 3, checked in full. Not: `${VAR}` from the environment, ids unique across a box |
-| HBlink4: DMRC, DMRD, DMRT, DMRK over UDP; the HBlink sink | in. Not HomeBrew's RPTL / RPTK / RPTC login |
-| HBlink4 over SCTP | SCTP over UDP (RFC 6951, tinysctp), not kernel SCTP: lwIP has none. One stream, PPID 0, ordered, as MMDVMHost. HBlink4 takes it with its usrsctp backend (`sctp_encap: udp`) |
-| MQTT | esp-mqtt; TLS behind `CONFIG_RDOF_MQTT_TLS`. The fallback to 3.1.1 hasn't met a broker without MQTT 5 |
-| Radios a board | two units that transmit and one SDR |
-
-Decoder notes: Golay(20,8) and QR(16,7) decode from tables of their 256 and 128 codewords (`layer2.c`), a lookup
-when the word is clean, else the first codeword within 3 or 2 bits, the same answer as RadioFoundry's decoders
-(checked over every word). Golay(23,12) decodes by syndrome search instead of an 8 KB table. OpenGD77 quirks
-handled: the 0.5 s `TX_TAIL_S` after the transmitting flag clears, a missed status reply ridden out for 2 s, the 2 s
-idle status that keeps it in hotspot mode.
-
-## SDR core: sdr
+### The SDR core
 
 `sdr/` is its own library (`rdof_sdr`, the ESP-IDF component `sdr`, requiring `common`): I/Q in, a multi-channel
 channelizer, FM discriminator and matched filter, the 4FSK demod, AGC, a call tracker per channel; and the
@@ -601,7 +639,7 @@ Switches (`include/rdof/sdr/features.h`, Kconfig "RadioFoundry Gateway SDR (sdr)
 `RDOF_SDR_FAST_ATAN2=0` swaps the polynomial atan2 for libm's. Every per-sample loop is single precision (the S3's
 and P4's FPUs have no double); double is used only per block, per burst or at setup.
 
-### Tests
+### SDR tests
 
 `host-tests/sdr.cmake`: `rdof_sdr_tests` (every switch on), `rdof_sdr_tests_min` (every `RDOF_FEATURE_*` off, the
 FFT through the hook), a `RDOF_FEATURE_SDR=0` build, `rtlsdr_tests` (the driver against a fake dongle that can fail
@@ -661,36 +699,7 @@ second-order step (error under 4e-7).
 96 and 250 kS/s; C modulator to C demod through the channelizer, clean and with noise, every burst bit-exact at its
 predicted position; queueing just in time gives the same samples as queueing everything first.
 
-### CPU budget
-
-`rdofsdr --bench` (Release, no sanitizers: `cmake -S host-tests -B build/bench -DRDOF_SANITIZE=OFF
--DCMAKE_BUILD_TYPE=Release`), simulated traffic, M1 Pro at an assumed 3.2 GHz. Mcycles per second of IQ; "busy" has
-every channel in a call, "idle" is noise only:
-
-| Stage | 10 ch, 1.536 MS/s busy | idle | 5 ch, 288 kS/s busy | idle |
-|---|---|---|---|---|
-| cu8 to float | 2.7 | 2.8 | 0.5 | 0.5 |
-| forward FFT (2048 / 384 points) | 42.1 | 42.7 | 7.7 | 7.6 |
-| per channel: bins x filter, 64-point IFFT, NCO | 12.2 | 11.7 | 6.6 | 6.6 |
-| discriminator | 4.6 | 4.6 | 2.3 | 2.3 |
-| RRC + power | 7.6 | 7.7 | 3.8 | 3.8 |
-| squelch, sync search, slicing, flywheel | 21.8 | 2.9 | 9.7 | 1.4 |
-| **total** | **91** | **72** | **31** | **22** |
-
-**ESP32-P4 (estimate, no board).** Scaling the host's cycles by esp-dsp's 1024-point FFT against the host's (x8.7)
-gives about 690 Mcycles/s for ten busy channels at 1.536 MS/s (86% of both 400 MHz cores) and 265 for five at
-288 kS/s. So ten channels on a P4 need some of: an int16 front end (esp-dsp's `dsps_fft2r_sc16`), skipping idle
-channels' FM stage (done: "The idle gate"), a symbol-rate sync search first, a fixed-point RRC, a polyphase
-channelizer. A P4 firmware would also need the RTL2832U driver's High Speed glue (512-byte packets, 3 MB/s), and
-the ESP32-C6 for Wi-Fi (esp-hosted over SDIO). Don't take code from `esp-rtl-sdr` (AGPL) or librtlsdr (GPLv2).
-
-### SDR: not done
-
-- Calibration, gain scans and recording on the board (the board learns its ppm instead).
-- cf32 recordings in `rdofsdr` (live SoapySDR streams are CF32).
-- The P4 firmware (no board).
-
-## The SDR role
+### The SDR role
 
 The SDR on a board: an RTL-SDR on the S3's USB, the W12's LR2021, or `sim`. It publishes each channel's calls as
 MMDVMHost-compatible JSON and raw bursts on MQTT, with a status and a Receiver message per channel, and feeds
@@ -788,7 +797,7 @@ Modes, by the settings' `sample_rate`:
 - **Sessions:** a loss, a retune or a new ppm ends the session and starts a new one (CalibFE overwrites the
   extended FIFO, R2.28). A FIFO loss is filled with zeros so the stream keeps real time.
 - **The sample clock:** each read's sample count and end time time the chip's crystal (`sdr_rate_block`), as the
-  RTL-SDR's transfers do ("The tuner's ppm, learned").
+  RTL-SDR's transfers do ([The tuner's ppm, learned](#the-tuners-ppm-learned)).
 - **576 kS/s at most:** the FIFO can't grow past 1 KB (R2.22); at 768 kS/s the reader lost about 30 FIFO-fulls a
   second at 16 MHz SPI, and at 26.67 MHz it kept up but starved core 0.
 - **Dynamic range:** int8 clips at ±32 (R2.26), about 20 dB from noise to clipping; int16 has 50 dB more at twice the
@@ -846,7 +855,8 @@ transmitter ([transmitters.md](spec/fw/transmitters.md)).
 - **Full duplex:** DMR_START keys a continuous BS downlink, slot 1 first: each slot a CACH and the slot's queued
   burst or an idle burst. The CACH carries the short LC (Null until DMR_SHORTLC; a new one starts on a slot counter
   that's a multiple of 4) and its AT bit is the other channel's busy state. Heard bursts go up as DMR_DATA1 or 2 by
-  their slot (aligned timing: a burst under outbound TSx is TSx). Needs `RDOF_FE_FULL_DUPLEX`: `sim` on a board, a Pluto or another I/Q device in `rdofradio`.
+  their slot (aligned timing: a burst under outbound TSx is TSx). Needs `RDOF_FE_FULL_DUPLEX`: `sim` on a board, a
+  Pluto or another I/Q device in `rdofradio`.
 - **Dual capacity direct mode** (SET_CONFIG simplex with 0x40; [repeater.md](spec/repeater.md) §13,
   [radio.md](spec/fw/radio.md) 1.6): two simplex calls on one frequency, one a slot. DMR_DATA1 and DMR_DATA2 queue
   TS1 and TS2, each burst ramped on its own, TS2 30 ms after TS1. The slot timing follows the TS1 / TS2 bursts it
@@ -877,8 +887,6 @@ transmitter ([transmitters.md](spec/fw/transmitters.md)).
   loopbacks (`rdof_sdrmodem_loopback`: a real `rdof_modem` client, three CSBKs heard back bit-exact and muted,
   another station's bursts in the gaps reaching the host; full duplex, the outbound heard back taken as ours by its
   content, idle bursts too, the other station's not), DCDM end to end.
-- **Not done:** CW ID; TX power control on `sim`; an SDR split half on the board; the UTC slot in the board's MQTT
-  raw bursts (the modem labels it, the burst doesn't carry it).
 
 ### SDR settings
 
@@ -896,8 +904,8 @@ Board keys on the device:
 | `selftest`, `spike` | false | run the self-test or the USB spike at boot |
 | `sim` | false | no dongle: the self-test clip (five busy channels around 438.1475 MHz at 288 kS/s) looped in real time; a chunk more than half a second late is dropped and counted. Needs `CONFIG_RDOF_SDR_SELFTEST` |
 | `sim_ppm` | 0 | with `sim`, a tuner this many ppm fast |
-| `idle_gate` | true | "The idle gate" |
-| `learn_ppm` | true | "The tuner's ppm, learned" |
+| `idle_gate` | true | [The idle gate](#the-idle-gate) |
+| `learn_ppm` | true | [The tuner's ppm, learned](#the-tuners-ppm-learned) |
 
 - With `"center": "auto"` and channels that don't all fit, the board takes the best window (`rdof_plan_window`) and
   leaves the rest out, with a log line each. The page's "As resolved" shows the plan.
@@ -932,19 +940,22 @@ The split starts at `round(C / 2 - 0.6)` channels on core 1, and every 64 chunks
 less busy core, keeping it if the next 64 chunks were 2% faster. Core 1 always keeps at least one channel, and "all
 on core 1" is a choice too. The status's `dsp_split` shows where it is. The output is the same either way.
 
-#### The idle gate
+### The idle gate
 
-An idle channel costs nearly as much as a busy one: the discriminator, matched filter and sync search run on
-noise too. Each chunk the channelizer measures each channel's power against what noise alone gives there (`rdof_chz_t`
-`level`; the band's noise is the 25th-percentile bin of a Hann-windowed spectrum from the channelizer's own FFT).
-Noise alone reads 1 to 2. A channel skips its demod for a chunk when that chunk and the one before stayed under 3,
-it isn't in a call, it had no burst in the last 2 s, and it isn't in its probe (0.1 s in every second, staggered).
-The first 2 s run everything. A skipped chunk goes into the demod as zeros, and the FM stage is warmed up on the last
-82 samples before it runs again, so the output is exactly what it would have been (`rdof_sdr_edge_tests` compares
-with and without). On a 7 s scene with channels idle for seconds, 37% of channel-chunks were skipped. The status's
-`idle` is the share skipped. Off with `"idle_gate": false`.
+An idle channel costs nearly as much as a busy one: the discriminator, matched filter and sync search run on noise
+too. So each chunk the channelizer measures each channel's power against what noise alone gives there
+(`rdof_chz_t` `level`; the band's noise is the 25th-percentile bin of a Hann-windowed spectrum from the
+channelizer's own FFT). Noise alone reads 1 to 2.
 
-#### The tuner's ppm, learned
+- A channel skips its demod for a chunk when that chunk and the one before stayed under 3, it isn't in a call, it
+  had no burst in the last 2 s, and it isn't in its probe (0.1 s in every second, staggered). The first 2 s run
+  everything.
+- A skipped chunk goes into the demod as zeros, and the FM stage is warmed up on the last 82 samples before it runs
+  again, so the output is exactly what it would have been (`rdof_sdr_edge_tests` compares with and without).
+- On a 7 s scene with channels idle for seconds, 37% of channel-chunks were skipped. The status's `idle` is the
+  share skipped. Off with `"idle_gate": false`.
+
+### The tuner's ppm, learned
 
 `rdof/sdr/ppm.h`, `rdof/sdr/rate.h`. The tuner's crystal error comes from one of two sources:
 
@@ -966,8 +977,8 @@ How it's applied:
   the other way, so nothing jumps. The channels take the rest, the sample clock's share included where the front end
   doesn't correct its rate (the LR2021: a channel 300 kHz from the center, 32 ppm off, is 9.6 Hz further).
 - The board's best value (learned, else the table, else the setting) also goes to the front end (`set_xtal_ppm`):
-  the W12's transmit carrier is set to it, fraction and all. The bench's reports use it ([bench-api.md](spec/bench-api.md)
-  14.7).
+  the W12's transmit carrier is set to it, fraction and all. The bench's reports use it
+  ([bench-api.md](spec/bench-api.md) 14.7).
 - **The temperature table** (netclock's `nc_tcal_t`, NVS namespace `rdof_ppm`, key `cal` plus a hash of the tuner's
   serial): once settled, the sample clock's value goes into the 2 C bin for the die's temperature, averaged with
   what the bin had, at most every 2 hours a bin in a run. At boot the table at the die's temperature (interpolated)
@@ -986,10 +997,13 @@ How it's applied:
 Status: `ppm` has `learning`, `rtl` (whole ppm set), `learned`, `by` (`clock` or `afc`), `channels`, `steady_s`,
 `saved`, `settled`, `die_c`, `die_spread`, `die_tol`, `clock` (`ppm`, `err`, `trusted`, `raw`, `span_s`, `rms_us`,
 `steps`, `spread`, `spread_tol`, `board`, `board_learned`), `table` and `expected`. The page shows it under "Tuner
-ppm". In the host test, a dongle 37.2 ppm fast with 0.1 to 2 ms of USB latency, 30 ms stalls and a silent 512-sample
-drop comes out within 0.003 ppm over 30 minutes. On NTP over Wi-Fi alone the board's own rate takes an hour or two
-to trust (about 2 ms of jitter); with a GNSS PPS, minutes. With `"sim": true, "sim_ppm": 6.5` the board shows it
-working.
+ppm".
+
+- In the host test, a dongle 37.2 ppm fast with 0.1 to 2 ms of USB latency, 30 ms stalls and a silent 512-sample
+  drop comes out within 0.003 ppm over 30 minutes.
+- On NTP over Wi-Fi alone the board's own rate takes an hour or two to trust (about 2 ms of jitter); with a GNSS PPS,
+  minutes.
+- With `"sim": true, "sim_ppm": 6.5` the board shows it working.
 
 ### Bring-up: the SDR
 
@@ -1031,6 +1045,520 @@ port is the dongle's.
    | `no samples for 3 s: restarted` (`stream_restarts`) | the stream stalled and was restarted; a dongle that won't open is tried four times, then `rtl_error` says to replug |
    | `bytes_lost` / `bytes_filled` | transfers dropped with the ring full, read as mid-scale filler (up to 250 ms a gap) so the stream keeps its timing |
    | no bursts with USB at 100% | check the frequency, the ppm (the AFC follows up to 5 kHz, `RDOF_AFC_LIMIT_HZ`, about 11.4 ppm at 439 MHz), the color code, the gain (`peakDbfs`, `clipPct`) |
+
+### The bench API
+
+The board answers the bench API ([bench-api.md](spec/bench-api.md)) under `/api/bench/v1`, so bench tools written
+for the bench daemon run against it (`tools/bench/benchapi.py` is a client; the HIL tests use it). No auth: it's for
+a private test network. Code: `bench_api.c`, `bench_radio.c`, `bench_tx.c`; the spec's section 9 says what's in.
+
+- HTTP snapshots, and WebSocket streams: bursts, I/Q channel taps, the wideband samples with up to 1 s of pre-roll
+  and a level trigger.
+- A run-time retune (`PUT /sdr`), under an exclusive lease that puts the settings back when it ends.
+- Radios wired to the bench (`"bench": {"devices": [...]}`: a UART, USB CDC-ACM or a USB-serial bridge).
+- DMR transmit (`WS /tx`) through the SDR's modem or an MMDVM bench radio, only on what `"bench": {"tx": {...}}`
+  allows.
+- PA ramps: `tools/bench/burstramp.py` measures a transmitter's ramps burst by burst from a capture (spec §14.8.2). A
+  `bursts` stream with `"ramp": true` measures them on the board (`rfgbench.py dmr-bursts --ramp`, spec §14.2).
+- PlutoSDR raw captures: `rfgbench.py capture --raw [--rate R]` takes a PlutoSDR's ADC samples, 12 bits, over the
+  bench port, at a rate of its own if asked; `rfgbench.py dmr-bursts --raw --ramp [--rate R]` decodes and measures a
+  raw capture on the board and sends only the results (spec §14.2).
+
+**The line protocol** on TCP `CONFIG_RDOF_BENCH_LINE_PORT` (7373; spec §14, `bench_line.c`), for
+`tools/bench/rfgbench.py`:
+
+- the receiver channels' bursts, cs8 captures and level triggers from a 2 s wideband history (kept only while a
+  capture or I/Q stream used it in the last ten minutes, so a first capture has no pre-roll);
+- `bench_tx` jobs through the SDR modem under `bench.tx`'s gates, in WS /tx's one job slot, `--power-dbm` (or
+  `--power`) capped at `bench.tx.max_dbm` or `rf_level`. A roamer keeps its SDR modem, so a W12 running one refuses
+  transmit jobs;
+- the `tune` op moves the receiver's window for a session (`PUT /sdr`'s retune) until it ends or releases it; a
+  `trigger` or `rx` outside the window tunes for itself;
+- analog `tx` and `rx` with a `mode`: FM, and AM for airband (`rfgbench.py tx am` / `rx am`: 1 kHz at 30% by
+  default; the receiver gives depth, SINAD, THD, the carrier's level and offset, residual FM, and the audio and
+  envelope as PCM). Receive is in software on any front end; transmit needs I/Q (a Pluto) or polar I/Q (the W12).
+
+Memory and throughput:
+
+- PSRAM: about 410 KB at rest (the engine 71 KB, its parser's strings 197 KB, send buffers 144 KB), and while in use
+  16 KB a connection, 115 KB a job, 256 KB a capture, a trigger its whole capture (2 MB at most, less where the
+  largest free block is smaller).
+- A wideband capture needs 2 bytes a sample (768 KB/s at 384 kS/s), more than one TCP stream from the W12 carries
+  (lwIP's 5.76 KB send buffer): a 4 s capture got 14% of its samples, the rest reported as `gap_samples`
+  (2026-10-29).
+- A trigger's channel (cs16 at 48 kS/s, 192 KB/s) is buffered up to 10.9 s ahead of the link. W12 #1 at 384 kS/s sent
+  it at 40-150 KB/s (2026-11-06), so a trigger longer than about 12 s can still lose its end on a slow link
+  (`gap_samples`); at 1 MB a 15 s trigger lost 1.5-3 s of each.
+
+## Host tools
+
+Built by the top-level CMake ([Host build and system tests](#host-build-and-system-tests)) from `sdr/cli/tools.cmake`.
+Libraries used when found (the configure step names each):
+
+| Library | Gives |
+|---|---|
+| SoapySDR (Debian / Ubuntu `libsoapysdr-dev`, Homebrew `soapysdr`) | `rdofsdr --soapy`, `rdofradio --soapy`; without it `rdofsdr` reads files only |
+| libiio 0.x | `rdofradio --iio`, `rdofchz`'s frames |
+| libad9361 | `--iio` below 2.083 MS/s |
+| libmosquitto | rdofradio's MQTT |
+
+`rdofradio` is built only with SoapySDR or libiio. How to run the tools on a computer or a Pi:
+[linux-macos.md](linux-macos.md), [raspberry-pi.md](raspberry-pi.md).
+
+### rdofsdr
+
+A receiver: a cu8 recording, or with SoapySDR a live device, in; bursts and tracker JSON out; `--bench` times each
+stage.
+
+```sh
+rdofsdr --soapy driver=rtlsdr -r 1536000 --ch C1:438.4875 ... [--gain DB] [--setting biastee=true] [--seconds S]
+```
+
+The device streams CF32 at the rate, tuned to the planned center; `--ppm` is the receiver's software correction. The
+rate must be a multiple of 48000 the device runs at exactly (`rdofsdr` warns when it can't).
+
+| Device | Soapy module | Rate (`-r`) | Status |
+|---|---|---|---|
+| RTL-SDR | SoapyRTLSDR | 1536000 | tested: SoapySDR 0.8, Debian aarch64 (2026-10-24) |
+| PlutoSDR | SoapyPlutoSDR (libiio) | 2400000 | tested: Rev.C (Z7010-AD9361), firmware v0.38, USB, macOS arm64 (2026-10-27) |
+| LimeSDR | SoapyLMS7 | 1536000 | untested |
+| HackRF One | SoapyHackRF | 2400000 or more | untested; 2-20 MS/s |
+| Ettus B200 / B210 | SoapyUHD | 1536000 | untested |
+| bladeRF | SoapyBladeRF | 1536000 | untested |
+| SDRplay RSP | SoapySDRPlay3 | 2400000 | untested; 2 MS/s or more |
+| Airspy Mini | SoapyAirspy | 6000000 | untested; 3 and 10 MS/s aren't multiples of 48000 |
+
+The Airspy R2 (2.5 and 10 MS/s only) doesn't fit. On the tested Pluto, SoapyPlutoSDR turns the FPGA's x8 decimator
+on below about 2.08 MS/s, and the board then streams a constant (through libiio too): run it at 2.4 MS/s or more.
+
+### rdofradio
+
+A device that transmits, run as the SDR's unit, with the board's code. `rdofradio --help` lists every flag.
+
+| Device | Flag |
+|---|---|
+| a SoapySDR device | `--soapy ARGS` |
+| an AD9361 / AD9363 through libiio ([PlutoSDR](#plutosdr)) | `--iio URI` |
+| files | `--file RX[,TX]`: RX cf32 or .cu8 played in real time, then silence; TX written as cf32, zeros while idle. For runs with no radio, such as two rdofradios over a local broker |
+| an MMDVM modem | `--mmdvm PORT` ([An MMDVM modem on a serial port](#an-mmdvm-modem-on-a-serial-port)) |
+
+`--duplex full` is the repeater, `half` the roaming transceiver; `--parrot ID` sends back what it hears. Nothing
+transmits without `--allow-tx` (or `--listen`: [Receive only](#receive-only)).
+
+```sh
+rdofradio --soapy driver=plutosdr -r 2400000 --allow-tx --rx 438.25 --tx 438.75 \
+    --duplex full --cc 1 --gain 20 --tx-gain 65 --tx-offset 0.063
+```
+
+Transmit power: `--tx-power DBM` at the antenna, from `--tx-max-dbm` (the device's output at its most gain, +7 dBm
+by default: a Pluto's nominal, not measured), so the gain is the most less the difference, held to the device's range
+with a warning. `--tx-gain DB` is the raw form, not with `--tx-power`. A frequency's `power_dbm` (SET_FREQ's RF level)
+takes 0.2 dB a level off it, from the next key-up. The start's log line gives the dBm and the gain.
+
+On a Pluto over USB (2026-10-27), RX and TX antennas on one bench: full duplex decoded the inbound throughout while
+transmitting, the outbound on the 30 ms grid; half duplex sent back a whole call with 0 FEC failures.
+
+#### Timing
+
+- **A thread for the transmit stream.** A Pluto's read and write both block on USB; one thread doing both fell
+  behind, and libiio drops receive samples not read in time without an overflow.
+- **`--stream`** (default `bufflen=32768` on a Pluto, `bufflen=16384` on an RTL-SDR: its own 85 ms buffers read as
+  dropped samples): with 65536 the loop delay changed by up to 27 ms from one start to the next; with 16384 the
+  transmit stream underran silently. With 32768 it stays at 61-65 ms: `--tx-offset 0.063`. `--monitor` measures it
+  by hearing the outbound back.
+- **Calibration.** Which slot a handheld's burst is in comes from where it falls against our outbound, so the
+  transmit path's delay must be known to a few ms. At the start (and when needed) the receiver tunes to the TX LO and
+  times a 20 ms pulse sent 100 kHz below it ("calibration: the transmit path is ... ms past its place"), up to 5
+  tries. A split wider than the receiver's band can't hear its outbound while repeating.
+- **The transmit guard** (`rdof/sdr/txguard.h`, `--iio`): a loop stall longer than the transmit queue (3 buffers)
+  would let the device run dry, and everything after would go out late for good. When the loop hasn't filled a
+  buffer 6 ms before the queue runs out, the writer finishes it with zeros and drops as many late samples
+  ("transmit: the loop fell behind; ... ms of zeros kept the stream's timing"): the air has a gap, the slots stay put.
+  The writer runs at SCHED_FIFO 10, the receive loop and its helper at 5 (nice -10 when refused).
+- **Receive losses.** A reader stall past the device's buffers loses samples without an overflow: the stream falls
+  behind the wall clock ("receive: ... ms of samples lost"; zeros take their place), the guard is told
+  (`rdof_txguard_slipped`), and rdofradio calibrates again at the next idle moment. Only a half second with a read
+  that waited counts: working through a backlog the device still holds loses nothing.
+- **SoapySDR** has no guard: a writer stall lets the device run dry and the stream moves one buffer later; idle,
+  rdofradio takes it out ("transmit: ... ms of delay taken out").
+- **Slots** are numbered by aligned timing ([slot-timing.md](spec/slot-timing.md)): a handheld's TSx burst falls
+  under outbound TSx and is repeated on TSx.
+- **Bandwidth.** A Pluto over USB 2 streams about 3.5 to 4 MS/s each way in full duplex. The modulator's phase table
+  allows 16384 phases on a host (a 25 MHz split at 30 MS/s needs 6250), 1024 on the ESP32.
+- **The rate** without `-r` is the least multiple of 48 kS/s, from the device's usual rate (768 kS/s through libiio,
+  2.4 MS/s through SoapySDR), whose window holds every receive channel and which the channelizer takes (its FFT is 64
+  times the decimation; pffft does factors 2, 3 and 5). The most: 2.4 MS/s on a Pluto's own ARM, 3.84 MS/s from a
+  host through libiio, 3.2 MS/s through SoapySDR. With the FPGA channelizer: [FPGA channelizer](#fpga-channelizer).
+
+#### Settings file
+
+`--config FILE` takes the firmware's settings, version 3 ([config-v3.md](spec/fw/config-v3.md)), opened by the
+firmware's parser (`rdof_plan_open`, `rdof_plan_check` with `rdof_plan_host`), calls going through the call router.
+It runs the file's one unit that transmits: a repeater, or a transceiver on the SDR (half duplex, on its idle
+frequency), or either on a modem with `--mmdvm PORT`. `mode` sfr or dcdm is refused. The unit's keys are the
+firmware's (`rdof_plan_radio`).
+
+- The device stays on the command line (`--soapy` or `--iio`, `-r`, `--gain`, `--tx-power`, `--tx-max-dbm`,
+  `--tx-gain`, `--tx-offset`, `--bw`, `--center`, `--allow-tx`, `--seconds`, `--web`, `-v`, `--bursts`, `--monitor`,
+  `--tx-lo`, `--stream`, `--fft`, `--mmdvm`, `--baud`, `--rf-level`).
+- `--rx`, `--tx`, `--cc`, `--duplex` and `--parrot` are refused beside it.
+- Without `--tx-power` or `--tx-gain`, the SDR device's `tx.power_dbm` is the power.
+
+```sh
+cat > example.json <<'JSON'
+{
+  "version": 3,
+  "name": "example",
+  "id": 9990601,
+  "defaults": {"cc": 1},
+  "devices": [{"name": "pluto", "kind": "sdr", "driver": "soapy"}],
+  "frequencies": [{"name": "in", "freq": 438.25}, {"name": "out", "freq": 438.75}],
+  "apps": [
+    {"name": "example", "type": "repeater", "in": "in", "out": "out"},
+    {"type": "parrot", "tg": 9990}
+  ]
+}
+JSON
+rdofradio --soapy driver=plutosdr -r 2400000 --allow-tx --config example.json --gain 20 --tx-gain 65 --tx-offset 0.063 --web 8080
+```
+
+- **HBlink4:** with an `hblink` network it's a peer, the board's peer state (`common/src/hbpeer.c`) under a POSIX
+  UDP socket (`sdr/cli/rdofradio_net.c`). UDP only: `transport` sctp falls back to UDP with a warning.
+- **MQTT:** an `mqtt` network with `calls` carries the calls: as DMRD packets, or with `format: "v3"` as the MQTT
+  network's call messages ([mqtt-net.md](spec/fw/mqtt-net.md)) on a connection of its own (`rdof-net-{name}-{hw}`).
+- **Channels:** the receiver's channels are the SDR's as the board resolves them (`rdof_plan_sdr`): its receiver's
+  frequencies, then the ones it hears for the unit (a transceiver's, a repeater's input), all in the rate's window,
+  up to 16.
+  - They're all alike: with `identity: per_path` each is a peer of its own (one with the unit's peer id is the unit's
+    peer, not a second login), else what it hears goes up through the unit's peer as its path's policy says. Each
+    publishes on the SDR's MQTT topics and shows on the SDR's card.
+  - The unit hears on the channel at its frequency (`io_channel`), and its own topics and card carry that channel's
+    calls. A duplex repeater's output isn't a channel. `--monitor` adds `out` (the TX heard back) when no channel is
+    on it.
+  - The transmitter's spurs land on other channels (on the Pluto, 100 kHz either side): a burst heard there that is
+    one the modem sent (within 24 bits of it, `rdof_sdrmodem_sent_bits`) isn't passed on, half duplex or a duplex
+    repeater's outbound alike. Without it a Pluto repeater sending on 438.3625 had 438.2625 send each call up again.
+- **Simplex on every channel** (a transceiver on the SDR): it sends on every frequency the SDR `transmits` on and
+  hears on any receiver channel (`io_channel`). The TX LO moves when a call's channel is past the modulator's reach
+  (0.4 of the rate, less half a channel), unkeyed. DMRD to any channel's peer goes out there through the same
+  transceiver, one channel at a time. Our own transmissions heard back are dropped within 60 ms of the key-up
+  (`echoes`). `"tx": false` on a frequency keeps every device off it.
+- **The clock:** with `ntp` servers it's netclock (`components/netclock`, `netclock_posix`) and the page's clock card
+  is the board's; `ntp.clock` `"os"` leaves the time to the OS. `--clock-state FILE` keeps netclock's rate across
+  restarts; `--set-os-clock` steps the OS clock when it's 100 ms off (root).
+- **The crystal:** `--ppm` corrects the receiver's channels and the modulator's carrier; `--ppm-tol` is how far to
+  trust it in the bench's reports. rdofradio doesn't learn it.
+- **The page:** with `--web`, the Settings tab edits the file. A save is checked by the same parser, written whole
+  (a temporary file renamed over it), and rdofradio restarts with the same command line. Settings that can't run keep
+  the page up: the card shows why and a save starts it again. Without `--config` the tab shows the flags as a
+  read-only version 3 document. `/api/status` `version` is `RDOF_VERSION`, else git describe at configure time.
+
+#### A radio transmits, the SDR receives (split duplex)
+
+`rdofradio DEVICE --allow-tx --split-tx PORT --rx MHZ --tx MHZ`: a split duplex repeater
+([repeater.md](spec/repeater.md)). A RadioFoundry radio with the split duplex extension ("SPLIT1" in its
+description) on PORT is the TX half; the SDR, opened receive only, is the RX half (any receiver: an RTL-SDR, a Pluto
+with its transmitter off). `rdof_split_t` joins them, as `split_port.c` does on a board.
+
+- PORT is the radio's USB serial device or a programming cable's UART (`--baud`, 115200). `--split-power-cap` caps
+  the radio's RF level (MMDVM scale 1-255). The SDR's transmitter flags (`--tx-power`, `--tx-max-dbm`, `--tx-gain`,
+  `--tx-lo`, `--tx-offset`, `--monitor`) are refused.
+- **The SDR modem's clock** is the receive stream's sample count against the wall clock, at the freshest read; its
+  least lag over half a second follows the device's crystal. A lag 2 ms over that floor for a second is dropped
+  samples: zeros take their place.
+- **The port** is read by a thread that stamps each read, so a TIME round trip doesn't include the main loop's wait.
+- **Waits:** while the repeater waits for the radio's reply, the receiver keeps reading.
+
+Run on the Pluto (2026-10-28) against a simulated radio on a pty: the split came up, the repeater ran 60.0 s in
+60.0 s with no samples lost, the TX half's round trip settled at 1.1 ms. Not yet run with a real radio.
+
+**Several split repeaters on one SDR** (`--config`): every repeater in the file whose RX half is the SDR and whose TX
+half is a modem runs, up to 8 (`RDOF_ROLES_MAX`), each with its own radio.
+
+- The first is the radio at `--split-tx`, or its device's `port.path`; the others need a `port.path` (and `baud`).
+- Each split has its own receive-only SDR modem (`rdof_sdrsplits_t`, `sdrsplit.c`) on its input's channel, and each
+  repeater registers with the router. Every split's output frequency is left out of the channels; its input is a
+  channel of the receiver and goes up through that channel's sink.
+- Bring-up runs every split at once, 15 s for all; one that fails stops the run.
+- Host-tested (`sdrmodem_tests`: 8 simulated radios with different crystals on one receiver at 1.632 MS/s, each burst
+  up on its own repeater and slot; `rdof_radiocfg_tests`: the file's units and ports). Not yet run with real radios.
+  The web page and MQTT status show the first repeater only.
+
+#### An MMDVM modem on a serial port
+
+A Raspberry Pi with an MMDVM_HS hat, step by step (OS, serial port, build, settings, service):
+[raspberry-pi.md](raspberry-pi.md).
+
+`rdofradio --allow-tx --mmdvm PORT --rx MHZ [--tx MHZ]`: the repeater (`--duplex full`, the default) or the roaming
+transceiver (`--duplex half`) on an MMDVM modem: an MMDVM_HS hat on a UART (`/dev/ttyS0`), a hotspot or an MMDVM
+board on USB. A duplex modem runs the repeater, any modem the transceiver; the radio's type comes from its
+description (`rdof_radio_detect`). Its own call tracker feeds the page, MQTT, HBlink4 and listen before talk. The port
+is read by a thread.
+
+- `--rf-level N` caps every SET_FREQ's RF level (0-255; 255 = no cap), whatever sent it (`rdof_mmdvm_cap_rf_level`).
+- `--rx-offset-hz`, `--tx-offset-hz`, `--rx-level`, `--tx-level`: the modem's settings; with `--config`, the modem
+  device's `mmdvm` keys, and each frequency's `power_dbm` goes to an RF level on the device's `tx` map (255 without
+  one).
+- **An SDR beside it** (DEVICE, optional), opened receive only. It hears:
+  - the modem's RX frequency as a channel of its own (`modem-rx`, when no channel is on it);
+  - the modem's TX frequency as another (`modem-tx`, when it's different and one window holds both: a split wider
+    than the SDR's rate logs that and leaves it out);
+  - the settings' channels, with the spectrum. It carries the bench's line protocol.
+
+  Bench DMR jobs transmit on the modem in simplex; a duplex modem runs `outbound` and `bench_repeater` too.
+  `--split-tx` and the SDR's transmitter flags are refused.
+- `--sim-sdr` in place of DEVICE: a receiver of noise, for tests with no RF (`host-tests/test_mmdvm_bench.py` runs the
+  whole bench on `fakemodem`).
+
+#### Receive only
+
+`rdofradio DEVICE --listen --rx MHZ [--tx MHZ]`: no unit and nothing that transmits, for an SDR with no TX antenna.
+
+- The device is opened receive only (no TX stream, the TX LO powered down), and `--allow-tx` isn't needed.
+- The receiver hears `--rx` and `--tx` as channels (`rx`, `out`). It serves the receiver's bursts, the spectrum
+  (`--web`) and the bench's line protocol (`--bench`).
+- The bench sees no transmitter (`info`'s station has `tx` false, "--listen: the SDR receives only"), so a transmit
+  job is refused.
+- `--allow-tx`, `--split-tx`, `--mmdvm`, `--config`, `--parrot`, `--bench-tx`, `--fpga-duc` and the transmitter's
+  flags are refused with it.
+
+Run on a Pluto (2026-11-09) with `--fpga-chz` on a duplex hotspot's pair (448.7 / 443.7 MHz, then 448.7 / 446.075):
+the bench's `bursts` op timed a radio's inbound bursts against the hotspot's outbound over about half an hour, the TX
+LO powered down throughout.
+
+#### The bench's line protocol
+
+`--bench [ADDR:]PORT` serves [bench-api.md](spec/bench-api.md) §14 for `tools/bench/rfgbench.py`: the channels'
+bursts, wideband cs8 captures from a 2.5 s history, level-triggered channel captures, `bench_tx` jobs (`voice`,
+`csbk`, `data`, `listen`) and `bench_repeater` jobs.
+
+- **Transmit jobs** need `--bench-tx MHZ[,MHZ...]` (up to 32 frequencies) or bands, and the half duplex transceiver.
+  A job takes the SDR modem for its length, at `--tx-power`, or at the job's `power_dbm` (bench_tx's `--power-dbm`)
+  when that's lower: the gain turns down by the difference for the job, to the device's least at most (a sweep of a
+  receiver's RSSI steps it), whatever RF level the transceiver left. A job's `power` 0-255 isn't applied on the SDR.
+  On `--mmdvm` a job's power goes to an RF level on the modem's `tx` map under `--rf-level`.
+- **Tuning:** `tune` and a `trigger` or `rx` outside the window move the receiver for the job (bench-api.md §14.2).
+- **With the FPGA channelizer** there's no wideband I/Q: capture, trigger, track and rx take the receiver's channels
+  (2.5 s of each kept).
+- **DNS-SD:** when the bench line and the page listen past loopback, rdofradio lists them (`_rfgbench._tcp` with TXT
+  `kind` and `ver`, `_http._tcp`) through the host's responder, by running `avahi-publish-service` (a PlutoSDR's
+  firmware has avahi) or macOS's `dns-sd` for as long as it runs; with neither, nothing is listed
+  (`rdofradio_dnssd.c`).
+
+A bench line with only an MMDVM modem and an RTL-SDR (bench-api.md §14.9 lists what it can do):
+
+```sh
+# on a Linux box with libsoapysdr-dev and soapysdr-module-rtlsdr
+cmake -S . -B build/linux && cmake --build build/linux --target rdofradio
+build/linux/rdofradio --soapy driver=rtlsdr -r 2.4e6 --gain 30 --ppm PPM --allow-tx \
+    --mmdvm /dev/ttyAMA0 --rx MHZ --tx MHZ --duplex half --cc CC \
+    --bench 0.0.0.0:7373 --bench-tx MHZ,LOW-HIGH
+```
+
+(A build to keep running is the release one, [Host tests](#host-tests): `build/linux` is sanitized.)
+
+- `--setting KEY=VALUE` (repeated) is the SoapySDR driver's own, written when the device opens: an RTL-SDR's bias tee
+  for an active antenna is `--setting biastee=true`. A setting the driver refuses stops the start.
+- `--bench-tx` is every frequency and band a job may key on; without it, no transmit job runs. `--allow-tx` is
+  required. With `--config`, the settings' `bench.tx` adds its frequencies and bands, caps each key-up at its
+  `max_key_s` (10 s unless set; 120 s without `bench.tx`) and the power at its `rf_level` or `max_dbm` (config-v3.md
+  §4.6); the files in `config/examples/` take every US amateur band from 6 m to 13 cm.
+- With no SDR (`--mmdvm` and `--config` alone), the bench runs transmit jobs on the modem and receives nothing.
+- `--ppm` is the RTL-SDR's crystal error, measured elsewhere: rdofradio doesn't measure it, and the bench's reports
+  are off by it otherwise. `--ppm-tol` says how well it is known.
+- `--duplex half` is a transceiver at rest, any modem. `--duplex full` needs a duplex board and runs a repeater;
+  jobs stop it and bring it back.
+- The serial port is whatever the modem is on (`/dev/ttyAMA0`, `/dev/ttyS0`, `/dev/ttyUSB0`, `/dev/ttyACM0`), with
+  `--baud` if it isn't the default. `--rf-level` caps the power of every job.
+- `--rx` and `--tx` are the modem's at rest; a job tunes the modem where it's asked. The SDR's window is `-r` wide,
+  around a center that holds the channels (or `--center`), and a request outside it tunes the SDR for itself.
+- A lost device ends the program with exit status 1: the modem's port going away, 5 s with no samples from the SDR,
+  or repeated read errors. Run it under a supervisor (a systemd unit with `Restart=on-failure`): an RTL-SDR that
+  dropped off USB comes back with a new process. Sessions, claims and running requests end with it; a client sees
+  `lost` or an `unavailable` connection. A modem that stops answering but keeps its port fails its jobs (`no reply`)
+  and isn't restarted.
+
+### Host web page
+
+`hostweb/` serves the firmware's page (embedded from `esp_idf/main/web/index.html` and the components' scripts) from
+a host tool ([hostweb/README.md](../hostweb/README.md)). Build with `-DRDOF_HOST_WEB=ON`, run with `--web
+[ADDR:]PORT` (127.0.0.1 unless ADDR is given).
+
+- The tool publishes a status snapshot, log lines and calls (`rdof/hostweb.h`), and may give settings hooks.
+  Publishing never waits on the server.
+- The API is the firmware's code (`rdof/webapi.h`): `/api/status`, `/api/lastheard`, `/api/log`, with the hooks
+  `/api/config`, `/api/resolved`, `/api/restart` and `/api/ota`; `501 not on this platform` for the rest.
+- The status's `caps` say what the server has, and the page hides the rest.
+
+## PlutoSDR
+
+`rdofradio --iio URI` drives an AD9361 or AD9363 through libiio 0.x (`sdr/cli/rdofradio_iio.c`), with no SoapySDR. A
+PlutoSDR's firmware has libiio and libad9361, so a build for its ARM runs on a stock Pluto (or a Zynq 7010 / 7020
+clone on ADI's firmware) with nothing installed. `ip:192.168.2.1` or `usb:` reach a Pluto from a host. Setting one up
+step by step: [plutosdr.md](plutosdr.md).
+
+**Build:** `tools/pluto/build.sh` (an x86_64 host with Docker) builds in Debian 9, whose glibc is older than the
+firmware's, against ADI's v0.38 sysroot. It writes `build/pluto/rdof-pluto.tar.gz` (`rdofradio`, `rdofsdr`,
+`rdofchz`; they need only libiio, libad9361 and libc) and `build/pluto/rdof-pluto-bundle-VERSION.tar.gz` (the
+installer, below).
+
+**Run** from `/tmp` (RAM):
+
+```sh
+gunzip -c rdof-pluto.tar.gz | tar -xf -
+./rdofradio --iio local: --allow-tx --rx 438.25 --tx 438.75 --duplex full --cc 1 --gain 20 --tx-gain 65 \
+    --parrot 9990 --web 0.0.0.0:8080
+```
+
+- `--iio` defaults to 768 kS/s: libad9361's `ad9361_set_bb_rate` loads the chip's own FIR under 2.083 MS/s, and the
+  FPGA's decimator stays off.
+- The RX and TX LOs are separate, so the split is anything both tune to (70 MHz to 6 GHz on an AD9361, 325 MHz to
+  3.8 GHz on an AD9363). The receiver hears its own outbound only during the calibration.
+- TX gain is 0..89 dB (89..0 dB attenuation), as SoapyPlutoSDR's. The LOs are powered up at the start and down at the
+  end: SoapyPlutoSDR leaves both down when it closes, and the transmitter then sends nothing.
+- The receiver shares each chunk with a helper thread on the other core: the forward FFTs split in half, the
+  channels a third and two thirds; the bursts go to the sinks on the loop's thread. The IIO buffer is copied out
+  before it's read (16-bit loads straight from the DMA buffer took 20% of a core, against 4%).
+
+Measured on a Rev.C (Z7010-AD9361), firmware v0.38, two Cortex-A9 cores at 667 MHz, the ARM channelizing
+(2026-10-28 and 29):
+
+| Run | Real time | CPU |
+|---|---|---|
+| SoapySDR at 2.4 MS/s, the built-in FFT | 34%: samples lost every second | the main thread 100% of a core |
+| `rdofsdr --bench`, 2.4 MS/s, built-in FFT / pffft | | 1989 / 762 ms per s of IQ |
+| `--iio local:` 768 kS/s, pffft, full duplex | 100% (60.0 s in 60.0 s) | 32% of the two cores, 20 MB |
+| `--iio local:` 864 kS/s, 9 channels, half duplex, two handhelds keyed at once, one a slot | 100%, no samples lost | main thread 70%, helper 34%, writer 20% |
+| `--iio local:` 1.296 MS/s, 10 channels (438.0625 to 438.975 MHz) | 100% | the receive loop 69% busy |
+
+### Installing on the Pluto
+
+The bundle ([tools/pluto/bundle/README.md](../tools/pluto/bundle/README.md)): `./install.sh --config FILE` (or
+`--example`) from a computer, over ssh, puts `rdofradio`, the settings and a supervisor loop (`run.sh`) in the
+Pluto's persistent flash (`/mnt/jffs2`). The firmware's `/mnt/jffs2/autorun.sh` starts the loop at boot, and the loop
+starts `rdofradio` again 5 s after it exits.
+
+- The settings stay in `/mnt/jffs2/rdof/config.json` (the page edits them), the device flags in `flags`
+  (`flags.example`: `--gain 20 --tx-gain 0 --web 0.0.0.0:8080 --clock-state ... --set-os-clock --bench 7373`).
+  netclock's state is kept in `/mnt/jffs2/rdof/netclock.state` and sets the Pluto's clock (it starts in 1970).
+- **Updates:** the page's Firmware update (`POST /api/ota`; `--ota FILE`: the bundle's `rdofradio.gz`, or an ELF for
+  the Pluto's ARM) leaves the new program in RAM and stops rdofradio; `run.sh` checks it runs, puts it in the flash
+  in place of the old one (there's no room for both), and puts the old one back if the new one ends in error within
+  30 s.
+- The Pluto makes a new ssh host key at every boot, so the script doesn't check it.
+- At `--tx-gain 0` (the default) the start's calibration pulse isn't heard, so the outbound slot timing isn't
+  measured.
+- Tested on a Pluto+ style clone (Z7010, 1 GB, Ethernet, SD boot, v0.38): the page answers about 25 s after power-on.
+
+### FPGA channelizer
+
+`--fpga-chz [ADDR]` (with `--iio`) decodes from the FPGA channelizer block (`chzhw.h`) in place of the ARM's
+channelizer: every channel at once, 15 on the 7010 clone where the ARM manages 10. It probes the block (at
+`0x7C480000` unless ADDR is given) and plans the rate as usual, up to 48 kS/s times the most the block decimates
+(24.576 MS/s with its CIC: R D at most 512).
+
+- **The plan:** no CIC when the FIR alone decimates enough; else the CIC with the smallest D from 8 that divides the
+  step. The FIR's taps (16 D + 1) are the block's time: R 9, D 46 overflowed its input at 19.872 MS/s.
+- **The frames** reach the receiver through `rdof_sdr_rx_channels_in`: int16 with 3 fraction bits over the 12-bit
+  ADC (`RDOF_CHZFX_OUT_SCALE`, 1/16384); a tone reads within 0.001 dB of the float path. Lost frames become zeros (the
+  status's lost count); STATUS overflow bits count as overflows. The block is stopped on exit.
+- **The idle gate's noise** comes from the channels: the 25th percentile across all channels, the least of the last
+  16 chunks.
+- **The AFC** writes the block's NCO steps once a turn.
+- **No wideband I/Q.** The page's spectrum is the channels' own: a 64-point FFT of each channel's 48 kS/s, its 33
+  bins within 12 kHz (750 Hz each) a piece of the row (`rdof_hostweb_spectrum_pieces`, `pieces` in
+  `/api/spectrum`), so a signal off a channel's center shows.
+  - The page shows each at its frequency, dimmed past the channel filter's 7.5 kHz cutoff (attenuated there), joins
+    channels 25 kHz apart into one strip (each to the midpoint; the join dips, both filters being past cutoff
+    there), and cuts a wide gap between them to an axis break.
+  - The bench keeps every channel's outputs for 2.5 s instead (about 130 bytes an output instant for 15 channels,
+    16 MB; the wideband ring at 19.872 MS/s is 99 MB), with each one's NCO offset: capture, trigger, track and rx on
+    a receiver channel take its I/Q from there (bench-api.md 14).
+  - The block's int16 LSB is near the noise, so a quiet channel's floor reads about -67 dB.
+  - The duplex calibration points channel 0 at the pulse while it runs.
+- **With `--split-tx` or `--mmdvm`** the SDR receives only and the block runs as usual. Not yet tested with a radio
+  on the Pluto's USB.
+- `rdofchz` brings the block up by hand: `--probe` reads ID and CAPS through `/dev/mem`; with `--fs`, `--center`,
+  `--ch MHZ ...` (and `--cic R`) it starts the block and prints the frames, gaps and each channel's level once a
+  second.
+- Host test: `rdof_chzrx_tests` runs `e2e_288k.cu8` through the block's model into this entry and matches the float
+  path burst for burst.
+
+`--fpga-duc [ADDR]` (on a bitstream with the TX interpolator, at `0x7C4A0000` unless ADDR is given) runs the transmit
+stream at 192 kS/s, or 96 kS/s when the rate isn't a multiple of 192 kS/s, and the FPGA's CIC (order 3, R 17 to
+4095) brings it to the device's rate, so the ARM makes a narrow transmit stream while the receiver runs wide.
+
+- The rate is planned to a multiple of 96 kS/s the interpolator makes (9 channels over 650 kHz: 1.632 MS/s, R 17);
+  with none for the channels it turns off.
+- 48 kS/s is refused: its first images, 56 dB down, land on the next channels of a 50 kHz grid. At 96 kS/s they are
+  76 dB down, at 192 kS/s 94 dB.
+- The TX LO sits 62.5 kHz above the carrier at 192 kS/s and 18.75 kHz at 96 kS/s (`--tx-lo` unless given). Only TX1.
+- The TX buffers are about 5 ms (512 samples at 96 kS/s), so the queue stays inside the stream's 50 ms lead.
+- With `--split-tx` or `--mmdvm` the SDR doesn't transmit, and it's left unused.
+- Without the block nothing answers at ADDR, and a read there is a bus error: both options need the bitstream.
+
+Measured on the 7010 clone (2026-11-03 and 04):
+
+| Run | Result |
+|---|---|
+| `rdofchz`, no CIC: 10 channels from 2.4 MS/s at 438.525 MHz | no frame lost over 6 s; a 20 dB gain step moved every channel 19-20 dB; flat to 3 kHz, -3 dB near 5.5 kHz, -59 dB beyond 14 kHz |
+| `rdofchz` with the CIC: 15 channels across 438.0125 to 438.6 MHz from 23.04 MS/s (R 60, D 8, 129 taps) | no frame lost and no input overflow over 10 s; the ARM 95% idle |
+| `--fpga-chz --fpga-duc`, 15 channels from 19.872 MS/s, TX at 96 kS/s (R 207) | 30.0 s in 30.0 s, no channel frame lost; without `--fpga-duc`, over 1,000 frames lost a second |
+| loopback with `--bench`, the 15 frequencies in `--bench-tx` (TX gain 79) | 8 CSBKs on each of the 15 in turn, all 15 receiving: 120 of 120 decoded (CC 2, no sync errors, -35 dBFS, 11-12 Hz off); a 10-superframe voice call, 71 of 71 bursts, nothing on the channels 50 kHz either side |
+
+### The bitstream
+
+The bitstream for both blocks is kept in `tools/pluto/fpga/` as `rfg-pluto-<board>.bit.bin` (MIT and ADI BSD; its
+README and `MANIFEST` say where it was built from). There is one for `fishball7010` (a 7010 Pluto+ style clone with
+32-bit DDR, 1 GB and Ethernet) so far; `rdof/sdr/plutofpga.h` also knows `plutoplus` and `adalm-pluto`.
+
+With `--iio local:`, `--fpga-chz` or `--fpga-duc` loads it before anything else (`sdr/cli/rdofradio_fpga.h`):
+
+1. **The board** from the Zynq's IDCODE, its DDR width, MIO 16's function, the memory size and the AD9361's LVDS
+   mode. `rdofradio --fpga-board` prints it and the file's name.
+2. **The file:** `--fpga-bit FILE`, else the first found in `/mnt/jffs2/rdof/`, `rdof/` on any SD card or USB stick
+   partition (mounted read-only for the look if it isn't mounted), `/lib/firmware/`.
+3. **The check:** its IDCODE against the chip's.
+4. **The load:** the PL's drivers unbound, the FPGA manager loads it, the drivers bound again, the AD9361's ADC and
+   DDS cores also when a probe before had failed. A driver that doesn't probe again (the ADC's RX tuning, in
+   `dmesg`) is an error and nothing is noted. `/tmp/rdof-fpga` notes what's in, so a restart loads nothing; a reboot
+   brings the stock design back.
+
+With none for the board both options are off and the ARM channelizes: the channels that don't fit its window are left
+out, in the settings' order, the unit's kept (15 configured on the clone: 10 kept, at 1.296 MS/s).
+
+`install.sh` writes the board's bitstream to `rdof/` on the SD card's boot partition (the one with `BOOT.bin`, which
+it never touches), only when it differs; the flash has no room for it. It then adds `--fpga-chz --fpga-duc` to
+`flags`, so every boot loads it.
+
+## Measured and not done
+
+Measurements tied to one part stay with it (the Size table, the RTL-SDR's rates, the W12's transmit, the Pluto's
+runs). The CPU budgets and what's left are here.
+
+### CPU budget
+
+`rdofsdr --bench` (Release, no sanitizers: `cmake -S host-tests -B build/bench -DRDOF_SANITIZE=OFF
+-DCMAKE_BUILD_TYPE=Release`), simulated traffic, M1 Pro at an assumed 3.2 GHz. Mcycles per second of IQ; "busy" has
+every channel in a call, "idle" is noise only:
+
+| Stage | 10 ch, 1.536 MS/s busy | idle | 5 ch, 288 kS/s busy | idle |
+|---|---|---|---|---|
+| cu8 to float | 2.7 | 2.8 | 0.5 | 0.5 |
+| forward FFT (2048 / 384 points) | 42.1 | 42.7 | 7.7 | 7.6 |
+| per channel: bins x filter, 64-point IFFT, NCO | 12.2 | 11.7 | 6.6 | 6.6 |
+| discriminator | 4.6 | 4.6 | 2.3 | 2.3 |
+| RRC + power | 7.6 | 7.7 | 3.8 | 3.8 |
+| squelch, sync search, slicing, flywheel | 21.8 | 2.9 | 9.7 | 1.4 |
+| **total** | **91** | **72** | **31** | **22** |
+
+**ESP32-P4 (estimate, no board).** Scaling the host's cycles by esp-dsp's 1024-point FFT against the host's (x8.7)
+gives about 690 Mcycles/s for ten busy channels at 1.536 MS/s (86% of both 400 MHz cores) and 265 for five at
+288 kS/s. So ten channels on a P4 need some of: an int16 front end (esp-dsp's `dsps_fft2r_sc16`), skipping idle
+channels' FM stage (done: [The idle gate](#the-idle-gate)), a symbol-rate sync search first, a fixed-point RRC, a
+polyphase channelizer. A P4 firmware would also need the RTL2832U driver's High Speed glue (512-byte packets,
+3 MB/s), and the ESP32-C6 for Wi-Fi (esp-hosted over SDIO). Don't take code from `esp-rtl-sdr` (AGPL) or librtlsdr
+(GPLv2).
 
 ### CPU budget on the S3 (measured)
 
@@ -1084,40 +1612,56 @@ as they came, `raw` in PSRAM, and the hot arena grown from the spare as an elast
 every block's spectrum in PSRAM (about 4 MB/s written by one core and read by the other), where one core reuses a
 spectrum buffer that stays in the cache.
 
-### The bench API
+### Scope
 
-The board answers the bench API ([bench-api.md](spec/bench-api.md)) under `/api/bench/v1`, so bench tools written
-for the bench daemon run against it (`tools/bench/benchapi.py` is a client; the HIL tests use it): HTTP snapshots,
-WebSocket streams (bursts, I/Q channel taps, the wideband samples with up to 1 s of pre-roll and a level trigger), a
-run-time retune (`PUT /sdr`, under an exclusive lease that puts the settings back when it ends), radios wired to the
-bench (`"bench": {"devices": [...]}`: a UART, USB CDC-ACM or a USB-serial bridge), and DMR transmit (`WS /tx`)
-through the SDR's modem or an MMDVM bench radio, only on what `"bench": {"tx": {...}}` allows. No auth: it's for a
-private test network. Code: `bench_api.c`, `bench_radio.c`, `bench_tx.c`; the spec's section 9 says what's in.
+What the firmware does and doesn't do:
 
-`tools/bench/burstramp.py` measures a transmitter's PA ramps burst by burst from a capture (spec §14.8.2). A `bursts` stream with `"ramp": true` measures them on the board (`rfgbench.py dmr-bursts --ramp`, spec §14.2). `rfgbench.py capture --raw [--rate R]` takes a PlutoSDR's ADC samples, 12 bits, over the bench port, at a rate of its own if asked; `rfgbench.py dmr-bursts --raw --ramp [--rate R]` decodes and measures a raw capture on the board and sends only the results (spec §14.2).
+| Part | Status |
+|---|---|
+| DMR FEC, PDUs, AMBE frames, layer 2 | in; talker alias text, LRRP / GPS and packet data decoding aren't (a server on the raw bursts can do those) |
+| MMDVM protocol: requests, config v1 / v2, SET_FREQ, CW ID, duplex | in |
+| MMDVM over UDP (an OpenGD77 as a USB network adapter) | not supported: needs USB CDC-NCM host; refused in the settings |
+| Radios: detection, SFR detection, profiles, RSSI maps, modem and fixed tuners, settle time | in |
+| rigctld and command tuners | not supported: they need a computer; refused in the settings |
+| The roaming transceiver: DMRT / DMRK, listen-before-talk, the jitter buffer ([roamer.md](spec/fw/roamer.md) 3.9), header / terminator repeats, orphans, CSBK lead-in, the answer window, TMS / confirmed data replies, CW ID, the transmit tail, the 2 s idle status | in; queues bounded (256 bursts a call, 4 early streams of 16 bursts) |
+| Scan | in, `CONFIG_RDOF_SCAN` |
+| The repeater: duplex, network per slot, RF priority, echo drop, hang, CW ID, short LC; SFR; DCDM (two simplex calls at once on one frequency, on the SDR modem; no stock MMDVM or OpenGD77 firmware does DCDM) | in; queues bounded (192 bursts a slot, 6 streams) |
+| UTC slot timing | in (`slotgrid.c`); the gate on the board from netclock |
+| Split duplex | in (`split.c`; on the board `split_port.c`). The board's SDR modem as a half: host-tested only. `rdofradio --split-tx`: run against a simulated radio, not a real one; several splits on one SDR (`--config`): host-tested only |
+| Network calls, `tx`, status every 10 s and on change, Receiver, restart with backoff | in |
+| Settings | version 3, checked in full. Not: `${VAR}` from the environment, ids unique across a box |
+| HBlink4: DMRC, DMRD, DMRT, DMRK over UDP; the HBlink sink | in. Not HomeBrew's RPTL / RPTK / RPTC login |
+| HBlink4 over SCTP | SCTP over UDP (RFC 6951, tinysctp), not kernel SCTP: lwIP has none. One stream, PPID 0, ordered, as MMDVMHost. HBlink4 takes it with its usrsctp backend (`sctp_encap: udp`) |
+| MQTT | esp-mqtt; TLS behind `CONFIG_RDOF_MQTT_TLS`. The fallback to 3.1.1 hasn't met a broker without MQTT 5 |
+| Radios a board | two units that transmit and one SDR |
 
-**The line protocol** on TCP `CONFIG_RDOF_BENCH_LINE_PORT` (7373; spec §14, `bench_line.c`), for
-`tools/bench/rfgbench.py`:
+Decoder notes: Golay(20,8) and QR(16,7) decode from tables of their 256 and 128 codewords (`layer2.c`), a lookup
+when the word is clean, else the first codeword within 3 or 2 bits, the same answer as RadioFoundry's decoders
+(checked over every word). Golay(23,12) decodes by syndrome search instead of an 8 KB table. OpenGD77 quirks
+handled: the 0.5 s `TX_TAIL_S` after the transmitting flag clears, a missed status reply ridden out for 2 s, the 2 s
+idle status that keeps it in hotspot mode.
 
-- the receiver channels' bursts, cs8 captures and level triggers from a 2 s wideband history (kept only while a
-  capture or I/Q stream used it in the last ten minutes, so a first capture has no pre-roll);
-- `bench_tx` jobs through the SDR modem under `bench.tx`'s gates, in WS /tx's one job slot, `--power-dbm` (or
-  `--power`) capped at `bench.tx.max_dbm` or `rf_level`. A roamer keeps its SDR modem, so a W12 running one refuses transmit jobs;
-- the `tune` op moves the receiver's window for a session (`PUT /sdr`'s retune) until it ends or releases it; a
-  `trigger` or `rx` outside the window tunes for itself;
-- analog `tx` and `rx` with a `mode`: FM, and AM for airband (`rfgbench.py tx am` / `rx am`: 1 kHz at 30% by
-  default; the receiver gives depth, SINAD, THD, the carrier's level and offset, residual FM, and the audio and
-  envelope as PCM). Receive is in software on any front end; transmit needs I/Q (a Pluto) or polar I/Q (the W12).
+### Not done
 
-PSRAM: about 410 KB at rest (the engine 71 KB, its parser's strings 197 KB, send buffers 144 KB), and while in use
-16 KB a connection, 115 KB a job, 256 KB a capture, a trigger its whole capture (2 MB at most, less where the
-largest free block is smaller). A wideband capture needs 2 bytes a sample (768 KB/s at 384 kS/s), more than one TCP
-stream from the W12 carries (lwIP's 5.76 KB send buffer): a 4 s capture got 14% of its samples, the rest reported as
-`gap_samples` (2026-10-29). A trigger's channel (cs16 at 48 kS/s, 192 KB/s) is buffered up to 10.9 s ahead of the
-link. W12 #1 at 384 kS/s sent it at 40-150 KB/s (2026-11-06), so a trigger longer than about 12 s can still lose its
-end on a slow link (`gap_samples`); at 1 MB a 15 s trigger lost 1.5-3 s of each.
+**The firmware**
 
-### Not yet done (S3 SDR)
+- A split repeater on a board, a USB hub with two radios: host-tested only ([More than one
+  radio](#more-than-one-radio)). Two radios and an SDR on the N16R8 haven't been measured.
+- The MQTT network: phase 1 only, not yet run on a board. `bundle` above 1, confirmed data retries and NAKs, the
+  voter, MQTT-SN and the other transports come later; so do the private-call router and the apps (mqtt-net.md §14).
+
+**The SDR core**
+
+- Calibration, gain scans and recording on the board (the board learns its ppm instead).
+- cf32 recordings in `rdofsdr` (live SoapySDR streams are CF32).
+- The P4 firmware (no board).
+
+**The SDR as a radio**
+
+- CW ID; TX power control on `sim`; an SDR split half on the board; the UTC slot in the board's MQTT raw bursts (the
+  modem labels it, the burst doesn't carry it).
+
+**The S3 SDR**
 
 - The dongle's faults on a board: the gap filler is tested on the host only, the stall restart and open retries not
   at all.
@@ -1130,405 +1674,10 @@ end on a slow link (`gap_samples`); at 1 MB a 15 s trigger lost 1.5-3 s of each.
   for amplitude (lr2021-iq.md 3) at 125 kS/s; the PA is built for constant envelope, and a continuous downlink needs
   runs chained with no gap, which hasn't been tried (R3.5, R3.6, R3.7).
 
-## Host tools
+**The host tools and the Pluto**
 
-Built by the top-level CMake ("Host build and system tests"); SoapySDR (Debian / Ubuntu `libsoapysdr-dev`, Homebrew
-`soapysdr`) and libiio / libad9361 are used when found.
-
-### rdofsdr
-
-A receiver: a cu8 recording, or with SoapySDR a live device, in; bursts and tracker JSON out; `--bench` times each
-stage.
-
-```sh
-rdofsdr --soapy driver=rtlsdr -r 1536000 --ch C1:438.4875 ... [--gain DB] [--setting biastee=true] [--seconds S]
-```
-
-The device streams CF32 at the rate, tuned to the planned center; `--ppm` is the receiver's software correction. The
-rate must be a multiple of 48000 the device runs at exactly (`rdofsdr` warns when it can't).
-
-| Device | Soapy module | Rate (`-r`) | Status |
-|---|---|---|---|
-| RTL-SDR | SoapyRTLSDR | 1536000 | tested: SoapySDR 0.8, Debian aarch64 (2026-10-24) |
-| PlutoSDR | SoapyPlutoSDR (libiio) | 2400000 | tested: Rev.C (Z7010-AD9361), firmware v0.38, USB, macOS arm64 (2026-10-27) |
-| LimeSDR | SoapyLMS7 | 1536000 | untested |
-| HackRF One | SoapyHackRF | 2400000 or more | untested; 2-20 MS/s |
-| Ettus B200 / B210 | SoapyUHD | 1536000 | untested |
-| bladeRF | SoapyBladeRF | 1536000 | untested |
-| SDRplay RSP | SoapySDRPlay3 | 2400000 | untested; 2 MS/s or more |
-| Airspy Mini | SoapyAirspy | 6000000 | untested; 3 and 10 MS/s aren't multiples of 48000 |
-
-The Airspy R2 (2.5 and 10 MS/s only) doesn't fit. On the tested Pluto, SoapyPlutoSDR turns the FPGA's x8 decimator
-on below about 2.08 MS/s, and the board then streams a constant (through libiio too): run it at 2.4 MS/s or more.
-
-### rdofradio
-
-A device that transmits, run as the SDR's unit, with the board's code: a SoapySDR device (`--soapy`) or an AD9361 /
-AD9363 through libiio (`--iio`), or files (`--file RX[,TX]`: RX cf32 or .cu8 played in real time, then silence; TX
-written as cf32, zeros while idle; for runs with no radio, such as two rdofradios over a local broker). `--duplex full` is the repeater, `half` the roaming transceiver; `--parrot ID` sends
-back what it hears.
-
-```sh
-rdofradio --soapy driver=plutosdr -r 2400000 --allow-tx --rx 438.25 --tx 438.75 \
-    --duplex full --cc 1 --gain 20 --tx-gain 65 --tx-offset 0.063
-```
-
-Transmit power: `--tx-power DBM` at the antenna, from `--tx-max-dbm` (the device's output at its most gain, +7 dBm
-by default: a Pluto's nominal, not measured), so the gain is the most less the difference, held to the device's range
-with a warning. `--tx-gain DB` is the raw form, not with `--tx-power`. A frequency's `power_dbm` (SET_FREQ's RF level)
-takes 0.2 dB a level off it, from the next key-up. The start's log line gives the dBm and the gain.
-
-On a Pluto over USB (2026-10-27), RX and TX antennas on one bench: full duplex decoded the inbound throughout while
-transmitting, the outbound on the 30 ms grid; half duplex sent back a whole call with 0 FEC failures.
-
-**Timing.**
-
-- **A thread for the transmit stream.** A Pluto's read and write both block on USB; one thread doing both fell
-  behind, and libiio drops receive samples not read in time without an overflow.
-- **`--stream`** (default `bufflen=32768` on a Pluto, `bufflen=16384` on an RTL-SDR: its own 85 ms buffers read as dropped samples): with 65536 the loop delay changed by up to 27 ms from one start
-  to the next; with 16384 the transmit stream underran silently. With 32768 it stays at 61-65 ms: `--tx-offset 0.063`.
-  `--monitor` measures it by hearing the outbound back.
-- **Calibration.** Which slot a handheld's burst is in comes from where it falls against our outbound, so the
-  transmit path's delay must be known to a few ms. At the start (and when needed) the receiver tunes to the TX LO and
-  times a 20 ms pulse sent 100 kHz below it ("calibration: the transmit path is ... ms past its place"), up to 5
-  tries. A split wider than the receiver's band can't hear its outbound while repeating.
-- **The transmit guard** (`rdof/sdr/txguard.h`, `--iio`): a loop stall longer than the transmit queue (3 buffers)
-  would let the device run dry, and everything after would go out late for good. When the loop hasn't filled a
-  buffer 6 ms before the queue runs out, the writer finishes it with zeros and drops as many late samples
-  ("transmit: the loop fell behind; ... ms of zeros kept the stream's timing"): the air has a gap, the slots stay put.
-  The writer runs at SCHED_FIFO 10, the receive loop and its helper at 5 (nice -10 when refused).
-- **Receive losses.** A reader stall past the device's buffers loses samples without an overflow: the stream falls
-  behind the wall clock ("receive: ... ms of samples lost"; zeros take their place), the guard is told
-  (`rdof_txguard_slipped`), and rdofradio calibrates again at the next idle moment. Only a half second with a read
-  that waited counts: working through a backlog the device still holds loses nothing.
-- **SoapySDR** has no guard: a writer stall lets the device run dry and the stream moves one buffer later; idle,
-  rdofradio takes it out ("transmit: ... ms of delay taken out").
-- **Slots** are numbered by aligned timing ([slot-timing.md](spec/slot-timing.md)): a handheld's TSx burst falls
-  under outbound TSx and is repeated on TSx.
-- **Bandwidth.** A Pluto over USB 2 streams about 3.5 to 4 MS/s each way in full duplex. The modulator's phase table
-  allows 16384 phases on a host (a 25 MHz split at 30 MS/s needs 6250), 1024 on the ESP32.
-
-**The rate** without `-r` is the least multiple of 48 kS/s, from the device's usual rate (768 kS/s through libiio,
-2.4 MS/s through SoapySDR), whose window holds every receive channel and which the channelizer takes (its FFT is 64
-times the decimation; pffft does factors 2, 3 and 5). The most: 2.4 MS/s on a Pluto's own ARM, 3.84 MS/s from a host
-through libiio, 3.2 MS/s through SoapySDR. With the FPGA channelizer: "FPGA channelizer".
-
-#### Settings file
-
-`--config FILE` takes the firmware's settings, version 3 ([config-v3.md](spec/fw/config-v3.md)), opened by the
-firmware's parser (`rdof_plan_open`, `rdof_plan_check` with `rdof_plan_host`), calls going through the call router.
-It runs the file's one unit that transmits: a repeater, or a transceiver on the SDR (half duplex, on its idle
-frequency), or either on a modem with `--mmdvm PORT`. `mode` sfr or dcdm is refused. The unit's keys are the
-firmware's (`rdof_plan_radio`). The device stays on the command line (`--soapy` or `--iio`, `-r`, `--gain`,
-`--tx-power`, `--tx-max-dbm`, `--tx-gain`, `--tx-offset`, `--bw`, `--center`, `--allow-tx`, `--seconds`, `--web`,
-`-v`, `--bursts`, `--monitor`, `--tx-lo`, `--stream`, `--fft`, `--mmdvm`, `--baud`, `--rf-level`); `--rx`, `--tx`,
-`--cc`, `--duplex` and `--parrot` are refused beside it. Without `--tx-power` or `--tx-gain`, the SDR device's
-`tx.power_dbm` is the power.
-
-```sh
-cat > example.json <<'JSON'
-{
-  "version": 3,
-  "name": "example",
-  "id": 9990601,
-  "defaults": {"cc": 1},
-  "devices": [{"name": "pluto", "kind": "sdr", "driver": "soapy"}],
-  "frequencies": [{"name": "in", "freq": 438.25}, {"name": "out", "freq": 438.75}],
-  "apps": [
-    {"name": "example", "type": "repeater", "in": "in", "out": "out"},
-    {"type": "parrot", "tg": 9990}
-  ]
-}
-JSON
-rdofradio --soapy driver=plutosdr -r 2400000 --allow-tx --config example.json --gain 20 --tx-gain 65 --tx-offset 0.063 --web 8080
-```
-
-- **HBlink4:** with an `hblink` network it's a peer, the board's peer state (`common/src/hbpeer.c`) under a POSIX
-  UDP socket (`sdr/cli/rdofradio_net.c`). UDP only: `transport` sctp falls back to UDP with a warning.
-- **MQTT:** an `mqtt` network with `calls` carries the calls: as DMRD packets, or with `format: "v3"` as the MQTT
-  network's call messages ([mqtt-net.md](spec/fw/mqtt-net.md)) on a connection of its own (`rdof-net-{name}-{hw}`).
-- **Channels:** the receiver's channels are the SDR's as the board resolves them (`rdof_plan_sdr`): its receiver's
-  frequencies, then the ones it hears for the unit (a transceiver's, a repeater's input), all in the rate's window,
-  up to 16. They're all alike: with `identity: per_path` each is a peer of its own (one with the unit's peer id is the
-  unit's peer, not a second login), else what it hears goes up through the unit's peer as its path's policy says; each publishes on the SDR's MQTT topics and shows on the SDR's card. The
-  unit hears on the channel at its frequency (`io_channel`), and its own topics and card carry that channel's calls.
-  A duplex repeater's output isn't a channel. `--monitor` adds `out` (the TX heard back) when no channel is on it.
-  The transmitter's spurs land on other channels (on the Pluto, 100 kHz either side): a burst heard there that is
-  one the modem sent (within 24 bits of it, `rdof_sdrmodem_sent_bits`) isn't passed on, half duplex or a duplex
-  repeater's outbound alike. Without it a Pluto repeater sending on 438.3625 had 438.2625 send each call up again.
-- **Simplex on every channel** (a transceiver on the SDR): it sends on every frequency the SDR `transmits` on and
-  hears on any receiver channel (`io_channel`). The TX LO moves when a call's channel is past the modulator's reach
-  (0.4 of the rate, less half a channel), unkeyed. DMRD to any channel's peer goes out there through the same
-  transceiver, one channel at a time. Our own transmissions heard back are dropped within 60 ms of the key-up
-  (`echoes`). `"tx": false` on a frequency keeps every device off it.
-- **The clock:** with `ntp` servers it's netclock (`components/netclock`, `netclock_posix`) and the page's clock card
-  is the board's; `ntp.clock` `"os"` leaves the time to the OS. `--clock-state FILE` keeps netclock's rate across
-  restarts; `--set-os-clock` steps the OS clock when it's 100 ms off (root).
-- **The crystal:** `--ppm` corrects the receiver's channels and the modulator's carrier; `--ppm-tol` is how far to
-  trust it in the bench's reports. rdofradio doesn't learn it.
-- **The page:** with `--web`, the Settings tab edits the file. A save is checked by the same parser, written whole
-  (a temporary file renamed over it), and rdofradio restarts with the same command line. Settings that can't run keep
-  the page up: the card shows why and a save starts it again. Without `--config` the tab shows the flags as a read-only
-  version 3 document. `/api/status` `version` is `RDOF_VERSION`, else git describe at configure time.
-
-#### A radio transmits, the SDR receives (split duplex)
-
-`rdofradio DEVICE --allow-tx --split-tx PORT --rx MHZ --tx MHZ`: a split duplex repeater
-([repeater.md](spec/repeater.md)). A RadioFoundry radio with the split duplex extension ("SPLIT1" in its
-description) on PORT is the TX half; the SDR, opened receive only, is the RX half (any receiver: an RTL-SDR, a Pluto
-with its transmitter off). `rdof_split_t` joins them, as `split_port.c` does on a board. PORT is the radio's USB
-serial device or a programming cable's UART (`--baud`, 115200). `--split-power-cap` caps the radio's RF level (MMDVM
-scale 1-255). The SDR's transmitter flags (`--tx-power`, `--tx-max-dbm`, `--tx-gain`, `--tx-lo`, `--tx-offset`,
-`--monitor`) are refused.
-
-- **The SDR modem's clock** is the receive stream's sample count against the wall clock, at the freshest read; its
-  least lag over half a second follows the device's crystal. A lag 2 ms over that floor for a second is dropped
-  samples: zeros take their place.
-- **The port** is read by a thread that stamps each read, so a TIME round trip doesn't include the main loop's wait.
-- **Waits:** while the repeater waits for the radio's reply, the receiver keeps reading.
-
-Run on the Pluto (2026-10-28) against a simulated radio on a pty: the split came up, the repeater ran 60.0 s in
-60.0 s with no samples lost, the TX half's round trip settled at 1.1 ms. Not yet run with a real radio.
-
-**Several split repeaters on one SDR** (`--config`): every repeater in the file whose RX half is the SDR and whose TX
-half is a modem runs, up to 8 (`RDOF_ROLES_MAX`), each with its own radio. The first is the radio at `--split-tx`,
-or its device's `port.path`; the others need a `port.path` (and `baud`). Each split has its own receive-only SDR
-modem (`rdof_sdrsplits_t`, `sdrsplit.c`) on its input's channel, and each repeater registers with the router. Every
-split's output frequency is left out of the channels; its input is a channel of the receiver and goes up
-through that channel's sink. Bring-up runs every split at once, 15 s for all; one that fails stops the run.
-Host-tested (`sdrmodem_tests`: 8 simulated radios with different crystals on one receiver at 1.632 MS/s, each burst
-up on its own repeater and slot; `rdof_radiocfg_tests`: the file's units and ports). Not yet run with real radios.
-The web page and MQTT status show the first repeater only.
-
-#### An MMDVM modem on a serial port
-
-A Raspberry Pi with an MMDVM_HS hat, step by step (OS, serial port, build, settings, service):
-[raspberry-pi.md](raspberry-pi.md).
-
-`rdofradio --allow-tx --mmdvm PORT --rx MHZ [--tx MHZ]`: the repeater (`--duplex full`, the default) or the roaming
-transceiver (`--duplex half`) on an MMDVM modem: an MMDVM_HS hat on a UART (`/dev/ttyS0`), a hotspot or an MMDVM
-board on USB. A duplex modem runs the repeater, any modem the transceiver; the radio's type comes from its
-description (`rdof_radio_detect`). Its own call tracker feeds the page, MQTT, HBlink4 and listen before talk. The port
-is read by a thread.
-
-- `--rf-level N` caps every SET_FREQ's RF level (0-255; 255 = no cap), whatever sent it (`rdof_mmdvm_cap_rf_level`).
-- `--rx-offset-hz`, `--tx-offset-hz`, `--rx-level`, `--tx-level`: the modem's settings; with `--config`, the modem
-  device's `mmdvm` keys, and each frequency's `power_dbm` goes to an RF level on the device's `tx` map (255 without
-  one).
-- **An SDR beside it** (DEVICE, optional), opened receive only: it hears the modem's RX frequency as a channel of its
-  own (`modem-rx`, when no channel is on it), the modem's TX frequency as another (`modem-tx`, when it's different
-  and one window holds both: a split wider than the SDR's rate logs that and leaves it out) and the settings' channels, with the spectrum, and carries the bench's line protocol. Bench DMR
-  jobs transmit on the modem in simplex; a duplex modem runs `outbound` and `bench_repeater` too. `--split-tx` and the
-  SDR's transmitter flags are refused.
-- `--sim-sdr` in place of DEVICE: a receiver of noise, for tests with no RF (`host-tests/test_mmdvm_bench.py` runs the
-  whole bench on `fakemodem`).
-
-#### Receive only
-
-`rdofradio DEVICE --listen --rx MHZ [--tx MHZ]`: no unit and nothing that transmits, for an SDR with no TX antenna. The
-device is opened receive only (no TX stream, the TX LO powered down), `--allow-tx` isn't needed, and the receiver
-hears `--rx` and `--tx` as channels (`rx`, `out`). It serves the receiver's bursts, the spectrum (`--web`) and the
-bench's line protocol (`--bench`): the bench sees no transmitter (`info`'s station has `tx` false, "--listen: the SDR
-receives only"), so a transmit job is refused. `--allow-tx`, `--split-tx`, `--mmdvm`, `--config`, `--parrot`,
-`--bench-tx`, `--fpga-duc` and the transmitter's flags are refused with it.
-
-Run on a Pluto (2026-11-09) with `--fpga-chz` on a duplex hotspot's pair (448.7 / 443.7 MHz, then 448.7 / 446.075):
-the bench's `bursts` op timed a radio's inbound bursts against the hotspot's outbound over about half an hour, the TX LO
-powered down throughout.
-
-#### The bench's line protocol
-
-`--bench [ADDR:]PORT` serves [bench-api.md](spec/bench-api.md) §14 for `tools/bench/rfgbench.py`: the channels'
-bursts, wideband cs8 captures from a 2.5 s history, level-triggered channel captures, `bench_tx` jobs (`voice`,
-`csbk`, `data`, `listen`) and `bench_repeater` jobs. A transmit job needs `--bench-tx MHZ[,MHZ...]` (up to 32
-frequencies) or bands, and the half duplex transceiver: it takes the SDR modem for its length, at `--tx-power`, or
-at a job's `power_dbm` (bench_tx's `--power-dbm`) when that's lower: the gain turns down by the difference for the
-job, to the device's least at most (a sweep of a receiver's RSSI steps it), whatever RF level the transceiver left. A
-job's `power` 0-255 isn't applied on the SDR. On `--mmdvm` a job's power goes to an RF level on the modem's `tx` map
-under `--rf-level`. `tune` and a `trigger` or `rx` outside the window move the receiver for the job (bench-api.md
-§14.2). With the FPGA channelizer there's no wideband I/Q: capture, trigger, track and rx take the
-receiver's channels (2.5 s of each kept). When the bench line and the page listen past loopback, rdofradio lists them
-over DNS-SD (`_rfgbench._tcp` with TXT `kind` and `ver`, `_http._tcp`) through the host's responder, by running
-`avahi-publish-service` (a PlutoSDR's firmware has avahi) or macOS's `dns-sd` for as long as it runs; with neither,
-nothing is listed (`rdofradio_dnssd.c`).
-
-A bench line with only an MMDVM modem and an RTL-SDR (bench-api.md §14.9 lists what it can do):
-
-```sh
-# on a Linux box with libsoapysdr-dev and soapysdr-module-rtlsdr
-cmake -S . -B build/linux && cmake --build build/linux --target rdofradio
-build/linux/rdofradio --soapy driver=rtlsdr -r 2.4e6 --gain 30 --ppm PPM --allow-tx \
-    --mmdvm /dev/ttyAMA0 --rx MHZ --tx MHZ --duplex half --cc CC \
-    --bench 0.0.0.0:7373 --bench-tx MHZ,LOW-HIGH
-```
-
-- `--setting KEY=VALUE` (repeated) is the SoapySDR driver's own, written when the device opens: an RTL-SDR's bias tee
-  for an active antenna is `--setting biastee=true`. A setting the driver refuses stops the start.
-- `--bench-tx` is every frequency and band a job may key on; without it, no transmit job runs. `--allow-tx` is
-  required. With `--config`, the settings' `bench.tx` adds its frequencies and bands, caps each key-up at its
-  `max_key_s` (10 s unless set; 120 s without `bench.tx`) and the power at its `rf_level` or `max_dbm` (config-v3.md
-  §4.6); the files in `config/examples/` take every US amateur band from 6 m to 13 cm.
-- With no SDR (`--mmdvm` and `--config` alone), the bench runs transmit jobs on the modem and receives nothing.
-- `--ppm` is the RTL-SDR's crystal error, measured elsewhere: rdofradio doesn't measure it, and the bench's reports
-  are off by it otherwise. `--ppm-tol` says how well it is known.
-- `--duplex half` is a transceiver at rest, any modem. `--duplex full` needs a duplex board and runs a repeater;
-  jobs stop it and bring it back.
-- The serial port is whatever the modem is on (`/dev/ttyAMA0`, `/dev/ttyS0`, `/dev/ttyUSB0`, `/dev/ttyACM0`), with `--baud`
-  if it isn't the default. `--rf-level` caps the power of every job.
-- `--rx` and `--tx` are the modem's at rest; a job tunes the modem where it's asked. The SDR's window is `-r` wide, around
-  a center that holds the channels (or `--center`), and a request outside it tunes the SDR for itself.
-- A lost device ends the program with exit status 1: the modem's port going away, 5 s with no samples from the SDR, or
-  repeated read errors. Run it under a supervisor (a systemd unit with `Restart=on-failure`): an RTL-SDR that dropped
-  off USB comes back with a new process. Sessions, claims and running requests end with it; a client sees `lost` or
-  an `unavailable` connection. A modem that stops answering but keeps its port fails its jobs (`no reply`) and isn't
-  restarted.
-
-### Host web page
-
-`hostweb/` serves the firmware's page (embedded from `esp_idf/main/web/index.html` and the components' scripts) from
-a host tool. Build with `-DRDOF_HOST_WEB=ON`, run with `--web [ADDR:]PORT` (127.0.0.1 unless ADDR is given). The tool
-publishes a status snapshot, log lines and calls (`rdof/hostweb.h`), and may give settings hooks. The API is the
-firmware's code (`rdof/webapi.h`): `/api/status`, `/api/lastheard`, `/api/log`, with the hooks `/api/config`,
-`/api/resolved`, `/api/restart` and `/api/ota`; `501 not on this platform` for the rest. The status's `caps` say what
-the server has, and the page hides the rest. Publishing never waits on the server.
-
-### PlutoSDR
-
-`rdofradio --iio URI` drives an AD9361 or AD9363 through libiio 0.x (`sdr/cli/rdofradio_iio.c`), with no SoapySDR. A
-PlutoSDR's firmware has libiio and libad9361, so a build for its ARM runs on a stock Pluto (or a Zynq 7010 / 7020
-clone on ADI's firmware) with nothing installed. `ip:192.168.2.1` or `usb:` reach a Pluto from a host.
-
-**Build:** `tools/pluto/build.sh` (an x86_64 host with Docker) builds in Debian 9, whose glibc is older than the
-firmware's, against ADI's v0.38 sysroot. It writes `build/pluto/rdof-pluto.tar.gz` (`rdofradio`, `rdofsdr`,
-`rdofchz`; they need only libiio, libad9361 and libc) and `build/pluto/rdof-pluto-bundle-VERSION.tar.gz` (the
-installer, below).
-
-**Run** from `/tmp` (RAM):
-
-```sh
-gunzip -c rdof-pluto.tar.gz | tar -xf -
-./rdofradio --iio local: --allow-tx --rx 438.25 --tx 438.75 --duplex full --cc 1 --gain 20 --tx-gain 65 \
-    --parrot 9990 --web 0.0.0.0:8080
-```
-
-- `--iio` defaults to 768 kS/s: libad9361's `ad9361_set_bb_rate` loads the chip's own FIR under 2.083 MS/s, and the
-  FPGA's decimator stays off.
-- The RX and TX LOs are separate, so the split is anything both tune to (70 MHz to 6 GHz on an AD9361, 325 MHz to
-  3.8 GHz on an AD9363). The receiver hears its own outbound only during the calibration.
-- TX gain is 0..89 dB (89..0 dB attenuation), as SoapyPlutoSDR's. The LOs are powered up at the start and down at the
-  end: SoapyPlutoSDR leaves both down when it closes, and the transmitter then sends nothing.
-- The receiver shares each chunk with a helper thread on the other core: the forward FFTs split in half, the
-  channels a third and two thirds; the bursts go to the sinks on the loop's thread. The IIO buffer is copied out
-  before it's read (16-bit loads straight from the DMA buffer took 20% of a core, against 4%).
-
-Measured on a Rev.C (Z7010-AD9361), firmware v0.38, two Cortex-A9 cores at 667 MHz, the ARM channelizing
-(2026-10-28 and 29):
-
-| Run | Real time | CPU |
-|---|---|---|
-| SoapySDR at 2.4 MS/s, the built-in FFT | 34%: samples lost every second | the main thread 100% of a core |
-| `rdofsdr --bench`, 2.4 MS/s, built-in FFT / pffft | | 1989 / 762 ms per s of IQ |
-| `--iio local:` 768 kS/s, pffft, full duplex | 100% (60.0 s in 60.0 s) | 32% of the two cores, 20 MB |
-| `--iio local:` 864 kS/s, 9 channels, half duplex, two handhelds keyed at once, one a slot | 100%, no samples lost | main thread 70%, helper 34%, writer 20% |
-| `--iio local:` 1.296 MS/s, 10 channels (438.0625 to 438.975 MHz) | 100% | the receive loop 69% busy |
-
-#### Installing on the Pluto
-
-The bundle ([tools/pluto/bundle/README.md](../tools/pluto/bundle/README.md)): `./install.sh --config FILE` (or
-`--example`) from a computer, over ssh, puts `rdofradio`, the settings and a supervisor loop (`run.sh`) in the
-Pluto's persistent flash (`/mnt/jffs2`). The firmware's `/mnt/jffs2/autorun.sh` starts the loop at boot, and the loop
-starts `rdofradio` again 5 s after it exits.
-
-- The settings stay in `/mnt/jffs2/rdof/config.json` (the page edits them), the device flags in `flags`
-  (`flags.example`: `--gain 20 --tx-gain 0 --web 0.0.0.0:8080 --clock-state ... --set-os-clock --bench 7373`).
-  netclock's state is kept in `/mnt/jffs2/rdof/netclock.state` and sets the Pluto's clock (it starts in 1970).
-- **Updates:** the page's Firmware update (`POST /api/ota`; `--ota FILE`: the bundle's `rdofradio.gz`, or an ELF for
-  the Pluto's ARM) leaves the new program in RAM and stops rdofradio; `run.sh` checks it runs, puts it in the flash
-  in place of the old one (there's no room for both), and puts the old one back if the new one ends in error within
-  30 s.
-- The Pluto makes a new ssh host key at every boot, so the script doesn't check it.
-- At `--tx-gain 0` (the default) the start's calibration pulse isn't heard, so the outbound slot timing isn't
-  measured.
-- Tested on a Pluto+ style clone (Z7010, 1 GB, Ethernet, SD boot, v0.38): the page answers about 25 s after power-on.
-
-#### FPGA channelizer
-
-`--fpga-chz [ADDR]` (with `--iio`) decodes from the FPGA channelizer block (`chzhw.h`) in place of the ARM's
-channelizer: every channel at once, 15 on the 7010 clone where the ARM manages 10. It probes the block (at
-`0x7C480000` unless ADDR is given) and plans the rate as usual, up to 48 kS/s times the most the block decimates
-(24.576 MS/s with its CIC: R D at most 512).
-
-- **The plan:** no CIC when the FIR alone decimates enough; else the CIC with the smallest D from 8 that divides the
-  step. The FIR's taps (16 D + 1) are the block's time: R 9, D 46 overflowed its input at 19.872 MS/s.
-- **The frames** reach the receiver through `rdof_sdr_rx_channels_in`: int16 with 3 fraction bits over the 12-bit
-  ADC (`RDOF_CHZFX_OUT_SCALE`, 1/16384); a tone reads within 0.001 dB of the float path. Lost frames become zeros (the
-  status's lost count); STATUS overflow bits count as overflows. The block is stopped on exit.
-- **The idle gate's noise** comes from the channels: the 25th percentile across all channels, the least of the last
-  16 chunks.
-- **The AFC** writes the block's NCO steps once a turn.
-- **No wideband I/Q:** the page's spectrum is the channels' own: a 64-point FFT of each channel's 48 kS/s, its 33
-  bins within 12 kHz (750 Hz each) a piece of the row (`rdof_hostweb_spectrum_pieces`, `pieces` in
-  `/api/spectrum`), so a signal off a channel's center shows. The page shows each at its frequency, dimmed past the
-  channel filter's 7.5 kHz cutoff (attenuated there), joins channels 25 kHz apart into one strip (each to the midpoint;
-  the join dips, both filters being past cutoff there), and cuts a wide gap between them to an axis break. The bench keeps every channel's
-  outputs for 2.5 s instead (about 130 bytes an output instant for 15 channels, 16 MB; the wideband ring at 19.872 MS/s
-  is 99 MB), with each one's NCO offset: capture, trigger, track and rx on a receiver channel take its I/Q from there
-  (bench-api.md 14). The block's int16 LSB is near the noise, so a quiet channel's floor reads about -67 dB. The duplex
-  calibration points channel 0 at the pulse while it runs.
-- **With `--split-tx` or `--mmdvm`** the SDR receives only and the block runs as usual. Not yet tested with a radio
-  on the Pluto's USB.
-- `rdofchz` brings the block up by hand: `--probe` reads ID and CAPS through `/dev/mem`; with `--fs`, `--center`,
-  `--ch MHZ ...` (and `--cic R`) it starts the block and prints the frames, gaps and each channel's level once a
-  second.
-- Host test: `rdof_chzrx_tests` runs `e2e_288k.cu8` through the block's model into this entry and matches the float
-  path burst for burst.
-
-`--fpga-duc [ADDR]` (on a bitstream with the TX interpolator, at `0x7C4A0000` unless ADDR is given) runs the transmit
-stream at 192 kS/s, or 96 kS/s when the rate isn't a multiple of 192 kS/s, and the FPGA's CIC (order 3, R 17 to
-4095) brings it to the device's rate, so the ARM makes a narrow transmit stream while the receiver runs wide.
-
-- The rate is planned to a multiple of 96 kS/s the interpolator makes (9 channels over 650 kHz: 1.632 MS/s, R 17);
-  with none for the channels it turns off.
-- 48 kS/s is refused: its first images, 56 dB down, land on the next channels of a 50 kHz grid. At 96 kS/s they are
-  76 dB down, at 192 kS/s 94 dB.
-- The TX LO sits 62.5 kHz above the carrier at 192 kS/s and 18.75 kHz at 96 kS/s (`--tx-lo` unless given). Only TX1.
-- The TX buffers are about 5 ms (512 samples at 96 kS/s), so the queue stays inside the stream's 50 ms lead.
-- With `--split-tx` or `--mmdvm` the SDR doesn't transmit, and it's left unused.
-- Without the block nothing answers at ADDR, and a read there is a bus error: both options need the bitstream.
-
-Measured on the 7010 clone (2026-11-03 and 04):
-
-| Run | Result |
-|---|---|
-| `rdofchz`, no CIC: 10 channels from 2.4 MS/s at 438.525 MHz | no frame lost over 6 s; a 20 dB gain step moved every channel 19-20 dB; flat to 3 kHz, -3 dB near 5.5 kHz, -59 dB beyond 14 kHz |
-| `rdofchz` with the CIC: 15 channels across 438.0125 to 438.6 MHz from 23.04 MS/s (R 60, D 8, 129 taps) | no frame lost and no input overflow over 10 s; the ARM 95% idle |
-| `--fpga-chz --fpga-duc`, 15 channels from 19.872 MS/s, TX at 96 kS/s (R 207) | 30.0 s in 30.0 s, no channel frame lost; without `--fpga-duc`, over 1,000 frames lost a second |
-| loopback with `--bench`, the 15 frequencies in `--bench-tx` (TX gain 79) | 8 CSBKs on each of the 15 in turn, all 15 receiving: 120 of 120 decoded (CC 2, no sync errors, -35 dBFS, 11-12 Hz off); a 10-superframe voice call, 71 of 71 bursts, nothing on the channels 50 kHz either side |
-
-#### The bitstream
-
-The bitstream for both blocks is kept in `tools/pluto/fpga/` as `rfg-pluto-<board>.bit.bin` (MIT and ADI BSD; its
-README and `MANIFEST` say where it was built from). There is one for `fishball7010` (a 7010 Pluto+ style clone with
-32-bit DDR, 1 GB and Ethernet) so far; `rdof/sdr/plutofpga.h` also knows `plutoplus` and `adalm-pluto`.
-
-With `--iio local:`, `--fpga-chz` or `--fpga-duc` loads it before anything else (`sdr/cli/rdofradio_fpga.h`):
-
-1. **The board** from the Zynq's IDCODE, its DDR width, MIO 16's function, the memory size and the AD9361's LVDS
-   mode. `rdofradio --fpga-board` prints it and the file's name.
-2. **The file:** `--fpga-bit FILE`, else the first found in `/mnt/jffs2/rdof/`, `rdof/` on any SD card or USB stick
-   partition (mounted read-only for the look if it isn't mounted), `/lib/firmware/`.
-3. **The check:** its IDCODE against the chip's.
-4. **The load:** the PL's drivers unbound, the FPGA manager loads it, the drivers bound again, the AD9361's ADC and
-   DDS cores also when a probe before had failed. A driver that doesn't probe again (the ADC's RX tuning, in
-   `dmesg`) is an error and nothing is noted. `/tmp/rdof-fpga` notes what's in, so a restart loads nothing; a reboot
-   brings the stock design back.
-
-With none for the board both options are off and the ARM channelizes: the channels that don't fit its
-window are left out, in the settings' order, the unit's kept (15 configured on the clone: 10 kept, at 1.296 MS/s).
-
-`install.sh` writes the board's bitstream to `rdof/` on the SD card's boot partition (the one with `BOOT.bin`, which
-it never touches), only when it differs; the flash has no room for it. It then adds `--fpga-chz --fpga-duc` to
-`flags`, so every boot loads it.
+- `rdofradio --split-tx` with a real radio, and several splits on one SDR with real radios.
+- The FPGA channelizer with a radio on the Pluto's USB (`--split-tx` or `--mmdvm`).
 
 ## License
 
