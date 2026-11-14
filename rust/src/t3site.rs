@@ -2714,7 +2714,7 @@ impl Site {
                 self.heard(v.source);
                 self.supp_ackvit(&v); // 6.4.9.2, 6.4.10: an MS challenges the TSCC
             }
-        } else if let Some(a) = Ack::decode(pdu).filter(|a| a.op == OP_ACKU) {
+        } else if let Some(a) = Ack::decode(pdu).filter(|a| a.op == OP_P_ACKU) {
             self.pa_answer(ch, &a); // P_ACKU to a radio check or a selective clear (t3pcheck.rs)
         } else if let Some(m) = Maint::decode(pdu) {
             let c = self.chans[ch];

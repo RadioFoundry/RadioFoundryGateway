@@ -870,8 +870,8 @@ impl Ms {
         if !to_me || !(check || clear) || self.pay_reply.is_some() {
             return;
         }
-        let r = Ack { op: OP_ACKU, response_info: 0, reason: R_MS_ACCEPTED, target: TSI, source: self.id };
-        self.pay_reply = Some(r.encode());
+        let r = Ack { op: OP_P_ACKU, response_info: 0, reason: R_MS_ACCEPTED, target: TSI, source: self.id };
+        self.pay_reply = Some(r.encode()); // table 7.4: P_ACKU on the payload inbound
         self.pay_leave = clear;
     }
 

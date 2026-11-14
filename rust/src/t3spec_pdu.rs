@@ -17,6 +17,7 @@ fn opcodes_table_b1() {
     assert_eq!(p::OP_RAND, spec::C_RAND);
     assert_eq!(p::OP_ACKD, spec::C_ACKD);
     assert_eq!(p::OP_ACKU, spec::C_ACKU);
+    assert_eq!(p::OP_P_ACKU, spec::P_ACKU);
     assert_eq!(p::OP_BCAST, spec::C_BCAST);
     assert_eq!(p::OP_MAINT, spec::P_MAINT);
     assert_eq!(p::OP_CLEAR, spec::P_CLEAR);
@@ -273,6 +274,22 @@ fn acku_layout_table_7_27() {
         .done();
     let a = p::Ack::decode(&want).expect("C_ACKU reads");
     assert_eq!((a.op, a.reason, a.target, a.source), (spec::C_ACKU, spec::MS_ACCEPTED, 2002, 3003));
+    assert_eq!(a.encode(), want);
+}
+
+/// Table 7.4: on a payload channel's inbound the MS answers with P_ACKU (opcode 10 0011b), not C_ACKU; the same
+/// layout (a P_AHOY's radio check or selective clear, 6.6.2.3.2.1).
+#[test]
+fn p_acku_on_payload_table_7_4() {
+    let want = Bits::csbk(true, spec::P_ACKU)
+        .f(7, 0)
+        .f(8, spec::MS_ACCEPTED as u64)
+        .f(1, 0)
+        .f(24, spec::TSI as u64)
+        .f(24, 3101276)
+        .done();
+    let a = p::Ack::decode(&want).expect("P_ACKU reads");
+    assert_eq!((a.op, a.reason, a.target, a.source), (spec::P_ACKU, spec::MS_ACCEPTED, spec::TSI, 3101276));
     assert_eq!(a.encode(), want);
 }
 

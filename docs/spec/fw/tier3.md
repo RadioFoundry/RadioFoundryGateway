@@ -644,7 +644,8 @@ of a group call), or the talkgroup has a call open, `radio_check` sends P_AHOY t
 `clear_ms` command is the selective clear (6.6.2.3.1.8): table 6.44 (Cancel Call 1111b, Service_Kind_Flag 0, an
 MS) or 6.45 (flag 1, a talkgroup). The P_AHOY goes on the channel's own slot only while nobody talks (the hang
 time, as P_PROTECT, 3.20), `sd_tries` times 360 ms apart; one at a time a channel. The MS answers P_ACKU
-(MS_Accepted) to TSI on the inbound (6.6.2.3.2.1, 6.6.2.3.2.7); a selective clear then sends it back to the TSCC,
+(MS_Accepted) to TSI on the inbound (6.6.2.3.2.1, 6.6.2.3.2.7): opcode 10 0011b (table 7.4), not C_ACKU's 10 0001b,
+and the site takes only P_ACKU there (a first on-air run lost every answer to that); a selective clear then sends it back to the TSCC,
 and the call goes on for the others. The members' answers to a talkgroup collide: an inbound burst that doesn't
 decode counts as answered (6.6.2.3.1.1: "the TS may use the presence of the burst"); a talkgroup's selective clear
 then clears the call (P_CLEAR) for any member that missed it. The log says "radio check of X on payload: answered"

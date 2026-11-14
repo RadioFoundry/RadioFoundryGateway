@@ -73,6 +73,7 @@ pub mod spec {
     pub const C_RAND: u8 = 0b01_1111; // table 7.25
     pub const C_ACKD: u8 = 0b10_0000; // table 7.23
     pub const C_ACKU: u8 = 0b10_0001; // table 7.27
+    pub const P_ACKU: u8 = 0b10_0011; // table 7.4: payload inbound
     pub const C_BCAST: u8 = 0b10_1000; // table 7.20
     pub const P_MAINT: u8 = 0b10_1010; // table 7.32
     pub const P_CLEAR: u8 = 0b10_1110; // table 7.30

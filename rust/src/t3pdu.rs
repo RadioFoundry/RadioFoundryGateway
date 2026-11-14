@@ -15,6 +15,8 @@ pub const OP_AHOY: u8 = 28;
 pub const OP_RAND: u8 = 31;
 pub const OP_ACKD: u8 = 32;
 pub const OP_ACKU: u8 = 33;
+/// P_ACKU: an MS's answer on a payload channel's inbound (table 7.4), laid out as C_ACKU
+pub const OP_P_ACKU: u8 = 35;
 pub const OP_BCAST: u8 = 40;
 pub const OP_MAINT: u8 = 42;
 pub const OP_CLEAR: u8 = 46;
@@ -298,7 +300,7 @@ impl Ack {
     }
     pub fn decode(b: &[u8; 10]) -> Option<Ack> {
         let op = opcode(b);
-        if (op != OP_ACKD && op != OP_ACKU) || fid(b) != 0 {
+        if !matches!(op, OP_ACKD | OP_ACKU | OP_P_ACKU) || fid(b) != 0 {
             return None;
         }
         let mut r = reader(b);
