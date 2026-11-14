@@ -2076,7 +2076,7 @@ One site (the SDR site, two carriers):
 | Group and individual voice, the availability check | yes | yes, on both carriers |
 | Broadcast calls and all-calls | yes | yes: cleared right after the terminator |
 | Emergency alarm, emergency call, cancel | yes | yes |
-| Emergency pre-emption | yes | no: the radio can't yet act on the RC cease as the talker |
+| Emergency pre-emption | yes | not yet: the radio now ceases on the RC (see transmit interrupt below); the pre-emption itself not run with it |
 | Status, status polls, UDT short data | yes | yes |
 | UDT short data polling | yes | yes: the radio polling an air MS, and an air MS polling the radio, asleep or not (13.2 step 8f) |
 | Packet data at rate 1/2, 3/4 and 1, up to 127 blocks | yes | partly: IP text messages, confirmed and unconfirmed, at rate 1/2 |
@@ -2090,7 +2090,7 @@ One site (the SDR site, two carriers):
 | Full-duplex individual calls | yes (off by default) | no |
 | Supplementary user data on voice calls (3.21) | yes | yes: both ways, to an MS and a talkgroup |
 | Supplementary user data on packet data, UDT short data and statuses (3.21) | yes | no |
-| Transmit interrupt | yes | air MSs only, on the modem site |
+| Transmit interrupt | yes | yes: a second radio (an MS with RadioFoundry's engine, its modem's receive tap read for the dedicated RC) on the modem site, interrupted from site 1 in a TG 1 call; it decoded the RC cease, sent its terminator and stopped 1.2 s after the accept, and the interrupter's call followed on the same channel 0.16 s later (2026-11-14 21:43 UTC) |
 | Composite TSCC | yes (group, individual, data, emergency, network calls, a sleeping member; 3.19) | yes, on the Pluto as one carrier (2026-11-14 18:20 UTC, t3-fa58d1a8): the radio's call on the lent TS1 while TS2 carried another; an air MS's call on TS1 during the radio's on TS2; the idle radio camped through a 9 s lend, no hunt; its access held until the Aloha, then granted TS1 again. Across sites (2026-11-14 19:21 UTC, both sites one-carrier composite, hat-t3 on t3-5c72bfbf): with TS2 busy on both sites (a network TG 2 call), the radio's TG 1 call from site 2 and an air MS's TG 1 call back each took the lent TSCC slot on both sites; 66 and 49 bursts, BER 0, none lost |
 | Three or four SDR carriers | yes | no: the SDR site runs two |
 
@@ -2105,7 +2105,7 @@ Two sites (the SDR site and the modem site, over mqtt-net):
 | Composite TSCC on both sites | yes | yes: a group call each way, on the lent TSCC slot at both sites (2026-11-14 19:21 UTC) |
 | UDT polls across sites | yes | yes: an air MS on site 1 polling the radio on site 2, and the radio polling it (2026-11-14 19:25 UTC) |
 | Transmit interrupt across sites | yes (off by default) | yes: the radio on site 2 interrupting an air MS's TG 1 call from site 1 with a status; the talker de-keyed and ceased at both sites (2026-11-14 20:43 UTC) |
-| ALS calls and their termination across sites | yes (off by default) | yes: each way, and the caller's status 123 ending it, from the radio on site 2 and from an air MS on site 1 (2026-11-14 20:53 UTC). A called radio that can't hear the RC keeps talking past the P_CLEAR |
+| ALS calls and their termination across sites | yes (off by default) | yes: each way, and the caller's status 123 ending it, from the radio on site 2 and from an air MS on site 1 (2026-11-14 20:53 UTC). A called radio that ceases on the RC (the second radio): its terminator 1.16 s after the accept, the site's "ceased", then P_CLEAR (21:42 UTC); one that can't hear it keeps talking past the P_CLEAR |
 | Supplementary user data across sites | yes | yes: on UDT short data, a status, packet data and voice, both ways (2026-11-14 19:25 and 20:43 UTC) |
 
 Hardware setups:
