@@ -1,60 +1,77 @@
 # hostweb
 
 The firmware's web page for a host (Linux / macOS) tool: watch a running `rdofradio` live in a browser, and edit its
-settings. Off by default. POSIX sockets and pthreads, no other dependency. The firmware doesn't use it; it has its
-own server (esp_http_server). Both route the shared API to the same handlers in `common/src/webapi.c`
-(`rdof/webapi.h`); each gives it a platform: a struct of optional function pointers and capability flags.
+settings. Off by default.
+
+```sh
+cmake -S . -B build/rel -DRDOF_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release -DRDOF_HOST_WEB=ON && cmake --build build/rel
+build/rel/rdofradio ... --web 8080          # http://127.0.0.1:8080/
+```
+
+- POSIX sockets and pthreads, no other dependency.
+- The firmware doesn't use it; it has its own server (esp_http_server). Both route the shared API to the same
+  handlers in `common/src/webapi.c` (`rdof/webapi.h`), and each gives it a platform: a struct of optional function
+  pointers and capability flags.
+- One thread serves one connection at a time, bound to 127.0.0.1 unless told otherwise. There is no
+  authentication: bind to another address only on a network you trust. A client that stalls holds it up to 2 s.
 
 ## What it serves
 
 - `/`, `/netclock.js`, `/wifilist.js`: the firmware's own files (`esp_idf/main/web/index.html` and the two
-  components' scripts), embedded at build time by `embed.cmake`. Not copies. The page loads the two scripts only
+  components' scripts), embedded at build time by `embed.cmake`, not copied. The page loads the two scripts only
   when the status says the server has them, so here it doesn't.
 - The shared routes (`rdof_webapi_handle`):
-  - `GET /api/status`: the board (name, uptime, `version` "host", `reset` "start" or "restart"), the process's and
-    the system's memory (`rss`, `rss_peak`, `mem_total`, `mem_avail`: mach on macOS, `/proc` on Linux), the system
-    clock as the OS's NTP client keeps it (`clock` "os" and `clock_os`, read with `ntp_adjtime`), each core's busy
-    share and the program's since the last status (`cpu`, `cpu_process`: `/proc/stat` on Linux, mach on macOS), the
-    radio as a repeater or roamer card, the devices (below), extra cards `host`, `slots` (per slot call src / dst /
-    group / BER / RSSI) and `parrot`, and `caps`: what this server has (below).
-  - The devices: `sdrs`, a card each as the board's SDR has (the board's names where they mean the same: `rtl`,
-    `rtl_open`, `receiving`, `sample_rate`, `center_hz`, `gain_db`, `cpu_load`, `cpu_stages`, `mqtt`, `hblink_peers`,
-    `channels`; a host's own: `samples_per_s`, `overflows`, `read_errors`, `lost_ms`, `tx_hz`, `tx_on`, ...), and
-    `modems`, a card each for a radio or modem on a port (a RadioFoundry radio's hotspot, an MMDVM: `kind`, `role`,
-    `port`, `open`, `ready`, `version`, `state`, `error`, and its counters). Up to four of each
-    (`rdof_hostweb_sdr_t`, `rdof_hostweb_modem_t` in the status).
-  - `last_exit` (with `rdof_hostweb_last_exit`): how the last run ended, from the supervisor's record: `rc` (the
-    shell's status), `signal` and `signal_name` when a signal ended it, `at` (Unix s), `last_line` (the log's last
-    line before it). The page's crash card shows it.
+  - `GET /api/status` (below).
   - `GET /api/lastheard` and `GET /api/log`: the last heard list and a 64 KB log ring.
   - `GET / POST /api/config`, `GET /api/resolved`, `POST /api/restart`: when the tool gives settings hooks
     (`rdof_hostweb_settings`). Read only, a POST answers 403. A POST is checked by the tool's own `save`; saved,
     the answer is "saved; restarting" and the tool's `restart` hook runs after it goes out.
-- `GET /api/spectrum?since=N[&sdr=K]`: the spectrum and waterfall, as the board's: SDR K's rows (default 0) newer
-  than row N (512 bins, base64, dBFS times -2), plus `channels`, the status's receive, transmit and monitored
-  channels (SDR K > 0: that SDR's channels) with `in` set for those in the span. The tool makes an SDR's rows
-  (`rdof_hostweb_spectrum_row_sdr`) only while `rdof_hostweb_spectrum_wanted_sdr`: the page asked for that SDR in
-  the last 10 s. With more than one SDR the page has a picker and shows one at a time. A row in pieces
-  (`rdof_hostweb_spectrum_pieces`: an FPGA channelizer's channels, each its own bins) adds `pieces`,
-  `[{f0, n, bw, pass}]` in the row's order (`f0` the low edge of the first bin, Hz; `pass` the channel filter's cutoff
-  either side of the piece's center, 0 none); `bins` is then the pieces' total, up to `RDOF_HOSTWEB_SPECTRUM_MAX`.
+- `GET /api/spectrum?since=N[&sdr=K]`: the spectrum and waterfall, as the board's.
+  - SDR K's rows (default 0) newer than row N: 512 bins, base64, dBFS times -2.
+  - `channels`: the status's receive, transmit and monitored channels (SDR K > 0: that SDR's channels), with `in`
+    set for those in the span.
+  - The tool makes an SDR's rows (`rdof_hostweb_spectrum_row_sdr`) only while `rdof_hostweb_spectrum_wanted_sdr`:
+    the page asked for that SDR in the last 10 s. With more than one SDR the page has a picker and shows one at a
+    time.
+  - A row in pieces (`rdof_hostweb_spectrum_pieces`: an FPGA channelizer's channels, each its own bins) adds
+    `pieces`, `[{f0, n, bw, pass}]` in the row's order (`f0` the low edge of the first bin, Hz; `pass` the channel
+    filter's cutoff either side of the piece's center, 0 none); `bins` is then the pieces' total, up to
+    `RDOF_HOSTWEB_SPECTRUM_MAX`.
 - `GET /api/crash`: the supervisor's record of the last exit, as text (404: none); `DELETE /api/crash` erases it.
   Only with `rdof_hostweb_last_exit`.
 - `POST /api/ota`: a new program as the body, with `rdof_hostweb_ota` (a path, a size cap, the tool's check of the
-  image, and a hook that stops the tool): checked (400 with the reason), written whole to the path, answered
-  "updated; restarting" as the board's, then the tool stops for its supervisor to start the new one (rdofradio's
+  image, and a hook that stops the tool). Checked (400 with the reason), written whole to the path, answered
+  "updated; restarting" as the board's; then the tool stops for its supervisor to start the new one (rdofradio's
   `--ota FILE` and the Pluto bundle's `run.sh`). Without it, 501.
 - Every other `/api/` path, and every other POST / DELETE, answers 501 with `{"error":"not on this platform", ...}`:
   core dump, Wi-Fi, the firmware's clock, tasks.
 
-`caps` in the status: `ota`, `restart`, `wifi`, `tasks`, `coredump`, `board_mem`, `sys_mem`, `netclock`,
-`os_clock`, `links`, `settings`, `settings_edit`, `spectrum`, `crash`. The page shows what's set and hides the rest (a status without
-`caps` is firmware with everything). Here: `sys_mem` and `os_clock`; `settings`, `settings_edit` (writable) and
-`restart` with the settings hooks; `ota` with `rdof_hostweb_ota`; `spectrum` when the status says the tool makes one; `crash` with
-`rdof_hostweb_last_exit`.
+### The status
 
-One thread serves one connection at a time, bound to 127.0.0.1 unless told otherwise (there is no
-authentication: bind to another address only on a network you trust). A client that stalls holds it up to 2 s.
+| Part | What |
+|---|---|
+| the board | name, uptime, `version` "host", `reset` "start" or "restart" |
+| memory | the process's and the system's: `rss`, `rss_peak`, `mem_total`, `mem_avail` (mach on macOS, `/proc` on Linux) |
+| clock | the system clock as the OS's NTP client keeps it: `clock` "os" and `clock_os`, read with `ntp_adjtime` |
+| `cpu`, `cpu_process` | each core's busy share and the program's since the last status (`/proc/stat` on Linux, mach on macOS) |
+| the radio | a repeater or roamer card |
+| `sdrs` | a card each as the board's SDR has, with the board's names where they mean the same (`rtl`, `rtl_open`, `receiving`, `sample_rate`, `center_hz`, `gain_db`, `cpu_load`, `cpu_stages`, `mqtt`, `hblink_peers`, `channels`) and a host's own (`samples_per_s`, `overflows`, `read_errors`, `lost_ms`, `tx_hz`, `tx_on`, ...) |
+| `modems` | a card each for a radio or modem on a port (a RadioFoundry radio's hotspot, an MMDVM): `kind`, `role`, `port`, `open`, `ready`, `version`, `state`, `error`, and its counters |
+| `host`, `slots`, `parrot` | extra cards; `slots` has each slot's call src / dst / group / BER / RSSI |
+| `last_exit` | with `rdof_hostweb_last_exit`: how the last run ended, from the supervisor's record: `rc` (the shell's status), `signal` and `signal_name` when a signal ended it, `at` (Unix s), `last_line` (the log's last line before it). The page's crash card shows it |
+| `caps` | what this server has (below) |
+
+Up to four SDRs and four modems (`rdof_hostweb_sdr_t`, `rdof_hostweb_modem_t` in the status).
+
+`caps` can hold `ota`, `restart`, `wifi`, `tasks`, `coredump`, `board_mem`, `sys_mem`, `netclock`, `os_clock`,
+`links`, `settings`, `settings_edit`, `spectrum`, `crash`. The page shows what's set and hides the rest; a status
+without `caps` is firmware with everything. Here:
+
+- always `sys_mem` and `os_clock`;
+- `settings`, `settings_edit` (writable) and `restart` with the settings hooks;
+- `ota` with `rdof_hostweb_ota`;
+- `spectrum` when the status says the tool makes one;
+- `crash` with `rdof_hostweb_last_exit`.
 
 ## API (`rdof/hostweb.h`)
 
@@ -74,19 +91,24 @@ authentication: bind to another address only on a network you trust). A client t
 | `rdof_hostweb_save_file(path, text, len, err, cap)` | write a file whole or not at all (a temporary file, fsync, rename) |
 | `rdof_hostweb_reexec(argv)` | start the program again with the same command line (after it has stopped cleanly) |
 
-The publishing calls are thread safe and do nothing when the server isn't running. None does I/O or waits on a
-socket: the real-time loop can call them. The settings hooks run on the server's thread. `restart` should only ask
-(set a flag); the tool stops its loop, puts its transmitter down, stops the server and calls `rdof_hostweb_reexec`.
-The listening socket is close-on-exec, so the new process can bind the same port.
+- The publishing calls are thread safe and do nothing when the server isn't running. None does I/O or waits on a
+  socket: the real-time loop can call them.
+- The settings hooks run on the server's thread. `restart` should only ask (set a flag); the tool stops its loop,
+  puts its transmitter down, stops the server and calls `rdof_hostweb_reexec`.
+- The listening socket is close-on-exec, so the new process can bind the same port.
 
-## Build
-
-```sh
-cmake -S host-tests -B build/web -DRDOF_HOST_WEB=ON && cmake --build build/web
-```
+## Build and test
 
 `RDOF_HOST_WEB=ON` links `rdof_hostweb` into `rdofradio` and defines `RDOF_HOST_WEB` for it (`sdr/cli/tools.cmake`),
 which turns on `--web [ADDR:]PORT`.
-`rdof_hostweb_tests` always builds and runs under ctest. `build/web/rdof_hostweb_tests --serve [PORT] [FILE]` serves
-moving fake state for a browser (two SDRs, each with a spectrum; `RDOF_HOSTWEB_LAST_EXIT=FILE` for the crash card); with FILE, its settings are that file (editable; a save logs the restart it would
-do), without one there are none.
+
+`rdof_hostweb_tests` always builds and runs under ctest. To try the page with no radio:
+
+```sh
+cmake -S host-tests -B build/web -DRDOF_HOST_WEB=ON && cmake --build build/web
+build/web/rdof_hostweb_tests --serve [PORT] [FILE]
+```
+
+It serves moving fake state for a browser: two SDRs, each with a spectrum; `RDOF_HOSTWEB_LAST_EXIT=FILE` for the
+crash card. With FILE its settings are that file (editable; a save logs the restart it would do); without one there
+are none.
