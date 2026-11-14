@@ -26,8 +26,8 @@ pub const SD_DGNA: u8 = 4;
 pub const SD_INTR: u8 = 5;
 /// A UDT short data poll across sites (tier3.md 5.9): src the caller, dst the polled MS, value the C_RAND's
 /// Service_Options (the Polling Format in its four LSBs), data one octet: the UDTs asked for (1-4). Its result
-/// carries the polled MS's data (value its UDT_Format) or the refusal. Only between sites (never from the
-/// application).
+/// carries the polled MS's data (value its UDT_Format) or the refusal. From the application: a poll from SDMI
+/// (6.6.5.1.5) of an MS registered here, value the Polling Format, data the UDTs asked for (none: 4).
 pub const SD_UDT_POLL: u8 = 6;
 /// A registration's talkgroup list upload (6.4.4.1.13.2): only from an MS here, never an SdMsg
 pub(super) const SD_TGLIST: u8 = 0x41;
@@ -503,8 +503,8 @@ impl Site {
     /// The message is whole (uploaded, or a status): on to the site, the talkgroup, the MS or the network.
     fn sd_route(&mut self, i: usize) {
         let d = self.sd.sds[i];
-        if d.what == SD_UPOLL && d.origin == O_NET {
-            self.sd_done(i, R_MESSAGE_ACCEPTED, 0, WHY_OK); // the data back to the caller's site
+        if d.what == SD_UPOLL && matches!(d.origin, O_NET | O_APP) {
+            self.sd_done(i, R_MESSAGE_ACCEPTED, 0, WHY_OK); // the data back to the caller's site or the application
             return;
         }
         if d.what == SD_UPOLL {
@@ -703,6 +703,12 @@ impl Site {
                     self.counters.refused += 1;
                     self.activity(ACT_REFUSE, 0, d.src, d.dst, reason);
                 }
+            }
+            O_APP if d.what == SD_UPOLL => {
+                // the polled data (value its UDT_Format), or the refusal
+                let m = SdMsg { op: SD_RESULT, reason, why, r#ref: d.r#ref, ..self.sd_msg(&d, SD_RESULT) };
+                let m = if ok { m } else { SdMsg { value: 0, len: 0, data: [0; 48], ..m } };
+                self.ev(m.event(EV_SD));
             }
             O_APP => {
                 let m = SdMsg { op: SD_RESULT, reason, why, value: info, r#ref: d.r#ref, ..self.sd_msg(&d, SD_RESULT) };
@@ -1110,7 +1116,42 @@ impl Site {
     /// go (no room, bad address or data). Its outcome comes as an EV_SD result with its ref.
     pub fn sd_send(&mut self, m: &SdMsg, now_ms: i64) -> bool {
         self.now = self.now.max(now_ms);
+        if m.what == SD_UDT_POLL {
+            return self.app_upoll(m);
+        }
         self.sd_new(m, O_APP)
+    }
+
+    /// A UDT short data poll from the site (6.6.5.1.5): C_AHOY from SDMI to the polled MS, Service_Kind 0110b; its
+    /// C_NACKU ends it, or its upload (target SDMI) is the result's data. False: not an individual MS, none free.
+    fn app_upoll(&mut self, m: &SdMsg) -> bool {
+        let dst = m.dst;
+        let group = m.flags & SD_F_GROUP != 0;
+        if group || dst == ADRNULL || is_gateway(dst) || is_allcall(dst) {
+            return false;
+        }
+        let Some(i) = self.sd_free() else { return false };
+        let busy = self.sd_busy(dst);
+        let mut d = Sd {
+            used: true,
+            what: SD_UPOLL,
+            origin: O_APP,
+            state: if busy { S_HOLD } else { S_UPLOAD },
+            ahoy_due: !busy,
+            so: m.value & 0x0F,
+            src: SDMI,
+            dst,
+            r#ref: m.r#ref,
+            tries: self.cfg.ahoy_tries.max(1),
+            deadline_ms: self.now + if busy { self.cfg.sd_store_ms } else { self.cfg.tnp_ms } as i64,
+            ..Default::default()
+        };
+        d.head.blocks = m.data().first().copied().unwrap_or(MAX_BLOCKS as u8).clamp(1, MAX_BLOCKS as u8);
+        self.sd.sds[i] = d;
+        if self.reg_index(dst).is_none() {
+            self.sd_done(i, R_NOREG_MSAWAY, 0, WHY_NOT_FOUND); // not here (the network isn't asked)
+        }
+        true
     }
 
     /// A message or a result from the network (mqtt-net `sdata`).

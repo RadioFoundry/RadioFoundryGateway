@@ -613,6 +613,52 @@ fn app_sends_udt_status_and_polls() {
     assert!(!air.site.sd_send(&SdMsg { dst: PSTNI, ..m }, now));
 }
 
+/// A UDT poll from the site (6.6.5.1.5): C_AHOY from SDMI, Service_Kind 0110b, to the polled MS; its upload (target
+/// SDMI) comes to the application as the result's data, its C_NACKU as the reason; an MS not here: NoregMSaway.
+#[test]
+fn app_udt_poll() {
+    const POS: &[u8] = b"33.6 N 86.6 W";
+    let mut s = site_with(|_| {});
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG]), ms(1002, &[TG])], T0);
+    assert!(air.ms[0].set_poll_reply(FMT_ISO8, POS));
+    register_all(&mut air, &mut log);
+    let poll = SdMsg { op: SD_SEND, what: SD_UDT_POLL, value: FMT_ISO8, dst: 1001, r#ref: 70, len: 1, data: {
+        let mut d = [0u8; 48];
+        d[0] = 2;
+        d
+    }, ..Default::default() };
+    let now = air.now();
+    assert!(air.site.sd_send(&poll, now));
+    let mut ahoy = None;
+    let end = air.now() + 8000;
+    while air.now() < end && log.sd(EV_SD, SD_RESULT).is_empty() {
+        air.step(&mut log.f());
+        if (air.k - 1) & 1 == 0 && air.last.tscc_dt == DT_CSBK {
+            ahoy = ahoy.or(Ahoy::decode(&air.last.tscc_pdu).filter(|a| a.service_kind == SK_UDT_POLL));
+        }
+    }
+    let a = ahoy.expect("the poll's C_AHOY");
+    assert_eq!((a.source, a.target, a.service_options, a.appended), (SDMI, 1001, FMT_ISO8, 1));
+    let r = log.sd(EV_SD, SD_RESULT);
+    assert_eq!((r[0].r#ref, r[0].what, r[0].reason, r[0].value), (70, SD_UDT_POLL, R_MESSAGE_ACCEPTED, FMT_ISO8));
+    assert_eq!((r[0].src, r[0].dst, r[0].data()), (SDMI, 1001, POS));
+    assert_eq!(air.ms[0].polled(), 1);
+    // refused by the MS (no reply set), and an MS not here
+    let now = air.now();
+    assert!(air.site.sd_send(&SdMsg { dst: 1002, r#ref: 71, ..poll }, now));
+    assert!(air.site.sd_send(&SdMsg { dst: 5555, r#ref: 72, ..poll }, now));
+    air.run(8000, &mut log.f());
+    let r = log.sd(EV_SD, SD_RESULT);
+    let of = |t: u32| r.iter().find(|m| m.r#ref == t).map(|m| (m.reason, m.len)).unwrap();
+    assert_eq!(of(71), (R_RECIPIENT_REFUSED, 0));
+    assert_eq!(of(72), (R_NOREG_MSAWAY, 0));
+    // not an individual MS
+    assert!(!air.site.sd_send(&SdMsg { flags: SD_F_GROUP, dst: TG, ..poll }, now));
+    assert!(!air.site.sd_send(&SdMsg { dst: PSTNI, ..poll }, now));
+    assert!(!air.site.sd_pending());
+}
+
 #[test]
 fn app_queue_full() {
     let mut s = site_with(|_| {});
