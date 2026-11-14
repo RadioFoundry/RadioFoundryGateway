@@ -468,6 +468,11 @@ static void test_memory(void)
           quiet_publishes);
     char st[2048];
     CHECK(rdof_t3unit_status_json(u, st, sizeof st) > 0 && strstr(st, "\"uptime_s\":20"), "status: %s", st);
+    rdof_t3unit_tick(u, T0 + 20000 + 1700000000000LL); /* the first time sync: a clock step isn't uptime */
+    rdof_t3unit_tick(u, T0 + 21000 + 1700000000000LL);
+    CHECK(rdof_t3unit_status_json(u, st, sizeof st) > 0 && strstr(st, "\"uptime_s\":21"), "after a step: %s", st);
+    rdof_t3unit_tick(u, T0 + 15000 + 1700000000000LL); /* and back */
+    CHECK(rdof_t3unit_status_json(u, st, sizeof st) > 0 && strstr(st, "\"uptime_s\":21"), "after a step back: %s", st);
     CHECK(rdof_t3unit_at(u, 40) >= 0 && rdof_t3unit_at(u, 40 - RDOF_T3UNIT_RING) == -1 && rdof_t3unit_at(u, -1) == -1,
           "the held slots");
     free(raw);

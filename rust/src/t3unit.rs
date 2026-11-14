@@ -2457,12 +2457,23 @@ pub unsafe extern "C" fn rdof_t3unit_init(
     true
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn rdof_t3unit_run(u: *mut Unit, k_upto: i64, now_ms: i64) {
-    (*u).now_ms = now_ms;
+/// Clock steps (a board's first time sync, from 1970) aren't uptime: a step back, or forward by more than a day, moves
+/// the start with it.
+const CLOCK_STEP_MS: i64 = 86_400_000;
+
+unsafe fn advance(u: *mut Unit, now_ms: i64) {
+    let step = now_ms - (*u).now_ms;
     if (*u).start_ms == 0 {
         (*u).start_ms = now_ms;
+    } else if !(0..=CLOCK_STEP_MS).contains(&step) {
+        (*u).start_ms += step;
     }
+    (*u).now_ms = now_ms;
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3unit_run(u: *mut Unit, k_upto: i64, now_ms: i64) {
+    advance(u, now_ms);
     if (*u).k_next < 0 || k_upto - (*u).k_next > RING as i64 * 8 {
         (*u).k_next = k_upto; // the first slot, or the clock jumped: start again there
     }
@@ -2697,10 +2708,7 @@ pub unsafe extern "C" fn rdof_t3unit_link(u: *mut Unit, up: bool) {
 
 #[no_mangle]
 pub unsafe extern "C" fn rdof_t3unit_tick(u: *mut Unit, now_ms: i64) {
-    (*u).now_ms = now_ms;
-    if (*u).start_ms == 0 {
-        (*u).start_ms = now_ms;
-    }
+    advance(u, now_ms);
     let now = wall_s(u);
     rdof_mn_down_tick((*u).down, now);
     for c in 0..usize::from((*u).cfg.ncarriers).min(CARRIERS) {
@@ -2804,7 +2812,7 @@ pub unsafe extern "C" fn rdof_t3unit_status_json(u: *const Unit, out: *mut c_cha
 
 #[no_mangle]
 pub unsafe extern "C" fn rdof_t3unit_set_now(u: *mut Unit, now_ms: i64) {
-    (*u).now_ms = now_ms;
+    advance(u, now_ms);
 }
 
 #[no_mangle]
