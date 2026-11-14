@@ -1136,9 +1136,9 @@ impl Site {
     }
 
     /// A C_RAND just taken: its answer, the first response it queued, is marked to be said when it goes out; none
-    /// queued (an answer later, or none), said now. Each line has the inbound slot it was heard in, for timing
+    /// queued (an answer later, or none, or the composite grant), said now. Each line has the inbound slot it was heard in, for timing
     /// random access (6.4.4.1: the MS waits NRand_Wait TSCC slots for an answer before it tries again).
-    fn rand_said(&mut self, r: &Rand, before: usize, queued: usize) {
+    fn rand_said(&mut self, r: &Rand, before: usize, queued: usize, lent: bool) {
         if self.resp_len > queued {
             let a = &mut self.resp[before];
             a.wait_ms = r.source;
@@ -1155,7 +1155,12 @@ impl Site {
             a.rand_src = r.source;
         } else {
             let (k, src, sk) = (self.rx_k.rem_euclid(1_000_000), r.source, r.service_kind);
-            self.log(format_args!("C_RAND from {src} in slot {k}: kind {sk}, no answer queued"));
+            if self.reverted() && !lent {
+                // the composite grant: not queued, it goes on the TSCC's next slots (section 3.19)
+                self.log(format_args!("C_RAND from {src} in slot {k}: kind {sk}, granted the TSCC's own slot"));
+            } else {
+                self.log(format_args!("C_RAND from {src} in slot {k}: kind {sk}, no answer queued"));
+            }
         }
     }
 
@@ -2850,12 +2855,13 @@ impl Site {
                 self.heard(r.source);
                 let before = (self.resp_head + self.resp_len) % RESP;
                 let queued = self.resp_len;
+                let lent = self.reverted();
                 if r.service_kind == SK_REG {
                     self.registration(&r);
                 } else {
                     self.service(&r);
                 }
-                self.rand_said(&r, before, queued);
+                self.rand_said(&r, before, queued, lent);
             } else if let Some(a) = Ack::decode(pdu) {
                 if a.op == OP_ACKU {
                     // each MS answer, as the C_RAND above: "C_NACKU from 16777215 to 16777215: 0x44"
