@@ -1952,7 +1952,7 @@ Built since step 8e, host-tested (the bench steps above note what has run on air
 | f530d840 | `setsupp TEXT` for the air MSs, and a log line for what they take |
 | 16a996f7 | The far site grants single-item: its channel closes after the item (5.10) |
 | 2446e12e | The simulated MS uploads in a character format, strips the pad, and counts the same data again on a later call |
-| "Site: supplementary data across sites" | A voice call's supplementary user data to an MS or a wide talkgroup at another site (3.21, 5.9 what 7) |
+| a0f54be6 | A voice call's supplementary user data to an MS or a wide talkgroup at another site (3.21, 5.9 what 7) |
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
 apart from the code, found seven deviations, all fixed (2026-11-12):
