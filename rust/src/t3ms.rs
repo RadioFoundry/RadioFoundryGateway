@@ -174,8 +174,11 @@ pub struct Ms {
     maint_left: u8,
     maint_at: i64,   // a multi-item caller's P_MAINT waits until then (pd_hold)
     supp_out: Blocks, // supplementary user data its voice calls carry (6.4.13; n 0: none)
+    supp_fmt: (u8, u8), // its UDT_Format and Pad_Nibble
     supp_in: Blocks,  // the last supplementary user data it took (from SUPLI)
     supp_n: u32,      // how many it took
+    supp_head: UdtHead, // the last one's header (its format and pad)
+    supp_held: bool,  // the last one is still for the coming call: a download of the same is the site's repeat
     supp_sent: u32,   // how many it uploaded
     pd_hold_ms: i64, // a multi-item caller holds the channel this long after its item
     pay_group: bool,
@@ -489,19 +492,28 @@ impl Ms {
     /// blocks less one; it uploads the data when the C_AHOY from SUPLI asks. False when it's over 4 blocks (46
     /// octets).
     pub fn set_supp(&mut self, data: Option<&[u8]>) -> bool {
-        match data.map(|d| Blocks::of(d, 0)) {
+        self.set_supp_as(FMT_BINARY, data)
+    }
+
+    /// set_supp in UDT_Format format (a character format padded to its last block, annex B).
+    pub fn set_supp_as(&mut self, format: u8, data: Option<&[u8]>) -> bool {
+        match data.map(|d| Blocks::of_format(d, format)) {
             None => self.supp_out = Blocks::default(),
-            Some(Some(b)) => self.supp_out = b,
+            Some(Some((b, pad))) => (self.supp_out, self.supp_fmt) = (b, (format, pad)),
             Some(None) => return false,
         }
         true
     }
 
-    /// The last supplementary user data it took, and how many (taken, uploaded).
+    /// The last supplementary user data it took (a character format less its pad nibbles), and how many (taken,
+    /// uploaded).
     pub fn supp(&self) -> (Option<([u8; MAX_DATA], usize)>, u32, u32) {
         let mut d = [0u8; MAX_DATA];
         let last = (self.supp_n > 0).then(|| {
-            let n = self.supp_in.data(&mut d);
+            let mut n = self.supp_in.data(&mut d);
+            if crate::t3udt::pads_nibbles(self.supp_head.format) {
+                n = n.saturating_sub(self.supp_head.pad_nibble as usize / 2);
+            }
             (d, n)
         });
         (last, self.supp_n, self.supp_sent)
@@ -906,6 +918,7 @@ impl Ms {
     }
 
     fn back_to_tscc(&mut self) {
+        self.supp_held = false; // the call it was for is over
         self.pay_reply = None;
         self.pay_leave = false;
         self.dx = false;
@@ -1307,10 +1320,13 @@ impl Ms {
                 let a = Ack { op: OP_ACKU, reason, target: SUPLI, source: self.id, ..Default::default() };
                 self.reply = Some(a.encode());
             }
-            if self.supp_n == 0 || self.supp_in != self.in_blocks {
-                self.supp_n += 1; // a repeat of the same isn't counted
+            // the site's repeats of one download aren't counted; the same data for a later call is
+            if !self.supp_held || self.supp_in != self.in_blocks {
+                self.supp_n += 1;
             }
             self.supp_in = self.in_blocks;
+            self.supp_head = h;
+            self.supp_held = true;
             return;
         }
         if h.sf && !h.group && h.op == OP_UDTHD && matches!(h.source, MSI | GPI) {
@@ -1599,12 +1615,13 @@ impl Ms {
                     (h, Blocks::of(&d, 1).unwrap_or_default())
                 }
                 DO_PRIVATE | DO_GROUP => {
-                    // 6.4.13.1 table 6.30: to SUPLI, SF 1, A 0, G/I the call's; the format prearranged (binary here)
+                    // 6.4.13.1 table 6.30: to SUPLI, SF 1, A 0, G/I the call's; the format prearranged
                     self.supp_sent += 1;
                     let h = UdtHead {
                         op: OP_UDTHU,
                         group: what == DO_GROUP,
-                        format: FMT_BINARY,
+                        format: self.supp_fmt.0,
+                        pad_nibble: self.supp_fmt.1,
                         target: SUPLI,
                         source: self.id,
                         blocks: self.supp_out.n,

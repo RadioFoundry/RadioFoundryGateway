@@ -1048,6 +1048,20 @@ fn supplementary_user_data() {
     assert_eq!((h.source, h.target, h.group, h.response, h.sf), (SUPLI, TG, true, false, true));
     assert!(run(&mut air, &mut log, 8000, &|a| all_idle(a)));
 
+    // ISO 8-bit, as a radio sends it (12 characters, 2 UDTs, 20 pad nibbles), and the same twice on two calls:
+    // taken twice, the pad gone
+    assert!(air.ms[0].set_supp_as(crate::t3udt::FMT_ISO8, Some(b"RF supl test")));
+    let before = air.ms[1].supp().1;
+    for k in 1..=2 {
+        let now = air.now();
+        air.ms[0].act(t3ms::DO_PRIVATE, 1002, 1000, 0, now);
+        assert!(run(&mut air, &mut log, 6000, &|a| a.ms[1].state() == t3ms::PAYLOAD));
+        let (got, n, _) = air.ms[1].supp();
+        let (d, len) = got.unwrap();
+        assert_eq!((&d[..len], n), (&b"RF supl test"[..], before + k));
+        assert!(run(&mut air, &mut log, 8000, &|a| all_idle(a)));
+    }
+
     // without SUPED_SV, no C_AHOY from SUPLI
     assert!(air.ms[0].set_supp(None));
     let before = tscc.borrow().len();

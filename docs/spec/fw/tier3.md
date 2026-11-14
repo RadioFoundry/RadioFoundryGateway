@@ -1037,8 +1037,11 @@ bits. The site (t3sdata.rs `SD_SUPP`):
    data (a) or C_NACKD (b); the site goes on. No room for the transfer, or 3 TNP times without an end, also go on.
    The log says "supplementary data from A to B: delivered", "not uploaded" or "not taken".
 
-The simulated MS (`Ms::set_supp`) sends SUPED_SV on its voice calls, uploads on the C_AHOY from SUPLI, and takes a
-download from SUPLI (answering an individual one), held for the call (`Ms::supp`).
+The simulated MS (`Ms::set_supp`, `set_supp_as` for a character format) sends SUPED_SV on its voice calls, uploads
+on the C_AHOY from SUPLI, and takes a download from SUPLI (answering an individual one), held for the call
+(`Ms::supp`, a character format less its pad; the site's repeats of one download counted once). On air (2026-11-14)
+both ways with a commercial portable running RadioFoundry's MS engine: an air MS's data to it on an individual call,
+and its ISO 8-bit data to a talkgroup and to an air MS.
 
 Not built: supplementary data on packet data and short data (6.6.3.2.2 a, 6.6.6.1.2.1.2 a: still abandoned), on
 calls across sites (the network setup carries none: the call goes on without it), the format beyond binary.
@@ -1936,7 +1939,8 @@ Built since step 8e, host-tested (the bench steps above note what has run on air
 | 4f47a52c | P_ACKU (table 7.4) on the payload inbound: the site took C_ACKU there, so a real radio's answers were dropped |
 | 1c21e8cc | Supplementary user data on voice calls at the site (6.4.13, 3.21) |
 | f530d840 | `setsupp TEXT` for the air MSs, and a log line for what they take |
-| "Site: multi-item data across sites" | The far site grants single-item: its channel closes after the item (5.10) |
+| 16a996f7 | The far site grants single-item: its channel closes after the item (5.10) |
+| "MS: supplementary data formats and repeats" | The simulated MS uploads in a character format, strips the pad, and counts the same data again on a later call |
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
 apart from the code, found seven deviations, all fixed (2026-11-12):
@@ -1976,10 +1980,10 @@ One site (the SDR site, two carriers):
 | IP address upload to IPI, IP connection advice | yes | IP connection advice yes, with and without power save (13.2 step 8g); the upload before a data call to IPI not yet |
 | Stun, revive, mass re-registration | yes | yes (PTT refused while stunned) |
 | Kill, DGNA, call diversion, ALS, C_MOVE | yes | no: the radio side host-tested only |
-| UDT polls from the site, the radio check (TSCC and payload), the selective clear | yes | no |
+| UDT polls from the site, the radio check (TSCC and payload), the selective clear | yes | the payload radio check yes (an MS and a talkgroup); the selective clear not yet: the radio's answer is lost as it leaves (its side) |
 | Power save | yes | yes: registration, a status, short data and a poll to the sleeping radio (13.2 step 8f); a call and packet data to it not yet |
 | Full-duplex individual calls | yes (off by default) | no |
-| Supplementary user data on voice calls (3.21) | yes | no: the radio side host-tested only |
+| Supplementary user data on voice calls (3.21) | yes | yes: both ways, to an MS and a talkgroup |
 | Transmit interrupt | yes | air MSs only, on the modem site |
 | Composite TSCC | yes | air MSs only, on the modem site |
 | Three or four SDR carriers | yes | no: the SDR site runs two |
