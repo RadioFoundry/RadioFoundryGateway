@@ -2089,7 +2089,7 @@ One site (the SDR site, two carriers):
 | Supplementary user data on voice calls (3.21) | yes | yes: both ways, to an MS and a talkgroup |
 | Supplementary user data on packet data, UDT short data and statuses (3.21) | yes | no |
 | Transmit interrupt | yes | air MSs only, on the modem site |
-| Composite TSCC | yes (group, individual, data, emergency, network calls, a sleeping member; 3.19) | yes, on the Pluto as one carrier (2026-11-14 18:20 UTC, t3-fa58d1a8): the radio's call on the lent TS1 while TS2 carried another; an air MS's call on TS1 during the radio's on TS2; the idle radio camped through a 9 s lend, no hunt; its access held until the Aloha, then granted TS1 again |
+| Composite TSCC | yes (group, individual, data, emergency, network calls, a sleeping member; 3.19) | yes, on the Pluto as one carrier (2026-11-14 18:20 UTC, t3-fa58d1a8): the radio's call on the lent TS1 while TS2 carried another; an air MS's call on TS1 during the radio's on TS2; the idle radio camped through a 9 s lend, no hunt; its access held until the Aloha, then granted TS1 again. Across sites (2026-11-14 19:21 UTC, both sites one-carrier composite, hat-t3 on t3-5c72bfbf): with TS2 busy on both sites (a network TG 2 call), the radio's TG 1 call from site 2 and an air MS's TG 1 call back each took the lent TSCC slot on both sites; 66 and 49 bursts, BER 0, none lost |
 | Three or four SDR carriers | yes | no: the SDR site runs two |
 
 Two sites (the SDR site and the modem site, over mqtt-net):
