@@ -1400,6 +1400,12 @@ unsafe fn data_feed(u: *mut Unit, k: i64) {
     if (*d).ch < 0 {
         if (*u).now_ms >= (*d).until_ms {
             (*d).on = false;
+            let dst = (*d).dst;
+            log(u, |o| {
+                o.bytes(b"tier3: site data to ");
+                o.int(i64::from(dst), 0);
+                o.bytes(b" dropped: no channel in 30 s");
+            });
         }
         return;
     }
@@ -1443,11 +1449,26 @@ pub unsafe extern "C" fn rdof_t3unit_data_tx(
     bursts: *const u8,
 ) -> bool {
     let d = addr_of_mut!((*u).dl);
-    if (*d).on || n < 1 || n as usize > DATA_BURSTS || control.is_null() || bursts.is_null() {
-        return false;
+    // "tier3: site data 16776899 -> 3101276 not sent: one waiting"
+    let refused = |why: &[u8]| {
+        log(u, |o| {
+            o.bytes(b"tier3: site data ");
+            o.int(i64::from(src), 0);
+            o.bytes(b" -> ");
+            o.int(i64::from(dst), 0);
+            o.bytes(b" not sent: ");
+            o.bytes(why);
+        });
+        false
+    };
+    if (*d).on {
+        return refused(b"one waiting");
+    }
+    if n < 1 || n as usize > DATA_BURSTS || control.is_null() || bursts.is_null() {
+        return refused(b"bad size");
     }
     if control.read() & 0x0F != crate::t3udt::DT_DATA_HDR {
-        return false;
+        return refused(b"no header");
     }
     let n = n as usize;
     (*d).on = true;
@@ -1467,9 +1488,22 @@ pub unsafe extern "C" fn rdof_t3unit_data_tx(
         if !group && (*u).net && (*u).connected && !t3::rdof_t3_record((*u).site, dst, &mut r) {
             return data_tx_net(u, n, control, bursts); // an MS at another site: over the network (tier3.md 5.10)
         }
-        return false;
+        return refused(b"the site refused");
     }
     drain(u);
+    let ch = (*d).ch;
+    log(u, |o| {
+        o.bytes(b"tier3: site data ");
+        o.int(i64::from(src), 0);
+        o.bytes(b" -> ");
+        o.int(i64::from(dst), 0);
+        o.bytes(b", ");
+        o.int(n as i64, 0);
+        o.bytes(if ch < 0 { b" bursts, waiting for a channel" } else { b" bursts on ch " });
+        if ch >= 0 {
+            o.int(i64::from(ch), 0);
+        }
+    });
     true
 }
 

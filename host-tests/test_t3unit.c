@@ -1011,6 +1011,10 @@ int main(void)
           GW.bursts, GW.g->n.rx_messages, GW.g->n.rx_bad);
     CHECK(GW.g->n.rx_headers == GW.g->n.rx_messages && GW.g->n.rx_blocks > 0 && !GW.g->n.rx_header_crc,
           "the gateway's header and block counts (headers %u, blocks %u)", GW.g->n.rx_headers, GW.g->n.rx_blocks);
+    pd0 = ms_status(&A, 0);
+    CHECK(GW.g->n.acks == 2 && GW.g->n.no_tx == 0 && pd0.calls_done == done0 + 2 && pd0.state == RDOF_T3MS_IDLE,
+          "the site's ACK of the data to IPI reached the MS (acks %u, no_tx %u, done %u, failed %u)", GW.g->n.acks,
+          GW.g->n.no_tx, pd0.calls_done, pd0.calls_failed);
     run(4000);
     GW.site = NULL;
     free(GW.g);
