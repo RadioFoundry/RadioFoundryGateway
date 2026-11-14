@@ -628,6 +628,15 @@ Not built: short data to gateways and extended addresses (the multi-part address
 from a gateway other than the site's application, a site poll of an MS at another site, the optional availability
 check before an individual download or a poll.
 
+The unsolicited radio check (6.4.12; the `radio_check` command, 5.7): C_AHOY from TSI, Service_Kind 1110b,
+Service_Options_Mirror 0, Service_Kind_Flag 0, Appended_Blocks 0 (table 6.27), to an MS registered here or a
+talkgroup one has, sent `sd_tries` times `ahoy_every_s` apart (to a sleeping MS in its wake frame). The MS answers
+C_ACKU(Message_Accepted) to TSI from its own address, whether polled by its address or a talkgroup (table 6.28); for
+a talkgroup the first member's answer ends it. The log says "radio check of X: answered" (a talkgroup: "answered
+by MS"), "refused" (a C_NACKU) or "no answer". The MS engine tells it from an authentication challenge (also
+Service_Kind 1110b, flag 0) by its source: TSI, where a challenge's is the challenge value, below the gateways.
+On the payload channel (P_AHOY) it isn't sent.
+
 ### 3.16 Packet data calls (361-4 6.6.3)
 
 The code is `rust/src/t3pdata.rs` (a part of the controller, with the data header codec, the message CRCs and a
@@ -1236,6 +1245,7 @@ Commands (`node/{node}/cmd`, JSON `{"id": "c-123", "cmd": "...", ...}`; the resu
 | `stun` / `revive` | `ms` | stun or revive an MS from the site; authenticated when the MS challenges the site (section 3.18) |
 | `kill` | `ms` | kill an MS (always authenticated: refused without a key for it; section 3.18) |
 | `dgna` | `ms`, `tg` (a list of 0-15 talkgroups) | DGNA_Address from DGNAI to the MS (section 3.17); `[]` sends ADRNULL, which clears what DGNA gave it |
+| `radio_check` | `ms`, or `tg` (one talkgroup) | an unsolicited radio check (section 3.15): is the MS, or a member of the talkgroup, listening; refused when no MS here has it; the outcome is logged |
 
 ### 5.8 Security
 
@@ -1786,7 +1796,7 @@ and against `t3ms` on one air.
 | Level | What | Where |
 |---|---|---|
 | PDU codec | Every PDU the site sends or reads: field packing against the 361-4 tables, round trips, known vectors from a standard site's captures (decoded values, not checks) | Rust unit tests |
-| Controller | Scenarios over `t3air`: registration open/listed/denied, collisions and backoff, group call, queue and grant on release, late entry repeats (through the hang time), hang and P_CLEAR, call timer, individual OACSU and FOACSU, no answer, cancel, busy called party, Not_Supported, network group in and out, network setup both ways, Tier II implicit setup, records reload, provisioning changes, link loss; short data (`t3sdtests.rs`): UDT MS to MS, MS, talkgroup and site, 1 to 4 blocks, refusals, store while busy and its timeout, cancel, the kept upload slots, CRC errors and a missing upload, status to MS, talkgroup and site, polling, UDT short data polling (the C_AHOY's fields, the polled MS's upload and the download to the caller, its refusal mirrored, not here, itself, a gateway; across two sites: the data back in the result, a refusal, no site with the MS), the site's own sends (a UDT poll from SDMI too), a full table, the network both ways; packet data (`t3pdtests.rs`): MS to MS unconfirmed and confirmed, rate 3/4 and rate 1 (unconfirmed to an MS and a talkgroup, a damaged block lost; confirmed with a damaged block: SACK, C_RDATA, the F = 0 retry, the ACK; retries to N_RtryLmt; `t3pdrate.rs`: the blocks at each rate, CRC-9 and CRC-32 against the B.3.9 / B.3.10 formulas), the availability check, PD/TD_GRANT single and multi-item, data hang and clearing, to a talkgroup, to the site (TSI, data ID, IPI), the IP address upload to IPI (its C_AHOY, the address taken either way round, the upload refused, off), IP connection advice (added with the power save offset, an address another MS holds, deleted and still registered, one not held, no IP service), refusals (NACKU mirrored, no answer, not here, multi-part, itself, talkgroup not allowed, busy), queued and cancelled, the site's own sends; packet data across sites (`t3pdnettests.rs`, two sites; `t3pdnet.rs`): confirmed MS to MS with a damaged block on each air link (SACK at both), unconfirmed at rate 3/4, refusals (not found, no answer, a lost setup, the link down), talkgroup data to the site that carries it, data with no setup checked first, the network form at each rate, the relay's retries and results; talkgroup lists (`t3tgtests.rs`): registration with a list (the
+| Controller | Scenarios over `t3air`: registration open/listed/denied, collisions and backoff, group call, queue and grant on release, late entry repeats (through the hang time), hang and P_CLEAR, call timer, individual OACSU and FOACSU, no answer, cancel, busy called party, Not_Supported, network group in and out, network setup both ways, Tier II implicit setup, records reload, provisioning changes, link loss; short data (`t3sdtests.rs`): UDT MS to MS, MS, talkgroup and site, 1 to 4 blocks, refusals, store while busy and its timeout, cancel, the kept upload slots, CRC errors and a missing upload, status to MS, talkgroup and site, polling, UDT short data polling (the C_AHOY's fields, the polled MS's upload and the download to the caller, its refusal mirrored, not here, itself, a gateway; across two sites: the data back in the result, a refusal, no site with the MS), the site's own sends (a UDT poll from SDMI too), the unsolicited radio check (an MS, a talkgroup, no answer), a full table, the network both ways; packet data (`t3pdtests.rs`): MS to MS unconfirmed and confirmed, rate 3/4 and rate 1 (unconfirmed to an MS and a talkgroup, a damaged block lost; confirmed with a damaged block: SACK, C_RDATA, the F = 0 retry, the ACK; retries to N_RtryLmt; `t3pdrate.rs`: the blocks at each rate, CRC-9 and CRC-32 against the B.3.9 / B.3.10 formulas), the availability check, PD/TD_GRANT single and multi-item, data hang and clearing, to a talkgroup, to the site (TSI, data ID, IPI), the IP address upload to IPI (its C_AHOY, the address taken either way round, the upload refused, off), IP connection advice (added with the power save offset, an address another MS holds, deleted and still registered, one not held, no IP service), refusals (NACKU mirrored, no answer, not here, multi-part, itself, talkgroup not allowed, busy), queued and cancelled, the site's own sends; packet data across sites (`t3pdnettests.rs`, two sites; `t3pdnet.rs`): confirmed MS to MS with a damaged block on each air link (SACK at both), unconfirmed at rate 3/4, refusals (not found, no answer, a lost setup, the link down), talkgroup data to the site that carries it, data with no setup checked first, the network form at each rate, the relay's retries and results; talkgroup lists (`t3tgtests.rs`): registration with a list (the
 C_AHOY's fields, the Response_Info bits, a talkgroup refused), all accepted, replaced, replaced by a single
 subscription, dropped on deregistration, a refused registration; DGNA MS to MS (address mode, a call on the new
 talkgroup, alias mode, delete all), refusals (off, talkgroup not allowed, itself, the site, not here, the called MS
@@ -1853,7 +1863,9 @@ Built since step 8e, host-tested (the bench steps above note what has run on air
 | 5f5a1b39 | Packet data's availability check waits for a sleeping MS's wake frame |
 | 77136033 | The IP address upload for data to IPI (6.6.3.2.4 b 2) |
 | d39ca8d4 | IP connection advice at registration (6.4.11) |
-| "Site: UDT polls across sites" | UDT polls across sites (5.9 what 6); C_WACKD to the caller of a poll held for a wake frame; a log line per short data C_AHOY |
+| d3088e17 | UDT polls across sites (5.9 what 6); C_WACKD to the caller of a poll held for a wake frame; a log line per short data C_AHOY |
+| 6b48f42b | UDT polls from the site's application (C_AHOY from SDMI, 6.6.5.1.5) |
+| "Site: unsolicited radio check" | The unsolicited radio check (6.4.12) of an MS or a talkgroup, the `radio_check` command; the MS engine answers it |
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
 apart from the code, found seven deviations, all fixed (2026-11-12):
@@ -1893,6 +1905,7 @@ One site (the SDR site, two carriers):
 | IP address upload to IPI, IP connection advice | yes | no: on the SDR site, the radio side host-tested only |
 | Stun, revive, mass re-registration | yes | yes (PTT refused while stunned) |
 | Kill, DGNA, call diversion, ALS, C_MOVE | yes | no: the radio side host-tested only |
+| UDT polls from the site, the unsolicited radio check | yes | no |
 | Power save | yes | yes: registration, a status, short data and a poll to the sleeping radio (13.2 step 8f); a call and packet data to it not yet |
 | Full-duplex individual calls | yes (off by default) | no |
 | Transmit interrupt | yes | air MSs only, on the modem site |
@@ -1920,7 +1933,7 @@ Hardware setups:
 | One split TX half and one split RX half, no SDR | yes, end to end | no |
 
 Not built: the standby controller; calls through PSTN, PABX or dispatcher gateways (dialled digits); IPv6;
-supplementary data and dual-slot data; the radio check (P_AHOY); across sites, duplex calls,
+supplementary data and dual-slot data; the radio check on a payload channel (P_AHOY); across sites, duplex calls,
 talkgroup and multi-item data, and ALS termination.
 
 ## 14. Open questions for the owner

@@ -87,6 +87,7 @@ const MN_CMD_STUN: c_int = 10;
 const MN_CMD_REVIVE: c_int = 11;
 const MN_CMD_DGNA: c_int = 12;
 const MN_CMD_KILL: c_int = 13;
+const MN_CMD_RADIO_CHECK: c_int = 14;
 
 // ── the C structs: rdof/t3unit.h's ─────────────────────────────────────────────
 
@@ -2180,6 +2181,8 @@ unsafe fn command(u: *mut Unit, json: *const c_char, len: usize) {
             MN_CMD_REVIVE => t3::rdof_t3_command(site, c"revive".as_ptr(), c.ms, 0),
             MN_CMD_DGNA => dgna_cmd(u, &c),
             MN_CMD_KILL => t3::rdof_t3_command(site, c"kill".as_ptr(), c.ms, 0),
+            MN_CMD_RADIO_CHECK if c.ntg > 0 => t3::rdof_t3_command(site, c"radio_check".as_ptr(), c.tg[0], 1),
+            MN_CMD_RADIO_CHECK => t3::rdof_t3_command(site, c"radio_check".as_ptr(), c.ms, 0),
             _ => false,
         };
         if !ok {

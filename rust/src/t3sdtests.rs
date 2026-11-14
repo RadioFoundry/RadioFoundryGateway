@@ -469,6 +469,57 @@ fn upoll_ms_to_ms() {
     assert!(!air.site.sd_pending());
 }
 
+/// The unsolicited radio check (6.4.12, the `radio_check` command): C_AHOY from TSI, Service_Kind 1110b,
+/// Service_Options_Mirror 0, Appended_Blocks 0 (table 6.27); the MS's C_ACKU(Message_Accepted) to TSI from its own
+/// address (table 6.28), polled by its address or a talkgroup; no answer after the repeats.
+#[test]
+fn radio_check() {
+    let mut s = site_with(|_| {});
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG]), ms(1002, &[10])], T0);
+    register_all(&mut air, &mut log);
+    let mut ahoys = Vec::new();
+    let check = |air: &mut Air<2>, log: &mut Log, ms: i64, ahoys: &mut Vec<Ahoy>| {
+        let end = air.now() + ms;
+        while air.now() < end {
+            air.step(&mut log.f());
+            if (air.k - 1) & 1 == 0 && air.last.tscc_dt == DT_CSBK {
+                if let Some(a) = Ahoy::decode(&air.last.tscc_pdu).filter(|a| a.source == TSI) {
+                    ahoys.push(a);
+                }
+            }
+        }
+    };
+    let said = |log: &Log, t: &str| log.of(EV_LOG).iter().any(|e| e.text().contains(t));
+    assert!(air.site.command("radio_check", 1002, 0));
+    check(&mut air, &mut log, 3000, &mut ahoys);
+    let a = ahoys[0];
+    assert_eq!((a.service_kind, a.service_kind_flag, a.service_options, a.appended), (SK_REG, false, 0, 0));
+    assert_eq!((a.target, a.group, air.ms[1].radio_checks(), air.ms[1].challenges()), (1002, false, 1, 0));
+    assert!(said(&log, "radio check of 1002: answered"));
+    // a talkgroup: a member answers from its own address; the other MS stays quiet
+    assert!(!air.site.command("radio_check", TG, 1), "no MS here has it");
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_REGISTER, TG, 0, 0, now);
+    assert!(air.until(5000, &mut log.f(), |a| a.site.record(1001).is_some_and(|r| r.sub_tg == TG)));
+    assert!(air.site.command("radio_check", TG, 1));
+    check(&mut air, &mut log, 3000, &mut ahoys);
+    assert_eq!((ahoys.last().unwrap().target, ahoys.last().unwrap().group), (TG, true));
+    assert_eq!((air.ms[0].radio_checks(), air.ms[1].radio_checks()), (1, 1));
+    assert!(said(&log, &format!("radio check of talkgroup {TG}: answered by 1001")));
+    // its answers lost: no answer after the repeats
+    air.lose_in = (OP_ACKU, 100);
+    assert!(air.site.command("radio_check", 1001, 0));
+    check(&mut air, &mut log, 10_000, &mut ahoys);
+    assert!(said(&log, "radio check of 1001: no answer"));
+    assert!(air.ms[0].radio_checks() > 1);
+    // not here: refused
+    air.lose_in = (0, 0);
+    assert!(!air.site.command("radio_check", 5555, 0));
+    assert!(!air.site.command("radio_check", 77, 1));
+    assert!(!air.site.sd_pending());
+}
+
 #[test]
 fn upoll_refusals() {
     // the polled MS refuses (C_NACKU, mirrored in C_NACKD: 6.6.5.1.2 a), an MS not registered here, itself, a

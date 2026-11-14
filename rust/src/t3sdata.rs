@@ -46,6 +46,9 @@ pub(super) const SD_IPADDR: u8 = 0x45;
 /// IP connection advice (6.4.11): a registration with IP_Inform 1 (so: its Service_Options, Reg_Dereg 1 adding the
 /// address, 0 deleting it); the C_AHOY from IPI asks for the address as SD_IPADDR does. r#ref: the IPv4 address.
 pub(super) const SD_IPADV: u8 = 0x46;
+/// An unsolicited radio check (6.4.12) from the site (the `radio_check` command): C_AHOY from TSI, Service_Kind
+/// 1110b, to an MS or a talkgroup; C_ACKU(Message_Accepted) from the MS (for a talkgroup, any member) ends it.
+pub(super) const SD_RCHECK: u8 = 0x47;
 
 // op (rdof_t3_sd_t.op)
 pub const SD_SEND: u8 = 1;
@@ -235,6 +238,39 @@ impl Site {
     /// On a payload channel (a private call, or talking in a group call), or in a call setup.
     fn sd_busy(&self, ms: u32) -> bool {
         self.ms_busy(ms) || self.chans.iter().any(|c| Self::live(c) && (c.src == ms || c.talker == ms))
+    }
+
+    /// Table 6.27: Service_Options_Mirror 0, Service_Kind_Flag 0, Appended_Blocks 0, source TSI.
+    fn rcheck_ahoy(d: &Sd) -> [u8; 10] {
+        Ahoy { group: d.group, service_kind: SK_REG, target: d.dst, source: TSI, ..Default::default() }.encode()
+    }
+
+    /// The `radio_check` command (6.4.12): is the MS (or a member of the talkgroup) listening? The outcome is
+    /// logged. False: an MS not registered here, a talkgroup no MS here has, or none free.
+    pub(super) fn radio_check(&mut self, target: u32, group: bool) -> bool {
+        let here = if group {
+            let has = |g: &Reg| g.used && (g.rec.sub_tg == target || g.rec.tgs().contains(&target));
+            is_allcall(target) || self.regs.iter().any(has)
+        } else {
+            self.reg_index(target).is_some()
+        };
+        if !here || target == ADRNULL || is_gateway(target) {
+            return false;
+        }
+        let Some(i) = self.sd_free() else { return false };
+        self.sd.sds[i] = Sd {
+            used: true,
+            what: SD_RCHECK,
+            state: S_DOWN,
+            group,
+            src: TSI,
+            dst: target,
+            tries: self.cfg.sd_tries.max(1),
+            next_ms: self.now,
+            deadline_ms: self.now + self.cfg.tnp_ms as i64,
+            ..Default::default()
+        };
+        true
     }
 
     /// The service options a status C_AHOY mirrors: G/I and the five MSBs of the status (table 6.57).
@@ -653,6 +689,19 @@ impl Site {
         if d.what == SD_NOTICE {
             return;
         }
+        if d.what == SD_RCHECK {
+            let (to, by) = (d.dst, d.r#ref);
+            if reason == R_MSAWAY {
+                self.log(format_args!("radio check of {to}: no answer"));
+            } else if !ok {
+                self.log(format_args!("radio check of {to}: refused (reason {reason:#04x})"));
+            } else if d.group {
+                self.log(format_args!("radio check of talkgroup {to}: answered by {by}"));
+            } else {
+                self.log(format_args!("radio check of {to}: answered"));
+            }
+            return;
+        }
         if d.what == SD_IPADDR {
             self.pd_addr(d.src, ok.then_some(d.r#ref), reason); // the data call's to answer
             return;
@@ -857,6 +906,9 @@ impl Site {
         s.tries -= 1;
         s.next_ms = now + self.cfg.ahoy_every_ms as i64;
         let notice = d.what == SD_NOTICE;
+        if d.what == SD_RCHECK {
+            return Some(self.train_start(&[(DT_CSBK, pdu12(&Self::rcheck_ahoy(&d)))], true));
+        }
         let solicit = !d.group && !notice;
         if !matches!(d.what, SD_UDT | SD_DGNA | SD_NOTICE | SD_UPOLL) {
             return Some(self.train_start(&[(DT_CSBK, pdu12(&Self::status_ahoy(&d)))], solicit));
@@ -988,6 +1040,20 @@ impl Site {
             let why = if reason_type(a.reason) == 1 { WHY_OK } else { WHY_REFUSED };
             self.sd_done(i, a.reason, 0, why);
             return true;
+        }
+        // a talkgroup's radio check: any member's C_ACKU (6.4.12: its source the MS's own address)
+        if a.target == TSI && reason_type(a.reason) == 1 {
+            if let Some(i) = (0..SDS).find(|&i| {
+                let d = &self.sd.sds[i];
+                d.used && d.what == SD_RCHECK && d.group && self.reg_index(a.source).is_some_and(|g| {
+                    let r = &self.regs[g].rec;
+                    is_allcall(d.dst) || r.sub_tg == d.dst || r.tgs().contains(&d.dst)
+                })
+            }) {
+                self.sd.sds[i].r#ref = a.source;
+                self.sd_done(i, a.reason, 0, WHY_OK);
+                return true;
+            }
         }
         let Some(i) = (0..SDS).find(|&i| {
             let d = &self.sd.sds[i];

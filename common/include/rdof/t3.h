@@ -376,7 +376,8 @@ void rdof_t3_withdraw(rdof_t3_site_t *s, bool off);
    0 all), "move_site" (C_MOVE to an adjacent site's TSCC: arg1 its C_SYScode, arg2 one MS, 0 all; by its frequencies,
    the MBC form, when its channel number names other frequencies here), "auth" (arg1 MS: an authentication poll; false when the MS isn't registered here or has no key),
    "stun" / "revive" (arg1 MS; 361-4 6.4.9, with authentication when the MS asks for it), "kill" (arg1 MS; 6.4.10,
-   always authenticated: false when the site has no key for the MS); the result an RDOF_T3_ACT_SUPP activity */
+   always authenticated: false when the site has no key for the MS); the result an RDOF_T3_ACT_SUPP activity;
+   "radio_check" (arg1 an MS, or with arg2 1 a talkgroup; 6.4.12: false when no MS here has it; the outcome logged) */
 bool rdof_t3_command(rdof_t3_site_t *s, const char *cmd, uint32_t arg1, uint32_t arg2);
 /* Stirs v into the source of authentication challenges: something unpredictable (the platform's random source),
    at start and now and then. */

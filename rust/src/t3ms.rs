@@ -221,6 +221,7 @@ pub struct Ms {
     poll_fmt: u8,
     poll_pn: u8,
     polled: u32, // the polls it answered
+    radio_checks: u32, // unsolicited radio checks it answered (6.4.12)
     up: [(u8, [u8; 12]); 1 + MAX_BLOCKS],
     up_len: usize,
     up_pos: usize,
@@ -548,6 +549,11 @@ impl Ms {
     /// The UDT short data polls it answered with its data.
     pub fn polled(&self) -> u32 {
         self.polled
+    }
+
+    /// The unsolicited radio checks it answered (6.4.12).
+    pub fn radio_checks(&self) -> u32 {
+        self.radio_checks
     }
 
     /// Queues a UDT short data poll of MS dst (6.6.5.2): the data in format (POL_FMT), in blocks UDTs (1 to 4).
@@ -943,7 +949,8 @@ impl Ms {
         } else if let Some(a) = Ahoy::decode(pdu) {
             // a UDT short data poll's C_AHOY to the polled MS is the caller's answer too (6.6.5.4 b)
             let my_poll = a.service_kind == SK_UDT_POLL && a.source == self.id && !a.group;
-            if a.target == self.id || my_poll || (a.group && a.service_kind == SK_STATUS && self.my_tg(a.target)) {
+            let to_my_tg = a.group && matches!(a.service_kind, SK_STATUS | SK_REG) && self.my_tg(a.target);
+            if a.target == self.id || my_poll || to_my_tg {
                 self.on_ahoy(&a);
             }
         } else if let Some(g) = Grant::decode(pdu) {
@@ -1396,6 +1403,16 @@ impl Ms {
                     }
                     self.nact -= 1;
                 }
+            }
+            return;
+        }
+        if a.service_kind == SK_REG && !a.service_kind_flag && a.source == TSI {
+            // 6.4.12: an unsolicited radio check (a challenge's source is the challenge, below the gateways);
+            // C_ACKU(Message_Accepted) to TSI from its own address, polled by its address or a talkgroup it has
+            if !a.group || self.my_tg(a.target) {
+                self.radio_checks += 1;
+                let a = Ack { op: OP_ACKU, response_info: 0, reason: R_MS_ACCEPTED, target: TSI, source: self.id };
+                self.reply = Some(a.encode());
             }
             return;
         }

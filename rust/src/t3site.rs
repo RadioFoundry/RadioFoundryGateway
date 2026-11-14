@@ -2879,6 +2879,7 @@ impl Site {
             "move" => self.move_cmd(a1, a2),
             "move_site" => self.move_to_site(a1, a2), // C_MOVE to an adjacent site's TSCC, absolute when needed
             "auth" => self.auth_poll(a1),
+            "radio_check" => self.radio_check(a1, a2 != 0), // 6.4.12: a2 1 for a talkgroup
             "stun" | "revive" => self.stun(a1, cmd == "revive"), // 6.4.9
             "kill" => self.kill(a1),                               // 6.4.10: only an MS with a key
             _ => false,
