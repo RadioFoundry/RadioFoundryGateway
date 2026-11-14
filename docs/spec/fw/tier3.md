@@ -2003,7 +2003,7 @@ Built since step 8e, host-tested (the bench steps above note what has run on air
 | 971e7cb8 | The IP gateway's answers go down: the repeater's gateway no longer starts in a trunked site's place; responses only on the channel they answer, new data through the TSCC after a single item; a channel granted again while its P_CLEARs go out stays open; the site's data waits for the grant's lead; the sim MS takes the site's data from IPI. `rdofradio_e2e_t3_ipgw` |
 | f2bf1728 | Air MS data to a host's address (`@A.B.C.D`); the sim MS takes a poll's answer the same as an earlier one's as a new message (a repeat only within 10 s) |
 | 19df4357 | The IP gateway's failed blocks counted by cause (`rx_block_fec`, `rx_block_crc`); with `-v` the site logs each burst it gives the gateway in hex (on air it showed a radio's rate 3/4 blocks with octets 0-1 wrong) |
-| next | The site's ACK goes at once beside a reply waiting for its MS, and doesn't cut the confirmed item's 6 s hold: a radio that missed it is answered on its retry (`missack` in `rdofradio_e2e_t3_ipgw`) |
+| 54ae8191 | The site's ACK goes at once beside a reply waiting for its MS, and doesn't cut the confirmed item's 6 s hold: a radio that missed it is answered on its retry (`missack` in `rdofradio_e2e_t3_ipgw`) |
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
 apart from the code, found seven deviations, all fixed (2026-11-12):
