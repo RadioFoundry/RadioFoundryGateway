@@ -1994,7 +1994,7 @@ Built since step 8e, host-tested (the bench steps above note what has run on air
 | 5455d696 | Supplementary user data on statuses (3.21) |
 | 7a0f0257 | Packet data to IPI with SUPED_VAL set is taken (table 6.50: only Appended_UDT must be 00); logs of the site's own data sends |
 | 29495f9d | A confirmed item's channel held 6 s for the sender's retry; the sim MS sends again on no response |
-| next | The IP gateway's answers go down: the repeater's gateway no longer starts in a trunked site's place; responses only on the channel they answer, new data through the TSCC after a single item; a channel granted again while its P_CLEARs go out stays open; the site's data waits for the grant's lead; the sim MS takes the site's data from IPI. `rdofradio_e2e_t3_ipgw` |
+| 971e7cb8 | The IP gateway's answers go down: the repeater's gateway no longer starts in a trunked site's place; responses only on the channel they answer, new data through the TSCC after a single item; a channel granted again while its P_CLEARs go out stays open; the site's data waits for the grant's lead; the sim MS takes the site's data from IPI. `rdofradio_e2e_t3_ipgw` |
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
 apart from the code, found seven deviations, all fixed (2026-11-12):
