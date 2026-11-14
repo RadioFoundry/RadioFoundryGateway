@@ -2017,6 +2017,8 @@ Built since step 8e, host-tested (the bench steps above note what has run on air
 | 19df4357 | The IP gateway's failed blocks counted by cause (`rx_block_fec`, `rx_block_crc`); with `-v` the site logs each burst it gives the gateway in hex (on air it showed a radio's rate 3/4 blocks with octets 0-1 wrong) |
 | 54ae8191 | The site's ACK goes at once beside a reply waiting for its MS, and doesn't cut the confirmed item's 6 s hold: a radio that missed it is answered on its retry (`missack` in `rdofradio_e2e_t3_ipgw`) |
 | 991860dd | Rate 3/4 data blocks decoded again from any trellis start state when octets 0-1 fail the CRC-9 (`rdof_trellis34_decode_block`): an HR_C7000 radio's encoder started in state 4 or 7 |
+| d99eab09 | C_WACKD(Wait) in a Vote_Now block for a C_RAND the block would hold to the last frame NWait allows or past it (section 3.11; on air one waited 14 slots and the radio sent again) |
+| 446851f8 | The site's own log lines print without `-v` (the modem site's journal had no C_MOVE line for a move command) |
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
 apart from the code, found seven deviations, all fixed (2026-11-12):
