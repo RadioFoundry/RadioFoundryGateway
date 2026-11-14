@@ -659,8 +659,12 @@ static bool trunk_taken(const char *t, size_t len, char *err, size_t cap)
     static rdof_t3_cfg_t cfg;
     static rdof_t3_policy_t pol;
     static rdof_sdr_config_t sc;
+    const rdof_site_t *s = rdof_plan_site(p);
+    bool sdr = false; /* a site of radios alone (split TX and RX halves) has no SDR settings */
+    for (int d = 0; d < s->ndev; d++)
+        sdr |= s->dev[d].kind == RDOF_DEV_SDR;
     bool ok = rdof_plan_roles_on(p, &rdof_plan_host, &roles, err, cap) &&
-              rdof_t3cfg_plan(p, -1, &cfg, &pol, err, cap) && rdof_plan_sdr(p, NULL, &sc, err, cap);
+              rdof_t3cfg_plan(p, -1, &cfg, &pol, err, cap) && (!sdr || rdof_plan_sdr(p, NULL, &sc, err, cap));
     rdof_plan_close(p);
     return ok;
 }

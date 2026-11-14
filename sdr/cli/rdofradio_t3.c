@@ -925,6 +925,7 @@ static void air_inbox(int i)
 /* trunk slot k's inbound: each MS's burst for it, the first on each carrier heard (the others collide with it); on
  * carrier 1, and carrier 2 when the SDR sends it. Once a slot, with carrier 1's. T.mu held. */
 static void hat_air_in(int64_t k, const rdof_burst_t *b);
+static bool sim_air_hear(int c, int64_t k, const rdof_burst_t *b);
 
 static void air_in(int64_t k)
 {
@@ -953,7 +954,8 @@ static void air_in(int64_t k)
         if (c >= AM.ncar || sent[c] || !rdof_t3sim_ms_burst(&tx, n, cc, &b))
             continue;
         b.slot = (tx.ch & 1) + 1;
-        rdof_t3unit_rx(T.u, c, k, &b, -60);
+        if (!sim_air_hear(c, k, &b)) /* a simulated RX half hears it (a carrier on two radios), or straight in */
+            rdof_t3unit_rx(T.u, c, k, &b, -60);
         if (c == 0)
             hat_air_in(k, &b);
         sent[c] = true;
@@ -1204,27 +1206,28 @@ static bool c2_start(const rdofradio_t3_cfg_t *t, int c, const rdof_sdrmodem_t *
 }
 
 /* Carriers on split TX halves (rdof/sdr/t3split.h): carrier 2 of two beside the SDR's carrier 1, or every carrier
- * (the TSCC's too: its half takes the CACH with each burst) with the SDR receiving only. Each its radio's port, a
- * reader thread, the split; the SDR's receiver its RX half. With RDOF_SIM_SPLIT (the host tests' build) the port
- * "sim-split" (and any name it starts) is a simulated half (host-tests/fake_radio.h) on a socket pair. */
+ * (the TSCC's too: its half takes the CACH with each burst), the SDR's receiver their RX half; or every carrier on two
+ * radios, a split TX half and a split RX half, and no SDR (rdofradio_t3_radios). Each radio its port and a reader
+ * thread. With RDOF_SIM_SPLIT (the host tests' build) the port "sim-split" (and any name it starts) is a simulated
+ * radio (host-tests/fake_radio.h) on a socket pair: a TX half, or an RX half with RX_META, which hears the air MSs. */
 #define BQ 64
+#define SIM_AIR 64
+typedef struct sp sp_t;
 typedef struct {
-    bool on, up;
-    int c; /* the carrier, 0 to 3 */
-    int fd, chan;
+    sp_t *p;
+    bool rx; /* the RX half's radio */
+    bool open;
+    int fd;
     pthread_t thread;
     volatile bool quit, gone;
     pthread_mutex_t mu;
     struct {
         uint8_t b[256];
         int n;
-        double t; /* when it came: the split times the half's replies by it (its clock sync) */
+        double t; /* when it came: the split times the halves' replies by it (its clock sync), the slots by it */
     } q[BQ];
     int head, tail;
     uint32_t dropped;
-    rdof_t3split_t ts;
-    int64_t heard_k; /* the UTC slot of the last burst heard on its inbound */
-    int align_said;  /* the TX half's alignment as last said */
 #ifdef RDOF_SIM_SPLIT
     bool sim;
     int sim_fd;
@@ -1232,8 +1235,24 @@ typedef struct {
     volatile bool sim_quit;
     fake_radio_t *fake;
     double sim_clock;
+    struct {
+        int64_t k;
+        uint8_t control, burst[RDOF_BURST_BYTES];
+    } air[SIM_AIR]; /* the air MSs' bursts for a simulated RX half, heard once their slot is over (under mu) */
+    int air_head, air_tail;
 #endif
-} sp_t;
+} pt_t;
+struct sp {
+    bool on, up;
+    int c; /* the carrier, 0 to 3 */
+    int chan;
+    bool radios; /* its in on a radio (the RX half), no SDR */
+    pt_t tx, rx;
+    rdof_t3split_t ts;
+    int64_t heard_k; /* the SDR: the UTC slot of the last burst heard on its inbound */
+    int align_said;  /* the TX half's alignment as last said */
+    uint32_t by_meta, by_parity; /* the RX half's bursts placed by RX_META's slot number, by their label's parity */
+};
 static sp_t SP[RDOF_T3_CARRIERS];
 static double utc_minus_host;     /* UTC - the monotonic clock, µs */
 static double next_utc;           /* when to measure it again */
@@ -1248,162 +1267,260 @@ static double utc_minus_host_us(void)
     return ((double)w.tv_sec * 1e6 + w.tv_nsec / 1e3) - 1e6 * (h0 + h1) / 2;
 }
 
-static int64_t utc_slot_now(void) { return (int64_t)floor((DEV.now() * 1e6 + utc_minus_host) / 30000.0); }
+static int64_t utc_slot_at(double t) { return (int64_t)floor((t * 1e6 + utc_minus_host) / 30000.0); }
+static int64_t utc_slot_now(void) { return utc_slot_at(DEV.now()); }
 
 static void *b_reader(void *arg)
 {
-    sp_t *p = arg;
-    while (!p->quit) {
-        struct pollfd pf = {p->fd, POLLIN, 0};
+    pt_t *x = arg;
+    while (!x->quit) {
+        struct pollfd pf = {x->fd, POLLIN, 0};
         if (poll(&pf, 1, 100) <= 0)
             continue;
         uint8_t b[256];
-        const int n = rdofradio_serial_read(p->fd, b, sizeof b);
+        const int n = rdofradio_serial_read(x->fd, b, sizeof b);
         const double t = DEV.now();
         if (n < 0 || (pf.revents & (POLLHUP | POLLERR | POLLNVAL))) {
-            p->gone = true;
+            x->gone = true;
             break;
         }
         if (n == 0)
             continue;
-        pthread_mutex_lock(&p->mu);
-        if (p->head - p->tail < BQ) {
-            const int i = p->head++ % BQ;
-            p->q[i].n = n;
-            p->q[i].t = t;
-            memcpy(p->q[i].b, b, (size_t)n);
+        pthread_mutex_lock(&x->mu);
+        if (x->head - x->tail < BQ) {
+            const int i = x->head++ % BQ;
+            x->q[i].n = n;
+            x->q[i].t = t;
+            memcpy(x->q[i].b, b, (size_t)n);
         } else {
-            p->dropped += (uint32_t)n;
+            x->dropped += (uint32_t)n;
         }
-        pthread_mutex_unlock(&p->mu);
+        pthread_mutex_unlock(&x->mu);
     }
     return NULL;
 }
 
-static void b_to_radio(void *ctx, const uint8_t *d, size_t n)
+static void pt_write(pt_t *x, const uint8_t *d, size_t n)
 {
-    sp_t *p = ctx;
-    if (!rdofradio_serial_write(p->fd, d, n) && !p->gone) {
-        p->gone = true;
-        tsay("carrier %d: the port write failed", p->c + 1);
+    if (!rdofradio_serial_write(x->fd, d, n) && !x->gone) {
+        x->gone = true;
+        tsay("carrier %d: the %s half's port write failed", x->p->c + 1, x->rx ? "RX" : "TX");
     }
 }
+static void b_to_radio(void *ctx, const uint8_t *d, size_t n) { pt_write(&((sp_t *)ctx)->tx, d, n); }
+static void b_to_rx_radio(void *ctx, const uint8_t *d, size_t n) { pt_write(&((sp_t *)ctx)->rx, d, n); }
 static int b_channel(void *ctx, uint32_t hz) { return DEV.channel(hz); }
 static int64_t b_now48(void *ctx) { return DEV.now48(); }
 
-/* what its RX half heard, to the site; T.mu held */
-static void b_take(sp_t *p)
+/* what its RX half heard, to the site, in its UTC slot: by RX_META's slot number when the RX half sends it; else a
+ * radio's by its label's parity in the slot just over when it came (t), the SDR's by the last burst heard there.
+ * T.mu held. */
+static void b_take(sp_t *p, double t)
 {
-    int slot;
+    int slot, meta, rssi;
     uint8_t control, burst[RDOF_BURST_BYTES];
-    while (rdof_t3split_take(&p->ts, &slot, &control, burst, NULL)) {
-        /* the slot of that parity nearest the last burst heard there */
-        int64_t k = p->heard_k;
-        if ((k & 1) != slot - 1)
-            k += 1;
+    uint32_t counter;
+    const int64_t k_at = utc_slot_at(t);
+    while (rdof_t3split_take_at(&p->ts, &slot, &control, burst, &rssi, &meta, &counter)) {
+        int64_t k;
+        if ((meta & RDOF_SPLIT_META_COUNTER) && (meta & RDOF_SPLIT_META_UTC)) {
+            k = rdof_t3split_unwrap(counter, k_at);
+            p->by_meta++;
+        } else if (p->radios) {
+            k = rdof_t3split_parity_slot(k_at - 1, slot);
+            p->by_parity++;
+        } else { /* the slot of that parity nearest the last burst heard there */
+            k = p->heard_k;
+            if ((k & 1) != slot - 1)
+                k += 1;
+        }
         rdof_burst_t b;
         rdof_t3split_burst(&p->ts, slot, control, burst, &b);
-        rdof_t3unit_rx(T.u, p->c, k, &b, 0);
+        rdof_t3unit_rx(T.u, p->c, k, &b, rssi);
     }
 }
 
-/* the split's bytes from the radio and its timers */
+/* the split's bytes from its radios and its timers; T.mu held */
 static void b_service(sp_t *p, double now)
 {
-    for (;;) {
-        uint8_t b[256];
-        int n = 0;
-        double t = now;
-        pthread_mutex_lock(&p->mu);
-        if (p->tail != p->head) {
-            const int i = p->tail++ % BQ;
-            n = p->q[i].n;
-            t = p->q[i].t;
-            memcpy(b, p->q[i].b, (size_t)n);
+    for (int h = 0; h < 2; h++) {
+        pt_t *x = h ? &p->rx : &p->tx;
+        while (x->open) {
+            uint8_t b[256];
+            int n = 0;
+            double t = now;
+            pthread_mutex_lock(&x->mu);
+            if (x->tail != x->head) {
+                const int i = x->tail++ % BQ;
+                n = x->q[i].n;
+                t = x->q[i].t;
+                memcpy(b, x->q[i].b, (size_t)n);
+            }
+            pthread_mutex_unlock(&x->mu);
+            if (!n)
+                break;
+            if (x->rx) {
+                rdof_t3split_from_rx_radio(&p->ts, b, (size_t)n, t);
+                b_take(p, t);
+            } else {
+                rdof_t3split_from_radio(&p->ts, b, (size_t)n, t);
+            }
         }
-        pthread_mutex_unlock(&p->mu);
-        if (!n)
-            break;
-        rdof_t3split_from_radio(&p->ts, b, (size_t)n, t);
     }
     rdof_t3split_tick(&p->ts, now);
 }
 
 #ifdef RDOF_SIM_SPLIT
-/* the simulated half: what the host writes in, its replies and its air timing out, on its own clock */
+#define SIM_REPORT_MS 8 /* a simulated RX half reports a burst this long after its slot ends */
+
+/* the simulated radio: what the host writes in, its replies and its air timing out, on its own clock; an RX half
+ * hears the air MSs' bursts */
 static void *sim_split_thread(void *arg)
 {
-    sp_t *p = arg;
-    while (!p->sim_quit) {
-        struct pollfd pf = {p->sim_fd, POLLIN, 0};
+    pt_t *x = arg;
+    while (!x->sim_quit) {
+        struct pollfd pf = {x->sim_fd, POLLIN, 0};
         const int r = poll(&pf, 1, 5);
-        p->sim_clock = DEV.now();
+        x->sim_clock = DEV.now();
         uint8_t b[512];
         if (r > 0 && (pf.revents & POLLIN)) {
-            const ssize_t n = read(p->sim_fd, b, sizeof b);
+            const ssize_t n = read(x->sim_fd, b, sizeof b);
             if (n <= 0)
                 break;
-            fake_write(p->fake, b, (size_t)n);
+            fake_write(x->fake, b, (size_t)n);
         }
-        fake_air(p->fake);
-        if (p->fake->non_air > 48) { /* what went out: the newest kept */
-            memmove(p->fake->on_air, p->fake->on_air + 32, 16 * sizeof p->fake->on_air[0]);
-            p->fake->non_air = 16;
+        fake_air(x->fake);
+        if (x->fake->non_air > 48) { /* what went out: the newest kept */
+            memmove(x->fake->on_air, x->fake->on_air + 32, 16 * sizeof x->fake->on_air[0]);
+            x->fake->non_air = 16;
+        }
+        if (x->rx) {
+            const double utc_ms = (x->sim_clock * 1e6 + utc_minus_host) / 1000.0;
+            pthread_mutex_lock(&x->mu);
+            while (x->air_tail != x->air_head && utc_ms >= (double)((x->air[x->air_tail].k + 1) * 30 + SIM_REPORT_MS)) {
+                const int i = x->air_tail++ % SIM_AIR;
+                const double start = ((double)x->air[i].k * 30000.0 - utc_minus_host) / 1e6;
+                fake_hear_at(x->fake, x->air[i].control, x->air[i].burst, -70, start);
+            }
+            pthread_mutex_unlock(&x->mu);
         }
         size_t m;
-        while ((m = fake_take(p->fake, b, sizeof b)) > 0)
-            if (write(p->sim_fd, b, m) != (ssize_t)m)
+        while ((m = fake_take(x->fake, b, sizeof b)) > 0)
+            if (write(x->sim_fd, b, m) != (ssize_t)m)
                 break;
     }
     return NULL;
 }
 
-static int sim_split_open(sp_t *p, char *err, size_t cap)
+static int sim_split_open(pt_t *x, const char *port, char *err, size_t cap)
 {
     int sv[2];
-    p->fake = calloc(1, sizeof *p->fake);
-    if (!p->fake || socketpair(AF_UNIX, SOCK_STREAM, 0, sv)) {
-        free(p->fake);
+    x->fake = calloc(1, sizeof *x->fake);
+    if (!x->fake || socketpair(AF_UNIX, SOCK_STREAM, 0, sv)) {
+        free(x->fake);
         snprintf(err, cap, "sim-split: no socket pair");
         return -1;
     }
-    fake_init(p->fake, "odr_split");
-    p->fake->split_caps |= RDOF_OPS_CACH; /* as RadioFoundry's (radiofoundry-handoff.md 1.4) */
-    p->fake->clock = &p->sim_clock;
-    p->fake->clock_offset_us = 1234567.0 * (p->c + 1); /* each its own modem clock */
-    p->fake->clock_rate = (p->c & 1 ? -6e-6 : 9e-6);
-    p->sim_clock = DEV.now();
-    p->sim_fd = sv[1];
-    p->sim_quit = false;
-    if (pthread_create(&p->sim_thread, NULL, sim_split_thread, p)) {
+    const int c = x->p->c;
+    fake_init(x->fake, "odr_split");
+    if (x->rx) { /* an RX half with RX_META, as RadioFoundry's (split-duplex.md 3.10); without, "...-nometa" */
+        x->fake->roles = 2;
+        if (!strstr(port, "nometa"))
+            x->fake->split_caps |= RDOF_OPS_RX_META;
+    } else {
+        x->fake->split_caps |= RDOF_OPS_CACH; /* as RadioFoundry's (radiofoundry-handoff.md 1.4) */
+    }
+    x->fake->clock = &x->sim_clock;
+    x->fake->clock_offset_us = 1234567.0 * (c + 1) + (x->rx ? 777777.0 : 0); /* each its own modem clock */
+    x->fake->clock_rate = ((c & 1) ^ x->rx ? -6e-6 : 9e-6);
+    x->sim_clock = DEV.now();
+    x->sim_fd = sv[1];
+    x->sim_quit = false;
+    if (pthread_create(&x->sim_thread, NULL, sim_split_thread, x)) {
         close(sv[0]), close(sv[1]);
-        free(p->fake);
+        free(x->fake);
         snprintf(err, cap, "sim-split: no thread");
         return -1;
     }
-    p->sim = true;
+    x->sim = true;
     return sv[0];
 }
+
+/* an air MS's burst on carrier c in slot k, to its simulated RX half; false: carrier c has none */
+static bool sim_air_hear(int c, int64_t k, const rdof_burst_t *b)
+{
+    pt_t *x = &SP[c].rx;
+    if (!all_split || !SP[c].up || !x->sim)
+        return false;
+    pthread_mutex_lock(&x->mu);
+    if (x->air_head - x->air_tail < SIM_AIR) {
+        const int i = x->air_head++ % SIM_AIR;
+        x->air[i].k = k;
+        x->air[i].control = b->dt == RDOF_DT_VOICE_SYNC ? RDOF_SYNC_AUDIO
+                            : b->dt == RDOF_DT_VOICE    ? (uint8_t)b->n
+                                                        : (uint8_t)(RDOF_SYNC_DATA | b->dt);
+        memcpy(x->air[i].burst, b->burst, RDOF_BURST_BYTES);
+    }
+    pthread_mutex_unlock(&x->mu);
+    return true;
+}
+#else
+static bool sim_air_hear(int c, int64_t k, const rdof_burst_t *b) { return false; }
 #endif
+
+static void pt_close(pt_t *x)
+{
+    if (!x->open)
+        return;
+    x->quit = true;
+    pthread_join(x->thread, NULL);
+    close(x->fd);
+#ifdef RDOF_SIM_SPLIT
+    if (x->sim) {
+        x->sim_quit = true;
+        pthread_join(x->sim_thread, NULL);
+        close(x->sim_fd);
+        free(x->fake);
+        x->sim = false;
+    }
+#endif
+    pthread_mutex_destroy(&x->mu);
+    x->open = false;
+}
+
+/* a radio's port and its reader */
+static bool pt_open(sp_t *p, pt_t *x, bool rx, const char *port, long baud, char *err, size_t cap)
+{
+    x->p = p, x->rx = rx, x->fd = -1;
+#ifdef RDOF_SIM_SPLIT
+    if (!strncmp(port, "sim-split", 9))
+        x->fd = sim_split_open(x, port, err, cap);
+    else
+#endif
+        x->fd = rdofradio_serial_open(port, baud ? (int)baud : 115200, err, cap);
+    if (x->fd < 0)
+        return false;
+    pthread_mutex_init(&x->mu, NULL);
+    x->open = true; /* pt_close from here */
+    if (pthread_create(&x->thread, NULL, b_reader, x)) {
+        x->thread = pthread_self();
+        x->quit = true;
+        snprintf(err, cap, "carrier %d: the port reader: no thread", p->c + 1);
+        x->open = false;
+        close(x->fd);
+        pthread_mutex_destroy(&x->mu);
+        return false;
+    }
+    return true;
+}
 
 static void b_stop(sp_t *p)
 {
     if (!p->on)
         return;
-    p->quit = true;
-    pthread_join(p->thread, NULL);
-    close(p->fd);
-#ifdef RDOF_SIM_SPLIT
-    if (p->sim) {
-        p->sim_quit = true;
-        pthread_join(p->sim_thread, NULL);
-        close(p->sim_fd);
-        free(p->fake);
-        p->sim = false;
-    }
-#endif
+    pt_close(&p->tx);
+    pt_close(&p->rx);
     rdof_t3split_free(&p->ts);
-    pthread_mutex_destroy(&p->mu);
     p->on = p->up = false;
 }
 
@@ -1413,52 +1530,47 @@ static void splits_stop(void)
         b_stop(&SP[c]);
 }
 
-/* carrier c's split (0-based): its port, the bring-up and its settings (the receiver isn't running yet: no RX half) */
+/* carrier c's split (0-based): its ports, the bring-up and its settings (the receiver isn't running yet: no RX half
+ * on the SDR) */
 static bool b_start(const rdofradio_t3_cfg_t *t, int c, char *err, size_t cap)
 {
     sp_t *p = &SP[c];
     const uint32_t rx = t->car[c].rx_hz, tx = t->car[c].tx_hz;
-    const char *port = t->car[c].port;
+    const char *port = t->car[c].port, *rport = t->car[c].rx_port;
     memset(p, 0, sizeof *p);
-    p->c = c, p->fd = -1, p->align_said = -1;
-    p->chan = DEV.channel(rx);
-    if (p->chan < 0) {
+    p->c = c, p->align_said = -1, p->chan = -1;
+    p->radios = !t->car[c].rx_sdr && rport[0];
+    if (!p->radios && (p->chan = DEV.channel(rx)) < 0) {
         snprintf(err, cap, "carrier %d: the receiver has no channel on its inbound %.5f MHz", c + 1, rx / 1e6);
         return false;
     }
-#ifdef RDOF_SIM_SPLIT
-    if (!strncmp(port, "sim-split", 9))
-        p->fd = sim_split_open(p, err, cap);
-    else
-#endif
-        p->fd = rdofradio_serial_open(port, t->car[c].baud ? (int)t->car[c].baud : 115200, err, cap);
-    if (p->fd < 0)
+    if (!pt_open(p, &p->tx, false, port, t->car[c].baud, err, cap))
         return false;
-    pthread_mutex_init(&p->mu, NULL);
-    p->on = true; /* b_stop from here */
-    if (pthread_create(&p->thread, NULL, b_reader, p)) {
-        p->thread = pthread_self();
-        p->on = false;
-        close(p->fd);
-        snprintf(err, cap, "carrier %d: the port reader: no thread", c + 1);
+    if (p->radios && !pt_open(p, &p->rx, true, rport, t->car[c].rx_baud, err, cap)) {
+        pt_close(&p->tx);
         return false;
     }
-    const rdof_t3split_io_t io = {b_to_radio, b_channel, b_now48, p};
-    if (!rdof_t3split_init(&p->ts, &io, DEV.rx_fs, c, rx, tx, t->cfg.cc, DEV.now())) {
+    p->on = true; /* b_stop from here */
+    const rdof_t3split_io_t io = {b_to_radio, b_channel, b_now48, p, b_to_rx_radio};
+    const bool ok = p->radios ? rdof_t3split_init_radios(&p->ts, &io, c, rx, tx, t->cfg.cc, DEV.now())
+                              : rdof_t3split_init(&p->ts, &io, DEV.rx_fs, c, rx, tx, t->cfg.cc, DEV.now());
+    if (!ok) {
         snprintf(err, cap, "carrier %d: %s", c + 1, p->ts.error);
         b_stop(p);
         return false;
     }
     const double until = DEV.now() + 8.0;
-    while (p->ts.state != RDOF_T3SPLIT_UP && p->ts.state != RDOF_T3SPLIT_FAILED && !p->gone && DEV.now() < until) {
+    while (p->ts.state != RDOF_T3SPLIT_UP && p->ts.state != RDOF_T3SPLIT_FAILED && !p->tx.gone && !p->rx.gone &&
+           DEV.now() < until) {
         usleep(10000);
         b_service(p, DEV.now());
     }
     if (p->ts.state != RDOF_T3SPLIT_UP) {
-        snprintf(err, cap, "carrier %d (%s): %s", c + 1, port,
-                 p->gone                                ? "the port went away"
+        snprintf(err, cap, "carrier %d (%s%s%s): %s", c + 1, port, p->radios ? ", " : "", p->radios ? rport : "",
+                 p->tx.gone || p->rx.gone             ? "the port went away"
                  : p->ts.state == RDOF_T3SPLIT_FAILED ? p->ts.error
-                                                        : "no split TX half answered in 8 s");
+                 : p->radios                          ? "no split TX and RX halves answered in 8 s"
+                                                      : "no split TX half answered in 8 s");
         b_stop(p);
         return false;
     }
@@ -1475,8 +1587,13 @@ static bool b_start(const rdofradio_t3_cfg_t *t, int c, char *err, size_t cap)
     }
     rdof_t3split_utc(&p->ts, utc_minus_host, 1000, DEV.now());
     p->up = true;
-    tsay("carrier %d: split TX half on %s (tx %.5f, rx %.5f MHz%s), aligning to UTC", c + 1, port, tx / 1e6, rx / 1e6,
-         c == 0 ? ", the CACH with each burst" : "");
+    if (p->radios)
+        tsay("carrier %d: split TX half on %s, RX half on %s (tx %.5f, rx %.5f MHz%s; each burst's slot %s), aligning "
+             "to UTC", c + 1, port, rport, tx / 1e6, rx / 1e6, c == 0 ? ", the CACH with each burst" : "",
+             rdof_t3split_split(&p->ts)->rx_meta_on ? "from RX_META" : "by its parity (no RX_META)");
+    else
+        tsay("carrier %d: split TX half on %s (tx %.5f, rx %.5f MHz%s), aligning to UTC", c + 1, port, tx / 1e6,
+             rx / 1e6, c == 0 ? ", the CACH with each burst" : "");
     return true;
 }
 
@@ -1496,14 +1613,15 @@ static void splits_poll(double now)
         if (remeasure)
             rdof_t3split_utc(&p->ts, utc_minus_host, 1000, now);
         b_service(p, now);
-        b_take(p);
+        b_take(p, now);
         const rdof_split_t *sp = rdof_t3split_split(&p->ts);
         if ((int)sp->align_state != p->align_said) {
             p->align_said = (int)sp->align_state;
             tsay("carrier %d: the TX half's slot clock: %s", c + 1, rdof_align_state_name(sp->align_state));
         }
-        if (p->ts.state == RDOF_T3SPLIT_FAILED || p->gone) {
-            tsay("carrier %d: %s; its channels go unsent", c + 1, p->gone ? "the port went away" : p->ts.error);
+        if (p->ts.state == RDOF_T3SPLIT_FAILED || p->tx.gone || p->rx.gone) {
+            tsay("carrier %d: %s; its channels go unsent", c + 1,
+                 p->tx.gone || p->rx.gone ? "a port went away" : p->ts.error);
             p->up = false;
         } else {
             rdof_t3unit_split_pump(T.u, &p->ts.o, rdof_t3split_split(&p->ts), k_now, now);
@@ -2193,9 +2311,10 @@ bool rdofradio_t3_start(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o, 
     const rdofradio_t3_cfg_t *t = &c->t;
     all_split = !t->car[0].tx_sdr;
     for (int k = 0; all_split && k < t->ncar; k++)
-        if (t->car[k].tx_sdr || !t->car[k].port[0]) {
+        if (t->car[k].tx_sdr || !t->car[k].port[0] || (!t->car[k].rx_sdr && !t->car[k].rx_port[0])) {
             snprintf(err, cap, "%s: carrier 1 on a split TX half: every carrier is (carrier %d isn't: a radio with a "
-                               "port path, port: {\"path\": ...}), the SDR hearing them all", t->name, k + 1);
+                               "port path, port: {\"path\": ...}), each heard by the SDR or its own radio with a port "
+                               "path", t->name, k + 1);
             return false;
         }
     for (int k = 1; !all_split && k < t->ncar; k++) {
@@ -2289,6 +2408,27 @@ static bool key_carrier1(void)
 
 bool rdofradio_t3_on(void) { return T.on; }
 
+static int no_channel(uint32_t hz) { return -1; }
+static int64_t no_now48(void) { return 0; }
+
+int rdofradio_t3_radios(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o, volatile sig_atomic_t *stop)
+{
+    const rdofradio_t3_dev_t dev = {.channel = no_channel, .now48 = no_now48, .now = mono_s, .rx_fs = 48000};
+    char err[300];
+    if (!rdofradio_t3_start(c, o, NULL, &dev, err, sizeof err)) {
+        tsay("%s", err);
+        return 1;
+    }
+    tsay("%s: every carrier on two radios, a split TX half and a split RX half; no SDR", c->t.name);
+    const double t0 = mono_s();
+    while (!*stop && (o->seconds <= 0 || mono_s() - t0 < o->seconds)) {
+        usleep(5000);
+        rdofradio_t3_poll();
+    }
+    rdofradio_t3_stop();
+    return 0;
+}
+
 void rdofradio_t3_heard(int c, const rdof_sdr_burst_t *b)
 {
     if (!T.on || c < 0)
@@ -2329,7 +2469,7 @@ void rdofradio_t3_heard(int c, const rdof_sdr_burst_t *b)
         const double t = DEV.now() - (double)(DEV.now48() - b->position) / 48000.0;
         p->heard_k = (int64_t)floor((t * 1e6 + utc_minus_host) / 30000.0 + 0.25);
         rdof_t3split_heard(&p->ts, c, b);
-        b_take(p);
+        b_take(p, DEV.now());
         pthread_mutex_unlock(&T.mu);
     }
 }
@@ -2433,9 +2573,10 @@ void rdofradio_t3_stop(void)
     hat_stop();
     for (int j = 0; j < RDOF_T3_CARRIERS; j++)
         if (SP[j].on)
-            tsay("carrier %d: split: %u scheduled (%u with the CACH), %u by the FIFO, %u key-ups", j + 1,
-                 (unsigned)SP[j].ts.o.sched_bursts, (unsigned)SP[j].ts.o.cach_bursts,
-                 (unsigned)SP[j].ts.o.fifo_bursts, (unsigned)SP[j].ts.o.keyups);
+            tsay("carrier %d: split: %u scheduled (%u with the CACH), %u by the FIFO, %u key-ups; its RX half's bursts "
+                 "%u by RX_META's slot, %u by parity", j + 1, (unsigned)SP[j].ts.o.sched_bursts,
+                 (unsigned)SP[j].ts.o.cach_bursts, (unsigned)SP[j].ts.o.fifo_bursts, (unsigned)SP[j].ts.o.keyups,
+                 (unsigned)SP[j].by_meta, (unsigned)SP[j].by_parity);
     splits_stop();
     stop_common();
     air_stop();

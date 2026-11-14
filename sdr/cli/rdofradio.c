@@ -6991,6 +6991,14 @@ int main(int argc, char **argv)
                 signal(SIGTERM, on_signal);
                 return rdofradio_t3_sim(&rcfg, &to, &stop);
             }
+            bool radios = rcfg.t.ncar > 0; /* every carrier on two radios, a split TX and RX half: no SDR */
+            for (int k = 0; k < rcfg.t.ncar; k++)
+                radios &= !rcfg.t.car[k].tx_sdr && !rcfg.t.car[k].rx_sdr && rcfg.t.car[k].rx_port[0];
+            if (radios && !split_tx && !mmdvm) {
+                signal(SIGINT, on_signal);
+                signal(SIGTERM, on_signal);
+                return rdofradio_t3_radios(&rcfg, &to, &stop);
+            }
             if (split_tx || mmdvm) {
                 fprintf(stderr, "%s: a trunked site: the SDR sends its TSCC carrier (no --split-tx, --mmdvm)\n",
                         config_path);

@@ -1181,8 +1181,11 @@ among the SDR's `transmits`, `tx.carriers` 2 to 4: an SDR modem each on the same
 stream with each carrier at 1/N amplitude, the TX LO mid-way between the lowest and highest outs; with `--fpga-duc`
 the stream is 384 kS/s), or a second carrier by a split TX half on its radio's port, aligned to UTC from the host's
 clock and fed by the scheduled stream, the SDR's receiver its RX half (tier3.md 9.4). Or every carrier on its own
-split TX half, the TSCC's taking the CACH with each burst, the SDR receiving only (its modem unkeyed). Two carriers
-out of the SDR run on the Pluto; three and four, and the all-split site, only on a file device so far.
+split TX half, the TSCC's taking the CACH with each burst, the SDR receiving only (its modem unkeyed). Or every
+carrier on two radios, a split TX half and a split RX half, and no SDR: the site on the host's clock, each RX-half
+burst's slot from its RX_META slot number or its label's parity (no web page or bench port in that mode yet). Two
+carriers out of the SDR run on the Pluto; three and four, the all-split site and the site on radios only in the host
+tests so far.
 A one-carrier site can instead go out of a stock duplex MMDVM modem, an SDR receiver beside it hearing its out
 and in: `--mmdvm PORT --config BOX.json --tier3 SITE.json [--hat-lead IDLE_MS,BUSY_MS]`, each burst written a lead
 before its slot on the modem's own slot clock as the receiver hears it (132 ms where the CACH's AT should say idle,

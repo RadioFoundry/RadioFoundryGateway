@@ -58,6 +58,9 @@ typedef struct {
         int tx_dev;     /* the device that sends it (the settings' index), -1 none */
         char port[64];
         long baud;
+        bool rx_sdr;        /* an SDR hears its in; else a radio (a split's RX half) on rx_port */
+        char rx_port[64];
+        long rx_baud;
     } car[RDOF_T3_CARRIERS];
     char host[64], user[32], pass[64], root[32];
     int port;

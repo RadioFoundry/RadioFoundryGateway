@@ -513,6 +513,8 @@ static int distinct_hz(const rdof_site_t *s, uint64_t set)
     return n;
 }
 
+static bool hotspot(const rdof_site_t *s, int d);
+
 static bool make_units(plan_t *p)
 {
     const rdof_site_t *s = &p->site;
@@ -550,7 +552,7 @@ static bool make_units(plan_t *p)
     }
     /* a trunked site: one unit for all its carriers, whose frequencies are its own (no transceiver or receiver
        takes them). Each carrier's out on the first device that transmits there; its in on the TSCC's SDR when that
-       hears it, else the first SDR that does */
+       hears it, else the first SDR that does, else the first radio in hotspot mode that does (a split's RX half) */
     for (int a = 0; a < s->napp; a++) {
         const rdof_app3_t *ap = &s->app[a];
         if (ap->type != RDOF_APP_TIER3)
@@ -569,11 +571,14 @@ static bool make_units(plan_t *p)
             for (int d = 0; d < s->ndev && rx < 0; d++)
                 if (s->dev[d].kind == RDOF_DEV_SDR && rdof_site_dev_hears(s, d, cr->in))
                     rx = d;
+            for (int d = 0; d < s->ndev && rx < 0; d++)
+                if (d != tx && s->dev[d].kind != RDOF_DEV_SDR && hotspot(s, d) && rdof_site_dev_hears(s, d, cr->in))
+                    rx = d;
             if (tx < 0)
                 return fail(p, "%s.carriers: no device transmits on %s", where, s->freq[cr->out].name);
             if (rx < 0)
-                return fail(p, "%s.carriers: no SDR hears %s (a trunked site hears its carriers on an SDR)", where,
-                            s->freq[cr->in].name);
+                return fail(p, "%s.carriers: no SDR hears %s (a trunked site hears its carriers on an SDR, or on a "
+                               "radio in hotspot mode as a split's RX half)", where, s->freq[cr->in].name);
             p->trx[k] = rx;
             p->ttx[k] = tx;
             done |= 1ull << cr->in | 1ull << cr->out;
@@ -694,8 +699,27 @@ static bool check_trunk(plan_t *p, const rdof_unit_t *u, const char *where)
                         in);
         if (on_modem)
             continue;
-        /* the TSCC on a split's TX half: every carrier is */
+        /* the TSCC on a split's TX half: every carrier is; its in on a split's RX half too: every carrier's is, two
+           radios a carrier and no SDR */
         const bool splits = s->dev[p->ttx[0]].kind != RDOF_DEV_SDR && hotspot(s, p->ttx[0]);
+        const bool rx_radios = s->dev[p->trx[0]].kind != RDOF_DEV_SDR;
+        if (rx_radios) {
+            if (!splits)
+                return fail(p, "%s: the TSCC's in (%s) is heard on devices.%s, a radio: then its out goes out of a "
+                               "radio too (a split's TX half)", where, s->freq[ap->carrier[0].in].name,
+                            s->dev[p->trx[0]].name);
+            if (rx->kind == RDOF_DEV_SDR || !hotspot(s, p->trx[k]))
+                return fail(p, "%s: the TSCC's in is heard on a radio, %s on devices.%s: with the TSCC's in on a "
+                               "split's RX half every carrier's is (a radio in hotspot mode)", where, in, rx->name);
+            if (tx->kind == RDOF_DEV_SDR)
+                return fail(p, "%s: %s goes out of devices.%s, an SDR: with the TSCC on two radios every carrier is",
+                            where, out, tx->name);
+            for (int j = 0; j < k; j++)
+                if (p->trx[j] == p->trx[k] || p->ttx[j] == p->trx[k] || p->trx[j] == p->ttx[k])
+                    return fail(p, "%s: devices.%s is a half of two carriers: a radio is one carrier's TX or RX half",
+                                where, s->dev[p->trx[j] == p->trx[k] || p->ttx[j] == p->trx[k] ? p->trx[k]
+                                                                                                : p->ttx[k]].name);
+        }
         if (!k && tx->kind != RDOF_DEV_SDR && !splits)
             return fail(p, "%s: %s is the TSCC's out, and devices.%s is a %s: the TSCC goes out of a full-duplex "
                            "SDR, a duplex MMDVM modem, or a radio in hotspot mode with the split duplex extension",
@@ -703,13 +727,13 @@ static bool check_trunk(plan_t *p, const rdof_unit_t *u, const char *where)
         if (splits && k && tx->kind == RDOF_DEV_SDR)
             return fail(p, "%s: the TSCC goes out of a radio (a split's TX half), %s out of devices.%s, an SDR: with "
                            "the TSCC on a radio every carrier is, the SDR hearing them", where, out, tx->name);
-        if (splits && rx->kind != RDOF_DEV_SDR)
+        if (splits && !rx_radios && rx->kind != RDOF_DEV_SDR)
             return fail(p, "%s: %s is heard on devices.%s: an SDR hears every carrier (the splits' RX half)", where,
                         in, rx->name);
         if (!k && !splits && p->trx[0] != p->ttx[0])
             return fail(p, "%s: the TSCC's in (%s) on devices.%s and its out (%s) on devices.%s: one SDR does both "
                            "(its slot clock)", where, in, rx->name, out, tx->name);
-        if (k && p->trx[k] != p->trx[0])
+        if (k && !rx_radios && p->trx[k] != p->trx[0])
             return fail(p, "%s: %s is heard on devices.%s, the TSCC on devices.%s: one SDR hears every carrier",
                         where, in, rx->name, s->dev[p->trx[0]].name);
         if (tx->kind != RDOF_DEV_SDR) {

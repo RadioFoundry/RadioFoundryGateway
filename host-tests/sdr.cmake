@@ -176,6 +176,10 @@ if(TARGET rdofradio)
         add_test(NAME rdofradio_e2e_t3_split COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/e2e_t3_split.sh
                  $<TARGET_FILE_DIR:rdofradio>)
         set_tests_properties(rdofradio_e2e_t3_split PROPERTIES TIMEOUT 90)
+        # no RF, no SDR: a carrier on a simulated split TX half and split RX half, with RX_META and without
+        add_test(NAME rdofradio_e2e_t3_radios COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/e2e_t3_radios.sh
+                 $<TARGET_FILE_DIR:rdofradio>)
+        set_tests_properties(rdofradio_e2e_t3_radios PROPERTIES TIMEOUT 90)
     endif()
 endif()
 # The synthetic data call in the fixtures (fixtures/README.md, "The data call"): not a test, run by hand.

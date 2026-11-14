@@ -74,6 +74,10 @@ typedef struct {
     double (*tx_lo)(void);
     uint32_t tx_fs;
 } rdofradio_t3_dev_t;
+/* A site of radios alone, no SDR: every carrier on two radios, a split TX half and a split RX half (each burst's
+ * slot from the RX half's RX_META, else its label's parity), the host's clock. Runs until *stop or o->seconds; the
+ * exit code. */
+int rdofradio_t3_radios(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o, volatile sig_atomic_t *stop);
 /* On a device: the site on modem m (keyed, its slot source), carrier 2's modem on the SDR or its split TX half
  * brought up on its port (a two-carrier site), or every carrier's split TX half (m left unkeyed), the network started. Before the receiver starts: a split's bring-up
  * waits on the port. False with err set (carrier 2's out on another device, a carrier past the TX LO's reach). */

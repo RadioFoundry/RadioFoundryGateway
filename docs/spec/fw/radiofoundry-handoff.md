@@ -81,9 +81,10 @@ A carrier on two radios and no SDR (a split transmitter and a split receiver): t
 RX_META (SET_ROLE byte 7 bit 0) when its INFO offers capability bit 3, and takes each burst's UTC slot from the
 event's slot number (bytes 14-15, flag 80) and the TX half's counter at the SET_EPOCH E it sent (GET_EPOCH's counter,
 plus one when that slot was TS2). It reads the number as signed: a burst from the slot just before a new E, reported
-after the radio took the new SET_EPOCH, comes as -1 (65535). Say if the radio does anything else there (0, or the
-number from the old E). Without RX_META the gateway takes the slot of the label's parity just over when the burst
-comes, so a report later than one slot after its slot ends lands two slots off. Tested against the host's fake
+after the radio took the new SET_EPOCH, comes as -1 (65535), as the radio sends it (counted from the E in force when
+the burst is reported, never the old E; the radio's own anchor moves are counted in). Without RX_META the gateway
+takes the slot of the label's parity just over when the burst comes, so a report later than one slot after its slot
+ends lands two slots off. Tested against the host's fake
 halves (`rdof_t3split3_tests`, both ways).
 
 ### 1.5 MMDVM protocol (the TX half's standard commands)

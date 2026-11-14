@@ -154,6 +154,12 @@ static bool from_trunk(const rdof_plan_t *p, int unit, rdofradio_cfg_t *o, char 
             snprintf(t->car[k].port, sizeof t->car[k].port, "%s", d->port.path);
             t->car[k].baud = d->port.baud;
         }
+        t->car[k].rx_sdr = rx >= 0 && s->dev[rx].kind == 1;
+        const rdof_plan_dev_t *r = rx >= 0 && !t->car[k].rx_sdr ? rdof_plan_dev(p, rx) : NULL;
+        if (r && r->port.kind == RDOF_PORT_PATH) {
+            snprintf(t->car[k].rx_port, sizeof t->car[k].rx_port, "%s", r->port.path);
+            t->car[k].rx_baud = r->port.baud;
+        }
     }
     t->net = rdof_plan_net_of(p, RDOF_NET_MQTT);
     if (t->net >= 0) {
