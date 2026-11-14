@@ -28,7 +28,7 @@ run() { # $1: the RX half's port; $2: how its bursts are placed
 J
     printf '7 1000001 private 1000002 4000\n' > "$D/script"
     "$BIN/rdofradio" --allow-tx --config "$D/site.json" --air-ms 3 --sim-tg 1 --sim-script "$D/script" \
-        --seconds 14 > "$D/log" 2>&1
+        --seconds 14 -v > "$D/log" 2>&1
     bad=0
     check() {
         grep -q "$1" "$D/log" || { echo "FAIL ($2): $3"; bad=1; }
@@ -40,6 +40,8 @@ J
     done
     check "air MS 1000002: payload, registered on ch 1; .* heard 1000001 -> 1000002$" "$1" "1000001's call heard"
     check "air MS 1000001: idle, registered on ch 0; calls 1 done" "$1" "1000001's call ends done"
+    # each C_RAND's answer a few TSCC slots after the slot it was heard in: the RX half's bursts on their slots
+    check "C_RAND from 1000001 in slot [0-9]*: answered +[2468] (" "$1" "1000001's C_RAND answered within 8 slots"
     check "carrier 1: split: [1-9][0-9]* scheduled ([1-9][0-9]* with the CACH)" "$1" "bursts scheduled with the CACH"
     case $2 in
     from*) check "its RX half's bursts [1-9][0-9]* by RX_META's slot, 0 by parity" "$1" "every burst by RX_META" ;;

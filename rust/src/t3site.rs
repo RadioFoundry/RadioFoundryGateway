@@ -658,6 +658,10 @@ struct Resp {
     has_cont: bool,
     pdu: [u8; 10],
     cont: [u8; 10],
+    /// the answer to a C_RAND heard in inbound slot rand_k (rx_k_ok then) from rand_src: a line when it goes out
+    rand: bool,
+    rand_k: i64,
+    rand_src: u32,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -679,6 +683,9 @@ pub struct Site {
     tscc_carrier: usize,
     now: i64,
     k: i64,
+    /// the inbound slot of the PDU rx_pdu takes, when its caller gave one (rdof_t3_rx_pdu)
+    rx_k: i64,
+    rx_k_ok: bool,
     connected: bool,
     withdrawn: bool,
     next_stream: u32,
@@ -1101,8 +1108,27 @@ impl Site {
             return; // the MS repeats its request
         }
         let i = (self.resp_head + self.resp_len) % RESP;
-        self.resp[i] = Resp { dt, solicit, has_cont: cont.is_some(), pdu, cont: cont.unwrap_or([0; 10]) };
+        self.resp[i] =
+            Resp { dt, solicit, has_cont: cont.is_some(), pdu, cont: cont.unwrap_or([0; 10]), ..Default::default() };
         self.resp_len += 1;
+    }
+
+    /// A C_RAND just taken: its answer, the first response it queued, is marked to be said when it goes out; none
+    /// queued (an answer later, or none), said now. Each line has the inbound slot it was heard in, for timing
+    /// random access (6.4.4.1: the MS waits NRand_Wait TSCC slots for an answer before it tries again).
+    fn rand_said(&mut self, r: &Rand, before: usize, queued: usize) {
+        if !self.rx_k_ok {
+            return;
+        }
+        if self.resp_len > queued {
+            let a = &mut self.resp[before];
+            a.rand = true;
+            a.rand_k = self.rx_k;
+            a.rand_src = r.source;
+        } else {
+            let (k, src, sk) = (self.rx_k.rem_euclid(1_000_000), r.source, r.service_kind);
+            self.log(format_args!("C_RAND from {src} in slot {k}: kind {sk}, no answer queued"));
+        }
     }
 
     /// C_ACKD, C_NACKD, C_QACKD or C_WACKD (by the reason) to target, about source.
@@ -1252,6 +1278,11 @@ impl Site {
             let r = self.resp[self.resp_head];
             self.resp_head = (self.resp_head + 1) % RESP;
             self.resp_len -= 1;
+            if r.rand {
+                // the slots' last six digits: the line fits an event's 64 octets
+                let (k, n, src) = (r.rand_k.rem_euclid(1_000_000), self.k - r.rand_k, r.rand_src);
+                self.log(format_args!("C_RAND from {src} in slot {k}: answered +{n} ({} ms)", n * 30));
+            }
             if r.has_cont {
                 self.cont_pending = true;
                 self.cont = r.cont;
@@ -2530,11 +2561,14 @@ impl Site {
                 self.counters.rand += 1;
                 self.count_load();
                 self.heard(r.source);
+                let before = (self.resp_head + self.resp_len) % RESP;
+                let queued = self.resp_len;
                 if r.service_kind == SK_REG {
                     self.registration(&r);
                 } else {
                     self.service(&r);
                 }
+                self.rand_said(&r, before, queued);
             } else if let Some(a) = Ack::decode(pdu) {
                 if a.op == OP_ACKU && !self.auth_answer(&a) {
                     self.ms_ack(&a);
@@ -2974,7 +3008,9 @@ pub unsafe extern "C" fn rdof_t3_slot(s: *mut Site, k: i64, now_ms: i64, out: *m
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rdof_t3_rx_pdu(s: *mut Site, ch: c_int, _k: i64, dt: u8, pdu: *const [u8; 10], _rssi: c_int) {
+pub unsafe extern "C" fn rdof_t3_rx_pdu(s: *mut Site, ch: c_int, k: i64, dt: u8, pdu: *const [u8; 10], _rssi: c_int) {
+    (*s).rx_k = k;
+    (*s).rx_k_ok = true;
     if ch >= 0 && dt == DT_RATE12 {
         (*s).rx_block(ch as usize, dt, &*pdu.cast::<[u8; 12]>()); // a rate 1/2 block: 12 octets
     } else if ch >= 0 {

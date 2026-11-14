@@ -167,6 +167,9 @@ Carrier A TS2 when not a payload channel: idle bursts (4.8: the other slot may b
 - NRand_Wait from settings (default 6, as the RadioMax reference: 6 frames, 360 ms). The site controller is in the
   same process as the radio layer, so it answers within 3-5 frames (inbound decode about 60 ms, outbound lead about
   1 slot plus the front end's buffer, about 100 ms on the Pluto). A request it can't settle at once gets C_WACKD.
+- With `-v` the site logs each C_RAND it takes when the radio layer gives its inbound slot: the slot (last six
+  digits) and, when its answer goes out, how many slots on (`C_RAND from 1000001 in slot 691918: answered +6 (180
+  ms)`), or that it queued no answer (an answer later, or none). For timing random access against NRand_Wait.
 - Backoff adapts: the controller counts inbound random accesses and collisions (a burst with a good sync and a bad
   CRC on the TSCC inbound slot counts as one) over the last 2 s; Backoff 3 when quiet, up to 9 under load.
 - Service Function: 00b normally; 11b (registration only) while the queue is full; 01b is not used yet.

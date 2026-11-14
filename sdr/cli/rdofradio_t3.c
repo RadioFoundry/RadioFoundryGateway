@@ -120,7 +120,7 @@ static void io_subscribe(void *ctx, const char *const *f, int n)
 static void io_log(void *ctx, const char *text)
 {
     if (T.o.verbose)
-        tsay("%s", text);
+        tsay("%s", strncmp(text, "tier3: ", 7) ? text : text + 7);
 }
 
 static uint32_t io_rand(void *ctx)
@@ -2366,7 +2366,8 @@ bool rdofradio_t3_start(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o, 
     }
     if (all_split) { /* the SDR receives only: its modem stays unkeyed, the splits' pumps send every slot */
         M = NULL;
-        tsay("%s: every carrier on a split TX half; the SDR receives only", t->name);
+        if (t->car[0].rx_sdr)
+            tsay("%s: every carrier on a split TX half; the SDR receives only", t->name);
         return true;
     }
     M = m;
