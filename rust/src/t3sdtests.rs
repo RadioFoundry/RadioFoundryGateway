@@ -423,6 +423,74 @@ fn status_polling() {
     assert_eq!(air.ms[0].status().last_reason, R_NOT_SUPPORTED);
 }
 
+// ── UDT short data polling (6.6.5) ──
+
+#[test]
+fn upoll_ms_to_ms() {
+    // 6.6.5.1: the TSCC answers the poll with a C_AHOY from the caller to the polled MS (Service_Kind 0110b, the
+    // C_RAND's Service_Options mirrored, Appended_Blocks the UDTs asked for); the polled MS uploads its data to the
+    // caller, the TSCC downloads it, the caller's C_ACKU ends it with no final C_ACKD
+    const POS: &[u8] = b"33.6 N 86.6 W, 2 m/s";
+    let mut s = site_with(|_| {});
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG]), ms(1002, &[TG]), ms(1003, &[TG])], T0);
+    assert!(air.ms[1].set_poll_reply(FMT_ISO8, POS));
+    register_all(&mut air, &mut log);
+    let now = air.now();
+    assert!(air.ms[0].send_upoll(1002, FMT_ISO8, 2, now));
+    let mut ahoy = None;
+    let mut acks = 0;
+    let end = air.now() + 8000;
+    while air.now() < end && !done::<3>(0)(&air) {
+        air.step(&mut log.f());
+        if (air.k - 1) & 1 == 0 && air.last.tscc_dt == DT_CSBK {
+            if let Some(a) = Ahoy::decode(&air.last.tscc_pdu) {
+                if a.service_kind == SK_UDT_POLL {
+                    ahoy = Some(a);
+                }
+            }
+            if let Some(a) = Ack::decode(&air.last.tscc_pdu) {
+                acks += (a.target == 1001 && reason_type(a.reason) == 1) as u32;
+            }
+        }
+    }
+    assert!(done::<3>(0)(&air), "the poll ends");
+    assert_eq!(air.ms[0].status().calls_done, 1);
+    let a = ahoy.expect("the poll's C_AHOY");
+    assert_eq!((a.source, a.target, a.service_options, a.appended, a.group), (1001, 1002, FMT_ISO8, 1, false));
+    assert_eq!(air.ms[1].polled(), 1);
+    let (h, d, n) = air.ms[0].inbox().expect("the polled data");
+    assert_eq!((n, h.source, h.target, h.format, h.response), (1, 1002, 1001, FMT_ISO8, true));
+    assert_eq!(&d[..POS.len()], POS);
+    assert!(air.ms[2].inbox().is_none() && air.ms[1].inbox().is_none());
+    // run on: no final C_ACKD to the caller after its own C_ACKU, nothing left in progress
+    let _ = tscc_blocks(&mut air, &mut log, 2000);
+    assert_eq!(acks, 0, "no C_ACKD to the caller");
+    assert!(!air.site.sd_pending());
+}
+
+#[test]
+fn upoll_refusals() {
+    // the polled MS refuses (C_NACKU, mirrored in C_NACKD: 6.6.5.1.2 a), an MS not registered here, itself, a
+    // gateway; a diverted MS: Div_Cause_Fail (t3sutests)
+    let mut s = site_with(|_| {});
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG]), ms(1002, &[TG])], T0);
+    register_all(&mut air, &mut log);
+    for (dst, reason) in
+        [(1002, R_RECIPIENT_REFUSED), (5555, R_NOREG_MSAWAY), (1001, R_NOT_SUPPORTED), (PSTNI, R_NOT_SUPPORTED)]
+    {
+        let now = air.now();
+        let before = air.ms[0].status().calls_failed;
+        air.ms[0].send_upoll(dst, FMT_ISO8, 1, now);
+        assert!(air.until(8000, &mut log.f(), |a| a.ms[0].status().calls_failed > before), "dst {dst}");
+        assert_eq!(air.ms[0].status().last_reason, reason, "dst {dst}");
+    }
+    assert!(air.ms[0].inbox().is_none());
+    let _ = tscc_blocks(&mut air, &mut log, 2000);
+    assert!(!air.site.sd_pending());
+}
+
 // ── from the site's application ──
 
 #[test]

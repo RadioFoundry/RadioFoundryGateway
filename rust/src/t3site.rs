@@ -1737,7 +1737,7 @@ impl Site {
             SK_CANCEL => self.cancel(r.source),
             SK_STATUS => self.sd_rand(r), // status delivery and polling (6.6.6; t3sdata.rs, t3status.rs)
             SK_DUPLEX => self.duplex_request(r),
-            SK_IND_UDT | SK_TG_UDT => self.sd_rand(r),
+            SK_IND_UDT | SK_TG_UDT | crate::t3udt::SK_UDT_POLL => self.sd_rand(r),
             SK_SUPPL if r.target == DGNAI => self.sd_rand(r),
             SK_IND_PD | SK_TG_PD => self.pd_rand(r),
             _ => self.refuse(R_NOT_SUPPORTED, r.source, r.target),

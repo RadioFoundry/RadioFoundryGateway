@@ -372,10 +372,13 @@ typedef struct {
 #define ACT_SETSTATUS 0xF1 /* rdof_t3ms_set_status */
 #define ACT_DATA 0xF2      /* rdof_t3ms_data: the text, UTF-16BE, in a UDP/IPv4 datagram (port 5016 to 5016) */
 #define ACT_AMBE 0xF3      /* the MSs' voice from a file of AMBE+2 frames (rdof_t3sim_ambe), "off" the near-silence */
+#define ACT_UPOLL 0xF4     /* rdof_t3ms_upoll (ISO 8-bit), arg the MS, len the blocks */
+#define ACT_SETPOLL 0xF5   /* rdof_t3ms_set_poll (ISO 8-bit text) */
 #define AIR_FILL_MAX ((RDOF_IPGW_MAX_PACKET - 28) / 2) /* data *N: characters at most, one UDP/IPv4 datagram */
 #define ACT_HELP                                                                                                       \
     "ID register [TG] | deregister | group TG [TALK_MS] | private ID [TALK_MS] | status ID N | gstatus TG N | "        \
-    "sdm ID TEXT | gsdm TG TEXT | data ID TEXT | cdata ID TEXT | gdata TG TEXT (data34, cdata1 ...: rate 3/4, 1; "   \
+    "sdm ID TEXT | gsdm TG TEXT | upoll ID [BLOCKS] | setpoll TEXT | data ID TEXT | cdata ID TEXT | gdata TG TEXT "  \
+    "(data34, cdata1 ...: rate 3/4, 1; "                                                                              \
     "TEXT *N: N generated characters) | "                                                                             \
     "interrupt ID [TALK_MS] | ginterrupt TG [TALK_MS] | als ID | alsend ID | "                                        \
     "setstatus N | cancel | ambe FILE|off (any MS: all MSs' voice, raw 9-octet AMBE+2 frames)"
@@ -456,6 +459,16 @@ static int act_parse(const char *text, act_t *x)
         x->what = sdm ? ACT_SDM : ACT_DATA, x->arg = (uint32_t)a1, x->len = (uint8_t)n,
         x->flags = (what[0] == 'g' ? RDOF_T3MS_F_GROUP : 0) | (what[0] == 'c' ? RDOF_T3MS_F_CONFIRMED : 0) |
                    (sdm ? 0 : (uint8_t)act_data_rate(what));
+    } else if (!strcmp(what, "upoll") && got >= 3 && (got < 4 || (a2 >= 1 && a2 <= 4)))
+        x->what = ACT_UPOLL, x->arg = (uint32_t)a1, x->len = got >= 4 ? (uint8_t)a2 : 4;
+    else if (!strcmp(what, "setpoll") && got >= 2) {
+        const char *t = strstr(line, what) + strlen(what);
+        t += strspn(t, " \t");
+        const size_t n = strcspn(t, "\r\n");
+        if (n > 46)
+            return -1;
+        memcpy(x->text, t, n);
+        x->what = ACT_SETPOLL, x->len = (uint8_t)n;
     } else if (!strcmp(what, "setstatus") && got >= 3 && a1 <= 127)
         x->what = ACT_SETSTATUS, x->arg = (uint32_t)a1;
     else if (!strcmp(what, "cancel"))
@@ -528,6 +541,10 @@ static bool act_run(rdof_t3ms_t *ms, const act_t *a, int64_t now)
         rdof_t3ms_set_status(ms, (uint8_t)a->arg);
         return true;
     }
+    if (a->what == ACT_SETPOLL)
+        return rdof_t3ms_set_poll(ms, 4 /* ISO 8-bit */, (const uint8_t *)a->text, a->len);
+    if (a->what == ACT_UPOLL)
+        return rdof_t3ms_upoll(ms, a->arg, 4, a->len, now);
     /* a status sent is the one it answers a poll with after (as a radio does) */
     if (a->what == RDOF_T3MS_DO_STATUS && a->talk_ms < 127)
         rdof_t3ms_set_status(ms, (uint8_t)a->talk_ms);
@@ -811,6 +828,9 @@ static bool air_start(const rdofradio_t3_opts_t *o, char *err, size_t cap)
             return false;
         }
         rdof_t3ms_init(AM.ms[i], AM.id[i], tg, 1, chans, AM.ncar, T.rng ^ (AM.id[i] * 2654435761u));
+        char reply[24]; /* a UDT short data poll's answer until the script sets one */
+        const int rn = snprintf(reply, sizeof reply, "air MS %u", (unsigned)AM.id[i]);
+        rdof_t3ms_set_poll(AM.ms[i], 4, (const uint8_t *)reply, (size_t)rn);
         if (i < o->air_ms)
             rdof_t3ms_do(AM.ms[i], RDOF_T3MS_DO_REGISTER, o->sim_tg, 0, 0, t0 + 3000 + 700 * i);
         rdof_t3ms_status(AM.ms[i], &AM.last[i]);
@@ -1397,7 +1417,8 @@ static void *sim_split_thread(void *arg)
         if (x->rx) {
             const double utc_ms = (x->sim_clock * 1e6 + utc_minus_host) / 1000.0;
             pthread_mutex_lock(&x->mu);
-            while (x->air_tail != x->air_head && utc_ms >= (double)((x->air[x->air_tail].k + 1) * 30 + SIM_REPORT_MS)) {
+            while (x->air_tail != x->air_head &&
+                   utc_ms >= (double)((x->air[x->air_tail % SIM_AIR].k + 1) * 30 + SIM_REPORT_MS)) {
                 const int i = x->air_tail++ % SIM_AIR;
                 const double start = ((double)x->air[i].k * 30000.0 - utc_minus_host) / 1e6;
                 fake_hear_at(x->fake, x->air[i].control, x->air[i].burst, -70, start);

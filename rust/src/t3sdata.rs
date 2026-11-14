@@ -30,6 +30,10 @@ pub(super) const SD_TGLIST: u8 = 0x41;
 pub(super) const SD_DIVERT: u8 = 0x42;
 /// The diverted address to a caller (6.6.7.2): a UDT header with SF 1 and no answer, sent FINAL_REPEATS times
 pub(super) const SD_NOTICE: u8 = 0x43;
+/// A UDT short data poll from an MS (6.6.5.1): src the caller, dst the polled MS (here). The C_AHOY from the caller
+/// asks the polled MS to upload its data (S_UPLOAD, the upload from dst); then the download to the caller (S_DOWN,
+/// from dst to src), whose C_ACKU ends it.
+pub(super) const SD_UPOLL: u8 = 0x44;
 
 // op (rdof_t3_sd_t.op)
 pub const SD_SEND: u8 = 1;
@@ -286,6 +290,7 @@ impl Site {
         let ms = r.source;
         let what = match r.service_kind {
             SK_IND_UDT | SK_TG_UDT => SD_UDT,
+            SK_UDT_POLL => SD_UPOLL,
             SK_SUPPL => SD_DGNA,
             _ if rand_status(r) == STATUS_POLL => SD_POLL,
             _ => SD_STATUS,
@@ -304,6 +309,10 @@ impl Site {
             return;
         }
         if !self.sd_admit(r) {
+            return;
+        }
+        if what == SD_UPOLL {
+            self.upoll_rand(r);
             return;
         }
         if what == SD_DGNA {
@@ -365,6 +374,48 @@ impl Site {
         self.sd_route(i);
     }
 
+    /// 6.6.5.1: a UDT short data poll of an individual MS registered here (its diversion is supp_gate's). The answer
+    /// is the C_AHOY to the polled MS (6.6.5.1.1 b), or C_QACKD while it's busy. Not served: a poll of an MS at
+    /// another site, gateways, talkgroups.
+    fn upoll_rand(&mut self, r: &Rand) {
+        let (ms, dst) = (r.source, r.target);
+        let bad = dst == ADRNULL || dst == ms || dst == TSI || is_gateway(dst) || is_allcall(dst);
+        if bad || r.proxy {
+            self.refuse(R_NOT_SUPPORTED, ms, dst);
+            return;
+        }
+        if self.reg_index(dst).is_none() {
+            self.refuse(R_NOREG_MSAWAY, ms, dst);
+            return;
+        }
+        let Some(i) = self.sd_free() else {
+            self.refuse(R_SYSBUSY, ms, dst);
+            return;
+        };
+        let busy = self.sd_busy(dst);
+        let mut d = Sd {
+            used: true,
+            what: SD_UPOLL,
+            origin: O_MS,
+            state: if busy { S_HOLD } else { S_UPLOAD },
+            ahoy_due: !busy,
+            so: r.service_options,
+            src: ms,
+            dst,
+            tries: self.cfg.ahoy_tries.max(1),
+            deadline_ms: self.now + if busy { self.cfg.sd_store_ms } else { self.cfg.tnp_ms } as i64,
+            next_ack_ms: self.now + ACK_EVERY_MS,
+            ..Default::default()
+        };
+        d.head.blocks = rand_sdata_blocks(r);
+        self.sd.sds[i] = d;
+        if busy {
+            self.ack(R_QUEUED_BUSY, ms, dst);
+        } else if self.sd.upload.active {
+            self.ack(R_WAIT, ms, dst); // another MS is uploading: this one's turn comes
+        }
+    }
+
     /// A transaction that starts with an upload from ms (C_AHOY from SDMI, DGNAI or TATTSI): what SD_UDT,
     /// SD_DGNA or SD_TGLIST, dst the C_RAND's target, so its Service_Options, blocks the UAB it asked for.
     pub(super) fn sd_upload_new(&mut self, what: u8, ms: u32, dst: u32, group: bool, so: u8, blocks: u8) {
@@ -412,6 +463,15 @@ impl Site {
     /// The message is whole (uploaded, or a status): on to the site, the talkgroup, the MS or the network.
     fn sd_route(&mut self, i: usize) {
         let d = self.sd.sds[i];
+        if d.what == SD_UPOLL {
+            // 6.6.5.1.3: the polled data down to the caller
+            let s = &mut self.sd.sds[i];
+            s.state = S_DOWN;
+            s.next_ms = self.now;
+            s.tries = self.cfg.sd_tries.max(1);
+            s.deadline_ms = self.now + self.cfg.tnp_ms as i64;
+            return;
+        }
         if d.what == SD_TGLIST {
             let mut buf = [0u8; MAX_DATA];
             let n = d.blocks.data(&mut buf);
@@ -548,6 +608,18 @@ impl Site {
             }
         }
         match d.origin {
+            // a poll: the caller's C_ACKU ends it (6.6.5.1.4); a failure before the download, C_NACKD to it with
+            // the polled MS's reason mirrored (6.6.5.1.2 a)
+            O_MS if d.what == SD_UPOLL => {
+                if !ok && d.state != S_DOWN {
+                    let a = Ack { op: OP_ACKD, response_info: 0, reason, target: d.src, source: d.dst };
+                    for _ in 0..FINAL_REPEATS {
+                        self.push(DT_CSBK, a.encode(), false, None);
+                    }
+                    self.counters.refused += 1;
+                    self.activity(ACT_REFUSE, 0, d.src, d.dst, reason);
+                }
+            }
             O_MS => {
                 let ri = if d.what == SD_POLL && ok { info } else { SysCode::decode(self.syscode).response_check() };
                 let a = Ack { op: OP_ACKD, response_info: ri, reason, target: d.src, source: d.dst };
@@ -609,15 +681,27 @@ impl Site {
     }
 
     /// Something in progress (for the hibernating TSCC: it stays awake).
-    pub(super) fn sd_pending(&self) -> bool {
+    pub fn sd_pending(&self) -> bool {
         self.sd.sds.iter().any(|d| d.used)
     }
 
     /// A transaction's next transmission when one is due: an upload's C_AHOY, a download, a status C_AHOY.
     pub(super) fn sd_start(&mut self) -> Option<(u8, [u8; 10], bool)> {
         let now = self.now;
+        // power save (6.4.7): a poll waits for the polled MS's wake frame, its time limit stretched to cover it
+        let mut ready = [false; SDS];
+        for (i, r) in ready.iter_mut().enumerate() {
+            let d = self.sd.sds[i];
+            *r = d.used && d.state == S_UPLOAD && d.ahoy_due;
+            if *r && d.what == SD_UPOLL && !self.ps_awake(d.dst) {
+                *r = false;
+                let wait = self.ps_wait_ms(d.dst);
+                let s = &mut self.sd.sds[i];
+                s.deadline_ms = s.deadline_ms.max(now + wait);
+            }
+        }
         if !self.sd.upload.active {
-            if let Some(i) = self.sd.sds.iter().position(|d| d.used && d.state == S_UPLOAD && d.ahoy_due) {
+            if let Some(i) = (0..SDS).find(|&i| ready[i]) {
                 // 6.6.4.1.1 d): C_AHOY from SDMI to the caller, Service_Kind 0100b whatever the message's target,
                 // Appended_Blocks the C_RAND's Appended_UDT_Short_Data; for DGNA from DGNAI, Service_Kind 1101b
                 // (6.6.8.2.1 c); for a registration's talkgroup list from TATTSI, Service_Kind 1110b and
@@ -625,25 +709,28 @@ impl Site {
                 let d = &mut self.sd.sds[i];
                 d.ahoy_due = false;
                 let n = d.head.blocks.clamp(1, MAX_BLOCKS as u8);
-                let (service_kind, source) = match d.what {
-                    SD_DGNA => (SK_SUPPL, DGNAI),
-                    SD_TGLIST => (SK_REG, TATTSI),
-                    SD_DIVERT => (SK_DIVERT, DIVERTI), // 6.6.7.1.1.1 b)
-                    _ => (SK_IND_UDT, SDMI),
+                // 6.6.5.1.1 b): a poll's from the caller to the polled MS, Service_Kind 0110b, Appended_Blocks the
+                // C_RAND's Appended_Short_Data (the UDTs the caller asked for)
+                let (service_kind, source, target) = match d.what {
+                    SD_DGNA => (SK_SUPPL, DGNAI, d.src),
+                    SD_TGLIST => (SK_REG, TATTSI, d.src),
+                    SD_DIVERT => (SK_DIVERT, DIVERTI, d.src), // 6.6.7.1.1.1 b)
+                    SD_UPOLL => (SK_UDT_POLL, d.src, d.dst),
+                    _ => (SK_IND_UDT, SDMI, d.src),
                 };
                 let a = Ahoy {
                     service_options: d.so,
                     service_kind_flag: d.what == SD_TGLIST,
                     appended: n - 1,
                     service_kind,
-                    target: d.src,
+                    target,
                     source,
                     ..Default::default()
                 };
                 self.sd.upload = Upload {
                     active: true,
                     sd: i,
-                    from: d.src,
+                    from: target,
                     until_k: self.k + 2 * (n as i64 + 1) + 8,
                     ..Default::default()
                 };
@@ -654,8 +741,9 @@ impl Site {
         // power save (6.4.7): one to a sleeping MS waits for its wake frame, its time limit stretched to cover it
         for i in 0..SDS {
             let d = self.sd.sds[i];
-            if d.used && d.state == S_DOWN && !d.group && now >= d.next_ms && !self.ps_awake(d.dst) {
-                let wait = self.ps_wait_ms(d.dst);
+            let to = if d.what == SD_UPOLL { d.src } else { d.dst };
+            if d.used && d.state == S_DOWN && !d.group && now >= d.next_ms && !self.ps_awake(to) {
+                let wait = self.ps_wait_ms(to);
                 let s = &mut self.sd.sds[i];
                 s.deadline_ms = s.deadline_ms.max(now + wait);
                 s.next_ms = now + 60; // look again next frame
@@ -671,18 +759,19 @@ impl Site {
         s.next_ms = now + self.cfg.ahoy_every_ms as i64;
         let notice = d.what == SD_NOTICE;
         let solicit = !d.group && !notice;
-        if !matches!(d.what, SD_UDT | SD_DGNA | SD_NOTICE) {
+        if !matches!(d.what, SD_UDT | SD_DGNA | SD_NOTICE | SD_UPOLL) {
             return Some(self.train_start(&[(DT_CSBK, pdu12(&Self::status_ahoy(&d)))], solicit));
         }
         // 6.6.4.1.4: the header (A = 1 to an MS, 6.5.1.2 table 6.34), then the blocks as they came
+        let poll = d.what == SD_UPOLL; // the polled MS's data to the caller (6.6.5.1.3)
         let h = UdtHead {
             op: if d.what == SD_DGNA { OP_DGNAHD } else { OP_UDTHD }, // table 6.69
             group: d.group,
             response: solicit,
             emergency: d.emergency,
             format: d.value,
-            target: d.dst,
-            source: d.src,
+            target: if poll { d.src } else { d.dst },
+            source: if poll { d.dst } else { d.src },
             pad_nibble: d.head.pad_nibble,
             blocks: d.blocks.n,
             sf: notice, // 6.6.7.2: Supplementary_Flag 1, UDT Response 0
@@ -715,6 +804,11 @@ impl Site {
         if !u.active || h.source != u.from {
             return; // not asked for (an upload this site didn't ask for): ignored
         }
+        let d = &self.sd.sds[u.sd];
+        if d.what == SD_UPOLL && (h.target != d.src || h.group || h.op != OP_UDTHU) {
+            return; // a poll's data goes to its caller (6.6.5.7 a)
+        }
+        let u = &mut self.sd.upload;
         u.have_head = true;
         u.got = 0;
         u.head = h;
@@ -759,7 +853,9 @@ impl Site {
             d.ahoy_due = true;
             return;
         }
-        self.sd_done(i, R_UDT_CRC, 0, WHY_TIMEOUT);
+        // a poll the polled MS never answered: MSaway
+        let reason = if self.sd.sds[i].what == SD_UPOLL { R_MSAWAY } else { R_UDT_CRC };
+        self.sd_done(i, reason, 0, WHY_TIMEOUT);
     }
 
     /// C_ACKU / C_NACKU for a transaction: true when it was one's.
@@ -775,9 +871,25 @@ impl Site {
             }
             // else the called MS's answer to a download from the gateway (DGNA from the site, source DGNAI)
         }
+        // a poll: the polled MS refusing it (6.6.5.7 b), or the caller's answer to the download (6.6.5.5)
+        if let Some(i) = (0..SDS).find(|&i| {
+            let d = &self.sd.sds[i];
+            d.used
+                && d.what == SD_UPOLL
+                && ((d.state == S_UPLOAD && d.dst == a.source && d.src == a.target)
+                    || (d.state == S_DOWN && d.src == a.source && d.dst == a.target))
+        }) {
+            let d = self.sd.sds[i];
+            if d.state == S_UPLOAD && reason_type(a.reason) == 1 {
+                return true; // its data comes as an upload, not an acknowledgement
+            }
+            let why = if reason_type(a.reason) == 1 { WHY_OK } else { WHY_REFUSED };
+            self.sd_done(i, a.reason, 0, why);
+            return true;
+        }
         let Some(i) = (0..SDS).find(|&i| {
             let d = &self.sd.sds[i];
-            d.used && d.state == S_DOWN && d.dst == a.source && d.src == a.target
+            d.used && d.state == S_DOWN && d.what != SD_UPOLL && d.dst == a.source && d.src == a.target
         }) else {
             return false;
         };
@@ -843,13 +955,20 @@ impl Site {
                 }
                 S_HOLD if !self.sd_busy(d.dst) => {
                     let s = &mut self.sd.sds[i];
-                    s.state = S_DOWN;
-                    s.next_ms = now;
+                    if d.what == SD_UPOLL {
+                        s.state = S_UPLOAD; // the poll's C_AHOY now
+                        s.ahoy_due = true;
+                        s.deadline_ms = now + self.cfg.tnp_ms as i64;
+                    } else {
+                        s.state = S_DOWN;
+                        s.next_ms = now;
+                    }
                 }
                 S_HOLD | S_NET | S_UPLOAD if now >= d.deadline_ms => {
                     let (reason, why) = match d.state {
                         S_HOLD => (R_CALLED_PARTY_BUSY, WHY_BUSY),
                         S_NET => (R_MSAWAY, WHY_TIMEOUT),
+                        _ if d.what == SD_UPOLL => (R_MSAWAY, WHY_TIMEOUT),
                         _ => (R_UDT_CRC, WHY_TIMEOUT),
                     };
                     self.sd_done(i, reason, 0, why);
@@ -858,7 +977,8 @@ impl Site {
                 _ => {}
             }
             let d = self.sd.sds[i];
-            if d.origin == O_MS && matches!(d.state, S_HOLD | S_DOWN | S_NET) && now >= d.next_ack_ms {
+            let progress = matches!(d.state, S_HOLD | S_NET) || (d.state == S_DOWN && d.what != SD_UPOLL);
+            if d.origin == O_MS && progress && now >= d.next_ack_ms {
                 let reason = if d.state == S_HOLD { R_QUEUED_BUSY } else { R_WAIT };
                 self.ack(reason, d.src, d.dst);
                 self.sd.sds[i].next_ack_ms = now + ACK_EVERY_MS;

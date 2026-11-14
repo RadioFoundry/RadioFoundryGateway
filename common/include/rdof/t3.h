@@ -490,6 +490,11 @@ void rdof_t3ms_set_status(rdof_t3ms_t *ms, uint8_t status);
 void rdof_t3ms_key(rdof_t3ms_t *ms, const uint8_t k[16], uint32_t psn, bool has_psn);
 /* queue an action (up to 8 queued) at or after at_ms */
 bool rdof_t3ms_do(rdof_t3ms_t *ms, uint8_t what, uint32_t arg, uint32_t talk_ms, uint8_t flags, int64_t at_ms);
+/* what it answers a UDT short data poll with (6.6.5.7): up to 46 octets in UDT_Format format; len 0, it refuses
+   polls (C_NACKU, Recipient_Refused; the default) */
+bool rdof_t3ms_set_poll(rdof_t3ms_t *ms, uint8_t format, const uint8_t *data, size_t len);
+/* a UDT short data poll of MS dst (6.6.5): the data in format, in blocks UDTs (1-4); it comes as short data */
+bool rdof_t3ms_upoll(rdof_t3ms_t *ms, uint32_t dst, uint8_t format, uint8_t blocks, int64_t at_ms);
 /* UDT short data (up to 46 octets, UDT_Format format) to dst, a talkgroup with RDOF_T3MS_F_GROUP */
 bool rdof_t3ms_sdm(rdof_t3ms_t *ms, uint32_t dst, uint8_t flags, uint8_t format, const uint8_t *data, size_t len,
                    int64_t at_ms);

@@ -1418,12 +1418,27 @@ fn cancel_after_answer_ahoy() {
     assert_eq!((tgt(&b), src(&b)), (B, A));
 }
 
-/// tier3.md 3.7 (4.2): a Service_Kind the site doesn't offer gets C_NACKD(Not_Supported). Status, short data and
-/// packet data are offered (tier3.md 3.15, 3.16); UDT polling isn't; duplex calls are off by default
+/// 6.6.5.1.1 b), 6.6.5.2 table 6.56, 7.2.14: a UDT short data poll of an MS here is answered within NRand_Wait by a
+/// C_AHOY from the caller to the polled MS: Service_Kind 0110b, Service_Options the C_RAND's (the Polling Format
+/// in its four LSBs), G/I 0, Appended_Blocks the C_RAND's Appended_Short_Data.
+#[test]
+fn udt_poll_ahoy() {
+    let mut r = two(false);
+    let k = r.send(rand(0x05, 2, spec::SK_POLL, B, A));
+    let (ko, o) = r.find(k, 30, |dt, b| ahoy(dt, b) && field(b, 28, 4) as u8 == spec::SK_POLL).expect("poll AHOY");
+    let b = o.tscc_pdu;
+    let (so, skf, als, gi, ab, _) = ahoy_f(&b);
+    assert_eq!((so, skf, als, gi, ab), (0x05, 0, 0, 0, 2));
+    assert_eq!((tgt(&b), src(&b)), (B, A));
+    assert!(r.within_nwait(k, ko));
+}
+
+/// tier3.md 3.7 (4.2): a Service_Kind the site doesn't offer gets C_NACKD(Not_Supported). Status, short data,
+/// UDT polling and packet data are offered (tier3.md 3.15, 3.16); duplex calls are off by default
 /// (`services.duplex`).
 #[test]
 fn unsupported_service_not_supported() {
-    for sk in [spec::SK_POLL, spec::SK_DUPLEX_IND] {
+    for sk in [spec::SK_DUPLEX_IND] {
         let mut r = two(false);
         let k = r.send(rand(0, 0, sk, B, A));
         let (ko, (_, reason, target, _)) = r.ack_to(k, 30, A).expect("answered");

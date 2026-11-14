@@ -56,6 +56,8 @@ pub const F_ALS: u8 = 0x20; // DO_PRIVATE: an Ambient Listening Service call (it
 /// A transmit interrupt from the payload channel it listens on (interrupt, als_end): arg the MS or, F_TO_GROUP, the
 /// talkgroup; F_ALS ends an ALS call (status 123), else a payload interrupt (status 125) and it talks talk_ms.
 pub const DO_INTERRUPT: u8 = 14;
+/// A UDT short data poll of an MS (6.6.5; send_upoll): arg the MS. The polled data comes as UDT short data (inbox).
+pub const DO_UPOLL: u8 = 15;
 
 pub const IDLE: u8 = 0;
 pub const ACCESS: u8 = 1;
@@ -212,6 +214,12 @@ pub struct Ms {
     sd_out: Blocks,
     sd_fmt: u8,
     sd_pn: u8, // its Pad_Nibble
+    upoll_fmt: u8, // DO_UPOLL: the format asked for and the blocks
+    upoll_blocks: u8,
+    poll_reply: Blocks, // what it answers a UDT short data poll with (none: C_NACKU)
+    poll_fmt: u8,
+    poll_pn: u8,
+    polled: u32, // the polls it answered
     up: [(u8, [u8; 12]); 1 + MAX_BLOCKS],
     up_len: usize,
     up_pos: usize,
@@ -506,6 +514,31 @@ impl Ms {
         self.status_reply = status;
     }
 
+    /// What it answers a UDT short data poll with (6.6.5.7): up to 46 octets in format; empty, it refuses polls.
+    pub fn set_poll_reply(&mut self, format: u8, data: &[u8]) -> bool {
+        if data.is_empty() {
+            self.poll_reply = Blocks::default();
+            return true;
+        }
+        let Some((b, pn)) = Blocks::of_format(data, format) else { return false };
+        self.poll_reply = b;
+        self.poll_fmt = format;
+        self.poll_pn = pn;
+        true
+    }
+
+    /// The UDT short data polls it answered with its data.
+    pub fn polled(&self) -> u32 {
+        self.polled
+    }
+
+    /// Queues a UDT short data poll of MS dst (6.6.5.2): the data in format (POL_FMT), in blocks UDTs (1 to 4).
+    pub fn send_upoll(&mut self, dst: u32, format: u8, blocks: u8, at_ms: i64) -> bool {
+        self.upoll_fmt = format & 0x0F;
+        self.upoll_blocks = blocks.clamp(1, MAX_BLOCKS as u8);
+        self.act(DO_UPOLL, dst, 0, 0, at_ms)
+    }
+
     /// The last UDT short data it took: the header and the data (the count of them in MsStatus-free form).
     pub fn inbox(&self) -> Option<(UdtHead, [u8; MAX_DATA], u32)> {
         if self.inbox_n == 0 {
@@ -604,6 +637,16 @@ impl Ms {
                 source: self.id,
                 ..Default::default()
             },
+            // 6.6.5.2 table 6.56, table 7.60: the Polling Format in Service_Options' four LSBs, Appended_Short_Data
+            // the UDTs less one
+            DO_UPOLL => Rand {
+                service_options: self.upoll_fmt & 0x0F,
+                dep: self.upoll_blocks.max(1) - 1,
+                service_kind: SK_UDT_POLL,
+                target: a.arg,
+                source: self.id,
+                ..Default::default()
+            },
             // 6.6.6.1.2 table 6.57: G/I, then the status's five MSBs; its two LSBs in the dependent bits
             DO_SD_STATUS => {
                 let st = (a.talk_ms & 0x7F) as u8;
@@ -671,7 +714,23 @@ impl Ms {
     }
 
     fn done(&mut self, ok: bool) {
-        if self.has_cur && matches!(self.cur.what, DO_GROUP | DO_PRIVATE | DO_STATUS | DO_DUPLEX | DO_SDM | DO_SD_STATUS | DO_DATA | DO_DGNA | DO_DIVERT | DO_INTERRUPT) {
+        let what = self.cur.what;
+        if self.has_cur
+            && matches!(
+                what,
+                DO_GROUP
+                    | DO_PRIVATE
+                    | DO_STATUS
+                    | DO_DUPLEX
+                    | DO_SDM
+                    | DO_SD_STATUS
+                    | DO_DATA
+                    | DO_DGNA
+                    | DO_DIVERT
+                    | DO_INTERRUPT
+                    | DO_UPOLL
+            )
+        {
             if ok {
                 self.calls_done += 1;
             } else {
@@ -863,7 +922,9 @@ impl Ms {
                 self.on_ack(&a);
             }
         } else if let Some(a) = Ahoy::decode(pdu) {
-            if a.target == self.id || (a.group && a.service_kind == SK_STATUS && self.my_tg(a.target)) {
+            // a UDT short data poll's C_AHOY to the polled MS is the caller's answer too (6.6.5.4 b)
+            let my_poll = a.service_kind == SK_UDT_POLL && a.source == self.id && !a.group;
+            if a.target == self.id || my_poll || (a.group && a.service_kind == SK_STATUS && self.my_tg(a.target)) {
                 self.on_ahoy(&a);
             }
         } else if let Some(g) = Grant::decode(pdu) {
@@ -1184,6 +1245,9 @@ impl Ms {
         self.inbox = self.in_blocks;
         self.inbox_head = h;
         self.inbox_n += 1;
+        if self.has_cur && self.cur.what == DO_UPOLL && h.source == self.cur.arg && !h.group {
+            self.done(true); // 6.6.5.5: its C_ACKU (above) ends the poll
+        }
     }
 
     fn on_ack(&mut self, a: &Ack) {
@@ -1202,7 +1266,7 @@ impl Ms {
         if !self.has_cur {
             return; // e.g. the called party told of its own refusal
         }
-        if matches!(self.cur.what, DO_SDM | DO_SD_STATUS) && a.source != self.cur.arg {
+        if matches!(self.cur.what, DO_SDM | DO_SD_STATUS | DO_UPOLL) && a.source != self.cur.arg {
             return; // not about this request (a repeat of an earlier one's final acknowledgement)
         }
         if self.cur.what == DO_INTERRUPT && a.source != TSI {
@@ -1312,6 +1376,43 @@ impl Ms {
         }
         if a.service_kind == SK_REG && !a.service_kind_flag {
             self.on_challenge(a);
+            return;
+        }
+        if a.service_kind == SK_UDT_POLL && a.source == self.id {
+            // 6.6.5.4 b): its poll goes on; the polled data comes as a download
+            if self.has_cur && self.cur.what == DO_UPOLL && self.cur.arg == a.target {
+                self.state = WAITING;
+                self.wait_until = self.now + WAIT_MS;
+            }
+            return;
+        }
+        if a.service_kind == SK_UDT_POLL && a.target == self.id {
+            // 6.6.5.7: the polled data to the caller as a UDT upload (A 0), or C_NACKU
+            if self.poll_reply.n == 0 {
+                let (target, source) = (a.source, self.id);
+                let r = Ack { op: OP_ACKU, reason: R_RECIPIENT_REFUSED, target, source, ..Default::default() };
+                self.reply = Some(r.encode());
+                return;
+            }
+            let b = self.poll_reply;
+            let h = UdtHead {
+                op: OP_UDTHU,
+                format: self.poll_fmt,
+                pad_nibble: self.poll_pn,
+                target: a.source,
+                source: self.id,
+                blocks: b.n,
+                ..Default::default()
+            };
+            let mut hb = [0u8; 12];
+            hb[..10].copy_from_slice(&h.encode());
+            self.up[0] = (DT_DATA_HDR, hb);
+            for j in 0..b.n as usize {
+                self.up[1 + j] = (DT_RATE12, b.b[j]);
+            }
+            self.up_len = 1 + b.n as usize;
+            self.up_pos = 0;
+            self.polled += 1;
             return;
         }
         // an upload asked for: short data (6.6.4.4 c, table 6.35), DGNA (6.6.8.3.3, table 6.71) or a
@@ -1998,6 +2099,17 @@ pub unsafe extern "C" fn rdof_t3ms_data(
 ) -> bool {
     let d = if data.is_null() || len == 0 { &[][..] } else { core::slice::from_raw_parts(data, len) };
     (*ms).send_data(dst, flags, d, at_ms)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3ms_set_poll(ms: *mut Ms, format: u8, data: *const u8, len: usize) -> bool {
+    let d = if data.is_null() || len == 0 { &[][..] } else { core::slice::from_raw_parts(data, len) };
+    (*ms).set_poll_reply(format, d)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3ms_upoll(ms: *mut Ms, dst: u32, format: u8, blocks: u8, at_ms: i64) -> bool {
+    (*ms).send_upoll(dst, format, blocks, at_ms)
 }
 
 #[no_mangle]
