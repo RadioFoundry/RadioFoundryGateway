@@ -204,6 +204,8 @@ typedef struct {
     uint32_t rx_headers;      /* data headers (CRC good) that start a message: what came before rx_incomplete */
     uint32_t rx_header_crc;   /* data headers whose CRC failed */
     uint32_t rx_blocks;       /* data blocks taken into a message */
+    uint32_t rx_block_fec;    /* of those, blocks whose FEC failed (rate 1/2, 3/4) */
+    uint32_t rx_block_crc;    /* of those, confirmed blocks whose CRC-9 failed */
 } rdof_ipgw_counters_t;
 
 typedef struct {

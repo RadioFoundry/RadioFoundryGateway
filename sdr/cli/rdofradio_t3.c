@@ -234,8 +234,15 @@ static void publish_node(void)
  * runs in poll_locked. */
 static void io_data(void *ctx, int ch, int dt, const uint8_t *burst, uint32_t src, uint32_t dst)
 {
-    if (rdofgw_on())
-        rdofgw_heard(0, (ch & 1) + 1, 0, -1, dt, burst, (double)wall_ms() / 1000.0);
+    if (!rdofgw_on())
+        return;
+    if (T.o.verbose) { /* each burst as heard: a message the gateway calls bad can be decoded again offline */
+        char hex[2 * RDOF_BURST_BYTES + 1];
+        for (int i = 0; i < RDOF_BURST_BYTES; i++)
+            snprintf(hex + 2 * i, 3, "%02x", burst[i]);
+        tsay("ip gateway: ch %d dt %d %u -> %u: %s", ch, dt, src, dst, hex);
+    }
+    rdofgw_heard(0, (ch & 1) + 1, 0, -1, dt, burst, (double)wall_ms() / 1000.0);
 }
 /* The gateway's packets go down one at a time (an ACK and then the reply to it come at once): the rest wait here,
  * in order, for the one going down. */

@@ -629,13 +629,17 @@ void rdof_ipgw_burst(rdof_ipgw_t *g, const rdof_ipgw_where_t *w, int dt, const u
     rdof_data_block_t b;
     rdof_decode_data_block(burst, dt, &b);
     g->n.rx_blocks++;
-    if (!b.fec_ok)
+    if (!b.fec_ok) {
         a->bad = true;
+        g->n.rx_block_fec++;
+    }
     if (a->confirmed) {
         int dbsn, n;
         uint8_t body[24];
-        if (!rdof_split_confirmed(&b, &dbsn, body, &n))
+        if (!rdof_split_confirmed(&b, &dbsn, body, &n)) {
             a->bad = true;
+            g->n.rx_block_crc += b.fec_ok;
+        }
         append(a, body, n);
     } else {
         append(a, b.payload, b.len);
@@ -910,6 +914,7 @@ void rdof_ipgw_status_json(const rdof_ipgw_t *g, rdof_json_t *j)
         {"icmp_unmatched", n->icmp_unmatched},
         {"down_own_source", n->down_own_source}, {"tx_busy", n->tx_busy},
         {"rx_headers", n->rx_headers},   {"rx_header_crc", n->rx_header_crc}, {"rx_blocks", n->rx_blocks},
+        {"rx_block_fec", n->rx_block_fec}, {"rx_block_crc", n->rx_block_crc},
     };
     for (size_t i = 0; i < sizeof c / sizeof c[0]; i++)
         rdof_json_int(j, c[i].key, c[i].v);

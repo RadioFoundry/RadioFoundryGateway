@@ -54,7 +54,7 @@ Nothing matched and NAT off: dropped (`no_route`).
   serial number and a CRC-9 each (checked, `rdof_split_confirmed`). Blocks are taken in the order heard; selective
   retry is not supported.
 - When the announced count is in: the CRC-32 over the user data and the pad octets (little endian in the last
-  four octets) is checked, the pad dropped. Any failed block, CRC-9 or CRC-32: `rx_bad`.
+  four octets) is checked, the pad dropped. Any failed block, CRC-9 or CRC-32: `rx_bad` (a block's FEC also counts `rx_block_fec`, a CRC-9 `rx_block_crc`).
 - A new header before the last block, or no block for `RDOF_IPGW_ASM_TIMEOUT_S` 2 s: `rx_incomplete`.
 - **Chains.** RadioFoundry radios send several unconfirmed packets to one destination in one transmission: CSBK
   preambles once, then each packet's header and blocks back to back, one terminator. Each header after a packet's

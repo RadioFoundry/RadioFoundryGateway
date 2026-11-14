@@ -532,7 +532,7 @@ static void t_route(void)
     rdof_ipgw_status_json(g, &j);
     rdof_json_close(&j);
     CHECK(rdof_json_done(&j) && strstr(buf, "\"ip_gateway\":{\"routes\":2,\"nat\":false,\"flows\":0,\"max_flows\":8,") &&
-              strstr(buf, "\"up_packets\":2,") && strstr(buf, "\"flows_expired\":2,\"queue_full\":0,\"sap3\":0,\"ttl_expired\":0,\"down_ttl_expired\":0,\"icmp_up\":0,\"icmp_down\":0,\"icmp_errors\":0,\"icmp_unmatched\":0,\"down_own_source\":0,\"tx_busy\":0,\"rx_headers\":5,\"rx_header_crc\":0,\"rx_blocks\":17}"),
+              strstr(buf, "\"up_packets\":2,") && strstr(buf, "\"flows_expired\":2,\"queue_full\":0,\"sap3\":0,\"ttl_expired\":0,\"down_ttl_expired\":0,\"icmp_up\":0,\"icmp_down\":0,\"icmp_errors\":0,\"icmp_unmatched\":0,\"down_own_source\":0,\"tx_busy\":0,\"rx_headers\":5,\"rx_header_crc\":0,\"rx_blocks\":17,\"rx_block_fec\":0,\"rx_block_crc\":0}"),
           "status: %s", buf);
     free(g);
 }
@@ -685,7 +685,7 @@ static void t_confirmed(void)
     n = datagram(RADIO_IP, 4005, IP(13, 0, 0, 1), 4005, "spoiled", d);
     confirmed(RADIO, 9990, 4, d, n, &p, true);
     hear(g, &W, &p, 26.0);
-    CHECK(g->n.rx_bad == 1 && f.dmr == 4 && f.sent == 1, "bad CRC-9");
+    CHECK(g->n.rx_bad == 1 && g->n.rx_block_crc == 1 && !g->n.rx_block_fec && f.dmr == 4 && f.sent == 1, "bad CRC-9");
     /* ack off */
     g->cfg.ack = false;
     n = datagram(RADIO_IP, 4005, IP(13, 0, 0, 1), 4005, "no ack", d);
@@ -767,7 +767,7 @@ static void t_assembly(void)
     blk[0] ^= 1;
     rdof_data_burst(blk, RDOF_DT_RATE_12, 1, sync, p.bursts[1]);
     hear(g, &W, &p, 6.0);
-    CHECK(g->n.rx_bad == 1 && g->n.rx_messages == 1, "CRC-32");
+    CHECK(g->n.rx_bad == 1 && g->n.rx_messages == 1 && !g->n.rx_block_crc && !g->n.rx_block_fec, "CRC-32");
     /* five at once on four assemblers: the oldest gives way */
     for (int k = 0; k < 5; k++) {
         rdof_ipgw_where_t wk = {.source = 10 + k, .slot = 1, .cc = 1};
