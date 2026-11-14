@@ -423,9 +423,9 @@ impl Site {
         self.sd_route(i);
     }
 
-    /// 6.6.5.1: a UDT short data poll of an individual MS registered here (its diversion is supp_gate's). The answer
-    /// is the C_AHOY to the polled MS (6.6.5.1.1 b), or C_QACKD while it's busy. Not served: a poll of an MS at
-    /// another site, gateways, talkgroups.
+    /// 6.6.5.1: a UDT short data poll of an individual MS (its diversion is supp_gate's). The answer is the C_AHOY
+    /// to the polled MS (6.6.5.1.1 b), or C_QACKD while it's busy; an MS not here, over the network (5.9). Not
+    /// served: gateways, talkgroups.
     fn upoll_rand(&mut self, r: &Rand) {
         let (ms, dst) = (r.source, r.target);
         let bad = dst == ADRNULL || dst == ms || dst == TSI || is_gateway(dst) || is_allcall(dst);
@@ -1213,9 +1213,20 @@ impl Site {
             ..Default::default()
         };
         d.head.blocks = m.data().first().copied().unwrap_or(MAX_BLOCKS as u8).clamp(1, MAX_BLOCKS as u8);
+        if self.reg_index(dst).is_none() && self.connected {
+            // another site may have it: the poll goes there (5.9), its data comes back in the result
+            d.state = S_NET;
+            d.ahoy_due = false;
+            d.stream = self.new_stream();
+            d.deadline_ms = self.now + 2 * self.cfg.tnp_ms as i64;
+            self.sd.sds[i] = d;
+            let m = self.sd_msg(&d, SD_SEND);
+            self.ev(SdMsg { stream: d.stream, ..m }.event(EV_NET_SD));
+            return true;
+        }
         self.sd.sds[i] = d;
         if self.reg_index(dst).is_none() {
-            self.sd_done(i, R_NOREG_MSAWAY, 0, WHY_NOT_FOUND); // not here (the network isn't asked)
+            self.sd_done(i, R_NOREG_MSAWAY, 0, WHY_NOT_FOUND); // not here, and no network to ask
         }
         true
     }
@@ -1236,6 +1247,9 @@ impl Site {
             };
             if self.sd.sds[i].what == SD_UPOLL && reason_type(m.reason) == 1 {
                 self.upoll_net_answer(i, m);
+                if self.sd.sds[i].used && self.sd.sds[i].origin == O_APP {
+                    self.sd_done(i, R_MESSAGE_ACCEPTED, 0, WHY_OK); // the application's: nothing to download
+                }
                 return;
             }
             let why = if reason_type(m.reason) == 1 {

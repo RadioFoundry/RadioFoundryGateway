@@ -618,6 +618,20 @@ fn upoll_across_sites() {
     assert_eq!(a.ms[0].status().last_reason, R_MSAWAY);
     let _ = two_sites_sd(&mut a, &mut b, &mut la, &mut lb, 2000, |_| false);
     assert!(!a.site.sd_pending() && !b.site.sd_pending());
+
+    // the site's application polls an MS at the other site: C_AHOY from SDMI there, the data in its result here
+    let now = a.now();
+    let mut p = SdMsg { op: SD_SEND, what: SD_UDT_POLL, value: FMT_ISO8, dst: 2002, r#ref: 71, ..Default::default() };
+    p.len = 1;
+    p.data[0] = 2;
+    assert!(a.site.sd_send(&p, now));
+    let sent = two_sites_sd(&mut a, &mut b, &mut la, &mut lb, 15_000, |_| false);
+    let q = sent.iter().find(|m| m.op == SD_SEND && m.dst == 2002).expect("the poll out");
+    assert_eq!((q.src, q.what), (SDMI, SD_UDT_POLL));
+    let r = *la.sd(EV_SD, SD_RESULT).iter().find(|r| r.r#ref == 71).expect("the application's poll ends");
+    assert_eq!((r.reason, r.src, r.value, &r.data()[..POS.len()]), (R_MESSAGE_ACCEPTED, SDMI, FMT_ISO8, POS));
+    assert_eq!(b.ms[0].polled(), 2);
+    assert!(!a.site.sd_pending() && !b.site.sd_pending());
 }
 
 // ── from the site's application ──
