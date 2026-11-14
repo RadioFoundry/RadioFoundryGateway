@@ -591,6 +591,11 @@ impl Site {
 
     fn pd_ahoy(&mut self, i: usize) {
         let p = self.pd.pds[i];
+        if !self.ps_awake(p.called) {
+            // asleep (power save, 6.4.7): held for its wake frame, the time limit stretched to it
+            self.pd.pds[i].deadline_ms = p.deadline_ms.max(self.now + self.ps_wait_ms(p.called));
+            return;
+        }
         if p.ahoy_left == 0 {
             self.pd.pds[i].used = false;
             self.pd_fail(&p, R_MSAWAY);

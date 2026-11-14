@@ -46,7 +46,7 @@ Principles:
 | Status and the emergency alarm | The Status Transport Service (6.6.6.1, 6.6.6.2) delivered as short data (section 3.15): to an MS (C_AHOY, its C_ACKU or C_NACKU mirrored), a talkgroup or the TSCC, stored while the called MS is busy, polling; the emergency alarm and its cancel (6.6.6.3) under the MS's emergency provisioning; an `activity` `status` event (section 3.10) |
 | Mass re-registration | MassReg (6.4.5): all MSs or one, on command (`mass_reg`) or at start, repeated inside its Reg_Window (section 3.11) |
 | TSCC modes | C_MOVE on command (all MSs or one, to another TSCC's logical channel, or to an adjacent site's TSCC by its frequencies in the MBC form); the asynchronous (hibernating) TSCC, woken by BS_Dwn_Act or any good inbound block; a setting, off by default (section 3.12); the composite TSCC (its slot carries a call when every payload channel is busy, P_SYS_Parms with Payload Channel Type 1 meanwhile; a setting, off by default, section 3.19) |
-| Power save | PowerSave_RQ in registration, PowerSave_Offset in the C_ACKD (6.4.7.2.1); C_AHOYs to a sleeping MS held for its wake frame; a setting, off by default (section 3.11) |
+| Power save | PowerSave_RQ in registration, PowerSave_Offset in the C_ACKD (6.4.7.2.1); C_AHOYs and UDT downloads to a sleeping MS held for its wake frame; a setting, off by default (section 3.11) |
 | Short data | UDT short data on the TSCC both ways (C_UDTHD/C_UDTHU, 1-4 rate 1/2 blocks, up to 46 octets), stored and forwarded MS to MS, MS to talkgroup, MS to site and site to MS; status messages, status polling and UDT short data polling; across sites in mqtt-net's `sdata` item (3.15, 5.9) |
 | Packet data | Individual and talkgroup packet data calls (C_RAND 0010b/0011b): the availability check (C_AHOY 0010b), PD_GRANT/TD_GRANT single or multi-item, the payload channel in data mode (each data burst repeated), confirmed and unconfirmed data at rate 1/2, 3/4 and 1 (the MS simulator's selective retry: SACK, C_RDATA, F = 0 resends), data hang time and clearing; MS to MS, MS to talkgroup, MS to the site's IP gateway (TSI, its data ID or IPI) and the gateway's replies down (3.16); across sites over mqtt-net to an MS registered at another site (the check there through the setup) and to the sites that carry a `wide_tg` talkgroup, a whole message at a time, and the gateway's replies to an MS at another site (5.10) |
 | Talkgroup lists | Registration with a talkgroup subscription/attachment list (C_AHOY from TATTSI, the Address Format upload, one Response_Info bit per talkgroup); DGNA from an MS (C_AHOY from DGNAI, C_DGNAHU then C_DGNAHD) or from the site, both modes; the site carries the talkgroups either list holds (3.17) |
@@ -412,7 +412,8 @@ Response_Info 000 0000b (6.4.4.1.13.1) and no power save, even if it asked (the 
 comes from the MS's subscribed talkgroup (else its address), so a talkgroup's members share a wake frame. PS_Counter
 is the Common_Slot_Counter's 7 high bits (one power save frame is 4 counts, 480 ms; figure 6.29); the MS wakes when
 PS_Counter masked to n bits equals its offset (table 6.14). A C_AHOY to a sleeping MS (an individual call, a
-status) waits for the first 8 slots of its wake frame, and the call's set-up time limit stretches by one cycle; the
+status, packet data's availability check, a UDT poll) and a UDT short data download to it wait for the first 8
+slots of its wake frame, and the set-up time limit stretches by one cycle; the
 MS is taken as awake for `services.power_save_awake_s` (the site's T_Awake, 1 s) after a PDU to or from it, so the
 following C_AHOYs and the grant go at once.
 

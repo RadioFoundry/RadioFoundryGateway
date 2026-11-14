@@ -655,6 +655,46 @@ fn power_save_wake_frames() {
     air.ms[0].act_status(9, false, 1002, now);
     assert!(air.until(8000, &mut log.f(), |a| a.ms[0].status().calls_done == 2));
     assert_eq!(air.ms[1].statuses(), (1, (1001, 1002, 9)));
+    // packet data (its C_AHOY), UDT short data (the C_UDTHD) and a UDT poll (its C_AHOY), each after it fell asleep
+    // again: the first PDU to it in its wake frame
+    assert!(air.ms[1].set_poll_reply(4, b"awake"));
+    for (n, what) in [(3, "packet data"), (4, "short data"), (5, "a poll")] {
+        air.run(4000, &mut log.f());
+        // start just after its wake frame: the next is 3 frames (1.44 s) away, past the caller's random access
+        while !ps_wake(air.k, rq, off) {
+            air.step(&mut log.f());
+        }
+        while ps_wake(air.k, rq, off) {
+            air.step(&mut log.f());
+        }
+        let now = air.now();
+        match n {
+            3 => assert!(air.ms[0].send_data(1002, 0, b"ps data", now)),
+            4 => assert!(air.ms[0].send_sdm(1002, 0, 4, b"ps text", now)),
+            _ => assert!(air.ms[0].send_upoll(1002, 4, 1, now)),
+        }
+        let mut first = None;
+        let end = air.now() + 12_000;
+        while air.now() < end && air.ms[0].status().calls_done < n {
+            air.step(&mut log.f());
+            let o = air.last;
+            if first.is_none() && air.k & 1 == 1 {
+                let to = match o.tscc_dt {
+                    DT_CSBK => Ahoy::decode(&o.tscc_pdu).map(|a| a.target),
+                    DT_DATA_HDR => crate::t3udt::UdtHead::decode(&o.tscc_pdu).map(|h| h.target),
+                    _ => None,
+                };
+                if to == Some(1002) {
+                    first = Some(air.k - 1);
+                }
+            }
+        }
+        assert_eq!(air.ms[0].status().calls_done, n, "{what} done");
+        let k = first.unwrap_or_else(|| panic!("{what}: nothing to it"));
+        assert!(ps_wake(k, rq, off), "{what}: the first PDU to it in its wake frame, slot {k}");
+    }
+    assert_eq!(air.ms[1].inbox().map(|(h, _, _)| h.source), Some(1001));
+    assert_eq!(air.ms[0].inbox().map(|(h, _, _)| h.source), Some(1002), "the poll's answer");
 }
 
 /// Power save and group calls (6.4.7.1: a transaction to a sleeping "group of MSs shall be queued on the TSCC until
