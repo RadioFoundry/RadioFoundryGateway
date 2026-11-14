@@ -2818,6 +2818,12 @@ impl Site {
                 }
                 self.rand_said(&r, before, queued);
             } else if let Some(a) = Ack::decode(pdu) {
+                if a.op == OP_ACKU {
+                    // each MS answer, as the C_RAND above: "C_NACKU from 16777215 to 16777215: 0x44"
+                    let (src, to, r) = (a.source, a.target, a.reason);
+                    let what = ["C_NACKU", "C_ACKU", "C_ACKU (queued)", "C_ACKU (wait)"][usize::from(reason_type(r))];
+                    self.log(format_args!("{what} from {src} to {to}: {r:#04x}"));
+                }
                 if a.op == OP_ACKU && !self.auth_answer(&a) {
                     self.ms_ack(&a);
                 }
