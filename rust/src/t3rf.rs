@@ -63,6 +63,9 @@ extern "C" {
     fn rdof_split_upstream(s: *mut c_void, data: *const u8, n: usize, now: f64);
     fn rdof_split_sched_ok(s: *const c_void) -> bool;
     fn rdof_split_sched(s: *mut c_void, n: i64, control: u8, burst: *const u8) -> bool;
+    fn rdof_split_has_cach(s: *const c_void) -> bool;
+    fn rdof_split_align_pending(s: *const c_void) -> bool;
+    fn rdof_split_sched_cach(s: *mut c_void, n: i64, control: u8, burst: *const u8, cach: *const u8) -> bool;
 }
 
 /// rdof_trunk_pdu_t
@@ -186,6 +189,7 @@ pub struct T3rfSplit {
     pub fifo_bursts: u32,
     pub short_lcs: u32,
     pub keyups: u32,
+    pub cach_bursts: u32,
 }
 
 // ── control blocks ─────────────────────────────────────────────────────────────
@@ -1078,7 +1082,11 @@ pub unsafe extern "C" fn rdof_t3rf_split_pump(
         o.keyed = false;
         return;
     }
-    if !busy {
+    // a half that will be on the UTC grid keys only once it is; the TSCC's carrier, never idle, lets go of a key-up
+    // held off the grid so the half can snap back (a payload carrier keeps its call, from the FIFO meanwhile)
+    let tscc_carrier = (*t).tscc && o.carrier == 0;
+    let pending = rdof_split_align_pending(s) && (!o.keyed || tscc_carrier);
+    if !busy || pending {
         if o.keyed {
             upstream(s, DMR_START, &[0], now);
             o.keyed = false;
@@ -1087,6 +1095,9 @@ pub unsafe extern "C" fn rdof_t3rf_split_pump(
         return;
     }
     let sched = rdof_split_sched_ok(s);
+    // a half that takes the CACH with each burst gets every slot's, the controller's AT and short LC in it (a TSCC's
+    // carrier needs them slot by slot); idle slots go too, so none is left to the half's own CACH
+    let cach = sched && rdof_split_has_cach(s);
     let ahead = if ahead > 0 {
         ahead
     } else if sched {
@@ -1094,13 +1105,17 @@ pub unsafe extern "C" fn rdof_t3rf_split_pump(
     } else {
         1
     };
+    let fresh = !o.keyed;
     if !o.keyed {
         upstream(s, DMR_START, &[1], now);
         o.keyed = true;
         o.keyups += 1;
     }
-    // a fresh key-up starts at the next slot; keyed and behind, those slots are gone
+    // a fresh key-up starts at the next slot; keyed and behind, those slots are gone. Scheduled, a fresh key-up's
+    // first two slots are inside the half's guard: taken from the controller (a payload channel's warm-up idles, a
+    // TSCC's PDUs it sends again) but not sent
     o.next_k = o.next_k.max(k_now + 1);
+    let first_sent = if sched && fresh { k_now + 3 } else { i64::MIN };
     o.scheduled = sched;
     while o.next_k <= k_now + ahead as i64 {
         let k = o.next_k;
@@ -1116,7 +1131,18 @@ pub unsafe extern "C" fn rdof_t3rf_split_pump(
             o.slc_sent = slc;
             o.short_lcs += 1;
         }
-        if sched {
+        if k < first_sent {
+            continue;
+        }
+        if cach {
+            let slc = if o.slc_sent >= 0 { o.slc_sent as u32 } else { 0 };
+            let mut rows = [[0u8; 3]; 4];
+            rdof_t3rf_cach4(slc, &[at.max(0); 4], k & !3, &mut rows);
+            if rdof_split_sched_cach(s, k, control, burst.as_ptr(), rows[(k & 3) as usize].as_ptr()) {
+                o.sched_bursts += 1;
+                o.cach_bursts += 1;
+            }
+        } else if sched {
             let rc_here = (*t).ch[(2 * o.carrier + (k & 1) as c_int) as usize].rc_k == k && k != 0;
             if control & 0x0F == DT_IDLE as u8 && control & RDOF_SYNC_DATA != 0 && !rc_here {
                 continue; // the half sends idle between scheduled bursts (an RC burst isn't idle)

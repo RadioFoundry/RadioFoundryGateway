@@ -1076,13 +1076,29 @@ bool rdof_split_sched_ok(const rdof_split_t *s)
            (s->align_state == RDOF_ALIGN_LOCKED || s->align_state == RDOF_ALIGN_SLEWING);
 }
 
+bool rdof_split_align_pending(const rdof_split_t *s)
+{
+    return s->ready && !s->failed[0] && s->tx_role && s->stream_mode == RDOF_OPS_STREAM_SCHEDULED &&
+           rdof_ops_can_align(s->halves[RDOF_SPLIT_TX].caps, s->stream_mode) && !rdof_split_sched_ok(s);
+}
+
+bool rdof_split_has_cach(const rdof_split_t *s) { return (s->halves[RDOF_SPLIT_TX].caps & RDOF_OPS_CACH) != 0; }
+
 bool rdof_split_sched(rdof_split_t *s, int64_t n, uint8_t control, const uint8_t burst[33])
+{
+    return rdof_split_sched_cach(s, n, control, burst, NULL);
+}
+
+bool rdof_split_sched_cach(rdof_split_t *s, int64_t n, uint8_t control, const uint8_t burst[33],
+                           const uint8_t cach[3])
 {
     if (!rdof_split_sched_ok(s) || !s->transmit)
         return false;
-    uint8_t p[1 + 39];
+    uint8_t p[1 + 42];
     p[0] = RDOF_OPS_SUB_TX_SCHED;
-    const size_t len = rdof_ops_schedule(p + 1, n, (int)(n & 1) + 1, control, burst);
+    const int slot = (int)(n & 1) + 1;
+    const size_t len = cach && rdof_split_has_cach(s) ? rdof_ops_schedule_cach(p + 1, n, slot, control, burst, cach)
+                                                      : rdof_ops_schedule(p + 1, n, slot, control, burst);
     to_half(s, RDOF_SPLIT_TX, RDOF_ODR_SPLIT, p, 1 + len);
     s->sched_sent++;
     return true;

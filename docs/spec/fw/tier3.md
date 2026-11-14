@@ -1504,6 +1504,15 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
   labels each with its slot, and come up with the UTC slot of that parity nearest the burst's position. A split
   half is carrier B of two only (three or more carriers are all the SDR's), and a carrier's `out` on another SDR is
   refused.
+- A split carrier is keyed only once its half is on the UTC grid (`rdof_split_align_pending`; a half that can't
+  align uses the FIFO at once). Scheduled, a fresh key-up's first two slots fall inside the half's guard: they are
+  taken from the controller (a payload channel's warm-up idles) but not sent. A half that takes the CACH with each
+  burst (`RDOF_OPS_CACH`, proposed: [radiofoundry-handoff.md](radiofoundry-handoff.md) 1.4) gets every slot while
+  keyed, idle ones included, each with the CACH the controller's AT and short LC make (`rdof_t3rf_cach4`): the TSCC's
+  carrier can then go out of a split radio. The TSCC's carrier on a split is never idle, so it stays keyed; held keyed
+  off the grid, it lets go so the half can snap back. `rdof_t3split2_tests`: both carriers on fake split halves, the
+  TSCC's with the CACH op (every slot aired with a CACH; AT, TC and short LC as the controller's; the MSs register and
+  call from the halves' air), carrier B's without (its idle slots left to the half).
 - Carrier B on the SDR (its `out` among the SDR's `transmits`, `tx.carriers` 2): a second duplex `rdof_sdrmodem_t`, set
   up as the repeater sets carrier A's (`SET_CONFIG`, `SET_FREQ`, `SET_MODE`, no role) with the unit's carrier 2
   (`rdof_t3unit_slot(u, 1, k, ...)`) as its slot source. Carriers 3 and 4 (`tx.carriers` 3, 4) are the same, each its

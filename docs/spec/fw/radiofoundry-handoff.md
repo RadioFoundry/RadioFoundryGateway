@@ -62,6 +62,15 @@ DMR_SHORTLC for P_SYS_Parms, SET_AT. A split radio carrying the control channel 
   bit per scheduled burst (a TX_SCHED control bit), applied to the CACH before that slot.
 - The CACH bits must be the host's. INFO byte 4 = 2 ("the chip makes its own CACH; our AT / short LC unknown") can't
   carry a TSCC. Report which radios send the host's CACH (byte 4 = 1).
+- The gateway's side is built (2026-11-13) as one op covering the short LC, AT and host CACH asks above: INFO
+  capability bit 0x0040 (`RDOF_OPS_CACH`); TX_SCHED may then carry 3 more octets after the burst, the 24-bit CACH
+  sent just before slot n's burst (TACT and payload, air order, the first bit in bit 7 of octet 0). The half sends
+  them as given in place of its own AT, TC and short LC fragment. An idle burst with a CACH is sent, not a clear,
+  so the gateway schedules every slot of the TSCC's carrier. Without the bit the gateway sends TX_SCHED as before.
+  Tested against the host's fake half (`rdof_t3split2_tests`); proposed to the radio session, not answered yet. If
+  the radio would rather take AT plus a scheduled short LC, the gateway can switch to that.
+- Before the half is on the UTC grid, the gateway doesn't key it. A TSCC's half that is held keyed off the grid (a
+  step in the host's clock) is unkeyed so it can snap back.
 - Every slot filled: a TSCC sends a block in every TS1 slot. With TX_SCHED, an empty TS1 slot in a TSCC is a fault;
   the gateway fills every slot, so the TX half's idle fill only covers a late burst. Request: count late bursts per
   key-up (STATUS 34 does) and say so in the reply, as now.

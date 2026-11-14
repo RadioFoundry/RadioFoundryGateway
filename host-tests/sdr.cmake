@@ -236,6 +236,17 @@ if(NOT RDOF_T3_LIB STREQUAL "NOTFOUND")
         target_link_options(rdof_t3split_tests PRIVATE -fsanitize=address,undefined)
     endif()
     add_test(NAME rdof_t3split_tests COMMAND rdof_t3split_tests)
+    # both carriers on split TX halves, the TSCC's taking the CACH with each burst
+    add_executable(rdof_t3split2_tests test_t3split2.c fake_radio.c)
+    target_include_directories(rdof_t3split2_tests PRIVATE ../common/include)
+    target_link_libraries(rdof_t3split2_tests PRIVATE rdof_sdr ${RDOF_T3_LIB} m)
+    set_target_properties(rdof_t3split2_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+    target_compile_options(rdof_t3split2_tests PRIVATE -Wall -Wno-unused-parameter)
+    if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+        target_compile_options(rdof_t3split2_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(rdof_t3split2_tests PRIVATE -fsanitize=address,undefined)
+    endif()
+    add_test(NAME rdof_t3split2_tests COMMAND rdof_t3split2_tests)
 endif()
 
 # The IP gateway on an sdr_transceiver (half and full duplex), end to end through the SDR modem and the receiver.

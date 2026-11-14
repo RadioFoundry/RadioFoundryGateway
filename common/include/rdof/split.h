@@ -278,6 +278,16 @@ bool rdof_split_sched_ok(const rdof_split_t *s);
 /* A burst (its MMDVM control byte) for UTC slot n on the TX half (TX_SCHED, unanswered in the request queue: each
  * reply is counted in sched_outcomes). False, nothing sent: not rdof_split_sched_ok, or the gate says stop. */
 bool rdof_split_sched(rdof_split_t *s, int64_t n, uint8_t control, const uint8_t burst[33]);
+/* The scheduled stream is coming but not up: the TX half can align (ALIGN, stream 1) and isn't on the UTC grid yet
+ * (no UTC given yet, waiting, snapping, or held keyed off the grid). False once rdof_split_sched_ok, or when the half
+ * can't align (the FIFO then). */
+bool rdof_split_align_pending(const rdof_split_t *s);
+/* The TX half takes a CACH with each scheduled burst (INFO's RDOF_OPS_CACH). */
+bool rdof_split_has_cach(const rdof_split_t *s);
+/* rdof_split_sched with the CACH sent before slot n (24 bits, air order); as rdof_split_sched without cach (NULL) or
+ * when the half can't take one. */
+bool rdof_split_sched_cach(rdof_split_t *s, int64_t n, uint8_t control, const uint8_t burst[33],
+                           const uint8_t cach[3]);
 
 #endif /* RDOF_FEATURE_REPEATER */
 

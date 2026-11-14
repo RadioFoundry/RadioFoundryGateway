@@ -75,12 +75,16 @@ typedef struct {
         bool used;
         uint32_t counter;
         uint8_t slot, control, burst[33];
+        bool has_cach; /* RDOF_OPS_CACH (in split_caps): the CACH TX_SCHED gave, sent before the burst */
+        uint8_t cach[3];
     } sched[32];
     int sched_cap;
     struct {
         uint32_t counter;
         uint8_t slot, burst[33];
         double start;
+        bool has_cach;
+        uint8_t cach[3];
     } on_air[64];
     int non_air;
     uint32_t sched_sent, sched_late, sched_early_full, sched_replaced, sched_cooling;

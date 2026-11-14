@@ -233,6 +233,7 @@ typedef struct {
     int32_t slc_sent;          /* the short LC last sent (DMR_SHORTLC), -1 none */
     bool scheduled;            /* the last pump used TX_SCHED (else the FIFO) */
     uint32_t sched_bursts, fifo_bursts, short_lcs, keyups;
+    uint32_t cach_bursts;      /* scheduled with their CACH (the half takes RDOF_OPS_CACH) */
 } rdof_t3rf_split_t;
 
 void rdof_t3rf_split_init(rdof_t3rf_split_t *o, int carrier);

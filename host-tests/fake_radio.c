@@ -180,6 +180,8 @@ void fake_air(fake_radio_t *f)
             f->on_air[f->non_air].slot = f->sched[best].slot;
             memcpy(f->on_air[f->non_air].burst, f->sched[best].burst, 33);
             f->on_air[f->non_air].start = start;
+            f->on_air[f->non_air].has_cach = f->sched[best].has_cach;
+            memcpy(f->on_air[f->non_air].cach, f->sched[best].cach, 3);
             f->non_air++;
         }
         f->sched[best].used = false;
@@ -386,8 +388,9 @@ static void split_cmd(fake_radio_t *f, const uint8_t *p, size_t len)
         }
         int outcome;
         const uint8_t control = d[5];
+        const bool has_cach = (f->split_caps & RDOF_OPS_CACH) && n >= 6 + 33 + 3;
         const uint8_t idle = RDOF_SYNC_DATA | 9, term = RDOF_SYNC_DATA | 2; /* data types 9 and 2 */
-        if (control == idle || (control == term && at >= 0 && f->sched[at].control == term)) {
+        if ((control == idle && !has_cach) || (control == term && at >= 0 && f->sched[at].control == term)) {
             if (at >= 0) /* an idle burst or a repeated terminator: "nothing", the place cleared */
                 f->sched[at].used = false;
             b[4] = RDOF_SCHED_QUEUED;
@@ -416,6 +419,9 @@ static void split_cmd(fake_radio_t *f, const uint8_t *p, size_t len)
             f->sched[at].slot = (uint8_t)slot;
             f->sched[at].control = d[5];
             memcpy(f->sched[at].burst, d + 6, 33);
+            f->sched[at].has_cach = has_cach;
+            if (has_cach)
+                memcpy(f->sched[at].cach, d + 39, 3);
         }
         fake_air(f); /* within ~150 ms of its slot: keyed now */
         b[4] = (uint8_t)outcome;
