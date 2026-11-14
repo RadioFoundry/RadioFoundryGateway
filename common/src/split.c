@@ -264,7 +264,7 @@ bool rdof_epoch_relay_decide(rdof_epoch_relay_t *r, uint32_t t, uint32_t period_
 const char *rdof_align_state_name(rdof_align_state_t a)
 {
     static const char *const names[] = {"off", "unsupported", "waiting", "snapping", "held", "slewing", "locked"};
-    return (unsigned)a < 6 ? names[a] : "?";
+    return (unsigned)a < 7 ? names[a] : "?";
 }
 
 static bool word_char(char c)

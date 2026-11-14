@@ -33,7 +33,7 @@ Principles:
 
 | Area | Built |
 |---|---|
-| RF layout | 2 carriers: A (SDR TX + SDR RX) carries the dedicated TSCC on TS1 and a payload channel on TS2; B (TX from the same SDR, summed into its transmit stream with each carrier at half amplitude, or from a split radio; SDR RX) carries two payload channels. 1 control slot, 3 payload slots. The controller, the radio layer, the unit and the simulator take 1-4 carriers (up to 7 payload channels), the TSCC on the first; tested with 3 and 4 on simulated air. rdofradio sends up to 4 out of one SDR (each at 1/N amplitude), or 2 with carrier B on a split half |
+| RF layout | 2 carriers: A (SDR TX + SDR RX) carries the dedicated TSCC on TS1 and a payload channel on TS2; B (TX from the same SDR, summed into its transmit stream with each carrier at half amplitude, or from a split radio; SDR RX) carries two payload channels. 1 control slot, 3 payload slots. The controller, the radio layer, the unit and the simulator take 1-4 carriers (up to 7 payload channels), the TSCC on the first; tested with 3 and 4 on simulated air. rdofradio sends up to 4 out of one SDR (each at 1/N amplitude), or 2 with carrier B on a split half, or up to 4 each on its own split TX half (the TSCC's too) with the SDR receiving only |
 | Control channel | C_SYS_Parms short LC with a counting Common_Slot_Counter; C_ALOHA; C_BCAST Adjacent_Site (from the network), Chan_Freq (the site's own channels and its neighbors' TSCCs), Local_Time (when the clock is good), Gen_Site_Params, CallTimer_Parms, Vote_Now (with the VOTE_BLK block), Ann_WD_TSCC, MassReg (section 3.11); CACH AT driven by the controller |
 | Random access | Slotted Aloha, Mask 0, Service Function from load, adaptive Backoff, NRand_Wait from settings; a response to every random access |
 | Registration | Open or listed (ID sets); register, de-register, implicit registration from call requests; single-talkgroup subscription (TRGT_ADR_CNTS 01b) and a list of up to 7 by UDT upload (10b, 3.17); Reg_Accepted / Reg_Refused / Reg_Denied; MS_Not_Registered |
@@ -974,9 +974,10 @@ paths").
 | `auth` | `off`, `registration`, `required` | `off` | MS authentication (section 3.14): challenge MSs with a key at registration, or every MS. Local settings only; the manager's `cfg` doesn't carry it |
 
 Checks (refusals name the key): exactly one `tscc` carrier; every carrier's `out` on a device that transmits and its
-`in` on a device that receives; the TSCC carrier's `in` and `out` on one full-duplex SDR (a split TX half
-can't carry the TSCC yet: radiofoundry-handoff.md 1.4); every carrier's `in` on that SDR; another carrier's `out` on
-an SDR or a split TX half (one carrier a radio). Carrier B out of the TSCC's SDR needs its `tx.carriers` at 2, which a
+`in` on a device that receives; the TSCC carrier's `in` and `out` on one full-duplex SDR, every carrier's `in` on that SDR, another carrier's `out` on
+an SDR or a split TX half (one carrier a radio); or the TSCC's `out` on a split TX half (a radio in hotspot mode),
+and then every carrier's `out` on its own radio and every `in` on one SDR, which sends none of them (the TSCC's
+half must take the CACH with each burst: rdofradio checks at start, radiofoundry-handoff.md 1.4). Carrier B out of the TSCC's SDR needs its `tx.carriers` at 2, which a
 host's I/Q driver (`iio`, `soapy`, `sim`) takes when the site is all that SDR sends (the board's drivers send one);
 rdofradio then wants both outs within its transmit stream's reach of one TX LO (9.4); `chan` unique; the `system` numbers inside the model's ranges; at most 4 carriers;
 a frequency used by a `tier3` app can't be used by another app or a talk path.
@@ -1607,7 +1608,21 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
   `rdof_sdrmodem_tests` (the sum within full scale, each carrier 6 dB under one alone, an inbound burst on the same k
   under either modem). An RF inbound burst on carrier B's `in` is checked through that k mapping, not end to end (the
   air MSs' inbound to carrier 2 is).
-- Not done: carrier B's split half on air; three or four carriers on a device (the Pluto's CPU for the extra
+- Every carrier on a split TX half (the owner's split transmitter setup: two RadioFoundry radios sending the two
+  outs, the SDR hearing both ins): the TSCC's out on a radio in the settings makes every carrier's a radio
+  (`good-tier3-splits.json`). rdofradio brings each half up on its port as carrier B's above, refuses the TSCC's
+  half unless its INFO has `RDOF_OPS_CACH` (the CACH with each `TX_SCHED`: the AT and short LC slot by slot), and
+  leaves the SDR's modem unkeyed (no slot source; its receiver is every split's RX half). The main loop's poll pumps
+  every split on the UTC slot (`rdof_t3unit_split_pump` each; the controller runs once). A split keys once its
+  half is on the UTC grid. The reader threads stamp each read from a port when it comes: the halves' replies
+  timed by the poll instead (up to 20 ms late) left the clock sync's bound too wide to align. With `--air-ms` the
+  air MSs hear each carrier's slot as its pump sent it (`rdof_t3rf_split_sent`, a ring of 16 slots in the split's
+  state), up to the current UTC slot. `rdofradio_e2e_t3_split` (host tests' build only: the port `sim-split*` is a
+  simulated half, `host-tests/fake_radio.h`, on a socket pair): two carriers on simulated halves, four air MSs
+  registering through carrier 1's half and a call on each carrier, every slot of carrier 1 scheduled with its CACH,
+  the SDR's modem sending nothing.
+- Not done: carrier B's split half on air; the all-split site on air (the radios' CACH op is host-tested only on
+  both sides, 2026-11-13); three or four carriers on a device (the Pluto's CPU for the extra
   modulators, the outs within 64 kHz of the LO with `--fpga-duc`).
 
 ## 10. Network services

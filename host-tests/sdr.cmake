@@ -166,6 +166,18 @@ if(TARGET rdof_pffft)
 endif()
 # The end-to-end tool (rdofsdr) and rdofradio: sdr/cli/tools.cmake.
 include(../sdr/cli/tools.cmake)
+# The host tests' rdofradio: a split TX half simulated on the port "sim-split" (fake_radio.c; e2e_t3_split.sh)
+if(TARGET rdofradio)
+    target_sources(rdofradio PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/fake_radio.c)
+    target_include_directories(rdofradio PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_compile_definitions(rdofradio PRIVATE RDOF_SIM_SPLIT)
+    if(RDOF_TIER3 AND NOT RDOF_T3_LIB STREQUAL "NOTFOUND")
+        # no RF: a two-carrier site, both carriers on simulated split TX halves, the SDR receiving only
+        add_test(NAME rdofradio_e2e_t3_split COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/e2e_t3_split.sh
+                 $<TARGET_FILE_DIR:rdofradio>)
+        set_tests_properties(rdofradio_e2e_t3_split PROPERTIES TIMEOUT 90)
+    endif()
+endif()
 # The synthetic data call in the fixtures (fixtures/README.md, "The data call"): not a test, run by hand.
 add_executable(rdof_gen_data_call fixtures/gen_data_call.c)
 target_link_libraries(rdof_gen_data_call PRIVATE rdof_sdr m)

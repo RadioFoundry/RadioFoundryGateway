@@ -190,6 +190,33 @@ pub struct T3rfSplit {
     pub short_lcs: u32,
     pub keyups: u32,
     pub cach_bursts: u32,
+    /// the slots the pump took from the controller, by k % SPLIT_SENT: what an air MS hears (rdof_t3rf_split_sent)
+    pub sent: [T3rfSent; SPLIT_SENT],
+}
+
+pub const SPLIT_SENT: usize = 16;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct T3rfSent {
+    pub k: i64,
+    pub aired: bool,
+    pub burst: [u8; BURST_BYTES],
+}
+
+/// Slot k of a split carrier as its pump took it: 1 sent to the half (the burst in burst), 0 not sent (the half's
+/// idle), -1 not taken (unkeyed, or gone from the ring).
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3rf_split_sent(o: *const T3rfSplit, k: i64, burst: *mut u8) -> c_int {
+    let e = &(*o).sent[k.rem_euclid(SPLIT_SENT as i64) as usize];
+    if e.k != k || k == 0 {
+        return -1;
+    }
+    if !e.aired {
+        return 0;
+    }
+    core::ptr::copy_nonoverlapping(e.burst.as_ptr(), burst, BURST_BYTES);
+    1
 }
 
 // ── control blocks ─────────────────────────────────────────────────────────────
@@ -1123,6 +1150,8 @@ pub unsafe extern "C" fn rdof_t3rf_split_pump(
         let mut burst = [0u8; BURST_BYTES];
         let (mut control, mut at, mut slc) = (0u8, 0, 0i32);
         rdof_t3rf_slot(t, o.carrier, k, &mut burst, &mut control, &mut at, &mut slc);
+        let e = k.rem_euclid(SPLIT_SENT as i64) as usize;
+        o.sent[e] = T3rfSent { k, aired: false, burst };
         if slc >= 0 && slc != o.slc_sent {
             let lc5 = [(slc >> 24 & 0x0F) as u8, (slc >> 16) as u8, (slc >> 8) as u8, slc as u8, 0];
             let mut sl9 = [0u8; 9];
@@ -1141,6 +1170,7 @@ pub unsafe extern "C" fn rdof_t3rf_split_pump(
             if rdof_split_sched_cach(s, k, control, burst.as_ptr(), rows[(k & 3) as usize].as_ptr()) {
                 o.sched_bursts += 1;
                 o.cach_bursts += 1;
+                o.sent[e].aired = true;
             }
         } else if sched {
             let rc_here = (*t).ch[(2 * o.carrier + (k & 1) as c_int) as usize].rc_k == k && k != 0;
@@ -1149,6 +1179,7 @@ pub unsafe extern "C" fn rdof_t3rf_split_pump(
             }
             if rdof_split_sched(s, k, control, burst.as_ptr()) {
                 o.sched_bursts += 1;
+                o.sent[e].aired = true;
             }
         } else {
             let mut p = [0u8; 1 + BURST_BYTES];
@@ -1156,6 +1187,7 @@ pub unsafe extern "C" fn rdof_t3rf_split_pump(
             p[1..].copy_from_slice(&burst);
             upstream(s, if k & 1 != 0 { DMR_DATA2 } else { DMR_DATA1 }, &p, now);
             o.fifo_bursts += 1;
+            o.sent[e].aired = true;
         }
     }
 }

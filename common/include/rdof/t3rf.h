@@ -234,7 +234,16 @@ typedef struct {
     bool scheduled;            /* the last pump used TX_SCHED (else the FIFO) */
     uint32_t sched_bursts, fifo_bursts, short_lcs, keyups;
     uint32_t cach_bursts;      /* scheduled with their CACH (the half takes RDOF_OPS_CACH) */
+    struct {                   /* the slots the pump took, by k % RDOF_T3RF_SPLIT_SENT (rdof_t3rf_split_sent) */
+        int64_t k;
+        bool aired;
+        uint8_t burst[33];
+    } sent[16];
 } rdof_t3rf_split_t;
+#define RDOF_T3RF_SPLIT_SENT 16
+/* Slot k of a split carrier as its pump took it: 1 sent to the half (the burst in burst), 0 not sent (the half's
+ * idle), -1 not taken (unkeyed, or gone from the ring): what an air MS hears. */
+int rdof_t3rf_split_sent(const rdof_t3rf_split_t *o, int64_t k, uint8_t burst[33]);
 
 void rdof_t3rf_split_init(rdof_t3rf_split_t *o, int carrier);
 /* Carrier o->carrier's bursts to split s for the slots up to k_now + ahead (k_now: the slot on air now), keyed while

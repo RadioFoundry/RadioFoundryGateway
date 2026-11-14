@@ -675,7 +675,9 @@ static bool hotspot(const rdof_site_t *s, int d)
 
 /* A trunked site: the TSCC's in and out on one full-duplex SDR (checked with its caps), its slot clock; every
    carrier heard on that SDR; another carrier's out on an SDR or a radio as a split's TX half, one carrier a radio.
-   Or a site of one carrier on a duplex MMDVM modem (docs/spec/fw/tier3-hat.md), an SDR hearing its out and in. */
+   Or every carrier's out on a radio as a split's TX half (the TSCC's taking the CACH with each burst), the SDR
+   hearing them all and sending none. Or a site of one carrier on a duplex MMDVM modem (docs/spec/fw/tier3-hat.md),
+   an SDR hearing its out and in. */
 static bool check_trunk(plan_t *p, const rdof_unit_t *u, const char *where)
 {
     const rdof_site_t *s = &p->site;
@@ -692,21 +694,29 @@ static bool check_trunk(plan_t *p, const rdof_unit_t *u, const char *where)
                         in);
         if (on_modem)
             continue;
-        if (!k && tx->kind != RDOF_DEV_SDR)
+        /* the TSCC on a split's TX half: every carrier is */
+        const bool splits = s->dev[p->ttx[0]].kind != RDOF_DEV_SDR && hotspot(s, p->ttx[0]);
+        if (!k && tx->kind != RDOF_DEV_SDR && !splits)
             return fail(p, "%s: %s is the TSCC's out, and devices.%s is a %s: the TSCC goes out of a full-duplex "
-                           "SDR or a duplex MMDVM modem (a split's TX half can't time its short LC and AT bit per "
-                           "slot yet)", where, out, tx->name, tx->driver);
-        if (!k && p->trx[0] != p->ttx[0])
+                           "SDR, a duplex MMDVM modem, or a radio in hotspot mode with the split duplex extension",
+                        where, out, tx->name, tx->driver);
+        if (splits && k && tx->kind == RDOF_DEV_SDR)
+            return fail(p, "%s: the TSCC goes out of a radio (a split's TX half), %s out of devices.%s, an SDR: with "
+                           "the TSCC on a radio every carrier is, the SDR hearing them", where, out, tx->name);
+        if (splits && rx->kind != RDOF_DEV_SDR)
+            return fail(p, "%s: %s is heard on devices.%s: an SDR hears every carrier (the splits' RX half)", where,
+                        in, rx->name);
+        if (!k && !splits && p->trx[0] != p->ttx[0])
             return fail(p, "%s: the TSCC's in (%s) on devices.%s and its out (%s) on devices.%s: one SDR does both "
                            "(its slot clock)", where, in, rx->name, out, tx->name);
         if (k && p->trx[k] != p->trx[0])
             return fail(p, "%s: %s is heard on devices.%s, the TSCC on devices.%s: one SDR hears every carrier",
                         where, in, rx->name, s->dev[p->trx[0]].name);
-        if (k && tx->kind != RDOF_DEV_SDR) {
+        if (tx->kind != RDOF_DEV_SDR) {
             if (!hotspot(s, p->ttx[k]))
                 return fail(p, "%s: devices.%s is a %s: a carrier's TX half is an SDR or a radio in hotspot mode with "
                                "the split duplex extension", where, tx->name, tx->driver);
-            for (int j = 1; j < k; j++)
+            for (int j = 0; j < k; j++)
                 if (p->ttx[j] == p->ttx[k])
                     return fail(p, "%s: devices.%s sends %s and %s: a radio sends one carrier", where, tx->name,
                                 s->freq[ap->carrier[j].out].name, out);

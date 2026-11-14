@@ -16,7 +16,8 @@
  *
  * On a device: the SDR is carrier 1 (the TSCC's): rdof_sdrmodem's slot source, keyed with no end (hold_key), what it
  * hears on carrier 1's inbound given its slot by timing (rdof_sdrmodem_inbound_k). Carriers 2 to 4 are sent by
- * the same SDR, or carrier 2 of two by a split TX half on its radio's port. On the SDR: an rdof_sdrmodem each with
+ * the same SDR, or carrier 2 of two by a split TX half on its radio's port. Or every carrier, carrier 1's too, by its
+ * own split TX half (the TSCC's taking the CACH with each burst), the SDR receiving only. On the SDR: an rdof_sdrmodem each with
  * its own slot source, on the same UTC slot grid and keyed with carrier 1, its I/Q summed into the one transmit stream
  * (rdofradio_t3_mix: each carrier at 1/N amplitude) at its own offset from the TX LO, which sits mid-way between the
  * outs, fixed for the run; what the receiver hears on its inbound placed by that modem's timing. A split TX half
@@ -24,7 +25,7 @@
  * each slot), the SDR's receiver its RX half on carrier 2's inbound. The trunk's slot k is the UTC slot number
  * (floor(UTC ms / 30)); off the grid each modem's slots are moved onto it by an even offset taken at its first slot
  * (the carriers aren't slot-synchronized: site_sync 0, the payload warm-up). Up to four carriers out of the SDR, or
- * two with carrier 2 on a split TX half.
+ * two with carrier 2 on a split TX half, or up to four each on a split TX half.
  *
  * --state-dir DIR keeps the provisioning (cfg-cache.json) across restarts.
  */
@@ -74,7 +75,7 @@ typedef struct {
     uint32_t tx_fs;
 } rdofradio_t3_dev_t;
 /* On a device: the site on modem m (keyed, its slot source), carrier 2's modem on the SDR or its split TX half
- * brought up on its port (a two-carrier site), the network started. Before the receiver starts: a split's bring-up
+ * brought up on its port (a two-carrier site), or every carrier's split TX half (m left unkeyed), the network started. Before the receiver starts: a split's bring-up
  * waits on the port. False with err set (carrier 2's out on another device, a carrier past the TX LO's reach). */
 bool rdofradio_t3_start(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o, struct rdof_sdrmodem *m,
                            const rdofradio_t3_dev_t *dev, char *err, size_t cap);
