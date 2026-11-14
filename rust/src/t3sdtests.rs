@@ -467,6 +467,12 @@ fn upoll_ms_to_ms() {
     let _ = tscc_blocks(&mut air, &mut log, 2000);
     assert_eq!(acks, 0, "no C_ACKD to the caller");
     assert!(!air.site.sd_pending());
+    // polled again later, the same answer (on air 2026-11-14): a new message, and the poll ends
+    let _ = tscc_blocks(&mut air, &mut log, 10_000);
+    let now = air.now();
+    assert!(air.ms[0].send_upoll(1002, FMT_ISO8, 2, now));
+    assert!(air.until(8000, &mut log.f(), |a| a.ms[0].status().calls_done == 2), "the second poll ends");
+    assert_eq!((air.ms[0].status().calls_failed, air.ms[0].inbox().unwrap().2), (0, 2));
 }
 
 /// The unsolicited radio check (6.4.12, the `radio_check` command): C_AHOY from TSI, Service_Kind 1110b,

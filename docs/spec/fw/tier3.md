@@ -1753,7 +1753,8 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
   data as ISO 8-bit text up to 46 characters; `1000001 data 3105738 hello`, `cdata` (confirmed), `1000001 gdata 1
   hello all`: a packet data call whose one message is a text message (361-3 5.7.1: UTF-16BE, up to 64 characters,
   or `*N` for N generated ones, up to 746: one 1520-octet datagram; the receiving MS logs the first 80 and whether
-  all of it is the pattern)
+  all of it is the pattern; `1000001 cdata 16776899 @192.168.2.10 ping` sends to that address, a host through the
+  site's IP gateway, in place of the ID's)
   in a UDP/IPv4 datagram from port 5016 to 5016, 12.x.y.z the MS's address (its ID in the low 24 bits) and 225.x.y.z
   a talkgroup's, sent as rate 1/2 blocks; `data34`, `cdata34`, `gdata34` the same in rate 3/4 blocks, `data1`,
   `cdata1`, `gdata1` in rate 1; `1000001 setstatus 12`: the status it answers a poll with, else the last it sent, 0
@@ -1995,6 +1996,7 @@ Built since step 8e, host-tested (the bench steps above note what has run on air
 | 7a0f0257 | Packet data to IPI with SUPED_VAL set is taken (table 6.50: only Appended_UDT must be 00); logs of the site's own data sends |
 | 29495f9d | A confirmed item's channel held 6 s for the sender's retry; the sim MS sends again on no response |
 | 971e7cb8 | The IP gateway's answers go down: the repeater's gateway no longer starts in a trunked site's place; responses only on the channel they answer, new data through the TSCC after a single item; a channel granted again while its P_CLEARs go out stays open; the site's data waits for the grant's lead; the sim MS takes the site's data from IPI. `rdofradio_e2e_t3_ipgw` |
+| next | Air MS data to a host's address (`@A.B.C.D`); the sim MS takes a poll's answer the same as an earlier one's as a new message (a repeat only within 10 s) |
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
 apart from the code, found seven deviations, all fixed (2026-11-12):

@@ -72,6 +72,8 @@ pub const TX_DATA: u8 = 3; // packet data on a payload channel: dt 6 a header (p
 const ACTIONS: usize = 8;
 /// How soon after a final C_ACKD the same one again is taken as its repeat.
 const FINAL_REPEAT_MS: i64 = 300;
+/// A UDT download the same as the last one this soon after it is the site repeating it (6.6.4.7), not a new message.
+const INBOX_REPEAT_MS: i64 = 10_000;
 const TRIES: u8 = 6; // random access attempts before giving up: NRand_NR (table A.6)
 const TRIES_EMERGENCY: u8 = 10; // NRand_NE
 const WAIT_MS: i64 = 30_000; // after C_WACKD / C_QACKD / MS_Alerting, the longest wait for the outcome
@@ -241,6 +243,7 @@ pub struct Ms {
     inbox: Blocks,
     inbox_head: UdtHead,
     inbox_n: u32,
+    inbox_ms: i64, // when the last one came
     status_reply: u8,
     sd_status: u8,
     sd_status_src: u32,
@@ -1383,8 +1386,13 @@ impl Ms {
             self.dgna_n += 1;
             return;
         }
-        if self.inbox_n > 0 && self.inbox_head == h && self.inbox == self.in_blocks {
-            return; // a repeat of the same message
+        let repeat = self.inbox_n > 0
+            && self.inbox_head == h
+            && self.inbox == self.in_blocks
+            && self.now - self.inbox_ms < INBOX_REPEAT_MS;
+        self.inbox_ms = self.now;
+        if repeat {
+            return; // the site sending the same message again (a new poll's same answer is a new message)
         }
         self.inbox = self.in_blocks;
         self.inbox_head = h;

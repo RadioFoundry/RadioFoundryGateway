@@ -385,6 +385,7 @@ static void stop_common(void)
 typedef struct {
     int64_t at_ms;
     uint32_t id, arg, talk_ms;
+    uint32_t ip; /* data: the datagram's destination when not the ID's (@A.B.C.D), 0 the ID's */
     uint8_t what, flags, len;
     uint16_t fill; /* data: this many generated characters in place of the text (*N) */
     char text[64]; /* sdm: the message (a UDT carries up to 46 octets); data: the UDP payload */
@@ -403,7 +404,7 @@ typedef struct {
 #define ACT_HELP                                                                                                       \
     "ID register [TG] | deregister | group TG [TALK_MS] | private ID [TALK_MS] | status ID N | gstatus TG N | "        \
     "sdm ID TEXT | gsdm TG TEXT | upoll ID [BLOCKS] | setpoll TEXT | setsupp [TEXT] | "                               \
-    "ipadv [A.B.C.D] [del] | data ID TEXT | "                                                                         \
+    "ipadv [A.B.C.D] [del] | data ID [@A.B.C.D] TEXT | "                                                                         \
     "cdata ID TEXT | gdata TG TEXT "                                                                                  \
     "(data34, cdata1 ...: rate 3/4, 1; "                                                                              \
     "TEXT *N: N generated characters) | "                                                                             \
@@ -430,10 +431,10 @@ static int act_cmp(const void *a, const void *b)
 
 /* ACT_HELP (a # starts a comment; status N 0-127, 126 the emergency alarm; sdm up to 46 characters; data, cdata
  * (confirmed) and gdata up to 64 characters, or *N for N generated ones (up to AIR_FILL_MAX: a message of up to 127
- * blocks), a packet data call carrying them as a text message, UTF-16BE on
- * UDP/IPv4 port 5016 (361-3 5.7.1), from 12.x.y.z to 12.x.y.z or, to a talkgroup, 225.x.y.z, in rate 1/2 blocks;
- * data34, cdata34, gdata34 in rate 3/4 blocks, data1, cdata1, gdata1 in rate 1): 1 an action in *x (at_ms 0), 0 a
- * blank line, -1 a bad one. */
+ * blocks), a packet data call carrying them as a text message, UTF-16BE on UDP/IPv4 port 5016 (361-3 5.7.1), from
+ * 12.x.y.z to 12.x.y.z, to a talkgroup 225.x.y.z, or (@A.B.C.D after the ID) to that address, a host through the
+ * site's IP gateway, in rate 1/2 blocks; data34, cdata34, gdata34 in rate 3/4 blocks, data1, cdata1, gdata1 in rate
+ * 1): 1 an action in *x (at_ms 0), 0 a blank line, -1 a bad one. */
 static int act_parse(const char *text, act_t *x)
 {
     char line[256];
@@ -474,6 +475,16 @@ static int act_parse(const char *text, act_t *x)
         t += strspn(t, " \t");
         t += strspn(t, "0123456789");
         t += strspn(t, " \t");
+        unsigned b[4];
+        int used = 0;
+        if (!sdm && t[0] == '@') { /* the datagram's destination: a host through the site's IP gateway, say */
+            if (sscanf(t, "@%u.%u.%u.%u%n", &b[0], &b[1], &b[2], &b[3], &used) != 4 ||
+                (b[0] | b[1] | b[2] | b[3]) > 255)
+                return -1;
+            x->ip = b[0] << 24 | b[1] << 16 | b[2] << 8 | b[3];
+            t += used;
+            t += strspn(t, " \t");
+        }
         size_t n = strcspn(t, "\r\n");
         if (!sdm && t[0] == '*') {
             const unsigned long f = strtoul(t + 1, NULL, 10);
@@ -600,8 +611,9 @@ static bool act_run(rdof_t3ms_t *ms, const act_t *a, int64_t now)
         return rdof_t3ms_sdm(ms, a->arg, a->flags, 4 /* ISO 8-bit */, (const uint8_t *)a->text, a->len, now);
     if (a->what == ACT_DATA) {
         const rdof_ipgw_net_t net = {AIR_RADIO_NET, 0xFF000000u};
-        const uint32_t dip = a->flags & RDOF_T3MS_F_GROUP ? RDOF_IPGW_GROUP_NET | (a->arg & 0xFFFFFF)
-                                                          : rdof_ipgw_radio_ip(&net, a->arg);
+        const uint32_t dip = a->ip                              ? a->ip
+                             : a->flags & RDOF_T3MS_F_GROUP ? RDOF_IPGW_GROUP_NET | (a->arg & 0xFFFFFF)
+                                                            : rdof_ipgw_radio_ip(&net, a->arg);
         static uint16_t ip_id;
         static char fill[AIR_FILL_MAX];
         static uint8_t u16[2 * AIR_FILL_MAX], d[28 + sizeof u16];
