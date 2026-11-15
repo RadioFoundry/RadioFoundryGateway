@@ -98,6 +98,7 @@ What runs:
 | `rdofradio_e2e_examples` | each file in `config/examples` as written, on simulated hardware, with its clock, bench and network (`host-tests/test_examples.py`) |
 | `rdofradio_e2e_mqttnet` | two boxes on `fakemodem`s joined by the MQTT network through a local broker (`host-tests/e2e_mqttnet.sh`) |
 | `mmdvm_bench_tests` | the whole bench line on `fakemodem` (`host-tests/test_mmdvm_bench.py`) |
+| `fpga_usb_tx_e2e` | the Pluto's FPGA channelizer with a USB radio transmitting, no Pluto (`host-tests/test_fpga_usb_tx.py`): `--sim-sdr`'s simulated block hears `e2e_288k.cu8`; `--listen`, a `--split-tx` repeater, two split repeaters from a `--config` (each radio repeats its own input's call), `--mmdvm` with the bench's taps and a raw capture, all with `--fpga-chz --fpga-duc` |
 | `rdof_sdr_tests`, `rdof_sdr_tests_min`, `rdof_sdr_edge_tests` | the SDR receive path against golden vectors; the corners they don't reach ([SDR tests](#sdr-tests)) |
 | `rdof_mod_tests`, `sdrmodem_tests`, `rdof_loopback_edge_tests`, `ipgw_sdr_tests` | the modulator, the SDR modem, its loopbacks, the IP gateway on the SDR modem |
 | `rdof_chzfx_tests`, `rdof_chzhw_tests`, `rdof_chzrx_tests`, `rdof_plutofpga_tests` | the PlutoSDR FPGA channelizer's model, its driver, the receiver on its frames, the board and bitstream checks |
@@ -1307,7 +1308,12 @@ is read by a thread.
   Bench DMR jobs transmit on the modem in simplex; a duplex modem runs `outbound` and `bench_repeater` too.
   `--split-tx` and the SDR's transmitter flags are refused.
 - `--sim-sdr` in place of DEVICE: a receiver of noise, for tests with no RF (`host-tests/test_mmdvm_bench.py` runs the
-  whole bench on `fakemodem`).
+  whole bench on `fakemodem`). `--sim-iq FILE:MHZ`: it hears a cu8 recording at `-r` instead, centered on MHZ,
+  looped. With `--fpga-chz` it's a simulated FPGA channelizer too (`rdofradio_sim.c`): the block's registers as the
+  HLS block answers them, and the DMA's frames from the bit-exact model (`chzfx`), so the board's whole path (probe,
+  start, the parser, the AFC's steps, a raw capture's restart) runs with no Pluto. A reader over 0.5 s late loses
+  frames as the DMA does (STATUS's `DMA_OVF`). At the end, `--fpga-chz: N channel frames lost (M made up with
+  zeros), K overflows (STATUS), J words of junk`.
 
 #### Receive only
 
@@ -1676,7 +1682,9 @@ idle status that keeps it in hotspot mode.
 **The host tools and the Pluto**
 
 - `rdofradio --split-tx` with a real radio, and several splits on one SDR with real radios.
-- The FPGA channelizer with a radio on the Pluto's USB (`--split-tx` or `--mmdvm`).
+- The FPGA channelizer with a radio on the Pluto's USB (`--split-tx` or `--mmdvm`) on air. The host tests run it on
+  the simulated block (`fpga_usb_tx_e2e`); on the board, the radio's tty comes from the generic usb-serial driver
+  (`run.sh`; [plutosdr.md](plutosdr.md), "A radio on the Pluto's USB"), which no radio has tried yet.
 
 ## License
 

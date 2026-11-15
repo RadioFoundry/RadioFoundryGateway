@@ -266,4 +266,16 @@ if(TARGET rdofradio AND TARGET fakemodem AND Python3_Interpreter_FOUND)
     add_test(NAME mmdvm_bench_tests COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_mmdvm_bench.py
              $<TARGET_FILE:rdofradio> $<TARGET_FILE:fakemodem>)
     set_tests_properties(mmdvm_bench_tests PROPERTIES TIMEOUT 180)
+    # the Pluto's FPGA channelizer (--sim-sdr's block) with a USB radio transmitting: --split-tx, two split
+    # repeaters from a --config, --mmdvm; e2e_288k.cu8 heard through the block
+    add_test(NAME fpga_usb_tx_e2e COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_fpga_usb_tx.py
+             $<TARGET_FILE:rdofradio> $<TARGET_FILE:fakemodem> ${RDOF_SDR_GEN}/sdr-data/e2e_288k.cu8)
+    set_tests_properties(fpga_usb_tx_e2e PROPERTIES TIMEOUT 180)
+endif()
+
+# the Pluto bundle's run.sh: a USB radio's IDs to the generic usb-serial driver on a kernel without cdc_acm
+if(UNIX)
+    add_test(NAME pluto_usb_serial_tests COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/test_pluto_usb_serial.sh
+             ${CMAKE_CURRENT_SOURCE_DIR}/../tools/pluto/bundle/run.sh)
+    set_tests_properties(pluto_usb_serial_tests PROPERTIES TIMEOUT 30)
 endif()
