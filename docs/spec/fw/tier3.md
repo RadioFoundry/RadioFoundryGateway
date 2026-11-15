@@ -2096,6 +2096,15 @@ Built since step 8e, host-tested (the bench steps above note what has run on air
 | 5ccdea85 | Composite TSCC tests: individual call, confirmed data, emergency, a sleeping member, a network call on the lent slot; the modem e2e with composite on |
 | 5ddec72e | A C_RAND whose group call gets the lent slot logs that, not "no answer queued" |
 | 7d5bee67 | Composite: no lend while a payload channel clears; a queued call takes the slot once the TSCC's MBC is out; the sim MS holds random access while lent; a split half's composite outbound per slot; the split e2e with composite on |
+| a480d169 | Composite: a call opened on the other slot while the TSCC's slot was lent gets its grant when the TSCC is back (an individual or data call's grant was dropped with the stale answers); a C_AHOY owed meanwhile waits with its tries kept (it ran out unsent, MSaway) |
+| 30e8f691 | Full-queue test (Service Function 3, SYSbusy at once, a network call dropped); SITE 0 allowed in the settings and `cfg/node` |
+| eb74f38f | Tests: CSBKs lost on the air (one C_AHOY, C_ACKU, PV_GRANT, C_RAND; all C_AHOYs; both grants; a registration's C_ACKD) |
+| b673280c | Test: a network group call waits `net_queue_s`, then is dropped; a static talkgroup carried with no member |
+| b397a0a6 | Test: no composite lend during a short data transfer |
+| 0009e935 | Test: FOACSU across sites (alerting then answered, refused, busy, no answer) |
+| 5111dc2b | Test: mass re-registration with power save (sleeping MSs at 1:4 and 1:8) |
+| 691e44cf | Test: a standby takeover keeps the MS records (read back from the broker) |
+| 09174469 | Test: an MS roams between two sites (test_t3unit: where/, the old site drops its record, calls follow) |
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
 apart from the code, found seven deviations, all fixed (2026-11-12):
@@ -2105,11 +2114,14 @@ apart from the code, found seven deviations, all fixed (2026-11-12):
 - The simulated MS ignored the Aloha's Mask and Service Function (6.2.1.1.1, 6.2.1.1.2), made 6 attempts for an
   emergency request instead of NRand_NE (10), and sent P_MAINT to the called MS instead of TSI (table 7.32).
 - The settings refused SITE 0, which table 6.5 counts (a Small network's 5-bit SITE gives 32 sites). Nothing used
-  0 as "no site" (a peer's info is marked by a nonzero syscode, and PAR is never 0), so 0 is now allowed.
+  0 as "no site" (a peer's info is marked by a nonzero syscode, and PAR is never 0), so 0 is now allowed. (The
+  settings file and `cfg/node` still refused it until 30e8f691, 2026-11-15; the standard site in the off-air
+  captures sends SITE 0.)
 
-Out of round 2, unchanged from section 1.2: dedicated multi-carrier sites beyond two, the standby controller. MS
-authentication was added on 2026-11-12 (section 3.14), transmit interrupt and packet data across sites on
-2026-11-13 (sections 3.20, 5.10), UDT polls across sites on 2026-11-14 (5.9).
+Out of round 2, unchanged from section 1.2: more than two carriers on one device (four run in the simulator,
+section 9). MS authentication was added on 2026-11-12 (section 3.14), transmit interrupt and packet data across
+sites on 2026-11-13 (sections 3.20, 5.10), UDT polls across sites and the standby controller on 2026-11-14 (5.9,
+6.2).
 
 ### 13.3 Support status (2026-11-14)
 
