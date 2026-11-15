@@ -1585,7 +1585,8 @@ The codecs should keep bit 2 (`data`).
   beat the fence. A box on the air that hears another's `on` beat with a lower ID goes off the air too.
 - Without a broker no box claims the node, and a box on the air without a standby stays on the air.
 - Failover: about 2.5 s after a crash (the will), `takeover_s` + 1.5 s after a box or its link goes silent.
-  `host-tests/e2e_t3_standby.sh` runs a pair through a crash, a broker stop and its return.
+  `host-tests/e2e_t3_standby.sh` runs a pair through a crash, a broker stop and its return; the box that takes
+  over holds the first's MS record (read back from the broker) with its own.
 - A site broker: optional. With one at the site (bridged to the backbone, `DMR/#` both ways except `cfg/#` and
   `node/+/cmd` inbound only), the site's own controller, records and provisioning cache keep working with the
   backbone down, and a standby box at the site works too.

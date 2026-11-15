@@ -7,7 +7,8 @@
 # first comes back as the standby. The broker hangs (SIGSTOP: to both boxes a link gone silent): the box on the air
 # hears no standby beat and goes off the air (exit 75); the standby doesn't claim the node without the broker. The
 # broker back, the standby goes on the air. (A broker that shuts down sends every client's will: the box on the air
-# then sees its standby gone and stays on.)
+# then sees its standby gone and stays on.) The registration records outlive the box: the second, on the air, holds
+# the first's MS (1000001, read back from the broker) and its own (2000001).
 #
 #   sh host-tests/e2e_t3_standby.sh <dir with rdofradio> <mosquitto> <port>
 set -u
@@ -27,7 +28,23 @@ cat > "$D/site.json" <<J
            "carriers": [{"out": "OUT", "in": "IN", "chan": 1, "tscc": true}],
            "registration": "open", "wide_tg": "1-99999", "standby": {"takeover_s": 12, "fence_s": 9}}]}
 J
-box() { RDOF_HWID=$1 exec "$BIN/rdofradio" --config "$D/site.json" --sim-air 1 --seconds 120 >> "$D/$1.log" 2>&1; }
+box() {
+    RDOF_HWID=$1 exec "$BIN/rdofradio" --config "$D/site.json" --sim-air 1 --sim-id "$2" --seconds 120 \
+        >> "$D/$1.log" 2>&1
+}
+SUB=$(command -v mosquitto_sub || true)
+# until the node's status (retained) counts $1 registration records, at most $2 s
+until_regs() {
+    [ -n "$SUB" ] || return 0
+    i=0
+    while [ $i -lt $(($2 * 2)) ]; do
+        r=$("$SUB" -h 127.0.0.1 -p "$PORT" -t DMR/node/t3sb/status -C 1 -W 1 2>/dev/null |
+            sed -n 's/.*"regs":\([0-9]*\).*/\1/p')
+        [ "$r" = "$1" ] && return 0
+        sleep 0.5; i=$((i + 1))
+    done
+    echo "regs: ${r:-none}"; return 1
+}
 # until a line is in a log, at most $3 s
 until_in() {
     i=0
@@ -41,9 +58,10 @@ sed 's/"takeover_s": 12/"takeover_s": 10/' "$D/site.json" > "$D/bad.json"
 "$BIN/rdofradio" --config "$D/bad.json" --sim-air 1 --seconds 1 2>&1 | grep -q "takeover_s at least fence_s + 3" ||
     { echo "FAIL: takeover_s 10 with fence_s 9 refused"; fail=1; }
 sleep 0.5
-box aaaaa1 & RA=$!
+box aaaaa1 1000001 & RA=$!
 until_in aaaaa1 "standby: on the air" 16 || { echo "FAIL: the first box on the air"; fail=1; }
-box bbbbb2 & RB=$!
+until_regs 1 10 || { echo "FAIL: the first box's MS registered"; fail=1; }
+box bbbbb2 2000001 & RB=$!
 until_in aaaaa1 "standby: bbbbb2 is there" 5 || { echo "FAIL: the active box hears the standby"; fail=1; }
 sleep 2
 [ "$(on bbbbb2)" = 0 ] || { echo "FAIL: the standby waits while the first is on the air"; fail=1; }
@@ -52,7 +70,8 @@ t0=$(date +%s)
 until_in bbbbb2 "standby: on the air" 6 || { echo "FAIL: the standby on the air after the first's will"; fail=1; }
 grep -q "the node's will: claiming" "$D/bbbbb2.log" || { echo "FAIL: the claim on the will"; fail=1; }
 echo "takeover in about $(($(date +%s) - t0)) s"
-box aaaaa1 & RA=$!
+until_regs 2 10 || { echo "FAIL: the second box holds the first's record and its own"; fail=1; }
+box aaaaa1 1000001 & RA=$!
 until_in bbbbb2 "standby: aaaaa1 is there" 5 || { echo "FAIL: the first back as the standby"; fail=1; }
 kill -STOP $MQ
 t0=$(date +%s)
