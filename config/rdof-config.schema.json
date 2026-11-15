@@ -542,7 +542,11 @@
         "timers": {"type": "object"},
         "broadcast": {"type": "object"},
         "services": {"type": "object"},
-        "auth": {"enum": ["off", "registration", "required"]}
+        "auth": {"enum": ["off", "registration", "required"]},
+        "standby": {"oneOf": [{"type": "boolean"},
+                              {"type": "object", "additionalProperties": false,
+                               "properties": {"takeover_s": {"type": "number", "minimum": 12, "maximum": 120},
+                                              "fence_s": {"type": "number", "minimum": 9, "maximum": 60}}}]}
       }
     },
     "app3": {

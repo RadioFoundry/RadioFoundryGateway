@@ -57,6 +57,12 @@ typedef struct {
     bool verbose;
 } rdofradio_t3_opts_t;
 
+/* A standby box (the site's "standby", tier3.md 6.2), before its devices open: waits on the broker while another
+ * box with these settings is on the air, true once this one should be (at once without "standby"); false on *stop. */
+bool rdofradio_t3_standby(const rdofradio_cfg_t *c, volatile sig_atomic_t *stop);
+/* True once the run stopped itself (raised SIGTERM) to make way for its standby: the exit code says so (75). */
+bool rdofradio_t3_fenced(void);
+
 /* --sim-air's whole run. Returns the exit code. */
 int rdofradio_t3_sim(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o, volatile sig_atomic_t *stop);
 

@@ -64,7 +64,7 @@ short data to gateways (extended addresses, supplementary data), a second TSCC, 
 says why), DGNA across sites for the site's records (a roaming MS's dynamic talkgroups), ALS from the site,
 transmit interrupt from a gateway or the network (3.20), call
 diversion to gateways or across sites, gateways (PSTN, PABX, dispatcher), duplex calls over the network and duplex
-packet data, a standby controller, trunking on the W12 (the LR2021 can't stay keyed: slot-timing.md),
+packet data, trunking on the W12 (the LR2021 can't stay keyed: slot-timing.md),
 encryption beyond pass-through.
 
 Two carriers out of one SDR, now built (9.4), were tried first on the Pluto (2026-11-06, with fixed test signals, not
@@ -1546,13 +1546,30 @@ The codecs should keep bit 2 (`data`).
 | Site controller (rdofradio) restarts | the TSCC stops for the restart (a few seconds; MSs hunt and come back) | | reads its records back (6.2) |
 | Split radio (carrier B) lost | the site runs on carrier A's payload slot; B's slots are marked out of service | | when the radio returns |
 
-### 6.2 State and the standby controller (built later, prepared now)
+### 6.2 State and the standby controller
 
 - All state worth keeping is in the retained registration records (one per MS) and the `cfg` cache. Calls in progress
   are not kept: a restart ends them (the MSs return to the TSCC on TV_Inactive).
-- A standby controller is a second box with the same settings: it holds a lock topic (`node/{node}/lock`, retained,
-  with the holder's ID and the will clearing it), takes over when the active one's will fires, reads the records and
-  keys up. The controller API (section 8) has the hooks: `rdof_t3_load_record`, `rdof_t3_withdraw`.
+- A standby controller is a second box with the same settings and `"standby": true` in the tier3 app (or
+  `{"takeover_s": 13, "fence_s": 9}`, the defaults; `fence_s` 9-60, `takeover_s` at least `fence_s` + 3). Both run
+  the same way; the broker decides which is on the air. Each box is told apart by its hardware ID (`rdofmq_hwid`,
+  `RDOF_HWID` in the environment for tests). Built in rdofradio (`rdofradio_t3_standby`, `--sim-air`, the SDR, the
+  radios-only site and the hat); the board's firmware has none.
+- Before its devices open, a box connects as `rdof-standby-{node}-{hw}` and beats its ID on `node/{node}/standby`
+  every 0.5 s (its will: `- {hw}`, keepalive 5 s). It hears its own beat back (the broker's path proven) and the box
+  on the air's beat on `node/{node}/hold` (`on {hw}`, every 0.5 s).
+- It claims the node when the path is there and either the `on` beat has stopped `takeover_s`, or the node's
+  `online` is 0 (the active box's will; a crash closes the socket, so this is about a second) and no beat since.
+  A claim is `claim {hw}` on `hold` for 1.5 s; an `on` beat or a lower ID's claim meanwhile sends it back to waiting.
+  Then it starts as any box does, reading the records back.
+- Fencing: the box on the air, once it has heard a standby, goes off the air when the standby's beat is gone
+  `fence_s` without its will: either it lost the broker (the standby takes over at `takeover_s`, after the fence) or
+  the standby died silently (its will comes 7.5 s on, before the fence). It raises SIGTERM and exits 75; its
+  supervisor starts it again, as the standby. Its own connection's keepalive is `fence_s` + 1, so its will can't
+  beat the fence. A box on the air that hears another's `on` beat with a lower ID goes off the air too.
+- Without a broker no box claims the node, and a box on the air without a standby stays on the air.
+- Failover: about 2.5 s after a crash (the will), `takeover_s` + 1.5 s after a box or its link goes silent.
+  `host-tests/e2e_t3_standby.sh` runs a pair through a crash, a broker stop and its return.
 - A site broker: optional. With one at the site (bridged to the backbone, `DMR/#` both ways except `cfg/#` and
   `node/+/cmd` inbound only), the site's own controller, records and provisioning cache keep working with the
   backbone down, and a standby box at the site works too.
@@ -2136,8 +2153,9 @@ Hardware setups:
 | A stock duplex modem as a one-carrier site (tier3-hat.md) | yes | yes, with limits: the radio decodes 1.4 TSCC blocks a second there (8 on the SDR site) and sends each registration twice |
 | Two split TX halves for the two carriers, the SDR receiving | yes, end to end | no |
 | One split TX half and one split RX half, no SDR | yes, end to end | no |
+| Standby controller (6.2) | yes: two boxes on a local broker through a crash and a hung broker | no |
 
-Not built: the standby controller; calls through PSTN, PABX or dispatcher gateways (dialled digits); IPv6;
+Not built: calls through PSTN, PABX or dispatcher gateways (dialled digits); IPv6;
 across sites, duplex calls; talkgroup data from the IP side
 (225.x.y.z) to a talkgroup.
 

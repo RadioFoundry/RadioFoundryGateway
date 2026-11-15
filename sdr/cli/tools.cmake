@@ -227,6 +227,12 @@ if(TARGET rdofradio AND TARGET fakemodem AND UNIX)
         add_test(NAME rdofradio_e2e_mqttnet COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_mqttnet.sh
                  $<TARGET_FILE_DIR:rdofradio> ${MOSQUITTO_BROKER} 18873)
         set_tests_properties(rdofradio_e2e_mqttnet PROPERTIES TIMEOUT 60)
+        if(RDOF_TIER3)
+            # no RF: a standby pair of Tier III boxes through a crash and a hung broker (tier3.md 6.2)
+            add_test(NAME rdofradio_e2e_t3_standby COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_t3_standby.sh
+                     $<TARGET_FILE_DIR:rdofradio> ${MOSQUITTO_BROKER} 18874)
+            set_tests_properties(rdofradio_e2e_t3_standby PROPERTIES TIMEOUT 120)
+        endif()
     else()
         message(STATUS "no mosquitto broker (or rdofradio without MQTT): the MQTT network's end-to-end test is off")
     endif()

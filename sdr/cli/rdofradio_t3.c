@@ -8,6 +8,7 @@
 #include <math.h>
 #include <poll.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -60,6 +61,10 @@ static struct {
 #ifdef RDOF_MQTT
     rdofmq_t *mq;
 #endif
+    /* standby (tier3.md 6.2): the active one's beat out on hold, a standby's heard on standby */
+    char hold_topic[128], sb_topic[128];
+    int64_t hold_next, sb_last;
+    bool sb_seen, fenced;
 } T = {.mu = PTHREAD_MUTEX_INITIALIZER};
 
 /* messages from libmosquitto's thread, taken by the loop */
@@ -113,6 +118,8 @@ static void io_subscribe(void *ctx, const char *const *f, int n)
         all[m++] = f[i];
     if (air_topic[0])
         all[m++] = air_topic;
+    if (T.sb_topic[0] && m < RDOFMQ_SUBS - 1)
+        all[m++] = T.sb_topic, all[m++] = T.hold_topic;
     rdofmq_subscribe(T.mq, all, m);
 #endif
 }
@@ -317,9 +324,15 @@ static bool start_common(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o,
         rdof_mn_node_topic(T.online, sizeof T.online, t->root, T.node, "online");
         rdof_mn_node_topic(T.info, sizeof T.info, t->root, T.node, "info");
         snprintf(id, sizeof id, "rdof-tier3-%s", T.node);
+        if (t->standby) {
+            rdof_mn_node_topic(T.hold_topic, sizeof T.hold_topic, t->root, T.node, "hold");
+            rdof_mn_node_topic(T.sb_topic, sizeof T.sb_topic, t->root, T.node, "standby");
+        }
+        /* with a standby: the broker sends the will 1.5 keepalives after the last packet, past fence_s */
         rdofmq_opts_t mo = {.host = t->host, .user = t->user, .pass = t->pass, .port = t->port, .tls = t->tls,
                             .client_id = id, .will_topic = T.online, .will_msg = "0", .queue_max = 1000,
-                            .say = mq_say, .on_message = on_message, .no_local = true, .nodelay = true};
+                            .say = mq_say, .on_message = on_message, .no_local = true, .nodelay = true,
+                            .keepalive_s = t->standby ? (int)t->fence_s + 1 : 0};
         T.mq = rdofmq_start(&mo);
         if (!T.mq) {
             snprintf(err, cap, "mqtt: libmosquitto refused the options");
@@ -338,6 +351,175 @@ static bool start_common(const rdofradio_cfg_t *c, const rdofradio_t3_opts_t *o,
 /* messages in, the link's changes, timers; T.mu held */
 static bool air_command(const char *topic, const void *data, size_t len);
 
+/* The active box of a standby pair (tier3.md 6.2): a standby's beat or its will on standby; another box on the air
+   on hold (the lower ID stays). True: the message was the pair's. */
+#define RDOF_T3_BEAT_MS 500
+static bool standby_message(const char *topic, const void *data, size_t len, int64_t now_ms)
+{
+#ifndef RDOF_MQTT
+    (void)topic, (void)data, (void)len, (void)now_ms;
+    return false;
+#else
+    if (!T.sb_topic[0])
+        return false;
+    char m[32];
+    snprintf(m, sizeof m, "%.*s", (int)(len < sizeof m ? len : sizeof m - 1), (const char *)data);
+    if (!strcmp(topic, T.sb_topic)) {
+        if (m[0] == '-') { /* its will: gone, no takeover to make way for */
+            if (T.sb_seen)
+                tsay("standby: %s is gone", m + 2);
+            T.sb_seen = false;
+        } else {
+            if (!T.sb_seen)
+                tsay("standby: %s is there: off the air after %.0f s without its beat", m, T.c->t.fence_s);
+            T.sb_seen = true, T.sb_last = now_ms;
+        }
+        return true;
+    }
+    if (!strcmp(topic, T.hold_topic)) {
+        if (!strncmp(m, "on ", 3) && strcmp(m + 3, rdofmq_hwid()) < 0 && !T.fenced) {
+            tsay("standby: %s is on the air too: off the air", m + 3);
+            T.fenced = true;
+            raise(SIGTERM);
+        }
+        return true;
+    }
+    return false;
+#endif
+}
+
+/* the active box's beat; off the air (the run stops) once a standby's beat is gone fence_s without its will */
+static void standby_tick(int64_t now_ms)
+{
+#ifndef RDOF_MQTT
+    (void)now_ms;
+#else
+    if (!T.sb_topic[0] || !T.mq)
+        return;
+    if (now_ms >= T.hold_next) {
+        char m[16];
+        snprintf(m, sizeof m, "on %s", rdofmq_hwid());
+        rdofmq_publish(T.mq, T.hold_topic, m, -1, 0, false);
+        T.hold_next = now_ms + RDOF_T3_BEAT_MS;
+    }
+    if (T.sb_seen && !T.fenced && now_ms - T.sb_last > (int64_t)(T.c->t.fence_s * 1000)) {
+        tsay("standby: no beat from the standby or the broker for %.0f s: off the air, the standby takes over",
+             T.c->t.fence_s);
+        T.fenced = true;
+        raise(SIGTERM);
+    }
+#endif
+}
+
+bool rdofradio_t3_fenced(void) { return T.fenced; }
+
+#ifdef RDOF_MQTT
+/* The standby's view, from libmosquitto's thread. */
+static struct {
+    pthread_mutex_t mu;
+    char hold[128], sb[128], online[128];
+    int64_t on_ms;     /* another box's "on" beat, last */
+    int64_t claim_ms;  /* a claim by a lower ID, last */
+    int64_t echo_ms;   /* our own beat back from the broker, last: the path is there */
+    int64_t will_ms;   /* online "0" (the active one's will), last; 0 none since the last "on" */
+} SB = {.mu = PTHREAD_MUTEX_INITIALIZER};
+
+static void sb_message(void *ctx, const char *topic, const void *data, int len)
+{
+    (void)ctx;
+    char m[32];
+    snprintf(m, sizeof m, "%.*s", len < 0 ? 0 : len < (int)sizeof m ? len : (int)sizeof m - 1, (const char *)data);
+    const int64_t now = wall_ms();
+    const char *hw = rdofmq_hwid();
+    pthread_mutex_lock(&SB.mu);
+    if (!strcmp(topic, SB.sb) && !strcmp(m, hw))
+        SB.echo_ms = now;
+    else if (!strcmp(topic, SB.hold) && !strncmp(m, "on ", 3) && strcmp(m + 3, hw))
+        SB.on_ms = now, SB.will_ms = 0;
+    else if (!strcmp(topic, SB.hold) && !strncmp(m, "claim ", 6) && strcmp(m + 6, hw) < 0)
+        SB.claim_ms = now;
+    else if (!strcmp(topic, SB.online) && !strcmp(m, "0"))
+        SB.will_ms = now;
+    else if (!strcmp(topic, SB.online) && !strcmp(m, "1"))
+        SB.will_ms = 0;
+    pthread_mutex_unlock(&SB.mu);
+}
+#endif
+
+bool rdofradio_t3_standby(const rdofradio_cfg_t *c, volatile sig_atomic_t *stop)
+{
+    const rdofradio_t3_cfg_t *t = &c->t;
+    if (!t->standby)
+        return true;
+#ifndef RDOF_MQTT
+    tsay("standby: rdofradio was built without libmosquitto (RDOF_MQTT): on the air at once");
+    return true;
+#else
+    if (t->net < 0 || !rdof_mn_node_ok(c->site.name)) {
+        tsay("standby: no mqtt network for the node: on the air at once");
+        return true;
+    }
+    const char *hw = rdofmq_hwid();
+    rdof_mn_node_topic(SB.hold, sizeof SB.hold, t->root, c->site.name, "hold");
+    rdof_mn_node_topic(SB.sb, sizeof SB.sb, t->root, c->site.name, "standby");
+    rdof_mn_node_topic(SB.online, sizeof SB.online, t->root, c->site.name, "online");
+    char id[64], will[16];
+    snprintf(id, sizeof id, "rdof-standby-%s-%s", c->site.name, hw);
+    snprintf(will, sizeof will, "- %s", hw);
+    /* keepalive 5 (libmosquitto's least): a standby gone without a word is gone (its will) 7.5 s on, inside the
+       active one's fence_s (at least 9);
+       no no_local: our own beat back is the broker's path proven */
+    const char *subs[] = {SB.hold, SB.sb, SB.online};
+    rdofmq_opts_t mo = {.host = t->host, .user = t->user, .pass = t->pass, .port = t->port, .tls = t->tls,
+                        .client_id = id, .will_topic = SB.sb, .will_msg = will, .queue_max = 100, .say = mq_say,
+                        .on_message = sb_message, .nodelay = true, .keepalive_s = 5};
+    rdofmq_t *q = rdofmq_start(&mo);
+    if (!q) {
+        tsay("standby: mqtt: libmosquitto refused the options: on the air at once");
+        return true;
+    }
+    rdofmq_subscribe(q, subs, 3);
+    tsay("standby: %s waits as %s on %s:%d: on the air %.0f s after the node's beat stops (1 s after its will)",
+         c->site.name, hw, t->host, t->port, t->takeover_s);
+    int64_t quiet = wall_ms(), claim = 0, next = 0;
+    bool won = false;
+    while (!*stop && !won) {
+        const int64_t now = wall_ms();
+        if (now >= next) {
+            char m[16];
+            if (claim)
+                snprintf(m, sizeof m, "claim %s", hw);
+            rdofmq_publish(q, claim ? SB.hold : SB.sb, claim ? m : hw, -1, 0, false);
+            if (claim) /* the standby's beat goes on while it claims */
+                rdofmq_publish(q, SB.sb, hw, -1, 0, false);
+            next = now + (claim ? 250 : RDOF_T3_BEAT_MS);
+        }
+        pthread_mutex_lock(&SB.mu);
+        const int64_t on = SB.on_ms, lower = SB.claim_ms, echo = SB.echo_ms, will = SB.will_ms;
+        pthread_mutex_unlock(&SB.mu);
+        const bool path = rdofmq_up(q) && now - echo < 1500;
+        if (!path || on > quiet)
+            quiet = path ? on : now;
+        if (claim && (on >= claim || lower >= claim)) {
+            tsay("standby: %s is on the air: waiting again", on >= claim ? "another box" : "a lower ID");
+            claim = 0, quiet = now;
+        } else if (claim && now - claim >= 1500) {
+            won = true;
+        } else if (!claim && path &&
+                   (now - quiet >= (int64_t)(t->takeover_s * 1000) || (will > quiet && now - will >= 1000))) {
+            tsay("standby: %s: claiming the node", now - quiet >= (int64_t)(t->takeover_s * 1000)
+                                                      ? "the node's beat stopped" : "the node's will");
+            claim = now, next = 0;
+        }
+        usleep(50000);
+    }
+    rdofmq_stop(q); /* its will: no longer a standby */
+    if (won)
+        tsay("standby: on the air");
+    return won;
+#endif
+}
+
 static void poll_locked(int64_t now_ms)
 {
     rdof_t3unit_set_now(T.u, now_ms);
@@ -355,7 +537,7 @@ static void poll_locked(int64_t now_ms)
         pthread_mutex_unlock(&inq_mu);
         if (!any)
             break;
-        if (!air_command(topic, data, len))
+        if (!standby_message(topic, data, len, now_ms) && !air_command(topic, data, len))
             rdof_t3unit_message(T.u, topic, data, len);
         free(topic);
         free(data);
@@ -372,6 +554,7 @@ static void poll_locked(int64_t now_ms)
         }
     }
 #endif
+    standby_tick(now_ms);
     rdof_t3unit_tick(T.u, now_ms);
     gw_drain();
 }

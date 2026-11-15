@@ -28,6 +28,8 @@ typedef struct {
     const char *subscribe;          /* a topic filter taken at each connect (QoS 0), NULL none */
     bool no_local;                  /* MQTT 5: the broker doesn't send this client's own messages back */
     bool nodelay;                   /* TCP_NODELAY: small messages go at once (the MQTT network's voice) */
+    int keepalive_s;                /* MQTT keepalive (the broker sends the will 1.5 times it after the last packet);
+                                       0: 30 */
     /* its messages, on libmosquitto's thread */
     void (*on_message)(void *ctx, const char *topic, const void *data, int len);
     void *ctx;
@@ -35,8 +37,8 @@ typedef struct {
 
 /* This machine's own id for a client ID, six hex digits, the same at every start: the last three bytes of its first
    network interface's hardware address (by name; not the loopback, not an address of zeros), else the last six
-   digits of /etc/machine-id, else a hash of the host's name. Two machines given the same settings stay two
-   clients. */
+   digits of /etc/machine-id, else a hash of the host's name (RDOF_HWID in the environment, its first six
+   characters, ahead of all). Two machines given the same settings stay two clients. */
 const char *rdofmq_hwid(void);
 /* Connects in the background. NULL: libmosquitto refused the options (said why). */
 rdofmq_t *rdofmq_start(const rdofmq_opts_t *o);

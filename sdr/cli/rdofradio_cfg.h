@@ -65,6 +65,11 @@ typedef struct {
     char host[64], user[32], pass[64], root[32];
     int port;
     bool tls;
+    /* "standby" (tier3.md 6.2): two boxes with these settings, one on the air; it waits while the node is online
+       and takes over takeover_s after its will; the active one stops when its broker is gone fence_s while a
+       standby is there */
+    bool standby;
+    double takeover_s, fence_s;
 } rdofradio_t3_cfg_t;
 
 typedef struct {

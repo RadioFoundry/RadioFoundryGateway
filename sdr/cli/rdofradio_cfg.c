@@ -182,6 +182,44 @@ static bool from_trunk(const rdof_plan_t *p, int unit, rdofradio_cfg_t *o, char 
         }
         t->tls = (ti >= 0 && rdof_jnode(d, ti)->type == RDOF_JBOOL && rdof_jnode(d, ti)->b) || s->net[t->net].transport == RDOF_MQTT_TLS;
     }
+    /* "standby": true or {"takeover_s", "fence_s"} (tier3.md 6.2) */
+    t->standby = false, t->takeover_s = 13, t->fence_s = 9;
+    {
+        const rdof_jdoc_t *d = rdof_plan_doc(p);
+        const int a = rdof_plan_app_node(p, u->app), si = a >= 0 ? rdof_jget(d, a, "standby") : -1;
+        const rdof_jnode_t *n = si >= 0 ? rdof_jnode(d, si) : NULL;
+        const char *where = s->app[u->app].name;
+        if (n && n->type == RDOF_JBOOL) {
+            t->standby = n->b;
+        } else if (n && n->type == RDOF_JOBJ) {
+            t->standby = true;
+            for (int k = n->child; k >= 0; k = rdof_jnode(d, k)->next) {
+                const rdof_jnode_t *v = rdof_jnode(d, k);
+                double *to = !strcmp(v->key, "takeover_s") ? &t->takeover_s
+                             : !strcmp(v->key, "fence_s")  ? &t->fence_s
+                                                           : NULL;
+                if (!to || v->type != RDOF_JNUM) {
+                    snprintf(err, cap, "apps.%s.standby.%s: %s", where, v->key,
+                             to ? "a number of seconds" : "not a setting (takeover_s, fence_s)");
+                    return false;
+                }
+                *to = v->num;
+            }
+        } else if (n && n->type != RDOF_JNULL) {
+            snprintf(err, cap, "apps.%s.standby: true, false or {\"takeover_s\", \"fence_s\"}", where);
+            return false;
+        }
+        /* a standby gone without a word shows (its will) 7.5 s on: fence_s past it; the takeover past fence_s */
+        if (t->standby &&
+            (t->fence_s < 9 || t->fence_s > 60 || t->takeover_s < t->fence_s + 3 || t->takeover_s > 120)) {
+            snprintf(err, cap, "apps.%s.standby: fence_s 9-60, takeover_s at least fence_s + 3, at most 120", where);
+            return false;
+        }
+        if (t->standby && t->net < 0) {
+            snprintf(err, cap, "apps.%s.standby: needs the site's mqtt network", where);
+            return false;
+        }
+    }
     /* the IP gateway app beside the site: the site's packet data goes to it (tier3.md 3.16) */
     o->has_ipgw = false;
     if (rdof_site_app_of(s, RDOF_APP_IPGW) >= 0) {

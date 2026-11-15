@@ -6988,18 +6988,20 @@ int main(int argc, char **argv)
                                                .state_dir = t3_opts.state_dir,
                                                .seconds = seconds,
                                                .verbose = verbose != 0};
+            signal(SIGINT, on_signal);
+            signal(SIGTERM, on_signal);
+            if (!rdofradio_t3_standby(&rcfg, &stop)) /* a standby box: not until the active one is gone */
+                return 0;
             if (to.sim_n > 0 || (to.sim_script && to.air_ms <= 0) || to.sim_ext) {
-                signal(SIGINT, on_signal);
-                signal(SIGTERM, on_signal);
-                return rdofradio_t3_sim(&rcfg, &to, &stop);
+                const int rc = rdofradio_t3_sim(&rcfg, &to, &stop);
+                return rdofradio_t3_fenced() ? 75 : rc;
             }
             bool radios = rcfg.t.ncar > 0; /* every carrier on two radios, a split TX and RX half: no SDR */
             for (int k = 0; k < rcfg.t.ncar; k++)
                 radios &= !rcfg.t.car[k].tx_sdr && !rcfg.t.car[k].rx_sdr && rcfg.t.car[k].rx_port[0];
             if (radios && !split_tx && !mmdvm) {
-                signal(SIGINT, on_signal);
-                signal(SIGTERM, on_signal);
-                return rdofradio_t3_radios(&rcfg, &to, &stop);
+                const int rc = rdofradio_t3_radios(&rcfg, &to, &stop);
+                return rdofradio_t3_fenced() ? 75 : rc;
             }
             if (split_tx || mmdvm) {
                 fprintf(stderr, "%s: a trunked site: the SDR sends its TSCC carrier (no --split-tx, --mmdvm)\n",
@@ -7248,6 +7250,10 @@ int main(int argc, char **argv)
                     !ok ? err : !t3cfg.tier3 ? "no tier3 app in it" : "the site's carrier is a modem's (--mmdvm PORT)");
             return 2;
         }
+        signal(SIGINT, on_signal);
+        signal(SIGTERM, on_signal);
+        if (!rdofradio_t3_standby(&t3cfg, &stop)) /* a standby box: the modem stays shut until the active one is gone */
+            return 0;
 #else
         fprintf(stderr, "--tier3: this rdofradio was built without the trunked site (RDOF_TIER3, cargo)\n");
         return 2;
@@ -8102,6 +8108,10 @@ int main(int argc, char **argv)
         fprintf(stderr, "restart: %s\n", strerror(errno));
         return 1;
     }
+#endif
+#ifdef RDOF_TIER3
+    if (rdofradio_t3_fenced())
+        return 75; /* off the air for the standby (tier3.md 6.2): the supervisor starts it again, as a standby */
 #endif
     return lost_device ? 1 : 0;
 }
