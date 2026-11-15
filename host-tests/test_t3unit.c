@@ -2,10 +2,12 @@
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 /* Two trunked sites (rdof/t3unit.h) with simulated MSs over the full burst path (rdof/t3sim.h), joined by an
  * in-process broker (retained messages, + wildcards, no local echo) with a stand-in router (pc/{dst} to dl/{the node
- * whose record has dst}): registration and its records, a wide group call heard at the other site, an individual
- * call across the sites through the setup, packet data across the sites (the setup with its data flag, the data_pdu
- * item: tier3.md 5.10, checked byte for byte), provisioning (cfg/net), commands, and a restart that reads the records
- * back. */
+ * whose record has dst}; where/{id} from each record): registration and its records, a wide group call heard at the
+ * other site, an individual call across the sites through the setup, packet data across the sites (the setup with
+ * its data flag, the data_pdu item: tier3.md 5.10, checked byte for byte), provisioning (cfg/net), commands, a
+ * restart that reads the records back, and an MS that roams from one site to the other. */
+#define _DEFAULT_SOURCE /* memmem */
+#define _DARWIN_C_SOURCE
 #include <stdalign.h>
 #include <stdarg.h>
 #include <stddef.h>
@@ -143,6 +145,17 @@ static void broker_publish(int from, const char *topic, const void *data, size_t
                 enqueue(c, topic, data, len);
                 break;
             }
+    }
+    /* the router: a registration record moves where/{id} (mqtt-net.md: a trunked site drops a record a newer one
+       elsewhere replaced) */
+    unsigned rid;
+    char rnode[48];
+    const char *at = len ? memmem(data, len, "\"at\":\"", 6) : NULL;
+    if (retain && at && sscanf(topic, "DMR/node/%47[^/]/ms/%u", rnode, &rid) == 2) {
+        char wt[64], w[160];
+        snprintf(wt, sizeof wt, "DMR/where/%u", rid);
+        const int n = snprintf(w, sizeof w, "{\"node\":\"%s\",\"at\":\"%.24s\",\"source\":\"reg\"}", rnode, at + 6);
+        broker_publish(-1, wt, w, (size_t)n, true);
     }
     /* the router: pc/{dst}/{node} to dl/{where dst is registered} */
     unsigned dst;
@@ -1229,6 +1242,38 @@ int main(void)
         CHECK(X.fates[RDOF_T3SIM_HEARD] > 5, "its bursts heard (%u)", X.fates[RDOF_T3SIM_HEARD]);
         A.sim.ext_in = NULL;
         A.sim.ext_out = NULL;
+
+        /* a roam (tier3.md 7): it moves to B's coverage and registers there. B writes its record, the router moves
+           where/, and A drops its own record (the controller's and the retained one). A call from A's MS to it then
+           goes to B, and its group call from B reaches A's MS. */
+        Bs.sim.ext_in = ext_in;
+        Bs.sim.ext_out = ext_out;
+        run(1000);
+        rdof_t3ms_do(X.ms, RDOF_T3MS_DO_REGISTER, TG, 0, 0, T0 + K * 30);
+        run(6000);
+        rdof_t3ms_status(X.ms, &xs);
+        CHECK(xs.registered && rdof_t3_record(Bs.mem, 3100009, &rec), "registered at B after the move");
+        const msg_t *w = retained("DMR/where/3100009");
+        CHECK(w && memmem(w->data, w->len, "\"site-b\"", 8), "where/ names B");
+        CHECK(!rdof_t3_record(A.mem, 3100009, &rec), "A's controller dropped the record");
+        CHECK(retained("DMR/node/site-a/ms/3100009") == NULL, "and A's retained record");
+        CHECK(retained("DMR/node/site-b/ms/3100009") != NULL, "B's record retained");
+        const uint32_t ahoys = xs.ahoys, done = ms_status(&A, 0).calls_done;
+        rdof_t3ms_do(A.ms[0], RDOF_T3MS_DO_PRIVATE, 3100009, 1500, 0, T0 + K * 30);
+        run(4000);
+        rdof_t3ms_status(X.ms, &xs);
+        CHECK(xs.ahoys > ahoys, "A's call reached it at B (ahoys %u)", xs.ahoys - ahoys);
+        run(8000);
+        CHECK(ms_status(&A, 0).calls_done == done + 1, "the call done (failed %u)", ms_status(&A, 0).calls_failed);
+        rdof_t3ms_do(X.ms, RDOF_T3MS_DO_GROUP, TG, 1500, 0, T0 + K * 30);
+        waited = 0;
+        while (ms_status(&A, 1).heard_src != 3100009 && waited < 5000)
+            run(30), waited += 30;
+        CHECK(ms_status(&A, 1).heard_src == 3100009, "its group call from B heard at A (%u)",
+              ms_status(&A, 1).heard_src);
+        run(8000);
+        Bs.sim.ext_in = NULL;
+        Bs.sim.ext_out = NULL;
         free(X.ms);
     }
 
