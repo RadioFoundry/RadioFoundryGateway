@@ -175,7 +175,10 @@ Carrier A TS2 when not a payload channel: idle bursts (4.8: the other slot may b
   (these, C_MOVE, commands, data) print without `-v`; `-v` adds each burst.
 - Backoff adapts: the controller counts inbound random accesses and collisions (a burst with a good sync and a bad
   CRC on the TSCC inbound slot counts as one) over the last 2 s; Backoff 3 when quiet, up to 9 under load.
-- Service Function: 00b normally; 11b (registration only) while the queue is full; 01b is not used yet.
+- Service Function: 00b normally; 11b (registration only) while the queue is full; 01b is not used yet. An
+  emergency request isn't held by it. A call request that comes anyway (a radio that ignores it) gets
+  C_NACKD(SYSbusy_Refused) at once, and a network group call is dropped (congestion), not queued. Test:
+  `full_queue_refuses_and_holds` (rust t3tests; the sim MS holds its request until the Service Function is 00b).
 
 ### 3.4 Registration
 
@@ -1174,7 +1177,8 @@ paths").
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `system` | object | | `model` (`tiny`/`small`/`large`/`huge`), `net`, `site` within the model's ranges (table 1.5 of the digest: tiny 9/3 bits ... huge 2/10), `par` (`a`, `b`, `ab`), `area_bits` (1..SITE bits, default all). The manager's `cfg` overrides it |
+| `system` | object | | `model` (`tiny`/`small`/`large`/`huge`), `net`, `site` within the model's ranges (table 1.5 of the digest: tiny 9/3 bits ... huge 2/10; SITE 0 is a site, as
+in table 6.5 and the off-air captures), `par` (`a`, `b`, `ab`), `area_bits` (1..SITE bits, default all). The manager's `cfg` overrides it |
 | `carriers` | array, 1-4 | | each: `out`, `in` (frequency names), `chan` (1-4094, the logical channel number in grants), `tscc` (exactly one carrier) |
 | `registration` | `open`, `listed` | `open` | |
 | `ms` | ID set | `*` | IDs that may register (with `listed`) and be served |

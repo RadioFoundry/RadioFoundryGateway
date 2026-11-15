@@ -764,8 +764,11 @@ static void test_trunk(const char *dir)
                      "cfg/node", &c, &pol, err, sizeof err),
           "cfg/node: %s", err);
     CHECK(c.site == 200 && c.area_bits == 6 && pol.static_tg.n == 2, "cfg/node applied");
-    CHECK(!apply_text("{\"site\": 256}", "cfg/node", &c, &pol, err, sizeof err) && !strcmp(err, "cfg/node.site: 1 to 255"),
+    CHECK(!apply_text("{\"site\": 256}", "cfg/node", &c, &pol, err, sizeof err) && !strcmp(err, "cfg/node.site: 0 to 255"),
           "site range: %s", err);
+    /* SITE 0 is one of a network's sites (361-4 table 6.5), the one a standard site in the off-air captures uses */
+    CHECK(apply_text("{\"site\": 0}", "cfg/node", &c, &pol, err, sizeof err) && c.site == 0, "site 0: %s", err);
+    CHECK(apply_text("{\"site\": 200}", "cfg/node", &c, &pol, err, sizeof err) && c.site == 200, "site back: %s", err);
     CHECK(!apply_text("{\"system\": {\"model\": \"medium\"}}", "cfg/net", &c, &pol, err, sizeof err) &&
               strstr(err, "cfg/net.system.model"),
           "%s", err);

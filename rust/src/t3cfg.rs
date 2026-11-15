@@ -401,7 +401,7 @@ impl<'a> Cx<'a> {
         }
         cfg.net = v as u16;
         v = f64::from(cfg.site);
-        if !self.num_in(o, c"site", p, 1.0, f64::from((1 << sb) - 1), false, &mut v) {
+        if !self.num_in(o, c"site", p, 0.0, f64::from((1 << sb) - 1), false, &mut v) {
             return false;
         }
         cfg.site = v as u16;

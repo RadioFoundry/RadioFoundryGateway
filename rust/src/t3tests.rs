@@ -273,6 +273,47 @@ fn queue_expires_with_sysbusy() {
     assert!(log.of(EV_ACTIVITY).iter().any(|e| e.kind == ACT_QUEUE && e.op == QUEUE_DROP));
 }
 
+/// A full queue (queue_max 1, 6.6.10, 6.2.1.1.2): the C_ALOHA's Service Function says registration only, so a
+/// conforming MS holds its call request; one that sends it anyway gets C_NACKD(SYSbusy) at once, not a place in the
+/// queue; a network group call isn't queued either (dropped, congestion). When the queue empties the Service Function
+/// is 0 again and the held request goes.
+#[test]
+fn full_queue_refuses_and_holds() {
+    let mut s = site_with(|c| c.queue_max = 1);
+    s.set_link(true);
+    let mut log = Log::default();
+    let tgs = [TG, 10, 11, 12, 13];
+    let mut air: Air<5> = Air::new(&mut s, core::array::from_fn(|i| ms(1001 + i as u32, &[tgs[i]], &[1])), T0);
+    register_all(&mut air, &mut log);
+    reg_tg(&mut air, &mut log, 4, 13);
+    assert_eq!(air.ms[2].service_function(), 0);
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_GROUP, TG, 6000, 0, now);
+    air.ms[1].act(t3ms::DO_GROUP, 10, 1000, 0, now + 600);
+    assert!(air.until(5000, &mut log.f(), |a| a.ms[1].status().last_reason == R_QUEUED));
+    assert!(air.until(1000, &mut log.f(), |a| a.ms[2].service_function() == 3), "registration only");
+    // C holds; D (ignoring the Service Function) is refused at once
+    air.ms[3].set_any_service(true);
+    let now = air.now();
+    air.ms[2].act(t3ms::DO_GROUP, 11, 1000, 0, now);
+    air.ms[3].act(t3ms::DO_GROUP, 12, 1000, 0, now);
+    assert!(air.until(1500, &mut log.f(), |a| a.ms[3].status().last_reason == R_SYSBUSY), "D refused");
+    assert_eq!((air.ms[2].state(), air.ms[2].status().calls_failed), (t3ms::ACCESS, 0), "C holds its request");
+    assert_eq!(air.site.status().queue, 1);
+    let drop = log.of(EV_ACTIVITY).into_iter().find(|e| e.kind == ACT_QUEUE && e.src == 1004).expect("D's drop");
+    assert_eq!((drop.op, drop.reason), (QUEUE_DROP, R_SYSBUSY));
+    // a network call to TG 13: not queued
+    let now = air.now();
+    air.site.net_group_in(77, 5555, 13, 0, now);
+    assert!(log.take(&mut air).of(EV_NET_DROP).iter().any(|e| e.stream == 77 && e.why == WHY_CONGESTION));
+    assert!(!log.of(EV_ACTIVITY).iter().any(|e| e.kind == ACT_QUEUE && e.src == 5555));
+    // A's call ends: B gets the channel, the Aloha invites calls again, C's request goes and is served in turn
+    assert!(air.until(10_000, &mut log.f(), |a| a.ms[1].state() == t3ms::PAYLOAD));
+    assert!(air.until(2000, &mut log.f(), |a| a.ms[2].service_function() == 0));
+    assert!(air.until(15_000, &mut log.f(), |a| a.ms[2].state() == t3ms::PAYLOAD), "C served");
+    assert_eq!(air.ms[2].status().calls_failed, 0);
+}
+
 #[test]
 fn emergency_goes_first_in_the_queue() {
     let mut s = site_with(|_| {});

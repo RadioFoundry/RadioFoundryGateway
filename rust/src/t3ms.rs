@@ -219,6 +219,7 @@ pub struct Ms {
     moves: u32,
     // full-duplex calls (6.6.9)
     no_duplex: bool, // answers a duplex radio check C_NACKU(MS_Duplex_Not_Supported)
+    any_service: bool, // sends a call request whatever the Aloha's Service Function (a radio that ignores it)
     dx: bool,        // in a duplex call: offset timing, talks while it listens
     dx_peer: u32,
     voice_heard: u32,
@@ -1906,6 +1907,17 @@ impl Ms {
         self.no_duplex = no;
     }
 
+    /// Ignores the C_ALOHA's Service Function (sends a call request when only registrations are invited).
+    pub fn set_any_service(&mut self, any: bool) {
+        self.any_service = any;
+    }
+
+    /// The last C_ALOHA's Service Function (6.2.1.1.2, table 6.1): 0 all, 1 registration and payload calls,
+    /// 2 registration and other services, 3 registration only.
+    pub fn service_function(&self) -> u8 {
+        self.service_fn & 3
+    }
+
     /// Voice bursts heard from another MS on its payload channel.
     pub fn voice_heard(&self) -> u32 {
         self.voice_heard
@@ -2060,7 +2072,7 @@ impl Ms {
         if (!emergency || m == 24) && (self.id ^ self.aloha_addr) & bits != 0 {
             return false;
         }
-        if emergency {
+        if emergency || self.any_service {
             return true;
         }
         let registration = matches!(self.cur.what, DO_REGISTER | DO_DEREGISTER);
