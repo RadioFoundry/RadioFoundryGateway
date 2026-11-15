@@ -454,7 +454,7 @@ pub struct Event {
     pub dst: u32,
     pub stream: u32,
     pub r#ref: u32,
-    pub text: [u8; 64],
+    pub text: [u8; 128],
 }
 
 impl Default for Event {
@@ -475,7 +475,7 @@ impl Default for Event {
             dst: 0,
             stream: 0,
             r#ref: 0,
-            text: [0; 64],
+            text: [0; 128],
         }
     }
 }

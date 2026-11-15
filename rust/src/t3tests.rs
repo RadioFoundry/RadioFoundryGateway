@@ -1330,6 +1330,10 @@ fn composite_ahoy_waits_while_lent() {
         "D asked once the TSCC is back, and on TS2"
     );
     assert_eq!(air.ms[3].status().ahoys, 1);
+    // the return's summary whole (the event text once cut it at 63 octets, before the lends' total)
+    let back: Vec<_> =
+        log.of(EV_LOG).iter().map(|e| e.text().to_string()).filter(|t| t.contains("again after")).collect();
+    assert!(!back.is_empty() && back.iter().all(|t| t.ends_with(" s in all)")), "{back:?}");
 }
 
 /// A network group call to TG 9 while TS2 and the TSCC's slot are both busy waits in the queue. A's call ends while

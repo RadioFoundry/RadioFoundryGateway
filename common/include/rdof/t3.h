@@ -251,7 +251,7 @@ typedef struct {
     uint16_t chan;
     uint8_t lcn, pad;
     uint32_t src, dst, stream, ref;
-    char text[64];
+    char text[128];
 } rdof_t3_event_t;
 
 /* channel use */
