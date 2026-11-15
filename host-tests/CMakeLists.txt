@@ -160,6 +160,20 @@ if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
 endif()
 add_test(NAME rdof_power_tests COMMAND rdof_power_tests)
 
+# Where a long key-up's seams fall on the LR2021 (esp_idf/main/tx_seam_core.c).
+add_executable(rdof_txseam_tests test_txseam.c ../esp_idf/main/tx_seam_core.c)
+target_include_directories(rdof_txseam_tests PRIVATE ../esp_idf/main)
+set_target_properties(rdof_txseam_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_compile_options(rdof_txseam_tests PRIVATE -Wall -Wno-unused-parameter)
+if(NOT MSVC)
+    target_link_libraries(rdof_txseam_tests PRIVATE m)
+endif()
+if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+    target_compile_options(rdof_txseam_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(rdof_txseam_tests PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME rdof_txseam_tests COMMAND rdof_txseam_tests)
+
 # The shared components' own tests.
 add_subdirectory(../components/tinysctp/test tinysctp)
 

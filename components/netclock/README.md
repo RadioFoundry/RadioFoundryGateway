@@ -1,9 +1,10 @@
 # netclock
 
 A UTC clock for ESP-IDF v5.x. It maps the local monotonic clock (`esp_timer`, µs) to UTC, disciplined by, in order
-of precedence: a GNSS pulse per second (PPS, its seconds numbered by the receiver's NMEA when the app passes it on), NTP (up to 6 servers, chrony-style selection), a GNSS receiver's NMEA time alone, or a web browser's
-clock. It learns the crystal's rate error, keeps it (and a rate-against-die-temperature table) in NVS, slews phase
-corrections instead of stepping, and rejects outliers.
+of precedence: a GNSS pulse per second (PPS, its seconds numbered by the receiver's NMEA when the app passes it on),
+NTP (up to 6 servers, chrony-style selection), a GNSS receiver's NMEA time alone, or a web browser's clock. It
+learns the crystal's rate error, keeps it (and a rate-against-die-temperature table) in NVS, slews phase corrections
+instead of stepping, and rejects outliers.
 
 [SPEC.md](SPEC.md) is the behavior spec: the NTP wire format and poll, selection and combination, the clock model
 and rate fit, the source rules, PPS, the temperature table, and every constant. This file covers use, the API,
@@ -74,8 +75,9 @@ netclock_posix_save();                               // at exit: what this run l
 netclock_posix_stop();
 ```
 
-Build: link `netclock_posix` (`add_subdirectory(components/netclock netclock)` from a host CMake project), or compile
-the seven portable sources and `src/netclock_posix.c` with `-lpthread -lm`. Plain C11 and POSIX; nothing assumes a 64-bit `long` (32-bit ARM Linux is a target).
+Build: link `netclock_posix` (`add_subdirectory(components/netclock netclock)` from a host CMake project), or
+compile the seven portable sources and `src/netclock_posix.c` with `-lpthread -lm`. Plain C11 and POSIX; nothing
+assumes a 64-bit `long` (32-bit ARM Linux is a target).
 
 Picking a mode:
 
@@ -117,9 +119,9 @@ A server may carry a port (`127.0.0.1:12300`); without one it's 123.
 
 ## API (`include/netclock.h`)
 
-Types: `netclock_source_t` (`NETCLOCK_SRC_NONE` 0, `_BROWSER` 1, `_NTP` 2, `_PPS` 3, `_GNSS` 4; `include/netclock_status.h`),
-`netclock_settings_t {char servers[NETCLOCK_SERVERS_LEN=128]; uint32_t poll_s;}`, `netclock_status_t` (fields as
-the `/api/clock` JSON below).
+Types: `netclock_source_t` (`NETCLOCK_SRC_NONE` 0, `_BROWSER` 1, `_NTP` 2, `_PPS` 3, `_GNSS` 4;
+`include/netclock_status.h`), `netclock_settings_t {char servers[NETCLOCK_SERVERS_LEN=128]; uint32_t poll_s;}`,
+`netclock_status_t` (fields as the `/api/clock` JSON below).
 
 Locking: the clock is read under a spinlock (`s_mux`, a copy of a few hundred bytes); writers (references,
 temperature ticks, status) serialize on a mutex (`s_wlock`), work on a scratch copy and swap it in under the
@@ -226,8 +228,8 @@ from this browser" button. One exchange at a time.
 
 Page section: `<div data-netclock></div><script src="/netclock.js" defer></script>`. Div options: `data-base`
 (default `/api`), `data-auto-time="0"`, `data-refresh` (s, default 5; reloads only while the page and the element
-are visible). Colors from the page's `--mute`, `--line`, `--ok`, `--bad`, `--warn`, `--accent`. `window.netclock.mount(el)`
-mounts it on another element.
+are visible). Colors from the page's `--mute`, `--line`, `--ok`, `--bad`, `--warn`, `--accent`.
+`window.netclock.mount(el)` mounts it on another element.
 
 ### `GET /api/clock` JSON
 
@@ -353,6 +355,6 @@ jitter, 5% slow round trips of 80..300 ms; scored after the first hour):
 
 ## Provenance
 
-Ported from smartlaps (same author): `timebase`, `clock_model`, `ntp_client`, `ntp_select` and the `sim_clock`
-test. Algorithms follow chrony's documented behavior (iburst, delay filter, root distance, Marzullo selection,
-skew) and RFC 5905 / RFC 4330 for the packet; no chrony or ntpd code. No third-party code; `PROVENANCE.md` lists it as clean.
+Ported from smartlaps (same author): `timebase`, `clock_model`, `ntp_client`, `ntp_select` and the `sim_clock` test.
+Algorithms follow chrony's documented behavior (iburst, delay filter, root distance, Marzullo selection, skew) and
+RFC 5905 / RFC 4330 for the packet; no chrony or ntpd code. No third-party code; `PROVENANCE.md` lists it as clean.

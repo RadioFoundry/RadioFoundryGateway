@@ -3,9 +3,10 @@
 A Wi-Fi station for ESP-IDF v5.x with a prioritized list of networks, a setup access point for when none
 connects, and a JSON API plus page section to edit the list. Passwords never leave the board through it.
 
-Files: `include/wifilist.h` (ESP-IDF API), `include/wifilist_core.h` + `src/wifilist_core.c` (portable C11:
-ranking, checks, edits, JSON writers, the backoff, the AP password check, the NVS blob codec), `src/wifilist.c` (station task, AP, NVS), `src/wifilist_settings.c`
-(JSON edits, cJSON), `src/wifilist_http.c` + `web/wifilist.js` (HTTP and page), `test/test_wifilist.c`.
+Files: `include/wifilist.h` (ESP-IDF API), `include/wifilist_core.h` + `src/wifilist_core.c` (portable C11: ranking,
+checks, edits, JSON writers, the backoff, the AP password check, the NVS blob codec), `src/wifilist.c` (station
+task, AP, NVS), `src/wifilist_settings.c` (JSON edits, cJSON), `src/wifilist_http.c` + `web/wifilist.js` (HTTP and
+page), `test/test_wifilist.c`.
 
 ## Use
 
@@ -117,10 +118,11 @@ written with `nvs_set_blob` + `nvs_commit`:
 | +98 | 1 | `priority`, int8 |
 | +99 | 1 | flags: bit 0 = hidden |
 
-Records are 100 bytes (`WIFILIST_BLOB_REC`), written by `wifilist_blob_encode` and read by `wifilist_blob_decode`. Load (once, lazily): a blob shorter than 2 bytes or with another version
-counts as nothing stored, and so does `n > WIFILIST_MAX` or `len < 2 + 100·n` (`wifilist_blob_decode` returns -1):
-the damaged list is ignored and `wifilist_migrate` can store a new one. Loaded records are not re-checked or re-sorted. Wi-Fi's own config is kept in RAM (`WIFI_STORAGE_RAM`), so
-the list is the only persistent Wi-Fi state.
+Records are 100 bytes (`WIFILIST_BLOB_REC`), written by `wifilist_blob_encode` and read by `wifilist_blob_decode`.
+Load (once, lazily): a blob shorter than 2 bytes or with another version counts as nothing stored, and so does `n >
+WIFILIST_MAX` or `len < 2 + 100·n` (`wifilist_blob_decode` returns -1): the damaged list is ignored and
+`wifilist_migrate` can store a new one. Loaded records are not re-checked or re-sorted. Wi-Fi's own config is kept
+in RAM (`WIFI_STORAGE_RAM`), so the list is the only persistent Wi-Fi state.
 
 ### Edits
 
@@ -144,10 +146,11 @@ the list is the only persistent Wi-Fi state.
 
 Other keys are ignored. `{"ssid": "x", "password": "y"}` (no `networks` key) is a list of one with priority 0;
 `"ssid": ""` there gives an empty list. Parse errors: `wifi: an object {networks: [...]} or {ssid, password}`,
-`wifi.networks: a list`, `wifi.networks: objects {ssid, priority, hidden, password}`, `<key>: a string of at
-most N bytes`, `at most N networks`, plus the check errors. An export (`{"networks":[{"ssid","priority"[,"hidden":true]}]}`)
-re-imported on the same board keeps the passwords; on another board protected networks become open (and are then
-never matched against protected APs, see [Selection](#selection)).
+`wifi.networks: a list`, `wifi.networks: objects {ssid, priority, hidden, password}`, `<key>: a string of at most N
+bytes`, `at most N networks`, plus the check errors. An export
+(`{"networks":[{"ssid","priority"[,"hidden":true]}]}`) re-imported on the same board keeps the passwords; on another
+board protected networks become open (and are then never matched against protected APs, see
+[Selection](#selection)).
 
 ## Selection
 
@@ -196,10 +199,10 @@ Rules (`src/wifilist.c:sta_task`):
 - **Try outcome:** `IP_EVENT_STA_GOT_IP` = connected; `WIFI_EVENT_STA_DISCONNECTED` = fail with its reason;
   no IP within `CONFIG_WIFILIST_CONNECT_TIMEOUT_S` = disconnect, fail with reason 0; `esp_wifi_connect()` error =
   fail with reason 205. A list change or reconnect request during a try aborts it without a fail record.
-- **Backoff** after a round with no connection: wait `min(5·2^r, RESCAN_MAX_S)` s (`wifilist_backoff_s`), r = failed rounds since
-  the last connection (5, 10, 20, 40, 80, 160, ... before the cap; default cap 30 gives 5, 10, 20, 30, 30, ...). While the
-  AP is up the wait is always `RESCAN_MAX_S` (a scan takes the radio off the AP's channel). The wait ends early on
-  a list change, scan request or reconnect request. r resets only on a connection.
+- **Backoff** after a round with no connection: wait `min(5·2^r, RESCAN_MAX_S)` s (`wifilist_backoff_s`), r = failed
+  rounds since the last connection (5, 10, 20, 40, 80, 160, ... before the cap; default cap 30 gives 5, 10, 20, 30,
+  30, ...). While the AP is up the wait is always `RESCAN_MAX_S` (a scan takes the radio off the AP's channel). The
+  wait ends early on a list change, scan request or reconnect request. r resets only on a connection.
 - **Connected:** stays until a disconnect event (fail with `lost = true`, then an immediate new round), a
   reconnect request, or a list change after which no entry has the same SSID **and** password. It never roams to
   a higher priority network on its own; a priority edit alone does not drop the connection.
@@ -266,8 +269,8 @@ No authentication: protect the server if it needs it.
 
 ### GET <base>/wifi: status JSON
 
-Key order is fixed. Strings escape `"` `\` and bytes < 0x20 (`\u00XX`); well-formed UTF-8 passes through; each byte that is
-not (an SSID is any 32 bytes) becomes `\ufffd`. MACs are `aa:bb:cc:dd:ee:ff`, lowercase.
+Key order is fixed. Strings escape `"` `\` and bytes < 0x20 (`\u00XX`); well-formed UTF-8 passes through; each byte
+that is not (an SSID is any 32 bytes) becomes `\ufffd`. MACs are `aa:bb:cc:dd:ee:ff`, lowercase.
 
 | Key | Type | Meaning |
 |---|---|---|
@@ -325,7 +328,9 @@ Portable code only; built standalone or by `host-tests` (`ctest -R wifilist`).
 | `edges` | rank with `max` below the count and a list longer than `WIFILIST_MAX`, the strongest protected twin, hidden networks seen and unseen, an unnamed AP; check: each refusal's text, no error buffer, 63 characters, 64 hex in either case; merge: too many edits, a name the old list lacks, `was`, a stored password that no longer passes |
 | `json` | status JSON head and key order, `password_set` and omitted `rssi` (-128), quote escaping, `why` text, too-small buffer returns 0 and empties it; export exact string, `hidden` only when true, no passwords; reason 0 and 201 |
 
-Not covered by host tests: the station task, the AP, the NVS calls, HTTP, cJSON parsing and the page (they need the radio and ESP-IDF); `wifilist_core.c` holds everything that can be decided without them and is covered line for line.
+Not covered by host tests: the station task, the AP, the NVS calls, HTTP, cJSON parsing and the page (they need the
+radio and ESP-IDF); `wifilist_core.c` holds everything that can be decided without them and is covered line for
+line.
 
 ## Provenance
 

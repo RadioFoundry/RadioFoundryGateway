@@ -20,7 +20,7 @@ if(CONFIG_RDOF_SDR)
         list(APPEND srcs bench_api.c bench_radio.c bench_tx.c bench_line.c)
     endif()
     if(CONFIG_RDOF_SDR_LR2021)
-        list(APPEND srcs fe_lr2021.c edge_time.c)
+        list(APPEND srcs fe_lr2021.c tx_seam_core.c edge_time.c)
         list(APPEND sdr_dsp fe_lr2021.c) # its read() converts and resamples every sample
     endif()
 endif()

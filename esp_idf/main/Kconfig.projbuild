@@ -464,6 +464,15 @@ menu "RadioFoundry Gateway"
             default 27
             help
                 The GC1109 saturates near here on the W12's 3.3 V supply (R3.44).
+        config RDOF_LR2021_SEAM_AT
+            int "A long DMR key-up's seams: samples after the slot's start"
+            range 0 1439
+            default 1388
+            help
+                Where in each 30 ms slot (1440 samples at 48 kS/s) the seams between a
+                long key-up's runs fall (lr2021-iq.md R3.49): the first of the about 8
+                samples a seam skips. 1388 is the last 5 symbols of the burst before the
+                CACH, where a key-up from its key-on puts them. The sync is 660-899.
         comment "RF switch DIOs: high in the modes each mask names (1 standby, 2 RX LF, 4 TX LF; 0xFF: unused)"
         comment "The GC1109 (datasheet table 4): CSD 0 off; CSD 1 CTX 0 receive (LNA); CTX 1 CPS 0 transmit bypass; CTX 1 CPS 1 transmit (PA)"
         config RDOF_LR2021_DIO9_PA

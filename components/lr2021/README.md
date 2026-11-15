@@ -13,6 +13,21 @@ The same code is SoapyLR20xx's `lib/` (github.com/RadioFoundry/SoapyLR20xx), ren
 README, `CMakeLists.txt` and the gateway's own (the patch RAM files, `pram/`, `lr2021_lora_extra.*`) is the same
 there but for the rename, so a change on either side carries over (that project's `tools/upstream/`).
 
+```c
+lr2021_esp_cfg_t pins = {.spi_host = SPI2_HOST, .sck = 9, .mosi = 10, .miso = 11, .nss = 8, .busy = 13,
+                         .nreset = 12, .irq = 7, .pa_en = 4, .clock_hz = 16000000};   /* the W12's */
+lr2021_config_t cfg = {0};
+lr2021_t *dev;
+lr2021_hal_esp_open(&pins, &cfg.hal);
+lr2021_open(&cfg, &dev);                      /* resets the chip */
+
+static lr2021_iq_t iq;                        /* a raw I/Q session: cs8 at 384 kS/s */
+lr2021_iq_init(&iq, dev, &lr2021_board_w12, false);
+lr2021_iq_start(&iq, &(lr2021_iq_cfg_t){.rate = 384000, .mode = LR2021_IQ_CONV8, .center_hz = 438500000, .gain = 13});
+for (;;)
+    lr2021_iq_poll(&iq, sink, ctx, 100);      /* on a task of its own */
+```
+
 References: Semtech LR2021/LR2022/LR2012 datasheet, DS.LR20xx Rev. 2.2 (29 Jul 2026), cited below as "DS" with
 its section or table. The raw I/Q commands are undocumented by Semtech; their facts are in
 [docs/spec/lr2021-iq.md](../../docs/spec/lr2021-iq.md) (cited as "IQ R*n*"), which this README does not repeat.
@@ -66,7 +81,7 @@ encodings, no I/O; links `m`), `lr2021_driver` (the driver, no port or HAL: the 
 | BUSY timeout | 200 ms (`src/lr2021.c:BUSY_TIMEOUT_US` = 200000) → `ESP_ERR_TIMEOUT` | |
 | BUSY poll | 1 µs busy-wait for the first 50 µs, 5 µs to 2 ms, then 1 RTOS tick per poll (most commands hold BUSY a few µs: 5 µs steps added half of that again to every frame, IQ R2.34) | `wait_busy` |
 | NRESET | GPIO output, high when idle | `lr2021_hal_esp_open` |
-| Largest frame | commands and reads 260 bytes (`src/lr2021.c:MAX_FRAME`); FIFO transfers 1026 bytes (`MAX_FIFO_FRAME`: a 1 KB FIFO transfer, the extended FIFO, plus 2 status bytes). The bus's `max_transfer_sz` is 1026 | |
+| Largest frame | commands and reads 260 bytes (`src/lr2021.c:MAX_FRAME`); FIFO transfers 1026 bytes (`MAX_FIFO_FRAME`: a 1 KB FIFO transfer, the extended FIFO, plus 2 status bytes). The bus's `max_transfer_sz` is 1028, that rounded up to 4 | `hal/esp_idf.c:MAX_FIFO_FRAME` |
 | Transfer | full duplex, one frame per NSS low; frames shorter than 32 bytes (`DMA_MIN`) by `spi_device_polling_transmit`, longer ones by `spi_device_transmit` (the task sleeps while the DMA moves them) | `hal/esp_idf.c:xfer` |
 | Received bytes | only what the call needs, rounded up to 4 within the frame; none (`rx_buffer` NULL) when only the write matters (see DMA alignment) | `xfer_rx` |
 | IRQ pin | `irq` ≥ 0: a GPIO interrupt on the rising edge; `lr2021_wait_irq` sleeps on it, `lr2021_irq_pin` reads its level | `hal/esp_idf.c:wait_irq` |
@@ -87,8 +102,9 @@ internal DMA bounce buffer for that transaction, and on IDF 5.5 a failed allocat
 - A FIFO read of n bytes is an n + 2 byte frame: keep n + 2 a multiple of 4 (n − 2 for n a multiple of 4) and there
   is no bounce.
 - What can't be rounded (the IRQ word, register reads, a FIFO read of another length) still bounces. Each one counts
-  in `lr2021_hal_esp_bounces`, and while the largest internal DMA block is under the transfer plus 64 bytes the transfer is
-  refused (`ESP_ERR_NO_MEM`, "no internal DMA memory for an unaligned transfer") instead of letting the IDF fail.
+  in `lr2021_hal_esp_bounces`, and while the largest internal DMA block is under the transfer plus 64 bytes the
+  transfer is refused (`ESP_ERR_NO_MEM`, "no internal DMA memory for an unaligned transfer") instead of letting the
+  IDF fail.
 
 ### Frames
 
@@ -129,9 +145,9 @@ ms, then wait for BUSY low (boot and calibration), 200 ms at most.
 ## API: driver (`include/lr2021.h`)
 
 Thread safety: none. A handle owns one TX and one RX buffer; serialize all calls on a handle. Several handles may
-share a bus (the ESP-IDF HAL's `bus_initialized`), and ESP-IDF serializes the bus between devices. Every failure sets the text
-`lr2021_last_error` returns and counts in `lr2021_failures` (except `ESP_ERR_INVALID_SIZE` and `lr2021_open`'s
-own errors).
+share a bus (the ESP-IDF HAL's `bus_initialized`), and ESP-IDF serializes the bus between devices. Every failure
+sets the text `lr2021_last_error` returns and counts in `lr2021_failures` (except `ESP_ERR_INVALID_SIZE` and
+`lr2021_open`'s own errors).
 
 ```c
 typedef struct {
@@ -431,13 +447,15 @@ and how it reads the answers. The ESP-IDF HAL itself (`hal/esp_idf.c`) is checke
 
 | Group | What it pins |
 |---|---|
-| `opening` | Pin setup (BUSY in, NRESET out), the bus config (pins, 1026-byte transfers, DMA auto), the device (mode 0, clock, NSS, pre-transaction), the NRESET sequence, clamping of the clock to 16 MHz, a shared bus not initialized and not freed, `close` and `close(NULL)` |
-| `open_failures` | No memory; bus init, add device and reset failing: the error passes on, the handle is freed, the device removed and the bus freed only if this call initialized it |
-| `busy_handshake` | Waiting for BUSY in 5 µs steps for 2 ms and a tick at a time after; the 200 ms timeout, its text and count; every call waits first |
+| `opening` | The NRESET sequence (low at least 1 ms, then high), no errors after open; `close` closes the HAL and holds the chip in reset; `close(NULL)` |
+| `open_failures` | A HAL without BUSY refused with the HAL closed; BUSY stuck after reset: the timeout after 200 ms, the HAL closed |
+| `busy_handshake` | Waiting for BUSY in 1 µs steps, then 5 µs steps to 2 ms, then a tick at a time; the 200 ms timeout, its text and count; every call waits first |
 | `status_and_write` | The GetStatus frame and its decoding; `lr2021_irq`; a write is the frame, then GetStatus; FAIL and PERR give `ESP_FAIL` with the mode in the text and a count; DATA after a write is fine; SPI failure at each transfer; size limits (260 is the largest frame, 261 is `ESP_ERR_INVALID_SIZE` and not a failure) |
 | `reading` | The two frames of a read; DATA and OK; FAIL, PERR and a reserved status give `ESP_FAIL` with the output untouched; SPI failure at each transfer; the 258-byte answer; size limits |
-| `bounces` | The bytes each frame receives (GetStatus 4 of 6, commands and writes none, a 4-multiple FIFO frame all of it); bounces counted for the IRQ word and an odd FIFO read, and refused with `ESP_ERR_NO_MEM` while the largest DMA block is short; the caller's `cfg.mem` used and not freed by `close`; a misaligned one refused |
-| `fifo_and_accessors` | Direct FIFO read and write frames and sizes; version, errors, FIFO levels and flags (clearing and peeking), `read32`: opcode out, big-endian answer back, 0 on error |
+| `fifo_and_accessors` | Direct FIFO read and write frames and sizes (1 KB in one 1026-byte frame); version, errors, FIFO levels and flags (clearing and peeking), `read32`: opcode out, big-endian answer back, 0 on error |
+| `irq_pin` | `lr2021_wait_irq` on a high pin at once, a low one timing out, no pin |
+| `clock_change` | `lr2021_set_clock`: out of range refused, a new clock and input delay passed to the HAL, a HAL with a fixed clock `ESP_ERR_NOT_SUPPORTED` |
+| `test_alignment` | The bytes each frame receives (GetStatus 4 of 6, commands, writes and TX FIFO writes none, a read's answer and a 4-multiple FIFO read all of it, the IRQ word 6); the handle size; the caller's `cfg.mem` used, cleared, and refused when not aligned to 4. The bounce count and the `ESP_ERR_NO_MEM` refusal are the ESP-IDF HAL's, checked on the board |
 
 ### Transmit (`test/test_lr2021_tx.c`, `test/test_lr2021_tx_stream.c`)
 
@@ -460,11 +478,12 @@ cmake -S components/lr2021 -B build/lr2021 && cmake --build build/lr2021 && ctes
 
 The driver, the raw paths and `lr2021_cmd.*` are written from the DS and measurements on the chip. The documented
 commands (`lr2021_radio.*`, `lr2021_lora.*`, `lr2021_fsk.*`, `lr2021_proto.*`) are ported from Semtech's USP driver
-(Clear BSD; the notice is in each file). Two LoRa opcodes and the ranging delay table in `lr2021_lora_extra.*`
-are from TheClams/lr2021 (MIT; its notice in those files). The patch image in `src/lr2021_patch_image.c` is Semtech's, unchanged, from
-the same USP commit (Clear BSD; the notice in the file). Both are in `PROVENANCE.md` and `LICENSES/`. The raw I/Q commands
-(`lr2021_cmd_raw_*`, `lr2021_raw_*`, the patch marker) are facts learned from the documentation of
-SAMS0N1TE/lr2021-sdr (GPL-3.0), recorded in `docs/spec/lr2021-iq.md`; no code taken (`PROVENANCE.md`).
+(Clear BSD; the notice is in each file). Two LoRa opcodes and the ranging delay table in `lr2021_lora_extra.*` are
+from TheClams/lr2021 (MIT; its notice in those files). The patch image in `src/lr2021_patch_image.c` is Semtech's,
+unchanged, from the same USP commit (Clear BSD; the notice in the file). Both are in `PROVENANCE.md` and
+`LICENSES/`. The raw I/Q commands (`lr2021_cmd_raw_*`, `lr2021_raw_*`, the patch marker) are facts learned from the
+documentation of SAMS0N1TE/lr2021-sdr (GPL-3.0), recorded in `docs/spec/lr2021-iq.md`; no code taken
+(`PROVENANCE.md`).
 
 ## Not yet
 
