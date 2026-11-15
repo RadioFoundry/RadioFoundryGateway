@@ -1216,3 +1216,58 @@ fn composite_grant_owed_while_lent() {
     // the owed grant, not the first Late_Entry repeat (grant_every after the open, long past)
     assert!(air.until(300, &mut log.f(), |a| a.ms[3].state() == t3ms::PAYLOAD && a.ms[3].status().ch == 1), "D joins");
 }
+
+// ── lost on the air (the air's lose_out / lose_in) ──
+
+/// An individual call (OACSU) from A to B with `lose_out` / `lose_in` on the air, run for `ms`: (A's call reached
+/// payload, A's calls done, A's calls failed, the C_AHOYs B heard, the site's channels all idle at the end).
+fn lossy_call(lose_out: (u8, u32), lose_in: (u8, u32), ms_run: i64) -> (bool, u32, u32, u32, bool) {
+    let mut s = site_with(|_| {});
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG], &[1]), ms(1002, &[TG], &[1])], T0);
+    register_all(&mut air, &mut log);
+    air.lose_out = lose_out;
+    air.lose_in = lose_in;
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_PRIVATE, 1002, 2000, 0, now);
+    let ok = air.until(8000, &mut log.f(), all_payload);
+    air.run(ms_run, &mut log.f());
+    assert_eq!(air.lose_out.1 + air.lose_in.1, 0, "the losses happened");
+    let (a, b) = (air.ms[0].status(), air.ms[1].status());
+    let idle = air.site.status().ch.iter().all(|c| matches!(c.r#use, USE_OFF | USE_IDLE | USE_TSCC));
+    (ok, a.calls_done, a.calls_failed, b.ahoys, idle)
+}
+
+/// One CSBK lost each way: the site's repeats and the MS's retries carry the call (6.6.3.1: C_AHOY repeated;
+/// 6.2.1: random access retried; the grant goes twice).
+#[test]
+fn lost_csbks_recovered() {
+    assert_eq!(lossy_call((OP_AHOY, 1), (0, 0), 6000), (true, 1, 0, 1, true), "B's first C_AHOY lost: asked again");
+    assert_eq!(lossy_call((0, 0), (OP_ACKU, 1), 6000), (true, 1, 0, 2, true), "B's C_ACKU lost: asked again");
+    assert_eq!(lossy_call((OP_PV_GRANT, 1), (0, 0), 6000), (true, 1, 0, 1, true), "one grant lost: the second");
+    assert_eq!(lossy_call((0, 0), (OP_RAND, 1), 6000), (true, 1, 0, 1, true), "A's C_RAND lost: A tries again");
+}
+
+/// Too much lost: the call fails cleanly. Every C_AHOY lost: MSaway to A, no channel opened. Both grants lost: the
+/// channel opened clears unused (start grace, hang), and A gives up when its wait runs out; nothing is left held.
+#[test]
+fn lost_csbks_fail_cleanly() {
+    assert_eq!(lossy_call((OP_AHOY, 3), (0, 0), 6000), (false, 0, 1, 0, true), "every C_AHOY lost");
+    assert_eq!(lossy_call((OP_PV_GRANT, 2), (0, 0), 35_000), (false, 0, 1, 1, true), "both grants lost");
+}
+
+/// A registration's C_ACKD lost: the MS asks again and is answered again; one record.
+#[test]
+fn lost_registration_answer() {
+    let mut s = site_with(|_| {});
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG], &[1])], T0);
+    air.lose_out = (OP_ACKD, 1);
+    register_all(&mut air, &mut log);
+    assert_eq!(air.lose_out.1, 0, "the first answer was lost");
+    assert!(air.site.record(1001).is_some());
+    assert_eq!(air.site.status().regs, 1, "one record");
+    // the site saw two registrations (the second a repeat, answered again)
+    let regs = log.of(EV_ACTIVITY).into_iter().filter(|e| e.kind == ACT_REG).map(|e| e.op).collect::<Vec<_>>();
+    assert_eq!(regs, [REG_REGISTER, REG_REGISTER]);
+}
