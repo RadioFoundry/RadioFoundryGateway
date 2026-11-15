@@ -31,9 +31,10 @@
  *   rdofradio [DEVICE] --allow-tx --mmdvm PORT [--baud N] [--rf-level N] [--rx-offset-hz HZ] [--tx-offset-hz HZ]
  *             [--rx-level PCT] [--tx-level PCT] --rx MHZ [--tx MHZ] [--duplex full|half] [--cc CC] | --config FILE [...]
  *
- * --sim-sdr in place of DEVICE, receive only with --mmdvm, --split-tx or --listen: a receiver of noise, for tests
- * with no RF; --sim-iq FILE:MHZ, of a cu8 recording at -r centered on MHZ, looped. With --fpga-chz, a simulated
- * FPGA channelizer block too (rdofradio_sim.c): its registers and frames, the board's path with no Pluto.
+ * --sim-sdr in place of DEVICE: a device for tests with no RF (rdofradio_sim.c). It hears noise, or --sim-iq
+ * FILE:MHZ, a cu8 recording at -r centered on MHZ, looped; it transmits at the clock's pace, into --sim-tx FILE (cf32)
+ * if given. With --fpga-chz and --fpga-duc, a simulated FPGA channelizer and TX interpolator too: their registers
+ * and the channelizer's frames, the board's path with no Pluto.
  *
  * DEVICE is --soapy ARGS (SoapySDR; -r defaults to 2.4 MS/s) or --iio URI (an AD9361 through libiio: "local:" on a
  * PlutoSDR, "ip:192.168.2.1" from a host; -r defaults to 768 kS/s, which the chip's own FIR makes with
@@ -569,7 +570,7 @@ static void usage(void)
             "                 [--sim-ext PATH [--sim-fast] [--sim-ext-loss P] [--sim-ext-err P]]\n"
             "                 [--state-dir DIR] [--seconds S] [-v] (a trunked site's air simulated, rdofradio_t3.h)\n"
             "--soapy takes --setting KEY=VALUE, repeated: the driver's own (an RTL-SDR's biastee=true)\n"
-            "DEVICE: %s (or, receive only, --sim-sdr [--sim-iq FILE:MHZ]: for tests with no RF)\n",
+            "DEVICE: %s (or --sim-sdr [--sim-iq FILE:MHZ] [--sim-tx FILE]: for tests with no RF)\n",
 #if defined(RDOF_SOAPY) && defined(RDOF_IIO)
             "--soapy ARGS | --iio URI | --file RX[,TX]"
 #elif defined(RDOF_SOAPY)
@@ -4932,12 +4933,19 @@ static void fx_stop(void)
     FX.started = false;
 }
 
-/* the block's frames at the run's end: gaps in their numbers, the zeros put in for them, STATUS's overflow bits */
+/* the block's frames at the run's end: gaps in their numbers, the zeros put in for them, STATUS's overflow bits;
+   the TX interpolator's STATUS (UNDERFLOW: its DMA ran dry at some point since it was on) */
 static void fx_report(void)
 {
     if (FX.on)
         fprintf(stderr, "--fpga-chz: %lld channel frames lost (%lld made up with zeros), %ld overflows (STATUS), "
                         "%llu words of junk\n", FX.lost, FX.made_up, FX.ovf, (unsigned long long)FX.prx.junk);
+    if (DX.started) {
+        const uint32_t st = rdof_chzhw_duc_status(&DX.d);
+        fprintf(stderr, "--fpga-duc: STATUS 0x%x (%s, %s)\n", (unsigned)st,
+                st & RDOF_CHZHW_DUC_STATUS_ON ? "on" : "off",
+                st & RDOF_CHZHW_DUC_STATUS_UNDERFLOW ? "it ran dry" : "never ran dry");
+    }
 }
 
 /* off: the stock path to the DAC again (at exit, whatever the way) */
@@ -4954,9 +4962,11 @@ static void dx_stop(void)
  * not taken. 0, or -1 with why in err. */
 static int dx_probe(char *err, size_t cap)
 {
-    if (!(DX.regs = map_regs(DX.addr, RDOF_CHZHW_DUC_SPAN, err, cap)))
+    rdof_chzhw_io_t io = {fx_rd, fx_wr, NULL};
+    if (FX.sim)
+        rdofradio_sim_duc(&io); /* --sim-sdr's */
+    else if (!(io.ctx = DX.regs = map_regs(DX.addr, RDOF_CHZHW_DUC_SPAN, err, cap)))
         return -1;
-    const rdof_chzhw_io_t io = {fx_rd, fx_wr, DX.regs};
     char e[160];
     if (rdof_chzhw_duc_probe(&DX.d, &io, e, sizeof e)) {
         snprintf(err, cap, "no TX interpolator at 0x%08lx: %s", DX.addr, e);
@@ -6659,6 +6669,7 @@ int main(int argc, char **argv)
     const char *soapy = NULL, *iio = NULL, *file_dev = NULL, *stream_args = "", *fft = NULL, *split_tx = NULL, *mmdvm = NULL;
     bool sim_sdr = false; /* --sim-sdr: rdofradio_sim.c's receiver, for no-RF tests */
     bool sim_iq = false;  /* --sim-iq: what it hears */
+    bool sim_tx = false;  /* --sim-tx: where what it sends goes */
     double mm_rx_off = 0, mm_tx_off = 0, mm_rx_level = NAN, mm_tx_level = NAN;
     int mm_flags = 0;
     int baud = 115200, power_cap = 0, tx_flags = 0;
@@ -6685,6 +6696,14 @@ int main(int argc, char **argv)
                 return 2;
             }
             sim_iq = true;
+        } else if (!strcmp(a, "--sim-tx")) {
+            NEXT();
+            char e[160];
+            if (rdofradio_sim_tx(v, e, sizeof e)) {
+                fprintf(stderr, "%s\n", e);
+                return 2;
+            }
+            sim_tx = true;
         } else if (!strcmp(a, "--soapy")) {
             NEXT();
             soapy = v;
@@ -7201,8 +7220,8 @@ int main(int argc, char **argv)
             fprintf(stderr, "fpga: %s\n", msg);
         }
     }
-    if (sim_iq && !sim_sdr) {
-        fprintf(stderr, "--sim-iq: what --sim-sdr hears\n");
+    if ((sim_iq || sim_tx) && !sim_sdr) {
+        fprintf(stderr, "--sim-iq, --sim-tx: what --sim-sdr hears, sends\n");
         return 2;
     }
     FX.sim = sim_sdr;
@@ -7220,16 +7239,13 @@ int main(int argc, char **argv)
                 FX.addr, FX.h.channels, FX.h.max_decim, FX.h.max_taps, FX.h.max_cic);
     }
     if (DX.on && !iio && !sim_sdr) {
-        fprintf(stderr, "--fpga-duc: the FPGA's TX interpolator is a PlutoSDR's transmitter's: with --iio\n");
+        fprintf(stderr,
+                "--fpga-duc: the FPGA's TX interpolator is a PlutoSDR's transmitter's: with --iio (or --sim-sdr's)\n");
         return 2;
     }
     if (DX.on && (split_tx || mmdvm)) {
         fprintf(stderr, "--fpga-duc: %s transmits, not the SDR: not used\n", split_tx ? "the --split-tx radio" : "the modem");
         DX.on = false;
-    }
-    if (DX.on && sim_sdr) {
-        fprintf(stderr, "--fpga-duc: --sim-sdr only receives: with --split-tx or --mmdvm\n");
-        return 2;
     }
     if (DX.on) {
         char why[256];

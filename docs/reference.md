@@ -99,6 +99,7 @@ What runs:
 | `rdofradio_e2e_mqttnet` | two boxes on `fakemodem`s joined by the MQTT network through a local broker (`host-tests/e2e_mqttnet.sh`) |
 | `mmdvm_bench_tests` | the whole bench line on `fakemodem` (`host-tests/test_mmdvm_bench.py`) |
 | `fpga_usb_tx_e2e` | the Pluto's FPGA channelizer with a USB radio transmitting, no Pluto (`host-tests/test_fpga_usb_tx.py`): `--sim-sdr`'s simulated block hears `e2e_288k.cu8`; `--listen`, a `--split-tx` repeater, two split repeaters from a `--config` (each radio repeats its own input's call), `--mmdvm` with the bench's taps and a raw capture, all with `--fpga-chz --fpga-duc` |
+| `rdofradio_e2e_t3_composite_sim` | a composite TSCC on the simulated Pluto (`--sim-sdr --fpga-chz --fpga-duc`, `host-tests/e2e_t3_composite_sim.py`): the lend in the log, `trunk.composite.lends` in the MQTT status (a broker on this host when there is one), and in what it sent (`rdofsdr`) both slots on the grid, voice on both while lent, P_SYS_Parms with Payload Channel Type 1 for the lend and C_SYS_Parms around it |
 | `rdof_sdr_tests`, `rdof_sdr_tests_min`, `rdof_sdr_edge_tests` | the SDR receive path against golden vectors; the corners they don't reach ([SDR tests](#sdr-tests)) |
 | `rdof_mod_tests`, `sdrmodem_tests`, `rdof_loopback_edge_tests`, `ipgw_sdr_tests` | the modulator, the SDR modem, its loopbacks, the IP gateway on the SDR modem |
 | `rdof_chzfx_tests`, `rdof_chzhw_tests`, `rdof_chzrx_tests`, `rdof_plutofpga_tests` | the PlutoSDR FPGA channelizer's model, its driver, the receiver on its frames, the board and bitstream checks |
@@ -1112,6 +1113,10 @@ Libraries used when found (the configure step names each):
 
 A receiver: a cu8 recording (cf32 when the name ends in `.cf32`, as rdofradio's `--file` device writes what it
 transmits), or with SoapySDR a live device, in; bursts and tracker JSON out; `--bench` (cu8) times each stage.
+`--bursts` prints a line a burst, `<id> burst <pos> <dt> <n> <slot> <family> <cc> <errors> <power> <offset>
+<deviation> <hex> <cach>` (pos in the channel's 48 kS/s samples; cach a BS burst's CACH in 6 hex digits, else `-`;
+the lines can come out of order), and a line for each CACH short LC its four CACHs make: `<id> slc <pos> <slc>`,
+the 28 bits in 7 hex digits, SLCO first (2 C_SYS_Parms, 3 P_SYS_Parms).
 
 ```sh
 rdofsdr --soapy driver=rtlsdr -r 1536000 --ch C1:438.4875 ... [--gain DB] [--setting biastee=true] [--seconds S]
@@ -1353,7 +1358,16 @@ is read by a thread.
   HLS block answers them, and the DMA's frames from the bit-exact model (`chzfx`), so the board's whole path (probe,
   start, the parser, the AFC's steps, a raw capture's restart) runs with no Pluto. A reader over 0.5 s late loses
   frames as the DMA does (STATUS's `DMA_OVF`). At the end, `--fpga-chz: N channel frames lost (M made up with
-  zeros), K overflows (STATUS), J words of junk`.
+  zeros), K overflows (STATUS), J words of junk`. `fpga_usb_tx_e2e` (`host-tests/test_fpga_usb_tx.py`) runs the
+  Pluto's flags with a USB radio transmitting: `--split-tx`, two split repeaters from a `--config`, `--mmdvm`.
+  It transmits too: the stream is paced by the clock, at most 50 ms ahead of it as a device's buffers hold it, and
+  `--sim-tx FILE` keeps it (cf32 at the stream's rate; the clock starts at the first write). A writer behind the
+  clock leaves the stream dry: zeros in the file, and `sim: the transmit stream ran dry at T s: D ms of zeros`
+  (each one with `--sim-tx`, else the first 5; the total at the end). With `--fpga-duc` it's the TX interpolator's
+  registers too (RTX1, a PlutoSDR's CAPS: R 17 to 4095), the stream at rate / R, a dry stream setting STATUS's
+  `UNDERFLOW`; at the end, `--fpga-duc: STATUS 0x.. (on, it ran dry | never ran dry)`.
+  `rdofradio_e2e_t3_composite_sim` (`host-tests/e2e_t3_composite_sim.py`) runs a composite TSCC this way and
+  decodes what it sent with `rdofsdr`.
 
 #### Receive only
 

@@ -14,6 +14,12 @@
  * (rdof/sdr/chzfx.h). Before ENABLE the DMA holds the stock design's samples, one a word. A reader late by more
  * than SIM_LATE_S loses samples, as the DMA does (STATUS's DMA_OVF, gaps in the frames' numbers). For the FPGA
  * path's tests: rdofradio's probe, start, parser, AFC and raw capture, with no Pluto.
+ *
+ * It transmits too (not beside a modem or a split's radio): the stream is paced by the wall clock, at most
+ * SIM_TX_AHEAD_S ahead of it as a device's buffers hold it, and --sim-tx FILE keeps it (cf32 at the stream's rate,
+ * zeros where nothing was written in time). With --fpga-duc, rdofradio_sim_duc is the TX interpolator's registers
+ * (RTX1, a PlutoSDR's CAPS) and the stream is rate / R, as the board's DMA takes it; a writer behind the clock
+ * while it's on sets STATUS's UNDERFLOW, as the block does.
  */
 #define _POSIX_C_SOURCE 200809L
 #include <math.h>
@@ -37,6 +43,8 @@
 #define SIM_MAX_CIC 64
 #define SIM_TAPS 1024
 #define SIM_HIST 1024
+#define SIM_TX_AHEAD_S 0.05 /* the transmit buffers: a writer this far ahead waits */
+#define SIM_DUC_CAPS (32u << 24 | 24u << 16 | 12u << 8 | 3u) /* the Pluto's: order 3, R to 4095, R 17 and up */
 
 /* ── the block ─────────── */
 
@@ -125,10 +133,57 @@ void rdofradio_sim_chz(rdof_chzhw_io_t *io)
     io->rd = b_rd, io->wr = b_wr, io->ctx = NULL;
 }
 
+/* ── the TX interpolator ─────────── */
+
+static struct {
+    bool made;
+    uint32_t reg[RDOF_CHZHW_DUC_SPAN / 4];
+    uint32_t status; /* UNDERFLOW, since on */
+} X;
+
+static uint32_t x_rd(void *ctx, uint32_t off)
+{
+    (void)ctx;
+    off &= RDOF_CHZHW_DUC_SPAN - 4;
+    if (off == RDOF_CHZHW_DUC_ID)
+        return RDOF_CHZHW_DUC_ID_RTX1;
+    if (off == RDOF_CHZHW_DUC_CAPS)
+        return SIM_DUC_CAPS;
+    if (off == RDOF_CHZHW_DUC_STATUS)
+        return (X.reg[RDOF_CHZHW_DUC_CTRL / 4] & 1u ? RDOF_CHZHW_DUC_STATUS_ON : 0u) | X.status;
+    return X.reg[off / 4];
+}
+
+static void x_wr(void *ctx, uint32_t off, uint32_t v)
+{
+    (void)ctx;
+    off &= RDOF_CHZHW_DUC_SPAN - 4;
+    if (off == RDOF_CHZHW_DUC_CTRL && (v & 1u) && !(X.reg[off / 4] & 1u))
+        X.status = 0; /* on: the flags anew */
+    if (off != RDOF_CHZHW_DUC_ID && off != RDOF_CHZHW_DUC_CAPS && off != RDOF_CHZHW_DUC_STATUS)
+        X.reg[off / 4] = v;
+}
+
+void rdofradio_sim_duc(rdof_chzhw_io_t *io)
+{
+    X.made = true;
+    io->rd = x_rd, io->wr = x_wr, io->ctx = NULL;
+}
+
 /* ── the source ─────────── */
 
-static char src_path[512];
+static char src_path[512], tx_path[512];
 static double src_hz;
+
+int rdofradio_sim_tx(const char *path, char *err, size_t cap)
+{
+    if (!*path || strlen(path) >= sizeof tx_path) {
+        snprintf(err, cap, "--sim-tx FILE (what the simulated SDR transmits, cf32)");
+        return -1;
+    }
+    snprintf(tx_path, sizeof tx_path, "%s", path);
+    return 0;
+}
 
 int rdofradio_sim_source(const char *spec, char *err, size_t cap)
 {
@@ -161,6 +216,14 @@ typedef struct {
     rdof_iq16_t *in, *out;
     uint64_t *w;
     int nbuf, nw_cap;
+    /* the transmit stream: d.tx_rate samples a second since t0 */
+    bool tx;
+    FILE *txf;          /* --sim-tx */
+    uint64_t tx_pos;    /* samples written, zeros for the gaps included */
+    double tx_t0;       /* elapsed() its sample 0 is due at: the first write's (the stream starts with it) */
+    bool tx_on;
+    long dry, dry_samples; /* the times the stream ran dry, the zeros sent for them */
+    double tx_gain;
 } sim_t;
 
 /* n samples of what the antenna has */
@@ -210,6 +273,7 @@ static int s_start(rdofradio_dev_t *d)
     sim_t *s = (sim_t *)d;
     clock_gettime(CLOCK_MONOTONIC, &s->t0);
     s->written = 0;
+    s->tx_pos = 0, s->tx_on = false;
     return 0;
 }
 
@@ -218,6 +282,84 @@ static double elapsed(const sim_t *s)
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     return (double)(now.tv_sec - s->t0.tv_sec) + 1e-9 * (double)(now.tv_nsec - s->t0.tv_nsec);
+}
+
+static void nap(double w)
+{
+    if (w > 0) {
+        const struct timespec ts = {(time_t)w, (long)((w - (double)(time_t)w) * 1e9)};
+        nanosleep(&ts, NULL);
+    }
+}
+
+/* the transmit samples due by now */
+static uint64_t tx_due(const sim_t *s)
+{
+    const double t = elapsed(s) - s->tx_t0;
+    return t > 0 ? (uint64_t)(t * s->d.tx_rate) : 0;
+}
+
+static void tx_zeros(sim_t *s, uint64_t n)
+{
+    static const rdof_cf_t zero[1024];
+    for (; n; ) {
+        const size_t k = n < 1024 ? (size_t)n : 1024;
+        if (s->txf)
+            fwrite(zero, sizeof *zero, k, s->txf);
+        s->tx_pos += k, n -= k;
+    }
+}
+
+static int s_write(rdofradio_dev_t *d, const rdof_cf_t *x, int n, long timeout_us)
+{
+    (void)timeout_us;
+    sim_t *s = (sim_t *)d;
+    const bool first = !s->tx_on; /* the clock starts at it: not late */
+    if (first)
+        s->tx_on = true, s->tx_t0 = elapsed(s);
+    const uint64_t ahead = (uint64_t)(SIM_TX_AHEAD_S * d->tx_rate);
+    uint64_t due;
+    while (s->tx_pos > (due = tx_due(s)) + ahead)
+        nap((double)(s->tx_pos - due - ahead) / d->tx_rate);
+    if (!first && s->tx_pos < due) { /* the buffers ran dry: the DAC sent zeros meanwhile */
+        if (X.reg[RDOF_CHZHW_DUC_CTRL / 4] & 1u)
+            X.status |= RDOF_CHZHW_DUC_STATUS_UNDERFLOW;
+        if (s->dry++ < 5 || s->txf) /* every one when kept: a test of the file excuses what each one cost */
+            fprintf(stderr, "sim: the transmit stream ran dry at %.3f s: %.1f ms of zeros\n",
+                    (double)s->tx_pos / d->tx_rate, 1e3 * (double)(due - s->tx_pos) / d->tx_rate);
+        s->dry_samples += (long)(due - s->tx_pos);
+        tx_zeros(s, due - s->tx_pos);
+    }
+    if (s->txf)
+        fwrite(x, sizeof *x, (size_t)n, s->txf);
+    s->tx_pos += (uint64_t)n;
+    return n;
+}
+
+static int s_tx_freq(rdofradio_dev_t *d, double hz)
+{
+    (void)d, (void)hz;
+    return 0;
+}
+static int s_tx_gain(rdofradio_dev_t *d, double db)
+{
+    ((sim_t *)d)->tx_gain = db;
+    return 0;
+}
+static void s_stop_tx(rdofradio_dev_t *d)
+{
+    sim_t *s = (sim_t *)d;
+    if (s->txf)
+        fflush(s->txf);
+}
+/* a raw capture's rate change: the transmit buffer anew, its stream from now */
+static int s_tx_restart(rdofradio_dev_t *d)
+{
+    sim_t *s = (sim_t *)d;
+    const uint64_t due = tx_due(s);
+    if (s->tx_pos < due)
+        tx_zeros(s, due - s->tx_pos); /* the file keeps the wall clock */
+    return 0;
 }
 
 /* until sample at is due */
@@ -335,6 +477,11 @@ static int s_raw_untune(rdofradio_dev_t *d)
 static void s_close(rdofradio_dev_t *d)
 {
     sim_t *s = (sim_t *)d;
+    if (s->tx)
+        fprintf(stderr, "sim: the transmit stream ran dry %ld times, %.1f ms of zeros in all\n", s->dry,
+                1e3 * (double)s->dry_samples / d->tx_rate);
+    if (s->txf)
+        fclose(s->txf);
     free(s->iq), free(s->x), free(s->in), free(s->out), free(s->w);
     free(s);
 }
@@ -366,8 +513,12 @@ static rdof_cf_t *load_cu8(const char *path, size_t *n, char *err, size_t cap)
 
 rdofradio_dev_t *rdofradio_sim_open(const rdofradio_dev_setup_t *su, char *err, size_t cap)
 {
-    if (!su->rx_only) {
-        snprintf(err, cap, "--sim-sdr only receives: with --mmdvm, --split-tx or --listen");
+    if (su->tx_interp > 1 && !(X.made && (X.reg[RDOF_CHZHW_DUC_CTRL / 4] & 1u))) {
+        snprintf(err, cap, "--sim-sdr: a transmit stream at rate / %d with no TX interpolator on", su->tx_interp);
+        return NULL;
+    }
+    if (tx_path[0] && su->rx_only) {
+        snprintf(err, cap, "--sim-tx: this run doesn't transmit on the SDR");
         return NULL;
     }
     if (su->words_rate > 0 && !B.made) {
@@ -393,8 +544,23 @@ rdofradio_dev_t *rdofradio_sim_open(const rdofradio_dev_setup_t *su, char *err, 
     s->d.start = s_start;
     s->d.read = s_read;
     s->d.close = s_close;
+    if (!su->rx_only) {
+        s->tx = true;
+        s->d.tx_rate = su->tx_interp > 1 ? su->rate / su->tx_interp : su->rate;
+        s->d.tx_gain_min = 0, s->d.tx_gain_max = 89; /* a PlutoSDR's */
+        s->d.set_tx_freq = s_tx_freq;
+        s->d.set_tx_gain = s_tx_gain;
+        s->d.write = s_write;
+        s->d.stop_tx = s_stop_tx;
+        s->d.tx_restart = s_tx_restart;
+        if (tx_path[0] && !(s->txf = fopen(tx_path, "wb"))) {
+            snprintf(err, cap, "--sim-tx %s: can't write it", tx_path);
+            free(s);
+            return NULL;
+        }
+    }
     if (src_path[0] && !(s->iq = load_cu8(src_path, &s->niq, err, cap))) {
-        free(s);
+        s_close(&s->d);
         return NULL;
     }
     if (su->words_rate > 0) {

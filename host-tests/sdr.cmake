@@ -326,6 +326,18 @@ if(TARGET rdofradio AND TARGET fakemodem AND Python3_Interpreter_FOUND)
     add_test(NAME fpga_usb_tx_e2e COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_fpga_usb_tx.py
              $<TARGET_FILE:rdofradio> $<TARGET_FILE:fakemodem> ${RDOF_SDR_GEN}/sdr-data/e2e_288k.cu8)
     set_tests_properties(fpga_usb_tx_e2e PROPERTIES TIMEOUT 180)
+    # no RF: a composite TSCC on the simulated Pluto (--sim-sdr --fpga-chz --fpga-duc): the lend, and in what it
+    # sent (rdofsdr) both slots on the grid, the short LC's P_SYS_Parms for the lend; the lend count from the MQTT
+    # status through a broker on this host when there is one
+    if(RDOF_TIER3 AND TARGET rdofsdr)
+        set(T3COMP_BROKER "")
+        if(MOSQUITTO_BROKER AND MOSQUITTO_INCLUDE_DIR AND MOSQUITTO_LIBRARY)
+            set(T3COMP_BROKER ${MOSQUITTO_BROKER})
+        endif()
+        add_test(NAME rdofradio_e2e_t3_composite_sim COMMAND ${Python3_EXECUTABLE}
+                 ${CMAKE_CURRENT_SOURCE_DIR}/e2e_t3_composite_sim.py $<TARGET_FILE_DIR:rdofradio> "${T3COMP_BROKER}")
+        set_tests_properties(rdofradio_e2e_t3_composite_sim PROPERTIES TIMEOUT 240)
+    endif()
 endif()
 
 # the Pluto bundle's run.sh: a USB radio's IDs to the generic usb-serial driver on a kernel without cdc_acm

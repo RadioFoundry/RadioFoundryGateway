@@ -96,7 +96,8 @@ rdofradio_dev_t *rdofradio_soapy_open(const char *args, const rdofradio_dev_setu
 rdofradio_dev_t *rdofradio_iio_open(const char *uri, const rdofradio_dev_setup_t *s, char *err, size_t cap);
 /* --file RX[,TX]: a recording in, the transmitted samples out (rdofradio_file.c), for tests without a radio */
 rdofradio_dev_t *rdofradio_file_open(const char *spec, const rdofradio_dev_setup_t *s, char *err, size_t cap);
-/* --sim-sdr: a receiver of noise, or of --sim-iq's recording, for no-RF tests; receive only (rdofradio_sim.c). */
+/* --sim-sdr: a receiver of noise, or of --sim-iq's recording, and a transmitter paced by the clock (--sim-tx keeps
+ * what it sends), for no-RF tests (rdofradio_sim.c). */
 rdofradio_dev_t *rdofradio_sim_open(const rdofradio_dev_setup_t *s, char *err, size_t cap);
 /* --sim-iq FILE:MHZ: what it hears, a cu8 recording at the device's rate centered on MHZ (before the open). 0, or -1
  * with why in err. */
@@ -104,5 +105,7 @@ int rdofradio_sim_source(const char *spec, char *err, size_t cap);
 /* --sim-sdr --fpga-chz: the simulated FPGA channelizer's registers (rdof/sdr/chzhw.h); a device opened after with
  * words_rate hands over its DMA frames. */
 void rdofradio_sim_chz(rdof_chzhw_io_t *io);
+void rdofradio_sim_duc(rdof_chzhw_io_t *io);
+int rdofradio_sim_tx(const char *path, char *err, size_t cap);
 
 #endif
