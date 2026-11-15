@@ -70,7 +70,7 @@ grep "(modem): TS1 aired" "$D/log" | head -1 |
     { echo "FAIL: the per-timeslot detail"; fail=1; }
 # the AT heard before each slot of ours is the one the controller set
 grep -o "as the controller's [0-9]* of [0-9]*" "$D/log" | awk '$4 != $6 || $6 < 100 { bad = 1 } END { exit bad }' ||
-    { echo "FAIL: an AT not the controller's"; fail=1; }
+    { echo "FAIL: an AT not the controller's"; grep "AT busy" "$D/log"; fail=1; }
 [ $fail = 0 ] || { grep "air MS\|tier3\|modem" "$D/log" | head -40; exit 1; }
 
 # The composite TSCC (tier3.md 3.19), as on a day-1 one-carrier site: 1000001's individual call holds TS2, then
@@ -96,6 +96,6 @@ grep -q "sim-hat: 1 key-ups, 0 unkeys, 0 watchdog drops" "$D/log2" || { echo "FA
 grep "carrier 1 (modem): [0-9]* written, .* grids" "$D/log2" | sed 's/.*(modem): //' |
     awk '{ if ($7 + $9 + $11 > 0) { print "FAIL: composite: late " $7 ", early " $9 ", lost " $11; exit 1 } }' || fail=1
 grep -o "as the controller's [0-9]* of [0-9]*" "$D/log2" | awk '$4 != $6 || $6 < 100 { bad = 1 } END { exit bad }' ||
-    { echo "FAIL: composite: an AT not the controller's"; fail=1; }
+    { echo "FAIL: composite: an AT not the controller's"; grep "AT busy" "$D/log2"; fail=1; }
 [ $fail = 0 ] && echo "site on a modem: all passed ($line); composite TSCC passed" ||
     { grep "air MS\|tier3\|composite\|modem" "$D/log2" | head -60; exit 1; }
