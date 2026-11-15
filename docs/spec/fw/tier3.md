@@ -944,7 +944,12 @@ as a hotspot modem, gets a second call at once.
 - The call runs and clears as any other: hang time, call timer, P_MAINT DISCON, then P_CLEAR on the slot (channel 0:
   back to the control channel). Then the TSCC returns ("When the payload call is completed, the channel returns to
   its control channel function", 5.3.2 b)) with a C_ALOHA first. What it had queued before or during the call
-  (grants for other calls, answers) is dropped as stale; MSs ask again.
+  (grants for other calls, answers) is dropped as stale; MSs ask again. Two things aren't: a call opened on the
+  other slot while this one was lent (the queue served, a call from the network) gets its grant then, twice, as at
+  an open (it never aired: an individual or data call has no Late_Entry repeat to carry it); and an availability
+  check owed meanwhile (C_AHOY for a call from the network) waits for the TSCC with its tries kept, instead of using
+  them up unsent and failing the call with MSaway. Tests: `composite_grant_owed_while_lent`,
+  `composite_ahoy_waits_while_lent` (rust t3tests).
 - No Late_Entry grants while the slot is lent: they go on the TSCC (6.6.2.4.1), and an idle MS "loses the control
   channel" meanwhile (5.3.2). A member that misses the grant misses the call (but see the next item for RadioFoundry
   radios); a standard MS follows grants, not a

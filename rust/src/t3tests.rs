@@ -1102,3 +1102,76 @@ fn supplementary_user_data() {
     assert!(run(&mut air, &mut log, 6000, &|a| a.ms[1].state() == t3ms::PAYLOAD));
     assert!(tscc.borrow()[before..].iter().filter_map(|b| Ahoy::decode(&b.1)).all(|a| a.source != SUPLI));
 }
+
+/// A one-carrier composite site (tier3.md 3.19): A's group call on TG 8 holds TS2 for `a_ms`, then B's call to C
+/// takes the TSCC's own slot for `bc_ms`. D (on TG 9) and E idle.
+fn composite_lent<'a>(log: &mut Log, s: &'a mut Site, a_ms: u32, bc_ms: u32) -> Air<'a, 5> {
+    let ch = [1];
+    let mss = [ms(1001, &[8], &ch), ms(1002, &[], &ch), ms(1003, &[], &ch), ms(1004, &[9], &ch), ms(1005, &[], &ch)];
+    let mut air = Air::new(s, mss, T0);
+    register_all(&mut air, log);
+    reg_tg(&mut air, log, 3, 9);
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_GROUP, 8, a_ms, 0, now);
+    assert!(air.until(5000, &mut log.f(), |a| a.ms[0].state() == t3ms::PAYLOAD && a.ms[0].status().ch == 1), "A");
+    let now = air.now();
+    air.ms[1].act(t3ms::DO_PRIVATE, 1003, bc_ms, 0, now);
+    assert!(air.until(8000, &mut log.f(), |a| a.site.tscc_payload() && a.ms[2].state() == t3ms::PAYLOAD), "B-C lent");
+    air
+}
+
+fn composite_site() -> Box<Site> {
+    let mut s = site_with(|c| {
+        c.composite = 1;
+        c.hang_ms = 1000;
+        c.net_queue_ms = 8000; // a network call waits out A's call
+    });
+    let mut p = Policy::default_open();
+    p.wide_tg = IdSet::of(&[(9, 9)]);
+    s.policy_set(&p);
+    s.set_link(true);
+    s
+}
+
+/// A call from the network (a Tier II caller, no setup) to D while the TSCC's slot is lent: its availability check
+/// (C_AHOY on the TSCC) waits for the TSCC, its tries kept, rather than running out unsent (MSaway); once the TSCC is
+/// back D is asked, answers and joins the call on TS2.
+#[test]
+fn composite_ahoy_waits_while_lent() {
+    let mut s = composite_site();
+    let mut log = Log::default();
+    let mut air = composite_lent(&mut log, &mut s, 2000, 9000);
+    let now = air.now();
+    air.site.net_private_in(700, 8888, 1004, now);
+    air.run(6000, &mut log.f());
+    assert!(air.site.tscc_payload(), "still lent");
+    assert_eq!(air.ms[3].status().ahoys, 0, "D not asked while lent");
+    assert!(!log.of(EV_NET_DROP).iter().any(|e| e.stream == 700), "the call not dropped meanwhile");
+    assert!(
+        air.until(20_000, &mut log.f(), |a| a.ms[3].state() == t3ms::PAYLOAD && a.ms[3].status().ch == 1),
+        "D asked once the TSCC is back, and on TS2"
+    );
+    assert_eq!(air.ms[3].status().ahoys, 1);
+}
+
+/// A network group call to TG 9 while TS2 and the TSCC's slot are both busy waits in the queue. A's call ends while
+/// the slot is still lent: TS2 goes to TG 9's call, but its grant can't go on the lent TSCC. When the TSCC is back the
+/// grant goes out at once, and D joins on TS2. (A group call's Late_Entry repeat, long due, would carry it too; the
+/// grant sent again at the return is what an individual or data call opened meanwhile has.)
+#[test]
+fn composite_grant_owed_while_lent() {
+    let mut s = composite_site();
+    let mut log = Log::default();
+    let mut air = composite_lent(&mut log, &mut s, 1500, 9000);
+    let now = air.now();
+    air.site.net_group_in(77, 5555, 9, 0, now);
+    assert!(
+        air.until(10_000, &mut log.f(), |a| a.site.status().ch[1].dst == 9 && a.site.status().ch[1].r#use != USE_IDLE),
+        "TG 9's call opens on TS2"
+    );
+    assert!(air.site.tscc_payload(), "while the TSCC's slot is lent");
+    assert_ne!(air.ms[3].state(), t3ms::PAYLOAD, "D can't hear its grant yet");
+    assert!(air.until(15_000, &mut log.f(), |a| !a.site.tscc_payload()), "the TSCC back");
+    // the owed grant, not the first Late_Entry repeat (grant_every after the open, long past)
+    assert!(air.until(300, &mut log.f(), |a| a.ms[3].state() == t3ms::PAYLOAD && a.ms[3].status().ch == 1), "D joins");
+}

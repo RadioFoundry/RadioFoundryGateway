@@ -2268,6 +2268,12 @@ impl Site {
             self.pend[i].deadline_ms = p.deadline_ms.max(self.now + self.ps_wait_ms(p.called));
             return;
         }
+        if self.reverted() {
+            // a composite TSCC lent to a call (section 3.19): the TSCC sends nothing, so the check waits for it,
+            // its tries and time limit kept (the MS waits on the slot meanwhile, 5.3.2)
+            self.pend[i].deadline_ms = p.deadline_ms.max(self.now + self.cfg.ahoy_every_ms as i64);
+            return;
+        }
         if p.ahoy_left == 0 {
             self.pend[i].used = false;
             self.fail(&p, R_MSAWAY, WHY_NO_ANSWER);

@@ -103,6 +103,17 @@ impl Site {
         self.rev.grants_left = 0;
         self.resp_len = 0;
         self.resp_head = 0;
+        // but a call opened on another channel meanwhile (the queue served, a call from the network) never had its
+        // grant on air: it goes now, twice, as at the open
+        for ch in (0..CHANNELS).filter(|&c| c != t) {
+            let c = self.chans[ch];
+            if Self::live(&c) && c.since_ms >= self.rev.since_ms {
+                let g = self.grant_pdu(ch, false, c.src);
+                self.push(DT_CSBK, g, false, None);
+                self.push(DT_CSBK, g, false, None);
+                self.log(format_args!("composite TSCC: the grant for ch {ch} (opened while lent) goes out now"));
+            }
+        }
         self.cont_pending = false;
         self.since_aloha = 3;
         let d = (self.now - self.rev.since_ms).max(0);
