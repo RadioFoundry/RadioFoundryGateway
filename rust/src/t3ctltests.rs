@@ -517,6 +517,28 @@ fn mass_reregistration() {
     assert_eq!(regs(&log, mark).len(), early, "none after the cancel");
 }
 
+/// Mass re-registration with power save (6.4.5.1, 6.4.7): sleeping MSs hear the demand in their wake frames (one
+/// sent in each frame of the longest cycle, the window stretched to it), so each MS, asleep or not, registers once.
+#[test]
+fn mass_reregistration_with_power_save() {
+    let mut s = site_with(|c| c.power_save = 3);
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG], &[1]), ms(1002, &[TG], &[1]), ms(1003, &[10], &[1])], T0);
+    air.ms[1].set_power_save(2); // 1:4
+    air.ms[2].set_power_save(3); // 1:8, the site's longest
+    register_all(&mut air, &mut log);
+    assert!(air.ms[1].power_save().1 > 0 && air.ms[2].power_save().1 > 0, "both granted power save");
+    air.run(3000, &mut log.f()); // asleep
+    let mark = log.0.len();
+    assert!(air.site.command("mass_reg", 2, 0));
+    air.run(20_000, &mut log.f());
+    let mut r = regs(&log, mark);
+    r.sort();
+    assert_eq!(r, [1001, 1002, 1003], "each once, the sleeping ones too");
+    assert!(air.ms.iter().all(|m| m.mass_regs() == 1 && m.status().registered != 0));
+    assert!(air.ms.iter().all(|m| m.bcasts(BC_MASS_REG) >= 1));
+}
+
 /// At start (services.mass_reg_at_start_s): the MSs a restarted site no longer knows register again.
 #[test]
 fn mass_reregistration_at_start() {
