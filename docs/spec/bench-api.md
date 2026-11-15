@@ -792,7 +792,7 @@ ARGS` (any interpreter, any directory) sends the job; `--file` and `--out` files
 ### 14.6 Signal modes: tx and rx
 
 A signal mode is a modulation other than DMR, as one table (`rdof/sigmode.h`; the list in `rdof/sdr/modes.h`): analog
-FM (`fm`) and analog AM (`am`). `info`'s `signal_modes` lists them: `{"tx": [names], "rx": [names]}`. The fields
+FM (`fm`), analog AM (`am`) and raw 4-level FSK (`fsk4`). `info`'s `signal_modes` lists them: `{"tx": [names], "rx": [names]}`. The fields
 after the op's own are the mode's.
 
 | op | request | replies |
@@ -909,6 +909,37 @@ s once the first 30 ms of carrier have set it; the first 60 ms after a key-up ar
 the residual FM on the carrier, a transmitter's AM-to-PM) and `spectrum` when asked. Lead and tail carrier count in
 the averages (the rms and the tone's depth and SINAD): for a tone's figures send `lead_s` and `tail_s` 0, or read the
 blocks.
+
+4FSK (`fsk4`) sends raw symbols: any 4-level FSK air interface (P25 phase 1's C4FM, DMR, NXDN, dPMR), framed by
+the client. The symbols are dibits packed 4 to a byte, the first in bits 7-6; 01 is +3, 00 +1, 10 -1, 11 -3 (the
+mapping P25 and DMR share), a symbol `a` being `a dev_hz / 3` of deviation at its center. The pulse `shape`:
+
+| shape | pulse | exact at the symbol centers behind |
+|---|---|---|
+| `c4fm` | raised cosine (roll-off 0.2) times `pi f T / sin(pi f T)`: P25 phase 1's C4FM modulator | a one-symbol integrate-and-dump |
+| `rrc` | square-root raised cosine, roll-off 0.2 | the matched RRC (DMR, NXDN) |
+| `rc` | raised cosine, roll-off 0.2 | nothing (the discriminator itself) |
+| `nrz` | a rectangle one symbol long | nothing |
+
+The pulse is a table over 16 symbols either side for `rrc`, 12 for `c4fm` and `rc` (cut at 8, an RRC's tails put
+about 45 Hz of intersymbol interference on DMR's levels), from the shape's spectrum, scaled to exactly 1 at the center
+behind its receive filter. Rendered at 48 kS/s, the levels behind that filter come out within 1 Hz (`c4fm`, `rc`,
+`nrz`) and 6 Hz (`rrc`, the 16-symbol cut).
+
+`fsk4` `tx` fields: the symbols, either `hex` (the bytes in the request) or `symbols` (how many) with the bytes after
+the request line (`ceil(symbols / 4)`; `symbols` also trims `hex`), `baud` (4800; 600-9600), `shape` (`c4fm`),
+`dev_hz` (1800; 1944 with `rrc`), `dev_scale_pct` (100), `offset_hz` (0: the carrier from `freq`), `clip_hz` (0: none;
+the deviation's limit), `repeat` (1), `gap_s` (0: the plays back to back in one keying; else each play its own keying,
+this far apart, carrier off between), `lead_s` and `tail_s` (bare carrier before and after, 0.01; each with a 2 ms
+raised-cosine ramp of the envelope ahead of it). Symbols that haven't come in by key-up hold the carrier off (keyed)
+for up to 2 s; any still missing go as 0 (`symbols_short`). `done` adds `shape`, `baud`, `dev_hz` (scaled),
+`peak_hz`, `offset_hz`, `symbols`, `repeat`, `bursts`, `seconds`, `symbols_in`, `symbols_short`, `wait_s`, `clip_hz`
+and `clipped` (samples cut to it).
+
+The peak (`peak_hz`, which a front end sending frequency checks against its limit) is the symbols' own when they
+come in the request (8192 at most), else the worst any symbols could reach, capped at `clip_hz`. C4FM's overshoot is
+large: at 1800 Hz random symbols reach about 4400 Hz and the worst about 4600, over a W12's 4064 Hz, so a streamed
+C4FM job on a W12 needs `clip_hz` 4064 (the report counts the samples cut; rare on real traffic).
 
 ### 14.7 Frequency correction
 

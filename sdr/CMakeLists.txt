@@ -34,6 +34,7 @@ set(RDOF_SDR_SRCS
     src/mode_fm.c
     src/amrx.c
     src/mode_am.c
+    src/mode_fsk4.c
     src/modes.c
 )
 

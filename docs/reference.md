@@ -275,7 +275,7 @@ sockets, NVS, HTTP, MQTT) stays in each target.
 | `ppm`, `rate` | the crystal's error from the AFC and from the sample clock |
 | `txguard` | the transmit stream's timekeeper for a host device |
 | `spectrum`, `bench` | the page's spectrum; the bench's wideband history and taps |
-| `modes`, `mode_fm`, `mode_am`, `fmgen`, `fmrx`, `amrx` | signal modes besides DMR: analog FM and AM, their generators and measuring receivers |
+| `modes`, `mode_fm`, `mode_am`, `mode_fsk4`, `fmgen`, `fmrx`, `amrx` | signal modes besides DMR: analog FM and AM, raw 4FSK symbols, their generators and measuring receivers |
 | `cli/` | `rdofsdr`, `rdofradio`, `rdofchz` and their device, serial, network and FPGA glue; `tools.cmake` (SoapySDR, libiio, libad9361 and libmosquitto found, pffft and the web page linked) |
 | `pffft/` | pffft (FFTPACK license) unchanged, and `rdof_pffft.c`: the host tools' FFT (`--fft builtin` turns it off); 2.6 to 2.9 times the built-in FFT on a Cortex-A9 |
 
