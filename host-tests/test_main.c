@@ -48,6 +48,16 @@ int checks, failures;
         }                                                                                                    \
     } while (0)
 
+/* rdof_trellis34_hook's last report */
+static struct {
+    int n, e0, start, e_any;
+    bool ok0, ok_any;
+} t34;
+static void t34_note(bool ok0, int e0, int start, bool ok_any, int e_any)
+{
+    t34.n++, t34.ok0 = ok0, t34.e0 = e0, t34.start = start, t34.ok_any = ok_any, t34.e_any = e_any;
+}
+
 static size_t unhex(const char *s, uint8_t *out)
 {
     size_t n = strlen(s) / 2;
@@ -143,6 +153,24 @@ static void test_fec(void)
         CHECK(memcmp(out, want, 2) && !memcmp(out + 2, want + 2, 16) && metric == 2, "trellis from 0: first octets off");
         metric = rdof_trellis34_decode_block(in, out);
         CHECK(!memcmp(out, want, 18) && metric == 0, "trellis block from start state 4 (%d)", metric);
+        /* the hook (rdofradio -v) says which: state 0 failed, the path from any start passed. It starts in 7 here:
+           states 4 and 7 send the same first point, so the block can't tell them apart */
+        rdof_trellis34_hook = t34_note;
+        metric = rdof_trellis34_decode_block(in, out);
+        CHECK(t34.n == 1 && !t34.ok0 && t34.e0 == 2 && t34.start == 7 && t34.ok_any && t34.e_any == 0 &&
+                  !memcmp(out, want, 18) && metric == 0,
+              "trellis hook, heard block: %d %d %d %d %d", t34.ok0, t34.e0, t34.start, t34.ok_any, t34.e_any);
+        /* our own encoder starts in 0: both decodes pass, the path from 0, the block as sent */
+        uint8_t burst[RDOF_BURST_BYTES] = {0};
+        rdof_trellis34_encode(want, info);
+        rdof_info_burst(info, 8, 2, 0, burst);
+        metric = rdof_trellis34_decode_block(burst, out);
+        CHECK(t34.n == 2 && t34.ok0 && t34.e0 == 0 && t34.start == 0 && t34.ok_any && !memcmp(out, want, 18) &&
+                  metric == 0,
+              "trellis hook, our block: %d %d %d %d", t34.ok0, t34.e0, t34.start, t34.ok_any);
+        rdof_trellis34_hook = NULL;
+        metric = rdof_trellis34_decode_block(burst, out);
+        CHECK(t34.n == 2 && metric == 0, "trellis hook off: not called");
     }
     for (size_t i = 0; i < V_RATE1_N; i++) {
         unhex(v_rate1[i].burst, in);

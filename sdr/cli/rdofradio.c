@@ -127,6 +127,7 @@
 #include "rdof/benchline.h"
 #include "rdof/benchnet.h"
 #include "rdof/benchtx.h"
+#include "rdof/fec.h"
 #include "rdof/hbpeer.h"
 #include "rdof/layer2.h"
 #include "rdof/modem.h"
@@ -6623,6 +6624,19 @@ static int hold(int argc, char **argv, const char *why)
 #endif
 }
 
+/* -v: each rate 3/4 data block's trellis decode, from state 0 and from any start (rdof_trellis34_hook) */
+static void trellis_note(bool ok0, int e0, int start, bool ok_any, int e_any)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    struct tm tm;
+    gmtime_r(&ts.tv_sec, &tm);
+    printf("rate 3/4 block %02d:%02d:%02d.%03ld UTC: from state 0 CRC-9 %s (metric %d); any start: state %d, CRC-9 %s "
+           "(metric %d)%s\n",
+           tm.tm_hour, tm.tm_min, tm.tm_sec, ts.tv_nsec / 1000000, ok0 ? "ok" : "bad", e0, start,
+           ok_any ? "ok" : "bad", e_any, ok0 ? "" : ok_any ? ": taken from any start" : ": neither");
+}
+
 int main(int argc, char **argv)
 {
     static const char *settings[16];
@@ -6873,6 +6887,7 @@ int main(int argc, char **argv)
         } else if (!strcmp(a, "-v") || !strcmp(a, "--verbose")) {
             verbose = 1;
             R.verbose = true;
+            rdof_trellis34_hook = trellis_note;
         } else if (!strcmp(a, "--bench")) {
             NEXT();
             const char *colon = strrchr(v, ':');

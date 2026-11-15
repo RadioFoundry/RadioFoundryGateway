@@ -210,17 +210,27 @@ int rdof_trellis34_decode(const uint8_t burst[RDOF_BURST_BYTES], uint8_t out18[1
     return dmrTrellisDecode(burst, out18);
 }
 
+rdof_trellis34_hook_t rdof_trellis34_hook;
+
+static bool crc9_ok(const uint8_t b[18])
+{
+    return rdof_check_crc9(b + 2, 16, b[0] >> 1, ((b[0] & 1) << 8) | b[1], RDOF_MASK_CRC9_RATE34);
+}
+
 int rdof_trellis34_decode_block(const uint8_t burst[RDOF_BURST_BYTES], uint8_t out18[18])
 {
-    int errors = dmrTrellisDecode(burst, out18);
-    int dbsn = out18[0] >> 1, crc9 = ((out18[0] & 1) << 8) | out18[1];
-    if (rdof_check_crc9(out18 + 2, 16, dbsn, crc9, RDOF_MASK_CRC9_RATE34))
+    const int errors = dmrTrellisDecode(burst, out18);
+    const bool ok0 = crc9_ok(out18);
+    const rdof_trellis34_hook_t hook = rdof_trellis34_hook;
+    if (ok0 && !hook)
         return errors;
     uint8_t any[18];
-    int e = dmrTrellisDecodeAnyStart(burst, any);
-    dbsn = any[0] >> 1;
-    crc9 = ((any[0] & 1) << 8) | any[1];
-    if (!rdof_check_crc9(any + 2, 16, dbsn, crc9, RDOF_MASK_CRC9_RATE34))
+    int start = -1;
+    const int e = dmrTrellisDecodeAnyStartFrom(burst, any, &start);
+    const bool ok_any = crc9_ok(any);
+    if (hook)
+        hook(ok0, errors, start, ok_any, e);
+    if (ok0 || !ok_any)
         return errors;
     memcpy(out18, any, 18);
     return e;

@@ -19,6 +19,8 @@ void dmrTrellisEncode(const uint8_t *payload, uint8_t *frame);
 int dmrTrellisDecode(const uint8_t *frame, uint8_t *payload);
 // The same with the path starting in any state, not only 0 (an encoder that doesn't start in 0)
 int dmrTrellisDecodeAnyStart(const uint8_t *frame, uint8_t *payload);
+// The same, with the state the path starts in
+int dmrTrellisDecodeAnyStartFrom(const uint8_t *frame, uint8_t *payload, int *start);
 // Rate 1: 24 payload bytes to and from the info bits (info bits 96-99 reserved, sent as 0)
 void dmrRate1Encode(const uint8_t *payload, uint8_t *frame);
 void dmrRate1Decode(const uint8_t *frame, uint8_t *payload);
