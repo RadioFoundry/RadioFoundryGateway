@@ -2105,7 +2105,7 @@ One site (the SDR site, two carriers):
 | C_MOVE | yes | to a channel with no TSCC: the radio moved, hunted and came back (2026-11-14); between two sites' TSCCs, both ways (2026-11-14 15:59 UTC, the Pluto's site 1 and the hat's site 2): on site 2 and registered 0.65 s after the command, back on site 1 1.6 s after it (its first try's answer missed by the radio); with no C_MOVE, site 2 withdrawn: the radio's T_Nosig 5.3 s later, then site 1 from its adjacent list, registered on the first try 1.2 s after that (16:52 UTC) |
 | Kill | yes | no: not run on the one radio (it would take it off DMR) |
 | UDT polls from the site, the radio check (TSCC and payload), the selective clear | yes | the payload radio check and the selective clear, yes |
-| Power save | yes | yes: registration, a status, short data and a poll to the sleeping radio (13.2 step 8f); a call and packet data to it not yet |
+| Power save | yes | yes: registration, a status, short data and a poll to the sleeping radio (13.2 step 8f); a group call, an individual call and a packet data call to a radio whose receiver sleeps (a DM-1801 Pro with RadioFoundry's MS engine, PowerSave_RQ 2, offset 1; 2026-11-15 00:14-00:15 UTC): each request, made just after its frame closed, held to its next frame (540 ms, 1.02 s, 0.90 s), the grant or C_AHOY early in that frame, and each call reached it |
 | Full-duplex individual calls | yes (off by default) | no |
 | Supplementary user data on voice calls (3.21) | yes | yes: both ways, to an MS and a talkgroup |
 | Supplementary user data on packet data, UDT short data and statuses (3.21) | yes | yes, across sites (below; 2026-11-14 19:25 and 20:43 UTC) |
