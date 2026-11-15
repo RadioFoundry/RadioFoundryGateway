@@ -88,6 +88,10 @@ typedef struct {
     const rdof_mn_chan_status_t *ch;
     int nch;
     uint32_t aloha, rand, collisions, grants, refused, queued;
+    /* a composite TSCC (tier3.md 3.19): its slot lent to calls, how often and how long (the one going on counted) */
+    bool composite;
+    uint32_t lends;
+    double lent_s, lent_max_s;
 } rdof_mn_trunk_status_t;
 
 typedef struct {

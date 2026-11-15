@@ -837,8 +837,15 @@ fn composite_tscc_individual_call() {
     );
     assert_eq!((air.ms[2].status().ch, air.ms[3].status().ch), (0, 0), "on the TSCC's slot");
     assert!(air.until(6000, &mut log.f(), |a| a.ms[3].status().heard_src == 1003), "D hears C");
+    let mid = air.site.status();
+    assert_eq!(mid.lends, 1, "one lend so far");
+    assert!(mid.lent_ms > 0 && mid.lent_max_ms == mid.lent_ms, "the lend going on counted: {}", mid.lent_ms);
     assert!(air.until(20_000, &mut log.f(), |a| a.ms[2].status().calls_done == 1), "C's call done");
     assert!(air.until(5000, &mut log.f(), |a| !a.site.tscc_payload() && a.ms[3].state() == t3ms::IDLE), "TSCC back");
+    let st = air.site.status();
+    // the 3 s call, its hang time and P_CLEARs (5.3.2: the cost to throughput "shall be assessed")
+    assert!(st.lends == 1 && st.lent_ms > 3000 && st.lent_ms < 15_000, "{} lends, {} ms", st.lends, st.lent_ms);
+    assert_eq!(st.lent_max_ms, st.lent_ms);
     let now = air.now();
     air.ms[3].act(t3ms::DO_PRIVATE, 1005, 1000, 0, now);
     assert!(air.until(8000, &mut log.f(), |a| a.ms[3].state() == t3ms::PAYLOAD), "the TSCC answers again");

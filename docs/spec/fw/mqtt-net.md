@@ -728,10 +728,12 @@ Any node, every 10 s and on change:
                          "since": "2026-11-05T21:04:01.000Z"},
                         {"chan": 2, "lcn": 0, "use": "idle"}, {"chan": 2, "lcn": 1, "use": "hang", "dst": 3100,
                          "group": true}],
-           "counters": {"aloha": 0, "rand": 0, "collisions": 0, "grants": 0, "refused": 0, "queued": 0}}}
+           "counters": {"aloha": 0, "rand": 0, "collisions": 0, "grants": 0, "refused": 0, "queued": 0},
+           "composite": {"lends": 3, "lent_s": 41.25, "lent_max_s": 20.5}}}
 ```
 
-`trunk` is a trunked site's only. `use`: `tscc`, `call`, `hang`, `idle`, `off` (out of service). `connected`: the
+`trunk` is a trunked site's only. `composite` is a composite TSCC's only (tier3.md 3.19): how often its slot was lent
+to a call, the seconds lent in all and the longest lend, the one going on counted. `use`: `tscc`, `call`, `hang`, `idle`, `off` (out of service). `connected`: the
 backbone link (the site's Active_Connection). Code: `rdof_mn_status_json`. rdofradio and the board publish it on each
 connect and every 10 s; `uptime_s` is the process's on rdofradio, the time since boot on a board.
 

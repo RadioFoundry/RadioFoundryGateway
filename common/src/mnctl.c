@@ -435,6 +435,13 @@ size_t rdof_mn_status_json(const rdof_mn_status_t *s, char *out, size_t cap)
         rdof_json_int(&j, "refused", tr->refused);
         rdof_json_int(&j, "queued", tr->queued);
         rdof_json_close(&j);
+        if (tr->composite) {
+            rdof_json_open(&j, "composite");
+            rdof_json_int(&j, "lends", tr->lends);
+            rdof_json_float3(&j, "lent_s", tr->lent_s);
+            rdof_json_float3(&j, "lent_max_s", tr->lent_max_s);
+            rdof_json_close(&j);
+        }
         rdof_json_close(&j);
     }
     rdof_json_close(&j);

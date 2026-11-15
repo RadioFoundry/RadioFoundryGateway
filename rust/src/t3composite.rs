@@ -25,6 +25,9 @@ pub(super) struct RevState {
     grants_left: u8,
     grant: [u8; 10],
     pub(super) reverts: u32,
+    since_ms: i64,
+    lent_ms: u64,
+    lent_max_ms: i64,
 }
 
 impl Site {
@@ -55,6 +58,7 @@ impl Site {
         self.rev.grant = grant;
         self.rev.grants_left = REV_GRANTS;
         self.rev.reverts += 1;
+        self.rev.since_ms = self.now;
         self.log(format_args!("composite TSCC: the control slot carries a call (5.3.2)"));
     }
 
@@ -101,6 +105,21 @@ impl Site {
         self.resp_head = 0;
         self.cont_pending = false;
         self.since_aloha = 3;
-        self.log(format_args!("composite TSCC: the control channel again"));
+        let d = (self.now - self.rev.since_ms).max(0);
+        self.rev.lent_ms += d as u64;
+        self.rev.lent_max_ms = self.rev.lent_max_ms.max(d);
+        let (n, all) = (self.rev.reverts, self.rev.lent_ms as f64 / 1000.0);
+        let d_s = d as f64 / 1000.0;
+        self.log(format_args!(
+            "composite TSCC: the control channel again after {d_s:.1} s ({n} lends, {all:.1} s in all)"
+        ));
+    }
+
+    /// The lends so far (5.3.2: the composite TSCC's cost to throughput "shall be assessed"): how many, ms in all
+    /// and the longest, the one going on counted.
+    pub(super) fn lend_stats(&self) -> (u32, u32, u32) {
+        let now = if self.reverted() { (self.now - self.rev.since_ms).max(0) } else { 0 };
+        let all = (self.rev.lent_ms + now as u64).min(u64::from(u32::MAX)) as u32;
+        (self.rev.reverts, all, self.rev.lent_max_ms.max(now).min(i64::from(u32::MAX)) as u32)
     }
 }

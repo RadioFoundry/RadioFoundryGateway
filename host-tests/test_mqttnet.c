@@ -1191,6 +1191,13 @@ static void test_records(void)
     static char sb[2048];
     rdof_jdoc_t jd = {nd, 200, 0, sb, sizeof sb, 0, {0}};
     CHECK(rdof_jparse(&jd, out, strlen(out)) >= 0);
+    CHECK(!strstr(out, "composite")); /* a dedicated TSCC */
+    rdof_mn_trunk_status_t tc = ts;
+    tc.composite = true, tc.lends = 3, tc.lent_s = 41.25, tc.lent_max_s = 20.5;
+    const rdof_mn_status_t stc = {.node = "site-a", .trunk = &tc};
+    CHECK(rdof_mn_status_json(&stc, out, sizeof out) > 0 &&
+          strstr(out, "\"queued\":0},\"composite\":{\"lends\":3,\"lent_s\":41.25,\"lent_max_s\":20.5}}") ||
+          !printf("  %s\n", out));
     const rdof_mn_status_t plain = {.node = "box"};
     CHECK(rdof_mn_status_json(&plain, out, sizeof out) > 0 && !strstr(out, "trunk"));
     CHECK(rdof_mn_status_json(&st, out, 100) == 0); /* too small */

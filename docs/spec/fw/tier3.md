@@ -984,8 +984,12 @@ On air (2026-11-14, the Pluto as one carrier, a RadioFoundry radio): all of the 
 Payload Channel Type 1 for the rest of the short LC cycle after the P_CLEAR (the cycle is 4 slots); the radio sees
 one more and the C_ALOHA right after ends its hold.
 
-Not built: an air MS that reads the short LC on air (the simulator's air MSs take it from the unit), and the
-5.3.2 note that the throughput "shall be assessed" (no metric beyond the log line and the slot counts).
+The cost to throughput, which 5.3.2 says "shall be assessed": `status` has `trunk.composite` (mqtt-net.md 16) with
+the lends, the seconds lent in all and the longest lend; each return logs the lend's length and the totals
+("composite TSCC: the control channel again after 6.2 s (3 lends, 14.0 s in all)"). While lent, random access,
+registration and short data wait, so the seconds lent are the TSCC's time off.
+
+Not built: an air MS that reads the short LC on air (the simulator's air MSs take it from the unit).
 
 ### 3.20 Transmit interrupt (361-4 6.4.14, 6.4.15)
 

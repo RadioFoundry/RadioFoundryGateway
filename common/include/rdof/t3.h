@@ -298,6 +298,8 @@ typedef struct {
     uint8_t connected, withdrawn, nch, pad;
     uint32_t regs, queue;
     uint32_t aloha, rand, collisions, grants, refused, queued;
+    uint32_t lends, lent_ms, lent_max_ms; /* a composite TSCC's slot lent to calls: how often, in all and the
+                                             longest, ms (the lend going on counted; tier3.md 3.19) */
     rdof_t3_ch_status_t ch[RDOF_T3_CHANNELS];
 } rdof_t3_status_t;
 

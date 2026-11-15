@@ -546,6 +546,11 @@ pub struct Status {
     pub grants: u32,
     pub refused: u32,
     pub queued: u32,
+    /// a composite TSCC's slot lent to calls (section 3.19): how often, in all and the longest, ms (the lend going
+    /// on counted)
+    pub lends: u32,
+    pub lent_ms: u32,
+    pub lent_max_ms: u32,
     pub ch: [ChStatus; CHANNELS],
 }
 
@@ -2990,6 +2995,7 @@ impl Site {
             queued: self.counters.queued,
             ..Default::default()
         };
+        (st.lends, st.lent_ms, st.lent_max_ms) = self.lend_stats();
         for ch in 0..CHANNELS {
             let c = &self.chans[ch];
             st.ch[ch] = ChStatus {

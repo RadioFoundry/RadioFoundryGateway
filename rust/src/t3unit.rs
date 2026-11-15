@@ -238,6 +238,10 @@ pub struct MnTrunkStatus {
     pub grants: u32,
     pub refused: u32,
     pub queued: u32,
+    pub composite: bool,
+    pub lends: u32,
+    pub lent_s: f64,
+    pub lent_max_s: f64,
 }
 
 /// rdof_mn_status_t
@@ -2797,6 +2801,10 @@ pub unsafe extern "C" fn rdof_t3unit_status_json(u: *const Unit, out: *mut c_cha
         grants: s.grants,
         refused: s.refused,
         queued: s.queued,
+        composite: (*u).cfg.composite != 0,
+        lends: s.lends,
+        lent_s: f64::from(s.lent_ms) / 1000.0,
+        lent_max_s: f64::from(s.lent_max_ms) / 1000.0,
     };
     let st = MnStatus {
         node: node(u),
