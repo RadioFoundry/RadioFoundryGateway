@@ -2111,6 +2111,16 @@ Built since step 8e, host-tested (the bench steps above note what has run on air
 | 24fec1b0 | `rdofradio -v`: each rate 3/4 block's trellis start state, from state 0 and from any start |
 | 0b828326 | The event text is 128 octets (log lines were cut at 63, the composite return's total among them) |
 | d92c72c5 | Test (sdr2): the composite TSCC on the simulated Pluto, its transmit IQ decoded |
+| 36a6c26d | Pluto bundle: a program too big for the flash (this site's, 745 KB xz) on the SD card's RDOF partition, the newer of the two run; install.sh checks the card first |
+| c2d689c2 | Merge main (USB radios on the Pluto's generic usb-serial, the simulated FPGA block) |
+
+State at the break (2026-11-15 02:50 UTC):
+- Both sites up: pluto-t3 (site 1, t3-24fec1b0, one carrier composite, TSCC 461.4625 / 461.0875) and hat-t3 (site 2,
+  t3-5c72bfbf on the Cubie's hat, TSCC 461.2875). The cross-site router runs ad hoc on the Mac.
+- pluto-t3 runs from RAM (`/tmp/rdof/web.xz`): too big for the flash, and the lab Pluto's SD card is a fake that
+  keeps writes past 121 MiB only at the front of each MiB, so install.sh made no RDOF partition. A reboot brings back
+  the flash's older t3-1113a until the image is put back. A genuine card fixes it (the owner's call, 14 item 5).
+- Next: the MD-380's rate 3/4 start state (rf-t3, when the radio is free); the owner's choices in section 14.
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
 apart from the code, found seven deviations, all fixed (2026-11-12):
@@ -2207,3 +2217,7 @@ availability check before a short data download or poll (3.15).
    range.
 4. Whether mqtt-net's keys follow the new name too: info's `trunk` object and a path's `"trunk": true`, status's
    `trunk` (shared with the network services; unchanged so far).
+5. The lab Pluto's program storage: a genuine SD card (install.sh then makes the RDOF partition), the boot
+   partition's `rdof/` (real storage there, mounted read-only, written only for an update), or a smaller program.
+6. A home for the cross-site router (radiodesk, beside rfn-ipsvc), in place of the ad hoc one on the Mac.
+7. Merging tier3-trunk into main (13.2 step 9), and pushing it.
