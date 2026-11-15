@@ -1156,7 +1156,8 @@ unsafe fn repeat(r: R, s: S, control: u8, burst: &Burst, now: f64) -> c_int {
         if dt == RDOF_DT_CSBK {
             let mut c = RdofCsbk::default();
             rdof_decode_csbk(burst, &mut c);
-            if !c.crc_ok || c.opcode == BS_DWN_ACT {
+            if !c.crc_ok {
+                // BS_Dwn_Act never gets here (rf)
                 return 0;
             }
             if c.src_id != RDOF_NONE {
@@ -1262,21 +1263,26 @@ unsafe fn rf(r: R, input: &RdofRptRfIn, now: f64) -> bool {
         return true;
     }
     let control = input.control;
-    if control & RDOF_CONTROL_IDLE != 0 {
-        // The idle receiver (transmitter off) only passes data sync: BS_Dwn_Act wakes us (R3.1).
-        if control & RDOF_SYNC_DATA != 0 && c_int::from(control & 0x0F) == RDOF_DT_CSBK {
-            let mut c = RdofCsbk::default();
-            rdof_decode_csbk(&input.burst, &mut c);
-            if c.crc_ok && c.opcode == BS_DWN_ACT {
-                if !key(r) {
-                    return false;
-                }
-                restart(r, now);
+    let idle = control & RDOF_CONTROL_IDLE != 0; // the idle receiver (transmitter off): data sync only
+    if !idle {
+        hear(r, input.slot, control, &input.burst, input.rssi);
+    }
+    if control & RDOF_SYNC_DATA != 0 && c_int::from(control & 0x0F) == RDOF_DT_CSBK {
+        // BS_Dwn_Act wakes us (R3.1), from either receiver: the slots' one too, while the modem still sends after an
+        // unkey, or keyed at the end of T_MSInactiv. A radio sends it when it hears no outbound. Never repeated.
+        let mut c = RdofCsbk::default();
+        rdof_decode_csbk(&input.burst, &mut c);
+        if c.crc_ok && c.opcode == BS_DWN_ACT {
+            if !key(r) {
+                return false;
             }
+            restart(r, now);
+            return true;
         }
+    }
+    if idle {
         return true;
     }
-    hear(r, input.slot, control, &input.burst, input.rssi);
     if (*r).enabled[input.slot as usize] {
         let q = repeat(r, s, control, &input.burst, now);
         if q < 0 {
