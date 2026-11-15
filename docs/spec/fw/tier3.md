@@ -1853,7 +1853,9 @@ burst's family, CC, slot and position), not through the modem's 34-byte DMR_DATA
   the TSCC, as a radio's emergency key does. `ID off`, `ID on`: the MS switched off (it neither hears nor sends, so
   it misses grants) and on again, where it was. Tests: `rdofradio_e2e_t3_airms`; `rdofradio_e2e_t3_preempt`
   (pre-emption on a one-carrier site: the talker ceases on the RC, the emergency call gets TS2);
-  `rdofradio_e2e_t3_late` (late entry on a lent composite slot, 3.19).
+  `rdofradio_e2e_t3_late` (late entry on a lent composite slot, 3.19); `rdofradio_e2e_t3_composite_sim` (a composite
+  TSCC on the simulated Pluto, `--sim-sdr --fpga-chz --fpga-duc --sim-tx`: its transmit IQ decoded by `rdofsdr`, every
+  burst on its slot, voice on both slots while lent, P_SYS_Parms with Payload Channel Type 1 only through the lend).
 - `--sim-ext PATH`: external MSs (other programs, such as a radio's MS engine built for the host) on the simulated
   air, through a unix socket, beside the N simulated ones (N may be 0). JSON lines in lockstep with the slots: after
   slot k each client gets what every carrier aired (the burst, its data type and CC, the PDU when its CRC passed, the
@@ -2105,6 +2107,10 @@ Built since step 8e, host-tested (the bench steps above note what has run on air
 | 5111dc2b | Test: mass re-registration with power save (sleeping MSs at 1:4 and 1:8) |
 | 691e44cf | Test: a standby takeover keeps the MS records (read back from the broker) |
 | 09174469 | Test: an MS roams between two sites (test_t3unit: where/, the old site drops its record, calls follow) |
+| 85f38d67 | Test: the standby setting's ranges and refusals (test_radiocfg) |
+| 24fec1b0 | `rdofradio -v`: each rate 3/4 block's trellis start state, from state 0 and from any start |
+| 0b828326 | The event text is 128 octets (log lines were cut at 63, the composite return's total among them) |
+| d92c72c5 | Test (sdr2): the composite TSCC on the simulated Pluto, its transmit IQ decoded |
 
 An ETSI conformance suite (`rust/src/t3spec_*.rs`, `host-tests/test_t3spec_rf.c`), written from the standards
 apart from the code, found seven deviations, all fixed (2026-11-12):
@@ -2144,7 +2150,7 @@ One site (the SDR site, two carriers):
 | Emergency pre-emption | yes | yes: the second radio (50 mW) talking to TG 1 on site 1 run with one payload channel (no composite TSCC), an air MS's emergency call to TG 2 made from inside that call; the radio ceased on the RC 1.09 s after the request was queued, and the emergency call had TS2 0.2 s later (2026-11-14 22:04 UTC) |
 | Status, status polls, UDT short data | yes | yes |
 | UDT short data polling | yes | yes: the radio polling an air MS, and an air MS polling the radio, asleep or not (13.2 step 8f) |
-| Packet data at rate 1/2, 3/4 and 1, up to 127 blocks | yes | yes: IP text messages, confirmed and unconfirmed; confirmed from a radio (the DM-1701, RadioFoundry's engine) to an air MS at rate 3/4, 1 and 1/2, each taken whole on its first send (2026-11-15 00:17 UTC); rate 3/4 from an HR_C7000 radio to the IP gateway (991860dd). Long messages (127 blocks) host-tested only |
+| Packet data at rate 1/2, 3/4 and 1, up to 127 blocks | yes | yes: IP text messages, confirmed and unconfirmed; confirmed from a radio (the DM-1701, RadioFoundry's engine) to an air MS at rate 3/4, 1 and 1/2, each taken whole on its first send (2026-11-15 00:17 UTC); rate 3/4 from an HR_C7000 radio to the IP gateway (991860dd). Trellis start state per radio (`rdofradio -v`, 24fec1b0): the DM-1701 (HR_C6000) starts in state 0, all 10 blocks of a confirmed rate 3/4 packet at metric 0 (2026-11-15 02:30 UTC); the HR_C7000 portable in state 4 or 7 (they send the same first point); the MD-380 (HR_C5000) not yet measured. Long messages (127 blocks) host-tested only |
 | IP address upload to IPI, IP connection advice | yes | IP connection advice yes, with and without power save (13.2 step 8g); the upload before a data call to IPI and the datagram through the IP gateway to a host, yes; the host's reply back down: on the Pluto's site with its air MSs (2026-11-14 13:16 UTC: the ACK on the payload channel, rfn-ipsvc's pong on a grant of its own, confirmed and unconfirmed); to a real radio (an HR_C7000 portable, 2026-11-14): unconfirmed at 13:26, confirmed rate 1/2 at 15:30 and 15:46 (the ACK, then the pong). Its rate 3/4 blocks failed the CRC-9 (its trellis encoder doesn't start in state 0; the radio now sends confirmed IP at 1/2, and the site decodes such blocks since 991860dd) |
 | Stun, revive, mass re-registration | yes | yes (PTT refused while stunned) |
 | DGNA, call diversion, ALS | yes | yes (13.2 step 8h) |
