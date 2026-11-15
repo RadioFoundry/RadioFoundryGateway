@@ -717,6 +717,54 @@ fn network_group_on_composite_tscc() {
     assert_eq!(air.ms[0].state(), t3ms::PAYLOAD, "A's call on TS2 goes on");
 }
 
+/// A network group call with no channel free waits `net_queue_s` (2 s) in the queue, then is dropped (congestion,
+/// SYSbusy in the queue event); with net_queue_s 0 it's dropped at once. A static talkgroup is carried with no member
+/// here (tier3.md 3.14); one nobody wants isn't.
+#[test]
+fn network_group_wait_drop_and_static() {
+    for wait in [true, false] {
+        let mut s = site_with(|c| c.net_queue_ms = if wait { 2000 } else { 0 });
+        let mut p = Policy::default_open();
+        p.wide_tg = IdSet::of(&[(TG, TG), (30, 31)]);
+        p.static_tg = IdSet::of(&[(30, 30)]);
+        s.policy_set(&p);
+        s.set_link(true);
+        let mut log = Log::default();
+        let mut air = Air::new(&mut s, [ms(1001, &[8], &[1]), ms(1002, &[TG], &[1])], T0);
+        register_all(&mut air, &mut log);
+        reg_tg(&mut air, &mut log, 1, TG);
+        let now = air.now();
+        air.ms[0].act(t3ms::DO_GROUP, 8, 4000, 0, now);
+        assert!(air.until(5000, &mut log.f(), |a| a.ms[0].state() == t3ms::PAYLOAD), "A on TS2");
+        let now = air.now();
+        air.site.net_group_in(77, 5555, TG, 0, now);
+        let dropped = |l: &Log| l.of(EV_NET_DROP).iter().any(|e| e.stream == 77 && e.why == WHY_CONGESTION);
+        let queued =
+            |l: &Log| l.of(EV_ACTIVITY).iter().any(|e| e.kind == ACT_QUEUE && e.op == QUEUE_IN && e.src == 5555);
+        if wait {
+            assert!(queued(log.take(&mut air)) && !dropped(&log), "queued");
+            air.run(1800, &mut log.f());
+            assert!(!dropped(&log), "still waiting at 1.8 s");
+            air.run(400, &mut log.f());
+            assert!(dropped(&log), "dropped at 2 s");
+            let d = log.of(EV_ACTIVITY).into_iter().find(|e| e.kind == ACT_QUEUE && e.op == QUEUE_DROP).expect("drop");
+            assert_eq!((d.src, d.dst, d.reason), (5555, TG, R_SYSBUSY));
+        } else {
+            assert!(dropped(log.take(&mut air)) && !queued(&log), "dropped at once");
+        }
+        assert!(!log.of(EV_CH_OPEN).iter().any(|e| e.dst == TG));
+        // A's call ends: the static talkgroup's call opens with no member here; TG 31 has none and isn't static
+        assert!(air.until(10_000, &mut log.f(), all_idle));
+        air.run(2000, &mut log.f());
+        let now = air.now();
+        air.site.net_group_in(78, 5555, 30, 0, now);
+        air.site.net_group_in(79, 5555, 31, 0, now);
+        air.run(500, &mut log.f());
+        assert!(log.of(EV_CH_OPEN).iter().any(|e| e.dst == 30 && e.stream == 78), "static TG 30 carried");
+        assert!(log.of(EV_NET_DROP).iter().any(|e| e.stream == 79 && e.why == WHY_NOT_FOUND), "TG 31 not");
+    }
+}
+
 #[test]
 fn network_setup_out() {
     let mut s = site_with(|_| {});
