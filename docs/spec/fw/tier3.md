@@ -957,7 +957,10 @@ as a hotspot modem, gets a second call at once.
   announce a new call on a payload channel using a P_GRANT"; manufacturer specific). An MS that lost the control
   channel waits on this slot (5.3.2), so it can follow one into a call it missed the start of. MSs in the lent
   call ignore them unless they're idle. P_PROTECT and a presence check go first. Other makers' radios most likely
-  ignore a P_GRANT on a payload channel; RadioFoundry's MS engine follows one when idle (rf-t3). Test:
+  ignore a P_GRANT on a payload channel; RadioFoundry's MS engine follows one when idle (rf-t3; on air 2026-11-15).
+  Only an MS already camped waits on the slot: one switched on meanwhile camps on a C_ALOHA, so once the TSCC is
+  back. The short LC stays Type 1 through the slot's P_CLEARs (`clear_repeats`), so an MS sees one up to ~0.4 s
+  after the first P_CLEAR. Test:
   `composite_late_entry_on_the_lent_slot` (rust t3ctltests: an MS switched off through a call's grants and the
   lend joins the call from the lent slot's hang time; without the setting, only once the TSCC is back) and
   `rdofradio_e2e_t3_late` (the same with air MSs: `1000003 off`, then `on` while the slot is lent).
@@ -2108,7 +2111,7 @@ One site (the SDR site, two carriers):
 | Supplementary user data on packet data, UDT short data and statuses (3.21) | yes | no |
 | Transmit interrupt | yes | yes: a second radio (an MS with RadioFoundry's engine, its modem's receive tap read for the dedicated RC) on the modem site, interrupted from site 1 in a TG 1 call; it decoded the RC cease, sent its terminator and stopped 1.2 s after the accept, and the interrupter's call followed on the same channel 0.16 s later (2026-11-14 21:43 UTC) |
 | Composite TSCC | yes (group, individual, data, emergency, network calls, a sleeping member; 3.19) | yes, on the Pluto as one carrier (2026-11-14 18:20 UTC, t3-fa58d1a8): the radio's call on the lent TS1 while TS2 carried another; an air MS's call on TS1 during the radio's on TS2; the idle radio camped through a 9 s lend, no hunt; its access held until the Aloha, then granted TS1 again. Across sites (2026-11-14 19:21 UTC, both sites one-carrier composite, hat-t3 on t3-5c72bfbf): with TS2 busy on both sites (a network TG 2 call), the radio's TG 1 call from site 2 and an air MS's TG 1 call back each took the lent TSCC slot on both sites; 66 and 49 bursts, BER 0, none lost |
-| Composite late entry (`composite_late_entry`, off by default) | yes (3.19) | air MSs only so far (2026-11-14 23:56 UTC, t3-d050bae9 on the Pluto): an air MS switched off through a TG 1 call's grants and switched on while another call held the lent TS1 followed the P_GRANT there in its hang time to TS2, before the TSCC came back. A radio not yet |
+| Composite late entry (`composite_late_entry`, off by default) | yes (3.19) | air MSs only so far (2026-11-14 23:56 UTC, t3-d050bae9 on the Pluto): an air MS switched off through a TG 1 call's grants and switched on while another call held the lent TS1 followed the P_GRANT there in its hang time to TS2, before the TSCC came back. A radio (2026-11-15 00:06 UTC, the DM-1701 with RadioFoundry's MS engine, TGs 1 and 2): in a TG 2 call on TS2 it ignored TG 1's grant for the lent TS1; back on that slot after TG 2 cleared, it followed the P_GRANT for TG 1 (LCN 0, Late_Entry 1) 0.2 s into TG 1's hang, as did an air MS. A radio switched on during a lend camps only when the TSCC is back (it needs a C_ALOHA) and joins on the TSCC's own Late_Entry grant |
 | Three or four SDR carriers | yes | no: the SDR site runs two |
 
 Two sites (the SDR site and the modem site, over mqtt-net):
