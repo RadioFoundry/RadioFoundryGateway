@@ -10,9 +10,32 @@
 # rdofradio stops: it's checked, put in place of rdofradio.gz and started. The flash has no room for two (about
 # 900 KB in all), so the one it replaces stays in RAM until the next boot: a new one that ends in error within 30 s
 # of its first start is put back.
+#
+# A radio on the Pluto's USB (an OTG adapter puts the port in host mode): the stock kernel has no cdc_acm, so a USB
+# serial radio gets no /dev/ttyACM*. usb_serial has the kernel's generic usb-serial driver take the IDs below
+# instead: each radio's data interface is /dev/ttyUSB0, 1, ... in the order they enumerate (the settings' port
+# paths). `run.sh --usb-serial [SYS]` does only that, against SYS in place of /sys (the host tests).
+USB_IDS="1fc9:0094" # RadioFoundry radios' USB serial (CDC ACM)
+
+usb_serial() {
+    S=${1:-/sys}
+    [ -d $S/bus/usb/drivers/cdc_acm ] && return 0 # a kernel with it: ttyACM as usual
+    N=$S/bus/usb-serial/drivers/generic/new_id
+    [ -e $N ] || return 0
+    for id in $USB_IDS; do
+        echo "${id%%:*} ${id##*:}" > $N 2> /dev/null # bound already: EEXIST, nothing to do
+    done
+}
+
+if [ "$1" = "--usb-serial" ]; then
+    usb_serial "$2"
+    exit 0
+fi
+
 D=/mnt/jffs2/rdof
 T=/tmp/rdof
 mkdir -p $T
+usb_serial
 echo $$ > $T/run.pid
 say() { echo "== $* $(date)" >> $T/log; }
 up() { cut -d. -f1 /proc/uptime; }

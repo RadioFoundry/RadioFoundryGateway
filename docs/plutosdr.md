@@ -110,7 +110,17 @@ demodulates: 15 channels across a wide window, where the ARM alone keeps about 1
   out, in the settings' order.
 - With the FPGA there's no wideband I/Q: the page's spectrum is each channel's own, and the bench captures channels.
 - With a radio on the Pluto's USB transmitting (`--split-tx` or `--mmdvm`), the channelizer still runs and
-  `--fpga-duc` is unused. Not yet tested with a radio.
+  `--fpga-duc` is unused. The host tests run this on a simulated block; not yet tried with a radio on air.
+
+### A radio on the Pluto's USB
+
+- The Pluto's micro-USB port takes a radio through an OTG adapter, which puts it in host mode. The USB network is
+  gone then: reach the Pluto over Ethernet.
+- The stock kernel has no `cdc_acm`. `run.sh` has the generic usb-serial driver take a RadioFoundry radio's USB ID
+  (`1fc9:0094`) at every start. Each radio is then `/dev/ttyUSB0`, `/dev/ttyUSB1`, ..., in the order they
+  enumerate: use those as the settings' port paths. A kernel with `cdc_acm` keeps `/dev/ttyACM*`.
+- An FTDI adapter works as it comes (`ftdi_sio` is built in). CP210x and CH340 adapters don't: the kernel has
+  neither driver.
 
 How it works, the rates and the measurements: [reference.md](reference.md), "FPGA channelizer" and "The bitstream";
 the design's license and origin: [tools/pluto/fpga/README.md](../tools/pluto/fpga/README.md).
