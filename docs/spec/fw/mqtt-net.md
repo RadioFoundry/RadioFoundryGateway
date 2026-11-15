@@ -732,10 +732,11 @@ Any node, every 10 s and on change:
            "composite": {"lends": 3, "lent_s": 41.25, "lent_max_s": 20.5}}}
 ```
 
-`trunk` is a trunked site's only. `composite` is a composite TSCC's only (tier3.md 3.19): how often its slot was lent
-to a call, the seconds lent in all and the longest lend, the one going on counted. `use`: `tscc`, `call`, `hang`, `idle`, `off` (out of service). `connected`: the
-backbone link (the site's Active_Connection). Code: `rdof_mn_status_json`. rdofradio and the board publish it on each
-connect and every 10 s; `uptime_s` is the process's on rdofradio, the time since boot on a board.
+`trunk` is a trunked site's only. `composite` is a composite TSCC's only (tier3.md 3.19): how often its slot was lent to
+a call, the seconds lent in all and the longest lend, the one going on counted. `use`: `tscc`, `call`, `hang`, `idle`,
+`off` (out of service). `connected`: the backbone link (the site's Active_Connection). Code: `rdof_mn_status_json`.
+rdofradio and the board publish it on each connect and every 10 s; `uptime_s` is the process's on rdofradio, the time
+since boot on a board.
 
 ## 17. Provisioning (`cfg/...`) and commands
 
