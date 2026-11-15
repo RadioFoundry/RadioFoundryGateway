@@ -41,6 +41,7 @@
 #define PH 64                    /* table points a symbol */
 #define SPAN 16                  /* symbols either side, at most (the table) */
 #define TAB (PH * SPAN + 1)      /* g(0) .. g(SPAN), g even */
+_Static_assert(PH == 64, "the render takes the phase row from the fraction's top 6 bits");
 #define ALPHA 0.2
 #define RAMP_S 0.002             /* the envelope's raised-cosine ramp, key-up and key-down */
 #define MAX_BYTES (256u * 1024u) /* a million symbols: 218 s at 4800 */
@@ -134,7 +135,11 @@ typedef struct {
     uint8_t *sym;                /* the dibits, packed */
     uint32_t nsym, nbytes, have; /* symbols; bytes expected, bytes in */
     float g[TAB];
+    /* the pulse by phase: row p (0 .. PH) holds tap m (0 .. 2 span - 1) = g(p / PH - (m - span + 1)), the weight of
+     * symbol c + m - span + 1 at fraction p / PH past symbol c's center; the render interpolates between rows */
+    float *rows;
     double sps;                  /* samples a symbol */
+    uint64_t step;               /* symbols a sample, 32.32 fixed point */
     /* the timeline, in samples: each burst lead + its symbols + tail, keyed; a gap off between bursts */
     unsigned bursts, per_burst;  /* bursts; plays of the symbols in each */
     uint64_t lead, body, tail, burst, gap, ramp, total;
@@ -275,6 +280,18 @@ static void *fsk4_tx_new(const rdof_jdoc_t *d, int job, double fs, double *secon
     t->sps = fs / t->baud;
     t->span = span_of(t->shape);
     build_pulse(t->shape, t->g);
+    const int nt = 2 * t->span;
+    t->rows = rdof_sdr_zalloc(sizeof(float) * (size_t)(PH + 1) * (size_t)nt);
+    if (!t->rows) {
+        snprintf(error, ecap, "no memory for a 4FSK transmitter");
+        rdof_sdr_free(t->sym);
+        rdof_sdr_free(t);
+        return NULL;
+    }
+    for (int p = 0; p <= PH; p++)
+        for (int m = 0; m < nt; m++)
+            t->rows[p * nt + m] = pulse(t->g, (float)p / PH - (float)(m - t->span + 1), t->span);
+    t->step = (uint64_t)llround(t->baud / fs * 4294967296.0);
     t->peak = peak_hz(t);
     /* gap_s 0: the plays back to back in one keying; else each its own keying, gap_s apart */
     t->bursts = t->gap_s > 0 ? t->repeat : 1;
@@ -297,6 +314,7 @@ static void fsk4_tx_free(void *tx)
     if (!t)
         return;
     rdof_sdr_free(t->sym);
+    rdof_sdr_free(t->rows);
     rdof_sdr_free(t);
 }
 
@@ -339,24 +357,33 @@ static int fsk4_freq(void *ctx, float *hz, float *env, int n)
             e = 0.5f - 0.5f * cosf((float)RDOF_PI * (float)(t->burst - q) / (float)(t->ramp + 1));
         if (env)
             env[i] = e;
-        /* u: time in symbols from the first symbol's center */
-        const double u = ((double)q - (double)t->lead) / t->sps - 0.5;
-        const double cf = floor(u);
-        const int64_t c = (int64_t)cf;
-        const float fu = (float)(u - cf);
+        /* time from the first symbol's center, symbols in 32.32 fixed point (no doubles here: the ESP32-S3 has no
+         * double FPU): symbol c, then the fraction as a phase row p and a weight w toward row p + 1 */
+        const int64_t u = ((int64_t)q - (int64_t)t->lead) * (int64_t)t->step - ((int64_t)1 << 31);
+        const int64_t c = u >> 32; /* floor */
+        const uint32_t fr = (uint32_t)u;
+        const int p = (int)(fr >> 26); /* PH = 64 rows */
+        const float w = (float)(fr & 0x3ffffff) * (1.0f / 67108864.0f);
+        const int nt = 2 * t->span;
+        const float *r0 = t->rows + p * nt, *r1 = r0 + nt;
         int64_t k0 = c - t->span + 1, k1 = c + t->span;
         if (k0 < 0)
             k0 = 0;
         if (k1 >= (int64_t)played)
             k1 = (int64_t)played - 1;
-        float s = 0;
+        float s0 = 0, s1 = 0;
         uint32_t j = k0 <= k1 ? (uint32_t)(k0 % t->nsym) : 0;
         for (int64_t k = k0; k <= k1; k++) {
-            if ((j >> 2) < t->have)
-                s += (float)dibit(t, j) * pulse(t->g, fu - (float)(k - c), t->span);
+            if ((j >> 2) < t->have) {
+                const int m = (int)(k - c) + t->span - 1;
+                const float a = (float)dibit(t, j);
+                s0 += a * r0[m];
+                s1 += a * r1[m];
+            }
             if (++j == t->nsym)
                 j = 0;
         }
+        const float s = s0 + (s1 - s0) * w;
         float h = s * unit + off;
         if (t->clip_hz > 0 && fabsf(h) > t->clip_hz) {
             h = h > 0 ? (float)t->clip_hz : -(float)t->clip_hz;
