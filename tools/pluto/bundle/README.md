@@ -22,6 +22,18 @@ with the new `rdofradio` on the Pluto.
 It goes in the Pluto's persistent flash (`/mnt/jffs2`), starts at boot from `/mnt/jffs2/autorun.sh`, and starts
 again 5 s after it exits.
 
+**A program too big for the flash** (about 650 KB free there: the trunked site's is bigger) goes on the SD card.
+
+- `install.sh` makes a partition for it once, labeled `RDOF`, in the free space after the boot partition: from the
+  MiB after it to 1 MiB below the next power of two (a boot partition ending at 119.4 MiB: 120-127 MiB). Only beside
+  a lone FAT boot partition. The boot partition and its files aren't touched; the MBR as it was is kept in
+  `/mnt/jffs2/rdof/sd-mbr.orig`.
+- Before the MBR changes, it writes the last sector of each MiB of the new partition and reads it back, and reads the
+  card's start before and after: a card smaller than it says (a fake) keeps nothing there or puts it at its start.
+  Then the start goes back and there's no partition: the program has to fit the flash (or use a genuine card).
+- `run.sh` mounts it read-only at `/tmp/rdof/sd` (read-write only while it writes an image). Each place has a sequence
+  number (`seq` beside the image): the newer image runs, the other is the fallback when it won't unpack.
+
 **The FPGA bitstream** (`fpga/`, for `--fpga-chz` and `--fpga-duc`: every channel at once, 15 on a 7010 clone in
 place of about 10) doesn't fit in the flash.
 
@@ -45,6 +57,8 @@ place of about 10) doesn't fit in the flash.
 | How it last ended on its own (a crash, an error): the page's crash card (Logs & maintenance) | `/tmp/rdof/last_exit` |
 | An update from the page, until `run.sh` takes it | `/tmp/rdof/rdofradio.ota` |
 | The FPGA bitstream (when the board has one) | `rdof/` on the SD card's boot partition |
+| The program (the newer of the two runs) | `/mnt/jffs2/rdof/rdofradio.xz`, or `rdof/` on the SD card's `RDOF` partition |
+| The MBR as it was before the `RDOF` partition | `/mnt/jffs2/rdof/sd-mbr.orig` |
 | Keep it from starting | `touch /mnt/jffs2/rdof/disabled`, then reboot |
 | The web page | `http://192.168.2.1:8080/` |
 
@@ -53,10 +67,10 @@ place of about 10) doesn't fit in the flash.
 The page's Firmware update (Logs & maintenance), or `curl --data-binary @rdofradio.xz http://192.168.2.1:8080/api/ota`,
 sends a new `rdofradio`: the bundle's `rdofradio.xz`, `rdofradio` gzipped, or an uncompressed ELF for the Pluto's ARM.
 
-- `rdofradio` stops; `run.sh` checks that the new one unpacks and runs, puts it in flash in place of the old one and
-  starts it.
+- `rdofradio` stops; `run.sh` checks that the new one unpacks and runs, puts it in flash in place of the old one (or
+  on the SD card's `RDOF` partition when it doesn't fit there, leaving the flash's as it was) and starts it.
 - The flash has no room for both, so the old one stays in RAM until the next boot: if the new one ends in error within
-  30 s of its first start, the old one goes back.
+  30 s of its first start, the old one goes back where the new one went.
 - `install.sh` updates `run.sh` and `VERSION` too; an update from the page doesn't (the page shows the program's own
   version).
 

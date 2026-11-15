@@ -275,6 +275,13 @@ if(NODE)
     add_test(NAME rdof_schema_tests COMMAND ${NODE} ${CMAKE_CURRENT_SOURCE_DIR}/test_schema.js)
 endif()
 
+# The Pluto bundle's run.sh and install.sh (which program starts, where an update goes, the SD card's partition).
+find_program(RDOF_XZ xz)
+if(RDOF_XZ)
+    add_test(NAME pluto_bundle COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/pluto_bundle.sh ${CMAKE_CURRENT_SOURCE_DIR}/..)
+    set_tests_properties(pluto_bundle PROPERTIES TIMEOUT 60)
+endif()
+
 # The components' portable parts (no ESP-IDF): netclock and wifilist.
 add_subdirectory(../components/netclock netclock)
 
