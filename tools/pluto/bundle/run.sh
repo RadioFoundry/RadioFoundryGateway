@@ -16,6 +16,28 @@
 # no room for two (about 900 KB in all), so the one it replaces stays in RAM until the next boot: a new one that ends
 # in error within 30 s of its first start is put back where the new one went.
 # RDOF_RUN_ROOT, RDOF_RUN_SD, RDOF_RUN_ROOM_KB and RDOF_RUN_PAUSE are for the host test (host-tests/pluto_bundle.sh).
+#
+# A radio on the Pluto's USB (an OTG adapter puts the port in host mode): the stock kernel has no cdc_acm, so a USB
+# serial radio gets no /dev/ttyACM*. usb_serial has the kernel's generic usb-serial driver take the IDs below
+# instead: each radio's data interface is /dev/ttyUSB0, 1, ... in the order they enumerate (the settings' port
+# paths). `run.sh --usb-serial [SYS]` does only that, against SYS in place of /sys (the host tests).
+USB_IDS="1fc9:0094" # RadioFoundry radios' USB serial (CDC ACM)
+
+usb_serial() {
+    Y=${1:-/sys}
+    [ -d $Y/bus/usb/drivers/cdc_acm ] && return 0 # a kernel with it: ttyACM as usual
+    N=$Y/bus/usb-serial/drivers/generic/new_id
+    [ -e $N ] || return 0
+    for id in $USB_IDS; do
+        echo "${id%%:*} ${id##*:}" > $N 2> /dev/null # bound already: EEXIST, nothing to do
+    done
+}
+
+if [ "${1:-}" = "--usb-serial" ]; then
+    usb_serial "${2:-}"
+    exit 0
+fi
+
 D=${RDOF_RUN_ROOT:-}/mnt/jffs2/rdof
 T=${RDOF_RUN_ROOT:-}/tmp/rdof
 S=${RDOF_RUN_SD:-$T/sd}
@@ -132,6 +154,7 @@ take_update() {
 # install.sh takes the functions above (RDOF_RUN_LIB=1 . run.sh)
 [ -n "${RDOF_RUN_LIB:-}" ] && return 0
 mkdir -p $T
+usb_serial
 echo $$ > $T/run.pid
 sd_mount
 while [ ! -f $D/disabled ]; do

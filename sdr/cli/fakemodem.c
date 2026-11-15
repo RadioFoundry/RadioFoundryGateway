@@ -23,6 +23,9 @@
  * with the burst's kind and, where it carries one, its LC or header's source and destination; the voice's embedded
  * LC as each superframe's E burst completes it. Lines "RX" are the bursts it played in, "MODEM" SET_FREQ, SET_MODE
  * and DMR_START. The transmitter drains one burst a 60 ms slot, so GET_STATUS's space is as a modem's.
+ *
+ * --kind odr_split is a split repeater's radio (rdofradio --split-tx): the fake's split half with the host's clock as
+ * its modem clock; a burst it queued (TX_SCHED) logs "AIR s<slot>" and its kind as its slot goes on air.
  */
 #define _DARWIN_C_SOURCE /* macOS: posix_openpt, ptsname, cfmakeraw */
 #define _DEFAULT_SOURCE
@@ -316,6 +319,28 @@ static void play(double now)
     to_rdofradio();
 }
 
+/* odr_split's queue: each scheduled burst as its slot goes on air, "AIR s<slot>" and its kind (a voice burst as such:
+ * the queue keeps no control byte) */
+static double clk; /* the split half's modem clock, the host's monotonic seconds */
+static void air(void)
+{
+    if (!M.radio.clock)
+        return;
+    fake_air(&M.radio);
+    for (int i = 0; i < M.radio.non_air; i++) {
+        char line[256];
+        int cc, dt, errors;
+        const uint8_t *b = M.radio.on_air[i].burst, slot = M.radio.on_air[i].slot;
+        if (rdof_decode_slot_type(b, &cc, &dt, &errors) && dt != RDOF_DT_VOICE && dt != RDOF_DT_VOICE_SYNC)
+            describe("AIR", slot, (uint8_t)(RDOF_SYNC_DATA | dt), b, line, sizeof line);
+        else
+            snprintf(line, sizeof line, "AIR s%d voice", slot);
+        say("%s", line);
+        M.tx_bursts++;
+    }
+    M.radio.non_air = 0;
+}
+
 /* one burst a slot leaves the transmitter's buffer */
 static void drain(double now)
 {
@@ -408,6 +433,8 @@ int main(int argc, char **argv)
             usage();
     }
     fake_init(&M.radio, kind);
+    if (!strcmp(kind, "odr_split")) /* a split half: its slot clock, and TX_SCHED's queue on air (air) */
+        clk = now_s(), M.radio.clock = &clk;
     if (description)
         snprintf(M.radio.description, sizeof M.radio.description, "%s", description);
     if (!M.radio.protocol) {
@@ -453,12 +480,16 @@ int main(int argc, char **argv)
             uint8_t buf[2048];
             const ssize_t n = read(M.master, buf, sizeof buf);
             if (n > 0) {
+                clk = now_s();
                 rdof_mmdvm_reader_feed(&M.tap, buf, (size_t)n, tapped, NULL);
                 fake_write(&M.radio, buf, (size_t)n);
                 to_rdofradio();
             }
         }
         const double now = now_s();
+        clk = now;
+        air();
+        to_rdofradio();
         drain(now);
         play(now);
         if (M.exit_after_s > 0 && M.done_at && now - M.done_at > M.exit_after_s) {

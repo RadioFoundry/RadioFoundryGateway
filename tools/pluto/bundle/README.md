@@ -42,7 +42,8 @@ place of about 10) doesn't fit in the flash.
 - It adds `--fpga-chz --fpga-duc` to `flags`, so `rdofradio` loads it at every boot (`/tmp/rdof-fpga` says which is
   in). A reboot brings the stock design back.
 - With `--split-tx` or `--mmdvm` in `flags` (a USB radio transmits), the channelizer still runs and `--fpga-duc` is
-  unused.
+  unused. The firmware's kernel has no `cdc_acm`: `run.sh` gives a RadioFoundry radio the generic usb-serial driver,
+  and it's `/dev/ttyUSB0` (the next one `ttyUSB1`).
 - With no SD card, or no bitstream for the board, it runs without: the ARM channelizes, and the channels that don't
   fit its window are left out.
 
