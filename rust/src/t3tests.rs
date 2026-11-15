@@ -851,6 +851,95 @@ fn network_setup_in() {
     assert!(!log.setups(SETUP_REJECT).iter().any(|e| e.r#ref == 502));
 }
 
+/// Two sites linked for call setups (tier3.md 5.4): each step relays the setups each site sent to the other. Runs
+/// for `ms` or until `stop`.
+fn two_sites<const N: usize, const M: usize>(
+    a: &mut Air<N>,
+    b: &mut Air<M>,
+    la: &mut Log,
+    lb: &mut Log,
+    ms: i64,
+    mut stop: impl FnMut(&Air<N>, &Air<M>) -> bool,
+) -> bool {
+    let end = a.now() + ms;
+    while a.now() < end {
+        if stop(a, b) {
+            return true;
+        }
+        let (na, nb) = (la.0.len(), lb.0.len());
+        a.step(&mut la.f());
+        b.step(&mut lb.f());
+        let now = a.now();
+        let setups = |l: &Log, n: usize| -> Vec<Setup> {
+            let of = |e: &Event| Setup {
+                op: e.op,
+                reason: e.reason,
+                flags: e.flags,
+                svc: e.svc,
+                src: e.src,
+                dst: e.dst,
+                stream: e.stream,
+                r#ref: e.r#ref,
+            };
+            l.0[n..].iter().filter(|e| e.r#type == EV_NET_SETUP).map(of).collect()
+        };
+        for m in setups(la, na) {
+            b.site.net_setup_in(&m, now);
+        }
+        for m in setups(lb, nb) {
+            a.site.net_setup_in(&m, now);
+        }
+    }
+    stop(a, b)
+}
+
+/// FOACSU across sites (tier3.md 5.4, 361-4 6.6.3.1.2): A at site 1 calls B at site 2, both full off-air call
+/// setup. B alerts (the caller hears MS_Alerting through the network), then answers: both on payload. B refuses, is
+/// busy or doesn't answer: the caller gets that reason, and no channel opens on either site.
+#[test]
+fn foacsu_across_sites() {
+    let cases = [
+        (t3ms::ANSWER_FOACSU, 0),
+        (t3ms::ANSWER_REFUSE, R_RECIPIENT_REFUSED),
+        (t3ms::ANSWER_BUSY, R_CALLED_PARTY_BUSY), // the network's `busy` (tier3.md 5.4), not Equip_Busy
+        (t3ms::ANSWER_SILENT, R_MSAWAY),
+    ];
+    for (answer, reason) in cases {
+        let (mut sa, mut sb) = (site_with(|c| c.foacsu = 1), site_with(|c| c.foacsu = 1));
+        sa.set_link(true);
+        sb.set_link(true);
+        let (mut la, mut lb) = (Log::default(), Log::default());
+        let mut a = Air::new(&mut sa, [ms(1001, &[TG], &[1])], T0);
+        let mut b = Air::new(&mut sb, [ms(2002, &[TG], &[1])], T0);
+        b.ms[0].set_answer(answer, 1500);
+        register_all(&mut a, &mut la);
+        register_all(&mut b, &mut lb);
+        while b.now() < a.now() {
+            b.step(&mut lb.f());
+        }
+        let now = a.now();
+        a.ms[0].act(t3ms::DO_PRIVATE, 2002, 2000, 0, now);
+        if reason == 0 {
+            let alerting = |a: &Air<1>, _: &Air<1>| a.ms[0].status().last_reason == R_MS_ALERTING;
+            assert!(two_sites(&mut a, &mut b, &mut la, &mut lb, 5000, alerting), "the caller hears alerting");
+            assert_eq!((a.ms[0].state(), b.ms[0].state()), (t3ms::WAITING, t3ms::IDLE));
+            let t = a.now();
+            let both = |a: &Air<1>, b: &Air<1>| a.ms[0].state() == t3ms::PAYLOAD && b.ms[0].state() == t3ms::PAYLOAD;
+            assert!(two_sites(&mut a, &mut b, &mut la, &mut lb, 6000, both), "answered: both on payload");
+            assert!(a.now() - t >= 1000, "after B's answer");
+            assert!(la.setups(SETUP_ALERTING).is_empty() && !lb.setups(SETUP_ALERTING).is_empty());
+            assert!(!lb.setups(SETUP_ANSWERED).is_empty() || !lb.setups(SETUP_ACCEPT).is_empty());
+        } else {
+            let failed = |a: &Air<1>, _: &Air<1>| a.ms[0].status().calls_failed == 1;
+            assert!(two_sites(&mut a, &mut b, &mut la, &mut lb, 30_000, failed), "answer {answer}: fails");
+            assert_eq!(a.ms[0].status().last_reason, reason, "answer {answer}");
+            assert!(la.of(EV_CH_OPEN).is_empty() && lb.of(EV_CH_OPEN).is_empty(), "answer {answer}: no channel");
+            two_sites(&mut a, &mut b, &mut la, &mut lb, 3000, |_, _| false);
+            assert!(all_idle(&a) && all_idle(&b), "answer {answer}: nothing held");
+        }
+    }
+}
+
 #[test]
 fn tier2_caller_implicit_setup() {
     let mut s = site_with(|_| {});

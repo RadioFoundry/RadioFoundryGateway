@@ -1300,7 +1300,10 @@ Rules:
 
 - The caller's site waits up to `setup_s` (5 s) for an answer, sending C_WACKD to its MS meanwhile; no answer:
   C_NACKD(MSaway_Refused) and a `cancel` out.
-- `alerting` (FOACSU) keeps the wait going until `answered` or `tp_s`.
+- `alerting` (FOACSU) keeps the wait going until `answered` or `tp_s`. The called MS's refusal goes out as `reject`:
+  Equip_Busy as `busy` (the caller hears Called_Party_Busy), the rest as `refused` (Recipient_Refused). Test:
+  `foacsu_across_sites` (rust t3tests: two sites with setups relayed; alerting then answered, refused, busy, no
+  answer; no channel left open on either site).
 - A `reject not_found` doesn't end the wait (with a flood, another node may still accept); the timer then ends the
   call as `not_found`. Any other reject ends it at once ([mqtt-net.md](mqtt-net.md) §9.4).
 - **All nodes:** a Tier II box that gets a `request` on `dl/{node}` for an ID in its last-heard table on a path that
