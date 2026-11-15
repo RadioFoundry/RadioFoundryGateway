@@ -1265,6 +1265,38 @@ fn composite_grant_owed_while_lent() {
     assert!(air.until(300, &mut log.f(), |a| a.ms[3].state() == t3ms::PAYLOAD && a.ms[3].status().ch == 1), "D joins");
 }
 
+/// No lend mid-way through a short data transfer (tier3.md 3.19: the TSCC isn't free to go while one is under way):
+/// TS2 busy, B's message to C goes on the TSCC; D's group call asked meanwhile waits, and takes the TSCC's slot only
+/// once the transfer is done. C has the message.
+#[test]
+fn composite_no_lend_during_short_data() {
+    let mut s = composite_site();
+    let mut log = Log::default();
+    let tgs = [8, 0, 0, 9, 9];
+    let mut air: Air<5> = Air::new(&mut s, core::array::from_fn(|i| ms(1001 + i as u32, &[tgs[i]], &[1])), T0);
+    register_all(&mut air, &mut log);
+    reg_tg(&mut air, &mut log, 4, 9);
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_GROUP, 8, 8000, 0, now);
+    assert!(air.until(5000, &mut log.f(), |a| a.ms[0].state() == t3ms::PAYLOAD && a.ms[0].status().ch == 1), "A");
+    let now = air.now();
+    assert!(air.ms[1].send_sdm(1003, 0, crate::t3udt::FMT_BINARY, &[0x5A; 40], now));
+    assert!(air.until(3000, &mut log.f(), |a| a.site.sd_pending()), "the transfer under way");
+    let now = air.now();
+    air.ms[3].act(t3ms::DO_GROUP, 9, 1000, 0, now);
+    let (mut overlap, mut lent_mid) = (false, false);
+    let joined = air.until(15_000, &mut log.f(), |a| {
+        let sd = a.site.sd_pending();
+        overlap |= sd && a.ms[3].state() != t3ms::IDLE;
+        lent_mid |= sd && a.site.status().ch[0].r#use != USE_TSCC;
+        a.ms[3].state() == t3ms::PAYLOAD
+    });
+    assert!(overlap, "D asked while the transfer was under way");
+    assert!(!lent_mid, "the TSCC's slot not lent mid-way");
+    assert!(joined && air.ms[3].status().ch == 0, "D's call then on the TSCC's slot");
+    assert!(air.ms[2].inbox().is_some(), "C has the message");
+}
+
 // ── lost on the air (the air's lose_out / lose_in) ──
 
 /// An individual call (OACSU) from A to B with `lose_out` / `lose_in` on the air, run for `ms`: (A's call reached
