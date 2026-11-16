@@ -2220,4 +2220,3 @@ availability check before a short data download or poll (3.15).
 5. The lab Pluto's program storage: a genuine SD card (install.sh then makes the RDOF partition), the boot
    partition's `rdof/` (real storage there, mounted read-only, written only for an update), or a smaller program.
 6. A home for the cross-site router (a lab host, beside the IP host's service), in place of the ad hoc one on the Mac.
-7. Merging tier3-trunk into main (13.2 step 9), and pushing it.
