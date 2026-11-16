@@ -928,6 +928,7 @@ struct long_span {
     int16_t off;      /* the carrier's offset (stage.off): a keyed sample at another ends the transmission */
     double skip;      /* samples owed to the seams, not yet skipped */
     int seam_us;
+    bool keep;        /* a continuous source (rdof_fe_tx_source_t): the seams delay its samples, skipping none */
     unsigned seams;
     int64_t skipped;
     const lr2021_tx_stream_stats_t *st; /* the stream's counts, live */
@@ -952,7 +953,7 @@ static size_t long_pull(void *ctx, uint8_t *buf, size_t max)
         const int us = p->iq ? p->seam_us : rdof_seam_skip_us(tx.seam_gap, (int)p->seams, TX_SEAM1_US, p->seam_us);
         if (p->seams <= RDOF_SEAM_FIRST)
             tx.seam_first_us[p->seams - 1] = us;
-        p->skip += us * (TX_RATE / 1e6);
+        p->skip += p->keep ? 0.0 : us * (TX_RATE / 1e6);
         const int64_t k = (int64_t)p->skip;
         p->skip -= (double)k;
         p->at += k;
@@ -1008,7 +1009,10 @@ static int64_t tx_run_long(int64_t key, int64_t k0, int64_t k1, int64_t t_key)
     const int seam_us = learned > 0 ? (int)fmax(0.0, lround(learned - (polar ? 0.0 : slow_us))) : TX_SEAM_US;
     int64_t run = TX_LONG_RUN_IQ;
     tx.long_seam_at = -1;
-    if (!polar) {
+    const bool keep = tx.src && tx.src->continuous && tx.src->continuous(tx.src->ctx);
+    if (!polar && keep) {
+        run = TX_LONG_RUN_MAX; /* no slots: the longest runs, the fewest seams */
+    } else if (!polar) {
         run = rdof_seam_run(seam_us * (TX_RATE / 1e6), TX_LONG_RUN_MAX, TX_SLOT);
         /* a key-on (unkeyed just before): its slot's start; a key-up straight on from a run keeps the last one */
         if (key > 0 && !stage.k[(key - 1) & (TX_STAGE - 1)])
@@ -1047,7 +1051,7 @@ static int64_t tx_run_long(int64_t key, int64_t k0, int64_t k1, int64_t t_key)
     EXT_RAM_BSS_ATTR static lr2021_tx_stream_stats_t s;
     EXT_RAM_BSS_ATTR static struct long_span span;
     span = (struct long_span){.at = k0, .end = k1, .run = run, .iq = polar, .off = stage.off[k0 & (TX_STAGE - 1)],
-                              .seam_us = seam_us, .st = &s};
+                              .seam_us = seam_us, .keep = keep, .st = &s};
     if (lr2021_iq_tx_calibrates(&iq, &t))
         tx.calibrated++;
     const lr2021_err_t e = lr2021_iq_transmit(&iq, &t, long_pull, &span, &s);

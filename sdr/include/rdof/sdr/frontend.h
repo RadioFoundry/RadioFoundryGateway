@@ -130,6 +130,10 @@ typedef struct {
      * gave, included in their Hz (a bench sweep's step). A front end that tunes its carrier per key-up may move the
      * carrier by it and take it out of the samples, so the offset doesn't spend the deviation it can send. */
     float (*carrier_off)(void *ctx);
+    /* Optional: true while the source keeps no time grid (a bench signal, not the modem's slots). A front end that
+     * must restart its transmission inside a long key-up (the LR2021's runs) then delays the samples by the restart,
+     * where it otherwise skips that many to keep their time: a skip is a step in a signal's symbol timing. */
+    bool (*continuous)(void *ctx);
 } rdof_fe_tx_source_t;
 
 typedef struct {
