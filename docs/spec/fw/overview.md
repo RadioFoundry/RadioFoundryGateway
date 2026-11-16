@@ -363,7 +363,7 @@ flowchart LR
 | `modes.c` | the signal modes (`rdof/sigmode.h` in `common`): each modulation besides DMR as one table, for the bench to send and analyze |
 | `mode_fm.c`, `fmgen.c`, `fmrx.c` | analog FM: test signal generator (tones, sweeps, DTMF, AFSK, noise, PCM; CTCSS, DCS) and a measuring receiver |
 | `mode_am.c`, `amrx.c` | analog AM (airband): FM's program as the envelope at a depth, and a measuring receiver (depth, a tone's SINAD and THD, residual FM) |
-| `mode_fsk4.c` | raw 4-level FSK: a client's dibits through a C4FM, RRC, RC or NRZ pulse (P25, DMR, NXDN framed by the client) |
+| `mode_fsk4.c` | raw 4-level FSK: a client's dibits through a C4FM, RRC, RC or NRZ pulse (P25, DMR, NXDN framed by the client); on receive, the client's sync, the dibits from it on and each keying's levels |
 | `status.c` | SDR status JSON |
 | `bench.c` | stage timing (`rdof_sdr_bench`) |
 

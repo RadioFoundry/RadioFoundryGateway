@@ -941,6 +941,43 @@ come in the request (8192 at most), else the worst any symbols could reach, capp
 large: at 1800 Hz random symbols reach about 4400 Hz and the worst about 4600, over a W12's 4064 Hz, so a streamed
 C4FM job on a W12 needs `clip_hz` 4064 (the report counts the samples cut; rare on real traffic).
 
+A W12 loses about the first 30 ms of each keying (measured 2026-11-16 on a Pluto: the carrier showed 28-30 ms into a
+40-50 ms `lead_s`), so a burst whose sync is at its start needs `lead_s` 0.04 or more there.
+
+`fsk4` `rx` measures a radio's 4FSK and gives back its symbols. The discriminator goes through a receive filter
+(`filter`: `iad`, a one-symbol integrate-and-dump; `rrc`, the matched RRC cut at 4 symbols either side; `none`; by
+default the one `shape` (`c4fm`) is exact behind: `c4fm` `iad`, `rrc` `rrc`, else `none`). A squelch on the power in
+1 ms blocks finds each keying (it ends after 3 blocks under). While the carrier is up the receiver looks for `sync`
+(the client's dibits as hex, packed as for `tx`; `sync_len` symbols of it, 8-64, all by default): the Pearson
+correlation of symbol-spaced samples with the pattern, at least `sync_min` (0.9), its peak placed to a fraction of a
+sample. A sync sets the symbol timing and fits the carrier offset and the level unit from its own symbols; each later
+one re-anchors both, so a frame-repeated sync (P25, NXDN, DMR) keeps the clocks' difference from building up.
+Without `sync` nothing is sliced: only the keying records come. Other fields: `baud` (4800; 600-9600), `shape`,
+`filter`, `squelch_dbfs`, `squelch_over_db`, `bw`, `streams` (`disc`, `filt`: the raw and filtered discriminator, Hz,
+full scale at half the rate).
+
+Records, `t` in seconds from the stream's start (the header's `t0` is its UTC):
+
+- `{"sync": {"t", "k", "corr", "cfo_hz", "dev_hz"}}`: a sync found; `k` its first symbol's index from the keying's
+  first sync, `dev_hz` the outer level's deviation from its fit.
+- `{"dibits": {"t", "k", "n", "hex"}}`: the symbols sliced, from the first sync on, packed as for `tx` (the last byte
+  padded with zeros); `t` and `k` are the first one's. 1024 a record, and what's left when the carrier drops: a burst's
+  dibits come in one record a few ms after its end (the squelch's 3 ms and a block). Symbols run to the end of the
+  carrier, its bare tail included; the client knows its frames' lengths.
+- `{"keying": {...}}` when the carrier drops: `t_on`, `t_off`, `s`, `power_dbfs`, `sync_ms` (carrier to the first
+  sync; null without one), `syncs`, `symbols`, `cfo_hz`, `dev_hz` (half the outer levels' spread), `levels_hz` (each
+  level's mean from the carrier, -3 -1 +1 +3), `sd_hz`, `counts`, `evm_pct` (RMS error from the ideal levels, of the
+  outer level), `baud_err_ppm` (the radio's symbol clock against the receiver's, from the first and last sync; null
+  with one), `filter`, `baud`. A bare carrier at the end (8 or more symbols within half a unit of the center, then up
+  to 4 more as it dies) stays out of the level statistics. Blips under 5 ms with no sync give no record.
+
+The summary: `baud`, `filter`, `sync_len`, `squelch_dbfs`, `keyings`, `syncs`, `symbols`, `carrier` (up at the end),
+`dropped` (records lost to a full queue).
+
+Measured 2026-11-16, a W12 (power 128) to a Pluto 2 m away at -30 dBFS: C4FM and RRC at 4800 baud, 3072 random symbols
+each, 0 errors (C4FM behind `iad` +-1792 / +-599 Hz, EVM 5%); 2400 baud RRC at 1050 Hz with a 10-symbol sync in 80 ms
+bursts, 0 errors, EVM 4%.
+
 ### 14.7 Frequency correction
 
 The bench's measurements find radios whose frequency is off, so the gateway takes its own crystal's error out of
