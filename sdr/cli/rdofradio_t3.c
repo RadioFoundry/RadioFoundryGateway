@@ -85,6 +85,14 @@ static int64_t wall_ms(void)
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+/* The standby pair's beats and timeouts: a clock step (NTP, netclock) mustn't look like a beat gone. */
+static int64_t mono_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
 static void tsay(const char *fmt, ...)
 {
     va_list ap;
@@ -354,10 +362,10 @@ static bool air_command(const char *topic, const void *data, size_t len);
 /* The active box of a standby pair (tier3.md 6.2): a standby's beat or its will on standby; another box on the air
    on hold (the lower ID stays). True: the message was the pair's. */
 #define RDOF_T3_BEAT_MS 500
-static bool standby_message(const char *topic, const void *data, size_t len, int64_t now_ms)
+static bool standby_message(const char *topic, const void *data, size_t len)
 {
 #ifndef RDOF_MQTT
-    (void)topic, (void)data, (void)len, (void)now_ms;
+    (void)topic, (void)data, (void)len;
     return false;
 #else
     if (!T.sb_topic[0])
@@ -372,7 +380,7 @@ static bool standby_message(const char *topic, const void *data, size_t len, int
         } else {
             if (!T.sb_seen)
                 tsay("standby: %s is there: off the air after %.0f s without its beat", m, T.c->t.fence_s);
-            T.sb_seen = true, T.sb_last = now_ms;
+            T.sb_seen = true, T.sb_last = mono_ms();
         }
         return true;
     }
@@ -389,13 +397,12 @@ static bool standby_message(const char *topic, const void *data, size_t len, int
 }
 
 /* the active box's beat; off the air (the run stops) once a standby's beat is gone fence_s without its will */
-static void standby_tick(int64_t now_ms)
+static void standby_tick(void)
 {
-#ifndef RDOF_MQTT
-    (void)now_ms;
-#else
+#ifdef RDOF_MQTT
     if (!T.sb_topic[0] || !T.mq)
         return;
+    const int64_t now_ms = mono_ms();
     if (now_ms >= T.hold_next) {
         char m[16];
         snprintf(m, sizeof m, "on %s", rdofmq_hwid());
@@ -429,7 +436,7 @@ static void sb_message(void *ctx, const char *topic, const void *data, int len)
     (void)ctx;
     char m[32];
     snprintf(m, sizeof m, "%.*s", len < 0 ? 0 : len < (int)sizeof m ? len : (int)sizeof m - 1, (const char *)data);
-    const int64_t now = wall_ms();
+    const int64_t now = mono_ms();
     const char *hw = rdofmq_hwid();
     pthread_mutex_lock(&SB.mu);
     if (!strcmp(topic, SB.sb) && !strcmp(m, hw))
@@ -481,10 +488,10 @@ bool rdofradio_t3_standby(const rdofradio_cfg_t *c, volatile sig_atomic_t *stop)
     rdofmq_subscribe(q, subs, 3);
     tsay("standby: %s waits as %s on %s:%d: on the air %.0f s after the node's beat stops (1 s after its will)",
          c->site.name, hw, t->host, t->port, t->takeover_s);
-    int64_t quiet = wall_ms(), claim = 0, next = 0;
+    int64_t quiet = mono_ms(), claim = 0, next = 0;
     bool won = false;
     while (!*stop && !won) {
-        const int64_t now = wall_ms();
+        const int64_t now = mono_ms();
         if (now >= next) {
             char m[16];
             if (claim)
@@ -537,7 +544,7 @@ static void poll_locked(int64_t now_ms)
         pthread_mutex_unlock(&inq_mu);
         if (!any)
             break;
-        if (!standby_message(topic, data, len, now_ms) && !air_command(topic, data, len))
+        if (!standby_message(topic, data, len) && !air_command(topic, data, len))
             rdof_t3unit_message(T.u, topic, data, len);
         free(topic);
         free(data);
@@ -554,7 +561,7 @@ static void poll_locked(int64_t now_ms)
         }
     }
 #endif
-    standby_tick(now_ms);
+    standby_tick();
     rdof_t3unit_tick(T.u, now_ms);
     gw_drain();
 }
