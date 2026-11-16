@@ -7,7 +7,8 @@
 //! side of a SACK (361-3 5.4.1: the listed blocks again, after a C_HEAD with F = 0). The MS simulator uses it.
 
 use crate::t3site::{
-    block_len, blocks_mask, crc32, DataHead, DataMsg, Mask, BLOCK_MAX, DPF_CONFIRMED, DPF_RESPONSE, MSG_BLOCKS,
+    block_len, blocks_mask, confirmed_block_ok, crc32, DataHead, DataMsg, Mask, BLOCK_MAX, DPF_CONFIRMED,
+    DPF_RESPONSE, MSG_BLOCKS,
 };
 
 /// Response classes and types (361-1 table 8.3).
@@ -75,8 +76,7 @@ impl DataAsm {
         }
         if dt == self.m.dt {
             if self.m.head.dpf == DPF_CONFIRMED {
-                let t = DataMsg { b: [*blk; MSG_BLOCKS], ..self.m };
-                let (dbsn, ok) = t.block_ok(0);
+                let (dbsn, ok) = confirmed_block_ok(blk, dt);
                 if ok && dbsn < self.m.n {
                     self.m.b[dbsn as usize][..len].copy_from_slice(&blk[..len]);
                     self.good = Mask::of(self.good.get() | 1 << dbsn);

@@ -232,6 +232,14 @@ impl Default for DataMsg {
     }
 }
 
+/// A confirmed block of data type dt (DT_R12, DT_R34, DT_R1): its serial number and whether its CRC-9 holds
+/// (361-1 B.3.10).
+pub fn confirmed_block_ok(b: &[u8; BLOCK_MAX], dt: u8) -> (u8, bool) {
+    let len = block_len(dt);
+    let (dbsn, stored) = (b[0] >> 1, u16::from(b[0] & 1) << 8 | u16::from(b[1]));
+    (dbsn, crc9(&b[2..len], dbsn, crc9_mask(dt)) == stored)
+}
+
 impl DataMsg {
     /// In rate 1/2 blocks.
     pub fn build(head: DataHead, data: &[u8]) -> Option<DataMsg> {
@@ -288,10 +296,7 @@ impl DataMsg {
 
     /// Confirmed: block j's serial number and whether its CRC-9 holds (361-1 B.3.10).
     pub fn block_ok(&self, j: usize) -> (u8, bool) {
-        let len = block_len(self.rate());
-        let b = &self.b[j];
-        let (dbsn, stored) = (b[0] >> 1, u16::from(b[0] & 1) << 8 | u16::from(b[1]));
-        (dbsn, crc9(&b[2..len], dbsn, crc9_mask(self.rate())) == stored)
+        confirmed_block_ok(&self.b[j], self.rate())
     }
 
     /// The user data (pad octets off) when the CRC-32 holds.

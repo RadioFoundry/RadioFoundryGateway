@@ -37,7 +37,7 @@ pub use supp::{Ackvit, OP_ACKVIT, R_AUTH_RESPONSE_TS, SUPP_KILL};
 #[path = "t3pdata.rs"]
 mod pdata;
 pub use pdata::{
-    block_len, crc32, crc9, crc9_mask, data_op, rdof_t3_pd_send, rdof_t3_rx_data, DataGrant, DataHead, DataMsg, DataRx,
+    block_len, confirmed_block_ok, crc32, crc9, crc9_mask, data_op, rdof_t3_pd_send, rdof_t3_rx_data, DataGrant, DataHead, DataMsg, DataRx,
     BLOCK_MAX, CRC9_RATE1, CRC9_RATE12, CRC9_RATE34, DATA_BLOCK, DATA_END, DT_R1, DT_R12, DT_R34, MSG_OCTETS,
     blocks_mask, Mask, DATA_END_CONFIRMED, DATA_HEADER, DATA_RESPONSE, DPF_CONFIRMED, DPF_RESPONSE, DPF_UNCONFIRMED,
     MSG_BLOCKS,
