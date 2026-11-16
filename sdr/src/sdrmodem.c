@@ -115,6 +115,7 @@ int rdof_sdrmodem_init(rdof_sdrmodem_t *m, const rdof_sdrmodem_io_t *io, uint32_
     m->dc_last = INT64_MIN;
     m->key_k = -1;
     m->rf_level = 255;
+    m->at_override = -1;
 #if RDOF_FEATURE_REPEATER
     const uint8_t null5[5] = {0};
     uint8_t sl9[9];
@@ -178,6 +179,17 @@ void rdof_sdrmodem_carrier_ppm(rdof_sdrmodem_t *m, double ppm)
     retune_carrier(m);
 }
 
+static void key_up(rdof_sdrmodem_t *m)
+{
+    m->keyed = true;
+    m->unkey = false;
+    m->ramp_up = true;
+    m->key_k = -1;
+    m->keyed_at48 = m->now48;
+    if (m->role != ROLE_TX)
+        m->slot_k = -1; /* placed at the next pull; the TX half's slot clock runs on */
+}
+
 void rdof_sdrmodem_preempt(rdof_sdrmodem_t *m)
 {
     m->qn[0] = m->qn[1] = 0;
@@ -190,6 +202,28 @@ void rdof_sdrmodem_set_transmit(rdof_sdrmodem_t *m, bool transmit)
     m->stopped = !transmit;
     if (m->stopped && m->keyed)
         m->unkey = true;
+    else if (!m->stopped && m->hold && m->duplex && (!m->keyed || m->unkey))
+        key_up(m);
+}
+
+void rdof_sdrmodem_set_source(rdof_sdrmodem_t *m, const rdof_sdrmodem_source_t *src)
+{
+    memset(&m->src, 0, sizeof m->src);
+    if (src)
+        m->src = *src;
+    m->src_has = false;
+}
+
+bool rdof_sdrmodem_hold_key(rdof_sdrmodem_t *m, bool on)
+{
+    if (!m->duplex)
+        return false;
+    m->hold = on;
+    if (on && !m->stopped && (!m->keyed || m->unkey))
+        key_up(m);
+    else if (!on && m->keyed)
+        m->unkey = true;
+    return true;
 }
 
 static bool mapped(const rdof_sdrmodem_t *m) { return m->grid && m->grid_ok; }
@@ -857,16 +891,9 @@ static void on_frame(void *ctx, uint8_t cmd, const uint8_t *p, size_t len)
         }
         if (len >= 1 && p[0]) {
             m->queue_keyed = false;
-            if (!m->keyed && !m->stopped && !(m->role == ROLE_TX && m->now48 < m->cool_until48)) {
-                m->keyed = true;
-                m->unkey = false;
-                m->ramp_up = true;
-                m->key_k = -1;
-                m->keyed_at48 = m->now48;
-                if (m->role != ROLE_TX)
-                    m->slot_k = -1; /* placed at the next pull; the TX half's slot clock runs on */
-            }
-        } else if (m->keyed) {
+            if (!m->keyed && !m->stopped && !(m->role == ROLE_TX && m->now48 < m->cool_until48))
+                key_up(m);
+        } else if (m->keyed && !m->hold) {
             m->unkey = true;
         }
         break;
@@ -1001,20 +1028,28 @@ static bool data_over(rdof_sdrmodem_t *m, int i, const rdof_burst_t *b)
 /* Duplex, keyed: a handheld's burst (MS sync, no CACH) is in the inbound slot its timing against our outbound says:
  * a duplex repeater's inbound TSx is under its outbound TSx, as an MMDVM labels it (measured with a handheld on a
  * 5 MHz split, 2026-10-27). The 1-2 crossover is a single frequency repeater's only. */
-int rdof_sdrmodem_inbound(rdof_sdrmodem_t *m, const rdof_sdr_burst_t *sb)
+bool rdof_sdrmodem_inbound_k(rdof_sdrmodem_t *m, const rdof_sdr_burst_t *sb, int64_t *k_out)
 {
 #if RDOF_FEATURE_REPEATER
     if (m->duplex && !m->role && m->keyed && m->slot_k >= 0 && sb->b.family == RDOF_FAMILY_MS) {
         const double slot48 = (double)rdof_mod_slot_samples(&m->mod) * 48000 / m->tx_fs;
         const double dt = (double)(sb->position - heard_at(m, m->base)) - SLOT_GUARD_US * 48 / 1000;
-        const int64_t k = (int64_t)floor(dt / slot48 + 0.5); /* outbound slot k: even TS1 */
+        const int64_t k = (int64_t)floor(dt / slot48 + 0.5); /* outbound slot k: even TS1; -1 and less before base */
         m->inbound_off = dt / slot48 - (double)k;
-        return (int)(k & 1) + 1;
+        *k_out = m->grid_placed ? m->grid_n0 + k : k;
+        return true;
     }
 #else
     (void)m, (void)sb;
 #endif
-    return 0;
+    *k_out = 0;
+    return false;
+}
+
+int rdof_sdrmodem_inbound(rdof_sdrmodem_t *m, const rdof_sdr_burst_t *sb)
+{
+    int64_t k;
+    return rdof_sdrmodem_inbound_k(m, sb, &k) ? (int)(k & 1) + 1 : 0;
 }
 
 void rdof_sdrmodem_heard(rdof_sdrmodem_t *m, int channel, const rdof_sdr_burst_t *sb)
@@ -1161,7 +1196,8 @@ void rdof_sdrmodem_cach(rdof_sdrmodem_t *m, long k, uint8_t out3[3])
     uint8_t bits[24];
     /* the AT bit speaks for the inbound slot that starts a slot later (ETSI TS 102 361-1 4.5 figure 4.8): with aligned
      * timing, the radios on the other channel, as an MMDVM sends it */
-    rdof_encode_cach_lc(s + 1, (rdof_sdrmodem_at(m) >> (s ^ 1)) & 1, lcss[q], m->slc[q], bits);
+    const int at = m->at_override >= 0 ? m->at_override & 1 : (rdof_sdrmodem_at(m) >> (s ^ 1)) & 1;
+    rdof_encode_cach_lc(s + 1, at, lcss[q], m->slc[q], bits);
     memset(out3, 0, 3);
     for (int i = 0; i < 24; i++)
         out3[i / 8] |= (uint8_t)((bits[i] & 1) << (7 - i % 8));
@@ -1240,6 +1276,31 @@ static void sched_put_back(rdof_sdrmodem_t *m, uint32_t c, const uint8_t burst[R
             memcpy(m->sched[i].burst, burst, RDOF_BURST_BYTES);
             return;
         }
+}
+
+/* The slot source's burst for the slot being queued (asked once a slot: kept if the modulator had no room), its AT
+ * for the CACH, and a new short LC for the next 4-slot cycle. */
+static bool source_slot(rdof_sdrmodem_t *m, uint8_t burst[RDOF_BURST_BYTES])
+{
+    const int64_t k = m->grid_placed ? m->grid_n0 + m->slot_k : m->slot_k;
+    if (!m->src_has || m->src_k != k) {
+        int at = -1;
+        int32_t slc = -1;
+        m->src_got = m->src.slot(m->src.ctx, k, m->src_burst, &at, &slc);
+        m->src_at = at;
+        m->src_has = true;
+        m->src_k = k;
+        if (slc >= 0) {
+            uint8_t lc5[5] = {(uint8_t)(slc >> 24 & 0x0F), (uint8_t)(slc >> 16), (uint8_t)(slc >> 8), (uint8_t)slc, 0};
+            uint8_t sl9[9];
+            rdof_short_lc(lc5, sl9);
+            rdof_short_lc_rows(sl9, m->slc_next);
+        }
+    }
+    m->at_override = m->src_at;
+    if (m->src_got)
+        memcpy(burst, m->src_burst, RDOF_BURST_BYTES);
+    return m->src_got;
 }
 #endif
 
@@ -1345,25 +1406,31 @@ static void queue_duplex(rdof_sdrmodem_t *m, int64_t pos, int n)
             if (!m->last_term[s])
                 m->underruns[s]++;
         }
-        bool idle = !m->qn[s] || (tx_half && !m->streaming[s]);
+        const bool from_src = !tx_half && m->src.slot && source_slot(m, burst);
+        bool idle = !from_src && (!m->qn[s] || (tx_half && !m->streaming[s]));
         if (idle)
             rdof_duplex_idle(m->cc, burst);
-        else
+        else if (!from_src)
             memcpy(burst, m->q[s][m->qh[s]].b, RDOF_BURST_BYTES);
         m->tx_active[s] = !idle;
         rdof_sdrmodem_cach(m, m->slot_k, c3);
+        m->at_override = -1;
         unsigned flags = (m->ramp_up ? RDOF_MOD_RAMP_UP : 0) | (m->unkey ? RDOF_MOD_RAMP_DOWN : 0);
         m->mod.next_off_hz = idle ? m->off_now : m->q[s][m->qh[s]].off_hz; /* idle fill: the offset in force */
         const int r = rdof_mod_queue_burst(&m->mod, at + cach, burst, c3, flags);
         m->mod.next_off_hz = 0.0f;
         if (r != 0)
             break;
+        m->src_has = false; /* sent: the next slot asks again */
         if (m->key_k < 0)
             m->key_k = m->slot_k;
         m->ramp_up = false;
         m->cach_bursts++;
         remember(m, at + cach, burst);
-        if (!idle) {
+        if (from_src) {
+            m->tx_bursts++;
+            m->src_bursts++;
+        } else if (!idle) {
             int cc, dt, e;
             m->last_term[s] = rdof_sync_errors(burst, rdof_data_sync(RDOF_BS_VOICE)) <= 4 &&
                               rdof_decode_slot_type(burst, &cc, &dt, &e) && dt == RDOF_DT_TERMINATOR_WITH_LC;
@@ -1586,6 +1653,20 @@ bool rdof_sdrmodem_pull_freq(rdof_sdrmodem_t *m, int64_t pos, float *hz, float *
     rdof_mod_freq(&m->mod, hz, env, n);
     m->pos = m->mod.pos;
     return keyed_in(m, env, NULL, n);
+}
+
+bool rdof_sdrmodem_pull_mixw(rdof_sdrmodem_t *m, int64_t pos, rdof_cf_t *iq, rdof_cf_t *scratch, int n, float w)
+{
+    const bool keyed = rdof_sdrmodem_pull_iq(m, pos, scratch, n);
+    const float v = 1.0f - w;
+    for (int i = 0; i < n; i++)
+        iq[i].re = v * iq[i].re + w * scratch[i].re, iq[i].im = v * iq[i].im + w * scratch[i].im;
+    return keyed;
+}
+
+bool rdof_sdrmodem_pull_mix(rdof_sdrmodem_t *m, int64_t pos, rdof_cf_t *iq, rdof_cf_t *scratch, int n)
+{
+    return rdof_sdrmodem_pull_mixw(m, pos, iq, scratch, n, 0.5f);
 }
 
 #endif /* RDOF_FEATURE_SDR */

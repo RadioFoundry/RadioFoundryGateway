@@ -109,8 +109,10 @@ static int pointDistance(uint8_t a, uint8_t b)
 	return (v & 1) + ((v >> 1) & 1) + ((v >> 2) & 1) + ((v >> 3) & 1);
 }
 
-// Hard decision Viterbi decoder. Returns the number of bit errors on the best path
-int dmrTrellisDecode(const uint8_t *frame, uint8_t *payload)
+// Hard decision Viterbi decoder. Returns the number of bit errors on the best path. The encoder starts in state 0
+// (361-1 B.2.2): the path starts there, or with anyStart in any state (state 0 keeps a tie), for a radio whose
+// encoder starts elsewhere (one heard on air started in state 4 or 7: only its first point was off)
+static int trellisDecode(const uint8_t *frame, uint8_t *payload, int anyStart, int *start)
 {
 	uint8_t dibits[TRELLIS_DIBITS];
 	uint8_t from[TRELLIS_STEPS][TRELLIS_STATES];// the state each state was reached from
@@ -126,7 +128,7 @@ int dmrTrellisDecode(const uint8_t *frame, uint8_t *payload)
 	metric[0] = 0;
 	for (int s = 1; s < TRELLIS_STATES; s++)
 	{
-		metric[s] = UNREACHED;
+		metric[s] = anyStart ? 0 : UNREACHED;
 	}
 
 	for (int i = 0; i < TRELLIS_STEPS; i++)
@@ -172,7 +174,26 @@ int dmrTrellisDecode(const uint8_t *frame, uint8_t *payload)
 		setBit(payload, bit + 2, state & 1);
 	}
 
+	if (start != NULL)
+	{
+		*start = from[0][state];// the state the path left at the first step
+	}
 	return metric[0];
+}
+
+int dmrTrellisDecode(const uint8_t *frame, uint8_t *payload)
+{
+	return trellisDecode(frame, payload, 0, NULL);
+}
+
+int dmrTrellisDecodeAnyStart(const uint8_t *frame, uint8_t *payload)
+{
+	return trellisDecode(frame, payload, 1, NULL);
+}
+
+int dmrTrellisDecodeAnyStartFrom(const uint8_t *frame, uint8_t *payload, int *start)
+{
+	return trellisDecode(frame, payload, 1, start);
 }
 
 // Rate 1: table B.10B, the 192 data bits are info bits 0-95 and 100-195; info bits 96-99 are reserved (sent as 0)

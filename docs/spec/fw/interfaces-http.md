@@ -214,12 +214,13 @@ Present when the IP gateway runs ([ipgw.md](ipgw.md)). Counters since boot, all 
 | `routes`, `nat`, `flows`, `max_flows` | routes configured, NAT on, flows open, the cap |
 | `rx_messages` | packet data messages put together with good CRCs |
 | `rx_bad`, `rx_incomplete`, `rx_dup` | a block, CRC-9 or CRC-32 failed; blocks missing; the same message again (or our own heard back) |
+| `rx_headers`, `rx_header_crc`, `rx_blocks`, `rx_block_fec`, `rx_block_crc` | headers that start a message; headers whose CRC failed; blocks taken in; of those, blocks whose FEC failed, confirmed blocks whose CRC-9 failed |
 | `not_ip`, `bad_ip`, `fragment`, `too_big` | not SAP 4 / SAP 3 / IPv4; header lengths or checksum wrong; IPv4 fragments; past `max_bytes` |
 | `not_udp`, `no_route`, `denied` | another protocol where UDP is needed; no route and NAT off; NAT destination denied |
 | `up_rate`, `flows_full`, `unresolved`, `send_failed` | over `up_pps`; no flow or socket free; a route's name not looked up yet; `sendto` failed |
 | `up_packets`, `up_bytes` | datagrams (payload octets) sent to the network |
 | `down_packets`, `down_bytes` | datagrams (whole IPv4 octets) sent down to radios |
-| `down_rate`, `down_too_big`, `down_stranger`, `down_bad_ip` | over `down_pps`; past `max_bytes`; from an address the flow didn't send to; payload `ip` not IPv4 or its checksum wrong |
+| `down_rate`, `down_too_big`, `down_stranger`, `down_bad_ip` | over `down_pps`; past `max_bytes` or 1520; from an address the flow didn't send to; payload `ip` not IPv4 or its checksum wrong |
 | `no_tx` | replies or ACKs with nothing to transmit them (or it refused) |
 | `acks` | confirmed data answered |
 | `flows_opened`, `flows_expired` | flows opened; closed idle |

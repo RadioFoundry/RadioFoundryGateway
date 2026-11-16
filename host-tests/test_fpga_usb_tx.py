@@ -96,13 +96,15 @@ cfo = [float(l.split()[10]) for l in out.splitlines() if " burst " in l and len(
 check(len(cfo) > 20 and abs(cfo[-1]) < abs(cfo[0]) / 2 and abs(cfo[-1]) < 120,
       f"listen: the AFC took the frequency error out through the NCOs: {cfo[:2]} ... {cfo[-2:]}")
 
-# refused: the simulated block without --sim-sdr, --sim-iq alone, --fpga-duc where the SDR would transmit
-for args, says in ((["--fpga-chz", "--listen", "--rx", "438.1125"], "with --iio"),
-                   (["--sim-iq", IQ + ":438.1875", "--listen", "--rx", "438.1125", "--file", "/dev/null"], "--sim-iq"),
-                   (["--sim-iq", IQ, "--sim-sdr", "--listen", "--rx", "438.1125"], "--sim-iq FILE:MHZ"),
-                   ([*SIM, "--allow-tx", "--rx", "438.1125", "--tx", "438.6"], "--sim-sdr only receives")):
+# refused: the simulated block without --sim-sdr, --sim-iq alone, --sim-tx on a run that doesn't transmit
+for args, says, want in ((["--fpga-chz", "--listen", "--rx", "438.1125"], "with --iio", 2),
+                         (["--sim-iq", IQ + ":438.1875", "--listen", "--rx", "438.1125", "--file", "/dev/null"],
+                          "--sim-iq", 2),
+                         (["--sim-iq", IQ, "--sim-sdr", "--listen", "--rx", "438.1125"], "--sim-iq FILE:MHZ", 2),
+                         ([*SIM_RX, "--sim-tx", os.path.join(D, "no.cf32"), "--listen", "--rx", "438.1125"],
+                          "--sim-tx: this run doesn't transmit on the SDR", 1)):  # the device's open refuses it
     rc, out, err = run("refused", args, 1)
-    check(rc == 2 and says in err, f"refused {args[:3]}: exit {rc}: {err[-200:]}")
+    check(rc == want and says in err, f"refused {args[:3]}: exit {rc}: {err[-200:]}")
 
 # 2. a split repeater, its radio on USB: the Pluto's flags, the radio transmits what the block heard
 p, port, log = fake("split", "odr_split")

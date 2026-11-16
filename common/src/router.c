@@ -77,7 +77,7 @@ static int app_for(const rdof_site_t *s, int path, const rdof_rcall_t *c)
 {
     for (int a = 0; a < s->napp; a++) {
         const rdof_app3_t *ap = &s->app[a];
-        if (ap->type == RDOF_APP_REPEATER || !(s->path[path].pol.apps >> a & 1))
+        if (ap->type == RDOF_APP_REPEATER || ap->type == RDOF_APP_TIER3 || !(s->path[path].pol.apps >> a & 1))
             continue;
         if (rdof_idset_has(c->group ? &ap->tg : &ap->pc, c->dst))
             return a;

@@ -13,6 +13,17 @@ path = "src/lib.rs"
 
 [dependencies]
 
+# legacy: the modules that replace common's C (the firmware's and rdof_tests_rust's build).
+# t3: the Tier III site controller: the PDU codec, the controller and the MS simulator (docs/spec/fw/tier3.md); no_std
+#     with no C, so `cargo test --no-default-features --features t3` runs it alone.
+# tier3: the whole Tier III site: t3, plus its radio layer, settings, unit, simulated air and split carrier, which call
+#     common's C (the FEC, mqtt-net, the settings plan) and legacy's modules. Rust only: there is no C twin.
+[features]
+default = ["legacy"]
+legacy = []
+t3 = []
+tier3 = ["legacy", "t3"]
+
 [profile.dev]
 panic = "abort"
 

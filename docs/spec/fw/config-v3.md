@@ -405,10 +405,10 @@ for SFR. The keys:
 | `repeater` | `in` and `out` frequencies | paths `<name>/1`, `<name>/2` | §6.2 |
 | `parrot` | | answers the IDs in its `tg` or `pc` | `name`, `type`, and `tg` or `pc` (ID sets) |
 | `ipgw` | | answers its ID | §6.3 |
+| `trunk` | 1-4 carriers, each an `out` and an `in` frequency | one path `<name>` (`trunk: true` in `info`) | §6.4 |
 
 Later, each as an app type, with no new section: `voting` (the best copy of each burst from several receivers),
-`simulcast` (one path, several transmitters), `trunk` (a control frequency and a pool; it assigns its own paths),
-`recorder`.
+`simulcast` (one path, several transmitters), `recorder`.
 
 An app that answers IDs (parrot, IP gateway) claims them: a call to a claimed ID on a path whose `apps` allows the app
 goes to the app and not to the network. Two apps may not claim the same ID.
@@ -464,7 +464,7 @@ The IP gateway: IP packets as DMR data between radios and the network ([ipgw.md]
 | `radio_net` | IPv4 CIDR, prefix 8..30 | `12.0.0.0/8` | the radios' addresses, from their DMR IDs |
 | `tx` | unit name | the first transmitting unit | where its answers go when no pool picks one. With the transmitter pool, the path the radio was last heard on |
 | `ack` | bool | true | answer a confirmed message with an ACK ([ipgw.md](ipgw.md) §10) |
-| `max_bytes` | int, 68..1520 | 1500 | the longest IP packet |
+| `max_bytes` | int, 68..3044 | 1500 | the longest IP packet (down at most 1520: rate 1/2) |
 | `up_pps`, `down_pps` | int, 0..1000 | 10, 2 | datagrams a second each way (a token bucket of twice that) |
 | `idle_s` | int, 5..86400 | 120 | a flow's idle time |
 | `max_flows` | int, 1..16 | 8 | NAT flows; cut to the build's `CONFIG_RDOF_IPGW_MAX_SOCKETS` |
@@ -483,6 +483,44 @@ It needs `routes` or `nat` ("nothing to do"). A route:
 | `payload` | `udp` \| `ip` | `udp` | the UDP payload, or the whole IP packet |
 
 A firmware build without `CONFIG_RDOF_IPGW` refuses an `ipgw` app. rdofradio runs it too ([ipgw.md](ipgw.md) §13.1).
+
+
+### 6.4 `trunk`
+
+A DMR Tier III trunked site ([tier3.md](tier3.md)): a control channel (TSCC) on one carrier's TS1, the other slots
+payload channels. One a box; it runs on a host (`rdofradio`), not on a board. The keys, defaults and ranges are
+tier3.md section 4 and 3.8; the manager's `cfg` documents override them (tier3.md 5.7).
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `carriers` | list, 1-4 | | each `{out, in, chan, tscc}`: frequency references, the logical channel number (1-4094, unique), `tscc` on exactly one |
+| `system` | object | small, net 1, site 1, `ab` | `model` (`tiny`, `small`, `large`, `huge`), `net`, `site` (within the model's bits), `par` (`a`, `b`, `ab`), `area_bits` (1 to the model's SITE bits, default all) |
+| `registration` | `open`, `listed` | `open` | `listed`: only `ms` may register (none without it) |
+| `ms`, `private`, `tg` | ID sets | `*` | who may register and be served; who may make individual calls; the talkgroups usable here |
+| `wide_tg`, `static_tg` | ID sets | none | talkgroups carried on the network; talkgroups always subscribed. 16 ranges at most each |
+| `require_registration` | bool | true | |
+| `refuse_unlisted` | `denied`, `refused` | `denied` | |
+| `foacsu` | bool | false | |
+| `dgna_from_ms` | bool | false | MSs may assign talkgroups to other MSs (DGNA, tier3.md 3.17); the site's own DGNA needs no setting |
+| `ambient_listening` | bool | false | MSs may ask for the Ambient Listening Service (an individual call the called MS answers by transmitting, tier3.md 3.18) |
+| `call_diversion` | bool | true | MSs may divert their calls to another MS or a talkgroup (tier3.md 3.18) |
+| `data_gateway` | integer | 0 | the site's own data ID besides TSI: packet data to it goes to the site's IP gateway (tier3.md 3.16); 0 none |
+| `timers` | object | tier3.md 3.8 | |
+| `broadcast` | object | 5, 10, 6, 0, 0, 0, 6, 0 | `adjacent_s`, `chan_freq_s`, `local_time_s`, `call_timers_s`, `vote_now_s`, `ann_tscc_s`: 0 (off) or 1-600; `vote_blk`: 2-10 TDMA frames; `priority`: 0-7 (tier3.md 3.11) |
+| `services` | object | | `emergency_preempt` (bool, false): clear a running call for a waiting emergency (tier3.md 3.9); `power_save` (0-7, 0), `power_save_awake_s` (0.1-60, 1), `power_save_group_hold_s` (0-10, 2), `mass_reg_at_start_s` (0-200000, 0) (tier3.md 3.11); `hibernate_s` (0 or 1-300, 0) (tier3.md 3.12); `duplex` (bool, false) (tier3.md 3.13); `composite_tscc` (bool, false): the TSCC's slot carries a call when no payload channel is free (tier3.md 3.19); `composite_late_entry` (bool, false): while that slot is lent, Late_Entry grants as P_GRANTs on it in its call's hang time (tier3.md 3.19); `transmit_interrupt` (bool, false): a listener may interrupt the talker, an ALS caller end the call, and an expired call timer de-keys the talker first (tier3.md 3.20) |
+| `auth` | `off`, `registration`, `required` | `off` | MS authentication (tier3.md 3.14): challenge MSs with a key (`cfg/ms` `auth_k`) at registration, or every MS |
+| `standby` | bool or object | false | two boxes with these settings, one on the air, the other taking over (tier3.md 6.2): `true`, or `{"takeover_s": 13, "fence_s": 9}` (`fence_s` 9-60, `takeover_s` at least `fence_s` + 3, at most 120). Needs the site's mqtt network; rdofradio only |
+
+Its frequencies are its own: no other app, gateway, transceiver or receiver uses them, and every carrier's color
+code is the same (the TSCC's). The unit, named after the app:
+
+- The TSCC carrier's `in` and `out` on one full-duplex SDR (its slot clock). A split's TX half can't carry the TSCC
+  yet (it can't time the short LC and the AT bit per slot).
+- Every carrier's `in` heard on that SDR: each is an extra channel of it, `<name>-<n>` in the carriers' order (the
+  TSCC's first).
+- Another carrier's `out` on an SDR (a carrier of its `tx.carriers`: the TSCC's SDR, summed into its stream by
+  rdofradio, tier3.md 9.4) or on a radio in hotspot mode with the split duplex extension (a split's TX half, one
+  carrier a radio).
 
 ## 7. Networks
 
@@ -1007,7 +1045,7 @@ The open (`rdof_plan_open`) refuses, with the place and the rule:
 |---|---|
 | units | an SFR on an SDR; an SFR or DCDM without a hotspot-mode modem (`radio_hotspot` or `auto`); `duplex: full` on a modem; a split whose transmit half is an SDR, or whose halves aren't hotspot-mode modems; a duplex repeater on a `radio_hotspot`; one modem or radio for two units ("a modem serves one"); two units with one name |
 | an SDR's driver (`check_caps`) | a rate over the driver's (`rtlsdr` 3.2 MS/s); a heard frequency outside its tuning range (`rtlsdr` 24 to 1766 MHz) or outside the window when `center_hz` is set; more than 16 receive channels |
-| an SDR that transmits | a driver that can't (`rtlsdr`); `tx.carriers` over the driver's (1 for every driver for now); more transmitting units than carriers; a duplex repeater, or a DCDM with `duplex: full`, on a half-duplex SDR (the LR2021) |
+| an SDR that transmits | a driver that can't (`rtlsdr`); `tx.carriers` over the driver's (1 for every driver for now; 2 on `iio`, `soapy` and `sim` when a trunked site's carriers are all it sends); more transmitting units than carriers; a duplex repeater, or a DCDM with `duplex: full`, on a half-duplex SDR (the LR2021) |
 | the bench | a bench modem that a frequency's `devices` pins to a unit (listed in `bench.devices`, it makes no unit otherwise); an SDR with both `bench` and `tx.bench` |
 | a transceiver | more than 32 frequencies to transmit on (`RDOF_PLAN_MAX_FREQS`, `RDOF_CFG_CHANNELS`) |
 

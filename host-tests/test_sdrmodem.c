@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "fake_radio.h"
 #include "rdof/split.h"
@@ -16,6 +17,9 @@
 #include "rdof/pdu.h"
 #include "rdof/sdr/sdrmodem.h"
 #include "rdof/sdr/sdrsplit.h"
+#if RDOF_RUST_T3
+#include "rdof/t3rf.h"
+#endif
 
 static int fails;
 
@@ -816,6 +820,24 @@ static void test_split_tx_solo(void)
     solo_pull(&m, m.cool_until48 + 48);
     rdof_sdrmodem_write(&m, (uint8_t[]){0xE0, 0x04, RDOF_MMDVM_DMR_START, 1}, 4);
     CHECK(m.keyed, "keyed again after it");
+    /* a handheld's burst by its timing: off the UTC grid a burst just before slot 0 is k -1, TS2 (as an MMDVM labels
+     * it), not "no slot" */
+    {
+        rdof_sdr_burst_t ib = {0};
+        ib.b.family = RDOF_FAMILY_MS;
+        ib.position = solo_now;
+        const int role = m.role;
+        m.role = 0; /* a duplex repeater's, not a split TX half's */
+        int64_t k0 = 0, k;
+        const bool in0 = rdof_sdrmodem_inbound_k(&m, &ib, &k0);
+        CHECK(!m.grid_placed && m.slot_k >= 0 && in0 && k0 >= 0, "inbound k %lld", (long long)k0);
+        ib.position -= (k0 + 1) * 1440;
+        CHECK(rdof_sdrmodem_inbound_k(&m, &ib, &k) && k == -1 && rdof_sdrmodem_inbound(&m, &ib) == 2,
+              "just before slot 0: k %lld, TS%d", (long long)k, rdof_sdrmodem_inbound(&m, &ib));
+        ib.b.family = RDOF_FAMILY_BS;
+        CHECK(!rdof_sdrmodem_inbound_k(&m, &ib, &k) && rdof_sdrmodem_inbound(&m, &ib) == 0, "not a handheld's: none");
+        m.role = role;
+    }
     /* a retune restarts the slot clock */
     uint8_t fq[9] = {0};
     rdof_sdrmodem_write(&m, f, rdof_mmdvm_frame(RDOF_MMDVM_SET_FREQ, fq, sizeof fq, f, sizeof f));
@@ -1994,6 +2016,288 @@ static void test_outbound_back(void)
     printf("outbound and back: %d BS idle bursts, unkeyed, role dropped, a simplex MS burst after\n", keyed_n);
 }
 
+#if RDOF_RUST_T3 /* the radio layer is Rust only (the tier3 feature) */
+/* A trunked site's control carrier (docs/spec/fw/tier3.md 9.1): a duplex modem held keyed with no host traffic, a
+ * slot source giving a CSBK in every TS1 slot (TS2 left to the modem: idle), the AT and a short LC from it. The
+ * source is asked once per slot, k after k; the receiver hears our blocks on TS1 and idles on TS2; the short LC goes
+ * on air; DMR_START 00 doesn't unkey a held key-up, hold_key false does. Without a source the modem is as before. */
+static const uint8_t SRC_PDU[10] = {0x80 | 25, 0x00, 0x00, 0x2C, 0x00, 0x00, 0xFF, 0xFF, 0xFE, 0x00};
+#define SRC_SLC 0x2ABCDEFu
+
+static struct {
+    int calls, gaps;
+    int64_t last;
+} srcr;
+
+static bool src_slot(void *ctx, int64_t k, uint8_t burst[RDOF_BURST_BYTES], int *at, int32_t *slc28)
+{
+    srcr.gaps += srcr.calls && k != srcr.last + 1;
+    srcr.calls++, srcr.last = k;
+    *at = 1;
+    if (k % 4 == 0)
+        *slc28 = (int32_t)SRC_SLC;
+    return !(k & 1) && rdof_t3rf_pdu_burst(RDOF_DT_CSBK, SRC_PDU, DC_CC, RDOF_FAMILY_BS, burst);
+}
+
+static struct {
+    int n, ours, idles, other;
+} srch;
+
+static void src_heard(void *ctx, int c, const rdof_sdr_burst_t *b, double t)
+{
+    uint8_t pdu[10];
+    int dt, cc;
+    srch.n++;
+    if (rdof_t3rf_burst_pdu(b->b.burst, &dt, &cc, pdu) == RDOF_T3RF_PDU_OK && dt == RDOF_DT_CSBK &&
+        !memcmp(pdu, SRC_PDU, 10) && b->b.slot == 1)
+        srch.ours++;
+    else if (b->b.dt == RDOF_DT_IDLE && b->b.slot == 2)
+        srch.idles++;
+    else
+        srch.other++;
+}
+
+static void test_slot_source(void)
+{
+    static rdof_sdrmodem_t m;
+    static rdof_sdr_rx_t rx;
+    const rdof_sdrmodem_io_t io = {no_reply, dcm_channel, dcm_tune, NULL, NULL};
+    CHECK(rdof_sdrmodem_init(&m, &io, DC_FS, DC_FS, true) == 0, "init");
+    const rdof_sdr_rx_config_t rc = {DC_FS, DC_CENTER, 0, 0, true, DC_CHUNK};
+    const rdof_sdr_channel_t ch = {"A", DC_CH, DC_CC, 2};
+    CHECK(rdof_sdr_rx_init(&rx, &rc, &ch, 1, NULL, 0) == 0, "receiver");
+    rx.on_burst = src_heard;
+    memset(&srcr, 0, sizeof srcr);
+    memset(&srch, 0, sizeof srch);
+    /* the repeater's settings on a full duplex front end: the outbound frames without the TX role or DMR_START */
+    uint8_t f[160];
+    size_t n = rdof_sdrmodem_outbound_frames(DC_CH, DC_CC, 0, 25, 15, f, sizeof f);
+    const size_t role = f[1];
+    rdof_sdrmodem_write(&m, f + role, n - role - 4);
+    CHECK(m.role == 0 && m.duplex && m.tuned && !m.keyed && m.mode == RDOF_MODE_DMR, "a duplex repeater modem, unkeyed");
+    const rdof_sdrmodem_source_t src = {src_slot, NULL};
+    rdof_sdrmodem_set_source(&m, &src);
+    CHECK(rdof_sdrmodem_hold_key(&m, true) && m.keyed, "held keyed");
+    ob_run(&m, &rx, 1.5, 0);
+    CHECK(srcr.calls >= 48 && !srcr.gaps && m.src_bursts == (uint32_t)(srcr.calls + 1) / 2,
+          "the source asked every slot: %d, %d gaps, %u bursts", srcr.calls, srcr.gaps, (unsigned)m.src_bursts);
+    CHECK(srch.ours >= 22 && srch.idles >= 22 && !srch.other, "heard: %d CSBKs on TS1, %d idles on TS2, %d other",
+          srch.ours, srch.idles, srch.other);
+    uint8_t lc5[5] = {(uint8_t)(SRC_SLC >> 24), (uint8_t)(SRC_SLC >> 16), (uint8_t)(SRC_SLC >> 8), (uint8_t)SRC_SLC,
+                      0},
+            sl9[9];
+    uint32_t rows[4];
+    rdof_short_lc(lc5, sl9);
+    rdof_short_lc_rows(sl9, rows);
+    CHECK(!memcmp(m.slc, rows, sizeof rows), "the source's short LC on air");
+
+    /* DMR_START 00 leaves a held key-up; hold_key false ends it */
+    const uint8_t off = 0;
+    rdof_sdrmodem_write(&m, f, rdof_mmdvm_frame(RDOF_MMDVM_DMR_START, &off, 1, f, sizeof f));
+    ob_run(&m, &rx, 0.3, 0);
+    CHECK(m.keyed && !m.unkey, "DMR_START 00: still keyed");
+    CHECK(rdof_sdrmodem_hold_key(&m, false), "released");
+    ob_run(&m, &rx, 0.3, 0);
+    const int heard = srch.n;
+    ob_run(&m, &rx, 0.3, 0);
+    CHECK(!m.keyed && srch.n == heard, "unkeyed: %d then %d", heard, srch.n);
+
+    /* no source: DMR_START keys, the modem's idles on both slots */
+    rdof_sdrmodem_set_source(&m, NULL);
+    const int ours = srch.ours;
+    memset(&srch, 0, sizeof srch);
+    const int calls = srcr.calls;
+    const uint8_t on = 1;
+    rdof_sdrmodem_write(&m, f, rdof_mmdvm_frame(RDOF_MMDVM_DMR_START, &on, 1, f, sizeof f));
+    ob_run(&m, &rx, 0.6, 0);
+    CHECK(srcr.calls == calls && !srch.ours && srch.n >= 15, "no source: %d bursts, none ours", srch.n);
+    rdof_sdr_rx_free(&rx);
+    rdof_sdrmodem_free(&m);
+    printf("slot source: %d slots asked, %d CSBKs heard on TS1, the short LC on air, held through DMR_START 00\n",
+           calls, ours);
+}
+
+/* A trunked site's two carriers out of one SDR (docs/spec/fw/tier3.md 9.4): two duplex modems, each with a slot source,
+ * keyed together and pulled for the same positions, the second summed in with rdof_sdrmodem_pull_mix (each at half
+ * amplitude), 62.5 kHz either side of a TX LO that stays put. The stream never passes full scale; a receiver hears both
+ * carriers, each 6 dB under one alone, with their own blocks on the same slots at the same sample; an inbound burst
+ * maps to the same slot k on either modem. And the time a pull takes, either modem, at 192 and 384 kS/s. */
+#define TC_LO 438687500.0
+#define TC_A 438750000u
+#define TC_B 438625000u
+#define TC_CHUNK 4096
+static const uint8_t TC_PDU_B[10] = {0x80 | 25, 0x00, 0x00, 0x2C, 0x00, 0x00, 0xFF, 0xFF, 0xFD, 0x00};
+
+static struct {
+    int calls[2], gaps[2];
+    int64_t last[2];
+} tcr;
+
+static bool tc_slot(int c, int64_t k, uint8_t burst[RDOF_BURST_BYTES], int *at)
+{
+    tcr.gaps[c] += tcr.calls[c] && k != tcr.last[c] + 1;
+    tcr.calls[c]++, tcr.last[c] = k;
+    *at = 1;
+    return rdof_t3rf_pdu_burst(RDOF_DT_CSBK, c ? TC_PDU_B : SRC_PDU, DC_CC, RDOF_FAMILY_BS, burst);
+}
+static bool tc_slot_a(void *ctx, int64_t k, uint8_t b[RDOF_BURST_BYTES], int *at, int32_t *slc28)
+{
+    return tc_slot(0, k, b, at);
+}
+static bool tc_slot_b(void *ctx, int64_t k, uint8_t b[RDOF_BURST_BYTES], int *at, int32_t *slc28)
+{
+    return tc_slot(1, k, b, at);
+}
+static int tc_channel(void *ctx, uint32_t hz) { return hz == TC_A - 500000 ? 0 : hz == TC_B - 250000 ? 1 : -1; }
+static bool tc_tune(void *ctx, uint32_t hz, double *off)
+{
+    *off = (double)hz - TC_LO;
+    return fabs(*off) < 70e3;
+}
+
+#define TC_MAX 512
+static struct {
+    int n[2];
+    int64_t pos[2][TC_MAX];
+    int slot[2][TC_MAX], ours[2], other[2];
+    double power[2];
+} tch;
+
+static void tc_heard(void *ctx, int c, const rdof_sdr_burst_t *b, double t)
+{
+    uint8_t pdu[10];
+    int dt, cc;
+    const bool ok = rdof_t3rf_burst_pdu(b->b.burst, &dt, &cc, pdu) == RDOF_T3RF_PDU_OK && dt == RDOF_DT_CSBK &&
+                    cc == DC_CC && !memcmp(pdu, c ? TC_PDU_B : SRC_PDU, 10);
+    ok ? tch.ours[c]++ : tch.other[c]++;
+    if (tch.n[c] < TC_MAX)
+        tch.pos[c][tch.n[c]] = b->position, tch.slot[c][tch.n[c]] = b->b.slot;
+    tch.n[c]++;
+    tch.power[c] += b->b.power_dbfs;
+}
+
+static void tc_modem(rdof_sdrmodem_t *m, int fs, uint32_t rx, uint32_t tx, bool (*slot)(void *, int64_t, uint8_t *, int *, int32_t *))
+{
+    const rdof_sdrmodem_io_t io = {no_reply, tc_channel, tc_tune, NULL, NULL};
+    CHECK(rdof_sdrmodem_init(m, &io, fs, fs, true) == 0, "init");
+    uint8_t config[23] = {0}, freq[14], f[64];
+    config[1] = RDOF_DMR_ENABLED, config[3] = RDOF_MODE_DMR, config[6] = DC_CC;
+    const uint8_t mode = RDOF_MODE_DMR;
+    rdof_sdrmodem_write(m, f, rdof_mmdvm_frame(RDOF_MMDVM_SET_CONFIG, config, sizeof config, f, sizeof f));
+    rdof_sdrmodem_write(m, f, rdof_mmdvm_frame(RDOF_MMDVM_SET_FREQ, freq, rdof_mmdvm_set_freq_payload(rx, tx, 255, freq),
+                                               f, sizeof f));
+    rdof_sdrmodem_write(m, f, rdof_mmdvm_frame(RDOF_MMDVM_SET_MODE, &mode, 1, f, sizeof f));
+    CHECK(m->duplex && m->tuned && m->mode == RDOF_MODE_DMR && !m->role, "a duplex modem, tuned");
+    const rdof_sdrmodem_source_t src = {slot, NULL};
+    rdof_sdrmodem_set_source(m, &src);
+}
+
+static double tc_now(void)
+{
+    struct timespec ts;
+    timespec_get(&ts, TIME_UTC);
+    return (double)ts.tv_sec + ts.tv_nsec * 1e-9;
+}
+
+/* both (or the first alone) for s seconds through the receiver; the peak |x|^2 */
+static double tc_run(rdof_sdrmodem_t *a, rdof_sdrmodem_t *b, int fs, rdof_sdr_rx_t *rx, double s)
+{
+    static rdof_cf_t iq[TC_CHUNK], scratch[TC_CHUNK];
+    double peak = 0;
+    for (int c = 0; c < (int)(s * fs / TC_CHUNK); c++) {
+        rdof_sdrmodem_pull_iq(a, rx ? rx->samples : (int64_t)c * TC_CHUNK, iq, TC_CHUNK);
+        if (b)
+            rdof_sdrmodem_pull_mix(b, rx ? rx->samples : (int64_t)c * TC_CHUNK, iq, scratch, TC_CHUNK);
+        for (int i = 0; i < TC_CHUNK; i++)
+            peak = fmax(peak, (double)iq[i].re * iq[i].re + (double)iq[i].im * iq[i].im);
+        if (rx)
+            rdof_sdr_rx_process(rx, iq, TC_CHUNK);
+    }
+    return peak;
+}
+
+static void test_two_carriers(void)
+{
+    static rdof_sdrmodem_t m1, m2;
+    static rdof_sdr_rx_t rx;
+    const int fs = 384000;
+    const rdof_sdr_rx_config_t rc = {fs, TC_LO, 0, 0, true, TC_CHUNK};
+    const rdof_sdr_channel_t ch[2] = {{"A", TC_A, DC_CC, 2}, {"B", TC_B, DC_CC, 2}};
+    double one = 0, peak1 = 0;
+    for (int pass = 0; pass < 2; pass++) { /* carrier 1 alone, then both */
+        memset(&tcr, 0, sizeof tcr);
+        memset(&tch, 0, sizeof tch);
+        CHECK(rdof_sdr_rx_init(&rx, &rc, ch, 2, NULL, 0) == 0, "receiver");
+        rx.on_burst = tc_heard;
+        tc_modem(&m1, fs, TC_A - 500000, TC_A, tc_slot_a);
+        if (pass)
+            tc_modem(&m2, fs, TC_B - 250000, TC_B, tc_slot_b);
+        CHECK(rdof_sdrmodem_hold_key(&m1, true) && (!pass || rdof_sdrmodem_hold_key(&m2, true)), "keyed together");
+        const double peak = tc_run(&m1, pass ? &m2 : NULL, fs, &rx, 1.5);
+        if (!pass) {
+            one = tch.n[0] ? tch.power[0] / tch.n[0] : 0, peak1 = peak;
+            CHECK(tch.ours[0] >= 40 && !tch.other[0] && !tch.n[1], "alone: %d ours, %d other on A, %d on B",
+                  tch.ours[0], tch.other[0], tch.n[1]);
+        } else {
+            CHECK(peak <= 1.0 + 1e-5 && peak > 0.5, "the sum's peak |x|^2 %.6f: within full scale", peak);
+            CHECK(tch.ours[0] >= 40 && tch.ours[1] >= 40 && !tch.other[0] && !tch.other[1],
+                  "both heard: A %d ours %d other, B %d ours %d other", tch.ours[0], tch.other[0], tch.ours[1],
+                  tch.other[1]);
+            for (int c = 0; c < 2; c++) {
+                const double level = tch.power[c] / tch.n[c] - one;
+                CHECK(fabs(level + 6.02) < 0.5, "carrier %d at %.2f dB to one alone, not -6.02", c + 1, level);
+            }
+            CHECK(tcr.calls[0] == tcr.calls[1] && tcr.last[0] == tcr.last[1] && !tcr.gaps[0] && !tcr.gaps[1],
+                  "the sources asked for the same slots: %d to %lld, %d to %lld", tcr.calls[0],
+                  (long long)tcr.last[0], tcr.calls[1], (long long)tcr.last[1]);
+            int same = 0;
+            for (int i = 0; i < tch.n[1] && i < TC_MAX; i++)
+                for (int j = 0; j < tch.n[0] && j < TC_MAX; j++)
+                    same += llabs(tch.pos[1][i] - tch.pos[0][j]) <= 1 && tch.slot[1][i] == tch.slot[0][j];
+            CHECK(same >= tch.n[1] - 1, "%d of carrier 2's %d bursts on carrier 1's slots", same, tch.n[1]);
+            /* an inbound (MS) burst under either outbound: the same slot k */
+            rdof_sdr_burst_t ib = {0};
+            ib.b.family = RDOF_FAMILY_MS;
+            int agree = 0;
+            for (int i = 0; i < 8; i++) {
+                ib.position = rx.samples * 48000 / fs - 20000 + i * 1440;
+                int64_t k1, k2;
+                agree += rdof_sdrmodem_inbound_k(&m1, &ib, &k1) && rdof_sdrmodem_inbound_k(&m2, &ib, &k2) && k1 == k2;
+            }
+            CHECK(agree == 8, "inbound bursts: %d of 8 on the same k", agree);
+            printf("two carriers: %d and %d blocks, each at %.2f / %.2f dB to one alone, peak |x|^2 %.4f (one alone %.4f)\n",
+                   tch.ours[0], tch.ours[1], tch.power[0] / tch.n[0] - one, tch.power[1] / tch.n[1] - one, peak,
+                   peak1);
+            rdof_sdrmodem_free(&m2);
+        }
+        rdof_sdrmodem_free(&m1);
+        rdof_sdr_rx_free(&rx);
+    }
+    /* the time a pull takes: carrier 1's (pull_iq), carrier 2's (pull_mix), TC_CHUNK samples */
+    for (int r = 0; r < 2; r++) {
+        const int rate = r ? 384000 : 192000;
+        tc_modem(&m1, rate, TC_A - 500000, TC_A, tc_slot_a);
+        tc_modem(&m2, rate, TC_B - 250000, TC_B, tc_slot_b);
+        rdof_sdrmodem_hold_key(&m1, true), rdof_sdrmodem_hold_key(&m2, true);
+        static rdof_cf_t iq[TC_CHUNK], scratch[TC_CHUNK];
+        const int pulls = (int)(4.0 * rate / TC_CHUNK);
+        double t1 = 0, t2 = 0;
+        for (int c = 0; c < pulls; c++) {
+            const double a = tc_now();
+            rdof_sdrmodem_pull_iq(&m1, (int64_t)c * TC_CHUNK, iq, TC_CHUNK);
+            const double b = tc_now();
+            rdof_sdrmodem_pull_mix(&m2, (int64_t)c * TC_CHUNK, iq, scratch, TC_CHUNK);
+            t1 += b - a, t2 += tc_now() - b;
+        }
+        printf("two carriers at %d S/s: a pull of %d samples %.1f us (carrier 1), %.1f us (carrier 2, with the sum); "
+               "%.2f%% and %.2f%% of real time\n", rate, TC_CHUNK, 1e6 * t1 / pulls, 1e6 * t2 / pulls,
+               100 * t1 / ((double)pulls * TC_CHUNK / rate), 100 * t2 / ((double)pulls * TC_CHUNK / rate));
+        rdof_sdrmodem_free(&m1);
+        rdof_sdrmodem_free(&m2);
+    }
+}
+#endif
+
 #endif
 
 /* A signal mode's source on a fast stream (a PlutoSDR's 864 kS/s, the carrier 100 kHz from its center): rendered at
@@ -2203,6 +2507,10 @@ int main(void)
     test_dcdm_e2e();
     test_outbound();
     test_outbound_back();
+#if RDOF_RUST_T3
+    test_slot_source();
+    test_two_carriers();
+#endif
 #endif
     test_write_from_reply();
     test_signal(true);

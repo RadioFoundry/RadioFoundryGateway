@@ -14,7 +14,7 @@ uint16_t rdof_ops_caps(const uint8_t *info, size_t len)
 {
     if (len < RDOF_OPS_CAPS_AT + 2)
         return 0;
-    return (uint16_t)((info[RDOF_OPS_CAPS_AT] | info[RDOF_OPS_CAPS_AT + 1] << 8) & RDOF_OPS_BUILT);
+    return (uint16_t)((info[RDOF_OPS_CAPS_AT] | info[RDOF_OPS_CAPS_AT + 1] << 8) & (RDOF_OPS_BUILT | RDOF_OPS_CACH | RDOF_OPS_RX_META));
 }
 
 int rdof_ops_guard_ms(const uint8_t *info, size_t len)
@@ -82,6 +82,15 @@ size_t rdof_ops_schedule(uint8_t *out, int64_t n, int slot, uint8_t control, con
     out[5] = control;
     memcpy(out + 6, burst, 33);
     return 39;
+}
+
+size_t rdof_ops_schedule_cach(uint8_t *out, int64_t n, int slot, uint8_t control, const uint8_t burst[33],
+                              const uint8_t cach[3])
+{
+    if (!rdof_ops_schedule(out, n, slot, control, burst))
+        return 0;
+    memcpy(out + 39, cach, 3);
+    return 42;
 }
 
 bool rdof_ops_scheduled(const uint8_t *d, size_t len, uint32_t *counter, int *outcome)

@@ -7,7 +7,7 @@ Status: phase 1 built, 2026-11-02 (§1.1): `common/src/mqttnet.c`, run by rdofra
 network and back out from another node on both slots, speech, every voice burst in order; the board's task is built,
 not yet run on hardware. Today's MQTT calls (`{root}/calls/...`, DMRD packets, [mqtt.md](mqtt.md) §10) stay the
 default; this replaces them later.
-Trunked sites (Tier III, [trunk.md](trunk.md)) use the same calls and topics, plus a call setup item (§9.4),
+Trunked sites (Tier III, [tier3.md](tier3.md)) use the same calls and topics, plus a call setup item (§9.4),
 registration records (§15), node status (§16) and provisioning from a manager (§17); a Tier II box needs only the
 setup answer (§9.4). The format stays 3: it is a draft until released.
 Related: [config-v3.md](config-v3.md) (talk paths, policies, networks), [dmr-core.md](dmr-core.md) (PDU layouts),
@@ -213,6 +213,7 @@ Each item is `[type u8][length u8][value]`. A length of 255 means a u16 length (
 | 0x0A | `quality` | bits corrected u8 (sum over this message's bursts, saturating), RSSI u8 (−dBm, average; 0 not measured) | 4 | added to RF-heard messages only |
 | 0x0B | `origin` | source network ID u32, source repeater ID u32, hop count u8 | 11 | a stream that came in through a bridge to another network, in its first message; bridges pass it on with one more hop |
 | 0x0C | `setup` | op u8, reason u8, flags u8, service options u8, ref u32 (§9.4) | 10 | a private call's setup across the network; the only item of its message |
+| 0x0D | `sdata` | op u8, what u8, reason u8, value u8, flags u8, pad nibble u8, why u8, 0 u8, ref u32, then 0-46 data octets ([tier3.md](tier3.md) 5.9) | 14 + data | Tier III short data (UDT, status, poll) or its result; the only item of its message; boxes without Tier III drop it |
 | 0x7F | `raw` | data type u8, then the 33-byte burst as heard | 36 | a burst the box can't decode (reserved data types, single-burst reverse channel) |
 
 ### 4.3 Rules
@@ -252,7 +253,8 @@ the rate in the item, and recomputes the header fields that depend on them (bloc
 - **Confirmed data is answered hop by hop.** The box that hears a confirmed data call answers the radio on RF itself
   (ACK, or a selective NAK for missing blocks) as soon as it has the call, then publishes it. It answers the way
   [ipgw.md](ipgw.md) §10 does. The box that delivers it sends it to the destination radio as confirmed data and
-  reports the result in `activity` (`data_result`, §7). Phase 1 sends it once; retries come later.
+  reports the result in `activity` (`data_result`, §7). Phase 1 sends it once; retries come later (a Tier III site
+  already retries: [tier3.md](tier3.md) 5.10).
   - Why: a radio waits `T_RspnsWait` for the response, 180 ms recommended (2 s minimum on simulcast; TS 102 361-3
     annex A.1), too short for a trip through the broker. ETSI leaves relaying between base stations out of scope
     (TS 102 361-3 §5).
@@ -348,7 +350,7 @@ place a call comes in or goes out, so the slot is part of the path where the slo
 | `paths[].tx_ok` | the path can transmit; only these can deliver a private call or answer confirmed data |
 | `paths[].tg`, `ptt`, `pc` | the path's resolved policy, in config v3's ID-set syntax ([config-v3.md](config-v3.md) §3, §8); only paths whose `net` is this network are listed |
 | `claims` | IDs this node answers for (apps, and a box's own `parrot` / `ipgw` apps); §9.2 |
-| `paths[].trunk` | `true` on a trunked site's path ([trunk.md](trunk.md)): the network addresses the site, never a slot |
+| `paths[].trunk` | `true` on a trunked site's path ([tier3.md](tier3.md)): the network addresses the site, never a slot |
 | `trunk` | a trunked site only: its system code, control channel and carriers, as below |
 
 ```json
@@ -356,11 +358,13 @@ place a call comes in or goes out, so the slot is part of the path where the slo
           "tscc": [{"chan": 1, "tx_hz": 438750000, "rx_hz": 438250000, "cc": 1}],
           "carriers": [{"chan": 1, "tx_hz": 438750000, "rx_hz": 438250000},
                        {"chan": 2, "tx_hz": 438600000, "rx_hz": 438500000}],
-          "services": ["reg", "group", "private", "allcall"], "reg": true}
+          "services": ["reg", "group", "private", "allcall"], "reg": true, "priority": 0}
 ```
 
-A trunked site builds its neighbor list (Adjacent_Site broadcasts) from the `trunk` objects of the other online
-nodes with the same `model` and `net`, unless its `cfg/node` document lists `neighbors`.
+`priority` is the site's priority for the Radiated Preference Strategy (0-7, 361-4 table 6.81). A trunked site builds
+its neighbor list (Adjacent_Site and Vote_Now broadcasts, Chan_Freq for each neighbor's TSCC channel from `tscc[0]`,
+the neighbor's `priority`) from the `trunk` objects of the other online nodes with the same `model` and `net`, unless
+its `cfg/node` document lists `neighbors` ([tier3.md](tier3.md) 3.11).
 
 ## 7. `activity` events
 
@@ -380,10 +384,12 @@ merge duplicates by `call_key`.
 | `data_fail` | a data call that didn't | `src, dst, reason` |
 | `data_result` | this box finished delivering a data call on RF | `src, dst, from` (the publisher's `{node}`), `from_stream`, `result` (`delivered`, `failed`, `no_response`, `unconfirmed`), `tries` |
 | `tx` | this box starts / stops transmitting a network stream | `action`, `src, dst, from` |
-| `reg` | a trunked site: a radio registers, de-registers, expires, or is denied or refused | `src, action` (`register`, `deregister`, `expire`, `deny`, `refuse`), `tg` (array) |
+| `reg` | a trunked site: a radio registers, de-registers, expires, is denied or refused, or answers an authentication challenge | `src, action` (`register`, `deregister`, `expire`, `deny`, `refuse`, `auth_ok`, `auth_fail`, `auth_none`: tier3.md 3.14), `tg` (array) |
 | `grant` | a trunked site grants a payload channel | `src, dst, group, chan` (logical channel), `lcn` (0 or 1), `late` (a late entry grant); `source` `rf` or `net` (who asked) |
 | `queue` | a trunked site queues a request, serves it, or drops it | `src, dst, group, action` (`in`, `out`, `drop`), `why` (on a drop) |
+| `interrupt` | a trunked site's transmit interrupt (tier3.md 3.20) | `src` (the interrupting MS), `dst` (the call's destination), `group`, `action` (`accepted`, `ceased`: the talker stopped, `gave_up`: it didn't or its site refused, `talks`: the interrupter talks), `talker` (the MS de-keyed; absent: none) |
 | `setup` | a call setup sent or received (§9.4) | `src, dst, op, reason, peer` (the other node) |
+| `status` | a trunked site delivered a status, or couldn't (tier3.md 3.10) | `src, dst, group, status` (0-126), `alarm` (`emergency` for 126, `cancel` for 124), `result` (`delivered`, `refused`, `away`, `busy`, `failed`) |
 
 On a trunked site, `call_start` and `call_end` carry `chan` and `lcn`; `path` is the site's one path and `slot` the
 payload channel's slot.
@@ -512,7 +518,7 @@ options' emergency bit (bit 7), in the request and in every answer to it.
 |---|---|---|
 | 0 | op | 1 `request`, 2 `accept`, 3 `reject`, 4 `alerting`, 5 `cancel`, 6 `answered` |
 | 1 | reason | 0 ok, 1 `not_found`, 2 `busy`, 3 `no_answer`, 4 `refused` (by the radio or policy), 5 `not_supported`, 6 `congestion` (no channel), 7 `timeout` |
-| 2 | flags | bit 0 `foacsu` (the called radio is alerted first), bit 1 `unconfirmed` (the answerer couldn't ask the radio: a Tier II box); bits 2–7 zero |
+| 2 | flags | bit 0 `foacsu` (the called radio is alerted first), bit 1 `unconfirmed` (the answerer couldn't ask the radio: a Tier II box), bit 2 `data` (a packet data call: [tier3.md](tier3.md) 5.10; set in every message of its setup), bit 3 `als` (an Ambient Listening Service call: the called radio transmits, [tier3.md](tier3.md) 3.18; in the request); bits 4–7 zero |
 | 3 | service options | as the trunking random access's: bit 7 emergency, bit 6 privacy, bits 1–0 priority |
 | 4 | ref | u32 little endian: the stream ID of the `request` this message answers; 0 in a request |
 
@@ -551,7 +557,13 @@ site A: grants the caller; the voice then goes as an ordinary private call both 
   turns the early refusal off; the request is then just dropped and the caller's timer ends it.
 - A setup message never becomes bursts: the downlink hands it to the box's handler (`rdof_mn_down_t.setup`).
 - A private call from a Tier II radio to a Tier III radio needs no setup: the trunked site does the check itself
-  when the voice arrives ([trunk.md](trunk.md) §3.6).
+  when the voice arrives ([tier3.md](tier3.md) §3.6). The same for data: a `data_pdu` to a Tier III radio with no
+  setup before it gets the check when it arrives.
+- **Packet data:** a trunked site asks with the `data` flag before it grants its radio a data channel; the answering
+  site checks its radio the same way and holds the accept 30 s for the `data_pdu` that follows (§4.4,
+  [tier3.md](tier3.md) 5.10). A Tier II box answers a data request like any other
+  (`accept` with `unconfirmed`, no `data` flag: the calling site goes by `ref`) and delivers the `data_pdu` as
+  ordinary data. A service that decodes a setup and encodes it again keeps every flag bit.
 
 ## 10. Config
 
@@ -675,7 +687,7 @@ two confirmed ones, one in parts (with the u16 length).
 
 ## 15. Registration records (`node/{node}/ms/{id}`)
 
-A trunked site publishes one retained record per radio it serves ([trunk.md](trunk.md) §3.4):
+A trunked site publishes one retained record per radio it serves ([tier3.md](tier3.md) §3.4):
 
 ```json
 {"id": 3100123, "at": "2026-11-05T21:04:11.250Z", "exp": "2026-11-06T01:04:11.000Z",
@@ -690,12 +702,13 @@ A trunked site publishes one retained record per radio it serves ([trunk.md](tru
 | `tg` | the talkgroups the site carries for it (the subscribed one first, then its recent calls, then provisioning), at most 8 |
 | `sub` | the talkgroup the radio subscribed to when it registered (absent: none) |
 | `area` | the registration area (absent: not given) |
+| `ps_rq`, `ps_off` | power save granted at registration: PowerSave_RQ (1-7) and PowerSave_Offset (1 to 2^`ps_rq` - 1); absent: none ([tier3.md](tier3.md) §3.11) |
 
 - Written on every change and at most once a minute for a refresh. Deleted (an empty retained message) on
   de-registration, expiry, a refusal after a policy change, or when `where/{id}` names another node with a newer
   time.
 - On a restart the site reads its own records back from the broker and serves those radios at once. A standby
-  controller does the same ([trunk.md](trunk.md) §6.2).
+  controller does the same ([tier3.md](tier3.md) §6.2).
 - The router reads them as sightings with `source: "reg"` at the record's `at`, valid until `exp`. A newer sighting
   anywhere (a record or heard traffic) wins; at the same time the record wins. It publishes `where/{id}` with
   `source`.
@@ -715,12 +728,15 @@ Any node, every 10 s and on change:
                          "since": "2026-11-05T21:04:01.000Z"},
                         {"chan": 2, "lcn": 0, "use": "idle"}, {"chan": 2, "lcn": 1, "use": "hang", "dst": 3100,
                          "group": true}],
-           "counters": {"aloha": 0, "rand": 0, "collisions": 0, "grants": 0, "refused": 0, "queued": 0}}}
+           "counters": {"aloha": 0, "rand": 0, "collisions": 0, "grants": 0, "refused": 0, "queued": 0},
+           "composite": {"lends": 3, "lent_s": 41.25, "lent_max_s": 20.5}}}
 ```
 
-`trunk` is a trunked site's only. `use`: `tscc`, `call`, `hang`, `idle`, `off` (out of service). `connected`: the
-backbone link (the site's Active_Connection). Code: `rdof_mn_status_json`. rdofradio and the board publish it on each
-connect and every 10 s; `uptime_s` is the process's on rdofradio, the time since boot on a board.
+`trunk` is a trunked site's only. `composite` is a composite TSCC's only (tier3.md 3.19): how often its slot was lent to
+a call, the seconds lent in all and the longest lend, the one going on counted. `use`: `tscc`, `call`, `hang`, `idle`,
+`off` (out of service). `connected`: the backbone link (the site's Active_Connection). Code: `rdof_mn_status_json`.
+rdofradio and the board publish it on each connect and every 10 s; `uptime_s` is the process's on rdofradio, the time
+since boot on a board.
 
 ## 17. Provisioning (`cfg/...`) and commands
 
@@ -743,10 +759,10 @@ change (frequencies, devices, carriers), is ignored and reported (in the log, or
 `cfg/node/{node}`, one site: `rev`, `at`, `name`, `site`, `par`, `area_bits`, `neighbors` (site numbers), `tg`,
 `static_tg`, `timers`, `broadcast`, `enabled` (false takes the site off the air: it withdraws its control channel).
 `site`, `par` and `area_bits` go at the document's top level (as the manager writes them) or in `system`. Both
-site-level documents take the same keys as the settings file's `trunk` app ([trunk.md](trunk.md) §4): `system`
+site-level documents take the same keys as the settings file's `trunk` app ([tier3.md](tier3.md) §4): `system`
 (`model`, `net`, `site`, `par`, `area_bits`), `registration` (`open`, `listed`), `ms`, `refuse_unlisted` (`denied`,
 `refused`), `private`, `tg`, `wide_tg`, `static_tg` (ID sets), `require_registration`, `foacsu`, `enabled`,
-`neighbors`, `timers` (names to numbers), `broadcast` (the control channel's broadcast intervals, [trunk.md](trunk.md)
+`neighbors`, `timers` (names to numbers), `broadcast` (the control channel's broadcast intervals, [tier3.md](tier3.md)
 §3.2: `adjacent_s`, `chan_freq_s`, `local_time_s`, seconds, 0 off). Both also take `name`: a name for people (the
 manager and dashboards show it); a site keeps it and doesn't act on it.
 
@@ -754,9 +770,12 @@ manager and dashboards show it); a site keeps it and doesn't act on it.
 (radios) limit where and by whom the talkgroup may be used, `*` when absent; `wide` carries it on the network;
 `priority` 0-3.
 
-`cfg/ms/{id}`: `{"rev", "at", "name", "enabled", "private", "wide_private", "priority", "emergency", "tg"}`. The
-booleans are true when absent. `enabled: false` denies the radio's registration at every site and removes a
-registration it has. `tg` (at most 8) are talkgroups the radio always gets.
+`cfg/ms/{id}`: `{"rev", "at", "name", "enabled", "private", "wide_private", "priority", "emergency", "tg", "auth_k",
+"psn"}`. The booleans are true when absent. `enabled: false` denies the radio's registration at every site and removes
+a registration it has. `tg` (at most 8) are talkgroups the radio always gets. `auth_k` (32 hex digits) is the radio's
+Tier III authentication key and `psn` (6 hex digits) its PSN, both optional (tier3.md 3.14). The key is secret: a node
+never logs or publishes it, and a bad one is refused without quoting it; every reader of `cfg/ms/+` can see it, so
+the ACL and TLS matter (§11).
 
 ### 17.2 Precedence
 
@@ -775,6 +794,9 @@ with `{"id": "c-123", "ok": true}` or `{"id": "c-123", "ok": false, "error": "..
 | `withdraw`, `restore` | | takes the control channel off the air, and back |
 | `resend_records` | | publishes every registration record again |
 | `status` | | publishes `status` now |
+| `mass_reg` | `window_s` (0-200000, 0 cancels), `ms` (optional) | a Tier III site asks its radios (or one) to register again within that time (tier3.md 3.11) |
+| `move` | `chan` (1-4094) or `site` (an adjacent site's C_SYScode), `ms` (optional) | a Tier III site sends its radios (or one) to the control channel on `chan`, or to that adjacent site's (tier3.md 3.12) |
+| `auth` | `ms` | a trunked site: an authentication poll of the radio (tier3.md 3.14); a failure removes its registration |
 
 An unknown command or a missing argument is answered `ok: false`.
 

@@ -208,6 +208,61 @@ if(RDOF_COMMON_IS_RUST MATCHES "RDOF_RUST=1")
     add_test(NAME rdof_tests_c COMMAND rdof_tests_c)
 endif()
 
+# The trunked site controller (rust's t3 feature, rdof/t3.h): its own tests (cargo test: the PDU codec and the
+# scenarios), and the C API from C. rdof_common's Rust has it (RDOF_TIER3, the default), else t3 is built alone.
+include(../rust/rust.cmake)
+rdof_t3_lib(RDOF_T3_LIB rdof_common)
+if(NOT RDOF_T3_LIB STREQUAL "NOTFOUND")
+    # A trunked site's radio layer (rdof/t3rf.h; Rust only).
+    add_executable(rdof_t3rf_tests test_t3rf.c)
+    target_include_directories(rdof_t3rf_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(rdof_t3rf_tests PRIVATE rdof_common)
+    set_target_properties(rdof_t3rf_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+    target_compile_options(rdof_t3rf_tests PRIVATE -Wall -Wno-unused-parameter)
+    if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+        target_compile_options(rdof_t3rf_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(rdof_t3rf_tests PRIVATE -fsanitize=address,undefined)
+    endif()
+    add_test(NAME rdof_t3rf_tests COMMAND rdof_t3rf_tests)
+    # Spec conformance of the radio layer's coding (361-1 annex B; a reference encoder written from the standard).
+    add_executable(rdof_t3spec_rf_tests test_t3spec_rf.c)
+    target_include_directories(rdof_t3spec_rf_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(rdof_t3spec_rf_tests PRIVATE rdof_common)
+    set_target_properties(rdof_t3spec_rf_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+    target_compile_options(rdof_t3spec_rf_tests PRIVATE -Wall -Wno-unused-parameter)
+    if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+        target_compile_options(rdof_t3spec_rf_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(rdof_t3spec_rf_tests PRIVATE -fsanitize=address,undefined)
+    endif()
+    add_test(NAME rdof_t3spec_rf_tests COMMAND rdof_t3spec_rf_tests)
+
+    add_executable(rdof_t3_tests test_t3.c)
+    target_include_directories(rdof_t3_tests PRIVATE ../common/include)
+    target_link_libraries(rdof_t3_tests PRIVATE ${RDOF_T3_LIB} rdof_common)
+    set_target_properties(rdof_t3_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+    target_compile_options(rdof_t3_tests PRIVATE -Wall -Wno-unused-parameter)
+    if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")  # rdof_common is built with them
+        target_compile_options(rdof_t3_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(rdof_t3_tests PRIVATE -fsanitize=address,undefined)
+    endif()
+    add_test(NAME rdof_t3_tests COMMAND rdof_t3_tests)
+    # The site joined up (rdof/t3unit.h, rdof/t3sim.h; Rust, in rdof_common): two sites, simulated MSs over the burst
+    # path, an in-process broker.
+    add_executable(rdof_t3unit_tests test_t3unit.c)
+    target_include_directories(rdof_t3unit_tests PRIVATE ../common/include)
+    target_link_libraries(rdof_t3unit_tests PRIVATE ${RDOF_T3_LIB} rdof_common)
+    set_target_properties(rdof_t3unit_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+    target_compile_options(rdof_t3unit_tests PRIVATE -Wall -Wno-unused-parameter)
+    if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+        target_compile_options(rdof_t3unit_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(rdof_t3unit_tests PRIVATE -fsanitize=address,undefined)
+    endif()
+    add_test(NAME rdof_t3unit_tests COMMAND rdof_t3unit_tests)
+    add_test(NAME rdof_t3_cargo_tests
+        COMMAND ${RDOF_CARGO} test --no-default-features --features t3 --manifest-path ${RDOF_RUST_DIR}/Cargo.toml
+                --target-dir ${CMAKE_CURRENT_BINARY_DIR}/rdof_rust_t3-cargo-test)
+endif()
+
 # The pages' scripts parse (a syntax error leaves a page section empty, and nothing else says so).
 find_program(NODE node)
 if(NODE)
@@ -218,6 +273,13 @@ if(NODE)
     endforeach()
     # The settings schema and the C parser agree (fixtures and key lists).
     add_test(NAME rdof_schema_tests COMMAND ${NODE} ${CMAKE_CURRENT_SOURCE_DIR}/test_schema.js)
+endif()
+
+# The Pluto bundle's run.sh and install.sh (which program starts, where an update goes, the SD card's partition).
+find_program(RDOF_XZ xz)
+if(RDOF_XZ)
+    add_test(NAME pluto_bundle COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/pluto_bundle.sh ${CMAKE_CURRENT_SOURCE_DIR}/..)
+    set_tests_properties(pluto_bundle PROPERTIES TIMEOUT 60)
 endif()
 
 # The components' portable parts (no ESP-IDF): netclock and wifilist.

@@ -7,6 +7,8 @@
 #   libmosquitto 2.x (libmosquitto-dev, Homebrew mosquitto; the PlutoSDR build makes its own): rdofradio's MQTT
 #   RDOF_HOST_WEB: rdofradio --web
 #   RDOF_VERSION: the version rdofradio reports (default: git describe at configure time)
+#   RDOF_TIER3 (ON) with cargo: rdofradio runs a trunked site and --sim-air (the controller is rust's t3 feature, in
+#   rdof_common's Rust library, or alone with the C modules); RDOF_RUST_TARGET is cargo's target for a cross build (armv7-unknown-linux-gnueabihf on a PlutoSDR)
 set(RDOF_CLI ${CMAKE_CURRENT_LIST_DIR})
 find_package(Threads REQUIRED)
 
@@ -44,7 +46,8 @@ find_path(AD9361_INCLUDE_DIR ad9361.h)
 find_library(AD9361_LIBRARY ad9361)
 set(RDOF_RADIO_SRCS ${RDOF_CLI}/rdofradio.c ${RDOF_CLI}/rdofradio_cfg.c ${RDOF_CLI}/rdofradio_serial.c
     ${RDOF_CLI}/rdofradio_net.c ${RDOF_CLI}/rdofradio_fpga.c ${RDOF_CLI}/rdofradio_dnssd.c
-    ${RDOF_CLI}/rdofradio_file.c ${RDOF_CLI}/rdofradio_sim.c ${RDOF_CLI}/rdofradio_ipgw.c)
+    ${RDOF_CLI}/rdofradio_file.c ${RDOF_CLI}/rdofradio_sim.c ${RDOF_CLI}/rdofradio_ipgw.c
+    ${RDOF_CLI}/rdofradio_utc.c)
 set(RDOF_RADIO_DEFS)
 set(RDOF_RADIO_INCS)
 set(RDOF_RADIO_LIBS)
@@ -126,6 +129,27 @@ if(RDOF_RADIO_DEFS AND NOT WIN32)
         endif()
     endif()
     target_compile_definitions(rdofradio PRIVATE RDOF_VERSION="${RDOF_VERSION}")
+    # the trunked site (rdofradio_t3.c): the controller in rust (rdof_common's Rust with the t3 feature, or t3
+    # built alone beside the C modules), the Tier III unit and the simulator
+    option(RDOF_TIER3 "rdofradio runs a trunked site (needs cargo)" ON)
+    set(RDOF_RUST_TARGET "" CACHE STRING "cargo's --target for the trunk controller (empty: the host)")
+    set(RDOF_T3_LIB NOTFOUND)
+    if(RDOF_TIER3)
+        if(NOT COMMAND rdof_t3_lib)
+            include(${RDOF_CLI}/../../rust/rust.cmake)
+        endif()
+        rdof_t3_lib(RDOF_T3_LIB rdof_common)
+    endif()
+    if(RDOF_TIER3 AND NOT RDOF_T3_LIB STREQUAL "NOTFOUND")
+        message(STATUS "rdofradio runs a trunked site")
+        target_sources(rdofradio PRIVATE ${RDOF_CLI}/rdofradio_t3.c ${RDOF_CLI}/rdofradio_simext.c)
+        target_compile_definitions(rdofradio PRIVATE RDOF_TIER3)
+        if(RDOF_T3_LIB)
+            target_link_libraries(rdofradio PRIVATE ${RDOF_T3_LIB})
+        endif()
+    else()
+        message(STATUS "rdofradio without the trunked site (RDOF_TIER3 off or no cargo)")
+    endif()
     option(RDOF_HOST_WEB "Link the web page server into the host tools (rdofradio --web [ADDR:]PORT)" OFF)
     if(RDOF_HOST_WEB)
         target_link_libraries(rdofradio PRIVATE rdof_hostweb)
@@ -140,6 +164,10 @@ if(TARGET rdofradio AND IIO_INCLUDE_DIR AND IIO_LIBRARY)
     set_tests_properties(rdofradio_listen_refuses_tx PROPERTIES PASS_REGULAR_EXPRESSION "--listen receives only")
     add_test(NAME rdofradio_listen_refuses_tx_flags COMMAND rdofradio --iio ip:192.0.2.1 --listen --rx 446 --tx-gain 10)
     set_tests_properties(rdofradio_listen_refuses_tx_flags PROPERTIES PASS_REGULAR_EXPRESSION "--listen receives only")
+    # a Pluto's run.sh passes --last-exit and --ota, and its flags may hold --web: taken with or without the web page
+    add_test(NAME rdofradio_web_flags_taken COMMAND rdofradio --iio ip:192.0.2.1 --web 0.0.0.0:8080 --last-exit
+             /nonexistent/last_exit --ota /nonexistent/rdofradio.ota --listen --allow-tx --rx 446)
+    set_tests_properties(rdofradio_web_flags_taken PROPERTIES PASS_REGULAR_EXPRESSION "--listen receives only")
     add_test(NAME rdofradio_needs_allow_tx COMMAND rdofradio --iio ip:192.0.2.1 --rx 446)
     set_tests_properties(rdofradio_needs_allow_tx PROPERTIES PASS_REGULAR_EXPRESSION "pass --allow-tx \\(or --listen")
 endif()
@@ -163,12 +191,48 @@ if(TARGET rdofradio AND TARGET fakemodem AND UNIX)
                  ${RDOF_CLI}/../../config/examples)
         set_tests_properties(rdofradio_e2e_examples PROPERTIES TIMEOUT 300)
     endif()
+    if(RDOF_TIER3 AND NOT RDOF_T3_LIB STREQUAL "NOTFOUND")
+        # no RF: a Tier III site on a file device with simulated MSs beside the air (--air-ms)
+        add_test(NAME rdofradio_e2e_t3_airms COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_t3_airms.sh
+                 $<TARGET_FILE_DIR:rdofradio>)
+        set_tests_properties(rdofradio_e2e_t3_airms PROPERTIES TIMEOUT 90)
+        # no RF: emergency pre-emption on a one-carrier site: the RC cease, the talker stops, the emergency call on TS2
+        add_test(NAME rdofradio_e2e_t3_preempt COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_t3_preempt.sh
+                 $<TARGET_FILE_DIR:rdofradio>)
+        set_tests_properties(rdofradio_e2e_t3_preempt PROPERTIES TIMEOUT 60)
+        # no RF: late entry on a lent composite TSCC slot: an MS that missed a call joins it from the slot's hang time
+        add_test(NAME rdofradio_e2e_t3_late COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_t3_late.sh
+                 $<TARGET_FILE_DIR:rdofradio>)
+        set_tests_properties(rdofradio_e2e_t3_late PROPERTIES TIMEOUT 90)
+        # no RF: a Tier III site's IP gateway: an MS's data to IPI goes out to a host and the reply comes back down
+        add_test(NAME rdofradio_e2e_t3_ipgw COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_t3_ipgw.sh
+                 $<TARGET_FILE_DIR:rdofradio> 47013)
+        set_tests_properties(rdofradio_e2e_t3_ipgw PROPERTIES TIMEOUT 120)
+        # no RF: a two-carrier site, both out of the SDR; rdofsdr decodes the transmit file at both outs
+        add_test(NAME rdofradio_e2e_t3_car2 COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_t3_car2.sh
+                 $<TARGET_FILE_DIR:rdofradio>)
+        set_tests_properties(rdofradio_e2e_t3_car2 PROPERTIES TIMEOUT 90)
+        # no RF: a four-carrier site, all out of the SDR; rdofsdr decodes the transmit file at every out
+        add_test(NAME rdofradio_e2e_t3_car4 COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_t3_car4.sh
+                 $<TARGET_FILE_DIR:rdofradio>)
+        set_tests_properties(rdofradio_e2e_t3_car4 PROPERTIES TIMEOUT 120)
+        # no RF: a site on a stock duplex MMDVM modem, simulated (--mmdvm sim-hat), its bursts each on their slot
+        add_test(NAME rdofradio_e2e_t3_hat COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_t3_hat.sh
+                 $<TARGET_FILE_DIR:rdofradio>)
+        set_tests_properties(rdofradio_e2e_t3_hat PROPERTIES TIMEOUT 60)
+    endif()
     # no RF: two boxes, each on a fakemodem, joined by the MQTT network (format v3) through a broker on this host
     find_program(MOSQUITTO_BROKER mosquitto HINTS /usr/sbin /usr/local/sbin /opt/homebrew/sbin)
     if(MOSQUITTO_BROKER AND MOSQUITTO_INCLUDE_DIR AND MOSQUITTO_LIBRARY)
         add_test(NAME rdofradio_e2e_mqttnet COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_mqttnet.sh
                  $<TARGET_FILE_DIR:rdofradio> ${MOSQUITTO_BROKER} 18873)
         set_tests_properties(rdofradio_e2e_mqttnet PROPERTIES TIMEOUT 60)
+        if(RDOF_TIER3)
+            # no RF: a standby pair of Tier III boxes through a crash and a hung broker (tier3.md 6.2)
+            add_test(NAME rdofradio_e2e_t3_standby COMMAND sh ${RDOF_CLI}/../../host-tests/e2e_t3_standby.sh
+                     $<TARGET_FILE_DIR:rdofradio> ${MOSQUITTO_BROKER} 18874)
+            set_tests_properties(rdofradio_e2e_t3_standby PROPERTIES TIMEOUT 120)
+        endif()
     else()
         message(STATUS "no mosquitto broker (or rdofradio without MQTT): the MQTT network's end-to-end test is off")
     endif()

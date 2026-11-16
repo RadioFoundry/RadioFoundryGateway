@@ -13,6 +13,9 @@
 #include "rdof/jitter.h"
 #include "rdof/jsonp.h"
 #include "rdof/siteplan.h"
+#ifdef RDOF_TIER3
+#include "rdof/t3cfg.h"
+#endif
 
 /* ntp: a string of servers, or {servers, poll_s, clock}. The clock is netclock's when servers are set, unless
    clock is "os"; "netclock" without servers runs it on the browser's time alone. */
@@ -115,8 +118,155 @@ static bool split_on_sdr(const rdof_plan_t *p, const char *name, rdofradio_split
     return true;
 }
 
+#ifdef RDOF_TIER3
+static void str_key(const rdof_jdoc_t *d, int obj, const char *key, const char *dflt, char *out, size_t cap)
+{
+    const int i = obj >= 0 ? rdof_jget(d, obj, key) : -1;
+    const rdof_jnode_t *n = i >= 0 ? rdof_jnode(d, i) : NULL;
+    snprintf(out, cap, "%s", n && n->type == RDOF_JSTR && n->str[0] ? n->str : dflt);
+}
+
+/* A trunked site: the controller's settings from its app, each carrier's devices, the mqtt network (as the board's
+   unit_mqtt reads it: host, port, username, password, root without its slashes, tls). */
+static bool from_trunk(const rdof_plan_t *p, int unit, rdofradio_cfg_t *o, char *err, size_t cap)
+{
+    rdofradio_t3_cfg_t *t = &o->t;
+    const rdof_site_t *s = rdof_plan_site(p);
+    const rdof_unit_t *u = rdof_plan_unit(p, unit);
+    if (!rdof_t3cfg_plan(p, unit, &t->cfg, &t->pol, err, cap))
+        return false;
+    o->tier3 = true;
+    snprintf(t->name, sizeof t->name, "%s", u->name);
+    snprintf(o->name, sizeof o->name, "%s", u->name);
+    t->path = s->app[u->app].path[0];
+    t->ncar = t->cfg.ncarriers;
+    for (int k = 0; k < t->ncar; k++) {
+        int rx = -1, tx = -1;
+        if (!rdof_plan_t3_carrier(p, unit, k, &rx, &tx)) {
+            snprintf(err, cap, "apps.%s: carrier %d has no device", s->app[u->app].name, k + 1);
+            return false;
+        }
+        t->car[k].rx_hz = t->cfg.carriers[k].rx_hz, t->car[k].tx_hz = t->cfg.carriers[k].tx_hz;
+        t->car[k].tx_sdr = tx >= 0 && s->dev[tx].kind == 1;
+        t->car[k].tx_dev = tx;
+        const rdof_plan_dev_t *d = tx >= 0 ? rdof_plan_dev(p, tx) : NULL;
+        if (d && d->port.kind == RDOF_PORT_PATH) {
+            snprintf(t->car[k].port, sizeof t->car[k].port, "%s", d->port.path);
+            t->car[k].baud = d->port.baud;
+        }
+        t->car[k].rx_sdr = rx >= 0 && s->dev[rx].kind == 1;
+        const rdof_plan_dev_t *r = rx >= 0 && !t->car[k].rx_sdr ? rdof_plan_dev(p, rx) : NULL;
+        if (r && r->port.kind == RDOF_PORT_PATH) {
+            snprintf(t->car[k].rx_port, sizeof t->car[k].rx_port, "%s", r->port.path);
+            t->car[k].rx_baud = r->port.baud;
+        }
+    }
+    t->net = rdof_plan_net_of(p, RDOF_NET_MQTT);
+    if (t->net >= 0) {
+        const rdof_jdoc_t *d = rdof_plan_doc(p);
+        const int m = rdof_plan_net_node(p, t->net);
+        str_key(d, m, "host", "localhost", t->host, sizeof t->host);
+        str_key(d, m, "username", "", t->user, sizeof t->user);
+        str_key(d, m, "password", "", t->pass, sizeof t->pass);
+        char root[64];
+        str_key(d, m, "root", "DMR", root, sizeof root);
+        size_t rl = strlen(root), lead = strspn(root, "/");
+        while (rl > lead && root[rl - 1] == '/')
+            rl--;
+        snprintf(t->root, sizeof t->root, "%.*s", (int)(rl - lead), root + lead);
+        const int pi = m >= 0 ? rdof_jget(d, m, "port") : -1, ti = m >= 0 ? rdof_jget(d, m, "tls") : -1;
+        t->port = pi >= 0 && rdof_jnode(d, pi)->type == RDOF_JNUM ? (int)rdof_jnode(d, pi)->num : 1883;
+        if (t->port <= 0 || t->port > 65535) {
+            snprintf(err, cap, "networks.%s.port: 1-65535", s->net[t->net].name);
+            return false;
+        }
+        t->tls = (ti >= 0 && rdof_jnode(d, ti)->type == RDOF_JBOOL && rdof_jnode(d, ti)->b) || s->net[t->net].transport == RDOF_MQTT_TLS;
+    }
+    /* "standby": true or {"takeover_s", "fence_s"} (tier3.md 6.2) */
+    t->standby = false, t->takeover_s = 13, t->fence_s = 9;
+    {
+        const rdof_jdoc_t *d = rdof_plan_doc(p);
+        const int a = rdof_plan_app_node(p, u->app), si = a >= 0 ? rdof_jget(d, a, "standby") : -1;
+        const rdof_jnode_t *n = si >= 0 ? rdof_jnode(d, si) : NULL;
+        const char *where = s->app[u->app].name;
+        if (n && n->type == RDOF_JBOOL) {
+            t->standby = n->b;
+        } else if (n && n->type == RDOF_JOBJ) {
+            t->standby = true;
+            for (int k = n->child; k >= 0; k = rdof_jnode(d, k)->next) {
+                const rdof_jnode_t *v = rdof_jnode(d, k);
+                double *to = !strcmp(v->key, "takeover_s") ? &t->takeover_s
+                             : !strcmp(v->key, "fence_s")  ? &t->fence_s
+                                                           : NULL;
+                if (!to || v->type != RDOF_JNUM) {
+                    snprintf(err, cap, "apps.%s.standby.%s: %s", where, v->key,
+                             to ? "a number of seconds" : "not a setting (takeover_s, fence_s)");
+                    return false;
+                }
+                *to = v->num;
+            }
+        } else if (n && n->type != RDOF_JNULL) {
+            snprintf(err, cap, "apps.%s.standby: true, false or {\"takeover_s\", \"fence_s\"}", where);
+            return false;
+        }
+        /* a standby gone without a word shows (its will) 7.5 s on: fence_s past it; the takeover past fence_s */
+        if (t->standby &&
+            (t->fence_s < 9 || t->fence_s > 60 || t->takeover_s < t->fence_s + 3 || t->takeover_s > 120)) {
+            snprintf(err, cap, "apps.%s.standby: fence_s 9-60, takeover_s at least fence_s + 3, at most 120", where);
+            return false;
+        }
+        if (t->standby && t->net < 0) {
+            snprintf(err, cap, "apps.%s.standby: needs the site's mqtt network", where);
+            return false;
+        }
+    }
+    /* the IP gateway app beside the site: the site's packet data goes to it (tier3.md 3.16) */
+    o->has_ipgw = false;
+    if (rdof_site_app_of(s, RDOF_APP_IPGW) >= 0) {
+        if (!rdof_plan_ipgw(p, &o->ipgw, err, cap))
+            return false;
+        o->has_ipgw = o->ipgw.on;
+    }
+    o->rx_hz = t->car[0].rx_hz, o->tx_hz = t->car[0].tx_hz, o->cc = t->cfg.cc;
+    o->full = true;
+    o->rx_slot = 1;
+    o->tx_power_dbm = NAN;
+    o->site = *s;
+    return clock_settings(p, o, err, cap);
+}
+#endif
+
+/* The plan's Tier III unit (a tier3 app), -1 none. */
+static int trunk_unit(const rdof_plan_t *p)
+{
+#ifdef RDOF_TIER3
+    return rdof_t3cfg_unit(p);
+#else
+    for (int k = 0; k < rdof_plan_nunits(p); k++)
+        if (rdof_plan_unit(p, k)->kind == RDOF_UNIT_TIER3)
+            return k;
+    return -1;
+#endif
+}
+
 static bool from_plan(const rdof_plan_t *p, rdofradio_cfg_t *o, char *err, size_t cap)
 {
+    const int tu = trunk_unit(p);
+    if (tu >= 0) {
+#ifdef RDOF_TIER3
+        if (!rdof_plan_check(p, &rdof_plan_host, err, cap))
+            return false;
+        rdof_roles_t roles;
+        if (rdof_plan_roles_on(p, &rdof_plan_host, &roles, err, cap))
+            snprintf(o->box, sizeof o->box, "%s", roles.box);
+        err[0] = 0;
+        return from_trunk(p, tu, o, err, cap);
+#else /* the Tier III site is rust's (RDOF_TIER3): none here */
+        snprintf(err, cap, "%s is a trunked site: this rdofradio was built without it (RDOF_TIER3, cargo)",
+                 rdof_plan_unit(p, tu)->name);
+        return false;
+#endif
+    }
     rdof_roles_t roles;
     if (!rdof_plan_check(p, &rdof_plan_host, err, cap) || !rdof_plan_roles_on(p, &rdof_plan_host, &roles, err, cap))
         return false;

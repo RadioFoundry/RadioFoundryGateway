@@ -20,7 +20,7 @@ use crate::mmdvm::{rdof_modem_config_default, RdofModemConfig};
 use crate::modem::{rdof_rssi_map_sort, RdofRssiMap};
 use crate::plan::{
     field, first_id, rdof_plan_close, rdof_txpower_level, rdof_plan_open, Plan, RdofPlan, RdofPort, RdofTxmap, RdofUnit, APP_PARROT, DEV_SDR, HEARS_SCAN,
-    NET_HBLINK, NET_MQTT, PORT_PATH, PORT_UART, UNIT_DCDM, UNIT_RECEIVER, UNIT_REPEATER, UNIT_SFR, UNIT_TRANSCEIVER,
+    NET_HBLINK, NET_MQTT, PORT_PATH, PORT_UART, UNIT_DCDM, UNIT_RECEIVER, UNIT_REPEATER, UNIT_SFR, UNIT_TRANSCEIVER, UNIT_TRUNK,
 };
 use crate::slotgrid::{rdof_slot_timing_describe, rdof_slot_timing_parse, RdofSlotTiming};
 use crate::status::rdof_format_repr;
@@ -1109,9 +1109,16 @@ impl Cx<'_> {
         let want = if want.is_null() { None } else { Some(CStr::from_ptr(want).to_bytes()) };
         let Some(k) = (0..p.nunits()).find(|&i| {
             let u = p.unit(i);
-            u.kind != UNIT_RECEIVER && want.is_none_or(|w| same_n(field(&u.name), w, cfg.name.len() - 1))
+            u.kind != UNIT_RECEIVER && u.kind != UNIT_TRUNK && want.is_none_or(|w| same_n(field(&u.name), w, cfg.name.len() - 1))
         }) else {
+            let trunk = want.is_some_and(|w| {
+                (0..p.nunits()).any(|i| p.unit(i).kind == UNIT_TRUNK && same_n(field(&p.unit(i).name), w, cfg.name.len() - 1))
+            });
             return match want {
+                Some(w) if trunk => self.err(&[
+                    S(w),
+                    S(b" is a trunked site: rdofradio runs it (rdof/t3cfg.h), not a radio unit"),
+                ]),
                 Some(w) => self.err(&[
                     S(w),
                     S(b" isn't a unit that transmits (a repeater, an SFR or DCDM frequency, or a device transmitting \

@@ -291,13 +291,13 @@ bool rdof_mn_setup_parse(const uint8_t *msg, size_t len, rdof_mn_hdr_t *h, rdof_
     return rdof_mn_next(&r, &it) && rdof_mn_setup_of(&it, s);
 }
 
-/* The message's first item is a setup item (valid or not). */
+/* The message's first item is a setup item (valid or not), or Tier III short data: never a stream. */
 static bool setup_first(const uint8_t *msg, size_t len)
 {
     rdof_mn_reader_t r;
     rdof_mn_item_t it;
     rdof_mn_reader(&r, msg, len);
-    return rdof_mn_next(&r, &it) && it.type == RDOF_MN_SETUP;
+    return rdof_mn_next(&r, &it) && (it.type == RDOF_MN_SETUP || it.type == RDOF_MN_SDATA);
 }
 
 const char *rdof_mn_setup_op_name(int op)
@@ -512,6 +512,35 @@ size_t rdof_mn_queue_event(const rdof_mn_ev_t *e, uint32_t src, uint32_t dst, bo
     return ev_done(&j);
 }
 
+size_t rdof_mn_status_event(const rdof_mn_ev_t *e, uint32_t src, uint32_t dst, bool group, int status,
+                            const char *result, char *out, size_t cap)
+{
+    rdof_json_t j;
+    ev_common(&j, out, cap, "status", e);
+    rdof_json_int(&j, "src", src);
+    rdof_json_int(&j, "dst", dst);
+    rdof_json_bool(&j, "group", group);
+    rdof_json_int(&j, "status", status);
+    if (status == 126 || status == 124)
+        rdof_json_str(&j, "alarm", status == 126 ? "emergency" : "cancel");
+    rdof_json_str(&j, "result", result);
+    return ev_done(&j);
+}
+
+size_t rdof_mn_intr_event(const rdof_mn_ev_t *e, uint32_t src, uint32_t dst, bool group, const char *action,
+                          uint32_t talker, char *out, size_t cap)
+{
+    rdof_json_t j;
+    ev_common(&j, out, cap, "interrupt", e);
+    rdof_json_int(&j, "src", src);
+    rdof_json_int(&j, "dst", dst);
+    rdof_json_bool(&j, "group", group);
+    rdof_json_str(&j, "action", action);
+    if (talker)
+        rdof_json_int(&j, "talker", talker);
+    return ev_done(&j);
+}
+
 size_t rdof_mn_setup_event(const rdof_mn_ev_t *e, uint32_t src, uint32_t dst, int op, int reason, const char *peer,
                            char *out, size_t cap)
 {
@@ -658,6 +687,9 @@ void rdof_mn_up_init(rdof_mn_up_t *u, const char *node)
     memset(u, 0, sizeof *u);
     u->node = node;
 }
+
+size_t rdof_mn_up_size(void) { return sizeof(rdof_mn_up_t); }
+size_t rdof_mn_up_align(void) { return _Alignof(rdof_mn_up_t); }
 
 static double up_wall(rdof_mn_up_t *u) { return u->wall ? u->wall(u->ctx) : 0.0; }
 
@@ -1570,6 +1602,9 @@ void rdof_mn_down_init(rdof_mn_down_t *d)
     d->max_preambles = 8;
 }
 
+size_t rdof_mn_down_size(void) { return sizeof(rdof_mn_down_t); }
+size_t rdof_mn_down_align(void) { return _Alignof(rdof_mn_down_t); }
+
 const char *rdof_mn_down_from(const rdof_mn_down_t *d, uint32_t stream)
 {
     for (int k = 0; k < RDOF_MN_DOWN_STREAMS; k++)
@@ -1732,7 +1767,7 @@ bool rdof_mn_down_message(rdof_mn_down_t *d, const char *node, bool dl, const ui
             d->setup(d->ctx, &h, &setup, dl, node);
         return true;
     }
-    if (setup_first(msg, len)) { /* a setup item of the wrong length or op: dropped, never a stream */
+    if (setup_first(msg, len)) { /* a setup item of the wrong length or op, or short data: dropped, never a stream */
         d->bad++;
         return false;
     }
@@ -1966,7 +2001,7 @@ size_t rdof_mn_info_json(const rdof_site_t *s, int net, const rdof_mn_info_t *in
             rdof_json_int(&q, "i", k);
             rdof_json_str(&q, "name", p->name);
             if (p->app >= 0)
-                rdof_json_str(&q, "app", "repeater");
+                rdof_json_str(&q, "app", s->app[p->app].type == RDOF_APP_TIER3 ? "tier3" : "repeater");
             if (in->trunk_paths >> k & 1)
                 rdof_json_bool(&q, "trunk", true);
             mhz(&q, "rx", rx->hz);
@@ -2065,7 +2100,7 @@ int rdof_mn_claim_ids(const rdof_site_t *s, int which, uint32_t *ids, int max)
     int nids = 0;
     for (int a = 0; a < s->napp; a++) {
         const rdof_app3_t *ap = &s->app[a];
-        if (ap->type == RDOF_APP_REPEATER)
+        if (ap->type == RDOF_APP_REPEATER || ap->type == RDOF_APP_TIER3)
             continue;
         for (int g = 0; g < 2; g++) {
             if (which != 2 && which != g)

@@ -130,6 +130,11 @@ const char *rdofmq_hwid(void)
     static char id[7];
     if (id[0])
         return id;
+    const char *e = getenv("RDOF_HWID"); /* two boxes on one host (the tests) */
+    if (e && e[0]) {
+        snprintf(id, sizeof id, "%.6s", e);
+        return id;
+    }
     /* the first interface by name with a hardware address (Linux) */
     struct dirent **list = NULL;
     const int n = scandir("/sys/class/net", &list, NULL, alphasort);
@@ -204,7 +209,7 @@ rdofmq_t *rdofmq_start(const rdofmq_opts_t *o)
     mosquitto_publish_v5_callback_set(m, on_publish);
     mosquitto_message_v5_callback_set(m, on_message);
     mosquitto_reconnect_delay_set(m, 2, 30, true);
-    const int rc = mosquitto_connect_async(m, o->host, o->port, 30);
+    const int rc = mosquitto_connect_async(m, o->host, o->port, o->keepalive_s > 0 ? o->keepalive_s : 30);
     if (rc != MOSQ_ERR_SUCCESS) /* the loop tries again */
         say(q, "mqtt: %s:%d: %s", o->host, o->port, mosquitto_strerror(rc));
     if (mosquitto_loop_start(m) != MOSQ_ERR_SUCCESS) {

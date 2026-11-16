@@ -38,11 +38,12 @@ extern "C" {
 #define RDOF_SITE_MAX_NETS 4
 #define RDOF_SITE_MAX_POLICIES 16
 #define RDOF_SITE_MAX_PATHS 64
+#define RDOF_SITE_MAX_CARRIERS 4 /* a trunked site's carriers */
 
 typedef enum { RDOF_FMODE_SIMPLEX = 0, RDOF_FMODE_SFR, RDOF_FMODE_DCDM } rdof_fmode_t;
 typedef enum { RDOF_FLOW_RF_NET = 1, RDOF_FLOW_NET_RF = 2, RDOF_FLOW_BOTH = 3 } rdof_flow_t;
 typedef enum { RDOF_HEARS_WINDOW = 0, RDOF_HEARS_IDLE, RDOF_HEARS_SCAN, RDOF_HEARS_NONE } rdof_hears_t;
-typedef enum { RDOF_APP_REPEATER = 1, RDOF_APP_PARROT, RDOF_APP_IPGW } rdof_app_type_t;
+typedef enum { RDOF_APP_REPEATER = 1, RDOF_APP_PARROT, RDOF_APP_IPGW, RDOF_APP_TIER3 } rdof_app_type_t;
 typedef enum { RDOF_NET_HBLINK = 1, RDOF_NET_MQTT } rdof_net_type_t;
 enum { RDOF_MQTT_FORMAT_DMRD = 0, RDOF_MQTT_FORMAT_V3 = 1 };
 enum { RDOF_MQTT_TCP = 0, RDOF_MQTT_TLS = 1 };
@@ -84,12 +85,22 @@ typedef struct {
     uint64_t transmits; /* the frequencies it may transmit on (bit per frequency) */
 } rdof_device3_t;
 
+/* A trunked site's carrier. */
+typedef struct {
+    int in, out;     /* frequencies */
+    uint16_t chan;   /* the logical channel number in grants, 1-4094 */
+} rdof_carrier3_t;
+
 typedef struct {
     char name[RDOF_SITE_NAME];
     uint8_t type;    /* rdof_app_type_t */
     int in, out;     /* a repeater: its frequencies */
-    int path[2];     /* a repeater: its slots' paths */
+    int path[2];     /* a repeater: its slots' paths; a trunked site: path[0] its one path */
     rdof_idset_t tg, pc; /* a parrot's, an IP gateway's: the IDs it answers */
+    /* a trunked site (docs/spec/fw/tier3.md section 4): its carriers, the TSCC's first; the rest of its keys are
+       read by the Tier III unit from the app's own object */
+    rdof_carrier3_t carrier[RDOF_SITE_MAX_CARRIERS];
+    uint8_t ncarrier;
 } rdof_app3_t;
 
 typedef struct {

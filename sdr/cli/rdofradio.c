@@ -31,9 +31,10 @@
  *   rdofradio [DEVICE] --allow-tx --mmdvm PORT [--baud N] [--rf-level N] [--rx-offset-hz HZ] [--tx-offset-hz HZ]
  *             [--rx-level PCT] [--tx-level PCT] --rx MHZ [--tx MHZ] [--duplex full|half] [--cc CC] | --config FILE [...]
  *
- * --sim-sdr in place of DEVICE, receive only with --mmdvm, --split-tx or --listen: a receiver of noise, for tests
- * with no RF; --sim-iq FILE:MHZ, of a cu8 recording at -r centered on MHZ, looped. With --fpga-chz, a simulated
- * FPGA channelizer block too (rdofradio_sim.c): its registers and frames, the board's path with no Pluto.
+ * --sim-sdr in place of DEVICE: a device for tests with no RF (rdofradio_sim.c). It hears noise, or --sim-iq
+ * FILE:MHZ, a cu8 recording at -r centered on MHZ, looped; it transmits at the clock's pace, into --sim-tx FILE (cf32)
+ * if given. With --fpga-chz and --fpga-duc, a simulated FPGA channelizer and TX interpolator too: their registers
+ * and the channelizer's frames, the board's path with no Pluto.
  *
  * DEVICE is --soapy ARGS (SoapySDR; -r defaults to 2.4 MS/s) or --iio URI (an AD9361 through libiio: "local:" on a
  * PlutoSDR, "ip:192.168.2.1" from a host; -r defaults to 768 kS/s, which the chip's own FIR makes with
@@ -129,6 +130,7 @@
 #include "rdof/benchline.h"
 #include "rdof/benchnet.h"
 #include "rdof/benchtx.h"
+#include "rdof/fec.h"
 #include "rdof/hbpeer.h"
 #include "rdof/layer2.h"
 #include "rdof/modem.h"
@@ -149,9 +151,13 @@
 #include "rdof/sdr/spectrum.h"
 #include "rdof/txvr.h"
 #include "rdofradio_cfg.h"
+#ifdef RDOF_TIER3
+#include "rdofradio_t3.h"
+#endif
 #include "rdofradio_dev.h"
 #include "rdofradio_fpga.h"
 #include "rdofradio_ipgw.h"
+#include "rdofradio_utc.h"
 #include "rdofradio_dnssd.h"
 #include "rdofradio_net.h"
 #include "rdofradio_serial.h"
@@ -316,7 +322,29 @@ static void on_signal(int s) { stop = 1; }
 
 /* --config: the file, and the radio it (or the command line) sets */
 static const char *config_path;
+/* a trunked site's (rdofradio_t3.h): --sim-air and the rest */
+static struct {
+    int sim_n, air_ms;
+    uint32_t sim_id, sim_tg;
+    double sim_talk_s, sim_ext_loss, sim_ext_err;
+    const char *sim_script, *state_dir, *sim_ext;
+    bool sim_fast;
+} t3_opts = {.sim_id = 1000001, .sim_tg = 9};
 static rdofradio_cfg_t rcfg;
+/* --tier3 FILE with --mmdvm: a trunked site's carrier on the modem (rdofradio_t3_start_hat), its settings beside
+ * --config's (the receiver's channels, the networks, the bench) */
+static const char *t3_path;
+static rdofradio_cfg_t t3cfg;
+static double hat_lead_ms[2] = {132, 161}; /* the middle of the AT idle and AT busy windows (tier3-hat.md H9, H10) */
+static bool hat_mark;                      /* --hat-mark: the host's idle bursts told apart on air */
+static double hat_sweep_ms[5];             /* --hat-sweep FROM,TO,STEP,SECONDS[,KEEP] */
+static bool hat_on; /* the site has the modem */
+#ifdef RDOF_TIER3
+static bool hat_modem_up(void);
+static rdof_mmdvm_reader_t hat_rd; /* the port's frames while the site has the modem: its status replies */
+static void hat_frame_in(void *ctx, uint8_t cmd, const uint8_t *p, size_t len);
+#endif
+static bool t3_sdr2; /* a trunked site's carriers 2 to 4 sent by the SDR too: the TX LO mid-way between them, fixed */
 #ifdef RDOF_HOST_WEB
 static char held[300]; /* hold (below): why the settings don't run, "" when they do */
 #endif
@@ -531,8 +559,18 @@ static void usage(void)
             "       rdofradio [DEVICE] --allow-tx --mmdvm PORT [--baud N] [--rf-level N] [--rx-offset-hz HZ]\n"
             "                 [--tx-offset-hz HZ] [--rx-level PCT] [--tx-level PCT] --rx MHZ [--tx MHZ] [--duplex full|half]\n"
             "                 [--cc CC] | --config FILE [--parrot ID] [--seconds S] [-v] [--web ...] [--bench ...]\n"
+            "       rdofradio DEVICE --allow-tx --config FILE (a trunked site) [--state-dir DIR] [the device's flags]\n"
+            "                 [--air-ms N [--sim-id ID] [--sim-tg TG] [--sim-talk S]] [--sim-script FILE] (simulated MSs\n"
+            "                 beside the radios on the air)\n"
+            "       rdofradio [DEVICE] --allow-tx --mmdvm PORT|sim-hat --config FILE --tier3 FILE [--hat-lead IDLE_MS,BUSY_MS]\n"
+            "                 [--air-ms N ...] (a trunked site's carrier on a stock duplex modem, the SDR hearing it;\n"
+            "                 leads 132,161 ms by default; sim-hat: the modem simulated, no SDR; measuring: --hat-mark\n"
+            "                 (idle bursts told apart on air), --hat-sweep FROM_MS,TO_MS,STEP_MS,SECONDS[,1: no flush per step] (a lead sweep))\n"
+            "       rdofradio --config FILE --sim-air N [--sim-id ID] [--sim-tg TG] [--sim-talk S] [--sim-script FILE]\n"
+            "                 [--sim-ext PATH [--sim-fast] [--sim-ext-loss P] [--sim-ext-err P]]\n"
+            "                 [--state-dir DIR] [--seconds S] [-v] (a trunked site's air simulated, rdofradio_t3.h)\n"
             "--soapy takes --setting KEY=VALUE, repeated: the driver's own (an RTL-SDR's biastee=true)\n"
-            "DEVICE: %s (or, receive only, --sim-sdr [--sim-iq FILE:MHZ]: for tests with no RF)\n",
+            "DEVICE: %s (or --sim-sdr [--sim-iq FILE:MHZ] [--sim-tx FILE]: for tests with no RF)\n",
 #if defined(RDOF_SOAPY) && defined(RDOF_IIO)
             "--soapy ARGS | --iio URI | --file RX[,TX]"
 #elif defined(RDOF_SOAPY)
@@ -689,7 +727,8 @@ static struct {
     unsigned long addr;
     void *regs;
     rdof_chzhw_duc_t d;
-} DX = {.addr = DX_ADDR};
+    long in_hi, in_lo; /* the transmit stream's rates it takes: 192 kS/s, else 96; 384 only for two carriers */
+} DX = {.addr = DX_ADDR, .in_hi = 192000, .in_lo = 96000};
 static long dx_r(double rate);
 static double plan_rate(const rdof_sdr_channel_t *c, int n, char *why, size_t cap)
 {
@@ -887,6 +926,10 @@ static void br_event(const rdof_bl_rpt_ev_t *e)
 static void mm_heard(int slot, uint8_t control, const uint8_t *burst, int rssi);
 static void on_rx(void *ctx, int slot, uint8_t control, const uint8_t *burst, int rssi)
 {
+#ifdef RDOF_TIER3
+    if (hat_on) /* the trunked site's cross-check of the receiver's inbound slots */
+        rdofradio_t3_hat_modem_rx(slot, burst, now_s());
+#endif
     if (in_wait) {
         if (heard_n < HEARD_Q) {
             heard_q[heard_n].slot = slot, heard_q[heard_n].rssi = rssi, heard_q[heard_n].control = control;
@@ -944,6 +987,10 @@ static void deliver_heard(void)
 static void on_nak(void *ctx, uint8_t cmd, int err)
 {
     fprintf(stderr, "modem NAK 0x%02x err %d\n", cmd, err);
+#ifdef RDOF_TIER3
+    if (hat_on)
+        rdofradio_t3_hat_nak(cmd, err);
+#endif
     if (BR.active)
         rdof_repeater_nak(&BR.r, cmd, err);
     else if (R.full)
@@ -1394,6 +1441,9 @@ static void clock_start(void)
     fprintf(stderr, "clock: netclock from %s%s\n", rcfg.ntp_servers[0] ? rcfg.ntp_servers : "the browser only",
             set_os_clock ? ", setting the OS clock" : "");
 }
+
+/* the slot grid waits for netclock's first fix when netclock sets the OS clock (rdofradio_utc.h) */
+static bool clock_ready(void) { return netclock_posix_synced(); }
 
 static void clock_stop(void)
 {
@@ -1948,7 +1998,9 @@ static void mq_start(void)
     }
     MQ = rdofmq_start(&o);
     o.subscribe = NULL, o.on_message = NULL;
-    if (v3)
+    if (v3 && rcfg.tier3) /* a trunked site's node on the network is the Tier III unit's (rdofradio_t3.c) alone */
+        fprintf(stderr, "mqtt-net: the trunked site's own connection carries the network\n");
+    else if (v3)
         mn_start();
     else
         mq_calls_start();
@@ -2351,15 +2403,38 @@ static double bench_atten_db(rdof_bench_power_t p)
         return 0;
     return rdof_bench_sdr_atten_db(&bench_cfg_lim, p, gain_dbm(txg_full), txg_full - dev->tx_gain_min);
 }
-/* A job took the transmitter (its power applies from the next key-up, or at once if keyed), or let it go */
+/* A job's deviation on the SDR's modulator, from its next sample on. Only the main loop sets it, and the main loop
+ * pulls the modulator. An MMDVM modem keeps its own (a job that asks another is refused: bl_cannot). */
+static bool bench_dev_reset; /* a job let the transmitter go: nominal once what it queued has gone out */
+static void bench_dev_scale(double scale)
+{
+    bench_dev_reset = false;
+    if (!R.mmdvm && R.m.mod_ok)
+        rdof_mod_set_dev_scale(&R.m.mod, scale);
+}
+/* Before each pull: an outbound's last slots can still be in the modulator when it closes. */
+static void bench_dev_settle(void)
+{
+    if (bench_dev_reset && rdof_mod_idle(&R.m.mod))
+        bench_dev_scale(1.0);
+}
+/* A job took the transmitter (its power applies from the next key-up, or at once if keyed; its deviation at once), or
+ * let it go */
 static void bench_power_on(rdof_bench_power_t p)
 {
-    const double a = bench_atten_db(p);
+    const double a = bench_atten_db(p), ds = rdof_bench_dev_scale(p);
     atomic_store(&bench_atten_cdb, (int)lround(100 * a));
     if (a > 0)
         say("bench: the job transmits %.1f dB under --tx-power: %.1f dBm\n", a, gain_dbm(txg_full) - a);
+    bench_dev_scale(ds);
+    if (ds != 1.0 && !R.mmdvm)
+        say("bench: the job's DMR deviation is %.2f of nominal\n", ds);
 }
-static void bench_power_off(void) { atomic_store(&bench_atten_cdb, -1); }
+static void bench_power_off(void)
+{
+    atomic_store(&bench_atten_cdb, -1);
+    bench_dev_reset = !R.mmdvm && R.m.mod_ok;
+}
 /* The settings' gates a job meets before it takes the transmitter: false with why. */
 static bool bench_gates(double seconds, char *why, size_t cap)
 {
@@ -2473,6 +2548,8 @@ static const char *bl_station(void *ctx, char *model, size_t cap)
 /* What an MMDVM modem physically can't do (the SDR beside it only receives). */
 static const char *bl_cannot(void *ctx, const char *what)
 {
+    if (!strcmp(what, "dev_scale"))
+        return "an MMDVM modem sets its own deviation: --dev-scale scales the SDR's modulator";
     if (!strcmp(what, "signal_tx"))
         return "an MMDVM modem's serial protocol sends DMR bursts: no FM, AM or arbitrary I/Q, and the SDR beside it "
                "only receives";
@@ -2885,6 +2962,17 @@ static void ob_clock(double now)
  * 1: the job may start; 0: not yet, the owner paused while the key-down ramps out; -1: not yet, the owner runs. */
 static int owner_yield(double now, double asked)
 {
+#ifdef RDOF_TIER3
+    if (hat_on) { /* the site stops writing; what it queued plays out in a few slots */
+        if (!RP.on) {
+            RP.on = true;
+            rdofradio_t3_hat_pause(true);
+            rdof_modem_dmr_start(&R.client, false);
+            say("bench: a job pauses the trunked site on the modem\n");
+        }
+        return 1;
+    }
+#endif
     if (R.mmdvm) {
         if (R.full) { /* a duplex repeater stops for the job and starts again after it (owner_resume) */
             if (!RP.on) {
@@ -2924,6 +3012,16 @@ static void owner_resume(bool txvr)
 {
     const bool was = RP.on;
     RP.on = false;
+#ifdef RDOF_TIER3
+    if (hat_on) {
+        if (!rdof_modem_start(&R.client, 1) || !hat_modem_up())
+            say("bench: the modem didn't go back to the trunked site: %s\n", R.client.error);
+        else
+            say("bench: the modem is the trunked site's again\n");
+        rdofradio_t3_hat_pause(false);
+        return;
+    }
+#endif
     if (R.full && was) {
         if (R.tx_lo != RP.lo) {
             if (!dev || !dev->set_tx_freq || dev->set_tx_freq(dev, RP.lo))
@@ -3753,8 +3851,65 @@ static void bench_stop(void)
     rdof_bl_ring_free(&BL.ring);
 }
 
+/* The receive stream against the clock in the main run (as SC for a split's): lag = clock samples - samples read,
+ * its least over half a second the freshest read. main_now48: the position the receiver is at now. */
+static struct {
+    bool on;
+    double t0, floor, win_start, win_min;
+} MC;
+static void main_clock(double t, long long total)
+{
+    if (!MC.on)
+        MC.on = true, MC.t0 = MC.win_start = t, MC.floor = MC.win_min = INFINITY;
+    const double lag = (t - MC.t0) * R.rate - (double)total;
+    if (lag < MC.win_min)
+        MC.win_min = lag;
+    if (t - MC.win_start >= 0.5) {
+        MC.floor = MC.win_min;
+        MC.win_start = t, MC.win_min = INFINITY;
+    }
+}
+/* The receiver's UTC of sample 0, so the bursts' and calls' times are the air's: from slot timing's map when on the
+ * grid, else from the earliest arrivals (main_clock). time(NULL) at start, which this replaces, ran up to 2 s early:
+ * a whole second, and the stream starts after it. */
+static void rx_time_base(double now)
+{
+    int64_t i0 = 0, t0 = 0;
+    double rate = 0;
+    if (rdofradio_utc_map48(&i0, &t0, &rate))
+        R.rx.t0 = (double)t0 / 1e9 - (double)i0 / RDOF_DEMOD_FS;
+    else if (MC.on && isfinite(MC.floor))
+        R.rx.t0 = wall_s() - now + MC.t0 + MC.floor / R.rate;
+}
+static int64_t main_now48(void)
+{
+    if (!MC.on)
+        return 0;
+    const double floor = isfinite(MC.floor) ? MC.floor : MC.win_min;
+    return (int64_t)(((now_s() - MC.t0) * R.rate - floor) * 48000.0 / R.rate);
+}
+#ifdef RDOF_TIER3
+static int trunk_channel(uint32_t hz) { return channel_of(hz); }
+/* A trunked site's carriers on the SDR: hz's place from the TX LO, which stays put. The reach is io_tune's (0.4 of
+ * the stream's rate, less 12.5 kHz); with the interpolator a sixth of its rate at most, where the CIC's first image
+ * (of a carrier f off the LO, at f less the rate) is 42 dB under the carrier. */
+static bool trunk_tx_offset(uint32_t hz, double *off, double *reach)
+{
+    *reach = R.tx_rate * 0.4 - 12.5e3;
+    if (DX.started && *reach > R.tx_rate / 6)
+        *reach = R.tx_rate / 6;
+    *off = (double)hz - R.tx_lo;
+    return fabs(*off) <= *reach;
+}
+static double trunk_tx_lo(void) { return R.tx_lo; }
+#endif
+
 static void on_burst(void *ctx, int c, const rdof_sdr_burst_t *b, double t)
 {
+#ifdef RDOF_TIER3
+    if (rdofradio_t3_on()) /* carrier 1's inbound (the TSCC's), carrier 2's */
+        rdofradio_t3_heard(c, b);
+#endif
     pthread_mutex_lock(&BT.mu);
     if (BT.active && c == BT.heard_ch)
         rdof_benchtx_heard(&BT.tx, b->b.burst, now_s());
@@ -4450,6 +4605,22 @@ static void web_publish(double rx, double tx, int cc)
     w.extra[0].value = R.m.tx_late48 * 1000 / 48;
     snprintf(w.extra[1].name, sizeof w.extra[1].name, "inbound off (%%)");
     w.extra[1].value = (int64_t)llround(R.m.inbound_off * 100);
+#ifdef RDOF_TIER3
+    if (rdofradio_t3_on()) { /* a trunked site's carriers 2 to 4: what sends them, and on the SDR their counts */
+        char c2[112];
+        uint32_t sent, heard;
+        rdofradio_t3_carrier2(c2, sizeof c2, &sent, &heard);
+        if (c2[0])
+            snprintf(w.modem, sizeof w.modem, "SDR modem; Tier III %.100s", c2);
+        const bool many = !strncmp(c2, "carriers", 8);
+        if (c2[0] && strstr(c2, "by the SDR") && w.nextra + 2 <= 8) {
+            snprintf(w.extra[w.nextra].name, sizeof w.extra[0].name, many ? "carriers 2+ sent" : "carrier 2 sent");
+            w.extra[w.nextra++].value = sent;
+            snprintf(w.extra[w.nextra].name, sizeof w.extra[0].name, many ? "carriers 2+ heard" : "carrier 2 heard");
+            w.extra[w.nextra++].value = heard;
+        }
+    }
+#endif
     if (SR.router.site && rcfg.site.napp)
         rdof_router_apps_json(&SR.router, now_s(), web_app_extra, NULL, w.apps, sizeof w.apps);
     rdofgw_status_text(w.ip_gateway, sizeof w.ip_gateway);
@@ -4540,15 +4711,17 @@ static void web_settings(int argc, char **argv)
     rdof_hostweb_settings(&s);
 }
 
-/* --ota FILE: the page's update (POST /api/ota) writes a new program there, gzipped as the Pluto bundle's
- * rdofradio.gz or an ELF for this machine (the class, byte order and machine of the one running), and this program
+/* --ota FILE: the page's update (POST /api/ota) writes a new program there: xz as the Pluto bundle's
+ * rdofradio.xz, gzipped, or an ELF for this machine (the class, byte order and machine of the one running), and this program
  * stops: its supervisor (the bundle's run.sh) puts the image in place and starts it. */
 static bool ota_check(void *ctx, const uint8_t *img, size_t len, char *err, size_t cap)
 {
     if (len >= 18 && img[0] == 0x1f && img[1] == 0x8b && img[2] == 8)
         return true; /* gzip, deflate: run.sh tests it whole before it takes it */
+    if (len >= 32 && !memcmp(img, "\xfd" "7zXZ\0", 6))
+        return true; /* xz: the same */
     if (len < 64 || memcmp(img, "\x7f" "ELF", 4)) {
-        snprintf(err, cap, "not a program: a gzipped rdofradio (the bundle's rdofradio.gz) or an ELF");
+        snprintf(err, cap, "not a program: rdofradio as xz (the bundle's rdofradio.xz), gzipped, or an ELF");
         return false;
     }
     uint8_t me[20];
@@ -4760,12 +4933,19 @@ static void fx_stop(void)
     FX.started = false;
 }
 
-/* the block's frames at the run's end: gaps in their numbers, the zeros put in for them, STATUS's overflow bits */
+/* the block's frames at the run's end: gaps in their numbers, the zeros put in for them, STATUS's overflow bits;
+   the TX interpolator's STATUS (UNDERFLOW: its DMA ran dry at some point since it was on) */
 static void fx_report(void)
 {
     if (FX.on)
         fprintf(stderr, "--fpga-chz: %lld channel frames lost (%lld made up with zeros), %ld overflows (STATUS), "
                         "%llu words of junk\n", FX.lost, FX.made_up, FX.ovf, (unsigned long long)FX.prx.junk);
+    if (DX.started) {
+        const uint32_t st = rdof_chzhw_duc_status(&DX.d);
+        fprintf(stderr, "--fpga-duc: STATUS 0x%x (%s, %s)\n", (unsigned)st,
+                st & RDOF_CHZHW_DUC_STATUS_ON ? "on" : "off",
+                st & RDOF_CHZHW_DUC_STATUS_UNDERFLOW ? "it ran dry" : "never ran dry");
+    }
 }
 
 /* off: the stock path to the DAC again (at exit, whatever the way) */
@@ -4782,9 +4962,11 @@ static void dx_stop(void)
  * not taken. 0, or -1 with why in err. */
 static int dx_probe(char *err, size_t cap)
 {
-    if (!(DX.regs = map_regs(DX.addr, RDOF_CHZHW_DUC_SPAN, err, cap)))
+    rdof_chzhw_io_t io = {fx_rd, fx_wr, NULL};
+    if (FX.sim)
+        rdofradio_sim_duc(&io); /* --sim-sdr's */
+    else if (!(io.ctx = DX.regs = map_regs(DX.addr, RDOF_CHZHW_DUC_SPAN, err, cap)))
         return -1;
-    const rdof_chzhw_io_t io = {fx_rd, fx_wr, DX.regs};
     char e[160];
     if (rdof_chzhw_duc_probe(&DX.d, &io, e, sizeof e)) {
         snprintf(err, cap, "no TX interpolator at 0x%08lx: %s", DX.addr, e);
@@ -4793,11 +4975,11 @@ static int dx_probe(char *err, size_t cap)
     DX.probed = true;
     return 0;
 }
-/* The interpolation for the device's rate (from 192 kS/s, else 96), or 0: none */
+/* The interpolation for the device's rate (from 192 kS/s, else 96; DX.in_hi, DX.in_lo), or 0: none */
 static long dx_r(double rate)
 {
     const long fs = lround(rate), lo = rdof_chzhw_duc_min_r(&DX.d), hi = rdof_chzhw_duc_max_r(&DX.d);
-    for (long in = 192000; in >= 96000; in /= 2)
+    for (long in = DX.in_hi; in >= DX.in_lo; in /= 2)
         if (fs % in == 0 && fs / in >= lo && fs / in <= hi)
             return fs / in;
     return 0;
@@ -4807,8 +4989,8 @@ static int dx_start(double rate, char *err, size_t cap)
     const long lo = rdof_chzhw_duc_min_r(&DX.d), hi = rdof_chzhw_duc_max_r(&DX.d), r = dx_r(rate);
     char e[160];
     if (!r) {
-        snprintf(err, cap, "the TX interpolator can't make %.0f S/s from 192 or 96 kS/s (R %ld to %ld): a rate that's "
-                           "a multiple of 96 kS/s", rate, lo, hi);
+        snprintf(err, cap, "the TX interpolator can't make %.0f S/s from %ld to %ld kS/s (R %ld to %ld): a rate that's "
+                           "a multiple of %ld kS/s", rate, DX.in_lo / 1000, DX.in_hi / 1000, lo, hi, DX.in_lo / 1000);
         return -1;
     }
     if (rdof_chzhw_duc_start(&DX.d, (int)r, e, sizeof e)) {
@@ -5534,7 +5716,9 @@ static bool gw_send(void *ctx, const rdof_ipgw_dmr_t *p)
 }
 static void gw_start(void)
 {
-    if (!rcfg.has_ipgw || !sr_on || listen_only)
+    /* a trunked site's gateway is the Tier III unit's (rdofradio_t3.c): its packets go down as the site's own data,
+     * not into a repeater. The gateway is one per process, so starting it here would take the site's place. */
+    if (!rcfg.has_ipgw || !sr_on || listen_only || rcfg.tier3 || t3_path)
         return;
     sr_ipgw = rdof_site_app_of(&rcfg.site, RDOF_APP_IPGW);
     if (sr_ipgw < 0)
@@ -5993,6 +6177,7 @@ out:
 /* a whole frame to the modem, its RF level capped */
 static bool mm_write(const uint8_t *d, size_t n)
 {
+    static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER; /* a trunked site's writer thread writes too */
     uint8_t f[RDOF_MMDVM_MAX_FRAME];
     if (P.gone)
         return false;
@@ -6002,8 +6187,10 @@ static bool mm_write(const uint8_t *d, size_t n)
             mm_capped++;
         d = f;
     }
+    pthread_mutex_lock(&mu);
     if (!rdofradio_serial_write(P.fd, d, n))
         P.gone = true;
+    pthread_mutex_unlock(&mu);
     return !P.gone;
 }
 
@@ -6021,8 +6208,13 @@ static void mm_service(void)
         const int n = P.q[i].n;
         memcpy(b, P.q[i].b, (size_t)n);
         pthread_mutex_unlock(&P.mu);
-        if (!bench_modem_reply(b, (size_t)n))
+        if (!bench_modem_reply(b, (size_t)n)) {
             rdof_modem_feed(&R.client, b, (size_t)n);
+#ifdef RDOF_TIER3
+            if (hat_on)
+                rdof_mmdvm_reader_feed(&hat_rd, b, (size_t)n, hat_frame_in, NULL);
+#endif
+        }
     }
     if (!stop && P.gone) {
         say("modem: the port went away\n");
@@ -6083,13 +6275,57 @@ static void mm_tracker_init(void)
     rdof_tracker_add_sink(&MT, out);
 }
 
+#ifdef RDOF_TIER3
+/* --tier3: the site's carrier on the modem (rdofradio_t3_start_hat) */
+static bool hat_frame_out(const uint8_t *d, size_t n) { return mm_write(d, n); }
+static int64_t hat_now48(void) { return dev ? split_now48(NULL) : (int64_t)llround(now_s() * 48000.0); }
+static int hat_channel(uint32_t hz) { return dev ? channel_of(hz) : -1; }
+
+/* the modem duplex on the site's carrier, DMR only. The site keys it by a write: DMR_START 1 would hold its queues
+ * unread for 20 slots (tier3-hat.md 2). */
+static bool hat_modem_up(void)
+{
+    const rdofradio_t3_cfg_t *t = &t3cfg.t;
+    return rdof_radio_tune_duplex(&R.radio, t->car[0].rx_hz, t->car[0].tx_hz, t->cfg.cc, 255);
+}
+
+/* what the port read, while the site has the modem: GET_STATUS replies to the site (the client drops them unasked) */
+static void hat_frame_in(void *ctx, uint8_t cmd, const uint8_t *p, size_t len)
+{
+    (void)ctx;
+    if (cmd == RDOF_MMDVM_GET_STATUS)
+        rdofradio_t3_hat_status(R.client.protocol, p, len);
+}
+
+static bool hat_start(char *err, size_t cap)
+{
+    if (!hat_modem_up()) {
+        snprintf(err, cap, "the modem won't go duplex on the site's carrier: %s", R.client.error);
+        return false;
+    }
+    const rdofradio_t3_opts_t to = {.air_ms = t3_opts.air_ms, .sim_id = t3_opts.sim_id, .sim_tg = t3_opts.sim_tg,
+                                    .sim_talk_s = t3_opts.sim_talk_s, .sim_script = t3_opts.sim_script,
+                                    .state_dir = t3_opts.state_dir, .verbose = R.verbose};
+    const rdofradio_t3_dev_t td = {hat_channel, hat_now48, now_s, dev ? (uint32_t)R.rate : 48000, NULL, NULL, 0};
+    const rdofradio_t3_hat_t hat = {hat_frame_out,          hat_lead_ms[0] / 1e3,  hat_lead_ms[1] / 1e3,
+                                    hat_mark,               hat_sweep_ms[0] / 1e3, hat_sweep_ms[1] / 1e3,
+                                    hat_sweep_ms[2] / 1e3, hat_sweep_ms[3],    hat_sweep_ms[4] != 0};
+    return rdofradio_t3_start_hat(&t3cfg, &to, &td, &hat, err, cap);
+}
+#endif
+
 /* The whole run with --mmdvm, once the SDR (if any) is open receive only. */
 static int mmdvm_main(int argc, char **argv, const char *port, int baud, double seconds, double rx_off, double tx_off,
                       double rx_level, double tx_level)
 {
     char err[256];
     P.path = port;
-    P.fd = rdofradio_serial_open(port, baud, err, sizeof err);
+#ifdef RDOF_TIER3
+    if (!strcmp(port, "sim-hat")) /* the stock modem simulated (rdofradio_t3.h) */
+        P.fd = rdofradio_t3_hat_sim(3.6, 0.110, err, sizeof err);
+    else
+#endif
+        P.fd = rdofradio_serial_open(port, baud, err, sizeof err);
     if (P.fd < 0) {
         fprintf(stderr, "--mmdvm %s\n", err);
         return 1;
@@ -6136,6 +6372,17 @@ static int mmdvm_main(int argc, char **argv, const char *port, int baud, double 
             R.radio.config.tx_level = tx_level;
     }
     bool ok;
+#ifdef RDOF_TIER3
+    if (t3_path) {
+        if (!hat_start(err, sizeof err)) {
+            fprintf(stderr, "tier3: %s\n", err);
+            goto out;
+        }
+        rdof_mmdvm_reader_init(&hat_rd);
+        hat_on = true;
+        ok = true;
+    } else
+#endif
     if (R.full) {
         rdof_repeater_init(&R.r, &R.radio, rcfg.peer_id, R.rx_hz, R.tx_hz, R.cc);
         R.r.keep_up = R.mmdvm; /* a modem drops its carrier when keyed with nothing queued */
@@ -6174,9 +6421,17 @@ static int mmdvm_main(int argc, char **argv, const char *port, int baud, double 
         goto out;
     }
     deliver_heard();
+    uint32_t say_rx = R.rx_hz, say_tx = R.tx_hz;
+    int say_cc = R.cc;
+#ifdef RDOF_TIER3
+    if (hat_on) { /* the modem is on the site's carrier (hat_modem_up), not the box's own frequency */
+        say_rx = t3cfg.t.car[0].rx_hz, say_tx = t3cfg.t.car[0].tx_hz;
+        say_cc = t3cfg.t.cfg.cc;
+    }
+#endif
     fprintf(stderr, "%s: %s (%s) on %s, RX %.4f MHz, TX %.4f MHz, cc %d, RF level cap %d%s%s\n",
-            R.full ? "repeater" : "transceiver", R.client.version, rdof_radio_kind_name(R.radio.kind), port,
-            R.rx_hz / 1e6, R.tx_hz / 1e6, R.cc, mm_rf_level, dev ? "; SDR: " : "", dev ? dev->name : "");
+            hat_on ? "trunked site" : R.full ? "repeater" : "transceiver", R.client.version, rdof_radio_kind_name(R.radio.kind), port,
+            say_rx / 1e6, say_tx / 1e6, say_cc, mm_rf_level, dev ? "; SDR: " : "", dev ? dev->name : "");
 #ifdef RDOF_HOST_WEB
     if (web_port >= 0) {
         web_settings(argc, argv);
@@ -6195,12 +6450,16 @@ static int mmdvm_main(int argc, char **argv, const char *port, int baud, double 
         bench_ob_fast();
         const double now = now_s();
         ms_poll(now);
+#ifdef RDOF_TIER3
+        if (hat_on)
+            rdofradio_t3_poll();
+#endif
         if (now - last_poll >= POLL_S) {
             last_poll = now;
             if (R.parrot)
                 rdof_parrot_poll(R.parrot, now);
             gw_poll(now);
-            if (!bench_tx_poll(now) && !bench_rpt_poll(now) &&
+            if (!bench_tx_poll(now) && !bench_rpt_poll(now) && !hat_on &&
                 !(R.full ? rdof_repeater_poll(&R.r) : rdof_txvr_poll(&R.t)))
                 fprintf(stderr, "poll: %s\n", R.client.error);
             rdof_tracker_tick(&MT, wall_s());
@@ -6221,7 +6480,13 @@ static int mmdvm_main(int argc, char **argv, const char *port, int baud, double 
                     R.client.refused, dev ? "" : "; no SDR");
         }
     }
-    if (R.full)
+#ifdef RDOF_TIER3
+    if (hat_on) {
+        rdofradio_t3_stop();
+        rdof_modem_dmr_start(&R.client, false);
+    }
+#endif
+    if (R.full && !hat_on)
         rdof_repeater_stop(&R.r);
     rdof_modem_set_mode(&R.client, RDOF_MODE_IDLE); /* the modem idle: it doesn't key on its own */
     for (int i = 0; i < 10; i++) /* the last frames out to the modem */
@@ -6231,6 +6496,9 @@ out:
     P.quit = true;
     pthread_join(P.thread, NULL);
     close(P.fd);
+#ifdef RDOF_TIER3
+    rdofradio_t3_hat_sim_stop();
+#endif
     if (dev)
         dev->close(dev);
     fx_report();
@@ -6381,6 +6649,19 @@ static int hold(int argc, char **argv, const char *why)
 #endif
 }
 
+/* -v: each rate 3/4 data block's trellis decode, from state 0 and from any start (rdof_trellis34_hook) */
+static void trellis_note(bool ok0, int e0, int start, bool ok_any, int e_any)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    struct tm tm;
+    gmtime_r(&ts.tv_sec, &tm);
+    printf("rate 3/4 block %02d:%02d:%02d.%03ld UTC: from state 0 CRC-9 %s (metric %d); any start: state %d, CRC-9 %s "
+           "(metric %d)%s\n",
+           tm.tm_hour, tm.tm_min, tm.tm_sec, ts.tv_nsec / 1000000, ok0 ? "ok" : "bad", e0, start,
+           ok_any ? "ok" : "bad", e_any, ok0 ? "" : ok_any ? ": taken from any start" : ": neither");
+}
+
 int main(int argc, char **argv)
 {
     static const char *settings[16];
@@ -6388,6 +6669,7 @@ int main(int argc, char **argv)
     const char *soapy = NULL, *iio = NULL, *file_dev = NULL, *stream_args = "", *fft = NULL, *split_tx = NULL, *mmdvm = NULL;
     bool sim_sdr = false; /* --sim-sdr: rdofradio_sim.c's receiver, for no-RF tests */
     bool sim_iq = false;  /* --sim-iq: what it hears */
+    bool sim_tx = false;  /* --sim-tx: where what it sends goes */
     double mm_rx_off = 0, mm_tx_off = 0, mm_rx_level = NAN, mm_tx_level = NAN;
     int mm_flags = 0;
     int baud = 115200, power_cap = 0, tx_flags = 0;
@@ -6414,6 +6696,14 @@ int main(int argc, char **argv)
                 return 2;
             }
             sim_iq = true;
+        } else if (!strcmp(a, "--sim-tx")) {
+            NEXT();
+            char e[160];
+            if (rdofradio_sim_tx(v, e, sizeof e)) {
+                fprintf(stderr, "%s\n", e);
+                return 2;
+            }
+            sim_tx = true;
         } else if (!strcmp(a, "--soapy")) {
             NEXT();
             soapy = v;
@@ -6477,6 +6767,59 @@ int main(int argc, char **argv)
         } else if (!strcmp(a, "--config")) {
             NEXT();
             config_path = v;
+        } else if (!strcmp(a, "--sim-air")) {
+            NEXT();
+            t3_opts.sim_n = atoi(v);
+        } else if (!strcmp(a, "--tier3")) {
+            NEXT();
+            t3_path = v;
+        } else if (!strcmp(a, "--hat-lead")) {
+            NEXT();
+            if (sscanf(v, "%lf,%lf", &hat_lead_ms[0], &hat_lead_ms[1]) != 2 || hat_lead_ms[0] <= 0 ||
+                hat_lead_ms[1] <= hat_lead_ms[0]) {
+                fprintf(stderr, "--hat-lead IDLE_MS,BUSY_MS (0 < IDLE < BUSY)\n");
+                return 2;
+            }
+        } else if (!strcmp(a, "--hat-mark")) {
+            hat_mark = true;
+        } else if (!strcmp(a, "--hat-sweep")) {
+            NEXT();
+            const int n = sscanf(v, "%lf,%lf,%lf,%lf,%lf", &hat_sweep_ms[0], &hat_sweep_ms[1], &hat_sweep_ms[2],
+                                 &hat_sweep_ms[3], &hat_sweep_ms[4]);
+            if (n < 4 || hat_sweep_ms[0] <= 20 || hat_sweep_ms[1] <= 20 || hat_sweep_ms[2] <= 0 || hat_sweep_ms[3] < 1) {
+                fprintf(stderr, "--hat-sweep FROM_MS,TO_MS,STEP_MS,SECONDS[,KEEP] (FROM, TO > 20, STEP > 0, SECONDS >= 1; "
+                                "KEEP 1: no flush per step)\n");
+                return 2;
+            }
+        } else if (!strcmp(a, "--air-ms")) {
+            NEXT();
+            t3_opts.air_ms = atoi(v);
+        } else if (!strcmp(a, "--sim-id")) {
+            NEXT();
+            t3_opts.sim_id = (uint32_t)strtoul(v, NULL, 10);
+        } else if (!strcmp(a, "--sim-tg")) {
+            NEXT();
+            t3_opts.sim_tg = (uint32_t)strtoul(v, NULL, 10);
+        } else if (!strcmp(a, "--sim-talk")) {
+            NEXT();
+            t3_opts.sim_talk_s = atof(v);
+        } else if (!strcmp(a, "--sim-script")) {
+            NEXT();
+            t3_opts.sim_script = v;
+        } else if (!strcmp(a, "--sim-ext")) {
+            NEXT();
+            t3_opts.sim_ext = v;
+        } else if (!strcmp(a, "--sim-ext-loss")) {
+            NEXT();
+            t3_opts.sim_ext_loss = atof(v);
+        } else if (!strcmp(a, "--sim-ext-err")) {
+            NEXT();
+            t3_opts.sim_ext_err = atof(v);
+        } else if (!strcmp(a, "--sim-fast")) {
+            t3_opts.sim_fast = true;
+        } else if (!strcmp(a, "--state-dir")) {
+            NEXT();
+            t3_opts.state_dir = v;
         } else if (!strcmp(a, "-r") || !strcmp(a, "--rate")) {
             NEXT();
             rate = atof(v);
@@ -6587,6 +6930,7 @@ int main(int argc, char **argv)
         } else if (!strcmp(a, "-v") || !strcmp(a, "--verbose")) {
             verbose = 1;
             R.verbose = true;
+            rdof_trellis34_hook = trellis_note;
         } else if (!strcmp(a, "--bench")) {
             NEXT();
             const char *colon = strrchr(v, ':');
@@ -6633,6 +6977,11 @@ int main(int argc, char **argv)
         } else if (!strcmp(a, "--ota")) {
             NEXT();
             web_ota(v);
+#else
+        } else if (!strcmp(a, "--web") || !strcmp(a, "--last-exit") || !strcmp(a, "--ota")) {
+            /* built without the web page: taken and ignored, so a Pluto's run.sh and flags work with either build */
+            NEXT();
+            (void)v;
 #endif
         } else if (!strcmp(a, "--fpga-bit")) {
             NEXT();
@@ -6654,6 +7003,10 @@ int main(int argc, char **argv)
         rdof_plutofpga_file(b, f, sizeof f);
         printf("%s %s\n", b, f);
         return 0;
+    }
+    if ((t3_opts.sim_n > 0 || t3_opts.sim_script || t3_opts.sim_ext) && !config_path) {
+        fprintf(stderr, "--sim-air: a trunked site's settings (--config FILE)\n");
+        return 2;
     }
     if (config_path) {
         /* the radio from the file; the command line keeps the device */
@@ -6678,7 +7031,57 @@ int main(int argc, char **argv)
             snprintf(why, sizeof why, "%s: %s", config_path, err);
             return hold(argc, argv, why);
         }
+        if (rcfg.tier3) {
+#ifdef RDOF_TIER3
+            const rdofradio_t3_opts_t to = {.sim_n = t3_opts.sim_n,
+                                               .air_ms = t3_opts.air_ms,
+                                               .sim_id = t3_opts.sim_id,
+                                               .sim_tg = t3_opts.sim_tg,
+                                               .sim_talk_s = t3_opts.sim_talk_s,
+                                               .sim_script = t3_opts.sim_script,
+                                               .sim_ext = t3_opts.sim_ext,
+                                               .sim_ext_loss = t3_opts.sim_ext_loss,
+                                               .sim_ext_err = t3_opts.sim_ext_err,
+                                               .sim_fast = t3_opts.sim_fast,
+                                               .state_dir = t3_opts.state_dir,
+                                               .seconds = seconds,
+                                               .verbose = verbose != 0};
+            signal(SIGINT, on_signal);
+            signal(SIGTERM, on_signal);
+            if (!rdofradio_t3_standby(&rcfg, &stop)) /* a standby box: not until the active one is gone */
+                return 0;
+            if (to.sim_n > 0 || (to.sim_script && to.air_ms <= 0) || to.sim_ext) {
+                const int rc = rdofradio_t3_sim(&rcfg, &to, &stop);
+                return rdofradio_t3_fenced() ? 75 : rc;
+            }
+            bool radios = rcfg.t.ncar > 0; /* every carrier on two radios, a split TX and RX half: no SDR */
+            for (int k = 0; k < rcfg.t.ncar; k++)
+                radios &= !rcfg.t.car[k].tx_sdr && !rcfg.t.car[k].rx_sdr && rcfg.t.car[k].rx_port[0];
+            if (radios && !split_tx && !mmdvm) {
+                const int rc = rdofradio_t3_radios(&rcfg, &to, &stop);
+                return rdofradio_t3_fenced() ? 75 : rc;
+            }
+            if (split_tx || mmdvm) {
+                fprintf(stderr, "%s: a trunked site: the SDR sends its TSCC carrier (no --split-tx, --mmdvm)\n",
+                        config_path);
+                return 2;
+            }
+#else
+            char why[300];
+            snprintf(why, sizeof why, "%s: %s is a trunked site: this rdofradio was built without it (RDOF_TIER3, "
+                     "cargo)", config_path, rcfg.name);
+            return hold(argc, argv, why);
+#endif
+        }
         rx = rcfg.rx_hz, tx = rcfg.tx_hz, cc = rcfg.cc, rx_slot = rcfg.rx_slot;
+#ifdef RDOF_TIER3
+        /* With --fpga-duc its stream at 384 kS/s: the CIC's first image of a carrier 62.5 kHz off the LO is 43 dB under
+           it there, 19 dB at 192 kS/s (docs/spec/fw/tier3.md 9.4) */
+        if (rcfg.tier3 && rcfg.t.ncar >= 2 && rcfg.t.car[1].tx_sdr) {
+            t3_sdr2 = true;
+            DX.in_hi = DX.in_lo = 384000;
+        }
+#endif
         if (rcfg.has_bench_tx) { /* bench.tx: its frequencies and bands beside --bench-tx's, its key time and power */
             const rdof_benchtx_policy_t *bp = &rcfg.bench_tx;
             char why[300] = "";
@@ -6817,8 +7220,8 @@ int main(int argc, char **argv)
             fprintf(stderr, "fpga: %s\n", msg);
         }
     }
-    if (sim_iq && !sim_sdr) {
-        fprintf(stderr, "--sim-iq: what --sim-sdr hears\n");
+    if ((sim_iq || sim_tx) && !sim_sdr) {
+        fprintf(stderr, "--sim-iq, --sim-tx: what --sim-sdr hears, sends\n");
         return 2;
     }
     FX.sim = sim_sdr;
@@ -6836,16 +7239,13 @@ int main(int argc, char **argv)
                 FX.addr, FX.h.channels, FX.h.max_decim, FX.h.max_taps, FX.h.max_cic);
     }
     if (DX.on && !iio && !sim_sdr) {
-        fprintf(stderr, "--fpga-duc: the FPGA's TX interpolator is a PlutoSDR's transmitter's: with --iio\n");
+        fprintf(stderr,
+                "--fpga-duc: the FPGA's TX interpolator is a PlutoSDR's transmitter's: with --iio (or --sim-sdr's)\n");
         return 2;
     }
     if (DX.on && (split_tx || mmdvm)) {
         fprintf(stderr, "--fpga-duc: %s transmits, not the SDR: not used\n", split_tx ? "the --split-tx radio" : "the modem");
         DX.on = false;
-    }
-    if (DX.on && sim_sdr) {
-        fprintf(stderr, "--fpga-duc: --sim-sdr only receives: with --split-tx or --mmdvm\n");
-        return 2;
     }
     if (DX.on) {
         char why[256];
@@ -6867,6 +7267,16 @@ int main(int argc, char **argv)
     if (!tx)
         tx = rx;
     const bool tx_lo_given = tx_lo != 0;
+    double t3_lo_hz = 0, t3_hi_hz = 0; /* the lowest and highest out of the SDR's carriers */
+#ifdef RDOF_TIER3
+    if (t3_sdr2) {
+        t3_lo_hz = t3_hi_hz = rcfg.t.car[0].tx_hz;
+        for (int c = 1; c < rcfg.t.ncar; c++)
+            t3_lo_hz = fmin(t3_lo_hz, rcfg.t.car[c].tx_hz), t3_hi_hz = fmax(t3_hi_hz, rcfg.t.car[c].tx_hz);
+    }
+#endif
+    if (!tx_lo && t3_sdr2) /* mid-way between the carriers' outs */
+        tx_lo = (double)llround((t3_lo_hz + t3_hi_hz) / 2);
     if (!tx_lo)
         tx_lo = tx + 100e3;
     R.txr = 1, R.lo_off = 100e3;
@@ -6889,6 +7299,30 @@ int main(int argc, char **argv)
         rcfg.parrot = R.parrot ? R.parrot->id : 0;
     }
     setvbuf(stdout, NULL, _IOLBF, 0);
+    if (t3_path) {
+#ifdef RDOF_TIER3
+        size_t len;
+        char *text = read_file(t3_path, &len), err[200];
+        if (!text) {
+            fprintf(stderr, "--tier3 %s: %s\n", t3_path, strerror(errno));
+            return 2;
+        }
+        const bool ok = rdofradio_cfg_parse(text, len, &t3cfg, err, sizeof err);
+        free(text);
+        if (!ok || !t3cfg.tier3 || !R.mmdvm) {
+            fprintf(stderr, "--tier3 %s: %s\n", t3_path,
+                    !ok ? err : !t3cfg.tier3 ? "no tier3 app in it" : "the site's carrier is a modem's (--mmdvm PORT)");
+            return 2;
+        }
+        signal(SIGINT, on_signal);
+        signal(SIGTERM, on_signal);
+        if (!rdofradio_t3_standby(&t3cfg, &stop)) /* a standby box: the modem stays shut until the active one is gone */
+            return 0;
+#else
+        fprintf(stderr, "--tier3: this rdofradio was built without the trunked site (RDOF_TIER3, cargo)\n");
+        return 2;
+#endif
+    }
 
     if (R.mmdvm) {
         mm_tracker_init(); /* the modem's: the radio's RX for the network, MQTT and the page */
@@ -6913,8 +7347,22 @@ int main(int argc, char **argv)
        them. Without the FPGA's bitstream, the ones that fit the ARM's window, the unit's kept. */
     int unfit = 0, nlisted = 0;
     {
-        rdof_sdr_channel_t own[2];
+        rdof_sdr_channel_t own[8];
         int nown = 0;
+#ifdef RDOF_TIER3
+        /* --tier3: the site's carrier, its out (the modem's slot grid from it) and its in */
+        if (t3_path && rdofradio_cfg_channel_at(&rcfg, t3cfg.t.car[0].tx_hz) < 0)
+            own[nown++] = (rdof_sdr_channel_t){"site-out", t3cfg.t.car[0].tx_hz, t3cfg.t.cfg.cc, 1};
+        if (t3_path && rdofradio_cfg_channel_at(&rcfg, t3cfg.t.car[0].rx_hz) < 0)
+            own[nown++] = (rdof_sdr_channel_t){"site-in", t3cfg.t.car[0].rx_hz, t3cfg.t.cfg.cc, 1};
+#endif
+#ifdef RDOF_TIER3
+        /* a trunked site's carriers 2 to 4: their inbounds heard here (carrier 2's when a split's RX half sends it) */
+        static const char *const car_in[] = {"carrier-2", "carrier-3", "carrier-4"};
+        for (int c = 1; rcfg.tier3 && c < rcfg.t.ncar && c <= 3; c++)
+            if (rdofradio_cfg_channel_at(&rcfg, rcfg.t.car[c].rx_hz) < 0)
+                own[nown++] = (rdof_sdr_channel_t){car_in[c - 1], rcfg.t.car[c].rx_hz, rcfg.t.cfg.cc, 1};
+#endif
         if (R.mmdvm && rdofradio_cfg_channel_at(&rcfg, R.rx_hz) < 0)
             own[nown++] = (rdof_sdr_channel_t){"modem-rx", rx, cc, rx_slot};
         if ((monitor || listen_only) && rdofradio_cfg_channel_at(&rcfg, R.tx_hz) < 0 && R.tx_hz != R.rx_hz)
@@ -7033,11 +7481,28 @@ int main(int argc, char **argv)
             fprintf(stderr, "--fpga-duc: %s\n", derr);
             return 1;
         }
-        if (!tx_lo_given)
+        if (!tx_lo_given && !t3_sdr2)
             tx_lo = tx + R.lo_off, R.tx_lo = tx_lo;
-        fprintf(stderr, "--fpga-duc: transmit at %.0f S/s, R %d to %.0f S/s, the TX LO %.0f kHz above\n", R.tx_rate,
-                R.txr, rate, (tx_lo - tx) / 1e3);
+        fprintf(stderr, "--fpga-duc: transmit at %.0f S/s, R %d to %.0f S/s, the TX LO %.0f kHz above%s\n", R.tx_rate,
+                R.txr, rate, (tx_lo - tx) / 1e3, t3_sdr2 ? " carrier 1's out (mid-way between the carriers)" : "");
     }
+#ifdef RDOF_TIER3
+    if (t3_sdr2) /* every carrier's out within the stream's reach of the one TX LO */
+        for (int c = 0; c < rcfg.t.ncar; c++) {
+            double off, reach;
+            if (trunk_tx_offset(rcfg.t.car[c].tx_hz, &off, &reach))
+                continue;
+            fprintf(stderr, "%s: %d carriers out from %.5f to %.5f MHz, %.1f kHz: the TX LO on %.5f MHz "
+                            "reaches %.1f kHz either side at %.0f kS/s (the transmit stream's rate%s), carrier %d is "
+                            "%.1f kHz off it: %s\n",
+                    rcfg.t.name, rcfg.t.ncar, t3_lo_hz / 1e6, t3_hi_hz / 1e6, (t3_hi_hz - t3_lo_hz) / 1e3,
+                    R.tx_lo / 1e6, reach / 1e3,
+                    R.tx_rate / 1e3, DX.started ? ", a sixth of it with --fpga-duc" : "", c + 1, fabs(off) / 1e3,
+                    DX.started ? "carriers closer together (--fpga-duc's stream is 384 kS/s at any -r)"
+                               : "a wider -r, or carriers closer together");
+            return 1;
+        }
+#endif
     const rdofradio_dev_setup_t su = {rate, R.rx.center_hz, tx_lo, gain, bw, stream_args, R.split || R.mmdvm || listen_only,
                                       FX.on ? 48000.0 * (double)rdof_chzfx_frame_words(FX.C) : 0, R.txr, settings,
                                       n_settings};
@@ -7140,14 +7605,47 @@ int main(int argc, char **argv)
     if (R.full) {
         rdof_repeater_init(&R.r, &R.radio, rcfg.peer_id, R.rx_hz, R.tx_hz, cc);
         R.r.keep_up = R.mmdvm; /* a modem drops its carrier when keyed with nothing queued */
-        if (config_path)
+        if (config_path && !rcfg.tier3)
             rdofradio_cfg_apply_repeater(&rcfg, &R.r); /* slots, hangs, jitter buffer, CW ID, as the firmware */
         R.r.clock = p_clock;
         R.r.on_tx = on_tx;
         R.r.on_sent = on_sent;
         R.r.on_key = on_key;
         R.r.ctx = &R;
+#ifdef RDOF_TIER3
+        /* a trunked site repeats nothing itself: the Tier III unit sends every slot of carrier 1, and a burst the
+         * repeater queued (the inbound repeated, a network call) would go out on any slot the unit leaves empty */
+        if (rcfg.tier3)
+            R.r.enabled[1] = R.r.enabled[2] = false;
+#endif
         ok = rdof_repeater_start(&R.r);
+#ifdef RDOF_TIER3
+        /* a trunked site: the repeater keeps the modem set up; the site's slot source sends every slot */
+        if (ok && rcfg.tier3) {
+            const rdofradio_t3_opts_t to = {.air_ms = t3_opts.air_ms, .sim_id = t3_opts.sim_id,
+                                               .sim_tg = t3_opts.sim_tg, .sim_talk_s = t3_opts.sim_talk_s,
+                                               .sim_script = t3_opts.sim_script, .state_dir = t3_opts.state_dir,
+                                               .seconds = seconds, .verbose = verbose != 0};
+            char terr[200];
+            const rdofradio_t3_dev_t td = {trunk_channel, main_now48,       now_s,
+                                              (uint32_t)R.rate, trunk_tx_offset, trunk_tx_lo,
+                                              (uint32_t)llround(R.tx_rate)};
+            /* the site's slots on the host's clock (UTC when it's synced): carrier 1's from the SDR's sample clock as
+             * timed against it, carrier 2's split half from it, so both carriers share one clock */
+            rdof_slot_timing_t st;
+            rdof_slot_timing_default(&st);
+            st.utc = true;
+            rdofradio_utc_setup(&st, R.rate, true, NULL);
+#ifdef RDOF_NETCLOCK
+            if (clock_on && set_os_clock)
+                rdofradio_utc_clock_ready(clock_ready);
+#endif
+            if (!rdofradio_t3_start(&rcfg, &to, &R.m, &td, terr, sizeof terr)) {
+                fprintf(stderr, "tier3: %s\n", terr);
+                return 1;
+            }
+        }
+#endif
     } else {
         rdof_txvr_init(&R.t, &R.radio, rcfg.peer_id);
         if (config_path) {
@@ -7331,6 +7829,9 @@ int main(int argc, char **argv)
         const double now = now_s();
         WS.last_samples = now;
         WS.n += n;
+        main_clock(now, total + n);
+        rdofradio_utc_arrived(total + n, now);
+        rx_time_base(now);
         const double t_poll = now;
         if (now - last_poll >= POLL_S) {
             last_poll = now;
@@ -7342,12 +7843,20 @@ int main(int argc, char **argv)
                 fprintf(stderr, "poll: %s\n", R.client.error);
             net_poll(now);
             mq_poll(now);
+#ifdef RDOF_TIER3
+            rdofradio_t3_poll();
+#endif
         }
         /* as many transmit samples as were read (one for every txr), at the modem's position for them */
         const int ntx = (int)((total + n) / txr - total / txr);
         const double t_mod = now_s();
         ms_poll(now);
-        const bool keyed = rdof_sdrmodem_pull_iq(&R.m, txn - lead + offset, out, ntx);
+        rdofradio_utc_apply(&R.m);
+        bench_dev_settle();
+        bool keyed = rdof_sdrmodem_pull_iq(&R.m, txn - lead + offset, out, ntx);
+#ifdef RDOF_TIER3
+        keyed |= rdofradio_t3_mix(txn - lead + offset, out, ntx); /* a trunked site's carrier 2, when the SDR sends it */
+#endif
         WS.mod += now_s() - t_mod;
         const double d_poll = t_mod - t_poll, d_mod = now_s() - t_mod;
         /* Samples the receiver lost (a stall longer than the device's buffers: the stream falls behind the wall
@@ -7614,6 +8123,9 @@ int main(int argc, char **argv)
                 1e3 * dt_read, 1e3 * FX.t_rx, 1e3 * d_poll, 1e3 * d_mod, 1e3 * d_write);
         total += n;
     }
+#ifdef RDOF_TIER3
+    rdofradio_t3_stop();
+#endif
     if (R.full)
         rdof_repeater_stop(&R.r);
     shutdown_tx();
@@ -7658,6 +8170,10 @@ int main(int argc, char **argv)
         fprintf(stderr, "restart: %s\n", strerror(errno));
         return 1;
     }
+#endif
+#ifdef RDOF_TIER3
+    if (rdofradio_t3_fenced())
+        return 75; /* off the air for the standby (tier3.md 6.2): the supervisor starts it again, as a standby */
 #endif
     return lost_device ? 1 : 0;
 }

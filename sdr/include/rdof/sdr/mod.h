@@ -66,6 +66,7 @@ typedef struct {
     float inv_ramp, inv_p;
     float amplitude;
     float dev_inc;                  /* one unit of deviation in phase-accumulator steps per sample */
+    float dev_hz;                   /* one unit of deviation in Hz (RDOF_MOD_DEVIATION_HZ times the scale) */
     double offset_hz;
     uint32_t base_inc;              /* the offset, in the same */
     uint32_t phase;
@@ -98,6 +99,13 @@ int rdof_mod_init(rdof_mod_t *m, uint32_t fs, double freq_offset_hz, double ramp
 void rdof_mod_free(rdof_mod_t *m);
 /* Where the channel sits from the front end's center; from the next sample on. */
 void rdof_mod_set_offset(rdof_mod_t *m, double hz);
+/* The deviation as a fraction of the nominal 648 Hz a unit (1.0 after init, and the same output bit for bit); from
+ * the next sample on. A bench job's --dev-scale (0.5-1.5) tests a receiver against a transmitter off nominal. */
+void rdof_mod_set_dev_scale(rdof_mod_t *m, double scale);
+/* The most the frequency can swing from the offset at the deviation set, Hz: +-3 through the pulse's largest sum of
+ * tap magnitudes (about 3690 Hz at 1.0; random symbols reach about 3200). A front end with a frequency limit (the W12's
+ * int8 samples, 4064 Hz) clips the overshoots past it. */
+double rdof_mod_peak_hz(const rdof_mod_t *m);
 
 /* count symbols (+-1, +-3) whose symbol first peaks at start + first * fs / 4800. Returns 0; -1 if it is too long,
  * the queue is full, it's before the last one queued, or it would touch a sample already pulled (late). */

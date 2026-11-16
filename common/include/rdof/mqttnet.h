@@ -65,6 +65,7 @@ enum {
     RDOF_MN_QUALITY = 0x0A,
     RDOF_MN_ORIGIN = 0x0B,
     RDOF_MN_SETUP = 0x0C,
+    RDOF_MN_SDATA = 0x0D, /* Tier III short data (tier3.md 5.9): read by the trunk unit, never a stream */
     RDOF_MN_RAW = 0x7F,
 };
 
@@ -157,6 +158,8 @@ enum {
 };
 #define RDOF_MN_SETUP_FOACSU 0x01      /* flags: full off-air call setup (the called radio is alerted first) */
 #define RDOF_MN_SETUP_UNCONFIRMED 0x02 /* flags: the answerer couldn't ask the radio (a Tier II box) */
+#define RDOF_MN_SETUP_DATA 0x04        /* flags: a packet data call (tier3.md 5.10) */
+#define RDOF_MN_SETUP_ALS 0x08         /* flags: an Ambient Listening Service call (the called radio transmits) */
 #define RDOF_MN_SETUP_LEN 8
 
 typedef struct {
@@ -306,6 +309,10 @@ void rdof_mn_up_init(rdof_mn_up_t *u, const char *node);
 void rdof_mn_up_frame(rdof_mn_up_t *u, const rdof_frame_t *f, double now);
 /* Call a few times a second: folded CSBKs that waited long enough go out, held voice and data calls expire. */
 void rdof_mn_up_tick(rdof_mn_up_t *u, double now);
+/* sizeof and _Alignof of rdof_mn_up_t, for a caller that lays out its own memory (rdof/t3unit.h, in Rust). That
+   caller sets the hooks through a mirror of the struct's head: keep node to ctx first, in this order. */
+size_t rdof_mn_up_size(void);
+size_t rdof_mn_up_align(void);
 
 /* ── the downlink: call messages, as network bursts ──────────────────────── */
 
@@ -362,6 +369,9 @@ void rdof_mn_down_init(rdof_mn_down_t *d);
 bool rdof_mn_down_message(rdof_mn_down_t *d, const char *node, bool dl, const uint8_t *msg, size_t len, double now);
 /* Streams with nothing for RDOF_MN_DOWN_IDLE_S end (a terminator goes out after voice). */
 void rdof_mn_down_tick(rdof_mn_down_t *d, double now);
+/* sizeof and _Alignof of rdof_mn_down_t, as rdof_mn_up_size (keep raw_tx to ctx first, in this order). */
+size_t rdof_mn_down_size(void);
+size_t rdof_mn_down_align(void);
 /* The publisher of stream id lately, NULL none (for the tx event's "from"). */
 const char *rdof_mn_down_from(const rdof_mn_down_t *d, uint32_t stream);
 
@@ -464,7 +474,7 @@ typedef struct {
     uint32_t stream;
 } rdof_mn_ev_t;
 
-/* A trunked site's events (section 7, trunk.md): */
+/* A trunked site's events (section 7, tier3.md): */
 /* {"ev":"reg",...}: action "register", "deregister", "expire", "deny", "refuse"; tg the radio's talkgroups */
 size_t rdof_mn_reg_event(const rdof_mn_ev_t *e, uint32_t src, const char *action, const uint32_t *tg, int ntg,
                          char *out, size_t cap);
@@ -474,6 +484,14 @@ size_t rdof_mn_grant_event(const rdof_mn_ev_t *e, uint32_t src, uint32_t dst, bo
 /* {"ev":"queue",...}: action "in", "out", "drop"; why NULL: none */
 size_t rdof_mn_queue_event(const rdof_mn_ev_t *e, uint32_t src, uint32_t dst, bool group, const char *action,
                            const char *why, char *out, size_t cap);
+/* {"ev":"status",...}: a status delivered or not (361-4 6.6.6); status 0-126, alarm "emergency" (126) or "cancel"
+   (124) beside it; result "delivered", "refused", "away", "busy", else "failed" */
+size_t rdof_mn_status_event(const rdof_mn_ev_t *e, uint32_t src, uint32_t dst, bool group, int status,
+                            const char *result, char *out, size_t cap);
+/* {"ev":"interrupt",...}: a transmit interrupt's progress (tier3.md 3.20); src the interrupting MS, dst the call's
+   destination; action "accepted", "ceased", "gave_up", "talks"; talker the MS de-keyed, 0: none (left out) */
+size_t rdof_mn_intr_event(const rdof_mn_ev_t *e, uint32_t src, uint32_t dst, bool group, const char *action,
+                          uint32_t talker, char *out, size_t cap);
 /* {"ev":"setup",...}: a call setup sent or received; peer the other node, NULL: none */
 size_t rdof_mn_setup_event(const rdof_mn_ev_t *e, uint32_t src, uint32_t dst, int op, int reason, const char *peer,
                            char *out, size_t cap);

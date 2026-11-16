@@ -43,10 +43,19 @@ int64_t rdof_n_of_counter(uint32_t c, int64_t near_n);
 #define RDOF_OPS_SCHEDULE 0x0001
 #define RDOF_OPS_ALIGN 0x0002
 #define RDOF_OPS_SLEW 0x0004    /* reserved: not built */
-#define RDOF_OPS_RX_META 0x0008 /* reserved: not built */
+#define RDOF_OPS_RX_META 0x0008 /* the RX half's RX_META events (sub 0x89), SET_ROLE byte 7 bit 0 */
 #define RDOF_OPS_TRIM 0x0010    /* reserved: not built */
 #define RDOF_OPS_PPS 0x0020     /* reserved: not built */
+/* Proposed (2026-11-13, for a TSCC on a TX half; not in a radio yet): TX_SCHED may carry 3 more octets after the
+ * burst, the 24-bit CACH sent just before slot n's burst (TACT and payload, air order, the first bit in bit 7 of
+ * octet 0), which the half sends as given in place of its own AT, TC and short LC fragment. An idle burst with a CACH
+ * is sent, not a clear. Without them, or without the bit, as before. */
+#define RDOF_OPS_CACH 0x0040
 #define RDOF_OPS_BUILT 0x0003
+#define RDOF_OPS_ROLE_OPTIONS_AT 7 /* SET_ROLE's body: options, bit 0 RX_META */
+#define RDOF_OPS_SUB_RX_META 0x89
+#define RDOF_OPS_RX_META_LEN 16 /* the event's block */
+#define RDOF_OPS_META_SLOT_N 0x80 /* its flags (byte 9): bytes 14-15 the slot number from the SET_EPOCH E */
 #define RDOF_OPS_GUARD_MS 40 /* only when INFO is too short to say */
 #define RDOF_OPS_HORIZON_SLOTS 32
 #define RDOF_OPS_STREAM_MODE_AT 6 /* SET_ROLE's body (the role at 0) */
@@ -86,6 +95,9 @@ size_t rdof_ops_align(uint8_t *out, uint32_t t_us, uint32_t period_ns, int64_t n
 bool rdof_ops_aligned(bool ok, const uint8_t *data, size_t len, int32_t *phase_us, int *flags);
 /* TX_SCHED's body for UTC slot n (its slot must match n's parity: TS1 even); 0 if they don't. */
 size_t rdof_ops_schedule(uint8_t *out, int64_t n, int slot, uint8_t control, const uint8_t burst[33]);
+/* The same with the CACH before it (RDOF_OPS_CACH): 42 octets, 0 if the slot doesn't match n's parity. */
+size_t rdof_ops_schedule_cach(uint8_t *out, int64_t n, int slot, uint8_t control, const uint8_t burst[33],
+                              const uint8_t cach[3]);
 bool rdof_ops_scheduled(const uint8_t *data, size_t len, uint32_t *counter, int *outcome);
 /* STATUS's bytes 32-46 (a reply's body, the role at 0); false if it's too short. */
 bool rdof_ops_status_ext(const uint8_t *status, size_t len, rdof_ops_status_t *st);

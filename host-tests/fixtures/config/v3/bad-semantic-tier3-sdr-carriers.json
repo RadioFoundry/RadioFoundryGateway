@@ -1,0 +1,77 @@
+{
+ "version": 3,
+ "name": "site3",
+ "id": 9800400,
+ "defaults": {
+  "cc": 1
+ },
+ "devices": [
+  {
+   "name": "pluto",
+   "kind": "sdr",
+   "driver": "iio",
+   "match": {
+    "uri": "local:"
+   }
+  }
+ ],
+ "frequencies": [
+  {
+   "name": "A-out",
+   "freq": 438.75
+  },
+  {
+   "name": "A-in",
+   "freq": 438.25,
+   "tx": false
+  },
+  {
+   "name": "B-out",
+   "freq": 438.6
+  },
+  {
+   "name": "B-in",
+   "freq": 438.5,
+   "tx": false
+  }
+ ],
+ "apps": [
+  {
+   "name": "site",
+   "type": "tier3",
+   "system": {
+    "model": "small",
+    "net": 5,
+    "site": 3,
+    "par": "ab"
+   },
+   "carriers": [
+    {
+     "out": "B-out",
+     "in": "B-in",
+     "chan": 2
+    },
+    {
+     "out": "A-out",
+     "in": "A-in",
+     "chan": 1,
+     "tscc": true
+    }
+   ],
+   "registration": "open",
+   "wide_tg": "1-99999",
+   "timers": {
+    "hang_s": 3
+   }
+  }
+ ],
+ "networks": [
+  {
+   "type": "mqtt",
+   "host": "broker.example.net",
+   "root": "DMR",
+   "calls": true,
+   "format": "v3"
+  }
+ ]
+}

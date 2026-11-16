@@ -56,6 +56,17 @@ int rdof_five_bit_checksum(const uint8_t lc9[9]);
 #if RDOF_FEATURE_DATA_BLOCKS
 /* Rate 3/4 trellis: returns the Viterbi path metric (0 = clean). */
 int rdof_trellis34_decode(const uint8_t burst[RDOF_BURST_BYTES], uint8_t out18[18]);
+/* A rate 3/4 data block: rdof_trellis34_decode, and when its octets 0-1 aren't a good DBSN and CRC-9 for the rest
+   (a confirmed block's, mask RDOF_MASK_CRC9_RATE34), the decode with the path starting in any trellis state, if
+   that one's are and its path metric is at least 2 lower: a radio whose encoder doesn't start in state 0 (361-1
+   B.2.2) sends a wrong first point. */
+int rdof_trellis34_decode_block(const uint8_t burst[RDOF_BURST_BYTES], uint8_t out18[18]);
+/* Called for each block rdof_trellis34_decode_block reads, when set (rdofradio -v; NULL otherwise, and the block
+   costs nothing more): whether the decode from state 0 passed the CRC-9 and its path metric, then the decode from
+   any start: the state its path starts in, whether it passed and its metric. Which state a radio's encoder starts
+   in (361-1 B.2.2), block by block. */
+typedef void (*rdof_trellis34_hook_t)(bool ok0, int e0, int start, bool ok_any, int e_any);
+extern rdof_trellis34_hook_t rdof_trellis34_hook;
 void rdof_trellis34_encode(const uint8_t payload18[18], uint8_t info196[196]);
 
 void rdof_rate1_payload(const uint8_t burst[RDOF_BURST_BYTES], uint8_t out24[24]);

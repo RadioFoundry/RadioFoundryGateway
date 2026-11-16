@@ -44,6 +44,9 @@ extern "C" {
 #define RDOF_IPGW_ACK_AGAIN_S 0.5   /* the same confirmed message again: answered again after this long */
 /* The longest datagram either way: 127 blocks (the header's 7-bit count) of 12 octets, less the CRC-32. */
 #define RDOF_IPGW_MAX_PACKET 1520
+/* The longest a radio sends up: 127 rate 1 blocks of 24 octets, less the CRC-32 (the gateway sends down rate 1/2
+ * only, so RDOF_IPGW_MAX_PACKET there). */
+#define RDOF_IPGW_MAX_UP 3044
 #define RDOF_IPGW_MAX_BURSTS 128 /* a header and up to 127 blocks */
 
 #define RDOF_SAP_IP 4
@@ -198,6 +201,11 @@ typedef struct {
     uint32_t icmp_unmatched; /* echo replies and errors that are no flow's */
     uint32_t down_own_source; /* down packets from the radio's own address (it would drop them): not sent */
     uint32_t tx_busy;         /* down packets dropped: the repeater's slot stayed busy (the platform's, rdof/ipgwtx.h) */
+    uint32_t rx_headers;      /* data headers (CRC good) that start a message: what came before rx_incomplete */
+    uint32_t rx_header_crc;   /* data headers whose CRC failed */
+    uint32_t rx_blocks;       /* data blocks taken into a message */
+    uint32_t rx_block_fec;    /* of those, blocks whose FEC failed (rate 1/2, 3/4) */
+    uint32_t rx_block_crc;    /* of those, confirmed blocks whose CRC-9 failed */
 } rdof_ipgw_counters_t;
 
 typedef struct {
@@ -212,7 +220,7 @@ typedef struct {
     int len;
     double last;
     rdof_ipgw_where_t where;
-    uint8_t data[RDOF_IPGW_MAX_PACKET + 32];
+    uint8_t data[RDOF_IPGW_MAX_UP + 32];
 } rdof_ipgw_asm_t;
 
 typedef struct rdof_ipgw {
@@ -241,7 +249,7 @@ typedef struct rdof_ipgw {
     uint16_t ip_id;
     rdof_ipgw_dmr_t out; /* what send_dmr gets */
     uint8_t scratch[RDOF_IPGW_MAX_PACKET + 32];
-    uint8_t up[RDOF_IPGW_MAX_PACKET + 32]; /* a datagram going up, rebuilt (SAP 3) or its TTL changed */
+    uint8_t up[RDOF_IPGW_MAX_UP + 32]; /* a datagram going up, rebuilt (SAP 3) or its TTL changed */
     rdof_ipgw_counters_t n;
 } rdof_ipgw_t;
 

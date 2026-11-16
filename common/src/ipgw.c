@@ -573,8 +573,10 @@ void rdof_ipgw_burst(rdof_ipgw_t *g, const rdof_ipgw_where_t *w, int dt, const u
     if (dt == RDOF_DT_DATA_HEADER) {
         rdof_data_header_t h;
         rdof_decode_data_header(burst, &h);
-        if (!h.crc_ok)
+        if (!h.crc_ok) {
+            g->n.rx_header_crc++;
             return;
+        }
         if (h.dpf == RDOF_DPF_PROPRIETARY) { /* a second header: one of the blocks announced */
             if (a && ++a->got >= a->expect)
                 finish(g, a, now);
@@ -588,6 +590,7 @@ void rdof_ipgw_burst(rdof_ipgw_t *g, const rdof_ipgw_where_t *w, int dt, const u
         }
         if ((h.dpf != RDOF_DPF_UNCONFIRMED && h.dpf != RDOF_DPF_CONFIRMED) || h.blocks <= 0)
             return; /* responses, short data, UDT: not IP */
+        g->n.rx_headers++;
         int k = 0;
         for (int i = 0; i < RDOF_IPGW_MAX_ASM; i++) {
             if (!g->asms[i].used) {
@@ -625,13 +628,18 @@ void rdof_ipgw_burst(rdof_ipgw_t *g, const rdof_ipgw_where_t *w, int dt, const u
         return;
     rdof_data_block_t b;
     rdof_decode_data_block(burst, dt, &b);
-    if (!b.fec_ok)
+    g->n.rx_blocks++;
+    if (!b.fec_ok) {
         a->bad = true;
+        g->n.rx_block_fec++;
+    }
     if (a->confirmed) {
         int dbsn, n;
         uint8_t body[24];
-        if (!rdof_split_confirmed(&b, &dbsn, body, &n))
+        if (!rdof_split_confirmed(&b, &dbsn, body, &n)) {
             a->bad = true;
+            g->n.rx_block_crc += b.fec_ok;
+        }
         append(a, body, n);
     } else {
         append(a, b.payload, b.len);
@@ -643,10 +651,17 @@ void rdof_ipgw_burst(rdof_ipgw_t *g, const rdof_ipgw_where_t *w, int dt, const u
 
 /* ── network to radio ──────────────────────────────────────────────────────── */
 
+/* The longest datagram down: max_bytes (which may allow up to RDOF_IPGW_MAX_UP, for uplink), at most
+ * RDOF_IPGW_MAX_PACKET (rate 1/2 only down; g->scratch holds no more). */
+static size_t down_max(const rdof_ipgw_t *g)
+{
+    return g->cfg.max_bytes < RDOF_IPGW_MAX_PACKET ? (size_t)g->cfg.max_bytes : RDOF_IPGW_MAX_PACKET;
+}
+
 /* d (n octets, in g->scratch) down to radio on flow f: the TTL, the rate, the size, then the packet. */
 static void send_down(rdof_ipgw_t *g, rdof_ipgw_flow_t *f, uint32_t radio, uint8_t *d, size_t n, double now)
 {
-    if (n > (size_t)g->cfg.max_bytes) {
+    if (n > down_max(g)) {
         g->n.down_too_big++;
         return;
     }
@@ -712,7 +727,7 @@ void rdof_ipgw_from_net(rdof_ipgw_t *g, int fi, uint32_t ip, uint16_t port, cons
     size_t n;
     uint32_t radio = f->radio;
     if (f->payload == RDOF_IPGW_PAYLOAD_UDP) {
-        if (28 + len > (size_t)g->cfg.max_bytes) {
+        if (28 + len > down_max(g)) {
             g->n.down_too_big++;
             return;
         }
@@ -724,7 +739,7 @@ void rdof_ipgw_from_net(rdof_ipgw_t *g, int fi, uint32_t ip, uint16_t port, cons
             return;
         }
         n = be16(data + 2);
-        if (n > (size_t)g->cfg.max_bytes) {
+        if (n > down_max(g)) {
             g->n.down_too_big++;
             return;
         }
@@ -905,6 +920,8 @@ void rdof_ipgw_status_json(const rdof_ipgw_t *g, rdof_json_t *j)
         {"icmp_up", n->icmp_up},         {"icmp_down", n->icmp_down},   {"icmp_errors", n->icmp_errors},
         {"icmp_unmatched", n->icmp_unmatched},
         {"down_own_source", n->down_own_source}, {"tx_busy", n->tx_busy},
+        {"rx_headers", n->rx_headers},   {"rx_header_crc", n->rx_header_crc}, {"rx_blocks", n->rx_blocks},
+        {"rx_block_fec", n->rx_block_fec}, {"rx_block_crc", n->rx_block_crc},
     };
     for (size_t i = 0; i < sizeof c / sizeof c[0]; i++)
         rdof_json_int(j, c[i].key, c[i].v);

@@ -48,6 +48,16 @@ int checks, failures;
         }                                                                                                    \
     } while (0)
 
+/* rdof_trellis34_hook's last report */
+static struct {
+    int n, e0, start, e_any;
+    bool ok0, ok_any;
+} t34;
+static void t34_note(bool ok0, int e0, int start, bool ok_any, int e_any)
+{
+    t34.n++, t34.ok0 = ok0, t34.e0 = e0, t34.start = start, t34.ok_any = ok_any, t34.e_any = e_any;
+}
+
 static size_t unhex(const char *s, uint8_t *out)
 {
     size_t n = strlen(s) / 2;
@@ -130,6 +140,57 @@ static void test_fec(void)
         int metric = rdof_trellis34_decode(in, out);
         CHECK(hex_eq(out, 18, v_trellis_dec[i].out) && metric == v_trellis_dec[i].metric, "trellis decode %zu (%d)",
               i, metric);
+    }
+    {
+        /* A rate 3/4 block heard on air from a radio whose trellis encoder started in state 4, not 0 (2026-11-14):
+           the spec decode (from state 0) gets octets 0-1 wrong; the block decode tries any start once the CRC-9 fails. */
+        static const char heard[] = "b432f22f7d08a2c2222226b8ca2dff57d75df5dc2d1327222eada4a82a2275dbe7";
+        static const char sent[] = "01e745000024000000004011481e0c2f63ca";
+        uint8_t want[18];
+        unhex(heard, in);
+        unhex(sent, want);
+        int metric = rdof_trellis34_decode(in, out);
+        CHECK(memcmp(out, want, 2) && !memcmp(out + 2, want + 2, 16) && metric == 2, "trellis from 0: first octets off");
+        metric = rdof_trellis34_decode_block(in, out);
+        CHECK(!memcmp(out, want, 18) && metric == 0, "trellis block from start state 4 (%d)", metric);
+        /* the hook (rdofradio -v) says which: state 0 failed, the path from any start passed. It starts in 7 here:
+           states 4 and 7 send the same first point, so the block can't tell them apart */
+        rdof_trellis34_hook = t34_note;
+        metric = rdof_trellis34_decode_block(in, out);
+        CHECK(t34.n == 1 && !t34.ok0 && t34.e0 == 2 && t34.start == 7 && t34.ok_any && t34.e_any == 0 &&
+                  !memcmp(out, want, 18) && metric == 0,
+              "trellis hook, heard block: %d %d %d %d %d", t34.ok0, t34.e0, t34.start, t34.ok_any, t34.e_any);
+        /* our own encoder starts in 0: both decodes pass, the path from 0, the block as sent */
+        uint8_t burst[RDOF_BURST_BYTES] = {0};
+        rdof_trellis34_encode(want, info);
+        rdof_info_burst(info, 8, 2, 0, burst);
+        metric = rdof_trellis34_decode_block(burst, out);
+        CHECK(t34.n == 2 && t34.ok0 && t34.e0 == 0 && t34.start == 0 && t34.ok_any && !memcmp(out, want, 18) &&
+                  metric == 0,
+              "trellis hook, our block: %d %d %d %d", t34.ok0, t34.e0, t34.start, t34.ok_any);
+        rdof_trellis34_hook = NULL;
+        metric = rdof_trellis34_decode_block(burst, out);
+        CHECK(t34.n == 2 && metric == 0, "trellis hook off: not called");
+        /* blocks from state 0 with noise: the path from any start may explain it a bit better and pass the CRC-9 by
+           chance (an unconfirmed block has none); taken only when it saves a wrong point (2), a swap is rare */
+        uint32_t seed = 1;
+        int swaps = 0, wrong = 0;
+        for (int t = 0; t < 40000; t++) {
+            uint8_t p[18], o0[18];
+            for (int i = 0; i < 18; i++)
+                p[i] = (uint8_t)((seed = seed * 1103515245u + 12345u) >> 16);
+            rdof_trellis34_encode(p, info);
+            for (int k = (int)((seed = seed * 1103515245u + 12345u) >> 16) % 8; k > 0; k--)
+                info[((seed = seed * 1103515245u + 12345u) >> 16) % 196] ^= 1;
+            rdof_info_burst(info, 8, 2, 0, burst);
+            rdof_trellis34_decode(burst, o0);
+            rdof_trellis34_decode_block(burst, out);
+            if (memcmp(o0, out, 18)) {
+                swaps++;
+                wrong += memcmp(out, p, 18) != 0;
+            }
+        }
+        CHECK(wrong == 0, "noisy blocks from state 0: %d swaps, %d wrong", swaps, wrong);
     }
     for (size_t i = 0; i < V_RATE1_N; i++) {
         unhex(v_rate1[i].burst, in);
@@ -753,6 +814,13 @@ static void test_roles(void)
 #define MODEM_AT(port) "{\"name\":\"M\",\"kind\":\"modem\",\"type\":\"mmdvm_hs\",\"port\":" port "}"
 #define UART "{\"uart\":1,\"tx\":17,\"rx\":18}"
 #define ONE_FREQ "\"frequencies\":[{\"freq\":438.0625,\"name\":\"A\"}]}"
+/* a trunked site on one SDR, both carriers out of it */
+#define T3_TWO                                                                                                     \
+    "\"frequencies\":[{\"freq\":438.75,\"name\":\"AO\"},{\"freq\":438.25,\"name\":\"AI\",\"tx\":false},"          \
+    "{\"freq\":438.625,\"name\":\"BO\"},{\"freq\":438.375,\"name\":\"BI\",\"tx\":false}],\"apps\":[{\"name\":"    \
+    "\"S\",\"type\":\"tier3\",\"system\":{\"model\":\"small\",\"net\":5,\"site\":1,\"par\":\"ab\"},"          \
+    "\"carriers\":[{\"out\":\"AO\",\"in\":\"AI\",\"chan\":1,\"tscc\":true},{\"out\":\"BO\",\"in\":\"BI\","     \
+    "\"chan\":2}],\"registration\":\"open\",\"wide_tg\":\"1-99999\"}]}"
 #define REP_APP                                                                                                    \
     "\"frequencies\":[{\"freq\":438.1125,\"name\":\"in\"},{\"freq\":438.75,\"name\":\"out\"}],\"apps\":"        \
     "[{\"name\":\"R\",\"type\":\"repeater\",\"in\":\"in\",\"out\":\"out\"}]}"
@@ -808,6 +876,16 @@ static void test_plan_checks(void)
          ONE_FREQ, 0, "devices.T.tx.carriers: 2, and the lr2021 sends 1 (one carrier a transmitter for now)"},
         {"{" V3_HEAD "\"devices\":[{\"name\":\"T\",\"kind\":\"sdr\",\"driver\":\"lr2021\",\"tx\":{\"carriers\":1}}],"
          ONE_FREQ, 0, NULL},
+        /* a host's I/Q SDR: a trunked site's carriers (up to four) when it sends nothing else */
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"T\",\"kind\":\"sdr\",\"driver\":\"iio\",\"tx\":{\"carriers\":2}}],"
+         ONE_FREQ, 0, "devices.T.tx.carriers: 2, and the iio sends 1 (one carrier a transmitter for now; a trunked site's "
+         "4 when it sends nothing else)"},
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"T\",\"kind\":\"sdr\",\"driver\":\"iio\",\"tx\":{\"carriers\":2}}]," T3_TWO,
+         0, NULL},
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"T\",\"kind\":\"sdr\",\"driver\":\"iio\",\"tx\":{}}]," T3_TWO, 0,
+         "devices.T: carrier 2 of 1 (S sends 2 carriers on it)"},
+        {"{" V3_HEAD "\"devices\":[{\"name\":\"T\",\"kind\":\"sdr\",\"driver\":\"sx1255\",\"tx\":{\"carriers\":2}}],"
+         T3_TWO, 0, "devices.T.tx.carriers: 2, and the sx1255 sends 1 (one carrier a transmitter for now)"},
         {"{" V3_HEAD "\"devices\":[{\"name\":\"S\",\"kind\":\"sdr\",\"tx\":{}}]," ONE_FREQ, 0,
          "devices.S: the rtlsdr can't transmit"},
         {"{" V3_HEAD "\"devices\":[{\"name\":\"T\",\"kind\":\"sdr\",\"driver\":\"sx1255\"}],\"frequencies\":[{\"freq\":"

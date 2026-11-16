@@ -180,6 +180,8 @@ void fake_air(fake_radio_t *f)
             f->on_air[f->non_air].slot = f->sched[best].slot;
             memcpy(f->on_air[f->non_air].burst, f->sched[best].burst, 33);
             f->on_air[f->non_air].start = start;
+            f->on_air[f->non_air].has_cach = f->sched[best].has_cach;
+            memcpy(f->on_air[f->non_air].cach, f->sched[best].cach, 3);
             f->non_air++;
         }
         f->sched[best].used = false;
@@ -244,8 +246,15 @@ static void split_cmd(fake_radio_t *f, const uint8_t *p, size_t len)
             f->aligned = f->has_grid = f->has_snap = false;
             memset(f->sched, 0, sizeof f->sched);
         }
+        if (n > RDOF_OPS_ROLE_OPTIONS_AT &&
+            ((d[RDOF_OPS_ROLE_OPTIONS_AT] & ~1) ||
+             ((d[RDOF_OPS_ROLE_OPTIONS_AT] & 1) && !(f->split_caps & RDOF_OPS_RX_META)))) {
+            split_reply(f, sub, 4, NULL, 0); /* an option it doesn't know */
+            return;
+        }
         f->role = d[0];
         f->stream_mode = n > RDOF_OPS_STREAM_MODE_AT ? d[RDOF_OPS_STREAM_MODE_AT] : 0;
+        f->rx_meta = f->role == 2 && n > RDOF_OPS_ROLE_OPTIONS_AT && (d[RDOF_OPS_ROLE_OPTIONS_AT] & 1);
         split_reply(f, sub, 0, b, split_info(f, b));
         return;
     case 2: {
@@ -386,8 +395,9 @@ static void split_cmd(fake_radio_t *f, const uint8_t *p, size_t len)
         }
         int outcome;
         const uint8_t control = d[5];
+        const bool has_cach = (f->split_caps & RDOF_OPS_CACH) && n >= 6 + 33 + 3;
         const uint8_t idle = RDOF_SYNC_DATA | 9, term = RDOF_SYNC_DATA | 2; /* data types 9 and 2 */
-        if (control == idle || (control == term && at >= 0 && f->sched[at].control == term)) {
+        if ((control == idle && !has_cach) || (control == term && at >= 0 && f->sched[at].control == term)) {
             if (at >= 0) /* an idle burst or a repeated terminator: "nothing", the place cleared */
                 f->sched[at].used = false;
             b[4] = RDOF_SCHED_QUEUED;
@@ -416,6 +426,9 @@ static void split_cmd(fake_radio_t *f, const uint8_t *p, size_t len)
             f->sched[at].slot = (uint8_t)slot;
             f->sched[at].control = d[5];
             memcpy(f->sched[at].burst, d + 6, 33);
+            f->sched[at].has_cach = has_cach;
+            if (has_cach)
+                memcpy(f->sched[at].cach, d + 39, 3);
         }
         fake_air(f); /* within ~150 ms of its slot: keyed now */
         b[4] = (uint8_t)outcome;
@@ -569,6 +582,37 @@ void fake_hear(fake_radio_t *f, uint8_t control, const uint8_t *burst, int rssi,
 {
     if (is_split(f) && (f->role != 2 || !f->has_epoch))
         return;
+    uint8_t p[36];
+    p[0] = control;
+    memcpy(p + 1, burst, 33);
+    p[34] = (uint8_t)(rssi >> 8);
+    p[35] = (uint8_t)rssi;
+    put(f, slot == 1 ? RDOF_MMDVM_DMR_DATA1 : RDOF_MMDVM_DMR_DATA2, p, sizeof p);
+}
+
+void fake_hear_at(fake_radio_t *f, uint8_t control, const uint8_t *burst, int rssi, double start)
+{
+    if (!is_split(f) || f->role != 2 || !f->has_epoch)
+        return;
+    const double m = start * 1e6 * (1.0 + f->clock_rate) + f->clock_offset_us;
+    const uint32_t mu = (uint32_t)(uint64_t)(int64_t)rint(m);
+    const double period_us = f->epoch_period / 1000.0;
+    const long n = lrint((int32_t)(mu - f->epoch_t_us) / period_us);
+    const int slot = (n & 1) ? 2 : 1;
+    if (f->rx_meta) {
+        uint8_t e[2 + RDOF_OPS_RX_META_LEN] = {RDOF_OPS_SUB_RX_META, 0};
+        uint8_t *b = e + 2;
+        put_le32(b, f->epoch_t_us + (uint32_t)lrint(n * period_us));
+        b[6] = (uint8_t)slot;
+        b[7] = (control & RDOF_SYNC_DATA) ? control & 0x0F : 0x10 + (control & 0x0F);
+        b[8] = (uint8_t)f->cc;
+        b[9] = 0x01 | 0x02 | 0x20 | 0x40 | RDOF_OPS_META_SLOT_N;
+        put_le16(b + 10, (uint16_t)(int16_t)rssi);
+        put_le16(b + 12, f->meta_seq++);
+        put_le16(b + 14, (uint16_t)n);
+        put(f, 0xD6, e, sizeof e);
+        f->metas++;
+    }
     uint8_t p[36];
     p[0] = control;
     memcpy(p + 1, burst, 33);

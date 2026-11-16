@@ -54,7 +54,7 @@ Nothing matched and NAT off: dropped (`no_route`).
   serial number and a CRC-9 each (checked, `rdof_split_confirmed`). Blocks are taken in the order heard; selective
   retry is not supported.
 - When the announced count is in: the CRC-32 over the user data and the pad octets (little endian in the last
-  four octets) is checked, the pad dropped. Any failed block, CRC-9 or CRC-32: `rx_bad`.
+  four octets) is checked, the pad dropped. Any failed block, CRC-9 or CRC-32: `rx_bad` (a block's FEC also counts `rx_block_fec`, a CRC-9 `rx_block_crc`).
 - A new header before the last block, or no block for `RDOF_IPGW_ASM_TIMEOUT_S` 2 s: `rx_incomplete`.
 - **Chains.** RadioFoundry radios send several unconfirmed packets to one destination in one transmission: CSBK
   preambles once, then each packet's header and blocks back to back, one terminator. Each header after a packet's
@@ -100,7 +100,8 @@ Nothing matched and NAT off: dropped (`no_route`).
   twice that (at least one). Down is the tighter one: every reply is airtime, and a RadioFoundry radio wants
   250 ms or more between separate transmissions to it, which 2 a second keeps on average (two in a burst can come
   closer; the transmitter's own call setup, §11, spaces them further).
-- **Size:** `max_bytes` (default 1500, at most 1520: 127 rate 1/2 blocks) either way.
+- **Size:** `max_bytes` (default 1500) either way: at most 3044 up (127 rate 1 blocks, the longest DMR message:
+  Blocks to Follow is 7 bits) and 1520 down (127 rate 1/2 blocks: the gateway sends rate 1/2).
 - **Flows:** `max_flows` (default 8, at most `CONFIG_RDOF_IPGW_MAX_SOCKETS`); one closes after `idle_s` (default
   120 s) with nothing either way. A full table drops new flows (`flows_full`); nothing is evicted.
 - **Replies:** only from the exact address and port a flow sent to (`down_stranger` otherwise; ICMP: §7). There is

@@ -57,11 +57,20 @@ rdof_txpower_path_t rdof_txpower_path(const rdof_txpower_fe_t *fe, double want, 
 void rdof_txpower_range(const rdof_txpower_fe_t *fe, bool pa_ok, double *min_dbm, double *max_dbm);
 
 /* A bench job's power (bench_tx's power_dbm or power): dbm, at the antenna, when not NAN; else level, the older
-   0..255 on the transmitter's range (255: the most). */
+   0..255 on the transmitter's range (255: the most). It carries the job's other transmitter setting too: dev_scale,
+   its DMR 4FSK deviation as a fraction of nominal (bench_tx's --dev-scale, 0.5-1.5; 0 is nominal, as 1.0, so a
+   {dbm, level} initializer keeps it). */
 typedef struct {
     double dbm;
     int level;
+    double dev_scale;
 } rdof_bench_power_t;
+
+#define RDOF_BENCH_DEV_SCALE_MIN 0.5
+#define RDOF_BENCH_DEV_SCALE_MAX 1.5
+
+/* A job's deviation scale: 1.0 when it names none. */
+static inline double rdof_bench_dev_scale(rdof_bench_power_t p) { return p.dev_scale > 0 ? p.dev_scale : 1.0; }
 
 /* The bench's own limit (bench.tx): max_dbm when has_max_dbm, else rf_level on the transmitter's range. */
 typedef struct {

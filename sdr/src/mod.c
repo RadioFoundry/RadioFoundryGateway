@@ -62,6 +62,25 @@ void rdof_mod_set_offset(rdof_mod_t *m, double hz)
     m->base_inc = (uint32_t)(int64_t)(v + (v >= 0 ? 0.5 : -0.5));
 }
 
+void rdof_mod_set_dev_scale(rdof_mod_t *m, double scale)
+{
+    const double hz = RDOF_MOD_DEVIATION_HZ * scale; /* exact at 1.0: init's numbers */
+    m->dev_inc = (float)(hz * 4294967296.0 / m->fs);
+    m->dev_hz = (float)hz;
+}
+
+double rdof_mod_peak_hz(const rdof_mod_t *m)
+{
+    double most = 0;
+    for (uint32_t ph = 0; ph < m->P; ph++) {
+        double a = 0;
+        for (int j = 0; j < RDOF_MOD_TAPS; j++)
+            a += fabs(m->taps[ph * RDOF_MOD_TAPS + j]);
+        most = a > most ? a : most;
+    }
+    return 3 * most * m->dev_hz;
+}
+
 int rdof_mod_init(rdof_mod_t *m, uint32_t fs, double freq_offset_hz, double ramp_symbols, float amplitude, int queue,
                 int64_t position)
 {
@@ -101,7 +120,7 @@ int rdof_mod_init(rdof_mod_t *m, uint32_t fs, double freq_offset_hz, double ramp
     m->inv_ramp = ramp_symbols > 0.0 ? (float)(1.0 / ramp_symbols) : 0.0f;
     m->inv_p = (float)(1.0 / P);
     m->amplitude = amplitude;
-    m->dev_inc = (float)(RDOF_MOD_DEVIATION_HZ * 4294967296.0 / fs);
+    rdof_mod_set_dev_scale(m, 1.0);
     m->pos = position;
     m->qcap = queue;
     rdof_mod_set_offset(m, freq_offset_hz);
@@ -317,7 +336,7 @@ void rdof_mod_iq(rdof_mod_t *m, rdof_cf_t *out, int n)
 void rdof_mod_freq(rdof_mod_t *m, float *hz, float *env_out, int n)
 {
     float s[BLOCK], env[BLOCK];
-    const float off = (float)m->offset_hz, dev = (float)RDOF_MOD_DEVIATION_HZ;
+    const float off = (float)m->offset_hz, dev = m->dev_hz;
     m->pulled_off_hz = 0.0f;
     if (quiet_for(m, n)) { /* idle (a transmitter waiting most of the time): what render would give, without it */
         for (int i = 0; i < n; i++)

@@ -68,6 +68,70 @@ int main(void)
         CHECK(C.has_hblink && C.unit_hblink && C.peer_id == 9990111);
     }
 
+#ifdef RDOF_TIER3
+    /* a trunked site with the IP gateway app beside it: the site's packet data goes to the gateway */
+    {
+        const char *fmt = "{\"version\": 3, \"name\": \"t3\", \"id\": 9990120, \"defaults\": {\"cc\": 2},"
+                          "\"devices\": [{\"name\": \"p\", \"kind\": \"sdr\", \"driver\": \"iio\", \"transmits\": [\"o\"]}],"
+                          "\"frequencies\": [{\"name\": \"o\", \"freq\": 438.75}, {\"name\": \"i\", \"freq\": 431.15, "
+                          "\"tx\": false}], \"apps\": [{\"name\": \"S\", \"type\": \"tier3\", \"system\": {\"model\": "
+                          "\"small\", \"net\": 5, \"site\": 1}, \"carriers\": [{\"out\": \"o\", \"in\": \"i\", \"chan\": 1, "
+                          "\"tscc\": true}]}%s]}";
+        char doc[1000];
+        snprintf(doc, sizeof doc, fmt, ", {\"type\": \"ipgw\", \"pc\": \"9991\", \"nat\": true}");
+        CHECK(parse(doc) || !printf("  %s\n", err));
+        CHECK(C.tier3 && C.has_ipgw && C.ipgw.on);
+        snprintf(doc, sizeof doc, fmt, "");
+        CHECK(parse(doc) || !printf("  %s\n", err));
+        CHECK(C.tier3 && !C.has_ipgw);
+    }
+    /* the standby controller's setting (tier3.md 6.2): its defaults, its ranges, and its refusals */
+    {
+        const char *fmt = "{\"version\": 3, \"name\": \"t3\", \"id\": 9990120, \"defaults\": {\"cc\": 2},"
+                          "\"devices\": [{\"name\": \"p\", \"kind\": \"sdr\", \"driver\": \"iio\", "
+                          "\"transmits\": [\"o\"]}], \"frequencies\": [{\"name\": \"o\", \"freq\": 438.75}, "
+                          "{\"name\": \"i\", \"freq\": 431.15, \"tx\": false}]%s, \"apps\": [{\"name\": \"S\", "
+                          "\"type\": \"tier3\", \"system\": {\"model\": \"small\", \"net\": 5, \"site\": 1}, "
+                          "\"carriers\": [{\"out\": \"o\", \"in\": \"i\", \"chan\": 1, \"tscc\": true}]%s}]}";
+        const char *net = ", \"networks\": [{\"type\": \"mqtt\", \"host\": \"127.0.0.1\", \"port\": 1883}]";
+#define RANGE "apps.S.standby: fence_s 9-60, takeover_s at least fence_s + 3, at most 120"
+        static const struct {
+            const char *standby, *err; /* err NULL: accepted */
+            bool on;
+            double takeover, fence;
+        } cases[] = {
+            {"", NULL, false, 13, 9},
+            {", \"standby\": false", NULL, false, 13, 9},
+            {", \"standby\": true", NULL, true, 13, 9},
+            {", \"standby\": {}", NULL, true, 13, 9},
+            {", \"standby\": {\"takeover_s\": 20, \"fence_s\": 15}", NULL, true, 20, 15},
+            {", \"standby\": {\"takeover_s\": 120, \"fence_s\": 60}", NULL, true, 120, 60},
+            {", \"standby\": {\"fence_s\": 8}", RANGE},
+            {", \"standby\": {\"takeover_s\": 11}", RANGE},
+            {", \"standby\": {\"takeover_s\": 121}", RANGE},
+            {", \"standby\": {\"grace\": 3}", "apps.S.standby.grace: not a setting (takeover_s, fence_s)"},
+            {", \"standby\": {\"fence_s\": \"9\"}", "apps.S.standby.fence_s: a number of seconds"},
+            {", \"standby\": \"yes\"", "apps.S.standby: true, false or {\"takeover_s\", \"fence_s\"}"},
+        };
+        char doc[1200];
+        for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+            snprintf(doc, sizeof doc, fmt, net, cases[i].standby);
+            const bool ok = parse(doc);
+            if (!cases[i].err) {
+                CHECK((ok && C.t.standby == cases[i].on && C.t.takeover_s == cases[i].takeover &&
+                       C.t.fence_s == cases[i].fence) ||
+                      !printf("  standby case %zu: %s\n", i, err));
+            } else {
+                CHECK((!ok && strstr(err, cases[i].err)) || !printf("  standby case %zu: %s\n", i, err));
+            }
+        }
+        /* a standby needs the site's network */
+        snprintf(doc, sizeof doc, fmt, "", ", \"standby\": true");
+        CHECK((!parse(doc) && strstr(err, "apps.S.standby: needs the site's mqtt network")) || !printf("  %s\n", err));
+#undef RANGE
+    }
+#endif
+
     /* the repeater's own settings, applied as the firmware does */
     static rdof_repeater_t r;
     rdof_repeater_init(&r, NULL, C.peer_id, C.rx_hz, C.tx_hz, C.cc);

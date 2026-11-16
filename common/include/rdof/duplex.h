@@ -22,6 +22,9 @@ extern "C" {
 
 /* An idle burst with this color code (the idle message of ETSI TS 102 361-1 D.2). */
 void rdof_duplex_idle(int cc, uint8_t out[RDOF_BURST_BYTES]);
+/* An idle burst whose fill carries mark (its last 4 bytes XORed with it): each one told apart on air. The fill isn't
+ * read by MSs (ETSI TS 102 361-1 7.3), but isn't the standard's either: for measuring only. */
+void rdof_duplex_idle_mark(int cc, uint32_t mark, uint8_t out[RDOF_BURST_BYTES]);
 /* A voice LC header or terminator for lc9, BS data sync. */
 void rdof_duplex_lc_burst(const uint8_t lc9[9], int dt, int cc, uint8_t out[RDOF_BURST_BYTES]);
 /* A data-sync burst (not an LC header / terminator) for a repeater to send; false when it isn't repeated (R5.5). */

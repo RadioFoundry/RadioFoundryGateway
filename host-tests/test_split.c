@@ -215,10 +215,17 @@ static void test_relay(void)
     uint8_t out[64], burst[33] = {0};
     CHECK(rdof_ops_schedule(out, 3, 1, 0x41, burst) == 0 && rdof_ops_schedule(out, 3, 2, 0x41, burst) == 39, "parity");
     const uint8_t info[16] = {1, 3, 0, 16, 1, 0, 0, 0, 0, 0, 0x3F, 0x00, 55, 32, 0xF8, 0x11}; /* 4600 µs */
-    CHECK(rdof_ops_caps(info, 16) == (RDOF_OPS_ALIGN | RDOF_OPS_SCHEDULE) && rdof_ops_caps(info, 10) == 0 &&
+    CHECK(rdof_ops_caps(info, 16) == (RDOF_OPS_ALIGN | RDOF_OPS_SCHEDULE | RDOF_OPS_RX_META) && rdof_ops_caps(info, 10) == 0 &&
               rdof_ops_guard_ms(info, 16) == 55 && rdof_ops_horizon(info, 16) == 32 &&
               rdof_ops_air_delay_us(info, 16) == 4600 && rdof_ops_air_delay_us(info, 14) == 0 && rdof_ops_guard_ms(info, 12) == RDOF_OPS_GUARD_MS,
           "INFO: the built caps only (reserved bits off), guard, horizon, air delay");
+    const uint8_t info_cach[16] = {1, 3, 0, 16, 1, 0, 0, 0, 0, 0, 0x7F, 0x00, 55, 32, 0, 0};
+    CHECK(rdof_ops_caps(info_cach, 16) == (RDOF_OPS_ALIGN | RDOF_OPS_SCHEDULE | RDOF_OPS_RX_META | RDOF_OPS_CACH),
+          "INFO: the CACH op");
+    const uint8_t cach[3] = {0xA5, 0x5A, 0xC3};
+    CHECK(rdof_ops_schedule_cach(out, 3, 1, 0x41, burst, cach) == 0 &&
+              rdof_ops_schedule_cach(out, 4, 1, 0x41, burst, cach) == 42 && !memcmp(out + 39, cach, 3) && out[4] == 1,
+          "TX_SCHED with its CACH: 42 octets, the CACH last");
     uint8_t st[RDOF_OPS_STATUS_LEN] = {0};
     rdof_ops_status_t a = {1, 2, 3, 4, 5, -1234567, 0x21}, b;
     rdof_ops_put_status_ext(st, &a);

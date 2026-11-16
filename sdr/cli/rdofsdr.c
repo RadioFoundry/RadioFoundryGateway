@@ -13,9 +13,11 @@
  * --fft picks the channelizer's FFT: pffft (sdr/pffft/) when it's built in (RDOF_PFFFT, the default), else the
  * built-in one; "builtin" to compare.
  * The input is rtl_sdr's cu8, as rtl_sdr writes
- * it; or, when built with SoapySDR (RDOF_SOAPY), any SoapySDR device live: ARGS as SoapySDRUtil takes them
+ * it, or interleaved float I/Q when its name ends in .cf32 (what rdofradio's --file device sends); or, when built with SoapySDR (RDOF_SOAPY), any SoapySDR device live: ARGS as SoapySDRUtil takes them
  * ("driver=rtlsdr", "driver=airspy,serial=..."), streamed as CF32 at the rate and tuned to the planned center. Output lines: "<id> json <text>", "<id> raw <text>", and with --bursts
- * "<id> burst <pos> <dt> <n> <slot> <family> <cc> <errors> <power> <offset> <deviation> <hex>".
+ * "<id> burst <pos> <dt> <n> <slot> <family> <cc> <errors> <power> <offset> <deviation> <hex> <cach>" (cach: a BS
+ * burst's CACH, 6 hex digits, else "-"), and each CACH short LC its four CACHs make (LCSS first, continuation twice,
+ * last): "<id> slc <pos> <slc>", pos the last burst's, slc the 28 bits in 7 hex digits, SLCO first.
  */
 #define _POSIX_C_SOURCE 200809L
 #include <math.h>
@@ -24,6 +26,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "rdof/duplex.h"
 #include "rdof/layer2.h"
 #include "rdof/sdr/bench.h"
 #include "rdof/sdr/channelizer.h"
@@ -99,16 +102,50 @@ static void on_raw(void *ctx, const char *ch, const char *json)
         printf("%s raw %s\n", ch, json);
 }
 
+/* the CACH short LC being put together, by channel: its rows so far */
+static struct {
+    uint32_t rows[4];
+    int n;
+} slc[MAX_CH];
+
+static void on_cach(int c, const rdof_sdr_burst_t *b)
+{
+    uint8_t bits[24];
+    for (int i = 0; i < 24; i++)
+        bits[i] = (uint8_t)(b->cach[i / 8] >> (7 - i % 8) & 1);
+    int lcss;
+    const uint32_t p = rdof_decode_cach_payload(bits, &lcss);
+    if (lcss == 1) /* first fragment */
+        slc[c].rows[0] = p, slc[c].n = 1;
+    else if (lcss == 3 && slc[c].n >= 1 && slc[c].n <= 2) /* continuation */
+        slc[c].rows[slc[c].n++] = p;
+    else if (lcss == 2 && slc[c].n == 3) { /* last */
+        slc[c].rows[3] = p;
+        uint8_t sl9[9], lc5[5];
+        rdof_short_lc_join(slc[c].rows, sl9);
+        if (rdof_decode_short_lc(sl9, lc5))
+            printf("%s slc %lld %07x\n", chans[c].id, (long long)b->position,
+                   (unsigned)((uint32_t)lc5[0] << 24 | (uint32_t)lc5[1] << 16 | (uint32_t)lc5[2] << 8 | lc5[3]) &
+                       0x0FFFFFFFu);
+        slc[c].n = 0;
+    } else
+        slc[c].n = 0;
+}
+
 static void on_burst(void *ctx, int c, const rdof_sdr_burst_t *b, double t)
 {
     if (!show_bursts)
         return;
-    char hex[67];
+    char hex[67], cach[7] = "-";
     for (int i = 0; i < 33; i++)
         snprintf(hex + 2 * i, 3, "%02x", b->b.burst[i]);
-    printf("%s burst %lld %d %d %d %s %d %d %.2f %.1f %.1f %s\n", chans[c].id, (long long)b->position, b->b.dt, b->b.n,
-           b->b.slot, rdof_family_name(b->b.family), b->b.cc, b->b.sync_errors, b->b.power_dbfs, b->freq_offset_hz,
-           b->deviation_hz, hex);
+    if (b->has_cach)
+        snprintf(cach, sizeof cach, "%02x%02x%02x", b->cach[0], b->cach[1], b->cach[2]);
+    printf("%s burst %lld %d %d %d %s %d %d %.2f %.1f %.1f %s %s\n", chans[c].id, (long long)b->position, b->b.dt,
+           b->b.n, b->b.slot, rdof_family_name(b->b.family), b->b.cc, b->b.sync_errors, b->b.power_dbfs,
+           b->freq_offset_hz, b->deviation_hz, hex, cach);
+    if (b->has_cach)
+        on_cach(c, b);
 }
 
 /* ── the bench (rdof_sdr_bench) ───────────────────────────────────────────── */
@@ -356,7 +393,13 @@ int main(int argc, char **argv)
     }
     size_t size;
     uint8_t *raw = read_file(input, &size);
-    const int n = (int)(size / 2);
+    const size_t len = strlen(input);
+    const bool cf32 = len > 5 && !strcmp(input + len - 5, ".cf32");
+    const int n = (int)(size / (cf32 ? 8 : 2));
+    if (do_bench && cf32) {
+        fprintf(stderr, "--bench takes cu8\n");
+        return 2;
+    }
     if (do_bench) {
         bench(raw, n, &cfg, ghz, reps < 1 ? 1 : reps);
         free(raw);
@@ -373,7 +416,10 @@ int main(int argc, char **argv)
     rdof_cf_t *iq = malloc(sizeof(rdof_cf_t) * cfg.max_chunk);
     for (int i = 0; i < n; i += cfg.max_chunk) {
         int m = n - i < cfg.max_chunk ? n - i : cfg.max_chunk;
-        rdof_iq_from_cu8(raw + 2 * (size_t)i, (size_t)m, iq);
+        if (cf32)
+            memcpy(iq, raw + 8 * (size_t)i, 8 * (size_t)m);
+        else
+            rdof_iq_from_cu8(raw + 2 * (size_t)i, (size_t)m, iq);
         rdof_sdr_rx_process(&rx, iq, m);
     }
     fprintf(stderr, "center %.0f Hz;", rx.center_hz);

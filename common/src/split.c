@@ -264,7 +264,7 @@ bool rdof_epoch_relay_decide(rdof_epoch_relay_t *r, uint32_t t, uint32_t period_
 const char *rdof_align_state_name(rdof_align_state_t a)
 {
     static const char *const names[] = {"off", "unsupported", "waiting", "snapping", "held", "slewing", "locked"};
-    return (unsigned)a < 6 ? names[a] : "?";
+    return (unsigned)a < 7 ? names[a] : "?";
 }
 
 static bool word_char(char c)
@@ -554,12 +554,24 @@ static void done(rdof_split_t *s, int which, const rdof_split_req_t *r, bool ok,
         memcpy(h->info, data, h->info_len);
         if (which == RDOF_SPLIT_TX && data[4] == 0)
             logf_(s, "The TX half sends no CACH (INFO says 0): radios may not tell the slots apart");
-        uint8_t p[7];
+        if (which == RDOF_SPLIT_TX && s->stream_mode == RDOF_OPS_STREAM_SCHEDULED &&
+            (h->caps & (RDOF_OPS_SCHEDULE | RDOF_OPS_ALIGN)) != (RDOF_OPS_SCHEDULE | RDOF_OPS_ALIGN)) {
+            snprintf(msg, sizeof msg, "The TX half (%s) has no scheduled TX with ALIGN: its FIFO stream instead",
+                     h->description);
+            logf_(s, msg);
+            s->stream_mode = RDOF_OPS_STREAM_FIFO;
+        }
+        uint8_t p[8];
         p[0] = which == RDOF_SPLIT_TX ? RDOF_SPLIT_ROLE_TX : RDOF_SPLIT_ROLE_RX;
         memcpy(p + 1, s->role_params, 5);
-        p[RDOF_OPS_STREAM_MODE_AT] = (uint8_t)s->stream_mode;
+        p[RDOF_OPS_STREAM_MODE_AT] = which == RDOF_SPLIT_TX ? (uint8_t)s->stream_mode : 0;
         bool mode = which == RDOF_SPLIT_TX && s->stream_mode != RDOF_OPS_STREAM_FIFO; /* the byte only when it isn't 0 */
-        split_req(s, which, RDOF_SPLIT_SET_ROLE, p, mode ? 7 : 6, RDOF_SPLIT_DONE_ROLE, 0, now);
+        size_t len = mode ? 7 : 6;
+        if (which == RDOF_SPLIT_RX && s->rx_meta && (h->caps & RDOF_OPS_RX_META)) {
+            p[RDOF_OPS_ROLE_OPTIONS_AT] = 1; /* RX_META events */
+            len = 8;
+        }
+        split_req(s, which, RDOF_SPLIT_SET_ROLE, p, len, RDOF_SPLIT_DONE_ROLE, 0, now);
         break;
     }
     case RDOF_SPLIT_DONE_ROLE:
@@ -570,6 +582,8 @@ static void done(rdof_split_t *s, int which, const rdof_split_req_t *r, bool ok,
         }
         if (which == RDOF_SPLIT_TX)
             s->tx_role = true;
+        else if (s->rx_meta && (h->caps & RDOF_OPS_RX_META))
+            s->rx_meta_on = true; /* asked for in SET_ROLE, and taken */
         time_req(s, which, now);
         break;
     case RDOF_SPLIT_DONE_TIME: {
@@ -601,6 +615,10 @@ static void done(rdof_split_t *s, int which, const rdof_split_req_t *r, bool ok,
         }
         uint32_t t_us = u32le(data + 4);
         int ts = data[8];
+        /* the TX half's counter at E (a TS1 start); UTC slots when it's on the grid */
+        s->pending_counter = u32le(data) + (ts == 2 ? 1u : 0u);
+        s->has_pending_counter = true;
+        s->pending_utc = s->align_state == RDOF_ALIGN_LOCKED || s->align_state == RDOF_ALIGN_SLEWING;
         uint32_t t_rx, period;
         rdof_split_epoch_for_rx(&s->halves[0].sync, &s->halves[1].sync, t_us, ts, (double)host_us(now), &t_rx, &period);
         double bound = rdof_clock_sync_bound_us(&s->halves[0].sync) + rdof_clock_sync_bound_us(&s->halves[1].sync);
@@ -629,6 +647,9 @@ static void done(rdof_split_t *s, int which, const rdof_split_req_t *r, bool ok,
             epoch_waited(s);
             return;
         }
+        s->has_epoch_counter = s->has_pending_counter;
+        s->epoch_counter = s->pending_counter;
+        s->epoch_utc = s->pending_utc;
         if (!s->epoch_ok)
             logf_(s, "Split duplex: the RX half has the TX half's slot clock");
         s->epoch_ok = true;
@@ -666,7 +687,7 @@ static void done(rdof_split_t *s, int which, const rdof_split_req_t *r, bool ok,
             s->mode = j->mode;
         if (j->command == RDOF_MMDVM_SET_FREQ || j->command == RDOF_MMDVM_SET_MODE) {
             /* TX's slot clock may restart: the epoch again, and the ACK once the RX half has it */
-            s->epoch_ok = false;
+            s->epoch_ok = s->has_epoch_counter = false;
             rdof_epoch_relay_reset(&s->relay); /* the next epoch is a first */
             if (j->command == RDOF_MMDVM_SET_FREQ) {
                 s->has_align_due = true;
@@ -740,7 +761,7 @@ static void done(rdof_split_t *s, int which, const rdof_split_req_t *r, bool ok,
         }
         if (s->align_jump || !(flags & RDOF_OPS_ALIGNED)) {
             /* its slot clock jumped: what the RX half labels from the old epoch is wrong until it has the new one */
-            s->epoch_ok = false;
+            s->epoch_ok = s->has_epoch_counter = false;
             rdof_epoch_relay_reset(&s->relay);
             s->has_epoch_due = true;
             s->epoch_due = now;
@@ -812,6 +833,30 @@ typedef struct {
     double now;
 } half_ctx_t;
 
+/* An RX half's RX_META event: up ahead of its burst, with the TX half's counter of the burst's slot when the event
+ * has the slot number and the split knows the counter at its E. */
+static void rx_meta(rdof_split_t *s, const uint8_t *b)
+{
+    s->meta_events++;
+    if (!s->rx_meta || !s->epoch_ok)
+        return;
+    uint8_t m[2 + RDOF_SPLIT_META_LEN];
+    m[0] = RDOF_OPS_SUB_RX_META, m[1] = 0;
+    memcpy(m + 2, b, RDOF_OPS_RX_META_LEN);
+    uint32_t counter = 0;
+    uint8_t flags = 0;
+    if ((b[9] & RDOF_OPS_META_SLOT_N) && s->has_epoch_counter) {
+        /* signed: a burst from the slot before a new E comes after its SET_EPOCH as -1 (65535); the epoch is sent
+         * again every few seconds, so a real count never nears 32768 */
+        counter = s->epoch_counter + (uint32_t)(int32_t)(int16_t)(uint16_t)(b[14] | b[15] << 8);
+        flags = RDOF_SPLIT_META_COUNTER | (s->epoch_utc ? RDOF_SPLIT_META_UTC : 0);
+        s->meta_counted++;
+    }
+    le32(m + 2 + RDOF_OPS_RX_META_LEN, counter);
+    m[2 + RDOF_OPS_RX_META_LEN + 4] = flags;
+    up(s, RDOF_ODR_SPLIT, m, sizeof m);
+}
+
 static void on_half_frame(void *ctx, uint8_t command, const uint8_t *p, size_t n)
 {
     half_ctx_t *c = ctx;
@@ -840,6 +885,18 @@ static void on_half_frame(void *ctx, uint8_t command, const uint8_t *p, size_t n
     if (command == RDOF_ODR_SPLIT) {
         if (n < 2)
             return;
+        if (p[0] == RDOF_OPS_SUB_RX_META) { /* an event, never a reply */
+            if (c->which == RDOF_SPLIT_RX && n >= 2 + RDOF_OPS_RX_META_LEN)
+                rx_meta(s, p + 2);
+            return;
+        }
+        if (p[0] == RDOF_OPS_SUB_TX_SCHED && c->which == RDOF_SPLIT_TX) { /* never in the request queue */
+            uint32_t counter;
+            int outcome;
+            if (rdof_ops_scheduled(p + 2, n - 2, &counter, &outcome) && outcome >= 0 && outcome < 5)
+                s->sched_outcomes[outcome]++;
+            return;
+        }
         reply(s, c->which, 0xD600 | p[0], p[1] == 0, p + 2, n - 2, c->now);
         return;
     }
@@ -874,7 +931,7 @@ static void cwid(rdof_split_t *s, const uint8_t *p, size_t n, double now)
 {
     /* CW ID only from the normal role (split-duplex.md 8.2): the TX half out of its role, then the ID */
     s->tx_role = false;
-    s->epoch_ok = false;
+    s->epoch_ok = s->has_epoch_counter = false;
     rdof_epoch_relay_reset(&s->relay);
     uint8_t role = RDOF_SPLIT_ROLE_NORMAL;
     split_req(s, RDOF_SPLIT_TX, RDOF_SPLIT_SET_ROLE, &role, 1, RDOF_SPLIT_DONE_NONE, 0, now);
@@ -1052,6 +1109,44 @@ static void align(rdof_split_t *s, double now)
     split_req(s, RDOF_SPLIT_TX, RDOF_OPS_SUB_ALIGN, body, len, RDOF_SPLIT_DONE_ALIGN, 0, now);
 }
 
+bool rdof_split_ready(const rdof_split_t *s) { return s->ready; }
+
+const char *rdof_split_failed(const rdof_split_t *s) { return s->failed; }
+
+bool rdof_split_sched_ok(const rdof_split_t *s)
+{
+    return s->ready && !s->failed[0] && s->tx_role && s->stream_mode == RDOF_OPS_STREAM_SCHEDULED &&
+           (s->align_state == RDOF_ALIGN_LOCKED || s->align_state == RDOF_ALIGN_SLEWING);
+}
+
+bool rdof_split_align_pending(const rdof_split_t *s)
+{
+    return s->ready && !s->failed[0] && s->tx_role && s->stream_mode == RDOF_OPS_STREAM_SCHEDULED &&
+           rdof_ops_can_align(s->halves[RDOF_SPLIT_TX].caps, s->stream_mode) && !rdof_split_sched_ok(s);
+}
+
+bool rdof_split_has_cach(const rdof_split_t *s) { return (s->halves[RDOF_SPLIT_TX].caps & RDOF_OPS_CACH) != 0; }
+
+bool rdof_split_sched(rdof_split_t *s, int64_t n, uint8_t control, const uint8_t burst[33])
+{
+    return rdof_split_sched_cach(s, n, control, burst, NULL);
+}
+
+bool rdof_split_sched_cach(rdof_split_t *s, int64_t n, uint8_t control, const uint8_t burst[33],
+                           const uint8_t cach[3])
+{
+    if (!rdof_split_sched_ok(s) || !s->transmit)
+        return false;
+    uint8_t p[1 + 42];
+    p[0] = RDOF_OPS_SUB_TX_SCHED;
+    const int slot = (int)(n & 1) + 1;
+    const size_t len = cach && rdof_split_has_cach(s) ? rdof_ops_schedule_cach(p + 1, n, slot, control, burst, cach)
+                                                      : rdof_ops_schedule(p + 1, n, slot, control, burst);
+    to_half(s, RDOF_SPLIT_TX, RDOF_ODR_SPLIT, p, 1 + len);
+    s->sched_sent++;
+    return true;
+}
+
 /* ── time ────────────────────────────────────────────────────────────────── */
 
 static void at(rdof_split_t *s, double now)
@@ -1134,6 +1229,8 @@ void rdof_split_init(rdof_split_t *s, double now, const rdof_split_params_t *p)
     s->role_params[2] = (uint8_t)clampi(p->prebuffer, 0, 12);
     s->role_params[3] = (uint8_t)clampi(rint(p->max_key_s / 10), 0, 60);
     s->role_params[4] = (uint8_t)clampi(p->cooldown_s, 0, 255);
+    s->stream_mode = p->stream_mode == RDOF_OPS_STREAM_SCHEDULED ? RDOF_OPS_STREAM_SCHEDULED : RDOF_OPS_STREAM_FIFO;
+    s->rx_meta = p->rx_meta != 0;
     rdof_mmdvm_reader_init(&s->up_reader);
     for (int i = 0; i < 2; i++) {
         rdof_mmdvm_reader_init(&s->halves[i].reader);

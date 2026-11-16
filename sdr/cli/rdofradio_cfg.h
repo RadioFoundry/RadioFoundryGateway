@@ -13,6 +13,7 @@
  * HBlink4 peer, as the board's; the mqtt network, published as the board does (rdofradio_mqtt.h); the SDR's
  * channels (as the board's SDR resolves them: the unit hears on the one at its frequency); and the site, for the call
  * router (rdof/siteroute.h: what goes up and what comes down, through the radio's peer unless identity is per_path).
+ * A trunked site (a tier3 app) runs alone: trunk below, from its app and the mqtt network (rdofradio_t3.h).
  * mode sfr and dcdm are refused. The devices stay on the command line (--soapy, -r, --gain, --tx-gain ..., --mmdvm
  * PORT).
  * No I/O here: rdofradio reads and writes the file.
@@ -29,6 +30,7 @@
 #include "rdof/config.h"
 #include "rdof/repeater.h"
 #include "rdof/site.h"
+#include "rdof/t3.h"
 #include "rdof/txvr.h"
 #include "rdof/sdr/config.h"
 
@@ -41,6 +43,34 @@ typedef struct {
     long baud;
     rdof_config_t cfg;  /* the unit as the firmware resolves it (its repeater's settings, split.power_cap ...) */
 } rdofradio_split_t;
+
+/* A trunked site (docs/spec/fw/tier3.md): its controller's settings, carriers and the mqtt network's connection. */
+typedef struct {
+    char name[24];      /* the unit's (the tier3 app's) */
+    int path;           /* its path on the site, -1 none */
+    int net;            /* the mqtt network (site.net), -1 none: the site alone */
+    rdof_t3_cfg_t cfg;  /* the settings file's (rdof_t3cfg_plan) */
+    rdof_t3_policy_t pol;
+    int ncar;
+    struct {
+        uint32_t rx_hz, tx_hz;
+        bool tx_sdr;    /* the SDR sends it; else a radio (a split's TX half) on port */
+        int tx_dev;     /* the device that sends it (the settings' index), -1 none */
+        char port[64];
+        long baud;
+        bool rx_sdr;        /* an SDR hears its in; else a radio (a split's RX half) on rx_port */
+        char rx_port[64];
+        long rx_baud;
+    } car[RDOF_T3_CARRIERS];
+    char host[64], user[32], pass[64], root[32];
+    int port;
+    bool tls;
+    /* "standby" (tier3.md 6.2): two boxes with these settings, one on the air; it waits while the node is online
+       and takes over takeover_s after its will; the active one stops when its broker is gone fence_s while a
+       standby is there */
+    bool standby;
+    double takeover_s, fence_s;
+} rdofradio_t3_cfg_t;
 
 typedef struct {
     bool full;          /* a repeater (full duplex); false: a transceiver (half duplex) */
@@ -72,6 +102,8 @@ typedef struct {
     /* split repeaters with the SDR as the RX half: the first is the radio above */
     int nsplit;
     rdofradio_split_t split[RDOF_ROLES_MAX];
+    bool tier3;         /* a trunked site: t, and the site, box, clock; nothing else above */
+    rdofradio_t3_cfg_t t;
     /* the IP gateway app (apps: type ipgw), when the document has one */
     bool has_ipgw;
     rdof_ipgw_config_t ipgw;

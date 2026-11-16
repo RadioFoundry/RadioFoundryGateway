@@ -287,7 +287,7 @@ pub extern "C" fn rdof_decode_data_block(burst: &Burst, data_type: c_int, b: &mu
             b.len = 12;
         }
         RDOF_DT_RATE_34 => {
-            b.errors = unsafe { ffi::rdof_trellis34_decode(burst.as_ptr(), b.payload.as_mut_ptr()) };
+            b.errors = unsafe { ffi::rdof_trellis34_decode_block(burst.as_ptr(), b.payload.as_mut_ptr()) };
             b.fec_ok = true; // errors is the bits corrected; CRC-9 and CRC-32 decide
             b.len = 18;
         }

@@ -19,7 +19,9 @@
 #include "rdof/router.h"
 #include "rdof/sdr/config.h"
 #include "rdof/site.h"
+#include "rdof/siteplan.h"
 #include "rdof/siteroute.h"
+#include "rdof/t3cfg.h"
 #include "rdof/txpool.h"
 #include "rdof/txvr.h"
 
@@ -646,6 +648,223 @@ static void test_siteroute(const char *dir)
     }
 }
 
+#if RDOF_RUST_T3 /* the Tier III unit's settings (rdof/t3cfg.h) are rust's (tier3) */
+/* A trunked site's file: its plan, what a host runs, the Tier III unit's settings and the SDR's. */
+static bool trunk_taken(const char *t, size_t len, char *err, size_t cap)
+{
+    rdof_plan_t *p = rdof_plan_open(t, len, err, cap);
+    if (!p)
+        return false;
+    static rdof_roles_t roles;
+    static rdof_t3_cfg_t cfg;
+    static rdof_t3_policy_t pol;
+    static rdof_sdr_config_t sc;
+    const rdof_site_t *s = rdof_plan_site(p);
+    bool sdr = false; /* a site of radios alone (split TX and RX halves) has no SDR settings */
+    for (int d = 0; d < s->ndev; d++)
+        sdr |= s->dev[d].kind == RDOF_DEV_SDR;
+    bool ok = rdof_plan_roles_on(p, &rdof_plan_host, &roles, err, cap) &&
+              rdof_t3cfg_plan(p, -1, &cfg, &pol, err, cap) && (!sdr || rdof_plan_sdr(p, NULL, &sc, err, cap));
+    rdof_plan_close(p);
+    return ok;
+}
+
+/* A JSON text's top object over cfg and pol (rdof_t3cfg_apply). */
+static bool apply_text(const char *text, const char *path, rdof_t3_cfg_t *cfg, rdof_t3_policy_t *pol, char *err,
+                       size_t cap)
+{
+    static rdof_jnode_t nodes[256];
+    static char buf[2048];
+    rdof_jdoc_t doc = {.nodes = nodes, .max = 256, .buf = buf, .cap = sizeof buf};
+    int root = rdof_jparse(&doc, text, strlen(text));
+    if (root < 0) {
+        snprintf(err, cap, "json: %s", doc.error);
+        return false;
+    }
+    return rdof_t3cfg_apply(&doc, root, path, cfg, pol, err, cap) && rdof_t3cfg_check(cfg, err, cap);
+}
+#endif
+
+/* The Tier III unit: its devices, its carriers, its settings (rdof/t3cfg.h), and the manager's documents over them. */
+static void test_trunk(const char *dir)
+{
+    char p[512], err[200] = "";
+    size_t n;
+    snprintf(p, sizeof p, "%s/v3/good-tier3.json", dir);
+    char *t = slurp(p, &n);
+    rdof_plan_t *pl = t ? rdof_plan_open(t, n, err, sizeof err) : NULL;
+    CHECK(pl, "good-trunk: %s", err);
+    free(t);
+    if (!pl)
+        return;
+    const rdof_site_t *s = rdof_plan_site(pl);
+#if RDOF_RUST_T3
+    int u = rdof_t3cfg_unit(pl);
+#else
+    int u = -1;
+    for (int k = 0; u < 0 && k < rdof_plan_nunits(pl); k++)
+        u = rdof_plan_unit(pl, k)->kind == RDOF_UNIT_TIER3 ? k : -1;
+#endif
+    CHECK(u >= 0 && !strcmp(rdof_plan_unit(pl, u)->name, "site"), "the Tier III unit");
+    int rx = -1, tx = -1, d0 = -1, d1 = -1;
+    for (int d = 0; d < s->ndev; d++) {
+        if (!strcmp(s->dev[d].name, "pluto"))
+            d0 = d;
+        if (!strcmp(s->dev[d].name, "txb"))
+            d1 = d;
+    }
+    CHECK(rdof_plan_t3_carrier(pl, u, 0, &rx, &tx) && rx == d0 && tx == d0, "the TSCC on the Pluto: %d %d", rx, tx);
+    CHECK(rdof_plan_t3_carrier(pl, u, 1, &rx, &tx) && rx == d0 && tx == d1, "B heard on the Pluto, sent by txb");
+    CHECK(!rdof_plan_t3_carrier(pl, u, 2, &rx, &tx), "two carriers");
+    CHECK(rdof_plan_unit_uses(pl, u, d1) && rdof_plan_sdr_used(pl, d0), "uses");
+    CHECK(rdof_plan_nextra(pl) == 2 && rdof_plan_extra(pl, 0)->hz == 438250000 &&
+              rdof_plan_extra(pl, 1)->hz == 438500000 && !strcmp(rdof_plan_extra(pl, 1)->id, "site-2"),
+          "the SDR hears both ins: %d", rdof_plan_nextra(pl));
+    static rdof_roles_t roles;
+    CHECK(!rdof_plan_roles(pl, &roles, err, sizeof err) && strstr(err, "runs on a host"), "not on a board: %s", err);
+    CHECK(rdof_plan_roles_on(pl, &rdof_plan_host, &roles, err, sizeof err) && roles.nradios == 1 && roles.has_sdr,
+          "a host: %s", err);
+    static rdof_config_t rc;
+    CHECK(!rdof_plan_radio(pl, "site", &rc, err, sizeof err) && strstr(err, "trunked site"), "no radio: %s", err);
+#if RDOF_RUST_T3
+    static rdof_t3_cfg_t c;
+    static rdof_t3_policy_t pol;
+    CHECK(rdof_t3cfg_plan(pl, -1, &c, &pol, err, sizeof err), "cfg: %s", err);
+    CHECK(c.model == 1 && c.net == 5 && c.site == 3 && c.par == 3 && c.area_bits == 5 && c.cc == 1, "system");
+    CHECK(c.ncarriers == 2 && c.carriers[0].tscc && c.carriers[0].chan == 1 && c.carriers[0].tx_hz == 438750000 &&
+              c.carriers[0].rx_hz == 438250000 && !c.carriers[1].tscc && c.carriers[1].chan == 2 &&
+              c.carriers[1].tx_hz == 438600000 && c.carriers[1].enabled,
+          "carriers, the TSCC's first");
+    CHECK(c.hang_ms == 3000 && c.tp_ms == 20000 && c.reg_required && !c.foacsu && c.nrand_wait == 6 && !c.dgna_ms,
+          "timers");
+    CHECK(!c.als && c.divert, "no ALS, diversion on");
+    CHECK(pol.open && pol.ms.all && pol.tg.all && pol.private_ms.all, "open");
+    CHECK(!pol.wide_tg.all && pol.wide_tg.n == 1 && pol.wide_tg.r[0].lo == 1 && pol.wide_tg.r[0].hi == 99999,
+          "wide_tg");
+    CHECK(!pol.static_tg.all && !pol.static_tg.n, "no static_tg");
+#endif
+    rdof_plan_close(pl);
+#if RDOF_RUST_T3
+
+    /* cfg/net over it, then cfg/node */
+    CHECK(apply_text("{\"rev\": 12, \"system\": {\"model\": \"large\", \"net\": 9}, \"registration\": \"listed\", "
+                     "\"ms\": \"3100000-3199999,!3100500\", \"refuse_unlisted\": \"refused\", \"timers\": "
+                     "{\"hang_s\": 4.5, \"grant_every_s\": 0.6}, \"broadcast\": {\"local_time_s\": 0}, "
+                     "\"dgna_from_ms\": true, \"ambient_listening\": true, \"call_diversion\": false}",
+                     "cfg/net", &c, &pol, err, sizeof err),
+          "cfg/net: %s", err);
+    CHECK(c.model == 2 && c.net == 9 && c.area_bits == 8 && c.hang_ms == 4500 && c.grant_every_ms == 600 &&
+              !c.local_time_ms && c.adjacent_ms == 5000 && c.dgna_ms && c.als && !c.divert,
+          "cfg/net applied");
+    CHECK(!pol.open && pol.refuse_unlisted && pol.ms.n == 2 && pol.ms.r[0].hi == 3100499 &&
+              pol.ms.r[1].lo == 3100501,
+          "listed less one");
+    CHECK(apply_text("{\"rev\": 3, \"site\": 200, \"area_bits\": 6, \"static_tg\": [91, \"3100-3101\"], "
+                     "\"neighbors\": [4], \"enabled\": true}",
+                     "cfg/node", &c, &pol, err, sizeof err),
+          "cfg/node: %s", err);
+    CHECK(c.site == 200 && c.area_bits == 6 && pol.static_tg.n == 2, "cfg/node applied");
+    CHECK(!apply_text("{\"site\": 256}", "cfg/node", &c, &pol, err, sizeof err) && !strcmp(err, "cfg/node.site: 0 to 255"),
+          "site range: %s", err);
+    /* SITE 0 is one of a network's sites (361-4 table 6.5), the one a standard site in the off-air captures uses */
+    CHECK(apply_text("{\"site\": 0}", "cfg/node", &c, &pol, err, sizeof err) && c.site == 0, "site 0: %s", err);
+    CHECK(apply_text("{\"site\": 200}", "cfg/node", &c, &pol, err, sizeof err) && c.site == 200, "site back: %s", err);
+    CHECK(!apply_text("{\"system\": {\"model\": \"medium\"}}", "cfg/net", &c, &pol, err, sizeof err) &&
+              strstr(err, "cfg/net.system.model"),
+          "%s", err);
+    CHECK(!apply_text("{\"timers\": {\"hang\": 3}}", "cfg/net", &c, &pol, err, sizeof err) &&
+              !strcmp(err, "cfg/net.timers.hang: not a key here"),
+          "%s", err);
+    CHECK(!apply_text("{\"timers\": {\"backoff_min\": 10, \"backoff_max\": 4}}", "x", &c, &pol, err, sizeof err),
+          "backoff order");
+    rdof_t3cfg_default(&c, &pol); /* a refused text leaves cfg half applied */
+    CHECK(!c.preempt && apply_text("{\"services\": {\"emergency_preempt\": true}}", "x", &c, &pol, err, sizeof err) &&
+              c.preempt == 1,
+          "services.emergency_preempt: %s", err);
+    CHECK(!c.auth && apply_text("{\"auth\": \"required\"}", "x", &c, &pol, err, sizeof err) &&
+              c.auth == RDOF_T3_AUTH_REQUIRED &&
+              apply_text("{\"auth\": \"registration\"}", "x", &c, &pol, err, sizeof err) &&
+              c.auth == RDOF_T3_AUTH_REGISTRATION,
+          "auth: %s", err);
+    CHECK(!apply_text("{\"auth\": true}", "x", &c, &pol, err, sizeof err) &&
+              !strcmp(err, "x.auth: off, registration or required"),
+          "%s", err);
+    CHECK(!apply_text("{\"services\": {\"preempt\": true}}", "x", &c, &pol, err, sizeof err) &&
+              !strcmp(err, "x.services.preempt: not a key here"),
+          "%s", err);
+    CHECK(c.awake_ms == 1000 &&
+              apply_text("{\"services\": {\"power_save\": 3, \"power_save_awake_s\": 2.5, \"mass_reg_at_start_s\": 60,"
+                         " \"hibernate_s\": 20, \"duplex\": true}, \"broadcast\": {\"call_timers_s\": 30, \"vote_now_s\": 20, \"ann_tscc_s\": 40}}",
+                         "x", &c, &pol, err, sizeof err) &&
+              c.power_save == 3 && c.awake_ms == 2500 && c.mass_reg_start == 8 && c.call_timers_ms == 30000 &&
+              c.vote_now_ms == 20000 && c.ann_tscc_ms == 40000 && c.hibernate_ms == 20000 && c.duplex == 1,
+          "power save, mass registration, broadcasts: %s", err);
+    CHECK(!apply_text("{\"services\": {\"power_save\": 8}}", "x", &c, &pol, err, sizeof err), "power_save 8");
+    CHECK(c.ps_hold_ms == 2000 &&
+              apply_text("{\"services\": {\"power_save_group_hold_s\": 0}}", "x", &c, &pol, err, sizeof err) &&
+              c.ps_hold_ms == 0 &&
+              !apply_text("{\"services\": {\"power_save_group_hold_s\": 11}}", "x", &c, &pol, err, sizeof err),
+          "power_save_group_hold_s: %s", err);
+    /* VOTE_BLK (361-4 A.2: 2 to 10 frames, default 6) and the site's priority (table 6.81: 0 to 7, default 0) */
+    rdof_t3cfg_default(&c, &pol);
+    CHECK(c.vote_blk == 6 && c.priority == 0 &&
+              apply_text("{\"broadcast\": {\"vote_now_s\": 30, \"vote_blk\": 8, \"priority\": 3}}", "x", &c, &pol, err,
+                         sizeof err) &&
+              c.vote_now_ms == 30000 && c.vote_blk == 8 && c.priority == 3,
+          "vote_blk, priority: %s", err);
+    CHECK(!apply_text("{\"broadcast\": {\"vote_blk\": 1}}", "x", &c, &pol, err, sizeof err) &&
+              !strcmp(err, "x.broadcast.vote_blk: 2 to 10"),
+          "%s", err);
+    CHECK(!apply_text("{\"broadcast\": {\"vote_blk\": 11}}", "x", &c, &pol, err, sizeof err), "vote_blk 11");
+    CHECK(!apply_text("{\"broadcast\": {\"priority\": 8}}", "x", &c, &pol, err, sizeof err) &&
+              !strcmp(err, "x.broadcast.priority: 0 to 7"),
+          "%s", err);
+    CHECK(!apply_text("{\"services\": {\"hibernate_s\": 0.5}}", "x", &c, &pol, err, sizeof err), "hibernate_s 0.5");
+    rdof_t3cfg_default(&c, &pol);
+    CHECK(c.composite == 0 && apply_text("{\"services\": {\"composite_tscc\": true}}", "x", &c, &pol, err, sizeof err) &&
+              c.composite == 1,
+          "composite_tscc: %s", err);
+    CHECK(!apply_text("{\"services\": {\"composite_tscc\": 1}}", "x", &c, &pol, err, sizeof err), "composite_tscc 1");
+    rdof_t3cfg_default(&c, &pol);
+    CHECK(c.composite_le == 0 &&
+              apply_text("{\"services\": {\"composite_late_entry\": true}}", "x", &c, &pol, err, sizeof err) &&
+              c.composite_le == 1,
+          "composite_late_entry: %s", err);
+    rdof_t3cfg_default(&c, &pol);
+    CHECK(c.intr == 0 && apply_text("{\"services\": {\"transmit_interrupt\": true}}", "x", &c, &pol, err, sizeof err) &&
+              c.intr == 1,
+          "transmit_interrupt: %s", err);
+    CHECK(!apply_text("{\"services\": {\"transmit_interrupt\": \"on\"}}", "x", &c, &pol, err, sizeof err),
+          "transmit_interrupt on");
+    rdof_t3cfg_default(&c, &pol);
+    CHECK(!apply_text("{\"timers\": {\"warmup_cach\": 3}}", "x", &c, &pol, err, sizeof err), "warmup 3");
+    CHECK(!apply_text("{\"wide_tg\": \"1,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31,33\"}", "x", &c, &pol, err,
+                      sizeof err),
+          "too many ranges: %s", err);
+    /* the same through the provisioning's resolved form (rdof/mnctl.h) */
+    {
+        static rdof_mn_site_cfg_t sc;
+        long rev = 0;
+        char note[96];
+        const char *doc = "{\"rev\": 4, \"system\": {\"model\": \"small\", \"net\": 7}, \"site\": 9, "
+                          "\"registration\": \"listed\", \"timers\": {\"hang_s\": 2, \"queue_max\": 8}}";
+        CHECK(rdof_mn_site_cfg_parse(doc, strlen(doc), &sc, &rev, note, sizeof note, err, sizeof err), "%s", err);
+        rdof_t3cfg_default(&c, &pol);
+        CHECK(rdof_t3cfg_site(&sc, &c, &pol, err, sizeof err), "site cfg: %s", err);
+        CHECK(c.net == 7 && c.site == 9 && c.hang_ms == 2000 && c.queue_max == 8 && !pol.open && !pol.ms.all &&
+                  !pol.ms.n,
+              "site cfg applied");
+        sc.timers[0].value = 99;
+        CHECK(!rdof_t3cfg_site(&sc, &c, &pol, err, sizeof err) && !strcmp(err, "cfg.timers.hang_s: 1 to 60"),
+              "%s", err);
+    }
+    rdof_t3cfg_default(&c, &pol);
+    CHECK(apply_text("{\"system\": {\"model\": \"tiny\", \"net\": 511, \"site\": 7}}", "x", &c, &pol, err, sizeof err) &&
+              c.area_bits == 3,
+          "tiny: %s", err);
+#endif
+}
+
 /* Every fixture: good- taken, bad- refused; a good one's units and SDR parse. */
 static void test_fixtures(const char *dir)
 {
@@ -663,10 +882,20 @@ static void test_fixtures(const char *dir)
         char *t = slurp(p, &len);
         bool good = !strncmp(e->d_name, "good-", 5);
         bool ok = rdof_site_parse(t, len, &S, err, sizeof err);
+        const bool trunk = ok && rdof_site_app_of(&S, RDOF_APP_TIER3) >= 0;
+#if RDOF_RUST_T3
+        if (trunk)
+            ok = trunk_taken(t, len, err, sizeof err);
+#else
+        if (trunk) { /* the Tier III unit's settings are rust's (tier3): not checked here */
+            free(t);
+            continue;
+        }
+#endif
         CHECK(ok == good, "%s: %s", e->d_name, ok ? "taken" : err);
         if (!good)
             printf("  %s: %s\n", e->d_name, err);
-        if (good && ok) {
+        if (good && ok && !trunk) {
             static rdof_roles_t roles;
             static rdof_config_t cfg;
             bool rok = rdof_box_roles(t, len, &roles, err, sizeof err);
@@ -707,6 +936,7 @@ int main(int argc, char **argv)
     test_txpool();
     test_siteroute(dir);
     test_fixtures(dir);
+    test_trunk(dir);
     printf("%d checks, %d failed\n", checks, fails);
     return fails != 0;
 }

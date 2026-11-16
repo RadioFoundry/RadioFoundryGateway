@@ -127,6 +127,12 @@ static const char *const REPEATER_KEYS[] = {"name", "type", "in", "out", "slots"
                                             "slot_timing", "split", "prebuffer", "jitter_buffer", "jitter_min_ms",
                                             "jitter_max_ms", "active_slots", NULL};
 static const char *const PARROT_KEYS[] = {"name", "type", "tg", "pc", NULL};
+static const char *const TIER3_KEYS[] = {"name", "type", "carriers", "system", "registration", "ms",
+                                         "require_registration", "refuse_unlisted", "private", "tg", "wide_tg",
+                                         "static_tg", "foacsu", "dgna_from_ms", "ambient_listening",
+                                         "call_diversion", "data_gateway", "timers", "broadcast", "services", "auth",
+                                         "standby", NULL};
+static const char *const CARRIER_KEYS[] = {"out", "in", "chan", "tscc", NULL};
 static const char *const IPGW_KEYS[] = {"name", "type", "tg", "pc", "radio_net", "tx", "ack", "max_bytes",
                                         "up_pps", "down_pps", "idle_s", "max_flows", "routes", "nat", NULL};
 static const char *const HBLINK_KEYS[] = {"name", "type", "host", "port", "transport", "sctp_encap_port",
@@ -700,6 +706,91 @@ static bool parse_nets(ctx_t *c, rdof_site_t *s)
     return true;
 }
 
+/* A trunked site's carriers (docs/spec/fw/tier3.md section 4): each an out and an in frequency of its own, a
+   logical channel number, exactly one the TSCC's (put first). One trunked site a box. */
+static bool trunk_app(ctx_t *c, rdof_site_t *s, rdof_app3_t *a, int e, const char *path)
+{
+    char p[96];
+    if (rdof_site_app_of(s, RDOF_APP_TIER3) >= 0)
+        return fail(c, "%s: one trunked site a box", path);
+    int cl = get(c, e, "carriers");
+    snprintf(p, sizeof p, "%s.carriers", path);
+    if (cl < 0 || !is_type(c, cl, RDOF_JARR) || count(c, cl) < 1)
+        return fail(c, "%s: a list of 1 to %d carriers", p, RDOF_SITE_MAX_CARRIERS);
+    if (count(c, cl) > RDOF_SITE_MAX_CARRIERS)
+        return fail(c, "%s: %d carriers at most", p, RDOF_SITE_MAX_CARRIERS);
+    int tscc = -1, cc = -1;
+    for (int k = 0; k < count(c, cl); k++) {
+        int o = at(c, cl, k);
+        char q[112];
+        snprintf(q, sizeof q, "%s[%d]", p, k);
+        if (!is_type(c, o, RDOF_JOBJ))
+            return fail(c, "%s: {\"out\", \"in\", \"chan\"}", q);
+        if (!known(c, o, q, CARRIER_KEYS))
+            return false;
+        int fr[2];
+        for (int w = 0; w < 2; w++) {
+            const char *key = w ? "out" : "in";
+            char r[128];
+            snprintf(r, sizeof r, "%s.%s", q, key);
+            int i = get(c, o, key);
+            if (i < 0)
+                return fail(c, "%s: the frequency it %s on", r, w ? "transmits" : "hears");
+            int f = freq_ref(c, s, i, r);
+            if (f < 0)
+                return false;
+            if (s->freq[f].app >= 0)
+                return fail(c, "%s: %s is %s's already", r, s->freq[f].name, s->app[s->freq[f].app].name);
+            if (w && !s->freq[f].tx)
+                return fail(c, "%s: %s has \"tx\": false", r, s->freq[f].name);
+            if (s->freq[f].mode != RDOF_FMODE_SIMPLEX)
+                return fail(c, "%s: %s has mode %s: a trunked site's frequencies are its own", r, s->freq[f].name,
+                            s->freq[f].mode == RDOF_FMODE_SFR ? "sfr" : "dcdm");
+            if (w) {
+                if (s->freq[f].cc < 0)
+                    return fail(c, "%s: %s needs a color code", r, s->freq[f].name);
+                if (cc >= 0 && s->freq[f].cc != cc)
+                    return fail(c, "%s: %s has color code %d, the site %d (one for all its carriers)", r,
+                                s->freq[f].name, s->freq[f].cc, cc);
+                cc = s->freq[f].cc;
+            }
+            fr[w] = f;
+        }
+        if (fr[0] == fr[1])
+            return fail(c, "%s: in and out are one frequency", q);
+        s->freq[fr[0]].app = s->freq[fr[1]].app = s->napp;
+        double v;
+        int ci = get(c, o, "chan");
+        if (ci < 0 || !num_of(c, ci, &v) || v < 1 || v > 4094 || v != floor(v))
+            return fail(c, "%s.chan: the logical channel number, 1 to 4094", q);
+        for (int j = 0; j < a->ncarrier; j++)
+            if (a->carrier[j].chan == (uint16_t)v)
+                return fail(c, "%s.chan: %d is another carrier's", q, (int)v);
+        int ti = get(c, o, "tscc");
+        if (ti >= 0 && !is_type(c, ti, RDOF_JBOOL))
+            return fail(c, "%s.tscc: true or false", q);
+        if (ti >= 0 && N(c, ti)->b) {
+            if (tscc >= 0)
+                return fail(c, "%s.tscc: carriers[%d] is the TSCC already (one TSCC for now)", q, tscc);
+            tscc = k;
+        }
+        int n = a->ncarrier++;
+        a->carrier[n].in = fr[0];
+        a->carrier[n].out = fr[1];
+        a->carrier[n].chan = (uint16_t)v;
+    }
+    if (tscc < 0)
+        return fail(c, "%s: one carrier with \"tscc\": true", p);
+    if (tscc > 0) { /* the TSCC's carrier first */
+        rdof_carrier3_t t = a->carrier[tscc];
+        memmove(&a->carrier[1], &a->carrier[0], sizeof a->carrier[0] * (size_t)tscc);
+        a->carrier[0] = t;
+    }
+    a->in = a->carrier[0].in;
+    a->out = a->carrier[0].out;
+    return true;
+}
+
 static bool parse_apps(ctx_t *c, rdof_site_t *s)
 {
     int al = get(c, c->root, "apps");
@@ -717,12 +808,12 @@ static bool parse_apps(ctx_t *c, rdof_site_t *s)
         a->in = a->out = a->path[0] = a->path[1] = -1;
         c->anode[s->napp] = e;
         const char *t = str_of(c, get(c, e, "type"));
-        static const char *const types[] = {"", "repeater", "parrot", "ipgw"};
-        for (int x = 1; t && x <= RDOF_APP_IPGW; x++)
+        static const char *const types[] = {"", "repeater", "parrot", "ipgw", "tier3"};
+        for (int x = 1; t && x <= RDOF_APP_TIER3; x++)
             if (!strcmp(t, types[x]))
                 a->type = (uint8_t)x;
         if (!a->type)
-            return fail(c, "%s.type: repeater, parrot or ipgw", path);
+            return fail(c, "%s.type: repeater, parrot, ipgw or tier3", path);
         const char *nmv = str_of(c, get(c, e, "name"));
         if (get(c, e, "name") >= 0 && (!nmv || !name_ok(nmv)))
             return fail(c, "%s.name: a name under %d characters, without '/'", path, RDOF_SITE_NAME);
@@ -731,10 +822,14 @@ static bool parse_apps(ctx_t *c, rdof_site_t *s)
             return fail(c, "%s.name: two apps called %s (two of one type need names)", path, a->name);
         snprintf(path, sizeof path, "apps.%s", a->name);
         if (!known(c, e, path, a->type == RDOF_APP_REPEATER ? REPEATER_KEYS
-                                : a->type == RDOF_APP_PARROT ? PARROT_KEYS : IPGW_KEYS))
+                                : a->type == RDOF_APP_PARROT ? PARROT_KEYS
+                                : a->type == RDOF_APP_TIER3 ? TIER3_KEYS : IPGW_KEYS))
             return false;
         char p[80];
-        if (a->type == RDOF_APP_REPEATER) {
+        if (a->type == RDOF_APP_TIER3) {
+            if (!trunk_app(c, s, a, e, path))
+                return false;
+        } else if (a->type == RDOF_APP_REPEATER) {
             for (int w = 0; w < 2; w++) {
                 const char *key = w ? "out" : "in";
                 snprintf(p, sizeof p, "%s.%s", path, key);
@@ -1178,6 +1273,24 @@ static bool make_paths(ctx_t *c, rdof_site_t *s)
             if (!make_path(c, s, fr->name, f, txf, -1, 0, o, bp, -1, NULL, true))
                 return false;
         }
+    }
+    for (int a = 0; a < s->napp; a++) {
+        rdof_app3_t *ap = &s->app[a];
+        if (ap->type != RDOF_APP_TIER3)
+            continue;
+        /* a trunked site: one path, named for it, on its TSCC carrier; the network carries wide_tg (none
+           without it) and private calls */
+        snprintf(bp, sizeof bp, "apps.%s", ap->name);
+        ap->path[0] = s->npath;
+        if (!make_path(c, s, ap->name, ap->in, ap->out, a, 0, -1, bp, -1, NULL, true))
+            return false;
+        rdof_path_t *tp = &s->path[ap->path[0]];
+        int w = get(c, c->anode[a], "wide_tg");
+        snprintf(p, sizeof p, "%s.wide_tg", bp);
+        rdof_idset_clear(&tp->pol.tg);
+        if (w >= 0 && !idset_of(c, w, p, &tp->pol.tg))
+            return false;
+        tp->pol.dir = RDOF_FLOW_BOTH;
     }
     for (int a = 0; a < s->napp; a++) {
         rdof_app3_t *ap = &s->app[a];

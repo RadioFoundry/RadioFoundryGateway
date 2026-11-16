@@ -1104,6 +1104,16 @@ static void test_setup(void)
     const rdof_mn_ev_t e2 = {.node = "site-a", .wall = 0, .path = -1, .slot = 1};
     rdof_mn_queue_event(&e2, 1, 2, false, "in", NULL, ev, sizeof ev);
     CHECK(strstr(ev, "\"path\":null") && strstr(ev, "\"source\":\"rf\"") && !strstr(ev, "why"));
+    rdof_mn_status_event(&e2, 3100123, 91, true, 126, "delivered", ev, sizeof ev);
+    CHECK(strstr(ev, "\"ev\":\"status\"") &&
+          strstr(ev, "\"src\":3100123,\"dst\":91,\"group\":true,\"status\":126,\"alarm\":\"emergency\",\"result\":\"delivered\""));
+    rdof_mn_status_event(&e2, 1, 2, false, 42, "away", ev, sizeof ev);
+    CHECK(strstr(ev, "\"status\":42,\"result\":\"away\"") != NULL);
+    rdof_mn_intr_event(&e2, 1002, 9, true, "accepted", 2001, ev, sizeof ev);
+    CHECK(strstr(ev, "\"ev\":\"interrupt\"") &&
+          strstr(ev, "\"src\":1002,\"dst\":9,\"group\":true,\"action\":\"accepted\",\"talker\":2001"));
+    rdof_mn_intr_event(&e2, 1002, 9, true, "talks", 0, ev, sizeof ev);
+    CHECK(strstr(ev, "\"action\":\"talks\"") && !strstr(ev, "talker"));
 }
 
 /* ── registration records, where, status, the trunk object ── */
@@ -1144,6 +1154,15 @@ static void test_records(void)
     static const char noexp[] = "{\"id\":7,\"at\":\"2026-11-05T21:04:11Z\"}";
     CHECK(!rdof_mn_record_parse(noexp, sizeof noexp - 1, &b, err, sizeof err) && strstr(err, "exp"));
     CHECK(!rdof_mn_record_parse("[]", 2, &b, err, sizeof err));
+    /* power save granted (PowerSave_RQ 2, offset 3): kept, so a restarted site pages the MS in its wake frame */
+    rdof_mn_record_t ps = r;
+    ps.ps_rq = 2, ps.ps_off = 3;
+    const size_t pn = rdof_mn_record_json(&ps, j, sizeof j);
+    CHECK(pn > 0 && strstr(j, "\"ps_rq\":2,\"ps_off\":3}") && rdof_mn_record_parse(j, pn, &b, err, sizeof err) &&
+          !memcmp(&b, &ps, sizeof ps));
+    static const char badoff[] = "{\"id\":7,\"at\":\"2026-11-05T21:04:11Z\",\"exp\":\"2026-11-05T22:04:11Z\","
+                                 "\"ps_rq\":1,\"ps_off\":2}";
+    CHECK(rdof_mn_record_parse(badoff, sizeof badoff - 1, &b, err, sizeof err) && b.ps_rq == 0 && b.ps_off == 0);
 
     static const char where[] =
         "{\"node\":\"site-b\",\"path\":{\"i\":1,\"name\":\"site\"},\"at\":\"2026-11-05T21:04:11.250Z\",\"source\":\"reg\"}";
@@ -1172,6 +1191,13 @@ static void test_records(void)
     static char sb[2048];
     rdof_jdoc_t jd = {nd, 200, 0, sb, sizeof sb, 0, {0}};
     CHECK(rdof_jparse(&jd, out, strlen(out)) >= 0);
+    CHECK(!strstr(out, "composite")); /* a dedicated TSCC */
+    rdof_mn_trunk_status_t tc = ts;
+    tc.composite = true, tc.lends = 3, tc.lent_s = 41.25, tc.lent_max_s = 20.5;
+    const rdof_mn_status_t stc = {.node = "site-a", .trunk = &tc};
+    CHECK(rdof_mn_status_json(&stc, out, sizeof out) > 0 &&
+          strstr(out, "\"queued\":0},\"composite\":{\"lends\":3,\"lent_s\":41.25,\"lent_max_s\":20.5}}") ||
+          !printf("  %s\n", out));
     const rdof_mn_status_t plain = {.node = "box"};
     CHECK(rdof_mn_status_json(&plain, out, sizeof out) > 0 && !strstr(out, "trunk"));
     CHECK(rdof_mn_status_json(&st, out, 100) == 0); /* too small */
@@ -1183,14 +1209,14 @@ static void test_records(void)
     const char *const svc[] = {"reg", "group", "private", "allcall"};
     const rdof_mn_trunk_info_t ti = {.model = "small", .net = 5, .site = 3, .par = "ab", .area_bits = 5, .tscc = &a,
                                      .ntscc = 1, .carriers = cs, .ncarriers = 2, .services = svc, .nservices = 4,
-                                     .reg = true};
+                                     .reg = true, .priority = 3};
     char tj[1024];
     CHECK(rdof_mn_trunk_info_json(&ti, tj, sizeof tj) > 0);
     CHECK(!strcmp(tj, "{\"system\":{\"model\":\"small\",\"net\":5,\"site\":3,\"par\":\"ab\",\"area_bits\":5},"
                       "\"tscc\":[{\"chan\":1,\"tx_hz\":438750000,\"rx_hz\":438250000,\"cc\":1}],"
                       "\"carriers\":[{\"chan\":1,\"tx_hz\":438750000,\"rx_hz\":438250000},"
                       "{\"chan\":2,\"tx_hz\":438600000,\"rx_hz\":438500000}],"
-                      "\"services\":[\"reg\",\"group\",\"private\",\"allcall\"],\"reg\":true}") ||
+                      "\"services\":[\"reg\",\"group\",\"private\",\"allcall\"],\"reg\":true,\"priority\":3}") ||
           !printf("  %s\n", tj));
     /* in info: the path marked, the object added */
     static rdof_site_t s;
@@ -1304,11 +1330,22 @@ static void test_cfg(void)
           !rdof_idset_has(&tg->ms, 3101000));
     CHECK(put(&c, "DMR/cfg/tg/3100", "{\"rev\":1,\"priority\":9}", note) == RDOF_MN_CFG_BAD);
     CHECK(put(&c, "DMR/cfg/ms/3100123", "{\"rev\":4,\"name\":\"Unit 12\",\"enabled\":true,\"private\":false,"
-                                        "\"priority\":1,\"tg\":[91,3100]}",
+                                        "\"priority\":1,\"tg\":[91,3100],"
+                                        "\"auth_k\":\"0102030405060708090a0B0C0D0E0F10\",\"psn\":\"0A0203\"}",
               note) == RDOF_MN_CFG_APPLIED);
     const rdof_mn_ms_cfg_t *ms = rdof_mn_cfg_ms(&c, 3100123);
     CHECK(ms && ms->enabled && !ms->private_ && ms->wide_private && ms->emergency && ms->priority == 1 && ms->ntg == 2 &&
           ms->tg[1] == 3100);
+    /* authentication (tier3.md 3.10): the key and PSN; a bad one is refused without quoting it */
+    CHECK(ms->has_key && ms->key[0] == 1 && ms->key[10] == 11 && ms->key[15] == 16 && ms->has_psn &&
+          ms->psn == 0x0A0203);
+    CHECK(put(&c, "DMR/cfg/ms/3100125", "{\"rev\":1,\"auth_k\":\"0102030405060708090a0b0c0d0e0f1\"}", note) ==
+              RDOF_MN_CFG_BAD &&
+          strstr(note, "auth_k") && !strstr(note, "0102"));
+    CHECK(put(&c, "DMR/cfg/ms/3100125", "{\"rev\":1,\"auth_k\":\"0102030405060708090a0b0c0d0e0fxx\"}", note) ==
+          RDOF_MN_CFG_BAD);
+    CHECK(put(&c, "DMR/cfg/ms/3100125", "{\"rev\":1,\"psn\":66051}", note) == RDOF_MN_CFG_BAD && strstr(note, "psn"));
+    CHECK(!rdof_mn_cfg_ms(&c, 3100125));
     CHECK(put(&c, "DMR/cfg/ms/3100124", "{\"rev\":1,\"enabled\":false}", note) == RDOF_MN_CFG_APPLIED);
     CHECK(!rdof_mn_cfg_ms(&c, 3100124)->enabled);
     CHECK(put(&c, "DMR/cfg/ms/0", "{\"rev\":1}", note) == RDOF_MN_CFG_NOT_CFG);
@@ -1376,11 +1413,58 @@ static void test_cmd(void)
           !strcmp(c.id, "c-4") && !strcmp(c.name, "reboot"));
     static const char noid[] = "{\"cmd\":\"status\"}";
     CHECK(!rdof_mn_cmd_parse(noid, sizeof noid - 1, &c, err, sizeof err) && strstr(err, "id"));
+    static const char auth[] = "{\"id\":\"c-5\",\"cmd\":\"auth\",\"ms\":3100123}";
+    CHECK(rdof_mn_cmd_parse(auth, sizeof auth - 1, &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_AUTH &&
+          c.ms == 3100123);
+    static const char auth_bad[] = "{\"id\":\"c-6\",\"cmd\":\"auth\"}";
+    CHECK(!rdof_mn_cmd_parse(auth_bad, sizeof auth_bad - 1, &c, err, sizeof err) && strstr(err, "ms"));
     static const char *const simple[] = {"withdraw", "restore", "resend_records", "status"};
     for (int i = 0; i < 4; i++) {
         snprintf(out, sizeof out, "{\"id\":\"x\",\"cmd\":\"%s\"}", simple[i]);
         CHECK(rdof_mn_cmd_parse(out, strlen(out), &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_WITHDRAW + i);
     }
+    static const char mass[] = "{\"id\":\"m\",\"cmd\":\"mass_reg\",\"window_s\":300,\"ms\":3100123}";
+    CHECK(rdof_mn_cmd_parse(mass, sizeof mass - 1, &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_MASS_REG &&
+          c.window_s == 300 && c.ms == 3100123);
+    static const char mass_bad[] = "{\"id\":\"m\",\"cmd\":\"mass_reg\"}";
+    CHECK(!rdof_mn_cmd_parse(mass_bad, sizeof mass_bad - 1, &c, err, sizeof err) && strstr(err, "window_s"));
+    static const char move[] = "{\"id\":\"v\",\"cmd\":\"move\",\"chan\":7}";
+    CHECK(rdof_mn_cmd_parse(move, sizeof move - 1, &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_MOVE && c.chan == 7 &&
+          c.ms == 0 && c.syscode == 0);
+    static const char move_site[] = "{\"id\":\"v\",\"cmd\":\"move\",\"site\":17035,\"ms\":3100123}";
+    CHECK(rdof_mn_cmd_parse(move_site, sizeof move_site - 1, &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_MOVE &&
+          c.syscode == 17035 && c.ms == 3100123);
+    static const char move_bad[] = "{\"id\":\"v\",\"cmd\":\"move\",\"site\":70000}";
+    CHECK(!rdof_mn_cmd_parse(move_bad, sizeof move_bad - 1, &c, err, sizeof err) && strstr(err, "site"));
+    static const char stun[] = "{\"id\":\"s\",\"cmd\":\"stun\",\"ms\":3100123}";
+    CHECK(rdof_mn_cmd_parse(stun, sizeof stun - 1, &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_STUN && c.ms == 3100123);
+    static const char revive[] = "{\"id\":\"r\",\"cmd\":\"revive\",\"ms\":3100123}";
+    CHECK(rdof_mn_cmd_parse(revive, sizeof revive - 1, &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_REVIVE);
+    static const char kill[] = "{\"id\":\"k\",\"cmd\":\"kill\",\"ms\":3100123}";
+    CHECK(rdof_mn_cmd_parse(kill, sizeof kill - 1, &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_KILL && c.ms == 3100123);
+    static const char rc_ms[] = "{\"id\":\"r\",\"cmd\":\"radio_check\",\"ms\":3100123}";
+    CHECK(rdof_mn_cmd_parse(rc_ms, sizeof rc_ms - 1, &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_RADIO_CHECK &&
+          c.ms == 3100123 && c.ntg == 0);
+    static const char rc_tg[] = "{\"id\":\"r\",\"cmd\":\"radio_check\",\"tg\":9}";
+    CHECK(rdof_mn_cmd_parse(rc_tg, sizeof rc_tg - 1, &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_RADIO_CHECK &&
+          c.ntg == 1 && c.tg[0] == 9);
+    static const char cm_tg[] = "{\"id\":\"c\",\"cmd\":\"clear_ms\",\"tg\":9}";
+    CHECK(rdof_mn_cmd_parse(cm_tg, sizeof cm_tg - 1, &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_CLEAR_MS &&
+          c.ntg == 1 && c.tg[0] == 9);
+    static const char rc_bad[] = "{\"id\":\"r\",\"cmd\":\"radio_check\"}";
+    CHECK(!rdof_mn_cmd_parse(rc_bad, sizeof rc_bad - 1, &c, err, sizeof err) && strstr(err, "ms or tg"));
+    static const char stun_bad[] = "{\"id\":\"s\",\"cmd\":\"stun\"}";
+    CHECK(!rdof_mn_cmd_parse(stun_bad, sizeof stun_bad - 1, &c, err, sizeof err) && strstr(err, "ms"));
+    static const char dgna[] = "{\"id\":\"d\",\"cmd\":\"dgna\",\"ms\":3100123,\"tg\":[5,6,700]}";
+    CHECK(rdof_mn_cmd_parse(dgna, sizeof dgna - 1, &c, err, sizeof err) && c.cmd == RDOF_MN_CMD_DGNA &&
+          c.ms == 3100123 && c.ntg == 3 && c.tg[0] == 5 && c.tg[2] == 700);
+    static const char dgna_clear[] = "{\"id\":\"d\",\"cmd\":\"dgna\",\"ms\":3100123,\"tg\":[]}";
+    CHECK(rdof_mn_cmd_parse(dgna_clear, sizeof dgna_clear - 1, &c, err, sizeof err) && c.ntg == 0);
+    static const char dgna_long[] =
+        "{\"id\":\"d\",\"cmd\":\"dgna\",\"ms\":3,\"tg\":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]}";
+    CHECK(!rdof_mn_cmd_parse(dgna_long, sizeof dgna_long - 1, &c, err, sizeof err) && strstr(err, "tg"));
+    static const char dgna_none[] = "{\"id\":\"d\",\"cmd\":\"dgna\",\"ms\":3}";
+    CHECK(!rdof_mn_cmd_parse(dgna_none, sizeof dgna_none - 1, &c, err, sizeof err) && strstr(err, "tg"));
     CHECK(rdof_mn_cmd_result_json("c-123", true, NULL, out, sizeof out) && !strcmp(out, "{\"id\":\"c-123\",\"ok\":true}"));
     CHECK(rdof_mn_cmd_result_json("c-4", false, "unknown command", out, sizeof out) &&
           !strcmp(out, "{\"id\":\"c-4\",\"ok\":false,\"error\":\"unknown command\"}"));

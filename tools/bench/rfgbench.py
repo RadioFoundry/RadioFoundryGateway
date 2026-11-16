@@ -1151,6 +1151,7 @@ def bench_tx_parser() -> argparse.ArgumentParser:
     ap.add_argument("--cc", type=int, default=2)
     ap.add_argument("--power", type=int, default=255)        # the older form: 0-255 on the transmitter's range
     ap.add_argument("--power-dbm", type=float)                # dBm at the antenna; the gateway takes it over --power
+    ap.add_argument("--dev-scale", type=float)                # the DMR deviation, a fraction of nominal: 0.5-1.5
     ap.add_argument("--rx-offset", type=int)
     ap.add_argument("--tx-offset", type=int)
     ap.add_argument("-v", "--verbose", action="store_true")
@@ -1218,6 +1219,7 @@ def bench_repeater_parser() -> argparse.ArgumentParser:
     ap.add_argument("--cc", type=int, default=2)
     ap.add_argument("--power", type=int, default=255)
     ap.add_argument("--power-dbm", type=float)
+    ap.add_argument("--dev-scale", type=float)
     ap.add_argument("--seconds", type=float, default=60)
     ap.add_argument("--slots", default="1,2")
     ap.add_argument("--hang", type=float, default=4.0)
@@ -1276,6 +1278,15 @@ def cmd_run(a) -> int:
         check_reach(a, job.get("rx"), tx=False)
     elif job.get("cmd") in ("voice", "csbk", "data", "outbound"):
         check_reach(a, job.get("freq"), tx=True)
+    if job.get("dev_scale", 1.0) != 1.0 and job.get("cmd") != "listen":
+        try:                                              # a gateway that predates it would send at nominal
+            d = request(a.where, {"op": "info"})
+        except OSError:
+            d = {"error": "unreachable"}                  # the run says why
+        if "error" not in d and not d.get("features", {}).get("dev_scale"):
+            print(f"{NOTE} this gateway doesn't apply --dev-scale (an older build, or a transmitter that keeps its own "
+                  f"deviation): not sent", file=sys.stderr)
+            return EX_UNAVAILABLE
     files = {}
 
     def on(d, data):

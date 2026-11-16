@@ -165,7 +165,7 @@ static struct {
     bool open, unkeyed, as_built;
     uint32_t freq;
     int cc, power;
-    double power_dbm;
+    double power_dbm, dev_scale;
     uint8_t q[4][34];
     int qn;
     double next;
@@ -180,6 +180,7 @@ static bool f_tx_open(void *ctx, uint32_t f, int cc, rdof_bench_power_t power, b
         return false;
     }
     tx.open = true, tx.freq = f, tx.cc = cc, tx.power = power.level, tx.power_dbm = power.dbm, tx.qn = 0;
+    tx.dev_scale = rdof_bench_dev_scale(power);
     tx.unkeyed = false, tx.as_built = as_built;
     if (isnan(power.dbm))
         snprintf(why, cap, "power %d noted", power.level);
@@ -658,7 +659,7 @@ static void test_ops(void)
     rdof_bl_closed(bl, c, now);
     c = ask(bl, "{\"op\": \"info\"}", now);
     drain(bl, c, out, sizeof out);
-    CHECK(strstr(out, "\"features\":{\"bursts_cach\":true,\"bursts_lost\":true,\"bursts_envelope\":true,\"bursts_ramp\":true,\"capture_raw\":false,\"bursts_raw\":false}"), "info names the features: %.300s", out);
+    CHECK(strstr(out, "\"features\":{\"bursts_cach\":true,\"bursts_lost\":true,\"bursts_envelope\":true,\"bursts_ramp\":true,\"capture_raw\":false,\"bursts_raw\":false,\"dev_scale\":true}"), "info names the features: %.300s", out);
     rdof_bl_closed(bl, c, now);
     c = ask(bl, "{\"op\": \"bursts\", \"freq\": 438.6}", now);
     drain(bl, c, out, sizeof out);
@@ -3326,6 +3327,133 @@ static void test_modem_station(void)
     rdof_bl_free(bl);
 }
 
+/* --dev-scale: the parser's default and limits, and the scale on each kind of transmit job's open */
+static bool parse_job(const char *json, rdof_bj_job_t *j, char *e, size_t ecap)
+{
+    static rdof_jnode_t nodes[64];
+    static char sb[1024];
+    static uint8_t ambe[64];
+    rdof_jdoc_t d = {.nodes = nodes, .max = 64, .buf = sb, .cap = sizeof sb};
+    e[0] = 0;
+    const int root = rdof_jparse(&d, json, strlen(json));
+    return root >= 0 && rdof_bj_parse(&d, root, j, ambe, sizeof ambe, e, ecap);
+}
+
+static void test_dev_scale(void)
+{
+    static rdof_bj_job_t j;
+    char e[200];
+    /* none named: 1.0, on every job that transmits */
+    static const char *const NONE[] = {
+        "{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"freq\":438.1125}",
+        "{\"tool\":\"bench_tx\",\"cmd\":\"outbound\",\"freq\":438.1125,\"seconds\":1}",
+        "{\"tool\":\"bench_repeater\",\"rx\":438.0625,\"tx\":438.1125}",
+        "{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"freq\":438.1125,\"dev_scale\":null}"};
+    for (int k = 0; k < 4; k++)
+        CHECK(parse_job(NONE[k], &j, e, sizeof e) && j.dev_scale == 1.0, "job %d: no --dev-scale is 1.0 (%g): %s", k,
+              j.dev_scale, e);
+    /* in range: a number, or argparse's text, the ends included */
+    CHECK(parse_job("{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"freq\":438.1125,\"dev_scale\":0.9}", &j, e,
+                    sizeof e) &&
+              j.dev_scale == 0.9, "0.9: %g %s", j.dev_scale, e);
+    CHECK(parse_job("{\"tool\":\"bench_tx\",\"cmd\":\"csbk\",\"freq\":438.1125,\"dev_scale\":\"1.1\"}", &j, e,
+                    sizeof e) &&
+              j.dev_scale == 1.1, "\"1.1\": %g %s", j.dev_scale, e);
+    CHECK(parse_job("{\"tool\":\"bench_tx\",\"cmd\":\"outbound\",\"freq\":438.1125,\"dev_scale\":0.5}", &j, e,
+                    sizeof e) &&
+              j.dev_scale == 0.5, "0.5: %g %s", j.dev_scale, e);
+    CHECK(parse_job("{\"tool\":\"bench_repeater\",\"rx\":438.0625,\"tx\":438.1125,\"dev_scale\":1.5}", &j, e,
+                    sizeof e) &&
+              j.dev_scale == 1.5, "1.5: %g %s", j.dev_scale, e);
+    /* out of range, or not a number: refused, the option named */
+    static const char *const BAD[] = {"0.49", "1.51", "0", "-1", "\"x\"", "\"0.9x\"", "true", "[1]"};
+    for (int k = 0; k < 8; k++) {
+        char req[160];
+        snprintf(req, sizeof req, "{\"tool\":\"bench_tx\",\"cmd\":\"data\",\"freq\":438.1125,\"dev_scale\":%s}",
+                 BAD[k]);
+        CHECK(!parse_job(req, &j, e, sizeof e) && strstr(e, "--dev-scale") && strstr(e, "0.5-1.5"),
+              "dev_scale %s refused: %s", BAD[k], e);
+    }
+    snprintf(e, sizeof e, "x");
+    CHECK(!parse_job("{\"tool\":\"bench_tx\",\"cmd\":\"outbound\",\"freq\":438.1125,\"dev_scale\":2}", &j, e,
+                     sizeof e) &&
+              strstr(e, "--dev-scale 2 is out of range"), "outbound refuses 2: %s", e);
+    CHECK(!parse_job("{\"tool\":\"bench_repeater\",\"rx\":438.0625,\"tx\":438.1125,\"dev_scale\":0.1}", &j, e,
+                     sizeof e) &&
+              strstr(e, "--dev-scale 0.1 is out of range"), "the repeater refuses 0.1: %s", e);
+
+    /* through the engine: refused before anything keys; the scale reaches each open, and the log says it */
+    static char out[1 << 18];
+    rdof_bl_t *bl = rdof_bl_new(&PLAT);
+    double now = 5000;
+    memset(&tx, 0, sizeof tx);
+    memset(&ob, 0, sizeof ob);
+    memset(&rp, 0, sizeof rp);
+    int c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"freq\":438.1125,"
+                    "\"dev_scale\":1.6}}", now);
+    drain(bl, c, out, sizeof out);
+    rdof_bl_closed(bl, c, now);
+    CHECK(strstr(out, "\"code\":\"unsupported\"") && strstr(out, "--dev-scale 1.6 is out of range") && !tx.open &&
+              !tx.keyups, "1.6 refused: %s", out);
+    static const struct {
+        const char *job;
+        double want;
+    } RUN[] = {{"\"cmd\":\"voice\",\"superframes\":1,\"dev_scale\":0.9", 0.9},
+               {"\"cmd\":\"csbk\",\"count\":1,\"dev_scale\":1.1", 1.1},
+               {"\"cmd\":\"csbk\",\"count\":1", 1.0}};
+    for (int k = 0; k < 3; k++) {
+        char req[200];
+        snprintf(req, sizeof req, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"freq\":438.1125,%s}}", RUN[k].job);
+        tx.dev_scale = 0;
+        c = ask(bl, req, now);
+        size_t n = 0;
+        for (int i = 0; i < 300 && !rdof_bl_finished(bl, c); i++) {
+            now += 0.01;
+            rdof_bl_tick(bl, now);
+            tx_air(bl, now, 1);
+            n = drain_all(bl, c, out, sizeof out, n);
+        }
+        rdof_bl_closed(bl, c, now);
+        CHECK(strstr(out, "\"exit\":0") && tx.dev_scale == RUN[k].want, "job %d opened at %g, not %g: %.300s", k,
+              tx.dev_scale, RUN[k].want, out);
+        CHECK((RUN[k].want != 1.0) == (strstr(out, "--dev-scale") != NULL), "job %d's log: %.600s", k, out);
+    }
+    CHECK(strstr(out, "csbk") && !strstr(out, "deviation"), "a nominal job says nothing of it: %.400s", out);
+    ob.first = 8;
+    run_ob(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"outbound\",\"freq\":438.1125,"
+               "\"seconds\":0.5,\"dev_scale\":1.1}}", &now, out, sizeof out);
+    CHECK(ob.cfg.power.dev_scale == 1.1 && strstr(out, "--dev-scale 1.10: the DMR deviation is 1.10 of nominal "
+                                                        "(+-2138 / +-713 Hz)"),
+          "the outbound's setup: %g: %.600s", ob.cfg.power.dev_scale, out);
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_repeater\",\"rx\":438.0625,\"tx\":438.1125,"
+                "\"seconds\":0.2,\"json\":true,\"dev_scale\":0.95}}", now);
+    for (int i = 0; i < 60 && !rdof_bl_finished(bl, c); i++) {
+        now += 0.02;
+        rdof_bl_tick(bl, now);
+        drain(bl, c, out, sizeof out);
+    }
+    rdof_bl_closed(bl, c, now);
+    CHECK(rp.closed && rp.cfg.power.dev_scale == 0.95, "the repeater's setup: %g", rp.cfg.power.dev_scale);
+    rdof_bl_free(bl);
+
+    /* a transmitter that keeps its own deviation (an MMDVM modem): refused, the reason given; info says it */
+    rdof_bl_platform_t pl = PLAT;
+    pl.cannot = f_cannot_all;
+    bl = rdof_bl_new(&pl);
+    c = ask(bl, "{\"op\": \"info\"}", now);
+    drain(bl, c, out, sizeof out);
+    rdof_bl_closed(bl, c, now);
+    CHECK(strstr(out, "\"dev_scale\":false"), "info: %.300s", out + (strlen(out) > 300 ? strlen(out) - 300 : 0));
+    memset(&tx, 0, sizeof tx);
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"freq\":438.1125,"
+                "\"dev_scale\":0.9}}", now);
+    drain(bl, c, out, sizeof out);
+    rdof_bl_closed(bl, c, now);
+    CHECK(strstr(out, "\"code\":\"unsupported\"") && strstr(out, "--dev-scale: no timed answers") && !tx.open,
+          "a modem: %s", out);
+    rdof_bl_free(bl);
+}
+
 static void test_ring_scale(void)
 {
     CHECK(rdof_bl_ring_scale(128.0) == 1.0f && rdof_bl_ring_scale(127.0) == 1.0f, "an 8-bit ADC keeps its own bits");
@@ -3347,6 +3475,33 @@ static void test_ring_scale(void)
           out[1], out[2], out[3]);
     CHECK(clipped == 1, "only the rail clips (%ld)", clipped);
     rdof_bl_ring_free(&ring);
+}
+
+/* A job field the gateway doesn't read is refused when it asks for something, not dropped (an offset once went out
+ * at 0 Hz that way); null, false, 0 and "" ask for nothing, and the tool's own ambe, port and verbose mean nothing
+ * here. */
+static void test_unread_field(void)
+{
+    static const struct {
+        const char *json, *refused; /* NULL: it parses */
+    } C[] = {
+        {"{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"dst\":1,\"offset_hz\":1500}", NULL},
+        {"{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"dst\":1,\"frobnicate\":true}", "--frobnicate"},
+        {"{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"dst\":1,\"tx_offset\":300}", "--tx-offset"},
+        {"{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"dst\":1,\"a\":false,\"b\":0,\"c\":\"\",\"d\":null}", NULL},
+        {"{\"tool\":\"bench_tx\",\"cmd\":\"voice\",\"dst\":1,\"ambe\":\"x.amb\",\"port\":\"/dev/x\",\"verbose\":true}",
+         NULL},
+        {"{\"tool\":\"bench_repeater\",\"rx\":461.0875,\"tx\":461.4625,\"offset_hz\":700}", "--offset-hz"},
+    };
+    for (size_t i = 0; i < sizeof C / sizeof C[0]; i++) {
+        rdof_bj_job_t j;
+        char e[200];
+        const bool ok = parse_job(C[i].json, &j, e, sizeof e);
+        if (C[i].refused)
+            CHECK(!ok && strstr(e, C[i].refused), "job %zu: refused for %s, got %s", i, C[i].refused, ok ? "OK" : e);
+        else
+            CHECK(ok, "job %zu: %s", i, e);
+    }
 }
 
 int main(int argc, char **argv)
@@ -3376,6 +3531,8 @@ int main(int argc, char **argv)
     test_zero_floor();
     test_ring_scale();
     test_modem_station();
+    test_dev_scale();
+    test_unread_field();
     test_tcp();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

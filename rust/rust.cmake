@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 # rust built by cargo as a static library, for the host tests and the ESP-IDF build.
-#   rdof_rust_add(<name> [TARGET <triple>] [TOOLCHAIN <rustup toolchain>] [BUILD_STD])
+#   rdof_rust_add(<name> [TARGET <triple>] [TOOLCHAIN <rustup toolchain>] [BUILD_STD]
+#                 [NO_DEFAULT_FEATURES] [FEATURES <feature>...])
 # makes <name> an imported static library (librdof_rust.a) that cargo rebuilds when a .rs file changes, without
-# Rust's compiler_builtins (strip_builtins.cmake).
+# Rust's compiler_builtins (strip_builtins.cmake). The default feature, legacy, is the modules that replace common's
+# C; tier3 is the Tier III site (FEATURES tier3), t3 its controller alone (cargo test).
 set(RDOF_RUST_DIR ${CMAKE_CURRENT_LIST_DIR})
 # common modules the crate replaces: common/src/<module>.c each.
 set(RDOF_RUST_MODULES ambe benchcfg benchtx bits config hblink jitter json jsonp lastheard layer2 mmdvm modem netcalls oled parrot pdu rawburst repeater slotgrid status tracker txvr usbmatch)
@@ -61,7 +63,7 @@ function(rdof_rust_check var)
 endfunction()
 
 function(rdof_rust_add name)
-    cmake_parse_arguments(A "BUILD_STD" "TARGET;TOOLCHAIN" "" ${ARGN})
+    cmake_parse_arguments(A "BUILD_STD;NO_DEFAULT_FEATURES" "TARGET;TOOLCHAIN" "FEATURES" ${ARGN})
     find_program(RDOF_CARGO cargo HINTS $ENV{HOME}/.cargo/bin REQUIRED)
     set(dir ${CMAKE_CURRENT_BINARY_DIR}/${name}-cargo)
     set(cmd ${RDOF_CARGO})
@@ -74,6 +76,13 @@ function(rdof_rust_add name)
         set(lib ${dir}/${A_TARGET}/release/librdof_rust.a)
     else()
         set(lib ${dir}/release/librdof_rust.a)
+    endif()
+    if(A_NO_DEFAULT_FEATURES)
+        list(APPEND cmd --no-default-features)
+    endif()
+    if(A_FEATURES)
+        list(JOIN A_FEATURES "," features)
+        list(APPEND cmd --features ${features})
     endif()
     if(A_BUILD_STD)  # a target without a prebuilt core (Xtensa): build it from rust-src
         list(APPEND cmd -Zbuild-std=core)
@@ -93,4 +102,16 @@ function(rdof_rust_add name)
     add_library(${name} STATIC IMPORTED GLOBAL)
     set_target_properties(${name} PROPERTIES IMPORTED_LOCATION ${lib})
     add_dependencies(${name} ${name}_cargo)
+endfunction()
+
+# rdof_t3_lib(<var> <common target>): what a program that runs the Tier III site (rdof/t3.h, rdof/t3*.h) links
+# beside <common target>: nothing when that library's Rust has the tier3 feature (RDOF_RUST_T3: RDOF_TIER3, the
+# default), else NOTFOUND (the C modules: no Tier III site).
+function(rdof_t3_lib var common)
+    get_target_property(defs ${common} INTERFACE_COMPILE_DEFINITIONS)
+    if(defs MATCHES "RDOF_RUST_T3=1")
+        set(${var} "" PARENT_SCOPE)
+    else()
+        set(${var} NOTFOUND PARENT_SCOPE)
+    endif()
 endfunction()

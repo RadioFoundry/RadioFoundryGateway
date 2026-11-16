@@ -210,6 +210,36 @@ int rdof_trellis34_decode(const uint8_t burst[RDOF_BURST_BYTES], uint8_t out18[1
     return dmrTrellisDecode(burst, out18);
 }
 
+rdof_trellis34_hook_t rdof_trellis34_hook;
+
+static bool crc9_ok(const uint8_t b[18])
+{
+    return rdof_check_crc9(b + 2, 16, b[0] >> 1, ((b[0] & 1) << 8) | b[1], RDOF_MASK_CRC9_RATE34);
+}
+
+int rdof_trellis34_decode_block(const uint8_t burst[RDOF_BURST_BYTES], uint8_t out18[18])
+{
+    const int errors = dmrTrellisDecode(burst, out18);
+    const bool ok0 = crc9_ok(out18);
+    const rdof_trellis34_hook_t hook = rdof_trellis34_hook;
+    if (ok0 && !hook)
+        return errors;
+    uint8_t any[18];
+    int start = -1;
+    const int e = dmrTrellisDecodeAnyStartFrom(burst, any, &start);
+    const bool ok_any = crc9_ok(any);
+    if (hook)
+        hook(ok0, errors, start, ok_any, e);
+    /* An encoder started off state 0 costs the path from 0 a wrong first point (2 bits): take the other path only
+       when it saves that much. An unconfirmed block has no CRC-9 and passes it 1 time in 512 by chance; a path from
+       any start explains noise near the start a bit or so better, and taking it then was wrong nearly every time
+       (random blocks, up to 7 bit errors: 252 of 253 such swaps; 3 in 600k blocks left at 2 bits). */
+    if (ok0 || !ok_any || e + 2 > errors)
+        return errors;
+    memcpy(out18, any, 18);
+    return e;
+}
+
 void rdof_trellis34_encode(const uint8_t payload18[18], uint8_t info196[196])
 {
     uint8_t burst[RDOF_BURST_BYTES] = {0};

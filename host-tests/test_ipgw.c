@@ -171,7 +171,7 @@ static void t_settings(void)
     bad(app("\"nat\": 1"), "nat: true, false");
     bad(app("\"nat\": true, \"radio_net\": \"12.0.0.0/4\""), "radio_net");
     bad(app("\"nat\": true, \"max_flows\": 17"), "max_flows: a whole number 1 to 16");
-    bad(app("\"nat\": true, \"max_bytes\": 2000"), "max_bytes");
+    bad(app("\"nat\": true, \"max_bytes\": 3045"), "max_bytes");
     bad(app("\"nat\": true, \"up_pps\": -1"), "up_pps");
     bad(app("\"nat\": true, \"ack\": 1"), "ack: true or false");
     bad(app("\"nat\": true, \"tx\": 5"), "apps.gw.tx: a unit's name");
@@ -236,7 +236,7 @@ typedef struct {
     uint32_t last_ip;
     uint16_t last_port;
     int last_ttl;
-    uint8_t last[2048];
+    uint8_t last[RDOF_IPGW_MAX_UP + 32];
     size_t last_len;
     int dmr;
     rdof_ipgw_dmr_t out;
@@ -532,7 +532,7 @@ static void t_route(void)
     rdof_ipgw_status_json(g, &j);
     rdof_json_close(&j);
     CHECK(rdof_json_done(&j) && strstr(buf, "\"ip_gateway\":{\"routes\":2,\"nat\":false,\"flows\":0,\"max_flows\":8,") &&
-              strstr(buf, "\"up_packets\":2,") && strstr(buf, "\"flows_expired\":2,\"queue_full\":0,\"sap3\":0,\"ttl_expired\":0,\"down_ttl_expired\":0,\"icmp_up\":0,\"icmp_down\":0,\"icmp_errors\":0,\"icmp_unmatched\":0,\"down_own_source\":0,\"tx_busy\":0}"),
+              strstr(buf, "\"up_packets\":2,") && strstr(buf, "\"flows_expired\":2,\"queue_full\":0,\"sap3\":0,\"ttl_expired\":0,\"down_ttl_expired\":0,\"icmp_up\":0,\"icmp_down\":0,\"icmp_errors\":0,\"icmp_unmatched\":0,\"down_own_source\":0,\"tx_busy\":0,\"rx_headers\":5,\"rx_header_crc\":0,\"rx_blocks\":17,\"rx_block_fec\":0,\"rx_block_crc\":0}"),
           "status: %s", buf);
     free(g);
 }
@@ -685,7 +685,7 @@ static void t_confirmed(void)
     n = datagram(RADIO_IP, 4005, IP(13, 0, 0, 1), 4005, "spoiled", d);
     confirmed(RADIO, 9990, 4, d, n, &p, true);
     hear(g, &W, &p, 26.0);
-    CHECK(g->n.rx_bad == 1 && f.dmr == 4 && f.sent == 1, "bad CRC-9");
+    CHECK(g->n.rx_bad == 1 && g->n.rx_block_crc == 1 && !g->n.rx_block_fec && f.dmr == 4 && f.sent == 1, "bad CRC-9");
     /* ack off */
     g->cfg.ack = false;
     n = datagram(RADIO_IP, 4005, IP(13, 0, 0, 1), 4005, "no ack", d);
@@ -767,7 +767,7 @@ static void t_assembly(void)
     blk[0] ^= 1;
     rdof_data_burst(blk, RDOF_DT_RATE_12, 1, sync, p.bursts[1]);
     hear(g, &W, &p, 6.0);
-    CHECK(g->n.rx_bad == 1 && g->n.rx_messages == 1, "CRC-32");
+    CHECK(g->n.rx_bad == 1 && g->n.rx_messages == 1 && !g->n.rx_block_crc && !g->n.rx_block_fec, "CRC-32");
     /* five at once on four assemblers: the oldest gives way */
     for (int k = 0; k < 5; k++) {
         rdof_ipgw_where_t wk = {.source = 10 + k, .slot = 1, .cc = 1};
@@ -799,16 +799,34 @@ static void t_assembly(void)
         rdof_ipgw_burst(g, &W, i < 2 ? RDOF_DT_DATA_HEADER : RDOF_DT_RATE_12, p.bursts[i], 21.0 + 0.06 * i);
     CHECK(g->n.not_ip == not_ip + 1 && g->n.rx_incomplete == inc, "proprietary header: complete (8 octets: not IP)");
 
-    /* 127 rate 3/4 blocks: more than the longest message */
-    rdof_ipgw_data_header(false, false, false, 4, 0, 9990, RADIO, 127, 0, h);
-    rdof_data_burst(h, RDOF_DT_DATA_HEADER, 1, sync, p.bursts[0]);
-    rdof_ipgw_burst(g, &W, RDOF_DT_DATA_HEADER, p.bursts[0], 30.0);
-    memset(buf, 0x55, 18);
-    rdof_trellis34_encode(buf, info);
-    rdof_info_burst(info, RDOF_DT_RATE_34, 1, sync, p.bursts[1]);
-    for (int b = 0; b < 127; b++)
-        rdof_ipgw_burst(g, &W, RDOF_DT_RATE_34, p.bursts[1], 30.0 + 0.01 * b);
-    CHECK(g->n.too_big == 1, "too long to hold");
+    /* the longest message DMR carries: 127 rate 1 blocks (Blocks to Follow's 7 bits), a 3044-octet datagram; over
+     * max_bytes (1500 here) it's too big, under it (raised to the most) it goes up whole */
+    static uint8_t big[RDOF_IPGW_MAX_UP + 32], pl[RDOF_IPGW_MAX_UP];
+    const int sent = f.sent;
+    for (int k = 0; k < 2; k++) {
+        for (size_t i = 0; i < sizeof pl; i++)
+            pl[i] = (uint8_t)(i * 7 + (size_t)k);
+        const size_t bn = rdof_ipgw_udp_datagram(RADIO_IP, 5000, IP(10, 0, 0, 1), 9000, (uint16_t)(7 + k), pl,
+                                                 RDOF_IPGW_MAX_UP - 28, big, sizeof big);
+        CHECK(bn == RDOF_IPGW_MAX_UP, "a 3044-octet datagram: %zu", bn);
+        uint32_t c32 = rdof_crc32_dmr(big, bn);
+        for (int i = 0; i < 4; i++)
+            big[bn + (size_t)i] = (uint8_t)(c32 >> (8 * i));
+        rdof_ipgw_data_header(false, false, false, 4, 0, 9990, RADIO, 127, 0, h);
+        rdof_data_burst(h, RDOF_DT_DATA_HEADER, 1, sync, p.bursts[0]);
+        rdof_ipgw_burst(g, &W, RDOF_DT_DATA_HEADER, p.bursts[0], 30.0 + 10 * k);
+        for (int b = 0; b < 127; b++) {
+            rdof_rate1_encode(big + 24 * b, info);
+            rdof_info_burst(info, RDOF_DT_RATE_1, 1, sync, p.bursts[1]);
+            rdof_ipgw_burst(g, &W, RDOF_DT_RATE_1, p.bursts[1], 30.0 + 10 * k + 0.01 * b);
+        }
+        if (k == 0) {
+            CHECK(g->n.too_big == 1 && f.sent == sent, "over max_bytes: too big");
+            g->cfg.max_bytes = RDOF_IPGW_MAX_UP;
+        }
+    }
+    CHECK(f.sent == sent + 1 && f.last_len == RDOF_IPGW_MAX_UP - 28 && !memcmp(f.last, pl, f.last_len),
+          "127 rate 1 blocks up whole: sent %d, %zu octets", f.sent - sent, f.last_len);
     free(g);
 }
 
@@ -941,6 +959,13 @@ static void t_ip_payload(void)
     m = rdof_ipgw_udp_datagram(RADIO_IP, 4005, IP(10, 0, 0, 1), 4001, 3, (const uint8_t *)"hi", 2, back, sizeof back);
     rdof_ipgw_from_net(g, f.last_flow, IP(198, 51, 100, 7), 7000, back, m, 14.0);
     CHECK(f.dmr == 2 && g->n.down_own_source == 2, "from the radio's own address: %u", g->n.down_own_source);
+    /* max_bytes raised for the uplink: down is still rate 1/2, RDOF_IPGW_MAX_PACKET at most (the scratch's size) */
+    g->cfg.max_bytes = RDOF_IPGW_MAX_UP;
+    static uint8_t pl[RDOF_IPGW_MAX_UP], huge[RDOF_IPGW_MAX_UP + 32];
+    const uint32_t too_big = g->n.down_too_big;
+    m = rdof_ipgw_udp_datagram(IP(13, 0, 0, 1), 4005, IP(12, 0, 0, 77), 4001, 3, pl, 2500 - 28, huge, sizeof huge);
+    rdof_ipgw_from_net(g, f.last_flow, IP(198, 51, 100, 7), 7000, huge, m, 15.0);
+    CHECK(m == 2500 && f.dmr == 2 && g->n.down_too_big == too_big + 1, "2500 octets down: too big");
     free(g);
 }
 

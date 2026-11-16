@@ -54,6 +54,7 @@ typedef struct {
     int ntg;
     uint32_t sub; /* the subscribed talkgroup, 0: none */
     int area;     /* the registration area (SYS_AREA); -1: not given */
+    int ps_rq, ps_off; /* power save granted (PowerSave_RQ 1-7, PowerSave_Offset); 0: none */
 } rdof_mn_record_t;
 
 size_t rdof_mn_record_json(const rdof_mn_record_t *r, char *out, size_t cap);
@@ -87,6 +88,10 @@ typedef struct {
     const rdof_mn_chan_status_t *ch;
     int nch;
     uint32_t aloha, rand, collisions, grants, refused, queued;
+    /* a composite TSCC (tier3.md 3.19): its slot lent to calls, how often and how long (the one going on counted) */
+    bool composite;
+    uint32_t lends;
+    double lent_s, lent_max_s;
 } rdof_mn_trunk_status_t;
 
 typedef struct {
@@ -113,7 +118,8 @@ typedef struct {
     int ncarriers;
     const char *const *services;
     int nservices;
-    bool reg; /* registration required */
+    bool reg;     /* registration required */
+    int priority; /* the site's priority with its neighbors (361-4 table 6.81: 1-7, 0 non-preferred) */
 } rdof_mn_trunk_info_t;
 
 /* The object for info's "trunk" (rdof_mn_info_t.trunk). */
@@ -170,7 +176,7 @@ typedef struct {
     int nneighbors;
     rdof_mn_timer_t timers[RDOF_MN_CFG_TIMERS]; /* by name; a later layer's value replaces an earlier one's */
     int ntimers;
-    /* the control channel's broadcast intervals (trunk.md 3.2: adjacent_s, chan_freq_s, local_time_s; 0 off), by name
+    /* the control channel's broadcast intervals (tier3.md 3.2: adjacent_s, chan_freq_s, local_time_s; 0 off), by name
        as the timers */
     rdof_mn_timer_t broadcast[RDOF_MN_CFG_BROADCASTS];
     int nbroadcast;
@@ -194,6 +200,10 @@ typedef struct {
     int priority;
     uint32_t tg[RDOF_MN_REC_TG]; /* static talkgroups for this radio */
     int ntg;
+    /* authentication (tier3.md 3.14): "auth_k" (32 hex digits) and "psn" (6); secret, kept only in the cache */
+    bool has_key, has_psn;
+    uint8_t key[16];
+    uint32_t psn;
 } rdof_mn_ms_cfg_t;
 
 typedef struct {
@@ -232,7 +242,7 @@ double rdof_mn_cfg_broadcast(const rdof_mn_site_cfg_t *s, const char *name, doub
 const rdof_mn_tg_cfg_t *rdof_mn_cfg_tg(const rdof_mn_cfg_t *c, uint32_t tg);
 const rdof_mn_ms_cfg_t *rdof_mn_cfg_ms(const rdof_mn_cfg_t *c, uint32_t id);
 /* A site-level document (cfg/net or cfg/node) from its JSON: what rdof_mn_cfg_message does for those two, for the
-   settings file's trunk app too. False with err. */
+   settings file's tier3 app too. False with err. */
 bool rdof_mn_site_cfg_parse(const char *json, size_t len, rdof_mn_site_cfg_t *out, long *rev, char *note, size_t ncap,
                             char *err, size_t cap);
 
@@ -252,6 +262,15 @@ typedef enum {
     RDOF_MN_CMD_RESTORE,
     RDOF_MN_CMD_RESEND_RECORDS,
     RDOF_MN_CMD_STATUS,
+    RDOF_MN_CMD_MASS_REG, /* window_s, ms (0: all) */
+    RDOF_MN_CMD_MOVE,     /* chan or syscode (an adjacent site's), ms (0: all) */
+    RDOF_MN_CMD_AUTH, /* ms: an authentication poll */
+    RDOF_MN_CMD_STUN,   /* ms */
+    RDOF_MN_CMD_REVIVE, /* ms */
+    RDOF_MN_CMD_DGNA,   /* ms, tg[ntg] (0-15; none clears) */
+    RDOF_MN_CMD_KILL,   /* ms (361-4 6.4.10: authenticated, only an MS with a key) */
+    RDOF_MN_CMD_RADIO_CHECK, /* ms, or tg[0] (ntg 1): a radio check (361-4 6.4.12; on payload 6.6.2.3.1.1) */
+    RDOF_MN_CMD_CLEAR_MS,    /* ms, or tg[0] (ntg 1): a selective clear from a payload channel (361-4 6.6.2.3.1.8) */
 } rdof_mn_cmd_kind_t;
 
 typedef struct {
@@ -260,6 +279,10 @@ typedef struct {
     char name[24];
     uint32_t ms;
     int chan, lcn;
+    uint32_t window_s;
+    uint32_t tg[15]; /* dgna */
+    int ntg;
+    uint32_t syscode; /* move: an adjacent site's C_SYScode (0: by chan) */
 } rdof_mn_cmd_t;
 
 /* False with err when it can't be carried out (unknown command, a missing argument); c->id is filled whenever the

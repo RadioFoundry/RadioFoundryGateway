@@ -1,0 +1,472 @@
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
+//! A trunked site's air, simulated (rdof/t3sim.h, docs/spec/fw/tier3.md section 10): simulated MSs (t3ms.rs) against
+//! a site (rdof/t3unit.h) through the full burst path, what rdofradio --sim-air runs. The Tier III unit and the radio
+//! layer's burst helpers (rdof/t3rf.h) through their C API.
+
+use core::ffi::{c_int, c_void};
+
+use crate::ffi::{
+    rdof_duplex_silence, RDOF_DT_TERMINATOR_WITH_LC, RDOF_DT_VOICE, RDOF_DT_VOICE_LC_HEADER, RDOF_DT_VOICE_SYNC,
+};
+use crate::layer2::{rdof_group_lc, rdof_lc_burst, RDOF_DATA_XOR, RDOF_MS_VOICE};
+use crate::ambe::{rdof_ambe_decode_frame, rdof_ambe_encode_frame};
+use crate::bits::{get_field, set_field};
+use crate::mmdvm::rdof_silence_burst;
+use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
+
+extern "C" {
+    fn rdof_embedded_lc_encode(lc9: *const u8, raw128: *mut u8);
+}
+use crate::t3ms::{Ms, MsTx};
+use crate::t3rf::{BURST_BYTES, PDU_BAD, PDU_OK};
+use crate::t3site::{CARRIERS, VOICE_FRAME, VOICE_HEADER, VOICE_TERM};
+use crate::tracker::RdofBurst;
+
+pub const MS_MAX: usize = 64; // RDOF_T3SIM_MS
+pub const EXT: usize = 32; // RDOF_T3SIM_EXT
+
+const FAMILY_MS: u32 = 1; // RDOF_FAMILY_MS
+
+/// rdof_t3sim_fate_t
+pub const HEARD: u32 = 0;
+pub const COLLIDED: u32 = 1;
+pub const DROPPED: u32 = 2;
+
+use crate::t3rf::{rdof_t3rf_block_burst, rdof_t3rf_burst_block, rdof_t3rf_cach4, rdof_t3rf_rc_read};
+/// rdof_t3unit_t
+pub use crate::t3unit::Unit as T3unit;
+use crate::t3unit::{rdof_t3unit_at, rdof_t3unit_cfg, rdof_t3unit_run, rdof_t3unit_rx, rdof_t3unit_slc, rdof_t3unit_slot};
+
+/// rdof_t3sim_in_t
+#[repr(C)]
+pub struct SimIn {
+    pub ch: c_int,
+    pub b: RdofBurst,
+    pub fate: u32,
+    pub tag: *mut c_void,
+}
+
+/// rdof_t3sim_out_t
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SimOut {
+    pub aired: bool,
+    pub burst: [u8; BURST_BYTES],
+    pub dt: c_int,
+    pub cc: c_int,
+    pub pdu_ok: bool,
+    pub pdu: [u8; 10],
+    pub cach: [u8; 3],
+    pub pdu_ext: [u8; 2],
+    pub at: c_int,
+    pub blk: [u8; 24],
+}
+
+/// rdof_t3sim_t
+#[repr(C)]
+pub struct Sim {
+    pub u: *mut T3unit,
+    pub n: c_int,
+    pub ms: [*mut Ms; MS_MAX],
+    pub id: [u32; MS_MAX],
+    pub voice_n: [c_int; MS_MAX],
+    pub outside: u32,
+    pub outbound: Option<unsafe extern "C" fn(ctx: *mut c_void, c: c_int, k: i64, burst: *mut u8) -> bool>,
+    pub outbound_ctx: *mut c_void,
+    pub outside_in: u32,
+    pub inbound: Option<unsafe extern "C" fn(ctx: *mut c_void, c: c_int, k: i64, b: *const RdofBurst)>,
+    pub inbound_ctx: *mut c_void,
+    pub ext_in: Option<unsafe extern "C" fn(ctx: *mut c_void, k: i64, inp: *mut SimIn, max: c_int) -> c_int>,
+    pub ext_out: Option<
+        unsafe extern "C" fn(
+            ctx: *mut c_void,
+            k: i64,
+            out: *const SimOut,
+            ncar: c_int,
+            at_next: c_int,
+            inp: *const SimIn,
+            nin: c_int,
+        ),
+    >,
+    pub ext_ctx: *mut c_void,
+    pub slc: [i32; CARRIERS],
+    pub out_pdus: u32,
+    pub out_bad: u32,
+    pub in_pdus: u32,
+    pub in_voice: u32,
+    pub collisions: u32,
+    pub ext_in_n: u32,
+    pub ext_drop: u32,
+    pub out_rc: u32,
+}
+
+impl Sim {
+    fn mss(&self) -> usize {
+        (self.n.max(0) as usize).min(MS_MAX)
+    }
+}
+
+/// An MS's burst for tx (rdof_t3sim_ms_burst).
+/// The three AMBE+2 frames of a voice burst (bits 0-107 and 156-263), as one 216-bit run.
+fn ambe_frames(burst: &[u8], frames: &mut [u8; 27]) {
+    set_field(frames, 0, 64, get_field(burst, 0, 64));
+    set_field(frames, 64, 44, get_field(burst, 64, 44));
+    for k in 0..3 {
+        set_field(frames, 108 + 36 * k, 36, get_field(burst, 156 + 36 * k, 36));
+    }
+}
+
+/// A simulated MS's voice: the silence frame's parameters with a counter in the 8 lowest of the 49, FEC coded
+/// again. Near-silence that never repeats a frame: a radio may take a frame equal to the one before for a stale read.
+fn vary_ambe(burst: &mut [u8]) {
+    static COUNT: AtomicU32 = AtomicU32::new(0);
+    let mut frames = [0u8; 27];
+    ambe_frames(burst, &mut frames);
+    for frame in frames.as_chunks_mut::<9>().0 {
+        let mut p = [0u8; 49];
+        rdof_ambe_decode_frame(frame, Some(&mut p));
+        let c = COUNT.fetch_add(1, Ordering::Relaxed);
+        for (i, b) in p[41..].iter_mut().enumerate() {
+            *b ^= (c >> i & 1) as u8;
+        }
+        rdof_ambe_encode_frame(&p, frame);
+    }
+    set_field(burst, 0, 64, get_field(&frames, 0, 64));
+    set_field(burst, 64, 44, get_field(&frames, 64, 44));
+    for k in 0..3 {
+        set_field(burst, 156 + 36 * k, 36, get_field(&frames, 108 + 36 * k, 36));
+    }
+}
+
+/// Recorded voice for the simulated MSs (rdof_t3sim_ambe): raw 9-octet AMBE+2 frames (72 bits each, FEC coded as
+/// on air), played in a loop from the first at each call's header. Null: the near-silence of vary_ambe.
+static AMBE_SRC: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
+static AMBE_N: AtomicUsize = AtomicUsize::new(0);
+static AMBE_AT: AtomicUsize = AtomicUsize::new(0);
+
+/// The simulated MSs' voice from n frames at p (the caller keeps them); n 0: back to near-silence.
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3sim_ambe(p: *const u8, n: usize) {
+    AMBE_N.store(0, Ordering::Relaxed);
+    AMBE_SRC.store(if n > 0 { p.cast_mut() } else { core::ptr::null_mut() }, Ordering::Relaxed);
+    AMBE_AT.store(0, Ordering::Relaxed);
+    AMBE_N.store(n, Ordering::Relaxed);
+}
+
+/// A voice burst's three frames from the recording, when there is one.
+fn recorded_ambe(burst: &mut [u8]) -> bool {
+    let (p, n) = (AMBE_SRC.load(Ordering::Relaxed), AMBE_N.load(Ordering::Relaxed));
+    if p.is_null() || n == 0 {
+        return false;
+    }
+    let mut frames = [0u8; 27];
+    for f in 0..3 {
+        let i = AMBE_AT.fetch_add(1, Ordering::Relaxed) % n;
+        frames[f * 9..f * 9 + 9].copy_from_slice(unsafe { core::slice::from_raw_parts(p.add(i * 9), 9) });
+    }
+    set_field(burst, 0, 64, get_field(&frames, 0, 64));
+    set_field(burst, 64, 44, get_field(&frames, 64, 44));
+    for k in 0..3 {
+        set_field(burst, 156 + 36 * k, 36, get_field(&frames, 108 + 36 * k, 36));
+    }
+    true
+}
+
+fn ms_burst(tx: &MsTx, n: c_int, cc: c_int, b: &mut RdofBurst) -> bool {
+    unsafe { core::ptr::write_bytes(b as *mut RdofBurst, 0, 1) };
+    b.family = FAMILY_MS;
+    b.cc = cc;
+    b.slot = c_int::from(tx.ch & 1) + 1;
+    if tx.kind == 1 || tx.kind == 3 {
+        // a control block, or packet data (a data header, a rate 1/2, 3/4 or 1 block)
+        let mut blk = [0u8; 24];
+        blk[..10].copy_from_slice(&tx.pdu);
+        blk[10..].copy_from_slice(&tx.ext); // a data block's octets 10 on
+        if !unsafe { rdof_t3rf_block_burst(tx.dt.into(), blk.as_ptr(), cc, FAMILY_MS, &mut b.burst) } {
+            return false;
+        }
+        b.dt = tx.dt.into();
+        return true;
+    }
+    match tx.what {
+        VOICE_HEADER | VOICE_TERM => {
+            let dt = if tx.what == VOICE_HEADER { RDOF_DT_VOICE_LC_HEADER } else { RDOF_DT_TERMINATOR_WITH_LC };
+            let mut lc9 = [0u8; 9];
+            rdof_group_lc(tx.src, tx.dst, tx.group != 0, c_int::from(tx.so), &mut lc9);
+            rdof_lc_burst(&lc9, dt, cc, RDOF_MS_VOICE ^ RDOF_DATA_XOR, &mut b.burst);
+            if tx.what == VOICE_HEADER {
+                AMBE_AT.store(0, Ordering::Relaxed);
+            }
+            b.dt = dt;
+            true
+        }
+        VOICE_FRAME => {
+            let n = n.rem_euclid(6);
+            if (1..=4).contains(&n) {
+                // B-E carry the call's LC embedded (361-1 7.1.4), for a radio entering late
+                let mut lc9 = [0u8; 9];
+                rdof_group_lc(tx.src, tx.dst, tx.group != 0, c_int::from(tx.so), &mut lc9);
+                let mut raw = [0u8; 128];
+                unsafe {
+                    rdof_embedded_lc_encode(lc9.as_ptr(), raw.as_mut_ptr());
+                    rdof_silence_burst(n, cc, false, raw[(n as usize - 1) * 32..].as_ptr(), &mut b.burst);
+                }
+            } else {
+                unsafe { rdof_duplex_silence(n, cc, b.burst.as_mut_ptr()) };
+            }
+            if !recorded_ambe(&mut b.burst) {
+                vary_ambe(&mut b.burst);
+            }
+            b.dt = if n != 0 { RDOF_DT_VOICE } else { RDOF_DT_VOICE_SYNC };
+            b.n = n;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// What MS i sends, as its burst, its voice counter kept.
+fn sim_ms_burst(s: &mut Sim, i: usize, tx: &MsTx, cc: c_int, b: &mut RdofBurst) -> bool {
+    let n = s.voice_n[i];
+    if tx.kind == 2 && tx.what == VOICE_FRAME {
+        s.voice_n[i] = (n + 1) % 6;
+    } else if tx.kind == 2 {
+        s.voice_n[i] = 0;
+    }
+    ms_burst(tx, n, cc, b)
+}
+
+fn is_voice(dt: c_int) -> bool {
+    dt == RDOF_DT_VOICE || dt == RDOF_DT_VOICE_SYNC
+}
+
+fn slot(s: &mut Sim, k: i64, now_ms: i64) {
+    let u = s.u;
+    let cfg = unsafe { &*rdof_t3unit_cfg(u) };
+    let (ncar, cc) = (usize::from(cfg.ncarriers).min(CARRIERS), c_int::from(cfg.cc));
+    unsafe { rdof_t3unit_run(u, k, now_ms) };
+    let parity = (k & 1) as usize;
+
+    // the outbound of slot k, read back as an MS would
+    let mut dt = [0u8; CARRIERS];
+    let mut pdu = [[0u8; 24]; CARRIERS];
+    let mut out = [SimOut {
+        aired: false,
+        burst: [0; BURST_BYTES],
+        dt: -1,
+        cc: -1,
+        pdu_ok: false,
+        pdu: [0; 10],
+        cach: [0; 3],
+        pdu_ext: [0; 2],
+        at: 0,
+        blk: [0; 24],
+    }; CARRIERS];
+    for (c, o) in out.iter_mut().enumerate().take(ncar) {
+        let mut control = 0u8;
+        let (mut at, mut rdt, mut rcc): (c_int, c_int, c_int) = (-1, -1, -1);
+        let mut slc: i32 = -1;
+        o.aired = if s.outside >> c & 1 != 0 {
+            match s.outbound {
+                Some(f) => unsafe { f(s.outbound_ctx, c as c_int, k, o.burst.as_mut_ptr()) },
+                None => false,
+            }
+        } else {
+            unsafe { rdof_t3unit_slot(u, c as c_int, k, o.burst.as_mut_ptr(), &mut control, &mut at, &mut slc) }
+        };
+        // the CACH before slot k: the short LC changes on a 4-slot cycle's first
+        if k % 4 == 0 && slc >= 0 {
+            s.slc[c] = slc;
+        }
+        let mut at4: [c_int; 4] = [0; 4];
+        let mut c4 = [[0u8; 3]; 4];
+        o.at = c_int::from(at > 0);
+        at4[(k & 3) as usize] = o.at;
+        let slc28 = if s.slc[c] >= 0 { s.slc[c] as u32 } else { 0 };
+        rdof_t3rf_cach4(slc28, &at4, k & !3, &mut c4);
+        o.cach = c4[(k & 3) as usize];
+        if !o.aired {
+            continue;
+        }
+        let mut blk = [0u8; 24];
+        let r = rdof_t3rf_burst_block(&o.burst, &mut rdt, &mut rcc, &mut blk);
+        o.pdu.copy_from_slice(&blk[..10]);
+        o.pdu_ext = [blk[10], blk[11]];
+        o.blk = blk;
+        o.dt = rdt;
+        o.cc = rcc;
+        if r == PDU_OK {
+            s.out_pdus += 1;
+            o.pdu_ok = true;
+            dt[c] = rdt as u8;
+            pdu[c] = blk;
+        } else {
+            s.out_bad += u32::from(r == PDU_BAD);
+        }
+    }
+
+    // the inbound of slot k: what each MS sends, the site hears one burst a channel
+    let nms = s.mss();
+    let mut tx = [MsTx::default(); MS_MAX];
+    let mut has = [false; MS_MAX];
+    for i in 0..nms {
+        if let Some(t) = unsafe { (*s.ms[i]).tx(k, now_ms) } {
+            tx[i] = t;
+            has[i] = true;
+        }
+    }
+    let mut ext: [SimIn; EXT] = unsafe { core::mem::zeroed() };
+    let next = match s.ext_in {
+        Some(f) => unsafe { f(s.ext_ctx, k, ext.as_mut_ptr(), EXT as c_int) }.clamp(0, EXT as c_int) as usize,
+        None => 0,
+    };
+    for e in &mut ext[..next] {
+        s.ext_in_n += 1;
+        e.fate = HEARD;
+        if e.ch < 0 || (e.ch & 1) as usize != parity || (e.ch / 2) as usize >= ncar {
+            e.ch = -1;
+            e.fate = DROPPED;
+            s.ext_drop += 1;
+        }
+    }
+    for ch in (parity..2 * ncar).step_by(2) {
+        let chi = ch as c_int;
+        // offset timing (a duplex call): the MS's burst is in its carrier's other inbound slot
+        let on = |i: usize| has[i] && usize::from(tx[i].ch) ^ usize::from(tx[i].offset) == ch;
+        let first = (0..nms).find(|&i| on(i));
+        let count = (0..nms).filter(|&i| on(i)).count() + ext[..next].iter().filter(|e| e.ch == chi).count();
+        if count == 0 {
+            continue;
+        }
+        let mut b: RdofBurst = unsafe { core::mem::zeroed() };
+        let mut ok = false;
+        if let Some(first) = first {
+            ok = sim_ms_burst(s, first, &tx[first], cc, &mut b);
+            for (i, t) in tx.iter().enumerate().take(nms).skip(first + 1) {
+                // the others' voice counters move on as if heard
+                if on(i) {
+                    let mut other: RdofBurst = unsafe { core::mem::zeroed() };
+                    sim_ms_burst(s, i, t, cc, &mut other);
+                }
+            }
+        }
+        if !ok {
+            let Some(e) = ext[..next].iter().find(|e| e.ch == chi) else {
+                continue;
+            };
+            b = unsafe { core::ptr::read(&e.b) }; // plain data
+        }
+        b.slot = (chi & 1) + 1;
+        if count > 1 {
+            // a collision: the strongest is unreadable too (the site counts it)
+            s.collisions += 1;
+            for e in ext[..next].iter_mut().filter(|e| e.ch == chi) {
+                e.fate = COLLIDED;
+            }
+            for x in &mut b.burst[14..20] {
+                *x ^= 0x5A;
+            }
+        }
+        if is_voice(b.dt) || b.dt == RDOF_DT_VOICE_LC_HEADER || b.dt == RDOF_DT_TERMINATOR_WITH_LC {
+            s.in_voice += 1;
+        } else {
+            s.in_pdus += 1;
+        }
+        let c = chi / 2;
+        match s.inbound {
+            Some(f) if s.outside_in >> c & 1 != 0 => unsafe { f(s.inbound_ctx, c, k, &b) },
+            _ => unsafe { rdof_t3unit_rx(u, c, k, &b, -60) },
+        }
+    }
+
+    // the MSs hear slot k on the channel each is on
+    let at = unsafe { rdof_t3unit_at(u, k) };
+    for i in 0..nms {
+        let ms = unsafe { &mut *s.ms[i] };
+        let ch = usize::from(ms.status().ch);
+        if ch & 1 != parity || ch / 2 >= ncar {
+            continue;
+        }
+        let slc = unsafe { rdof_t3unit_slc(u, (ch / 2) as c_int, k) };
+        if slc >= 0 {
+            ms.slc(ch / 2, slc as u32); // its carrier's CACH (a composite TSCC's P_SYS_Parms)
+        }
+        ms.rx_block(ch, k, dt[ch / 2], &pdu[ch / 2], ch == 0 && at > 0);
+    }
+    // a Reverse Channel PDU in slot k is for the talker on its carrier's other slot (361-1 5.1.5)
+    for (c, o) in out.iter().enumerate().take(ncar) {
+        let info = if o.aired { rdof_t3rf_rc_read(&o.burst) } else { -1 };
+        if info < 0 {
+            continue;
+        }
+        s.out_rc += 1;
+        let ch = 2 * c + (parity ^ 1);
+        for i in 0..nms {
+            let ms = unsafe { &mut *s.ms[i] };
+            ms.rc(ch, info as u8);
+        }
+    }
+    if let Some(f) = s.ext_out {
+        unsafe { f(s.ext_ctx, k, out.as_ptr(), ncar as c_int, at, ext.as_ptr(), next as c_int) };
+    }
+}
+
+// ── C API (rdof/t3sim.h) ──────────────────────────────────────────────────────
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3sim_init(s: *mut Sim, u: *mut T3unit, n: c_int, ms: *const *mut Ms, id: *const u32) {
+    core::ptr::write_bytes(s, 0, 1);
+    let s = &mut *s;
+    s.u = u;
+    s.n = n.min(MS_MAX as c_int);
+    s.slc = [-1; CARRIERS];
+    for i in 0..s.mss() {
+        s.ms[i] = *ms.add(i);
+        s.id[i] = *id.add(i);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3sim_slot(s: *mut Sim, k: i64, now_ms: i64) {
+    slot(&mut *s, k, now_ms);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3sim_ms_burst(tx: *const MsTx, n: c_int, cc: c_int, b: *mut RdofBurst) -> bool {
+    ms_burst(&*tx, n, cc, &mut *b)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_t3sim_find(s: *const Sim, id: u32) -> c_int {
+    let s = &*s;
+    s.id[..s.mss()].iter().position(|&x| x == id).map_or(-1, |i| i as c_int)
+}
+
+// ── layouts (rdof_t3sim_layout) ───────────────────────────────────────────────
+
+pub use crate::t3site::Layout;
+
+macro_rules! layout {
+    ($name:literal, $t:ty) => {
+        Layout {
+            name: concat!($name, "\0").as_ptr().cast(),
+            size: core::mem::size_of::<$t>(),
+            align: core::mem::align_of::<$t>(),
+        }
+    };
+}
+
+static LAYOUTS: [Layout; 4] = [
+    layout!("rdof_t3sim_in_t", SimIn),
+    layout!("rdof_t3sim_out_t", SimOut),
+    layout!("rdof_t3sim_t", Sim),
+    Layout { name: core::ptr::null(), size: 0, align: 0 },
+];
+
+#[no_mangle]
+pub extern "C" fn rdof_t3sim_layout(i: usize) -> *const Layout {
+    LAYOUTS.get(i).map_or(core::ptr::null(), |l| l as *const Layout)
+}
+
+

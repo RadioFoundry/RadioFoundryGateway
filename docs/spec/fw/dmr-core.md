@@ -185,13 +185,13 @@ Decode (`layer2.c:rdof_golay2087_decode`, `rdof_qr1676_decode`): tables of all 2
 | Point → 2 dibits (B.9) | `2 A 7 F E 6 B 3 D 5 8 0 1 9 4 C` (first dibit high) |
 | Dibits | 98; interleave (B.7): dibit i sent at position `INTERLEAVE[i]` |
 | Info bits | 196 = 98 dibits |
-| Decode | hard-decision Viterbi, branch metric = Hamming distance of the 4 bits, path must end in state 0 |
+| Decode | hard-decision Viterbi, branch metric = Hamming distance of the 4 bits, path starts and ends in state 0. `rdof_trellis34_decode_block` (the data block decoders' call) decodes again from any start state when octets 0-1 fail the CRC-9 and takes that if they pass and its metric is at least 2 lower (one wrong point): a radio heard on air started its encoder in state 4 or 7, and only its first point was off. An unconfirmed block has no CRC-9 and passes it by chance 1 time in 512; a swap that saves less was wrong nearly every time |
 
 B.7 interleave: `0 1 8 9 16 17 24 25 32 33 40 41 48 49 56 57 64 65 72 73 80 81 88 89 96 97 2 3 10 11 18 19 26 27 34 35 42 43 50 51 58 59 66 67 74 75 82 83 90 91 4 5 12 13 20 21 28 29 36 37 44 45 52 53 60 61 68 69 76 77 84 85 92 93 6 7 14 15 22 23 30 31 38 39 46 47 54 55 62 63 70 71 78 79 86 87 94 95`.
 
 B.8 (row = state): `0 8 4 12 2 10 6 14 | 4 12 2 10 6 14 0 8 | 1 9 5 13 3 11 7 15 | 5 13 3 11 7 15 1 9 | 3 11 7 15 1 9 5 13 | 7 15 1 9 5 13 3 11 | 2 10 6 14 0 8 4 12 | 6 14 0 8 4 12 2 10`.
 
-`fec.c:rdof_trellis34_decode(burst, out18)` returns the best path metric (0 = clean); `rdof_trellis34_encode(payload18, info196)`.
+`fec.c:rdof_trellis34_decode(burst, out18)` returns the best path metric (0 = clean), `rdof_trellis34_decode_block` the same; `rdof_trellis34_encode(payload18, info196)`.
 
 ### 5.6 Rate 1 (`-1` B.2.5, table B.10)
 
@@ -293,7 +293,7 @@ Talker alias text is not decoded; the raw `ta_bits` are left to a subscriber.
 | DT | Payload | `fec_ok` |
 |---|---|---|
 | 7 rate 1/2 | 12 bytes, BPTC | BPTC clean |
-| 8 rate 3/4 | 18 bytes, trellis | metric == 0 (`errors` = metric) |
+| 8 rate 3/4 | 18 bytes, trellis | always true (`errors` = metric; CRC-9 and CRC-32 decide) |
 | 10 rate 1 | 24 bytes | always true |
 
 Confirmed blocks (`rdof_split_confirmed`): DBSN = payload bits 0–6, CRC-9 = bits 7–15, body = payload[2..len−1]; CRC-9 checked with the rate's mask (§5.8). The last block of a packet ends with the CRC-32 (little endian) over all user data and pad octets.

@@ -290,6 +290,10 @@ size_t rdof_mn_record_json(const rdof_mn_record_t *r, char *out, size_t cap)
         rdof_json_int(&j, "sub", r->sub);
     if (r->area >= 0)
         rdof_json_int(&j, "area", r->area);
+    if (r->ps_rq > 0) {
+        rdof_json_int(&j, "ps_rq", r->ps_rq);
+        rdof_json_int(&j, "ps_off", r->ps_off);
+    }
     rdof_json_close(&j);
     return rdof_json_done(&j) ? j.len : 0;
 }
@@ -326,6 +330,9 @@ bool rdof_mn_record_parse(const char *json, size_t len, rdof_mn_record_t *r, cha
         r->sub = (uint32_t)v;
     if (jint(jget(&P, root, "area"), 0, 1 << 16, &v))
         r->area = (int)v;
+    long off;
+    if (jint(jget(&P, root, "ps_rq"), 1, 7, &v) && jint(jget(&P, root, "ps_off"), 1, 127, &off) && off < 1L << v)
+        r->ps_rq = (int)v, r->ps_off = (int)off;
     return true;
 }
 
@@ -428,6 +435,13 @@ size_t rdof_mn_status_json(const rdof_mn_status_t *s, char *out, size_t cap)
         rdof_json_int(&j, "refused", tr->refused);
         rdof_json_int(&j, "queued", tr->queued);
         rdof_json_close(&j);
+        if (tr->composite) {
+            rdof_json_open(&j, "composite");
+            rdof_json_int(&j, "lends", tr->lends);
+            rdof_json_float3(&j, "lent_s", tr->lent_s);
+            rdof_json_float3(&j, "lent_max_s", tr->lent_max_s);
+            rdof_json_close(&j);
+        }
         rdof_json_close(&j);
     }
     rdof_json_close(&j);
@@ -481,6 +495,7 @@ size_t rdof_mn_trunk_info_json(const rdof_mn_trunk_info_t *t, char *out, size_t 
     s[k] = 0;
     rdof_json_raw(&j, "services", s);
     rdof_json_bool(&j, "reg", t->reg);
+    rdof_json_int(&j, "priority", t->priority);
     rdof_json_close(&j);
     return rdof_json_done(&j) ? j.len : 0;
 }
@@ -819,6 +834,24 @@ static bool tg_from(const jp_t *p, int root, rdof_mn_tg_cfg_t *o, char *note, si
     return true;
 }
 
+/* n bytes from exactly 2n hex digits */
+static bool hex_bytes(const char *s, uint8_t *out, size_t n)
+{
+    if (strlen(s) != 2 * n)
+        return false;
+    for (size_t i = 0; i < 2 * n; i++) {
+        const char c = s[i];
+        const int v = c >= '0' && c <= '9'   ? c - '0'
+                      : c >= 'a' && c <= 'f' ? c - 'a' + 10
+                      : c >= 'A' && c <= 'F' ? c - 'A' + 10
+                                             : -1;
+        if (v < 0)
+            return false;
+        out[i / 2] = (uint8_t)(i % 2 ? out[i / 2] | v : v << 4);
+    }
+    return true;
+}
+
 static bool ms_from(const jp_t *p, int root, rdof_mn_ms_cfg_t *o, char *note, size_t ncap, char *err, size_t cap)
 {
     const uint32_t id = o->id;
@@ -861,6 +894,21 @@ static bool ms_from(const jp_t *p, int root, rdof_mn_ms_cfg_t *o, char *note, si
                 return false;
             }
             o->priority = (int)v;
+        } else if (!strcmp(n->key, "auth_k")) {
+            /* the error never quotes the value: it is a secret */
+            if (n->type != RDOF_JSTR || !hex_bytes(n->str, o->key, sizeof o->key)) {
+                seterr(err, cap, "auth_k: 32 hex digits");
+                return false;
+            }
+            o->has_key = true;
+        } else if (!strcmp(n->key, "psn")) {
+            uint8_t b[3];
+            if (n->type != RDOF_JSTR || !hex_bytes(n->str, b, sizeof b)) {
+                seterr(err, cap, "psn: 6 hex digits");
+                return false;
+            }
+            o->psn = (uint32_t)b[0] << 16 | (uint32_t)b[1] << 8 | b[2];
+            o->has_psn = true;
         } else if (!strcmp(n->key, "tg")) {
             char ie[64];
             if (!jids(p, k, o->tg, RDOF_MN_REC_TG, &o->ntg, ie, sizeof ie)) {
@@ -1201,6 +1249,17 @@ static size_t ms_json(const rdof_mn_ms_cfg_t *m, char *out, size_t cap)
     rdof_json_bool(&j, "emergency", m->emergency);
     rdof_json_int(&j, "priority", m->priority);
     ids_raw(&j, "tg", m->tg, m->ntg);
+    if (m->has_key) { /* the cache is local: the key has to survive a restart without the network */
+        char h[33];
+        for (size_t i = 0; i < sizeof m->key; i++)
+            snprintf(h + 2 * i, 3, "%02x", m->key[i]);
+        rdof_json_str(&j, "auth_k", h);
+    }
+    if (m->has_psn) {
+        char h[7];
+        snprintf(h, sizeof h, "%06lx", (unsigned long)(m->psn & 0xFFFFFF));
+        rdof_json_str(&j, "psn", h);
+    }
     rdof_json_close(&j);
     return rdof_json_done(&j) ? j.len : 0;
 }
@@ -1255,7 +1314,11 @@ bool rdof_mn_cmd_parse(const char *json, size_t len, rdof_mn_cmd_t *c, char *err
         rdof_mn_cmd_kind_t kind;
     } cmds[] = {{"deregister", RDOF_MN_CMD_DEREGISTER},   {"clear", RDOF_MN_CMD_CLEAR},
                 {"withdraw", RDOF_MN_CMD_WITHDRAW},       {"restore", RDOF_MN_CMD_RESTORE},
-                {"resend_records", RDOF_MN_CMD_RESEND_RECORDS}, {"status", RDOF_MN_CMD_STATUS}};
+                {"resend_records", RDOF_MN_CMD_RESEND_RECORDS}, {"status", RDOF_MN_CMD_STATUS},
+                {"mass_reg", RDOF_MN_CMD_MASS_REG}, {"move", RDOF_MN_CMD_MOVE},
+                {"auth", RDOF_MN_CMD_AUTH}, {"stun", RDOF_MN_CMD_STUN}, {"revive", RDOF_MN_CMD_REVIVE},
+                {"dgna", RDOF_MN_CMD_DGNA}, {"kill", RDOF_MN_CMD_KILL}, {"radio_check", RDOF_MN_CMD_RADIO_CHECK},
+                {"clear_ms", RDOF_MN_CMD_CLEAR_MS}};
     memset(c, 0, sizeof *c);
     c->chan = c->lcn = -1;
     const int root = jp_parse(&P, json, len, err, cap);
@@ -1280,8 +1343,39 @@ bool rdof_mn_cmd_parse(const char *json, size_t len, rdof_mn_cmd_t *c, char *err
     switch (c->cmd) {
     case RDOF_MN_CMD_UNKNOWN: seterr(err, cap, "unknown command"); return false;
     case RDOF_MN_CMD_DEREGISTER:
+    case RDOF_MN_CMD_AUTH:
+    case RDOF_MN_CMD_STUN:
+    case RDOF_MN_CMD_REVIVE:
+    case RDOF_MN_CMD_KILL:
+    case RDOF_MN_CMD_DGNA:
         if (!jint(jget(&P, root, "ms"), 1, RDOF_ID_MAX, &v)) {
             seterr(err, cap, "ms: 1 to 16777215");
+            return false;
+        }
+        c->ms = (uint32_t)v;
+        if (c->cmd == RDOF_MN_CMD_DGNA) { /* tg: up to 15 talkgroups, [] clears them */
+            const int tg = rdof_jget(&P.doc, root, "tg");
+            if (tg < 0 || rdof_jnode(&P.doc, tg)->type != RDOF_JARR || rdof_jnode(&P.doc, tg)->count > 15) {
+                seterr(err, cap, "tg: a list of up to 15 talkgroups");
+                return false;
+            }
+            if (!jids(&P, tg, c->tg, 15, &c->ntg, err, cap))
+                return false;
+        }
+        break;
+    case RDOF_MN_CMD_RADIO_CHECK: /* an MS, or a talkgroup */
+    case RDOF_MN_CMD_CLEAR_MS:
+        if (jget(&P, root, "tg")) {
+            if (!jint(jget(&P, root, "tg"), 1, RDOF_ID_MAX, &v)) {
+                seterr(err, cap, "tg: 1 to 16777215");
+                return false;
+            }
+            c->tg[0] = (uint32_t)v;
+            c->ntg = 1;
+            break;
+        }
+        if (!jint(jget(&P, root, "ms"), 1, RDOF_ID_MAX, &v)) {
+            seterr(err, cap, "ms or tg: 1 to 16777215");
             return false;
         }
         c->ms = (uint32_t)v;
@@ -1298,7 +1392,37 @@ bool rdof_mn_cmd_parse(const char *json, size_t len, rdof_mn_cmd_t *c, char *err
         }
         c->lcn = (int)v;
         break;
+    case RDOF_MN_CMD_MASS_REG:
+        if (!jint(jget(&P, root, "window_s"), 0, 200000, &v)) {
+            seterr(err, cap, "window_s: 0 to 200000");
+            return false;
+        }
+        c->window_s = (uint32_t)v;
+        break;
+    case RDOF_MN_CMD_MOVE: /* to a TSCC by its chan, or to an adjacent site's by its C_SYScode */
+        if (jget(&P, root, "site")) {
+            if (!jint(jget(&P, root, "site"), 1, 0xFFFF, &v)) {
+                seterr(err, cap, "site: an adjacent site's C_SYScode, 1 to 65535");
+                return false;
+            }
+            c->syscode = (uint32_t)v;
+            break;
+        }
+        if (!jint(jget(&P, root, "chan"), 1, 4094, &v)) {
+            seterr(err, cap, "chan: 1 to 4094, or site");
+            return false;
+        }
+        c->chan = (int)v;
+        break;
     default: break;
+    }
+    /* mass_reg and move: one MS, or all without it */
+    if ((c->cmd == RDOF_MN_CMD_MASS_REG || c->cmd == RDOF_MN_CMD_MOVE) && jget(&P, root, "ms")) {
+        if (!jint(jget(&P, root, "ms"), 1, RDOF_ID_MAX, &v)) {
+            seterr(err, cap, "ms: 1 to 16777215");
+            return false;
+        }
+        c->ms = (uint32_t)v;
     }
     return true;
 }
