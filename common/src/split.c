@@ -570,7 +570,6 @@ static void done(rdof_split_t *s, int which, const rdof_split_req_t *r, bool ok,
         if (which == RDOF_SPLIT_RX && s->rx_meta && (h->caps & RDOF_OPS_RX_META)) {
             p[RDOF_OPS_ROLE_OPTIONS_AT] = 1; /* RX_META events */
             len = 8;
-            s->rx_meta_on = true;
         }
         split_req(s, which, RDOF_SPLIT_SET_ROLE, p, len, RDOF_SPLIT_DONE_ROLE, 0, now);
         break;
@@ -583,6 +582,8 @@ static void done(rdof_split_t *s, int which, const rdof_split_req_t *r, bool ok,
         }
         if (which == RDOF_SPLIT_TX)
             s->tx_role = true;
+        else if (s->rx_meta && (h->caps & RDOF_OPS_RX_META))
+            s->rx_meta_on = true; /* asked for in SET_ROLE, and taken */
         time_req(s, which, now);
         break;
     case RDOF_SPLIT_DONE_TIME: {

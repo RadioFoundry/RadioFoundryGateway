@@ -291,6 +291,7 @@ static void site(bool meta)
     pump();
     run(3.0);
     const rdof_split_t *sp = rdof_t3split_split(&S.ts);
+    CHECK(sp->rx_meta_on == meta, "%s: RX_META on once the RX half took its role (%d)", name, sp->rx_meta_on);
     CHECK(rdof_split_sched_ok(sp) && rdof_split_has_cach(sp), "%s: scheduled on UTC with the CACH (align %s)", name,
           rdof_align_state_name(sp->align_state));
     CHECK(S.f[RXR].has_epoch, "%s: the RX half has the TX half's epoch", name);
