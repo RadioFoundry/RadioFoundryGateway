@@ -959,6 +959,13 @@ static void t_ip_payload(void)
     m = rdof_ipgw_udp_datagram(RADIO_IP, 4005, IP(10, 0, 0, 1), 4001, 3, (const uint8_t *)"hi", 2, back, sizeof back);
     rdof_ipgw_from_net(g, f.last_flow, IP(198, 51, 100, 7), 7000, back, m, 14.0);
     CHECK(f.dmr == 2 && g->n.down_own_source == 2, "from the radio's own address: %u", g->n.down_own_source);
+    /* max_bytes raised for the uplink: down is still rate 1/2, RDOF_IPGW_MAX_PACKET at most (the scratch's size) */
+    g->cfg.max_bytes = RDOF_IPGW_MAX_UP;
+    static uint8_t pl[RDOF_IPGW_MAX_UP], huge[RDOF_IPGW_MAX_UP + 32];
+    const uint32_t too_big = g->n.down_too_big;
+    m = rdof_ipgw_udp_datagram(IP(13, 0, 0, 1), 4005, IP(12, 0, 0, 77), 4001, 3, pl, 2500 - 28, huge, sizeof huge);
+    rdof_ipgw_from_net(g, f.last_flow, IP(198, 51, 100, 7), 7000, huge, m, 15.0);
+    CHECK(m == 2500 && f.dmr == 2 && g->n.down_too_big == too_big + 1, "2500 octets down: too big");
     free(g);
 }
 

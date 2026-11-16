@@ -651,10 +651,17 @@ void rdof_ipgw_burst(rdof_ipgw_t *g, const rdof_ipgw_where_t *w, int dt, const u
 
 /* ── network to radio ──────────────────────────────────────────────────────── */
 
+/* The longest datagram down: max_bytes (which may allow up to RDOF_IPGW_MAX_UP, for uplink), at most
+ * RDOF_IPGW_MAX_PACKET (rate 1/2 only down; g->scratch holds no more). */
+static size_t down_max(const rdof_ipgw_t *g)
+{
+    return g->cfg.max_bytes < RDOF_IPGW_MAX_PACKET ? (size_t)g->cfg.max_bytes : RDOF_IPGW_MAX_PACKET;
+}
+
 /* d (n octets, in g->scratch) down to radio on flow f: the TTL, the rate, the size, then the packet. */
 static void send_down(rdof_ipgw_t *g, rdof_ipgw_flow_t *f, uint32_t radio, uint8_t *d, size_t n, double now)
 {
-    if (n > (size_t)g->cfg.max_bytes) {
+    if (n > down_max(g)) {
         g->n.down_too_big++;
         return;
     }
@@ -720,7 +727,7 @@ void rdof_ipgw_from_net(rdof_ipgw_t *g, int fi, uint32_t ip, uint16_t port, cons
     size_t n;
     uint32_t radio = f->radio;
     if (f->payload == RDOF_IPGW_PAYLOAD_UDP) {
-        if (28 + len > (size_t)g->cfg.max_bytes) {
+        if (28 + len > down_max(g)) {
             g->n.down_too_big++;
             return;
         }
@@ -732,7 +739,7 @@ void rdof_ipgw_from_net(rdof_ipgw_t *g, int fi, uint32_t ip, uint16_t port, cons
             return;
         }
         n = be16(data + 2);
-        if (n > (size_t)g->cfg.max_bytes) {
+        if (n > down_max(g)) {
             g->n.down_too_big++;
             return;
         }
