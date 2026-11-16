@@ -16,7 +16,7 @@ RDOF, FAKE = sys.argv[1], sys.argv[2]
 
 
 class Rig:
-    def __init__(self, duplex, description=None, tx="438.6"):
+    def __init__(self, duplex, description=None, tx="438.6", extra=(), cc="1"):
         self.d = tempfile.mkdtemp(prefix="rdof-mmdvm-")
         self.path = os.path.join(self.d, "path")
         self.log = os.path.join(self.d, "modem.log")
@@ -30,8 +30,8 @@ class Rig:
             time.sleep(0.05)
         self.err = open(os.path.join(self.d, "rdofradio.err"), "w+")
         self.radio = subprocess.Popen(
-            [RDOF, "--allow-tx", "--mmdvm", open(self.path).read().strip(), "--sim-sdr", "-r", "240000",
-             "--rx", "438.5", "--tx", tx, "--duplex", duplex, "--cc", "1", "--bench", "127.0.0.1:0",
+            [RDOF, "--allow-tx", "--mmdvm", open(self.path).read().strip(), "--sim-sdr", *extra, "-r", "240000",
+             "--rx", "438.5", "--tx", tx, "--duplex", duplex, "--cc", cc, "--bench", "127.0.0.1:0",
              "--bench-tx", "438.6,438.5", "--seconds", "80"],
             stderr=self.err, stdout=subprocess.DEVNULL)
         self.port = None
@@ -246,6 +246,53 @@ finally:
     if r.radio.poll() is None:
         r.radio.terminate()
         r.radio.wait(5)
+
+
+def dmr_bursts_cu8(path, rate, offset_hz, raw_hex, n):
+    """n copies of one burst as an MS sends them (27.5 ms of 4FSK in a 30 ms carrier, one every 60 ms), offset_hz
+    from the recording's center, as cu8 at rate. Returns where each carrier rises, in samples."""
+    import cmath
+    import math
+    sps = rate / 4800.0
+    dibit = {0b01: 3, 0b00: 1, 0b10: -1, 0b11: -3}
+    raw = bytes.fromhex(raw_hex)
+    sym = [dibit[(raw[i // 4] >> (6 - 2 * (i % 4))) & 3] for i in range(132)]
+    lead, period, car = int(0.2 * rate), int(0.06 * rate), int(0.03 * rate)
+    total = lead + n * period + int(0.2 * rate)
+    out, ups, ph = bytearray(2 * total), [], 0.0
+    for i in range(total):
+        k, at = divmod(i - lead, period)
+        on = i >= lead and k < n and at < car
+        if on and at == 0:
+            ups.append(i)
+        f = offset_hz
+        s = (at - 0.00125 * rate) / sps if on else -1
+        if 0 <= s < 132:
+            f += 648.0 * sym[int(s)]
+        ph += 2 * math.pi * f / rate
+        z = 60 * cmath.exp(1j * ph) if on else 0
+        out[2 * i] = max(0, min(255, round(z.real + 127.5)))
+        out[2 * i + 1] = max(0, min(255, round(z.imag + 127.5)))
+    open(path, "wb").write(out)
+    return ups
+
+
+# the carrier's envelope and the bursts on one timeline in MMDVM mode, where the modem's bring-up reads the stream
+# before the bench starts: each keyed segment holds its burst, none of its carrier unexplained (it was the
+# bring-up's length apart, so 10 to 20 ms of each burst read as carrier no burst explains)
+d = tempfile.mkdtemp(prefix="rdof-env-")
+iq = os.path.join(d, "ms.cu8")
+dmr_bursts_cu8(iq, 240000, -50000, "0414038a1abc0fa07820d901087d5d7f77fd7578985814e81d70b880d4c11f02bd", 20)
+r = Rig("full", DUAL, extra=("--sim-iq", iq + ":438.55"), cc="2")
+try:
+    out = r.ask({"op": "bursts", "freq": 438.5, "seconds": 2.5, "cc": 2, "envelope": True}, 6)
+    segs = [x["segment"] for x in out if "segment" in x and x["segment"].get("down_ms") is not None]
+    bursts = [x for x in out if "burst" in x]
+    check(len(bursts) >= 10 and len(segs) >= 10, f"bursts and segments: {len(bursts)}, {len(segs)}: {out[-1:]}")
+    bad = [s for s in segs if s.get("bursts") != 1 or (s.get("unexplained_ms") or 0) > 3]
+    check(not bad, f"segments without their burst: {bad[:2]}")
+finally:
+    r.stop()
 
 print(f"{checks} checks, {failures} failures")
 sys.exit(1 if failures else 0)
