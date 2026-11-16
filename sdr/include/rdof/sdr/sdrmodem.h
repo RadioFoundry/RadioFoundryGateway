@@ -351,9 +351,9 @@ int rdof_sdrmodem_at(const rdof_sdrmodem_t *m);
 int rdof_sdrmodem_label(rdof_sdrmodem_t *m, int64_t pos48);
 /* Duplex repeater, keyed: the inbound slot (1, 2) of a handheld's burst by its timing; 0 for any other burst. */
 int rdof_sdrmodem_inbound(rdof_sdrmodem_t *m, const rdof_sdr_burst_t *sb);
-/* The same burst's outbound slot k, as the slot source counts it (the UTC grid's n when placed on it); -1 for any
- * other burst. A trunked site gives it to the controller (rdof_t3unit_rx). */
-int64_t rdof_sdrmodem_inbound_k(rdof_sdrmodem_t *m, const rdof_sdr_burst_t *sb);
+/* The same burst's outbound slot k, as the slot source counts it (the UTC grid's n when placed on it; off it, a burst
+ * just before slot 0 is -1); false for any other burst. A trunked site gives it to the controller (rdof_t3unit_rx). */
+bool rdof_sdrmodem_inbound_k(rdof_sdrmodem_t *m, const rdof_sdr_burst_t *sb, int64_t *k);
 /* Duplex: the inbound slots busy now (bit 0 TS1, bit 1 TS2), what the CACH's AT bits say. */
 int rdof_sdrmodem_busy(const rdof_sdrmodem_t *m);
 /* Duplex: the 3 CACH bytes (24 bits, first on air in the top bit of byte 0) before outbound slot k (k even: TS1). */

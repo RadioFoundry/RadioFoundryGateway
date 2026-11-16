@@ -2748,9 +2748,10 @@ void rdofradio_t3_heard(int c, const rdof_sdr_burst_t *b)
         return;
     }
     if (c == A.chan) {
-        const int64_t k = M ? rdof_sdrmodem_inbound_k(M, b) : -1;
+        int64_t k;
+        const bool in = M && rdof_sdrmodem_inbound_k(M, b, &k);
         pthread_mutex_lock(&T.mu);
-        if (k >= 0 && A.s.placed)
+        if (in && A.s.placed)
             rdof_t3unit_rx(T.u, 0, k + A.s.d, &b->b, 0);
         pthread_mutex_unlock(&T.mu);
     }
@@ -2759,9 +2760,10 @@ void rdofradio_t3_heard(int c, const rdof_sdr_burst_t *b)
         if (!x->on || c != x->chan)
             continue;
         rdof_sdrmodem_heard(&x->m, c, b); /* its inbound's busy state: the AT in its CACH */
-        const int64_t k = rdof_sdrmodem_inbound_k(&x->m, b);
+        int64_t k;
+        const bool in = rdof_sdrmodem_inbound_k(&x->m, b, &k);
         pthread_mutex_lock(&T.mu);
-        if (k >= 0 && x->s.placed) {
+        if (in && x->s.placed) {
             rdof_t3unit_rx(T.u, x->c - 1, k + x->s.d, &b->b, 0);
             x->heard++;
             if (T.o.verbose)

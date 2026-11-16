@@ -820,6 +820,24 @@ static void test_split_tx_solo(void)
     solo_pull(&m, m.cool_until48 + 48);
     rdof_sdrmodem_write(&m, (uint8_t[]){0xE0, 0x04, RDOF_MMDVM_DMR_START, 1}, 4);
     CHECK(m.keyed, "keyed again after it");
+    /* a handheld's burst by its timing: off the UTC grid a burst just before slot 0 is k -1, TS2 (as an MMDVM labels
+     * it), not "no slot" */
+    {
+        rdof_sdr_burst_t ib = {0};
+        ib.b.family = RDOF_FAMILY_MS;
+        ib.position = solo_now;
+        const int role = m.role;
+        m.role = 0; /* a duplex repeater's, not a split TX half's */
+        int64_t k0 = 0, k;
+        const bool in0 = rdof_sdrmodem_inbound_k(&m, &ib, &k0);
+        CHECK(!m.grid_placed && m.slot_k >= 0 && in0 && k0 >= 0, "inbound k %lld", (long long)k0);
+        ib.position -= (k0 + 1) * 1440;
+        CHECK(rdof_sdrmodem_inbound_k(&m, &ib, &k) && k == -1 && rdof_sdrmodem_inbound(&m, &ib) == 2,
+              "just before slot 0: k %lld, TS%d", (long long)k, rdof_sdrmodem_inbound(&m, &ib));
+        ib.b.family = RDOF_FAMILY_BS;
+        CHECK(!rdof_sdrmodem_inbound_k(&m, &ib, &k) && rdof_sdrmodem_inbound(&m, &ib) == 0, "not a handheld's: none");
+        m.role = role;
+    }
     /* a retune restarts the slot clock */
     uint8_t fq[9] = {0};
     rdof_sdrmodem_write(&m, f, rdof_mmdvm_frame(RDOF_MMDVM_SET_FREQ, fq, sizeof fq, f, sizeof f));
@@ -2243,8 +2261,8 @@ static void test_two_carriers(void)
             int agree = 0;
             for (int i = 0; i < 8; i++) {
                 ib.position = rx.samples * 48000 / fs - 20000 + i * 1440;
-                const int64_t k1 = rdof_sdrmodem_inbound_k(&m1, &ib), k2 = rdof_sdrmodem_inbound_k(&m2, &ib);
-                agree += k1 >= 0 && k1 == k2;
+                int64_t k1, k2;
+                agree += rdof_sdrmodem_inbound_k(&m1, &ib, &k1) && rdof_sdrmodem_inbound_k(&m2, &ib, &k2) && k1 == k2;
             }
             CHECK(agree == 8, "inbound bursts: %d of 8 on the same k", agree);
             printf("two carriers: %d and %d blocks, each at %.2f / %.2f dB to one alone, peak |x|^2 %.4f (one alone %.4f)\n",

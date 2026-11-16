@@ -1028,26 +1028,28 @@ static bool data_over(rdof_sdrmodem_t *m, int i, const rdof_burst_t *b)
 /* Duplex, keyed: a handheld's burst (MS sync, no CACH) is in the inbound slot its timing against our outbound says:
  * a duplex repeater's inbound TSx is under its outbound TSx, as an MMDVM labels it (measured with a handheld on a
  * 5 MHz split, 2026-10-27). The 1-2 crossover is a single frequency repeater's only. */
-int64_t rdof_sdrmodem_inbound_k(rdof_sdrmodem_t *m, const rdof_sdr_burst_t *sb)
+bool rdof_sdrmodem_inbound_k(rdof_sdrmodem_t *m, const rdof_sdr_burst_t *sb, int64_t *k_out)
 {
 #if RDOF_FEATURE_REPEATER
     if (m->duplex && !m->role && m->keyed && m->slot_k >= 0 && sb->b.family == RDOF_FAMILY_MS) {
         const double slot48 = (double)rdof_mod_slot_samples(&m->mod) * 48000 / m->tx_fs;
         const double dt = (double)(sb->position - heard_at(m, m->base)) - SLOT_GUARD_US * 48 / 1000;
-        const int64_t k = (int64_t)floor(dt / slot48 + 0.5); /* outbound slot k: even TS1 */
+        const int64_t k = (int64_t)floor(dt / slot48 + 0.5); /* outbound slot k: even TS1; -1 and less before base */
         m->inbound_off = dt / slot48 - (double)k;
-        return m->grid_placed ? m->grid_n0 + k : k;
+        *k_out = m->grid_placed ? m->grid_n0 + k : k;
+        return true;
     }
 #else
     (void)m, (void)sb;
 #endif
-    return -1;
+    *k_out = 0;
+    return false;
 }
 
 int rdof_sdrmodem_inbound(rdof_sdrmodem_t *m, const rdof_sdr_burst_t *sb)
 {
-    const int64_t k = rdof_sdrmodem_inbound_k(m, sb);
-    return k < 0 ? 0 : (int)(k & 1) + 1;
+    int64_t k;
+    return rdof_sdrmodem_inbound_k(m, sb, &k) ? (int)(k & 1) + 1 : 0;
 }
 
 void rdof_sdrmodem_heard(rdof_sdrmodem_t *m, int channel, const rdof_sdr_burst_t *sb)
