@@ -941,6 +941,20 @@ come in the request (8192 at most), else the worst any symbols could reach, capp
 large: at 1800 Hz random symbols reach about 4400 Hz and the worst about 4600, over a W12's 4064 Hz, so a streamed
 C4FM job on a W12 needs `clip_hz` 4064 (the report counts the samples cut; rare on real traffic).
 
+Open-ended (`stream: true`): the symbols come after the request line for as long as the client sends them, up to
+`seconds` (required: the keying's ceiling, plus 2 s for the first symbols, within the platform's `max_key_s`). The
+gateway holds `ahead_s` of them (0.25) and reads no more, so it paces the client; key-up waits (carrier off) until
+that much is in, the stream ends or 2 s pass. When it runs dry, `idle_hex` (bytes, up to 4096) plays whole from its
+start, or level 0 without it, and a `{"underrun":{"n","k","t","fill"}}` record goes out (n so far, the symbol and its
+time from the first, `idle` or `zero`); the client's symbols resume after it. The client ends the stream with a
+half-close (shutdown of its sending side): what came plays, the keying ends and `done` follows on the same
+connection. A close cancels as for any job. `done` adds `stream`, `ahead_bytes`, `symbols` (played), `symbols_in`,
+`underruns`, `idle_symbols` and `zero_symbols`. `repeat`, `gap_s`, `hex` and `symbols` don't apply. For any mode with
+input after the request, a half-close is the input's end (FM's PCM: what's missing plays as silence).
+
+A W12 sends a key-up longer than 1.35 s in runs, and each seam between them costs about one symbol at 4800 baud
+(lr2021-iq.md R3.62; 3-4 symbol errors in 31 104), with no timing step.
+
 A W12 loses about the first 30 ms of each keying (measured 2026-11-16 on a Pluto: the carrier showed 28-30 ms into a
 40-50 ms `lead_s`), so a burst whose sync is at its start needs `lead_s` 0.04 or more there.
 

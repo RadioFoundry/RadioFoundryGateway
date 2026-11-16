@@ -153,7 +153,7 @@ static int try_pull_iq(void *ctx, int64_t pos, rdof_cf_t *iq, int n)
 static volatile bool sig_iq;
 static bool iq_now(void *ctx) { return sig_iq; }
 
-/* A bench signal is on (set as sig_iq is): no slots to keep time for, so a long key-up's seams skip nothing */
+/* A bench signal is on (set as sig_iq is): no slots, so a long key-up's seams aren't placed in one */
 static volatile bool sig_on;
 static bool continuous(void *ctx) { return sig_on; }
 
