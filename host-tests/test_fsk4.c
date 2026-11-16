@@ -349,6 +349,84 @@ int main(void)
         m->tx_free(tx);
     }
 
+    /* stream: open-ended, through a ring; dry, the idle block plays whole and an underrun is recorded */
+    {
+        double secs;
+        void *tx = job("{\"shape\":\"nrz\",\"stream\":true,\"seconds\":2,\"ahead_s\":0.02,\"idle_hex\":\"1b\"}",
+                       &secs);
+        CHECK(secs > 2 && secs < 4.5, "stream: the ceiling %.1f s", secs);
+        CHECK(m->tx_in_room(tx) == 24 && m->tx_in_want(tx) > 2000, "a ring of 24 bytes, room %zu",
+              m->tx_in_room(tx));
+        const rdof_sig_src_t src = m->tx_src(tx);
+        CHECK(src.freq(src.ctx, hz, env, 480) == 480 && env[479] == 0, "waits for a full ring, carrier off");
+        size_t in = 0;
+        long n = 480;
+        char rec[256];
+        int recs = 0;
+        unsigned long rk = 0;
+        for (int chunk = 0; chunk < 200; chunk++) {
+            if ((chunk < 3 || chunk > 6) && in < NSYM / 4) {
+                in += m->tx_in(tx, bytes + in, NSYM / 4 - in);
+                if (in == NSYM / 4)
+                    m->tx_in_end(tx, false);
+            }
+            const int k = src.freq(src.ctx, hz + n, env + n, 480);
+            n += k;
+            size_t L;
+            while ((L = m->tx_record(tx, rec, sizeof rec)) > 0) {
+                recs++;
+                const char *q = strstr(rec, "\"k\":");
+                CHECK(strstr(rec, "{\"underrun\":{\"n\":1,") && strstr(rec, "\"fill\":\"idle\"") && q, "rec %s",
+                      rec);
+                if (q)
+                    rk = strtoul(q + 4, NULL, 10);
+            }
+            if (k < 480)
+                break;
+        }
+        CHECK(src.done(src.ctx) && recs == 1, "done, %d underrun records", recs);
+        char rep[512];
+        m->tx_report(tx, rep, sizeof rep);
+        unsigned long idle = 0, sym = 0;
+        const char *q = strstr(rep, "\"idle_symbols\":"), *q2 = strstr(rep, "\"symbols\":");
+        if (q)
+            idle = strtoul(q + 15, NULL, 10);
+        if (q2)
+            sym = strtoul(q2 + 10, NULL, 10);
+        CHECK(strstr(rep, "\"underruns\":1,") && strstr(rep, "\"symbols_in\":400,") && idle && idle % 4 == 0 &&
+                  sym == 400 + idle, "report %s", rep);
+        /* the symbols played: the client's up to the underrun, the idle blocks, the rest */
+        const long lead = lround(0.012 * FS), w0 = lround(0.01 * FS); /* 480 samples of waiting first */
+        static const int idl[4] = {1, 3, -1, -3};
+        int bad = 0;
+        for (unsigned long j = 0; j < sym; j++) {
+            const int want = j < rk ? levels[j] : j < rk + idle ? idl[(j - rk) % 4] : levels[j - idle];
+            bad += fabs(hz[w0 + lead + (long)j * 10 + 5] - want * 600.0) > 0.5;
+        }
+        CHECK(rk > 100 && bad == 0, "underrun at %lu, %lu idle symbols, %d wrong", rk, idle, bad);
+        CHECK(n == w0 + 2 * lead + (long)sym * 10, "the keying: %ld samples", n);
+        m->tx_free(tx);
+
+        /* never ended: it stops at seconds, no idle block: zeros */
+        tx = job("{\"shape\":\"c4fm\",\"stream\":true,\"seconds\":0.2,\"ahead_s\":0.05}", &secs);
+        const rdof_sig_src_t s2 = m->tx_src(tx);
+        n = 0;
+        for (int chunk = 0; chunk < 100; chunk++) {
+            if (chunk < 2)
+                while (m->tx_in_room(tx) > 0)
+                    m->tx_in(tx, bytes, m->tx_in_room(tx) < sizeof bytes ? m->tx_in_room(tx) : sizeof bytes);
+            const int k = s2.freq(s2.ctx, hz + n, env + n, 480);
+            n += k;
+            if (k < 480)
+                break;
+        }
+        m->tx_report(tx, rep, sizeof rep);
+        CHECK(s2.done(s2.ctx) && n <= lround(0.2 * FS) && n > lround(0.19 * FS), "stops at seconds: %ld", n);
+        CHECK(strstr(rep, "\"underruns\":1,") && !strstr(rep, "\"zero_symbols\":0,"), "zeros when dry: %s", rep);
+        CHECK(m->tx_record(tx, rec, sizeof rec) > 0 && strstr(rec, "\"fill\":\"zero\""), "rec %s", rec);
+        m->tx_free(tx);
+    }
+
     /* the peak, for a front end that sends frequency (the W12's limit is 4064 Hz): the symbols' own, the worst any
      * could reach when they come later, or clip_hz's; and what's rendered stays under it */
     {

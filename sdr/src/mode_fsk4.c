@@ -32,6 +32,7 @@
 #if RDOF_FEATURE_SDR
 
 #include <math.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -149,6 +150,22 @@ typedef struct {
     uint64_t wait_max;
     double peak;
     bool done;
+    /* stream: true, the symbols as they come, for up to seconds. A ring of ahead_s's bytes, one writer (the stream's
+     * input) and one reader (the render), paces the client; when it runs dry, the idle block plays (whole, from its
+     * start) or, without one, level 0; each time it does is an underrun. */
+    bool stream, ready, ended, starved, in_idle;
+    uint8_t *ring, *idle;
+    uint32_t cap, nidle, idle_pos;
+    atomic_uint_fast32_t rw, rr; /* bytes written, read */
+    atomic_bool eof;
+    uint8_t cur;
+    int sub;                     /* the dibit next in cur (4: a byte needed) */
+    int8_t lvh[256];             /* the levels decided, by symbol index */
+    uint64_t decided, kend, stop_at, max_q;
+    uint64_t sym_in, fill, zero;
+    double seconds;
+    atomic_uint_fast32_t underruns, under_k; /* how many; the last one's symbol */
+    uint32_t reported;
 } fsk4_tx_t;
 
 static int dibit(const fsk4_tx_t *t, uint32_t k)
@@ -178,10 +195,42 @@ static const char *hex_in(fsk4_tx_t *t, const char *hex, double nsym)
     return NULL;
 }
 
+static const char *stream_cfg(fsk4_tx_t *t, const rdof_jdoc_t *d, int job)
+{
+    t->seconds = rdof_sig_num(d, job, "seconds", 0);
+    const double ahead = rdof_sig_num(d, job, "ahead_s", 0.25);
+    if (!(t->seconds > 0 && t->seconds <= 3600))
+        return "fsk4 stream: seconds (0-3600), the most it keys";
+    if (!(ahead >= 0.02 && ahead <= 10))
+        return "fsk4 stream: ahead_s 0.02-10";
+    uint32_t c = (uint32_t)ceil(ahead * t->baud / 4);
+    t->cap = c < 16 ? 16 : c;
+    if (!(t->ring = rdof_sdr_alloc(t->cap)))
+        return "no memory for the symbols";
+    const rdof_jnode_t *in = rdof_jnode(d, rdof_jget(d, job, "idle_hex"));
+    if (in && in->type == RDOF_JSTR && in->str[0]) {
+        const size_t L = strlen(in->str);
+        if (L % 2 || L > 2 * 4096)
+            return "fsk4 idle_hex: whole bytes, 4096 at most";
+        if (!(t->idle = rdof_sdr_alloc(L / 2)))
+            return "no memory for the idle block";
+        for (size_t i = 0; i < L; i += 2) {
+            unsigned v;
+            if (sscanf(in->str + i, "%2x", &v) != 1)
+                return "fsk4 idle_hex: hex digits";
+            t->idle[i / 2] = (uint8_t)v;
+        }
+        t->nidle = (uint32_t)(2 * L);
+    }
+    t->sub = 4;
+    return NULL;
+}
+
 static const char *fsk4_cfg(fsk4_tx_t *t, const rdof_jdoc_t *d, int job, char *why, size_t cap)
 {
-    char shape[16] = "c4fm";
-    rdof_sig_text(d, job, "shape", shape, sizeof shape);
+    char shape[16];
+    if (!rdof_sig_text(d, job, "shape", shape, sizeof shape))
+        snprintf(shape, sizeof shape, "c4fm");
     t->shape = -1;
     for (int i = 0; i < 4; i++)
         if (!strcmp(shape, shape_names[i]))
@@ -211,6 +260,9 @@ static const char *fsk4_cfg(fsk4_tx_t *t, const rdof_jdoc_t *d, int job, char *w
     if (!(rep >= 1 && rep <= 10000))
         return "fsk4 repeat: 1 to 10000";
     t->repeat = (unsigned)rep;
+    t->stream = rdof_sig_flag(d, job, "stream");
+    if (t->stream)
+        return stream_cfg(t, d, job);
     /* the symbols: hex in the request, or a stream of `symbols` after it */
     const double nsym = rdof_sig_num(d, job, "symbols", 0);
     const rdof_jnode_t *hn = rdof_jnode(d, rdof_jget(d, job, "hex"));
@@ -233,7 +285,7 @@ static double peak_hz(const fsk4_tx_t *t)
 {
     const double unit = t->dev_hz * t->scale / 3;
     double worst = 0;
-    if (t->have == t->nbytes && t->nsym <= 8192) {
+    if (!t->stream && t->have == t->nbytes && t->nsym <= 8192) {
         /* two plays when they go back to back: the join too */
         const int64_t n = (int64_t)t->nsym * (t->repeat > 1 && t->gap_s == 0 ? 2 : 1);
         for (int64_t i = -16 * t->span; i < 16 * (n + t->span); i++) {
@@ -267,13 +319,13 @@ static void *fsk4_tx_new(const rdof_jdoc_t *d, int job, double fs, double *secon
     if (why) {
         if (why != error)
             snprintf(error, ecap, "%s", why);
-        rdof_sdr_free(t->sym);
+        rdof_sdr_free(t->sym), rdof_sdr_free(t->ring), rdof_sdr_free(t->idle);
         rdof_sdr_free(t);
         return NULL;
     }
     if (!(fs >= 8 * t->baud)) {
         snprintf(error, ecap, "fsk4: the transmitter's %.0f S/s is under 8 samples a symbol", fs);
-        rdof_sdr_free(t->sym);
+        rdof_sdr_free(t->sym), rdof_sdr_free(t->ring), rdof_sdr_free(t->idle);
         rdof_sdr_free(t);
         return NULL;
     }
@@ -285,7 +337,7 @@ static void *fsk4_tx_new(const rdof_jdoc_t *d, int job, double fs, double *secon
     t->rows = rdof_sdr_zalloc(sizeof(float) * (size_t)(PH + 1) * (size_t)nt);
     if (!t->rows) {
         snprintf(error, ecap, "no memory for a 4FSK transmitter");
-        rdof_sdr_free(t->sym);
+        rdof_sdr_free(t->sym), rdof_sdr_free(t->ring), rdof_sdr_free(t->idle);
         rdof_sdr_free(t);
         return NULL;
     }
@@ -294,6 +346,15 @@ static void *fsk4_tx_new(const rdof_jdoc_t *d, int job, double fs, double *secon
             t->rows[p * nt + m] = pulse(t->g, (float)p / PH - (float)(m - t->span + 1), t->span);
     t->step = (uint64_t)llround(t->baud / fs * 4294967296.0);
     t->peak = peak_hz(t);
+    if (t->stream) {
+        t->ramp = (uint64_t)llround(RAMP_S * fs);
+        t->lead = (uint64_t)llround(t->lead_s * fs) + t->ramp;
+        t->tail = (uint64_t)llround(t->tail_s * fs) + t->ramp;
+        t->max_q = (uint64_t)llround(t->seconds * fs);
+        t->wait_max = (uint64_t)llround(WAIT_S * fs);
+        *seconds = t->seconds + WAIT_S;
+        return t;
+    }
     /* gap_s 0: the plays back to back in one keying; else each its own keying, gap_s apart */
     t->bursts = t->gap_s > 0 ? t->repeat : 1;
     t->per_burst = t->gap_s > 0 ? 1 : t->repeat;
@@ -316,7 +377,131 @@ static void fsk4_tx_free(void *tx)
         return;
     rdof_sdr_free(t->sym);
     rdof_sdr_free(t->rows);
+    rdof_sdr_free(t->ring), rdof_sdr_free(t->idle);
     rdof_sdr_free(t);
+}
+
+/* ── stream ── */
+
+static int8_t level_of(unsigned b)
+{
+    static const int8_t lv[4] = {1, 3, -1, -3}; /* 00 01 10 11 */
+    return lv[b & 3];
+}
+
+/* The next symbol decided: the client's, the idle block's or 0; or none more (ended) */
+static void stream_decide(fsk4_tx_t *t)
+{
+    int8_t a = 0;
+    if (t->in_idle) { /* an idle block plays whole */
+        a = level_of(t->idle[t->idle_pos >> 2] >> (6 - 2 * (t->idle_pos & 3)));
+        if (++t->idle_pos == t->nidle)
+            t->in_idle = false, t->idle_pos = 0;
+        t->fill++;
+    } else {
+        if (t->sub == 4) {
+            const uint_fast32_t w = atomic_load_explicit(&t->rw, memory_order_acquire);
+            const uint_fast32_t r = atomic_load_explicit(&t->rr, memory_order_relaxed);
+            if (w != r) {
+                t->cur = t->ring[r % t->cap];
+                atomic_store_explicit(&t->rr, r + 1, memory_order_release);
+                t->sub = 0;
+            }
+        }
+        if (t->sub < 4) {
+            a = level_of(t->cur >> (6 - 2 * t->sub));
+            t->sub++, t->sym_in++, t->starved = false;
+        } else if (atomic_load_explicit(&t->eof, memory_order_acquire) &&
+                   atomic_load_explicit(&t->rw, memory_order_acquire) ==
+                       atomic_load_explicit(&t->rr, memory_order_relaxed)) {
+            t->ended = true, t->kend = t->decided;
+            return;
+        } else { /* dry: an underrun */
+            if (!t->starved) {
+                t->starved = true;
+                atomic_store_explicit(&t->under_k, (uint_fast32_t)t->decided, memory_order_relaxed);
+                atomic_fetch_add_explicit(&t->underruns, 1, memory_order_release);
+            }
+            if (t->nidle) {
+                t->in_idle = true, t->idle_pos = 0;
+                stream_decide(t);
+                return;
+            }
+            t->zero++;
+        }
+    }
+    t->lvh[t->decided & 255] = a;
+    t->decided++;
+}
+
+static int fsk4_freq_stream(void *ctx, float *hz, float *env, int n)
+{
+    fsk4_tx_t *t = ctx;
+    const float unit = (float)(t->dev_hz * t->scale / 3), off = (float)t->offset_hz;
+    int keyed = 0;
+    for (int i = 0; i < n; i++) {
+        if (!t->ready) { /* the ring full (or the stream over) before the key-up, for up to 2 s, carrier off */
+            const uint_fast32_t w = atomic_load_explicit(&t->rw, memory_order_acquire);
+            if (w - atomic_load_explicit(&t->rr, memory_order_relaxed) < t->cap &&
+                !atomic_load_explicit(&t->eof, memory_order_acquire) && t->waited < t->wait_max) {
+                t->waited++;
+                hz[i] = 0;
+                if (env)
+                    env[i] = 0;
+                keyed++;
+                continue;
+            }
+            t->ready = true;
+        }
+        if (t->done || (t->stop_at && t->pos >= t->stop_at + t->tail)) {
+            t->done = true;
+            hz[i] = 0;
+            if (env)
+                env[i] = 0;
+            continue;
+        }
+        keyed++;
+        const uint64_t q = t->pos++;
+        float e = 1;
+        if (q < t->ramp)
+            e = 0.5f - 0.5f * cosf((float)RDOF_PI * (float)(q + 1) / (float)(t->ramp + 1));
+        else if (t->stop_at && q >= t->stop_at + t->tail - t->ramp)
+            e = 0.5f - 0.5f * cosf((float)RDOF_PI * (float)(t->stop_at + t->tail - q) / (float)(t->ramp + 1));
+        if (env)
+            env[i] = e;
+        const int64_t u = ((int64_t)q - (int64_t)t->lead) * (int64_t)t->step - ((int64_t)1 << 31);
+        const int64_t c = u >> 32;
+        const uint32_t fr = (uint32_t)u;
+        const int p = (int)(fr >> 26);
+        const float w = (float)(fr & 0x3ffffff) * (1.0f / 67108864.0f);
+        /* the most it keys: the last symbols' pulses and the tail inside it */
+        if (!t->ended && (double)(q + t->tail) + (t->span + 1) * t->sps >= (double)t->max_q)
+            t->ended = true, t->kend = t->decided;
+        while (!t->ended && (int64_t)t->decided <= c + t->span)
+            stream_decide(t);
+        if (t->ended && !t->stop_at && u + ((int64_t)1 << 31) >= (int64_t)(t->kend << 32))
+            t->stop_at = q; /* the symbols' time over, as a job with hex ends; the tail carries their pulses' ends */
+        const int nt = 2 * t->span;
+        const float *r0 = t->rows + p * nt, *r1 = r0 + nt;
+        int64_t k0 = c - t->span + 1, k1 = c + t->span;
+        if (k0 < 0)
+            k0 = 0;
+        if (k1 >= (int64_t)t->decided)
+            k1 = (int64_t)t->decided - 1;
+        float s0 = 0, s1 = 0;
+        for (int64_t k = k0; k <= k1; k++) {
+            const int m = (int)(k - c) + t->span - 1;
+            const float a = t->lvh[k & 255];
+            s0 += a * r0[m], s1 += a * r1[m];
+        }
+        float h = (s0 + (s1 - s0) * w) * unit + off;
+        if (t->clip_hz > 0 && fabsf(h) > t->clip_hz) {
+            h = h > 0 ? (float)t->clip_hz : -(float)t->clip_hz;
+            t->clipped++;
+        }
+        hz[i] = h;
+    }
+    return keyed;
 }
 
 static int fsk4_freq(void *ctx, float *hz, float *env, int n)
@@ -400,20 +585,43 @@ static bool fsk4_done(void *ctx) { return ((fsk4_tx_t *)ctx)->done; }
 static rdof_sig_src_t fsk4_tx_src(void *tx)
 {
     fsk4_tx_t *t = tx;
-    return (rdof_sig_src_t){.freq = fsk4_freq, .done = fsk4_done, .peak_hz = t->peak, .ctx = t};
+    return (rdof_sig_src_t){.freq = t->stream ? fsk4_freq_stream : fsk4_freq, .done = fsk4_done, .peak_hz = t->peak,
+                            .ctx = t};
 }
 
 static uint64_t fsk4_tx_in_want(void *tx)
 {
-    const fsk4_tx_t *t = tx;
+    fsk4_tx_t *t = tx;
+    if (t->stream) { /* until the client ends it: as much as the job could play */
+        if (atomic_load(&t->eof))
+            return 0;
+        const uint64_t most = (uint64_t)ceil(t->seconds * t->baud / 4) + 1,
+                       w = atomic_load_explicit(&t->rw, memory_order_relaxed);
+        return w < most ? most - w : 1;
+    }
     return t->nbytes - t->have;
 }
 
-static size_t fsk4_tx_in_room(void *tx) { return (size_t)fsk4_tx_in_want(tx); }
+static size_t fsk4_tx_in_room(void *tx)
+{
+    fsk4_tx_t *t = tx;
+    if (t->stream)
+        return atomic_load(&t->eof) ? 0 : t->cap - (size_t)(atomic_load_explicit(&t->rw, memory_order_relaxed) -
+                                                       atomic_load_explicit(&t->rr, memory_order_acquire));
+    return (size_t)fsk4_tx_in_want(tx);
+}
 
 static size_t fsk4_tx_in(void *tx, const uint8_t *b, size_t n)
 {
     fsk4_tx_t *t = tx;
+    if (t->stream) {
+        const size_t room = fsk4_tx_in_room(tx), k = n < room ? n : room;
+        uint_fast32_t w = atomic_load_explicit(&t->rw, memory_order_relaxed);
+        for (size_t i = 0; i < k; i++)
+            t->ring[(w + i) % t->cap] = b[i];
+        atomic_store_explicit(&t->rw, w + (uint_fast32_t)k, memory_order_release);
+        return k;
+    }
     const size_t k = n < t->nbytes - t->have ? n : t->nbytes - t->have;
     memcpy(t->sym + t->have, b, k);
     t->have += (uint32_t)k;
@@ -424,12 +632,45 @@ static void fsk4_tx_in_end(void *tx, bool gone)
 {
     fsk4_tx_t *t = tx;
     (void)gone;
+    if (t->stream) {
+        atomic_store_explicit(&t->eof, true, memory_order_release);
+        return;
+    }
     t->wait_max = 0; /* nothing more comes: what's missing goes as 0 */
+}
+
+/* An underrun since the last record: how many so far, the last one's symbol and time from the first symbol */
+static size_t fsk4_tx_record(void *tx, char *out, size_t cap)
+{
+    fsk4_tx_t *t = tx;
+    if (!t->stream)
+        return 0;
+    const uint32_t u = (uint32_t)atomic_load_explicit(&t->underruns, memory_order_acquire);
+    if (u == t->reported)
+        return 0;
+    t->reported = u;
+    const uint32_t k = (uint32_t)atomic_load_explicit(&t->under_k, memory_order_relaxed);
+    const int n = snprintf(out, cap, "{\"underrun\":{\"n\":%u,\"k\":%u,\"t\":%.4f,\"fill\":\"%s\"}}", (unsigned)u, (unsigned)k,
+                           k / t->baud, t->nidle ? "idle" : "zero");
+    return n > 0 && (size_t)n < cap ? (size_t)n : 0;
 }
 
 static size_t fsk4_tx_report(void *tx, char *out, size_t cap)
 {
     const fsk4_tx_t *t = tx;
+    if (t->stream) {
+        const int n = snprintf(out, cap,
+                               ",\"shape\":\"%s\",\"baud\":%.1f,\"dev_hz\":%.1f,\"peak_hz\":%.0f,\"offset_hz\":%.1f,"
+                               "\"stream\":true,\"ahead_bytes\":%u,\"symbols\":%llu,\"symbols_in\":%llu,"
+                               "\"underruns\":%u,\"idle_symbols\":%llu,\"zero_symbols\":%llu,\"wait_s\":%.3f,"
+                               "\"clip_hz\":%.0f,\"clipped\":%llu",
+                               shape_names[t->shape], t->baud, t->dev_hz * t->scale, t->peak, t->offset_hz, (unsigned)t->cap,
+                               (unsigned long long)t->decided, (unsigned long long)t->sym_in,
+                               (unsigned)atomic_load(&t->underruns), (unsigned long long)t->fill,
+                               (unsigned long long)t->zero, (double)t->waited / t->fs, t->clip_hz,
+                               (unsigned long long)t->clipped);
+        return n > 0 && (size_t)n < cap ? (size_t)n : 0;
+    }
     const uint32_t in = t->have * 4 < t->nsym ? t->have * 4 : t->nsym;
     const int n = snprintf(out, cap,
                            ",\"shape\":\"%s\",\"baud\":%.1f,\"dev_hz\":%.1f,\"peak_hz\":%.0f,\"offset_hz\":%.1f,"
@@ -998,6 +1239,7 @@ const rdof_sig_mode_t rdof_mode_fsk4 = {
     .tx_in_end = fsk4_tx_in_end,
     .tx_in_want = fsk4_tx_in_want,
     .tx_report = fsk4_tx_report,
+    .tx_record = fsk4_tx_record,
     .rx_new = fsk4_rx_new,
     .rx_free = fsk4_rx_free,
     .rx_streams = fsk4_rx_streams,

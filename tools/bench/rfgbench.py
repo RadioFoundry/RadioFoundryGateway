@@ -1031,7 +1031,16 @@ def cmd_tx_fsk4(a) -> int:
     req: dict = {"op": "tx", "mode": "fsk4", "freq": a.freq, "session": a.session, "wait_max": a.wait_max,
                  "label": a.label}
     data = b""
-    if a.dibits:
+    if a.stream:   # open-ended: the dibits as they come (a file or stdin), a half-close at their end
+        if not a.dibits or a.symbols or a.repeat or a.gap is not None:
+            print(f"{NOTE} --stream takes --dibits FILE or - (stdin), not --symbols, --repeat or --gap",
+                  file=sys.stderr)
+            return 1
+        req.update({"stream": True, "seconds": a.seconds})
+        for k, v in (("ahead_s", a.ahead), ("idle_hex", a.idle_hex)):
+            if v is not None:
+                req[k] = v
+    elif a.dibits:
         try:
             with open(a.dibits, "rb") as f:
                 data = f.read()
@@ -1061,8 +1070,23 @@ def cmd_tx_fsk4(a) -> int:
         except OSError:
             pass
 
+    def send_stream():    # as it comes; the gateway reads as its ahead_s ring empties
+        try:
+            f = sys.stdin.buffer if a.dibits == "-" else open(a.dibits, "rb")
+            with f:
+                while True:
+                    b = f.read1(4096) if hasattr(f, "read1") else f.read(4096)
+                    if not b:
+                        break
+                    hold["conn"].s.sendall(b)
+            hold["conn"].s.shutdown(socket.SHUT_WR)    # the stream's end: the rest plays, then the report
+        except OSError as e:
+            print(f"{NOTE} {e}", file=sys.stderr)
+
     def on(d, _):
-        if "tx" in d and data:
+        if "tx" in d and a.stream:
+            threading.Thread(target=send_stream, daemon=True).start()
+        elif "tx" in d and data:
             threading.Thread(target=send, daemon=True).start()
         print(json.dumps(d), flush=True)
         if "done" in d:
@@ -1574,6 +1598,13 @@ def main(argv=None) -> int:
             g.add_argument("--dibits", default=None,
                            help="a file of dibits, 4 a byte, first in bits 7-6 (01 +3, 00 +1, 10 -1, 11 -3)")
             g.add_argument("--hex", default=None, help="the same bytes as hex, in the request")
+            s.add_argument("--stream", action="store_true",
+                           help="open-ended: --dibits FILE or - (stdin) sent as it comes, its end the keying's end; "
+                                "an {\"underrun\"} record each time it runs dry")
+            s.add_argument("--seconds", type=float, default=60, help="--stream: the most it keys (60)")
+            s.add_argument("--ahead", type=float, default=None, help="--stream: the gateway's buffer, s (0.25)")
+            s.add_argument("--idle-hex", default=None,
+                           help="--stream: bytes played whole while it runs dry (default: level 0)")
             s.add_argument("--symbols", type=int, default=None, help="how many of the bytes' dibits (all)")
             s.add_argument("--baud", type=float, default=None, help="symbols a second (4800)")
             s.add_argument("--shape", choices=("c4fm", "rrc", "rc", "nrz"), default=None, help="pulse shape (c4fm)")

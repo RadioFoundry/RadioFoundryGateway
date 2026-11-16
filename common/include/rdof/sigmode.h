@@ -76,6 +76,9 @@ typedef struct rdof_sig_mode {
     uint64_t (*tx_in_want)(void *tx);
     /* What happened, as a JSON object's members (",\"underruns\":0"), for the job's summary: its length. */
     size_t (*tx_report)(void *tx, char *out, size_t cap);
+    /* Optional: the next record while it sends (a whole JSON object; an underrun): its length, 0 none. The server
+     * asks each tick, on its own thread, while the source renders on the transmitter's. */
+    size_t (*tx_record)(void *tx, char *out, size_t cap);
     /* ── receive (NULL: this mode only transmits) ── */
     /* A receiver for req (an object) at fs complex samples a second: NULL with error. squelch_dbfs: the platform's
      * default (from the channel's noise floor); req may set its own. */
