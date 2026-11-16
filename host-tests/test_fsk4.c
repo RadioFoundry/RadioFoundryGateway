@@ -129,6 +129,117 @@ static double worst_error(const char *shape, double dev, long first, double sps,
     return worst;
 }
 
+/* ── receive: the transmitter's output as I/Q (with noise) through the receiver ── */
+
+typedef struct {
+    int keyings, syncs, nsym;
+    uint8_t dib[4096];           /* the first keying's dibits from its first sync */
+    double cfo, dev, evm, ppm, sync_ms, t_off, levels[4];
+    long rec_at;                 /* the sample when the first keying record came */
+    char keying[1024];
+} rxres_t;
+
+static float iq[2 * 480];
+static double gauss(void)
+{
+    const double u = (rnd() + 1.0) / 16777217.0, v = (rnd() + 1.0) / 16777217.0;
+    return sqrt(-2 * log(u)) * cos(2 * M_PI * v);
+}
+
+static void parse_rec(const char *s, rxres_t *o, long at)
+{
+    const char *p;
+    if ((p = strstr(s, "{\"dibits\":"))) {
+        unsigned long long k = 0;
+        int n = 0;
+        sscanf(strstr(p, "\"k\":") + 4, "%llu", &k);
+        sscanf(strstr(p, "\"n\":") + 4, "%d", &n);
+        const char *h = strstr(p, "\"hex\":\"") + 7;
+        if (o->keyings == 0)
+            for (int i = 0; i < n && k + (unsigned)i < 4 * sizeof o->dib; i++) {
+                unsigned v;
+                sscanf(h + i / 2, "%1x", &v);
+                const unsigned b = (i % 2 ? v : v >> 2) & 3, j = (unsigned)k + (unsigned)i;
+                o->dib[j / 4] |= (uint8_t)(b << (6 - 2 * (j % 4)));
+                if ((int)j + 1 > o->nsym)
+                    o->nsym = (int)j + 1;
+            }
+    } else if (strstr(s, "{\"sync\":")) {
+        o->syncs++;
+    } else if ((p = strstr(s, "{\"keying\":"))) {
+        if (o->keyings++ == 0) {
+            snprintf(o->keying, sizeof o->keying, "%s", s);
+            o->rec_at = at;
+            const char *q;
+            if ((q = strstr(s, "\"cfo_hz\":")))
+                o->cfo = atof(q + 9);
+            if ((q = strstr(s, "\"dev_hz\":")))
+                o->dev = atof(q + 9);
+            if ((q = strstr(s, "\"evm_pct\":")))
+                o->evm = atof(q + 10);
+            if ((q = strstr(s, "\"baud_err_ppm\":")))
+                o->ppm = strncmp(q + 15, "null", 4) ? atof(q + 15) : NAN;
+            if ((q = strstr(s, "\"sync_ms\":")))
+                o->sync_ms = atof(q + 10);
+            if ((q = strstr(s, "\"t_off\":")))
+                o->t_off = atof(q + 8);
+            if ((q = strstr(s, "\"levels_hz\":[")))
+                sscanf(q + 13, "%lf,%lf,%lf,%lf", &o->levels[0], &o->levels[1], &o->levels[2], &o->levels[3]);
+        }
+    }
+}
+
+/* Render a job at tx_fs, play it at FS after pad_s of noise (and before it), through a receiver for rxreq */
+static void through(const char *txjob, double tx_fs, const char *rxreq, double snr_db, rxres_t *o, long *tx_end)
+{
+    memset(o, 0, sizeof *o);
+    char err[200] = "";
+    double secs;
+    int root = rdof_jparse(&doc, txjob, strlen(txjob));
+    void *tx = m->tx_new(&doc, root, tx_fs, &secs, err, sizeof err);
+    CHECK(tx, "tx %s: %s", txjob, err);
+    if (!tx)
+        return;
+    const long n = render(tx, NULL);
+    m->tx_free(tx);
+    root = rdof_jparse(&doc, rxreq, strlen(rxreq));
+    void *rx = m->rx_new(&doc, root, FS, -10 - snr_db, err, sizeof err); /* 10 dB over the noise */
+    CHECK(rx, "rx %s: %s", rxreq, err);
+    if (!rx)
+        return;
+    const long pad = 4800;
+    const double a = 0.1, sd = a * pow(10, -snr_db / 20) / sqrt(2); /* -20 dBFS; noise over the 48 kHz */
+    double ph = 0;
+    char rec[8192];
+    *tx_end = pad + n;
+    for (long i0 = 0; i0 < n + 2 * pad; i0 += 480) {
+        for (int j = 0; j < 480; j++) {
+            const long i = i0 + j - pad;
+            const double e = i >= 0 && i < n ? env[i] : 0;
+            if (i >= 0 && i < n)
+                ph += 2 * M_PI * hz[i] / FS;
+            iq[2 * j] = (float)(a * e * cos(ph) + sd * gauss());
+            iq[2 * j + 1] = (float)(a * e * sin(ph) + sd * gauss());
+        }
+        int nout[RDOF_SIG_STREAMS];
+        m->rx_feed(rx, iq, 480, NULL, nout);
+        size_t k;
+        while ((k = m->rx_record(rx, rec, sizeof rec)) > 0)
+            parse_rec(rec, o, i0 + 480);
+    }
+    char sum[512];
+    CHECK(m->rx_summary(rx, sum, sizeof sum) > 0 && strstr(sum, "\"keyings\""), "summary %s", sum);
+    m->rx_free(rx);
+}
+
+static int dibit_errors(const rxres_t *o, const uint8_t *b, int n)
+{
+    int e = 0;
+    for (int k = 0; k < n; k++)
+        e += k >= o->nsym || ((o->dib[k / 4] ^ b[k / 4]) >> (6 - 2 * (k % 4)) & 3) != 0;
+    return e;
+}
+
 int main(void)
 {
     m = rdof_sig_find(rdof_sdr_modes, "fsk4");
@@ -287,6 +398,76 @@ int main(void)
         void *tx = m->tx_new(&doc, root, FS, &secs, err, sizeof err);
         CHECK(!tx && err[0], "refused: %s", bad[i]);
         m->tx_free(tx);
+    }
+
+    /* receive: the transmitter's own output, the dibits from the sync on */
+    {
+        static uint8_t frame[(24 + NSYM) / 4];
+        static const uint8_t p25sync[6] = {0x55, 0x75, 0xf5, 0xff, 0x77, 0xff};
+        memcpy(frame, p25sync, 6), memcpy(frame + 6, bytes, NSYM / 4);
+        static char hexf[2 * sizeof frame + 1];
+        for (size_t i = 0; i < sizeof frame; i++)
+            snprintf(hexf + 2 * i, 3, "%02x", frame[i]);
+        const int ns = 24 + NSYM;
+        static char text[4096];
+        rxres_t o;
+        long end;
+        const struct {
+            const char *shape;
+            double dev, offset, snr, lev_tol, evm_max;
+        } rc[] = {{"c4fm", 1800, 300, 40, 25, 4}, {"rrc", 1944, -500, 40, 40, 5}, {"nrz", 1800, 0, 40, 25, 6},
+                  {"c4fm", 1800, 0, 20, 60, 12}};
+        for (size_t c = 0; c < sizeof rc / sizeof rc[0]; c++) {
+            snprintf(text, sizeof text, "{\"shape\":\"%s\",\"dev_hz\":%.0f,\"offset_hz\":%.0f,\"repeat\":3,"
+                     "\"hex\":\"%s\"}", rc[c].shape, rc[c].dev, rc[c].offset, hexf);
+            char req[200];
+            snprintf(req, sizeof req, "{\"shape\":\"%s\",\"sync\":\"5575f5ff77ff\"}", rc[c].shape);
+            through(text, FS, req, rc[c].snr, &o, &end);
+            const int e = dibit_errors(&o, frame, ns);
+            printf("rx %s snr %.0f: errors %d/%d syncs %d cfo %.1f dev %.1f evm %.2f%% ppm %.1f sync_ms %.2f "
+                   "levels %.0f %.0f %.0f %.0f\n", rc[c].shape, rc[c].snr, e, ns, o.syncs, o.cfo, o.dev, o.evm,
+                   o.ppm, o.sync_ms, o.levels[0], o.levels[1], o.levels[2], o.levels[3]);
+            CHECK(o.keyings == 1, "%s: one keying, %d", rc[c].shape, o.keyings);
+            CHECK(e == 0, "%s: dibits from the sync on, %d errors", rc[c].shape, e);
+            CHECK(o.syncs == 3, "%s: each play's sync, %d", rc[c].shape, o.syncs);
+            CHECK(fabs(o.cfo - rc[c].offset) < 15, "%s: cfo %.1f", rc[c].shape, o.cfo);
+            CHECK(fabs(o.dev - rc[c].dev) < rc[c].lev_tol, "%s: dev %.1f", rc[c].shape, o.dev);
+            for (int i = 0; i < 4; i++)
+                CHECK(fabs(o.levels[i] - (2 * i - 3) * rc[c].dev / 3) < rc[c].lev_tol, "%s: level %d %.1f",
+                      rc[c].shape, i, o.levels[i]);
+            CHECK(o.evm < rc[c].evm_max, "%s: evm %.2f%%", rc[c].shape, o.evm);
+            CHECK(fabs(o.ppm) < 30, "%s: baud error %.1f ppm", rc[c].shape, o.ppm);
+            CHECK(o.sync_ms > 5 && o.sync_ms < 20, "%s: carrier to sync %.2f ms (lead 12)", rc[c].shape, o.sync_ms);
+            CHECK(o.rec_at - end < 480 + 5 * 48, "%s: the keying record %.1f ms after the carrier", rc[c].shape,
+                  (o.rec_at - end) / 48.0);
+        }
+        /* a radio 100 ppm slow (its symbols longer) */
+        snprintf(text, sizeof text, "{\"shape\":\"c4fm\",\"repeat\":4,\"hex\":\"%s\"}", hexf);
+        through(text, FS * 1.0001, "{\"sync\":\"5575f5ff77ff\"}", 40, &o, &end);
+        printf("rx 100 ppm: errors %d ppm %.1f\n", dibit_errors(&o, frame, ns), o.ppm);
+        CHECK(fabs(o.ppm + 100) < 20, "baud error %.1f ppm, -100", o.ppm);
+        CHECK(dibit_errors(&o, frame, ns) == 0, "100 ppm: no errors");
+        /* NXDN-like: 2400 baud, RRC, outer 1050 Hz, a 10-symbol sync (CDF59), a short burst */
+        static uint8_t nx[48];
+        static const uint8_t nsync[3] = {0xcd, 0xf5, 0x90};
+        memcpy(nx, nsync, 3), memcpy(nx + 3, bytes, sizeof nx - 3);
+        nx[2] = (uint8_t)(0x90 | (bytes[0] & 0x0f));
+        static char hexn[2 * sizeof nx + 1];
+        for (size_t i = 0; i < sizeof nx; i++)
+            snprintf(hexn + 2 * i, 3, "%02x", nx[i]);
+        snprintf(text, sizeof text, "{\"shape\":\"rrc\",\"baud\":2400,\"dev_hz\":1050,\"lead_s\":0.002,\"hex\":\"%s\"}",
+                 hexn);
+        through(text, FS, "{\"shape\":\"rrc\",\"baud\":2400,\"sync\":\"cdf59\",\"sync_len\":10}", 30, &o, &end);
+        const int en = dibit_errors(&o, nx, 4 * (int)sizeof nx);
+        printf("rx nxdn 2400: errors %d/%d syncs %d dev %.1f evm %.2f%% sync_ms %.2f\n%s\n", en,
+               4 * (int)sizeof nx, o.syncs, o.dev, o.evm, o.sync_ms, o.keying);
+        CHECK(o.keyings == 1 && o.syncs >= 1 && en == 0, "nxdn: %d keyings, %d syncs, %d errors", o.keyings, o.syncs,
+              en);
+        CHECK(fabs(o.dev - 1050) < 30, "nxdn: dev %.1f", o.dev);
+        /* noise alone: nothing */
+        through("{\"shape\":\"c4fm\",\"lead_s\":0,\"tail_s\":0,\"dev_scale_pct\":1,\"hex\":\"00\"}", FS,
+                "{\"sync\":\"cdf59\",\"sync_len\":10}", -30, &o, &end);
+        CHECK(o.keyings == 0 && o.syncs == 0, "noise: %d keyings, %d syncs", o.keyings, o.syncs);
     }
 
     printf("%d checks, %d failed\n", checks, fails);

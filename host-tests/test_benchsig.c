@@ -236,7 +236,7 @@ static void test_loop(bool chan)
     /* info names the modes */
     int c = ask(bl, "{\"op\":\"info\"}");
     take(bl, c);
-    CHECK(strstr(text, "\"signal_modes\":{\"tx\":[\"fm\",\"am\",\"fsk4\"],\"rx\":[\"fm\",\"am\"]}"), "%.300s", text);
+    CHECK(strstr(text, "\"signal_modes\":{\"tx\":[\"fm\",\"am\",\"fsk4\"],\"rx\":[\"fm\",\"am\",\"fsk4\"]}"), "%.300s", text);
     rdof_bl_closed(bl, c, clock_s);
     ntext = 0;
 

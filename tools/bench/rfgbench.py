@@ -1084,16 +1084,23 @@ class _Wav:
 
 
 def cmd_rx_sig(a) -> int:
-    """rx fm, rx am: a signal mode's receiver, its streams to WAVs."""
+    """rx fm, rx am, rx fsk4: a signal mode's receiver, its streams to WAVs."""
     check_reach(a, a.freq, tx=False)
-    raw = "disc" if a.mode_name == "fm" else "env"
-    files = {"audio": a.audio, raw: getattr(a, raw)}
+    if a.mode_name == "fsk4":
+        files = {"disc": a.disc, "filt": a.filt}
+    else:
+        raw = "disc" if a.mode_name == "fm" else "env"
+        files = {"audio": a.audio, raw: getattr(a, raw)}
     streams = [x for x, f in files.items() if f]
     req: dict = {"op": "rx", "mode": a.mode_name, "freq": a.freq, "seconds": a.seconds, "session": a.session,
                  "wait_max": a.wait_max, "label": a.label, "streams": ",".join(streams)}
-    fields = [("bw", a.bw), ("squelch_dbfs", a.squelch_dbfs), ("squelch_over_db", a.squelch_over),
-              ("block_s", a.block_s), ("spectrum_hz", a.spectrum_hz)]
-    if a.mode_name == "fm":
+    fields = [("bw", a.bw), ("squelch_dbfs", a.squelch_dbfs), ("squelch_over_db", a.squelch_over)]
+    if a.mode_name != "fsk4":
+        fields += [("block_s", a.block_s), ("spectrum_hz", a.spectrum_hz)]
+    if a.mode_name == "fsk4":
+        fields += [("shape", a.shape), ("filter", a.filter), ("baud", a.baud), ("sync", a.sync),
+                   ("sync_len", a.sync_len), ("sync_min", a.sync_min)]
+    elif a.mode_name == "fm":
         fields += [("deemph_us", a.deemph_us), ("nominal_dev_hz", a.nominal_dev), ("audio_full_hz", a.audio_full_hz)]
         fields += [(k, True) for k in ("dtmf", "tones", "aprs") if getattr(a, k)]
     else:
@@ -1584,6 +1591,29 @@ def main(argv=None) -> int:
             s.add_argument("--power-dbm", type=float, default=None,
                            help="dBm at the antenna, capped by the gateway's bench.tx max_dbm")
             s.add_argument("--power", type=int, default=None, help="0-255 on the transmitter's range, capped the same")
+        else:
+            s = modes.add_parser("fsk4", help="4-level FSK as raw dibits: sync, dibits and each keying's levels")
+            s.set_defaults(fn=cmd_rx_sig)
+            s.add_argument("--session", default=None)
+            s.add_argument("--wait-max", type=float, default=None, help="give up after this many seconds (exit 75)")
+            s.add_argument("--label", default=None)
+            s.add_argument("--freq", type=float, required=True, help="MHz")
+            s.add_argument("--seconds", type=float, required=True)
+            s.add_argument("--sync", default=None,
+                           help="the sync's dibits as hex (P25 5575f5ff77ff; NXDN cdf59 with --sync-len 10)")
+            s.add_argument("--sync-len", type=int, default=None, help="its symbols (all the hex's)")
+            s.add_argument("--sync-min", type=float, default=None, help="the correlation a sync needs (0.9)")
+            s.add_argument("--baud", type=float, default=None, help="symbols a second (4800)")
+            s.add_argument("--shape", choices=("c4fm", "rrc", "rc", "nrz"), default=None,
+                           help="what's sent: picks the filter (c4fm: iad, rrc: rrc, else none)")
+            s.add_argument("--filter", choices=("none", "iad", "rrc"), default=None, help="the receive filter")
+            s.add_argument("--disc", default=None, help="write the raw discriminator to this WAV")
+            s.add_argument("--filt", default=None, help="write the filtered discriminator to this WAV")
+            s.add_argument("--records", default=None, help="write every line (records, gaps, done) to this file")
+            s.add_argument("--quiet", action="store_true", help="don't print the records")
+            s.add_argument("--bw", type=float, default=None, help="channel bandwidth, Hz (16000)")
+            s.add_argument("--squelch-dbfs", type=float, default=None, help="else learned from the noise floor")
+            s.add_argument("--squelch-over", type=float, default=None, help="dB over the learned floor (10)")
     for name in ("activity", "burstlog", "bridge"):
         s = p(name, cmd_unsupported, False)
         s.add_argument("rest", nargs=argparse.REMAINDER)
