@@ -171,6 +171,26 @@ static void test_fec(void)
         rdof_trellis34_hook = NULL;
         metric = rdof_trellis34_decode_block(burst, out);
         CHECK(t34.n == 2 && metric == 0, "trellis hook off: not called");
+        /* blocks from state 0 with noise: the path from any start may explain it a bit better and pass the CRC-9 by
+           chance (an unconfirmed block has none); taken only when it saves a wrong point (2), a swap is rare */
+        uint32_t seed = 1;
+        int swaps = 0, wrong = 0;
+        for (int t = 0; t < 40000; t++) {
+            uint8_t p[18], o0[18];
+            for (int i = 0; i < 18; i++)
+                p[i] = (uint8_t)((seed = seed * 1103515245u + 12345u) >> 16);
+            rdof_trellis34_encode(p, info);
+            for (int k = (int)((seed = seed * 1103515245u + 12345u) >> 16) % 8; k > 0; k--)
+                info[((seed = seed * 1103515245u + 12345u) >> 16) % 196] ^= 1;
+            rdof_info_burst(info, 8, 2, 0, burst);
+            rdof_trellis34_decode(burst, o0);
+            rdof_trellis34_decode_block(burst, out);
+            if (memcmp(o0, out, 18)) {
+                swaps++;
+                wrong += memcmp(out, p, 18) != 0;
+            }
+        }
+        CHECK(wrong == 0, "noisy blocks from state 0: %d swaps, %d wrong", swaps, wrong);
     }
     for (size_t i = 0; i < V_RATE1_N; i++) {
         unhex(v_rate1[i].burst, in);

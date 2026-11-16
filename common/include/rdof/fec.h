@@ -58,7 +58,8 @@ int rdof_five_bit_checksum(const uint8_t lc9[9]);
 int rdof_trellis34_decode(const uint8_t burst[RDOF_BURST_BYTES], uint8_t out18[18]);
 /* A rate 3/4 data block: rdof_trellis34_decode, and when its octets 0-1 aren't a good DBSN and CRC-9 for the rest
    (a confirmed block's, mask RDOF_MASK_CRC9_RATE34), the decode with the path starting in any trellis state, if
-   that one's are: a radio whose encoder doesn't start in state 0 (361-1 B.2.2) sends a wrong first point. */
+   that one's are and its path metric is at least 2 lower: a radio whose encoder doesn't start in state 0 (361-1
+   B.2.2) sends a wrong first point. */
 int rdof_trellis34_decode_block(const uint8_t burst[RDOF_BURST_BYTES], uint8_t out18[18]);
 /* Called for each block rdof_trellis34_decode_block reads, when set (rdofradio -v; NULL otherwise, and the block
    costs nothing more): whether the decode from state 0 passed the CRC-9 and its path metric, then the decode from

@@ -185,7 +185,7 @@ Decode (`layer2.c:rdof_golay2087_decode`, `rdof_qr1676_decode`): tables of all 2
 | Point → 2 dibits (B.9) | `2 A 7 F E 6 B 3 D 5 8 0 1 9 4 C` (first dibit high) |
 | Dibits | 98; interleave (B.7): dibit i sent at position `INTERLEAVE[i]` |
 | Info bits | 196 = 98 dibits |
-| Decode | hard-decision Viterbi, branch metric = Hamming distance of the 4 bits, path starts and ends in state 0. `rdof_trellis34_decode_block` (the data block decoders' call) decodes again from any start state when octets 0-1 fail the CRC-9 and takes that if they pass: a radio heard on air started its encoder in state 4 or 7, and only its first point was off |
+| Decode | hard-decision Viterbi, branch metric = Hamming distance of the 4 bits, path starts and ends in state 0. `rdof_trellis34_decode_block` (the data block decoders' call) decodes again from any start state when octets 0-1 fail the CRC-9 and takes that if they pass and its metric is at least 2 lower (one wrong point): a radio heard on air started its encoder in state 4 or 7, and only its first point was off. An unconfirmed block has no CRC-9 and passes it by chance 1 time in 512; a swap that saves less was wrong nearly every time |
 
 B.7 interleave: `0 1 8 9 16 17 24 25 32 33 40 41 48 49 56 57 64 65 72 73 80 81 88 89 96 97 2 3 10 11 18 19 26 27 34 35 42 43 50 51 58 59 66 67 74 75 82 83 90 91 4 5 12 13 20 21 28 29 36 37 44 45 52 53 60 61 68 69 76 77 84 85 92 93 6 7 14 15 22 23 30 31 38 39 46 47 54 55 62 63 70 71 78 79 86 87 94 95`.
 
