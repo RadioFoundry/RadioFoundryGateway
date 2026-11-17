@@ -134,6 +134,9 @@
 #include "rdof/hbpeer.h"
 #include "rdof/layer2.h"
 #include "rdof/modem.h"
+#if RDOF_RUST
+#include "rdof/mrelay.h"
+#endif
 #include "rdof/mssim.h"
 #include "rdof/parrot.h"
 #include "rdof/pdu.h"
@@ -910,6 +913,16 @@ static struct {
     int64_t late48;        /* the modem's tx_late48 before the job */
     int rx_ch;             /* the input's receiver channel: it decodes the job's color code meanwhile (-1: none) */
     rdof_repeater_t r;
+#if RDOF_RUST
+    /* a P25 or NXDN job (cfg.mode): the modem in that mode, each frame it hears sent back (mrelay) */
+    struct {
+        uint8_t cmd;
+        uint16_t len;
+        uint8_t p[232];
+    } fq[16];
+    int nfq;
+    rdof_mrelay_t relay; /* the main loop's */
+#endif
 } BR = {.mu = PTHREAD_MUTEX_INITIALIZER};
 
 static double wall_s(void);
@@ -974,6 +987,19 @@ static void on_lost(void *ctx, int slot)
         rdof_repeater_lost(&R.r, slot);
     }
 }
+#if RDOF_RUST
+/* A P25 or NXDN frame from the modem (the reader's context): queued for the main loop's relay. */
+static void on_frame(void *ctx, uint8_t command, const uint8_t *payload, size_t len)
+{
+    pthread_mutex_lock(&BR.mu);
+    if (BR.active && BR.cfg.mode != RDOF_MODE_DMR && BR.nfq < (int)(sizeof BR.fq / sizeof BR.fq[0]) &&
+        len <= sizeof BR.fq[0].p) {
+        BR.fq[BR.nfq].cmd = command, BR.fq[BR.nfq].len = (uint16_t)len;
+        memcpy(BR.fq[BR.nfq++].p, payload, len);
+    }
+    pthread_mutex_unlock(&BR.mu);
+}
+#endif
 static void deliver_heard(void)
 {
     for (int i = 0; i < heard_n; i++)
@@ -3066,6 +3092,21 @@ static void bench_ob_fast(void)
     pthread_mutex_unlock(&BO.mu);
 }
 
+/* --mmdvm, while a job has the modem with no repeater polling it: a GET_STATUS every half second, unanswered here
+ * (the client drops the reply). An MMDVM_HS falls back to idle 2 s after the last one (its watchdog), and the job's
+ * DMR_START 0, P25 or NXDN frames are then refused (NAK reason 4, wrong mode). */
+static void mm_keepalive(double now)
+{
+    static double last;
+    if (now - last < 0.5)
+        return;
+    last = now;
+    uint8_t f[4];
+    const size_t n = rdof_mmdvm_frame(RDOF_MMDVM_GET_STATUS, NULL, 0, f, sizeof f);
+    if (n)
+        mm_write(f, n);
+}
+
 /* --mmdvm: the outbound's turn on a duplex modem. It keys with DMR_START; its idle outbound and CACH are the modem's
  * own, the voice bursts its host's DMR_DATA1 / DMR_DATA2 (bench_ob_fast). */
 static bool bench_ob_poll_mm(double now)
@@ -3124,6 +3165,7 @@ static bool bench_ob_poll_mm(double now)
     }
     ob_clock_mm(now);
     pthread_mutex_unlock(&BO.mu);
+    mm_keepalive(now);
     return true;
 }
 
@@ -3628,6 +3670,24 @@ static bool bench_rpt_poll(double now)
         BR.want = 0, BR.active = true;
         bench_power_on(BR.cfg.power);
         const rdof_bl_rpt_cfg_t cfg = BR.cfg;
+#if RDOF_RUST
+        if (cfg.mode != RDOF_MODE_DMR) { /* the modem's own P25 or NXDN mode, duplex: no slots, no color code */
+            BR.nfq = 0;
+            rdof_mrelay_init(&BR.relay, cfg.mode);
+            pthread_mutex_unlock(&BR.mu);
+            const bool ok = rdof_modem_start(&R.client, 1) &&
+                            rdof_radio_tune_mode(&R.radio, cfg.rx_hz, cfg.tx_hz, cfg.mode, 0, bench_level(cfg.power));
+            pthread_mutex_lock(&BR.mu);
+            BR.ready = ok, BR.failed = !ok;
+            if (!ok)
+                snprintf(BR.why, sizeof BR.why, "%s", R.client.error);
+            pthread_mutex_unlock(&BR.mu);
+            say("bench: a job's %s repeater has the transmitter: RX %.4f TX %.4f MHz%s%s\n",
+                cfg.mode == RDOF_MODE_P25 ? "P25" : "NXDN", cfg.rx_hz / 1e6, cfg.tx_hz / 1e6, ok ? "" : ": ",
+                ok ? "" : R.client.error);
+            return true;
+        }
+#endif
         pthread_mutex_unlock(&BR.mu);
         /* the input's channel decodes the job's color code, not the site's: it heard nothing of a job on another */
         BR.rx_ch = channel_of(cfg.rx_hz);
@@ -3665,6 +3725,22 @@ static bool bench_rpt_poll(double now)
     }
     if (BR.want == 2) { /* the job is over: the modem back to the transceiver */
         BR.nwake = 0;
+#if RDOF_RUST
+        if (BR.cfg.mode != RDOF_MODE_DMR) { /* the modem back to DMR: the site's own start (owner_resume) sets it up */
+            BR.nfq = 0;
+            pthread_mutex_unlock(&BR.mu);
+            rdof_modem_set_mode(&R.client, RDOF_MODE_IDLE);
+            say("bench: the %s repeater relayed %lld frames in %lld calls, %lld losses\n",
+                BR.cfg.mode == RDOF_MODE_P25 ? "P25" : "NXDN", (long long)BR.relay.frames,
+                (long long)BR.relay.calls, (long long)BR.relay.lost);
+            pthread_mutex_lock(&BR.mu);
+            BR.active = false, BR.nev = 0, BR.want = 0;
+            bench_power_off();
+            pthread_mutex_unlock(&BR.mu);
+            owner_resume(true);
+            return true;
+        }
+#endif
         pthread_mutex_unlock(&BR.mu);
         rdof_repeater_stop(&BR.r);
         R.m.tx_late48 = BR.late48;
@@ -3683,6 +3759,39 @@ static bool bench_rpt_poll(double now)
     memcpy(wake, BR.wake, sizeof wake[0] * (size_t)nwake);
     BR.nwake = 0;
     const bool failed = BR.failed;
+#if RDOF_RUST
+    if (BR.cfg.mode != RDOF_MODE_DMR) {
+        const int nfq = BR.nfq;
+        __typeof__(BR.fq[0]) fq[sizeof BR.fq / sizeof BR.fq[0]];
+        memcpy(fq, BR.fq, sizeof fq[0] * (size_t)nfq);
+        BR.nfq = 0;
+        pthread_mutex_unlock(&BR.mu);
+        mm_keepalive(now);
+        for (int i = 0; i < nfq && !failed; i++) {
+            uint8_t cmd, out[256];
+            size_t n;
+            rdof_mrelay_heard_t h;
+            if (!rdof_mrelay_heard(&BR.relay, fq[i].cmd, fq[i].p, fq[i].len, &cmd, out, sizeof out, &n, &h))
+                continue;
+            if (h.start)
+                br_on_key(&R, true);
+            if (n && !rdof_modem_write_frame(&R.client, cmd, out, n)) {
+                pthread_mutex_lock(&BR.mu);
+                BR.failed = true;
+                snprintf(BR.why, sizeof BR.why, "%s", R.client.error[0] ? R.client.error : "the modem stopped");
+                pthread_mutex_unlock(&BR.mu);
+                break;
+            }
+            if (h.lost)
+                br_event(&(rdof_bl_rpt_ev_t){.kind = RDOF_BL_RPT_LOST, .slot = 0});
+            else
+                br_event(&(rdof_bl_rpt_ev_t){.kind = RDOF_BL_RPT_FRAME, .duid = h.duid, .nac = h.nac, .rssi = h.rssi});
+            if (h.end)
+                br_on_key(&R, false);
+        }
+        return true;
+    }
+#endif
     pthread_mutex_unlock(&BR.mu);
     if (failed)
         return true;
@@ -3819,6 +3928,10 @@ static void bench_start(void)
         p.sig_open = NULL, p.sig_state = NULL, p.sig_close = NULL;
         p.station = bl_station, p.cannot = bl_cannot;
         p.rpt_own_rx = true; /* the repeater job hears on the modem's own receiver */
+#if RDOF_RUST
+        /* and runs the modem's own P25 and NXDN modes (mrelay); a simplex modem refuses any repeater (bl_cannot) */
+        p.rpt_modes = (1u << RDOF_MODE_P25) | (1u << RDOF_MODE_NXDN);
+#endif
     }
     if (!dev) /* the modem alone: no window, no I/Q, no tune; the receive ops say "the receiver isn't running" */
         p.iq_read = NULL, p.iq_filled = NULL, p.tune = NULL, p.tune_state = NULL, p.untune = NULL;
@@ -6056,6 +6169,9 @@ static int split_main(int argc, char **argv, const char *port, int baud, int pow
     rdof_modem_init(&R.client, &mp);
     R.client.on_rx = on_rx;
     R.client.on_lost = on_lost;
+#if RDOF_RUST
+    R.client.on_frame = on_frame;
+#endif
     R.client.on_nak = on_nak;
     R.client.cb_ctx = &R;
     if (!rdof_modem_start(&R.client, 1)) {
@@ -6359,6 +6475,9 @@ static int mmdvm_main(int argc, char **argv, const char *port, int baud, double 
     rdof_modem_init(&R.client, &mp);
     R.client.on_rx = on_rx;
     R.client.on_lost = on_lost;
+#if RDOF_RUST
+    R.client.on_frame = on_frame;
+#endif
     R.client.on_nak = on_nak;
     R.client.cb_ctx = &R;
     if (!rdof_modem_start(&R.client, 3)) {
@@ -7602,6 +7721,9 @@ int main(int argc, char **argv)
     rdof_modem_init(&R.client, &port);
     R.client.on_rx = on_rx;
     R.client.on_lost = on_lost;
+#if RDOF_RUST
+    R.client.on_frame = on_frame;
+#endif
     R.client.on_nak = on_nak;
     R.client.cb_ctx = &R;
     if (!rdof_modem_start(&R.client, 1)) {

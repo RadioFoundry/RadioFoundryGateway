@@ -44,6 +44,12 @@ cmake -S host-tests -B build/host-c -DRDOF_RUST=OFF              # the C modules
 | `txvr.rs` | `common/src/txvr.c` (the struct shared by three tasks through the raw pointer, `tuning` volatile) |
 | `usbmatch.rs` | `common/src/usbmatch.c` |
 
+Modules with no C twin (new code is written in Rust only; its C callers build with `RDOF_RUST`):
+
+| Module | What |
+|---|---|
+| `mrelay.rs` | `rdof/mrelay.h`: a P25 or NXDN repeater on a duplex MMDVM modem (`bench_repeater` `mode`) |
+
 - `config.rs` and `benchcfg.rs` read the version 3 plan, which stays C (`siteplan.c`, `site.c`): `src/plan.rs`
   mirrors its structs and declares the accessors they call.
 - Code copied from RadioFoundry (`common/src/radiofoundry`) stays C for now; the Rust calls it through `src/ffi.rs`.

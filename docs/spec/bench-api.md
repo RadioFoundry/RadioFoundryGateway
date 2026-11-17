@@ -462,7 +462,7 @@ Field names are the daemon's (frequencies in MHz, unlike v1).
 
 | op | request | replies |
 |---|---|---|
-| `info` | | `window` (`enabled`, `lo`, `hi`, `center` MHz, `fs`, `gain`, `dc_guard_khz`, `ppm`, `ppm_source`, `ppm_tol`, `ppm_ref`, `lo_ppm`, `fs_ppm` (section 14.7), `tx_lo`, `tx_hi` MHz: where the transmitter tunes now, each platform's own limit (a W12: 1 MHz either side of `center`, the LR2021's one synthesizer; rdofradio in full duplex: the modulator's reach around its TX LO); both 0: anywhere it can), `tune` (null, or `session`, `label`, `for` `"session"` or `"request"`, `state` `"tuning"` or `"tuned"`), `sdr` (`"shared"` when the receiver runs), `channels` (one per receiver channel and TX frequency: `freq`, `ch`, `in_window`, `listed`, `caps`, `claimed_by`, `keyed`), `tx_bands` (`[low, high]` MHz each: where else it may transmit, `bench.tx.bands_hz` or rdofradio's `--bench-tx LOW-HIGH`; a frequency in one is a transmit frequency as a listed one with `tx` is), `stations` (`modem`: the gateway's own modem, `kind` `sdrmodem`, or `mmdvm` with the modem's description in `model` and `mmdvm_tx` in place of `sdr_tx` in the channels' caps; `tx`, `held_by`, `waiting`), `modem` (`held_by`, `waiting`, `next_job_eta`), `default_caps`, `device` (kind, name, version), `signal_modes` (section 14.6), `jobs` (`bench_tx`, `bench_repeater`, `outbound`, `mssim`, `signal_tx`: null when this bench can run it, else the reason it can't, section 14.9) |
+| `info` | | `window` (`enabled`, `lo`, `hi`, `center` MHz, `fs`, `gain`, `dc_guard_khz`, `ppm`, `ppm_source`, `ppm_tol`, `ppm_ref`, `lo_ppm`, `fs_ppm` (section 14.7), `tx_lo`, `tx_hi` MHz: where the transmitter tunes now, each platform's own limit (a W12: 1 MHz either side of `center`, the LR2021's one synthesizer; rdofradio in full duplex: the modulator's reach around its TX LO); both 0: anywhere it can), `tune` (null, or `session`, `label`, `for` `"session"` or `"request"`, `state` `"tuning"` or `"tuned"`), `sdr` (`"shared"` when the receiver runs), `channels` (one per receiver channel and TX frequency: `freq`, `ch`, `in_window`, `listed`, `caps`, `claimed_by`, `keyed`), `tx_bands` (`[low, high]` MHz each: where else it may transmit, `bench.tx.bands_hz` or rdofradio's `--bench-tx LOW-HIGH`; a frequency in one is a transmit frequency as a listed one with `tx` is), `stations` (`modem`: the gateway's own modem, `kind` `sdrmodem`, or `mmdvm` with the modem's description in `model` and `mmdvm_tx` in place of `sdr_tx` in the channels' caps; `tx`, `held_by`, `waiting`), `modem` (`held_by`, `waiting`, `next_job_eta`), `default_caps`, `device` (kind, name, version), `signal_modes` (section 14.6), `repeater_modes` (`bench_repeater`'s `mode`s: `["dmr"]`, with `"p25"` and `"nxdn"` on a duplex MMDVM modem; `[]` with no repeater; `stations[0].modes` the same), `jobs` (`bench_tx`, `bench_repeater`, `outbound`, `mssim`, `signal_tx`: null when this bench can run it, else the reason it can't, section 14.9) |
 | `status` | | `sdr`, `receiver` (`seconds`, `overflows`, `clip_pct`, `dsp_skipped`, `decode_dropped`, `captures`), `held`, `waiting`, `sessions`, `tx` (section 7's) |
 | `session` | `label`, `expect_s`, `max_s` | `{"session": ID, "label"}`, then nothing until the connection closes (the session ends with it) or the session's `max_s` runs out (`{"ended": "max_s"}`) |
 | `claim` | `session`, `freqs`, `caps`, `wait_max` | queued / granted, `{"claimed": [MHz], "window"}` |
@@ -735,6 +735,14 @@ tool's own `ambe` (its bytes come as `ambe_hex`), `port` and `verbose` pass.
   burst heard: `slot`, `control`, `rssi`, `dt`, and the CSBK opcode, LC or voice frame), `lost`, `key`, `beacon`,
   then `summary` per slot (wakeups, voice frames, data types). `rx_offset`, `tx_offset` and `port` are
   `unsupported`: the gateway's own receiver and transmitter.
+- `bench_repeater`'s `mode` (`dmr`, the default; `p25`; `nxdn`) picks the protocol. A P25 or NXDN repeater runs on
+  a duplex MMDVM modem in that mode (rdofradio `--mmdvm`; elsewhere `unsupported`, and `info.repeater_modes` lists
+  the modes a bench runs): each frame the modem hears goes back to it to send, as heard, NAC or RAN, status symbols
+  and bit errors included. `cc`, `slots`, `hang` and `call_hang` are DMR's and ignored; `beacon` is refused. Its
+  records: `rx` per frame (`{"mode": "p25", "duid": "hdu"|"ldu1"|"ldu2"|"tdu"|"tdulc"|"tsdu"|"pdu", "nac": N,
+  "rssi": N}`, the NAC as heard with no error correction; NXDN `{"mode": "nxdn", "rssi": N}`; `rssi` the modem's raw
+  value, -1 none), `key` (true at a transmission's first frame, false at a P25 terminator or a loss), `lost`
+  (always 0: no slots), then one `summary` (`{"mode": "p25", "ldu1": n, ..., "lost": n}`, or NXDN's `"frames": n`).
 - An option the gateway can't honor is `unsupported` with the option named, before anything keys. `power_dbm`
   (dBm at the antenna; `power`, 0-255, the older form) is clamped to `bench.tx.max_dbm` or `rf_level`, and the
   refusal or note says the dBm (rdofradio: see 14.4).
@@ -1190,7 +1198,7 @@ each job's reason when it can't run. A client skips on those; a refused job's er
 | `tune`: gain | yes | yes | yes | no |
 | `run` `bench_tx`: `voice`, `csbk`, `data` | yes | yes | yes, the modem in simplex | yes, on the modem's own band (a hotspot board: 70 cm) |
 | `run` `bench_tx`: `outbound` | yes, the slot clock its own | yes, its own | duplex modem only: the modem's idle downlink and CACH; its slot times from a burst the SDR hears | no: the slot clock is counted in an SDR's samples |
-| `run` `bench_repeater` | no (`unsupported`) | yes | duplex modem only: the modem's own receiver hears the input | duplex modem only, as beside an SDR |
+| `run` `bench_repeater` | no (`unsupported`) | yes | duplex modem only: the modem's own receiver hears the input; `mode` `p25` and `nxdn` too | duplex modem only, as beside an SDR |
 | `mssim` (confirmed-data responder) | yes | yes | yes: timing the serial port's and a key-up's, learned from what's heard back | no: it hears through an SDR's channel |
 | `tx`: FM, AM (signal modes) | yes | yes | no: the MMDVM serial protocol carries DMR bursts only, and an RTL-SDR doesn't transmit | no |
 

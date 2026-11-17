@@ -17,6 +17,7 @@ use crate::jsonp::{JDoc, JNode};
 use crate::lastheard::{RdofLh, RdofLhEntry};
 use crate::mmdvm::{RdofMmdvmReader, RdofMmdvmStatus, RdofModemConfig};
 use crate::modem::{RdofModem, RdofModemPort, RdofRadio, RdofRssiMap};
+use crate::mrelay::{RdofMrelay, RdofMrelayHeard};
 use crate::netcalls::{RdofNetcalls, RdofTxCallInfo};
 use crate::oled::{RdofFrameBuf, RdofOledStatus};
 use crate::parrot::{RdofIpgwDmr, RdofParrot, RdofParrotBurst};
@@ -88,6 +89,8 @@ static LAYOUTS: &[Layout] = &layouts![
     ("rdof_benchtx_track_t", RdofBenchtxTrack),
     ("rdof_modem_port_t", RdofModemPort),
     ("rdof_modem_t", RdofModem),
+    ("rdof_mrelay_t", RdofMrelay),
+    ("rdof_mrelay_heard_t", RdofMrelayHeard),
     ("rdof_rssi_map_t", RdofRssiMap),
     ("rdof_radio_t", RdofRadio),
     ("rdof_burst_t", RdofBurst),

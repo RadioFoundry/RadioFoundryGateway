@@ -312,6 +312,19 @@ static bool parse_repeater(const rdof_jdoc_t *d, int obj, rdof_bj_job_t *j, char
     j->beacon_len = num(d, obj, "beacon_len", 4.0);
     j->beacon_phase = num(d, obj, "beacon_phase", 2.0);
     j->slots = slots(d, obj);
+    char mode[16];
+    if (!text(d, obj, "mode", mode, sizeof mode))
+        snprintf(mode, sizeof mode, "dmr");
+    j->rpt_mode = !strcmp(mode, "dmr") ? RDOF_MODE_DMR : !strcmp(mode, "p25") ? RDOF_MODE_P25
+                : !strcmp(mode, "nxdn") ? RDOF_MODE_NXDN : -1;
+    if (j->rpt_mode < 0) {
+        snprintf(error, ecap, "bench_repeater --mode %s: dmr, p25 or nxdn", mode);
+        return false;
+    }
+    if (j->rpt_mode != RDOF_MODE_DMR && j->beacon) {
+        snprintf(error, ecap, "bench_repeater --beacon is DMR's (a BS_Dwn_Act), not %s's", mode);
+        return false;
+    }
     if (!(j->rx_mhz > 0) || !(j->tx_mhz > 0)) {
         snprintf(error, ecap, "bench_repeater needs --rx and --tx");
         return false;
@@ -1692,8 +1705,56 @@ void rdof_bj_rpt_heard(rdof_bj_rpt_t *r, double t, int slot, uint8_t control, co
     rdof_bj_rpt_record(t, body, emit, ctx);
 }
 
+/* A P25 DUID's name, as the records give it ("duid5"-style for one with no name). */
+static const char *duid_name(int duid, char *buf, size_t cap)
+{
+    static const char *const names[16] = {[0x0] = "hdu",  [0x3] = "tdu", [0x5] = "ldu1", [0x7] = "tsdu",
+                                          [0xA] = "ldu2", [0xC] = "pdu", [0xF] = "tdulc"};
+    if (duid >= 0 && duid < 16 && names[duid])
+        return names[duid];
+    snprintf(buf, cap, "duid%d", duid);
+    return buf;
+}
+
+void rdof_bj_rpt_frame(rdof_bj_rpt_t *r, double t, int duid, int nac, int rssi, rdof_bj_emit_fn emit, void *ctx)
+{
+    char body[200], name[16];
+    if (r->mode == RDOF_MODE_P25) {
+        r->frames[duid >= 0 && duid < 16 ? duid : 0]++;
+        snprintf(body, sizeof body, ", \"rx\": {\"mode\": \"p25\", \"duid\": \"%s\", \"nac\": %d, \"rssi\": %d}",
+                 duid_name(duid, name, sizeof name), nac, rssi);
+    } else {
+        r->frames[0]++;
+        snprintf(body, sizeof body, ", \"rx\": {\"mode\": \"nxdn\", \"rssi\": %d}", rssi);
+    }
+    rdof_bj_rpt_record(t, body, emit, ctx);
+}
+
+/* A P25 or NXDN job's summary: frames by kind and losses. */
+static void frame_summary(const rdof_bj_rpt_t *r, double t, rdof_bj_emit_fn emit, void *ctx)
+{
+    char body[600], name[16];
+    const bool p25 = r->mode == RDOF_MODE_P25;
+    size_t k = (size_t)snprintf(body, sizeof body, ", \"summary\": {\"mode\": \"%s\"", p25 ? "p25" : "nxdn");
+    if (p25) {
+        for (int d = 0; d < 16 && k < sizeof body; d++)
+            if (r->frames[d])
+                k += (size_t)snprintf(body + k, sizeof body - k, ", \"%s\": %ld", duid_name(d, name, sizeof name),
+                                      r->frames[d]);
+    } else {
+        k += (size_t)snprintf(body + k, sizeof body - k, ", \"frames\": %ld", r->frames[0]);
+    }
+    if (k < sizeof body)
+        snprintf(body + k, sizeof body - k, ", \"lost\": %ld}", r->lost);
+    rdof_bj_rpt_record(t, body, emit, ctx);
+}
+
 void rdof_bj_rpt_summary(const rdof_bj_rpt_t *r, double t, rdof_bj_emit_fn emit, void *ctx)
 {
+    if (r->mode == RDOF_MODE_P25 || r->mode == RDOF_MODE_NXDN) {
+        frame_summary(r, t, emit, ctx);
+        return;
+    }
     char body[1200];
     size_t k = (size_t)snprintf(body, sizeof body, ", \"summary\": {");
     for (int s = 1; s <= 2; s++) {

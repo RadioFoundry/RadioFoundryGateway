@@ -2658,6 +2658,62 @@ static void test_repeater(void)
     CHECK(rp.open, "running");
     rdof_bl_closed(bl, c, now);
     CHECK(rp.closed && !rp.open, "closing ends the repeater");
+    /* P25 and NXDN: refused where the platform can't (no rpt_modes), an unknown mode and a beacon refused anywhere */
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_repeater\",\"rx\":438.0625,\"tx\":438.1125,"
+                "\"mode\":\"p25\"}}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"code\":\"unsupported\"") && strstr(out, "--mode p25"), "no P25 here: %s", out);
+    rdof_bl_closed(bl, c, now);
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_repeater\",\"rx\":438.0625,\"tx\":438.1125,"
+                "\"mode\":\"dstar\"}}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "dmr, p25 or nxdn"), "an unknown mode: %s", out);
+    rdof_bl_closed(bl, c, now);
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_repeater\",\"rx\":438.0625,\"tx\":438.1125,"
+                "\"mode\":\"nxdn\",\"beacon\":2}}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "--beacon is DMR's"), "a beacon on NXDN: %s", out);
+    rdof_bl_closed(bl, c, now);
+    rdof_bl_free(bl);
+
+    /* a platform whose modem runs them (rdofradio --mmdvm): info lists them, and a P25 job reports its frames */
+    rdof_bl_platform_t pm = PLAT;
+    pm.rpt_modes = (1u << RDOF_MODE_P25) | (1u << RDOF_MODE_NXDN);
+    bl = rdof_bl_new(&pm);
+    memset(&rp, 0, sizeof rp);
+    c = ask(bl, "{\"op\":\"info\"}", now);
+    drain(bl, c, out, sizeof out);
+    CHECK(strstr(out, "\"repeater_modes\":[\"dmr\",\"p25\",\"nxdn\"]"), "info: %.400s", strstr(out, "repeater_modes"));
+    rdof_bl_closed(bl, c, now);
+    c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_repeater\",\"rx\":438.0625,\"tx\":438.1125,"
+                "\"mode\":\"p25\",\"seconds\":1,\"json\":true}}", now);
+    n = 0;
+    bool sent = false;
+    for (int i = 0; i < 300 && !rdof_bl_finished(bl, c); i++) {
+        now += 0.01;
+        rdof_bl_tick(bl, now);
+        if (rp.open && rp.polls > 2 && !sent) {
+            sent = true;
+            rp.ev[rp.nev++] = (rdof_bl_rpt_ev_t){.kind = RDOF_BL_RPT_KEY, .keyed = true};
+            rp.ev[rp.nev++] = (rdof_bl_rpt_ev_t){.kind = RDOF_BL_RPT_FRAME, .duid = 0x0, .nac = 0x293, .rssi = -1};
+            for (int k = 0; k < 4; k++)
+                rp.ev[rp.nev++] = (rdof_bl_rpt_ev_t){.kind = RDOF_BL_RPT_FRAME, .duid = k & 1 ? 0xA : 0x5,
+                                                     .nac = 0x293, .rssi = 300};
+            rp.ev[rp.nev++] = (rdof_bl_rpt_ev_t){.kind = RDOF_BL_RPT_FRAME, .duid = 0x3, .nac = 0x293, .rssi = 300};
+            rp.ev[rp.nev++] = (rdof_bl_rpt_ev_t){.kind = RDOF_BL_RPT_KEY, .keyed = false};
+            rp.ev[rp.nev++] = (rdof_bl_rpt_ev_t){.kind = RDOF_BL_RPT_LOST};
+        }
+        n = drain_all(bl, c, out, sizeof out, n);
+    }
+    CHECK(rp.cfg.mode == RDOF_MODE_P25 && strstr(out, "\"exit\":0"), "the P25 job: mode %d %.300s", rp.cfg.mode, out);
+    CHECK(strstr(out, "rfg repeater RX 438.0625 TX 438.1125 MHz P25"), "its log: %.600s", out);
+    CHECK(strstr(out, "\\\"mode\\\": \\\"p25\\\"") && strstr(out, "\\\"duid\\\": \\\"ldu1\\\"") &&
+              strstr(out, "\\\"nac\\\": 659"), "a frame: %.2000s", out);
+    sum = strstr(out, "\\\"summary\\\"");
+    CHECK(sum && strstr(sum, "\\\"ldu1\\\": 2") && strstr(sum, "\\\"ldu2\\\": 2") &&
+              strstr(sum, "\\\"hdu\\\": 1") && strstr(sum, "\\\"tdu\\\": 1") && strstr(sum, "\\\"lost\\\": 1"),
+          "the P25 summary: %s", sum ? sum : "(none)");
+    rdof_bl_closed(bl, c, now);
     rdof_bl_free(bl);
 }
 

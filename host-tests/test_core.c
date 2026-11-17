@@ -2582,8 +2582,11 @@ static void t_mmdvm_edges(void)
     int answered = 0;
     for (int c = 0; c < 256; c++)
         answered += !rdof_mmdvm_unanswered((uint8_t)c);
-    CHECK(answered == 251 && rdof_mmdvm_unanswered(0x18) && rdof_mmdvm_unanswered(0x1A) && rdof_mmdvm_unanswered(0x1C) &&
-              rdof_mmdvm_unanswered(0x1D) && rdof_mmdvm_unanswered(0x1E) && !rdof_mmdvm_unanswered(0x19),
+    /* the frames sent with no reply: DMR's, and P25's and NXDN's (a repeater job's relay) */
+    CHECK(answered == 248 && rdof_mmdvm_unanswered(0x18) && rdof_mmdvm_unanswered(0x1A) && rdof_mmdvm_unanswered(0x1C) &&
+              rdof_mmdvm_unanswered(0x1D) && rdof_mmdvm_unanswered(0x1E) && !rdof_mmdvm_unanswered(0x19) &&
+              rdof_mmdvm_unanswered(0x30) && rdof_mmdvm_unanswered(0x31) && rdof_mmdvm_unanswered(0x40) &&
+              !rdof_mmdvm_unanswered(0x32),
           "unanswered %d", answered);
 
     /* a frame: 252 bytes of payload at most, and only in a buffer it fits */
@@ -2620,6 +2623,19 @@ static void t_mmdvm_edges(void)
     CHECK(v2[0] == 0x07 && v2[1] == 2 && v2[3] == 255 && v2[4] == 0 && v2[5] == 127 && v2[6] == 255 && v2[7] == 128 &&
               v2[10] == 255 && v2[26] == 3 && v2[27] == 44 && v2[28] == 128 && v2[36] == 0,
           "v2 %02x %02x %02x %02x", v2[0], v2[3], v2[5], v2[6]);
+    /* a P25 or NXDN repeater job's modem: that mode alone enabled, its own TX level as DMR's */
+    CHECK(rdof_mmdvm_config_v1(&c, 1, RDOF_MODE_P25, true, v1) == 23 && v1[1] == RDOF_P25_ENABLED && v1[3] == 4 &&
+              v1[12] == v1[10] && v1[12] == 255 && v1[15] == 0,
+          "v1 P25 %02x %02x %02x", v1[1], v1[3], v1[12]);
+    CHECK(rdof_mmdvm_config_v1(&c, 1, RDOF_MODE_NXDN, true, v1) == 23 && v1[1] == RDOF_NXDN_ENABLED && v1[3] == 5 &&
+              v1[15] == 255 && v1[12] == 0,
+          "v1 NXDN %02x %02x %02x", v1[1], v1[3], v1[15]);
+    CHECK(rdof_mmdvm_config_v2(&c, 1, RDOF_MODE_P25, true, v2) == 37 && v2[1] == RDOF_P25_ENABLED && v2[4] == 4 &&
+              v2[12] == 255 && v2[13] == 0,
+          "v2 P25 %02x %02x %02x", v2[1], v2[4], v2[12]);
+    CHECK(rdof_mmdvm_config_v2(&c, 1, RDOF_MODE_NXDN, true, v2) == 37 && v2[1] == RDOF_NXDN_ENABLED && v2[4] == 5 &&
+              v2[13] == 255 && v2[12] == 0,
+          "v2 NXDN %02x %02x %02x", v2[1], v2[4], v2[13]);
 
     uint8_t fq[14];
     CHECK(rdof_mmdvm_set_freq_payload(0x1B7D1A6C, 0xFFFFFFFF, 0x1FF, fq) == 14, "freq len");

@@ -1010,16 +1010,24 @@ static void op_info(rdof_bl_t *bl, conn_t *c, double now)
         snprintf(bands + strlen(bands), sizeof bands - strlen(bands), "%s[%.6f,%.6f]", i ? "," : "", b[i][0] / 1e6,
                  b[i][1] / 1e6);
     strcat(bands, "]");
+    /* the station's digital modes: DMR, and the repeater jobs' others (rpt_modes) */
+    char modes[48] = "[\"dmr\"";
+    if (bl->p.rpt_open && (bl->p.rpt_modes & (1u << RDOF_MODE_P25)))
+        strcat(modes, ",\"p25\"");
+    if (bl->p.rpt_open && (bl->p.rpt_modes & (1u << RDOF_MODE_NXDN)))
+        strcat(modes, ",\"nxdn\"");
+    strcat(modes, "]");
     if (k < line_cap)
         k += (size_t)snprintf(line + k, line_cap - k,
                               "],\"tx_bands\":%s,\"stations\":[{\"name\":\"modem\",\"kind\":\"%s\",\"model\":%s,"
-                              "\"port\":\"\",\"present\":%s,\"tx\":%s,\"why_not\":%s,\"modes\":[\"dmr\"],"
+                              "\"port\":\"\",\"present\":%s,\"tx\":%s,\"why_not\":%s,\"modes\":%s,"
                               "\"bands\":[],\"held_by\":%s,\"waiting\":%s}],"
                               "\"modem\":{\"held_by\":%s,\"waiting\":%s,\"next_job_eta\":{\"eta_s\":%.1f,"
                               "\"worst_s\":%.1f}},\"signal_modes\":{\"tx\":%s,\"rx\":%s},\"jobs\":%s,"
-                              "\"features\":{\"bursts_cach\":true,\"bursts_lost\":true,\"bursts_envelope\":true,\"bursts_ramp\":true,\"capture_raw\":%s,\"bursts_raw\":%s,\"dev_scale\":%s},\"default_caps\":[]}",
+                              "\"repeater_modes\":%s,\"features\":{\"bursts_cach\":true,\"bursts_lost\":true,\"bursts_envelope\":true,\"bursts_ramp\":true,\"capture_raw\":%s,\"bursts_raw\":%s,\"dev_scale\":%s},\"default_caps\":[]}",
                               bands, st_kind ? st_kind : "sdrmodem", qmodel, notx ? "false" : "true",
-                              notx ? "false" : "true", why, held, wq, held, wq, eta, eta, stx, srx, jobs, bl->p.raw_start ? "true" : "false",
+                              notx ? "false" : "true", why, modes, held, wq, held, wq, eta, eta, stx, srx, jobs,
+                              bl->p.rpt_open ? modes : "[]", bl->p.raw_start ? "true" : "false",
                               bl->p.raw_start && bl->p.raw_demod ? "true" : "false",
                               cannot(bl, "dev_scale") ? "false" : "true");
     if (k >= line_cap) {
@@ -2138,6 +2146,13 @@ static void rpt_run(rdof_bl_t *bl, conn_t *c, job_t *J, int root, double now)
         fail(bl, c, "unsupported", "%s", no);
         return;
     }
+    if (j->rpt_mode != RDOF_MODE_DMR && !(bl->p.rpt_modes & (1u << j->rpt_mode))) {
+        const char *mode = j->rpt_mode == RDOF_MODE_P25 ? "p25" : "nxdn";
+        free(J);
+        fail(bl, c, "unsupported", "bench_repeater --mode %s isn't done here: an MMDVM modem's own P25 and NXDN modes "
+             "run it (rdofradio --mmdvm on a duplex board)", mode);
+        return;
+    }
     const double rx = j->rx_mhz, tx = j->tx_mhz;
     /* an input no channel decodes: the receiver tuned there for the job, as any job that hears (the Pluto). A
        modem's own receiver hears the input (rpt_own_rx): no channel needed there. */
@@ -2473,7 +2488,9 @@ static void tick_rpt(rdof_bl_t *bl, conn_t *c, double now)
     switch (J->state) {
     case J_OPEN: {
         const rdof_bl_rpt_cfg_t cfg = {(uint32_t)lround(j->rx_mhz * 1e6), (uint32_t)lround(j->tx_mhz * 1e6), j->cc,
-                                       {j->power_dbm, j->power, j->dev_scale}, j->hang, j->call_hang, j->slots};
+                                       {j->power_dbm, j->power, j->dev_scale}, j->hang, j->call_hang, j->slots,
+                                       j->rpt_mode};
+        J->rpt.mode = j->rpt_mode;
         if (!bl->p.rpt_open(bl->p.ctx, &cfg, why, sizeof why)) {
             run_log(bl, c, now, "can't run the repeater: %s", why[0] ? why : "the transmitter is busy");
             run_exit(bl, c, 1, NULL);
@@ -2496,7 +2513,11 @@ static void tick_rpt(rdof_bl_t *bl, conn_t *c, double now)
         }
         if (st == 0)
             break;
-        run_log(bl, c, now, "rfg repeater RX %.4f TX %.4f MHz cc %d", j->rx_mhz, j->tx_mhz, j->cc);
+        if (j->rpt_mode == RDOF_MODE_P25 || j->rpt_mode == RDOF_MODE_NXDN)
+            run_log(bl, c, now, "rfg repeater RX %.4f TX %.4f MHz %s", j->rx_mhz, j->tx_mhz,
+                    j->rpt_mode == RDOF_MODE_P25 ? "P25" : "NXDN");
+        else
+            run_log(bl, c, now, "rfg repeater RX %.4f TX %.4f MHz cc %d", j->rx_mhz, j->tx_mhz, j->cc);
         if (j->beacon)
             run_log(bl, c, now, "beacon every %.1f s for %.1f s, first after %.1f s", j->beacon, j->beacon_len,
                     j->beacon_phase);
@@ -2510,7 +2531,10 @@ static void tick_rpt(rdof_bl_t *bl, conn_t *c, double now)
             const double t = ev.t > 0 ? ev.t : utc_now(bl, now);
             if (ev.kind == RDOF_BL_RPT_HEARD) {
                 rdof_bj_rpt_heard(&J->rpt, t, ev.slot, ev.control, ev.burst, ev.rssi, rpt_out, &rc);
+            } else if (ev.kind == RDOF_BL_RPT_FRAME) {
+                rdof_bj_rpt_frame(&J->rpt, t, ev.duid, ev.nac, ev.rssi, rpt_out, &rc);
             } else if (ev.kind == RDOF_BL_RPT_LOST) {
+                J->rpt.lost++;
                 snprintf(body, sizeof body, ", \"lost\": %d", ev.slot);
                 rdof_bj_rpt_record(t, body, rpt_out, &rc);
             } else if (ev.kind == RDOF_BL_RPT_KEY) {

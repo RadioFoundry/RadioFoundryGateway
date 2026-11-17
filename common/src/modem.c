@@ -52,6 +52,13 @@ static void on_frame(void *ctx, uint8_t cmd, const uint8_t *p, size_t len)
         }
         return;
     }
+    if (cmd == RDOF_MMDVM_P25_HDR || cmd == RDOF_MMDVM_P25_LDU || cmd == RDOF_MMDVM_P25_LOST ||
+        cmd == RDOF_MMDVM_NXDN_DATA || cmd == RDOF_MMDVM_NXDN_LOST) {
+        m->last_rx = now_s(m);
+        if (m->on_frame)
+            m->on_frame(m->cb_ctx, cmd, p, len);
+        return;
+    }
     int key;
     bool ok = true;
     if (cmd == RDOF_MMDVM_ACK || cmd == RDOF_MMDVM_NAK) {
@@ -156,18 +163,23 @@ bool rdof_modem_status(rdof_modem_t *m, rdof_mmdvm_status_t *out)
 }
 
 /* SET_CONFIG with extra flags ORed into its flags byte (RDOF_MMDVM_DCDM). */
-static bool configure(rdof_modem_t *m, const rdof_modem_config_t *c, int cc, bool duplex, uint8_t extra)
+static bool configure(rdof_modem_t *m, const rdof_modem_config_t *c, int cc, int mode, bool duplex, uint8_t extra)
 {
     uint8_t p[40];
-    size_t n = m->protocol >= 2 ? rdof_mmdvm_config_v2(c, cc, RDOF_MODE_DMR, duplex, p)
-                                : rdof_mmdvm_config_v1(c, cc, RDOF_MODE_DMR, duplex, p);
+    size_t n = m->protocol >= 2 ? rdof_mmdvm_config_v2(c, cc, mode, duplex, p)
+                                : rdof_mmdvm_config_v1(c, cc, mode, duplex, p);
     p[0] |= extra;
     return request(m, RDOF_MMDVM_SET_CONFIG, p, n);
 }
 
 bool rdof_modem_configure(rdof_modem_t *m, const rdof_modem_config_t *c, int cc, bool duplex)
 {
-    return configure(m, c, cc, duplex, 0);
+    return configure(m, c, cc, RDOF_MODE_DMR, duplex, 0);
+}
+
+bool rdof_modem_configure_mode(rdof_modem_t *m, const rdof_modem_config_t *c, int cc, int mode, bool duplex)
+{
+    return configure(m, c, cc, mode, duplex, 0);
 }
 
 bool rdof_modem_set_freq(rdof_modem_t *m, uint32_t rx_hz, uint32_t tx_hz, int rf_level)
@@ -199,6 +211,11 @@ bool rdof_modem_write_dmr(rdof_modem_t *m, uint8_t control, const uint8_t burst[
     p[0] = control;
     memcpy(p + 1, burst, RDOF_BURST_BYTES);
     return write_frame(m, slot == 1 ? RDOF_MMDVM_DMR_DATA1 : RDOF_MMDVM_DMR_DATA2, p, sizeof p);
+}
+
+bool rdof_modem_write_frame(rdof_modem_t *m, uint8_t command, const uint8_t *payload, size_t len)
+{
+    return write_frame(m, command, payload, len);
 }
 
 bool rdof_modem_dmr_start(rdof_modem_t *m, bool on)
@@ -320,11 +337,20 @@ bool rdof_radio_tune_duplex(rdof_radio_t *r, uint32_t rx, uint32_t tx, int cc, i
     return rdof_modem_configure(r->modem, &r->config, cc, true) && rdof_modem_set_mode(r->modem, RDOF_MODE_DMR);
 }
 
+bool rdof_radio_tune_mode(rdof_radio_t *r, uint32_t rx, uint32_t tx, int mode, int cc, int power)
+{
+    if (!tune_split(r, rx, tx, power))
+        return false;
+    if (r->settle_ms && r->modem->port.sleep_ms)
+        r->modem->port.sleep_ms(r->modem->port.ctx, r->settle_ms);
+    return configure(r->modem, &r->config, cc, mode, true, 0) && rdof_modem_set_mode(r->modem, mode);
+}
+
 bool rdof_radio_tune_dcdm(rdof_radio_t *r, uint32_t freq, int cc, int power)
 {
     if (!tune_split(r, freq, freq, power))
         return false;
     if (r->settle_ms && r->modem->port.sleep_ms)
         r->modem->port.sleep_ms(r->modem->port.ctx, r->settle_ms);
-    return configure(r->modem, &r->config, cc, false, RDOF_MMDVM_DCDM) && rdof_modem_set_mode(r->modem, RDOF_MODE_DMR);
+    return configure(r->modem, &r->config, cc, RDOF_MODE_DMR, false, RDOF_MMDVM_DCDM) && rdof_modem_set_mode(r->modem, RDOF_MODE_DMR);
 }

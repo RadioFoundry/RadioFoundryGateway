@@ -37,6 +37,8 @@ pub mod mmdvm;
 #[cfg(feature = "legacy")]
 pub mod modem;
 #[cfg(feature = "legacy")]
+pub mod mrelay;
+#[cfg(feature = "legacy")]
 pub mod netcalls;
 #[cfg(feature = "legacy")]
 pub mod oled;

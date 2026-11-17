@@ -56,6 +56,9 @@ typedef struct rdof_modem {
     /* An unanswered command (DMR data ...) NAKed. */
     void (*on_nak)(void *ctx, uint8_t command, int err);
     void *cb_ctx;
+    /* P25 and NXDN frames the modem hears (reader context): RDOF_MMDVM_P25_HDR / _LDU / _LOST, RDOF_MMDVM_NXDN_DATA /
+     * _LOST and the payload as it came (rdof/mmdvm.h). May be NULL. */
+    void (*on_frame)(void *ctx, uint8_t command, const uint8_t *payload, size_t len);
 } rdof_modem_t;
 
 void rdof_modem_init(rdof_modem_t *m, const rdof_modem_port_t *port);
@@ -68,12 +71,16 @@ void rdof_modem_fail(rdof_modem_t *m, const char *why);
 bool rdof_modem_start(rdof_modem_t *m, int tries);
 bool rdof_modem_status(rdof_modem_t *m, rdof_mmdvm_status_t *out);
 bool rdof_modem_configure(rdof_modem_t *m, const rdof_modem_config_t *c, int cc, bool duplex);
+/* SET_CONFIG for a starting mode (RDOF_MODE_DMR, _P25, _NXDN): that mode alone enabled. */
+bool rdof_modem_configure_mode(rdof_modem_t *m, const rdof_modem_config_t *c, int cc, int mode, bool duplex);
 bool rdof_modem_set_freq(rdof_modem_t *m, uint32_t rx_hz, uint32_t tx_hz, int rf_level);
 bool rdof_modem_set_mode(rdof_modem_t *m, int mode);
 bool rdof_modem_send_cwid(rdof_modem_t *m, const char *text);
 /* Not waited on. */
 bool rdof_modem_write_dmr(rdof_modem_t *m, uint8_t control, const uint8_t burst[RDOF_BURST_BYTES], int slot);
 bool rdof_modem_dmr_start(rdof_modem_t *m, bool on);
+/* A data frame the modem answers only with a NAK (RDOF_MMDVM_P25_HDR, _P25_LDU, _NXDN_DATA): command and payload. */
+bool rdof_modem_write_frame(rdof_modem_t *m, uint8_t command, const uint8_t *payload, size_t len);
 bool rdof_modem_dmr_abort(rdof_modem_t *m, int slot);
 bool rdof_modem_dmr_short_lc(rdof_modem_t *m, const uint8_t lc9[9]);
 
@@ -110,6 +117,8 @@ bool rdof_radio_tune(rdof_radio_t *r, uint32_t freq, int cc, int power);
 bool rdof_radio_tune_duplex(rdof_radio_t *r, uint32_t rx, uint32_t tx, int cc, int power);
 /* Simplex on freq with RDOF_MMDVM_DCDM: both slots, direct mode (a modem that rdof_dcdm_capable says takes it). */
 bool rdof_radio_tune_dcdm(rdof_radio_t *r, uint32_t freq, int cc, int power);
+/* Duplex on rx / tx in mode (RDOF_MODE_DMR at cc, RDOF_MODE_P25, RDOF_MODE_NXDN): that mode alone enabled. */
+bool rdof_radio_tune_mode(rdof_radio_t *r, uint32_t rx, uint32_t tx, int mode, int cc, int power);
 /* dBm for a raw RSSI (-1 = none); false when there's no conversion. */
 bool rdof_radio_rssi(const rdof_radio_t *r, int raw, uint32_t freq, int *dbm);
 

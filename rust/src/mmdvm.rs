@@ -21,6 +21,13 @@ const DMR_SHORTLC: u8 = 0x1C;
 const DMR_START: u8 = 0x1D;
 const DMR_ABORT: u8 = 0x1E;
 const DMR_ENABLED: u8 = 0x02;
+const P25_ENABLED: u8 = 0x08;
+const NXDN_ENABLED: u8 = 0x10;
+const MODE_P25: c_int = 4;
+const MODE_NXDN: c_int = 5;
+const P25_HDR: u8 = 0x30;
+const P25_LDU: u8 = 0x31;
+const NXDN_DATA: u8 = 0x40;
 const SIMPLEX: c_int = 0x80;
 const SYNC_AUDIO: u8 = 0x20;
 pub const RDOF_SYNC_DATA: u8 = 0x40;
@@ -64,7 +71,7 @@ pub type FrameCb = Option<unsafe extern "C" fn(ctx: *mut c_void, command: u8, pa
 
 #[no_mangle]
 pub extern "C" fn rdof_mmdvm_unanswered(c: u8) -> bool {
-    matches!(c, DMR_DATA1 | DMR_DATA2 | DMR_SHORTLC | DMR_START | DMR_ABORT)
+    matches!(c, DMR_DATA1 | DMR_DATA2 | DMR_SHORTLC | DMR_START | DMR_ABORT | P25_HDR | P25_LDU | NXDN_DATA)
 }
 
 #[no_mangle]
@@ -127,6 +134,15 @@ fn dc(offset: c_int) -> u8 {
     (offset as u8).wrapping_add(128)
 }
 
+/// The modes byte for a starting state: the one mode it enables.
+fn enabled(state: c_int) -> u8 {
+    match state {
+        MODE_P25 => P25_ENABLED,
+        MODE_NXDN => NXDN_ENABLED,
+        _ => DMR_ENABLED,
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn rdof_mmdvm_config_v1(
     c: &RdofModemConfig,
@@ -137,7 +153,7 @@ pub extern "C" fn rdof_mmdvm_config_v1(
 ) -> usize {
     *p = [0; 23];
     p[0] = rdof_modem_config_flags(c, duplex) as u8;
-    p[1] = DMR_ENABLED;
+    p[1] = enabled(state);
     p[2] = tx_delay(c);
     p[3] = state as u8;
     p[4] = pct(c.rx_level);
@@ -148,6 +164,11 @@ pub extern "C" fn rdof_mmdvm_config_v1(
     p[10] = pct(c.tx_level);
     p[13] = dc(c.tx_dc_offset);
     p[14] = dc(c.rx_dc_offset);
+    match state {
+        MODE_P25 => p[12] = p[10],
+        MODE_NXDN => p[15] = p[10],
+        _ => {}
+    }
     23
 }
 
@@ -161,7 +182,7 @@ pub extern "C" fn rdof_mmdvm_config_v2(
 ) -> usize {
     *p = [0; 37];
     p[0] = rdof_modem_config_flags(c, duplex) as u8;
-    p[1] = DMR_ENABLED;
+    p[1] = enabled(state);
     p[3] = tx_delay(c);
     p[4] = state as u8;
     p[5] = dc(c.tx_dc_offset);
@@ -172,6 +193,11 @@ pub extern "C" fn rdof_mmdvm_config_v2(
     p[26] = (cc & 0x0F) as u8;
     p[27] = c.dmr_delay as u8;
     p[28] = 128;
+    match state {
+        MODE_P25 => p[12] = p[10],
+        MODE_NXDN => p[13] = p[10],
+        _ => {}
+    }
     37
 }
 

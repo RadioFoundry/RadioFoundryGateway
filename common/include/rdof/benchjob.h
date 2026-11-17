@@ -87,6 +87,7 @@ typedef struct {
     bool json;
     /* bench_repeater (cmd RDOF_BJ_REPEATER; freq_mhz is tx_mhz) */
     double rx_mhz, tx_mhz, hang, call_hang, beacon, beacon_len, beacon_phase;
+    int rpt_mode;               /* --mode: RDOF_MODE_DMR, RDOF_MODE_P25, RDOF_MODE_NXDN (rdof/mmdvm.h) */
     unsigned slots;             /* bit 1: slot 1, bit 2: slot 2 (outbound: the slots it reports) */
     /* bench_tx outbound's voice calls */
     rdof_bj_ob_call_t ob_calls[RDOF_BJ_OB_CALLS];
@@ -186,11 +187,16 @@ typedef struct {
 
 typedef struct {
     rdof_bj_rpt_slot_t s[3];    /* 1 and 2 */
+    int mode;                   /* RDOF_MODE_P25 or RDOF_MODE_NXDN: frames counted below, not slots; else DMR */
+    long frames[16];            /* P25: by DUID; NXDN: [0] */
+    long lost;
 } rdof_bj_rpt_t;
 
 /* A burst heard on the input (its MMDVM control byte): an "rx" record, and a "wakeup" before it for a BS_Dwn_Act. */
 void rdof_bj_rpt_heard(rdof_bj_rpt_t *r, double t, int slot, uint8_t control, const uint8_t burst[33], int rssi,
                        rdof_bj_emit_fn emit, void *ctx);
+/* A P25 or NXDN frame heard on the input (r->mode's): an "rx" record. duid, nac and rssi -1: none. */
+void rdof_bj_rpt_frame(rdof_bj_rpt_t *r, double t, int duid, int nac, int rssi, rdof_bj_emit_fn emit, void *ctx);
 /* Any other record: body is its fields after "t" (",\"key\":true"). */
 void rdof_bj_rpt_record(double t, const char *body, rdof_bj_emit_fn emit, void *ctx);
 void rdof_bj_rpt_summary(const rdof_bj_rpt_t *r, double t, rdof_bj_emit_fn emit, void *ctx);

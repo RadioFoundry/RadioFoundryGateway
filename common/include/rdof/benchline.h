@@ -137,9 +137,12 @@ typedef struct {
     rdof_bench_power_t power;
     double hang_s, call_hang_s; /* T_MSInactiv, T_CallHt */
     unsigned slots;             /* bit 1: slot 1, bit 2: slot 2 */
+    int mode;                   /* RDOF_MODE_DMR, or RDOF_MODE_P25 / RDOF_MODE_NXDN where rpt_modes has it (rdof/mmdvm.h) */
 } rdof_bl_rpt_cfg_t;
 
-enum { RDOF_BL_RPT_HEARD = 1, RDOF_BL_RPT_LOST, RDOF_BL_RPT_KEY };
+/* A P25 or NXDN repeater's events: RDOF_BL_RPT_FRAME for a frame heard (duid, nac, rssi), RDOF_BL_RPT_LOST (slot 0),
+ * RDOF_BL_RPT_KEY. */
+enum { RDOF_BL_RPT_HEARD = 1, RDOF_BL_RPT_LOST, RDOF_BL_RPT_KEY, RDOF_BL_RPT_FRAME };
 
 /* An outbound job's setup (bench_tx outbound): a BS downlink keyed for seconds. */
 typedef struct {
@@ -174,6 +177,7 @@ typedef struct {
     uint8_t control;            /* heard: the MMDVM control byte */
     uint8_t burst[33];
     bool keyed;                 /* key */
+    int duid, nac;              /* frame (P25; -1: none) */
 } rdof_bl_rpt_ev_t;
 
 /* A retune of the receiver (the tune op; a trigger or rx outside the window): what changes, the rest as it is. */
@@ -327,6 +331,9 @@ typedef struct {
     /* A repeater job hears on its own receive path, the platform's (an MMDVM modem), not on a receiver channel: its
      * input needs none, and no tune for one. */
     bool rpt_own_rx;
+    /* The repeater jobs' modes besides DMR, each as bit (1u << mode): RDOF_MODE_P25, RDOF_MODE_NXDN (an MMDVM modem's
+     * own modes). 0: DMR only. */
+    unsigned rpt_modes;
     /* A raw capture (optional): the ADC's own samples, int16 I, Q, for a capture with "raw": a receiver that has to stop
      * listening to hand them over does it for this long. raw_start begins one in the background: 0 begun, 1 another is
      * running (try again), -1 it can't (why in err). raw_state: 0 still running, 1 ready (*info), -1 failed (why in err).

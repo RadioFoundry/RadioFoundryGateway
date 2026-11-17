@@ -37,6 +37,11 @@ const ACK: u8 = 0x70;
 const NAK: u8 = 0x7F;
 const MODE_DMR: c_int = 2;
 const DCDM: u8 = 0x40; // RDOF_MMDVM_DCDM
+const P25_HDR: u8 = 0x30;
+const P25_LDU: u8 = 0x31;
+const P25_LOST: u8 = 0x32;
+const NXDN_DATA: u8 = 0x40;
+const NXDN_LOST: u8 = 0x41;
 
 const RADIO_HOTSPOT: c_int = 1;
 const RADIO_MMDVM: c_int = 3;
@@ -80,6 +85,7 @@ pub struct RdofModem {
     pub on_lost: Option<unsafe extern "C" fn(ctx: *mut c_void, slot: c_int)>,
     pub on_nak: Option<unsafe extern "C" fn(ctx: *mut c_void, command: u8, err: c_int)>,
     pub cb_ctx: *mut c_void,
+    pub on_frame: Option<unsafe extern "C" fn(ctx: *mut c_void, command: u8, payload: *const u8, len: usize)>,
 }
 
 /// rdof_rssi_map_t
@@ -193,6 +199,13 @@ unsafe extern "C" fn on_frame(ctx: *mut c_void, cmd: u8, p: *const u8, len: usiz
             if let Some(on_rx) = (*m).on_rx {
                 on_rx((*m).cb_ctx, slot, p[0], p[1..].as_ptr(), rssi);
             }
+        }
+        return;
+    }
+    if matches!(cmd, P25_HDR | P25_LDU | P25_LOST | NXDN_DATA | NXDN_LOST) {
+        (*m).last_rx = now_s(m);
+        if let Some(on_frame) = (*m).on_frame {
+            on_frame((*m).cb_ctx, cmd, p.as_ptr(), p.len());
         }
         return;
     }
@@ -330,16 +343,27 @@ pub unsafe extern "C" fn rdof_modem_status(m: *mut RdofModem, out: &mut RdofMmdv
 
 #[no_mangle]
 pub unsafe extern "C" fn rdof_modem_configure(m: *mut RdofModem, c: &RdofModemConfig, cc: c_int, duplex: bool) -> bool {
-    configure(m, c, cc, duplex, 0)
+    configure(m, c, cc, MODE_DMR, duplex, 0)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_modem_configure_mode(
+    m: *mut RdofModem,
+    c: &RdofModemConfig,
+    cc: c_int,
+    mode: c_int,
+    duplex: bool,
+) -> bool {
+    configure(m, c, cc, mode, duplex, 0)
 }
 
 /// SET_CONFIG with extra flags ORed into its flags byte (RDOF_MMDVM_DCDM).
-unsafe fn configure(m: *mut RdofModem, c: &RdofModemConfig, cc: c_int, duplex: bool, extra: u8) -> bool {
+unsafe fn configure(m: *mut RdofModem, c: &RdofModemConfig, cc: c_int, mode: c_int, duplex: bool, extra: u8) -> bool {
     let mut p = [0u8; 37];
     let n = if (*m).protocol >= 2 {
-        rdof_mmdvm_config_v2(c, cc, MODE_DMR, duplex, &mut p)
+        rdof_mmdvm_config_v2(c, cc, mode, duplex, &mut p)
     } else {
-        rdof_mmdvm_config_v1(c, cc, MODE_DMR, duplex, (&mut p[..23]).try_into().unwrap())
+        rdof_mmdvm_config_v1(c, cc, mode, duplex, (&mut p[..23]).try_into().unwrap())
     };
     p[0] |= extra;
     request(m, SET_CONFIG, &p[..n])
@@ -379,6 +403,11 @@ pub unsafe extern "C" fn rdof_modem_write_dmr(m: *mut RdofModem, control: u8, bu
     p[0] = control;
     p[1..].copy_from_slice(slice(burst, RDOF_BURST_BYTES));
     write_frame(m, if slot == 1 { DMR_DATA1 } else { DMR_DATA2 }, &p)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_modem_write_frame(m: *mut RdofModem, command: u8, payload: *const u8, len: usize) -> bool {
+    write_frame(m, command, slice(payload, len))
 }
 
 #[no_mangle]
@@ -494,10 +523,20 @@ unsafe fn tune_split(r: &RdofRadio, rx: u32, tx: u32, power: c_int) -> bool {
 }
 
 unsafe fn tune(r: &RdofRadio, rx: u32, tx: u32, cc: c_int, power: c_int, duplex: bool) -> bool {
-    tune_flags(r, rx, tx, cc, power, duplex, 0)
+    tune_flags(r, rx, tx, MODE_DMR, cc, power, duplex, 0)
 }
 
-unsafe fn tune_flags(r: &RdofRadio, rx: u32, tx: u32, cc: c_int, power: c_int, duplex: bool, extra: u8) -> bool {
+#[allow(clippy::too_many_arguments)]
+unsafe fn tune_flags(
+    r: &RdofRadio,
+    rx: u32,
+    tx: u32,
+    mode: c_int,
+    cc: c_int,
+    power: c_int,
+    duplex: bool,
+    extra: u8,
+) -> bool {
     if !tune_split(r, rx, tx, power) {
         return false;
     }
@@ -507,7 +546,7 @@ unsafe fn tune_flags(r: &RdofRadio, rx: u32, tx: u32, cc: c_int, power: c_int, d
             sleep_ms((*m).port.ctx, r.settle_ms);
         }
     }
-    configure(m, &r.config, cc, duplex, extra) && rdof_modem_set_mode(m, MODE_DMR)
+    configure(m, &r.config, cc, mode, duplex, extra) && rdof_modem_set_mode(m, mode)
 }
 
 #[no_mangle]
@@ -522,5 +561,10 @@ pub unsafe extern "C" fn rdof_radio_tune_duplex(r: &RdofRadio, rx: u32, tx: u32,
 
 #[no_mangle]
 pub unsafe extern "C" fn rdof_radio_tune_dcdm(r: &RdofRadio, freq: u32, cc: c_int, power: c_int) -> bool {
-    tune_flags(r, freq, freq, cc, power, false, DCDM)
+    tune_flags(r, freq, freq, MODE_DMR, cc, power, false, DCDM)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rdof_radio_tune_mode(r: &RdofRadio, rx: u32, tx: u32, mode: c_int, cc: c_int, power: c_int) -> bool {
+    tune_flags(r, rx, tx, mode, cc, power, true, 0)
 }

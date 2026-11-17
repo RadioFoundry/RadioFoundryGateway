@@ -33,12 +33,23 @@ extern "C" {
 #define RDOF_MMDVM_DMR_SHORTLC 0x1C
 #define RDOF_MMDVM_DMR_START 0x1D
 #define RDOF_MMDVM_DMR_ABORT 0x1E
+/* P25 and NXDN data: what the modem hears comes as {tag, frame (sync first) [, RSSI hi, lo]}; what it is handed to
+ * send as {tag, frame}, the tag skipped. A P25 header frame is any non-LDU frame starting a transmission. */
+#define RDOF_MMDVM_P25_HDR 0x30
+#define RDOF_MMDVM_P25_LDU 0x31
+#define RDOF_MMDVM_P25_LOST 0x32
+#define RDOF_MMDVM_NXDN_DATA 0x40
+#define RDOF_MMDVM_NXDN_LOST 0x41
 #define RDOF_MMDVM_ACK 0x70
 #define RDOF_MMDVM_NAK 0x7F
 
 #define RDOF_MODE_IDLE 0
 #define RDOF_MODE_DMR 2
+#define RDOF_MODE_P25 4
+#define RDOF_MODE_NXDN 5
 #define RDOF_DMR_ENABLED 0x02
+#define RDOF_P25_ENABLED 0x08
+#define RDOF_NXDN_ENABLED 0x10
 #define RDOF_MMDVM_SIMPLEX 0x80
 /* SET_CONFIG flags, with RDOF_MMDVM_SIMPLEX: dual capacity direct mode (both slots on one frequency, ETSI TDMA
  * direct mode syncs). The gateway's extension, sent only to a modem with DCDM in its description (rdof_dcdm_capable). */
@@ -72,7 +83,9 @@ typedef struct {
 void rdof_modem_config_default(rdof_modem_config_t *c);
 int rdof_mmdvm_pct(double level);
 int rdof_modem_config_flags(const rdof_modem_config_t *c, bool duplex);
-/* SET_CONFIG payloads: 23 bytes (protocol 1), 37 bytes (protocol 2). Return the length. */
+/* SET_CONFIG payloads: 23 bytes (protocol 1), 37 bytes (protocol 2). Return the length. state is the mode the modem
+ * starts in, and the one mode enabled: RDOF_MODE_P25 or RDOF_MODE_NXDN enable that mode at tx_level, anything else
+ * DMR (with cc). */
 size_t rdof_mmdvm_config_v1(const rdof_modem_config_t *c, int cc, int state, bool duplex, uint8_t out[23]);
 size_t rdof_mmdvm_config_v2(const rdof_modem_config_t *c, int cc, int state, bool duplex, uint8_t out[37]);
 /* SET_FREQ payload: flags, RX, TX (little endian), RF level, POCSAG = TX. 14 bytes. */

@@ -16,6 +16,7 @@
 bool rdof_mmdvm_unanswered(uint8_t c)
 {
     return c == RDOF_MMDVM_DMR_DATA1 || c == RDOF_MMDVM_DMR_DATA2 || c == RDOF_MMDVM_DMR_SHORTLC ||
+           c == RDOF_MMDVM_P25_HDR || c == RDOF_MMDVM_P25_LDU || c == RDOF_MMDVM_NXDN_DATA ||
            c == RDOF_MMDVM_DMR_START || c == RDOF_MMDVM_DMR_ABORT;
 }
 
@@ -56,11 +57,17 @@ static uint8_t tx_delay(const rdof_modem_config_t *c)
     return (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
 }
 
+/* The modes byte for a starting state: the one mode it enables. */
+static uint8_t enabled(int state)
+{
+    return state == RDOF_MODE_P25 ? RDOF_P25_ENABLED : state == RDOF_MODE_NXDN ? RDOF_NXDN_ENABLED : RDOF_DMR_ENABLED;
+}
+
 size_t rdof_mmdvm_config_v1(const rdof_modem_config_t *c, int cc, int state, bool duplex, uint8_t p[23])
 {
     memset(p, 0, 23);
     p[0] = (uint8_t)rdof_modem_config_flags(c, duplex);
-    p[1] = RDOF_DMR_ENABLED;
+    p[1] = enabled(state);
     p[2] = tx_delay(c);
     p[3] = (uint8_t)state;
     p[4] = (uint8_t)rdof_mmdvm_pct(c->rx_level);
@@ -71,6 +78,10 @@ size_t rdof_mmdvm_config_v1(const rdof_modem_config_t *c, int cc, int state, boo
     p[10] = (uint8_t)rdof_mmdvm_pct(c->tx_level);
     p[13] = (uint8_t)((unsigned)c->tx_dc_offset + 128u);
     p[14] = (uint8_t)((unsigned)c->rx_dc_offset + 128u);
+    if (state == RDOF_MODE_P25)
+        p[12] = p[10];
+    else if (state == RDOF_MODE_NXDN)
+        p[15] = p[10];
     return 23;
 }
 
@@ -78,7 +89,7 @@ size_t rdof_mmdvm_config_v2(const rdof_modem_config_t *c, int cc, int state, boo
 {
     memset(p, 0, 37);
     p[0] = (uint8_t)rdof_modem_config_flags(c, duplex);
-    p[1] = RDOF_DMR_ENABLED;
+    p[1] = enabled(state);
     p[3] = tx_delay(c);
     p[4] = (uint8_t)state;
     p[5] = (uint8_t)((unsigned)c->tx_dc_offset + 128u);
@@ -89,6 +100,10 @@ size_t rdof_mmdvm_config_v2(const rdof_modem_config_t *c, int cc, int state, boo
     p[26] = (uint8_t)(cc & 0x0F);
     p[27] = (uint8_t)c->dmr_delay;
     p[28] = 128;
+    if (state == RDOF_MODE_P25)
+        p[12] = p[10];
+    else if (state == RDOF_MODE_NXDN)
+        p[13] = p[10];
     return 37;
 }
 
