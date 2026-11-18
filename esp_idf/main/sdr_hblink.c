@@ -157,9 +157,16 @@ static void peer_task(void *arg)
                 rdof_hb_peer_set_config(&p->peer, pkt, n, true, now);
                 peer_send(p, out, rdof_hb_peer_packet(&p->peer, out));
             }
-            if (ev == RDOF_HBP_QUIET)
+            if (ev == RDOF_HBP_QUIET) {
                 ESP_LOGW(TAG, "peer %lu: no %s from master", (unsigned long)p->peer.peer_id,
                          p->peer.login ? "MSTPONG" : "DMRP");
+                /* a new socket on the next turn, the host looked up again: a name's address may have moved */
+                xSemaphoreTake(p->lock, portMAX_DELAY);
+                close(p->sock);
+                p->sock = -1;
+                xSemaphoreGive(p->lock);
+                rdof_hb_peer_link_down(&p->peer);
+            }
             up += p->peer.up;
         }
         g_sstat.hb_up = up;

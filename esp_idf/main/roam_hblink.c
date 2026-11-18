@@ -35,6 +35,7 @@ struct roam_hb {
     int sock;
     SemaphoreHandle_t lock; /* sock and peer */
     rdof_hb_peer_t peer;    /* the keepalive and the master's state (common/src/hbpeer.c) */
+    bool reopen;            /* the master went quiet: a new socket, the host looked up again (its address may move) */
 #if CONFIG_RDOF_HBLINK_SCTP
     bool use_sctp;
     tsctp_esp_t *assoc; /* started once, never stopped: it reconnects by itself */
@@ -206,6 +207,7 @@ static void keepalive(roam_t *r)
                  h->peer.login ? "MSTPONG" : "DMRP");
         r->st.hblink_up = false;
         roam_publish_status(r);
+        h->reopen = !USE_SCTP(r);
     }
 }
 
@@ -316,8 +318,10 @@ static void peer_task(void *arg)
         rdof_hb_peer_link_up(&h->peer);
         xSemaphoreGive(h->lock);
         backoff_ms = 1000;
-        while (g_board.wifi_up) {
+        while (g_board.wifi_up && !h->reopen) {
             keepalive(r);
+            if (h->reopen)
+                break;
             ssize_t n = recv(s, buf, 1500, 0);
             if (n < 0) {
                 if (errno == EAGAIN || errno == EWOULDBLOCK)
@@ -329,6 +333,7 @@ static void peer_task(void *arg)
         }
         xSemaphoreTake(h->lock, portMAX_DELAY);
         h->sock = -1;
+        h->reopen = false;
         rdof_hb_peer_link_down(&h->peer);
         xSemaphoreGive(h->lock);
         close(s);

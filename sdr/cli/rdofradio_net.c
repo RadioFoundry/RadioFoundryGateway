@@ -105,9 +105,16 @@ void rdofnet_peer_poll(rdofnet_peer_t *p, double now)
         uint8_t out[RDOF_HB_OUT_MAX];
         rdofnet_peer_send(p, out, rdof_hb_peer_packet(&p->peer, out));
     }
-    if (ev == RDOF_HBP_QUIET)
+    if (ev == RDOF_HBP_QUIET) {
         sayf(p, "%s: %s (peer %u): no %s from %s:%d", net, p->label, id, p->peer.login ? "MSTPONG" : "DMRP", p->host,
              p->port);
+        /* a new socket now, the host looked up again: a name's address may have moved (a DHCP lease) */
+        close(p->sock);
+        p->sock = -1;
+        rdof_hb_peer_link_down(&p->peer);
+        p->next_open = now;
+        return;
+    }
     uint8_t buf[1500];
     for (;;) {
         const ssize_t n = recv(p->sock, buf, sizeof buf, 0);

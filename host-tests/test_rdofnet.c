@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 The RadioFoundry Gateway authors
 /* rdofradio's HBlink4 peer (sdr/cli/rdofradio_net.h) against a fake master on 127.0.0.1: the DMRC at once and as
- * the keepalive, registered on DMRP, the master's other packets passed on, a refusal, and gone quiet. Then a
- * BrandMeister login over the socket: RPTL, RPTK with the salted hash, RPTC, RPTPING, no DMRD before it's in, RPTCL
- * on close. */
+ * the keepalive, registered on DMRP, the master's other packets passed on, a refusal, and gone quiet (a new socket, the
+ * host looked up again). Then a BrandMeister login over the socket: RPTL, RPTK with the salted hash, RPTC, RPTPING,
+ * no DMRD before it's in, RPTCL on close. */
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <poll.h>
@@ -109,6 +109,18 @@ int main(void)
         rdofnet_peer_poll(&p, t);
     CHECK(!p.peer.up && nsaid == 4 && strstr(said[3], "no DMRP"));
     CHECK(p.peer.tx >= 5 && p.errors == 0);
+    /* quiet: the socket closed, and the next turn opens a new one, the host looked up again (a name's address may
+       have moved): the DMRC comes from a new port */
+    CHECK(p.sock < 0);
+    {
+        struct pollfd pf = {m, POLLIN, 0};
+        while (poll(&pf, 1, 50) > 0)
+            recv(m, buf, sizeof buf, 0);
+    }
+    const struct sockaddr_in before = from;
+    rdofnet_peer_poll(&p, 61);
+    n = master_recv(m, buf, sizeof buf, &from);
+    CHECK(p.sock >= 0 && n == (ssize_t)sizeof dmrc && from.sin_port != before.sin_port);
 
     rdofnet_peer_close(&p);
 
