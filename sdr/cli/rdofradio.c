@@ -3107,6 +3107,35 @@ static void mm_keepalive(double now)
         mm_write(f, n);
 }
 
+/* --mmdvm: DMR_START 1, after the modem's last transmission has ended, and checked. The firmware starts its idle
+ * outbound only when it isn't transmitting, and ACKs the DMR_START either way: one sent while what the owner queued
+ * still plays out (a trunked site paused a moment ago) leaves it silent. So wait for the status to show it unkeyed
+ * (2 s at most), send it, and see it key (0.5 s), once more if not. */
+static bool mm_dmr_start_keyed(void)
+{
+    rdof_mmdvm_status_t s;
+    for (int i = 0; i < 40; i++) {
+        if (!rdof_modem_status(&R.client, &s))
+            return false;
+        if (!s.transmitting)
+            break;
+        nanosleep(&(struct timespec){0, 50000000}, NULL);
+    }
+    for (int tries = 0; tries < 2; tries++) {
+        if (!rdof_modem_dmr_start(&R.client, true))
+            return false;
+        for (int i = 0; i < 10; i++) {
+            nanosleep(&(struct timespec){0, 50000000}, NULL);
+            if (!rdof_modem_status(&R.client, &s))
+                return false;
+            if (s.transmitting)
+                return true;
+        }
+    }
+    snprintf(R.client.error, sizeof R.client.error, "it took DMR_START but didn't key");
+    return false;
+}
+
 /* --mmdvm: the outbound's turn on a duplex modem. It keys with DMR_START; its idle outbound and CACH are the modem's
  * own, the voice bursts its host's DMR_DATA1 / DMR_DATA2 (bench_ob_fast). */
 static bool bench_ob_poll_mm(double now)
@@ -3126,7 +3155,7 @@ static bool bench_ob_poll_mm(double now)
         const bool ok = rdof_modem_start(&R.client, 1) &&
                         rdof_radio_tune_duplex(&R.radio, c.freq_hz, c.freq_hz, c.cc, bench_level(c.power)) &&
                         rdof_modem_set_mode(&R.client, RDOF_MODE_DMR) && /* the firmware takes DMR_START only in DMR mode */
-                        rdof_modem_dmr_start(&R.client, true);
+                        mm_dmr_start_keyed();
         pthread_mutex_lock(&BO.mu);
         if (!ok) {
             BO.failed = true;
