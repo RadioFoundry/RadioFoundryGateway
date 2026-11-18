@@ -90,7 +90,7 @@ void sdr_publish_status(void)
     static char buf[3072];
     if (!client || !g_rx_ready)
         return;
-    const char *names[RDOF_SDR_MAX_CHANNELS];
+    const char *names[RDOF_SDR_MAX_CHANNELS] = {0}; /* past the configured channels (a bench tap): none */
     const char *hb_ids[RDOF_SDR_MAX_CHANNELS];
     bool hb_up[RDOF_SDR_MAX_CHANNELS];
     const rdof_sdr_cfg_channel_t *rc;
