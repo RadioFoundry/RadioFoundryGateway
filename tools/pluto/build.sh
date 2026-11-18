@@ -88,7 +88,9 @@ if [ ! -f /out/libs/usr/lib/libmosquitto_static.a ]; then
         /out/libs/usr/include/
     rm -rf $T
 fi
-cmake -S /src -B /out/build -DCMAKE_TOOLCHAIN_FILE=/src/tools/pluto/armhf.cmake -DCMAKE_BUILD_TYPE=Release \
+# MinSizeRel (-Os): -O3 made the program 25 % bigger, past the room in flash (2026-11-18: 697 KB of xz against
+# 559 KB without the web page; 768 KB against 618 KB with it); the Rust is opt-level "s" already
+cmake -S /src -B /out/build -DCMAKE_TOOLCHAIN_FILE=/src/tools/pluto/armhf.cmake -DCMAKE_BUILD_TYPE=MinSizeRel \
     -DRDOF_BUILD_TESTS=OFF -DRDOF_HOST_WEB=$RDOF_PLUTO_WEB -DRDOF_PFFFT=ON -DRDOF_VERSION="$RDOF_VERSION" \
     -DRDOF_RUST_TARGET="$RUST_TARGET"
 cmake --build /out/build --target rdofradio rdofsdr rdofchz -j"$(nproc)"
