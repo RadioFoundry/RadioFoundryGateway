@@ -810,7 +810,7 @@ ARGS` (any interpreter, any directory) sends the job; `--file` and `--out` files
 ### 14.6 Signal modes: tx and rx
 
 A signal mode is a modulation other than DMR, as one table (`rdof/sigmode.h`; the list in `rdof/sdr/modes.h`): analog
-FM (`fm`) and analog AM (`am`). `info`'s `signal_modes` lists them: `{"tx": [names], "rx": [names]}`. The fields
+FM (`fm`), analog AM (`am`) and raw 4-level FSK (`fsk4`). `info`'s `signal_modes` lists them: `{"tx": [names], "rx": [names]}`. The fields
 after the op's own are the mode's.
 
 | op | request | replies |
@@ -927,6 +927,88 @@ s once the first 30 ms of carrier have set it; the first 60 ms after a key-up ar
 the residual FM on the carrier, a transmitter's AM-to-PM) and `spectrum` when asked. Lead and tail carrier count in
 the averages (the rms and the tone's depth and SINAD): for a tone's figures send `lead_s` and `tail_s` 0, or read the
 blocks.
+
+4FSK (`fsk4`) sends raw symbols: any 4-level FSK air interface (P25 phase 1's C4FM, DMR, NXDN, dPMR), framed by
+the client. The symbols are dibits packed 4 to a byte, the first in bits 7-6; 01 is +3, 00 +1, 10 -1, 11 -3 (the
+mapping P25 and DMR share), a symbol `a` being `a dev_hz / 3` of deviation at its center. The pulse `shape`:
+
+| shape | pulse | exact at the symbol centers behind |
+|---|---|---|
+| `c4fm` | raised cosine (roll-off 0.2) times `pi f T / sin(pi f T)`: P25 phase 1's C4FM modulator | a one-symbol integrate-and-dump |
+| `rrc` | square-root raised cosine, roll-off 0.2 | the matched RRC (DMR, NXDN) |
+| `rc` | raised cosine, roll-off 0.2 | nothing (the discriminator itself) |
+| `nrz` | a rectangle one symbol long | nothing |
+
+The pulse is a table over 16 symbols either side for `rrc`, 12 for `c4fm` and `rc` (cut at 8, an RRC's tails put
+about 45 Hz of intersymbol interference on DMR's levels), from the shape's spectrum, scaled to exactly 1 at the center
+behind its receive filter. Rendered at 48 kS/s, the levels behind that filter come out within 1 Hz (`c4fm`, `rc`,
+`nrz`) and 6 Hz (`rrc`, the 16-symbol cut).
+
+`fsk4` `tx` fields: the symbols, either `hex` (the bytes in the request) or `symbols` (how many) with the bytes after
+the request line (`ceil(symbols / 4)`; `symbols` also trims `hex`), `baud` (4800; 600-9600), `shape` (`c4fm`),
+`dev_hz` (1800; 1944 with `rrc`), `dev_scale_pct` (100), `offset_hz` (0: the carrier from `freq`), `clip_hz` (0: none;
+the deviation's limit), `repeat` (1), `gap_s` (0: the plays back to back in one keying; else each play its own keying,
+this far apart, carrier off between), `lead_s` and `tail_s` (bare carrier before and after, 0.01; each with a 2 ms
+raised-cosine ramp of the envelope ahead of it). Symbols that haven't come in by key-up hold the carrier off (keyed)
+for up to 2 s; any still missing go as 0 (`symbols_short`). `done` adds `shape`, `baud`, `dev_hz` (scaled),
+`peak_hz`, `offset_hz`, `symbols`, `repeat`, `bursts`, `seconds`, `symbols_in`, `symbols_short`, `wait_s`, `clip_hz`
+and `clipped` (samples cut to it).
+
+The peak (`peak_hz`, which a front end sending frequency checks against its limit) is the symbols' own when they
+come in the request (8192 at most), else the worst any symbols could reach, capped at `clip_hz`. C4FM's overshoot is
+large: at 1800 Hz random symbols reach about 4400 Hz and the worst about 4600, over a W12's 4064 Hz, so a streamed
+C4FM job on a W12 needs `clip_hz` 4064 (the report counts the samples cut; rare on real traffic).
+
+Open-ended (`stream: true`): the symbols come after the request line for as long as the client sends them, up to
+`seconds` (required: the keying's ceiling, plus 2 s for the first symbols, within the platform's `max_key_s`). The
+gateway holds `ahead_s` of them (0.25) and reads no more, so it paces the client; key-up waits (carrier off) until
+that much is in, the stream ends or 2 s pass. When it runs dry, `idle_hex` (bytes, up to 4096) plays whole from its
+start, or level 0 without it, and a `{"underrun":{"n","k","t","fill"}}` record goes out (n so far, the symbol and its
+time from the first, `idle` or `zero`); the client's symbols resume after it. The client ends the stream with a
+half-close (shutdown of its sending side): what came plays, the keying ends and `done` follows on the same
+connection. A close cancels as for any job. `done` adds `stream`, `ahead_bytes`, `symbols` (played), `symbols_in`,
+`underruns`, `idle_symbols` and `zero_symbols`. `repeat`, `gap_s`, `hex` and `symbols` don't apply. For any mode with
+input after the request, a half-close is the input's end (FM's PCM: what's missing plays as silence).
+
+A W12 sends a key-up longer than 1.35 s in runs, and each seam between them costs about one symbol at 4800 baud
+(lr2021-iq.md R3.62; 3-4 symbol errors in 31 104), with no timing step.
+
+A W12 loses about the first 30 ms of each keying (measured 2026-11-16 on a Pluto: the carrier showed 28-30 ms into a
+40-50 ms `lead_s`), so a burst whose sync is at its start needs `lead_s` 0.04 or more there.
+
+`fsk4` `rx` measures a radio's 4FSK and gives back its symbols. The discriminator goes through a receive filter
+(`filter`: `iad`, a one-symbol integrate-and-dump; `rrc`, the matched RRC cut at 4 symbols either side; `none`; by
+default the one `shape` (`c4fm`) is exact behind: `c4fm` `iad`, `rrc` `rrc`, else `none`). A squelch on the power in
+1 ms blocks finds each keying (it ends after 3 blocks under). While the carrier is up the receiver looks for `sync`
+(the client's dibits as hex, packed as for `tx`; `sync_len` symbols of it, 8-64, all by default): the Pearson
+correlation of symbol-spaced samples with the pattern, at least `sync_min` (0.9), its peak placed to a fraction of a
+sample. A sync sets the symbol timing and fits the carrier offset and the level unit from its own symbols; each later
+one re-anchors both, so a frame-repeated sync (P25, NXDN, DMR) keeps the clocks' difference from building up.
+Without `sync` nothing is sliced: only the keying records come. Other fields: `baud` (4800; 600-9600), `shape`,
+`filter`, `squelch_dbfs`, `squelch_over_db`, `bw`, `streams` (`disc`, `filt`: the raw and filtered discriminator, Hz,
+full scale at half the rate).
+
+Records, `t` in seconds from the stream's start (the header's `t0` is its UTC):
+
+- `{"sync": {"t", "k", "corr", "cfo_hz", "dev_hz"}}`: a sync found; `k` its first symbol's index from the keying's
+  first sync, `dev_hz` the outer level's deviation from its fit.
+- `{"dibits": {"t", "k", "n", "hex"}}`: the symbols sliced, from the first sync on, packed as for `tx` (the last byte
+  padded with zeros); `t` and `k` are the first one's. 1024 a record, and what's left when the carrier drops: a burst's
+  dibits come in one record a few ms after its end (the squelch's 3 ms and a block). Symbols run to the end of the
+  carrier, its bare tail included; the client knows its frames' lengths.
+- `{"keying": {...}}` when the carrier drops: `t_on`, `t_off`, `s`, `power_dbfs`, `sync_ms` (carrier to the first
+  sync; null without one), `syncs`, `symbols`, `cfo_hz`, `dev_hz` (half the outer levels' spread), `levels_hz` (each
+  level's mean from the carrier, -3 -1 +1 +3), `sd_hz`, `counts`, `evm_pct` (RMS error from the ideal levels, of the
+  outer level), `baud_err_ppm` (the radio's symbol clock against the receiver's, from the first and last sync; null
+  with one), `filter`, `baud`. A bare carrier at the end (8 or more symbols within half a unit of the center, then up
+  to 4 more as it dies) stays out of the level statistics. Blips under 5 ms with no sync give no record.
+
+The summary: `baud`, `filter`, `sync_len`, `squelch_dbfs`, `keyings`, `syncs`, `symbols`, `carrier` (up at the end),
+`dropped` (records lost to a full queue).
+
+Measured 2026-11-16, a W12 (power 128) to a Pluto 2 m away at -30 dBFS: C4FM and RRC at 4800 baud, 3072 random symbols
+each, 0 errors (C4FM behind `iad` +-1792 / +-599 Hz, EVM 5%); 2400 baud RRC at 1050 Hz with a 10-symbol sync in 80 ms
+bursts, 0 errors, EVM 4%.
 
 ### 14.7 Frequency correction
 

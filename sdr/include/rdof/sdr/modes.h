@@ -18,6 +18,7 @@ extern const rdof_sig_mode_t *const rdof_sdr_modes[];
 
 extern const rdof_sig_mode_t rdof_mode_fm;   /* analog FM (mode_fm.c) */
 extern const rdof_sig_mode_t rdof_mode_am;   /* analog AM (mode_am.c) */
+extern const rdof_sig_mode_t rdof_mode_fsk4; /* 4-level FSK as raw dibits (mode_fsk4.c) */
 
 #ifdef __cplusplus
 }

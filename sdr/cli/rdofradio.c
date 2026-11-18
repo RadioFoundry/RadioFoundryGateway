@@ -3777,6 +3777,7 @@ static int bl_raw_state(void *ctx, rdof_bl_raw_t *o, char *err, size_t cap);
 static void bl_raw_read(void *ctx, long at, int16_t *out, long n);
 static void bl_raw_close(void *ctx);
 static int bl_raw_demod(void *ctx, bool reset, int cc, const float *iq, int n, rdof_bl_burst_t *out, int cap);
+static long long stream_samples(void);
 
 static void bench_start(void)
 {
@@ -3788,6 +3789,11 @@ static void bench_start(void)
         fprintf(stderr, "bench: no memory for the history\n");
         return;
     }
+    /* The receiver counts its samples from the stream's first, and a burst's sample is its position in that count;
+     * an MMDVM modem's bring-up reads the stream (p_wait) before the bench starts. The ring's count starts where the
+     * receiver's is, so a burst and the history are one timeline (they were the bring-up apart, seconds). */
+    if (dev)
+        rdof_bl_ring_skip(&BL.ring, (long)stream_samples());
     /* cs8 from a wider ADC (an AD9361's 12 bits at 1/2048 a step): its low 8 bits, where a bench signal is (a call at
      * -53 dBFS is a few steps); a signal over -24 dBFS clips, and the capture's clip_pct says so. An 8-bit device
      * (an RTL-SDR) keeps its own 8 bits: at the wider ADC's gain a signal over -24 dBFS, which an RTL-SDR's gain puts
@@ -5554,6 +5560,8 @@ static struct {
     long long total, filled;
     int chunk, timeouts, errors, overflows;
 } SC;
+
+static long long stream_samples(void) { return SC.total; }
 
 static void clock_read(double t, bool fresh)
 {

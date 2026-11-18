@@ -23,6 +23,7 @@ the daemon's client only changes the command it runs.
     rfgbench.py ... tx fm --freq MHz [SEGMENT...] [--pcm FILE] [--ctcss HZ | --dcs 023N] [--dev HZ] [--sub-dev HZ] ...
     rfgbench.py ... rx fm --freq MHz --seconds S [--audio FILE.wav] [--disc FILE.wav] [--records FILE] [--dtmf] [--tones] [--aprs] ...
     rfgbench.py ... tx am --freq MHz [SEGMENT...] [--pcm FILE] [--depth 0-1] [--offset HZ] ...
+    rfgbench.py ... tx fsk4 --freq MHz --dibits FILE|--hex HEX [--shape c4fm|rrc|rc|nrz] [--baud B] [--dev HZ] ...
     rfgbench.py ... rx am --freq MHz --seconds S [--audio FILE.wav] [--env FILE.wav] [--records FILE] [--bw HZ] ...
 
 A tx fm or tx am SEGMENT is KIND:ARG:ARG..., with key=value arguments and @LEVEL anywhere (level 0-1 of the
@@ -1025,6 +1026,75 @@ def cmd_tx_sig(a) -> int:
     return stream(a.where, req, on, hold)
 
 
+def cmd_tx_fsk4(a) -> int:
+    """tx fsk4: raw dibits on the carrier (bench-api.md section 14.6)."""
+    req: dict = {"op": "tx", "mode": "fsk4", "freq": a.freq, "session": a.session, "wait_max": a.wait_max,
+                 "label": a.label}
+    data = b""
+    if a.stream:   # open-ended: the dibits as they come (a file or stdin), a half-close at their end
+        if not a.dibits or a.symbols or a.repeat or a.gap is not None:
+            print(f"{NOTE} --stream takes --dibits FILE or - (stdin), not --symbols, --repeat or --gap",
+                  file=sys.stderr)
+            return 1
+        req.update({"stream": True, "seconds": a.seconds})
+        for k, v in (("ahead_s", a.ahead), ("idle_hex", a.idle_hex)):
+            if v is not None:
+                req[k] = v
+    elif a.dibits:
+        try:
+            with open(a.dibits, "rb") as f:
+                data = f.read()
+        except OSError as e:
+            print(f"{NOTE} {e}", file=sys.stderr)
+            return 1
+        if not data:
+            print(f"{NOTE} {a.dibits} is empty", file=sys.stderr)
+            return 1
+        req["symbols"] = a.symbols if a.symbols else 4 * len(data)
+        data = data[:(req["symbols"] + 3) // 4]
+    else:
+        req["hex"] = a.hex
+        if a.symbols:
+            req["symbols"] = a.symbols
+    for k, v in (("baud", a.baud), ("shape", a.shape), ("dev_hz", a.dev), ("dev_scale_pct", a.dev_scale),
+                 ("offset_hz", a.offset), ("clip_hz", a.clip), ("repeat", a.repeat), ("gap_s", a.gap),
+                 ("lead_s", a.lead), ("tail_s", a.tail), ("power_dbm", a.power_dbm), ("power", a.power)):
+        if v is not None:
+            req[k] = v
+    check_reach(a, a.freq, tx=True)
+    hold: dict = {}
+
+    def send():    # all at once: TCP's flow control paces it
+        try:
+            hold["conn"].s.sendall(data)
+        except OSError:
+            pass
+
+    def send_stream():    # as it comes; the gateway reads as its ahead_s ring empties
+        try:
+            f = sys.stdin.buffer if a.dibits == "-" else open(a.dibits, "rb")
+            with f:
+                while True:
+                    b = f.read1(4096) if hasattr(f, "read1") else f.read(4096)
+                    if not b:
+                        break
+                    hold["conn"].s.sendall(b)
+            hold["conn"].s.shutdown(socket.SHUT_WR)    # the stream's end: the rest plays, then the report
+        except OSError as e:
+            print(f"{NOTE} {e}", file=sys.stderr)
+
+    def on(d, _):
+        if "tx" in d and a.stream:
+            threading.Thread(target=send_stream, daemon=True).start()
+        elif "tx" in d and data:
+            threading.Thread(target=send, daemon=True).start()
+        print(json.dumps(d), flush=True)
+        if "done" in d:
+            return 1 if d["done"].get("cut") else 0
+        return None
+    return stream(a.where, req, on, hold)
+
+
 class _Wav:
     def __init__(self, path: str, rate: float) -> None:
         self.w = wave.open(path, "wb")
@@ -1038,16 +1108,23 @@ class _Wav:
 
 
 def cmd_rx_sig(a) -> int:
-    """rx fm, rx am: a signal mode's receiver, its streams to WAVs."""
+    """rx fm, rx am, rx fsk4: a signal mode's receiver, its streams to WAVs."""
     check_reach(a, a.freq, tx=False)
-    raw = "disc" if a.mode_name == "fm" else "env"
-    files = {"audio": a.audio, raw: getattr(a, raw)}
+    if a.mode_name == "fsk4":
+        files = {"disc": a.disc, "filt": a.filt}
+    else:
+        raw = "disc" if a.mode_name == "fm" else "env"
+        files = {"audio": a.audio, raw: getattr(a, raw)}
     streams = [x for x, f in files.items() if f]
     req: dict = {"op": "rx", "mode": a.mode_name, "freq": a.freq, "seconds": a.seconds, "session": a.session,
                  "wait_max": a.wait_max, "label": a.label, "streams": ",".join(streams)}
-    fields = [("bw", a.bw), ("squelch_dbfs", a.squelch_dbfs), ("squelch_over_db", a.squelch_over),
-              ("block_s", a.block_s), ("spectrum_hz", a.spectrum_hz)]
-    if a.mode_name == "fm":
+    fields = [("bw", a.bw), ("squelch_dbfs", a.squelch_dbfs), ("squelch_over_db", a.squelch_over)]
+    if a.mode_name != "fsk4":
+        fields += [("block_s", a.block_s), ("spectrum_hz", a.spectrum_hz)]
+    if a.mode_name == "fsk4":
+        fields += [("shape", a.shape), ("filter", a.filter), ("baud", a.baud), ("sync", a.sync),
+                   ("sync_len", a.sync_len), ("sync_min", a.sync_min)]
+    elif a.mode_name == "fm":
         fields += [("deemph_us", a.deemph_us), ("nominal_dev_hz", a.nominal_dev), ("audio_full_hz", a.audio_full_hz)]
         fields += [(k, True) for k in ("dtmf", "tones", "aprs") if getattr(a, k)]
     else:
@@ -1521,6 +1598,64 @@ def main(argv=None) -> int:
                                    help="0-1, for the audio's level in dB")
                     s.add_argument("--audio-full", type=float, default=None,
                                    help="the modulation at full scale in the WAV (1.0: 100%%)")
+        if op == "tx":
+            s = modes.add_parser("fsk4", help="4-level FSK as raw dibits (P25 C4FM, DMR, NXDN)")
+            s.set_defaults(fn=cmd_tx_fsk4)
+            s.add_argument("--session", default=None)
+            s.add_argument("--wait-max", type=float, default=None, help="give up after this many seconds (exit 75)")
+            s.add_argument("--label", default=None)
+            s.add_argument("--freq", type=float, required=True, help="MHz")
+            g = s.add_mutually_exclusive_group(required=True)
+            g.add_argument("--dibits", default=None,
+                           help="a file of dibits, 4 a byte, first in bits 7-6 (01 +3, 00 +1, 10 -1, 11 -3)")
+            g.add_argument("--hex", default=None, help="the same bytes as hex, in the request")
+            s.add_argument("--stream", action="store_true",
+                           help="open-ended: --dibits FILE or - (stdin) sent as it comes, its end the keying's end; "
+                                "an {\"underrun\"} record each time it runs dry")
+            s.add_argument("--seconds", type=float, default=60, help="--stream: the most it keys (60)")
+            s.add_argument("--ahead", type=float, default=None, help="--stream: the gateway's buffer, s (0.25)")
+            s.add_argument("--idle-hex", default=None,
+                           help="--stream: bytes played whole while it runs dry (default: level 0)")
+            s.add_argument("--symbols", type=int, default=None, help="how many of the bytes' dibits (all)")
+            s.add_argument("--baud", type=float, default=None, help="symbols a second (4800)")
+            s.add_argument("--shape", choices=("c4fm", "rrc", "rc", "nrz"), default=None, help="pulse shape (c4fm)")
+            s.add_argument("--dev", type=float, default=None,
+                           help="the outer level's deviation, Hz (1800; 1944 with rrc)")
+            s.add_argument("--dev-scale", type=float, default=None, help="percent of --dev (100)")
+            s.add_argument("--offset", type=float, default=None, help="carrier offset, Hz")
+            s.add_argument("--clip", type=float, default=None,
+                           help="limit the deviation to this, Hz (a W12 sends at most 4064)")
+            s.add_argument("--repeat", type=int, default=None, help="plays of the symbols (1)")
+            s.add_argument("--gap", type=float, default=None,
+                           help="seconds unkeyed between plays (0: back to back in one keying)")
+            s.add_argument("--lead", type=float, default=None, help="bare carrier before, s (0.01)")
+            s.add_argument("--tail", type=float, default=None, help="bare carrier after, s (0.01)")
+            s.add_argument("--power-dbm", type=float, default=None,
+                           help="dBm at the antenna, capped by the gateway's bench.tx max_dbm")
+            s.add_argument("--power", type=int, default=None, help="0-255 on the transmitter's range, capped the same")
+        else:
+            s = modes.add_parser("fsk4", help="4-level FSK as raw dibits: sync, dibits and each keying's levels")
+            s.set_defaults(fn=cmd_rx_sig)
+            s.add_argument("--session", default=None)
+            s.add_argument("--wait-max", type=float, default=None, help="give up after this many seconds (exit 75)")
+            s.add_argument("--label", default=None)
+            s.add_argument("--freq", type=float, required=True, help="MHz")
+            s.add_argument("--seconds", type=float, required=True)
+            s.add_argument("--sync", default=None,
+                           help="the sync's dibits as hex (P25 5575f5ff77ff; NXDN cdf59 with --sync-len 10)")
+            s.add_argument("--sync-len", type=int, default=None, help="its symbols (all the hex's)")
+            s.add_argument("--sync-min", type=float, default=None, help="the correlation a sync needs (0.9)")
+            s.add_argument("--baud", type=float, default=None, help="symbols a second (4800)")
+            s.add_argument("--shape", choices=("c4fm", "rrc", "rc", "nrz"), default=None,
+                           help="what's sent: picks the filter (c4fm: iad, rrc: rrc, else none)")
+            s.add_argument("--filter", choices=("none", "iad", "rrc"), default=None, help="the receive filter")
+            s.add_argument("--disc", default=None, help="write the raw discriminator to this WAV")
+            s.add_argument("--filt", default=None, help="write the filtered discriminator to this WAV")
+            s.add_argument("--records", default=None, help="write every line (records, gaps, done) to this file")
+            s.add_argument("--quiet", action="store_true", help="don't print the records")
+            s.add_argument("--bw", type=float, default=None, help="channel bandwidth, Hz (16000)")
+            s.add_argument("--squelch-dbfs", type=float, default=None, help="else learned from the noise floor")
+            s.add_argument("--squelch-over", type=float, default=None, help="dB over the learned floor (10)")
     for name in ("activity", "burstlog", "bridge"):
         s = p(name, cmd_unsupported, False)
         s.add_argument("rest", nargs=argparse.REMAINDER)

@@ -236,7 +236,7 @@ static void test_loop(bool chan)
     /* info names the modes */
     int c = ask(bl, "{\"op\":\"info\"}");
     take(bl, c);
-    CHECK(strstr(text, "\"signal_modes\":{\"tx\":[\"fm\",\"am\"],\"rx\":[\"fm\",\"am\"]}"), "%.300s", text);
+    CHECK(strstr(text, "\"signal_modes\":{\"tx\":[\"fm\",\"am\",\"fsk4\"],\"rx\":[\"fm\",\"am\",\"fsk4\"]}"), "%.300s", text);
     rdof_bl_closed(bl, c, clock_s);
     ntext = 0;
 
@@ -388,6 +388,48 @@ static void test_pcm(void)
     rdof_bl_free(bl);
 }
 
+/* fsk4 streamed: open-ended, an underrun reported as it happens, the client's half-close its end */
+static void test_fsk4_stream(void)
+{
+    rdof_bl_t *bl = rdof_bl_new(&PLAT);
+    char l[2048];
+    ntext = 0;
+    tx = (typeof(tx)){0};
+    const int c = ask(bl, "{\"op\":\"tx\",\"mode\":\"fsk4\",\"freq\":438.075,\"stream\":true,\"seconds\":20,"
+                          "\"ahead_s\":0.05,\"idle_hex\":\"55ff\"}");
+    static uint8_t buf[2400];
+    for (size_t i = 0; i < sizeof buf; i++)
+        buf[i] = (uint8_t)(i * 37 + 11);
+    size_t sent = 0;
+    for (int i = 0; i < 4000 && !tx.done; i++) {
+        const bool pause = i >= 20 && i < 40; /* 20 ticks of 40 ms with nothing: dry */
+        size_t room = rdof_bl_input_room(bl, c);
+        if (!pause && room && sent < sizeof buf) {
+            const size_t k = room < sizeof buf - sent ? room : sizeof buf - sent;
+            rdof_bl_input(bl, c, (const char *)buf + sent, k, clock_s);
+            sent += k;
+            if (sent == sizeof buf)
+                CHECK(rdof_bl_input_end(bl, c, clock_s), "a half-close ends the stream, the job goes on");
+        }
+        rdof_bl_tick(bl, clock_s);
+        air(1920, true);
+    }
+    rdof_bl_tick(bl, clock_s);
+    take(bl, c);
+    CHECK(sent == sizeof buf, "sent %zu", sent);
+    CHECK(lines("{\"underrun\":", l, sizeof l) == 1 && strstr(l, "\"fill\":\"idle\""), "underrun: %.400s", text);
+    CHECK(lines("{\"done\":", l, sizeof l) == 1, "no done: %.400s", text);
+    CHECK(num(l, "symbols_in") == 4 * sizeof buf && num(l, "underruns") == 1 && num(l, "idle_symbols") > 0, "%s", l);
+    CHECK(clock_s < 30, "ended at the stream's end, not at seconds");
+    CHECK(rdof_bl_input_room(bl, c) == 0, "nothing more read after the half-close");
+    rdof_bl_closed(bl, c, clock_s);
+
+    /* without a stream to end, a half-close closes */
+    const int c2 = ask(bl, "{\"op\":\"info\"}");
+    CHECK(!rdof_bl_input_end(bl, c2, clock_s), "info: a half-close closes it");
+    rdof_bl_free(bl);
+}
+
 static void test_refusals(void)
 {
     rdof_bl_t *bl = rdof_bl_new(&PLAT);
@@ -452,6 +494,7 @@ int main(void)
     test_loop(false);
     test_loop(true);
     test_pcm();
+    test_fsk4_stream();
     test_refusals();
     test_am();
     rdof_bl_ring_free(&ring);

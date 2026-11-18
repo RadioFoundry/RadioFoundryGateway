@@ -1008,8 +1008,12 @@ static int64_t tx_run_long(int64_t key, int64_t k0, int64_t k1, int64_t t_key)
     const int seam_us = learned > 0 ? (int)fmax(0.0, lround(learned - (polar ? 0.0 : slow_us))) : TX_SEAM_US;
     int64_t run = TX_LONG_RUN_IQ;
     tx.long_seam_at = -1;
-    if (!polar) {
+    /* a bench signal (no slots): the same runs, its seams wherever they fall. Runs of 65 535 for one ended every
+     * other one 2 ms late (R3.62) */
+    const bool slots = !(tx.src && tx.src->continuous && tx.src->continuous(tx.src->ctx));
+    if (!polar)
         run = rdof_seam_run(seam_us * (TX_RATE / 1e6), TX_LONG_RUN_MAX, TX_SLOT);
+    if (!polar && slots) {
         /* a key-on (unkeyed just before): its slot's start; a key-up straight on from a run keeps the last one */
         if (key > 0 && !stage.k[(key - 1) & (TX_STAGE - 1)])
             tx.slot_ref = key + TX_KEY_LEAD;

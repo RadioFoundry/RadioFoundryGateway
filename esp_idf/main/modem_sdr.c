@@ -153,7 +153,12 @@ static int try_pull_iq(void *ctx, int64_t pos, rdof_cf_t *iq, int n)
 static volatile bool sig_iq;
 static bool iq_now(void *ctx) { return sig_iq; }
 
-static const rdof_fe_tx_source_t source = {pull_iq, pull_freq, NULL, try_pull_freq, iq_now, try_pull_iq, carrier_off};
+/* A bench signal is on (set as sig_iq is): no slots, so a long key-up's seams aren't placed in one */
+static volatile bool sig_on;
+static bool continuous(void *ctx) { return sig_on; }
+
+static const rdof_fe_tx_source_t source = {pull_iq,     pull_freq,   NULL, try_pull_freq, iq_now, try_pull_iq,
+                                           carrier_off, continuous};
 
 /* A frequency no receive channel hears is still one the modem may transmit on (a bench job's, a bench.tx band's):
  * it hears nothing there. A -1 would NAK the SET_FREQ ("isn't one of the SDR's channels"). */
@@ -359,6 +364,7 @@ const char *sdr_modem_bench_signal(uint32_t hz, const rdof_sig_src_t *src, char 
     if (!no && !rdof_sdrmodem_signal(mdm, hz, src, why, cap))
         no = why;
     sig_iq = !no && mdm && rdof_sdrmodem_signal_iq(mdm);
+    sig_on = !no && src != NULL;
     GIVE();
     if (no && no != why)
         snprintf(why, cap, "%s", no);

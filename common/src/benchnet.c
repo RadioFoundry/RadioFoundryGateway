@@ -151,8 +151,14 @@ static void *serve(void *arg)
             const ssize_t k = recv(n->fd[c], in, want < sizeof in ? want : sizeof in, 0);
             if (k > 0)
                 rdof_bl_input(n->bl, c, in, (size_t)k, now);
-            else if (k == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
-                drop(n, c); /* the client closed: its request is cancelled */
+            else if (k == 0 && rdof_bl_input_end(n->bl, c, now))
+                ; /* a tx stream's end: the replies still go, and nothing more is read (no room) */
+            else if (k == 0) {
+                close(n->fd[c]); /* the client closed: its request is cancelled (closed in the engine already) */
+                n->fd[c] = -1;
+                n->pend[c] = n->off[c] = 0;
+            } else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
+                drop(n, c);
         }
         rdof_bl_tick(n->bl, n->now());
         for (int c = 0; c < RDOF_BL_CONNS; c++) {

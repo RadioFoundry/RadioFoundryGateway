@@ -212,6 +212,7 @@ typedef struct {
     trig_t *trig;
     struct envx *ex;          /* bursts with "envelope": its segments waiting for their bursts, the figures */
     struct sigtx *stx;        /* tx */
+    bool in_eof;              /* the client shut its sending side (a tx stream's end): nothing more is read */
     struct sigrx *srx;        /* rx */
 } conn_t;
 
@@ -636,6 +637,7 @@ static bool rerun_after_tune(rdof_bl_t *bl, conn_t *c);
 static void job_end(rdof_bl_t *bl, conn_t *c);
 static void stx_input(rdof_bl_t *bl, conn_t *c, const uint8_t *b, size_t n);
 static size_t stx_room(const conn_t *c);
+static bool stx_input_end(conn_t *c);
 static void sig_end(rdof_bl_t *bl, conn_t *c);
 static double trig_utc(const rdof_bl_t *bl, uint64_t sc, double now, uint64_t next, double fs);
 
@@ -672,6 +674,18 @@ void rdof_bl_input(rdof_bl_t *bl, int ci, const char *data, size_t n, double now
     if (i < n && c->stx)
         stx_input(bl, c, (const uint8_t *)data + i, n - i);
     unlock(bl);
+}
+
+bool rdof_bl_input_end(rdof_bl_t *bl, int ci, double now)
+{
+    if (ci < 0 || ci >= RDOF_BL_CONNS)
+        return false;
+    lock(bl);
+    const bool on = stx_input_end(&bl->c[ci]);
+    unlock(bl);
+    if (!on)
+        rdof_bl_closed(bl, ci, now);
+    return on;
 }
 
 size_t rdof_bl_input_room(rdof_bl_t *bl, int ci)
@@ -2918,6 +2932,7 @@ typedef struct sigtx {
     uint8_t in[STX_IN];
     size_t inn;
     uint64_t taken;           /* stream bytes the mode took */
+    bool in_eof, in_ended;    /* the client shut its sending side; the mode was told, after the bytes held */
     char why[200];
 } sigtx_t;
 
@@ -3096,15 +3111,20 @@ static const rdof_sig_mode_t *sig_mode(rdof_bl_t *bl, conn_t *c, int root, bool 
 static size_t stx_room(const conn_t *c)
 {
     const sigtx_t *t = c->stx;
+    if (c->in_eof)
+        return 0;
     if (c->state == C_LINE || !t || !t->m->tx_in_want || !t->m->tx_in_want(t->tx))
         return 1024; /* the request line, or bytes dropped (a close still counts) */
-    return STX_IN - t->inn;
+    /* no more than the mode has room for: its own buffer (a stream's ahead_s) paces the client */
+    const size_t mr = t->m->tx_in_room ? t->m->tx_in_room(t->tx) : 0, free_in = STX_IN - t->inn;
+    const size_t want = mr > t->inn ? mr - t->inn : 0;
+    return want < free_in ? want : free_in;
 }
 
 /* What the engine holds goes to the mode, as it has room. */
 static void stx_feed(sigtx_t *t)
 {
-    if (!t->inn || !t->m->tx_in)
+    if (!t->m->tx_in)
         return;
     size_t room = t->m->tx_in_room(t->tx);
     if (room > t->inn)
@@ -3113,6 +3133,20 @@ static void stx_feed(sigtx_t *t)
     memmove(t->in, t->in + n, t->inn - n);
     t->inn -= n;
     t->taken += n;
+    if (t->in_eof && !t->in_ended && !t->inn) {
+        t->in_ended = true;
+        t->m->tx_in_end(t->tx, false);
+    }
+}
+
+static bool stx_input_end(conn_t *c)
+{
+    sigtx_t *t = c->stx;
+    if (!t || !t->m->tx_in_end || !t->m->tx_in)
+        return false;
+    c->in_eof = t->in_eof = true;
+    stx_feed(t);
+    return true;
 }
 
 static void stx_input(rdof_bl_t *bl, conn_t *c, const uint8_t *b, size_t n)
@@ -3241,6 +3275,12 @@ static void tick_tx(rdof_bl_t *bl, conn_t *c, double now)
     if (st < 0) {
         fail(bl, c, "internal", "transmit failed: %s", why);
         return;
+    }
+    if (t->m->tx_record) { /* what it reports while it sends */
+        char rec[256];
+        size_t n;
+        while ((n = t->m->tx_record(t->tx, rec, sizeof rec)) > 0)
+            emit(bl, c, "%.*s", (int)n, rec);
     }
     const bool late = now - t->started > t->max_s;
     if (st != 2 && !late)

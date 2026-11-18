@@ -356,6 +356,9 @@ int rdof_bl_open(rdof_bl_t *bl, double now);
 const char *rdof_bl_refusal(void);
 void rdof_bl_input(rdof_bl_t *bl, int c, const char *data, size_t n, double now);
 void rdof_bl_closed(rdof_bl_t *bl, int c, double now);
+/* The client shut its sending side: true when c goes on (a tx op's stream, whose end that is: the mode plays what came
+ * and keys down, and the replies follow); false: close it as rdof_bl_closed does. */
+bool rdof_bl_input_end(rdof_bl_t *bl, int c, double now);
 /* How many bytes c's request takes now (the server reads no more than this; 0: read later). After the request line
  * a tx op's stream (a mode's PCM) follows, taken as the mode has room; any other request's are dropped. */
 size_t rdof_bl_input_room(rdof_bl_t *bl, int c);

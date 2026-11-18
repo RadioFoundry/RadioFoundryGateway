@@ -138,6 +138,17 @@ if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
 endif()
 add_test(NAME rdof_am_tests COMMAND rdof_am_tests)
 
+# 4-level FSK as raw dibits (sdr/src/mode_fsk4.c): each pulse shape's levels behind its receive filter.
+add_executable(rdof_fsk4_tests test_fsk4.c)
+target_link_libraries(rdof_fsk4_tests PRIVATE rdof_sdr m)
+set_target_properties(rdof_fsk4_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_compile_options(rdof_fsk4_tests PRIVATE -Wall -Wno-unused-parameter)
+if(RDOF_SANITIZE AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+    target_compile_options(rdof_fsk4_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(rdof_fsk4_tests PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME rdof_fsk4_tests COMMAND rdof_fsk4_tests)
+
 # The memory plan (rdof/memplan.h).
 add_executable(rdof_memplan_tests test_memplan.c)
 target_link_libraries(rdof_memplan_tests PRIVATE rdof_common)

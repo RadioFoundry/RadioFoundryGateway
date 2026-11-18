@@ -5,6 +5,7 @@
  * FIFO topped up, and start the next run on each TX_DONE until the data ends. Only the driver's public calls:
  * docs/spec/lr2021-iq.md section 3 has the facts (R3.11-R3.17).
  */
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -115,6 +116,8 @@ lr2021_err_t lr2021_tx_stream(lr2021_t *d, const lr2021_tx_stream_cfg_t *c, lr20
     int64_t run_start = st->key_us, last = st->key_us, level_t = st->key_us;
     int level_was = (int)n; /* bytes in the FIFO at level_t */
     double write_us = 0.6;  /* a FIFO write's time a byte, measured as it goes (16 MHz SPI: about 0.5) */
+    double pull_us = 0.0;   /* a pull's own time (a source that renders as it's pulled: a block, whatever the size
+                             * asked), the worst lately */
     bool held = false;      /* refills wait for the next run: the FIFO lasts past this one's end */
     int64_t retry_at = 0;   /* the pull had nothing yet: ask again from then */
     /* The next run's SetTx sent ahead of this run's TX_DONE (R3.47): the chip takes it in the run's last 45-60 us
@@ -323,13 +326,14 @@ lr2021_err_t lr2021_tx_stream(lr2021_t *d, const lr2021_tx_stream_cfg_t *c, lr20
                  * end, write what the run still needs and what fits before it, the rest after. (A run whose last
                  * byte isn't in the FIFO yet can't end: no limit then.) */
                 const int64_t to_end = run_start + run_us - level_t;
-                const int fits = (int)((to_end - 100) / write_us);
+                const int fits = (int)((to_end - 100 - (int64_t)pull_us) / write_us);
                 const int needs = (int)((to_end + 1000) * bpus) - (int)level;
                 if (fits < want)
                     want = fits > needs ? fits : needs;
             }
             if (want >= chunk || (want > 0 && want < free_bytes && want >= 16)) {
                 want &= ~3;
+                const int64_t p0 = lr2021_now_us();
                 n = pull(ctx, buf, (size_t)(want < free_bytes ? want : free_bytes));
                 if (n == LR2021_TX_PULL_WAIT) {
                     retry_at = lr2021_now_us() + 200;
@@ -339,6 +343,7 @@ lr2021_err_t lr2021_tx_stream(lr2021_t *d, const lr2021_tx_stream_cfg_t *c, lr20
                     pulled_all = true;
                 } else {
                     const int64_t w0 = lr2021_now_us();
+                    pull_us = fmax(0.98 * pull_us, (double)(w0 - p0));
                     if ((e = lr2021_write_tx_fifo(d, buf, n)) != LR2021_OK)
                         break;
                     const int64_t w1 = lr2021_now_us();
