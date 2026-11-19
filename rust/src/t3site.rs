@@ -76,7 +76,7 @@ mod intr;
 // P_AHOY on a voice payload channel: radio check and selective clear (tier3.md 3.15)
 #[path = "t3pcheck.rs"]
 mod pcheck;
-// field-site behaviors on a payload channel, each off by default (tier3.md 3.21)
+// field-site behaviors on a payload channel, each off by default (tier3.md 3.22)
 #[path = "t3park.rs"]
 mod park;
 use pcheck::PaCheck;
@@ -182,6 +182,9 @@ pub struct Cfg {
     pub pad1: u8,
     pub clear_chan: u16, // P_CLEAR's channel (0: none named, the TSCC); t3park.rs
     pub park_ms: u32,    // P_PROTECT(ILLEGALLY_PARKED) this long while a new call waits for voice; 0 off (t3park.rs)
+    pub ack_first: u8,   // 1: a group call from RF: C_ACKD(Message_Accepted) on the TSCC before its grant (t3park.rs)
+    pub pad2: [u8; 3],
+    pub ack_gap_ms: u32, // with ack_first: the grant no sooner than this after the C_ACKD goes out
 }
 
 #[repr(C)]
@@ -696,6 +699,9 @@ struct Resp {
     wait_src: u32,
     wait_k: i64,
     waited: bool,
+    /// not on air before then: the PDU before it went out gap_ms earlier (services.ack_before_grant)
+    not_before_ms: i64,
+    gap_ms: u32,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -836,6 +842,7 @@ pub fn cfg_default() -> Cfg {
         divert: 1,
         vote_blk: 6,
         ps_hold_ms: 2000,
+        ack_gap_ms: 120,
         ..Default::default()
     };
     c.carriers[0] = Carrier { tx_hz: 438_750_000, rx_hz: 438_250_000, chan: 1, tscc: 1, enabled: 1 };
@@ -976,6 +983,12 @@ fn check(c: &Cfg, err: &mut Buf) -> bool {
     }
     if c.clear_chan > 4095 {
         no!("clear_lpcn: 0 to 4095");
+    }
+    if c.ack_first > 1 {
+        no!("ack_before_grant: true or false");
+    }
+    if c.ack_gap_ms > 2000 {
+        no!("ack_before_grant_gap_s: 0 to 2");
     }
     if c.park_ms > 60_000 {
         no!("illegally_parked_s: 0 to 60");
@@ -1342,10 +1355,14 @@ impl Site {
         } else if self.since_aloha >= 3 || (self.since_aloha == 2 && self.resp_len > 0 && self.resp[self.resp_head].has_cont) {
             // an MBC's two blocks must end before the Aloha that's due: it waits a slot
             (DT_CSBK, self.aloha(), false)
-        } else if self.resp_len > 0 {
+        } else if self.resp_len > 0 && self.now >= self.resp[self.resp_head].not_before_ms {
             let r = self.resp[self.resp_head];
             self.resp_head = (self.resp_head + 1) % RESP;
             self.resp_len -= 1;
+            if self.resp_len > 0 && self.resp[self.resp_head].gap_ms > 0 {
+                let h = &mut self.resp[self.resp_head];
+                h.not_before_ms = self.now + h.gap_ms as i64;
+            }
             if r.rand {
                 // the slots' last six digits: the line fits an event's 64 octets
                 let (k, n, src) = (r.rand_k.rem_euclid(1_000_000), self.k - r.rand_k, r.rand_src);
@@ -1445,6 +1462,11 @@ impl Site {
         let g = self.grant_pdu(ch, false, src);
         if ch == self.tscc_carrier * 2 {
             self.revert(g); // a composite TSCC: the grant on its own slot, then the call
+        } else if self.ack_first(ch, talking_net) {
+            self.push(DT_CSBK, g, false, None);
+            let i = (self.resp_head + self.resp_len + RESP - 1) % RESP;
+            self.resp[i].gap_ms = self.cfg.ack_gap_ms;
+            self.push(DT_CSBK, g, false, None);
         } else {
             self.push(DT_CSBK, g, false, None);
             self.push(DT_CSBK, g, false, None);

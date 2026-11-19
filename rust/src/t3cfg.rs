@@ -79,6 +79,8 @@ const SERVICES_KEYS: &[&[u8]] = &[
     b"payload_late_entry",
     b"illegally_parked_s",
     b"clear_lpcn",
+    b"ack_before_grant",
+    b"ack_before_grant_gap_s",
     b"transmit_interrupt",
     b"ip_address_upload",
 ];
@@ -548,6 +550,8 @@ impl<'a> Cx<'a> {
                 || !self.bool_of(sv, c"payload_late_entry", p, &mut cfg.payload_le)
                 || !self.ms_in(sv, c"illegally_parked_s", p, 0.0, 60.0, &mut cfg.park_ms)
                 || !self.u16_in(sv, c"clear_lpcn", p, 0, 4095, &mut cfg.clear_chan)
+                || !self.bool_of(sv, c"ack_before_grant", p, &mut cfg.ack_first)
+                || !self.ms_in(sv, c"ack_before_grant_gap_s", p, 0.0, 2.0, &mut cfg.ack_gap_ms)
                 || !self.bool_of(sv, c"transmit_interrupt", p, &mut cfg.intr)
                 || !self.bool_of(sv, c"ip_address_upload", p, &mut cfg.ip_upload)
                 || !self.u8_in(sv, c"power_save", p, 0, 7, &mut cfg.power_save)

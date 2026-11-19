@@ -1177,9 +1177,9 @@ fn broadcast_call_has_no_hang() {
     }
 }
 
-// ── field-site behaviors on a payload channel (tier3.md 3.21) ──
+// ── field-site behaviors on a payload channel (tier3.md 3.22) ──
 
-/// One carrier, every 3.21 setting on: A asks for a group call and goes quiet after the grant. TS2 sends Late_Entry
+/// One carrier, every 3.22 setting on: A asks for a group call and goes quiet after the grant. TS2 sends Late_Entry
 /// grants and P_PROTECT(ILLEGALLY_PARKED) for the parking time, then C_ACKD(Message_Accepted) to A from the
 /// talkgroup, then P_CLEAR naming clear_lpcn. Off by default: none of it, and P_CLEAR names 0.
 fn parked(on: bool) -> (u32, u32, Option<Ack>, Option<Clear>, i64) {
@@ -1234,4 +1234,45 @@ fn parked_call_protects_then_acks_and_clears() {
     let (protects, les, ack, clear, _) = parked(false);
     assert!(protects == 0 && les == 0 && ack.is_none(), "off: {protects} {les} {ack:?}");
     assert_eq!(clear.unwrap().chan, 0);
+}
+
+/// services.ack_before_grant: A's group call gets C_ACKD(Message_Accepted, A, TG) on the TSCC, then the TV_GRANT at
+/// least the gap after it. Off: the grant comes first, no C_ACKD, and A talks on TS2. On, this MS model takes the
+/// final C_ACKD as its request's answer and doesn't follow the grant, so that isn't checked.
+fn ack_then_grant(on: bool) -> (Option<i64>, i64, bool) {
+    let mut s = site_with(|c| c.ack_first = on as u8);
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG], &[1]), ms(1002, &[TG], &[1])], T0);
+    register_all(&mut air, &mut log);
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_GROUP, TG, 2000, 0, now);
+    let (mut t_ack, mut t_grant) = (None, 0);
+    let ok = air.until(5000, &mut log.f(), |a| {
+        let (dt, pdu) = (a.last.tscc_dt, a.last.tscc_pdu);
+        if dt == DT_CSBK && t_grant == 0 {
+            if let Some(k) = Ack::decode(&pdu) {
+                if k.reason == R_MESSAGE_ACCEPTED {
+                    assert_eq!((k.target, k.source), (1001, TG));
+                    t_ack.get_or_insert(a.now());
+                }
+            } else if Grant::decode(&pdu).is_some() {
+                t_grant = a.now();
+            }
+        }
+        t_grant != 0
+    });
+    assert!(ok, "the grant");
+    let talks = air.until(5000, &mut log.f(), |a| a.ms[0].state() == t3ms::PAYLOAD && a.site.status().ch[1].r#use == USE_CALL);
+    (t_ack, t_grant, talks)
+}
+
+#[test]
+fn ack_before_grant() {
+    let (ack, grant, talks) = ack_then_grant(true);
+    let ack = ack.expect("C_ACKD before the grant");
+    assert!(grant - ack >= 120, "the grant {} ms after the C_ACKD", grant - ack);
+    assert!(grant - ack <= 300, "the grant {} ms after the C_ACKD", grant - ack);
+    let _ = talks;
+    let (ack, _, talks) = ack_then_grant(false);
+    assert!(ack.is_none() && talks, "off: no C_ACKD first");
 }
