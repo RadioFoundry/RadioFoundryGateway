@@ -29,7 +29,9 @@ extern "C" {
 #define RDOF_BJ_UDP 600         /* --udp-payload octets */
 #define RDOF_BJ_CALLS 16        /* calls a listener keeps for its summary */
 
-enum { RDOF_BJ_VOICE = 1, RDOF_BJ_CSBK, RDOF_BJ_DATA, RDOF_BJ_LISTEN, RDOF_BJ_REPEATER, RDOF_BJ_OUTBOUND };
+enum { RDOF_BJ_VOICE = 1, RDOF_BJ_CSBK, RDOF_BJ_DATA, RDOF_BJ_LISTEN, RDOF_BJ_REPEATER, RDOF_BJ_OUTBOUND, RDOF_BJ_RAW };
+
+#define RDOF_BJ_RAW_MAX 128       /* bench_tx raw's bursts at most (7.7 s at one every 60 ms) */
 
 #define RDOF_BJ_OUTBOUND_MAX_S 60 /* an outbound job's --seconds at most (bench.tx's max_key_s doesn't apply) */
 #define RDOF_BJ_OB_CALLS 8        /* voice calls an outbound job carries at most */
@@ -82,6 +84,9 @@ typedef struct {
     int octets, tms_seq, udp_port, udp_src_port, udp_octets, preambles, repeat, repeat_gap_ms;
     uint8_t udp_payload[RDOF_BJ_UDP];
     int udp_payload_len;        /* -1: none (filler) */
+    /* raw: the client's own 33-byte bursts (in the job's AMBE buffer), sent as they are */
+    const uint8_t *raw;
+    int nraw;
     /* listen */
     double seconds;
     bool json;

@@ -677,6 +677,13 @@ tool's own `ambe` (its bytes come as `ambe_hex`), `port` and `verbose` pass.
 - `bench_tx` `voice`, `csbk`, `data` go out through the bench's TX path (section 7: the SDR modem, `bench.tx`'s
   frequencies, key time and power) in DMO timing, one burst every 60 ms; `listen` (and `listen_after`) reports what
   the receiver channel at `freq` hears, as the tool's `--json` lines and per-call summaries.
+- `bench_tx` `raw` keys the client's own bursts, as they are: `bursts`, 33-byte bursts as hex (66 digits each), an
+  array of strings or one string with commas, up to 128. They go out back to back as `voice`, `csbk` and `data`
+  do (one every 60 ms, the same gates: claim, lease, `bench.tx`, `max_key_s`, power), never framed again (on a
+  roamer, through the raw SDR modem), with `listen_after` to hear the reply. The control byte comes from each
+  burst's sync (voice sync, data sync and its slot type) or, for voice B-F, its EMB; a burst with neither is
+  refused. The gateway builds nothing: a data packet's preambles, header and blocks, privacy included, are the
+  client's. There is no `slot`: DMO timing has none.
 - `bench_tx` `outbound` sends a repeater's idle outbound on `freq`: a BS-sync idle burst every 30 ms on both
   slots, each with the CACH as an MMDVM sends it (AT 0, TS1/TS2 alternating) and `cc`, keyed from the first slot
   for `seconds` (0.5-60) with no handshake. `slots` (`1,2`, `1` or `2`) picks which slots' records are written;
@@ -1196,7 +1203,7 @@ each job's reason when it can't run. A client skips on those; a refused job's er
 | `rx`: FM, AM | yes | yes | yes, on the SDR | no |
 | `tune`: center, taps | yes | yes | yes | no |
 | `tune`: gain | yes | yes | yes | no |
-| `run` `bench_tx`: `voice`, `csbk`, `data` | yes | yes | yes, the modem in simplex | yes, on the modem's own band (a hotspot board: 70 cm) |
+| `run` `bench_tx`: `voice`, `csbk`, `data`, `raw` | yes | yes | yes, the modem in simplex | yes, on the modem's own band (a hotspot board: 70 cm) |
 | `run` `bench_tx`: `outbound` | yes, the slot clock its own | yes, its own | duplex modem only: the modem's idle downlink and CACH; its slot times from a burst the SDR hears | no: the slot clock is counted in an SDR's samples |
 | `run` `bench_repeater` | no (`unsupported`) | yes | duplex modem only: the modem's own receiver hears the input; `mode` `p25` and `nxdn` too | duplex modem only, as beside an SDR |
 | `mssim` (confirmed-data responder) | yes | yes | yes: timing the serial port's and a key-up's, learned from what's heard back | no: it hears through an SDR's channel |

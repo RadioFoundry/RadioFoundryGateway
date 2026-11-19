@@ -2301,6 +2301,8 @@ static void ob_run(rdof_bl_t *bl, conn_t *c, job_t *J, int root, double now)
 /* A job whose bursts must go out as it built them (tx_open's as_built). */
 static bool as_built(const rdof_bj_job_t *j)
 {
+    if (j->cmd == RDOF_BJ_RAW)
+        return true; /* the client's bursts: never framed again */
     if (j->cmd != RDOF_BJ_VOICE && j->cmd != RDOF_BJ_CSBK && j->cmd != RDOF_BJ_DATA)
         return false;
     return j->family != RDOF_FAMILY_MS || rdof_bj_offsets(j) || /* the carrier moved: the raw modem's */
@@ -2875,7 +2877,7 @@ static void tick_run(rdof_bl_t *bl, conn_t *c, int ci, double now)
     }
     switch (J->state) {
     case J_OPEN: {
-        static const char *const CMDS[] = {"", "voice", "csbk", "data", "listen"};
+        static const char *const CMDS[] = {"", "voice", "csbk", "data", "listen", "repeater", "outbound", "raw"};
         const char *fam = family_why(bl, j); /* the path may have changed while the job waited */
         if (fam) {
             run_log(bl, c, now, "can't transmit: --family: %s", fam);

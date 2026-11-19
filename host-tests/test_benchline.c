@@ -17,6 +17,7 @@
 #include <sys/socket.h>
 
 #include "rdof/benchjob.h"
+#include "rdof/benchtx.h"
 #include "rdof/bits.h"
 #include "rdof/benchline.h"
 #include "fake_chs.h"
@@ -1930,8 +1931,8 @@ static int count(const char *text, const char *needle)
 static void decode_job(const char *json, rdof_bj_burst_t *out, int *n)
 {
     static rdof_jnode_t nodes[64];
-    static char sb[1024];
-    static uint8_t ambe[64];
+    static char sb[4096];
+    static uint8_t ambe[RDOF_BJ_RAW_MAX * 33]; /* raw's bursts too */
     rdof_jdoc_t d = {.nodes = nodes, .max = 64, .buf = sb, .cap = sizeof sb};
     rdof_bj_job_t j;
     char e[200], note[200], done[200];
@@ -2005,6 +2006,91 @@ static void test_decode(void)
     memset(b.raw, 0x55, 12); /* past what the BPTC corrects */
     rdof_bj_burst_decode(&emb, &b, out, sizeof out);
     CHECK(strstr(out, "\"fec_ok\":false"), "a ruined csbk: %s", out);
+}
+
+/* bench_tx raw: the client's own bursts go out byte for byte, as built, the control byte from each one's sync */
+static void test_raw(void)
+{
+    static rdof_bj_burst_t ref[64], got[64];
+    int nref = 0, n = 0;
+    decode_job("{\"tool\":\"bench_tx\",\"cmd\":\"csbk\",\"freq\":438.1125,\"cc\":2,\"count\":2}", ref, &nref);
+    static char job[4096], list[2048];
+    list[0] = 0;
+    for (int i = 0; i < nref; i++) {
+        char *p = list + strlen(list);
+        *p++ = i ? ',' : '"';
+        for (int k = 0; k < 33; k++)
+            p += sprintf(p, "%02X", ref[i].burst[k]);
+    }
+    strcat(list, "\"");
+    /* one string with commas */
+    snprintf(job, sizeof job, "{\"tool\":\"bench_tx\",\"cmd\":\"raw\",\"freq\":438.1125,\"cc\":2,\"bursts\":%s}", list);
+    decode_job(job, got, &n);
+    bool same = n == nref;
+    for (int i = 0; same && i < n; i++)
+        same = got[i].control == ref[i].control && !memcmp(got[i].burst, ref[i].burst, 33);
+    CHECK(same, "raw: %d bursts as given (%d)", n, nref);
+    /* an array of strings */
+    char arr[2048] = "[";
+    for (int i = 0; i < nref; i++) {
+        char *p = arr + strlen(arr);
+        p += sprintf(p, "%s\"", i ? "," : "");
+        for (int k = 0; k < 33; k++)
+            p += sprintf(p, "%02x", ref[i].burst[k]);
+        strcpy(p, "\"");
+    }
+    strcat(arr, "]");
+    snprintf(job, sizeof job, "{\"tool\":\"bench_tx\",\"cmd\":\"raw\",\"freq\":438.1125,\"cc\":2,\"bursts\":%s}", arr);
+    decode_job(job, got, &n);
+    CHECK(n == nref && !memcmp(got[n - 1].burst, ref[n - 1].burst, 33), "raw as an array: %d", n);
+
+    /* refused: none, short, no sync */
+    static rdof_jnode_t nodes[64];
+    static char sb[4096];
+    static uint8_t buf[RDOF_BJ_RAW_MAX * 33];
+    /* a burst with no sync whose EMB doesn't decode either */
+    uint8_t junk[33];
+    int vn = -1, v = 0;
+    do {
+        for (int k = 0; k < 33; k++)
+            junk[k] = (uint8_t)(v * 37 + k * 11);
+        vn = -1;
+    } while (rdof_benchtx_control(junk, -1, &vn) >= 0 && ++v < 256);
+    char nosync[200];
+    int w = snprintf(nosync, sizeof nosync, "{\"tool\":\"bench_tx\",\"cmd\":\"raw\",\"freq\":438.1125,\"bursts\":[\"");
+    for (int k = 0; k < 33; k++)
+        w += snprintf(nosync + w, sizeof nosync - (size_t)w, "%02x", junk[k]);
+    snprintf(nosync + w, sizeof nosync - (size_t)w, "\"]}");
+    const char *const BAD[] = {
+        "{\"tool\":\"bench_tx\",\"cmd\":\"raw\",\"freq\":438.1125}",
+        "{\"tool\":\"bench_tx\",\"cmd\":\"raw\",\"freq\":438.1125,\"bursts\":\"00ff\"}", nosync};
+    static const char *const WHY[] = {"raw needs --bursts", "isn't 66 hex digits", "has no sync"};
+    for (int i = 0; i < 3; i++) {
+        rdof_jdoc_t d = {.nodes = nodes, .max = 64, .buf = sb, .cap = sizeof sb};
+        rdof_bj_job_t j;
+        char e[200] = "";
+        const int root = rdof_jparse(&d, BAD[i], strlen(BAD[i]));
+        CHECK(!rdof_bj_parse(&d, root, &j, buf, sizeof buf, e, sizeof e) && strstr(e, WHY[i]), "raw %d: %s", i, e);
+    }
+
+    /* on the engine: as built (a router's path would frame them again), every burst pushed */
+    rdof_bl_t *bl = rdof_bl_new(&PLAT);
+    double now = 5000;
+    memset(&tx, 0, sizeof tx);
+    routed = true;
+    snprintf(job, sizeof job, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"raw\",\"freq\":438.1125,\"cc\":2,"
+                              "\"bursts\":%s}}", list);
+    const int c = ask(bl, job, now);
+    for (int i = 0; i < 40; i++) {
+        now += 0.02;
+        rdof_bl_tick(bl, now);
+        tx_air(bl, now, -1);
+    }
+    CHECK(tx.as_built && tx.naired == nref && !memcmp(tx.aired[0] + 1, ref[0].burst, 33) && tx.aired[0][0] == ref[0].control,
+          "raw on the air: as built %d, %d of %d", tx.as_built, tx.naired, nref);
+    routed = false;
+    rdof_bl_closed(bl, c, now);
+    rdof_bl_free(bl);
 }
 
 static void no_emit(void *ctx, const char *line) { (void)ctx, (void)line; }
@@ -3599,6 +3685,7 @@ int main(int argc, char **argv)
     test_iq_formats();
     test_decode();
     test_udp_payload_kept();
+    test_raw();
     test_late();
     test_run();
     test_offset();

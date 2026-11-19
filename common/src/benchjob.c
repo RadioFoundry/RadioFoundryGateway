@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "rdof/benchtx.h"
 #include "rdof/bits.h"
 #include "rdof/fec.h"
 #include "rdof/features.h"
@@ -454,6 +455,53 @@ bool rdof_bj_parse(const rdof_jdoc_t *d, int obj, rdof_bj_job_t *j, uint8_t *amb
     return true;
 }
 
+/* bench_tx raw --bursts: 33-byte bursts as hex, an array of strings or one string with commas, into buf. Each
+ * needs a sync (voice, data) or to be voice B-F after a voice sync, for the modem's control byte. */
+static bool parse_raw(const rdof_jdoc_t *d, int obj, rdof_bj_job_t *j, uint8_t *buf, size_t cap, char *error,
+                      size_t ecap)
+{
+    seen_add("bursts");
+    const int b = rdof_jget(d, obj, "bursts");
+    const rdof_jnode_t *a = rdof_jnode(d, b);
+    const int count = !a ? 0 : a->type == RDOF_JARR ? a->count : a->type == RDOF_JSTR ? 1 : -1;
+    int voice_n = -1;
+    j->nraw = 0;
+    for (int i = 0; i < count; i++) {
+        const rdof_jnode_t *e = a->type == RDOF_JARR ? rdof_jnode(d, rdof_jat(d, b, i)) : a;
+        if (!e || e->type != RDOF_JSTR) {
+            snprintf(error, ecap, "raw --bursts: hex strings");
+            return false;
+        }
+        for (const char *p = e->str; *p;) {
+            const char *comma = strchr(p, ',');
+            const size_t len = comma ? (size_t)(comma - p) : strlen(p);
+            if (j->nraw == RDOF_BJ_RAW_MAX || (size_t)(j->nraw + 1) * 33 > cap) {
+                snprintf(error, ecap, "raw --bursts: %d at most", RDOF_BJ_RAW_MAX);
+                return false;
+            }
+            char hex[67];
+            uint8_t *out = buf + 33 * j->nraw;
+            if (len != 66 || (memcpy(hex, p, 66), hex[66] = 0, unhex(hex, out, 33)) != 33) {
+                snprintf(error, ecap, "raw --bursts: burst %d isn't 66 hex digits (33 bytes)", j->nraw + 1);
+                return false;
+            }
+            if (rdof_benchtx_control(out, -1, &voice_n) < 0) {
+                snprintf(error, ecap, "raw --bursts: burst %d has no sync and isn't voice B-F after a voice sync",
+                         j->nraw + 1);
+                return false;
+            }
+            j->nraw++;
+            p = comma ? comma + 1 : p + len;
+        }
+    }
+    if (count < 0 || !j->nraw) {
+        snprintf(error, ecap, "raw needs --bursts: 33-byte bursts as hex");
+        return false;
+    }
+    j->raw = buf;
+    return true;
+}
+
 static bool parse_job(const rdof_jdoc_t *d, int obj, rdof_bj_job_t *j, uint8_t *ambe_buf, size_t cap, char *error,
                       size_t ecap)
 {
@@ -470,9 +518,9 @@ static bool parse_job(const rdof_jdoc_t *d, int obj, rdof_bj_job_t *j, uint8_t *
     if (!strcmp(s, "outbound"))
         return parse_outbound(d, obj, j, ambe_buf, cap, error, ecap);
     j->cmd = !strcmp(s, "voice") ? RDOF_BJ_VOICE : !strcmp(s, "csbk") ? RDOF_BJ_CSBK : !strcmp(s, "data") ? RDOF_BJ_DATA
-           : !strcmp(s, "listen") ? RDOF_BJ_LISTEN : 0;
+           : !strcmp(s, "listen") ? RDOF_BJ_LISTEN : !strcmp(s, "raw") ? RDOF_BJ_RAW : 0;
     if (!j->cmd) {
-        snprintf(error, ecap, "bench_tx %s isn't done here (voice, csbk, data, listen, outbound)", s);
+        snprintf(error, ecap, "bench_tx %s isn't done here (voice, csbk, data, raw, listen, outbound)", s);
         return false;
     }
     j->freq_mhz = num(d, obj, "freq", 438.5);
@@ -533,6 +581,8 @@ static bool parse_job(const rdof_jdoc_t *d, int obj, rdof_bj_job_t *j, uint8_t *
         j->ambe = ambe_buf;
         j->ambe_len = (size_t)n / 9 * 9;
     }
+    if (j->cmd == RDOF_BJ_RAW && !parse_raw(d, obj, j, ambe_buf, cap, error, ecap))
+        return false;
     if (j->superframes < 1 || j->superframes > 200 || j->calls < 1 || j->calls > 50) {
         snprintf(error, ecap, "--superframes 1-200, --calls 1-50");
         return false;
@@ -1028,6 +1078,7 @@ int rdof_bj_parts(const rdof_bj_job_t *j)
     case RDOF_BJ_DATA:
         return j->repeat_gap_ms > 0 ? j->repeat : 1;
     case RDOF_BJ_CSBK:
+    case RDOF_BJ_RAW:
         return 1;
     default:
         return 0;
@@ -1049,6 +1100,8 @@ int rdof_bj_max_bursts(const rdof_bj_job_t *j)
     }
     case RDOF_BJ_CSBK:
         return j->count + 1;
+    case RDOF_BJ_RAW:
+        return j->nraw;
     case RDOF_BJ_DATA:
         return (j->repeat_gap_ms > 0 ? 1 : j->repeat) * (j->preambles + 1 + MAX_BLOCKS + 1);
     default:
@@ -1068,6 +1121,16 @@ int rdof_bj_build(const rdof_bj_job_t *j, int k, rdof_bj_burst_t *out, int cap, 
     case RDOF_BJ_CSBK:
         n = build_csbk(j, out, cap, done, ncap);
         break;
+    case RDOF_BJ_RAW: { /* the client's bursts as they are; the control byte from each one's sync */
+        int voice_n = -1;
+        for (int i = 0; i < j->nraw && i < cap; i++) {
+            memcpy(out[i].burst, j->raw + 33 * i, 33);
+            out[i].control = (uint8_t)rdof_benchtx_control(out[i].burst, -1, &voice_n);
+        }
+        n = j->nraw;
+        snprintf(done, ncap, "raw: %d burst(s) sent", n);
+        break;
+    }
     case RDOF_BJ_DATA: {
         const bool one = j->repeat_gap_ms <= 0;
         for (int p = one ? 0 : k; p < (one ? j->repeat : k + 1); p++)
