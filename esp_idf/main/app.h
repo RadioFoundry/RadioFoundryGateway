@@ -533,6 +533,8 @@ bool bench_tx_listed(uint32_t freq);
 int bench_tx_freqs(uint32_t *out, int max); /* bench.tx's frequencies */
 int bench_tx_bands(double (*out)[2], int max); /* bench.tx's bands: low, high (Hz) */
 const char *bench_tx_line_why(void);
+/* bench.tx's limits for the line protocol's info "tx" (rdof_bl_params_t.tx_limits). */
+void bench_tx_limits(double *max_key_s, double *max_dbm, int *power);
 /* as_built: the job's bursts as it built them, on the raw SDR modem (a roamer's parked), never the router */
 bool bench_tx_line_open(uint32_t freq, int cc, rdof_bench_power_t power, bool as_built, char *why, size_t cap);
 int bench_tx_line_space(char *why, size_t cap);

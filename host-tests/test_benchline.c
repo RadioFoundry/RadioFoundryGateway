@@ -393,6 +393,10 @@ static void f_ob_unkey(void *ctx)
     ob.unkeyed = true, ob.stop = s.next;
 }
 static void f_ob_close(void *ctx) { ob.open = false, ob.closed = true; }
+static void f_tx_limits(void *ctx, double *max_key_s, double *max_dbm, int *power)
+{
+    *max_key_s = 20, *max_dbm = 7, *power = -1;
+}
 
 static const rdof_bl_platform_t PLAT = {.device = f_device, .window = f_window, .freqs = f_freqs, .tx_bands = f_tx_bands,
                                         .iq_read = f_iq_read, .iq_filled = f_iq_filled, .utc = f_utc,
@@ -483,7 +487,7 @@ static void test_ops(void)
     drain(bl, c, out, sizeof out);
     CHECK(is_json_lines(out) && strstr(out, "\"center\":438.225000") && strstr(out, "\"fs\":768000.0") &&
               strstr(out, "\"tx_lo\":437.225000,\"tx_hi\":439.225000") &&
-              strstr(out, "\"tx_bands\":[[144.000000,148.000000]]"),
+              strstr(out, "\"tx\":null,\"tx_bands\":[[144.000000,148.000000]]"),
           "info: %s", out);
     CHECK(strstr(out, "{\"freq\":438.112500,\"ch\":1,\"id\":\"CH2\",\"in_window\":true,\"listed\":true,"
                       "\"caps\":[\"rx\",\"dmr\",\"iq\",\"mmdvm_tx\",\"sdr_tx\"],\"claimed_by\":null}") &&
@@ -2348,6 +2352,24 @@ static void test_outbound(void)
     c = ask(bl, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"outbound\",\"freq\":438.0625}}", now);
     drain(bl, c, out, sizeof out);
     CHECK(strstr(out, "\"code\":\"refused\""), "not a TX frequency: %s", out);
+    rdof_bl_closed(bl, c, now);
+    {
+        /* the key-up limit: in info's "tx", and an outbound longer than it refused before "started" */
+        rdof_bl_platform_t lp = PLAT;
+        lp.tx_limits = f_tx_limits;
+        rdof_bl_t *lb = rdof_bl_new(&lp);
+        int k = ask(lb, "{\"op\": \"info\"}", now);
+        drain(lb, k, out, sizeof out);
+        CHECK(strstr(out, "\"tx\":{\"max_key_s\":20.0,\"max_dbm\":7.0,\"power\":null}"), "info tx: %s", out);
+        rdof_bl_closed(lb, k, now);
+        k = ask(lb, "{\"op\":\"run\",\"job\":{\"tool\":\"bench_tx\",\"cmd\":\"outbound\",\"freq\":438.1125,"
+                    "\"seconds\":30}}", now);
+        drain(lb, k, out, sizeof out);
+        CHECK(strstr(out, "\"code\":\"refused\"") && strstr(out, "max_key_s 20.0") && !strstr(out, "started") && !ob.open,
+              "30 s over a 20 s limit: %s", out);
+        rdof_bl_closed(lb, k, now);
+        rdof_bl_free(lb);
+    }
     rdof_bl_closed(bl, c, now);
     CHECK(!ob.open && !ob.polls, "nothing keyed");
 

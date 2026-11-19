@@ -528,6 +528,13 @@ int bench_tx_bands(double (*out)[2], int max)
     return k;
 }
 
+void bench_tx_limits(double *max_key_s, double *max_dbm, int *power)
+{
+    *max_key_s = policy.max_key_s;
+    *max_dbm = policy.has_max_dbm ? policy.max_dbm : NAN;
+    *power = policy.has_max_dbm ? -1 : policy.rf_level;
+}
+
 const char *bench_tx_line_why(void)
 {
     if (!bench_tx_enabled())
@@ -1033,6 +1040,7 @@ bool bench_tx_enabled(void) { return false; }
 bool bench_tx_listed(uint32_t freq) { return false; }
 int bench_tx_freqs(uint32_t *out, int max) { return 0; }
 const char *bench_tx_line_why(void) { return "this build has no bench TX (CONFIG_RDOF_BENCH_TX)"; }
+void bench_tx_limits(double *max_key_s, double *max_dbm, int *power) { *max_key_s = 0, *max_dbm = NAN, *power = -1; }
 bool bench_tx_line_open(uint32_t freq, int cc, rdof_bench_power_t power, bool as_built, char *why, size_t cap)
 {
     snprintf(why, cap, "%s", bench_tx_line_why());

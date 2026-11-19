@@ -2461,6 +2461,18 @@ static void bench_power_off(void)
     atomic_store(&bench_atten_cdb, -1);
     bench_dev_reset = !R.mmdvm && R.m.mod_ok;
 }
+/* info's "tx": the key-up limit, and bench.tx's dBm cap (an SDR's; with none, --tx-power) or the modem's RF level. */
+static void bl_tx_limits(void *ctx, double *max_key_s, double *max_dbm, int *power)
+{
+    (void)ctx;
+    *max_key_s = bench_max_key_s;
+    *max_dbm = bench_has_cfg && bench_cfg_lim.has_max_dbm ? bench_cfg_lim.max_dbm : NAN;
+    *power = -1;
+    if (R.mmdvm && isnan(*max_dbm))
+        *power = bench_limit().rf_level;
+    else if (!R.mmdvm && dev && isnan(*max_dbm))
+        *max_dbm = gain_dbm(txg_full);
+}
 /* The settings' gates a job meets before it takes the transmitter: false with why. */
 static bool bench_gates(double seconds, char *why, size_t cap)
 {
@@ -3941,7 +3953,7 @@ static void bench_start(void)
                                           .tx_bands = bl_tx_bands,
                                           .iq_read = bl_iq_read, .iq_filled = bl_iq_filled, .utc = bl_utc,
                                           .sc_utc = bl_sc_utc,
-                                          .rx_stats = bl_rx_stats, .can_tx = bl_can_tx, .tx_open = bl_tx_open, .mssim = bl_mssim,
+                                          .rx_stats = bl_rx_stats, .can_tx = bl_can_tx, .tx_limits = bl_tx_limits, .tx_open = bl_tx_open, .mssim = bl_mssim,
                                           .tx_space = bl_tx_space, .tx_push = bl_tx_push, .tx_unkey = bl_tx_unkey, .tx_offset = bl_tx_offset,
                                           .tx_idle = bl_tx_idle, .tx_close = bl_tx_close, .tx_event = bl_tx_event, .rpt_open = bl_rpt_open,
                                           .rpt_state = bl_rpt_state, .rpt_event = bl_rpt_event,

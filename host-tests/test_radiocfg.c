@@ -261,6 +261,12 @@ int main(void)
           strstr(text, "driver=plutosdr"));
     if (!strstr(text, "HBlink4: off"))
         printf("%s\n", text);
+    /* "tx": {} without power_dbm: 10 dBm (the SDR's full power), not the gain's floor (-82 dBm on a Pluto) */
+    CHECK(parse("{\"version\": 3, \"name\": \"b\", \"id\": 3, \"defaults\": {\"cc\": 1}, \"devices\": [{\"kind\": "
+                "\"sdr\", \"driver\": \"soapy\", \"tx\": {}}], \"frequencies\": [{\"name\": \"in\", \"freq\": 438.25}, "
+                "{\"name\": \"out\", \"freq\": 438.0125}], \"apps\": [{\"name\": \"R\", \"type\": \"repeater\", \"in\": "
+                "\"in\", \"out\": \"out\"}]}") &&
+          C.tx_power_dbm == 10);
     /* an hblink network: the master */
     const char *R1 = "\"devices\": [{\"kind\": \"sdr\", \"driver\": \"soapy\"}], \"frequencies\": [{\"name\": \"in\", "
                      "\"freq\": 438.25, \"cc\": 1}, {\"name\": \"out\", \"freq\": 438.0125, \"cc\": 1}], \"apps\": "

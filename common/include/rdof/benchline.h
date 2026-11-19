@@ -240,6 +240,10 @@ typedef struct {
     void (*rx_stats)(void *ctx, double *seconds, long *overflows, double *clip_pct, long *dsp_skipped, long *dropped);
     /* Whether the bench can transmit at all (its build, its front end, bench.tx): NULL yes, else why not. */
     const char *(*can_tx)(void *ctx);
+    /* Optional: the transmit limits, info's "tx" (NULL hook: "tx": null): the longest key-up in seconds, the most
+     * power at the antenna in dBm (NAN: none set), the highest RF level 0-255 (-1: none, a dBm limit or an SDR's
+     * --tx-power instead). A job whose seconds are longer is refused before it starts. */
+    void (*tx_limits)(void *ctx, double *max_key_s, double *max_dbm, int *power);
     void *ctx;
     /* Transmit jobs (NULL: none), called from the engine's thread with its lock held. tx_open: take the transmitter
      * for a job on freq_hz at the job's power (bench_tx --power-dbm, or the older --power 0-255: the platform says in

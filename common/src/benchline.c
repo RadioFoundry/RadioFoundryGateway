@@ -1010,6 +1010,18 @@ static void op_info(rdof_bl_t *bl, conn_t *c, double now)
         snprintf(bands + strlen(bands), sizeof bands - strlen(bands), "%s[%.6f,%.6f]", i ? "," : "", b[i][0] / 1e6,
                  b[i][1] / 1e6);
     strcat(bands, "]");
+    char txl[96] = "null"; /* the transmit limits, as the WebSocket info's "tx" has them */
+    if (bl->p.tx_limits) {
+        double mk = 0, md = NAN;
+        int pw = -1;
+        bl->p.tx_limits(bl->p.ctx, &mk, &md, &pw);
+        char sd[24] = "null", sp[12] = "null";
+        if (!isnan(md))
+            snprintf(sd, sizeof sd, "%.1f", md);
+        if (pw >= 0)
+            snprintf(sp, sizeof sp, "%d", pw);
+        snprintf(txl, sizeof txl, "{\"max_key_s\":%.1f,\"max_dbm\":%s,\"power\":%s}", mk, sd, sp);
+    }
     /* the station's digital modes: DMR, and the repeater jobs' others (rpt_modes) */
     char modes[48] = "[\"dmr\"";
     if (bl->p.rpt_open && (bl->p.rpt_modes & (1u << RDOF_MODE_P25)))
@@ -1019,13 +1031,13 @@ static void op_info(rdof_bl_t *bl, conn_t *c, double now)
     strcat(modes, "]");
     if (k < line_cap)
         k += (size_t)snprintf(line + k, line_cap - k,
-                              "],\"tx_bands\":%s,\"stations\":[{\"name\":\"modem\",\"kind\":\"%s\",\"model\":%s,"
+                              "],\"tx\":%s,\"tx_bands\":%s,\"stations\":[{\"name\":\"modem\",\"kind\":\"%s\",\"model\":%s,"
                               "\"port\":\"\",\"present\":%s,\"tx\":%s,\"why_not\":%s,\"modes\":%s,"
                               "\"bands\":[],\"held_by\":%s,\"waiting\":%s}],"
                               "\"modem\":{\"held_by\":%s,\"waiting\":%s,\"next_job_eta\":{\"eta_s\":%.1f,"
                               "\"worst_s\":%.1f}},\"signal_modes\":{\"tx\":%s,\"rx\":%s},\"jobs\":%s,"
                               "\"repeater_modes\":%s,\"features\":{\"bursts_cach\":true,\"bursts_lost\":true,\"bursts_envelope\":true,\"bursts_ramp\":true,\"capture_raw\":%s,\"bursts_raw\":%s,\"dev_scale\":%s},\"default_caps\":[]}",
-                              bands, st_kind ? st_kind : "sdrmodem", qmodel, notx ? "false" : "true",
+                              txl, bands, st_kind ? st_kind : "sdrmodem", qmodel, notx ? "false" : "true",
                               notx ? "false" : "true", why, modes, held, wq, held, wq, eta, eta, stx, srx, jobs,
                               bl->p.rpt_open ? modes : "[]", bl->p.raw_start ? "true" : "false",
                               bl->p.raw_start && bl->p.raw_demod ? "true" : "false",
@@ -2254,6 +2266,16 @@ static void ob_run(rdof_bl_t *bl, conn_t *c, job_t *J, int root, double now)
     if (!tx_ok(bl, mhz)) {
         free(J);
         fail(bl, c, "refused", "%.4f MHz isn't a transmit frequency of this bench", mhz);
+        return;
+    }
+    double max_key_s = 0, max_dbm = NAN;
+    int power = -1;
+    if (bl->p.tx_limits)
+        bl->p.tx_limits(bl->p.ctx, &max_key_s, &max_dbm, &power);
+    if (bl->p.tx_limits && j->seconds > max_key_s + 1e-9) { /* refused here, not after "started" */
+        const double s = j->seconds;
+        free(J);
+        fail(bl, c, "refused", "%.1f s is longer than this bench's max_key_s %.1f s (info.tx)", s, max_key_s);
         return;
     }
     if (reach_tune(bl, c, root, mhz, false, true, now)) {

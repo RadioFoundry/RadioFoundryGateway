@@ -339,8 +339,8 @@ static bool from_plan(const rdof_plan_t *p, rdofradio_cfg_t *o, char *err, size_
     const int uk = rdof_plan_unit_find(p, roles.radio);
     const rdof_unit_t *u = uk >= 0 ? rdof_plan_unit(p, uk) : NULL;
     const rdof_plan_dev_t *dv = u && c->sdr_duplex != RDOF_SDR_DUPLEX_NONE ? rdof_plan_dev(p, u->rx) : NULL;
-    if (dv && dv->has_tx_power)
-        o->tx_power_dbm = dv->tx_power_dbm;
+    if (dv) /* the device's tx.power_dbm, 10 dBm unless set (config-v3 §4.7), as config.c has it: never the gain's floor */
+        o->tx_power_dbm = dv->has_tx_power ? dv->tx_power_dbm : 10;
     if (!clock_settings(p, o, err, cap) || !bench_settings(p, o, err, cap))
         return false;
     if (roles.has_sdr && !channels(p, o, err, cap))

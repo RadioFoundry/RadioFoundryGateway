@@ -134,6 +134,10 @@ static void bl_rx_stats(void *ctx, double *seconds, long *overflows, double *cli
 }
 
 static const char *bl_can_tx(void *ctx) { return bench_tx_line_why(); }
+static void bl_tx_limits(void *ctx, double *max_key_s, double *max_dbm, int *power)
+{
+    bench_tx_limits(max_key_s, max_dbm, power);
+}
 
 static bool bl_tx_open(void *ctx, uint32_t freq, int cc, rdof_bench_power_t power, bool as_built, char *why,
                        size_t cap)
@@ -256,7 +260,7 @@ void bench_line_start(void)
                                           .tx_bands = bl_tx_bands,
                                           .iq_read = bl_iq_read, .iq_filled = bl_iq_filled,
                                           .iq_warm = bl_iq_warm, .ppm_hold = bl_ppm_hold, .utc = bl_utc,
-                                          .sc_utc = bl_sc_utc, .rx_stats = bl_rx_stats, .can_tx = bl_can_tx,
+                                          .sc_utc = bl_sc_utc, .rx_stats = bl_rx_stats, .can_tx = bl_can_tx, .tx_limits = bl_tx_limits,
                                           .tx_open = bl_tx_open, .tx_space = bl_tx_space, .tx_push = bl_tx_push,
                                           .tx_unkey = bl_tx_unkey, .tx_idle = bl_tx_idle, .tx_close = bl_tx_close, .tx_event = bl_tx_event,
                                           .tx_offset = bl_tx_offset,
