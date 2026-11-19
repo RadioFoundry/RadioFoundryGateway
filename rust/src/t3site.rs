@@ -76,6 +76,9 @@ mod intr;
 // P_AHOY on a voice payload channel: radio check and selective clear (tier3.md 3.15)
 #[path = "t3pcheck.rs"]
 mod pcheck;
+// field-site behaviors on a payload channel, each off by default (tier3.md 3.21)
+#[path = "t3park.rs"]
+mod park;
 use pcheck::PaCheck;
 pub use intr::{ACT_INTR, INTR_ACCEPTED, INTR_CEASED, INTR_GAVE_UP, INTR_TALKS, STATUS_ALS_END, STATUS_INTERRUPT};
 use duplex::KIND_DUPLEX;
@@ -175,6 +178,10 @@ pub struct Cfg {
     pub ip_upload: u8, // 1: packet data to IPI asks the caller for the IP address first (6.6.3.2.4 b 2)
     pub composite_le: u8, // 1: Late_Entry grants on a lent composite TSCC slot in hang time (6.6.2.5.2)
     pub ps_hold_ms: u32, // a group call waits up to this long for its sleeping members' wake frame (6.4.7.1); 0 never
+    pub payload_le: u8,  // 1: Late_Entry grants on a payload slot itself in its call's gaps (t3park.rs)
+    pub pad1: u8,
+    pub clear_chan: u16, // P_CLEAR's channel (0: none named, the TSCC); t3park.rs
+    pub park_ms: u32,    // P_PROTECT(ILLEGALLY_PARKED) this long while a new call waits for voice; 0 off (t3park.rs)
 }
 
 #[repr(C)]
@@ -607,6 +614,8 @@ struct Chan {
     protect_ms: u32, // P_PROTECT(EN_PTT_ONE_MS) to this MS while the channel waits for it (t3intr.rs)
     protect_until_ms: i64,
     pa: PaCheck, // a P_AHOY radio check or selective clear on the channel (t3pcheck.rs)
+    park_until_ms: i64, // P_PROTECT(ILLEGALLY_PARKED) until then while no one talks; PARK_ACKED after (t3park.rs)
+    le_next_ms: i64,    // the next Late_Entry grant on the channel's own slot (services.payload_late_entry)
 }
 
 const P_AHOY: u8 = 1; // waiting for the called MS's answer to C_AHOY
@@ -961,6 +970,15 @@ fn check(c: &Cfg, err: &mut Buf) -> bool {
     }
     if c.composite_le > 1 {
         no!("composite_late_entry: true or false");
+    }
+    if c.payload_le > 1 {
+        no!("payload_late_entry: true or false");
+    }
+    if c.clear_chan > 4095 {
+        no!("clear_lpcn: 0 to 4095");
+    }
+    if c.park_ms > 60_000 {
+        no!("illegally_parked_s: 0 to 60");
     }
     if c.ip_upload > 1 {
         no!("ip_address_upload: true or false");
@@ -1423,6 +1441,7 @@ impl Site {
             last_voice_ms: now,
             ..Default::default()
         };
+        self.park_open(ch, talking_net);
         let g = self.grant_pdu(ch, false, src);
         if ch == self.tscc_carrier * 2 {
             self.revert(g); // a composite TSCC: the grant on its own slot, then the call
@@ -1525,11 +1544,12 @@ impl Site {
             if ch % 2 == lcn {
                 self.pa_slot(ch, &mut out.ch[ch]);
                 self.le_slot(ch, &mut out.ch[ch]);
+                self.park_slot(ch, &mut out.ch[ch]);
             }
             if ch % 2 != lcn || self.chans[ch].r#use != USE_CLEAR {
                 continue;
             }
-            let c = Clear { chan: 0, group: false, target: ALLMSI, source: TSI };
+            let c = Clear { chan: self.cfg.clear_chan, group: false, target: ALLMSI, source: TSI };
             out.ch[ch].dt = DT_CSBK;
             out.ch[ch].pdu = c.encode();
             self.chans[ch].clear_left = self.chans[ch].clear_left.saturating_sub(1);

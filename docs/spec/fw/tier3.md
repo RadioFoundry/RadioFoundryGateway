@@ -1144,6 +1144,24 @@ A status (table 6.57: SUPED_SV is Service_Options bit 5, above the status's five
 called MS or talkgroup, then the status's C_AHOY (6.6.6.1.2.1.2 e; 6.4.13 leaves the order to the call). 4 Tnp at most
 for the supplementary data; no room, the status goes on without it. Sim-tested.
 
+### 3.22 Field-site behaviors on a payload channel
+
+Off by default; for a radio to meet on the bench what it met at a site (`rust/src/t3park.rs`). Each is a
+`services` setting:
+
+- `payload_late_entry`: the call's grant with Late_Entry 1 (the TV_GRANT format, a P_GRANT on the payload channel,
+  6.6.2.5.2) on the payload slot itself, every `timers.grant_every_s` in the call's gaps (its hang time and the wait
+  before the first voice). Group and all-calls; not an individual or a data call.
+- `illegally_parked_s` (0-60 s): a voice call opened from RF waits for its caller's voice with
+  P_PROTECT(ILLEGALLY_PARKED) (Protect_Kind 010b, table 7.82; Group the call's, target its called party, source the
+  caller) in every other slot of the channel, for this long. The hang time doesn't end the wait. When someone
+  talks, the wait ends. When the time is up with no voice, C_ACKD(Message_Accepted) to the caller, source the called
+  party, then the clear.
+- `clear_lpcn` (0-4095): P_CLEAR names this channel (in place of 0).
+
+The TSCC's carrier's C_BCAST Chan_Freq (`broadcast.chan_freq_s`) already names every carrier, the TSCC's included.
+Host test `t3ctltests::parked_call_protects_then_acks_and_clears`.
+
 ## 4. Settings (config-v3 `tier3` app)
 
 The app takes the place reserved for it in config-v3.md section 6 ("a control frequency and a pool; it assigns its own
@@ -1195,7 +1213,7 @@ in table 6.5 and the off-air captures), `par` (`a`, `b`, `ab`), `area_bits` (1..
 | `data_gateway` | integer | 0 | the site's own data ID besides TSI (1-16776415): packet data to it, to TSI or to IPI goes to the site's IP gateway (3.16) |
 | `timers` | object | section 3.8 | |
 | `broadcast` | object | section 3.2 | `adjacent_s`, `chan_freq_s`, `local_time_s`, `call_timers_s`, `vote_now_s`, `ann_tscc_s` (0 = off, else 1-600 s; the last three off by default, section 3.11); `vote_blk` (2-10 TDMA frames, 6): VOTE_BLK after a Vote_Now; `priority` (0-7, 0): the site's priority for the Radiated Preference Strategy (table 6.81: 1 highest, 7 lowest, 0 non-preferred), sent as the confirmed priority with each neighbor and in `info` (section 3.11). Local settings: the manager's `cfg` doesn't carry them |
-| `services` | object | | `emergency_preempt` (bool, false): clear a running call for a waiting emergency (section 3.9); `power_save` (0-7, 0): the largest PowerSave_RQ granted, 0 none; `power_save_awake_s` (0.1-60, 1); `power_save_group_hold_s` (0-10, 2): how long a group call waits for its sleeping members' wake frame (section 3.11); `mass_reg_at_start_s` (0-200000, 0): a mass re-registration at start within this time (section 3.11); `hibernate_s` (0 or 1-300, 0): T_BS_Inactive of the asynchronous TSCC, 0 never (section 3.12); `duplex` (bool, false): full-duplex individual calls (section 3.13); `composite_tscc` (bool, false): the TSCC's slot carries a call when no payload channel is free (section 3.19); `composite_late_entry` (bool, false): while that slot is lent, Late_Entry grants as P_GRANTs on it in its call's hang time (section 3.19); `transmit_interrupt` (bool, false): payload interrupt, ALS termination and the call timer de-key (section 3.20); `ip_address_upload` (bool, false): packet data to IPI uploads the IP address first (section 3.16), and IP connection advice at registration is offered (section 3.4; off, it gets IP_Connection_failed). Local settings only for now; the manager's `cfg` doesn't carry them |
+| `services` | object | | `emergency_preempt` (bool, false): clear a running call for a waiting emergency (section 3.9); `power_save` (0-7, 0): the largest PowerSave_RQ granted, 0 none; `power_save_awake_s` (0.1-60, 1); `power_save_group_hold_s` (0-10, 2): how long a group call waits for its sleeping members' wake frame (section 3.11); `mass_reg_at_start_s` (0-200000, 0): a mass re-registration at start within this time (section 3.11); `hibernate_s` (0 or 1-300, 0): T_BS_Inactive of the asynchronous TSCC, 0 never (section 3.12); `duplex` (bool, false): full-duplex individual calls (section 3.13); `composite_tscc` (bool, false): the TSCC's slot carries a call when no payload channel is free (section 3.19); `composite_late_entry` (bool, false): while that slot is lent, Late_Entry grants as P_GRANTs on it in its call's hang time (section 3.19); `payload_late_entry` (bool, false), `illegally_parked_s` (0-60, 0), `clear_lpcn` (0-4095, 0): field-site behaviors on a payload channel (section 3.22); `transmit_interrupt` (bool, false): payload interrupt, ALS termination and the call timer de-key (section 3.20); `ip_address_upload` (bool, false): packet data to IPI uploads the IP address first (section 3.16), and IP connection advice at registration is offered (section 3.4; off, it gets IP_Connection_failed). Local settings only for now; the manager's `cfg` doesn't carry them |
 | `auth` | `off`, `registration`, `required` | `off` | MS authentication (section 3.14): challenge MSs with a key at registration, or every MS. Local settings only; the manager's `cfg` doesn't carry it |
 
 Checks (refusals name the key): exactly one `tscc` carrier; every carrier's `out` on a device that transmits and its

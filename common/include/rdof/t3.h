@@ -98,6 +98,10 @@ typedef struct {
     /* a group call to a talkgroup with members in power save waits up to this long for a frame they're all awake
      * in (361-4 6.4.7.1); 0: never waits */
     uint32_t ps_hold_ms;
+    uint8_t payload_le; /* 1: Late_Entry grants on a payload slot itself in its call's gaps (tier3.md 3.21) */
+    uint8_t pad1;
+    uint16_t clear_chan; /* P_CLEAR's channel; 0: none named (tier3.md 3.21) */
+    uint32_t park_ms;    /* P_PROTECT(ILLEGALLY_PARKED) this long while a new call waits for voice; 0 off (3.21) */
 } rdof_t3_cfg_t;
 
 #define RDOF_T3_AUTH_OFF 0          /* none */

@@ -76,6 +76,9 @@ const SERVICES_KEYS: &[&[u8]] = &[
     b"duplex",
     b"composite_tscc",
     b"composite_late_entry",
+    b"payload_late_entry",
+    b"illegally_parked_s",
+    b"clear_lpcn",
     b"transmit_interrupt",
     b"ip_address_upload",
 ];
@@ -263,6 +266,15 @@ impl<'a> Cx<'a> {
             return false;
         }
         *out = v as u8;
+        true
+    }
+
+    fn u16_in(&mut self, obj: c_int, key: &CStr, path: &[u8], lo: c_int, hi: c_int, out: &mut u16) -> bool {
+        let mut v = f64::from(*out);
+        if !self.num_in(obj, key, path, f64::from(lo), f64::from(hi), false, &mut v) {
+            return false;
+        }
+        *out = v as u16;
         true
     }
 
@@ -533,6 +545,9 @@ impl<'a> Cx<'a> {
                 || !self.bool_of(sv, c"duplex", p, &mut cfg.duplex)
                 || !self.bool_of(sv, c"composite_tscc", p, &mut cfg.composite)
                 || !self.bool_of(sv, c"composite_late_entry", p, &mut cfg.composite_le)
+                || !self.bool_of(sv, c"payload_late_entry", p, &mut cfg.payload_le)
+                || !self.ms_in(sv, c"illegally_parked_s", p, 0.0, 60.0, &mut cfg.park_ms)
+                || !self.u16_in(sv, c"clear_lpcn", p, 0, 4095, &mut cfg.clear_chan)
                 || !self.bool_of(sv, c"transmit_interrupt", p, &mut cfg.intr)
                 || !self.bool_of(sv, c"ip_address_upload", p, &mut cfg.ip_upload)
                 || !self.u8_in(sv, c"power_save", p, 0, 7, &mut cfg.power_save)

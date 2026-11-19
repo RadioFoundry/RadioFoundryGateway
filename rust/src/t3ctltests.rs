@@ -1176,3 +1176,62 @@ fn broadcast_call_has_no_hang() {
         assert_eq!(air.ms[0].status().calls_done, done);
     }
 }
+
+// ── field-site behaviors on a payload channel (tier3.md 3.21) ──
+
+/// One carrier, every 3.21 setting on: A asks for a group call and goes quiet after the grant. TS2 sends Late_Entry
+/// grants and P_PROTECT(ILLEGALLY_PARKED) for the parking time, then C_ACKD(Message_Accepted) to A from the
+/// talkgroup, then P_CLEAR naming clear_lpcn. Off by default: none of it, and P_CLEAR names 0.
+fn parked(on: bool) -> (u32, u32, Option<Ack>, Option<Clear>, i64) {
+    let mut s = site_with(|c| {
+        if on {
+            c.payload_le = 1;
+            c.park_ms = 8000;
+            c.clear_chan = 622;
+        }
+    });
+    let mut log = Log::default();
+    let mut air = Air::new(&mut s, [ms(1001, &[TG], &[1]), ms(1002, &[TG], &[1])], T0);
+    register_all(&mut air, &mut log);
+    air.off = 0b10; // B off; A asks, then is off too: no voice
+    let now = air.now();
+    air.ms[0].act(t3ms::DO_GROUP, TG, 5000, 0, now);
+    assert!(air.until(5000, &mut log.f(), |a| a.site.status().ch[1].r#use != USE_IDLE), "the call opens on TS2");
+    air.off = 0b11;
+    let t_open = air.now();
+    let (mut protects, mut les, mut ack, mut clear, mut t_ack) = (0, 0, None, None, 0);
+    let done = air.until(20_000, &mut log.f(), |a| {
+        let o = &a.last.ch[1];
+        if o.dt == DT_CSBK {
+            if let Some(p) = Protect::decode(&o.pdu) {
+                assert_eq!((p.kind, p.group, p.target, p.source), (PROTECT_ILLEGALLY_PARKED, true, TG, 1001));
+                protects += 1;
+            } else if let Some(g) = Grant::decode(&o.pdu) {
+                assert!(g.late_entry && g.target == TG && g.lcn == 1, "{g:?}");
+                les += 1;
+            } else if let Some(k) = Ack::decode(&o.pdu) {
+                ack = Some(k);
+                t_ack = a.now();
+            } else if let Some(c) = Clear::decode(&o.pdu) {
+                clear = Some(c);
+            }
+        }
+        clear.is_some()
+    });
+    assert!(done, "the call clears");
+    (protects, les, ack, clear, t_ack - t_open)
+}
+
+#[test]
+fn parked_call_protects_then_acks_and_clears() {
+    let (protects, les, ack, clear, t) = parked(true);
+    assert!((55..=70).contains(&protects), "{protects} P_PROTECTs: every other slot of 8 s");
+    assert!(les >= 5, "{les} Late_Entry grants on TS2");
+    let a = ack.expect("C_ACKD before the clear");
+    assert_eq!((a.reason, a.target, a.source), (R_MESSAGE_ACCEPTED, 1001, TG));
+    assert!((7900..9000).contains(&t), "C_ACKD {t} ms after the open");
+    assert_eq!(clear.unwrap().chan, 622);
+    let (protects, les, ack, clear, _) = parked(false);
+    assert!(protects == 0 && les == 0 && ack.is_none(), "off: {protects} {les} {ack:?}");
+    assert_eq!(clear.unwrap().chan, 0);
+}
